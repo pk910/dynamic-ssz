@@ -1,6 +1,6 @@
 module github.com/pk910/dynamic-ssz
 
-go 1.21.1
+go 1.20
 
 require github.com/ferranbt/fastssz v0.1.3
 
