@@ -101,6 +101,7 @@ func (d *DynSsz) unmarshalStruct(targetType reflect.Type, targetValue reflect.Va
 	dynamicFields := []*reflect.StructField{}
 	dynamicOffsets := []int{}
 	dynamicSizeHints := [][]sszSizeHint{}
+	sszSize := len(ssz)
 
 	for i := 0; i < targetType.NumField(); i++ {
 		field := targetType.Field(i)
@@ -113,6 +114,9 @@ func (d *DynSsz) unmarshalStruct(targetType reflect.Type, targetValue reflect.Va
 		if fieldSize > 0 {
 			//fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", indent(idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
 
+			if offset+fieldSize > sszSize {
+				return 0, fmt.Errorf("unexpected end of SSZ. field %v expects %v bytes, got %v", field.Name, fieldSize, sszSize-offset)
+			}
 			fieldSsz := ssz[offset : offset+fieldSize]
 			fieldValue := targetValue.Field(i)
 			consumedBytes, err := d.unmarshalType(field.Type, fieldValue, fieldSsz, sizeHints, idt+2)
