@@ -14,7 +14,7 @@ func (d *DynSsz) marshalType(sourceType reflect.Type, sourceValue reflect.Value,
 		sourceValue = sourceValue.Elem()
 	}
 
-	//fmt.Printf("%stype: %s\t kind: %v\n", indent(idt), sourceType.Name(), sourceType.Kind())
+	//fmt.Printf("%stype: %s\t kind: %v\n", strings.Repeat(" ", idt), sourceType.Name(), sourceType.Kind())
 
 	switch sourceType.Kind() {
 	case reflect.Struct:
@@ -34,7 +34,7 @@ func (d *DynSsz) marshalType(sourceType reflect.Type, sourceValue reflect.Value,
 				}
 			}
 
-			//fmt.Printf("%s fastssz for type %s: %v\n", indent(idt), sourceType.Name(), hasSpecVals)
+			//fmt.Printf("%s fastssz for type %s: %v\n", strings.Repeat(" ", idt), sourceType.Name(), hasSpecVals)
 			d.typesWithSpecVals[sourceType] = hasSpecVals
 		}
 		if hasSpecVals == noSpecValues && !d.NoFastSsz {
@@ -101,7 +101,7 @@ func (d *DynSsz) marshalStruct(sourceType reflect.Type, sourceValue reflect.Valu
 		}
 
 		if fieldSize > 0 {
-			//fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", indent(idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
+			//fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
 
 			fieldValue := sourceValue.Field(i)
 			newBuf, err := d.marshalType(field.Type, fieldValue, buf, sizeHints, idt+2)
@@ -113,7 +113,7 @@ func (d *DynSsz) marshalStruct(sourceType reflect.Type, sourceValue reflect.Valu
 		} else {
 			fieldSize = 4
 			buf = append(buf, 0, 0, 0, 0)
-			//fmt.Printf("%sfield %d:\t offset [%v:%v] %v\t %v\n", indent(idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
+			//fmt.Printf("%sfield %d:\t offset [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
 
 			dynamicFields = append(dynamicFields, &field)
 			dynamicOffsets = append(dynamicOffsets, offset)
@@ -129,7 +129,7 @@ func (d *DynSsz) marshalStruct(sourceType reflect.Type, sourceValue reflect.Valu
 		binary.LittleEndian.PutUint32(offsetBuf, uint32(offset))
 		copy(buf[fieldOffset+startLen:fieldOffset+startLen+4], offsetBuf)
 
-		//fmt.Printf("%sfield %d:\t dynamic [%v:]\t %v\n", indent(idt+1), field.Index[0], offset, field.Name)
+		//fmt.Printf("%sfield %d:\t dynamic [%v:]\t %v\n", strings.Repeat(" ", idt+1), field.Index[0], offset, field.Name)
 
 		fieldValue := sourceValue.Field(field.Index[0])
 		bufLen := len(buf)

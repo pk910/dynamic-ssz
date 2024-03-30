@@ -13,14 +13,14 @@ func (d *DynSsz) unmarshalType(targetType reflect.Type, targetValue reflect.Valu
 	if targetType.Kind() == reflect.Ptr {
 		targetType = targetType.Elem()
 		if targetValue.IsNil() {
-			//fmt.Printf("new type %v\n", targetType.Name())
+			// fmt.Printf("new type %v\n", targetType.Name())
 			newValue := reflect.New(targetType)
 			targetValue.Set(newValue)
 		}
 		targetValue = targetValue.Elem()
 	}
 
-	//fmt.Printf("%stype: %s\t kind: %v\n", indent(idt), targetType.Name(), targetType.Kind())
+	// fmt.Printf("%stype: %s\t kind: %v\n", strings.Repeat(" ", idt), targetType.Name(), targetType.Kind())
 
 	switch targetType.Kind() {
 	case reflect.Struct:
@@ -40,7 +40,7 @@ func (d *DynSsz) unmarshalType(targetType reflect.Type, targetValue reflect.Valu
 				}
 			}
 
-			//fmt.Printf("%s fastssz for type %s: %v\n", indent(idt), targetType.Name(), hasSpecVals)
+			// fmt.Printf("%s fastssz for type %s: %v\n", strings.Repeat(" ", idt), targetType.Name(), hasSpecVals)
 			d.typesWithSpecVals[targetType] = hasSpecVals
 		}
 		if hasSpecVals == noSpecValues {
@@ -112,7 +112,7 @@ func (d *DynSsz) unmarshalStruct(targetType reflect.Type, targetValue reflect.Va
 		}
 
 		if fieldSize > 0 {
-			//fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", indent(idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
+			// fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
 
 			if offset+fieldSize > sszSize {
 				return 0, fmt.Errorf("unexpected end of SSZ. field %v expects %v bytes, got %v", field.Name, fieldSize, sszSize-offset)
@@ -130,7 +130,7 @@ func (d *DynSsz) unmarshalStruct(targetType reflect.Type, targetValue reflect.Va
 		} else {
 			fieldSize = 4
 			fieldOffset := fastssz.ReadOffset(ssz[offset : offset+fieldSize])
-			//fmt.Printf("%sfield %d:\t offset [%v:%v] %v\t %v \t %v\n", indent(idt+1), i, offset, offset+fieldSize, fieldSize, field.Name, fieldOffset)
+			// fmt.Printf("%sfield %d:\t offset [%v:%v] %v\t %v \t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name, fieldOffset)
 
 			dynamicFields = append(dynamicFields, &field)
 			dynamicOffsets = append(dynamicOffsets, int(fieldOffset))
@@ -148,7 +148,7 @@ func (d *DynSsz) unmarshalStruct(targetType reflect.Type, targetValue reflect.Va
 			endOffset = len(ssz)
 		}
 
-		//fmt.Printf("%sfield %d:\t dynamic [%v:%v]\t %v\n", indent(idt+1), field.Index[0], startOffset, endOffset, field.Name)
+		// fmt.Printf("%sfield %d:\t dynamic [%v:%v]\t %v\n", strings.Repeat(" ", idt+1), field.Index[0], startOffset, endOffset, field.Name)
 
 		var fieldSsz []byte
 		if endOffset > startOffset {
@@ -197,7 +197,7 @@ func (d *DynSsz) unmarshalArray(targetType reflect.Type, targetValue reflect.Val
 		for i := 0; i < arrLen; i++ {
 			var itemVal reflect.Value
 			if fieldIsPtr {
-				//fmt.Printf("new array item %v\n", fieldType.Name())
+				// fmt.Printf("new array item %v\n", fieldType.Name())
 				itemVal = reflect.New(fieldType).Elem()
 				targetValue.Index(i).Set(itemVal.Addr())
 			} else {
@@ -268,7 +268,7 @@ func (d *DynSsz) unmarshalSlice(targetType reflect.Type, targetValue reflect.Val
 		return d.unmarshalDynamicSlice(targetType, targetValue, ssz, childSizeHints, idt)
 	}
 
-	//fmt.Printf("new slice %v  %v\n", fieldType.Name(), sliceLen)
+	// fmt.Printf("new slice %v  %v\n", fieldType.Name(), sliceLen)
 	newValue := reflect.MakeSlice(targetType, sliceLen, sliceLen)
 	targetValue.Set(newValue)
 
@@ -284,7 +284,7 @@ func (d *DynSsz) unmarshalSlice(targetType reflect.Type, targetValue reflect.Val
 			for i := 0; i < sliceLen; i++ {
 				var itemVal reflect.Value
 				if fieldIsPtr {
-					//fmt.Printf("new slice item %v\n", fieldType.Name())
+					// fmt.Printf("new slice item %v\n", fieldType.Name())
 					itemVal = reflect.New(fieldType).Elem()
 					newValue.Index(i).Set(itemVal.Addr())
 				} else {
@@ -327,11 +327,7 @@ func (d *DynSsz) unmarshalDynamicSlice(targetType reflect.Type, targetValue refl
 		fieldType = fieldType.Elem()
 	}
 
-	for i := 0; i < sliceLen; i++ {
-
-	}
-
-	//fmt.Printf("new dynamic slice %v  %v\n", fieldType.Name(), sliceLen)
+	// fmt.Printf("new dynamic slice %v  %v\n", fieldType.Name(), sliceLen)
 	newValue := reflect.MakeSlice(targetType, sliceLen, sliceLen)
 	targetValue.Set(newValue)
 
@@ -340,7 +336,7 @@ func (d *DynSsz) unmarshalDynamicSlice(targetType reflect.Type, targetValue refl
 		for i := 0; i < sliceLen; i++ {
 			var itemVal reflect.Value
 			if fieldIsPtr {
-				//fmt.Printf("new slice item %v\n", fieldType.Name())
+				// fmt.Printf("new slice item %v\n", fieldType.Name())
 				itemVal = reflect.New(fieldType).Elem()
 				newValue.Index(i).Set(itemVal.Addr())
 			} else {
