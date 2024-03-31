@@ -41,40 +41,41 @@ func main() {
 
 	var dur time.Duration
 	var err error
+	iterations := 1000
 
-	fmt.Printf("## mainnet preset / BeaconBlock decode + encode (100 times)\n")
-	dur, err = test_block_fastssz(block_mainnet)
+	fmt.Printf("## mainnet preset / BeaconBlock decode + encode (%d times)\n", iterations)
+	dur, err = test_block_fastssz(block_mainnet, iterations)
 	print_test_result("fastssz only", dur, err)
-	dur, err = test_block_dynssz(dynssz_only_mainnet, block_mainnet)
+	dur, err = test_block_dynssz(dynssz_only_mainnet, block_mainnet, iterations)
 	print_test_result("dynssz only", dur, err)
-	dur, err = test_block_dynssz(dynssz_hybrid_mainnet, block_mainnet)
+	dur, err = test_block_dynssz(dynssz_hybrid_mainnet, block_mainnet, iterations)
 	print_test_result("dynssz + fastssz", dur, err)
 	fmt.Printf("\n")
 
-	fmt.Printf("## mainnet preset / BeaconState decode + encode (100 times)\n")
-	dur, err = test_state_fastssz(state_mainnet)
+	fmt.Printf("## mainnet preset / BeaconState decode + encode (%d times)\n", iterations)
+	dur, err = test_state_fastssz(state_mainnet, iterations)
 	print_test_result("fastssz only", dur, err)
-	dur, err = test_state_dynssz(dynssz_only_mainnet, state_mainnet)
+	dur, err = test_state_dynssz(dynssz_only_mainnet, state_mainnet, iterations)
 	print_test_result("dynssz only", dur, err)
-	dur, err = test_state_dynssz(dynssz_hybrid_mainnet, state_mainnet)
+	dur, err = test_state_dynssz(dynssz_hybrid_mainnet, state_mainnet, iterations)
 	print_test_result("dynssz + fastssz", dur, err)
 	fmt.Printf("\n")
 
-	fmt.Printf("## minimal preset / BeaconBlock decode + encode (100 times)\n")
-	dur, err = test_block_fastssz(block_minimal)
+	fmt.Printf("## minimal preset / BeaconBlock decode + encode (%d times)\n", iterations)
+	dur, err = test_block_fastssz(block_minimal, iterations)
 	print_test_result("fastssz only", dur, err)
-	dur, err = test_block_dynssz(dynssz_only_minimal, block_minimal)
+	dur, err = test_block_dynssz(dynssz_only_minimal, block_minimal, iterations)
 	print_test_result("dynssz only", dur, err)
-	dur, err = test_block_dynssz(dynssz_hybrid_minimal, block_minimal)
+	dur, err = test_block_dynssz(dynssz_hybrid_minimal, block_minimal, iterations)
 	print_test_result("dynssz + fastssz", dur, err)
 	fmt.Printf("\n")
 
-	fmt.Printf("## minimal preset / BeaconState decode + encode (100 times)\n")
-	dur, err = test_state_fastssz(state_minimal)
+	fmt.Printf("## minimal preset / BeaconState decode + encode (%d times)\n", iterations)
+	dur, err = test_state_fastssz(state_minimal, iterations)
 	print_test_result("fastssz only", dur, err)
-	dur, err = test_state_dynssz(dynssz_only_minimal, state_minimal)
+	dur, err = test_state_dynssz(dynssz_only_minimal, state_minimal, iterations)
 	print_test_result("dynssz only", dur, err)
-	dur, err = test_state_dynssz(dynssz_hybrid_minimal, state_minimal)
+	dur, err = test_state_dynssz(dynssz_hybrid_minimal, state_minimal, iterations)
 	print_test_result("dynssz + fastssz", dur, err)
 	fmt.Printf("\n")
 }
@@ -90,11 +91,11 @@ func print_test_result(title string, duration time.Duration, err error) {
 	fmt.Printf("\n")
 }
 
-func test_block_fastssz(in []byte) (time.Duration, error) {
+func test_block_fastssz(in []byte, iterations int) (time.Duration, error) {
 	start := time.Now()
 
 	var out []byte
-	for i := 0; i < 100; i++ {
+	for i := 0; i < iterations; i++ {
 		t := new(deneb.SignedBeaconBlock)
 		err := t.UnmarshalSSZ(in)
 		if err != nil {
@@ -115,11 +116,11 @@ func test_block_fastssz(in []byte) (time.Duration, error) {
 	return elapsed, nil
 }
 
-func test_state_fastssz(in []byte) (time.Duration, error) {
+func test_state_fastssz(in []byte, iterations int) (time.Duration, error) {
 	start := time.Now()
 
 	var out []byte
-	for i := 0; i < 100; i++ {
+	for i := 0; i < iterations; i++ {
 		t := new(deneb.BeaconState)
 		err := t.UnmarshalSSZ(in)
 		if err != nil {
@@ -140,11 +141,11 @@ func test_state_fastssz(in []byte) (time.Duration, error) {
 	return elapsed, nil
 }
 
-func test_block_dynssz(dynssz *ssz.DynSsz, in []byte) (time.Duration, error) {
+func test_block_dynssz(dynssz *ssz.DynSsz, in []byte, iterations int) (time.Duration, error) {
 	start := time.Now()
 
 	var out []byte
-	for i := 0; i < 100; i++ {
+	for i := 0; i < iterations; i++ {
 		t := new(deneb.SignedBeaconBlock)
 		err := dynssz.UnmarshalSSZ(t, in)
 		if err != nil {
@@ -165,11 +166,11 @@ func test_block_dynssz(dynssz *ssz.DynSsz, in []byte) (time.Duration, error) {
 	return elapsed, nil
 }
 
-func test_state_dynssz(dynssz *ssz.DynSsz, in []byte) (time.Duration, error) {
+func test_state_dynssz(dynssz *ssz.DynSsz, in []byte, iterations int) (time.Duration, error) {
 	start := time.Now()
 
 	var out []byte
-	for i := 0; i < 100; i++ {
+	for i := 0; i < iterations; i++ {
 		t := new(deneb.BeaconState)
 		err := dynssz.UnmarshalSSZ(t, in)
 		if err != nil {

@@ -132,6 +132,9 @@ func (d *DynSsz) unmarshalStruct(targetType reflect.Type, targetValue reflect.Va
 
 		} else {
 			fieldSize = 4
+			if offset+fieldSize > sszSize {
+				return 0, fmt.Errorf("unexpected end of SSZ. dynamic field %v expects %v bytes (offset), got %v", field.Name, fieldSize, sszSize-offset)
+			}
 			fieldOffset := fastssz.ReadOffset(ssz[offset : offset+fieldSize])
 			// fmt.Printf("%sfield %d:\t offset [%v:%v] %v\t %v \t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name, fieldOffset)
 
