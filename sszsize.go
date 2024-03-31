@@ -197,16 +197,16 @@ func (d *DynSsz) getSszValueSize(targetType reflect.Type, targetValue reflect.Va
 			}
 
 			if fieldTypeSize < 0 {
+				size, err := d.getSszValueSize(field.Type, fieldValue)
+				if err != nil {
+					return 0, err
+				}
+
 				// dynamic field, add 4 bytes for offset
-				staticSize += 4
+				staticSize += size + 4
+			} else {
+				staticSize += fieldTypeSize
 			}
-
-			size, err := d.getSszValueSize(field.Type, fieldValue)
-			if err != nil {
-				return 0, err
-			}
-
-			staticSize += size
 		}
 	case reflect.Array:
 		arrLen := targetType.Len()
@@ -245,11 +245,7 @@ func (d *DynSsz) getSszValueSize(targetType reflect.Type, targetValue reflect.Va
 						staticSize += size + 4
 					}
 				} else {
-					size, err := d.getSszValueSize(fieldType, targetValue.Index(0))
-					if err != nil {
-						return 0, err
-					}
-					staticSize = size * sliceLen
+					staticSize = fieldTypeSize * sliceLen
 				}
 			}
 		}

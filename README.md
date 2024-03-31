@@ -87,25 +87,25 @@ The performance of `dynssz` has been benchmarked against `fastssz` using BeaconB
 
 #### BeaconBlock Decode + Encode (10,000 times)
 - **fastssz only:** [5 ms / 2 ms] success
-- **dynssz only:** [6 ms / 388 ms] success
-- **dynssz + fastssz:** [5 ms / 171 ms] success
+- **dynssz only:** [6 ms / 345 ms] success
+- **dynssz + fastssz:** [5 ms / 161 ms] success
 
 #### BeaconState Decode + Encode (10,000 times)
-- **fastssz only:** [5638 ms / 6154 ms] success
-- **dynssz only:** [5684 ms / 23526 ms] success
-- **dynssz + fastssz:** [4333 ms / 4727 ms] success
+- **fastssz only:** [5268 ms / 5623 ms] success
+- **dynssz only:** [5950 ms / 24358 ms] success
+- **dynssz + fastssz:** [4255 ms / 4568 ms] success
 
 ### Minimal Preset
 
 #### BeaconBlock Decode + Encode (10,000 times)
 - **fastssz only:** [0 ms / 0 ms] failed (unmarshal error)
-- **dynssz only:** [183 ms / 489 ms] success
-- **dynssz + fastssz:** [180 ms / 376 ms] success
+- **dynssz only:** [198 ms / 482 ms] success
+- **dynssz + fastssz:** [162 ms / 300 ms] success
 
 #### BeaconState Decode + Encode (10,000 times)
 - **fastssz only:** [0 ms / 0 ms] failed (unmarshal error)
-- **dynssz only:** [856 ms / 4915 ms] success
-- **dynssz + fastssz:** [820 ms / 652 ms] success
+- **dynssz only:** [896 ms / 4978 ms] success
+- **dynssz + fastssz:** [819 ms / 658 ms] success
 
 These results showcase the dynamic processing capabilities of `dynssz`, particularly its ability to handle data structures that `fastssz` cannot process due to its static nature. While `dynssz` introduces additional processing time, its flexibility allows it to successfully manage both mainnet and minimal presets. The combined `dynssz` and `fastssz` approach significantly improves performance while maintaining this flexibility, making it a viable solution for applications requiring dynamic SSZ processing.
 
