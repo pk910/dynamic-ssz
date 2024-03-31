@@ -16,6 +16,11 @@ type sszSizeHint struct {
 	specval bool
 }
 
+type sszSizeCache struct {
+	size    int
+	specval bool
+}
+
 func (d *DynSsz) getSszSizeTag(field *reflect.StructField) ([]sszSizeHint, error) {
 	sszSizes := []sszSizeHint{}
 
@@ -84,6 +89,10 @@ func (d *DynSsz) getSszSize(targetType reflect.Type, sizeHints []sszSizeHint) (i
 		targetType = targetType.Elem()
 	}
 
+	if cachedSize := d.typeSizeCache[targetType]; cachedSize != nil {
+		return cachedSize.size, cachedSize.specval, nil
+	}
+
 	switch targetType.Kind() {
 	case reflect.Struct:
 		for i := 0; i < targetType.NumField(); i++ {
@@ -148,6 +157,11 @@ func (d *DynSsz) getSszSize(targetType reflect.Type, sizeHints []sszSizeHint) (i
 
 	if isDynamicSize {
 		staticSize = -1
+	} else if len(sizeHints) == 0 {
+		d.typeSizeCache[targetType] = &sszSizeCache{
+			size:    staticSize,
+			specval: hasSpecValue,
+		}
 	}
 
 	return staticSize, hasSpecValue, nil
@@ -198,37 +212,45 @@ func (d *DynSsz) getSszValueSize(targetType reflect.Type, targetValue reflect.Va
 		arrLen := targetType.Len()
 		if arrLen > 0 {
 			fieldType := targetType.Elem()
-			size, err := d.getSszValueSize(fieldType, targetValue.Index(0))
-			if err != nil {
-				return 0, err
+			if fieldType == byteType {
+				staticSize = arrLen
+			} else {
+				size, err := d.getSszValueSize(fieldType, targetValue.Index(0))
+				if err != nil {
+					return 0, err
+				}
+				staticSize = size * arrLen
 			}
-			staticSize = size * arrLen
 		}
 	case reflect.Slice:
 		fieldType := targetType.Elem()
 		sliceLen := targetValue.Len()
 
 		if sliceLen > 0 {
-			fieldTypeSize, _, err := d.getSszSize(fieldType, nil)
-			if err != nil {
-				return 0, err
-			}
-
-			if fieldTypeSize < 0 {
-				// dyn size slice
-				for i := 0; i < sliceLen; i++ {
-					size, err := d.getSszValueSize(fieldType, targetValue.Index(i))
-					if err != nil {
-						return 0, err
-					}
-					staticSize += size + 4
-				}
+			if fieldType == byteType {
+				staticSize = sliceLen
 			} else {
-				size, err := d.getSszValueSize(fieldType, targetValue.Index(0))
+				fieldTypeSize, _, err := d.getSszSize(fieldType, nil)
 				if err != nil {
 					return 0, err
 				}
-				staticSize = size * sliceLen
+
+				if fieldTypeSize < 0 {
+					// dyn size slice
+					for i := 0; i < sliceLen; i++ {
+						size, err := d.getSszValueSize(fieldType, targetValue.Index(i))
+						if err != nil {
+							return 0, err
+						}
+						staticSize += size + 4
+					}
+				} else {
+					size, err := d.getSszValueSize(fieldType, targetValue.Index(0))
+					if err != nil {
+						return 0, err
+					}
+					staticSize = size * sliceLen
+				}
 			}
 		}
 	case reflect.Bool:

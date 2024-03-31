@@ -13,6 +13,7 @@ import (
 
 type DynSsz struct {
 	typesWithSpecVals map[reflect.Type]uint8
+	typeSizeCache     map[reflect.Type]*sszSizeCache
 	SpecValues        map[string]any
 	NoFastSsz         bool
 }
@@ -33,6 +34,7 @@ func NewDynSsz(specs map[string]any) *DynSsz {
 	}
 	return &DynSsz{
 		typesWithSpecVals: map[reflect.Type]uint8{},
+		typeSizeCache:     map[reflect.Type]*sszSizeCache{},
 		SpecValues:        specs,
 	}
 }
@@ -51,8 +53,8 @@ func (d *DynSsz) MarshalSSZ(source any) ([]byte, error) {
 		return nil, err
 	}
 
-	buf := make([]byte, size)
-	newBuf, err := d.marshalType(sourceType, sourceValue, buf[:0], []sszSizeHint{}, 0)
+	buf := make([]byte, 0, size)
+	newBuf, err := d.marshalType(sourceType, sourceValue, buf, []sszSizeHint{}, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -89,7 +91,11 @@ func (d *DynSsz) SizeSSZ(source any) (int, error) {
 	sourceType := reflect.TypeOf(source)
 	sourceValue := reflect.ValueOf(source)
 
-	return d.getSszValueSize(sourceType, sourceValue)
+	size, err := d.getSszValueSize(sourceType, sourceValue)
+	if err != nil {
+		return 0, err
+	}
+	return size, nil
 }
 
 // UnmarshalSSZ decodes the given SSZ-encoded data into the target object.
