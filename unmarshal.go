@@ -153,6 +153,9 @@ func (d *DynSsz) unmarshalStruct(targetType reflect.Type, targetValue reflect.Va
 		} else {
 			endOffset = len(ssz)
 		}
+		if startOffset < offset || endOffset > sszSize {
+			return 0, fastssz.ErrOffset
+		}
 
 		// fmt.Printf("%sfield %d:\t dynamic [%v:%v]\t %v\n", strings.Repeat(" ", idt+1), field.Index[0], startOffset, endOffset, field.Name)
 
