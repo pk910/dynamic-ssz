@@ -30,7 +30,7 @@ func (d *DynSsz) unmarshalType(targetType reflect.Type, targetValue reflect.Valu
 		usedFastSsz := false
 
 		hasSpecVals := d.typesWithSpecVals[targetType]
-		if hasSpecVals == unknownSpecValued {
+		if hasSpecVals == unknownSpecValued && !d.NoFastSsz {
 			hasSpecVals = noSpecValues
 			if targetValue.Addr().Type().Implements(sszUnmarshallerType) {
 				_, hasSpecVals2, err := d.getSszSize(targetType, sizeHints)
@@ -46,7 +46,7 @@ func (d *DynSsz) unmarshalType(targetType reflect.Type, targetValue reflect.Valu
 			// fmt.Printf("%s fastssz for type %s: %v\n", strings.Repeat(" ", idt), targetType.Name(), hasSpecVals)
 			d.typesWithSpecVals[targetType] = hasSpecVals
 		}
-		if hasSpecVals == noSpecValues {
+		if hasSpecVals == noSpecValues && !d.NoFastSsz {
 			unmarshaller, ok := targetValue.Addr().Interface().(fastssz.Unmarshaler)
 			if ok {
 				err := unmarshaller.UnmarshalSSZ(ssz)

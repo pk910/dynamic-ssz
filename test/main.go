@@ -96,25 +96,29 @@ func test_block_fastssz(in []byte, iterations int) (time.Duration, time.Duration
 	unmarshalTime := time.Duration(0)
 	marshalTime := time.Duration(0)
 
-	var out []byte
+	start := time.Now()
 	for i := 0; i < iterations; i++ {
 		t := new(deneb.SignedBeaconBlock)
-
-		start := time.Now()
 		err := t.UnmarshalSSZ(in)
 		if err != nil {
 			return 0, 0, fmt.Errorf("unmarshal error: %v", err)
 		}
-		unmarshalTime += time.Since(start)
+	}
+	unmarshalTime = time.Since(start)
 
-		start = time.Now()
-		out, err = t.MarshalSSZ()
+	t := new(deneb.SignedBeaconBlock)
+	t.UnmarshalSSZ(in)
+
+	start = time.Now()
+	for i := 0; i < iterations; i++ {
+		_, err := t.MarshalSSZ()
 		if err != nil {
 			return 0, 0, fmt.Errorf("marshal error: %v", err)
 		}
-		marshalTime += time.Since(start)
 	}
+	marshalTime = time.Since(start)
 
+	out, _ := t.MarshalSSZ()
 	if !bytes.Equal(in, out) {
 		return 0, 0, fmt.Errorf("SSZ mismatch after re-marshalling")
 	}
@@ -126,25 +130,29 @@ func test_state_fastssz(in []byte, iterations int) (time.Duration, time.Duration
 	unmarshalTime := time.Duration(0)
 	marshalTime := time.Duration(0)
 
-	var out []byte
+	start := time.Now()
 	for i := 0; i < iterations; i++ {
 		t := new(deneb.BeaconState)
-
-		start := time.Now()
 		err := t.UnmarshalSSZ(in)
 		if err != nil {
 			return 0, 0, fmt.Errorf("unmarshal error: %v", err)
 		}
-		unmarshalTime += time.Since(start)
+	}
+	unmarshalTime = time.Since(start)
 
-		start = time.Now()
-		out, err = t.MarshalSSZ()
+	t := new(deneb.BeaconState)
+	t.UnmarshalSSZ(in)
+
+	start = time.Now()
+	for i := 0; i < iterations; i++ {
+		_, err := t.MarshalSSZ()
 		if err != nil {
 			return 0, 0, fmt.Errorf("marshal error: %v", err)
 		}
-		marshalTime += time.Since(start)
 	}
+	marshalTime = time.Since(start)
 
+	out, _ := t.MarshalSSZ()
 	if !bytes.Equal(in, out) {
 		return 0, 0, fmt.Errorf("SSZ mismatch after re-marshalling")
 	}
@@ -156,25 +164,29 @@ func test_block_dynssz(dynssz *ssz.DynSsz, in []byte, iterations int) (time.Dura
 	unmarshalTime := time.Duration(0)
 	marshalTime := time.Duration(0)
 
-	var out []byte
+	start := time.Now()
 	for i := 0; i < iterations; i++ {
 		t := new(deneb.SignedBeaconBlock)
-
-		start := time.Now()
 		err := dynssz.UnmarshalSSZ(t, in)
 		if err != nil {
 			return 0, 0, fmt.Errorf("unmarshal error: %v", err)
 		}
-		unmarshalTime += time.Since(start)
+	}
+	unmarshalTime = time.Since(start)
 
-		start = time.Now()
-		out, err = dynssz.MarshalSSZ(t)
+	t := new(deneb.SignedBeaconBlock)
+	dynssz.UnmarshalSSZ(t, in)
+
+	start = time.Now()
+	for i := 0; i < iterations; i++ {
+		_, err := dynssz.MarshalSSZ(t)
 		if err != nil {
 			return 0, 0, fmt.Errorf("marshal error: %v", err)
 		}
-		marshalTime += time.Since(start)
 	}
+	marshalTime = time.Since(start)
 
+	out, _ := dynssz.MarshalSSZ(t)
 	if !bytes.Equal(in, out) {
 		return 0, 0, fmt.Errorf("SSZ mismatch after re-marshalling")
 	}
@@ -186,25 +198,30 @@ func test_state_dynssz(dynssz *ssz.DynSsz, in []byte, iterations int) (time.Dura
 	unmarshalTime := time.Duration(0)
 	marshalTime := time.Duration(0)
 
-	var out []byte
+	start := time.Now()
 	for i := 0; i < iterations; i++ {
 		t := new(deneb.BeaconState)
 
-		start := time.Now()
 		err := dynssz.UnmarshalSSZ(t, in)
 		if err != nil {
 			return 0, 0, fmt.Errorf("unmarshal error: %v", err)
 		}
-		unmarshalTime += time.Since(start)
+	}
+	unmarshalTime = time.Since(start)
 
-		start = time.Now()
-		out, err = dynssz.MarshalSSZ(t)
+	t := new(deneb.BeaconState)
+	dynssz.UnmarshalSSZ(t, in)
+
+	start = time.Now()
+	for i := 0; i < iterations; i++ {
+		_, err := dynssz.MarshalSSZ(t)
 		if err != nil {
 			return 0, 0, fmt.Errorf("marshal error: %v", err)
 		}
-		marshalTime += time.Since(start)
 	}
+	marshalTime = time.Since(start)
 
+	out, _ := dynssz.MarshalSSZ(t)
 	if !bytes.Equal(in, out) {
 		return 0, 0, fmt.Errorf("SSZ mismatch after re-marshalling")
 	}

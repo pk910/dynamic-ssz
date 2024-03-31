@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+
+	fastssz "github.com/ferranbt/fastssz"
 )
 
 type sszSizeHint struct {
@@ -187,25 +189,54 @@ func (d *DynSsz) getSszValueSize(targetType reflect.Type, targetValue reflect.Va
 
 	switch targetType.Kind() {
 	case reflect.Struct:
-		for i := 0; i < targetType.NumField(); i++ {
-			field := targetType.Field(i)
-			fieldValue := targetValue.Field(i)
+		usedFastSsz := false
 
-			fieldTypeSize, _, _, err := d.getSszFieldSize(&field)
-			if err != nil {
-				return 0, err
-			}
-
-			if fieldTypeSize < 0 {
-				size, err := d.getSszValueSize(field.Type, fieldValue)
+		hasSpecVals := d.typesWithSpecVals[targetType]
+		if hasSpecVals == unknownSpecValued && !d.NoFastSsz {
+			hasSpecVals = noSpecValues
+			if targetValue.Addr().Type().Implements(sszMarshallerType) {
+				_, hasSpecVals2, err := d.getSszSize(targetType, []sszSizeHint{})
 				if err != nil {
 					return 0, err
 				}
 
-				// dynamic field, add 4 bytes for offset
-				staticSize += size + 4
-			} else {
-				staticSize += fieldTypeSize
+				if hasSpecVals2 {
+					hasSpecVals = hasSpecValues
+				}
+			}
+
+			// fmt.Printf(" fastssz for type %s: %v\n", targetType.Name(), hasSpecVals)
+			d.typesWithSpecVals[targetType] = hasSpecVals
+		}
+		if hasSpecVals == noSpecValues && !d.NoFastSsz {
+			marshaller, ok := targetValue.Addr().Interface().(fastssz.Marshaler)
+			if ok {
+				staticSize = marshaller.SizeSSZ()
+				usedFastSsz = true
+			}
+		}
+
+		if !usedFastSsz {
+			for i := 0; i < targetType.NumField(); i++ {
+				field := targetType.Field(i)
+				fieldValue := targetValue.Field(i)
+
+				fieldTypeSize, _, _, err := d.getSszFieldSize(&field)
+				if err != nil {
+					return 0, err
+				}
+
+				if fieldTypeSize < 0 {
+					size, err := d.getSszValueSize(field.Type, fieldValue)
+					if err != nil {
+						return 0, err
+					}
+
+					// dynamic field, add 4 bytes for offset
+					staticSize += size + 4
+				} else {
+					staticSize += fieldTypeSize
+				}
 			}
 		}
 	case reflect.Array:
