@@ -1,6 +1,6 @@
 # Dynamic SSZ (dynssz)
 
-Dynamic SSZ (`dynssz`) is a Go library designed to provide flexible and dynamic SSZ encoding/decoding for Ethereum data structures. It stands out by using runtime reflection to handle serialization and deserialization of types with variable field sizes, enabling it to support a wide range of Ethereum presets beyond the mainnet. `dynssz` integrates with `fastssz` to leverage static type information for encoding/decoding when possible, but its primary advantage lies in its ability to adapt to dynamic and complex data structures that are not well-suited to static code generation methods.
+Dynamic SSZ (`dynssz`) is a Go library designed to provide flexible and dynamic SSZ encoding/decoding for Ethereum data structures. It stands out by using runtime reflection to handle serialization and deserialization of types with variable field sizes, enabling it to support a wide range of Ethereum presets beyond the mainnet. `dynssz` integrates with `fastssz` to leverage static type information for encoding/decoding when possible, but its primary advantage lies in its ability to adapt to dynamic field sizes that are not well-suited to static code generation methods.
 
 ## Features
 
@@ -75,13 +75,43 @@ if err != nil {
 }
 ```
 
+## Performance
+
+The performance of `dynssz` has been benchmarked in comparison to `fastssz` under various scenarios using Ethereum network data structures like BeaconBlocks and BeaconStates, following both the mainnet and minimal presets. The tests evaluate three approaches: using `fastssz` exclusively, using `dynssz` exclusively, and a combined approach where `dynssz` defaults to `fastssz` for static types not requiring dynamic processing. Here are the results, illustrating the trade-offs between flexibility and speed:
+
+### Mainnet Preset
+
+#### BeaconBlock Decode + Encode (100 times)
+- **fastssz only:** 4 ms (success)
+- **dynssz only:** 42 ms (success)
+- **dynssz + fastssz:** 19 ms (success)
+
+#### BeaconState Decode + Encode (100 times)
+- **fastssz only:** 102 ms (success)
+- **dynssz only:** 553 ms (success)
+- **dynssz + fastssz:** 184 ms (success)
+
+### Minimal Preset
+
+#### BeaconBlock Decode + Encode (100 times)
+- **fastssz only:** 0 ms (failed due to unmarshal error)
+- **dynssz only:** 14 ms (success)
+- **dynssz + fastssz:** 9 ms (success)
+
+#### BeaconState Decode + Encode (100 times)
+- **fastssz only:** 0 ms (failed due to unmarshal error)
+- **dynssz only:** 43 ms (success)
+- **dynssz + fastssz:** 12 ms (success)
+
+These results showcase the dynamic processing capabilities of `dynssz`, particularly its ability to handle data structures that `fastssz` cannot process due to its static nature. While `dynssz` introduces additional processing time, its flexibility allows it to successfully manage both mainnet and minimal presets. The combined `dynssz` and `fastssz` approach significantly improves performance while maintaining this flexibility, making it a viable solution for applications requiring dynamic SSZ processing.
+
 ## Contributing
 
 We welcome contributions from the community! Please check out the [CONTRIBUTING.md](CONTRIBUTING.md) file for guidelines on how to contribute to `dynssz`.
 
 ## License
 
-`dynssz` is licensed under the [MIT License](LICENSE). See the LICENSE file for more details.
+`dynssz` is licensed under the [LGPL License](LICENSE). See the LICENSE file for more details.
 
 ## Acknowledgements
 
