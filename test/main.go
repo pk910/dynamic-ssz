@@ -8,20 +8,32 @@ import (
 
 	"github.com/attestantio/go-eth2-client/spec/deneb"
 	ssz "github.com/pk910/dynamic-ssz"
-
-	_ "net/http/pprof"
 )
 
 func main() {
-
-	dynssz_mainnet := ssz.NewDynSsz(nil)
-	dynssz_minimal := ssz.NewDynSsz(map[string]any{
+	// minimal preset properties that have an effect on SSZ format
+	minimalSpecs := map[string]any{
 		"SYNC_COMMITTEE_SIZE":          uint64(32),
 		"SYNC_COMMITTEE_SUBNET_COUNT":  uint64(4),
 		"EPOCHS_PER_HISTORICAL_VECTOR": uint64(64),
 		"EPOCHS_PER_SLASHINGS_VECTOR":  uint64(64),
 		"SLOTS_PER_HISTORICAL_ROOT":    uint64(64),
-	})
+	}
+
+	dynssz_only_mainnet := ssz.NewDynSsz(nil)
+	dynssz_only_minimal := ssz.NewDynSsz(minimalSpecs)
+	dynssz_hybrid_mainnet := ssz.NewDynSsz(nil)
+	dynssz_hybrid_minimal := ssz.NewDynSsz(minimalSpecs)
+
+	// this has a huge negative performance impact.
+	// it prevents dynssz from using fastssz for structures where no dynamic marshalling is required.
+	// it's here for demonstration, don't use if not required.
+	dynssz_only_mainnet.NoFastSsz = true
+	dynssz_only_minimal.NoFastSsz = true
+
+	// load example blocks & states
+	// these are example dumps from networks with mainnet & minimal presets
+	// mainnet is from the ethereum mainnet, minimal from a small kurtosis testnet
 	block_mainnet, _ := ioutil.ReadFile("block-mainnet.ssz")
 	state_mainnet, _ := ioutil.ReadFile("state-mainnet.ssz")
 	block_minimal, _ := ioutil.ReadFile("block-minimal.ssz")
@@ -30,43 +42,45 @@ func main() {
 	var dur time.Duration
 	var err error
 
-	fmt.Printf("## mainnet preset / 100 x BeaconBlock decode + encode\n")
+	fmt.Printf("## mainnet preset / BeaconBlock decode + encode (100 times)\n")
 	dur, err = test_block_fastssz(block_mainnet)
-	print_test_result("fastssz", dur, err)
-	dur, err = test_block_dynssz(dynssz_mainnet, block_mainnet)
-	print_test_result("dynssz", dur, err)
+	print_test_result("fastssz only", dur, err)
+	dur, err = test_block_dynssz(dynssz_only_mainnet, block_mainnet)
+	print_test_result("dynssz only", dur, err)
+	dur, err = test_block_dynssz(dynssz_hybrid_mainnet, block_mainnet)
+	print_test_result("dynssz + fastssz", dur, err)
 	fmt.Printf("\n")
 
-	fmt.Printf("## mainnet preset / 100 x BeaconState decode + encode\n")
+	fmt.Printf("## mainnet preset / BeaconState decode + encode (100 times)\n")
 	dur, err = test_state_fastssz(state_mainnet)
-	print_test_result("fastssz", dur, err)
-	dur, err = test_state_dynssz(dynssz_mainnet, state_mainnet)
-	print_test_result("dynssz", dur, err)
+	print_test_result("fastssz only", dur, err)
+	dur, err = test_state_dynssz(dynssz_only_mainnet, state_mainnet)
+	print_test_result("dynssz only", dur, err)
+	dur, err = test_state_dynssz(dynssz_hybrid_mainnet, state_mainnet)
+	print_test_result("dynssz + fastssz", dur, err)
 	fmt.Printf("\n")
 
-	fmt.Printf("## minimal preset / 100 x BeaconBlock decode + encode\n")
+	fmt.Printf("## minimal preset / BeaconBlock decode + encode (100 times)\n")
 	dur, err = test_block_fastssz(block_minimal)
-	print_test_result("fastssz", dur, err)
-	dur, err = test_block_dynssz(dynssz_minimal, block_minimal)
-	print_test_result("dynssz", dur, err)
+	print_test_result("fastssz only", dur, err)
+	dur, err = test_block_dynssz(dynssz_only_minimal, block_minimal)
+	print_test_result("dynssz only", dur, err)
+	dur, err = test_block_dynssz(dynssz_hybrid_minimal, block_minimal)
+	print_test_result("dynssz + fastssz", dur, err)
 	fmt.Printf("\n")
 
-	fmt.Printf("## minimal preset / 100 x BeaconState decode + encode\n")
+	fmt.Printf("## minimal preset / BeaconState decode + encode (100 times)\n")
 	dur, err = test_state_fastssz(state_minimal)
-	print_test_result("fastssz", dur, err)
-	dur, err = test_state_dynssz(dynssz_minimal, state_minimal)
-	print_test_result("dynssz", dur, err)
+	print_test_result("fastssz only", dur, err)
+	dur, err = test_state_dynssz(dynssz_only_minimal, state_minimal)
+	print_test_result("dynssz only", dur, err)
+	dur, err = test_state_dynssz(dynssz_hybrid_minimal, state_minimal)
+	print_test_result("dynssz + fastssz", dur, err)
 	fmt.Printf("\n")
-
-	/*
-		f, _ := os.Create("mem.pprof")
-		pprof.WriteHeapProfile(f)
-		f.Close()
-	*/
 }
 
 func print_test_result(title string, duration time.Duration, err error) {
-	fmt.Printf("%v\t", title)
+	fmt.Printf("%-18v", title)
 	fmt.Printf("  [%4v ms]\t", duration.Milliseconds())
 	if err != nil {
 		fmt.Printf("failed (%v)", err)
