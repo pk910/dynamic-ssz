@@ -22,26 +22,22 @@ This will download and install the `dynssz` package into your Go workspace.
 
 ## Usage
 
-### Creating a New DynSsz Instance
-
-```go
-import "github.com/pk910/dynamic-ssz"
-
-// Define your dynamic specifications
-specs := map[string]any{
-    "SYNC_COMMITTEE_SIZE": uint64(32),
-    // ...
-}
-
-ds := dynssz.NewDynSsz(specs)
-```
-
 ### Struct Tag Annotations for Dynamic Encoding/Decoding
 
 `dynssz` utilizes struct tag annotations to indicate how fields should be encoded/decoded, supporting both static and dynamic field sizes:
 
-- `ssz-size`: Defines static default field sizes. This tag follows the same format supported by `fastssz`, allowing seamless integration.
-- `dynssz-size`: Specifies dynamic sizes derived from spec properties. Use this tag in conjunction with `ssz-size` for fields that require dynamic sizing. When the resolved size differs from the default, `dynssz` switches to dynamic handling for that field.
+- `ssz-size`:
+Defines static default field sizes. This tag follows the same format supported by `fastssz`, allowing seamless integration.
+- `dynssz-size`:
+Specifies dynamic sizes based on specification properties, extending the flexibility of `dynssz` to adapt to various Ethereum presets. Unlike the straightforward `ssz-size`, `dynssz-size` supports not only direct references to specification values but also simple mathematical expressions. This feature allows for dynamic calculation of field sizes based on spec values, enhancing the dynamic capabilities of `dynssz`.
+
+    The `dynssz-size` tag can interpret and evaluate expressions involving one or multiple spec values, offering a versatile approach to defining dynamic sizes. For example:
+    
+    - A direct reference to a single spec value might look like `dynssz-size:"SPEC_VALUE"`.
+    - A simple mathematical expression based on a spec value could be `dynssz-size:"(SPEC_VALUE*2)-5"`, enabling the size to be dynamically adjusted according to the spec value.
+    - For more complex scenarios involving multiple spec values, the tag can handle expressions like `dynssz-size:"(SPEC_VALUE1*SPEC_VALUE2)+SPEC_VALUE3"`, providing a powerful tool for defining sizes that depend on multiple dynamic specifications.
+
+    When processing a field with a `dynssz-size` tag, `dynssz` evaluates the expression to determine the actual size. If the resolved size deviates from the default established by `ssz-size`, the library switches to dynamic handling for that field. This mechanism ensures that `dynssz` can accurately and efficiently encode or decode data structures, taking into account the intricate sizing requirements dictated by dynamic Ethereum presets.
 
 Fields with static sizes do not need the `dynssz-size` tag. Here's an example of a structure using both tags:
 
@@ -56,6 +52,20 @@ type BeaconState struct {
     StateRoots                   []phase0.Root `ssz-size:"8192,32" dynssz-size:"SLOTS_PER_HISTORICAL_ROOT,32"`
     ...
 }
+```
+
+### Creating a New DynSsz Instance
+
+```go
+import "github.com/pk910/dynamic-ssz"
+
+// Define your dynamic specifications
+specs := map[string]any{
+    "SYNC_COMMITTEE_SIZE": uint64(32),
+    // ...
+}
+
+ds := dynssz.NewDynSsz(specs)
 ```
 
 ### Marshaling an Object
@@ -110,7 +120,7 @@ The performance of `dynssz` has been benchmarked against `fastssz` using BeaconB
 
 These results showcase the dynamic processing capabilities of `dynssz`, particularly its ability to handle data structures that `fastssz` cannot process due to its static nature. While `dynssz` introduces additional processing time, its flexibility allows it to successfully manage both mainnet and minimal presets. The combined `dynssz` and `fastssz` approach significantly improves performance while maintaining this flexibility, making it a viable solution for applications requiring dynamic SSZ processing.
 
-## Technical Overview
+## Internal Technical Overview
 
 ### Key Components
 

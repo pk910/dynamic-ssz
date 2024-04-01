@@ -32,8 +32,8 @@ func main() {
 	dynssz_only_minimal.NoFastSsz = true
 
 	// load example blocks & states
-	// these are example dumps from networks with mainnet & minimal presets
-	// mainnet is from the ethereum mainnet, minimal from a small kurtosis testnet
+	// these are example dumps from small kurtosis networks with mainnet & minimal presets
+	// both networks were started with ~380 validators and the snapshot was made around epoch 10-20
 	block_mainnet, _ := ioutil.ReadFile("block-mainnet.ssz")
 	state_mainnet, _ := ioutil.ReadFile("state-mainnet.ssz")
 	block_minimal, _ := ioutil.ReadFile("block-minimal.ssz")
