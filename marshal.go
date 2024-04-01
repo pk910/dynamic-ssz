@@ -57,24 +57,11 @@ func (d *DynSsz) marshalType(sourceType reflect.Type, sourceValue reflect.Value,
 		// use fastssz to marshal structs if:
 		// - struct implements fastssz Marshaler interface
 		// - this structure or any child structure does not use spec specific field sizes
-		hasSpecVals := d.typesWithSpecVals[sourceType]
-		if hasSpecVals == unknownSpecValued && !d.NoFastSsz {
-			hasSpecVals = noSpecValues
-			if sourceValue.Addr().Type().Implements(sszMarshalerType) {
-				_, hasSpecVals2, err := d.getSszSize(sourceType, sizeHints)
-				if err != nil {
-					return nil, err
-				}
-
-				if hasSpecVals2 {
-					hasSpecVals = hasSpecValues
-				}
-			}
-
-			//fmt.Printf("%s fastssz for type %s: %v\n", strings.Repeat(" ", idt), sourceType.Name(), hasSpecVals)
-			d.typesWithSpecVals[sourceType] = hasSpecVals
+		fastsszCompat, err := d.getFastsszCompatibility(sourceType, sourceValue)
+		if err != nil {
+			return nil, fmt.Errorf("failed checking fastssz compatibility: %v", err)
 		}
-		if hasSpecVals == noSpecValues && !d.NoFastSsz {
+		if !d.NoFastSsz && fastsszCompat.isMarshaler && !fastsszCompat.hasDynamicSpecValues {
 			marshaller, ok := sourceValue.Addr().Interface().(fastssz.Marshaler)
 			if ok {
 				newBuf, err := marshaller.MarshalSSZTo(buf)

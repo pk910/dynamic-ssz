@@ -12,18 +12,12 @@ import (
 )
 
 type DynSsz struct {
-	typesWithSpecVals map[reflect.Type]uint8
-	typeSizeCache     map[reflect.Type]*cachedSszSize
-	specValues        map[string]any
-	specValueCache    map[string]*cachedSpecValue
-	NoFastSsz         bool
+	fastsszCompatCache map[reflect.Type]*fastsszCompatibility
+	typeSizeCache      map[reflect.Type]*cachedSszSize
+	specValues         map[string]any
+	specValueCache     map[string]*cachedSpecValue
+	NoFastSsz          bool
 }
-
-const (
-	unknownSpecValued uint8 = iota
-	noSpecValues
-	hasSpecValues
-)
 
 // NewDynSsz creates a new instance of the DynSsz encoder/decoder.
 // The 'specs' map contains dynamic properties and configurations that will be applied during SSZ serialization and deserialization processes.
@@ -34,10 +28,10 @@ func NewDynSsz(specs map[string]any) *DynSsz {
 		specs = map[string]any{}
 	}
 	return &DynSsz{
-		typesWithSpecVals: map[reflect.Type]uint8{},
-		typeSizeCache:     map[reflect.Type]*cachedSszSize{},
-		specValues:        specs,
-		specValueCache:    map[string]*cachedSpecValue{},
+		fastsszCompatCache: map[reflect.Type]*fastsszCompatibility{},
+		typeSizeCache:      map[reflect.Type]*cachedSszSize{},
+		specValues:         specs,
+		specValueCache:     map[string]*cachedSpecValue{},
 	}
 }
 

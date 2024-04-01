@@ -60,24 +60,12 @@ func (d *DynSsz) unmarshalType(targetType reflect.Type, targetValue reflect.Valu
 		// use fastssz to unmarshal structs if:
 		// - struct implements fastssz Unmarshaller interface
 		// - this structure or any child structure does not use spec specific field sizes
-		hasSpecVals := d.typesWithSpecVals[targetType]
-		if hasSpecVals == unknownSpecValued && !d.NoFastSsz {
-			hasSpecVals = noSpecValues
-			if targetValue.Addr().Type().Implements(sszUnmarshalerType) {
-				_, hasSpecVals2, err := d.getSszSize(targetType, sizeHints)
-				if err != nil {
-					return 0, err
-				}
-
-				if hasSpecVals2 {
-					hasSpecVals = hasSpecValues
-				}
-			}
-
-			// fmt.Printf("%s fastssz for type %s: %v\n", strings.Repeat(" ", idt), targetType.Name(), hasSpecVals)
-			d.typesWithSpecVals[targetType] = hasSpecVals
+		fastsszCompat, err := d.getFastsszCompatibility(targetType, targetValue)
+		if err != nil {
+			return 0, fmt.Errorf("failed checking fastssz compatibility: %v", err)
 		}
-		if hasSpecVals == noSpecValues && !d.NoFastSsz {
+		if !d.NoFastSsz && fastsszCompat.isUnmarshaler && !fastsszCompat.hasDynamicSpecValues {
+			// fmt.Printf("%s fastssz for type %s: %v\n", strings.Repeat(" ", idt), targetType.Name(), hasSpecVals)
 			unmarshaller, ok := targetValue.Addr().Interface().(fastssz.Unmarshaler)
 			if ok {
 				err := unmarshaller.UnmarshalSSZ(ssz)
