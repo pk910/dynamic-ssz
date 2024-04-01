@@ -10,5 +10,5 @@ import (
 )
 
 var byteType = reflect.TypeOf(byte(0))
-var sszMarshallerType = reflect.TypeOf((*fastssz.Marshaler)(nil)).Elem()
-var sszUnmarshallerType = reflect.TypeOf((*fastssz.Unmarshaler)(nil)).Elem()
+var sszMarshalerType = reflect.TypeOf((*fastssz.Marshaler)(nil)).Elem()
+var sszUnmarshalerType = reflect.TypeOf((*fastssz.Unmarshaler)(nil)).Elem()

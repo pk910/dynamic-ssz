@@ -6,76 +6,38 @@ package dynssz
 import (
 	"fmt"
 	"reflect"
-	"strconv"
-	"strings"
 
 	fastssz "github.com/ferranbt/fastssz"
 )
 
-type sszSizeHint struct {
-	size    uint64
-	dynamic bool
-	specval bool
-}
-
-type cachesSszSize struct {
+type cachedSszSize struct {
 	size    int
 	specval bool
 }
 
-func (d *DynSsz) getSszSizeTag(field *reflect.StructField) ([]sszSizeHint, error) {
-	sszSizes := []sszSizeHint{}
-
-	if fieldSszSizeStr, fieldHasSszSize := field.Tag.Lookup("ssz-size"); fieldHasSszSize {
-		for _, sszSizeStr := range strings.Split(fieldSszSizeStr, ",") {
-			sszSize := sszSizeHint{}
-
-			if sszSizeStr == "?" {
-				sszSize.dynamic = true
-			} else {
-				sszSizeInt, err := strconv.ParseUint(sszSizeStr, 10, 32)
-				if err != nil {
-					return sszSizes, fmt.Errorf("error parsing ssz-size tag for '%v' field: %v", field.Name, err)
-				}
-				sszSize.size = sszSizeInt
-			}
-
-			sszSizes = append(sszSizes, sszSize)
-		}
-	}
-
-	fieldDynSszSizeStr, fieldHasDynSszSize := field.Tag.Lookup("dynssz-size")
-	if fieldHasDynSszSize {
-		for i, sszSizeStr := range strings.Split(fieldDynSszSizeStr, ",") {
-			sszSize := sszSizeHint{}
-
-			if sszSizeStr == "?" {
-				sszSize.dynamic = true
-			} else if sszSizeInt, err := strconv.ParseUint(sszSizeStr, 10, 32); err == nil {
-				sszSize.size = sszSizeInt
-			} else {
-				ok, specVal, err := d.getSpecValue(sszSizeStr)
-				if err != nil {
-					return sszSizes, fmt.Errorf("error parsing dynssz-size tag for '%v' field (%v): %v", field.Name, sszSizeStr, err)
-				}
-				if ok {
-					// dynamic value from spec
-					sszSize.size = specVal
-					sszSize.specval = true
-				} else {
-					// unknown spec value? fallback to fastssz
-					break
-				}
-			}
-
-			if sszSizes[i].size != sszSize.size {
-				sszSizes[i] = sszSize
-			}
-		}
-	}
-
-	return sszSizes, nil
-}
+// getSszSize calculates the SSZ size of a given type, differentiating between static and dynamic sizes. It recursively
+// analyzes the target type to determine its static size or identifies it as dynamically sized if it is inherently dynamic
+// or contains dynamic elements at any level of its structure.
+//
+// Parameters:
+// - targetType: The reflect.Type for which the SSZ size is being calculated. This type may be a simple, static-sized type,
+//   a complex type with static-sized elements, or a dynamic type that contains dynamic elements or refers to dynamic types.
+// - sizeHints: A slice of sszSizeHint, populated from 'ssz-size' and 'dynssz-size' tag annotations from parent structures,
+//   which are essential for accurately calculating sizes for types with dynamic lengths or when specific instances
+//   of types differ from their default specifications.
+//
+// Returns:
+// - The calculated size of the type in its SSZ representation. This size is either a positive integer for static-sized types
+//   or -1 for types identified as dynamically sized.
+// - A boolean indicating whether a dynamic specification value, differing from the default, has been applied anywhere within
+//   the type structure. This flag is crucial for downstream functions to decide between utilizing dynamic marshalling or,
+//   when no dynamic values are applied and it's available, opting for the static code path.
+// - An error, if the size calculation encounters any issues, such as an unsupported type or an inability to resolve sizes
+//   based on the provided sizeHints.
+//
+// getSszSize plays a pivotal role in the marshalling and unmarshalling processes by identifying whether types are static
+// or dynamic in size and signaling when dynamic encoding or decoding is necessary. This function ensures that the appropriate
+// encoding or decoding path is chosen based on the type's nature and any dynamic specifications applied to it.
 
 func (d *DynSsz) getSszSize(targetType reflect.Type, sizeHints []sszSizeHint) (int, bool, error) {
 	staticSize := 0
@@ -87,11 +49,13 @@ func (d *DynSsz) getSszSize(targetType reflect.Type, sizeHints []sszSizeHint) (i
 		childSizeHints = sizeHints[1:]
 	}
 
+	// resolve pointers to value type
 	if targetType.Kind() == reflect.Ptr {
 		targetType = targetType.Elem()
 	}
 
-	if cachedSize := d.typeSizeCache[targetType]; cachedSize != nil {
+	// get size from cache if not influenced by a parent sizeHint
+	if cachedSize := d.typeSizeCache[targetType]; cachedSize != nil && len(sizeHints) == 0 {
 		return cachedSize.size, cachedSize.specval, nil
 	}
 
@@ -143,6 +107,8 @@ func (d *DynSsz) getSszSize(targetType reflect.Type, sizeHints []sszSizeHint) (i
 		} else {
 			isDynamicSize = true
 		}
+
+	// primitive types
 	case reflect.Bool:
 		staticSize = 1
 	case reflect.Uint8:
@@ -153,6 +119,7 @@ func (d *DynSsz) getSszSize(targetType reflect.Type, sizeHints []sszSizeHint) (i
 		staticSize = 4
 	case reflect.Uint64:
 		staticSize = 8
+
 	default:
 		return 0, false, fmt.Errorf("unhandled reflection kind in size check: %v", targetType.Kind())
 	}
@@ -160,7 +127,8 @@ func (d *DynSsz) getSszSize(targetType reflect.Type, sizeHints []sszSizeHint) (i
 	if isDynamicSize {
 		staticSize = -1
 	} else if len(sizeHints) == 0 {
-		d.typeSizeCache[targetType] = &cachesSszSize{
+		// cache size if it's static and not influenced by a parent sizeHint
+		d.typeSizeCache[targetType] = &cachedSszSize{
 			size:    staticSize,
 			specval: hasSpecValue,
 		}
@@ -168,6 +136,25 @@ func (d *DynSsz) getSszSize(targetType reflect.Type, sizeHints []sszSizeHint) (i
 
 	return staticSize, hasSpecValue, nil
 }
+
+// getSszFieldSize calculates the SSZ size of a specific struct field, assessing whether it's statically or dynamically sized.
+// This function operates within a recursion loop with getSszSize, evaluating the size of individual fields within a struct
+// by potentially invoking getSszSize for nested structures or composite types, thus forming part of the comprehensive type
+// size determination process.
+//
+// Parameters:
+// - targetField: A pointer to the reflect.StructField being analyzed. This provides the context to assess the field's type,
+//   including its size characteristics and any tag annotations that might influence the size calculation.
+//
+// Returns:
+// - The calculated size of the field in its SSZ representation, either as a positive integer for static-sized fields or -1
+//   for fields identified as dynamically sized.
+// - A boolean indicating whether the field is influenced by a dynamic specification value that differs from the default.
+//   This information is critical for deciding between static or dynamic handling in the encoding or decoding process.
+// - A slice of sszSizeHint that could be relevant for further size calculations of elements within the field that possess
+//   dynamic sizes. These hints, derived from 'ssz-size' and 'dynssz-size' tag annotations, are indispensable for accurate
+//   size calculations in types with variable lengths.
+// - An error if the size calculation encounters challenges, such as unsupported field types or issues interpreting tag annotations.
 
 func (d *DynSsz) getSszFieldSize(targetField *reflect.StructField) (int, bool, []sszSizeHint, error) {
 	sszSizes, err := d.getSszSizeTag(targetField)
@@ -178,6 +165,27 @@ func (d *DynSsz) getSszFieldSize(targetField *reflect.StructField) (int, bool, [
 	size, hasSpecVal, err := d.getSszSize(targetField.Type, sszSizes)
 	return size, hasSpecVal, sszSizes, err
 }
+
+// getSszValueSize calculates the absolute SSZ size of the specified targetValue, taking into account both simple and complex, nested types.
+// It enhances performance by employing the "SizeSSZ" function from fastssz for calculating the size of structures that, along with all types
+// they refer to, do not have dynamic specification values applied. This means that the size calculation defaults to the static, fastssz code path
+// whenever the structure in question and its nested types are static and do not necessitate dynamic handling due to applied dynamic spec values.
+//
+// Parameters:
+// - targetType: The reflect.Type of the value to be sized, which provides the necessary type information for accurately determining the size
+//   of the value. This detail is especially vital for composite types potentially containing nested dynamic elements.
+// - targetValue: The reflect.Value containing the actual data to be sized. This function examines targetValue to calculate the size of the value itself
+//   and any of its nested values, resorting to fastssz's "SizeSSZ" for static structures and their statically typed components to optimize performance.
+//
+// Returns:
+// - An integer indicating the total size of targetValue in its SSZ-encoded form. This size encompasses the contributions from all nested
+//   or composite elements within the value.
+// - An error, if the size calculation process encounters challenges, such as unsupported types or intricate nested structures that defy
+//   accurate sizing with the available information.
+//
+// By adeptly utilizing fastssz's "SizeSSZ" for structures without dynamic spec values and their statically typed references, getSszValueSize ensures
+// efficient and accurate size calculations. This approach allows for the dynamic encoding process to proceed with precise size information, essential
+// for correctly encoding data into the SSZ format across a broad spectrum of data types, ranging from straightforward primitives to elaborate nested structures.
 
 func (d *DynSsz) getSszValueSize(targetType reflect.Type, targetValue reflect.Value) (int, error) {
 	staticSize := 0
@@ -191,10 +199,13 @@ func (d *DynSsz) getSszValueSize(targetType reflect.Type, targetValue reflect.Va
 	case reflect.Struct:
 		usedFastSsz := false
 
+		// use fastssz to calculate size if:
+		// - struct implements fastssz Marshaler interface
+		// - this structure or any child structure does not use spec specific field sizes
 		hasSpecVals := d.typesWithSpecVals[targetType]
 		if hasSpecVals == unknownSpecValued && !d.NoFastSsz {
 			hasSpecVals = noSpecValues
-			if targetValue.Addr().Type().Implements(sszMarshallerType) {
+			if targetValue.Addr().Type().Implements(sszMarshalerType) {
 				_, hasSpecVals2, err := d.getSszSize(targetType, []sszSizeHint{})
 				if err != nil {
 					return 0, err
@@ -217,6 +228,8 @@ func (d *DynSsz) getSszValueSize(targetType reflect.Type, targetValue reflect.Va
 		}
 
 		if !usedFastSsz {
+			// can't use fastssz, use dynamic size calculation
+
 			for i := 0; i < targetType.NumField(); i++ {
 				field := targetType.Field(i)
 				fieldValue := targetValue.Field(i)
@@ -235,6 +248,7 @@ func (d *DynSsz) getSszValueSize(targetType reflect.Type, targetValue reflect.Va
 					// dynamic field, add 4 bytes for offset
 					staticSize += size + 4
 				} else {
+					// static field
 					staticSize += fieldTypeSize
 				}
 			}
@@ -267,12 +281,13 @@ func (d *DynSsz) getSszValueSize(targetType reflect.Type, targetValue reflect.Va
 				}
 
 				if fieldTypeSize < 0 {
-					// dyn size slice
+					// slice with dynamic size items, so we have to go through each item
 					for i := 0; i < sliceLen; i++ {
 						size, err := d.getSszValueSize(fieldType, targetValue.Index(i))
 						if err != nil {
 							return 0, err
 						}
+						// add 4 bytes for offset in dynamic slice
 						staticSize += size + 4
 					}
 				} else {
@@ -280,6 +295,8 @@ func (d *DynSsz) getSszValueSize(targetType reflect.Type, targetValue reflect.Va
 				}
 			}
 		}
+
+	// primitive types
 	case reflect.Bool:
 		staticSize = 1
 	case reflect.Uint8:
@@ -290,6 +307,7 @@ func (d *DynSsz) getSszValueSize(targetType reflect.Type, targetValue reflect.Va
 		staticSize = 4
 	case reflect.Uint64:
 		staticSize = 8
+
 	default:
 		return 0, fmt.Errorf("unhandled reflection kind in size check: %v", targetType.Kind())
 	}
