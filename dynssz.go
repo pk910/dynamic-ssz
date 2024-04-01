@@ -13,8 +13,9 @@ import (
 
 type DynSsz struct {
 	typesWithSpecVals map[reflect.Type]uint8
-	typeSizeCache     map[reflect.Type]*sszSizeCache
-	SpecValues        map[string]any
+	typeSizeCache     map[reflect.Type]*cachesSszSize
+	specValues        map[string]any
+	specValueCache    map[string]*cachedSpecValue
 	NoFastSsz         bool
 }
 
@@ -34,8 +35,9 @@ func NewDynSsz(specs map[string]any) *DynSsz {
 	}
 	return &DynSsz{
 		typesWithSpecVals: map[reflect.Type]uint8{},
-		typeSizeCache:     map[reflect.Type]*sszSizeCache{},
-		SpecValues:        specs,
+		typeSizeCache:     map[reflect.Type]*cachesSszSize{},
+		specValues:        specs,
+		specValueCache:    map[string]*cachedSpecValue{},
 	}
 }
 

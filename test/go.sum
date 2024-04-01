@@ -1,3 +1,5 @@
+github.com/Knetic/govaluate v3.0.0+incompatible h1:7o6+MAPhYTCF0+fdvoz1xDedhRb4f6s9Tn1Tt7/WTEg=
+github.com/Knetic/govaluate v3.0.0+incompatible/go.mod h1:r7JcOSlj0wfOMncg0iLm8Leh48TZaKVeNIfJntJ2wa0=
 github.com/attestantio/go-eth2-client v0.21.1 h1:yvsMd/azPUbxiJzWZhgqfOJJRNF1zLvAJpcBXTHzyh8=
 github.com/attestantio/go-eth2-client v0.21.1/go.mod h1:Tb412NpzhsC0sbtpXS4D51y5se6nDkWAi6amsJrqX9c=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

@@ -18,7 +18,7 @@ type sszSizeHint struct {
 	specval bool
 }
 
-type sszSizeCache struct {
+type cachesSszSize struct {
 	size    int
 	specval bool
 }
@@ -160,7 +160,7 @@ func (d *DynSsz) getSszSize(targetType reflect.Type, sizeHints []sszSizeHint) (i
 	if isDynamicSize {
 		staticSize = -1
 	} else if len(sizeHints) == 0 {
-		d.typeSizeCache[targetType] = &sszSizeCache{
+		d.typeSizeCache[targetType] = &cachesSszSize{
 			size:    staticSize,
 			specval: hasSpecValue,
 		}
