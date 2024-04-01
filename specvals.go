@@ -6,7 +6,7 @@ package dynssz
 import (
 	"fmt"
 
-	"github.com/Knetic/govaluate"
+	"gopkg.in/Knetic/govaluate.v3"
 )
 
 type cachedSpecValue struct {

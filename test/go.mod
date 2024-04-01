@@ -8,7 +8,6 @@ require (
 )
 
 require (
-	github.com/Knetic/govaluate v3.0.0+incompatible // indirect
 	github.com/fatih/color v1.16.0 // indirect
 	github.com/ferranbt/fastssz v0.1.3 // indirect
 	github.com/goccy/go-yaml v1.9.2 // indirect
@@ -23,6 +22,7 @@ require (
 	golang.org/x/crypto v0.20.0 // indirect
 	golang.org/x/sys v0.17.0 // indirect
 	golang.org/x/xerrors v0.0.0-20231012003039-104605ab7028 // indirect
+	gopkg.in/Knetic/govaluate.v3 v3.0.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
 
