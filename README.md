@@ -2,12 +2,13 @@
 
 Dynamic SSZ (`dynssz`) is a Go library designed to provide flexible and dynamic SSZ encoding/decoding for Ethereum data structures. It stands out by using runtime reflection to handle serialization and deserialization of types with variable field sizes, enabling it to support a wide range of Ethereum presets beyond the mainnet. `dynssz` integrates with `fastssz` to leverage static type information for encoding/decoding when possible, but its primary advantage lies in its ability to adapt to dynamic field sizes that are not well-suited to static code generation methods.
 
-## Features
+`dynssz` is designed to bridge the gap between the efficiency of static SSZ encoding/decoding and the flexibility required for handling dynamic data structures. It achieves this through a hybrid approach that combines the best of both worlds: leveraging `fastssz` for static types and dynamically processing types with variable sizes.
 
-- **Dynamic Field Sizes:** Dynamically handles SSZ encoding/decoding with variable field sizes at runtime.
-- **Integration with FastSSZ:** Uses `fastssz` for parts of the serialization process when static type information is applicable, offering a balanced approach to handling Ethereum data.
-- **Support for Various Ethereum Presets:** Capable of working with non-mainnet Ethereum presets, facilitating a broader range of applications.
-- **Minimal Performance Overhead:** Designed to minimize the performance impact of dynamic serialization.
+## Benefits
+
+- **Flexibility**: Supports Ethereum data structures beyond mainnet presets, accommodating custom and dynamic specifications.
+- **Hybrid Efficiency**: Balances the efficiency of static processing with the flexibility of dynamic handling, optimizing performance where possible.
+- **Developer-Friendly**: Simplifies the handling of SSZ data for developers by abstracting the complexity of dynamic data processing.
 
 ## Installation
 
@@ -108,6 +109,29 @@ The performance of `dynssz` has been benchmarked against `fastssz` using BeaconB
 - **dynssz + fastssz:** [1554 ms / 1096 ms] success
 
 These results showcase the dynamic processing capabilities of `dynssz`, particularly its ability to handle data structures that `fastssz` cannot process due to its static nature. While `dynssz` introduces additional processing time, its flexibility allows it to successfully manage both mainnet and minimal presets. The combined `dynssz` and `fastssz` approach significantly improves performance while maintaining this flexibility, making it a viable solution for applications requiring dynamic SSZ processing.
+
+## Technical Overview
+
+### Key Components
+
+- **Type and Value Size Calculation**: The library distinguishes between type sizes (static sizes of types or -1 for dynamic types) and value sizes (the absolute size of an instance in SSZ representation), utilizing recursive functions to accurately determine these sizes based on reflection and tag annotations (`ssz-size`, `dynssz-size`).
+
+- **Encoding/Decoding Dispatch**: Central to the library's architecture are the `marshalType` and `unmarshalType` functions. These serve as entry points to the encoding and decoding processes, respectively, dynamically dispatching tasks to specialized functions based on the nature of the data (e.g., `marshalStruct`, `unmarshalArray`).
+
+- **Dynamic Handling with Static Efficiency**: For types that do not necessitate dynamic processing (neither the type nor its nested types have dynamic specifications), `dynssz` optimizes performance by invoking corresponding `fastssz` functions. This ensures minimal overhead for types compatible with static processing.
+
+- **Size Hints and Spec Values**: `dynssz` intelligently handles sizes through `sszSizeHint` structures, derived from field tag annotations. These hints inform the library whether to process data statically or dynamically, allowing for precise and efficient data serialization.
+
+### Architecture Flow
+
+1. **Size Calculation**: Upon receiving a data structure for encoding or decoding, `dynssz` first calculates its size. For encoding, it determines whether the structure can be processed statically or requires dynamic handling. For decoding, it assesses the expected size of the incoming SSZ data.
+
+2. **Dynamic vs. Static Path Selection**: Based on the size calculation and the presence of dynamic specifications, the library selects the appropriate processing path. Static paths leverage `fastssz` for efficiency, while dynamic paths use runtime reflection.
+
+3. **Recursive Encoding/Decoding**: The library recursively processes each field or element of the data structure. It dynamically navigates through nested structures, applying the correct encoding or decoding method based on the data type and size characteristics.
+
+4. **Specialized Function Dispatch**: For complex types (e.g., slices, arrays, structs), `dynssz` dispatches tasks to specialized functions tailored to handle specific encoding or decoding needs, ensuring accurate and efficient processing.
+
 
 ## Contributing
 
