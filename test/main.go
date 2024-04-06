@@ -42,7 +42,7 @@ func main() {
 	var dur1 time.Duration
 	var dur2 time.Duration
 	var err error
-	iterations := 10000
+	iterations := 1
 
 	fmt.Printf("## mainnet preset / BeaconBlock decode + encode (%d times)\n", iterations)
 	dur1, dur2, err = test_block_fastssz(block_mainnet, iterations)
@@ -123,6 +123,9 @@ func test_block_fastssz(in []byte, iterations int) (time.Duration, time.Duration
 		return 0, 0, fmt.Errorf("SSZ mismatch after re-marshalling")
 	}
 
+	root, _ := t.Message.HashTreeRoot()
+	fmt.Printf("tree root: 0x%x\n", root)
+
 	return unmarshalTime, marshalTime, nil
 }
 
@@ -190,6 +193,12 @@ func test_block_dynssz(dynssz *ssz.DynSsz, in []byte, iterations int) (time.Dura
 	if !bytes.Equal(in, out) {
 		return 0, 0, fmt.Errorf("SSZ mismatch after re-marshalling")
 	}
+
+	root, _ := dynssz.HashTreeRoot(t.Message)
+	fmt.Printf("tree root: 0x%x\n", root)
+
+	root, _ = t.Message.HashTreeRoot()
+	fmt.Printf("tree root2: 0x%x\n", root)
 
 	return unmarshalTime, marshalTime, nil
 }

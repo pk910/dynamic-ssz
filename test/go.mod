@@ -4,7 +4,7 @@ go 1.21.1
 
 require (
 	github.com/attestantio/go-eth2-client v0.21.1
-	github.com/pk910/dynamic-ssz v0.0.0-20240330205931-ea3b4a12b2f2
+	github.com/pk910/dynamic-ssz v0.0.2
 )
 
 require (
@@ -26,6 +26,7 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
 
-replace github.com/attestantio/go-eth2-client => github.com/pk910/go-eth2-client v0.0.0-20240330075337-93f905e392bd
+//replace github.com/attestantio/go-eth2-client => github.com/pk910/go-eth2-client v0.0.0-20240330075337-93f905e392bd
+replace github.com/attestantio/go-eth2-client => ../../go-eth2-client
 
 replace github.com/pk910/dynamic-ssz => ../

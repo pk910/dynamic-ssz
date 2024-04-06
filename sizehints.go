@@ -107,3 +107,61 @@ func (d *DynSsz) getSszSizeTag(field *reflect.StructField) ([]sszSizeHint, error
 
 	return sszSizes, nil
 }
+
+type sszMaxSizeHint struct {
+	size    uint64
+	dynamic bool
+	specval bool
+}
+
+func (d *DynSsz) getSszMaxSizeTag(field *reflect.StructField) ([]sszMaxSizeHint, error) {
+	sszMaxSizes := []sszMaxSizeHint{}
+
+	// parse `ssz-max` first, these are the default values used by fastssz
+	if fieldSszMaxStr, fieldHasSszMax := field.Tag.Lookup("ssz-max"); fieldHasSszMax {
+		for _, sszSizeStr := range strings.Split(fieldSszMaxStr, ",") {
+			sszMaxSize := sszMaxSizeHint{}
+
+			sszSizeInt, err := strconv.ParseUint(sszSizeStr, 10, 32)
+			if err != nil {
+				return sszMaxSizes, fmt.Errorf("error parsing ssz-max tag for '%v' field: %v", field.Name, err)
+			}
+			sszMaxSize.size = sszSizeInt
+
+			sszMaxSizes = append(sszMaxSizes, sszMaxSize)
+		}
+	}
+
+	fieldDynSszMaxStr, fieldHasDynSszMax := field.Tag.Lookup("dynssz-max")
+	if fieldHasDynSszMax {
+		for i, sszMaxSizeStr := range strings.Split(fieldDynSszMaxStr, ",") {
+			sszMaxSize := sszMaxSizeHint{}
+
+			if sszSizeInt, err := strconv.ParseUint(sszMaxSizeStr, 10, 32); err == nil {
+				sszMaxSize.size = sszSizeInt
+			} else {
+				ok, specVal, err := d.getSpecValue(sszMaxSizeStr)
+				if err != nil {
+					return sszMaxSizes, fmt.Errorf("error parsing dynssz-max tag for '%v' field (%v): %v", field.Name, sszMaxSizeStr, err)
+				}
+				if ok {
+					// dynamic value from spec
+					sszMaxSize.size = specVal
+					sszMaxSize.specval = true
+				} else {
+					// unknown spec value? fallback to fastssz defaults
+					break
+				}
+			}
+
+			if i >= len(sszMaxSizes) {
+				sszMaxSizes = append(sszMaxSizes, sszMaxSize)
+			} else if sszMaxSizes[i].size != sszMaxSize.size {
+				// update if resolved max size differs from default
+				sszMaxSizes[i] = sszMaxSize
+			}
+		}
+	}
+
+	return sszMaxSizes, nil
+}
