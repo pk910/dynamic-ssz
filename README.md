@@ -149,7 +149,7 @@ We welcome contributions from the community! Please check out the [CONTRIBUTING.
 
 ## License
 
-`dynssz` is licensed under the [LGPL License](LICENSE). See the LICENSE file for more details.
+`dynssz` is licensed under the [Apache-2.0 License](LICENSE). See the LICENSE file for more details.
 
 ## Acknowledgements
 
