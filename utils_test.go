@@ -3,13 +3,13 @@ package dynssz_test
 import "encoding/hex"
 
 type slug_DynStruct1 struct {
-	f1 bool
-	f2 []uint8
+	F1 bool
+	F2 []uint8
 }
 
 type slug_StaticStruct1 struct {
-	f1 bool
-	f2 []uint8 `ssz-size:"3"`
+	F1 bool
+	F2 []uint8 `ssz-size:"3"`
 }
 
 // FromHex returns the bytes represented by the hexadecimal string s.
