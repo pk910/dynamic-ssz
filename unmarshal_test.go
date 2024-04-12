@@ -3,14 +3,10 @@
 // Copyright (c) 2024 by pk910. Refer to LICENSE for more information.
 package dynssz_test
 
-import (
-	"bytes"
-	"testing"
+//. "github.com/pk910/dynamic-ssz"
 
-	. "github.com/pk910/dynamic-ssz"
-)
-
-func TestMarshal(t *testing.T) {
+/*
+func TestUnmarshal(t *testing.T) {
 	dynssz := NewDynSsz(nil)
 	dynssz.NoFastSsz = true
 
@@ -95,7 +91,9 @@ func TestMarshal(t *testing.T) {
 	}
 
 	for idx, test := range testMatrix {
-		buf, err := dynssz.MarshalSSZ(test.payload)
+		var err error
+		buf := []byte{}
+		buf, err = dynssz.MarshalSSZ(test.payload)
 
 		switch {
 		case test.expected == nil && err != nil:
@@ -107,3 +105,4 @@ func TestMarshal(t *testing.T) {
 		}
 	}
 }
+*/

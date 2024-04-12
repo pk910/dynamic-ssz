@@ -185,12 +185,17 @@ func (d *DynSsz) getSszFieldSize(targetField *reflect.StructField) (int, bool, [
 // efficient and accurate size calculations. This approach allows for the dynamic encoding process to proceed with precise size information, essential
 // for correctly encoding data into the SSZ format across a broad spectrum of data types, ranging from straightforward primitives to elaborate nested structures.
 
-func (d *DynSsz) getSszValueSize(targetType reflect.Type, targetValue reflect.Value) (int, error) {
+func (d *DynSsz) getSszValueSize(targetType reflect.Type, targetValue reflect.Value, sizeHints []sszSizeHint) (int, error) {
 	staticSize := 0
 
 	if targetType.Kind() == reflect.Ptr {
 		targetType = targetType.Elem()
 		targetValue = targetValue.Elem()
+	}
+
+	childSizeHints := []sszSizeHint{}
+	if len(sizeHints) > 1 {
+		childSizeHints = sizeHints[1:]
 	}
 
 	switch targetType.Kind() {
@@ -219,13 +224,13 @@ func (d *DynSsz) getSszValueSize(targetType reflect.Type, targetValue reflect.Va
 				field := targetType.Field(i)
 				fieldValue := targetValue.Field(i)
 
-				fieldTypeSize, _, _, err := d.getSszFieldSize(&field)
+				fieldTypeSize, _, fieldSizeHints, err := d.getSszFieldSize(&field)
 				if err != nil {
 					return 0, err
 				}
 
 				if fieldTypeSize < 0 {
-					size, err := d.getSszValueSize(field.Type, fieldValue)
+					size, err := d.getSszValueSize(field.Type, fieldValue, fieldSizeHints)
 					if err != nil {
 						return 0, err
 					}
@@ -245,7 +250,7 @@ func (d *DynSsz) getSszValueSize(targetType reflect.Type, targetValue reflect.Va
 			if fieldType == byteType {
 				staticSize = arrLen
 			} else {
-				size, err := d.getSszValueSize(fieldType, targetValue.Index(0))
+				size, err := d.getSszValueSize(fieldType, targetValue.Index(0), childSizeHints)
 				if err != nil {
 					return 0, err
 				}
@@ -256,11 +261,21 @@ func (d *DynSsz) getSszValueSize(targetType reflect.Type, targetValue reflect.Va
 		fieldType := targetType.Elem()
 		sliceLen := targetValue.Len()
 
+		appendZero := 0
+		if len(sizeHints) > 0 && !sizeHints[0].dynamic {
+			if uint64(sliceLen) > sizeHints[0].size {
+				return 0, ErrListTooBig
+			}
+			if uint64(sliceLen) < sizeHints[0].size {
+				appendZero = int(sizeHints[0].size - uint64(sliceLen))
+			}
+		}
+
 		if sliceLen > 0 {
 			if fieldType == byteType {
-				staticSize = sliceLen
+				staticSize = sliceLen + appendZero
 			} else {
-				fieldTypeSize, _, err := d.getSszSize(fieldType, nil)
+				fieldTypeSize, _, err := d.getSszSize(fieldType, childSizeHints)
 				if err != nil {
 					return 0, err
 				}
@@ -268,15 +283,25 @@ func (d *DynSsz) getSszValueSize(targetType reflect.Type, targetValue reflect.Va
 				if fieldTypeSize < 0 {
 					// slice with dynamic size items, so we have to go through each item
 					for i := 0; i < sliceLen; i++ {
-						size, err := d.getSszValueSize(fieldType, targetValue.Index(i))
+						size, err := d.getSszValueSize(fieldType, targetValue.Index(i), childSizeHints)
 						if err != nil {
 							return 0, err
 						}
 						// add 4 bytes for offset in dynamic slice
 						staticSize += size + 4
 					}
+
+					if appendZero > 0 {
+						zeroVal := reflect.New(fieldType).Elem()
+						size, err := d.getSszValueSize(fieldType, zeroVal, childSizeHints)
+						if err != nil {
+							return 0, err
+						}
+
+						staticSize += (size + 4) * appendZero
+					}
 				} else {
-					staticSize = fieldTypeSize * sliceLen
+					staticSize = fieldTypeSize * (sliceLen + appendZero)
 				}
 			}
 		}

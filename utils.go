@@ -2,7 +2,6 @@ package dynssz
 
 import (
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"time"
 )
@@ -114,34 +113,4 @@ func readOffset(buf []byte) uint64 {
 // DivideInt divides the int fully
 func divideInt(a, b int) (int, bool) {
 	return a / b, a%b == 0
-}
-
-// ---- hex functions ----
-
-// FromHex returns the bytes represented by the hexadecimal string s.
-// s may be prefixed with "0x".
-func fromHex(s string) []byte {
-	if has0xPrefix(s) {
-		s = s[2:]
-	}
-	if len(s)%2 == 1 {
-		s = "0" + s
-	}
-	return hex2Bytes(s)
-}
-
-// has0xPrefix validates str begins with '0x' or '0X'.
-func has0xPrefix(str string) bool {
-	return len(str) >= 2 && str[0] == '0' && (str[1] == 'x' || str[1] == 'X')
-}
-
-// Bytes2Hex returns the hexadecimal encoding of d.
-func bytes2Hex(d []byte) string {
-	return hex.EncodeToString(d)
-}
-
-// Hex2Bytes returns the bytes represented by the hexadecimal string str.
-func hex2Bytes(str string) []byte {
-	h, _ := hex.DecodeString(str)
-	return h
 }
