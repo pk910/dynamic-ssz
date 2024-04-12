@@ -11,6 +11,62 @@ import (
 	fastssz "github.com/ferranbt/fastssz"
 )
 
+func (d *DynSsz) buildRootFromType(sourceType reflect.Type, sourceValue reflect.Value, hh fastssz.HashWalker, sizeHints []sszSizeHint, maxSizeHints []sszMaxSizeHint, idt int) error {
+	hashIndex := hh.Index()
+
+	if sourceType.Kind() == reflect.Ptr {
+		sourceType = sourceType.Elem()
+		sourceValue = sourceValue.Elem()
+	}
+
+	// use fastssz to hash structs if:
+	// - struct implements fastssz HashRoot interface
+	// - this structure or any child structure does not use spec specific field sizes
+	fastsszCompat, err := d.getFastsszCompatibility(sourceType, sourceValue)
+	if err != nil {
+		return fmt.Errorf("failed checking fastssz compatibility: %v", err)
+	}
+	if !d.NoFastSsz && fastsszCompat.isHashRoot && !fastsszCompat.hasDynamicSpecValues {
+		hasher, ok := sourceValue.Addr().Interface().(fastssz.HashRoot)
+		if ok {
+			fmt.Printf("%stype: %s\t index: %v\t fastssz\n", strings.Repeat(" ", idt), sourceType.Name(), hashIndex)
+			return hasher.HashTreeRootWith(hh)
+		}
+	}
+
+	fmt.Printf("%stype: %s\t index: %v\n", strings.Repeat(" ", idt), sourceType.Name(), hashIndex)
+
+	switch sourceType.Kind() {
+	case reflect.Struct:
+		// can't use fastssz, use dynamic marshaling
+		err := d.buildRootFromStruct(sourceType, sourceValue, hh, idt)
+		if err != nil {
+			return err
+		}
+	case reflect.Array, reflect.Slice:
+		// can't use fastssz, use dynamic marshaling
+		err := d.buildRootFromSlice(sourceType, sourceValue, hh, sizeHints, maxSizeHints, idt)
+		if err != nil {
+			return err
+		}
+
+	case reflect.Bool:
+		hh.PutBool(sourceValue.Bool())
+	case reflect.Uint8:
+		hh.PutUint8(uint8(sourceValue.Uint()))
+	case reflect.Uint16:
+		hh.PutUint16(uint16(sourceValue.Uint()))
+	case reflect.Uint32:
+		hh.PutUint32(uint32(sourceValue.Uint()))
+	case reflect.Uint64:
+		hh.PutUint64(uint64(sourceValue.Uint()))
+	default:
+		return fmt.Errorf("unknown type: %v", sourceType)
+	}
+
+	return nil
+}
+
 func (d *DynSsz) buildRootFromStruct(sourceType reflect.Type, sourceValue reflect.Value, hh fastssz.HashWalker, idt int) error {
 	hashIndex := hh.Index()
 
@@ -18,11 +74,6 @@ func (d *DynSsz) buildRootFromStruct(sourceType reflect.Type, sourceValue reflec
 		sourceType = sourceType.Elem()
 		sourceValue = sourceValue.Elem()
 	}
-	if sourceType.Kind() != reflect.Struct {
-		return fmt.Errorf("source type is not of kind struct")
-	}
-
-	fmt.Printf("%stype: %s\t index: %v\n", strings.Repeat(" ", idt), sourceType.Name(), hashIndex)
 
 	for i := 0; i < sourceType.NumField(); i++ {
 		field := sourceType.Field(i)
@@ -44,43 +95,7 @@ func (d *DynSsz) buildRootFromStruct(sourceType reflect.Type, sourceValue reflec
 			return err
 		}
 
-		switch fieldType.Kind() {
-		case reflect.Struct:
-			err = d.buildRootFromStruct(fieldType, fieldValue, hh, idt+2)
-		case reflect.Array:
-			itemType := fieldType.Elem()
-			if itemType == byteType {
-				hh.PutBytes(fieldValue.Bytes())
-			} else {
-				// build byte array
-				buf := make([]byte, 0)
-				buf, err = d.marshalArray(fieldType, fieldValue, buf, sizeHints, idt+2)
-				if err != nil {
-					return err
-				}
-
-				fmt.Printf("non-byte array %v: 0x%x\n", itemType, buf)
-				hh.PutBytes(buf)
-			}
-		case reflect.Slice:
-			itemType := fieldType.Elem()
-			if itemType == byteType {
-				hh.PutBytes(fieldValue.Bytes())
-			} else {
-				err = d.buildRootFromSlice(fieldType, fieldValue, hh, sizeHints, maxSizeHints, idt+2)
-			}
-		case reflect.Bool:
-			hh.PutBool(fieldValue.Bool())
-		case reflect.Uint8:
-			hh.PutUint8(uint8(fieldValue.Uint()))
-		case reflect.Uint16:
-			hh.PutUint16(uint16(fieldValue.Uint()))
-		case reflect.Uint32:
-			hh.PutUint32(uint32(fieldValue.Uint()))
-		case reflect.Uint64:
-			hh.PutUint64(uint64(fieldValue.Uint()))
-		}
-
+		err = d.buildRootFromType(fieldType, fieldValue, hh, sizeHints, maxSizeHints, idt+2)
 		if err != nil {
 			return err
 		}
@@ -96,6 +111,11 @@ func (d *DynSsz) buildRootFromSlice(sourceType reflect.Type, sourceValue reflect
 	fieldIsPtr := fieldType.Kind() == reflect.Ptr
 	if fieldIsPtr {
 		fieldType = fieldType.Elem()
+	}
+
+	if fieldType == byteType {
+		hh.PutBytes(sourceValue.Bytes())
+		return nil
 	}
 
 	subIndex := hh.Index()

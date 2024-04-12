@@ -126,7 +126,7 @@ func (d *DynSsz) HashTreeRoot(source any) ([32]byte, error) {
 		ssz.DefaultHasherPool.Put(hh)
 	}()
 
-	err := d.buildRootFromStruct(sourceType, sourceValue, hh, 0)
+	err := d.buildRootFromType(sourceType, sourceValue, hh, nil, nil, 0)
 	if err != nil {
 		return [32]byte{}, err
 	}
