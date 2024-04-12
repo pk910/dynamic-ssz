@@ -94,6 +94,14 @@ func TestMarshal(t *testing.T) {
 			}{42, []*slug_StaticStruct1{nil, {true, []uint8{4, 8, 4}}}, 43},
 			fromHex("0x2a0000000001040804000000002b"),
 		},
+		{
+			struct {
+				f1 uint8
+				f2 []*slug_StaticStruct1 `ssz-size:"3"`
+				f3 uint8
+			}{42, []*slug_StaticStruct1{nil, nil, nil, nil}, 43},
+			nil, // size too long error
+		},
 	}
 
 	for idx, test := range testMatrix {
@@ -101,9 +109,12 @@ func TestMarshal(t *testing.T) {
 		buf := []byte{}
 		buf, err = dynssz.marshalType(reflect.TypeOf(test.payload), reflect.ValueOf(test.payload), buf, nil, 0)
 
-		if err != nil {
+		switch {
+		case test.expected == nil && err != nil:
+			// expected error
+		case err != nil:
 			t.Errorf("test %v error: %v", idx, err)
-		} else if !bytes.Equal(buf, test.expected) {
+		case !bytes.Equal(buf, test.expected):
 			t.Errorf("test %v failed: got 0x%x, wanted 0x%x", idx, buf, test.expected)
 		}
 	}
