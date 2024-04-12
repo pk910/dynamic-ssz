@@ -6,8 +6,6 @@ package dynssz
 import (
 	"fmt"
 	"reflect"
-
-	fastssz "github.com/ferranbt/fastssz"
 )
 
 type cachedSszSize struct {
@@ -207,7 +205,7 @@ func (d *DynSsz) getSszValueSize(targetType reflect.Type, targetValue reflect.Va
 			return 0, fmt.Errorf("failed checking fastssz compatibility: %v", err)
 		}
 		if !d.NoFastSsz && fastsszCompat.isMarshaler && !fastsszCompat.hasDynamicSpecValues {
-			marshaller, ok := targetValue.Addr().Interface().(fastssz.Marshaler)
+			marshaller, ok := targetValue.Addr().Interface().(fastsszMarshaler)
 			if ok {
 				staticSize = marshaller.SizeSSZ()
 				usedFastSsz = true

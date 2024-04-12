@@ -7,8 +7,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"reflect"
-
-	fastssz "github.com/ferranbt/fastssz"
 )
 
 // marshalType is the entry point for marshalling Go values into SSZ-encoded data, using reflection to navigate
@@ -62,7 +60,7 @@ func (d *DynSsz) marshalType(sourceType reflect.Type, sourceValue reflect.Value,
 			return nil, fmt.Errorf("failed checking fastssz compatibility: %v", err)
 		}
 		if !d.NoFastSsz && fastsszCompat.isMarshaler && !fastsszCompat.hasDynamicSpecValues {
-			marshaller, ok := sourceValue.Addr().Interface().(fastssz.Marshaler)
+			marshaller, ok := sourceValue.Addr().Interface().(fastsszMarshaler)
 			if ok {
 				newBuf, err := marshaller.MarshalSSZTo(buf)
 				if err != nil {
@@ -94,15 +92,15 @@ func (d *DynSsz) marshalType(sourceType reflect.Type, sourceValue reflect.Value,
 		}
 		buf = newBuf
 	case reflect.Bool:
-		buf = fastssz.MarshalBool(buf, sourceValue.Bool())
+		buf = marshalBool(buf, sourceValue.Bool())
 	case reflect.Uint8:
-		buf = fastssz.MarshalUint8(buf, uint8(sourceValue.Uint()))
+		buf = marshalUint8(buf, uint8(sourceValue.Uint()))
 	case reflect.Uint16:
-		buf = fastssz.MarshalUint16(buf, uint16(sourceValue.Uint()))
+		buf = marshalUint16(buf, uint16(sourceValue.Uint()))
 	case reflect.Uint32:
-		buf = fastssz.MarshalUint32(buf, uint32(sourceValue.Uint()))
+		buf = marshalUint32(buf, uint32(sourceValue.Uint()))
 	case reflect.Uint64:
-		buf = fastssz.MarshalUint64(buf, uint64(sourceValue.Uint()))
+		buf = marshalUint64(buf, uint64(sourceValue.Uint()))
 	default:
 		return nil, fmt.Errorf("unknown type: %v", sourceType)
 	}
