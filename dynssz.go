@@ -44,7 +44,7 @@ func (d *DynSsz) MarshalSSZ(source any) ([]byte, error) {
 	sourceType := reflect.TypeOf(source)
 	sourceValue := reflect.ValueOf(source)
 
-	size, err := d.getSszValueSize(sourceType, sourceValue)
+	size, err := d.getSszValueSize(sourceType, sourceValue, []sszSizeHint{})
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +87,7 @@ func (d *DynSsz) SizeSSZ(source any) (int, error) {
 	sourceType := reflect.TypeOf(source)
 	sourceValue := reflect.ValueOf(source)
 
-	size, err := d.getSszValueSize(sourceType, sourceValue)
+	size, err := d.getSszValueSize(sourceType, sourceValue, []sszSizeHint{})
 	if err != nil {
 		return 0, err
 	}

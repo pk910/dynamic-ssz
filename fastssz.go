@@ -69,8 +69,6 @@ type fastsszCompatibility struct {
 // Parameters:
 // - targetType: The reflect.Type of the value being assessed for fastssz compatibility. This type, along with its nested
 //   or referenced types, is evaluated to ensure it aligns with fastssz's requirements for static encoding and decoding.
-// - targetValue: The reflect.Value that contains the data instance to be checked. This parameter is examined to identify any
-//   dynamic specifications that may affect compatibility with fastssz.
 //
 // Returns:
 // - A pointer to a fastsszCompatibility struct, which contains detailed information about the compatibility status, including
@@ -78,7 +76,7 @@ type fastsszCompatibility struct {
 // - An error if the compatibility check encounters issues, such as reflection errors or the presence of unsupported type configurations
 //   that would prevent the use of fastssz for encoding or decoding.
 
-func (d *DynSsz) getFastsszCompatibility(targetType reflect.Type, targetValue reflect.Value) (*fastsszCompatibility, error) {
+func (d *DynSsz) getFastsszCompatibility(targetType reflect.Type) (*fastsszCompatibility, error) {
 	if cachedCompatibility := d.fastsszCompatCache[targetType]; cachedCompatibility != nil {
 		return cachedCompatibility, nil
 	}
@@ -88,10 +86,11 @@ func (d *DynSsz) getFastsszCompatibility(targetType reflect.Type, targetValue re
 		return nil, err
 	}
 
+	targetPtrType := reflect.New(targetType).Type()
 	compatibility := &fastsszCompatibility{
-		isMarshaler:          targetValue.Addr().Type().Implements(sszMarshalerType),
-		isUnmarshaler:        targetValue.Addr().Type().Implements(sszUnmarshalerType),
-		isHashRoot:           targetValue.Addr().Type().Implements(sszHashRootType),
+		isMarshaler:          targetPtrType.Implements(sszMarshalerType),
+		isUnmarshaler:        targetPtrType.Implements(sszUnmarshalerType),
+		isHashRoot:           targetPtrType.Implements(sszHashRootType),
 		hasDynamicSpecValues: hasSpecVals,
 	}
 	d.fastsszCompatCache[targetType] = compatibility

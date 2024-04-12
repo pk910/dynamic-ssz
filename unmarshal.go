@@ -58,7 +58,7 @@ func (d *DynSsz) unmarshalType(targetType reflect.Type, targetValue reflect.Valu
 		// use fastssz to unmarshal structs if:
 		// - struct implements fastssz Unmarshaller interface
 		// - this structure or any child structure does not use spec specific field sizes
-		fastsszCompat, err := d.getFastsszCompatibility(targetType, targetValue)
+		fastsszCompat, err := d.getFastsszCompatibility(targetType)
 		if err != nil {
 			return 0, fmt.Errorf("failed checking fastssz compatibility: %v", err)
 		}
@@ -345,30 +345,18 @@ func (d *DynSsz) unmarshalSlice(targetType reflect.Type, targetValue reflect.Val
 	sszLen := len(ssz)
 
 	// check if slice has dynamic size items
-	if len(sizeHints) > 0 && sizeHints[0].size > 0 {
-		sliceLen = int(sizeHints[0].size)
-	} else if len(sizeHints) > 1 && sizeHints[1].size > 0 {
-		ok := false
-		sliceLen, ok = divideInt(sszLen, int(sizeHints[1].size))
-		if !ok {
-			return 0, fmt.Errorf("invalid slice length, expected multiple of %v, got %v", sizeHints[1], sszLen)
-		}
-	} else {
-		size, _, err := d.getSszSize(fieldType, childSizeHints)
-		if err != nil {
-			return 0, err
-		}
-
-		if size > 0 {
-			ok := false
-			sliceLen, ok = divideInt(sszLen, size)
-			if !ok {
-				return 0, fmt.Errorf("invalid slice length, expected multiple of %v, got %v", size, sszLen)
-			}
-		}
+	size, _, err := d.getSszSize(fieldType, childSizeHints)
+	if err != nil {
+		return 0, err
 	}
 
-	if sliceLen == 0 && len(ssz) > 0 {
+	if size > 0 {
+		ok := false
+		sliceLen, ok = divideInt(sszLen, size)
+		if !ok {
+			return 0, fmt.Errorf("invalid slice length, expected multiple of %v, got %v", size, sszLen)
+		}
+	} else if len(ssz) > 0 {
 		// slice with dynamic size items
 		return d.unmarshalDynamicSlice(targetType, targetValue, ssz, childSizeHints, idt)
 	}
