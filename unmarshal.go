@@ -456,6 +456,7 @@ func (d *DynSsz) unmarshalDynamicSlice(targetType reflect.Type, targetValue refl
 	targetValue.Set(newValue)
 
 	offset := int(firstOffset)
+	sszLen := len(ssz)
 	if sliceLen > 0 {
 		// decode slice items
 		for i := 0; i < sliceLen; i++ {
@@ -471,11 +472,14 @@ func (d *DynSsz) unmarshalDynamicSlice(targetType reflect.Type, targetValue refl
 			startOffset := sliceOffsets[i]
 			endOffset := 0
 			if i == sliceLen-1 {
-				endOffset = len(ssz)
+				endOffset = sszLen
 			} else {
 				endOffset = sliceOffsets[i+1]
 			}
 			itemSize := endOffset - startOffset
+			if itemSize < 0 || endOffset > sszLen {
+				return 0, ErrOffset
+			}
 
 			itemSsz := ssz[startOffset:endOffset]
 
