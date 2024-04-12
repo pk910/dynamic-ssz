@@ -7,7 +7,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"reflect"
-	"strings"
 )
 
 // marshalType is the entry point for marshalling Go values into SSZ-encoded data, using reflection to navigate
@@ -46,9 +45,10 @@ func (d *DynSsz) marshalType(sourceType reflect.Type, sourceValue reflect.Value,
 		sourceType = sourceType.Elem()
 
 		if sourceValue.IsNil() {
-			sourceValue = reflect.New(sourceType)
+			sourceValue = reflect.New(sourceType).Elem()
+		} else {
+			sourceValue = sourceValue.Elem()
 		}
-		sourceValue = sourceValue.Elem()
 	}
 
 	//fmt.Printf("%stype: %s\t kind: %v\n", strings.Repeat(" ", idt), sourceType.Name(), sourceType.Kind())
@@ -153,7 +153,7 @@ func (d *DynSsz) marshalStruct(sourceType reflect.Type, sourceValue reflect.Valu
 		}
 
 		if fieldSize > 0 {
-			fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
+			//fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
 
 			fieldValue := sourceValue.Field(i)
 			newBuf, err := d.marshalType(field.Type, fieldValue, buf, sizeHints, idt+2)
@@ -345,7 +345,11 @@ func (d *DynSsz) marshalSlice(sourceType reflect.Type, sourceValue reflect.Value
 		for i := 0; i < sliceLen; i++ {
 			itemVal := sourceValue.Index(i)
 			if fieldIsPtr {
-				itemVal = itemVal.Elem()
+				if itemVal.IsNil() {
+					itemVal = reflect.New(fieldType).Elem()
+				} else {
+					itemVal = itemVal.Elem()
+				}
 			}
 
 			newBuf, err := d.marshalType(fieldType, itemVal, buf, childSizeHints, idt+2)

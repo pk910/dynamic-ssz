@@ -89,10 +89,10 @@ func TestMarshal(t *testing.T) {
 		{
 			struct {
 				f1 uint8
-				f2 []slug_StaticStruct1 `ssz-size:"3"`
+				f2 []*slug_StaticStruct1 `ssz-size:"3"`
 				f3 uint8
-			}{42, []slug_StaticStruct1{{true, []uint8{4}}, {true, []uint8{4, 8, 4}}}, 43},
-			fromHex("0x2a0104000001040804000000002b"),
+			}{42, []*slug_StaticStruct1{nil, {true, []uint8{4, 8, 4}}}, 43},
+			fromHex("0x2a0000000001040804000000002b"),
 		},
 	}
 
