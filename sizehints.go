@@ -110,7 +110,6 @@ func (d *DynSsz) getSszSizeTag(field *reflect.StructField) ([]sszSizeHint, error
 
 type sszMaxSizeHint struct {
 	size    uint64
-	dynamic bool
 	specval bool
 }
 
@@ -122,7 +121,7 @@ func (d *DynSsz) getSszMaxSizeTag(field *reflect.StructField) ([]sszMaxSizeHint,
 		for _, sszSizeStr := range strings.Split(fieldSszMaxStr, ",") {
 			sszMaxSize := sszMaxSizeHint{}
 
-			sszSizeInt, err := strconv.ParseUint(sszSizeStr, 10, 32)
+			sszSizeInt, err := strconv.ParseUint(sszSizeStr, 10, 64)
 			if err != nil {
 				return sszMaxSizes, fmt.Errorf("error parsing ssz-max tag for '%v' field: %v", field.Name, err)
 			}
@@ -137,7 +136,7 @@ func (d *DynSsz) getSszMaxSizeTag(field *reflect.StructField) ([]sszMaxSizeHint,
 		for i, sszMaxSizeStr := range strings.Split(fieldDynSszMaxStr, ",") {
 			sszMaxSize := sszMaxSizeHint{}
 
-			if sszSizeInt, err := strconv.ParseUint(sszMaxSizeStr, 10, 32); err == nil {
+			if sszSizeInt, err := strconv.ParseUint(sszMaxSizeStr, 10, 64); err == nil {
 				sszMaxSize.size = sszSizeInt
 			} else {
 				ok, specVal, err := d.getSpecValue(sszMaxSizeStr)

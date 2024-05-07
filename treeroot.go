@@ -6,13 +6,12 @@ package dynssz
 import (
 	"fmt"
 	"reflect"
-	"strings"
 
 	fastssz "github.com/ferranbt/fastssz"
 )
 
 func (d *DynSsz) buildRootFromType(sourceType reflect.Type, sourceValue reflect.Value, hh fastssz.HashWalker, sizeHints []sszSizeHint, maxSizeHints []sszMaxSizeHint, idt int) error {
-	hashIndex := hh.Index()
+	//hashIndex := hh.Index()
 
 	if sourceType.Kind() == reflect.Ptr {
 		sourceType = sourceType.Elem()
@@ -22,19 +21,19 @@ func (d *DynSsz) buildRootFromType(sourceType reflect.Type, sourceValue reflect.
 	// use fastssz to hash structs if:
 	// - struct implements fastssz HashRoot interface
 	// - this structure or any child structure does not use spec specific field sizes
-	fastsszCompat, err := d.getFastsszCompatibility(sourceType, sourceValue)
+	fastsszCompat, err := d.getFastsszCompatibility(sourceType)
 	if err != nil {
 		return fmt.Errorf("failed checking fastssz compatibility: %v", err)
 	}
 	if !d.NoFastSsz && fastsszCompat.isHashRoot && !fastsszCompat.hasDynamicSpecValues {
 		hasher, ok := sourceValue.Addr().Interface().(fastssz.HashRoot)
 		if ok {
-			fmt.Printf("%stype: %s\t index: %v\t fastssz\n", strings.Repeat(" ", idt), sourceType.Name(), hashIndex)
+			//fmt.Printf("%stype: %s\t index: %v\t fastssz\n", strings.Repeat(" ", idt), sourceType.Name(), hashIndex)
 			return hasher.HashTreeRootWith(hh)
 		}
 	}
 
-	fmt.Printf("%stype: %s\t index: %v\n", strings.Repeat(" ", idt), sourceType.Name(), hashIndex)
+	//fmt.Printf("%stype: %s\t index: %v\n", strings.Repeat(" ", idt), sourceType.Name(), hashIndex)
 
 	switch sourceType.Kind() {
 	case reflect.Struct:
