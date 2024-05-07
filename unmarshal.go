@@ -6,8 +6,6 @@ package dynssz
 import (
 	"fmt"
 	"reflect"
-
-	fastssz "github.com/ferranbt/fastssz"
 )
 
 // unmarshalType decodes SSZ-encoded data into a Go value based on reflection. It serves as the
@@ -60,13 +58,13 @@ func (d *DynSsz) unmarshalType(targetType reflect.Type, targetValue reflect.Valu
 		// use fastssz to unmarshal structs if:
 		// - struct implements fastssz Unmarshaller interface
 		// - this structure or any child structure does not use spec specific field sizes
-		fastsszCompat, err := d.getFastsszCompatibility(targetType, targetValue)
+		fastsszCompat, err := d.getFastsszCompatibility(targetType)
 		if err != nil {
 			return 0, fmt.Errorf("failed checking fastssz compatibility: %v", err)
 		}
 		if !d.NoFastSsz && fastsszCompat.isUnmarshaler && !fastsszCompat.hasDynamicSpecValues {
 			// fmt.Printf("%s fastssz for type %s: %v\n", strings.Repeat(" ", idt), targetType.Name(), hasSpecVals)
-			unmarshaller, ok := targetValue.Addr().Interface().(fastssz.Unmarshaler)
+			unmarshaller, ok := targetValue.Addr().Interface().(fastsszUnmarshaler)
 			if ok {
 				err := unmarshaller.UnmarshalSSZ(ssz)
 				if err != nil {
@@ -100,19 +98,19 @@ func (d *DynSsz) unmarshalType(targetType reflect.Type, targetValue reflect.Valu
 
 	// primitive types
 	case reflect.Bool:
-		targetValue.SetBool(fastssz.UnmarshalBool(ssz))
+		targetValue.SetBool(unmarshalBool(ssz))
 		consumedBytes = 1
 	case reflect.Uint8:
-		targetValue.SetUint(uint64(fastssz.UnmarshallUint8(ssz)))
+		targetValue.SetUint(uint64(unmarshallUint8(ssz)))
 		consumedBytes = 1
 	case reflect.Uint16:
-		targetValue.SetUint(uint64(fastssz.UnmarshallUint16(ssz)))
+		targetValue.SetUint(uint64(unmarshallUint16(ssz)))
 		consumedBytes = 2
 	case reflect.Uint32:
-		targetValue.SetUint(uint64(fastssz.UnmarshallUint32(ssz)))
+		targetValue.SetUint(uint64(unmarshallUint32(ssz)))
 		consumedBytes = 4
 	case reflect.Uint64:
-		targetValue.SetUint(uint64(fastssz.UnmarshallUint64(ssz)))
+		targetValue.SetUint(uint64(unmarshallUint64(ssz)))
 		consumedBytes = 8
 
 	default:
@@ -180,7 +178,7 @@ func (d *DynSsz) unmarshalStruct(targetType reflect.Type, targetValue reflect.Va
 			if offset+fieldSize > sszSize {
 				return 0, fmt.Errorf("unexpected end of SSZ. dynamic field %v expects %v bytes (offset), got %v", field.Name, fieldSize, sszSize-offset)
 			}
-			fieldOffset := fastssz.ReadOffset(ssz[offset : offset+fieldSize])
+			fieldOffset := readOffset(ssz[offset : offset+fieldSize])
 
 			// fmt.Printf("%sfield %d:\t offset [%v:%v] %v\t %v \t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name, fieldOffset)
 
@@ -205,7 +203,7 @@ func (d *DynSsz) unmarshalStruct(targetType reflect.Type, targetValue reflect.Va
 
 		// check offset integrity (not before previous field offset & not after range end)
 		if startOffset < offset || endOffset > sszSize {
-			return 0, fastssz.ErrOffset
+			return 0, ErrOffset
 		}
 
 		// fmt.Printf("%sfield %d:\t dynamic [%v:%v]\t %v\n", strings.Repeat(" ", idt+1), field.Index[0], startOffset, endOffset, field.Name)
@@ -347,30 +345,18 @@ func (d *DynSsz) unmarshalSlice(targetType reflect.Type, targetValue reflect.Val
 	sszLen := len(ssz)
 
 	// check if slice has dynamic size items
-	if len(sizeHints) > 0 && sizeHints[0].size > 0 {
-		sliceLen = int(sizeHints[0].size)
-	} else if len(sizeHints) > 1 && sizeHints[1].size > 0 {
-		ok := false
-		sliceLen, ok = fastssz.DivideInt(sszLen, int(sizeHints[1].size))
-		if !ok {
-			return 0, fmt.Errorf("invalid slice length, expected multiple of %v, got %v", sizeHints[1], sszLen)
-		}
-	} else {
-		size, _, err := d.getSszSize(fieldType, childSizeHints)
-		if err != nil {
-			return 0, err
-		}
-
-		if size > 0 {
-			ok := false
-			sliceLen, ok = fastssz.DivideInt(sszLen, size)
-			if !ok {
-				return 0, fmt.Errorf("invalid slice length, expected multiple of %v, got %v", size, sszLen)
-			}
-		}
+	size, _, err := d.getSszSize(fieldType, childSizeHints)
+	if err != nil {
+		return 0, err
 	}
 
-	if sliceLen == 0 && len(ssz) > 0 {
+	if size > 0 {
+		ok := false
+		sliceLen, ok = divideInt(sszLen, size)
+		if !ok {
+			return 0, fmt.Errorf("invalid slice length, expected multiple of %v, got %v", size, sszLen)
+		}
+	} else if len(ssz) > 0 {
 		// slice with dynamic size items
 		return d.unmarshalDynamicSlice(targetType, targetValue, ssz, childSizeHints, idt)
 	}
@@ -449,14 +435,14 @@ func (d *DynSsz) unmarshalSlice(targetType reflect.Type, targetValue reflect.Val
 
 func (d *DynSsz) unmarshalDynamicSlice(targetType reflect.Type, targetValue reflect.Value, ssz []byte, sizeHints []sszSizeHint, idt int) (int, error) {
 	// derive number of items from first item offset
-	firstOffset := fastssz.ReadOffset(ssz[0:4])
+	firstOffset := readOffset(ssz[0:4])
 	sliceLen := int(firstOffset / 4)
 
 	// read all item offsets
 	sliceOffsets := make([]int, sliceLen)
 	sliceOffsets[0] = int(firstOffset)
 	for i := 1; i < sliceLen; i++ {
-		sliceOffsets[i] = int(fastssz.ReadOffset(ssz[i*4 : (i+1)*4]))
+		sliceOffsets[i] = int(readOffset(ssz[i*4 : (i+1)*4]))
 	}
 
 	fieldType := targetType.Elem()
@@ -470,6 +456,7 @@ func (d *DynSsz) unmarshalDynamicSlice(targetType reflect.Type, targetValue refl
 	targetValue.Set(newValue)
 
 	offset := int(firstOffset)
+	sszLen := len(ssz)
 	if sliceLen > 0 {
 		// decode slice items
 		for i := 0; i < sliceLen; i++ {
@@ -485,11 +472,14 @@ func (d *DynSsz) unmarshalDynamicSlice(targetType reflect.Type, targetValue refl
 			startOffset := sliceOffsets[i]
 			endOffset := 0
 			if i == sliceLen-1 {
-				endOffset = len(ssz)
+				endOffset = sszLen
 			} else {
 				endOffset = sliceOffsets[i+1]
 			}
 			itemSize := endOffset - startOffset
+			if itemSize < 0 || endOffset > sszLen {
+				return 0, ErrOffset
+			}
 
 			itemSsz := ssz[startOffset:endOffset]
 

@@ -8,7 +8,7 @@ We are looking for contributions of all kinds: bug fixes, added features, docume
 
 ## Ground Rules & Expectations
 
-Before you contribute, please read through this document. By contributing to dynssz, you agree that your contributions will be licensed under its LGPL license.
+Before you contribute, please read through this document. By contributing to dynssz, you agree that your contributions will be licensed under its Apache license.
 
 - Ensure that your code adheres to the coding conventions used throughout the project. This includes using descriptive variable names, commenting your code where necessary, and following the existing coding style.
 - Before submitting a pull request, check for any errors or warnings.
@@ -34,6 +34,6 @@ If you find a bug or have a feature request, please use the GitHub issue tracker
 
 ## License
 
-By contributing to dynssz, you agree that your contributions will be licensed under its LGPL license.
+By contributing to dynssz, you agree that your contributions will be licensed under its Apache license.
 
 Thank you for contributing to dynssz!

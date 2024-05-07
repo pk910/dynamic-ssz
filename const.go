@@ -5,11 +5,6 @@ package dynssz
 
 import (
 	"reflect"
-
-	fastssz "github.com/ferranbt/fastssz"
 )
 
 var byteType = reflect.TypeOf(byte(0))
-var sszMarshalerType = reflect.TypeOf((*fastssz.Marshaler)(nil)).Elem()
-var sszUnmarshalerType = reflect.TypeOf((*fastssz.Unmarshaler)(nil)).Elem()
-var sszHashRootType = reflect.TypeOf((*fastssz.HashRoot)(nil)).Elem()
