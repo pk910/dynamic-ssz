@@ -31,6 +31,10 @@ func (d *DynSsz) getSpecValue(name string) (bool, uint64, error) {
 		if ok {
 			cachedValue.resolved = true
 			cachedValue.value = uint64(value)
+			if float64(cachedValue.value) < value {
+				// rounding issue - always round up to full bytes as we can't serialize parial bytes
+				cachedValue.value++
+			}
 		}
 	}
 
