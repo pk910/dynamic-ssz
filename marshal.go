@@ -7,6 +7,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"reflect"
+
+	fastssz "github.com/ferranbt/fastssz"
 )
 
 // marshalType is the entry point for marshalling Go values into SSZ-encoded data, using reflection to navigate
@@ -65,7 +67,7 @@ func (d *DynSsz) marshalType(sourceType reflect.Type, sourceValue reflect.Value,
 			return nil, fmt.Errorf("failed checking fastssz compatibility: %v", err)
 		}
 		if !d.NoFastSsz && fastsszCompat.isMarshaler && !fastsszCompat.hasDynamicSpecValues {
-			marshaller, ok := sourceValue.Addr().Interface().(fastsszMarshaler)
+			marshaller, ok := sourceValue.Addr().Interface().(fastssz.Marshaler)
 			if ok {
 				newBuf, err := marshaller.MarshalSSZTo(buf)
 				if err != nil {

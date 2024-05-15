@@ -6,6 +6,8 @@ package dynssz
 import (
 	"fmt"
 	"reflect"
+
+	fastssz "github.com/ferranbt/fastssz"
 )
 
 // unmarshalType decodes SSZ-encoded data into a Go value based on reflection. It serves as the
@@ -64,7 +66,7 @@ func (d *DynSsz) unmarshalType(targetType reflect.Type, targetValue reflect.Valu
 		}
 		if !d.NoFastSsz && fastsszCompat.isUnmarshaler && !fastsszCompat.hasDynamicSpecValues {
 			// fmt.Printf("%s fastssz for type %s: %v\n", strings.Repeat(" ", idt), targetType.Name(), hasSpecVals)
-			unmarshaller, ok := targetValue.Addr().Interface().(fastsszUnmarshaler)
+			unmarshaller, ok := targetValue.Addr().Interface().(fastssz.Unmarshaler)
 			if ok {
 				err := unmarshaller.UnmarshalSSZ(ssz)
 				if err != nil {

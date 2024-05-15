@@ -1,46 +1,14 @@
 package dynssz
 
-import "reflect"
+import (
+	"reflect"
 
-// fastsszMarshaler is the interface implemented by types that can marshal themselves into valid SZZ using fastssz.
-type fastsszMarshaler interface {
-	MarshalSSZTo(dst []byte) ([]byte, error)
-	MarshalSSZ() ([]byte, error)
-	SizeSSZ() int
-}
+	fastssz "github.com/ferranbt/fastssz"
+)
 
-// fastsszUnmarshaler is the interface implemented by types that can unmarshal a SSZ description of themselves
-type fastsszUnmarshaler interface {
-	UnmarshalSSZ(buf []byte) error
-}
-
-type fastsszHashRoot interface {
-	HashTreeRoot() ([32]byte, error)
-	HashTreeRootWith(hh fastsszHashWalker) error
-}
-
-type fastsszHashWalker interface {
-	Hash() []byte
-	AppendUint8(i uint8)
-	AppendUint64(i uint64)
-	AppendBytes32(b []byte)
-	PutUint64(i uint64)
-	PutUint32(i uint32)
-	PutUint16(i uint16)
-	PutUint8(i uint8)
-	FillUpTo32()
-	Append(i []byte)
-	PutBitlist(bb []byte, maxSize uint64)
-	PutBool(b bool)
-	PutBytes(b []byte)
-	Index() int
-	Merkleize(indx int)
-	MerkleizeWithMixin(indx int, num, limit uint64)
-}
-
-var sszMarshalerType = reflect.TypeOf((*fastsszMarshaler)(nil)).Elem()
-var sszUnmarshalerType = reflect.TypeOf((*fastsszUnmarshaler)(nil)).Elem()
-var sszHashRootType = reflect.TypeOf((*fastsszHashRoot)(nil)).Elem()
+var sszMarshalerType = reflect.TypeOf((*fastssz.Marshaler)(nil)).Elem()
+var sszUnmarshalerType = reflect.TypeOf((*fastssz.Unmarshaler)(nil)).Elem()
+var sszHashRootType = reflect.TypeOf((*fastssz.HashRoot)(nil)).Elem()
 
 // fastsszCompatibility holds information about a type's compatibility with fastssz's static encoding and decoding methods.
 // It is used to determine whether a type can leverage fastssz's efficient, static code paths or if it must be handled dynamically

@@ -29,11 +29,6 @@ func has0xPrefix(str string) bool {
 	return len(str) >= 2 && str[0] == '0' && (str[1] == 'x' || str[1] == 'X')
 }
 
-// Bytes2Hex returns the hexadecimal encoding of d.
-func bytes2Hex(d []byte) string {
-	return hex.EncodeToString(d)
-}
-
 // Hex2Bytes returns the bytes represented by the hexadecimal string str.
 func hex2Bytes(str string) []byte {
 	h, _ := hex.DecodeString(str)

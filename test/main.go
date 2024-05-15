@@ -41,9 +41,9 @@ func main() {
 
 	var dur1 time.Duration
 	var dur2 time.Duration
-	var hash []byte
+	var hash [][32]byte
 	var err error
-	iterations := 10000
+	iterations := 1
 
 	fmt.Printf("## mainnet preset / BeaconBlock decode + encode (%d times)\n", iterations)
 	dur1, dur2, hash, err = test_block_fastssz(block_mainnet, iterations)
@@ -82,7 +82,7 @@ func main() {
 	fmt.Printf("\n")
 }
 
-func print_test_result(title string, durationUnmarshal time.Duration, durationMarshal time.Duration, hash []byte, err error) {
+func print_test_result(title string, durationUnmarshal time.Duration, durationMarshal time.Duration, hash [][32]byte, err error) {
 	fmt.Printf("%-18v", title)
 	fmt.Printf("  [%4v ms / %4v ms]\t ", durationUnmarshal.Milliseconds(), durationMarshal.Milliseconds())
 	if err != nil {
@@ -90,10 +90,18 @@ func print_test_result(title string, durationUnmarshal time.Duration, durationMa
 	} else {
 		fmt.Printf("success")
 	}
-	fmt.Printf("\t Root: 0x%x\n", hash)
+	if len(hash) > 0 {
+		fmt.Printf("\t Root: 0x%x", hash[0])
+		if len(hash) > 1 && !bytes.Equal(hash[0][:], hash[1][:]) {
+			fmt.Printf("\t != 0x%x", hash[1])
+		}
+	}
+
+	fmt.Printf("\n")
+
 }
 
-func test_block_fastssz(in []byte, iterations int) (time.Duration, time.Duration, []byte, error) {
+func test_block_fastssz(in []byte, iterations int) (time.Duration, time.Duration, [][32]byte, error) {
 	unmarshalTime := time.Duration(0)
 	marshalTime := time.Duration(0)
 
@@ -125,10 +133,10 @@ func test_block_fastssz(in []byte, iterations int) (time.Duration, time.Duration
 	}
 
 	rootHash, _ := t.HashTreeRoot()
-	return unmarshalTime, marshalTime, rootHash[:], nil
+	return unmarshalTime, marshalTime, [][32]byte{rootHash}, nil
 }
 
-func test_state_fastssz(in []byte, iterations int) (time.Duration, time.Duration, []byte, error) {
+func test_state_fastssz(in []byte, iterations int) (time.Duration, time.Duration, [][32]byte, error) {
 	unmarshalTime := time.Duration(0)
 	marshalTime := time.Duration(0)
 
@@ -160,10 +168,10 @@ func test_state_fastssz(in []byte, iterations int) (time.Duration, time.Duration
 	}
 
 	rootHash, _ := t.HashTreeRoot()
-	return unmarshalTime, marshalTime, rootHash[:], nil
+	return unmarshalTime, marshalTime, [][32]byte{rootHash}, nil
 }
 
-func test_block_dynssz(dynssz *ssz.DynSsz, in []byte, iterations int) (time.Duration, time.Duration, []byte, error) {
+func test_block_dynssz(dynssz *ssz.DynSsz, in []byte, iterations int) (time.Duration, time.Duration, [][32]byte, error) {
 	unmarshalTime := time.Duration(0)
 	marshalTime := time.Duration(0)
 
@@ -194,11 +202,16 @@ func test_block_dynssz(dynssz *ssz.DynSsz, in []byte, iterations int) (time.Dura
 		return 0, 0, nil, fmt.Errorf("SSZ mismatch after re-marshalling")
 	}
 
-	rootHash, _ := t.HashTreeRoot()
-	return unmarshalTime, marshalTime, rootHash[:], nil
+	root1, _ := dynssz.HashTreeRoot(t.Message)
+	//fmt.Printf("  dynssz tree root: 0x%x\n", root1)
+
+	root2, _ := t.Message.HashTreeRoot()
+	//fmt.Printf("  fastssz tree root: 0x%x\n", root2)
+
+	return unmarshalTime, marshalTime, [][32]byte{root1, root2}, nil
 }
 
-func test_state_dynssz(dynssz *ssz.DynSsz, in []byte, iterations int) (time.Duration, time.Duration, []byte, error) {
+func test_state_dynssz(dynssz *ssz.DynSsz, in []byte, iterations int) (time.Duration, time.Duration, [][32]byte, error) {
 	unmarshalTime := time.Duration(0)
 	marshalTime := time.Duration(0)
 
@@ -230,6 +243,11 @@ func test_state_dynssz(dynssz *ssz.DynSsz, in []byte, iterations int) (time.Dura
 		return 0, 0, nil, fmt.Errorf("SSZ mismatch after re-marshalling")
 	}
 
-	rootHash, _ := t.HashTreeRoot()
-	return unmarshalTime, marshalTime, rootHash[:], nil
+	root1, _ := dynssz.HashTreeRoot(t)
+	//fmt.Printf("  dynssz tree root: 0x%x\n", root1)
+
+	root2, _ := t.HashTreeRoot()
+	//fmt.Printf("  fastssz tree root: 0x%x\n", root2)
+
+	return unmarshalTime, marshalTime, [][32]byte{root1, root2}, nil
 }
