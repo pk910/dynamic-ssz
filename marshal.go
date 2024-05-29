@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"reflect"
+	"strings"
 
 	fastssz "github.com/ferranbt/fastssz"
 )
@@ -53,63 +54,67 @@ func (d *DynSsz) marshalType(sourceType reflect.Type, sourceValue reflect.Value,
 		}
 	}
 
-	//fmt.Printf("%stype: %s\t kind: %v\n", strings.Repeat(" ", idt), sourceType.Name(), sourceType.Kind())
+	// use fastssz to marshal if:
+	// - type implements fastssz Marshaler interface
+	// - this type or any child types does not use spec specific field sizes
+	fastsszCompat, err := d.getFastsszCompatibility(sourceType, sizeHints)
+	if err != nil {
+		return nil, fmt.Errorf("failed checking fastssz compatibility: %v", err)
+	}
 
-	switch sourceType.Kind() {
-	case reflect.Struct:
-		usedFastSsz := false
+	useFastSsz := !d.NoFastSsz && fastsszCompat.isMarshaler && !fastsszCompat.hasDynamicSpecValues
 
-		// use fastssz to marshal structs if:
-		// - struct implements fastssz Marshaler interface
-		// - this structure or any child structure does not use spec specific field sizes
-		fastsszCompat, err := d.getFastsszCompatibility(sourceType)
-		if err != nil {
-			return nil, fmt.Errorf("failed checking fastssz compatibility: %v", err)
-		}
-		if !d.NoFastSsz && fastsszCompat.isMarshaler && !fastsszCompat.hasDynamicSpecValues {
-			marshaller, ok := sourceValue.Addr().Interface().(fastssz.Marshaler)
-			if ok {
-				newBuf, err := marshaller.MarshalSSZTo(buf)
-				if err != nil {
-					return nil, err
-				}
-				buf = newBuf
-				usedFastSsz = true
+	if d.Verbose {
+		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), sourceType.Name(), sourceType.Kind(), useFastSsz, fastsszCompat.isMarshaler, fastsszCompat.hasDynamicSpecValues)
+	}
+
+	if useFastSsz {
+		marshaller, ok := sourceValue.Addr().Interface().(fastssz.Marshaler)
+		if ok {
+			newBuf, err := marshaller.MarshalSSZTo(buf)
+			if err != nil {
+				return nil, err
 			}
+			buf = newBuf
+		} else {
+			useFastSsz = false
 		}
+	}
 
-		if !usedFastSsz {
-			// can't use fastssz, use dynamic marshaling
+	if !useFastSsz {
+		// can't use fastssz, use dynamic marshaling
+		switch sourceType.Kind() {
+		case reflect.Struct:
 			newBuf, err := d.marshalStruct(sourceType, sourceValue, buf, idt)
 			if err != nil {
 				return nil, err
 			}
 			buf = newBuf
+		case reflect.Array:
+			newBuf, err := d.marshalArray(sourceType, sourceValue, buf, sizeHints, idt)
+			if err != nil {
+				return nil, err
+			}
+			buf = newBuf
+		case reflect.Slice:
+			newBuf, err := d.marshalSlice(sourceType, sourceValue, buf, sizeHints, idt)
+			if err != nil {
+				return nil, err
+			}
+			buf = newBuf
+		case reflect.Bool:
+			buf = marshalBool(buf, sourceValue.Bool())
+		case reflect.Uint8:
+			buf = marshalUint8(buf, uint8(sourceValue.Uint()))
+		case reflect.Uint16:
+			buf = marshalUint16(buf, uint16(sourceValue.Uint()))
+		case reflect.Uint32:
+			buf = marshalUint32(buf, uint32(sourceValue.Uint()))
+		case reflect.Uint64:
+			buf = marshalUint64(buf, uint64(sourceValue.Uint()))
+		default:
+			return nil, fmt.Errorf("unknown type: %v", sourceType)
 		}
-	case reflect.Array:
-		newBuf, err := d.marshalArray(sourceType, sourceValue, buf, sizeHints, idt)
-		if err != nil {
-			return nil, err
-		}
-		buf = newBuf
-	case reflect.Slice:
-		newBuf, err := d.marshalSlice(sourceType, sourceValue, buf, sizeHints, idt)
-		if err != nil {
-			return nil, err
-		}
-		buf = newBuf
-	case reflect.Bool:
-		buf = marshalBool(buf, sourceValue.Bool())
-	case reflect.Uint8:
-		buf = marshalUint8(buf, uint8(sourceValue.Uint()))
-	case reflect.Uint16:
-		buf = marshalUint16(buf, uint16(sourceValue.Uint()))
-	case reflect.Uint32:
-		buf = marshalUint32(buf, uint32(sourceValue.Uint()))
-	case reflect.Uint64:
-		buf = marshalUint64(buf, uint64(sourceValue.Uint()))
-	default:
-		return nil, fmt.Errorf("unknown type: %v", sourceType)
 	}
 
 	return buf, nil

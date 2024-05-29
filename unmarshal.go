@@ -6,6 +6,7 @@ package dynssz
 import (
 	"fmt"
 	"reflect"
+	"strings"
 
 	fastssz "github.com/ferranbt/fastssz"
 )
@@ -51,72 +52,76 @@ func (d *DynSsz) unmarshalType(targetType reflect.Type, targetValue reflect.Valu
 		targetValue = targetValue.Elem()
 	}
 
-	// fmt.Printf("%stype: %s\t kind: %v\n", strings.Repeat(" ", idt), targetType.Name(), targetType.Kind())
+	// use fastssz to unmarshal structs if:
+	// - struct implements fastssz Unmarshaller interface
+	// - this structure or any child structure does not use spec specific field sizes
+	fastsszCompat, err := d.getFastsszCompatibility(targetType, sizeHints)
+	if err != nil {
+		return 0, fmt.Errorf("failed checking fastssz compatibility: %v", err)
+	}
 
-	switch targetType.Kind() {
-	case reflect.Struct:
-		usedFastSsz := false
+	useFastSsz := !d.NoFastSsz && fastsszCompat.isUnmarshaler && !fastsszCompat.hasDynamicSpecValues
 
-		// use fastssz to unmarshal structs if:
-		// - struct implements fastssz Unmarshaller interface
-		// - this structure or any child structure does not use spec specific field sizes
-		fastsszCompat, err := d.getFastsszCompatibility(targetType)
-		if err != nil {
-			return 0, fmt.Errorf("failed checking fastssz compatibility: %v", err)
-		}
-		if !d.NoFastSsz && fastsszCompat.isUnmarshaler && !fastsszCompat.hasDynamicSpecValues {
-			// fmt.Printf("%s fastssz for type %s: %v\n", strings.Repeat(" ", idt), targetType.Name(), hasSpecVals)
-			unmarshaller, ok := targetValue.Addr().Interface().(fastssz.Unmarshaler)
-			if ok {
-				err := unmarshaller.UnmarshalSSZ(ssz)
-				if err != nil {
-					return 0, err
-				}
-				consumedBytes = len(ssz)
-				usedFastSsz = true
+	if d.Verbose {
+		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), targetType.Name(), targetType.Kind(), useFastSsz, fastsszCompat.isUnmarshaler, fastsszCompat.hasDynamicSpecValues)
+	}
+
+	if useFastSsz {
+		unmarshaller, ok := targetValue.Addr().Interface().(fastssz.Unmarshaler)
+		if ok {
+			err := unmarshaller.UnmarshalSSZ(ssz)
+			if err != nil {
+				return 0, err
 			}
-		}
 
-		if !usedFastSsz {
-			// can't use fastssz, use dynamic unmarshaling
+			consumedBytes = len(ssz)
+		} else {
+			useFastSsz = false
+		}
+	}
+
+	if !useFastSsz {
+		// can't use fastssz, use dynamic unmarshaling
+		switch targetType.Kind() {
+		case reflect.Struct:
 			consumed, err := d.unmarshalStruct(targetType, targetValue, ssz, idt)
 			if err != nil {
 				return 0, err
 			}
 			consumedBytes = consumed
-		}
-	case reflect.Array:
-		consumed, err := d.unmarshalArray(targetType, targetValue, ssz, sizeHints, idt)
-		if err != nil {
-			return 0, err
-		}
-		consumedBytes = consumed
-	case reflect.Slice:
-		consumed, err := d.unmarshalSlice(targetType, targetValue, ssz, sizeHints, idt)
-		if err != nil {
-			return 0, err
-		}
-		consumedBytes = consumed
+		case reflect.Array:
+			consumed, err := d.unmarshalArray(targetType, targetValue, ssz, sizeHints, idt)
+			if err != nil {
+				return 0, err
+			}
+			consumedBytes = consumed
+		case reflect.Slice:
+			consumed, err := d.unmarshalSlice(targetType, targetValue, ssz, sizeHints, idt)
+			if err != nil {
+				return 0, err
+			}
+			consumedBytes = consumed
 
-	// primitive types
-	case reflect.Bool:
-		targetValue.SetBool(unmarshalBool(ssz))
-		consumedBytes = 1
-	case reflect.Uint8:
-		targetValue.SetUint(uint64(unmarshallUint8(ssz)))
-		consumedBytes = 1
-	case reflect.Uint16:
-		targetValue.SetUint(uint64(unmarshallUint16(ssz)))
-		consumedBytes = 2
-	case reflect.Uint32:
-		targetValue.SetUint(uint64(unmarshallUint32(ssz)))
-		consumedBytes = 4
-	case reflect.Uint64:
-		targetValue.SetUint(uint64(unmarshallUint64(ssz)))
-		consumedBytes = 8
+		// primitive types
+		case reflect.Bool:
+			targetValue.SetBool(unmarshalBool(ssz))
+			consumedBytes = 1
+		case reflect.Uint8:
+			targetValue.SetUint(uint64(unmarshallUint8(ssz)))
+			consumedBytes = 1
+		case reflect.Uint16:
+			targetValue.SetUint(uint64(unmarshallUint16(ssz)))
+			consumedBytes = 2
+		case reflect.Uint32:
+			targetValue.SetUint(uint64(unmarshallUint32(ssz)))
+			consumedBytes = 4
+		case reflect.Uint64:
+			targetValue.SetUint(uint64(unmarshallUint64(ssz)))
+			consumedBytes = 8
 
-	default:
-		return 0, fmt.Errorf("unknown type: %v", targetType)
+		default:
+			return 0, fmt.Errorf("unknown type: %v", targetType)
+		}
 	}
 
 	return consumedBytes, nil

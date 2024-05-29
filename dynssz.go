@@ -19,6 +19,7 @@ type DynSsz struct {
 	specValues         map[string]any
 	specValueCache     map[string]*cachedSpecValue
 	NoFastSsz          bool
+	Verbose            bool
 }
 
 // NewDynSsz creates a new instance of the DynSsz encoder/decoder.

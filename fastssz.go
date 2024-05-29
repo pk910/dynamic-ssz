@@ -44,12 +44,12 @@ type fastsszCompatibility struct {
 // - An error if the compatibility check encounters issues, such as reflection errors or the presence of unsupported type configurations
 //   that would prevent the use of fastssz for encoding or decoding.
 
-func (d *DynSsz) getFastsszCompatibility(targetType reflect.Type) (*fastsszCompatibility, error) {
+func (d *DynSsz) getFastsszCompatibility(targetType reflect.Type, sizeHints []sszSizeHint) (*fastsszCompatibility, error) {
 	if cachedCompatibility := d.fastsszCompatCache[targetType]; cachedCompatibility != nil {
 		return cachedCompatibility, nil
 	}
 
-	_, hasSpecVals, err := d.getSszSize(targetType, []sszSizeHint{})
+	_, hasSpecVals, err := d.getSszSize(targetType, sizeHints)
 	if err != nil {
 		return nil, err
 	}

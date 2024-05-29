@@ -195,33 +195,35 @@ func (d *DynSsz) getSszValueSize(targetType reflect.Type, targetValue reflect.Va
 		targetValue = targetValue.Elem()
 	}
 
-	childSizeHints := []sszSizeHint{}
-	if len(sizeHints) > 1 {
-		childSizeHints = sizeHints[1:]
+	// use fastssz to calculate size if:
+	// - struct implements fastssz Marshaler interface
+	// - this structure or any child structure does not use spec specific field sizes
+	fastsszCompat, err := d.getFastsszCompatibility(targetType, sizeHints)
+	if err != nil {
+		return 0, fmt.Errorf("failed checking fastssz compatibility: %v", err)
 	}
 
-	switch targetType.Kind() {
-	case reflect.Struct:
-		usedFastSsz := false
+	useFastSsz := !d.NoFastSsz && fastsszCompat.isMarshaler && !fastsszCompat.hasDynamicSpecValues
 
-		// use fastssz to calculate size if:
-		// - struct implements fastssz Marshaler interface
-		// - this structure or any child structure does not use spec specific field sizes
-		fastsszCompat, err := d.getFastsszCompatibility(targetType)
-		if err != nil {
-			return 0, fmt.Errorf("failed checking fastssz compatibility: %v", err)
+	if useFastSsz {
+		marshaller, ok := targetValue.Addr().Interface().(fastssz.Marshaler)
+		if ok {
+			staticSize = marshaller.SizeSSZ()
+		} else {
+			useFastSsz = false
 		}
-		if !d.NoFastSsz && fastsszCompat.isMarshaler && !fastsszCompat.hasDynamicSpecValues {
-			marshaller, ok := targetValue.Addr().Interface().(fastssz.Marshaler)
-			if ok {
-				staticSize = marshaller.SizeSSZ()
-				usedFastSsz = true
-			}
+	}
+
+	if !useFastSsz {
+		// can't use fastssz, use dynamic size calculation
+
+		childSizeHints := []sszSizeHint{}
+		if len(sizeHints) > 1 {
+			childSizeHints = sizeHints[1:]
 		}
 
-		if !usedFastSsz {
-			// can't use fastssz, use dynamic size calculation
-
+		switch targetType.Kind() {
+		case reflect.Struct:
 			for i := 0; i < targetType.NumField(); i++ {
 				field := targetType.Field(i)
 				fieldValue := targetValue.Field(i)
@@ -244,84 +246,84 @@ func (d *DynSsz) getSszValueSize(targetType reflect.Type, targetValue reflect.Va
 					staticSize += fieldTypeSize
 				}
 			}
-		}
-	case reflect.Array:
-		arrLen := targetType.Len()
-		if arrLen > 0 {
-			fieldType := targetType.Elem()
-			if fieldType == byteType {
-				staticSize = arrLen
-			} else {
-				size, err := d.getSszValueSize(fieldType, targetValue.Index(0), childSizeHints)
-				if err != nil {
-					return 0, err
-				}
-				staticSize = size * arrLen
-			}
-		}
-	case reflect.Slice:
-		fieldType := targetType.Elem()
-		sliceLen := targetValue.Len()
-
-		appendZero := 0
-		if len(sizeHints) > 0 && !sizeHints[0].dynamic {
-			if uint64(sliceLen) > sizeHints[0].size {
-				return 0, ErrListTooBig
-			}
-			if uint64(sliceLen) < sizeHints[0].size {
-				appendZero = int(sizeHints[0].size - uint64(sliceLen))
-			}
-		}
-
-		if sliceLen > 0 {
-			if fieldType == byteType {
-				staticSize = sliceLen + appendZero
-			} else {
-				fieldTypeSize, _, err := d.getSszSize(fieldType, childSizeHints)
-				if err != nil {
-					return 0, err
-				}
-
-				if fieldTypeSize < 0 {
-					// slice with dynamic size items, so we have to go through each item
-					for i := 0; i < sliceLen; i++ {
-						size, err := d.getSszValueSize(fieldType, targetValue.Index(i), childSizeHints)
-						if err != nil {
-							return 0, err
-						}
-						// add 4 bytes for offset in dynamic slice
-						staticSize += size + 4
-					}
-
-					if appendZero > 0 {
-						zeroVal := reflect.New(fieldType).Elem()
-						size, err := d.getSszValueSize(fieldType, zeroVal, childSizeHints)
-						if err != nil {
-							return 0, err
-						}
-
-						staticSize += (size + 4) * appendZero
-					}
+		case reflect.Array:
+			arrLen := targetType.Len()
+			if arrLen > 0 {
+				fieldType := targetType.Elem()
+				if fieldType == byteType {
+					staticSize = arrLen
 				} else {
-					staticSize = fieldTypeSize * (sliceLen + appendZero)
+					size, err := d.getSszValueSize(fieldType, targetValue.Index(0), childSizeHints)
+					if err != nil {
+						return 0, err
+					}
+					staticSize = size * arrLen
 				}
 			}
+		case reflect.Slice:
+			fieldType := targetType.Elem()
+			sliceLen := targetValue.Len()
+
+			appendZero := 0
+			if len(sizeHints) > 0 && !sizeHints[0].dynamic {
+				if uint64(sliceLen) > sizeHints[0].size {
+					return 0, ErrListTooBig
+				}
+				if uint64(sliceLen) < sizeHints[0].size {
+					appendZero = int(sizeHints[0].size - uint64(sliceLen))
+				}
+			}
+
+			if sliceLen > 0 {
+				if fieldType == byteType {
+					staticSize = sliceLen + appendZero
+				} else {
+					fieldTypeSize, _, err := d.getSszSize(fieldType, childSizeHints)
+					if err != nil {
+						return 0, err
+					}
+
+					if fieldTypeSize < 0 {
+						// slice with dynamic size items, so we have to go through each item
+						for i := 0; i < sliceLen; i++ {
+							size, err := d.getSszValueSize(fieldType, targetValue.Index(i), childSizeHints)
+							if err != nil {
+								return 0, err
+							}
+							// add 4 bytes for offset in dynamic slice
+							staticSize += size + 4
+						}
+
+						if appendZero > 0 {
+							zeroVal := reflect.New(fieldType).Elem()
+							size, err := d.getSszValueSize(fieldType, zeroVal, childSizeHints)
+							if err != nil {
+								return 0, err
+							}
+
+							staticSize += (size + 4) * appendZero
+						}
+					} else {
+						staticSize = fieldTypeSize * (sliceLen + appendZero)
+					}
+				}
+			}
+
+		// primitive types
+		case reflect.Bool:
+			staticSize = 1
+		case reflect.Uint8:
+			staticSize = 1
+		case reflect.Uint16:
+			staticSize = 2
+		case reflect.Uint32:
+			staticSize = 4
+		case reflect.Uint64:
+			staticSize = 8
+
+		default:
+			return 0, fmt.Errorf("unhandled reflection kind in size check: %v", targetType.Kind())
 		}
-
-	// primitive types
-	case reflect.Bool:
-		staticSize = 1
-	case reflect.Uint8:
-		staticSize = 1
-	case reflect.Uint16:
-		staticSize = 2
-	case reflect.Uint32:
-		staticSize = 4
-	case reflect.Uint64:
-		staticSize = 8
-
-	default:
-		return 0, fmt.Errorf("unhandled reflection kind in size check: %v", targetType.Kind())
 	}
 
 	return staticSize, nil

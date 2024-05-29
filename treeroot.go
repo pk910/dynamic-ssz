@@ -21,7 +21,7 @@ func (d *DynSsz) buildRootFromType(sourceType reflect.Type, sourceValue reflect.
 	// use fastssz to hash structs if:
 	// - struct implements fastssz HashRoot interface
 	// - this structure or any child structure does not use spec specific field sizes
-	fastsszCompat, err := d.getFastsszCompatibility(sourceType)
+	fastsszCompat, err := d.getFastsszCompatibility(sourceType, sizeHints)
 	if err != nil {
 		return fmt.Errorf("failed checking fastssz compatibility: %v", err)
 	}
