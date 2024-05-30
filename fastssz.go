@@ -2,15 +2,29 @@ package dynssz
 
 import (
 	"reflect"
-
-	fastssz "github.com/ferranbt/fastssz"
 )
 
-var sszMarshalerType = reflect.TypeOf((*fastssz.Marshaler)(nil)).Elem()
-var sszUnmarshalerType = reflect.TypeOf((*fastssz.Unmarshaler)(nil)).Elem()
-var sszHashRootType = reflect.TypeOf((*fastssz.HashRoot)(nil)).Elem()
+// fastsszMarshaler is the interface implemented by types that can marshal themselves into valid SZZ using fastssz.
+type fastsszMarshaler interface {
+	MarshalSSZTo(dst []byte) ([]byte, error)
+	MarshalSSZ() ([]byte, error)
+	SizeSSZ() int
+}
 
-// fastsszCompatibility holds information about a type's compatibility with fastssz's static encoding and decoding methods.
+// fastsszUnmarshaler is the interface implemented by types that can unmarshal a SSZ description of themselves
+type fastsszUnmarshaler interface {
+	UnmarshalSSZ(buf []byte) error
+}
+
+type fastsszHashRoot interface {
+	HashTreeRoot() ([32]byte, error)
+}
+
+var sszMarshalerType = reflect.TypeOf((*fastsszMarshaler)(nil)).Elem()
+var sszUnmarshalerType = reflect.TypeOf((*fastsszUnmarshaler)(nil)).Elem()
+var sszHashRootType = reflect.TypeOf((*fastsszHashRoot)(nil)).Elem()
+
+// fastsszConvertCompatibility holds information about a type's compatibility with fastssz's static encoding and decoding methods.
 // It is used to determine whether a type can leverage fastssz's efficient, static code paths or if it must be handled dynamically
 // due to the presence of non-default specification values or the lack of necessary interface implementations.
 //
@@ -21,11 +35,16 @@ var sszHashRootType = reflect.TypeOf((*fastssz.HashRoot)(nil)).Elem()
 //   - hasDynamicSpecValues: Indicates the presence of dynamically applied specification values that deviate from the default
 //     specifications. A true value here suggests that, despite potentially implementing the required interfaces for static processing,
 //     the type may still need to be handled dynamically due to these spec values affecting its size or structure.
-type fastsszCompatibility struct {
-	isMarshaler          bool
-	isUnmarshaler        bool
-	isHashRoot           bool
-	hasDynamicSpecValues bool
+type fastsszConvertCompatibility struct {
+	isMarshaler         bool
+	isUnmarshaler       bool
+	hasDynamicSpecSizes bool
+}
+
+type fastsszHashCompatibility struct {
+	isHashRoot          bool
+	hasDynamicSpecSizes bool
+	hasDynamicSpecMax   bool
 }
 
 // getFastsszCompatibility evaluates the compatibility of a given type with fastssz, determining whether the type and its nested
@@ -44,23 +63,47 @@ type fastsszCompatibility struct {
 // - An error if the compatibility check encounters issues, such as reflection errors or the presence of unsupported type configurations
 //   that would prevent the use of fastssz for encoding or decoding.
 
-func (d *DynSsz) getFastsszCompatibility(targetType reflect.Type, sizeHints []sszSizeHint) (*fastsszCompatibility, error) {
-	if cachedCompatibility := d.fastsszCompatCache[targetType]; cachedCompatibility != nil {
+func (d *DynSsz) getFastsszConvertCompatibility(targetType reflect.Type, sizeHints []sszSizeHint) (*fastsszConvertCompatibility, error) {
+	if cachedCompatibility := d.fastsszConvertCompatCache[targetType]; cachedCompatibility != nil {
 		return cachedCompatibility, nil
 	}
 
-	_, hasSpecVals, err := d.getSszSize(targetType, sizeHints)
+	_, hasDynSizes, err := d.getSszSize(targetType, sizeHints)
 	if err != nil {
 		return nil, err
 	}
 
 	targetPtrType := reflect.New(targetType).Type()
-	compatibility := &fastsszCompatibility{
-		isMarshaler:          targetPtrType.Implements(sszMarshalerType),
-		isUnmarshaler:        targetPtrType.Implements(sszUnmarshalerType),
-		isHashRoot:           targetPtrType.Implements(sszHashRootType),
-		hasDynamicSpecValues: hasSpecVals,
+	compatibility := &fastsszConvertCompatibility{
+		isMarshaler:         targetPtrType.Implements(sszMarshalerType),
+		isUnmarshaler:       targetPtrType.Implements(sszUnmarshalerType),
+		hasDynamicSpecSizes: hasDynSizes,
 	}
-	d.fastsszCompatCache[targetType] = compatibility
+	d.fastsszConvertCompatCache[targetType] = compatibility
+	return compatibility, nil
+}
+
+func (d *DynSsz) getFastsszHashCompatibility(targetType reflect.Type, sizeHints []sszSizeHint, maxSizeHints []sszMaxSizeHint) (*fastsszHashCompatibility, error) {
+	if cachedCompatibility := d.fastsszHashCompatCache[targetType]; cachedCompatibility != nil {
+		return cachedCompatibility, nil
+	}
+
+	compat, err := d.getFastsszConvertCompatibility(targetType, sizeHints)
+	if err != nil {
+		return nil, err
+	}
+
+	hasDynMaxSize, err := d.checkDynamicMaxSize(targetType, maxSizeHints)
+	if err != nil {
+		return nil, err
+	}
+
+	targetPtrType := reflect.New(targetType).Type()
+	compatibility := &fastsszHashCompatibility{
+		isHashRoot:          targetPtrType.Implements(sszHashRootType),
+		hasDynamicSpecSizes: compat.hasDynamicSpecSizes,
+		hasDynamicSpecMax:   hasDynMaxSize,
+	}
+	d.fastsszHashCompatCache[targetType] = compatibility
 	return compatibility, nil
 }

@@ -14,12 +14,14 @@ import (
 )
 
 type DynSsz struct {
-	fastsszCompatCache map[reflect.Type]*fastsszCompatibility
-	typeSizeCache      map[reflect.Type]*cachedSszSize
-	specValues         map[string]any
-	specValueCache     map[string]*cachedSpecValue
-	NoFastSsz          bool
-	Verbose            bool
+	fastsszConvertCompatCache map[reflect.Type]*fastsszConvertCompatibility
+	fastsszHashCompatCache    map[reflect.Type]*fastsszHashCompatibility
+	typeSizeCache             map[reflect.Type]*cachedSszSize
+	typeDynMaxCache           map[reflect.Type]*bool
+	specValues                map[string]any
+	specValueCache            map[string]*cachedSpecValue
+	NoFastSsz                 bool
+	Verbose                   bool
 }
 
 // NewDynSsz creates a new instance of the DynSsz encoder/decoder.
@@ -31,10 +33,12 @@ func NewDynSsz(specs map[string]any) *DynSsz {
 		specs = map[string]any{}
 	}
 	return &DynSsz{
-		fastsszCompatCache: map[reflect.Type]*fastsszCompatibility{},
-		typeSizeCache:      map[reflect.Type]*cachedSszSize{},
-		specValues:         specs,
-		specValueCache:     map[string]*cachedSpecValue{},
+		fastsszConvertCompatCache: map[reflect.Type]*fastsszConvertCompatibility{},
+		fastsszHashCompatCache:    map[reflect.Type]*fastsszHashCompatibility{},
+		typeSizeCache:             map[reflect.Type]*cachedSszSize{},
+		typeDynMaxCache:           map[reflect.Type]*bool{},
+		specValues:                specs,
+		specValueCache:            map[string]*cachedSpecValue{},
 	}
 }
 

@@ -6,61 +6,76 @@ package dynssz
 import (
 	"fmt"
 	"reflect"
+	"strings"
 
 	fastssz "github.com/ferranbt/fastssz"
 )
 
 func (d *DynSsz) buildRootFromType(sourceType reflect.Type, sourceValue reflect.Value, hh fastssz.HashWalker, sizeHints []sszSizeHint, maxSizeHints []sszMaxSizeHint, idt int) error {
-	//hashIndex := hh.Index()
+	hashIndex := hh.Index()
 
 	if sourceType.Kind() == reflect.Ptr {
 		sourceType = sourceType.Elem()
 		sourceValue = sourceValue.Elem()
 	}
 
-	// use fastssz to hash structs if:
-	// - struct implements fastssz HashRoot interface
-	// - this structure or any child structure does not use spec specific field sizes
-	fastsszCompat, err := d.getFastsszCompatibility(sourceType, sizeHints)
+	// use fastssz to hash types if:
+	// - type implements fastssz HashRoot interface
+	// - this type or any child type does not use spec specific field sizes
+	fastsszCompat, err := d.getFastsszHashCompatibility(sourceType, sizeHints, maxSizeHints)
 	if err != nil {
 		return fmt.Errorf("failed checking fastssz compatibility: %v", err)
 	}
-	if !d.NoFastSsz && fastsszCompat.isHashRoot && !fastsszCompat.hasDynamicSpecValues {
-		hasher, ok := sourceValue.Addr().Interface().(fastssz.HashRoot)
+
+	useFastSsz := !d.NoFastSsz && fastsszCompat.isHashRoot && !fastsszCompat.hasDynamicSpecSizes && !fastsszCompat.hasDynamicSpecMax
+
+	fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v/%v)\t index: %v\n", strings.Repeat(" ", idt), sourceType.Name(), sourceType.Kind(), useFastSsz, fastsszCompat.isHashRoot, fastsszCompat.hasDynamicSpecSizes, fastsszCompat.hasDynamicSpecMax, hashIndex)
+
+	if useFastSsz {
+		hasher, ok := sourceValue.Addr().Interface().(fastsszHashRoot)
 		if ok {
 			//fmt.Printf("%stype: %s\t index: %v\t fastssz\n", strings.Repeat(" ", idt), sourceType.Name(), hashIndex)
-			return hasher.HashTreeRootWith(hh)
+			hashBytes, err := hasher.HashTreeRoot()
+			if err != nil {
+				return fmt.Errorf("failed HashTreeRoot: %v", err)
+			}
+
+			hh.PutBytes(hashBytes[:])
+		} else {
+			useFastSsz = false
 		}
 	}
 
 	//fmt.Printf("%stype: %s\t index: %v\n", strings.Repeat(" ", idt), sourceType.Name(), hashIndex)
 
-	switch sourceType.Kind() {
-	case reflect.Struct:
-		// can't use fastssz, use dynamic marshaling
-		err := d.buildRootFromStruct(sourceType, sourceValue, hh, idt)
-		if err != nil {
-			return err
-		}
-	case reflect.Array, reflect.Slice:
-		// can't use fastssz, use dynamic marshaling
-		err := d.buildRootFromSlice(sourceType, sourceValue, hh, sizeHints, maxSizeHints, idt)
-		if err != nil {
-			return err
-		}
+	if !useFastSsz {
+		switch sourceType.Kind() {
+		case reflect.Struct:
+			// can't use fastssz, use dynamic marshaling
+			err := d.buildRootFromStruct(sourceType, sourceValue, hh, idt)
+			if err != nil {
+				return err
+			}
+		case reflect.Array, reflect.Slice:
+			// can't use fastssz, use dynamic marshaling
+			err := d.buildRootFromSlice(sourceType, sourceValue, hh, sizeHints, maxSizeHints, idt)
+			if err != nil {
+				return err
+			}
 
-	case reflect.Bool:
-		hh.PutBool(sourceValue.Bool())
-	case reflect.Uint8:
-		hh.PutUint8(uint8(sourceValue.Uint()))
-	case reflect.Uint16:
-		hh.PutUint16(uint16(sourceValue.Uint()))
-	case reflect.Uint32:
-		hh.PutUint32(uint32(sourceValue.Uint()))
-	case reflect.Uint64:
-		hh.PutUint64(uint64(sourceValue.Uint()))
-	default:
-		return fmt.Errorf("unknown type: %v", sourceType)
+		case reflect.Bool:
+			hh.PutBool(sourceValue.Bool())
+		case reflect.Uint8:
+			hh.PutUint8(uint8(sourceValue.Uint()))
+		case reflect.Uint16:
+			hh.PutUint16(uint16(sourceValue.Uint()))
+		case reflect.Uint32:
+			hh.PutUint32(uint32(sourceValue.Uint()))
+		case reflect.Uint64:
+			hh.PutUint64(uint64(sourceValue.Uint()))
+		default:
+			return fmt.Errorf("unknown type: %v", sourceType)
+		}
 	}
 
 	return nil
@@ -100,6 +115,7 @@ func (d *DynSsz) buildRootFromStruct(sourceType reflect.Type, sourceValue reflec
 		}
 	}
 
+	fmt.Printf("merkelize struct %v (%v)\n", sourceType.Name(), hashIndex)
 	hh.Merkleize(hashIndex)
 
 	return nil
