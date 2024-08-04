@@ -77,6 +77,9 @@ type fastsszCompatibility struct {
 //   that would prevent the use of fastssz for encoding or decoding.
 
 func (d *DynSsz) getFastsszCompatibility(targetType reflect.Type, sizeHints []sszSizeHint) (*fastsszCompatibility, error) {
+	d.fastsszCompatMutex.Lock()
+	defer d.fastsszCompatMutex.Unlock()
+
 	if cachedCompatibility := d.fastsszCompatCache[targetType]; cachedCompatibility != nil {
 		return cachedCompatibility, nil
 	}

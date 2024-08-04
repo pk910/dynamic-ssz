@@ -9,10 +9,13 @@ package dynssz
 import (
 	"fmt"
 	"reflect"
+	"sync"
 )
 
 type DynSsz struct {
+	fastsszCompatMutex sync.Mutex
 	fastsszCompatCache map[reflect.Type]*fastsszCompatibility
+	typeSizeMutex      sync.RWMutex
 	typeSizeCache      map[reflect.Type]*cachedSszSize
 	specValues         map[string]any
 	specValueCache     map[string]*cachedSpecValue
