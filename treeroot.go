@@ -28,6 +28,10 @@ func (d *DynSsz) buildRootFromType(sourceType reflect.Type, sourceValue reflect.
 	}
 
 	useFastSsz := !d.NoFastSsz && fastsszCompat.isHashRoot && !fastsszCompat.hasDynamicSpecSizes && !fastsszCompat.hasDynamicSpecMax
+	if !useFastSsz && fastsszCompat.isHashRoot && !fastsszCompat.hasDynamicSpecSizes && !fastsszCompat.hasDynamicSpecMax && sourceType.Name() == "Int" {
+		// hack for uint256.Int
+		useFastSsz = true
+	}
 
 	fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v/%v)\t index: %v\n", strings.Repeat(" ", idt), sourceType.Name(), sourceType.Kind(), useFastSsz, fastsszCompat.isHashRoot, fastsszCompat.hasDynamicSpecSizes, fastsszCompat.hasDynamicSpecMax, hashIndex)
 
@@ -49,32 +53,50 @@ func (d *DynSsz) buildRootFromType(sourceType reflect.Type, sourceValue reflect.
 	//fmt.Printf("%stype: %s\t index: %v\n", strings.Repeat(" ", idt), sourceType.Name(), hashIndex)
 
 	if !useFastSsz {
-		switch sourceType.Kind() {
-		case reflect.Struct:
-			// can't use fastssz, use dynamic marshaling
-			err := d.buildRootFromStruct(sourceType, sourceValue, hh, idt)
-			if err != nil {
-				return err
-			}
-		case reflect.Array, reflect.Slice:
-			// can't use fastssz, use dynamic marshaling
-			err := d.buildRootFromSlice(sourceType, sourceValue, hh, sizeHints, maxSizeHints, idt)
-			if err != nil {
-				return err
+		if strings.Contains(sourceType.Name(), "Bitlist") {
+			// hack for bitlists
+			maxSize := uint64(0)
+			bytes := sourceValue.Bytes()
+			if len(maxSizeHints) > 0 {
+				maxSize = maxSizeHints[0].size
+			} else {
+				maxSize = uint64(len(bytes) * 8)
 			}
 
-		case reflect.Bool:
-			hh.PutBool(sourceValue.Bool())
-		case reflect.Uint8:
-			hh.PutUint8(uint8(sourceValue.Uint()))
-		case reflect.Uint16:
-			hh.PutUint16(uint16(sourceValue.Uint()))
-		case reflect.Uint32:
-			hh.PutUint32(uint32(sourceValue.Uint()))
-		case reflect.Uint64:
-			hh.PutUint64(uint64(sourceValue.Uint()))
-		default:
-			return fmt.Errorf("unknown type: %v", sourceType)
+			hh.PutBitlist(bytes, maxSize)
+		} else {
+
+			switch sourceType.Kind() {
+			case reflect.Struct:
+				err := d.buildRootFromStruct(sourceType, sourceValue, hh, idt)
+				if err != nil {
+					return err
+				}
+			case reflect.Array:
+				err := d.buildRootFromArray(sourceType, sourceValue, hh, sizeHints, maxSizeHints, idt)
+				if err != nil {
+					return err
+				}
+
+			case reflect.Slice:
+				err := d.buildRootFromSlice(sourceType, sourceValue, hh, sizeHints, maxSizeHints, idt)
+				if err != nil {
+					return err
+				}
+
+			case reflect.Bool:
+				hh.PutBool(sourceValue.Bool())
+			case reflect.Uint8:
+				hh.PutUint8(uint8(sourceValue.Uint()))
+			case reflect.Uint16:
+				hh.PutUint16(uint16(sourceValue.Uint()))
+			case reflect.Uint32:
+				hh.PutUint32(uint32(sourceValue.Uint()))
+			case reflect.Uint64:
+				hh.PutUint64(uint64(sourceValue.Uint()))
+			default:
+				return fmt.Errorf("unknown type: %v", sourceType)
+			}
 		}
 	}
 
@@ -121,7 +143,7 @@ func (d *DynSsz) buildRootFromStruct(sourceType reflect.Type, sourceValue reflec
 	return nil
 }
 
-func (d *DynSsz) buildRootFromSlice(sourceType reflect.Type, sourceValue reflect.Value, hh fastssz.HashWalker, sizeHints []sszSizeHint, maxSizeHints []sszMaxSizeHint, idt int) error {
+func (d *DynSsz) buildRootFromArray(sourceType reflect.Type, sourceValue reflect.Value, hh fastssz.HashWalker, sizeHints []sszSizeHint, maxSizeHints []sszMaxSizeHint, idt int) error {
 	fieldType := sourceType.Elem()
 	fieldIsPtr := fieldType.Kind() == reflect.Ptr
 	if fieldIsPtr {
@@ -131,6 +153,16 @@ func (d *DynSsz) buildRootFromSlice(sourceType reflect.Type, sourceValue reflect
 	if fieldType == byteType {
 		hh.PutBytes(sourceValue.Bytes())
 		return nil
+	}
+
+	return d.buildRootFromSlice(sourceType, sourceValue, hh, sizeHints, maxSizeHints, idt)
+}
+
+func (d *DynSsz) buildRootFromSlice(sourceType reflect.Type, sourceValue reflect.Value, hh fastssz.HashWalker, sizeHints []sszSizeHint, maxSizeHints []sszMaxSizeHint, idt int) error {
+	fieldType := sourceType.Elem()
+	fieldIsPtr := fieldType.Kind() == reflect.Ptr
+	if fieldIsPtr {
+		fieldType = fieldType.Elem()
 	}
 
 	subIndex := hh.Index()
@@ -159,7 +191,7 @@ func (d *DynSsz) buildRootFromSlice(sourceType reflect.Type, sourceValue reflect
 					fieldValue = fieldValue.Elem()
 				}
 
-				hh.Append(fieldValue.Bytes())
+				hh.PutBytes(fieldValue.Bytes())
 			}
 
 		} else {
@@ -174,21 +206,15 @@ func (d *DynSsz) buildRootFromSlice(sourceType reflect.Type, sourceValue reflect
 					fieldValue = fieldValue.Elem()
 				}
 
-				hh.Append(fieldValue.Bytes())
+				hh.PutBytes(fieldValue.Bytes())
 			}
 
 		} else {
 			fmt.Printf("non-byte slice in slice: %v\n", itemType)
 		}
 	case reflect.Uint8:
-		for i := 0; i < sliceLen; i++ {
-			fieldValue := sourceValue.Index(i)
-			if fieldIsPtr {
-				fieldValue = fieldValue.Elem()
-			}
-
-			hh.AppendUint8(uint8(fieldValue.Uint()))
-		}
+		hh.Append(sourceValue.Bytes())
+		hh.FillUpTo32()
 		itemSize = 1
 	case reflect.Uint64:
 		for i := 0; i < sliceLen; i++ {

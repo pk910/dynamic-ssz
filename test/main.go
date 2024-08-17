@@ -13,19 +13,21 @@ import (
 func main() {
 	// minimal preset properties that have an effect on SSZ format
 	minimalSpecs := map[string]any{
-		"SLOTS_PER_EPOCH":               uint64(8),
-		"SYNC_COMMITTEE_SIZE":           uint64(32),
-		"SYNC_COMMITTEE_SUBNET_COUNT":   uint64(4),
-		"EPOCHS_PER_HISTORICAL_VECTOR":  uint64(64),
-		"EPOCHS_PER_SLASHINGS_VECTOR":   uint64(64),
-		"SLOTS_PER_HISTORICAL_ROOT":     uint64(64),
-		"EPOCHS_PER_ETH1_VOTING_PERIOD": uint64(4),
+		"SLOTS_PER_EPOCH":                uint64(8),
+		"SYNC_COMMITTEE_SIZE":            uint64(32),
+		"SYNC_COMMITTEE_SUBNET_COUNT":    uint64(4),
+		"EPOCHS_PER_HISTORICAL_VECTOR":   uint64(64),
+		"EPOCHS_PER_SLASHINGS_VECTOR":    uint64(64),
+		"SLOTS_PER_HISTORICAL_ROOT":      uint64(64),
+		"EPOCHS_PER_ETH1_VOTING_PERIOD":  uint64(4),
+		"MAX_BLOB_COMMITMENTS_PER_BLOCK": uint64(16),
+		"MAX_WITHDRAWALS_PER_PAYLOAD":    uint64(4),
 	}
 
 	dynssz_only_mainnet := ssz.NewDynSsz(nil)
 	dynssz_only_minimal := ssz.NewDynSsz(minimalSpecs)
 	//dynssz_hybrid_mainnet := ssz.NewDynSsz(nil)
-	dynssz_hybrid_minimal := ssz.NewDynSsz(minimalSpecs)
+	//dynssz_hybrid_minimal := ssz.NewDynSsz(minimalSpecs)
 
 	// this has a huge negative performance impact.
 	// it prevents dynssz from using fastssz for structures where no dynamic marshalling is required.
@@ -55,10 +57,12 @@ func main() {
 		print_test_result("fastssz only", dur1, dur2, hash, err)
 		dur1, dur2, hash, err = test_block_dynssz(dynssz_only_mainnet, block_mainnet, iterations)
 		print_test_result("dynssz only", dur1, dur2, hash, err)
-		dur1, dur2, hash, err = test_block_dynssz(dynssz_hybrid_mainnet, block_mainnet, iterations)
-		print_test_result("dynssz + fastssz", dur1, dur2, hash, err)
+		//dur1, dur2, hash, err = test_block_dynssz(dynssz_hybrid_mainnet, block_mainnet, iterations)
+		//print_test_result("dynssz + fastssz", dur1, dur2, hash, err)
 		fmt.Printf("\n")
+	*/
 
+	/*
 		fmt.Printf("## mainnet preset / BeaconState decode + encode (%d times)\n", iterations)
 		dur1, dur2, hash, err = test_state_fastssz(state_mainnet, iterations)
 		print_test_result("fastssz only", dur1, dur2, hash, err)
@@ -72,10 +76,10 @@ func main() {
 	fmt.Printf("## minimal preset / BeaconBlock decode + encode (%d times)\n", iterations)
 	//dur1, dur2, hash, err = test_block_fastssz(block_minimal, iterations)
 	//print_test_result("fastssz only", dur1, dur2, hash, err)
-	//dur1, dur2, hash, err = test_block_dynssz(dynssz_only_minimal, block_minimal, iterations)
-	//print_test_result("dynssz only", dur1, dur2, hash, err)
-	dur1, dur2, hash, err = test_block_dynssz(dynssz_hybrid_minimal, block_minimal, iterations)
-	print_test_result("dynssz + fastssz", dur1, dur2, hash, err)
+	dur1, dur2, hash, err = test_block_dynssz(dynssz_only_minimal, block_minimal, iterations)
+	print_test_result("dynssz only", dur1, dur2, hash, err)
+	//dur1, dur2, hash, err = test_block_dynssz(dynssz_hybrid_minimal, block_minimal, iterations)
+	//print_test_result("dynssz + fastssz", dur1, dur2, hash, err)
 	fmt.Printf("\n")
 
 	/*
