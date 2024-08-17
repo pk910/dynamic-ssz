@@ -64,6 +64,9 @@ type fastsszHashCompatibility struct {
 //   that would prevent the use of fastssz for encoding or decoding.
 
 func (d *DynSsz) getFastsszConvertCompatibility(targetType reflect.Type, sizeHints []sszSizeHint) (*fastsszConvertCompatibility, error) {
+	d.fastsszConvertCompatMutex.Lock()
+	defer d.fastsszConvertCompatMutex.Unlock()
+
 	if cachedCompatibility := d.fastsszConvertCompatCache[targetType]; cachedCompatibility != nil {
 		return cachedCompatibility, nil
 	}
@@ -84,6 +87,9 @@ func (d *DynSsz) getFastsszConvertCompatibility(targetType reflect.Type, sizeHin
 }
 
 func (d *DynSsz) getFastsszHashCompatibility(targetType reflect.Type, sizeHints []sszSizeHint, maxSizeHints []sszMaxSizeHint) (*fastsszHashCompatibility, error) {
+	d.fastsszHashCompatMutex.Lock()
+	defer d.fastsszHashCompatMutex.Unlock()
+
 	if cachedCompatibility := d.fastsszHashCompatCache[targetType]; cachedCompatibility != nil {
 		return cachedCompatibility, nil
 	}

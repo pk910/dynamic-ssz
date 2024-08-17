@@ -21,9 +21,12 @@ func (d *DynSsz) checkDynamicMaxSize(targetType reflect.Type, sizeHints []sszMax
 	}
 
 	// get size from cache if not influenced by a parent sizeHint
+	d.typeDynMaxCacheMutex.RLock()
 	if cachedDynMaxCheck := d.typeDynMaxCache[targetType]; cachedDynMaxCheck != nil {
+		d.typeDynMaxCacheMutex.RUnlock()
 		return *cachedDynMaxCheck, nil
 	}
+	d.typeDynMaxCacheMutex.RUnlock()
 
 	switch targetType.Kind() {
 	case reflect.Struct:
@@ -68,7 +71,9 @@ func (d *DynSsz) checkDynamicMaxSize(targetType reflect.Type, sizeHints []sszMax
 
 	if len(sizeHints) == 0 {
 		// cache check result if it's static maximum and not influenced by a parent maxSizeHint
+		d.typeDynMaxCacheMutex.Lock()
 		d.typeDynMaxCache[targetType] = &hasSpecValue
+		d.typeDynMaxCacheMutex.Unlock()
 	}
 
 	return hasSpecValue, nil

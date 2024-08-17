@@ -53,9 +53,12 @@ func (d *DynSsz) getSszSize(targetType reflect.Type, sizeHints []sszSizeHint) (i
 	}
 
 	// get size from cache if not influenced by a parent sizeHint
+	d.typeSizeMutex.RLock()
 	if cachedSize := d.typeSizeCache[targetType]; cachedSize != nil && len(sizeHints) == 0 {
+		d.typeSizeMutex.RUnlock()
 		return cachedSize.size, cachedSize.specval, nil
 	}
+	d.typeSizeMutex.RUnlock()
 
 	switch targetType.Kind() {
 	case reflect.Struct:
@@ -126,10 +129,12 @@ func (d *DynSsz) getSszSize(targetType reflect.Type, sizeHints []sszSizeHint) (i
 		staticSize = -1
 	} else if len(sizeHints) == 0 {
 		// cache size if it's static and not influenced by a parent sizeHint
+		d.typeSizeMutex.Lock()
 		d.typeSizeCache[targetType] = &cachedSszSize{
 			size:    staticSize,
 			specval: hasSpecValue,
 		}
+		d.typeSizeMutex.Unlock()
 	}
 
 	return staticSize, hasSpecValue, nil

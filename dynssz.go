@@ -9,14 +9,19 @@ package dynssz
 import (
 	"fmt"
 	"reflect"
+	"sync"
 
 	fastssz "github.com/ferranbt/fastssz"
 )
 
 type DynSsz struct {
+	fastsszConvertCompatMutex sync.Mutex
 	fastsszConvertCompatCache map[reflect.Type]*fastsszConvertCompatibility
+	fastsszHashCompatMutex    sync.Mutex
 	fastsszHashCompatCache    map[reflect.Type]*fastsszHashCompatibility
+	typeSizeMutex             sync.RWMutex
 	typeSizeCache             map[reflect.Type]*cachedSszSize
+	typeDynMaxCacheMutex      sync.RWMutex
 	typeDynMaxCache           map[reflect.Type]*bool
 	specValues                map[string]any
 	specValueCache            map[string]*cachedSpecValue
