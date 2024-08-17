@@ -26,8 +26,8 @@ func main() {
 
 	dynssz_only_mainnet := ssz.NewDynSsz(nil)
 	dynssz_only_minimal := ssz.NewDynSsz(minimalSpecs)
-	//dynssz_hybrid_mainnet := ssz.NewDynSsz(nil)
-	//dynssz_hybrid_minimal := ssz.NewDynSsz(minimalSpecs)
+	dynssz_hybrid_mainnet := ssz.NewDynSsz(nil)
+	dynssz_hybrid_minimal := ssz.NewDynSsz(minimalSpecs)
 
 	// this has a huge negative performance impact.
 	// it prevents dynssz from using fastssz for structures where no dynamic marshalling is required.
@@ -40,10 +40,10 @@ func main() {
 	// load example blocks & states
 	// these are example dumps from small kurtosis networks with mainnet & minimal presets
 	// both networks were started with ~380 validators and the snapshot was made around epoch 10-20
-	//block_mainnet, _ := ioutil.ReadFile("../temp/block-mainnet.ssz")
-	//state_mainnet, _ := ioutil.ReadFile("../temp/state-mainnet.ssz")
+	block_mainnet, _ := ioutil.ReadFile("../temp/block-mainnet.ssz")
+	state_mainnet, _ := ioutil.ReadFile("../temp/state-mainnet.ssz")
 	block_minimal, _ := ioutil.ReadFile("../temp/block-minimal.ssz")
-	//state_minimal, _ := ioutil.ReadFile("../temp/state-minimal.ssz")
+	state_minimal, _ := ioutil.ReadFile("../temp/state-minimal.ssz")
 
 	var dur1 time.Duration
 	var dur2 time.Duration
@@ -51,47 +51,42 @@ func main() {
 	var err error
 	iterations := 1
 
-	/*
-		fmt.Printf("## mainnet preset / BeaconBlock decode + encode (%d times)\n", iterations)
-		dur1, dur2, hash, err = test_block_fastssz(block_mainnet, iterations)
-		print_test_result("fastssz only", dur1, dur2, hash, err)
-		dur1, dur2, hash, err = test_block_dynssz(dynssz_only_mainnet, block_mainnet, iterations)
-		print_test_result("dynssz only", dur1, dur2, hash, err)
-		//dur1, dur2, hash, err = test_block_dynssz(dynssz_hybrid_mainnet, block_mainnet, iterations)
-		//print_test_result("dynssz + fastssz", dur1, dur2, hash, err)
-		fmt.Printf("\n")
-	*/
-
-	/*
-		fmt.Printf("## mainnet preset / BeaconState decode + encode (%d times)\n", iterations)
-		dur1, dur2, hash, err = test_state_fastssz(state_mainnet, iterations)
-		print_test_result("fastssz only", dur1, dur2, hash, err)
-		dur1, dur2, hash, err = test_state_dynssz(dynssz_only_mainnet, state_mainnet, iterations)
-		print_test_result("dynssz only", dur1, dur2, hash, err)
-		dur1, dur2, hash, err = test_state_dynssz(dynssz_hybrid_mainnet, state_mainnet, iterations)
-		print_test_result("dynssz + fastssz", dur1, dur2, hash, err)
-		fmt.Printf("\n")
-	*/
-
-	fmt.Printf("## minimal preset / BeaconBlock decode + encode (%d times)\n", iterations)
-	//dur1, dur2, hash, err = test_block_fastssz(block_minimal, iterations)
-	//print_test_result("fastssz only", dur1, dur2, hash, err)
-	dur1, dur2, hash, err = test_block_dynssz(dynssz_only_minimal, block_minimal, iterations)
+	fmt.Printf("## mainnet preset / BeaconBlock decode + encode (%d times)\n", iterations)
+	dur1, dur2, hash, err = test_block_fastssz(block_mainnet, iterations)
+	print_test_result("fastssz only", dur1, dur2, hash, err)
+	dur1, dur2, hash, err = test_block_dynssz(dynssz_only_mainnet, block_mainnet, iterations)
 	print_test_result("dynssz only", dur1, dur2, hash, err)
-	//dur1, dur2, hash, err = test_block_dynssz(dynssz_hybrid_minimal, block_minimal, iterations)
-	//print_test_result("dynssz + fastssz", dur1, dur2, hash, err)
+	dur1, dur2, hash, err = test_block_dynssz(dynssz_hybrid_mainnet, block_mainnet, iterations)
+	print_test_result("dynssz + fastssz", dur1, dur2, hash, err)
 	fmt.Printf("\n")
 
-	/*
-		fmt.Printf("## minimal preset / BeaconState decode + encode (%d times)\n", iterations)
-		dur1, dur2, hash, err = test_state_fastssz(state_minimal, iterations)
-		print_test_result("fastssz only", dur1, dur2, hash, err)
-		dur1, dur2, hash, err = test_state_dynssz(dynssz_only_minimal, state_minimal, iterations)
-		print_test_result("dynssz only", dur1, dur2, hash, err)
-		dur1, dur2, hash, err = test_state_dynssz(dynssz_hybrid_minimal, state_minimal, iterations)
-		print_test_result("dynssz + fastssz", dur1, dur2, hash, err)
-		fmt.Printf("\n")
-	*/
+	fmt.Printf("## mainnet preset / BeaconState decode + encode (%d times)\n", iterations)
+	dur1, dur2, hash, err = test_state_fastssz(state_mainnet, iterations)
+	print_test_result("fastssz only", dur1, dur2, hash, err)
+	dur1, dur2, hash, err = test_state_dynssz(dynssz_only_mainnet, state_mainnet, iterations)
+	print_test_result("dynssz only", dur1, dur2, hash, err)
+	dur1, dur2, hash, err = test_state_dynssz(dynssz_hybrid_mainnet, state_mainnet, iterations)
+	print_test_result("dynssz + fastssz", dur1, dur2, hash, err)
+	fmt.Printf("\n")
+
+	fmt.Printf("## minimal preset / BeaconBlock decode + encode (%d times)\n", iterations)
+	dur1, dur2, hash, err = test_block_fastssz(block_minimal, iterations)
+	print_test_result("fastssz only", dur1, dur2, hash, err)
+	dur1, dur2, hash, err = test_block_dynssz(dynssz_only_minimal, block_minimal, iterations)
+	print_test_result("dynssz only", dur1, dur2, hash, err)
+	dur1, dur2, hash, err = test_block_dynssz(dynssz_hybrid_minimal, block_minimal, iterations)
+	print_test_result("dynssz + fastssz", dur1, dur2, hash, err)
+	fmt.Printf("\n")
+
+	fmt.Printf("## minimal preset / BeaconState decode + encode (%d times)\n", iterations)
+	dur1, dur2, hash, err = test_state_fastssz(state_minimal, iterations)
+	print_test_result("fastssz only", dur1, dur2, hash, err)
+	dur1, dur2, hash, err = test_state_dynssz(dynssz_only_minimal, state_minimal, iterations)
+	print_test_result("dynssz only", dur1, dur2, hash, err)
+	dur1, dur2, hash, err = test_state_dynssz(dynssz_hybrid_minimal, state_minimal, iterations)
+	print_test_result("dynssz + fastssz", dur1, dur2, hash, err)
+	fmt.Printf("\n")
+
 }
 
 func print_test_result(title string, durationUnmarshal time.Duration, durationMarshal time.Duration, hash [][32]byte, err error) {

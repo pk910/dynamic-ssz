@@ -12,7 +12,7 @@ import (
 )
 
 func (d *DynSsz) buildRootFromType(sourceType reflect.Type, sourceValue reflect.Value, hh fastssz.HashWalker, sizeHints []sszSizeHint, maxSizeHints []sszMaxSizeHint, idt int) error {
-	hashIndex := hh.Index()
+	//hashIndex := hh.Index()
 
 	if sourceType.Kind() == reflect.Ptr {
 		sourceType = sourceType.Elem()
@@ -33,7 +33,7 @@ func (d *DynSsz) buildRootFromType(sourceType reflect.Type, sourceValue reflect.
 		useFastSsz = true
 	}
 
-	fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v/%v)\t index: %v\n", strings.Repeat(" ", idt), sourceType.Name(), sourceType.Kind(), useFastSsz, fastsszCompat.isHashRoot, fastsszCompat.hasDynamicSpecSizes, fastsszCompat.hasDynamicSpecMax, hashIndex)
+	//fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v/%v)\t index: %v\n", strings.Repeat(" ", idt), sourceType.Name(), sourceType.Kind(), useFastSsz, fastsszCompat.isHashRoot, fastsszCompat.hasDynamicSpecSizes, fastsszCompat.hasDynamicSpecMax, hashIndex)
 
 	if useFastSsz {
 		hasher, ok := sourceValue.Addr().Interface().(fastsszHashRoot)
@@ -137,7 +137,7 @@ func (d *DynSsz) buildRootFromStruct(sourceType reflect.Type, sourceValue reflec
 		}
 	}
 
-	fmt.Printf("merkelize struct %v (%v)\n", sourceType.Name(), hashIndex)
+	//fmt.Printf("merkelize struct %v (%v)\n", sourceType.Name(), hashIndex)
 	hh.Merkleize(hashIndex)
 
 	return nil
