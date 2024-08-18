@@ -45,53 +45,57 @@ func main() {
 	block_minimal, _ := ioutil.ReadFile("../temp/block-minimal.ssz")
 	state_minimal, _ := ioutil.ReadFile("../temp/state-minimal.ssz")
 
-	var dur1 time.Duration
-	var dur2 time.Duration
+	var dur []time.Duration
 	var hash [][32]byte
 	var err error
-	iterations := 1
+	iterations := 1000
 
-	fmt.Printf("## mainnet preset / BeaconBlock decode + encode (%d times)\n", iterations)
-	dur1, dur2, hash, err = test_block_fastssz(block_mainnet, iterations)
-	print_test_result("fastssz only", dur1, dur2, hash, err)
-	dur1, dur2, hash, err = test_block_dynssz(dynssz_only_mainnet, block_mainnet, iterations)
-	print_test_result("dynssz only", dur1, dur2, hash, err)
-	dur1, dur2, hash, err = test_block_dynssz(dynssz_hybrid_mainnet, block_mainnet, iterations)
-	print_test_result("dynssz + fastssz", dur1, dur2, hash, err)
+	fmt.Printf("## mainnet preset / BeaconBlock decode + encode + hash (%d times)\n", iterations)
+	dur, hash, err = test_block_fastssz(block_mainnet, iterations)
+	print_test_result("fastssz only", dur, hash, err)
+	dur, hash, err = test_block_dynssz(dynssz_only_mainnet, block_mainnet, iterations)
+	print_test_result("dynssz only", dur, hash, err)
+	dur, hash, err = test_block_dynssz(dynssz_hybrid_mainnet, block_mainnet, iterations)
+	print_test_result("dynssz + fastssz", dur, hash, err)
 	fmt.Printf("\n")
 
-	fmt.Printf("## mainnet preset / BeaconState decode + encode (%d times)\n", iterations)
-	dur1, dur2, hash, err = test_state_fastssz(state_mainnet, iterations)
-	print_test_result("fastssz only", dur1, dur2, hash, err)
-	dur1, dur2, hash, err = test_state_dynssz(dynssz_only_mainnet, state_mainnet, iterations)
-	print_test_result("dynssz only", dur1, dur2, hash, err)
-	dur1, dur2, hash, err = test_state_dynssz(dynssz_hybrid_mainnet, state_mainnet, iterations)
-	print_test_result("dynssz + fastssz", dur1, dur2, hash, err)
+	fmt.Printf("## mainnet preset / BeaconState decode + encode + hash (%d times)\n", iterations)
+	dur, hash, err = test_state_fastssz(state_mainnet, iterations)
+	print_test_result("fastssz only", dur, hash, err)
+	dur, hash, err = test_state_dynssz(dynssz_only_mainnet, state_mainnet, iterations)
+	print_test_result("dynssz only", dur, hash, err)
+	dur, hash, err = test_state_dynssz(dynssz_hybrid_mainnet, state_mainnet, iterations)
+	print_test_result("dynssz + fastssz", dur, hash, err)
 	fmt.Printf("\n")
 
-	fmt.Printf("## minimal preset / BeaconBlock decode + encode (%d times)\n", iterations)
-	dur1, dur2, hash, err = test_block_fastssz(block_minimal, iterations)
-	print_test_result("fastssz only", dur1, dur2, hash, err)
-	dur1, dur2, hash, err = test_block_dynssz(dynssz_only_minimal, block_minimal, iterations)
-	print_test_result("dynssz only", dur1, dur2, hash, err)
-	dur1, dur2, hash, err = test_block_dynssz(dynssz_hybrid_minimal, block_minimal, iterations)
-	print_test_result("dynssz + fastssz", dur1, dur2, hash, err)
+	fmt.Printf("## minimal preset / BeaconBlock decode + encode + hash (%d times)\n", iterations)
+	dur, hash, err = test_block_fastssz(block_minimal, iterations)
+	print_test_result("fastssz only", dur, hash, err)
+	dur, hash, err = test_block_dynssz(dynssz_only_minimal, block_minimal, iterations)
+	print_test_result("dynssz only", dur, hash, err)
+	dur, hash, err = test_block_dynssz(dynssz_hybrid_minimal, block_minimal, iterations)
+	print_test_result("dynssz + fastssz", dur, hash, err)
 	fmt.Printf("\n")
 
-	fmt.Printf("## minimal preset / BeaconState decode + encode (%d times)\n", iterations)
-	dur1, dur2, hash, err = test_state_fastssz(state_minimal, iterations)
-	print_test_result("fastssz only", dur1, dur2, hash, err)
-	dur1, dur2, hash, err = test_state_dynssz(dynssz_only_minimal, state_minimal, iterations)
-	print_test_result("dynssz only", dur1, dur2, hash, err)
-	dur1, dur2, hash, err = test_state_dynssz(dynssz_hybrid_minimal, state_minimal, iterations)
-	print_test_result("dynssz + fastssz", dur1, dur2, hash, err)
+	fmt.Printf("## minimal preset / BeaconState decode + encode + hash (%d times)\n", iterations)
+	dur, hash, err = test_state_fastssz(state_minimal, iterations)
+	print_test_result("fastssz only", dur, hash, err)
+	dur, hash, err = test_state_dynssz(dynssz_only_minimal, state_minimal, iterations)
+	print_test_result("dynssz only", dur, hash, err)
+	dur, hash, err = test_state_dynssz(dynssz_hybrid_minimal, state_minimal, iterations)
+	print_test_result("dynssz + fastssz", dur, hash, err)
 	fmt.Printf("\n")
 
 }
 
-func print_test_result(title string, durationUnmarshal time.Duration, durationMarshal time.Duration, hash [][32]byte, err error) {
-	fmt.Printf("%-18v", title)
-	fmt.Printf("  [%4v ms / %4v ms]\t ", durationUnmarshal.Milliseconds(), durationMarshal.Milliseconds())
+func print_test_result(title string, durations []time.Duration, hash [][32]byte, err error) {
+	fmt.Printf("%-18v  ", title)
+	if len(durations) > 0 {
+		fmt.Printf("[%4v ms / %4v ms / %4v ms]", durations[0].Milliseconds(), durations[1].Milliseconds(), durations[2].Milliseconds())
+	} else {
+		fmt.Printf("[    ms /     ms /     ms]")
+	}
+	fmt.Printf("\t ")
 	if err != nil {
 		fmt.Printf("failed (%v)", err)
 	} else {
@@ -99,25 +103,23 @@ func print_test_result(title string, durationUnmarshal time.Duration, durationMa
 	}
 	if len(hash) > 0 {
 		fmt.Printf("\t Root: 0x%x", hash[0])
-		if len(hash) > 1 && !bytes.Equal(hash[0][:], hash[1][:]) {
-			fmt.Printf("\t != 0x%x", hash[1])
-		}
 	}
 
 	fmt.Printf("\n")
 
 }
 
-func test_block_fastssz(in []byte, iterations int) (time.Duration, time.Duration, [][32]byte, error) {
+func test_block_fastssz(in []byte, iterations int) ([]time.Duration, [][32]byte, error) {
 	unmarshalTime := time.Duration(0)
 	marshalTime := time.Duration(0)
+	hashTime := time.Duration(0)
 
 	start := time.Now()
 	for i := 0; i < iterations; i++ {
 		t := new(deneb.SignedBeaconBlock)
 		err := t.UnmarshalSSZ(in)
 		if err != nil {
-			return 0, 0, nil, fmt.Errorf("unmarshal error: %v", err)
+			return nil, nil, fmt.Errorf("unmarshal error: %v", err)
 		}
 	}
 	unmarshalTime = time.Since(start)
@@ -129,34 +131,44 @@ func test_block_fastssz(in []byte, iterations int) (time.Duration, time.Duration
 	for i := 0; i < iterations; i++ {
 		_, err := t.MarshalSSZ()
 		if err != nil {
-			return 0, 0, nil, fmt.Errorf("marshal error: %v", err)
+			return nil, nil, fmt.Errorf("marshal error: %v", err)
 		}
 	}
 	marshalTime = time.Since(start)
 
 	out, _ := t.MarshalSSZ()
 	if !bytes.Equal(in, out) {
-		return 0, 0, nil, fmt.Errorf("SSZ mismatch after re-marshalling")
+		return nil, nil, fmt.Errorf("SSZ mismatch after re-marshalling")
 	}
 
-	rootHash, _ := t.Message.HashTreeRoot()
+	start = time.Now()
+	var hashRoot [32]byte
+	for i := 0; i < iterations; i++ {
+		root, err := t.Message.HashTreeRoot()
+		if err != nil {
+			return nil, nil, fmt.Errorf("hashroot error: %v", err)
+		}
+		hashRoot = root
+	}
+	hashTime = time.Since(start)
 
 	//out, _ = yaml.Marshal(t)
 	//fmt.Printf("%v\n\n", string(out))
 
-	return unmarshalTime, marshalTime, [][32]byte{rootHash}, nil
+	return []time.Duration{unmarshalTime, marshalTime, hashTime}, [][32]byte{hashRoot}, nil
 }
 
-func test_state_fastssz(in []byte, iterations int) (time.Duration, time.Duration, [][32]byte, error) {
+func test_state_fastssz(in []byte, iterations int) ([]time.Duration, [][32]byte, error) {
 	unmarshalTime := time.Duration(0)
 	marshalTime := time.Duration(0)
+	hashTime := time.Duration(0)
 
 	start := time.Now()
 	for i := 0; i < iterations; i++ {
 		t := new(deneb.BeaconState)
 		err := t.UnmarshalSSZ(in)
 		if err != nil {
-			return 0, 0, nil, fmt.Errorf("unmarshal error: %v", err)
+			return nil, nil, fmt.Errorf("unmarshal error: %v", err)
 		}
 	}
 	unmarshalTime = time.Since(start)
@@ -168,30 +180,41 @@ func test_state_fastssz(in []byte, iterations int) (time.Duration, time.Duration
 	for i := 0; i < iterations; i++ {
 		_, err := t.MarshalSSZ()
 		if err != nil {
-			return 0, 0, nil, fmt.Errorf("marshal error: %v", err)
+			return nil, nil, fmt.Errorf("marshal error: %v", err)
 		}
 	}
 	marshalTime = time.Since(start)
 
 	out, _ := t.MarshalSSZ()
 	if !bytes.Equal(in, out) {
-		return 0, 0, nil, fmt.Errorf("SSZ mismatch after re-marshalling")
+		return nil, nil, fmt.Errorf("SSZ mismatch after re-marshalling")
 	}
 
-	rootHash, _ := t.HashTreeRoot()
-	return unmarshalTime, marshalTime, [][32]byte{rootHash}, nil
+	start = time.Now()
+	var hashRoot [32]byte
+	for i := 0; i < iterations; i++ {
+		root, err := t.HashTreeRoot()
+		if err != nil {
+			return nil, nil, fmt.Errorf("hashroot error: %v", err)
+		}
+		hashRoot = root
+	}
+	hashTime = time.Since(start)
+
+	return []time.Duration{unmarshalTime, marshalTime, hashTime}, [][32]byte{hashRoot}, nil
 }
 
-func test_block_dynssz(dynssz *ssz.DynSsz, in []byte, iterations int) (time.Duration, time.Duration, [][32]byte, error) {
+func test_block_dynssz(dynssz *ssz.DynSsz, in []byte, iterations int) ([]time.Duration, [][32]byte, error) {
 	unmarshalTime := time.Duration(0)
 	marshalTime := time.Duration(0)
+	hashTime := time.Duration(0)
 
 	start := time.Now()
 	for i := 0; i < iterations; i++ {
 		t := new(deneb.SignedBeaconBlock)
 		err := dynssz.UnmarshalSSZ(t, in)
 		if err != nil {
-			return 0, 0, nil, fmt.Errorf("unmarshal error: %v", err)
+			return nil, nil, fmt.Errorf("unmarshal error: %v", err)
 		}
 	}
 	unmarshalTime = time.Since(start)
@@ -203,32 +226,37 @@ func test_block_dynssz(dynssz *ssz.DynSsz, in []byte, iterations int) (time.Dura
 	for i := 0; i < iterations; i++ {
 		_, err := dynssz.MarshalSSZ(t)
 		if err != nil {
-			return 0, 0, nil, fmt.Errorf("marshal error: %v", err)
+			return nil, nil, fmt.Errorf("marshal error: %v", err)
 		}
 	}
 	marshalTime = time.Since(start)
 
 	out, _ := dynssz.MarshalSSZ(t)
 	if !bytes.Equal(in, out) {
-		return 0, 0, nil, fmt.Errorf("SSZ mismatch after re-marshalling")
+		return nil, nil, fmt.Errorf("SSZ mismatch after re-marshalling")
 	}
 
-	root1, _ := dynssz.HashTreeRoot(t.Message)
-	fmt.Printf("  dynssz tree root: 0x%x\n", root1)
-
-	root2, err := t.Message.HashTreeRoot()
-	fmt.Printf("  fastssz tree root: 0x%x\n", root2)
-	fmt.Printf("  fastssz tree err: %v\n", err)
+	start = time.Now()
+	var hashRoot [32]byte
+	for i := 0; i < iterations; i++ {
+		root, err := dynssz.HashTreeRoot(t.Message)
+		if err != nil {
+			return nil, nil, fmt.Errorf("hashroot error: %v", err)
+		}
+		hashRoot = root
+	}
+	hashTime = time.Since(start)
 
 	//out, _ = yaml.Marshal(t)
 	//fmt.Printf("%v\n\n", string(out))
 
-	return unmarshalTime, marshalTime, [][32]byte{root1, root2}, nil
+	return []time.Duration{unmarshalTime, marshalTime, hashTime}, [][32]byte{hashRoot}, nil
 }
 
-func test_state_dynssz(dynssz *ssz.DynSsz, in []byte, iterations int) (time.Duration, time.Duration, [][32]byte, error) {
+func test_state_dynssz(dynssz *ssz.DynSsz, in []byte, iterations int) ([]time.Duration, [][32]byte, error) {
 	unmarshalTime := time.Duration(0)
 	marshalTime := time.Duration(0)
+	hashTime := time.Duration(0)
 
 	start := time.Now()
 	for i := 0; i < iterations; i++ {
@@ -236,7 +264,7 @@ func test_state_dynssz(dynssz *ssz.DynSsz, in []byte, iterations int) (time.Dura
 
 		err := dynssz.UnmarshalSSZ(t, in)
 		if err != nil {
-			return 0, 0, nil, fmt.Errorf("unmarshal error: %v", err)
+			return nil, nil, fmt.Errorf("unmarshal error: %v", err)
 		}
 	}
 	unmarshalTime = time.Since(start)
@@ -248,21 +276,26 @@ func test_state_dynssz(dynssz *ssz.DynSsz, in []byte, iterations int) (time.Dura
 	for i := 0; i < iterations; i++ {
 		_, err := dynssz.MarshalSSZ(t)
 		if err != nil {
-			return 0, 0, nil, fmt.Errorf("marshal error: %v", err)
+			return nil, nil, fmt.Errorf("marshal error: %v", err)
 		}
 	}
 	marshalTime = time.Since(start)
 
 	out, _ := dynssz.MarshalSSZ(t)
 	if !bytes.Equal(in, out) {
-		return 0, 0, nil, fmt.Errorf("SSZ mismatch after re-marshalling")
+		return nil, nil, fmt.Errorf("SSZ mismatch after re-marshalling")
 	}
 
-	root1, _ := dynssz.HashTreeRoot(t)
-	//fmt.Printf("  dynssz tree root: 0x%x\n", root1)
+	start = time.Now()
+	var hashRoot [32]byte
+	for i := 0; i < iterations; i++ {
+		root, err := dynssz.HashTreeRoot(t)
+		if err != nil {
+			return nil, nil, fmt.Errorf("hashroot error: %v", err)
+		}
+		hashRoot = root
+	}
+	hashTime = time.Since(start)
 
-	root2, _ := t.HashTreeRoot()
-	//fmt.Printf("  fastssz tree root: 0x%x\n", root2)
-
-	return unmarshalTime, marshalTime, [][32]byte{root1, root2}, nil
+	return []time.Duration{unmarshalTime, marshalTime, hashTime}, [][32]byte{hashRoot}, nil
 }
