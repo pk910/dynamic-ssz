@@ -10,8 +10,6 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
-
-	fastssz "github.com/ferranbt/fastssz"
 )
 
 type DynSsz struct {
@@ -131,9 +129,9 @@ func (d *DynSsz) HashTreeRoot(source any) ([32]byte, error) {
 	sourceType := reflect.TypeOf(source)
 	sourceValue := reflect.ValueOf(source)
 
-	hh := fastssz.DefaultHasherPool.Get()
+	hh := DefaultHasherPool.Get()
 	defer func() {
-		fastssz.DefaultHasherPool.Put(hh)
+		DefaultHasherPool.Put(hh)
 	}()
 
 	err := d.buildRootFromType(sourceType, sourceValue, hh, nil, nil, 0)

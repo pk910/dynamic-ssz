@@ -7,11 +7,9 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
-
-	fastssz "github.com/ferranbt/fastssz"
 )
 
-func (d *DynSsz) buildRootFromType(sourceType reflect.Type, sourceValue reflect.Value, hh fastssz.HashWalker, sizeHints []sszSizeHint, maxSizeHints []sszMaxSizeHint, idt int) error {
+func (d *DynSsz) buildRootFromType(sourceType reflect.Type, sourceValue reflect.Value, hh *Hasher, sizeHints []sszSizeHint, maxSizeHints []sszMaxSizeHint, idt int) error {
 	//hashIndex := hh.Index()
 
 	if sourceType.Kind() == reflect.Ptr {
@@ -73,13 +71,13 @@ func (d *DynSsz) buildRootFromType(sourceType reflect.Type, sourceValue reflect.
 					return err
 				}
 			case reflect.Array:
-				err := d.buildRootFromArray(sourceType, sourceValue, hh, sizeHints, maxSizeHints, idt)
+				err := d.buildRootFromArray(sourceType, sourceValue, hh, maxSizeHints, idt)
 				if err != nil {
 					return err
 				}
 
 			case reflect.Slice:
-				err := d.buildRootFromSlice(sourceType, sourceValue, hh, sizeHints, maxSizeHints, idt)
+				err := d.buildRootFromSlice(sourceType, sourceValue, hh, maxSizeHints, idt)
 				if err != nil {
 					return err
 				}
@@ -103,7 +101,7 @@ func (d *DynSsz) buildRootFromType(sourceType reflect.Type, sourceValue reflect.
 	return nil
 }
 
-func (d *DynSsz) buildRootFromStruct(sourceType reflect.Type, sourceValue reflect.Value, hh fastssz.HashWalker, idt int) error {
+func (d *DynSsz) buildRootFromStruct(sourceType reflect.Type, sourceValue reflect.Value, hh *Hasher, idt int) error {
 	hashIndex := hh.Index()
 
 	if sourceType.Kind() == reflect.Ptr {
@@ -143,7 +141,7 @@ func (d *DynSsz) buildRootFromStruct(sourceType reflect.Type, sourceValue reflec
 	return nil
 }
 
-func (d *DynSsz) buildRootFromArray(sourceType reflect.Type, sourceValue reflect.Value, hh fastssz.HashWalker, sizeHints []sszSizeHint, maxSizeHints []sszMaxSizeHint, idt int) error {
+func (d *DynSsz) buildRootFromArray(sourceType reflect.Type, sourceValue reflect.Value, hh *Hasher, maxSizeHints []sszMaxSizeHint, idt int) error {
 	fieldType := sourceType.Elem()
 	fieldIsPtr := fieldType.Kind() == reflect.Ptr
 	if fieldIsPtr {
@@ -155,10 +153,10 @@ func (d *DynSsz) buildRootFromArray(sourceType reflect.Type, sourceValue reflect
 		return nil
 	}
 
-	return d.buildRootFromSlice(sourceType, sourceValue, hh, sizeHints, maxSizeHints, idt)
+	return d.buildRootFromSlice(sourceType, sourceValue, hh, maxSizeHints, idt)
 }
 
-func (d *DynSsz) buildRootFromSlice(sourceType reflect.Type, sourceValue reflect.Value, hh fastssz.HashWalker, sizeHints []sszSizeHint, maxSizeHints []sszMaxSizeHint, idt int) error {
+func (d *DynSsz) buildRootFromSlice(sourceType reflect.Type, sourceValue reflect.Value, hh *Hasher, maxSizeHints []sszMaxSizeHint, idt int) error {
 	fieldType := sourceType.Elem()
 	fieldIsPtr := fieldType.Kind() == reflect.Ptr
 	if fieldIsPtr {
@@ -195,7 +193,7 @@ func (d *DynSsz) buildRootFromSlice(sourceType reflect.Type, sourceValue reflect
 			}
 
 		} else {
-			fmt.Printf("non-byte array in slice: %v\n", itemType)
+			return fmt.Errorf("non-byte array in slice: %v\n", itemType)
 		}
 	case reflect.Slice:
 		itemType := fieldType.Elem()
@@ -210,7 +208,7 @@ func (d *DynSsz) buildRootFromSlice(sourceType reflect.Type, sourceValue reflect
 			}
 
 		} else {
-			fmt.Printf("non-byte slice in slice: %v\n", itemType)
+			return fmt.Errorf("non-byte slice in slice: %v\n", itemType)
 		}
 	case reflect.Uint8:
 		hh.Append(sourceValue.Bytes())
@@ -231,7 +229,7 @@ func (d *DynSsz) buildRootFromSlice(sourceType reflect.Type, sourceValue reflect
 	if len(maxSizeHints) > 0 {
 		var limit uint64
 		if itemSize > 0 {
-			limit = fastssz.CalculateLimit(maxSizeHints[0].size, uint64(sliceLen), uint64(itemSize))
+			limit = calculateLimit(maxSizeHints[0].size, uint64(sliceLen), uint64(itemSize))
 		} else {
 			limit = maxSizeHints[0].size
 		}

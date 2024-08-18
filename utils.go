@@ -111,3 +111,14 @@ func readOffset(buf []byte) uint64 {
 func divideInt(a, b int) (int, bool) {
 	return a / b, a%b == 0
 }
+
+func calculateLimit(maxCapacity, numItems, size uint64) uint64 {
+	limit := (maxCapacity*size + 31) / 32
+	if limit != 0 {
+		return limit
+	}
+	if numItems == 0 {
+		return 1
+	}
+	return numItems
+}
