@@ -34,8 +34,7 @@ func (d *DynSsz) buildRootFromType(sourceType reflect.Type, sourceValue reflect.
 	//fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v/%v)\t index: %v\n", strings.Repeat(" ", idt), sourceType.Name(), sourceType.Kind(), useFastSsz, fastsszCompat.isHashRoot, fastsszCompat.hasDynamicSpecSizes, fastsszCompat.hasDynamicSpecMax, hashIndex)
 
 	if useFastSsz {
-		hasher, ok := sourceValue.Addr().Interface().(fastsszHashRoot)
-		if ok {
+		if hasher, ok := sourceValue.Addr().Interface().(fastsszHashRoot); ok {
 			//fmt.Printf("%stype: %s\t index: %v\t fastssz\n", strings.Repeat(" ", idt), sourceType.Name(), hashIndex)
 			hashBytes, err := hasher.HashTreeRoot()
 			if err != nil {
@@ -71,13 +70,13 @@ func (d *DynSsz) buildRootFromType(sourceType reflect.Type, sourceValue reflect.
 					return err
 				}
 			case reflect.Array:
-				err := d.buildRootFromArray(sourceType, sourceValue, hh, maxSizeHints, idt)
+				err := d.buildRootFromSlice(sourceType, sourceValue, hh, maxSizeHints, true, idt)
 				if err != nil {
 					return err
 				}
 
 			case reflect.Slice:
-				err := d.buildRootFromSlice(sourceType, sourceValue, hh, maxSizeHints, idt)
+				err := d.buildRootFromSlice(sourceType, sourceValue, hh, maxSizeHints, false, idt)
 				if err != nil {
 					return err
 				}
@@ -141,22 +140,7 @@ func (d *DynSsz) buildRootFromStruct(sourceType reflect.Type, sourceValue reflec
 	return nil
 }
 
-func (d *DynSsz) buildRootFromArray(sourceType reflect.Type, sourceValue reflect.Value, hh *Hasher, maxSizeHints []sszMaxSizeHint, idt int) error {
-	fieldType := sourceType.Elem()
-	fieldIsPtr := fieldType.Kind() == reflect.Ptr
-	if fieldIsPtr {
-		fieldType = fieldType.Elem()
-	}
-
-	if fieldType == byteType {
-		hh.PutBytes(sourceValue.Bytes())
-		return nil
-	}
-
-	return d.buildRootFromSlice(sourceType, sourceValue, hh, maxSizeHints, idt)
-}
-
-func (d *DynSsz) buildRootFromSlice(sourceType reflect.Type, sourceValue reflect.Value, hh *Hasher, maxSizeHints []sszMaxSizeHint, idt int) error {
+func (d *DynSsz) buildRootFromSlice(sourceType reflect.Type, sourceValue reflect.Value, hh *Hasher, maxSizeHints []sszMaxSizeHint, isArray bool, idt int) error {
 	fieldType := sourceType.Elem()
 	fieldIsPtr := fieldType.Kind() == reflect.Ptr
 	if fieldIsPtr {
@@ -180,7 +164,7 @@ func (d *DynSsz) buildRootFromSlice(sourceType reflect.Type, sourceValue reflect
 				return err
 			}
 		}
-	case reflect.Array:
+	case reflect.Array, reflect.Slice:
 		itemType := fieldType.Elem()
 		if itemType == byteType {
 			for i := 0; i < sliceLen; i++ {
@@ -193,24 +177,14 @@ func (d *DynSsz) buildRootFromSlice(sourceType reflect.Type, sourceValue reflect
 			}
 
 		} else {
-			return fmt.Errorf("non-byte array in slice: %v\n", itemType)
-		}
-	case reflect.Slice:
-		itemType := fieldType.Elem()
-		if itemType == byteType {
-			for i := 0; i < sliceLen; i++ {
-				fieldValue := sourceValue.Index(i)
-				if fieldIsPtr {
-					fieldValue = fieldValue.Elem()
-				}
-
-				hh.PutBytes(fieldValue.Bytes())
-			}
-
-		} else {
-			return fmt.Errorf("non-byte slice in slice: %v\n", itemType)
+			return fmt.Errorf("non-byte slice/array in slice: %v", itemType.Name())
 		}
 	case reflect.Uint8:
+		if isArray {
+			hh.PutBytes(sourceValue.Bytes())
+			return nil
+		}
+
 		hh.Append(sourceValue.Bytes())
 		hh.FillUpTo32()
 		itemSize = 1

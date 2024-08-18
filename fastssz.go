@@ -86,6 +86,23 @@ func (d *DynSsz) getFastsszConvertCompatibility(targetType reflect.Type, sizeHin
 	return compatibility, nil
 }
 
+// getFastsszHashCompatibility evaluates the compatibility of a given type with fastssz's HashRoot interface, determining whether
+// the type can efficiently compute its hash tree root using fastssz's static code generation approach. This assessment includes
+// checking for the implementation of the HashRoot interface and the absence of non-default dynamically applied specification values
+// within the type hierarchy. For performance optimization, the results of this compatibility check are cached, allowing `dynssz`
+// to quickly reference these results in future operations without the need to re-evaluate the same types repeatedly.
+//
+// Parameters:
+// - targetType: The reflect.Type of the value being assessed for fastssz hash compatibility. This type, along with its nested
+//   or referenced types, is evaluated to ensure it aligns with fastssz's requirements for static hash tree root computation.
+//
+// Returns:
+// - A pointer to a fastsszHashCompatibility struct, which contains detailed information about the compatibility status, including
+//   whether the type implements the HashRoot interface and lacks dynamically applied non-default spec values that would affect
+//   the hash tree root computation.
+// - An error if the compatibility check encounters issues, such as reflection errors or the presence of unsupported type configurations
+//   that would prevent the use of fastssz for hash tree root computation.
+
 func (d *DynSsz) getFastsszHashCompatibility(targetType reflect.Type, sizeHints []sszSizeHint, maxSizeHints []sszMaxSizeHint) (*fastsszHashCompatibility, error) {
 	d.fastsszHashCompatMutex.Lock()
 	defer d.fastsszHashCompatMutex.Unlock()
