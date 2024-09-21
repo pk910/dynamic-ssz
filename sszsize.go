@@ -64,6 +64,18 @@ func (d *DynSsz) getSszSize(targetType reflect.Type, sizeHints []sszSizeHint) (i
 	case reflect.Struct:
 		for i := 0; i < targetType.NumField(); i++ {
 			field := targetType.Field(i)
+
+			if i == 0 {
+				stableMax, err := d.getSszStableMaxTag(&field)
+				if err != nil {
+					return 0, false, err
+				}
+
+				if stableMax > 0 {
+					isDynamicSize = true // stable container are always dynamic
+				}
+			}
+
 			size, hasSpecVal, _, err := d.getSszFieldSize(&field)
 			if err != nil {
 				return 0, false, err

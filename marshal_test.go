@@ -92,6 +92,18 @@ var marshalTestMatrix = []struct {
 	// stable containers
 	{
 		struct {
+			F1 uint8 `ssz-stable-max:"8"`
+			F2 slug_StaticStruct1
+			F3 *slug_StaticStruct1
+		}{
+			42,
+			slug_StaticStruct1{true, []uint8{1, 33, 7}},
+			nil,
+		},
+		fromHex("0xc02a01012107"),
+	},
+	{
+		struct {
 			F1 uint8 `ssz-stable-max:"16"`
 			F2 slug_StaticStruct1
 			F3 *slug_StaticStruct1
@@ -105,6 +117,16 @@ var marshalTestMatrix = []struct {
 			nil,
 		},
 		fromHex("0xd0002a01012107090000000105000000040804"),
+	},
+	{
+		struct {
+			F1 slug_StableStaticStruct1
+			F2 slug_StableStaticStruct1
+		}{
+			slug_StableStaticStruct1{&trueValue, &testUint8Arr, nil},
+			slug_StableStaticStruct1{nil, &testUint8Arr, &testUint16},
+		},
+		fromHex("0x080000000e000000c0000101020360000102033713"),
 	},
 }
 
