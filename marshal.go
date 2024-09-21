@@ -218,7 +218,7 @@ func (d *DynSsz) marshalStruct(sourceType reflect.Type, sourceValue reflect.Valu
 }
 
 // marshalStableStruct encodes Go struct values that are stable containers into SSZ-encoded data. This function is specifically
-// designed for structs that are stable containers, as defined by EIP-7688, and handles the encoding of each field with
+// designed for structs that are stable containers, as defined by EIP-7495, and handles the encoding of each field with
 // the appropriate offsets and sizes. It ensures that the encoded data accurately reflects the structure and content of the
 // original struct, adhering to the specifications for stable containers.
 //
@@ -227,7 +227,7 @@ func (d *DynSsz) marshalStruct(sourceType reflect.Type, sourceValue reflect.Valu
 //   process of the stable container.
 // - sourceValue: The reflect.Value holding the struct data to be encoded. marshalStableStruct iterates over each field
 //   of the struct, using sourceValue to extract the data for encoding.
-// - stableMax: The maximum size of the stable container, as defined by EIP-7688. This size information is crucial for
+// - stableMax: The maximum size of the stable container, as defined by EIP-7495. This size information is crucial for
 //   accurately encoding the struct fields within the stable container.
 // - buf: A byte slice that acts as the initial buffer for the encoded data. As the function processes each field, it appends
 //   the encoded bytes to this buffer, dynamically expanding it as needed to accommodate the encoded data.
@@ -241,7 +241,7 @@ func (d *DynSsz) marshalStruct(sourceType reflect.Type, sourceValue reflect.Valu
 //   sourceValue's data and the requirements for SSZ encoding.
 //
 // marshalStableStruct is tailored for the encoding of stable containers, ensuring that the struct fields are encoded
-// accurately and efficiently within the specified size constraints. By adhering to the EIP-7688 specifications, this
+// accurately and efficiently within the specified size constraints. By adhering to the EIP-7495 specifications, this
 // function guarantees that the encoded data is compliant with the requirements for stable containers, facilitating
 // seamless data serialization and storage.
 

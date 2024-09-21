@@ -251,7 +251,7 @@ func (d *DynSsz) unmarshalStruct(targetType reflect.Type, targetValue reflect.Va
 	return offset, nil
 }
 
-// unmarshalStableStruct decodes SSZ-encoded data into a Go struct that is a stable container (EIP-7688).
+// unmarshalStableStruct decodes SSZ-encoded data into a Go struct that is a stable container (EIP-7495).
 // This function is specifically designed to handle structs that have a stable maximum size, ensuring that
 // only active fields are decoded and inactive fields are skipped.
 //
