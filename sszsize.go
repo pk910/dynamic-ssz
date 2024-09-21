@@ -227,8 +227,25 @@ func (d *DynSsz) getSszValueSize(targetType reflect.Type, targetValue reflect.Va
 
 		switch targetType.Kind() {
 		case reflect.Struct:
+			stableMax := uint64(0)
+
 			for i := 0; i < targetType.NumField(); i++ {
 				field := targetType.Field(i)
+
+				if i == 0 {
+					stableMax, err = d.getSszStableMaxTag(&field)
+					if err != nil {
+						return 0, err
+					}
+
+					if stableMax > 0 {
+						staticSize += int((stableMax + 7) / 8)
+					}
+				}
+				if stableMax > 0 && field.Type.Kind() == reflect.Pointer && targetValue.Field(i).IsNil() {
+					continue // inactive field
+				}
+
 				fieldValue := targetValue.Field(i)
 
 				fieldTypeSize, _, fieldSizeHints, err := d.getSszFieldSize(&field)

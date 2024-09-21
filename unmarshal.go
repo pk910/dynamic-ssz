@@ -150,7 +150,23 @@ func (d *DynSsz) unmarshalStruct(targetType reflect.Type, targetValue reflect.Va
 	dynamicSizeHints := [][]sszSizeHint{}
 	sszSize := len(ssz)
 
-	for i := 0; i < targetType.NumField(); i++ {
+	fieldCount := targetType.NumField()
+	if fieldCount == 0 {
+		return 0, nil
+	}
+
+	field := targetType.Field(0)
+	stableMax, err := d.getSszStableMaxTag(&field)
+	if err != nil {
+		return 0, err
+	}
+
+	if stableMax > 0 {
+		// struct is a stable container (eip-7688)
+		return d.unmarshalStableStruct(targetType, targetValue, stableMax, ssz, idt)
+	}
+
+	for i := 0; i < fieldCount; i++ {
 		field := targetType.Field(i)
 
 		fieldSize, _, sizeHints, err := d.getSszFieldSize(&field)
@@ -184,6 +200,176 @@ func (d *DynSsz) unmarshalStruct(targetType reflect.Type, targetValue reflect.Va
 				return 0, fmt.Errorf("unexpected end of SSZ. dynamic field %v expects %v bytes (offset), got %v", field.Name, fieldSize, sszSize-offset)
 			}
 			fieldOffset := readOffset(ssz[offset : offset+fieldSize])
+
+			// fmt.Printf("%sfield %d:\t offset [%v:%v] %v\t %v \t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name, fieldOffset)
+
+			// store dynamic fields for later
+			dynamicFields = append(dynamicFields, &field)
+			dynamicOffsets = append(dynamicOffsets, int(fieldOffset))
+			dynamicSizeHints = append(dynamicSizeHints, sizeHints)
+		}
+		offset += fieldSize
+	}
+
+	// finished parsing the static size fields, process dynamic fields
+	dynamicFieldCount := len(dynamicFields)
+	for i, field := range dynamicFields {
+		var endOffset int
+		startOffset := dynamicOffsets[i]
+		if i < dynamicFieldCount-1 {
+			endOffset = dynamicOffsets[i+1]
+		} else {
+			endOffset = len(ssz)
+		}
+
+		// check offset integrity (not before previous field offset & not after range end)
+		if startOffset < offset || endOffset > sszSize {
+			return 0, ErrOffset
+		}
+
+		// fmt.Printf("%sfield %d:\t dynamic [%v:%v]\t %v\n", strings.Repeat(" ", idt+1), field.Index[0], startOffset, endOffset, field.Name)
+
+		var fieldSsz []byte
+		if endOffset > startOffset {
+			fieldSsz = ssz[startOffset:endOffset]
+		} else {
+			fieldSsz = []byte{}
+		}
+
+		fieldValue := targetValue.Field(field.Index[0])
+		consumedBytes, err := d.unmarshalType(field.Type, fieldValue, fieldSsz, dynamicSizeHints[i], idt+2)
+		if err != nil {
+			return 0, fmt.Errorf("failed decoding field %v: %v", field.Name, err)
+		}
+		if consumedBytes != endOffset-startOffset {
+			return 0, fmt.Errorf("struct field did not consume expected ssz range (consumed: %v, expected: %v)", consumedBytes, endOffset-startOffset)
+		}
+
+		offset += consumedBytes
+	}
+
+	return offset, nil
+}
+
+// unmarshalStableStruct decodes SSZ-encoded data into a Go struct that is a stable container (EIP-7688).
+// This function is specifically designed to handle structs that have a stable maximum size, ensuring that
+// only active fields are decoded and inactive fields are skipped.
+//
+// Parameters:
+//   - targetType: The reflect.Type of the struct to be decoded, providing the necessary type information for decoding.
+//   - targetValue: The reflect.Value where the decoded data is stored. This function prepares each struct field for decoding by unmarshalType,
+//     based on their calculated offsets within the SSZ data.
+//   - stableMax: The maximum stable size of the struct, indicating the number of active fields to be decoded.
+//   - ssz: A byte slice containing the SSZ-encoded data to be decoded.
+//   - idt: An indentation level, primarily used for debugging or logging to track recursion depth and field processing order.
+//
+// Returns:
+//   - The total number of bytes consumed from the SSZ data for decoding the struct. This information is crucial for the decoding of subsequent
+//     data structures or fields.
+//   - An error, if the decoding process encounters any issues, such as incorrect SSZ format or mismatches between the SSZ data and targetType.
+//
+// unmarshalStableStruct decodes a struct that is a stable container, ensuring that only active fields are decoded based on the active field bitmap.
+// Inactive fields are skipped during decoding, allowing for efficient and accurate decoding of SSZ data for structs with a fixed maximum size.
+func (d *DynSsz) unmarshalStableStruct(targetType reflect.Type, targetValue reflect.Value, stableMax uint64, ssz []byte, idt int) (int, error) {
+	offset := 0
+	dynamicFields := []*reflect.StructField{}
+	dynamicOffsets := []int{}
+	dynamicSizeHints := [][]sszSizeHint{}
+	sszSize := len(ssz)
+	fieldCount := targetType.NumField()
+
+	// read active fields
+	activeFieldsLen := int((stableMax + 7) / 8)
+	if offset+activeFieldsLen > sszSize {
+		return 0, fmt.Errorf("unexpected end of SSZ. active fields expects %v bytes, got %v", activeFieldsLen, sszSize-offset)
+	}
+
+	activeFields := ssz[offset : offset+activeFieldsLen]
+	isActiveField := func(i int) bool {
+		byteIdx := i / 8
+		bitIdx := 7 - uint(i%8)
+		return (activeFields[byteIdx] & (1 << bitIdx)) != 0
+	}
+
+	for i := fieldCount; i < int(stableMax); i++ {
+		if isActiveField(i) {
+			return 0, fmt.Errorf("unexpected active field at index %v", i)
+		}
+	}
+
+	offset += activeFieldsLen
+
+	nextStableIndex := uint64(0)
+	prevStableIndex := uint64(0)
+
+	for i := 0; i < fieldCount; i++ {
+		field := targetType.Field(i)
+
+		stableIndexTag, err := d.getSszStableIndexTag(&field)
+		if err != nil {
+			return 0, err
+		}
+
+		var stableIndex uint64
+		if stableIndexTag != nil {
+			stableIndex = *stableIndexTag
+
+			if stableIndex < nextStableIndex {
+				return 0, fmt.Errorf("invalid ssz-stable-index tag for '%v' field: %v", field.Name, stableIndex)
+			}
+		} else {
+			stableIndex = nextStableIndex
+		}
+
+		nextStableIndex = stableIndex + 1
+
+		if prevStableIndex > stableIndex {
+			// skipped some fields, ensure they are inactive
+			for j := prevStableIndex; j < stableIndex; j++ {
+				if isActiveField(int(j)) {
+					return 0, fmt.Errorf("unexpected data for unknown field at index %v", j)
+				}
+			}
+		}
+
+		prevStableIndex = nextStableIndex
+
+		if !isActiveField(int(stableIndex)) {
+			// field is inactive, skip
+			continue
+		}
+
+		fieldSize, _, sizeHints, err := d.getSszFieldSize(&field)
+		if err != nil {
+			return 0, err
+		}
+
+		if fieldSize > 0 {
+			// static size field
+			if offset+fieldSize > sszSize {
+				return 0, fmt.Errorf("unexpected end of SSZ. field %v expects %v bytes, got %v", field.Name, fieldSize, sszSize-offset)
+			}
+
+			// fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
+
+			fieldSsz := ssz[offset : offset+fieldSize]
+			fieldValue := targetValue.Field(i)
+			consumedBytes, err := d.unmarshalType(field.Type, fieldValue, fieldSsz, sizeHints, idt+2)
+			if err != nil {
+				return 0, fmt.Errorf("failed decoding field %v: %v", field.Name, err)
+			}
+			if consumedBytes != fieldSize {
+				return 0, fmt.Errorf("struct field did not consume expected ssz range (consumed: %v, expected: %v)", consumedBytes, fieldSize)
+			}
+
+		} else {
+			// dynamic size field
+			// get the 4 byte offset where the fields ssz range starts
+			fieldSize = 4
+			if offset+fieldSize > sszSize {
+				return 0, fmt.Errorf("unexpected end of SSZ. dynamic field %v expects %v bytes (offset), got %v", field.Name, fieldSize, sszSize-offset)
+			}
+			fieldOffset := readOffset(ssz[offset:offset+fieldSize]) + uint64(activeFieldsLen)
 
 			// fmt.Printf("%sfield %d:\t offset [%v:%v] %v\t %v \t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name, fieldOffset)
 

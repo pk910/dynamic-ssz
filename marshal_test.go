@@ -88,6 +88,24 @@ var marshalTestMatrix = []struct {
 		}{42, []*slug_StaticStruct1{nil, nil, nil, nil}, 43},
 		nil, // size too long error
 	},
+
+	// stable containers
+	{
+		struct {
+			F1 uint8 `ssz-stable-max:"16"`
+			F2 slug_StaticStruct1
+			F3 *slug_StaticStruct1
+			F4 *slug_DynStruct1
+			F5 *slug_DynStruct1
+		}{
+			42,
+			slug_StaticStruct1{true, []uint8{1, 33, 7}},
+			nil,
+			&slug_DynStruct1{true, []uint8{4, 8, 4}},
+			nil,
+		},
+		fromHex("0xd0002a01012107090000000105000000040804"),
+	},
 }
 
 func TestMarshal(t *testing.T) {

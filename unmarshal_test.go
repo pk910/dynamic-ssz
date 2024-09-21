@@ -83,6 +83,24 @@ var unmarshalTestMatrix = []struct {
 		}{42, []*slug_StaticStruct1{{false, []uint8{0, 0, 0}}, {true, []uint8{4, 8, 4}}, {false, []uint8{0, 0, 0}}}, 43},
 		fromHex("0x2a0000000001040804000000002b"),
 	},
+
+	// stable containers
+	{
+		struct {
+			F1 uint8 `ssz-stable-max:"16"`
+			F2 slug_StaticStruct1
+			F3 *slug_StaticStruct1
+			F4 *slug_DynStruct1
+			F5 *slug_DynStruct1
+		}{
+			42,
+			slug_StaticStruct1{true, []uint8{1, 33, 7}},
+			nil,
+			&slug_DynStruct1{true, []uint8{4, 8, 4}},
+			nil,
+		},
+		fromHex("0xd0002a01012107090000000105000000040804"),
+	},
 }
 
 func TestUnmarshal(t *testing.T) {

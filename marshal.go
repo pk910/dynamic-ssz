@@ -149,7 +149,23 @@ func (d *DynSsz) marshalStruct(sourceType reflect.Type, sourceValue reflect.Valu
 	dynamicOffsets := []int{}
 	dynamicSizeHints := [][]sszSizeHint{}
 
-	for i := 0; i < sourceType.NumField(); i++ {
+	fieldCount := sourceType.NumField()
+	if fieldCount == 0 {
+		return nil, nil
+	}
+
+	field := sourceType.Field(0)
+	stableMax, err := d.getSszStableMaxTag(&field)
+	if err != nil {
+		return nil, err
+	}
+
+	if stableMax > 0 {
+		// struct is a stable container (eip-7688)
+		return d.marshalStableStruct(sourceType, sourceValue, stableMax, buf, idt)
+	}
+
+	for i := 0; i < fieldCount; i++ {
 		field := sourceType.Field(i)
 
 		fieldSize, _, sizeHints, err := d.getSszFieldSize(&field)
@@ -197,6 +213,132 @@ func (d *DynSsz) marshalStruct(sourceType reflect.Type, sourceValue reflect.Valu
 		buf = newBuf
 		offset += len(buf) - bufLen
 	}
+
+	return buf, nil
+}
+
+// marshalStableStruct encodes Go struct values that are stable containers into SSZ-encoded data. This function is specifically
+// designed for structs that are stable containers, as defined by EIP-7688, and handles the encoding of each field with
+// the appropriate offsets and sizes. It ensures that the encoded data accurately reflects the structure and content of the
+// original struct, adhering to the specifications for stable containers.
+//
+// Parameters:
+// - sourceType: The reflect.Type of the struct to be encoded, providing the necessary type information for the encoding
+//   process of the stable container.
+// - sourceValue: The reflect.Value holding the struct data to be encoded. marshalStableStruct iterates over each field
+//   of the struct, using sourceValue to extract the data for encoding.
+// - stableMax: The maximum size of the stable container, as defined by EIP-7688. This size information is crucial for
+//   accurately encoding the struct fields within the stable container.
+// - buf: A byte slice that acts as the initial buffer for the encoded data. As the function processes each field, it appends
+//   the encoded bytes to this buffer, dynamically expanding it as needed to accommodate the encoded data.
+// - idt: An indentation level, primarily used for debugging or logging to help track the recursion depth and encoding
+//   sequence of the struct fields.
+//
+// Returns:
+// - A byte slice containing the SSZ-encoded data of the stable struct. This byte slice represents the serialized version
+//   of sourceValue, with all struct fields encoded according to the specifications for stable containers.
+// - An error if the encoding process encounters any issues, such as an unsupported field type or a mismatch between the
+//   sourceValue's data and the requirements for SSZ encoding.
+//
+// marshalStableStruct is tailored for the encoding of stable containers, ensuring that the struct fields are encoded
+// accurately and efficiently within the specified size constraints. By adhering to the EIP-7688 specifications, this
+// function guarantees that the encoded data is compliant with the requirements for stable containers, facilitating
+// seamless data serialization and storage.
+
+func (d *DynSsz) marshalStableStruct(sourceType reflect.Type, sourceValue reflect.Value, stableMax uint64, buf []byte, idt int) ([]byte, error) {
+	offset := 0
+	startLen := len(buf)
+	dynamicFields := []*reflect.StructField{}
+	dynamicOffsets := []int{}
+	dynamicSizeHints := [][]sszSizeHint{}
+
+	activeFieldsLen := int((stableMax + 7) / 8)
+	activeFields := make([]byte, activeFieldsLen)
+	buf = append(buf, activeFields...) // reserve space for active fields
+	offset += activeFieldsLen
+
+	setActiveField := func(index uint64) {
+		activeFields[index/8] |= 1 << (7 - (index % 8))
+	}
+
+	fieldCount := sourceType.NumField()
+	nextStableIndex := uint64(0)
+
+	for i := 0; i < fieldCount; i++ {
+		field := sourceType.Field(i)
+
+		stableIndexTag, err := d.getSszStableIndexTag(&field)
+		if err != nil {
+			return nil, err
+		}
+
+		var stableIndex uint64
+		if stableIndexTag != nil {
+			stableIndex = *stableIndexTag
+
+			if stableIndex < nextStableIndex {
+				return nil, fmt.Errorf("invalid ssz-stable-index tag for '%v' field: %v", field.Name, stableIndex)
+			}
+		} else {
+			stableIndex = nextStableIndex
+		}
+
+		nextStableIndex = stableIndex + 1
+
+		if field.Type.Kind() == reflect.Pointer && sourceValue.Field(i).IsNil() {
+			// inactive field
+			continue
+		}
+
+		setActiveField(stableIndex)
+
+		fieldSize, _, sizeHints, err := d.getSszFieldSize(&field)
+		if err != nil {
+			return nil, err
+		}
+
+		if fieldSize > 0 {
+			//fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
+
+			fieldValue := sourceValue.Field(i)
+			newBuf, err := d.marshalType(field.Type, fieldValue, buf, sizeHints, idt+2)
+			if err != nil {
+				return nil, fmt.Errorf("failed encoding field %v: %v", field.Name, err)
+			}
+			buf = newBuf
+
+		} else {
+			fieldSize = 4
+			buf = append(buf, 0, 0, 0, 0)
+			//fmt.Printf("%sfield %d:\t offset [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
+
+			dynamicFields = append(dynamicFields, &field)
+			dynamicOffsets = append(dynamicOffsets, offset)
+			dynamicSizeHints = append(dynamicSizeHints, sizeHints)
+		}
+		offset += fieldSize
+	}
+
+	for i, field := range dynamicFields {
+		// set field offset
+		fieldOffset := dynamicOffsets[i]
+		offsetBuf := make([]byte, 4)
+		binary.LittleEndian.PutUint32(offsetBuf, uint32(offset-activeFieldsLen))
+		copy(buf[fieldOffset+startLen:fieldOffset+startLen+4], offsetBuf)
+
+		//fmt.Printf("%sfield %d:\t dynamic [%v:]\t %v\n", strings.Repeat(" ", idt+1), field.Index[0], offset, field.Name)
+
+		fieldValue := sourceValue.Field(field.Index[0])
+		bufLen := len(buf)
+		newBuf, err := d.marshalType(field.Type, fieldValue, buf, dynamicSizeHints[i], idt+2)
+		if err != nil {
+			return nil, fmt.Errorf("failed decoding field %v: %v", field.Name, err)
+		}
+		buf = newBuf
+		offset += len(buf) - bufLen
+	}
+
+	copy(buf[startLen:], activeFields)
 
 	return buf, nil
 }
