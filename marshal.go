@@ -258,7 +258,7 @@ func (d *DynSsz) marshalStableStruct(sourceType reflect.Type, sourceValue reflec
 	offset += activeFieldsLen
 
 	setActiveField := func(index uint64) {
-		activeFields[index/8] |= 1 << (7 - (index % 8))
+		activeFields[index/8] |= 1 << (index % 8)
 	}
 
 	fieldCount := sourceType.NumField()

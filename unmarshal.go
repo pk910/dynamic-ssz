@@ -287,7 +287,7 @@ func (d *DynSsz) unmarshalStableStruct(targetType reflect.Type, targetValue refl
 	activeFields := ssz[offset : offset+activeFieldsLen]
 	isActiveField := func(i int) bool {
 		byteIdx := i / 8
-		bitIdx := 7 - uint(i%8)
+		bitIdx := uint(i % 8)
 		return (activeFields[byteIdx] & (1 << bitIdx)) != 0
 	}
 

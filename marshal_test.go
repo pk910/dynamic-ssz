@@ -100,7 +100,7 @@ var marshalTestMatrix = []struct {
 			slug_StaticStruct1{true, []uint8{1, 33, 7}},
 			nil,
 		},
-		fromHex("0xc02a01012107"),
+		fromHex("0x032a01012107"),
 	},
 	{
 		struct {
@@ -116,7 +116,7 @@ var marshalTestMatrix = []struct {
 			&slug_DynStruct1{true, []uint8{4, 8, 4}},
 			nil,
 		},
-		fromHex("0xd0002a01012107090000000105000000040804"),
+		fromHex("0x0b002a01012107090000000105000000040804"),
 	},
 	{
 		struct {
@@ -126,7 +126,7 @@ var marshalTestMatrix = []struct {
 			slug_StableStaticStruct1{&trueValue, &testUint8Arr, nil},
 			slug_StableStaticStruct1{nil, &testUint8Arr, &testUint16},
 		},
-		fromHex("0x080000000e000000c0000101020360000102033713"),
+		fromHex("0x080000000e00000003000101020306000102033713"),
 	},
 }
 
