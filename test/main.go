@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/attestantio/go-eth2-client/spec/deneb"
+	"github.com/attestantio/go-eth2-client/spec/electra"
 	ssz "github.com/pk910/dynamic-ssz"
 )
 
@@ -22,11 +23,12 @@ func main() {
 		"EPOCHS_PER_ETH1_VOTING_PERIOD":  uint64(4),
 		"MAX_BLOB_COMMITMENTS_PER_BLOCK": uint64(16),
 		"MAX_WITHDRAWALS_PER_PAYLOAD":    uint64(4),
+		"MAX_COMMITTEES_PER_SLOT":        uint64(4),
 	}
 
 	dynssz_only_mainnet := ssz.NewDynSsz(nil)
 	dynssz_only_minimal := ssz.NewDynSsz(minimalSpecs)
-	dynssz_hybrid_mainnet := ssz.NewDynSsz(nil)
+	//dynssz_hybrid_mainnet := ssz.NewDynSsz(nil)
 	dynssz_hybrid_minimal := ssz.NewDynSsz(minimalSpecs)
 
 	// this has a huge negative performance impact.
@@ -35,38 +37,40 @@ func main() {
 	dynssz_only_mainnet.NoFastSsz = true
 	dynssz_only_minimal.NoFastSsz = true
 
-	//dynssz_hybrid_minimal.Verbose = true
+	dynssz_hybrid_minimal.Verbose = true
 
 	// load example blocks & states
 	// these are example dumps from small kurtosis networks with mainnet & minimal presets
 	// both networks were started with ~380 validators and the snapshot was made around epoch 10-20
-	block_mainnet, _ := ioutil.ReadFile("../temp/block-mainnet.ssz")
-	state_mainnet, _ := ioutil.ReadFile("../temp/state-mainnet.ssz")
-	block_minimal, _ := ioutil.ReadFile("../temp/block-minimal.ssz")
-	state_minimal, _ := ioutil.ReadFile("../temp/state-minimal.ssz")
+	//block_mainnet, _ := ioutil.ReadFile("../temp/block-mainnet.ssz")
+	//state_mainnet, _ := ioutil.ReadFile("../temp/state-mainnet.ssz")
+	block_minimal, _ := ioutil.ReadFile("../temp/block-157-9738ef50df03b2218cd1f58741eb75787f435305a97c5f3d1cf8ea400aed2e87-minimal.ssz")
+	//state_minimal, _ := ioutil.ReadFile("../temp/state-minimal.ssz")
 
 	var dur []time.Duration
 	var hash [][32]byte
 	var err error
-	iterations := 1000
+	iterations := 1
 
-	fmt.Printf("## mainnet preset / BeaconBlock decode + encode + hash (%d times)\n", iterations)
-	dur, hash, err = test_block_fastssz(block_mainnet, iterations)
-	print_test_result("fastssz only", dur, hash, err)
-	dur, hash, err = test_block_dynssz(dynssz_only_mainnet, block_mainnet, iterations)
-	print_test_result("dynssz only", dur, hash, err)
-	dur, hash, err = test_block_dynssz(dynssz_hybrid_mainnet, block_mainnet, iterations)
-	print_test_result("dynssz + fastssz", dur, hash, err)
-	fmt.Printf("\n")
+	/*
+		fmt.Printf("## mainnet preset / BeaconBlock decode + encode + hash (%d times)\n", iterations)
+		dur, hash, err = test_block_fastssz(block_mainnet, iterations)
+		print_test_result("fastssz only", dur, hash, err)
+		dur, hash, err = test_block_dynssz(dynssz_only_mainnet, block_mainnet, iterations)
+		print_test_result("dynssz only", dur, hash, err)
+		dur, hash, err = test_block_dynssz(dynssz_hybrid_mainnet, block_mainnet, iterations)
+		print_test_result("dynssz + fastssz", dur, hash, err)
+		fmt.Printf("\n")
 
-	fmt.Printf("## mainnet preset / BeaconState decode + encode + hash (%d times)\n", iterations)
-	dur, hash, err = test_state_fastssz(state_mainnet, iterations)
-	print_test_result("fastssz only", dur, hash, err)
-	dur, hash, err = test_state_dynssz(dynssz_only_mainnet, state_mainnet, iterations)
-	print_test_result("dynssz only", dur, hash, err)
-	dur, hash, err = test_state_dynssz(dynssz_hybrid_mainnet, state_mainnet, iterations)
-	print_test_result("dynssz + fastssz", dur, hash, err)
-	fmt.Printf("\n")
+		fmt.Printf("## mainnet preset / BeaconState decode + encode + hash (%d times)\n", iterations)
+		dur, hash, err = test_state_fastssz(state_mainnet, iterations)
+		print_test_result("fastssz only", dur, hash, err)
+		dur, hash, err = test_state_dynssz(dynssz_only_mainnet, state_mainnet, iterations)
+		print_test_result("dynssz only", dur, hash, err)
+		dur, hash, err = test_state_dynssz(dynssz_hybrid_mainnet, state_mainnet, iterations)
+		print_test_result("dynssz + fastssz", dur, hash, err)
+		fmt.Printf("\n")
+	*/
 
 	fmt.Printf("## minimal preset / BeaconBlock decode + encode + hash (%d times)\n", iterations)
 	dur, hash, err = test_block_fastssz(block_minimal, iterations)
@@ -77,14 +81,16 @@ func main() {
 	print_test_result("dynssz + fastssz", dur, hash, err)
 	fmt.Printf("\n")
 
-	fmt.Printf("## minimal preset / BeaconState decode + encode + hash (%d times)\n", iterations)
-	dur, hash, err = test_state_fastssz(state_minimal, iterations)
-	print_test_result("fastssz only", dur, hash, err)
-	dur, hash, err = test_state_dynssz(dynssz_only_minimal, state_minimal, iterations)
-	print_test_result("dynssz only", dur, hash, err)
-	dur, hash, err = test_state_dynssz(dynssz_hybrid_minimal, state_minimal, iterations)
-	print_test_result("dynssz + fastssz", dur, hash, err)
-	fmt.Printf("\n")
+	/*
+		fmt.Printf("## minimal preset / BeaconState decode + encode + hash (%d times)\n", iterations)
+		dur, hash, err = test_state_fastssz(state_minimal, iterations)
+		print_test_result("fastssz only", dur, hash, err)
+		dur, hash, err = test_state_dynssz(dynssz_only_minimal, state_minimal, iterations)
+		print_test_result("dynssz only", dur, hash, err)
+		dur, hash, err = test_state_dynssz(dynssz_hybrid_minimal, state_minimal, iterations)
+		print_test_result("dynssz + fastssz", dur, hash, err)
+		fmt.Printf("\n")
+	*/
 
 }
 
@@ -116,7 +122,7 @@ func test_block_fastssz(in []byte, iterations int) ([]time.Duration, [][32]byte,
 
 	start := time.Now()
 	for i := 0; i < iterations; i++ {
-		t := new(deneb.SignedBeaconBlock)
+		t := new(electra.SignedBeaconBlock)
 		err := t.UnmarshalSSZ(in)
 		if err != nil {
 			return nil, nil, fmt.Errorf("unmarshal error: %v", err)
@@ -124,7 +130,7 @@ func test_block_fastssz(in []byte, iterations int) ([]time.Duration, [][32]byte,
 	}
 	unmarshalTime = time.Since(start)
 
-	t := new(deneb.SignedBeaconBlock)
+	t := new(electra.SignedBeaconBlock)
 	t.UnmarshalSSZ(in)
 
 	start = time.Now()
@@ -211,7 +217,7 @@ func test_block_dynssz(dynssz *ssz.DynSsz, in []byte, iterations int) ([]time.Du
 
 	start := time.Now()
 	for i := 0; i < iterations; i++ {
-		t := new(deneb.SignedBeaconBlock)
+		t := new(electra.SignedBeaconBlock)
 		err := dynssz.UnmarshalSSZ(t, in)
 		if err != nil {
 			return nil, nil, fmt.Errorf("unmarshal error: %v", err)
@@ -219,7 +225,7 @@ func test_block_dynssz(dynssz *ssz.DynSsz, in []byte, iterations int) ([]time.Du
 	}
 	unmarshalTime = time.Since(start)
 
-	t := new(deneb.SignedBeaconBlock)
+	t := new(electra.SignedBeaconBlock)
 	dynssz.UnmarshalSSZ(t, in)
 
 	start = time.Now()
