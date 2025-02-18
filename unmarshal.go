@@ -53,15 +53,15 @@ func (d *DynSsz) unmarshalType(targetType reflect.Type, targetValue reflect.Valu
 	// use fastssz to unmarshal structs if:
 	// - struct implements fastssz Unmarshaller interface
 	// - this structure or any child structure does not use spec specific field sizes
-	fastsszCompat, err := d.getFastsszCompatibility(targetType, sizeHints)
+	fastsszCompat, err := d.getFastsszConvertCompatibility(targetType, sizeHints)
 	if err != nil {
 		return 0, fmt.Errorf("failed checking fastssz compatibility: %v", err)
 	}
 
-	useFastSsz := !d.NoFastSsz && fastsszCompat.isUnmarshaler && !fastsszCompat.hasDynamicSpecValues
+	useFastSsz := !d.NoFastSsz && fastsszCompat.isUnmarshaler && !fastsszCompat.hasDynamicSpecSizes
 
 	if d.Verbose {
-		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), targetType.Name(), targetType.Kind(), useFastSsz, fastsszCompat.isUnmarshaler, fastsszCompat.hasDynamicSpecValues)
+		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), targetType.Name(), targetType.Kind(), useFastSsz, fastsszCompat.isUnmarshaler, fastsszCompat.hasDynamicSpecSizes)
 	}
 
 	if useFastSsz {

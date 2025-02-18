@@ -13,14 +13,18 @@ import (
 )
 
 type DynSsz struct {
-	fastsszCompatMutex sync.Mutex
-	fastsszCompatCache map[reflect.Type]*fastsszCompatibility
-	typeSizeMutex      sync.RWMutex
-	typeSizeCache      map[reflect.Type]*cachedSszSize
-	specValues         map[string]any
-	specValueCache     map[string]*cachedSpecValue
-	NoFastSsz          bool
-	Verbose            bool
+	fastsszConvertCompatMutex sync.Mutex
+	fastsszConvertCompatCache map[reflect.Type]*fastsszConvertCompatibility
+	fastsszHashCompatMutex    sync.Mutex
+	fastsszHashCompatCache    map[reflect.Type]*fastsszHashCompatibility
+	typeSizeMutex             sync.RWMutex
+	typeSizeCache             map[reflect.Type]*cachedSszSize
+	typeDynMaxCacheMutex      sync.RWMutex
+	typeDynMaxCache           map[reflect.Type]*bool
+	specValues                map[string]any
+	specValueCache            map[string]*cachedSpecValue
+	NoFastSsz                 bool
+	Verbose                   bool
 }
 
 // NewDynSsz creates a new instance of the DynSsz encoder/decoder.
@@ -32,10 +36,12 @@ func NewDynSsz(specs map[string]any) *DynSsz {
 		specs = map[string]any{}
 	}
 	return &DynSsz{
-		fastsszCompatCache: map[reflect.Type]*fastsszCompatibility{},
-		typeSizeCache:      map[reflect.Type]*cachedSszSize{},
-		specValues:         specs,
-		specValueCache:     map[string]*cachedSpecValue{},
+		fastsszConvertCompatCache: map[reflect.Type]*fastsszConvertCompatibility{},
+		fastsszHashCompatCache:    map[reflect.Type]*fastsszHashCompatibility{},
+		typeSizeCache:             map[reflect.Type]*cachedSszSize{},
+		typeDynMaxCache:           map[reflect.Type]*bool{},
+		specValues:                specs,
+		specValueCache:            map[string]*cachedSpecValue{},
 	}
 }
 
@@ -117,4 +123,21 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte) error {
 	}
 
 	return nil
+}
+
+func (d *DynSsz) HashTreeRoot(source any) ([32]byte, error) {
+	sourceType := reflect.TypeOf(source)
+	sourceValue := reflect.ValueOf(source)
+
+	hh := DefaultHasherPool.Get()
+	defer func() {
+		DefaultHasherPool.Put(hh)
+	}()
+
+	err := d.buildRootFromType(sourceType, sourceValue, hh, nil, nil, 0)
+	if err != nil {
+		return [32]byte{}, err
+	}
+
+	return hh.HashRoot()
 }

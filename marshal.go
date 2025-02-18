@@ -55,15 +55,15 @@ func (d *DynSsz) marshalType(sourceType reflect.Type, sourceValue reflect.Value,
 	// use fastssz to marshal if:
 	// - type implements fastssz Marshaler interface
 	// - this type or any child types does not use spec specific field sizes
-	fastsszCompat, err := d.getFastsszCompatibility(sourceType, sizeHints)
+	fastsszCompat, err := d.getFastsszConvertCompatibility(sourceType, sizeHints)
 	if err != nil {
 		return nil, fmt.Errorf("failed checking fastssz compatibility: %v", err)
 	}
 
-	useFastSsz := !d.NoFastSsz && fastsszCompat.isMarshaler && !fastsszCompat.hasDynamicSpecValues
+	useFastSsz := !d.NoFastSsz && fastsszCompat.isMarshaler && !fastsszCompat.hasDynamicSpecSizes
 
 	if d.Verbose {
-		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), sourceType.Name(), sourceType.Kind(), useFastSsz, fastsszCompat.isMarshaler, fastsszCompat.hasDynamicSpecValues)
+		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), sourceType.Name(), sourceType.Kind(), useFastSsz, fastsszCompat.isMarshaler, fastsszCompat.hasDynamicSpecSizes)
 	}
 
 	if useFastSsz {

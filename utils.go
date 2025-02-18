@@ -40,10 +40,7 @@ func unmarshallUint8(src []byte) uint8 {
 
 // unmarshalBool unmarshals a boolean from the src input
 func unmarshalBool(src []byte) bool {
-	if src[0] == 1 {
-		return true
-	}
-	return false
+	return src[0] == 1
 }
 
 // unmarshalTime unmarshals a time.Time from the src input
@@ -113,4 +110,15 @@ func readOffset(buf []byte) uint64 {
 // DivideInt divides the int fully
 func divideInt(a, b int) (int, bool) {
 	return a / b, a%b == 0
+}
+
+func calculateLimit(maxCapacity, numItems, size uint64) uint64 {
+	limit := (maxCapacity*size + 31) / 32
+	if limit != 0 {
+		return limit
+	}
+	if numItems == 0 {
+		return 1
+	}
+	return numItems
 }

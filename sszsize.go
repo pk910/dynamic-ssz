@@ -201,12 +201,12 @@ func (d *DynSsz) getSszValueSize(targetType reflect.Type, targetValue reflect.Va
 	// use fastssz to calculate size if:
 	// - struct implements fastssz Marshaler interface
 	// - this structure or any child structure does not use spec specific field sizes
-	fastsszCompat, err := d.getFastsszCompatibility(targetType, sizeHints)
+	fastsszCompat, err := d.getFastsszConvertCompatibility(targetType, sizeHints)
 	if err != nil {
 		return 0, fmt.Errorf("failed checking fastssz compatibility: %v", err)
 	}
 
-	useFastSsz := !d.NoFastSsz && fastsszCompat.isMarshaler && !fastsszCompat.hasDynamicSpecValues
+	useFastSsz := !d.NoFastSsz && fastsszCompat.isMarshaler && !fastsszCompat.hasDynamicSpecSizes
 
 	if useFastSsz {
 		marshaller, ok := targetValue.Addr().Interface().(fastsszMarshaler)
