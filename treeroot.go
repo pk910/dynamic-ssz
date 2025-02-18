@@ -10,7 +10,7 @@ import (
 )
 
 func (d *DynSsz) buildRootFromType(sourceType reflect.Type, sourceValue reflect.Value, hh *Hasher, sizeHints []sszSizeHint, maxSizeHints []sszMaxSizeHint, idt int) error {
-	//hashIndex := hh.Index()
+	hashIndex := hh.Index()
 
 	if sourceType.Kind() == reflect.Ptr {
 		sourceType = sourceType.Elem()
@@ -31,11 +31,12 @@ func (d *DynSsz) buildRootFromType(sourceType reflect.Type, sourceValue reflect.
 		useFastSsz = true
 	}
 
-	//fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v/%v)\t index: %v\n", strings.Repeat(" ", idt), sourceType.Name(), sourceType.Kind(), useFastSsz, fastsszCompat.isHashRoot, fastsszCompat.hasDynamicSpecSizes, fastsszCompat.hasDynamicSpecMax, hashIndex)
+	if d.Verbose {
+		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v/%v)\t index: %v\n", strings.Repeat(" ", idt), sourceType.Name(), sourceType.Kind(), useFastSsz, fastsszCompat.isHashRoot, fastsszCompat.hasDynamicSpecSizes, fastsszCompat.hasDynamicSpecMax, hashIndex)
+	}
 
 	if useFastSsz {
 		if hasher, ok := sourceValue.Addr().Interface().(fastsszHashRoot); ok {
-			//fmt.Printf("%stype: %s\t index: %v\t fastssz\n", strings.Repeat(" ", idt), sourceType.Name(), hashIndex)
 			hashBytes, err := hasher.HashTreeRoot()
 			if err != nil {
 				return fmt.Errorf("failed HashTreeRoot: %v", err)
@@ -46,8 +47,6 @@ func (d *DynSsz) buildRootFromType(sourceType reflect.Type, sourceValue reflect.
 			useFastSsz = false
 		}
 	}
-
-	//fmt.Printf("%stype: %s\t index: %v\n", strings.Repeat(" ", idt), sourceType.Name(), hashIndex)
 
 	if !useFastSsz {
 		if strings.Contains(sourceType.Name(), "Bitlist") {
@@ -97,6 +96,10 @@ func (d *DynSsz) buildRootFromType(sourceType reflect.Type, sourceValue reflect.
 		}
 	}
 
+	if d.Verbose {
+		fmt.Printf("%shash: 0x%x\n", strings.Repeat(" ", idt), hh.Hash())
+	}
+
 	return nil
 }
 
@@ -128,13 +131,15 @@ func (d *DynSsz) buildRootFromStruct(sourceType reflect.Type, sourceValue reflec
 			return err
 		}
 
+		if d.Verbose {
+			fmt.Printf("%vfield %v\n", strings.Repeat(" ", idt), field.Name)
+		}
+
 		err = d.buildRootFromType(fieldType, fieldValue, hh, sizeHints, maxSizeHints, idt+2)
 		if err != nil {
 			return err
 		}
 	}
-
-	//fmt.Printf("merkelize struct %v (%v)\n", sourceType.Name(), hashIndex)
 	hh.Merkleize(hashIndex)
 
 	return nil
@@ -168,14 +173,25 @@ func (d *DynSsz) buildRootFromSlice(sourceType reflect.Type, sourceValue reflect
 		itemType := fieldType.Elem()
 		if itemType == byteType {
 			for i := 0; i < sliceLen; i++ {
+				sliceSubIndex := hh.Index()
+
 				fieldValue := sourceValue.Index(i)
 				if fieldIsPtr {
 					fieldValue = fieldValue.Elem()
 				}
 
-				hh.PutBytes(fieldValue.Bytes())
-			}
+				fieldBytes := fieldValue.Bytes()
+				byteLen := uint64(len(fieldBytes))
 
+				// we might need to merkelize the child array too.
+				// check if we have size hints
+				if len(maxSizeHints) > 1 {
+					hh.AppendBytes32(fieldBytes)
+					hh.MerkleizeWithMixin(sliceSubIndex, byteLen, (maxSizeHints[1].size+31)/32)
+				} else {
+					hh.PutBytes(fieldBytes)
+				}
+			}
 		} else {
 			return fmt.Errorf("non-byte slice/array in slice: %v", itemType.Name())
 		}
