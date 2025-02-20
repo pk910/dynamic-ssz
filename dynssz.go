@@ -12,6 +12,8 @@ import (
 	"sync"
 )
 
+// DynSsz is a dynamic SSZ encoder/decoder that uses runtime reflection to handle dynamic field sizes.
+// The instance holds caches for referenced types, so it's recommended to reuse the same instance to speed up the encoding/decoding process.
 type DynSsz struct {
 	fastsszConvertCompatMutex sync.Mutex
 	fastsszConvertCompatCache map[reflect.Type]*fastsszConvertCompatibility
@@ -125,6 +127,10 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte) error {
 	return nil
 }
 
+// HashTreeRoot computes the hash tree root of the given source object.
+// This method uses the default hasher pool to get a new hasher instance,
+// builds the root from the source object, and returns the computed hash root.
+// It returns the computed hash root and an error if the process fails.
 func (d *DynSsz) HashTreeRoot(source any) ([32]byte, error) {
 	sourceType := reflect.TypeOf(source)
 	sourceValue := reflect.ValueOf(source)
