@@ -205,7 +205,7 @@ func (d *DynSsz) unmarshalStruct(targetType *TypeDescriptor, targetValue reflect
 			fieldSsz = []byte{}
 		}
 
-		fieldValue := targetValue.Field(field.Index)
+		fieldValue := targetValue.Field(int(field.Index))
 		consumedBytes, err := d.unmarshalType(field.Type, fieldValue, fieldSsz, idt+2)
 		if err != nil {
 			return 0, fmt.Errorf("failed decoding field %v: %v", field.Name, err)

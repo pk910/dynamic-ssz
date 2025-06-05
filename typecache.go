@@ -12,9 +12,9 @@ import (
 
 // TypeCache manages cached type descriptors
 type TypeCache struct {
-	mu          sync.RWMutex
-	descriptors map[reflect.Type]*TypeDescriptor
 	dynssz      *DynSsz
+	mutex       sync.RWMutex
+	descriptors map[reflect.Type]*TypeDescriptor
 }
 
 // TypeDescriptor represents a cached, optimized descriptor for a type's SSZ encoding/decoding
@@ -38,8 +38,8 @@ type TypeDescriptor struct {
 type FieldDescriptor struct {
 	Name      string
 	Offset    uintptr         // Unsafe offset within the struct
-	Index     int             // Index of the field in the struct
 	Type      *TypeDescriptor // Type descriptor
+	Index     int16           // Index of the field in the struct
 	Size      int32           // SSZ size (-1 if dynamic)
 	IsPtr     bool            // Whether field is a pointer
 	IsDynamic bool            // Whether field has dynamic size
@@ -48,8 +48,8 @@ type FieldDescriptor struct {
 // NewTypeCache creates a new type cache
 func NewTypeCache(dynssz *DynSsz) *TypeCache {
 	return &TypeCache{
-		descriptors: make(map[reflect.Type]*TypeDescriptor),
 		dynssz:      dynssz,
+		descriptors: make(map[reflect.Type]*TypeDescriptor),
 	}
 }
 
@@ -57,17 +57,17 @@ func NewTypeCache(dynssz *DynSsz) *TypeCache {
 func (tc *TypeCache) GetTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint) (*TypeDescriptor, error) {
 	// Check cache first (read lock)
 	if len(sizeHints) == 0 && len(maxSizeHints) == 0 {
-		tc.mu.RLock()
+		tc.mutex.RLock()
 		if desc, exists := tc.descriptors[t]; exists {
-			tc.mu.RUnlock()
+			tc.mutex.RUnlock()
 			return desc, nil
 		}
-		tc.mu.RUnlock()
+		tc.mutex.RUnlock()
 	}
 
 	// If not in cache, build and cache it (write lock)
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
+	tc.mutex.Lock()
+	defer tc.mutex.Unlock()
 
 	return tc.getTypeDescriptor(t, sizeHints, maxSizeHints)
 }
@@ -176,7 +176,7 @@ func (tc *TypeCache) buildStructDescriptor(desc *TypeDescriptor, t reflect.Type)
 		fieldDesc := &FieldDescriptor{
 			Name:   field.Name,
 			Offset: field.Offset,
-			Index:  i,
+			Index:  int16(i),
 			IsPtr:  field.Type.Kind() == reflect.Ptr,
 		}
 
@@ -316,8 +316,8 @@ func (tc *TypeCache) DumpTypeDescriptor(t reflect.Type) (string, error) {
 
 // DumpAllCachedTypes returns a JSON representation of all cached type descriptors
 func (tc *TypeCache) DumpAllCachedTypes() (string, error) {
-	tc.mu.RLock()
-	defer tc.mu.RUnlock()
+	tc.mutex.RLock()
+	defer tc.mutex.RUnlock()
 
 	typeMap := make(map[string]*TypeDescriptor)
 	idx := 0

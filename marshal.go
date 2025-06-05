@@ -171,7 +171,7 @@ func (d *DynSsz) marshalStruct(sourceType *TypeDescriptor, sourceValue reflect.V
 
 		//fmt.Printf("%sfield %d:\t dynamic [%v:]\t %v\n", strings.Repeat(" ", idt+1), field.Index[0], offset, field.Name)
 
-		fieldValue := sourceValue.Field(field.Index)
+		fieldValue := sourceValue.Field(int(field.Index))
 		bufLen := len(buf)
 		newBuf, err := d.marshalType(field.Type, fieldValue, buf, idt+2)
 		if err != nil {

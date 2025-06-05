@@ -21,8 +21,11 @@ type DynSsz struct {
 	Verbose        bool
 }
 
-func (d *DynSsz) GetTypeDescriptor(t reflect.Type) (*TypeDescriptor, error) {
-	return d.typeCache.GetTypeDescriptor(t, nil, nil)
+// GetTypeCache returns the type cache for the DynSsz instance.
+// The type cache is used to store the type descriptors for the types that are used in the encoding/decoding process.
+// It's recommended to reuse the same instance to speed up the encoding/decoding process.
+func (d *DynSsz) GetTypeCache() *TypeCache {
+	return d.typeCache
 }
 
 // NewDynSsz creates a new instance of the DynSsz encoder/decoder.
