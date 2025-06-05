@@ -36,32 +36,23 @@ import (
 // to navigate and decode nested structures, ensuring every part of the targetValue is correctly populated
 // with data from the SSZ input.
 
-func (d *DynSsz) unmarshalType(targetType reflect.Type, targetValue reflect.Value, ssz []byte, sizeHints []sszSizeHint, idt int) (int, error) {
+func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
 	consumedBytes := 0
 
-	if targetType.Kind() == reflect.Ptr {
+	if targetType.IsPtr {
 		// target is a pointer type, resolve type & value to actual value type
-		targetType = targetType.Elem()
 		if targetValue.IsNil() {
 			// create new instance of target type for null pointers
-			newValue := reflect.New(targetType)
+			newValue := reflect.New(targetType.Type.Elem())
 			targetValue.Set(newValue)
 		}
 		targetValue = targetValue.Elem()
 	}
 
-	// use fastssz to unmarshal structs if:
-	// - struct implements fastssz Unmarshaller interface
-	// - this structure or any child structure does not use spec specific field sizes
-	fastsszCompat, err := d.getFastsszConvertCompatibility(targetType, sizeHints)
-	if err != nil {
-		return 0, fmt.Errorf("failed checking fastssz compatibility: %v", err)
-	}
-
-	useFastSsz := !d.NoFastSsz && fastsszCompat.isUnmarshaler && !fastsszCompat.hasDynamicSpecSizes
+	useFastSsz := !d.NoFastSsz && targetType.IsFastSSZMarshaler && !targetType.HasDynamicSize
 
 	if d.Verbose {
-		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), targetType.Name(), targetType.Kind(), useFastSsz, fastsszCompat.isUnmarshaler, fastsszCompat.hasDynamicSpecSizes)
+		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), targetType.Type.Name(), targetType.Kind, useFastSsz, targetType.IsFastSSZMarshaler, targetType.HasDynamicSize)
 	}
 
 	if useFastSsz {
@@ -80,7 +71,7 @@ func (d *DynSsz) unmarshalType(targetType reflect.Type, targetValue reflect.Valu
 
 	if !useFastSsz {
 		// can't use fastssz, use dynamic unmarshaling
-		switch targetType.Kind() {
+		switch targetType.Kind {
 		case reflect.Struct:
 			consumed, err := d.unmarshalStruct(targetType, targetValue, ssz, idt)
 			if err != nil {
@@ -88,13 +79,13 @@ func (d *DynSsz) unmarshalType(targetType reflect.Type, targetValue reflect.Valu
 			}
 			consumedBytes = consumed
 		case reflect.Array:
-			consumed, err := d.unmarshalArray(targetType, targetValue, ssz, sizeHints, idt)
+			consumed, err := d.unmarshalArray(targetType, targetValue, ssz, idt)
 			if err != nil {
 				return 0, err
 			}
 			consumedBytes = consumed
 		case reflect.Slice:
-			consumed, err := d.unmarshalSlice(targetType, targetValue, ssz, sizeHints, idt)
+			consumed, err := d.unmarshalSlice(targetType, targetValue, ssz, idt)
 			if err != nil {
 				return 0, err
 			}
@@ -143,21 +134,16 @@ func (d *DynSsz) unmarshalType(targetType reflect.Type, targetValue reflect.Valu
 // The function's core responsibility is to navigate the struct's layout in the SSZ-encoded data, adjusting SSZ slices for each field and
 // invoking unmarshalType with these parameters. This strategy efficiently decouples structural navigation from type-specific decoding logic.
 
-func (d *DynSsz) unmarshalStruct(targetType reflect.Type, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
+func (d *DynSsz) unmarshalStruct(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
 	offset := 0
-	dynamicFields := []*reflect.StructField{}
+	dynamicFields := []*FieldDescriptor{}
 	dynamicOffsets := []int{}
-	dynamicSizeHints := [][]sszSizeHint{}
 	sszSize := len(ssz)
 
-	for i := 0; i < targetType.NumField(); i++ {
-		field := targetType.Field(i)
+	for i := 0; i < len(targetType.Fields); i++ {
+		field := targetType.Fields[i]
 
-		fieldSize, _, sizeHints, err := d.getSszFieldSize(&field)
-		if err != nil {
-			return 0, err
-		}
-
+		fieldSize := int(field.Size)
 		if fieldSize > 0 {
 			// static size field
 			if offset+fieldSize > sszSize {
@@ -168,7 +154,7 @@ func (d *DynSsz) unmarshalStruct(targetType reflect.Type, targetValue reflect.Va
 
 			fieldSsz := ssz[offset : offset+fieldSize]
 			fieldValue := targetValue.Field(i)
-			consumedBytes, err := d.unmarshalType(field.Type, fieldValue, fieldSsz, sizeHints, idt+2)
+			consumedBytes, err := d.unmarshalType(field.Type, fieldValue, fieldSsz, idt+2)
 			if err != nil {
 				return 0, fmt.Errorf("failed decoding field %v: %v", field.Name, err)
 			}
@@ -188,9 +174,8 @@ func (d *DynSsz) unmarshalStruct(targetType reflect.Type, targetValue reflect.Va
 			// fmt.Printf("%sfield %d:\t offset [%v:%v] %v\t %v \t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name, fieldOffset)
 
 			// store dynamic fields for later
-			dynamicFields = append(dynamicFields, &field)
+			dynamicFields = append(dynamicFields, field)
 			dynamicOffsets = append(dynamicOffsets, int(fieldOffset))
-			dynamicSizeHints = append(dynamicSizeHints, sizeHints)
 		}
 		offset += fieldSize
 	}
@@ -220,8 +205,8 @@ func (d *DynSsz) unmarshalStruct(targetType reflect.Type, targetValue reflect.Va
 			fieldSsz = []byte{}
 		}
 
-		fieldValue := targetValue.Field(field.Index[0])
-		consumedBytes, err := d.unmarshalType(field.Type, fieldValue, fieldSsz, dynamicSizeHints[i], idt+2)
+		fieldValue := targetValue.Field(field.Index)
+		consumedBytes, err := d.unmarshalType(field.Type, fieldValue, fieldSsz, idt+2)
 		if err != nil {
 			return 0, fmt.Errorf("failed decoding field %v: %v", field.Name, err)
 		}
@@ -257,22 +242,13 @@ func (d *DynSsz) unmarshalStruct(targetType reflect.Type, targetValue reflect.Va
 // invoking unmarshalType with these parameters for decoding. This division of tasks allows unmarshalArray to focus
 // on the structural navigation within the SSZ data, while unmarshalType applies the specific decoding logic for the type of each element.
 
-func (d *DynSsz) unmarshalArray(targetType reflect.Type, targetValue reflect.Value, ssz []byte, sizeHints []sszSizeHint, idt int) (int, error) {
+func (d *DynSsz) unmarshalArray(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
 	var consumedBytes int
 
-	childSizeHints := []sszSizeHint{}
-	if len(sizeHints) > 1 {
-		childSizeHints = sizeHints[1:]
-	}
+	fieldType := targetType.ElemDesc
 
-	fieldType := targetType.Elem()
-	fieldIsPtr := fieldType.Kind() == reflect.Ptr
-	if fieldIsPtr {
-		fieldType = fieldType.Elem()
-	}
-
-	arrLen := targetType.Len()
-	if fieldType == byteType {
+	arrLen := int(targetType.Len)
+	if fieldType.Type == byteType {
 		// shortcut for performance: use copy on []byte arrays
 		reflect.Copy(targetValue, reflect.ValueOf(ssz[0:arrLen]))
 		consumedBytes = arrLen
@@ -281,17 +257,17 @@ func (d *DynSsz) unmarshalArray(targetType reflect.Type, targetValue reflect.Val
 		itemSize := len(ssz) / arrLen
 		for i := 0; i < arrLen; i++ {
 			var itemVal reflect.Value
-			if fieldIsPtr {
+			if fieldType.IsPtr {
 				// fmt.Printf("new array item %v\n", fieldType.Name())
-				itemVal = reflect.New(fieldType).Elem()
-				targetValue.Index(i).Set(itemVal.Addr())
+				itemVal = reflect.New(fieldType.Type.Elem())
+				targetValue.Index(i).Set(itemVal.Elem().Addr())
 			} else {
 				itemVal = targetValue.Index(i)
 			}
 
 			itemSsz := ssz[offset : offset+itemSize]
 
-			consumed, err := d.unmarshalType(fieldType, itemVal, itemSsz, childSizeHints, idt+2)
+			consumed, err := d.unmarshalType(fieldType, itemVal, itemSsz, idt+2)
 			if err != nil {
 				return 0, err
 			}
@@ -332,46 +308,30 @@ func (d *DynSsz) unmarshalArray(targetType reflect.Type, targetValue reflect.Val
 // element, and invoking unmarshalType for the decoding. When faced with elements of dynamic size, it seamlessly transitions to
 // unmarshalDynamicSlice, ensuring all elements, regardless of their size variability, are accurately decoded.
 
-func (d *DynSsz) unmarshalSlice(targetType reflect.Type, targetValue reflect.Value, ssz []byte, sizeHints []sszSizeHint, idt int) (int, error) {
+func (d *DynSsz) unmarshalSlice(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
 	var consumedBytes int
 
-	childSizeHints := []sszSizeHint{}
-	if len(sizeHints) > 1 {
-		childSizeHints = sizeHints[1:]
-	}
-
-	fieldType := targetType.Elem()
-	fieldIsPtr := fieldType.Kind() == reflect.Ptr
-	if fieldIsPtr {
-		fieldType = fieldType.Elem()
-	}
-
+	fieldType := targetType.ElemDesc
 	sliceLen := 0
 	sszLen := len(ssz)
 
 	// check if slice has dynamic size items
-	size, _, err := d.getSszSize(fieldType, childSizeHints)
-	if err != nil {
-		return 0, err
+	if fieldType.Size < 0 {
+		return d.unmarshalDynamicSlice(targetType, targetValue, ssz, idt)
 	}
 
-	if size > 0 {
-		ok := false
-		sliceLen, ok = divideInt(sszLen, size)
-		if !ok {
-			return 0, fmt.Errorf("invalid slice length, expected multiple of %v, got %v", size, sszLen)
-		}
-	} else if len(ssz) > 0 {
-		// slice with dynamic size items
-		return d.unmarshalDynamicSlice(targetType, targetValue, ssz, childSizeHints, idt)
+	ok := false
+	sliceLen, ok = divideInt(sszLen, int(fieldType.Size))
+	if !ok {
+		return 0, fmt.Errorf("invalid slice length, expected multiple of %v, got %v", fieldType.Size, sszLen)
 	}
 
 	// slice with static size items
 	// fmt.Printf("new slice %v  %v\n", fieldType.Name(), sliceLen)
-	newValue := reflect.MakeSlice(targetType, sliceLen, sliceLen)
+	newValue := reflect.MakeSlice(targetType.Type, sliceLen, sliceLen)
 	targetValue.Set(newValue)
 
-	if fieldType == byteType {
+	if fieldType.Type == byteType {
 		// shortcut for performance: use copy on []byte arrays
 		reflect.Copy(newValue, reflect.ValueOf(ssz[0:sliceLen]))
 		consumedBytes = sliceLen
@@ -383,17 +343,17 @@ func (d *DynSsz) unmarshalSlice(targetType reflect.Type, targetValue reflect.Val
 			// decode slice items
 			for i := 0; i < sliceLen; i++ {
 				var itemVal reflect.Value
-				if fieldIsPtr {
+				if fieldType.IsPtr {
 					// fmt.Printf("new slice item %v\n", fieldType.Name())
-					itemVal = reflect.New(fieldType).Elem()
-					newValue.Index(i).Set(itemVal.Addr())
+					itemVal = reflect.New(fieldType.Type.Elem())
+					newValue.Index(i).Set(itemVal.Elem().Addr())
 				} else {
 					itemVal = newValue.Index(i)
 				}
 
 				itemSsz := ssz[offset : offset+itemSize]
 
-				consumed, err := d.unmarshalType(fieldType, itemVal, itemSsz, childSizeHints, idt+2)
+				consumed, err := d.unmarshalType(fieldType, itemVal, itemSsz, idt+2)
 				if err != nil {
 					return 0, err
 				}
@@ -438,7 +398,11 @@ func (d *DynSsz) unmarshalSlice(targetType reflect.Type, targetValue reflect.Val
 // within a dynamic slice. This method efficiently handles the complexity of variable-sized elements, ensuring the integrity and
 // intended structure of the decoded data are maintained.
 
-func (d *DynSsz) unmarshalDynamicSlice(targetType reflect.Type, targetValue reflect.Value, ssz []byte, sizeHints []sszSizeHint, idt int) (int, error) {
+func (d *DynSsz) unmarshalDynamicSlice(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
+	if len(ssz) == 0 {
+		return 0, nil
+	}
+
 	// derive number of items from first item offset
 	firstOffset := readOffset(ssz[0:4])
 	sliceLen := int(firstOffset / 4)
@@ -450,14 +414,10 @@ func (d *DynSsz) unmarshalDynamicSlice(targetType reflect.Type, targetValue refl
 		sliceOffsets[i] = int(readOffset(ssz[i*4 : (i+1)*4]))
 	}
 
-	fieldType := targetType.Elem()
-	fieldIsPtr := fieldType.Kind() == reflect.Ptr
-	if fieldIsPtr {
-		fieldType = fieldType.Elem()
-	}
+	fieldType := targetType.ElemDesc
 
 	// fmt.Printf("new dynamic slice %v  %v\n", fieldType.Name(), sliceLen)
-	newValue := reflect.MakeSlice(targetType, sliceLen, sliceLen)
+	newValue := reflect.MakeSlice(targetType.Type, sliceLen, sliceLen)
 	targetValue.Set(newValue)
 
 	offset := int(firstOffset)
@@ -466,10 +426,10 @@ func (d *DynSsz) unmarshalDynamicSlice(targetType reflect.Type, targetValue refl
 		// decode slice items
 		for i := 0; i < sliceLen; i++ {
 			var itemVal reflect.Value
-			if fieldIsPtr {
+			if fieldType.IsPtr {
 				// fmt.Printf("new slice item %v\n", fieldType.Name())
-				itemVal = reflect.New(fieldType).Elem()
-				newValue.Index(i).Set(itemVal.Addr())
+				itemVal = reflect.New(fieldType.Type.Elem())
+				newValue.Index(i).Set(itemVal.Elem().Addr())
 			} else {
 				itemVal = newValue.Index(i)
 			}
@@ -488,7 +448,7 @@ func (d *DynSsz) unmarshalDynamicSlice(targetType reflect.Type, targetValue refl
 
 			itemSsz := ssz[startOffset:endOffset]
 
-			consumed, err := d.unmarshalType(fieldType, itemVal, itemSsz, sizeHints, idt+2)
+			consumed, err := d.unmarshalType(fieldType, itemVal, itemSsz, idt+2)
 			if err != nil {
 				return 0, err
 			}

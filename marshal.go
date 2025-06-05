@@ -41,29 +41,19 @@ import (
 // data types by leveraging type-specific encoding logic for complex structures. The recursion in the encoding process
 // ensures that nested structures are fully and accurately encoded.
 
-func (d *DynSsz) marshalType(sourceType reflect.Type, sourceValue reflect.Value, buf []byte, sizeHints []sszSizeHint, idt int) ([]byte, error) {
-	if sourceType.Kind() == reflect.Ptr {
-		sourceType = sourceType.Elem()
-
+func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
+	if sourceType.IsPtr {
 		if sourceValue.IsNil() {
-			sourceValue = reflect.New(sourceType).Elem()
+			sourceValue = reflect.New(sourceType.Type.Elem()).Elem()
 		} else {
 			sourceValue = sourceValue.Elem()
 		}
 	}
 
-	// use fastssz to marshal if:
-	// - type implements fastssz Marshaler interface
-	// - this type or any child types does not use spec specific field sizes
-	fastsszCompat, err := d.getFastsszConvertCompatibility(sourceType, sizeHints)
-	if err != nil {
-		return nil, fmt.Errorf("failed checking fastssz compatibility: %v", err)
-	}
-
-	useFastSsz := !d.NoFastSsz && fastsszCompat.isMarshaler && !fastsszCompat.hasDynamicSpecSizes
+	useFastSsz := !d.NoFastSsz && sourceType.IsFastSSZMarshaler && !sourceType.HasDynamicSize
 
 	if d.Verbose {
-		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), sourceType.Name(), sourceType.Kind(), useFastSsz, fastsszCompat.isMarshaler, fastsszCompat.hasDynamicSpecSizes)
+		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, sourceType.IsFastSSZMarshaler, sourceType.HasDynamicSize)
 	}
 
 	if useFastSsz {
@@ -81,7 +71,7 @@ func (d *DynSsz) marshalType(sourceType reflect.Type, sourceValue reflect.Value,
 
 	if !useFastSsz {
 		// can't use fastssz, use dynamic marshaling
-		switch sourceType.Kind() {
+		switch sourceType.Kind {
 		case reflect.Struct:
 			newBuf, err := d.marshalStruct(sourceType, sourceValue, buf, idt)
 			if err != nil {
@@ -89,13 +79,13 @@ func (d *DynSsz) marshalType(sourceType reflect.Type, sourceValue reflect.Value,
 			}
 			buf = newBuf
 		case reflect.Array:
-			newBuf, err := d.marshalArray(sourceType, sourceValue, buf, sizeHints, idt)
+			newBuf, err := d.marshalArray(sourceType, sourceValue, buf, idt)
 			if err != nil {
 				return nil, err
 			}
 			buf = newBuf
 		case reflect.Slice:
-			newBuf, err := d.marshalSlice(sourceType, sourceValue, buf, sizeHints, idt)
+			newBuf, err := d.marshalSlice(sourceType, sourceValue, buf, idt)
 			if err != nil {
 				return nil, err
 			}
@@ -142,26 +132,20 @@ func (d *DynSsz) marshalType(sourceType reflect.Type, sourceValue reflect.Value,
 // over the encoding of each field, ensuring that the resulting SSZ data accurately reflects the structure and content
 // of the original Go struct.
 
-func (d *DynSsz) marshalStruct(sourceType reflect.Type, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
+func (d *DynSsz) marshalStruct(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
 	offset := 0
 	startLen := len(buf)
-	dynamicFields := []*reflect.StructField{}
+	dynamicFields := []*FieldDescriptor{}
 	dynamicOffsets := []int{}
-	dynamicSizeHints := [][]sszSizeHint{}
 
-	for i := 0; i < sourceType.NumField(); i++ {
-		field := sourceType.Field(i)
-
-		fieldSize, _, sizeHints, err := d.getSszFieldSize(&field)
-		if err != nil {
-			return nil, err
-		}
-
-		if fieldSize > 0 {
+	for i := 0; i < len(sourceType.Fields); i++ {
+		field := sourceType.Fields[i]
+		fieldSize := field.Size
+		if field.Size > 0 {
 			//fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
 
 			fieldValue := sourceValue.Field(i)
-			newBuf, err := d.marshalType(field.Type, fieldValue, buf, sizeHints, idt+2)
+			newBuf, err := d.marshalType(field.Type, fieldValue, buf, idt+2)
 			if err != nil {
 				return nil, fmt.Errorf("failed encoding field %v: %v", field.Name, err)
 			}
@@ -172,11 +156,10 @@ func (d *DynSsz) marshalStruct(sourceType reflect.Type, sourceValue reflect.Valu
 			buf = append(buf, 0, 0, 0, 0)
 			//fmt.Printf("%sfield %d:\t offset [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
 
-			dynamicFields = append(dynamicFields, &field)
+			dynamicFields = append(dynamicFields, field)
 			dynamicOffsets = append(dynamicOffsets, offset)
-			dynamicSizeHints = append(dynamicSizeHints, sizeHints)
 		}
-		offset += fieldSize
+		offset += int(fieldSize)
 	}
 
 	for i, field := range dynamicFields {
@@ -188,9 +171,9 @@ func (d *DynSsz) marshalStruct(sourceType reflect.Type, sourceValue reflect.Valu
 
 		//fmt.Printf("%sfield %d:\t dynamic [%v:]\t %v\n", strings.Repeat(" ", idt+1), field.Index[0], offset, field.Name)
 
-		fieldValue := sourceValue.Field(field.Index[0])
+		fieldValue := sourceValue.Field(field.Index)
 		bufLen := len(buf)
-		newBuf, err := d.marshalType(field.Type, fieldValue, buf, dynamicSizeHints[i], idt+2)
+		newBuf, err := d.marshalType(field.Type, fieldValue, buf, idt+2)
 		if err != nil {
 			return nil, fmt.Errorf("failed decoding field %v: %v", field.Name, err)
 		}
@@ -226,37 +209,23 @@ func (d *DynSsz) marshalStruct(sourceType reflect.Type, sourceValue reflect.Valu
 // in the SSZ-encoded output. The function relies on marshalType for the encoding of individual elements, allowing for
 // a consistent and recursive encoding approach that handles both simple and complex types within the array.
 
-func (d *DynSsz) marshalArray(sourceType reflect.Type, sourceValue reflect.Value, buf []byte, sizeHints []sszSizeHint, idt int) ([]byte, error) {
+func (d *DynSsz) marshalArray(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
+	fieldType := sourceType.ElemDesc
 
-	childSizeHints := []sszSizeHint{}
-	if len(sizeHints) > 1 {
-		childSizeHints = sizeHints[1:]
-	}
-
-	fieldType := sourceType.Elem()
-	fieldIsPtr := fieldType.Kind() == reflect.Ptr
-	if fieldIsPtr {
-		fieldType = fieldType.Elem()
-	}
-
-	arrLen := sourceType.Len()
-	if fieldType == byteType {
+	arrLen := sourceType.Len
+	if fieldType.Type == byteType {
 		// shortcut for performance: use append on []byte arrays
 		if !sourceValue.CanAddr() {
 			// workaround for unaddressable static arrays
-			sourceValPtr := reflect.New(sourceType)
+			sourceValPtr := reflect.New(sourceType.Type)
 			sourceValPtr.Elem().Set(sourceValue)
 			sourceValue = sourceValPtr.Elem()
 		}
 		buf = append(buf, sourceValue.Bytes()...)
 	} else {
-		for i := 0; i < arrLen; i++ {
+		for i := 0; i < int(arrLen); i++ {
 			itemVal := sourceValue.Index(i)
-			if fieldIsPtr {
-				itemVal = itemVal.Elem()
-			}
-
-			newBuf, err := d.marshalType(fieldType, itemVal, buf, childSizeHints, idt+2)
+			newBuf, err := d.marshalType(fieldType, itemVal, buf, idt+2)
 			if err != nil {
 				return nil, err
 			}
@@ -295,49 +264,24 @@ func (d *DynSsz) marshalArray(sourceType reflect.Type, sourceValue reflect.Value
 // represented in the SSZ-encoded output. It seamlessly transitions to marshalDynamicSlice for slices with dynamically sized
 // elements, leveraging a recursive encoding strategy to handle various data types within the slice effectively.
 
-func (d *DynSsz) marshalSlice(sourceType reflect.Type, sourceValue reflect.Value, buf []byte, sizeHints []sszSizeHint, idt int) ([]byte, error) {
-	childSizeHints := []sszSizeHint{}
-	if len(sizeHints) > 1 {
-		childSizeHints = sizeHints[1:]
-	}
-
-	fieldType := sourceType.Elem()
-	fieldIsPtr := fieldType.Kind() == reflect.Ptr
-	if fieldIsPtr {
-		fieldType = fieldType.Elem()
-	}
-
-	isDynSlice := false
-	fieldSize := 0
-	if len(sizeHints) > 1 && sizeHints[1].dynamic {
-		isDynSlice = true
-	} else {
-		size, _, err := d.getSszSize(fieldType, childSizeHints)
-		if err != nil {
-			return nil, err
-		}
-		if size < 0 {
-			isDynSlice = true
-		}
-		fieldSize = size
-	}
-
-	if isDynSlice {
-		return d.marshalDynamicSlice(sourceType, sourceValue, buf, sizeHints, idt)
+func (d *DynSsz) marshalSlice(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
+	fieldType := sourceType.ElemDesc
+	if fieldType.Size < 0 {
+		return d.marshalDynamicSlice(sourceType, sourceValue, buf, idt)
 	}
 
 	sliceLen := sourceValue.Len()
 	appendZero := 0
-	if len(sizeHints) > 0 && !sizeHints[0].dynamic {
-		if uint64(sliceLen) > sizeHints[0].size {
+	if len(sourceType.SizeHints) > 0 && !sourceType.SizeHints[0].Dynamic {
+		if uint32(sliceLen) > sourceType.SizeHints[0].Size {
 			return nil, ErrListTooBig
 		}
-		if uint64(sliceLen) < sizeHints[0].size {
-			appendZero = int(sizeHints[0].size - uint64(sliceLen))
+		if uint32(sliceLen) < sourceType.SizeHints[0].Size {
+			appendZero = int(sourceType.SizeHints[0].Size - uint32(sliceLen))
 		}
 	}
 
-	if fieldType == byteType {
+	if fieldType.Type == byteType {
 		// shortcut for performance: use append on []byte arrays
 		buf = append(buf, sourceValue.Bytes()...)
 
@@ -349,15 +293,13 @@ func (d *DynSsz) marshalSlice(sourceType reflect.Type, sourceValue reflect.Value
 
 		for i := 0; i < sliceLen; i++ {
 			itemVal := sourceValue.Index(i)
-			if fieldIsPtr {
+			if fieldType.IsPtr {
 				if itemVal.IsNil() {
-					itemVal = reflect.New(fieldType).Elem()
-				} else {
-					itemVal = itemVal.Elem()
+					itemVal = reflect.New(fieldType.Type.Elem())
 				}
 			}
 
-			newBuf, err := d.marshalType(fieldType, itemVal, buf, childSizeHints, idt+2)
+			newBuf, err := d.marshalType(fieldType, itemVal, buf, idt+2)
 			if err != nil {
 				return nil, err
 			}
@@ -365,7 +307,7 @@ func (d *DynSsz) marshalSlice(sourceType reflect.Type, sourceValue reflect.Value
 		}
 
 		if appendZero > 0 {
-			zeroBuf := make([]byte, fieldSize)
+			zeroBuf := make([]byte, fieldType.Size)
 			for i := 0; i < appendZero; i++ {
 				buf = append(buf, zeroBuf...)
 			}
@@ -401,21 +343,17 @@ func (d *DynSsz) marshalSlice(sourceType reflect.Type, sourceValue reflect.Value
 // nature of SSZ to encode each element according to its actual size, ensuring the final encoded data accurately reflects
 // the content and structure of the original slice.
 
-func (d *DynSsz) marshalDynamicSlice(sourceType reflect.Type, sourceValue reflect.Value, buf []byte, sizeHints []sszSizeHint, idt int) ([]byte, error) {
-	childSizeHints := []sszSizeHint{}
-	if len(sizeHints) > 1 {
-		childSizeHints = sizeHints[1:]
-	}
-
+func (d *DynSsz) marshalDynamicSlice(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
+	fieldType := sourceType.ElemDesc
 	sliceLen := sourceValue.Len()
 
 	appendZero := 0
-	if len(sizeHints) > 0 && !sizeHints[0].dynamic {
-		if uint64(sliceLen) > sizeHints[0].size {
+	if len(sourceType.SizeHints) > 0 && !sourceType.SizeHints[0].Dynamic {
+		if uint32(sliceLen) > sourceType.SizeHints[0].Size {
 			return nil, ErrListTooBig
 		}
-		if uint64(sliceLen) < sizeHints[0].size {
-			appendZero = int(sizeHints[0].size - uint64(sliceLen))
+		if uint32(sliceLen) < sourceType.SizeHints[0].Size {
+			appendZero = int(sourceType.SizeHints[0].Size - uint32(sliceLen))
 		}
 	}
 
@@ -423,22 +361,13 @@ func (d *DynSsz) marshalDynamicSlice(sourceType reflect.Type, sourceValue reflec
 	offsetBuf := make([]byte, 4*(sliceLen+appendZero))
 	buf = append(buf, offsetBuf...)
 
-	fieldType := sourceType.Elem()
-	fieldIsPtr := fieldType.Kind() == reflect.Ptr
-	if fieldIsPtr {
-		fieldType = fieldType.Elem()
-	}
-
 	offset := 4 * (sliceLen + appendZero)
 	bufLen := len(buf)
 
 	for i := 0; i < sliceLen; i++ {
 		itemVal := sourceValue.Index(i)
-		if fieldIsPtr {
-			itemVal = itemVal.Elem()
-		}
 
-		newBuf, err := d.marshalType(fieldType, itemVal, buf, childSizeHints, idt+2)
+		newBuf, err := d.marshalType(fieldType, itemVal, buf, idt+2)
 		if err != nil {
 			return nil, err
 		}
@@ -454,9 +383,15 @@ func (d *DynSsz) marshalDynamicSlice(sourceType reflect.Type, sourceValue reflec
 	}
 
 	if appendZero > 0 {
-		zeroVal := reflect.New(fieldType).Elem()
+		var zeroVal reflect.Value
 
-		zeroBuf, err := d.marshalType(fieldType, zeroVal, []byte{}, childSizeHints, idt+2)
+		if fieldType.IsPtr {
+			zeroVal = reflect.New(fieldType.Type.Elem())
+		} else {
+			zeroVal = reflect.New(fieldType.Type).Elem()
+		}
+
+		zeroBuf, err := d.marshalType(fieldType, zeroVal, []byte{}, idt+2)
 		if err != nil {
 			return nil, err
 		}

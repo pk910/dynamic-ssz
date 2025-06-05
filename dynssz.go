@@ -9,24 +9,20 @@ package dynssz
 import (
 	"fmt"
 	"reflect"
-	"sync"
 )
 
 // DynSsz is a dynamic SSZ encoder/decoder that uses runtime reflection to handle dynamic field sizes.
 // The instance holds caches for referenced types, so it's recommended to reuse the same instance to speed up the encoding/decoding process.
 type DynSsz struct {
-	fastsszConvertCompatMutex sync.Mutex
-	fastsszConvertCompatCache map[reflect.Type]*fastsszConvertCompatibility
-	fastsszHashCompatMutex    sync.Mutex
-	fastsszHashCompatCache    map[reflect.Type]*fastsszHashCompatibility
-	typeSizeMutex             sync.RWMutex
-	typeSizeCache             map[reflect.Type]*cachedSszSize
-	typeDynMaxCacheMutex      sync.RWMutex
-	typeDynMaxCache           map[reflect.Type]*bool
-	specValues                map[string]any
-	specValueCache            map[string]*cachedSpecValue
-	NoFastSsz                 bool
-	Verbose                   bool
+	typeCache      *TypeCache
+	specValues     map[string]any
+	specValueCache map[string]*cachedSpecValue
+	NoFastSsz      bool
+	Verbose        bool
+}
+
+func (d *DynSsz) GetTypeDescriptor(t reflect.Type) (*TypeDescriptor, error) {
+	return d.typeCache.GetTypeDescriptor(t, nil, nil)
 }
 
 // NewDynSsz creates a new instance of the DynSsz encoder/decoder.
@@ -37,14 +33,14 @@ func NewDynSsz(specs map[string]any) *DynSsz {
 	if specs == nil {
 		specs = map[string]any{}
 	}
-	return &DynSsz{
-		fastsszConvertCompatCache: map[reflect.Type]*fastsszConvertCompatibility{},
-		fastsszHashCompatCache:    map[reflect.Type]*fastsszHashCompatibility{},
-		typeSizeCache:             map[reflect.Type]*cachedSszSize{},
-		typeDynMaxCache:           map[reflect.Type]*bool{},
-		specValues:                specs,
-		specValueCache:            map[string]*cachedSpecValue{},
+
+	dynssz := &DynSsz{
+		specValues:     specs,
+		specValueCache: map[string]*cachedSpecValue{},
 	}
+	dynssz.typeCache = NewTypeCache(dynssz)
+
+	return dynssz
 }
 
 // MarshalSSZ serializes the given source into its SSZ (Simple Serialize) representation.
@@ -56,18 +52,23 @@ func (d *DynSsz) MarshalSSZ(source any) ([]byte, error) {
 	sourceType := reflect.TypeOf(source)
 	sourceValue := reflect.ValueOf(source)
 
-	size, err := d.getSszValueSize(sourceType, sourceValue, []sszSizeHint{})
+	sourceTypeDesc, err := d.typeCache.GetTypeDescriptor(sourceType, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	size, err := d.getSszValueSize(sourceTypeDesc, sourceValue)
 	if err != nil {
 		return nil, err
 	}
 
 	buf := make([]byte, 0, size)
-	newBuf, err := d.marshalType(sourceType, sourceValue, buf, []sszSizeHint{}, 0)
+	newBuf, err := d.marshalType(sourceTypeDesc, sourceValue, buf, 0)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(newBuf) != size {
+	if uint32(len(newBuf)) != size {
 		return nil, fmt.Errorf("ssz length does not match expected length (expected: %v, got: %v)", size, len(newBuf))
 	}
 
@@ -83,7 +84,12 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte) ([]byte, error) {
 	sourceType := reflect.TypeOf(source)
 	sourceValue := reflect.ValueOf(source)
 
-	newBuf, err := d.marshalType(sourceType, sourceValue, buf, []sszSizeHint{}, 0)
+	sourceTypeDesc, err := d.typeCache.GetTypeDescriptor(sourceType, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	newBuf, err := d.marshalType(sourceTypeDesc, sourceValue, buf, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -99,11 +105,17 @@ func (d *DynSsz) SizeSSZ(source any) (int, error) {
 	sourceType := reflect.TypeOf(source)
 	sourceValue := reflect.ValueOf(source)
 
-	size, err := d.getSszValueSize(sourceType, sourceValue, []sszSizeHint{})
+	sourceTypeDesc, err := d.typeCache.GetTypeDescriptor(sourceType, nil, nil)
 	if err != nil {
 		return 0, err
 	}
-	return size, nil
+
+	size, err := d.getSszValueSize(sourceTypeDesc, sourceValue)
+	if err != nil {
+		return 0, err
+	}
+
+	return int(size), nil
 }
 
 // UnmarshalSSZ decodes the given SSZ-encoded data into the target object.
@@ -115,7 +127,12 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte) error {
 	targetType := reflect.TypeOf(target)
 	targetValue := reflect.ValueOf(target)
 
-	consumedBytes, err := d.unmarshalType(targetType, targetValue, ssz, []sszSizeHint{}, 0)
+	targetTypeDesc, err := d.typeCache.GetTypeDescriptor(targetType, nil, nil)
+	if err != nil {
+		return err
+	}
+
+	consumedBytes, err := d.unmarshalType(targetTypeDesc, targetValue, ssz, 0)
 	if err != nil {
 		return err
 	}
@@ -135,12 +152,17 @@ func (d *DynSsz) HashTreeRoot(source any) ([32]byte, error) {
 	sourceType := reflect.TypeOf(source)
 	sourceValue := reflect.ValueOf(source)
 
+	sourceTypeDesc, err := d.typeCache.GetTypeDescriptor(sourceType, nil, nil)
+	if err != nil {
+		return [32]byte{}, err
+	}
+
 	hh := DefaultHasherPool.Get()
 	defer func() {
 		DefaultHasherPool.Put(hh)
 	}()
 
-	err := d.buildRootFromType(sourceType, sourceValue, hh, nil, nil, 0)
+	err = d.buildRootFromType(sourceTypeDesc, sourceValue, hh, 0)
 	if err != nil {
 		return [32]byte{}, err
 	}
