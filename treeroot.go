@@ -40,7 +40,11 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 	hashIndex := hh.Index()
 
 	if sourceType.IsPtr {
-		sourceValue = sourceValue.Elem()
+		if sourceValue.IsNil() {
+			sourceValue = reflect.New(sourceType.Type.Elem()).Elem()
+		} else {
+			sourceValue = sourceValue.Elem()
+		}
 	}
 
 	useFastSsz := !d.NoFastSsz && sourceType.IsFastSSZHasher && !sourceType.HasDynamicSize && !sourceType.HasDynamicMax
@@ -67,8 +71,8 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 	}
 
 	if !useFastSsz {
+		// Special case for bitlists - hack
 		if strings.Contains(sourceType.Type.Name(), "Bitlist") {
-			// hack for bitlists
 			maxSize := uint64(0)
 			bytes := sourceValue.Bytes()
 			if len(sourceType.MaxSizeHints) > 0 {
@@ -79,7 +83,7 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 
 			hh.PutBitlist(bytes, maxSize)
 		} else {
-
+			// Route to appropriate handler based on type
 			switch sourceType.Kind {
 			case reflect.Struct:
 				err := d.buildRootFromStruct(sourceType, sourceValue, hh, idt)
@@ -87,17 +91,15 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 					return err
 				}
 			case reflect.Array:
-				err := d.buildRootFromSlice(sourceType, sourceValue, hh, true, idt)
+				err := d.buildRootFromArray(sourceType, sourceValue, hh, idt)
 				if err != nil {
 					return err
 				}
-
 			case reflect.Slice:
-				err := d.buildRootFromSlice(sourceType, sourceValue, hh, false, idt)
+				err := d.buildRootFromSlice(sourceType, sourceValue, hh, idt)
 				if err != nil {
 					return err
 				}
-
 			case reflect.Bool:
 				hh.PutBool(sourceValue.Bool())
 			case reflect.Uint8:
@@ -152,7 +154,7 @@ func (d *DynSsz) buildRootFromStruct(sourceType *TypeDescriptor, sourceValue ref
 		fieldValue := sourceValue.Field(i)
 
 		if d.Verbose {
-			fmt.Printf("%vfield %v\n", strings.Repeat(" ", idt), field.Name)
+			fmt.Printf("%sfield %v\n", strings.Repeat(" ", idt), field.Name)
 		}
 
 		err := d.buildRootFromType(fieldType, fieldValue, hh, idt+2)
@@ -165,32 +167,70 @@ func (d *DynSsz) buildRootFromStruct(sourceType *TypeDescriptor, sourceValue ref
 	return nil
 }
 
-// buildRootFromSlice handles the computation of HashTreeRoot for Go slice and array values. It processes each element
+// buildRootFromArray handles the computation of HashTreeRoot for Go array values. It processes each element
+// of the array, using reflection to access element types and values, and delegates the hashing of individual
+// elements to buildRootFromType.
+//
+// Parameters:
+// - sourceType: The TypeDescriptor of the array to be hashed, providing the type information needed to hash
+//   each element within the array correctly.
+// - sourceValue: The reflect.Value that holds the array data to be hashed. buildRootFromArray iterates over
+//   each element, using sourceValue to extract the data for hashing.
+// - hh: A Hasher instance that maintains the state of the hashing process and provides methods for hashing
+//   different types of values according to SSZ specifications.
+// - idt: An indentation level used for debugging or logging to track the hashing depth and sequence.
+//
+// Returns:
+// - An error if the hashing process encounters any issues, such as an unsupported element type.
+//
+// buildRootFromArray specializes in hashing fixed-size arrays by processing each element through the central
+// buildRootFromType dispatcher, ensuring consistent handling across all array element types.
+
+func (d *DynSsz) buildRootFromArray(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher, idt int) error {
+	fieldType := sourceType.ElemDesc
+
+	// For byte arrays, handle as a single unit
+	if fieldType.Kind == reflect.Uint8 {
+		hh.PutBytes(sourceValue.Bytes())
+		return nil
+	}
+
+	// For other types, process each element
+	arrayLen := sourceValue.Len()
+	for i := 0; i < arrayLen; i++ {
+		fieldValue := sourceValue.Index(i)
+
+		err := d.buildRootFromType(fieldType, fieldValue, hh, idt+2)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// buildRootFromSlice handles the computation of HashTreeRoot for Go slice values. It processes each element
 // of the collection, using reflection to access element types and values, and delegates the hashing of individual
 // elements to buildRootFromType.
 //
 // Parameters:
-// - sourceType: The reflect.Type of the slice/array to be hashed, providing the type information needed to hash
+// - sourceType: The TypeDescriptor of the slice to be hashed, providing the type information needed to hash
 //   each element within the collection correctly.
-// - sourceValue: The reflect.Value that holds the slice/array data to be hashed. buildRootFromSlice iterates over
+// - sourceValue: The reflect.Value that holds the slice data to be hashed. buildRootFromSlice iterates over
 //   each element, using sourceValue to extract the data for hashing.
 // - hh: A Hasher instance that maintains the state of the hashing process and provides methods for hashing
 //   different types of values according to SSZ specifications.
-// - maxSizeHints: A slice of sszMaxSizeHint, providing maximum size constraints for variable-length types,
-//   ensuring compliance with SSZ specifications during the hashing process.
-// - isArray: A boolean indicating whether the source is an array (true) or slice (false), affecting how the
-//   function handles the collection's length and memory layout.
 // - idt: An indentation level used for debugging or logging to track the hashing depth and sequence.
 //
 // Returns:
 // - An error if the hashing process encounters any issues, such as an unsupported element type or size constraint
 //   violations.
 //
-// buildRootFromSlice specializes in hashing collections by properly handling both fixed-size arrays and variable-length
-// slices. It implements specific optimizations for common types like byte slices and uint64 arrays while maintaining
+// buildRootFromSlice specializes in hashing collections by properly handling variable-length slices.
+// It implements specific optimizations for common types like byte slices and uint64 arrays while maintaining
 // the ability to process complex nested structures through recursive calls to buildRootFromType.
 
-func (d *DynSsz) buildRootFromSlice(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher, isArray bool, idt int) error {
+func (d *DynSsz) buildRootFromSlice(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher, idt int) error {
 	fieldType := sourceType.ElemDesc
 
 	subIndex := hh.Index()
@@ -201,25 +241,18 @@ func (d *DynSsz) buildRootFromSlice(sourceType *TypeDescriptor, sourceValue refl
 	case reflect.Struct:
 		for i := 0; i < sliceLen; i++ {
 			fieldValue := sourceValue.Index(i)
-			if fieldType.IsPtr {
-				fieldValue = fieldValue.Elem()
-			}
 
-			err := d.buildRootFromStruct(fieldType, fieldValue, hh, idt+2)
+			err := d.buildRootFromType(fieldType, fieldValue, hh, idt+2)
 			if err != nil {
 				return err
 			}
 		}
 	case reflect.Array, reflect.Slice:
-		itemType := fieldType.ElemDesc
-		if itemType.Kind == reflect.Uint8 {
+		if fieldType.IsByteArray {
 			for i := 0; i < sliceLen; i++ {
 				sliceSubIndex := hh.Index()
 
 				fieldValue := sourceValue.Index(i)
-				if itemType.IsPtr {
-					fieldValue = fieldValue.Elem()
-				}
 
 				fieldBytes := fieldValue.Bytes()
 				byteLen := uint64(len(fieldBytes))
@@ -234,27 +267,29 @@ func (d *DynSsz) buildRootFromSlice(sourceType *TypeDescriptor, sourceValue refl
 				}
 			}
 		} else {
-			return fmt.Errorf("non-byte slice/array in slice: %v", itemType.Type.Name())
+			return fmt.Errorf("non-byte slice/array in slice: %v", fieldType.ElemDesc.Type.Name())
 		}
 	case reflect.Uint8:
-		if isArray {
-			hh.PutBytes(sourceValue.Bytes())
-			return nil
-		}
-
 		hh.Append(sourceValue.Bytes())
 		hh.FillUpTo32()
 		itemSize = 1
 	case reflect.Uint64:
 		for i := 0; i < sliceLen; i++ {
 			fieldValue := sourceValue.Index(i)
-			if fieldType.IsPtr {
-				fieldValue = fieldValue.Elem()
-			}
 
 			hh.AppendUint64(uint64(fieldValue.Uint()))
 		}
 		itemSize = 8
+	default:
+		// For other types, use the central dispatcher
+		for i := 0; i < sliceLen; i++ {
+			fieldValue := sourceValue.Index(i)
+
+			err := d.buildRootFromType(fieldType, fieldValue, hh, idt+2)
+			if err != nil {
+				return err
+			}
+		}
 	}
 
 	if len(sourceType.MaxSizeHints) > 0 {
