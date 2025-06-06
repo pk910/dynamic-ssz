@@ -3,7 +3,6 @@ package dynssz
 import (
 	"encoding/binary"
 	"fmt"
-	"time"
 )
 
 var (
@@ -43,35 +42,21 @@ func unmarshalBool(src []byte) bool {
 	return src[0] == 1
 }
 
-// unmarshalTime unmarshals a time.Time from the src input
-func unmarshalTime(src []byte) time.Time {
-	return time.Unix(int64(unmarshallUint64(src)), 0).UTC()
-}
-
 // ---- Marshal functions ----
 
 // marshalUint64 marshals a little endian uint64 to dst
 func marshalUint64(dst []byte, i uint64) []byte {
-	buf := make([]byte, 8)
-	binary.LittleEndian.PutUint64(buf, i)
-	dst = append(dst, buf...)
-	return dst
+	return binary.LittleEndian.AppendUint64(dst, i)
 }
 
 // marshalUint32 marshals a little endian uint32 to dst
 func marshalUint32(dst []byte, i uint32) []byte {
-	buf := make([]byte, 4)
-	binary.LittleEndian.PutUint32(buf, i)
-	dst = append(dst, buf...)
-	return dst
+	return binary.LittleEndian.AppendUint32(dst, i)
 }
 
 // marshalUint16 marshals a little endian uint16 to dst
 func marshalUint16(dst []byte, i uint16) []byte {
-	buf := make([]byte, 2)
-	binary.LittleEndian.PutUint16(buf, i)
-	dst = append(dst, buf...)
-	return dst
+	return binary.LittleEndian.AppendUint16(dst, i)
 }
 
 // marshalUint8 marshals a little endian uint8 to dst
@@ -90,17 +75,7 @@ func marshalBool(dst []byte, b bool) []byte {
 	return dst
 }
 
-// marshalTime marshals a time to dst
-func marshalTime(dst []byte, t time.Time) []byte {
-	return marshalUint64(dst, uint64(t.Unix()))
-}
-
 // ---- offset functions ----
-
-// WriteOffset writes an offset to dst
-func writeOffset(dst []byte, i int) []byte {
-	return marshalUint32(dst, uint32(i))
-}
 
 // ReadOffset reads an offset from buf
 func readOffset(buf []byte) uint64 {

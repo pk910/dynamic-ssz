@@ -132,28 +132,26 @@ func (h *Hasher) AppendBytes32(b []byte) {
 
 // PutUint64 appends a uint64 in 32 bytes
 func (h *Hasher) PutUint64(i uint64) {
-	buf := make([]byte, 8)
-	binary.LittleEndian.PutUint64(buf, i)
-	h.AppendBytes32(buf)
+	binary.LittleEndian.PutUint64(h.tmp[:8], i)
+	h.AppendBytes32(h.tmp[:8])
 }
 
 // PutUint32 appends a uint32 in 32 bytes
 func (h *Hasher) PutUint32(i uint32) {
-	buf := make([]byte, 4)
-	binary.LittleEndian.PutUint32(buf, i)
-	h.AppendBytes32(buf)
+	binary.LittleEndian.PutUint32(h.tmp[:4], i)
+	h.AppendBytes32(h.tmp[:4])
 }
 
 // PutUint16 appends a uint16 in 32 bytes
 func (h *Hasher) PutUint16(i uint16) {
-	buf := make([]byte, 2)
-	binary.LittleEndian.PutUint16(buf, i)
-	h.AppendBytes32(buf)
+	binary.LittleEndian.PutUint16(h.tmp[:2], i)
+	h.AppendBytes32(h.tmp[:2])
 }
 
-// PutUint16 appends a uint16 in 32 bytes
+// PutUint8 appends a uint8 in 32 bytes
 func (h *Hasher) PutUint8(i uint8) {
-	h.AppendBytes32([]byte{byte(i)})
+	h.tmp[0] = byte(i)
+	h.AppendBytes32(h.tmp[:1])
 }
 
 func CalculateLimit(maxCapacity, numItems, size uint64) uint64 {

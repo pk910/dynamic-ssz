@@ -247,7 +247,7 @@ func (d *DynSsz) unmarshalArray(targetType *TypeDescriptor, targetValue reflect.
 	fieldType := targetType.ElemDesc
 	arrLen := int(targetType.Len)
 
-	if fieldType.Type == byteType {
+	if targetType.IsByteArray {
 		// shortcut for performance: use copy on []byte arrays
 		reflect.Copy(targetValue, reflect.ValueOf(ssz[0:arrLen]))
 		consumedBytes = arrLen
@@ -336,7 +336,7 @@ func (d *DynSsz) unmarshalSlice(targetType *TypeDescriptor, targetValue reflect.
 	newValue := reflect.MakeSlice(fieldT, sliceLen, sliceLen)
 	targetValue.Set(newValue)
 
-	if fieldType.Type == byteType {
+	if targetType.IsByteArray {
 		// shortcut for performance: use copy on []byte arrays
 		reflect.Copy(newValue, reflect.ValueOf(ssz[0:sliceLen]))
 		consumedBytes = sliceLen
@@ -438,7 +438,7 @@ func (d *DynSsz) unmarshalDynamicSlice(targetType *TypeDescriptor, targetValue r
 			if fieldType.IsPtr {
 				// fmt.Printf("new slice item %v\n", fieldType.Name())
 				itemVal = reflect.New(fieldType.Type.Elem())
-				newValue.Index(i).Set(itemVal.Elem().Addr())
+				newValue.Index(i).Set(itemVal)
 			} else {
 				itemVal = newValue.Index(i)
 			}

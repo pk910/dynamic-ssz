@@ -205,10 +205,8 @@ func (d *DynSsz) marshalStruct(sourceType *TypeDescriptor, sourceValue reflect.V
 // a consistent and recursive encoding approach that handles both simple and complex types within the array.
 
 func (d *DynSsz) marshalArray(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
-	fieldType := sourceType.ElemDesc
-
 	arrLen := sourceType.Len
-	if fieldType.Type == byteType {
+	if sourceType.IsByteArray {
 		// shortcut for performance: use append on []byte arrays
 		if !sourceValue.CanAddr() {
 			// workaround for unaddressable static arrays
@@ -220,7 +218,7 @@ func (d *DynSsz) marshalArray(sourceType *TypeDescriptor, sourceValue reflect.Va
 	} else {
 		for i := 0; i < int(arrLen); i++ {
 			itemVal := sourceValue.Index(i)
-			newBuf, err := d.marshalType(fieldType, itemVal, buf, idt+2)
+			newBuf, err := d.marshalType(sourceType.ElemDesc, itemVal, buf, idt+2)
 			if err != nil {
 				return nil, err
 			}
@@ -276,7 +274,7 @@ func (d *DynSsz) marshalSlice(sourceType *TypeDescriptor, sourceValue reflect.Va
 		}
 	}
 
-	if fieldType.Type == byteType {
+	if sourceType.IsByteArray {
 		// shortcut for performance: use append on []byte arrays
 		buf = append(buf, sourceValue.Bytes()...)
 
@@ -390,14 +388,16 @@ func (d *DynSsz) marshalDynamicSlice(sourceType *TypeDescriptor, sourceValue ref
 		}
 		zeroBufLen := len(zeroBuf)
 
+		// Batch append all zero values at once for better performance
+		totalZeroBytes := zeroBufLen * appendZero
+		zeroData := make([]byte, 0, totalZeroBytes)
 		for i := 0; i < appendZero; i++ {
-			buf = append(buf, zeroBuf...)
-
+			zeroData = append(zeroData, zeroBuf...)
 			binary.LittleEndian.PutUint32(buf[startOffset+((sliceLen+i)*4):startOffset+(((sliceLen+i)+1)*4)], uint32(offset))
-
 			offset += zeroBufLen
 		}
 
+		buf = append(buf, zeroData...)
 	}
 
 	return buf, nil

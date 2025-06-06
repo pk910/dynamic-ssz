@@ -163,11 +163,55 @@ func BenchmarkBlockMinimal_DynSSZ_Unmarshal(b *testing.B) {
 	}
 }
 
+func BenchmarkBlockMinimal_DynSSZ_Marshal(b *testing.B) {
+	block := new(deneb.SignedBeaconBlock)
+	dynSszMinimal.UnmarshalSSZ(block, blockMinimalData)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := dynSszMinimal.MarshalSSZ(block); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkBlockMinimal_DynSSZ_HashTreeRoot(b *testing.B) {
+	block := new(deneb.SignedBeaconBlock)
+	dynSszMinimal.UnmarshalSSZ(block, blockMinimalData)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := dynSszMinimal.HashTreeRoot(block.Message); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkBlockMinimal_DynSSZOnly_Unmarshal(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		block := new(deneb.SignedBeaconBlock)
 		if err := dynSszOnlyMinimal.UnmarshalSSZ(block, blockMinimalData); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkBlockMinimal_DynSSZOnly_Marshal(b *testing.B) {
+	block := new(deneb.SignedBeaconBlock)
+	dynSszOnlyMinimal.UnmarshalSSZ(block, blockMinimalData)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := dynSszOnlyMinimal.MarshalSSZ(block); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkBlockMinimal_DynSSZOnly_HashTreeRoot(b *testing.B) {
+	block := new(deneb.SignedBeaconBlock)
+	dynSszOnlyMinimal.UnmarshalSSZ(block, blockMinimalData)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := dynSszOnlyMinimal.HashTreeRoot(block.Message); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -283,11 +327,55 @@ func BenchmarkStateMinimal_DynSSZ_Unmarshal(b *testing.B) {
 	}
 }
 
+func BenchmarkStateMinimal_DynSSZ_Marshal(b *testing.B) {
+	state := new(deneb.BeaconState)
+	dynSszMinimal.UnmarshalSSZ(state, stateMinimalData)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := dynSszMinimal.MarshalSSZ(state); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateMinimal_DynSSZ_HashTreeRoot(b *testing.B) {
+	state := new(deneb.BeaconState)
+	dynSszMinimal.UnmarshalSSZ(state, stateMinimalData)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := dynSszMinimal.HashTreeRoot(state); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkStateMinimal_DynSSZOnly_Unmarshal(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		state := new(deneb.BeaconState)
 		if err := dynSszOnlyMinimal.UnmarshalSSZ(state, stateMinimalData); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateMinimal_DynSSZOnly_Marshal(b *testing.B) {
+	state := new(deneb.BeaconState)
+	dynSszOnlyMinimal.UnmarshalSSZ(state, stateMinimalData)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := dynSszOnlyMinimal.MarshalSSZ(state); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateMinimal_DynSSZOnly_HashTreeRoot(b *testing.B) {
+	state := new(deneb.BeaconState)
+	dynSszOnlyMinimal.UnmarshalSSZ(state, stateMinimalData)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := dynSszOnlyMinimal.HashTreeRoot(state); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -354,6 +442,102 @@ func BenchmarkStateMainnet_DynSSZ_FullCycle(b *testing.B) {
 			b.Fatal(err)
 		}
 		if _, err := dynSszMainnet.HashTreeRoot(state); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkBlockMainnet_DynSSZOnly_FullCycle(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		block := new(deneb.SignedBeaconBlock)
+		if err := dynSszOnlyMainnet.UnmarshalSSZ(block, blockMainnetData); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := dynSszOnlyMainnet.MarshalSSZ(block); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := dynSszOnlyMainnet.HashTreeRoot(block.Message); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkBlockMinimal_DynSSZ_FullCycle(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		block := new(deneb.SignedBeaconBlock)
+		if err := dynSszMinimal.UnmarshalSSZ(block, blockMinimalData); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := dynSszMinimal.MarshalSSZ(block); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := dynSszMinimal.HashTreeRoot(block.Message); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkBlockMinimal_DynSSZOnly_FullCycle(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		block := new(deneb.SignedBeaconBlock)
+		if err := dynSszOnlyMinimal.UnmarshalSSZ(block, blockMinimalData); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := dynSszOnlyMinimal.MarshalSSZ(block); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := dynSszOnlyMinimal.HashTreeRoot(block.Message); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateMainnet_DynSSZOnly_FullCycle(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		state := new(deneb.BeaconState)
+		if err := dynSszOnlyMainnet.UnmarshalSSZ(state, stateMainnetData); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := dynSszOnlyMainnet.MarshalSSZ(state); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := dynSszOnlyMainnet.HashTreeRoot(state); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateMinimal_DynSSZ_FullCycle(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		state := new(deneb.BeaconState)
+		if err := dynSszMinimal.UnmarshalSSZ(state, stateMinimalData); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := dynSszMinimal.MarshalSSZ(state); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := dynSszMinimal.HashTreeRoot(state); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateMinimal_DynSSZOnly_FullCycle(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		state := new(deneb.BeaconState)
+		if err := dynSszOnlyMinimal.UnmarshalSSZ(state, stateMinimalData); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := dynSszOnlyMinimal.MarshalSSZ(state); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := dynSszOnlyMinimal.HashTreeRoot(state); err != nil {
 			b.Fatal(err)
 		}
 	}

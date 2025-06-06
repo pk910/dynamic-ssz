@@ -33,6 +33,7 @@ type TypeDescriptor struct {
 	IsFastSSZMarshaler bool                 // Whether the type implements fastssz.Marshaler
 	IsFastSSZHasher    bool                 // Whether the type implements fastssz.HashRoot
 	IsPtr              bool                 // Whether this is a pointer type
+	IsByteArray        bool                 // Whether this is a byte array
 }
 
 // FieldDescriptor represents a cached descriptor for a struct field
@@ -250,7 +251,12 @@ func (tc *TypeCache) buildArrayDescriptor(desc *TypeDescriptor, t reflect.Type, 
 		childMaxSizeHints = maxSizeHints[1:]
 	}
 
-	elemDesc, err := tc.getTypeDescriptor(t.Elem(), childSizeHints, childMaxSizeHints)
+	fieldType := t.Elem()
+	if fieldType == byteType {
+		desc.IsByteArray = true
+	}
+
+	elemDesc, err := tc.getTypeDescriptor(fieldType, childSizeHints, childMaxSizeHints)
 	if err != nil {
 		return err
 	}
@@ -285,7 +291,12 @@ func (tc *TypeCache) buildSliceDescriptor(desc *TypeDescriptor, t reflect.Type, 
 		childMaxSizeHints = maxSizeHints[1:]
 	}
 
-	elemDesc, err := tc.getTypeDescriptor(t.Elem(), childSizeHints, childMaxSizeHints)
+	fieldType := t.Elem()
+	if fieldType == byteType {
+		desc.IsByteArray = true
+	}
+
+	elemDesc, err := tc.getTypeDescriptor(fieldType, childSizeHints, childMaxSizeHints)
 	if err != nil {
 		return err
 	}
