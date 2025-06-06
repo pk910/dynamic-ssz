@@ -328,7 +328,13 @@ func (d *DynSsz) unmarshalSlice(targetType *TypeDescriptor, targetValue reflect.
 
 	// slice with static size items
 	// fmt.Printf("new slice %v  %v\n", fieldType.Name(), sliceLen)
-	newValue := reflect.MakeSlice(targetType.Type, sliceLen, sliceLen)
+
+	fieldT := targetType.Type
+	if targetType.IsPtr {
+		fieldT = fieldT.Elem()
+	}
+
+	newValue := reflect.MakeSlice(fieldT, sliceLen, sliceLen)
 	targetValue.Set(newValue)
 
 	if fieldType.Type == byteType {
@@ -417,7 +423,12 @@ func (d *DynSsz) unmarshalDynamicSlice(targetType *TypeDescriptor, targetValue r
 	fieldType := targetType.ElemDesc
 
 	// fmt.Printf("new dynamic slice %v  %v\n", fieldType.Name(), sliceLen)
-	newValue := reflect.MakeSlice(targetType.Type, sliceLen, sliceLen)
+	fieldT := targetType.Type
+	if targetType.IsPtr {
+		fieldT = fieldT.Elem()
+	}
+
+	newValue := reflect.MakeSlice(fieldT, sliceLen, sliceLen)
 	targetValue.Set(newValue)
 
 	offset := int(firstOffset)
