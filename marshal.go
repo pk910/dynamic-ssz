@@ -135,10 +135,9 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 func (d *DynSsz) marshalStruct(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
 	offset := 0
 	startLen := len(buf)
-	dynamicFields := []*FieldDescriptor{}
-	dynamicOffsets := []int{}
+	fieldCount := len(sourceType.Fields)
 
-	for i := 0; i < len(sourceType.Fields); i++ {
+	for i := 0; i < fieldCount; i++ {
 		field := sourceType.Fields[i]
 		fieldSize := field.Size
 		if field.Size > 0 {
@@ -153,29 +152,25 @@ func (d *DynSsz) marshalStruct(sourceType *TypeDescriptor, sourceValue reflect.V
 
 		} else {
 			fieldSize = 4
-			buf = append(buf, 0, 0, 0, 0)
+			buf = binary.LittleEndian.AppendUint32(buf, 0)
 			//fmt.Printf("%sfield %d:\t offset [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
-
-			dynamicFields = append(dynamicFields, field)
-			dynamicOffsets = append(dynamicOffsets, offset)
 		}
 		offset += int(fieldSize)
 	}
 
-	for i, field := range dynamicFields {
+	for _, field := range sourceType.DynFields {
 		// set field offset
-		fieldOffset := dynamicOffsets[i]
-		offsetBuf := make([]byte, 4)
-		binary.LittleEndian.PutUint32(offsetBuf, uint32(offset))
-		copy(buf[fieldOffset+startLen:fieldOffset+startLen+4], offsetBuf)
+		fieldOffset := int(field.Offset)
+		binary.LittleEndian.PutUint32(buf[fieldOffset+startLen:fieldOffset+startLen+4], uint32(offset))
 
 		//fmt.Printf("%sfield %d:\t dynamic [%v:]\t %v\n", strings.Repeat(" ", idt+1), field.Index[0], offset, field.Name)
 
-		fieldValue := sourceValue.Field(int(field.Index))
+		fieldDescriptor := field.Field
+		fieldValue := sourceValue.Field(int(fieldDescriptor.Index))
 		bufLen := len(buf)
-		newBuf, err := d.marshalType(field.Type, fieldValue, buf, idt+2)
+		newBuf, err := d.marshalType(fieldDescriptor.Type, fieldValue, buf, idt+2)
 		if err != nil {
-			return nil, fmt.Errorf("failed decoding field %v: %v", field.Name, err)
+			return nil, fmt.Errorf("failed decoding field %v: %v", fieldDescriptor.Name, err)
 		}
 		buf = newBuf
 		offset += len(buf) - bufLen
@@ -307,10 +302,9 @@ func (d *DynSsz) marshalSlice(sourceType *TypeDescriptor, sourceValue reflect.Va
 		}
 
 		if appendZero > 0 {
-			zeroBuf := make([]byte, fieldType.Size)
-			for i := 0; i < appendZero; i++ {
-				buf = append(buf, zeroBuf...)
-			}
+			totalZeroBytes := int(fieldType.Size) * appendZero
+			zeroBuf := make([]byte, totalZeroBytes)
+			buf = append(buf, zeroBuf...)
 		}
 	}
 
@@ -358,10 +352,11 @@ func (d *DynSsz) marshalDynamicSlice(sourceType *TypeDescriptor, sourceValue ref
 	}
 
 	startOffset := len(buf)
-	offsetBuf := make([]byte, 4*(sliceLen+appendZero))
+	totalOffsets := sliceLen + appendZero
+	offsetBuf := make([]byte, 4*totalOffsets)
 	buf = append(buf, offsetBuf...)
 
-	offset := 4 * (sliceLen + appendZero)
+	offset := 4 * totalOffsets
 	bufLen := len(buf)
 
 	for i := 0; i < sliceLen; i++ {
@@ -374,9 +369,7 @@ func (d *DynSsz) marshalDynamicSlice(sourceType *TypeDescriptor, sourceValue ref
 		newBufLen := len(newBuf)
 		buf = newBuf
 
-		offsetBuf := make([]byte, 4)
-		binary.LittleEndian.PutUint32(offsetBuf, uint32(offset))
-		copy(buf[startOffset+(i*4):startOffset+((i+1)*4)], offsetBuf)
+		binary.LittleEndian.PutUint32(buf[startOffset+(i*4):startOffset+((i+1)*4)], uint32(offset))
 
 		offset += newBufLen - bufLen
 		bufLen = newBufLen
@@ -400,9 +393,7 @@ func (d *DynSsz) marshalDynamicSlice(sourceType *TypeDescriptor, sourceValue ref
 		for i := 0; i < appendZero; i++ {
 			buf = append(buf, zeroBuf...)
 
-			offsetBuf := make([]byte, 4)
-			binary.LittleEndian.PutUint32(offsetBuf, uint32(offset))
-			copy(buf[startOffset+((sliceLen+i)*4):startOffset+(((sliceLen+i)+1)*4)], offsetBuf)
+			binary.LittleEndian.PutUint32(buf[startOffset+((sliceLen+i)*4):startOffset+(((sliceLen+i)+1)*4)], uint32(offset))
 
 			offset += zeroBufLen
 		}

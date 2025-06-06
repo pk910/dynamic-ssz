@@ -21,17 +21,18 @@ type TypeCache struct {
 type TypeDescriptor struct {
 	Kind               reflect.Kind
 	Type               reflect.Type
-	Size               int32              // SSZ size (-1 if dynamic)
-	Len                uint32             // Length of array/slice
-	Fields             []*FieldDescriptor // For structs
-	ElemDesc           *TypeDescriptor    // For slices/arrays
-	SizeHints          []SszSizeHint      // Size hints from tags
-	MaxSizeHints       []SszMaxSizeHint   // Max size hints from tags
-	HasDynamicSize     bool               // Whether this type uses dynamic spec size value that differs from the default
-	HasDynamicMax      bool               // Whether this type uses dynamic spec max value that differs from the default
-	IsFastSSZMarshaler bool               // Whether the type implements fastssz.Marshaler
-	IsFastSSZHasher    bool               // Whether the type implements fastssz.HashRoot
-	IsPtr              bool               // Whether this is a pointer type
+	Size               int32                // SSZ size (-1 if dynamic)
+	Len                uint32               // Length of array/slice
+	Fields             []FieldDescriptor    // For structs
+	DynFields          []DynFieldDescriptor // Dynamic struct fields
+	ElemDesc           *TypeDescriptor      // For slices/arrays
+	SizeHints          []SszSizeHint        // Size hints from tags
+	MaxSizeHints       []SszMaxSizeHint     // Max size hints from tags
+	HasDynamicSize     bool                 // Whether this type uses dynamic spec size value that differs from the default
+	HasDynamicMax      bool                 // Whether this type uses dynamic spec max value that differs from the default
+	IsFastSSZMarshaler bool                 // Whether the type implements fastssz.Marshaler
+	IsFastSSZHasher    bool                 // Whether the type implements fastssz.HashRoot
+	IsPtr              bool                 // Whether this is a pointer type
 }
 
 // FieldDescriptor represents a cached descriptor for a struct field
@@ -43,6 +44,12 @@ type FieldDescriptor struct {
 	Size      int32           // SSZ size (-1 if dynamic)
 	IsPtr     bool            // Whether field is a pointer
 	IsDynamic bool            // Whether field has dynamic size
+}
+
+// DynFieldDescriptor represents a dynamic field descriptor for a struct
+type DynFieldDescriptor struct {
+	Field  *FieldDescriptor
+	Offset uint32
 }
 
 // NewTypeCache creates a new type cache
@@ -167,13 +174,13 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 
 // buildStructDescriptor builds a descriptor for struct types
 func (tc *TypeCache) buildStructDescriptor(desc *TypeDescriptor, t reflect.Type) error {
-	desc.Fields = make([]*FieldDescriptor, t.NumField())
+	desc.Fields = make([]FieldDescriptor, t.NumField())
 	totalSize := int32(0)
 	isDynamic := false
 
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
-		fieldDesc := &FieldDescriptor{
+		fieldDesc := FieldDescriptor{
 			Name:   field.Name,
 			Offset: field.Offset,
 			Index:  int16(i),
@@ -203,6 +210,11 @@ func (tc *TypeCache) buildStructDescriptor(desc *TypeDescriptor, t reflect.Type)
 			fieldDesc.IsDynamic = true
 			isDynamic = true
 			sszSize = 4 // Offset size for dynamic fields
+
+			desc.DynFields = append(desc.DynFields, DynFieldDescriptor{
+				Field:  &desc.Fields[i],
+				Offset: uint32(totalSize),
+			})
 		}
 
 		if fieldDesc.Type.HasDynamicSize {
