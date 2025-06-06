@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// sszSizeHint encapsulates size information for SSZ encoding and decoding, derived from 'ssz-size' and 'dynssz-size' tag annotations.
+// SszSizeHint encapsulates size information for SSZ encoding and decoding, derived from 'ssz-size' and 'dynssz-size' tag annotations.
 // It provides detailed insights into the size attributes of fields or types, particularly noting whether sizes are fixed or dynamic,
 // and if special specification values are applied, differing from default assumptions.
 //
@@ -23,10 +23,10 @@ import (
 // - specval: A boolean indicating whether a non-default specification value has been applied to the type or field, typically through
 //   'dynssz-size' annotations, suggesting a deviation from standard size expectations that might influence the encoding or decoding process.
 
-type sszSizeHint struct {
-	size    uint64
-	dynamic bool
-	specval bool
+type SszSizeHint struct {
+	Size    uint32
+	Dynamic bool
+	SpecVal bool
 }
 
 // getSszSizeTag parses the 'ssz-size' and 'dynssz-size' tag annotations from a struct field and returns size hints
@@ -38,7 +38,7 @@ type sszSizeHint struct {
 //   and 'dynssz-size' annotations, which provide crucial size information for encoding or decoding processes.
 //
 // Returns:
-// - A slice of sszSizeHint, which are derived from the parsed tag annotations. These hints inform the marshalling
+// - A slice of SszSizeHint, which are derived from the parsed tag annotations. These hints inform the marshalling
 //   and unmarshalling functions about the size characteristics of the field, enabling accurate handling of both
 //   static and dynamic sized elements within struct fields.
 // - An error if the tag parsing encounters issues, such as malformed annotations or unsupported specifications within
@@ -50,22 +50,22 @@ type sszSizeHint struct {
 // that the library can correctly manage fields with complex size requirements, facilitating precise and efficient
 // data serialization.
 
-func (d *DynSsz) getSszSizeTag(field *reflect.StructField) ([]sszSizeHint, error) {
-	sszSizes := []sszSizeHint{}
+func (d *DynSsz) getSszSizeTag(field *reflect.StructField) ([]SszSizeHint, error) {
+	sszSizes := []SszSizeHint{}
 
 	// parse `ssz-size` first, these are the default values used by fastssz
 	if fieldSszSizeStr, fieldHasSszSize := field.Tag.Lookup("ssz-size"); fieldHasSszSize {
 		for _, sszSizeStr := range strings.Split(fieldSszSizeStr, ",") {
-			sszSize := sszSizeHint{}
+			sszSize := SszSizeHint{}
 
 			if sszSizeStr == "?" {
-				sszSize.dynamic = true
+				sszSize.Dynamic = true
 			} else {
 				sszSizeInt, err := strconv.ParseUint(sszSizeStr, 10, 32)
 				if err != nil {
 					return sszSizes, fmt.Errorf("error parsing ssz-size tag for '%v' field: %v", field.Name, err)
 				}
-				sszSize.size = sszSizeInt
+				sszSize.Size = uint32(sszSizeInt)
 			}
 
 			sszSizes = append(sszSizes, sszSize)
@@ -75,12 +75,12 @@ func (d *DynSsz) getSszSizeTag(field *reflect.StructField) ([]sszSizeHint, error
 	fieldDynSszSizeStr, fieldHasDynSszSize := field.Tag.Lookup("dynssz-size")
 	if fieldHasDynSszSize {
 		for i, sszSizeStr := range strings.Split(fieldDynSszSizeStr, ",") {
-			sszSize := sszSizeHint{}
+			sszSize := SszSizeHint{}
 
 			if sszSizeStr == "?" {
-				sszSize.dynamic = true
+				sszSize.Dynamic = true
 			} else if sszSizeInt, err := strconv.ParseUint(sszSizeStr, 10, 32); err == nil {
-				sszSize.size = sszSizeInt
+				sszSize.Size = uint32(sszSizeInt)
 			} else {
 				ok, specVal, err := d.getSpecValue(sszSizeStr)
 				if err != nil {
@@ -88,8 +88,8 @@ func (d *DynSsz) getSszSizeTag(field *reflect.StructField) ([]sszSizeHint, error
 				}
 				if ok {
 					// dynamic value from spec
-					sszSize.size = specVal
-					sszSize.specval = true
+					sszSize.Size = uint32(specVal)
+					sszSize.SpecVal = true
 				} else {
 					// unknown spec value? fallback to fastssz defaults
 					break
@@ -98,7 +98,7 @@ func (d *DynSsz) getSszSizeTag(field *reflect.StructField) ([]sszSizeHint, error
 
 			if i >= len(sszSizes) {
 				sszSizes = append(sszSizes, sszSize)
-			} else if sszSizes[i].size != sszSize.size {
+			} else if sszSizes[i].Size != sszSize.Size {
 				// update if resolved size differs from default
 				sszSizes[i] = sszSize
 			}
@@ -108,24 +108,24 @@ func (d *DynSsz) getSszSizeTag(field *reflect.StructField) ([]sszSizeHint, error
 	return sszSizes, nil
 }
 
-type sszMaxSizeHint struct {
-	size    uint64
-	specval bool
+type SszMaxSizeHint struct {
+	Size    uint64
+	SpecVal bool
 }
 
-func (d *DynSsz) getSszMaxSizeTag(field *reflect.StructField) ([]sszMaxSizeHint, error) {
-	sszMaxSizes := []sszMaxSizeHint{}
+func (d *DynSsz) getSszMaxSizeTag(field *reflect.StructField) ([]SszMaxSizeHint, error) {
+	sszMaxSizes := []SszMaxSizeHint{}
 
 	// parse `ssz-max` first, these are the default values used by fastssz
 	if fieldSszMaxStr, fieldHasSszMax := field.Tag.Lookup("ssz-max"); fieldHasSszMax {
 		for _, sszSizeStr := range strings.Split(fieldSszMaxStr, ",") {
-			sszMaxSize := sszMaxSizeHint{}
+			sszMaxSize := SszMaxSizeHint{}
 
 			sszSizeInt, err := strconv.ParseUint(sszSizeStr, 10, 64)
 			if err != nil {
 				return sszMaxSizes, fmt.Errorf("error parsing ssz-max tag for '%v' field: %v", field.Name, err)
 			}
-			sszMaxSize.size = sszSizeInt
+			sszMaxSize.Size = sszSizeInt
 
 			sszMaxSizes = append(sszMaxSizes, sszMaxSize)
 		}
@@ -134,10 +134,10 @@ func (d *DynSsz) getSszMaxSizeTag(field *reflect.StructField) ([]sszMaxSizeHint,
 	fieldDynSszMaxStr, fieldHasDynSszMax := field.Tag.Lookup("dynssz-max")
 	if fieldHasDynSszMax {
 		for i, sszMaxSizeStr := range strings.Split(fieldDynSszMaxStr, ",") {
-			sszMaxSize := sszMaxSizeHint{}
+			sszMaxSize := SszMaxSizeHint{}
 
 			if sszSizeInt, err := strconv.ParseUint(sszMaxSizeStr, 10, 64); err == nil {
-				sszMaxSize.size = sszSizeInt
+				sszMaxSize.Size = sszSizeInt
 			} else {
 				ok, specVal, err := d.getSpecValue(sszMaxSizeStr)
 				if err != nil {
@@ -145,8 +145,8 @@ func (d *DynSsz) getSszMaxSizeTag(field *reflect.StructField) ([]sszMaxSizeHint,
 				}
 				if ok {
 					// dynamic value from spec
-					sszMaxSize.size = specVal
-					sszMaxSize.specval = true
+					sszMaxSize.Size = specVal
+					sszMaxSize.SpecVal = true
 				} else {
 					// unknown spec value? fallback to fastssz defaults
 					break
@@ -155,7 +155,7 @@ func (d *DynSsz) getSszMaxSizeTag(field *reflect.StructField) ([]sszMaxSizeHint,
 
 			if i >= len(sszMaxSizes) {
 				sszMaxSizes = append(sszMaxSizes, sszMaxSize)
-			} else if sszMaxSizes[i].size != sszMaxSize.size {
+			} else if sszMaxSizes[i].Size != sszMaxSize.Size {
 				// update if resolved max size differs from default
 				sszMaxSizes[i] = sszMaxSize
 			}

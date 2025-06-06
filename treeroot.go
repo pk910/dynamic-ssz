@@ -36,30 +36,21 @@ import (
 // orchestrates the process by preparing the necessary context and parameters, then calling the appropriate specialized
 // function based on the type of sourceValue.
 
-func (d *DynSsz) buildRootFromType(sourceType reflect.Type, sourceValue reflect.Value, hh *Hasher, sizeHints []sszSizeHint, maxSizeHints []sszMaxSizeHint, idt int) error {
+func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher, idt int) error {
 	hashIndex := hh.Index()
 
-	if sourceType.Kind() == reflect.Ptr {
-		sourceType = sourceType.Elem()
+	if sourceType.IsPtr {
 		sourceValue = sourceValue.Elem()
 	}
 
-	// use fastssz to hash types if:
-	// - type implements fastssz HashRoot interface
-	// - this type or any child type does not use spec specific field sizes
-	fastsszCompat, err := d.getFastsszHashCompatibility(sourceType, sizeHints, maxSizeHints)
-	if err != nil {
-		return fmt.Errorf("failed checking fastssz compatibility: %v", err)
-	}
-
-	useFastSsz := !d.NoFastSsz && fastsszCompat.isHashRoot && !fastsszCompat.hasDynamicSpecSizes && !fastsszCompat.hasDynamicSpecMax
-	if !useFastSsz && fastsszCompat.isHashRoot && !fastsszCompat.hasDynamicSpecSizes && !fastsszCompat.hasDynamicSpecMax && sourceType.Name() == "Int" {
+	useFastSsz := !d.NoFastSsz && sourceType.IsFastSSZHasher && !sourceType.HasDynamicSize && !sourceType.HasDynamicMax
+	if !useFastSsz && sourceType.IsFastSSZHasher && !sourceType.HasDynamicSize && !sourceType.HasDynamicMax && sourceValue.Type().Name() == "Int" {
 		// hack for uint256.Int
 		useFastSsz = true
 	}
 
 	if d.Verbose {
-		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v/%v)\t index: %v\n", strings.Repeat(" ", idt), sourceType.Name(), sourceType.Kind(), useFastSsz, fastsszCompat.isHashRoot, fastsszCompat.hasDynamicSpecSizes, fastsszCompat.hasDynamicSpecMax, hashIndex)
+		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v/%v)\t index: %v\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, sourceType.IsFastSSZHasher, sourceType.HasDynamicSize, sourceType.HasDynamicMax, hashIndex)
 	}
 
 	if useFastSsz {
@@ -76,12 +67,12 @@ func (d *DynSsz) buildRootFromType(sourceType reflect.Type, sourceValue reflect.
 	}
 
 	if !useFastSsz {
-		if strings.Contains(sourceType.Name(), "Bitlist") {
+		if strings.Contains(sourceType.Type.Name(), "Bitlist") {
 			// hack for bitlists
 			maxSize := uint64(0)
 			bytes := sourceValue.Bytes()
-			if len(maxSizeHints) > 0 {
-				maxSize = maxSizeHints[0].size
+			if len(sourceType.MaxSizeHints) > 0 {
+				maxSize = uint64(sourceType.MaxSizeHints[0].Size)
 			} else {
 				maxSize = uint64(len(bytes) * 8)
 			}
@@ -89,20 +80,20 @@ func (d *DynSsz) buildRootFromType(sourceType reflect.Type, sourceValue reflect.
 			hh.PutBitlist(bytes, maxSize)
 		} else {
 
-			switch sourceType.Kind() {
+			switch sourceType.Kind {
 			case reflect.Struct:
 				err := d.buildRootFromStruct(sourceType, sourceValue, hh, idt)
 				if err != nil {
 					return err
 				}
 			case reflect.Array:
-				err := d.buildRootFromSlice(sourceType, sourceValue, hh, maxSizeHints, true, idt)
+				err := d.buildRootFromSlice(sourceType, sourceValue, hh, true, idt)
 				if err != nil {
 					return err
 				}
 
 			case reflect.Slice:
-				err := d.buildRootFromSlice(sourceType, sourceValue, hh, maxSizeHints, false, idt)
+				err := d.buildRootFromSlice(sourceType, sourceValue, hh, false, idt)
 				if err != nil {
 					return err
 				}
@@ -152,39 +143,19 @@ func (d *DynSsz) buildRootFromType(sourceType reflect.Type, sourceValue reflect.
 // is properly hashed and combined according to SSZ specifications. The function processes each field sequentially,
 // building up the final hash by combining the hashes of individual fields using the Merkleization process.
 
-func (d *DynSsz) buildRootFromStruct(sourceType reflect.Type, sourceValue reflect.Value, hh *Hasher, idt int) error {
+func (d *DynSsz) buildRootFromStruct(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher, idt int) error {
 	hashIndex := hh.Index()
 
-	if sourceType.Kind() == reflect.Ptr {
-		sourceType = sourceType.Elem()
-		sourceValue = sourceValue.Elem()
-	}
-
-	for i := 0; i < sourceType.NumField(); i++ {
-		field := sourceType.Field(i)
+	for i := 0; i < len(sourceType.Fields); i++ {
+		field := sourceType.Fields[i]
 		fieldType := field.Type
 		fieldValue := sourceValue.Field(i)
-
-		fieldIsPtr := fieldType.Kind() == reflect.Ptr
-		if fieldIsPtr {
-			fieldType = fieldType.Elem()
-			fieldValue = fieldValue.Elem()
-		}
-
-		_, _, sizeHints, err := d.getSszFieldSize(&field)
-		if err != nil {
-			return err
-		}
-		maxSizeHints, err := d.getSszMaxSizeTag(&field)
-		if err != nil {
-			return err
-		}
 
 		if d.Verbose {
 			fmt.Printf("%vfield %v\n", strings.Repeat(" ", idt), field.Name)
 		}
 
-		err = d.buildRootFromType(fieldType, fieldValue, hh, sizeHints, maxSizeHints, idt+2)
+		err := d.buildRootFromType(fieldType, fieldValue, hh, idt+2)
 		if err != nil {
 			return err
 		}
@@ -219,22 +190,18 @@ func (d *DynSsz) buildRootFromStruct(sourceType reflect.Type, sourceValue reflec
 // slices. It implements specific optimizations for common types like byte slices and uint64 arrays while maintaining
 // the ability to process complex nested structures through recursive calls to buildRootFromType.
 
-func (d *DynSsz) buildRootFromSlice(sourceType reflect.Type, sourceValue reflect.Value, hh *Hasher, maxSizeHints []sszMaxSizeHint, isArray bool, idt int) error {
-	fieldType := sourceType.Elem()
-	fieldIsPtr := fieldType.Kind() == reflect.Ptr
-	if fieldIsPtr {
-		fieldType = fieldType.Elem()
-	}
+func (d *DynSsz) buildRootFromSlice(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher, isArray bool, idt int) error {
+	fieldType := sourceType.ElemDesc
 
 	subIndex := hh.Index()
 	sliceLen := sourceValue.Len()
 	itemSize := 0
 
-	switch fieldType.Kind() {
+	switch fieldType.Kind {
 	case reflect.Struct:
 		for i := 0; i < sliceLen; i++ {
 			fieldValue := sourceValue.Index(i)
-			if fieldIsPtr {
+			if fieldType.IsPtr {
 				fieldValue = fieldValue.Elem()
 			}
 
@@ -244,13 +211,13 @@ func (d *DynSsz) buildRootFromSlice(sourceType reflect.Type, sourceValue reflect
 			}
 		}
 	case reflect.Array, reflect.Slice:
-		itemType := fieldType.Elem()
-		if itemType == byteType {
+		itemType := fieldType.ElemDesc
+		if itemType.Kind == reflect.Uint8 {
 			for i := 0; i < sliceLen; i++ {
 				sliceSubIndex := hh.Index()
 
 				fieldValue := sourceValue.Index(i)
-				if fieldIsPtr {
+				if itemType.IsPtr {
 					fieldValue = fieldValue.Elem()
 				}
 
@@ -259,15 +226,15 @@ func (d *DynSsz) buildRootFromSlice(sourceType reflect.Type, sourceValue reflect
 
 				// we might need to merkelize the child array too.
 				// check if we have size hints
-				if len(maxSizeHints) > 1 {
+				if len(sourceType.MaxSizeHints) > 1 {
 					hh.AppendBytes32(fieldBytes)
-					hh.MerkleizeWithMixin(sliceSubIndex, byteLen, (maxSizeHints[1].size+31)/32)
+					hh.MerkleizeWithMixin(sliceSubIndex, byteLen, uint64((sourceType.MaxSizeHints[1].Size+31)/32))
 				} else {
 					hh.PutBytes(fieldBytes)
 				}
 			}
 		} else {
-			return fmt.Errorf("non-byte slice/array in slice: %v", itemType.Name())
+			return fmt.Errorf("non-byte slice/array in slice: %v", itemType.Type.Name())
 		}
 	case reflect.Uint8:
 		if isArray {
@@ -281,7 +248,7 @@ func (d *DynSsz) buildRootFromSlice(sourceType reflect.Type, sourceValue reflect
 	case reflect.Uint64:
 		for i := 0; i < sliceLen; i++ {
 			fieldValue := sourceValue.Index(i)
-			if fieldIsPtr {
+			if fieldType.IsPtr {
 				fieldValue = fieldValue.Elem()
 			}
 
@@ -290,12 +257,12 @@ func (d *DynSsz) buildRootFromSlice(sourceType reflect.Type, sourceValue reflect
 		itemSize = 8
 	}
 
-	if len(maxSizeHints) > 0 {
+	if len(sourceType.MaxSizeHints) > 0 {
 		var limit uint64
 		if itemSize > 0 {
-			limit = calculateLimit(maxSizeHints[0].size, uint64(sliceLen), uint64(itemSize))
+			limit = calculateLimit(uint64(sourceType.MaxSizeHints[0].Size), uint64(sliceLen), uint64(itemSize))
 		} else {
-			limit = maxSizeHints[0].size
+			limit = uint64(sourceType.MaxSizeHints[0].Size)
 		}
 		hh.MerkleizeWithMixin(subIndex, uint64(sliceLen), limit)
 	} else {
