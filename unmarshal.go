@@ -136,8 +136,8 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 
 func (d *DynSsz) unmarshalStruct(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
 	offset := 0
-	dynamicFields := []*FieldDescriptor{}
-	dynamicOffsets := []int{}
+	dynamicFieldCount := len(targetType.DynFields)
+	dynamicOffsets := make([]int, 0, dynamicFieldCount)
 	sszSize := len(ssz)
 
 	for i := 0; i < len(targetType.Fields); i++ {
@@ -173,16 +173,14 @@ func (d *DynSsz) unmarshalStruct(targetType *TypeDescriptor, targetValue reflect
 
 			// fmt.Printf("%sfield %d:\t offset [%v:%v] %v\t %v \t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name, fieldOffset)
 
-			// store dynamic fields for later
-			dynamicFields = append(dynamicFields, field)
+			// store dynamic field offset for later
 			dynamicOffsets = append(dynamicOffsets, int(fieldOffset))
 		}
 		offset += fieldSize
 	}
 
 	// finished parsing the static size fields, process dynamic fields
-	dynamicFieldCount := len(dynamicFields)
-	for i, field := range dynamicFields {
+	for i, field := range targetType.DynFields {
 		var endOffset int
 		startOffset := dynamicOffsets[i]
 		if i < dynamicFieldCount-1 {
@@ -205,10 +203,11 @@ func (d *DynSsz) unmarshalStruct(targetType *TypeDescriptor, targetValue reflect
 			fieldSsz = []byte{}
 		}
 
-		fieldValue := targetValue.Field(int(field.Index))
-		consumedBytes, err := d.unmarshalType(field.Type, fieldValue, fieldSsz, idt+2)
+		fieldDescriptor := field.Field
+		fieldValue := targetValue.Field(int(fieldDescriptor.Index))
+		consumedBytes, err := d.unmarshalType(fieldDescriptor.Type, fieldValue, fieldSsz, idt+2)
 		if err != nil {
-			return 0, fmt.Errorf("failed decoding field %v: %v", field.Name, err)
+			return 0, fmt.Errorf("failed decoding field %v: %v", fieldDescriptor.Name, err)
 		}
 		if consumedBytes != endOffset-startOffset {
 			return 0, fmt.Errorf("struct field did not consume expected ssz range (consumed: %v, expected: %v)", consumedBytes, endOffset-startOffset)
@@ -246,9 +245,9 @@ func (d *DynSsz) unmarshalArray(targetType *TypeDescriptor, targetValue reflect.
 	var consumedBytes int
 
 	fieldType := targetType.ElemDesc
-
 	arrLen := int(targetType.Len)
-	if fieldType.Type == byteType {
+
+	if targetType.IsByteArray {
 		// shortcut for performance: use copy on []byte arrays
 		reflect.Copy(targetValue, reflect.ValueOf(ssz[0:arrLen]))
 		consumedBytes = arrLen
@@ -312,7 +311,6 @@ func (d *DynSsz) unmarshalSlice(targetType *TypeDescriptor, targetValue reflect.
 	var consumedBytes int
 
 	fieldType := targetType.ElemDesc
-	sliceLen := 0
 	sszLen := len(ssz)
 
 	// check if slice has dynamic size items
@@ -320,10 +318,11 @@ func (d *DynSsz) unmarshalSlice(targetType *TypeDescriptor, targetValue reflect.
 		return d.unmarshalDynamicSlice(targetType, targetValue, ssz, idt)
 	}
 
-	ok := false
-	sliceLen, ok = divideInt(sszLen, int(fieldType.Size))
+	// Calculate slice length once
+	itemSize := int(fieldType.Size)
+	sliceLen, ok := divideInt(sszLen, itemSize)
 	if !ok {
-		return 0, fmt.Errorf("invalid slice length, expected multiple of %v, got %v", fieldType.Size, sszLen)
+		return 0, fmt.Errorf("invalid slice length, expected multiple of %v, got %v", itemSize, sszLen)
 	}
 
 	// slice with static size items
@@ -337,15 +336,13 @@ func (d *DynSsz) unmarshalSlice(targetType *TypeDescriptor, targetValue reflect.
 	newValue := reflect.MakeSlice(fieldT, sliceLen, sliceLen)
 	targetValue.Set(newValue)
 
-	if fieldType.Type == byteType {
+	if targetType.IsByteArray {
 		// shortcut for performance: use copy on []byte arrays
 		reflect.Copy(newValue, reflect.ValueOf(ssz[0:sliceLen]))
 		consumedBytes = sliceLen
 	} else {
 		offset := 0
 		if sliceLen > 0 {
-			itemSize := sszLen / sliceLen
-
 			// decode slice items
 			for i := 0; i < sliceLen; i++ {
 				var itemVal reflect.Value
@@ -433,6 +430,7 @@ func (d *DynSsz) unmarshalDynamicSlice(targetType *TypeDescriptor, targetValue r
 
 	offset := int(firstOffset)
 	sszLen := len(ssz)
+
 	if sliceLen > 0 {
 		// decode slice items
 		for i := 0; i < sliceLen; i++ {
@@ -440,18 +438,19 @@ func (d *DynSsz) unmarshalDynamicSlice(targetType *TypeDescriptor, targetValue r
 			if fieldType.IsPtr {
 				// fmt.Printf("new slice item %v\n", fieldType.Name())
 				itemVal = reflect.New(fieldType.Type.Elem())
-				newValue.Index(i).Set(itemVal.Elem().Addr())
+				newValue.Index(i).Set(itemVal)
 			} else {
 				itemVal = newValue.Index(i)
 			}
 
 			startOffset := sliceOffsets[i]
-			endOffset := 0
+			var endOffset int
 			if i == sliceLen-1 {
 				endOffset = sszLen
 			} else {
 				endOffset = sliceOffsets[i+1]
 			}
+
 			itemSize := endOffset - startOffset
 			if itemSize < 0 || endOffset > sszLen {
 				return 0, ErrOffset
@@ -472,5 +471,4 @@ func (d *DynSsz) unmarshalDynamicSlice(targetType *TypeDescriptor, targetValue r
 	}
 
 	return offset, nil
-
 }
