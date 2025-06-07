@@ -6,6 +6,7 @@ import (
 
 	"github.com/attestantio/go-eth2-client/spec/deneb"
 	ssz "github.com/pk910/dynamic-ssz"
+	"gopkg.in/yaml.v2"
 )
 
 var (
@@ -30,17 +31,9 @@ func init() {
 	stateMinimalData, _ = ioutil.ReadFile("../temp/state-minimal.ssz")
 
 	// Minimal preset properties
-	minimalSpecs := map[string]any{
-		"SLOTS_PER_EPOCH":                uint64(8),
-		"SYNC_COMMITTEE_SIZE":            uint64(32),
-		"SYNC_COMMITTEE_SUBNET_COUNT":    uint64(4),
-		"EPOCHS_PER_HISTORICAL_VECTOR":   uint64(64),
-		"EPOCHS_PER_SLASHINGS_VECTOR":    uint64(64),
-		"SLOTS_PER_HISTORICAL_ROOT":      uint64(64),
-		"EPOCHS_PER_ETH1_VOTING_PERIOD":  uint64(4),
-		"MAX_BLOB_COMMITMENTS_PER_BLOCK": uint64(16),
-		"MAX_WITHDRAWALS_PER_PAYLOAD":    uint64(4),
-	}
+	minimalPresetBytes, _ := ioutil.ReadFile("minimal-preset.yaml")
+	minimalSpecs := make(map[string]any)
+	yaml.Unmarshal(minimalPresetBytes, &minimalSpecs)
 
 	// Create SSZ instances
 	dynSszMainnet = ssz.NewDynSsz(nil)
