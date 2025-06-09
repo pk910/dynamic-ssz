@@ -196,6 +196,7 @@ func (d *DynSsz) buildRootFromArray(sourceType *TypeDescriptor, sourceValue refl
 	}
 
 	// For other types, process each element
+	hashIndex := hh.Index()
 	arrayLen := sourceValue.Len()
 	for i := 0; i < arrayLen; i++ {
 		fieldValue := sourceValue.Index(i)
@@ -204,6 +205,18 @@ func (d *DynSsz) buildRootFromArray(sourceType *TypeDescriptor, sourceValue refl
 		if err != nil {
 			return err
 		}
+	}
+
+	if len(sourceType.MaxSizeHints) > 0 {
+		var limit uint64
+		if fieldType.Size > 0 {
+			limit = calculateLimit(uint64(sourceType.MaxSizeHints[0].Size), uint64(arrayLen), uint64(fieldType.Size))
+		} else {
+			limit = uint64(sourceType.MaxSizeHints[0].Size)
+		}
+		hh.MerkleizeWithMixin(hashIndex, uint64(arrayLen), limit)
+	} else {
+		hh.Merkleize(hashIndex)
 	}
 
 	return nil

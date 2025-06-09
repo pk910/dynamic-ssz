@@ -28,6 +28,24 @@
               // * the first charactor MUST be small
               ""
             ]
+          },
+          {
+            "name": "Launch spectests",
+            "type": "go",
+            "request": "launch",
+            "mode": "test",
+            "program": "${workspaceFolder}/test",
+            "env": {
+                "CONSENSUS_SPEC_TESTS_DIR": "${workspaceFolder}/spectests"
+            },
+            "args": [
+              "-test.run",
+              // test function name
+              // * can use reguler expression
+              // * NOT include "Test"
+              // * the first charactor MUST be small
+              ""
+            ]
           }
     ]
 }
