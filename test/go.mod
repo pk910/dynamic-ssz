@@ -27,6 +27,7 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/prysmaticlabs/go-bitfield v0.0.0-20240618144021-706c95b2dd15 // indirect
+	github.com/prysmaticlabs/gohashtree v0.0.4-beta // indirect
 	golang.org/x/crypto v0.33.0 // indirect
 	golang.org/x/sys v0.30.0 // indirect
 	golang.org/x/xerrors v0.0.0-20231012003039-104605ab7028 // indirect

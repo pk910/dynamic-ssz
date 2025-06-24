@@ -12,7 +12,10 @@
             "request": "launch",
             "mode": "auto",
             "cwd": "${workspaceFolder}/test",
-            "program": "${workspaceFolder}/test"
+            "program": "${workspaceFolder}/test",
+            "args": [
+              "performance"
+            ]
         },
         {
             "name": "Launch test function",

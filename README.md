@@ -93,30 +93,31 @@ The performance of `dynssz` has been benchmarked against `fastssz` using BeaconB
 **Legend:**
 - First number: Unmarshalling time in milliseconds.
 - Second number: Marshalling time in milliseconds.
+- Third number: Hash tree root time in milliseconds.
 
 ### Mainnet Preset
 
-#### BeaconBlock Decode + Encode (10,000 times)
-- **fastssz only:** [4 ms / 2 ms] success
-- **dynssz only:** [356 ms / 422 ms] success
-- **dynssz + fastssz:** [12 ms / 6 ms] success
+#### BeaconBlock Decode + Encode + Hash (10,000 times)
+- **fastssz only:** [8 ms / 3 ms / 88 ms] success
+- **dynssz only:** [27 ms / 12 ms / 63 ms] success
+- **dynssz + fastssz:** [8 ms / 3 ms / 64 ms] success
 
-#### BeaconState Decode + Encode (10,000 times)
-- **fastssz only:** [12416 ms / 7817 ms] success
-- **dynssz only:** [38020 ms / 25964 ms] success
-- **dynssz + fastssz:** [11256 ms / 8135 ms] success
+#### BeaconState Decode + Encode + Hash (10,000 times)
+- **fastssz only:** [5849 ms / 4960 ms / 73087 ms] success
+- **dynssz only:** [22544 ms / 12256 ms / 40181 ms] success
+- **dynssz + fastssz:** [5728 ms / 4857 ms / 37191 ms] success
 
 ### Minimal Preset
 
-#### BeaconBlock Decode + Encode (10,000 times)
-- **fastssz only:** [0 ms / 0 ms] failed (unmarshal error)
-- **dynssz only:** [347 ms / 582 ms] success
-- **dynssz + fastssz:** [251 ms / 283 ms] success
+#### BeaconBlock Decode + Encode + Hash (10,000 times)
+- **fastssz only:** [0 ms / 0 ms / 0 ms] failed (unmarshal error)
+- **dynssz only:** [44 ms / 29 ms / 90 ms] success
+- **dynssz + fastssz:** [22 ms / 13 ms / 151 ms] success
 
-#### BeaconState Decode + Encode (10,000 times)
-- **fastssz only:** [0 ms / 0 ms] failed (unmarshal error)
-- **dynssz only:** [8450 ms / 8036 ms] success
-- **dynssz + fastssz:** [1554 ms / 1096 ms] success
+#### BeaconState Decode + Encode + Hash (10,000 times)
+- **fastssz only:** [0 ms / 0 ms / 0 ms] failed (unmarshal error)
+- **dynssz only:** [796 ms / 407 ms / 1816 ms] success
+- **dynssz + fastssz:** [459 ms / 244 ms / 4712 ms] success
 
 These results showcase the dynamic processing capabilities of `dynssz`, particularly its ability to handle data structures that `fastssz` cannot process due to its static nature. While `dynssz` introduces additional processing time, its flexibility allows it to successfully manage both mainnet and minimal presets. The combined `dynssz` and `fastssz` approach significantly improves performance while maintaining this flexibility, making it a viable solution for applications requiring dynamic SSZ processing.
 
