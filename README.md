@@ -1,14 +1,15 @@
 # Dynamic SSZ (dynssz)
 
-Dynamic SSZ (`dynssz`) is a Go library designed to provide flexible and dynamic SSZ encoding/decoding for Ethereum data structures. It stands out by using runtime reflection to handle serialization and deserialization of types with variable field sizes, enabling it to support a wide range of Ethereum presets beyond the mainnet. `dynssz` integrates with `fastssz` to leverage static type information for encoding/decoding when possible, but its primary advantage lies in its ability to adapt to dynamic field sizes that are not well-suited to static code generation methods.
+Dynamic SSZ (`dynssz`) is a Go library designed to provide flexible and dynamic SSZ encoding/decoding for any Go data structures. It stands out by using runtime reflection to handle serialization and deserialization of types with variable field sizes, enabling it to support dynamic specifications and configurations. While commonly used with Ethereum data structures and presets (mainnet, minimal, custom), it works with any SSZ-compatible types. `dynssz` integrates with `fastssz` to leverage static type information for encoding/decoding when possible, but its primary advantage lies in its ability to adapt to dynamic field sizes that are not well-suited to static code generation methods.
 
 `dynssz` is designed to bridge the gap between the efficiency of static SSZ encoding/decoding and the flexibility required for handling dynamic data structures. It achieves this through a hybrid approach that combines the best of both worlds: leveraging `fastssz` for static types and dynamically processing types with variable sizes.
 
 ## Benefits
 
-- **Flexibility**: Supports Ethereum data structures beyond mainnet presets, accommodating custom and dynamic specifications.
+- **Flexibility**: Supports any SSZ-compatible data structures with custom and dynamic specifications, not limited to Ethereum types.
 - **Hybrid Efficiency**: Balances the efficiency of static processing with the flexibility of dynamic handling, optimizing performance where possible.
 - **Developer-Friendly**: Simplifies the handling of SSZ data for developers by abstracting the complexity of dynamic data processing.
+- **General Purpose**: Works with any Go types that follow SSZ serialization rules, making it suitable for various applications beyond blockchain.
 
 ## Installation
 
@@ -60,12 +61,23 @@ type BeaconState struct {
 import "github.com/pk910/dynamic-ssz"
 
 // Define your dynamic specifications
-specs := map[string]any{
+// For Ethereum use case:
+ethSpecs := map[string]any{
     "SYNC_COMMITTEE_SIZE": uint64(32),
+    "SLOTS_PER_HISTORICAL_ROOT": uint64(8192),
     // ...
 }
 
-ds := dynssz.NewDynSsz(specs)
+// For custom application use case:
+customSpecs := map[string]any{
+    "MAX_ITEMS": uint64(1000),
+    "BUFFER_SIZE": uint64(4096),
+    // ...
+}
+
+ds := dynssz.NewDynSsz(ethSpecs)
+// or
+ds := dynssz.NewDynSsz(customSpecs)
 ```
 
 ### Marshaling an Object
@@ -120,6 +132,25 @@ The performance of `dynssz` has been benchmarked against `fastssz` using BeaconB
 - **dynssz + fastssz:** [459 ms / 244 ms / 4712 ms] success
 
 These results showcase the dynamic processing capabilities of `dynssz`, particularly its ability to handle data structures that `fastssz` cannot process due to its static nature. While `dynssz` introduces additional processing time, its flexibility allows it to successfully manage both mainnet and minimal presets. The combined `dynssz` and `fastssz` approach significantly improves performance while maintaining this flexibility, making it a viable solution for applications requiring dynamic SSZ processing.
+
+## Testing
+
+The library includes comprehensive testing infrastructure:
+
+- **Unit Tests**: Fast, isolated tests for core functionality
+- **Spec Tests**: Ethereum consensus specification compliance tests
+- **Examples**: Working examples that are automatically tested
+- **Performance Tests**: Benchmarking and regression testing
+
+### Running Spec Tests
+
+```bash
+cd spectests
+./run_tests.sh mainnet  # Run mainnet preset tests
+./run_tests.sh minimal  # Run minimal preset tests
+```
+
+The spec tests automatically download the latest consensus spec test data and validate the library against the official Ethereum test vectors.
 
 ## Internal Technical Overview
 

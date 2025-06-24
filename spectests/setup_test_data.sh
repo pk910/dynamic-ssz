@@ -154,6 +154,9 @@ main() {
     # Check if test data already exists
     if [ -d "${TEST_DATA_DIR}/tests/${preset}" ]; then
         echo "Existing test data found, skipping download"
+        if [ -f "${TEST_DATA_DIR}/version.txt" ]; then
+            echo "Spec tests version: $(cat ${TEST_DATA_DIR}/version.txt)"
+        fi
         echo "CONSENSUS_SPEC_TESTS_DIR=${TEST_DATA_DIR}/tests/${preset}"
         return 0
     fi
@@ -162,6 +165,9 @@ main() {
     local latest_tag=$(get_latest_release)
     download_and_extract "${latest_tag}" "${preset}"
     verify_test_data "${preset}"
+    
+    # Save the version to a file for cache key usage
+    echo "${latest_tag}" > "${TEST_DATA_DIR}/version.txt"
     
     echo "CONSENSUS_SPEC_TESTS_DIR=${TEST_DATA_DIR}/tests/${preset}"
 }
@@ -176,6 +182,15 @@ export_test_dir() {
     echo "${test_dir}"
 }
 
+# Get the spec tests version
+get_version() {
+    if [ -f "${TEST_DATA_DIR}/version.txt" ]; then
+        cat "${TEST_DATA_DIR}/version.txt"
+    else
+        echo "unknown"
+    fi
+}
+
 # Handle command line arguments
 COMMAND="${1:-setup}"
 PRESET_ARG="${2:-mainnet}"
@@ -187,21 +202,26 @@ case "${COMMAND}" in
     "export")
         export_test_dir "${2}"
         ;;
+    "version")
+        get_version
+        ;;
     "clean")
         echo "Cleaning test data..."
         rm -rf "${TEST_DATA_DIR}"
         echo "Test data cleaned"
         ;;
     *)
-        echo "Usage: $0 [setup|export|clean] [mainnet|minimal]"
+        echo "Usage: $0 [setup|export|version|clean] [mainnet|minimal]"
         echo "  setup: Download and setup test data (default)"
         echo "  export: Print the test data directory path"
+        echo "  version: Print the spec tests version"
         echo "  clean: Remove all test data"
         echo ""
         echo "Examples:"
         echo "  $0 setup mainnet"
         echo "  $0 setup minimal" 
         echo "  $0 export mainnet"
+        echo "  $0 version"
         echo "  $0 clean"
         exit 1
         ;;

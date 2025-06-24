@@ -34,11 +34,28 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-go-${{ matrix.go-version }}-spectests-
           
+    - name: Get spec tests version
+      id: spec-version
+      run: |
+        # Get latest non-prerelease version
+        VERSION=$(curl -s https://api.github.com/repos/ethereum/consensus-spec-tests/releases | \
+          jq -r '.[] | select(.prerelease == false and .draft == false) | .tag_name' | \
+          grep -v -E '(alpha|beta|rc|pre)' | \
+          head -1)
+        
+        # Fallback if no version found
+        if [ -z "$VERSION" ]; then
+          VERSION="v1.5.0"
+        fi
+        
+        echo "Spec tests version: ${VERSION}"
+        echo "version=${VERSION}" >> $GITHUB_OUTPUT
+        
     - name: Cache consensus spec tests
       uses: actions/cache@v3
       with:
         path: spectests/consensus-spec-tests
-        key: consensus-spec-tests-${{ matrix.preset }}-${{ github.run_number }}
+        key: consensus-spec-tests-${{ matrix.preset }}-${{ steps.spec-version.outputs.version }}
         restore-keys: |
           consensus-spec-tests-${{ matrix.preset }}-
           
