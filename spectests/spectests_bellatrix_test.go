@@ -1,16 +1,16 @@
-package main
+package spectests
 
 import (
 	"os"
 	"testing"
 
 	"github.com/attestantio/go-eth2-client/spec/altair"
-	"github.com/attestantio/go-eth2-client/spec/capella"
+	"github.com/attestantio/go-eth2-client/spec/bellatrix"
 	"github.com/attestantio/go-eth2-client/spec/phase0"
 )
 
-// TestConsensusSpec tests the types against the Ethereum consensus spec tests.
-func TestConsensusSpecCapella(t *testing.T) {
+// TestConsensusSpecBellatrix tests the types against the Ethereum consensus spec tests.
+func TestConsensusSpecBellatrix(t *testing.T) {
 	if os.Getenv("CONSENSUS_SPEC_TESTS_DIR") == "" {
 		t.Skip("CONSENSUS_SPEC_TESTS_DIR not supplied, not running spec tests")
 	}
@@ -34,11 +34,11 @@ func TestConsensusSpecCapella(t *testing.T) {
 		},
 		{
 			name: "BeaconBlock",
-			s:    &capella.BeaconBlock{},
+			s:    &bellatrix.BeaconBlock{},
 		},
 		{
 			name: "BeaconBlockBody",
-			s:    &capella.BeaconBlockBody{},
+			s:    &bellatrix.BeaconBlockBody{},
 		},
 		{
 			name: "BeaconBlockHeader",
@@ -46,7 +46,7 @@ func TestConsensusSpecCapella(t *testing.T) {
 		},
 		{
 			name: "BeaconState",
-			s:    &capella.BeaconState{},
+			s:    &bellatrix.BeaconState{},
 		},
 		{
 			name: "Checkpoint",
@@ -74,11 +74,11 @@ func TestConsensusSpecCapella(t *testing.T) {
 		},
 		{
 			name: "ExecutionPayload",
-			s:    &capella.ExecutionPayload{},
+			s:    &bellatrix.ExecutionPayload{},
 		},
 		{
 			name: "ExecutionPayloadHeader",
-			s:    &capella.ExecutionPayloadHeader{},
+			s:    &bellatrix.ExecutionPayloadHeader{},
 		},
 		{
 			name: "Fork",
@@ -87,10 +87,6 @@ func TestConsensusSpecCapella(t *testing.T) {
 		{
 			name: "ForkData",
 			s:    &phase0.ForkData{},
-		},
-		{
-			name: "HistoricalSummary",
-			s:    &capella.HistoricalSummary{},
 		},
 		{
 			name: "IndexedAttestation",
@@ -110,7 +106,7 @@ func TestConsensusSpecCapella(t *testing.T) {
 		},
 		{
 			name: "SignedBeaconBlock",
-			s:    &capella.SignedBeaconBlock{},
+			s:    &bellatrix.SignedBeaconBlock{},
 		},
 		{
 			name: "SignedBeaconBlockHeader",
@@ -144,12 +140,8 @@ func TestConsensusSpecCapella(t *testing.T) {
 			name: "VoluntaryExit",
 			s:    &phase0.VoluntaryExit{},
 		},
-		{
-			name: "Withdrawal",
-			s:    &capella.Withdrawal{},
-		},
 	}
 
-	testForkConsensusSpec(t, "capella", "mainnet", tests)
-	testForkConsensusSpec(t, "capella", "minimal", tests)
+	testForkConsensusSpec(t, "bellatrix", "mainnet", tests)
+	testForkConsensusSpec(t, "bellatrix", "minimal", tests)
 }

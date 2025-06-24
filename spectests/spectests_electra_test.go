@@ -1,16 +1,18 @@
-package main
+package spectests
 
 import (
 	"os"
 	"testing"
 
 	"github.com/attestantio/go-eth2-client/spec/altair"
-	"github.com/attestantio/go-eth2-client/spec/bellatrix"
+	"github.com/attestantio/go-eth2-client/spec/capella"
+	"github.com/attestantio/go-eth2-client/spec/deneb"
+	"github.com/attestantio/go-eth2-client/spec/electra"
 	"github.com/attestantio/go-eth2-client/spec/phase0"
 )
 
-// TestConsensusSpecBellatrix tests the types against the Ethereum consensus spec tests.
-func TestConsensusSpecBellatrix(t *testing.T) {
+// TestConsensusSpecElectra tests the types against the Ethereum consensus spec tests.
+func TestConsensusSpecElectra(t *testing.T) {
 	if os.Getenv("CONSENSUS_SPEC_TESTS_DIR") == "" {
 		t.Skip("CONSENSUS_SPEC_TESTS_DIR not supplied, not running spec tests")
 	}
@@ -18,11 +20,11 @@ func TestConsensusSpecBellatrix(t *testing.T) {
 	tests := []SpecTestStruct{
 		{
 			name: "AggregateAndProof",
-			s:    &phase0.AggregateAndProof{},
+			s:    &electra.AggregateAndProof{},
 		},
 		{
 			name: "Attestation",
-			s:    &phase0.Attestation{},
+			s:    &electra.Attestation{},
 		},
 		{
 			name: "AttestationData",
@@ -30,15 +32,15 @@ func TestConsensusSpecBellatrix(t *testing.T) {
 		},
 		{
 			name: "AttesterSlashing",
-			s:    &phase0.AttesterSlashing{},
+			s:    &electra.AttesterSlashing{},
 		},
 		{
 			name: "BeaconBlock",
-			s:    &bellatrix.BeaconBlock{},
+			s:    &electra.BeaconBlock{},
 		},
 		{
 			name: "BeaconBlockBody",
-			s:    &bellatrix.BeaconBlockBody{},
+			s:    &electra.BeaconBlockBody{},
 		},
 		{
 			name: "BeaconBlockHeader",
@@ -46,11 +48,31 @@ func TestConsensusSpecBellatrix(t *testing.T) {
 		},
 		{
 			name: "BeaconState",
-			s:    &bellatrix.BeaconState{},
+			s:    &electra.BeaconState{},
+		},
+		{
+			name: "BlobIdentifier",
+			s:    &deneb.BlobIdentifier{},
+		},
+		{
+			name: "BlobSidecar",
+			s:    &deneb.BlobSidecar{},
+		},
+		{
+			name: "BLSToExecutionChange",
+			s:    &capella.BLSToExecutionChange{},
 		},
 		{
 			name: "Checkpoint",
 			s:    &phase0.Checkpoint{},
+		},
+		{
+			name: "Consolidation",
+			s:    &electra.Consolidation{},
+		},
+		{
+			name: "ConsolidationRequest",
+			s:    &electra.ConsolidationRequest{},
 		},
 		{
 			name: "ContributionAndProof",
@@ -65,6 +87,10 @@ func TestConsensusSpecBellatrix(t *testing.T) {
 			s:    &phase0.DepositData{},
 		},
 		{
+			name: "DepositRequest",
+			s:    &electra.DepositRequest{},
+		},
+		{
 			name: "DepositMessage",
 			s:    &phase0.DepositMessage{},
 		},
@@ -73,12 +99,8 @@ func TestConsensusSpecBellatrix(t *testing.T) {
 			s:    &phase0.ETH1Data{},
 		},
 		{
-			name: "ExecutionPayload",
-			s:    &bellatrix.ExecutionPayload{},
-		},
-		{
-			name: "ExecutionPayloadHeader",
-			s:    &bellatrix.ExecutionPayloadHeader{},
+			name: "ExecutionRequests",
+			s:    &electra.ExecutionRequests{},
 		},
 		{
 			name: "Fork",
@@ -89,12 +111,28 @@ func TestConsensusSpecBellatrix(t *testing.T) {
 			s:    &phase0.ForkData{},
 		},
 		{
+			name: "HistoricalSummary",
+			s:    &capella.HistoricalSummary{},
+		},
+		{
 			name: "IndexedAttestation",
-			s:    &phase0.IndexedAttestation{},
+			s:    &electra.IndexedAttestation{},
 		},
 		{
 			name: "PendingAttestation",
 			s:    &phase0.PendingAttestation{},
+		},
+		{
+			name: "PendingDeposit",
+			s:    &electra.PendingDeposit{},
+		},
+		{
+			name: "PendingConsolidation",
+			s:    &electra.PendingConsolidation{},
+		},
+		{
+			name: "PendingPartialWithdrawal",
+			s:    &electra.PendingPartialWithdrawal{},
 		},
 		{
 			name: "ProposerSlashing",
@@ -102,15 +140,19 @@ func TestConsensusSpecBellatrix(t *testing.T) {
 		},
 		{
 			name: "SignedAggregateAndProof",
-			s:    &phase0.SignedAggregateAndProof{},
+			s:    &electra.SignedAggregateAndProof{},
 		},
 		{
 			name: "SignedBeaconBlock",
-			s:    &bellatrix.SignedBeaconBlock{},
+			s:    &electra.SignedBeaconBlock{},
 		},
 		{
 			name: "SignedBeaconBlockHeader",
 			s:    &phase0.SignedBeaconBlockHeader{},
+		},
+		{
+			name: "SignedBLSToExecutionChange",
+			s:    &capella.SignedBLSToExecutionChange{},
 		},
 		{
 			name: "SignedContributionAndProof",
@@ -123,6 +165,10 @@ func TestConsensusSpecBellatrix(t *testing.T) {
 		{
 			name: "SyncAggregate",
 			s:    &altair.SyncAggregate{},
+		},
+		{
+			name: "SyncCommittee",
+			s:    &altair.SyncCommittee{},
 		},
 		{
 			name: "SyncCommitteeContribution",
@@ -140,8 +186,16 @@ func TestConsensusSpecBellatrix(t *testing.T) {
 			name: "VoluntaryExit",
 			s:    &phase0.VoluntaryExit{},
 		},
+		{
+			name: "Withdrawal",
+			s:    &capella.Withdrawal{},
+		},
+		{
+			name: "WithdrawalRequest",
+			s:    &electra.WithdrawalRequest{},
+		},
 	}
 
-	testForkConsensusSpec(t, "bellatrix", "mainnet", tests)
-	testForkConsensusSpec(t, "bellatrix", "minimal", tests)
+	testForkConsensusSpec(t, "electra", "mainnet", tests)
+	testForkConsensusSpec(t, "electra", "minimal", tests)
 }

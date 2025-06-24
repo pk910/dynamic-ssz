@@ -1,4 +1,4 @@
-package main
+package spectests
 
 import (
 	"os"
@@ -7,12 +7,11 @@ import (
 	"github.com/attestantio/go-eth2-client/spec/altair"
 	"github.com/attestantio/go-eth2-client/spec/capella"
 	"github.com/attestantio/go-eth2-client/spec/deneb"
-	"github.com/attestantio/go-eth2-client/spec/electra"
 	"github.com/attestantio/go-eth2-client/spec/phase0"
 )
 
-// TestConsensusSpecElectra tests the types against the Ethereum consensus spec tests.
-func TestConsensusSpecElectra(t *testing.T) {
+// TestConsensusSpecDeneb tests the types against the Ethereum consensus spec tests.
+func TestConsensusSpecDeneb(t *testing.T) {
 	if os.Getenv("CONSENSUS_SPEC_TESTS_DIR") == "" {
 		t.Skip("CONSENSUS_SPEC_TESTS_DIR not supplied, not running spec tests")
 	}
@@ -20,11 +19,11 @@ func TestConsensusSpecElectra(t *testing.T) {
 	tests := []SpecTestStruct{
 		{
 			name: "AggregateAndProof",
-			s:    &electra.AggregateAndProof{},
+			s:    &phase0.AggregateAndProof{},
 		},
 		{
 			name: "Attestation",
-			s:    &electra.Attestation{},
+			s:    &phase0.Attestation{},
 		},
 		{
 			name: "AttestationData",
@@ -32,15 +31,15 @@ func TestConsensusSpecElectra(t *testing.T) {
 		},
 		{
 			name: "AttesterSlashing",
-			s:    &electra.AttesterSlashing{},
+			s:    &phase0.AttesterSlashing{},
 		},
 		{
 			name: "BeaconBlock",
-			s:    &electra.BeaconBlock{},
+			s:    &deneb.BeaconBlock{},
 		},
 		{
 			name: "BeaconBlockBody",
-			s:    &electra.BeaconBlockBody{},
+			s:    &deneb.BeaconBlockBody{},
 		},
 		{
 			name: "BeaconBlockHeader",
@@ -48,7 +47,7 @@ func TestConsensusSpecElectra(t *testing.T) {
 		},
 		{
 			name: "BeaconState",
-			s:    &electra.BeaconState{},
+			s:    &deneb.BeaconState{},
 		},
 		{
 			name: "BlobIdentifier",
@@ -67,14 +66,6 @@ func TestConsensusSpecElectra(t *testing.T) {
 			s:    &phase0.Checkpoint{},
 		},
 		{
-			name: "Consolidation",
-			s:    &electra.Consolidation{},
-		},
-		{
-			name: "ConsolidationRequest",
-			s:    &electra.ConsolidationRequest{},
-		},
-		{
 			name: "ContributionAndProof",
 			s:    &altair.ContributionAndProof{},
 		},
@@ -87,10 +78,6 @@ func TestConsensusSpecElectra(t *testing.T) {
 			s:    &phase0.DepositData{},
 		},
 		{
-			name: "DepositRequest",
-			s:    &electra.DepositRequest{},
-		},
-		{
 			name: "DepositMessage",
 			s:    &phase0.DepositMessage{},
 		},
@@ -99,8 +86,12 @@ func TestConsensusSpecElectra(t *testing.T) {
 			s:    &phase0.ETH1Data{},
 		},
 		{
-			name: "ExecutionRequests",
-			s:    &electra.ExecutionRequests{},
+			name: "ExecutionPayload",
+			s:    &deneb.ExecutionPayload{},
+		},
+		{
+			name: "ExecutionPayloadHeader",
+			s:    &deneb.ExecutionPayloadHeader{},
 		},
 		{
 			name: "Fork",
@@ -116,23 +107,11 @@ func TestConsensusSpecElectra(t *testing.T) {
 		},
 		{
 			name: "IndexedAttestation",
-			s:    &electra.IndexedAttestation{},
+			s:    &phase0.IndexedAttestation{},
 		},
 		{
 			name: "PendingAttestation",
 			s:    &phase0.PendingAttestation{},
-		},
-		{
-			name: "PendingDeposit",
-			s:    &electra.PendingDeposit{},
-		},
-		{
-			name: "PendingConsolidation",
-			s:    &electra.PendingConsolidation{},
-		},
-		{
-			name: "PendingPartialWithdrawal",
-			s:    &electra.PendingPartialWithdrawal{},
 		},
 		{
 			name: "ProposerSlashing",
@@ -140,11 +119,11 @@ func TestConsensusSpecElectra(t *testing.T) {
 		},
 		{
 			name: "SignedAggregateAndProof",
-			s:    &electra.SignedAggregateAndProof{},
+			s:    &phase0.SignedAggregateAndProof{},
 		},
 		{
 			name: "SignedBeaconBlock",
-			s:    &electra.SignedBeaconBlock{},
+			s:    &deneb.SignedBeaconBlock{},
 		},
 		{
 			name: "SignedBeaconBlockHeader",
@@ -190,13 +169,8 @@ func TestConsensusSpecElectra(t *testing.T) {
 			name: "Withdrawal",
 			s:    &capella.Withdrawal{},
 		},
-		{
-			name: "WithdrawalRequest",
-			s:    &electra.WithdrawalRequest{},
-		},
 	}
 
-	//t.Skipf("Deneb spec tests are not implemented yet (%v)", len(tests))
-	testForkConsensusSpec(t, "electra", "mainnet", tests)
-	testForkConsensusSpec(t, "electra", "minimal", tests)
+	testForkConsensusSpec(t, "deneb", "mainnet", tests)
+	testForkConsensusSpec(t, "deneb", "minimal", tests)
 }

@@ -1,11 +1,12 @@
-module github.com/pk910/dynamic-ssz/test
+module versioned-blocks-example
 
-go 1.21.1
+go 1.21.0
+
+toolchain go1.22.4
 
 require (
-	github.com/attestantio/go-eth2-client v0.25.2
+	github.com/attestantio/go-eth2-client v0.26.0
 	github.com/pk910/dynamic-ssz v0.0.4
-	gopkg.in/yaml.v2 v2.4.0
 )
 
 require (
@@ -26,9 +27,7 @@ require (
 	golang.org/x/sys v0.30.0 // indirect
 	golang.org/x/xerrors v0.0.0-20231012003039-104605ab7028 // indirect
 	gopkg.in/Knetic/govaluate.v3 v3.0.0 // indirect
+	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
 
-//replace github.com/attestantio/go-eth2-client => ../../go-eth2-client
-replace github.com/attestantio/go-eth2-client => github.com/pk910/go-eth2-client v0.0.0-20250624161731-3d549c5576da // waiting for https://github.com/attestantio/go-eth2-client/pull/242
-
-replace github.com/pk910/dynamic-ssz => ../
+replace github.com/pk910/dynamic-ssz => ../../

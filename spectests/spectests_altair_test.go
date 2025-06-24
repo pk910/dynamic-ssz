@@ -1,14 +1,15 @@
-package main
+package spectests
 
 import (
 	"os"
 	"testing"
 
+	"github.com/attestantio/go-eth2-client/spec/altair"
 	"github.com/attestantio/go-eth2-client/spec/phase0"
 )
 
-// TestConsensusSpecPhase0 tests the types against the Ethereum consensus spec tests.
-func TestConsensusSpecPhase0(t *testing.T) {
+// TestConsensusSpecAltair tests the types against the Ethereum consensus spec tests.
+func TestConsensusSpecAltair(t *testing.T) {
 	if os.Getenv("CONSENSUS_SPEC_TESTS_DIR") == "" {
 		t.Skip("CONSENSUS_SPEC_TESTS_DIR not supplied, not running spec tests")
 	}
@@ -32,11 +33,11 @@ func TestConsensusSpecPhase0(t *testing.T) {
 		},
 		{
 			name: "BeaconBlock",
-			s:    &phase0.BeaconBlock{},
+			s:    &altair.BeaconBlock{},
 		},
 		{
 			name: "BeaconBlockBody",
-			s:    &phase0.BeaconBlockBody{},
+			s:    &altair.BeaconBlockBody{},
 		},
 		{
 			name: "BeaconBlockHeader",
@@ -44,11 +45,15 @@ func TestConsensusSpecPhase0(t *testing.T) {
 		},
 		{
 			name: "BeaconState",
-			s:    &phase0.BeaconState{},
+			s:    &altair.BeaconState{},
 		},
 		{
 			name: "Checkpoint",
 			s:    &phase0.Checkpoint{},
+		},
+		{
+			name: "ContributionAndProof",
+			s:    &altair.ContributionAndProof{},
 		},
 		{
 			name: "Deposit",
@@ -92,15 +97,31 @@ func TestConsensusSpecPhase0(t *testing.T) {
 		},
 		{
 			name: "SignedBeaconBlock",
-			s:    &phase0.SignedBeaconBlock{},
+			s:    &altair.SignedBeaconBlock{},
 		},
 		{
 			name: "SignedBeaconBlockHeader",
 			s:    &phase0.SignedBeaconBlockHeader{},
 		},
 		{
+			name: "SignedContributionAndProof",
+			s:    &altair.SignedContributionAndProof{},
+		},
+		{
 			name: "SignedVoluntaryExit",
 			s:    &phase0.SignedVoluntaryExit{},
+		},
+		{
+			name: "SyncAggregate",
+			s:    &altair.SyncAggregate{},
+		},
+		{
+			name: "SyncCommitteeContribution",
+			s:    &altair.SyncCommitteeContribution{},
+		},
+		{
+			name: "SyncCommitteeMessage",
+			s:    &altair.SyncCommitteeMessage{},
 		},
 		{
 			name: "Validator",
@@ -112,6 +133,6 @@ func TestConsensusSpecPhase0(t *testing.T) {
 		},
 	}
 
-	testForkConsensusSpec(t, "phase0", "mainnet", tests)
-	testForkConsensusSpec(t, "phase0", "minimal", tests)
+	testForkConsensusSpec(t, "altair", "mainnet", tests)
+	testForkConsensusSpec(t, "altair", "minimal", tests)
 }

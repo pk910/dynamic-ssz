@@ -1,4 +1,4 @@
-package main
+package spectests
 
 import (
 	"fmt"
@@ -17,10 +17,6 @@ type SpecTestStruct struct {
 	s    any
 }
 
-type fastsszHashRoot interface {
-	HashTreeRoot() ([32]byte, error)
-}
-
 func testForkConsensusSpec(t *testing.T, fork string, preset string, tests []SpecTestStruct) {
 	var dynssz *ssz.DynSsz
 	if preset == "mainnet" {
@@ -29,9 +25,27 @@ func testForkConsensusSpec(t *testing.T, fork string, preset string, tests []Spe
 		dynssz = dynSszOnlyMinimal
 	}
 
-	baseDir := filepath.Join(os.Getenv("CONSENSUS_SPEC_TESTS_DIR"), preset, fork, "ssz_static")
+	specTestsDir := os.Getenv("CONSENSUS_SPEC_TESTS_DIR")
+	if specTestsDir == "" {
+		t.Skip("CONSENSUS_SPEC_TESTS_DIR not set")
+	}
+
+	baseDir := filepath.Join(specTestsDir, preset, fork, "ssz_static")
+
+	// Check if the fork directory exists
+	if _, err := os.Stat(baseDir); os.IsNotExist(err) {
+		t.Skipf("Fork %s not found in test data", fork)
+	}
+
 	for _, test := range tests {
 		dir := filepath.Join(baseDir, test.name, "ssz_random")
+
+		// Check if the test type directory exists
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			t.Logf("Test type %s not found for fork %s, skipping", test.name, fork)
+			continue
+		}
+
 		require.NoError(t, filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 			if path == dir {
 				// Only interested in subdirectories.
@@ -44,14 +58,15 @@ func testForkConsensusSpec(t *testing.T, fork string, preset string, tests []Spe
 					s2 := clone.Clone(test.s)
 					compressedSpecSSZ, err := os.ReadFile(filepath.Join(path, "serialized.ssz_snappy"))
 					require.NoError(t, err)
-					var specSSZ []byte
-					specSSZ, err = snappy.Decode(specSSZ, compressedSpecSSZ)
+					specSSZ, err := snappy.Decode(nil, compressedSpecSSZ)
 					require.NoError(t, err)
+
+					fmt.Printf("specSSZ: %v\n", len(specSSZ))
 
 					// Unmarshal the SSZ.
 					err = dynssz.UnmarshalSSZ(s2, specSSZ)
 					if err != nil {
-						fmt.Printf("type: %v\n", test.name)
+						fmt.Printf("error unmarshalling: %v\n", err)
 						err = dynssz.UnmarshalSSZ(s2, specSSZ)
 					}
 					require.NoError(t, err)
@@ -73,8 +88,7 @@ func testForkConsensusSpec(t *testing.T, fork string, preset string, tests []Spe
 						fmt.Printf("\n\ngeneratedRoot: %v", generatedRoot)
 						fmt.Printf("specYAMLRoot: %v\n", string(specYAMLRoot))
 						generatedRootBytes, err = dynssz.HashTreeRoot(s2)
-
-						s2.(fastsszHashRoot).HashTreeRoot()
+						require.NoError(t, err)
 
 						dynssz.Verbose = false
 					}

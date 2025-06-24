@@ -1,4 +1,4 @@
-package main
+package spectests
 
 import (
 	"os"
@@ -6,12 +6,11 @@ import (
 
 	"github.com/attestantio/go-eth2-client/spec/altair"
 	"github.com/attestantio/go-eth2-client/spec/capella"
-	"github.com/attestantio/go-eth2-client/spec/deneb"
 	"github.com/attestantio/go-eth2-client/spec/phase0"
 )
 
-// TestConsensusSpecDeneb tests the types against the Ethereum consensus spec tests.
-func TestConsensusSpecDeneb(t *testing.T) {
+// TestConsensusSpec tests the types against the Ethereum consensus spec tests.
+func TestConsensusSpecCapella(t *testing.T) {
 	if os.Getenv("CONSENSUS_SPEC_TESTS_DIR") == "" {
 		t.Skip("CONSENSUS_SPEC_TESTS_DIR not supplied, not running spec tests")
 	}
@@ -35,11 +34,11 @@ func TestConsensusSpecDeneb(t *testing.T) {
 		},
 		{
 			name: "BeaconBlock",
-			s:    &deneb.BeaconBlock{},
+			s:    &capella.BeaconBlock{},
 		},
 		{
 			name: "BeaconBlockBody",
-			s:    &deneb.BeaconBlockBody{},
+			s:    &capella.BeaconBlockBody{},
 		},
 		{
 			name: "BeaconBlockHeader",
@@ -47,19 +46,7 @@ func TestConsensusSpecDeneb(t *testing.T) {
 		},
 		{
 			name: "BeaconState",
-			s:    &deneb.BeaconState{},
-		},
-		{
-			name: "BlobIdentifier",
-			s:    &deneb.BlobIdentifier{},
-		},
-		{
-			name: "BlobSidecar",
-			s:    &deneb.BlobSidecar{},
-		},
-		{
-			name: "BLSToExecutionChange",
-			s:    &capella.BLSToExecutionChange{},
+			s:    &capella.BeaconState{},
 		},
 		{
 			name: "Checkpoint",
@@ -87,11 +74,11 @@ func TestConsensusSpecDeneb(t *testing.T) {
 		},
 		{
 			name: "ExecutionPayload",
-			s:    &deneb.ExecutionPayload{},
+			s:    &capella.ExecutionPayload{},
 		},
 		{
 			name: "ExecutionPayloadHeader",
-			s:    &deneb.ExecutionPayloadHeader{},
+			s:    &capella.ExecutionPayloadHeader{},
 		},
 		{
 			name: "Fork",
@@ -123,15 +110,11 @@ func TestConsensusSpecDeneb(t *testing.T) {
 		},
 		{
 			name: "SignedBeaconBlock",
-			s:    &deneb.SignedBeaconBlock{},
+			s:    &capella.SignedBeaconBlock{},
 		},
 		{
 			name: "SignedBeaconBlockHeader",
 			s:    &phase0.SignedBeaconBlockHeader{},
-		},
-		{
-			name: "SignedBLSToExecutionChange",
-			s:    &capella.SignedBLSToExecutionChange{},
 		},
 		{
 			name: "SignedContributionAndProof",
@@ -144,10 +127,6 @@ func TestConsensusSpecDeneb(t *testing.T) {
 		{
 			name: "SyncAggregate",
 			s:    &altair.SyncAggregate{},
-		},
-		{
-			name: "SyncCommittee",
-			s:    &altair.SyncCommittee{},
 		},
 		{
 			name: "SyncCommitteeContribution",
@@ -171,7 +150,6 @@ func TestConsensusSpecDeneb(t *testing.T) {
 		},
 	}
 
-	//t.Skipf("Deneb spec tests are not implemented yet (%v)", len(tests))
-	testForkConsensusSpec(t, "deneb", "mainnet", tests)
-	testForkConsensusSpec(t, "deneb", "minimal", tests)
+	testForkConsensusSpec(t, "capella", "mainnet", tests)
+	testForkConsensusSpec(t, "capella", "minimal", tests)
 }
