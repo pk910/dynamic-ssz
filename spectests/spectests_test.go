@@ -61,14 +61,8 @@ func testForkConsensusSpec(t *testing.T, fork string, preset string, tests []Spe
 					specSSZ, err := snappy.Decode(nil, compressedSpecSSZ)
 					require.NoError(t, err)
 
-					fmt.Printf("specSSZ: %v\n", len(specSSZ))
-
 					// Unmarshal the SSZ.
 					err = dynssz.UnmarshalSSZ(s2, specSSZ)
-					if err != nil {
-						fmt.Printf("error unmarshalling: %v\n", err)
-						err = dynssz.UnmarshalSSZ(s2, specSSZ)
-					}
 					require.NoError(t, err)
 
 					// Confirm we can return to the SSZ.
