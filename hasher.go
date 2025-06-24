@@ -7,10 +7,13 @@ import (
 	"hash"
 	"math/bits"
 	"sync"
+
+	"github.com/prysmaticlabs/gohashtree"
 )
 
 // this hasher implementation was copied from the fastssz package
 // https://github.com/ferranbt/fastssz/blob/main/hasher.go
+// code has been modified for dynamis-ssz needs
 
 var (
 	// ErrIncorrectByteSize means that the byte size is incorrect
@@ -22,12 +25,25 @@ var (
 
 // DefaultHasherPool is a default hasher pool
 var DefaultHasherPool HasherPool
+var FastHasherPool HasherPool = HasherPool{
+	HashFn: gohashtree.HashByteSlice,
+}
 
+var hasherInitialized bool
+var hasherInitMutex sync.Mutex
 var zeroHashes [65][32]byte
 var zeroHashLevels map[string]int
 var trueBytes, falseBytes, zeroBytes []byte
 
-func init() {
+func initHasher() {
+	hasherInitMutex.Lock()
+	defer hasherInitMutex.Unlock()
+
+	if hasherInitialized {
+		return
+	}
+
+	hasherInitialized = true
 	falseBytes = make([]byte, 32)
 	trueBytes = make([]byte, 32)
 	zeroBytes = make([]byte, 32)
@@ -69,14 +85,19 @@ func NativeHashWrapper(hashFn hash.Hash) HashFn {
 
 // HasherPool may be used for pooling Hashers for similarly typed SSZs.
 type HasherPool struct {
-	pool sync.Pool
+	HashFn HashFn
+	pool   sync.Pool
 }
 
 // Get acquires a Hasher from the pool.
 func (hh *HasherPool) Get() *Hasher {
 	h := hh.pool.Get()
 	if h == nil {
-		return NewHasher()
+		if hh.HashFn == nil {
+			return NewHasher()
+		} else {
+			return NewHasherWithHashFn(hh.HashFn)
+		}
 	}
 	return h.(*Hasher)
 }
@@ -111,6 +132,10 @@ func NewHasherWithHash(hh hash.Hash) *Hasher {
 
 // NewHasherWithHashFn creates a new Hasher object with a custom HashFn function
 func NewHasherWithHashFn(hh HashFn) *Hasher {
+	if !hasherInitialized {
+		initHasher()
+	}
+
 	return &Hasher{
 		hash: hh,
 		tmp:  make([]byte, 32),

@@ -18,6 +18,7 @@ type DynSsz struct {
 	specValues     map[string]any
 	specValueCache map[string]*cachedSpecValue
 	NoFastSsz      bool
+	NoFastHash     bool
 	Verbose        bool
 }
 
@@ -160,9 +161,16 @@ func (d *DynSsz) HashTreeRoot(source any) ([32]byte, error) {
 		return [32]byte{}, err
 	}
 
-	hh := DefaultHasherPool.Get()
+	var pool *HasherPool
+	if d.NoFastHash {
+		pool = &DefaultHasherPool
+	} else {
+		pool = &FastHasherPool
+	}
+
+	hh := pool.Get()
 	defer func() {
-		DefaultHasherPool.Put(hh)
+		pool.Put(hh)
 	}()
 
 	err = d.buildRootFromType(sourceTypeDesc, sourceValue, hh, 0)
