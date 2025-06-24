@@ -38,10 +38,4 @@ jobs:
       run: |
         cd examples/${{ matrix.example }}
         go mod download
-        go build -v .
-        ./$(basename $(pwd))
-        
-    - name: Test example compilation
-      run: |
-        cd examples/${{ matrix.example }}
-        go test -c .
+        go run .

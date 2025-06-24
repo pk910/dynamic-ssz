@@ -47,7 +47,7 @@ jobs:
         name: codecov-umbrella
         
     - name: Upload coverage artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: coverage-report-go${{ matrix.go-version }}
         path: coverage.html
