@@ -19,21 +19,22 @@ type TypeCache struct {
 
 // TypeDescriptor represents a cached, optimized descriptor for a type's SSZ encoding/decoding
 type TypeDescriptor struct {
-	Kind               reflect.Kind
-	Type               reflect.Type
-	Size               int32                // SSZ size (-1 if dynamic)
-	Len                uint32               // Length of array/slice
-	Fields             []FieldDescriptor    // For structs
-	DynFields          []DynFieldDescriptor // Dynamic struct fields
-	ElemDesc           *TypeDescriptor      // For slices/arrays
-	SizeHints          []SszSizeHint        // Size hints from tags
-	MaxSizeHints       []SszMaxSizeHint     // Max size hints from tags
-	HasDynamicSize     bool                 // Whether this type uses dynamic spec size value that differs from the default
-	HasDynamicMax      bool                 // Whether this type uses dynamic spec max value that differs from the default
-	IsFastSSZMarshaler bool                 // Whether the type implements fastssz.Marshaler
-	IsFastSSZHasher    bool                 // Whether the type implements fastssz.HashRoot
-	IsPtr              bool                 // Whether this is a pointer type
-	IsByteArray        bool                 // Whether this is a byte array
+	Kind                reflect.Kind
+	Type                reflect.Type
+	Size                int32                // SSZ size (-1 if dynamic)
+	Len                 uint32               // Length of array/slice
+	Fields              []FieldDescriptor    // For structs
+	DynFields           []DynFieldDescriptor // Dynamic struct fields
+	ElemDesc            *TypeDescriptor      // For slices/arrays
+	SizeHints           []SszSizeHint        // Size hints from tags
+	MaxSizeHints        []SszMaxSizeHint     // Max size hints from tags
+	HasDynamicSize      bool                 // Whether this type uses dynamic spec size value that differs from the default
+	HasDynamicMax       bool                 // Whether this type uses dynamic spec max value that differs from the default
+	IsFastSSZMarshaler  bool                 // Whether the type implements fastssz.Marshaler
+	IsFastSSZHasher     bool                 // Whether the type implements fastssz.HashRoot
+	HasHashTreeRootWith bool                 // Whether the type implements HashTreeRootWith
+	IsPtr               bool                 // Whether this is a pointer type
+	IsByteArray         bool                 // Whether this is a byte array
 }
 
 // FieldDescriptor represents a cached descriptor for a struct field
@@ -168,6 +169,7 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 	}
 	if !desc.HasDynamicMax {
 		desc.IsFastSSZHasher = tc.dynssz.getFastsszHashCompatibility(t)
+		desc.HasHashTreeRootWith = tc.dynssz.getHashTreeRootWithCompatibility(t)
 	}
 
 	return desc, nil

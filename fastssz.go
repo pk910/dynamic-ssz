@@ -53,3 +53,46 @@ func (d *DynSsz) getFastsszHashCompatibility(targetType reflect.Type) bool {
 	targetPtrType := reflect.New(targetType).Type()
 	return targetPtrType.Implements(sszHashRootType)
 }
+
+// getHashTreeRootWithCompatibility evaluates the compatibility of a given type with fastssz's HashTreeRootWith method,
+// determining whether the type can efficiently compute its hash tree root using fastssz's optimized hasher interface.
+// This method uses reflection to detect the HashTreeRootWith method since actual implementations may use specific
+// parameter types (ssz.HashWalker, *ssz.Hasher) rather than interface{}, ensuring compatibility across different
+// fastssz implementations without requiring direct imports.
+//
+// Parameters:
+//   - targetType: The reflect.Type of the value being assessed for fastssz HashTreeRootWith compatibility. This type
+//     is evaluated to ensure it has a method with the signature pattern HashTreeRootWith(hasher) error, regardless
+//     of the specific hasher parameter type used.
+//
+// Returns:
+//   - A boolean indicating whether the type is compatible with fastssz's HashTreeRootWith method and can be called
+//     with the dynssz Hasher instance for optimized hash tree root computation.
+func (d *DynSsz) getHashTreeRootWithCompatibility(targetType reflect.Type) bool {
+	targetPtrType := reflect.New(targetType).Type()
+
+	// Check if the type has a method named "HashTreeRootWith"
+	method, found := targetPtrType.MethodByName("HashTreeRootWith")
+	if !found {
+		return false
+	}
+
+	// Check the method signature:
+	// - Should have exactly 2 parameters (receiver + hasher parameter)
+	// - Should return exactly 1 value (error)
+	methodType := method.Type
+	if methodType.NumIn() != 2 || methodType.NumOut() != 1 {
+		return false
+	}
+
+	// Check that it returns an error
+	errorType := reflect.TypeOf((*error)(nil)).Elem()
+	if !methodType.Out(0).AssignableTo(errorType) {
+		return false
+	}
+
+	// The method exists with the right signature pattern
+	// We don't check the exact parameter type since it could be
+	// ssz.HashWalker, *ssz.Hasher, or interface{}
+	return true
+}

@@ -15,6 +15,9 @@ import (
 // https://github.com/ferranbt/fastssz/blob/main/hasher.go
 // code has been modified for dynamis-ssz needs
 
+// Compile-time check to ensure Hasher implements HashWalker interface
+var _ HashWalker = (*Hasher)(nil)
+
 var (
 	// ErrIncorrectByteSize means that the byte size is incorrect
 	ErrIncorrectByteSize = fmt.Errorf("incorrect byte size")
