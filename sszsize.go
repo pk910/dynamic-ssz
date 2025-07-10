@@ -8,26 +8,31 @@ import (
 	"reflect"
 )
 
-// getSszValueSize calculates the absolute SSZ size of the specified targetValue, taking into account both simple and complex, nested types.
-// It enhances performance by employing the "SizeSSZ" function from fastssz for calculating the size of structures that, along with all types
-// they refer to, do not have dynamic specification values applied. This means that the size calculation defaults to the static, fastssz code path
-// whenever the structure in question and its nested types are static and do not necessitate dynamic handling due to applied dynamic spec values.
+// getSszValueSize calculates the exact SSZ-encoded size of a value.
+//
+// This internal function is used by SizeSSZ to determine buffer requirements for serialization.
+// It recursively traverses the value structure, calculating sizes based on SSZ encoding rules:
+//   - Fixed-size types have predetermined sizes
+//   - Dynamic types require 4-byte offset markers plus their content size
+//   - Arrays multiply element size by length
+//   - Slices account for actual length and any padding from size hints
+//
+// The function optimizes performance by delegating to fastssz's SizeSSZ method when:
+//   - The type implements the fastssz Marshaler interface
+//   - The type and all nested types have static sizes (no dynamic spec values)
 //
 // Parameters:
-// - targetType: The TypeDescriptor of the value to be sized, which provides the necessary type information for accurately determining the size
-//   of the value. This detail is especially vital for composite types potentially containing nested dynamic elements.
-// - targetValue: The reflect.Value containing the actual data to be sized. This function examines targetValue to calculate the size of the value itself
-//   and any of its nested values, resorting to fastssz's "SizeSSZ" for static structures and their statically typed components to optimize performance.
+//   - targetType: The TypeDescriptor containing type metadata and size information
+//   - targetValue: The reflect.Value containing the actual data to size
 //
 // Returns:
-// - An integer indicating the total size of targetValue in its SSZ-encoded form. This size encompasses the contributions from all nested
-//   or composite elements within the value.
-// - An error, if the size calculation process encounters challenges, such as unsupported types or intricate nested structures that defy
-//   accurate sizing with the available information.
+//   - uint32: The exact number of bytes needed to encode this value
+//   - error: An error if sizing fails (e.g., slice exceeds maximum size)
 //
-// By adeptly utilizing fastssz's "SizeSSZ" for structures without dynamic spec values and their statically typed references, getSszValueSize ensures
-// efficient and accurate size calculations. This approach allows for the dynamic encoding process to proceed with precise size information, essential
-// for correctly encoding data into the SSZ format across a broad spectrum of data types, ranging from straightforward primitives to elaborate nested structures.
+// Special handling:
+//   - Nil pointers are sized as zero-valued instances
+//   - Dynamic slices include padding for size hint compliance
+//   - Struct fields are sized based on their static/dynamic nature
 
 func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect.Value) (uint32, error) {
 	staticSize := uint32(0)

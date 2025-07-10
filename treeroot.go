@@ -9,32 +9,27 @@ import (
 	"strings"
 )
 
-// buildRootFromType is the entry point for computing HashTreeRoot of Go values, using reflection to navigate
-// the type tree and hash each value appropriately. It serves as the core function for the recursive hashing process,
-// handling both primitive and composite types.
+// buildRootFromType is the core recursive function for computing hash tree roots of Go values.
+//
+// This function serves as the primary dispatcher within the hashing process, handling both
+// primitive and composite types. It uses the TypeDescriptor's metadata to determine the most
+// efficient hashing path, automatically leveraging fastssz when possible for optimal performance.
 //
 // Parameters:
-// - sourceType: The reflect.Type of the value to be hashed. This provides the necessary type information to guide
-//   the hashing process for both simple and complex types.
-// - sourceValue: The reflect.Value that holds the data to be hashed. This function uses sourceValue to extract
-//   the actual data for computing the HashTreeRoot.
-// - hh: A Hasher instance that maintains the state of the hashing process and provides methods for hashing
-//   different types of values according to SSZ specifications.
-// - sizeHints: A slice of sszSizeHint, populated from 'ssz-size' and 'dynssz-size' tag annotations from parent
-//   structures, crucial for hashing types that may have dynamic lengths.
-// - maxSizeHints: A slice of sszMaxSizeHint, providing maximum size constraints for variable-length types like
-//   lists and bitlists, ensuring compliance with SSZ specifications.
-// - idt: An indentation level, primarily used for debugging or logging to help track the recursion depth and hashing
-//   sequence of the data structure.
+//   - sourceType: The TypeDescriptor containing optimized metadata about the type to hash
+//   - sourceValue: The reflect.Value holding the data to be hashed
+//   - hh: The Hasher instance managing the hash computation state
+//   - idt: Indentation level for verbose logging (when enabled)
 //
 // Returns:
-// - An error if the hashing process encounters any issues, such as an unsupported type or a mismatch between
-//   the sourceValue and the expected type structure.
+//   - error: An error if hashing fails
 //
-// This function serves as the primary dispatcher within the hashing process, computing hashes for primitive types directly
-// and delegating the hashing of composite types to specialized functions. For composite types, buildRootFromType
-// orchestrates the process by preparing the necessary context and parameters, then calling the appropriate specialized
-// function based on the type of sourceValue.
+// The function handles:
+//   - Automatic nil pointer dereferencing
+//   - FastSSZ delegation for compatible types (HashTreeRootWith or HashTreeRoot methods)
+//   - Special handling for Bitlist types
+//   - Primitive type hashing (bool, uint8, uint16, uint32, uint64)
+//   - Delegation to specialized functions for composite types (structs, arrays, slices)
 
 func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher, idt int) error {
 	hashIndex := hh.Index()
@@ -149,27 +144,27 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 	return nil
 }
 
-// buildRootFromStruct handles the computation of HashTreeRoot for Go struct values. It iterates through each field
-// of the struct, leveraging reflection to access field types and values, and delegates the hashing of each field
-// to buildRootFromType.
+// buildRootFromStruct computes the hash tree root for Go struct values.
+//
+// In SSZ, struct hashing follows these rules:
+//   - Each field is hashed independently to produce a 32-byte root
+//   - All field roots are collected in order
+//   - The collection is Merkleized to produce the struct's root
+//
+// The function uses the pre-computed TypeDescriptor to efficiently iterate through
+// fields without repeated reflection calls.
 //
 // Parameters:
-// - sourceType: The reflect.Type of the struct to be hashed, providing the necessary type information to guide
-//   the hashing process for the struct's fields.
-// - sourceValue: The reflect.Value that holds the struct data to be hashed. buildRootFromStruct iterates over
-//   each field of the struct and uses sourceValue to extract the data for hashing.
-// - hh: A Hasher instance that maintains the state of the hashing process and provides methods for hashing
-//   different types of values according to SSZ specifications.
-// - idt: An indentation level, primarily used for debugging or logging to help track the recursion depth and hashing
-//   sequence of the struct fields.
+//   - sourceType: The TypeDescriptor containing struct field metadata
+//   - sourceValue: The reflect.Value of the struct to hash
+//   - hh: The Hasher instance for hash computation
+//   - idt: Indentation level for verbose logging
 //
 // Returns:
-// - An error if the hashing process encounters any issues, such as an unsupported field type or a mismatch between
-//   the sourceValue's actual data and what is expected for SSZ hashing.
+//   - error: An error if any field hashing fails
 //
-// buildRootFromStruct specifically focuses on the structural aspects of hashing a struct, ensuring that each field
-// is properly hashed and combined according to SSZ specifications. The function processes each field sequentially,
-// building up the final hash by combining the hashes of individual fields using the Merkleization process.
+// The Merkleize call at the end combines all field hashes into the final root
+// using binary tree hashing with zero-padding to the next power of two.
 
 func (d *DynSsz) buildRootFromStruct(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher, idt int) error {
 	hashIndex := hh.Index()
@@ -193,24 +188,27 @@ func (d *DynSsz) buildRootFromStruct(sourceType *TypeDescriptor, sourceValue ref
 	return nil
 }
 
-// buildRootFromArray handles the computation of HashTreeRoot for Go array values. It processes each element
-// of the array, using reflection to access element types and values, and delegates the hashing of individual
-// elements to buildRootFromType.
+// buildRootFromArray computes the hash tree root for Go array values.
+//
+// Arrays in SSZ are hashed based on their element type:
+//   - Byte arrays: Treated as a single value, chunked into 32-byte segments
+//   - Other arrays: Each element is hashed individually, then Merkleized
+//
+// For arrays with max size hints, the function uses MerkleizeWithMixin to include
+// the array length in the final hash computation.
 //
 // Parameters:
-// - sourceType: The TypeDescriptor of the array to be hashed, providing the type information needed to hash
-//   each element within the array correctly.
-// - sourceValue: The reflect.Value that holds the array data to be hashed. buildRootFromArray iterates over
-//   each element, using sourceValue to extract the data for hashing.
-// - hh: A Hasher instance that maintains the state of the hashing process and provides methods for hashing
-//   different types of values according to SSZ specifications.
-// - idt: An indentation level used for debugging or logging to track the hashing depth and sequence.
+//   - sourceType: The TypeDescriptor containing array metadata
+//   - sourceValue: The reflect.Value of the array to hash
+//   - hh: The Hasher instance for hash computation
+//   - idt: Indentation level for verbose logging
 //
 // Returns:
-// - An error if the hashing process encounters any issues, such as an unsupported element type.
+//   - error: An error if element hashing fails
 //
-// buildRootFromArray specializes in hashing fixed-size arrays by processing each element through the central
-// buildRootFromType dispatcher, ensuring consistent handling across all array element types.
+// Special handling:
+//   - Byte arrays use PutBytes for efficient chunk-based hashing
+//   - Arrays with max size hints include length mixing for proper limits
 
 func (d *DynSsz) buildRootFromArray(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher, idt int) error {
 	fieldType := sourceType.ElemDesc
@@ -248,26 +246,28 @@ func (d *DynSsz) buildRootFromArray(sourceType *TypeDescriptor, sourceValue refl
 	return nil
 }
 
-// buildRootFromSlice handles the computation of HashTreeRoot for Go slice values. It processes each element
-// of the collection, using reflection to access element types and values, and delegates the hashing of individual
-// elements to buildRootFromType.
+// buildRootFromSlice computes the hash tree root for Go slice values.
+//
+// Slices in SSZ are hashed as lists, which requires:
+//   - Computing the root of the slice contents (as if it were an array)
+//   - Mixing the slice length into the final hash for proper domain separation
+//
+// The function includes optimizations for common types:
+//   - Byte slices: Direct appending with chunk padding
+//   - Uint64 slices: Efficient 8-byte appending
+//   - Nested byte arrays: Special handling for [][]byte patterns
 //
 // Parameters:
-// - sourceType: The TypeDescriptor of the slice to be hashed, providing the type information needed to hash
-//   each element within the collection correctly.
-// - sourceValue: The reflect.Value that holds the slice data to be hashed. buildRootFromSlice iterates over
-//   each element, using sourceValue to extract the data for hashing.
-// - hh: A Hasher instance that maintains the state of the hashing process and provides methods for hashing
-//   different types of values according to SSZ specifications.
-// - idt: An indentation level used for debugging or logging to track the hashing depth and sequence.
+//   - sourceType: The TypeDescriptor containing slice metadata and limits
+//   - sourceValue: The reflect.Value of the slice to hash
+//   - hh: The Hasher instance for hash computation
+//   - idt: Indentation level for verbose logging
 //
 // Returns:
-// - An error if the hashing process encounters any issues, such as an unsupported element type or size constraint
-//   violations.
+//   - error: An error if element hashing fails
 //
-// buildRootFromSlice specializes in hashing collections by properly handling variable-length slices.
-// It implements specific optimizations for common types like byte slices and uint64 arrays while maintaining
-// the ability to process complex nested structures through recursive calls to buildRootFromType.
+// For slices with max size hints, MerkleizeWithMixin ensures the length is
+// properly mixed into the root, implementing the SSZ list hashing algorithm.
 
 func (d *DynSsz) buildRootFromSlice(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher, idt int) error {
 	fieldType := sourceType.ElemDesc

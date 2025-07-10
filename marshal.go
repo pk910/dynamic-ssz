@@ -10,36 +10,27 @@ import (
 	"strings"
 )
 
-// marshalType is the entry point for marshalling Go values into SSZ-encoded data, using reflection to navigate
-// the type tree and encode each value appropriately. It serves as the core function for the recursive encoding process,
-// handling both primitive and composite types.
+// marshalType is the core recursive function for marshalling Go values into SSZ-encoded data.
+//
+// This function serves as the primary dispatcher within the marshalling process, handling both primitive
+// and composite types. It uses the TypeDescriptor's metadata to determine the most efficient encoding
+// path, automatically leveraging fastssz when possible for optimal performance.
 //
 // Parameters:
-// - sourceType: The reflect.Type of the value to be encoded. This provides the necessary type information to guide
-//   the encoding process for both simple and complex types.
-// - sourceValue: The reflect.Value that holds the data to be encoded. This function uses sourceValue to extract
-//   the actual data for encoding into SSZ format.
-// - buf: A byte slice that serves as the initial buffer for the encoded data. As the function processes each value,
-//   it appends the encoded bytes to this buffer, growing it as necessary to accommodate the encoded data.
-// - sizeHints: A slice of sszSizeHint, populated from 'ssz-size' and 'dynssz-size' tag annotations from parent
-//   structures. These hints are crucial for encoding types like slices and arrays that may have dynamic lengths, ensuring
-//   that the encoded data reflects the correct size information.
-// - idt: An indentation level, primarily used for debugging or logging to help track the recursion depth and encoding
-//   sequence of the data structure.
+//   - sourceType: The TypeDescriptor containing optimized metadata about the type to be encoded
+//   - sourceValue: The reflect.Value holding the data to be encoded
+//   - buf: The byte slice buffer where encoded data is appended
+//   - idt: Indentation level for verbose logging (when enabled)
 //
 // Returns:
-// - A byte slice containing the SSZ-encoded data. This is the final encoded version of sourceValue, ready for storage
-//   or transmission.
-// - An error if the encoding process encounters any issues, such as an unsupported type or a mismatch between the
-//   sourceValue and the expected type structure.
+//   - []byte: The updated buffer containing the appended SSZ-encoded data
+//   - error: An error if encoding fails
 //
-// This function serves as the primary dispatcher within the marshalling process, encoding primitive types directly and
-// delegating the encoding of composite types (e.g., structs, arrays, slices) to specialized functions like marshalStruct,
-// marshalArray, and marshalSlice. For composite types, marshalType orchestrates the encoding by preparing the necessary
-// context and parameters, then calling the appropriate specialized function based on the type of the sourceValue.
-// This division of responsibility allows marshalType to efficiently handle the encoding process across a wide range of
-// data types by leveraging type-specific encoding logic for complex structures. The recursion in the encoding process
-// ensures that nested structures are fully and accurately encoded.
+// The function handles:
+//   - Automatic nil pointer dereferencing
+//   - FastSSZ delegation for compatible types without dynamic sizing
+//   - Primitive type encoding (bool, uint8, uint16, uint32, uint64)
+//   - Delegation to specialized functions for composite types (structs, arrays, slices)
 
 func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
 	if sourceType.IsPtr {
@@ -108,29 +99,25 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 	return buf, nil
 }
 
-// marshalStruct handles the encoding of Go struct values into SSZ-encoded data. It iterates through each field of the struct,
-// leveraging reflection to access field types and values, and delegates the encoding of each field to the marshalType function.
+// marshalStruct handles the encoding of Go struct values into SSZ-encoded data.
+//
+// This function implements the SSZ specification for struct encoding, which requires:
+//   - Fixed-size fields are encoded first in field definition order
+//   - Variable-size fields are encoded after all fixed fields
+//   - Variable-size fields are prefixed with 4-byte offsets in the fixed section
+//
+// The function uses the pre-computed TypeDescriptor to efficiently navigate the struct's
+// layout without repeated reflection calls.
 //
 // Parameters:
-// - sourceType: The reflect.Type of the struct to be encoded. This provides the necessary type information to guide
-//   the encoding process for the struct's fields.
-// - sourceValue: The reflect.Value that holds the struct data to be encoded. marshalStruct iterates over each field
-//   of the struct and uses sourceValue to extract the data for encoding.
-// - buf: A byte slice that serves as the initial buffer for the encoded data. As the function processes each field,
-//   it appends the encoded bytes to this buffer, dynamically expanding it as needed to accommodate the encoded data.
-// - idt: An indentation level, primarily used for debugging or logging to help track the recursion depth and encoding
-//   sequence of the struct fields.
+//   - sourceType: The TypeDescriptor containing struct field metadata
+//   - sourceValue: The reflect.Value of the struct to encode
+//   - buf: The buffer to append encoded data to
+//   - idt: Indentation level for verbose logging
 //
 // Returns:
-// - A byte slice containing the SSZ-encoded data of the struct. This byte slice represents the serialized version of
-//   sourceValue, with all struct fields encoded according to SSZ specifications.
-// - An error if the encoding process encounters any issues, such as an unsupported field type or a mismatch between
-//   the sourceValue's actual data and what is expected for SSZ encoding.
-//
-// marshalStruct specifically focuses on the structural aspects of encoding a struct, calculating offsets and sizes for
-// each field as needed, and invoking marshalType for the actual encoding logic. This approach allows for precise control
-// over the encoding of each field, ensuring that the resulting SSZ data accurately reflects the structure and content
-// of the original Go struct.
+//   - []byte: The updated buffer with the encoded struct
+//   - error: An error if any field encoding fails
 
 func (d *DynSsz) marshalStruct(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
 	offset := 0
@@ -179,30 +166,26 @@ func (d *DynSsz) marshalStruct(sourceType *TypeDescriptor, sourceValue reflect.V
 	return buf, nil
 }
 
-// marshalArray encodes Go array values into SSZ-encoded data. It processes each element of the array, using reflection to
-// access element types and values, and delegates the encoding of individual elements to the marshalType function.
+// marshalArray encodes Go array values into SSZ-encoded data.
+//
+// Arrays in SSZ are encoded as fixed-size sequences where each element is encoded
+// sequentially without any length prefix (since the length is known from the type).
+// For byte arrays ([N]byte), the function uses an optimized path that directly
+// appends the bytes without element-wise iteration.
 //
 // Parameters:
-// - sourceType: The reflect.Type of the array to be encoded, offering the type information needed to encode each element
-//   within the array correctly.
-// - sourceValue: The reflect.Value that holds the array data to be encoded. marshalArray iterates over each element
-//   of the array, using sourceValue to extract the data for encoding.
-// - buf: A byte slice that acts as the starting buffer for the encoded data. As the function encodes each element,
-//   it appends the encoded bytes to this buffer, expanding it as necessary to fit the resulting encoded data.
-// - sizeHints: A slice of sszSizeHint, informed by 'ssz-size' and 'dynssz-size' tag annotations from parent structures.
-//   These hints assist in encoding elements that have dynamic sizes, ensuring accurate size information in the encoded output.
-// - idt: An indentation level used for debugging or logging, facilitating the tracking of the encoding depth and sequence
-//   of array elements.
+//   - sourceType: The TypeDescriptor containing array metadata including element type and length
+//   - sourceValue: The reflect.Value of the array to encode
+//   - buf: The buffer to append encoded data to
+//   - idt: Indentation level for verbose logging
 //
 // Returns:
-// - A byte slice containing the SSZ-encoded data of the array. This byte slice represents the serialized form of sourceValue,
-//   with all array elements encoded according to SSZ specifications.
-// - An error if the encoding process encounters any issues, such as an unsupported element type or discrepancies between
-//   the actual data of sourceValue and the requirements for SSZ encoding.
+//   - []byte: The updated buffer with the encoded array
+//   - error: An error if any element encoding fails
 //
-// marshalArray focuses on the encoding of arrays by navigating through each element and ensuring accurate representation
-// in the SSZ-encoded output. The function relies on marshalType for the encoding of individual elements, allowing for
-// a consistent and recursive encoding approach that handles both simple and complex types within the array.
+// Special handling:
+//   - Byte arrays use reflect.Value.Bytes() for efficient bulk copying
+//   - Non-addressable arrays are made addressable via a temporary pointer
 
 func (d *DynSsz) marshalArray(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
 	arrLen := sourceType.Len
@@ -229,33 +212,30 @@ func (d *DynSsz) marshalArray(sourceType *TypeDescriptor, sourceValue reflect.Va
 	return buf, nil
 }
 
-// marshalSlice encodes Go slice values with static size items into SSZ-encoded data. For slices containing elements
-// with dynamic sizes, it internally calls marshalDynamicSlice to accommodate the variability in element sizes.
-// This function processes each element of the slice using reflection to access their types and values, and relies
-// on marshalType for encoding individual static size elements.
+// marshalSlice encodes Go slice values into SSZ-encoded data.
+//
+// This function handles slices with fixed-size elements. For slices with variable-size
+// elements, it delegates to marshalDynamicSlice. The encoding follows SSZ specifications
+// where slices are encoded as their elements in sequence without a length prefix.
+//
+// If the slice has size hints from parent structures (via ssz-size tags), the function
+// ensures the encoded length matches the hint, padding with zero values if necessary.
 //
 // Parameters:
-// - sourceType: The reflect.Type of the slice to be encoded, providing the type information necessary for correctly encoding
-//   each element within the slice.
-// - sourceValue: The reflect.Value holding the data of the slice to be encoded. marshalSlice iterates over each element,
-//   utilizing sourceValue to extract the data for encoding.
-// - buf: A byte slice that serves as the initial buffer for the encoded data. As each element is encoded, the resulting bytes
-//   are appended to this buffer, which is dynamically expanded as needed to fit the encoded data.
-// - sizeHints: A slice of sszSizeHint, derived from 'ssz-size' and 'dynssz-size' tag annotations from parent structures,
-//   crucial for encoding slices with elements that have dynamic lengths. This assists in providing accurate size information
-//   in the encoded output, especially for dynamic elements.
-// - idt: An indentation level, primarily for debugging or logging purposes, to aid in tracking the encoding process's depth
-//   and sequence for the slice elements.
+//   - sourceType: The TypeDescriptor containing slice metadata and element type information
+//   - sourceValue: The reflect.Value of the slice to encode
+//   - buf: The buffer to append encoded data to
+//   - idt: Indentation level for verbose logging
 //
 // Returns:
-// - The byte slice containing the SSZ-encoded data of the slice, representing the serialized version of sourceValue
-//   with all elements encoded in compliance with SSZ specifications.
-// - An error if any issues arise during the encoding process, such as encountering an unsupported element type or if there
-//   is a mismatch between the sourceValue data and SSZ encoding requirements.
+//   - []byte: The updated buffer with the encoded slice
+//   - error: An error if encoding fails or slice exceeds size constraints
 //
-// marshalSlice adeptly manages the encoding of slices by navigating through each element and ensuring they are accurately
-// represented in the SSZ-encoded output. It seamlessly transitions to marshalDynamicSlice for slices with dynamically sized
-// elements, leveraging a recursive encoding strategy to handle various data types within the slice effectively.
+// Special handling:
+//   - Delegates to marshalDynamicSlice for variable-size elements
+//   - Byte slices use optimized bulk append
+//   - Zero-padding is applied when slice length is less than size hint
+//   - Returns ErrListTooBig if slice exceeds maximum size from hints
 
 func (d *DynSsz) marshalSlice(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
 	fieldType := sourceType.ElemDesc
@@ -309,31 +289,28 @@ func (d *DynSsz) marshalSlice(sourceType *TypeDescriptor, sourceValue reflect.Va
 	return buf, nil
 }
 
-// marshalDynamicSlice encodes Go slice values with dynamically sized items into SSZ-encoded data. This function
-// handles the complexity of encoding each element by utilizing the inherent offsets within the SSZ format, ensuring
-// accurate representation of variable-sized elements in the encoded output.
+// marshalDynamicSlice encodes slices with variable-size elements into SSZ format.
+//
+// For slices with variable-size elements, SSZ requires a special encoding:
+//   1. A series of 4-byte offsets, one per element, indicating where each element's data begins
+//   2. The actual encoded data for each element, in order
+//
+// The offsets are relative to the start of the slice encoding (not the entire message).
+// This allows decoders to locate each variable-size element without parsing all preceding elements.
 //
 // Parameters:
-// - sourceType: The reflect.Type of the slice to be encoded, providing the type information necessary for the dynamic
-//   encoding of each element within the slice.
-// - sourceValue: The reflect.Value holding the slice data to be encoded. This function iterates through each element
-//   within the slice, encoding them based on their actual sizes and appending the results to the buffer.
-// - buf: A byte slice that serves as the initial buffer for the encoded data. As elements are encoded, their bytes are
-//   appended to this buffer, which is expanded as necessary to accommodate the encoded data.
-// - sizeHints: A slice of sszSizeHint, derived from 'ssz-size' and 'dynssz-size' tag annotations from parent structures,
-//   used to inform the encoding process for elements with sizes that cannot be determined solely by their type.
-// - idt: An indentation level, primarily used for debugging or logging, to aid in tracking the encoding process's depth
-//   and the sequence of the dynamically sized elements.
+//   - sourceType: The TypeDescriptor with slice metadata
+//   - sourceValue: The reflect.Value of the slice to encode
+//   - buf: The buffer to append encoded data to
+//   - idt: Indentation level for verbose logging
 //
 // Returns:
-// - A byte slice containing the SSZ-encoded data of the dynamic slice, representing the serialized version of sourceValue,
-//   with each element encoded to reflect its dynamic size.
-// - An error, if any issues are encountered during the encoding process, such as unsupported element types or mismatches
-//   between the sourceValue's data and the requirements for SSZ encoding.
+//   - []byte: The updated buffer with offsets followed by encoded elements
+//   - error: An error if encoding fails or size constraints are violated
 //
-// marshalDynamicSlice is adept at encoding slices containing elements of variable sizes. It leverages the structured
-// nature of SSZ to encode each element according to its actual size, ensuring the final encoded data accurately reflects
-// the content and structure of the original slice.
+// The function handles size hints for padding with zero values when the slice
+// length is less than the expected size. Zero values are efficiently batched
+// to minimize encoding overhead.
 
 func (d *DynSsz) marshalDynamicSlice(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
 	fieldType := sourceType.ElemDesc

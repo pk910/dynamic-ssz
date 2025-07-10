@@ -9,32 +9,28 @@ import (
 	"strings"
 )
 
-// unmarshalType decodes SSZ-encoded data into a Go value based on reflection. It serves as the
-// recursive core of the dynamic SSZ decoding process, handling both primitive and composite types.
+// unmarshalType is the core recursive function for decoding SSZ-encoded data into Go values.
+//
+// This function serves as the primary dispatcher within the unmarshalling process, handling both
+// primitive and composite types. It uses the TypeDescriptor's metadata to determine the most
+// efficient decoding path, automatically leveraging fastssz when possible for optimal performance.
 //
 // Parameters:
-// - targetType: The reflect.Type of the value to be decoded. This provides the necessary
-//   type information for reflection-based decoding.
-// - targetValue: The reflect.Value where the decoded data should be stored. This function
-//   directly modifies targetValue to set the decoded values.
-// - ssz: A byte slice containing the SSZ-encoded data to be decoded.
-// - sizeHints: A slice of sszSizeHint, which contains size hints for decoding dynamic sizes
-//   within the SSZ data. These hints are populated from 'ssz-size' and 'dynssz-size' tag annotations
-//   from parent structures, which are crucial for correctly decoding types like slices and arrays
-//   with dynamic lengths.
-// - idt: An indentation level used for debugging or logging purposes, helping track the recursion depth.
+//   - targetType: The TypeDescriptor containing optimized metadata about the type to decode
+//   - targetValue: The reflect.Value where decoded data will be stored
+//   - ssz: The SSZ-encoded data to decode
+//   - idt: Indentation level for verbose logging (when enabled)
 //
 // Returns:
-// - The number of bytes consumed from the SSZ data for the current decoding operation. This helps
-//   subsequent decoding steps to know where in the SSZ data to start decoding the next piece of data.
-// - An error, if the decoding fails at any point due to reasons such as type mismatches, unexpected
-//   SSZ data length, etc.
+//   - int: The number of bytes consumed from the SSZ data
+//   - error: An error if decoding fails
 //
-// This function directly handles the decoding of primitive types by interpreting the SSZ data according
-// to the targetType. For composite types (e.g., structs, arrays, slices), it delegates to more specific
-// unmarshal functions (like unmarshalStruct, unmarshalArray) tailored to each type. It uses recursion
-// to navigate and decode nested structures, ensuring every part of the targetValue is correctly populated
-// with data from the SSZ input.
+// The function handles:
+//   - Automatic nil pointer initialization
+//   - FastSSZ delegation for compatible types without dynamic sizing
+//   - Primitive type decoding (bool, uint8, uint16, uint32, uint64)
+//   - Delegation to specialized functions for composite types (structs, arrays, slices)
+//   - Validation that consumed bytes match expected sizes
 
 func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
 	consumedBytes := 0
@@ -116,23 +112,28 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 	return consumedBytes, nil
 }
 
-// unmarshalStruct decodes SSZ-encoded data into a Go struct by calculating field offsets within the SSZ stream
-// and delegating the type-specific decoding of each field to the generic unmarshalType function.
+// unmarshalStruct decodes SSZ-encoded data into a Go struct.
+//
+// This function implements the SSZ specification for struct decoding, which requires:
+//   - Fixed-size fields appear first in the encoding
+//   - Variable-size fields are referenced by 4-byte offsets in the fixed section
+//   - Variable-size field data appears after all fixed fields
+//
+// The function uses the pre-computed TypeDescriptor to efficiently navigate the struct's
+// layout without repeated reflection calls.
 //
 // Parameters:
-// - targetType: The reflect.Type of the struct to be decoded, providing necessary type information for decoding.
-// - targetValue: The reflect.Value where the decoded data is stored. This function prepares each struct field for decoding by unmarshalType,
-//   based on their calculated offsets within the SSZ data.
-// - ssz: A byte slice containing the SSZ-encoded data to be decoded.
-// - idt: An indentation level, primarily used for debugging or logging to track recursion depth and field processing order.
+//   - targetType: The TypeDescriptor containing struct field metadata
+//   - targetValue: The reflect.Value of the struct to populate
+//   - ssz: The SSZ-encoded data to decode
+//   - idt: Indentation level for verbose logging
 //
 // Returns:
-// - The total number of bytes consumed from the SSZ data for decoding the struct. This information is crucial for the decoding of subsequent
-//   data structures or fields.
-// - An error, if the decoding process encounters any issues, such as incorrect SSZ format or mismatches between the SSZ data and targetType.
+//   - int: Total bytes consumed from the SSZ data
+//   - error: An error if decoding fails or data is malformed
 //
-// The function's core responsibility is to navigate the struct's layout in the SSZ-encoded data, adjusting SSZ slices for each field and
-// invoking unmarshalType with these parameters. This strategy efficiently decouples structural navigation from type-specific decoding logic.
+// The function validates offset integrity to ensure variable fields don't overlap
+// and that all data is consumed correctly.
 
 func (d *DynSsz) unmarshalStruct(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
 	offset := 0
@@ -219,27 +220,26 @@ func (d *DynSsz) unmarshalStruct(targetType *TypeDescriptor, targetValue reflect
 	return offset, nil
 }
 
-// unmarshalArray decodes SSZ-encoded data into a Go array, calculating the necessary offsets for each element within the SSZ stream
-// and delegating the decoding of each element's type to the generic unmarshalType function.
+// unmarshalArray decodes SSZ-encoded data into a Go array.
+//
+// Arrays in SSZ are encoded as fixed-size sequences. Since the array length is known
+// from the type, the function can calculate each element's size by dividing the total
+// SSZ data length by the array length.
 //
 // Parameters:
-// - targetType: The reflect.Type of the array to be decoded, providing the type information needed for decoding the array elements.
-// - targetValue: The reflect.Value where the decoded array data should be stored. This function prepares each element of the array
-//   for decoding by unmarshalType, based on their calculated offsets within the SSZ data.
-// - ssz: A byte slice containing the SSZ-encoded data to be decoded into the array.
-// - sizeHints: A slice of sszSizeHint populated from 'ssz-size' and 'dynssz-size' tag annotations from parent structures,
-//   essential for decoding arrays with elements that have dynamic lengths.
-// - idt: An indentation level, used for debugging or logging to aid in tracking the recursion depth and element processing order.
+//   - targetType: The TypeDescriptor containing array metadata
+//   - targetValue: The reflect.Value of the array to populate
+//   - ssz: The SSZ-encoded data to decode
+//   - idt: Indentation level for verbose logging
 //
 // Returns:
-// - The number of bytes consumed from the SSZ data for decoding the array. This metric is crucial for the decoding process of
-//   subsequent structures or elements.
-// - An error, if the decoding process encounters any issues such as incorrect SSZ format, mismatches between the SSZ data
-//   and targetType, etc.
+//   - int: Total bytes consumed (should equal len(ssz))
+//   - error: An error if decoding fails
 //
-// unmarshalArray navigates the layout of the array in the SSZ-encoded data, adjusting SSZ slices for each element and
-// invoking unmarshalType with these parameters for decoding. This division of tasks allows unmarshalArray to focus
-// on the structural navigation within the SSZ data, while unmarshalType applies the specific decoding logic for the type of each element.
+// Special handling:
+//   - Byte arrays use reflect.Copy for efficient bulk copying
+//   - Pointer elements are automatically initialized
+//   - Each element must consume exactly itemSize bytes
 
 func (d *DynSsz) unmarshalArray(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
 	var consumedBytes int
@@ -283,29 +283,27 @@ func (d *DynSsz) unmarshalArray(targetType *TypeDescriptor, targetValue reflect.
 	return consumedBytes, nil
 }
 
-// unmarshalSlice decodes SSZ-encoded data into a Go slice with static length items, calculating offsets within the SSZ stream
-// and delegating the decoding of each element's type to the generic unmarshalType function. For slices containing elements
-// with dynamic sizes, it internally forwards the call to unmarshalDynamicSlice to handle the variability in element sizes.
+// unmarshalSlice decodes SSZ-encoded data into a Go slice.
+//
+// This function handles slices with fixed-size elements. For slices with variable-size
+// elements, it delegates to unmarshalDynamicSlice. The slice length is determined by
+// dividing the SSZ data length by the element size.
 //
 // Parameters:
-// - targetType: The reflect.Type of the slice to be decoded, providing the type information necessary for decoding the slice elements.
-// - targetValue: The reflect.Value where the decoded slice data should be stored. This function prepares each element of the slice
-//   for decoding by unmarshalType, based on their calculated offsets within the SSZ data, or forwards to unmarshalDynamicSlice
-//   if the elements require dynamic size handling.
-// - ssz: A byte slice containing the SSZ-encoded data to be decoded into the slice.
-// - sizeHints: A slice of sszSizeHint, populated from 'ssz-size' and 'dynssz-size' tag annotations from parent structures,
-//   crucial for decoding slices and elements that have dynamic lengths.
-// - idt: An indentation level, primarily used for debugging or logging to facilitate tracking of the recursion depth and element processing order.
+//   - targetType: The TypeDescriptor containing slice metadata
+//   - targetValue: The reflect.Value where the slice will be stored
+//   - ssz: The SSZ-encoded data to decode
+//   - idt: Indentation level for verbose logging
 //
 // Returns:
-// - The number of bytes consumed from the SSZ data for decoding the slice. This figure is vital for the decoding of subsequent
-//   data structures or elements.
-// - An error, if any issues arise during the decoding process, such as incorrect SSZ format, mismatches between the SSZ data
-//   and targetType, etc.
+//   - int: Total bytes consumed (should equal len(ssz))
+//   - error: An error if decoding fails or data length is invalid
 //
-// unmarshalSlice effectively handles slices by navigating their layout within the SSZ-encoded data, adjusting SSZ slices for each
-// element, and invoking unmarshalType for the decoding. When faced with elements of dynamic size, it seamlessly transitions to
-// unmarshalDynamicSlice, ensuring all elements, regardless of their size variability, are accurately decoded.
+// The function:
+//   - Creates a new slice with the calculated length
+//   - Delegates to unmarshalDynamicSlice for variable-size elements
+//   - Uses optimized copying for byte slices
+//   - Validates that each element consumes exactly the expected bytes
 
 func (d *DynSsz) unmarshalSlice(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
 	var consumedBytes int
@@ -374,32 +372,28 @@ func (d *DynSsz) unmarshalSlice(targetType *TypeDescriptor, targetValue reflect.
 	return consumedBytes, nil
 }
 
-// unmarshalDynamicSlice decodes SSZ-encoded data into a Go slice with dynamically sized items, leveraging the offsets encoded
-// within the SSZ stream itself to navigate and decode each element. This method is essential for accurately handling slices where
-// element sizes can vary, such as slices of slices, slices of arrays with dynamic sizes, or slices of structs containing dynamically
-// sized fields.
+// unmarshalDynamicSlice decodes slices with variable-size elements from SSZ format.
+//
+// For slices with variable-size elements, SSZ uses an offset-based encoding:
+//   - The first 4 bytes contain the offset to the first element's data
+//   - The number of elements is derived by dividing this offset by 4
+//   - Each subsequent 4-byte value is an offset to the next element
+//   - Element data appears after all offsets, in order
 //
 // Parameters:
-// - targetType: The reflect.Type of the slice to be decoded, providing the type information necessary for decoding the dynamically
-//   sized elements.
-// - targetValue: The reflect.Value where the decoded data will be stored, populated with the decoded elements of the slice as
-//   determined by the SSZ data's internal offsets.
-// - ssz: A byte slice containing the SSZ-encoded data to be decoded into the slice.
-// - sizeHints: A slice of sszSizeHint, derived from 'ssz-size' and 'dynssz-size' tag annotations from parent structures. While this
-//   function primarily uses encoded offsets for decoding, sizeHints may still play a role in certain contexts, particularly when
-//   dealing with nested dynamic structures.
-// - idt: An indentation level, used primarily for debugging or logging purposes, to facilitate tracking of the decoding process's
-//   depth and sequence.
+//   - targetType: The TypeDescriptor with slice metadata
+//   - targetValue: The reflect.Value where the slice will be stored
+//   - ssz: The SSZ-encoded data containing offsets and elements
+//   - idt: Indentation level for verbose logging
 //
 // Returns:
-// - The number of bytes consumed from the SSZ data during the decoding process. This information is crucial for correctly parsing
-//   any subsequent structures or fields.
-// - An error if any issues arise during decoding, such as mismatches between the SSZ data and the expected targetType, incorrect
-//   SSZ format, or inconsistencies with the expected sizes and the encoded offsets.
+//   - int: Total bytes consumed (should equal len(ssz))
+//   - error: An error if offsets are invalid or decoding fails
 //
-// By directly utilizing the offsets encoded within the SSZ stream, unmarshalDynamicSlice ensures precise decoding of each element
-// within a dynamic slice. This method efficiently handles the complexity of variable-sized elements, ensuring the integrity and
-// intended structure of the decoded data are maintained.
+// The function validates that:
+//   - Offsets are monotonically increasing
+//   - No offset points outside the data bounds
+//   - Each element consumes exactly the expected bytes
 
 func (d *DynSsz) unmarshalDynamicSlice(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
 	if len(ssz) == 0 {

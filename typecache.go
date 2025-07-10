@@ -4,7 +4,6 @@
 package dynssz
 
 import (
-	"encoding/json"
 	"fmt"
 	"reflect"
 	"sync"
@@ -62,7 +61,36 @@ func NewTypeCache(dynssz *DynSsz) *TypeCache {
 	}
 }
 
-// GetTypeDescriptor returns a cached type descriptor, computing it if necessary, ensuring sequential processing
+// GetTypeDescriptor returns a cached type descriptor for the given type, computing it if necessary.
+//
+// This method is the primary interface for obtaining type descriptors, which contain optimized
+// metadata about how to serialize, deserialize, and hash types according to SSZ specifications.
+// Type descriptors are cached for performance, avoiding repeated reflection and analysis of the
+// same types.
+//
+// The method is thread-safe and ensures sequential processing to prevent duplicate computation
+// of type descriptors when called concurrently for the same type.
+//
+// Parameters:
+//   - t: The reflect.Type for which to obtain a descriptor
+//   - sizeHints: Optional size hints from parent structures' tags. Pass nil for top-level types.
+//   - maxSizeHints: Optional max size hints from parent structures' tags. Pass nil for top-level types.
+//
+// Returns:
+//   - *TypeDescriptor: The type descriptor containing metadata for SSZ operations
+//   - error: An error if the type cannot be analyzed or contains unsupported features
+//
+// Type descriptors are only cached when no size hints are provided (i.e., for root types).
+// When size hints are present, the descriptor is computed dynamically to accommodate the
+// specific constraints.
+//
+// Example:
+//
+//	typeDesc, err := cache.GetTypeDescriptor(reflect.TypeOf(myStruct), nil, nil)
+//	if err != nil {
+//	    log.Fatal("Failed to get type descriptor:", err)
+//	}
+//	fmt.Printf("Type size: %d bytes (dynamic: %v)\n", typeDesc.Size, typeDesc.Size < 0)
 func (tc *TypeCache) GetTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint) (*TypeDescriptor, error) {
 	// Check cache first (read lock)
 	if len(sizeHints) == 0 && len(maxSizeHints) == 0 {
@@ -81,7 +109,7 @@ func (tc *TypeCache) GetTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, 
 	return tc.getTypeDescriptor(t, sizeHints, maxSizeHints)
 }
 
-// GetTypeDescriptor returns a cached type descriptor, computing it if necessary
+// getTypeDescriptor returns a cached type descriptor, computing it if necessary
 func (tc *TypeCache) getTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint) (*TypeDescriptor, error) {
 	if desc, exists := tc.descriptors[t]; exists && len(sizeHints) == 0 && len(maxSizeHints) == 0 {
 		return desc, nil
@@ -324,37 +352,84 @@ func (tc *TypeCache) buildSliceDescriptor(desc *TypeDescriptor, t reflect.Type, 
 	return nil
 }
 
-// DumpTypeDescriptor returns a JSON representation of a type descriptor for debugging
-func (tc *TypeCache) DumpTypeDescriptor(t reflect.Type) (string, error) {
-	desc, err := tc.GetTypeDescriptor(t, nil, nil)
-	if err != nil {
-		return "", err
-	}
-
-	jsonBytes, err := json.MarshalIndent(desc, "", "  ")
-	if err != nil {
-		return "", err
-	}
-
-	return string(jsonBytes), nil
-}
-
-// DumpAllCachedTypes returns a JSON representation of all cached type descriptors
-func (tc *TypeCache) DumpAllCachedTypes() (string, error) {
+// GetAllTypes returns a slice of all types currently cached in the TypeCache.
+//
+// This method is useful for cache inspection, debugging, and understanding which types
+// have been processed and cached during the application's lifetime. The returned slice
+// contains the reflect.Type values in no particular order.
+//
+// The method acquires a read lock to ensure thread-safe access to the cache.
+//
+// Returns:
+//   - []reflect.Type: A slice containing all cached types
+//
+// Example:
+//
+//	cachedTypes := cache.GetAllTypes()
+//	fmt.Printf("TypeCache contains %d types\n", len(cachedTypes))
+//	for _, t := range cachedTypes {
+//	    fmt.Printf("  - %s\n", t.String())
+//	}
+func (tc *TypeCache) GetAllTypes() []reflect.Type {
 	tc.mutex.RLock()
 	defer tc.mutex.RUnlock()
 
-	typeMap := make(map[string]*TypeDescriptor)
-	idx := 0
-	for typ, desc := range tc.descriptors {
-		typeMap[fmt.Sprintf("%d-%s", idx, typ.String())] = desc
-		idx++
+	types := make([]reflect.Type, 0, len(tc.descriptors))
+	for t := range tc.descriptors {
+		types = append(types, t)
 	}
 
-	jsonBytes, err := json.MarshalIndent(typeMap, "", "  ")
-	if err != nil {
-		return "", err
-	}
+	return types
+}
 
-	return string(jsonBytes), nil
+// RemoveType removes a specific type from the cache.
+//
+// This method is useful for cache management scenarios where you need to force
+// recomputation of a type descriptor, such as after configuration changes or
+// when testing different type configurations.
+//
+// The method acquires a write lock to ensure thread-safe removal.
+//
+// Parameters:
+//   - t: The reflect.Type to remove from the cache
+//
+// Example:
+//
+//	// Remove a type to force recomputation
+//	cache.RemoveType(reflect.TypeOf(MyStruct{}))
+//
+//	// Next call to GetTypeDescriptor will rebuild the descriptor
+//	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(MyStruct{}), nil, nil)
+func (tc *TypeCache) RemoveType(t reflect.Type) {
+	tc.mutex.Lock()
+	defer tc.mutex.Unlock()
+
+	delete(tc.descriptors, t)
+}
+
+// RemoveAllTypes clears all cached type descriptors from the cache.
+//
+// This method is useful for:
+//   - Resetting the cache after configuration changes
+//   - Memory management in long-running applications
+//   - Testing scenarios requiring a clean cache state
+//
+// The method acquires a write lock to ensure thread-safe clearing.
+// After calling this method, all subsequent type descriptor requests
+// will trigger recomputation.
+//
+// Example:
+//
+//	// Clear cache after updating specifications
+//	ds.UpdateSpecs(newSpecs)
+//	cache.RemoveAllTypes()
+//
+//	// All types will be recomputed with new specs
+//	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(MyStruct{}), nil, nil)
+func (tc *TypeCache) RemoveAllTypes() {
+	tc.mutex.Lock()
+	defer tc.mutex.Unlock()
+
+	// Create new map to clear all references
+	tc.descriptors = make(map[reflect.Type]*TypeDescriptor)
 }
