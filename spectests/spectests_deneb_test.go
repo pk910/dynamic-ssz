@@ -171,6 +171,9 @@ func TestConsensusSpecDeneb(t *testing.T) {
 		},
 	}
 
-	testForkConsensusSpec(t, "deneb", "mainnet", tests)
-	testForkConsensusSpec(t, "deneb", "minimal", tests)
+	mainnetRes := testForkConsensusSpec(t, "deneb", "mainnet", tests)
+	minimalRes := testForkConsensusSpec(t, "deneb", "minimal", tests)
+	if !mainnetRes && !minimalRes {
+		t.Skipf("Fork deneb not found in test data")
+	}
 }

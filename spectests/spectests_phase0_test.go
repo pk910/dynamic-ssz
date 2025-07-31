@@ -112,6 +112,9 @@ func TestConsensusSpecPhase0(t *testing.T) {
 		},
 	}
 
-	testForkConsensusSpec(t, "phase0", "mainnet", tests)
-	testForkConsensusSpec(t, "phase0", "minimal", tests)
+	mainnetRes := testForkConsensusSpec(t, "phase0", "mainnet", tests)
+	minimalRes := testForkConsensusSpec(t, "phase0", "minimal", tests)
+	if !mainnetRes && !minimalRes {
+		t.Skipf("Fork phase0 not found in test data")
+	}
 }

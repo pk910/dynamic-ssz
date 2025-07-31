@@ -2,6 +2,57 @@
 
 This document provides comprehensive documentation for all public APIs in the dynamic-ssz library.
 
+## Supported Types
+
+Dynamic SSZ supports only SSZ-compatible types as defined in the SSZ specification:
+
+### Base Types
+- `uint8`/`byte`, `uint16`, `uint32`, `uint64` - Unsigned integers
+- `bool` - Boolean values
+
+### Composite Types
+- **Arrays**: Fixed-size arrays of supported types
+- **Slices**: Variable-size slices of supported types (require `ssz-size` or `ssz-max` tags)
+- **Structs**: Structs containing only supported types
+- **Pointers**: Pointers to structs (nil pointers will be filled with empty instances of the referred type)
+
+### Not Supported
+The following types are **not** part of the SSZ specification and therefore not supported:
+- Signed integers (`int`, `int8`, `int16`, `int32`, `int64`)
+- Floating-point numbers (`float32`, `float64`)
+- Strings (`string`) - Use `[]byte` instead
+- Maps
+- Channels
+- Functions
+- Complex numbers
+- Interfaces (except when referring to concrete SSZ-compatible types)
+
+### Type Examples
+
+```go
+// Supported types
+type ValidStruct struct {
+    // Base types
+    Count      uint64
+    Flag       bool
+    Hash       [32]byte
+    
+    // Composite types
+    Values     []uint32      `ssz-max:"100"`
+    Data       []byte        `ssz-max:"1024"`
+    Matrix     [][]byte      `ssz-size:"?,32" ssz-max:"64"`
+    SubStruct  *OtherStruct  // Pointer treated as empty instance for nil pointer
+}
+
+// NOT supported
+type InvalidStruct struct {
+    Name    string         // ❌ Use []byte instead
+    Score   float64        // ❌ Not part of SSZ
+    Count   int            // ❌ Use uint64 instead
+    Mapping map[string]int // ❌ Maps not supported
+}
+```
+
 ## Core Types
 
 ### DynSsz
@@ -207,17 +258,22 @@ Returns a cached type descriptor, computing it if necessary.
 
 ### ssz-size
 
-Defines static default field sizes, compatible with fastssz.
+Defines field sizes, compatible with fastssz. Use `?` to indicate dynamic length dimensions, or specify a number for fixed-size arrays/slices.
 
 ```go
 type MyStruct struct {
-    Data []byte `ssz-size:"32"`
+    FixedData   []byte   `ssz-size:"32"`     // Fixed 32-byte slice
+    DynamicData []byte   `ssz-size:"?"`      // Dynamic slice (requires ssz-max)
+    Matrix      [][]byte `ssz-size:"4,32"`   // Fixed 4x32 matrix
+    Dynamic2D   [][]byte `ssz-size:"?,32"`   // Dynamic outer, fixed inner
 }
 ```
 
+**Note**: Fixed-size fields (those with numeric values) do not use `ssz-max` tags.
+
 ### dynssz-size
 
-Specifies dynamic sizes based on specification properties.
+Specifies sizes based on specification properties with expression support.
 
 ```go
 type MyStruct struct {
@@ -232,6 +288,52 @@ The `dynssz-size` tag supports mathematical expressions:
 - Direct reference: `dynssz-size:"SPEC_VALUE"`
 - Mathematical expression: `dynssz-size:"(SPEC_VALUE*2)-5"`
 - Multiple values: `dynssz-size:"(SPEC_VALUE1*SPEC_VALUE2)+SPEC_VALUE3"`
+
+### ssz-max
+
+**Required** for all dynamic length fields to properly calculate hash tree root. Defines the maximum number of elements.
+
+```go
+type MyStruct struct {
+    DynamicData []byte    `ssz-max:"1024"`              // Max 1024 bytes
+    Items       []Item    `ssz-max:"100"`               // Max 100 items
+    Matrix      [][]byte  `ssz-size:"?,32" ssz-max:"64"` // Max 64 rows of 32 bytes each
+}
+```
+
+### dynssz-max
+
+Similar to `dynssz-size`, allows specification-based maximum sizes with expression support.
+
+```go
+type MyStruct struct {
+    Validators []Validator `ssz-max:"1099511627776" dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
+    Data       []byte      `dynssz-max:"MAX_DATA_SIZE"`
+    Items      [][]byte    `ssz-size:"?,?" ssz-max:"100,256" dynssz-max:"MAX_ITEMS,MAX_ITEM_SIZE"`
+}
+```
+
+### Multi-dimensional Arrays
+
+For multi-dimensional arrays/slices, specify sizes and maximums for each dimension using comma-separated values:
+
+```go
+type MyStruct struct {
+    // Fixed dimensions
+    Fixed2D     [][]byte  `ssz-size:"4,32"`                // 4x32 fixed matrix
+    
+    // Mixed dimensions
+    Mixed       [][]byte  `ssz-size:"?,32" ssz-max:"100"`  // Dynamic outer (max 100), fixed inner (32)
+    
+    // Fully dynamic
+    Dynamic2D   [][]byte  `ssz-size:"?,?" ssz-max:"64,256"` // Max 64x256 matrix
+    
+    // With spec values
+    SpecBased   [][]uint64 `ssz-size:"?,?" ssz-max:"100,100" dynssz-max:"MAX_COMMITTEES,MAX_VALIDATORS"`
+}
+```
+
+**Known Limitation**: Hash tree root calculations currently have limitations with multi-dimensional slices of complex types. While `[][]byte` and `[][]uint8` work correctly, multi-dimensional slices of structs (e.g., `[][]CustomType`) and higher dimensional arrays/slices (e.g., `[][][]byte`) are not yet supported for hash tree root calculations. Encoding and decoding work correctly for all types.
 
 ## Error Handling
 

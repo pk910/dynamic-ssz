@@ -23,14 +23,38 @@ This will download and install the `dynssz` package into your Go workspace.
 
 ## Usage
 
+### Supported Types
+
+Dynamic SSZ supports only SSZ-compatible types as defined in the SSZ specification:
+
+**Base Types:**
+- `uint8`, `uint16`, `uint32`, `uint64` (unsigned integers)
+- `bool` (boolean values)
+- Fixed-size byte arrays (e.g., `[32]byte`)
+
+**Composite Types:**
+- Arrays and slices of supported types
+- Structs containing only supported types
+- Pointers to structs (treated as optional fields)
+
+**Not Supported:**
+- Signed integers (`int`, `int8`, `int16`, `int32`, `int64`)
+- Floating-point numbers (`float32`, `float64`)
+- Strings (`string`) - use `[]byte` instead
+- Maps, channels, functions, complex numbers
+- Interfaces (except when referring to concrete SSZ-compatible types)
+
 ### Struct Tag Annotations for Dynamic Encoding/Decoding
 
 `dynssz` utilizes struct tag annotations to indicate how fields should be encoded/decoded, supporting both static and dynamic field sizes:
 
+#### Size Tags
+
 - `ssz-size`:
-Defines static default field sizes. This tag follows the same format supported by `fastssz`, allowing seamless integration.
+Defines field sizes. This tag follows the same format supported by `fastssz`, allowing seamless integration. Use `?` to indicate dynamic length dimensions, or specify a number for fixed-size arrays/slices. **Note**: Fixed-size fields (those with numeric values in `ssz-size`) do not use `ssz-max` tags.
+
 - `dynssz-size`:
-Specifies dynamic sizes based on specification properties, extending the flexibility of `dynssz` to adapt to various Ethereum presets. Unlike the straightforward `ssz-size`, `dynssz-size` supports not only direct references to specification values but also simple mathematical expressions. This feature allows for dynamic calculation of field sizes based on spec values, enhancing the dynamic capabilities of `dynssz`.
+Specifies sizes based on specification properties, extending the flexibility of `dynssz` to adapt to various Ethereum presets. Unlike the straightforward `ssz-size`, `dynssz-size` supports not only direct references to specification values but also simple mathematical expressions. This feature allows for dynamic calculation of field sizes based on spec values, enhancing the dynamic capabilities of `dynssz`.
 
     The `dynssz-size` tag can interpret and evaluate expressions involving one or multiple spec values, offering a versatile approach to defining dynamic sizes. For example:
     
@@ -40,9 +64,60 @@ Specifies dynamic sizes based on specification properties, extending the flexibi
 
     When processing a field with a `dynssz-size` tag, `dynssz` evaluates the expression to determine the actual size. If the resolved size deviates from the default established by `ssz-size`, the library switches to dynamic handling for that field. This mechanism ensures that `dynssz` can accurately and efficiently encode or decode data structures, taking into account the intricate sizing requirements dictated by dynamic Ethereum presets.
 
-Fields with static sizes do not need the `dynssz-size` tag. Here's an example of a structure using both tags:
+#### Maximum Size Tags (Required for Dynamic Fields)
+
+- `ssz-max`:
+Defines the maximum number of elements for dynamic length fields. This tag is **required** for all dynamic length fields (slices with `?` in `ssz-size` or no `ssz-size` tag) to properly calculate the hash tree root. The maximum size determines the merkle tree depth and is essential for SSZ compliance.
+
+- `dynssz-max`:
+Similar to `dynssz-size`, this tag allows specification-based maximum sizes with support for mathematical expressions. This enables dynamic adjustment of maximum bounds based on specification values.
+
+**Important**: Every dynamic length field (those with `?` in `ssz-size` or without `ssz-size`) must have either an `ssz-max` or `dynssz-max` tag. Without these tags, the hash tree root calculation cannot determine the appropriate merkle tree structure. Fixed-size fields (e.g., `ssz-size:"32"`) should not have max tags.
+
+#### Multi-dimensional Slices
+
+`dynssz` supports multi-dimensional slices with different size constraints at each dimension. When using multi-dimensional arrays or slices, you can specify sizes and maximums for each dimension using comma-separated values:
 
 ```go
+// Two-dimensional byte slice: outer dynamic up to 100, inner fixed at 32 bytes
+Field1 [][]byte `ssz-size:"?,32" ssz-max:"100"`
+
+// Two-dimensional uint8 slice: both dimensions dynamic
+Field2 [][]uint8 `ssz-size:"?,?" ssz-max:"64,256"`
+
+// Mixed fixed and dynamic dimensions
+Field3 [][4]byte `ssz-size:"?" ssz-max:"128" dynssz-max:"MAX_ITEMS"`
+```
+
+Key points for multi-dimensional fields:
+- Sizes and maximums are specified in order from outermost to innermost dimension
+- Use `?` in `ssz-size` to indicate dynamic length dimensions
+- Each dynamic dimension requires a corresponding maximum value
+- Empty values in comma-separated lists can be used for fixed-size dimensions
+
+**Known Limitations**: Currently, hash tree root calculations have limitations with multi-dimensional slices of complex types. While `[][]byte` and `[][]uint8` work correctly, multi-dimensional slices of structs (e.g., `[][]CustomType`) and higher dimensional arrays/slices (e.g., `[][][]byte`) are not yet supported for hash tree root calculations. Encoding and decoding work correctly for all types.
+
+Fields with static sizes do not need the `dynssz-size` tag. Here's an example of a structure using various tag combinations:
+
+```go
+type Example struct {
+    // Fixed-size fields (no ssz-max needed)
+    FixedArray     [32]byte                    // Fixed array, no tags needed
+    FixedSlice     []byte    `ssz-size:"32"`   // Fixed-size slice of 32 bytes
+    Fixed2D        [][]byte  `ssz-size:"4,32"` // Fixed 4x32 byte matrix
+    
+    // Dynamic-size fields (ssz-max required)
+    DynamicSlice   []byte    `ssz-max:"1024"`                           // Dynamic slice, max 1024 bytes
+    DynamicSlice2  []byte    `ssz-size:"?" ssz-max:"2048"`              // Explicit dynamic marker
+    Dynamic2D      [][]byte  `ssz-size:"?,32" ssz-max:"100"`            // Dynamic outer, fixed inner
+    FullyDynamic   [][]byte  `ssz-size:"?,?" ssz-max:"64,256"`          // Both dimensions dynamic
+    
+    // With dynamic specifications
+    SpecDynamic    []uint64  `ssz-max:"1000" dynssz-max:"MAX_ITEMS"`    // Dynamic max from spec
+    SpecFixed      []byte    `ssz-size:"256" dynssz-size:"BUFFER_SIZE"` // Fixed size from spec
+}
+
+// Real-world Ethereum example
 type BeaconState struct {
     GenesisTime                  uint64
     GenesisValidatorsRoot        phase0.Root `ssz-size:"32"`
@@ -51,6 +126,9 @@ type BeaconState struct {
     LatestBlockHeader            *phase0.BeaconBlockHeader
     BlockRoots                   []phase0.Root `ssz-size:"8192,32" dynssz-size:"SLOTS_PER_HISTORICAL_ROOT,32"`
     StateRoots                   []phase0.Root `ssz-size:"8192,32" dynssz-size:"SLOTS_PER_HISTORICAL_ROOT,32"`
+    HistoricalRoots              []phase0.Root `ssz-size:"?,32" ssz-max:"16777216" dynssz-max:"HISTORICAL_ROOTS_LIMIT"`
+    Validators                   []Validator   `ssz-max:"1099511627776" dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
+    PreviousEpochParticipation   []byte        `ssz-max:"1099511627776" dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
     ...
 }
 ```

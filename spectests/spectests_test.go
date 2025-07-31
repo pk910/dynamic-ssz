@@ -17,7 +17,7 @@ type SpecTestStruct struct {
 	s    any
 }
 
-func testForkConsensusSpec(t *testing.T, fork string, preset string, tests []SpecTestStruct) {
+func testForkConsensusSpec(t *testing.T, fork string, preset string, tests []SpecTestStruct) bool {
 	var dynssz *ssz.DynSsz
 	if preset == "mainnet" {
 		dynssz = dynSszOnlyMainnet
@@ -34,7 +34,7 @@ func testForkConsensusSpec(t *testing.T, fork string, preset string, tests []Spe
 
 	// Check if the fork directory exists
 	if _, err := os.Stat(baseDir); os.IsNotExist(err) {
-		t.Skipf("Fork %s not found in test data", fork)
+		return false
 	}
 
 	for _, test := range tests {
@@ -93,4 +93,6 @@ func testForkConsensusSpec(t *testing.T, fork string, preset string, tests []Spe
 			return nil
 		}))
 	}
+
+	return true
 }

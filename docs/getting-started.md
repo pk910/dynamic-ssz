@@ -68,6 +68,24 @@ func main() {
 
 ## Core Concepts
 
+### Supported Types
+
+Before diving into the details, it's important to understand which types are supported by Dynamic SSZ:
+
+**✅ Supported:**
+- Unsigned integers: `uint8`, `uint16`, `uint32`, `uint64`
+- Booleans: `bool`
+- Byte arrays: `[N]byte` (fixed-size)
+- Slices and arrays of supported types
+- Structs containing only supported types
+- Pointers to structs (optional fields)
+
+**❌ Not Supported:**
+- Signed integers (`int`, `int8`, etc.)
+- Floating-point numbers (`float32`, `float64`)
+- Strings (`string`) - use `[]byte` instead
+- Maps, channels, functions, interfaces
+
 ### Dynamic Specifications
 
 Dynamic SSZ supports runtime configuration through specifications. These specifications allow you to define dynamic field sizes that can adapt to different Ethereum presets (mainnet, minimal, custom).
@@ -76,16 +94,25 @@ Dynamic SSZ supports runtime configuration through specifications. These specifi
 
 The library uses struct tags to control encoding/decoding behavior:
 
-- `ssz-size`: Defines static default field sizes (compatible with fastssz)
-- `dynssz-size`: Specifies dynamic sizes based on specification properties
+- `ssz-size`: Defines field sizes (compatible with fastssz). Use `?` for dynamic dimensions
+- `dynssz-size`: Specifies sizes based on specification properties with expression support
+- `ssz-max`: **Required** for dynamic fields to define maximum elements for hash tree root
+- `dynssz-max`: Dynamic maximum based on specifications
 
 Example:
 ```go
 type BeaconState struct {
+    // Fixed-size fields (no ssz-max needed)
     BlockRoots []phase0.Root `ssz-size:"8192,32" dynssz-size:"SLOTS_PER_HISTORICAL_ROOT,32"`
     StateRoots []phase0.Root `ssz-size:"8192,32" dynssz-size:"SLOTS_PER_HISTORICAL_ROOT,32"`
+    
+    // Dynamic fields (ssz-max required)
+    HistoricalRoots []phase0.Root `ssz-size:"?,32" ssz-max:"16777216" dynssz-max:"HISTORICAL_ROOTS_LIMIT"`
+    Validators      []Validator   `ssz-max:"1099511627776" dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
 }
 ```
+
+**Important**: Every dynamic length field must have either an `ssz-max` or `dynssz-max` tag for proper hash tree root calculation.
 
 ### Hybrid Approach
 
@@ -151,12 +178,53 @@ ds.Verbose = true     // Enable verbose logging
 - Explore [performance optimization](performance.md) techniques
 - Check out [examples](../examples/) for more use cases
 
+## Working with Custom Types
+
+Here's a comprehensive example using custom types with various tag combinations:
+
+```go
+type CustomData struct {
+    // Fixed-size fields
+    ID         uint64
+    Hash       [32]byte                    // Fixed array, no tags needed
+    FixedData  []byte    `ssz-size:"256"`  // Fixed 256-byte slice
+    
+    // Dynamic fields (require ssz-max)
+    Counts     []uint64  `ssz-max:"100"`                            // Max 100 counts
+    Data       []byte    `ssz-max:"4096" dynssz-max:"MAX_DATA"`    // Dynamic max from spec
+    
+    // Multi-dimensional arrays
+    Matrix     [][]byte  `ssz-size:"?,32" ssz-max:"64"`            // Dynamic outer, fixed inner
+    Dynamic2D  [][]uint8 `ssz-size:"?,?" ssz-max:"100,256"`        // Fully dynamic
+}
+
+// Usage
+specs := map[string]any{
+    "MAX_DATA": uint64(8192),
+}
+ds := dynssz.NewDynSsz(specs)
+
+data := &CustomData{
+    ID:        1,
+    Hash:      [32]byte{1, 2, 3},
+    FixedData: make([]byte, 256),
+    Counts:    []uint64{100, 200, 300},
+    Data:      []byte("dynamic data"),
+    Matrix:    [][]byte{{1, 2}, {3, 4}},
+    Dynamic2D: [][]uint8{{1}, {2, 3}, {4, 5, 6}},
+}
+
+encoded, _ := ds.MarshalSSZ(data)
+root, _ := ds.HashTreeRoot(data)
+```
+
 ## Common Pitfalls
 
-1. **Pointer handling**: Always pass pointers to UnmarshalSSZ
-2. **Specification values**: Ensure your specs map contains all required values
-3. **Type compatibility**: Verify struct tags match your specifications
-4. **Buffer reuse**: Consider reusing buffers for better performance
+1. **Missing ssz-max tags**: Dynamic fields without `ssz-max` will fail hash tree root calculation
+2. **Mixing size and max**: Don't use `ssz-max` on fixed-size fields (those with numeric `ssz-size`)
+3. **Pointer handling**: Always pass pointers to UnmarshalSSZ
+4. **Specification values**: Ensure your specs map contains all required values
+5. **Multi-dimensional limits**: Be aware of hash tree root limitations for complex multi-dimensional types
 
 ## Getting Help
 
