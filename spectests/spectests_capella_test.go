@@ -150,6 +150,9 @@ func TestConsensusSpecCapella(t *testing.T) {
 		},
 	}
 
-	testForkConsensusSpec(t, "capella", "mainnet", tests)
-	testForkConsensusSpec(t, "capella", "minimal", tests)
+	mainnetRes := testForkConsensusSpec(t, "capella", "mainnet", tests)
+	minimalRes := testForkConsensusSpec(t, "capella", "minimal", tests)
+	if !mainnetRes && !minimalRes {
+		t.Skipf("Fork capella not found in test data")
+	}
 }

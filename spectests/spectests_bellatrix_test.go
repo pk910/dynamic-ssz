@@ -142,6 +142,9 @@ func TestConsensusSpecBellatrix(t *testing.T) {
 		},
 	}
 
-	testForkConsensusSpec(t, "bellatrix", "mainnet", tests)
-	testForkConsensusSpec(t, "bellatrix", "minimal", tests)
+	mainnetRes := testForkConsensusSpec(t, "bellatrix", "mainnet", tests)
+	minimalRes := testForkConsensusSpec(t, "bellatrix", "minimal", tests)
+	if !mainnetRes && !minimalRes {
+		t.Skipf("Fork bellatrix not found in test data")
+	}
 }

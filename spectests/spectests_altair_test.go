@@ -133,6 +133,9 @@ func TestConsensusSpecAltair(t *testing.T) {
 		},
 	}
 
-	testForkConsensusSpec(t, "altair", "mainnet", tests)
-	testForkConsensusSpec(t, "altair", "minimal", tests)
+	mainnetRes := testForkConsensusSpec(t, "altair", "mainnet", tests)
+	minimalRes := testForkConsensusSpec(t, "altair", "minimal", tests)
+	if !mainnetRes && !minimalRes {
+		t.Skipf("Fork altair not found in test data")
+	}
 }

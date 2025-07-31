@@ -196,6 +196,9 @@ func TestConsensusSpecElectra(t *testing.T) {
 		},
 	}
 
-	testForkConsensusSpec(t, "electra", "mainnet", tests)
-	testForkConsensusSpec(t, "electra", "minimal", tests)
+	mainnetRes := testForkConsensusSpec(t, "electra", "mainnet", tests)
+	minimalRes := testForkConsensusSpec(t, "electra", "minimal", tests)
+	if !mainnetRes && !minimalRes {
+		t.Skipf("Fork electra not found in test data")
+	}
 }
