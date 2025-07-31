@@ -75,7 +75,7 @@ func main() {
     // Your data structure
     type MyData struct {
         ID    uint64
-        Items []byte `ssz-size:"1024" dynssz-size:"MAX_ITEMS"`
+        Items []byte `ssz-max:"2048" dynssz-max:"MAX_ITEMS"`
     }
     
     data := &MyData{
@@ -108,9 +108,17 @@ func main() {
 
 ## Key Concepts
 
+### Supported Types
+Dynamic SSZ only supports SSZ-compatible types:
+- **Base types**: `uint8`, `uint16`, `uint32`, `uint64`, `bool`, fixed byte arrays
+- **Composite types**: Arrays, slices, structs, pointers (optional fields)
+- **Not supported**: Signed integers, floats, strings, maps, channels, interfaces
+
 ### Struct Tags
-- **`ssz-size`**: Static size hints (fastssz compatible)
-- **`dynssz-size`**: Dynamic size based on specifications
+- **`ssz-size`**: Size hints for fields (fastssz compatible). Use `?` for dynamic dimensions
+- **`dynssz-size`**: Dynamic size based on specifications with expression support
+- **`ssz-max`**: Maximum elements for dynamic fields (**required** for hash tree root)
+- **`dynssz-max`**: Dynamic maximum based on specifications
 
 ### Specifications
 Runtime configuration that controls dynamic field sizes:

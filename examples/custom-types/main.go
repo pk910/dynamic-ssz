@@ -14,8 +14,8 @@ type CustomMessage struct {
 	ID        uint64
 	Timestamp uint64
 	Sender    [32]byte
-	Data      []byte   `ssz-size:"1024" dynssz-size:"MAX_MESSAGE_SIZE"`
-	Tags      [][]byte `ssz-size:"16,64" dynssz-size:"MAX_TAGS,MAX_TAG_LENGTH"`
+	Data      []byte   `ssz-max:"4096" dynssz-max:"MAX_MESSAGE_SIZE"`
+	Tags      [][]byte `ssz-size:"?,64" ssz-max:"32" dynssz-max:"MAX_TAGS"`
 }
 
 // LogEntry represents a log entry with dynamic buffer size
@@ -23,8 +23,8 @@ type LogEntry struct {
 	Level     uint32
 	Timestamp uint64
 	Module    [16]byte
-	Message   []byte `ssz-size:"256" dynssz-size:"MAX_LOG_MESSAGE_SIZE"`
-	Details   []byte `ssz-size:"512" dynssz-size:"LOG_BUFFER_SIZE"`
+	Message   []byte `ssz-max:"1024" dynssz-max:"MAX_LOG_MESSAGE_SIZE"`
+	Details   []byte `ssz-max:"2048" dynssz-max:"LOG_BUFFER_SIZE"`
 }
 
 // NetworkPacket represents a network packet with variable payload
@@ -35,17 +35,17 @@ type NetworkPacket struct {
 	SourceID uint32
 	TargetID uint32
 	Sequence uint64
-	Payload  []byte `ssz-size:"1500" dynssz-size:"MAX_PACKET_SIZE"`
+	Payload  []byte `ssz-max:"65535" dynssz-max:"MAX_PACKET_SIZE"`
 	Checksum uint32
 }
 
 // Configuration represents application configuration with dynamic arrays
 type Configuration struct {
 	Version  uint32
-	Servers  [][]byte `ssz-size:"10,128" dynssz-size:"MAX_SERVERS,SERVER_NAME_LENGTH"`
-	Ports    []uint16 `ssz-size:"10" dynssz-size:"MAX_SERVERS"`
-	Features []bool   `ssz-size:"64" dynssz-size:"MAX_FEATURES"`
-	Timeouts []uint32 `ssz-size:"5" dynssz-size:"TIMEOUT_COUNT"`
+	Servers  [][]byte `ssz-size:"?,?" ssz-max:"100,256" dynssz-max:"MAX_SERVERS,SERVER_NAME_LENGTH"`
+	Ports    []uint16 `ssz-max:"100" dynssz-max:"MAX_SERVERS"`
+	Features []bool   `ssz-max:"256" dynssz-max:"MAX_FEATURES"`
+	Timeouts []uint32 `ssz-max:"32" dynssz-max:"TIMEOUT_COUNT"`
 }
 
 func main() {
