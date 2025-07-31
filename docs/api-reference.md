@@ -27,6 +27,30 @@ The following types are **not** part of the SSZ specification and therefore not 
 - Complex numbers
 - Interfaces (except when referring to concrete SSZ-compatible types)
 
+### Handling Large Integers (uint128/uint256)
+
+The SSZ specification defines `uint128` and `uint256` types, but Go doesn't have native support for these large integer types. This creates a gap between the SSZ specification and Go's type system.
+
+#### Current Approach
+- **For marshalling/unmarshalling**: Large integers are typically represented as byte arrays (`[16]byte` for uint128, `[32]byte` for uint256) or `uint64` arrays
+- **For calculations**: Complex types that handle endianness and arithmetic operations are needed
+
+#### Recommended Libraries
+- **uint256**: Use `github.com/holiman/uint256` for proper uint256 handling
+  ```go
+  import "github.com/holiman/uint256"
+  
+  type MyStruct struct {
+      // For SSZ marshalling/unmarshalling
+      Balance1 [32]byte
+      
+      // For actual usage in calculations
+      Balance2 uint256.Int
+  }
+  ```
+
+**Note**: There is currently no widely adopted standard library for uint128 in Go. Consider using byte arrays or implementing custom handling based on your specific needs.
+
 ### Type Examples
 
 ```go
