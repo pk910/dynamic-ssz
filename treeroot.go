@@ -326,6 +326,20 @@ func (d *DynSsz) buildRootFromSlice(sourceType *TypeDescriptor, sourceValue refl
 		hh.Append(sourceValue.Bytes())
 		hh.FillUpTo32()
 		itemSize = 1
+	case reflect.Uint16:
+		for i := 0; i < sliceLen; i++ {
+			fieldValue := sourceValue.Index(i)
+
+			hh.AppendUint16(uint16(fieldValue.Uint()))
+		}
+		itemSize = 2
+	case reflect.Uint32:
+		for i := 0; i < sliceLen; i++ {
+			fieldValue := sourceValue.Index(i)
+
+			hh.AppendUint32(uint32(fieldValue.Uint()))
+		}
+		itemSize = 4
 	case reflect.Uint64:
 		for i := 0; i < sliceLen; i++ {
 			fieldValue := sourceValue.Index(i)
@@ -345,7 +359,9 @@ func (d *DynSsz) buildRootFromSlice(sourceType *TypeDescriptor, sourceValue refl
 		}
 	}
 
-	if len(sourceType.MaxSizeHints) > 0 && !sourceType.MaxSizeHints[0].NoValue {
+	if len(sourceType.TypeHints) > 0 && sourceType.TypeHints[0].Type == SszProgressiveListType {
+		hh.MerkleizeProgressiveWithMixin(subIndex, uint64(sliceLen))
+	} else if len(sourceType.MaxSizeHints) > 0 && !sourceType.MaxSizeHints[0].NoValue {
 		var limit uint64
 		if itemSize > 0 {
 			limit = CalculateLimit(uint64(sourceType.MaxSizeHints[0].Size), uint64(sliceLen), uint64(itemSize))
