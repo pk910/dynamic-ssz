@@ -424,8 +424,12 @@ func (d *DynSsz) unmarshalDynamicSlice(targetType *TypeDescriptor, targetValue r
 		fieldT = fieldT.Elem()
 	}
 
-	newValue := reflect.MakeSlice(fieldT, sliceLen, sliceLen)
-	targetValue.Set(newValue)
+	var newValue reflect.Value
+	if targetType.Kind == reflect.Array {
+		newValue = reflect.New(fieldT).Elem()
+	} else {
+		newValue = reflect.MakeSlice(fieldT, sliceLen, sliceLen)
+	}
 
 	offset := int(firstOffset)
 	sszLen := len(ssz)
@@ -468,6 +472,8 @@ func (d *DynSsz) unmarshalDynamicSlice(targetType *TypeDescriptor, targetValue r
 			offset += itemSize
 		}
 	}
+
+	targetValue.Set(newValue)
 
 	return offset, nil
 }

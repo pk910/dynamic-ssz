@@ -4,7 +4,7 @@ import "encoding/hex"
 
 type slug_DynStruct1 struct {
 	F1 bool
-	F2 []uint8
+	F2 []uint8 `ssz-max:"10"`
 }
 
 type slug_StaticStruct1 struct {

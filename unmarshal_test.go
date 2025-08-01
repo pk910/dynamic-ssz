@@ -83,6 +83,18 @@ var unmarshalTestMatrix = []struct {
 		}{42, []*slug_StaticStruct1{{false, []uint8{0, 0, 0}}, {true, []uint8{4, 8, 4}}, {false, []uint8{0, 0, 0}}}, 43},
 		fromHex("0x2a0000000001040804000000002b"),
 	},
+	{
+		struct {
+			F1 uint8
+			F2 [][2][]struct {
+				F1 uint16
+			} `ssz-size:"?,2"`
+			F3 uint8
+		}{42, [][2][]struct {
+			F1 uint16
+		}{{{{F1: 2}, {F1: 3}}, {{F1: 4}, {F1: 5}}}, {{{F1: 8}, {F1: 9}}, {{F1: 10}, {F1: 11}}}}, 43},
+		fromHex("0x2a060000002b0800000018000000080000000c0000000200030004000500080000000c000000080009000a000b00"),
+	},
 }
 
 func TestUnmarshal(t *testing.T) {

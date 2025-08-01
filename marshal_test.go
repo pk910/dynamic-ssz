@@ -91,6 +91,14 @@ var marshalTestMatrix = []struct {
 	{
 		struct {
 			F1 uint8
+			F2 [2][]*slug_StaticStruct1 `ssz-size:"2,3"`
+			F3 uint8
+		}{42, [2][]*slug_StaticStruct1{{nil, nil, nil}, {nil, nil, nil, nil}}, 43},
+		nil, // size too long error
+	},
+	{
+		struct {
+			F1 uint8
 			F2 [][]struct {
 				F1 uint16
 			} `ssz-size:"?,2"`
@@ -99,6 +107,24 @@ var marshalTestMatrix = []struct {
 			F1 uint16
 		}{{{F1: 2}, {F1: 3}}, {{F1: 4}, {F1: 5}}}, 43},
 		fromHex("0x2a060000002b0200030004000500"),
+	},
+	{
+		struct {
+			F1 uint8
+			F2 [][2][]struct {
+				F1 uint16
+			} `ssz-size:"?,2"`
+			F3 uint8
+		}{42, [][2][]struct {
+			F1 uint16
+		}{{{{F1: 2}, {F1: 3}}, {{F1: 4}, {F1: 5}}}, {{{F1: 8}, {F1: 9}}, {{F1: 10}, {F1: 11}}}}, 43},
+		fromHex("0x2a060000002b0800000018000000080000000c0000000200030004000500080000000c000000080009000a000b00"),
+	},
+	{
+		struct {
+			F1 [][]uint16 `ssz-size:"?,2" ssz-max:"10"`
+		}{[][]uint16{{2, 3}, {4, 5}, {8, 9}, {10, 11}}},
+		fromHex("0x040000000200030004000500080009000a000b00"),
 	},
 }
 

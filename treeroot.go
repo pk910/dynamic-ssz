@@ -215,6 +215,13 @@ func (d *DynSsz) buildRootFromArray(sourceType *TypeDescriptor, sourceValue refl
 
 	// For byte arrays, handle as a single unit
 	if fieldType.Kind == reflect.Uint8 {
+		if !sourceValue.CanAddr() {
+			// workaround for unaddressable static arrays
+			sourceValPtr := reflect.New(sourceType.Type)
+			sourceValPtr.Elem().Set(sourceValue)
+			sourceValue = sourceValPtr.Elem()
+		}
+
 		hh.PutBytes(sourceValue.Bytes())
 		return nil
 	}
