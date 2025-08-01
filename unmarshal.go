@@ -247,6 +247,11 @@ func (d *DynSsz) unmarshalArray(targetType *TypeDescriptor, targetValue reflect.
 	fieldType := targetType.ElemDesc
 	arrLen := int(targetType.Len)
 
+	// check if slice has dynamic size items
+	if fieldType.Size < 0 {
+		return d.unmarshalDynamicSlice(targetType, targetValue, ssz, idt)
+	}
+
 	if targetType.IsByteArray {
 		// shortcut for performance: use copy on []byte arrays
 		reflect.Copy(targetValue, reflect.ValueOf(ssz[0:arrLen]))

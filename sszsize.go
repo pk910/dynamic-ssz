@@ -81,6 +81,16 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 				fieldType := targetType.ElemDesc
 				if fieldType.Kind == reflect.Uint8 {
 					staticSize = targetType.Len
+				} else if fieldType.Size < 0 {
+					// array with dynamic size items, so we have to go through each item
+					for i := 0; i < int(targetType.Len); i++ {
+						size, err := d.getSszValueSize(fieldType, targetValue.Index(i))
+						if err != nil {
+							return 0, err
+						}
+						// add 4 bytes for offset in dynamic array
+						staticSize += size + 4
+					}
 				} else {
 					size, err := d.getSszValueSize(fieldType, targetValue.Index(0))
 					if err != nil {

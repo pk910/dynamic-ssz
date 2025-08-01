@@ -231,7 +231,7 @@ func (d *DynSsz) buildRootFromArray(sourceType *TypeDescriptor, sourceValue refl
 		}
 	}
 
-	if len(sourceType.MaxSizeHints) > 0 {
+	if len(sourceType.MaxSizeHints) > 0 && !sourceType.MaxSizeHints[0].NoValue {
 		var limit uint64
 		if fieldType.Size > 0 {
 			limit = calculateLimit(uint64(sourceType.MaxSizeHints[0].Size), uint64(arrayLen), uint64(fieldType.Size))
@@ -306,7 +306,14 @@ func (d *DynSsz) buildRootFromSlice(sourceType *TypeDescriptor, sourceValue refl
 				}
 			}
 		} else {
-			return fmt.Errorf("non-byte slice/array in slice: %v", fieldType.ElemDesc.Type.Name())
+			for i := 0; i < sliceLen; i++ {
+				fieldValue := sourceValue.Index(i)
+
+				err := d.buildRootFromType(fieldType, fieldValue, hh, idt+2)
+				if err != nil {
+					return err
+				}
+			}
 		}
 	case reflect.Uint8:
 		hh.Append(sourceValue.Bytes())
@@ -331,7 +338,7 @@ func (d *DynSsz) buildRootFromSlice(sourceType *TypeDescriptor, sourceValue refl
 		}
 	}
 
-	if len(sourceType.MaxSizeHints) > 0 {
+	if len(sourceType.MaxSizeHints) > 0 && !sourceType.MaxSizeHints[0].NoValue {
 		var limit uint64
 		if itemSize > 0 {
 			limit = calculateLimit(uint64(sourceType.MaxSizeHints[0].Size), uint64(sliceLen), uint64(itemSize))
