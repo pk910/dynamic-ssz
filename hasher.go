@@ -38,6 +38,7 @@ var zeroHashes [65][32]byte
 var zeroHashLevels map[string]int
 var trueBytes, falseBytes, zeroBytes []byte
 
+
 func initHasher() {
 	hasherInitMutex.Lock()
 	defer hasherInitMutex.Unlock()
@@ -141,7 +142,7 @@ func NewHasherWithHashFn(hh HashFn) *Hasher {
 
 	return &Hasher{
 		hash: hh,
-		tmp:  make([]byte, 32),
+		tmp:  make([]byte, 64),
 	}
 }
 
@@ -202,6 +203,10 @@ func (h *Hasher) FillUpTo32() {
 
 func (h *Hasher) AppendUint8(i uint8) {
 	h.buf = marshalUint8(h.buf, i)
+}
+
+func (h *Hasher) AppendUint16(i uint16) {
+	h.buf = marshalUint16(h.buf, i)
 }
 
 func (h *Hasher) AppendUint32(i uint32) {
@@ -431,4 +436,105 @@ func (h *Hasher) merkleizeImpl(dst []byte, input []byte, limit uint64) []byte {
 	}
 
 	return append(dst, input...)
+}
+
+// Merkleize is used to merkleize the last group of the hasher
+func (h *Hasher) MerkleizeProgressive(indx int) {
+	// merkleizeImpl will expand the `input` by 32 bytes if some hashing depth
+	// hits an odd chunk length. But if we're at the end of `h.buf` already,
+	// appending to `input` will allocate a new buffer, *not* expand `h.buf`,
+	// so the next invocation will realloc, over and over and over. We can pre-
+	// emptively cater for that by ensuring that an extra 32 bytes is always
+	// available.
+	h.buf = append(h.buf, zeroBytes...)
+	h.buf = h.buf[:len(h.buf)-len(zeroBytes)]
+	input := h.buf[indx:]
+
+	// merkleize the input
+	input = h.merkleizeProgressiveImpl(input[:0], input, 0)
+	h.buf = append(h.buf[:indx], input...)
+}
+
+// MerkleizeProgressiveWithMixin is used to merkleize progressive lists with length mixin
+func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
+	h.FillUpTo32()
+	input := h.buf[indx:]
+
+	// progressive merkleize the input
+	input = h.merkleizeProgressiveImpl(input[:0], input, 0)
+
+	// mixin with the size (same as MerkleizeWithMixin)
+	output := h.tmp[:32]
+	for indx := range output {
+		output[indx] = 0
+	}
+	marshalUint64(output[:0], num)
+	input = append(input, output...)
+
+	// input is of the form [<progressive_root><size>] of 64 bytes
+	h.hash(input, input)
+	
+	h.buf = append(h.buf[:indx], input[:32]...)
+}
+
+func (h *Hasher) merkleizeProgressiveImpl(dst []byte, chunks []byte, depth uint8) []byte {
+	count := uint64((len(chunks) + 31) / 32)
+
+	if count == 0 {
+		return append(dst, zeroBytes...)
+	}
+
+	// This implements subtree_fill_progressive from remerkleable
+	// def subtree_fill_progressive(nodes: PyList[Node], depth=0) -> Node:
+	//     if len(nodes) == 0:
+	//         return zero_node(0)
+	//     base_size = 1 << depth
+	//     return PairNode(
+	//         subtree_fill_progressive(nodes[base_size:], depth + 2),
+	//         subtree_fill_to_contents(nodes[:base_size], depth),
+	//     )
+
+	// Calculate base_size = 1 << depth (1, 4, 16, 64, 256...)
+	baseSize := uint64(1) << depth
+
+	// Split chunks: first baseSize chunks go to RIGHT (binary), rest go to LEFT (progressive)
+	splitPoint := int(baseSize * 32)
+	if splitPoint > len(chunks) {
+		splitPoint = len(chunks)
+	}
+
+	// Right child: subtree_fill_to_contents(nodes[:base_size], depth) - binary merkleization
+	rightChunks := chunks[:splitPoint]
+	
+	// Ensure rightChunks are properly padded to 32-byte boundaries
+	if len(rightChunks) > 0 && len(rightChunks)%32 != 0 {
+		padNeeded := 32 - (len(rightChunks) % 32)
+		rightChunks = append(rightChunks, make([]byte, padNeeded)...)
+	}
+	
+	rightRoot := h.merkleizeImpl(nil, rightChunks, baseSize)
+
+	// Left child: subtree_fill_progressive(nodes[base_size:], depth + 2) - recursive progressive
+	leftChunks := chunks[splitPoint:]
+	var leftRoot []byte
+	if len(leftChunks) == 0 {
+		leftRoot = append([]byte(nil), zeroBytes...)
+	} else {
+		// Ensure leftChunks are properly padded to 32-byte boundaries
+		if len(leftChunks)%32 != 0 {
+			padNeeded := 32 - (len(leftChunks) % 32)
+			leftChunks = append(leftChunks, make([]byte, padNeeded)...)
+		}
+		
+		leftRoot = h.merkleizeProgressiveImpl(nil, leftChunks, depth+2)
+	}
+
+	// PairNode(left, right) - hash(left, right)
+	combined := make([]byte, 64)
+	copy(combined[:32], leftRoot)
+	copy(combined[32:], rightRoot)
+	result := make([]byte, 32)
+	h.hash(result, combined)
+
+	return append(dst, result...)
 }
