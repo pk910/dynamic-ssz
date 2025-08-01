@@ -136,10 +136,10 @@ var treerootTestMatrix = []struct {
 			list[127] = 222
 
 			return struct {
-				F1 []uint32 `ssz-container:"progressive-list"`
+				F1 []uint32 `ssz-type:"progressive-list"`
 			}{list}
 		}(),
-		fromHex("0x64a3b62652532a2e8b3621ed185e140f965a90aa0ef4b9f5859eff8ca7658ba6"),
+		fromHex("0xcafb653b8b774afa1a755897c6afc68bb08af48b30a3c08ca5b72ddf79bdb20f"),
 	},
 }
 
