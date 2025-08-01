@@ -357,7 +357,7 @@ type MyStruct struct {
 }
 ```
 
-**Known Limitation**: Hash tree root calculations currently have limitations with multi-dimensional slices of complex types. While `[][]byte` and `[][]uint8` work correctly, multi-dimensional slices of structs (e.g., `[][]CustomType`) and higher dimensional arrays/slices (e.g., `[][][]byte`) are not yet supported for hash tree root calculations. Encoding and decoding work correctly for all types.
+Multi-dimensional slices are fully supported for all operations including hash tree root calculations, encoding, and decoding. This includes complex types like `[][]CustomType` and higher dimensional slices such as `[][][]byte`.
 
 ## Error Handling
 

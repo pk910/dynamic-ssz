@@ -95,7 +95,7 @@ Key points for multi-dimensional fields:
 - Each dynamic dimension requires a corresponding maximum value
 - Empty values in comma-separated lists can be used for fixed-size dimensions
 
-**Known Limitations**: Currently, hash tree root calculations have limitations with multi-dimensional slices of complex types. While `[][]byte` and `[][]uint8` work correctly, multi-dimensional slices of structs (e.g., `[][]CustomType`) and higher dimensional arrays/slices (e.g., `[][][]byte`) are not yet supported for hash tree root calculations. Encoding and decoding work correctly for all types.
+Multi-dimensional slices are fully supported for all operations including hash tree root calculations, encoding, and decoding.
 
 Fields with static sizes do not need the `dynssz-size` tag. Here's an example of a structure using various tag combinations:
 

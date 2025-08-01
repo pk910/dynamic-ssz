@@ -223,8 +223,7 @@ root, _ := ds.HashTreeRoot(data)
 1. **Missing ssz-max tags**: Dynamic fields without `ssz-max` will fail hash tree root calculation
 2. **Mixing size and max**: Don't use `ssz-max` on fixed-size fields (those with numeric `ssz-size`)
 3. **Pointer handling**: Always pass pointers to UnmarshalSSZ
-4. **Specification values**: Ensure your specs map contains all required values
-5. **Multi-dimensional limits**: Be aware of hash tree root limitations for complex multi-dimensional types
+4. **Specification values**: Ensure your specs map contains all required values for dynamic sizing
 
 ## Getting Help
 
