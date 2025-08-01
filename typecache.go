@@ -188,8 +188,28 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		desc.Size = 4
 	case reflect.Uint64:
 		desc.Size = 8
+
+	// Explicitly unsupported types with helpful error messages
+	case reflect.String:
+		return nil, fmt.Errorf("strings are not supported in SSZ (use []byte instead)")
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return nil, fmt.Errorf("signed integers are not supported in SSZ (use unsigned integers instead)")
+	case reflect.Float32, reflect.Float64:
+		return nil, fmt.Errorf("floating-point numbers are not supported in SSZ")
+	case reflect.Complex64, reflect.Complex128:
+		return nil, fmt.Errorf("complex numbers are not supported in SSZ")
+	case reflect.Map:
+		return nil, fmt.Errorf("maps are not supported in SSZ (use structs or arrays instead)")
+	case reflect.Chan:
+		return nil, fmt.Errorf("channels are not supported in SSZ")
+	case reflect.Func:
+		return nil, fmt.Errorf("functions are not supported in SSZ")
+	case reflect.Interface:
+		return nil, fmt.Errorf("interfaces are not supported in SSZ (use concrete types)")
+	case reflect.UnsafePointer:
+		return nil, fmt.Errorf("unsafe pointers are not supported in SSZ")
 	default:
-		return nil, fmt.Errorf("unhandled reflection kind: %v", t.Kind())
+		return nil, fmt.Errorf("unsupported type kind: %v", t.Kind())
 	}
 
 	if !desc.HasDynamicSize {

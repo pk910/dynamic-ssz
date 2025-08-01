@@ -188,6 +188,11 @@ func (d *DynSsz) marshalStruct(sourceType *TypeDescriptor, sourceValue reflect.V
 //   - Non-addressable arrays are made addressable via a temporary pointer
 
 func (d *DynSsz) marshalArray(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
+	fieldType := sourceType.ElemDesc
+	if fieldType.Size < 0 {
+		return d.marshalDynamicSlice(sourceType, sourceValue, buf, idt)
+	}
+
 	arrLen := sourceType.Len
 	if sourceType.IsByteArray {
 		// shortcut for performance: use append on []byte arrays

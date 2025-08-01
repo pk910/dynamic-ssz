@@ -88,6 +88,18 @@ var marshalTestMatrix = []struct {
 		}{42, []*slug_StaticStruct1{nil, nil, nil, nil}, 43},
 		nil, // size too long error
 	},
+	{
+		struct {
+			F1 uint8
+			F2 [][]struct {
+				F1 uint16
+			} `ssz-size:"?,2"`
+			F3 uint8
+		}{42, [][]struct {
+			F1 uint16
+		}{{{F1: 2}, {F1: 3}}, {{F1: 4}, {F1: 5}}}, 43},
+		fromHex("0x2a060000002b0200030004000500"),
+	},
 }
 
 func TestMarshal(t *testing.T) {

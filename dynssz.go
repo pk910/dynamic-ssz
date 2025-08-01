@@ -407,3 +407,57 @@ func (d *DynSsz) HashTreeRoot(source any) ([32]byte, error) {
 
 	return hh.HashRoot()
 }
+
+// ValidateType validates whether a given type is compatible with SSZ encoding/decoding.
+//
+// This method performs a comprehensive analysis of the provided type to determine if it can be
+// successfully serialized and deserialized according to SSZ specifications. It recursively
+// validates all nested types within structs, arrays, and slices, ensuring complete compatibility
+// throughout the type hierarchy.
+//
+// The validation process checks for:
+//   - Supported primitive types (bool, uint8, uint16, uint32, uint64)
+//   - Valid composite types (arrays, slices, structs)
+//   - Proper SSZ tags on slice fields (ssz-size, ssz-max, dynssz-size, dynssz-max)
+//   - Correct tag syntax and values
+//   - No unsupported types (strings, maps, channels, signed integers, floats, etc.)
+//
+// This method is particularly useful for:
+//   - Pre-validation before attempting marshalling/unmarshalling operations
+//   - Development-time type checking to catch errors early
+//   - Runtime validation of dynamically constructed types
+//   - Ensuring type compatibility when integrating with external systems
+//
+// Parameters:
+//   - t: The reflect.Type to validate for SSZ compatibility
+//
+// Returns:
+//   - error: nil if the type is valid for SSZ encoding/decoding, or a descriptive error
+//     explaining why the type is incompatible. The error message includes details about
+//     the specific field or type that caused the validation failure.
+//
+// Example usage:
+//
+//	type MyStruct struct {
+//	    ValidField   uint64
+//	    InvalidField string  // This will cause validation to fail
+//	}
+//
+//	err := ds.ValidateType(reflect.TypeOf(MyStruct{}))
+//	if err != nil {
+//	    log.Fatal("Type validation failed:", err)
+//	    // Output: Type validation failed: field 'InvalidField': unsupported type 'string'
+//	}
+//
+// The method validates at the type level without requiring an instance of the type,
+// making it suitable for early validation scenarios. For performance-critical paths,
+// validation results can be cached as type compatibility doesn't change at runtime.
+func (d *DynSsz) ValidateType(t reflect.Type) error {
+	// Attempt to get type descriptor which will validate the type structure
+	_, err := d.typeCache.GetTypeDescriptor(t, nil, nil)
+	if err != nil {
+		return fmt.Errorf("type validation failed: %w", err)
+	}
+
+	return nil
+}
