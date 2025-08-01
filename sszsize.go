@@ -59,9 +59,21 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 		// can't use fastssz, use dynamic size calculation
 		switch targetType.Kind {
 		case reflect.Struct:
+			isStableContainer := targetType.ContainerType != nil && targetType.ContainerType.Type == SszStableContainerType
+			if isStableContainer {
+				stableMax := targetType.ContainerType.Size
+				activeFieldsLen := int((stableMax + 7) / 8)
+				staticSize += uint32(activeFieldsLen)
+			}
+
 			for i := 0; i < len(targetType.Fields); i++ {
 				fieldType := targetType.Fields[i]
 				fieldValue := targetValue.Field(i)
+
+				if isStableContainer && fieldType.IsPtr && fieldValue.IsNil() {
+					// inactive field
+					continue
+				}
 
 				if fieldType.Size < 0 {
 					size, err := d.getSszValueSize(fieldType.Type, fieldValue)

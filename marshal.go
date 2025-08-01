@@ -120,6 +120,10 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 //   - error: An error if any field encoding fails
 
 func (d *DynSsz) marshalStruct(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
+	if sourceType.ContainerType != nil && sourceType.ContainerType.Type == SszStableContainerType {
+		return d.marshalStableStruct(sourceType, sourceValue, buf, idt)
+	}
+
 	offset := 0
 	startLen := len(buf)
 	fieldCount := len(sourceType.Fields)
@@ -162,6 +166,85 @@ func (d *DynSsz) marshalStruct(sourceType *TypeDescriptor, sourceValue reflect.V
 		buf = newBuf
 		offset += len(buf) - bufLen
 	}
+
+	return buf, nil
+}
+
+func (d *DynSsz) marshalStableStruct(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
+	offset := 0
+	startLen := len(buf)
+	stableMax := sourceType.ContainerType.Size
+
+	activeFieldsLen := int((stableMax + 7) / 8)
+	activeFields := make([]byte, activeFieldsLen)
+	buf = append(buf, activeFields...) // reserve space for active fields
+	offset += activeFieldsLen
+
+	setActiveField := func(index uint64) {
+		activeFields[index/8] |= 1 << (index % 8)
+	}
+
+	fieldCount := len(sourceType.Fields)
+	fieldOffsets := map[uint64]int{}
+
+	for i := 0; i < fieldCount; i++ {
+		field := sourceType.Fields[i]
+		fieldSize := field.Size
+
+		if field.SszIndex == nil {
+			return nil, fmt.Errorf("ssz-index tag is required for stable container fields")
+		}
+
+		fieldValue := sourceValue.Field(i)
+		if field.IsPtr && fieldValue.IsNil() {
+			// inactive field
+			continue
+		}
+
+		setActiveField(*field.SszIndex)
+
+		if field.Size > 0 {
+			//fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
+
+			newBuf, err := d.marshalType(field.Type, fieldValue, buf, idt+2)
+			if err != nil {
+				return nil, fmt.Errorf("failed encoding field %v: %v", field.Name, err)
+			}
+			buf = newBuf
+
+		} else {
+			fieldSize = 4
+			buf = binary.LittleEndian.AppendUint32(buf, 0)
+			fieldOffsets[*field.SszIndex] = offset
+			//fmt.Printf("%sfield %d:\t offset [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
+		}
+		offset += int(fieldSize)
+	}
+
+	for _, field := range sourceType.DynFields {
+		fieldDescriptor := field.Field
+		fieldValue := sourceValue.Field(int(fieldDescriptor.Index))
+		if fieldDescriptor.IsPtr && fieldValue.IsNil() {
+			// inactive field
+			continue
+		}
+
+		// set field offset
+		fieldOffset := fieldOffsets[*fieldDescriptor.SszIndex]
+		binary.LittleEndian.PutUint32(buf[fieldOffset:fieldOffset+4], uint32(offset-activeFieldsLen))
+
+		//fmt.Printf("%sfield %d:\t dynamic [%v:]\t %v\n", strings.Repeat(" ", idt+1), field.Index[0], offset, field.Name)
+
+		bufLen := len(buf)
+		newBuf, err := d.marshalType(fieldDescriptor.Type, fieldValue, buf, idt+2)
+		if err != nil {
+			return nil, fmt.Errorf("failed decoding field %v: %v", fieldDescriptor.Name, err)
+		}
+		buf = newBuf
+		offset += len(buf) - bufLen
+	}
+
+	copy(buf[startLen:], activeFields)
 
 	return buf, nil
 }

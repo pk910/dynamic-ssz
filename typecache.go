@@ -22,6 +22,7 @@ type TypeDescriptor struct {
 	Type                reflect.Type
 	Size                int32                // SSZ size (-1 if dynamic)
 	Len                 uint32               // Length of array/slice
+	ContainerType       *SszContainerHint    // Container type from tags
 	Fields              []FieldDescriptor    // For structs
 	DynFields           []DynFieldDescriptor // Dynamic struct fields
 	ElemDesc            *TypeDescriptor      // For slices/arrays
@@ -42,6 +43,7 @@ type FieldDescriptor struct {
 	Offset    uintptr         // Unsafe offset within the struct
 	Type      *TypeDescriptor // Type descriptor
 	Index     int16           // Index of the field in the struct
+	SszIndex  *uint64         // SSZ index from tags
 	Size      int32           // SSZ size (-1 if dynamic)
 	IsPtr     bool            // Whether field is a pointer
 	IsDynamic bool            // Whether field has dynamic size
@@ -228,9 +230,23 @@ func (tc *TypeCache) buildStructDescriptor(desc *TypeDescriptor, t reflect.Type)
 	desc.Fields = make([]FieldDescriptor, t.NumField())
 	totalSize := int32(0)
 	isDynamic := false
+	nextStableIndex := uint64(0)
 
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
+
+		if i == 0 {
+			var err error
+			desc.ContainerType, err = tc.dynssz.getSszContainerTag(&field)
+			if err != nil {
+				return err
+			}
+
+			if desc.ContainerType != nil && desc.ContainerType.Type == SszStableContainerType {
+				isDynamic = true
+			}
+		}
+
 		fieldDesc := FieldDescriptor{
 			Name:   field.Name,
 			Offset: field.Offset,
@@ -266,6 +282,25 @@ func (tc *TypeCache) buildStructDescriptor(desc *TypeDescriptor, t reflect.Type)
 				Field:  &desc.Fields[i],
 				Offset: uint32(totalSize),
 			})
+		}
+
+		if desc.ContainerType != nil && (desc.ContainerType.Type == SszStableContainerType || desc.ContainerType.Type == SszStableViewType) {
+			fieldDesc.SszIndex, err = tc.dynssz.getSszIndexTag(&field)
+			if err != nil {
+				return err
+			}
+
+			if fieldDesc.SszIndex != nil {
+				if *fieldDesc.SszIndex < nextStableIndex {
+					return fmt.Errorf("invalid ssz-index tag for '%v' field: %v", field.Name, *fieldDesc.SszIndex)
+				}
+
+				nextStableIndex = *fieldDesc.SszIndex + 1
+			} else {
+				nextIndex := nextStableIndex
+				fieldDesc.SszIndex = &nextIndex
+				nextStableIndex++
+			}
 		}
 
 		if fieldDesc.Type.HasDynamicSize {

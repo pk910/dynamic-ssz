@@ -126,6 +126,46 @@ var marshalTestMatrix = []struct {
 		}{[][]uint16{{2, 3}, {4, 5}, {8, 9}, {10, 11}}},
 		fromHex("0x040000000200030004000500080009000a000b00"),
 	},
+
+	// stable containers
+	{
+		struct {
+			F1 uint8 `ssz-container:"stable-container,8"`
+			F2 slug_StaticStruct1
+			F3 *slug_StaticStruct1
+		}{
+			42,
+			slug_StaticStruct1{true, []uint8{1, 33, 7}},
+			nil,
+		},
+		fromHex("0x032a01012107"),
+	},
+	{
+		struct {
+			F1 uint8 `ssz-container:"stable-container,16"`
+			F2 slug_StaticStruct1
+			F3 *slug_StaticStruct1
+			F4 *slug_DynStruct1
+			F5 *slug_DynStruct1
+		}{
+			42,
+			slug_StaticStruct1{true, []uint8{1, 33, 7}},
+			nil,
+			&slug_DynStruct1{true, []uint8{4, 8, 4}},
+			nil,
+		},
+		fromHex("0x0b002a01012107090000000105000000040804"),
+	},
+	{
+		struct {
+			F1 slug_StableStaticStruct1
+			F2 slug_StableStaticStruct1
+		}{
+			slug_StableStaticStruct1{&trueValue, &testUint8Arr, nil},
+			slug_StableStaticStruct1{nil, &testUint8Arr, &testUint16},
+		},
+		fromHex("0x080000000e00000003000101020306000102033713"),
+	},
 }
 
 func TestMarshal(t *testing.T) {
