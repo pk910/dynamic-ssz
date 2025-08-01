@@ -2,6 +2,10 @@ package dynssz_test
 
 import "encoding/hex"
 
+var trueValue = true
+var testUint8Arr = []uint8{1, 2, 3}
+var testUint16 = uint16(0x1337)
+
 type slug_DynStruct1 struct {
 	F1 bool
 	F2 []uint8 `ssz-max:"10"`
@@ -10,6 +14,18 @@ type slug_DynStruct1 struct {
 type slug_StaticStruct1 struct {
 	F1 bool
 	F2 []uint8 `ssz-size:"3"`
+}
+
+type slug_StableDynStruct1 struct {
+	F1 *bool `ssz-container:"stable-container,16"`
+	F2 *[]uint8
+	F3 *uint16
+}
+
+type slug_StableStaticStruct1 struct {
+	F1 *bool    `ssz-container:"stable-container,16"`
+	F2 *[]uint8 `ssz-size:"3"`
+	F3 *uint16
 }
 
 // FromHex returns the bytes represented by the hexadecimal string s.

@@ -171,3 +171,79 @@ func (d *DynSsz) getSszMaxSizeTag(field *reflect.StructField) ([]SszMaxSizeHint,
 
 	return sszMaxSizes, nil
 }
+
+type SszContainerType uint8
+
+const (
+	SszDefaultContainerType SszContainerType = iota
+	SszStableContainerType  SszContainerType = 1
+	SszStableViewType       SszContainerType = 2
+)
+
+type SszContainerHint struct {
+	Type SszContainerType
+	Size uint64
+}
+
+func (d *DynSsz) getSszContainerTag(field *reflect.StructField) (*SszContainerHint, error) {
+	// parse `ssz-container`
+	sszContainerHint := &SszContainerHint{
+		Type: SszDefaultContainerType,
+		Size: 0,
+	}
+
+	if fieldSszContainerStr, fieldHasSszContainer := field.Tag.Lookup("ssz-container"); fieldHasSszContainer {
+		containerArgs := strings.Split(fieldSszContainerStr, ",")
+		switch containerArgs[0] {
+		case "container":
+		case "stable-container":
+			if len(containerArgs) < 2 {
+				return nil, fmt.Errorf("ssz-container tag for '%v' field misses stable-container size", field.Name)
+			}
+
+			containerSize, err := strconv.ParseUint(containerArgs[1], 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("ssz-container tag for '%v' field has invalid stable-container size: %v", field.Name, err)
+			}
+
+			sszContainerHint = &SszContainerHint{
+				Type: SszStableContainerType,
+				Size: containerSize,
+			}
+
+		case "stable-view":
+			if len(containerArgs) < 2 {
+				return nil, fmt.Errorf("ssz-container tag for '%v' field misses stable-view size", field.Name)
+			}
+
+			containerSize, err := strconv.ParseUint(containerArgs[1], 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("ssz-container tag for '%v' field has invalid stable-view size: %v", field.Name, err)
+			}
+
+			sszContainerHint = &SszContainerHint{
+				Type: SszStableViewType,
+				Size: containerSize,
+			}
+
+		default:
+			return nil, fmt.Errorf("ssz-container tag for '%v' field has invalid container type: %v", field.Name, containerArgs[0])
+		}
+	}
+
+	return sszContainerHint, nil
+}
+
+func (d *DynSsz) getSszIndexTag(field *reflect.StructField) (*uint64, error) {
+	// parse `ssz-index`
+	if fieldSszIndexStr, fieldHasSszIndex := field.Tag.Lookup("ssz-index"); fieldHasSszIndex {
+		sszIndex, err := strconv.ParseUint(fieldSszIndexStr, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("ssz-index tag for '%v' field has invalid index: %v", field.Name, err)
+		}
+
+		return &sszIndex, nil
+	}
+
+	return nil, nil
+}

@@ -190,7 +190,8 @@ func (d *DynSsz) MarshalSSZ(source any) ([]byte, error) {
 	}
 
 	if uint32(len(newBuf)) != size {
-		return nil, fmt.Errorf("ssz length does not match expected length (expected: %v, got: %v)", size, len(newBuf))
+		size, _ := d.getSszValueSize(sourceTypeDesc, sourceValue)
+		return nil, fmt.Errorf("ssz length does not match expected length (expected: %v, got: %v, %x)", size, len(newBuf), newBuf)
 	}
 
 	return newBuf, nil
