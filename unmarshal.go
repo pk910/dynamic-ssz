@@ -103,6 +103,10 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 		case reflect.Uint64:
 			targetValue.SetUint(uint64(unmarshallUint64(ssz)))
 			consumedBytes = 8
+		case reflect.String:
+			// Convert []byte to string and set
+			targetValue.SetString(string(ssz))
+			consumedBytes = len(ssz)
 
 		default:
 			return 0, fmt.Errorf("unknown type: %v", targetType)

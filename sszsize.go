@@ -152,6 +152,9 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 			staticSize = 4
 		case reflect.Uint64:
 			staticSize = 8
+		case reflect.String:
+			// String size is the length of the string in bytes
+			staticSize = uint32(len(targetValue.String()))
 
 		default:
 			return 0, fmt.Errorf("unhandled reflection kind in size check: %v", targetType.Kind)

@@ -131,6 +131,16 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 				hh.PutUint32(uint32(sourceValue.Uint()))
 			case reflect.Uint64:
 				hh.PutUint64(uint64(sourceValue.Uint()))
+			case reflect.String:
+				// Convert string to []byte and hash as bytes
+				stringBytes := []byte(sourceValue.String())
+				if len(stringBytes) == 0 {
+					// For empty strings, we still need to append empty bytes and fill to 32
+					hh.Append(stringBytes)
+					hh.FillUpTo32()
+				} else {
+					hh.PutBytes(stringBytes)
+				}
 			default:
 				return fmt.Errorf("unknown type: %v", sourceType)
 			}

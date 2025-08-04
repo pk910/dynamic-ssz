@@ -34,6 +34,7 @@ type TypeDescriptor struct {
 	HasHashTreeRootWith bool                 // Whether the type implements HashTreeRootWith
 	IsPtr               bool                 // Whether this is a pointer type
 	IsByteArray         bool                 // Whether this is a byte array
+	IsString            bool                 // Whether this is a string type
 }
 
 // FieldDescriptor represents a cached descriptor for a struct field
@@ -189,9 +190,10 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 	case reflect.Uint64:
 		desc.Size = 8
 
-	// Explicitly unsupported types with helpful error messages
+	// String handling - treat as []byte
 	case reflect.String:
-		return nil, fmt.Errorf("strings are not supported in SSZ (use []byte instead)")
+		desc.Size = -1 // Strings are dynamic
+		desc.IsString = true
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		return nil, fmt.Errorf("signed integers are not supported in SSZ (use unsigned integers instead)")
 	case reflect.Float32, reflect.Float64:
@@ -304,6 +306,8 @@ func (tc *TypeCache) buildArrayDescriptor(desc *TypeDescriptor, t reflect.Type, 
 	fieldType := t.Elem()
 	if fieldType == byteType {
 		desc.IsByteArray = true
+	} else if fieldType == stringType {
+		desc.IsString = true
 	}
 
 	elemDesc, err := tc.getTypeDescriptor(fieldType, childSizeHints, childMaxSizeHints)
@@ -344,6 +348,8 @@ func (tc *TypeCache) buildSliceDescriptor(desc *TypeDescriptor, t reflect.Type, 
 	fieldType := t.Elem()
 	if fieldType == byteType {
 		desc.IsByteArray = true
+	} else if fieldType == stringType {
+		desc.IsString = true
 	}
 
 	elemDesc, err := tc.getTypeDescriptor(fieldType, childSizeHints, childMaxSizeHints)

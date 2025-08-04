@@ -91,6 +91,9 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 			buf = marshalUint32(buf, uint32(sourceValue.Uint()))
 		case reflect.Uint64:
 			buf = marshalUint64(buf, uint64(sourceValue.Uint()))
+		case reflect.String:
+			// Convert string to []byte and append
+			buf = append(buf, []byte(sourceValue.String())...)
 		default:
 			return nil, fmt.Errorf("unknown type: %v", sourceType)
 		}
