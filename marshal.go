@@ -92,8 +92,28 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 		case reflect.Uint64:
 			buf = marshalUint64(buf, uint64(sourceValue.Uint()))
 		case reflect.String:
-			// Convert string to []byte and append
-			buf = append(buf, []byte(sourceValue.String())...)
+			// Convert string to []byte
+			stringBytes := []byte(sourceValue.String())
+			
+			// Check if this is a fixed-size string
+			if sourceType.Size > 0 {
+				// Fixed-size string: pad or truncate to exact size
+				fixedSize := int(sourceType.Size)
+				if len(stringBytes) > fixedSize {
+					// Truncate if too long
+					buf = append(buf, stringBytes[:fixedSize]...)
+				} else {
+					// Pad with zeros if too short
+					buf = append(buf, stringBytes...)
+					padding := fixedSize - len(stringBytes)
+					for i := 0; i < padding; i++ {
+						buf = append(buf, 0)
+					}
+				}
+			} else {
+				// Dynamic string: append as-is
+				buf = append(buf, stringBytes...)
+			}
 		default:
 			return nil, fmt.Errorf("unknown type: %v", sourceType)
 		}

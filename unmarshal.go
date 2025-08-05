@@ -104,9 +104,30 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 			targetValue.SetUint(uint64(unmarshallUint64(ssz)))
 			consumedBytes = 8
 		case reflect.String:
-			// Convert []byte to string and set
-			targetValue.SetString(string(ssz))
-			consumedBytes = len(ssz)
+			// Handle fixed-size vs dynamic strings
+			if targetType.Size > 0 {
+				// Fixed-size string: read exact number of bytes
+				fixedSize := int(targetType.Size)
+				if len(ssz) < fixedSize {
+					return 0, fmt.Errorf("not enough data for fixed-size string: need %d bytes, have %d", fixedSize, len(ssz))
+				}
+				// Read the fixed-size bytes and trim null padding
+				stringBytes := ssz[:fixedSize]
+				// Find the first null byte to trim padding
+				nullIndex := fixedSize
+				for i := 0; i < fixedSize; i++ {
+					if stringBytes[i] == 0 {
+						nullIndex = i
+						break
+					}
+				}
+				targetValue.SetString(string(stringBytes[:nullIndex]))
+				consumedBytes = fixedSize
+			} else {
+				// Dynamic string: use all available bytes
+				targetValue.SetString(string(ssz))
+				consumedBytes = len(ssz)
+			}
 
 		default:
 			return 0, fmt.Errorf("unknown type: %v", targetType)

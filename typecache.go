@@ -192,8 +192,14 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 
 	// String handling - treat as []byte
 	case reflect.String:
-		desc.Size = -1 // Strings are dynamic
 		desc.IsString = true
+		// Check if we have a size hint to make this a fixed-size string
+		if len(sizeHints) > 0 && !sizeHints[0].Dynamic && sizeHints[0].Size > 0 {
+			desc.Size = int32(sizeHints[0].Size)
+			desc.SizeHints = sizeHints
+		} else {
+			desc.Size = -1 // Strings are dynamic by default
+		}
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		return nil, fmt.Errorf("signed integers are not supported in SSZ (use unsigned integers instead)")
 	case reflect.Float32, reflect.Float64:
@@ -306,8 +312,6 @@ func (tc *TypeCache) buildArrayDescriptor(desc *TypeDescriptor, t reflect.Type, 
 	fieldType := t.Elem()
 	if fieldType == byteType {
 		desc.IsByteArray = true
-	} else if fieldType == stringType {
-		desc.IsString = true
 	}
 
 	elemDesc, err := tc.getTypeDescriptor(fieldType, childSizeHints, childMaxSizeHints)
@@ -348,8 +352,6 @@ func (tc *TypeCache) buildSliceDescriptor(desc *TypeDescriptor, t reflect.Type, 
 	fieldType := t.Elem()
 	if fieldType == byteType {
 		desc.IsByteArray = true
-	} else if fieldType == stringType {
-		desc.IsString = true
 	}
 
 	elemDesc, err := tc.getTypeDescriptor(fieldType, childSizeHints, childMaxSizeHints)

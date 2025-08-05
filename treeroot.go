@@ -132,14 +132,31 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 			case reflect.Uint64:
 				hh.PutUint64(uint64(sourceValue.Uint()))
 			case reflect.String:
-				// Convert string to []byte and hash as bytes
+				// Convert string to bytes
 				stringBytes := []byte(sourceValue.String())
-				if len(stringBytes) == 0 {
-					// For empty strings, we still need to append empty bytes and fill to 32
+				
+				if sourceType.Size > 0 {
+					// Fixed-size string: hash like a fixed-size byte array
+					fixedSize := int(sourceType.Size)
+					paddedBytes := make([]byte, fixedSize)
+					copy(paddedBytes, stringBytes)
+					// The rest is already zero-filled
+					hh.PutBytes(paddedBytes)
+				} else if len(sourceType.MaxSizeHints) > 0 && !sourceType.MaxSizeHints[0].NoValue {
+					// Dynamic string with max size hints: hash as a list with length mixin
+					subIndex := hh.Index()
 					hh.Append(stringBytes)
 					hh.FillUpTo32()
+					limit := uint64((sourceType.MaxSizeHints[0].Size + 31) / 32)
+					hh.MerkleizeWithMixin(subIndex, uint64(len(stringBytes)), limit)
 				} else {
-					hh.PutBytes(stringBytes)
+					// Dynamic string without hints: hash as basic type
+					if len(stringBytes) == 0 {
+						hh.Append(stringBytes)
+						hh.FillUpTo32()
+					} else {
+						hh.PutBytes(stringBytes)
+					}
 				}
 			default:
 				return fmt.Errorf("unknown type: %v", sourceType)
@@ -343,6 +360,15 @@ func (d *DynSsz) buildRootFromSlice(sourceType *TypeDescriptor, sourceValue refl
 			hh.AppendUint64(uint64(fieldValue.Uint()))
 		}
 		itemSize = 8
+	case reflect.String:
+		// Handle []string to match [][]byte behavior
+		// When [][]byte doesn't have nested max size hints, it uses PutBytes
+		// So we do the same for []string to ensure they hash identically
+		for i := 0; i < sliceLen; i++ {
+			fieldValue := sourceValue.Index(i)
+			stringBytes := []byte(fieldValue.String())
+			hh.PutBytes(stringBytes)
+		}
 	default:
 		// For other types, use the central dispatcher
 		for i := 0; i < sliceLen; i++ {

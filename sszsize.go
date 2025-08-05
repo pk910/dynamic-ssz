@@ -153,8 +153,14 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 		case reflect.Uint64:
 			staticSize = 8
 		case reflect.String:
-			// String size is the length of the string in bytes
-			staticSize = uint32(len(targetValue.String()))
+			// String size depends on whether it's fixed or dynamic
+			if targetType.Size > 0 {
+				// Fixed-size string: always return the fixed size
+				staticSize = uint32(targetType.Size)
+			} else {
+				// Dynamic string: return the actual length
+				staticSize = uint32(len(targetValue.String()))
+			}
 
 		default:
 			return 0, fmt.Errorf("unhandled reflection kind in size check: %v", targetType.Kind)
