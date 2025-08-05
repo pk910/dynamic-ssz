@@ -69,11 +69,20 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 		// can't use fastssz, use dynamic unmarshaling
 		switch targetType.Kind {
 		case reflect.Struct:
-			consumed, err := d.unmarshalStruct(targetType, targetValue, ssz, idt)
-			if err != nil {
-				return 0, err
+			// Check if this is a CompatibleUnion
+			if targetType.IsCompatibleUnion {
+				consumed, err := d.unmarshalCompatibleUnion(targetType, targetValue, ssz, idt)
+				if err != nil {
+					return 0, err
+				}
+				consumedBytes = consumed
+			} else {
+				consumed, err := d.unmarshalStruct(targetType, targetValue, ssz, idt)
+				if err != nil {
+					return 0, err
+				}
+				consumedBytes = consumed
 			}
-			consumedBytes = consumed
 		case reflect.Array:
 			consumed, err := d.unmarshalArray(targetType, targetValue, ssz, idt)
 			if err != nil {
@@ -218,6 +227,67 @@ func (d *DynSsz) unmarshalStruct(targetType *TypeDescriptor, targetValue reflect
 	}
 
 	return offset, nil
+}
+
+// unmarshalCompatibleUnion decodes SSZ-encoded data into a CompatibleUnion.
+//
+// According to the spec:
+// - The encoding is: selector.to_bytes(1, "little") + serialize(value.data)
+// - The selector index is based at 0 if a ProgressiveContainer type option is present
+// - Otherwise, it is based at 1
+//
+// Parameters:
+//   - targetType: The TypeDescriptor containing union metadata and variant descriptors
+//   - targetValue: The reflect.Value of the CompatibleUnion to populate
+//   - ssz: The SSZ-encoded data to decode
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - int: Total bytes consumed
+//   - error: An error if decoding fails
+func (d *DynSsz) unmarshalCompatibleUnion(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
+	if len(ssz) < 1 {
+		return 0, fmt.Errorf("CompatibleUnion requires at least 1 byte for selector")
+	}
+	
+	// Read the selector byte
+	selector := ssz[0]
+	
+	// Adjust selector to variant index based on whether first variant is ProgressiveContainer
+	variant := selector
+	if len(targetType.UnionVariants) > 0 {
+		// Check if the first variant (index 0) is a ProgressiveContainer
+		firstVariant, hasFirst := targetType.UnionVariants[0]
+		if !hasFirst || !firstVariant.IsProgressiveContainer {
+			// No ProgressiveContainer at index 0, so selector is based at 1
+			if selector == 0 {
+				return 0, fmt.Errorf("invalid selector value 0 when union is 1-indexed")
+			}
+			variant = selector - 1
+		}
+	}
+	
+	// Get the variant descriptor
+	variantDesc, ok := targetType.UnionVariants[variant]
+	if !ok {
+		return 0, fmt.Errorf("unknown union variant index: %d (selector: %d)", variant, selector)
+	}
+	
+	// Create a new value of the variant type
+	variantValue := reflect.New(variantDesc.Type).Elem()
+	
+	// Unmarshal the data
+	consumed, err := d.unmarshalType(variantDesc, variantValue, ssz[1:], idt+2)
+	if err != nil {
+		return 0, fmt.Errorf("failed to unmarshal union variant %d: %w", variant, err)
+	}
+	
+	// We know CompatibleUnion has exactly 2 fields: Variant (uint8) and Data (interface{})
+	// Field 0 is Variant, Field 1 is Data
+	targetValue.Field(0).SetUint(uint64(variant))
+	targetValue.Field(1).Set(variantValue)
+	
+	return consumed + 1, nil // +1 for the selector byte
 }
 
 // unmarshalArray decodes SSZ-encoded data into a Go array.

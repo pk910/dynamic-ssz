@@ -118,9 +118,17 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 			// Route to appropriate handler based on type
 			switch sourceType.Kind {
 			case reflect.Struct:
-				err := d.buildRootFromStruct(sourceType, sourceValue, hh, idt)
-				if err != nil {
-					return err
+				// Check if this is a CompatibleUnion
+				if sourceType.IsCompatibleUnion {
+					err := d.buildRootFromCompatibleUnion(sourceType, sourceValue, hh, idt)
+					if err != nil {
+						return err
+					}
+				} else {
+					err := d.buildRootFromStruct(sourceType, sourceValue, hh, idt)
+					if err != nil {
+						return err
+					}
 				}
 			case reflect.Array:
 				err := d.buildRootFromArray(sourceType, sourceValue, hh, idt)
@@ -209,6 +217,41 @@ func (d *DynSsz) buildRootFromStruct(sourceType *TypeDescriptor, sourceValue ref
 		hh.Merkleize(hashIndex)
 	}
 
+	return nil
+}
+
+// buildRootFromCompatibleUnion computes the hash tree root for CompatibleUnion values.
+//
+// According to the spec:
+// - hash_tree_root(value.data) if value is of compatible union type
+// - The selector is only used for serialization, it is not mixed in when Merkleizing
+//
+// Parameters:
+//   - sourceType: The TypeDescriptor containing union metadata and variant descriptors
+//   - sourceValue: The reflect.Value of the CompatibleUnion to hash
+//   - hh: The Hasher instance for hash computation
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - error: An error if hashing fails
+func (d *DynSsz) buildRootFromCompatibleUnion(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher, idt int) error {
+	// We know CompatibleUnion has exactly 2 fields: Variant (uint8) and Data (interface{})
+	// Field 0 is Variant, Field 1 is Data
+	variant := uint8(sourceValue.Field(0).Uint())
+	dataField := sourceValue.Field(1)
+	
+	// Get the variant descriptor
+	variantDesc, ok := sourceType.UnionVariants[variant]
+	if !ok {
+		return fmt.Errorf("unknown union variant index: %d", variant)
+	}
+	
+	// Hash only the data, not the selector
+	err := d.buildRootFromType(variantDesc, dataField.Elem(), hh, idt+2)
+	if err != nil {
+		return fmt.Errorf("failed to hash union variant %d: %w", variant, err)
+	}
+	
 	return nil
 }
 

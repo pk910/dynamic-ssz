@@ -20,22 +20,24 @@ type TypeCache struct {
 type TypeDescriptor struct {
 	Kind                   reflect.Kind
 	Type                   reflect.Type
-	Size                   int32                // SSZ size (-1 if dynamic)
-	Len                    uint32               // Length of array/slice
-	Fields                 []FieldDescriptor    // For structs
-	DynFields              []DynFieldDescriptor // Dynamic struct fields
-	ElemDesc               *TypeDescriptor      // For slices/arrays
-	SizeHints              []SszSizeHint        // Size hints from tags
-	MaxSizeHints           []SszMaxSizeHint     // Max size hints from tags
-	TypeHints              []SszTypeHint        // Type hints from tags
-	HasDynamicSize         bool                 // Whether this type uses dynamic spec size value that differs from the default
-	HasDynamicMax          bool                 // Whether this type uses dynamic spec max value that differs from the default
-	IsFastSSZMarshaler     bool                 // Whether the type implements fastssz.Marshaler
-	IsFastSSZHasher        bool                 // Whether the type implements fastssz.HashRoot
-	HasHashTreeRootWith    bool                 // Whether the type implements HashTreeRootWith
-	IsPtr                  bool                 // Whether this is a pointer type
-	IsByteArray            bool                 // Whether this is a byte array
-	IsProgressiveContainer bool                 // Whether this is a progressive container
+	Size                   int32                     // SSZ size (-1 if dynamic)
+	Len                    uint32                    // Length of array/slice
+	Fields                 []FieldDescriptor         // For structs
+	DynFields              []DynFieldDescriptor      // Dynamic struct fields
+	UnionVariants          map[uint8]*TypeDescriptor // Union variant types by index (for CompatibleUnion)
+	ElemDesc               *TypeDescriptor           // For slices/arrays
+	SizeHints              []SszSizeHint             // Size hints from tags
+	MaxSizeHints           []SszMaxSizeHint          // Max size hints from tags
+	TypeHints              []SszTypeHint             // Type hints from tags
+	HasDynamicSize         bool                      // Whether this type uses dynamic spec size value that differs from the default
+	HasDynamicMax          bool                      // Whether this type uses dynamic spec max value that differs from the default
+	IsFastSSZMarshaler     bool                      // Whether the type implements fastssz.Marshaler
+	IsFastSSZHasher        bool                      // Whether the type implements fastssz.HashRoot
+	HasHashTreeRootWith    bool                      // Whether the type implements HashTreeRootWith
+	IsPtr                  bool                      // Whether this is a pointer type
+	IsByteArray            bool                      // Whether this is a byte array
+	IsProgressiveContainer bool                      // Whether this is a progressive container
+	IsCompatibleUnion      bool                      // Whether this is a CompatibleUnion type
 }
 
 // FieldDescriptor represents a cached descriptor for a struct field
@@ -44,10 +46,10 @@ type FieldDescriptor struct {
 	Offset    uintptr         // Unsafe offset within the struct
 	Type      *TypeDescriptor // Type descriptor
 	Index     int16           // Index of the field in the struct
+	SszIndex  uint16          // SSZ index for progressive containers
 	Size      int32           // SSZ size (-1 if dynamic)
 	IsPtr     bool            // Whether field is a pointer
 	IsDynamic bool            // Whether field has dynamic size
-	SszIndex  uint16          // SSZ index for progressive containers
 }
 
 // DynFieldDescriptor represents a dynamic field descriptor for a struct
@@ -231,6 +233,15 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 
 // buildStructDescriptor builds a descriptor for struct types
 func (tc *TypeCache) buildStructDescriptor(desc *TypeDescriptor, t reflect.Type) error {
+	// Check for CompatibleUnion type before general struct handling
+	if IsCompatibleUnionType(t) {
+		err := tc.buildCompatibleUnionDescriptor(desc, t)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+
 	desc.Fields = make([]FieldDescriptor, t.NumField())
 	totalSize := int32(0)
 	isDynamic := false
@@ -350,6 +361,40 @@ func (tc *TypeCache) buildStructDescriptor(desc *TypeDescriptor, t reflect.Type)
 		desc.Size = -1
 	} else {
 		desc.Size = totalSize
+	}
+
+	return nil
+}
+
+// buildCompatibleUnionDescriptor builds a descriptor for CompatibleUnion types
+func (tc *TypeCache) buildCompatibleUnionDescriptor(desc *TypeDescriptor, t reflect.Type) error {
+	// CompatibleUnion is always dynamic size (1 byte for type + variable data)
+	desc.Size = -1
+	desc.IsCompatibleUnion = true
+
+	// Try to extract the descriptor type from the generic type parameter
+	descriptorType, err := tc.extractGenericTypeParameter(t)
+	if err != nil {
+		return err
+	}
+
+	// Populate union variants immediately since we have the descriptor type
+	desc.UnionVariants = make(map[uint8]*TypeDescriptor)
+
+	// Extract variant information from descriptor struct (includes SSZ annotations)
+	variantInfo, err := ExtractUnionDescriptorInfo(descriptorType, tc.dynssz)
+	if err != nil {
+		return fmt.Errorf("failed to extract union variant info: %w", err)
+	}
+
+	// Build type descriptors for each variant using the extracted information
+	for variantIndex, info := range variantInfo {
+		variantDesc, err := tc.getTypeDescriptor(info.Type, info.SizeHints, info.MaxSizeHints, info.TypeHints)
+		if err != nil {
+			return fmt.Errorf("failed to build descriptor for union variant %d: %w", variantIndex, err)
+		}
+
+		desc.UnionVariants[variantIndex] = variantDesc
 	}
 
 	return nil
@@ -528,4 +573,31 @@ func (tc *TypeCache) RemoveAllTypes() {
 
 	// Create new map to clear all references
 	tc.descriptors = make(map[reflect.Type]*TypeDescriptor)
+}
+
+// extractGenericTypeParameter extracts the generic type parameter from a CompatibleUnion type.
+// This uses reflection to call the GetDescriptorType method on the union type.
+func (tc *TypeCache) extractGenericTypeParameter(unionType reflect.Type) (reflect.Type, error) {
+	// Create a zero value of the union type to call methods on
+	unionValue := reflect.New(unionType)
+
+	// Get the GetDescriptorType method
+	method := unionValue.MethodByName("GetDescriptorType")
+	if !method.IsValid() {
+		return nil, fmt.Errorf("GetDescriptorType method not found on type %s", unionType)
+	}
+
+	// Call the method to get the descriptor type
+	results := method.Call(nil)
+	if len(results) == 0 {
+		return nil, fmt.Errorf("GetDescriptorType returned no results")
+	}
+
+	// Extract the reflect.Type from the result
+	descriptorType, ok := results[0].Interface().(reflect.Type)
+	if !ok {
+		return nil, fmt.Errorf("GetDescriptorType did not return a reflect.Type")
+	}
+
+	return descriptorType, nil
 }

@@ -141,6 +141,22 @@ var unmarshalTestMatrix = []struct {
 		}{0, 0, false, 0},
 		fromHex("0x000000000000000000000000000000"),
 	},
+
+	// CompatibleUnion tests
+	{
+		struct {
+			Field0 uint16
+			Field1 CompatibleUnion[struct {
+				Field1 uint32
+				Field2 [2]uint8
+			}]
+			Field3 uint16
+		}{0x1337, CompatibleUnion[struct {
+			Field1 uint32
+			Field2 [2]uint8
+		}]{Variant: 0, Data: uint32(0x12345678)}, 0x4242},
+		fromHex("0x37130800000042420178563412"),
+	},
 }
 
 func TestUnmarshal(t *testing.T) {

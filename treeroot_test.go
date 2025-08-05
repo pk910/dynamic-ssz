@@ -178,6 +178,22 @@ var treerootTestMatrix = []struct {
 		}{12345, 67890, true, 999},
 		fromHex("0x4ea4845cff00bd7de3b59e8a7517f085a4ef171453b3d5a4d41bd59cc1144d49"),
 	},
+
+	// CompatibleUnion tests
+	{
+		struct {
+			Field0 uint16
+			Field1 CompatibleUnion[struct {
+				Field1 uint32
+				Field2 [2]uint8
+			}]
+			Field3 uint16
+		}{0x1337, CompatibleUnion[struct {
+			Field1 uint32
+			Field2 [2]uint8
+		}]{Variant: 0, Data: uint32(0x12345678)}, 0x4242},
+		fromHex("0xf72856610b8e134c3abbeccf3a6545ef026d9f456a57618628e15c2863c0dc6a"),
+	},
 }
 
 func TestTreeRoot(t *testing.T) {

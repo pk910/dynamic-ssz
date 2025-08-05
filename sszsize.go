@@ -59,21 +59,43 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 		// can't use fastssz, use dynamic size calculation
 		switch targetType.Kind {
 		case reflect.Struct:
-			for i := 0; i < len(targetType.Fields); i++ {
-				fieldType := targetType.Fields[i]
-				fieldValue := targetValue.Field(i)
+			// Check if this is a CompatibleUnion
+			if targetType.IsCompatibleUnion {
+				// CompatibleUnion: 1 byte for selector + size of the data
+				variant := uint8(targetValue.Field(0).Uint())
+				dataField := targetValue.Field(1)
+				
+				// Get the variant descriptor
+				variantDesc, ok := targetType.UnionVariants[variant]
+				if !ok {
+					return 0, fmt.Errorf("unknown union variant index: %d", variant)
+				}
+				
+				// Calculate size of the data
+				dataSize, err := d.getSszValueSize(variantDesc, dataField.Elem())
+				if err != nil {
+					return 0, fmt.Errorf("failed to get size of union variant %d: %w", variant, err)
+				}
+				
+				staticSize = 1 + dataSize // 1 byte selector + data size
+			} else {
+				// Regular struct
+				for i := 0; i < len(targetType.Fields); i++ {
+					fieldType := targetType.Fields[i]
+					fieldValue := targetValue.Field(i)
 
-				if fieldType.Size < 0 {
-					size, err := d.getSszValueSize(fieldType.Type, fieldValue)
-					if err != nil {
-						return 0, err
+					if fieldType.Size < 0 {
+						size, err := d.getSszValueSize(fieldType.Type, fieldValue)
+						if err != nil {
+							return 0, err
+						}
+
+						// dynamic field, add 4 bytes for offset
+						staticSize += size + 4
+					} else {
+						// static field
+						staticSize += uint32(fieldType.Size)
 					}
-
-					// dynamic field, add 4 bytes for offset
-					staticSize += size + 4
-				} else {
-					// static field
-					staticSize += uint32(fieldType.Size)
 				}
 			}
 		case reflect.Array:
