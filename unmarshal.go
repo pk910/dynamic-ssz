@@ -487,7 +487,7 @@ func (d *DynSsz) unmarshalDynamicSlice(targetType *TypeDescriptor, targetValue r
 // unmarshalString decodes SSZ-encoded data into a Go string value.
 //
 // Strings in SSZ can be either fixed-size or dynamic:
-//   - Fixed-size strings: Read exact number of bytes and trim null padding
+//   - Fixed-size strings: Read exact number of bytes (including any null bytes)
 //   - Dynamic strings: Use all available bytes
 //
 // Parameters:
@@ -501,7 +501,7 @@ func (d *DynSsz) unmarshalDynamicSlice(targetType *TypeDescriptor, targetValue r
 //   - error: An error if decoding fails (e.g., insufficient data for fixed-size string)
 //
 // For fixed-size strings, the function reads exactly the specified number of bytes
-// and trims any null padding. For dynamic strings, all available bytes are used.
+// without any trimming. For dynamic strings, all available bytes are used.
 func (d *DynSsz) unmarshalString(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
 	consumedBytes := 0
 	
@@ -512,17 +512,9 @@ func (d *DynSsz) unmarshalString(targetType *TypeDescriptor, targetValue reflect
 		if len(ssz) < fixedSize {
 			return 0, fmt.Errorf("not enough data for fixed-size string: need %d bytes, have %d", fixedSize, len(ssz))
 		}
-		// Read the fixed-size bytes and trim null padding
+		// Read the fixed-size bytes without trimming
 		stringBytes := ssz[:fixedSize]
-		// Find the first null byte to trim padding
-		nullIndex := fixedSize
-		for i := 0; i < fixedSize; i++ {
-			if stringBytes[i] == 0 {
-				nullIndex = i
-				break
-			}
-		}
-		targetValue.SetString(string(stringBytes[:nullIndex]))
+		targetValue.SetString(string(stringBytes))
 		consumedBytes = fixedSize
 	} else {
 		// Dynamic string: use all available bytes

@@ -277,9 +277,14 @@ func TestFixedSizeStringVsByteArray(t *testing.T) {
 			}
 
 			// For strings longer than 32, we expect truncation
+			// For strings shorter than 32, we expect null padding
 			expectedStr := tc.value
 			if len(expectedStr) > 32 {
 				expectedStr = expectedStr[:32]
+			} else if len(expectedStr) < 32 {
+				// Pad with null bytes
+				paddingBytes := make([]byte, 32-len(expectedStr))
+				expectedStr = expectedStr + string(paddingBytes)
 			}
 
 			if decodedStr.Data != expectedStr {
@@ -330,14 +335,18 @@ func TestMixedStringTypes(t *testing.T) {
 		t.Fatalf("Failed to unmarshal: %v", err)
 	}
 
-	if decoded.FixedStr1 != test.FixedStr1 {
-		t.Errorf("FixedStr1 mismatch: got %q, want %q", decoded.FixedStr1, test.FixedStr1)
+	// Fixed-size strings will have null padding
+	expectedFixedStr1 := test.FixedStr1 + string(make([]byte, 16-len(test.FixedStr1)))
+	expectedFixedStr2 := test.FixedStr2 + string(make([]byte, 8-len(test.FixedStr2)))
+	
+	if decoded.FixedStr1 != expectedFixedStr1 {
+		t.Errorf("FixedStr1 mismatch: got %q, want %q", decoded.FixedStr1, expectedFixedStr1)
 	}
 	if decoded.DynamicStr != test.DynamicStr {
 		t.Errorf("DynamicStr mismatch: got %q, want %q", decoded.DynamicStr, test.DynamicStr)
 	}
-	if decoded.FixedStr2 != test.FixedStr2 {
-		t.Errorf("FixedStr2 mismatch: got %q, want %q", decoded.FixedStr2, test.FixedStr2)
+	if decoded.FixedStr2 != expectedFixedStr2 {
+		t.Errorf("FixedStr2 mismatch: got %q, want %q", decoded.FixedStr2, expectedFixedStr2)
 	}
 	if decoded.ID != test.ID {
 		t.Errorf("ID mismatch: got %d, want %d", decoded.ID, test.ID)
