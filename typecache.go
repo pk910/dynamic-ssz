@@ -34,6 +34,7 @@ type TypeDescriptor struct {
 	HasHashTreeRootWith bool                 // Whether the type implements HashTreeRootWith
 	IsPtr               bool                 // Whether this is a pointer type
 	IsByteArray         bool                 // Whether this is a byte array
+	IsString            bool                 // Whether this is a string type
 }
 
 // FieldDescriptor represents a cached descriptor for a struct field
@@ -189,9 +190,12 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 	case reflect.Uint64:
 		desc.Size = 8
 
-	// Explicitly unsupported types with helpful error messages
+	// String handling
 	case reflect.String:
-		return nil, fmt.Errorf("strings are not supported in SSZ (use []byte instead)")
+		err := tc.buildStringDescriptor(desc, sizeHints, maxSizeHints)
+		if err != nil {
+			return nil, err
+		}
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		return nil, fmt.Errorf("signed integers are not supported in SSZ (use unsigned integers instead)")
 	case reflect.Float32, reflect.Float64:
@@ -367,6 +371,34 @@ func (tc *TypeCache) buildSliceDescriptor(desc *TypeDescriptor, t reflect.Type, 
 		}
 	} else {
 		desc.Size = -1 // Dynamic slice
+	}
+
+	return nil
+}
+
+// buildStringDescriptor builds a descriptor for string types
+func (tc *TypeCache) buildStringDescriptor(desc *TypeDescriptor, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint) error {
+	desc.IsString = true
+
+	// Apply size hints
+	desc.SizeHints = sizeHints
+	desc.MaxSizeHints = maxSizeHints
+
+	// Check if we have a size hint to make this a fixed-size string
+	if len(sizeHints) > 0 && !sizeHints[0].Dynamic && sizeHints[0].Size > 0 {
+		// Fixed-size string
+		desc.Size = int32(sizeHints[0].Size)
+	} else {
+		// Dynamic string (default)
+		desc.Size = -1
+	}
+
+	// Dynamic strings might have spec values
+	if len(sizeHints) > 0 && sizeHints[0].SpecVal {
+		desc.HasDynamicSize = true
+	}
+	if len(maxSizeHints) > 0 && maxSizeHints[0].SpecVal {
+		desc.HasDynamicMax = true
 	}
 
 	return nil

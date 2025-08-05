@@ -122,6 +122,38 @@ var treerootTestMatrix = []struct {
 		}{[][]uint16{{2, 3}, {4, 5}, {8, 9}, {10, 11}}},
 		fromHex("0x253a3f3ffab684c2d4f4930b7923f31aadc3eff94b3eb8b4b7b9aa1363efcf52"),
 	},
+
+	// string types
+	{
+		struct {
+			Data string `ssz-max:"100"`
+		}{""},
+		fromHex("0x28ba1834a3a7b657460ce79fa3a1d909ab8828fd557659d4d0554a9bdbc0ec30"),
+	},
+	{
+		struct {
+			Data string `ssz-max:"100"`
+		}{"hello"},
+		fromHex("0x19da29a0796bb0ad502164fb6362e551756896856128aa64e415d5304a317b40"),
+	},
+	{
+		struct {
+			Data string `ssz-max:"100"`
+		}{"hello 世界"},
+		fromHex("0xd08864f0ff9f68f992a72baefd9550f1f6735b7b0e334d80623021cc5a59eff1"),
+	},
+	{
+		struct {
+			Data string `ssz-size:"32"`
+		}{"hello"},
+		fromHex("0x68656c6c6f000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		struct {
+			Data string `ssz-size:"32"`
+		}{"abcdefghijklmnopqrstuvwxyz123456"},
+		fromHex("0x6162636465666768696a6b6c6d6e6f707172737475767778797a313233343536"),
+	},
 }
 
 func TestTreeRoot(t *testing.T) {
@@ -139,5 +171,157 @@ func TestTreeRoot(t *testing.T) {
 		case !bytes.Equal(buf[:], test.expected):
 			t.Errorf("test %v failed: got 0x%x, wanted 0x%x", idx, buf, test.expected)
 		}
+	}
+}
+
+func TestStringVsByteContainerTreeRootEquivalence(t *testing.T) {
+	type StringContainer struct {
+		Data string `ssz-max:"100"`
+	}
+
+	type ByteContainer struct {
+		Data []byte `ssz-max:"100"`
+	}
+
+	testCases := []struct {
+		name  string
+		value string
+	}{
+		{"empty", ""},
+		{"single_char", "a"},
+		{"hello", "hello"},
+		{"exactly_32_bytes", "abcdefghijklmnopqrstuvwxyz123456"},
+		{"over_32_bytes", "abcdefghijklmnopqrstuvwxyz1234567890"},
+		{"unicode", "hello 世界"},
+		{"binary", "test\x00\x01\x02\xff"},
+	}
+
+	dynssz := NewDynSsz(nil)
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			strContainer := StringContainer{Data: tc.value}
+			byteContainer := ByteContainer{Data: []byte(tc.value)}
+
+			strHash, err := dynssz.HashTreeRoot(strContainer)
+			if err != nil {
+				t.Fatalf("Failed to hash string container: %v", err)
+			}
+
+			byteHash, err := dynssz.HashTreeRoot(byteContainer)
+			if err != nil {
+				t.Fatalf("Failed to hash byte container: %v", err)
+			}
+
+			if strHash != byteHash {
+				t.Errorf("Hash mismatch:\nString: %x\nBytes:  %x", strHash, byteHash)
+			}
+		})
+	}
+}
+
+func TestFixedSizeStringVsByteArrayTreeRoot(t *testing.T) {
+	type WithFixedString struct {
+		Data string `ssz-size:"32"`
+		ID   uint32
+	}
+
+	type WithByteArray struct {
+		Data [32]byte
+		ID   uint32
+	}
+
+	dynssz := NewDynSsz(nil)
+
+	testCases := []struct {
+		name  string
+		value string
+	}{
+		{"empty", ""},
+		{"short", "hello"},
+		{"exact_32", "abcdefghijklmnopqrstuvwxyz123456"},
+		{"over_32_truncated", "abcdefghijklmnopqrstuvwxyz1234567890"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var byteData [32]byte
+			copy(byteData[:], []byte(tc.value))
+
+			strStruct := WithFixedString{
+				Data: tc.value,
+				ID:   42,
+			}
+
+			byteStruct := WithByteArray{
+				Data: byteData,
+				ID:   42,
+			}
+
+			strHash, err := dynssz.HashTreeRoot(strStruct)
+			if err != nil {
+				t.Fatalf("Failed to hash string struct: %v", err)
+			}
+
+			byteHash, err := dynssz.HashTreeRoot(byteStruct)
+			if err != nil {
+				t.Fatalf("Failed to hash byte struct: %v", err)
+			}
+
+			if strHash != byteHash {
+				t.Errorf("Hash mismatch:\nString: %x\nBytes:  %x", strHash, byteHash)
+			}
+		})
+	}
+}
+
+func TestStringSliceVsByteSliceTreeRoot(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+
+	testCases := []struct {
+		name    string
+		strings []string
+		bytes   [][]byte
+	}{
+		{
+			"single_element",
+			[]string{"hello"},
+			[][]byte{[]byte("hello")},
+		},
+		{
+			"multiple_elements",
+			[]string{"one", "two", "three"},
+			[][]byte{[]byte("one"), []byte("two"), []byte("three")},
+		},
+		{
+			"with_empty",
+			[]string{"", "test", ""},
+			[][]byte{{}, []byte("test"), {}},
+		},
+		{
+			"empty_slice",
+			[]string{},
+			[][]byte{},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			strSliceHash, err := dynssz.HashTreeRoot(tc.strings)
+			if err != nil {
+				t.Fatalf("Failed to hash []string: %v", err)
+			}
+
+			bytesSliceHash, err := dynssz.HashTreeRoot(tc.bytes)
+			if err != nil {
+				t.Fatalf("Failed to hash [][]byte: %v", err)
+			}
+
+			if strSliceHash != bytesSliceHash {
+				t.Errorf("[]string and [][]byte should have identical hash roots")
+				t.Logf("[]string hash: %x", strSliceHash)
+				t.Logf("[][]byte hash: %x", bytesSliceHash)
+			}
+		})
 	}
 }

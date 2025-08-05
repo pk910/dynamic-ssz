@@ -31,6 +31,7 @@ Dynamic SSZ supports only SSZ-compatible types as defined in the SSZ specificati
 - `uint8`, `uint16`, `uint32`, `uint64` (unsigned integers)
 - `bool` (boolean values)
 - Fixed-size byte arrays (e.g., `[32]byte`)
+- `string` (handled as `[]byte`)
 
 **Composite Types:**
 - Arrays and slices of supported types
@@ -40,7 +41,6 @@ Dynamic SSZ supports only SSZ-compatible types as defined in the SSZ specificati
 **Not Supported:**
 - Signed integers (`int`, `int8`, `int16`, `int32`, `int64`)
 - Floating-point numbers (`float32`, `float64`)
-- Strings (`string`) - use `[]byte` instead
 - Maps, channels, functions, complex numbers
 - Interfaces (except when referring to concrete SSZ-compatible types)
 
