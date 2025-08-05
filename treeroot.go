@@ -412,12 +412,7 @@ func (d *DynSsz) buildRootFromString(sourceType *TypeDescriptor, sourceValue ref
 		hh.MerkleizeWithMixin(subIndex, uint64(len(stringBytes)), limit)
 	} else {
 		// Dynamic string without hints: hash as basic type
-		if len(stringBytes) == 0 {
-			hh.Append(stringBytes)
-			hh.FillUpTo32()
-		} else {
-			hh.PutBytes(stringBytes)
-		}
+		hh.PutBytes(stringBytes)
 	}
 	
 	return nil
