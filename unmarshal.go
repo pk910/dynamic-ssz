@@ -95,6 +95,12 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 				return 0, err
 			}
 			consumedBytes = consumed
+		case reflect.String:
+			consumed, err := d.unmarshalString(targetType, targetValue, ssz, idt)
+			if err != nil {
+				return 0, err
+			}
+			consumedBytes = consumed
 
 		// primitive types
 		case reflect.Bool:
@@ -546,4 +552,45 @@ func (d *DynSsz) unmarshalDynamicSlice(targetType *TypeDescriptor, targetValue r
 	targetValue.Set(newValue)
 
 	return offset, nil
+}
+
+// unmarshalString decodes SSZ-encoded data into a Go string value.
+//
+// Strings in SSZ can be either fixed-size or dynamic:
+//   - Fixed-size strings: Read exact number of bytes (including any null bytes)
+//   - Dynamic strings: Use all available bytes
+//
+// Parameters:
+//   - targetType: The TypeDescriptor containing string metadata and size constraints
+//   - targetValue: The reflect.Value where the decoded string will be stored
+//   - ssz: The SSZ-encoded data to decode
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - int: The number of bytes consumed from the SSZ data
+//   - error: An error if decoding fails (e.g., insufficient data for fixed-size string)
+//
+// For fixed-size strings, the function reads exactly the specified number of bytes
+// without any trimming. For dynamic strings, all available bytes are used.
+func (d *DynSsz) unmarshalString(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
+	consumedBytes := 0
+
+	// Handle fixed-size vs dynamic strings
+	if targetType.Size > 0 {
+		// Fixed-size string: read exact number of bytes
+		fixedSize := int(targetType.Size)
+		if len(ssz) < fixedSize {
+			return 0, fmt.Errorf("not enough data for fixed-size string: need %d bytes, have %d", fixedSize, len(ssz))
+		}
+		// Read the fixed-size bytes without trimming
+		stringBytes := ssz[:fixedSize]
+		targetValue.SetString(string(stringBytes))
+		consumedBytes = fixedSize
+	} else {
+		// Dynamic string: use all available bytes
+		targetValue.SetString(string(ssz))
+		consumedBytes = len(ssz)
+	}
+
+	return consumedBytes, nil
 }

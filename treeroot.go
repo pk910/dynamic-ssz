@@ -140,6 +140,11 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 				if err != nil {
 					return err
 				}
+			case reflect.String:
+				err := d.buildRootFromString(sourceType, sourceValue, hh)
+				if err != nil {
+					return err
+				}
 			case reflect.Bool:
 				hh.PutBool(sourceValue.Bool())
 			case reflect.Uint8:
@@ -417,6 +422,16 @@ func (d *DynSsz) buildRootFromSlice(sourceType *TypeDescriptor, sourceValue refl
 		}
 		hh.FillUpTo32()
 		itemSize = 8
+	case reflect.String:
+		// Handle []string to match [][]byte behavior
+		for i := 0; i < sliceLen; i++ {
+			fieldValue := sourceValue.Index(i)
+
+			err := d.buildRootFromString(fieldType, fieldValue, hh)
+			if err != nil {
+				return err
+			}
+		}
 	default:
 		// For other types, use the central dispatcher
 		for i := 0; i < sliceLen; i++ {
@@ -441,6 +456,50 @@ func (d *DynSsz) buildRootFromSlice(sourceType *TypeDescriptor, sourceValue refl
 		hh.MerkleizeWithMixin(subIndex, uint64(sliceLen), limit)
 	} else {
 		hh.Merkleize(subIndex)
+	}
+
+	return nil
+}
+
+// buildRootFromString computes the hash tree root for Go string values.
+//
+// Strings in SSZ can be either fixed-size or dynamic:
+//   - Fixed-size strings (with ssz-size tag): Hash like fixed-size byte arrays with zero padding
+//   - Dynamic strings with max size hints: Hash as lists with length mixin
+//   - Dynamic strings without hints: Hash as basic byte sequences
+//
+// Parameters:
+//   - sourceType: The TypeDescriptor containing string metadata and size constraints
+//   - sourceValue: The reflect.Value of the string to hash
+//   - hh: The Hasher instance for hash computation
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - error: An error if hashing fails
+//
+// The function converts the string to bytes and then applies the appropriate
+// hashing strategy based on the string's size constraints.
+func (d *DynSsz) buildRootFromString(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher) error {
+	// Convert string to bytes
+	stringBytes := []byte(sourceValue.String())
+
+	if sourceType.Size > 0 {
+		// Fixed-size string: hash like a fixed-size byte array
+		fixedSize := int(sourceType.Size)
+		paddedBytes := make([]byte, fixedSize)
+		copy(paddedBytes, stringBytes)
+		// The rest is already zero-filled
+		hh.PutBytes(paddedBytes)
+	} else if len(sourceType.MaxSizeHints) > 0 && !sourceType.MaxSizeHints[0].NoValue {
+		// Dynamic string with max size hints: hash as a list with length mixin
+		subIndex := hh.Index()
+		hh.Append(stringBytes)
+		hh.FillUpTo32()
+		limit := uint64((sourceType.MaxSizeHints[0].Size + 31) / 32)
+		hh.MerkleizeWithMixin(subIndex, uint64(len(stringBytes)), limit)
+	} else {
+		// Dynamic string without hints: hash as basic type
+		hh.PutBytes(stringBytes)
 	}
 
 	return nil

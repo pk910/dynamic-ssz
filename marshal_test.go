@@ -201,6 +201,38 @@ var marshalTestMatrix = []struct {
 		}]{Variant: 0, Data: uint32(0x12345678)}, 0x4242},
 		fromHex("0x37130800000042420178563412"),
 	},
+
+	// string types
+	{
+		struct {
+			Data string `ssz-max:"100"`
+		}{""},
+		fromHex("0x04000000"),
+	},
+	{
+		struct {
+			Data string `ssz-max:"100"`
+		}{"hello"},
+		fromHex("0x0400000068656c6c6f"),
+	},
+	{
+		struct {
+			Data string `ssz-max:"100"`
+		}{"hello 世界"},
+		fromHex("0x0400000068656c6c6f20e4b896e7958c"),
+	},
+	{
+		struct {
+			Data string `ssz-size:"32"`
+		}{"hello"},
+		fromHex("0x68656c6c6f000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		struct {
+			Data string `ssz-size:"32"`
+		}{"abcdefghijklmnopqrstuvwxyz123456"},
+		fromHex("0x6162636465666768696a6b6c6d6e6f707172737475767778797a313233343536"),
+	},
 }
 
 func TestMarshal(t *testing.T) {
@@ -218,5 +250,106 @@ func TestMarshal(t *testing.T) {
 		case !bytes.Equal(buf, test.expected):
 			t.Errorf("test %v failed: got 0x%x, wanted 0x%x", idx, buf, test.expected)
 		}
+	}
+}
+
+func TestStringVsByteContainerMarshalEquivalence(t *testing.T) {
+	type StringContainer struct {
+		Data string `ssz-max:"100"`
+	}
+
+	type ByteContainer struct {
+		Data []byte `ssz-max:"100"`
+	}
+
+	testCases := []struct {
+		name  string
+		value string
+	}{
+		{"empty", ""},
+		{"single_char", "a"},
+		{"hello", "hello"},
+		{"exactly_32_bytes", "abcdefghijklmnopqrstuvwxyz123456"},
+		{"over_32_bytes", "abcdefghijklmnopqrstuvwxyz1234567890"},
+		{"unicode", "hello 世界"},
+		{"binary", "test\x00\x01\x02\xff"},
+	}
+
+	dynssz := NewDynSsz(nil)
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			strContainer := StringContainer{Data: tc.value}
+			byteContainer := ByteContainer{Data: []byte(tc.value)}
+
+			strEncoded, err := dynssz.MarshalSSZ(strContainer)
+			if err != nil {
+				t.Fatalf("Failed to marshal string container: %v", err)
+			}
+
+			byteEncoded, err := dynssz.MarshalSSZ(byteContainer)
+			if err != nil {
+				t.Fatalf("Failed to marshal byte container: %v", err)
+			}
+
+			if !bytes.Equal(strEncoded, byteEncoded) {
+				t.Errorf("Encoding mismatch:\nString: %x\nBytes:  %x", strEncoded, byteEncoded)
+			}
+		})
+	}
+}
+
+func TestFixedSizeStringVsByteArrayMarshal(t *testing.T) {
+	type WithFixedString struct {
+		Data string `ssz-size:"32"`
+		ID   uint32
+	}
+
+	type WithByteArray struct {
+		Data [32]byte
+		ID   uint32
+	}
+
+	dynssz := NewDynSsz(nil)
+
+	testCases := []struct {
+		name  string
+		value string
+	}{
+		{"empty", ""},
+		{"short", "hello"},
+		{"exact_32", "abcdefghijklmnopqrstuvwxyz123456"},
+		{"over_32_truncated", "abcdefghijklmnopqrstuvwxyz1234567890"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var byteData [32]byte
+			copy(byteData[:], []byte(tc.value))
+
+			strStruct := WithFixedString{
+				Data: tc.value,
+				ID:   42,
+			}
+
+			byteStruct := WithByteArray{
+				Data: byteData,
+				ID:   42,
+			}
+
+			strData, err := dynssz.MarshalSSZ(strStruct)
+			if err != nil {
+				t.Fatalf("Failed to marshal string struct: %v", err)
+			}
+
+			byteStructData, err := dynssz.MarshalSSZ(byteStruct)
+			if err != nil {
+				t.Fatalf("Failed to marshal byte struct: %v", err)
+			}
+
+			if !bytes.Equal(strData, byteStructData) {
+				t.Errorf("Marshaled data mismatch:\nString: %x\nBytes:  %x", strData, byteStructData)
+			}
+		})
 	}
 }

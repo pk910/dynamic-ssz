@@ -95,6 +95,7 @@ var unmarshalTestMatrix = []struct {
 		}{{{{F1: 2}, {F1: 3}}, {{F1: 4}, {F1: 5}}}, {{{F1: 8}, {F1: 9}}, {{F1: 10}, {F1: 11}}}}, 43},
 		fromHex("0x2a060000002b0800000018000000080000000c0000000200030004000500080000000c000000080009000a000b00"),
 	},
+
 	// progressive bitlist test - matches Python test_progressive_bitlist.py output
 	{
 		func() any {
@@ -157,6 +158,38 @@ var unmarshalTestMatrix = []struct {
 		}]{Variant: 0, Data: uint32(0x12345678)}, 0x4242},
 		fromHex("0x37130800000042420178563412"),
 	},
+
+	// string types
+	{
+		struct {
+			Data string `ssz-max:"100"`
+		}{""},
+		fromHex("0x04000000"),
+	},
+	{
+		struct {
+			Data string `ssz-max:"100"`
+		}{"hello"},
+		fromHex("0x0400000068656c6c6f"),
+	},
+	{
+		struct {
+			Data string `ssz-max:"100"`
+		}{"hello 世界"},
+		fromHex("0x0400000068656c6c6f20e4b896e7958c"),
+	},
+	{
+		struct {
+			Data string `ssz-size:"32"`
+		}{"hello" + string(make([]byte, 27))}, // padded to 32 bytes
+		fromHex("0x68656c6c6f000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		struct {
+			Data string `ssz-size:"32"`
+		}{"abcdefghijklmnopqrstuvwxyz123456"},
+		fromHex("0x6162636465666768696a6b6c6d6e6f707172737475767778797a313233343536"),
+	},
 }
 
 func TestUnmarshal(t *testing.T) {
@@ -190,5 +223,116 @@ func TestUnmarshal(t *testing.T) {
 				t.Errorf("test %v failed: got %v, wanted %v", idx, string(objJson), string(payloadJson))
 			}
 		}
+	}
+}
+
+func TestStringVsByteContainerUnmarshalEquivalence(t *testing.T) {
+	type StringContainer struct {
+		Data string `ssz-max:"100"`
+	}
+
+	type ByteContainer struct {
+		Data []byte `ssz-max:"100"`
+	}
+
+	testCases := []struct {
+		name  string
+		value string
+	}{
+		{"empty", ""},
+		{"single_char", "a"},
+		{"hello", "hello"},
+		{"exactly_32_bytes", "abcdefghijklmnopqrstuvwxyz123456"},
+		{"over_32_bytes", "abcdefghijklmnopqrstuvwxyz1234567890"},
+		{"unicode", "hello 世界"},
+		{"binary", "test\x00\x01\x02\xff"},
+	}
+
+	dynssz := NewDynSsz(nil)
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			strContainer := StringContainer{Data: tc.value}
+			byteContainer := ByteContainer{Data: []byte(tc.value)}
+
+			strEncoded, err := dynssz.MarshalSSZ(strContainer)
+			if err != nil {
+				t.Fatalf("Failed to marshal string container: %v", err)
+			}
+
+			byteEncoded, err := dynssz.MarshalSSZ(byteContainer)
+			if err != nil {
+				t.Fatalf("Failed to marshal byte container: %v", err)
+			}
+
+			if !bytes.Equal(strEncoded, byteEncoded) {
+				t.Errorf("Encoding mismatch:\nString: %x\nBytes:  %x", strEncoded, byteEncoded)
+			}
+
+			var decodedStr StringContainer
+			err = dynssz.UnmarshalSSZ(&decodedStr, strEncoded)
+			if err != nil {
+				t.Fatalf("Failed to unmarshal string container: %v", err)
+			}
+
+			if decodedStr.Data != tc.value {
+				t.Errorf("String round-trip failed: got %q, want %q", decodedStr.Data, tc.value)
+			}
+
+			var decodedByte ByteContainer
+			err = dynssz.UnmarshalSSZ(&decodedByte, byteEncoded)
+			if err != nil {
+				t.Fatalf("Failed to unmarshal byte container: %v", err)
+			}
+
+			if !bytes.Equal(decodedByte.Data, []byte(tc.value)) {
+				t.Errorf("Byte round-trip failed: got %q, want %q", decodedByte.Data, tc.value)
+			}
+		})
+	}
+}
+
+func TestMixedStringTypesUnmarshal(t *testing.T) {
+	type MixedStruct struct {
+		FixedStr1  string `ssz-size:"16"`
+		DynamicStr string `ssz-max:"100"`
+		FixedStr2  string `ssz-size:"8"`
+		ID         uint32
+	}
+
+	dynssz := NewDynSsz(nil)
+
+	test := MixedStruct{
+		FixedStr1:  "hello",
+		DynamicStr: "world",
+		FixedStr2:  "test",
+		ID:         42,
+	}
+
+	data, err := dynssz.MarshalSSZ(test)
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+
+	var decoded MixedStruct
+	err = dynssz.UnmarshalSSZ(&decoded, data)
+	if err != nil {
+		t.Fatalf("Failed to unmarshal: %v", err)
+	}
+
+	expectedFixedStr1 := test.FixedStr1 + string(make([]byte, 16-len(test.FixedStr1)))
+	expectedFixedStr2 := test.FixedStr2 + string(make([]byte, 8-len(test.FixedStr2)))
+
+	if decoded.FixedStr1 != expectedFixedStr1 {
+		t.Errorf("FixedStr1 mismatch: got %q, want %q", decoded.FixedStr1, expectedFixedStr1)
+	}
+	if decoded.DynamicStr != test.DynamicStr {
+		t.Errorf("DynamicStr mismatch: got %q, want %q", decoded.DynamicStr, test.DynamicStr)
+	}
+	if decoded.FixedStr2 != expectedFixedStr2 {
+		t.Errorf("FixedStr2 mismatch: got %q, want %q", decoded.FixedStr2, expectedFixedStr2)
+	}
+	if decoded.ID != test.ID {
+		t.Errorf("ID mismatch: got %d, want %d", decoded.ID, test.ID)
 	}
 }

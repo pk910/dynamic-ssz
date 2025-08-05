@@ -90,6 +90,12 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 				return nil, err
 			}
 			buf = newBuf
+		case reflect.String:
+			newBuf, err := d.marshalString(sourceType, sourceValue, buf, idt)
+			if err != nil {
+				return nil, err
+			}
+			buf = newBuf
 		case reflect.Bool:
 			buf = marshalBool(buf, sourceValue.Bool())
 		case reflect.Uint8:
@@ -441,6 +447,51 @@ func (d *DynSsz) marshalDynamicSlice(sourceType *TypeDescriptor, sourceValue ref
 		}
 
 		buf = append(buf, zeroData...)
+	}
+
+	return buf, nil
+}
+
+// marshalString encodes Go string values into SSZ format.
+//
+// Strings in SSZ can be either fixed-size or dynamic:
+//   - Fixed-size strings (with ssz-size tag): Encoded with zero padding to exact size
+//   - Dynamic strings: Encoded as-is without padding
+//
+// Parameters:
+//   - sourceType: The TypeDescriptor containing string metadata and size constraints
+//   - sourceValue: The reflect.Value of the string to encode
+//   - buf: The buffer to append the encoded data to
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - []byte: The buffer with the encoded string appended
+//   - error: Always nil for strings (kept for consistency with other marshal functions)
+//
+// Fixed-size strings are truncated if longer than the specified size or padded
+// with zeros if shorter. Dynamic strings are encoded as their raw byte representation.
+func (d *DynSsz) marshalString(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
+	// Convert string to []byte
+	stringBytes := []byte(sourceValue.String())
+
+	// Check if this is a fixed-size string
+	if sourceType.Size > 0 {
+		// Fixed-size string: pad or truncate to exact size
+		fixedSize := int(sourceType.Size)
+		if len(stringBytes) > fixedSize {
+			// Truncate if too long
+			buf = append(buf, stringBytes[:fixedSize]...)
+		} else {
+			// Pad with zeros if too short
+			buf = append(buf, stringBytes...)
+			padding := fixedSize - len(stringBytes)
+			for i := 0; i < padding; i++ {
+				buf = append(buf, 0)
+			}
+		}
+	} else {
+		// Dynamic string: append as-is
+		buf = append(buf, stringBytes...)
 	}
 
 	return buf, nil

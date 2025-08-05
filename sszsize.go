@@ -162,6 +162,15 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 					staticSize = uint32(fieldType.Size) * (sliceLen + appendZero)
 				}
 			}
+		case reflect.String:
+			// String size depends on whether it's fixed or dynamic
+			if targetType.Size > 0 {
+				// Fixed-size string: always return the fixed size
+				staticSize = uint32(targetType.Size)
+			} else {
+				// Dynamic string: return the actual length
+				staticSize = uint32(len(targetValue.String()))
+			}
 
 		// primitive types
 		case reflect.Bool:
@@ -174,7 +183,6 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 			staticSize = 4
 		case reflect.Uint64:
 			staticSize = 8
-
 		default:
 			return 0, fmt.Errorf("unhandled reflection kind in size check: %v", targetType.Kind)
 		}

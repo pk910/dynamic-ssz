@@ -9,6 +9,7 @@ Dynamic SSZ supports only SSZ-compatible types as defined in the SSZ specificati
 ### Base Types
 - `uint8`/`byte`, `uint16`, `uint32`, `uint64` - Unsigned integers
 - `bool` - Boolean values
+- `string` - Strings (treated like a []byte)
 
 ### Composite Types
 - **Arrays**: Fixed-size arrays of supported types
@@ -24,7 +25,6 @@ Dynamic SSZ supports only SSZ-compatible types as defined in the SSZ specificati
 The following types are **not** part of the SSZ specification and therefore not supported:
 - Signed integers (`int`, `int8`, `int16`, `int32`, `int64`)
 - Floating-point numbers (`float32`, `float64`)
-- Strings (`string`) - Use `[]byte` instead
 - Maps
 - Channels
 - Functions
@@ -43,11 +43,11 @@ The SSZ specification defines `uint128` and `uint256` types, but Go doesn't have
 - **uint256**: Use `github.com/holiman/uint256` for proper uint256 handling
   ```go
   import "github.com/holiman/uint256"
-  
+
   type MyStruct struct {
       // For SSZ marshalling/unmarshalling
       Balance1 [32]byte
-      
+
       // For actual usage in calculations
       Balance2 uint256.Int
   }
@@ -64,17 +64,18 @@ type ValidStruct struct {
     Count      uint64
     Flag       bool
     Hash       [32]byte
-    
+    Name       string
+
     // Composite types
     Values     []uint32      `ssz-max:"100"`
     Data       []byte        `ssz-max:"1024"`
+    Labels     []string      `ssz-max:"10"`
     Matrix     [][]byte      `ssz-size:"?,32" ssz-max:"64"`
     SubStruct  *OtherStruct  // Pointer treated as empty instance for nil pointer
 }
 
 // NOT supported
 type InvalidStruct struct {
-    Name    string         // ❌ Use []byte instead
     Score   float64        // ❌ Not part of SSZ
     Count   int            // ❌ Use uint64 instead
     Mapping map[string]int // ❌ Maps not supported
@@ -349,13 +350,13 @@ For multi-dimensional arrays/slices, specify sizes and maximums for each dimensi
 type MyStruct struct {
     // Fixed dimensions
     Fixed2D     [][]byte  `ssz-size:"4,32"`                // 4x32 fixed matrix
-    
+
     // Mixed dimensions
     Mixed       [][]byte  `ssz-size:"?,32" ssz-max:"100"`  // Dynamic outer (max 100), fixed inner (32)
-    
+
     // Fully dynamic
     Dynamic2D   [][]byte  `ssz-size:"?,?" ssz-max:"64,256"` // Max 64x256 matrix
-    
+
     // With spec values
     SpecBased   [][]uint64 `ssz-size:"?,?" ssz-max:"100,100" dynssz-max:"MAX_COMMITTEES,MAX_VALIDATORS"`
 }
