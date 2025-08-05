@@ -195,11 +195,7 @@ func CalculateLimit(maxCapacity, numItems, size uint64) uint64 {
 
 func (h *Hasher) FillUpTo32() {
 	// pad zero bytes to the left
-	bufLen := len(h.buf)
-	if bufLen == 0 {
-		// Special case: empty buffer should be padded to 32 bytes
-		h.buf = append(h.buf, zeroBytes[:32]...)
-	} else if rest := bufLen % 32; rest != 0 {
+	if rest := len(h.buf) % 32; rest != 0 {
 		h.buf = append(h.buf, zeroBytes[:32-rest]...)
 	}
 }
