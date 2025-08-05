@@ -136,6 +136,10 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 // and that all data is consumed correctly.
 
 func (d *DynSsz) unmarshalStruct(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
+	if targetType.ContainerType != nil && targetType.ContainerType.Type == SszStableContainerType {
+		return d.unmarshalStableStruct(targetType, targetValue, ssz, idt)
+	}
+
 	offset := 0
 	dynamicFieldCount := len(targetType.DynFields)
 	dynamicOffsets := make([]int, 0, dynamicFieldCount)
@@ -205,6 +209,121 @@ func (d *DynSsz) unmarshalStruct(targetType *TypeDescriptor, targetValue reflect
 		}
 
 		fieldDescriptor := field.Field
+		fieldValue := targetValue.Field(int(fieldDescriptor.Index))
+		consumedBytes, err := d.unmarshalType(fieldDescriptor.Type, fieldValue, fieldSsz, idt+2)
+		if err != nil {
+			return 0, fmt.Errorf("failed decoding field %v: %v", fieldDescriptor.Name, err)
+		}
+		if consumedBytes != endOffset-startOffset {
+			return 0, fmt.Errorf("struct field did not consume expected ssz range (consumed: %v, expected: %v)", consumedBytes, endOffset-startOffset)
+		}
+
+		offset += consumedBytes
+	}
+
+	return offset, nil
+}
+
+func (d *DynSsz) unmarshalStableStruct(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
+	offset := 0
+	dynamicFieldCount := len(targetType.DynFields)
+	dynamicOffsets := make([]int, 0, dynamicFieldCount)
+	sszSize := len(ssz)
+	stableMax := targetType.ContainerType.Size
+
+	// read active fields
+	activeFieldsLen := int((stableMax + 7) / 8)
+	if offset+activeFieldsLen > sszSize {
+		return 0, fmt.Errorf("unexpected end of SSZ. active fields expects %v bytes, got %v", activeFieldsLen, sszSize-offset)
+	}
+
+	activeFields := ssz[offset : offset+activeFieldsLen]
+	offset += activeFieldsLen
+
+	isActiveField := func(i int) bool {
+		byteIdx := i / 8
+		bitIdx := uint(i % 8)
+		return (activeFields[byteIdx] & (1 << bitIdx)) != 0
+	}
+
+	for i := 0; i < len(targetType.Fields); i++ {
+		field := targetType.Fields[i]
+
+		if field.SszIndex == nil {
+			return 0, fmt.Errorf("ssz-index tag is required for stable container fields")
+		}
+
+		if !isActiveField(int(*field.SszIndex)) {
+			// field is inactive, skip
+			continue
+		}
+
+		fieldSize := int(field.Size)
+		if fieldSize > 0 {
+			// static size field
+			if offset+fieldSize > sszSize {
+				return 0, fmt.Errorf("unexpected end of SSZ. field %v expects %v bytes, got %v", field.Name, fieldSize, sszSize-offset)
+			}
+
+			// fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
+
+			fieldSsz := ssz[offset : offset+fieldSize]
+			fieldValue := targetValue.Field(i)
+			consumedBytes, err := d.unmarshalType(field.Type, fieldValue, fieldSsz, idt+2)
+			if err != nil {
+				return 0, fmt.Errorf("failed decoding field %v: %v", field.Name, err)
+			}
+			if consumedBytes != fieldSize {
+				return 0, fmt.Errorf("struct field did not consume expected ssz range (consumed: %v, expected: %v)", consumedBytes, fieldSize)
+			}
+
+		} else {
+			// dynamic size field
+			// get the 4 byte offset where the fields ssz range starts
+			fieldSize = 4
+			if offset+fieldSize > sszSize {
+				return 0, fmt.Errorf("unexpected end of SSZ. dynamic field %v expects %v bytes (offset), got %v", field.Name, fieldSize, sszSize-offset)
+			}
+			fieldOffset := readOffset(ssz[offset:offset+fieldSize]) + uint64(activeFieldsLen)
+
+			// fmt.Printf("%sfield %d:\t offset [%v:%v] %v\t %v \t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name, fieldOffset)
+
+			// store dynamic field offset for later
+			dynamicOffsets = append(dynamicOffsets, int(fieldOffset))
+		}
+		offset += fieldSize
+	}
+
+	// finished parsing the static size fields, process dynamic fields
+	for i, field := range targetType.DynFields {
+		fieldDescriptor := field.Field
+		if !isActiveField(int(*fieldDescriptor.SszIndex)) {
+			// field is inactive, skip
+			continue
+		}
+
+		var endOffset int
+		startOffset := dynamicOffsets[i]
+		if i < dynamicFieldCount-1 {
+			endOffset = dynamicOffsets[i+1]
+		} else {
+			endOffset = len(ssz)
+		}
+
+		// check offset integrity (not before previous field offset & not after range end)
+		if startOffset < offset || endOffset > sszSize {
+			return 0, ErrOffset
+		}
+
+		// fmt.Printf("%sfield %d:\t dynamic [%v:%v]\t %v\n", strings.Repeat(" ", idt+1), field.Index[0], startOffset, endOffset, field.Name)
+
+		var fieldSsz []byte
+		if endOffset > startOffset {
+			fieldSsz = ssz[startOffset:endOffset]
+		} else {
+			fieldSsz = []byte{}
+		}
+
 		fieldValue := targetValue.Field(int(fieldDescriptor.Index))
 		consumedBytes, err := d.unmarshalType(fieldDescriptor.Type, fieldValue, fieldSsz, idt+2)
 		if err != nil {
