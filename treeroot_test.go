@@ -120,7 +120,7 @@ var treerootTestMatrix = []struct {
 		struct {
 			F1 [][]uint16 `ssz-size:"?,2" ssz-max:"10"`
 		}{[][]uint16{{2, 3}, {4, 5}, {8, 9}, {10, 11}}},
-		fromHex("0x0b803c5194671ffc450ea070a122fad6499d7d91f35066c208ff2d1851b90c28"),
+		fromHex("0x253a3f3ffab684c2d4f4930b7923f31aadc3eff94b3eb8b4b7b9aa1363efcf52"),
 	},
 	{
 		struct {

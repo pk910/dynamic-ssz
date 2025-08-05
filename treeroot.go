@@ -239,19 +239,19 @@ func (d *DynSsz) buildRootFromCompatibleUnion(sourceType *TypeDescriptor, source
 	// Field 0 is Variant, Field 1 is Data
 	variant := uint8(sourceValue.Field(0).Uint())
 	dataField := sourceValue.Field(1)
-	
+
 	// Get the variant descriptor
 	variantDesc, ok := sourceType.UnionVariants[variant]
 	if !ok {
 		return fmt.Errorf("unknown union variant index: %d", variant)
 	}
-	
+
 	// Hash only the data, not the selector
 	err := d.buildRootFromType(variantDesc, dataField.Elem(), hh, idt+2)
 	if err != nil {
 		return fmt.Errorf("failed to hash union variant %d: %w", variant, err)
 	}
-	
+
 	return nil
 }
 
@@ -399,6 +399,7 @@ func (d *DynSsz) buildRootFromSlice(sourceType *TypeDescriptor, sourceValue refl
 
 			hh.AppendUint16(uint16(fieldValue.Uint()))
 		}
+		hh.FillUpTo32()
 		itemSize = 2
 	case reflect.Uint32:
 		for i := 0; i < sliceLen; i++ {
@@ -406,6 +407,7 @@ func (d *DynSsz) buildRootFromSlice(sourceType *TypeDescriptor, sourceValue refl
 
 			hh.AppendUint32(uint32(fieldValue.Uint()))
 		}
+		hh.FillUpTo32()
 		itemSize = 4
 	case reflect.Uint64:
 		for i := 0; i < sliceLen; i++ {
@@ -413,6 +415,7 @@ func (d *DynSsz) buildRootFromSlice(sourceType *TypeDescriptor, sourceValue refl
 
 			hh.AppendUint64(uint64(fieldValue.Uint()))
 		}
+		hh.FillUpTo32()
 		itemSize = 8
 	default:
 		// For other types, use the central dispatcher
