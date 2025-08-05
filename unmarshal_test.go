@@ -95,6 +95,32 @@ var unmarshalTestMatrix = []struct {
 		}{{{{F1: 2}, {F1: 3}}, {{F1: 4}, {F1: 5}}}, {{{F1: 8}, {F1: 9}}, {{F1: 10}, {F1: 11}}}}, 43},
 		fromHex("0x2a060000002b0800000018000000080000000c0000000200030004000500080000000c000000080009000a000b00"),
 	},
+	// progressive bitlist test - matches Python test_progressive_bitlist.py output
+	{
+		func() any {
+			// Create bitlist with 1000 bits where every 3rd bit is set (pattern: [false, false, true, ...])
+			bits := make([]bool, 1000)
+			for i := 0; i < 1000; i++ {
+				bits[i] = (i%3 == 2)
+			}
+			// Convert to bitlist format with delimiter bit
+			bytesNeeded := (len(bits) + 1 + 7) / 8
+			bl := make([]byte, bytesNeeded)
+			for i, bit := range bits {
+				if bit {
+					bl[i/8] |= 1 << (i % 8)
+				}
+			}
+
+			// Set delimiter bit at position 1000 (1000 % 8 = 0, byte 125)
+			bl[125] |= 0x01 // delimiter bit at position 7 of byte 125
+
+			return struct {
+				F1 []byte `ssz-type:"progressive-bitlist"`
+			}{bl}
+		}(),
+		fromHex("04000000244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244901"),
+	},
 }
 
 func TestUnmarshal(t *testing.T) {

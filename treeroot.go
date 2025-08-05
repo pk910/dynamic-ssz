@@ -92,17 +92,28 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 	}
 
 	if !useFastSsz {
+		isBitlist := strings.Contains(sourceType.Type.Name(), "Bitlist")
+		isProgressiveBitlist := false
+		if len(sourceType.TypeHints) > 0 && (sourceType.TypeHints[0].Type == SszBitlistType || sourceType.TypeHints[0].Type == SszProgressiveBitlistType) {
+			isBitlist = true
+			isProgressiveBitlist = sourceType.TypeHints[0].Type == SszProgressiveBitlistType
+		}
 		// Special case for bitlists - hack
-		if strings.Contains(sourceType.Type.Name(), "Bitlist") {
+		if isBitlist {
 			maxSize := uint64(0)
 			bytes := sourceValue.Bytes()
-			if len(sourceType.MaxSizeHints) > 0 {
-				maxSize = uint64(sourceType.MaxSizeHints[0].Size)
-			} else {
-				maxSize = uint64(len(bytes) * 8)
-			}
 
-			hh.PutBitlist(bytes, maxSize)
+			if isProgressiveBitlist {
+				hh.PutProgressiveBitlist(bytes)
+			} else {
+				if len(sourceType.MaxSizeHints) > 0 {
+					maxSize = uint64(sourceType.MaxSizeHints[0].Size)
+				} else {
+					maxSize = uint64(len(bytes) * 8)
+				}
+
+				hh.PutBitlist(bytes, maxSize)
+			}
 		} else {
 			// Route to appropriate handler based on type
 			switch sourceType.Kind {
@@ -294,7 +305,7 @@ func (d *DynSsz) buildRootFromSlice(sourceType *TypeDescriptor, sourceValue refl
 			}
 		}
 	case reflect.Array, reflect.Slice:
-		if fieldType.IsByteArray {
+		if fieldType.IsByteArray && (len(fieldType.TypeHints) == 0 || (fieldType.TypeHints[0].Type != SszBitlistType && fieldType.TypeHints[0].Type != SszProgressiveBitlistType)) {
 			for i := 0; i < sliceLen; i++ {
 				sliceSubIndex := hh.Index()
 

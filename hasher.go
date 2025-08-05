@@ -38,7 +38,6 @@ var zeroHashes [65][32]byte
 var zeroHashLevels map[string]int
 var trueBytes, falseBytes, zeroBytes []byte
 
-
 func initHasher() {
 	hasherInitMutex.Lock()
 	defer hasherInitMutex.Unlock()
@@ -292,6 +291,16 @@ func (h *Hasher) PutBitlist(bb []byte, maxSize uint64) {
 	h.MerkleizeWithMixin(indx, size, (maxSize+255)/256)
 }
 
+func (h *Hasher) PutProgressiveBitlist(bb []byte) {
+	var size uint64
+	h.tmp, size = parseBitlist(h.tmp[:0], bb)
+
+	// merkleize the content with mix in length
+	indx := h.Index()
+	h.AppendBytes32(h.tmp)
+	h.MerkleizeProgressiveWithMixin(indx, size)
+}
+
 // PutBool appends a boolean
 func (h *Hasher) PutBool(b bool) {
 	if b {
@@ -473,7 +482,7 @@ func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 
 	// input is of the form [<progressive_root><size>] of 64 bytes
 	h.hash(input, input)
-	
+
 	h.buf = append(h.buf[:indx], input[:32]...)
 }
 
@@ -505,36 +514,34 @@ func (h *Hasher) merkleizeProgressiveImpl(dst []byte, chunks []byte, depth uint8
 
 	// Right child: subtree_fill_to_contents(nodes[:base_size], depth) - binary merkleization
 	rightChunks := chunks[:splitPoint]
-	
+
 	// Ensure rightChunks are properly padded to 32-byte boundaries
 	if len(rightChunks) > 0 && len(rightChunks)%32 != 0 {
 		padNeeded := 32 - (len(rightChunks) % 32)
-		rightChunks = append(rightChunks, make([]byte, padNeeded)...)
+		rightChunks = append(rightChunks, zeroBytes[:padNeeded]...)
 	}
-	
-	rightRoot := h.merkleizeImpl(nil, rightChunks, baseSize)
+
+	rightRoot := h.merkleizeImpl(rightChunks[:0], rightChunks, baseSize)
 
 	// Left child: subtree_fill_progressive(nodes[base_size:], depth + 2) - recursive progressive
 	leftChunks := chunks[splitPoint:]
 	var leftRoot []byte
 	if len(leftChunks) == 0 {
-		leftRoot = append([]byte(nil), zeroBytes...)
+		leftRoot = zeroHashes[0][:]
 	} else {
 		// Ensure leftChunks are properly padded to 32-byte boundaries
 		if len(leftChunks)%32 != 0 {
 			padNeeded := 32 - (len(leftChunks) % 32)
-			leftChunks = append(leftChunks, make([]byte, padNeeded)...)
+			leftChunks = append(leftChunks, zeroBytes[:padNeeded]...)
 		}
-		
-		leftRoot = h.merkleizeProgressiveImpl(nil, leftChunks, depth+2)
+
+		leftRoot = h.merkleizeProgressiveImpl(leftChunks[:0], leftChunks, depth+2)
 	}
 
 	// PairNode(left, right) - hash(left, right)
-	combined := make([]byte, 64)
-	copy(combined[:32], leftRoot)
-	copy(combined[32:], rightRoot)
-	result := make([]byte, 32)
-	h.hash(result, combined)
+	copy(h.tmp[:32], leftRoot)
+	copy(h.tmp[32:], rightRoot)
+	h.hash(chunks, h.tmp[0:64])
 
-	return append(dst, result...)
+	return append(dst, chunks[:32]...)
 }

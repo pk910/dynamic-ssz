@@ -141,6 +141,32 @@ var treerootTestMatrix = []struct {
 		}(),
 		fromHex("0xcafb653b8b774afa1a755897c6afc68bb08af48b30a3c08ca5b72ddf79bdb20f"),
 	},
+	// progressive bitlist test - matches Python test_progressive_bitlist.py output
+	{
+		func() any {
+			// Create bitlist with 1000 bits where every 3rd bit is set (pattern: [false, false, true, ...])
+			bits := make([]bool, 1000)
+			for i := 0; i < 1000; i++ {
+				bits[i] = (i%3 == 2)
+			}
+			// Convert to bitlist format with delimiter bit
+			bytesNeeded := (len(bits) + 1 + 7) / 8
+			bl := make([]byte, bytesNeeded)
+			for i, bit := range bits {
+				if bit {
+					bl[i/8] |= 1 << (i % 8)
+				}
+			}
+
+			// Set delimiter bit at position 1000 (1000 % 8 = 0, byte 125)
+			bl[125] |= 0x01 // delimiter bit at position 7 of byte 125
+
+			return struct {
+				F1 []byte `ssz-type:"progressive-bitlist"`
+			}{bl}
+		}(),
+		fromHex("0xba990efa7343179a41d01614759e0ab696a8869fade3f576a8abe6e9880eeaa3"),
+	},
 }
 
 func TestTreeRoot(t *testing.T) {
