@@ -96,6 +96,69 @@ var unmarshalTestMatrix = []struct {
 		fromHex("0x2a060000002b0800000018000000080000000c0000000200030004000500080000000c000000080009000a000b00"),
 	},
 
+	// progressive bitlist test - matches Python test_progressive_bitlist.py output
+	{
+		func() any {
+			// Create bitlist with 1000 bits where every 3rd bit is set (pattern: [false, false, true, ...])
+			bits := make([]bool, 1000)
+			for i := 0; i < 1000; i++ {
+				bits[i] = (i%3 == 2)
+			}
+			// Convert to bitlist format with delimiter bit
+			bytesNeeded := (len(bits) + 1 + 7) / 8
+			bl := make([]byte, bytesNeeded)
+			for i, bit := range bits {
+				if bit {
+					bl[i/8] |= 1 << (i % 8)
+				}
+			}
+
+			// Set delimiter bit at position 1000 (1000 % 8 = 0, byte 125)
+			bl[125] |= 0x01 // delimiter bit at position 7 of byte 125
+
+			return struct {
+				F1 []byte `ssz-type:"progressive-bitlist"`
+			}{bl}
+		}(),
+		fromHex("04000000244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244901"),
+	},
+
+	// Progressive container tests
+	{
+		struct {
+			Field0 uint64 `ssz-index:"0"`
+			Field1 uint32 `ssz-index:"1"`
+			Field2 bool   `ssz-index:"2"`
+			Field3 uint16 `ssz-index:"3"`
+		}{12345, 67890, true, 999},
+		fromHex("0x39300000000000003209010001e703"),
+	},
+	{
+		struct {
+			Field0 uint64 `ssz-index:"0"`
+			Field1 uint32 `ssz-index:"1"`
+			Field2 bool   `ssz-index:"2"`
+			Field3 uint16 `ssz-index:"3"`
+		}{0, 0, false, 0},
+		fromHex("0x000000000000000000000000000000"),
+	},
+
+	// CompatibleUnion tests
+	{
+		struct {
+			Field0 uint16
+			Field1 CompatibleUnion[struct {
+				Field1 uint32
+				Field2 [2]uint8
+			}]
+			Field3 uint16
+		}{0x1337, CompatibleUnion[struct {
+			Field1 uint32
+			Field2 [2]uint8
+		}]{Variant: 0, Data: uint32(0x12345678)}, 0x4242},
+		fromHex("0x37130800000042420178563412"),
+	},
+
 	// string types
 	{
 		struct {

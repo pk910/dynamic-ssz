@@ -18,23 +18,27 @@ type TypeCache struct {
 
 // TypeDescriptor represents a cached, optimized descriptor for a type's SSZ encoding/decoding
 type TypeDescriptor struct {
-	Kind                reflect.Kind
-	Type                reflect.Type
-	Size                int32                // SSZ size (-1 if dynamic)
-	Len                 uint32               // Length of array/slice
-	Fields              []FieldDescriptor    // For structs
-	DynFields           []DynFieldDescriptor // Dynamic struct fields
-	ElemDesc            *TypeDescriptor      // For slices/arrays
-	SizeHints           []SszSizeHint        // Size hints from tags
-	MaxSizeHints        []SszMaxSizeHint     // Max size hints from tags
-	HasDynamicSize      bool                 // Whether this type uses dynamic spec size value that differs from the default
-	HasDynamicMax       bool                 // Whether this type uses dynamic spec max value that differs from the default
-	IsFastSSZMarshaler  bool                 // Whether the type implements fastssz.Marshaler
-	IsFastSSZHasher     bool                 // Whether the type implements fastssz.HashRoot
-	HasHashTreeRootWith bool                 // Whether the type implements HashTreeRootWith
-	IsPtr               bool                 // Whether this is a pointer type
-	IsByteArray         bool                 // Whether this is a byte array
-	IsString            bool                 // Whether this is a string type
+	Kind                   reflect.Kind
+	Type                   reflect.Type
+	Size                   int32                     // SSZ size (-1 if dynamic)
+	Len                    uint32                    // Length of array/slice
+	Fields                 []FieldDescriptor         // For structs
+	DynFields              []DynFieldDescriptor      // Dynamic struct fields
+	UnionVariants          map[uint8]*TypeDescriptor // Union variant types by index (for CompatibleUnion)
+	ElemDesc               *TypeDescriptor           // For slices/arrays
+	SizeHints              []SszSizeHint             // Size hints from tags
+	MaxSizeHints           []SszMaxSizeHint          // Max size hints from tags
+	TypeHints              []SszTypeHint             // Type hints from tags
+	HasDynamicSize         bool                      // Whether this type uses dynamic spec size value that differs from the default
+	HasDynamicMax          bool                      // Whether this type uses dynamic spec max value that differs from the default
+	IsFastSSZMarshaler     bool                      // Whether the type implements fastssz.Marshaler
+	IsFastSSZHasher        bool                      // Whether the type implements fastssz.HashRoot
+	HasHashTreeRootWith    bool                      // Whether the type implements HashTreeRootWith
+	IsPtr                  bool                      // Whether this is a pointer type
+	IsByteArray            bool                      // Whether this is a byte array
+	IsString               bool                      // Whether this is a string type
+	IsProgressiveContainer bool                      // Whether this is a progressive container
+	IsCompatibleUnion      bool                      // Whether this is a CompatibleUnion type
 }
 
 // FieldDescriptor represents a cached descriptor for a struct field
@@ -43,6 +47,7 @@ type FieldDescriptor struct {
 	Offset    uintptr         // Unsafe offset within the struct
 	Type      *TypeDescriptor // Type descriptor
 	Index     int16           // Index of the field in the struct
+	SszIndex  uint16          // SSZ index for progressive containers
 	Size      int32           // SSZ size (-1 if dynamic)
 	IsPtr     bool            // Whether field is a pointer
 	IsDynamic bool            // Whether field has dynamic size
@@ -76,6 +81,7 @@ func NewTypeCache(dynssz *DynSsz) *TypeCache {
 //   - t: The reflect.Type for which to obtain a descriptor
 //   - sizeHints: Optional size hints from parent structures' tags. Pass nil for top-level types.
 //   - maxSizeHints: Optional max size hints from parent structures' tags. Pass nil for top-level types.
+//   - typeHints: Optional type hints from parent structures' tags. Pass nil for top-level types.
 //
 // Returns:
 //   - *TypeDescriptor: The type descriptor containing metadata for SSZ operations
@@ -92,9 +98,9 @@ func NewTypeCache(dynssz *DynSsz) *TypeCache {
 //	    log.Fatal("Failed to get type descriptor:", err)
 //	}
 //	fmt.Printf("Type size: %d bytes (dynamic: %v)\n", typeDesc.Size, typeDesc.Size < 0)
-func (tc *TypeCache) GetTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint) (*TypeDescriptor, error) {
+func (tc *TypeCache) GetTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) (*TypeDescriptor, error) {
 	// Check cache first (read lock)
-	if len(sizeHints) == 0 && len(maxSizeHints) == 0 {
+	if len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) == 0 {
 		tc.mutex.RLock()
 		if desc, exists := tc.descriptors[t]; exists {
 			tc.mutex.RUnlock()
@@ -107,22 +113,23 @@ func (tc *TypeCache) GetTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, 
 	tc.mutex.Lock()
 	defer tc.mutex.Unlock()
 
-	return tc.getTypeDescriptor(t, sizeHints, maxSizeHints)
+	return tc.getTypeDescriptor(t, sizeHints, maxSizeHints, typeHints)
 }
 
 // getTypeDescriptor returns a cached type descriptor, computing it if necessary
-func (tc *TypeCache) getTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint) (*TypeDescriptor, error) {
-	if desc, exists := tc.descriptors[t]; exists && len(sizeHints) == 0 && len(maxSizeHints) == 0 {
+func (tc *TypeCache) getTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) (*TypeDescriptor, error) {
+	cacheable := len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) == 0
+	if desc, exists := tc.descriptors[t]; exists && cacheable {
 		return desc, nil
 	}
 
-	desc, err := tc.buildTypeDescriptor(t, sizeHints, maxSizeHints)
+	desc, err := tc.buildTypeDescriptor(t, sizeHints, maxSizeHints, typeHints)
 	if err != nil {
 		return nil, err
 	}
 
 	// Cache only if no size hints (cacheable)
-	if len(sizeHints) == 0 && len(maxSizeHints) == 0 {
+	if cacheable {
 		tc.descriptors[t] = desc
 	}
 
@@ -130,11 +137,12 @@ func (tc *TypeCache) getTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, 
 }
 
 // buildTypeDescriptor computes a type descriptor for the given type
-func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint) (*TypeDescriptor, error) {
+func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) (*TypeDescriptor, error) {
 	desc := &TypeDescriptor{
 		Type:         t,
 		SizeHints:    sizeHints,
 		MaxSizeHints: maxSizeHints,
+		TypeHints:    typeHints,
 	}
 
 	// Handle pointer types
@@ -170,12 +178,12 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 			return nil, err
 		}
 	case reflect.Array:
-		err := tc.buildArrayDescriptor(desc, t, sizeHints, maxSizeHints)
+		err := tc.buildArrayDescriptor(desc, t, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
 			return nil, err
 		}
 	case reflect.Slice:
-		err := tc.buildSliceDescriptor(desc, t, sizeHints, maxSizeHints)
+		err := tc.buildSliceDescriptor(desc, t, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
 			return nil, err
 		}
@@ -229,9 +237,23 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 
 // buildStructDescriptor builds a descriptor for struct types
 func (tc *TypeCache) buildStructDescriptor(desc *TypeDescriptor, t reflect.Type) error {
+	// Check for CompatibleUnion type before general struct handling
+	if IsCompatibleUnionType(t) {
+		err := tc.buildCompatibleUnionDescriptor(desc, t)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+
 	desc.Fields = make([]FieldDescriptor, t.NumField())
 	totalSize := int32(0)
 	isDynamic := false
+
+	// Check for progressive container detection
+	hasAnyIndexTag := false
+	allFieldsHaveIndex := true
+	fieldIndices := make(map[uint16]bool)
 
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
@@ -240,6 +262,23 @@ func (tc *TypeCache) buildStructDescriptor(desc *TypeDescriptor, t reflect.Type)
 			Offset: field.Offset,
 			Index:  int16(i),
 			IsPtr:  field.Type.Kind() == reflect.Ptr,
+		}
+
+		// Get ssz-index tag
+		sszIndex, err := tc.dynssz.getSszIndexTag(&field)
+		if err != nil {
+			return err
+		}
+
+		if sszIndex != nil {
+			fieldDesc.SszIndex = *sszIndex
+			hasAnyIndexTag = true
+			if fieldIndices[*sszIndex] {
+				return fmt.Errorf("duplicate ssz-index %d found in field %s", *sszIndex, field.Name)
+			}
+			fieldIndices[*sszIndex] = true
+		} else {
+			allFieldsHaveIndex = false
 		}
 
 		// Get size hints from tags
@@ -253,8 +292,13 @@ func (tc *TypeCache) buildStructDescriptor(desc *TypeDescriptor, t reflect.Type)
 			return err
 		}
 
+		typeHints, err := tc.dynssz.getSszTypeTag(&field)
+		if err != nil {
+			return err
+		}
+
 		// Build type descriptor for field
-		fieldDesc.Type, err = tc.getTypeDescriptor(field.Type, sizeHints, maxSizeHints)
+		fieldDesc.Type, err = tc.getTypeDescriptor(field.Type, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
 			return err
 		}
@@ -284,6 +328,39 @@ func (tc *TypeCache) buildStructDescriptor(desc *TypeDescriptor, t reflect.Type)
 		desc.Fields[i] = fieldDesc
 	}
 
+	// Determine if this is a progressive container
+	// A container is progressive if it has ssz-index annotations on fields
+	// If it's progressive, all fields must have increasing ssz-index tags
+	if hasAnyIndexTag {
+		if !allFieldsHaveIndex {
+			return fmt.Errorf("progressive container requires all fields to have ssz-index tags")
+		}
+
+		// For progressive containers, ensure all ssz-index values are properly set
+		// and validate they are in increasing order
+		for i := 0; i < len(desc.Fields); i++ {
+			field := &desc.Fields[i]
+			structField := t.Field(i)
+			if sszIndex, err := tc.dynssz.getSszIndexTag(&structField); err != nil {
+				return err
+			} else if sszIndex != nil {
+				field.SszIndex = *sszIndex
+			} else {
+				return fmt.Errorf("progressive container field %s missing ssz-index tag", field.Name)
+			}
+		}
+
+		// Verify indices are increasing
+		for i := 1; i < len(desc.Fields); i++ {
+			if desc.Fields[i].SszIndex <= desc.Fields[i-1].SszIndex {
+				return fmt.Errorf("progressive container requires increasing ssz-index values (field %s has index %d, previous field has %d)",
+					desc.Fields[i].Name, desc.Fields[i].SszIndex, desc.Fields[i-1].SszIndex)
+			}
+		}
+
+		desc.IsProgressiveContainer = true
+	}
+
 	if isDynamic {
 		desc.Size = -1
 	} else {
@@ -293,8 +370,42 @@ func (tc *TypeCache) buildStructDescriptor(desc *TypeDescriptor, t reflect.Type)
 	return nil
 }
 
+// buildCompatibleUnionDescriptor builds a descriptor for CompatibleUnion types
+func (tc *TypeCache) buildCompatibleUnionDescriptor(desc *TypeDescriptor, t reflect.Type) error {
+	// CompatibleUnion is always dynamic size (1 byte for type + variable data)
+	desc.Size = -1
+	desc.IsCompatibleUnion = true
+
+	// Try to extract the descriptor type from the generic type parameter
+	descriptorType, err := tc.extractGenericTypeParameter(t)
+	if err != nil {
+		return err
+	}
+
+	// Populate union variants immediately since we have the descriptor type
+	desc.UnionVariants = make(map[uint8]*TypeDescriptor)
+
+	// Extract variant information from descriptor struct (includes SSZ annotations)
+	variantInfo, err := ExtractUnionDescriptorInfo(descriptorType, tc.dynssz)
+	if err != nil {
+		return fmt.Errorf("failed to extract union variant info: %w", err)
+	}
+
+	// Build type descriptors for each variant using the extracted information
+	for variantIndex, info := range variantInfo {
+		variantDesc, err := tc.getTypeDescriptor(info.Type, info.SizeHints, info.MaxSizeHints, info.TypeHints)
+		if err != nil {
+			return fmt.Errorf("failed to build descriptor for union variant %d: %w", variantIndex, err)
+		}
+
+		desc.UnionVariants[variantIndex] = variantDesc
+	}
+
+	return nil
+}
+
 // buildArrayDescriptor builds a descriptor for array types
-func (tc *TypeCache) buildArrayDescriptor(desc *TypeDescriptor, t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint) error {
+func (tc *TypeCache) buildArrayDescriptor(desc *TypeDescriptor, t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) error {
 	childSizeHints := []SszSizeHint{}
 	if len(sizeHints) > 1 {
 		childSizeHints = sizeHints[1:]
@@ -305,12 +416,17 @@ func (tc *TypeCache) buildArrayDescriptor(desc *TypeDescriptor, t reflect.Type, 
 		childMaxSizeHints = maxSizeHints[1:]
 	}
 
+	childTypeHints := []SszTypeHint{}
+	if len(typeHints) > 1 {
+		childTypeHints = typeHints[1:]
+	}
+
 	fieldType := t.Elem()
 	if fieldType == byteType {
 		desc.IsByteArray = true
 	}
 
-	elemDesc, err := tc.getTypeDescriptor(fieldType, childSizeHints, childMaxSizeHints)
+	elemDesc, err := tc.getTypeDescriptor(fieldType, childSizeHints, childMaxSizeHints, childTypeHints)
 	if err != nil {
 		return err
 	}
@@ -334,7 +450,7 @@ func (tc *TypeCache) buildArrayDescriptor(desc *TypeDescriptor, t reflect.Type, 
 }
 
 // buildSliceDescriptor builds a descriptor for slice types
-func (tc *TypeCache) buildSliceDescriptor(desc *TypeDescriptor, t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint) error {
+func (tc *TypeCache) buildSliceDescriptor(desc *TypeDescriptor, t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) error {
 	childSizeHints := []SszSizeHint{}
 	if len(sizeHints) > 1 {
 		childSizeHints = sizeHints[1:]
@@ -345,12 +461,17 @@ func (tc *TypeCache) buildSliceDescriptor(desc *TypeDescriptor, t reflect.Type, 
 		childMaxSizeHints = maxSizeHints[1:]
 	}
 
+	childTypeHints := []SszTypeHint{}
+	if len(typeHints) > 1 {
+		childTypeHints = typeHints[1:]
+	}
+
 	fieldType := t.Elem()
 	if fieldType == byteType {
 		desc.IsByteArray = true
 	}
 
-	elemDesc, err := tc.getTypeDescriptor(fieldType, childSizeHints, childMaxSizeHints)
+	elemDesc, err := tc.getTypeDescriptor(fieldType, childSizeHints, childMaxSizeHints, childTypeHints)
 	if err != nil {
 		return err
 	}
@@ -484,4 +605,31 @@ func (tc *TypeCache) RemoveAllTypes() {
 
 	// Create new map to clear all references
 	tc.descriptors = make(map[reflect.Type]*TypeDescriptor)
+}
+
+// extractGenericTypeParameter extracts the generic type parameter from a CompatibleUnion type.
+// This uses reflection to call the GetDescriptorType method on the union type.
+func (tc *TypeCache) extractGenericTypeParameter(unionType reflect.Type) (reflect.Type, error) {
+	// Create a zero value of the union type to call methods on
+	unionValue := reflect.New(unionType)
+
+	// Get the GetDescriptorType method
+	method := unionValue.MethodByName("GetDescriptorType")
+	if !method.IsValid() {
+		return nil, fmt.Errorf("GetDescriptorType method not found on type %s", unionType)
+	}
+
+	// Call the method to get the descriptor type
+	results := method.Call(nil)
+	if len(results) == 0 {
+		return nil, fmt.Errorf("GetDescriptorType returned no results")
+	}
+
+	// Extract the reflect.Type from the result
+	descriptorType, ok := results[0].Interface().(reflect.Type)
+	if !ok {
+		return nil, fmt.Errorf("GetDescriptorType did not return a reflect.Type")
+	}
+
+	return descriptorType, nil
 }
