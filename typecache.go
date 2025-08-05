@@ -393,15 +393,12 @@ func (tc *TypeCache) buildStringDescriptor(desc *TypeDescriptor, sizeHints []Ssz
 		desc.Size = -1
 	}
 
-	// Strings simply have to be determined if they dynamic or not.
-	if desc.Size < 0 {
-		// Dynamic strings might have spec values
-		if len(sizeHints) > 0 && sizeHints[0].SpecVal {
-			desc.HasDynamicSize = true
-		}
-		if len(maxSizeHints) > 0 && maxSizeHints[0].SpecVal {
-			desc.HasDynamicMax = true
-		}
+	// Dynamic strings might have spec values
+	if len(sizeHints) > 0 && sizeHints[0].SpecVal {
+		desc.HasDynamicSize = true
+	}
+	if len(maxSizeHints) > 0 && maxSizeHints[0].SpecVal {
+		desc.HasDynamicMax = true
 	}
 
 	return nil
