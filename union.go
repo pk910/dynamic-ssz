@@ -19,14 +19,24 @@ import (
 //
 // Usage:
 //
-//	type MyUnionDescriptor struct {
-//	    Variant1 SomeType  // union index 0
-//	    Variant2 OtherType // union index 1
+//	type UnionExecutionPayload = dynssz.CompatibleUnion[struct {
+//	    ExecutionPayload
+//	    ExecutionPayloadWithBlobs
+//	}]
+//
+//	type BlockWithPayload struct {
+//	    Slot          uint64
+//	    ExecutionData UnionExecutionPayload
 //	}
 //
-//	union := CompatibleUnion[MyUnionDescriptor]{
-//	    unionType: 0,
-//	    data: SomeType{...},
+//	block := BlockWithPayload{
+//	    Slot: 123,
+//	    ExecutionData: UnionExecutionPayload{
+//	        Variant: 0,
+//	        Data: ExecutionPayload{
+//	            ...
+//	        },
+//	    },
 //	}
 type CompatibleUnion[T any] struct {
 	Variant uint8
@@ -60,7 +70,7 @@ func IsCompatibleUnionType(t reflect.Type) bool {
 
 	// For generic types, Name() includes type parameters, e.g. "CompatibleUnion[T]"
 	// So we need to check if it starts with "CompatibleUnion["
-	return t.PkgPath() == compatibleUnionType.PkgPath() && 
+	return t.PkgPath() == compatibleUnionType.PkgPath() &&
 		strings.HasPrefix(t.Name(), "CompatibleUnion[")
 }
 
