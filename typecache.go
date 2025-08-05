@@ -379,11 +379,11 @@ func (tc *TypeCache) buildSliceDescriptor(desc *TypeDescriptor, t reflect.Type, 
 // buildStringDescriptor builds a descriptor for string types
 func (tc *TypeCache) buildStringDescriptor(desc *TypeDescriptor, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint) error {
 	desc.IsString = true
-	
+
 	// Apply size hints
 	desc.SizeHints = sizeHints
 	desc.MaxSizeHints = maxSizeHints
-	
+
 	// Check if we have a size hint to make this a fixed-size string
 	if len(sizeHints) > 0 && !sizeHints[0].Dynamic && sizeHints[0].Size > 0 {
 		// Fixed-size string
@@ -392,9 +392,8 @@ func (tc *TypeCache) buildStringDescriptor(desc *TypeDescriptor, sizeHints []Ssz
 		// Dynamic string (default)
 		desc.Size = -1
 	}
-	
-	// Strings don't have dynamic size or max in the same way as slices/arrays
-	// They're either fixed-size (with ssz-size) or dynamic (default)
+
+	// Strings simply have to be determined if they dynamic or not.
 	if desc.Size < 0 {
 		// Dynamic strings might have spec values
 		if len(sizeHints) > 0 && sizeHints[0].SpecVal {
@@ -404,7 +403,7 @@ func (tc *TypeCache) buildStringDescriptor(desc *TypeDescriptor, sizeHints []Ssz
 			desc.HasDynamicMax = true
 		}
 	}
-	
+
 	return nil
 }
 
