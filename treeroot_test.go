@@ -54,7 +54,7 @@ var treerootTestMatrix = []struct {
 			F3 []uint16 `ssz-size:"5"` // static field due to tag
 			F4 uint32
 		}{true, []uint8{1, 1, 1, 1}, []uint16{2, 2, 2, 2}, 3},
-		fromHex("0xdf5e70a7c5c545445d8adced00e0d531b2101fcb5e43158621a256434423ded9"),
+		fromHex("0xcb141fb9e033499344f568ea05a6a77ada886fc6e856ece01ae5a329e184fbd1"),
 	},
 	{
 		struct {
@@ -120,7 +120,7 @@ var treerootTestMatrix = []struct {
 		struct {
 			F1 [][]uint16 `ssz-size:"?,2" ssz-max:"10"`
 		}{[][]uint16{{2, 3}, {4, 5}, {8, 9}, {10, 11}}},
-		fromHex("0xc32aa2ec48fe03bd08bb351ae8c370ba19dc7e20551e5ca56c0730de5651293d"),
+		fromHex("0x253a3f3ffab684c2d4f4930b7923f31aadc3eff94b3eb8b4b7b9aa1363efcf52"),
 	},
 }
 

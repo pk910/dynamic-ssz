@@ -326,12 +326,29 @@ func (d *DynSsz) buildRootFromSlice(sourceType *TypeDescriptor, sourceValue refl
 		hh.Append(sourceValue.Bytes())
 		hh.FillUpTo32()
 		itemSize = 1
+	case reflect.Uint16:
+		for i := 0; i < sliceLen; i++ {
+			fieldValue := sourceValue.Index(i)
+
+			hh.AppendUint16(uint16(fieldValue.Uint()))
+		}
+		hh.FillUpTo32()
+		itemSize = 2
+	case reflect.Uint32:
+		for i := 0; i < sliceLen; i++ {
+			fieldValue := sourceValue.Index(i)
+
+			hh.AppendUint32(uint32(fieldValue.Uint()))
+		}
+		hh.FillUpTo32()
+		itemSize = 4
 	case reflect.Uint64:
 		for i := 0; i < sliceLen; i++ {
 			fieldValue := sourceValue.Index(i)
 
 			hh.AppendUint64(uint64(fieldValue.Uint()))
 		}
+		hh.FillUpTo32()
 		itemSize = 8
 	default:
 		// For other types, use the central dispatcher
