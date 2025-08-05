@@ -55,8 +55,8 @@ func NewCompatibleUnion[T any](variantIndex uint8, data interface{}) (*Compatibl
 // GetDescriptorType returns the reflect.Type of the descriptor struct T.
 // This allows external code to access the descriptor type information.
 func (u *CompatibleUnion[T]) GetDescriptorType() reflect.Type {
-	var zero T
-	return reflect.TypeOf(zero)
+	var zero *T
+	return reflect.TypeOf(zero).Elem()
 }
 
 // compatibleUnionType is a reference type for comparison
