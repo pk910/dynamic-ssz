@@ -13,7 +13,11 @@ Dynamic SSZ supports only SSZ-compatible types as defined in the SSZ specificati
 ### Composite Types
 - **Arrays**: Fixed-size arrays of supported types
 - **Slices**: Variable-size slices of supported types (require `ssz-size` or `ssz-max` tags)
+- **Progressive Lists**: Lists with progressive merkleization (EIP-7916) using `ssz-type:"progressive-list"`
+- **Progressive Bitlists**: Bitlists with progressive merkleization (EIP-7916) using `ssz-type:"progressive-bitlist"`
 - **Structs**: Structs containing only supported types
+- **Progressive Containers**: Containers with active field tracking (EIP-7495) using `ssz-index` tags
+- **Compatible Unions**: Generic union types (EIP-7495) with variant selection
 - **Pointers**: Pointers to structs (nil pointers will be filled with empty instances of the referred type)
 
 ### Not Supported
@@ -358,6 +362,105 @@ type MyStruct struct {
 ```
 
 Multi-dimensional slices are fully supported for all operations including hash tree root calculations, encoding, and decoding. This includes complex types like `[][]CustomType` and higher dimensional slices such as `[][][]byte`.
+
+## Progressive Merkleization (EIP-7916 & EIP-7495)
+
+Dynamic SSZ supports progressive merkleization features as defined in EIP-7916 and EIP-7495, enabling efficient incremental hashing for growing data structures.
+
+### Progressive Lists (EIP-7916)
+
+Progressive lists use progressive merkleization for better performance when appending elements to large lists.
+
+```go
+type MyStruct struct {
+    Items []uint32 `ssz-type:"progressive-list"`
+}
+```
+
+**Key Features:**
+- **Progressive Hashing**: Only rehashes the minimal tree path when elements are added
+- **Performance**: Significantly faster for large lists that grow incrementally
+- **Compatibility**: Standard SSZ serialization format, progressive hashing only affects merkleization
+
+### Progressive Bitlists (EIP-7916)
+
+Progressive bitlists apply progressive merkleization to bitlist structures for efficient bit manipulation.
+
+```go
+type MyStruct struct {
+    Flags []byte `ssz-type:"progressive-bitlist"`
+}
+```
+
+**Key Features:**
+- **Bitlist Format**: Standard SSZ bitlist with delimiter bit
+- **Progressive Hashing**: Optimized merkleization for growing bitlists
+- **Use Cases**: Large validator participation bitfields, attestation aggregation
+
+### Progressive Containers (EIP-7495)
+
+Progressive containers track active fields using `ssz-index` tags, enabling efficient partial updates.
+
+```go
+type BeaconBlock struct {
+    Slot        uint64 `ssz-index:"0"`
+    ProposerIndex uint64 `ssz-index:"1"`
+    ParentRoot  [32]byte `ssz-index:"2"`
+    StateRoot   [32]byte `ssz-index:"3"`
+    // Additional fields can be added with higher indices
+}
+```
+
+**Key Features:**
+- **Active Fields**: Automatically tracks which fields are present using bitlist
+- **Field Indexing**: Uses `ssz-index` tags to define field positions, indexes must be in icreasing order
+- **Progressive Merkleization**: Efficient hashing with active field mixing
+- **Forward Compatibility**: New fields can be added without breaking existing code
+
+**Active Fields Generation:**
+- The highest `ssz-index` determines the bitlist size
+- Each field with an `ssz-index` sets the corresponding bit to 1
+- The bitlist includes a delimiter bit at the highest index position
+
+### Compatible Unions (EIP-7495)
+
+Compatible unions provide type-safe variant types with automatic selector management.
+
+```go
+// Define possible variants
+type ExecutionPayload struct {
+    ParentHash [32]byte
+    // ... other fields
+}
+
+type ExecutionPayloadWithBlobs struct {
+    ParentHash [32]byte
+    BlobKzgCommitments [][]byte
+    // ... other fields
+}
+
+// Union type
+type MyUnion = CompatibleUnion[struct{
+    ExecutionPayload
+    ExecutionPayloadWithBlobs
+}]
+
+// Usage
+union := MyUnion{
+    Variant: 1,
+    Data: ExecutionPayloadWithBlobs{
+        ParentHash: [32]byte{1, 2, 3},
+        BlobKzgCommitments: [][]byte{{4, 5, 6}},
+    },
+}
+```
+
+**Key Features:**
+- **Type Safety**: Generic type parameter ensures compile-time variant validation
+- **Automatic Selectors**: Selector values assigned based on variant position
+- **Progressive Container Support**: Selector indexing starts at 0 if first variant is ProgressiveContainer
+- **Hash Tree Root**: Only hashes the data, selector is not mixed into the root
+- **Serialization**: Includes 1-byte selector + serialized data
 
 ## Error Handling
 

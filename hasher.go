@@ -562,6 +562,15 @@ func (h *Hasher) merkleizeProgressiveImpl(dst []byte, chunks []byte, depth uint8
 		leftRoot = h.merkleizeProgressiveImpl(leftChunks[:0], leftChunks, depth+2)
 	}
 
+	if len(h.tmp) < 64 {
+		if len(h.tmp) < 32 {
+			padNeeded := 32 - len(h.tmp)
+			h.tmp = append(h.tmp, zeroBytes[:padNeeded]...)
+		}
+		padNeeded := 64 - len(h.tmp)
+		h.tmp = append(h.tmp, zeroBytes[:padNeeded]...)
+	}
+
 	// PairNode(left, right) - hash(left, right)
 	copy(h.tmp[:32], leftRoot)
 	copy(h.tmp[32:], rightRoot)
