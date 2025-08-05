@@ -167,6 +167,17 @@ var treerootTestMatrix = []struct {
 		}(),
 		fromHex("0xba990efa7343179a41d01614759e0ab696a8869fade3f576a8abe6e9880eeaa3"),
 	},
+
+	// Progressive container tests - these should have different hashes than regular containers
+	{
+		struct {
+			Field0 uint64 `ssz-index:"0"`
+			Field1 uint32 `ssz-index:"1"`
+			Field2 bool   `ssz-index:"4"`
+			Field3 uint16 `ssz-index:"5"`
+		}{12345, 67890, true, 999},
+		fromHex("0x4ea4845cff00bd7de3b59e8a7517f085a4ef171453b3d5a4d41bd59cc1144d49"),
+	},
 }
 
 func TestTreeRoot(t *testing.T) {

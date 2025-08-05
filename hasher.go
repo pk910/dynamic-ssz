@@ -486,6 +486,30 @@ func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 	h.buf = append(h.buf[:indx], input[:32]...)
 }
 
+// MerkleizeProgressiveWithMixin is used to merkleize progressive lists with length mixin
+func (h *Hasher) MerkleizeProgressiveWithActiveFields(indx int, activeFields []byte) {
+	h.FillUpTo32()
+	input := h.buf[indx:]
+
+	// progressive merkleize the input
+	input = h.merkleizeProgressiveImpl(input[:0], input, 0)
+
+	// mixin with the active fields bitlist
+	h.tmp, _ = parseBitlist(h.tmp[:0], activeFields)
+
+	// merkleize the content with mix in length
+	input = append(input, h.tmp...)
+	if rest := len(h.tmp) % 32; rest != 0 {
+		// pad zero bytes to the left
+		input = append(input, zeroBytes[:32-rest]...)
+	}
+
+	// input is of the form [<progressive_root><active_fields>] of 64 bytes
+	h.hash(input, input)
+
+	h.buf = append(h.buf[:indx], input[:32]...)
+}
+
 func (h *Hasher) merkleizeProgressiveImpl(dst []byte, chunks []byte, depth uint8) []byte {
 	count := uint64((len(chunks) + 31) / 32)
 

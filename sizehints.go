@@ -221,3 +221,20 @@ func (d *DynSsz) getSszTypeTag(field *reflect.StructField) ([]SszTypeHint, error
 
 	return sszTypeHints, nil
 }
+
+func (d *DynSsz) getSszIndexTag(field *reflect.StructField) (*uint16, error) {
+	var sszIndex *uint16
+
+	// parse `ssz-index` first, these are the default values used by fastssz
+	if fieldSszIndexStr, fieldHasSszIndex := field.Tag.Lookup("ssz-index"); fieldHasSszIndex {
+		sszSizeInt, err := strconv.ParseUint(fieldSszIndexStr, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("error parsing ssz-index tag for '%v' field: %v", field.Name, err)
+		}
+
+		index := uint16(sszSizeInt)
+		sszIndex = &index
+	}
+
+	return sszIndex, nil
+}

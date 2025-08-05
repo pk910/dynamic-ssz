@@ -162,6 +162,9 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 //   - All field roots are collected in order
 //   - The collection is Merkleized to produce the struct's root
 //
+// For progressive containers, the merkleization is done using the progressive
+// algorithm with active fields mixing.
+//
 // The function uses the pre-computed TypeDescriptor to efficiently iterate through
 // fields without repeated reflection calls.
 //
@@ -194,7 +197,17 @@ func (d *DynSsz) buildRootFromStruct(sourceType *TypeDescriptor, sourceValue ref
 			return err
 		}
 	}
-	hh.Merkleize(hashIndex)
+
+	// Use progressive merkleization for progressive containers
+	if sourceType.IsProgressiveContainer {
+		// Get active fields based on the struct value
+		activeFields := d.getActiveFields(sourceType)
+
+		// merkleize progressively with active fields
+		hh.MerkleizeProgressiveWithActiveFields(hashIndex, activeFields)
+	} else {
+		hh.Merkleize(hashIndex)
+	}
 
 	return nil
 }
@@ -385,4 +398,47 @@ func (d *DynSsz) buildRootFromSlice(sourceType *TypeDescriptor, sourceValue refl
 	}
 
 	return nil
+}
+
+// getActiveFields returns the active fields for a progressive container.
+// Per the specification: Given a value of type ProgressiveContainer(active_fields)
+// return value.__class__.active_fields.
+//
+// The active fields are determined by the ssz-index tags in the struct definition:
+// - The highest ssz-index determines the size of the bitlist
+// - Each field with an ssz-index has its corresponding bit set to 1
+// - All other bits are set to 0
+//
+// Parameters:
+//   - sourceType: The TypeDescriptor containing progressive container metadata
+//
+// Returns:
+//   - []byte: The active fields bitlist as bytes (≤256 bits, so max 32 bytes)
+func (d *DynSsz) getActiveFields(sourceType *TypeDescriptor) []byte {
+	// Find the highest ssz-index to determine bitlist size
+	maxIndex := uint16(0)
+	for _, field := range sourceType.Fields {
+		if field.SszIndex > maxIndex {
+			maxIndex = field.SszIndex
+		}
+	}
+
+	// Create bitlist with enough bytes to hold maxIndex+1 bits
+	bytesNeeded := (int(maxIndex) + 8) / 8 // +7 for rounding up, +1 already included in maxIndex
+	activeFields := make([]byte, bytesNeeded)
+
+	// Set most significant bit for length bit.
+	i := uint8(1 << (maxIndex % 8))
+	activeFields[maxIndex/8] |= i
+
+	// Set bit for each field that has an ssz-index
+	for _, field := range sourceType.Fields {
+		byteIndex := field.SszIndex / 8
+		bitIndex := field.SszIndex % 8
+		if int(byteIndex) < len(activeFields) {
+			activeFields[byteIndex] |= (1 << bitIndex)
+		}
+	}
+
+	return activeFields
 }

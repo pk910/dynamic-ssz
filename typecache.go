@@ -18,23 +18,24 @@ type TypeCache struct {
 
 // TypeDescriptor represents a cached, optimized descriptor for a type's SSZ encoding/decoding
 type TypeDescriptor struct {
-	Kind                reflect.Kind
-	Type                reflect.Type
-	Size                int32                // SSZ size (-1 if dynamic)
-	Len                 uint32               // Length of array/slice
-	Fields              []FieldDescriptor    // For structs
-	DynFields           []DynFieldDescriptor // Dynamic struct fields
-	ElemDesc            *TypeDescriptor      // For slices/arrays
-	SizeHints           []SszSizeHint        // Size hints from tags
-	MaxSizeHints        []SszMaxSizeHint     // Max size hints from tags
-	TypeHints           []SszTypeHint        // Type hints from tags
-	HasDynamicSize      bool                 // Whether this type uses dynamic spec size value that differs from the default
-	HasDynamicMax       bool                 // Whether this type uses dynamic spec max value that differs from the default
-	IsFastSSZMarshaler  bool                 // Whether the type implements fastssz.Marshaler
-	IsFastSSZHasher     bool                 // Whether the type implements fastssz.HashRoot
-	HasHashTreeRootWith bool                 // Whether the type implements HashTreeRootWith
-	IsPtr               bool                 // Whether this is a pointer type
-	IsByteArray         bool                 // Whether this is a byte array
+	Kind                   reflect.Kind
+	Type                   reflect.Type
+	Size                   int32                // SSZ size (-1 if dynamic)
+	Len                    uint32               // Length of array/slice
+	Fields                 []FieldDescriptor    // For structs
+	DynFields              []DynFieldDescriptor // Dynamic struct fields
+	ElemDesc               *TypeDescriptor      // For slices/arrays
+	SizeHints              []SszSizeHint        // Size hints from tags
+	MaxSizeHints           []SszMaxSizeHint     // Max size hints from tags
+	TypeHints              []SszTypeHint        // Type hints from tags
+	HasDynamicSize         bool                 // Whether this type uses dynamic spec size value that differs from the default
+	HasDynamicMax          bool                 // Whether this type uses dynamic spec max value that differs from the default
+	IsFastSSZMarshaler     bool                 // Whether the type implements fastssz.Marshaler
+	IsFastSSZHasher        bool                 // Whether the type implements fastssz.HashRoot
+	HasHashTreeRootWith    bool                 // Whether the type implements HashTreeRootWith
+	IsPtr                  bool                 // Whether this is a pointer type
+	IsByteArray            bool                 // Whether this is a byte array
+	IsProgressiveContainer bool                 // Whether this is a progressive container
 }
 
 // FieldDescriptor represents a cached descriptor for a struct field
@@ -46,6 +47,7 @@ type FieldDescriptor struct {
 	Size      int32           // SSZ size (-1 if dynamic)
 	IsPtr     bool            // Whether field is a pointer
 	IsDynamic bool            // Whether field has dynamic size
+	SszIndex  uint16          // SSZ index for progressive containers
 }
 
 // DynFieldDescriptor represents a dynamic field descriptor for a struct
@@ -233,6 +235,11 @@ func (tc *TypeCache) buildStructDescriptor(desc *TypeDescriptor, t reflect.Type)
 	totalSize := int32(0)
 	isDynamic := false
 
+	// Check for progressive container detection
+	hasAnyIndexTag := false
+	allFieldsHaveIndex := true
+	fieldIndices := make(map[uint16]bool)
+
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		fieldDesc := FieldDescriptor{
@@ -240,6 +247,23 @@ func (tc *TypeCache) buildStructDescriptor(desc *TypeDescriptor, t reflect.Type)
 			Offset: field.Offset,
 			Index:  int16(i),
 			IsPtr:  field.Type.Kind() == reflect.Ptr,
+		}
+
+		// Get ssz-index tag
+		sszIndex, err := tc.dynssz.getSszIndexTag(&field)
+		if err != nil {
+			return err
+		}
+
+		if sszIndex != nil {
+			fieldDesc.SszIndex = *sszIndex
+			hasAnyIndexTag = true
+			if fieldIndices[*sszIndex] {
+				return fmt.Errorf("duplicate ssz-index %d found in field %s", *sszIndex, field.Name)
+			}
+			fieldIndices[*sszIndex] = true
+		} else {
+			allFieldsHaveIndex = false
 		}
 
 		// Get size hints from tags
@@ -287,6 +311,39 @@ func (tc *TypeCache) buildStructDescriptor(desc *TypeDescriptor, t reflect.Type)
 
 		totalSize += sszSize
 		desc.Fields[i] = fieldDesc
+	}
+
+	// Determine if this is a progressive container
+	// A container is progressive if it has ssz-index annotations on fields
+	// If it's progressive, all fields must have increasing ssz-index tags
+	if hasAnyIndexTag {
+		if !allFieldsHaveIndex {
+			return fmt.Errorf("progressive container requires all fields to have ssz-index tags")
+		}
+
+		// For progressive containers, ensure all ssz-index values are properly set
+		// and validate they are in increasing order
+		for i := 0; i < len(desc.Fields); i++ {
+			field := &desc.Fields[i]
+			structField := t.Field(i)
+			if sszIndex, err := tc.dynssz.getSszIndexTag(&structField); err != nil {
+				return err
+			} else if sszIndex != nil {
+				field.SszIndex = *sszIndex
+			} else {
+				return fmt.Errorf("progressive container field %s missing ssz-index tag", field.Name)
+			}
+		}
+
+		// Verify indices are increasing
+		for i := 1; i < len(desc.Fields); i++ {
+			if desc.Fields[i].SszIndex <= desc.Fields[i-1].SszIndex {
+				return fmt.Errorf("progressive container requires increasing ssz-index values (field %s has index %d, previous field has %d)",
+					desc.Fields[i].Name, desc.Fields[i].SszIndex, desc.Fields[i-1].SszIndex)
+			}
+		}
+
+		desc.IsProgressiveContainer = true
 	}
 
 	if isDynamic {

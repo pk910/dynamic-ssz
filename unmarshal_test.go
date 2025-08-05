@@ -121,6 +121,26 @@ var unmarshalTestMatrix = []struct {
 		}(),
 		fromHex("04000000244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244901"),
 	},
+
+	// Progressive container tests
+	{
+		struct {
+			Field0 uint64 `ssz-index:"0"`
+			Field1 uint32 `ssz-index:"1"`
+			Field2 bool   `ssz-index:"2"`
+			Field3 uint16 `ssz-index:"3"`
+		}{12345, 67890, true, 999},
+		fromHex("0x39300000000000003209010001e703"),
+	},
+	{
+		struct {
+			Field0 uint64 `ssz-index:"0"`
+			Field1 uint32 `ssz-index:"1"`
+			Field2 bool   `ssz-index:"2"`
+			Field3 uint16 `ssz-index:"3"`
+		}{0, 0, false, 0},
+		fromHex("0x000000000000000000000000000000"),
+	},
 }
 
 func TestUnmarshal(t *testing.T) {
