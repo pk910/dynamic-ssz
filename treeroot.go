@@ -121,6 +121,11 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 				if err != nil {
 					return err
 				}
+			case reflect.String:
+				err := d.buildRootFromString(sourceType, sourceValue, hh)
+				if err != nil {
+					return err
+				}
 			case reflect.Bool:
 				hh.PutBool(sourceValue.Bool())
 			case reflect.Uint8:
@@ -131,11 +136,6 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 				hh.PutUint32(uint32(sourceValue.Uint()))
 			case reflect.Uint64:
 				hh.PutUint64(uint64(sourceValue.Uint()))
-			case reflect.String:
-				err := d.buildRootFromString(sourceType, sourceValue, hh, idt)
-				if err != nil {
-					return err
-				}
 			default:
 				return fmt.Errorf("unknown type: %v", sourceType)
 			}
@@ -340,12 +340,13 @@ func (d *DynSsz) buildRootFromSlice(sourceType *TypeDescriptor, sourceValue refl
 		itemSize = 8
 	case reflect.String:
 		// Handle []string to match [][]byte behavior
-		// When [][]byte doesn't have nested max size hints, it uses PutBytes
-		// So we do the same for []string to ensure they hash identically
 		for i := 0; i < sliceLen; i++ {
 			fieldValue := sourceValue.Index(i)
-			stringBytes := []byte(fieldValue.String())
-			hh.PutBytes(stringBytes)
+
+			err := d.buildRootFromString(fieldType, fieldValue, hh)
+			if err != nil {
+				return err
+			}
 		}
 	default:
 		// For other types, use the central dispatcher
@@ -392,10 +393,10 @@ func (d *DynSsz) buildRootFromSlice(sourceType *TypeDescriptor, sourceValue refl
 //
 // The function converts the string to bytes and then applies the appropriate
 // hashing strategy based on the string's size constraints.
-func (d *DynSsz) buildRootFromString(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher, idt int) error {
+func (d *DynSsz) buildRootFromString(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher) error {
 	// Convert string to bytes
 	stringBytes := []byte(sourceValue.String())
-	
+
 	if sourceType.Size > 0 {
 		// Fixed-size string: hash like a fixed-size byte array
 		fixedSize := int(sourceType.Size)
@@ -414,6 +415,6 @@ func (d *DynSsz) buildRootFromString(sourceType *TypeDescriptor, sourceValue ref
 		// Dynamic string without hints: hash as basic type
 		hh.PutBytes(stringBytes)
 	}
-	
+
 	return nil
 }

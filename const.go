@@ -8,4 +8,3 @@ import (
 )
 
 var byteType = reflect.TypeOf(byte(0))
-var stringType = reflect.TypeOf("")

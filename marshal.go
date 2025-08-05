@@ -81,6 +81,12 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 				return nil, err
 			}
 			buf = newBuf
+		case reflect.String:
+			newBuf, err := d.marshalString(sourceType, sourceValue, buf, idt)
+			if err != nil {
+				return nil, err
+			}
+			buf = newBuf
 		case reflect.Bool:
 			buf = marshalBool(buf, sourceValue.Bool())
 		case reflect.Uint8:
@@ -91,12 +97,6 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 			buf = marshalUint32(buf, uint32(sourceValue.Uint()))
 		case reflect.Uint64:
 			buf = marshalUint64(buf, uint64(sourceValue.Uint()))
-		case reflect.String:
-			newBuf, err := d.marshalString(sourceType, sourceValue, buf, idt)
-			if err != nil {
-				return nil, err
-			}
-			buf = newBuf
 		default:
 			return nil, fmt.Errorf("unknown type: %v", sourceType)
 		}
@@ -412,7 +412,7 @@ func (d *DynSsz) marshalDynamicSlice(sourceType *TypeDescriptor, sourceValue ref
 func (d *DynSsz) marshalString(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
 	// Convert string to []byte
 	stringBytes := []byte(sourceValue.String())
-	
+
 	// Check if this is a fixed-size string
 	if sourceType.Size > 0 {
 		// Fixed-size string: pad or truncate to exact size
@@ -432,6 +432,6 @@ func (d *DynSsz) marshalString(sourceType *TypeDescriptor, sourceValue reflect.V
 		// Dynamic string: append as-is
 		buf = append(buf, stringBytes...)
 	}
-	
+
 	return buf, nil
 }

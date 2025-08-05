@@ -86,6 +86,12 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 				return 0, err
 			}
 			consumedBytes = consumed
+		case reflect.String:
+			consumed, err := d.unmarshalString(targetType, targetValue, ssz, idt)
+			if err != nil {
+				return 0, err
+			}
+			consumedBytes = consumed
 
 		// primitive types
 		case reflect.Bool:
@@ -103,12 +109,6 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 		case reflect.Uint64:
 			targetValue.SetUint(uint64(unmarshallUint64(ssz)))
 			consumedBytes = 8
-		case reflect.String:
-			consumed, err := d.unmarshalString(targetType, targetValue, ssz, idt)
-			if err != nil {
-				return 0, err
-			}
-			consumedBytes = consumed
 
 		default:
 			return 0, fmt.Errorf("unknown type: %v", targetType)
@@ -504,7 +504,7 @@ func (d *DynSsz) unmarshalDynamicSlice(targetType *TypeDescriptor, targetValue r
 // without any trimming. For dynamic strings, all available bytes are used.
 func (d *DynSsz) unmarshalString(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
 	consumedBytes := 0
-	
+
 	// Handle fixed-size vs dynamic strings
 	if targetType.Size > 0 {
 		// Fixed-size string: read exact number of bytes
@@ -521,6 +521,6 @@ func (d *DynSsz) unmarshalString(targetType *TypeDescriptor, targetValue reflect
 		targetValue.SetString(string(ssz))
 		consumedBytes = len(ssz)
 	}
-	
+
 	return consumedBytes, nil
 }
