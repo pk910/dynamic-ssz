@@ -490,6 +490,12 @@ func (d *DynSsz) buildRootFromString(sourceType *TypeDescriptor, sourceValue ref
 		copy(paddedBytes, stringBytes)
 		// The rest is already zero-filled
 		hh.PutBytes(paddedBytes)
+	} else if len(sourceType.TypeHints) > 0 && sourceType.TypeHints[0].Type == SszProgressiveListType {
+		// Dynamic string as progressive list: hash as a list with length mixin
+		subIndex := hh.Index()
+		hh.Append(stringBytes)
+		hh.FillUpTo32()
+		hh.MerkleizeProgressiveWithMixin(subIndex, uint64(len(stringBytes)))
 	} else if len(sourceType.MaxSizeHints) > 0 && !sourceType.MaxSizeHints[0].NoValue {
 		// Dynamic string with max size hints: hash as a list with length mixin
 		subIndex := hh.Index()

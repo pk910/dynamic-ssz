@@ -227,6 +227,12 @@ var treerootTestMatrix = []struct {
 		}{"abcdefghijklmnopqrstuvwxyz123456"},
 		fromHex("0x6162636465666768696a6b6c6d6e6f707172737475767778797a313233343536"),
 	},
+	{
+		struct {
+			Data string `ssz-type:"progressive-list"`
+		}{"abcdefghijklmnopqrstuvwxyz123456"},
+		fromHex("0x41ba7be636dd08b32cca499285494e18f8849fbba06a7ced2d0d692777228e10"),
+	},
 }
 
 func TestTreeRoot(t *testing.T) {
