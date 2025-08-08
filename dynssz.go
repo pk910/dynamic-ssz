@@ -483,17 +483,17 @@ func (d *DynSsz) ValidateType(t reflect.Type) error {
 // Parameters:
 //   - source: Any Go value to be serialized. Must be a type supported by SSZ encoding.
 //   - w: The io.Writer destination for the SSZ-encoded output. Common writers include:
-//     - os.File for file output
-//     - net.Conn for network transmission  
-//     - bytes.Buffer for in-memory buffering
-//     - Any custom io.Writer implementation
+//   - os.File for file output
+//   - net.Conn for network transmission
+//   - bytes.Buffer for in-memory buffering
+//   - Any custom io.Writer implementation
 //
 // Returns:
 //   - error: An error if serialization fails due to:
-//     - Type validation errors
-//     - I/O write failures
-//     - Size calculation errors for dynamic fields
-//     - Unsupported type structures
+//   - Type validation errors
+//   - I/O write failures
+//   - Size calculation errors for dynamic fields
+//   - Unsupported type structures
 //
 // Example usage:
 //
@@ -566,27 +566,16 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error {
 	}
 
 	// Create writer context
-	ctx := newMarshalWriterContext(w, defaultBufferSize)
+	cw := newLimitedWriter(w)
+	ctx := newMarshalWriterContext(cw, defaultBufferSize)
 	if sizeTree != nil {
 		ctx.setSizeTree(sizeTree)
 	}
-
-	// Use counting writer to track bytes written
-	cw := newCountingWriter(w)
-	ctx.writer = cw
 
 	// Marshal using writer methods
 	err = d.marshalTypeWriter(ctx, sourceTypeDesc, sourceValue)
 	if err != nil {
 		return err
-	}
-
-	// Flush any remaining buffer
-	if len(ctx.buffer) > 0 {
-		_, err = ctx.writer.Write(ctx.buffer)
-		if err != nil {
-			return err
-		}
 	}
 
 	return nil
@@ -613,22 +602,22 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error {
 //     to a type compatible with SSZ decoding. The method will allocate memory for slices
 //     and initialize pointer fields as needed during decoding.
 //   - r: An io.Reader source containing the SSZ-encoded data. Common readers include:
-//     - os.File for file input
-//     - net.Conn for network reception
-//     - bytes.Reader for in-memory data
-//     - Any custom io.Reader implementation
+//   - os.File for file input
+//   - net.Conn for network reception
+//   - bytes.Reader for in-memory data
+//   - Any custom io.Reader implementation
 //   - size: The expected total size of the SSZ data in bytes. Special values:
-//     - Positive value: Exact number of bytes to read (enforced via limited reader)
-//     - -1: Size unknown, read until EOF
-//     - 0: Empty data expected
+//   - Positive value: Exact number of bytes to read (enforced via limited reader)
+//   - -1: Size unknown, read until EOF
+//   - 0: Empty data expected
 //
 // Returns:
 //   - error: An error if decoding fails due to:
-//     - I/O read failures
-//     - Invalid SSZ format or structure
-//     - Type mismatches between data and target
-//     - Unexpected EOF or excess data
-//     - Size constraint violations
+//   - I/O read failures
+//   - Invalid SSZ format or structure
+//   - Type mismatches between data and target
+//   - Unexpected EOF or excess data
+//   - Size constraint violations
 //
 // The method ensures strict compliance with SSZ specifications, validating that:
 //   - All expected bytes are consumed (when size is specified)
@@ -655,7 +644,7 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error {
 //
 //	// Read from network with unknown size
 //	conn, _ := net.Dial("tcp", "localhost:8080")
-//	var block phase0.BeaconBlock  
+//	var block phase0.BeaconBlock
 //	err = ds.UnmarshalSSZReader(&block, conn, -1)
 func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int64) error {
 	targetType := reflect.TypeOf(target)
@@ -676,26 +665,27 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int64) error {
 		return err
 	}
 
-	// Create reader context
-	ctx := newUnmarshalReaderContext(defaultBufferSize)
+	// Create reader context with limitedReader
+	ctx := newUnmarshalReaderContext(r, defaultBufferSize)
 
-	// Use limited reader if size is known
-	var reader io.Reader = r
+	// Push initial limit if size is known
 	if size >= 0 {
-		reader = newLimitedReader(r, size)
+		ctx.limitedReader.pushLimit(uint64(size))
 	}
 
 	// Unmarshal using reader methods
-	err = d.unmarshalTypeReader(ctx, reader, targetTypeDesc, targetValue)
+	err = d.unmarshalTypeReader(ctx, targetTypeDesc, targetValue)
+	if size >= 0 {
+		consumedBytes := ctx.limitedReader.popLimit()
+		if consumedBytes != uint64(size) {
+			return fmt.Errorf("did not consume full data (consumed: %v, expected: %v): %w", consumedBytes, size, err)
+		}
+	}
+	if err == io.EOF {
+		err = nil
+	}
 	if err != nil {
 		return err
-	}
-
-	// Verify all data was consumed if using limited reader
-	if lr, ok := reader.(*limitedReader); ok && size >= 0 {
-		if lr.BytesRead() != size {
-			return fmt.Errorf("did not consume full data (consumed: %v, expected: %v)", lr.BytesRead(), size)
-		}
 	}
 
 	return nil

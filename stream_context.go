@@ -15,14 +15,14 @@ type dynamicSizeNode struct {
 
 // marshalWriterContext holds context for streaming marshal operations
 type marshalWriterContext struct {
-	writer      io.Writer
+	writer      *limitedWriter
 	buffer      []byte
 	sizeTree    *dynamicSizeNode
 	currentNode *dynamicSizeNode
 }
 
 // newMarshalWriterContext creates a new marshal writer context
-func newMarshalWriterContext(w io.Writer, bufSize int) *marshalWriterContext {
+func newMarshalWriterContext(w *limitedWriter, bufSize int) *marshalWriterContext {
 	if bufSize <= 0 {
 		bufSize = defaultBufferSize
 	}
@@ -64,15 +64,17 @@ func (ctx *marshalWriterContext) getChildSize(index int) (uint32, bool) {
 
 // unmarshalReaderContext holds context for streaming unmarshal operations
 type unmarshalReaderContext struct {
-	buffer []byte
+	buffer        []byte
+	limitedReader *limitedReader
 }
 
 // newUnmarshalReaderContext creates a new unmarshal reader context
-func newUnmarshalReaderContext(bufSize int) *unmarshalReaderContext {
+func newUnmarshalReaderContext(reader io.Reader, bufSize int) *unmarshalReaderContext {
 	if bufSize <= 0 {
 		bufSize = defaultBufferSize
 	}
 	return &unmarshalReaderContext{
-		buffer: make([]byte, bufSize),
+		buffer:        make([]byte, bufSize),
+		limitedReader: newLimitedReader(reader),
 	}
 }

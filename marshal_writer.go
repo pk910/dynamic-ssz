@@ -101,9 +101,9 @@ func (d *DynSsz) marshalTypeWriter(ctx *marshalWriterContext, typeDesc *TypeDesc
 // fields: first writing fixed fields and offsets, then writing the actual dynamic field data.
 //
 // The encoding process follows these steps:
-//   1. Fixed fields are written directly in order
-//   2. For each dynamic field, a 4-byte offset is written indicating where its data begins
-//   3. After all fixed fields and offsets, dynamic field data is written sequentially
+//  1. Fixed fields are written directly in order
+//  2. For each dynamic field, a 4-byte offset is written indicating where its data begins
+//  3. After all fixed fields and offsets, dynamic field data is written sequentially
 //
 // Parameters:
 //   - ctx: The marshal context containing the writer, buffer, and dynamic size tree
@@ -146,9 +146,16 @@ func (d *DynSsz) marshalStructWriter(ctx *marshalWriterContext, typeDesc *TypeDe
 			dynamicFieldIdx++
 		} else {
 			// Static field - write directly
+			ctx.writer.pushLimit(uint64(field.Size))
 			err := d.marshalTypeWriter(ctx, field.Type, fieldValue)
+			writtenBytes := ctx.writer.popLimit()
+
 			if err != nil {
 				return err
+			}
+
+			if writtenBytes != uint64(field.Size) {
+				return fmt.Errorf("static field %v did not write expected ssz range (written: %v, expected: %v)", field.Name, writtenBytes, field.Size)
 			}
 		}
 	}
@@ -159,10 +166,18 @@ func (d *DynSsz) marshalStructWriter(ctx *marshalWriterContext, typeDesc *TypeDe
 		fieldValue := value.Field(int(field.Field.Index))
 
 		ctx.enterDynamicField()
+		fieldSize := ctx.currentNode.size
+		ctx.writer.pushLimit(uint64(fieldSize))
 
 		err := d.marshalTypeWriter(ctx, field.Field.Type, fieldValue)
+		writtenBytes := ctx.writer.popLimit()
+
 		if err != nil {
 			return err
+		}
+
+		if writtenBytes != uint64(fieldSize) {
+			return fmt.Errorf("dynamic field %v did not write expected ssz range (written: %v, expected: %v)", field.Field.Name, writtenBytes, fieldSize)
 		}
 
 		ctx.exitDynamicField(savedNode)
@@ -178,8 +193,8 @@ func (d *DynSsz) marshalStructWriter(ctx *marshalWriterContext, typeDesc *TypeDe
 // optimized paths for common scenarios like byte arrays.
 //
 // For arrays with dynamic elements, the SSZ format requires:
-//   1. Writing N offsets (4 bytes each) for N elements
-//   2. Writing the actual element data in sequence
+//  1. Writing N offsets (4 bytes each) for N elements
+//  2. Writing the actual element data in sequence
 //
 // Special optimizations:
 //   - Byte arrays ([N]uint8) are written directly as a single write operation
@@ -238,9 +253,17 @@ func (d *DynSsz) marshalArrayWriter(ctx *marshalWriterContext, typeDesc *TypeDes
 		for i := 0; i < arrayLen; i++ {
 			ctx.enterDynamicField()
 
+			elementSize := ctx.currentNode.size
+			ctx.writer.pushLimit(uint64(elementSize))
 			err := d.marshalTypeWriter(ctx, elemType, value.Index(i))
+			writtenBytes := ctx.writer.popLimit()
+
 			if err != nil {
 				return err
+			}
+
+			if writtenBytes != uint64(elementSize) {
+				return fmt.Errorf("dynamic array element %d did not write expected ssz range (written: %v, expected: %v)", i, writtenBytes, elementSize)
 			}
 
 			ctx.exitDynamicField(savedNode)
@@ -248,9 +271,17 @@ func (d *DynSsz) marshalArrayWriter(ctx *marshalWriterContext, typeDesc *TypeDes
 	} else {
 		// Static elements - write directly
 		for i := 0; i < arrayLen; i++ {
+			elementSize := ctx.currentNode.size
+			ctx.writer.pushLimit(uint64(elementSize))
 			err := d.marshalTypeWriter(ctx, elemType, value.Index(i))
+			writtenBytes := ctx.writer.popLimit()
+
 			if err != nil {
 				return err
+			}
+
+			if writtenBytes != uint64(elementSize) {
+				return fmt.Errorf("static array element %d did not write expected ssz range (written: %v, expected: %v)", i, writtenBytes, elementSize)
 			}
 		}
 	}
@@ -298,29 +329,6 @@ func (d *DynSsz) marshalSliceWriter(ctx *marshalWriterContext, typeDesc *TypeDes
 		if uint32(sliceLen) < typeDesc.SizeHints[0].Size {
 			appendZero = int(typeDesc.SizeHints[0].Size) - sliceLen
 		}
-	}
-
-	// Handle byte slices specially
-	if elemType.Kind == reflect.Uint8 {
-		// Write byte slice directly
-		bytes := make([]byte, sliceLen)
-		for i := 0; i < sliceLen; i++ {
-			bytes[i] = uint8(value.Index(i).Uint())
-		}
-		_, err := ctx.writer.Write(bytes)
-		if err != nil {
-			return err
-		}
-
-		// Write padding zeros
-		if appendZero > 0 {
-			zeros := make([]byte, appendZero)
-			_, err = ctx.writer.Write(zeros)
-			if err != nil {
-				return err
-			}
-		}
-		return nil
 	}
 
 	// Handle slices with dynamic elements
@@ -388,12 +396,36 @@ func (d *DynSsz) marshalSliceWriter(ctx *marshalWriterContext, typeDesc *TypeDes
 			}
 		}
 		ctx.currentNode = savedNode
+	} else if elemType.Kind == reflect.Uint8 {
+		// Write byte slice directly
+		bytes := value.Bytes()
+		_, err := ctx.writer.Write(bytes)
+		if err != nil {
+			return err
+		}
+
+		// Write padding zeros
+		if appendZero > 0 {
+			zeros := make([]byte, appendZero)
+			_, err = ctx.writer.Write(zeros)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
 	} else {
 		// Static elements - write directly
 		for i := 0; i < sliceLen; i++ {
+			ctx.writer.pushLimit(uint64(elemType.Size))
 			err := d.marshalTypeWriter(ctx, elemType, value.Index(i))
+			writtenBytes := ctx.writer.popLimit()
+
 			if err != nil {
 				return err
+			}
+
+			if writtenBytes != uint64(elemType.Size) {
+				return fmt.Errorf("static slice element %d did not write expected ssz range (written: %v, expected: %v)", i, writtenBytes, elemType.Size)
 			}
 		}
 
@@ -432,8 +464,9 @@ func (d *DynSsz) marshalSliceWriter(ctx *marshalWriterContext, typeDesc *TypeDes
 //   - error: An error if the string exceeds fixed size limits or if writing fails
 //
 // Example:
-//   A fixed-size string field with size 10 containing "hello" would be encoded as:
-//   [0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x00, 0x00, 0x00, 0x00, 0x00]
+//
+//	A fixed-size string field with size 10 containing "hello" would be encoded as:
+//	[0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x00, 0x00, 0x00, 0x00, 0x00]
 func (d *DynSsz) marshalStringWriter(ctx *marshalWriterContext, typeDesc *TypeDescriptor, value reflect.Value) error {
 	str := value.String()
 	strBytes := []byte(str)

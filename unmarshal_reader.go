@@ -20,8 +20,7 @@ import (
 //   - Support for infinite streams with proper boundaries
 //
 // Parameters:
-//   - ctx: The unmarshal reader context containing buffers for optimization
-//   - r: The io.Reader source providing SSZ-encoded data
+//   - ctx: The unmarshal reader context containing buffers and the limitedReader for optimization
 //   - typeDesc: Pre-computed type metadata for efficient decoding
 //   - value: The reflect.Value where decoded data will be stored
 //
@@ -34,7 +33,7 @@ import (
 //   - Direct primitive type reading with proper endianness
 //   - Complex type delegation to specialized streaming handlers
 //   - Buffer reuse for small reads to minimize allocations
-func (d *DynSsz) unmarshalTypeReader(ctx *unmarshalReaderContext, r io.Reader, typeDesc *TypeDescriptor, value reflect.Value) error {
+func (d *DynSsz) unmarshalTypeReader(ctx *unmarshalReaderContext, typeDesc *TypeDescriptor, value reflect.Value) error {
 	if typeDesc.IsPtr {
 		if value.IsNil() {
 			// Create new instance for nil pointer
@@ -44,21 +43,19 @@ func (d *DynSsz) unmarshalTypeReader(ctx *unmarshalReaderContext, r io.Reader, t
 	}
 
 	// For small static types, read into context buffer and use regular unmarshal
-	/* // TODO: re-enable this for production
 	if !typeDesc.HasDynamicSize && typeDesc.Size > 0 && typeDesc.Size <= int32(len(ctx.buffer)) {
 		buf := ctx.buffer[:typeDesc.Size]
-		if _, err := io.ReadFull(r, buf); err != nil {
+		if _, err := io.ReadFull(ctx.limitedReader, buf); err != nil {
 			return err
 		}
 		_, err := d.unmarshalType(typeDesc, value, buf, 0)
 		return err
 	}
-	*/
 
 	// Use fastssz if available and not disabled for small structures
 	if !d.NoFastSsz && typeDesc.IsFastSSZMarshaler && typeDesc.Size > 0 && typeDesc.Size <= int32(len(ctx.buffer)) {
 		buf := ctx.buffer[:typeDesc.Size]
-		if _, err := io.ReadFull(r, buf); err != nil {
+		if _, err := io.ReadFull(ctx.limitedReader, buf); err != nil {
 			return err
 		}
 		if unmarshaler, ok := value.Addr().Interface().(fastsszUnmarshaler); ok {
@@ -69,48 +66,48 @@ func (d *DynSsz) unmarshalTypeReader(ctx *unmarshalReaderContext, r io.Reader, t
 	// Handle different types
 	switch typeDesc.Kind {
 	case reflect.Bool:
-		val, err := readBool(r)
+		val, err := readBool(ctx.limitedReader)
 		if err != nil {
 			return err
 		}
 		value.SetBool(val)
 		return nil
 	case reflect.Uint8:
-		val, err := readUint8(r)
+		val, err := readUint8(ctx.limitedReader)
 		if err != nil {
 			return err
 		}
 		value.SetUint(uint64(val))
 		return nil
 	case reflect.Uint16:
-		val, err := readUint16(r)
+		val, err := readUint16(ctx.limitedReader)
 		if err != nil {
 			return err
 		}
 		value.SetUint(uint64(val))
 		return nil
 	case reflect.Uint32:
-		val, err := readUint32(r)
+		val, err := readUint32(ctx.limitedReader)
 		if err != nil {
 			return err
 		}
 		value.SetUint(uint64(val))
 		return nil
 	case reflect.Uint64:
-		val, err := readUint64(r)
+		val, err := readUint64(ctx.limitedReader)
 		if err != nil {
 			return err
 		}
 		value.SetUint(val)
 		return nil
 	case reflect.Struct:
-		return d.unmarshalStructReader(ctx, r, typeDesc, value)
+		return d.unmarshalStructReader(ctx, typeDesc, value)
 	case reflect.Array:
-		return d.unmarshalArrayReader(ctx, r, typeDesc, value)
+		return d.unmarshalArrayReader(ctx, typeDesc, value)
 	case reflect.Slice:
-		return d.unmarshalSliceReader(ctx, r, typeDesc, value)
+		return d.unmarshalSliceReader(ctx, typeDesc, value)
 	case reflect.String:
-		return d.unmarshalStringReader(ctx, r, typeDesc, value)
+		return d.unmarshalStringReader(ctx, typeDesc, value)
 	default:
 		return fmt.Errorf("unsupported type for streaming unmarshal: %v", typeDesc.Kind)
 	}
@@ -123,24 +120,23 @@ func (d *DynSsz) unmarshalTypeReader(ctx *unmarshalReaderContext, r io.Reader, t
 // values, then use these offsets to determine boundaries for variable-length field data.
 //
 // The decoding process follows SSZ specifications:
-//   1. Read fixed fields directly in their declared order
-//   2. For each dynamic field position, read a 4-byte offset
-//   3. After all fixed fields, read dynamic fields using offset boundaries
-//   4. Each dynamic field's size is calculated as (next_offset - current_offset)
+//  1. Read fixed fields directly in their declared order
+//  2. For each dynamic field position, read a 4-byte offset
+//  3. After all fixed fields, read dynamic fields using offset boundaries
+//  4. Each dynamic field's size is calculated as (next_offset - current_offset)
 //
 // Parameters:
-//   - ctx: The unmarshal context containing reusable buffers
-//   - r: The io.Reader providing the SSZ-encoded struct data
+//   - ctx: The unmarshal context containing reusable buffers and limitedReader
 //   - typeDesc: Pre-computed struct metadata with field descriptors
 //   - value: The reflect.Value of the struct to populate
 //
 // Returns:
 //   - error: An error if reading fails or data doesn't match expected format
 //
-// The function enforces strict boundary checking using limited readers to ensure each
+// The function enforces strict boundary checking using the limit stack to ensure each
 // field consumes exactly its allocated bytes according to the offset table. This prevents
 // fields from reading beyond their boundaries and corrupting subsequent data.
-func (d *DynSsz) unmarshalStructReader(ctx *unmarshalReaderContext, r io.Reader, typeDesc *TypeDescriptor, value reflect.Value) error {
+func (d *DynSsz) unmarshalStructReader(ctx *unmarshalReaderContext, typeDesc *TypeDescriptor, value reflect.Value) error {
 	dynamicOffsets := make([]uint32, 0, len(typeDesc.DynFields))
 
 	// First pass: read static fields and dynamic field offsets directly from stream
@@ -149,28 +145,29 @@ func (d *DynSsz) unmarshalStructReader(ctx *unmarshalReaderContext, r io.Reader,
 
 		if field.Size < 0 {
 			// Dynamic field - read offset directly from stream
-			offset, err := readUint32(r)
+			offset, err := readUint32(ctx.limitedReader)
 			if err != nil {
 				return err
 			}
 			dynamicOffsets = append(dynamicOffsets, offset)
 		} else {
-			fieldReader := newLimitedReader(r, int64(field.Size))
+			// Static field - push limit and read directly from stream
+			ctx.limitedReader.pushLimit(uint64(field.Size))
 
-			// Static field - read directly from stream
-			err := d.unmarshalTypeReader(ctx, fieldReader, field.Type, fieldValue)
+			err := d.unmarshalTypeReader(ctx, field.Type, fieldValue)
 
-			consumedExpecedBytes := field.Size >= 0 && int64(field.Size) == fieldReader.BytesRead()
+			consumedBytes := ctx.limitedReader.popLimit()
+			consumedExpectedBytes := consumedBytes == uint64(field.Size)
 
-			if err == io.EOF && consumedExpecedBytes {
+			if err == io.EOF && consumedExpectedBytes {
 				err = nil
 			}
 			if err != nil {
 				return err
 			}
 
-			if !consumedExpecedBytes {
-				return fmt.Errorf("struct field %s did not consume expected ssz range (consumed: %v, expected: %v)", field.Name, fieldReader.BytesRead(), field.Size)
+			if !consumedExpectedBytes {
+				return fmt.Errorf("struct field %s did not consume expected ssz range (consumed: %v, expected: %v)", field.Name, consumedBytes, field.Size)
 			}
 		}
 	}
@@ -180,33 +177,37 @@ func (d *DynSsz) unmarshalStructReader(ctx *unmarshalReaderContext, r io.Reader,
 		fieldValue := value.Field(int(dynFieldInfo.Field.Index))
 
 		// Calculate field size from this offset to the next offset or EOF
-		var fieldSize int64 = -1
+		var fieldSize uint64
+		hasKnownSize := false
 		if i+1 < len(typeDesc.DynFields) {
 			// Next field starts at next offset
-			fieldSize = int64(dynamicOffsets[i+1] - dynamicOffsets[i])
+			fieldSize = uint64(dynamicOffsets[i+1] - dynamicOffsets[i])
+			hasKnownSize = true
 		}
 
-		// Create context and reader for this field
-		var fieldReader io.Reader
-		if fieldSize >= 0 {
-			fieldReader = newLimitedReader(r, fieldSize)
-		} else {
-			fieldReader = r
+		// Push limit for this field if size is known
+		if hasKnownSize {
+			ctx.limitedReader.pushLimit(fieldSize)
 		}
 
-		err := d.unmarshalTypeReader(ctx, fieldReader, dynFieldInfo.Field.Type, fieldValue)
+		err := d.unmarshalTypeReader(ctx, dynFieldInfo.Field.Type, fieldValue)
 
-		consumedExpecedBytes := fieldSize >= 0 && fieldSize == fieldReader.(*limitedReader).BytesRead()
+		var consumedBytes uint64
+		if hasKnownSize {
+			consumedBytes = ctx.limitedReader.popLimit()
+		}
 
-		if err == io.EOF && (consumedExpecedBytes || fieldSize < 0) {
+		consumedExpectedBytes := !hasKnownSize || consumedBytes == fieldSize
+
+		if err == io.EOF && consumedExpectedBytes {
 			err = nil
 		}
 		if err != nil {
 			return err
 		}
 
-		if fieldSize > 0 && !consumedExpecedBytes {
-			return fmt.Errorf("struct field did not consume expected ssz range (consumed: %v, expected: %v)", fieldReader.(*limitedReader).BytesRead(), fieldSize)
+		if hasKnownSize && !consumedExpectedBytes {
+			return fmt.Errorf("struct field did not consume expected ssz range (consumed: %v, expected: %v)", consumedBytes, fieldSize)
 		}
 	}
 
@@ -220,10 +221,10 @@ func (d *DynSsz) unmarshalStructReader(ctx *unmarshalReaderContext, r io.Reader,
 // with specialized paths for common patterns like byte arrays.
 //
 // For arrays with dynamic elements, the SSZ format uses offset-based encoding:
-//   1. First, N offsets (4 bytes each) are read for N elements
-//   2. Each offset indicates where that element's data begins
-//   3. Element sizes are calculated from consecutive offset differences
-//   4. The last element extends to the end of the available data
+//  1. First, N offsets (4 bytes each) are read for N elements
+//  2. Each offset indicates where that element's data begins
+//  3. Element sizes are calculated from consecutive offset differences
+//  4. The last element extends to the end of the available data
 //
 // Special optimizations:
 //   - Byte arrays ([N]uint8) use direct byte-by-byte reading
@@ -231,32 +232,18 @@ func (d *DynSsz) unmarshalStructReader(ctx *unmarshalReaderContext, r io.Reader,
 //   - Offset tables are buffered when they fit in the context buffer
 //
 // Parameters:
-//   - ctx: The unmarshal context with reusable buffers for efficiency
-//   - r: The io.Reader providing the SSZ-encoded array data
+//   - ctx: The unmarshal context with reusable buffers and limitedReader for efficiency
 //   - typeDesc: Array metadata including length and element type
 //   - value: The reflect.Value of the array to populate
 //
 // Returns:
 //   - error: An error if reading fails or offsets are invalid
 //
-// The function ensures each element is read within its exact boundaries using limited
-// readers, preventing any element from consuming data belonging to subsequent elements.
-func (d *DynSsz) unmarshalArrayReader(ctx *unmarshalReaderContext, r io.Reader, typeDesc *TypeDescriptor, value reflect.Value) error {
+// The function ensures each element is read within its exact boundaries using the limit
+// stack, preventing any element from consuming data belonging to subsequent elements.
+func (d *DynSsz) unmarshalArrayReader(ctx *unmarshalReaderContext, typeDesc *TypeDescriptor, value reflect.Value) error {
 	arrayLen := int(typeDesc.Len)
 	elemType := typeDesc.ElemDesc
-
-	// Handle byte arrays specially
-	if elemType.Kind == reflect.Uint8 {
-		// Read directly from stream
-		for i := 0; i < arrayLen; i++ {
-			val, err := readUint8(r)
-			if err != nil {
-				return err
-			}
-			value.Index(i).SetUint(uint64(val))
-		}
-		return nil
-	}
 
 	// Handle arrays with dynamic elements
 	if elemType.Size < 0 {
@@ -271,14 +258,14 @@ func (d *DynSsz) unmarshalArrayReader(ctx *unmarshalReaderContext, r io.Reader, 
 
 		// Read all offsets into context buffer
 		offsets := ctx.buffer[:offsetBytes]
-		if _, err := io.ReadFull(r, offsets); err != nil {
+		if _, err := io.ReadFull(ctx.limitedReader, offsets); err != nil {
 			return err
 		}
 
 		// Extract offsets from buffer and process elements with boundaries
 		offsetList := make([]uint32, arrayLen)
 		for i := 0; i < arrayLen; i++ {
-			offsetList[i] = readUint32FromBytes(offsets[i*4 : (i+1)*4])
+			offsetList[i] = unmarshallUint32(offsets[i*4 : (i+1)*4])
 		}
 
 		// Process elements in order with proper boundaries
@@ -286,34 +273,47 @@ func (d *DynSsz) unmarshalArrayReader(ctx *unmarshalReaderContext, r io.Reader, 
 			elemValue := value.Index(i)
 
 			// Calculate element size from this offset to next offset or EOF
-			var elemSize int64 = -1
+			var elemSize uint64
+			hasKnownSize := false
 			if i+1 < arrayLen {
-				elemSize = int64(offsetList[i+1] - offsetList[i])
+				elemSize = uint64(offsetList[i+1] - offsetList[i])
+				hasKnownSize = true
 			}
-			// Last element reads until EOF (handled by parent limitedReader)
+			// Last element reads until EOF (handled by parent limit)
 
-			// Create context and reader for this element
-			var elemReader io.Reader
-			if elemSize >= 0 {
-				elemReader = newLimitedReader(r, elemSize)
-			} else {
-				elemReader = r
+			// Push limit for this element if size is known
+			if hasKnownSize {
+				ctx.limitedReader.pushLimit(elemSize)
 			}
 
-			err := d.unmarshalTypeReader(ctx, elemReader, elemType, elemValue)
+			err := d.unmarshalTypeReader(ctx, elemType, elemValue)
+
+			var consumedBytes uint64
+			if hasKnownSize {
+				consumedBytes = ctx.limitedReader.popLimit()
+			}
+
 			if err != nil {
 				return err
 			}
 
-			if elemSize > 0 && elemSize != int64(elemReader.(*limitedReader).BytesRead()) {
-				return fmt.Errorf("array element did not consume expected ssz range (consumed: %v, expected: %v)", elemReader.(*limitedReader).BytesRead(), elemSize)
+			if hasKnownSize && consumedBytes != elemSize {
+				return fmt.Errorf("array element did not consume expected ssz range (consumed: %v, expected: %v)", consumedBytes, elemSize)
 			}
 		}
+	} else if elemType.Kind == reflect.Uint8 {
+		// Read directly from stream
+		bytes := make([]byte, arrayLen)
+		if _, err := io.ReadFull(ctx.limitedReader, bytes); err != nil {
+			return err
+		}
+		value.SetBytes(bytes)
+		return nil
 	} else {
 		// Static elements - read each element directly from stream
 		for i := 0; i < arrayLen; i++ {
 			elemValue := value.Index(i)
-			err := d.unmarshalTypeReader(ctx, r, elemType, elemValue)
+			err := d.unmarshalTypeReader(ctx, elemType, elemValue)
 			if err != nil {
 				return err
 			}
@@ -335,14 +335,13 @@ func (d *DynSsz) unmarshalArrayReader(ctx *unmarshalReaderContext, r io.Reader, 
 //   - Byte slices: Optimized path reading all remaining bytes at once
 //
 // For dynamic element slices, the process involves:
-//   1. Read first offset to determine total element count (offset / 4)
-//   2. Read remaining offsets to build complete offset table
-//   3. Use offset boundaries to read each element's data
-//   4. Allocate and populate the slice with decoded elements
+//  1. Read first offset to determine total element count (offset / 4)
+//  2. Read remaining offsets to build complete offset table
+//  3. Use offset boundaries to read each element's data
+//  4. Allocate and populate the slice with decoded elements
 //
 // Parameters:
-//   - ctx: The unmarshal context containing optimization buffers
-//   - r: The io.Reader providing the SSZ-encoded slice data
+//   - ctx: The unmarshal context containing optimization buffers and limitedReader
 //   - typeDesc: Slice metadata including element type descriptor
 //   - value: The reflect.Value where the decoded slice will be set
 //
@@ -352,13 +351,13 @@ func (d *DynSsz) unmarshalArrayReader(ctx *unmarshalReaderContext, r io.Reader, 
 // The function handles memory allocation efficiently, creating slices with exact capacity
 // to avoid reallocation during element population. For byte slices, it uses chunked
 // reading to handle potentially large data without excessive memory usage.
-func (d *DynSsz) unmarshalSliceReader(ctx *unmarshalReaderContext, r io.Reader, typeDesc *TypeDescriptor, value reflect.Value) error {
+func (d *DynSsz) unmarshalSliceReader(ctx *unmarshalReaderContext, typeDesc *TypeDescriptor, value reflect.Value) error {
 	elemType := typeDesc.ElemDesc
 
 	// For dynamic slices, we need to determine the number of elements from offsets
 	if elemType.Size < 0 {
 		// Read first offset to determine element count
-		firstOffset, err := readUint32(r)
+		firstOffset, err := readUint32(ctx.limitedReader)
 		if err != nil {
 			return err
 		}
@@ -380,12 +379,12 @@ func (d *DynSsz) unmarshalSliceReader(ctx *unmarshalReaderContext, r io.Reader, 
 
 		if remainingOffsetBytes > 0 {
 			offsetBuf := ctx.buffer[:remainingOffsetBytes]
-			if _, err := io.ReadFull(r, offsetBuf); err != nil {
+			if _, err := io.ReadFull(ctx.limitedReader, offsetBuf); err != nil {
 				return err
 			}
 			// Extract remaining offsets
 			for i := 1; i < elemCount; i++ {
-				offsetList[i] = readUint32FromBytes(offsetBuf[(i-1)*4 : i*4])
+				offsetList[i] = unmarshallUint32(offsetBuf[(i-1)*4 : i*4])
 			}
 		}
 
@@ -397,33 +396,37 @@ func (d *DynSsz) unmarshalSliceReader(ctx *unmarshalReaderContext, r io.Reader, 
 			elemValue := sliceValue.Index(i)
 
 			// Calculate element size from this offset to next offset or EOF
-			var elemSize int64 = -1
+			var elemSize uint64
+			hasKnownSize := false
 			if i+1 < elemCount {
-				elemSize = int64(offsetList[i+1] - offsetList[i])
+				elemSize = uint64(offsetList[i+1] - offsetList[i])
+				hasKnownSize = true
 			}
-			// Last element reads until EOF (handled by parent limitedReader)
+			// Last element reads until EOF (handled by parent limit)
 
-			// Create context and reader for this element
-			var elemReader io.Reader
-			if elemSize >= 0 {
-				elemReader = newLimitedReader(r, elemSize)
-			} else {
-				elemReader = r
+			// Push limit for this element if size is known
+			if hasKnownSize {
+				ctx.limitedReader.pushLimit(elemSize)
 			}
 
-			err := d.unmarshalTypeReader(ctx, elemReader, elemType, elemValue)
+			err := d.unmarshalTypeReader(ctx, elemType, elemValue)
 
-			consumedExpecedBytes := elemSize >= 0 && int64(elemSize) == elemReader.(*limitedReader).BytesRead()
+			var consumedBytes uint64
+			if hasKnownSize {
+				consumedBytes = ctx.limitedReader.popLimit()
+			}
 
-			if err == io.EOF && (consumedExpecedBytes || elemSize < 0) {
+			consumedExpectedBytes := !hasKnownSize || consumedBytes == elemSize
+
+			if err == io.EOF && consumedExpectedBytes {
 				err = nil
 			}
 			if err != nil {
 				return err
 			}
 
-			if elemSize > 0 && !consumedExpecedBytes {
-				return fmt.Errorf("dynamic slice element did not consume expected ssz range (consumed: %v, expected: %v)", elemReader.(*limitedReader).BytesRead(), elemSize)
+			if hasKnownSize && !consumedExpectedBytes {
+				return fmt.Errorf("dynamic slice element did not consume expected ssz range (consumed: %v, expected: %v)", consumedBytes, elemSize)
 			}
 		}
 
@@ -434,7 +437,7 @@ func (d *DynSsz) unmarshalSliceReader(ctx *unmarshalReaderContext, r io.Reader, 
 
 		// Try to read in chunks using context buffer
 		for {
-			n, err := r.Read(ctx.buffer)
+			n, err := ctx.limitedReader.Read(ctx.buffer)
 			if n > 0 {
 				bytes = append(bytes, ctx.buffer[:n]...)
 			}
@@ -444,14 +447,12 @@ func (d *DynSsz) unmarshalSliceReader(ctx *unmarshalReaderContext, r io.Reader, 
 			if err != nil {
 				return err
 			}
+			if bytesRemaining, hasLimit := ctx.limitedReader.bytesRemaining(); hasLimit && bytesRemaining == 0 {
+				break
+			}
 		}
 
-		// Create slice and set values
-		sliceValue := reflect.MakeSlice(value.Type(), len(bytes), len(bytes))
-		for i, b := range bytes {
-			sliceValue.Index(i).SetUint(uint64(b))
-		}
-		value.Set(sliceValue)
+		value.SetBytes(bytes)
 
 		if typeDesc.Size > 0 {
 			if len(bytes) != int(typeDesc.Size) {
@@ -463,35 +464,47 @@ func (d *DynSsz) unmarshalSliceReader(ctx *unmarshalReaderContext, r io.Reader, 
 
 		return io.EOF
 	} else {
-		// Static elements - read until EOF to determine count
-		var elements []reflect.Value
+		// Static elements
+		capacity := 16
+		if remaining, hasLimit := ctx.limitedReader.bytesRemaining(); hasLimit {
+			capacity = int(remaining / uint64(elemType.Size))
+			if remaining%uint64(elemType.Size) != 0 {
+				return fmt.Errorf("slice element size is not a multiple of the remaining bytes")
+			}
+		}
+
+		sliceValue := reflect.MakeSlice(value.Type(), 0, capacity) // Start with small capacity
 
 		for {
-			// Try to read one element
-			elemValue := reflect.New(elemType.Type).Elem()
-			elemReader := newLimitedReader(r, int64(elemType.Size))
-
-			err := d.unmarshalTypeReader(ctx, elemReader, elemType, elemValue)
-			if elemReader.BytesRead() == 0 {
+			// Check if there's enough data for another element
+			remaining, hasLimit := ctx.limitedReader.bytesRemaining()
+			if hasLimit && remaining < uint64(elemType.Size) {
 				break
 			}
-			if (err == io.EOF || err == nil) && int64(elemType.Size) != elemReader.BytesRead() {
-				return fmt.Errorf("slice element did not consume expected ssz range (consumed: %v, expected: %v)", elemReader.BytesRead(), elemType.Size)
+
+			// Grow slice by one element
+			elemValue := reflect.New(elemType.Type).Elem()
+
+			// Push limit for this element
+			ctx.limitedReader.pushLimit(uint64(elemType.Size))
+
+			err := d.unmarshalTypeReader(ctx, elemType, elemValue)
+			actualConsumed := ctx.limitedReader.popLimit()
+
+			if actualConsumed == 0 {
+				break
+			}
+			if (err == io.EOF || err == nil) && uint64(elemType.Size) != actualConsumed {
+				return fmt.Errorf("slice element did not consume expected ssz range (consumed: %v, expected: %v)", actualConsumed, elemType.Size)
 			}
 			if err != nil {
 				return err
 			}
 
-			elements = append(elements, elemValue)
+			sliceValue = reflect.Append(sliceValue, elemValue)
 		}
 
-		// Create slice and set values
-		sliceValue := reflect.MakeSlice(value.Type(), len(elements), len(elements))
-		for i, elem := range elements {
-			sliceValue.Index(i).Set(elem)
-		}
 		value.Set(sliceValue)
-
 		return io.EOF
 	}
 
@@ -514,8 +527,7 @@ func (d *DynSsz) unmarshalSliceReader(ctx *unmarshalReaderContext, r io.Reader, 
 // when processing strings from network streams or large files.
 //
 // Parameters:
-//   - ctx: The unmarshal context with reusable buffer for chunked reading
-//   - r: The io.Reader providing the UTF-8 encoded string data  
+//   - ctx: The unmarshal context with reusable buffer and limitedReader for chunked reading
 //   - typeDesc: String metadata including size constraints
 //   - value: The reflect.Value where the decoded string will be set
 //
@@ -525,13 +537,13 @@ func (d *DynSsz) unmarshalSliceReader(ctx *unmarshalReaderContext, r io.Reader, 
 // For fixed-size strings, the function ensures exactly the specified number of bytes
 // are consumed from the reader, even if the actual string content is shorter (due to
 // null padding). This maintains proper alignment for subsequent fields.
-func (d *DynSsz) unmarshalStringReader(ctx *unmarshalReaderContext, r io.Reader, typeDesc *TypeDescriptor, value reflect.Value) error {
+func (d *DynSsz) unmarshalStringReader(ctx *unmarshalReaderContext, typeDesc *TypeDescriptor, value reflect.Value) error {
 	// Read all available bytes from the reader for the string
 	var bytes []byte
 
 	// Try to read in chunks using context buffer
 	for {
-		n, err := r.Read(ctx.buffer)
+		n, err := ctx.limitedReader.Read(ctx.buffer)
 		if n > 0 {
 			bytes = append(bytes, ctx.buffer[:n]...)
 		}
@@ -565,22 +577,4 @@ func (d *DynSsz) unmarshalStringReader(ctx *unmarshalReaderContext, r io.Reader,
 	}
 
 	return nil
-}
-
-// readUint32FromBytes extracts a little-endian encoded uint32 from a byte slice.
-//
-// This helper function is used internally for efficient offset table processing when
-// multiple offsets have been read into a buffer. It avoids the overhead of individual
-// reads by operating on pre-buffered data.
-//
-// Parameters:
-//   - b: Byte slice containing at least 4 bytes of little-endian encoded data
-//
-// Returns:
-//   - uint32: The decoded 32-bit unsigned integer
-//
-// Note: This function assumes the input slice has at least 4 bytes and does not
-// perform bounds checking for performance reasons. Callers must ensure proper sizing.
-func readUint32FromBytes(b []byte) uint32 {
-	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
 }
