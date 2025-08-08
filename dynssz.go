@@ -241,228 +241,6 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte) ([]byte, error) {
 	return newBuf, nil
 }
 
-// SizeSSZ calculates the size of the given source object when serialized using SSZ encoding.
-//
-// This method is useful for pre-allocating buffers with the exact size needed for serialization,
-// avoiding unnecessary allocations and resizing. It dynamically evaluates the size based on the
-// actual values in the source object, accurately handling variable-length fields such as slices
-// and dynamic arrays.
-//
-// For types without dynamic fields, the size is calculated using the optimized fastssz SizeSSZ method
-// when available. For types with dynamic fields, it traverses the entire structure to compute the
-// exact serialized size.
-//
-// Parameters:
-//   - source: Any Go value whose SSZ-encoded size needs to be calculated
-//
-// Returns:
-//   - int: The exact number of bytes that would be produced by MarshalSSZ for this source
-//   - error: An error if the size calculation fails due to unsupported types or invalid data
-//
-// Example:
-//
-//	state := &phase0.BeaconState{
-//	    // ... populated state fields
-//	}
-//
-//	size, err := ds.SizeSSZ(state)
-//	if err != nil {
-//	    log.Fatal("Failed to calculate size:", err)
-//	}
-//
-//	// Pre-allocate buffer with exact size
-//	buf := make([]byte, 0, size)
-//	buf, err = ds.MarshalSSZTo(state, buf)
-func (d *DynSsz) SizeSSZ(source any) (int, error) {
-	sourceType := reflect.TypeOf(source)
-	sourceValue := reflect.ValueOf(source)
-
-	sourceTypeDesc, err := d.typeCache.GetTypeDescriptor(sourceType, nil, nil)
-	if err != nil {
-		return 0, err
-	}
-
-	size, err := d.getSszValueSize(sourceTypeDesc, sourceValue)
-	if err != nil {
-		return 0, err
-	}
-
-	return int(size), nil
-}
-
-// UnmarshalSSZ decodes the given SSZ-encoded data into the target object.
-//
-// This method is the counterpart to MarshalSSZ, reconstructing Go values from their SSZ representation.
-// It dynamically handles decoding for types with both static and dynamic field sizes, automatically
-// using fastssz for optimal performance when applicable.
-//
-// The target must be a pointer to a value of the appropriate type. The method will allocate memory
-// for slices and initialize pointer fields as needed during decoding.
-//
-// Parameters:
-//   - target: A pointer to the Go value where the decoded data will be stored. Must be a pointer.
-//   - ssz: The SSZ-encoded data to decode
-//
-// Returns:
-//   - error: An error if decoding fails due to:
-//   - Invalid SSZ format
-//   - Type mismatches between the data and target
-//   - Insufficient or excess data
-//   - Unsupported types
-//
-// The method ensures that all bytes in the ssz parameter are consumed during decoding. If there are
-// leftover bytes, an error is returned indicating incomplete consumption.
-//
-// Example:
-//
-//	var header phase0.BeaconBlockHeader
-//	err := ds.UnmarshalSSZ(&header, encodedData)
-//	if err != nil {
-//	    log.Fatal("Failed to unmarshal:", err)
-//	}
-//	fmt.Printf("Decoded header for slot %d\n", header.Slot)
-func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte) error {
-	targetType := reflect.TypeOf(target)
-	targetValue := reflect.ValueOf(target)
-
-	targetTypeDesc, err := d.typeCache.GetTypeDescriptor(targetType, nil, nil)
-	if err != nil {
-		return err
-	}
-
-	consumedBytes, err := d.unmarshalType(targetTypeDesc, targetValue, ssz, 0)
-	if err != nil {
-		return err
-	}
-
-	if consumedBytes != len(ssz) {
-		return fmt.Errorf("did not consume full ssz range (consumed: %v, ssz size: %v)", consumedBytes, len(ssz))
-	}
-
-	return nil
-}
-
-// HashTreeRoot computes the hash tree root of the given source object according to SSZ specifications.
-//
-// The hash tree root is a cryptographic commitment to the entire data structure, used extensively
-// in Ethereum's consensus layer for creating Merkle proofs and maintaining state roots. This method
-// implements the SSZ hash tree root algorithm, which recursively hashes all fields and combines
-// them using binary Merkle trees.
-//
-// For optimal performance, the method uses a hasher pool to reuse hasher instances across calls.
-// When NoFastHash is false (default), it uses the optimized gohashtree implementation. For types
-// without dynamic fields, it automatically delegates to fastssz's HashTreeRoot method when available.
-//
-// Parameters:
-//   - source: Any Go value for which to compute the hash tree root
-//
-// Returns:
-//   - [32]byte: The computed hash tree root
-//   - error: An error if the computation fails due to unsupported types or hashing errors
-//
-// The method handles all SSZ-supported types including:
-//   - Basic types (bool, uint8, uint16, uint32, uint64)
-//   - Fixed-size and variable-size arrays
-//   - Structs with nested fields
-//   - Slices with proper limit handling
-//   - Bitlists with maximum size constraints
-//
-// Example:
-//
-//	block := &phase0.BeaconBlock{
-//	    Slot:          12345,
-//	    ProposerIndex: 42,
-//	    // ... other fields
-//	}
-//
-//	root, err := ds.HashTreeRoot(block)
-//	if err != nil {
-//	    log.Fatal("Failed to compute root:", err)
-//	}
-//	fmt.Printf("Block root: %x\n", root)
-func (d *DynSsz) HashTreeRoot(source any) ([32]byte, error) {
-	sourceType := reflect.TypeOf(source)
-	sourceValue := reflect.ValueOf(source)
-
-	sourceTypeDesc, err := d.typeCache.GetTypeDescriptor(sourceType, nil, nil)
-	if err != nil {
-		return [32]byte{}, err
-	}
-
-	var pool *HasherPool
-	if d.NoFastHash {
-		pool = &DefaultHasherPool
-	} else {
-		pool = &FastHasherPool
-	}
-
-	hh := pool.Get()
-	defer func() {
-		pool.Put(hh)
-	}()
-
-	err = d.buildRootFromType(sourceTypeDesc, sourceValue, hh, 0)
-	if err != nil {
-		return [32]byte{}, err
-	}
-
-	return hh.HashRoot()
-}
-
-// ValidateType validates whether a given type is compatible with SSZ encoding/decoding.
-//
-// This method performs a comprehensive analysis of the provided type to determine if it can be
-// successfully serialized and deserialized according to SSZ specifications. It recursively
-// validates all nested types within structs, arrays, and slices, ensuring complete compatibility
-// throughout the type hierarchy.
-//
-// The validation process checks for:
-//   - Supported primitive types (bool, uint8, uint16, uint32, uint64)
-//   - Valid composite types (arrays, slices, structs)
-//   - Proper SSZ tags on slice fields (ssz-size, ssz-max, dynssz-size, dynssz-max)
-//   - Correct tag syntax and values
-//   - No unsupported types (strings, maps, channels, signed integers, floats, etc.)
-//
-// This method is particularly useful for:
-//   - Pre-validation before attempting marshalling/unmarshalling operations
-//   - Development-time type checking to catch errors early
-//   - Runtime validation of dynamically constructed types
-//   - Ensuring type compatibility when integrating with external systems
-//
-// Parameters:
-//   - t: The reflect.Type to validate for SSZ compatibility
-//
-// Returns:
-//   - error: nil if the type is valid for SSZ encoding/decoding, or a descriptive error
-//     explaining why the type is incompatible. The error message includes details about
-//     the specific field or type that caused the validation failure.
-//
-// Example usage:
-//
-//	type MyStruct struct {
-//	    ValidField   uint64
-//	    InvalidField string  // This will cause validation to fail
-//	}
-//
-//	err := ds.ValidateType(reflect.TypeOf(MyStruct{}))
-//	if err != nil {
-//	    log.Fatal("Type validation failed:", err)
-//	    // Output: Type validation failed: field 'InvalidField': unsupported type 'string'
-//	}
-//
-// The method validates at the type level without requiring an instance of the type,
-// making it suitable for early validation scenarios. For performance-critical paths,
-// validation results can be cached as type compatibility doesn't change at runtime.
-func (d *DynSsz) ValidateType(t reflect.Type) error {
-	// Attempt to get type descriptor which will validate the type structure
-	_, err := d.typeCache.GetTypeDescriptor(t, nil, nil)
-	if err != nil {
-		return fmt.Errorf("type validation failed: %w", err)
-	}
-
-	return nil
-}
-
 // MarshalSSZWriter serializes the given source into its SSZ representation and writes it directly to an io.Writer.
 //
 // This method provides memory-efficient streaming serialization for SSZ encoding, particularly beneficial
@@ -589,6 +367,107 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error {
 	return nil
 }
 
+// SizeSSZ calculates the size of the given source object when serialized using SSZ encoding.
+//
+// This method is useful for pre-allocating buffers with the exact size needed for serialization,
+// avoiding unnecessary allocations and resizing. It dynamically evaluates the size based on the
+// actual values in the source object, accurately handling variable-length fields such as slices
+// and dynamic arrays.
+//
+// For types without dynamic fields, the size is calculated using the optimized fastssz SizeSSZ method
+// when available. For types with dynamic fields, it traverses the entire structure to compute the
+// exact serialized size.
+//
+// Parameters:
+//   - source: Any Go value whose SSZ-encoded size needs to be calculated
+//
+// Returns:
+//   - int: The exact number of bytes that would be produced by MarshalSSZ for this source
+//   - error: An error if the size calculation fails due to unsupported types or invalid data
+//
+// Example:
+//
+//	state := &phase0.BeaconState{
+//	    // ... populated state fields
+//	}
+//
+//	size, err := ds.SizeSSZ(state)
+//	if err != nil {
+//	    log.Fatal("Failed to calculate size:", err)
+//	}
+//
+//	// Pre-allocate buffer with exact size
+//	buf := make([]byte, 0, size)
+//	buf, err = ds.MarshalSSZTo(state, buf)
+func (d *DynSsz) SizeSSZ(source any) (int, error) {
+	sourceType := reflect.TypeOf(source)
+	sourceValue := reflect.ValueOf(source)
+
+	sourceTypeDesc, err := d.typeCache.GetTypeDescriptor(sourceType, nil, nil)
+	if err != nil {
+		return 0, err
+	}
+
+	size, err := d.getSszValueSize(sourceTypeDesc, sourceValue)
+	if err != nil {
+		return 0, err
+	}
+
+	return int(size), nil
+}
+
+// UnmarshalSSZ decodes the given SSZ-encoded data into the target object.
+//
+// This method is the counterpart to MarshalSSZ, reconstructing Go values from their SSZ representation.
+// It dynamically handles decoding for types with both static and dynamic field sizes, automatically
+// using fastssz for optimal performance when applicable.
+//
+// The target must be a pointer to a value of the appropriate type. The method will allocate memory
+// for slices and initialize pointer fields as needed during decoding.
+//
+// Parameters:
+//   - target: A pointer to the Go value where the decoded data will be stored. Must be a pointer.
+//   - ssz: The SSZ-encoded data to decode
+//
+// Returns:
+//   - error: An error if decoding fails due to:
+//   - Invalid SSZ format
+//   - Type mismatches between the data and target
+//   - Insufficient or excess data
+//   - Unsupported types
+//
+// The method ensures that all bytes in the ssz parameter are consumed during decoding. If there are
+// leftover bytes, an error is returned indicating incomplete consumption.
+//
+// Example:
+//
+//	var header phase0.BeaconBlockHeader
+//	err := ds.UnmarshalSSZ(&header, encodedData)
+//	if err != nil {
+//	    log.Fatal("Failed to unmarshal:", err)
+//	}
+//	fmt.Printf("Decoded header for slot %d\n", header.Slot)
+func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte) error {
+	targetType := reflect.TypeOf(target)
+	targetValue := reflect.ValueOf(target)
+
+	targetTypeDesc, err := d.typeCache.GetTypeDescriptor(targetType, nil, nil)
+	if err != nil {
+		return err
+	}
+
+	consumedBytes, err := d.unmarshalType(targetTypeDesc, targetValue, ssz, 0)
+	if err != nil {
+		return err
+	}
+
+	if consumedBytes != len(ssz) {
+		return fmt.Errorf("did not consume full ssz range (consumed: %v, ssz size: %v)", consumedBytes, len(ssz))
+	}
+
+	return nil
+}
+
 // UnmarshalSSZReader decodes SSZ-encoded data from an io.Reader directly into the target object.
 //
 // This method implements memory-efficient streaming deserialization for SSZ data, reading incrementally
@@ -694,6 +573,127 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int64) error {
 	}
 	if err != nil {
 		return err
+	}
+
+	return nil
+}
+
+// HashTreeRoot computes the hash tree root of the given source object according to SSZ specifications.
+//
+// The hash tree root is a cryptographic commitment to the entire data structure, used extensively
+// in Ethereum's consensus layer for creating Merkle proofs and maintaining state roots. This method
+// implements the SSZ hash tree root algorithm, which recursively hashes all fields and combines
+// them using binary Merkle trees.
+//
+// For optimal performance, the method uses a hasher pool to reuse hasher instances across calls.
+// When NoFastHash is false (default), it uses the optimized gohashtree implementation. For types
+// without dynamic fields, it automatically delegates to fastssz's HashTreeRoot method when available.
+//
+// Parameters:
+//   - source: Any Go value for which to compute the hash tree root
+//
+// Returns:
+//   - [32]byte: The computed hash tree root
+//   - error: An error if the computation fails due to unsupported types or hashing errors
+//
+// The method handles all SSZ-supported types including:
+//   - Basic types (bool, uint8, uint16, uint32, uint64)
+//   - Fixed-size and variable-size arrays
+//   - Structs with nested fields
+//   - Slices with proper limit handling
+//   - Bitlists with maximum size constraints
+//
+// Example:
+//
+//	block := &phase0.BeaconBlock{
+//	    Slot:          12345,
+//	    ProposerIndex: 42,
+//	    // ... other fields
+//	}
+//
+//	root, err := ds.HashTreeRoot(block)
+//	if err != nil {
+//	    log.Fatal("Failed to compute root:", err)
+//	}
+//	fmt.Printf("Block root: %x\n", root)
+func (d *DynSsz) HashTreeRoot(source any) ([32]byte, error) {
+	sourceType := reflect.TypeOf(source)
+	sourceValue := reflect.ValueOf(source)
+
+	sourceTypeDesc, err := d.typeCache.GetTypeDescriptor(sourceType, nil, nil)
+	if err != nil {
+		return [32]byte{}, err
+	}
+
+	var pool *HasherPool
+	if d.NoFastHash {
+		pool = &DefaultHasherPool
+	} else {
+		pool = &FastHasherPool
+	}
+
+	hh := pool.Get()
+	defer func() {
+		pool.Put(hh)
+	}()
+
+	err = d.buildRootFromType(sourceTypeDesc, sourceValue, hh, 0)
+	if err != nil {
+		return [32]byte{}, err
+	}
+
+	return hh.HashRoot()
+}
+
+// ValidateType validates whether a given type is compatible with SSZ encoding/decoding.
+//
+// This method performs a comprehensive analysis of the provided type to determine if it can be
+// successfully serialized and deserialized according to SSZ specifications. It recursively
+// validates all nested types within structs, arrays, and slices, ensuring complete compatibility
+// throughout the type hierarchy.
+//
+// The validation process checks for:
+//   - Supported primitive types (bool, uint8, uint16, uint32, uint64)
+//   - Valid composite types (arrays, slices, structs)
+//   - Proper SSZ tags on slice fields (ssz-size, ssz-max, dynssz-size, dynssz-max)
+//   - Correct tag syntax and values
+//   - No unsupported types (strings, maps, channels, signed integers, floats, etc.)
+//
+// This method is particularly useful for:
+//   - Pre-validation before attempting marshalling/unmarshalling operations
+//   - Development-time type checking to catch errors early
+//   - Runtime validation of dynamically constructed types
+//   - Ensuring type compatibility when integrating with external systems
+//
+// Parameters:
+//   - t: The reflect.Type to validate for SSZ compatibility
+//
+// Returns:
+//   - error: nil if the type is valid for SSZ encoding/decoding, or a descriptive error
+//     explaining why the type is incompatible. The error message includes details about
+//     the specific field or type that caused the validation failure.
+//
+// Example usage:
+//
+//	type MyStruct struct {
+//	    ValidField   uint64
+//	    InvalidField string  // This will cause validation to fail
+//	}
+//
+//	err := ds.ValidateType(reflect.TypeOf(MyStruct{}))
+//	if err != nil {
+//	    log.Fatal("Type validation failed:", err)
+//	    // Output: Type validation failed: field 'InvalidField': unsupported type 'string'
+//	}
+//
+// The method validates at the type level without requiring an instance of the type,
+// making it suitable for early validation scenarios. For performance-critical paths,
+// validation results can be cached as type compatibility doesn't change at runtime.
+func (d *DynSsz) ValidateType(t reflect.Type) error {
+	// Attempt to get type descriptor which will validate the type structure
+	_, err := d.typeCache.GetTypeDescriptor(t, nil, nil)
+	if err != nil {
+		return fmt.Errorf("type validation failed: %w", err)
 	}
 
 	return nil
