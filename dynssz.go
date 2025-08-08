@@ -528,6 +528,7 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error {
 
 	// Build size tree if we have dynamic fields
 	var sizeTree *dynamicSizeNode
+	var totalSize uint32
 	if sourceTypeDesc.Size < 0 {
 		sizeTree = &dynamicSizeNode{}
 		size, err := d.getSszValueSizeWithTree(sourceTypeDesc, sourceValue, sizeTree)
@@ -535,6 +536,7 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error {
 			return err
 		}
 		sizeTree.size = size
+		totalSize = size
 
 		// For small structures, use the regular marshal method
 		if size <= defaultBufferSize {
@@ -552,6 +554,8 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error {
 		if err != nil {
 			return err
 		}
+
+		totalSize = size
 
 		// For small structures, use the regular marshal method
 		if size <= defaultBufferSize {
@@ -576,6 +580,10 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error {
 	err = d.marshalTypeWriter(ctx, sourceTypeDesc, sourceValue)
 	if err != nil {
 		return err
+	}
+
+	if ctx.writer.bytesWritten != uint64(totalSize) {
+		return fmt.Errorf("did not write expected ssz range (written: %v, expected: %v)", ctx.writer.bytesWritten, totalSize)
 	}
 
 	return nil
