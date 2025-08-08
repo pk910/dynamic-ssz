@@ -68,14 +68,9 @@ func testForkConsensusSpec(t *testing.T, fork string, preset string, tests []Spe
 					err = dynssz.UnmarshalSSZ(s2, specSSZ)
 					require.NoError(t, err)
 
-					// Unmarshal the SSZ using the writer.
+					// Unmarshal the SSZ using a io.Reader.
 					specSSZReader := bytes.NewReader(specSSZ)
 					err = dynssz.UnmarshalSSZReader(s3, specSSZReader, -1)
-					if err != nil {
-						specSSZReader := bytes.NewReader(specSSZ)
-						err = dynssz.UnmarshalSSZReader(s3, specSSZReader, -1)
-						fmt.Printf("error unmarshalling: %v\n", err)
-					}
 					require.NoError(t, err)
 
 					s2Json, err := json.Marshal(s2)
@@ -89,7 +84,7 @@ func testForkConsensusSpec(t *testing.T, fork string, preset string, tests []Spe
 					require.NoError(t, err)
 					require.Equal(t, specSSZ, remarshalledSpecSSZ)
 
-					// Confirm we can return to the SSZ using the writer.
+					// Confirm we can return to the SSZ using a io.Writer.
 					var buf bytes.Buffer
 					err = dynssz.MarshalSSZWriter(s3, &buf)
 					require.NoError(t, err)
