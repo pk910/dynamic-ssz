@@ -6,7 +6,34 @@ import (
 	"reflect"
 )
 
-// unmarshalTypeReader unmarshals a value from a reader using streaming
+// unmarshalTypeReader is the core streaming deserialization dispatcher for reading SSZ-encoded data from an io.Reader.
+//
+// This function serves as the primary entry point for the streaming unmarshal process, routing to
+// appropriate handlers based on the type's characteristics. It provides memory-efficient decoding
+// by reading data incrementally from the source, making it suitable for large files, network streams,
+// or any scenario where loading complete data into memory would be impractical.
+//
+// The streaming approach offers significant advantages:
+//   - Constant memory usage regardless of input size
+//   - Ability to process data as it arrives from network connections
+//   - Efficient handling of large blockchain state files
+//   - Support for infinite streams with proper boundaries
+//
+// Parameters:
+//   - ctx: The unmarshal reader context containing buffers for optimization
+//   - r: The io.Reader source providing SSZ-encoded data
+//   - typeDesc: Pre-computed type metadata for efficient decoding
+//   - value: The reflect.Value where decoded data will be stored
+//
+// Returns:
+//   - error: An error if decoding fails due to I/O issues, format errors, or type mismatches
+//
+// The function handles:
+//   - Automatic nil pointer initialization
+//   - FastSSZ integration for small static types
+//   - Direct primitive type reading with proper endianness
+//   - Complex type delegation to specialized streaming handlers
+//   - Buffer reuse for small reads to minimize allocations
 func (d *DynSsz) unmarshalTypeReader(ctx *unmarshalReaderContext, r io.Reader, typeDesc *TypeDescriptor, value reflect.Value) error {
 	if typeDesc.IsPtr {
 		if value.IsNil() {
@@ -89,7 +116,30 @@ func (d *DynSsz) unmarshalTypeReader(ctx *unmarshalReaderContext, r io.Reader, t
 	}
 }
 
-// unmarshalStructReader unmarshals a struct from a reader
+// unmarshalStructReader handles streaming deserialization of struct types from SSZ-encoded data.
+//
+// This function implements the SSZ decoding rules for structures, which use an offset-based
+// encoding scheme for dynamic fields. The decoder must first read all fixed fields and offset
+// values, then use these offsets to determine boundaries for variable-length field data.
+//
+// The decoding process follows SSZ specifications:
+//   1. Read fixed fields directly in their declared order
+//   2. For each dynamic field position, read a 4-byte offset
+//   3. After all fixed fields, read dynamic fields using offset boundaries
+//   4. Each dynamic field's size is calculated as (next_offset - current_offset)
+//
+// Parameters:
+//   - ctx: The unmarshal context containing reusable buffers
+//   - r: The io.Reader providing the SSZ-encoded struct data
+//   - typeDesc: Pre-computed struct metadata with field descriptors
+//   - value: The reflect.Value of the struct to populate
+//
+// Returns:
+//   - error: An error if reading fails or data doesn't match expected format
+//
+// The function enforces strict boundary checking using limited readers to ensure each
+// field consumes exactly its allocated bytes according to the offset table. This prevents
+// fields from reading beyond their boundaries and corrupting subsequent data.
 func (d *DynSsz) unmarshalStructReader(ctx *unmarshalReaderContext, r io.Reader, typeDesc *TypeDescriptor, value reflect.Value) error {
 	dynamicOffsets := make([]uint32, 0, len(typeDesc.DynFields))
 
@@ -163,7 +213,34 @@ func (d *DynSsz) unmarshalStructReader(ctx *unmarshalReaderContext, r io.Reader,
 	return nil
 }
 
-// unmarshalArrayReader unmarshals an array from a reader
+// unmarshalArrayReader handles streaming deserialization of array types with fixed element counts.
+//
+// Arrays in SSZ have a compile-time known number of elements, but these elements may be either
+// static (fixed-size) or dynamic (variable-size). This function efficiently handles both cases
+// with specialized paths for common patterns like byte arrays.
+//
+// For arrays with dynamic elements, the SSZ format uses offset-based encoding:
+//   1. First, N offsets (4 bytes each) are read for N elements
+//   2. Each offset indicates where that element's data begins
+//   3. Element sizes are calculated from consecutive offset differences
+//   4. The last element extends to the end of the available data
+//
+// Special optimizations:
+//   - Byte arrays ([N]uint8) use direct byte-by-byte reading
+//   - Static element arrays read elements sequentially without offsets
+//   - Offset tables are buffered when they fit in the context buffer
+//
+// Parameters:
+//   - ctx: The unmarshal context with reusable buffers for efficiency
+//   - r: The io.Reader providing the SSZ-encoded array data
+//   - typeDesc: Array metadata including length and element type
+//   - value: The reflect.Value of the array to populate
+//
+// Returns:
+//   - error: An error if reading fails or offsets are invalid
+//
+// The function ensures each element is read within its exact boundaries using limited
+// readers, preventing any element from consuming data belonging to subsequent elements.
 func (d *DynSsz) unmarshalArrayReader(ctx *unmarshalReaderContext, r io.Reader, typeDesc *TypeDescriptor, value reflect.Value) error {
 	arrayLen := int(typeDesc.Len)
 	elemType := typeDesc.ElemDesc
@@ -246,7 +323,35 @@ func (d *DynSsz) unmarshalArrayReader(ctx *unmarshalReaderContext, r io.Reader, 
 	return nil
 }
 
-// unmarshalSliceReader unmarshals a slice from a reader
+// unmarshalSliceReader handles streaming deserialization of slice types with dynamic length determination.
+//
+// Unlike arrays, slices in SSZ have variable length that must be determined during decoding.
+// For slices with dynamic elements, the length is inferred from the offset table structure.
+// For slices with static elements, the length is determined by reading until EOF.
+//
+// The decoding strategy varies by element type:
+//   - Dynamic elements: First offset divided by 4 gives the element count
+//   - Static elements: Read elements sequentially until no more data
+//   - Byte slices: Optimized path reading all remaining bytes at once
+//
+// For dynamic element slices, the process involves:
+//   1. Read first offset to determine total element count (offset / 4)
+//   2. Read remaining offsets to build complete offset table
+//   3. Use offset boundaries to read each element's data
+//   4. Allocate and populate the slice with decoded elements
+//
+// Parameters:
+//   - ctx: The unmarshal context containing optimization buffers
+//   - r: The io.Reader providing the SSZ-encoded slice data
+//   - typeDesc: Slice metadata including element type descriptor
+//   - value: The reflect.Value where the decoded slice will be set
+//
+// Returns:
+//   - error: An error if reading fails, offsets are invalid, or allocation fails
+//
+// The function handles memory allocation efficiently, creating slices with exact capacity
+// to avoid reallocation during element population. For byte slices, it uses chunked
+// reading to handle potentially large data without excessive memory usage.
 func (d *DynSsz) unmarshalSliceReader(ctx *unmarshalReaderContext, r io.Reader, typeDesc *TypeDescriptor, value reflect.Value) error {
 	elemType := typeDesc.ElemDesc
 
@@ -393,7 +498,33 @@ func (d *DynSsz) unmarshalSliceReader(ctx *unmarshalReaderContext, r io.Reader, 
 	return nil
 }
 
-// unmarshalStringReader unmarshals a string from a reader
+// unmarshalStringReader handles streaming deserialization of string types from UTF-8 encoded bytes.
+//
+// In SSZ, strings are encoded as UTF-8 byte sequences. This function reads these bytes and
+// converts them back to Go strings. For fixed-size strings, null padding bytes are automatically
+// trimmed during decoding.
+//
+// String decoding behavior:
+//   - Variable-size strings: Read all available bytes as UTF-8 text
+//   - Fixed-size strings: Read exact size, then trim trailing null bytes
+//   - Chunked reading: Uses context buffer for memory-efficient processing
+//
+// The function handles large strings efficiently by reading in chunks rather than
+// allocating a single large buffer upfront. This approach is particularly beneficial
+// when processing strings from network streams or large files.
+//
+// Parameters:
+//   - ctx: The unmarshal context with reusable buffer for chunked reading
+//   - r: The io.Reader providing the UTF-8 encoded string data  
+//   - typeDesc: String metadata including size constraints
+//   - value: The reflect.Value where the decoded string will be set
+//
+// Returns:
+//   - error: An error if reading fails or size constraints are violated
+//
+// For fixed-size strings, the function ensures exactly the specified number of bytes
+// are consumed from the reader, even if the actual string content is shorter (due to
+// null padding). This maintains proper alignment for subsequent fields.
 func (d *DynSsz) unmarshalStringReader(ctx *unmarshalReaderContext, r io.Reader, typeDesc *TypeDescriptor, value reflect.Value) error {
 	// Read all available bytes from the reader for the string
 	var bytes []byte
@@ -436,7 +567,20 @@ func (d *DynSsz) unmarshalStringReader(ctx *unmarshalReaderContext, r io.Reader,
 	return nil
 }
 
-// Helper function to read uint32 from byte slice
+// readUint32FromBytes extracts a little-endian encoded uint32 from a byte slice.
+//
+// This helper function is used internally for efficient offset table processing when
+// multiple offsets have been read into a buffer. It avoids the overhead of individual
+// reads by operating on pre-buffered data.
+//
+// Parameters:
+//   - b: Byte slice containing at least 4 bytes of little-endian encoded data
+//
+// Returns:
+//   - uint32: The decoded 32-bit unsigned integer
+//
+// Note: This function assumes the input slice has at least 4 bytes and does not
+// perform bounds checking for performance reasons. Callers must ensure proper sizing.
 func readUint32FromBytes(b []byte) uint32 {
 	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
 }

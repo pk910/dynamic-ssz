@@ -185,6 +185,86 @@ size, err := ds.SizeSSZ(myStruct)
 fmt.Printf("SSZ size: %d bytes\n", size)
 ```
 
+## Streaming Methods
+
+### MarshalSSZWriter
+
+```go
+func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error
+```
+
+Serializes the given source into its SSZ representation and writes it directly to an io.Writer. This method provides memory-efficient streaming serialization for large data structures.
+
+**Parameters:**
+- `source`: The Go value to be serialized
+- `w`: An io.Writer where the SSZ-encoded data will be written
+
+**Returns:**
+- `error`: Error if serialization or writing fails
+
+**Example:**
+```go
+// Write to file
+file, err := os.Create("beacon_state.ssz")
+if err != nil {
+    log.Fatal(err)
+}
+defer file.Close()
+
+err = ds.MarshalSSZWriter(state, file)
+if err != nil {
+    log.Fatal("Failed to write state:", err)
+}
+
+// Stream over network
+conn, err := net.Dial("tcp", "localhost:8080")
+if err != nil {
+    log.Fatal(err)
+}
+defer conn.Close()
+
+err = ds.MarshalSSZWriter(block, conn)
+```
+
+### UnmarshalSSZReader
+
+```go
+func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int64) error
+```
+
+Decodes SSZ-encoded data from an io.Reader directly into the target object. This method provides memory-efficient streaming deserialization, reading data incrementally from the source.
+
+**Parameters:**
+- `target`: Pointer to the Go value where the decoded data will be stored
+- `r`: An io.Reader containing the SSZ-encoded data
+- `size`: The expected size of the SSZ data (use -1 if unknown)
+
+**Returns:**
+- `error`: Error if decoding or reading fails
+
+**Example:**
+```go
+// Read from file
+file, err := os.Open("beacon_state.ssz")
+if err != nil {
+    log.Fatal(err)
+}
+defer file.Close()
+
+// Get file size
+info, _ := file.Stat()
+var state phase0.BeaconState
+err = ds.UnmarshalSSZReader(&state, file, info.Size())
+if err != nil {
+    log.Fatal("Failed to read state:", err)
+}
+
+// Read from network with unknown size
+conn, _ := net.Dial("tcp", "localhost:8080")
+var block phase0.BeaconBlock
+err = ds.UnmarshalSSZReader(&block, conn, -1)
+```
+
 ## Decoding Methods
 
 ### UnmarshalSSZ

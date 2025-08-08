@@ -10,6 +10,7 @@ Dynamic SSZ (`dynssz`) is a Go library designed to provide flexible and dynamic 
 - **Hybrid Efficiency**: Balances the efficiency of static processing with the flexibility of dynamic handling, optimizing performance where possible.
 - **Developer-Friendly**: Simplifies the handling of SSZ data for developers by abstracting the complexity of dynamic data processing.
 - **General Purpose**: Works with any Go types that follow SSZ serialization rules, making it suitable for various applications beyond blockchain.
+- **Memory-Efficient Streaming**: New streaming methods enable processing of large data structures with constant memory usage, ideal for resource-constrained environments.
 
 ## Installation
 
@@ -175,6 +176,50 @@ if err != nil {
     log.Fatalf("Failed to unmarshal SSZ: %v", err)
 }
 ```
+
+### Streaming Operations (New)
+
+`dynssz` now supports memory-efficient streaming operations for handling large data structures without loading them entirely into memory:
+
+```go
+// Stream to file
+file, err := os.Create("beacon_state.ssz")
+if err != nil {
+    log.Fatal(err)
+}
+defer file.Close()
+
+// Write directly to file without intermediate buffer
+err = ds.MarshalSSZWriter(largeState, file)
+
+// Stream from file
+file, err = os.Open("beacon_state.ssz")
+if err != nil {
+    log.Fatal(err)
+}
+defer file.Close()
+
+// Read directly from file with constant memory usage
+info, _ := file.Stat()
+var state BeaconState
+err = ds.UnmarshalSSZReader(&state, file, info.Size())
+
+// Stream over network
+conn, err := net.Dial("tcp", "server:8080")
+if err != nil {
+    log.Fatal(err)
+}
+defer conn.Close()
+
+// Send data directly to network connection
+err = ds.MarshalSSZWriter(block, conn)
+```
+
+Benefits of streaming:
+- **Constant Memory Usage**: Process gigabyte-sized structures with megabytes of RAM
+- **Direct I/O**: No intermediate buffers, data flows directly to/from destination
+- **Scalability**: Handle structures larger than available memory
+- **Network Efficiency**: Start transmitting before complete serialization
 
 ## Performance
 

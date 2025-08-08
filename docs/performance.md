@@ -339,6 +339,64 @@ func (sp *StreamProcessor) ProcessStream(items <-chan interface{}) error {
 }
 ```
 
+### 4. Memory-Efficient Streaming Pattern
+
+**New streaming methods eliminate memory overhead for large structures:**
+
+```go
+// ❌ Traditional approach: Entire data in memory
+func saveState(ds *dynssz.DynSsz, state *phase0.BeaconState, filename string) error {
+    data, err := ds.MarshalSSZ(state) // Allocates full size in memory
+    if err != nil {
+        return err
+    }
+    return os.WriteFile(filename, data, 0644)
+}
+
+// ✅ Streaming approach: Constant memory usage
+func saveStateStreaming(ds *dynssz.DynSsz, state *phase0.BeaconState, filename string) error {
+    file, err := os.Create(filename)
+    if err != nil {
+        return err
+    }
+    defer file.Close()
+    
+    // Streams directly to disk with minimal memory overhead
+    return ds.MarshalSSZWriter(state, file)
+}
+
+// ✅ Network streaming: No intermediate buffers
+func sendStateOverNetwork(ds *dynssz.DynSsz, state *phase0.BeaconState, conn net.Conn) error {
+    // Streams directly to network connection
+    return ds.MarshalSSZWriter(state, conn)
+}
+
+// ✅ Reading large files efficiently
+func loadStateStreaming(ds *dynssz.DynSsz, filename string) (*phase0.BeaconState, error) {
+    file, err := os.Open(filename)
+    if err != nil {
+        return nil, err
+    }
+    defer file.Close()
+    
+    info, err := file.Stat()
+    if err != nil {
+        return nil, err
+    }
+    
+    var state phase0.BeaconState
+    // Reads incrementally without loading entire file into memory
+    err = ds.UnmarshalSSZReader(&state, file, info.Size())
+    return &state, err
+}
+```
+
+**Benefits of streaming methods:**
+- **Constant memory usage**: Process gigabyte-sized structures with megabytes of RAM
+- **Improved latency**: Start transmitting data before complete serialization
+- **Better I/O efficiency**: Direct writes to destination without intermediate buffers
+- **Scalability**: Handle structures larger than available memory
+
 ## Common Performance Pitfalls
 
 ### 1. Creating New Instances

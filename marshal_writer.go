@@ -5,7 +5,32 @@ import (
 	"reflect"
 )
 
-// marshalTypeWriter marshals a value to a writer using streaming
+// marshalTypeWriter is the core streaming serialization dispatcher for writing SSZ-encoded data to an io.Writer.
+//
+// This function serves as the primary entry point for the streaming marshal process, determining the most
+// efficient encoding path based on the type's characteristics. It automatically handles pointer dereferencing,
+// fastssz delegation for compatible types, and routes to specialized streaming functions for each kind.
+//
+// The streaming approach is particularly beneficial for:
+//   - Large data structures that would consume significant memory if buffered
+//   - Network protocols requiring incremental data transmission
+//   - File I/O operations where disk streaming is more efficient than bulk writes
+//   - Embedded systems or environments with memory constraints
+//
+// Parameters:
+//   - ctx: The marshal writer context containing the output writer, buffer, and size tree for dynamic fields
+//   - typeDesc: The TypeDescriptor with pre-computed metadata about the type being encoded
+//   - value: The reflect.Value containing the actual data to be serialized
+//
+// Returns:
+//   - error: An error if encoding fails due to I/O issues, unsupported types, or size mismatches
+//
+// The function handles:
+//   - Automatic nil pointer handling by creating zero values
+//   - FastSSZ integration for types implementing the marshaler interface
+//   - Primitive type encoding using optimized write functions
+//   - Complex type delegation to specialized streaming handlers
+//   - Buffer optimization for small writes to reduce I/O overhead
 func (d *DynSsz) marshalTypeWriter(ctx *marshalWriterContext, typeDesc *TypeDescriptor, value reflect.Value) error {
 	if typeDesc.IsPtr {
 		if value.IsNil() {
@@ -69,7 +94,28 @@ func (d *DynSsz) marshalTypeWriter(ctx *marshalWriterContext, typeDesc *TypeDesc
 	}
 }
 
-// marshalStructWriter marshals a struct to a writer
+// marshalStructWriter handles streaming serialization of struct types according to SSZ specifications.
+//
+// This function implements the SSZ encoding rules for structures, which require careful handling
+// of dynamic fields. The SSZ format mandates a two-pass approach for structs with variable-length
+// fields: first writing fixed fields and offsets, then writing the actual dynamic field data.
+//
+// The encoding process follows these steps:
+//   1. Fixed fields are written directly in order
+//   2. For each dynamic field, a 4-byte offset is written indicating where its data begins
+//   3. After all fixed fields and offsets, dynamic field data is written sequentially
+//
+// Parameters:
+//   - ctx: The marshal context containing the writer, buffer, and dynamic size tree
+//   - typeDesc: Pre-computed struct metadata including field descriptors and offsets
+//   - value: The reflect.Value of the struct instance to serialize
+//
+// Returns:
+//   - error: An error if writing fails or if the size tree is missing for dynamic fields
+//
+// The function requires a pre-computed size tree (via getSszValueSizeWithTree) when the struct
+// contains dynamic fields. This tree provides the exact sizes needed for offset calculation
+// without requiring multiple passes over the data.
 func (d *DynSsz) marshalStructWriter(ctx *marshalWriterContext, typeDesc *TypeDescriptor, value reflect.Value) error {
 	currentOffset := typeDesc.Len
 
@@ -125,7 +171,30 @@ func (d *DynSsz) marshalStructWriter(ctx *marshalWriterContext, typeDesc *TypeDe
 	return nil
 }
 
-// marshalArrayWriter marshals an array to a writer
+// marshalArrayWriter handles streaming serialization of array types with both static and dynamic elements.
+//
+// Arrays in SSZ have a fixed number of elements known at compile time. However, the elements themselves
+// may be either static (fixed-size) or dynamic (variable-size). This function handles both cases with
+// optimized paths for common scenarios like byte arrays.
+//
+// For arrays with dynamic elements, the SSZ format requires:
+//   1. Writing N offsets (4 bytes each) for N elements
+//   2. Writing the actual element data in sequence
+//
+// Special optimizations:
+//   - Byte arrays ([N]uint8) are written directly as a single write operation
+//   - Static element arrays use sequential writes without offset calculation
+//
+// Parameters:
+//   - ctx: The marshal context with writer, buffer, and size tree for dynamic elements
+//   - typeDesc: Array type metadata including length and element type descriptor
+//   - value: The reflect.Value of the array to serialize
+//
+// Returns:
+//   - error: An error if writing fails or size tree is missing for dynamic elements
+//
+// The size tree must be pre-populated for arrays with dynamic elements to ensure correct
+// offset calculation during the streaming process.
 func (d *DynSsz) marshalArrayWriter(ctx *marshalWriterContext, typeDesc *TypeDescriptor, value reflect.Value) error {
 	arrayLen := int(typeDesc.Len)
 	elemType := typeDesc.ElemDesc
@@ -189,7 +258,33 @@ func (d *DynSsz) marshalArrayWriter(ctx *marshalWriterContext, typeDesc *TypeDes
 	return nil
 }
 
-// marshalSliceWriter marshals a slice to a writer
+// marshalSliceWriter handles streaming serialization of slice types with support for dynamic sizing and padding.
+//
+// Slices in SSZ are variable-length sequences that may have size constraints specified via tags.
+// This function handles multiple slice variants including byte slices (with optimizations), slices
+// with fixed-size limits (requiring padding), and slices containing dynamic elements.
+//
+// The encoding process handles:
+//   - Dynamic slices: Similar to arrays, requiring offset tables for variable-length elements
+//   - Fixed-size slices: Must be padded with zero values to reach the specified size
+//   - Byte slices: Optimized with direct write operations
+//   - Size validation: Ensures slices don't exceed maximum sizes
+//
+// For fixed-size slices (ssz-size tag), padding calculation:
+//   - If slice length < required size: Zero elements are appended
+//   - If slice length > required size: Returns ErrListTooBig
+//   - If slice length = required size: Written as-is
+//
+// Parameters:
+//   - ctx: The marshal context containing writer, buffer, and dynamic size tracking
+//   - typeDesc: Slice metadata including element type and size constraints from tags
+//   - value: The reflect.Value of the slice to serialize
+//
+// Returns:
+//   - error: An error if writing fails, size constraints are violated, or size tree is missing
+//
+// The function ensures compliance with SSZ specifications for list types, including proper
+// offset calculation for dynamic elements and correct padding for fixed-size lists.
 func (d *DynSsz) marshalSliceWriter(ctx *marshalWriterContext, typeDesc *TypeDescriptor, value reflect.Value) error {
 	sliceLen := value.Len()
 	elemType := typeDesc.ElemDesc
@@ -317,7 +412,28 @@ func (d *DynSsz) marshalSliceWriter(ctx *marshalWriterContext, typeDesc *TypeDes
 	return nil
 }
 
-// marshalStringWriter marshals a string to a writer
+// marshalStringWriter handles streaming serialization of string types as UTF-8 encoded byte sequences.
+//
+// In SSZ, strings are treated as byte arrays containing UTF-8 encoded text. This function supports
+// both fixed-size strings (which must be padded with zeros) and variable-size strings. The encoding
+// follows the same rules as byte slices but with string-specific handling.
+//
+// String encoding behavior:
+//   - Fixed-size strings: Padded with null bytes (0x00) to reach the specified size
+//   - Variable-size strings: Written as-is without padding
+//   - Size validation: Fixed-size strings cannot exceed their declared size
+//
+// Parameters:
+//   - ctx: The marshal context containing the output writer
+//   - typeDesc: String type metadata including size constraints
+//   - value: The reflect.Value containing the string to serialize
+//
+// Returns:
+//   - error: An error if the string exceeds fixed size limits or if writing fails
+//
+// Example:
+//   A fixed-size string field with size 10 containing "hello" would be encoded as:
+//   [0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x00, 0x00, 0x00, 0x00, 0x00]
 func (d *DynSsz) marshalStringWriter(ctx *marshalWriterContext, typeDesc *TypeDescriptor, value reflect.Value) error {
 	str := value.String()
 	strBytes := []byte(str)

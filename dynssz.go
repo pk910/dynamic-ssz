@@ -463,25 +463,41 @@ func (d *DynSsz) ValidateType(t reflect.Type) error {
 	return nil
 }
 
-// MarshalSSZWriter serializes the given source into SSZ format and writes it to the provided writer.
+// MarshalSSZWriter serializes the given source into its SSZ representation and writes it directly to an io.Writer.
 //
-// This method supports streaming serialization for large data structures, avoiding the need to
-// buffer the entire encoded result in memory. It's particularly useful when writing to files,
-// network connections, or other I/O streams.
+// This method provides memory-efficient streaming serialization for SSZ encoding, particularly beneficial
+// for large data structures that would be expensive to buffer entirely in memory. Unlike MarshalSSZ which
+// returns a complete byte slice, this method writes data incrementally to the provided writer, enabling
+// direct output to files, network connections, or other I/O destinations.
 //
-// The method uses an internal buffer (default 1KB) to optimize small writes and reduce I/O overhead.
-// For structures smaller than the buffer size, it delegates to the regular MarshalSSZ method for
-// optimal performance.
+// The implementation employs several optimizations:
+//   - Internal buffering (default 1KB) to reduce system call overhead for small writes
+//   - Automatic delegation to regular MarshalSSZ for structures smaller than the buffer size
+//   - Pre-computed dynamic size trees for efficient offset calculation in complex structures
+//   - Seamless integration with fastssz for types without dynamic fields
+//
+// For structures with dynamic fields, the method builds a size tree during the first pass to calculate
+// all necessary offsets, then streams the actual data in a second pass. This two-pass approach ensures
+// correct SSZ encoding while maintaining streaming efficiency.
 //
 // Parameters:
 //   - source: Any Go value to be serialized. Must be a type supported by SSZ encoding.
-//   - w: An io.Writer where the SSZ-encoded data will be written.
+//   - w: The io.Writer destination for the SSZ-encoded output. Common writers include:
+//     - os.File for file output
+//     - net.Conn for network transmission  
+//     - bytes.Buffer for in-memory buffering
+//     - Any custom io.Writer implementation
 //
 // Returns:
-//   - error: An error if serialization fails or writing encounters an I/O error
+//   - error: An error if serialization fails due to:
+//     - Type validation errors
+//     - I/O write failures
+//     - Size calculation errors for dynamic fields
+//     - Unsupported type structures
 //
-// Example:
+// Example usage:
 //
+//	// Write directly to a file
 //	file, err := os.Create("beacon_state.ssz")
 //	if err != nil {
 //	    log.Fatal(err)
@@ -492,6 +508,15 @@ func (d *DynSsz) ValidateType(t reflect.Type) error {
 //	if err != nil {
 //	    log.Fatal("Failed to write state:", err)
 //	}
+//
+//	// Stream over network
+//	conn, err := net.Dial("tcp", "localhost:8080")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	defer conn.Close()
+//
+//	err = ds.MarshalSSZWriter(block, conn)
 func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error {
 	sourceType := reflect.TypeOf(source)
 	sourceValue := reflect.ValueOf(source)
@@ -567,37 +592,71 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error {
 	return nil
 }
 
-// UnmarshalSSZReader decodes SSZ-encoded data from a reader into the target object.
+// UnmarshalSSZReader decodes SSZ-encoded data from an io.Reader directly into the target object.
 //
-// This method provides streaming deserialization for SSZ data, reading from an io.Reader
-// instead of requiring the entire data to be in memory. This is particularly useful for
-// large files, network streams, or when memory efficiency is important.
+// This method implements memory-efficient streaming deserialization for SSZ data, reading incrementally
+// from any io.Reader source. Unlike UnmarshalSSZ which requires the complete data in memory as a byte
+// slice, this method processes data in chunks, making it ideal for large files, network streams, or
+// memory-constrained environments.
 //
-// The reader should contain exactly the amount of data needed for the target type. For
-// nested structures, the method uses a limited reader internally to ensure proper boundaries
-// are maintained according to SSZ specifications.
+// The implementation handles SSZ's offset-based encoding for dynamic fields by:
+//   - Reading offsets to determine field boundaries for variable-length data
+//   - Using limited readers to enforce exact byte consumption per field
+//   - Processing static fields directly from the stream
+//   - Dynamically allocating slices based on discovered sizes
+//
+// For optimal performance with small static types (≤ buffer size), the method automatically
+// reads into an internal buffer and delegates to the regular unmarshal function.
 //
 // Parameters:
-//   - target: A pointer to the Go value where the decoded data will be stored. Must be a pointer.
-//   - r: An io.Reader containing the SSZ-encoded data to decode
-//   - size: The expected size of the SSZ data. Use -1 if the size is unknown (reads until EOF).
+//   - target: A pointer to the Go value where decoded data will be stored. Must be a pointer
+//     to a type compatible with SSZ decoding. The method will allocate memory for slices
+//     and initialize pointer fields as needed during decoding.
+//   - r: An io.Reader source containing the SSZ-encoded data. Common readers include:
+//     - os.File for file input
+//     - net.Conn for network reception
+//     - bytes.Reader for in-memory data
+//     - Any custom io.Reader implementation
+//   - size: The expected total size of the SSZ data in bytes. Special values:
+//     - Positive value: Exact number of bytes to read (enforced via limited reader)
+//     - -1: Size unknown, read until EOF
+//     - 0: Empty data expected
 //
 // Returns:
-//   - error: An error if decoding fails due to I/O errors, format issues, or type mismatches
+//   - error: An error if decoding fails due to:
+//     - I/O read failures
+//     - Invalid SSZ format or structure
+//     - Type mismatches between data and target
+//     - Unexpected EOF or excess data
+//     - Size constraint violations
 //
-// Example:
+// The method ensures strict compliance with SSZ specifications, validating that:
+//   - All expected bytes are consumed (when size is specified)
+//   - Dynamic field offsets are valid and properly ordered
+//   - Field boundaries are respected
+//   - No data is left unread
 //
+// Example usage:
+//
+//	// Read from file
 //	file, err := os.Open("beacon_state.ssz")
 //	if err != nil {
 //	    log.Fatal(err)
 //	}
 //	defer file.Close()
 //
+//	// Get file size for exact reading
+//	info, _ := file.Stat()
 //	var state phase0.BeaconState
-//	err = ds.UnmarshalSSZReader(&state, file, -1)
+//	err = ds.UnmarshalSSZReader(&state, file, info.Size())
 //	if err != nil {
 //	    log.Fatal("Failed to read state:", err)
 //	}
+//
+//	// Read from network with unknown size
+//	conn, _ := net.Dial("tcp", "localhost:8080")
+//	var block phase0.BeaconBlock  
+//	err = ds.UnmarshalSSZReader(&block, conn, -1)
 func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int64) error {
 	targetType := reflect.TypeOf(target)
 	targetValue := reflect.ValueOf(target)
