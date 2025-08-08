@@ -8,6 +8,7 @@ package dynssz
 
 import (
 	"fmt"
+	"io"
 	"reflect"
 )
 
@@ -457,6 +458,185 @@ func (d *DynSsz) ValidateType(t reflect.Type) error {
 	_, err := d.typeCache.GetTypeDescriptor(t, nil, nil)
 	if err != nil {
 		return fmt.Errorf("type validation failed: %w", err)
+	}
+
+	return nil
+}
+
+// MarshalSSZWriter serializes the given source into SSZ format and writes it to the provided writer.
+//
+// This method supports streaming serialization for large data structures, avoiding the need to
+// buffer the entire encoded result in memory. It's particularly useful when writing to files,
+// network connections, or other I/O streams.
+//
+// The method uses an internal buffer (default 1KB) to optimize small writes and reduce I/O overhead.
+// For structures smaller than the buffer size, it delegates to the regular MarshalSSZ method for
+// optimal performance.
+//
+// Parameters:
+//   - source: Any Go value to be serialized. Must be a type supported by SSZ encoding.
+//   - w: An io.Writer where the SSZ-encoded data will be written.
+//
+// Returns:
+//   - error: An error if serialization fails or writing encounters an I/O error
+//
+// Example:
+//
+//	file, err := os.Create("beacon_state.ssz")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	defer file.Close()
+//
+//	err = ds.MarshalSSZWriter(state, file)
+//	if err != nil {
+//	    log.Fatal("Failed to write state:", err)
+//	}
+func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error {
+	sourceType := reflect.TypeOf(source)
+	sourceValue := reflect.ValueOf(source)
+
+	sourceTypeDesc, err := d.typeCache.GetTypeDescriptor(sourceType, nil, nil)
+	if err != nil {
+		return err
+	}
+
+	// Build size tree if we have dynamic fields
+	var sizeTree *dynamicSizeNode
+	if sourceTypeDesc.Size < 0 {
+		sizeTree = &dynamicSizeNode{}
+		size, err := d.getSszValueSizeWithTree(sourceTypeDesc, sourceValue, sizeTree)
+		if err != nil {
+			return err
+		}
+		sizeTree.size = size
+
+		// For small structures, use the regular marshal method
+		if size <= defaultBufferSize {
+			buf := make([]byte, 0, size)
+			result, err := d.marshalType(sourceTypeDesc, sourceValue, buf, 0)
+			if err != nil {
+				return err
+			}
+			_, err = w.Write(result)
+			return err
+		}
+	} else {
+		// For static structures without dynamic fields, calculate size once
+		size, err := d.getSszValueSize(sourceTypeDesc, sourceValue)
+		if err != nil {
+			return err
+		}
+
+		// For small structures, use the regular marshal method
+		if size <= defaultBufferSize {
+			buf := make([]byte, 0, size)
+			result, err := d.marshalType(sourceTypeDesc, sourceValue, buf, 0)
+			if err != nil {
+				return err
+			}
+			_, err = w.Write(result)
+			return err
+		}
+	}
+
+	// Create writer context
+	ctx := newMarshalWriterContext(w, defaultBufferSize)
+	if sizeTree != nil {
+		ctx.setSizeTree(sizeTree)
+	}
+
+	// Use counting writer to track bytes written
+	cw := newCountingWriter(w)
+	ctx.writer = cw
+
+	// Marshal using writer methods
+	err = d.marshalTypeWriter(ctx, sourceTypeDesc, sourceValue)
+	if err != nil {
+		return err
+	}
+
+	// Flush any remaining buffer
+	if len(ctx.buffer) > 0 {
+		_, err = ctx.writer.Write(ctx.buffer)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// UnmarshalSSZReader decodes SSZ-encoded data from a reader into the target object.
+//
+// This method provides streaming deserialization for SSZ data, reading from an io.Reader
+// instead of requiring the entire data to be in memory. This is particularly useful for
+// large files, network streams, or when memory efficiency is important.
+//
+// The reader should contain exactly the amount of data needed for the target type. For
+// nested structures, the method uses a limited reader internally to ensure proper boundaries
+// are maintained according to SSZ specifications.
+//
+// Parameters:
+//   - target: A pointer to the Go value where the decoded data will be stored. Must be a pointer.
+//   - r: An io.Reader containing the SSZ-encoded data to decode
+//   - size: The expected size of the SSZ data. Use -1 if the size is unknown (reads until EOF).
+//
+// Returns:
+//   - error: An error if decoding fails due to I/O errors, format issues, or type mismatches
+//
+// Example:
+//
+//	file, err := os.Open("beacon_state.ssz")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	defer file.Close()
+//
+//	var state phase0.BeaconState
+//	err = ds.UnmarshalSSZReader(&state, file, -1)
+//	if err != nil {
+//	    log.Fatal("Failed to read state:", err)
+//	}
+func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int64) error {
+	targetType := reflect.TypeOf(target)
+	targetValue := reflect.ValueOf(target)
+
+	targetTypeDesc, err := d.typeCache.GetTypeDescriptor(targetType, nil, nil)
+	if err != nil {
+		return err
+	}
+
+	// For small static types, read into buffer and use regular unmarshal
+	if targetTypeDesc.Size > 0 && targetTypeDesc.Size <= defaultBufferSize {
+		buf := make([]byte, targetTypeDesc.Size)
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return err
+		}
+		_, err := d.unmarshalType(targetTypeDesc, targetValue, buf, 0)
+		return err
+	}
+
+	// Create reader context
+	ctx := newUnmarshalReaderContext(defaultBufferSize)
+
+	// Use limited reader if size is known
+	var reader io.Reader = r
+	if size >= 0 {
+		reader = newLimitedReader(r, size)
+	}
+
+	// Unmarshal using reader methods
+	err = d.unmarshalTypeReader(ctx, reader, targetTypeDesc, targetValue)
+	if err != nil {
+		return err
+	}
+
+	// Verify all data was consumed if using limited reader
+	if lr, ok := reader.(*limitedReader); ok && size >= 0 {
+		if lr.BytesRead() != size {
+			return fmt.Errorf("did not consume full data (consumed: %v, expected: %v)", lr.BytesRead(), size)
+		}
 	}
 
 	return nil

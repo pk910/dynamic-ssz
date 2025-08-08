@@ -1,6 +1,8 @@
 package spectests
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -56,6 +58,7 @@ func testForkConsensusSpec(t *testing.T, fork string, preset string, tests []Spe
 				t.Run(fmt.Sprintf("%s/%s", test.name, info.Name()), func(t *testing.T) {
 					// Obtain the struct from the SSZ.
 					s2 := clone.Clone(test.s)
+					s3 := clone.Clone(test.s)
 					compressedSpecSSZ, err := os.ReadFile(filepath.Join(path, "serialized.ssz_snappy"))
 					require.NoError(t, err)
 					specSSZ, err := snappy.Decode(nil, compressedSpecSSZ)
@@ -65,10 +68,32 @@ func testForkConsensusSpec(t *testing.T, fork string, preset string, tests []Spe
 					err = dynssz.UnmarshalSSZ(s2, specSSZ)
 					require.NoError(t, err)
 
+					// Unmarshal the SSZ using the writer.
+					specSSZReader := bytes.NewReader(specSSZ)
+					err = dynssz.UnmarshalSSZReader(s3, specSSZReader, -1)
+					if err != nil {
+						specSSZReader := bytes.NewReader(specSSZ)
+						err = dynssz.UnmarshalSSZReader(s3, specSSZReader, -1)
+						fmt.Printf("error unmarshalling: %v\n", err)
+					}
+					require.NoError(t, err)
+
+					s2Json, err := json.Marshal(s2)
+					require.NoError(t, err)
+					s3Json, err := json.Marshal(s3)
+					require.NoError(t, err)
+					require.Equal(t, s2Json, s3Json)
+
 					// Confirm we can return to the SSZ.
 					remarshalledSpecSSZ, err := dynssz.MarshalSSZ(s2)
 					require.NoError(t, err)
 					require.Equal(t, specSSZ, remarshalledSpecSSZ)
+
+					// Confirm we can return to the SSZ using the writer.
+					var buf bytes.Buffer
+					err = dynssz.MarshalSSZWriter(s3, &buf)
+					require.NoError(t, err)
+					require.Equal(t, specSSZ, buf.Bytes())
 
 					// Obtain the hash tree root from the YAML.
 					specYAMLRoot, err := os.ReadFile(filepath.Join(path, "roots.yaml"))
