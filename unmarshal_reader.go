@@ -34,14 +34,6 @@ import (
 //   - Complex type delegation to specialized streaming handlers
 //   - Buffer reuse for small reads to minimize allocations
 func (d *DynSsz) unmarshalTypeReader(ctx *unmarshalReaderContext, typeDesc *TypeDescriptor, value reflect.Value) error {
-	if typeDesc.IsPtr {
-		if value.IsNil() {
-			// Create new instance for nil pointer
-			value.Set(reflect.New(typeDesc.Type.Elem()))
-		}
-		value = value.Elem()
-	}
-
 	// For small static types, read into context buffer and use regular unmarshal
 	if !typeDesc.HasDynamicSize && typeDesc.Size > 0 && typeDesc.Size <= int32(len(ctx.buffer)) {
 		buf := ctx.buffer[:typeDesc.Size]
@@ -50,6 +42,14 @@ func (d *DynSsz) unmarshalTypeReader(ctx *unmarshalReaderContext, typeDesc *Type
 		}
 		_, err := d.unmarshalType(typeDesc, value, buf, 0)
 		return err
+	}
+
+	if typeDesc.IsPtr {
+		if value.IsNil() {
+			// Create new instance for nil pointer
+			value.Set(reflect.New(typeDesc.Type.Elem()))
+		}
+		value = value.Elem()
 	}
 
 	// Use fastssz if available and not disabled for small structures
@@ -303,11 +303,10 @@ func (d *DynSsz) unmarshalArrayReader(ctx *unmarshalReaderContext, typeDesc *Typ
 		}
 	} else if elemType.Kind == reflect.Uint8 {
 		// Read directly from stream
-		bytes := make([]byte, arrayLen)
+		bytes := value.Bytes()
 		if _, err := io.ReadFull(ctx.limitedReader, bytes); err != nil {
 			return err
 		}
-		value.SetBytes(bytes)
 		return nil
 	} else {
 		// Static elements - read each element directly from stream

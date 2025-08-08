@@ -32,16 +32,8 @@ import (
 //   - Complex type delegation to specialized streaming handlers
 //   - Buffer optimization for small writes to reduce I/O overhead
 func (d *DynSsz) marshalTypeWriter(ctx *marshalWriterContext, typeDesc *TypeDescriptor, value reflect.Value) error {
-	if typeDesc.IsPtr {
-		if value.IsNil() {
-			// Handle nil pointers by creating zero value
-			value = reflect.New(typeDesc.Type.Elem())
-		}
-		value = value.Elem()
-	}
 
 	// For small static types or when buffer can hold entire result, use regular marshal
-	/* // TODO: re-enable this for production
 	if !typeDesc.HasDynamicSize && typeDesc.Size > 0 && typeDesc.Size <= int32(cap(ctx.buffer)) {
 		buf := ctx.buffer[:0]
 		result, err := d.marshalType(typeDesc, value, buf, 0)
@@ -51,7 +43,14 @@ func (d *DynSsz) marshalTypeWriter(ctx *marshalWriterContext, typeDesc *TypeDesc
 		_, err = ctx.writer.Write(result)
 		return err
 	}
-	*/
+
+	if typeDesc.IsPtr {
+		if value.IsNil() {
+			// Handle nil pointers by creating zero value
+			value = reflect.New(typeDesc.Type.Elem())
+		}
+		value = value.Elem()
+	}
 
 	// Use fastssz if available and not disabled
 	if !d.NoFastSsz && typeDesc.IsFastSSZMarshaler {
@@ -271,8 +270,7 @@ func (d *DynSsz) marshalArrayWriter(ctx *marshalWriterContext, typeDesc *TypeDes
 	} else {
 		// Static elements - write directly
 		for i := 0; i < arrayLen; i++ {
-			elementSize := ctx.currentNode.size
-			ctx.writer.pushLimit(uint64(elementSize))
+			ctx.writer.pushLimit(uint64(elemType.Size))
 			err := d.marshalTypeWriter(ctx, elemType, value.Index(i))
 			writtenBytes := ctx.writer.popLimit()
 
@@ -280,8 +278,8 @@ func (d *DynSsz) marshalArrayWriter(ctx *marshalWriterContext, typeDesc *TypeDes
 				return err
 			}
 
-			if writtenBytes != uint64(elementSize) {
-				return fmt.Errorf("static array element %d did not write expected ssz range (written: %v, expected: %v)", i, writtenBytes, elementSize)
+			if writtenBytes != uint64(elemType.Size) {
+				return fmt.Errorf("static array element %d did not write expected ssz range (written: %v, expected: %v)", i, writtenBytes, elemType.Size)
 			}
 		}
 	}

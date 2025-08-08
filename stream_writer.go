@@ -80,7 +80,7 @@ func (lw *limitedWriter) Write(p []byte) (n int, err error) {
 	if len(lw.limits) > 0 {
 		currentLimit := lw.limits[len(lw.limits)-1]
 		remaining := currentLimit.absoluteLimit - lw.bytesWritten
-		if remaining == 0 {
+		if remaining < uint64(len(p)) {
 			return 0, io.ErrShortWrite
 		}
 		if uint64(len(p)) > remaining {
