@@ -63,7 +63,7 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 				fieldType := targetType.Fields[i]
 				fieldValue := targetValue.Field(i)
 
-				if fieldType.Size < 0 {
+				if fieldType.Type.Size < 0 {
 					size, err := d.getSszValueSize(fieldType.Type, fieldValue)
 					if err != nil {
 						return 0, err
@@ -73,7 +73,7 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 					staticSize += size + 4
 				} else {
 					// static field
-					staticSize += uint32(fieldType.Size)
+					staticSize += uint32(fieldType.Type.Size)
 				}
 			}
 		case reflect.Array:

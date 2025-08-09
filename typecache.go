@@ -28,6 +28,7 @@ type TypeDescriptor struct {
 	SizeHints           []SszSizeHint        // Size hints from tags
 	MaxSizeHints        []SszMaxSizeHint     // Max size hints from tags
 	TypeHints           []SszTypeHint        // Type hints from tags
+	SszType             SszType              // SSZ type of the type
 	HasDynamicSize      bool                 // Whether this type uses dynamic spec size value that differs from the default
 	HasDynamicMax       bool                 // Whether this type uses dynamic spec max value that differs from the default
 	IsFastSSZMarshaler  bool                 // Whether the type implements fastssz.Marshaler
@@ -40,13 +41,10 @@ type TypeDescriptor struct {
 
 // FieldDescriptor represents a cached descriptor for a struct field
 type FieldDescriptor struct {
-	Name      string
-	Offset    uintptr         // Unsafe offset within the struct
-	Type      *TypeDescriptor // Type descriptor
-	Index     int16           // Index of the field in the struct
-	Size      int32           // SSZ size (-1 if dynamic)
-	IsPtr     bool            // Whether field is a pointer
-	IsDynamic bool            // Whether field has dynamic size
+	Name   string
+	Offset uintptr         // Unsafe offset within the struct
+	Type   *TypeDescriptor // Type descriptor
+	Index  int16           // Index of the field in the struct
 }
 
 // DynFieldDescriptor represents a dynamic field descriptor for a struct
@@ -77,6 +75,7 @@ func NewTypeCache(dynssz *DynSsz) *TypeCache {
 //   - t: The reflect.Type for which to obtain a descriptor
 //   - sizeHints: Optional size hints from parent structures' tags. Pass nil for top-level types.
 //   - maxSizeHints: Optional max size hints from parent structures' tags. Pass nil for top-level types.
+//   - typeHints: Optional type hints from parent structures' tags. Pass nil for top-level types.
 //
 // Returns:
 //   - *TypeDescriptor: The type descriptor containing metadata for SSZ operations
@@ -165,58 +164,125 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		}
 	}
 
-	// Compute size and build field descriptors
-	switch desc.Kind {
-	case reflect.Struct:
-		err := tc.buildStructDescriptor(desc, t)
-		if err != nil {
-			return nil, err
-		}
-	case reflect.Array:
-		err := tc.buildArrayDescriptor(desc, t, sizeHints, maxSizeHints, typeHints)
-		if err != nil {
-			return nil, err
-		}
-	case reflect.Slice:
-		err := tc.buildSliceDescriptor(desc, t, sizeHints, maxSizeHints, typeHints)
-		if err != nil {
-			return nil, err
-		}
-	case reflect.Bool:
-		desc.Size = 1
-	case reflect.Uint8:
-		desc.Size = 1
-	case reflect.Uint16:
-		desc.Size = 2
-	case reflect.Uint32:
-		desc.Size = 4
-	case reflect.Uint64:
-		desc.Size = 8
+	// determine ssz type
+	sszType := SszUnspecifiedType
+	if len(typeHints) > 0 {
+		sszType = typeHints[0].Type
+	}
 
-	// String handling
-	case reflect.String:
-		err := tc.buildStringDescriptor(desc, sizeHints, maxSizeHints)
+	// auto-detect ssz type if not specified
+	if sszType == SszUnspecifiedType {
+		switch desc.Kind {
+		// basic types
+		case reflect.Bool:
+			sszType = SszBoolType
+		case reflect.Uint8:
+			sszType = SszUint8Type
+		case reflect.Uint16:
+			sszType = SszUint16Type
+		case reflect.Uint32:
+			sszType = SszUint32Type
+		case reflect.Uint64:
+			sszType = SszUint64Type
+
+		// complex types
+		case reflect.Struct:
+			sszType = SszContainerType
+		case reflect.Array:
+			sszType = SszVectorType
+		case reflect.Slice:
+			if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
+				sszType = SszVectorType
+			} else {
+				sszType = SszListType
+			}
+		case reflect.String:
+			if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
+				sszType = SszVectorType
+			} else {
+				sszType = SszListType
+			}
+			desc.IsString = true
+
+		// unsupported types
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			return nil, fmt.Errorf("signed integers are not supported in SSZ (use unsigned integers instead)")
+		case reflect.Float32, reflect.Float64:
+			return nil, fmt.Errorf("floating-point numbers are not supported in SSZ")
+		case reflect.Complex64, reflect.Complex128:
+			return nil, fmt.Errorf("complex numbers are not supported in SSZ")
+		case reflect.Map:
+			return nil, fmt.Errorf("maps are not supported in SSZ (use structs or arrays instead)")
+		case reflect.Chan:
+			return nil, fmt.Errorf("channels are not supported in SSZ")
+		case reflect.Func:
+			return nil, fmt.Errorf("functions are not supported in SSZ")
+		case reflect.Interface:
+			return nil, fmt.Errorf("interfaces are not supported in SSZ (use concrete types)")
+		case reflect.UnsafePointer:
+			return nil, fmt.Errorf("unsafe pointers are not supported in SSZ")
+		default:
+			return nil, fmt.Errorf("unsupported type kind: %v", t.Kind())
+		}
+	}
+
+	desc.SszType = sszType
+
+	// Check type compatibility and compute size
+	switch sszType {
+	// basic types
+	case SszBoolType:
+		if desc.Kind != reflect.Bool {
+			return nil, fmt.Errorf("bool ssz type can only be represented by bool types, got %v", desc.Kind)
+		}
+		desc.Size = 1
+	case SszUint8Type:
+		if desc.Kind != reflect.Uint8 {
+			return nil, fmt.Errorf("uint8 ssz type can only be represented by uint8 types, got %v", desc.Kind)
+		}
+		desc.Size = 1
+	case SszUint16Type:
+		if desc.Kind != reflect.Uint16 {
+			return nil, fmt.Errorf("uint16 ssz type can only be represented by uint16 types, got %v", desc.Kind)
+		}
+		desc.Size = 2
+	case SszUint32Type:
+		if desc.Kind != reflect.Uint32 {
+			return nil, fmt.Errorf("uint32 ssz type can only be represented by uint32 types, got %v", desc.Kind)
+		}
+		desc.Size = 4
+	case SszUint64Type:
+		if desc.Kind != reflect.Uint64 {
+			return nil, fmt.Errorf("uint64 ssz type can only be represented by uint64 types, got %v", desc.Kind)
+		}
+		desc.Size = 8
+	case SszUint128Type:
+		err := tc.buildUint128Descriptor(desc, t) // handle as [16]uint8 or [2]uint64
 		if err != nil {
 			return nil, err
 		}
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return nil, fmt.Errorf("signed integers are not supported in SSZ (use unsigned integers instead)")
-	case reflect.Float32, reflect.Float64:
-		return nil, fmt.Errorf("floating-point numbers are not supported in SSZ")
-	case reflect.Complex64, reflect.Complex128:
-		return nil, fmt.Errorf("complex numbers are not supported in SSZ")
-	case reflect.Map:
-		return nil, fmt.Errorf("maps are not supported in SSZ (use structs or arrays instead)")
-	case reflect.Chan:
-		return nil, fmt.Errorf("channels are not supported in SSZ")
-	case reflect.Func:
-		return nil, fmt.Errorf("functions are not supported in SSZ")
-	case reflect.Interface:
-		return nil, fmt.Errorf("interfaces are not supported in SSZ (use concrete types)")
-	case reflect.UnsafePointer:
-		return nil, fmt.Errorf("unsafe pointers are not supported in SSZ")
-	default:
-		return nil, fmt.Errorf("unsupported type kind: %v", t.Kind())
+	case SszUint256Type:
+		err := tc.buildUint256Descriptor(desc, t) // handle as [32]uint8 or [4]uint64
+		if err != nil {
+			return nil, err
+		}
+
+	// complex types
+	case SszContainerType:
+		err := tc.buildContainerDescriptor(desc, t)
+		if err != nil {
+			return nil, err
+		}
+	case SszVectorType, SszBitvectorType:
+		err := tc.buildVectorDescriptor(desc, t, sizeHints, maxSizeHints, typeHints)
+		if err != nil {
+			return nil, err
+		}
+	case SszListType, SszBitlistType:
+		err := tc.buildListDescriptor(desc, t, sizeHints, maxSizeHints, typeHints)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if !desc.HasDynamicSize {
@@ -227,11 +293,85 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		desc.HasHashTreeRootWith = tc.dynssz.getHashTreeRootWithCompatibility(t)
 	}
 
+	if desc.SszType == SszCustomType && (!desc.IsFastSSZMarshaler || !desc.IsFastSSZHasher) {
+		return nil, fmt.Errorf("custom ssz type requires fastssz marshaler and hasher implementations")
+	}
+
 	return desc, nil
 }
 
-// buildStructDescriptor builds a descriptor for struct types
-func (tc *TypeCache) buildStructDescriptor(desc *TypeDescriptor, t reflect.Type) error {
+// buildUint128Descriptor builds a descriptor for uint128 types
+func (tc *TypeCache) buildUint128Descriptor(desc *TypeDescriptor, t reflect.Type) error {
+	if desc.Kind != reflect.Slice && desc.Kind != reflect.Array {
+		return fmt.Errorf("uint128 ssz type can only be represented by slice or array types, got %v", desc.Kind)
+	}
+
+	fieldType := t.Elem()
+	elemKind := fieldType.Kind()
+	if elemKind != reflect.Uint8 && elemKind != reflect.Uint64 {
+		return fmt.Errorf("uint128 ssz type can only be represented by slices or arrays of uint8 or uint64, got %v", elemKind)
+	} else if elemKind == reflect.Uint8 {
+		desc.IsByteArray = true
+	}
+
+	elemDesc, err := tc.getTypeDescriptor(fieldType, nil, nil, nil)
+	if err != nil {
+		return err
+	}
+
+	desc.ElemDesc = elemDesc
+	desc.Size = 16 // hardcoded size for uint128
+	desc.Len = uint32(desc.Size / elemDesc.Size)
+
+	if desc.Kind == reflect.Array {
+		dstLen := uint32(t.Len())
+		if dstLen < desc.Len {
+			return fmt.Errorf("uint128 ssz type does not fit in array (%d < %d)", dstLen, desc.Len)
+		}
+	}
+
+	return nil
+}
+
+// buildUint256Descriptor builds a descriptor for uint256 types
+func (tc *TypeCache) buildUint256Descriptor(desc *TypeDescriptor, t reflect.Type) error {
+	if desc.Kind != reflect.Slice && desc.Kind != reflect.Array {
+		return fmt.Errorf("uint256 ssz type can only be represented by slice or array types, got %v", desc.Kind)
+	}
+
+	fieldType := t.Elem()
+	elemKind := fieldType.Kind()
+	if elemKind != reflect.Uint8 && elemKind != reflect.Uint64 {
+		return fmt.Errorf("uint256 ssz type can only be represented by slices or arrays of uint8 or uint64, got %v", elemKind)
+	} else if elemKind == reflect.Uint8 {
+		desc.IsByteArray = true
+	}
+
+	elemDesc, err := tc.getTypeDescriptor(fieldType, nil, nil, nil)
+	if err != nil {
+		return err
+	}
+
+	desc.ElemDesc = elemDesc
+	desc.Size = 32 // hardcoded size for uint256
+	desc.Len = uint32(desc.Size / elemDesc.Size)
+
+	if desc.Kind == reflect.Array {
+		dstLen := uint32(t.Len())
+		if dstLen < desc.Len {
+			return fmt.Errorf("uint256 ssz type does not fit in array (%d < %d)", dstLen, desc.Len)
+		}
+	}
+
+	return nil
+}
+
+// buildContainerDescriptor builds a descriptor for ssz container types
+func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Type) error {
+	if desc.Kind != reflect.Struct {
+		return fmt.Errorf("container ssz type can only be represented by struct types, got %v", desc.Kind)
+	}
+
 	desc.Fields = make([]FieldDescriptor, t.NumField())
 	totalSize := int32(0)
 	isDynamic := false
@@ -242,7 +382,6 @@ func (tc *TypeCache) buildStructDescriptor(desc *TypeDescriptor, t reflect.Type)
 			Name:   field.Name,
 			Offset: field.Offset,
 			Index:  int16(i),
-			IsPtr:  field.Type.Kind() == reflect.Ptr,
 		}
 
 		// Get size hints from tags
@@ -267,10 +406,8 @@ func (tc *TypeCache) buildStructDescriptor(desc *TypeDescriptor, t reflect.Type)
 			return err
 		}
 
-		fieldDesc.Size = fieldDesc.Type.Size
-		sszSize := fieldDesc.Size
-		if fieldDesc.Size < 0 {
-			fieldDesc.IsDynamic = true
+		sszSize := fieldDesc.Type.Size
+		if sszSize < 0 {
 			isDynamic = true
 			sszSize = 4 // Offset size for dynamic fields
 
@@ -301,8 +438,23 @@ func (tc *TypeCache) buildStructDescriptor(desc *TypeDescriptor, t reflect.Type)
 	return nil
 }
 
-// buildArrayDescriptor builds a descriptor for array types
-func (tc *TypeCache) buildArrayDescriptor(desc *TypeDescriptor, t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) error {
+// buildVectorDescriptor builds a descriptor for ssz vector types
+func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) error {
+	if desc.Kind != reflect.Array && desc.Kind != reflect.Slice && desc.Kind != reflect.String {
+		return fmt.Errorf("vector ssz type can only be represented by array or slice types, got %v", desc.Kind)
+	}
+
+	if desc.Kind == reflect.Array {
+		desc.Len = uint32(t.Len())
+		if len(sizeHints) > 0 && sizeHints[0].Size > desc.Len {
+			return fmt.Errorf("size hint for vector type is greater than the length of the array (%d > %d)", sizeHints[0].Size, desc.Len)
+		}
+	} else if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
+		desc.Len = uint32(sizeHints[0].Size)
+	} else {
+		return fmt.Errorf("missing size hint for vector type")
+	}
+
 	childSizeHints := []SszSizeHint{}
 	if len(sizeHints) > 1 {
 		childSizeHints = sizeHints[1:]
@@ -318,9 +470,15 @@ func (tc *TypeCache) buildArrayDescriptor(desc *TypeDescriptor, t reflect.Type, 
 		childTypeHints = typeHints[1:]
 	}
 
-	fieldType := t.Elem()
-	if fieldType == byteType {
+	var fieldType reflect.Type
+	if desc.Kind == reflect.String {
+		fieldType = byteType
 		desc.IsByteArray = true
+	} else {
+		fieldType = t.Elem()
+		if fieldType == byteType {
+			desc.IsByteArray = true
+		}
 	}
 
 	elemDesc, err := tc.getTypeDescriptor(fieldType, childSizeHints, childMaxSizeHints, childTypeHints)
@@ -329,7 +487,7 @@ func (tc *TypeCache) buildArrayDescriptor(desc *TypeDescriptor, t reflect.Type, 
 	}
 
 	desc.ElemDesc = elemDesc
-	desc.Len = uint32(t.Len())
+
 	if elemDesc.HasDynamicSize {
 		desc.HasDynamicSize = true
 	}
@@ -340,14 +498,18 @@ func (tc *TypeCache) buildArrayDescriptor(desc *TypeDescriptor, t reflect.Type, 
 	if elemDesc.Size < 0 {
 		desc.Size = -1
 	} else {
-		desc.Size = elemDesc.Size * int32(t.Len())
+		desc.Size = elemDesc.Size * int32(desc.Len)
 	}
 
 	return nil
 }
 
-// buildSliceDescriptor builds a descriptor for slice types
-func (tc *TypeCache) buildSliceDescriptor(desc *TypeDescriptor, t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) error {
+// buildListDescriptor builds a descriptor for ssz list types
+func (tc *TypeCache) buildListDescriptor(desc *TypeDescriptor, t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) error {
+	if desc.Kind != reflect.Slice && desc.Kind != reflect.String {
+		return fmt.Errorf("list ssz type can only be represented by slice types, got %v", desc.Kind)
+	}
+
 	childSizeHints := []SszSizeHint{}
 	if len(sizeHints) > 1 {
 		childSizeHints = sizeHints[1:]
@@ -363,9 +525,15 @@ func (tc *TypeCache) buildSliceDescriptor(desc *TypeDescriptor, t reflect.Type, 
 		childTypeHints = typeHints[1:]
 	}
 
-	fieldType := t.Elem()
-	if fieldType == byteType {
+	var fieldType reflect.Type
+	if desc.Kind == reflect.String {
+		fieldType = byteType
 		desc.IsByteArray = true
+	} else {
+		fieldType = t.Elem()
+		if fieldType == byteType {
+			desc.IsByteArray = true
+		}
 	}
 
 	elemDesc, err := tc.getTypeDescriptor(fieldType, childSizeHints, childMaxSizeHints, childTypeHints)
@@ -389,34 +557,6 @@ func (tc *TypeCache) buildSliceDescriptor(desc *TypeDescriptor, t reflect.Type, 
 		}
 	} else {
 		desc.Size = -1 // Dynamic slice
-	}
-
-	return nil
-}
-
-// buildStringDescriptor builds a descriptor for string types
-func (tc *TypeCache) buildStringDescriptor(desc *TypeDescriptor, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint) error {
-	desc.IsString = true
-
-	// Apply size hints
-	desc.SizeHints = sizeHints
-	desc.MaxSizeHints = maxSizeHints
-
-	// Check if we have a size hint to make this a fixed-size string
-	if len(sizeHints) > 0 && !sizeHints[0].Dynamic && sizeHints[0].Size > 0 {
-		// Fixed-size string
-		desc.Size = int32(sizeHints[0].Size)
-	} else {
-		// Dynamic string (default)
-		desc.Size = -1
-	}
-
-	// Dynamic strings might have spec values
-	if len(sizeHints) > 0 && sizeHints[0].SpecVal {
-		desc.HasDynamicSize = true
-	}
-	if len(maxSizeHints) > 0 && maxSizeHints[0].SpecVal {
-		desc.HasDynamicMax = true
 	}
 
 	return nil

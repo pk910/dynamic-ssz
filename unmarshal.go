@@ -150,7 +150,7 @@ func (d *DynSsz) unmarshalStruct(targetType *TypeDescriptor, targetValue reflect
 	for i := 0; i < len(targetType.Fields); i++ {
 		field := targetType.Fields[i]
 
-		fieldSize := int(field.Size)
+		fieldSize := int(field.Type.Size)
 		if fieldSize > 0 {
 			// static size field
 			if offset+fieldSize > sszSize {

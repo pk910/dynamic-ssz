@@ -132,8 +132,8 @@ func (d *DynSsz) marshalStruct(sourceType *TypeDescriptor, sourceValue reflect.V
 
 	for i := 0; i < fieldCount; i++ {
 		field := sourceType.Fields[i]
-		fieldSize := field.Size
-		if field.Size > 0 {
+		fieldSize := field.Type.Size
+		if fieldSize > 0 {
 			//fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
 
 			fieldValue := sourceValue.Field(i)
