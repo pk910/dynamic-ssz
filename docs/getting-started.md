@@ -160,6 +160,28 @@ err := ds.UnmarshalSSZ(&target, sszData)
 root, err := ds.HashTreeRoot(myStruct)
 ```
 
+### Streaming Operations (New)
+
+Dynamic SSZ now supports memory-efficient streaming operations for large data structures:
+
+```go
+// Stream to file
+file, _ := os.Create("state.ssz")
+defer file.Close()
+err := ds.MarshalSSZWriter(largeState, file)
+
+// Stream from file
+file, _ = os.Open("state.ssz")
+defer file.Close()
+info, _ := file.Stat()
+var state BeaconState
+err = ds.UnmarshalSSZReader(&state, file, info.Size())
+
+// Stream over network
+conn, _ := net.Dial("tcp", "server:8080")
+err = ds.MarshalSSZWriter(block, conn)
+```
+
 ## Configuration Options
 
 The DynSsz instance supports several configuration options:

@@ -21,7 +21,7 @@ type TypeDescriptor struct {
 	Kind                reflect.Kind
 	Type                reflect.Type
 	Size                int32                // SSZ size (-1 if dynamic)
-	Len                 uint32               // Length of array/slice
+	Len                 uint32               // Length of array/slice, static size for structs
 	Fields              []FieldDescriptor    // For structs
 	DynFields           []DynFieldDescriptor // Dynamic struct fields
 	ElemDesc            *TypeDescriptor      // For slices/arrays
@@ -285,6 +285,7 @@ func (tc *TypeCache) buildStructDescriptor(desc *TypeDescriptor, t reflect.Type)
 	}
 
 	if isDynamic {
+		desc.Len = uint32(totalSize)
 		desc.Size = -1
 	} else {
 		desc.Size = totalSize
