@@ -45,6 +45,9 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 	// - struct implements fastssz Marshaler interface
 	// - this structure or any child structure does not use spec specific field sizes
 	useFastSsz := !d.NoFastSsz && targetType.IsFastSSZMarshaler
+	if !useFastSsz && targetType.SszType == SszCustomType {
+		useFastSsz = true
+	}
 
 	if useFastSsz {
 		marshaller, ok := targetValue.Addr().Interface().(fastsszMarshaler)
@@ -57,8 +60,8 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 
 	if !useFastSsz {
 		// can't use fastssz, use dynamic size calculation
-		switch targetType.Kind {
-		case reflect.Struct:
+		switch targetType.SszType {
+		case SszContainerType:
 			for i := 0; i < len(targetType.Fields); i++ {
 				fieldType := targetType.Fields[i]
 				fieldValue := targetValue.Field(i)
@@ -76,30 +79,54 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 					staticSize += uint32(fieldType.Type.Size)
 				}
 			}
-		case reflect.Array:
-			if targetType.Len > 0 {
-				fieldType := targetType.ElemDesc
-				if fieldType.Kind == reflect.Uint8 {
-					staticSize = targetType.Len
-				} else if fieldType.Size < 0 {
-					// array with dynamic size items, so we have to go through each item
-					for i := 0; i < int(targetType.Len); i++ {
-						size, err := d.getSszValueSize(fieldType, targetValue.Index(i))
-						if err != nil {
-							return 0, err
-						}
-						// add 4 bytes for offset in dynamic array
-						staticSize += size + 4
+		case SszVectorType, SszBitvectorType:
+			fieldType := targetType.ElemDesc
+			if fieldType.Kind == reflect.Uint8 {
+				staticSize = targetType.Len
+			} else if fieldType.Size < 0 {
+				// vector with dynamic size items, so we have to go through each item
+				dataLen := targetValue.Len()
+
+				for i := 0; i < dataLen; i++ {
+					size, err := d.getSszValueSize(fieldType, targetValue.Index(i))
+					if err != nil {
+						return 0, err
 					}
-				} else {
+					// add 4 bytes for offset in dynamic array
+					staticSize += size + 4
+				}
+
+				if dataLen < int(targetType.Len) {
+					appendZero := targetType.Len - uint32(dataLen)
+					zeroVal := reflect.New(fieldType.Type).Elem()
+					size, err := d.getSszValueSize(fieldType, zeroVal)
+					if err != nil {
+						return 0, err
+					}
+
+					staticSize += (size + 4) * appendZero
+				}
+			} else {
+				dataLen := targetValue.Len()
+
+				if dataLen > 0 {
 					size, err := d.getSszValueSize(fieldType, targetValue.Index(0))
 					if err != nil {
 						return 0, err
 					}
+
 					staticSize = size * targetType.Len
+				} else {
+					zeroVal := reflect.New(fieldType.Type).Elem()
+					size, err := d.getSszValueSize(fieldType, zeroVal)
+					if err != nil {
+						return 0, err
+					}
+
+					staticSize += size * targetType.Len
 				}
 			}
-		case reflect.Slice:
+		case SszListType, SszBitlistType:
 			fieldType := targetType.ElemDesc
 			sliceLen := uint32(targetValue.Len())
 
@@ -140,27 +167,23 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 					staticSize = uint32(fieldType.Size) * (sliceLen + appendZero)
 				}
 			}
-		case reflect.String:
-			// String size depends on whether it's fixed or dynamic
-			if targetType.Size > 0 {
-				// Fixed-size string: always return the fixed size
-				staticSize = uint32(targetType.Size)
-			} else {
-				// Dynamic string: return the actual length
-				staticSize = uint32(len(targetValue.String()))
-			}
 
 		// primitive types
-		case reflect.Bool:
+		case SszBoolType:
 			staticSize = 1
-		case reflect.Uint8:
+		case SszUint8Type:
 			staticSize = 1
-		case reflect.Uint16:
+		case SszUint16Type:
 			staticSize = 2
-		case reflect.Uint32:
+		case SszUint32Type:
 			staticSize = 4
-		case reflect.Uint64:
+		case SszUint64Type:
 			staticSize = 8
+		case SszUint128Type:
+			staticSize = 16
+		case SszUint256Type:
+			staticSize = 32
+
 		default:
 			return 0, fmt.Errorf("unhandled reflection kind in size check: %v", targetType.Kind)
 		}
