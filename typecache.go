@@ -27,6 +27,7 @@ type TypeDescriptor struct {
 	ElemDesc            *TypeDescriptor      // For slices/arrays
 	SizeHints           []SszSizeHint        // Size hints from tags
 	MaxSizeHints        []SszMaxSizeHint     // Max size hints from tags
+	TypeHints           []SszTypeHint        // Type hints from tags
 	HasDynamicSize      bool                 // Whether this type uses dynamic spec size value that differs from the default
 	HasDynamicMax       bool                 // Whether this type uses dynamic spec max value that differs from the default
 	IsFastSSZMarshaler  bool                 // Whether the type implements fastssz.Marshaler
@@ -92,9 +93,9 @@ func NewTypeCache(dynssz *DynSsz) *TypeCache {
 //	    log.Fatal("Failed to get type descriptor:", err)
 //	}
 //	fmt.Printf("Type size: %d bytes (dynamic: %v)\n", typeDesc.Size, typeDesc.Size < 0)
-func (tc *TypeCache) GetTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint) (*TypeDescriptor, error) {
+func (tc *TypeCache) GetTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) (*TypeDescriptor, error) {
 	// Check cache first (read lock)
-	if len(sizeHints) == 0 && len(maxSizeHints) == 0 {
+	if len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) == 0 {
 		tc.mutex.RLock()
 		if desc, exists := tc.descriptors[t]; exists {
 			tc.mutex.RUnlock()
@@ -107,22 +108,23 @@ func (tc *TypeCache) GetTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, 
 	tc.mutex.Lock()
 	defer tc.mutex.Unlock()
 
-	return tc.getTypeDescriptor(t, sizeHints, maxSizeHints)
+	return tc.getTypeDescriptor(t, sizeHints, maxSizeHints, typeHints)
 }
 
 // getTypeDescriptor returns a cached type descriptor, computing it if necessary
-func (tc *TypeCache) getTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint) (*TypeDescriptor, error) {
-	if desc, exists := tc.descriptors[t]; exists && len(sizeHints) == 0 && len(maxSizeHints) == 0 {
+func (tc *TypeCache) getTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) (*TypeDescriptor, error) {
+	cacheable := len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) == 0
+	if desc, exists := tc.descriptors[t]; exists && cacheable {
 		return desc, nil
 	}
 
-	desc, err := tc.buildTypeDescriptor(t, sizeHints, maxSizeHints)
+	desc, err := tc.buildTypeDescriptor(t, sizeHints, maxSizeHints, typeHints)
 	if err != nil {
 		return nil, err
 	}
 
 	// Cache only if no size hints (cacheable)
-	if len(sizeHints) == 0 && len(maxSizeHints) == 0 {
+	if cacheable {
 		tc.descriptors[t] = desc
 	}
 
@@ -130,11 +132,12 @@ func (tc *TypeCache) getTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, 
 }
 
 // buildTypeDescriptor computes a type descriptor for the given type
-func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint) (*TypeDescriptor, error) {
+func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) (*TypeDescriptor, error) {
 	desc := &TypeDescriptor{
 		Type:         t,
 		SizeHints:    sizeHints,
 		MaxSizeHints: maxSizeHints,
+		TypeHints:    typeHints,
 	}
 
 	// Handle pointer types
@@ -170,12 +173,12 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 			return nil, err
 		}
 	case reflect.Array:
-		err := tc.buildArrayDescriptor(desc, t, sizeHints, maxSizeHints)
+		err := tc.buildArrayDescriptor(desc, t, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
 			return nil, err
 		}
 	case reflect.Slice:
-		err := tc.buildSliceDescriptor(desc, t, sizeHints, maxSizeHints)
+		err := tc.buildSliceDescriptor(desc, t, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
 			return nil, err
 		}
@@ -253,8 +256,13 @@ func (tc *TypeCache) buildStructDescriptor(desc *TypeDescriptor, t reflect.Type)
 			return err
 		}
 
+		typeHints, err := tc.dynssz.getSszTypeTag(&field)
+		if err != nil {
+			return err
+		}
+
 		// Build type descriptor for field
-		fieldDesc.Type, err = tc.getTypeDescriptor(field.Type, sizeHints, maxSizeHints)
+		fieldDesc.Type, err = tc.getTypeDescriptor(field.Type, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
 			return err
 		}
@@ -294,7 +302,7 @@ func (tc *TypeCache) buildStructDescriptor(desc *TypeDescriptor, t reflect.Type)
 }
 
 // buildArrayDescriptor builds a descriptor for array types
-func (tc *TypeCache) buildArrayDescriptor(desc *TypeDescriptor, t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint) error {
+func (tc *TypeCache) buildArrayDescriptor(desc *TypeDescriptor, t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) error {
 	childSizeHints := []SszSizeHint{}
 	if len(sizeHints) > 1 {
 		childSizeHints = sizeHints[1:]
@@ -305,12 +313,17 @@ func (tc *TypeCache) buildArrayDescriptor(desc *TypeDescriptor, t reflect.Type, 
 		childMaxSizeHints = maxSizeHints[1:]
 	}
 
+	childTypeHints := []SszTypeHint{}
+	if len(typeHints) > 1 {
+		childTypeHints = typeHints[1:]
+	}
+
 	fieldType := t.Elem()
 	if fieldType == byteType {
 		desc.IsByteArray = true
 	}
 
-	elemDesc, err := tc.getTypeDescriptor(fieldType, childSizeHints, childMaxSizeHints)
+	elemDesc, err := tc.getTypeDescriptor(fieldType, childSizeHints, childMaxSizeHints, childTypeHints)
 	if err != nil {
 		return err
 	}
@@ -334,7 +347,7 @@ func (tc *TypeCache) buildArrayDescriptor(desc *TypeDescriptor, t reflect.Type, 
 }
 
 // buildSliceDescriptor builds a descriptor for slice types
-func (tc *TypeCache) buildSliceDescriptor(desc *TypeDescriptor, t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint) error {
+func (tc *TypeCache) buildSliceDescriptor(desc *TypeDescriptor, t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) error {
 	childSizeHints := []SszSizeHint{}
 	if len(sizeHints) > 1 {
 		childSizeHints = sizeHints[1:]
@@ -345,12 +358,17 @@ func (tc *TypeCache) buildSliceDescriptor(desc *TypeDescriptor, t reflect.Type, 
 		childMaxSizeHints = maxSizeHints[1:]
 	}
 
+	childTypeHints := []SszTypeHint{}
+	if len(typeHints) > 1 {
+		childTypeHints = typeHints[1:]
+	}
+
 	fieldType := t.Elem()
 	if fieldType == byteType {
 		desc.IsByteArray = true
 	}
 
-	elemDesc, err := tc.getTypeDescriptor(fieldType, childSizeHints, childMaxSizeHints)
+	elemDesc, err := tc.getTypeDescriptor(fieldType, childSizeHints, childMaxSizeHints, childTypeHints)
 	if err != nil {
 		return err
 	}

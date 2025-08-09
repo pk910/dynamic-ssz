@@ -92,8 +92,12 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 	}
 
 	if !useFastSsz {
+		isBitlist := strings.Contains(sourceType.Type.Name(), "Bitlist")
+		if len(sourceType.TypeHints) > 0 && sourceType.TypeHints[0].Type == SszBitlistType {
+			isBitlist = true
+		}
 		// Special case for bitlists - hack
-		if strings.Contains(sourceType.Type.Name(), "Bitlist") {
+		if isBitlist {
 			maxSize := uint64(0)
 			bytes := sourceValue.Bytes()
 			if len(sourceType.MaxSizeHints) > 0 {
@@ -299,7 +303,7 @@ func (d *DynSsz) buildRootFromSlice(sourceType *TypeDescriptor, sourceValue refl
 			}
 		}
 	case reflect.Array, reflect.Slice:
-		if fieldType.IsByteArray {
+		if fieldType.IsByteArray && (len(fieldType.TypeHints) == 0 || fieldType.TypeHints[0].Type != SszBitlistType) {
 			for i := 0; i < sliceLen; i++ {
 				sliceSubIndex := hh.Index()
 

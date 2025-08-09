@@ -96,6 +96,14 @@ var unmarshalTestMatrix = []struct {
 		fromHex("0x2a060000002b0800000018000000080000000c0000000200030004000500080000000c000000080009000a000b00"),
 	},
 
+	// ssz-type annotation tests
+	{
+		struct {
+			BitlistData []byte `ssz-type:"bitlist" ssz-max:"100"`
+		}{[]byte{0x0f, 0x01}}, // bitlist with 4 bits set, length indicator
+		fromHex("0x040000000f01"),
+	},
+
 	// string types
 	{
 		struct {

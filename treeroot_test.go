@@ -123,6 +123,14 @@ var treerootTestMatrix = []struct {
 		fromHex("0x253a3f3ffab684c2d4f4930b7923f31aadc3eff94b3eb8b4b7b9aa1363efcf52"),
 	},
 
+	// ssz-type annotation tests
+	{
+		struct {
+			BitlistData []byte `ssz-type:"bitlist" ssz-max:"100"`
+		}{[]byte{0x0f, 0x01}}, // bitlist with 4 bits set, length indicator
+		fromHex("0xac0d43079c4f10cade6386f382829a4a00e4d9832cb66a068969c761bce57d96"),
+	},
+
 	// string types
 	{
 		struct {

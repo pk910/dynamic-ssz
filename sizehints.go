@@ -171,3 +171,47 @@ func (d *DynSsz) getSszMaxSizeTag(field *reflect.StructField) ([]SszMaxSizeHint,
 
 	return sszMaxSizes, nil
 }
+
+type SszType uint8
+
+const (
+	SszUnknownType   SszType = iota
+	SszListType      SszType = 1
+	SszVectorType    SszType = 2
+	SszBitlistType   SszType = 3
+	SszBitvectorType SszType = 4
+)
+
+type SszTypeHint struct {
+	Type SszType
+}
+
+func (d *DynSsz) getSszTypeTag(field *reflect.StructField) ([]SszTypeHint, error) {
+	// parse `ssz-type`
+	sszTypeHints := []SszTypeHint{}
+
+	if fieldSszTypeStr, fieldHasSszType := field.Tag.Lookup("ssz-type"); fieldHasSszType {
+		for _, sszTypeStr := range strings.Split(fieldSszTypeStr, ",") {
+			sszType := SszTypeHint{}
+
+			switch sszTypeStr {
+			case "?":
+				sszType.Type = SszUnknownType
+			case "list":
+				sszType.Type = SszListType
+			case "vector":
+				sszType.Type = SszVectorType
+			case "bitlist":
+				sszType.Type = SszBitlistType
+			case "bitvector":
+				sszType.Type = SszBitvectorType
+			default:
+				return nil, fmt.Errorf("invalid ssz-type tag for '%v' field: %v", field.Name, sszTypeStr)
+			}
+
+			sszTypeHints = append(sszTypeHints, sszType)
+		}
+	}
+
+	return sszTypeHints, nil
+}
