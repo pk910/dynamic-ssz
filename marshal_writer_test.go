@@ -22,7 +22,7 @@ func TestMarshalSSZWriter(t *testing.T) {
 	}
 
 	ds := NewDynSsz(nil)
-	
+
 	// Marshal to buffer using writer
 	var buf bytes.Buffer
 	err := ds.MarshalSSZWriter(s, &buf)
@@ -205,7 +205,7 @@ func TestMarshalSSZWriterMatrix(t *testing.T) {
 
 	dynssz := NewDynSsz(nil)
 	dynssz.NoFastSsz = true
-	dynssz.NoByteSliceOptimization = true
+	dynssz.NoStreamBuffering = true
 
 	for _, test := range testMatrix {
 		t.Run(test.name, func(t *testing.T) {
@@ -242,7 +242,7 @@ func TestMarshalSSZWriterComplexArraysSlices(t *testing.T) {
 		"BUFFER_SIZE":  uint64(100),
 	})
 	dynssz.NoFastSsz = true
-	dynssz.NoByteSliceOptimization = true
+	dynssz.NoStreamBuffering = true
 
 	// Test array with dynamic items
 	t.Run("array_with_dynamic_items", func(t *testing.T) {
@@ -250,7 +250,7 @@ func TestMarshalSSZWriterComplexArraysSlices(t *testing.T) {
 			Data []byte `ssz-max:"10"`
 			ID   uint32
 		}
-		
+
 		type ArrayContainer struct {
 			Items [3]DynamicItem
 		}
@@ -284,7 +284,7 @@ func TestMarshalSSZWriterComplexArraysSlices(t *testing.T) {
 			ID   uint32
 			Flag bool
 		}
-		
+
 		type ArrayContainer struct {
 			Items [4]StaticItem
 		}
@@ -315,10 +315,10 @@ func TestMarshalSSZWriterComplexArraysSlices(t *testing.T) {
 	// Test slice with dynamic items
 	t.Run("slice_with_dynamic_items", func(t *testing.T) {
 		type DynamicItem struct {
-			Name string `ssz-max:"20"`
+			Name string   `ssz-max:"20"`
 			Tags []uint16 `ssz-max:"5"`
 		}
-		
+
 		type SliceContainer struct {
 			Items []DynamicItem `ssz-max:"3"`
 		}
@@ -349,7 +349,7 @@ func TestMarshalSSZWriterComplexArraysSlices(t *testing.T) {
 		type SpecItem struct {
 			Data []byte `dynssz-max:"BUFFER_SIZE"`
 		}
-		
+
 		type SpecContainer struct {
 			Items []SpecItem `dynssz-max:"MAX_ELEMENTS"`
 		}
@@ -380,7 +380,7 @@ func TestMarshalSSZWriterComplexArraysSlices(t *testing.T) {
 func TestMarshalSSZWriterPointers(t *testing.T) {
 	dynssz := NewDynSsz(nil)
 	dynssz.NoFastSsz = true
-	dynssz.NoByteSliceOptimization = true
+	dynssz.NoStreamBuffering = true
 
 	// Test simple pointer handling
 	t.Run("simple_pointers", func(t *testing.T) {
@@ -415,7 +415,7 @@ func TestMarshalSSZWriterPointers(t *testing.T) {
 		type InnerStruct struct {
 			Value uint32
 		}
-		
+
 		type OuterStruct struct {
 			Inner *InnerStruct
 			Data  []byte `ssz-max:"10"`
@@ -467,7 +467,7 @@ func TestMarshalSSZWriterPointers(t *testing.T) {
 func TestMarshalSSZWriterEdgeCases(t *testing.T) {
 	dynssz := NewDynSsz(nil)
 	dynssz.NoFastSsz = true
-	dynssz.NoByteSliceOptimization = true
+	dynssz.NoStreamBuffering = true
 
 	// Test slice with ssz-size but too few items
 	t.Run("slice_too_few_items", func(t *testing.T) {
@@ -517,7 +517,7 @@ func TestMarshalSSZWriterEdgeCases(t *testing.T) {
 			"CUSTOM_SIZE": uint64(4),
 		})
 		specDynssz.NoFastSsz = true
-		specDynssz.NoByteSliceOptimization = true
+		specDynssz.NoStreamBuffering = true
 
 		type SpecStruct struct {
 			Data []byte `dynssz-size:"CUSTOM_SIZE"`
@@ -561,7 +561,7 @@ func TestMarshalSSZWriterLimitedWriter(t *testing.T) {
 	t.Run("sufficient_buffer", func(t *testing.T) {
 		buf := make([]byte, 100)
 		writer := bytes.NewBuffer(buf[:0])
-		
+
 		err := dynssz.MarshalSSZWriter(payload, writer)
 		if err != nil {
 			t.Errorf("Expected success but got error: %v", err)
@@ -570,7 +570,7 @@ func TestMarshalSSZWriterLimitedWriter(t *testing.T) {
 
 	t.Run("write_error", func(t *testing.T) {
 		writer := &failingWriter{failAt: 10}
-		
+
 		err := dynssz.MarshalSSZWriter(payload, writer)
 		if err == nil {
 			t.Error("Expected write error but got nil")
@@ -584,10 +584,10 @@ func TestMarshalSSZWriterLimitedWriter(t *testing.T) {
 // Test primitive write functions
 func TestWritePrimitives(t *testing.T) {
 	tests := []struct {
-		name     string
+		name      string
 		writeFunc func(io.Writer, interface{}) error
-		value    interface{}
-		expected []byte
+		value     interface{}
+		expected  []byte
 	}{
 		{"write_bool_false", func(w io.Writer, v interface{}) error { return writeBool(w, v.(bool)) }, false, []byte{0x00}},
 		{"write_bool_true", func(w io.Writer, v interface{}) error { return writeBool(w, v.(bool)) }, true, []byte{0x01}},
@@ -618,9 +618,9 @@ func TestWritePrimitives(t *testing.T) {
 // Test error conditions for primitive writes
 func TestWritePrimitivesErrors(t *testing.T) {
 	writer := &failingWriter{failAt: 0}
-	
+
 	tests := []struct {
-		name string
+		name      string
 		writeFunc func() error
 	}{
 		{"write_bool_error", func() error { return writeBool(writer, true) }},
@@ -654,7 +654,7 @@ func (w *failingWriter) Write(p []byte) (int, error) {
 		return 0, io.ErrShortWrite
 	}
 	toWrite := len(p)
-	if w.written + toWrite > w.failAt {
+	if w.written+toWrite > w.failAt {
 		toWrite = w.failAt - w.written
 	}
 	w.written += toWrite
@@ -672,7 +672,7 @@ func fromHex(hexStr string) []byte {
 	if len(hexStr) == 0 {
 		return []byte{}
 	}
-	
+
 	result := make([]byte, len(hexStr)/2)
 	for i := 0; i < len(result); i++ {
 		var b byte
@@ -700,7 +700,7 @@ func toHex(data []byte) string {
 	hexStr := make([]byte, len(data)*2+2)
 	hexStr[0] = '0'
 	hexStr[1] = 'x'
-	
+
 	for i, b := range data {
 		hexStr[i*2+2] = "0123456789abcdef"[b>>4]
 		hexStr[i*2+3] = "0123456789abcdef"[b&0xf]

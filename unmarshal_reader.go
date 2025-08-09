@@ -35,7 +35,7 @@ import (
 //   - Buffer reuse for small reads to minimize allocations
 func (d *DynSsz) unmarshalTypeReader(ctx *unmarshalReaderContext, typeDesc *TypeDescriptor, value reflect.Value) error {
 	// For small static types, read into context buffer and use regular unmarshal
-	if !typeDesc.HasDynamicSize && typeDesc.Size > 0 && typeDesc.Size <= int32(len(ctx.buffer)) && !d.NoByteSliceOptimization {
+	if !typeDesc.HasDynamicSize && typeDesc.Size > 0 && typeDesc.Size <= int32(len(ctx.buffer)) && !d.NoStreamBuffering {
 		buf := ctx.buffer[:typeDesc.Size]
 		if _, err := io.ReadFull(ctx.limitedReader, buf); err != nil {
 			return err

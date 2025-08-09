@@ -258,7 +258,7 @@ func (d *DynSsz) unmarshalArray(targetType *TypeDescriptor, targetValue reflect.
 		return d.unmarshalDynamicSlice(targetType, targetValue, ssz, idt)
 	}
 
-	if targetType.IsByteArray && !d.NoByteSliceOptimization {
+	if targetType.IsByteArray {
 		// shortcut for performance: use copy on []byte arrays
 		reflect.Copy(targetValue, reflect.ValueOf(ssz[0:arrLen]))
 		consumedBytes = arrLen
@@ -345,7 +345,7 @@ func (d *DynSsz) unmarshalSlice(targetType *TypeDescriptor, targetValue reflect.
 	newValue := reflect.MakeSlice(fieldT, sliceLen, sliceLen)
 	targetValue.Set(newValue)
 
-	if targetType.IsByteArray && !d.NoByteSliceOptimization {
+	if targetType.IsByteArray {
 		// shortcut for performance: use copy on []byte arrays
 		reflect.Copy(newValue, reflect.ValueOf(ssz[0:sliceLen]))
 		consumedBytes = sliceLen

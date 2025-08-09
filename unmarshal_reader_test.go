@@ -275,7 +275,7 @@ func TestUnmarshalSSZReaderMatrix(t *testing.T) {
 
 	dynssz := NewDynSsz(nil)
 	dynssz.NoFastSsz = true
-	dynssz.NoByteSliceOptimization = true
+	dynssz.NoStreamBuffering = true
 
 	for _, test := range testMatrix {
 		t.Run(test.name, func(t *testing.T) {
@@ -604,11 +604,11 @@ func TestUnmarshalArrayReader(t *testing.T) {
 // Test arrays and slices with complex elements for unmarshal reader
 func TestUnmarshalReaderComplexArraysSlices(t *testing.T) {
 	dynssz := NewDynSsz(map[string]any{
-		"MAX_ITEMS":    uint64(5),
-		"STRING_SIZE":  uint64(32),
+		"MAX_ITEMS":   uint64(5),
+		"STRING_SIZE": uint64(32),
 	})
 	dynssz.NoFastSsz = true
-	dynssz.NoByteSliceOptimization = true
+	dynssz.NoStreamBuffering = true
 
 	// Test array with dynamic complex elements
 	t.Run("array_dynamic_elements", func(t *testing.T) {
@@ -616,7 +616,7 @@ func TestUnmarshalReaderComplexArraysSlices(t *testing.T) {
 			Name string `ssz-max:"20"`
 			Data []byte `ssz-max:"15"`
 		}
-		
+
 		type ArrayContainer struct {
 			Elements [2]DynamicElement
 		}
@@ -664,7 +664,7 @@ func TestUnmarshalReaderComplexArraysSlices(t *testing.T) {
 			Value uint64
 			Flag  bool
 		}
-		
+
 		type ArrayContainer struct {
 			Elements [3]StaticElement
 		}
@@ -704,7 +704,7 @@ func TestUnmarshalReaderComplexArraysSlices(t *testing.T) {
 			Tags []uint16 `ssz-max:"3"`
 			Info string   `ssz-max:"10"`
 		}
-		
+
 		type SliceContainer struct {
 			Elements []DynamicElement `ssz-max:"2"`
 		}
@@ -753,7 +753,7 @@ func TestUnmarshalReaderComplexArraysSlices(t *testing.T) {
 		type SpecElement struct {
 			Data []byte `dynssz-max:"MAX_ITEMS"`
 		}
-		
+
 		type SpecContainer struct {
 			Elements []SpecElement `dynssz-max:"MAX_ITEMS"`
 		}
@@ -794,7 +794,7 @@ func TestUnmarshalReaderStaticStrings(t *testing.T) {
 		"FIXED_SIZE": uint64(16),
 	})
 	dynssz.NoFastSsz = true
-	dynssz.NoByteSliceOptimization = true
+	dynssz.NoStreamBuffering = true
 
 	tests := []struct {
 		name     string
@@ -811,7 +811,7 @@ func TestUnmarshalReaderStaticStrings(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var structType interface{}
 			var original interface{}
-			
+
 			if test.size == "FIXED_SIZE" {
 				type SpecStringStruct struct {
 					Data string `dynssz-size:"FIXED_SIZE"`
@@ -838,7 +838,7 @@ func TestUnmarshalReaderStaticStrings(t *testing.T) {
 			if err != nil {
 				t.Errorf("UnmarshalSSZReader failed: %v", err)
 			}
-			
+
 			// The comparison would be complex due to reflection, but if we got here without error, the test passed
 		})
 	}
@@ -848,7 +848,7 @@ func TestUnmarshalReaderStaticStrings(t *testing.T) {
 func TestUnmarshalReaderPointers(t *testing.T) {
 	dynssz := NewDynSsz(nil)
 	dynssz.NoFastSsz = true
-	dynssz.NoByteSliceOptimization = true
+	dynssz.NoStreamBuffering = true
 
 	// Test nested pointers (simpler case)
 	t.Run("nested_pointers", func(t *testing.T) {
@@ -856,7 +856,7 @@ func TestUnmarshalReaderPointers(t *testing.T) {
 			ID   uint32
 			Data []byte `ssz-max:"8"`
 		}
-		
+
 		type PointerContainer struct {
 			Nested *NestedStruct
 			Count  *uint32
@@ -909,13 +909,13 @@ func TestUnmarshalReaderPointers(t *testing.T) {
 		if err != nil {
 			t.Errorf("UnmarshalSSZReader failed: %v", err)
 		}
-		
+
 		// Validate the structure
 		if result.Value == nil || *result.Value != 100 {
 			t.Errorf("Pointer not properly restored: got %v, expected 100", result.Value)
 		}
 	})
-	
+
 	// Test nil pointer handling
 	t.Run("nil_pointers", func(t *testing.T) {
 		type NilPointer struct {
@@ -935,7 +935,7 @@ func TestUnmarshalReaderPointers(t *testing.T) {
 		if err != nil {
 			t.Errorf("UnmarshalSSZReader failed: %v", err)
 		}
-		
+
 		// For nil pointers, the field should be the zero value (0)
 		if result.Value == nil || *result.Value != 0 {
 			t.Errorf("Expected zero value for nil pointer")
@@ -947,7 +947,7 @@ func TestUnmarshalReaderPointers(t *testing.T) {
 func TestUnmarshalReaderEdgeCases(t *testing.T) {
 	dynssz := NewDynSsz(nil)
 	dynssz.NoFastSsz = true
-	dynssz.NoByteSliceOptimization = true
+	dynssz.NoStreamBuffering = true
 
 	// Test slice size constraints
 	t.Run("slice_size_constraints", func(t *testing.T) {
@@ -1024,17 +1024,17 @@ func TestUnmarshalReaderEdgeCases(t *testing.T) {
 		type Level3 struct {
 			Data []byte `ssz-max:"5"`
 		}
-		
+
 		type Level2 struct {
 			L3 Level3
 			ID uint32
 		}
-		
+
 		type Level1 struct {
 			L2s  []Level2 `ssz-max:"2"`
 			Name string   `ssz-max:"10"`
 		}
-		
+
 		type TopLevel struct {
 			L1 Level1
 		}

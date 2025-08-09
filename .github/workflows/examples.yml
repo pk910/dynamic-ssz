@@ -12,7 +12,11 @@ jobs:
     strategy:
       matrix:
         go-version: [1.21.x]
-        example: [basic, versioned-blocks, custom-types]
+        example:
+          - basic
+          - versioned-blocks
+          - custom-types
+          - streaming
     
     steps:
     - name: Checkout code

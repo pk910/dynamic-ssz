@@ -34,7 +34,7 @@ import (
 func (d *DynSsz) marshalTypeWriter(ctx *marshalWriterContext, typeDesc *TypeDescriptor, value reflect.Value) error {
 
 	// For small static types or when buffer can hold entire result, use regular marshal
-	if !typeDesc.HasDynamicSize && typeDesc.Size > 0 && typeDesc.Size <= int32(cap(ctx.buffer)) && !d.NoByteSliceOptimization {
+	if !typeDesc.HasDynamicSize && typeDesc.Size > 0 && typeDesc.Size <= int32(cap(ctx.buffer)) && !d.NoStreamBuffering {
 		buf := ctx.buffer[:0]
 		result, err := d.marshalType(typeDesc, value, buf, 0)
 		if err != nil {

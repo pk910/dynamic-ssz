@@ -56,10 +56,10 @@ type DynSsz struct {
 	// When true, uses the standard hasher instead of the fast gohashtree implementation.
 	NoFastHash bool
 
-	// NoByteSliceOptimization disables switching to byte slice methods for small structures.
+	// NoStreamBuffering disables switching to byte slice methods for small structures.
 	// When true, always uses full structure-aware marshaling/unmarshaling.
 	// Useful for testing to ensure all code paths are exercised.
-	NoByteSliceOptimization bool
+	NoStreamBuffering bool
 
 	// Verbose enables detailed logging of encoding/decoding operations.
 	// Useful for debugging but impacts performance.
@@ -322,7 +322,7 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error {
 		totalSize = size
 
 		// For small structures, use the regular marshal method
-		if size <= defaultBufferSize && !d.NoByteSliceOptimization {
+		if size <= defaultBufferSize && !d.NoStreamBuffering {
 			buf := make([]byte, 0, size)
 			result, err := d.marshalType(sourceTypeDesc, sourceValue, buf, 0)
 			if err != nil {
@@ -341,7 +341,7 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error {
 		totalSize = size
 
 		// For small structures, use the regular marshal method
-		if size <= defaultBufferSize && !d.NoByteSliceOptimization {
+		if size <= defaultBufferSize && !d.NoStreamBuffering {
 			buf := make([]byte, 0, size)
 			result, err := d.marshalType(sourceTypeDesc, sourceValue, buf, 0)
 			if err != nil {
@@ -548,7 +548,7 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int64) error {
 	}
 
 	// For small static types, read into buffer and use regular unmarshal
-	if targetTypeDesc.Size > 0 && targetTypeDesc.Size <= defaultBufferSize && !d.NoByteSliceOptimization {
+	if targetTypeDesc.Size > 0 && targetTypeDesc.Size <= defaultBufferSize && !d.NoStreamBuffering {
 		buf := make([]byte, targetTypeDesc.Size)
 		if _, err := io.ReadFull(r, buf); err != nil {
 			return err
