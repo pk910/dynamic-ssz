@@ -41,16 +41,15 @@ type TypeDescriptor struct {
 
 // FieldDescriptor represents a cached descriptor for a struct field
 type FieldDescriptor struct {
-	Name   string
-	Offset uintptr         // Unsafe offset within the struct
-	Type   *TypeDescriptor // Type descriptor
-	Index  int16           // Index of the field in the struct
+	Name string
+	Type *TypeDescriptor // Type descriptor
 }
 
 // DynFieldDescriptor represents a dynamic field descriptor for a struct
 type DynFieldDescriptor struct {
 	Field  *FieldDescriptor
 	Offset uint32
+	Index  int16 // Index of the field in the struct
 }
 
 // NewTypeCache creates a new type cache
@@ -379,9 +378,7 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		fieldDesc := FieldDescriptor{
-			Name:   field.Name,
-			Offset: field.Offset,
-			Index:  int16(i),
+			Name: field.Name,
 		}
 
 		// Get size hints from tags
@@ -414,6 +411,7 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 			desc.DynFields = append(desc.DynFields, DynFieldDescriptor{
 				Field:  &desc.Fields[i],
 				Offset: uint32(totalSize),
+				Index:  int16(i),
 			})
 		}
 
