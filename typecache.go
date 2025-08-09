@@ -171,6 +171,12 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 
 	// auto-detect ssz type if not specified
 	if sszType == SszUnspecifiedType {
+		// detect some well-known and widely used types
+		if t.PkgPath() == "github.com/holiman/uint256" && t.Name() == "Int" {
+			sszType = SszUint256Type
+		}
+	}
+	if sszType == SszUnspecifiedType {
 		switch desc.Kind {
 		// basic types
 		case reflect.Bool:
