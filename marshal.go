@@ -200,7 +200,7 @@ func (d *DynSsz) marshalArray(sourceType *TypeDescriptor, sourceValue reflect.Va
 	}
 
 	arrLen := sourceType.Len
-	if sourceType.IsByteArray {
+	if sourceType.IsByteArray && !d.NoByteSliceOptimization {
 		// shortcut for performance: use append on []byte arrays
 		if !sourceValue.CanAddr() {
 			// workaround for unaddressable static arrays
@@ -265,7 +265,7 @@ func (d *DynSsz) marshalSlice(sourceType *TypeDescriptor, sourceValue reflect.Va
 		}
 	}
 
-	if sourceType.IsByteArray {
+	if sourceType.IsByteArray && !d.NoByteSliceOptimization {
 		// shortcut for performance: use append on []byte arrays
 		buf = append(buf, sourceValue.Bytes()...)
 

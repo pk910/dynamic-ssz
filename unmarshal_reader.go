@@ -35,7 +35,7 @@ import (
 //   - Buffer reuse for small reads to minimize allocations
 func (d *DynSsz) unmarshalTypeReader(ctx *unmarshalReaderContext, typeDesc *TypeDescriptor, value reflect.Value) error {
 	// For small static types, read into context buffer and use regular unmarshal
-	if !typeDesc.HasDynamicSize && typeDesc.Size > 0 && typeDesc.Size <= int32(len(ctx.buffer)) {
+	if !typeDesc.HasDynamicSize && typeDesc.Size > 0 && typeDesc.Size <= int32(len(ctx.buffer)) && !d.NoByteSliceOptimization {
 		buf := ctx.buffer[:typeDesc.Size]
 		if _, err := io.ReadFull(ctx.limitedReader, buf); err != nil {
 			return err
@@ -556,6 +556,10 @@ func (d *DynSsz) unmarshalStringReader(ctx *unmarshalReaderContext, typeDesc *Ty
 
 	// For fixed-size strings, trim null bytes
 	if typeDesc.Size > 0 {
+		if len(bytes) != int(typeDesc.Size) {
+			return fmt.Errorf("string did not consume expected ssz range (consumed: %v, expected: %v)", len(bytes), typeDesc.Size)
+		}
+
 		// Find the first null byte
 		for i, b := range bytes {
 			if b == 0 {
@@ -566,14 +570,6 @@ func (d *DynSsz) unmarshalStringReader(ctx *unmarshalReaderContext, typeDesc *Ty
 	}
 
 	value.SetString(string(bytes))
-
-	if typeDesc.Size > 0 {
-		if len(bytes) != int(typeDesc.Size) {
-			return fmt.Errorf("string did not consume expected ssz range (consumed: %v, expected: %v)", len(bytes), typeDesc.Size)
-		}
-
-		return nil
-	}
 
 	return nil
 }
