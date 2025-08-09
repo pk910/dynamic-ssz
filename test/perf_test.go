@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"io/ioutil"
 	"testing"
 
@@ -47,6 +48,8 @@ func init() {
 }
 
 // ========================= BLOCK BENCHMARKS =========================
+
+// Streaming benchmarks for blocks
 
 func BenchmarkBlockMainnet_FastSSZ_Unmarshal(b *testing.B) {
 	b.ResetTimer()
@@ -144,6 +147,54 @@ func BenchmarkBlockMainnet_DynSSZOnly_HashTreeRoot(b *testing.B) {
 	}
 }
 
+func BenchmarkBlockMainnet_DynSSZ_Streaming_Unmarshal(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		block := new(deneb.SignedBeaconBlock)
+		reader := bytes.NewReader(blockMainnetData)
+		if err := dynSszMainnet.UnmarshalSSZReader(block, reader, int64(len(blockMainnetData))); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkBlockMainnet_DynSSZ_Streaming_Marshal(b *testing.B) {
+	block := new(deneb.SignedBeaconBlock)
+	reader := bytes.NewReader(blockMainnetData)
+	dynSszMainnet.UnmarshalSSZReader(block, reader, int64(len(blockMainnetData)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var buf bytes.Buffer
+		if err := dynSszMainnet.MarshalSSZWriter(block, &buf); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkBlockMainnet_DynSSZOnly_Streaming_Unmarshal(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		block := new(deneb.SignedBeaconBlock)
+		reader := bytes.NewReader(blockMainnetData)
+		if err := dynSszOnlyMainnet.UnmarshalSSZReader(block, reader, int64(len(blockMainnetData))); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkBlockMainnet_DynSSZOnly_Streaming_Marshal(b *testing.B) {
+	block := new(deneb.SignedBeaconBlock)
+	reader := bytes.NewReader(blockMainnetData)
+	dynSszOnlyMainnet.UnmarshalSSZReader(block, reader, int64(len(blockMainnetData)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var buf bytes.Buffer
+		if err := dynSszOnlyMainnet.MarshalSSZWriter(block, &buf); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // ========================= MINIMAL BLOCK BENCHMARKS =========================
 
 func BenchmarkBlockMinimal_DynSSZ_Unmarshal(b *testing.B) {
@@ -210,7 +261,57 @@ func BenchmarkBlockMinimal_DynSSZOnly_HashTreeRoot(b *testing.B) {
 	}
 }
 
+func BenchmarkBlockMinimal_DynSSZ_Streaming_Unmarshal(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		block := new(deneb.SignedBeaconBlock)
+		reader := bytes.NewReader(blockMinimalData)
+		if err := dynSszMinimal.UnmarshalSSZReader(block, reader, int64(len(blockMinimalData))); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkBlockMinimal_DynSSZ_Streaming_Marshal(b *testing.B) {
+	block := new(deneb.SignedBeaconBlock)
+	reader := bytes.NewReader(blockMinimalData)
+	dynSszMinimal.UnmarshalSSZReader(block, reader, int64(len(blockMinimalData)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var buf bytes.Buffer
+		if err := dynSszMinimal.MarshalSSZWriter(block, &buf); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkBlockMinimal_DynSSZOnly_Streaming_Unmarshal(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		block := new(deneb.SignedBeaconBlock)
+		reader := bytes.NewReader(blockMinimalData)
+		if err := dynSszOnlyMinimal.UnmarshalSSZReader(block, reader, int64(len(blockMinimalData))); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkBlockMinimal_DynSSZOnly_Streaming_Marshal(b *testing.B) {
+	block := new(deneb.SignedBeaconBlock)
+	reader := bytes.NewReader(blockMinimalData)
+	dynSszOnlyMinimal.UnmarshalSSZReader(block, reader, int64(len(blockMinimalData)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var buf bytes.Buffer
+		if err := dynSszOnlyMinimal.MarshalSSZWriter(block, &buf); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // ========================= STATE BENCHMARKS =========================
+
+// Streaming benchmarks for states
 
 func BenchmarkStateMainnet_FastSSZ_Unmarshal(b *testing.B) {
 	b.ResetTimer()
@@ -308,6 +409,54 @@ func BenchmarkStateMainnet_DynSSZOnly_HashTreeRoot(b *testing.B) {
 	}
 }
 
+func BenchmarkStateMainnet_DynSSZ_Streaming_Unmarshal(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		state := new(deneb.BeaconState)
+		reader := bytes.NewReader(stateMainnetData)
+		if err := dynSszMainnet.UnmarshalSSZReader(state, reader, int64(len(stateMainnetData))); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateMainnet_DynSSZ_Streaming_Marshal(b *testing.B) {
+	state := new(deneb.BeaconState)
+	reader := bytes.NewReader(stateMainnetData)
+	dynSszMainnet.UnmarshalSSZReader(state, reader, int64(len(stateMainnetData)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var buf bytes.Buffer
+		if err := dynSszMainnet.MarshalSSZWriter(state, &buf); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateMainnet_DynSSZOnly_Streaming_Unmarshal(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		state := new(deneb.BeaconState)
+		reader := bytes.NewReader(stateMainnetData)
+		if err := dynSszOnlyMainnet.UnmarshalSSZReader(state, reader, int64(len(stateMainnetData))); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateMainnet_DynSSZOnly_Streaming_Marshal(b *testing.B) {
+	state := new(deneb.BeaconState)
+	reader := bytes.NewReader(stateMainnetData)
+	dynSszOnlyMainnet.UnmarshalSSZReader(state, reader, int64(len(stateMainnetData)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var buf bytes.Buffer
+		if err := dynSszOnlyMainnet.MarshalSSZWriter(state, &buf); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // ========================= MINIMAL STATE BENCHMARKS =========================
 
 func BenchmarkStateMinimal_DynSSZ_Unmarshal(b *testing.B) {
@@ -374,7 +523,57 @@ func BenchmarkStateMinimal_DynSSZOnly_HashTreeRoot(b *testing.B) {
 	}
 }
 
+func BenchmarkStateMinimal_DynSSZ_Streaming_Unmarshal(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		state := new(deneb.BeaconState)
+		reader := bytes.NewReader(stateMinimalData)
+		if err := dynSszMinimal.UnmarshalSSZReader(state, reader, int64(len(stateMinimalData))); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateMinimal_DynSSZ_Streaming_Marshal(b *testing.B) {
+	state := new(deneb.BeaconState)
+	reader := bytes.NewReader(stateMinimalData)
+	dynSszMinimal.UnmarshalSSZReader(state, reader, int64(len(stateMinimalData)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var buf bytes.Buffer
+		if err := dynSszMinimal.MarshalSSZWriter(state, &buf); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateMinimal_DynSSZOnly_Streaming_Unmarshal(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		state := new(deneb.BeaconState)
+		reader := bytes.NewReader(stateMinimalData)
+		if err := dynSszOnlyMinimal.UnmarshalSSZReader(state, reader, int64(len(stateMinimalData))); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateMinimal_DynSSZOnly_Streaming_Marshal(b *testing.B) {
+	state := new(deneb.BeaconState)
+	reader := bytes.NewReader(stateMinimalData)
+	dynSszOnlyMinimal.UnmarshalSSZReader(state, reader, int64(len(stateMinimalData)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var buf bytes.Buffer
+		if err := dynSszOnlyMinimal.MarshalSSZWriter(state, &buf); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // ========================= COMBINED OPERATIONS =========================
+
+// Streaming benchmarks for combined operations
 
 func BenchmarkBlockMainnet_FastSSZ_FullCycle(b *testing.B) {
 	b.ResetTimer()
@@ -528,6 +727,150 @@ func BenchmarkStateMinimal_DynSSZOnly_FullCycle(b *testing.B) {
 			b.Fatal(err)
 		}
 		if _, err := dynSszOnlyMinimal.MarshalSSZ(state); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := dynSszOnlyMinimal.HashTreeRoot(state); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkBlockMainnet_DynSSZ_Streaming_FullCycle(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		block := new(deneb.SignedBeaconBlock)
+		reader := bytes.NewReader(blockMainnetData)
+		if err := dynSszMainnet.UnmarshalSSZReader(block, reader, int64(len(blockMainnetData))); err != nil {
+			b.Fatal(err)
+		}
+		var buf bytes.Buffer
+		if err := dynSszMainnet.MarshalSSZWriter(block, &buf); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := dynSszMainnet.HashTreeRoot(block.Message); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkBlockMainnet_DynSSZOnly_Streaming_FullCycle(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		block := new(deneb.SignedBeaconBlock)
+		reader := bytes.NewReader(blockMainnetData)
+		if err := dynSszOnlyMainnet.UnmarshalSSZReader(block, reader, int64(len(blockMainnetData))); err != nil {
+			b.Fatal(err)
+		}
+		var buf bytes.Buffer
+		if err := dynSszOnlyMainnet.MarshalSSZWriter(block, &buf); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := dynSszOnlyMainnet.HashTreeRoot(block.Message); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateMainnet_DynSSZ_Streaming_FullCycle(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		state := new(deneb.BeaconState)
+		reader := bytes.NewReader(stateMainnetData)
+		if err := dynSszMainnet.UnmarshalSSZReader(state, reader, int64(len(stateMainnetData))); err != nil {
+			b.Fatal(err)
+		}
+		var buf bytes.Buffer
+		if err := dynSszMainnet.MarshalSSZWriter(state, &buf); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := dynSszMainnet.HashTreeRoot(state); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateMainnet_DynSSZOnly_Streaming_FullCycle(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		state := new(deneb.BeaconState)
+		reader := bytes.NewReader(stateMainnetData)
+		if err := dynSszOnlyMainnet.UnmarshalSSZReader(state, reader, int64(len(stateMainnetData))); err != nil {
+			b.Fatal(err)
+		}
+		var buf bytes.Buffer
+		if err := dynSszOnlyMainnet.MarshalSSZWriter(state, &buf); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := dynSszOnlyMainnet.HashTreeRoot(state); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkBlockMinimal_DynSSZ_Streaming_FullCycle(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		block := new(deneb.SignedBeaconBlock)
+		reader := bytes.NewReader(blockMinimalData)
+		if err := dynSszMinimal.UnmarshalSSZReader(block, reader, int64(len(blockMinimalData))); err != nil {
+			b.Fatal(err)
+		}
+		var buf bytes.Buffer
+		if err := dynSszMinimal.MarshalSSZWriter(block, &buf); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := dynSszMinimal.HashTreeRoot(block.Message); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkBlockMinimal_DynSSZOnly_Streaming_FullCycle(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		block := new(deneb.SignedBeaconBlock)
+		reader := bytes.NewReader(blockMinimalData)
+		if err := dynSszOnlyMinimal.UnmarshalSSZReader(block, reader, int64(len(blockMinimalData))); err != nil {
+			b.Fatal(err)
+		}
+		var buf bytes.Buffer
+		if err := dynSszOnlyMinimal.MarshalSSZWriter(block, &buf); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := dynSszOnlyMinimal.HashTreeRoot(block.Message); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateMinimal_DynSSZ_Streaming_FullCycle(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		state := new(deneb.BeaconState)
+		reader := bytes.NewReader(stateMinimalData)
+		if err := dynSszMinimal.UnmarshalSSZReader(state, reader, int64(len(stateMinimalData))); err != nil {
+			b.Fatal(err)
+		}
+		var buf bytes.Buffer
+		if err := dynSszMinimal.MarshalSSZWriter(state, &buf); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := dynSszMinimal.HashTreeRoot(state); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateMinimal_DynSSZOnly_Streaming_FullCycle(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		state := new(deneb.BeaconState)
+		reader := bytes.NewReader(stateMinimalData)
+		if err := dynSszOnlyMinimal.UnmarshalSSZReader(state, reader, int64(len(stateMinimalData))); err != nil {
+			b.Fatal(err)
+		}
+		var buf bytes.Buffer
+		if err := dynSszOnlyMinimal.MarshalSSZWriter(state, &buf); err != nil {
 			b.Fatal(err)
 		}
 		if _, err := dynSszOnlyMinimal.HashTreeRoot(state); err != nil {

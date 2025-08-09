@@ -223,38 +223,70 @@ Benefits of streaming:
 
 ## Performance
 
-The performance of `dynssz` has been benchmarked against `fastssz` using BeaconBlocks and BeaconStates from small kurtosis testnets, providing a consistent and comparable set of data. These benchmarks compare three scenarios: exclusively using `fastssz`, exclusively using `dynssz`, and a combined approach where `dynssz` defaults to `fastssz` for static types that do not require dynamic processing. The results highlight the balance between flexibility and speed:
+`dynamic-ssz` has been benchmarked against [`fastssz`](https://github.com/ferranbt/fastssz) using **BeaconBlock** and **BeaconState** objects from both **mainnet** and **minimal** presets.  
+We measured three modes:
 
-**Legend:**
-- First number: Unmarshalling time in milliseconds.
-- Second number: Marshalling time in milliseconds.
-- Third number: Hash tree root time in milliseconds.
+- **FastSSZ only** – Static code-generated serialization/deserialization.
+- **DynSSZ only** – Fully dynamic processing (maximum flexibility, no codegen).
+- **DynSSZ + FastSSZ hybrid** – Uses `fastssz` for types that don't require dynamic handling, falling back to `dynamic-ssz` for everything else.
+
+Additionally, **streaming** benchmarks show performance when using `dynamic-ssz`'s streaming encoder/decoder.
+
+**Legend:**  
+`[ Unmarshal ms / Marshal ms / HashTreeRoot ms ]` (10,000 iterations)  
+All results run on **Intel i9-14900K**.
+
+---
 
 ### Mainnet Preset
 
-#### BeaconBlock Decode + Encode + Hash (10,000 times)
-- **fastssz only:** [8 ms / 3 ms / 88 ms] success
-- **dynssz only:** [27 ms / 12 ms / 63 ms] success
-- **dynssz + fastssz:** [8 ms / 3 ms / 64 ms] success
+#### BeaconBlock Decode + Encode + Hash (10,000x)
+| Mode                       | Unmarshal | Marshal | HashTreeRoot | Status      |
+|----------------------------|-----------|---------|--------------|-------------|
+| FastSSZ only               | **5 ms**  | **2 ms**| 81 ms        | ✅ success  |
+| DynSSZ only                | 18 ms     | 10 ms   | 61 ms        | ✅ success  |
+| DynSSZ + FastSSZ            | **5 ms**  | **2 ms**| **59 ms**    | ✅ success  |
+| DynSSZ streaming only      | 30 ms     | 82 ms   | 69 ms        | ✅ success  |
+| DynSSZ streaming + FastSSZ | 22 ms     | 12 ms   | 64 ms        | ✅ success  |
 
-#### BeaconState Decode + Encode + Hash (10,000 times)
-- **fastssz only:** [5849 ms / 4960 ms / 73087 ms] success
-- **dynssz only:** [22544 ms / 12256 ms / 40181 ms] success
-- **dynssz + fastssz:** [5728 ms / 4857 ms / 37191 ms] success
+#### BeaconState Decode + Encode + Hash (10,000x)
+| Mode                       | Unmarshal   | Marshal   | HashTreeRoot | Status      |
+|----------------------------|-------------|-----------|--------------|-------------|
+| FastSSZ only               | **13,381 ms**| 10,581 ms | 66,177 ms    | ✅ success  |
+| DynSSZ only                | 33,388 ms   | 18,203 ms | **36,553 ms**| ✅ success  |
+| DynSSZ + FastSSZ            | **13,531 ms**| **10,243 ms** | **34,234 ms** | ✅ success  |
+| DynSSZ streaming only      | 96,865 ms   | 34,707 ms | 36,714 ms    | ✅ success  |
+| DynSSZ streaming + FastSSZ | 95,289 ms   | 64,061 ms | 34,263 ms    | ✅ success  |
+
+---
 
 ### Minimal Preset
 
-#### BeaconBlock Decode + Encode + Hash (10,000 times)
-- **fastssz only:** [0 ms / 0 ms / 0 ms] failed (unmarshal error)
-- **dynssz only:** [44 ms / 29 ms / 90 ms] success
-- **dynssz + fastssz:** [22 ms / 13 ms / 151 ms] success
+#### BeaconBlock Decode + Encode + Hash (10,000x)
+| Mode                       | Unmarshal | Marshal | HashTreeRoot | Status      |
+|----------------------------|-----------|---------|--------------|-------------|
+| FastSSZ only               | —         | —       | —            | ❌ unmarshal error |
+| DynSSZ only                | 47 ms     | 25 ms   | 87 ms        | ✅ success  |
+| DynSSZ + FastSSZ            | **15 ms** | **8 ms**| 128 ms       | ✅ success  |
+| DynSSZ streaming only      | 47 ms     | 124 ms  | **78 ms**    | ✅ success  |
+| DynSSZ streaming + FastSSZ | 29 ms     | 43 ms   | 140 ms       | ✅ success  |
 
-#### BeaconState Decode + Encode + Hash (10,000 times)
-- **fastssz only:** [0 ms / 0 ms / 0 ms] failed (unmarshal error)
-- **dynssz only:** [796 ms / 407 ms / 1816 ms] success
-- **dynssz + fastssz:** [459 ms / 244 ms / 4712 ms] success
+#### BeaconState Decode + Encode + Hash (10,000x)
+| Mode                       | Unmarshal | Marshal | HashTreeRoot | Status      |
+|----------------------------|-----------|---------|--------------|-------------|
+| FastSSZ only               | —         | —       | —            | ❌ unmarshal error |
+| DynSSZ only                | 1,460 ms  | 587 ms  | **1,628 ms** | ✅ success  |
+| DynSSZ + FastSSZ            | **980 ms**| **465 ms** | 4,295 ms    | ✅ success  |
+| DynSSZ streaming only      | 2,663 ms  | 1,230 ms| 1,610 ms     | ✅ success  |
+| DynSSZ streaming + FastSSZ | 1,963 ms  | 1,048 ms| 4,436 ms     | ✅ success  |
 
-These results showcase the dynamic processing capabilities of `dynssz`, particularly its ability to handle data structures that `fastssz` cannot process due to its static nature. While `dynssz` introduces additional processing time, its flexibility allows it to successfully manage both mainnet and minimal presets. The combined `dynssz` and `fastssz` approach significantly improves performance while maintaining this flexibility, making it a viable solution for applications requiring dynamic SSZ processing.
+---
+
+### Key Takeaways
+- **Hybrid mode (DynSSZ + FastSSZ)** offers the **best of both worlds** – static speed for known types, dynamic flexibility for unknown or runtime-defined types.
+- **DynSSZ only** is slower than FastSSZ for large objects, but **can handle structures FastSSZ cannot** (e.g., minimal preset states/blocks).
+- **Streaming mode** is useful for large payloads with low memory pressure, but comes with significant speed trade-offs.
+- **HashTreeRoot** often benefits significantly from DynSSZ's dynamic approach, especially in large structures.
 
 ## Testing
 
