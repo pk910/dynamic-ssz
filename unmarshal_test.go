@@ -95,6 +95,13 @@ var unmarshalTestMatrix = []struct {
 		}{{{{F1: 2}, {F1: 3}}, {{F1: 4}, {F1: 5}}}, {{{F1: 8}, {F1: 9}}, {{F1: 10}, {F1: 11}}}}, 43},
 		fromHex("0x2a060000002b0800000018000000080000000c0000000200030004000500080000000c000000080009000a000b00"),
 	},
+	// ssz-type annotation tests
+	{
+		struct {
+			BitlistData []byte `ssz-type:"bitlist" ssz-max:"100"`
+		}{[]byte{0x0f, 0x01}}, // bitlist with 4 bits set, length indicator
+		fromHex("0x040000000f01"),
+	},
 
 	// progressive bitlist test - matches Python test_progressive_bitlist.py output
 	{

@@ -202,6 +202,14 @@ var marshalTestMatrix = []struct {
 		fromHex("0x37130800000042420178563412"),
 	},
 
+	// ssz-type annotation tests
+	{
+		struct {
+			BitlistData []byte `ssz-type:"bitlist" ssz-max:"100"`
+		}{[]byte{0x0f, 0x01}}, // bitlist with 4 bits set, length indicator
+		fromHex("0x040000000f01"),
+	},
+
 	// string types
 	{
 		struct {
