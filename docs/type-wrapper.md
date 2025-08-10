@@ -20,11 +20,11 @@ SSZ annotations in Go are applied via struct field tags. However, you cannot dir
 
 ```go
 // This doesn't work - no way to add SSZ annotations
-type MyByteSlice []byte
+type MyByteSlice []byte `ssz-max:"32"`
 
 // This works but requires wrapper struct, which has an effect on the corresponding SSZ
 type MyData struct {
-    Bytes []byte `ssz-size:"32"`
+    Bytes []byte `ssz-max:"32"`
 }
 ```
 

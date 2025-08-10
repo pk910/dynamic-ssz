@@ -54,12 +54,11 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 
 	if useFastSsz {
 		if sourceType.HasHashTreeRootWith {
-			// Use HashTreeRootWith for better performance via reflection
-			value := sourceValue.Addr()
-			method := value.MethodByName("HashTreeRootWith")
-			if method.IsValid() {
-				// Call the method with our hasher
-				results := method.Call([]reflect.Value{reflect.ValueOf(hh)})
+			// Use cached HashTreeRootWith method for better performance
+			if sourceType.HashTreeRootWithMethod != nil {
+				value := sourceValue.Addr()
+				// Call the cached method with our hasher
+				results := sourceType.HashTreeRootWithMethod.Func.Call([]reflect.Value{value, reflect.ValueOf(hh)})
 				if len(results) > 0 && !results[0].IsNil() {
 					return fmt.Errorf("failed HashTreeRootWith: %v", results[0].Interface())
 				}
