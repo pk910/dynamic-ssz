@@ -300,7 +300,13 @@ func (d *DynSsz) unmarshalVector(targetType *TypeDescriptor, targetValue reflect
 	var newValue reflect.Value
 	switch targetType.Kind {
 	case reflect.Slice:
-		newValue = reflect.MakeSlice(targetType.Type, arrLen, arrLen)
+		// Optimization: avoid reflect.MakeSlice for common byte slice types
+		if targetType.IsByteArray && targetType.ElemDesc.Type.Kind() == reflect.Uint8 {
+			byteSlice := make([]byte, arrLen)
+			newValue = reflect.ValueOf(byteSlice)
+		} else {
+			newValue = reflect.MakeSlice(targetType.Type, arrLen, arrLen)
+		}
 	case reflect.Array:
 		newValue = targetValue
 	default:
@@ -499,7 +505,13 @@ func (d *DynSsz) unmarshalList(targetType *TypeDescriptor, targetValue reflect.V
 
 	var newValue reflect.Value
 	if targetType.Kind == reflect.Slice {
-		newValue = reflect.MakeSlice(fieldT, sliceLen, sliceLen)
+		// Optimization: avoid reflect.MakeSlice for common byte slice types
+		if targetType.IsByteArray && fieldType.Type.Kind() == reflect.Uint8 {
+			byteSlice := make([]byte, sliceLen)
+			newValue = reflect.ValueOf(byteSlice)
+		} else {
+			newValue = reflect.MakeSlice(fieldT, sliceLen, sliceLen)
+		}
 	} else {
 		newValue = reflect.New(fieldT).Elem()
 	}
