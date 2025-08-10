@@ -183,6 +183,9 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		if t.PkgPath() == "github.com/holiman/uint256" && t.Name() == "Int" {
 			sszType = SszUint256Type
 		}
+		if t.PkgPath() == typeWrapperType.PkgPath() && strings.HasPrefix(t.Name(), "TypeWrapper[") {
+			sszType = SszTypeWrapperType
+		}
 	}
 	if sszType == SszUnspecifiedType {
 		switch desc.Kind {
@@ -286,6 +289,11 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		}
 
 	// complex types
+	case SszTypeWrapperType:
+		err := tc.buildTypeWrapperDescriptor(desc, t)
+		if err != nil {
+			return nil, err
+		}
 	case SszContainerType:
 		err := tc.buildContainerDescriptor(desc, t)
 		if err != nil {
@@ -316,6 +324,54 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 	}
 
 	return desc, nil
+}
+
+// buildTypeWrapperDescriptor builds a descriptor for TypeWrapper types
+func (tc *TypeCache) buildTypeWrapperDescriptor(desc *TypeDescriptor, t reflect.Type) error {
+	if desc.Kind != reflect.Struct {
+		return fmt.Errorf("TypeWrapper ssz type can only be represented by struct types, got %v", desc.Kind)
+	}
+
+	// Create a zero value instance to call the GetDescriptorType method
+	wrapperValue := reflect.New(t)
+	method := wrapperValue.MethodByName("GetDescriptorType")
+	if !method.IsValid() {
+		return fmt.Errorf("GetDescriptorType method not found on type %s", t)
+	}
+
+	// Call the method to get the descriptor type
+	results := method.Call(nil)
+	if len(results) == 0 {
+		return fmt.Errorf("GetDescriptorType returned no results")
+	}
+
+	descriptorType, ok := results[0].Interface().(reflect.Type)
+	if !ok {
+		return fmt.Errorf("GetDescriptorType did not return a reflect.Type")
+	}
+
+	// Extract wrapper information from descriptor struct (includes SSZ annotations)
+	wrapperInfo, err := extractWrapperDescriptorInfo(descriptorType, tc.dynssz)
+	if err != nil {
+		return fmt.Errorf("failed to extract wrapper descriptor info: %w", err)
+	}
+
+	// Build type descriptor for the wrapped type using the extracted information
+	wrappedDesc, err := tc.getTypeDescriptor(wrapperInfo.Type, wrapperInfo.SizeHints, wrapperInfo.MaxSizeHints, wrapperInfo.TypeHints)
+	if err != nil {
+		return fmt.Errorf("failed to build descriptor for wrapped type: %w", err)
+	}
+
+	// Store wrapper information
+	desc.ElemDesc = wrappedDesc
+
+	// The TypeWrapper inherits properties from the wrapped type
+	desc.Size = wrappedDesc.Size
+	desc.IsDynamic = wrappedDesc.IsDynamic
+	desc.HasDynamicSize = wrappedDesc.HasDynamicSize
+	desc.HasDynamicMax = wrappedDesc.HasDynamicMax
+
+	return nil
 }
 
 // buildUint128Descriptor builds a descriptor for uint128 types

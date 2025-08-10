@@ -94,6 +94,11 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 	if !useFastSsz {
 		// Route to appropriate handler based on type
 		switch sourceType.SszType {
+		case SszTypeWrapperType:
+			err := d.buildRootFromTypeWrapper(sourceType, sourceValue, hh, pack, idt)
+			if err != nil {
+				return err
+			}
 		case SszContainerType:
 			err := d.buildRootFromContainer(sourceType, sourceValue, hh, idt)
 			if err != nil {
@@ -165,6 +170,35 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 	}
 
 	return nil
+}
+
+// buildRootFromTypeWrapper builds hash tree root from a TypeWrapper by extracting its data field
+//
+// Parameters:
+//   - sourceType: The TypeDescriptor containing wrapper field metadata
+//   - sourceValue: The reflect.Value of the wrapper to hash
+//   - hh: The Hasher instance for hash computation
+//   - pack: Whether to pack the value into a single tree leaf
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - error: An error if hashing fails
+//
+// The function extracts the Data field from the TypeWrapper and builds the hash tree root for the wrapped value using its type descriptor.
+
+func (d *DynSsz) buildRootFromTypeWrapper(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher, pack bool, idt int) error {
+	if d.Verbose {
+		fmt.Printf("%sbuildRootFromTypeWrapper: %s\n", strings.Repeat(" ", idt), sourceType.Type.Name())
+	}
+
+	// Extract the Data field from the TypeWrapper
+	dataField := sourceValue.Field(0)
+	if !dataField.IsValid() {
+		return fmt.Errorf("TypeWrapper missing 'Data' field")
+	}
+
+	// Build hash tree root for the wrapped value using its type descriptor
+	return d.buildRootFromType(sourceType.ElemDesc, dataField, hh, pack, idt+2)
 }
 
 // buildRootFromLargeUint handles hashing of large uint types.

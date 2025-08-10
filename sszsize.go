@@ -61,6 +61,19 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 	if !useFastSsz {
 		// can't use fastssz, use dynamic size calculation
 		switch targetType.SszType {
+		case SszTypeWrapperType:
+			// Extract the Data field from the TypeWrapper
+			dataField := targetValue.Field(0)
+			if !dataField.IsValid() {
+				return 0, fmt.Errorf("TypeWrapper missing 'Data' field")
+			}
+
+			// Calculate size for the wrapped value using its type descriptor
+			size, err := d.getSszValueSize(targetType.ElemDesc, dataField)
+			if err != nil {
+				return 0, err
+			}
+			staticSize = size
 		case SszContainerType:
 			for i := 0; i < len(targetType.ContainerDesc.Fields); i++ {
 				fieldType := targetType.ContainerDesc.Fields[i]
