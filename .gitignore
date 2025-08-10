@@ -1,4 +1,6 @@
 temp/
 ai_plans/
+profiles/
+coverage.*
 spec-coverage.out
 unit-coverage.out

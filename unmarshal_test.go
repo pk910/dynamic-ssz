@@ -102,7 +102,7 @@ var unmarshalTestMatrix = []struct {
 		}{[]byte{0x0f, 0x01}}, // bitlist with 4 bits set, length indicator
 		fromHex("0x040000000f01"),
 	},
-	
+
 	// uint128 type tests
 	{
 		struct {
@@ -122,7 +122,7 @@ var unmarshalTestMatrix = []struct {
 		}{[]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}},
 		fromHex("0x0102030405060708090a0b0c0d0e0f10"),
 	},
-	
+
 	// uint256 type tests
 	{
 		struct {
@@ -148,7 +148,7 @@ var unmarshalTestMatrix = []struct {
 		}},
 		fromHex("0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"),
 	},
-	
+
 	// bitvector type tests
 	{
 		struct {
@@ -156,7 +156,7 @@ var unmarshalTestMatrix = []struct {
 		}{[4]byte{0xff, 0x0f, 0x00, 0xf0}},
 		fromHex("0xff0f00f0"),
 	},
-	
+
 	// explicit basic type annotations
 	{
 		struct {
@@ -170,7 +170,7 @@ var unmarshalTestMatrix = []struct {
 		}{true},
 		fromHex("0x01"),
 	},
-	
+
 	// vector type annotation
 	{
 		struct {
@@ -178,7 +178,7 @@ var unmarshalTestMatrix = []struct {
 		}{[]uint64{1, 2, 3}},
 		fromHex("0x010000000000000002000000000000000300000000000000"),
 	},
-	
+
 	// container type annotation
 	{
 		struct {
@@ -286,6 +286,47 @@ var unmarshalTestMatrix = []struct {
 			Data string `ssz-size:"32"`
 		}{"abcdefghijklmnopqrstuvwxyz123456"},
 		fromHex("0x6162636465666768696a6b6c6d6e6f707172737475767778797a313233343536"),
+	},
+
+	// TypeWrapper test cases
+	{
+		func() any {
+			type WrappedByteArray = TypeWrapper[struct {
+				Data []byte `ssz-size:"32"`
+			}, []byte]
+
+			testData := make([]byte, 32)
+			for i := range testData {
+				testData[i] = byte(i)
+			}
+			wrapper := WrappedByteArray{
+				Data: testData,
+			}
+			return wrapper
+		}(),
+		fromHex("0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"),
+	},
+	{
+		func() any {
+			type WrappedUint32List = TypeWrapper[struct {
+				Data []uint32 `ssz-max:"1024"`
+			}, []uint32]
+			wrapper := WrappedUint32List{}
+			wrapper.Set([]uint32{1, 2, 3, 4, 5})
+			return wrapper
+		}(),
+		fromHex("0x0100000002000000030000000400000005000000"),
+	},
+	{
+		func() any {
+			type WrappedBool = TypeWrapper[struct {
+				Data bool
+			}, bool]
+			wrapper := WrappedBool{}
+			wrapper.Set(true)
+			return wrapper
+		}(),
+		fromHex("0x01"),
 	},
 }
 

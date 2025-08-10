@@ -8,6 +8,7 @@ Welcome to the comprehensive documentation for the dynamic-ssz library. This doc
 - **[Getting Started Guide](getting-started.md)** - Start here if you're new to dynamic-ssz
 - **[API Reference](api-reference.md)** - Complete API documentation with examples
 - **[Strict Types](strict-types.md)** - Using the strict type system with `ssz-type` annotations
+- **[TypeWrapper](type-wrapper.md)** - Applying SSZ annotations to non-struct types
 - **[Troubleshooting](troubleshooting.md)** - Common issues and solutions
 
 ### Advanced Usage
@@ -120,7 +121,7 @@ Dynamic SSZ only supports SSZ-compatible types:
 - **`dynssz-size`**: Dynamic size based on specifications with expression support
 - **`ssz-max`**: Maximum elements for dynamic fields (**required** for hash tree root)
 - **`dynssz-max`**: Dynamic maximum based on specifications
-- **`ssz-type`**: Explicit SSZ type specification (new strict type system)
+- **`ssz-type`**: Explicit SSZ type specification (strict type system)
 
 ### Specifications
 Runtime configuration that controls dynamic field sizes:

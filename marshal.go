@@ -68,6 +68,11 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 		var err error
 		switch sourceType.SszType {
 		// complex types
+		case SszTypeWrapperType:
+			buf, err = d.marshalTypeWrapper(sourceType, sourceValue, buf, idt)
+			if err != nil {
+				return nil, err
+			}
 		case SszContainerType, SszProgressiveContainerType:
 			buf, err = d.marshalContainer(sourceType, sourceValue, buf, idt)
 			if err != nil {
@@ -114,6 +119,35 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 	}
 
 	return buf, nil
+}
+
+// marshalTypeWrapper marshals a TypeWrapper by extracting its data field and marshaling it as the wrapped type
+//
+// Parameters:
+//   - sourceType: The TypeDescriptor containing wrapper field metadata
+//   - sourceValue: The reflect.Value of the wrapper to encode
+//   - buf: The buffer to append encoded data to
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - []byte: The updated buffer with the encoded wrapper
+//   - error: An error if any field encoding fails
+//
+// The function validates that the Data field is present and marshals the wrapped value using its type descriptor.
+
+func (d *DynSsz) marshalTypeWrapper(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
+	if d.Verbose {
+		fmt.Printf("%smarshalTypeWrapper: %s\n", strings.Repeat(" ", idt), sourceType.Type.Name())
+	}
+
+	// Extract the Data field from the TypeWrapper
+	dataField := sourceValue.Field(0)
+	if !dataField.IsValid() {
+		return nil, fmt.Errorf("TypeWrapper missing 'Data' field")
+	}
+
+	// Marshal the wrapped value using its type descriptor
+	return d.marshalType(sourceType.ElemDesc, dataField, buf, idt+2)
 }
 
 // marshalContainer handles the encoding of container values into SSZ-encoded data.
@@ -234,8 +268,7 @@ func (d *DynSsz) marshalVector(sourceType *TypeDescriptor, sourceValue reflect.V
 		buf = append(buf, bytes...)
 
 		if appendZero > 0 {
-			zeroBytes := make([]uint8, appendZero)
-			buf = append(buf, zeroBytes...)
+			buf = appendZeroPadding(buf, appendZero)
 		}
 	} else {
 		for i := 0; i < int(sliceLen); i++ {
@@ -249,8 +282,7 @@ func (d *DynSsz) marshalVector(sourceType *TypeDescriptor, sourceValue reflect.V
 
 		if appendZero > 0 {
 			totalZeroBytes := int(sourceType.ElemDesc.Size) * appendZero
-			zeroBuf := make([]byte, totalZeroBytes)
-			buf = append(buf, zeroBuf...)
+			buf = appendZeroPadding(buf, totalZeroBytes)
 		}
 	}
 
@@ -297,8 +329,7 @@ func (d *DynSsz) marshalDynamicVector(sourceType *TypeDescriptor, sourceValue re
 
 	startOffset := len(buf)
 	totalOffsets := sliceLen + appendZero
-	offsetBuf := make([]byte, 4*totalOffsets)
-	buf = append(buf, offsetBuf...)
+	buf = appendZeroPadding(buf, 4*totalOffsets) // Reserve space for offsets
 
 	offset := 4 * totalOffsets
 	bufLen := len(buf)
@@ -334,16 +365,11 @@ func (d *DynSsz) marshalDynamicVector(sourceType *TypeDescriptor, sourceValue re
 		}
 		zeroBufLen := len(zeroBuf)
 
-		// Batch append all zero values at once for better performance
-		totalZeroBytes := zeroBufLen * appendZero
-		zeroData := make([]byte, 0, totalZeroBytes)
 		for i := 0; i < appendZero; i++ {
-			zeroData = append(zeroData, zeroBuf...)
+			buf = append(buf, zeroBuf...)
 			binary.LittleEndian.PutUint32(buf[startOffset+((sliceLen+i)*4):startOffset+(((sliceLen+i)+1)*4)], uint32(offset))
 			offset += zeroBufLen
 		}
-
-		buf = append(buf, zeroData...)
 	}
 
 	return buf, nil
@@ -424,8 +450,7 @@ func (d *DynSsz) marshalDynamicList(sourceType *TypeDescriptor, sourceValue refl
 
 	startOffset := len(buf)
 	totalOffsets := sliceLen
-	offsetBuf := make([]byte, 4*totalOffsets)
-	buf = append(buf, offsetBuf...)
+	buf = appendZeroPadding(buf, 4*totalOffsets) // Reserve space for offsets
 
 	offset := 4 * totalOffsets
 	bufLen := len(buf)

@@ -19,25 +19,26 @@ type TypeCache struct {
 
 // TypeDescriptor represents a cached, optimized descriptor for a type's SSZ encoding/decoding
 type TypeDescriptor struct {
-	Type                reflect.Type
-	Kind                reflect.Kind              // Go kind of the type
-	Size                uint32                    // SSZ size (-1 if dynamic)
-	Len                 uint32                    // Length of array/slice
-	Limit               uint64                    // Limit of array/slice (ssz-max tag)
-	ContainerDesc       *ContainerDescriptor      // For structs
-	UnionVariants       map[uint8]*TypeDescriptor // Union variant types by index (for CompatibleUnion)
-	ElemDesc            *TypeDescriptor           // For slices/arrays
-	SszType             SszType                   // SSZ type of the type
-	IsDynamic           bool                      // Whether this type is a dynamic type (or has nested dynamic types)
-	HasLimit            bool                      // Whether this type has a limit (ssz-max tag)
-	HasDynamicSize      bool                      // Whether this type uses dynamic spec size value that differs from the default
-	HasDynamicMax       bool                      // Whether this type uses dynamic spec max value that differs from the default
-	HasFastSSZMarshaler bool                      // Whether the type implements fastssz.Marshaler
-	HasFastSSZHasher    bool                      // Whether the type implements fastssz.HashRoot
-	HasHashTreeRootWith bool                      // Whether the type implements HashTreeRootWith
-	IsPtr               bool                      // Whether this is a pointer type
-	IsByteArray         bool                      // Whether this is a byte array
-	IsString            bool                      // Whether this is a string type
+	Type                   reflect.Type
+	Kind                   reflect.Kind              // Go kind of the type
+	Size                   uint32                    // SSZ size (-1 if dynamic)
+	Len                    uint32                    // Length of array/slice
+	Limit                  uint64                    // Limit of array/slice (ssz-max tag)
+	ContainerDesc          *ContainerDescriptor      // For structs
+	UnionVariants          map[uint8]*TypeDescriptor // Union variant types by index (for CompatibleUnion)
+	ElemDesc               *TypeDescriptor           // For slices/arrays
+	HashTreeRootWithMethod *reflect.Method           // Cached HashTreeRootWith method for performance
+	SszType                SszType                   // SSZ type of the type
+	IsDynamic              bool                      // Whether this type is a dynamic type (or has nested dynamic types)
+	HasLimit               bool                      // Whether this type has a limit (ssz-max tag)
+	HasDynamicSize         bool                      // Whether this type uses dynamic spec size value that differs from the default
+	HasDynamicMax          bool                      // Whether this type uses dynamic spec max value that differs from the default
+	HasFastSSZMarshaler    bool                      // Whether the type implements fastssz.Marshaler
+	HasFastSSZHasher       bool                      // Whether the type implements fastssz.HashRoot
+	HasHashTreeRootWith    bool                      // Whether the type implements HashTreeRootWith
+	IsPtr                  bool                      // Whether this is a pointer type
+	IsByteArray            bool                      // Whether this is a byte array
+	IsString               bool                      // Whether this is a string type
 }
 
 // FieldDescriptor represents a cached descriptor for a struct field
@@ -192,6 +193,9 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		case t.PkgPath() == "github.com/pk910/dynamic-ssz" && strings.HasPrefix(t.Name(), "CompatibleUnion["):
 			sszType = SszCompatibleUnionType
 		}
+		if t.PkgPath() == typeWrapperType.PkgPath() && strings.HasPrefix(t.Name(), "TypeWrapper[") {
+			sszType = SszTypeWrapperType
+		}
 	}
 	if sszType == SszUnspecifiedType {
 		switch desc.Kind {
@@ -294,6 +298,11 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		}
 
 	// complex types
+	case SszTypeWrapperType:
+		err := tc.buildTypeWrapperDescriptor(desc, t)
+		if err != nil {
+			return nil, err
+		}
 	case SszContainerType, SszProgressiveContainerType:
 		err := tc.buildContainerDescriptor(desc, t)
 		if err != nil {
@@ -315,6 +324,13 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 			return nil, err
 		}
 
+	case SszCustomType:
+		if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
+			desc.Size = uint32(sizeHints[0].Size)
+		} else {
+			desc.Size = 0
+			desc.IsDynamic = true
+		}
 	}
 
 	if !desc.HasDynamicSize {
@@ -322,7 +338,8 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 	}
 	if !desc.HasDynamicMax {
 		desc.HasFastSSZHasher = tc.dynssz.getFastsszHashCompatibility(t)
-		desc.HasHashTreeRootWith = tc.dynssz.getHashTreeRootWithCompatibility(t)
+		desc.HashTreeRootWithMethod = tc.dynssz.getHashTreeRootWithCompatibility(t)
+		desc.HasHashTreeRootWith = desc.HashTreeRootWithMethod != nil
 	}
 
 	if desc.SszType == SszCustomType && (!desc.HasFastSSZMarshaler || !desc.HasFastSSZHasher) {
@@ -330,6 +347,54 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 	}
 
 	return desc, nil
+}
+
+// buildTypeWrapperDescriptor builds a descriptor for TypeWrapper types
+func (tc *TypeCache) buildTypeWrapperDescriptor(desc *TypeDescriptor, t reflect.Type) error {
+	if desc.Kind != reflect.Struct {
+		return fmt.Errorf("TypeWrapper ssz type can only be represented by struct types, got %v", desc.Kind)
+	}
+
+	// Create a zero value instance to call the GetDescriptorType method
+	wrapperValue := reflect.New(t)
+	method := wrapperValue.MethodByName("GetDescriptorType")
+	if !method.IsValid() {
+		return fmt.Errorf("GetDescriptorType method not found on type %s", t)
+	}
+
+	// Call the method to get the descriptor type
+	results := method.Call(nil)
+	if len(results) == 0 {
+		return fmt.Errorf("GetDescriptorType returned no results")
+	}
+
+	descriptorType, ok := results[0].Interface().(reflect.Type)
+	if !ok {
+		return fmt.Errorf("GetDescriptorType did not return a reflect.Type")
+	}
+
+	// Extract wrapper information from descriptor struct (includes SSZ annotations)
+	wrapperInfo, err := extractWrapperDescriptorInfo(descriptorType, tc.dynssz)
+	if err != nil {
+		return fmt.Errorf("failed to extract wrapper descriptor info: %w", err)
+	}
+
+	// Build type descriptor for the wrapped type using the extracted information
+	wrappedDesc, err := tc.getTypeDescriptor(wrapperInfo.Type, wrapperInfo.SizeHints, wrapperInfo.MaxSizeHints, wrapperInfo.TypeHints)
+	if err != nil {
+		return fmt.Errorf("failed to build descriptor for wrapped type: %w", err)
+	}
+
+	// Store wrapper information
+	desc.ElemDesc = wrappedDesc
+
+	// The TypeWrapper inherits properties from the wrapped type
+	desc.Size = wrappedDesc.Size
+	desc.IsDynamic = wrappedDesc.IsDynamic
+	desc.HasDynamicSize = wrappedDesc.HasDynamicSize
+	desc.HasDynamicMax = wrappedDesc.HasDynamicMax
+
+	return nil
 }
 
 // buildUint128Descriptor builds a descriptor for uint128 types

@@ -38,6 +38,22 @@ var zeroHashes [65][32]byte
 var zeroHashLevels map[string]int
 var trueBytes, falseBytes, zeroBytes []byte
 
+// appendZeroPadding appends the specified number of zero bytes to buf
+func appendZeroPadding(buf []byte, count int) []byte {
+	if len(zeroBytes) == 0 {
+		zeroBytes = make([]byte, 1024)
+	}
+	for count > 0 {
+		toCopy := count
+		if toCopy > len(zeroBytes) {
+			toCopy = len(zeroBytes)
+		}
+		buf = append(buf, zeroBytes[:toCopy]...)
+		count -= toCopy
+	}
+	return buf
+}
+
 func initHasher() {
 	hasherInitMutex.Lock()
 	defer hasherInitMutex.Unlock()
@@ -49,7 +65,9 @@ func initHasher() {
 	hasherInitialized = true
 	falseBytes = make([]byte, 32)
 	trueBytes = make([]byte, 32)
-	zeroBytes = make([]byte, 32)
+	if len(zeroBytes) == 0 {
+		zeroBytes = make([]byte, 1024)
+	}
 	trueBytes[0] = 1
 	zeroHashLevels = make(map[string]int)
 	zeroHashLevels[string(falseBytes)] = 0
@@ -338,8 +356,8 @@ func (h *Hasher) Merkleize(indx int) {
 	// emptively cater for that by ensuring that an extra 32 bytes is always
 	// available.
 	if len(h.buf) == cap(h.buf) {
-		h.buf = append(h.buf, zeroBytes...)
-		h.buf = h.buf[:len(h.buf)-len(zeroBytes)]
+		h.buf = append(h.buf, zeroBytes[:32]...)
+		h.buf = h.buf[:len(h.buf)-len(zeroBytes[:32])]
 	}
 	input := h.buf[indx:]
 
@@ -418,13 +436,13 @@ func (h *Hasher) merkleizeImpl(dst []byte, input []byte, limit uint64) []byte {
 	}
 
 	if limit == 0 {
-		return append(dst, zeroBytes...)
+		return append(dst, zeroBytes[:32]...)
 	}
 	if limit == 1 {
 		if count == 1 {
 			return append(dst, input[:32]...)
 		}
-		return append(dst, zeroBytes...)
+		return append(dst, zeroBytes[:32]...)
 	}
 
 	depth := h.getDepth(limit)
