@@ -113,6 +113,10 @@ func (d *DynSsz) getSszValueSizeWithTree(targetType *TypeDescriptor, targetValue
 					if err != nil {
 						return 0, err
 					}
+					if childNode != nil {
+						childNode.size = size
+					}
+
 					// add 4 bytes for offset in dynamic array
 					staticSize += size + 4
 				}
@@ -121,19 +125,27 @@ func (d *DynSsz) getSszValueSizeWithTree(targetType *TypeDescriptor, targetValue
 					appendZero := targetType.Len - uint32(dataLen)
 					zeroVal := reflect.New(fieldType.Type).Elem()
 					var childNode *dynamicSizeNode
-					if tree != nil {
-						childNode = &dynamicSizeNode{}
-						for i := 0; i < int(appendZero); i++ {
+					var zeroSize uint32
+
+					for i := 0; i < int(appendZero); i++ {
+						if tree != nil {
+							childNode = &dynamicSizeNode{}
 							tree.children = append(tree.children, childNode)
 						}
+
+						size, err := d.getSszValueSizeWithTree(fieldType, zeroVal, childNode)
+						if err != nil {
+							return 0, err
+						}
+
+						if childNode != nil {
+							childNode.size = size
+						}
+
+						zeroSize = size
 					}
 
-					size, err := d.getSszValueSizeWithTree(fieldType, zeroVal, childNode)
-					if err != nil {
-						return 0, err
-					}
-
-					staticSize += (size + 4) * appendZero
+					staticSize += (zeroSize + 4) * appendZero
 				}
 			} else {
 				dataLen := targetValue.Len()

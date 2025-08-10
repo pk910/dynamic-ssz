@@ -312,7 +312,7 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error {
 	// Build size tree if we have dynamic fields
 	var sizeTree *dynamicSizeNode
 	var totalSize uint32
-	if sourceTypeDesc.Size < 0 {
+	if sourceTypeDesc.IsDynamic {
 		sizeTree = &dynamicSizeNode{}
 		size, err := d.getSszValueSizeWithTree(sourceTypeDesc, sourceValue, sizeTree)
 		if err != nil {
@@ -360,7 +360,7 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error {
 	}
 
 	// Marshal using writer methods
-	err = d.marshalTypeWriter(ctx, sourceTypeDesc, sourceValue)
+	err = d.marshalTypeWriter(ctx, sourceTypeDesc, sourceValue, 0)
 	if err != nil {
 		return err
 	}
