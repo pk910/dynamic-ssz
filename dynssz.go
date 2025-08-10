@@ -400,7 +400,7 @@ func (d *DynSsz) HashTreeRoot(source any) ([32]byte, error) {
 		pool.Put(hh)
 	}()
 
-	err = d.buildRootFromType(sourceTypeDesc, sourceValue, hh, 0)
+	err = d.buildRootFromType(sourceTypeDesc, sourceValue, hh, false, 0)
 	if err != nil {
 		return [32]byte{}, err
 	}

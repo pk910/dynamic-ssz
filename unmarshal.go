@@ -293,7 +293,7 @@ func (d *DynSsz) unmarshalVector(targetType *TypeDescriptor, targetValue reflect
 				return 0, err
 			}
 			if consumed != itemSize {
-				return 0, fmt.Errorf("unmarshalling array item did not consume expected ssz range (consumed: %v, expected: %v)", consumed, itemSize)
+				return 0, fmt.Errorf("unmarshalling vector item did not consume expected ssz range (consumed: %v, expected: %v)", consumed, itemSize)
 			}
 
 			offset += itemSize
@@ -396,7 +396,7 @@ func (d *DynSsz) unmarshalDynamicVector(targetType *TypeDescriptor, targetValue 
 			return 0, err
 		}
 		if consumed != itemSize {
-			return 0, fmt.Errorf("dynamic slice item did not consume expected ssz range (consumed: %v, expected: %v)", consumed, itemSize)
+			return 0, fmt.Errorf("dynamic vector item did not consume expected ssz range (consumed: %v, expected: %v)", consumed, itemSize)
 		}
 
 		offset += itemSize
@@ -444,7 +444,7 @@ func (d *DynSsz) unmarshalList(targetType *TypeDescriptor, targetValue reflect.V
 	itemSize := int(fieldType.Size)
 	sliceLen, ok := divideInt(sszLen, itemSize)
 	if !ok {
-		return 0, fmt.Errorf("invalid slice length, expected multiple of %v, got %v", itemSize, sszLen)
+		return 0, fmt.Errorf("invalid list length, expected multiple of %v, got %v", itemSize, sszLen)
 	}
 
 	// slice with static size items
@@ -472,11 +472,11 @@ func (d *DynSsz) unmarshalList(targetType *TypeDescriptor, targetValue reflect.V
 	} else {
 		offset := 0
 		if sliceLen > 0 {
-			// decode slice items
+			// decode list items
 			for i := 0; i < sliceLen; i++ {
 				var itemVal reflect.Value
 				if fieldType.IsPtr {
-					// fmt.Printf("new slice item %v\n", fieldType.Name())
+					// fmt.Printf("new list item %v\n", fieldType.Name())
 					itemVal = reflect.New(fieldType.Type.Elem())
 					newValue.Index(i).Set(itemVal.Elem().Addr())
 				} else {
@@ -490,7 +490,7 @@ func (d *DynSsz) unmarshalList(targetType *TypeDescriptor, targetValue reflect.V
 					return 0, err
 				}
 				if consumed != itemSize {
-					return 0, fmt.Errorf("slice item did not consume expected ssz range (consumed: %v, expected: %v)", consumed, itemSize)
+					return 0, fmt.Errorf("list item did not consume expected ssz range (consumed: %v, expected: %v)", consumed, itemSize)
 				}
 
 				offset += itemSize
@@ -594,7 +594,7 @@ func (d *DynSsz) unmarshalDynamicList(targetType *TypeDescriptor, targetValue re
 				return 0, err
 			}
 			if consumed != itemSize {
-				return 0, fmt.Errorf("dynamic slice item did not consume expected ssz range (consumed: %v, expected: %v)", consumed, itemSize)
+				return 0, fmt.Errorf("dynamic list item did not consume expected ssz range (consumed: %v, expected: %v)", consumed, itemSize)
 			}
 
 			offset += itemSize
@@ -604,45 +604,4 @@ func (d *DynSsz) unmarshalDynamicList(targetType *TypeDescriptor, targetValue re
 	targetValue.Set(newValue)
 
 	return offset, nil
-}
-
-// unmarshalString decodes SSZ-encoded data into a Go string value.
-//
-// Strings in SSZ can be either fixed-size or dynamic:
-//   - Fixed-size strings: Read exact number of bytes (including any null bytes)
-//   - Dynamic strings: Use all available bytes
-//
-// Parameters:
-//   - targetType: The TypeDescriptor containing string metadata and size constraints
-//   - targetValue: The reflect.Value where the decoded string will be stored
-//   - ssz: The SSZ-encoded data to decode
-//   - idt: Indentation level for verbose logging
-//
-// Returns:
-//   - int: The number of bytes consumed from the SSZ data
-//   - error: An error if decoding fails (e.g., insufficient data for fixed-size string)
-//
-// For fixed-size strings, the function reads exactly the specified number of bytes
-// without any trimming. For dynamic strings, all available bytes are used.
-func (d *DynSsz) unmarshalString(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
-	consumedBytes := 0
-
-	// Handle fixed-size vs dynamic strings
-	if targetType.Size > 0 {
-		// Fixed-size string: read exact number of bytes
-		fixedSize := int(targetType.Size)
-		if len(ssz) < fixedSize {
-			return 0, fmt.Errorf("not enough data for fixed-size string: need %d bytes, have %d", fixedSize, len(ssz))
-		}
-		// Read the fixed-size bytes without trimming
-		stringBytes := ssz[:fixedSize]
-		targetValue.SetString(string(stringBytes))
-		consumedBytes = fixedSize
-	} else {
-		// Dynamic string: use all available bytes
-		targetValue.SetString(string(ssz))
-		consumedBytes = len(ssz)
-	}
-
-	return consumedBytes, nil
 }

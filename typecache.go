@@ -6,6 +6,7 @@ package dynssz
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 )
 
@@ -228,6 +229,11 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 			return nil, fmt.Errorf("unsafe pointers are not supported in SSZ")
 		default:
 			return nil, fmt.Errorf("unsupported type kind: %v", t.Kind())
+		}
+
+		// special case for bitlists
+		if sszType == SszListType && strings.Contains(t.Name(), "Bitlist") {
+			sszType = SszBitlistType
 		}
 	}
 

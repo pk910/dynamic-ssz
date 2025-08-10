@@ -19,6 +19,7 @@ import (
 //   - sourceType: The TypeDescriptor containing optimized metadata about the type to hash
 //   - sourceValue: The reflect.Value holding the data to be hashed
 //   - hh: The Hasher instance managing the hash computation state
+//   - pack: Whether to pack the value into a single tree leaf
 //   - idt: Indentation level for verbose logging (when enabled)
 //
 // Returns:
@@ -31,7 +32,7 @@ import (
 //   - Primitive type hashing (bool, uint8, uint16, uint32, uint64)
 //   - Delegation to specialized functions for composite types (structs, arrays, slices)
 
-func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher, idt int) error {
+func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher, pack bool, idt int) error {
 	hashIndex := hh.Index()
 
 	if sourceType.IsPtr {
@@ -43,8 +44,7 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 	}
 
 	useFastSsz := !d.NoFastSsz && sourceType.IsFastSSZHasher && !sourceType.HasDynamicSize && !sourceType.HasDynamicMax
-	if !useFastSsz && sourceType.IsFastSSZHasher && !sourceType.HasDynamicSize && !sourceType.HasDynamicMax && sourceValue.Type().Name() == "Int" {
-		// hack for uint256.Int
+	if !useFastSsz && sourceType.SszType == SszCustomType {
 		useFastSsz = true
 	}
 
@@ -92,12 +92,24 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 	}
 
 	if !useFastSsz {
-		isBitlist := strings.Contains(sourceType.Type.Name(), "Bitlist")
-		if len(sourceType.TypeHints) > 0 && sourceType.TypeHints[0].Type == SszBitlistType {
-			isBitlist = true
-		}
-		// Special case for bitlists - hack
-		if isBitlist {
+		// Route to appropriate handler based on type
+		switch sourceType.SszType {
+		case SszContainerType:
+			err := d.buildRootFromContainer(sourceType, sourceValue, hh, idt)
+			if err != nil {
+				return err
+			}
+		case SszVectorType, SszBitvectorType:
+			err := d.buildRootFromVector(sourceType, sourceValue, hh, idt)
+			if err != nil {
+				return err
+			}
+		case SszListType:
+			err := d.buildRootFromList(sourceType, sourceValue, hh, idt)
+			if err != nil {
+				return err
+			}
+		case SszBitlistType:
 			maxSize := uint64(0)
 			bytes := sourceValue.Bytes()
 			if len(sourceType.MaxSizeHints) > 0 {
@@ -107,42 +119,51 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 			}
 
 			hh.PutBitlist(bytes, maxSize)
-		} else {
-			// Route to appropriate handler based on type
-			switch sourceType.Kind {
-			case reflect.Struct:
-				err := d.buildRootFromStruct(sourceType, sourceValue, hh, idt)
-				if err != nil {
-					return err
-				}
-			case reflect.Array:
-				err := d.buildRootFromArray(sourceType, sourceValue, hh, idt)
-				if err != nil {
-					return err
-				}
-			case reflect.Slice:
-				err := d.buildRootFromSlice(sourceType, sourceValue, hh, idt)
-				if err != nil {
-					return err
-				}
-			case reflect.String:
-				err := d.buildRootFromString(sourceType, sourceValue, hh)
-				if err != nil {
-					return err
-				}
-			case reflect.Bool:
+
+		case SszBoolType:
+			if pack {
+				hh.AppendUint8(1)
+			} else {
 				hh.PutBool(sourceValue.Bool())
-			case reflect.Uint8:
-				hh.PutUint8(uint8(sourceValue.Uint()))
-			case reflect.Uint16:
-				hh.PutUint16(uint16(sourceValue.Uint()))
-			case reflect.Uint32:
-				hh.PutUint32(uint32(sourceValue.Uint()))
-			case reflect.Uint64:
-				hh.PutUint64(uint64(sourceValue.Uint()))
-			default:
-				return fmt.Errorf("unknown type: %v", sourceType)
 			}
+		case SszUint8Type:
+			if pack {
+				hh.AppendUint8(uint8(sourceValue.Uint()))
+			} else {
+				hh.PutUint8(uint8(sourceValue.Uint()))
+			}
+		case SszUint16Type:
+			if pack {
+				hh.AppendUint16(uint16(sourceValue.Uint()))
+			} else {
+				hh.PutUint16(uint16(sourceValue.Uint()))
+			}
+		case SszUint32Type:
+			if pack {
+				hh.AppendUint32(uint32(sourceValue.Uint()))
+			} else {
+				hh.PutUint32(uint32(sourceValue.Uint()))
+			}
+		case SszUint64Type:
+			if pack {
+				hh.AppendUint64(uint64(sourceValue.Uint()))
+			} else {
+				hh.PutUint64(uint64(sourceValue.Uint()))
+			}
+		case SszUint128Type, SszUint256Type:
+			isUint64 := sourceType.ElemDesc.Kind == reflect.Uint64
+			if isUint64 {
+				for i := 0; i < int(sourceType.Size/8); i++ {
+					hh.AppendUint64(sourceValue.Index(i).Uint())
+				}
+			} else {
+				hh.Append(sourceValue.Bytes())
+			}
+			if !pack {
+				hh.FillUpTo32()
+			}
+		default:
+			return fmt.Errorf("unknown type: %v", sourceType)
 		}
 	}
 
@@ -153,19 +174,19 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 	return nil
 }
 
-// buildRootFromStruct computes the hash tree root for Go struct values.
+// buildRootFromContainer computes the hash tree root for ssz containers.
 //
-// In SSZ, struct hashing follows these rules:
+// In SSZ, containers are hashed as follows:
 //   - Each field is hashed independently to produce a 32-byte root
 //   - All field roots are collected in order
-//   - The collection is Merkleized to produce the struct's root
+//   - The collection is Merkleized to produce the container's root
 //
 // The function uses the pre-computed TypeDescriptor to efficiently iterate through
 // fields without repeated reflection calls.
 //
 // Parameters:
-//   - sourceType: The TypeDescriptor containing struct field metadata
-//   - sourceValue: The reflect.Value of the struct to hash
+//   - sourceType: The TypeDescriptor containing container field metadata
+//   - sourceValue: The reflect.Value of the container to hash
 //   - hh: The Hasher instance for hash computation
 //   - idt: Indentation level for verbose logging
 //
@@ -175,7 +196,7 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 // The Merkleize call at the end combines all field hashes into the final root
 // using binary tree hashing with zero-padding to the next power of two.
 
-func (d *DynSsz) buildRootFromStruct(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher, idt int) error {
+func (d *DynSsz) buildRootFromContainer(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher, idt int) error {
 	hashIndex := hh.Index()
 
 	for i := 0; i < len(sourceType.Fields); i++ {
@@ -187,7 +208,7 @@ func (d *DynSsz) buildRootFromStruct(sourceType *TypeDescriptor, sourceValue ref
 			fmt.Printf("%sfield %v\n", strings.Repeat(" ", idt), field.Name)
 		}
 
-		err := d.buildRootFromType(fieldType, fieldValue, hh, idt+2)
+		err := d.buildRootFromType(fieldType, fieldValue, hh, false, idt+2)
 		if err != nil {
 			return err
 		}
@@ -197,7 +218,7 @@ func (d *DynSsz) buildRootFromStruct(sourceType *TypeDescriptor, sourceValue ref
 	return nil
 }
 
-// buildRootFromArray computes the hash tree root for Go array values.
+// buildRootFromVector computes the hash tree root for ssz vectors.
 //
 // Arrays in SSZ are hashed based on their element type:
 //   - Byte arrays: Treated as a single value, chunked into 32-byte segments
@@ -219,11 +240,21 @@ func (d *DynSsz) buildRootFromStruct(sourceType *TypeDescriptor, sourceValue ref
 //   - Byte arrays use PutBytes for efficient chunk-based hashing
 //   - Arrays with max size hints include length mixing for proper limits
 
-func (d *DynSsz) buildRootFromArray(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher, idt int) error {
-	fieldType := sourceType.ElemDesc
+func (d *DynSsz) buildRootFromVector(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher, idt int) error {
+	hashIndex := hh.Index()
+
+	sliceLen := sourceValue.Len()
+	if uint32(sliceLen) > sourceType.Len {
+		return ErrListTooBig
+	}
+
+	appendZero := 0
+	if uint32(sliceLen) < sourceType.Len {
+		appendZero = int(sourceType.Len) - sliceLen
+	}
 
 	// For byte arrays, handle as a single unit
-	if fieldType.Kind == reflect.Uint8 {
+	if sourceType.IsByteArray {
 		if !sourceValue.CanAddr() {
 			// workaround for unaddressable static arrays
 			sourceValPtr := reflect.New(sourceType.Type)
@@ -231,40 +262,67 @@ func (d *DynSsz) buildRootFromArray(sourceType *TypeDescriptor, sourceValue refl
 			sourceValue = sourceValPtr.Elem()
 		}
 
-		hh.PutBytes(sourceValue.Bytes())
-		return nil
-	}
-
-	// For other types, process each element
-	hashIndex := hh.Index()
-	arrayLen := sourceValue.Len()
-	for i := 0; i < arrayLen; i++ {
-		fieldValue := sourceValue.Index(i)
-
-		err := d.buildRootFromType(fieldType, fieldValue, hh, idt+2)
-		if err != nil {
-			return err
-		}
-	}
-
-	if len(sourceType.MaxSizeHints) > 0 && !sourceType.MaxSizeHints[0].NoValue {
-		var limit uint64
-		if fieldType.Size > 0 {
-			limit = CalculateLimit(uint64(sourceType.MaxSizeHints[0].Size), uint64(arrayLen), uint64(fieldType.Size))
+		var bytes []byte
+		if sourceType.IsString {
+			bytes = []byte(sourceValue.String())
 		} else {
-			limit = uint64(sourceType.MaxSizeHints[0].Size)
+			bytes = sourceValue.Bytes()
 		}
-		hh.MerkleizeWithMixin(hashIndex, uint64(arrayLen), limit)
+
+		if appendZero > 0 {
+			zeroBytes := make([]byte, appendZero)
+			bytes = append(bytes, zeroBytes...)
+		}
+
+		hh.AppendBytes32(bytes)
 	} else {
-		hh.Merkleize(hashIndex)
+		// For other types, process each element
+		arrayLen := sourceValue.Len()
+		for i := 0; i < arrayLen; i++ {
+			fieldValue := sourceValue.Index(i)
+
+			err := d.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, true, idt+2)
+			if err != nil {
+				return err
+			}
+		}
+
+		if appendZero > 0 {
+			var zeroVal reflect.Value
+			if sourceType.ElemDesc.IsPtr {
+				zeroVal = reflect.New(sourceType.ElemDesc.Type.Elem())
+			} else {
+				zeroVal = reflect.New(sourceType.ElemDesc.Type).Elem()
+			}
+
+			index := hh.Index()
+			err := d.buildRootFromType(sourceType.ElemDesc, zeroVal, hh, true, idt+2)
+			if err != nil {
+				return err
+			}
+
+			zeroLen := hh.Index() - index
+			zeroBytes := hh.Hash()
+			if len(zeroBytes) > zeroLen {
+				zeroBytes = zeroBytes[len(zeroBytes)-zeroLen:]
+			}
+
+			for i := 1; i < appendZero; i++ {
+				hh.Append(zeroBytes)
+			}
+		}
+
+		hh.FillUpTo32()
 	}
+
+	hh.Merkleize(hashIndex)
 
 	return nil
 }
 
-// buildRootFromSlice computes the hash tree root for Go slice values.
+// buildRootFromList computes the hash tree root for ssz lists.
 //
-// Slices in SSZ are hashed as lists, which requires:
+// Lists in SSZ are hashed as follows:
 //   - Computing the root of the slice contents (as if it were an array)
 //   - Mixing the slice length into the final hash for proper domain separation
 //
@@ -285,156 +343,73 @@ func (d *DynSsz) buildRootFromArray(sourceType *TypeDescriptor, sourceValue refl
 // For slices with max size hints, MerkleizeWithMixin ensures the length is
 // properly mixed into the root, implementing the SSZ list hashing algorithm.
 
-func (d *DynSsz) buildRootFromSlice(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher, idt int) error {
-	fieldType := sourceType.ElemDesc
+func (d *DynSsz) buildRootFromList(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher, idt int) error {
+	hashIndex := hh.Index()
 
-	subIndex := hh.Index()
 	sliceLen := sourceValue.Len()
-	itemSize := 0
 
-	switch fieldType.Kind {
-	case reflect.Struct:
-		for i := 0; i < sliceLen; i++ {
-			fieldValue := sourceValue.Index(i)
-
-			err := d.buildRootFromType(fieldType, fieldValue, hh, idt+2)
-			if err != nil {
-				return err
-			}
+	// For byte arrays, handle as a single unit
+	if sourceType.IsByteArray {
+		if !sourceValue.CanAddr() {
+			// workaround for unaddressable static arrays
+			sourceValPtr := reflect.New(sourceType.Type)
+			sourceValPtr.Elem().Set(sourceValue)
+			sourceValue = sourceValPtr.Elem()
 		}
-	case reflect.Array, reflect.Slice:
-		if fieldType.IsByteArray && (len(fieldType.TypeHints) == 0 || fieldType.TypeHints[0].Type != SszBitlistType) {
-			for i := 0; i < sliceLen; i++ {
-				sliceSubIndex := hh.Index()
 
-				fieldValue := sourceValue.Index(i)
-
-				fieldBytes := fieldValue.Bytes()
-				byteLen := uint64(len(fieldBytes))
-
-				// we might need to merkelize the child array too.
-				// check if we have size hints
-				if len(sourceType.MaxSizeHints) > 1 {
-					hh.AppendBytes32(fieldBytes)
-					hh.MerkleizeWithMixin(sliceSubIndex, byteLen, uint64((sourceType.MaxSizeHints[1].Size+31)/32))
-				} else {
-					hh.PutBytes(fieldBytes)
-				}
-			}
+		var bytes []byte
+		if sourceType.IsString {
+			bytes = []byte(sourceValue.String())
 		} else {
-			for i := 0; i < sliceLen; i++ {
-				fieldValue := sourceValue.Index(i)
-
-				err := d.buildRootFromType(fieldType, fieldValue, hh, idt+2)
-				if err != nil {
-					return err
-				}
-			}
+			bytes = sourceValue.Bytes()
 		}
-	case reflect.Uint8:
-		hh.Append(sourceValue.Bytes())
-		hh.FillUpTo32()
-		itemSize = 1
-	case reflect.Uint16:
-		for i := 0; i < sliceLen; i++ {
+
+		hh.AppendBytes32(bytes)
+	} else {
+		// For other types, process each element
+		arrayLen := sourceValue.Len()
+		for i := 0; i < arrayLen; i++ {
 			fieldValue := sourceValue.Index(i)
 
-			hh.AppendUint16(uint16(fieldValue.Uint()))
-		}
-		hh.FillUpTo32()
-		itemSize = 2
-	case reflect.Uint32:
-		for i := 0; i < sliceLen; i++ {
-			fieldValue := sourceValue.Index(i)
-
-			hh.AppendUint32(uint32(fieldValue.Uint()))
-		}
-		hh.FillUpTo32()
-		itemSize = 4
-	case reflect.Uint64:
-		for i := 0; i < sliceLen; i++ {
-			fieldValue := sourceValue.Index(i)
-
-			hh.AppendUint64(uint64(fieldValue.Uint()))
-		}
-		hh.FillUpTo32()
-		itemSize = 8
-	case reflect.String:
-		// Handle []string to match [][]byte behavior
-		for i := 0; i < sliceLen; i++ {
-			fieldValue := sourceValue.Index(i)
-
-			err := d.buildRootFromString(fieldType, fieldValue, hh)
+			err := d.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, true, idt+2)
 			if err != nil {
 				return err
 			}
 		}
-	default:
-		// For other types, use the central dispatcher
-		for i := 0; i < sliceLen; i++ {
-			fieldValue := sourceValue.Index(i)
 
-			err := d.buildRootFromType(fieldType, fieldValue, hh, idt+2)
-			if err != nil {
-				return err
-			}
-		}
+		hh.FillUpTo32()
 	}
 
 	if len(sourceType.MaxSizeHints) > 0 && !sourceType.MaxSizeHints[0].NoValue {
-		var limit uint64
+		var limit, itemSize uint64
+
+		switch sourceType.ElemDesc.SszType {
+		case SszBoolType:
+			itemSize = 1
+		case SszUint8Type:
+			itemSize = 1
+		case SszUint16Type:
+			itemSize = 2
+		case SszUint32Type:
+			itemSize = 4
+		case SszUint64Type:
+			itemSize = 8
+		case SszUint128Type:
+			itemSize = 16
+		case SszUint256Type:
+			itemSize = 32
+		default:
+			itemSize = 0
+		}
+
 		if itemSize > 0 {
 			limit = CalculateLimit(uint64(sourceType.MaxSizeHints[0].Size), uint64(sliceLen), uint64(itemSize))
 		} else {
 			limit = uint64(sourceType.MaxSizeHints[0].Size)
 		}
-		hh.MerkleizeWithMixin(subIndex, uint64(sliceLen), limit)
+		hh.MerkleizeWithMixin(hashIndex, uint64(sliceLen), limit)
 	} else {
-		hh.Merkleize(subIndex)
-	}
-
-	return nil
-}
-
-// buildRootFromString computes the hash tree root for Go string values.
-//
-// Strings in SSZ can be either fixed-size or dynamic:
-//   - Fixed-size strings (with ssz-size tag): Hash like fixed-size byte arrays with zero padding
-//   - Dynamic strings with max size hints: Hash as lists with length mixin
-//   - Dynamic strings without hints: Hash as basic byte sequences
-//
-// Parameters:
-//   - sourceType: The TypeDescriptor containing string metadata and size constraints
-//   - sourceValue: The reflect.Value of the string to hash
-//   - hh: The Hasher instance for hash computation
-//   - idt: Indentation level for verbose logging
-//
-// Returns:
-//   - error: An error if hashing fails
-//
-// The function converts the string to bytes and then applies the appropriate
-// hashing strategy based on the string's size constraints.
-func (d *DynSsz) buildRootFromString(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher) error {
-	// Convert string to bytes
-	stringBytes := []byte(sourceValue.String())
-
-	if sourceType.Size > 0 {
-		// Fixed-size string: hash like a fixed-size byte array
-		fixedSize := int(sourceType.Size)
-		paddedBytes := make([]byte, fixedSize)
-		copy(paddedBytes, stringBytes)
-		// The rest is already zero-filled
-		hh.PutBytes(paddedBytes)
-	} else if len(sourceType.MaxSizeHints) > 0 && !sourceType.MaxSizeHints[0].NoValue {
-		// Dynamic string with max size hints: hash as a list with length mixin
-		subIndex := hh.Index()
-		hh.Append(stringBytes)
-		hh.FillUpTo32()
-		limit := uint64((sourceType.MaxSizeHints[0].Size + 31) / 32)
-		hh.MerkleizeWithMixin(subIndex, uint64(len(stringBytes)), limit)
-	} else {
-		// Dynamic string without hints: hash as basic type
-		hh.PutBytes(stringBytes)
+		hh.Merkleize(hashIndex)
 	}
 
 	return nil
