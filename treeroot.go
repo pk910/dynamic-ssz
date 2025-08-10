@@ -159,16 +159,9 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 				hh.PutUint64(uint64(sourceValue.Uint()))
 			}
 		case SszUint128Type, SszUint256Type:
-			isUint64 := sourceType.ElemDesc.Kind == reflect.Uint64
-			if isUint64 {
-				for i := 0; i < int(sourceType.Size/8); i++ {
-					hh.AppendUint64(sourceValue.Index(i).Uint())
-				}
-			} else {
-				hh.Append(sourceValue.Bytes())
-			}
-			if !pack {
-				hh.FillUpTo32()
+			err := d.buildRootFromLargeUint(sourceType, sourceValue, hh, pack, idt)
+			if err != nil {
+				return err
 			}
 		default:
 			return fmt.Errorf("unknown type: %v", sourceType)
@@ -177,6 +170,49 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 
 	if d.Verbose {
 		fmt.Printf("%shash: 0x%x\n", strings.Repeat(" ", idt), hh.Hash())
+	}
+
+	return nil
+}
+
+// buildRootFromLargeUint handles hashing of large uint types.
+//
+// Large uint types are hashed as follows:
+//   - Uint128: Hashed as a single 16-byte value
+//   - Uint256: Hashed as a single 32-byte value
+//
+// The function uses the pre-computed TypeDescriptor to efficiently iterate through
+// the array without repeated reflection calls.
+//
+// Parameters:
+//   - sourceType: The TypeDescriptor containing array metadata
+//   - sourceValue: The reflect.Value of the array to hash
+//   - hh: The Hasher instance for hash computation
+//   - pack: Whether to pack the value into a single tree leaf
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - error: An error if hashing fails
+
+func (d *DynSsz) buildRootFromLargeUint(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher, pack bool, idt int) error {
+	// Handle unaddressable arrays
+	if !sourceValue.CanAddr() && sourceValue.Kind() == reflect.Array {
+		// workaround for unaddressable static arrays
+		sourceValPtr := reflect.New(sourceValue.Type())
+		sourceValPtr.Elem().Set(sourceValue)
+		sourceValue = sourceValPtr.Elem()
+	}
+
+	isUint64 := sourceType.ElemDesc.Kind == reflect.Uint64
+	if isUint64 {
+		for i := 0; i < int(sourceType.Size/8); i++ {
+			hh.AppendUint64(sourceValue.Index(i).Uint())
+		}
+	} else {
+		hh.Append(sourceValue.Bytes())
+	}
+	if !pack {
+		hh.FillUpTo32()
 	}
 
 	return nil
