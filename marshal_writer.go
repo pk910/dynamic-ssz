@@ -406,17 +406,36 @@ func (d *DynSsz) marshalVectorWriter(ctx *marshalWriterContext, typeDesc *TypeDe
 // The function ensures compliance with SSZ specifications for list types, including proper
 // offset calculation for dynamic elements and correct padding for fixed-size lists.
 func (d *DynSsz) marshalListWriter(ctx *marshalWriterContext, typeDesc *TypeDescriptor, value reflect.Value, idt int) error {
-	sliceLen := value.Len()
 	elemType := typeDesc.ElemDesc
+	sliceLen := value.Len()
 
-	// Handle lists with dynamic elements
-	if elemType.IsDynamic {
-		if ctx.currentNode == nil {
-			return fmt.Errorf("marshal dynamic list without size tree")
+	if typeDesc.IsByteArray || typeDesc.IsString {
+		// shortcut for performance: use append on []byte arrays
+		if !value.CanAddr() {
+			// workaround for unaddressable static arrays
+			valPtr := reflect.New(typeDesc.Type)
+			valPtr.Elem().Set(value)
+			value = valPtr.Elem()
 		}
 
-		totalElems := sliceLen
-		currentOffset := 4 * totalElems // Space for offsets
+		var bytes []byte
+		if typeDesc.IsString {
+			bytes = []byte(value.String())
+		} else {
+			bytes = value.Bytes()
+		}
+
+		_, err := ctx.writer.Write(bytes)
+		return err
+	}
+
+	// Handle arrays with dynamic elements
+	if elemType.IsDynamic {
+		if ctx.currentNode == nil {
+			return fmt.Errorf("marshal dynamic vector without size tree")
+		}
+
+		currentOffset := 4 * (sliceLen) // Space for offsets
 
 		// First pass: write offsets
 		for i := 0; i < sliceLen; i++ {
@@ -429,7 +448,7 @@ func (d *DynSsz) marshalListWriter(ctx *marshalWriterContext, typeDesc *TypeDesc
 			if childSize, ok := ctx.getChildSize(i); ok {
 				currentOffset += int(childSize)
 			} else {
-				return fmt.Errorf("dynamic slice element %d has missing size tree node", i)
+				return fmt.Errorf("dynamic vector has missing size tree node")
 			}
 		}
 
@@ -438,30 +457,21 @@ func (d *DynSsz) marshalListWriter(ctx *marshalWriterContext, typeDesc *TypeDesc
 		for i := 0; i < sliceLen; i++ {
 			ctx.enterDynamicField()
 
+			elementSize := ctx.currentNode.size
+			ctx.writer.pushLimit(uint64(elementSize))
 			err := d.marshalTypeWriter(ctx, elemType, value.Index(i), idt+2)
+			writtenBytes := ctx.writer.popLimit()
+
 			if err != nil {
 				return err
 			}
 
+			if writtenBytes != uint64(elementSize) {
+				return fmt.Errorf("dynamic vector element %d did not write expected ssz range (written: %v, expected: %v)", i, writtenBytes, elementSize)
+			}
+
 			ctx.exitDynamicField(savedNode)
 		}
-
-		ctx.currentNode = savedNode
-	} else if elemType.IsByteArray {
-		// Write byte slice directly
-		var bytes []byte
-		if typeDesc.IsString {
-			bytes = []byte(value.String())
-		} else {
-			bytes = value.Bytes()
-		}
-
-		_, err := ctx.writer.Write(bytes)
-		if err != nil {
-			return err
-		}
-
-		return nil
 	} else {
 		// Static elements - write directly
 		for i := 0; i < sliceLen; i++ {
@@ -474,7 +484,7 @@ func (d *DynSsz) marshalListWriter(ctx *marshalWriterContext, typeDesc *TypeDesc
 			}
 
 			if writtenBytes != uint64(elemType.Size) {
-				return fmt.Errorf("static slice element %d did not write expected ssz range (written: %v, expected: %v)", i, writtenBytes, elemType.Size)
+				return fmt.Errorf("static vector element %d did not write expected ssz range (written: %v, expected: %v)", i, writtenBytes, elemType.Size)
 			}
 		}
 	}
