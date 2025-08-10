@@ -312,7 +312,7 @@ func (d *DynSsz) unmarshalVector(targetType *TypeDescriptor, targetValue reflect
 		consumedBytes = arrLen
 	} else if targetType.IsByteArray {
 		// shortcut for performance: use copy on []byte arrays
-		reflect.Copy(newValue, reflect.ValueOf(ssz[0:arrLen]))
+		copy(newValue.Bytes(), ssz[0:arrLen])
 		consumedBytes = arrLen
 	} else {
 		offset := 0
@@ -509,7 +509,7 @@ func (d *DynSsz) unmarshalList(targetType *TypeDescriptor, targetValue reflect.V
 		consumedBytes = len(ssz)
 	} else if targetType.IsByteArray {
 		// shortcut for performance: use copy on []byte arrays
-		reflect.Copy(newValue, reflect.ValueOf(ssz[0:sliceLen]))
+		copy(newValue.Bytes(), ssz[0:sliceLen])
 		consumedBytes = sliceLen
 	} else {
 		offset := 0
