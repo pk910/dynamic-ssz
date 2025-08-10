@@ -73,6 +73,11 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 		var err error
 		switch targetType.SszType {
 		// complex types
+		case SszTypeWrapperType:
+			consumedBytes, err = d.unmarshalTypeWrapper(targetType, targetValue, ssz, idt)
+			if err != nil {
+				return 0, err
+			}
 		case SszContainerType:
 			consumedBytes, err = d.unmarshalContainer(targetType, targetValue, ssz, idt)
 			if err != nil {
@@ -117,6 +122,40 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 		default:
 			return 0, fmt.Errorf("unknown type: %v", targetType)
 		}
+	}
+
+	return consumedBytes, nil
+}
+
+// unmarshalTypeWrapper unmarshals a TypeWrapper by extracting the wrapped data and unmarshaling it as the wrapped type
+//
+// Parameters:
+//   - targetType: The TypeDescriptor containing wrapper field metadata
+//   - targetValue: The reflect.Value of the wrapper to populate
+//   - ssz: The SSZ-encoded data to decode
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - int: Total bytes consumed from the SSZ data
+//   - error: An error if decoding fails or data is malformed
+//
+// The function validates that the Data field is present and unmarshals the wrapped value using its type descriptor.
+
+func (d *DynSsz) unmarshalTypeWrapper(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
+	if d.Verbose {
+		fmt.Printf("%sunmarshalTypeWrapper: %s\n", strings.Repeat(" ", idt), targetType.Type.Name())
+	}
+
+	// Get the Data field from the TypeWrapper
+	dataField := targetValue.Field(0)
+	if !dataField.IsValid() {
+		return 0, fmt.Errorf("TypeWrapper missing 'Data' field")
+	}
+
+	// Unmarshal the wrapped value using its type descriptor
+	consumedBytes, err := d.unmarshalType(targetType.ElemDesc, dataField, ssz, idt+2)
+	if err != nil {
+		return 0, err
 	}
 
 	return consumedBytes, nil

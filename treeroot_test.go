@@ -130,7 +130,7 @@ var treerootTestMatrix = []struct {
 		}{[]byte{0x0f, 0x01}}, // bitlist with 4 bits set, length indicator
 		fromHex("0xac0d43079c4f10cade6386f382829a4a00e4d9832cb66a068969c761bce57d96"),
 	},
-	
+
 	// uint128 type tests
 	{
 		struct {
@@ -150,7 +150,7 @@ var treerootTestMatrix = []struct {
 		}{[]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}},
 		fromHex("0x0102030405060708090a0b0c0d0e0f1000000000000000000000000000000000"),
 	},
-	
+
 	// uint256 type tests
 	{
 		struct {
@@ -176,7 +176,7 @@ var treerootTestMatrix = []struct {
 		}},
 		fromHex("0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"),
 	},
-	
+
 	// bitvector type tests
 	{
 		struct {
@@ -184,7 +184,7 @@ var treerootTestMatrix = []struct {
 		}{[4]byte{0xff, 0x0f, 0x00, 0xf0}},
 		fromHex("0xff0f00f000000000000000000000000000000000000000000000000000000000"),
 	},
-	
+
 	// explicit basic type annotations
 	{
 		struct {
@@ -198,7 +198,7 @@ var treerootTestMatrix = []struct {
 		}{true},
 		fromHex("0x0100000000000000000000000000000000000000000000000000000000000000"),
 	},
-	
+
 	// vector type annotation
 	{
 		struct {
@@ -206,7 +206,7 @@ var treerootTestMatrix = []struct {
 		}{[]uint64{1, 2, 3}},
 		fromHex("0x0100000000000000020000000000000003000000000000000000000000000000"),
 	},
-	
+
 	// container type annotation
 	{
 		struct {
@@ -251,6 +251,49 @@ var treerootTestMatrix = []struct {
 			Data string `ssz-size:"32"`
 		}{"abcdefghijklmnopqrstuvwxyz123456"},
 		fromHex("0x6162636465666768696a6b6c6d6e6f707172737475767778797a313233343536"),
+	},
+
+	// TypeWrapper test cases - should produce same hash as equivalent direct types
+	{
+		func() any {
+			type WrappedByteArray = TypeWrapper[struct {
+				Data [32]byte
+			}, [32]byte]
+			var testData [32]byte
+			for i := range testData {
+				testData[i] = byte(i)
+			}
+			return WrappedByteArray{
+				Data: testData,
+			}
+		}(),
+		fromHex("0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"),
+	},
+	{
+		func() any {
+			type WrappedBool = TypeWrapper[struct {
+				Data bool
+			}, bool]
+			return WrappedBool{
+				Data: true,
+			}
+		}(),
+		fromHex("0x0100000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		func() any {
+			type WrappedUint64 = TypeWrapper[struct {
+				Data []uint16 `ssz-max:"30"`
+			}, []uint16]
+			return WrappedUint64{
+				Data: []uint16{
+					14028,
+					14029,
+					14030,
+				},
+			}
+		}(),
+		fromHex("0xee1b490c066fd9628f79bae66126af845bd7d5bbe406b6344fc88d9e1fb25c41"),
 	},
 }
 

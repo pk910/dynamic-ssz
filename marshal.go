@@ -68,6 +68,11 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 		var err error
 		switch sourceType.SszType {
 		// complex types
+		case SszTypeWrapperType:
+			buf, err = d.marshalTypeWrapper(sourceType, sourceValue, buf, idt)
+			if err != nil {
+				return nil, err
+			}
 		case SszContainerType:
 			buf, err = d.marshalContainer(sourceType, sourceValue, buf, idt)
 			if err != nil {
@@ -109,6 +114,35 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 	}
 
 	return buf, nil
+}
+
+// marshalTypeWrapper marshals a TypeWrapper by extracting its data field and marshaling it as the wrapped type
+//
+// Parameters:
+//   - sourceType: The TypeDescriptor containing wrapper field metadata
+//   - sourceValue: The reflect.Value of the wrapper to encode
+//   - buf: The buffer to append encoded data to
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - []byte: The updated buffer with the encoded wrapper
+//   - error: An error if any field encoding fails
+//
+// The function validates that the Data field is present and marshals the wrapped value using its type descriptor.
+
+func (d *DynSsz) marshalTypeWrapper(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
+	if d.Verbose {
+		fmt.Printf("%smarshalTypeWrapper: %s\n", strings.Repeat(" ", idt), sourceType.Type.Name())
+	}
+
+	// Extract the Data field from the TypeWrapper
+	dataField := sourceValue.Field(0)
+	if !dataField.IsValid() {
+		return nil, fmt.Errorf("TypeWrapper missing 'Data' field")
+	}
+
+	// Marshal the wrapped value using its type descriptor
+	return d.marshalType(sourceType.ElemDesc, dataField, buf, idt+2)
 }
 
 // marshalContainer handles the encoding of container values into SSZ-encoded data.

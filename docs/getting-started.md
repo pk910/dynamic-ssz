@@ -114,6 +114,28 @@ type BeaconState struct {
 
 **Important**: Every dynamic length field must have either an `ssz-max` or `dynssz-max` tag for proper hash tree root calculation.
 
+### TypeWrapper for Non-Struct Types
+
+TypeWrapper allows you to apply SSZ annotations to non-struct types at the root level:
+
+```go
+// Define descriptor with annotations
+type Hash32Descriptor struct {
+    Data [32]byte `ssz-type:"uint256"`
+}
+type Hash32 = dynssz.TypeWrapper[Hash32Descriptor, [32]byte]
+
+// Usage
+hash := Hash32{}
+hash.Set([32]byte{1, 2, 3, /* ... */})
+
+// Works with all SSZ operations
+encoded, _ := ds.MarshalSSZ(&hash)
+root, _ := ds.HashTreeRoot(&hash)
+```
+
+See the [TypeWrapper documentation](type-wrapper.md) for comprehensive examples and patterns.
+
 ### Hybrid Approach
 
 Dynamic SSZ automatically chooses between:
