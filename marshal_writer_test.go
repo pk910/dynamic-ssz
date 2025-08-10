@@ -127,42 +127,40 @@ func TestMarshalSSZWriterMatrix(t *testing.T) {
 		payload  any
 		expected []byte
 	}{
-		/*
-			// primitive types
-			{"bool_false", bool(false), fromHex("0x00")},
-			{"bool_true", bool(true), fromHex("0x01")},
-			{"uint8_zero", uint8(0), fromHex("0x00")},
-			{"uint8_max", uint8(255), fromHex("0xff")},
-			{"uint8_mid", uint8(42), fromHex("0x2a")},
-			{"uint16_zero", uint16(0), fromHex("0x0000")},
-			{"uint16_max", uint16(65535), fromHex("0xffff")},
-			{"uint16_mid", uint16(1337), fromHex("0x3905")},
-			{"uint32_zero", uint32(0), fromHex("0x00000000")},
-			{"uint32_max", uint32(4294967295), fromHex("0xffffffff")},
-			{"uint32_mid", uint32(817482215), fromHex("0xe7c9b930")},
-			{"uint64_zero", uint64(0), fromHex("0x0000000000000000")},
-			{"uint64_max", uint64(18446744073709551615), fromHex("0xffffffffffffffff")},
-			{"uint64_mid", uint64(848028848028), fromHex("0x9c4f7572c5000000")},
+		// primitive types
+		{"bool_false", bool(false), fromHex("0x00")},
+		{"bool_true", bool(true), fromHex("0x01")},
+		{"uint8_zero", uint8(0), fromHex("0x00")},
+		{"uint8_max", uint8(255), fromHex("0xff")},
+		{"uint8_mid", uint8(42), fromHex("0x2a")},
+		{"uint16_zero", uint16(0), fromHex("0x0000")},
+		{"uint16_max", uint16(65535), fromHex("0xffff")},
+		{"uint16_mid", uint16(1337), fromHex("0x3905")},
+		{"uint32_zero", uint32(0), fromHex("0x00000000")},
+		{"uint32_max", uint32(4294967295), fromHex("0xffffffff")},
+		{"uint32_mid", uint32(817482215), fromHex("0xe7c9b930")},
+		{"uint64_zero", uint64(0), fromHex("0x0000000000000000")},
+		{"uint64_max", uint64(18446744073709551615), fromHex("0xffffffffffffffff")},
+		{"uint64_mid", uint64(848028848028), fromHex("0x9c4f7572c5000000")},
 
-			// arrays & slices
-			{"empty_slice", []uint8{}, fromHex("0x")},
-			{"uint8_slice", []uint8{1, 2, 3, 4, 5}, fromHex("0x0102030405")},
-			{"uint8_array", [5]uint8{1, 2, 3, 4, 5}, fromHex("0x0102030405")},
-			{"uint8_array_partial", [10]uint8{1, 2, 3, 4, 5}, fromHex("0x01020304050000000000")},
+		// arrays & slices
+		{"empty_slice", []uint8{}, fromHex("0x")},
+		{"uint8_slice", []uint8{1, 2, 3, 4, 5}, fromHex("0x0102030405")},
+		{"uint8_array", [5]uint8{1, 2, 3, 4, 5}, fromHex("0x0102030405")},
+		{"uint8_array_partial", [10]uint8{1, 2, 3, 4, 5}, fromHex("0x01020304050000000000")},
 
-			// complex types
-			{
-				"complex_struct",
-				struct {
-					F1 bool
-					F2 uint8
-					F3 uint16
-					F4 uint32
-					F5 uint64
-				}{true, 1, 2, 3, 4},
-				fromHex("0x01010200030000000400000000000000"),
-			},
-		*/
+		// complex types
+		{
+			"complex_struct",
+			struct {
+				F1 bool
+				F2 uint8
+				F3 uint16
+				F4 uint32
+				F5 uint64
+			}{true, 1, 2, 3, 4},
+			fromHex("0x01010200030000000400000000000000"),
+		},
 		{
 			"dynamic_struct",
 			struct {
