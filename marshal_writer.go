@@ -34,7 +34,7 @@ import (
 func (d *DynSsz) marshalTypeWriter(ctx *marshalWriterContext, typeDesc *TypeDescriptor, value reflect.Value) error {
 
 	// For small static types or when buffer can hold entire result, use regular marshal
-	if !typeDesc.HasDynamicSize && typeDesc.Size > 0 && typeDesc.Size <= int32(cap(ctx.buffer)) && !d.NoStreamBuffering {
+	if !typeDesc.HasDynamicSize && typeDesc.Size > 0 && typeDesc.Size <= uint32(cap(ctx.buffer)) && !d.NoStreamBuffering {
 		buf := ctx.buffer[:0]
 		result, err := d.marshalType(typeDesc, value, buf, 0)
 		if err != nil {
@@ -53,7 +53,7 @@ func (d *DynSsz) marshalTypeWriter(ctx *marshalWriterContext, typeDesc *TypeDesc
 	}
 
 	// Use fastssz if available and not disabled
-	if !d.NoFastSsz && typeDesc.IsFastSSZMarshaler {
+	if !d.NoFastSsz && typeDesc.HasFastSSZMarshaler {
 		if marshaler, ok := value.Addr().Interface().(fastsszMarshaler); ok {
 			// Use buffer for fastssz marshal
 			buf := ctx.buffer[:0]
@@ -120,11 +120,11 @@ func (d *DynSsz) marshalStructWriter(ctx *marshalWriterContext, typeDesc *TypeDe
 
 	// First pass: write fixed fields and collect dynamic fields
 	dynamicFieldIdx := 0
-	for i := range typeDesc.Fields {
-		field := &typeDesc.Fields[i]
+	for i := range typeDesc.ContainerDesc.Fields {
+		field := &typeDesc.ContainerDesc.Fields[i]
 		fieldValue := value.Field(i)
 
-		if field.Size < 0 {
+		if field.Type.IsDynamic {
 			// Dynamic field - write offset
 			err := writeUint32(ctx.writer, uint32(currentOffset))
 			if err != nil {
@@ -145,7 +145,7 @@ func (d *DynSsz) marshalStructWriter(ctx *marshalWriterContext, typeDesc *TypeDe
 			dynamicFieldIdx++
 		} else {
 			// Static field - write directly
-			ctx.writer.pushLimit(uint64(field.Size))
+			ctx.writer.pushLimit(uint64(field.Type.Size))
 			err := d.marshalTypeWriter(ctx, field.Type, fieldValue)
 			writtenBytes := ctx.writer.popLimit()
 
@@ -153,16 +153,16 @@ func (d *DynSsz) marshalStructWriter(ctx *marshalWriterContext, typeDesc *TypeDe
 				return err
 			}
 
-			if writtenBytes != uint64(field.Size) {
-				return fmt.Errorf("static field %v did not write expected ssz range (written: %v, expected: %v)", field.Name, writtenBytes, field.Size)
+			if writtenBytes != uint64(field.Type.Size) {
+				return fmt.Errorf("static field %v did not write expected ssz range (written: %v, expected: %v)", field.Name, writtenBytes, field.Type.Size)
 			}
 		}
 	}
 
 	// Second pass: write dynamic fields
 	savedNode := ctx.currentNode
-	for _, field := range typeDesc.DynFields {
-		fieldValue := value.Field(int(field.Field.Index))
+	for _, field := range typeDesc.ContainerDesc.DynFields {
+		fieldValue := value.Field(int(field.Index))
 
 		ctx.enterDynamicField()
 		fieldSize := ctx.currentNode.size
@@ -320,12 +320,13 @@ func (d *DynSsz) marshalSliceWriter(ctx *marshalWriterContext, typeDesc *TypeDes
 
 	// Calculate padding for fixed-size slices
 	appendZero := 0
-	if len(typeDesc.SizeHints) > 0 && !typeDesc.SizeHints[0].Dynamic {
-		if uint32(sliceLen) > typeDesc.SizeHints[0].Size {
+	if typeDesc.Kind == reflect.Slice || typeDesc.Kind == reflect.String {
+		sliceLen := value.Len()
+		if uint32(sliceLen) > typeDesc.Len {
 			return ErrListTooBig
 		}
-		if uint32(sliceLen) < typeDesc.SizeHints[0].Size {
-			appendZero = int(typeDesc.SizeHints[0].Size) - sliceLen
+		if uint32(sliceLen) < typeDesc.Len {
+			appendZero = int(typeDesc.Len) - sliceLen
 		}
 	}
 

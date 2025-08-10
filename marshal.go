@@ -41,10 +41,13 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 		}
 	}
 
-	useFastSsz := !d.NoFastSsz && sourceType.IsFastSSZMarshaler && !sourceType.HasDynamicSize
+	useFastSsz := !d.NoFastSsz && sourceType.HasFastSSZMarshaler && !sourceType.HasDynamicSize
+	if !useFastSsz && sourceType.SszType == SszCustomType {
+		useFastSsz = true
+	}
 
 	if d.Verbose {
-		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, sourceType.IsFastSSZMarshaler, sourceType.HasDynamicSize)
+		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, sourceType.HasFastSSZMarshaler, sourceType.HasDynamicSize)
 	}
 
 	if useFastSsz {
@@ -62,40 +65,43 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 
 	if !useFastSsz {
 		// can't use fastssz, use dynamic marshaling
-		switch sourceType.Kind {
-		case reflect.Struct:
-			newBuf, err := d.marshalStruct(sourceType, sourceValue, buf, idt)
+		var err error
+		switch sourceType.SszType {
+		// complex types
+		case SszContainerType:
+			buf, err = d.marshalContainer(sourceType, sourceValue, buf, idt)
 			if err != nil {
 				return nil, err
 			}
-			buf = newBuf
-		case reflect.Array:
-			newBuf, err := d.marshalArray(sourceType, sourceValue, buf, idt)
+		case SszVectorType, SszBitvectorType, SszUint128Type, SszUint256Type:
+			if sourceType.ElemDesc.IsDynamic {
+				buf, err = d.marshalDynamicVector(sourceType, sourceValue, buf, idt)
+			} else {
+				buf, err = d.marshalVector(sourceType, sourceValue, buf, idt)
+			}
 			if err != nil {
 				return nil, err
 			}
-			buf = newBuf
-		case reflect.Slice:
-			newBuf, err := d.marshalSlice(sourceType, sourceValue, buf, idt)
+		case SszListType, SszBitlistType:
+			if sourceType.ElemDesc.IsDynamic {
+				buf, err = d.marshalDynamicList(sourceType, sourceValue, buf, idt)
+			} else {
+				buf, err = d.marshalList(sourceType, sourceValue, buf, idt)
+			}
 			if err != nil {
 				return nil, err
 			}
-			buf = newBuf
-		case reflect.String:
-			newBuf, err := d.marshalString(sourceType, sourceValue, buf, idt)
-			if err != nil {
-				return nil, err
-			}
-			buf = newBuf
-		case reflect.Bool:
+
+		// primitive types
+		case SszBoolType:
 			buf = marshalBool(buf, sourceValue.Bool())
-		case reflect.Uint8:
+		case SszUint8Type:
 			buf = marshalUint8(buf, uint8(sourceValue.Uint()))
-		case reflect.Uint16:
+		case SszUint16Type:
 			buf = marshalUint16(buf, uint16(sourceValue.Uint()))
-		case reflect.Uint32:
+		case SszUint32Type:
 			buf = marshalUint32(buf, uint32(sourceValue.Uint()))
-		case reflect.Uint64:
+		case SszUint64Type:
 			buf = marshalUint64(buf, uint64(sourceValue.Uint()))
 		default:
 			return nil, fmt.Errorf("unknown type: %v", sourceType)
@@ -105,19 +111,19 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 	return buf, nil
 }
 
-// marshalStruct handles the encoding of Go struct values into SSZ-encoded data.
+// marshalContainer handles the encoding of container values into SSZ-encoded data.
 //
-// This function implements the SSZ specification for struct encoding, which requires:
+// This function implements the SSZ specification for container encoding, which requires:
 //   - Fixed-size fields are encoded first in field definition order
 //   - Variable-size fields are encoded after all fixed fields
 //   - Variable-size fields are prefixed with 4-byte offsets in the fixed section
 //
-// The function uses the pre-computed TypeDescriptor to efficiently navigate the struct's
+// The function uses the pre-computed TypeDescriptor to efficiently navigate the container's
 // layout without repeated reflection calls.
 //
 // Parameters:
-//   - sourceType: The TypeDescriptor containing struct field metadata
-//   - sourceValue: The reflect.Value of the struct to encode
+//   - sourceType: The TypeDescriptor containing container field metadata
+//   - sourceValue: The reflect.Value of the container to encode (must be a struct)
 //   - buf: The buffer to append encoded data to
 //   - idt: Indentation level for verbose logging
 //
@@ -125,15 +131,15 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 //   - []byte: The updated buffer with the encoded struct
 //   - error: An error if any field encoding fails
 
-func (d *DynSsz) marshalStruct(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
+func (d *DynSsz) marshalContainer(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
 	offset := 0
 	startLen := len(buf)
-	fieldCount := len(sourceType.Fields)
+	fieldCount := len(sourceType.ContainerDesc.Fields)
 
 	for i := 0; i < fieldCount; i++ {
-		field := sourceType.Fields[i]
-		fieldSize := field.Size
-		if field.Size > 0 {
+		field := sourceType.ContainerDesc.Fields[i]
+		fieldSize := field.Type.Size
+		if fieldSize > 0 {
 			//fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
 
 			fieldValue := sourceValue.Field(i)
@@ -151,7 +157,7 @@ func (d *DynSsz) marshalStruct(sourceType *TypeDescriptor, sourceValue reflect.V
 		offset += int(fieldSize)
 	}
 
-	for _, field := range sourceType.DynFields {
+	for _, field := range sourceType.ContainerDesc.DynFields {
 		// set field offset
 		fieldOffset := int(field.Offset)
 		binary.LittleEndian.PutUint32(buf[fieldOffset+startLen:fieldOffset+startLen+4], uint32(offset))
@@ -159,7 +165,7 @@ func (d *DynSsz) marshalStruct(sourceType *TypeDescriptor, sourceValue reflect.V
 		//fmt.Printf("%sfield %d:\t dynamic [%v:]\t %v\n", strings.Repeat(" ", idt+1), field.Index[0], offset, field.Name)
 
 		fieldDescriptor := field.Field
-		fieldValue := sourceValue.Field(int(fieldDescriptor.Index))
+		fieldValue := sourceValue.Field(int(field.Index))
 		bufLen := len(buf)
 		newBuf, err := d.marshalType(fieldDescriptor.Type, fieldValue, buf, idt+2)
 		if err != nil {
@@ -172,16 +178,16 @@ func (d *DynSsz) marshalStruct(sourceType *TypeDescriptor, sourceValue reflect.V
 	return buf, nil
 }
 
-// marshalArray encodes Go array values into SSZ-encoded data.
+// marshalVector encodes vector values into SSZ-encoded data.
 //
-// Arrays in SSZ are encoded as fixed-size sequences where each element is encoded
+// Vectors in SSZ are encoded as fixed-size sequences where each element is encoded
 // sequentially without any length prefix (since the length is known from the type).
-// For byte arrays ([N]byte), the function uses an optimized path that directly
+// For byte arrays ([N]byte) or slices ([]byte), the function uses an optimized path that directly
 // appends the bytes without element-wise iteration.
 //
 // Parameters:
-//   - sourceType: The TypeDescriptor containing array metadata including element type and length
-//   - sourceValue: The reflect.Value of the array to encode
+//   - sourceType: The TypeDescriptor containing vector metadata including element type and length
+//   - sourceValue: The reflect.Value of the vector to encode
 //   - buf: The buffer to append encoded data to
 //   - idt: Indentation level for verbose logging
 //
@@ -193,14 +199,18 @@ func (d *DynSsz) marshalStruct(sourceType *TypeDescriptor, sourceValue reflect.V
 //   - Byte arrays use reflect.Value.Bytes() for efficient bulk copying
 //   - Non-addressable arrays are made addressable via a temporary pointer
 
-func (d *DynSsz) marshalArray(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
-	fieldType := sourceType.ElemDesc
-	if fieldType.Size < 0 {
-		return d.marshalDynamicSlice(sourceType, sourceValue, buf, idt)
+func (d *DynSsz) marshalVector(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
+	sliceLen := sourceValue.Len()
+	if uint32(sliceLen) > sourceType.Len {
+		return nil, ErrListTooBig
 	}
 
-	arrLen := sourceType.Len
-	if sourceType.IsByteArray {
+	appendZero := 0
+	if uint32(sliceLen) < sourceType.Len {
+		appendZero = int(sourceType.Len) - sliceLen
+	}
+
+	if sourceType.IsByteArray || sourceType.IsString {
 		// shortcut for performance: use append on []byte arrays
 		if !sourceValue.CanAddr() {
 			// workaround for unaddressable static arrays
@@ -208,9 +218,22 @@ func (d *DynSsz) marshalArray(sourceType *TypeDescriptor, sourceValue reflect.Va
 			sourceValPtr.Elem().Set(sourceValue)
 			sourceValue = sourceValPtr.Elem()
 		}
-		buf = append(buf, sourceValue.Bytes()...)
+
+		var bytes []byte
+		if sourceType.IsString {
+			bytes = []byte(sourceValue.String())
+		} else {
+			bytes = sourceValue.Bytes()
+		}
+
+		buf = append(buf, bytes...)
+
+		if appendZero > 0 {
+			zeroBytes := make([]uint8, appendZero)
+			buf = append(buf, zeroBytes...)
+		}
 	} else {
-		for i := 0; i < int(arrLen); i++ {
+		for i := 0; i < int(sliceLen); i++ {
 			itemVal := sourceValue.Index(i)
 			newBuf, err := d.marshalType(sourceType.ElemDesc, itemVal, buf, idt+2)
 			if err != nil {
@@ -218,80 +241,9 @@ func (d *DynSsz) marshalArray(sourceType *TypeDescriptor, sourceValue reflect.Va
 			}
 			buf = newBuf
 		}
-	}
-
-	return buf, nil
-}
-
-// marshalSlice encodes Go slice values into SSZ-encoded data.
-//
-// This function handles slices with fixed-size elements. For slices with variable-size
-// elements, it delegates to marshalDynamicSlice. The encoding follows SSZ specifications
-// where slices are encoded as their elements in sequence without a length prefix.
-//
-// If the slice has size hints from parent structures (via ssz-size tags), the function
-// ensures the encoded length matches the hint, padding with zero values if necessary.
-//
-// Parameters:
-//   - sourceType: The TypeDescriptor containing slice metadata and element type information
-//   - sourceValue: The reflect.Value of the slice to encode
-//   - buf: The buffer to append encoded data to
-//   - idt: Indentation level for verbose logging
-//
-// Returns:
-//   - []byte: The updated buffer with the encoded slice
-//   - error: An error if encoding fails or slice exceeds size constraints
-//
-// Special handling:
-//   - Delegates to marshalDynamicSlice for variable-size elements
-//   - Byte slices use optimized bulk append
-//   - Zero-padding is applied when slice length is less than size hint
-//   - Returns ErrListTooBig if slice exceeds maximum size from hints
-
-func (d *DynSsz) marshalSlice(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
-	fieldType := sourceType.ElemDesc
-	if fieldType.Size < 0 {
-		return d.marshalDynamicSlice(sourceType, sourceValue, buf, idt)
-	}
-
-	sliceLen := sourceValue.Len()
-	appendZero := 0
-	if len(sourceType.SizeHints) > 0 && !sourceType.SizeHints[0].Dynamic {
-		if uint32(sliceLen) > sourceType.SizeHints[0].Size {
-			return nil, ErrListTooBig
-		}
-		if uint32(sliceLen) < sourceType.SizeHints[0].Size {
-			appendZero = int(sourceType.SizeHints[0].Size - uint32(sliceLen))
-		}
-	}
-
-	if sourceType.IsByteArray {
-		// shortcut for performance: use append on []byte arrays
-		buf = append(buf, sourceValue.Bytes()...)
 
 		if appendZero > 0 {
-			zeroBytes := make([]uint8, appendZero)
-			buf = append(buf, zeroBytes...)
-		}
-	} else {
-
-		for i := 0; i < sliceLen; i++ {
-			itemVal := sourceValue.Index(i)
-			if fieldType.IsPtr {
-				if itemVal.IsNil() {
-					itemVal = reflect.New(fieldType.Type.Elem())
-				}
-			}
-
-			newBuf, err := d.marshalType(fieldType, itemVal, buf, idt+2)
-			if err != nil {
-				return nil, err
-			}
-			buf = newBuf
-		}
-
-		if appendZero > 0 {
-			totalZeroBytes := int(fieldType.Size) * appendZero
+			totalZeroBytes := int(sourceType.ElemDesc.Size) * appendZero
 			zeroBuf := make([]byte, totalZeroBytes)
 			buf = append(buf, zeroBuf...)
 		}
@@ -300,18 +252,18 @@ func (d *DynSsz) marshalSlice(sourceType *TypeDescriptor, sourceValue reflect.Va
 	return buf, nil
 }
 
-// marshalDynamicSlice encodes slices with variable-size elements into SSZ format.
+// marshalDynamicVector encodes vectors with variable-size elements into SSZ format.
 //
-// For slices with variable-size elements, SSZ requires a special encoding:
+// For vectors with variable-size elements, SSZ requires a special encoding:
 //   1. A series of 4-byte offsets, one per element, indicating where each element's data begins
 //   2. The actual encoded data for each element, in order
 //
-// The offsets are relative to the start of the slice encoding (not the entire message).
+// The offsets are relative to the start of the vector encoding (not the entire message).
 // This allows decoders to locate each variable-size element without parsing all preceding elements.
 //
 // Parameters:
-//   - sourceType: The TypeDescriptor with slice metadata
-//   - sourceValue: The reflect.Value of the slice to encode
+//   - sourceType: The TypeDescriptor with vector metadata
+//   - sourceValue: The reflect.Value of the vector to encode
 //   - buf: The buffer to append encoded data to
 //   - idt: Indentation level for verbose logging
 //
@@ -319,21 +271,22 @@ func (d *DynSsz) marshalSlice(sourceType *TypeDescriptor, sourceValue reflect.Va
 //   - []byte: The updated buffer with offsets followed by encoded elements
 //   - error: An error if encoding fails or size constraints are violated
 //
-// The function handles size hints for padding with zero values when the slice
+// The function handles size hints for padding with zero values when the list
 // length is less than the expected size. Zero values are efficiently batched
 // to minimize encoding overhead.
 
-func (d *DynSsz) marshalDynamicSlice(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
+func (d *DynSsz) marshalDynamicVector(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
 	fieldType := sourceType.ElemDesc
 	sliceLen := sourceValue.Len()
 
 	appendZero := 0
-	if len(sourceType.SizeHints) > 0 && !sourceType.SizeHints[0].Dynamic {
-		if uint32(sliceLen) > sourceType.SizeHints[0].Size {
+	if sourceType.Kind == reflect.Slice || sourceType.Kind == reflect.String {
+		sliceLen := sourceValue.Len()
+		if uint32(sliceLen) > sourceType.Len {
 			return nil, ErrListTooBig
 		}
-		if uint32(sliceLen) < sourceType.SizeHints[0].Size {
-			appendZero = int(sourceType.SizeHints[0].Size - uint32(sliceLen))
+		if uint32(sliceLen) < sourceType.Len {
+			appendZero = int(sourceType.Len) - sliceLen
 		}
 	}
 
@@ -391,46 +344,101 @@ func (d *DynSsz) marshalDynamicSlice(sourceType *TypeDescriptor, sourceValue ref
 	return buf, nil
 }
 
-// marshalString encodes Go string values into SSZ format.
+// marshalList encodes list values into SSZ-encoded data.
 //
-// Strings in SSZ can be either fixed-size or dynamic:
-//   - Fixed-size strings (with ssz-size tag): Encoded with zero padding to exact size
-//   - Dynamic strings: Encoded as-is without padding
+// This function handles lists with fixed-size elements. The encoding follows SSZ specifications
+// where lists are encoded as their elements in sequence without a length prefix.
 //
 // Parameters:
-//   - sourceType: The TypeDescriptor containing string metadata and size constraints
-//   - sourceValue: The reflect.Value of the string to encode
-//   - buf: The buffer to append the encoded data to
+//   - sourceType: The TypeDescriptor containing slice metadata and element type information
+//   - sourceValue: The reflect.Value of the slice to encode
+//   - buf: The buffer to append encoded data to
 //   - idt: Indentation level for verbose logging
 //
 // Returns:
-//   - []byte: The buffer with the encoded string appended
-//   - error: Always nil for strings (kept for consistency with other marshal functions)
+//   - []byte: The updated buffer with the encoded slice
+//   - error: An error if encoding fails or slice exceeds size constraints
 //
-// Fixed-size strings are truncated if longer than the specified size or padded
-// with zeros if shorter. Dynamic strings are encoded as their raw byte representation.
-func (d *DynSsz) marshalString(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
-	// Convert string to []byte
-	stringBytes := []byte(sourceValue.String())
+// Special handling:
+//   - Delegates to marshalDynamicSlice for variable-size elements
+//   - Byte slices use optimized bulk append
+//   - Zero-padding is applied when slice length is less than size hint
+//   - Returns ErrListTooBig if slice exceeds maximum size from hints
 
-	// Check if this is a fixed-size string
-	if sourceType.Size > 0 {
-		// Fixed-size string: pad or truncate to exact size
-		fixedSize := int(sourceType.Size)
-		if len(stringBytes) > fixedSize {
-			// Truncate if too long
-			buf = append(buf, stringBytes[:fixedSize]...)
-		} else {
-			// Pad with zeros if too short
-			buf = append(buf, stringBytes...)
-			padding := fixedSize - len(stringBytes)
-			for i := 0; i < padding; i++ {
-				buf = append(buf, 0)
-			}
-		}
-	} else {
-		// Dynamic string: append as-is
+func (d *DynSsz) marshalList(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
+	if sourceType.IsString {
+		stringBytes := []byte(sourceValue.String())
 		buf = append(buf, stringBytes...)
+	} else if sourceType.IsByteArray {
+		buf = append(buf, sourceValue.Bytes()...)
+	} else {
+		sliceLen := sourceValue.Len()
+		fieldType := sourceType.ElemDesc
+
+		for i := 0; i < sliceLen; i++ {
+			itemVal := sourceValue.Index(i)
+			if fieldType.IsPtr {
+				if itemVal.IsNil() {
+					itemVal = reflect.New(fieldType.Type.Elem())
+				}
+			}
+
+			newBuf, err := d.marshalType(fieldType, itemVal, buf, idt+2)
+			if err != nil {
+				return nil, err
+			}
+			buf = newBuf
+		}
+	}
+
+	return buf, nil
+}
+
+// marshalDynamicList encodes lists with variable-size elements into SSZ format.
+//
+// For lists with variable-size elements, SSZ requires a special encoding:
+//   1. A series of 4-byte offsets, one per element, indicating where each element's data begins
+//   2. The actual encoded data for each element, in order
+//
+// The offsets are relative to the start of the list encoding (not the entire message).
+// This allows decoders to locate each variable-size element without parsing all preceding elements.
+//
+// Parameters:
+//   - sourceType: The TypeDescriptor with list metadata
+//   - sourceValue: The reflect.Value of the list to encode
+//   - buf: The buffer to append encoded data to
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - []byte: The updated buffer with offsets followed by encoded elements
+//   - error: An error if encoding fails or size constraints are violated
+
+func (d *DynSsz) marshalDynamicList(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
+	fieldType := sourceType.ElemDesc
+	sliceLen := sourceValue.Len()
+
+	startOffset := len(buf)
+	totalOffsets := sliceLen
+	offsetBuf := make([]byte, 4*totalOffsets)
+	buf = append(buf, offsetBuf...)
+
+	offset := 4 * totalOffsets
+	bufLen := len(buf)
+
+	for i := 0; i < sliceLen; i++ {
+		itemVal := sourceValue.Index(i)
+
+		newBuf, err := d.marshalType(fieldType, itemVal, buf, idt+2)
+		if err != nil {
+			return nil, err
+		}
+		newBufLen := len(newBuf)
+		buf = newBuf
+
+		binary.LittleEndian.PutUint32(buf[startOffset+(i*4):startOffset+((i+1)*4)], uint32(offset))
+
+		offset += newBufLen - bufLen
+		bufLen = newBufLen
 	}
 
 	return buf, nil

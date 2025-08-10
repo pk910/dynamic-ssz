@@ -179,7 +179,7 @@ func (d *DynSsz) MarshalSSZ(source any) ([]byte, error) {
 	sourceType := reflect.TypeOf(source)
 	sourceValue := reflect.ValueOf(source)
 
-	sourceTypeDesc, err := d.typeCache.GetTypeDescriptor(sourceType, nil, nil)
+	sourceTypeDesc, err := d.typeCache.GetTypeDescriptor(sourceType, nil, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -233,7 +233,7 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte) ([]byte, error) {
 	sourceType := reflect.TypeOf(source)
 	sourceValue := reflect.ValueOf(source)
 
-	sourceTypeDesc, err := d.typeCache.GetTypeDescriptor(sourceType, nil, nil)
+	sourceTypeDesc, err := d.typeCache.GetTypeDescriptor(sourceType, nil, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -304,7 +304,7 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error {
 	sourceType := reflect.TypeOf(source)
 	sourceValue := reflect.ValueOf(source)
 
-	sourceTypeDesc, err := d.typeCache.GetTypeDescriptor(sourceType, nil, nil)
+	sourceTypeDesc, err := d.typeCache.GetTypeDescriptor(sourceType, nil, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -408,7 +408,7 @@ func (d *DynSsz) SizeSSZ(source any) (int, error) {
 	sourceType := reflect.TypeOf(source)
 	sourceValue := reflect.ValueOf(source)
 
-	sourceTypeDesc, err := d.typeCache.GetTypeDescriptor(sourceType, nil, nil)
+	sourceTypeDesc, err := d.typeCache.GetTypeDescriptor(sourceType, nil, nil, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -456,7 +456,7 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte) error {
 	targetType := reflect.TypeOf(target)
 	targetValue := reflect.ValueOf(target)
 
-	targetTypeDesc, err := d.typeCache.GetTypeDescriptor(targetType, nil, nil)
+	targetTypeDesc, err := d.typeCache.GetTypeDescriptor(targetType, nil, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -542,7 +542,7 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int64) error {
 	targetType := reflect.TypeOf(target)
 	targetValue := reflect.ValueOf(target)
 
-	targetTypeDesc, err := d.typeCache.GetTypeDescriptor(targetType, nil, nil)
+	targetTypeDesc, err := d.typeCache.GetTypeDescriptor(targetType, nil, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -625,7 +625,7 @@ func (d *DynSsz) HashTreeRoot(source any) ([32]byte, error) {
 	sourceType := reflect.TypeOf(source)
 	sourceValue := reflect.ValueOf(source)
 
-	sourceTypeDesc, err := d.typeCache.GetTypeDescriptor(sourceType, nil, nil)
+	sourceTypeDesc, err := d.typeCache.GetTypeDescriptor(sourceType, nil, nil, nil)
 	if err != nil {
 		return [32]byte{}, err
 	}
@@ -642,7 +642,7 @@ func (d *DynSsz) HashTreeRoot(source any) ([32]byte, error) {
 		pool.Put(hh)
 	}()
 
-	err = d.buildRootFromType(sourceTypeDesc, sourceValue, hh, 0)
+	err = d.buildRootFromType(sourceTypeDesc, sourceValue, hh, false, 0)
 	if err != nil {
 		return [32]byte{}, err
 	}
@@ -696,7 +696,7 @@ func (d *DynSsz) HashTreeRoot(source any) ([32]byte, error) {
 // validation results can be cached as type compatibility doesn't change at runtime.
 func (d *DynSsz) ValidateType(t reflect.Type) error {
 	// Attempt to get type descriptor which will validate the type structure
-	_, err := d.typeCache.GetTypeDescriptor(t, nil, nil)
+	_, err := d.typeCache.GetTypeDescriptor(t, nil, nil, nil)
 	if err != nil {
 		return fmt.Errorf("type validation failed: %w", err)
 	}
