@@ -190,7 +190,7 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		case t.PkgPath() == "github.com/holiman/uint256" && t.Name() == "Int":
 			sszType = SszUint256Type
 		case t.PkgPath() == "github.com/pk910/dynamic-ssz" && strings.HasPrefix(t.Name(), "CompatibleUnion["):
-			sszType = SszUnionType
+			sszType = SszCompatibleUnionType
 		}
 	}
 	if sszType == SszUnspecifiedType {
@@ -309,7 +309,7 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		if err != nil {
 			return nil, err
 		}
-	case SszUnionType:
+	case SszCompatibleUnionType:
 		err := tc.buildCompatibleUnionDescriptor(desc, t)
 		if err != nil {
 			return nil, err

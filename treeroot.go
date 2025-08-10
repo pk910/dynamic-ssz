@@ -122,7 +122,7 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 		case SszProgressiveBitlistType:
 			bytes := sourceValue.Bytes()
 			hh.PutProgressiveBitlist(bytes)
-		case SszUnionType:
+		case SszCompatibleUnionType:
 			err := d.buildRootFromCompatibleUnion(sourceType, sourceValue, hh, idt)
 			if err != nil {
 				return err

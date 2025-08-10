@@ -96,7 +96,7 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 			if err != nil {
 				return 0, err
 			}
-		case SszUnionType:
+		case SszCompatibleUnionType:
 			consumedBytes, err = d.unmarshalCompatibleUnion(targetType, targetValue, ssz, idt)
 			if err != nil {
 				return 0, err

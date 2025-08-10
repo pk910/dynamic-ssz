@@ -34,7 +34,7 @@ const (
 	SszProgressiveListType
 	SszProgressiveBitlistType
 	SszProgressiveContainerType
-	SszUnionType
+	SszCompatibleUnionType
 )
 
 type SszTypeHint struct {
@@ -88,8 +88,8 @@ func (d *DynSsz) getSszTypeTag(field *reflect.StructField) ([]SszTypeHint, error
 				sszType.Type = SszProgressiveBitlistType
 			case "progressive-container":
 				sszType.Type = SszProgressiveContainerType
-			case "union":
-				sszType.Type = SszUnionType
+			case "compatible-union", "union":
+				sszType.Type = SszCompatibleUnionType
 
 			default:
 				return nil, fmt.Errorf("invalid ssz-type tag for '%v' field: %v", field.Name, sszTypeStr)

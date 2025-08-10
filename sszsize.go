@@ -147,7 +147,7 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 					staticSize = uint32(fieldType.Size) * sliceLen
 				}
 			}
-		case SszUnionType:
+		case SszCompatibleUnionType:
 			// CompatibleUnion: 1 byte for selector + size of the data
 			variant := uint8(targetValue.Field(0).Uint())
 			dataField := targetValue.Field(1)

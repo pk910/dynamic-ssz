@@ -91,7 +91,7 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 			if err != nil {
 				return nil, err
 			}
-		case SszUnionType:
+		case SszCompatibleUnionType:
 			buf, err = d.marshalCompatibleUnion(sourceType, sourceValue, buf, idt)
 			if err != nil {
 				return nil, err
