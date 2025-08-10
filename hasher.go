@@ -360,7 +360,11 @@ func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 }
 
 func (h *Hasher) Hash() []byte {
-	return h.buf[len(h.buf)-32:]
+	start := 0
+	if len(h.buf) > 32 {
+		start = len(h.buf) - 32
+	}
+	return h.buf[start:]
 }
 
 // HashRoot creates the hash final hash root

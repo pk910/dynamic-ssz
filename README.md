@@ -74,6 +74,21 @@ Similar to `dynssz-size`, this tag allows specification-based maximum sizes with
 
 **Important**: Every dynamic length field (those with `?` in `ssz-size` or without `ssz-size`) must have either an `ssz-max` or `dynssz-max` tag. Without these tags, the hash tree root calculation cannot determine the appropriate merkle tree structure. Fixed-size fields (e.g., `ssz-size:"32"`) should not have max tags.
 
+#### Type Specification Tags (Strict Type System)
+
+- `ssz-type`:
+Explicitly specifies the SSZ type for a field, overriding automatic type detection. This strict type system allows precise control over how Go types are interpreted for SSZ encoding. Supported values include:
+  - Basic types: `"bool"`, `"uint8"`, `"uint16"`, `"uint32"`, `"uint64"`, `"uint128"`, `"uint256"`
+  - Composite types: `"container"`, `"list"`, `"vector"`, `"bitlist"`, `"bitvector"`
+  - Special values: `"?"` or `"auto"` (automatic detection), `"custom"` (fastssz implementation)
+
+This is particularly useful for:
+- Distinguishing bitlists from regular byte slices
+- Handling large integers (uint128, uint256) not natively supported by Go
+- Ensuring compatibility with specific SSZ implementations
+
+The library also provides automatic type detection for well-known types like `github.com/holiman/uint256.Int` (detected as uint256).
+
 #### Multi-dimensional Slices
 
 `dynssz` supports multi-dimensional slices with different size constraints at each dimension. When using multi-dimensional arrays or slices, you can specify sizes and maximums for each dimension using comma-separated values:
@@ -115,6 +130,11 @@ type Example struct {
     // With dynamic specifications
     SpecDynamic    []uint64  `ssz-max:"1000" dynssz-max:"MAX_ITEMS"`    // Dynamic max from spec
     SpecFixed      []byte    `ssz-size:"256" dynssz-size:"BUFFER_SIZE"` // Fixed size from spec
+    
+    // With strict type annotations
+    Bitlist        []byte    `ssz-type:"bitlist" ssz-max:"256"`         // Explicitly a bitlist
+    Balance        [32]byte  `ssz-type:"uint256"`                       // Explicitly uint256
+    Flags          [8]byte   `ssz-type:"bitvector"`                     // Fixed bitvector
 }
 
 // Real-world Ethereum example
