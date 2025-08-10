@@ -309,6 +309,14 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		if err != nil {
 			return nil, err
 		}
+
+	case SszCustomType:
+		if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
+			desc.Size = uint32(sizeHints[0].Size)
+		} else {
+			desc.Size = 0
+			desc.IsDynamic = true
+		}
 	}
 
 	if !desc.HasDynamicSize {
