@@ -263,8 +263,7 @@ func (d *DynSsz) marshalVector(sourceType *TypeDescriptor, sourceValue reflect.V
 		buf = append(buf, bytes...)
 
 		if appendZero > 0 {
-			zeroBytes := make([]uint8, appendZero)
-			buf = append(buf, zeroBytes...)
+			buf = appendZeroPadding(buf, appendZero)
 		}
 	} else {
 		for i := 0; i < int(sliceLen); i++ {
@@ -278,8 +277,7 @@ func (d *DynSsz) marshalVector(sourceType *TypeDescriptor, sourceValue reflect.V
 
 		if appendZero > 0 {
 			totalZeroBytes := int(sourceType.ElemDesc.Size) * appendZero
-			zeroBuf := make([]byte, totalZeroBytes)
-			buf = append(buf, zeroBuf...)
+			buf = appendZeroPadding(buf, totalZeroBytes)
 		}
 	}
 
@@ -326,8 +324,7 @@ func (d *DynSsz) marshalDynamicVector(sourceType *TypeDescriptor, sourceValue re
 
 	startOffset := len(buf)
 	totalOffsets := sliceLen + appendZero
-	offsetBuf := make([]byte, 4*totalOffsets)
-	buf = append(buf, offsetBuf...)
+	buf = appendZeroPadding(buf, 4*totalOffsets) // Reserve space for offsets
 
 	offset := 4 * totalOffsets
 	bufLen := len(buf)
@@ -363,16 +360,11 @@ func (d *DynSsz) marshalDynamicVector(sourceType *TypeDescriptor, sourceValue re
 		}
 		zeroBufLen := len(zeroBuf)
 
-		// Batch append all zero values at once for better performance
-		totalZeroBytes := zeroBufLen * appendZero
-		zeroData := make([]byte, 0, totalZeroBytes)
 		for i := 0; i < appendZero; i++ {
-			zeroData = append(zeroData, zeroBuf...)
+			buf = append(buf, zeroBuf...)
 			binary.LittleEndian.PutUint32(buf[startOffset+((sliceLen+i)*4):startOffset+(((sliceLen+i)+1)*4)], uint32(offset))
 			offset += zeroBufLen
 		}
-
-		buf = append(buf, zeroData...)
 	}
 
 	return buf, nil
@@ -453,8 +445,7 @@ func (d *DynSsz) marshalDynamicList(sourceType *TypeDescriptor, sourceValue refl
 
 	startOffset := len(buf)
 	totalOffsets := sliceLen
-	offsetBuf := make([]byte, 4*totalOffsets)
-	buf = append(buf, offsetBuf...)
+	buf = appendZeroPadding(buf, 4*totalOffsets) // Reserve space for offsets
 
 	offset := 4 * totalOffsets
 	bufLen := len(buf)

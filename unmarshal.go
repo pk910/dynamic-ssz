@@ -187,7 +187,8 @@ func (d *DynSsz) unmarshalTypeWrapper(targetType *TypeDescriptor, targetValue re
 func (d *DynSsz) unmarshalContainer(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
 	offset := 0
 	dynamicFieldCount := len(targetType.ContainerDesc.DynFields)
-	dynamicOffsets := make([]int, 0, dynamicFieldCount)
+	dynamicOffsets := defaultOffsetSlicePool.Get()
+	defer defaultOffsetSlicePool.Put(dynamicOffsets)
 	sszSize := len(ssz)
 
 	for i := 0; i < len(targetType.ContainerDesc.Fields); i++ {
@@ -378,7 +379,13 @@ func (d *DynSsz) unmarshalDynamicVector(targetType *TypeDescriptor, targetValue 
 	vectorLen := int(targetType.Len)
 
 	// read all item offsets
-	sliceOffsets := make([]int, vectorLen)
+	sliceOffsets := defaultOffsetSlicePool.Get()
+	defer defaultOffsetSlicePool.Put(sliceOffsets)
+	if cap(sliceOffsets) < vectorLen {
+		sliceOffsets = make([]int, vectorLen)
+	} else {
+		sliceOffsets = sliceOffsets[:vectorLen]
+	}
 	for i := 0; i < vectorLen; i++ {
 		sliceOffsets[i] = int(readOffset(ssz[i*4 : (i+1)*4]))
 	}
@@ -573,7 +580,13 @@ func (d *DynSsz) unmarshalDynamicList(targetType *TypeDescriptor, targetValue re
 	sliceLen := int(firstOffset / 4)
 
 	// read all item offsets
-	sliceOffsets := make([]int, sliceLen)
+	sliceOffsets := defaultOffsetSlicePool.Get()
+	defer defaultOffsetSlicePool.Put(sliceOffsets)
+	if cap(sliceOffsets) < sliceLen {
+		sliceOffsets = make([]int, sliceLen)
+	} else {
+		sliceOffsets = sliceOffsets[:sliceLen]
+	}
 	sliceOffsets[0] = int(firstOffset)
 	for i := 1; i < sliceLen; i++ {
 		sliceOffsets[i] = int(readOffset(ssz[i*4 : (i+1)*4]))
