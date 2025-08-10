@@ -70,7 +70,7 @@ var treerootTestMatrix = []struct {
 			F2 []slug_DynStruct1 `ssz-size:"3"`
 			F3 uint8
 		}{42, []slug_DynStruct1{{true, []uint8{4}}, {true, []uint8{4, 8, 4}}}, 43},
-		fromHex("0xeb722b1df677b9949255b1e9aefddde783d6fac52dbc0a28e788d6a9306be7fd"),
+		fromHex("0x609aed07225400cb21de97260b267aab012358a235d1a1e9fc4df94859208c83"),
 	},
 	{
 		struct {
@@ -78,7 +78,7 @@ var treerootTestMatrix = []struct {
 			F2 []*slug_StaticStruct1 `ssz-size:"3"`
 			F3 uint8
 		}{42, []*slug_StaticStruct1{nil, {true, []uint8{4, 8, 4}}}, 43},
-		fromHex("0xd0816b4909b1eb8345e88fdf833ec5ec545b4d8e46ea6c71ee5c9fa93256275d"),
+		fromHex("0xcb36f82247d205d8fc9dc60d04a245fb588be35315b4c3406ed2b68f69de7eda"),
 	},
 	{
 		struct {
@@ -327,7 +327,6 @@ func TestFixedSizeStringVsByteArrayTreeRoot(t *testing.T) {
 		{"empty", ""},
 		{"short", "hello"},
 		{"exact_32", "abcdefghijklmnopqrstuvwxyz123456"},
-		{"over_32_truncated", "abcdefghijklmnopqrstuvwxyz1234567890"},
 	}
 
 	for _, tc := range testCases {

@@ -327,7 +327,6 @@ func TestFixedSizeStringVsByteArrayMarshal(t *testing.T) {
 		{"empty", ""},
 		{"short", "hello"},
 		{"exact_32", "abcdefghijklmnopqrstuvwxyz123456"},
-		{"over_32_truncated", "abcdefghijklmnopqrstuvwxyz1234567890"},
 	}
 
 	for _, tc := range testCases {

@@ -44,7 +44,10 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 	// use fastssz to calculate size if:
 	// - struct implements fastssz Marshaler interface
 	// - this structure or any child structure does not use spec specific field sizes
-	useFastSsz := !d.NoFastSsz && targetType.IsFastSSZMarshaler
+	useFastSsz := !d.NoFastSsz && targetType.HasFastSSZMarshaler
+	if !useFastSsz && targetType.SszType == SszCustomType {
+		useFastSsz = true
+	}
 
 	if useFastSsz {
 		marshaller, ok := targetValue.Addr().Interface().(fastsszMarshaler)
@@ -57,88 +60,80 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 
 	if !useFastSsz {
 		// can't use fastssz, use dynamic size calculation
-		switch targetType.Kind {
-		case reflect.Struct:
-			// Check if this is a CompatibleUnion
-			if targetType.IsCompatibleUnion {
-				// CompatibleUnion: 1 byte for selector + size of the data
-				variant := uint8(targetValue.Field(0).Uint())
-				dataField := targetValue.Field(1)
-				
-				// Get the variant descriptor
-				variantDesc, ok := targetType.UnionVariants[variant]
-				if !ok {
-					return 0, fmt.Errorf("unknown union variant index: %d", variant)
-				}
-				
-				// Calculate size of the data
-				dataSize, err := d.getSszValueSize(variantDesc, dataField.Elem())
-				if err != nil {
-					return 0, fmt.Errorf("failed to get size of union variant %d: %w", variant, err)
-				}
-				
-				staticSize = 1 + dataSize // 1 byte selector + data size
-			} else {
-				// Regular struct
-				for i := 0; i < len(targetType.Fields); i++ {
-					fieldType := targetType.Fields[i]
-					fieldValue := targetValue.Field(i)
+		switch targetType.SszType {
+		case SszContainerType, SszProgressiveContainerType:
+			for i := 0; i < len(targetType.ContainerDesc.Fields); i++ {
+				fieldType := targetType.ContainerDesc.Fields[i]
+				fieldValue := targetValue.Field(i)
 
-					if fieldType.Size < 0 {
-						size, err := d.getSszValueSize(fieldType.Type, fieldValue)
-						if err != nil {
-							return 0, err
-						}
-
-						// dynamic field, add 4 bytes for offset
-						staticSize += size + 4
-					} else {
-						// static field
-						staticSize += uint32(fieldType.Size)
+				if fieldType.Type.IsDynamic {
+					size, err := d.getSszValueSize(fieldType.Type, fieldValue)
+					if err != nil {
+						return 0, err
 					}
+
+					// dynamic field, add 4 bytes for offset
+					staticSize += size + 4
+				} else {
+					// static field
+					staticSize += uint32(fieldType.Type.Size)
 				}
 			}
-		case reflect.Array:
-			if targetType.Len > 0 {
-				fieldType := targetType.ElemDesc
-				if fieldType.Kind == reflect.Uint8 {
-					staticSize = targetType.Len
-				} else if fieldType.Size < 0 {
-					// array with dynamic size items, so we have to go through each item
-					for i := 0; i < int(targetType.Len); i++ {
-						size, err := d.getSszValueSize(fieldType, targetValue.Index(i))
-						if err != nil {
-							return 0, err
-						}
-						// add 4 bytes for offset in dynamic array
-						staticSize += size + 4
+		case SszVectorType, SszBitvectorType:
+			fieldType := targetType.ElemDesc
+			if fieldType.Kind == reflect.Uint8 {
+				staticSize = targetType.Len
+			} else if fieldType.IsDynamic {
+				// vector with dynamic size items, so we have to go through each item
+				dataLen := targetValue.Len()
+
+				for i := 0; i < dataLen; i++ {
+					size, err := d.getSszValueSize(fieldType, targetValue.Index(i))
+					if err != nil {
+						return 0, err
 					}
-				} else {
+					// add 4 bytes for offset in dynamic array
+					staticSize += size + 4
+				}
+
+				if dataLen < int(targetType.Len) {
+					appendZero := targetType.Len - uint32(dataLen)
+					zeroVal := reflect.New(fieldType.Type).Elem()
+					size, err := d.getSszValueSize(fieldType, zeroVal)
+					if err != nil {
+						return 0, err
+					}
+
+					staticSize += (size + 4) * appendZero
+				}
+			} else {
+				dataLen := targetValue.Len()
+
+				if dataLen > 0 {
 					size, err := d.getSszValueSize(fieldType, targetValue.Index(0))
 					if err != nil {
 						return 0, err
 					}
+
 					staticSize = size * targetType.Len
+				} else {
+					zeroVal := reflect.New(fieldType.Type).Elem()
+					size, err := d.getSszValueSize(fieldType, zeroVal)
+					if err != nil {
+						return 0, err
+					}
+
+					staticSize += size * targetType.Len
 				}
 			}
-		case reflect.Slice:
+		case SszListType, SszBitlistType, SszProgressiveListType, SszProgressiveBitlistType:
 			fieldType := targetType.ElemDesc
 			sliceLen := uint32(targetValue.Len())
 
-			appendZero := uint32(0)
-			if len(targetType.SizeHints) > 0 && !targetType.SizeHints[0].Dynamic {
-				if sliceLen > targetType.SizeHints[0].Size {
-					return 0, ErrListTooBig
-				}
-				if sliceLen < targetType.SizeHints[0].Size {
-					appendZero = targetType.SizeHints[0].Size - uint32(sliceLen)
-				}
-			}
-
 			if sliceLen > 0 {
 				if fieldType.Kind == reflect.Uint8 {
-					staticSize = uint32(sliceLen) + uint32(appendZero)
-				} else if fieldType.Size < 0 {
+					staticSize = uint32(sliceLen)
+				} else if fieldType.IsDynamic {
 					// slice with dynamic size items, so we have to go through each item
 					for i := 0; i < int(sliceLen); i++ {
 						size, err := d.getSszValueSize(fieldType, targetValue.Index(i))
@@ -148,41 +143,45 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 						// add 4 bytes for offset in dynamic slice
 						staticSize += size + 4
 					}
-
-					if appendZero > 0 {
-						zeroVal := reflect.New(fieldType.Type).Elem()
-						size, err := d.getSszValueSize(fieldType, zeroVal)
-						if err != nil {
-							return 0, err
-						}
-
-						staticSize += (size + 4) * appendZero
-					}
 				} else {
-					staticSize = uint32(fieldType.Size) * (sliceLen + appendZero)
+					staticSize = uint32(fieldType.Size) * sliceLen
 				}
 			}
-		case reflect.String:
-			// String size depends on whether it's fixed or dynamic
-			if targetType.Size > 0 {
-				// Fixed-size string: always return the fixed size
-				staticSize = uint32(targetType.Size)
-			} else {
-				// Dynamic string: return the actual length
-				staticSize = uint32(len(targetValue.String()))
+		case SszUnionType:
+			// CompatibleUnion: 1 byte for selector + size of the data
+			variant := uint8(targetValue.Field(0).Uint())
+			dataField := targetValue.Field(1)
+
+			// Get the variant descriptor
+			variantDesc, ok := targetType.UnionVariants[variant]
+			if !ok {
+				return 0, fmt.Errorf("unknown union variant index: %d", variant)
 			}
 
+			// Calculate size of the data
+			dataSize, err := d.getSszValueSize(variantDesc, dataField.Elem())
+			if err != nil {
+				return 0, fmt.Errorf("failed to get size of union variant %d: %w", variant, err)
+			}
+
+			staticSize = 1 + dataSize // 1 byte selector + data size
+
 		// primitive types
-		case reflect.Bool:
+		case SszBoolType:
 			staticSize = 1
-		case reflect.Uint8:
+		case SszUint8Type:
 			staticSize = 1
-		case reflect.Uint16:
+		case SszUint16Type:
 			staticSize = 2
-		case reflect.Uint32:
+		case SszUint32Type:
 			staticSize = 4
-		case reflect.Uint64:
+		case SszUint64Type:
 			staticSize = 8
+		case SszUint128Type:
+			staticSize = 16
+		case SszUint256Type:
+			staticSize = 32
+
 		default:
 			return 0, fmt.Errorf("unhandled reflection kind in size check: %v", targetType.Kind)
 		}

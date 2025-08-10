@@ -10,6 +10,98 @@ import (
 	"strings"
 )
 
+type SszType uint8
+
+const (
+	SszUnspecifiedType SszType = iota
+	SszCustomType
+
+	// basic types
+	SszBoolType
+	SszUint8Type
+	SszUint16Type
+	SszUint32Type
+	SszUint64Type
+	SszUint128Type
+	SszUint256Type
+
+	// complex types
+	SszContainerType
+	SszListType
+	SszVectorType
+	SszBitlistType
+	SszBitvectorType
+	SszProgressiveListType
+	SszProgressiveBitlistType
+	SszProgressiveContainerType
+	SszUnionType
+)
+
+type SszTypeHint struct {
+	Type SszType
+}
+
+func (d *DynSsz) getSszTypeTag(field *reflect.StructField) ([]SszTypeHint, error) {
+	// parse `ssz-type`
+	sszTypeHints := []SszTypeHint{}
+
+	if fieldSszTypeStr, fieldHasSszType := field.Tag.Lookup("ssz-type"); fieldHasSszType {
+		for _, sszTypeStr := range strings.Split(fieldSszTypeStr, ",") {
+			sszType := SszTypeHint{}
+
+			switch sszTypeStr {
+			case "?", "auto":
+				sszType.Type = SszUnspecifiedType
+			case "custom":
+				sszType.Type = SszCustomType
+
+			// basic types
+			case "bool":
+				sszType.Type = SszBoolType
+			case "uint8":
+				sszType.Type = SszUint8Type
+			case "uint16":
+				sszType.Type = SszUint16Type
+			case "uint32":
+				sszType.Type = SszUint32Type
+			case "uint64":
+				sszType.Type = SszUint64Type
+			case "uint128":
+				sszType.Type = SszUint128Type
+			case "uint256":
+				sszType.Type = SszUint256Type
+
+			// complex types
+			case "container":
+				sszType.Type = SszContainerType
+			case "list":
+				sszType.Type = SszListType
+			case "vector":
+				sszType.Type = SszVectorType
+			case "bitlist":
+				sszType.Type = SszBitlistType
+			case "bitvector":
+				sszType.Type = SszBitvectorType
+			case "progressive-list":
+				sszType.Type = SszProgressiveListType
+			case "progressive-bitlist":
+				sszType.Type = SszProgressiveBitlistType
+			case "progressive-container":
+				sszType.Type = SszProgressiveContainerType
+			case "union":
+				sszType.Type = SszUnionType
+
+			default:
+				return nil, fmt.Errorf("invalid ssz-type tag for '%v' field: %v", field.Name, sszTypeStr)
+			}
+
+			sszTypeHints = append(sszTypeHints, sszType)
+		}
+	}
+
+	return sszTypeHints, nil
+}
+
 // SszSizeHint encapsulates size information for SSZ encoding and decoding, derived from 'ssz-size' and 'dynssz-size' tag annotations.
 // It provides detailed insights into the size attributes of fields or types, particularly noting whether sizes are fixed or dynamic,
 // and if special specification values are applied, differing from default assumptions.
@@ -170,56 +262,6 @@ func (d *DynSsz) getSszMaxSizeTag(field *reflect.StructField) ([]SszMaxSizeHint,
 	}
 
 	return sszMaxSizes, nil
-}
-
-type SszType uint8
-
-const (
-	SszUnknownType            SszType = iota
-	SszListType               SszType = 1
-	SszVectorType             SszType = 2
-	SszBitlistType            SszType = 3
-	SszBitvectorType          SszType = 4
-	SszProgressiveListType    SszType = 5
-	SszProgressiveBitlistType SszType = 6
-)
-
-type SszTypeHint struct {
-	Type SszType
-}
-
-func (d *DynSsz) getSszTypeTag(field *reflect.StructField) ([]SszTypeHint, error) {
-	// parse `ssz-type`
-	sszTypeHints := []SszTypeHint{}
-
-	if fieldSszTypeStr, fieldHasSszType := field.Tag.Lookup("ssz-type"); fieldHasSszType {
-		for _, sszTypeStr := range strings.Split(fieldSszTypeStr, ",") {
-			sszType := SszTypeHint{}
-
-			switch sszTypeStr {
-			case "?":
-				sszType.Type = SszUnknownType
-			case "list":
-				sszType.Type = SszListType
-			case "vector":
-				sszType.Type = SszVectorType
-			case "bitlist":
-				sszType.Type = SszBitlistType
-			case "bitvector":
-				sszType.Type = SszBitvectorType
-			case "progressive-list":
-				sszType.Type = SszProgressiveListType
-			case "progressive-bitlist":
-				sszType.Type = SszProgressiveBitlistType
-			default:
-				return nil, fmt.Errorf("invalid ssz-type tag for '%v' field: %v", field.Name, sszTypeStr)
-			}
-
-			sszTypeHints = append(sszTypeHints, sszType)
-		}
-	}
-
-	return sszTypeHints, nil
 }
 
 func (d *DynSsz) getSszIndexTag(field *reflect.StructField) (*uint16, error) {
