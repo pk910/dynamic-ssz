@@ -20,24 +20,23 @@ type TypeCache struct {
 // TypeDescriptor represents a cached, optimized descriptor for a type's SSZ encoding/decoding
 type TypeDescriptor struct {
 	Type                reflect.Type
-	Kind                reflect.Kind           // Go kind of the type
-	Size                uint32                 // SSZ size (-1 if dynamic)
-	Len                 uint32                 // Length of array/slice
-	Limit               uint64                 // Limit of array/slice (ssz-max tag)
-	ContainerDesc       *ContainerDescriptor   // For structs
-	WrapperDesc         *WrapperDescriptorInfo // For TypeWrapper
-	ElemDesc            *TypeDescriptor        // For slices/arrays
-	SszType             SszType                // SSZ type of the type
-	IsDynamic           bool                   // Whether this type is a dynamic type (or has nested dynamic types)
-	HasLimit            bool                   // Whether this type has a limit (ssz-max tag)
-	HasDynamicSize      bool                   // Whether this type uses dynamic spec size value that differs from the default
-	HasDynamicMax       bool                   // Whether this type uses dynamic spec max value that differs from the default
-	HasFastSSZMarshaler bool                   // Whether the type implements fastssz.Marshaler
-	HasFastSSZHasher    bool                   // Whether the type implements fastssz.HashRoot
-	HasHashTreeRootWith bool                   // Whether the type implements HashTreeRootWith
-	IsPtr               bool                   // Whether this is a pointer type
-	IsByteArray         bool                   // Whether this is a byte array
-	IsString            bool                   // Whether this is a string type
+	Kind                reflect.Kind         // Go kind of the type
+	Size                uint32               // SSZ size (-1 if dynamic)
+	Len                 uint32               // Length of array/slice
+	Limit               uint64               // Limit of array/slice (ssz-max tag)
+	ContainerDesc       *ContainerDescriptor // For structs
+	ElemDesc            *TypeDescriptor      // For slices/arrays
+	SszType             SszType              // SSZ type of the type
+	IsDynamic           bool                 // Whether this type is a dynamic type (or has nested dynamic types)
+	HasLimit            bool                 // Whether this type has a limit (ssz-max tag)
+	HasDynamicSize      bool                 // Whether this type uses dynamic spec size value that differs from the default
+	HasDynamicMax       bool                 // Whether this type uses dynamic spec max value that differs from the default
+	HasFastSSZMarshaler bool                 // Whether the type implements fastssz.Marshaler
+	HasFastSSZHasher    bool                 // Whether the type implements fastssz.HashRoot
+	HasHashTreeRootWith bool                 // Whether the type implements HashTreeRootWith
+	IsPtr               bool                 // Whether this is a pointer type
+	IsByteArray         bool                 // Whether this is a byte array
+	IsString            bool                 // Whether this is a string type
 }
 
 // FieldDescriptor represents a cached descriptor for a struct field
@@ -352,7 +351,7 @@ func (tc *TypeCache) buildTypeWrapperDescriptor(desc *TypeDescriptor, t reflect.
 	}
 
 	// Extract wrapper information from descriptor struct (includes SSZ annotations)
-	wrapperInfo, err := ExtractWrapperDescriptorInfo(descriptorType, tc.dynssz)
+	wrapperInfo, err := extractWrapperDescriptorInfo(descriptorType, tc.dynssz)
 	if err != nil {
 		return fmt.Errorf("failed to extract wrapper descriptor info: %w", err)
 	}
@@ -364,7 +363,6 @@ func (tc *TypeCache) buildTypeWrapperDescriptor(desc *TypeDescriptor, t reflect.
 	}
 
 	// Store wrapper information
-	desc.WrapperDesc = wrapperInfo
 	desc.ElemDesc = wrappedDesc
 
 	// The TypeWrapper inherits properties from the wrapped type

@@ -55,8 +55,8 @@ func (w *TypeWrapper[D, T]) GetDescriptorType() reflect.Type {
 	return reflect.TypeOf(zero).Elem()
 }
 
-// WrapperDescriptorInfo contains type and annotation information for a wrapper
-type WrapperDescriptorInfo struct {
+// wrapperDescriptorInfo contains type and annotation information for a wrapper
+type wrapperDescriptorInfo struct {
 	Type         reflect.Type
 	SizeHints    []SszSizeHint
 	MaxSizeHints []SszMaxSizeHint
@@ -65,7 +65,7 @@ type WrapperDescriptorInfo struct {
 
 // ExtractWrapperDescriptorInfo extracts wrapper information from a wrapper descriptor type.
 // This function validates that the descriptor has exactly one field and extracts its annotations.
-func ExtractWrapperDescriptorInfo(descriptorType reflect.Type, dynssz *DynSsz) (*WrapperDescriptorInfo, error) {
+func extractWrapperDescriptorInfo(descriptorType reflect.Type, dynssz *DynSsz) (*wrapperDescriptorInfo, error) {
 	if descriptorType.Kind() != reflect.Struct {
 		return nil, fmt.Errorf("wrapper descriptor must be a struct, got %v", descriptorType.Kind())
 	}
@@ -92,7 +92,7 @@ func ExtractWrapperDescriptorInfo(descriptorType reflect.Type, dynssz *DynSsz) (
 		return nil, fmt.Errorf("failed to parse ssz-type tag for field %s: %w", field.Name, err)
 	}
 
-	return &WrapperDescriptorInfo{
+	return &wrapperDescriptorInfo{
 		Type:         field.Type,
 		SizeHints:    sizeHints,
 		MaxSizeHints: maxSizeHints,
