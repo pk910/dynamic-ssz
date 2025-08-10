@@ -225,7 +225,7 @@ func (d *DynSsz) marshalArrayWriter(ctx *marshalWriterContext, typeDesc *TypeDes
 	}
 
 	// Handle arrays with dynamic elements
-	if elemType.Size < 0 {
+	if elemType.IsDynamic {
 		if ctx.currentNode == nil {
 			return fmt.Errorf("marshal dynamic array without size tree")
 		}
@@ -331,7 +331,7 @@ func (d *DynSsz) marshalSliceWriter(ctx *marshalWriterContext, typeDesc *TypeDes
 	}
 
 	// Handle slices with dynamic elements
-	if elemType.Size < 0 {
+	if elemType.IsDynamic {
 		if ctx.currentNode == nil {
 			return fmt.Errorf("marshal dynamic slice without size tree")
 		}

@@ -35,7 +35,7 @@ import (
 //   - Buffer reuse for small reads to minimize allocations
 func (d *DynSsz) unmarshalTypeReader(ctx *unmarshalReaderContext, typeDesc *TypeDescriptor, value reflect.Value) error {
 	// For small static types, read into context buffer and use regular unmarshal
-	if !typeDesc.HasDynamicSize && typeDesc.Size > 0 && typeDesc.Size <= int32(len(ctx.buffer)) && !d.NoStreamBuffering {
+	if !typeDesc.HasDynamicSize && typeDesc.Size > 0 && typeDesc.Size <= uint32(len(ctx.buffer)) && !d.NoStreamBuffering {
 		buf := ctx.buffer[:typeDesc.Size]
 		if _, err := io.ReadFull(ctx.limitedReader, buf); err != nil {
 			return err
@@ -53,7 +53,7 @@ func (d *DynSsz) unmarshalTypeReader(ctx *unmarshalReaderContext, typeDesc *Type
 	}
 
 	// Use fastssz if available and not disabled for small structures
-	if !d.NoFastSsz && typeDesc.IsFastSSZMarshaler && typeDesc.Size > 0 && typeDesc.Size <= int32(len(ctx.buffer)) {
+	if !d.NoFastSsz && typeDesc.HasFastSSZMarshaler && typeDesc.Size > 0 && typeDesc.Size <= uint32(len(ctx.buffer)) {
 		buf := ctx.buffer[:typeDesc.Size]
 		if _, err := io.ReadFull(ctx.limitedReader, buf); err != nil {
 			return err
@@ -137,13 +137,13 @@ func (d *DynSsz) unmarshalTypeReader(ctx *unmarshalReaderContext, typeDesc *Type
 // field consumes exactly its allocated bytes according to the offset table. This prevents
 // fields from reading beyond their boundaries and corrupting subsequent data.
 func (d *DynSsz) unmarshalStructReader(ctx *unmarshalReaderContext, typeDesc *TypeDescriptor, value reflect.Value) error {
-	dynamicOffsets := make([]uint32, 0, len(typeDesc.DynFields))
+	dynamicOffsets := make([]uint32, 0, len(typeDesc.ContainerDesc.DynFields))
 
 	// First pass: read static fields and dynamic field offsets directly from stream
-	for i, field := range typeDesc.Fields {
+	for i, field := range typeDesc.ContainerDesc.Fields {
 		fieldValue := value.Field(i)
 
-		if field.Size < 0 {
+		if field.Type.IsDynamic {
 			// Dynamic field - read offset directly from stream
 			offset, err := readUint32(ctx.limitedReader)
 			if err != nil {
@@ -152,12 +152,12 @@ func (d *DynSsz) unmarshalStructReader(ctx *unmarshalReaderContext, typeDesc *Ty
 			dynamicOffsets = append(dynamicOffsets, offset)
 		} else {
 			// Static field - push limit and read directly from stream
-			ctx.limitedReader.pushLimit(uint64(field.Size))
+			ctx.limitedReader.pushLimit(uint64(field.Type.Size))
 
 			err := d.unmarshalTypeReader(ctx, field.Type, fieldValue)
 
 			consumedBytes := ctx.limitedReader.popLimit()
-			consumedExpectedBytes := consumedBytes == uint64(field.Size)
+			consumedExpectedBytes := consumedBytes == uint64(field.Type.Size)
 
 			if err == io.EOF && consumedExpectedBytes {
 				err = nil
@@ -167,19 +167,19 @@ func (d *DynSsz) unmarshalStructReader(ctx *unmarshalReaderContext, typeDesc *Ty
 			}
 
 			if !consumedExpectedBytes {
-				return fmt.Errorf("struct field %s did not consume expected ssz range (consumed: %v, expected: %v)", field.Name, consumedBytes, field.Size)
+				return fmt.Errorf("struct field %s did not consume expected ssz range (consumed: %v, expected: %v)", field.Name, consumedBytes, field.Type.Size)
 			}
 		}
 	}
 
 	// Process dynamic fields with proper boundaries
-	for i, dynFieldInfo := range typeDesc.DynFields {
-		fieldValue := value.Field(int(dynFieldInfo.Field.Index))
+	for i, dynFieldInfo := range typeDesc.ContainerDesc.DynFields {
+		fieldValue := value.Field(int(dynFieldInfo.Index))
 
 		// Calculate field size from this offset to the next offset or EOF
 		var fieldSize uint64
 		hasKnownSize := false
-		if i+1 < len(typeDesc.DynFields) {
+		if i+1 < len(typeDesc.ContainerDesc.DynFields) {
 			// Next field starts at next offset
 			fieldSize = uint64(dynamicOffsets[i+1] - dynamicOffsets[i])
 			hasKnownSize = true
@@ -246,7 +246,7 @@ func (d *DynSsz) unmarshalArrayReader(ctx *unmarshalReaderContext, typeDesc *Typ
 	elemType := typeDesc.ElemDesc
 
 	// Handle arrays with dynamic elements
-	if elemType.Size < 0 {
+	if elemType.IsDynamic {
 		// Dynamic array - read offsets first
 		offsetCount := arrayLen
 		offsetBytes := offsetCount * 4
@@ -354,7 +354,7 @@ func (d *DynSsz) unmarshalSliceReader(ctx *unmarshalReaderContext, typeDesc *Typ
 	elemType := typeDesc.ElemDesc
 
 	// For dynamic slices, we need to determine the number of elements from offsets
-	if elemType.Size < 0 {
+	if elemType.IsDynamic {
 		// Read first offset to determine element count
 		firstOffset, err := readUint32(ctx.limitedReader)
 		if err != nil {
