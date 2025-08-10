@@ -130,6 +130,96 @@ var treerootTestMatrix = []struct {
 		}{[]byte{0x0f, 0x01}}, // bitlist with 4 bits set, length indicator
 		fromHex("0xac0d43079c4f10cade6386f382829a4a00e4d9832cb66a068969c761bce57d96"),
 	},
+	
+	// uint128 type tests
+	{
+		struct {
+			Value [16]byte `ssz-type:"uint128"`
+		}{[16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}},
+		fromHex("0x0102030405060708090a0b0c0d0e0f1000000000000000000000000000000000"),
+	},
+	{
+		struct {
+			Value [2]uint64 `ssz-type:"uint128"`
+		}{[2]uint64{0x0807060504030201, 0x100f0e0d0c0b0a09}},
+		fromHex("0x0102030405060708090a0b0c0d0e0f1000000000000000000000000000000000"),
+	},
+	{
+		struct {
+			Value []byte `ssz-type:"uint128" ssz-size:"16"`
+		}{[]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}},
+		fromHex("0x0102030405060708090a0b0c0d0e0f1000000000000000000000000000000000"),
+	},
+	
+	// uint256 type tests
+	{
+		struct {
+			Balance [32]byte `ssz-type:"uint256"`
+		}{[32]byte{
+			1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+			17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
+		}},
+		fromHex("0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"),
+	},
+	{
+		struct {
+			Balance [4]uint64 `ssz-type:"uint256"`
+		}{[4]uint64{0x0807060504030201, 0x100f0e0d0c0b0a09, 0x1817161514131211, 0x201f1e1d1c1b1a19}},
+		fromHex("0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"),
+	},
+	{
+		struct {
+			Balance []byte `ssz-type:"uint256" ssz-size:"32"`
+		}{[]byte{
+			1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+			17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
+		}},
+		fromHex("0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"),
+	},
+	
+	// bitvector type tests
+	{
+		struct {
+			Flags [4]byte `ssz-type:"bitvector"`
+		}{[4]byte{0xff, 0x0f, 0x00, 0xf0}},
+		fromHex("0xff0f00f000000000000000000000000000000000000000000000000000000000"),
+	},
+	
+	// explicit basic type annotations
+	{
+		struct {
+			Value uint32 `ssz-type:"uint32"`
+		}{0x12345678},
+		fromHex("0x7856341200000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		struct {
+			Value bool `ssz-type:"bool"`
+		}{true},
+		fromHex("0x0100000000000000000000000000000000000000000000000000000000000000"),
+	},
+	
+	// vector type annotation
+	{
+		struct {
+			Values []uint64 `ssz-type:"vector" ssz-size:"3"`
+		}{[]uint64{1, 2, 3}},
+		fromHex("0x0100000000000000020000000000000003000000000000000000000000000000"),
+	},
+	
+	// container type annotation
+	{
+		struct {
+			Data struct {
+				A uint32
+				B uint64
+			} `ssz-type:"container"`
+		}{struct {
+			A uint32
+			B uint64
+		}{A: 100, B: 200}},
+		fromHex("0x40fb670c297a5c70d0b09f5f39cc5f1a442c79e86d7aaebe34a775c35c84e2e5"),
+	},
 
 	// string types
 	{
