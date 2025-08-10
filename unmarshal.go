@@ -45,13 +45,13 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 		targetValue = targetValue.Elem()
 	}
 
-	useFastSsz := !d.NoFastSsz && targetType.IsFastSSZMarshaler && !targetType.HasDynamicSize
+	useFastSsz := !d.NoFastSsz && targetType.HasFastSSZMarshaler && !targetType.HasDynamicSize
 	if !useFastSsz && targetType.SszType == SszCustomType {
 		useFastSsz = true
 	}
 
 	if d.Verbose {
-		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), targetType.Type.Name(), targetType.Kind, useFastSsz, targetType.IsFastSSZMarshaler, targetType.HasDynamicSize)
+		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), targetType.Type.Name(), targetType.Kind, useFastSsz, targetType.HasFastSSZMarshaler, targetType.HasDynamicSize)
 	}
 
 	if useFastSsz {
@@ -70,26 +70,32 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 
 	if !useFastSsz {
 		// can't use fastssz, use dynamic unmarshaling
+		var err error
 		switch targetType.SszType {
 		// complex types
 		case SszContainerType:
-			consumed, err := d.unmarshalContainer(targetType, targetValue, ssz, idt)
+			consumedBytes, err = d.unmarshalContainer(targetType, targetValue, ssz, idt)
 			if err != nil {
 				return 0, err
 			}
-			consumedBytes = consumed
 		case SszVectorType, SszBitvectorType, SszUint128Type, SszUint256Type:
-			consumed, err := d.unmarshalVector(targetType, targetValue, ssz, idt)
+			if targetType.ElemDesc.IsDynamic {
+				consumedBytes, err = d.unmarshalDynamicVector(targetType, targetValue, ssz, idt)
+			} else {
+				consumedBytes, err = d.unmarshalVector(targetType, targetValue, ssz, idt)
+			}
 			if err != nil {
 				return 0, err
 			}
-			consumedBytes = consumed
 		case SszListType, SszBitlistType:
-			consumed, err := d.unmarshalList(targetType, targetValue, ssz, idt)
+			if targetType.ElemDesc.IsDynamic {
+				consumedBytes, err = d.unmarshalDynamicList(targetType, targetValue, ssz, idt)
+			} else {
+				consumedBytes, err = d.unmarshalList(targetType, targetValue, ssz, idt)
+			}
 			if err != nil {
 				return 0, err
 			}
-			consumedBytes = consumed
 
 		// primitive types
 		case SszBoolType:
@@ -141,12 +147,12 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 
 func (d *DynSsz) unmarshalContainer(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
 	offset := 0
-	dynamicFieldCount := len(targetType.DynFields)
+	dynamicFieldCount := len(targetType.ContainerDesc.DynFields)
 	dynamicOffsets := make([]int, 0, dynamicFieldCount)
 	sszSize := len(ssz)
 
-	for i := 0; i < len(targetType.Fields); i++ {
-		field := targetType.Fields[i]
+	for i := 0; i < len(targetType.ContainerDesc.Fields); i++ {
+		field := targetType.ContainerDesc.Fields[i]
 
 		fieldSize := int(field.Type.Size)
 		if fieldSize > 0 {
@@ -185,7 +191,7 @@ func (d *DynSsz) unmarshalContainer(targetType *TypeDescriptor, targetValue refl
 	}
 
 	// finished parsing the static size fields, process dynamic fields
-	for i, field := range targetType.DynFields {
+	for i, field := range targetType.ContainerDesc.DynFields {
 		var endOffset int
 		startOffset := dynamicOffsets[i]
 		if i < dynamicFieldCount-1 {
@@ -250,11 +256,6 @@ func (d *DynSsz) unmarshalVector(targetType *TypeDescriptor, targetValue reflect
 
 	fieldType := targetType.ElemDesc
 	arrLen := int(targetType.Len)
-
-	// check if slice has dynamic size items
-	if fieldType.Size < 0 {
-		return d.unmarshalDynamicVector(targetType, targetValue, ssz, idt)
-	}
 
 	var newValue reflect.Value
 	switch targetType.Kind {
@@ -434,11 +435,6 @@ func (d *DynSsz) unmarshalList(targetType *TypeDescriptor, targetValue reflect.V
 
 	fieldType := targetType.ElemDesc
 	sszLen := len(ssz)
-
-	// check if slice has dynamic size items
-	if fieldType.Size < 0 {
-		return d.unmarshalDynamicList(targetType, targetValue, ssz, idt)
-	}
 
 	// Calculate slice length once
 	itemSize := int(fieldType.Size)

@@ -41,13 +41,13 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 		}
 	}
 
-	useFastSsz := !d.NoFastSsz && sourceType.IsFastSSZMarshaler && !sourceType.HasDynamicSize
+	useFastSsz := !d.NoFastSsz && sourceType.HasFastSSZMarshaler && !sourceType.HasDynamicSize
 	if !useFastSsz && sourceType.SszType == SszCustomType {
 		useFastSsz = true
 	}
 
 	if d.Verbose {
-		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, sourceType.IsFastSSZMarshaler, sourceType.HasDynamicSize)
+		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, sourceType.HasFastSSZMarshaler, sourceType.HasDynamicSize)
 	}
 
 	if useFastSsz {
@@ -65,26 +65,32 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 
 	if !useFastSsz {
 		// can't use fastssz, use dynamic marshaling
+		var err error
 		switch sourceType.SszType {
 		// complex types
 		case SszContainerType:
-			newBuf, err := d.marshalContainer(sourceType, sourceValue, buf, idt)
+			buf, err = d.marshalContainer(sourceType, sourceValue, buf, idt)
 			if err != nil {
 				return nil, err
 			}
-			buf = newBuf
 		case SszVectorType, SszBitvectorType, SszUint128Type, SszUint256Type:
-			newBuf, err := d.marshalVector(sourceType, sourceValue, buf, idt)
+			if sourceType.ElemDesc.IsDynamic {
+				buf, err = d.marshalDynamicVector(sourceType, sourceValue, buf, idt)
+			} else {
+				buf, err = d.marshalVector(sourceType, sourceValue, buf, idt)
+			}
 			if err != nil {
 				return nil, err
 			}
-			buf = newBuf
 		case SszListType, SszBitlistType:
-			newBuf, err := d.marshalList(sourceType, sourceValue, buf, idt)
+			if sourceType.ElemDesc.IsDynamic {
+				buf, err = d.marshalDynamicList(sourceType, sourceValue, buf, idt)
+			} else {
+				buf, err = d.marshalList(sourceType, sourceValue, buf, idt)
+			}
 			if err != nil {
 				return nil, err
 			}
-			buf = newBuf
 
 		// primitive types
 		case SszBoolType:
@@ -128,10 +134,10 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 func (d *DynSsz) marshalContainer(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
 	offset := 0
 	startLen := len(buf)
-	fieldCount := len(sourceType.Fields)
+	fieldCount := len(sourceType.ContainerDesc.Fields)
 
 	for i := 0; i < fieldCount; i++ {
-		field := sourceType.Fields[i]
+		field := sourceType.ContainerDesc.Fields[i]
 		fieldSize := field.Type.Size
 		if fieldSize > 0 {
 			//fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
@@ -151,7 +157,7 @@ func (d *DynSsz) marshalContainer(sourceType *TypeDescriptor, sourceValue reflec
 		offset += int(fieldSize)
 	}
 
-	for _, field := range sourceType.DynFields {
+	for _, field := range sourceType.ContainerDesc.DynFields {
 		// set field offset
 		fieldOffset := int(field.Offset)
 		binary.LittleEndian.PutUint32(buf[fieldOffset+startLen:fieldOffset+startLen+4], uint32(offset))
@@ -194,11 +200,6 @@ func (d *DynSsz) marshalContainer(sourceType *TypeDescriptor, sourceValue reflec
 //   - Non-addressable arrays are made addressable via a temporary pointer
 
 func (d *DynSsz) marshalVector(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
-	fieldType := sourceType.ElemDesc
-	if fieldType.Size < 0 {
-		return d.marshalDynamicVector(sourceType, sourceValue, buf, idt)
-	}
-
 	sliceLen := sourceValue.Len()
 	if uint32(sliceLen) > sourceType.Len {
 		return nil, ErrListTooBig
@@ -242,7 +243,7 @@ func (d *DynSsz) marshalVector(sourceType *TypeDescriptor, sourceValue reflect.V
 		}
 
 		if appendZero > 0 {
-			totalZeroBytes := int(fieldType.Size) * appendZero
+			totalZeroBytes := int(sourceType.ElemDesc.Size) * appendZero
 			zeroBuf := make([]byte, totalZeroBytes)
 			buf = append(buf, zeroBuf...)
 		}
@@ -345,8 +346,7 @@ func (d *DynSsz) marshalDynamicVector(sourceType *TypeDescriptor, sourceValue re
 
 // marshalList encodes list values into SSZ-encoded data.
 //
-// This function handles lists with fixed-size elements. For lists with variable-size
-// elements, it delegates to marshalDynamicList. The encoding follows SSZ specifications
+// This function handles lists with fixed-size elements. The encoding follows SSZ specifications
 // where lists are encoded as their elements in sequence without a length prefix.
 //
 // Parameters:
@@ -366,11 +366,6 @@ func (d *DynSsz) marshalDynamicVector(sourceType *TypeDescriptor, sourceValue re
 //   - Returns ErrListTooBig if slice exceeds maximum size from hints
 
 func (d *DynSsz) marshalList(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
-	fieldType := sourceType.ElemDesc
-	if fieldType.Size < 0 {
-		return d.marshalDynamicList(sourceType, sourceValue, buf, idt)
-	}
-
 	if sourceType.IsString {
 		stringBytes := []byte(sourceValue.String())
 		buf = append(buf, stringBytes...)
@@ -378,6 +373,7 @@ func (d *DynSsz) marshalList(sourceType *TypeDescriptor, sourceValue reflect.Val
 		buf = append(buf, sourceValue.Bytes()...)
 	} else {
 		sliceLen := sourceValue.Len()
+		fieldType := sourceType.ElemDesc
 
 		for i := 0; i < sliceLen; i++ {
 			itemVal := sourceValue.Index(i)

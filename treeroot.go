@@ -43,13 +43,13 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 		}
 	}
 
-	useFastSsz := !d.NoFastSsz && sourceType.IsFastSSZHasher && !sourceType.HasDynamicSize && !sourceType.HasDynamicMax
+	useFastSsz := !d.NoFastSsz && sourceType.HasFastSSZHasher && !sourceType.HasDynamicSize && !sourceType.HasDynamicMax
 	if !useFastSsz && sourceType.SszType == SszCustomType {
 		useFastSsz = true
 	}
 
 	if d.Verbose {
-		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v/%v)\t index: %v\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, sourceType.IsFastSSZHasher, sourceType.HasDynamicSize, sourceType.HasDynamicMax, hashIndex)
+		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v/%v)\t index: %v\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, sourceType.HasFastSSZHasher, sourceType.HasDynamicSize, sourceType.HasDynamicMax, hashIndex)
 	}
 
 	if useFastSsz {
@@ -112,8 +112,8 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 		case SszBitlistType:
 			maxSize := uint64(0)
 			bytes := sourceValue.Bytes()
-			if len(sourceType.MaxSizeHints) > 0 {
-				maxSize = uint64(sourceType.MaxSizeHints[0].Size)
+			if sourceType.HasLimit {
+				maxSize = sourceType.Limit
 			} else {
 				maxSize = uint64(len(bytes) * 8)
 			}
@@ -199,8 +199,8 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 func (d *DynSsz) buildRootFromContainer(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher, idt int) error {
 	hashIndex := hh.Index()
 
-	for i := 0; i < len(sourceType.Fields); i++ {
-		field := sourceType.Fields[i]
+	for i := 0; i < len(sourceType.ContainerDesc.Fields); i++ {
+		field := sourceType.ContainerDesc.Fields[i]
 		fieldType := field.Type
 		fieldValue := sourceValue.Field(i)
 
@@ -380,7 +380,7 @@ func (d *DynSsz) buildRootFromList(sourceType *TypeDescriptor, sourceValue refle
 		hh.FillUpTo32()
 	}
 
-	if len(sourceType.MaxSizeHints) > 0 && !sourceType.MaxSizeHints[0].NoValue {
+	if sourceType.HasLimit {
 		var limit, itemSize uint64
 
 		switch sourceType.ElemDesc.SszType {
@@ -403,9 +403,9 @@ func (d *DynSsz) buildRootFromList(sourceType *TypeDescriptor, sourceValue refle
 		}
 
 		if itemSize > 0 {
-			limit = CalculateLimit(uint64(sourceType.MaxSizeHints[0].Size), uint64(sliceLen), uint64(itemSize))
+			limit = CalculateLimit(sourceType.Limit, uint64(sliceLen), uint64(itemSize))
 		} else {
-			limit = uint64(sourceType.MaxSizeHints[0].Size)
+			limit = sourceType.Limit
 		}
 		hh.MerkleizeWithMixin(hashIndex, uint64(sliceLen), limit)
 	} else {

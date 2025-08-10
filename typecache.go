@@ -19,25 +19,30 @@ type TypeCache struct {
 
 // TypeDescriptor represents a cached, optimized descriptor for a type's SSZ encoding/decoding
 type TypeDescriptor struct {
-	Kind                reflect.Kind
 	Type                reflect.Type
-	Size                int32                // SSZ size (-1 if dynamic)
+	Kind                reflect.Kind         // Go kind of the type
+	Size                uint32               // SSZ size (-1 if dynamic)
 	Len                 uint32               // Length of array/slice
-	Fields              []FieldDescriptor    // For structs
-	DynFields           []DynFieldDescriptor // Dynamic struct fields
+	Limit               uint64               // Limit of array/slice (ssz-max tag)
+	ContainerDesc       *ContainerDescriptor // For structs
 	ElemDesc            *TypeDescriptor      // For slices/arrays
-	SizeHints           []SszSizeHint        // Size hints from tags
-	MaxSizeHints        []SszMaxSizeHint     // Max size hints from tags
-	TypeHints           []SszTypeHint        // Type hints from tags
 	SszType             SszType              // SSZ type of the type
+	IsDynamic           bool                 // Whether this type is a dynamic type (or has nested dynamic types)
+	HasLimit            bool                 // Whether this type has a limit (ssz-max tag)
 	HasDynamicSize      bool                 // Whether this type uses dynamic spec size value that differs from the default
 	HasDynamicMax       bool                 // Whether this type uses dynamic spec max value that differs from the default
-	IsFastSSZMarshaler  bool                 // Whether the type implements fastssz.Marshaler
-	IsFastSSZHasher     bool                 // Whether the type implements fastssz.HashRoot
+	HasFastSSZMarshaler bool                 // Whether the type implements fastssz.Marshaler
+	HasFastSSZHasher    bool                 // Whether the type implements fastssz.HashRoot
 	HasHashTreeRootWith bool                 // Whether the type implements HashTreeRootWith
 	IsPtr               bool                 // Whether this is a pointer type
 	IsByteArray         bool                 // Whether this is a byte array
 	IsString            bool                 // Whether this is a string type
+}
+
+// FieldDescriptor represents a cached descriptor for a struct field
+type ContainerDescriptor struct {
+	Fields    []FieldDescriptor    // For structs
+	DynFields []DynFieldDescriptor // Dynamic struct fields
 }
 
 // FieldDescriptor represents a cached descriptor for a struct field
@@ -133,10 +138,7 @@ func (tc *TypeCache) getTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, 
 // buildTypeDescriptor computes a type descriptor for the given type
 func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) (*TypeDescriptor, error) {
 	desc := &TypeDescriptor{
-		Type:         t,
-		SizeHints:    sizeHints,
-		MaxSizeHints: maxSizeHints,
-		TypeHints:    typeHints,
+		Type: t,
 	}
 
 	// Handle pointer types
@@ -157,6 +159,11 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 	}
 
 	if len(maxSizeHints) > 0 {
+		if !maxSizeHints[0].NoValue {
+			desc.HasLimit = true
+			desc.Limit = maxSizeHints[0].Size
+		}
+
 		for _, hint := range maxSizeHints {
 			if hint.SpecVal {
 				desc.HasDynamicMax = true
@@ -297,14 +304,14 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 	}
 
 	if !desc.HasDynamicSize {
-		desc.IsFastSSZMarshaler = tc.dynssz.getFastsszConvertCompatibility(t)
+		desc.HasFastSSZMarshaler = tc.dynssz.getFastsszConvertCompatibility(t)
 	}
 	if !desc.HasDynamicMax {
-		desc.IsFastSSZHasher = tc.dynssz.getFastsszHashCompatibility(t)
+		desc.HasFastSSZHasher = tc.dynssz.getFastsszHashCompatibility(t)
 		desc.HasHashTreeRootWith = tc.dynssz.getHashTreeRootWithCompatibility(t)
 	}
 
-	if desc.SszType == SszCustomType && (!desc.IsFastSSZMarshaler || !desc.IsFastSSZHasher) {
+	if desc.SszType == SszCustomType && (!desc.HasFastSSZMarshaler || !desc.HasFastSSZHasher) {
 		return nil, fmt.Errorf("custom ssz type requires fastssz marshaler and hasher implementations")
 	}
 
@@ -383,8 +390,12 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 		return fmt.Errorf("container ssz type can only be represented by struct types, got %v", desc.Kind)
 	}
 
-	desc.Fields = make([]FieldDescriptor, t.NumField())
-	totalSize := int32(0)
+	desc.ContainerDesc = &ContainerDescriptor{
+		Fields:    make([]FieldDescriptor, t.NumField()),
+		DynFields: make([]DynFieldDescriptor, 0),
+	}
+
+	totalSize := uint32(0)
 	isDynamic := false
 
 	for i := 0; i < t.NumField(); i++ {
@@ -416,12 +427,12 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 		}
 
 		sszSize := fieldDesc.Type.Size
-		if sszSize < 0 {
+		if fieldDesc.Type.IsDynamic {
 			isDynamic = true
 			sszSize = 4 // Offset size for dynamic fields
 
-			desc.DynFields = append(desc.DynFields, DynFieldDescriptor{
-				Field:  &desc.Fields[i],
+			desc.ContainerDesc.DynFields = append(desc.ContainerDesc.DynFields, DynFieldDescriptor{
+				Field:  &desc.ContainerDesc.Fields[i],
 				Offset: uint32(totalSize),
 				Index:  int16(i),
 			})
@@ -436,11 +447,12 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 		}
 
 		totalSize += sszSize
-		desc.Fields[i] = fieldDesc
+		desc.ContainerDesc.Fields[i] = fieldDesc
 	}
 
 	if isDynamic {
-		desc.Size = -1
+		desc.Size = 0
+		desc.IsDynamic = true
 	} else {
 		desc.Size = totalSize
 	}
@@ -505,10 +517,11 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, t reflect.Type,
 		desc.HasDynamicMax = true
 	}
 
-	if elemDesc.Size < 0 {
-		desc.Size = -1
+	if elemDesc.IsDynamic {
+		desc.Size = 0
+		desc.IsDynamic = true
 	} else {
-		desc.Size = elemDesc.Size * int32(desc.Len)
+		desc.Size = elemDesc.Size * desc.Len
 	}
 
 	return nil
@@ -560,13 +573,15 @@ func (tc *TypeCache) buildListDescriptor(desc *TypeDescriptor, t reflect.Type, s
 	}
 
 	if len(sizeHints) > 0 && sizeHints[0].Size > 0 && !sizeHints[0].Dynamic {
-		if elemDesc.Size < 0 {
-			desc.Size = -1 // Dynamic elements = dynamic size
+		if elemDesc.IsDynamic {
+			desc.Size = 0 // Dynamic elements = dynamic size
+			desc.IsDynamic = true
 		} else {
-			desc.Size = elemDesc.Size * int32(sizeHints[0].Size)
+			desc.Size = elemDesc.Size * sizeHints[0].Size
 		}
 	} else {
-		desc.Size = -1 // Dynamic slice
+		desc.Size = 0 // Dynamic slice
+		desc.IsDynamic = true
 	}
 
 	return nil
