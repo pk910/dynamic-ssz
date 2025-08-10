@@ -53,27 +53,13 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 	}
 
 	if useFastSsz {
-		if sourceType.HasHashTreeRootWith {
+		if sourceType.HasHashTreeRootWith && sourceType.HashTreeRootWithMethod != nil {
 			// Use cached HashTreeRootWith method for better performance
-			if sourceType.HashTreeRootWithMethod != nil {
-				value := sourceValue.Addr()
-				// Call the cached method with our hasher
-				results := sourceType.HashTreeRootWithMethod.Func.Call([]reflect.Value{value, reflect.ValueOf(hh)})
-				if len(results) > 0 && !results[0].IsNil() {
-					return fmt.Errorf("failed HashTreeRootWith: %v", results[0].Interface())
-				}
-			} else {
-				// Fall back to regular HashTreeRoot
-				if hasher, ok := sourceValue.Addr().Interface().(fastsszHashRoot); ok {
-					hashBytes, err := hasher.HashTreeRoot()
-					if err != nil {
-						return fmt.Errorf("failed HashTreeRoot: %v", err)
-					}
-
-					hh.PutBytes(hashBytes[:])
-				} else {
-					useFastSsz = false
-				}
+			value := sourceValue.Addr()
+			// Call the cached method with our hasher
+			results := sourceType.HashTreeRootWithMethod.Func.Call([]reflect.Value{value, reflect.ValueOf(hh)})
+			if len(results) > 0 && !results[0].IsNil() {
+				return fmt.Errorf("failed HashTreeRootWith: %v", results[0].Interface())
 			}
 		} else {
 			// Use regular HashTreeRoot
