@@ -66,15 +66,14 @@ func (d *DynSsz) getFastsszHashCompatibility(targetType reflect.Type) bool {
 //     of the specific hasher parameter type used.
 //
 // Returns:
-//   - A boolean indicating whether the type is compatible with fastssz's HashTreeRootWith method and can be called
-//     with the dynssz Hasher instance for optimized hash tree root computation.
-func (d *DynSsz) getHashTreeRootWithCompatibility(targetType reflect.Type) bool {
+//   - The method if found and valid, nil otherwise. This allows caching for performance optimization.
+func (d *DynSsz) getHashTreeRootWithCompatibility(targetType reflect.Type) *reflect.Method {
 	targetPtrType := reflect.New(targetType).Type()
 
 	// Check if the type has a method named "HashTreeRootWith"
 	method, found := targetPtrType.MethodByName("HashTreeRootWith")
 	if !found {
-		return false
+		return nil
 	}
 
 	// Check the method signature:
@@ -82,17 +81,17 @@ func (d *DynSsz) getHashTreeRootWithCompatibility(targetType reflect.Type) bool 
 	// - Should return exactly 1 value (error)
 	methodType := method.Type
 	if methodType.NumIn() != 2 || methodType.NumOut() != 1 {
-		return false
+		return nil
 	}
 
 	// Check that it returns an error
 	errorType := reflect.TypeOf((*error)(nil)).Elem()
 	if !methodType.Out(0).AssignableTo(errorType) {
-		return false
+		return nil
 	}
 
 	// The method exists with the right signature pattern
 	// We don't check the exact parameter type since it could be
 	// ssz.HashWalker, *ssz.Hasher, or interface{}
-	return true
+	return &method
 }

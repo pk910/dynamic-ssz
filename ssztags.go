@@ -15,6 +15,7 @@ type SszType uint8
 const (
 	SszUnspecifiedType SszType = iota
 	SszCustomType
+	SszTypeWrapperType
 
 	// basic types
 	SszBoolType
@@ -50,6 +51,8 @@ func (d *DynSsz) getSszTypeTag(field *reflect.StructField) ([]SszTypeHint, error
 				sszType.Type = SszUnspecifiedType
 			case "custom":
 				sszType.Type = SszCustomType
+			case "wrapper", "type-wrapper":
+				sszType.Type = SszTypeWrapperType
 
 			// basic types
 			case "bool":

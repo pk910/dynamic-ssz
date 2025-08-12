@@ -73,6 +73,11 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 		var err error
 		switch targetType.SszType {
 		// complex types
+		case SszTypeWrapperType:
+			consumedBytes, err = d.unmarshalTypeWrapper(targetType, targetValue, ssz, idt)
+			if err != nil {
+				return 0, err
+			}
 		case SszContainerType:
 			consumedBytes, err = d.unmarshalContainer(targetType, targetValue, ssz, idt)
 			if err != nil {
@@ -122,6 +127,40 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 	return consumedBytes, nil
 }
 
+// unmarshalTypeWrapper unmarshals a TypeWrapper by extracting the wrapped data and unmarshaling it as the wrapped type
+//
+// Parameters:
+//   - targetType: The TypeDescriptor containing wrapper field metadata
+//   - targetValue: The reflect.Value of the wrapper to populate
+//   - ssz: The SSZ-encoded data to decode
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - int: Total bytes consumed from the SSZ data
+//   - error: An error if decoding fails or data is malformed
+//
+// The function validates that the Data field is present and unmarshals the wrapped value using its type descriptor.
+
+func (d *DynSsz) unmarshalTypeWrapper(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
+	if d.Verbose {
+		fmt.Printf("%sunmarshalTypeWrapper: %s\n", strings.Repeat(" ", idt), targetType.Type.Name())
+	}
+
+	// Get the Data field from the TypeWrapper
+	dataField := targetValue.Field(0)
+	if !dataField.IsValid() {
+		return 0, fmt.Errorf("TypeWrapper missing 'Data' field")
+	}
+
+	// Unmarshal the wrapped value using its type descriptor
+	consumedBytes, err := d.unmarshalType(targetType.ElemDesc, dataField, ssz, idt+2)
+	if err != nil {
+		return 0, err
+	}
+
+	return consumedBytes, nil
+}
+
 // unmarshalContainer decodes SSZ-encoded container data.
 //
 // This function implements the SSZ specification for container decoding, which requires:
@@ -148,7 +187,8 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 func (d *DynSsz) unmarshalContainer(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
 	offset := 0
 	dynamicFieldCount := len(targetType.ContainerDesc.DynFields)
-	dynamicOffsets := make([]int, 0, dynamicFieldCount)
+	dynamicOffsets := defaultOffsetSlicePool.Get()
+	defer defaultOffsetSlicePool.Put(dynamicOffsets)
 	sszSize := len(ssz)
 
 	for i := 0; i < len(targetType.ContainerDesc.Fields); i++ {
@@ -260,7 +300,13 @@ func (d *DynSsz) unmarshalVector(targetType *TypeDescriptor, targetValue reflect
 	var newValue reflect.Value
 	switch targetType.Kind {
 	case reflect.Slice:
-		newValue = reflect.MakeSlice(targetType.Type, arrLen, arrLen)
+		// Optimization: avoid reflect.MakeSlice for common byte slice types
+		if targetType.IsByteArray && targetType.ElemDesc.Type.Kind() == reflect.Uint8 {
+			byteSlice := make([]byte, arrLen)
+			newValue = reflect.ValueOf(byteSlice)
+		} else {
+			newValue = reflect.MakeSlice(targetType.Type, arrLen, arrLen)
+		}
 	case reflect.Array:
 		newValue = targetValue
 	default:
@@ -272,7 +318,7 @@ func (d *DynSsz) unmarshalVector(targetType *TypeDescriptor, targetValue reflect
 		consumedBytes = arrLen
 	} else if targetType.IsByteArray {
 		// shortcut for performance: use copy on []byte arrays
-		reflect.Copy(newValue, reflect.ValueOf(ssz[0:arrLen]))
+		copy(newValue.Bytes(), ssz[0:arrLen])
 		consumedBytes = arrLen
 	} else {
 		offset := 0
@@ -339,7 +385,13 @@ func (d *DynSsz) unmarshalDynamicVector(targetType *TypeDescriptor, targetValue 
 	vectorLen := int(targetType.Len)
 
 	// read all item offsets
-	sliceOffsets := make([]int, vectorLen)
+	sliceOffsets := defaultOffsetSlicePool.Get()
+	defer defaultOffsetSlicePool.Put(sliceOffsets)
+	if cap(sliceOffsets) < vectorLen {
+		sliceOffsets = make([]int, vectorLen)
+	} else {
+		sliceOffsets = sliceOffsets[:vectorLen]
+	}
 	for i := 0; i < vectorLen; i++ {
 		sliceOffsets[i] = int(readOffset(ssz[i*4 : (i+1)*4]))
 	}
@@ -453,7 +505,13 @@ func (d *DynSsz) unmarshalList(targetType *TypeDescriptor, targetValue reflect.V
 
 	var newValue reflect.Value
 	if targetType.Kind == reflect.Slice {
-		newValue = reflect.MakeSlice(fieldT, sliceLen, sliceLen)
+		// Optimization: avoid reflect.MakeSlice for common byte slice types
+		if targetType.IsByteArray && fieldType.Type.Kind() == reflect.Uint8 {
+			byteSlice := make([]byte, sliceLen)
+			newValue = reflect.ValueOf(byteSlice)
+		} else {
+			newValue = reflect.MakeSlice(fieldT, sliceLen, sliceLen)
+		}
 	} else {
 		newValue = reflect.New(fieldT).Elem()
 	}
@@ -463,7 +521,7 @@ func (d *DynSsz) unmarshalList(targetType *TypeDescriptor, targetValue reflect.V
 		consumedBytes = len(ssz)
 	} else if targetType.IsByteArray {
 		// shortcut for performance: use copy on []byte arrays
-		reflect.Copy(newValue, reflect.ValueOf(ssz[0:sliceLen]))
+		copy(newValue.Bytes(), ssz[0:sliceLen])
 		consumedBytes = sliceLen
 	} else {
 		offset := 0
@@ -534,7 +592,13 @@ func (d *DynSsz) unmarshalDynamicList(targetType *TypeDescriptor, targetValue re
 	sliceLen := int(firstOffset / 4)
 
 	// read all item offsets
-	sliceOffsets := make([]int, sliceLen)
+	sliceOffsets := defaultOffsetSlicePool.Get()
+	defer defaultOffsetSlicePool.Put(sliceOffsets)
+	if cap(sliceOffsets) < sliceLen {
+		sliceOffsets = make([]int, sliceLen)
+	} else {
+		sliceOffsets = sliceOffsets[:sliceLen]
+	}
 	sliceOffsets[0] = int(firstOffset)
 	for i := 1; i < sliceLen; i++ {
 		sliceOffsets[i] = int(readOffset(ssz[i*4 : (i+1)*4]))

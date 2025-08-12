@@ -16,6 +16,7 @@ Dynamic SSZ supports only SSZ-compatible types as defined in the SSZ specificati
 - **Slices**: Variable-size slices of supported types (require `ssz-size` or `ssz-max` tags)
 - **Structs**: Structs containing only supported types
 - **Pointers**: Pointers to structs (nil pointers will be filled with empty instances of the referred type)
+- **TypeWrapper**: Generic wrapper for applying SSZ annotations to non-struct types (see [TypeWrapper Guide](type-wrapper.md))
 
 ### Not Supported
 The following types are **not** part of the SSZ specification and therefore not supported:
@@ -69,6 +70,15 @@ type ValidStruct struct {
     Matrix     [][]byte      `ssz-size:"?,32" ssz-max:"64"`
     SubStruct  *OtherStruct  // Pointer treated as empty instance for nil pointer
 }
+
+// TypeWrapper examples - for annotating non-struct types
+type Hash32 = TypeWrapper[struct {
+    Data []byte `ssz-type:"uint256"`
+}, []byte]
+
+type ValidatorList = TypeWrapper[struct {
+    Data [][]byte `ssz-size:"?,48" ssz-max:"1000000"`
+}, [][]byte]
 
 // NOT supported
 type InvalidStruct struct {
@@ -455,6 +465,55 @@ All methods return errors that provide context about what went wrong:
 2. **Buffer Reuse**: Use `MarshalSSZTo` with pre-allocated buffers
 3. **Static Optimization**: The library automatically uses fastssz for static types
 4. **Specification Caching**: Specification values are cached for performance
+
+## TypeWrapper API
+
+### Type Definition
+
+```go
+type TypeWrapper[D, T any] struct {
+    Data T
+}
+```
+
+Generic wrapper for applying SSZ annotations to non-struct types. See the [comprehensive TypeWrapper guide](type-wrapper.md) for detailed documentation and examples.
+
+**Type Parameters:**
+- `D`: Descriptor struct with exactly one field containing SSZ annotations
+- `T`: The actual value type being wrapped
+
+### Constructor
+
+```go
+func NewTypeWrapper[D, T any](data T) (*TypeWrapper[D, T], error)
+```
+
+Creates a new TypeWrapper instance.
+
+### Methods
+
+```go
+func (w *TypeWrapper[D, T]) Get() T
+func (w *TypeWrapper[D, T]) Set(value T)
+func (w *TypeWrapper[D, T]) GetDescriptorType() reflect.Type // Internal use
+```
+
+### Usage Example
+
+```go
+type ByteArray32 = TypeWrapper[struct {
+    Data []byte `ssz-size:"32"`
+}, []byte]
+
+// Usage
+wrapper := ByteArray32{}
+wrapper.Set([]byte{1, 2, 3})
+data := wrapper.Get() // Type-safe access
+
+// All SSZ operations work transparently
+marshaled, _ := dynssz.MarshalSSZ(&wrapper)
+hash, _ := dynssz.HashTreeRoot(&wrapper)
+```
 
 ## Thread Safety
 
