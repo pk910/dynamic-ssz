@@ -22,7 +22,7 @@ type marshalWriterContext struct {
 }
 
 // newMarshalWriterContext creates a new marshal writer context
-func newMarshalWriterContext(w *limitedWriter, bufSize int) *marshalWriterContext {
+func newMarshalWriterContext(w *limitedWriter, bufSize uint32) *marshalWriterContext {
 	if bufSize <= 0 {
 		bufSize = defaultBufferSize
 	}
@@ -69,7 +69,7 @@ type unmarshalReaderContext struct {
 }
 
 // newUnmarshalReaderContext creates a new unmarshal reader context
-func newUnmarshalReaderContext(reader io.Reader, bufSize int) *unmarshalReaderContext {
+func newUnmarshalReaderContext(reader io.Reader, bufSize uint32) *unmarshalReaderContext {
 	if bufSize <= 0 {
 		bufSize = defaultBufferSize
 	}

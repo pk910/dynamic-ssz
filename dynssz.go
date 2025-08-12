@@ -61,6 +61,10 @@ type DynSsz struct {
 	// Useful for testing to ensure all code paths are exercised.
 	NoStreamBuffering bool
 
+	// BufferSize is the size of the buffer to use for streaming marshaling/unmarshaling.
+	// This is used to determine when to switch to byte slice methods for small structures.
+	BufferSize uint32
+
 	// Verbose enables detailed logging of encoding/decoding operations.
 	// Useful for debugging but impacts performance.
 	Verbose bool
@@ -108,6 +112,7 @@ func NewDynSsz(specs map[string]any) *DynSsz {
 	dynssz := &DynSsz{
 		specValues:     specs,
 		specValueCache: map[string]*cachedSpecValue{},
+		BufferSize:     1024,
 	}
 	dynssz.typeCache = NewTypeCache(dynssz)
 
@@ -322,7 +327,7 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error {
 		totalSize = size
 
 		// For small structures, use the regular marshal method
-		if size <= defaultBufferSize && !d.NoStreamBuffering {
+		if size <= d.BufferSize && !d.NoStreamBuffering {
 			buf := make([]byte, 0, size)
 			result, err := d.marshalType(sourceTypeDesc, sourceValue, buf, 0)
 			if err != nil {
@@ -341,7 +346,7 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error {
 		totalSize = size
 
 		// For small structures, use the regular marshal method
-		if size <= defaultBufferSize && !d.NoStreamBuffering {
+		if size <= d.BufferSize && !d.NoStreamBuffering {
 			buf := make([]byte, 0, size)
 			result, err := d.marshalType(sourceTypeDesc, sourceValue, buf, 0)
 			if err != nil {
@@ -354,7 +359,7 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error {
 
 	// Create writer context
 	cw := newLimitedWriter(w)
-	ctx := newMarshalWriterContext(cw, defaultBufferSize)
+	ctx := newMarshalWriterContext(cw, d.BufferSize)
 	if sizeTree != nil {
 		ctx.setSizeTree(sizeTree)
 	}
@@ -548,7 +553,7 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int64) error {
 	}
 
 	// For small static types, read into buffer and use regular unmarshal
-	if targetTypeDesc.Size > 0 && targetTypeDesc.Size <= defaultBufferSize && !d.NoStreamBuffering {
+	if targetTypeDesc.Size > 0 && targetTypeDesc.Size <= d.BufferSize && !d.NoStreamBuffering {
 		buf := make([]byte, targetTypeDesc.Size)
 		if _, err := io.ReadFull(r, buf); err != nil {
 			return err
@@ -558,7 +563,7 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int64) error {
 	}
 
 	// Create reader context with limitedReader
-	ctx := newUnmarshalReaderContext(r, defaultBufferSize)
+	ctx := newUnmarshalReaderContext(r, d.BufferSize)
 
 	// Push initial limit if size is known
 	if size >= 0 {

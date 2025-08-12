@@ -35,7 +35,7 @@ import (
 func (d *DynSsz) marshalTypeWriter(ctx *marshalWriterContext, typeDesc *TypeDescriptor, value reflect.Value, idt int) error {
 
 	// For small static types or when buffer can hold entire result, use regular marshal
-	if !typeDesc.HasDynamicSize && typeDesc.Size > 0 && typeDesc.Size <= uint32(cap(ctx.buffer)) && !d.NoStreamBuffering {
+	if !typeDesc.HasDynamicSize && typeDesc.Size > 0 && typeDesc.Size <= d.BufferSize && !d.NoStreamBuffering {
 		buf := ctx.buffer[:0]
 		result, err := d.marshalType(typeDesc, value, buf, idt)
 		if err != nil {
@@ -54,6 +54,9 @@ func (d *DynSsz) marshalTypeWriter(ctx *marshalWriterContext, typeDesc *TypeDesc
 	}
 
 	useFastSsz := !d.NoFastSsz && typeDesc.HasFastSSZMarshaler && !typeDesc.HasDynamicSize
+	if useFastSsz && (typeDesc.IsDynamic || typeDesc.Size > d.BufferSize) {
+		useFastSsz = false
+	}
 	if !useFastSsz && typeDesc.SszType == SszCustomType {
 		useFastSsz = true
 	}
@@ -253,13 +256,19 @@ func (d *DynSsz) marshalVectorWriter(ctx *marshalWriterContext, typeDesc *TypeDe
 			bytes = value.Bytes()
 		}
 
-		if appendZero > 0 {
-			zeroBytes := make([]uint8, appendZero)
-			bytes = append(bytes, zeroBytes...)
+		_, err := ctx.writer.Write(bytes)
+		if err != nil {
+			return err
 		}
 
-		_, err := ctx.writer.Write(bytes)
-		return err
+		if appendZero > 0 {
+			err = writeZeroPadding(ctx.writer, appendZero)
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
 	}
 
 	// Handle arrays with dynamic elements

@@ -50,6 +50,9 @@ func (d *DynSsz) getSszValueSizeWithTree(targetType *TypeDescriptor, targetValue
 	// - struct implements fastssz Marshaler interface
 	// - this structure or any child structure does not use spec specific field sizes
 	useFastSsz := !d.NoFastSsz && targetType.HasFastSSZMarshaler
+	if useFastSsz && (targetType.IsDynamic || targetType.Size > d.BufferSize) {
+		useFastSsz = false
+	}
 	if !useFastSsz && targetType.SszType == SszCustomType {
 		useFastSsz = true
 	}

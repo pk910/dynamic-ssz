@@ -42,9 +42,21 @@ func init() {
 	dynSszOnlyMainnet = ssz.NewDynSsz(nil)
 	dynSszOnlyMinimal = ssz.NewDynSsz(minimalSpecs)
 
+	// Increase buffer size for better streaming performance
+	dynSszMainnet.BufferSize = 16384
+	dynSszMinimal.BufferSize = 16384
+	dynSszOnlyMainnet.BufferSize = 16384
+	dynSszOnlyMinimal.BufferSize = 16384
+
 	// Disable fastssz for pure dynssz tests
 	dynSszOnlyMainnet.NoFastSsz = true
 	dynSszOnlyMinimal.NoFastSsz = true
+}
+
+type discardWriter struct{}
+
+func (w *discardWriter) Write(p []byte) (n int, err error) {
+	return len(p), nil
 }
 
 // ========================= BLOCK BENCHMARKS =========================
@@ -164,7 +176,7 @@ func BenchmarkBlockMainnet_DynSSZ_Streaming_Marshal(b *testing.B) {
 	dynSszMainnet.UnmarshalSSZReader(block, reader, int64(len(blockMainnetData)))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		var buf bytes.Buffer
+		var buf discardWriter
 		if err := dynSszMainnet.MarshalSSZWriter(block, &buf); err != nil {
 			b.Fatal(err)
 		}
@@ -188,7 +200,7 @@ func BenchmarkBlockMainnet_DynSSZOnly_Streaming_Marshal(b *testing.B) {
 	dynSszOnlyMainnet.UnmarshalSSZReader(block, reader, int64(len(blockMainnetData)))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		var buf bytes.Buffer
+		var buf discardWriter
 		if err := dynSszOnlyMainnet.MarshalSSZWriter(block, &buf); err != nil {
 			b.Fatal(err)
 		}
@@ -278,7 +290,7 @@ func BenchmarkBlockMinimal_DynSSZ_Streaming_Marshal(b *testing.B) {
 	dynSszMinimal.UnmarshalSSZReader(block, reader, int64(len(blockMinimalData)))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		var buf bytes.Buffer
+		var buf discardWriter
 		if err := dynSszMinimal.MarshalSSZWriter(block, &buf); err != nil {
 			b.Fatal(err)
 		}
@@ -302,7 +314,7 @@ func BenchmarkBlockMinimal_DynSSZOnly_Streaming_Marshal(b *testing.B) {
 	dynSszOnlyMinimal.UnmarshalSSZReader(block, reader, int64(len(blockMinimalData)))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		var buf bytes.Buffer
+		var buf discardWriter
 		if err := dynSszOnlyMinimal.MarshalSSZWriter(block, &buf); err != nil {
 			b.Fatal(err)
 		}
@@ -426,7 +438,7 @@ func BenchmarkStateMainnet_DynSSZ_Streaming_Marshal(b *testing.B) {
 	dynSszMainnet.UnmarshalSSZReader(state, reader, int64(len(stateMainnetData)))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		var buf bytes.Buffer
+		var buf discardWriter
 		if err := dynSszMainnet.MarshalSSZWriter(state, &buf); err != nil {
 			b.Fatal(err)
 		}
@@ -450,7 +462,7 @@ func BenchmarkStateMainnet_DynSSZOnly_Streaming_Marshal(b *testing.B) {
 	dynSszOnlyMainnet.UnmarshalSSZReader(state, reader, int64(len(stateMainnetData)))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		var buf bytes.Buffer
+		var buf discardWriter
 		if err := dynSszOnlyMainnet.MarshalSSZWriter(state, &buf); err != nil {
 			b.Fatal(err)
 		}
@@ -540,7 +552,7 @@ func BenchmarkStateMinimal_DynSSZ_Streaming_Marshal(b *testing.B) {
 	dynSszMinimal.UnmarshalSSZReader(state, reader, int64(len(stateMinimalData)))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		var buf bytes.Buffer
+		var buf discardWriter
 		if err := dynSszMinimal.MarshalSSZWriter(state, &buf); err != nil {
 			b.Fatal(err)
 		}
@@ -564,7 +576,7 @@ func BenchmarkStateMinimal_DynSSZOnly_Streaming_Marshal(b *testing.B) {
 	dynSszOnlyMinimal.UnmarshalSSZReader(state, reader, int64(len(stateMinimalData)))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		var buf bytes.Buffer
+		var buf discardWriter
 		if err := dynSszOnlyMinimal.MarshalSSZWriter(state, &buf); err != nil {
 			b.Fatal(err)
 		}
@@ -743,7 +755,7 @@ func BenchmarkBlockMainnet_DynSSZ_Streaming_FullCycle(b *testing.B) {
 		if err := dynSszMainnet.UnmarshalSSZReader(block, reader, int64(len(blockMainnetData))); err != nil {
 			b.Fatal(err)
 		}
-		var buf bytes.Buffer
+		var buf discardWriter
 		if err := dynSszMainnet.MarshalSSZWriter(block, &buf); err != nil {
 			b.Fatal(err)
 		}
@@ -761,7 +773,7 @@ func BenchmarkBlockMainnet_DynSSZOnly_Streaming_FullCycle(b *testing.B) {
 		if err := dynSszOnlyMainnet.UnmarshalSSZReader(block, reader, int64(len(blockMainnetData))); err != nil {
 			b.Fatal(err)
 		}
-		var buf bytes.Buffer
+		var buf discardWriter
 		if err := dynSszOnlyMainnet.MarshalSSZWriter(block, &buf); err != nil {
 			b.Fatal(err)
 		}
@@ -779,7 +791,7 @@ func BenchmarkStateMainnet_DynSSZ_Streaming_FullCycle(b *testing.B) {
 		if err := dynSszMainnet.UnmarshalSSZReader(state, reader, int64(len(stateMainnetData))); err != nil {
 			b.Fatal(err)
 		}
-		var buf bytes.Buffer
+		var buf discardWriter
 		if err := dynSszMainnet.MarshalSSZWriter(state, &buf); err != nil {
 			b.Fatal(err)
 		}
@@ -797,7 +809,7 @@ func BenchmarkStateMainnet_DynSSZOnly_Streaming_FullCycle(b *testing.B) {
 		if err := dynSszOnlyMainnet.UnmarshalSSZReader(state, reader, int64(len(stateMainnetData))); err != nil {
 			b.Fatal(err)
 		}
-		var buf bytes.Buffer
+		var buf discardWriter
 		if err := dynSszOnlyMainnet.MarshalSSZWriter(state, &buf); err != nil {
 			b.Fatal(err)
 		}
@@ -815,7 +827,7 @@ func BenchmarkBlockMinimal_DynSSZ_Streaming_FullCycle(b *testing.B) {
 		if err := dynSszMinimal.UnmarshalSSZReader(block, reader, int64(len(blockMinimalData))); err != nil {
 			b.Fatal(err)
 		}
-		var buf bytes.Buffer
+		var buf discardWriter
 		if err := dynSszMinimal.MarshalSSZWriter(block, &buf); err != nil {
 			b.Fatal(err)
 		}
@@ -833,7 +845,7 @@ func BenchmarkBlockMinimal_DynSSZOnly_Streaming_FullCycle(b *testing.B) {
 		if err := dynSszOnlyMinimal.UnmarshalSSZReader(block, reader, int64(len(blockMinimalData))); err != nil {
 			b.Fatal(err)
 		}
-		var buf bytes.Buffer
+		var buf discardWriter
 		if err := dynSszOnlyMinimal.MarshalSSZWriter(block, &buf); err != nil {
 			b.Fatal(err)
 		}
@@ -851,7 +863,7 @@ func BenchmarkStateMinimal_DynSSZ_Streaming_FullCycle(b *testing.B) {
 		if err := dynSszMinimal.UnmarshalSSZReader(state, reader, int64(len(stateMinimalData))); err != nil {
 			b.Fatal(err)
 		}
-		var buf bytes.Buffer
+		var buf discardWriter
 		if err := dynSszMinimal.MarshalSSZWriter(state, &buf); err != nil {
 			b.Fatal(err)
 		}
@@ -869,7 +881,7 @@ func BenchmarkStateMinimal_DynSSZOnly_Streaming_FullCycle(b *testing.B) {
 		if err := dynSszOnlyMinimal.UnmarshalSSZReader(state, reader, int64(len(stateMinimalData))); err != nil {
 			b.Fatal(err)
 		}
-		var buf bytes.Buffer
+		var buf discardWriter
 		if err := dynSszOnlyMinimal.MarshalSSZWriter(state, &buf); err != nil {
 			b.Fatal(err)
 		}

@@ -51,6 +51,25 @@ func writeUint64(w io.Writer, i uint64) error {
 	return err
 }
 
+// writeZeroPadding writes the specified number of zero bytes to the writer
+func writeZeroPadding(w io.Writer, count int) error {
+	if len(zeroBytes) == 0 {
+		zeroBytes = make([]byte, 1024)
+	}
+	for count > 0 {
+		toCopy := count
+		if toCopy > len(zeroBytes) {
+			toCopy = len(zeroBytes)
+		}
+		_, err := w.Write(zeroBytes[:toCopy])
+		if err != nil {
+			return err
+		}
+		count -= toCopy
+	}
+	return nil
+}
+
 // ---- Stream Unmarshal functions ----
 
 // readBool reads a boolean from the reader
