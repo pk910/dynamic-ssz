@@ -35,6 +35,11 @@ import (
 //   - Struct fields are sized based on their static/dynamic nature
 
 func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect.Value) (uint32, error) {
+	return d.getSszValueSizeWithTree(targetType, targetValue, nil)
+}
+
+// getSszValueSizeWithTree calculates the SSZ size and optionally builds a dynamic size tree
+func (d *DynSsz) getSszValueSizeWithTree(targetType *TypeDescriptor, targetValue reflect.Value, tree *dynamicSizeNode) (uint32, error) {
 	staticSize := uint32(0)
 
 	if targetType.IsPtr {
@@ -45,6 +50,9 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 	// - struct implements fastssz Marshaler interface
 	// - this structure or any child structure does not use spec specific field sizes
 	useFastSsz := !d.NoFastSsz && targetType.HasFastSSZMarshaler
+	if useFastSsz && (targetType.IsDynamic || targetType.Size > d.BufferSize) {
+		useFastSsz = false
+	}
 	if !useFastSsz && targetType.SszType == SszCustomType {
 		useFastSsz = true
 	}
@@ -80,9 +88,18 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 				fieldValue := targetValue.Field(i)
 
 				if fieldType.Type.IsDynamic {
-					size, err := d.getSszValueSize(fieldType.Type, fieldValue)
+					var childNode *dynamicSizeNode
+					if tree != nil {
+						childNode = &dynamicSizeNode{}
+						tree.children = append(tree.children, childNode)
+					}
+
+					size, err := d.getSszValueSizeWithTree(fieldType.Type, fieldValue, childNode)
 					if err != nil {
 						return 0, err
+					}
+					if childNode != nil {
+						childNode.size = size
 					}
 
 					// dynamic field, add 4 bytes for offset
@@ -92,6 +109,7 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 					staticSize += uint32(fieldType.Type.Size)
 				}
 			}
+
 		case SszVectorType, SszBitvectorType:
 			fieldType := targetType.ElemDesc
 			if fieldType.Kind == reflect.Uint8 {
@@ -101,10 +119,20 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 				dataLen := targetValue.Len()
 
 				for i := 0; i < dataLen; i++ {
-					size, err := d.getSszValueSize(fieldType, targetValue.Index(i))
+					var childNode *dynamicSizeNode
+					if tree != nil {
+						childNode = &dynamicSizeNode{}
+						tree.children = append(tree.children, childNode)
+					}
+
+					size, err := d.getSszValueSizeWithTree(fieldType, targetValue.Index(i), childNode)
 					if err != nil {
 						return 0, err
 					}
+					if childNode != nil {
+						childNode.size = size
+					}
+
 					// add 4 bytes for offset in dynamic array
 					staticSize += size + 4
 				}
@@ -112,12 +140,28 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 				if dataLen < int(targetType.Len) {
 					appendZero := targetType.Len - uint32(dataLen)
 					zeroVal := reflect.New(fieldType.Type).Elem()
-					size, err := d.getSszValueSize(fieldType, zeroVal)
-					if err != nil {
-						return 0, err
+					var childNode *dynamicSizeNode
+					var zeroSize uint32
+
+					for i := 0; i < int(appendZero); i++ {
+						if tree != nil {
+							childNode = &dynamicSizeNode{}
+							tree.children = append(tree.children, childNode)
+						}
+
+						size, err := d.getSszValueSizeWithTree(fieldType, zeroVal, childNode)
+						if err != nil {
+							return 0, err
+						}
+
+						if childNode != nil {
+							childNode.size = size
+						}
+
+						zeroSize = size
 					}
 
-					staticSize += (size + 4) * appendZero
+					staticSize += (zeroSize + 4) * appendZero
 				}
 			} else {
 				dataLen := targetValue.Len()
@@ -149,9 +193,17 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 				} else if fieldType.IsDynamic {
 					// slice with dynamic size items, so we have to go through each item
 					for i := 0; i < int(sliceLen); i++ {
-						size, err := d.getSszValueSize(fieldType, targetValue.Index(i))
+						var childNode *dynamicSizeNode
+						if tree != nil {
+							childNode = &dynamicSizeNode{}
+							tree.children = append(tree.children, childNode)
+						}
+						size, err := d.getSszValueSizeWithTree(fieldType, targetValue.Index(i), childNode)
 						if err != nil {
 							return 0, err
+						}
+						if childNode != nil {
+							childNode.size = size
 						}
 						// add 4 bytes for offset in dynamic slice
 						staticSize += size + 4

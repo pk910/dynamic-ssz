@@ -40,7 +40,7 @@ func performanceCommand() {
 	var dur []time.Duration
 	var hash [][32]byte
 	var err error
-	iterations := 1000
+	iterations := 10000
 
 	fmt.Printf("## mainnet preset / BeaconBlock decode + encode + hash (%d times)\n", iterations)
 	dur, hash, err = test_block_fastssz(block_mainnet, iterations)
@@ -49,6 +49,10 @@ func performanceCommand() {
 	print_test_result("dynssz only", dur, hash, err)
 	dur, hash, err = test_block_dynssz(dynssz_hybrid_mainnet, block_mainnet, iterations)
 	print_test_result("dynssz + fastssz", dur, hash, err)
+	dur, hash, err = test_block_dynssz_streaming(dynssz_only_mainnet, block_mainnet, iterations)
+	print_test_result("dynssz streaming only", dur, hash, err)
+	dur, hash, err = test_block_dynssz_streaming(dynssz_hybrid_mainnet, block_mainnet, iterations)
+	print_test_result("dynssz streaming + fastssz", dur, hash, err)
 	fmt.Printf("\n")
 
 	fmt.Printf("## mainnet preset / BeaconState decode + encode + hash (%d times)\n", iterations)
@@ -58,6 +62,10 @@ func performanceCommand() {
 	print_test_result("dynssz only", dur, hash, err)
 	dur, hash, err = test_state_dynssz(dynssz_hybrid_mainnet, state_mainnet, iterations)
 	print_test_result("dynssz + fastssz", dur, hash, err)
+	dur, hash, err = test_state_dynssz_streaming(dynssz_only_mainnet, state_mainnet, iterations)
+	print_test_result("dynssz streaming only", dur, hash, err)
+	dur, hash, err = test_state_dynssz_streaming(dynssz_hybrid_mainnet, state_mainnet, iterations)
+	print_test_result("dynssz streaming + fastssz", dur, hash, err)
 	fmt.Printf("\n")
 
 	fmt.Printf("## minimal preset / BeaconBlock decode + encode + hash (%d times)\n", iterations)
@@ -67,6 +75,10 @@ func performanceCommand() {
 	print_test_result("dynssz only", dur, hash, err)
 	dur, hash, err = test_block_dynssz(dynssz_hybrid_minimal, block_minimal, iterations)
 	print_test_result("dynssz + fastssz", dur, hash, err)
+	dur, hash, err = test_block_dynssz_streaming(dynssz_only_minimal, block_minimal, iterations)
+	print_test_result("dynssz streaming only", dur, hash, err)
+	dur, hash, err = test_block_dynssz_streaming(dynssz_hybrid_minimal, block_minimal, iterations)
+	print_test_result("dynssz streaming + fastssz", dur, hash, err)
 	fmt.Printf("\n")
 
 	fmt.Printf("## minimal preset / BeaconState decode + encode + hash (%d times)\n", iterations)
@@ -76,11 +88,15 @@ func performanceCommand() {
 	print_test_result("dynssz only", dur, hash, err)
 	dur, hash, err = test_state_dynssz(dynssz_hybrid_minimal, state_minimal, iterations)
 	print_test_result("dynssz + fastssz", dur, hash, err)
+	dur, hash, err = test_state_dynssz_streaming(dynssz_only_minimal, state_minimal, iterations)
+	print_test_result("dynssz streaming only", dur, hash, err)
+	dur, hash, err = test_state_dynssz_streaming(dynssz_hybrid_minimal, state_minimal, iterations)
+	print_test_result("dynssz streaming + fastssz", dur, hash, err)
 	fmt.Printf("\n")
 }
 
 func print_test_result(title string, durations []time.Duration, hash [][32]byte, err error) {
-	fmt.Printf("%-18v  ", title)
+	fmt.Printf("%-25v  ", title)
 	if len(durations) > 0 {
 		fmt.Printf("[%4v ms / %4v ms / %4v ms]", durations[0].Milliseconds(), durations[1].Milliseconds(), durations[2].Milliseconds())
 	} else {
@@ -272,6 +288,108 @@ func test_state_dynssz(dynssz *ssz.DynSsz, in []byte, iterations int) ([]time.Du
 	marshalTime = time.Since(start)
 
 	out, _ := dynssz.MarshalSSZ(t)
+	if !bytes.Equal(in, out) {
+		return nil, nil, fmt.Errorf("SSZ mismatch after re-marshalling")
+	}
+
+	start = time.Now()
+	var hashRoot [32]byte
+	for i := 0; i < iterations; i++ {
+		root, err := dynssz.HashTreeRoot(t)
+		if err != nil {
+			return nil, nil, fmt.Errorf("hashroot error: %v", err)
+		}
+		hashRoot = root
+	}
+	hashTime = time.Since(start)
+
+	return []time.Duration{unmarshalTime, marshalTime, hashTime}, [][32]byte{hashRoot}, nil
+}
+
+func test_block_dynssz_streaming(dynssz *ssz.DynSsz, in []byte, iterations int) ([]time.Duration, [][32]byte, error) {
+	unmarshalTime := time.Duration(0)
+	marshalTime := time.Duration(0)
+	hashTime := time.Duration(0)
+
+	start := time.Now()
+	for i := 0; i < iterations; i++ {
+		t := new(deneb.SignedBeaconBlock)
+		reader := bytes.NewReader(in)
+		err := dynssz.UnmarshalSSZReader(t, reader, int64(len(in)))
+		if err != nil {
+			return nil, nil, fmt.Errorf("unmarshal error: %v", err)
+		}
+	}
+	unmarshalTime = time.Since(start)
+
+	t := new(deneb.SignedBeaconBlock)
+	reader := bytes.NewReader(in)
+	dynssz.UnmarshalSSZReader(t, reader, int64(len(in)))
+
+	start = time.Now()
+	for i := 0; i < iterations; i++ {
+		var buf bytes.Buffer
+		err := dynssz.MarshalSSZWriter(t, &buf)
+		if err != nil {
+			return nil, nil, fmt.Errorf("marshal error: %v", err)
+		}
+	}
+	marshalTime = time.Since(start)
+
+	var buf bytes.Buffer
+	dynssz.MarshalSSZWriter(t, &buf)
+	out := buf.Bytes()
+	if !bytes.Equal(in, out) {
+		return nil, nil, fmt.Errorf("SSZ mismatch after re-marshalling")
+	}
+
+	start = time.Now()
+	var hashRoot [32]byte
+	for i := 0; i < iterations; i++ {
+		root, err := dynssz.HashTreeRoot(t.Message)
+		if err != nil {
+			return nil, nil, fmt.Errorf("hashroot error: %v", err)
+		}
+		hashRoot = root
+	}
+	hashTime = time.Since(start)
+
+	return []time.Duration{unmarshalTime, marshalTime, hashTime}, [][32]byte{hashRoot}, nil
+}
+
+func test_state_dynssz_streaming(dynssz *ssz.DynSsz, in []byte, iterations int) ([]time.Duration, [][32]byte, error) {
+	unmarshalTime := time.Duration(0)
+	marshalTime := time.Duration(0)
+	hashTime := time.Duration(0)
+
+	start := time.Now()
+	for i := 0; i < iterations; i++ {
+		t := new(deneb.BeaconState)
+		reader := bytes.NewReader(in)
+		err := dynssz.UnmarshalSSZReader(t, reader, int64(len(in)))
+		if err != nil {
+			return nil, nil, fmt.Errorf("unmarshal error: %v", err)
+		}
+	}
+	unmarshalTime = time.Since(start)
+
+	t := new(deneb.BeaconState)
+	reader := bytes.NewReader(in)
+	dynssz.UnmarshalSSZReader(t, reader, int64(len(in)))
+
+	start = time.Now()
+	for i := 0; i < iterations; i++ {
+		var buf bytes.Buffer
+		err := dynssz.MarshalSSZWriter(t, &buf)
+		if err != nil {
+			return nil, nil, fmt.Errorf("marshal error: %v", err)
+		}
+	}
+	marshalTime = time.Since(start)
+
+	var buf bytes.Buffer
+	dynssz.MarshalSSZWriter(t, &buf)
+	out := buf.Bytes()
 	if !bytes.Equal(in, out) {
 		return nil, nil, fmt.Errorf("SSZ mismatch after re-marshalling")
 	}

@@ -517,6 +517,7 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 	}
 
 	if isDynamic {
+		desc.Len = uint32(totalSize)
 		desc.Size = 0
 		desc.IsDynamic = true
 	} else {
