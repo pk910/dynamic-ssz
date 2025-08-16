@@ -126,6 +126,10 @@ var marshalTestMatrix = []struct {
 		}{[][]uint16{{2, 3}, {4, 5}, {8, 9}, {10, 11}}},
 		fromHex("0x040000000200030004000500080009000a000b00"),
 	},
+	{
+		[2]uint16{1, 2},
+		fromHex("0x01000200"),
+	},
 
 	// ssz-type annotation tests
 	{
