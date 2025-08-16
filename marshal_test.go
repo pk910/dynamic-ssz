@@ -201,6 +201,10 @@ var marshalTestMatrix = []struct {
 		}]{Variant: 0, Data: uint32(0x12345678)}, 0x4242},
 		fromHex("0x37130800000042420178563412"),
 	},
+	{
+		[2]uint16{1, 2},
+		fromHex("0x01000200"),
+	},
 
 	// ssz-type annotation tests
 	{
@@ -208,6 +212,12 @@ var marshalTestMatrix = []struct {
 			BitlistData []byte `ssz-type:"bitlist" ssz-max:"100"`
 		}{[]byte{0x0f, 0x01}}, // bitlist with 4 bits set, length indicator
 		fromHex("0x040000000f01"),
+	},
+
+	// nil pointer tests
+	{
+		(*struct{ A uint32 })(nil),
+		fromHex("0x00000000"),
 	},
 
 	// uint128 type tests
@@ -390,6 +400,30 @@ func TestMarshal(t *testing.T) {
 	}
 }
 
+func TestMarshalTo(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	for idx, test := range marshalTestMatrix {
+		size, err := dynssz.SizeSSZ(test.payload)
+		if err != nil {
+			t.Errorf("test %v error: %v", idx, err)
+		}
+
+		buf := make([]byte, 0, size)
+		buf, err = dynssz.MarshalSSZTo(test.payload, buf)
+
+		switch {
+		case test.expected == nil && err != nil:
+			// expected error
+		case err != nil:
+			t.Errorf("test %v error: %v", idx, err)
+		case !bytes.Equal(buf, test.expected):
+			t.Errorf("test %v failed: got 0x%x, wanted 0x%x", idx, buf, test.expected)
+		}
+	}
+}
+
 func TestStringVsByteContainerMarshalEquivalence(t *testing.T) {
 	type StringContainer struct {
 		Data string `ssz-max:"100"`
@@ -488,4 +522,196 @@ func TestFixedSizeStringVsByteArrayMarshal(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMarshalErrors(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	testCases := []struct {
+		name        string
+		input       any
+		expectedErr string
+	}{
+		{
+			name:        "unknown_type",
+			input:       complex64(1 + 2i),
+			expectedErr: "not supported in SSZ",
+		},
+		{
+			name: "vector_too_big",
+			input: struct {
+				Data []uint8 `ssz-size:"5"`
+			}{[]uint8{1, 2, 3, 4, 5, 6}},
+			expectedErr: "list length is higher than max value",
+		},
+		{
+			name: "vector_too_big_nested",
+			input: struct {
+				Data []*slug_StaticStruct1 `ssz-size:"3"`
+			}{[]*slug_StaticStruct1{nil, nil, nil, nil}},
+			expectedErr: "list length is higher than max value",
+		},
+		{
+			name: "type_wrapper_missing_data",
+			input: struct {
+				TypeWrapper struct{} `ssz-type:"wrapper"`
+			}{},
+			expectedErr: "method not found on type",
+		},
+
+		{
+			name: "invalid_uint128_size",
+			input: struct {
+				Value []byte `ssz-type:"uint128" ssz-size:"15"`
+			}{[]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}},
+			expectedErr: "list length is higher than max value",
+		},
+		{
+			name: "invalid_uint256_size",
+			input: struct {
+				Value []byte `ssz-type:"uint256" ssz-size:"31"`
+			}{[]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33}},
+			expectedErr: "list length is higher than max value",
+		},
+		{
+			name: "invalid_bitvector_type",
+			input: struct {
+				Flags []uint16 `ssz-type:"bitvector" ssz-size:"4"`
+			}{[]uint16{1, 2, 3, 4}},
+			expectedErr: "bitvector ssz type can only be represented by byte slices or arrays, got uint16",
+		},
+		{
+			name: "invalid_bitlist_type",
+			input: struct {
+				Bits []uint64 `ssz-type:"bitlist"`
+			}{[]uint64{0xff, 0xff}},
+			expectedErr: "bitlist ssz type can only be represented by byte slices or arrays, got uint64",
+		},
+		{
+			name: "string_too_long_fixed",
+			input: struct {
+				Data string `ssz-size:"5"`
+			}{"hello world"},
+			expectedErr: "list length is higher than max value",
+		},
+		{
+			name: "nested_container_field_error",
+			input: struct {
+				Inner struct {
+					Data []uint32 `ssz-size:"2"`
+				}
+			}{struct {
+				Data []uint32 `ssz-size:"2"`
+			}{[]uint32{1, 2, 3}}},
+			expectedErr: "list length is higher than max value",
+		},
+		{
+			name: "dynamic_container_field_error",
+			input: struct {
+				Static  uint32
+				Dynamic []struct {
+					Data []uint8 `ssz-size:"3"`
+				} `ssz-max:"10"`
+			}{
+				Static: 42,
+				Dynamic: []struct {
+					Data []uint8 `ssz-size:"3"`
+				}{{[]uint8{1, 2, 3, 4}}},
+			},
+			expectedErr: "list length is higher than max value",
+		},
+		{
+			name: "vector_element_marshal_error",
+			input: struct {
+				Data [3]struct {
+					Inner complex64
+				}
+			}{[3]struct {
+				Inner complex64
+			}{{complex64(1)}, {complex64(2)}, {complex64(3)}}},
+			expectedErr: "complex numbers are not supported in SSZ",
+		},
+		{
+			name: "dynamic_vector_element_marshal_error",
+			input: struct {
+				Data []struct {
+					Inner complex128
+				} `ssz-max:"10"`
+			}{[]struct {
+				Inner complex128
+			}{{complex128(1)}, {complex128(2)}}},
+			expectedErr: "complex numbers are not supported in SSZ",
+		},
+		{
+			name: "list_element_marshal_error",
+			input: struct {
+				Data []struct {
+					Value func()
+				} `ssz-max:"10"`
+			}{[]struct {
+				Value func()
+			}{{nil}, {nil}}},
+			expectedErr: "functions are not supported in SSZ",
+		},
+		{
+			name: "multi_dimensional_size_mismatch",
+			input: struct {
+				Data [2][]*slug_StaticStruct1 `ssz-size:"2,3"`
+			}{[2][]*slug_StaticStruct1{{nil, nil, nil}, {nil, nil, nil, nil}}},
+			expectedErr: "list length is higher than max value",
+		},
+		{
+			name: "invalid_custom_type",
+			input: struct {
+				Data map[string]int
+			}{map[string]int{"a": 1}},
+			expectedErr: "maps are not supported in SSZ",
+		},
+		{
+			name: "invalid_interface_type",
+			input: struct {
+				Data interface{}
+			}{42},
+			expectedErr: "interfaces are not supported in SSZ",
+		},
+		{
+			name: "channel_type",
+			input: struct {
+				Ch chan int
+			}{make(chan int)},
+			expectedErr: "channels are not supported in SSZ",
+		},
+		{
+			name: "function_type",
+			input: struct {
+				Fn func() error
+			}{func() error { return nil }},
+			expectedErr: "functions are not supported in SSZ",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := dynssz.MarshalSSZ(tc.input)
+			if err == nil {
+				t.Errorf("expected error containing '%s', but got no error", tc.expectedErr)
+			} else if !contains(err.Error(), tc.expectedErr) {
+				t.Errorf("expected error containing '%s', but got: %v", tc.expectedErr, err)
+			}
+		})
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && containsHelper(s, substr))
+}
+
+func containsHelper(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }

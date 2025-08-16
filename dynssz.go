@@ -329,6 +329,14 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte) error {
 		return err
 	}
 
+	if !targetTypeDesc.IsPtr {
+		return fmt.Errorf("target must be a pointer")
+	}
+
+	if targetValue.IsNil() {
+		return fmt.Errorf("target pointer must not be nil")
+	}
+
 	consumedBytes, err := d.unmarshalType(targetTypeDesc, targetValue, ssz, 0)
 	if err != nil {
 		return err

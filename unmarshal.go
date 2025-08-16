@@ -109,18 +109,33 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 
 		// primitive types
 		case SszBoolType:
+			if len(ssz) < 1 {
+				return 0, fmt.Errorf("unexpected end of SSZ")
+			}
 			targetValue.SetBool(unmarshalBool(ssz))
 			consumedBytes = 1
 		case SszUint8Type:
+			if len(ssz) < 1 {
+				return 0, fmt.Errorf("unexpected end of SSZ")
+			}
 			targetValue.SetUint(uint64(unmarshallUint8(ssz)))
 			consumedBytes = 1
 		case SszUint16Type:
+			if len(ssz) < 2 {
+				return 0, fmt.Errorf("unexpected end of SSZ")
+			}
 			targetValue.SetUint(uint64(unmarshallUint16(ssz)))
 			consumedBytes = 2
 		case SszUint32Type:
+			if len(ssz) < 4 {
+				return 0, fmt.Errorf("unexpected end of SSZ")
+			}
 			targetValue.SetUint(uint64(unmarshallUint32(ssz)))
 			consumedBytes = 4
 		case SszUint64Type:
+			if len(ssz) < 8 {
+				return 0, fmt.Errorf("unexpected end of SSZ")
+			}
 			targetValue.SetUint(uint64(unmarshallUint64(ssz)))
 			consumedBytes = 8
 
@@ -246,7 +261,7 @@ func (d *DynSsz) unmarshalContainer(targetType *TypeDescriptor, targetValue refl
 		}
 
 		// check offset integrity (not before previous field offset & not after range end)
-		if startOffset < offset || endOffset > sszSize {
+		if startOffset != offset || endOffset > sszSize || endOffset < startOffset {
 			return 0, ErrOffset
 		}
 
