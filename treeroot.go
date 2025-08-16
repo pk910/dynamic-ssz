@@ -100,16 +100,10 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 				return err
 			}
 		case SszBitlistType:
-			maxSize := uint64(0)
-			bytes := sourceValue.Bytes()
-			if sourceType.HasLimit {
-				maxSize = sourceType.Limit
-			} else {
-				maxSize = uint64(len(bytes) * 8)
+			err := d.buildRootFromBitlist(sourceType, sourceValue, hh, idt)
+			if err != nil {
+				return err
 			}
-
-			hh.PutBitlist(bytes, maxSize)
-
 		case SszBoolType:
 			if pack {
 				hh.AppendUint8(1)
@@ -212,6 +206,11 @@ func (d *DynSsz) buildRootFromLargeUint(sourceType *TypeDescriptor, sourceValue 
 		sourceValPtr := reflect.New(sourceValue.Type())
 		sourceValPtr.Elem().Set(sourceValue)
 		sourceValue = sourceValPtr.Elem()
+	}
+
+	sourceLen := uint32(sourceValue.Len())
+	if sourceLen != sourceType.Size/sourceType.ElemDesc.Size {
+		return fmt.Errorf("large uint type does not have expected data length (%d != %d)", sourceLen, sourceType.Size/sourceType.ElemDesc.Size)
 	}
 
 	isUint64 := sourceType.ElemDesc.Kind == reflect.Uint64
@@ -462,10 +461,53 @@ func (d *DynSsz) buildRootFromList(sourceType *TypeDescriptor, sourceValue refle
 		} else {
 			limit = sourceType.Limit
 		}
+		inputLen := hh.Index() - hashIndex
+		if (uint64(inputLen)+31)/32 > limit {
+			return fmt.Errorf("list too big: %d > %d", (uint64(inputLen)+31)/32, limit)
+		}
 		hh.MerkleizeWithMixin(hashIndex, uint64(sliceLen), limit)
 	} else {
 		hh.Merkleize(hashIndex)
 	}
+
+	return nil
+}
+
+// buildRootFromBitlist computes the hash tree root for ssz bitlists.
+//
+// Bitlists in SSZ are hashed as follows:
+//   - The bitlist is aligned to the next 32 bytes boundary and padded with zeros
+//   - The length of the bitlist is mixed into the final hash for proper domain separation
+//
+// Parameters:
+//   - sourceType: The TypeDescriptor containing bitlist metadata and limits
+//   - sourceValue: The reflect.Value of the bitlist to hash
+//   - hh: The Hasher instance for hash computation
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - error: An error if bitlist hashing fails
+
+func (d *DynSsz) buildRootFromBitlist(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher, idt int) error {
+	maxSize := uint64(0)
+	bytes := sourceValue.Bytes()
+	if sourceType.HasLimit {
+		maxSize = sourceType.Limit
+	} else {
+		maxSize = uint64(len(bytes) * 8)
+	}
+
+	var size uint64
+	hh.tmp, size = parseBitlist(hh.tmp[:0], bytes)
+
+	if size > maxSize {
+		return fmt.Errorf("bitlist too big: %d > %d", size, maxSize)
+	}
+
+	// merkleize the content with mix in length
+	indx := hh.Index()
+	hh.AppendBytes32(hh.tmp)
+	hh.MerkleizeWithMixin(indx, size, (maxSize+255)/256)
 
 	return nil
 }

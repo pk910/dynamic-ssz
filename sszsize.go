@@ -38,7 +38,11 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 	staticSize := uint32(0)
 
 	if targetType.IsPtr {
-		targetValue = targetValue.Elem()
+		if targetValue.IsNil() {
+			targetValue = reflect.New(targetType.Type.Elem()).Elem()
+		} else {
+			targetValue = targetValue.Elem()
+		}
 	}
 
 	// use fastssz to calculate size if:

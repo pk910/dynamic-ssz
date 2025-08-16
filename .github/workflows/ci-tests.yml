@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go-version: [1.21.x, 1.22.x]
+        go-version: [1.21.x, 1.22.x, 1.25.x]
         preset: [mainnet, minimal]
     
     steps:
@@ -93,13 +93,13 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v4
       with:
-        go-version: 1.22.x
+        go-version: 1.25.x
         
     - name: Cache Go modules
       uses: actions/cache@v3
       with:
         path: ~/go/pkg/mod
-        key: ${{ runner.os }}-go-1.22.x-${{ hashFiles('**/go.sum') }}
+        key: ${{ runner.os }}-go-1.25.x-${{ hashFiles('**/go.sum') }}
           
     - name: Download dependencies
       run: go mod download
@@ -111,7 +111,7 @@ jobs:
     - name: Download spec test coverage artifacts
       uses: actions/download-artifact@v4
       with:
-        pattern: spec-coverage-go1.22.x-*
+        pattern: spec-coverage-go1.25.x-*
         path: spec-coverage-artifacts
         
     - name: Combine all coverage reports

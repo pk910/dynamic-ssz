@@ -257,25 +257,40 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		if desc.Kind != reflect.Bool {
 			return nil, fmt.Errorf("bool ssz type can only be represented by bool types, got %v", desc.Kind)
 		}
+		if len(sizeHints) > 0 && sizeHints[0].Size != 1 {
+			return nil, fmt.Errorf("bool ssz type must be ssz-size:1, got %v", sizeHints[0].Size)
+		}
 		desc.Size = 1
 	case SszUint8Type:
 		if desc.Kind != reflect.Uint8 {
 			return nil, fmt.Errorf("uint8 ssz type can only be represented by uint8 types, got %v", desc.Kind)
+		}
+		if len(sizeHints) > 0 && sizeHints[0].Size != 1 {
+			return nil, fmt.Errorf("uint8 ssz type must be ssz-size:1, got %v", sizeHints[0].Size)
 		}
 		desc.Size = 1
 	case SszUint16Type:
 		if desc.Kind != reflect.Uint16 {
 			return nil, fmt.Errorf("uint16 ssz type can only be represented by uint16 types, got %v", desc.Kind)
 		}
+		if len(sizeHints) > 0 && sizeHints[0].Size != 2 {
+			return nil, fmt.Errorf("uint16 ssz type must be ssz-size:2, got %v", sizeHints[0].Size)
+		}
 		desc.Size = 2
 	case SszUint32Type:
 		if desc.Kind != reflect.Uint32 {
 			return nil, fmt.Errorf("uint32 ssz type can only be represented by uint32 types, got %v", desc.Kind)
 		}
+		if len(sizeHints) > 0 && sizeHints[0].Size != 4 {
+			return nil, fmt.Errorf("uint32 ssz type must be ssz-size:4, got %v", sizeHints[0].Size)
+		}
 		desc.Size = 4
 	case SszUint64Type:
 		if desc.Kind != reflect.Uint64 {
 			return nil, fmt.Errorf("uint64 ssz type can only be represented by uint64 types, got %v", desc.Kind)
+		}
+		if len(sizeHints) > 0 && sizeHints[0].Size != 8 {
+			return nil, fmt.Errorf("uint64 ssz type must be ssz-size:8, got %v", sizeHints[0].Size)
 		}
 		desc.Size = 8
 	case SszUint128Type:
@@ -305,12 +320,17 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		if err != nil {
 			return nil, err
 		}
+		if desc.SszType == SszBitvectorType && desc.ElemDesc.Kind != reflect.Uint8 {
+			return nil, fmt.Errorf("bitvector ssz type can only be represented by byte slices or arrays, got %v", desc.ElemDesc.Kind.String())
+		}
 	case SszListType, SszBitlistType:
 		err := tc.buildListDescriptor(desc, t, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
 			return nil, err
 		}
-
+		if desc.SszType == SszBitlistType && desc.ElemDesc.Kind != reflect.Uint8 {
+			return nil, fmt.Errorf("bitlist ssz type can only be represented by byte slices or arrays, got %v", desc.ElemDesc.Kind.String())
+		}
 	case SszCustomType:
 		if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
 			desc.Size = uint32(sizeHints[0].Size)

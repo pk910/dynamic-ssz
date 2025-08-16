@@ -412,3 +412,240 @@ func TestMixedStringTypesUnmarshal(t *testing.T) {
 		t.Errorf("ID mismatch: got %d, want %d", decoded.ID, test.ID)
 	}
 }
+
+func TestUnmarshalErrors(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	testCases := []struct {
+		name        string
+		target      any
+		data        []byte
+		expectedErr string
+	}{
+		{
+			name:        "unknown_type",
+			target:      new(complex64),
+			data:        fromHex("0x00000000"),
+			expectedErr: "complex numbers are not supported in SSZ",
+		},
+		{
+			name:        "truncated_data_bool",
+			target:      new(bool),
+			data:        []byte{},
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name:        "truncated_data_uint16",
+			target:      new(uint16),
+			data:        []byte{0x01},
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name:        "truncated_data_uint32",
+			target:      new(uint32),
+			data:        []byte{0x01, 0x02, 0x03},
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name:        "truncated_data_uint64",
+			target:      new(uint64),
+			data:        []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07},
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name: "truncated_container_field",
+			target: new(struct {
+				A uint32
+				B uint64
+			}),
+			data:        fromHex("0x01020304050607"),
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name: "container_field_size_mismatch",
+			target: new(struct {
+				A [5]uint8
+			}),
+			data:        fromHex("0x010203"),
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name: "dynamic_field_offset_too_small",
+			target: new(struct {
+				A []uint8 `ssz-max:"100"`
+			}),
+			data:        fromHex("0x01000000"),
+			expectedErr: "incorrect offset",
+		},
+		{
+			name: "dynamic_field_offset_too_large",
+			target: new(struct {
+				A []uint8 `ssz-max:"100"`
+			}),
+			data:        fromHex("0xff000000"),
+			expectedErr: "incorrect offset",
+		},
+		{
+			name: "dynamic_field_truncated",
+			target: new(struct {
+				A []uint8 `ssz-size:"100"`
+			}),
+			data:        fromHex("0x0400000001"),
+			expectedErr: "field A expects 100 bytes, got 5",
+		},
+		{
+			name: "vector_size_mismatch",
+			target: new(struct {
+				Data [5]uint8
+			}),
+			data:        fromHex("0x010203"),
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name: "vector_item_size_mismatch",
+			target: new(struct {
+				Data [2]uint32
+			}),
+			data:        fromHex("0x0100000002000000030000"),
+			expectedErr: "did not consume full ssz range (consumed: 8, ssz size: 11)",
+		},
+		{
+			name: "dynamic_vector_odd_byte_count",
+			target: new(struct {
+				Data [][]uint8 `ssz-size:"?,2" ssz-max:"10"`
+			}),
+			data:        fromHex("0x040000000500000001"),
+			expectedErr: "invalid list length, expected multiple of 2, got 5",
+		},
+		{
+			name: "list_item_size_mismatch",
+			target: new(struct {
+				Data [][2]uint16 `ssz-size:"1"`
+			}),
+			data:        fromHex("0x0400000001000200"),
+			expectedErr: "did not consume full ssz range (consumed: 4, ssz size: 8)",
+		},
+		{
+			name: "dynamic_list_offset_bounds",
+			target: new(struct {
+				Data [][]uint8 `ssz-max:"10"`
+			}),
+			data:        fromHex("0x040000000800000010000000"),
+			expectedErr: "incorrect offset",
+		},
+		{
+			name: "type_wrapper_missing_data",
+			target: new(struct {
+				TypeWrapper struct{} `ssz-type:"wrapper"`
+			}),
+			data:        fromHex("0x"),
+			expectedErr: "method not found on type",
+		},
+		{
+			name: "nil_target",
+			target: (*struct {
+				A uint32
+			})(nil),
+			data:        fromHex("0x01020304"),
+			expectedErr: "target pointer must not be nil",
+		},
+		{
+			name: "invalid_uint128_size",
+			target: new(struct {
+				Value []byte `ssz-type:"uint128" ssz-size:"15"`
+			}),
+			data:        fromHex("0x0102030405060708090a0b0c0d0e0f"),
+			expectedErr: "field Value expects 16 bytes, got 15",
+		},
+		{
+			name: "invalid_uint256_size",
+			target: new(struct {
+				Value []byte `ssz-type:"uint256" ssz-size:"31"`
+			}),
+			data:        fromHex("0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"),
+			expectedErr: "field Value expects 32 bytes, got 31",
+		},
+		{
+			name: "string_fixed_size_mismatch",
+			target: new(struct {
+				Data string `ssz-size:"5"`
+			}),
+			data:        fromHex("0x68656c6c6f20776f726c64"),
+			expectedErr: "did not consume full ssz range (consumed: 5, ssz size: 11)",
+		},
+		{
+			name: "nested_unmarshal_error",
+			target: new(struct {
+				Inner struct {
+					Data []uint32 `ssz-size:"2"`
+				}
+			}),
+			data:        fromHex("0x010000"),
+			expectedErr: "unexpected end of SSZ. field Inner expects 8 bytes, got 3",
+		},
+		{
+			name: "dynamic_nested_offset_error",
+			target: new(struct {
+				A uint32
+				B []struct {
+					C []uint8 `ssz-max:"10"`
+				} `ssz-max:"10"`
+			}),
+			data:        fromHex("0x010000000800000008000000ff000000"),
+			expectedErr: "failed decoding field B: incorrect offset",
+		},
+		{
+			name: "map_type",
+			target: new(struct {
+				Data map[string]int
+			}),
+			data:        fromHex("0x04000000"),
+			expectedErr: "maps are not supported in SSZ",
+		},
+		{
+			name: "interface_type",
+			target: new(struct {
+				Data interface{}
+			}),
+			data:        fromHex("0x04000000"),
+			expectedErr: "interfaces are not supported in SSZ",
+		},
+		{
+			name: "channel_type",
+			target: new(struct {
+				Ch chan int
+			}),
+			data:        fromHex("0x00000000"),
+			expectedErr: "channels are not supported in SSZ",
+		},
+		{
+			name: "function_type",
+			target: new(struct {
+				Fn func() error
+			}),
+			data:        fromHex("0x00000000"),
+			expectedErr: "functions are not supported in SSZ",
+		},
+		{
+			name: "corrupted_dynamic_offsets",
+			target: new(struct {
+				A []uint8  `ssz-max:"10"`
+				B []uint16 `ssz-max:"10"`
+			}),
+			data:        fromHex("0x080000000400000001020304"),
+			expectedErr: "incorrect offset",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := dynssz.UnmarshalSSZ(tc.target, tc.data)
+			if err == nil {
+				t.Errorf("expected error containing '%s', but got no error", tc.expectedErr)
+			} else if !contains(err.Error(), tc.expectedErr) {
+				t.Errorf("expected error containing '%s', but got: %v", tc.expectedErr, err)
+			}
+		})
+	}
+}
