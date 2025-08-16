@@ -136,6 +136,10 @@ jobs:
         # Sort and deduplicate coverage entries (keep header, process body)
         (head -n 1 combined-coverage.out; tail -n +2 combined-coverage.out | sort -k1,1 -k2,2n | sort -u -k1,1 -k2,2n) > combined-coverage-final.out
         mv combined-coverage-final.out combined-coverage.out
+
+        # Convert coverage to lcov format
+        go install github.com/jandelgado/gcov2lcov@latest
+        gcov2lcov -infile=combined-coverage.out -outfile=combined-coverage.lcov
         
         echo "Combined coverage report created:"
         wc -l combined-coverage.out
@@ -145,9 +149,9 @@ jobs:
       run: go tool cover -html=combined-coverage.out -o coverage.html
       
     - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v4
+      uses: codecov/codecov-action@v5
       with:
-        file: ./combined-coverage.out
+        files: ./combined-coverage.lcov
         flags: combined
         name: codecov-combined
         token: ${{ secrets.CODECOV_TOKEN }}
