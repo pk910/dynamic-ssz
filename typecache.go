@@ -298,16 +298,10 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		if err != nil {
 			return nil, err
 		}
-		if len(sizeHints) > 0 && sizeHints[0].Size != 16/desc.ElemDesc.Size {
-			return nil, fmt.Errorf("uint128 ssz type must be ssz-size:16, got %v", sizeHints[0].Size*desc.ElemDesc.Size)
-		}
 	case SszUint256Type:
 		err := tc.buildUint256Descriptor(desc, t) // handle as [32]uint8 or [4]uint64
 		if err != nil {
 			return nil, err
-		}
-		if len(sizeHints) > 0 && sizeHints[0].Size != 32/desc.ElemDesc.Size {
-			return nil, fmt.Errorf("uint256 ssz type must be ssz-size:32, got %v", sizeHints[0].Size*desc.ElemDesc.Size)
 		}
 
 	// complex types

@@ -208,6 +208,11 @@ func (d *DynSsz) buildRootFromLargeUint(sourceType *TypeDescriptor, sourceValue 
 		sourceValue = sourceValPtr.Elem()
 	}
 
+	sourceLen := uint32(sourceValue.Len())
+	if sourceLen != sourceType.Size/sourceType.ElemDesc.Size {
+		return fmt.Errorf("large uint type does not have expected data length (%d != %d)", sourceLen, sourceType.Size/sourceType.ElemDesc.Size)
+	}
+
 	isUint64 := sourceType.ElemDesc.Kind == reflect.Uint64
 	if isUint64 {
 		for i := 0; i < int(sourceType.Size/8); i++ {

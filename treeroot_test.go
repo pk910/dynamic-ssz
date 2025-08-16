@@ -504,16 +504,16 @@ func TestHashTreeRootErrors(t *testing.T) {
 		{
 			name: "invalid_uint128_size",
 			input: struct {
-				Value []byte `ssz-type:"uint128" ssz-size:"15"`
-			}{[]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}},
-			expectedErr: "uint128 ssz type must be ssz-size:16, got 15",
+				Value []byte `ssz-type:"uint128"`
+			}{[]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}},
+			expectedErr: "large uint type does not have expected data length (17 != 16)",
 		},
 		{
 			name: "invalid_uint256_size",
 			input: struct {
-				Value []byte `ssz-type:"uint256" ssz-size:"31"`
-			}{[]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31}},
-			expectedErr: "uint256 ssz type must be ssz-size:32, got 31",
+				Value []byte `ssz-type:"uint256"`
+			}{[]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33}},
+			expectedErr: "large uint type does not have expected data length (33 != 32)",
 		},
 		{
 			name: "invalid_bitvector_type",

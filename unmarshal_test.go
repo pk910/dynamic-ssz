@@ -556,7 +556,7 @@ func TestUnmarshalErrors(t *testing.T) {
 				Value []byte `ssz-type:"uint128" ssz-size:"15"`
 			}),
 			data:        fromHex("0x0102030405060708090a0b0c0d0e0f"),
-			expectedErr: "uint128 ssz type must be ssz-size:16, got 15",
+			expectedErr: "field Value expects 16 bytes, got 15",
 		},
 		{
 			name: "invalid_uint256_size",
@@ -564,7 +564,7 @@ func TestUnmarshalErrors(t *testing.T) {
 				Value []byte `ssz-type:"uint256" ssz-size:"31"`
 			}),
 			data:        fromHex("0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"),
-			expectedErr: "uint256 ssz type must be ssz-size:32, got 31",
+			expectedErr: "field Value expects 32 bytes, got 31",
 		},
 		{
 			name: "string_fixed_size_mismatch",
