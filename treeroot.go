@@ -495,8 +495,8 @@ func (d *DynSsz) buildRootFromBitlist(sourceType *TypeDescriptor, sourceValue re
 	var size uint64
 	hh.tmp, size = parseBitlist(hh.tmp[:0], bytes)
 
-	if (uint64(len(hh.tmp))+31)/32 > (maxSize+255)/256 {
-		return fmt.Errorf("bitlist too big: %d > %d", (uint64(len(hh.tmp))+31)/32, (maxSize+255)/256)
+	if size > maxSize {
+		return fmt.Errorf("bitlist too big: %d > %d", size, maxSize)
 	}
 
 	// merkleize the content with mix in length
