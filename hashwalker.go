@@ -20,6 +20,7 @@ type HashWalker interface {
 	PutUint16(i uint16)
 	PutUint8(i uint8)
 	PutBitlist(bb []byte, maxSize uint64)
+	PutProgressiveBitlist(bb []byte)
 	PutBool(b bool)
 	PutBytes(b []byte)
 
@@ -31,4 +32,6 @@ type HashWalker interface {
 	// Merkleization methods
 	Merkleize(indx int)
 	MerkleizeWithMixin(indx int, num, limit uint64)
+	MerkleizeProgressive(indx int)
+	MerkleizeProgressiveWithMixin(indx int, num uint64)
 }
