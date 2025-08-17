@@ -6,13 +6,8 @@ import (
 )
 
 var (
-	ErrOffset                = fmt.Errorf("incorrect offset")
-	ErrSize                  = fmt.Errorf("incorrect size")
-	ErrBytesLength           = fmt.Errorf("bytes array does not have the correct length")
-	ErrVectorLength          = fmt.Errorf("vector does not have the correct length")
-	ErrListTooBig            = fmt.Errorf("list length is higher than max value")
-	ErrEmptyBitlist          = fmt.Errorf("bitlist is empty")
-	ErrInvalidVariableOffset = fmt.Errorf("invalid ssz encoding. first variable element offset indexes into fixed value data")
+	ErrOffset     = fmt.Errorf("incorrect offset")
+	ErrListTooBig = fmt.Errorf("list length is higher than max value")
 )
 
 // ---- Unmarshal functions ----

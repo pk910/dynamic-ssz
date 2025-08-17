@@ -6,7 +6,6 @@ package dynssz
 import (
 	"fmt"
 	"reflect"
-	"strings"
 )
 
 // CompatibleUnion represents a union type that can hold one of several possible types.
@@ -61,18 +60,6 @@ func (u *CompatibleUnion[T]) GetDescriptorType() reflect.Type {
 
 // compatibleUnionType is a reference type for comparison
 var compatibleUnionType = reflect.TypeOf((*CompatibleUnion[struct{}])(nil)).Elem()
-
-// IsCompatibleUnionType checks if the given reflect.Type is a CompatibleUnion type.
-func IsCompatibleUnionType(t reflect.Type) bool {
-	if t.Kind() != reflect.Struct {
-		return false
-	}
-
-	// For generic types, Name() includes type parameters, e.g. "CompatibleUnion[T]"
-	// So we need to check if it starts with "CompatibleUnion["
-	return t.PkgPath() == compatibleUnionType.PkgPath() &&
-		strings.HasPrefix(t.Name(), "CompatibleUnion[")
-}
 
 // UnionVariantInfo contains type and annotation information for a union variant
 type UnionVariantInfo struct {
