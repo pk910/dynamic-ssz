@@ -14,7 +14,7 @@ type cachedSpecValue struct {
 	value    uint64
 }
 
-func (d *DynSsz) getSpecValue(name string) (bool, uint64, error) {
+func (d *DynSsz) ResolveSpecValue(name string) (bool, uint64, error) {
 	if cachedValue := d.specValueCache[name]; cachedValue != nil {
 		return cachedValue.resolved, cachedValue.value, nil
 	}

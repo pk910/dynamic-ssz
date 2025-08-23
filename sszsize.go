@@ -6,6 +6,8 @@ package dynssz
 import (
 	"fmt"
 	"reflect"
+
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 // getSszValueSize calculates the exact SSZ-encoded size of a value.
@@ -54,7 +56,7 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 	}
 
 	if useFastSsz {
-		marshaller, ok := targetValue.Addr().Interface().(fastsszMarshaler)
+		marshaller, ok := targetValue.Addr().Interface().(sszutils.FastsszMarshaler)
 		if ok {
 			staticSize = uint32(marshaller.SizeSSZ())
 		} else {

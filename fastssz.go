@@ -2,27 +2,13 @@ package dynssz
 
 import (
 	"reflect"
+
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
-// fastsszMarshaler is the interface implemented by types that can marshal themselves into valid SZZ using fastssz.
-type fastsszMarshaler interface {
-	MarshalSSZTo(dst []byte) ([]byte, error)
-	MarshalSSZ() ([]byte, error)
-	SizeSSZ() int
-}
-
-// fastsszUnmarshaler is the interface implemented by types that can unmarshal a SSZ description of themselves
-type fastsszUnmarshaler interface {
-	UnmarshalSSZ(buf []byte) error
-}
-
-type fastsszHashRoot interface {
-	HashTreeRoot() ([32]byte, error)
-}
-
-var sszMarshalerType = reflect.TypeOf((*fastsszMarshaler)(nil)).Elem()
-var sszUnmarshalerType = reflect.TypeOf((*fastsszUnmarshaler)(nil)).Elem()
-var sszHashRootType = reflect.TypeOf((*fastsszHashRoot)(nil)).Elem()
+var sszMarshalerType = reflect.TypeOf((*sszutils.FastsszMarshaler)(nil)).Elem()
+var sszUnmarshalerType = reflect.TypeOf((*sszutils.FastsszUnmarshaler)(nil)).Elem()
+var sszHashRootType = reflect.TypeOf((*sszutils.FastsszHashRoot)(nil)).Elem()
 
 // getFastsszCompatibility evaluates the compatibility of a given type with fastssz, determining whether the type and its nested
 // structures can be efficiently encoded/decoded using fastssz's static code generation approach.

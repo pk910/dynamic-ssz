@@ -28,10 +28,14 @@ type TypeDescriptor struct {
 	ElemDesc               *TypeDescriptor      // For slices/arrays
 	HashTreeRootWithMethod *reflect.Method      // Cached HashTreeRootWith method for performance
 	SszType                SszType              // SSZ type of the type
+	SizeExpression         string               // The dynamic expression used to calculate the size of the type
+	MaxExpression          string               // The dynamic expression used to calculate the max size of the type
 	IsDynamic              bool                 // Whether this type is a dynamic type (or has nested dynamic types)
 	HasLimit               bool                 // Whether this type has a limit (ssz-max tag)
-	HasDynamicSize         bool                 // Whether this type uses dynamic spec size value that differs from the default
-	HasDynamicMax          bool                 // Whether this type uses dynamic spec max value that differs from the default
+	HasDynamicSize         bool                 // Whether this type or any of its nested types uses dynamic spec size value that differs from the default
+	HasDynamicMax          bool                 // Whether this type or any of its nested types uses dynamic spec max value that differs from the default
+	HasSizeExpr            bool                 // Whether this type or any of its nested types uses a dynamic expression to calculate the size or max size
+	HasMaxExpr             bool                 // Whether this type or any of its nested types uses a dynamic expression to calculate the max size
 	HasFastSSZMarshaler    bool                 // Whether the type implements fastssz.Marshaler
 	HasFastSSZHasher       bool                 // Whether the type implements fastssz.HashRoot
 	HasHashTreeRootWith    bool                 // Whether the type implements HashTreeRootWith
@@ -152,9 +156,14 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 
 	// check dynamic size and max size
 	if len(sizeHints) > 0 {
+		desc.SizeExpression = sizeHints[0].Expr
 		for _, hint := range sizeHints {
-			if hint.SpecVal {
+			if hint.Custom {
 				desc.HasDynamicSize = true
+			}
+
+			if hint.Expr != "" {
+				desc.HasSizeExpr = true
 			}
 		}
 	}
@@ -164,10 +173,14 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 			desc.HasLimit = true
 			desc.Limit = maxSizeHints[0].Size
 		}
+		desc.MaxExpression = maxSizeHints[0].Expr
 
 		for _, hint := range maxSizeHints {
-			if hint.SpecVal {
+			if hint.Custom {
 				desc.HasDynamicMax = true
+			}
+			if hint.Expr != "" {
+				desc.HasMaxExpr = true
 			}
 		}
 	}
@@ -400,6 +413,8 @@ func (tc *TypeCache) buildTypeWrapperDescriptor(desc *TypeDescriptor, t reflect.
 	desc.IsDynamic = wrappedDesc.IsDynamic
 	desc.HasDynamicSize = wrappedDesc.HasDynamicSize
 	desc.HasDynamicMax = wrappedDesc.HasDynamicMax
+	desc.HasSizeExpr = wrappedDesc.HasSizeExpr
+	desc.HasMaxExpr = wrappedDesc.HasMaxExpr
 
 	return nil
 }
@@ -532,6 +547,14 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 			desc.HasDynamicMax = true
 		}
 
+		if fieldDesc.Type.HasSizeExpr {
+			desc.HasSizeExpr = true
+		}
+
+		if fieldDesc.Type.HasMaxExpr {
+			desc.HasMaxExpr = true
+		}
+
 		totalSize += sszSize
 		desc.ContainerDesc.Fields[i] = fieldDesc
 	}
@@ -554,8 +577,11 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, t reflect.Type,
 
 	if desc.Kind == reflect.Array {
 		desc.Len = uint32(t.Len())
-		if len(sizeHints) > 0 && sizeHints[0].Size > desc.Len {
-			return fmt.Errorf("size hint for vector type is greater than the length of the array (%d > %d)", sizeHints[0].Size, desc.Len)
+		if len(sizeHints) > 0 {
+			if sizeHints[0].Size > desc.Len {
+				return fmt.Errorf("size hint for vector type is greater than the length of the array (%d > %d)", sizeHints[0].Size, desc.Len)
+			}
+			desc.Len = uint32(sizeHints[0].Size)
 		}
 	} else if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
 		desc.Len = uint32(sizeHints[0].Size)
@@ -601,6 +627,12 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, t reflect.Type,
 	}
 	if elemDesc.HasDynamicMax {
 		desc.HasDynamicMax = true
+	}
+	if elemDesc.HasSizeExpr {
+		desc.HasSizeExpr = true
+	}
+	if elemDesc.HasMaxExpr {
+		desc.HasMaxExpr = true
 	}
 
 	if elemDesc.IsDynamic {
@@ -656,6 +688,12 @@ func (tc *TypeCache) buildListDescriptor(desc *TypeDescriptor, t reflect.Type, s
 	}
 	if elemDesc.HasDynamicMax {
 		desc.HasDynamicMax = true
+	}
+	if elemDesc.HasSizeExpr {
+		desc.HasSizeExpr = true
+	}
+	if elemDesc.HasMaxExpr {
+		desc.HasMaxExpr = true
 	}
 
 	if len(sizeHints) > 0 && sizeHints[0].Size > 0 && !sizeHints[0].Dynamic {

@@ -1,0 +1,129 @@
+{{ define "size_main" }}
+{{- if and .CreateDynamicFn (not .UsedDynSsz) }}
+func (t {{ .TypeName }}) SizeSSZDyn(_ *dynssz.DynSsz) (size int) {
+  return t.SizeSSZ()
+}
+{{- end }}
+{{- if .UsedDynSsz }}
+func (t {{ .TypeName }}) SizeSSZDyn(ds *dynssz.DynSsz) (size int) {
+{{- else }}
+func (t {{ .TypeName }}) SizeSSZ() (size int) {
+{{- end }}
+  {{- range .SizeFunctions }}
+  {{ .Name }} := func(t {{ .TypeName }}) (size int) { // {{ .Key }}
+    {{- indent .Code 4 }}
+    return size
+  }
+  {{- end }}
+  return {{ .RootFnName }}(t)
+}
+{{- if and .CreateLegacyFn .UsedDynSsz }}
+func (t {{ .TypeName }}) SizeSSZ() (size int) {
+  return t.SizeSSZDyn(dynssz.GetGlobalDynSsz())
+}
+{{- end }}
+{{ end }}
+
+{{ define "size_fastssz" }}
+size = t.SizeSSZ()
+{{- end }}
+
+{{ define "size_wrapper" }}
+size = {{ .SizeFn }}(t.Data)
+{{- end }}
+
+{{ define "size_bool" }}
+size = 1
+{{- end }}
+
+{{ define "size_uint8" }}
+size = 1
+{{- end }}
+
+{{ define "size_uint16" }}
+size = 2
+{{- end }}
+
+{{ define "size_uint32" }}
+size = 4
+{{- end }}
+
+{{ define "size_uint64" }}
+size = 8
+{{- end }}
+
+{{ define "size_struct" }}
+size = {{ .Size }}
+{{- range .Fields }}
+{{- if .IsDynamic }}
+size += 4 + {{ .SizeFn }}(t.{{ .Name }})
+{{- else if .SizeFn }}
+size += {{ .SizeFn }}(t.{{ .Name }})
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{ define "size_vector" }}
+{{- if not (eq .SizeExpr "") }}
+hasLimit, limit, _ := ds.ResolveSpecValue("{{ .SizeExpr }}")
+if !hasLimit {
+  limit = {{ .Length }}
+}
+{{- else }}
+limit := {{ .Length }}
+{{- end }}
+{{- if .SizeFn }}
+if len(t) > 0 {
+  size += int(limit) * {{ .SizeFn }}(t[0])
+} else {
+  item := make({{ .TypeName }}, 1)
+  size += int(limit) * {{ .SizeFn }}(item[0])
+}
+{{- else }}
+size += int(limit) * {{ .ItemSize }}
+{{- end }}
+{{- end }}
+
+{{ define "size_dynamic_vector" }}
+{{- if not (eq .SizeExpr "") }}
+hasLimit, limit, _ := ds.ResolveSpecValue("{{ .SizeExpr }}")
+if !hasLimit {
+  limit = {{ .Length }}
+}
+{{- else }}
+limit := {{ .Length }}
+{{- end }}
+vlen := len(t)
+{{- if not .IsArray }}
+if vlen > int(limit) {
+  vlen = int(limit)
+}
+{{- end }}
+for i := 0; i < vlen; i++ {
+  size += 4 + {{ .SizeFn }}(t[i])
+}
+{{- if not .IsArray }}
+if vlen < int(limit) {
+  size += (int(limit) - vlen) * {{ .EmptySize }}
+}
+{{- end }}
+{{- end }}
+
+{{ define "size_list" }}
+{{- if .IsByteArray }}
+size += len(t)
+{{- else if .SizeFn }}
+if len(t) > 0 {
+  size += len(t) * {{ .SizeFn }}(t[0])
+}
+{{- else }}
+size += len(t) * {{ .ItemSize }}
+{{- end }}
+{{- end }}
+
+{{ define "size_dynamic_list" }}
+vlen := len(t)
+for i := 0; i < vlen; i++ {
+  size += 4 + {{ .SizeFn }}(t[i])
+}
+{{- end }}

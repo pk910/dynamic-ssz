@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 // unmarshalType is the core recursive function for decoding SSZ-encoded data into Go values.
@@ -55,7 +57,7 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 	}
 
 	if useFastSsz {
-		unmarshaller, ok := targetValue.Addr().Interface().(fastsszUnmarshaler)
+		unmarshaller, ok := targetValue.Addr().Interface().(sszutils.FastsszUnmarshaler)
 		if ok {
 			err := unmarshaller.UnmarshalSSZ(ssz)
 			if err != nil {

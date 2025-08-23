@@ -15,6 +15,8 @@ func main() {
 	switch command {
 	case "performance":
 		performanceCommand()
+	case "codegen":
+		codegenCommand()
 	case "help":
 		printUsage()
 	default:

@@ -8,6 +8,7 @@ import (
 	"math/bits"
 	"sync"
 
+	"github.com/pk910/dynamic-ssz/sszutils"
 	"github.com/prysmaticlabs/gohashtree"
 )
 
@@ -38,22 +39,6 @@ var zeroHashes [65][32]byte
 var zeroHashLevels map[string]int
 var trueBytes, falseBytes, zeroBytes []byte
 
-// appendZeroPadding appends the specified number of zero bytes to buf
-func appendZeroPadding(buf []byte, count int) []byte {
-	if len(zeroBytes) == 0 {
-		zeroBytes = make([]byte, 1024)
-	}
-	for count > 0 {
-		toCopy := count
-		if toCopy > len(zeroBytes) {
-			toCopy = len(zeroBytes)
-		}
-		buf = append(buf, zeroBytes[:toCopy]...)
-		count -= toCopy
-	}
-	return buf
-}
-
 func initHasher() {
 	hasherInitMutex.Lock()
 	defer hasherInitMutex.Unlock()
@@ -65,9 +50,7 @@ func initHasher() {
 	hasherInitialized = true
 	falseBytes = make([]byte, 32)
 	trueBytes = make([]byte, 32)
-	if len(zeroBytes) == 0 {
-		zeroBytes = make([]byte, 1024)
-	}
+	zeroBytes = sszutils.ZeroBytes()
 	trueBytes[0] = 1
 	zeroHashLevels = make(map[string]int)
 	zeroHashLevels[string(falseBytes)] = 0
@@ -219,19 +202,19 @@ func (h *Hasher) FillUpTo32() {
 }
 
 func (h *Hasher) AppendUint8(i uint8) {
-	h.buf = marshalUint8(h.buf, i)
+	h.buf = sszutils.MarshalUint8(h.buf, i)
 }
 
 func (h *Hasher) AppendUint16(i uint16) {
-	h.buf = marshalUint16(h.buf, i)
+	h.buf = sszutils.MarshalUint16(h.buf, i)
 }
 
 func (h *Hasher) AppendUint32(i uint32) {
-	h.buf = marshalUint32(h.buf, i)
+	h.buf = sszutils.MarshalUint32(h.buf, i)
 }
 
 func (h *Hasher) AppendUint64(i uint64) {
-	h.buf = marshalUint64(h.buf, i)
+	h.buf = sszutils.MarshalUint64(h.buf, i)
 }
 
 func (h *Hasher) Append(i []byte) {
@@ -369,7 +352,7 @@ func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 	for indx := range output {
 		output[indx] = 0
 	}
-	marshalUint64(output[:0], num)
+	sszutils.MarshalUint64(output[:0], num)
 	input = append(input, output...)
 
 	// input is of the form [<input><size>] of 64 bytes

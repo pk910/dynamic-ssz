@@ -1,0 +1,202 @@
+{{ define "marshal_main" }}
+{{- if and .CreateDynamicFn (not .UsedDynSsz) }}
+func (t {{ .TypeName }}) MarshalSSZDyn(_ *dynssz.DynSsz, buf []byte) (dst []byte, err error) {
+  return t.MarshalSSZTo(buf)
+}
+{{- end }}
+{{- if .UsedDynSsz }}
+func (t {{ .TypeName }}) MarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (dst []byte, err error) {
+{{- else }}
+func (t {{ .TypeName }}) MarshalSSZTo(buf []byte) (dst []byte, err error) {
+{{- end }}
+  dst = buf
+  {{- range .MarshalFunctions }}
+  {{ .Name }} := func(t {{ .TypeName }}) (err error) { // {{ .Key }}
+    {{- indent .Code 4 }}
+    return err
+  }
+  {{- end }}
+  err = {{ .RootFnName }}(t)
+  return dst, err
+}
+{{- if .CreateLegacyFn }}
+func (t {{ .TypeName }}) MarshalSSZ() ([]byte, error) {
+  return dynssz.GetGlobalDynSsz().MarshalSSZ(t)
+}
+{{- if .UsedDynSsz }}
+func (t {{ .TypeName }}) MarshalSSZTo(buf []byte) (dst []byte, err error) {
+  return t.MarshalSSZDyn(dynssz.GetGlobalDynSsz(), buf)
+}
+{{- end }}
+{{- end }}
+{{ end }}
+
+{{ define "marshal_fastssz" }}
+buf, err = t.MarshalSSZTo(buf)
+{{- end }}
+
+{{ define "marshal_wrapper" }}
+err = {{ .MarshalFn }}(t.Data)
+{{- end }}
+
+{{ define "marshal_bool" }}
+dst = sszutils.MarshalBool(dst, t)
+{{- end }}
+
+{{ define "marshal_uint8" }}
+dst = sszutils.MarshalUint8(dst, uint8(t))
+{{- end }}
+
+{{ define "marshal_uint16" }}
+dst = sszutils.MarshalUint16(dst, uint16(t))
+{{- end }}
+
+{{ define "marshal_uint32" }}
+dst = sszutils.MarshalUint32(dst, uint32(t))
+{{- end }}
+
+{{ define "marshal_uint64" }}
+dst = sszutils.MarshalUint64(dst, uint64(t))
+{{- end }}
+
+{{ define "marshal_struct" }}
+{{- if .HasDynamicFields }}
+dstlen := len(dst)
+{{- end }}
+{{- range .Fields }}
+{{- if .IsDynamic }}
+// Offset #{{ .Index }} '{{ .Name }}'
+offset{{ .Index }} := len(dst)
+dst = sszutils.MarshalOffset(dst, 0)
+{{- else }}
+// Field #{{ .Index }} '{{ .Name }}'
+if err = {{ .MarshalFn }}(t.{{ .Name }}); err != nil {
+  return err
+}
+{{- end }}
+{{- end }}
+{{- range .Fields }}
+{{- if .IsDynamic }}
+// Dynamic Field #{{ .Index }} '{{ .Name }}'
+sszutils.UpdateOffset(dst[offset{{ .Index }}:offset{{ .Index }}+4], len(dst)-dstlen)
+if err = {{ .MarshalFn }}(t.{{ .Name }}); err != nil {
+  return err
+}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{ define "marshal_vector" }}
+{{- if not (eq .SizeExpr "") }}
+hasLimit, limit, err := ds.ResolveSpecValue("{{ .SizeExpr }}")
+if err != nil {
+  return err
+}
+if !hasLimit {
+  limit = {{ .Length }}
+}
+{{- else if not .IsArray }}
+limit := {{ .Length }}
+{{- end }}
+{{- if not .IsArray }}
+vlen := len(t)
+if vlen > int(limit) {
+  return sszutils.ErrListTooBig
+}
+{{- end }}
+{{- if .IsString }}
+dst = append(dst, []byte(t)...)
+{{- if not .IsArray }}
+if vlen < int(limit) {
+  dst = sszutils.AppendZeroPadding(dst, int(limit) - vlen)
+}
+{{- end }}
+{{- else if .IsByteArray }}
+{{- if not .IsArray }}
+vlimit := int(limit)
+if vlimit > vlen {
+  vlimit = vlen
+}
+{{- end }}
+dst = append(dst, t[:{{ if not .IsArray }}vlimit{{ else }}{{ .Length }}{{ end }}]...)
+{{- if not .IsArray }}
+if vlen < int(limit) {
+  dst = sszutils.AppendZeroPadding(dst, int(limit) - vlen)
+}
+{{- end }}
+{{- else }}
+{{- if .IsArray }}
+vlen := len(t)
+{{- end }}
+for i := 0; i < vlen; i++ {
+  if err = {{ .MarshalFn }}(t[i]); err != nil {
+    return err
+  }
+}
+{{- if not .IsArray }}
+if vlen < int(limit) {
+  dst = sszutils.AppendZeroPadding(dst, (int(limit) - vlen) * {{ .ItemSize }})
+}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{ define "marshal_dynamic_vector" }}
+{{- if not (eq .SizeExpr "") }}
+hasLimit, limit, err := ds.ResolveSpecValue("{{ .SizeExpr }}")
+if err != nil {
+  return err
+}
+if !hasLimit {
+  limit = {{ .Length }}
+}
+{{- else }}
+limit := {{ .Length }}
+{{- end }}
+vlen := len(t)
+{{- if not .IsArray }}
+if vlen > int(limit) {
+  return sszutils.ErrListTooBig
+}
+{{- end }}
+dstlen := len(dst)
+dst = sszutils.AppendZeroPadding(dst, int(limit) * 4)
+for i := 0; i < vlen; i++ {
+  sszutils.UpdateOffset(dst[dstlen+(i*4):dstlen+((i+1)*4)], len(dst)-dstlen)
+  if err = {{ .MarshalFn }}(t[i]); err != nil {
+    return err
+  }
+}
+{{- if not .IsArray }}
+if vlen < int(limit) {
+  dst = sszutils.AppendZeroPadding(dst, (int(limit) - vlen) * {{ .EmptySize }})
+}
+{{- end }}
+{{- end }}
+
+{{ define "marshal_list" }}
+{{- if .IsString }}
+dst = append(dst, []byte(t)...)
+{{- else if .IsByteArray }}
+dst = append(dst, t[:]...)
+{{- else }}
+vlen := len(t)
+for i := 0; i < vlen; i++ {
+  if err = {{ .MarshalFn }}(t[i]); err != nil {
+    return err
+  }
+}
+{{- end }}
+{{- end }}
+
+{{ define "marshal_dynamic_list" }}
+vlen := len(t)
+dstlen := len(dst)
+dst = sszutils.AppendZeroPadding(dst, vlen * 4)
+for i := 0; i < vlen; i++ {
+  sszutils.UpdateOffset(dst[dstlen+(i*4):dstlen+((i+1)*4)], len(dst)-dstlen)
+  if err = {{ .MarshalFn }}(t[i]); err != nil {
+    return err
+  }
+}
+{{- end }}

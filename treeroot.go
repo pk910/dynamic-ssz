@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 // buildRootFromType is the core recursive function for computing hash tree roots of Go values.
@@ -63,7 +65,7 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 			}
 		} else {
 			// Use regular HashTreeRoot
-			if hasher, ok := sourceValue.Addr().Interface().(fastsszHashRoot); ok {
+			if hasher, ok := sourceValue.Addr().Interface().(sszutils.FastsszHashRoot); ok {
 				hashBytes, err := hasher.HashTreeRoot()
 				if err != nil {
 					return fmt.Errorf("failed HashTreeRoot: %v", err)
@@ -299,7 +301,7 @@ func (d *DynSsz) buildRootFromVector(sourceType *TypeDescriptor, sourceValue ref
 
 	sliceLen := sourceValue.Len()
 	if uint32(sliceLen) > sourceType.Len {
-		return ErrListTooBig
+		return sszutils.ErrListTooBig
 	}
 
 	appendZero := 0
