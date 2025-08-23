@@ -6,7 +6,6 @@ import (
 	{{ if .Alias }}{{ .Alias }} {{ else }}{{ end }}"{{ .Path }}"
 	{{- end }}
 )
-var _ = dynssz.NewDynSsz
 var _ = sszutils.ErrListTooBig
 
 {{ .Code }}

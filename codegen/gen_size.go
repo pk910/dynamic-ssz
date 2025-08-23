@@ -10,7 +10,7 @@ import (
 	"github.com/pk910/dynamic-ssz/codegen/tmpl"
 )
 
-func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGenOptions) error {
+func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGenOptions) (bool, error) {
 	type sizeFnEntry struct {
 		Fn   *tmpl.SizeFunction
 		Type *dynssz.TypeDescriptor
@@ -275,7 +275,7 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 
 	rootFn, err := genRecursive(rootTypeDesc, true)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	sizeFnList := make([]*tmpl.SizeFunction, 0, len(sizeFnMap))
@@ -297,8 +297,8 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 	}
 
 	if err := codeTpl.ExecuteTemplate(codeBuilder, "size_main", sizeModel); err != nil {
-		return err
+		return false, err
 	}
 
-	return nil
+	return usedDynSsz, nil
 }

@@ -1,0 +1,240 @@
+{{ define "unmarshal_main" }}
+{{- if and .CreateDynamicFn (not .UsedDynSsz) }}
+func (t {{ .TypeName }}) UnmarshalSSZDyn(_ *dynssz.DynSsz, buf []byte) (err error) {
+  return t.UnmarshalSSZ(buf)
+}
+{{- end }}
+{{- if .UsedDynSsz }}
+func (t {{ .TypeName }}) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err error) {
+{{- else }}
+func (t {{ .TypeName }}) UnmarshalSSZTo(buf []byte) (err error) {
+{{- end }}
+  {{- range .UnmarshalFunctions }}
+  {{ .Name }} := func({{ if .UsedValue }}t{{ else }}_{{ end }} {{ .TypeName }}, buf []byte) ({{ .TypeName }}, error) { // {{ .Key }}
+    var err error
+    {{- if not .UsedValue }}
+    var t {{ .TypeName }}
+    {{- end }}
+    {{- if .IsPointer }}
+    if t == nil {
+      t = new({{ .InnerType }})
+    }
+    {{- end }}
+    {{- indent .Code 4 }}
+    return t, err
+  }
+  {{- end }}
+  _, err = {{ .RootFnName }}(t, buf)
+  return err
+}
+{{- if and .CreateLegacyFn .UsedDynSsz }}
+func (t {{ .TypeName }}) UnmarshalSSZ(buf []byte) (err error) {
+  return t.UnmarshalSSZDyn(dynssz.GetGlobalDynSsz(), buf)
+}
+{{- end }}
+{{ end }}
+
+{{ define "unmarshal_fastssz" }}
+err = t.UnmarshalSSZ(buf)
+{{- end }}
+
+{{ define "unmarshal_wrapper" }}
+t.Data, err = {{ .UnmarshalFn }}(t.Data, buf)
+{{- end }}
+
+{{ define "unmarshal_bool" }}
+t = ({{ .TypeName }})(sszutils.UnmarshalBool(buf))
+{{- end }}
+
+{{ define "unmarshal_uint8" }}
+t = ({{ .TypeName }})(sszutils.UnmarshallUint8(buf))
+{{- end }}
+
+{{ define "unmarshal_uint16" }}
+t = ({{ .TypeName }})(sszutils.UnmarshallUint16(buf))
+{{- end }}
+
+{{ define "unmarshal_uint32" }}
+t = ({{ .TypeName }})(sszutils.UnmarshallUint32(buf))
+{{- end }}
+
+{{ define "unmarshal_uint64" }}
+t = ({{ .TypeName }})(sszutils.UnmarshallUint64(buf))
+{{- end }}
+
+{{ define "unmarshal_struct" }}
+bufpos := 0
+buflen := len(buf)
+if buflen < {{ .Size }} {
+  return t, sszutils.ErrUnexpectedEOF
+}
+{{- range .Fields }}
+{{- if .IsDynamic }}
+// Offset #{{ .Index }} '{{ .Name }}'
+offset{{ .Index }} := int(sszutils.ReadOffset(buf[bufpos:bufpos+4]))
+bufpos += 4
+{{- else }}
+// Field #{{ .Index }} '{{ .Name }}'
+if t.{{ .Name }}, err = {{ .UnmarshalFn }}(t.{{ .Name }}, buf[bufpos:bufpos+{{ .Size }}]); err != nil {
+  return t, err
+}
+bufpos += {{ .Size }}
+{{- end }}
+{{- end }}
+{{- range .Fields }}
+{{- if .IsDynamic }}
+// Dynamic Field #{{ .Index }} '{{ .Name }}'
+if offset{{ .Index }} < bufpos {{ if gt .NextDynamic 0 }}|| offset{{ .NextDynamic }} > buflen || offset{{ .NextDynamic }} < offset{{ .Index }}{{ end }} {
+  return t, sszutils.ErrOffset
+}
+{
+  fieldSlice := buf[offset{{ .Index }}:{{ if gt .NextDynamic 0 }}offset{{ .NextDynamic }}{{ end }}]
+  if t.{{ .Name }}, err = {{ .UnmarshalFn }}(t.{{ .Name }}, fieldSlice); err != nil {
+    return t, err
+  }
+  bufpos += len(fieldSlice)
+}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{ define "unmarshal_vector" }}
+{{- if not (eq .SizeExpr "") }}
+hasLimit, limit, err := ds.ResolveSpecValue("{{ .SizeExpr }}")
+if err != nil {
+  return t, err
+}
+if !hasLimit {
+  limit = {{ .Length }}
+}
+{{- else }}
+limit := {{ .Length }}
+{{- end }}
+{{- if and (not .IsArray) (not .IsString) }}
+if len(t) < int(limit) {
+  t = make({{ .TypeName }}, int(limit))
+} else {
+  t = t[:int(limit)]
+}
+{{- end }}
+if len(buf) > int(limit) * {{ .ItemSize }} {
+  return t, sszutils.ErrListTooBig
+}
+{{- if .IsString }}
+t = string(buf)
+{{- else if .IsByteArray }}
+copy(t[:], buf[:])
+{{- else }}
+for i := 0; i < int(limit); i++ {
+  if t[i], err = {{ .UnmarshalFn }}(t[i], buf[i*{{ .ItemSize }}:(i+1)*{{ .ItemSize }}]); err != nil {
+    return t, err
+  }
+}
+{{- end }}
+{{- end }}
+
+{{ define "unmarshal_dynamic_vector" }}
+{{- if not (eq .SizeExpr "") }}
+hasLimit, limit, err := ds.ResolveSpecValue("{{ .SizeExpr }}")
+if err != nil {
+  return t, err
+}
+if !hasLimit {
+  limit = {{ .Length }}
+}
+{{- else }}
+limit := {{ .Length }}
+{{- end }}
+{{- if and (not .IsArray) (not .IsString) }}
+if len(t) < int(limit) {
+  t = make({{ .TypeName }}, int(limit))
+} else {
+  t = t[:int(limit)]
+}
+{{- end }}
+buflen := len(buf)
+if buflen < 4 {
+  return t, sszutils.ErrUnexpectedEOF
+}
+offset := sszutils.ReadOffset(buf[0:4])
+itemCount := int(offset / 4)
+if itemCount > int(limit) {
+  return t, sszutils.ErrListTooBig
+}
+if buflen < int(limit) * 4 {
+  return t, sszutils.ErrUnexpectedEOF
+}
+var endOffset int
+for i := 0; i < itemCount; i++ {
+  if i < itemCount-1 {
+    endOffset = sszutils.ReadOffset(buf[i*4:(i+1)*4])
+  } else {
+    endOffset = buflen
+  }
+  if endOffset < offset || endOffset > buflen {
+    return t, sszutils.ErrOffset
+  }
+  if t[i], err = {{ .UnmarshalFn }}(t[i], buf[offset:endOffset]); err != nil {
+    return t, err
+  }
+  offset = endOffset
+}
+{{- end }}
+
+{{ define "unmarshal_list" }}
+{{- if .IsString }}
+t = string(buf)
+{{- else if .IsByteArray }}
+if len(t) < len(buf) {
+  t = make({{ .TypeName }}, len(buf))
+} else {
+  t = t[:len(buf)]
+}
+copy(t[:], buf[:])
+{{- else }}
+buflen := len(buf)
+itemCount := buflen / {{ .ItemSize }}
+{{- if gt .ItemSize 1 }}
+if buflen % {{ .ItemSize }} != 0 {
+  return t, sszutils.ErrUnexpectedEOF
+}
+{{- end }}
+if len(t) < itemCount {
+  t = make({{ .TypeName }}, itemCount)
+} else {
+  t = t[:itemCount]
+}
+for i := 0; i < itemCount; i++ {
+  if t[i], err = {{ .UnmarshalFn }}(t[i], buf[i*{{ .ItemSize }}:(i+1)*{{ .ItemSize }}]); err != nil {
+    return t, err
+  }
+}
+{{- end }}
+{{- end }}
+
+{{ define "unmarshal_dynamic_list" }}
+buflen := len(buf)
+if buflen < 4 {
+  return t, sszutils.ErrUnexpectedEOF
+}
+offset := int(sszutils.ReadOffset(buf[0:4]))
+itemCount := offset / 4
+if buflen < itemCount * 4 {
+  return t, sszutils.ErrUnexpectedEOF
+}
+var endOffset int
+for i := 0; i < itemCount; i++ {
+  if i < itemCount-1 {
+    endOffset = int(sszutils.ReadOffset(buf[i*4:(i+1)*4]))
+  } else {
+    endOffset = buflen
+  }
+  if endOffset < offset || endOffset > buflen {
+    return t, sszutils.ErrOffset
+  }
+  if t[i], err = {{ .UnmarshalFn }}(t[i], buf[offset:endOffset]); err != nil {
+    return t, err
+  }
+  offset = endOffset
+}
+{{- end }}

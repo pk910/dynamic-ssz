@@ -10,7 +10,7 @@ import (
 	"github.com/pk910/dynamic-ssz/codegen/tmpl"
 )
 
-func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGenOptions) error {
+func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGenOptions) (bool, error) {
 	type marshalFnEntry struct {
 		Fn   *tmpl.MarshalFunction
 		Type *dynssz.TypeDescriptor
@@ -250,7 +250,7 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 
 	rootFn, err := genRecursive(rootTypeDesc, true)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	marshalFnList := make([]*tmpl.MarshalFunction, 0, len(marshalFnMap))
@@ -272,8 +272,8 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 	}
 
 	if err := codeTpl.ExecuteTemplate(codeBuilder, "marshal_main", marshalModel); err != nil {
-		return err
+		return false, err
 	}
 
-	return nil
+	return usedDynSsz, nil
 }

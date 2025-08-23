@@ -108,22 +108,43 @@ func GenerateSSZCode(source any, opts ...CodeGenOption) (string, error) {
 	}
 
 	typePrinter := NewTypePrinter(rootType.PkgPath())
+	usedDynSsz := false
 
-	// add base imports
-	typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
-	typePrinter.AddImport("github.com/pk910/dynamic-ssz/sszutils", "sszutils")
-
-	// generate marshal code
+	// generate MarshalSSZ code
 	marshalCode := strings.Builder{}
 	if !options.NoMarshalSSZ {
-		generateMarshal(ds, sourceTypeDesc, &marshalCode, typePrinter, options)
+		usedDynSszFn, err := generateMarshal(ds, sourceTypeDesc, &marshalCode, typePrinter, options)
+		if err != nil {
+			return "", err
+		}
+		usedDynSsz = usedDynSsz || usedDynSszFn
 	}
 
-	// generate size code
+	// generate SizeSSZ code
 	sizeCode := strings.Builder{}
 	if !options.NoSizeSSZ {
-		generateSize(ds, sourceTypeDesc, &sizeCode, typePrinter, options)
+		usedDynSszFn, err := generateSize(ds, sourceTypeDesc, &sizeCode, typePrinter, options)
+		if err != nil {
+			return "", err
+		}
+		usedDynSsz = usedDynSsz || usedDynSszFn
 	}
+
+	// generate UnmarshalSSZ code
+	unmarshalCode := strings.Builder{}
+	if !options.NoUnmarshalSSZ {
+		usedDynSszFn, err := generateUnmarshal(ds, sourceTypeDesc, &unmarshalCode, typePrinter, options)
+		if err != nil {
+			return "", err
+		}
+		usedDynSsz = usedDynSsz || usedDynSszFn
+	}
+
+	// add base imports
+	if usedDynSsz {
+		typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
+	}
+	typePrinter.AddImport("github.com/pk910/dynamic-ssz/sszutils", "sszutils")
 
 	// collect & sort imports
 	importsMap := typePrinter.Imports()
@@ -152,7 +173,7 @@ func GenerateSSZCode(source any, opts ...CodeGenOption) (string, error) {
 	mainCode := tmpl.Main{
 		PackageName: pkgName,
 		Imports:     imports,
-		Code:        marshalCode.String() + "\n" + sizeCode.String(),
+		Code:        marshalCode.String() + "\n" + sizeCode.String() + "\n" + unmarshalCode.String(),
 	}
 
 	mainCodeTpl := GetTemplate("tmpl/main.tmpl")
@@ -162,8 +183,4 @@ func GenerateSSZCode(source any, opts ...CodeGenOption) (string, error) {
 	}
 
 	return mainCodeBuilder.String(), nil
-}
-
-func generateUnmarshal(sourceTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder) {
-
 }
