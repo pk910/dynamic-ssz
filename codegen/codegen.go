@@ -108,7 +108,7 @@ func GenerateSSZCode(source any, opts ...CodeGenOption) (string, error) {
 	}
 
 	typePrinter := NewTypePrinter(rootType.PkgPath())
-	usedDynSsz := false
+	usedDynSsz := options.CreateDynamicFn
 
 	// generate MarshalSSZ code
 	marshalCode := strings.Builder{}

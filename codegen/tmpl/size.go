@@ -10,11 +10,13 @@ type SizeMain struct {
 }
 
 type SizeFunction struct {
-	Index    int
-	Key      string
-	Name     string
-	TypeName string
-	Code     string
+	Index     int
+	Key       string
+	Name      string
+	TypeName  string
+	InnerType string
+	Code      string
+	IsPointer bool
 }
 
 type SizeWrapper struct {

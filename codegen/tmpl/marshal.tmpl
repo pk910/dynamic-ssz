@@ -32,7 +32,7 @@ func (t {{ .TypeName }}) MarshalSSZTo(buf []byte) (dst []byte, err error) {
 {{ end }}
 
 {{ define "marshal_fastssz" }}
-buf, err = t.MarshalSSZTo(buf)
+dst, err = t.MarshalSSZTo(dst)
 {{- end }}
 
 {{ define "marshal_wrapper" }}

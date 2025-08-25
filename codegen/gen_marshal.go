@@ -53,7 +53,7 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 		}
 
 		useFastSsz := !ds.NoFastSsz && sourceType.HasFastSSZMarshaler && !sourceType.HasDynamicSize
-		if !useFastSsz && sourceType.HasSizeExpr {
+		if useFastSsz && sourceType.HasSizeExpr {
 			useFastSsz = false
 		}
 		if !useFastSsz && sourceType.SszType == dynssz.SszCustomType {

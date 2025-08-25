@@ -7,8 +7,14 @@ func (t {{ .TypeName }}) UnmarshalSSZDyn(_ *dynssz.DynSsz, buf []byte) (err erro
 {{- if .UsedDynSsz }}
 func (t {{ .TypeName }}) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err error) {
 {{- else }}
-func (t {{ .TypeName }}) UnmarshalSSZTo(buf []byte) (err error) {
+func (t {{ .TypeName }}) UnmarshalSSZ(buf []byte) (err error) {
 {{- end }}
+  {{- range .StaticSizeFunctions }}
+  {{ .Name }} := func() (size int) { // {{ .Key }}
+    {{- indent .Code 4 }}
+    return size
+  }()
+  {{- end }}
   {{- range .UnmarshalFunctions }}
   {{ .Name }} := func({{ if .UsedValue }}t{{ else }}_{{ end }} {{ .TypeName }}, buf []byte) ({{ .TypeName }}, error) { // {{ .Key }}
     var err error
@@ -38,8 +44,17 @@ func (t {{ .TypeName }}) UnmarshalSSZ(buf []byte) (err error) {
 err = t.UnmarshalSSZ(buf)
 {{- end }}
 
+{{ define "unmarshal_size_fastssz" }}
+t := new({{ .TypeName }})
+size = t.SizeSSZ()
+{{- end }}
+
 {{ define "unmarshal_wrapper" }}
 t.Data, err = {{ .UnmarshalFn }}(t.Data, buf)
+{{- end }}
+
+{{ define "unmarshal_size_wrapper" }}
+size = {{ .SizeFn }}
 {{- end }}
 
 {{ define "unmarshal_bool" }}
@@ -65,7 +80,8 @@ t = ({{ .TypeName }})(sszutils.UnmarshallUint64(buf))
 {{ define "unmarshal_struct" }}
 bufpos := 0
 buflen := len(buf)
-if buflen < {{ .Size }} {
+minsize := {{ .Size }}
+if buflen < minsize {
   return t, sszutils.ErrUnexpectedEOF
 }
 {{- range .Fields }}
@@ -75,10 +91,21 @@ offset{{ .Index }} := int(sszutils.ReadOffset(buf[bufpos:bufpos+4]))
 bufpos += 4
 {{- else }}
 // Field #{{ .Index }} '{{ .Name }}'
-if t.{{ .Name }}, err = {{ .UnmarshalFn }}(t.{{ .Name }}, buf[bufpos:bufpos+{{ .Size }}]); err != nil {
-  return t, err
+{
+  {{- if .SizeFn }}
+  fieldsize := {{ .SizeFn.Name }}
+  minsize += fieldsize
+  if buflen < minsize {
+    return t, sszutils.ErrUnexpectedEOF
+  }
+  {{- else }}
+  fieldsize := {{ .Size }}
+  {{- end }}
+  if t.{{ .Name }}, err = {{ .UnmarshalFn }}(t.{{ .Name }}, buf[bufpos:bufpos+fieldsize]); err != nil {
+    return t, err
+  }
+  bufpos += fieldsize
 }
-bufpos += {{ .Size }}
 {{- end }}
 {{- end }}
 {{- range .Fields }}
@@ -98,15 +125,23 @@ if offset{{ .Index }} < bufpos {{ if gt .NextDynamic 0 }}|| offset{{ .NextDynami
 {{- end }}
 {{- end }}
 
+{{ define "unmarshal_size_struct" }}
+size = {{ .Size }}
+{{- range .Fields }}
+{{- if .SizeFn }}
+size += {{ .SizeFn }}
+{{- end }}
+{{- end }}
+{{- end }}
+
 {{ define "unmarshal_vector" }}
-{{- if not (eq .SizeExpr "") }}
-hasLimit, limit, err := ds.ResolveSpecValue("{{ .SizeExpr }}")
-if err != nil {
-  return t, err
-}
-if !hasLimit {
-  limit = {{ .Length }}
-}
+{{- if .ItemSizeFn }}
+itemsize := {{ .ItemSizeFn.Name }}
+{{- else }}
+itemsize := {{ .ItemSize }}
+{{- end }}
+{{- if .SizeFn }}
+limit := {{ .SizeFn.Name }} / itemsize
 {{- else }}
 limit := {{ .Length }}
 {{- end }}
@@ -117,7 +152,7 @@ if len(t) < int(limit) {
   t = t[:int(limit)]
 }
 {{- end }}
-if len(buf) > int(limit) * {{ .ItemSize }} {
+if len(buf) > int(limit) * itemsize {
   return t, sszutils.ErrListTooBig
 }
 {{- if .IsString }}
@@ -126,10 +161,30 @@ t = string(buf)
 copy(t[:], buf[:])
 {{- else }}
 for i := 0; i < int(limit); i++ {
-  if t[i], err = {{ .UnmarshalFn }}(t[i], buf[i*{{ .ItemSize }}:(i+1)*{{ .ItemSize }}]); err != nil {
+  if t[i], err = {{ .UnmarshalFn }}(t[i], buf[i*itemsize:(i+1)*itemsize]); err != nil {
     return t, err
   }
 }
+{{- end }}
+{{- end }}
+
+{{ define "unmarshal_size_vector" }}
+{{- if not (eq .SizeExpr "") }}
+hasLimit, limit, _ := ds.ResolveSpecValue("{{ .SizeExpr }}")
+if !hasLimit {
+  limit = {{ .Length }}
+}
+{{- else }}
+limit := {{ .Length }}
+{{- end }}
+{{- if .SizeFn }}
+if len(t) > 0 {
+  size += int(limit) * {{ .SizeFn }}
+} else {
+  size += int(limit) * {{ .SizeFn }}
+}
+{{- else }}
+size += int(limit) * {{ .ItemSize }}
 {{- end }}
 {{- end }}
 
@@ -167,7 +222,7 @@ if buflen < int(limit) * 4 {
 var endOffset int
 for i := 0; i < itemCount; i++ {
   if i < itemCount-1 {
-    endOffset = sszutils.ReadOffset(buf[i*4:(i+1)*4])
+    endOffset = int(sszutils.ReadOffset(buf[(i+1)*4:(i+2)*4]))
   } else {
     endOffset = buflen
   }
@@ -190,22 +245,27 @@ if len(t) < len(buf) {
 } else {
   t = t[:len(buf)]
 }
-copy(t[:], buf[:])
+if len(buf) > 0 {
+  copy(t[:], buf[:])
+}
 {{- else }}
 buflen := len(buf)
-itemCount := buflen / {{ .ItemSize }}
-{{- if gt .ItemSize 1 }}
-if buflen % {{ .ItemSize }} != 0 {
+{{- if .SizeFn }}
+itemsize := {{ .SizeFn.Name }}
+{{- else }}
+itemsize := {{ .ItemSize }}
+{{- end }}
+itemCount := buflen / itemsize
+if buflen % itemsize != 0 {
   return t, sszutils.ErrUnexpectedEOF
 }
-{{- end }}
 if len(t) < itemCount {
   t = make({{ .TypeName }}, itemCount)
 } else {
   t = t[:itemCount]
 }
 for i := 0; i < itemCount; i++ {
-  if t[i], err = {{ .UnmarshalFn }}(t[i], buf[i*{{ .ItemSize }}:(i+1)*{{ .ItemSize }}]); err != nil {
+  if t[i], err = {{ .UnmarshalFn }}(t[i], buf[i*itemsize:(i+1)*itemsize]); err != nil {
     return t, err
   }
 }
@@ -214,6 +274,9 @@ for i := 0; i < itemCount; i++ {
 
 {{ define "unmarshal_dynamic_list" }}
 buflen := len(buf)
+if buflen == 0 {
+  return t, nil
+}
 if buflen < 4 {
   return t, sszutils.ErrUnexpectedEOF
 }
@@ -222,10 +285,15 @@ itemCount := offset / 4
 if buflen < itemCount * 4 {
   return t, sszutils.ErrUnexpectedEOF
 }
+if len(t) < itemCount {
+  t = make({{ .TypeName }}, itemCount)
+} else {
+  t = t[:itemCount]
+}
 var endOffset int
 for i := 0; i < itemCount; i++ {
   if i < itemCount-1 {
-    endOffset = int(sszutils.ReadOffset(buf[i*4:(i+1)*4]))
+    endOffset = int(sszutils.ReadOffset(buf[(i+1)*4:(i+2)*4]))
   } else {
     endOffset = buflen
   }

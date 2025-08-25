@@ -53,7 +53,7 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 		}
 
 		useFastSsz := !ds.NoFastSsz && sourceType.HasFastSSZMarshaler && !sourceType.HasDynamicSize
-		if !useFastSsz && sourceType.HasSizeExpr {
+		if useFastSsz && sourceType.HasSizeExpr {
 			useFastSsz = false
 		}
 		if !useFastSsz && sourceType.SszType == dynssz.SszCustomType {
@@ -62,10 +62,16 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 
 		code := strings.Builder{}
 		sizeFn := &tmpl.SizeFunction{
-			Index:    0,
-			Key:      typeKey,
-			TypeName: typeName,
+			Index:     0,
+			Key:       typeKey,
+			TypeName:  typeName,
+			IsPointer: sourceType.IsPtr,
 		}
+
+		if sourceType.IsPtr {
+			sizeFn.InnerType = typePrinter.TypeString(sourceType.Type.Elem())
+		}
+
 		sizeFnMap[typeKey] = sizeFnEntry{
 			Fn:   sizeFn,
 			Type: sourceType,
@@ -267,7 +273,7 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 
 		sizeFnIdx++
 		sizeFn.Index = sizeFnIdx
-		sizeFn.Name = fmt.Sprintf("fn%d", sizeFnIdx)
+		sizeFn.Name = fmt.Sprintf("sfn%d", sizeFnIdx)
 		sizeFn.Code = code.String()
 
 		return sizeFn, nil
