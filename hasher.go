@@ -7,8 +7,6 @@ import (
 	"hash"
 	"math/bits"
 	"sync"
-
-	"github.com/prysmaticlabs/gohashtree"
 )
 
 // this hasher implementation was copied from the fastssz package
@@ -29,7 +27,7 @@ var (
 // DefaultHasherPool is a default hasher pool
 var DefaultHasherPool HasherPool
 var FastHasherPool HasherPool = HasherPool{
-	HashFn: gohashtree.HashByteSlice,
+	HashFn: hashtreeHashByteSlice,
 }
 
 var hasherInitialized bool
