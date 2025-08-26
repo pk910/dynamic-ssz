@@ -32,6 +32,10 @@ const (
 	SszVectorType
 	SszBitlistType
 	SszBitvectorType
+	SszProgressiveListType
+	SszProgressiveBitlistType
+	SszProgressiveContainerType
+	SszCompatibleUnionType
 )
 
 type SszTypeHint struct {
@@ -81,6 +85,14 @@ func (d *DynSsz) getSszTypeTag(field *reflect.StructField) ([]SszTypeHint, error
 				sszType.Type = SszBitlistType
 			case "bitvector":
 				sszType.Type = SszBitvectorType
+			case "progressive-list":
+				sszType.Type = SszProgressiveListType
+			case "progressive-bitlist":
+				sszType.Type = SszProgressiveBitlistType
+			case "progressive-container":
+				sszType.Type = SszProgressiveContainerType
+			case "compatible-union", "union":
+				sszType.Type = SszCompatibleUnionType
 
 			default:
 				return nil, fmt.Errorf("invalid ssz-type tag for '%v' field: %v", field.Name, sszTypeStr)
@@ -253,4 +265,21 @@ func (d *DynSsz) getSszMaxSizeTag(field *reflect.StructField) ([]SszMaxSizeHint,
 	}
 
 	return sszMaxSizes, nil
+}
+
+func (d *DynSsz) getSszIndexTag(field *reflect.StructField) (*uint16, error) {
+	var sszIndex *uint16
+
+	// parse `ssz-index` first, these are the default values used by fastssz
+	if fieldSszIndexStr, fieldHasSszIndex := field.Tag.Lookup("ssz-index"); fieldHasSszIndex {
+		sszSizeInt, err := strconv.ParseUint(fieldSszIndexStr, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("error parsing ssz-index tag for '%v' field: %v", field.Name, err)
+		}
+
+		index := uint16(sszSizeInt)
+		sszIndex = &index
+	}
+
+	return sszIndex, nil
 }

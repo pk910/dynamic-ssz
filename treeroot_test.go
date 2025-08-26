@@ -221,6 +221,79 @@ var treerootTestMatrix = []struct {
 		fromHex("0x40fb670c297a5c70d0b09f5f39cc5f1a442c79e86d7aaebe34a775c35c84e2e5"),
 	},
 
+	{
+		struct {
+			F1 []uint16 `ssz-type:"progressive-list"`
+		}{[]uint16{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100}},
+		fromHex("0xafc3646489c444662626be91d6630ba5671cb302733bd50822544f8c6be96005"),
+	},
+	{
+		func() any {
+			list := make([]uint32, 128)
+			list[0] = 123
+			list[1] = 654
+			list[127] = 222
+
+			return struct {
+				F1 []uint32 `ssz-type:"progressive-list"`
+			}{list}
+		}(),
+		fromHex("0xcafb653b8b774afa1a755897c6afc68bb08af48b30a3c08ca5b72ddf79bdb20f"),
+	},
+	// progressive bitlist test - matches Python test_progressive_bitlist.py output
+	{
+		func() any {
+			// Create bitlist with 1000 bits where every 3rd bit is set (pattern: [false, false, true, ...])
+			bits := make([]bool, 1000)
+			for i := 0; i < 1000; i++ {
+				bits[i] = (i%3 == 2)
+			}
+			// Convert to bitlist format with delimiter bit
+			bytesNeeded := (len(bits) + 1 + 7) / 8
+			bl := make([]byte, bytesNeeded)
+			for i, bit := range bits {
+				if bit {
+					bl[i/8] |= 1 << (i % 8)
+				}
+			}
+
+			// Set delimiter bit at position 1000 (1000 % 8 = 0, byte 125)
+			bl[125] |= 0x01 // delimiter bit at position 7 of byte 125
+
+			return struct {
+				F1 []byte `ssz-type:"progressive-bitlist"`
+			}{bl}
+		}(),
+		fromHex("0xba990efa7343179a41d01614759e0ab696a8869fade3f576a8abe6e9880eeaa3"),
+	},
+
+	// Progressive container tests - these should have different hashes than regular containers
+	{
+		struct {
+			Field0 uint64 `ssz-index:"0"`
+			Field1 uint32 `ssz-index:"1"`
+			Field2 bool   `ssz-index:"4"`
+			Field3 uint16 `ssz-index:"5"`
+		}{12345, 67890, true, 999},
+		fromHex("0xa022dead859d4c67b19c5caa2cd26b1f004479465133ae8f2decd234f41df8f5"),
+	},
+
+	// CompatibleUnion tests
+	{
+		struct {
+			Field0 uint16
+			Field1 CompatibleUnion[struct {
+				Field1 uint32
+				Field2 [2]uint8
+			}]
+			Field3 uint16
+		}{0x1337, CompatibleUnion[struct {
+			Field1 uint32
+			Field2 [2]uint8
+		}]{Variant: 0, Data: uint32(0x12345678)}, 0x4242},
+		fromHex("0xf72856610b8e134c3abbeccf3a6545ef026d9f456a57618628e15c2863c0dc6a"),
+	},
+
 	// string types
 	{
 		struct {
@@ -251,6 +324,12 @@ var treerootTestMatrix = []struct {
 			Data string `ssz-size:"32"`
 		}{"abcdefghijklmnopqrstuvwxyz123456"},
 		fromHex("0x6162636465666768696a6b6c6d6e6f707172737475767778797a313233343536"),
+	},
+	{
+		struct {
+			Data string `ssz-type:"progressive-list"`
+		}{"abcdefghijklmnopqrstuvwxyz123456"},
+		fromHex("0x41ba7be636dd08b32cca499285494e18f8849fbba06a7ced2d0d692777228e10"),
 	},
 
 	// TypeWrapper test cases - should produce same hash as equivalent direct types

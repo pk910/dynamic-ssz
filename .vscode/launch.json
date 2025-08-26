@@ -5,8 +5,6 @@
     "version": "0.2.0",
     "configurations": [
 
-
-
         {
             "name": "Launch Package",
             "type": "go",
@@ -54,6 +52,13 @@
             "request": "launch",
             "mode": "debug",
             "program": "${workspaceFolder}/test/pyssz/test_multidim_slice.go"
+        },
+        {
+            "name": "Launch pyssz test_progressive_container.go",
+            "type": "go",
+            "request": "launch",
+            "mode": "debug",
+            "program": "${workspaceFolder}/test/pyssz/test_progressive_container.go"
         }
     ]
 }
