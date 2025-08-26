@@ -253,7 +253,7 @@ var unmarshalTestMatrix = []struct {
 			Field1 uint32
 			Field2 [2]uint8
 		}]{Variant: 0, Data: uint32(0x12345678)}, 0x4242},
-		fromHex("0x37130800000042420178563412"),
+		fromHex("0x37130800000042420078563412"),
 	},
 
 	// string types

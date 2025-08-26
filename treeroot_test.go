@@ -275,7 +275,7 @@ var treerootTestMatrix = []struct {
 			Field2 bool   `ssz-index:"4"`
 			Field3 uint16 `ssz-index:"5"`
 		}{12345, 67890, true, 999},
-		fromHex("0x4ea4845cff00bd7de3b59e8a7517f085a4ef171453b3d5a4d41bd59cc1144d49"),
+		fromHex("0xa022dead859d4c67b19c5caa2cd26b1f004479465133ae8f2decd234f41df8f5"),
 	},
 
 	// CompatibleUnion tests
