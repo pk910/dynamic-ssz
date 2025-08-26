@@ -84,8 +84,13 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 			if err != nil {
 				return err
 			}
-		case SszContainerType, SszProgressiveContainerType:
+		case SszContainerType:
 			err := d.buildRootFromContainer(sourceType, sourceValue, hh, idt)
+			if err != nil {
+				return err
+			}
+		case SszProgressiveContainerType:
+			err := d.buildRootFromProgressiveContainer(sourceType, sourceValue, hh, idt)
 			if err != nil {
 				return err
 			}
@@ -241,9 +246,6 @@ func (d *DynSsz) buildRootFromLargeUint(sourceType *TypeDescriptor, sourceValue 
 //   - All field roots are collected in order
 //   - The collection is Merkleized to produce the container's root
 //
-// For progressive containers, the merkleization is done using the progressive
-// algorithm with active fields mixing.
-//
 // The function uses the pre-computed TypeDescriptor to efficiently iterate through
 // fields without repeated reflection calls.
 //
@@ -277,16 +279,69 @@ func (d *DynSsz) buildRootFromContainer(sourceType *TypeDescriptor, sourceValue 
 		}
 	}
 
-	// Use progressive merkleization for progressive containers
-	if sourceType.SszType == SszProgressiveContainerType {
-		// Get active fields based on the struct value
-		activeFields := d.getActiveFields(sourceType)
+	hh.Merkleize(hashIndex)
 
-		// merkleize progressively with active fields
-		hh.MerkleizeProgressiveWithActiveFields(hashIndex, activeFields)
-	} else {
-		hh.Merkleize(hashIndex)
+	return nil
+}
+
+// buildRootFromProgressiveContainer computes the hash tree root for ssz progressive containers.
+//
+// In SSZ, containers are hashed as follows:
+//   - Each field is hashed independently to produce a 32-byte root
+//   - All field roots are collected in order
+//   - The collection is Merkleized to produce the container's root
+//
+// The merkleization is done using the progressive algorithm with active fields mixing.
+//
+// The function uses the pre-computed TypeDescriptor to efficiently iterate through
+// fields without repeated reflection calls.
+//
+// Parameters:
+//   - sourceType: The TypeDescriptor containing container field metadata
+//   - sourceValue: The reflect.Value of the container to hash
+//   - hh: The Hasher instance for hash computation
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - error: An error if any field hashing fails
+//
+// The Merkleize call at the end combines all field hashes into the final root
+// using binary tree hashing with zero-padding to the next power of two.
+
+func (d *DynSsz) buildRootFromProgressiveContainer(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher, idt int) error {
+	hashIndex := hh.Index()
+	lastActiveField := -1
+
+	for i := 0; i < len(sourceType.ContainerDesc.Fields); i++ {
+		field := sourceType.ContainerDesc.Fields[i]
+
+		if int(field.SszIndex) > lastActiveField+1 {
+			// fill the gap with empty fields
+			for j := lastActiveField + 1; j < int(field.SszIndex); j++ {
+				hh.Append(make([]byte, 32))
+			}
+		}
+
+		lastActiveField = int(field.SszIndex)
+
+		fieldType := field.Type
+		fieldValue := sourceValue.Field(i)
+
+		if d.Verbose {
+			fmt.Printf("%sfield %v\n", strings.Repeat(" ", idt), field.Name)
+		}
+
+		err := d.buildRootFromType(fieldType, fieldValue, hh, false, idt+2)
+		if err != nil {
+			return err
+		}
 	}
+
+	// Get active fields based on the struct value
+	activeFields := d.getActiveFields(sourceType)
+
+	// merkleize progressively with active fields
+	hh.MerkleizeProgressiveWithActiveFields(hashIndex, activeFields)
 
 	return nil
 }

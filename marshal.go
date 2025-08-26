@@ -496,20 +496,8 @@ func (d *DynSsz) marshalCompatibleUnion(sourceType *TypeDescriptor, sourceValue 
 	variant := uint8(sourceValue.Field(0).Uint())
 	dataField := sourceValue.Field(1)
 
-	// Check if we need to adjust the selector index
-	// The index is based at 0 if a ProgressiveContainer type option is present, otherwise at 1
-	selector := variant
-	if len(sourceType.UnionVariants) > 0 {
-		// Check if the first variant (index 0) is a ProgressiveContainer
-		firstVariant, hasFirst := sourceType.UnionVariants[0]
-		if !hasFirst || firstVariant.SszType != SszProgressiveContainerType {
-			// No ProgressiveContainer at index 0, so selector is based at 1
-			selector = variant + 1
-		}
-	}
-
-	// Append selector byte
-	buf = append(buf, selector)
+	// Append variant byte
+	buf = append(buf, variant)
 
 	// Get the variant descriptor
 	variantDesc, ok := sourceType.UnionVariants[variant]

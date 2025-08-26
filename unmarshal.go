@@ -707,27 +707,13 @@ func (d *DynSsz) unmarshalCompatibleUnion(targetType *TypeDescriptor, targetValu
 		return 0, fmt.Errorf("CompatibleUnion requires at least 1 byte for selector")
 	}
 
-	// Read the selector byte
-	selector := ssz[0]
-
-	// Adjust selector to variant index based on whether first variant is ProgressiveContainer
-	variant := selector
-	if len(targetType.UnionVariants) > 0 {
-		// Check if the first variant (index 0) is a ProgressiveContainer
-		firstVariant, hasFirst := targetType.UnionVariants[0]
-		if !hasFirst || firstVariant.SszType != SszProgressiveContainerType {
-			// No ProgressiveContainer at index 0, so selector is based at 1
-			if selector == 0 {
-				return 0, fmt.Errorf("invalid selector value 0 when union is 1-indexed")
-			}
-			variant = selector - 1
-		}
-	}
+	// Read the variant byte
+	variant := ssz[0]
 
 	// Get the variant descriptor
 	variantDesc, ok := targetType.UnionVariants[variant]
 	if !ok {
-		return 0, fmt.Errorf("unknown union variant index: %d (selector: %d)", variant, selector)
+		return 0, fmt.Errorf("unknown union variant index: %d", variant)
 	}
 
 	// Create a new value of the variant type

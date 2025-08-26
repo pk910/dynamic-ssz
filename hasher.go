@@ -516,12 +516,9 @@ func (h *Hasher) MerkleizeProgressiveWithActiveFields(indx int, activeFields []b
 	// progressive merkleize the input
 	input = h.merkleizeProgressiveImpl(input[:0], input, 0)
 
-	// mixin with the active fields bitlist
-	h.tmp, _ = parseBitlist(h.tmp[:0], activeFields)
-
-	// merkleize the content with mix in length
-	input = append(input, h.tmp...)
-	if rest := len(h.tmp) % 32; rest != 0 {
+	// mixin with the active fields bitvector
+	input = append(input, activeFields...)
+	if rest := len(activeFields) % 32; rest != 0 {
 		// pad zero bytes to the left
 		input = append(input, zeroBytes[:32-rest]...)
 	}
