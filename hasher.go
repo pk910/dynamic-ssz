@@ -482,7 +482,7 @@ func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 	for indx := range output {
 		output[indx] = 0
 	}
-	marshalUint64(output[:0], num)
+	sszutils.MarshalUint64(output[:0], num)
 	input = append(input, output...)
 
 	// input is of the form [<progressive_root><size>] of 64 bytes
