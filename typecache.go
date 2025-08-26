@@ -20,28 +20,29 @@ type TypeCache struct {
 // TypeDescriptor represents a cached, optimized descriptor for a type's SSZ encoding/decoding
 type TypeDescriptor struct {
 	Type                   reflect.Type
-	Kind                   reflect.Kind         // Go kind of the type
-	Size                   uint32               // SSZ size (-1 if dynamic)
-	Len                    uint32               // Length of array/slice
-	Limit                  uint64               // Limit of array/slice (ssz-max tag)
-	ContainerDesc          *ContainerDescriptor // For structs
-	ElemDesc               *TypeDescriptor      // For slices/arrays
-	HashTreeRootWithMethod *reflect.Method      // Cached HashTreeRootWith method for performance
-	SszType                SszType              // SSZ type of the type
-	SizeExpression         string               // The dynamic expression used to calculate the size of the type
-	MaxExpression          string               // The dynamic expression used to calculate the max size of the type
-	IsDynamic              bool                 // Whether this type is a dynamic type (or has nested dynamic types)
-	HasLimit               bool                 // Whether this type has a limit (ssz-max tag)
-	HasDynamicSize         bool                 // Whether this type or any of its nested types uses dynamic spec size value that differs from the default
-	HasDynamicMax          bool                 // Whether this type or any of its nested types uses dynamic spec max value that differs from the default
-	HasSizeExpr            bool                 // Whether this type or any of its nested types uses a dynamic expression to calculate the size or max size
-	HasMaxExpr             bool                 // Whether this type or any of its nested types uses a dynamic expression to calculate the max size
-	HasFastSSZMarshaler    bool                 // Whether the type implements fastssz.Marshaler
-	HasFastSSZHasher       bool                 // Whether the type implements fastssz.HashRoot
-	HasHashTreeRootWith    bool                 // Whether the type implements HashTreeRootWith
-	IsPtr                  bool                 // Whether this is a pointer type
-	IsByteArray            bool                 // Whether this is a byte array
-	IsString               bool                 // Whether this is a string type
+	Kind                   reflect.Kind              // Go kind of the type
+	Size                   uint32                    // SSZ size (-1 if dynamic)
+	Len                    uint32                    // Length of array/slice
+	Limit                  uint64                    // Limit of array/slice (ssz-max tag)
+	ContainerDesc          *ContainerDescriptor      // For structs
+	UnionVariants          map[uint8]*TypeDescriptor // Union variant types by index (for CompatibleUnion)
+	ElemDesc               *TypeDescriptor           // For slices/arrays
+	HashTreeRootWithMethod *reflect.Method           // Cached HashTreeRootWith method for performance
+	SszType                SszType                   // SSZ type of the type
+	SizeExpression         string                    // The dynamic expression used to calculate the size of the type
+	MaxExpression          string                    // The dynamic expression used to calculate the max size of the type
+	IsDynamic              bool                      // Whether this type is a dynamic type (or has nested dynamic types)
+	HasLimit               bool                      // Whether this type has a limit (ssz-max tag)
+	HasDynamicSize         bool                      // Whether this type or any of its nested types uses dynamic spec size value that differs from the default
+	HasDynamicMax          bool                      // Whether this type or any of its nested types uses dynamic spec max value that differs from the default
+	HasSizeExpr            bool                      // Whether this type or any of its nested types uses a dynamic expression to calculate the size or max size
+	HasMaxExpr             bool                      // Whether this type or any of its nested types uses a dynamic expression to calculate the max size
+	HasFastSSZMarshaler    bool                      // Whether the type implements fastssz.Marshaler
+	HasFastSSZHasher       bool                      // Whether the type implements fastssz.HashRoot
+	HasHashTreeRootWith    bool                      // Whether the type implements HashTreeRootWith
+	IsPtr                  bool                      // Whether this is a pointer type
+	IsByteArray            bool                      // Whether this is a byte array
+	IsString               bool                      // Whether this is a string type
 }
 
 // FieldDescriptor represents a cached descriptor for a struct field
@@ -52,8 +53,9 @@ type ContainerDescriptor struct {
 
 // FieldDescriptor represents a cached descriptor for a struct field
 type FieldDescriptor struct {
-	Name string
-	Type *TypeDescriptor // Type descriptor
+	Name     string
+	Type     *TypeDescriptor // Type descriptor
+	SszIndex uint16          // SSZ index for progressive containers
 }
 
 // DynFieldDescriptor represents a dynamic field descriptor for a struct
@@ -191,11 +193,18 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		sszType = typeHints[0].Type
 	}
 
+	if desc.Kind == reflect.String {
+		desc.IsString = true
+	}
+
 	// auto-detect ssz type if not specified
 	if sszType == SszUnspecifiedType {
 		// detect some well-known and widely used types
-		if t.PkgPath() == "github.com/holiman/uint256" && t.Name() == "Int" {
+		switch {
+		case t.PkgPath() == "github.com/holiman/uint256" && t.Name() == "Int":
 			sszType = SszUint256Type
+		case t.PkgPath() == "github.com/pk910/dynamic-ssz" && strings.HasPrefix(t.Name(), "CompatibleUnion["):
+			sszType = SszCompatibleUnionType
 		}
 		if t.PkgPath() == typeWrapperType.PkgPath() && strings.HasPrefix(t.Name(), "TypeWrapper[") {
 			sszType = SszTypeWrapperType
@@ -232,7 +241,6 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 			} else {
 				sszType = SszListType
 			}
-			desc.IsString = true
 
 		// unsupported types
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
@@ -323,7 +331,7 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		if err != nil {
 			return nil, err
 		}
-	case SszContainerType:
+	case SszContainerType, SszProgressiveContainerType:
 		err := tc.buildContainerDescriptor(desc, t)
 		if err != nil {
 			return nil, err
@@ -333,16 +341,15 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		if err != nil {
 			return nil, err
 		}
-		if desc.SszType == SszBitvectorType && desc.ElemDesc.Kind != reflect.Uint8 {
-			return nil, fmt.Errorf("bitvector ssz type can only be represented by byte slices or arrays, got %v", desc.ElemDesc.Kind.String())
-		}
-	case SszListType, SszBitlistType:
+	case SszListType, SszBitlistType, SszProgressiveListType, SszProgressiveBitlistType:
 		err := tc.buildListDescriptor(desc, t, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
 			return nil, err
 		}
-		if desc.SszType == SszBitlistType && desc.ElemDesc.Kind != reflect.Uint8 {
-			return nil, fmt.Errorf("bitlist ssz type can only be represented by byte slices or arrays, got %v", desc.ElemDesc.Kind.String())
+	case SszCompatibleUnionType:
+		err := tc.buildCompatibleUnionDescriptor(desc, t)
+		if err != nil {
+			return nil, err
 		}
 	case SszCustomType:
 		if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
@@ -499,10 +506,32 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 	totalSize := uint32(0)
 	isDynamic := false
 
+	// Check for progressive container detection
+	hasAnyIndexTag := false
+	allFieldsHaveIndex := true
+	fieldIndices := make(map[uint16]bool)
+
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		fieldDesc := FieldDescriptor{
 			Name: field.Name,
+		}
+
+		// Get ssz-index tag
+		sszIndex, err := tc.dynssz.getSszIndexTag(&field)
+		if err != nil {
+			return err
+		}
+
+		if sszIndex != nil {
+			fieldDesc.SszIndex = *sszIndex
+			hasAnyIndexTag = true
+			if fieldIndices[*sszIndex] {
+				return fmt.Errorf("duplicate ssz-index %d found in field %s", *sszIndex, field.Name)
+			}
+			fieldIndices[*sszIndex] = true
+		} else {
+			allFieldsHaveIndex = false
 		}
 
 		// Get size hints from tags
@@ -559,11 +588,78 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 		desc.ContainerDesc.Fields[i] = fieldDesc
 	}
 
+	// Determine if this is a progressive container
+	// A container is progressive if it has ssz-index annotations on fields
+	// If it's progressive, all fields must have increasing ssz-index tags
+	if hasAnyIndexTag {
+		if !allFieldsHaveIndex {
+			return fmt.Errorf("progressive container requires all fields to have ssz-index tags")
+		}
+
+		// For progressive containers, ensure all ssz-index values are properly set
+		// and validate they are in increasing order
+		for i := 0; i < len(desc.ContainerDesc.Fields); i++ {
+			field := &desc.ContainerDesc.Fields[i]
+			structField := t.Field(i)
+			if sszIndex, err := tc.dynssz.getSszIndexTag(&structField); err != nil {
+				return err
+			} else if sszIndex != nil {
+				field.SszIndex = *sszIndex
+			} else {
+				return fmt.Errorf("progressive container field %s missing ssz-index tag", field.Name)
+			}
+		}
+
+		// Verify indices are increasing
+		for i := 1; i < len(desc.ContainerDesc.Fields); i++ {
+			if desc.ContainerDesc.Fields[i].SszIndex <= desc.ContainerDesc.Fields[i-1].SszIndex {
+				return fmt.Errorf("progressive container requires increasing ssz-index values (field %s has index %d, previous field has %d)",
+					desc.ContainerDesc.Fields[i].Name, desc.ContainerDesc.Fields[i].SszIndex, desc.ContainerDesc.Fields[i-1].SszIndex)
+			}
+		}
+
+		desc.SszType = SszProgressiveContainerType
+	}
+
 	if isDynamic {
 		desc.Size = 0
 		desc.IsDynamic = true
 	} else {
 		desc.Size = totalSize
+	}
+
+	return nil
+}
+
+// buildCompatibleUnionDescriptor builds a descriptor for CompatibleUnion types
+func (tc *TypeCache) buildCompatibleUnionDescriptor(desc *TypeDescriptor, t reflect.Type) error {
+	// CompatibleUnion is always dynamic size (1 byte for type + variable data)
+	desc.Size = 0
+	desc.IsDynamic = true
+
+	// Try to extract the descriptor type from the generic type parameter
+	descriptorType, err := tc.extractGenericTypeParameter(t)
+	if err != nil {
+		return err
+	}
+
+	// Populate union variants immediately since we have the descriptor type
+	desc.UnionVariants = make(map[uint8]*TypeDescriptor)
+
+	// Extract variant information from descriptor struct (includes SSZ annotations)
+	variantInfo, err := ExtractUnionDescriptorInfo(descriptorType, tc.dynssz)
+	if err != nil {
+		return fmt.Errorf("failed to extract union variant info: %w", err)
+	}
+
+	// Build type descriptors for each variant using the extracted information
+	for variantIndex, info := range variantInfo {
+		variantDesc, err := tc.getTypeDescriptor(info.Type, info.SizeHints, info.MaxSizeHints, info.TypeHints)
+		if err != nil {
+			return fmt.Errorf("failed to build descriptor for union variant %d: %w", variantIndex, err)
+		}
+
+		desc.UnionVariants[variantIndex] = variantDesc
 	}
 
 	return nil
@@ -635,6 +731,10 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, t reflect.Type,
 		desc.HasMaxExpr = true
 	}
 
+	if desc.SszType == SszBitvectorType && desc.ElemDesc.Kind != reflect.Uint8 {
+		return fmt.Errorf("bitvector ssz type can only be represented by byte slices or arrays, got %v", desc.ElemDesc.Kind.String())
+	}
+
 	if elemDesc.IsDynamic {
 		desc.Size = 0
 		desc.IsDynamic = true
@@ -694,6 +794,10 @@ func (tc *TypeCache) buildListDescriptor(desc *TypeDescriptor, t reflect.Type, s
 	}
 	if elemDesc.HasMaxExpr {
 		desc.HasMaxExpr = true
+	}
+
+	if (desc.SszType == SszBitlistType || desc.SszType == SszProgressiveBitlistType) && desc.ElemDesc.Kind != reflect.Uint8 {
+		return fmt.Errorf("bitlist ssz type can only be represented by byte slices or arrays, got %v", desc.ElemDesc.Kind.String())
 	}
 
 	if len(sizeHints) > 0 && sizeHints[0].Size > 0 && !sizeHints[0].Dynamic {
@@ -791,4 +895,31 @@ func (tc *TypeCache) RemoveAllTypes() {
 
 	// Create new map to clear all references
 	tc.descriptors = make(map[reflect.Type]*TypeDescriptor)
+}
+
+// extractGenericTypeParameter extracts the generic type parameter from a CompatibleUnion type.
+// This uses reflection to call the GetDescriptorType method on the union type.
+func (tc *TypeCache) extractGenericTypeParameter(unionType reflect.Type) (reflect.Type, error) {
+	// Create a zero value of the union type to call methods on
+	unionValue := reflect.New(unionType)
+
+	// Get the GetDescriptorType method
+	method := unionValue.MethodByName("GetDescriptorType")
+	if !method.IsValid() {
+		return nil, fmt.Errorf("GetDescriptorType method not found on type %s", unionType)
+	}
+
+	// Call the method to get the descriptor type
+	results := method.Call(nil)
+	if len(results) == 0 {
+		return nil, fmt.Errorf("GetDescriptorType returned no results")
+	}
+
+	// Extract the reflect.Type from the result
+	descriptorType, ok := results[0].Interface().(reflect.Type)
+	if !ok {
+		return nil, fmt.Errorf("GetDescriptorType did not return a reflect.Type")
+	}
+
+	return descriptorType, nil
 }

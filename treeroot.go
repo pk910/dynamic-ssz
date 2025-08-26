@@ -91,21 +91,32 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 			if err != nil {
 				return err
 			}
+		case SszProgressiveContainerType:
+			err := d.buildRootFromProgressiveContainer(sourceType, sourceValue, hh, idt)
+			if err != nil {
+				return err
+			}
 		case SszVectorType, SszBitvectorType:
 			err := d.buildRootFromVector(sourceType, sourceValue, hh, idt)
 			if err != nil {
 				return err
 			}
-		case SszListType:
+		case SszListType, SszProgressiveListType:
 			err := d.buildRootFromList(sourceType, sourceValue, hh, idt)
 			if err != nil {
 				return err
 			}
-		case SszBitlistType:
+		case SszBitlistType, SszProgressiveBitlistType:
 			err := d.buildRootFromBitlist(sourceType, sourceValue, hh, idt)
 			if err != nil {
 				return err
 			}
+		case SszCompatibleUnionType:
+			err := d.buildRootFromCompatibleUnion(sourceType, sourceValue, hh, idt)
+			if err != nil {
+				return err
+			}
+
 		case SszBoolType:
 			if pack {
 				hh.AppendUint8(1)
@@ -269,7 +280,105 @@ func (d *DynSsz) buildRootFromContainer(sourceType *TypeDescriptor, sourceValue 
 			return err
 		}
 	}
+
 	hh.Merkleize(hashIndex)
+
+	return nil
+}
+
+// buildRootFromProgressiveContainer computes the hash tree root for ssz progressive containers.
+//
+// In SSZ, containers are hashed as follows:
+//   - Each field is hashed independently to produce a 32-byte root
+//   - All field roots are collected in order
+//   - The collection is Merkleized to produce the container's root
+//
+// The merkleization is done using the progressive algorithm with active fields mixing.
+//
+// The function uses the pre-computed TypeDescriptor to efficiently iterate through
+// fields without repeated reflection calls.
+//
+// Parameters:
+//   - sourceType: The TypeDescriptor containing container field metadata
+//   - sourceValue: The reflect.Value of the container to hash
+//   - hh: The Hasher instance for hash computation
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - error: An error if any field hashing fails
+//
+// The Merkleize call at the end combines all field hashes into the final root
+// using binary tree hashing with zero-padding to the next power of two.
+
+func (d *DynSsz) buildRootFromProgressiveContainer(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher, idt int) error {
+	hashIndex := hh.Index()
+	lastActiveField := -1
+
+	for i := 0; i < len(sourceType.ContainerDesc.Fields); i++ {
+		field := sourceType.ContainerDesc.Fields[i]
+
+		if int(field.SszIndex) > lastActiveField+1 {
+			// fill the gap with empty fields
+			for j := lastActiveField + 1; j < int(field.SszIndex); j++ {
+				hh.Append(make([]byte, 32))
+			}
+		}
+
+		lastActiveField = int(field.SszIndex)
+
+		fieldType := field.Type
+		fieldValue := sourceValue.Field(i)
+
+		if d.Verbose {
+			fmt.Printf("%sfield %v\n", strings.Repeat(" ", idt), field.Name)
+		}
+
+		err := d.buildRootFromType(fieldType, fieldValue, hh, false, idt+2)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Get active fields based on the struct value
+	activeFields := d.getActiveFields(sourceType)
+
+	// merkleize progressively with active fields
+	hh.MerkleizeProgressiveWithActiveFields(hashIndex, activeFields)
+
+	return nil
+}
+
+// buildRootFromCompatibleUnion computes the hash tree root for CompatibleUnion values.
+//
+// According to the spec:
+// - hash_tree_root(value.data) if value is of compatible union type
+// - The selector is only used for serialization, it is not mixed in when Merkleizing
+//
+// Parameters:
+//   - sourceType: The TypeDescriptor containing union metadata and variant descriptors
+//   - sourceValue: The reflect.Value of the CompatibleUnion to hash
+//   - hh: The Hasher instance for hash computation
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - error: An error if hashing fails
+func (d *DynSsz) buildRootFromCompatibleUnion(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher, idt int) error {
+	// We know CompatibleUnion has exactly 2 fields: Variant (uint8) and Data (interface{})
+	// Field 0 is Variant, Field 1 is Data
+	variant := uint8(sourceValue.Field(0).Uint())
+	dataField := sourceValue.Field(1)
+
+	// Get the variant descriptor
+	variantDesc, ok := sourceType.UnionVariants[variant]
+	if !ok {
+		return fmt.Errorf("unknown union variant index: %d", variant)
+	}
+
+	// Hash only the data, not the selector
+	err := d.buildRootFromType(variantDesc, dataField.Elem(), hh, false, idt+2)
+	if err != nil {
+		return fmt.Errorf("failed to hash union variant %d: %w", variant, err)
+	}
 
 	return nil
 }
@@ -436,7 +545,9 @@ func (d *DynSsz) buildRootFromList(sourceType *TypeDescriptor, sourceValue refle
 		hh.FillUpTo32()
 	}
 
-	if sourceType.HasLimit {
+	if sourceType.SszType == SszProgressiveListType {
+		hh.MerkleizeProgressiveWithMixin(hashIndex, uint64(sliceLen))
+	} else if sourceType.HasLimit {
 		var limit, itemSize uint64
 
 		switch sourceType.ElemDesc.SszType {
@@ -475,6 +586,49 @@ func (d *DynSsz) buildRootFromList(sourceType *TypeDescriptor, sourceValue refle
 	return nil
 }
 
+// getActiveFields returns the active fields for a progressive container.
+// Per the specification: Given a value of type ProgressiveContainer(active_fields)
+// return value.__class__.active_fields.
+//
+// The active fields are determined by the ssz-index tags in the struct definition:
+// - The highest ssz-index determines the size of the bitlist
+// - Each field with an ssz-index has its corresponding bit set to 1
+// - All other bits are set to 0
+//
+// Parameters:
+//   - sourceType: The TypeDescriptor containing progressive container metadata
+//
+// Returns:
+//   - []byte: The active fields bitlist as bytes (≤256 bits, so max 32 bytes)
+func (d *DynSsz) getActiveFields(sourceType *TypeDescriptor) []byte {
+	// Find the highest ssz-index to determine bitlist size
+	maxIndex := uint16(0)
+	for _, field := range sourceType.ContainerDesc.Fields {
+		if field.SszIndex > maxIndex {
+			maxIndex = field.SszIndex
+		}
+	}
+
+	// Create bitlist with enough bytes to hold maxIndex+1 bits
+	bytesNeeded := (int(maxIndex) + 8) / 8 // +7 for rounding up, +1 already included in maxIndex
+	activeFields := make([]byte, bytesNeeded)
+
+	// Set most significant bit for length bit.
+	i := uint8(1 << (maxIndex % 8))
+	activeFields[maxIndex/8] |= i
+
+	// Set bit for each field that has an ssz-index
+	for _, field := range sourceType.ContainerDesc.Fields {
+		byteIndex := field.SszIndex / 8
+		bitIndex := field.SszIndex % 8
+		if int(byteIndex) < len(activeFields) {
+			activeFields[byteIndex] |= (1 << bitIndex)
+		}
+	}
+
+	return activeFields
+}
+
 // buildRootFromBitlist computes the hash tree root for ssz bitlists.
 //
 // Bitlists in SSZ are hashed as follows:
@@ -493,6 +647,7 @@ func (d *DynSsz) buildRootFromList(sourceType *TypeDescriptor, sourceValue refle
 func (d *DynSsz) buildRootFromBitlist(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *Hasher, idt int) error {
 	maxSize := uint64(0)
 	bytes := sourceValue.Bytes()
+
 	if sourceType.HasLimit {
 		maxSize = sourceType.Limit
 	} else {
@@ -509,7 +664,11 @@ func (d *DynSsz) buildRootFromBitlist(sourceType *TypeDescriptor, sourceValue re
 	// merkleize the content with mix in length
 	indx := hh.Index()
 	hh.AppendBytes32(hh.tmp)
-	hh.MerkleizeWithMixin(indx, size, (maxSize+255)/256)
+	if sourceType.SszType == SszProgressiveBitlistType {
+		hh.MerkleizeProgressiveWithMixin(indx, size)
+	} else {
+		hh.MerkleizeWithMixin(indx, size, (maxSize+255)/256)
+	}
 
 	return nil
 }

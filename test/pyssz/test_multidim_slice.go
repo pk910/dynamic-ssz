@@ -6,6 +6,8 @@ import (
 	dynssz "github.com/pk910/dynamic-ssz"
 )
 
+// go run test_multidim_slice.go
+
 type TestData struct {
 	T1 uint16
 	T2 uint16

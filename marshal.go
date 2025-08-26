@@ -75,7 +75,7 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 			if err != nil {
 				return nil, err
 			}
-		case SszContainerType:
+		case SszContainerType, SszProgressiveContainerType:
 			buf, err = d.marshalContainer(sourceType, sourceValue, buf, idt)
 			if err != nil {
 				return nil, err
@@ -89,12 +89,17 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 			if err != nil {
 				return nil, err
 			}
-		case SszListType, SszBitlistType:
+		case SszListType, SszBitlistType, SszProgressiveListType, SszProgressiveBitlistType:
 			if sourceType.ElemDesc.IsDynamic {
 				buf, err = d.marshalDynamicList(sourceType, sourceValue, buf, idt)
 			} else {
 				buf, err = d.marshalList(sourceType, sourceValue, buf, idt)
 			}
+			if err != nil {
+				return nil, err
+			}
+		case SszCompatibleUnionType:
+			buf, err = d.marshalCompatibleUnion(sourceType, sourceValue, buf, idt)
 			if err != nil {
 				return nil, err
 			}
@@ -469,4 +474,44 @@ func (d *DynSsz) marshalDynamicList(sourceType *TypeDescriptor, sourceValue refl
 	}
 
 	return buf, nil
+}
+
+// marshalCompatibleUnion encodes CompatibleUnion values into SSZ-encoded data.
+//
+// According to the spec:
+// - The encoding is: selector.to_bytes(1, "little") + serialize(value.data)
+// - The selector index is based at 0 if a ProgressiveContainer type option is present
+// - Otherwise, it is based at 1
+//
+// Parameters:
+//   - sourceType: The TypeDescriptor containing union metadata and variant descriptors
+//   - sourceValue: The reflect.Value of the CompatibleUnion to encode
+//   - buf: The buffer to append encoded data to
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - []byte: The updated buffer with the encoded union
+//   - error: An error if encoding fails
+func (d *DynSsz) marshalCompatibleUnion(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
+	// We know CompatibleUnion has exactly 2 fields: Variant (uint8) and Data (interface{})
+	// Field 0 is Variant, Field 1 is Data
+	variant := uint8(sourceValue.Field(0).Uint())
+	dataField := sourceValue.Field(1)
+
+	// Append variant byte
+	buf = append(buf, variant)
+
+	// Get the variant descriptor
+	variantDesc, ok := sourceType.UnionVariants[variant]
+	if !ok {
+		return nil, fmt.Errorf("unknown union variant index: %d", variant)
+	}
+
+	// Marshal the data using the variant's type descriptor
+	newBuf, err := d.marshalType(variantDesc, dataField.Elem(), buf, idt+2)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal union variant %d: %w", variant, err)
+	}
+
+	return newBuf, nil
 }

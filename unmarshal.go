@@ -80,7 +80,7 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 			if err != nil {
 				return 0, err
 			}
-		case SszContainerType:
+		case SszContainerType, SszProgressiveContainerType:
 			consumedBytes, err = d.unmarshalContainer(targetType, targetValue, ssz, idt)
 			if err != nil {
 				return 0, err
@@ -94,12 +94,17 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 			if err != nil {
 				return 0, err
 			}
-		case SszListType, SszBitlistType:
+		case SszListType, SszBitlistType, SszProgressiveListType, SszProgressiveBitlistType:
 			if targetType.ElemDesc.IsDynamic {
 				consumedBytes, err = d.unmarshalDynamicList(targetType, targetValue, ssz, idt)
 			} else {
 				consumedBytes, err = d.unmarshalList(targetType, targetValue, ssz, idt)
 			}
+			if err != nil {
+				return 0, err
+			}
+		case SszCompatibleUnionType:
+			consumedBytes, err = d.unmarshalCompatibleUnion(targetType, targetValue, ssz, idt)
 			if err != nil {
 				return 0, err
 			}
@@ -681,4 +686,51 @@ func (d *DynSsz) unmarshalDynamicList(targetType *TypeDescriptor, targetValue re
 	targetValue.Set(newValue)
 
 	return offset, nil
+}
+
+// unmarshalCompatibleUnion decodes SSZ-encoded data into a CompatibleUnion.
+//
+// According to the spec:
+// - The encoding is: selector.to_bytes(1, "little") + serialize(value.data)
+// - The selector index is based at 0 if a ProgressiveContainer type option is present
+// - Otherwise, it is based at 1
+//
+// Parameters:
+//   - targetType: The TypeDescriptor containing union metadata and variant descriptors
+//   - targetValue: The reflect.Value of the CompatibleUnion to populate
+//   - ssz: The SSZ-encoded data to decode
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - int: Total bytes consumed
+//   - error: An error if decoding fails
+func (d *DynSsz) unmarshalCompatibleUnion(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
+	if len(ssz) < 1 {
+		return 0, fmt.Errorf("CompatibleUnion requires at least 1 byte for selector")
+	}
+
+	// Read the variant byte
+	variant := ssz[0]
+
+	// Get the variant descriptor
+	variantDesc, ok := targetType.UnionVariants[variant]
+	if !ok {
+		return 0, fmt.Errorf("unknown union variant index: %d", variant)
+	}
+
+	// Create a new value of the variant type
+	variantValue := reflect.New(variantDesc.Type).Elem()
+
+	// Unmarshal the data
+	consumed, err := d.unmarshalType(variantDesc, variantValue, ssz[1:], idt+2)
+	if err != nil {
+		return 0, fmt.Errorf("failed to unmarshal union variant %d: %w", variant, err)
+	}
+
+	// We know CompatibleUnion has exactly 2 fields: Variant (uint8) and Data (interface{})
+	// Field 0 is Variant, Field 1 is Data
+	targetValue.Field(0).SetUint(uint64(variant))
+	targetValue.Field(1).Set(variantValue)
+
+	return consumed + 1, nil // +1 for the selector byte
 }

@@ -80,7 +80,7 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 				return 0, err
 			}
 			staticSize = size
-		case SszContainerType:
+		case SszContainerType, SszProgressiveContainerType:
 			for i := 0; i < len(targetType.ContainerDesc.Fields); i++ {
 				fieldType := targetType.ContainerDesc.Fields[i]
 				fieldValue := targetValue.Field(i)
@@ -145,7 +145,7 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 					staticSize += size * targetType.Len
 				}
 			}
-		case SszListType, SszBitlistType:
+		case SszListType, SszBitlistType, SszProgressiveListType, SszProgressiveBitlistType:
 			fieldType := targetType.ElemDesc
 			sliceLen := uint32(targetValue.Len())
 
@@ -166,6 +166,24 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 					staticSize = uint32(fieldType.Size) * sliceLen
 				}
 			}
+		case SszCompatibleUnionType:
+			// CompatibleUnion: 1 byte for selector + size of the data
+			variant := uint8(targetValue.Field(0).Uint())
+			dataField := targetValue.Field(1)
+
+			// Get the variant descriptor
+			variantDesc, ok := targetType.UnionVariants[variant]
+			if !ok {
+				return 0, fmt.Errorf("unknown union variant index: %d", variant)
+			}
+
+			// Calculate size of the data
+			dataSize, err := d.getSszValueSize(variantDesc, dataField.Elem())
+			if err != nil {
+				return 0, fmt.Errorf("failed to get size of union variant %d: %w", variant, err)
+			}
+
+			staticSize = 1 + dataSize // 1 byte selector + data size
 
 		// primitive types
 		case SszBoolType:
