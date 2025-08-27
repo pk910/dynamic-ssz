@@ -16,7 +16,7 @@ type TestBeaconBlock struct {
 }
 
 type Test1 struct {
-	TestUnion dynssz.CompatibleUnion[struct {
+	TestUnion *dynssz.CompatibleUnion[struct {
 		Deneb   phase0.ValidatorIndex
 		Electra phase0.Epoch
 	}]

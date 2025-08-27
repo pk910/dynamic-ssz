@@ -315,10 +315,10 @@ t.Variant = uint8(buf[0])
 switch t.Variant {
 {{- range .VariantFns }}
 case {{ .Index }}:
-  v, ok := t.Data.({{ .TypeName }})
+  v, _ := t.Data.({{ .TypeName }})
   t.Data, err = {{ .UnmarshalFn }}(v, buf[1:])
+{{- end }}
 default:
   return t, sszutils.ErrInvalidUnionVariant
-{{- end }}
 }
 {{- end }}

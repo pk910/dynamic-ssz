@@ -3,6 +3,7 @@ package codegen
 import (
 	"fmt"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -10,6 +11,7 @@ import (
 type TypePrinter struct {
 	CurrentPkg string
 	imports    map[string]string
+	aliases    map[string]string
 
 	UseRune bool
 }
@@ -18,6 +20,7 @@ func NewTypePrinter(currentPkg string) *TypePrinter {
 	return &TypePrinter{
 		CurrentPkg: currentPkg,
 		imports:    make(map[string]string),
+		aliases:    make(map[string]string),
 	}
 }
 
@@ -25,6 +28,12 @@ func (p *TypePrinter) Imports() map[string]string { return p.imports }
 
 func (p *TypePrinter) AddImport(path, alias string) {
 	p.imports[path] = alias
+}
+
+func (p *TypePrinter) Aliases() map[string]string { return p.aliases }
+
+func (p *TypePrinter) AddAlias(path, alias string) {
+	p.aliases[path] = alias
 }
 
 // Qualify a named type with an alias, recording the import.
@@ -39,7 +48,7 @@ func (p *TypePrinter) qualify(t reflect.Type) string {
 	}
 	alias := p.imports[pkg]
 	if alias == "" {
-		alias = normalizeAlias(defaultAlias(pkg))
+		alias = normalizeAlias(p.defaultAlias(pkg))
 		// ensure alias uniqueness
 		base := alias
 		i := 1
@@ -61,7 +70,10 @@ func containsValue(m map[string]string, v string) bool {
 	return false
 }
 
-func defaultAlias(importPath string) string {
+func (p *TypePrinter) defaultAlias(importPath string) string {
+	if alias, ok := p.aliases[importPath]; ok {
+		return alias
+	}
 	// naive but effective: last path element (handles stdlib + common cases)
 	parts := strings.Split(importPath, "/")
 	return parts[len(parts)-1]
@@ -86,6 +98,10 @@ func (p *TypePrinter) typeString(t reflect.Type) string {
 		}
 		if p.UseRune && t.Kind() == reflect.Int32 && t.PkgPath() == "" {
 			return "rune"
+		}
+		// Check if this is a generic type with embedded package paths
+		if strings.Contains(t.Name(), "[") && strings.Contains(t.Name(), "]") {
+			return p.processGenericTypeName(t)
 		}
 		return p.qualify(t)
 	}
@@ -142,6 +158,90 @@ func (p *TypePrinter) structString(t reflect.Type) string {
 	}
 	b.WriteString(" }")
 	return b.String()
+}
+
+// processGenericTypeName handles generic types that may contain package paths in their type parameters
+func (p *TypePrinter) processGenericTypeName(t reflect.Type) string {
+	name := t.Name()
+
+	// Extract and register package imports from the full name
+	p.extractAndRegisterImports(name)
+
+	// Clean up the full name by replacing full package paths with qualified type names
+	cleanedName := p.cleanGenericTypeName(name)
+
+	// Now handle the qualification of the base type
+	pkgPath := t.PkgPath()
+	if pkgPath != "" && pkgPath != p.CurrentPkg {
+		// Extract just the base type name (before generic params)
+		baseName := cleanedName
+		if idx := strings.Index(cleanedName, "["); idx != -1 {
+			baseName = cleanedName[:idx]
+		}
+
+		// Get the alias for this package
+		alias := p.imports[pkgPath]
+		if alias == "" {
+			// Ensure the type is qualified (this will add it to imports)
+			p.qualify(t)
+			alias = p.imports[pkgPath]
+		}
+
+		// Replace the base name with qualified version
+		if idx := strings.Index(cleanedName, "["); idx != -1 {
+			return alias + "." + cleanedName
+		}
+		return alias + "." + baseName
+	}
+
+	return cleanedName
+}
+
+// extractAndRegisterImports finds package paths in the type string and registers them as imports
+func (p *TypePrinter) extractAndRegisterImports(typeStr string) {
+	// Match package paths like github.com/attestantio/go-eth2-client/spec/phase0
+	pkgPattern := regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z][a-zA-Z0-9_]*)*(?:/[a-zA-Z][a-zA-Z0-9_.-]*)+)\.([A-Z][a-zA-Z0-9_]*)`)
+	matches := pkgPattern.FindAllStringSubmatch(typeStr, -1)
+
+	for _, match := range matches {
+		if len(match) >= 2 {
+			pkgPath := match[1]
+			// Register this import
+			if p.imports[pkgPath] == "" {
+				alias := normalizeAlias(p.defaultAlias(pkgPath))
+				// ensure alias uniqueness
+				base := alias
+				i := 1
+				for containsValue(p.imports, alias) {
+					alias = fmt.Sprintf("%s%d", base, i)
+					i++
+				}
+				p.imports[pkgPath] = alias
+			}
+		}
+	}
+}
+
+// cleanGenericTypeName replaces full package paths with qualified type names using registered aliases
+func (p *TypePrinter) cleanGenericTypeName(genericStr string) string {
+	result := genericStr
+
+	// Replace full package paths with alias.Type format
+	pkgPattern := regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z][a-zA-Z0-9_]*)*(?:/[a-zA-Z][a-zA-Z0-9_.-]*)+)\.([A-Z][a-zA-Z0-9_]*)`)
+
+	result = pkgPattern.ReplaceAllStringFunc(result, func(match string) string {
+		submatches := pkgPattern.FindStringSubmatch(match)
+		if len(submatches) >= 3 {
+			pkgPath := submatches[1]
+			typeName := submatches[2]
+			if alias, ok := p.imports[pkgPath]; ok {
+				return alias + "." + typeName
+			}
+		}
+		return match
+	})
+
+	return result
 }
 
 func escapeBackticks(s string) string {

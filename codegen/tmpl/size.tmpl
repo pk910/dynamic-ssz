@@ -130,7 +130,12 @@ for i := 0; i < vlen; i++ {
 
 {{ define "size_compatible_union" }}
 size = 1
+switch t.Variant {
 {{- range .VariantFns }}
-size += {{ .SizeFn }}(t.Data)
+case {{ .Index }}:
+  if v, ok := t.Data.({{ .TypeName }}); ok {
+    size += {{ .SizeFn }}(v)
+  }
 {{- end }}
+}
 {{- end }}

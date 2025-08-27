@@ -108,6 +108,7 @@ func GenerateSSZCode(source any, opts ...CodeGenOption) (string, error) {
 	}
 
 	typePrinter := NewTypePrinter(rootType.PkgPath())
+	typePrinter.AddAlias("github.com/pk910/dynamic-ssz", "dynssz")
 	usedDynSsz := options.CreateDynamicFn
 
 	// generate MarshalSSZ code
@@ -150,8 +151,9 @@ func GenerateSSZCode(source any, opts ...CodeGenOption) (string, error) {
 	importsMap := typePrinter.Imports()
 	imports := make([]tmpl.TypeImport, 0, len(importsMap))
 	for path, alias := range importsMap {
-		defaultAlias := defaultAlias(path)
-		if alias == defaultAlias {
+		if presetAlias := typePrinter.Aliases()[path]; presetAlias != "" {
+			alias = presetAlias
+		} else if defaultAlias := typePrinter.defaultAlias(path); alias == defaultAlias {
 			alias = ""
 		}
 		imports = append(imports, tmpl.TypeImport{
