@@ -26,6 +26,8 @@ var templateFuncs = template.FuncMap{
 		}
 		return strings.Join(lines, "\n")
 	},
+	"add": func(a, b int) int { return a + b },
+	"index": func(slice []int, i int) int { return slice[i] },
 }
 
 // compile time check for templates

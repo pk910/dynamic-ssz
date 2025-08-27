@@ -32,7 +32,70 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 
 	var genRecursiveStaticSize func(sourceType *dynssz.TypeDescriptor, isRoot bool) (*tmpl.UnmarshalStaticSizeFunction, error)
 
+	isBaseType := func(sourceType *dynssz.TypeDescriptor) bool {
+		// Check if it's a byte array/slice
+		if sourceType.IsByteArray {
+			return true
+		}
+
+		// Check if it's a primitive type
+		switch sourceType.SszType {
+		case dynssz.SszBoolType, dynssz.SszUint8Type, dynssz.SszUint16Type, dynssz.SszUint32Type, dynssz.SszUint64Type:
+			return true
+		default:
+			return false
+		}
+	}
+
+	getInlineBaseTypeUnmarshal := func(sourceType *dynssz.TypeDescriptor, varName string, bufExpr string, knownSize int) string {
+		// Handle byte arrays/slices
+		if sourceType.IsByteArray {
+			if sourceType.Kind == reflect.Array {
+				// For arrays, just copy
+				return fmt.Sprintf("copy(%s[:], %s[:])", varName, bufExpr)
+			} else {
+				// For slices, allocate if needed and copy
+				typeName := typePrinter.TypeString(sourceType.Type)
+				if knownSize > 0 {
+					// Use static size when known
+					return fmt.Sprintf("if len(%s) < %d {\n  %s = make(%s, %d)\n} else {\n  %s = %s[:%d]\n}\ncopy(%s, %s)",
+						varName, knownSize, varName, typeName, knownSize, varName, varName, knownSize, varName, bufExpr)
+				} else {
+					// Fall back to dynamic size calculation
+					return fmt.Sprintf("if len(%s) < len(%s) {\n  %s = make(%s, len(%s))\n} else {\n  %s = %s[:len(%s)]\n}\ncopy(%s, %s)",
+						varName, bufExpr, varName, typeName, bufExpr, varName, varName, bufExpr, varName, bufExpr)
+				}
+			}
+		}
+
+		// Handle primitive types
+		typeName := typePrinter.TypeString(sourceType.Type)
+		switch sourceType.SszType {
+		case dynssz.SszBoolType:
+			return fmt.Sprintf("%s = (%s)(sszutils.UnmarshalBool(%s))", varName, typeName, bufExpr)
+		case dynssz.SszUint8Type:
+			return fmt.Sprintf("%s = (%s)(sszutils.UnmarshallUint8(%s))", varName, typeName, bufExpr)
+		case dynssz.SszUint16Type:
+			return fmt.Sprintf("%s = (%s)(sszutils.UnmarshallUint16(%s))", varName, typeName, bufExpr)
+		case dynssz.SszUint32Type:
+			return fmt.Sprintf("%s = (%s)(sszutils.UnmarshallUint32(%s))", varName, typeName, bufExpr)
+		case dynssz.SszUint64Type:
+			return fmt.Sprintf("%s = (%s)(sszutils.UnmarshallUint64(%s))", varName, typeName, bufExpr)
+		default:
+			return ""
+		}
+	}
+
 	genRecursive = func(sourceType *dynssz.TypeDescriptor, isRoot bool) (*tmpl.UnmarshalFunction, error) {
+		// For base types that are not root, return a special inline function
+		// Aggressive inlining: inline ALL base types including byte slices in vectors
+		if !isRoot && isBaseType(sourceType) && !sourceType.IsPtr {
+			return &tmpl.UnmarshalFunction{
+				IsInlined:  true,
+				InlineCode: getInlineBaseTypeUnmarshal(sourceType, "VAR_NAME", "BUF_EXPR", 0),
+			}, nil
+		}
+
 		typeName := typePrinter.TypeString(sourceType.Type)
 		typeKey := typeName
 		if sourceType.Len > 0 {
@@ -115,24 +178,69 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 				}
 			case dynssz.SszContainerType, dynssz.SszProgressiveContainerType:
 				structModel := tmpl.UnmarshalStruct{
-					TypeName: typePrinter.TypeString(sourceType.Type),
-					Fields:   make([]tmpl.UnmarshalField, 0, len(sourceType.ContainerDesc.Fields)),
+					TypeName:      typePrinter.TypeString(sourceType.Type),
+					Fields:        make([]tmpl.UnmarshalField, 0, len(sourceType.ContainerDesc.Fields)),
+					StaticOffsets: make([]int, len(sourceType.ContainerDesc.Fields)),
 				}
 				lastDynamic := -1
+				currentOffset := 0
+				hasDynamicSizes := false
+
+				// First pass: calculate static offsets and detect dynamic sizes
+				for idx, field := range sourceType.ContainerDesc.Fields {
+					structModel.StaticOffsets[idx] = currentOffset
+
+					if field.Type.IsDynamic {
+						currentOffset += 4 // offset field
+					} else if field.Type.HasSizeExpr {
+						hasDynamicSizes = true
+						// For dynamic sizes, we can't calculate static offsets beyond this point
+						break
+					} else {
+						currentOffset += int(field.Type.Size)
+					}
+				}
+				structModel.HasDynamicSizes = hasDynamicSizes
+
+				// Second pass: generate field models
 				for idx, field := range sourceType.ContainerDesc.Fields {
 					fn, err := genRecursive(field.Type, false)
 					if err != nil {
 						return nil, err
 					}
 
-					structModel.Fields = append(structModel.Fields, tmpl.UnmarshalField{
-						Index:       idx,
-						Name:        field.Name,
-						TypeName:    typePrinter.TypeString(field.Type.Type),
-						IsDynamic:   field.Type.IsDynamic,
-						Size:        int(field.Type.Size),
-						UnmarshalFn: fn.Name,
-					})
+					fieldModel := tmpl.UnmarshalField{
+						Index:     idx,
+						Name:      field.Name,
+						IsDynamic: field.Type.IsDynamic,
+						Size:      int(field.Type.Size),
+					}
+
+					if fn.IsInlined {
+						// Use inline code for base types
+						varName := fmt.Sprintf("t.%s", field.Name)
+						var inlineCode string
+						
+						if field.Type.IsDynamic {
+							// For dynamic fields, the buffer is already sliced as 'fieldSlice'
+							inlineCode = getInlineBaseTypeUnmarshal(field.Type, varName, "fieldSlice", 0)
+						} else if hasDynamicSizes {
+							// For static fields with dynamic sizes, use bufpos tracking
+							inlineCode = getInlineBaseTypeUnmarshal(field.Type, varName, "buf[bufpos:bufpos+fieldsize]", 0)
+						} else {
+							// For static fields with static sizes, use direct offsets with known size
+							offset := structModel.StaticOffsets[idx]
+							fieldSize := int(field.Type.Size)
+							bufExpr := fmt.Sprintf("buf[%d:%d]", offset, offset+fieldSize)
+							inlineCode = getInlineBaseTypeUnmarshal(field.Type, varName, bufExpr, fieldSize)
+						}
+						fieldModel.InlineUnmarshalCode = inlineCode
+					} else {
+						fieldModel.TypeName = typePrinter.TypeString(field.Type.Type)
+						fieldModel.UnmarshalFn = fn.Name
+					}
+
+					structModel.Fields = append(structModel.Fields, fieldModel)
 
 					if field.Type.IsDynamic {
 						structModel.HasDynamicFields = true
@@ -156,13 +264,20 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 				}
 			case dynssz.SszVectorType, dynssz.SszBitvectorType, dynssz.SszUint128Type, dynssz.SszUint256Type:
 				unmarshalFn := ""
+				inlineUnmarshalCode := ""
 				if !sourceType.IsByteArray {
 					fn, err := genRecursive(sourceType.ElemDesc, false)
 					if err != nil {
 						return nil, err
 					}
 
-					unmarshalFn = fn.Name
+					if fn.IsInlined {
+						// Generate inline code for vectors with known element size
+						elemSize := int(sourceType.ElemDesc.Size)
+						inlineUnmarshalCode = getInlineBaseTypeUnmarshal(sourceType.ElemDesc, "t[i]", "buf[i*itemsize:(i+1)*itemsize]", elemSize)
+					} else {
+						unmarshalFn = fn.Name
+					}
 				}
 
 				if sourceType.SizeExpression != "" {
@@ -177,7 +292,6 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 					}
 
 					dynVectorModel := tmpl.UnmarshalDynamicVector{
-						TypeName:    typePrinter.TypeString(sourceType.Type),
 						Length:      int(sourceType.Len),
 						EmptySize:   emptySize,
 						UnmarshalFn: unmarshalFn,
@@ -185,18 +299,26 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 						IsArray:     sourceType.Kind == reflect.Array,
 					}
 
+					if !dynVectorModel.IsArray {
+						dynVectorModel.TypeName = typePrinter.TypeString(sourceType.Type)
+					}
+
 					if err := codeTpl.ExecuteTemplate(&code, "marshal_dynamic_vector", dynVectorModel); err != nil {
 						return nil, err
 					}
 				} else {
 					vectorModel := tmpl.UnmarshalVector{
-						TypeName:    typePrinter.TypeString(sourceType.Type),
-						Length:      int(sourceType.Len),
-						ItemSize:    int(sourceType.ElemDesc.Size),
-						UnmarshalFn: unmarshalFn,
-						IsArray:     sourceType.Kind == reflect.Array,
-						IsByteArray: sourceType.IsByteArray,
-						IsString:    sourceType.IsString,
+						Length:                  int(sourceType.Len),
+						ItemSize:                int(sourceType.ElemDesc.Size),
+						UnmarshalFn:             unmarshalFn,
+						InlineItemUnmarshalCode: inlineUnmarshalCode,
+						IsArray:                 sourceType.Kind == reflect.Array,
+						IsByteArray:             sourceType.IsByteArray,
+						IsString:                sourceType.IsString,
+					}
+
+					if !vectorModel.IsArray && !vectorModel.IsString {
+						vectorModel.TypeName = typePrinter.TypeString(sourceType.Type)
 					}
 
 					if sourceType.SizeExpression != "" {
@@ -222,13 +344,24 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 				}
 			case dynssz.SszListType, dynssz.SszBitlistType, dynssz.SszProgressiveListType, dynssz.SszProgressiveBitlistType:
 				unmarshalFn := ""
+				inlineUnmarshalCode := ""
+				inlineUnmarshalCodeDynamic := ""
 				if !sourceType.IsByteArray {
 					fn, err := genRecursive(sourceType.ElemDesc, false)
 					if err != nil {
 						return nil, err
 					}
 
-					unmarshalFn = fn.Name
+					if fn.IsInlined {
+						// Generate inline code for static lists with known element size
+						elemSize := int(sourceType.ElemDesc.Size)
+						inlineUnmarshalCode = getInlineBaseTypeUnmarshal(sourceType.ElemDesc, "t[i]", "buf[i*itemsize:(i+1)*itemsize]", elemSize)
+
+						// Generate inline code for dynamic lists (unknown size at this point)
+						inlineUnmarshalCodeDynamic = getInlineBaseTypeUnmarshal(sourceType.ElemDesc, "t[i]", "buf[offset:endOffset]", 0)
+					} else {
+						unmarshalFn = fn.Name
+					}
 				}
 
 				if sourceType.SizeExpression != "" {
@@ -237,9 +370,10 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 
 				if sourceType.ElemDesc.IsDynamic {
 					dynListModel := tmpl.UnmarshalDynamicList{
-						TypeName:    typePrinter.TypeString(sourceType.Type),
-						UnmarshalFn: unmarshalFn,
-						SizeExpr:    sourceType.SizeExpression,
+						TypeName:                typePrinter.TypeString(sourceType.Type),
+						UnmarshalFn:             unmarshalFn,
+						InlineItemUnmarshalCode: inlineUnmarshalCodeDynamic,
+						SizeExpr:                sourceType.SizeExpression,
 					}
 
 					if err := codeTpl.ExecuteTemplate(&code, "unmarshal_dynamic_list", dynListModel); err != nil {
@@ -247,12 +381,13 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 					}
 				} else {
 					listModel := tmpl.UnmarshalList{
-						TypeName:    typePrinter.TypeString(sourceType.Type),
-						ItemSize:    int(sourceType.ElemDesc.Size),
-						UnmarshalFn: unmarshalFn,
-						SizeExpr:    sourceType.SizeExpression,
-						IsByteArray: sourceType.IsByteArray,
-						IsString:    sourceType.IsString,
+						TypeName:                typePrinter.TypeString(sourceType.Type),
+						ItemSize:                int(sourceType.ElemDesc.Size),
+						UnmarshalFn:             unmarshalFn,
+						InlineItemUnmarshalCode: inlineUnmarshalCode,
+						SizeExpr:                sourceType.SizeExpression,
+						IsByteArray:             sourceType.IsByteArray,
+						IsString:                sourceType.IsString,
 					}
 
 					if sourceType.ElemDesc.HasSizeExpr {
@@ -278,11 +413,20 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 						return nil, err
 					}
 
-					compatibleUnionModel.VariantFns = append(compatibleUnionModel.VariantFns, tmpl.UnmarshalCompatibleUnionVariant{
-						Index:       int(variant),
-						TypeName:    typePrinter.TypeString(variantDesc.Type),
-						UnmarshalFn: fn.Name,
-					})
+					variantModel := tmpl.UnmarshalCompatibleUnionVariant{
+						Index:    int(variant),
+						TypeName: typePrinter.TypeString(variantDesc.Type),
+					}
+
+					if fn.IsInlined {
+						// Generate inline code for union variants
+						variantSize := int(variantDesc.Size)
+						variantModel.InlineUnmarshalCode = getInlineBaseTypeUnmarshal(variantDesc, "v", "buf[1:]", variantSize)
+					} else {
+						variantModel.UnmarshalFn = fn.Name
+					}
+
+					compatibleUnionModel.VariantFns = append(compatibleUnionModel.VariantFns, variantModel)
 				}
 				if err := codeTpl.ExecuteTemplate(&code, "unmarshal_compatible_union", compatibleUnionModel); err != nil {
 					return nil, err

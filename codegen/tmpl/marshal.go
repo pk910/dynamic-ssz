@@ -10,11 +10,13 @@ type MarshalMain struct {
 }
 
 type MarshalFunction struct {
-	Index    int
-	Key      string
-	Name     string
-	TypeName string
-	Code     string
+	Index      int
+	Key        string
+	Name       string
+	TypeName   string
+	Code       string
+	IsInlined  bool
+	InlineCode string
 }
 
 type MarshalWrapper struct {
@@ -29,23 +31,25 @@ type MarshalStruct struct {
 }
 
 type MarshalField struct {
-	Index     int
-	Name      string
-	TypeName  string
-	IsDynamic bool
-	Size      int
-	MarshalFn string
+	Index             int
+	Name              string
+	TypeName          string
+	IsDynamic         bool
+	Size              int
+	MarshalFn         string
+	InlineMarshalCode string
 }
 
 type MarshalVector struct {
-	TypeName    string
-	Length      int
-	ItemSize    int
-	MarshalFn   string
-	SizeExpr    string
-	IsArray     bool
-	IsByteArray bool
-	IsString    bool
+	TypeName              string
+	Length                int
+	ItemSize              int
+	MarshalFn             string
+	InlineItemMarshalCode string
+	SizeExpr              string
+	IsArray               bool
+	IsByteArray           bool
+	IsString              bool
 }
 
 type MarshalDynamicVector struct {
@@ -58,12 +62,13 @@ type MarshalDynamicVector struct {
 }
 
 type MarshalList struct {
-	TypeName    string
-	ItemSize    int
-	MarshalFn   string
-	SizeExpr    string
-	IsByteArray bool
-	IsString    bool
+	TypeName              string
+	ItemSize              int
+	MarshalFn             string
+	InlineItemMarshalCode string
+	SizeExpr              string
+	IsByteArray           bool
+	IsString              bool
 }
 
 type MarshalDynamicList struct {
@@ -81,7 +86,8 @@ type MarshalCompatibleUnion struct {
 }
 
 type MarshalCompatibleUnionVariant struct {
-	Index     int
-	TypeName  string
-	MarshalFn string
+	Index             int
+	TypeName          string
+	MarshalFn         string
+	InlineMarshalCode string
 }

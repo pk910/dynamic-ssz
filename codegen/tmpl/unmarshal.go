@@ -11,14 +11,16 @@ type UnmarshalMain struct {
 }
 
 type UnmarshalFunction struct {
-	Index     int
-	Key       string
-	Name      string
-	TypeName  string
-	InnerType string
-	Code      string
-	IsPointer bool
-	UsedValue bool
+	Index      int
+	Key        string
+	Name       string
+	TypeName   string
+	InnerType  string
+	Code       string
+	IsPointer  bool
+	UsedValue  bool
+	IsInlined  bool
+	InlineCode string
 }
 
 type UnmarshalStaticSizeFunction struct {
@@ -52,6 +54,8 @@ type UnmarshalStruct struct {
 	Fields           []UnmarshalField
 	Size             int
 	HasDynamicFields bool
+	HasDynamicSizes  bool  // true if any field has dynamic size expressions
+	StaticOffsets    []int // precomputed static offsets for each field
 }
 
 type UnmarshalStaticSizeStruct struct {
@@ -61,14 +65,15 @@ type UnmarshalStaticSizeStruct struct {
 }
 
 type UnmarshalField struct {
-	Index       int
-	Name        string
-	TypeName    string
-	IsDynamic   bool
-	Size        int
-	UnmarshalFn string
-	SizeFn      *UnmarshalStaticSizeFunction
-	NextDynamic int
+	Index               int
+	Name                string
+	TypeName            string
+	IsDynamic           bool
+	Size                int
+	UnmarshalFn         string
+	InlineUnmarshalCode string
+	SizeFn              *UnmarshalStaticSizeFunction
+	NextDynamic         int
 }
 
 type UnmarshalStaticSizeField struct {
@@ -79,15 +84,16 @@ type UnmarshalStaticSizeField struct {
 }
 
 type UnmarshalVector struct {
-	TypeName    string
-	Length      int
-	ItemSize    int
-	UnmarshalFn string
-	SizeFn      *UnmarshalStaticSizeFunction
-	ItemSizeFn  *UnmarshalStaticSizeFunction
-	IsArray     bool
-	IsByteArray bool
-	IsString    bool
+	TypeName                string
+	Length                  int
+	ItemSize                int
+	UnmarshalFn             string
+	InlineItemUnmarshalCode string
+	SizeFn                  *UnmarshalStaticSizeFunction
+	ItemSizeFn              *UnmarshalStaticSizeFunction
+	IsArray                 bool
+	IsByteArray             bool
+	IsString                bool
 }
 
 type UnmarshalStaticSizeVector struct {
@@ -108,22 +114,24 @@ type UnmarshalDynamicVector struct {
 }
 
 type UnmarshalList struct {
-	TypeName    string
-	ItemSize    int
-	UnmarshalFn string
-	SizeFn      *UnmarshalStaticSizeFunction
-	SizeExpr    string
-	IsByteArray bool
-	IsString    bool
+	TypeName                string
+	ItemSize                int
+	UnmarshalFn             string
+	InlineItemUnmarshalCode string
+	SizeFn                  *UnmarshalStaticSizeFunction
+	SizeExpr                string
+	IsByteArray             bool
+	IsString                bool
 }
 
 type UnmarshalDynamicList struct {
-	TypeName    string
-	Length      int
-	EmptySize   int
-	UnmarshalFn string
-	SizeExpr    string
-	IsArray     bool
+	TypeName                string
+	Length                  int
+	EmptySize               int
+	UnmarshalFn             string
+	InlineItemUnmarshalCode string
+	SizeExpr                string
+	IsArray                 bool
 }
 
 type UnmarshalCompatibleUnion struct {
@@ -132,7 +140,8 @@ type UnmarshalCompatibleUnion struct {
 }
 
 type UnmarshalCompatibleUnionVariant struct {
-	Index       int
-	TypeName    string
-	UnmarshalFn string
+	Index                int
+	TypeName             string
+	UnmarshalFn          string
+	InlineUnmarshalCode  string
 }

@@ -23,8 +23,65 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 
 	var genRecursive func(sourceType *dynssz.TypeDescriptor, isRoot bool) (*tmpl.MarshalFunction, error)
 
+	isBaseType := func(sourceType *dynssz.TypeDescriptor) bool {
+		// Check if it's a byte array/slice
+		if sourceType.IsByteArray {
+			return true
+		}
+
+		// Check if it's a primitive type
+		switch sourceType.SszType {
+		case dynssz.SszBoolType, dynssz.SszUint8Type, dynssz.SszUint16Type, dynssz.SszUint32Type, dynssz.SszUint64Type:
+			return true
+		default:
+			return false
+		}
+	}
+
+	getInlineBaseTypeMarshal := func(sourceType *dynssz.TypeDescriptor, varName string) string {
+		// Handle byte arrays/slices
+		if sourceType.IsByteArray {
+			if sourceType.Kind == reflect.Array {
+				// For arrays, append all bytes (arrays have fixed size)
+				return fmt.Sprintf("dst = append(dst, %s[:]...)", varName)
+			} else if sourceType.Size > 0 {
+				// For slices with fixed size, limit to expected field size to prevent buffer overflow
+				expectedSize := int(sourceType.Size)
+				return fmt.Sprintf("if len(%s) > %d {\n  dst = append(dst, %s[:%d]...)\n} else {\n  dst = append(dst, %s[:]...)\n  if len(%s) < %d {\n    dst = sszutils.AppendZeroPadding(dst, %d - len(%s))\n  }\n}",
+					varName, expectedSize, varName, expectedSize, varName, varName, expectedSize, expectedSize, varName)
+			} else {
+				// For dynamic slices (no fixed size), append all available bytes
+				return fmt.Sprintf("dst = append(dst, %s[:]...)", varName)
+			}
+		}
+
+		// Handle primitive types
+		switch sourceType.SszType {
+		case dynssz.SszBoolType:
+			return fmt.Sprintf("dst = sszutils.MarshalBool(dst, bool(%s))", varName)
+		case dynssz.SszUint8Type:
+			return fmt.Sprintf("dst = sszutils.MarshalUint8(dst, uint8(%s))", varName)
+		case dynssz.SszUint16Type:
+			return fmt.Sprintf("dst = sszutils.MarshalUint16(dst, uint16(%s))", varName)
+		case dynssz.SszUint32Type:
+			return fmt.Sprintf("dst = sszutils.MarshalUint32(dst, uint32(%s))", varName)
+		case dynssz.SszUint64Type:
+			return fmt.Sprintf("dst = sszutils.MarshalUint64(dst, uint64(%s))", varName)
+		default:
+			return ""
+		}
+	}
+
 	genRecursive = func(sourceType *dynssz.TypeDescriptor, isRoot bool) (*tmpl.MarshalFunction, error) {
-		typeName := typePrinter.TypeString(sourceType.Type)
+		// For base types that are not root, return a special inline function
+		if !isRoot && isBaseType(sourceType) && !sourceType.IsPtr {
+			return &tmpl.MarshalFunction{
+				IsInlined:  true,
+				InlineCode: getInlineBaseTypeMarshal(sourceType, "VAR_NAME"),
+			}, nil
+		}
+		// Generate type key first to check if we've seen this type before
+		typeName := sourceType.Type.String() // Use basic string representation for key
 		typeKey := typeName
 		if sourceType.Len > 0 {
 			typeKey = fmt.Sprintf("%s:%d", typeKey, sourceType.Len)
@@ -62,9 +119,8 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 
 		code := strings.Builder{}
 		marshalFn := &tmpl.MarshalFunction{
-			Index:    0,
-			Key:      typeKey,
-			TypeName: typeName,
+			Index: 0,
+			Key:   typeKey,
 		}
 		marshalFnMap[typeKey] = marshalFnEntry{
 			Fn:   marshalFn,
@@ -109,14 +165,24 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 						return nil, err
 					}
 
-					structModel.Fields = append(structModel.Fields, tmpl.MarshalField{
+					fieldModel := tmpl.MarshalField{
 						Index:     idx,
 						Name:      field.Name,
-						TypeName:  typePrinter.TypeString(field.Type.Type),
 						IsDynamic: field.Type.IsDynamic,
 						Size:      int(field.Type.Size),
-						MarshalFn: fn.Name,
-					})
+					}
+
+					if fn.IsInlined {
+						// Use inline code for base types
+						inlineCode := fn.InlineCode
+						inlineCode = strings.ReplaceAll(inlineCode, "VAR_NAME", fmt.Sprintf("t.%s", field.Name))
+						fieldModel.InlineMarshalCode = inlineCode
+					} else {
+						fieldModel.TypeName = typePrinter.TypeString(field.Type.Type)
+						fieldModel.MarshalFn = fn.Name
+					}
+
+					structModel.Fields = append(structModel.Fields, fieldModel)
 
 					if field.Type.IsDynamic {
 						structModel.HasDynamicFields = true
@@ -127,13 +193,21 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 				}
 			case dynssz.SszVectorType, dynssz.SszBitvectorType, dynssz.SszUint128Type, dynssz.SszUint256Type:
 				marshalFn := ""
+				inlineMarshalCode := ""
 				if !sourceType.IsByteArray {
 					fn, err := genRecursive(sourceType.ElemDesc, false)
 					if err != nil {
 						return nil, err
 					}
 
-					marshalFn = fn.Name
+					if fn.IsInlined {
+						// Generate inline code for vectors
+						inlineCode := fn.InlineCode
+						inlineCode = strings.ReplaceAll(inlineCode, "VAR_NAME", "t[i]")
+						inlineMarshalCode = inlineCode
+					} else {
+						marshalFn = fn.Name
+					}
 				}
 
 				if sourceType.SizeExpression != "" {
@@ -161,14 +235,15 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 					}
 				} else {
 					vectorModel := tmpl.MarshalVector{
-						TypeName:    typePrinter.TypeString(sourceType.Type),
-						Length:      int(sourceType.Len),
-						ItemSize:    int(sourceType.ElemDesc.Size),
-						MarshalFn:   marshalFn,
-						SizeExpr:    sourceType.SizeExpression,
-						IsArray:     sourceType.Kind == reflect.Array,
-						IsByteArray: sourceType.IsByteArray,
-						IsString:    sourceType.IsString,
+						TypeName:              typePrinter.TypeString(sourceType.Type),
+						Length:                int(sourceType.Len),
+						ItemSize:              int(sourceType.ElemDesc.Size),
+						MarshalFn:             marshalFn,
+						InlineItemMarshalCode: inlineMarshalCode,
+						SizeExpr:              sourceType.SizeExpression,
+						IsArray:               sourceType.Kind == reflect.Array,
+						IsByteArray:           sourceType.IsByteArray,
+						IsString:              sourceType.IsString,
 					}
 
 					if err := codeTpl.ExecuteTemplate(&code, "marshal_vector", vectorModel); err != nil {
@@ -177,13 +252,21 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 				}
 			case dynssz.SszListType, dynssz.SszBitlistType, dynssz.SszProgressiveListType, dynssz.SszProgressiveBitlistType:
 				marshalFn := ""
+				inlineMarshalCode := ""
 				if !sourceType.IsByteArray {
 					fn, err := genRecursive(sourceType.ElemDesc, false)
 					if err != nil {
 						return nil, err
 					}
 
-					marshalFn = fn.Name
+					if fn.IsInlined {
+						// Generate inline code for lists
+						inlineCode := fn.InlineCode
+						inlineCode = strings.ReplaceAll(inlineCode, "VAR_NAME", "t[i]")
+						inlineMarshalCode = inlineCode
+					} else {
+						marshalFn = fn.Name
+					}
 				}
 
 				if sourceType.SizeExpression != "" {
@@ -202,12 +285,13 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 					}
 				} else {
 					listModel := tmpl.MarshalList{
-						TypeName:    typePrinter.TypeString(sourceType.Type),
-						ItemSize:    int(sourceType.ElemDesc.Size),
-						MarshalFn:   marshalFn,
-						SizeExpr:    sourceType.SizeExpression,
-						IsByteArray: sourceType.IsByteArray,
-						IsString:    sourceType.IsString,
+						TypeName:              typePrinter.TypeString(sourceType.Type),
+						ItemSize:              int(sourceType.ElemDesc.Size),
+						MarshalFn:             marshalFn,
+						InlineItemMarshalCode: inlineMarshalCode,
+						SizeExpr:              sourceType.SizeExpression,
+						IsByteArray:           sourceType.IsByteArray,
+						IsString:              sourceType.IsString,
 					}
 
 					if err := codeTpl.ExecuteTemplate(&code, "marshal_list", listModel); err != nil {
@@ -221,11 +305,22 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 					if err != nil {
 						return nil, err
 					}
-					variantFns = append(variantFns, tmpl.MarshalCompatibleUnionVariant{
-						Index:     int(variant),
-						TypeName:  typePrinter.TypeString(variantDesc.Type),
-						MarshalFn: fn.Name,
-					})
+
+					variantModel := tmpl.MarshalCompatibleUnionVariant{
+						Index:    int(variant),
+						TypeName: typePrinter.TypeString(variantDesc.Type),
+					}
+
+					if fn.IsInlined {
+						// Generate inline code for union variants
+						inlineCode := fn.InlineCode
+						inlineCode = strings.ReplaceAll(inlineCode, "VAR_NAME", "v")
+						variantModel.InlineMarshalCode = inlineCode
+					} else {
+						variantModel.MarshalFn = fn.Name
+					}
+
+					variantFns = append(variantFns, variantModel)
 				}
 
 				sort.Slice(variantFns, func(i, j int) bool {
@@ -270,6 +365,7 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 		marshalFn.Index = marshalFnIdx
 		marshalFn.Name = fmt.Sprintf("fn%d", marshalFnIdx)
 		marshalFn.Code = code.String()
+		marshalFn.TypeName = typePrinter.TypeString(sourceType.Type)
 
 		return marshalFn, nil
 	}

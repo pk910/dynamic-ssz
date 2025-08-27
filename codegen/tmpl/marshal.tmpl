@@ -70,18 +70,26 @@ offset{{ .Index }} := len(dst)
 dst = sszutils.MarshalOffset(dst, 0)
 {{- else }}
 // Field #{{ .Index }} '{{ .Name }}'
+{{- if .InlineMarshalCode }}
+{{ .InlineMarshalCode }}
+{{- else }}
 if err = {{ .MarshalFn }}(t.{{ .Name }}); err != nil {
   return err
 }
+{{- end }}
 {{- end }}
 {{- end }}
 {{- range .Fields }}
 {{- if .IsDynamic }}
 // Dynamic Field #{{ .Index }} '{{ .Name }}'
 sszutils.UpdateOffset(dst[offset{{ .Index }}:offset{{ .Index }}+4], len(dst)-dstlen)
+{{- if .InlineMarshalCode }}
+{{ .InlineMarshalCode }}
+{{- else }}
 if err = {{ .MarshalFn }}(t.{{ .Name }}); err != nil {
   return err
 }
+{{- end }}
 {{- end }}
 {{- end }}
 {{- end }}
@@ -129,9 +137,13 @@ if vlen < int(limit) {
 vlen := len(t)
 {{- end }}
 for i := 0; i < vlen; i++ {
+  {{- if .InlineItemMarshalCode }}
+  {{ indent .InlineItemMarshalCode 2 }}
+  {{- else }}
   if err = {{ .MarshalFn }}(t[i]); err != nil {
     return err
   }
+  {{- end }}
 }
 {{- if not .IsArray }}
 if vlen < int(limit) {
@@ -182,9 +194,13 @@ dst = append(dst, t[:]...)
 {{- else }}
 vlen := len(t)
 for i := 0; i < vlen; i++ {
+  {{- if .InlineItemMarshalCode }}
+  {{ indent .InlineItemMarshalCode 2 }}
+  {{- else }}
   if err = {{ .MarshalFn }}(t[i]); err != nil {
     return err
   }
+  {{- end }}
 }
 {{- end }}
 {{- end }}
@@ -210,9 +226,13 @@ case {{ .Index }}:
   if !ok {
     return sszutils.ErrInvalidUnionVariant
   }
+  {{- if .InlineMarshalCode }}
+  {{ indent .InlineMarshalCode 2 }}
+  {{- else }}
   if err = {{ .MarshalFn }}(v); err != nil {
     return err
   }
+  {{- end }}
 {{- end }}
 default:
   return sszutils.ErrInvalidUnionVariant

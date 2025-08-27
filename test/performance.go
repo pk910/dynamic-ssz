@@ -56,12 +56,12 @@ func performanceCommand() {
 	fmt.Printf("## mainnet preset / BeaconState decode + encode + hash (%d times)\n", iterations)
 	dur, hash, err = test_state_fastssz(state_mainnet, iterations)
 	print_test_result("fastssz only", dur, hash, err)
+	dur, hash, err = test_state_dynssz_codegen(dynssz_hybrid_mainnet, state_mainnet, iterations)
+	print_test_result("dynssz + codegen", dur, hash, err)
 	dur, hash, err = test_state_dynssz(dynssz_only_mainnet, state_mainnet, iterations)
 	print_test_result("dynssz only", dur, hash, err)
 	dur, hash, err = test_state_dynssz(dynssz_hybrid_mainnet, state_mainnet, iterations)
 	print_test_result("dynssz + fastssz", dur, hash, err)
-	dur, hash, err = test_state_dynssz_codegen(dynssz_hybrid_mainnet, state_mainnet, iterations)
-	print_test_result("dynssz + codegen", dur, hash, err)
 	fmt.Printf("\n")
 
 	fmt.Printf("## minimal preset / BeaconBlock decode + encode + hash (%d times)\n", iterations)
@@ -367,7 +367,6 @@ func test_state_dynssz_codegen(dynssz *ssz.DynSsz, in []byte, iterations int) ([
 
 		err := t.UnmarshalSSZDyn(dynssz, in)
 		if err != nil {
-			err := t.UnmarshalSSZDyn(dynssz, in)
 			return nil, nil, fmt.Errorf("unmarshal error: %v", err)
 		}
 	}
@@ -380,7 +379,8 @@ func test_state_dynssz_codegen(dynssz *ssz.DynSsz, in []byte, iterations int) ([
 	for i := 0; i < iterations; i++ {
 		size := t.SizeSSZDyn(dynssz)
 		buf := make([]byte, size)
-		_, err := t.MarshalSSZDyn(dynssz, buf)
+		var err error
+		_, err = t.MarshalSSZDyn(dynssz, buf[:0])
 		if err != nil {
 			return nil, nil, fmt.Errorf("marshal error: %v", err)
 		}

@@ -10,10 +10,7 @@ import (
 )
 
 type TestBeaconState deneb.BeaconState
-type TestBeaconBlock struct {
-	Message   *deneb.BeaconBlock
-	Signature phase0.BLSSignature `ssz-size:"96"`
-}
+type TestBeaconBlock deneb.SignedBeaconBlock
 
 type Test1 struct {
 	TestUnion *dynssz.CompatibleUnion[struct {
@@ -26,7 +23,7 @@ func codegenCommand() {
 	ds := dynssz.NewDynSsz(nil)
 	ds.NoFastSsz = true
 
-	code, err := codegen.GenerateSSZCode((*Test1)(nil), codegen.WithDynSSZ(ds), codegen.WithCreateLegacyFn(), codegen.WithCreateDynamicFn())
+	code, err := codegen.GenerateSSZCode((*TestBeaconState)(nil), codegen.WithDynSSZ(ds), codegen.WithCreateLegacyFn(), codegen.WithCreateDynamicFn())
 	if err != nil {
 		fmt.Printf("Error generating SSZ code: %v\n", err)
 		return

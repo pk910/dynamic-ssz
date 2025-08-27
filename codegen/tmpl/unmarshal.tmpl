@@ -78,12 +78,29 @@ t = ({{ .TypeName }})(sszutils.UnmarshallUint64(buf))
 {{- end }}
 
 {{ define "unmarshal_struct" }}
+{{- if .HasDynamicSizes }}
 bufpos := 0
 buflen := len(buf)
 minsize := {{ .Size }}
 if buflen < minsize {
   return t, sszutils.ErrUnexpectedEOF
 }
+{{- else }}
+{{- if .HasDynamicFields }}
+bufpos := {{ .Size }}
+{{- end }}
+buflen := len(buf)
+if buflen < {{ .Size }} {
+  return t, sszutils.ErrUnexpectedEOF
+}
+{{- range .Fields }}
+{{- if .IsDynamic }}
+// Read offset #{{ .Index }} '{{ .Name }}'
+offset{{ .Index }} := int(sszutils.ReadOffset(buf[{{ index $.StaticOffsets .Index }}:{{ add (index $.StaticOffsets .Index) 4 }}]))
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if .HasDynamicSizes }}
 {{- range .Fields }}
 {{- if .IsDynamic }}
 // Offset #{{ .Index }} '{{ .Name }}'
@@ -101,11 +118,29 @@ bufpos += 4
   {{- else }}
   fieldsize := {{ .Size }}
   {{- end }}
+  {{- if .InlineUnmarshalCode }}
+  {{ .InlineUnmarshalCode }}
+  {{- else }}
   if t.{{ .Name }}, err = {{ .UnmarshalFn }}(t.{{ .Name }}, buf[bufpos:bufpos+fieldsize]); err != nil {
     return t, err
   }
+  {{- end }}
   bufpos += fieldsize
 }
+{{- end }}
+{{- end }}
+{{- else }}
+{{- range .Fields }}
+{{- if not .IsDynamic }}
+// Field #{{ .Index }} '{{ .Name }}'
+{{- if .InlineUnmarshalCode }}
+{{ .InlineUnmarshalCode }}
+{{- else }}
+if t.{{ .Name }}, err = {{ .UnmarshalFn }}(t.{{ .Name }}, buf[{{ index $.StaticOffsets .Index }}:{{ add (index $.StaticOffsets .Index) .Size }}]); err != nil {
+  return t, err
+}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- range .Fields }}
@@ -116,9 +151,13 @@ if offset{{ .Index }} < bufpos {{ if gt .NextDynamic 0 }}|| offset{{ .NextDynami
 }
 {
   fieldSlice := buf[offset{{ .Index }}:{{ if gt .NextDynamic 0 }}offset{{ .NextDynamic }}{{ end }}]
+  {{- if .InlineUnmarshalCode }}
+  {{ indent .InlineUnmarshalCode 2 }}
+  {{- else }}
   if t.{{ .Name }}, err = {{ .UnmarshalFn }}(t.{{ .Name }}, fieldSlice); err != nil {
     return t, err
   }
+  {{- end }}
   bufpos += len(fieldSlice)
 }
 {{- end }}
@@ -161,9 +200,13 @@ t = string(buf)
 copy(t[:], buf[:])
 {{- else }}
 for i := 0; i < int(limit); i++ {
+  {{- if .InlineItemUnmarshalCode }}
+  {{ indent .InlineItemUnmarshalCode 2 }}
+  {{- else }}
   if t[i], err = {{ .UnmarshalFn }}(t[i], buf[i*itemsize:(i+1)*itemsize]); err != nil {
     return t, err
   }
+  {{- end }}
 }
 {{- end }}
 {{- end }}
@@ -200,7 +243,7 @@ if !hasLimit {
 {{- else }}
 limit := {{ .Length }}
 {{- end }}
-{{- if and (not .IsArray) (not .IsString) }}
+{{- if not .IsArray }}
 if len(t) < int(limit) {
   t = make({{ .TypeName }}, int(limit))
 } else {
@@ -265,9 +308,13 @@ if len(t) < itemCount {
   t = t[:itemCount]
 }
 for i := 0; i < itemCount; i++ {
+  {{- if .InlineItemUnmarshalCode }}
+  {{ indent .InlineItemUnmarshalCode 2 }}
+  {{- else }}
   if t[i], err = {{ .UnmarshalFn }}(t[i], buf[i*itemsize:(i+1)*itemsize]); err != nil {
     return t, err
   }
+  {{- end }}
 }
 {{- end }}
 {{- end }}
@@ -300,9 +347,13 @@ for i := 0; i < itemCount; i++ {
   if endOffset < offset || endOffset > buflen {
     return t, sszutils.ErrOffset
   }
+  {{- if .InlineItemUnmarshalCode }}
+  {{ indent .InlineItemUnmarshalCode 2 }}
+  {{- else }}
   if t[i], err = {{ .UnmarshalFn }}(t[i], buf[offset:endOffset]); err != nil {
     return t, err
   }
+  {{- end }}
   offset = endOffset
 }
 {{- end }}
@@ -316,7 +367,12 @@ switch t.Variant {
 {{- range .VariantFns }}
 case {{ .Index }}:
   v, _ := t.Data.({{ .TypeName }})
+  {{- if .InlineUnmarshalCode }}
+  {{ indent .InlineUnmarshalCode 2 }}
+  t.Data = v
+  {{- else }}
   t.Data, err = {{ .UnmarshalFn }}(v, buf[1:])
+  {{- end }}
 {{- end }}
 default:
   return t, sszutils.ErrInvalidUnionVariant
