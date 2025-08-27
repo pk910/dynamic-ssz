@@ -132,6 +132,9 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 			useFastSsz = true
 		}
 
+		// Check if we should use dynamic unmarshaler - can ALWAYS be used unlike fastssz
+		useDynamicUnmarshal := sourceType.HasDynamicUnmarshaler
+
 		code := strings.Builder{}
 		unmarshalFn := &tmpl.UnmarshalFunction{
 			Index:     0,
@@ -149,17 +152,18 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 			Type: sourceType,
 		}
 
-		if useFastSsz {
+		if useFastSsz && !isRoot {
 			if err := codeTpl.ExecuteTemplate(&code, "unmarshal_fastssz", nil); err != nil {
 				return nil, err
 			}
-		} else {
-
-			if sourceType.Type.Name() != "" && !isRoot {
-				// do not recurse into non-root types
-
+		} else if useDynamicUnmarshal && !isRoot {
+			// Use dynamic unmarshaler - create template for this
+			if err := codeTpl.ExecuteTemplate(&code, "unmarshal_dynamic", nil); err != nil {
+				return nil, err
 			}
 
+			usedDynSsz = true
+		} else {
 			switch sourceType.SszType {
 			// complex types
 			case dynssz.SszTypeWrapperType:
@@ -220,7 +224,7 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 						// Use inline code for base types
 						varName := fmt.Sprintf("t.%s", field.Name)
 						var inlineCode string
-						
+
 						if field.Type.IsDynamic {
 							// For dynamic fields, the buffer is already sliced as 'fieldSlice'
 							inlineCode = getInlineBaseTypeUnmarshal(field.Type, varName, "fieldSlice", 0)

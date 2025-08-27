@@ -53,12 +53,13 @@ type MarshalVector struct {
 }
 
 type MarshalDynamicVector struct {
-	TypeName  string
-	Length    int
-	EmptySize int
-	MarshalFn string
-	SizeExpr  string
-	IsArray   bool
+	TypeName              string
+	Length                int
+	EmptySize             int
+	MarshalFn             string
+	InlineItemMarshalCode string
+	SizeExpr              string
+	IsArray               bool
 }
 
 type MarshalList struct {
@@ -72,12 +73,13 @@ type MarshalList struct {
 }
 
 type MarshalDynamicList struct {
-	TypeName  string
-	Length    int
-	EmptySize int
-	MarshalFn string
-	SizeExpr  string
-	IsArray   bool
+	TypeName              string
+	Length                int
+	EmptySize             int
+	MarshalFn             string
+	InlineItemMarshalCode string
+	SizeExpr              string
+	IsArray               bool
 }
 
 type MarshalCompatibleUnion struct {

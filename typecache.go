@@ -40,6 +40,9 @@ type TypeDescriptor struct {
 	HasFastSSZMarshaler    bool                      // Whether the type implements fastssz.Marshaler
 	HasFastSSZHasher       bool                      // Whether the type implements fastssz.HashRoot
 	HasHashTreeRootWith    bool                      // Whether the type implements HashTreeRootWith
+	HasDynamicMarshaler    bool                      // Whether the type implements DynamicMarshaler
+	HasDynamicUnmarshaler  bool                      // Whether the type implements DynamicUnmarshaler
+	HasDynamicSizer        bool                      // Whether the type implements DynamicSizer
 	IsPtr                  bool                      // Whether this is a pointer type
 	IsByteArray            bool                      // Whether this is a byte array
 	IsString               bool                      // Whether this is a string type
@@ -368,6 +371,11 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		desc.HashTreeRootWithMethod = tc.dynssz.getHashTreeRootWithCompatibility(t)
 		desc.HasHashTreeRootWith = desc.HashTreeRootWithMethod != nil
 	}
+
+	// Check for dynamic interface implementations
+	desc.HasDynamicMarshaler = tc.dynssz.getDynamicMarshalerCompatibility(t)
+	desc.HasDynamicUnmarshaler = tc.dynssz.getDynamicUnmarshalerCompatibility(t)
+	desc.HasDynamicSizer = tc.dynssz.getDynamicSizerCompatibility(t)
 
 	if desc.SszType == SszCustomType && (!desc.HasFastSSZMarshaler || !desc.HasFastSSZHasher) {
 		return nil, fmt.Errorf("custom ssz type requires fastssz marshaler and hasher implementations")

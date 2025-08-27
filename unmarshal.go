@@ -52,6 +52,9 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 		useFastSsz = true
 	}
 
+	// Check if we should use dynamic unmarshaler - can ALWAYS be used unlike fastssz
+	useDynamicUnmarshal := targetType.HasDynamicUnmarshaler
+
 	if d.Verbose {
 		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), targetType.Type.Name(), targetType.Kind, useFastSsz, targetType.HasFastSSZMarshaler, targetType.HasDynamicSize)
 	}
@@ -70,7 +73,22 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 		}
 	}
 
-	if !useFastSsz {
+	if !useFastSsz && useDynamicUnmarshal {
+		// Use dynamic unmarshaler - can always be used even with dynamic specs
+		unmarshaller, ok := targetValue.Addr().Interface().(sszutils.DynamicUnmarshaler)
+		if ok {
+			err := unmarshaller.UnmarshalSSZDyn(d, ssz)
+			if err != nil {
+				return 0, err
+			}
+
+			consumedBytes = len(ssz)
+		} else {
+			useDynamicUnmarshal = false
+		}
+	}
+
+	if !useFastSsz && !useDynamicUnmarshal {
 		// can't use fastssz, use dynamic unmarshaling
 		var err error
 		switch targetType.SszType {

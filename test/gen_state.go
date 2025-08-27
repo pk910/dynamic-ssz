@@ -444,7 +444,6 @@ func (t *TestBeaconState) MarshalSSZTo(buf []byte) (dst []byte, err error) {
   return t.MarshalSSZDyn(dynssz.GetGlobalDynSsz(), buf)
 }
 
-
 func (t *TestBeaconState) SizeSSZDyn(ds *dynssz.DynSsz) (size int) {
   sfn1 := func(t []phase0.Root) (size int) { // []phase0.Root:8192:SLOTS_PER_HISTORICAL_ROOT:32
     hasLimit, limit, _ := ds.ResolveSpecValue("SLOTS_PER_HISTORICAL_ROOT")
@@ -544,7 +543,6 @@ func (t *TestBeaconState) SizeSSZDyn(ds *dynssz.DynSsz) (size int) {
 func (t *TestBeaconState) SizeSSZ() (size int) {
   return t.SizeSSZDyn(dynssz.GetGlobalDynSsz())
 }
-
 
 func (t *TestBeaconState) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err error) {
   sfn1 := func() (size int) { // []phase0.Root:8192:SLOTS_PER_HISTORICAL_ROOT:32
@@ -1326,5 +1324,4 @@ func (t *TestBeaconState) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
 func (t *TestBeaconState) UnmarshalSSZ(buf []byte) (err error) {
   return t.UnmarshalSSZDyn(dynssz.GetGlobalDynSsz(), buf)
 }
-
 

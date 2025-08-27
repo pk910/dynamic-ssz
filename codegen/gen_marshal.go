@@ -117,6 +117,9 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 			useFastSsz = true
 		}
 
+		// Check if we should use dynamic marshaler - can ALWAYS be used unlike fastssz
+		useDynamicMarshal := sourceType.HasDynamicMarshaler
+
 		code := strings.Builder{}
 		marshalFn := &tmpl.MarshalFunction{
 			Index: 0,
@@ -127,17 +130,18 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 			Type: sourceType,
 		}
 
-		if useFastSsz {
+		if useFastSsz && !isRoot {
 			if err := codeTpl.ExecuteTemplate(&code, "marshal_fastssz", nil); err != nil {
 				return nil, err
 			}
-		} else {
-
-			if sourceType.Type.Name() != "" && !isRoot {
-				// do not recurse into non-root types
-
+		} else if useDynamicMarshal && !isRoot {
+			// Use dynamic marshaler - create template for this
+			if err := codeTpl.ExecuteTemplate(&code, "marshal_dynamic", nil); err != nil {
+				return nil, err
 			}
 
+			usedDynSsz = true
+		} else {
 			switch sourceType.SszType {
 			// complex types
 			case dynssz.SszTypeWrapperType:
@@ -222,12 +226,13 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 					}
 
 					dynVectorModel := tmpl.MarshalDynamicVector{
-						TypeName:  typePrinter.TypeString(sourceType.Type),
-						Length:    int(sourceType.Len),
-						EmptySize: emptySize,
-						MarshalFn: marshalFn,
-						SizeExpr:  sourceType.SizeExpression,
-						IsArray:   sourceType.Kind == reflect.Array,
+						TypeName:              typePrinter.TypeString(sourceType.Type),
+						Length:                int(sourceType.Len),
+						EmptySize:             emptySize,
+						MarshalFn:             marshalFn,
+						InlineItemMarshalCode: inlineMarshalCode,
+						SizeExpr:              sourceType.SizeExpression,
+						IsArray:               sourceType.Kind == reflect.Array,
 					}
 
 					if err := codeTpl.ExecuteTemplate(&code, "marshal_dynamic_vector", dynVectorModel); err != nil {
@@ -275,9 +280,10 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 
 				if sourceType.ElemDesc.IsDynamic {
 					dynListModel := tmpl.MarshalDynamicList{
-						TypeName:  typePrinter.TypeString(sourceType.Type),
-						MarshalFn: marshalFn,
-						SizeExpr:  sourceType.SizeExpression,
+						TypeName:              typePrinter.TypeString(sourceType.Type),
+						MarshalFn:             marshalFn,
+						InlineItemMarshalCode: inlineMarshalCode,
+						SizeExpr:              sourceType.SizeExpression,
 					}
 
 					if err := codeTpl.ExecuteTemplate(&code, "marshal_dynamic_list", dynListModel); err != nil {

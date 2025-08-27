@@ -35,6 +35,10 @@ func (t {{ .TypeName }}) MarshalSSZTo(buf []byte) (dst []byte, err error) {
 dst, err = t.MarshalSSZTo(dst)
 {{- end }}
 
+{{ define "marshal_dynamic" }}
+dst, err = t.MarshalSSZDyn(ds, dst)
+{{- end }}
+
 {{ define "marshal_wrapper" }}
 err = {{ .MarshalFn }}(t.Data)
 {{- end }}
@@ -175,9 +179,13 @@ dstlen := len(dst)
 dst = sszutils.AppendZeroPadding(dst, int(limit) * 4)
 for i := 0; i < vlen; i++ {
   sszutils.UpdateOffset(dst[dstlen+(i*4):dstlen+((i+1)*4)], len(dst)-dstlen)
+  {{- if .InlineItemMarshalCode }}
+  {{ indent .InlineItemMarshalCode 2 }}
+  {{- else }}
   if err = {{ .MarshalFn }}(t[i]); err != nil {
     return err
   }
+  {{- end }}
 }
 {{- if not .IsArray }}
 if vlen < int(limit) {
@@ -211,9 +219,13 @@ dstlen := len(dst)
 dst = sszutils.AppendZeroPadding(dst, vlen * 4)
 for i := 0; i < vlen; i++ {
   sszutils.UpdateOffset(dst[dstlen+(i*4):dstlen+((i+1)*4)], len(dst)-dstlen)
+  {{- if .InlineItemMarshalCode }}
+  {{ indent .InlineItemMarshalCode 2 }}
+  {{- else }}
   if err = {{ .MarshalFn }}(t[i]); err != nil {
     return err
   }
+  {{- end }}
 }
 {{- end }}
 

@@ -78,14 +78,10 @@ func WithCreateLegacyFn() CodeGenOption {
 	}
 }
 
-func WithCreateDynamicFn() CodeGenOption {
-	return func(opts *CodeGenOptions) {
-		opts.CreateDynamicFn = true
-	}
-}
-
 func GenerateSSZCode(source any, opts ...CodeGenOption) (string, error) {
-	options := &CodeGenOptions{}
+	options := &CodeGenOptions{
+		CreateDynamicFn: true,
+	}
 	for _, opt := range opts {
 		opt(options)
 	}

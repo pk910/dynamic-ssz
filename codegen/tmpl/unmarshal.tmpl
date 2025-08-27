@@ -44,6 +44,10 @@ func (t {{ .TypeName }}) UnmarshalSSZ(buf []byte) (err error) {
 err = t.UnmarshalSSZ(buf)
 {{- end }}
 
+{{ define "unmarshal_dynamic" }}
+err = t.UnmarshalSSZDyn(ds, buf)
+{{- end }}
+
 {{ define "unmarshal_size_fastssz" }}
 t := new({{ .TypeName }})
 size = t.SizeSSZ()

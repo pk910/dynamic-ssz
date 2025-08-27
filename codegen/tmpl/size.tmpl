@@ -28,6 +28,10 @@ func (t {{ .TypeName }}) SizeSSZ() (size int) {
 size = t.SizeSSZ()
 {{- end }}
 
+{{ define "size_dynamic" }}
+size = t.SizeSSZDyn(ds)
+{{- end }}
+
 {{ define "size_wrapper" }}
 size = {{ .SizeFn }}(t.Data)
 {{- end }}
