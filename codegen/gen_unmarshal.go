@@ -113,7 +113,7 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 				if err := codeTpl.ExecuteTemplate(&code, "unmarshal_wrapper", wrapperModel); err != nil {
 					return nil, err
 				}
-			case dynssz.SszContainerType:
+			case dynssz.SszContainerType, dynssz.SszProgressiveContainerType:
 				structModel := tmpl.UnmarshalStruct{
 					TypeName: typePrinter.TypeString(sourceType.Type),
 					Fields:   make([]tmpl.UnmarshalField, 0, len(sourceType.ContainerDesc.Fields)),
@@ -220,7 +220,7 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 						return nil, err
 					}
 				}
-			case dynssz.SszListType, dynssz.SszBitlistType:
+			case dynssz.SszListType, dynssz.SszBitlistType, dynssz.SszProgressiveListType, dynssz.SszProgressiveBitlistType:
 				unmarshalFn := ""
 				if !sourceType.IsByteArray {
 					fn, err := genRecursive(sourceType.ElemDesc, false)
@@ -266,6 +266,26 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 					if err := codeTpl.ExecuteTemplate(&code, "unmarshal_list", listModel); err != nil {
 						return nil, err
 					}
+				}
+			case dynssz.SszCompatibleUnionType:
+				compatibleUnionModel := tmpl.UnmarshalCompatibleUnion{
+					TypeName:   typePrinter.TypeString(sourceType.Type),
+					VariantFns: make([]tmpl.UnmarshalCompatibleUnionVariant, 0, len(sourceType.UnionVariants)),
+				}
+				for variant, variantDesc := range sourceType.UnionVariants {
+					fn, err := genRecursive(variantDesc, false)
+					if err != nil {
+						return nil, err
+					}
+
+					compatibleUnionModel.VariantFns = append(compatibleUnionModel.VariantFns, tmpl.UnmarshalCompatibleUnionVariant{
+						Index:       int(variant),
+						TypeName:    typePrinter.TypeString(variantDesc.Type),
+						UnmarshalFn: fn.Name,
+					})
+				}
+				if err := codeTpl.ExecuteTemplate(&code, "unmarshal_compatible_union", compatibleUnionModel); err != nil {
+					return nil, err
 				}
 			// primitive types
 			case dynssz.SszBoolType:
@@ -378,7 +398,7 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 			if err := codeTpl.ExecuteTemplate(&code, "unmarshal_size_wrapper", wrapperModel); err != nil {
 				return nil, err
 			}
-		case dynssz.SszContainerType:
+		case dynssz.SszContainerType, dynssz.SszProgressiveContainerType:
 			structModel := tmpl.UnmarshalStaticSizeStruct{
 				TypeName: typePrinter.TypeString(sourceType.Type),
 				Fields:   make([]tmpl.UnmarshalStaticSizeField, 0, len(sourceType.ContainerDesc.Fields)),

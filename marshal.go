@@ -504,7 +504,7 @@ func (d *DynSsz) marshalCompatibleUnion(sourceType *TypeDescriptor, sourceValue 
 	// Get the variant descriptor
 	variantDesc, ok := sourceType.UnionVariants[variant]
 	if !ok {
-		return nil, fmt.Errorf("unknown union variant index: %d", variant)
+		return nil, sszutils.ErrInvalidUnionVariant
 	}
 
 	// Marshal the data using the variant's type descriptor

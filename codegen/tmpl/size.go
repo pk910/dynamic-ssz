@@ -76,3 +76,14 @@ type SizeDynamicList struct {
 	SizeExpr  string
 	IsArray   bool
 }
+
+type SizeCompatibleUnion struct {
+	TypeName   string
+	VariantFns []SizeCompatibleUnionVariant
+}
+
+type SizeCompatibleUnionVariant struct {
+	Index    int
+	TypeName string
+	SizeFn   string
+}

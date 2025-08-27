@@ -98,7 +98,7 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 				if err := codeTpl.ExecuteTemplate(&code, "marshal_wrapper", wrapperModel); err != nil {
 					return nil, err
 				}
-			case dynssz.SszContainerType:
+			case dynssz.SszContainerType, dynssz.SszProgressiveContainerType:
 				structModel := tmpl.MarshalStruct{
 					TypeName: typePrinter.TypeString(sourceType.Type),
 					Fields:   make([]tmpl.MarshalField, 0, len(sourceType.ContainerDesc.Fields)),
@@ -175,7 +175,7 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 						return nil, err
 					}
 				}
-			case dynssz.SszListType, dynssz.SszBitlistType:
+			case dynssz.SszListType, dynssz.SszBitlistType, dynssz.SszProgressiveListType, dynssz.SszProgressiveBitlistType:
 				marshalFn := ""
 				if !sourceType.IsByteArray {
 					fn, err := genRecursive(sourceType.ElemDesc, false)
@@ -213,6 +213,32 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 					if err := codeTpl.ExecuteTemplate(&code, "marshal_list", listModel); err != nil {
 						return nil, err
 					}
+				}
+			case dynssz.SszCompatibleUnionType:
+				variantFns := make([]tmpl.MarshalCompatibleUnionVariant, 0, len(sourceType.UnionVariants))
+				for variant, variantDesc := range sourceType.UnionVariants {
+					fn, err := genRecursive(variantDesc, false)
+					if err != nil {
+						return nil, err
+					}
+					variantFns = append(variantFns, tmpl.MarshalCompatibleUnionVariant{
+						Index:     int(variant),
+						TypeName:  typePrinter.TypeString(variantDesc.Type),
+						MarshalFn: fn.Name,
+					})
+				}
+
+				sort.Slice(variantFns, func(i, j int) bool {
+					return variantFns[i].Index < variantFns[j].Index
+				})
+
+				compatibleUnionModel := tmpl.MarshalCompatibleUnion{
+					TypeName:   typePrinter.TypeString(sourceType.Type),
+					VariantFns: variantFns,
+				}
+
+				if err := codeTpl.ExecuteTemplate(&code, "marshal_compatible_union", compatibleUnionModel); err != nil {
+					return nil, err
 				}
 			// primitive types
 			case dynssz.SszBoolType:

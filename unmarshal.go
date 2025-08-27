@@ -715,7 +715,7 @@ func (d *DynSsz) unmarshalCompatibleUnion(targetType *TypeDescriptor, targetValu
 	// Get the variant descriptor
 	variantDesc, ok := targetType.UnionVariants[variant]
 	if !ok {
-		return 0, fmt.Errorf("unknown union variant index: %d", variant)
+		return 0, sszutils.ErrInvalidUnionVariant
 	}
 
 	// Create a new value of the variant type

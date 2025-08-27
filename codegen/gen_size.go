@@ -104,7 +104,7 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 				if err := codeTpl.ExecuteTemplate(&code, "size_wrapper", wrapperModel); err != nil {
 					return nil, err
 				}
-			case dynssz.SszContainerType:
+			case dynssz.SszContainerType, dynssz.SszProgressiveContainerType:
 				structModel := tmpl.SizeStruct{
 					TypeName: typePrinter.TypeString(sourceType.Type),
 					Fields:   make([]tmpl.SizeField, 0, len(sourceType.ContainerDesc.Fields)),
@@ -202,7 +202,7 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 						return nil, err
 					}
 				}
-			case dynssz.SszListType, dynssz.SszBitlistType:
+			case dynssz.SszListType, dynssz.SszBitlistType, dynssz.SszProgressiveListType, dynssz.SszProgressiveBitlistType:
 				if sourceType.SizeExpression != "" {
 					usedDynSsz = true
 				}
@@ -244,6 +244,26 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 					if err := codeTpl.ExecuteTemplate(&code, "size_list", listModel); err != nil {
 						return nil, err
 					}
+				}
+			case dynssz.SszCompatibleUnionType:
+				compatibleUnionModel := tmpl.SizeCompatibleUnion{
+					TypeName:   typePrinter.TypeString(sourceType.Type),
+					VariantFns: make([]tmpl.SizeCompatibleUnionVariant, 0, len(sourceType.UnionVariants)),
+				}
+				for variant, variantDesc := range sourceType.UnionVariants {
+					fn, err := genRecursive(variantDesc, false)
+					if err != nil {
+						return nil, err
+					}
+
+					compatibleUnionModel.VariantFns = append(compatibleUnionModel.VariantFns, tmpl.SizeCompatibleUnionVariant{
+						Index:    int(variant),
+						TypeName: typePrinter.TypeString(variantDesc.Type),
+						SizeFn:   fn.Name,
+					})
+				}
+				if err := codeTpl.ExecuteTemplate(&code, "size_compatible_union", compatibleUnionModel); err != nil {
+					return nil, err
 				}
 			// primitive types
 			case dynssz.SszBoolType:

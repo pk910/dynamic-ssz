@@ -200,3 +200,21 @@ for i := 0; i < vlen; i++ {
   }
 }
 {{- end }}
+
+{{ define "marshal_compatible_union" }}
+dst = sszutils.MarshalUint8(dst, uint8(t.Variant))
+switch t.Variant {
+{{- range .VariantFns }}
+case {{ .Index }}:
+  v, ok := t.Data.({{ .TypeName }})
+  if !ok {
+    return sszutils.ErrInvalidUnionVariant
+  }
+  if err = {{ .MarshalFn }}(v); err != nil {
+    return err
+  }
+{{- end }}
+default:
+  return sszutils.ErrInvalidUnionVariant
+}
+{{- end }}

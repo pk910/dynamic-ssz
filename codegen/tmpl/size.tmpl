@@ -127,3 +127,10 @@ for i := 0; i < vlen; i++ {
   size += 4 + {{ .SizeFn }}(t[i])
 }
 {{- end }}
+
+{{ define "size_compatible_union" }}
+size = 1
+{{- range .VariantFns }}
+size += {{ .SizeFn }}(t.Data)
+{{- end }}
+{{- end }}

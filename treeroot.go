@@ -371,7 +371,7 @@ func (d *DynSsz) buildRootFromCompatibleUnion(sourceType *TypeDescriptor, source
 	// Get the variant descriptor
 	variantDesc, ok := sourceType.UnionVariants[variant]
 	if !ok {
-		return fmt.Errorf("unknown union variant index: %d", variant)
+		return sszutils.ErrInvalidUnionVariant
 	}
 
 	// Hash only the data, not the selector

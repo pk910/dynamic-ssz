@@ -125,3 +125,14 @@ type UnmarshalDynamicList struct {
 	SizeExpr    string
 	IsArray     bool
 }
+
+type UnmarshalCompatibleUnion struct {
+	TypeName   string
+	VariantFns []UnmarshalCompatibleUnionVariant
+}
+
+type UnmarshalCompatibleUnionVariant struct {
+	Index       int
+	TypeName    string
+	UnmarshalFn string
+}

@@ -306,3 +306,19 @@ for i := 0; i < itemCount; i++ {
   offset = endOffset
 }
 {{- end }}
+
+{{ define "unmarshal_compatible_union" }}
+if len(buf) < 1 {
+  return t, sszutils.ErrUnexpectedEOF
+}
+t.Variant = uint8(buf[0])
+switch t.Variant {
+{{- range .VariantFns }}
+case {{ .Index }}:
+  v, ok := t.Data.({{ .TypeName }})
+  t.Data, err = {{ .UnmarshalFn }}(v, buf[1:])
+default:
+  return t, sszutils.ErrInvalidUnionVariant
+{{- end }}
+}
+{{- end }}

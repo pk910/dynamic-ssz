@@ -74,3 +74,14 @@ type MarshalDynamicList struct {
 	SizeExpr  string
 	IsArray   bool
 }
+
+type MarshalCompatibleUnion struct {
+	TypeName   string
+	VariantFns []MarshalCompatibleUnionVariant
+}
+
+type MarshalCompatibleUnionVariant struct {
+	Index     int
+	TypeName  string
+	MarshalFn string
+}
