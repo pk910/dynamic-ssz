@@ -123,7 +123,7 @@ bufpos += 4
   fieldsize := {{ .Size }}
   {{- end }}
   {{- if .InlineUnmarshalCode }}
-  {{ .InlineUnmarshalCode }}
+  {{ indent .InlineUnmarshalCode 2 }}
   {{- else }}
   if t.{{ .Name }}, err = {{ .UnmarshalFn }}(t.{{ .Name }}, buf[bufpos:bufpos+fieldsize]); err != nil {
     return t, err

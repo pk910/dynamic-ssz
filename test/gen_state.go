@@ -6,7 +6,6 @@ import (
 	"github.com/attestantio/go-eth2-client/spec/capella"
 	"github.com/attestantio/go-eth2-client/spec/deneb"
 	"github.com/attestantio/go-eth2-client/spec/phase0"
-	"github.com/holiman/uint256"
 	dynssz "github.com/pk910/dynamic-ssz"
 	"github.com/pk910/dynamic-ssz/sszutils"
 	go_bitfield "github.com/prysmaticlabs/go-bitfield"
@@ -17,25 +16,11 @@ var _ = sszutils.ErrListTooBig
 func (t *TestBeaconState) MarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (dst []byte, err error) {
   dst = buf
   fn1 := func(t *phase0.Fork) (err error) { // *phase0.Fork
-    // Field #0 'PreviousVersion'
-    dst = append(dst, t.PreviousVersion[:]...)
-    // Field #1 'CurrentVersion'
-    dst = append(dst, t.CurrentVersion[:]...)
-    // Field #2 'Epoch'
-    dst = sszutils.MarshalUint64(dst, uint64(t.Epoch))
+    dst, err = t.MarshalSSZTo(dst)
     return err
   }
   fn2 := func(t *phase0.BeaconBlockHeader) (err error) { // *phase0.BeaconBlockHeader
-    // Field #0 'Slot'
-    dst = sszutils.MarshalUint64(dst, uint64(t.Slot))
-    // Field #1 'ProposerIndex'
-    dst = sszutils.MarshalUint64(dst, uint64(t.ProposerIndex))
-    // Field #2 'ParentRoot'
-    dst = append(dst, t.ParentRoot[:]...)
-    // Field #3 'StateRoot'
-    dst = append(dst, t.StateRoot[:]...)
-    // Field #4 'BodyRoot'
-    dst = append(dst, t.BodyRoot[:]...)
+    dst, err = t.MarshalSSZTo(dst)
     return err
   }
   fn3 := func(t []phase0.Root) (err error) { // []phase0.Root:8192:SLOTS_PER_HISTORICAL_ROOT:32
@@ -66,19 +51,7 @@ func (t *TestBeaconState) MarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (dst []by
     return err
   }
   fn5 := func(t *phase0.ETH1Data) (err error) { // *phase0.ETH1Data
-    // Field #0 'DepositRoot'
-    dst = append(dst, t.DepositRoot[:]...)
-    // Field #1 'DepositCount'
-    dst = sszutils.MarshalUint64(dst, uint64(t.DepositCount))
-    // Field #2 'BlockHash'
-    if len(t.BlockHash) > 32 {
-      dst = append(dst, t.BlockHash[:32]...)
-    } else {
-      dst = append(dst, t.BlockHash[:]...)
-      if len(t.BlockHash) < 32 {
-        dst = sszutils.AppendZeroPadding(dst, 32 - len(t.BlockHash))
-      }
-    }
+    dst, err = t.MarshalSSZTo(dst)
     return err
   }
   fn6 := func(t []*phase0.ETH1Data) (err error) { // []*phase0.ETH1Data
@@ -91,29 +64,7 @@ func (t *TestBeaconState) MarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (dst []by
     return err
   }
   fn7 := func(t *phase0.Validator) (err error) { // *phase0.Validator
-    // Field #0 'PublicKey'
-    dst = append(dst, t.PublicKey[:]...)
-    // Field #1 'WithdrawalCredentials'
-    if len(t.WithdrawalCredentials) > 32 {
-      dst = append(dst, t.WithdrawalCredentials[:32]...)
-    } else {
-      dst = append(dst, t.WithdrawalCredentials[:]...)
-      if len(t.WithdrawalCredentials) < 32 {
-        dst = sszutils.AppendZeroPadding(dst, 32 - len(t.WithdrawalCredentials))
-      }
-    }
-    // Field #2 'EffectiveBalance'
-    dst = sszutils.MarshalUint64(dst, uint64(t.EffectiveBalance))
-    // Field #3 'Slashed'
-    dst = sszutils.MarshalBool(dst, bool(t.Slashed))
-    // Field #4 'ActivationEligibilityEpoch'
-    dst = sszutils.MarshalUint64(dst, uint64(t.ActivationEligibilityEpoch))
-    // Field #5 'ActivationEpoch'
-    dst = sszutils.MarshalUint64(dst, uint64(t.ActivationEpoch))
-    // Field #6 'ExitEpoch'
-    dst = sszutils.MarshalUint64(dst, uint64(t.ExitEpoch))
-    // Field #7 'WithdrawableEpoch'
-    dst = sszutils.MarshalUint64(dst, uint64(t.WithdrawableEpoch))
+    dst, err = t.MarshalSSZTo(dst)
     return err
   }
   fn8 := func(t []*phase0.Validator) (err error) { // []*phase0.Validator
@@ -180,10 +131,7 @@ func (t *TestBeaconState) MarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (dst []by
     return err
   }
   fn13 := func(t *phase0.Checkpoint) (err error) { // *phase0.Checkpoint
-    // Field #0 'Epoch'
-    dst = sszutils.MarshalUint64(dst, uint64(t.Epoch))
-    // Field #1 'Root'
-    dst = append(dst, t.Root[:]...)
+    dst, err = t.MarshalSSZTo(dst)
     return err
   }
   fn14 := func(t []uint64) (err error) { // []uint64
@@ -222,74 +170,24 @@ func (t *TestBeaconState) MarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (dst []by
     dst = append(dst, t.AggregatePubkey[:]...)
     return err
   }
-  fn17 := func(t *uint256.Int) (err error) { // *uint256.Int:4
+  fn17 := func(t *deneb.ExecutionPayloadHeader) (err error) { // *deneb.ExecutionPayloadHeader
+    dst, err = t.MarshalSSZTo(dst)
+    return err
+  }
+  fn18 := func(t *capella.HistoricalSummary) (err error) { // *capella.HistoricalSummary
+    dst, err = t.MarshalSSZTo(dst)
+    return err
+  }
+  fn19 := func(t []*capella.HistoricalSummary) (err error) { // []*capella.HistoricalSummary
     vlen := len(t)
     for i := 0; i < vlen; i++ {
-      dst = sszutils.MarshalUint64(dst, uint64(t[i]))
-    }
-    return err
-  }
-  fn18 := func(t *deneb.ExecutionPayloadHeader) (err error) { // *deneb.ExecutionPayloadHeader
-    dstlen := len(dst)
-    // Field #0 'ParentHash'
-    dst = append(dst, t.ParentHash[:]...)
-    // Field #1 'FeeRecipient'
-    dst = append(dst, t.FeeRecipient[:]...)
-    // Field #2 'StateRoot'
-    dst = append(dst, t.StateRoot[:]...)
-    // Field #3 'ReceiptsRoot'
-    dst = append(dst, t.ReceiptsRoot[:]...)
-    // Field #4 'LogsBloom'
-    dst = append(dst, t.LogsBloom[:]...)
-    // Field #5 'PrevRandao'
-    dst = append(dst, t.PrevRandao[:]...)
-    // Field #6 'BlockNumber'
-    dst = sszutils.MarshalUint64(dst, uint64(t.BlockNumber))
-    // Field #7 'GasLimit'
-    dst = sszutils.MarshalUint64(dst, uint64(t.GasLimit))
-    // Field #8 'GasUsed'
-    dst = sszutils.MarshalUint64(dst, uint64(t.GasUsed))
-    // Field #9 'Timestamp'
-    dst = sszutils.MarshalUint64(dst, uint64(t.Timestamp))
-    // Offset #10 'ExtraData'
-    offset10 := len(dst)
-    dst = sszutils.MarshalOffset(dst, 0)
-    // Field #11 'BaseFeePerGas'
-    if err = fn17(t.BaseFeePerGas); err != nil {
-      return err
-    }
-    // Field #12 'BlockHash'
-    dst = append(dst, t.BlockHash[:]...)
-    // Field #13 'TransactionsRoot'
-    dst = append(dst, t.TransactionsRoot[:]...)
-    // Field #14 'WithdrawalsRoot'
-    dst = append(dst, t.WithdrawalsRoot[:]...)
-    // Field #15 'BlobGasUsed'
-    dst = sszutils.MarshalUint64(dst, uint64(t.BlobGasUsed))
-    // Field #16 'ExcessBlobGas'
-    dst = sszutils.MarshalUint64(dst, uint64(t.ExcessBlobGas))
-    // Dynamic Field #10 'ExtraData'
-    sszutils.UpdateOffset(dst[offset10:offset10+4], len(dst)-dstlen)
-    dst = append(dst, t.ExtraData[:]...)
-    return err
-  }
-  fn19 := func(t *capella.HistoricalSummary) (err error) { // *capella.HistoricalSummary
-    // Field #0 'BlockSummaryRoot'
-    dst = append(dst, t.BlockSummaryRoot[:]...)
-    // Field #1 'StateSummaryRoot'
-    dst = append(dst, t.StateSummaryRoot[:]...)
-    return err
-  }
-  fn20 := func(t []*capella.HistoricalSummary) (err error) { // []*capella.HistoricalSummary
-    vlen := len(t)
-    for i := 0; i < vlen; i++ {
-      if err = fn19(t[i]); err != nil {
+      if err = fn18(t[i]); err != nil {
         return err
       }
     }
     return err
   }
-  fn21 := func(t *TestBeaconState) (err error) { // *main.TestBeaconState
+  fn20 := func(t *TestBeaconState) (err error) { // *main.TestBeaconState
     dstlen := len(dst)
     // Field #0 'GenesisTime'
     dst = sszutils.MarshalUint64(dst, uint64(t.GenesisTime))
@@ -424,18 +322,24 @@ func (t *TestBeaconState) MarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (dst []by
     }
     // Dynamic Field #24 'LatestExecutionPayloadHeader'
     sszutils.UpdateOffset(dst[offset24:offset24+4], len(dst)-dstlen)
-    if err = fn18(t.LatestExecutionPayloadHeader); err != nil {
+    if err = fn17(t.LatestExecutionPayloadHeader); err != nil {
       return err
     }
     // Dynamic Field #27 'HistoricalSummaries'
     sszutils.UpdateOffset(dst[offset27:offset27+4], len(dst)-dstlen)
-    if err = fn20(t.HistoricalSummaries); err != nil {
+    if err = fn19(t.HistoricalSummaries); err != nil {
       return err
     }
     return err
   }
-  err = fn21(t)
+  err = fn20(t)
   return dst, err
+}
+func (t *TestBeaconState) MarshalSSZ() ([]byte, error) {
+  return dynssz.GetGlobalDynSsz().MarshalSSZ(t)
+}
+func (t *TestBeaconState) MarshalSSZTo(buf []byte) (dst []byte, err error) {
+  return t.MarshalSSZDyn(dynssz.GetGlobalDynSsz(), buf)
 }
 
 func (t *TestBeaconState) SizeSSZDyn(ds *dynssz.DynSsz) (size int) {
@@ -500,20 +404,15 @@ func (t *TestBeaconState) SizeSSZDyn(ds *dynssz.DynSsz) (size int) {
     size += sfn10(t.Pubkeys)
     return size
   }
-  sfn12 := func(t []byte) (size int) { // []byte
-    size += len(t)
+  sfn12 := func(t *deneb.ExecutionPayloadHeader) (size int) { // *deneb.ExecutionPayloadHeader
+    size = t.SizeSSZ()
     return size
   }
-  sfn13 := func(t *deneb.ExecutionPayloadHeader) (size int) { // *deneb.ExecutionPayloadHeader
-    size = 580
-    size += 4 + sfn12(t.ExtraData)
-    return size
-  }
-  sfn14 := func(t []*capella.HistoricalSummary) (size int) { // []*capella.HistoricalSummary
+  sfn13 := func(t []*capella.HistoricalSummary) (size int) { // []*capella.HistoricalSummary
     size += len(t) * 64
     return size
   }
-  sfn15 := func(t *TestBeaconState) (size int) { // *TestBeaconState
+  sfn14 := func(t *TestBeaconState) (size int) { // *TestBeaconState
     size = 393
     size += sfn1(t.BlockRoots)
     size += sfn1(t.StateRoots)
@@ -528,11 +427,14 @@ func (t *TestBeaconState) SizeSSZDyn(ds *dynssz.DynSsz) (size int) {
     size += 4 + sfn9(t.InactivityScores)
     size += sfn11(t.CurrentSyncCommittee)
     size += sfn11(t.NextSyncCommittee)
-    size += 4 + sfn13(t.LatestExecutionPayloadHeader)
-    size += 4 + sfn14(t.HistoricalSummaries)
+    size += 4 + sfn12(t.LatestExecutionPayloadHeader)
+    size += 4 + sfn13(t.HistoricalSummaries)
     return size
   }
-  return sfn15(t)
+  return sfn14(t)
+}
+func (t *TestBeaconState) SizeSSZ() (size int) {
+  return t.SizeSSZDyn(dynssz.GetGlobalDynSsz())
 }
 
 func (t *TestBeaconState) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err error) {
@@ -578,16 +480,7 @@ func (t *TestBeaconState) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
     if t == nil {
       t = new(phase0.Fork)
     }
-    buflen := len(buf)
-    if buflen < 16 {
-      return t, sszutils.ErrUnexpectedEOF
-    }
-    // Field #0 'PreviousVersion'
-    copy(t.PreviousVersion[:], buf[0:4][:])
-    // Field #1 'CurrentVersion'
-    copy(t.CurrentVersion[:], buf[4:8][:])
-    // Field #2 'Epoch'
-    t.Epoch = (phase0.Epoch)(sszutils.UnmarshallUint64(buf[8:16]))
+    err = t.UnmarshalSSZ(buf)
     return t, err
   }
   fn2 := func(t *phase0.BeaconBlockHeader, buf []byte) (*phase0.BeaconBlockHeader, error) { // *phase0.BeaconBlockHeader
@@ -595,20 +488,7 @@ func (t *TestBeaconState) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
     if t == nil {
       t = new(phase0.BeaconBlockHeader)
     }
-    buflen := len(buf)
-    if buflen < 112 {
-      return t, sszutils.ErrUnexpectedEOF
-    }
-    // Field #0 'Slot'
-    t.Slot = (phase0.Slot)(sszutils.UnmarshallUint64(buf[0:8]))
-    // Field #1 'ProposerIndex'
-    t.ProposerIndex = (phase0.ValidatorIndex)(sszutils.UnmarshallUint64(buf[8:16]))
-    // Field #2 'ParentRoot'
-    copy(t.ParentRoot[:], buf[16:48][:])
-    // Field #3 'StateRoot'
-    copy(t.StateRoot[:], buf[48:80][:])
-    // Field #4 'BodyRoot'
-    copy(t.BodyRoot[:], buf[80:112][:])
+    err = t.UnmarshalSSZ(buf)
     return t, err
   }
   fn3 := func(t []phase0.Root, buf []byte) ([]phase0.Root, error) { // []phase0.Root:8192:SLOTS_PER_HISTORICAL_ROOT:32
@@ -651,21 +531,7 @@ func (t *TestBeaconState) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
     if t == nil {
       t = new(phase0.ETH1Data)
     }
-    buflen := len(buf)
-    if buflen < 72 {
-      return t, sszutils.ErrUnexpectedEOF
-    }
-    // Field #0 'DepositRoot'
-    copy(t.DepositRoot[:], buf[0:32][:])
-    // Field #1 'DepositCount'
-    t.DepositCount = (uint64)(sszutils.UnmarshallUint64(buf[32:40]))
-    // Field #2 'BlockHash'
-    if len(t.BlockHash) < 32 {
-      t.BlockHash = make([]byte, 32)
-    } else {
-      t.BlockHash = t.BlockHash[:32]
-    }
-    copy(t.BlockHash, buf[40:72])
+    err = t.UnmarshalSSZ(buf)
     return t, err
   }
   fn6 := func(t []*phase0.ETH1Data, buf []byte) ([]*phase0.ETH1Data, error) { // []*phase0.ETH1Data
@@ -693,31 +559,7 @@ func (t *TestBeaconState) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
     if t == nil {
       t = new(phase0.Validator)
     }
-    buflen := len(buf)
-    if buflen < 121 {
-      return t, sszutils.ErrUnexpectedEOF
-    }
-    // Field #0 'PublicKey'
-    copy(t.PublicKey[:], buf[0:48][:])
-    // Field #1 'WithdrawalCredentials'
-    if len(t.WithdrawalCredentials) < 32 {
-      t.WithdrawalCredentials = make([]byte, 32)
-    } else {
-      t.WithdrawalCredentials = t.WithdrawalCredentials[:32]
-    }
-    copy(t.WithdrawalCredentials, buf[48:80])
-    // Field #2 'EffectiveBalance'
-    t.EffectiveBalance = (phase0.Gwei)(sszutils.UnmarshallUint64(buf[80:88]))
-    // Field #3 'Slashed'
-    t.Slashed = (bool)(sszutils.UnmarshalBool(buf[88:89]))
-    // Field #4 'ActivationEligibilityEpoch'
-    t.ActivationEligibilityEpoch = (phase0.Epoch)(sszutils.UnmarshallUint64(buf[89:97]))
-    // Field #5 'ActivationEpoch'
-    t.ActivationEpoch = (phase0.Epoch)(sszutils.UnmarshallUint64(buf[97:105]))
-    // Field #6 'ExitEpoch'
-    t.ExitEpoch = (phase0.Epoch)(sszutils.UnmarshallUint64(buf[105:113]))
-    // Field #7 'WithdrawableEpoch'
-    t.WithdrawableEpoch = (phase0.Epoch)(sszutils.UnmarshallUint64(buf[113:121]))
+    err = t.UnmarshalSSZ(buf)
     return t, err
   }
   fn8 := func(t []*phase0.Validator, buf []byte) ([]*phase0.Validator, error) { // []*phase0.Validator
@@ -815,14 +657,7 @@ func (t *TestBeaconState) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
     if t == nil {
       t = new(phase0.Checkpoint)
     }
-    buflen := len(buf)
-    if buflen < 40 {
-      return t, sszutils.ErrUnexpectedEOF
-    }
-    // Field #0 'Epoch'
-    t.Epoch = (phase0.Epoch)(sszutils.UnmarshallUint64(buf[0:8]))
-    // Field #1 'Root'
-    copy(t.Root[:], buf[8:40][:])
+    err = t.UnmarshalSSZ(buf)
     return t, err
   }
   fn14 := func(t []uint64, buf []byte) ([]uint64, error) { // []uint64
@@ -891,99 +726,23 @@ func (t *TestBeaconState) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
     }
     return t, err
   }
-  fn17 := func(t *uint256.Int, buf []byte) (*uint256.Int, error) { // *uint256.Int:4
-    var err error
-    if t == nil {
-      t = new(uint256.Int)
-    }
-    itemsize := 8
-    limit := 4
-    if len(buf) > int(limit) * itemsize {
-      return t, sszutils.ErrListTooBig
-    }
-    for i := 0; i < int(limit); i++ {
-      t[i] = (uint64)(sszutils.UnmarshallUint64(buf[i*itemsize:(i+1)*itemsize]))
-    }
-    return t, err
-  }
-  fn18 := func(t *deneb.ExecutionPayloadHeader, buf []byte) (*deneb.ExecutionPayloadHeader, error) { // *deneb.ExecutionPayloadHeader
+  fn17 := func(t *deneb.ExecutionPayloadHeader, buf []byte) (*deneb.ExecutionPayloadHeader, error) { // *deneb.ExecutionPayloadHeader
     var err error
     if t == nil {
       t = new(deneb.ExecutionPayloadHeader)
     }
-    bufpos := 584
-    buflen := len(buf)
-    if buflen < 584 {
-      return t, sszutils.ErrUnexpectedEOF
-    }
-    // Read offset #10 'ExtraData'
-    offset10 := int(sszutils.ReadOffset(buf[436:440]))
-    // Field #0 'ParentHash'
-    copy(t.ParentHash[:], buf[0:32][:])
-    // Field #1 'FeeRecipient'
-    copy(t.FeeRecipient[:], buf[32:52][:])
-    // Field #2 'StateRoot'
-    copy(t.StateRoot[:], buf[52:84][:])
-    // Field #3 'ReceiptsRoot'
-    copy(t.ReceiptsRoot[:], buf[84:116][:])
-    // Field #4 'LogsBloom'
-    copy(t.LogsBloom[:], buf[116:372][:])
-    // Field #5 'PrevRandao'
-    copy(t.PrevRandao[:], buf[372:404][:])
-    // Field #6 'BlockNumber'
-    t.BlockNumber = (uint64)(sszutils.UnmarshallUint64(buf[404:412]))
-    // Field #7 'GasLimit'
-    t.GasLimit = (uint64)(sszutils.UnmarshallUint64(buf[412:420]))
-    // Field #8 'GasUsed'
-    t.GasUsed = (uint64)(sszutils.UnmarshallUint64(buf[420:428]))
-    // Field #9 'Timestamp'
-    t.Timestamp = (uint64)(sszutils.UnmarshallUint64(buf[428:436]))
-    // Field #11 'BaseFeePerGas'
-    if t.BaseFeePerGas, err = fn17(t.BaseFeePerGas, buf[440:472]); err != nil {
-      return t, err
-    }
-    // Field #12 'BlockHash'
-    copy(t.BlockHash[:], buf[472:504][:])
-    // Field #13 'TransactionsRoot'
-    copy(t.TransactionsRoot[:], buf[504:536][:])
-    // Field #14 'WithdrawalsRoot'
-    copy(t.WithdrawalsRoot[:], buf[536:568][:])
-    // Field #15 'BlobGasUsed'
-    t.BlobGasUsed = (uint64)(sszutils.UnmarshallUint64(buf[568:576]))
-    // Field #16 'ExcessBlobGas'
-    t.ExcessBlobGas = (uint64)(sszutils.UnmarshallUint64(buf[576:584]))
-    // Dynamic Field #10 'ExtraData'
-    if offset10 < bufpos  {
-      return t, sszutils.ErrOffset
-    }
-    {
-      fieldSlice := buf[offset10:]
-      if len(t.ExtraData) < len(fieldSlice) {
-        t.ExtraData = make([]byte, len(fieldSlice))
-      } else {
-        t.ExtraData = t.ExtraData[:len(fieldSlice)]
-      }
-      copy(t.ExtraData, fieldSlice)
-      bufpos += len(fieldSlice)
-    }
+    err = t.UnmarshalSSZ(buf)
     return t, err
   }
-  fn19 := func(t *capella.HistoricalSummary, buf []byte) (*capella.HistoricalSummary, error) { // *capella.HistoricalSummary
+  fn18 := func(t *capella.HistoricalSummary, buf []byte) (*capella.HistoricalSummary, error) { // *capella.HistoricalSummary
     var err error
     if t == nil {
       t = new(capella.HistoricalSummary)
     }
-    buflen := len(buf)
-    if buflen < 64 {
-      return t, sszutils.ErrUnexpectedEOF
-    }
-    // Field #0 'BlockSummaryRoot'
-    copy(t.BlockSummaryRoot[:], buf[0:32][:])
-    // Field #1 'StateSummaryRoot'
-    copy(t.StateSummaryRoot[:], buf[32:64][:])
+    err = t.UnmarshalSSZ(buf)
     return t, err
   }
-  fn20 := func(t []*capella.HistoricalSummary, buf []byte) ([]*capella.HistoricalSummary, error) { // []*capella.HistoricalSummary
+  fn19 := func(t []*capella.HistoricalSummary, buf []byte) ([]*capella.HistoricalSummary, error) { // []*capella.HistoricalSummary
     var err error
     buflen := len(buf)
     itemsize := 64
@@ -997,13 +756,13 @@ func (t *TestBeaconState) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
       t = t[:itemCount]
     }
     for i := 0; i < itemCount; i++ {
-      if t[i], err = fn19(t[i], buf[i*itemsize:(i+1)*itemsize]); err != nil {
+      if t[i], err = fn18(t[i], buf[i*itemsize:(i+1)*itemsize]); err != nil {
         return t, err
       }
     }
     return t, err
   }
-  fn21 := func(t *TestBeaconState, buf []byte) (*TestBeaconState, error) { // *TestBeaconState
+  fn20 := func(t *TestBeaconState, buf []byte) (*TestBeaconState, error) { // *TestBeaconState
     var err error
     if t == nil {
       t = new(TestBeaconState)
@@ -1132,11 +891,11 @@ func (t *TestBeaconState) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
     {
       fieldsize := 1
       if len(t.JustificationBits) < len(buf[bufpos:bufpos+fieldsize]) {
-      t.JustificationBits = make(go_bitfield.Bitvector4, len(buf[bufpos:bufpos+fieldsize]))
-    } else {
-      t.JustificationBits = t.JustificationBits[:len(buf[bufpos:bufpos+fieldsize])]
-    }
-    copy(t.JustificationBits, buf[bufpos:bufpos+fieldsize])
+        t.JustificationBits = make(go_bitfield.Bitvector4, len(buf[bufpos:bufpos+fieldsize]))
+      } else {
+        t.JustificationBits = t.JustificationBits[:len(buf[bufpos:bufpos+fieldsize])]
+      }
+      copy(t.JustificationBits, buf[bufpos:bufpos+fieldsize])
       bufpos += fieldsize
     }
     // Field #18 'PreviousJustifiedCheckpoint'
@@ -1291,7 +1050,7 @@ func (t *TestBeaconState) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
     }
     {
       fieldSlice := buf[offset24:offset27]
-      if t.LatestExecutionPayloadHeader, err = fn18(t.LatestExecutionPayloadHeader, fieldSlice); err != nil {
+      if t.LatestExecutionPayloadHeader, err = fn17(t.LatestExecutionPayloadHeader, fieldSlice); err != nil {
         return t, err
       }
       bufpos += len(fieldSlice)
@@ -1302,14 +1061,17 @@ func (t *TestBeaconState) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
     }
     {
       fieldSlice := buf[offset27:]
-      if t.HistoricalSummaries, err = fn20(t.HistoricalSummaries, fieldSlice); err != nil {
+      if t.HistoricalSummaries, err = fn19(t.HistoricalSummaries, fieldSlice); err != nil {
         return t, err
       }
       bufpos += len(fieldSlice)
     }
     return t, err
   }
-  _, err = fn21(t, buf)
+  _, err = fn20(t, buf)
   return err
+}
+func (t *TestBeaconState) UnmarshalSSZ(buf []byte) (err error) {
+  return t.UnmarshalSSZDyn(dynssz.GetGlobalDynSsz(), buf)
 }
 

@@ -49,28 +49,31 @@ func (t *Test1) MarshalSSZTo(buf []byte) (dst []byte, err error) {
   err = fn2(t)
   return dst, err
 }
+func (t *Test1) MarshalSSZ() ([]byte, error) {
+  return dynssz.GetGlobalDynSsz().MarshalSSZ(t)
+}
 
 func (t *Test1) SizeSSZDyn(_ *dynssz.DynSsz) (size int) {
   return t.SizeSSZ()
 }
 func (t *Test1) SizeSSZ() (size int) {
-  sfn1 := func(t phase0.ValidatorIndex) (size int) { // phase0.ValidatorIndex
+  sfn1 := func(t phase0.Epoch) (size int) { // phase0.Epoch
     size = 8
     return size
   }
-  sfn2 := func(t phase0.Epoch) (size int) { // phase0.Epoch
+  sfn2 := func(t phase0.ValidatorIndex) (size int) { // phase0.ValidatorIndex
     size = 8
     return size
   }
   sfn3 := func(t *dynssz.CompatibleUnion[struct { Deneb phase0.ValidatorIndex; Electra phase0.Epoch }]) (size int) { // *dynssz.CompatibleUnion[struct { Deneb phase0.ValidatorIndex; Electra phase0.Epoch }]
     size = 1
     switch t.Variant {
-    case 0:
-      if v, ok := t.Data.(phase0.ValidatorIndex); ok {
-        size += sfn1(v)
-      }
     case 1:
       if v, ok := t.Data.(phase0.Epoch); ok {
+        size += sfn1(v)
+      }
+    case 0:
+      if v, ok := t.Data.(phase0.ValidatorIndex); ok {
         size += sfn2(v)
       }
     }
@@ -98,13 +101,13 @@ func (t *Test1) UnmarshalSSZ(buf []byte) (err error) {
     }
     t.Variant = uint8(buf[0])
     switch t.Variant {
-    case 0:
-      v, _ := t.Data.(phase0.ValidatorIndex)
-      v = (phase0.ValidatorIndex)(sszutils.UnmarshallUint64(buf[1:]))
-      t.Data = v
     case 1:
       v, _ := t.Data.(phase0.Epoch)
       v = (phase0.Epoch)(sszutils.UnmarshallUint64(buf[1:]))
+      t.Data = v
+    case 0:
+      v, _ := t.Data.(phase0.ValidatorIndex)
+      v = (phase0.ValidatorIndex)(sszutils.UnmarshallUint64(buf[1:]))
       t.Data = v
     default:
       return t, sszutils.ErrInvalidUnionVariant
@@ -140,10 +143,13 @@ func (t *Test1) UnmarshalSSZ(buf []byte) (err error) {
   return err
 }
 
-func (t *Test2) MarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (dst []byte, err error) {
+func (t *Test2) MarshalSSZDyn(_ *dynssz.DynSsz, buf []byte) (dst []byte, err error) {
+  return t.MarshalSSZTo(buf)
+}
+func (t *Test2) MarshalSSZTo(buf []byte) (dst []byte, err error) {
   dst = buf
   fn1 := func(t *Test1) (err error) { // *main.Test1
-    dst, err = t.MarshalSSZDyn(ds, dst)
+    dst, err = t.MarshalSSZTo(dst)
     return err
   }
   fn2 := func(t *Test2) (err error) { // *main.Test2
@@ -161,10 +167,16 @@ func (t *Test2) MarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (dst []byte, err er
   err = fn2(t)
   return dst, err
 }
+func (t *Test2) MarshalSSZ() ([]byte, error) {
+  return dynssz.GetGlobalDynSsz().MarshalSSZ(t)
+}
 
-func (t *Test2) SizeSSZDyn(ds *dynssz.DynSsz) (size int) {
+func (t *Test2) SizeSSZDyn(_ *dynssz.DynSsz) (size int) {
+  return t.SizeSSZ()
+}
+func (t *Test2) SizeSSZ() (size int) {
   sfn1 := func(t *Test1) (size int) { // *Test1
-    size = t.SizeSSZDyn(ds)
+    size = t.SizeSSZ()
     return size
   }
   sfn2 := func(t *Test2) (size int) { // *Test2
@@ -175,13 +187,16 @@ func (t *Test2) SizeSSZDyn(ds *dynssz.DynSsz) (size int) {
   return sfn2(t)
 }
 
-func (t *Test2) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err error) {
+func (t *Test2) UnmarshalSSZDyn(_ *dynssz.DynSsz, buf []byte) (err error) {
+  return t.UnmarshalSSZ(buf)
+}
+func (t *Test2) UnmarshalSSZ(buf []byte) (err error) {
   fn1 := func(t *Test1, buf []byte) (*Test1, error) { // *Test1
     var err error
     if t == nil {
       t = new(Test1)
     }
-    err = t.UnmarshalSSZDyn(ds, buf)
+    err = t.UnmarshalSSZ(buf)
     return t, err
   }
   fn2 := func(t *Test2, buf []byte) (*Test2, error) { // *Test2

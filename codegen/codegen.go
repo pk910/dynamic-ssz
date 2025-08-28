@@ -191,9 +191,11 @@ func (cg *CodeGenerator) GenerateToMap() (map[string]string, error) {
 			}
 
 			// set availability of dynamic methods (we will generate them in a bit and we want cross references)
-			desc.HasDynamicMarshaler = !t.Options.NoMarshalSSZ
-			desc.HasDynamicUnmarshaler = !t.Options.NoUnmarshalSSZ
-			desc.HasDynamicSizer = !t.Options.NoSizeSSZ
+			desc.HasDynamicMarshaler = !t.Options.NoMarshalSSZ && !t.Options.WithoutDynamicExpressions
+			desc.HasDynamicUnmarshaler = !t.Options.NoUnmarshalSSZ && !t.Options.WithoutDynamicExpressions
+			desc.HasDynamicSizer = !t.Options.NoSizeSSZ && !t.Options.WithoutDynamicExpressions
+
+			desc.HasFastSSZMarshaler = !t.Options.NoMarshalSSZ && !t.Options.NoUnmarshalSSZ && !t.Options.NoSizeSSZ && (t.Options.CreateLegacyFn || t.Options.WithoutDynamicExpressions)
 
 			t.Descriptor = desc
 		}

@@ -28,7 +28,7 @@ type Test2 struct {
 
 func codegenCommand() {
 	ds := dynssz.NewDynSsz(nil)
-	ds.NoFastSsz = true
+	//ds.NoFastSsz = true
 	generator := codegen.NewCodeGenerator(ds)
 
 	_, filePath, _, _ := runtime.Caller(0)
@@ -39,7 +39,7 @@ func codegenCommand() {
 		currentDir+"/gen_block.go",
 		codegen.WithType(
 			reflect.TypeOf(&TestBeaconBlock{}),
-			codegen.WithoutDynamicExpressions(),
+			codegen.WithCreateLegacyFn(),
 		),
 	)
 
@@ -47,6 +47,7 @@ func codegenCommand() {
 		currentDir+"/gen_state.go",
 		codegen.WithType(
 			reflect.TypeOf(&TestBeaconState{}),
+			codegen.WithCreateLegacyFn(),
 		),
 	)
 
@@ -58,6 +59,7 @@ func codegenCommand() {
 		codegen.WithType(
 			reflect.TypeOf(&Test2{}),
 		),
+		codegen.WithCreateLegacyFn(),
 	)
 
 	err := generator.Generate()
