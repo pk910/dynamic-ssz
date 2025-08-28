@@ -49,9 +49,6 @@ func (t *Test1) MarshalSSZTo(buf []byte) (dst []byte, err error) {
   err = fn2(t)
   return dst, err
 }
-func (t *Test1) MarshalSSZ() ([]byte, error) {
-  return dynssz.GetGlobalDynSsz().MarshalSSZ(t)
-}
 
 func (t *Test1) SizeSSZDyn(_ *dynssz.DynSsz) (size int) {
   return t.SizeSSZ()
@@ -133,6 +130,79 @@ func (t *Test1) UnmarshalSSZ(buf []byte) (err error) {
     {
       fieldSlice := buf[offset0:]
       if t.TestUnion, err = fn1(t.TestUnion, fieldSlice); err != nil {
+        return t, err
+      }
+      bufpos += len(fieldSlice)
+    }
+    return t, err
+  }
+  _, err = fn2(t, buf)
+  return err
+}
+
+func (t *Test2) MarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (dst []byte, err error) {
+  dst = buf
+  fn1 := func(t *Test1) (err error) { // *main.Test1
+    dst, err = t.MarshalSSZDyn(ds, dst)
+    return err
+  }
+  fn2 := func(t *Test2) (err error) { // *main.Test2
+    dstlen := len(dst)
+    // Offset #0 'T1'
+    offset0 := len(dst)
+    dst = sszutils.MarshalOffset(dst, 0)
+    // Dynamic Field #0 'T1'
+    sszutils.UpdateOffset(dst[offset0:offset0+4], len(dst)-dstlen)
+    if err = fn1(t.T1); err != nil {
+      return err
+    }
+    return err
+  }
+  err = fn2(t)
+  return dst, err
+}
+
+func (t *Test2) SizeSSZDyn(ds *dynssz.DynSsz) (size int) {
+  sfn1 := func(t *Test1) (size int) { // *Test1
+    size = t.SizeSSZDyn(ds)
+    return size
+  }
+  sfn2 := func(t *Test2) (size int) { // *Test2
+    size = 0
+    size += 4 + sfn1(t.T1)
+    return size
+  }
+  return sfn2(t)
+}
+
+func (t *Test2) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err error) {
+  fn1 := func(t *Test1, buf []byte) (*Test1, error) { // *Test1
+    var err error
+    if t == nil {
+      t = new(Test1)
+    }
+    err = t.UnmarshalSSZDyn(ds, buf)
+    return t, err
+  }
+  fn2 := func(t *Test2, buf []byte) (*Test2, error) { // *Test2
+    var err error
+    if t == nil {
+      t = new(Test2)
+    }
+    bufpos := 4
+    buflen := len(buf)
+    if buflen < 4 {
+      return t, sszutils.ErrUnexpectedEOF
+    }
+    // Read offset #0 'T1'
+    offset0 := int(sszutils.ReadOffset(buf[0:4]))
+    // Dynamic Field #0 'T1'
+    if offset0 < bufpos  {
+      return t, sszutils.ErrOffset
+    }
+    {
+      fieldSlice := buf[offset0:]
+      if t.T1, err = fn1(t.T1, fieldSlice); err != nil {
         return t, err
       }
       bufpos += len(fieldSlice)

@@ -10,7 +10,7 @@ import (
 	"github.com/pk910/dynamic-ssz/codegen/tmpl"
 )
 
-func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGenOptions) (bool, error) {
+func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) (bool, error) {
 	type sizeFnEntry struct {
 		Fn   *tmpl.SizeFunction
 		Type *dynssz.TypeDescriptor
@@ -29,7 +29,7 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 		if sourceType.Len > 0 {
 			typeKey = fmt.Sprintf("%s:%d", typeKey, sourceType.Len)
 		}
-		if sourceType.SizeExpression != "" {
+		if sourceType.SizeExpression != "" && !options.WithoutDynamicExpressions {
 			typeKey = fmt.Sprintf("%s:%s", typeKey, sourceType.SizeExpression)
 		}
 
@@ -43,7 +43,7 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 			if childType.Len > 0 {
 				typeKey = fmt.Sprintf("%s:%d", typeKey, childType.Len)
 			}
-			if childType.SizeExpression != "" {
+			if childType.SizeExpression != "" && !options.WithoutDynamicExpressions {
 				typeKey = fmt.Sprintf("%s:%s", typeKey, childType.SizeExpression)
 			}
 		}
@@ -153,7 +153,11 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 					return nil, err
 				}
 			case dynssz.SszVectorType, dynssz.SszBitvectorType, dynssz.SszUint128Type, dynssz.SszUint256Type:
-				if sourceType.SizeExpression != "" {
+				sizeExpression := sourceType.SizeExpression
+				if options.WithoutDynamicExpressions {
+					sizeExpression = ""
+				}
+				if sizeExpression != "" {
 					usedDynSsz = true
 				}
 
@@ -174,7 +178,7 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 						Length:    int(sourceType.Len),
 						EmptySize: emptySize,
 						SizeFn:    fn.Name,
-						SizeExpr:  sourceType.SizeExpression,
+						SizeExpr:  sizeExpression,
 						IsArray:   sourceType.Kind == reflect.Array,
 					}
 
@@ -196,7 +200,7 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 						Length:      int(sourceType.Len),
 						ItemSize:    int(sourceType.ElemDesc.Size),
 						SizeFn:      sizeFn,
-						SizeExpr:    sourceType.SizeExpression,
+						SizeExpr:    sizeExpression,
 						IsArray:     sourceType.Kind == reflect.Array,
 						IsByteArray: sourceType.IsByteArray,
 						IsString:    sourceType.IsString,
@@ -207,7 +211,11 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 					}
 				}
 			case dynssz.SszListType, dynssz.SszBitlistType, dynssz.SszProgressiveListType, dynssz.SszProgressiveBitlistType:
-				if sourceType.SizeExpression != "" {
+				sizeExpression := sourceType.SizeExpression
+				if options.WithoutDynamicExpressions {
+					sizeExpression = ""
+				}
+				if sizeExpression != "" {
 					usedDynSsz = true
 				}
 
@@ -220,7 +228,7 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 					dynListModel := tmpl.SizeDynamicList{
 						TypeName: typePrinter.TypeString(sourceType.Type),
 						SizeFn:   fn.Name,
-						SizeExpr: sourceType.SizeExpression,
+						SizeExpr: sizeExpression,
 					}
 
 					if err := codeTpl.ExecuteTemplate(&code, "size_dynamic_list", dynListModel); err != nil {
@@ -240,7 +248,7 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 						TypeName:    typePrinter.TypeString(sourceType.Type),
 						ItemSize:    int(sourceType.ElemDesc.Size),
 						SizeFn:      sizeFn,
-						SizeExpr:    sourceType.SizeExpression,
+						SizeExpr:    sizeExpression,
 						IsByteArray: sourceType.IsByteArray,
 						IsString:    sourceType.IsString,
 					}
@@ -322,7 +330,7 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 		SizeFunctions:   sizeFnList,
 		RootFnName:      rootFn.Name,
 		CreateLegacyFn:  options.CreateLegacyFn,
-		CreateDynamicFn: options.CreateDynamicFn,
+		CreateDynamicFn: !options.WithoutDynamicExpressions,
 		UsedDynSsz:      usedDynSsz,
 	}
 

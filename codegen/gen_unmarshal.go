@@ -10,7 +10,7 @@ import (
 	"github.com/pk910/dynamic-ssz/codegen/tmpl"
 )
 
-func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGenOptions) (bool, error) {
+func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) (bool, error) {
 	type unmarshalFnEntry struct {
 		Fn   *tmpl.UnmarshalFunction
 		Type *dynssz.TypeDescriptor
@@ -101,7 +101,7 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 		if sourceType.Len > 0 {
 			typeKey = fmt.Sprintf("%s:%d", typeKey, sourceType.Len)
 		}
-		if sourceType.SizeExpression != "" {
+		if sourceType.SizeExpression != "" && !options.WithoutDynamicExpressions {
 			typeKey = fmt.Sprintf("%s:%s", typeKey, sourceType.SizeExpression)
 		}
 
@@ -115,7 +115,7 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 			if childType.Len > 0 {
 				typeKey = fmt.Sprintf("%s:%d", typeKey, childType.Len)
 			}
-			if childType.SizeExpression != "" {
+			if childType.SizeExpression != "" && !options.WithoutDynamicExpressions {
 				typeKey = fmt.Sprintf("%s:%s", typeKey, childType.SizeExpression)
 			}
 		}
@@ -196,7 +196,7 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 
 					if field.Type.IsDynamic {
 						currentOffset += 4 // offset field
-					} else if field.Type.HasSizeExpr {
+					} else if field.Type.HasSizeExpr && !options.WithoutDynamicExpressions {
 						hasDynamicSizes = true
 						// For dynamic sizes, we can't calculate static offsets beyond this point
 						break
@@ -253,7 +253,7 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 							structModel.Fields[lastDynamic].NextDynamic = idx
 						}
 						lastDynamic = idx
-					} else if field.Type.HasSizeExpr {
+					} else if field.Type.HasSizeExpr && !options.WithoutDynamicExpressions {
 						sizeFn, err := genRecursiveStaticSize(field.Type, false)
 						if err != nil {
 							return nil, err
@@ -284,7 +284,11 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 					}
 				}
 
-				if sourceType.SizeExpression != "" {
+				sizeExpression := sourceType.SizeExpression
+				if options.WithoutDynamicExpressions {
+					sizeExpression = ""
+				}
+				if sizeExpression != "" {
 					usedDynSsz = true
 				}
 
@@ -299,7 +303,7 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 						Length:      int(sourceType.Len),
 						EmptySize:   emptySize,
 						UnmarshalFn: unmarshalFn,
-						SizeExpr:    sourceType.SizeExpression,
+						SizeExpr:    sizeExpression,
 						IsArray:     sourceType.Kind == reflect.Array,
 					}
 
@@ -325,16 +329,15 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 						vectorModel.TypeName = typePrinter.TypeString(sourceType.Type)
 					}
 
-					if sourceType.SizeExpression != "" {
+					if sourceType.SizeExpression != "" && !options.WithoutDynamicExpressions {
 						fn, err := genRecursiveStaticSize(sourceType, false)
 						if err != nil {
 							return nil, err
 						}
 						vectorModel.SizeFn = fn
-
 					}
 
-					if sourceType.ElemDesc.HasSizeExpr {
+					if sourceType.ElemDesc.HasSizeExpr && !options.WithoutDynamicExpressions {
 						fn, err := genRecursiveStaticSize(sourceType.ElemDesc, false)
 						if err != nil {
 							return nil, err
@@ -368,7 +371,11 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 					}
 				}
 
-				if sourceType.SizeExpression != "" {
+				sizeExpression := sourceType.SizeExpression
+				if options.WithoutDynamicExpressions {
+					sizeExpression = ""
+				}
+				if sizeExpression != "" {
 					usedDynSsz = true
 				}
 
@@ -377,7 +384,7 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 						TypeName:                typePrinter.TypeString(sourceType.Type),
 						UnmarshalFn:             unmarshalFn,
 						InlineItemUnmarshalCode: inlineUnmarshalCodeDynamic,
-						SizeExpr:                sourceType.SizeExpression,
+						SizeExpr:                sizeExpression,
 					}
 
 					if err := codeTpl.ExecuteTemplate(&code, "unmarshal_dynamic_list", dynListModel); err != nil {
@@ -389,12 +396,12 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 						ItemSize:                int(sourceType.ElemDesc.Size),
 						UnmarshalFn:             unmarshalFn,
 						InlineItemUnmarshalCode: inlineUnmarshalCode,
-						SizeExpr:                sourceType.SizeExpression,
+						SizeExpr:                sizeExpression,
 						IsByteArray:             sourceType.IsByteArray,
 						IsString:                sourceType.IsString,
 					}
 
-					if sourceType.ElemDesc.HasSizeExpr {
+					if sourceType.ElemDesc.HasSizeExpr && !options.WithoutDynamicExpressions {
 						fn, err := genRecursiveStaticSize(sourceType.ElemDesc, false)
 						if err != nil {
 							return nil, err
@@ -490,7 +497,7 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 		if sourceType.Len > 0 {
 			typeKey = fmt.Sprintf("%s:%d", typeKey, sourceType.Len)
 		}
-		if sourceType.SizeExpression != "" {
+		if sourceType.SizeExpression != "" && !options.WithoutDynamicExpressions {
 			typeKey = fmt.Sprintf("%s:%s", typeKey, sourceType.SizeExpression)
 		}
 
@@ -504,7 +511,7 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 			if childType.Len > 0 {
 				typeKey = fmt.Sprintf("%s:%d", typeKey, childType.Len)
 			}
-			if childType.SizeExpression != "" {
+			if childType.SizeExpression != "" && !options.WithoutDynamicExpressions {
 				typeKey = fmt.Sprintf("%s:%s", typeKey, childType.SizeExpression)
 			}
 		}
@@ -555,7 +562,7 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 			for idx, field := range sourceType.ContainerDesc.Fields {
 				if field.Type.IsDynamic {
 					return nil, fmt.Errorf("dynamic field not supported for static size calculation")
-				} else if field.Type.HasSizeExpr {
+				} else if field.Type.HasSizeExpr && !options.WithoutDynamicExpressions {
 					fn, err := genRecursiveStaticSize(field.Type, false)
 					if err != nil {
 						return nil, err
@@ -575,7 +582,11 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 				return nil, err
 			}
 		case dynssz.SszVectorType, dynssz.SszBitvectorType, dynssz.SszUint128Type, dynssz.SszUint256Type:
-			if sourceType.SizeExpression != "" {
+			sizeExpression := sourceType.SizeExpression
+			if options.WithoutDynamicExpressions {
+				sizeExpression = ""
+			}
+			if sizeExpression != "" {
 				usedDynSsz = true
 			}
 
@@ -583,7 +594,7 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 				return nil, fmt.Errorf("dynamic vector not supported for static size calculation")
 			} else {
 				sizeFn := ""
-				if sourceType.ElemDesc.HasSizeExpr {
+				if sourceType.ElemDesc.HasSizeExpr && !options.WithoutDynamicExpressions {
 					fn, err := genRecursiveStaticSize(sourceType.ElemDesc, false)
 					if err != nil {
 						return nil, err
@@ -596,7 +607,7 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 					Length:   int(sourceType.Len),
 					ItemSize: int(sourceType.ElemDesc.Size),
 					SizeFn:   sizeFn,
-					SizeExpr: sourceType.SizeExpression,
+					SizeExpr: sizeExpression,
 				}
 
 				if err := codeTpl.ExecuteTemplate(&code, "size_vector", vectorModel); err != nil {
@@ -642,7 +653,7 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 		UnmarshalFunctions:  unmarshalFnList,
 		RootFnName:          rootFn.Name,
 		CreateLegacyFn:      options.CreateLegacyFn,
-		CreateDynamicFn:     options.CreateDynamicFn,
+		CreateDynamicFn:     !options.WithoutDynamicExpressions,
 		UsedDynSsz:          usedDynSsz,
 	}
 

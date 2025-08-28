@@ -320,14 +320,14 @@ func test_block_dynssz_codegen(dynssz *ssz.DynSsz, in []byte, iterations int) ([
 	for i := 0; i < iterations; i++ {
 		size := t.SizeSSZDyn(dynssz)
 		buf := make([]byte, 0, size)
-		_, err := t.MarshalSSZDyn(dynssz, buf)
+		_, err := t.MarshalSSZTo(buf)
 		if err != nil {
 			return nil, nil, fmt.Errorf("marshal error: %v", err)
 		}
 	}
 	marshalTime = time.Since(start)
 
-	out, _ := t.MarshalSSZDyn(dynssz, nil)
+	out, _ := t.MarshalSSZTo(nil)
 	if !bytes.Equal(in, out) {
 		for i := 0; i < len(in); i++ {
 			if in[i] != out[i] {

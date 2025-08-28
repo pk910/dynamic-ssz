@@ -22,36 +22,43 @@ type Test1 struct {
 	}]
 }
 
+type Test2 struct {
+	T1 *Test1
+}
+
 func codegenCommand() {
 	ds := dynssz.NewDynSsz(nil)
 	ds.NoFastSsz = true
-	generator := codegen.NewCodeGenerator(
-		ds,
-		codegen.WithCreateLegacyFn(),
-	)
+	generator := codegen.NewCodeGenerator(ds)
 
 	_, filePath, _, _ := runtime.Caller(0)
 	log.Printf("Current file path: %s", filePath)
 	currentDir := filepath.Dir(filePath)
 
-	if err := generator.BuildFile(
+	generator.BuildFile(
 		currentDir+"/gen_block.go",
-		reflect.TypeOf(&TestBeaconBlock{}),
-	); err != nil {
-		log.Fatal("gen_block.go failed:", err)
-	}
-	if err := generator.BuildFile(
+		codegen.WithType(
+			reflect.TypeOf(&TestBeaconBlock{}),
+			codegen.WithoutDynamicExpressions(),
+		),
+	)
+
+	generator.BuildFile(
 		currentDir+"/gen_state.go",
-		reflect.TypeOf(&TestBeaconState{}),
-	); err != nil {
-		log.Fatal("gen_state.go failed:", err)
-	}
-	if err := generator.BuildFile(
+		codegen.WithType(
+			reflect.TypeOf(&TestBeaconState{}),
+		),
+	)
+
+	generator.BuildFile(
 		currentDir+"/gen_test1.go",
-		reflect.TypeOf(&Test1{}),
-	); err != nil {
-		log.Fatal("gen_test1.go failed:", err)
-	}
+		codegen.WithType(
+			reflect.TypeOf(&Test1{}),
+		),
+		codegen.WithType(
+			reflect.TypeOf(&Test2{}),
+		),
+	)
 
 	err := generator.Generate()
 	if err != nil {

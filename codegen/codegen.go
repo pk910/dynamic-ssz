@@ -1,6 +1,9 @@
 package codegen
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -9,135 +12,251 @@ import (
 	"github.com/pk910/dynamic-ssz/codegen/tmpl"
 )
 
-type CodeGenOption func(*CodeGenOptions)
+type CodeGeneratorOption func(*CodeGeneratorOptions)
 
-type CodeGenOptions struct {
-	DynSSZ          *dynssz.DynSsz
-	NoMarshalSSZ    bool
-	NoUnmarshalSSZ  bool
-	NoSizeSSZ       bool
-	NoHashTreeRoot  bool
-	CreateLegacyFn  bool
-	CreateDynamicFn bool
-	SizeHints       []dynssz.SszSizeHint
-	MaxSizeHints    []dynssz.SszMaxSizeHint
-	TypeHints       []dynssz.SszTypeHint
+type CodeGeneratorOptions struct {
+	NoMarshalSSZ              bool
+	NoUnmarshalSSZ            bool
+	NoSizeSSZ                 bool
+	NoHashTreeRoot            bool
+	CreateLegacyFn            bool
+	WithoutDynamicExpressions bool
+	SizeHints                 []dynssz.SszSizeHint
+	MaxSizeHints              []dynssz.SszMaxSizeHint
+	TypeHints                 []dynssz.SszTypeHint
+	Types                     []CodeGeneratorTypeOption
 }
 
-func WithDynSSZ(ds *dynssz.DynSsz) CodeGenOption {
-	return func(opts *CodeGenOptions) {
-		opts.DynSSZ = ds
-	}
+type CodeGeneratorTypeOption struct {
+	Type reflect.Type
+	Opts []CodeGeneratorOption
 }
 
-func WithNoMarshalSSZ() CodeGenOption {
-	return func(opts *CodeGenOptions) {
+type CodeGeneratorTypeOptions struct {
+	Type       reflect.Type
+	Options    CodeGeneratorOptions
+	Descriptor *dynssz.TypeDescriptor
+}
+
+type CodeGeneratorFileOptions struct {
+	Package string
+	Types   []*CodeGeneratorTypeOptions
+}
+
+func WithNoMarshalSSZ() CodeGeneratorOption {
+	return func(opts *CodeGeneratorOptions) {
 		opts.NoMarshalSSZ = true
 	}
 }
 
-func WithNoUnmarshalSSZ() CodeGenOption {
-	return func(opts *CodeGenOptions) {
+func WithNoUnmarshalSSZ() CodeGeneratorOption {
+	return func(opts *CodeGeneratorOptions) {
 		opts.NoUnmarshalSSZ = true
 	}
 }
 
-func WithNoSizeSSZ() CodeGenOption {
-	return func(opts *CodeGenOptions) {
+func WithNoSizeSSZ() CodeGeneratorOption {
+	return func(opts *CodeGeneratorOptions) {
 		opts.NoSizeSSZ = true
 	}
 }
 
-func WithNoHashTreeRoot() CodeGenOption {
-	return func(opts *CodeGenOptions) {
+func WithNoHashTreeRoot() CodeGeneratorOption {
+	return func(opts *CodeGeneratorOptions) {
 		opts.NoHashTreeRoot = true
 	}
 }
 
-func WithSizeHints(hints []dynssz.SszSizeHint) CodeGenOption {
-	return func(opts *CodeGenOptions) {
+func WithSizeHints(hints []dynssz.SszSizeHint) CodeGeneratorOption {
+	return func(opts *CodeGeneratorOptions) {
 		opts.SizeHints = hints
 	}
 }
 
-func WithMaxSizeHints(hints []dynssz.SszMaxSizeHint) CodeGenOption {
-	return func(opts *CodeGenOptions) {
+func WithMaxSizeHints(hints []dynssz.SszMaxSizeHint) CodeGeneratorOption {
+	return func(opts *CodeGeneratorOptions) {
 		opts.MaxSizeHints = hints
 	}
 }
 
-func WithTypeHints(hints []dynssz.SszTypeHint) CodeGenOption {
-	return func(opts *CodeGenOptions) {
+// WithTypeHints creates code with type hints for the dynamic expressions
+// this is useful to generate code that is compatible with the dynamic expressions
+func WithTypeHints(hints []dynssz.SszTypeHint) CodeGeneratorOption {
+	return func(opts *CodeGeneratorOptions) {
 		opts.TypeHints = hints
 	}
 }
 
-func WithCreateLegacyFn() CodeGenOption {
-	return func(opts *CodeGenOptions) {
+// WithCreateLegacyFn creates code with legacy methods that use the global dynssz instance
+// this is useful to generate code that is compatible with the legacy fastssz interfaces
+func WithCreateLegacyFn() CodeGeneratorOption {
+	return func(opts *CodeGeneratorOptions) {
 		opts.CreateLegacyFn = true
 	}
 }
 
-func GenerateSSZCode(source any, opts ...CodeGenOption) (string, error) {
-	options := &CodeGenOptions{
-		CreateDynamicFn: true,
+// WithoutDynamicExpressions creates code that uses static sizes only and ignores dynamic expressions
+// this is useful to generate code with maximum performance characteristics for the default preset, while maintaining the expression flexibility for other presets via the slower reflection-based methods
+// this option is not compatible with WithCreateDynamicFn
+func WithoutDynamicExpressions() CodeGeneratorOption {
+	return func(opts *CodeGeneratorOptions) {
+		opts.WithoutDynamicExpressions = true
 	}
+}
+
+func WithType(t reflect.Type, typeOpts ...CodeGeneratorOption) CodeGeneratorOption {
+	return func(opts *CodeGeneratorOptions) {
+		opts.Types = append(opts.Types, CodeGeneratorTypeOption{
+			Type: t,
+			Opts: typeOpts,
+		})
+	}
+}
+
+// fileGenerationRequest represents a request to generate a file with SSZ methods for specific types
+type fileGenerationRequest struct {
+	FileName string
+	Options  *CodeGeneratorFileOptions
+}
+
+// CodeGenerator manages batch generation of SSZ methods for multiple types
+type CodeGenerator struct {
+	files  []*fileGenerationRequest
+	dynSsz *dynssz.DynSsz
+}
+
+// NewCodeGenerator creates a new code generator instance
+func NewCodeGenerator(dynSsz *dynssz.DynSsz) *CodeGenerator {
+	return &CodeGenerator{
+		files:  make([]*fileGenerationRequest, 0),
+		dynSsz: dynSsz,
+	}
+}
+
+func (cg *CodeGenerator) BuildFile(fileName string, opts ...CodeGeneratorOption) {
+	baseCodeOpts := CodeGeneratorOptions{}
 	for _, opt := range opts {
-		opt(options)
+		opt(&baseCodeOpts)
 	}
 
-	sourceType := reflect.TypeOf(source)
+	fileOpts := CodeGeneratorFileOptions{}
 
-	ds := options.DynSSZ
-	if ds == nil {
-		ds = dynssz.NewDynSsz(nil)
+	types := baseCodeOpts.Types
+	baseCodeOpts.Types = nil
+
+	for _, t := range types {
+		codeOpts := baseCodeOpts
+		for _, opt := range t.Opts {
+			opt(&codeOpts)
+		}
+
+		fileOpts.Types = append(fileOpts.Types, &CodeGeneratorTypeOptions{
+			Type:    t.Type,
+			Options: codeOpts,
+		})
 	}
 
-	sourceTypeDesc, err := ds.GetTypeCache().GetTypeDescriptor(sourceType, options.SizeHints, options.MaxSizeHints, options.TypeHints)
+	cg.files = append(cg.files, &fileGenerationRequest{
+		FileName: fileName,
+		Options:  &fileOpts,
+	})
+}
+
+// GenerateToMap generates code for all requested types and returns it as a map of file name to code
+func (cg *CodeGenerator) GenerateToMap() (map[string]string, error) {
+	if len(cg.files) == 0 {
+		return nil, fmt.Errorf("no types requested for generation")
+	}
+
+	// analyze all types to build complete dependency graph
+	for _, file := range cg.files {
+		pkgPath := ""
+		for _, t := range file.Options.Types {
+			typePkgPath := t.Type.PkgPath()
+			if typePkgPath == "" && t.Type.Kind() == reflect.Ptr {
+				typePkgPath = t.Type.Elem().PkgPath()
+			}
+			if typePkgPath == "" {
+				return nil, fmt.Errorf("type %s has no package path", t.Type.Name())
+			}
+			if pkgPath == "" {
+				pkgPath = typePkgPath
+			} else if pkgPath != typePkgPath {
+				return nil, fmt.Errorf("type %s has different package path than %s. cannot combine types from different packages in a single file", t.Type.Name(), file.Options.Types[0].Type.Name())
+			}
+
+			desc, err := cg.dynSsz.GetTypeCache().GetTypeDescriptor(t.Type, t.Options.SizeHints, t.Options.MaxSizeHints, t.Options.TypeHints)
+			if err != nil {
+				return nil, fmt.Errorf("failed to analyze type %s: %w", t.Type.Name(), err)
+			}
+
+			// set availability of dynamic methods (we will generate them in a bit and we want cross references)
+			desc.HasDynamicMarshaler = !t.Options.NoMarshalSSZ
+			desc.HasDynamicUnmarshaler = !t.Options.NoUnmarshalSSZ
+			desc.HasDynamicSizer = !t.Options.NoSizeSSZ
+
+			t.Descriptor = desc
+		}
+
+		file.Options.Package = pkgPath
+	}
+
+	// generate code for each file
+	results := make(map[string]string)
+	for _, file := range cg.files {
+		code, err := cg.generateFile(file.FileName, file.Options.Package, file.Options)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate code for %s: %w", file.FileName, err)
+		}
+
+		results[file.FileName] = code
+	}
+
+	return results, nil
+}
+
+func (cg *CodeGenerator) Generate() error {
+	results, err := cg.GenerateToMap()
 	if err != nil {
-		return "", err
+		return fmt.Errorf("failed to generate code: %w", err)
 	}
 
-	rootType := sourceTypeDesc.Type
-	if sourceTypeDesc.IsPtr {
-		rootType = rootType.Elem()
+	for fileName, code := range results {
+		dir := filepath.Dir(fileName)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("failed to create directory %s: %w", dir, err)
+		}
+
+		if err := os.WriteFile(fileName, []byte(code), 0644); err != nil {
+			return fmt.Errorf("failed to write code to file %s: %w", fileName, err)
+		}
 	}
 
-	typePrinter := NewTypePrinter(rootType.PkgPath())
+	return nil
+}
+
+func (cg *CodeGenerator) generateFile(fileName string, packagePath string, opts *CodeGeneratorFileOptions) (string, error) {
+	if len(opts.Types) == 0 {
+		return "", fmt.Errorf("no types requested for generation")
+	}
+
+	typePrinter := NewTypePrinter(packagePath)
 	typePrinter.AddAlias("github.com/pk910/dynamic-ssz", "dynssz")
-	usedDynSsz := options.CreateDynamicFn
+	usedDynSsz := false
+	codeBuilder := strings.Builder{}
 
-	// generate MarshalSSZ code
-	marshalCode := strings.Builder{}
-	if !options.NoMarshalSSZ {
-		usedDynSszFn, err := generateMarshal(ds, sourceTypeDesc, &marshalCode, typePrinter, options)
-		if err != nil {
-			return "", err
+	for _, t := range opts.Types {
+		if t.Descriptor == nil {
+			return "", fmt.Errorf("type %s has no descriptor", t.Type.Name())
 		}
-		usedDynSsz = usedDynSsz || usedDynSszFn
+
+		withDynSsz, err := cg.generateCode(t.Descriptor, typePrinter, &codeBuilder, &t.Options)
+		if err != nil {
+			return "", fmt.Errorf("failed to generate code for %s: %w", t.Type.Name(), err)
+		}
+		usedDynSsz = usedDynSsz || withDynSsz
 	}
 
-	// generate SizeSSZ code
-	sizeCode := strings.Builder{}
-	if !options.NoSizeSSZ {
-		usedDynSszFn, err := generateSize(ds, sourceTypeDesc, &sizeCode, typePrinter, options)
-		if err != nil {
-			return "", err
-		}
-		usedDynSsz = usedDynSsz || usedDynSszFn
-	}
-
-	// generate UnmarshalSSZ code
-	unmarshalCode := strings.Builder{}
-	if !options.NoUnmarshalSSZ {
-		usedDynSszFn, err := generateUnmarshal(ds, sourceTypeDesc, &unmarshalCode, typePrinter, options)
-		if err != nil {
-			return "", err
-		}
-		usedDynSsz = usedDynSsz || usedDynSszFn
-	}
-
-	// add base imports
 	if usedDynSsz {
 		typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
 	}
@@ -163,7 +282,7 @@ func GenerateSSZCode(source any, opts ...CodeGenOption) (string, error) {
 	})
 
 	// generate main code
-	pkgName := rootType.PkgPath()
+	pkgName := packagePath
 	if slashIdx := strings.Index(pkgName, "/"); slashIdx != -1 {
 		pkgName = pkgName[slashIdx+1:]
 	}
@@ -171,14 +290,42 @@ func GenerateSSZCode(source any, opts ...CodeGenOption) (string, error) {
 	mainCode := tmpl.Main{
 		PackageName: pkgName,
 		Imports:     imports,
-		Code:        marshalCode.String() + "\n" + sizeCode.String() + "\n" + unmarshalCode.String(),
+		Code:        codeBuilder.String(),
 	}
 
 	mainCodeTpl := GetTemplate("tmpl/main.tmpl")
 	mainCodeBuilder := strings.Builder{}
 	if err := mainCodeTpl.ExecuteTemplate(&mainCodeBuilder, "main", mainCode); err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to generate code for %s: %w", fileName, err)
 	}
 
 	return mainCodeBuilder.String(), nil
+}
+
+// generateCode generates the code for a single type
+func (cg *CodeGenerator) generateCode(desc *dynssz.TypeDescriptor, typePrinter *TypePrinter, codeBuilder *strings.Builder, options *CodeGeneratorOptions) (bool, error) {
+	// Generate the actual methods
+	var err error
+	var usedDynSsz bool
+	var usedDynSszResult bool
+
+	usedDynSsz, err = generateMarshal(cg.dynSsz, desc, codeBuilder, typePrinter, options)
+	if err != nil {
+		return usedDynSsz, fmt.Errorf("failed to generate marshal for %s: %w", desc.Type.Name(), err)
+	}
+	usedDynSszResult = usedDynSsz
+
+	usedDynSsz, err = generateSize(cg.dynSsz, desc, codeBuilder, typePrinter, options)
+	if err != nil {
+		return usedDynSsz, fmt.Errorf("failed to generate size for %s: %w", desc.Type.Name(), err)
+	}
+	usedDynSszResult = usedDynSszResult || usedDynSsz
+
+	usedDynSsz, err = generateUnmarshal(cg.dynSsz, desc, codeBuilder, typePrinter, options)
+	if err != nil {
+		return usedDynSsz, fmt.Errorf("failed to generate unmarshal for %s: %w", desc.Type.Name(), err)
+	}
+	usedDynSszResult = usedDynSszResult || usedDynSsz
+
+	return usedDynSszResult, nil
 }

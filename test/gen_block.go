@@ -8,14 +8,13 @@ import (
 	"github.com/attestantio/go-eth2-client/spec/deneb"
 	"github.com/attestantio/go-eth2-client/spec/phase0"
 	"github.com/holiman/uint256"
-	dynssz "github.com/pk910/dynamic-ssz"
 	"github.com/pk910/dynamic-ssz/sszutils"
 	go_bitfield "github.com/prysmaticlabs/go-bitfield"
 )
 var _ = sszutils.ErrListTooBig
 
 
-func (t *TestBeaconBlock) MarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (dst []byte, err error) {
+func (t *TestBeaconBlock) MarshalSSZTo(buf []byte) (dst []byte, err error) {
   dst = buf
   fn1 := func(t *phase0.ETH1Data) (err error) { // *phase0.ETH1Data
     // Field #0 'DepositRoot'
@@ -184,14 +183,8 @@ func (t *TestBeaconBlock) MarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (dst []by
     }
     return err
   }
-  fn14 := func(t [][]byte) (err error) { // [][]uint8:33:DEPOSIT_CONTRACT_TREE_DEPTH+1:32
-    hasLimit, limit, err := ds.ResolveSpecValue("DEPOSIT_CONTRACT_TREE_DEPTH+1")
-    if err != nil {
-      return err
-    }
-    if !hasLimit {
-      limit = 33
-    }
+  fn14 := func(t [][]byte) (err error) { // [][]uint8:33:32
+    limit := 33
     vlen := len(t)
     if vlen > int(limit) {
       return sszutils.ErrListTooBig
@@ -532,14 +525,8 @@ func (t *TestBeaconBlock) MarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (dst []by
   err = fn33(t)
   return dst, err
 }
-func (t *TestBeaconBlock) MarshalSSZ() ([]byte, error) {
-  return dynssz.GetGlobalDynSsz().MarshalSSZ(t)
-}
-func (t *TestBeaconBlock) MarshalSSZTo(buf []byte) (dst []byte, err error) {
-  return t.MarshalSSZDyn(dynssz.GetGlobalDynSsz(), buf)
-}
 
-func (t *TestBeaconBlock) SizeSSZDyn(ds *dynssz.DynSsz) (size int) {
+func (t *TestBeaconBlock) SizeSSZ() (size int) {
   sfn1 := func(t []*phase0.ProposerSlashing) (size int) { // []*phase0.ProposerSlashing
     size += len(t) * 416
     return size
@@ -582,11 +569,8 @@ func (t *TestBeaconBlock) SizeSSZDyn(ds *dynssz.DynSsz) (size int) {
     }
     return size
   }
-  sfn9 := func(t [][]byte) (size int) { // [][]byte:33:DEPOSIT_CONTRACT_TREE_DEPTH+1:32
-    hasLimit, limit, _ := ds.ResolveSpecValue("DEPOSIT_CONTRACT_TREE_DEPTH+1")
-    if !hasLimit {
-      limit = 33
-    }
+  sfn9 := func(t [][]byte) (size int) { // [][]byte:33:32
+    limit := 33
     size += int(limit) * 32
     return size
   }
@@ -605,11 +589,8 @@ func (t *TestBeaconBlock) SizeSSZDyn(ds *dynssz.DynSsz) (size int) {
     size += len(t) * 112
     return size
   }
-  sfn13 := func(t go_bitfield.Bitvector512) (size int) { // go_bitfield.Bitvector512:64:SYNC_COMMITTEE_SIZE/8
-    hasLimit, limit, _ := ds.ResolveSpecValue("SYNC_COMMITTEE_SIZE/8")
-    if !hasLimit {
-      limit = 64
-    }
+  sfn13 := func(t go_bitfield.Bitvector512) (size int) { // go_bitfield.Bitvector512:64
+    limit := 64
     size += int(limit) * 1
     return size
   }
@@ -677,37 +658,8 @@ func (t *TestBeaconBlock) SizeSSZDyn(ds *dynssz.DynSsz) (size int) {
   }
   return sfn24(t)
 }
-func (t *TestBeaconBlock) SizeSSZ() (size int) {
-  return t.SizeSSZDyn(dynssz.GetGlobalDynSsz())
-}
 
-func (t *TestBeaconBlock) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err error) {
-  sfn1 := func() (size int) { // [][]byte:33:DEPOSIT_CONTRACT_TREE_DEPTH+1:32
-    hasLimit, limit, _ := ds.ResolveSpecValue("DEPOSIT_CONTRACT_TREE_DEPTH+1")
-    if !hasLimit {
-      limit = 33
-    }
-    size += int(limit) * 32
-    return size
-  }()
-  sfn2 := func() (size int) { // *phase0.Deposit
-    size = 184
-    size += sfn1
-    return size
-  }()
-  sfn3 := func() (size int) { // go_bitfield.Bitvector512:64:SYNC_COMMITTEE_SIZE/8
-    hasLimit, limit, _ := ds.ResolveSpecValue("SYNC_COMMITTEE_SIZE/8")
-    if !hasLimit {
-      limit = 64
-    }
-    size += int(limit) * 1
-    return size
-  }()
-  sfn4 := func() (size int) { // *altair.SyncAggregate
-    size = 96
-    size += sfn3
-    return size
-  }()
+func (t *TestBeaconBlock) UnmarshalSSZ(buf []byte) (err error) {
   fn1 := func(t *phase0.ETH1Data, buf []byte) (*phase0.ETH1Data, error) { // *phase0.ETH1Data
     var err error
     if t == nil {
@@ -1040,10 +992,10 @@ func (t *TestBeaconBlock) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
     }
     return t, err
   }
-  fn14 := func(t [][]byte, buf []byte) ([][]byte, error) { // [][]byte:33:DEPOSIT_CONTRACT_TREE_DEPTH+1:32
+  fn14 := func(t [][]byte, buf []byte) ([][]byte, error) { // [][]byte:33:32
     var err error
     itemsize := 32
-    limit := sfn1 / itemsize
+    limit := 33
     if len(t) < int(limit) {
       t = make([][]byte, int(limit))
     } else {
@@ -1091,38 +1043,24 @@ func (t *TestBeaconBlock) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
     if t == nil {
       t = new(phase0.Deposit)
     }
-    bufpos := 0
     buflen := len(buf)
-    minsize := 184
-    if buflen < minsize {
+    if buflen < 1240 {
       return t, sszutils.ErrUnexpectedEOF
     }
     // Field #0 'Proof'
-    {
-      fieldsize := sfn1
-      minsize += fieldsize
-      if buflen < minsize {
-        return t, sszutils.ErrUnexpectedEOF
-      }
-      if t.Proof, err = fn14(t.Proof, buf[bufpos:bufpos+fieldsize]); err != nil {
-        return t, err
-      }
-      bufpos += fieldsize
+    if t.Proof, err = fn14(t.Proof, buf[0:1056]); err != nil {
+      return t, err
     }
     // Field #1 'Data'
-    {
-      fieldsize := 184
-      if t.Data, err = fn15(t.Data, buf[bufpos:bufpos+fieldsize]); err != nil {
-        return t, err
-      }
-      bufpos += fieldsize
+    if t.Data, err = fn15(t.Data, buf[1056:1240]); err != nil {
+      return t, err
     }
     return t, err
   }
   fn17 := func(t []*phase0.Deposit, buf []byte) ([]*phase0.Deposit, error) { // []*phase0.Deposit
     var err error
     buflen := len(buf)
-    itemsize := sfn2
+    itemsize := 1240
     itemCount := buflen / itemsize
     if buflen % itemsize != 0 {
       return t, sszutils.ErrUnexpectedEOF
@@ -1196,33 +1134,19 @@ func (t *TestBeaconBlock) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
     if t == nil {
       t = new(altair.SyncAggregate)
     }
-    bufpos := 0
     buflen := len(buf)
-    minsize := 96
-    if buflen < minsize {
+    if buflen < 160 {
       return t, sszutils.ErrUnexpectedEOF
     }
     // Field #0 'SyncCommitteeBits'
-    {
-      fieldsize := sfn3
-      minsize += fieldsize
-      if buflen < minsize {
-        return t, sszutils.ErrUnexpectedEOF
-      }
-      if len(t.SyncCommitteeBits) < len(buf[bufpos:bufpos+fieldsize]) {
-      t.SyncCommitteeBits = make(go_bitfield.Bitvector512, len(buf[bufpos:bufpos+fieldsize]))
+    if len(t.SyncCommitteeBits) < 64 {
+      t.SyncCommitteeBits = make(go_bitfield.Bitvector512, 64)
     } else {
-      t.SyncCommitteeBits = t.SyncCommitteeBits[:len(buf[bufpos:bufpos+fieldsize])]
+      t.SyncCommitteeBits = t.SyncCommitteeBits[:64]
     }
-    copy(t.SyncCommitteeBits, buf[bufpos:bufpos+fieldsize])
-      bufpos += fieldsize
-    }
+    copy(t.SyncCommitteeBits, buf[0:64])
     // Field #1 'SyncCommitteeSignature'
-    {
-      fieldsize := 96
-      copy(t.SyncCommitteeSignature[:], buf[bufpos:bufpos+fieldsize][:])
-      bufpos += fieldsize
-    }
+    copy(t.SyncCommitteeSignature[:], buf[64:160][:])
     return t, err
   }
   fn22 := func(t *uint256.Int, buf []byte) (*uint256.Int, error) { // *uint256.Int:4
@@ -1479,68 +1403,39 @@ func (t *TestBeaconBlock) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
     if t == nil {
       t = new(deneb.BeaconBlockBody)
     }
-    bufpos := 0
+    bufpos := 392
     buflen := len(buf)
-    minsize := 232
-    if buflen < minsize {
+    if buflen < 392 {
       return t, sszutils.ErrUnexpectedEOF
     }
+    // Read offset #3 'ProposerSlashings'
+    offset3 := int(sszutils.ReadOffset(buf[200:204]))
+    // Read offset #4 'AttesterSlashings'
+    offset4 := int(sszutils.ReadOffset(buf[204:208]))
+    // Read offset #5 'Attestations'
+    offset5 := int(sszutils.ReadOffset(buf[208:212]))
+    // Read offset #6 'Deposits'
+    offset6 := int(sszutils.ReadOffset(buf[212:216]))
+    // Read offset #7 'VoluntaryExits'
+    offset7 := int(sszutils.ReadOffset(buf[216:220]))
+    // Read offset #9 'ExecutionPayload'
+    offset9 := int(sszutils.ReadOffset(buf[380:384]))
+    // Read offset #10 'BLSToExecutionChanges'
+    offset10 := int(sszutils.ReadOffset(buf[384:388]))
+    // Read offset #11 'BlobKZGCommitments'
+    offset11 := int(sszutils.ReadOffset(buf[388:392]))
     // Field #0 'RANDAOReveal'
-    {
-      fieldsize := 96
-      copy(t.RANDAOReveal[:], buf[bufpos:bufpos+fieldsize][:])
-      bufpos += fieldsize
-    }
+    copy(t.RANDAOReveal[:], buf[0:96][:])
     // Field #1 'ETH1Data'
-    {
-      fieldsize := 72
-      if t.ETH1Data, err = fn1(t.ETH1Data, buf[bufpos:bufpos+fieldsize]); err != nil {
-        return t, err
-      }
-      bufpos += fieldsize
+    if t.ETH1Data, err = fn1(t.ETH1Data, buf[96:168]); err != nil {
+      return t, err
     }
     // Field #2 'Graffiti'
-    {
-      fieldsize := 32
-      copy(t.Graffiti[:], buf[bufpos:bufpos+fieldsize][:])
-      bufpos += fieldsize
-    }
-    // Offset #3 'ProposerSlashings'
-    offset3 := int(sszutils.ReadOffset(buf[bufpos:bufpos+4]))
-    bufpos += 4
-    // Offset #4 'AttesterSlashings'
-    offset4 := int(sszutils.ReadOffset(buf[bufpos:bufpos+4]))
-    bufpos += 4
-    // Offset #5 'Attestations'
-    offset5 := int(sszutils.ReadOffset(buf[bufpos:bufpos+4]))
-    bufpos += 4
-    // Offset #6 'Deposits'
-    offset6 := int(sszutils.ReadOffset(buf[bufpos:bufpos+4]))
-    bufpos += 4
-    // Offset #7 'VoluntaryExits'
-    offset7 := int(sszutils.ReadOffset(buf[bufpos:bufpos+4]))
-    bufpos += 4
+    copy(t.Graffiti[:], buf[168:200][:])
     // Field #8 'SyncAggregate'
-    {
-      fieldsize := sfn4
-      minsize += fieldsize
-      if buflen < minsize {
-        return t, sszutils.ErrUnexpectedEOF
-      }
-      if t.SyncAggregate, err = fn21(t.SyncAggregate, buf[bufpos:bufpos+fieldsize]); err != nil {
-        return t, err
-      }
-      bufpos += fieldsize
+    if t.SyncAggregate, err = fn21(t.SyncAggregate, buf[220:380]); err != nil {
+      return t, err
     }
-    // Offset #9 'ExecutionPayload'
-    offset9 := int(sszutils.ReadOffset(buf[bufpos:bufpos+4]))
-    bufpos += 4
-    // Offset #10 'BLSToExecutionChanges'
-    offset10 := int(sszutils.ReadOffset(buf[bufpos:bufpos+4]))
-    bufpos += 4
-    // Offset #11 'BlobKZGCommitments'
-    offset11 := int(sszutils.ReadOffset(buf[bufpos:bufpos+4]))
-    bufpos += 4
     // Dynamic Field #3 'ProposerSlashings'
     if offset3 < bufpos || offset4 > buflen || offset4 < offset3 {
       return t, sszutils.ErrOffset
@@ -1693,8 +1588,5 @@ func (t *TestBeaconBlock) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
   }
   _, err = fn33(t, buf)
   return err
-}
-func (t *TestBeaconBlock) UnmarshalSSZ(buf []byte) (err error) {
-  return t.UnmarshalSSZDyn(dynssz.GetGlobalDynSsz(), buf)
 }
 

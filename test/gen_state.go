@@ -437,12 +437,6 @@ func (t *TestBeaconState) MarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (dst []by
   err = fn21(t)
   return dst, err
 }
-func (t *TestBeaconState) MarshalSSZ() ([]byte, error) {
-  return dynssz.GetGlobalDynSsz().MarshalSSZ(t)
-}
-func (t *TestBeaconState) MarshalSSZTo(buf []byte) (dst []byte, err error) {
-  return t.MarshalSSZDyn(dynssz.GetGlobalDynSsz(), buf)
-}
 
 func (t *TestBeaconState) SizeSSZDyn(ds *dynssz.DynSsz) (size int) {
   sfn1 := func(t []phase0.Root) (size int) { // []phase0.Root:8192:SLOTS_PER_HISTORICAL_ROOT:32
@@ -539,9 +533,6 @@ func (t *TestBeaconState) SizeSSZDyn(ds *dynssz.DynSsz) (size int) {
     return size
   }
   return sfn15(t)
-}
-func (t *TestBeaconState) SizeSSZ() (size int) {
-  return t.SizeSSZDyn(dynssz.GetGlobalDynSsz())
 }
 
 func (t *TestBeaconState) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err error) {
@@ -1320,8 +1311,5 @@ func (t *TestBeaconState) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
   }
   _, err = fn21(t, buf)
   return err
-}
-func (t *TestBeaconState) UnmarshalSSZ(buf []byte) (err error) {
-  return t.UnmarshalSSZDyn(dynssz.GetGlobalDynSsz(), buf)
 }
 

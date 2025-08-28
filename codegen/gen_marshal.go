@@ -10,7 +10,7 @@ import (
 	"github.com/pk910/dynamic-ssz/codegen/tmpl"
 )
 
-func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGenOptions) (bool, error) {
+func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) (bool, error) {
 	type marshalFnEntry struct {
 		Fn   *tmpl.MarshalFunction
 		Type *dynssz.TypeDescriptor
@@ -86,7 +86,7 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 		if sourceType.Len > 0 {
 			typeKey = fmt.Sprintf("%s:%d", typeKey, sourceType.Len)
 		}
-		if sourceType.SizeExpression != "" {
+		if sourceType.SizeExpression != "" && !options.WithoutDynamicExpressions {
 			typeKey = fmt.Sprintf("%s:%s", typeKey, sourceType.SizeExpression)
 		}
 
@@ -100,7 +100,7 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 			if childType.Len > 0 {
 				typeKey = fmt.Sprintf("%s:%d", typeKey, childType.Len)
 			}
-			if childType.SizeExpression != "" {
+			if childType.SizeExpression != "" && !options.WithoutDynamicExpressions {
 				typeKey = fmt.Sprintf("%s:%s", typeKey, childType.SizeExpression)
 			}
 		}
@@ -214,7 +214,11 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 					}
 				}
 
-				if sourceType.SizeExpression != "" {
+				sizeExpression := sourceType.SizeExpression
+				if options.WithoutDynamicExpressions {
+					sizeExpression = ""
+				}
+				if sizeExpression != "" {
 					usedDynSsz = true
 				}
 
@@ -231,7 +235,7 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 						EmptySize:             emptySize,
 						MarshalFn:             marshalFn,
 						InlineItemMarshalCode: inlineMarshalCode,
-						SizeExpr:              sourceType.SizeExpression,
+						SizeExpr:              sizeExpression,
 						IsArray:               sourceType.Kind == reflect.Array,
 					}
 
@@ -245,7 +249,7 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 						ItemSize:              int(sourceType.ElemDesc.Size),
 						MarshalFn:             marshalFn,
 						InlineItemMarshalCode: inlineMarshalCode,
-						SizeExpr:              sourceType.SizeExpression,
+						SizeExpr:              sizeExpression,
 						IsArray:               sourceType.Kind == reflect.Array,
 						IsByteArray:           sourceType.IsByteArray,
 						IsString:              sourceType.IsString,
@@ -274,7 +278,11 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 					}
 				}
 
-				if sourceType.SizeExpression != "" {
+				sizeExpression := sourceType.SizeExpression
+				if options.WithoutDynamicExpressions {
+					sizeExpression = ""
+				}
+				if sizeExpression != "" {
 					usedDynSsz = true
 				}
 
@@ -283,7 +291,7 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 						TypeName:              typePrinter.TypeString(sourceType.Type),
 						MarshalFn:             marshalFn,
 						InlineItemMarshalCode: inlineMarshalCode,
-						SizeExpr:              sourceType.SizeExpression,
+						SizeExpr:              sizeExpression,
 					}
 
 					if err := codeTpl.ExecuteTemplate(&code, "marshal_dynamic_list", dynListModel); err != nil {
@@ -295,7 +303,7 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 						ItemSize:              int(sourceType.ElemDesc.Size),
 						MarshalFn:             marshalFn,
 						InlineItemMarshalCode: inlineMarshalCode,
-						SizeExpr:              sourceType.SizeExpression,
+						SizeExpr:              sizeExpression,
 						IsByteArray:           sourceType.IsByteArray,
 						IsString:              sourceType.IsString,
 					}
@@ -395,7 +403,7 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 		MarshalFunctions: marshalFnList,
 		RootFnName:       rootFn.Name,
 		CreateLegacyFn:   options.CreateLegacyFn,
-		CreateDynamicFn:  options.CreateDynamicFn,
+		CreateDynamicFn:  !options.WithoutDynamicExpressions,
 		UsedDynSsz:       usedDynSsz,
 	}
 
