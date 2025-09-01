@@ -383,7 +383,7 @@ func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 	h.hash(input, input)
 	h.buf = append(h.buf[:indx], input[:32]...)
 
-	logfn(fmt.Sprintf("-> %x\n", input))
+	logfn(fmt.Sprintf("-> %x\n", input[:32]))
 }
 
 func (h *Hasher) Hash() []byte {

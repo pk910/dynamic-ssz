@@ -1099,7 +1099,7 @@ func (t *TestBeaconState) HashTreeRootWithDyn(ds *dynssz.DynSsz, hh sszutils.Has
       return sszutils.ErrVectorLength
     }
     for i := 0; i < vlen; i++ {
-      hh.Append(t[i][:])
+      hh.PutBytes(t[i][:])
     }
     for i := vlen; i < int(limit); i++ {
       hh.PutUint8(0)
@@ -1121,7 +1121,7 @@ func (t *TestBeaconState) HashTreeRootWithDyn(ds *dynssz.DynSsz, hh sszutils.Has
     }
     idx := hh.Index()
     for i := 0; i < vlen; i++ {
-      hh.Append(t[i][:])
+      hh.PutBytes(t[i][:])
     }
     limit := uint64(maxLen)
     if (uint64(hh.Index()-idx)+31)/32 > limit {
@@ -1229,7 +1229,7 @@ func (t *TestBeaconState) HashTreeRootWithDyn(ds *dynssz.DynSsz, hh sszutils.Has
       return sszutils.ErrVectorLength
     }
     for i := 0; i < vlen; i++ {
-      hh.Append(t[i][:])
+      hh.PutBytes(t[i][:])
     }
     for i := vlen; i < int(limit); i++ {
       hh.PutUint8(0)
@@ -1323,7 +1323,7 @@ func (t *TestBeaconState) HashTreeRootWithDyn(ds *dynssz.DynSsz, hh sszutils.Has
       return sszutils.ErrVectorLength
     }
     for i := 0; i < vlen; i++ {
-      hh.Append(t[i][:])
+      hh.PutBytes(t[i][:])
     }
     for i := vlen; i < int(limit); i++ {
       hh.PutUint8(0)

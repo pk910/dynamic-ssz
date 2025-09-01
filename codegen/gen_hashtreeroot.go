@@ -72,14 +72,8 @@ func generateHashTreeRoot(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor
 		case dynssz.SszVectorType, dynssz.SszListType:
 			if sourceType.IsByteArray {
 				// Simple byte arrays/slices can be inlined directly
-				// (complex cases with dynamic expressions are filtered out in isBaseType)
-				if pack {
-					// When packing (inside lists/vectors), use Append to avoid merkleization
-					return fmt.Sprintf("hh.Append(%s[:])", varName)
-				} else {
-					// When not packing (standalone), use PutBytes which handles merkleization
-					return fmt.Sprintf("hh.PutBytes(%s[:])", varName)
-				}
+				// (complex cases with dynamic expressions or limits are filtered out in isBaseType)
+				return fmt.Sprintf("hh.PutBytes(%s[:])", varName)
 			}
 			return ""
 		default:
