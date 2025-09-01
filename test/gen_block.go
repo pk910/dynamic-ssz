@@ -3,10 +3,13 @@ package main
 
 import (
 	"github.com/attestantio/go-eth2-client/spec/altair"
+	"github.com/attestantio/go-eth2-client/spec/bellatrix"
 	"github.com/attestantio/go-eth2-client/spec/capella"
 	"github.com/attestantio/go-eth2-client/spec/deneb"
 	"github.com/attestantio/go-eth2-client/spec/phase0"
+	"github.com/holiman/uint256"
 	dynssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
 	go_bitfield "github.com/prysmaticlabs/go-bitfield"
 )
@@ -128,45 +131,62 @@ func (t *TestBeaconBlock) MarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (dst []by
     }
     return err
   }
-  fn14 := func(t *altair.SyncAggregate) (err error) { // *altair.SyncAggregate
+  fn14 := func(t go_bitfield.Bitvector512) (err error) { // bitfield.Bitvector512:64:SYNC_COMMITTEE_SIZE/8
+    hasLimit, limit, err := ds.ResolveSpecValue("SYNC_COMMITTEE_SIZE/8")
+    if err != nil {
+      return err
+    }
+    if !hasLimit {
+      limit = 64
+    }
+    vlen := len(t)
+    if vlen > int(limit) {
+      return sszutils.ErrListTooBig
+    }
+    vlimit := int(limit)
+    if vlimit > vlen {
+      vlimit = vlen
+    }
+    dst = append(dst, t[:vlimit]...)
+    if vlen < int(limit) {
+      dst = sszutils.AppendZeroPadding(dst, int(limit) - vlen)
+    }
+    return err
+  }
+  fn15 := func(t *altair.SyncAggregate) (err error) { // *altair.SyncAggregate
     // Field #0 'SyncCommitteeBits'
-    if len(t.SyncCommitteeBits) > 64 {
-      dst = append(dst, t.SyncCommitteeBits[:64]...)
-    } else {
-      dst = append(dst, t.SyncCommitteeBits[:]...)
-      if len(t.SyncCommitteeBits) < 64 {
-        dst = sszutils.AppendZeroPadding(dst, 64 - len(t.SyncCommitteeBits))
-      }
+    if err = fn14(t.SyncCommitteeBits); err != nil {
+      return err
     }
     // Field #1 'SyncCommitteeSignature'
     dst = append(dst, t.SyncCommitteeSignature[:]...)
     return err
   }
-  fn15 := func(t *deneb.ExecutionPayload) (err error) { // *deneb.ExecutionPayload
+  fn16 := func(t *deneb.ExecutionPayload) (err error) { // *deneb.ExecutionPayload
     dst, err = t.MarshalSSZTo(dst)
     return err
   }
-  fn16 := func(t *capella.SignedBLSToExecutionChange) (err error) { // *capella.SignedBLSToExecutionChange
+  fn17 := func(t *capella.SignedBLSToExecutionChange) (err error) { // *capella.SignedBLSToExecutionChange
     dst, err = t.MarshalSSZTo(dst)
     return err
   }
-  fn17 := func(t []*capella.SignedBLSToExecutionChange) (err error) { // []*capella.SignedBLSToExecutionChange
+  fn18 := func(t []*capella.SignedBLSToExecutionChange) (err error) { // []*capella.SignedBLSToExecutionChange
     vlen := len(t)
     for i := 0; i < vlen; i++ {
-      if err = fn16(t[i]); err != nil {
+      if err = fn17(t[i]); err != nil {
         return err
       }
     }
     return err
   }
-  fn18 := func(t []deneb.KZGCommitment) (err error) { // []deneb.KZGCommitment:48
+  fn19 := func(t []deneb.KZGCommitment) (err error) { // []deneb.KZGCommitment:48
     vlen := len(t)
     for i := 0; i < vlen; i++ {
       dst = append(dst, t[i][:]...)
     }
     return err
   }
-  fn19 := func(t *deneb.BeaconBlockBody) (err error) { // *deneb.BeaconBlockBody
+  fn20 := func(t *deneb.BeaconBlockBody) (err error) { // *deneb.BeaconBlockBody
     dstlen := len(dst)
     // Field #0 'RANDAOReveal'
     dst = append(dst, t.RANDAOReveal[:]...)
@@ -192,7 +212,7 @@ func (t *TestBeaconBlock) MarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (dst []by
     offset7 := len(dst)
     dst = sszutils.MarshalOffset(dst, 0)
     // Field #8 'SyncAggregate'
-    if err = fn14(t.SyncAggregate); err != nil {
+    if err = fn15(t.SyncAggregate); err != nil {
       return err
     }
     // Offset #9 'ExecutionPayload'
@@ -231,22 +251,22 @@ func (t *TestBeaconBlock) MarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (dst []by
     }
     // Dynamic Field #9 'ExecutionPayload'
     sszutils.UpdateOffset(dst[offset9:offset9+4], len(dst)-dstlen)
-    if err = fn15(t.ExecutionPayload); err != nil {
+    if err = fn16(t.ExecutionPayload); err != nil {
       return err
     }
     // Dynamic Field #10 'BLSToExecutionChanges'
     sszutils.UpdateOffset(dst[offset10:offset10+4], len(dst)-dstlen)
-    if err = fn17(t.BLSToExecutionChanges); err != nil {
+    if err = fn18(t.BLSToExecutionChanges); err != nil {
       return err
     }
     // Dynamic Field #11 'BlobKZGCommitments'
     sszutils.UpdateOffset(dst[offset11:offset11+4], len(dst)-dstlen)
-    if err = fn18(t.BlobKZGCommitments); err != nil {
+    if err = fn19(t.BlobKZGCommitments); err != nil {
       return err
     }
     return err
   }
-  fn20 := func(t *deneb.BeaconBlock) (err error) { // *deneb.BeaconBlock
+  fn21 := func(t *TestBeaconBlock) (err error) { // *main.TestBeaconBlock
     dstlen := len(dst)
     // Field #0 'Slot'
     dst = sszutils.MarshalUint64(dst, uint64(t.Slot))
@@ -261,21 +281,7 @@ func (t *TestBeaconBlock) MarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (dst []by
     dst = sszutils.MarshalOffset(dst, 0)
     // Dynamic Field #4 'Body'
     sszutils.UpdateOffset(dst[offset4:offset4+4], len(dst)-dstlen)
-    if err = fn19(t.Body); err != nil {
-      return err
-    }
-    return err
-  }
-  fn21 := func(t *TestBeaconBlock) (err error) { // *main.TestBeaconBlock
-    dstlen := len(dst)
-    // Offset #0 'Message'
-    offset0 := len(dst)
-    dst = sszutils.MarshalOffset(dst, 0)
-    // Field #1 'Signature'
-    dst = append(dst, t.Signature[:]...)
-    // Dynamic Field #0 'Message'
-    sszutils.UpdateOffset(dst[offset0:offset0+4], len(dst)-dstlen)
-    if err = fn20(t.Message); err != nil {
+    if err = fn20(t.Body); err != nil {
       return err
     }
     return err
@@ -378,17 +384,12 @@ func (t *TestBeaconBlock) SizeSSZDyn(ds *dynssz.DynSsz) (size int) {
     size += 4 + sfn14(t.BlobKZGCommitments)
     return size
   }
-  sfn16 := func(t *deneb.BeaconBlock) (size int) { // *deneb.BeaconBlock
+  sfn16 := func(t *TestBeaconBlock) (size int) { // *TestBeaconBlock
     size = 80
     size += 4 + sfn15(t.Body)
     return size
   }
-  sfn17 := func(t *TestBeaconBlock) (size int) { // *TestBeaconBlock
-    size = 96
-    size += 4 + sfn16(t.Message)
-    return size
-  }
-  return sfn17(t)
+  return sfn16(t)
 }
 func (t *TestBeaconBlock) SizeSSZ() (size int) {
   return t.SizeSSZDyn(dynssz.GetGlobalDynSsz())
@@ -656,7 +657,22 @@ func (t *TestBeaconBlock) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
     }
     return t, err
   }
-  fn14 := func(t *altair.SyncAggregate, buf []byte) (*altair.SyncAggregate, error) { // *altair.SyncAggregate
+  fn14 := func(t go_bitfield.Bitvector512, buf []byte) (go_bitfield.Bitvector512, error) { // go_bitfield.Bitvector512:64:SYNC_COMMITTEE_SIZE/8
+    var err error
+    itemsize := 1
+    limit := sfn3 / itemsize
+    if len(t) < int(limit) {
+      t = make(go_bitfield.Bitvector512, int(limit))
+    } else {
+      t = t[:int(limit)]
+    }
+    if len(buf) > int(limit) * itemsize {
+      return t, sszutils.ErrListTooBig
+    }
+    copy(t[:], buf[:])
+    return t, err
+  }
+  fn15 := func(t *altair.SyncAggregate, buf []byte) (*altair.SyncAggregate, error) { // *altair.SyncAggregate
     var err error
     if t == nil {
       t = new(altair.SyncAggregate)
@@ -674,12 +690,9 @@ func (t *TestBeaconBlock) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
       if buflen < minsize {
         return t, sszutils.ErrUnexpectedEOF
       }
-      if len(t.SyncCommitteeBits) < len(buf[bufpos:bufpos+fieldsize]) {
-        t.SyncCommitteeBits = make(go_bitfield.Bitvector512, len(buf[bufpos:bufpos+fieldsize]))
-      } else {
-        t.SyncCommitteeBits = t.SyncCommitteeBits[:len(buf[bufpos:bufpos+fieldsize])]
+      if t.SyncCommitteeBits, err = fn14(t.SyncCommitteeBits, buf[bufpos:bufpos+fieldsize]); err != nil {
+        return t, err
       }
-      copy(t.SyncCommitteeBits, buf[bufpos:bufpos+fieldsize])
       bufpos += fieldsize
     }
     // Field #1 'SyncCommitteeSignature'
@@ -690,7 +703,7 @@ func (t *TestBeaconBlock) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
     }
     return t, err
   }
-  fn15 := func(t *deneb.ExecutionPayload, buf []byte) (*deneb.ExecutionPayload, error) { // *deneb.ExecutionPayload
+  fn16 := func(t *deneb.ExecutionPayload, buf []byte) (*deneb.ExecutionPayload, error) { // *deneb.ExecutionPayload
     var err error
     if t == nil {
       t = new(deneb.ExecutionPayload)
@@ -698,7 +711,7 @@ func (t *TestBeaconBlock) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
     err = t.UnmarshalSSZ(buf)
     return t, err
   }
-  fn16 := func(t *capella.SignedBLSToExecutionChange, buf []byte) (*capella.SignedBLSToExecutionChange, error) { // *capella.SignedBLSToExecutionChange
+  fn17 := func(t *capella.SignedBLSToExecutionChange, buf []byte) (*capella.SignedBLSToExecutionChange, error) { // *capella.SignedBLSToExecutionChange
     var err error
     if t == nil {
       t = new(capella.SignedBLSToExecutionChange)
@@ -706,7 +719,7 @@ func (t *TestBeaconBlock) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
     err = t.UnmarshalSSZ(buf)
     return t, err
   }
-  fn17 := func(t []*capella.SignedBLSToExecutionChange, buf []byte) ([]*capella.SignedBLSToExecutionChange, error) { // []*capella.SignedBLSToExecutionChange
+  fn18 := func(t []*capella.SignedBLSToExecutionChange, buf []byte) ([]*capella.SignedBLSToExecutionChange, error) { // []*capella.SignedBLSToExecutionChange
     var err error
     buflen := len(buf)
     itemsize := 172
@@ -720,13 +733,13 @@ func (t *TestBeaconBlock) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
       t = t[:itemCount]
     }
     for i := 0; i < itemCount; i++ {
-      if t[i], err = fn16(t[i], buf[i*itemsize:(i+1)*itemsize]); err != nil {
+      if t[i], err = fn17(t[i], buf[i*itemsize:(i+1)*itemsize]); err != nil {
         return t, err
       }
     }
     return t, err
   }
-  fn18 := func(t []deneb.KZGCommitment, buf []byte) ([]deneb.KZGCommitment, error) { // []deneb.KZGCommitment:48
+  fn19 := func(t []deneb.KZGCommitment, buf []byte) ([]deneb.KZGCommitment, error) { // []deneb.KZGCommitment:48
     var err error
     buflen := len(buf)
     itemsize := 48
@@ -744,7 +757,7 @@ func (t *TestBeaconBlock) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
     }
     return t, err
   }
-  fn19 := func(t *deneb.BeaconBlockBody, buf []byte) (*deneb.BeaconBlockBody, error) { // *deneb.BeaconBlockBody
+  fn20 := func(t *deneb.BeaconBlockBody, buf []byte) (*deneb.BeaconBlockBody, error) { // *deneb.BeaconBlockBody
     var err error
     if t == nil {
       t = new(deneb.BeaconBlockBody)
@@ -797,7 +810,7 @@ func (t *TestBeaconBlock) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
       if buflen < minsize {
         return t, sszutils.ErrUnexpectedEOF
       }
-      if t.SyncAggregate, err = fn14(t.SyncAggregate, buf[bufpos:bufpos+fieldsize]); err != nil {
+      if t.SyncAggregate, err = fn15(t.SyncAggregate, buf[bufpos:bufpos+fieldsize]); err != nil {
         return t, err
       }
       bufpos += fieldsize
@@ -872,7 +885,7 @@ func (t *TestBeaconBlock) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
     }
     {
       fieldSlice := buf[offset9:offset10]
-      if t.ExecutionPayload, err = fn15(t.ExecutionPayload, fieldSlice); err != nil {
+      if t.ExecutionPayload, err = fn16(t.ExecutionPayload, fieldSlice); err != nil {
         return t, err
       }
       bufpos += len(fieldSlice)
@@ -883,7 +896,7 @@ func (t *TestBeaconBlock) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
     }
     {
       fieldSlice := buf[offset10:offset11]
-      if t.BLSToExecutionChanges, err = fn17(t.BLSToExecutionChanges, fieldSlice); err != nil {
+      if t.BLSToExecutionChanges, err = fn18(t.BLSToExecutionChanges, fieldSlice); err != nil {
         return t, err
       }
       bufpos += len(fieldSlice)
@@ -894,17 +907,17 @@ func (t *TestBeaconBlock) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
     }
     {
       fieldSlice := buf[offset11:]
-      if t.BlobKZGCommitments, err = fn18(t.BlobKZGCommitments, fieldSlice); err != nil {
+      if t.BlobKZGCommitments, err = fn19(t.BlobKZGCommitments, fieldSlice); err != nil {
         return t, err
       }
       bufpos += len(fieldSlice)
     }
     return t, err
   }
-  fn20 := func(t *deneb.BeaconBlock, buf []byte) (*deneb.BeaconBlock, error) { // *deneb.BeaconBlock
+  fn21 := func(t *TestBeaconBlock, buf []byte) (*TestBeaconBlock, error) { // *TestBeaconBlock
     var err error
     if t == nil {
-      t = new(deneb.BeaconBlock)
+      t = new(TestBeaconBlock)
     }
     bufpos := 84
     buflen := len(buf)
@@ -927,17 +940,625 @@ func (t *TestBeaconBlock) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
     }
     {
       fieldSlice := buf[offset4:]
-      if t.Body, err = fn19(t.Body, fieldSlice); err != nil {
+      if t.Body, err = fn20(t.Body, fieldSlice); err != nil {
         return t, err
       }
       bufpos += len(fieldSlice)
     }
     return t, err
   }
-  fn21 := func(t *TestBeaconBlock, buf []byte) (*TestBeaconBlock, error) { // *TestBeaconBlock
+  _, err = fn21(t, buf)
+  return err
+}
+func (t *TestBeaconBlock) UnmarshalSSZ(buf []byte) (err error) {
+  return t.UnmarshalSSZDyn(dynssz.GetGlobalDynSsz(), buf)
+}
+
+func (t *TestBeaconBlock) HashTreeRootWithDyn(ds *dynssz.DynSsz, hh sszutils.HashWalker) error {
+  fn1 := func(t *phase0.ETH1Data) (err error) { // *phase0.ETH1Data
+    err = t.HashTreeRootWith(hh)
+    return err
+  }
+  fn2 := func(t *phase0.ProposerSlashing) (err error) { // *phase0.ProposerSlashing:pack
+    err = t.HashTreeRootWith(hh)
+    return err
+  }
+  fn3 := func(t []*phase0.ProposerSlashing) (err error) { // []*phase0.ProposerSlashing:MAX_PROPOSER_SLASHINGS
+    hasLimit, maxLen, err := ds.ResolveSpecValue("MAX_PROPOSER_SLASHINGS")
+    if err != nil {
+      return err
+    }
+    if !hasLimit {
+      maxLen = 16
+    }
+    vlen := len(t)
+    if vlen > int(maxLen) {
+      return sszutils.ErrListTooBig
+    }
+    idx := hh.Index()
+    for i := 0; i < vlen; i++ {
+      if err = fn2(t[i]); err != nil {
+        return err
+      }
+    }
+    limit := uint64(maxLen)
+    if (uint64(hh.Index()-idx)+31)/32 > limit {
+      return sszutils.ErrListTooBig
+    }
+    hh.MerkleizeWithMixin(idx, uint64(vlen), limit)
+    return err
+  }
+  fn4 := func(t *phase0.AttesterSlashing) (err error) { // *phase0.AttesterSlashing:pack
+    err = t.HashTreeRootWith(hh)
+    return err
+  }
+  fn5 := func(t []*phase0.AttesterSlashing) (err error) { // []*phase0.AttesterSlashing:MAX_ATTESTER_SLASHINGS
+    hasLimit, maxLen, err := ds.ResolveSpecValue("MAX_ATTESTER_SLASHINGS")
+    if err != nil {
+      return err
+    }
+    if !hasLimit {
+      maxLen = 2
+    }
+    vlen := len(t)
+    if vlen > int(maxLen) {
+      return sszutils.ErrListTooBig
+    }
+    idx := hh.Index()
+    for i := 0; i < vlen; i++ {
+      if err = fn4(t[i]); err != nil {
+        return err
+      }
+    }
+    limit := uint64(maxLen)
+    if (uint64(hh.Index()-idx)+31)/32 > limit {
+      return sszutils.ErrListTooBig
+    }
+    hh.MerkleizeWithMixin(idx, uint64(vlen), limit)
+    return err
+  }
+  fn6 := func(t go_bitfield.Bitlist) (err error) { // bitfield.Bitlist:MAX_VALIDATORS_PER_COMMITTEE
+    hasLimit, maxLen, err := ds.ResolveSpecValue("MAX_VALIDATORS_PER_COMMITTEE")
+    if err != nil {
+      return err
+    }
+    if !hasLimit {
+      maxLen = 2048
+    }
+    var size uint64
+    var bitlist []byte
+    hh.WithTemp(func(tmp []byte) []byte {
+      tmp, size = hasher.ParseBitlist(tmp[:0], t[:])
+      bitlist = tmp
+      return tmp
+    })
+    if size > maxLen {
+      return sszutils.ErrListTooBig
+    }
+    idx := hh.Index()
+    hh.AppendBytes32(bitlist)
+    hh.MerkleizeWithMixin(idx, size, (maxLen+255)/256)
+    return err
+  }
+  fn7 := func(t *phase0.AttestationData) (err error) { // *phase0.AttestationData
+    err = t.HashTreeRootWith(hh)
+    return err
+  }
+  fn8 := func(t *phase0.Attestation) (err error) { // *phase0.Attestation:pack
+    idx := hh.Index()
+    // Field #0 'AggregationBits'
+    if err = fn6(t.AggregationBits); err != nil {
+      return err
+    }
+    // Field #1 'Data'
+    if err = fn7(t.Data); err != nil {
+      return err
+    }
+    // Field #2 'Signature'
+    hh.PutBytes(t.Signature[:])
+    hh.Merkleize(idx)
+    return err
+  }
+  fn9 := func(t []*phase0.Attestation) (err error) { // []*phase0.Attestation:MAX_ATTESTATIONS
+    hasLimit, maxLen, err := ds.ResolveSpecValue("MAX_ATTESTATIONS")
+    if err != nil {
+      return err
+    }
+    if !hasLimit {
+      maxLen = 128
+    }
+    vlen := len(t)
+    if vlen > int(maxLen) {
+      return sszutils.ErrListTooBig
+    }
+    idx := hh.Index()
+    for i := 0; i < vlen; i++ {
+      if err = fn8(t[i]); err != nil {
+        return err
+      }
+    }
+    limit := uint64(maxLen)
+    if (uint64(hh.Index()-idx)+31)/32 > limit {
+      return sszutils.ErrListTooBig
+    }
+    hh.MerkleizeWithMixin(idx, uint64(vlen), limit)
+    return err
+  }
+  fn10 := func(t [][]byte) (err error) { // [][]uint8:33:DEPOSIT_CONTRACT_TREE_DEPTH+1:32
+    hasLimit, limit, err := ds.ResolveSpecValue("DEPOSIT_CONTRACT_TREE_DEPTH+1")
+    if err != nil {
+      return err
+    }
+    if !hasLimit {
+      limit = 33
+    }
+    idx := hh.Index()
+    vlen := len(t)
+    if vlen > int(limit) {
+      return sszutils.ErrVectorLength
+    }
+    for i := 0; i < vlen; i++ {
+      hh.Append(t[i][:])
+    }
+    for i := vlen; i < int(limit); i++ {
+      hh.PutUint8(0)
+    }
+    hh.Merkleize(idx)
+    return err
+  }
+  fn11 := func(t *phase0.DepositData) (err error) { // *phase0.DepositData
+    err = t.HashTreeRootWith(hh)
+    return err
+  }
+  fn12 := func(t *phase0.Deposit) (err error) { // *phase0.Deposit:pack
+    idx := hh.Index()
+    // Field #0 'Proof'
+    if err = fn10(t.Proof); err != nil {
+      return err
+    }
+    // Field #1 'Data'
+    if err = fn11(t.Data); err != nil {
+      return err
+    }
+    hh.Merkleize(idx)
+    return err
+  }
+  fn13 := func(t []*phase0.Deposit) (err error) { // []*phase0.Deposit:MAX_DEPOSITS
+    hasLimit, maxLen, err := ds.ResolveSpecValue("MAX_DEPOSITS")
+    if err != nil {
+      return err
+    }
+    if !hasLimit {
+      maxLen = 16
+    }
+    vlen := len(t)
+    if vlen > int(maxLen) {
+      return sszutils.ErrListTooBig
+    }
+    idx := hh.Index()
+    for i := 0; i < vlen; i++ {
+      if err = fn12(t[i]); err != nil {
+        return err
+      }
+    }
+    limit := uint64(maxLen)
+    if (uint64(hh.Index()-idx)+31)/32 > limit {
+      return sszutils.ErrListTooBig
+    }
+    hh.MerkleizeWithMixin(idx, uint64(vlen), limit)
+    return err
+  }
+  fn14 := func(t *phase0.SignedVoluntaryExit) (err error) { // *phase0.SignedVoluntaryExit:pack
+    err = t.HashTreeRootWith(hh)
+    return err
+  }
+  fn15 := func(t []*phase0.SignedVoluntaryExit) (err error) { // []*phase0.SignedVoluntaryExit:MAX_VOLUNTARY_EXITS
+    hasLimit, maxLen, err := ds.ResolveSpecValue("MAX_VOLUNTARY_EXITS")
+    if err != nil {
+      return err
+    }
+    if !hasLimit {
+      maxLen = 16
+    }
+    vlen := len(t)
+    if vlen > int(maxLen) {
+      return sszutils.ErrListTooBig
+    }
+    idx := hh.Index()
+    for i := 0; i < vlen; i++ {
+      if err = fn14(t[i]); err != nil {
+        return err
+      }
+    }
+    limit := uint64(maxLen)
+    if (uint64(hh.Index()-idx)+31)/32 > limit {
+      return sszutils.ErrListTooBig
+    }
+    hh.MerkleizeWithMixin(idx, uint64(vlen), limit)
+    return err
+  }
+  fn16 := func(t go_bitfield.Bitvector512) (err error) { // bitfield.Bitvector512:64:SYNC_COMMITTEE_SIZE/8
+    hasLimit, limit, err := ds.ResolveSpecValue("SYNC_COMMITTEE_SIZE/8")
+    if err != nil {
+      return err
+    }
+    if !hasLimit {
+      limit = 64
+    }
+    if len(t) != int(limit) {
+      return sszutils.ErrVectorLength
+    }
+    hh.PutBytes(t[:])
+    return err
+  }
+  fn17 := func(t *altair.SyncAggregate) (err error) { // *altair.SyncAggregate
+    idx := hh.Index()
+    // Field #0 'SyncCommitteeBits'
+    if err = fn16(t.SyncCommitteeBits); err != nil {
+      return err
+    }
+    // Field #1 'SyncCommitteeSignature'
+    hh.PutBytes(t.SyncCommitteeSignature[:])
+    hh.Merkleize(idx)
+    return err
+  }
+  fn18 := func(t []byte) (err error) { // []uint8:MAX_EXTRA_DATA_BYTES
+    hasLimit, maxLen, err := ds.ResolveSpecValue("MAX_EXTRA_DATA_BYTES")
+    if err != nil {
+      return err
+    }
+    if !hasLimit {
+      maxLen = 32
+    }
+    vlen := len(t)
+    if vlen > int(maxLen) {
+      return sszutils.ErrListTooBig
+    }
+    idx := hh.Index()
+    hh.AppendBytes32(t[:vlen])
+    limit := sszutils.CalculateLimit(uint64(maxLen), uint64(vlen), uint64(1))
+    if (uint64(hh.Index()-idx)+31)/32 > limit {
+      return sszutils.ErrListTooBig
+    }
+    hh.MerkleizeWithMixin(idx, uint64(vlen), limit)
+    return err
+  }
+  fn19 := func(t *uint256.Int) (err error) { // *uint256.Int:4
+    var root [32]byte
+    if root, err = t.HashTreeRoot(); err == nil {
+      hh.Append(root[:])
+    }
+    return err
+  }
+  fn20 := func(t bellatrix.Transaction) (err error) { // bellatrix.Transaction:MAX_BYTES_PER_TRANSACTION:pack
+    hasLimit, maxLen, err := ds.ResolveSpecValue("MAX_BYTES_PER_TRANSACTION")
+    if err != nil {
+      return err
+    }
+    if !hasLimit {
+      maxLen = 1073741824
+    }
+    vlen := len(t)
+    if vlen > int(maxLen) {
+      return sszutils.ErrListTooBig
+    }
+    idx := hh.Index()
+    hh.AppendBytes32(t[:vlen])
+    limit := sszutils.CalculateLimit(uint64(maxLen), uint64(vlen), uint64(1))
+    if (uint64(hh.Index()-idx)+31)/32 > limit {
+      return sszutils.ErrListTooBig
+    }
+    hh.MerkleizeWithMixin(idx, uint64(vlen), limit)
+    return err
+  }
+  fn21 := func(t []bellatrix.Transaction) (err error) { // []bellatrix.Transaction:MAX_TRANSACTIONS_PER_PAYLOAD:MAX_BYTES_PER_TRANSACTION
+    hasLimit, maxLen, err := ds.ResolveSpecValue("MAX_TRANSACTIONS_PER_PAYLOAD")
+    if err != nil {
+      return err
+    }
+    if !hasLimit {
+      maxLen = 1048576
+    }
+    vlen := len(t)
+    if vlen > int(maxLen) {
+      return sszutils.ErrListTooBig
+    }
+    idx := hh.Index()
+    for i := 0; i < vlen; i++ {
+      if err = fn20(t[i]); err != nil {
+        return err
+      }
+    }
+    limit := uint64(maxLen)
+    if (uint64(hh.Index()-idx)+31)/32 > limit {
+      return sszutils.ErrListTooBig
+    }
+    hh.MerkleizeWithMixin(idx, uint64(vlen), limit)
+    return err
+  }
+  fn22 := func(t *capella.Withdrawal) (err error) { // *capella.Withdrawal:pack
+    err = t.HashTreeRootWith(hh)
+    return err
+  }
+  fn23 := func(t []*capella.Withdrawal) (err error) { // []*capella.Withdrawal:MAX_WITHDRAWALS_PER_PAYLOAD
+    hasLimit, maxLen, err := ds.ResolveSpecValue("MAX_WITHDRAWALS_PER_PAYLOAD")
+    if err != nil {
+      return err
+    }
+    if !hasLimit {
+      maxLen = 16
+    }
+    vlen := len(t)
+    if vlen > int(maxLen) {
+      return sszutils.ErrListTooBig
+    }
+    idx := hh.Index()
+    for i := 0; i < vlen; i++ {
+      if err = fn22(t[i]); err != nil {
+        return err
+      }
+    }
+    limit := uint64(maxLen)
+    if (uint64(hh.Index()-idx)+31)/32 > limit {
+      return sszutils.ErrListTooBig
+    }
+    hh.MerkleizeWithMixin(idx, uint64(vlen), limit)
+    return err
+  }
+  fn24 := func(t *deneb.ExecutionPayload) (err error) { // *deneb.ExecutionPayload
+    idx := hh.Index()
+    // Field #0 'ParentHash'
+    hh.PutBytes(t.ParentHash[:])
+    // Field #1 'FeeRecipient'
+    hh.PutBytes(t.FeeRecipient[:])
+    // Field #2 'StateRoot'
+    hh.PutBytes(t.StateRoot[:])
+    // Field #3 'ReceiptsRoot'
+    hh.PutBytes(t.ReceiptsRoot[:])
+    // Field #4 'LogsBloom'
+    hh.PutBytes(t.LogsBloom[:])
+    // Field #5 'PrevRandao'
+    hh.PutBytes(t.PrevRandao[:])
+    // Field #6 'BlockNumber'
+    hh.PutUint64(uint64(t.BlockNumber))
+    // Field #7 'GasLimit'
+    hh.PutUint64(uint64(t.GasLimit))
+    // Field #8 'GasUsed'
+    hh.PutUint64(uint64(t.GasUsed))
+    // Field #9 'Timestamp'
+    hh.PutUint64(uint64(t.Timestamp))
+    // Field #10 'ExtraData'
+    if err = fn18(t.ExtraData); err != nil {
+      return err
+    }
+    // Field #11 'BaseFeePerGas'
+    if err = fn19(t.BaseFeePerGas); err != nil {
+      return err
+    }
+    // Field #12 'BlockHash'
+    hh.PutBytes(t.BlockHash[:])
+    // Field #13 'Transactions'
+    if err = fn21(t.Transactions); err != nil {
+      return err
+    }
+    // Field #14 'Withdrawals'
+    if err = fn23(t.Withdrawals); err != nil {
+      return err
+    }
+    // Field #15 'BlobGasUsed'
+    hh.PutUint64(uint64(t.BlobGasUsed))
+    // Field #16 'ExcessBlobGas'
+    hh.PutUint64(uint64(t.ExcessBlobGas))
+    hh.Merkleize(idx)
+    return err
+  }
+  fn25 := func(t *capella.SignedBLSToExecutionChange) (err error) { // *capella.SignedBLSToExecutionChange:pack
+    err = t.HashTreeRootWith(hh)
+    return err
+  }
+  fn26 := func(t []*capella.SignedBLSToExecutionChange) (err error) { // []*capella.SignedBLSToExecutionChange:MAX_BLS_TO_EXECUTION_CHANGES
+    hasLimit, maxLen, err := ds.ResolveSpecValue("MAX_BLS_TO_EXECUTION_CHANGES")
+    if err != nil {
+      return err
+    }
+    if !hasLimit {
+      maxLen = 16
+    }
+    vlen := len(t)
+    if vlen > int(maxLen) {
+      return sszutils.ErrListTooBig
+    }
+    idx := hh.Index()
+    for i := 0; i < vlen; i++ {
+      if err = fn25(t[i]); err != nil {
+        return err
+      }
+    }
+    limit := uint64(maxLen)
+    if (uint64(hh.Index()-idx)+31)/32 > limit {
+      return sszutils.ErrListTooBig
+    }
+    hh.MerkleizeWithMixin(idx, uint64(vlen), limit)
+    return err
+  }
+  fn27 := func(t []deneb.KZGCommitment) (err error) { // []deneb.KZGCommitment:MAX_BLOB_COMMITMENTS_PER_BLOCK:48
+    hasLimit, maxLen, err := ds.ResolveSpecValue("MAX_BLOB_COMMITMENTS_PER_BLOCK")
+    if err != nil {
+      return err
+    }
+    if !hasLimit {
+      maxLen = 4096
+    }
+    vlen := len(t)
+    if vlen > int(maxLen) {
+      return sszutils.ErrListTooBig
+    }
+    idx := hh.Index()
+    for i := 0; i < vlen; i++ {
+      hh.Append(t[i][:])
+    }
+    limit := uint64(maxLen)
+    if (uint64(hh.Index()-idx)+31)/32 > limit {
+      return sszutils.ErrListTooBig
+    }
+    hh.MerkleizeWithMixin(idx, uint64(vlen), limit)
+    return err
+  }
+  fn28 := func(t *deneb.BeaconBlockBody) (err error) { // *deneb.BeaconBlockBody
+    idx := hh.Index()
+    // Field #0 'RANDAOReveal'
+    hh.PutBytes(t.RANDAOReveal[:])
+    // Field #1 'ETH1Data'
+    if err = fn1(t.ETH1Data); err != nil {
+      return err
+    }
+    // Field #2 'Graffiti'
+    hh.PutBytes(t.Graffiti[:])
+    // Field #3 'ProposerSlashings'
+    if err = fn3(t.ProposerSlashings); err != nil {
+      return err
+    }
+    // Field #4 'AttesterSlashings'
+    if err = fn5(t.AttesterSlashings); err != nil {
+      return err
+    }
+    // Field #5 'Attestations'
+    if err = fn9(t.Attestations); err != nil {
+      return err
+    }
+    // Field #6 'Deposits'
+    if err = fn13(t.Deposits); err != nil {
+      return err
+    }
+    // Field #7 'VoluntaryExits'
+    if err = fn15(t.VoluntaryExits); err != nil {
+      return err
+    }
+    // Field #8 'SyncAggregate'
+    if err = fn17(t.SyncAggregate); err != nil {
+      return err
+    }
+    // Field #9 'ExecutionPayload'
+    if err = fn24(t.ExecutionPayload); err != nil {
+      return err
+    }
+    // Field #10 'BLSToExecutionChanges'
+    if err = fn26(t.BLSToExecutionChanges); err != nil {
+      return err
+    }
+    // Field #11 'BlobKZGCommitments'
+    if err = fn27(t.BlobKZGCommitments); err != nil {
+      return err
+    }
+    hh.Merkleize(idx)
+    return err
+  }
+  fn29 := func(t *TestBeaconBlock) (err error) { // *main.TestBeaconBlock
+    idx := hh.Index()
+    // Field #0 'Slot'
+    hh.PutUint64(uint64(t.Slot))
+    // Field #1 'ProposerIndex'
+    hh.PutUint64(uint64(t.ProposerIndex))
+    // Field #2 'ParentRoot'
+    hh.PutBytes(t.ParentRoot[:])
+    // Field #3 'StateRoot'
+    hh.PutBytes(t.StateRoot[:])
+    // Field #4 'Body'
+    if err = fn28(t.Body); err != nil {
+      return err
+    }
+    hh.Merkleize(idx)
+    return err
+  }
+  return fn29(t)
+}
+func (t *TestBeaconBlock) HashTreeRootDyn(ds *dynssz.DynSsz) ([32]byte, error) {
+  pool := &hasher.DefaultHasherPool
+  hh := pool.Get()
+	defer func() {
+		pool.Put(hh)
+	}()
+  if err := t.HashTreeRootWithDyn(ds, hh); err != nil {
+    return [32]byte{}, err
+  }
+  r, _ := hh.HashRoot()
+  return r, nil
+}
+func (t *TestBeaconBlock) HashTreeRootWith(hh sszutils.HashWalker) error {
+  return t.HashTreeRootWithDyn(dynssz.GetGlobalDynSsz(), hh)
+}
+func (t *TestBeaconBlock) HashTreeRoot() ([32]byte, error) {
+  pool := &hasher.DefaultHasherPool
+  hh := pool.Get()
+	defer func() {
+		pool.Put(hh)
+	}()
+  if err := t.HashTreeRootWithDyn(dynssz.GetGlobalDynSsz(), hh); err != nil {
+    return [32]byte{}, err
+  }
+  r, _ := hh.HashRoot()
+  return r, nil
+}
+
+func (t *TestSignedBeaconBlock) MarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (dst []byte, err error) {
+  dst = buf
+  fn1 := func(t *TestBeaconBlock) (err error) { // *main.TestBeaconBlock
+    dst, err = t.MarshalSSZDyn(ds, dst)
+    return err
+  }
+  fn2 := func(t *TestSignedBeaconBlock) (err error) { // *main.TestSignedBeaconBlock
+    dstlen := len(dst)
+    // Offset #0 'Message'
+    offset0 := len(dst)
+    dst = sszutils.MarshalOffset(dst, 0)
+    // Field #1 'Signature'
+    dst = append(dst, t.Signature[:]...)
+    // Dynamic Field #0 'Message'
+    sszutils.UpdateOffset(dst[offset0:offset0+4], len(dst)-dstlen)
+    if err = fn1(t.Message); err != nil {
+      return err
+    }
+    return err
+  }
+  err = fn2(t)
+  return dst, err
+}
+func (t *TestSignedBeaconBlock) MarshalSSZ() ([]byte, error) {
+  return dynssz.GetGlobalDynSsz().MarshalSSZ(t)
+}
+func (t *TestSignedBeaconBlock) MarshalSSZTo(buf []byte) (dst []byte, err error) {
+  return t.MarshalSSZDyn(dynssz.GetGlobalDynSsz(), buf)
+}
+
+func (t *TestSignedBeaconBlock) SizeSSZDyn(ds *dynssz.DynSsz) (size int) {
+  sfn1 := func(t *TestBeaconBlock) (size int) { // *TestBeaconBlock
+    size = t.SizeSSZDyn(ds)
+    return size
+  }
+  sfn2 := func(t *TestSignedBeaconBlock) (size int) { // *TestSignedBeaconBlock
+    size = 96
+    size += 4 + sfn1(t.Message)
+    return size
+  }
+  return sfn2(t)
+}
+func (t *TestSignedBeaconBlock) SizeSSZ() (size int) {
+  return t.SizeSSZDyn(dynssz.GetGlobalDynSsz())
+}
+
+func (t *TestSignedBeaconBlock) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err error) {
+  fn1 := func(t *TestBeaconBlock, buf []byte) (*TestBeaconBlock, error) { // *TestBeaconBlock
     var err error
     if t == nil {
       t = new(TestBeaconBlock)
+    }
+    err = t.UnmarshalSSZDyn(ds, buf)
+    return t, err
+  }
+  fn2 := func(t *TestSignedBeaconBlock, buf []byte) (*TestSignedBeaconBlock, error) { // *TestSignedBeaconBlock
+    var err error
+    if t == nil {
+      t = new(TestSignedBeaconBlock)
     }
     bufpos := 100
     buflen := len(buf)
@@ -954,17 +1575,63 @@ func (t *TestBeaconBlock) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
     }
     {
       fieldSlice := buf[offset0:]
-      if t.Message, err = fn20(t.Message, fieldSlice); err != nil {
+      if t.Message, err = fn1(t.Message, fieldSlice); err != nil {
         return t, err
       }
       bufpos += len(fieldSlice)
     }
     return t, err
   }
-  _, err = fn21(t, buf)
+  _, err = fn2(t, buf)
   return err
 }
-func (t *TestBeaconBlock) UnmarshalSSZ(buf []byte) (err error) {
+func (t *TestSignedBeaconBlock) UnmarshalSSZ(buf []byte) (err error) {
   return t.UnmarshalSSZDyn(dynssz.GetGlobalDynSsz(), buf)
+}
+
+func (t *TestSignedBeaconBlock) HashTreeRootWithDyn(ds *dynssz.DynSsz, hh sszutils.HashWalker) error {
+  fn1 := func(t *TestBeaconBlock) (err error) { // *main.TestBeaconBlock
+    err = t.HashTreeRootWithDyn(ds, hh)
+    return err
+  }
+  fn2 := func(t *TestSignedBeaconBlock) (err error) { // *main.TestSignedBeaconBlock
+    idx := hh.Index()
+    // Field #0 'Message'
+    if err = fn1(t.Message); err != nil {
+      return err
+    }
+    // Field #1 'Signature'
+    hh.PutBytes(t.Signature[:])
+    hh.Merkleize(idx)
+    return err
+  }
+  return fn2(t)
+}
+func (t *TestSignedBeaconBlock) HashTreeRootDyn(ds *dynssz.DynSsz) ([32]byte, error) {
+  pool := &hasher.DefaultHasherPool
+  hh := pool.Get()
+	defer func() {
+		pool.Put(hh)
+	}()
+  if err := t.HashTreeRootWithDyn(ds, hh); err != nil {
+    return [32]byte{}, err
+  }
+  r, _ := hh.HashRoot()
+  return r, nil
+}
+func (t *TestSignedBeaconBlock) HashTreeRootWith(hh sszutils.HashWalker) error {
+  return t.HashTreeRootWithDyn(dynssz.GetGlobalDynSsz(), hh)
+}
+func (t *TestSignedBeaconBlock) HashTreeRoot() ([32]byte, error) {
+  pool := &hasher.DefaultHasherPool
+  hh := pool.Get()
+	defer func() {
+		pool.Put(hh)
+	}()
+  if err := t.HashTreeRootWithDyn(dynssz.GetGlobalDynSsz(), hh); err != nil {
+    return [32]byte{}, err
+  }
+  r, _ := hh.HashRoot()
+  return r, nil
 }
 

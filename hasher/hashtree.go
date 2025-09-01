@@ -1,4 +1,4 @@
-package dynssz
+package hasher
 
 import (
 	"fmt"

@@ -27,6 +27,27 @@ var templateFuncs = template.FuncMap{
 		return strings.Join(lines, "\n")
 	},
 	"add": func(a, b int) int { return a + b },
+	"seq": func(start, end int) []int {
+		result := make([]int, 0, end-start)
+		for i := start; i < end; i++ {
+			result = append(result, i)
+		}
+		return result
+	},
+	"int": func(v interface{}) int {
+		switch val := v.(type) {
+		case int:
+			return val
+		case uint16:
+			return int(val)
+		case uint32:
+			return int(val)
+		case uint64:
+			return int(val)
+		default:
+			return 0
+		}
+	},
 	"index": func(slice []int, i int) int { return slice[i] },
 }
 

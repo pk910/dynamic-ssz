@@ -269,7 +269,7 @@ func (d *DynSsz) getSszMaxSizeTag(field *reflect.StructField) ([]SszMaxSizeHint,
 					if i < len(sszMaxSizes) {
 						sszMaxSizes[i].Expr = sszMaxSizeStr
 					}
-					break
+					continue
 				}
 			}
 

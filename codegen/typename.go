@@ -26,8 +26,21 @@ func NewTypePrinter(currentPkg string) *TypePrinter {
 
 func (p *TypePrinter) Imports() map[string]string { return p.imports }
 
-func (p *TypePrinter) AddImport(path, alias string) {
-	p.imports[path] = alias
+func (p *TypePrinter) AddImport(path, alias string) string {
+	if p.imports[path] == "" {
+		// ensure alias uniqueness
+		base := alias
+		i := 1
+		for containsValue(p.imports, alias) {
+			alias = fmt.Sprintf("%s%d", base, i)
+			i++
+		}
+
+		p.imports[path] = alias
+	} else {
+		alias = p.imports[path]
+	}
+	return alias
 }
 
 func (p *TypePrinter) Aliases() map[string]string { return p.aliases }

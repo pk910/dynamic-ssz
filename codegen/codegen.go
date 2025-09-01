@@ -194,8 +194,10 @@ func (cg *CodeGenerator) GenerateToMap() (map[string]string, error) {
 			desc.HasDynamicMarshaler = !t.Options.NoMarshalSSZ && !t.Options.WithoutDynamicExpressions
 			desc.HasDynamicUnmarshaler = !t.Options.NoUnmarshalSSZ && !t.Options.WithoutDynamicExpressions
 			desc.HasDynamicSizer = !t.Options.NoSizeSSZ && !t.Options.WithoutDynamicExpressions
+			desc.HasDynamicHashRoot = !t.Options.NoHashTreeRoot && !t.Options.WithoutDynamicExpressions
 
 			desc.HasFastSSZMarshaler = !t.Options.NoMarshalSSZ && !t.Options.NoUnmarshalSSZ && !t.Options.NoSizeSSZ && (t.Options.CreateLegacyFn || t.Options.WithoutDynamicExpressions)
+			desc.HasFastSSZHasher = !t.Options.NoHashTreeRoot && (t.Options.CreateLegacyFn || t.Options.WithoutDynamicExpressions)
 
 			t.Descriptor = desc
 		}
@@ -328,6 +330,14 @@ func (cg *CodeGenerator) generateCode(desc *dynssz.TypeDescriptor, typePrinter *
 		return usedDynSsz, fmt.Errorf("failed to generate unmarshal for %s: %w", desc.Type.Name(), err)
 	}
 	usedDynSszResult = usedDynSszResult || usedDynSsz
+
+	if !options.NoHashTreeRoot {
+		usedDynSsz, err = generateHashTreeRoot(cg.dynSsz, desc, codeBuilder, typePrinter, options)
+		if err != nil {
+			return usedDynSsz, fmt.Errorf("failed to generate hash tree root for %s: %w", desc.Type.Name(), err)
+		}
+		usedDynSszResult = usedDynSszResult || usedDynSsz
+	}
 
 	return usedDynSszResult, nil
 }

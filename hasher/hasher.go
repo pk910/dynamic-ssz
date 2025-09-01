@@ -1,4 +1,4 @@
-package dynssz
+package hasher
 
 import (
 	"crypto/sha256"
@@ -16,7 +16,9 @@ import (
 // code has been modified for dynamis-ssz needs
 
 // Compile-time check to ensure Hasher implements HashWalker interface
-var _ HashWalker = (*Hasher)(nil)
+var _ sszutils.HashWalker = (*Hasher)(nil)
+
+var verbose = false
 
 var (
 	// ErrIncorrectByteSize means that the byte size is incorrect
@@ -63,6 +65,12 @@ func initHasher() {
 	}
 }
 
+func logfn(msg string) {
+	if verbose {
+		fmt.Printf("%s", msg)
+	}
+}
+
 type HashFn func(dst []byte, input []byte) error
 
 // NativeHashWrapper wraps a hash.Hash function into a HashFn
@@ -80,7 +88,7 @@ func NativeHashWrapper(hashFn hash.Hash) HashFn {
 			layerLen++
 		}
 		for i := 0; i < layerLen; i += 2 {
-			hash(input[(i/2)*32:][:0], input[i*32:])
+			hash(dst[(i/2)*32:][:0], input[i*32:])
 		}
 		return nil
 	}
@@ -145,6 +153,10 @@ func NewHasherWithHashFn(hh HashFn) *Hasher {
 	}
 }
 
+func (h *Hasher) WithTemp(fn func(tmp []byte) []byte) {
+	h.tmp = fn(h.tmp)
+}
+
 // Reset resets the Hasher obj
 func (h *Hasher) Reset() {
 	h.buf = h.buf[:0]
@@ -182,21 +194,18 @@ func (h *Hasher) PutUint8(i uint8) {
 	h.AppendBytes32(h.tmp[:1])
 }
 
-func CalculateLimit(maxCapacity, numItems, size uint64) uint64 {
-	limit := (maxCapacity*size + 31) / 32
-	if limit != 0 {
-		return limit
-	}
-	if numItems == 0 {
-		return 1
-	}
-	return numItems
-}
-
 func (h *Hasher) FillUpTo32() {
 	// pad zero bytes to the left
 	if rest := len(h.buf) % 32; rest != 0 {
 		h.buf = append(h.buf, zeroBytes[:32-rest]...)
+	}
+}
+
+func (h *Hasher) AppendBool(b bool) {
+	if b {
+		h.buf = append(h.buf, 1)
+	} else {
+		h.buf = append(h.buf, 0)
 	}
 }
 
@@ -234,7 +243,7 @@ func (h *Hasher) PutRootVector(b [][]byte, maxCapacity ...uint64) error {
 		h.Merkleize(indx)
 	} else {
 		numItems := uint64(len(b))
-		limit := CalculateLimit(maxCapacity[0], numItems, 32)
+		limit := sszutils.CalculateLimit(maxCapacity[0], numItems, 32)
 
 		h.MerkleizeWithMixin(indx, numItems, limit)
 	}
@@ -256,13 +265,13 @@ func (h *Hasher) PutUint64Array(b []uint64, maxCapacity ...uint64) {
 		h.Merkleize(indx)
 	} else {
 		numItems := uint64(len(b))
-		limit := CalculateLimit(maxCapacity[0], numItems, 8)
+		limit := sszutils.CalculateLimit(maxCapacity[0], numItems, 8)
 
 		h.MerkleizeWithMixin(indx, numItems, limit)
 	}
 }
 
-func parseBitlist(dst, buf []byte) ([]byte, uint64) {
+func ParseBitlist(dst, buf []byte) ([]byte, uint64) {
 	msb := uint8(bits.Len8(buf[len(buf)-1])) - 1
 	size := uint64(8*(len(buf)-1) + int(msb))
 
@@ -283,7 +292,7 @@ func parseBitlist(dst, buf []byte) ([]byte, uint64) {
 // PutBitlist appends a ssz bitlist
 func (h *Hasher) PutBitlist(bb []byte, maxSize uint64) {
 	var size uint64
-	h.tmp, size = parseBitlist(h.tmp[:0], bb)
+	h.tmp, size = ParseBitlist(h.tmp[:0], bb)
 
 	// merkleize the content with mix in length
 	indx := h.Index()
@@ -293,7 +302,7 @@ func (h *Hasher) PutBitlist(bb []byte, maxSize uint64) {
 
 func (h *Hasher) PutProgressiveBitlist(bb []byte) {
 	var size uint64
-	h.tmp, size = parseBitlist(h.tmp[:0], bb)
+	h.tmp, size = ParseBitlist(h.tmp[:0], bb)
 
 	// merkleize the content with mix in length
 	indx := h.Index()
@@ -343,9 +352,13 @@ func (h *Hasher) Merkleize(indx int) {
 	}
 	input := h.buf[indx:]
 
+	logfn(fmt.Sprintf("merkleize: %x ", input))
+
 	// merkleize the input
 	input = h.merkleizeImpl(input[:0], input, 0)
 	h.buf = append(h.buf[:indx], input...)
+
+	logfn(fmt.Sprintf("-> %x\n", input))
 }
 
 // MerkleizeWithMixin is used to merkleize the last group of the hasher
@@ -364,9 +377,13 @@ func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 	sszutils.MarshalUint64(output[:0], num)
 	input = append(input, output...)
 
+	logfn(fmt.Sprintf("merkleize-mixin: %x (%d, %d) ", input, num, limit))
+
 	// input is of the form [<input><size>] of 64 bytes
 	h.hash(input, input)
 	h.buf = append(h.buf[:indx], input[:32]...)
+
+	logfn(fmt.Sprintf("-> %x\n", input))
 }
 
 func (h *Hasher) Hash() []byte {
@@ -463,9 +480,13 @@ func (h *Hasher) MerkleizeProgressive(indx int) {
 	h.buf = h.buf[:len(h.buf)-len(zeroBytes)]
 	input := h.buf[indx:]
 
+	logfn(fmt.Sprintf("merkleize-progressive: %x ", input))
+
 	// merkleize the input
 	input = h.merkleizeProgressiveImpl(input[:0], input, 0)
 	h.buf = append(h.buf[:indx], input...)
+
+	logfn(fmt.Sprintf("-> %x\n", input))
 }
 
 // MerkleizeProgressiveWithMixin is used to merkleize progressive lists with length mixin
@@ -484,10 +505,13 @@ func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 	sszutils.MarshalUint64(output[:0], num)
 	input = append(input, output...)
 
+	logfn(fmt.Sprintf("merkleize-progressive-mixin: %x (%d) ", input, num))
+
 	// input is of the form [<progressive_root><size>] of 64 bytes
 	h.hash(input, input)
-
 	h.buf = append(h.buf[:indx], input[:32]...)
+
+	logfn(fmt.Sprintf("-> %x\n", input[:32]))
 }
 
 // MerkleizeProgressiveWithMixin is used to merkleize progressive lists with length mixin
@@ -495,8 +519,11 @@ func (h *Hasher) MerkleizeProgressiveWithActiveFields(indx int, activeFields []b
 	h.FillUpTo32()
 	input := h.buf[indx:]
 
+	logfn(fmt.Sprintf("merkleize-progressive-active-fields: %x ", input))
 	// progressive merkleize the input
 	input = h.merkleizeProgressiveImpl(input[:0], input, 0)
+
+	logfn(fmt.Sprintf("-> %x (%x)", input, activeFields))
 
 	// mixin with the active fields bitvector
 	input = append(input, activeFields...)
@@ -507,8 +534,9 @@ func (h *Hasher) MerkleizeProgressiveWithActiveFields(indx int, activeFields []b
 
 	// input is of the form [<progressive_root><active_fields>] of 64 bytes
 	h.hash(input, input)
-
 	h.buf = append(h.buf[:indx], input[:32]...)
+
+	logfn(fmt.Sprintf("-> %x\n", input[:32]))
 }
 
 func (h *Hasher) merkleizeProgressiveImpl(dst []byte, chunks []byte, depth uint8) []byte {
@@ -575,7 +603,7 @@ func (h *Hasher) merkleizeProgressiveImpl(dst []byte, chunks []byte, depth uint8
 	// PairNode(left, right) - hash(left, right)
 	copy(h.tmp[:32], leftRoot)
 	copy(h.tmp[32:], rightRoot)
-	h.hash(chunks, h.tmp[0:64])
+	h.hash(h.tmp, h.tmp[0:64])
 
-	return append(dst, chunks[:32]...)
+	return append(dst, h.tmp[:32]...)
 }

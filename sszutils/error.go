@@ -7,4 +7,5 @@ var (
 	ErrUnexpectedEOF       = fmt.Errorf("unexpected end of SSZ")
 	ErrOffset              = fmt.Errorf("incorrect offset")
 	ErrInvalidUnionVariant = fmt.Errorf("invalid union variant")
+	ErrVectorLength        = fmt.Errorf("incorrect vector length")
 )

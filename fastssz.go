@@ -12,6 +12,7 @@ var sszHashRootType = reflect.TypeOf((*sszutils.FastsszHashRoot)(nil)).Elem()
 var dynamicMarshalerType = reflect.TypeOf((*sszutils.DynamicMarshaler)(nil)).Elem()
 var dynamicUnmarshalerType = reflect.TypeOf((*sszutils.DynamicUnmarshaler)(nil)).Elem()
 var dynamicSizerType = reflect.TypeOf((*sszutils.DynamicSizer)(nil)).Elem()
+var dynamicHashRootType = reflect.TypeOf((*sszutils.DynamicHashRoot)(nil)).Elem()
 
 // getFastsszCompatibility evaluates the compatibility of a given type with fastssz, determining whether the type and its nested
 // structures can be efficiently encoded/decoded using fastssz's static code generation approach.
@@ -101,4 +102,10 @@ func (d *DynSsz) getDynamicUnmarshalerCompatibility(targetType reflect.Type) boo
 func (d *DynSsz) getDynamicSizerCompatibility(targetType reflect.Type) bool {
 	targetPtrType := reflect.New(targetType).Type()
 	return targetPtrType.Implements(dynamicSizerType)
+}
+
+// getDynamicHashRootCompatibility checks if a type implements the DynamicHashRoot interface
+func (d *DynSsz) getDynamicHashRootCompatibility(targetType reflect.Type) bool {
+	targetPtrType := reflect.New(targetType).Type()
+	return targetPtrType.Implements(dynamicHashRootType)
 }

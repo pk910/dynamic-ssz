@@ -4,6 +4,7 @@ package main
 import (
 	"github.com/attestantio/go-eth2-client/spec/phase0"
 	dynssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 var _ = sszutils.ErrListTooBig
@@ -14,39 +15,12 @@ func (t *Test1) MarshalSSZDyn(_ *dynssz.DynSsz, buf []byte) (dst []byte, err err
 }
 func (t *Test1) MarshalSSZTo(buf []byte) (dst []byte, err error) {
   dst = buf
-  fn1 := func(t *dynssz.CompatibleUnion[struct { Deneb phase0.ValidatorIndex; Electra phase0.Epoch }]) (err error) { // *dynssz.CompatibleUnion[struct { Deneb github.com/attestantio/go-eth2-client/spec/phase0.ValidatorIndex; Electra github.com/attestantio/go-eth2-client/spec/phase0.Epoch }]
-    dst = sszutils.MarshalUint8(dst, uint8(t.Variant))
-    switch t.Variant {
-    case 0:
-      v, ok := t.Data.(phase0.ValidatorIndex)
-      if !ok {
-        return sszutils.ErrInvalidUnionVariant
-      }
-      dst = sszutils.MarshalUint64(dst, uint64(v))
-    case 1:
-      v, ok := t.Data.(phase0.Epoch)
-      if !ok {
-        return sszutils.ErrInvalidUnionVariant
-      }
-      dst = sszutils.MarshalUint64(dst, uint64(v))
-    default:
-      return sszutils.ErrInvalidUnionVariant
-    }
+  fn1 := func(t *Test1) (err error) { // *main.Test1
+    // Field #0 'F1'
+    dst = sszutils.MarshalUint64(dst, uint64(t.F1))
     return err
   }
-  fn2 := func(t *Test1) (err error) { // *main.Test1
-    dstlen := len(dst)
-    // Offset #0 'TestUnion'
-    offset0 := len(dst)
-    dst = sszutils.MarshalOffset(dst, 0)
-    // Dynamic Field #0 'TestUnion'
-    sszutils.UpdateOffset(dst[offset0:offset0+4], len(dst)-dstlen)
-    if err = fn1(t.TestUnion); err != nil {
-      return err
-    }
-    return err
-  }
-  err = fn2(t)
+  err = fn1(t)
   return dst, err
 }
 func (t *Test1) MarshalSSZ() ([]byte, error) {
@@ -57,90 +31,70 @@ func (t *Test1) SizeSSZDyn(_ *dynssz.DynSsz) (size int) {
   return t.SizeSSZ()
 }
 func (t *Test1) SizeSSZ() (size int) {
-  sfn1 := func(t phase0.Epoch) (size int) { // phase0.Epoch
+  sfn1 := func(t *Test1) (size int) { // *Test1
     size = 8
     return size
   }
-  sfn2 := func(t phase0.ValidatorIndex) (size int) { // phase0.ValidatorIndex
-    size = 8
-    return size
-  }
-  sfn3 := func(t *dynssz.CompatibleUnion[struct { Deneb phase0.ValidatorIndex; Electra phase0.Epoch }]) (size int) { // *dynssz.CompatibleUnion[struct { Deneb phase0.ValidatorIndex; Electra phase0.Epoch }]
-    size = 1
-    switch t.Variant {
-    case 1:
-      if v, ok := t.Data.(phase0.Epoch); ok {
-        size += sfn1(v)
-      }
-    case 0:
-      if v, ok := t.Data.(phase0.ValidatorIndex); ok {
-        size += sfn2(v)
-      }
-    }
-    return size
-  }
-  sfn4 := func(t *Test1) (size int) { // *Test1
-    size = 0
-    size += 4 + sfn3(t.TestUnion)
-    return size
-  }
-  return sfn4(t)
+  return sfn1(t)
 }
 
 func (t *Test1) UnmarshalSSZDyn(_ *dynssz.DynSsz, buf []byte) (err error) {
   return t.UnmarshalSSZ(buf)
 }
 func (t *Test1) UnmarshalSSZ(buf []byte) (err error) {
-  fn1 := func(t *dynssz.CompatibleUnion[struct { Deneb phase0.ValidatorIndex; Electra phase0.Epoch }], buf []byte) (*dynssz.CompatibleUnion[struct { Deneb phase0.ValidatorIndex; Electra phase0.Epoch }], error) { // *dynssz.CompatibleUnion[struct { Deneb phase0.ValidatorIndex; Electra phase0.Epoch }]
-    var err error
-    if t == nil {
-      t = new(dynssz.CompatibleUnion[struct { Deneb phase0.ValidatorIndex; Electra phase0.Epoch }])
-    }
-    if len(buf) < 1 {
-      return t, sszutils.ErrUnexpectedEOF
-    }
-    t.Variant = uint8(buf[0])
-    switch t.Variant {
-    case 1:
-      v, _ := t.Data.(phase0.Epoch)
-      v = (phase0.Epoch)(sszutils.UnmarshallUint64(buf[1:]))
-      t.Data = v
-    case 0:
-      v, _ := t.Data.(phase0.ValidatorIndex)
-      v = (phase0.ValidatorIndex)(sszutils.UnmarshallUint64(buf[1:]))
-      t.Data = v
-    default:
-      return t, sszutils.ErrInvalidUnionVariant
-    }
-    return t, err
-  }
-  fn2 := func(t *Test1, buf []byte) (*Test1, error) { // *Test1
+  fn1 := func(t *Test1, buf []byte) (*Test1, error) { // *Test1
     var err error
     if t == nil {
       t = new(Test1)
     }
-    bufpos := 4
     buflen := len(buf)
-    if buflen < 4 {
+    if buflen < 8 {
       return t, sszutils.ErrUnexpectedEOF
     }
-    // Read offset #0 'TestUnion'
-    offset0 := int(sszutils.ReadOffset(buf[0:4]))
-    // Dynamic Field #0 'TestUnion'
-    if offset0 < bufpos  {
-      return t, sszutils.ErrOffset
-    }
-    {
-      fieldSlice := buf[offset0:]
-      if t.TestUnion, err = fn1(t.TestUnion, fieldSlice); err != nil {
-        return t, err
-      }
-      bufpos += len(fieldSlice)
-    }
+    // Field #0 'F1'
+    t.F1 = (phase0.ValidatorIndex)(sszutils.UnmarshallUint64(buf[0:8]))
     return t, err
   }
-  _, err = fn2(t, buf)
+  _, err = fn1(t, buf)
   return err
+}
+
+func (t *Test1) HashTreeRootWithDyn(_ *dynssz.DynSsz, hh sszutils.HashWalker) error {
+  return t.HashTreeRootWith(hh)
+}
+func (t *Test1) HashTreeRootWith(hh sszutils.HashWalker) error {
+  fn1 := func(t *Test1) (err error) { // *main.Test1
+    idx := hh.Index()
+    // Field #0 'F1'
+    hh.PutUint64(uint64(t.F1))
+    hh.Merkleize(idx)
+    return err
+  }
+  return fn1(t)
+}
+func (t *Test1) HashTreeRootDyn(_ *dynssz.DynSsz) ([32]byte, error) {
+  pool := &hasher.DefaultHasherPool
+  hh := pool.Get()
+	defer func() {
+		pool.Put(hh)
+	}()
+  if err := t.HashTreeRootWith(hh); err != nil {
+    return [32]byte{}, err
+  }
+  r, _ := hh.HashRoot()
+  return r, nil
+}
+func (t *Test1) HashTreeRoot() ([32]byte, error) {
+  pool := &hasher.DefaultHasherPool
+  hh := pool.Get()
+	defer func() {
+		pool.Put(hh)
+	}()
+  if err := t.HashTreeRootWith(hh); err != nil {
+    return [32]byte{}, err
+  }
+  r, _ := hh.HashRoot()
+  return r, nil
 }
 
 func (t *Test2) MarshalSSZDyn(_ *dynssz.DynSsz, buf []byte) (dst []byte, err error) {
@@ -152,19 +106,27 @@ func (t *Test2) MarshalSSZTo(buf []byte) (dst []byte, err error) {
     dst, err = t.MarshalSSZTo(dst)
     return err
   }
-  fn2 := func(t *Test2) (err error) { // *main.Test2
-    dstlen := len(dst)
-    // Offset #0 'T1'
-    offset0 := len(dst)
-    dst = sszutils.MarshalOffset(dst, 0)
-    // Dynamic Field #0 'T1'
-    sszutils.UpdateOffset(dst[offset0:offset0+4], len(dst)-dstlen)
+  fn2 := func(t *Test3) (err error) { // *main.Test3
+    // Field #0 'F1'
+    dst = sszutils.MarshalUint64(dst, uint64(t.F1))
+    // Field #1 'F3'
+    dst = sszutils.MarshalUint64(dst, uint64(t.F3))
+    // Field #2 'F4'
+    dst = sszutils.MarshalUint64(dst, uint64(t.F4))
+    return err
+  }
+  fn3 := func(t *Test2) (err error) { // *main.Test2
+    // Field #0 'T1'
     if err = fn1(t.T1); err != nil {
+      return err
+    }
+    // Field #1 'T3'
+    if err = fn2(t.T3); err != nil {
       return err
     }
     return err
   }
-  err = fn2(t)
+  err = fn3(t)
   return dst, err
 }
 func (t *Test2) MarshalSSZ() ([]byte, error) {
@@ -175,16 +137,11 @@ func (t *Test2) SizeSSZDyn(_ *dynssz.DynSsz) (size int) {
   return t.SizeSSZ()
 }
 func (t *Test2) SizeSSZ() (size int) {
-  sfn1 := func(t *Test1) (size int) { // *Test1
-    size = t.SizeSSZ()
+  sfn1 := func(t *Test2) (size int) { // *Test2
+    size = 32
     return size
   }
-  sfn2 := func(t *Test2) (size int) { // *Test2
-    size = 0
-    size += 4 + sfn1(t.T1)
-    return size
-  }
-  return sfn2(t)
+  return sfn1(t)
 }
 
 func (t *Test2) UnmarshalSSZDyn(_ *dynssz.DynSsz, buf []byte) (err error) {
@@ -199,32 +156,106 @@ func (t *Test2) UnmarshalSSZ(buf []byte) (err error) {
     err = t.UnmarshalSSZ(buf)
     return t, err
   }
-  fn2 := func(t *Test2, buf []byte) (*Test2, error) { // *Test2
+  fn2 := func(t *Test3, buf []byte) (*Test3, error) { // *Test3
+    var err error
+    if t == nil {
+      t = new(Test3)
+    }
+    buflen := len(buf)
+    if buflen < 24 {
+      return t, sszutils.ErrUnexpectedEOF
+    }
+    // Field #0 'F1'
+    t.F1 = (uint64)(sszutils.UnmarshallUint64(buf[0:8]))
+    // Field #1 'F3'
+    t.F3 = (uint64)(sszutils.UnmarshallUint64(buf[8:16]))
+    // Field #2 'F4'
+    t.F4 = (uint64)(sszutils.UnmarshallUint64(buf[16:24]))
+    return t, err
+  }
+  fn3 := func(t *Test2, buf []byte) (*Test2, error) { // *Test2
     var err error
     if t == nil {
       t = new(Test2)
     }
-    bufpos := 4
     buflen := len(buf)
-    if buflen < 4 {
+    if buflen < 32 {
       return t, sszutils.ErrUnexpectedEOF
     }
-    // Read offset #0 'T1'
-    offset0 := int(sszutils.ReadOffset(buf[0:4]))
-    // Dynamic Field #0 'T1'
-    if offset0 < bufpos  {
-      return t, sszutils.ErrOffset
+    // Field #0 'T1'
+    if t.T1, err = fn1(t.T1, buf[0:8]); err != nil {
+      return t, err
     }
-    {
-      fieldSlice := buf[offset0:]
-      if t.T1, err = fn1(t.T1, fieldSlice); err != nil {
-        return t, err
-      }
-      bufpos += len(fieldSlice)
+    // Field #1 'T3'
+    if t.T3, err = fn2(t.T3, buf[8:32]); err != nil {
+      return t, err
     }
     return t, err
   }
-  _, err = fn2(t, buf)
+  _, err = fn3(t, buf)
   return err
+}
+
+func (t *Test2) HashTreeRootWithDyn(_ *dynssz.DynSsz, hh sszutils.HashWalker) error {
+  return t.HashTreeRootWith(hh)
+}
+func (t *Test2) HashTreeRootWith(hh sszutils.HashWalker) error {
+  fn1 := func(t *Test1) (err error) { // *main.Test1
+    err = t.HashTreeRootWith(hh)
+    return err
+  }
+  fn2 := func(t *Test3) (err error) { // *main.Test3
+    idx := hh.Index()
+    // Empty field at index 0
+    hh.PutUint8(0)
+    // Field #1 'F1'
+    hh.PutUint64(uint64(t.F1))
+    // Empty field at index 2
+    hh.PutUint8(0)
+    // Field #3 'F3'
+    hh.PutUint64(uint64(t.F3))
+    // Field #4 'F4'
+    hh.PutUint64(uint64(t.F4))
+    hh.MerkleizeProgressiveWithActiveFields(idx, []byte{0x1a})
+    return err
+  }
+  fn3 := func(t *Test2) (err error) { // *main.Test2
+    idx := hh.Index()
+    // Field #0 'T1'
+    if err = fn1(t.T1); err != nil {
+      return err
+    }
+    // Field #1 'T3'
+    if err = fn2(t.T3); err != nil {
+      return err
+    }
+    hh.Merkleize(idx)
+    return err
+  }
+  return fn3(t)
+}
+func (t *Test2) HashTreeRootDyn(_ *dynssz.DynSsz) ([32]byte, error) {
+  pool := &hasher.DefaultHasherPool
+  hh := pool.Get()
+	defer func() {
+		pool.Put(hh)
+	}()
+  if err := t.HashTreeRootWith(hh); err != nil {
+    return [32]byte{}, err
+  }
+  r, _ := hh.HashRoot()
+  return r, nil
+}
+func (t *Test2) HashTreeRoot() ([32]byte, error) {
+  pool := &hasher.DefaultHasherPool
+  hh := pool.Get()
+	defer func() {
+		pool.Put(hh)
+	}()
+  if err := t.HashTreeRootWith(hh); err != nil {
+    return [32]byte{}, err
+  }
+  r, _ := hh.HashRoot()
+  return r, nil
 }
 

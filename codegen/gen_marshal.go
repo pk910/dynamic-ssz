@@ -26,6 +26,10 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 	isBaseType := func(sourceType *dynssz.TypeDescriptor) bool {
 		// Check if it's a byte array/slice
 		if sourceType.IsByteArray {
+			// Don't inline if it has dynamic size expressions - these need spec resolution
+			if sourceType.SizeExpression != "" || sourceType.MaxExpression != "" {
+				return false
+			}
 			return true
 		}
 
@@ -406,6 +410,8 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 		CreateDynamicFn:  !options.WithoutDynamicExpressions,
 		UsedDynSsz:       usedDynSsz,
 	}
+
+	usedDynSsz = usedDynSsz || !options.WithoutDynamicExpressions
 
 	if err := codeTpl.ExecuteTemplate(codeBuilder, "marshal_main", marshalModel); err != nil {
 		return false, err

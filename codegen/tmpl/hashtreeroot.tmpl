@@ -1,0 +1,305 @@
+{{ define "hashtreeroot_main" }}
+{{- if and .CreateDynamicFn (not .UsedDynSsz) }}
+func (t {{ .TypeName }}) HashTreeRootWithDyn(_ *dynssz.DynSsz, hh sszutils.HashWalker) error {
+  return t.HashTreeRootWith(hh)
+}
+{{- end }}
+{{- if .UsedDynSsz }}
+func (t {{ .TypeName }}) HashTreeRootWithDyn(ds *dynssz.DynSsz, hh sszutils.HashWalker) error {
+{{- else }}
+func (t {{ .TypeName }}) HashTreeRootWith(hh sszutils.HashWalker) error {
+{{- end }}
+  {{- range .HashTreeRootFunctions }}
+  {{ .Name }} := func({{ if .IsPointer }}t *{{ .InnerType }}{{ else }}t {{ .TypeName }}{{ end }}) (err error) { // {{ .Key }}
+    {{- indent .Code 4 }}
+    return err
+  }
+  {{- end }}
+  return {{ .RootFnName }}(t)
+}
+{{- if .CreateDynamicFn }}
+func (t {{ .TypeName }}) HashTreeRootDyn({{ if .UsedDynSsz }}ds{{ else }}_{{ end }} *dynssz.DynSsz) ([32]byte, error) {
+  pool := &{{ .HasherAlias }}.DefaultHasherPool
+  hh := pool.Get()
+	defer func() {
+		pool.Put(hh)
+	}()
+  if err := {{ if .UsedDynSsz }}t.HashTreeRootWithDyn(ds, hh){{ else }}t.HashTreeRootWith(hh){{ end }}; err != nil {
+    return [32]byte{}, err
+  }
+  r, _ := hh.HashRoot()
+  return r, nil
+}
+{{- end }}
+{{- if and .CreateLegacyFn .UsedDynSsz }}
+func (t {{ .TypeName }}) HashTreeRootWith(hh sszutils.HashWalker) error {
+  return t.HashTreeRootWithDyn(dynssz.GetGlobalDynSsz(), hh)
+}
+func (t {{ .TypeName }}) HashTreeRoot() ([32]byte, error) {
+  pool := &{{ .HasherAlias }}.DefaultHasherPool
+  hh := pool.Get()
+	defer func() {
+		pool.Put(hh)
+	}()
+  if err := t.HashTreeRootWithDyn(dynssz.GetGlobalDynSsz(), hh); err != nil {
+    return [32]byte{}, err
+  }
+  r, _ := hh.HashRoot()
+  return r, nil
+}
+{{- else if .CreateLegacyFn }}
+func (t {{ .TypeName }}) HashTreeRoot() ([32]byte, error) {
+  pool := &{{ .HasherAlias }}.DefaultHasherPool
+  hh := pool.Get()
+	defer func() {
+		pool.Put(hh)
+	}()
+  if err := t.HashTreeRootWith(hh); err != nil {
+    return [32]byte{}, err
+  }
+  r, _ := hh.HashRoot()
+  return r, nil
+}
+{{- end }}
+{{ end }}
+
+{{ define "hashtreeroot_fastssz_with" }}
+err = t.HashTreeRootWith(hh)
+{{- end }}
+
+{{ define "hashtreeroot_fastssz_root" }}
+var root [32]byte
+if root, err = t.HashTreeRoot(); err == nil {
+  hh.Append(root[:])
+}
+{{- end }}
+
+{{ define "hashtreeroot_dynamic" }}
+err = t.HashTreeRootWithDyn(ds, hh)
+{{- end }}
+
+{{ define "hashtreeroot_wrapper" }}
+err = {{ .HashTreeRootFn }}(t.Data)
+{{- end }}
+
+{{ define "hashtreeroot_bool" }}
+hh.PutBool(bool(t))
+{{- end }}
+
+{{ define "hashtreeroot_uint8" }}
+hh.PutUint8(uint8(t))
+{{- end }}
+
+{{ define "hashtreeroot_uint16" }}
+hh.PutUint16(uint16(t))
+{{- end }}
+
+{{ define "hashtreeroot_uint32" }}
+hh.PutUint32(uint32(t))
+{{- end }}
+
+{{ define "hashtreeroot_uint64" }}
+hh.PutUint64(uint64(t))
+{{- end }}
+
+{{ define "hashtreeroot_struct" }}
+idx := hh.Index()
+{{- range .Fields }}
+// Field #{{ .Index }} '{{ .Name }}'
+{{- if .InlineHashCode }}
+{{ indent .InlineHashCode 0 }}
+{{- else }}
+if err = {{ .HashTreeRootFn }}(t.{{ .Name }}); err != nil {
+  return err
+}
+{{- end }}
+{{- end }}
+hh.Merkleize(idx)
+{{- end }}
+
+{{ define "hashtreeroot_vector" }}
+{{- if not (eq .SizeExpr "") }}
+hasLimit, limit, err := ds.ResolveSpecValue("{{ .SizeExpr }}")
+if err != nil {
+  return err
+}
+if !hasLimit {
+  limit = {{ .Length }}
+}
+{{- else if not .IsArray }}
+limit := {{ .Length }}
+{{- end }}
+{{- if .IsByteArray }}
+{{- if not .IsArray }}
+if len(t) != int(limit) {
+  return sszutils.ErrVectorLength
+}
+{{- end }}
+hh.PutBytes(t[:])
+{{- else }}
+idx := hh.Index()
+{{- if not .IsArray }}
+vlen := len(t)
+if vlen > int(limit) {
+  return sszutils.ErrVectorLength
+}
+{{- else }}
+vlen := len(t)
+{{- end }}
+for i := 0; i < vlen; i++ {
+  {{- if .InlineItemHashCode }}
+  {{ indent .InlineItemHashCode 2 }}
+  {{- else }}
+  if err = {{ .HashTreeRootFn }}(t[i]); err != nil {
+    return err
+  }
+  {{- end }}
+}
+{{- if not .IsArray }}
+for i := vlen; i < int(limit); i++ {
+  hh.PutUint8(0)
+}
+{{- end }}
+hh.Merkleize(idx)
+{{- end }}
+{{- end }}
+
+{{ define "hashtreeroot_list" }}
+{{- if not (eq .MaxExpr "") }}
+hasLimit, maxLen, err := ds.ResolveSpecValue("{{ .MaxExpr }}")
+if err != nil {
+  return err
+}
+if !hasLimit {
+  maxLen = {{ .MaxLength }}
+}
+{{- else }}
+maxLen := {{ .MaxLength }}
+{{- end }}
+{{- if .IsByteArray }}
+vlen := len(t)
+if vlen > int(maxLen) {
+  return sszutils.ErrListTooBig
+}
+idx := hh.Index()
+hh.AppendBytes32(t[:vlen])
+{{- else }}
+vlen := len(t)
+if vlen > int(maxLen) {
+  return sszutils.ErrListTooBig
+}
+idx := hh.Index()
+for i := 0; i < vlen; i++ {
+  {{- if .InlineItemHashCode }}
+  {{ indent .InlineItemHashCode 2 }}
+  {{- else }}
+  if err = {{ .HashTreeRootFn }}(t[i]); err != nil {
+    return err
+  }
+  {{- end }}
+}
+{{- end }}
+{{- if .IsProgressive }}
+hh.MerkleizeProgressiveWithMixin(idx, uint64(vlen))
+{{- else if .HasLimit }}
+{{- if gt .ItemSize 0 }}
+limit := sszutils.CalculateLimit(uint64(maxLen), uint64(vlen), uint64({{ .ItemSize }}))
+{{- else }}
+limit := uint64(maxLen)
+{{- end }}
+if (uint64(hh.Index()-idx)+31)/32 > limit {
+  return sszutils.ErrListTooBig
+}
+hh.MerkleizeWithMixin(idx, uint64(vlen), limit)
+{{- else }}
+hh.Merkleize(idx)
+{{- end }}
+{{- end }}
+
+{{ define "hashtreeroot_bitlist" }}
+{{- if not (eq .MaxExpr "") }}
+hasLimit, maxLen, err := ds.ResolveSpecValue("{{ .MaxExpr }}")
+if err != nil {
+  return err
+}
+if !hasLimit {
+  maxLen = {{ .MaxLength }}
+}
+{{- else }}
+maxLen := {{ .MaxLength }}
+{{- end }}
+var size uint64
+var bitlist []byte
+hh.WithTemp(func(tmp []byte) []byte {
+  tmp, size = hasher.ParseBitlist(tmp[:0], t[:])
+  bitlist = tmp
+  return tmp
+})
+if size > maxLen {
+  return sszutils.ErrListTooBig
+}
+idx := hh.Index()
+hh.AppendBytes32(bitlist)
+{{- if .IsProgressive }}
+hh.MerkleizeProgressiveWithMixin(idx, size)
+{{- else if .HasLimit }}
+hh.MerkleizeWithMixin(idx, size, (maxLen+255)/256)
+{{- else }}
+hh.Merkleize(idx)
+{{- end }}
+{{- end }}
+
+{{ define "hashtreeroot_compatible_union" }}
+if t.Data == nil {
+  return sszutils.ErrInvalidUnionVariant
+}
+idx := hh.Index()
+hh.PutUint8(uint8(t.Variant))
+switch t.Variant {
+{{- range .VariantFns }}
+case {{ .Index }}:
+  {{- if .InlineHashCode }}
+  if v, ok := t.Data.({{ .TypeName }}); ok {
+    {{ indent .InlineHashCode 4 }}
+  } else {
+    return sszutils.ErrInvalidUnionVariant
+  }
+  {{- else }}
+  if v, ok := t.Data.({{ .TypeName }}); ok {
+    if err = {{ .HashTreeRootFn }}(v); err != nil {
+      return err
+    }
+  } else {
+    return sszutils.ErrInvalidUnionVariant
+  }
+  {{- end }}
+{{- end }}
+default:
+  return sszutils.ErrInvalidUnionVariant
+}
+hh.Merkleize(idx)
+{{- end }}
+
+{{ define "hashtreeroot_progressive_container" }}
+idx := hh.Index()
+{{- $lastSszIndex := -1 }}
+{{- range .Fields }}
+{{- $currentIndexInt := int .SszIndex }}
+{{- if gt $currentIndexInt (add $lastSszIndex 1) }}
+{{- range $i := seq (add $lastSszIndex 1) $currentIndexInt }}
+// Empty field at index {{ $i }}
+hh.PutUint8(0)
+{{- end }}
+{{- end }}
+{{- $lastSszIndex = $currentIndexInt }}
+// Field #{{ .SszIndex }} '{{ .Name }}'
+{{- if .InlineHashCode }}
+{{ indent .InlineHashCode 0 }}
+{{- else }}
+if err = {{ .HashTreeRootFn }}({{ if .IsDynamic }}&{{ end }}t.{{ .Name }}); err != nil {
+  return err
+}
+{{- end }}
+{{- end }}
+hh.MerkleizeProgressiveWithActiveFields(idx, {{ .ActiveFields }})
+{{- end }}

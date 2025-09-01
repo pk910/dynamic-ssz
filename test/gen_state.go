@@ -7,6 +7,7 @@ import (
 	"github.com/attestantio/go-eth2-client/spec/deneb"
 	"github.com/attestantio/go-eth2-client/spec/phase0"
 	dynssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
 	go_bitfield "github.com/prysmaticlabs/go-bitfield"
 )
@@ -1073,5 +1074,437 @@ func (t *TestBeaconState) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err er
 }
 func (t *TestBeaconState) UnmarshalSSZ(buf []byte) (err error) {
   return t.UnmarshalSSZDyn(dynssz.GetGlobalDynSsz(), buf)
+}
+
+func (t *TestBeaconState) HashTreeRootWithDyn(ds *dynssz.DynSsz, hh sszutils.HashWalker) error {
+  fn1 := func(t *phase0.Fork) (err error) { // *phase0.Fork
+    err = t.HashTreeRootWith(hh)
+    return err
+  }
+  fn2 := func(t *phase0.BeaconBlockHeader) (err error) { // *phase0.BeaconBlockHeader
+    err = t.HashTreeRootWith(hh)
+    return err
+  }
+  fn3 := func(t []phase0.Root) (err error) { // []phase0.Root:8192:SLOTS_PER_HISTORICAL_ROOT:32
+    hasLimit, limit, err := ds.ResolveSpecValue("SLOTS_PER_HISTORICAL_ROOT")
+    if err != nil {
+      return err
+    }
+    if !hasLimit {
+      limit = 8192
+    }
+    idx := hh.Index()
+    vlen := len(t)
+    if vlen > int(limit) {
+      return sszutils.ErrVectorLength
+    }
+    for i := 0; i < vlen; i++ {
+      hh.Append(t[i][:])
+    }
+    for i := vlen; i < int(limit); i++ {
+      hh.PutUint8(0)
+    }
+    hh.Merkleize(idx)
+    return err
+  }
+  fn4 := func(t []phase0.Root) (err error) { // []phase0.Root:HISTORICAL_ROOTS_LIMIT:32
+    hasLimit, maxLen, err := ds.ResolveSpecValue("HISTORICAL_ROOTS_LIMIT")
+    if err != nil {
+      return err
+    }
+    if !hasLimit {
+      maxLen = 16777216
+    }
+    vlen := len(t)
+    if vlen > int(maxLen) {
+      return sszutils.ErrListTooBig
+    }
+    idx := hh.Index()
+    for i := 0; i < vlen; i++ {
+      hh.Append(t[i][:])
+    }
+    limit := uint64(maxLen)
+    if (uint64(hh.Index()-idx)+31)/32 > limit {
+      return sszutils.ErrListTooBig
+    }
+    hh.MerkleizeWithMixin(idx, uint64(vlen), limit)
+    return err
+  }
+  fn5 := func(t *phase0.ETH1Data) (err error) { // *phase0.ETH1Data
+    err = t.HashTreeRootWith(hh)
+    return err
+  }
+  fn6 := func(t *phase0.ETH1Data) (err error) { // *phase0.ETH1Data:pack
+    err = t.HashTreeRootWith(hh)
+    return err
+  }
+  fn7 := func(t []*phase0.ETH1Data) (err error) { // []*phase0.ETH1Data:EPOCHS_PER_ETH1_VOTING_PERIOD*SLOTS_PER_EPOCH
+    hasLimit, maxLen, err := ds.ResolveSpecValue("EPOCHS_PER_ETH1_VOTING_PERIOD*SLOTS_PER_EPOCH")
+    if err != nil {
+      return err
+    }
+    if !hasLimit {
+      maxLen = 2048
+    }
+    vlen := len(t)
+    if vlen > int(maxLen) {
+      return sszutils.ErrListTooBig
+    }
+    idx := hh.Index()
+    for i := 0; i < vlen; i++ {
+      if err = fn6(t[i]); err != nil {
+        return err
+      }
+    }
+    limit := uint64(maxLen)
+    if (uint64(hh.Index()-idx)+31)/32 > limit {
+      return sszutils.ErrListTooBig
+    }
+    hh.MerkleizeWithMixin(idx, uint64(vlen), limit)
+    return err
+  }
+  fn8 := func(t *phase0.Validator) (err error) { // *phase0.Validator:pack
+    err = t.HashTreeRootWith(hh)
+    return err
+  }
+  fn9 := func(t []*phase0.Validator) (err error) { // []*phase0.Validator:VALIDATOR_REGISTRY_LIMIT
+    hasLimit, maxLen, err := ds.ResolveSpecValue("VALIDATOR_REGISTRY_LIMIT")
+    if err != nil {
+      return err
+    }
+    if !hasLimit {
+      maxLen = 1099511627776
+    }
+    vlen := len(t)
+    if vlen > int(maxLen) {
+      return sszutils.ErrListTooBig
+    }
+    idx := hh.Index()
+    for i := 0; i < vlen; i++ {
+      if err = fn8(t[i]); err != nil {
+        return err
+      }
+    }
+    limit := uint64(maxLen)
+    if (uint64(hh.Index()-idx)+31)/32 > limit {
+      return sszutils.ErrListTooBig
+    }
+    hh.MerkleizeWithMixin(idx, uint64(vlen), limit)
+    return err
+  }
+  fn10 := func(t []phase0.Gwei) (err error) { // []phase0.Gwei:VALIDATOR_REGISTRY_LIMIT
+    hasLimit, maxLen, err := ds.ResolveSpecValue("VALIDATOR_REGISTRY_LIMIT")
+    if err != nil {
+      return err
+    }
+    if !hasLimit {
+      maxLen = 1099511627776
+    }
+    vlen := len(t)
+    if vlen > int(maxLen) {
+      return sszutils.ErrListTooBig
+    }
+    idx := hh.Index()
+    for i := 0; i < vlen; i++ {
+      hh.AppendUint64(uint64(t[i]))
+    }
+    limit := sszutils.CalculateLimit(uint64(maxLen), uint64(vlen), uint64(8))
+    if (uint64(hh.Index()-idx)+31)/32 > limit {
+      return sszutils.ErrListTooBig
+    }
+    hh.MerkleizeWithMixin(idx, uint64(vlen), limit)
+    return err
+  }
+  fn11 := func(t []phase0.Root) (err error) { // []phase0.Root:65536:EPOCHS_PER_HISTORICAL_VECTOR:32
+    hasLimit, limit, err := ds.ResolveSpecValue("EPOCHS_PER_HISTORICAL_VECTOR")
+    if err != nil {
+      return err
+    }
+    if !hasLimit {
+      limit = 65536
+    }
+    idx := hh.Index()
+    vlen := len(t)
+    if vlen > int(limit) {
+      return sszutils.ErrVectorLength
+    }
+    for i := 0; i < vlen; i++ {
+      hh.Append(t[i][:])
+    }
+    for i := vlen; i < int(limit); i++ {
+      hh.PutUint8(0)
+    }
+    hh.Merkleize(idx)
+    return err
+  }
+  fn12 := func(t []phase0.Gwei) (err error) { // []phase0.Gwei:8192:EPOCHS_PER_SLASHINGS_VECTOR
+    hasLimit, limit, err := ds.ResolveSpecValue("EPOCHS_PER_SLASHINGS_VECTOR")
+    if err != nil {
+      return err
+    }
+    if !hasLimit {
+      limit = 8192
+    }
+    idx := hh.Index()
+    vlen := len(t)
+    if vlen > int(limit) {
+      return sszutils.ErrVectorLength
+    }
+    for i := 0; i < vlen; i++ {
+      hh.AppendUint64(uint64(t[i]))
+    }
+    for i := vlen; i < int(limit); i++ {
+      hh.PutUint8(0)
+    }
+    hh.Merkleize(idx)
+    return err
+  }
+  fn13 := func(t []altair.ParticipationFlags) (err error) { // []altair.ParticipationFlags:VALIDATOR_REGISTRY_LIMIT
+    hasLimit, maxLen, err := ds.ResolveSpecValue("VALIDATOR_REGISTRY_LIMIT")
+    if err != nil {
+      return err
+    }
+    if !hasLimit {
+      maxLen = 1099511627776
+    }
+    vlen := len(t)
+    if vlen > int(maxLen) {
+      return sszutils.ErrListTooBig
+    }
+    idx := hh.Index()
+    for i := 0; i < vlen; i++ {
+      hh.AppendUint8(uint8(t[i]))
+    }
+    limit := sszutils.CalculateLimit(uint64(maxLen), uint64(vlen), uint64(1))
+    if (uint64(hh.Index()-idx)+31)/32 > limit {
+      return sszutils.ErrListTooBig
+    }
+    hh.MerkleizeWithMixin(idx, uint64(vlen), limit)
+    return err
+  }
+  fn14 := func(t *phase0.Checkpoint) (err error) { // *phase0.Checkpoint
+    err = t.HashTreeRootWith(hh)
+    return err
+  }
+  fn15 := func(t []uint64) (err error) { // []uint64:VALIDATOR_REGISTRY_LIMIT
+    hasLimit, maxLen, err := ds.ResolveSpecValue("VALIDATOR_REGISTRY_LIMIT")
+    if err != nil {
+      return err
+    }
+    if !hasLimit {
+      maxLen = 1099511627776
+    }
+    vlen := len(t)
+    if vlen > int(maxLen) {
+      return sszutils.ErrListTooBig
+    }
+    idx := hh.Index()
+    for i := 0; i < vlen; i++ {
+      hh.AppendUint64(uint64(t[i]))
+    }
+    limit := sszutils.CalculateLimit(uint64(maxLen), uint64(vlen), uint64(8))
+    if (uint64(hh.Index()-idx)+31)/32 > limit {
+      return sszutils.ErrListTooBig
+    }
+    hh.MerkleizeWithMixin(idx, uint64(vlen), limit)
+    return err
+  }
+  fn16 := func(t []phase0.BLSPubKey) (err error) { // []phase0.BLSPubKey:512:SYNC_COMMITTEE_SIZE:48
+    hasLimit, limit, err := ds.ResolveSpecValue("SYNC_COMMITTEE_SIZE")
+    if err != nil {
+      return err
+    }
+    if !hasLimit {
+      limit = 512
+    }
+    idx := hh.Index()
+    vlen := len(t)
+    if vlen > int(limit) {
+      return sszutils.ErrVectorLength
+    }
+    for i := 0; i < vlen; i++ {
+      hh.Append(t[i][:])
+    }
+    for i := vlen; i < int(limit); i++ {
+      hh.PutUint8(0)
+    }
+    hh.Merkleize(idx)
+    return err
+  }
+  fn17 := func(t *altair.SyncCommittee) (err error) { // *altair.SyncCommittee
+    idx := hh.Index()
+    // Field #0 'Pubkeys'
+    if err = fn16(t.Pubkeys); err != nil {
+      return err
+    }
+    // Field #1 'AggregatePubkey'
+    hh.PutBytes(t.AggregatePubkey[:])
+    hh.Merkleize(idx)
+    return err
+  }
+  fn18 := func(t *deneb.ExecutionPayloadHeader) (err error) { // *deneb.ExecutionPayloadHeader
+    err = t.HashTreeRootWith(hh)
+    return err
+  }
+  fn19 := func(t *capella.HistoricalSummary) (err error) { // *capella.HistoricalSummary:pack
+    err = t.HashTreeRootWith(hh)
+    return err
+  }
+  fn20 := func(t []*capella.HistoricalSummary) (err error) { // []*capella.HistoricalSummary:HISTORICAL_ROOTS_LIMIT
+    hasLimit, maxLen, err := ds.ResolveSpecValue("HISTORICAL_ROOTS_LIMIT")
+    if err != nil {
+      return err
+    }
+    if !hasLimit {
+      maxLen = 16777216
+    }
+    vlen := len(t)
+    if vlen > int(maxLen) {
+      return sszutils.ErrListTooBig
+    }
+    idx := hh.Index()
+    for i := 0; i < vlen; i++ {
+      if err = fn19(t[i]); err != nil {
+        return err
+      }
+    }
+    limit := uint64(maxLen)
+    if (uint64(hh.Index()-idx)+31)/32 > limit {
+      return sszutils.ErrListTooBig
+    }
+    hh.MerkleizeWithMixin(idx, uint64(vlen), limit)
+    return err
+  }
+  fn21 := func(t *TestBeaconState) (err error) { // *main.TestBeaconState
+    idx := hh.Index()
+    // Field #0 'GenesisTime'
+    hh.PutUint64(uint64(t.GenesisTime))
+    // Field #1 'GenesisValidatorsRoot'
+    hh.PutBytes(t.GenesisValidatorsRoot[:])
+    // Field #2 'Slot'
+    hh.PutUint64(uint64(t.Slot))
+    // Field #3 'Fork'
+    if err = fn1(t.Fork); err != nil {
+      return err
+    }
+    // Field #4 'LatestBlockHeader'
+    if err = fn2(t.LatestBlockHeader); err != nil {
+      return err
+    }
+    // Field #5 'BlockRoots'
+    if err = fn3(t.BlockRoots); err != nil {
+      return err
+    }
+    // Field #6 'StateRoots'
+    if err = fn3(t.StateRoots); err != nil {
+      return err
+    }
+    // Field #7 'HistoricalRoots'
+    if err = fn4(t.HistoricalRoots); err != nil {
+      return err
+    }
+    // Field #8 'ETH1Data'
+    if err = fn5(t.ETH1Data); err != nil {
+      return err
+    }
+    // Field #9 'ETH1DataVotes'
+    if err = fn7(t.ETH1DataVotes); err != nil {
+      return err
+    }
+    // Field #10 'ETH1DepositIndex'
+    hh.PutUint64(uint64(t.ETH1DepositIndex))
+    // Field #11 'Validators'
+    if err = fn9(t.Validators); err != nil {
+      return err
+    }
+    // Field #12 'Balances'
+    if err = fn10(t.Balances); err != nil {
+      return err
+    }
+    // Field #13 'RANDAOMixes'
+    if err = fn11(t.RANDAOMixes); err != nil {
+      return err
+    }
+    // Field #14 'Slashings'
+    if err = fn12(t.Slashings); err != nil {
+      return err
+    }
+    // Field #15 'PreviousEpochParticipation'
+    if err = fn13(t.PreviousEpochParticipation); err != nil {
+      return err
+    }
+    // Field #16 'CurrentEpochParticipation'
+    if err = fn13(t.CurrentEpochParticipation); err != nil {
+      return err
+    }
+    // Field #17 'JustificationBits'
+    hh.PutBytes(t.JustificationBits[:])
+    // Field #18 'PreviousJustifiedCheckpoint'
+    if err = fn14(t.PreviousJustifiedCheckpoint); err != nil {
+      return err
+    }
+    // Field #19 'CurrentJustifiedCheckpoint'
+    if err = fn14(t.CurrentJustifiedCheckpoint); err != nil {
+      return err
+    }
+    // Field #20 'FinalizedCheckpoint'
+    if err = fn14(t.FinalizedCheckpoint); err != nil {
+      return err
+    }
+    // Field #21 'InactivityScores'
+    if err = fn15(t.InactivityScores); err != nil {
+      return err
+    }
+    // Field #22 'CurrentSyncCommittee'
+    if err = fn17(t.CurrentSyncCommittee); err != nil {
+      return err
+    }
+    // Field #23 'NextSyncCommittee'
+    if err = fn17(t.NextSyncCommittee); err != nil {
+      return err
+    }
+    // Field #24 'LatestExecutionPayloadHeader'
+    if err = fn18(t.LatestExecutionPayloadHeader); err != nil {
+      return err
+    }
+    // Field #25 'NextWithdrawalIndex'
+    hh.PutUint64(uint64(t.NextWithdrawalIndex))
+    // Field #26 'NextWithdrawalValidatorIndex'
+    hh.PutUint64(uint64(t.NextWithdrawalValidatorIndex))
+    // Field #27 'HistoricalSummaries'
+    if err = fn20(t.HistoricalSummaries); err != nil {
+      return err
+    }
+    hh.Merkleize(idx)
+    return err
+  }
+  return fn21(t)
+}
+func (t *TestBeaconState) HashTreeRootDyn(ds *dynssz.DynSsz) ([32]byte, error) {
+  pool := &hasher.DefaultHasherPool
+  hh := pool.Get()
+	defer func() {
+		pool.Put(hh)
+	}()
+  if err := t.HashTreeRootWithDyn(ds, hh); err != nil {
+    return [32]byte{}, err
+  }
+  r, _ := hh.HashRoot()
+  return r, nil
+}
+func (t *TestBeaconState) HashTreeRootWith(hh sszutils.HashWalker) error {
+  return t.HashTreeRootWithDyn(dynssz.GetGlobalDynSsz(), hh)
+}
+func (t *TestBeaconState) HashTreeRoot() ([32]byte, error) {
+  pool := &hasher.DefaultHasherPool
+  hh := pool.Get()
+	defer func() {
+		pool.Put(hh)
+	}()
+  if err := t.HashTreeRootWithDyn(dynssz.GetGlobalDynSsz(), hh); err != nil {
+    return [32]byte{}, err
+  }
+  r, _ := hh.HashRoot()
+  return r, nil
 }
 

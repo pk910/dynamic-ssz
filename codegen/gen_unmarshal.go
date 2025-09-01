@@ -35,6 +35,10 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 	isBaseType := func(sourceType *dynssz.TypeDescriptor) bool {
 		// Check if it's a byte array/slice
 		if sourceType.IsByteArray {
+			// Don't inline if it has dynamic size expressions - these need spec resolution
+			if sourceType.SizeExpression != "" || sourceType.MaxExpression != "" {
+				return false
+			}
 			return true
 		}
 
@@ -439,6 +443,11 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 
 					compatibleUnionModel.VariantFns = append(compatibleUnionModel.VariantFns, variantModel)
 				}
+
+				sort.Slice(compatibleUnionModel.VariantFns, func(i, j int) bool {
+					return compatibleUnionModel.VariantFns[i].Index < compatibleUnionModel.VariantFns[j].Index
+				})
+
 				if err := codeTpl.ExecuteTemplate(&code, "unmarshal_compatible_union", compatibleUnionModel); err != nil {
 					return nil, err
 				}
@@ -656,6 +665,8 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 		CreateDynamicFn:     !options.WithoutDynamicExpressions,
 		UsedDynSsz:          usedDynSsz,
 	}
+
+	usedDynSsz = usedDynSsz || !options.WithoutDynamicExpressions
 
 	if err := codeTpl.ExecuteTemplate(codeBuilder, "unmarshal_main", unmarshalModel); err != nil {
 		return false, err

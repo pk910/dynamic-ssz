@@ -40,17 +40,17 @@ func performanceCommand() {
 	var dur []time.Duration
 	var hash [][32]byte
 	var err error
-	iterations := 1000
+	iterations := 1
 
 	fmt.Printf("## mainnet preset / BeaconBlock decode + encode + hash (%d times)\n", iterations)
 	dur, hash, err = test_block_fastssz(block_mainnet, iterations)
 	print_test_result("fastssz only", dur, hash, err)
+	dur, hash, err = test_block_dynssz_codegen(dynssz_hybrid_mainnet, block_mainnet, iterations)
+	print_test_result("dynssz + codegen", dur, hash, err)
 	dur, hash, err = test_block_dynssz(dynssz_only_mainnet, block_mainnet, iterations)
 	print_test_result("dynssz only", dur, hash, err)
 	dur, hash, err = test_block_dynssz(dynssz_hybrid_mainnet, block_mainnet, iterations)
 	print_test_result("dynssz + fastssz", dur, hash, err)
-	dur, hash, err = test_block_dynssz_codegen(dynssz_hybrid_mainnet, block_mainnet, iterations)
-	print_test_result("dynssz + codegen", dur, hash, err)
 	fmt.Printf("\n")
 
 	fmt.Printf("## mainnet preset / BeaconState decode + encode + hash (%d times)\n", iterations)
@@ -305,7 +305,7 @@ func test_block_dynssz_codegen(dynssz *ssz.DynSsz, in []byte, iterations int) ([
 
 	start := time.Now()
 	for i := 0; i < iterations; i++ {
-		t := new(TestBeaconBlock)
+		t := new(TestSignedBeaconBlock)
 		err := t.UnmarshalSSZDyn(dynssz, in)
 		if err != nil {
 			return nil, nil, fmt.Errorf("unmarshal error: %v", err)
@@ -313,7 +313,7 @@ func test_block_dynssz_codegen(dynssz *ssz.DynSsz, in []byte, iterations int) ([
 	}
 	unmarshalTime = time.Since(start)
 
-	t := new(TestBeaconBlock)
+	t := new(TestSignedBeaconBlock)
 	t.UnmarshalSSZDyn(dynssz, in)
 
 	start = time.Now()
@@ -327,7 +327,7 @@ func test_block_dynssz_codegen(dynssz *ssz.DynSsz, in []byte, iterations int) ([
 	}
 	marshalTime = time.Since(start)
 
-	out, _ := t.MarshalSSZTo(nil)
+	out, _ := t.MarshalSSZDyn(dynssz, nil)
 	if !bytes.Equal(in, out) {
 		for i := 0; i < len(in); i++ {
 			if in[i] != out[i] {
@@ -342,7 +342,7 @@ func test_block_dynssz_codegen(dynssz *ssz.DynSsz, in []byte, iterations int) ([
 	start = time.Now()
 	var hashRoot [32]byte
 	for i := 0; i < iterations; i++ {
-		root, err := dynssz.HashTreeRoot(t.Message)
+		root, err := t.Message.HashTreeRootDyn(dynssz)
 		if err != nil {
 			return nil, nil, fmt.Errorf("hashroot error: %v", err)
 		}
@@ -401,7 +401,7 @@ func test_state_dynssz_codegen(dynssz *ssz.DynSsz, in []byte, iterations int) ([
 	start = time.Now()
 	var hashRoot [32]byte
 	for i := 0; i < iterations; i++ {
-		root, err := dynssz.HashTreeRoot(t)
+		root, err := t.HashTreeRoot()
 		if err != nil {
 			return nil, nil, fmt.Errorf("hashroot error: %v", err)
 		}

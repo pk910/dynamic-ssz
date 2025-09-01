@@ -13,17 +13,32 @@ import (
 )
 
 type TestBeaconState deneb.BeaconState
-type TestBeaconBlock deneb.SignedBeaconBlock
+type TestBeaconBlock deneb.BeaconBlock
+
+type TestSignedBeaconBlock struct {
+	Message   *TestBeaconBlock
+	Signature phase0.BLSSignature `ssz-size:"96"`
+}
 
 type Test1 struct {
-	TestUnion *dynssz.CompatibleUnion[struct {
-		Deneb   phase0.ValidatorIndex
-		Electra phase0.Epoch
-	}]
+	/*
+		TestUnion *dynssz.CompatibleUnion[struct {
+			Deneb   phase0.ValidatorIndex
+			Electra phase0.Epoch
+		}]
+	*/
+	F1 phase0.ValidatorIndex
 }
 
 type Test2 struct {
 	T1 *Test1
+	T3 *Test3 `ssz-type:"progressive-container"`
+}
+
+type Test3 struct {
+	F1 uint64 `ssz-index:"1"`
+	F3 uint64 `ssz-index:"3"`
+	F4 uint64 `ssz-index:"4"`
 }
 
 func codegenCommand() {
@@ -37,10 +52,9 @@ func codegenCommand() {
 
 	generator.BuildFile(
 		currentDir+"/gen_block.go",
-		codegen.WithType(
-			reflect.TypeOf(&TestBeaconBlock{}),
-			codegen.WithCreateLegacyFn(),
-		),
+		codegen.WithType(reflect.TypeOf(&TestBeaconBlock{})),
+		codegen.WithType(reflect.TypeOf(&TestSignedBeaconBlock{})),
+		codegen.WithCreateLegacyFn(),
 	)
 
 	generator.BuildFile(

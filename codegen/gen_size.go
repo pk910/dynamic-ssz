@@ -334,6 +334,8 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 		UsedDynSsz:      usedDynSsz,
 	}
 
+	usedDynSsz = usedDynSsz || !options.WithoutDynamicExpressions
+
 	if err := codeTpl.ExecuteTemplate(codeBuilder, "size_main", sizeModel); err != nil {
 		return false, err
 	}
