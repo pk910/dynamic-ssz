@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 // unmarshalType is the core recursive function for decoding SSZ-encoded data into Go values.
@@ -50,12 +52,15 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 		useFastSsz = true
 	}
 
+	// Check if we should use dynamic unmarshaler - can ALWAYS be used unlike fastssz
+	useDynamicUnmarshal := targetType.HasDynamicUnmarshaler
+
 	if d.Verbose {
 		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), targetType.Type.Name(), targetType.Kind, useFastSsz, targetType.HasFastSSZMarshaler, targetType.HasDynamicSize)
 	}
 
 	if useFastSsz {
-		unmarshaller, ok := targetValue.Addr().Interface().(fastsszUnmarshaler)
+		unmarshaller, ok := targetValue.Addr().Interface().(sszutils.FastsszUnmarshaler)
 		if ok {
 			err := unmarshaller.UnmarshalSSZ(ssz)
 			if err != nil {
@@ -68,7 +73,22 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 		}
 	}
 
-	if !useFastSsz {
+	if !useFastSsz && useDynamicUnmarshal {
+		// Use dynamic unmarshaler - can always be used even with dynamic specs
+		unmarshaller, ok := targetValue.Addr().Interface().(sszutils.DynamicUnmarshaler)
+		if ok {
+			err := unmarshaller.UnmarshalSSZDyn(d, ssz)
+			if err != nil {
+				return 0, err
+			}
+
+			consumedBytes = len(ssz)
+		} else {
+			useDynamicUnmarshal = false
+		}
+	}
+
+	if !useFastSsz && !useDynamicUnmarshal {
 		// can't use fastssz, use dynamic unmarshaling
 		var err error
 		switch targetType.SszType {
@@ -112,31 +132,31 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 			if len(ssz) < 1 {
 				return 0, fmt.Errorf("unexpected end of SSZ")
 			}
-			targetValue.SetBool(unmarshalBool(ssz))
+			targetValue.SetBool(sszutils.UnmarshalBool(ssz))
 			consumedBytes = 1
 		case SszUint8Type:
 			if len(ssz) < 1 {
 				return 0, fmt.Errorf("unexpected end of SSZ")
 			}
-			targetValue.SetUint(uint64(unmarshallUint8(ssz)))
+			targetValue.SetUint(uint64(sszutils.UnmarshallUint8(ssz)))
 			consumedBytes = 1
 		case SszUint16Type:
 			if len(ssz) < 2 {
 				return 0, fmt.Errorf("unexpected end of SSZ")
 			}
-			targetValue.SetUint(uint64(unmarshallUint16(ssz)))
+			targetValue.SetUint(uint64(sszutils.UnmarshallUint16(ssz)))
 			consumedBytes = 2
 		case SszUint32Type:
 			if len(ssz) < 4 {
 				return 0, fmt.Errorf("unexpected end of SSZ")
 			}
-			targetValue.SetUint(uint64(unmarshallUint32(ssz)))
+			targetValue.SetUint(uint64(sszutils.UnmarshallUint32(ssz)))
 			consumedBytes = 4
 		case SszUint64Type:
 			if len(ssz) < 8 {
 				return 0, fmt.Errorf("unexpected end of SSZ")
 			}
-			targetValue.SetUint(uint64(unmarshallUint64(ssz)))
+			targetValue.SetUint(uint64(sszutils.UnmarshallUint64(ssz)))
 			consumedBytes = 8
 
 		default:
@@ -240,7 +260,7 @@ func (d *DynSsz) unmarshalContainer(targetType *TypeDescriptor, targetValue refl
 			if offset+fieldSize > sszSize {
 				return 0, fmt.Errorf("unexpected end of SSZ. dynamic field %v expects %v bytes (offset), got %v", field.Name, fieldSize, sszSize-offset)
 			}
-			fieldOffset := readOffset(ssz[offset : offset+fieldSize])
+			fieldOffset := sszutils.ReadOffset(ssz[offset : offset+fieldSize])
 
 			// fmt.Printf("%sfield %d:\t offset [%v:%v] %v\t %v \t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name, fieldOffset)
 
@@ -262,7 +282,7 @@ func (d *DynSsz) unmarshalContainer(targetType *TypeDescriptor, targetValue refl
 
 		// check offset integrity (not before previous field offset & not after range end)
 		if startOffset != offset || endOffset > sszSize || endOffset < startOffset {
-			return 0, ErrOffset
+			return 0, sszutils.ErrOffset
 		}
 
 		// fmt.Printf("%sfield %d:\t dynamic [%v:%v]\t %v\n", strings.Repeat(" ", idt+1), field.Index[0], startOffset, endOffset, field.Name)
@@ -413,7 +433,7 @@ func (d *DynSsz) unmarshalDynamicVector(targetType *TypeDescriptor, targetValue 
 		sliceOffsets = sliceOffsets[:vectorLen]
 	}
 	for i := 0; i < vectorLen; i++ {
-		sliceOffsets[i] = int(readOffset(ssz[i*4 : (i+1)*4]))
+		sliceOffsets[i] = int(sszutils.ReadOffset(ssz[i*4 : (i+1)*4]))
 	}
 
 	fieldType := targetType.ElemDesc
@@ -459,7 +479,7 @@ func (d *DynSsz) unmarshalDynamicVector(targetType *TypeDescriptor, targetValue 
 
 		itemSize := endOffset - startOffset
 		if itemSize < 0 || endOffset > sszLen {
-			return 0, ErrOffset
+			return 0, sszutils.ErrOffset
 		}
 
 		itemSsz := ssz[startOffset:endOffset]
@@ -608,7 +628,7 @@ func (d *DynSsz) unmarshalDynamicList(targetType *TypeDescriptor, targetValue re
 	}
 
 	// derive number of items from first item offset
-	firstOffset := readOffset(ssz[0:4])
+	firstOffset := sszutils.ReadOffset(ssz[0:4])
 	sliceLen := int(firstOffset / 4)
 
 	// read all item offsets
@@ -621,7 +641,7 @@ func (d *DynSsz) unmarshalDynamicList(targetType *TypeDescriptor, targetValue re
 	}
 	sliceOffsets[0] = int(firstOffset)
 	for i := 1; i < sliceLen; i++ {
-		sliceOffsets[i] = int(readOffset(ssz[i*4 : (i+1)*4]))
+		sliceOffsets[i] = int(sszutils.ReadOffset(ssz[i*4 : (i+1)*4]))
 	}
 
 	fieldType := targetType.ElemDesc
@@ -664,7 +684,7 @@ func (d *DynSsz) unmarshalDynamicList(targetType *TypeDescriptor, targetValue re
 
 			itemSize := endOffset - startOffset
 			if itemSize < 0 || endOffset > sszLen {
-				return 0, ErrOffset
+				return 0, sszutils.ErrOffset
 			}
 
 			itemSsz := ssz[startOffset:endOffset]
@@ -713,7 +733,7 @@ func (d *DynSsz) unmarshalCompatibleUnion(targetType *TypeDescriptor, targetValu
 	// Get the variant descriptor
 	variantDesc, ok := targetType.UnionVariants[variant]
 	if !ok {
-		return 0, fmt.Errorf("unknown union variant index: %d", variant)
+		return 0, sszutils.ErrInvalidUnionVariant
 	}
 
 	// Create a new value of the variant type

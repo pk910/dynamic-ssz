@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 // marshalType is the core recursive function for marshalling Go values into SSZ-encoded data.
@@ -46,12 +48,15 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 		useFastSsz = true
 	}
 
+	// Check if we should use dynamic marshaler - can ALWAYS be used unlike fastssz
+	useDynamicMarshal := sourceType.HasDynamicMarshaler
+
 	if d.Verbose {
 		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, sourceType.HasFastSSZMarshaler, sourceType.HasDynamicSize)
 	}
 
 	if useFastSsz {
-		marshaller, ok := sourceValue.Addr().Interface().(fastsszMarshaler)
+		marshaller, ok := sourceValue.Addr().Interface().(sszutils.FastsszMarshaler)
 		if ok {
 			newBuf, err := marshaller.MarshalSSZTo(buf)
 			if err != nil {
@@ -63,7 +68,21 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 		}
 	}
 
-	if !useFastSsz {
+	if !useFastSsz && useDynamicMarshal {
+		// Use dynamic marshaler - can always be used even with dynamic specs
+		marshaller, ok := sourceValue.Addr().Interface().(sszutils.DynamicMarshaler)
+		if ok {
+			newBuf, err := marshaller.MarshalSSZDyn(d, buf)
+			if err != nil {
+				return nil, err
+			}
+			buf = newBuf
+		} else {
+			useDynamicMarshal = false
+		}
+	}
+
+	if !useFastSsz && !useDynamicMarshal {
 		// can't use fastssz, use dynamic marshaling
 		var err error
 		switch sourceType.SszType {
@@ -104,15 +123,15 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 
 		// primitive types
 		case SszBoolType:
-			buf = marshalBool(buf, sourceValue.Bool())
+			buf = sszutils.MarshalBool(buf, sourceValue.Bool())
 		case SszUint8Type:
-			buf = marshalUint8(buf, uint8(sourceValue.Uint()))
+			buf = sszutils.MarshalUint8(buf, uint8(sourceValue.Uint()))
 		case SszUint16Type:
-			buf = marshalUint16(buf, uint16(sourceValue.Uint()))
+			buf = sszutils.MarshalUint16(buf, uint16(sourceValue.Uint()))
 		case SszUint32Type:
-			buf = marshalUint32(buf, uint32(sourceValue.Uint()))
+			buf = sszutils.MarshalUint32(buf, uint32(sourceValue.Uint()))
 		case SszUint64Type:
-			buf = marshalUint64(buf, uint64(sourceValue.Uint()))
+			buf = sszutils.MarshalUint64(buf, uint64(sourceValue.Uint()))
 		default:
 			return nil, fmt.Errorf("unknown type: %v", sourceType)
 		}
@@ -241,7 +260,7 @@ func (d *DynSsz) marshalContainer(sourceType *TypeDescriptor, sourceValue reflec
 func (d *DynSsz) marshalVector(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
 	sliceLen := sourceValue.Len()
 	if uint32(sliceLen) > sourceType.Len {
-		return nil, ErrListTooBig
+		return nil, sszutils.ErrListTooBig
 	}
 
 	appendZero := 0
@@ -268,7 +287,7 @@ func (d *DynSsz) marshalVector(sourceType *TypeDescriptor, sourceValue reflect.V
 		buf = append(buf, bytes...)
 
 		if appendZero > 0 {
-			buf = appendZeroPadding(buf, appendZero)
+			buf = sszutils.AppendZeroPadding(buf, appendZero)
 		}
 	} else {
 		for i := 0; i < int(sliceLen); i++ {
@@ -282,7 +301,7 @@ func (d *DynSsz) marshalVector(sourceType *TypeDescriptor, sourceValue reflect.V
 
 		if appendZero > 0 {
 			totalZeroBytes := int(sourceType.ElemDesc.Size) * appendZero
-			buf = appendZeroPadding(buf, totalZeroBytes)
+			buf = sszutils.AppendZeroPadding(buf, totalZeroBytes)
 		}
 	}
 
@@ -320,7 +339,7 @@ func (d *DynSsz) marshalDynamicVector(sourceType *TypeDescriptor, sourceValue re
 	if sourceType.Kind == reflect.Slice || sourceType.Kind == reflect.String {
 		sliceLen := sourceValue.Len()
 		if uint32(sliceLen) > sourceType.Len {
-			return nil, ErrListTooBig
+			return nil, sszutils.ErrListTooBig
 		}
 		if uint32(sliceLen) < sourceType.Len {
 			appendZero = int(sourceType.Len) - sliceLen
@@ -329,7 +348,7 @@ func (d *DynSsz) marshalDynamicVector(sourceType *TypeDescriptor, sourceValue re
 
 	startOffset := len(buf)
 	totalOffsets := sliceLen + appendZero
-	buf = appendZeroPadding(buf, 4*totalOffsets) // Reserve space for offsets
+	buf = sszutils.AppendZeroPadding(buf, 4*totalOffsets) // Reserve space for offsets
 
 	offset := 4 * totalOffsets
 	bufLen := len(buf)
@@ -450,7 +469,7 @@ func (d *DynSsz) marshalDynamicList(sourceType *TypeDescriptor, sourceValue refl
 
 	startOffset := len(buf)
 	totalOffsets := sliceLen
-	buf = appendZeroPadding(buf, 4*totalOffsets) // Reserve space for offsets
+	buf = sszutils.AppendZeroPadding(buf, 4*totalOffsets) // Reserve space for offsets
 
 	offset := 4 * totalOffsets
 	bufLen := len(buf)
@@ -502,7 +521,7 @@ func (d *DynSsz) marshalCompatibleUnion(sourceType *TypeDescriptor, sourceValue 
 	// Get the variant descriptor
 	variantDesc, ok := sourceType.UnionVariants[variant]
 	if !ok {
-		return nil, fmt.Errorf("unknown union variant index: %d", variant)
+		return nil, sszutils.ErrInvalidUnionVariant
 	}
 
 	// Marshal the data using the variant's type descriptor
