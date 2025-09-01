@@ -51,9 +51,6 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 		useFastSsz = true
 	}
 
-	// Check if we should use dynamic marshaler - can ALWAYS be used unlike fastssz
-	useDynamicMarshal := sourceType.HasDynamicMarshaler
-
 	if d.Verbose {
 		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, isFastsszMarshaler, hasDynamicSize)
 	}

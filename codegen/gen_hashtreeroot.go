@@ -30,10 +30,10 @@ func generateHashTreeRoot(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor
 			return true
 		case dynssz.SszVectorType, dynssz.SszListType, dynssz.SszBitvectorType:
 			// Inline byte arrays and byte slices, but not if they need dynamic spec resolution or have limits
-			if sourceType.IsByteArray {
+			if sourceType.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
 				// Don't inline if they have dynamic expressions that need spec resolution
 				// Don't inline if they have limits (need individual merkleization with mixin)
-				return sourceType.MaxExpression == "" && sourceType.SizeExpression == "" && !sourceType.HasLimit
+				return sourceType.MaxExpression == nil && sourceType.SizeExpression == nil && sourceType.SszTypeFlags&dynssz.SszTypeFlagHasLimit == 0
 			}
 			return false
 		default:
@@ -70,7 +70,7 @@ func generateHashTreeRoot(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor
 			}
 			return fmt.Sprintf("hh.PutUint64(uint64(%s))", varName)
 		case dynssz.SszVectorType, dynssz.SszListType:
-			if sourceType.IsByteArray {
+			if sourceType.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
 				// Simple byte arrays/slices can be inlined directly
 				// (complex cases with dynamic expressions or limits are filtered out in isBaseType)
 				return fmt.Sprintf("hh.PutBytes(%s[:])", varName)
@@ -83,7 +83,7 @@ func generateHashTreeRoot(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor
 
 	genRecursive = func(sourceType *dynssz.TypeDescriptor, isRoot bool, pack bool) (*tmpl.HashTreeRootFunction, error) {
 		// For base types that are not root, return a special inline function
-		if !isRoot && isBaseType(sourceType) && !sourceType.IsPtr {
+		if !isRoot && isBaseType(sourceType) && sourceType.GoTypeFlags&dynssz.GoTypeFlagIsPointer == 0 {
 			return &tmpl.HashTreeRootFunction{
 				IsInlined:  true,
 				InlineCode: getInlineBaseTypeHash(sourceType, "VAR_NAME", pack),
@@ -96,11 +96,11 @@ func generateHashTreeRoot(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor
 		if sourceType.Len > 0 {
 			typeKey = fmt.Sprintf("%s:%d", typeKey, sourceType.Len)
 		}
-		if sourceType.SizeExpression != "" && !options.WithoutDynamicExpressions {
-			typeKey = fmt.Sprintf("%s:%s", typeKey, sourceType.SizeExpression)
+		if sourceType.SizeExpression != nil && !options.WithoutDynamicExpressions {
+			typeKey = fmt.Sprintf("%s:%s", typeKey, *sourceType.SizeExpression)
 		}
-		if sourceType.MaxExpression != "" && !options.WithoutDynamicExpressions {
-			typeKey = fmt.Sprintf("%s:%s", typeKey, sourceType.MaxExpression)
+		if sourceType.MaxExpression != nil && !options.WithoutDynamicExpressions {
+			typeKey = fmt.Sprintf("%s:%s", typeKey, *sourceType.MaxExpression)
 		}
 		if pack {
 			typeKey = fmt.Sprintf("%s:pack", typeKey)
@@ -116,11 +116,11 @@ func generateHashTreeRoot(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor
 			if childType.Len > 0 {
 				typeKey = fmt.Sprintf("%s:%d", typeKey, childType.Len)
 			}
-			if childType.SizeExpression != "" && !options.WithoutDynamicExpressions {
-				typeKey = fmt.Sprintf("%s:%s", typeKey, childType.SizeExpression)
+			if childType.SizeExpression != nil && !options.WithoutDynamicExpressions {
+				typeKey = fmt.Sprintf("%s:%s", typeKey, *childType.SizeExpression)
 			}
-			if childType.MaxExpression != "" && !options.WithoutDynamicExpressions {
-				typeKey = fmt.Sprintf("%s:%s", typeKey, childType.MaxExpression)
+			if childType.MaxExpression != nil && !options.WithoutDynamicExpressions {
+				typeKey = fmt.Sprintf("%s:%s", typeKey, *childType.MaxExpression)
 			}
 		}
 
@@ -128,26 +128,27 @@ func generateHashTreeRoot(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor
 			return fn.Fn, nil
 		}
 
-		useFastSsz := !ds.NoFastSsz && sourceType.HasFastSSZHasher && !sourceType.HasDynamicSize && !sourceType.HasDynamicMax && !isRoot
-		if useFastSsz && (sourceType.HasMaxExpr || sourceType.HasSizeExpr) {
+		isFastsszHasher := sourceType.SszCompatFlags&dynssz.SszCompatFlagFastSSZHasher != 0
+		useDynamicHashRoot := sourceType.SszCompatFlags&dynssz.SszCompatFlagDynamicHashRoot != 0
+		hasDynamicSize := sourceType.SszTypeFlags&dynssz.SszTypeFlagHasDynamicSize != 0
+		hasDynamicMax := sourceType.SszTypeFlags&dynssz.SszTypeFlagHasDynamicMax != 0
+		useFastSsz := !ds.NoFastSsz && isFastsszHasher && !hasDynamicSize && !hasDynamicMax && !isRoot
+		if useFastSsz && (sourceType.SszTypeFlags&(dynssz.SszTypeFlagHasMaxExpr|dynssz.SszTypeFlagHasSizeExpr) != 0) {
 			useFastSsz = false
 		}
 		if !useFastSsz && sourceType.SszType == dynssz.SszCustomType {
 			useFastSsz = true
 		}
 
-		// Check if we should use dynamic hash root - can ALWAYS be used unlike fastssz
-		useDynamicHashRoot := sourceType.HasDynamicHashRoot
-
 		code := strings.Builder{}
 		hashTreeRootFn := &tmpl.HashTreeRootFunction{
-			Index:     0,
-			Key:       typeKey,
-			TypeName:  typePrinter.TypeString(sourceType.Type),
-			IsPointer: sourceType.IsPtr,
+			Index:    0,
+			Key:      typeKey,
+			TypeName: typePrinter.TypeString(sourceType.Type),
 		}
 
-		if sourceType.IsPtr {
+		if sourceType.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+			hashTreeRootFn.IsPointer = true
 			hashTreeRootFn.InnerType = typePrinter.TypeString(sourceType.Type.Elem())
 		}
 
@@ -158,7 +159,7 @@ func generateHashTreeRoot(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor
 
 		if useFastSsz && !isRoot {
 			// Use the method availability information from the type cache
-			if sourceType.HasHashTreeRootWith {
+			if sourceType.SszCompatFlags&dynssz.SszCompatFlagHashTreeRootWith != 0 {
 				if err := codeTpl.ExecuteTemplate(&code, "hashtreeroot_fastssz_with", nil); err != nil {
 					return nil, err
 				}
@@ -205,7 +206,7 @@ func generateHashTreeRoot(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor
 					fieldModel := tmpl.HashTreeRootField{
 						Index:     idx,
 						Name:      field.Name,
-						IsDynamic: field.Type.IsDynamic,
+						IsDynamic: field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0,
 					}
 
 					if fn.IsInlined {
@@ -220,7 +221,7 @@ func generateHashTreeRoot(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor
 
 					structModel.Fields = append(structModel.Fields, fieldModel)
 
-					if field.Type.IsDynamic {
+					if field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
 						structModel.HasDynamicFields = true
 					}
 				}
@@ -244,7 +245,7 @@ func generateHashTreeRoot(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor
 					fieldModel := tmpl.HashTreeRootField{
 						Index:     idx,
 						Name:      field.Name,
-						IsDynamic: field.Type.IsDynamic,
+						IsDynamic: field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0,
 						SszIndex:  field.SszIndex,
 					}
 
@@ -266,7 +267,7 @@ func generateHashTreeRoot(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor
 			case dynssz.SszVectorType, dynssz.SszBitvectorType, dynssz.SszUint128Type, dynssz.SszUint256Type:
 				hashTreeRootFn := ""
 				inlineHashCode := ""
-				if !sourceType.IsByteArray {
+				if sourceType.GoTypeFlags&dynssz.GoTypeFlagIsByteArray == 0 {
 					// For vectors, items are packed
 					fn, err := genRecursive(sourceType.ElemDesc, false, true)
 					if err != nil {
@@ -285,10 +286,7 @@ func generateHashTreeRoot(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor
 
 				sizeExpression := sourceType.SizeExpression
 				if options.WithoutDynamicExpressions {
-					sizeExpression = ""
-				}
-				if sizeExpression != "" {
-					usedDynSsz = true
+					sizeExpression = nil
 				}
 
 				vectorModel := tmpl.HashTreeRootVector{
@@ -297,10 +295,15 @@ func generateHashTreeRoot(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor
 					ItemSize:           int(sourceType.ElemDesc.Size),
 					HashTreeRootFn:     hashTreeRootFn,
 					InlineItemHashCode: inlineHashCode,
-					SizeExpr:           sizeExpression,
+					SizeExpr:           "",
 					IsArray:            sourceType.Kind == reflect.Array,
-					IsByteArray:        sourceType.IsByteArray,
-					IsString:           sourceType.IsString,
+					IsByteArray:        sourceType.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0,
+					IsString:           sourceType.GoTypeFlags&dynssz.GoTypeFlagIsString != 0,
+				}
+
+				if sizeExpression != nil {
+					vectorModel.SizeExpr = *sizeExpression
+					usedDynSsz = true
 				}
 
 				if err := codeTpl.ExecuteTemplate(&code, "hashtreeroot_vector", vectorModel); err != nil {
@@ -309,7 +312,7 @@ func generateHashTreeRoot(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor
 			case dynssz.SszListType, dynssz.SszProgressiveListType:
 				hashTreeRootFn := ""
 				inlineHashCode := ""
-				if !sourceType.IsByteArray {
+				if sourceType.GoTypeFlags&dynssz.GoTypeFlagIsByteArray == 0 {
 					// For lists, items are packed
 					fn, err := genRecursive(sourceType.ElemDesc, false, true)
 					if err != nil {
@@ -329,11 +332,8 @@ func generateHashTreeRoot(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor
 				sizeExpression := sourceType.SizeExpression
 				maxExpression := sourceType.MaxExpression
 				if options.WithoutDynamicExpressions {
-					sizeExpression = ""
-					maxExpression = ""
-				}
-				if sizeExpression != "" || maxExpression != "" {
-					usedDynSsz = true
+					sizeExpression = nil
+					maxExpression = nil
 				}
 
 				listModel := tmpl.HashTreeRootList{
@@ -341,12 +341,22 @@ func generateHashTreeRoot(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor
 					MaxLength:          int(sourceType.Limit),
 					HashTreeRootFn:     hashTreeRootFn,
 					InlineItemHashCode: inlineHashCode,
-					SizeExpr:           sizeExpression,
-					MaxExpr:            maxExpression,
-					HasLimit:           sourceType.HasLimit,
+					SizeExpr:           "",
+					MaxExpr:            "",
+					HasLimit:           sourceType.SszTypeFlags&dynssz.SszTypeFlagHasLimit != 0,
 					IsProgressive:      (sourceType.SszType == dynssz.SszProgressiveListType || sourceType.SszType == dynssz.SszProgressiveBitlistType),
-					IsByteArray:        sourceType.IsByteArray,
-					IsString:           sourceType.IsString,
+					IsByteArray:        sourceType.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0,
+					IsString:           sourceType.GoTypeFlags&dynssz.GoTypeFlagIsString != 0,
+				}
+
+				if sizeExpression != nil {
+					listModel.SizeExpr = *sizeExpression
+					usedDynSsz = true
+				}
+
+				if maxExpression != nil {
+					listModel.MaxExpr = *maxExpression
+					usedDynSsz = true
 				}
 
 				switch sourceType.ElemDesc.SszType {
@@ -374,18 +384,20 @@ func generateHashTreeRoot(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor
 			case dynssz.SszBitlistType, dynssz.SszProgressiveBitlistType:
 				maxExpression := sourceType.MaxExpression
 				if options.WithoutDynamicExpressions {
-					maxExpression = ""
-				}
-				if maxExpression != "" {
-					usedDynSsz = true
+					maxExpression = nil
 				}
 
 				bitlistModel := tmpl.HashTreeRootBitlist{
 					TypeName:      typePrinter.TypeString(sourceType.Type),
 					MaxLength:     int(sourceType.Limit),
-					MaxExpr:       maxExpression,
-					HasLimit:      sourceType.HasLimit,
+					MaxExpr:       "",
+					HasLimit:      sourceType.SszTypeFlags&dynssz.SszTypeFlagHasLimit != 0,
 					IsProgressive: (sourceType.SszType == dynssz.SszProgressiveBitlistType),
+				}
+
+				if maxExpression != nil {
+					bitlistModel.MaxExpr = *maxExpression
+					usedDynSsz = true
 				}
 
 				if err := codeTpl.ExecuteTemplate(&code, "hashtreeroot_bitlist", bitlistModel); err != nil {

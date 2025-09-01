@@ -29,8 +29,8 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 		if sourceType.Len > 0 {
 			typeKey = fmt.Sprintf("%s:%d", typeKey, sourceType.Len)
 		}
-		if sourceType.SizeExpression != "" && !options.WithoutDynamicExpressions {
-			typeKey = fmt.Sprintf("%s:%s", typeKey, sourceType.SizeExpression)
+		if sourceType.SizeExpression != nil && !options.WithoutDynamicExpressions {
+			typeKey = fmt.Sprintf("%s:%s", typeKey, *sourceType.SizeExpression)
 		}
 
 		childType := sourceType
@@ -43,8 +43,8 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 			if childType.Len > 0 {
 				typeKey = fmt.Sprintf("%s:%d", typeKey, childType.Len)
 			}
-			if childType.SizeExpression != "" && !options.WithoutDynamicExpressions {
-				typeKey = fmt.Sprintf("%s:%s", typeKey, childType.SizeExpression)
+			if childType.SizeExpression != nil && !options.WithoutDynamicExpressions {
+				typeKey = fmt.Sprintf("%s:%s", typeKey, *childType.SizeExpression)
 			}
 		}
 
@@ -52,26 +52,26 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 			return fn.Fn, nil
 		}
 
-		useFastSsz := !ds.NoFastSsz && sourceType.HasFastSSZMarshaler && !sourceType.HasDynamicSize
-		if useFastSsz && sourceType.HasSizeExpr {
+		hasDynamicSize := sourceType.SszTypeFlags&dynssz.SszTypeFlagHasDynamicSize != 0
+		isFastsszMarshaler := sourceType.SszCompatFlags&dynssz.SszCompatFlagFastSSZMarshaler != 0
+		useDynamicSize := sourceType.SszCompatFlags&dynssz.SszCompatFlagDynamicSizer != 0
+		useFastSsz := !ds.NoFastSsz && isFastsszMarshaler && !hasDynamicSize
+		if useFastSsz && sourceType.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 {
 			useFastSsz = false
 		}
 		if !useFastSsz && sourceType.SszType == dynssz.SszCustomType {
 			useFastSsz = true
 		}
 
-		// Check if we should use dynamic sizer - can ALWAYS be used unlike fastssz
-		useDynamicSize := sourceType.HasDynamicSizer
-
 		code := strings.Builder{}
 		sizeFn := &tmpl.SizeFunction{
-			Index:     0,
-			Key:       typeKey,
-			TypeName:  typeName,
-			IsPointer: sourceType.IsPtr,
+			Index:    0,
+			Key:      typeKey,
+			TypeName: typeName,
 		}
 
-		if sourceType.IsPtr {
+		if sourceType.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+			sizeFn.IsPointer = true
 			sizeFn.InnerType = typePrinter.TypeString(sourceType.Type.Elem())
 		}
 
@@ -115,7 +115,7 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 					Size:     0,
 				}
 				for idx, field := range sourceType.ContainerDesc.Fields {
-					if field.Type.IsDynamic {
+					if field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
 						fn, err := genRecursive(field.Type, false)
 						if err != nil {
 							return nil, err
@@ -125,14 +125,14 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 							Index:     idx,
 							Name:      field.Name,
 							TypeName:  typePrinter.TypeString(field.Type.Type),
-							IsDynamic: field.Type.IsDynamic,
+							IsDynamic: field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0,
 							SizeFn:    fn.Name,
 						})
 
-						if field.Type.IsDynamic {
+						if field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
 							structModel.HasDynamicFields = true
 						}
-					} else if field.Type.HasSizeExpr {
+					} else if field.Type.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 {
 						fn, err := genRecursive(field.Type, false)
 						if err != nil {
 							return nil, err
@@ -155,13 +155,10 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 			case dynssz.SszVectorType, dynssz.SszBitvectorType, dynssz.SszUint128Type, dynssz.SszUint256Type:
 				sizeExpression := sourceType.SizeExpression
 				if options.WithoutDynamicExpressions {
-					sizeExpression = ""
-				}
-				if sizeExpression != "" {
-					usedDynSsz = true
+					sizeExpression = nil
 				}
 
-				if sourceType.ElemDesc.IsDynamic {
+				if sourceType.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
 					emptyVal := reflect.New(sourceType.ElemDesc.Type).Elem()
 					emptySize, err := ds.SizeSSZ(emptyVal.Interface())
 					if err != nil {
@@ -178,8 +175,13 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 						Length:    int(sourceType.Len),
 						EmptySize: emptySize,
 						SizeFn:    fn.Name,
-						SizeExpr:  sizeExpression,
+						SizeExpr:  "",
 						IsArray:   sourceType.Kind == reflect.Array,
+					}
+
+					if sizeExpression != nil {
+						dynVectorModel.SizeExpr = *sizeExpression
+						usedDynSsz = true
 					}
 
 					if err := codeTpl.ExecuteTemplate(&code, "size_dynamic_vector", dynVectorModel); err != nil {
@@ -187,7 +189,7 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 					}
 				} else {
 					sizeFn := ""
-					if sourceType.ElemDesc.HasSizeExpr {
+					if sourceType.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 {
 						fn, err := genRecursive(sourceType.ElemDesc, false)
 						if err != nil {
 							return nil, err
@@ -200,10 +202,15 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 						Length:      int(sourceType.Len),
 						ItemSize:    int(sourceType.ElemDesc.Size),
 						SizeFn:      sizeFn,
-						SizeExpr:    sizeExpression,
+						SizeExpr:    "",
 						IsArray:     sourceType.Kind == reflect.Array,
-						IsByteArray: sourceType.IsByteArray,
-						IsString:    sourceType.IsString,
+						IsByteArray: sourceType.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0,
+						IsString:    sourceType.GoTypeFlags&dynssz.GoTypeFlagIsString != 0,
+					}
+
+					if sizeExpression != nil {
+						vectorModel.SizeExpr = *sizeExpression
+						usedDynSsz = true
 					}
 
 					if err := codeTpl.ExecuteTemplate(&code, "size_vector", vectorModel); err != nil {
@@ -213,13 +220,10 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 			case dynssz.SszListType, dynssz.SszBitlistType, dynssz.SszProgressiveListType, dynssz.SszProgressiveBitlistType:
 				sizeExpression := sourceType.SizeExpression
 				if options.WithoutDynamicExpressions {
-					sizeExpression = ""
-				}
-				if sizeExpression != "" {
-					usedDynSsz = true
+					sizeExpression = nil
 				}
 
-				if sourceType.ElemDesc.IsDynamic {
+				if sourceType.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
 					fn, err := genRecursive(sourceType.ElemDesc, false)
 					if err != nil {
 						return nil, err
@@ -228,7 +232,12 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 					dynListModel := tmpl.SizeDynamicList{
 						TypeName: typePrinter.TypeString(sourceType.Type),
 						SizeFn:   fn.Name,
-						SizeExpr: sizeExpression,
+						SizeExpr: "",
+					}
+
+					if sizeExpression != nil {
+						dynListModel.SizeExpr = *sizeExpression
+						usedDynSsz = true
 					}
 
 					if err := codeTpl.ExecuteTemplate(&code, "size_dynamic_list", dynListModel); err != nil {
@@ -236,7 +245,7 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 					}
 				} else {
 					sizeFn := ""
-					if sourceType.ElemDesc.HasSizeExpr {
+					if sourceType.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 {
 						fn, err := genRecursive(sourceType.ElemDesc, false)
 						if err != nil {
 							return nil, err
@@ -248,9 +257,14 @@ func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBu
 						TypeName:    typePrinter.TypeString(sourceType.Type),
 						ItemSize:    int(sourceType.ElemDesc.Size),
 						SizeFn:      sizeFn,
-						SizeExpr:    sizeExpression,
-						IsByteArray: sourceType.IsByteArray,
-						IsString:    sourceType.IsString,
+						SizeExpr:    "",
+						IsByteArray: sourceType.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0,
+						IsString:    sourceType.GoTypeFlags&dynssz.GoTypeFlagIsString != 0,
+					}
+
+					if sizeExpression != nil {
+						listModel.SizeExpr = *sizeExpression
+						usedDynSsz = true
 					}
 
 					if err := codeTpl.ExecuteTemplate(&code, "size_list", listModel); err != nil {

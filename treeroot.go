@@ -55,9 +55,6 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 		useFastSsz = true
 	}
 
-	// Check if we should use dynamic hash root - can ALWAYS be used unlike fastssz
-	useDynamicHashRoot := sourceType.HasDynamicHashRoot
-
 	if d.Verbose {
 		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v/%v)\t index: %v\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, isFastsszHasher, hasDynamicSize, hasDynamicMax, hashIndex)
 	}

@@ -55,9 +55,6 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 		useFastSsz = true
 	}
 
-	// Check if we should use dynamic unmarshaler - can ALWAYS be used unlike fastssz
-	useDynamicUnmarshal := targetType.HasDynamicUnmarshaler
-
 	if d.Verbose {
 		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), targetType.Type.Name(), targetType.Kind, useFastSsz, isFastsszUnmarshaler, hasDynamicSize)
 	}

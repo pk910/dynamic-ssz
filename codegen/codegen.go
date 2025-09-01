@@ -191,13 +191,25 @@ func (cg *CodeGenerator) GenerateToMap() (map[string]string, error) {
 			}
 
 			// set availability of dynamic methods (we will generate them in a bit and we want cross references)
-			desc.HasDynamicMarshaler = !t.Options.NoMarshalSSZ && !t.Options.WithoutDynamicExpressions
-			desc.HasDynamicUnmarshaler = !t.Options.NoUnmarshalSSZ && !t.Options.WithoutDynamicExpressions
-			desc.HasDynamicSizer = !t.Options.NoSizeSSZ && !t.Options.WithoutDynamicExpressions
-			desc.HasDynamicHashRoot = !t.Options.NoHashTreeRoot && !t.Options.WithoutDynamicExpressions
+			if !t.Options.NoMarshalSSZ && !t.Options.WithoutDynamicExpressions {
+				desc.SszCompatFlags |= dynssz.SszCompatFlagDynamicMarshaler
+			}
+			if !t.Options.NoUnmarshalSSZ && !t.Options.WithoutDynamicExpressions {
+				desc.SszCompatFlags |= dynssz.SszCompatFlagDynamicUnmarshaler
+			}
+			if !t.Options.NoSizeSSZ && !t.Options.WithoutDynamicExpressions {
+				desc.SszCompatFlags |= dynssz.SszCompatFlagDynamicSizer
+			}
+			if !t.Options.NoHashTreeRoot && !t.Options.WithoutDynamicExpressions {
+				desc.SszCompatFlags |= dynssz.SszCompatFlagDynamicHashRoot
+			}
 
-			desc.HasFastSSZMarshaler = !t.Options.NoMarshalSSZ && !t.Options.NoUnmarshalSSZ && !t.Options.NoSizeSSZ && (t.Options.CreateLegacyFn || t.Options.WithoutDynamicExpressions)
-			desc.HasFastSSZHasher = !t.Options.NoHashTreeRoot && (t.Options.CreateLegacyFn || t.Options.WithoutDynamicExpressions)
+			if !t.Options.NoMarshalSSZ && !t.Options.NoUnmarshalSSZ && !t.Options.NoSizeSSZ && (t.Options.CreateLegacyFn || t.Options.WithoutDynamicExpressions) {
+				desc.SszCompatFlags |= dynssz.SszCompatFlagFastSSZMarshaler
+			}
+			if !t.Options.NoHashTreeRoot && (t.Options.CreateLegacyFn || t.Options.WithoutDynamicExpressions) {
+				desc.SszCompatFlags |= dynssz.SszCompatFlagFastSSZHasher
+			}
 
 			t.Descriptor = desc
 		}

@@ -182,7 +182,9 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 
 	// check dynamic size and max size
 	if len(sizeHints) > 0 {
-		desc.SizeExpression = &sizeHints[0].Expr
+		if sizeHints[0].Expr != "" {
+			desc.SizeExpression = &sizeHints[0].Expr
+		}
 		for _, hint := range sizeHints {
 			if hint.Custom {
 				desc.SszTypeFlags |= SszTypeFlagHasDynamicSize
@@ -200,7 +202,9 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 			desc.Limit = maxSizeHints[0].Size
 		}
 
-		desc.MaxExpression = &maxSizeHints[0].Expr
+		if maxSizeHints[0].Expr != "" {
+			desc.MaxExpression = &maxSizeHints[0].Expr
+		}
 
 		for _, hint := range maxSizeHints {
 			if hint.Custom {
