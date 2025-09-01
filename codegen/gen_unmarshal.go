@@ -52,22 +52,24 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 	}
 
 	getInlineBaseTypeUnmarshal := func(sourceType *dynssz.TypeDescriptor, varName string, bufExpr string, knownSize int) string {
+		compactBufExpr := strings.ReplaceAll(bufExpr, " ", "")
+
 		// Handle byte arrays/slices
 		if sourceType.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
 			if sourceType.Kind == reflect.Array {
 				// For arrays, just copy
-				return fmt.Sprintf("copy(%s[:], %s[:])", varName, bufExpr)
+				return fmt.Sprintf("copy(%s[:], %s)", varName, compactBufExpr)
 			} else {
 				// For slices, allocate if needed and copy
 				typeName := typePrinter.TypeString(sourceType.Type)
 				if knownSize > 0 {
 					// Use static size when known
-					return fmt.Sprintf("if len(%s) < %d {\n  %s = make(%s, %d)\n} else {\n  %s = %s[:%d]\n}\ncopy(%s, %s)",
-						varName, knownSize, varName, typeName, knownSize, varName, varName, knownSize, varName, bufExpr)
+					return fmt.Sprintf("if len(%s) < %d {\n\t%s = make(%s, %d)\n} else {\n\t%s = %s[:%d]\n}\ncopy(%s[:], %s)",
+						varName, knownSize, varName, typeName, knownSize, varName, varName, knownSize, varName, compactBufExpr)
 				} else {
 					// Fall back to dynamic size calculation
-					return fmt.Sprintf("if len(%s) < len(%s) {\n  %s = make(%s, len(%s))\n} else {\n  %s = %s[:len(%s)]\n}\ncopy(%s, %s)",
-						varName, bufExpr, varName, typeName, bufExpr, varName, varName, bufExpr, varName, bufExpr)
+					return fmt.Sprintf("if len(%s) < len(%s) {\n\t%s = make(%s, len(%s))\n} else {\n\t%s = %s[:len(%s)]\n}\ncopy(%s[:], %s)",
+						varName, compactBufExpr, varName, typeName, compactBufExpr, varName, varName, compactBufExpr, varName, compactBufExpr)
 				}
 			}
 		}
@@ -234,7 +236,7 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 							inlineCode = getInlineBaseTypeUnmarshal(field.Type, varName, "fieldSlice", 0)
 						} else if hasDynamicSizes {
 							// For static fields with dynamic sizes, use bufpos tracking
-							inlineCode = getInlineBaseTypeUnmarshal(field.Type, varName, "buf[bufpos:bufpos+fieldsize]", 0)
+							inlineCode = getInlineBaseTypeUnmarshal(field.Type, varName, "buf[bufpos : bufpos+fieldsize]", 0)
 						} else {
 							// For static fields with static sizes, use direct offsets with known size
 							offset := structModel.StaticOffsets[idx]
@@ -282,7 +284,7 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 					if fn.IsInlined {
 						// Generate inline code for vectors with known element size
 						elemSize := int(sourceType.ElemDesc.Size)
-						inlineUnmarshalCode = getInlineBaseTypeUnmarshal(sourceType.ElemDesc, "t[i]", "buf[i*itemsize:(i+1)*itemsize]", elemSize)
+						inlineUnmarshalCode = getInlineBaseTypeUnmarshal(sourceType.ElemDesc, "t[i]", "buf[i*itemsize : (i+1)*itemsize]", elemSize)
 					} else {
 						unmarshalFn = fn.Name
 					}
@@ -368,10 +370,10 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 					if fn.IsInlined {
 						// Generate inline code for static lists with known element size
 						elemSize := int(sourceType.ElemDesc.Size)
-						inlineUnmarshalCode = getInlineBaseTypeUnmarshal(sourceType.ElemDesc, "t[i]", "buf[i*itemsize:(i+1)*itemsize]", elemSize)
+						inlineUnmarshalCode = getInlineBaseTypeUnmarshal(sourceType.ElemDesc, "t[i]", "buf[i*itemsize : (i+1)*itemsize]", elemSize)
 
 						// Generate inline code for dynamic lists (unknown size at this point)
-						inlineUnmarshalCodeDynamic = getInlineBaseTypeUnmarshal(sourceType.ElemDesc, "t[i]", "buf[offset:endOffset]", 0)
+						inlineUnmarshalCodeDynamic = getInlineBaseTypeUnmarshal(sourceType.ElemDesc, "t[i]", "buf[offset : endOffset]", 0)
 					} else {
 						unmarshalFn = fn.Name
 					}

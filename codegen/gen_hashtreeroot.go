@@ -90,6 +90,22 @@ func generateHashTreeRoot(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor
 			}, nil
 		}
 
+		// Check if we can inline FastSSZ types that have HashTreeRootWith
+		if !isRoot && sourceType.SszCompatFlags&dynssz.SszCompatFlagFastSSZHasher != 0 &&
+			sourceType.SszCompatFlags&dynssz.SszCompatFlagHashTreeRootWith != 0 {
+			// Check if it's safe to inline (no dynamic size/max)
+			hasDynamicSize := sourceType.SszTypeFlags&dynssz.SszTypeFlagHasDynamicSize != 0
+			hasDynamicMax := sourceType.SszTypeFlags&dynssz.SszTypeFlagHasDynamicMax != 0
+			hasDynamicExpr := sourceType.SszTypeFlags&(dynssz.SszTypeFlagHasMaxExpr|dynssz.SszTypeFlagHasSizeExpr) != 0
+			if !hasDynamicSize && !hasDynamicMax && !hasDynamicExpr && !ds.NoFastSsz {
+				// Return inline function for FastSSZ types
+				return &tmpl.HashTreeRootFunction{
+					IsInlined:  true,
+					InlineCode: "if err = VAR_NAME.HashTreeRootWith(hh); err != nil {\n\treturn err\n}",
+				}, nil
+			}
+		}
+
 		// Generate type key first to check if we've seen this type before
 		typeName := sourceType.Type.String() // Use basic string representation for key
 		typeKey := typeName

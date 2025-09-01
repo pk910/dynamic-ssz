@@ -7,255 +7,256 @@ import (
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
+
 var _ = sszutils.ErrListTooBig
 
-
 func (t *Test1) MarshalSSZDyn(_ *dynssz.DynSsz, buf []byte) (dst []byte, err error) {
-  return t.MarshalSSZTo(buf)
+	return t.MarshalSSZTo(buf)
 }
 func (t *Test1) MarshalSSZTo(buf []byte) (dst []byte, err error) {
-  dst = buf
-  fn1 := func(t *Test1) (err error) { // *main.Test1
-    // Field #0 'F1'
-    dst = sszutils.MarshalUint64(dst, uint64(t.F1))
-    return err
-  }
-  err = fn1(t)
-  return dst, err
+	dst = buf
+	fn1 := func(t *Test1) (err error) { // *main.Test1
+		// Field #0 'F1'
+		dst = sszutils.MarshalUint64(dst, uint64(t.F1))
+		return err
+	}
+	err = fn1(t)
+	return dst, err
 }
 func (t *Test1) MarshalSSZ() ([]byte, error) {
-  return dynssz.GetGlobalDynSsz().MarshalSSZ(t)
+	return dynssz.GetGlobalDynSsz().MarshalSSZ(t)
 }
 
 func (t *Test1) SizeSSZDyn(_ *dynssz.DynSsz) (size int) {
-  return t.SizeSSZ()
+	return t.SizeSSZ()
 }
 func (t *Test1) SizeSSZ() (size int) {
-  sfn1 := func(t *Test1) (size int) { // *Test1
-    size = 8
-    return size
-  }
-  return sfn1(t)
+	sfn1 := func(t *Test1) (size int) { // *Test1
+		size = 8
+		return size
+	}
+	return sfn1(t)
 }
 
 func (t *Test1) UnmarshalSSZDyn(_ *dynssz.DynSsz, buf []byte) (err error) {
-  return t.UnmarshalSSZ(buf)
+	return t.UnmarshalSSZ(buf)
 }
 func (t *Test1) UnmarshalSSZ(buf []byte) (err error) {
-  fn1 := func(t *Test1, buf []byte) (*Test1, error) { // *Test1
-    var err error
-    if t == nil {
-      t = new(Test1)
-    }
-    buflen := len(buf)
-    if buflen < 8 {
-      return t, sszutils.ErrUnexpectedEOF
-    }
-    // Field #0 'F1'
-    t.F1 = (phase0.ValidatorIndex)(sszutils.UnmarshallUint64(buf[0:8]))
-    return t, err
-  }
-  _, err = fn1(t, buf)
-  return err
+	fn1 := func(t *Test1, buf []byte) (*Test1, error) { // *Test1
+		var err error
+		if t == nil {
+			t = new(Test1)
+		}
+		buflen := len(buf)
+		if buflen < 8 {
+			return t, sszutils.ErrUnexpectedEOF
+		}
+		// Field #0 'F1'
+		t.F1 = (phase0.ValidatorIndex)(sszutils.UnmarshallUint64(buf[0:8]))
+		return t, err
+	}
+	_, err = fn1(t, buf)
+	return err
 }
 
 func (t *Test1) HashTreeRootWithDyn(_ *dynssz.DynSsz, hh sszutils.HashWalker) error {
-  return t.HashTreeRootWith(hh)
+	return t.HashTreeRootWith(hh)
 }
 func (t *Test1) HashTreeRootWith(hh sszutils.HashWalker) error {
-  fn1 := func(t *Test1) (err error) { // *main.Test1
-    idx := hh.Index()
-    // Field #0 'F1'
-    hh.PutUint64(uint64(t.F1))
-    hh.Merkleize(idx)
-    return err
-  }
-  return fn1(t)
+	fn1 := func(t *Test1) (err error) { // *main.Test1
+		idx := hh.Index()
+		// Field #0 'F1'
+		hh.PutUint64(uint64(t.F1))
+		hh.Merkleize(idx)
+		return err
+	}
+	return fn1(t)
 }
-func (t *Test1) HashTreeRootDyn(_ *dynssz.DynSsz) ([32]byte, error) {
-  pool := &hasher.DefaultHasherPool
-  hh := pool.Get()
+func (t *Test1) HashTreeRootDyn(ds *dynssz.DynSsz) ([32]byte, error) {
+	pool := &hasher.FastHasherPool
+	if ds.NoFastHash {
+		pool = &hasher.DefaultHasherPool
+	}
+	hh := pool.Get()
 	defer func() {
 		pool.Put(hh)
 	}()
-  if err := t.HashTreeRootWith(hh); err != nil {
-    return [32]byte{}, err
-  }
-  r, _ := hh.HashRoot()
-  return r, nil
+	if err := t.HashTreeRootWith(hh); err != nil {
+		return [32]byte{}, err
+	}
+	r, _ := hh.HashRoot()
+	return r, nil
 }
 func (t *Test1) HashTreeRoot() ([32]byte, error) {
-  pool := &hasher.DefaultHasherPool
-  hh := pool.Get()
+	pool := &hasher.FastHasherPool
+	hh := pool.Get()
 	defer func() {
 		pool.Put(hh)
 	}()
-  if err := t.HashTreeRootWith(hh); err != nil {
-    return [32]byte{}, err
-  }
-  r, _ := hh.HashRoot()
-  return r, nil
+	if err := t.HashTreeRootWith(hh); err != nil {
+		return [32]byte{}, err
+	}
+	r, _ := hh.HashRoot()
+	return r, nil
 }
 
 func (t *Test2) MarshalSSZDyn(_ *dynssz.DynSsz, buf []byte) (dst []byte, err error) {
-  return t.MarshalSSZTo(buf)
+	return t.MarshalSSZTo(buf)
 }
 func (t *Test2) MarshalSSZTo(buf []byte) (dst []byte, err error) {
-  dst = buf
-  fn1 := func(t *Test1) (err error) { // *main.Test1
-    dst, err = t.MarshalSSZTo(dst)
-    return err
-  }
-  fn2 := func(t *Test3) (err error) { // *main.Test3
-    // Field #0 'F1'
-    dst = sszutils.MarshalUint64(dst, uint64(t.F1))
-    // Field #1 'F3'
-    dst = sszutils.MarshalUint64(dst, uint64(t.F3))
-    // Field #2 'F4'
-    dst = sszutils.MarshalUint64(dst, uint64(t.F4))
-    return err
-  }
-  fn3 := func(t *Test2) (err error) { // *main.Test2
-    // Field #0 'T1'
-    if err = fn1(t.T1); err != nil {
-      return err
-    }
-    // Field #1 'T3'
-    if err = fn2(t.T3); err != nil {
-      return err
-    }
-    return err
-  }
-  err = fn3(t)
-  return dst, err
+	dst = buf
+	fn1 := func(t *Test1) (err error) { // *main.Test1
+		dst, err = t.MarshalSSZTo(dst)
+		return err
+	}
+	fn2 := func(t *Test3) (err error) { // *main.Test3
+		// Field #0 'F1'
+		dst = sszutils.MarshalUint64(dst, uint64(t.F1))
+		// Field #1 'F3'
+		dst = sszutils.MarshalUint64(dst, uint64(t.F3))
+		// Field #2 'F4'
+		dst = sszutils.MarshalUint64(dst, uint64(t.F4))
+		return err
+	}
+	fn3 := func(t *Test2) (err error) { // *main.Test2
+		// Field #0 'T1'
+		if err = fn1(t.T1); err != nil {
+			return err
+		}
+		// Field #1 'T3'
+		if err = fn2(t.T3); err != nil {
+			return err
+		}
+		return err
+	}
+	err = fn3(t)
+	return dst, err
 }
 func (t *Test2) MarshalSSZ() ([]byte, error) {
-  return dynssz.GetGlobalDynSsz().MarshalSSZ(t)
+	return dynssz.GetGlobalDynSsz().MarshalSSZ(t)
 }
 
 func (t *Test2) SizeSSZDyn(_ *dynssz.DynSsz) (size int) {
-  return t.SizeSSZ()
+	return t.SizeSSZ()
 }
 func (t *Test2) SizeSSZ() (size int) {
-  sfn1 := func(t *Test2) (size int) { // *Test2
-    size = 32
-    return size
-  }
-  return sfn1(t)
+	sfn1 := func(t *Test2) (size int) { // *Test2
+		size = 32
+		return size
+	}
+	return sfn1(t)
 }
 
 func (t *Test2) UnmarshalSSZDyn(_ *dynssz.DynSsz, buf []byte) (err error) {
-  return t.UnmarshalSSZ(buf)
+	return t.UnmarshalSSZ(buf)
 }
 func (t *Test2) UnmarshalSSZ(buf []byte) (err error) {
-  fn1 := func(t *Test1, buf []byte) (*Test1, error) { // *Test1
-    var err error
-    if t == nil {
-      t = new(Test1)
-    }
-    err = t.UnmarshalSSZ(buf)
-    return t, err
-  }
-  fn2 := func(t *Test3, buf []byte) (*Test3, error) { // *Test3
-    var err error
-    if t == nil {
-      t = new(Test3)
-    }
-    buflen := len(buf)
-    if buflen < 24 {
-      return t, sszutils.ErrUnexpectedEOF
-    }
-    // Field #0 'F1'
-    t.F1 = (uint64)(sszutils.UnmarshallUint64(buf[0:8]))
-    // Field #1 'F3'
-    t.F3 = (uint64)(sszutils.UnmarshallUint64(buf[8:16]))
-    // Field #2 'F4'
-    t.F4 = (uint64)(sszutils.UnmarshallUint64(buf[16:24]))
-    return t, err
-  }
-  fn3 := func(t *Test2, buf []byte) (*Test2, error) { // *Test2
-    var err error
-    if t == nil {
-      t = new(Test2)
-    }
-    buflen := len(buf)
-    if buflen < 32 {
-      return t, sszutils.ErrUnexpectedEOF
-    }
-    // Field #0 'T1'
-    if t.T1, err = fn1(t.T1, buf[0:8]); err != nil {
-      return t, err
-    }
-    // Field #1 'T3'
-    if t.T3, err = fn2(t.T3, buf[8:32]); err != nil {
-      return t, err
-    }
-    return t, err
-  }
-  _, err = fn3(t, buf)
-  return err
+	fn1 := func(t *Test1, buf []byte) (*Test1, error) { // *Test1
+		var err error
+		if t == nil {
+			t = new(Test1)
+		}
+		err = t.UnmarshalSSZ(buf)
+		return t, err
+	}
+	fn2 := func(t *Test3, buf []byte) (*Test3, error) { // *Test3
+		var err error
+		if t == nil {
+			t = new(Test3)
+		}
+		buflen := len(buf)
+		if buflen < 24 {
+			return t, sszutils.ErrUnexpectedEOF
+		}
+		// Field #0 'F1'
+		t.F1 = (uint64)(sszutils.UnmarshallUint64(buf[0:8]))
+		// Field #1 'F3'
+		t.F3 = (uint64)(sszutils.UnmarshallUint64(buf[8:16]))
+		// Field #2 'F4'
+		t.F4 = (uint64)(sszutils.UnmarshallUint64(buf[16:24]))
+		return t, err
+	}
+	fn3 := func(t *Test2, buf []byte) (*Test2, error) { // *Test2
+		var err error
+		if t == nil {
+			t = new(Test2)
+		}
+		buflen := len(buf)
+		if buflen < 32 {
+			return t, sszutils.ErrUnexpectedEOF
+		}
+		// Field #0 'T1'
+		if t.T1, err = fn1(t.T1, buf[0:8]); err != nil {
+			return t, err
+		}
+		// Field #1 'T3'
+		if t.T3, err = fn2(t.T3, buf[8:32]); err != nil {
+			return t, err
+		}
+		return t, err
+	}
+	_, err = fn3(t, buf)
+	return err
 }
 
 func (t *Test2) HashTreeRootWithDyn(_ *dynssz.DynSsz, hh sszutils.HashWalker) error {
-  return t.HashTreeRootWith(hh)
+	return t.HashTreeRootWith(hh)
 }
 func (t *Test2) HashTreeRootWith(hh sszutils.HashWalker) error {
-  fn1 := func(t *Test1) (err error) { // *main.Test1
-    err = t.HashTreeRootWith(hh)
-    return err
-  }
-  fn2 := func(t *Test3) (err error) { // *main.Test3
-    idx := hh.Index()
-    // Empty field at index 0
-    hh.PutUint8(0)
-    // Field #1 'F1'
-    hh.PutUint64(uint64(t.F1))
-    // Empty field at index 2
-    hh.PutUint8(0)
-    // Field #3 'F3'
-    hh.PutUint64(uint64(t.F3))
-    // Field #4 'F4'
-    hh.PutUint64(uint64(t.F4))
-    hh.MerkleizeProgressiveWithActiveFields(idx, []byte{0x1a})
-    return err
-  }
-  fn3 := func(t *Test2) (err error) { // *main.Test2
-    idx := hh.Index()
-    // Field #0 'T1'
-    if err = fn1(t.T1); err != nil {
-      return err
-    }
-    // Field #1 'T3'
-    if err = fn2(t.T3); err != nil {
-      return err
-    }
-    hh.Merkleize(idx)
-    return err
-  }
-  return fn3(t)
+	fn1 := func(t *Test3) (err error) { // *main.Test3
+		idx := hh.Index()
+		// Empty field at index 0
+		hh.PutUint8(0)
+		// Field #1 'F1'
+		hh.PutUint64(uint64(t.F1))
+		// Empty field at index 2
+		hh.PutUint8(0)
+		// Field #3 'F3'
+		hh.PutUint64(uint64(t.F3))
+		// Field #4 'F4'
+		hh.PutUint64(uint64(t.F4))
+		hh.MerkleizeProgressiveWithActiveFields(idx, []byte{0x1a})
+		return err
+	}
+	fn2 := func(t *Test2) (err error) { // *main.Test2
+		idx := hh.Index()
+		// Field #0 'T1'
+		if err = t.T1.HashTreeRootWith(hh); err != nil {
+			return err
+		}
+		// Field #1 'T3'
+		if err = fn1(t.T3); err != nil {
+			return err
+		}
+		hh.Merkleize(idx)
+		return err
+	}
+	return fn2(t)
 }
-func (t *Test2) HashTreeRootDyn(_ *dynssz.DynSsz) ([32]byte, error) {
-  pool := &hasher.DefaultHasherPool
-  hh := pool.Get()
+func (t *Test2) HashTreeRootDyn(ds *dynssz.DynSsz) ([32]byte, error) {
+	pool := &hasher.FastHasherPool
+	if ds.NoFastHash {
+		pool = &hasher.DefaultHasherPool
+	}
+	hh := pool.Get()
 	defer func() {
 		pool.Put(hh)
 	}()
-  if err := t.HashTreeRootWith(hh); err != nil {
-    return [32]byte{}, err
-  }
-  r, _ := hh.HashRoot()
-  return r, nil
+	if err := t.HashTreeRootWith(hh); err != nil {
+		return [32]byte{}, err
+	}
+	r, _ := hh.HashRoot()
+	return r, nil
 }
 func (t *Test2) HashTreeRoot() ([32]byte, error) {
-  pool := &hasher.DefaultHasherPool
-  hh := pool.Get()
+	pool := &hasher.FastHasherPool
+	hh := pool.Get()
 	defer func() {
 		pool.Put(hh)
 	}()
-  if err := t.HashTreeRootWith(hh); err != nil {
-    return [32]byte{}, err
-  }
-  r, _ := hh.HashRoot()
-  return r, nil
+	if err := t.HashTreeRootWith(hh); err != nil {
+		return [32]byte{}, err
+	}
+	r, _ := hh.HashRoot()
+	return r, nil
 }
-

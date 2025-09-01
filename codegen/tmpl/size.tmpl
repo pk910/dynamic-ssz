@@ -1,7 +1,7 @@
 {{ define "size_main" }}
 {{- if and .CreateDynamicFn (not .UsedDynSsz) }}
 func (t {{ .TypeName }}) SizeSSZDyn(_ *dynssz.DynSsz) (size int) {
-  return t.SizeSSZ()
+	return t.SizeSSZ()
 }
 {{- end }}
 {{- if .UsedDynSsz }}
@@ -9,17 +9,17 @@ func (t {{ .TypeName }}) SizeSSZDyn(ds *dynssz.DynSsz) (size int) {
 {{- else }}
 func (t {{ .TypeName }}) SizeSSZ() (size int) {
 {{- end }}
-  {{- range .SizeFunctions }}
-  {{ .Name }} := func(t {{ .TypeName }}) (size int) { // {{ .Key }}
-    {{- indent .Code 4 }}
-    return size
-  }
-  {{- end }}
-  return {{ .RootFnName }}(t)
+	{{- range .SizeFunctions }}
+	{{ .Name }} := func(t {{ .TypeName }}) (size int) { // {{ .Key }}
+		{{- indent .Code 2 }}
+		return size
+	}
+	{{- end }}
+	return {{ .RootFnName }}(t)
 }
 {{- if and .CreateLegacyFn .UsedDynSsz }}
 func (t {{ .TypeName }}) SizeSSZ() (size int) {
-  return t.SizeSSZDyn(dynssz.GetGlobalDynSsz())
+	return t.SizeSSZDyn(dynssz.GetGlobalDynSsz())
 }
 {{- end }}
 {{ end }}
@@ -71,17 +71,17 @@ size += {{ .SizeFn }}(t.{{ .Name }})
 {{- if not (eq .SizeExpr "") }}
 hasLimit, limit, _ := ds.ResolveSpecValue("{{ .SizeExpr }}")
 if !hasLimit {
-  limit = {{ .Length }}
+	limit = {{ .Length }}
 }
 {{- else }}
 limit := {{ .Length }}
 {{- end }}
 {{- if .SizeFn }}
 if len(t) > 0 {
-  size += int(limit) * {{ .SizeFn }}(t[0])
+	size += int(limit) * {{ .SizeFn }}(t[0])
 } else {
-  item := make({{ .TypeName }}, 1)
-  size += int(limit) * {{ .SizeFn }}(item[0])
+	item := make({{ .TypeName }}, 1)
+	size += int(limit) * {{ .SizeFn }}(item[0])
 }
 {{- else }}
 size += int(limit) * {{ .ItemSize }}
@@ -92,7 +92,7 @@ size += int(limit) * {{ .ItemSize }}
 {{- if not (eq .SizeExpr "") }}
 hasLimit, limit, _ := ds.ResolveSpecValue("{{ .SizeExpr }}")
 if !hasLimit {
-  limit = {{ .Length }}
+	limit = {{ .Length }}
 }
 {{- else }}
 limit := {{ .Length }}
@@ -100,15 +100,15 @@ limit := {{ .Length }}
 vlen := len(t)
 {{- if not .IsArray }}
 if vlen > int(limit) {
-  vlen = int(limit)
+	vlen = int(limit)
 }
 {{- end }}
 for i := 0; i < vlen; i++ {
-  size += 4 + {{ .SizeFn }}(t[i])
+	size += 4 + {{ .SizeFn }}(t[i])
 }
 {{- if not .IsArray }}
 if vlen < int(limit) {
-  size += (int(limit) - vlen) * {{ .EmptySize }}
+	size += (int(limit) - vlen) * {{ .EmptySize }}
 }
 {{- end }}
 {{- end }}
@@ -118,7 +118,7 @@ if vlen < int(limit) {
 size += len(t)
 {{- else if .SizeFn }}
 if len(t) > 0 {
-  size += len(t) * {{ .SizeFn }}(t[0])
+	size += len(t) * {{ .SizeFn }}(t[0])
 }
 {{- else }}
 size += len(t) * {{ .ItemSize }}
@@ -128,7 +128,7 @@ size += len(t) * {{ .ItemSize }}
 {{ define "size_dynamic_list" }}
 vlen := len(t)
 for i := 0; i < vlen; i++ {
-  size += 4 + {{ .SizeFn }}(t[i])
+	size += 4 + {{ .SizeFn }}(t[i])
 }
 {{- end }}
 
@@ -137,9 +137,9 @@ size = 1
 switch t.Variant {
 {{- range .VariantFns }}
 case {{ .Index }}:
-  if v, ok := t.Data.({{ .TypeName }}); ok {
-    size += {{ .SizeFn }}(v)
-  }
+	if v, ok := t.Data.({{ .TypeName }}); ok {
+		size += {{ .SizeFn }}(v)
+	}
 {{- end }}
 }
 {{- end }}

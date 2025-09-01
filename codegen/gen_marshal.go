@@ -51,7 +51,7 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 			} else if sourceType.Size > 0 {
 				// For slices with fixed size, limit to expected field size to prevent buffer overflow
 				expectedSize := int(sourceType.Size)
-				return fmt.Sprintf("if len(%s) > %d {\n  dst = append(dst, %s[:%d]...)\n} else {\n  dst = append(dst, %s[:]...)\n  if len(%s) < %d {\n    dst = sszutils.AppendZeroPadding(dst, %d - len(%s))\n  }\n}",
+				return fmt.Sprintf("if len(%s) > %d {\n\tdst = append(dst, %s[:%d]...)\n} else {\n\tdst = append(dst, %s[:]...)\n\tif len(%s) < %d {\n\t\tdst = sszutils.AppendZeroPadding(dst, %d-len(%s))\n\t}\n}",
 					varName, expectedSize, varName, expectedSize, varName, varName, expectedSize, expectedSize, varName)
 			} else {
 				// For dynamic slices (no fixed size), append all available bytes

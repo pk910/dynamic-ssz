@@ -6,7 +6,7 @@ import (
 	{{ if .Alias }}{{ .Alias }} {{ else }}{{ end }}"{{ .Path }}"
 	{{- end }}
 )
-var _ = sszutils.ErrListTooBig
 
+var _ = sszutils.ErrListTooBig
 {{ .Code }}
-{{ end }}
+{{- end }}
