@@ -58,9 +58,6 @@ func (u *CompatibleUnion[T]) GetDescriptorType() reflect.Type {
 	return reflect.TypeOf(zero).Elem()
 }
 
-// compatibleUnionType is a reference type for comparison
-var compatibleUnionType = reflect.TypeOf((*CompatibleUnion[struct{}])(nil)).Elem()
-
 // UnionVariantInfo contains type and annotation information for a union variant
 type UnionVariantInfo struct {
 	Type         reflect.Type

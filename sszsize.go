@@ -6,6 +6,8 @@ package dynssz
 import (
 	"fmt"
 	"reflect"
+
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 // getSszValueSize calculates the exact SSZ-encoded size of a value.
@@ -37,7 +39,7 @@ import (
 func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect.Value) (uint32, error) {
 	staticSize := uint32(0)
 
-	if targetType.IsPtr {
+	if targetType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
 		if targetValue.IsNil() {
 			targetValue = reflect.New(targetType.Type.Elem()).Elem()
 		} else {
@@ -48,13 +50,16 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 	// use fastssz to calculate size if:
 	// - struct implements fastssz Marshaler interface
 	// - this structure or any child structure does not use spec specific field sizes
-	useFastSsz := !d.NoFastSsz && targetType.HasFastSSZMarshaler
+	useFastSsz := !d.NoFastSsz && targetType.SszCompatFlags&SszCompatFlagFastSSZMarshaler != 0
 	if !useFastSsz && targetType.SszType == SszCustomType {
 		useFastSsz = true
 	}
 
+	// Check if we should use dynamic sizer - can ALWAYS be used unlike fastssz
+	useDynamicSize := targetType.SszCompatFlags&SszCompatFlagDynamicSizer != 0
+
 	if useFastSsz {
-		marshaller, ok := targetValue.Addr().Interface().(fastsszMarshaler)
+		marshaller, ok := targetValue.Addr().Interface().(sszutils.FastsszMarshaler)
 		if ok {
 			staticSize = uint32(marshaller.SizeSSZ())
 		} else {
@@ -62,7 +67,17 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 		}
 	}
 
-	if !useFastSsz {
+	if !useFastSsz && useDynamicSize {
+		// Use dynamic sizer - can always be used even with dynamic specs
+		sizer, ok := targetValue.Addr().Interface().(sszutils.DynamicSizer)
+		if ok {
+			staticSize = uint32(sizer.SizeSSZDyn(d))
+		} else {
+			useDynamicSize = false
+		}
+	}
+
+	if !useFastSsz && !useDynamicSize {
 		// can't use fastssz, use dynamic size calculation
 		switch targetType.SszType {
 		case SszTypeWrapperType:
@@ -83,7 +98,7 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 				fieldType := targetType.ContainerDesc.Fields[i]
 				fieldValue := targetValue.Field(i)
 
-				if fieldType.Type.IsDynamic {
+				if fieldType.Type.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
 					size, err := d.getSszValueSize(fieldType.Type, fieldValue)
 					if err != nil {
 						return 0, err
@@ -100,7 +115,7 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 			fieldType := targetType.ElemDesc
 			if fieldType.Kind == reflect.Uint8 {
 				staticSize = targetType.Len
-			} else if fieldType.IsDynamic {
+			} else if fieldType.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
 				// vector with dynamic size items, so we have to go through each item
 				dataLen := targetValue.Len()
 
@@ -150,7 +165,7 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 			if sliceLen > 0 {
 				if fieldType.Kind == reflect.Uint8 {
 					staticSize = uint32(sliceLen)
-				} else if fieldType.IsDynamic {
+				} else if fieldType.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
 					// slice with dynamic size items, so we have to go through each item
 					for i := 0; i < int(sliceLen); i++ {
 						size, err := d.getSszValueSize(fieldType, targetValue.Index(i))

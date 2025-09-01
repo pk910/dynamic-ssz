@@ -9,6 +9,8 @@ package dynssz
 import (
 	"fmt"
 	"reflect"
+
+	"github.com/pk910/dynamic-ssz/hasher"
 )
 
 // DynSsz is a dynamic SSZ encoder/decoder that uses runtime reflection to handle dynamic field sizes.
@@ -329,7 +331,7 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte) error {
 		return err
 	}
 
-	if !targetTypeDesc.IsPtr {
+	if targetTypeDesc.GoTypeFlags&GoTypeFlagIsPointer == 0 {
 		return fmt.Errorf("target must be a pointer")
 	}
 
@@ -396,11 +398,11 @@ func (d *DynSsz) HashTreeRoot(source any) ([32]byte, error) {
 		return [32]byte{}, err
 	}
 
-	var pool *HasherPool
+	var pool *hasher.HasherPool
 	if d.NoFastHash {
-		pool = &DefaultHasherPool
+		pool = &hasher.DefaultHasherPool
 	} else {
-		pool = &FastHasherPool
+		pool = &hasher.FastHasherPool
 	}
 
 	hh := pool.Get()
