@@ -9,9 +9,10 @@ Dynamic SSZ is a Go library for SSZ encoding/decoding with support for dynamic f
 ## Features
 
 - **🔧 Dynamic Field Sizes** - Support for runtime-determined field sizes based on configuration
+- **⚡ Reflection-Based Processing** - Works instantly with any SSZ-compatible types - no code generation required for prototyping
 - **🏗️ Code Generation** - Optional static code generation for maximum performance (2-3x faster than dynamic processing)
 - **🔄 Hybrid Approach** - Seamlessly combines with fastssz for optimal efficiency
-- **📦 Zero Dependencies** - Core library has minimal external dependencies
+- **📦 Minimal Dependencies** - Core library has minimal external dependencies
 - **✅ Spec Compliant** - Fully compliant with SSZ specification and Ethereum consensus tests
 
 ## Quick Start
@@ -84,7 +85,7 @@ This generates optimized SSZ methods that are 2-3x faster than reflection-based 
 
 ## Performance
 
-The performance of `dynssz` has been benchmarked against `fastssz` using BeaconBlocks and BeaconStates from small kurtosis testnets, providing a consistent and comparable set of data. These benchmarks compare three scenarios: exclusively using `fastssz`, exclusively using `dynssz`, and a combined approach where `dynssz` defaults to `fastssz` for static types that do not require dynamic processing. The results highlight the balance between flexibility and speed:
+The performance of `dynssz` has been benchmarked against `fastssz` using BeaconBlocks and BeaconStates from small kurtosis testnets, providing a consistent and comparable set of data. These benchmarks compare four scenarios: exclusively using `fastssz`, exclusively using `dynssz`, a hybrid approach where `dynssz` defaults to `fastssz` for static types, and `dynssz` with code generation for maximum performance. The results highlight the balance between flexibility and speed:
 
 **Legend:**
 - First number: Unmarshalling time in milliseconds.
@@ -94,28 +95,32 @@ The performance of `dynssz` has been benchmarked against `fastssz` using BeaconB
 ### Mainnet Preset
 
 #### BeaconBlock Decode + Encode + Hash (10,000 times)
-- **fastssz only:** [8 ms / 3 ms / 88 ms] success
-- **dynssz only:** [27 ms / 12 ms / 63 ms] success
-- **dynssz + fastssz:** [8 ms / 3 ms / 64 ms] success
+- **fastssz only:** [6 ms / 2 ms / 87 ms] success
+- **dynssz only:** [29 ms / 15 ms / 57 ms] success
+- **dynssz + fastssz:** [9 ms / 3 ms / 64 ms] success
+- **dynssz + codegen:** [6 ms / 2 ms / 55 ms] success
 
 #### BeaconState Decode + Encode + Hash (10,000 times)
-- **fastssz only:** [5849 ms / 4960 ms / 73087 ms] success
-- **dynssz only:** [22544 ms / 12256 ms / 40181 ms] success
-- **dynssz + fastssz:** [5728 ms / 4857 ms / 37191 ms] success
+- **fastssz only:** [5963 ms / 4026 ms / 70919 ms] success
+- **dynssz only:** [15728 ms / 13841 ms / 49248 ms] success
+- **dynssz + fastssz:** [6139 ms / 4094 ms / 36042 ms] success
+- **dynssz + codegen:** [6344 ms / 4869 ms / 36084 ms] success
 
 ### Minimal Preset
 
 #### BeaconBlock Decode + Encode + Hash (10,000 times)
-- **fastssz only:** [0 ms / 0 ms / 0 ms] failed (unmarshal error)
-- **dynssz only:** [44 ms / 29 ms / 90 ms] success
-- **dynssz + fastssz:** [22 ms / 13 ms / 151 ms] success
+- **fastssz only:** failed (unmarshal error: invalid ssz encoding. first variable element offset indexes into fixed value data)
+- **dynssz only:** [34 ms / 20 ms / 78 ms] success
+- **dynssz + fastssz:** [18 ms / 12 ms / 120 ms] success
+- **dynssz + codegen:** [8 ms / 8 ms / 69 ms] success
 
 #### BeaconState Decode + Encode + Hash (10,000 times)
-- **fastssz only:** [0 ms / 0 ms / 0 ms] failed (unmarshal error)
-- **dynssz only:** [796 ms / 407 ms / 1816 ms] success
-- **dynssz + fastssz:** [459 ms / 244 ms / 4712 ms] success
+- **fastssz only:** failed (unmarshal error: incorrect size)
+- **dynssz only:** [762 ms / 434 ms / 1553 ms] success
+- **dynssz + fastssz:** [413 ms / 264 ms / 3921 ms] success
+- **dynssz + codegen:** [172 ms / 100 ms / 1329 ms] success
 
-These results showcase the dynamic processing capabilities of `dynssz`, particularly its ability to handle data structures that `fastssz` cannot process due to its static nature. While `dynssz` introduces additional processing time, its flexibility allows it to successfully manage both mainnet and minimal presets. The combined `dynssz` and `fastssz` approach significantly improves performance while maintaining this flexibility, making it a viable solution for applications requiring dynamic SSZ processing.
+These results showcase the dynamic processing capabilities of `dynssz`, particularly its ability to handle data structures that `fastssz` cannot process due to its static nature. The code generation option provides the best of both worlds: the flexibility to handle any preset configuration while delivering performance that matches or exceeds `fastssz`. The hybrid approach with `fastssz` provides excellent performance for compatible types, while code generation delivers optimal performance across all scenarios.
 
 ## Testing
 

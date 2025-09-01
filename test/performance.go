@@ -40,7 +40,7 @@ func performanceCommand() {
 	var dur []time.Duration
 	var hash [][32]byte
 	var err error
-	iterations := 1000
+	iterations := 10000
 
 	fmt.Printf("## mainnet preset / BeaconBlock decode + encode + hash (%d times)\n", iterations)
 	dur, hash, err = test_block_fastssz(block_mainnet, iterations)
