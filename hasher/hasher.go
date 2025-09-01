@@ -370,12 +370,12 @@ func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 	input = h.merkleizeImpl(input[:0], input, limit)
 
 	// mixin with the size
-	output := h.tmp[:32]
-	for indx := range output {
-		output[indx] = 0
-	}
-	sszutils.MarshalUint64(output[:0], num)
+	output := h.tmp[:0]
+	output = sszutils.MarshalUint64(output, num)
 	input = append(input, output...)
+	input = append(input, zeroBytes[:24]...)
+
+	logfn("merkleize-mixin: %x (%d, %d) ", input, num, limit)
 
 	logfn("merkleize-mixin: %x (%d, %d) ", input, num, limit)
 
@@ -498,12 +498,12 @@ func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 	input = h.merkleizeProgressiveImpl(input[:0], input, 0)
 
 	// mixin with the size (same as MerkleizeWithMixin)
-	output := h.tmp[:32]
-	for indx := range output {
-		output[indx] = 0
-	}
-	sszutils.MarshalUint64(output[:0], num)
+	output := h.tmp[:0]
+	output = sszutils.MarshalUint64(output, num)
 	input = append(input, output...)
+	input = append(input, zeroBytes[:24]...)
+
+	logfn("merkleize-progressive-mixin: %x (%d) ", input, num)
 
 	logfn("merkleize-progressive-mixin: %x (%d) ", input, num)
 
@@ -603,7 +603,7 @@ func (h *Hasher) merkleizeProgressiveImpl(dst []byte, chunks []byte, depth uint8
 	// PairNode(left, right) - hash(left, right)
 	copy(h.tmp[:32], leftRoot)
 	copy(h.tmp[32:], rightRoot)
-	h.hash(h.tmp, h.tmp[0:64])
+	h.hash(h.tmp[:32], h.tmp[0:64])
 
 	return append(dst, h.tmp[:32]...)
 }

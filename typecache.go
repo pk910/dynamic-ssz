@@ -17,6 +17,39 @@ type TypeCache struct {
 	descriptors map[reflect.Type]*TypeDescriptor
 }
 
+// SszTypeFlag is a flag indicating whether a type has a specific SSZ type feature
+type SszTypeFlag uint8
+
+const (
+	SszTypeFlagIsDynamic      SszTypeFlag = 1 << iota // Whether the type is a dynamic type (or has nested dynamic types)
+	SszTypeFlagHasLimit                               // Whether the type has a max size tag
+	SszTypeFlagHasDynamicSize                         // Whether this type or any of its nested types uses dynamic spec size value that differs from the default
+	SszTypeFlagHasDynamicMax                          // Whether this type or any of its nested types uses dynamic spec max value that differs from the default
+	SszTypeFlagHasSizeExpr                            // Whether this type or any of its nested types uses a dynamic expression to calculate the size or max size
+	SszTypeFlagHasMaxExpr                             // Whether this type or any of its nested types uses a dynamic expression to calculate the max size
+)
+
+// SszCompatFlag is a flag indicating whether a type implements a specific SSZ compatibility interface
+type SszCompatFlag uint8
+
+const (
+	SszCompatFlagFastSSZMarshaler   SszCompatFlag = 1 << iota // Whether the type implements fastssz.Marshaler
+	SszCompatFlagFastSSZHasher                                // Whether the type implements fastssz.HashRoot
+	SszCompatFlagHashTreeRootWith                             // Whether the type implements HashTreeRootWith
+	SszCompatFlagDynamicMarshaler                             // Whether the type implements DynamicMarshaler
+	SszCompatFlagDynamicUnmarshaler                           // Whether the type implements DynamicUnmarshaler
+	SszCompatFlagDynamicSizer                                 // Whether the type implements DynamicSizer
+	SszCompatFlagDynamicHashRoot                              // Whether the type implements DynamicHashRoot
+)
+
+type GoTypeFlag uint8
+
+const (
+	GoTypeFlagIsPointer   GoTypeFlag = 1 << iota // Whether the type is a pointer type
+	GoTypeFlagIsByteArray                        // Whether the type is a byte array
+	GoTypeFlagIsString                           // Whether the type is a string type
+)
+
 // TypeDescriptor represents a cached, optimized descriptor for a type's SSZ encoding/decoding
 type TypeDescriptor struct {
 	Type                   reflect.Type
@@ -28,25 +61,12 @@ type TypeDescriptor struct {
 	UnionVariants          map[uint8]*TypeDescriptor // Union variant types by index (for CompatibleUnion)
 	ElemDesc               *TypeDescriptor           // For slices/arrays
 	HashTreeRootWithMethod *reflect.Method           // Cached HashTreeRootWith method for performance
+	SizeExpression         *string                   // The dynamic expression used to calculate the size of the type
+	MaxExpression          *string                   // The dynamic expression used to calculate the max size of the type
 	SszType                SszType                   // SSZ type of the type
-	SizeExpression         string                    // The dynamic expression used to calculate the size of the type
-	MaxExpression          string                    // The dynamic expression used to calculate the max size of the type
-	IsDynamic              bool                      // Whether this type is a dynamic type (or has nested dynamic types)
-	HasLimit               bool                      // Whether this type has a limit (ssz-max tag)
-	HasDynamicSize         bool                      // Whether this type or any of its nested types uses dynamic spec size value that differs from the default
-	HasDynamicMax          bool                      // Whether this type or any of its nested types uses dynamic spec max value that differs from the default
-	HasSizeExpr            bool                      // Whether this type or any of its nested types uses a dynamic expression to calculate the size or max size
-	HasMaxExpr             bool                      // Whether this type or any of its nested types uses a dynamic expression to calculate the max size
-	HasFastSSZMarshaler    bool                      // Whether the type implements fastssz.Marshaler
-	HasFastSSZHasher       bool                      // Whether the type implements fastssz.HashRoot
-	HasHashTreeRootWith    bool                      // Whether the type implements HashTreeRootWith
-	HasDynamicMarshaler    bool                      // Whether the type implements DynamicMarshaler
-	HasDynamicUnmarshaler  bool                      // Whether the type implements DynamicUnmarshaler
-	HasDynamicSizer        bool                      // Whether the type implements DynamicSizer
-	HasDynamicHashRoot     bool                      // Whether the type implements DynamicHashRoot
-	IsPtr                  bool                      // Whether this is a pointer type
-	IsByteArray            bool                      // Whether this is a byte array
-	IsString               bool                      // Whether this is a string type
+	SszTypeFlags           SszTypeFlag               // SSZ type flags
+	SszCompatFlags         SszCompatFlag             // SSZ compatibility flags
+	GoTypeFlags            GoTypeFlag                // Additional go type flags
 }
 
 // FieldDescriptor represents a cached descriptor for a struct field
@@ -154,7 +174,7 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 
 	// Handle pointer types
 	if t.Kind() == reflect.Ptr {
-		desc.IsPtr = true
+		desc.GoTypeFlags |= GoTypeFlagIsPointer
 		t = t.Elem()
 	}
 
@@ -162,31 +182,32 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 
 	// check dynamic size and max size
 	if len(sizeHints) > 0 {
-		desc.SizeExpression = sizeHints[0].Expr
+		desc.SizeExpression = &sizeHints[0].Expr
 		for _, hint := range sizeHints {
 			if hint.Custom {
-				desc.HasDynamicSize = true
+				desc.SszTypeFlags |= SszTypeFlagHasDynamicSize
 			}
 
 			if hint.Expr != "" {
-				desc.HasSizeExpr = true
+				desc.SszTypeFlags |= SszTypeFlagHasSizeExpr
 			}
 		}
 	}
 
 	if len(maxSizeHints) > 0 {
 		if !maxSizeHints[0].NoValue {
-			desc.HasLimit = true
+			desc.SszTypeFlags |= SszTypeFlagHasLimit
 			desc.Limit = maxSizeHints[0].Size
 		}
-		desc.MaxExpression = maxSizeHints[0].Expr
+
+		desc.MaxExpression = &maxSizeHints[0].Expr
 
 		for _, hint := range maxSizeHints {
 			if hint.Custom {
-				desc.HasDynamicMax = true
+				desc.SszTypeFlags |= SszTypeFlagHasDynamicMax
 			}
 			if hint.Expr != "" {
-				desc.HasMaxExpr = true
+				desc.SszTypeFlags |= SszTypeFlagHasMaxExpr
 			}
 		}
 	}
@@ -198,7 +219,7 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 	}
 
 	if desc.Kind == reflect.String {
-		desc.IsString = true
+		desc.GoTypeFlags |= GoTypeFlagIsString
 	}
 
 	// auto-detect ssz type if not specified
@@ -360,26 +381,38 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 			desc.Size = uint32(sizeHints[0].Size)
 		} else {
 			desc.Size = 0
-			desc.IsDynamic = true
+			desc.SszTypeFlags |= SszTypeFlagIsDynamic
 		}
 	}
 
-	if !desc.HasDynamicSize {
-		desc.HasFastSSZMarshaler = tc.dynssz.getFastsszConvertCompatibility(t)
+	if desc.SszTypeFlags&SszTypeFlagHasDynamicSize == 0 && tc.dynssz.getFastsszConvertCompatibility(t) {
+		desc.SszCompatFlags |= SszCompatFlagFastSSZMarshaler
 	}
-	if !desc.HasDynamicMax {
-		desc.HasFastSSZHasher = tc.dynssz.getFastsszHashCompatibility(t)
-		desc.HashTreeRootWithMethod = tc.dynssz.getHashTreeRootWithCompatibility(t)
-		desc.HasHashTreeRootWith = desc.HashTreeRootWithMethod != nil
+	if desc.SszTypeFlags&SszTypeFlagHasDynamicMax == 0 {
+		if tc.dynssz.getFastsszHashCompatibility(t) {
+			desc.SszCompatFlags |= SszCompatFlagFastSSZHasher
+		}
+		if method := tc.dynssz.getHashTreeRootWithCompatibility(t); method != nil {
+			desc.HashTreeRootWithMethod = method
+			desc.SszCompatFlags |= SszCompatFlagHashTreeRootWith
+		}
 	}
 
 	// Check for dynamic interface implementations
-	desc.HasDynamicMarshaler = tc.dynssz.getDynamicMarshalerCompatibility(t)
-	desc.HasDynamicUnmarshaler = tc.dynssz.getDynamicUnmarshalerCompatibility(t)
-	desc.HasDynamicSizer = tc.dynssz.getDynamicSizerCompatibility(t)
-	desc.HasDynamicHashRoot = tc.dynssz.getDynamicHashRootCompatibility(t)
+	if tc.dynssz.getDynamicMarshalerCompatibility(t) {
+		desc.SszCompatFlags |= SszCompatFlagDynamicMarshaler
+	}
+	if tc.dynssz.getDynamicUnmarshalerCompatibility(t) {
+		desc.SszCompatFlags |= SszCompatFlagDynamicUnmarshaler
+	}
+	if tc.dynssz.getDynamicSizerCompatibility(t) {
+		desc.SszCompatFlags |= SszCompatFlagDynamicSizer
+	}
+	if tc.dynssz.getDynamicHashRootCompatibility(t) {
+		desc.SszCompatFlags |= SszCompatFlagDynamicHashRoot
+	}
 
-	if desc.SszType == SszCustomType && (!desc.HasFastSSZMarshaler || !desc.HasFastSSZHasher) {
+	if desc.SszType == SszCustomType && (desc.SszCompatFlags&SszCompatFlagFastSSZMarshaler == 0 || desc.SszCompatFlags&SszCompatFlagFastSSZHasher == 0) {
 		return nil, fmt.Errorf("custom ssz type requires fastssz marshaler and hasher implementations")
 	}
 
@@ -427,11 +460,7 @@ func (tc *TypeCache) buildTypeWrapperDescriptor(desc *TypeDescriptor, t reflect.
 
 	// The TypeWrapper inherits properties from the wrapped type
 	desc.Size = wrappedDesc.Size
-	desc.IsDynamic = wrappedDesc.IsDynamic
-	desc.HasDynamicSize = wrappedDesc.HasDynamicSize
-	desc.HasDynamicMax = wrappedDesc.HasDynamicMax
-	desc.HasSizeExpr = wrappedDesc.HasSizeExpr
-	desc.HasMaxExpr = wrappedDesc.HasMaxExpr
+	desc.SszTypeFlags |= wrappedDesc.SszTypeFlags & (SszTypeFlagIsDynamic | SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
 
 	return nil
 }
@@ -447,7 +476,7 @@ func (tc *TypeCache) buildUint128Descriptor(desc *TypeDescriptor, t reflect.Type
 	if elemKind != reflect.Uint8 && elemKind != reflect.Uint64 {
 		return fmt.Errorf("uint128 ssz type can only be represented by slices or arrays of uint8 or uint64, got %v", elemKind)
 	} else if elemKind == reflect.Uint8 {
-		desc.IsByteArray = true
+		desc.GoTypeFlags |= GoTypeFlagIsByteArray
 	}
 
 	elemDesc, err := tc.getTypeDescriptor(fieldType, nil, nil, nil)
@@ -480,7 +509,7 @@ func (tc *TypeCache) buildUint256Descriptor(desc *TypeDescriptor, t reflect.Type
 	if elemKind != reflect.Uint8 && elemKind != reflect.Uint64 {
 		return fmt.Errorf("uint256 ssz type can only be represented by slices or arrays of uint8 or uint64, got %v", elemKind)
 	} else if elemKind == reflect.Uint8 {
-		desc.IsByteArray = true
+		desc.GoTypeFlags |= GoTypeFlagIsByteArray
 	}
 
 	elemDesc, err := tc.getTypeDescriptor(fieldType, nil, nil, nil)
@@ -567,7 +596,7 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 		}
 
 		sszSize := fieldDesc.Type.Size
-		if fieldDesc.Type.IsDynamic {
+		if fieldDesc.Type.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
 			isDynamic = true
 			sszSize = 4 // Offset size for dynamic fields
 
@@ -578,22 +607,7 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 			})
 		}
 
-		if fieldDesc.Type.HasDynamicSize {
-			desc.HasDynamicSize = true
-		}
-
-		if fieldDesc.Type.HasDynamicMax {
-			desc.HasDynamicMax = true
-		}
-
-		if fieldDesc.Type.HasSizeExpr {
-			desc.HasSizeExpr = true
-		}
-
-		if fieldDesc.Type.HasMaxExpr {
-			desc.HasMaxExpr = true
-		}
-
+		desc.SszTypeFlags |= fieldDesc.Type.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
 		totalSize += sszSize
 		desc.ContainerDesc.Fields[i] = fieldDesc
 	}
@@ -633,7 +647,7 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 
 	if isDynamic {
 		desc.Size = 0
-		desc.IsDynamic = true
+		desc.SszTypeFlags |= SszTypeFlagIsDynamic
 	} else {
 		desc.Size = totalSize
 	}
@@ -645,7 +659,7 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 func (tc *TypeCache) buildCompatibleUnionDescriptor(desc *TypeDescriptor, t reflect.Type) error {
 	// CompatibleUnion is always dynamic size (1 byte for type + variable data)
 	desc.Size = 0
-	desc.IsDynamic = true
+	desc.SszTypeFlags |= SszTypeFlagIsDynamic
 
 	// Try to extract the descriptor type from the generic type parameter
 	descriptorType, err := tc.extractGenericTypeParameter(t)
@@ -713,11 +727,11 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, t reflect.Type,
 	var fieldType reflect.Type
 	if desc.Kind == reflect.String {
 		fieldType = byteType
-		desc.IsByteArray = true
+		desc.GoTypeFlags |= GoTypeFlagIsByteArray
 	} else {
 		fieldType = t.Elem()
 		if fieldType == byteType {
-			desc.IsByteArray = true
+			desc.GoTypeFlags |= GoTypeFlagIsByteArray
 		}
 	}
 
@@ -727,27 +741,15 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, t reflect.Type,
 	}
 
 	desc.ElemDesc = elemDesc
-
-	if elemDesc.HasDynamicSize {
-		desc.HasDynamicSize = true
-	}
-	if elemDesc.HasDynamicMax {
-		desc.HasDynamicMax = true
-	}
-	if elemDesc.HasSizeExpr {
-		desc.HasSizeExpr = true
-	}
-	if elemDesc.HasMaxExpr {
-		desc.HasMaxExpr = true
-	}
+	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
 
 	if desc.SszType == SszBitvectorType && desc.ElemDesc.Kind != reflect.Uint8 {
 		return fmt.Errorf("bitvector ssz type can only be represented by byte slices or arrays, got %v", desc.ElemDesc.Kind.String())
 	}
 
-	if elemDesc.IsDynamic {
+	if elemDesc.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
 		desc.Size = 0
-		desc.IsDynamic = true
+		desc.SszTypeFlags |= SszTypeFlagIsDynamic
 	} else {
 		desc.Size = elemDesc.Size * desc.Len
 	}
@@ -779,11 +781,11 @@ func (tc *TypeCache) buildListDescriptor(desc *TypeDescriptor, t reflect.Type, s
 	var fieldType reflect.Type
 	if desc.Kind == reflect.String {
 		fieldType = byteType
-		desc.IsByteArray = true
+		desc.GoTypeFlags |= GoTypeFlagIsByteArray
 	} else {
 		fieldType = t.Elem()
 		if fieldType == byteType {
-			desc.IsByteArray = true
+			desc.GoTypeFlags |= GoTypeFlagIsByteArray
 		}
 	}
 
@@ -793,33 +795,22 @@ func (tc *TypeCache) buildListDescriptor(desc *TypeDescriptor, t reflect.Type, s
 	}
 
 	desc.ElemDesc = elemDesc
-	if elemDesc.HasDynamicSize {
-		desc.HasDynamicSize = true
-	}
-	if elemDesc.HasDynamicMax {
-		desc.HasDynamicMax = true
-	}
-	if elemDesc.HasSizeExpr {
-		desc.HasSizeExpr = true
-	}
-	if elemDesc.HasMaxExpr {
-		desc.HasMaxExpr = true
-	}
+	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
 
 	if (desc.SszType == SszBitlistType || desc.SszType == SszProgressiveBitlistType) && desc.ElemDesc.Kind != reflect.Uint8 {
 		return fmt.Errorf("bitlist ssz type can only be represented by byte slices or arrays, got %v", desc.ElemDesc.Kind.String())
 	}
 
 	if len(sizeHints) > 0 && sizeHints[0].Size > 0 && !sizeHints[0].Dynamic {
-		if elemDesc.IsDynamic {
+		if elemDesc.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
 			desc.Size = 0 // Dynamic elements = dynamic size
-			desc.IsDynamic = true
+			desc.SszTypeFlags |= SszTypeFlagIsDynamic
 		} else {
 			desc.Size = elemDesc.Size * sizeHints[0].Size
 		}
 	} else {
 		desc.Size = 0 // Dynamic slice
-		desc.IsDynamic = true
+		desc.SszTypeFlags |= SszTypeFlagIsDynamic
 	}
 
 	return nil

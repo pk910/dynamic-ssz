@@ -38,7 +38,7 @@ import (
 func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue reflect.Value, hh *hasher.Hasher, pack bool, idt int) error {
 	hashIndex := hh.Index()
 
-	if sourceType.IsPtr {
+	if sourceType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
 		if sourceValue.IsNil() {
 			sourceValue = reflect.New(sourceType.Type.Elem()).Elem()
 		} else {
@@ -46,7 +46,11 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 		}
 	}
 
-	useFastSsz := !d.NoFastSsz && sourceType.HasFastSSZHasher && !sourceType.HasDynamicSize && !sourceType.HasDynamicMax
+	isFastsszHasher := sourceType.SszCompatFlags&SszCompatFlagFastSSZHasher != 0
+	useDynamicHashRoot := sourceType.SszCompatFlags&SszCompatFlagDynamicHashRoot != 0
+	hasDynamicSize := sourceType.SszTypeFlags&SszTypeFlagHasDynamicSize != 0
+	hasDynamicMax := sourceType.SszTypeFlags&SszTypeFlagHasDynamicMax != 0
+	useFastSsz := !d.NoFastSsz && isFastsszHasher && !hasDynamicSize && !hasDynamicMax
 	if !useFastSsz && sourceType.SszType == SszCustomType {
 		useFastSsz = true
 	}
@@ -55,11 +59,11 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 	useDynamicHashRoot := sourceType.HasDynamicHashRoot
 
 	if d.Verbose {
-		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v/%v)\t index: %v\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, sourceType.HasFastSSZHasher, sourceType.HasDynamicSize, sourceType.HasDynamicMax, hashIndex)
+		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v/%v)\t index: %v\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, isFastsszHasher, hasDynamicSize, hasDynamicMax, hashIndex)
 	}
 
 	if useFastSsz {
-		if sourceType.HasHashTreeRootWith && sourceType.HashTreeRootWithMethod != nil {
+		if sourceType.SszCompatFlags&SszCompatFlagHashTreeRootWith != 0 && sourceType.HashTreeRootWithMethod != nil {
 			// Use cached HashTreeRootWith method for better performance
 			value := sourceValue.Addr()
 			// Call the cached method with our hasher
@@ -441,7 +445,7 @@ func (d *DynSsz) buildRootFromVector(sourceType *TypeDescriptor, sourceValue ref
 	}
 
 	// For byte arrays, handle as a single unit
-	if sourceType.IsByteArray {
+	if sourceType.GoTypeFlags&GoTypeFlagIsByteArray != 0 {
 		if !sourceValue.CanAddr() {
 			// workaround for unaddressable static arrays
 			sourceValPtr := reflect.New(sourceType.Type)
@@ -450,7 +454,7 @@ func (d *DynSsz) buildRootFromVector(sourceType *TypeDescriptor, sourceValue ref
 		}
 
 		var bytes []byte
-		if sourceType.IsString {
+		if sourceType.GoTypeFlags&GoTypeFlagIsString != 0 {
 			bytes = []byte(sourceValue.String())
 		} else {
 			bytes = sourceValue.Bytes()
@@ -476,7 +480,7 @@ func (d *DynSsz) buildRootFromVector(sourceType *TypeDescriptor, sourceValue ref
 
 		if appendZero > 0 {
 			var zeroVal reflect.Value
-			if sourceType.ElemDesc.IsPtr {
+			if sourceType.ElemDesc.GoTypeFlags&GoTypeFlagIsPointer != 0 {
 				zeroVal = reflect.New(sourceType.ElemDesc.Type.Elem())
 			} else {
 				zeroVal = reflect.New(sourceType.ElemDesc.Type).Elem()
@@ -536,7 +540,7 @@ func (d *DynSsz) buildRootFromList(sourceType *TypeDescriptor, sourceValue refle
 	sliceLen := sourceValue.Len()
 
 	// For byte arrays, handle as a single unit
-	if sourceType.IsByteArray {
+	if sourceType.GoTypeFlags&GoTypeFlagIsByteArray != 0 {
 		if !sourceValue.CanAddr() {
 			// workaround for unaddressable static arrays
 			sourceValPtr := reflect.New(sourceType.Type)
@@ -545,7 +549,7 @@ func (d *DynSsz) buildRootFromList(sourceType *TypeDescriptor, sourceValue refle
 		}
 
 		var bytes []byte
-		if sourceType.IsString {
+		if sourceType.GoTypeFlags&GoTypeFlagIsString != 0 {
 			bytes = []byte(sourceValue.String())
 		} else {
 			bytes = sourceValue.Bytes()
@@ -569,7 +573,7 @@ func (d *DynSsz) buildRootFromList(sourceType *TypeDescriptor, sourceValue refle
 
 	if sourceType.SszType == SszProgressiveListType {
 		hh.MerkleizeProgressiveWithMixin(hashIndex, uint64(sliceLen))
-	} else if sourceType.HasLimit {
+	} else if sourceType.SszTypeFlags&SszTypeFlagHasLimit != 0 {
 		var limit, itemSize uint64
 
 		switch sourceType.ElemDesc.SszType {
@@ -670,7 +674,7 @@ func (d *DynSsz) buildRootFromBitlist(sourceType *TypeDescriptor, sourceValue re
 	maxSize := uint64(0)
 	bytes := sourceValue.Bytes()
 
-	if sourceType.HasLimit {
+	if sourceType.SszTypeFlags&SszTypeFlagHasLimit != 0 {
 		maxSize = sourceType.Limit
 	} else {
 		maxSize = uint64(len(bytes) * 8)
