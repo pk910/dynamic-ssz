@@ -1,11 +1,11 @@
 {{ define "hashtreeroot_main" }}
 {{- if and .CreateDynamicFn (not .UsedDynSsz) }}
-func (t {{ .TypeName }}) HashTreeRootWithDyn(_ *dynssz.DynSsz, hh sszutils.HashWalker) error {
+func (t {{ .TypeName }}) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
 	return t.HashTreeRootWith(hh)
 }
 {{- end }}
 {{- if .UsedDynSsz }}
-func (t {{ .TypeName }}) HashTreeRootWithDyn(ds *dynssz.DynSsz, hh sszutils.HashWalker) error {
+func (t {{ .TypeName }}) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
 {{- else }}
 func (t {{ .TypeName }}) HashTreeRootWith(hh sszutils.HashWalker) error {
 {{- end }}
@@ -18,11 +18,8 @@ func (t {{ .TypeName }}) HashTreeRootWith(hh sszutils.HashWalker) error {
 	return {{ .RootFnName }}(t)
 }
 {{- if .CreateDynamicFn }}
-func (t {{ .TypeName }}) HashTreeRootDyn(ds *dynssz.DynSsz) ([32]byte, error) {
+func (t {{ .TypeName }}) HashTreeRootDyn(ds sszutils.DynamicSpecs) ([32]byte, error) {
 	pool := &{{ .HasherAlias }}.FastHasherPool
-	if ds.NoFastHash {
-		pool = &{{ .HasherAlias }}.DefaultHasherPool
-	}
 	hh := pool.Get()
 	defer func() {
 		pool.Put(hh)
@@ -229,7 +226,7 @@ if !hasLimit {
 	maxLen = {{ .MaxLength }}
 }
 {{- else }}
-maxLen := {{ .MaxLength }}
+maxLen := uint64({{ .MaxLength }})
 {{- end }}
 var size uint64
 var bitlist []byte

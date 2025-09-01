@@ -130,6 +130,10 @@ type CodeGenerator struct {
 
 // NewCodeGenerator creates a new code generator instance
 func NewCodeGenerator(dynSsz *dynssz.DynSsz) *CodeGenerator {
+	if dynSsz == nil {
+		dynSsz = dynssz.NewDynSsz(nil)
+	}
+
 	return &CodeGenerator{
 		files:  make([]*fileGenerationRequest, 0),
 		dynSsz: dynSsz,
@@ -311,7 +315,7 @@ func (cg *CodeGenerator) generateFile(fileName string, packagePath string, opts 
 
 	// generate main code
 	pkgName := packagePath
-	if slashIdx := strings.Index(pkgName, "/"); slashIdx != -1 {
+	if slashIdx := strings.LastIndex(pkgName, "/"); slashIdx != -1 {
 		pkgName = pkgName[slashIdx+1:]
 	}
 

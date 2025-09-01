@@ -1,11 +1,11 @@
 {{ define "marshal_main" }}
 {{- if and .CreateDynamicFn (not .UsedDynSsz) }}
-func (t {{ .TypeName }}) MarshalSSZDyn(_ *dynssz.DynSsz, buf []byte) (dst []byte, err error) {
+func (t {{ .TypeName }}) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {
 	return t.MarshalSSZTo(buf)
 }
 {{- end }}
 {{- if .UsedDynSsz }}
-func (t {{ .TypeName }}) MarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (dst []byte, err error) {
+func (t {{ .TypeName }}) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {
 {{- else }}
 func (t {{ .TypeName }}) MarshalSSZTo(buf []byte) (dst []byte, err error) {
 {{- end }}

@@ -18,7 +18,7 @@ import (
 
 var _ = sszutils.ErrListTooBig
 
-func (t *TestBeaconBlock) MarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (dst []byte, err error) {
+func (t *TestBeaconBlock) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {
 	dst = buf
 	fn1 := func(t *phase0.ETH1Data) (err error) { // *phase0.ETH1Data
 		dst, err = t.MarshalSSZTo(dst)
@@ -298,7 +298,7 @@ func (t *TestBeaconBlock) MarshalSSZTo(buf []byte) (dst []byte, err error) {
 	return t.MarshalSSZDyn(dynssz.GetGlobalDynSsz(), buf)
 }
 
-func (t *TestBeaconBlock) SizeSSZDyn(ds *dynssz.DynSsz) (size int) {
+func (t *TestBeaconBlock) SizeSSZDyn(ds sszutils.DynamicSpecs) (size int) {
 	sfn1 := func(t []*phase0.ProposerSlashing) (size int) { // []*phase0.ProposerSlashing
 		size += len(t) * 416
 		return size
@@ -397,7 +397,7 @@ func (t *TestBeaconBlock) SizeSSZ() (size int) {
 	return t.SizeSSZDyn(dynssz.GetGlobalDynSsz())
 }
 
-func (t *TestBeaconBlock) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err error) {
+func (t *TestBeaconBlock) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (err error) {
 	sfn1 := func() (size int) { // [][]byte:33:DEPOSIT_CONTRACT_TREE_DEPTH+1:32
 		hasLimit, limit, _ := ds.ResolveSpecValue("DEPOSIT_CONTRACT_TREE_DEPTH+1")
 		if !hasLimit {
@@ -956,7 +956,7 @@ func (t *TestBeaconBlock) UnmarshalSSZ(buf []byte) (err error) {
 	return t.UnmarshalSSZDyn(dynssz.GetGlobalDynSsz(), buf)
 }
 
-func (t *TestBeaconBlock) HashTreeRootWithDyn(ds *dynssz.DynSsz, hh sszutils.HashWalker) error {
+func (t *TestBeaconBlock) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
 	fn1 := func(t []*phase0.ProposerSlashing) (err error) { // []*phase0.ProposerSlashing:MAX_PROPOSER_SLASHINGS
 		hasLimit, maxLen, err := ds.ResolveSpecValue("MAX_PROPOSER_SLASHINGS")
 		if err != nil {
@@ -1442,11 +1442,8 @@ func (t *TestBeaconBlock) HashTreeRootWithDyn(ds *dynssz.DynSsz, hh sszutils.Has
 	}
 	return fn21(t)
 }
-func (t *TestBeaconBlock) HashTreeRootDyn(ds *dynssz.DynSsz) ([32]byte, error) {
+func (t *TestBeaconBlock) HashTreeRootDyn(ds sszutils.DynamicSpecs) ([32]byte, error) {
 	pool := &hasher.FastHasherPool
-	if ds.NoFastHash {
-		pool = &hasher.DefaultHasherPool
-	}
 	hh := pool.Get()
 	defer func() {
 		pool.Put(hh)
@@ -1473,7 +1470,7 @@ func (t *TestBeaconBlock) HashTreeRoot() ([32]byte, error) {
 	return r, nil
 }
 
-func (t *TestSignedBeaconBlock) MarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (dst []byte, err error) {
+func (t *TestSignedBeaconBlock) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {
 	dst = buf
 	fn1 := func(t *TestBeaconBlock) (err error) { // *main.TestBeaconBlock
 		dst, err = t.MarshalSSZDyn(ds, dst)
@@ -1503,7 +1500,7 @@ func (t *TestSignedBeaconBlock) MarshalSSZTo(buf []byte) (dst []byte, err error)
 	return t.MarshalSSZDyn(dynssz.GetGlobalDynSsz(), buf)
 }
 
-func (t *TestSignedBeaconBlock) SizeSSZDyn(ds *dynssz.DynSsz) (size int) {
+func (t *TestSignedBeaconBlock) SizeSSZDyn(ds sszutils.DynamicSpecs) (size int) {
 	sfn1 := func(t *TestBeaconBlock) (size int) { // *TestBeaconBlock
 		size = t.SizeSSZDyn(ds)
 		return size
@@ -1519,7 +1516,7 @@ func (t *TestSignedBeaconBlock) SizeSSZ() (size int) {
 	return t.SizeSSZDyn(dynssz.GetGlobalDynSsz())
 }
 
-func (t *TestSignedBeaconBlock) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err error) {
+func (t *TestSignedBeaconBlock) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (err error) {
 	fn1 := func(t *TestBeaconBlock, buf []byte) (*TestBeaconBlock, error) { // *TestBeaconBlock
 		var err error
 		if t == nil {
@@ -1562,7 +1559,7 @@ func (t *TestSignedBeaconBlock) UnmarshalSSZ(buf []byte) (err error) {
 	return t.UnmarshalSSZDyn(dynssz.GetGlobalDynSsz(), buf)
 }
 
-func (t *TestSignedBeaconBlock) HashTreeRootWithDyn(ds *dynssz.DynSsz, hh sszutils.HashWalker) error {
+func (t *TestSignedBeaconBlock) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
 	fn1 := func(t *TestBeaconBlock) (err error) { // *main.TestBeaconBlock
 		err = t.HashTreeRootWithDyn(ds, hh)
 		return err
@@ -1580,11 +1577,8 @@ func (t *TestSignedBeaconBlock) HashTreeRootWithDyn(ds *dynssz.DynSsz, hh sszuti
 	}
 	return fn2(t)
 }
-func (t *TestSignedBeaconBlock) HashTreeRootDyn(ds *dynssz.DynSsz) ([32]byte, error) {
+func (t *TestSignedBeaconBlock) HashTreeRootDyn(ds sszutils.DynamicSpecs) ([32]byte, error) {
 	pool := &hasher.FastHasherPool
-	if ds.NoFastHash {
-		pool = &hasher.DefaultHasherPool
-	}
 	hh := pool.Get()
 	defer func() {
 		pool.Put(hh)

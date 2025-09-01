@@ -1,11 +1,11 @@
 {{ define "size_main" }}
 {{- if and .CreateDynamicFn (not .UsedDynSsz) }}
-func (t {{ .TypeName }}) SizeSSZDyn(_ *dynssz.DynSsz) (size int) {
+func (t {{ .TypeName }}) SizeSSZDyn(_ sszutils.DynamicSpecs) (size int) {
 	return t.SizeSSZ()
 }
 {{- end }}
 {{- if .UsedDynSsz }}
-func (t {{ .TypeName }}) SizeSSZDyn(ds *dynssz.DynSsz) (size int) {
+func (t {{ .TypeName }}) SizeSSZDyn(ds sszutils.DynamicSpecs) (size int) {
 {{- else }}
 func (t {{ .TypeName }}) SizeSSZ() (size int) {
 {{- end }}

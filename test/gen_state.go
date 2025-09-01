@@ -16,7 +16,7 @@ import (
 
 var _ = sszutils.ErrListTooBig
 
-func (t *TestBeaconState) MarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (dst []byte, err error) {
+func (t *TestBeaconState) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {
 	dst = buf
 	fn1 := func(t *phase0.Fork) (err error) { // *phase0.Fork
 		dst, err = t.MarshalSSZTo(dst)
@@ -345,7 +345,7 @@ func (t *TestBeaconState) MarshalSSZTo(buf []byte) (dst []byte, err error) {
 	return t.MarshalSSZDyn(dynssz.GetGlobalDynSsz(), buf)
 }
 
-func (t *TestBeaconState) SizeSSZDyn(ds *dynssz.DynSsz) (size int) {
+func (t *TestBeaconState) SizeSSZDyn(ds sszutils.DynamicSpecs) (size int) {
 	sfn1 := func(t []phase0.Root) (size int) { // []phase0.Root:8192:SLOTS_PER_HISTORICAL_ROOT:32
 		hasLimit, limit, _ := ds.ResolveSpecValue("SLOTS_PER_HISTORICAL_ROOT")
 		if !hasLimit {
@@ -440,7 +440,7 @@ func (t *TestBeaconState) SizeSSZ() (size int) {
 	return t.SizeSSZDyn(dynssz.GetGlobalDynSsz())
 }
 
-func (t *TestBeaconState) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err error) {
+func (t *TestBeaconState) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (err error) {
 	sfn1 := func() (size int) { // []phase0.Root:8192:SLOTS_PER_HISTORICAL_ROOT:32
 		hasLimit, limit, _ := ds.ResolveSpecValue("SLOTS_PER_HISTORICAL_ROOT")
 		if !hasLimit {
@@ -1078,7 +1078,7 @@ func (t *TestBeaconState) UnmarshalSSZ(buf []byte) (err error) {
 	return t.UnmarshalSSZDyn(dynssz.GetGlobalDynSsz(), buf)
 }
 
-func (t *TestBeaconState) HashTreeRootWithDyn(ds *dynssz.DynSsz, hh sszutils.HashWalker) error {
+func (t *TestBeaconState) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
 	fn1 := func(t []phase0.Root) (err error) { // []phase0.Root:8192:SLOTS_PER_HISTORICAL_ROOT:32
 		hasLimit, limit, err := ds.ResolveSpecValue("SLOTS_PER_HISTORICAL_ROOT")
 		if err != nil {
@@ -1450,11 +1450,8 @@ func (t *TestBeaconState) HashTreeRootWithDyn(ds *dynssz.DynSsz, hh sszutils.Has
 	}
 	return fn13(t)
 }
-func (t *TestBeaconState) HashTreeRootDyn(ds *dynssz.DynSsz) ([32]byte, error) {
+func (t *TestBeaconState) HashTreeRootDyn(ds sszutils.DynamicSpecs) ([32]byte, error) {
 	pool := &hasher.FastHasherPool
-	if ds.NoFastHash {
-		pool = &hasher.DefaultHasherPool
-	}
 	hh := pool.Get()
 	defer func() {
 		pool.Put(hh)

@@ -12,11 +12,13 @@ Welcome to the comprehensive documentation for the dynamic-ssz library. This doc
 - **[Troubleshooting](troubleshooting.md)** - Common issues and solutions
 
 ### Advanced Usage
+- **[Code Generation Guide](codegen.md)** - Static code generation for maximum performance
 - **[Performance Guide](performance.md)** - Optimization techniques and best practices
 - **[go-eth2-client Integration](go-eth2-client-integration.md)** - Ethereum-specific integration patterns
 
 ### Examples
 - **[Basic Usage](../examples/basic/)** - Simple encoding/decoding examples
+- **[Code Generation](../examples/codegen/)** - Complete code generation example with performance demos
 - **[Custom Types](../examples/custom-types/)** - Non-Ethereum data structures
 - **[Versioned Blocks](../examples/versioned-blocks/)** - Ethereum fork handling patterns
 

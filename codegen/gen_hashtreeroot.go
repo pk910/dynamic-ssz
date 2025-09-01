@@ -112,6 +112,9 @@ func generateHashTreeRoot(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor
 		if sourceType.Len > 0 {
 			typeKey = fmt.Sprintf("%s:%d", typeKey, sourceType.Len)
 		}
+		if sourceType.Limit > 0 {
+			typeKey = fmt.Sprintf("%s:%d", typeKey, sourceType.Limit)
+		}
 		if sourceType.SizeExpression != nil && !options.WithoutDynamicExpressions {
 			typeKey = fmt.Sprintf("%s:%s", typeKey, *sourceType.SizeExpression)
 		}

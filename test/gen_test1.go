@@ -12,7 +12,7 @@ import (
 
 var _ = sszutils.ErrListTooBig
 
-func (t *Test1) MarshalSSZDyn(_ *dynssz.DynSsz, buf []byte) (dst []byte, err error) {
+func (t *Test1) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {
 	return t.MarshalSSZTo(buf)
 }
 func (t *Test1) MarshalSSZTo(buf []byte) (dst []byte, err error) {
@@ -29,7 +29,7 @@ func (t *Test1) MarshalSSZ() ([]byte, error) {
 	return dynssz.GetGlobalDynSsz().MarshalSSZ(t)
 }
 
-func (t *Test1) SizeSSZDyn(_ *dynssz.DynSsz) (size int) {
+func (t *Test1) SizeSSZDyn(_ sszutils.DynamicSpecs) (size int) {
 	return t.SizeSSZ()
 }
 func (t *Test1) SizeSSZ() (size int) {
@@ -40,7 +40,7 @@ func (t *Test1) SizeSSZ() (size int) {
 	return sfn1(t)
 }
 
-func (t *Test1) UnmarshalSSZDyn(_ *dynssz.DynSsz, buf []byte) (err error) {
+func (t *Test1) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) (err error) {
 	return t.UnmarshalSSZ(buf)
 }
 func (t *Test1) UnmarshalSSZ(buf []byte) (err error) {
@@ -61,7 +61,7 @@ func (t *Test1) UnmarshalSSZ(buf []byte) (err error) {
 	return err
 }
 
-func (t *Test1) HashTreeRootWithDyn(_ *dynssz.DynSsz, hh sszutils.HashWalker) error {
+func (t *Test1) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
 	return t.HashTreeRootWith(hh)
 }
 func (t *Test1) HashTreeRootWith(hh sszutils.HashWalker) error {
@@ -74,11 +74,8 @@ func (t *Test1) HashTreeRootWith(hh sszutils.HashWalker) error {
 	}
 	return fn1(t)
 }
-func (t *Test1) HashTreeRootDyn(ds *dynssz.DynSsz) ([32]byte, error) {
+func (t *Test1) HashTreeRootDyn(ds sszutils.DynamicSpecs) ([32]byte, error) {
 	pool := &hasher.FastHasherPool
-	if ds.NoFastHash {
-		pool = &hasher.DefaultHasherPool
-	}
 	hh := pool.Get()
 	defer func() {
 		pool.Put(hh)
@@ -102,7 +99,7 @@ func (t *Test1) HashTreeRoot() ([32]byte, error) {
 	return r, nil
 }
 
-func (t *Test2) MarshalSSZDyn(_ *dynssz.DynSsz, buf []byte) (dst []byte, err error) {
+func (t *Test2) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {
 	return t.MarshalSSZTo(buf)
 }
 func (t *Test2) MarshalSSZTo(buf []byte) (dst []byte, err error) {
@@ -138,7 +135,7 @@ func (t *Test2) MarshalSSZ() ([]byte, error) {
 	return dynssz.GetGlobalDynSsz().MarshalSSZ(t)
 }
 
-func (t *Test2) SizeSSZDyn(_ *dynssz.DynSsz) (size int) {
+func (t *Test2) SizeSSZDyn(_ sszutils.DynamicSpecs) (size int) {
 	return t.SizeSSZ()
 }
 func (t *Test2) SizeSSZ() (size int) {
@@ -149,7 +146,7 @@ func (t *Test2) SizeSSZ() (size int) {
 	return sfn1(t)
 }
 
-func (t *Test2) UnmarshalSSZDyn(_ *dynssz.DynSsz, buf []byte) (err error) {
+func (t *Test2) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) (err error) {
 	return t.UnmarshalSSZ(buf)
 }
 func (t *Test2) UnmarshalSSZ(buf []byte) (err error) {
@@ -201,7 +198,7 @@ func (t *Test2) UnmarshalSSZ(buf []byte) (err error) {
 	return err
 }
 
-func (t *Test2) HashTreeRootWithDyn(_ *dynssz.DynSsz, hh sszutils.HashWalker) error {
+func (t *Test2) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
 	return t.HashTreeRootWith(hh)
 }
 func (t *Test2) HashTreeRootWith(hh sszutils.HashWalker) error {
@@ -235,11 +232,8 @@ func (t *Test2) HashTreeRootWith(hh sszutils.HashWalker) error {
 	}
 	return fn2(t)
 }
-func (t *Test2) HashTreeRootDyn(ds *dynssz.DynSsz) ([32]byte, error) {
+func (t *Test2) HashTreeRootDyn(ds sszutils.DynamicSpecs) ([32]byte, error) {
 	pool := &hasher.FastHasherPool
-	if ds.NoFastHash {
-		pool = &hasher.DefaultHasherPool
-	}
 	hh := pool.Get()
 	defer func() {
 		pool.Put(hh)

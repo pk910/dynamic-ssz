@@ -1,11 +1,11 @@
 {{ define "unmarshal_main" }}
 {{- if and .CreateDynamicFn (not .UsedDynSsz) }}
-func (t {{ .TypeName }}) UnmarshalSSZDyn(_ *dynssz.DynSsz, buf []byte) (err error) {
+func (t {{ .TypeName }}) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) (err error) {
 	return t.UnmarshalSSZ(buf)
 }
 {{- end }}
 {{- if .UsedDynSsz }}
-func (t {{ .TypeName }}) UnmarshalSSZDyn(ds *dynssz.DynSsz, buf []byte) (err error) {
+func (t {{ .TypeName }}) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (err error) {
 {{- else }}
 func (t {{ .TypeName }}) UnmarshalSSZ(buf []byte) (err error) {
 {{- end }}
