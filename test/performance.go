@@ -40,21 +40,7 @@ func performanceCommand() {
 	var dur []time.Duration
 	var hash [][32]byte
 	var err error
-	iterations := 1
-
-	fmt.Printf("## minimal preset / BeaconState decode + encode + hash (%d times)\n", iterations)
-	dur, hash, err = test_state_dynssz(dynssz_only_minimal, state_minimal, iterations)
-	print_test_result("dynssz only", dur, hash, err)
-	dur, hash, err = test_state_dynssz_codegen(dynssz_hybrid_minimal, state_minimal, iterations)
-	print_test_result("dynssz + codegen", dur, hash, err)
-
-	return
-	dur, hash, err = test_state_fastssz(state_minimal, iterations)
-	print_test_result("fastssz only", dur, hash, err)
-	dur, hash, err = test_state_dynssz(dynssz_hybrid_minimal, state_minimal, iterations)
-	print_test_result("dynssz + fastssz", dur, hash, err)
-
-	fmt.Printf("\n")
+	iterations := 1000
 
 	fmt.Printf("## mainnet preset / BeaconBlock decode + encode + hash (%d times)\n", iterations)
 	dur, hash, err = test_block_fastssz(block_mainnet, iterations)
@@ -86,6 +72,17 @@ func performanceCommand() {
 	dur, hash, err = test_block_dynssz(dynssz_hybrid_minimal, block_minimal, iterations)
 	print_test_result("dynssz + fastssz", dur, hash, err)
 	dur, hash, err = test_block_dynssz_codegen(dynssz_hybrid_minimal, block_minimal, iterations)
+	print_test_result("dynssz + codegen", dur, hash, err)
+	fmt.Printf("\n")
+
+	fmt.Printf("## minimal preset / BeaconState decode + encode + hash (%d times)\n", iterations)
+	dur, hash, err = test_state_fastssz(state_minimal, iterations)
+	print_test_result("fastssz only", dur, hash, err)
+	dur, hash, err = test_state_dynssz(dynssz_only_minimal, state_minimal, iterations)
+	print_test_result("dynssz only", dur, hash, err)
+	dur, hash, err = test_state_dynssz(dynssz_hybrid_minimal, state_minimal, iterations)
+	print_test_result("dynssz + fastssz", dur, hash, err)
+	dur, hash, err = test_state_dynssz_codegen(dynssz_hybrid_minimal, state_minimal, iterations)
 	print_test_result("dynssz + codegen", dur, hash, err)
 	fmt.Printf("\n")
 
