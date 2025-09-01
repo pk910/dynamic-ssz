@@ -381,8 +381,6 @@ func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 		logfn("merkleize-mixin: %x (%d, %d) ", input, num, limit)
 	}
 
-	logfn("merkleize-mixin: %x (%d, %d) ", input, num, limit)
-
 	// input is of the form [<input><size>] of 64 bytes
 	h.hash(input, input)
 	h.buf = append(h.buf[:indx], input[:32]...)
