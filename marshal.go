@@ -35,7 +35,7 @@ import (
 //   - Delegation to specialized functions for composite types (structs, arrays, slices)
 
 func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
-	if sourceType.IsPtr {
+	if sourceType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
 		if sourceValue.IsNil() {
 			sourceValue = reflect.New(sourceType.Type.Elem()).Elem()
 		} else {
@@ -43,16 +43,16 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 		}
 	}
 
-	useFastSsz := !d.NoFastSsz && sourceType.HasFastSSZMarshaler && !sourceType.HasDynamicSize
+	hasDynamicSize := sourceType.SszTypeFlags&SszTypeFlagHasDynamicSize != 0
+	isFastsszMarshaler := sourceType.SszCompatFlags&SszCompatFlagFastSSZMarshaler != 0
+	useDynamicMarshal := sourceType.SszCompatFlags&SszCompatFlagDynamicMarshaler != 0
+	useFastSsz := !d.NoFastSsz && isFastsszMarshaler && !hasDynamicSize
 	if !useFastSsz && sourceType.SszType == SszCustomType {
 		useFastSsz = true
 	}
 
-	// Check if we should use dynamic marshaler - can ALWAYS be used unlike fastssz
-	useDynamicMarshal := sourceType.HasDynamicMarshaler
-
 	if d.Verbose {
-		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, sourceType.HasFastSSZMarshaler, sourceType.HasDynamicSize)
+		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, isFastsszMarshaler, hasDynamicSize)
 	}
 
 	if useFastSsz {
@@ -98,7 +98,7 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 				return nil, err
 			}
 		case SszVectorType, SszBitvectorType, SszUint128Type, SszUint256Type:
-			if sourceType.ElemDesc.IsDynamic {
+			if sourceType.ElemDesc.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
 				buf, err = d.marshalDynamicVector(sourceType, sourceValue, buf, idt)
 			} else {
 				buf, err = d.marshalVector(sourceType, sourceValue, buf, idt)
@@ -107,7 +107,7 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 				return nil, err
 			}
 		case SszListType, SszBitlistType, SszProgressiveListType, SszProgressiveBitlistType:
-			if sourceType.ElemDesc.IsDynamic {
+			if sourceType.ElemDesc.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
 				buf, err = d.marshalDynamicList(sourceType, sourceValue, buf, idt)
 			} else {
 				buf, err = d.marshalList(sourceType, sourceValue, buf, idt)
@@ -268,7 +268,7 @@ func (d *DynSsz) marshalVector(sourceType *TypeDescriptor, sourceValue reflect.V
 		appendZero = int(sourceType.Len) - sliceLen
 	}
 
-	if sourceType.IsByteArray || sourceType.IsString {
+	if sourceType.GoTypeFlags&(GoTypeFlagIsByteArray|GoTypeFlagIsString) != 0 {
 		// shortcut for performance: use append on []byte arrays
 		if !sourceValue.CanAddr() {
 			// workaround for unaddressable static arrays
@@ -278,7 +278,7 @@ func (d *DynSsz) marshalVector(sourceType *TypeDescriptor, sourceValue reflect.V
 		}
 
 		var bytes []byte
-		if sourceType.IsString {
+		if sourceType.GoTypeFlags&GoTypeFlagIsString != 0 {
 			bytes = []byte(sourceValue.String())
 		} else {
 			bytes = sourceValue.Bytes()
@@ -372,7 +372,7 @@ func (d *DynSsz) marshalDynamicVector(sourceType *TypeDescriptor, sourceValue re
 	if appendZero > 0 {
 		var zeroVal reflect.Value
 
-		if fieldType.IsPtr {
+		if fieldType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
 			zeroVal = reflect.New(fieldType.Type.Elem())
 		} else {
 			zeroVal = reflect.New(fieldType.Type).Elem()
@@ -416,10 +416,10 @@ func (d *DynSsz) marshalDynamicVector(sourceType *TypeDescriptor, sourceValue re
 //   - Returns ErrListTooBig if slice exceeds maximum size from hints
 
 func (d *DynSsz) marshalList(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
-	if sourceType.IsString {
+	if sourceType.GoTypeFlags&GoTypeFlagIsString != 0 {
 		stringBytes := []byte(sourceValue.String())
 		buf = append(buf, stringBytes...)
-	} else if sourceType.IsByteArray {
+	} else if sourceType.GoTypeFlags&GoTypeFlagIsByteArray != 0 {
 		buf = append(buf, sourceValue.Bytes()...)
 	} else {
 		sliceLen := sourceValue.Len()
@@ -427,7 +427,7 @@ func (d *DynSsz) marshalList(sourceType *TypeDescriptor, sourceValue reflect.Val
 
 		for i := 0; i < sliceLen; i++ {
 			itemVal := sourceValue.Index(i)
-			if fieldType.IsPtr {
+			if fieldType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
 				if itemVal.IsNil() {
 					itemVal = reflect.New(fieldType.Type.Elem())
 				}

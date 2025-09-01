@@ -37,7 +37,7 @@ import (
 func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
 	consumedBytes := 0
 
-	if targetType.IsPtr {
+	if targetType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
 		// target is a pointer type, resolve type & value to actual value type
 		if targetValue.IsNil() {
 			// create new instance of target type for null pointers
@@ -47,16 +47,16 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 		targetValue = targetValue.Elem()
 	}
 
-	useFastSsz := !d.NoFastSsz && targetType.HasFastSSZMarshaler && !targetType.HasDynamicSize
+	hasDynamicSize := targetType.SszTypeFlags&SszTypeFlagHasDynamicSize != 0
+	isFastsszUnmarshaler := targetType.SszCompatFlags&SszCompatFlagFastSSZMarshaler != 0
+	useDynamicUnmarshal := targetType.SszCompatFlags&SszCompatFlagDynamicUnmarshaler != 0
+	useFastSsz := !d.NoFastSsz && isFastsszUnmarshaler && !hasDynamicSize
 	if !useFastSsz && targetType.SszType == SszCustomType {
 		useFastSsz = true
 	}
 
-	// Check if we should use dynamic unmarshaler - can ALWAYS be used unlike fastssz
-	useDynamicUnmarshal := targetType.HasDynamicUnmarshaler
-
 	if d.Verbose {
-		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), targetType.Type.Name(), targetType.Kind, useFastSsz, targetType.HasFastSSZMarshaler, targetType.HasDynamicSize)
+		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), targetType.Type.Name(), targetType.Kind, useFastSsz, isFastsszUnmarshaler, hasDynamicSize)
 	}
 
 	if useFastSsz {
@@ -104,7 +104,7 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 				return 0, err
 			}
 		case SszVectorType, SszBitvectorType, SszUint128Type, SszUint256Type:
-			if targetType.ElemDesc.IsDynamic {
+			if targetType.ElemDesc.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
 				consumedBytes, err = d.unmarshalDynamicVector(targetType, targetValue, ssz, idt)
 			} else {
 				consumedBytes, err = d.unmarshalVector(targetType, targetValue, ssz, idt)
@@ -113,7 +113,7 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 				return 0, err
 			}
 		case SszListType, SszBitlistType, SszProgressiveListType, SszProgressiveBitlistType:
-			if targetType.ElemDesc.IsDynamic {
+			if targetType.ElemDesc.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
 				consumedBytes, err = d.unmarshalDynamicList(targetType, targetValue, ssz, idt)
 			} else {
 				consumedBytes, err = d.unmarshalList(targetType, targetValue, ssz, idt)
@@ -341,7 +341,7 @@ func (d *DynSsz) unmarshalVector(targetType *TypeDescriptor, targetValue reflect
 	switch targetType.Kind {
 	case reflect.Slice:
 		// Optimization: avoid reflect.MakeSlice for common byte slice types
-		if targetType.IsByteArray && targetType.ElemDesc.Type.Kind() == reflect.Uint8 {
+		if targetType.GoTypeFlags&GoTypeFlagIsByteArray != 0 && targetType.ElemDesc.Type.Kind() == reflect.Uint8 {
 			byteSlice := make([]byte, arrLen)
 			newValue = reflect.ValueOf(byteSlice)
 		} else {
@@ -353,10 +353,10 @@ func (d *DynSsz) unmarshalVector(targetType *TypeDescriptor, targetValue reflect
 		newValue = reflect.New(targetType.Type).Elem()
 	}
 
-	if targetType.IsString {
+	if targetType.GoTypeFlags&GoTypeFlagIsString != 0 {
 		newValue.SetString(string(ssz[0:arrLen]))
 		consumedBytes = arrLen
-	} else if targetType.IsByteArray {
+	} else if targetType.GoTypeFlags&GoTypeFlagIsByteArray != 0 {
 		// shortcut for performance: use copy on []byte arrays
 		copy(newValue.Bytes(), ssz[0:arrLen])
 		consumedBytes = arrLen
@@ -365,7 +365,7 @@ func (d *DynSsz) unmarshalVector(targetType *TypeDescriptor, targetValue reflect
 		itemSize := len(ssz) / arrLen
 		for i := 0; i < arrLen; i++ {
 			var itemVal reflect.Value
-			if fieldType.IsPtr {
+			if fieldType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
 				// fmt.Printf("new array item %v\n", fieldType.Name())
 				itemVal = reflect.New(fieldType.Type.Elem())
 				newValue.Index(i).Set(itemVal.Elem().Addr())
@@ -440,7 +440,7 @@ func (d *DynSsz) unmarshalDynamicVector(targetType *TypeDescriptor, targetValue 
 
 	// fmt.Printf("new dynamic slice %v  %v\n", fieldType.Name(), sliceLen)
 	fieldT := targetType.Type
-	if targetType.IsPtr {
+	if targetType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
 		fieldT = fieldT.Elem()
 	}
 
@@ -461,7 +461,7 @@ func (d *DynSsz) unmarshalDynamicVector(targetType *TypeDescriptor, targetValue 
 	// decode slice items
 	for i := 0; i < vectorLen; i++ {
 		var itemVal reflect.Value
-		if fieldType.IsPtr {
+		if fieldType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
 			// fmt.Printf("new slice item %v\n", fieldType.Name())
 			itemVal = reflect.New(fieldType.Type.Elem())
 			newValue.Index(i).Set(itemVal)
@@ -539,14 +539,14 @@ func (d *DynSsz) unmarshalList(targetType *TypeDescriptor, targetValue reflect.V
 	// fmt.Printf("new slice %v  %v\n", fieldType.Name(), sliceLen)
 
 	fieldT := targetType.Type
-	if targetType.IsPtr {
+	if targetType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
 		fieldT = fieldT.Elem()
 	}
 
 	var newValue reflect.Value
 	if targetType.Kind == reflect.Slice {
 		// Optimization: avoid reflect.MakeSlice for common byte slice types
-		if targetType.IsByteArray && fieldType.Type.Kind() == reflect.Uint8 {
+		if targetType.GoTypeFlags&GoTypeFlagIsByteArray != 0 && fieldType.Type.Kind() == reflect.Uint8 {
 			byteSlice := make([]byte, sliceLen)
 			newValue = reflect.ValueOf(byteSlice)
 		} else {
@@ -556,10 +556,10 @@ func (d *DynSsz) unmarshalList(targetType *TypeDescriptor, targetValue reflect.V
 		newValue = reflect.New(fieldT).Elem()
 	}
 
-	if targetType.IsString {
+	if targetType.GoTypeFlags&GoTypeFlagIsString != 0 {
 		newValue.SetString(string(ssz))
 		consumedBytes = len(ssz)
-	} else if targetType.IsByteArray {
+	} else if targetType.GoTypeFlags&GoTypeFlagIsByteArray != 0 {
 		// shortcut for performance: use copy on []byte arrays
 		copy(newValue.Bytes(), ssz[0:sliceLen])
 		consumedBytes = sliceLen
@@ -569,7 +569,7 @@ func (d *DynSsz) unmarshalList(targetType *TypeDescriptor, targetValue reflect.V
 			// decode list items
 			for i := 0; i < sliceLen; i++ {
 				var itemVal reflect.Value
-				if fieldType.IsPtr {
+				if fieldType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
 					// fmt.Printf("new list item %v\n", fieldType.Name())
 					itemVal = reflect.New(fieldType.Type.Elem())
 					newValue.Index(i).Set(itemVal.Elem().Addr())
@@ -648,7 +648,7 @@ func (d *DynSsz) unmarshalDynamicList(targetType *TypeDescriptor, targetValue re
 
 	// fmt.Printf("new dynamic slice %v  %v\n", fieldType.Name(), sliceLen)
 	fieldT := targetType.Type
-	if targetType.IsPtr {
+	if targetType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
 		fieldT = fieldT.Elem()
 	}
 
@@ -666,7 +666,7 @@ func (d *DynSsz) unmarshalDynamicList(targetType *TypeDescriptor, targetValue re
 		// decode slice items
 		for i := 0; i < sliceLen; i++ {
 			var itemVal reflect.Value
-			if fieldType.IsPtr {
+			if fieldType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
 				// fmt.Printf("new slice item %v\n", fieldType.Name())
 				itemVal = reflect.New(fieldType.Type.Elem())
 				newValue.Index(i).Set(itemVal)

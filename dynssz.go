@@ -331,7 +331,7 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte) error {
 		return err
 	}
 
-	if !targetTypeDesc.IsPtr {
+	if targetTypeDesc.GoTypeFlags&GoTypeFlagIsPointer == 0 {
 		return fmt.Errorf("target must be a pointer")
 	}
 
