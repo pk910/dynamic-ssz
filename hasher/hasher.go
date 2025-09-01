@@ -18,7 +18,7 @@ import (
 // Compile-time check to ensure Hasher implements HashWalker interface
 var _ sszutils.HashWalker = (*Hasher)(nil)
 
-var verbose = false
+var debug = false
 
 var (
 	// ErrIncorrectByteSize means that the byte size is incorrect
@@ -66,9 +66,7 @@ func initHasher() {
 }
 
 func logfn(format string, a ...any) {
-	if verbose {
-		fmt.Printf(format, a...)
-	}
+	fmt.Printf(format, a...)
 }
 
 type HashFn func(dst []byte, input []byte) error
@@ -352,13 +350,17 @@ func (h *Hasher) Merkleize(indx int) {
 	}
 	input := h.buf[indx:]
 
-	logfn("merkleize: %x ", input)
+	if debug {
+		logfn("merkleize: %x ", input)
+	}
 
 	// merkleize the input
 	input = h.merkleizeImpl(input[:0], input, 0)
 	h.buf = append(h.buf[:indx], input...)
 
-	logfn("-> %x\n", input)
+	if debug {
+		logfn("-> %x\n", input)
+	}
 }
 
 // MerkleizeWithMixin is used to merkleize the last group of the hasher
@@ -375,7 +377,9 @@ func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 	input = append(input, output...)
 	input = append(input, zeroBytes[:24]...)
 
-	logfn("merkleize-mixin: %x (%d, %d) ", input, num, limit)
+	if debug {
+		logfn("merkleize-mixin: %x (%d, %d) ", input, num, limit)
+	}
 
 	logfn("merkleize-mixin: %x (%d, %d) ", input, num, limit)
 
@@ -383,7 +387,9 @@ func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 	h.hash(input, input)
 	h.buf = append(h.buf[:indx], input[:32]...)
 
-	logfn("-> %x\n", input[:32])
+	if debug {
+		logfn("-> %x\n", input[:32])
+	}
 }
 
 func (h *Hasher) Hash() []byte {
@@ -480,13 +486,17 @@ func (h *Hasher) MerkleizeProgressive(indx int) {
 	h.buf = h.buf[:len(h.buf)-len(zeroBytes)]
 	input := h.buf[indx:]
 
-	logfn("merkleize-progressive: %x ", input)
+	if debug {
+		logfn("merkleize-progressive: %x ", input)
+	}
 
 	// merkleize the input
 	input = h.merkleizeProgressiveImpl(input[:0], input, 0)
 	h.buf = append(h.buf[:indx], input...)
 
-	logfn("-> %x\n", input)
+	if debug {
+		logfn("-> %x\n", input)
+	}
 }
 
 // MerkleizeProgressiveWithMixin is used to merkleize progressive lists with length mixin
@@ -503,7 +513,9 @@ func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 	input = append(input, output...)
 	input = append(input, zeroBytes[:24]...)
 
-	logfn("merkleize-progressive-mixin: %x (%d) ", input, num)
+	if debug {
+		logfn("merkleize-progressive-mixin: %x (%d) ", input, num)
+	}
 
 	logfn("merkleize-progressive-mixin: %x (%d) ", input, num)
 
@@ -511,7 +523,9 @@ func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 	h.hash(input, input)
 	h.buf = append(h.buf[:indx], input[:32]...)
 
-	logfn("-> %x\n", input[:32])
+	if debug {
+		logfn("-> %x\n", input[:32])
+	}
 }
 
 // MerkleizeProgressiveWithMixin is used to merkleize progressive lists with length mixin
@@ -519,11 +533,15 @@ func (h *Hasher) MerkleizeProgressiveWithActiveFields(indx int, activeFields []b
 	h.FillUpTo32()
 	input := h.buf[indx:]
 
-	logfn("merkleize-progressive-active-fields: %x ", input)
+	if debug {
+		logfn("merkleize-progressive-active-fields: %x ", input)
+	}
 	// progressive merkleize the input
 	input = h.merkleizeProgressiveImpl(input[:0], input, 0)
 
-	logfn("-> %x (%x)", input, activeFields)
+	if debug {
+		logfn("-> %x (%x)", input, activeFields)
+	}
 
 	// mixin with the active fields bitvector
 	input = append(input, activeFields...)
@@ -536,7 +554,9 @@ func (h *Hasher) MerkleizeProgressiveWithActiveFields(indx int, activeFields []b
 	h.hash(input, input)
 	h.buf = append(h.buf[:indx], input[:32]...)
 
-	logfn("-> %x\n", input[:32])
+	if debug {
+		logfn("-> %x\n", input[:32])
+	}
 }
 
 func (h *Hasher) merkleizeProgressiveImpl(dst []byte, chunks []byte, depth uint8) []byte {
