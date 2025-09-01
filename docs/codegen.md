@@ -72,53 +72,251 @@ This creates `generated/types_ssz.go` with optimized SSZ methods for your types.
 
 ### Step 3: Use the Generated Code
 
-The generated file provides these methods for each type:
+By default, the generator creates dynamic methods that support runtime configuration:
 
 ```go
-// Marshaling
-func (t *MyStruct) MarshalSSZ() ([]byte, error)
-func (t *MyStruct) MarshalSSZTo(buf []byte) ([]byte, error)
-func (t *MyStruct) SizeSSZ() int
-
-// Unmarshaling
-func (t *MyStruct) UnmarshalSSZ(buf []byte) error
-
-// Hash Tree Root
-func (t *MyStruct) HashTreeRoot() ([32]byte, error)
-func (t *MyStruct) HashTreeRootWith(hh ssz.HashWalker) error
+// Dynamic methods (default)
+func (t *MyStruct) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) ([]byte, error)
+func (t *MyStruct) SizeSSZDyn(ds sszutils.DynamicSpecs) int
+func (t *MyStruct) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) error
+func (t *MyStruct) HashTreeRootDyn(ds sszutils.DynamicSpecs) ([32]byte, error)
+func (t *MyStruct) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error
 ```
+
+With `WithCreateLegacyFn()`, it also generates legacy methods:
+
+```go
+// Legacy methods (compatible with fastSSZ)
+func (t *MyStruct) MarshalSSZ() ([]byte, error)
+func (t *MyStruct) MarshalSSZTo(buf []byte) ([]byte, error) 
+func (t *MyStruct) SizeSSZ() int
+func (t *MyStruct) UnmarshalSSZ(buf []byte) error
+func (t *MyStruct) HashTreeRoot() ([32]byte, error)
+func (t *MyStruct) HashTreeRootWith(hh sszutils.HashWalker) error
+```
+
+## Method Types
+
+### Dynamic vs Legacy Methods
+
+Dynamic SSZ supports two types of generated methods:
+
+#### Dynamic Methods (Default)
+These methods accept a `DynamicSpecs` provider that resolves specification values at runtime:
+
+```go
+// Create a DynSSZ instance with your specifications
+specs := map[string]any{
+    "MAX_VALIDATORS": uint64(2048),
+    "SYNC_COMMITTEE_SIZE": uint64(512),
+}
+ds := dynssz.NewDynSsz(specs)
+
+// Dynamic methods take the DynamicSpecs provider
+buf := make([]byte, 0, block.SizeSSZDyn(ds))
+data, err := block.MarshalSSZDyn(ds, buf)
+size := block.SizeSSZDyn(ds)
+err = block.UnmarshalSSZDyn(ds, data)
+root, err := block.HashTreeRootDyn(ds)
+```
+
+#### Legacy Methods (FastSSZ Compatible)
+These methods use compile-time configuration and are compatible with fastSSZ:
+
+```go
+// Legacy methods (compile-time configuration)
+data, err := block.MarshalSSZ()
+size := block.SizeSSZ()
+err = block.UnmarshalSSZ(data)
+root, err := block.HashTreeRoot()
+err = block.HashTreeRootWith(hasher)
+```
+
+### Choosing Method Types
+
+- **Dynamic methods only (default)**: Maximum flexibility, supports all presets
+- **Legacy methods only**: Maximum compatibility with fastSSZ ecosystem  
+- **Both**: Best of both worlds - flexibility when needed, compatibility everywhere
 
 ## Advanced Configuration
 
-### Generator Options
+### File-Level Options
 
 ```go
 generator := codegen.NewCodeGenerator(nil)
 
-// Generate code for multiple files
+// File 1: Full dynamic support
 generator.BuildFile(
-    "user_types_ssz.go",
-    codegen.WithType(reflect.TypeOf(User{})),
-    codegen.WithType(reflect.TypeOf(Account{})),
-    codegen.WithCreateLegacyFn(), // Generate legacy method signatures
+    "dynamic_types_ssz.go",
+    codegen.WithType(reflect.TypeOf(BeaconState{})),
+    codegen.WithType(reflect.TypeOf(BeaconBlock{})),
+    codegen.WithCreateLegacyFn(), // Add legacy methods too
 )
 
+// File 2: Legacy-only for maximum performance on main preset
 generator.BuildFile(
-    "game_types_ssz.go",
-    codegen.WithType(reflect.TypeOf(GameState{})),
-    codegen.WithoutDynamicExpressions(), // Disable dynamic expressions
+    "legacy_types_ssz.go",
+    codegen.WithType(reflect.TypeOf(SimpleStruct{})),
+    codegen.WithoutDynamicExpressions(), // Legacy only
 )
+```
+
+### Type-Level Options
+
+Control which methods are generated per type:
+
+```go
+generator.BuildFile(
+    "selective_ssz.go",
+    codegen.WithType(
+        reflect.TypeOf(ReadOnlyType{}),
+        codegen.WithNoMarshalSSZ(),   // Skip marshal methods
+        codegen.WithNoSizeSSZ(),      // Skip size method
+    ),
+    codegen.WithType(
+        reflect.TypeOf(HashOnlyType{}),
+        codegen.WithNoMarshalSSZ(),   // Only generate hash methods
+        codegen.WithNoUnmarshalSSZ(),
+        codegen.WithNoSizeSSZ(),
+    ),
+)
+```
+
+### Available Options
+
+- `WithCreateLegacyFn()` - Generate legacy methods alongside dynamic ones
+- `WithoutDynamicExpressions()` - Generate legacy methods only, ignore all dynamic expressions
+- `WithNoMarshalSSZ()` - Skip `MarshalSSZ`/`MarshalSSZDyn` methods
+- `WithNoUnmarshalSSZ()` - Skip `UnmarshalSSZ`/`UnmarshalSSZDyn` methods
+- `WithNoSizeSSZ()` - Skip `SizeSSZ`/`SizeSSZDyn` methods
+- `WithNoHashTreeRoot()` - Skip all hash tree root methods
+
+### DynamicSpecs Interface
+
+The `sszutils.DynamicSpecs` interface provides specification value resolution:
+
+```go
+type DynamicSpecs interface {
+    ResolveSpecValue(name string) (bool, uint64, error)
+}
+```
+
+The main implementation is the `*DynSsz` struct, which resolves values from the specs map:
+
+```go
+// Create DynSSZ with specifications
+ds := dynssz.NewDynSsz(map[string]any{
+    "VALIDATOR_REGISTRY_LIMIT": uint64(1099511627776),
+    "SYNC_COMMITTEE_SIZE": uint64(512),
+})
+
+// The DynSsz instance implements DynamicSpecs
+// Generated code calls ds.ResolveSpecValue("VALIDATOR_REGISTRY_LIMIT")
+```
+
+### Preset Compatibility
+
+#### With Dynamic Expressions (Default)
+```go
+// Supports all presets at runtime
+type BeaconState struct {
+    Validators []Validator `ssz-max:"1099511627776" dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
+}
+
+// Usage with different presets
+mainnetDS := dynssz.NewDynSsz(map[string]any{
+    "VALIDATOR_REGISTRY_LIMIT": uint64(1099511627776),
+})
+minimalDS := dynssz.NewDynSsz(map[string]any{
+    "VALIDATOR_REGISTRY_LIMIT": uint64(64),
+})
+
+buf := make([]byte, 0)
+data1, _ := state.MarshalSSZDyn(mainnetDS, buf)  // Uses mainnet limit
+data2, _ := state.MarshalSSZDyn(minimalDS, buf)  // Uses minimal limit
+```
+
+#### Without Dynamic Expressions
+```go
+// Generated code uses static values from struct tags
+// Only works with default preset (values from ssz-max tags)
+codegen.WithoutDynamicExpressions()
+
+// The dynssz library automatically chooses:
+// - Generated code for default preset
+// - Reflection for other presets
+
+buf := make([]byte, 0)
+data1, _ := mainnetDS.MarshalSSZTo(state, buf)  // Uses generated code in behind
+data2, _ := minimalDS.MarshalSSZTo(state, buf)  // Uses reflection in behind
 ```
 
 ### Package Management
 
-The generator automatically handles imports and package declarations:
+The generator determines the package from the types being processed. **All types in a single `BuildFile()` call must be from the same package** - mixing types from different packages is not allowed.
+
+The generated file will be placed in the same package as the input types:
 
 ```go
+// ✅ Correct: All types from same package (types)
 generator.BuildFile(
-    "internal/generated/ssz.go", // Output path determines package
-    codegen.WithType(reflect.TypeOf(MyType{})),
+    "types/generated_ssz.go",  // Must be in same directory as types
+    codegen.WithType(reflect.TypeOf(types.BeaconState{})),
+    codegen.WithType(reflect.TypeOf(types.BeaconBlock{})),
 )
+
+// ❌ Error: Mixing packages not allowed
+generator.BuildFile(
+    "mixed_ssz.go",
+    codegen.WithType(reflect.TypeOf(types.BeaconState{})),    // package types
+    codegen.WithType(reflect.TypeOf(network.Message{})),     // package network - ERROR!
+)
+
+// ✅ Correct: Separate files for different packages
+generator.BuildFile(
+    "types/types_ssz.go",
+    codegen.WithType(reflect.TypeOf(types.BeaconState{})),
+    codegen.WithType(reflect.TypeOf(types.BeaconBlock{})),
+)
+
+generator.BuildFile(
+    "network/network_ssz.go",
+    codegen.WithType(reflect.TypeOf(network.Message{})),
+    codegen.WithType(reflect.TypeOf(network.Request{})),
+)
+```
+
+**Key Rules:**
+- Generated file must be in the same directory as the source types
+- All types in one file must belong to the same Go package
+- Package name is automatically determined from the first type
+- Import statements are automatically generated
+
+## Multi-File Generation
+
+### Cross-File Type Linking
+
+The generator automatically links types across all generated files and existing fastSSZ/dynSSZ methods:
+
+```go
+// File 1: Core types
+generator.BuildFile(
+    "core_ssz.go",
+    codegen.WithType(reflect.TypeOf(BeaconState{})),
+    codegen.WithType(reflect.TypeOf(BeaconBlock{})), // References Transaction
+)
+
+// File 2: Transaction types  
+generator.BuildFile(
+    "tx_ssz.go",
+    codegen.WithType(reflect.TypeOf(Transaction{})),
+    codegen.WithType(reflect.TypeOf(TransactionPool{})), // References Transaction
+)
+
+// The generated code automatically uses:
+// - Generated methods from other files when available
+// - Existing fastSSZ methods when present
+// - Reflection fallback when neither exists
 ```
 
 ## Complete Example
@@ -128,11 +326,10 @@ generator.BuildFile(
 ```
 myproject/
 ├── types/
-│   └── types.go        # Your type definitions
+│   ├── types.go        # Your type definitions
+│   └── types_ssz.go    # Generated SSZ code
 ├── codegen/
 │   └── main.go         # Code generator
-├── generated/
-│   └── types_ssz.go    # Generated code (git-ignored)
 ├── main.go
 └── go.mod
 ```
@@ -178,9 +375,9 @@ func main() {
     generator := codegen.NewCodeGenerator(nil)
     
     generator.BuildFile(
-        "generated/types_ssz.go",
-        codegen.WithType(reflect.TypeOf(types.Block{})),
-        codegen.WithType(reflect.TypeOf(types.Transaction{})),
+        "types/types_ssz.go",
+        codegen.WithType(reflect.TypeOf(&types.Block{})),
+        codegen.WithType(reflect.TypeOf(&types.Transaction{})),
         codegen.WithCreateLegacyFn(),
     )
     
@@ -198,7 +395,7 @@ func main() {
 .PHONY: generate
 generate:
 	@echo "Generating SSZ code..."
-	@go run codegen/main.go
+	@go run ./codegen
 
 .PHONY: build
 build: generate
@@ -211,12 +408,14 @@ test: generate
 
 ### Using Generated Code
 
+#### Hybrid Usage with DynSSZ
+
 ```go
 package main
 
 import (
+    dynssz "github.com/pk910/dynamic-ssz"
     "myproject/types"
-    _ "myproject/generated" // Import for side effects
 )
 
 func main() {
@@ -225,7 +424,77 @@ func main() {
         // ...
     }
     
-    // Use generated methods
+    // Create DynSSZ instance with your specifications
+    specs := map[string]any{
+        "MAX_TRANSACTIONS": uint64(1048576),
+        "MAX_BYTES_PER_TRANSACTION": uint64(131072),
+    }
+    ds := dynssz.NewDynSsz(specs)
+    
+    // Use dynamic generated methods
+    data, err := ds.MarshalSSZ(block)
+    if err != nil {
+        panic(err)
+    }
+    
+    // Unmarshal
+    newBlock := &types.Block{}
+    err = ds.UnmarshalSSZ(newBlock, data)
+    
+    // Hash tree root
+    root, err := ds.HashTreeRoot(block)
+}
+```
+
+#### With Dynamic Methods
+
+```go
+package main
+
+import (
+    dynssz "github.com/pk910/dynamic-ssz"
+    "myproject/types"
+)
+
+func main() {
+    block := &types.Block{
+        Number: 12345,
+        // ...
+    }
+    
+    // Create DynSSZ instance with your specifications
+    specs := map[string]any{
+        "MAX_TRANSACTIONS": uint64(1048576),
+        "MAX_BYTES_PER_TRANSACTION": uint64(131072),
+    }
+    ds := dynssz.NewDynSsz(specs)
+    
+    // Use dynamic generated methods
+    buf := make([]byte, 0, block.SizeSSZDyn(ds))
+    data, err := block.MarshalSSZDyn(ds, buf)
+    if err != nil {
+        panic(err)
+    }
+    
+    // Unmarshal
+    newBlock := &types.Block{}
+    err = newBlock.UnmarshalSSZDyn(ds, data)
+    
+    // Hash tree root
+    root, err := block.HashTreeRootDyn(ds)
+}
+```
+
+#### With Legacy Methods
+
+```go
+func main() {
+    block := &types.Block{
+        Number: 12345,
+        // ...
+    }
+    
+    // Use legacy generated methods (fastSSZ compatible)
     data, err := block.MarshalSSZ()
     if err != nil {
         panic(err)
@@ -237,6 +506,11 @@ func main() {
     
     // Hash tree root
     root, err := block.HashTreeRoot()
+    
+    // Or with custom hasher
+    hasher := ssz.NewHasher()
+    err = block.HashTreeRootWith(hasher)
+    root = hasher.Hash()
 }
 ```
 
@@ -269,39 +543,6 @@ steps:
   
   - name: Test
     run: go test ./...
-```
-
-## Performance Optimization
-
-The code generator implements several optimizations:
-
-### 1. Function Inlining
-
-For simple types and FastSSZ-compatible types, the generator inlines function calls:
-
-```go
-// Instead of:
-err = fn1(t.Field)
-
-// Generated:
-err = t.Field.HashTreeRootWith(hh)
-```
-
-### 2. Static Size Calculation
-
-Sizes are pre-calculated where possible:
-
-```go
-// Dynamic calculation avoided
-size := 184 + len(t.DynamicField)*32
-```
-
-### 3. Optimized Memory Allocation
-
-```go
-// Pre-allocate exact size
-buf := make([]byte, 0, t.SizeSSZ())
-data, err := t.MarshalSSZTo(buf)
 ```
 
 ## Troubleshooting
@@ -356,9 +597,7 @@ fn3 := func(t []*Transaction) (err error) { // []*Transaction:MAX_TRANSACTIONS
    - Use go:generate for automation
    - Include generation in CI/CD
 
-## Migration Guide
-
-### From FastSSZ
+## Migration from FastSSZ
 
 ```go
 // Before: fastssz with sszgen
@@ -368,14 +607,4 @@ fn3 := func(t []*Transaction) (err error) { // []*Transaction:MAX_TRANSACTIONS
 //go:generate go run codegen/main.go
 ```
 
-### From Reflection
-
-```go
-// Before: Pure reflection
-data, err := dynssz.MarshalSSZ(block)
-
-// After: With generated code
-data, err := block.MarshalSSZ()
-```
-
-The generated methods are compatible with the reflection-based API, allowing gradual migration.
+The generated legacy methods are compatible with the fastssz API, allowing gradual migration.
