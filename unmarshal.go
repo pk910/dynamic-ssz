@@ -530,8 +530,8 @@ func (d *DynSsz) unmarshalList(targetType *TypeDescriptor, targetValue reflect.V
 
 	// Calculate slice length once
 	itemSize := int(fieldType.Size)
-	sliceLen, ok := divideInt(sszLen, itemSize)
-	if !ok {
+	sliceLen := sszLen / itemSize
+	if sszLen%itemSize != 0 {
 		return 0, fmt.Errorf("invalid list length, expected multiple of %v, got %v", itemSize, sszLen)
 	}
 
