@@ -4,6 +4,8 @@
 package dynssz
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -52,21 +54,21 @@ const (
 
 // TypeDescriptor represents a cached, optimized descriptor for a type's SSZ encoding/decoding
 type TypeDescriptor struct {
-	Type                   reflect.Type
-	Kind                   reflect.Kind              // Go kind of the type
-	Size                   uint32                    // SSZ size (-1 if dynamic)
-	Len                    uint32                    // Length of array/slice
-	Limit                  uint64                    // Limit of array/slice (ssz-max tag)
-	ContainerDesc          *ContainerDescriptor      // For structs
-	UnionVariants          map[uint8]*TypeDescriptor // Union variant types by index (for CompatibleUnion)
-	ElemDesc               *TypeDescriptor           // For slices/arrays
-	HashTreeRootWithMethod *reflect.Method           // Cached HashTreeRootWith method for performance
-	SizeExpression         *string                   // The dynamic expression used to calculate the size of the type
-	MaxExpression          *string                   // The dynamic expression used to calculate the max size of the type
-	SszType                SszType                   // SSZ type of the type
-	SszTypeFlags           SszTypeFlag               // SSZ type flags
-	SszCompatFlags         SszCompatFlag             // SSZ compatibility flags
-	GoTypeFlags            GoTypeFlag                // Additional go type flags
+	Type                   reflect.Type              `json:"-"`
+	Kind                   reflect.Kind              `json:"kind"`                // Go kind of the type
+	Size                   uint32                    `json:"size"`                // SSZ size (-1 if dynamic)
+	Len                    uint32                    `json:"len"`                 // Length of array/slice
+	Limit                  uint64                    `json:"limit"`               // Limit of array/slice (ssz-max tag)
+	ContainerDesc          *ContainerDescriptor      `json:"container,omitempty"` // For structs
+	UnionVariants          map[uint8]*TypeDescriptor `json:"union,omitempty"`     // Union variant types by index (for CompatibleUnion)
+	ElemDesc               *TypeDescriptor           `json:"field,omitempty"`     // For slices/arrays
+	HashTreeRootWithMethod *reflect.Method           `json:"-"`                   // Cached HashTreeRootWith method for performance
+	SizeExpression         *string                   `json:"size_expr,omitempty"` // The dynamic expression used to calculate the size of the type
+	MaxExpression          *string                   `json:"max_expr,omitempty"`  // The dynamic expression used to calculate the max size of the type
+	SszType                SszType                   `json:"type"`                // SSZ type of the type
+	SszTypeFlags           SszTypeFlag               `json:"flags"`               // SSZ type flags
+	SszCompatFlags         SszCompatFlag             `json:"compat"`              // SSZ compatibility flags
+	GoTypeFlags            GoTypeFlag                `json:"go_flags"`            // Additional go type flags
 }
 
 // FieldDescriptor represents a cached descriptor for a struct field
@@ -927,4 +929,14 @@ func (tc *TypeCache) extractGenericTypeParameter(unionType reflect.Type) (reflec
 	}
 
 	return descriptorType, nil
+}
+
+func (td *TypeDescriptor) GetTypeHash() ([32]byte, error) {
+	jsonDesc, err := json.Marshal(td)
+	if err != nil {
+		return [32]byte{}, err
+	}
+
+	hash := sha256.Sum256(jsonDesc)
+	return hash, nil
 }

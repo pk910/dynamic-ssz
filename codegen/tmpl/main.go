@@ -2,6 +2,8 @@ package tmpl
 
 type Main struct {
 	PackageName string
+	TypesHash   string
+	Version     string
 	Imports     []TypeImport
 	Code        string
 }

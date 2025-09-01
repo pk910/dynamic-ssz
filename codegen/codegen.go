@@ -1,6 +1,9 @@
 package codegen
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -260,11 +263,18 @@ func (cg *CodeGenerator) generateFile(fileName string, packagePath string, opts 
 	typePrinter.AddAlias("github.com/pk910/dynamic-ssz", "dynssz")
 	usedDynSsz := false
 	codeBuilder := strings.Builder{}
+	hashParts := [][]byte{}
 
 	for _, t := range opts.Types {
 		if t.Descriptor == nil {
 			return "", fmt.Errorf("type %s has no descriptor", t.Type.Name())
 		}
+
+		hash, err := t.Descriptor.GetTypeHash()
+		if err != nil {
+			return "", fmt.Errorf("failed to get type hash for %s: %w", t.Type.Name(), err)
+		}
+		hashParts = append(hashParts, hash[:])
 
 		withDynSsz, err := cg.generateCode(t.Descriptor, typePrinter, &codeBuilder, &t.Options)
 		if err != nil {
@@ -272,6 +282,8 @@ func (cg *CodeGenerator) generateFile(fileName string, packagePath string, opts 
 		}
 		usedDynSsz = usedDynSsz || withDynSsz
 	}
+
+	typesHash := sha256.Sum256(bytes.Join(hashParts, []byte{}))
 
 	if usedDynSsz {
 		typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
@@ -305,6 +317,8 @@ func (cg *CodeGenerator) generateFile(fileName string, packagePath string, opts 
 
 	mainCode := tmpl.Main{
 		PackageName: pkgName,
+		TypesHash:   hex.EncodeToString(typesHash[:]),
+		Version:     Version,
 		Imports:     imports,
 		Code:        codeBuilder.String(),
 	}
