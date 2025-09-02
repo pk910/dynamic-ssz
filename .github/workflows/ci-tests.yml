@@ -123,6 +123,12 @@ jobs:
           echo "Adding unit test coverage..."
           tail -n +2 unit-coverage.out | grep -v '^$' >> combined-coverage.out
         fi
+
+        # Add codegen test coverage
+        if [ -f coverage_codegen.out ]; then
+          echo "Adding codegen test coverage..."
+          tail -n +2 coverage_codegen.out | grep -v '^$' >> combined-coverage.out
+        fi
         
         # Add spec test coverage from all presets (exclude mode line, adjust paths, filter empty lines)
         for artifact_dir in spec-coverage-artifacts/*/; do
@@ -159,4 +165,5 @@ jobs:
         path: |
           coverage.html
           combined-coverage.out
+          coverage_codegen.out
           unit-coverage.out
