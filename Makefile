@@ -1,4 +1,4 @@
-.PHONY: test bench perf spec clean help
+.PHONY: test bench perf spec clean help coverage coverage-func coverage-merge coverage-clean
 
 # Default target
 help: ## Show this help message
@@ -39,6 +39,7 @@ clean: ## Clean test artifacts and profiles
 	@rm -rf profiles/
 	@rm -f *.prof
 	@rm -f *.test
+	@$(MAKE) coverage-clean
 	@go clean -testcache
 
 check: ## Run staticcheck and go vet
@@ -55,13 +56,33 @@ lint: check fmt ## Run linting (staticcheck, vet, fmt)
 all: clean fmt check test bench ## Run all checks and tests
 
 # Coverage targets
-coverage: ## Run tests with coverage
+coverage: ## Run tests with coverage (including codegen tests)
 	@echo "Running tests with coverage..."
-	@go test ./... -coverprofile=coverage.out
-	@go tool cover -html=coverage.out -o coverage.html
+	@echo "1. Running main unit tests..."
+	@go test ./... -coverprofile=coverage_main.out -coverpkg=./...
+	@echo "3. Combining coverage files..."
+	@$(MAKE) coverage-merge
+	@go tool cover -html=coverage_combined.out -o coverage.html
 	@echo "Coverage report saved to coverage.html"
 
-coverage-func: ## Show coverage by function
+coverage-func: ## Show coverage by function (including codegen tests) 
 	@echo "Running tests with coverage by function..."
-	@go test ./... -coverprofile=coverage.out
-	@go tool cover -func=coverage.out
+	@$(MAKE) coverage-merge
+	@go tool cover -func=coverage_combined.out
+
+coverage-merge: ## Merge all coverage files into combined report
+	@echo "Merging coverage files..."
+	@rm -f coverage_combined.out
+	@echo "mode: set" > coverage_combined.out
+	@if [ -f coverage_main.out ]; then \
+		tail -n +2 coverage_main.out >> coverage_combined.out; \
+	fi
+	@if [ -f coverage_codegen.out ]; then \
+		tail -n +2 coverage_codegen.out >> coverage_combined.out; \
+	fi
+	@echo "Combined coverage file: coverage_combined.out"
+
+coverage-clean: ## Clean all coverage files
+	@echo "Cleaning coverage files..."
+	@rm -f coverage.out coverage_main.out coverage_combined.out coverage.html
+	@rm -f coverage_codegen.out

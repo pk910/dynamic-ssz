@@ -1,8 +1,10 @@
 package codegen
 
 import (
+	"bufio"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,10 +12,16 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	dynssz "github.com/pk910/dynamic-ssz"
+)
+
+var (
+	combinedCoverageFile = "../coverage_codegen.out"
+	coverageMutex        sync.Mutex
 )
 
 // TestPayload represents a single test case for code generation
@@ -22,6 +30,21 @@ type TestPayload struct {
 	Type   reflect.Type   // Go type to generate code for
 	SSZHex string         // SSZ encoding as hex string (without 0x prefix)
 	Specs  map[string]any // Dynamic specifications
+}
+
+// TestResult represents the result of testing a single code path
+type TestResult struct {
+	Method       string `json:"method"`
+	HashTreeRoot string `json:"hashTreeRoot"`
+	SSZEqual     bool   `json:"sszEqual"`
+	Error        string `json:"error,omitempty"`
+}
+
+// TestResults represents results from all code paths
+type TestResults struct {
+	Legacy  *TestResult `json:"legacy,omitempty"`
+	Dynamic *TestResult `json:"dynamic,omitempty"`
+	Hybrid  *TestResult `json:"hybrid,omitempty"`
 }
 
 // Test matrix containing various payload types and their expected SSZ encodings
@@ -212,15 +235,58 @@ func writeMainFile(filename string, payload TestPayload) error {
 import (
 	"bytes"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	
 	dynssz "github.com/pk910/dynamic-ssz"
-	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
 	"codegen_test_%s/types"
 )
+
+type TestResult struct {
+	Method         string `+"`"+`json:"method"`+"`"+`
+	HashTreeRoot   string `+"`"+`json:"hashTreeRoot"`+"`"+`
+	SSZEqual       bool   `+"`"+`json:"sszEqual"`+"`"+`
+	Error          string `+"`"+`json:"error,omitempty"`+"`"+`
+}
+
+type TestResults struct {
+	Legacy  *TestResult `+"`"+`json:"legacy,omitempty"`+"`"+`
+	Dynamic *TestResult `+"`"+`json:"dynamic,omitempty"`+"`"+`
+	Hybrid  *TestResult `+"`"+`json:"hybrid,omitempty"`+"`"+`
+}
+
+func testCodePath(method string, testUnmarshal func() error, testMarshal func() ([]byte, error), testHashRoot func() ([32]byte, error), expectedSSZ []byte) *TestResult {
+	result := &TestResult{Method: method}
+	
+	// Test unmarshal
+	if err := testUnmarshal(); err != nil {
+		result.Error = fmt.Sprintf("unmarshal error: %%v", err)
+		return result
+	}
+	
+	// Test marshal
+	marshalData, err := testMarshal()
+	if err != nil {
+		result.Error = fmt.Sprintf("marshal error: %%v", err)
+		return result
+	}
+	
+	// Check SSZ equality
+	result.SSZEqual = bytes.Equal(marshalData, expectedSSZ)
+	
+	// Test hash tree root
+	hashRoot, err := testHashRoot()
+	if err != nil {
+		result.Error = fmt.Sprintf("hash tree root error: %%v", err)
+		return result
+	}
+	
+	result.HashTreeRoot = hex.EncodeToString(hashRoot[:])
+	return result
+}
 
 func main() {
 	// Get SSZ hex from command line
@@ -236,107 +302,70 @@ func main() {
 	
 	// Get specs
 	specs := types.GetSpecs()
+	dynssz.SetGlobalSpecs(specs)
 	
 	// Create DynSSZ instance
 	ds := dynssz.NewDynSsz(specs)
 	
-	fmt.Printf("=== Code Generation Test Results ===\n")
-	fmt.Printf("SSZ Input: %%s\n", sszHex)
+	results := &TestResults{}
 	
-	// Test 1: Unmarshal with all available code paths
-	fmt.Printf("\n--- Testing Unmarshal ---\n")
-	
-	// Try dynamic unmarshal
-	var testValue2 types.TestPayload
-	var unmarshalErr2 error
-	if dynUnmarshaler, ok := interface{}(&testValue2).(sszutils.DynamicUnmarshaler); ok {
-		unmarshalErr2 = dynUnmarshaler.UnmarshalSSZDyn(ds, expectedSSZ)
-		fmt.Printf("Unmarshal Method: Dynamic (UnmarshalSSZDyn)\n")
-		if unmarshalErr2 != nil {
-			fmt.Printf("Dynamic Unmarshal Error: %%v\n", unmarshalErr2)
-		}
-	} else {
-		fmt.Printf("Unmarshal Method: Dynamic not available\n")
+	// Test Legacy code path (if available)
+	if _, ok := interface{}((*types.TestPayload)(nil)).(sszutils.FastsszMarshaler); ok {
+		var legacyValue types.TestPayload
+		results.Legacy = testCodePath("legacy",
+			func() error {
+				return legacyValue.UnmarshalSSZ(expectedSSZ)
+			},
+			func() ([]byte, error) {
+				return legacyValue.MarshalSSZ()
+			},
+			func() ([32]byte, error) {
+				return legacyValue.HashTreeRoot()
+			},
+			expectedSSZ,
+		)
 	}
 	
-	// Always try reflection unmarshal
-	var testValue3 types.TestPayload
-	unmarshalErr3 := ds.UnmarshalSSZ(&testValue3, expectedSSZ)
-	fmt.Printf("Unmarshal Method: Reflection (fallback)\n")
-	if unmarshalErr3 != nil {
-		fmt.Printf("Reflection Unmarshal Error: %%v\n", unmarshalErr3)
+	// Test Dynamic code path (if available)
+	if _, ok := interface{}((*types.TestPayload)(nil)).(sszutils.DynamicMarshaler); ok {
+		var dynamicValue types.TestPayload
+		results.Dynamic = testCodePath("dynamic",
+			func() error {
+				return dynamicValue.UnmarshalSSZDyn(ds, expectedSSZ)
+			},
+			func() ([]byte, error) {
+				buf := make([]byte, 0)
+				return dynamicValue.MarshalSSZDyn(ds, buf)
+			},
+			func() ([32]byte, error) {
+				return dynamicValue.HashTreeRootDyn(ds)
+			},
+			expectedSSZ,
+		)
 	}
 	
-	// Use the first successful unmarshal for further tests
-	var testValue types.TestPayload
-	var unmarshalSuccess bool
-	if _, ok := interface{}(&testValue2).(sszutils.DynamicUnmarshaler); ok && unmarshalErr2 == nil {
-		testValue = testValue2
-		unmarshalSuccess = true
-		fmt.Printf("Using Dynamic unmarshaled value\n")
-	} else if unmarshalErr3 == nil {
-		testValue = testValue3
-		unmarshalSuccess = true
-		fmt.Printf("Using Reflection unmarshaled value\n")
-	} else {
-		log.Fatal("All unmarshal methods failed")
+	// Test Hybrid/Reflection code path (always available)
+	var hybridValue types.TestPayload
+	results.Hybrid = testCodePath("hybrid",
+		func() error {
+			return ds.UnmarshalSSZ(&hybridValue, expectedSSZ)
+		},
+		func() ([]byte, error) {
+			return ds.MarshalSSZ(&hybridValue)
+		},
+		func() ([32]byte, error) {
+			return ds.HashTreeRoot(&hybridValue)
+		},
+		expectedSSZ,
+	)
+	
+	// Output results as JSON
+	output, err := json.MarshalIndent(results, "", "  ")
+	if err != nil {
+		log.Fatalf("Failed to marshal results: %%v", err)
 	}
 	
-	fmt.Printf("Unmarshal Success: %%t\n", unmarshalSuccess)
-	
-	// Test 2: Marshal with generated code
-	fmt.Printf("\n--- Testing Marshal ---\n")
-	var marshalErr error
-	var marshalData []byte
-	
-	if dynMarshaler, ok := interface{}(&testValue).(sszutils.DynamicMarshaler); ok {
-		buf := make([]byte, 0)
-		marshalData, marshalErr = dynMarshaler.MarshalSSZDyn(ds, buf)
-		fmt.Printf("Marshal Method: Dynamic (MarshalSSZDyn)\n")
-	} else {
-		// Fallback to reflection
-		marshalData, marshalErr = ds.MarshalSSZ(&testValue)
-		fmt.Printf("Marshal Method: Reflection (fallback)\n")
-	}
-	
-	if marshalErr != nil {
-		log.Fatalf("Marshal failed: %%v", marshalErr)
-	}
-	
-	fmt.Printf("Generated SSZ: %%s\n", hex.EncodeToString(marshalData))
-	fmt.Printf("Expected SSZ:  %%s\n", hex.EncodeToString(expectedSSZ))
-	fmt.Printf("SSZ Match: %%t\n", bytes.Equal(marshalData, expectedSSZ))
-	
-	// Test 3: Hash tree root with generated code
-	fmt.Printf("\n--- Testing Hash Tree Root ---\n")
-	var hashErr error
-	var hashRoot [32]byte
-	
-	if dynHasher, ok := interface{}(&testValue).(sszutils.DynamicHashRoot); ok {
-		// DynamicHashRoot uses HashTreeRootDyn which requires a hasher
-		pool := &hasher.FastHasherPool
-		hh := pool.Get()
-		defer func() {
-			pool.Put(hh)
-		}()
-		hashErr = dynHasher.HashTreeRootDyn(ds, hh)
-		if hashErr == nil {
-			hashRoot, _ = hh.HashRoot()
-		}
-		fmt.Printf("Hash Method: Dynamic (HashTreeRootDyn)\n") 
-	} else {
-		// Fallback to reflection
-		hashRoot, hashErr = ds.HashTreeRoot(&testValue)
-		fmt.Printf("Hash Method: Reflection (fallback)\n")
-	}
-	
-	if hashErr != nil {
-		log.Fatalf("Hash tree root failed: %%v", hashErr)
-	}
-	
-	fmt.Printf("Generated Hash: %%s\n", hex.EncodeToString(hashRoot[:]))
-	
-	fmt.Printf("\n=== Test Completed ===\n")
+	fmt.Println(string(output))
 }
 `, payload.Name)
 
@@ -372,12 +401,37 @@ func runCodegen(tempDir string) error {
 		return fmt.Errorf("go mod tidy failed: %v\nOutput: %s", err, string(output))
 	}
 
-	cmd := exec.CommandContext(ctx, "go", "run", "./codegen")
+	// Build codegen binary with coverage
+	codegenBinary := filepath.Join(tempDir, "codegen_executable")
+	buildCmd := exec.CommandContext(ctx, "go", "build", "-cover", "-coverpkg=...", "-o", codegenBinary, "./codegen")
+	buildCmd.Dir = tempDir
+	if output, err := buildCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("codegen build failed: %v\nOutput: %s", err, string(output))
+	}
+
+	// Run codegen with coverage collection
+	coverDir := filepath.Join(tempDir, "codegen_coverage")
+	os.MkdirAll(coverDir, 0755)
+
+	cmd := exec.CommandContext(ctx, codegenBinary)
 	cmd.Dir = tempDir
+	cmd.Env = append(os.Environ(), fmt.Sprintf("GOCOVERDIR=%s", coverDir))
 	output, err := cmd.CombinedOutput()
 
 	if err != nil {
 		return fmt.Errorf("codegen execution failed: %v\nOutput: %s", err, string(output))
+	}
+
+	// Convert codegen coverage to text format and append
+	coverFile := filepath.Join(tempDir, "codegen_coverage.out")
+	convertCmd := exec.CommandContext(ctx, "go", "tool", "covdata", "textfmt",
+		"-i="+coverDir, "-o="+coverFile)
+	if convertErr := convertCmd.Run(); convertErr != nil {
+		// Log but don't fail - coverage conversion is optional
+		fmt.Printf("Warning: Codegen coverage conversion failed: %v\n", convertErr)
+	} else {
+		// Append to global coverage file
+		appendCoverageFile(coverFile)
 	}
 
 	return nil
@@ -387,22 +441,40 @@ func runTest(tempDir string, sszHex string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "go", "run", ".", sszHex)
+	// Build test executable (no coverage needed for test execution)
+	testBinary := filepath.Join(tempDir, "test_executable")
+	buildCmd := exec.CommandContext(ctx, "go", "build", "-o", testBinary, ".")
+	buildCmd.Dir = tempDir
+	if output, err := buildCmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("test build failed: %v\nOutput: %s", err, string(output))
+	}
+
+	// Run test executable
+	cmd := exec.CommandContext(ctx, testBinary, sszHex)
 	cmd.Dir = tempDir
-	output, _ := cmd.CombinedOutput()
+	output, err := cmd.CombinedOutput()
+
+	if err != nil {
+		return "", fmt.Errorf("test execution failed: %v\nOutput: %s", err, string(output))
+	}
 
 	return string(output), nil
 }
 
 func verifyResults(t *testing.T, payload TestPayload, output string) error {
-	// Unmarshal the test value and calculate expected hash tree root using reflection
+	// Parse JSON output
+	var results TestResults
+	if err := json.Unmarshal([]byte(output), &results); err != nil {
+		return fmt.Errorf("failed to parse JSON output: %v", err)
+	}
+
+	// Calculate expected hash tree root using reflection
 	ds := dynssz.NewDynSsz(payload.Specs)
 	sszBytes, err := hex.DecodeString(payload.SSZHex)
 	if err != nil {
 		return fmt.Errorf("failed to decode SSZ hex: %v", err)
 	}
 
-	// Create a new instance of the type and unmarshal
 	testValue := reflect.New(payload.Type).Interface()
 	if err := ds.UnmarshalSSZ(testValue, sszBytes); err != nil {
 		return fmt.Errorf("failed to unmarshal test data: %v", err)
@@ -412,65 +484,69 @@ func verifyResults(t *testing.T, payload TestPayload, output string) error {
 	if err != nil {
 		return fmt.Errorf("failed to calculate expected hash tree root: %v", err)
 	}
-
-	// Parse output for verification
-	lines := strings.Split(output, "\n")
-
-	var unmarshalSuccess, sszMatch, hashFound bool
-	var generatedHash string
-	var unmarshalMethods []string
-
-	for _, line := range lines {
-		// Check unmarshal results
-		if strings.Contains(line, "Unmarshal Success: true") {
-			unmarshalSuccess = true
-		}
-		if strings.Contains(line, "Unmarshal Method: Legacy (UnmarshalSSZ)") && !strings.Contains(line, "not available") {
-			unmarshalMethods = append(unmarshalMethods, "Legacy")
-		}
-		if strings.Contains(line, "Unmarshal Method: Dynamic (UnmarshalSSZDyn)") && !strings.Contains(line, "not available") {
-			unmarshalMethods = append(unmarshalMethods, "Dynamic")
-		}
-		if strings.Contains(line, "Unmarshal Method: Reflection (fallback)") {
-			unmarshalMethods = append(unmarshalMethods, "Reflection")
-		}
-
-		// Check marshal results
-		if strings.Contains(line, "SSZ Match: true") {
-			sszMatch = true
-		}
-
-		// Check hash results
-		if strings.HasPrefix(line, "Generated Hash: ") {
-			hashFound = true
-			generatedHash = strings.TrimPrefix(line, "Generated Hash: ")
-		}
-	}
-
-	if !unmarshalSuccess {
-		return fmt.Errorf("unmarshal failed in output")
-	}
-
-	if !sszMatch {
-		return fmt.Errorf("SSZ encoding mismatch in output")
-	}
-
-	if !hashFound {
-		return fmt.Errorf("generated hash not found in output")
-	}
-
-	// Verify hash matches reflection calculation
 	expectedHashHex := hex.EncodeToString(expectedRoot[:])
-	if generatedHash != expectedHashHex {
-		return fmt.Errorf("hash mismatch: generated=%s, expected=%s", generatedHash, expectedHashHex)
+
+	// Verify at least one code path succeeded
+	hasSuccess := false
+	var testedMethods []string
+
+	// Check legacy results
+	if results.Legacy != nil {
+		testedMethods = append(testedMethods, "legacy")
+		if results.Legacy.Error == "" {
+			hasSuccess = true
+			if !results.Legacy.SSZEqual {
+				return fmt.Errorf("legacy: SSZ encoding mismatch")
+			}
+			if results.Legacy.HashTreeRoot != expectedHashHex {
+				return fmt.Errorf("legacy: hash mismatch: generated=%s, expected=%s", results.Legacy.HashTreeRoot, expectedHashHex)
+			}
+		}
 	}
 
-	// Verify test completed successfully
-	if !strings.Contains(output, "=== Test Completed ===") {
-		return fmt.Errorf("test did not complete successfully")
+	// Check dynamic results
+	if results.Dynamic != nil {
+		testedMethods = append(testedMethods, "dynamic")
+		if results.Dynamic.Error == "" {
+			hasSuccess = true
+			if !results.Dynamic.SSZEqual {
+				return fmt.Errorf("dynamic: SSZ encoding mismatch")
+			}
+			if results.Dynamic.HashTreeRoot != expectedHashHex {
+				return fmt.Errorf("dynamic: hash mismatch: generated=%s, expected=%s", results.Dynamic.HashTreeRoot, expectedHashHex)
+			}
+		}
 	}
 
-	t.Logf("✅ Test %s passed - Unmarshal methods: %v, SSZ and hash tree root match reflection", payload.Name, unmarshalMethods)
+	// Check hybrid results (should always be present)
+	if results.Hybrid != nil {
+		testedMethods = append(testedMethods, "hybrid")
+		if results.Hybrid.Error == "" {
+			hasSuccess = true
+			if !results.Hybrid.SSZEqual {
+				return fmt.Errorf("hybrid: SSZ encoding mismatch")
+			}
+			if results.Hybrid.HashTreeRoot != expectedHashHex {
+				return fmt.Errorf("hybrid: hash mismatch: generated=%s, expected=%s", results.Hybrid.HashTreeRoot, expectedHashHex)
+			}
+		}
+	} else {
+		return fmt.Errorf("hybrid results missing - should always be available")
+	}
+
+	if !hasSuccess {
+		return fmt.Errorf("all code paths failed")
+	}
+
+	// Verify all successful paths have matching hash tree roots
+	if results.Legacy != nil && results.Legacy.Error == "" && results.Dynamic != nil && results.Dynamic.Error == "" {
+		if results.Legacy.HashTreeRoot != results.Dynamic.HashTreeRoot {
+			return fmt.Errorf("hash tree root mismatch between legacy and dynamic: legacy=%s, dynamic=%s",
+				results.Legacy.HashTreeRoot, results.Dynamic.HashTreeRoot)
+		}
+	}
+
+	t.Logf("✅ Test %s passed - Methods tested: %v, SSZ and hash tree roots match", payload.Name, testedMethods)
 	return nil
 }
 
@@ -495,4 +571,91 @@ func formatTypeString(t reflect.Type) string {
 	default:
 		return t.String()
 	}
+}
+
+// appendCoverageFile appends coverage data from a test run to the combined coverage file
+func appendCoverageFile(coverFile string) error {
+	coverageMutex.Lock()
+	defer coverageMutex.Unlock()
+
+	_, filePath, _, _ := runtime.Caller(0)
+	currentDir := filepath.Dir(filePath)
+
+	// Read the new coverage data
+	newData, err := os.Open(coverFile)
+	if err != nil {
+		return fmt.Errorf("failed to open coverage file %s: %v", coverFile, err)
+	}
+	defer newData.Close()
+
+	// Check if combined coverage file exists
+	combinedFile := filepath.Join(currentDir, combinedCoverageFile)
+	var combined *os.File
+
+	if _, err := os.Stat(combinedFile); os.IsNotExist(err) {
+		// Create new combined file
+		combined, err = os.Create(combinedFile)
+		if err != nil {
+			return fmt.Errorf("failed to create combined coverage file: %v", err)
+		}
+		defer combined.Close()
+
+		// Write header
+		fmt.Fprintln(combined, "mode: set")
+	} else {
+		// Append to existing file
+		combined, err = os.OpenFile(combinedFile, os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			return fmt.Errorf("failed to open combined coverage file: %v", err)
+		}
+		defer combined.Close()
+	}
+
+	// Copy coverage data (skip "mode: set" line from new file)
+	scanner := bufio.NewScanner(newData)
+	firstLine := true
+	for scanner.Scan() {
+		line := scanner.Text()
+		// Skip mode line from individual coverage files
+		if firstLine && strings.HasPrefix(line, "mode:") {
+			firstLine = false
+			continue
+		}
+		firstLine = false
+
+		// Only add non-empty lines and filter out temporary test packages
+		if strings.TrimSpace(line) != "" {
+			// Only include coverage from github.com/pk910/dynamic-ssz, exclude temporary test packages
+			if strings.Contains(line, "github.com/pk910/dynamic-ssz") && !strings.Contains(line, "codegen_test_") {
+				fmt.Fprintln(combined, line)
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("error reading coverage file: %v", err)
+	}
+
+	return nil
+}
+
+// TestMain handles setup and cleanup for the code generation tests
+func TestMain(m *testing.M) {
+	// Clean up any previous coverage file
+	os.Remove(combinedCoverageFile)
+
+	// Run tests
+	exitCode := m.Run()
+
+	// Print coverage file location (only if not running from Makefile)
+	if _, err := os.Stat(combinedCoverageFile); err == nil {
+		// Check if we're running from make (quieter output)
+		if os.Getenv("MAKEFLAGS") == "" {
+			fmt.Printf("\n📊 Combined coverage file created: %s\n", combinedCoverageFile)
+			fmt.Printf("📊 To view coverage: go tool cover -html=%s\n", combinedCoverageFile)
+			fmt.Printf("📊 To get coverage percentage: go tool cover -func=%s\n", combinedCoverageFile)
+		}
+	}
+
+	os.Exit(exitCode)
 }
