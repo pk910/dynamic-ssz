@@ -47,7 +47,6 @@ func codegenCommand() {
 	generator := codegen.NewCodeGenerator(ds)
 
 	_, filePath, _, _ := runtime.Caller(0)
-	log.Printf("Current file path: %s", filePath)
 	currentDir := filepath.Dir(filePath)
 
 	generator.BuildFile(

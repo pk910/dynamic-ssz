@@ -515,8 +515,6 @@ func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 		logfn("merkleize-progressive-mixin: %x (%d) ", input, num)
 	}
 
-	logfn("merkleize-progressive-mixin: %x (%d) ", input, num)
-
 	// input is of the form [<progressive_root><size>] of 64 bytes
 	h.hash(input, input)
 	h.buf = append(h.buf[:indx], input[:32]...)
