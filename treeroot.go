@@ -398,10 +398,18 @@ func (d *DynSsz) buildRootFromCompatibleUnion(sourceType *TypeDescriptor, source
 	}
 	dataField = dataField.Elem()
 
+	hashIndex := hh.Index()
+
 	err := d.buildRootFromType(variantDesc, dataField, hh, false, idt+2)
 	if err != nil {
 		return fmt.Errorf("failed to hash union variant %d: %w", variant, err)
 	}
+
+	// mixin the selector
+	hh.PutUint8(variant)
+
+	// merkleize
+	hh.Merkleize(hashIndex)
 
 	return nil
 }

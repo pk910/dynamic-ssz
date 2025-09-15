@@ -291,7 +291,7 @@ var treerootTestMatrix = []struct {
 			Field1 uint32
 			Field2 [2]uint8
 		}]{Variant: 0, Data: uint32(0x12345678)}, 0x4242},
-		fromHex("0xf72856610b8e134c3abbeccf3a6545ef026d9f456a57618628e15c2863c0dc6a"),
+		fromHex("0x631276fc281634b5224241dd547762be15e2f54e361c6bdc8f921a4d5125e954"),
 	},
 
 	// string types
