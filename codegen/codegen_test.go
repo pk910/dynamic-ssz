@@ -403,7 +403,7 @@ func runCodegen(tempDir string) error {
 
 	// Build codegen binary with coverage
 	codegenBinary := filepath.Join(tempDir, "codegen_executable")
-	buildCmd := exec.CommandContext(ctx, "go", "build", "-cover", "-coverpkg=...", "-o", codegenBinary, "./codegen")
+	buildCmd := exec.CommandContext(ctx, "go", "build", "-cover", "-coverpkg=...", "-covermode=atomic", "-o", codegenBinary, "./codegen")
 	buildCmd.Dir = tempDir
 	if output, err := buildCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("codegen build failed: %v\nOutput: %s", err, string(output))

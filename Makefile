@@ -59,7 +59,7 @@ all: clean fmt check test bench ## Run all checks and tests
 coverage: ## Run tests with coverage (including codegen tests)
 	@echo "Running tests with coverage..."
 	@echo "1. Running main unit tests..."
-	@go test ./... -coverprofile=coverage_main.out -coverpkg=./...
+	@go test ./... -coverprofile=coverage_main.out -coverpkg=...
 	@echo "3. Combining coverage files..."
 	@$(MAKE) coverage-merge
 	@go tool cover -html=coverage_combined.out -o coverage.html

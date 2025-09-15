@@ -106,7 +106,7 @@ jobs:
         
     - name: Run unit tests with coverage
       run: |
-        go test -v -race -coverprofile=unit-coverage.out -covermode=atomic ./...
+        go test -v -race -coverprofile=unit-coverage.out -coverpkg=... -covermode=atomic ./...
         
     - name: Download spec test coverage artifacts
       uses: actions/download-artifact@v4
