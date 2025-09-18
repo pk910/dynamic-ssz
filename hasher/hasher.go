@@ -30,9 +30,9 @@ var (
 
 // DefaultHasherPool is a default hasher pool
 var DefaultHasherPool HasherPool
-var FastHasherPool HasherPool = HasherPool{
-	HashFn: hashtreeHashByteSlice,
-}
+
+// FastHasherPool is the fast hasher pool that uses the hashtree library if cgo is enabled
+var FastHasherPool HasherPool
 
 var hasherInitialized bool
 var hasherInitMutex sync.Mutex
