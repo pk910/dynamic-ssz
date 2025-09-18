@@ -1,3 +1,6 @@
+//go:build cgo
+// +build cgo
+
 package hasher
 
 import (
@@ -31,4 +34,8 @@ func hashtreeHashByteSlice(digests []byte, chunks []byte) error {
 	hashtree.Hash(chunkedDigest, chunkedChunks)
 
 	return nil
+}
+
+func init() {
+	FastHasherPool.HashFn = hashtreeHashByteSlice
 }
