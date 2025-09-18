@@ -110,7 +110,7 @@ jobs:
 
     - name: Run unit tests with coverage (without cgo)
       run: |
-        CGO_ENABLED=0 go test -v -race -coverprofile=unit-coverage-nocgo.out -covermode=atomic ./...
+        CGO_ENABLED=0 go test -v -coverprofile=unit-coverage-nocgo.out -covermode=atomic ./...
         
     - name: Download spec test coverage artifacts
       uses: actions/download-artifact@v4
