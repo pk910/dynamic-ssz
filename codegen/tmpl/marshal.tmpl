@@ -63,6 +63,10 @@ dst = sszutils.MarshalUint32(dst, uint32(t))
 dst = sszutils.MarshalUint64(dst, uint64(t))
 {{- end }}
 
+{{ define "marshal_uint64_time" }}
+dst = sszutils.MarshalUint64(dst, uint64(t.Unix()))
+{{- end }}
+
 {{ define "marshal_struct" }}
 {{- if .HasDynamicFields }}
 dstlen := len(dst)

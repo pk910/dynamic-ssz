@@ -50,6 +50,7 @@ const (
 	GoTypeFlagIsPointer   GoTypeFlag = 1 << iota // Whether the type is a pointer type
 	GoTypeFlagIsByteArray                        // Whether the type is a byte array
 	GoTypeFlagIsString                           // Whether the type is a string type
+	GoTypeFlagIsTime                             // Whether the type is a time.Time type
 )
 
 // TypeDescriptor represents a cached, optimized descriptor for a type's SSZ encoding/decoding
@@ -227,11 +228,16 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 	if desc.Kind == reflect.String {
 		desc.GoTypeFlags |= GoTypeFlagIsString
 	}
+	if t.PkgPath() == "time" && t.Name() == "Time" {
+		desc.GoTypeFlags |= GoTypeFlagIsTime
+	}
 
 	// auto-detect ssz type if not specified
 	if sszType == SszUnspecifiedType {
 		// detect some well-known and widely used types
 		switch {
+		case t.PkgPath() == "time" && t.Name() == "Time":
+			sszType = SszUint64Type
 		case t.PkgPath() == "github.com/holiman/uint256" && t.Name() == "Int":
 			sszType = SszUint256Type
 		case t.PkgPath() == "github.com/pk910/dynamic-ssz" && strings.HasPrefix(t.Name(), "CompatibleUnion["):
@@ -338,8 +344,8 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		}
 		desc.Size = 4
 	case SszUint64Type:
-		if desc.Kind != reflect.Uint64 {
-			return nil, fmt.Errorf("uint64 ssz type can only be represented by uint64 types, got %v", desc.Kind)
+		if desc.Kind != reflect.Uint64 && desc.GoTypeFlags&GoTypeFlagIsTime == 0 {
+			return nil, fmt.Errorf("uint64 ssz type can only be represented by uint64 or time.Time types, got %v", desc.Kind)
 		}
 		if len(sizeHints) > 0 && sizeHints[0].Size != 8 {
 			return nil, fmt.Errorf("uint64 ssz type must be ssz-size:8, got %v", sizeHints[0].Size)

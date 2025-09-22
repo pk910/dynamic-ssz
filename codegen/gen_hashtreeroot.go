@@ -65,10 +65,16 @@ func generateHashTreeRoot(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor
 			}
 			return fmt.Sprintf("hh.PutUint32(uint32(%s))", varName)
 		case dynssz.SszUint64Type:
-			if pack {
-				return fmt.Sprintf("hh.AppendUint64(uint64(%s))", varName)
+			var uintVar string
+			if sourceType.GoTypeFlags&dynssz.GoTypeFlagIsTime != 0 {
+				uintVar = fmt.Sprintf("uint64(%s.Unix())", varName)
+			} else {
+				uintVar = fmt.Sprintf("uint64(%s)", varName)
 			}
-			return fmt.Sprintf("hh.PutUint64(uint64(%s))", varName)
+			if pack {
+				return fmt.Sprintf("hh.AppendUint64(%s)", uintVar)
+			}
+			return fmt.Sprintf("hh.PutUint64(%s)", uintVar)
 		case dynssz.SszVectorType, dynssz.SszListType:
 			if sourceType.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
 				// Simple byte arrays/slices can be inlined directly
@@ -482,7 +488,11 @@ func generateHashTreeRoot(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor
 				}
 			case dynssz.SszUint64Type:
 				model := map[string]interface{}{"pack": pack}
-				if err := codeTpl.ExecuteTemplate(&code, "hashtreeroot_uint64", model); err != nil {
+				tpl := "hashtreeroot_uint64"
+				if sourceType.GoTypeFlags&dynssz.GoTypeFlagIsTime != 0 {
+					tpl = "hashtreeroot_uint64_time"
+				}
+				if err := codeTpl.ExecuteTemplate(&code, tpl, model); err != nil {
 					return nil, err
 				}
 			case dynssz.SszCustomType:

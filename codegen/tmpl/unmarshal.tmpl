@@ -81,6 +81,10 @@ t = ({{ .TypeName }})(sszutils.UnmarshallUint32(buf))
 t = ({{ .TypeName }})(sszutils.UnmarshallUint64(buf))
 {{- end }}
 
+{{ define "unmarshal_uint64_time" }}
+t = ({{ .TypeName }})(time.Unix(int64(sszutils.UnmarshallUint64(buf)), 0))
+{{- end }}
+
 {{ define "unmarshal_struct" }}
 {{- if .HasDynamicSizes }}
 bufpos := 0

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
@@ -160,10 +161,20 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 				hh.PutUint32(uint32(sourceValue.Uint()))
 			}
 		case SszUint64Type:
-			if pack {
-				hh.AppendUint64(uint64(sourceValue.Uint()))
+			var uintVal uint64
+			if sourceType.GoTypeFlags&GoTypeFlagIsTime != 0 {
+				timeVal, isTime := sourceValue.Interface().(time.Time)
+				if !isTime {
+					return fmt.Errorf("time.Time type expected, got %v", sourceType.Type.Name())
+				}
+				uintVal = uint64(timeVal.Unix())
 			} else {
-				hh.PutUint64(uint64(sourceValue.Uint()))
+				uintVal = uint64(sourceValue.Uint())
+			}
+			if pack {
+				hh.AppendUint64(uintVal)
+			} else {
+				hh.PutUint64(uintVal)
 			}
 		case SszUint128Type, SszUint256Type:
 			err := d.buildRootFromLargeUint(sourceType, sourceValue, hh, pack, idt)

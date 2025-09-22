@@ -102,6 +102,10 @@ hh.PutUint32(uint32(t))
 hh.PutUint64(uint64(t))
 {{- end }}
 
+{{ define "hashtreeroot_uint64_time" }}
+hh.PutUint64(uint64(t.Unix()))
+{{- end }}
+
 {{ define "hashtreeroot_struct" }}
 idx := hh.Index()
 {{- range .Fields }}

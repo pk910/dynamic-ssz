@@ -86,7 +86,11 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 		case dynssz.SszUint32Type:
 			return fmt.Sprintf("%s = (%s)(sszutils.UnmarshallUint32(%s))", varName, typeName, bufExpr)
 		case dynssz.SszUint64Type:
-			return fmt.Sprintf("%s = (%s)(sszutils.UnmarshallUint64(%s))", varName, typeName, bufExpr)
+			if sourceType.GoTypeFlags&dynssz.GoTypeFlagIsTime != 0 {
+				return fmt.Sprintf("%s = (%s)(time.Unix(int64(sszutils.UnmarshallUint64(%s)), 0))", varName, typeName, bufExpr)
+			} else {
+				return fmt.Sprintf("%s = (%s)(sszutils.UnmarshallUint64(%s))", varName, typeName, bufExpr)
+			}
 		default:
 			return ""
 		}
@@ -492,7 +496,11 @@ func generateUnmarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, c
 				}
 				unmarshalFn.UsedValue = false
 			case dynssz.SszUint64Type:
-				if err := codeTpl.ExecuteTemplate(&code, "unmarshal_uint64", tmpl.UnmarshalPrimitive{
+				tpl := "unmarshal_uint64"
+				if sourceType.GoTypeFlags&dynssz.GoTypeFlagIsTime != 0 {
+					tpl = "unmarshal_uint64_time"
+				}
+				if err := codeTpl.ExecuteTemplate(&code, tpl, tmpl.UnmarshalPrimitive{
 					TypeName: typePrinter.TypeString(sourceType.Type),
 				}); err != nil {
 					return nil, err

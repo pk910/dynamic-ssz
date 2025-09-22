@@ -70,7 +70,11 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 		case dynssz.SszUint32Type:
 			return fmt.Sprintf("dst = sszutils.MarshalUint32(dst, uint32(%s))", varName)
 		case dynssz.SszUint64Type:
-			return fmt.Sprintf("dst = sszutils.MarshalUint64(dst, uint64(%s))", varName)
+			if sourceType.GoTypeFlags&dynssz.GoTypeFlagIsTime != 0 {
+				return fmt.Sprintf("dst = sszutils.MarshalUint64(dst, uint64(%s.Unix()))", varName)
+			} else {
+				return fmt.Sprintf("dst = sszutils.MarshalUint64(dst, uint64(%s))", varName)
+			}
 		default:
 			return ""
 		}
@@ -385,7 +389,11 @@ func generateMarshal(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, cod
 					return nil, err
 				}
 			case dynssz.SszUint64Type:
-				if err := codeTpl.ExecuteTemplate(&code, "marshal_uint64", nil); err != nil {
+				tpl := "marshal_uint64"
+				if sourceType.GoTypeFlags&dynssz.GoTypeFlagIsTime != 0 {
+					tpl = "marshal_uint64_time"
+				}
+				if err := codeTpl.ExecuteTemplate(&code, tpl, nil); err != nil {
 					return nil, err
 				}
 			case dynssz.SszCustomType:
