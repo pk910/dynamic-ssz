@@ -141,7 +141,6 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 			} else {
 				buf = sszutils.MarshalUint64(buf, uint64(sourceValue.Uint()))
 			}
-			buf = sszutils.MarshalUint64(buf, uint64(sourceValue.Uint()))
 		default:
 			return nil, fmt.Errorf("unknown type: %v", sourceType)
 		}
