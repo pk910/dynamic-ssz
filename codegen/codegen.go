@@ -215,7 +215,10 @@ func (cg *CodeGenerator) GenerateToMap() (map[string]string, error) {
 				desc.SszCompatFlags |= dynssz.SszCompatFlagFastSSZMarshaler
 			}
 			if !t.Options.NoHashTreeRoot && (t.Options.CreateLegacyFn || t.Options.WithoutDynamicExpressions) {
-				desc.SszCompatFlags |= dynssz.SszCompatFlagFastSSZHasher
+				if t.Options.CreateLegacyFn {
+					desc.SszCompatFlags |= dynssz.SszCompatFlagFastSSZHasher
+				}
+				desc.SszCompatFlags |= dynssz.SszCompatFlagHashTreeRootWith
 			}
 
 			t.Descriptor = desc

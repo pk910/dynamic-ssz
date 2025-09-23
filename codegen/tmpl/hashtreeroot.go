@@ -73,6 +73,7 @@ type HashTreeRootBitlist struct {
 	TypeName      string
 	MaxLength     int
 	MaxExpr       string
+	HasherAlias   string
 	HasLimit      bool
 	IsProgressive bool
 }

@@ -235,7 +235,7 @@ maxLen := uint64({{ .MaxLength }})
 var size uint64
 var bitlist []byte
 hh.WithTemp(func(tmp []byte) []byte {
-	tmp, size = hasher.ParseBitlist(tmp[:0], t[:])
+	tmp, size = {{ .HasherAlias }}.ParseBitlist(tmp[:0], t[:])
 	bitlist = tmp
 	return tmp
 })

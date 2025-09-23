@@ -418,6 +418,7 @@ func generateHashTreeRoot(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor
 					MaxExpr:       "",
 					HasLimit:      sourceType.SszTypeFlags&dynssz.SszTypeFlagHasLimit != 0,
 					IsProgressive: (sourceType.SszType == dynssz.SszProgressiveBitlistType),
+					HasherAlias:   typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher"),
 				}
 
 				if maxExpression != nil {
@@ -529,7 +530,11 @@ func generateHashTreeRoot(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor
 		CreateLegacyFn:        options.CreateLegacyFn,
 		CreateDynamicFn:       !options.WithoutDynamicExpressions,
 		UsedDynSsz:            usedDynSsz,
-		HasherAlias:           typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher"),
+	}
+
+	if hashTreeRootModel.CreateLegacyFn {
+		hashTreeRootModel.HasherAlias = typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
+		usedDynSsz = true
 	}
 
 	usedDynSsz = usedDynSsz || !options.WithoutDynamicExpressions
