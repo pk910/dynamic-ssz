@@ -138,22 +138,29 @@ func (ctx *sizeContext) sizeType(desc *dynssz.TypeDescriptor, varName string, in
 
 func (ctx *sizeContext) sizeContainer(desc *dynssz.TypeDescriptor, varName string, indent int) error {
 	// Fixed part size
+	staticSize := 0
 	for idx, field := range desc.ContainerDesc.Fields {
 		if field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
 			// Dynamic field - add offset size
-			ctx.appendCode(indent, "size += 4 // Offset for field #%d '%s'\n", idx, field.Name)
-		} else {
-			// Fixed field - add its size directly
-			if field.Type.Size > 0 && field.Type.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr == 0 {
-				ctx.appendCode(indent, "size += %d // Field #%d '%s'\n", field.Type.Size, idx, field.Name)
-			} else {
-				// Need to calculate size
-				ctx.appendCode(indent, "{ // Field #%d '%s'\n", idx, field.Name)
-				if err := ctx.sizeType(field.Type, fmt.Sprintf("%s.%s", varName, field.Name), indent+1, false); err != nil {
-					return err
-				}
-				ctx.appendCode(indent, "}\n")
+			staticSize += 4
+			ctx.appendCode(indent, "// Field #%d '%s' offset (4 bytes)\n", idx, field.Name)
+		} else if field.Type.Size > 0 && (field.Type.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr == 0 || ctx.options.WithoutDynamicExpressions) {
+			staticSize += int(field.Type.Size)
+			ctx.appendCode(indent, "// Field #%d '%s' static (%d bytes)\n", idx, field.Name, field.Type.Size)
+		}
+	}
+
+	ctx.appendCode(indent, "size += %d\n", staticSize)
+
+	// Add calculated size for static fields
+	for idx, field := range desc.ContainerDesc.Fields {
+		if field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic == 0 && (field.Type.Size == 0 || (field.Type.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions)) {
+			// Need to calculate size
+			ctx.appendCode(indent, "{ // Field #%d '%s'\n", idx, field.Name)
+			if err := ctx.sizeType(field.Type, fmt.Sprintf("%s.%s", varName, field.Name), indent+1, false); err != nil {
+				return err
 			}
+			ctx.appendCode(indent, "}\n")
 		}
 	}
 

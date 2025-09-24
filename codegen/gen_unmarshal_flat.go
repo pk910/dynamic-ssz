@@ -87,8 +87,34 @@ func (ctx *unmarshalContext) getValVar() string {
 	return fmt.Sprintf("val%d", ctx.valVarCounter)
 }
 
-func (ctx *unmarshalContext) isPrimitive(desc *dynssz.TypeDescriptor) bool {
-	return desc.SszType == dynssz.SszBoolType || desc.SszType == dynssz.SszUint8Type || desc.SszType == dynssz.SszUint16Type || desc.SszType == dynssz.SszUint32Type || desc.SszType == dynssz.SszUint64Type
+func (ctx *unmarshalContext) isInlinable(desc *dynssz.TypeDescriptor) bool {
+	// Inline primitive types
+	if desc.SszType == dynssz.SszBoolType || desc.SszType == dynssz.SszUint8Type || desc.SszType == dynssz.SszUint16Type || desc.SszType == dynssz.SszUint32Type || desc.SszType == dynssz.SszUint64Type {
+		return true
+	}
+
+	// Inline byte arrays/slices
+	if (desc.SszType == dynssz.SszVectorType || desc.SszType == dynssz.SszListType) && desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
+		return true
+	}
+
+	// Inline types with fastssz unmarshaler
+	hasDynamicSize := desc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
+	isFastsszUnmarshaler := desc.SszCompatFlags&dynssz.SszCompatFlagFastSSZMarshaler != 0
+	useFastSsz := !ctx.options.NoFastSsz && isFastsszUnmarshaler && !hasDynamicSize
+	if !useFastSsz && desc.SszType == dynssz.SszCustomType {
+		useFastSsz = true
+	}
+	if useFastSsz {
+		return true
+	}
+
+	// Inline types with generated unmarshal methods
+	if desc.SszCompatFlags&dynssz.SszCompatFlagDynamicUnmarshaler != 0 {
+		return true
+	}
+
+	return false
 }
 
 func (ctx *unmarshalContext) getStaticSizeVar(desc *dynssz.TypeDescriptor) (string, error) {
@@ -173,7 +199,9 @@ func (ctx *unmarshalContext) getStaticSizeVar(desc *dynssz.TypeDescriptor) (stri
 
 func (ctx *unmarshalContext) unmarshalType(desc *dynssz.TypeDescriptor, varName string, indent int, isRoot bool, noBufCheck bool) error {
 	// Handle types that have generated methods we can call
-	useFastSsz := !ctx.options.NoFastSsz && desc.SszCompatFlags&dynssz.SszCompatFlagFastSSZMarshaler != 0
+	hasDynamicSize := desc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
+	isFastsszUnmarshaler := desc.SszCompatFlags&dynssz.SszCompatFlagFastSSZMarshaler != 0
+	useFastSsz := !ctx.options.NoFastSsz && isFastsszUnmarshaler && !hasDynamicSize
 	if !useFastSsz && desc.SszType == dynssz.SszCustomType {
 		useFastSsz = true
 	}
@@ -339,20 +367,20 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *dynssz.TypeDescriptor, var
 			}
 
 			valVar := fmt.Sprintf("%s.%s", varName, field.Name)
-			isPrimitive := ctx.isPrimitive(field.Type)
-			if !isPrimitive {
+			isInlinable := ctx.isInlinable(field.Type)
+			if !isInlinable {
 				valVar = ctx.getValVar()
 				ctx.appendCode(indent, "\t%s := %s.%s\n", valVar, varName, field.Name)
-				if field.Type.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
-					ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.TypeString(field.Type.Type.Elem()))
-				}
+			}
+			if field.Type.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+				ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.TypeString(field.Type.Type.Elem()))
 			}
 
 			if err := ctx.unmarshalType(field.Type, valVar, indent+1, false, true); err != nil {
 				return err
 			}
 
-			if !isPrimitive {
+			if !isInlinable {
 				ctx.appendCode(indent, "\t%s.%s = %s\n", varName, field.Name, valVar)
 			}
 			ctx.appendCode(indent, "}\n")
@@ -407,9 +435,9 @@ func (ctx *unmarshalContext) unmarshalVector(desc *dynssz.TypeDescriptor, varNam
 
 	// create slice if needed
 	if desc.Kind != reflect.Array {
-		ctx.appendCode(indent, "if(len(%s) < %s) {\n", varName, limitVar)
+		ctx.appendCode(indent, "if len(%s) < %s {\n", varName, limitVar)
 		ctx.appendCode(indent, "\t%s = make(%s, %s)\n", varName, ctx.typePrinter.TypeString(desc.Type), limitVar)
-		ctx.appendCode(indent, "} else if(len(%s) > %s) {\n", varName, limitVar)
+		ctx.appendCode(indent, "} else if len(%s) > %s {\n", varName, limitVar)
 		ctx.appendCode(indent, "\t%s = %s[:%s]\n", varName, varName, limitVar)
 		ctx.appendCode(indent, "}\n")
 	}
@@ -448,14 +476,13 @@ func (ctx *unmarshalContext) unmarshalVector(desc *dynssz.TypeDescriptor, varNam
 		ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", limitVar)
 
 		valVar := fmt.Sprintf("%s[i]", varName)
-		isPrimitive := ctx.isPrimitive(desc.ElemDesc)
-		if !isPrimitive {
+		isInlinable := ctx.isInlinable(desc.ElemDesc)
+		if !isInlinable {
 			valVar = ctx.getValVar()
 			ctx.appendCode(indent, "\t%s := %s[i]\n", valVar, varName)
-
-			if desc.ElemDesc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
-				ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.TypeString(desc.ElemDesc.Type.Elem()))
-			}
+		}
+		if desc.ElemDesc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.TypeString(desc.ElemDesc.Type.Elem()))
 		}
 
 		ctx.appendCode(indent, "\tbuf := buf[%s*i : %s*(i+1)]\n", fieldSizeVar, fieldSizeVar)
@@ -463,7 +490,7 @@ func (ctx *unmarshalContext) unmarshalVector(desc *dynssz.TypeDescriptor, varNam
 			return err
 		}
 
-		if !isPrimitive {
+		if !isInlinable {
 			ctx.appendCode(indent, "\t%s[i] = %s\n", varName, valVar)
 		}
 		ctx.appendCode(indent, "}\n")
@@ -532,8 +559,12 @@ func (ctx *unmarshalContext) unmarshalList(desc *dynssz.TypeDescriptor, varName 
 			fieldSizeVar = fmt.Sprintf("%d", desc.ElemDesc.Size)
 		}
 
-		ctx.appendCode(indent, "itemCount := len(buf) / %s\n", fieldSizeVar)
-		ctx.appendCode(indent, "if len(buf)%%%s != 0 {\n\treturn sszutils.ErrUnexpectedEOF\n}\n", fieldSizeVar)
+		if fieldSizeVar == "1" {
+			ctx.appendCode(indent, "itemCount := len(buf)\n")
+		} else {
+			ctx.appendCode(indent, "itemCount := len(buf) / %s\n", fieldSizeVar)
+			ctx.appendCode(indent, "if len(buf)%%%s != 0 {\n\treturn sszutils.ErrUnexpectedEOF\n}\n", fieldSizeVar)
+		}
 		if desc.Kind != reflect.Array {
 			ctx.appendCode(indent, "if len(%s) < itemCount {\n", varName)
 			ctx.appendCode(indent, "\t%s = make(%s, itemCount)\n", varName, ctx.typePrinter.TypeString(desc.Type))
@@ -545,14 +576,13 @@ func (ctx *unmarshalContext) unmarshalList(desc *dynssz.TypeDescriptor, varName 
 		ctx.appendCode(indent, "for i := 0; i < itemCount; i++ {\n")
 
 		valVar := fmt.Sprintf("%s[i]", varName)
-		isPrimitive := ctx.isPrimitive(desc.ElemDesc)
-		if !isPrimitive {
+		isInlinable := ctx.isInlinable(desc.ElemDesc)
+		if !isInlinable {
 			valVar = ctx.getValVar()
 			ctx.appendCode(indent, "\t%s := %s[i]\n", valVar, varName)
-
-			if desc.ElemDesc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
-				ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.TypeString(desc.ElemDesc.Type.Elem()))
-			}
+		}
+		if desc.ElemDesc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.TypeString(desc.ElemDesc.Type.Elem()))
 		}
 
 		ctx.appendCode(indent, "\tbuf := buf[%s*i : %s*(i+1)]\n", fieldSizeVar, fieldSizeVar)
@@ -560,7 +590,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *dynssz.TypeDescriptor, varName 
 			return err
 		}
 
-		if !isPrimitive {
+		if !isInlinable {
 			ctx.appendCode(indent, "\t%s[i] = %s\n", varName, valVar)
 		}
 		ctx.appendCode(indent, "}\n")
