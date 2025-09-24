@@ -15,6 +15,7 @@ type unmarshalContext struct {
 	options        *CodeGeneratorOptions
 	usedDynSsz     bool
 	valVarCounter  int
+	sizeVarCounter int
 	sizeVarMap     map[*dynssz.TypeDescriptor]string
 }
 
@@ -122,7 +123,8 @@ func (ctx *unmarshalContext) getStaticSizeVar(desc *dynssz.TypeDescriptor) (stri
 		return sizeVar, nil
 	}
 
-	sizeVar := fmt.Sprintf("size%d", len(ctx.sizeVarMap)+1)
+	ctx.sizeVarCounter++
+	sizeVar := fmt.Sprintf("size%d", ctx.sizeVarCounter)
 	var err error
 
 	// recursive resolve static size with size expressions
@@ -306,7 +308,7 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *dynssz.TypeDescriptor, var
 		if field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
 			staticSize += 4
 		} else {
-			if field.Type.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 {
+			if field.Type.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
 				sizeVar, err := ctx.getStaticSizeVar(field.Type)
 				if err != nil {
 					return err
@@ -349,7 +351,7 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *dynssz.TypeDescriptor, var
 		} else {
 			// Unmarshal fixed field
 			ctx.appendCode(indent, "{ // Field #%d '%s' (static)\n", idx, field.Name)
-			if field.Type.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 {
+			if field.Type.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
 				fieldSizeVar, err := ctx.getStaticSizeVar(field.Type)
 				if err != nil {
 					return err
@@ -460,7 +462,7 @@ func (ctx *unmarshalContext) unmarshalVector(desc *dynssz.TypeDescriptor, varNam
 		// static elements
 		var fieldSizeVar string
 		var err error
-		if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 {
+		if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
 			fieldSizeVar, err = ctx.getStaticSizeVar(desc.ElemDesc)
 			if err != nil {
 				return err
@@ -550,7 +552,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *dynssz.TypeDescriptor, varName 
 		// static elements
 		var fieldSizeVar string
 		var err error
-		if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 {
+		if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
 			fieldSizeVar, err = ctx.getStaticSizeVar(desc.ElemDesc)
 			if err != nil {
 				return err

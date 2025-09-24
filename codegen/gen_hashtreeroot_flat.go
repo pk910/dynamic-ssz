@@ -40,10 +40,6 @@ func generateHashTreeRootFlat(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *
 	genDynamicFn := !options.WithoutDynamicExpressions
 	genStaticFn := options.WithoutDynamicExpressions || options.CreateLegacyFn
 
-	// Check if it's a fixed size type
-	isFixedSize := rootTypeDesc.SszTypeFlags&dynssz.SszTypeFlagHasDynamicSize == 0 &&
-		rootTypeDesc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr == 0
-
 	if genDynamicFn {
 		if ctx.usedDynSsz {
 			codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName))
@@ -58,7 +54,7 @@ func generateHashTreeRootFlat(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *
 	}
 
 	if genStaticFn {
-		if !ctx.usedDynSsz || isFixedSize {
+		if !ctx.usedDynSsz {
 			codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootWith(hh sszutils.HashWalker) error {\n", typeName))
 			codeBuilder.WriteString(codeBuf.String())
 			codeBuilder.WriteString("\treturn nil\n")
