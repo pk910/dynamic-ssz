@@ -193,7 +193,7 @@ func createSampleGame() *types.GameState {
 	board[7][4] = 12 // Enemy king
 
 	// Sample players
-	var player1ID, player2ID [16]byte
+	var player1ID, player2ID []byte
 	copy(player1ID[:], "player-1-uuid-16")
 	copy(player2ID[:], "player-2-uuid-16")
 

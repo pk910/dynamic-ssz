@@ -50,7 +50,7 @@ func (p *TypePrinter) AddAlias(path, alias string) {
 }
 
 // Qualify a named type with an alias, recording the import.
-func (p *TypePrinter) qualify(t reflect.Type) string {
+func (p *TypePrinter) qualify(t reflect.Type, trackImports bool) string {
 	pkg := t.PkgPath()
 	name := t.Name()
 	if pkg == "" { // predeclared or builtin (e.g., int, any)
@@ -59,6 +59,11 @@ func (p *TypePrinter) qualify(t reflect.Type) string {
 	if pkg == p.CurrentPkg {
 		return name // same package: unqualified
 	}
+
+	if !trackImports {
+		return name
+	}
+
 	alias := p.imports[pkg]
 	if alias == "" {
 		alias = normalizeAlias(p.defaultAlias(pkg))
@@ -71,6 +76,7 @@ func (p *TypePrinter) qualify(t reflect.Type) string {
 		}
 		p.imports[pkg] = alias
 	}
+
 	return alias + "." + name
 }
 
@@ -99,10 +105,14 @@ func normalizeAlias(alias string) string {
 
 // Public entry point.
 func (p *TypePrinter) TypeString(t reflect.Type) string {
-	return p.typeString(t)
+	return p.typeString(t, true)
 }
 
-func (p *TypePrinter) typeString(t reflect.Type) string {
+func (p *TypePrinter) TypeStringWithoutTracking(t reflect.Type) string {
+	return p.typeString(t, false)
+}
+
+func (p *TypePrinter) typeString(t reflect.Type, trackImports bool) string {
 	// Named types first
 	if t.Name() != "" {
 		// Special-case predeclared aliases: byte and rune preferences
@@ -114,35 +124,35 @@ func (p *TypePrinter) typeString(t reflect.Type) string {
 		}
 		// Check if this is a generic type with embedded package paths
 		if strings.Contains(t.Name(), "[") && strings.Contains(t.Name(), "]") {
-			return p.processGenericTypeName(t)
+			return p.processGenericTypeName(t, trackImports)
 		}
-		return p.qualify(t)
+		return p.qualify(t, trackImports)
 	}
 
 	// Unnamed kinds
 	switch t.Kind() {
 	case reflect.Pointer:
-		return "*" + p.typeString(t.Elem())
+		return "*" + p.typeString(t.Elem(), trackImports)
 	case reflect.Slice:
 		// []byte nicer than []uint8
 		if t.Elem().Kind() == reflect.Uint8 && t.Elem().PkgPath() == "" {
 			return "[]byte"
 		}
-		return "[]" + p.typeString(t.Elem())
+		return "[]" + p.typeString(t.Elem(), trackImports)
 	case reflect.Array:
 		if t.Elem().Kind() == reflect.Uint8 && t.Elem().PkgPath() == "" {
 			return fmt.Sprintf("[%d]byte", t.Len())
 		}
-		return fmt.Sprintf("[%d]%s", t.Len(), p.typeString(t.Elem()))
+		return fmt.Sprintf("[%d]%s", t.Len(), p.typeString(t.Elem(), trackImports))
 	case reflect.Struct:
-		return p.structString(t)
+		return p.structString(t, trackImports)
 	default:
 		// predeclared unnamed basics (shouldn’t happen except for unsafe types)
 		return t.String()
 	}
 }
 
-func (p *TypePrinter) structString(t reflect.Type) string {
+func (p *TypePrinter) structString(t reflect.Type, trackImports bool) string {
 	if t.NumField() == 0 {
 		return "struct{}"
 	}
@@ -155,11 +165,11 @@ func (p *TypePrinter) structString(t reflect.Type) string {
 		}
 		if f.Anonymous {
 			// Embedded: just the type
-			b.WriteString(p.typeString(f.Type))
+			b.WriteString(p.typeString(f.Type, trackImports))
 		} else {
 			b.WriteString(f.Name)
 			b.WriteByte(' ')
-			b.WriteString(p.typeString(f.Type))
+			b.WriteString(p.typeString(f.Type, trackImports))
 		}
 		if tag := string(f.Tag); tag != "" {
 			b.WriteByte(' ')
@@ -174,11 +184,13 @@ func (p *TypePrinter) structString(t reflect.Type) string {
 }
 
 // processGenericTypeName handles generic types that may contain package paths in their type parameters
-func (p *TypePrinter) processGenericTypeName(t reflect.Type) string {
+func (p *TypePrinter) processGenericTypeName(t reflect.Type, trackImports bool) string {
 	name := t.Name()
 
 	// Extract and register package imports from the full name
-	p.extractAndRegisterImports(name)
+	if trackImports {
+		p.extractAndRegisterImports(name)
+	}
 
 	// Clean up the full name by replacing full package paths with qualified type names
 	cleanedName := p.cleanGenericTypeName(name)
@@ -196,7 +208,7 @@ func (p *TypePrinter) processGenericTypeName(t reflect.Type) string {
 		alias := p.imports[pkgPath]
 		if alias == "" {
 			// Ensure the type is qualified (this will add it to imports)
-			p.qualify(t)
+			p.qualify(t, trackImports)
 			alias = p.imports[pkgPath]
 		}
 
