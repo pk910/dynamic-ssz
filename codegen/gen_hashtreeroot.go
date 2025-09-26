@@ -3,551 +3,259 @@ package codegen
 import (
 	"fmt"
 	"reflect"
-	"sort"
 	"strings"
 
 	dynssz "github.com/pk910/dynamic-ssz"
-	"github.com/pk910/dynamic-ssz/codegen/tmpl"
 )
 
-func generateHashTreeRoot(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) (bool, error) {
-	type hashTreeRootFnEntry struct {
-		Fn   *tmpl.HashTreeRootFunction
-		Type *dynssz.TypeDescriptor
-	}
-
-	codeTpl := GetTemplate("tmpl/hashtreeroot.tmpl")
-	hashTreeRootFnMap := map[string]hashTreeRootFnEntry{}
-	hashTreeRootFnIdx := 0
-	usedDynSsz := false
-
-	var genRecursive func(sourceType *dynssz.TypeDescriptor, isRoot bool, pack bool) (*tmpl.HashTreeRootFunction, error)
-
-	isBaseType := func(sourceType *dynssz.TypeDescriptor) bool {
-		// Check if it's a primitive type or simple byte array/slice that can be inlined
-		switch sourceType.SszType {
-		case dynssz.SszBoolType, dynssz.SszUint8Type, dynssz.SszUint16Type, dynssz.SszUint32Type, dynssz.SszUint64Type:
-			return true
-		case dynssz.SszVectorType, dynssz.SszListType, dynssz.SszBitvectorType:
-			// Inline byte arrays and byte slices, but not if they need dynamic spec resolution or have limits
-			if sourceType.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
-				// Don't inline if they have dynamic expressions that need spec resolution
-				// Don't inline if they have limits (need individual merkleization with mixin)
-				return sourceType.MaxExpression == nil && sourceType.SizeExpression == nil && sourceType.SszTypeFlags&dynssz.SszTypeFlagHasLimit == 0
-			}
-			return false
-		default:
-			return false
-		}
-	}
-
-	getInlineBaseTypeHash := func(sourceType *dynssz.TypeDescriptor, varName string, pack bool) string {
-		// Handle primitive types with packing support
-		switch sourceType.SszType {
-		case dynssz.SszBoolType:
-			if pack {
-				return fmt.Sprintf("hh.AppendBool(bool(%s))", varName)
-			}
-			return fmt.Sprintf("hh.PutBool(bool(%s))", varName)
-		case dynssz.SszUint8Type:
-			if pack {
-				return fmt.Sprintf("hh.AppendUint8(uint8(%s))", varName)
-			}
-			return fmt.Sprintf("hh.PutUint8(uint8(%s))", varName)
-		case dynssz.SszUint16Type:
-			if pack {
-				return fmt.Sprintf("hh.AppendUint16(uint16(%s))", varName)
-			}
-			return fmt.Sprintf("hh.PutUint16(uint16(%s))", varName)
-		case dynssz.SszUint32Type:
-			if pack {
-				return fmt.Sprintf("hh.AppendUint32(uint32(%s))", varName)
-			}
-			return fmt.Sprintf("hh.PutUint32(uint32(%s))", varName)
-		case dynssz.SszUint64Type:
-			var uintVar string
-			if sourceType.GoTypeFlags&dynssz.GoTypeFlagIsTime != 0 {
-				uintVar = fmt.Sprintf("uint64(%s.Unix())", varName)
-			} else {
-				uintVar = fmt.Sprintf("uint64(%s)", varName)
-			}
-			if pack {
-				return fmt.Sprintf("hh.AppendUint64(%s)", uintVar)
-			}
-			return fmt.Sprintf("hh.PutUint64(%s)", uintVar)
-		case dynssz.SszVectorType, dynssz.SszListType:
-			if sourceType.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
-				// Simple byte arrays/slices can be inlined directly
-				// (complex cases with dynamic expressions or limits are filtered out in isBaseType)
-				return fmt.Sprintf("hh.PutBytes(%s[:])", varName)
-			}
-			return ""
-		default:
-			return ""
-		}
-	}
-
-	genRecursive = func(sourceType *dynssz.TypeDescriptor, isRoot bool, pack bool) (*tmpl.HashTreeRootFunction, error) {
-		// For base types that are not root, return a special inline function
-		if !isRoot && isBaseType(sourceType) && sourceType.GoTypeFlags&dynssz.GoTypeFlagIsPointer == 0 {
-			return &tmpl.HashTreeRootFunction{
-				IsInlined:  true,
-				InlineCode: getInlineBaseTypeHash(sourceType, "VAR_NAME", pack),
-			}, nil
-		}
-
-		// Check if we can inline FastSSZ types that have HashTreeRootWith
-		if !isRoot && sourceType.SszCompatFlags&dynssz.SszCompatFlagFastSSZHasher != 0 &&
-			sourceType.SszCompatFlags&dynssz.SszCompatFlagHashTreeRootWith != 0 {
-			// Check if it's safe to inline (no dynamic size/max)
-			hasDynamicSize := sourceType.SszTypeFlags&dynssz.SszTypeFlagHasDynamicSize != 0
-			hasDynamicMax := sourceType.SszTypeFlags&dynssz.SszTypeFlagHasDynamicMax != 0
-			hasDynamicExpr := sourceType.SszTypeFlags&(dynssz.SszTypeFlagHasMaxExpr|dynssz.SszTypeFlagHasSizeExpr) != 0
-			if !hasDynamicSize && !hasDynamicMax && !hasDynamicExpr && !ds.NoFastSsz {
-				// Return inline function for FastSSZ types
-				return &tmpl.HashTreeRootFunction{
-					IsInlined:  true,
-					InlineCode: "if err = VAR_NAME.HashTreeRootWith(hh); err != nil {\n\treturn err\n}",
-				}, nil
-			}
-		}
-
-		// Generate type key first to check if we've seen this type before
-		typeName := sourceType.Type.String() // Use basic string representation for key
-		typeKey := typeName
-		if sourceType.Len > 0 {
-			typeKey = fmt.Sprintf("%s:%d", typeKey, sourceType.Len)
-		}
-		if sourceType.Limit > 0 {
-			typeKey = fmt.Sprintf("%s:%d", typeKey, sourceType.Limit)
-		}
-		if sourceType.SizeExpression != nil && !options.WithoutDynamicExpressions {
-			typeKey = fmt.Sprintf("%s:%s", typeKey, *sourceType.SizeExpression)
-		}
-		if sourceType.MaxExpression != nil && !options.WithoutDynamicExpressions {
-			typeKey = fmt.Sprintf("%s:%s", typeKey, *sourceType.MaxExpression)
-		}
-		if pack {
-			typeKey = fmt.Sprintf("%s:pack", typeKey)
-		}
-
-		childType := sourceType
-		for {
-			childType = childType.ElemDesc
-			if childType == nil {
-				break
-			}
-
-			if childType.Len > 0 {
-				typeKey = fmt.Sprintf("%s:%d", typeKey, childType.Len)
-			}
-			if childType.SizeExpression != nil && !options.WithoutDynamicExpressions {
-				typeKey = fmt.Sprintf("%s:%s", typeKey, *childType.SizeExpression)
-			}
-			if childType.MaxExpression != nil && !options.WithoutDynamicExpressions {
-				typeKey = fmt.Sprintf("%s:%s", typeKey, *childType.MaxExpression)
-			}
-		}
-
-		if fn, found := hashTreeRootFnMap[typeKey]; found {
-			return fn.Fn, nil
-		}
-
-		isFastsszHasher := sourceType.SszCompatFlags&dynssz.SszCompatFlagFastSSZHasher != 0
-		useDynamicHashRoot := sourceType.SszCompatFlags&dynssz.SszCompatFlagDynamicHashRoot != 0
-		hasDynamicSize := sourceType.SszTypeFlags&dynssz.SszTypeFlagHasDynamicSize != 0
-		hasDynamicMax := sourceType.SszTypeFlags&dynssz.SszTypeFlagHasDynamicMax != 0
-		useFastSsz := !ds.NoFastSsz && isFastsszHasher && !hasDynamicSize && !hasDynamicMax && !isRoot
-		if useFastSsz && (sourceType.SszTypeFlags&(dynssz.SszTypeFlagHasMaxExpr|dynssz.SszTypeFlagHasSizeExpr) != 0) {
-			useFastSsz = false
-		}
-		if !useFastSsz && sourceType.SszType == dynssz.SszCustomType {
-			useFastSsz = true
-		}
-
-		code := strings.Builder{}
-		hashTreeRootFn := &tmpl.HashTreeRootFunction{
-			Index:    0,
-			Key:      typeKey,
-			TypeName: typePrinter.TypeString(sourceType.Type),
-		}
-
-		if sourceType.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
-			hashTreeRootFn.IsPointer = true
-			hashTreeRootFn.InnerType = typePrinter.TypeString(sourceType.Type.Elem())
-		}
-
-		hashTreeRootFnMap[typeKey] = hashTreeRootFnEntry{
-			Fn:   hashTreeRootFn,
-			Type: sourceType,
-		}
-
-		if useFastSsz && !isRoot {
-			// Use the method availability information from the type cache
-			if sourceType.SszCompatFlags&dynssz.SszCompatFlagHashTreeRootWith != 0 {
-				if err := codeTpl.ExecuteTemplate(&code, "hashtreeroot_fastssz_with", nil); err != nil {
-					return nil, err
-				}
-			} else {
-				// Use HashTreeRoot method
-				if err := codeTpl.ExecuteTemplate(&code, "hashtreeroot_fastssz_root", nil); err != nil {
-					return nil, err
-				}
-			}
-		} else if useDynamicHashRoot && !isRoot {
-			// Use dynamic hash root
-			if err := codeTpl.ExecuteTemplate(&code, "hashtreeroot_dynamic", nil); err != nil {
-				return nil, err
-			}
-			usedDynSsz = true
-		} else {
-			switch sourceType.SszType {
-			// complex types
-			case dynssz.SszTypeWrapperType:
-				fn, err := genRecursive(sourceType.ElemDesc, false, pack)
-				if err != nil {
-					return nil, err
-				}
-
-				wrapperModel := tmpl.HashTreeRootWrapper{
-					TypeName:       typePrinter.TypeString(sourceType.Type),
-					HashTreeRootFn: fn.Name,
-				}
-
-				if err := codeTpl.ExecuteTemplate(&code, "hashtreeroot_wrapper", wrapperModel); err != nil {
-					return nil, err
-				}
-			case dynssz.SszContainerType:
-				structModel := tmpl.HashTreeRootStruct{
-					TypeName: typePrinter.TypeString(sourceType.Type),
-					Fields:   make([]tmpl.HashTreeRootField, 0, len(sourceType.ContainerDesc.Fields)),
-				}
-				for idx, field := range sourceType.ContainerDesc.Fields {
-					fn, err := genRecursive(field.Type, false, false)
-					if err != nil {
-						return nil, err
-					}
-
-					fieldModel := tmpl.HashTreeRootField{
-						Index:     idx,
-						Name:      field.Name,
-						IsDynamic: field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0,
-					}
-
-					if fn.IsInlined {
-						// Use inline code for base types
-						inlineCode := fn.InlineCode
-						inlineCode = strings.ReplaceAll(inlineCode, "VAR_NAME", fmt.Sprintf("t.%s", field.Name))
-						fieldModel.InlineHashCode = inlineCode
-					} else {
-						fieldModel.TypeName = typePrinter.TypeString(field.Type.Type)
-						fieldModel.HashTreeRootFn = fn.Name
-					}
-
-					structModel.Fields = append(structModel.Fields, fieldModel)
-
-					if field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
-						structModel.HasDynamicFields = true
-					}
-				}
-				if err := codeTpl.ExecuteTemplate(&code, "hashtreeroot_struct", structModel); err != nil {
-					return nil, err
-				}
-			case dynssz.SszProgressiveContainerType:
-				// Progressive container needs special handling
-				activeFields := getActiveFieldsHex(sourceType)
-				structModel := tmpl.HashTreeRootProgressiveContainer{
-					TypeName:     typePrinter.TypeString(sourceType.Type),
-					ActiveFields: activeFields,
-					Fields:       make([]tmpl.HashTreeRootField, 0, len(sourceType.ContainerDesc.Fields)),
-				}
-				for idx, field := range sourceType.ContainerDesc.Fields {
-					fn, err := genRecursive(field.Type, false, false)
-					if err != nil {
-						return nil, err
-					}
-
-					fieldModel := tmpl.HashTreeRootField{
-						Index:     idx,
-						Name:      field.Name,
-						IsDynamic: field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0,
-						SszIndex:  field.SszIndex,
-					}
-
-					if fn.IsInlined {
-						// Use inline code for base types
-						inlineCode := fn.InlineCode
-						inlineCode = strings.ReplaceAll(inlineCode, "VAR_NAME", fmt.Sprintf("t.%s", field.Name))
-						fieldModel.InlineHashCode = inlineCode
-					} else {
-						fieldModel.TypeName = typePrinter.TypeString(field.Type.Type)
-						fieldModel.HashTreeRootFn = fn.Name
-					}
-
-					structModel.Fields = append(structModel.Fields, fieldModel)
-				}
-				if err := codeTpl.ExecuteTemplate(&code, "hashtreeroot_progressive_container", structModel); err != nil {
-					return nil, err
-				}
-			case dynssz.SszVectorType, dynssz.SszBitvectorType, dynssz.SszUint128Type, dynssz.SszUint256Type:
-				hashTreeRootFn := ""
-				inlineHashCode := ""
-				if sourceType.GoTypeFlags&dynssz.GoTypeFlagIsByteArray == 0 {
-					// For vectors, items are packed
-					fn, err := genRecursive(sourceType.ElemDesc, false, true)
-					if err != nil {
-						return nil, err
-					}
-
-					if fn.IsInlined {
-						inlineCode := fn.InlineCode
-						inlineCode = strings.ReplaceAll(inlineCode, "VAR_NAME", "t[i]")
-						hashTreeRootFn = ""
-						inlineHashCode = inlineCode
-					} else {
-						hashTreeRootFn = fn.Name
-					}
-				}
-
-				sizeExpression := sourceType.SizeExpression
-				if options.WithoutDynamicExpressions {
-					sizeExpression = nil
-				}
-
-				vectorModel := tmpl.HashTreeRootVector{
-					TypeName:           typePrinter.TypeString(sourceType.Type),
-					Length:             int(sourceType.Len),
-					ItemSize:           int(sourceType.ElemDesc.Size),
-					HashTreeRootFn:     hashTreeRootFn,
-					InlineItemHashCode: inlineHashCode,
-					SizeExpr:           "",
-					IsArray:            sourceType.Kind == reflect.Array,
-					IsByteArray:        sourceType.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0,
-					IsString:           sourceType.GoTypeFlags&dynssz.GoTypeFlagIsString != 0,
-				}
-
-				if sizeExpression != nil {
-					vectorModel.SizeExpr = *sizeExpression
-					usedDynSsz = true
-				}
-
-				if err := codeTpl.ExecuteTemplate(&code, "hashtreeroot_vector", vectorModel); err != nil {
-					return nil, err
-				}
-			case dynssz.SszListType, dynssz.SszProgressiveListType:
-				hashTreeRootFn := ""
-				inlineHashCode := ""
-				if sourceType.GoTypeFlags&dynssz.GoTypeFlagIsByteArray == 0 {
-					// For lists, items are packed
-					fn, err := genRecursive(sourceType.ElemDesc, false, true)
-					if err != nil {
-						return nil, err
-					}
-
-					if fn.IsInlined {
-						inlineCode := fn.InlineCode
-						inlineCode = strings.ReplaceAll(inlineCode, "VAR_NAME", "t[i]")
-						hashTreeRootFn = ""
-						inlineHashCode = inlineCode
-					} else {
-						hashTreeRootFn = fn.Name
-					}
-				}
-
-				sizeExpression := sourceType.SizeExpression
-				maxExpression := sourceType.MaxExpression
-				if options.WithoutDynamicExpressions {
-					sizeExpression = nil
-					maxExpression = nil
-				}
-
-				listModel := tmpl.HashTreeRootList{
-					TypeName:           typePrinter.TypeString(sourceType.Type),
-					MaxLength:          int(sourceType.Limit),
-					HashTreeRootFn:     hashTreeRootFn,
-					InlineItemHashCode: inlineHashCode,
-					SizeExpr:           "",
-					MaxExpr:            "",
-					HasLimit:           sourceType.SszTypeFlags&dynssz.SszTypeFlagHasLimit != 0,
-					IsProgressive:      (sourceType.SszType == dynssz.SszProgressiveListType || sourceType.SszType == dynssz.SszProgressiveBitlistType),
-					IsByteArray:        sourceType.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0,
-					IsString:           sourceType.GoTypeFlags&dynssz.GoTypeFlagIsString != 0,
-				}
-
-				if sizeExpression != nil {
-					listModel.SizeExpr = *sizeExpression
-					usedDynSsz = true
-				}
-
-				if maxExpression != nil {
-					listModel.MaxExpr = *maxExpression
-					usedDynSsz = true
-				}
-
-				switch sourceType.ElemDesc.SszType {
-				case dynssz.SszBoolType:
-					listModel.ItemSize = 1
-				case dynssz.SszUint8Type:
-					listModel.ItemSize = 1
-				case dynssz.SszUint16Type:
-					listModel.ItemSize = 2
-				case dynssz.SszUint32Type:
-					listModel.ItemSize = 4
-				case dynssz.SszUint64Type:
-					listModel.ItemSize = 8
-				case dynssz.SszUint128Type:
-					listModel.ItemSize = 16
-				case dynssz.SszUint256Type:
-					listModel.ItemSize = 32
-				default:
-					listModel.ItemSize = 0
-				}
-
-				if err := codeTpl.ExecuteTemplate(&code, "hashtreeroot_list", listModel); err != nil {
-					return nil, err
-				}
-			case dynssz.SszBitlistType, dynssz.SszProgressiveBitlistType:
-				maxExpression := sourceType.MaxExpression
-				if options.WithoutDynamicExpressions {
-					maxExpression = nil
-				}
-
-				bitlistModel := tmpl.HashTreeRootBitlist{
-					TypeName:      typePrinter.TypeString(sourceType.Type),
-					MaxLength:     int(sourceType.Limit),
-					MaxExpr:       "",
-					HasLimit:      sourceType.SszTypeFlags&dynssz.SszTypeFlagHasLimit != 0,
-					IsProgressive: (sourceType.SszType == dynssz.SszProgressiveBitlistType),
-					HasherAlias:   typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher"),
-				}
-
-				if maxExpression != nil {
-					bitlistModel.MaxExpr = *maxExpression
-					usedDynSsz = true
-				}
-
-				if err := codeTpl.ExecuteTemplate(&code, "hashtreeroot_bitlist", bitlistModel); err != nil {
-					return nil, err
-				}
-			case dynssz.SszCompatibleUnionType:
-				variantFns := make([]tmpl.HashTreeRootCompatibleUnionVariant, 0, len(sourceType.UnionVariants))
-				for variant, variantDesc := range sourceType.UnionVariants {
-					fn, err := genRecursive(variantDesc, false, false)
-					if err != nil {
-						return nil, err
-					}
-
-					variantModel := tmpl.HashTreeRootCompatibleUnionVariant{
-						Index:    int(variant),
-						TypeName: typePrinter.TypeString(variantDesc.Type),
-					}
-
-					if fn.IsInlined {
-						// Generate inline code for union variants
-						inlineCode := fn.InlineCode
-						inlineCode = strings.ReplaceAll(inlineCode, "VAR_NAME", "v")
-						variantModel.InlineHashCode = inlineCode
-					} else {
-						variantModel.HashTreeRootFn = fn.Name
-					}
-
-					variantFns = append(variantFns, variantModel)
-				}
-
-				sort.Slice(variantFns, func(i, j int) bool {
-					return variantFns[i].Index < variantFns[j].Index
-				})
-
-				compatibleUnionModel := tmpl.HashTreeRootCompatibleUnion{
-					TypeName:   typePrinter.TypeString(sourceType.Type),
-					VariantFns: variantFns,
-				}
-
-				if err := codeTpl.ExecuteTemplate(&code, "hashtreeroot_compatible_union", compatibleUnionModel); err != nil {
-					return nil, err
-				}
-			// primitive types
-			case dynssz.SszBoolType:
-				model := map[string]interface{}{"pack": pack}
-				if err := codeTpl.ExecuteTemplate(&code, "hashtreeroot_bool", model); err != nil {
-					return nil, err
-				}
-			case dynssz.SszUint8Type:
-				model := map[string]interface{}{"pack": pack}
-				if err := codeTpl.ExecuteTemplate(&code, "hashtreeroot_uint8", model); err != nil {
-					return nil, err
-				}
-			case dynssz.SszUint16Type:
-				model := map[string]interface{}{"pack": pack}
-				if err := codeTpl.ExecuteTemplate(&code, "hashtreeroot_uint16", model); err != nil {
-					return nil, err
-				}
-			case dynssz.SszUint32Type:
-				model := map[string]interface{}{"pack": pack}
-				if err := codeTpl.ExecuteTemplate(&code, "hashtreeroot_uint32", model); err != nil {
-					return nil, err
-				}
-			case dynssz.SszUint64Type:
-				model := map[string]interface{}{"pack": pack}
-				tpl := "hashtreeroot_uint64"
-				if sourceType.GoTypeFlags&dynssz.GoTypeFlagIsTime != 0 {
-					tpl = "hashtreeroot_uint64_time"
-				}
-				if err := codeTpl.ExecuteTemplate(&code, tpl, model); err != nil {
-					return nil, err
-				}
-			case dynssz.SszCustomType:
-				code.WriteString("return errors.New(\"type does not implement ssziface.FastsszHashRoot\")\n")
-			}
-		}
-
-		hashTreeRootFnIdx++
-		hashTreeRootFn.Index = hashTreeRootFnIdx
-		hashTreeRootFn.Name = fmt.Sprintf("fn%d", hashTreeRootFnIdx)
-		hashTreeRootFn.Code = code.String()
-
-		return hashTreeRootFn, nil
-	}
-
-	rootFn, err := genRecursive(rootTypeDesc, true, false)
-	if err != nil {
-		return false, err
-	}
-
-	hashTreeRootFnList := make([]*tmpl.HashTreeRootFunction, 0, len(hashTreeRootFnMap))
-	for _, fn := range hashTreeRootFnMap {
-		hashTreeRootFnList = append(hashTreeRootFnList, fn.Fn)
-	}
-
-	sort.Slice(hashTreeRootFnList, func(i, j int) bool {
-		return hashTreeRootFnList[i].Index < hashTreeRootFnList[j].Index
-	})
-
-	hashTreeRootModel := tmpl.HashTreeRootMain{
-		TypeName:              typePrinter.TypeString(rootTypeDesc.Type),
-		HashTreeRootFunctions: hashTreeRootFnList,
-		RootFnName:            rootFn.Name,
-		CreateLegacyFn:        options.CreateLegacyFn,
-		CreateDynamicFn:       !options.WithoutDynamicExpressions,
-		UsedDynSsz:            usedDynSsz,
-	}
-
-	if hashTreeRootModel.CreateLegacyFn {
-		hashTreeRootModel.HasherAlias = typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
-		usedDynSsz = true
-	}
-
-	usedDynSsz = usedDynSsz || !options.WithoutDynamicExpressions
-
-	if err := codeTpl.ExecuteTemplate(codeBuilder, "hashtreeroot_main", hashTreeRootModel); err != nil {
-		return false, err
-	}
-
-	return usedDynSsz, nil
+type hashTreeRootContext struct {
+	appendCode    func(indent int, code string, args ...any)
+	typePrinter   *TypePrinter
+	options       *CodeGeneratorOptions
+	usedDynSsz    bool
+	valVarCounter int
 }
 
-// getActiveFieldsHex returns the hex representation of the active fields bitlist for a progressive container
-func getActiveFieldsHex(sourceType *dynssz.TypeDescriptor) string {
+func generateHashTreeRoot(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) (bool, error) {
+	codeBuf := strings.Builder{}
+	ctx := &hashTreeRootContext{
+		appendCode: func(indent int, code string, args ...any) {
+			if len(args) > 0 {
+				code = fmt.Sprintf(code, args...)
+			}
+			codeBuf.WriteString(indentStr(code, indent))
+		},
+		typePrinter: typePrinter,
+		options:     options,
+	}
+
+	// Generate main function signature
+	typeName := typePrinter.TypeString(rootTypeDesc.Type)
+
+	// Generate hash tree root code
+	if err := ctx.hashType(rootTypeDesc, "t", 1, true, false); err != nil {
+		return false, err
+	}
+
+	genDynamicFn := !options.WithoutDynamicExpressions
+	genStaticFn := options.WithoutDynamicExpressions || options.CreateLegacyFn
+
+	if genDynamicFn {
+		if ctx.usedDynSsz {
+			codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName))
+			codeBuilder.WriteString(codeBuf.String())
+			codeBuilder.WriteString("\treturn nil\n")
+			codeBuilder.WriteString("}\n\n")
+		} else {
+			codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName))
+			codeBuilder.WriteString("\treturn t.HashTreeRootWith(hh)\n")
+			codeBuilder.WriteString("}\n\n")
+		}
+	}
+
+	if genStaticFn {
+		if !ctx.usedDynSsz {
+			codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootWith(hh sszutils.HashWalker) error {\n", typeName))
+			codeBuilder.WriteString(codeBuf.String())
+			codeBuilder.WriteString("\treturn nil\n")
+			codeBuilder.WriteString("}\n\n")
+		} else {
+			dynsszAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
+			codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootWith(hh sszutils.HashWalker) error {\n", typeName))
+			codeBuilder.WriteString(fmt.Sprintf("\treturn t.HashTreeRootWithDyn(%s.GetGlobalDynSsz(), hh)\n", dynsszAlias))
+			codeBuilder.WriteString("}\n\n")
+		}
+	}
+
+	// Dynamic hash tree root function
+	if genDynamicFn {
+		hasherAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
+		codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootDyn(ds sszutils.DynamicSpecs) ([32]byte, error) {\n", typeName))
+		codeBuilder.WriteString(fmt.Sprintf("\tpool := &%s.FastHasherPool\n", hasherAlias))
+		codeBuilder.WriteString("\thh := pool.Get()\n")
+		codeBuilder.WriteString("\tdefer func() {\n\t\tpool.Put(hh)\n\t}()\n")
+		codeBuilder.WriteString("\tif err := t.HashTreeRootWithDyn(ds, hh); err != nil {\n\t\treturn [32]byte{}, err\n\t}\n")
+		codeBuilder.WriteString("\tr, _ := hh.HashRoot()\n")
+		codeBuilder.WriteString("\treturn r, nil\n")
+		codeBuilder.WriteString("}\n\n")
+	}
+
+	// Static hash tree root function
+	if genStaticFn {
+		hasherAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
+		codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRoot() ([32]byte, error) {\n", typeName))
+		codeBuilder.WriteString(fmt.Sprintf("\tpool := &%s.FastHasherPool\n", hasherAlias))
+		codeBuilder.WriteString("\thh := pool.Get()\n")
+		codeBuilder.WriteString("\tdefer func() {\n\t\tpool.Put(hh)\n\t}()\n")
+		codeBuilder.WriteString("\tif err := t.HashTreeRootWith(hh); err != nil {\n\t\treturn [32]byte{}, err\n\t}\n")
+		codeBuilder.WriteString("\tr, _ := hh.HashRoot()\n")
+		codeBuilder.WriteString("\treturn r, nil\n")
+		codeBuilder.WriteString("}\n")
+	}
+
+	return ctx.usedDynSsz, nil
+}
+
+func (ctx *hashTreeRootContext) isPrimitive(desc *dynssz.TypeDescriptor) bool {
+	return desc.SszType == dynssz.SszBoolType || desc.SszType == dynssz.SszUint8Type || desc.SszType == dynssz.SszUint16Type || desc.SszType == dynssz.SszUint32Type || desc.SszType == dynssz.SszUint64Type || desc.SszType == dynssz.SszUint128Type
+}
+
+func (ctx *hashTreeRootContext) getValVar() string {
+	ctx.valVarCounter++
+	return fmt.Sprintf("val%d", ctx.valVarCounter)
+}
+
+func (ctx *hashTreeRootContext) hashType(desc *dynssz.TypeDescriptor, varName string, indent int, isRoot bool, pack bool) error {
+	// Handle types that have generated methods we can call
+	if desc.SszCompatFlags&dynssz.SszCompatFlagDynamicHashRoot != 0 && !isRoot {
+		ctx.appendCode(indent, "if err := %s.HashTreeRootWithDyn(ds, hh); err != nil {\n\treturn err\n}\n", varName)
+		ctx.usedDynSsz = true
+		return nil
+	}
+
+	useFastSsz := !ctx.options.NoFastSsz && desc.SszCompatFlags&dynssz.SszCompatFlagHashTreeRootWith != 0
+	if !useFastSsz && desc.SszType == dynssz.SszCustomType {
+		useFastSsz = true
+	}
+
+	if useFastSsz && !isRoot {
+		ctx.appendCode(indent, "if err := %s.HashTreeRootWith(hh); err != nil {\n\treturn err\n}\n", varName)
+		return nil
+	}
+
+	switch desc.SszType {
+	case dynssz.SszBoolType:
+		if pack {
+			ctx.appendCode(indent, "hh.AppendBool(%s)\n", varName)
+		} else {
+			ctx.appendCode(indent, "hh.PutBool(%s)\n", varName)
+		}
+	case dynssz.SszUint8Type:
+		if pack {
+			ctx.appendCode(indent, "hh.AppendUint8(uint8(%s))\n", varName)
+		} else {
+			ctx.appendCode(indent, "hh.PutUint8(uint8(%s))\n", varName)
+		}
+	case dynssz.SszUint16Type:
+		if pack {
+			ctx.appendCode(indent, "hh.AppendUint16(uint16(%s))\n", varName)
+		} else {
+			ctx.appendCode(indent, "hh.PutUint16(uint16(%s))\n", varName)
+		}
+
+	case dynssz.SszUint32Type:
+		if pack {
+			ctx.appendCode(indent, "hh.AppendUint32(uint32(%s))\n", varName)
+		} else {
+			ctx.appendCode(indent, "hh.PutUint32(uint32(%s))\n", varName)
+		}
+
+	case dynssz.SszUint64Type:
+		var valVar string
+		if desc.GoTypeFlags&dynssz.GoTypeFlagIsTime != 0 {
+			valVar = fmt.Sprintf("uint64(%s.Unix())", varName)
+		} else {
+			valVar = fmt.Sprintf("uint64(%s)", varName)
+		}
+		if pack {
+			ctx.appendCode(indent, "hh.AppendUint64(%s)\n", valVar)
+		} else {
+			ctx.appendCode(indent, "hh.PutUint64(%s)\n", valVar)
+		}
+
+	case dynssz.SszTypeWrapperType:
+		ctx.appendCode(indent, "{\n\tt := %s.Data\n", varName)
+		if err := ctx.hashType(desc.ElemDesc, "t", indent+1, false, pack); err != nil {
+			return err
+		}
+		ctx.appendCode(indent, "}\n")
+
+	case dynssz.SszContainerType:
+		return ctx.hashContainer(desc, varName, indent)
+
+	case dynssz.SszProgressiveContainerType:
+		return ctx.hashProgressiveContainer(desc, varName, indent)
+
+	case dynssz.SszUint128Type, dynssz.SszUint256Type:
+		return ctx.hashVector(desc, varName, indent, true)
+
+	case dynssz.SszVectorType, dynssz.SszBitvectorType:
+		return ctx.hashVector(desc, varName, indent, false)
+
+	case dynssz.SszListType, dynssz.SszProgressiveListType:
+		return ctx.hashList(desc, varName, indent)
+
+	case dynssz.SszBitlistType, dynssz.SszProgressiveBitlistType:
+		return ctx.hashBitlist(desc, varName, indent)
+
+	case dynssz.SszCompatibleUnionType:
+		return ctx.hashUnion(desc, varName, indent)
+
+	case dynssz.SszCustomType:
+		ctx.appendCode(indent, "// Custom type - hash unknown\n")
+
+	default:
+		return fmt.Errorf("unsupported SSZ type: %v", desc.SszType)
+	}
+
+	return nil
+}
+
+func (ctx *hashTreeRootContext) hashContainer(desc *dynssz.TypeDescriptor, varName string, indent int) error {
+	// Start container merkleization
+	ctx.appendCode(indent, "idx := hh.Index()\n")
+
+	// Hash each field
+	for idx, field := range desc.ContainerDesc.Fields {
+		ctx.appendCode(indent, "{ // Field #%d '%s'\n", idx, field.Name)
+		ctx.appendCode(indent, "\tt := %s.%s\n", varName, field.Name)
+		if err := ctx.hashType(field.Type, "t", indent+1, false, false); err != nil {
+			return err
+		}
+		ctx.appendCode(indent, "}\n")
+	}
+
+	// Finalize container
+	ctx.appendCode(indent, "hh.Merkleize(idx)\n")
+
+	return nil
+}
+
+func (ctx *hashTreeRootContext) hashProgressiveContainer(desc *dynssz.TypeDescriptor, varName string, indent int) error {
+	// Start container merkleization
+	ctx.appendCode(indent, "idx := hh.Index()\n")
+
+	// Hash each field
+	lastActiveField := -1
+
+	for i := 0; i < len(desc.ContainerDesc.Fields); i++ {
+		field := desc.ContainerDesc.Fields[i]
+
+		if int(field.SszIndex) > lastActiveField+1 {
+			// fill the gap with empty fields
+			for j := lastActiveField + 1; j < int(field.SszIndex); j++ {
+				ctx.appendCode(indent, "// Inactive field #%d\n", j)
+				ctx.appendCode(indent, "hh.PutUint8(0)\n")
+			}
+		}
+
+		lastActiveField = int(field.SszIndex)
+
+		ctx.appendCode(indent, "{ // Field #%d '%s'\n", i, field.Name)
+		ctx.appendCode(indent, "\tt := %s.%s\n", varName, field.Name)
+		if err := ctx.hashType(field.Type, "t", indent+1, false, false); err != nil {
+			return err
+		}
+		ctx.appendCode(indent, "}\n")
+	}
+
+	activeFields := ctx.getActiveFieldsHex(desc)
+	ctx.appendCode(indent, "hh.MerkleizeProgressiveWithActiveFields(idx, %s)\n", activeFields)
+
+	return nil
+}
+
+func (ctx *hashTreeRootContext) getActiveFieldsHex(sourceType *dynssz.TypeDescriptor) string {
 	// Find the highest ssz-index to determine bitlist size
 	maxIndex := uint16(0)
 	for _, field := range sourceType.ContainerDesc.Fields {
@@ -583,4 +291,208 @@ func getActiveFieldsHex(sourceType *dynssz.TypeDescriptor) string {
 	}
 	hex += "}"
 	return hex
+}
+
+func (ctx *hashTreeRootContext) hashVector(desc *dynssz.TypeDescriptor, varName string, indent int, pack bool) error {
+	sizeExpression := desc.SizeExpression
+	if ctx.options.WithoutDynamicExpressions {
+		sizeExpression = nil
+	}
+
+	limitVar := ""
+	if sizeExpression != nil {
+		ctx.usedDynSsz = true
+		ctx.appendCode(indent, "hasLimit, limit, err := ds.ResolveSpecValue(\"%s\")\n", *sizeExpression)
+		ctx.appendCode(indent, "if err != nil {\n\treturn err\n}\n")
+		ctx.appendCode(indent, "if !hasLimit {\n\tlimit = %d\n}\n", desc.Len)
+		limitVar = "int(limit)"
+	} else {
+		limitVar = fmt.Sprintf("%d", desc.Len)
+	}
+
+	if !pack {
+		// Start vector merkleization
+		ctx.appendCode(indent, "idx := hh.Index()\n")
+	}
+
+	hasVLen := false
+	if desc.Kind != reflect.Array {
+		ctx.appendCode(indent, "vlen := len(%s)\n", varName)
+		ctx.appendCode(indent, "if vlen > %s {\n", limitVar)
+		ctx.appendCode(indent, "\treturn sszutils.ErrVectorLength\n")
+		ctx.appendCode(indent, "}\n")
+		hasVLen = true
+	}
+
+	// Handle byte arrays
+	if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
+		ctx.appendCode(indent, "hh.PutBytes([]byte(%s))\n", varName)
+	} else if desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
+		ctx.appendCode(indent, "hh.PutBytes(%s[:])\n", varName)
+	} else {
+		// Hash elements
+		if !hasVLen {
+			ctx.appendCode(indent, "vlen := len(%s)\n", varName)
+		}
+		valVar := ctx.getValVar()
+		ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", limitVar)
+		ctx.appendCode(indent, "\tvar %s %s\n", valVar, ctx.typePrinter.TypeString(desc.ElemDesc.Type))
+		ctx.appendCode(indent, "\tif i < vlen {\n")
+		ctx.appendCode(indent, "\t\t%s = %s[i]\n", valVar, varName)
+		ctx.appendCode(indent, "\t}\n")
+
+		if err := ctx.hashType(desc.ElemDesc, valVar, indent+1, false, true); err != nil {
+			return err
+		}
+		ctx.appendCode(indent, "}\n")
+	}
+
+	if !pack {
+		// Finalize vector with bit limit
+		ctx.appendCode(indent, "hh.Merkleize(idx)\n")
+	}
+
+	return nil
+}
+
+func (ctx *hashTreeRootContext) hashList(desc *dynssz.TypeDescriptor, varName string, indent int) error {
+	maxExpression := desc.MaxExpression
+	if ctx.options.WithoutDynamicExpressions {
+		maxExpression = nil
+	}
+
+	maxVar := ""
+	if maxExpression != nil {
+		ctx.usedDynSsz = true
+		ctx.appendCode(indent, "hasMax, max, err := ds.ResolveSpecValue(\"%s\")\n", *maxExpression)
+		ctx.appendCode(indent, "if err != nil {\n")
+		ctx.appendCode(indent, "\treturn err\n")
+		ctx.appendCode(indent, "}\n")
+		if desc.Limit > 0 {
+			ctx.appendCode(indent, "if !hasMax {\n")
+			ctx.appendCode(indent, "\tmax = %d\n", desc.Limit)
+			ctx.appendCode(indent, "}\n")
+		}
+		maxVar = "uint64(max)"
+	} else if desc.Limit > 0 {
+		maxVar = fmt.Sprintf("%d", desc.Limit)
+	}
+
+	// Start list merkleization
+	ctx.appendCode(indent, "idx := hh.Index()\n")
+	ctx.appendCode(indent, "vlen := uint64(len(%s))\n", varName)
+
+	itemSize := 0
+
+	// Handle byte slices
+	if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
+		ctx.appendCode(indent, "hh.PutBytes([]byte(%s))\n", varName)
+		itemSize = 1
+	} else if desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
+		ctx.appendCode(indent, "hh.PutBytes(%s[:])\n", varName)
+		itemSize = 1
+	} else {
+		if ctx.isPrimitive(desc.ElemDesc) {
+			itemSize = int(desc.ElemDesc.Size)
+		} else {
+			itemSize = 32
+		}
+
+		// Hash all elements
+		ctx.appendCode(indent, "for i := 0; i < int(vlen); i++ {\n")
+		ctx.appendCode(indent, "\tt := %s[i]\n", varName)
+		if err := ctx.hashType(desc.ElemDesc, "t", indent+1, false, true); err != nil {
+			return err
+		}
+		ctx.appendCode(indent, "}\n")
+	}
+
+	if desc.SszType == dynssz.SszProgressiveListType {
+		ctx.appendCode(indent, "hh.MerkleizeProgressiveWithMixin(idx, vlen)\n")
+	} else if maxVar != "" {
+		if itemSize > 0 {
+			ctx.appendCode(indent, "limit := sszutils.CalculateLimit(%s, vlen, %d)\n", maxVar, itemSize)
+			ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, vlen, limit)\n")
+		} else {
+			ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, vlen, %s)\n", maxVar)
+		}
+	} else {
+		ctx.appendCode(indent, "hh.Merkleize(idx)\n")
+	}
+
+	return nil
+}
+
+func (ctx *hashTreeRootContext) hashBitlist(desc *dynssz.TypeDescriptor, varName string, indent int) error {
+	maxExpression := desc.MaxExpression
+	if ctx.options.WithoutDynamicExpressions {
+		maxExpression = nil
+	}
+
+	maxVar := ""
+	if maxExpression != nil {
+		ctx.usedDynSsz = true
+		ctx.appendCode(indent, "hasMax, max, err := ds.ResolveSpecValue(\"%s\")\n", *maxExpression)
+		ctx.appendCode(indent, "if err != nil {\n")
+		ctx.appendCode(indent, "\treturn err\n")
+		ctx.appendCode(indent, "}\n")
+		if desc.Limit > 0 {
+			ctx.appendCode(indent, "if !hasMax {\n")
+			ctx.appendCode(indent, "\tmax = %d\n", desc.Limit)
+			ctx.appendCode(indent, "}\n")
+		}
+		maxVar = "uint64(max)"
+	} else if desc.Limit > 0 {
+		maxVar = fmt.Sprintf("%d", desc.Limit)
+	}
+
+	ctx.appendCode(indent, "idx := hh.Index()\n")
+	ctx.appendCode(indent, "var size uint64\n")
+	ctx.appendCode(indent, "var bitlist []byte\n")
+	ctx.appendCode(indent, "hh.WithTemp(func(tmp []byte) []byte {\n")
+	ctx.appendCode(indent, "\ttmp, size = hasher.ParseBitlist(tmp[:0], %s[:])\n", varName)
+	ctx.appendCode(indent, "\tbitlist = tmp\n")
+	ctx.appendCode(indent, "\treturn tmp\n")
+	ctx.appendCode(indent, "})\n")
+
+	if maxVar != "" {
+		ctx.appendCode(indent, "if size > %s {\n", maxVar)
+		ctx.appendCode(indent, "\treturn sszutils.ErrListTooBig\n")
+		ctx.appendCode(indent, "}\n")
+	}
+	ctx.appendCode(indent, "hh.AppendBytes32(bitlist)\n")
+
+	if desc.SszType == dynssz.SszProgressiveBitlistType {
+		ctx.appendCode(indent, "hh.MerkleizeProgressiveWithMixin(idx, size)\n")
+	} else if maxVar != "" {
+		ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, size, (%s+255)/256)\n", maxVar)
+	} else {
+		ctx.appendCode(indent, "hh.Merkleize(idx)\n")
+	}
+
+	return nil
+}
+
+func (ctx *hashTreeRootContext) hashUnion(desc *dynssz.TypeDescriptor, varName string, indent int) error {
+	ctx.appendCode(indent, "idx := hh.Index()\n")
+	ctx.appendCode(indent, "hh.PutUint8(%s.Variant)\n", varName)
+	ctx.appendCode(indent, "switch %s.Variant {\n", varName)
+
+	for variant, variantDesc := range desc.UnionVariants {
+		variantType := ctx.typePrinter.TypeString(variantDesc.Type)
+		ctx.appendCode(indent, "case %d:\n", variant)
+		ctx.appendCode(indent, "\tv, ok := %s.Data.(%s)\n", varName, variantType)
+		ctx.appendCode(indent, "\tif !ok {\n\t\treturn sszutils.ErrInvalidUnionVariant\n\t}\n")
+		if err := ctx.hashType(variantDesc, "v", indent+1, false, false); err != nil {
+			return err
+		}
+	}
+
+	ctx.appendCode(indent, "default:\n")
+	ctx.appendCode(indent, "\treturn sszutils.ErrInvalidUnionVariant\n")
+	ctx.appendCode(indent, "}\n")
+
+	ctx.appendCode(indent, "hh.Merkleize(idx)\n")
+
+	return nil
 }

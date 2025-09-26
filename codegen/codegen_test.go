@@ -26,10 +26,9 @@ var (
 
 // TestPayload represents a single test case for code generation
 type TestPayload struct {
-	Name   string         // Test name
-	Type   reflect.Type   // Go type to generate code for
-	SSZHex string         // SSZ encoding as hex string (without 0x prefix)
-	Specs  map[string]any // Dynamic specifications
+	Name    string         // Test name
+	Payload any            // Test payload
+	Specs   map[string]any // Dynamic specifications
 }
 
 // TestResult represents the result of testing a single code path
@@ -50,50 +49,98 @@ type TestResults struct {
 // Test matrix containing various payload types and their expected SSZ encodings
 var testMatrix = []TestPayload{
 	{
-		Name: "SimpleStruct",
-		Type: reflect.TypeOf(struct {
-			ID     uint64
-			Active bool
-		}{}),
-		SSZHex: "393000000000000001", // ID: 12345, Active: true
-		Specs:  map[string]any{},
+		Name: "SimpleTypes1",
+		Payload: struct {
+			B1     bool
+			I8     uint8
+			I16    uint16
+			I32    uint32
+			I64    uint64
+			I128   [16]byte
+			I256   [4]uint64
+			Vec8   []uint8     `ssz-size:"4"`
+			Vec32  []uint32    `ssz-size:"4"`
+			Vec128 [][2]uint64 `ssz-type:"?,uint128" ssz-size:"4"`
+			BitVec [8]byte     `ssz-type:"bitvector"`
+			Lst8   []uint8     `ssz-max:"4"`
+			Lst32  []uint32    `ssz-max:"4"`
+			Lst128 [][2]uint64 `ssz-type:"?,uint128" ssz-max:"4"`
+			Str    string      `ssz-max:"8"`
+		}{
+			B1:     true,
+			I8:     1,
+			I16:    2,
+			I32:    3,
+			I64:    4,
+			I128:   [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+			I256:   [4]uint64{1, 2, 3, 4},
+			Vec8:   []uint8{1, 2, 3, 4},
+			Vec32:  []uint32{1, 2, 3, 4},
+			Vec128: [][2]uint64{{1, 2}, {3, 4}},
+			BitVec: [8]byte{1, 2, 3, 4, 5, 6, 7, 8},
+			Lst8:   []uint8{1, 2, 3, 4},
+			Lst32:  []uint32{1, 2, 3, 4},
+			Lst128: [][2]uint64{{1, 2}, {3, 4}},
+			Str:    "hello",
+		},
+		Specs: map[string]any{},
 	},
 	{
-		Name: "DynamicSlice",
-		Type: reflect.TypeOf(struct {
-			Items []byte `ssz-max:"64"`
-		}{}),
-		SSZHex: "0400000068656c6c6f20776f726c64", // "hello world"
-		Specs:  map[string]any{},
+		Name: "SimpleTypesWithSpecs",
+		Payload: struct {
+			Vec8   []uint8     `ssz-size:"4" dynssz-size:"VEC8_SIZE"`
+			Vec32  []uint32    `ssz-size:"4" dynssz-size:"VEC32_SIZE"`
+			Vec128 [][2]uint64 `ssz-type:"?,uint128" ssz-size:"4" dynssz-size:"VEC128_SIZE"`
+			BitVec []byte      `ssz-type:"bitvector" ssz-size:"8" dynssz-size:"BITVEC_SIZE"`
+			Lst8   []uint8     `ssz-max:"4" dynssz-max:"LST8_MAX"`
+			Lst32  []uint32    `ssz-max:"4" dynssz-max:"LST32_MAX"`
+			Lst128 [][2]uint64 `ssz-type:"?,uint128" ssz-max:"4" dynssz-max:"LST128_MAX"`
+			Str    string      `ssz-max:"8" dynssz-max:"STR_MAX"`
+		}{
+			Vec8:   []uint8{1, 2, 3, 4, 5, 6},
+			Vec32:  []uint32{1, 2, 3, 4, 5, 6, 7, 8},
+			Vec128: [][2]uint64{{1, 2}, {3, 4}},
+			BitVec: []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+			Lst8:   []uint8{1, 2, 3, 4, 5, 6},
+			Lst32:  []uint32{1, 2, 3, 4, 5, 6, 7, 8},
+			Lst128: [][2]uint64{{1, 2}, {3, 4}},
+			Str:    "hello",
+		},
+		Specs: map[string]any{
+			"VEC8_SIZE":   6,
+			"VEC32_SIZE":  8,
+			"VEC128_SIZE": 2,
+			"BITVEC_SIZE": 10,
+			"LST8_MAX":    6,
+			"LST32_MAX":   8,
+			"LST128_MAX":  2,
+			"STR_MAX":     16,
+		},
 	},
 	{
-		Name: "FixedArray",
-		Type: reflect.TypeOf(struct {
-			Hash [32]byte
-			Size uint64
-		}{}),
-		SSZHex: "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f200004000000000000", // Hash: 1-32, Size: 1024
-		Specs:  map[string]any{},
-	},
-	{
-		Name: "DynamicSpecStruct",
-		Type: reflect.TypeOf(struct {
-			Data []byte `ssz-max:"1024" dynssz-max:"MAX_SIZE"`
-		}{}),
-		SSZHex: "04000000deadbeef", // Data: [0xde, 0xad, 0xbe, 0xef]
-		Specs:  map[string]any{"MAX_SIZE": uint64(512)},
-	},
-	{
-		Name: "NestedStruct",
-		Type: reflect.TypeOf(struct {
-			Inner struct {
-				Value uint32
-				Flag  bool
-			}
-			Count uint64
-		}{}),
-		SSZHex: "7856341201e703000000000000", // Inner.Value: 0x12345678, Inner.Flag: true, Count: 999
-		Specs:  map[string]any{},
+		Name: "ProgressiveTypes",
+		Payload: struct {
+			C1 struct {
+				F1 uint64 `ssz-index:"0"`
+				F3 uint64 `ssz-index:"2"`
+				F7 uint8  `ssz-index:"6"`
+			} `ssz-type:"progressive-container"`
+			L1 []uint64 `ssz-type:"progressive-list"`
+			L2 []byte   `ssz-type:"progressive-bitlist"`
+		}{
+			C1: struct {
+				F1 uint64 `ssz-index:"0"`
+				F3 uint64 `ssz-index:"2"`
+				F7 uint8  `ssz-index:"6"`
+			}{
+				F1: 12345,
+				F3: 67890,
+				F7: 123,
+			},
+			L1: []uint64{12345, 67890},
+			L2: []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+		},
+		Specs: map[string]any{},
 	},
 }
 
@@ -111,7 +158,21 @@ func testCodegenPayload(t *testing.T, payload TestPayload) {
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() {
+		if t.Failed() {
+			t.Logf("Payload %v data dir: %s", payload.Name, tempDir)
+		} else {
+			os.RemoveAll(tempDir)
+		}
+	}()
+
+	ds := dynssz.NewDynSsz(payload.Specs)
+
+	sszBytes, err := ds.MarshalSSZ(payload.Payload)
+	if err != nil {
+		t.Fatalf("Failed to marshal payload: %v", err)
+	}
+	sszHex := hex.EncodeToString(sszBytes)
 
 	// Step 1: Create types directory and write the type definition
 	typesDir := filepath.Join(tempDir, "types")
@@ -159,7 +220,7 @@ func testCodegenPayload(t *testing.T, payload TestPayload) {
 	}
 
 	// Step 6: Run the test and capture output
-	output, err := runTest(tempDir, payload.SSZHex)
+	output, err := runTest(tempDir, sszHex)
 	//fmt.Printf("Test output:\n%s", output)
 
 	if err != nil {
@@ -167,7 +228,7 @@ func testCodegenPayload(t *testing.T, payload TestPayload) {
 	}
 
 	// Step 7: Verify results with reflection
-	if err := verifyResults(t, payload, output); err != nil {
+	if err := verifyResults(t, payload, sszHex, output); err != nil {
 		t.Fatalf("Result verification failed: %v", err)
 	}
 }
@@ -183,7 +244,7 @@ func GetSpecs() map[string]any {
 	return %#v
 }
 `,
-		formatTypeString(payload.Type),
+		formatTypeString(reflect.TypeOf(payload.Payload)),
 		payload.Specs,
 	)
 
@@ -461,7 +522,7 @@ func runTest(tempDir string, sszHex string) (string, error) {
 	return string(output), nil
 }
 
-func verifyResults(t *testing.T, payload TestPayload, output string) error {
+func verifyResults(t *testing.T, payload TestPayload, sszHex string, output string) error {
 	// Parse JSON output
 	var results TestResults
 	if err := json.Unmarshal([]byte(output), &results); err != nil {
@@ -470,12 +531,12 @@ func verifyResults(t *testing.T, payload TestPayload, output string) error {
 
 	// Calculate expected hash tree root using reflection
 	ds := dynssz.NewDynSsz(payload.Specs)
-	sszBytes, err := hex.DecodeString(payload.SSZHex)
+	sszBytes, err := hex.DecodeString(sszHex)
 	if err != nil {
 		return fmt.Errorf("failed to decode SSZ hex: %v", err)
 	}
 
-	testValue := reflect.New(payload.Type).Interface()
+	testValue := reflect.New(reflect.TypeOf(payload.Payload)).Interface()
 	if err := ds.UnmarshalSSZ(testValue, sszBytes); err != nil {
 		return fmt.Errorf("failed to unmarshal test data: %v", err)
 	}

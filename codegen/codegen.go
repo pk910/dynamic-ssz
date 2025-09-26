@@ -366,7 +366,7 @@ func (cg *CodeGenerator) generateCode(desc *dynssz.TypeDescriptor, typePrinter *
 	var usedDynSszResult bool
 
 	if !options.NoMarshalSSZ {
-		usedDynSsz, err = generateMarshalFlat(desc, codeBuilder, typePrinter, options)
+		usedDynSsz, err = generateMarshal(desc, codeBuilder, typePrinter, options)
 		if err != nil {
 			return usedDynSsz, fmt.Errorf("failed to generate marshal for %s: %w", desc.Type.Name(), err)
 		}
@@ -374,7 +374,7 @@ func (cg *CodeGenerator) generateCode(desc *dynssz.TypeDescriptor, typePrinter *
 	}
 
 	if !options.NoSizeSSZ {
-		usedDynSsz, err = generateSizeFlat(desc, codeBuilder, typePrinter, options)
+		usedDynSsz, err = generateSize(desc, codeBuilder, typePrinter, options)
 		if err != nil {
 			return usedDynSsz, fmt.Errorf("failed to generate size for %s: %w", desc.Type.Name(), err)
 		}
@@ -382,7 +382,7 @@ func (cg *CodeGenerator) generateCode(desc *dynssz.TypeDescriptor, typePrinter *
 	}
 
 	if !options.NoUnmarshalSSZ {
-		usedDynSsz, err = generateUnmarshalFlat(desc, codeBuilder, typePrinter, options)
+		usedDynSsz, err = generateUnmarshal(desc, codeBuilder, typePrinter, options)
 		if err != nil {
 			return usedDynSsz, fmt.Errorf("failed to generate unmarshal for %s: %w", desc.Type.Name(), err)
 		}
@@ -390,7 +390,7 @@ func (cg *CodeGenerator) generateCode(desc *dynssz.TypeDescriptor, typePrinter *
 	}
 
 	if !options.NoHashTreeRoot {
-		usedDynSsz, err = generateHashTreeRootFlat(desc, codeBuilder, typePrinter, options)
+		usedDynSsz, err = generateHashTreeRoot(desc, codeBuilder, typePrinter, options)
 		if err != nil {
 			return usedDynSsz, fmt.Errorf("failed to generate hash tree root for %s: %w", desc.Type.Name(), err)
 		}

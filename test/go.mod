@@ -28,7 +28,8 @@ require (
 	golang.org/x/xerrors v0.0.0-20231012003039-104605ab7028 // indirect
 )
 
-//replace github.com/attestantio/go-eth2-client => ../../go-eth2-client
-replace github.com/attestantio/go-eth2-client => github.com/pk910/go-eth2-client v0.0.0-20250624161731-3d549c5576da // waiting for https://github.com/attestantio/go-eth2-client/pull/242
+replace github.com/attestantio/go-eth2-client => ../../go-eth2-client
+
+//replace github.com/attestantio/go-eth2-client => github.com/pk910/go-eth2-client v0.0.0-20250624161731-3d549c5576da // waiting for https://github.com/attestantio/go-eth2-client/pull/242
 
 replace github.com/pk910/dynamic-ssz => ../

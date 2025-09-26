@@ -3,356 +3,298 @@ package codegen
 import (
 	"fmt"
 	"reflect"
-	"sort"
 	"strings"
 
 	dynssz "github.com/pk910/dynamic-ssz"
-	"github.com/pk910/dynamic-ssz/codegen/tmpl"
 )
 
-func generateSize(ds *dynssz.DynSsz, rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) (bool, error) {
-	type sizeFnEntry struct {
-		Fn   *tmpl.SizeFunction
-		Type *dynssz.TypeDescriptor
+type sizeContext struct {
+	appendCode  func(indent int, code string, args ...any)
+	typePrinter *TypePrinter
+	options     *CodeGeneratorOptions
+	usedDynSsz  bool
+}
+
+func generateSize(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) (bool, error) {
+	codeBuf := strings.Builder{}
+	ctx := &sizeContext{
+		appendCode: func(indent int, code string, args ...any) {
+			if len(args) > 0 {
+				code = fmt.Sprintf(code, args...)
+			}
+			codeBuf.WriteString(indentStr(code, indent))
+		},
+		typePrinter: typePrinter,
+		options:     options,
 	}
 
-	codeTpl := GetTemplate("tmpl/size.tmpl")
-	sizeFnMap := map[string]sizeFnEntry{}
-	sizeFnIdx := 0
-	usedDynSsz := false
+	// Generate main function signature
+	typeName := typePrinter.TypeString(rootTypeDesc.Type)
 
-	var genRecursive func(sourceType *dynssz.TypeDescriptor, isRoot bool) (*tmpl.SizeFunction, error)
+	// Generate size calculation code
+	if err := ctx.sizeType(rootTypeDesc, "t", 1, true); err != nil {
+		return false, err
+	}
 
-	genRecursive = func(sourceType *dynssz.TypeDescriptor, isRoot bool) (*tmpl.SizeFunction, error) {
-		typeName := typePrinter.TypeString(sourceType.Type)
-		typeKey := typeName
-		if sourceType.Len > 0 {
-			typeKey = fmt.Sprintf("%s:%d", typeKey, sourceType.Len)
-		}
-		if sourceType.SizeExpression != nil && !options.WithoutDynamicExpressions {
-			typeKey = fmt.Sprintf("%s:%s", typeKey, *sourceType.SizeExpression)
-		}
+	genDynamicFn := !options.WithoutDynamicExpressions
+	genStaticFn := options.WithoutDynamicExpressions || options.CreateLegacyFn
 
-		childType := sourceType
-		for {
-			childType = childType.ElemDesc
-			if childType == nil {
-				break
-			}
-
-			if childType.Len > 0 {
-				typeKey = fmt.Sprintf("%s:%d", typeKey, childType.Len)
-			}
-			if childType.SizeExpression != nil && !options.WithoutDynamicExpressions {
-				typeKey = fmt.Sprintf("%s:%s", typeKey, *childType.SizeExpression)
-			}
-		}
-
-		if fn, found := sizeFnMap[typeKey]; found {
-			return fn.Fn, nil
-		}
-
-		hasDynamicSize := sourceType.SszTypeFlags&dynssz.SszTypeFlagHasDynamicSize != 0
-		isFastsszMarshaler := sourceType.SszCompatFlags&dynssz.SszCompatFlagFastSSZMarshaler != 0
-		useDynamicSize := sourceType.SszCompatFlags&dynssz.SszCompatFlagDynamicSizer != 0
-		useFastSsz := !ds.NoFastSsz && isFastsszMarshaler && !hasDynamicSize
-		if useFastSsz && sourceType.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 {
-			useFastSsz = false
-		}
-		if !useFastSsz && sourceType.SszType == dynssz.SszCustomType {
-			useFastSsz = true
-		}
-
-		code := strings.Builder{}
-		sizeFn := &tmpl.SizeFunction{
-			Index:    0,
-			Key:      typeKey,
-			TypeName: typeName,
-		}
-
-		if sourceType.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
-			sizeFn.IsPointer = true
-			sizeFn.InnerType = typePrinter.TypeString(sourceType.Type.Elem())
-		}
-
-		sizeFnMap[typeKey] = sizeFnEntry{
-			Fn:   sizeFn,
-			Type: sourceType,
-		}
-
-		if useFastSsz && !isRoot {
-			if err := codeTpl.ExecuteTemplate(&code, "size_fastssz", nil); err != nil {
-				return nil, err
-			}
-		} else if useDynamicSize && !isRoot {
-			// Use dynamic sizer - create template for this
-			if err := codeTpl.ExecuteTemplate(&code, "size_dynamic", nil); err != nil {
-				return nil, err
-			}
-
-			usedDynSsz = true
+	if genDynamicFn {
+		if ctx.usedDynSsz {
+			codeBuilder.WriteString(fmt.Sprintf("func (t %s) SizeSSZDyn(ds sszutils.DynamicSpecs) (size int) {\n", typeName))
+			codeBuilder.WriteString(codeBuf.String())
+			codeBuilder.WriteString("\treturn size\n")
+			codeBuilder.WriteString("}\n\n")
 		} else {
-			switch sourceType.SszType {
-			// complex types
-			case dynssz.SszTypeWrapperType:
-				fn, err := genRecursive(sourceType.ElemDesc, false)
-				if err != nil {
-					return nil, err
-				}
-
-				wrapperModel := tmpl.SizeWrapper{
-					TypeName: typePrinter.TypeString(sourceType.Type),
-					SizeFn:   fn.Name,
-				}
-
-				if err := codeTpl.ExecuteTemplate(&code, "size_wrapper", wrapperModel); err != nil {
-					return nil, err
-				}
-			case dynssz.SszContainerType, dynssz.SszProgressiveContainerType:
-				structModel := tmpl.SizeStruct{
-					TypeName: typePrinter.TypeString(sourceType.Type),
-					Fields:   make([]tmpl.SizeField, 0, len(sourceType.ContainerDesc.Fields)),
-					Size:     0,
-				}
-				for idx, field := range sourceType.ContainerDesc.Fields {
-					if field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
-						fn, err := genRecursive(field.Type, false)
-						if err != nil {
-							return nil, err
-						}
-
-						structModel.Fields = append(structModel.Fields, tmpl.SizeField{
-							Index:     idx,
-							Name:      field.Name,
-							TypeName:  typePrinter.TypeString(field.Type.Type),
-							IsDynamic: field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0,
-							SizeFn:    fn.Name,
-						})
-
-						if field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
-							structModel.HasDynamicFields = true
-						}
-					} else if field.Type.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 {
-						fn, err := genRecursive(field.Type, false)
-						if err != nil {
-							return nil, err
-						}
-
-						structModel.Fields = append(structModel.Fields, tmpl.SizeField{
-							Index:     idx,
-							Name:      field.Name,
-							TypeName:  typePrinter.TypeString(field.Type.Type),
-							IsDynamic: false,
-							SizeFn:    fn.Name,
-						})
-					} else {
-						structModel.Size += int(field.Type.Size)
-					}
-				}
-				if err := codeTpl.ExecuteTemplate(&code, "size_struct", structModel); err != nil {
-					return nil, err
-				}
-			case dynssz.SszVectorType, dynssz.SszBitvectorType, dynssz.SszUint128Type, dynssz.SszUint256Type:
-				sizeExpression := sourceType.SizeExpression
-				if options.WithoutDynamicExpressions {
-					sizeExpression = nil
-				}
-
-				if sourceType.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
-					emptyVal := reflect.New(sourceType.ElemDesc.Type).Elem()
-					emptySize, err := ds.SizeSSZ(emptyVal.Interface())
-					if err != nil {
-						return nil, err
-					}
-
-					fn, err := genRecursive(sourceType.ElemDesc, false)
-					if err != nil {
-						return nil, err
-					}
-
-					dynVectorModel := tmpl.SizeDynamicVector{
-						TypeName:  typePrinter.TypeString(sourceType.Type),
-						Length:    int(sourceType.Len),
-						EmptySize: emptySize,
-						SizeFn:    fn.Name,
-						SizeExpr:  "",
-						IsArray:   sourceType.Kind == reflect.Array,
-					}
-
-					if sizeExpression != nil {
-						dynVectorModel.SizeExpr = *sizeExpression
-						usedDynSsz = true
-					}
-
-					if err := codeTpl.ExecuteTemplate(&code, "size_dynamic_vector", dynVectorModel); err != nil {
-						return nil, err
-					}
-				} else {
-					sizeFn := ""
-					if sourceType.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 {
-						fn, err := genRecursive(sourceType.ElemDesc, false)
-						if err != nil {
-							return nil, err
-						}
-						sizeFn = fn.Name
-					}
-
-					vectorModel := tmpl.SizeVector{
-						TypeName:    typePrinter.TypeString(sourceType.Type),
-						Length:      int(sourceType.Len),
-						ItemSize:    int(sourceType.ElemDesc.Size),
-						SizeFn:      sizeFn,
-						SizeExpr:    "",
-						IsArray:     sourceType.Kind == reflect.Array,
-						IsByteArray: sourceType.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0,
-						IsString:    sourceType.GoTypeFlags&dynssz.GoTypeFlagIsString != 0,
-					}
-
-					if sizeExpression != nil {
-						vectorModel.SizeExpr = *sizeExpression
-						usedDynSsz = true
-					}
-
-					if err := codeTpl.ExecuteTemplate(&code, "size_vector", vectorModel); err != nil {
-						return nil, err
-					}
-				}
-			case dynssz.SszListType, dynssz.SszBitlistType, dynssz.SszProgressiveListType, dynssz.SszProgressiveBitlistType:
-				sizeExpression := sourceType.SizeExpression
-				if options.WithoutDynamicExpressions {
-					sizeExpression = nil
-				}
-
-				if sourceType.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
-					fn, err := genRecursive(sourceType.ElemDesc, false)
-					if err != nil {
-						return nil, err
-					}
-
-					dynListModel := tmpl.SizeDynamicList{
-						TypeName: typePrinter.TypeString(sourceType.Type),
-						SizeFn:   fn.Name,
-						SizeExpr: "",
-					}
-
-					if sizeExpression != nil {
-						dynListModel.SizeExpr = *sizeExpression
-						usedDynSsz = true
-					}
-
-					if err := codeTpl.ExecuteTemplate(&code, "size_dynamic_list", dynListModel); err != nil {
-						return nil, err
-					}
-				} else {
-					sizeFn := ""
-					if sourceType.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 {
-						fn, err := genRecursive(sourceType.ElemDesc, false)
-						if err != nil {
-							return nil, err
-						}
-						sizeFn = fn.Name
-					}
-
-					listModel := tmpl.SizeList{
-						TypeName:    typePrinter.TypeString(sourceType.Type),
-						ItemSize:    int(sourceType.ElemDesc.Size),
-						SizeFn:      sizeFn,
-						SizeExpr:    "",
-						IsByteArray: sourceType.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0,
-						IsString:    sourceType.GoTypeFlags&dynssz.GoTypeFlagIsString != 0,
-					}
-
-					if sizeExpression != nil {
-						listModel.SizeExpr = *sizeExpression
-						usedDynSsz = true
-					}
-
-					if err := codeTpl.ExecuteTemplate(&code, "size_list", listModel); err != nil {
-						return nil, err
-					}
-				}
-			case dynssz.SszCompatibleUnionType:
-				compatibleUnionModel := tmpl.SizeCompatibleUnion{
-					TypeName:   typePrinter.TypeString(sourceType.Type),
-					VariantFns: make([]tmpl.SizeCompatibleUnionVariant, 0, len(sourceType.UnionVariants)),
-				}
-				for variant, variantDesc := range sourceType.UnionVariants {
-					fn, err := genRecursive(variantDesc, false)
-					if err != nil {
-						return nil, err
-					}
-
-					compatibleUnionModel.VariantFns = append(compatibleUnionModel.VariantFns, tmpl.SizeCompatibleUnionVariant{
-						Index:    int(variant),
-						TypeName: typePrinter.TypeString(variantDesc.Type),
-						SizeFn:   fn.Name,
-					})
-				}
-				if err := codeTpl.ExecuteTemplate(&code, "size_compatible_union", compatibleUnionModel); err != nil {
-					return nil, err
-				}
-			// primitive types
-			case dynssz.SszBoolType:
-				if err := codeTpl.ExecuteTemplate(&code, "size_bool", nil); err != nil {
-					return nil, err
-				}
-			case dynssz.SszUint8Type:
-				if err := codeTpl.ExecuteTemplate(&code, "size_uint8", nil); err != nil {
-					return nil, err
-				}
-			case dynssz.SszUint16Type:
-				if err := codeTpl.ExecuteTemplate(&code, "size_uint16", nil); err != nil {
-					return nil, err
-				}
-			case dynssz.SszUint32Type:
-				if err := codeTpl.ExecuteTemplate(&code, "size_uint32", nil); err != nil {
-					return nil, err
-				}
-			case dynssz.SszUint64Type:
-				if err := codeTpl.ExecuteTemplate(&code, "size_uint64", nil); err != nil {
-					return nil, err
-				}
-			case dynssz.SszCustomType:
-				code.WriteString("return errors.New(\"type does not implement ssziface.FastsszMarshaler\")\n")
-			}
+			codeBuilder.WriteString(fmt.Sprintf("func (t %s) SizeSSZDyn(_ sszutils.DynamicSpecs) (size int) {\n", typeName))
+			codeBuilder.WriteString("\treturn t.SizeSSZ()\n")
+			codeBuilder.WriteString("}\n\n")
 		}
-
-		sizeFnIdx++
-		sizeFn.Index = sizeFnIdx
-		sizeFn.Name = fmt.Sprintf("sfn%d", sizeFnIdx)
-		sizeFn.Code = code.String()
-
-		return sizeFn, nil
 	}
 
-	rootFn, err := genRecursive(rootTypeDesc, true)
-	if err != nil {
-		return false, err
+	if genStaticFn {
+		if !ctx.usedDynSsz {
+			codeBuilder.WriteString(fmt.Sprintf("func (t %s) SizeSSZ() (size int) {\n", typeName))
+			if rootTypeDesc.Size > 0 {
+				codeBuilder.WriteString(fmt.Sprintf("\treturn %d\n", rootTypeDesc.Size))
+			} else {
+				codeBuilder.WriteString(codeBuf.String())
+				codeBuilder.WriteString("\treturn size\n")
+			}
+			codeBuilder.WriteString("}\n\n")
+		} else {
+			dynsszAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
+			codeBuilder.WriteString(fmt.Sprintf("func (t %s) SizeSSZ() (size int) {\n", typeName))
+			codeBuilder.WriteString(fmt.Sprintf("\treturn t.SizeSSZDyn(%s.GetGlobalDynSsz())\n", dynsszAlias))
+			codeBuilder.WriteString("}\n\n")
+		}
 	}
 
-	sizeFnList := make([]*tmpl.SizeFunction, 0, len(sizeFnMap))
-	for _, fn := range sizeFnMap {
-		sizeFnList = append(sizeFnList, fn.Fn)
+	return ctx.usedDynSsz, nil
+}
+
+func (ctx *sizeContext) sizeType(desc *dynssz.TypeDescriptor, varName string, indent int, isRoot bool) error {
+	// Handle types that have generated methods we can call
+	if desc.SszCompatFlags&dynssz.SszCompatFlagDynamicSizer != 0 && !isRoot {
+		ctx.appendCode(indent, "size += %s.SizeSSZDyn(ds)\n", varName)
+		ctx.usedDynSsz = true
+		return nil
 	}
 
-	sort.Slice(sizeFnList, func(i, j int) bool {
-		return sizeFnList[i].Index < sizeFnList[j].Index
-	})
-
-	sizeModel := tmpl.SizeMain{
-		TypeName:        typePrinter.TypeString(rootTypeDesc.Type),
-		SizeFunctions:   sizeFnList,
-		RootFnName:      rootFn.Name,
-		CreateLegacyFn:  options.CreateLegacyFn,
-		CreateDynamicFn: !options.WithoutDynamicExpressions,
-		UsedDynSsz:      usedDynSsz,
+	useFastSsz := !ctx.options.NoFastSsz && desc.SszCompatFlags&dynssz.SszCompatFlagFastSSZMarshaler != 0
+	if !useFastSsz && desc.SszType == dynssz.SszCustomType {
+		useFastSsz = true
 	}
 
-	usedDynSsz = usedDynSsz || !options.WithoutDynamicExpressions
-
-	if err := codeTpl.ExecuteTemplate(codeBuilder, "size_main", sizeModel); err != nil {
-		return false, err
+	if useFastSsz && !isRoot {
+		ctx.appendCode(indent, "size += %s.SizeSSZ()\n", varName)
+		return nil
 	}
 
-	return usedDynSsz, nil
+	switch desc.SszType {
+	case dynssz.SszBoolType:
+		ctx.appendCode(indent, "size += 1\n")
+
+	case dynssz.SszUint8Type:
+		ctx.appendCode(indent, "size += 1\n")
+
+	case dynssz.SszUint16Type:
+		ctx.appendCode(indent, "size += 2\n")
+
+	case dynssz.SszUint32Type:
+		ctx.appendCode(indent, "size += 4\n")
+
+	case dynssz.SszUint64Type:
+		ctx.appendCode(indent, "size += 8\n")
+
+	case dynssz.SszTypeWrapperType:
+		ctx.appendCode(indent, "{\n\tt := %s.Data\n", varName)
+		if err := ctx.sizeType(desc.ElemDesc, "t", indent+1, false); err != nil {
+			return err
+		}
+		ctx.appendCode(indent, "}\n")
+
+	case dynssz.SszContainerType, dynssz.SszProgressiveContainerType:
+		return ctx.sizeContainer(desc, varName, indent)
+
+	case dynssz.SszVectorType, dynssz.SszBitvectorType, dynssz.SszUint128Type, dynssz.SszUint256Type:
+		return ctx.sizeVector(desc, varName, indent)
+
+	case dynssz.SszListType, dynssz.SszBitlistType, dynssz.SszProgressiveListType, dynssz.SszProgressiveBitlistType:
+		return ctx.sizeList(desc, varName, indent)
+
+	case dynssz.SszCompatibleUnionType:
+		return ctx.sizeUnion(desc, varName, indent)
+
+	case dynssz.SszCustomType:
+		ctx.appendCode(indent, "// Custom type - size unknown\n")
+
+	default:
+		return fmt.Errorf("unsupported SSZ type: %v", desc.SszType)
+	}
+
+	return nil
+}
+
+func (ctx *sizeContext) sizeContainer(desc *dynssz.TypeDescriptor, varName string, indent int) error {
+	// Fixed part size
+	staticSize := 0
+	for idx, field := range desc.ContainerDesc.Fields {
+		if field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
+			// Dynamic field - add offset size
+			staticSize += 4
+			ctx.appendCode(indent, "// Field #%d '%s' offset (4 bytes)\n", idx, field.Name)
+		} else if field.Type.Size > 0 && (field.Type.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr == 0 || ctx.options.WithoutDynamicExpressions) {
+			staticSize += int(field.Type.Size)
+			ctx.appendCode(indent, "// Field #%d '%s' static (%d bytes)\n", idx, field.Name, field.Type.Size)
+		}
+	}
+
+	ctx.appendCode(indent, "size += %d\n", staticSize)
+
+	// Add calculated size for static fields
+	for idx, field := range desc.ContainerDesc.Fields {
+		if field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic == 0 && (field.Type.Size == 0 || (field.Type.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions)) {
+			// Need to calculate size
+			ctx.appendCode(indent, "{ // Field #%d '%s'\n", idx, field.Name)
+			if err := ctx.sizeType(field.Type, fmt.Sprintf("%s.%s", varName, field.Name), indent+1, false); err != nil {
+				return err
+			}
+			ctx.appendCode(indent, "}\n")
+		}
+	}
+
+	// Dynamic part size
+	for idx, field := range desc.ContainerDesc.Fields {
+		if field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
+			ctx.appendCode(indent, "{ // Dynamic field #%d '%s'\n", idx, field.Name)
+			if err := ctx.sizeType(field.Type, fmt.Sprintf("%s.%s", varName, field.Name), indent+1, false); err != nil {
+				return err
+			}
+			ctx.appendCode(indent, "}\n")
+		}
+	}
+
+	return nil
+}
+
+func (ctx *sizeContext) sizeVector(desc *dynssz.TypeDescriptor, varName string, indent int) error {
+	sizeExpression := desc.SizeExpression
+	if ctx.options.WithoutDynamicExpressions {
+		sizeExpression = nil
+	}
+
+	if sizeExpression != nil {
+		ctx.usedDynSsz = true
+		ctx.appendCode(indent, "hasLimit, limit, err := ds.ResolveSpecValue(\"%s\")\n", *sizeExpression)
+		ctx.appendCode(indent, "if err != nil {\n")
+		ctx.appendCode(indent, "\treturn 0\n")
+		ctx.appendCode(indent, "}\n")
+		ctx.appendCode(indent, "if !hasLimit {\n")
+		ctx.appendCode(indent, "\tlimit = %d\n", desc.Len)
+		ctx.appendCode(indent, "}\n")
+	} else {
+		ctx.appendCode(indent, "limit := %d\n", desc.Len)
+	}
+
+	if desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
+		// For byte arrays, size is just the vector length
+		ctx.appendCode(indent, "size += int(limit)\n")
+	} else if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic == 0 {
+		// Fixed size elements - simple multiplication
+		ctx.appendCode(indent, "size += int(limit) * %d\n", desc.ElemDesc.Size)
+	} else {
+		// Dynamic size elements - need to iterate
+		if desc.Kind == reflect.Array {
+			ctx.appendCode(indent, "for i := 0; i < int(limit); i++ {\n")
+			ctx.appendCode(indent, "\tt := %s[i]\n", varName)
+			if err := ctx.sizeType(desc.ElemDesc, "t", indent+1, false); err != nil {
+				return err
+			}
+			ctx.appendCode(indent, "}\n")
+		} else {
+			ctx.appendCode(indent, "vlen := len(%s)\n", varName)
+			ctx.appendCode(indent, "if vlen > int(limit) {\n")
+			ctx.appendCode(indent, "\tvlen = int(limit)\n")
+			ctx.appendCode(indent, "}\n")
+			ctx.appendCode(indent, "for i := 0; i < vlen; i++ {\n")
+			ctx.appendCode(indent, "\tt := %s[i]\n", varName)
+			if err := ctx.sizeType(desc.ElemDesc, "t", indent+1, false); err != nil {
+				return err
+			}
+			ctx.appendCode(indent, "}\n")
+
+			// Add size for zero-padding
+			ctx.appendCode(indent, "if vlen < int(limit) {\n")
+			typeName := ctx.typePrinter.TypeString(desc.ElemDesc.Type)
+			ctx.appendCode(indent, "\tzeroItem := &%s{}\n", typeName)
+			ctx.appendCode(indent, "\tfor i := vlen; i < int(limit); i++ {\n")
+			if err := ctx.sizeType(desc.ElemDesc, "zeroItem", indent+2, false); err != nil {
+				return err
+			}
+			ctx.appendCode(indent, "\t}\n")
+			ctx.appendCode(indent, "}\n")
+		}
+	}
+
+	return nil
+}
+
+func (ctx *sizeContext) sizeList(desc *dynssz.TypeDescriptor, varName string, indent int) error {
+	// For byte slices, size is just the length
+	if desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
+		ctx.appendCode(indent, "size += len(%s)\n", varName)
+		return nil
+	}
+
+	ctx.appendCode(indent, "vlen := len(%s)\n", varName)
+
+	// Handle lists with dynamic elements
+	if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
+		// Add offset space
+		ctx.appendCode(indent, "size += vlen * 4 // Offsets\n")
+
+		// Add size of each element
+		ctx.appendCode(indent, "for i := 0; i < vlen; i++ {\n")
+		ctx.appendCode(indent, "\tt := %s[i]\n", varName)
+		if err := ctx.sizeType(desc.ElemDesc, "t", indent+1, false); err != nil {
+			return err
+		}
+		ctx.appendCode(indent, "}\n")
+	} else {
+		// Fixed size elements
+		if desc.ElemDesc.Size > 0 {
+			ctx.appendCode(indent, "size += vlen * %d\n", desc.ElemDesc.Size)
+		} else {
+			ctx.appendCode(indent, "for i := 0; i < vlen; i++ {\n")
+			ctx.appendCode(indent, "\tt := %s[i]\n", varName)
+			if err := ctx.sizeType(desc.ElemDesc, "t", indent+1, false); err != nil {
+				return err
+			}
+			ctx.appendCode(indent, "}\n")
+		}
+	}
+
+	return nil
+}
+
+func (ctx *sizeContext) sizeUnion(desc *dynssz.TypeDescriptor, varName string, indent int) error {
+	ctx.appendCode(indent, "size += 1 // Union selector\n")
+	ctx.appendCode(indent, "switch %s.Variant {\n", varName)
+
+	for variant, variantDesc := range desc.UnionVariants {
+		variantType := ctx.typePrinter.TypeString(variantDesc.Type)
+		ctx.appendCode(indent, "case %d:\n", variant)
+		ctx.appendCode(indent, "\tv, ok := %s.Data.(%s)\n", varName, variantType)
+		ctx.appendCode(indent, "\tif !ok {\n")
+		ctx.appendCode(indent, "\t\treturn 0\n")
+		ctx.appendCode(indent, "\t}\n")
+		if err := ctx.sizeType(variantDesc, "v", indent+1, false); err != nil {
+			return err
+		}
+	}
+
+	ctx.appendCode(indent, "}\n")
+
+	return nil
 }
