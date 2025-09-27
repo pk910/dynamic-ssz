@@ -720,7 +720,7 @@ func appendCoverageFile(coverFile string) error {
 		defer combined.Close()
 
 		// Write header
-		fmt.Fprintln(combined, "mode: set")
+		fmt.Fprintln(combined, "mode: atomic")
 	} else {
 		// Append to existing file
 		combined, err = os.OpenFile(combinedFile, os.O_APPEND|os.O_WRONLY, 0644)
@@ -730,7 +730,7 @@ func appendCoverageFile(coverFile string) error {
 		defer combined.Close()
 	}
 
-	// Copy coverage data (skip "mode: set" line from new file)
+	// Copy coverage data (skip "mode: atomic" line from new file)
 	scanner := bufio.NewScanner(newData)
 	firstLine := true
 	for scanner.Scan() {
