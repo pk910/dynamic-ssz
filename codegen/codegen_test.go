@@ -51,21 +51,24 @@ var testMatrix = []TestPayload{
 	{
 		Name: "SimpleTypes1",
 		Payload: struct {
-			B1     bool
-			I8     uint8
-			I16    uint16
-			I32    uint32
-			I64    uint64
-			I128   [16]byte
-			I256   [4]uint64
-			Vec8   []uint8     `ssz-size:"4"`
-			Vec32  []uint32    `ssz-size:"4"`
-			Vec128 [][2]uint64 `ssz-type:"?,uint128" ssz-size:"4"`
-			BitVec [8]byte     `ssz-type:"bitvector"`
-			Lst8   []uint8     `ssz-max:"4"`
-			Lst32  []uint32    `ssz-max:"4"`
-			Lst128 [][2]uint64 `ssz-type:"?,uint128" ssz-max:"4"`
-			Str    string      `ssz-max:"8"`
+			B1       bool
+			I8       uint8
+			I16      uint16
+			I32      uint32
+			I64      uint64
+			I128     [16]byte
+			I256     [4]uint64
+			Vec8     []uint8     `ssz-size:"4"`
+			Vec32    []uint32    `ssz-size:"4"`
+			Vec128   [][2]uint64 `ssz-type:"?,uint128" ssz-size:"4"`
+			BitVec   [8]byte     `ssz-type:"bitvector"`
+			Lst8     []uint8     `ssz-max:"4"`
+			Lst32    []uint32    `ssz-max:"4"`
+			Lst128   [][2]uint64 `ssz-type:"?,uint128" ssz-max:"4"`
+			Str      string      `ssz-max:"8"`
+			Wrapper1 dynssz.TypeWrapper[struct {
+				Data []byte `ssz-size:"32"`
+			}, []byte] `ssz-type:"wrapper"`
 		}{
 			B1:     true,
 			I8:     1,
@@ -82,6 +85,11 @@ var testMatrix = []TestPayload{
 			Lst32:  []uint32{1, 2, 3, 4},
 			Lst128: [][2]uint64{{1, 2}, {3, 4}},
 			Str:    "hello",
+			Wrapper1: dynssz.TypeWrapper[struct {
+				Data []byte `ssz-size:"32"`
+			}, []byte]{
+				Data: []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+			},
 		},
 		Specs: map[string]any{},
 	},
@@ -127,6 +135,10 @@ var testMatrix = []TestPayload{
 			} `ssz-type:"progressive-container"`
 			L1 []uint64 `ssz-type:"progressive-list"`
 			L2 []byte   `ssz-type:"progressive-bitlist"`
+			U1 dynssz.CompatibleUnion[struct {
+				F1 uint32
+				F2 [2][]uint8 `ssz-size:"2,5"`
+			}]
 		}{
 			C1: struct {
 				F1 uint64 `ssz-index:"0"`
@@ -139,6 +151,13 @@ var testMatrix = []TestPayload{
 			},
 			L1: []uint64{12345, 67890},
 			L2: []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+			U1: dynssz.CompatibleUnion[struct {
+				F1 uint32
+				F2 [2][]uint8 `ssz-size:"2,5"`
+			}]{
+				Variant: 0,
+				Data:    uint32(0x12345678),
+			},
 		},
 		Specs: map[string]any{},
 	},
@@ -158,9 +177,13 @@ func testCodegenPayload(t *testing.T, payload TestPayload) {
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
+
+	var sszHex, hashRootHex string
 	defer func() {
 		if t.Failed() {
 			t.Logf("Payload %v data dir: %s", payload.Name, tempDir)
+			t.Logf("Payload hex: %v", sszHex)
+			t.Logf("Payload hash root: %v", hashRootHex)
 		} else {
 			os.RemoveAll(tempDir)
 		}
@@ -172,7 +195,13 @@ func testCodegenPayload(t *testing.T, payload TestPayload) {
 	if err != nil {
 		t.Fatalf("Failed to marshal payload: %v", err)
 	}
-	sszHex := hex.EncodeToString(sszBytes)
+	sszHex = hex.EncodeToString(sszBytes)
+
+	hashRoot, err := ds.HashTreeRoot(payload.Payload)
+	if err != nil {
+		t.Fatalf("Failed to hash tree root: %v", err)
+	}
+	hashRootHex = hex.EncodeToString(hashRoot[:])
 
 	// Step 1: Create types directory and write the type definition
 	typesDir := filepath.Join(tempDir, "types")
@@ -228,13 +257,17 @@ func testCodegenPayload(t *testing.T, payload TestPayload) {
 	}
 
 	// Step 7: Verify results with reflection
-	if err := verifyResults(t, payload, sszHex, output); err != nil {
+	if err := verifyResults(t, payload, sszHex, hashRootHex, output); err != nil {
 		t.Fatalf("Result verification failed: %v", err)
 	}
 }
 
 func writeTypeFile(filename string, payload TestPayload) error {
 	content := fmt.Sprintf(`package types
+
+import dynssz "github.com/pk910/dynamic-ssz"
+
+var _ dynssz.SszType
 
 // TestPayload represents the test type
 type TestPayload %s
@@ -522,30 +555,12 @@ func runTest(tempDir string, sszHex string) (string, error) {
 	return string(output), nil
 }
 
-func verifyResults(t *testing.T, payload TestPayload, sszHex string, output string) error {
+func verifyResults(t *testing.T, payload TestPayload, sszHex string, hashRootHex string, output string) error {
 	// Parse JSON output
 	var results TestResults
 	if err := json.Unmarshal([]byte(output), &results); err != nil {
 		return fmt.Errorf("failed to parse JSON output: %v", err)
 	}
-
-	// Calculate expected hash tree root using reflection
-	ds := dynssz.NewDynSsz(payload.Specs)
-	sszBytes, err := hex.DecodeString(sszHex)
-	if err != nil {
-		return fmt.Errorf("failed to decode SSZ hex: %v", err)
-	}
-
-	testValue := reflect.New(reflect.TypeOf(payload.Payload)).Interface()
-	if err := ds.UnmarshalSSZ(testValue, sszBytes); err != nil {
-		return fmt.Errorf("failed to unmarshal test data: %v", err)
-	}
-
-	expectedRoot, err := ds.HashTreeRoot(testValue)
-	if err != nil {
-		return fmt.Errorf("failed to calculate expected hash tree root: %v", err)
-	}
-	expectedHashHex := hex.EncodeToString(expectedRoot[:])
 
 	// Verify at least one code path succeeded
 	hasSuccess := false
@@ -559,8 +574,8 @@ func verifyResults(t *testing.T, payload TestPayload, sszHex string, output stri
 			if !results.Legacy.SSZEqual {
 				return fmt.Errorf("legacy: SSZ encoding mismatch")
 			}
-			if results.Legacy.HashTreeRoot != expectedHashHex {
-				return fmt.Errorf("legacy: hash mismatch: generated=%s, expected=%s", results.Legacy.HashTreeRoot, expectedHashHex)
+			if results.Legacy.HashTreeRoot != hashRootHex {
+				return fmt.Errorf("legacy: hash mismatch: generated=%s, expected=%s", results.Legacy.HashTreeRoot, hashRootHex)
 			}
 		}
 	}
@@ -573,8 +588,8 @@ func verifyResults(t *testing.T, payload TestPayload, sszHex string, output stri
 			if !results.Dynamic.SSZEqual {
 				return fmt.Errorf("dynamic: SSZ encoding mismatch")
 			}
-			if results.Dynamic.HashTreeRoot != expectedHashHex {
-				return fmt.Errorf("dynamic: hash mismatch: generated=%s, expected=%s", results.Dynamic.HashTreeRoot, expectedHashHex)
+			if results.Dynamic.HashTreeRoot != hashRootHex {
+				return fmt.Errorf("dynamic: hash mismatch: generated=%s, expected=%s", results.Dynamic.HashTreeRoot, hashRootHex)
 			}
 		}
 	}
@@ -587,8 +602,8 @@ func verifyResults(t *testing.T, payload TestPayload, sszHex string, output stri
 			if !results.Hybrid.SSZEqual {
 				return fmt.Errorf("hybrid: SSZ encoding mismatch")
 			}
-			if results.Hybrid.HashTreeRoot != expectedHashHex {
-				return fmt.Errorf("hybrid: hash mismatch: generated=%s, expected=%s", results.Hybrid.HashTreeRoot, expectedHashHex)
+			if results.Hybrid.HashTreeRoot != hashRootHex {
+				return fmt.Errorf("hybrid: hash mismatch: generated=%s, expected=%s", results.Hybrid.HashTreeRoot, hashRootHex)
 			}
 		}
 	} else {
@@ -614,6 +629,49 @@ func verifyResults(t *testing.T, payload TestPayload, sszHex string, output stri
 func formatTypeString(t reflect.Type) string {
 	switch t.Kind() {
 	case reflect.Struct:
+
+		if t.PkgPath() == "github.com/pk910/dynamic-ssz" && strings.HasPrefix(t.Name(), "TypeWrapper[") {
+			wrapperValue := reflect.New(t)
+			method := wrapperValue.MethodByName("GetDescriptorType")
+			if !method.IsValid() {
+				return ""
+			}
+
+			// Call the method to get the descriptor type
+			results := method.Call(nil)
+			if len(results) == 0 {
+				return ""
+			}
+
+			descriptorType, ok := results[0].Interface().(reflect.Type)
+			if !ok {
+				return ""
+			}
+
+			fieldType := descriptorType.Field(0)
+
+			return fmt.Sprintf("dynssz.TypeWrapper[%s, %s]", formatTypeString(descriptorType), formatTypeString(fieldType.Type))
+		} else if t.PkgPath() == "github.com/pk910/dynamic-ssz" && strings.HasPrefix(t.Name(), "CompatibleUnion[") {
+			wrapperValue := reflect.New(t)
+			method := wrapperValue.MethodByName("GetDescriptorType")
+			if !method.IsValid() {
+				return ""
+			}
+
+			// Call the method to get the descriptor type
+			results := method.Call(nil)
+			if len(results) == 0 {
+				return ""
+			}
+
+			descriptorType, ok := results[0].Interface().(reflect.Type)
+			if !ok {
+				return ""
+			}
+
+			return fmt.Sprintf("dynssz.CompatibleUnion[%s]", formatTypeString(descriptorType))
+		}
+
 		var fields []string
 		for i := 0; i < t.NumField(); i++ {
 			field := t.Field(i)

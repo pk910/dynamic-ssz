@@ -3,6 +3,7 @@ package codegen
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 
 	dynssz "github.com/pk910/dynamic-ssz"
@@ -334,15 +335,23 @@ func (ctx *marshalContext) marshalList(desc *dynssz.TypeDescriptor, varName stri
 }
 
 func (ctx *marshalContext) marshalUnion(desc *dynssz.TypeDescriptor, varName string, indent int) error {
-	ctx.appendCode(indent, "\tdst = sszutils.MarshalUint8(dst, %s.Variant)\n", varName)
+	ctx.appendCode(indent, "dst = sszutils.MarshalUint8(dst, %s.Variant)\n", varName)
 	ctx.appendCode(indent, "switch %s.Variant {\n", varName)
-	for variant, variantDesc := range desc.UnionVariants {
+
+	variants := make([]int, 0, len(desc.UnionVariants))
+	for variant := range desc.UnionVariants {
+		variants = append(variants, int(variant))
+	}
+	slices.Sort(variants)
+
+	for _, variant := range variants {
+		variantDesc := desc.UnionVariants[uint8(variant)]
 		variantType := ctx.typePrinter.TypeString(variantDesc.Type)
 		ctx.appendCode(indent, "case %d:\n", variant)
-		ctx.appendCode(indent, "v, ok := %s.Data.({%s})\n", varName, variantType)
-		ctx.appendCode(indent, "if !ok {\n")
-		ctx.appendCode(indent, "\treturn dst, sszutils.ErrInvalidUnionVariant\n")
-		ctx.appendCode(indent, "}\n")
+		ctx.appendCode(indent, "\tv, ok := %s.Data.(%s)\n", varName, variantType)
+		ctx.appendCode(indent, "\tif !ok {\n")
+		ctx.appendCode(indent, "\t\treturn dst, sszutils.ErrInvalidUnionVariant\n")
+		ctx.appendCode(indent, "\t}\n")
 		if err := ctx.marshalType(variantDesc, "v", indent+1, false); err != nil {
 			return err
 		}

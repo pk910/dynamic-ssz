@@ -3,6 +3,7 @@ package codegen
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 
 	dynssz "github.com/pk910/dynamic-ssz"
@@ -475,10 +476,16 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *dynssz.TypeDescriptor, varName
 
 func (ctx *hashTreeRootContext) hashUnion(desc *dynssz.TypeDescriptor, varName string, indent int) error {
 	ctx.appendCode(indent, "idx := hh.Index()\n")
-	ctx.appendCode(indent, "hh.PutUint8(%s.Variant)\n", varName)
 	ctx.appendCode(indent, "switch %s.Variant {\n", varName)
 
-	for variant, variantDesc := range desc.UnionVariants {
+	variants := make([]int, 0, len(desc.UnionVariants))
+	for variant := range desc.UnionVariants {
+		variants = append(variants, int(variant))
+	}
+	slices.Sort(variants)
+
+	for _, variant := range variants {
+		variantDesc := desc.UnionVariants[uint8(variant)]
 		variantType := ctx.typePrinter.TypeString(variantDesc.Type)
 		ctx.appendCode(indent, "case %d:\n", variant)
 		ctx.appendCode(indent, "\tv, ok := %s.Data.(%s)\n", varName, variantType)
@@ -492,6 +499,7 @@ func (ctx *hashTreeRootContext) hashUnion(desc *dynssz.TypeDescriptor, varName s
 	ctx.appendCode(indent, "\treturn sszutils.ErrInvalidUnionVariant\n")
 	ctx.appendCode(indent, "}\n")
 
+	ctx.appendCode(indent, "hh.PutUint8(%s.Variant)\n", varName)
 	ctx.appendCode(indent, "hh.Merkleize(idx)\n")
 
 	return nil

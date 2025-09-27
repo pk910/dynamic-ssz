@@ -3,6 +3,7 @@ package codegen
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 
 	dynssz "github.com/pk910/dynamic-ssz"
@@ -646,11 +647,19 @@ func (ctx *unmarshalContext) unmarshalUnion(desc *dynssz.TypeDescriptor, varName
 	ctx.appendCode(indent, "%s.Variant = selector\n", varName)
 	ctx.appendCode(indent, "switch selector {\n")
 
-	for variant, variantDesc := range desc.UnionVariants {
+	variants := make([]int, 0, len(desc.UnionVariants))
+	for variant := range desc.UnionVariants {
+		variants = append(variants, int(variant))
+	}
+	slices.Sort(variants)
+
+	for _, variant := range variants {
+		variantDesc := desc.UnionVariants[uint8(variant)]
 		variantType := ctx.typePrinter.TypeString(variantDesc.Type)
 		ctx.appendCode(indent, "case %d:\n", variant)
 		valVar := ctx.getValVar()
-		ctx.appendCode(indent, "\t%s := &%s{}\n", valVar, variantType)
+		ctx.appendCode(indent, "\t%s := *new(%s)\n", valVar, variantType)
+		ctx.appendCode(indent, "\tbuf := buf[1:]\n")
 		if err := ctx.unmarshalType(variantDesc, valVar, indent+1, false, true); err != nil {
 			return err
 		}
