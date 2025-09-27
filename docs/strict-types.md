@@ -50,6 +50,11 @@ type MyStruct struct {
 | `"vector"` | Vector | Fixed-length sequences |
 | `"bitlist"` | Bitlist | Dynamic-length bit sequences |
 | `"bitvector"` | Bitvector | Fixed-length bit sequences |
+| `"progressive-container"` | Progressive Container | Struct types with progressive merkleization and active field tracking (EIP-7495) |
+| `"progressive-list"` | Progressive List | Dynamic-length sequences with progressive merkleization (EIP-7916) |
+| `"progressive-bitlist"` | Progressive Bitlist | Dynamic-length bit sequences with progressive merkleization (EIP-7916) |
+| `"compatible-union"` | Compatible Union | Union type with variant selection (EIP-7495) |
+
 
 ### Special Annotations
 
