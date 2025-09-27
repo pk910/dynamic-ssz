@@ -78,12 +78,12 @@ Before diving into the details, it's important to understand which types are sup
 - Byte arrays: `[N]byte` (fixed-size)
 - Slices and arrays of supported types
 - Structs containing only supported types
-- Pointers to structs (optional fields)
+- Pointers to supported types
+- Strings (handled as []byte)
 
 **❌ Not Supported:**
 - Signed integers (`int`, `int8`, etc.)
 - Floating-point numbers (`float32`, `float64`)
-- Strings (`string`) - use `[]byte` instead
 - Maps, channels, functions, interfaces
 
 ### Dynamic Specifications
