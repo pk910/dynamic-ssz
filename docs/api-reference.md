@@ -14,13 +14,10 @@ Dynamic SSZ supports only SSZ-compatible types as defined in the SSZ specificati
 ### Composite Types
 - **Arrays**: Fixed-size arrays of supported types
 - **Slices**: Variable-size slices of supported types (require `ssz-size` or `ssz-max` tags)
-- **Progressive Lists**: Lists with progressive merkleization (EIP-7916) using `ssz-type:"progressive-list"`
-- **Progressive Bitlists**: Bitlists with progressive merkleization (EIP-7916) using `ssz-type:"progressive-bitlist"`
 - **Structs**: Structs containing only supported types
-- **Progressive Containers**: Containers with active field tracking (EIP-7495) using `ssz-index` tags
-- **Compatible Unions**: Generic union types (EIP-7495) with variant selection
 - **Pointers**: Pointers to structs (nil pointers will be filled with empty instances of the referred type)
 - **TypeWrapper**: Generic wrapper for applying SSZ annotations to non-struct types (see [TypeWrapper Guide](type-wrapper.md))
+- **Compatible Unions**: Generic union types (EIP-7495) with variant selection
 
 ### Not Supported
 The following types are **not** part of the SSZ specification and therefore not supported:
@@ -30,14 +27,14 @@ The following types are **not** part of the SSZ specification and therefore not 
 - Channels
 - Functions
 - Complex numbers
-- Interfaces (except when referring to concrete SSZ-compatible types)
+- Interfaces (except when referring to concrete SSZ-compatible types in unions)
 
 ### Handling Large Integers (uint128/uint256)
 
 The SSZ specification defines `uint128` and `uint256` types, but Go doesn't have native support for these large integer types. This creates a gap between the SSZ specification and Go's type system.
 
 #### Current Approach
-- **For marshalling/unmarshalling**: Large integers are typically represented as byte arrays (`[16]byte` for uint128, `[32]byte` for uint256) or `uint64` arrays
+- **For marshalling/unmarshalling**: Large integers are typically represented as byte arrays (`[16]byte` for uint128, `[32]byte` for uint256) or `uint64` arrays (`[2]uint64` for uint128, `[4]uint64` for uint256)
 - **For calculations**: Complex types that handle endianness and arithmetic operations are needed
 
 #### Recommended Libraries
@@ -250,48 +247,6 @@ if err != nil {
 }
 fmt.Printf("Hash tree root: %x\n", root)
 ```
-
-## Utility Methods
-
-### GetTypeCache
-
-```go
-func (d *DynSsz) GetTypeCache() *TypeCache
-```
-
-Returns the type cache for the DynSsz instance. The type cache stores type descriptors for performance optimization.
-
-**Returns:**
-- `*TypeCache`: The type cache instance
-
-**Example:**
-```go
-cache := ds.GetTypeCache()
-descriptor, err := cache.GetTypeDescriptor(reflect.TypeOf(myStruct), nil, nil)
-```
-
-## Type Cache
-
-### TypeCache
-
-The `TypeCache` manages cached type descriptors for performance optimization.
-
-#### GetTypeDescriptor
-
-```go
-func (tc *TypeCache) GetTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint) (*TypeDescriptor, error)
-```
-
-Returns a cached type descriptor, computing it if necessary.
-
-**Parameters:**
-- `t`: The reflection type to get descriptor for
-- `sizeHints`: Size hints from struct tags
-- `maxSizeHints`: Maximum size hints from struct tags
-
-**Returns:**
-- `*TypeDescriptor`: The type descriptor
-- `error`: Error if descriptor creation fails
 
 ## Struct Tags
 
