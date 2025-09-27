@@ -17,8 +17,8 @@ func main() {
 	fmt.Println("This example demonstrates code generation for high-performance SSZ operations.")
 	fmt.Println()
 	fmt.Println("Steps to use:")
-	fmt.Println("1. Run: go run cmd/main.go     (generates optimized code)")
-	fmt.Println("2. Run: go run .               (uses generated methods)")
+	fmt.Println("1. Run: go run codegen/codegen.go  (generates optimized code)")
+	fmt.Println("2. Run: go run .                   (uses generated methods)")
 	fmt.Println()
 
 	// Create a DynSsz instance for reflection-based operations
@@ -56,7 +56,7 @@ func main() {
 
 	fmt.Println()
 	fmt.Println("To see 2-3x performance improvement:")
-	fmt.Println("1. Run 'go run cmd/main.go' to generate optimized code")
+	fmt.Println("1. Run 'go run codegen/codegen.go' to generate optimized code")
 	fmt.Println("2. Run 'go run .' again to use generated methods")
 }
 
