@@ -10,6 +10,10 @@ import (
 	dynssz "github.com/pk910/dynamic-ssz"
 )
 
+var (
+	byteType = types.Typ[types.Uint8]
+)
+
 type CodegenInfo struct {
 	Type types.Type
 }
@@ -39,20 +43,20 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 	}
 
 	originalType := typ
+	innerType := typ
 
-	// Resolve named types
-	if named, ok := typ.(*types.Named); ok {
-		typ = named.Underlying()
-	}
-
-	// Handle pointer types
-	if ptr, ok := typ.(*types.Pointer); ok {
-		typ = ptr.Elem()
-		desc.GoTypeFlags |= dynssz.GoTypeFlagIsPointer
-
-		// Resolve named types after resolving pointer
+	for {
+		// Resolve named types
 		if named, ok := typ.(*types.Named); ok {
 			typ = named.Underlying()
+		} else if ptr, ok := typ.(*types.Pointer); ok {
+			typ = ptr.Elem()
+			desc.GoTypeFlags |= dynssz.GoTypeFlagIsPointer
+			innerType = typ
+		} else if alias, ok := typ.(*types.Alias); ok {
+			typ = alias.Underlying()
+		} else {
+			break
 		}
 	}
 
@@ -133,23 +137,28 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 	// Auto-detect ssz type if not specified
 	if sszType == dynssz.SszUnspecifiedType {
 		// Detect well-known types first (named types)
-		if named, ok := originalType.(*types.Named); ok {
-			obj := named.Obj()
-			if obj.Pkg() != nil {
-				pkgPath := obj.Pkg().Path()
-				typeName := obj.Name()
+		var obj *types.TypeName
+		if alias, ok := innerType.(*types.Alias); ok {
+			innerType = types.Unalias(alias)
+		}
+		if named, ok := innerType.(*types.Named); ok {
+			obj = named.Obj()
+		}
 
-				switch {
-				case pkgPath == "time" && typeName == "Time":
-					sszType = dynssz.SszUint64Type
-					desc.GoTypeFlags |= dynssz.GoTypeFlagIsTime
-				case pkgPath == "github.com/holiman/uint256" && typeName == "Int":
-					sszType = dynssz.SszUint256Type
-				case pkgPath == "github.com/pk910/dynamic-ssz" && strings.HasPrefix(typeName, "CompatibleUnion["):
-					sszType = dynssz.SszCompatibleUnionType
-				case pkgPath == "github.com/pk910/dynamic-ssz" && strings.HasPrefix(typeName, "TypeWrapper["):
-					sszType = dynssz.SszTypeWrapperType
-				}
+		if obj != nil && obj.Pkg() != nil {
+			pkgPath := obj.Pkg().Path()
+			typeName := obj.Name()
+
+			switch {
+			case pkgPath == "time" && typeName == "Time":
+				sszType = dynssz.SszUint64Type
+				desc.GoTypeFlags |= dynssz.GoTypeFlagIsTime
+			case pkgPath == "github.com/holiman/uint256" && typeName == "Int":
+				sszType = dynssz.SszUint256Type
+			case pkgPath == "github.com/pk910/dynamic-ssz" && typeName == "CompatibleUnion":
+				sszType = dynssz.SszCompatibleUnionType
+			case pkgPath == "github.com/pk910/dynamic-ssz" && typeName == "TypeWrapper":
+				sszType = dynssz.SszTypeWrapperType
 			}
 		}
 	}
@@ -232,6 +241,7 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 		if desc.Kind != reflect.Uint8 {
 			return nil, fmt.Errorf("uint8 ssz type can only be represented by uint8 types, got %v", desc.Kind)
 		}
+		fmt.Printf("uint8 ssz type: %v\n", sizeHints)
 		if len(sizeHints) > 0 && sizeHints[0].Size != 1 {
 			return nil, fmt.Errorf("uint8 ssz type must be ssz-size:1, got %v", sizeHints[0].Size)
 		}
@@ -273,7 +283,7 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 
 	// complex types
 	case dynssz.SszTypeWrapperType:
-		if named, ok := originalType.(*types.Named); ok {
+		if named, ok := innerType.(*types.Named); ok {
 			err := p.buildTypeWrapperDescriptor(desc, named, typeHints, sizeHints, maxSizeHints)
 			if err != nil {
 				return nil, err
@@ -281,7 +291,7 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 		} else {
 			return nil, fmt.Errorf("TypeWrapper must be a named type")
 		}
-	case dynssz.SszContainerType:
+	case dynssz.SszContainerType, dynssz.SszProgressiveContainerType:
 		if struc, ok := typ.(*types.Struct); ok {
 			err := p.buildContainerDescriptor(desc, struc)
 			if err != nil {
@@ -290,28 +300,23 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 		} else {
 			return nil, fmt.Errorf("container ssz type can only be represented by struct types, got %v", desc.Kind)
 		}
-	case dynssz.SszVectorType:
+	case dynssz.SszVectorType, dynssz.SszBitvectorType:
 		err := p.buildVectorDescriptor(desc, typ, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
 			return nil, err
 		}
-	case dynssz.SszListType:
+	case dynssz.SszListType, dynssz.SszProgressiveListType:
 		err := p.buildListDescriptor(desc, typ, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
 			return nil, err
 		}
-	case dynssz.SszBitvectorType:
-		err := p.buildBitvectorDescriptor(desc, typ, sizeHints, maxSizeHints, typeHints)
-		if err != nil {
-			return nil, err
-		}
-	case dynssz.SszBitlistType:
+	case dynssz.SszBitlistType, dynssz.SszProgressiveBitlistType:
 		err := p.buildBitlistDescriptor(desc, typ, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
 			return nil, err
 		}
 	case dynssz.SszCompatibleUnionType:
-		if named, ok := originalType.(*types.Named); ok {
+		if named, ok := innerType.(*types.Named); ok {
 			err := p.buildCompatibleUnionDescriptor(desc, named)
 			if err != nil {
 				return nil, err
@@ -464,12 +469,9 @@ func (p *Parser) buildContainerDescriptor(desc *dynssz.TypeDescriptor, struc *ty
 			continue
 		}
 
-		typeHints, sizeHints, maxSizeHints, skip, err := p.parseFieldTags(struc.Tag(i))
+		typeHints, sizeHints, maxSizeHints, err := p.parseFieldTags(struc.Tag(i))
 		if err != nil {
 			return fmt.Errorf("failed to parse tags for field %v: %v", field.Name(), err)
-		}
-		if skip {
-			continue
 		}
 
 		// Build type descriptor with field-specific hints
@@ -606,9 +608,10 @@ func (p *Parser) buildListDescriptor(desc *dynssz.TypeDescriptor, typ types.Type
 			desc.SszTypeFlags |= dynssz.SszTypeFlagIsDynamic
 			desc.Size = 0
 			desc.GoTypeFlags |= dynssz.GoTypeFlagIsByteArray
-			return nil
+			elemType = byteType
+		} else {
+			return fmt.Errorf("unsupported list base type: %v", t.Kind())
 		}
-		return fmt.Errorf("unsupported list base type: %v", t.Kind())
 	default:
 		return fmt.Errorf("unsupported list type: %T", typ)
 	}
@@ -641,45 +644,6 @@ func (p *Parser) buildListDescriptor(desc *dynssz.TypeDescriptor, typ types.Type
 	// Lists are always dynamic
 	desc.SszTypeFlags |= dynssz.SszTypeFlagIsDynamic
 	desc.Size = 0
-
-	return nil
-}
-
-func (p *Parser) buildBitvectorDescriptor(desc *dynssz.TypeDescriptor, typ types.Type, sizeHints []dynssz.SszSizeHint, maxSizeHints []dynssz.SszMaxSizeHint, typeHints []dynssz.SszTypeHint) error {
-	var elemType types.Type
-	var length uint32
-
-	switch t := typ.(type) {
-	case *types.Array:
-		elemType = t.Elem()
-		length = uint32(t.Len())
-	case *types.Slice:
-		elemType = t.Elem()
-		if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
-			length = sizeHints[0].Size
-		} else {
-			return fmt.Errorf("bitvector slice type requires explicit size hint")
-		}
-	default:
-		return fmt.Errorf("unsupported bitvector type: %T", typ)
-	}
-
-	// Build element descriptor
-	elemDesc, err := p.buildTypeDescriptor(elemType, nil, nil, nil)
-	if err != nil {
-		return fmt.Errorf("failed to build bitvector element descriptor: %v", err)
-	}
-	desc.ElemDesc = elemDesc
-
-	// Bitvector must use byte (uint8) elements
-	if elemDesc.Kind != reflect.Uint8 {
-		return fmt.Errorf("bitvector ssz type can only be represented by byte slices or arrays, got %v", elemDesc.Kind)
-	}
-
-	desc.Len = length
-	// Bitvector size is calculated as (length + 7) / 8 bytes
-	desc.Size = (length + 7) / 8
-	desc.GoTypeFlags |= dynssz.GoTypeFlagIsByteArray
 
 	return nil
 }
@@ -737,12 +701,9 @@ func (p *Parser) buildCompatibleUnionDescriptor(desc *dynssz.TypeDescriptor, nam
 		variantIndex := uint8(i) // Field order determines variant index
 
 		// Extract SSZ annotations from the field
-		typeHints, sizeHints, maxSizeHints, skip, err := p.parseFieldTags(descriptorStruct.Tag(i))
+		typeHints, sizeHints, maxSizeHints, err := p.parseFieldTags(descriptorStruct.Tag(i))
 		if err != nil {
 			return fmt.Errorf("failed to parse union variant field %s tags: %v", field.Name(), err)
-		}
-		if skip {
-			continue
 		}
 
 		// Build variant type descriptor
@@ -788,12 +749,9 @@ func (p *Parser) buildTypeWrapperDescriptor(desc *dynssz.TypeDescriptor, named *
 
 	// Extract SSZ annotations from the descriptor field
 	field := descriptorStruct.Field(0)
-	fieldTypeHints, fieldSizeHints, fieldMaxSizeHints, skip, err := p.parseFieldTags(descriptorStruct.Tag(0))
+	fieldTypeHints, fieldSizeHints, fieldMaxSizeHints, err := p.parseFieldTags(descriptorStruct.Tag(0))
 	if err != nil {
 		return fmt.Errorf("failed to parse TypeWrapper descriptor field tags: %v", err)
-	}
-	if skip {
-		return fmt.Errorf("TypeWrapper descriptor field cannot be skipped")
 	}
 
 	// Verify the field type matches the wrapped type
@@ -817,17 +775,12 @@ func (p *Parser) buildTypeWrapperDescriptor(desc *dynssz.TypeDescriptor, named *
 	return nil
 }
 
-func (p *Parser) parseFieldTags(tag string) (typeHints []dynssz.SszTypeHint, sizeHints []dynssz.SszSizeHint, maxSizeHints []dynssz.SszMaxSizeHint, skip bool, err error) {
+func (p *Parser) parseFieldTags(tag string) (typeHints []dynssz.SszTypeHint, sizeHints []dynssz.SszSizeHint, maxSizeHints []dynssz.SszMaxSizeHint, err error) {
 	if tag == "" {
-		return nil, nil, nil, false, nil
+		return nil, nil, nil, nil
 	}
 
 	structTag := reflect.StructTag(tag)
-
-	// Check for ssz:"-" which means skip field
-	if sszTag, ok := structTag.Lookup("ssz"); ok && sszTag == "-" {
-		return nil, nil, nil, true, nil
-	}
 
 	// Parse type hints (matching getSszTypeTag logic)
 	if sszType, ok := structTag.Lookup("ssz-type"); ok {
@@ -835,47 +788,9 @@ func (p *Parser) parseFieldTags(tag string) (typeHints []dynssz.SszTypeHint, siz
 			typeStr = strings.TrimSpace(typeStr)
 			hint := dynssz.SszTypeHint{}
 
-			switch typeStr {
-			case "?", "auto":
-				hint.Type = dynssz.SszUnspecifiedType
-			case "custom":
-				hint.Type = dynssz.SszCustomType
-			case "wrapper", "type-wrapper":
-				hint.Type = dynssz.SszTypeWrapperType
-			case "bool":
-				hint.Type = dynssz.SszBoolType
-			case "uint8":
-				hint.Type = dynssz.SszUint8Type
-			case "uint16":
-				hint.Type = dynssz.SszUint16Type
-			case "uint32":
-				hint.Type = dynssz.SszUint32Type
-			case "uint64":
-				hint.Type = dynssz.SszUint64Type
-			case "uint128":
-				hint.Type = dynssz.SszUint128Type
-			case "uint256":
-				hint.Type = dynssz.SszUint256Type
-			case "container":
-				hint.Type = dynssz.SszContainerType
-			case "list":
-				hint.Type = dynssz.SszListType
-			case "vector":
-				hint.Type = dynssz.SszVectorType
-			case "bitlist":
-				hint.Type = dynssz.SszBitlistType
-			case "bitvector":
-				hint.Type = dynssz.SszBitvectorType
-			case "progressive-list":
-				hint.Type = dynssz.SszProgressiveListType
-			case "progressive-bitlist":
-				hint.Type = dynssz.SszProgressiveBitlistType
-			case "progressive-container":
-				hint.Type = dynssz.SszProgressiveContainerType
-			case "compatible-union", "union":
-				hint.Type = dynssz.SszCompatibleUnionType
-			default:
-				return nil, nil, nil, false, fmt.Errorf("invalid ssz-type tag: %v", typeStr)
+			hint.Type, err = dynssz.ParseSszType(typeStr)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("error parsing ssz-type tag: %v", err)
 			}
 
 			typeHints = append(typeHints, hint)
@@ -893,7 +808,7 @@ func (p *Parser) parseFieldTags(tag string) (typeHints []dynssz.SszTypeHint, siz
 			} else {
 				sizeInt, err := strconv.ParseUint(sizeStr, 10, 32)
 				if err != nil {
-					return nil, nil, nil, false, fmt.Errorf("error parsing ssz-size tag: %v", err)
+					return nil, nil, nil, fmt.Errorf("error parsing ssz-size tag: %v", err)
 				}
 				hint.Size = uint32(sizeInt)
 			}
@@ -903,21 +818,39 @@ func (p *Parser) parseFieldTags(tag string) (typeHints []dynssz.SszTypeHint, siz
 	}
 
 	// Parse dynamic size hints
-	if dynsszSize, ok := structTag.Lookup("dynssz-size"); ok {
-		hint := dynssz.SszSizeHint{
-			Custom: true,
-			Expr:   dynsszSize,
-		}
+	fieldDynSszSizeStr, fieldHasDynSszSize := structTag.Lookup("dynssz-size")
+	if fieldHasDynSszSize {
+		for i, sszSizeStr := range strings.Split(fieldDynSszSizeStr, ",") {
+			sszSize := dynssz.SszSizeHint{}
+			isExpr := false
 
-		// Try to parse as number first
-		if sizeInt, err := strconv.ParseUint(dynsszSize, 10, 32); err == nil {
-			hint.Size = uint32(sizeInt)
-		} else {
-			// It's an expression
-			hint.Dynamic = true
-		}
+			if sszSizeStr == "?" {
+				sszSize.Dynamic = true
+			} else if sszSizeInt, err := strconv.ParseUint(sszSizeStr, 10, 32); err == nil {
+				sszSize.Size = uint32(sszSizeInt)
+			} else {
+				// For go/types parser, we can't resolve spec values at compile time
+				// So we treat all non-numeric values as expressions
+				isExpr = true
+				sszSize.Dynamic = true
+				sszSize.Custom = true
+				if i < len(sizeHints) {
+					sizeHints[i].Expr = sszSizeStr
+				}
+				continue
+			}
 
-		sizeHints = append(sizeHints, hint)
+			if i >= len(sizeHints) {
+				sizeHints = append(sizeHints, sszSize)
+			} else if sizeHints[i].Size != sszSize.Size {
+				// update if resolved size differs from default
+				sizeHints[i] = sszSize
+			}
+
+			if isExpr {
+				sizeHints[i].Expr = sszSizeStr
+			}
+		}
 	}
 
 	// Parse max size hints (matching getSszMaxSizeTag logic)
@@ -931,7 +864,7 @@ func (p *Parser) parseFieldTags(tag string) (typeHints []dynssz.SszTypeHint, siz
 			} else {
 				maxInt, err := strconv.ParseUint(maxStr, 10, 64)
 				if err != nil {
-					return nil, nil, nil, false, fmt.Errorf("error parsing ssz-max tag: %v", err)
+					return nil, nil, nil, fmt.Errorf("error parsing ssz-max tag: %v", err)
 				}
 				hint.Size = maxInt
 			}
@@ -941,24 +874,41 @@ func (p *Parser) parseFieldTags(tag string) (typeHints []dynssz.SszTypeHint, siz
 	}
 
 	// Parse dynamic max size hints
-	if dynsszMax, ok := structTag.Lookup("dynssz-max"); ok {
-		hint := dynssz.SszMaxSizeHint{
-			Custom: true,
-			Expr:   dynsszMax,
-		}
+	fieldDynSszMaxStr, fieldHasDynSszMax := structTag.Lookup("dynssz-max")
+	if fieldHasDynSszMax {
+		for i, sszMaxSizeStr := range strings.Split(fieldDynSszMaxStr, ",") {
+			sszMaxSize := dynssz.SszMaxSizeHint{}
+			isExpr := false
 
-		// Try to parse as number first
-		if maxInt, err := strconv.ParseUint(dynsszMax, 10, 64); err == nil {
-			hint.Size = maxInt
-		} else {
-			// It's an expression - for now we can't resolve it without a spec context
-			hint.NoValue = true
-		}
+			if sszMaxSizeStr == "?" {
+				sszMaxSize.NoValue = true
+			} else if sszSizeInt, err := strconv.ParseUint(sszMaxSizeStr, 10, 64); err == nil {
+				sszMaxSize.Size = sszSizeInt
+			} else {
+				// For go/types parser, we can't resolve spec values at compile time
+				// So we treat all non-numeric values as expressions
+				isExpr = true
+				sszMaxSize.Custom = true
+				if i < len(maxSizeHints) {
+					maxSizeHints[i].Expr = sszMaxSizeStr
+				}
+				continue
+			}
 
-		maxSizeHints = append(maxSizeHints, hint)
+			if i >= len(maxSizeHints) {
+				maxSizeHints = append(maxSizeHints, sszMaxSize)
+			} else if maxSizeHints[i].Size != sszMaxSize.Size {
+				// update if resolved max size differs from default
+				maxSizeHints[i] = sszMaxSize
+			}
+
+			if isExpr {
+				maxSizeHints[i].Expr = sszMaxSizeStr
+			}
+		}
 	}
 
-	return typeHints, sizeHints, maxSizeHints, false, nil
+	return typeHints, sizeHints, maxSizeHints, nil
 }
 
 func (p *Parser) extractSszIndex(tag string) string {
