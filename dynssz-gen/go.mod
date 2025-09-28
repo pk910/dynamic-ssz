@@ -2,10 +2,8 @@ module github.com/pk910/dynamic-ssz/dynssz-gen
 
 go 1.24.0
 
-replace github.com/pk910/dynamic-ssz => ../
-
 require (
-	github.com/pk910/dynamic-ssz v1.0.1
+	github.com/pk910/dynamic-ssz v1.0.3-0.20250928193621-b517e2f054d2
 	golang.org/x/tools v0.37.0
 )
 
