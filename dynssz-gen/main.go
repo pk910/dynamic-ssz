@@ -31,14 +31,10 @@ func main() {
 	if *typeNames == "" {
 		log.Fatal("Type names are required (-types)")
 	}
-	if *outputFile == "" {
-		log.Fatal("Output file is required (-output)")
-	}
 
 	if *verbose {
 		log.Printf("Analyzing package: %s", *packagePath)
 		log.Printf("Looking for types: %s", *typeNames)
-		log.Printf("Output file: %s", *outputFile)
 	}
 
 	// Parse the Go package
@@ -74,10 +70,25 @@ func main() {
 	}
 
 	// Find the requested types in the package
-	foundTypes := make(map[string]types.Type)
+	generateFiles := make(map[string][]types.Type)
 	scope := pkg.Types.Scope()
+	typeCount := 0
 
 	for _, typeName := range requestedTypes {
+		outFile := ""
+		outFileParts := strings.Split(typeName, ":")
+		if len(outFileParts) > 1 {
+			outFile = outFileParts[1]
+			typeName = outFileParts[0]
+		}
+
+		if outFile == "" {
+			if *outputFile == "" {
+				log.Fatal("Output file is required (-output)")
+			}
+			outFile = *outputFile
+		}
+
 		obj := scope.Lookup(typeName)
 		if obj == nil {
 			log.Fatalf("Type %s not found in package %s", typeName, *packagePath)
@@ -88,7 +99,12 @@ func main() {
 			log.Fatalf("Object %s is not a type in package %s", typeName, *packagePath)
 		}
 
-		foundTypes[typeName] = typeObj.Type()
+		if _, ok := generateFiles[outFile]; !ok {
+			generateFiles[outFile] = make([]types.Type, 0)
+		}
+		generateFiles[outFile] = append(generateFiles[outFile], typeObj.Type())
+		typeCount++
+
 		if *verbose {
 			log.Printf("Found type: %s", typeName)
 		}
@@ -98,20 +114,22 @@ func main() {
 	codeGen := codegen.NewCodeGenerator(dynssz.NewDynSsz(nil))
 
 	// Build options for all types
-	var typeOptions []codegen.CodeGeneratorOption
-	for _, goType := range foundTypes {
-		typeOptions = append(typeOptions, codegen.WithGoTypesType(goType))
-	}
+	for outFile, foundTypes := range generateFiles {
+		var typeOptions []codegen.CodeGeneratorOption
+		for _, goType := range foundTypes {
+			typeOptions = append(typeOptions, codegen.WithGoTypesType(goType))
+		}
 
-	if *legacy {
-		typeOptions = append(typeOptions, codegen.WithCreateLegacyFn())
-	}
-	if *withoutDynamicExpressions {
-		typeOptions = append(typeOptions, codegen.WithoutDynamicExpressions())
-	}
+		if *legacy {
+			typeOptions = append(typeOptions, codegen.WithCreateLegacyFn())
+		}
+		if *withoutDynamicExpressions {
+			typeOptions = append(typeOptions, codegen.WithoutDynamicExpressions())
+		}
 
-	// Build the file with all types
-	codeGen.BuildFile(*outputFile, typeOptions...)
+		// Build the file with all types
+		codeGen.BuildFile(outFile, typeOptions...)
+	}
 
 	// Generate the code
 	if *verbose {
@@ -123,25 +141,23 @@ func main() {
 		log.Fatalf("Failed to generate code: %v", err)
 	}
 
-	// Get the generated code for our file
-	generatedCode, exists := codeMap[*outputFile]
-	if !exists {
-		log.Fatalf("Generated code not found for file %s", *outputFile)
-	}
-
 	// Write to output file
 	if *verbose {
 		log.Printf("Writing output to %s", *outputFile)
 	}
 
-	err = os.WriteFile(*outputFile, []byte(generatedCode), 0644)
-	if err != nil {
-		log.Fatalf("Failed to write output file %s: %v", *outputFile, err)
+	codeSize := 0
+	for outFile, generatedCode := range codeMap {
+		codeSize += len(generatedCode)
+		err = os.WriteFile(outFile, []byte(generatedCode), 0644)
+		if err != nil {
+			log.Fatalf("Failed to write output file %s: %v", outFile, err)
+		}
 	}
 
 	if *verbose {
-		log.Printf("Successfully generated %d bytes of code for %d types", len(generatedCode), len(foundTypes))
+		log.Printf("Successfully generated %d bytes of code for %d types to %d files", codeSize, typeCount, len(generateFiles))
 	} else {
-		fmt.Printf("Generated SSZ code for %d types in %s\n", len(foundTypes), *outputFile)
+		fmt.Printf("Generated SSZ code for %d types to %d files\n", typeCount, len(generateFiles))
 	}
 }

@@ -165,7 +165,11 @@ func (p *TypePrinter) TypeString(t *dynssz.TypeDescriptor) string {
 func (p *TypePrinter) InnerTypeString(t *dynssz.TypeDescriptor) string {
 	if t.CodegenInfo != nil {
 		if codegenInfo, ok := (*t.CodegenInfo).(*CodegenInfo); ok && codegenInfo.Type != nil {
-			return p.packageQualify(codegenInfo.Type.Underlying(), true)
+			innerType := codegenInfo.Type
+			if named, ok := codegenInfo.Type.(*types.Pointer); ok {
+				innerType = named.Elem()
+			}
+			return p.packageQualify(innerType, true)
 		}
 	}
 	return p.reflectTypeString(t.Type.Elem(), true)

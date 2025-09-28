@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"go/types"
 	"os"
@@ -195,6 +194,8 @@ func (cg *CodeGenerator) GenerateToMap() (map[string]string, error) {
 		return nil, fmt.Errorf("no types requested for generation")
 	}
 
+	var parser *Parser
+
 	// analyze all types to build complete dependency graph
 	for _, file := range cg.files {
 		pkgPath := ""
@@ -235,7 +236,9 @@ func (cg *CodeGenerator) GenerateToMap() (map[string]string, error) {
 				}
 				desc, err = cg.dynSsz.GetTypeCache().GetTypeDescriptor(t.ReflectType, t.Options.SizeHints, t.Options.MaxSizeHints, t.Options.TypeHints)
 			} else {
-				p := NewParser()
+				if parser == nil {
+					parser = NewParser()
+				}
 				baseType := t.GoTypesType
 				if named, ok := baseType.(*types.Named); ok {
 					baseType = named.Underlying()
@@ -243,18 +246,20 @@ func (cg *CodeGenerator) GenerateToMap() (map[string]string, error) {
 				if _, ok := baseType.(*types.Struct); ok {
 					t.GoTypesType = types.NewPointer(t.GoTypesType)
 				}
-				desc, err = p.GetTypeDescriptor(t.GoTypesType, t.Options.TypeHints, t.Options.SizeHints, t.Options.MaxSizeHints)
+				desc, err = parser.GetTypeDescriptor(t.GoTypesType, t.Options.TypeHints, t.Options.SizeHints, t.Options.MaxSizeHints)
 			}
 
 			if err != nil {
 				return nil, fmt.Errorf("failed to analyze type %s: %w", typeName, err)
 			}
 
-			descJson, err := json.MarshalIndent(desc, "", "  ")
-			if err != nil {
-				return nil, fmt.Errorf("failed to marshal type descriptor for %s: %w", typeName, err)
-			}
-			fmt.Printf("Type descriptor for %s: %s\n", typeName, string(descJson))
+			/*
+				descJson, err := json.MarshalIndent(desc, "", "  ")
+				if err != nil {
+					return nil, fmt.Errorf("failed to marshal type descriptor for %s: %w", typeName, err)
+				}
+				fmt.Printf("Type descriptor for %s: %s\n", typeName, string(descJson))
+			*/
 
 			// set availability of dynamic methods (we will generate them in a bit and we want cross references)
 			if !t.Options.NoMarshalSSZ && !t.Options.WithoutDynamicExpressions {

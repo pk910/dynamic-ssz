@@ -19,10 +19,13 @@ type CodegenInfo struct {
 }
 
 type Parser struct {
+	cache map[string]*dynssz.TypeDescriptor
 }
 
 func NewParser() *Parser {
-	return &Parser{}
+	return &Parser{
+		cache: make(map[string]*dynssz.TypeDescriptor),
+	}
 }
 
 func (p *Parser) GetTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeHint, sizeHints []dynssz.SszSizeHint, maxSizeHints []dynssz.SszMaxSizeHint) (*dynssz.TypeDescriptor, error) {
@@ -35,11 +38,21 @@ func (p *Parser) GetTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeHin
 }
 
 func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeHint, sizeHints []dynssz.SszSizeHint, maxSizeHints []dynssz.SszMaxSizeHint) (*dynssz.TypeDescriptor, error) {
+	cacheable := len(typeHints) == 0 && len(sizeHints) == 0 && len(maxSizeHints) == 0
+	typeKey := fmt.Sprintf("%v", typ.String())
+	if cacheable && p.cache[typeKey] != nil {
+		return p.cache[typeKey], nil
+	}
+
 	// Create descriptor
 	codegenInfo := &CodegenInfo{Type: typ}
 	var anyCodegenInfo any = codegenInfo
 	desc := &dynssz.TypeDescriptor{
 		CodegenInfo: &anyCodegenInfo,
+	}
+
+	if cacheable {
+		p.cache[typeKey] = desc
 	}
 
 	originalType := typ
@@ -87,7 +100,6 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 	case *types.Struct:
 		desc.Kind = reflect.Struct
 	default:
-		fmt.Printf("Unknown type: %T\n", t)
 		desc.Kind = reflect.Invalid
 	}
 
@@ -155,6 +167,8 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 				desc.GoTypeFlags |= dynssz.GoTypeFlagIsTime
 			case pkgPath == "github.com/holiman/uint256" && typeName == "Int":
 				sszType = dynssz.SszUint256Type
+			case pkgPath == "github.com/prysmaticlabs/go-bitfield" && typeName == "Bitlist":
+				sszType = dynssz.SszBitlistType
 			case pkgPath == "github.com/pk910/dynamic-ssz" && typeName == "CompatibleUnion":
 				sszType = dynssz.SszCompatibleUnionType
 			case pkgPath == "github.com/pk910/dynamic-ssz" && typeName == "TypeWrapper":
@@ -241,7 +255,6 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 		if desc.Kind != reflect.Uint8 {
 			return nil, fmt.Errorf("uint8 ssz type can only be represented by uint8 types, got %v", desc.Kind)
 		}
-		fmt.Printf("uint8 ssz type: %v\n", sizeHints)
 		if len(sizeHints) > 0 && sizeHints[0].Size != 1 {
 			return nil, fmt.Errorf("uint8 ssz type must be ssz-size:1, got %v", sizeHints[0].Size)
 		}
@@ -465,7 +478,8 @@ func (p *Parser) buildContainerDescriptor(desc *dynssz.TypeDescriptor, struc *ty
 
 	for i := 0; i < struc.NumFields(); i++ {
 		field := struc.Field(i)
-		if !field.Exported() || field.Name() == "_" {
+		fieldName := field.Name()
+		if !field.Exported() || fieldName == "_" {
 			continue
 		}
 
@@ -503,10 +517,12 @@ func (p *Parser) buildContainerDescriptor(desc *dynssz.TypeDescriptor, struc *ty
 			}
 			dynFields = append(dynFields, dynFieldDesc)
 			isDynamic = true
+			size += 4
 		} else {
 			size += typeDesc.Size
 		}
 
+		desc.SszTypeFlags |= fieldDesc.Type.SszTypeFlags & (dynssz.SszTypeFlagHasDynamicSize | dynssz.SszTypeFlagHasDynamicMax | dynssz.SszTypeFlagHasSizeExpr | dynssz.SszTypeFlagHasMaxExpr)
 		fields = append(fields, fieldDesc)
 	}
 
@@ -585,6 +601,8 @@ func (p *Parser) buildVectorDescriptor(desc *dynssz.TypeDescriptor, typ types.Ty
 		desc.GoTypeFlags |= dynssz.GoTypeFlagIsByteArray
 	}
 
+	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (dynssz.SszTypeFlagHasDynamicSize | dynssz.SszTypeFlagHasDynamicMax | dynssz.SszTypeFlagHasSizeExpr | dynssz.SszTypeFlagHasMaxExpr)
+
 	// Calculate size
 	if elemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
 		desc.SszTypeFlags |= dynssz.SszTypeFlagIsDynamic
@@ -640,6 +658,8 @@ func (p *Parser) buildListDescriptor(desc *dynssz.TypeDescriptor, typ types.Type
 	if p.isByteType(elemType) {
 		desc.GoTypeFlags |= dynssz.GoTypeFlagIsByteArray
 	}
+
+	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (dynssz.SszTypeFlagHasDynamicSize | dynssz.SszTypeFlagHasDynamicMax | dynssz.SszTypeFlagHasSizeExpr | dynssz.SszTypeFlagHasMaxExpr)
 
 	// Lists are always dynamic
 	desc.SszTypeFlags |= dynssz.SszTypeFlagIsDynamic
@@ -927,88 +947,53 @@ func (p *Parser) isByteType(typ types.Type) bool {
 	return ok && basic.Kind() == types.Uint8
 }
 
-// Interface compatibility checks (equivalent to reflection-based logic)
+// Interface compatibility checks using proper go/types interface implementation checking
 
 func (p *Parser) getFastsszConvertCompatibility(typ types.Type) bool {
-	// Check if type implements fastssz.Marshaler interface
-	return p.implementsInterface(typ, "github.com/ferranbt/fastssz", "Marshaler")
+	methodSet := types.NewMethodSet(typ)
+	return (p.hasMethodWithSignature(methodSet, "MarshalSSZTo", []string{"[]byte"}, []string{"[]byte", "error"}) &&
+		p.hasMethodWithSignature(methodSet, "SizeSSZ", []string{}, []string{"int"}) &&
+		p.hasMethodWithSignature(methodSet, "UnmarshalSSZ", []string{"[]byte"}, []string{"error"}))
 }
 
 func (p *Parser) getFastsszHashCompatibility(typ types.Type) bool {
-	// Check if type implements fastssz.HashRoot interface
-	return p.implementsInterface(typ, "github.com/ferranbt/fastssz", "HashRoot")
+	methodSet := types.NewMethodSet(typ)
+	return (p.hasMethodWithSignature(methodSet, "HashTreeRoot", []string{}, []string{"[32]byte", "error"}))
 }
 
 func (p *Parser) getHashTreeRootWithCompatibility(typ types.Type) bool {
-	// Check if type implements HashTreeRootWith method
-	return p.hasMethod(typ, "HashTreeRootWith")
+	// Check if type has HashTreeRootWith method
+	methodSet := types.NewMethodSet(typ)
+	return p.hasMethodWithSignature(methodSet, "HashTreeRootWith", []string{"-"}, []string{"error"})
 }
 
 func (p *Parser) getDynamicMarshalerCompatibility(typ types.Type) bool {
-	// Check if type implements DynamicMarshaler interface
-	return p.implementsInterface(typ, "github.com/pk910/dynamic-ssz", "DynamicMarshaler")
+	// Check if type has MarshalSSZDyn method
+	methodSet := types.NewMethodSet(typ)
+	return p.hasMethodWithSignature(methodSet, "MarshalSSZDyn", []string{"DynamicSpecs", "[]byte"}, []string{"[]byte", "error"})
 }
 
 func (p *Parser) getDynamicUnmarshalerCompatibility(typ types.Type) bool {
-	// Check if type implements DynamicUnmarshaler interface
-	return p.implementsInterface(typ, "github.com/pk910/dynamic-ssz", "DynamicUnmarshaler")
+	// Check if type has UnmarshalSSZDyn method
+	methodSet := types.NewMethodSet(typ)
+	return p.hasMethodWithSignature(methodSet, "UnmarshalSSZDyn", []string{"DynamicSpecs", "[]byte"}, []string{"error"})
 }
 
 func (p *Parser) getDynamicSizerCompatibility(typ types.Type) bool {
-	// Check if type implements DynamicSizer interface
-	return p.implementsInterface(typ, "github.com/pk910/dynamic-ssz", "DynamicSizer")
+	// Check if type has SizeSSZDyn method
+	methodSet := types.NewMethodSet(typ)
+	return p.hasMethodWithSignature(methodSet, "SizeSSZDyn", []string{"DynamicSpecs"}, []string{"int"})
 }
 
 func (p *Parser) getDynamicHashRootCompatibility(typ types.Type) bool {
-	// Check if type implements DynamicHashRoot interface
-	return p.implementsInterface(typ, "github.com/pk910/dynamic-ssz", "DynamicHashRoot")
-}
-
-// Helper methods for interface checking
-
-func (p *Parser) implementsInterface(typ types.Type, pkgPath, interfaceName string) bool {
-	// For go/types, we need to check if the type implements the interface
-	// This is a simplified check - in a full implementation, you'd need to
-	// resolve the interface type and check method signatures
-
-	// Get the method set for the type
+	// Check if type has HashTreeRootDyn method
 	methodSet := types.NewMethodSet(typ)
-
-	// Check for required methods based on interface
-	switch interfaceName {
-	case "Marshaler":
-		// fastssz.Marshaler requires: MarshalSSZ() ([]byte, error)
-		return p.hasMethodWithSignature(methodSet, "MarshalSSZ", []string{}, []string{"[]byte", "error"})
-	case "HashRoot":
-		// fastssz.HashRoot requires: HashTreeRoot() ([32]byte, error)
-		return p.hasMethodWithSignature(methodSet, "HashTreeRoot", []string{}, []string{"[32]byte", "error"})
-	case "DynamicMarshaler":
-		// DynamicMarshaler requires: MarshalDynamicSSZ() ([]byte, error)
-		return p.hasMethodWithSignature(methodSet, "MarshalDynamicSSZ", []string{}, []string{"[]byte", "error"})
-	case "DynamicUnmarshaler":
-		// DynamicUnmarshaler requires: UnmarshalDynamicSSZ([]byte) error
-		return p.hasMethodWithSignature(methodSet, "UnmarshalDynamicSSZ", []string{"[]byte"}, []string{"error"})
-	case "DynamicSizer":
-		// DynamicSizer requires: SizeSSZ() int
-		return p.hasMethodWithSignature(methodSet, "SizeSSZ", []string{}, []string{"int"})
-	case "DynamicHashRoot":
-		// DynamicHashRoot requires: HashTreeRoot() ([32]byte, error)
-		return p.hasMethodWithSignature(methodSet, "HashTreeRoot", []string{}, []string{"[32]byte", "error"})
-	}
-
-	return false
+	return p.hasMethodWithSignature(methodSet, "HashTreeRootDyn", []string{"DynamicSpecs", "HashWalker"}, []string{"error"})
 }
 
-func (p *Parser) hasMethod(typ types.Type, methodName string) bool {
-	methodSet := types.NewMethodSet(typ)
-	for i := 0; i < methodSet.Len(); i++ {
-		if methodSet.At(i).Obj().Name() == methodName {
-			return true
-		}
-	}
-	return false
-}
+// Interface implementation checks using go/types proper interface checking
 
+// Simple helper to check if a type has required methods
 func (p *Parser) hasMethodWithSignature(methodSet *types.MethodSet, methodName string, paramTypes, returnTypes []string) bool {
 	for i := 0; i < methodSet.Len(); i++ {
 		method := methodSet.At(i)
@@ -1059,6 +1044,8 @@ func (p *Parser) hasMethodWithSignature(methodSet *types.MethodSet, methodName s
 
 func (p *Parser) typeMatches(typ types.Type, expectedTypeStr string) bool {
 	switch expectedTypeStr {
+	case "-":
+		return true
 	case "[]byte":
 		if slice, ok := typ.(*types.Slice); ok {
 			if basic, ok := slice.Elem().(*types.Basic); ok {
