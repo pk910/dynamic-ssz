@@ -51,6 +51,7 @@ func generateHashTreeRoot(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *stri
 			codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName))
 			codeBuilder.WriteString("\treturn t.HashTreeRootWith(hh)\n")
 			codeBuilder.WriteString("}\n\n")
+			genStaticFn = true
 		}
 	}
 

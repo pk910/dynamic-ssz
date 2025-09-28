@@ -63,6 +63,7 @@ func generateUnmarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings
 			codeBuilder.WriteString(fmt.Sprintf("func (t %s) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) (err error) {\n", typeName))
 			codeBuilder.WriteString("\treturn t.UnmarshalSSZ(buf)\n")
 			codeBuilder.WriteString("}\n\n")
+			genStaticFn = true
 		}
 	}
 

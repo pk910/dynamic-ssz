@@ -16,10 +16,12 @@ import (
 
 func main() {
 	var (
-		packagePath = flag.String("package", "", "Go package path to analyze")
-		typeNames   = flag.String("types", "", "Comma-separated list of type names to generate code for")
-		outputFile  = flag.String("output", "", "Output file path for generated code")
-		verbose     = flag.Bool("v", false, "Verbose output")
+		packagePath               = flag.String("package", "", "Go package path to analyze")
+		typeNames                 = flag.String("types", "", "Comma-separated list of type names to generate code for")
+		outputFile                = flag.String("output", "", "Output file path for generated code")
+		verbose                   = flag.Bool("v", false, "Verbose output")
+		legacy                    = flag.Bool("legacy", false, "Generate legacy methods")
+		withoutDynamicExpressions = flag.Bool("without-dynamic-expressions", false, "Generate code without dynamic expressions")
 	)
 	flag.Parse()
 
@@ -101,7 +103,12 @@ func main() {
 		typeOptions = append(typeOptions, codegen.WithGoTypesType(goType))
 	}
 
-	typeOptions = append(typeOptions, codegen.WithCreateLegacyFn())
+	if *legacy {
+		typeOptions = append(typeOptions, codegen.WithCreateLegacyFn())
+	}
+	if *withoutDynamicExpressions {
+		typeOptions = append(typeOptions, codegen.WithoutDynamicExpressions())
+	}
 
 	// Build the file with all types
 	codeGen.BuildFile(*outputFile, typeOptions...)

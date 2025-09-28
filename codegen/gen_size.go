@@ -50,6 +50,7 @@ func generateSize(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Buil
 			codeBuilder.WriteString(fmt.Sprintf("func (t %s) SizeSSZDyn(_ sszutils.DynamicSpecs) (size int) {\n", typeName))
 			codeBuilder.WriteString("\treturn t.SizeSSZ()\n")
 			codeBuilder.WriteString("}\n\n")
+			genStaticFn = true
 		}
 	}
 
