@@ -307,7 +307,7 @@ func main() {
 	// Generate SSZ methods for TestPayload type
 	generator.BuildFile(
 		currentDir+"/../types/generated_ssz.go",
-		codegen.WithType(reflect.TypeOf(&types.TestPayload{})),
+		codegen.WithReflectType(reflect.TypeOf(&types.TestPayload{})),
 		codegen.WithCreateLegacyFn(), // Generate both dynamic and legacy methods
 	)
 	

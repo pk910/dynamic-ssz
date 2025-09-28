@@ -51,14 +51,14 @@ func codegenCommand() {
 
 	generator.BuildFile(
 		currentDir+"/gen_block.go",
-		codegen.WithType(reflect.TypeOf(&TestBeaconBlock{})),
-		codegen.WithType(reflect.TypeOf(&TestSignedBeaconBlock{})),
+		codegen.WithReflectType(reflect.TypeOf(&TestBeaconBlock{})),
+		codegen.WithReflectType(reflect.TypeOf(&TestSignedBeaconBlock{})),
 		codegen.WithCreateLegacyFn(),
 	)
 
 	generator.BuildFile(
 		currentDir+"/gen_state.go",
-		codegen.WithType(
+		codegen.WithReflectType(
 			reflect.TypeOf(&TestBeaconState{}),
 			codegen.WithCreateLegacyFn(),
 		),
@@ -66,10 +66,10 @@ func codegenCommand() {
 
 	generator.BuildFile(
 		currentDir+"/gen_test1.go",
-		codegen.WithType(
+		codegen.WithReflectType(
 			reflect.TypeOf(&Test1{}),
 		),
-		codegen.WithType(
+		codegen.WithReflectType(
 			reflect.TypeOf(&Test2{}),
 		),
 		codegen.WithCreateLegacyFn(),

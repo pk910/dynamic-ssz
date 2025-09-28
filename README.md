@@ -70,7 +70,7 @@ func main() {
     
     generator.BuildFile(
         "generated.go",
-        codegen.WithType(reflect.TypeOf(MyStruct{})),
+        codegen.WithReflectType(reflect.TypeOf(MyStruct{})),
     )
     
     generator.Generate()

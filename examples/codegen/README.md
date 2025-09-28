@@ -46,8 +46,8 @@ Shows how to set up code generation for multiple types:
 ```go
 generator.BuildFile(
     "generated_ssz.go",
-    codegen.WithType(reflect.TypeOf(User{})),
-    codegen.WithType(reflect.TypeOf(Transaction{})),
+    codegen.WithReflectType(reflect.TypeOf(User{})),
+    codegen.WithReflectType(reflect.TypeOf(Transaction{})),
     // ... more types
     codegen.WithCreateLegacyFn(), // Generate HashTreeRoot() methods
 )

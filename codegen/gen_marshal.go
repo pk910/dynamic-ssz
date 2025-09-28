@@ -303,6 +303,10 @@ func (ctx *marshalContext) marshalList(desc *dynssz.TypeDescriptor, varName stri
 	ctx.appendCode(indent, "\treturn dst, sszutils.ErrListTooBig\n")
 	ctx.appendCode(indent, "}\n")
 
+	if desc.ElemDesc == nil {
+		fmt.Printf("desc.ElemDesc is nil for %s\n", ctx.typePrinter.TypeString(desc))
+	}
+
 	if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic == 0 {
 		// static elements
 		if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
