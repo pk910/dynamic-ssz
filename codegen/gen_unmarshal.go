@@ -42,7 +42,7 @@ func generateUnmarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings
 	}
 
 	// Generate main function signature
-	typeName := typePrinter.TypeString(rootTypeDesc.Type)
+	typeName := typePrinter.TypeString(rootTypeDesc)
 
 	// Generate unmarshal code
 	if err := ctx.unmarshalType(rootTypeDesc, "t", 1, true, false); err != nil {
@@ -157,7 +157,7 @@ func (ctx *unmarshalContext) getStaticSizeVar(desc *dynssz.TypeDescriptor) (stri
 		if len(fieldSizeVars) == 1 {
 			return fieldSizeVars[0], nil
 		}
-		ctx.appendSizeCode(1, "%s := %s // size expression for '%s'\n", sizeVar, strings.Join(fieldSizeVars, "+"), ctx.typePrinter.TypeStringWithoutTracking(desc.Type))
+		ctx.appendSizeCode(1, "%s := %s // size expression for '%s'\n", sizeVar, strings.Join(fieldSizeVars, "+"), ctx.typePrinter.TypeStringWithoutTracking(desc))
 	case dynssz.SszVectorType, dynssz.SszBitvectorType, dynssz.SszUint128Type, dynssz.SszUint256Type:
 		sizeExpression := desc.SizeExpression
 		if ctx.options.WithoutDynamicExpressions {
@@ -178,7 +178,7 @@ func (ctx *unmarshalContext) getStaticSizeVar(desc *dynssz.TypeDescriptor) (stri
 			}
 
 			if sizeExpression != nil {
-				ctx.appendSizeCode(1, "%s := %s // size expression for '%s'\n", sizeVar, itemSizeVar, ctx.typePrinter.TypeStringWithoutTracking(desc.Type))
+				ctx.appendSizeCode(1, "%s := %s // size expression for '%s'\n", sizeVar, itemSizeVar, ctx.typePrinter.TypeStringWithoutTracking(desc))
 				ctx.appendSizeCode(1, "{\n")
 				ctx.appendSizeCode(2, "hasLimit, limit, err := ds.ResolveSpecValue(\"%s\")\n", *sizeExpression)
 				ctx.appendSizeCode(2, "if err != nil {\n\treturn err\n}\n")
@@ -229,7 +229,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *dynssz.TypeDescriptor, varName 
 		if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
 			ptrVarName = fmt.Sprintf("*(%s)", varName)
 		}
-		ctx.appendCode(indent, "%s = %s(sszutils.UnmarshalBool(buf))\n", ptrVarName, ctx.typePrinter.TypeString(desc.Type))
+		ctx.appendCode(indent, "%s = %s(sszutils.UnmarshalBool(buf))\n", ptrVarName, ctx.typePrinter.TypeString(desc))
 	case dynssz.SszUint8Type:
 		if !noBufCheck {
 			ctx.appendCode(indent, "if len(buf) < 1 {\n\treturn sszutils.ErrUnexpectedEOF\n}\n")
@@ -238,7 +238,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *dynssz.TypeDescriptor, varName 
 		if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
 			ptrVarName = fmt.Sprintf("*(%s)", varName)
 		}
-		ctx.appendCode(indent, "%s = %s(sszutils.UnmarshallUint8(buf))\n", ptrVarName, ctx.typePrinter.TypeString(desc.Type))
+		ctx.appendCode(indent, "%s = %s(sszutils.UnmarshallUint8(buf))\n", ptrVarName, ctx.typePrinter.TypeString(desc))
 
 	case dynssz.SszUint16Type:
 		if !noBufCheck {
@@ -248,7 +248,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *dynssz.TypeDescriptor, varName 
 		if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
 			ptrVarName = fmt.Sprintf("*(%s)", varName)
 		}
-		ctx.appendCode(indent, "%s = %s(sszutils.UnmarshallUint16(buf))\n", ptrVarName, ctx.typePrinter.TypeString(desc.Type))
+		ctx.appendCode(indent, "%s = %s(sszutils.UnmarshallUint16(buf))\n", ptrVarName, ctx.typePrinter.TypeString(desc))
 
 	case dynssz.SszUint32Type:
 		if !noBufCheck {
@@ -258,7 +258,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *dynssz.TypeDescriptor, varName 
 		if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
 			ptrVarName = fmt.Sprintf("*(%s)", varName)
 		}
-		ctx.appendCode(indent, "%s = %s(sszutils.UnmarshallUint32(buf))\n", ptrVarName, ctx.typePrinter.TypeString(desc.Type))
+		ctx.appendCode(indent, "%s = %s(sszutils.UnmarshallUint32(buf))\n", ptrVarName, ctx.typePrinter.TypeString(desc))
 
 	case dynssz.SszUint64Type:
 		if !noBufCheck {
@@ -269,10 +269,10 @@ func (ctx *unmarshalContext) unmarshalType(desc *dynssz.TypeDescriptor, varName 
 			ptrVarName = fmt.Sprintf("*(%s)", varName)
 		}
 		if desc.GoTypeFlags&dynssz.GoTypeFlagIsTime != 0 {
-			ctx.appendCode(indent, "%s = %s(time.Unix(int64(sszutils.UnmarshallUint64(buf)), 0).UTC())\n", ptrVarName, ctx.typePrinter.TypeString(desc.Type))
+			ctx.appendCode(indent, "%s = %s(time.Unix(int64(sszutils.UnmarshallUint64(buf)), 0).UTC())\n", ptrVarName, ctx.typePrinter.TypeString(desc))
 			ctx.typePrinter.AddImport("time", "time")
 		} else {
-			ctx.appendCode(indent, "%s = %s(sszutils.UnmarshallUint64(buf))\n", ptrVarName, ctx.typePrinter.TypeString(desc.Type))
+			ctx.appendCode(indent, "%s = %s(sszutils.UnmarshallUint64(buf))\n", ptrVarName, ctx.typePrinter.TypeString(desc))
 		}
 
 	case dynssz.SszTypeWrapperType:
@@ -376,7 +376,7 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *dynssz.TypeDescriptor, var
 				ctx.appendCode(indent, "\t%s := %s.%s\n", valVar, varName, field.Name)
 			}
 			if field.Type.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
-				ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.TypeString(field.Type.Type.Elem()))
+				ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(field.Type))
 			}
 
 			if err := ctx.unmarshalType(field.Type, valVar, indent+1, false, true); err != nil {
@@ -405,7 +405,7 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *dynssz.TypeDescriptor, var
 		ctx.appendCode(indent, "\t%s := %s.%s\n", valVar, varName, field.Name)
 
 		if field.Type.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
-			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.TypeString(field.Type.Type.Elem()))
+			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(field.Type))
 		}
 
 		if err := ctx.unmarshalType(field.Type, valVar, indent+1, false, true); err != nil {
@@ -439,7 +439,7 @@ func (ctx *unmarshalContext) unmarshalVector(desc *dynssz.TypeDescriptor, varNam
 	// create slice if needed
 	if desc.Kind != reflect.Array {
 		ctx.appendCode(indent, "if len(%s) < %s {\n", varName, limitVar)
-		ctx.appendCode(indent, "\t%s = make(%s, %s)\n", varName, ctx.typePrinter.TypeString(desc.Type), limitVar)
+		ctx.appendCode(indent, "\t%s = make(%s, %s)\n", varName, ctx.typePrinter.TypeString(desc), limitVar)
 		ctx.appendCode(indent, "} else if len(%s) > %s {\n", varName, limitVar)
 		ctx.appendCode(indent, "\t%s = %s[:%s]\n", varName, varName, limitVar)
 		ctx.appendCode(indent, "}\n")
@@ -452,7 +452,7 @@ func (ctx *unmarshalContext) unmarshalVector(desc *dynssz.TypeDescriptor, varNam
 				ctx.appendCode(indent, "if %s > len(buf) {\n\treturn sszutils.ErrUnexpectedEOF\n}\n", limitVar)
 			}
 			if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
-				typename := ctx.typePrinter.TypeString(desc.Type)
+				typename := ctx.typePrinter.TypeString(desc)
 				ctx.appendCode(indent, "%s = %s(buf)\n", varName, typename)
 			} else {
 				ctx.appendCode(indent, "copy(%s[:], buf)\n", varName)
@@ -485,7 +485,7 @@ func (ctx *unmarshalContext) unmarshalVector(desc *dynssz.TypeDescriptor, varNam
 			ctx.appendCode(indent, "\t%s := %s[i]\n", valVar, varName)
 		}
 		if desc.ElemDesc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
-			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.TypeString(desc.ElemDesc.Type.Elem()))
+			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
 		}
 
 		ctx.appendCode(indent, "\tbuf := buf[%s*i : %s*(i+1)]\n", fieldSizeVar, fieldSizeVar)
@@ -517,7 +517,7 @@ func (ctx *unmarshalContext) unmarshalVector(desc *dynssz.TypeDescriptor, varNam
 		valVar := ctx.getValVar()
 		ctx.appendCode(indent, "\t%s := %s[i]\n", valVar, varName)
 		if desc.ElemDesc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
-			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.TypeString(desc.ElemDesc.Type.Elem()))
+			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
 		}
 		if err := ctx.unmarshalType(desc.ElemDesc, valVar, indent+1, false, true); err != nil {
 			return err
@@ -534,13 +534,13 @@ func (ctx *unmarshalContext) unmarshalList(desc *dynssz.TypeDescriptor, varName 
 		// static byte arrays
 		if desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
 			if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
-				typename := ctx.typePrinter.TypeString(desc.Type)
+				typename := ctx.typePrinter.TypeString(desc)
 				ctx.appendCode(indent, "%s = %s(buf)\n", varName, typename)
 			} else {
 				if desc.Kind != reflect.Array {
 					ctx.appendCode(indent, "limit := len(buf)\n")
 					ctx.appendCode(indent, "if len(%s) < limit {\n", varName)
-					ctx.appendCode(indent, "\t%s = make(%s, limit)\n", varName, ctx.typePrinter.TypeString(desc.Type))
+					ctx.appendCode(indent, "\t%s = make(%s, limit)\n", varName, ctx.typePrinter.TypeString(desc))
 					ctx.appendCode(indent, "} else if len(%s) > limit {\n", varName)
 					ctx.appendCode(indent, "\t%s = %s[:limit]\n", varName, varName)
 					ctx.appendCode(indent, "}\n")
@@ -570,7 +570,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *dynssz.TypeDescriptor, varName 
 		}
 		if desc.Kind != reflect.Array {
 			ctx.appendCode(indent, "if len(%s) < itemCount {\n", varName)
-			ctx.appendCode(indent, "\t%s = make(%s, itemCount)\n", varName, ctx.typePrinter.TypeString(desc.Type))
+			ctx.appendCode(indent, "\t%s = make(%s, itemCount)\n", varName, ctx.typePrinter.TypeString(desc))
 			ctx.appendCode(indent, "} else if len(%s) > itemCount {\n", varName)
 			ctx.appendCode(indent, "\t%s = %s[:itemCount]\n", varName, varName)
 			ctx.appendCode(indent, "}\n")
@@ -585,7 +585,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *dynssz.TypeDescriptor, varName 
 			ctx.appendCode(indent, "\t%s := %s[i]\n", valVar, varName)
 		}
 		if desc.ElemDesc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
-			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.TypeString(desc.ElemDesc.Type.Elem()))
+			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
 		}
 
 		ctx.appendCode(indent, "\tbuf := buf[%s*i : %s*(i+1)]\n", fieldSizeVar, fieldSizeVar)
@@ -608,7 +608,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *dynssz.TypeDescriptor, varName 
 		ctx.appendCode(indent, "if startOffset%4 != 0 || len(buf) < startOffset {\n\treturn sszutils.ErrUnexpectedEOF\n}\n")
 		if desc.Kind != reflect.Array {
 			ctx.appendCode(indent, "if len(%s) < itemCount {\n", varName)
-			ctx.appendCode(indent, "\t%s = make(%s, itemCount)\n", varName, ctx.typePrinter.TypeString(desc.Type))
+			ctx.appendCode(indent, "\t%s = make(%s, itemCount)\n", varName, ctx.typePrinter.TypeString(desc))
 			ctx.appendCode(indent, "} else if len(%s) > itemCount {\n", varName)
 			ctx.appendCode(indent, "\t%s = %s[:itemCount]\n", varName, varName)
 			ctx.appendCode(indent, "}\n")
@@ -628,7 +628,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *dynssz.TypeDescriptor, varName 
 		valVar := ctx.getValVar()
 		ctx.appendCode(indent, "\t%s := %s[i]\n", valVar, varName)
 		if desc.ElemDesc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
-			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.TypeString(desc.ElemDesc.Type.Elem()))
+			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
 		}
 		if err := ctx.unmarshalType(desc.ElemDesc, valVar, indent+1, false, true); err != nil {
 			return err
@@ -655,7 +655,7 @@ func (ctx *unmarshalContext) unmarshalUnion(desc *dynssz.TypeDescriptor, varName
 
 	for _, variant := range variants {
 		variantDesc := desc.UnionVariants[uint8(variant)]
-		variantType := ctx.typePrinter.TypeString(variantDesc.Type)
+		variantType := ctx.typePrinter.TypeString(variantDesc)
 		ctx.appendCode(indent, "case %d:\n", variant)
 		valVar := ctx.getValVar()
 		ctx.appendCode(indent, "\t%s := *new(%s)\n", valVar, variantType)

@@ -31,7 +31,7 @@ func generateHashTreeRoot(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *stri
 	}
 
 	// Generate main function signature
-	typeName := typePrinter.TypeString(rootTypeDesc.Type)
+	typeName := typePrinter.TypeString(rootTypeDesc)
 
 	// Generate hash tree root code
 	if err := ctx.hashType(rootTypeDesc, "t", 1, true, false); err != nil {
@@ -337,7 +337,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *dynssz.TypeDescriptor, varName 
 		}
 		valVar := ctx.getValVar()
 		ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", limitVar)
-		ctx.appendCode(indent, "\tvar %s %s\n", valVar, ctx.typePrinter.TypeString(desc.ElemDesc.Type))
+		ctx.appendCode(indent, "\tvar %s %s\n", valVar, ctx.typePrinter.TypeString(desc.ElemDesc))
 		ctx.appendCode(indent, "\tif i < vlen {\n")
 		ctx.appendCode(indent, "\t\t%s = %s[i]\n", valVar, varName)
 		ctx.appendCode(indent, "\t}\n")
@@ -486,7 +486,7 @@ func (ctx *hashTreeRootContext) hashUnion(desc *dynssz.TypeDescriptor, varName s
 
 	for _, variant := range variants {
 		variantDesc := desc.UnionVariants[uint8(variant)]
-		variantType := ctx.typePrinter.TypeString(variantDesc.Type)
+		variantType := ctx.typePrinter.TypeString(variantDesc)
 		ctx.appendCode(indent, "case %d:\n", variant)
 		ctx.appendCode(indent, "\tv, ok := %s.Data.(%s)\n", varName, variantType)
 		ctx.appendCode(indent, "\tif !ok {\n\t\treturn sszutils.ErrInvalidUnionVariant\n\t}\n")

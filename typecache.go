@@ -55,8 +55,9 @@ const (
 
 // TypeDescriptor represents a cached, optimized descriptor for a type's SSZ encoding/decoding
 type TypeDescriptor struct {
-	Type                   reflect.Type              `json:"-"`
-	Kind                   reflect.Kind              `json:"kind"`                // Go kind of the type
+	Type                   reflect.Type              `json:"-"`                   // Reflect type
+	CodegenInfo            *any                      `json:"-"`                   // Codegen information
+	Kind                   reflect.Kind              `json:"kind"`                // Reflect kind of the type
 	Size                   uint32                    `json:"size"`                // SSZ size (-1 if dynamic)
 	Len                    uint32                    `json:"len"`                 // Length of array/slice
 	Limit                  uint64                    `json:"limit"`               // Limit of array/slice (ssz-max tag)
