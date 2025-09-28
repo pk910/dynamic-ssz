@@ -17,6 +17,11 @@ Dynamic SSZ is a Go library for SSZ encoding/decoding with support for dynamic f
 - **📦 Minimal Dependencies** - Core library has minimal external dependencies
 - **✅ Spec Compliant** - Fully compliant with SSZ specification and Ethereum consensus tests
 
+## Production Readiness
+
+- **✅ Reflection-based dynamic marshaling/unmarshaling/HTR**: Production ready - battle-tested in various toolings and stable
+- **🚧 Code generator**: Feature complete but in beta stage - hasn't been extensively tested in production environments
+
 ## Quick Start
 
 ### Installation
