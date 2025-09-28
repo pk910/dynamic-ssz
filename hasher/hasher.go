@@ -65,6 +65,19 @@ func initHasher() {
 	}
 }
 
+func GetZeroHashLevel(hash string) (int, bool) {
+	level, ok := zeroHashLevels[hash]
+	return level, ok
+}
+
+func GetZeroHash(depth int) []byte {
+	return zeroHashes[depth][:]
+}
+
+func GetZeroHashes() [65][32]byte {
+	return zeroHashes
+}
+
 func logfn(format string, a ...any) {
 	fmt.Printf(format, a...)
 }
