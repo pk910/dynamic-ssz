@@ -22,13 +22,13 @@ func main() {
 	// Generate SSZ methods for our types
 	generator.BuildFile(
 		filepath.Join(parentDir, "types", "types_ssz.go"),
-		codegen.WithType(reflect.TypeOf(&types.User{})),
-		codegen.WithType(reflect.TypeOf(&types.Transaction{})),
-		codegen.WithType(reflect.TypeOf(&types.Block{})),
-		codegen.WithType(reflect.TypeOf(&types.GameState{})),
-		codegen.WithType(reflect.TypeOf(&types.Player{})),
-		codegen.WithType(reflect.TypeOf(&types.Move{})),
-		codegen.WithType(reflect.TypeOf(&types.Tile{})),
+		codegen.WithReflectType(reflect.TypeOf(&types.User{})),
+		codegen.WithReflectType(reflect.TypeOf(&types.Transaction{})),
+		codegen.WithReflectType(reflect.TypeOf(&types.Block{})),
+		codegen.WithReflectType(reflect.TypeOf(&types.GameState{})),
+		codegen.WithReflectType(reflect.TypeOf(&types.Player{})),
+		codegen.WithReflectType(reflect.TypeOf(&types.Move{})),
+		codegen.WithReflectType(reflect.TypeOf(&types.Tile{})),
 		codegen.WithCreateLegacyFn(), // Generate legacy HashTreeRoot() methods
 	)
 

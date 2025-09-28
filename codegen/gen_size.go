@@ -30,7 +30,7 @@ func generateSize(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Buil
 	}
 
 	// Generate main function signature
-	typeName := typePrinter.TypeString(rootTypeDesc.Type)
+	typeName := typePrinter.TypeString(rootTypeDesc)
 
 	// Generate size calculation code
 	if err := ctx.sizeType(rootTypeDesc, "t", 1, true); err != nil {
@@ -50,6 +50,7 @@ func generateSize(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Buil
 			codeBuilder.WriteString(fmt.Sprintf("func (t %s) SizeSSZDyn(_ sszutils.DynamicSpecs) (size int) {\n", typeName))
 			codeBuilder.WriteString("\treturn t.SizeSSZ()\n")
 			codeBuilder.WriteString("}\n\n")
+			genStaticFn = true
 		}
 	}
 
@@ -227,7 +228,7 @@ func (ctx *sizeContext) sizeVector(desc *dynssz.TypeDescriptor, varName string, 
 
 			// Add size for zero-padding
 			ctx.appendCode(indent, "if vlen < int(limit) {\n")
-			typeName := ctx.typePrinter.TypeString(desc.ElemDesc.Type)
+			typeName := ctx.typePrinter.TypeString(desc.ElemDesc)
 			ctx.appendCode(indent, "\tzeroItem := &%s{}\n", typeName)
 			ctx.appendCode(indent, "\tfor i := vlen; i < int(limit); i++ {\n")
 			if err := ctx.sizeType(desc.ElemDesc, "zeroItem", indent+2, false); err != nil {
@@ -291,7 +292,7 @@ func (ctx *sizeContext) sizeUnion(desc *dynssz.TypeDescriptor, varName string, i
 
 	for _, variant := range variants {
 		variantDesc := desc.UnionVariants[uint8(variant)]
-		variantType := ctx.typePrinter.TypeString(variantDesc.Type)
+		variantType := ctx.typePrinter.TypeString(variantDesc)
 		hasDynamicSize := variantDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0
 		ctx.appendCode(indent, "case %d:\n", variant)
 		if hasDynamicSize {

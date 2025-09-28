@@ -2,10 +2,12 @@ package codegen
 
 import (
 	"fmt"
+	"go/types"
 	"reflect"
 	"regexp"
-	"strconv"
 	"strings"
+
+	dynssz "github.com/pk910/dynamic-ssz"
 )
 
 type TypePrinter struct {
@@ -49,8 +51,9 @@ func (p *TypePrinter) AddAlias(path, alias string) {
 	p.aliases[path] = alias
 }
 
-// Qualify a named type with an alias, recording the import.
-func (p *TypePrinter) qualify(t reflect.Type, trackImports bool) string {
+// reflectQualify prints reflection.Type t using p.imports/p.aliases to track and assign package aliases.
+// It qualifies types from other packages; types in CurrentPkg (or predeclared) are unqualified.
+func (p *TypePrinter) reflectQualify(t reflect.Type, trackImports bool) string {
 	pkg := t.PkgPath()
 	name := t.Name()
 	if pkg == "" { // predeclared or builtin (e.g., int, any)
@@ -80,6 +83,51 @@ func (p *TypePrinter) qualify(t reflect.Type, trackImports bool) string {
 	return alias + "." + name
 }
 
+// packageQualify prints types.Type t using p.imports/p.aliases to track and assign package aliases.
+// It qualifies types from other packages; types in CurrentPkg (or predeclared) are unqualified.
+func (p *TypePrinter) packageQualify(t types.Type, trackImports bool) string {
+	qual := func(pkg *types.Package) string {
+		if pkg == nil || !trackImports {
+			// predeclared/builtin (e.g., int, any) or no tracking
+			return ""
+		}
+		path := pkg.Path()
+		if path == "" || path == p.CurrentPkg {
+			// same package or no path: unqualified
+			return ""
+		}
+
+		// already have an alias for this import path?
+		if alias := p.imports[path]; alias != "" {
+			return alias
+		}
+
+		// pick a default alias and ensure uniqueness across recorded imports
+		alias := normalizeAlias(p.defaultAlias(path))
+		base := alias
+		i := 1
+		for containsValue(p.imports, alias) || (p.aliases != nil && p.aliases[alias] != "" && p.aliases[alias] != path) {
+			alias = fmt.Sprintf("%s%d", base, i)
+			i++
+		}
+
+		// record alias
+		p.imports[path] = alias
+		return alias
+	}
+
+	s := types.TypeString(t, qual)
+
+	// Optional: mimic your rune preference (rune over int32) if desired.
+	if p.UseRune {
+		if b, ok := t.Underlying().(*types.Basic); ok && b.Kind() == types.Int32 && s == "int32" {
+			s = "rune"
+		}
+	}
+
+	return s
+}
+
 func containsValue(m map[string]string, v string) bool {
 	for _, vv := range m {
 		if vv == v {
@@ -103,16 +151,37 @@ func normalizeAlias(alias string) string {
 	return alias
 }
 
-// Public entry point.
-func (p *TypePrinter) TypeString(t reflect.Type) string {
-	return p.typeString(t, true)
+// TypeString returns the string representation of the type and tracks uses of imports.
+func (p *TypePrinter) TypeString(t *dynssz.TypeDescriptor) string {
+	if t.CodegenInfo != nil {
+		if codegenInfo, ok := (*t.CodegenInfo).(*CodegenInfo); ok && codegenInfo.Type != nil {
+			return p.packageQualify(codegenInfo.Type, true)
+		}
+	}
+	return p.reflectTypeString(t.Type, true)
 }
 
-func (p *TypePrinter) TypeStringWithoutTracking(t reflect.Type) string {
-	return p.typeString(t, false)
+// InnerTypeString returns the string representation of the inner type of the type and tracks uses of imports.
+func (p *TypePrinter) InnerTypeString(t *dynssz.TypeDescriptor) string {
+	if t.CodegenInfo != nil {
+		if codegenInfo, ok := (*t.CodegenInfo).(*CodegenInfo); ok && codegenInfo.Type != nil {
+			return p.packageQualify(codegenInfo.Type.Underlying(), true)
+		}
+	}
+	return p.reflectTypeString(t.Type.Elem(), true)
 }
 
-func (p *TypePrinter) typeString(t reflect.Type, trackImports bool) string {
+// TypeStringWithoutTracking returns the string representation of the type without tracking imports.
+func (p *TypePrinter) TypeStringWithoutTracking(t *dynssz.TypeDescriptor) string {
+	if t.CodegenInfo != nil {
+		if codegenInfo, ok := (*t.CodegenInfo).(*CodegenInfo); ok && codegenInfo.Type != nil {
+			return p.packageQualify(codegenInfo.Type, false)
+		}
+	}
+	return p.reflectTypeString(t.Type, false)
+}
+
+func (p *TypePrinter) reflectTypeString(t reflect.Type, trackImports bool) string {
 	// Named types first
 	if t.Name() != "" {
 		// Special-case predeclared aliases: byte and rune preferences
@@ -124,35 +193,35 @@ func (p *TypePrinter) typeString(t reflect.Type, trackImports bool) string {
 		}
 		// Check if this is a generic type with embedded package paths
 		if strings.Contains(t.Name(), "[") && strings.Contains(t.Name(), "]") {
-			return p.processGenericTypeName(t, trackImports)
+			return p.reflectGenericTypeName(t, trackImports)
 		}
-		return p.qualify(t, trackImports)
+		return p.reflectQualify(t, trackImports)
 	}
 
 	// Unnamed kinds
 	switch t.Kind() {
 	case reflect.Pointer:
-		return "*" + p.typeString(t.Elem(), trackImports)
+		return "*" + p.reflectTypeString(t.Elem(), trackImports)
 	case reflect.Slice:
 		// []byte nicer than []uint8
 		if t.Elem().Kind() == reflect.Uint8 && t.Elem().PkgPath() == "" {
 			return "[]byte"
 		}
-		return "[]" + p.typeString(t.Elem(), trackImports)
+		return "[]" + p.reflectTypeString(t.Elem(), trackImports)
 	case reflect.Array:
 		if t.Elem().Kind() == reflect.Uint8 && t.Elem().PkgPath() == "" {
 			return fmt.Sprintf("[%d]byte", t.Len())
 		}
-		return fmt.Sprintf("[%d]%s", t.Len(), p.typeString(t.Elem(), trackImports))
+		return fmt.Sprintf("[%d]%s", t.Len(), p.reflectTypeString(t.Elem(), trackImports))
 	case reflect.Struct:
-		return p.structString(t, trackImports)
+		return p.reflectStructString(t, trackImports)
 	default:
 		// predeclared unnamed basics (shouldn’t happen except for unsafe types)
 		return t.String()
 	}
 }
 
-func (p *TypePrinter) structString(t reflect.Type, trackImports bool) string {
+func (p *TypePrinter) reflectStructString(t reflect.Type, trackImports bool) string {
 	if t.NumField() == 0 {
 		return "struct{}"
 	}
@@ -165,11 +234,11 @@ func (p *TypePrinter) structString(t reflect.Type, trackImports bool) string {
 		}
 		if f.Anonymous {
 			// Embedded: just the type
-			b.WriteString(p.typeString(f.Type, trackImports))
+			b.WriteString(p.reflectTypeString(f.Type, trackImports))
 		} else {
 			b.WriteString(f.Name)
 			b.WriteByte(' ')
-			b.WriteString(p.typeString(f.Type, trackImports))
+			b.WriteString(p.reflectTypeString(f.Type, trackImports))
 		}
 		if tag := string(f.Tag); tag != "" {
 			b.WriteByte(' ')
@@ -183,8 +252,8 @@ func (p *TypePrinter) structString(t reflect.Type, trackImports bool) string {
 	return b.String()
 }
 
-// processGenericTypeName handles generic types that may contain package paths in their type parameters
-func (p *TypePrinter) processGenericTypeName(t reflect.Type, trackImports bool) string {
+// reflectGenericTypeName handles generic types that may contain package paths in their type parameters
+func (p *TypePrinter) reflectGenericTypeName(t reflect.Type, trackImports bool) string {
 	name := t.Name()
 
 	// Extract and register package imports from the full name
@@ -208,7 +277,7 @@ func (p *TypePrinter) processGenericTypeName(t reflect.Type, trackImports bool) 
 		alias := p.imports[pkgPath]
 		if alias == "" {
 			// Ensure the type is qualified (this will add it to imports)
-			p.qualify(t, trackImports)
+			p.reflectQualify(t, trackImports)
 			alias = p.imports[pkgPath]
 		}
 
@@ -267,12 +336,4 @@ func (p *TypePrinter) cleanGenericTypeName(genericStr string) string {
 	})
 
 	return result
-}
-
-func escapeBackticks(s string) string {
-	// Backticks cannot appear in raw string literals; encode as a quoted + strconv backtick
-	if strings.Contains(s, "`") {
-		return strconv.Quote(s)[1 : len(strconv.Quote(s))-1] // \"...\" sans outer quotes
-	}
-	return s
 }

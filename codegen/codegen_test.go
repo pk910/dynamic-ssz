@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -238,7 +239,7 @@ func testCodegenPayload(t *testing.T, payload TestPayload) {
 	}
 
 	// Step 5: Run code generation
-	if err := runCodegen(tempDir); err != nil {
+	if err := runCodegen(tempDir, payload.Name); err != nil {
 		t.Fatalf("Code generation failed: %v", err)
 	}
 
@@ -307,7 +308,7 @@ func main() {
 	// Generate SSZ methods for TestPayload type
 	generator.BuildFile(
 		currentDir+"/../types/generated_ssz.go",
-		codegen.WithType(reflect.TypeOf(&types.TestPayload{})),
+		codegen.WithReflectType(reflect.TypeOf(&types.TestPayload{})),
 		codegen.WithCreateLegacyFn(), // Generate both dynamic and legacy methods
 	)
 	
@@ -484,9 +485,12 @@ replace github.com/pk910/dynamic-ssz => %s
 	return os.WriteFile(filename, []byte(content), 0644)
 }
 
-func runCodegen(tempDir string) error {
+func runCodegen(tempDir, testName string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+
+	_, filePath, _, _ := runtime.Caller(0)
+	currentDir := filepath.Dir(filePath)
 
 	// First, initialize go module in the temp directory
 	initCmd := exec.CommandContext(ctx, "go", "mod", "tidy")
@@ -497,8 +501,8 @@ func runCodegen(tempDir string) error {
 
 	// Build codegen binary with coverage
 	codegenBinary := filepath.Join(tempDir, "codegen_executable")
-	buildCmd := exec.CommandContext(ctx, "go", "build", "-cover", "-coverpkg=...", "-covermode=atomic", "-o", codegenBinary, "./codegen")
-	buildCmd.Dir = tempDir
+	buildCmd := exec.CommandContext(ctx, "go", "build", "-cover", "-coverpkg=...", "-covermode=atomic", "-o", codegenBinary, ".")
+	buildCmd.Dir = path.Join(currentDir, "..", "dynssz-gen")
 	if output, err := buildCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("codegen build failed: %v\nOutput: %s", err, string(output))
 	}
@@ -507,7 +511,7 @@ func runCodegen(tempDir string) error {
 	coverDir := filepath.Join(tempDir, "codegen_coverage")
 	os.MkdirAll(coverDir, 0755)
 
-	cmd := exec.CommandContext(ctx, codegenBinary)
+	cmd := exec.CommandContext(ctx, codegenBinary, "-package", fmt.Sprintf("codegen_test_%s/types", testName), "-types", "TestPayload", "-output", filepath.Join(tempDir, "types", "generated_ssz.go"), "-legacy")
 	cmd.Dir = tempDir
 	cmd.Env = append(os.Environ(), fmt.Sprintf("GOCOVERDIR=%s", coverDir))
 	output, err := cmd.CombinedOutput()

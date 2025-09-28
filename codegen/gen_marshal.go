@@ -30,7 +30,7 @@ func generateMarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.B
 	}
 
 	// Generate main function signature
-	typeName := typePrinter.TypeString(rootTypeDesc.Type)
+	typeName := typePrinter.TypeString(rootTypeDesc)
 
 	// Generate marshaling code
 	if err := ctx.marshalType(rootTypeDesc, "t", 1, true); err != nil {
@@ -52,6 +52,7 @@ func generateMarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.B
 			codeBuilder.WriteString(fmt.Sprintf("func (t %s) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {\n", typeName))
 			codeBuilder.WriteString("\treturn t.MarshalSSZTo(buf)\n")
 			codeBuilder.WriteString("}\n\n")
+			genStaticFn = true
 		}
 	}
 
@@ -259,7 +260,7 @@ func (ctx *marshalContext) marshalVector(desc *dynssz.TypeDescriptor, varName st
 		ctx.appendCode(indent, "}\n")
 
 		ctx.appendCode(indent, "if vlen < int(limit) {\n")
-		typeName := ctx.typePrinter.TypeString(desc.ElemDesc.Type)
+		typeName := ctx.typePrinter.TypeString(desc.ElemDesc)
 		ctx.appendCode(indent, "\tzeroItem := &%s{}\n", typeName)
 		ctx.appendCode(indent, "\tfor i := vlen; i < int(limit); i++ {\n")
 		ctx.appendCode(indent, "\t\tsszutils.UpdateOffset(dst[dstlen+(i*4):dstlen+((i+1)*4)], len(dst)-dstlen)\n")
@@ -302,6 +303,10 @@ func (ctx *marshalContext) marshalList(desc *dynssz.TypeDescriptor, varName stri
 	ctx.appendCode(indent, "if hasMax && vlen > int(max) {\n")
 	ctx.appendCode(indent, "\treturn dst, sszutils.ErrListTooBig\n")
 	ctx.appendCode(indent, "}\n")
+
+	if desc.ElemDesc == nil {
+		fmt.Printf("desc.ElemDesc is nil for %s\n", ctx.typePrinter.TypeString(desc))
+	}
 
 	if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic == 0 {
 		// static elements
@@ -346,7 +351,7 @@ func (ctx *marshalContext) marshalUnion(desc *dynssz.TypeDescriptor, varName str
 
 	for _, variant := range variants {
 		variantDesc := desc.UnionVariants[uint8(variant)]
-		variantType := ctx.typePrinter.TypeString(variantDesc.Type)
+		variantType := ctx.typePrinter.TypeString(variantDesc)
 		ctx.appendCode(indent, "case %d:\n", variant)
 		ctx.appendCode(indent, "\tv, ok := %s.Data.(%s)\n", varName, variantType)
 		ctx.appendCode(indent, "\tif !ok {\n")

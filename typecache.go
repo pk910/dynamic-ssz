@@ -55,8 +55,9 @@ const (
 
 // TypeDescriptor represents a cached, optimized descriptor for a type's SSZ encoding/decoding
 type TypeDescriptor struct {
-	Type                   reflect.Type              `json:"-"`
-	Kind                   reflect.Kind              `json:"kind"`                // Go kind of the type
+	Type                   reflect.Type              `json:"-"`                   // Reflect type
+	CodegenInfo            *any                      `json:"-"`                   // Codegen information
+	Kind                   reflect.Kind              `json:"kind"`                // Reflect kind of the type
 	Size                   uint32                    `json:"size"`                // SSZ size (-1 if dynamic)
 	Len                    uint32                    `json:"len"`                 // Length of array/slice
 	Limit                  uint64                    `json:"limit"`               // Limit of array/slice (ssz-max tag)
@@ -74,22 +75,22 @@ type TypeDescriptor struct {
 
 // FieldDescriptor represents a cached descriptor for a struct field
 type ContainerDescriptor struct {
-	Fields    []FieldDescriptor    // For structs
-	DynFields []DynFieldDescriptor // Dynamic struct fields
+	Fields    []FieldDescriptor    `json:"fields"`     // For structs
+	DynFields []DynFieldDescriptor `json:"dyn_fields"` // Dynamic struct fields
 }
 
 // FieldDescriptor represents a cached descriptor for a struct field
 type FieldDescriptor struct {
-	Name     string
-	Type     *TypeDescriptor // Type descriptor
-	SszIndex uint16          // SSZ index for progressive containers
+	Name     string          `json:"name"`            // Name of the field
+	Type     *TypeDescriptor `json:"type"`            // Type descriptor
+	SszIndex uint16          `json:"index,omitempty"` // SSZ index for progressive containers
 }
 
 // DynFieldDescriptor represents a dynamic field descriptor for a struct
 type DynFieldDescriptor struct {
-	Field  *FieldDescriptor
-	Offset uint32
-	Index  int16 // Index of the field in the struct
+	Field  *FieldDescriptor `json:"field"`
+	Offset uint32           `json:"offset"`
+	Index  int16            `json:"index"` // Index of the field in the struct
 }
 
 // NewTypeCache creates a new type cache

@@ -1,6 +1,6 @@
 module github.com/pk910/dynamic-ssz/examples/codegen
 
-go 1.22.2
+go 1.24.0
 
 replace github.com/pk910/dynamic-ssz => ../../
 

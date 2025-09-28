@@ -51,8 +51,8 @@ func main() {
     // Add types to generate code for
     generator.BuildFile(
         "generated/types_ssz.go",
-        codegen.WithType(reflect.TypeOf(&types.MyStruct{})),
-        codegen.WithType(reflect.TypeOf(&types.AnotherStruct{})),
+        codegen.WithReflectType(reflect.TypeOf(&types.MyStruct{})),
+        codegen.WithReflectType(reflect.TypeOf(&types.AnotherStruct{})),
     )
     
     // Generate the code
@@ -148,15 +148,15 @@ generator := codegen.NewCodeGenerator(nil)
 // File 1: Full dynamic support
 generator.BuildFile(
     "dynamic_types_ssz.go",
-    codegen.WithType(reflect.TypeOf(BeaconState{})),
-    codegen.WithType(reflect.TypeOf(BeaconBlock{})),
+    codegen.WithReflectType(reflect.TypeOf(BeaconState{})),
+    codegen.WithReflectType(reflect.TypeOf(BeaconBlock{})),
     codegen.WithCreateLegacyFn(), // Add legacy methods too
 )
 
 // File 2: Legacy-only for maximum performance on main preset
 generator.BuildFile(
     "legacy_types_ssz.go",
-    codegen.WithType(reflect.TypeOf(SimpleStruct{})),
+    codegen.WithReflectType(reflect.TypeOf(SimpleStruct{})),
     codegen.WithoutDynamicExpressions(), // Legacy only
 )
 ```
@@ -168,12 +168,12 @@ Control which methods are generated per type:
 ```go
 generator.BuildFile(
     "selective_ssz.go",
-    codegen.WithType(
+    codegen.WithReflectType(
         reflect.TypeOf(ReadOnlyType{}),
         codegen.WithNoMarshalSSZ(),   // Skip marshal methods
         codegen.WithNoSizeSSZ(),      // Skip size method
     ),
-    codegen.WithType(
+    codegen.WithReflectType(
         reflect.TypeOf(HashOnlyType{}),
         codegen.WithNoMarshalSSZ(),   // Only generate hash methods
         codegen.WithNoUnmarshalSSZ(),
@@ -261,28 +261,28 @@ The generated file will be placed in the same package as the input types:
 // ✅ Correct: All types from same package (types)
 generator.BuildFile(
     "types/generated_ssz.go",  // Must be in same directory as types
-    codegen.WithType(reflect.TypeOf(types.BeaconState{})),
-    codegen.WithType(reflect.TypeOf(types.BeaconBlock{})),
+    codegen.WithReflectType(reflect.TypeOf(types.BeaconState{})),
+    codegen.WithReflectType(reflect.TypeOf(types.BeaconBlock{})),
 )
 
 // ❌ Error: Mixing packages not allowed
 generator.BuildFile(
     "mixed_ssz.go",
-    codegen.WithType(reflect.TypeOf(types.BeaconState{})),    // package types
-    codegen.WithType(reflect.TypeOf(network.Message{})),     // package network - ERROR!
+    codegen.WithReflectType(reflect.TypeOf(types.BeaconState{})),    // package types
+    codegen.WithReflectType(reflect.TypeOf(network.Message{})),     // package network - ERROR!
 )
 
 // ✅ Correct: Separate files for different packages
 generator.BuildFile(
     "types/types_ssz.go",
-    codegen.WithType(reflect.TypeOf(types.BeaconState{})),
-    codegen.WithType(reflect.TypeOf(types.BeaconBlock{})),
+    codegen.WithReflectType(reflect.TypeOf(types.BeaconState{})),
+    codegen.WithReflectType(reflect.TypeOf(types.BeaconBlock{})),
 )
 
 generator.BuildFile(
     "network/network_ssz.go",
-    codegen.WithType(reflect.TypeOf(network.Message{})),
-    codegen.WithType(reflect.TypeOf(network.Request{})),
+    codegen.WithReflectType(reflect.TypeOf(network.Message{})),
+    codegen.WithReflectType(reflect.TypeOf(network.Request{})),
 )
 ```
 
@@ -302,15 +302,15 @@ The generator automatically links types across all generated files and existing 
 // File 1: Core types
 generator.BuildFile(
     "core_ssz.go",
-    codegen.WithType(reflect.TypeOf(BeaconState{})),
-    codegen.WithType(reflect.TypeOf(BeaconBlock{})), // References Transaction
+    codegen.WithReflectType(reflect.TypeOf(BeaconState{})),
+    codegen.WithReflectType(reflect.TypeOf(BeaconBlock{})), // References Transaction
 )
 
 // File 2: Transaction types  
 generator.BuildFile(
     "tx_ssz.go",
-    codegen.WithType(reflect.TypeOf(Transaction{})),
-    codegen.WithType(reflect.TypeOf(TransactionPool{})), // References Transaction
+    codegen.WithReflectType(reflect.TypeOf(Transaction{})),
+    codegen.WithReflectType(reflect.TypeOf(TransactionPool{})), // References Transaction
 )
 
 // The generated code automatically uses:
@@ -376,8 +376,8 @@ func main() {
     
     generator.BuildFile(
         "types/types_ssz.go",
-        codegen.WithType(reflect.TypeOf(&types.Block{})),
-        codegen.WithType(reflect.TypeOf(&types.Transaction{})),
+        codegen.WithReflectType(reflect.TypeOf(&types.Block{})),
+        codegen.WithReflectType(reflect.TypeOf(&types.Transaction{})),
         codegen.WithCreateLegacyFn(),
     )
     

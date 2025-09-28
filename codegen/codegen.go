@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"go/types"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -36,14 +38,17 @@ type CodeGeneratorOptions struct {
 }
 
 type CodeGeneratorTypeOption struct {
-	Type reflect.Type
-	Opts []CodeGeneratorOption
+	ReflectType reflect.Type
+	GoTypesType types.Type
+	Opts        []CodeGeneratorOption
 }
 
 type CodeGeneratorTypeOptions struct {
-	Type       reflect.Type
-	Options    CodeGeneratorOptions
-	Descriptor *dynssz.TypeDescriptor
+	ReflectType reflect.Type
+	GoTypesType types.Type
+	TypeName    string
+	Options     CodeGeneratorOptions
+	Descriptor  *dynssz.TypeDescriptor
 }
 
 type CodeGeneratorFileOptions struct {
@@ -112,11 +117,20 @@ func WithoutDynamicExpressions() CodeGeneratorOption {
 	}
 }
 
-func WithType(t reflect.Type, typeOpts ...CodeGeneratorOption) CodeGeneratorOption {
+func WithReflectType(t reflect.Type, typeOpts ...CodeGeneratorOption) CodeGeneratorOption {
 	return func(opts *CodeGeneratorOptions) {
 		opts.Types = append(opts.Types, CodeGeneratorTypeOption{
-			Type: t,
-			Opts: typeOpts,
+			ReflectType: t,
+			Opts:        typeOpts,
+		})
+	}
+}
+
+func WithGoTypesType(t types.Type, typeOpts ...CodeGeneratorOption) CodeGeneratorOption {
+	return func(opts *CodeGeneratorOptions) {
+		opts.Types = append(opts.Types, CodeGeneratorTypeOption{
+			GoTypesType: t,
+			Opts:        typeOpts,
 		})
 	}
 }
@@ -163,8 +177,9 @@ func (cg *CodeGenerator) BuildFile(fileName string, opts ...CodeGeneratorOption)
 		}
 
 		fileOpts.Types = append(fileOpts.Types, &CodeGeneratorTypeOptions{
-			Type:    t.Type,
-			Options: codeOpts,
+			ReflectType: t.ReflectType,
+			GoTypesType: t.GoTypesType,
+			Options:     codeOpts,
 		})
 	}
 
@@ -183,24 +198,63 @@ func (cg *CodeGenerator) GenerateToMap() (map[string]string, error) {
 	// analyze all types to build complete dependency graph
 	for _, file := range cg.files {
 		pkgPath := ""
+		otherTypeName := ""
 		for _, t := range file.Options.Types {
-			typePkgPath := t.Type.PkgPath()
-			if typePkgPath == "" && t.Type.Kind() == reflect.Ptr {
-				typePkgPath = t.Type.Elem().PkgPath()
+			var typeName, typePkgPath string
+			if t.ReflectType != nil {
+				typeName = t.ReflectType.Name()
+				typePkgPath = t.ReflectType.PkgPath()
+				if typePkgPath == "" && t.ReflectType.Kind() == reflect.Ptr {
+					typePkgPath = t.ReflectType.Elem().PkgPath()
+				}
+			} else if t.GoTypesType != nil {
+				typeName = t.GoTypesType.String()
+				types.TypeString(t.GoTypesType, func(pkg *types.Package) string {
+					typePkgPath = pkg.Path()
+					return ""
+				})
 			}
+
 			if typePkgPath == "" {
-				return nil, fmt.Errorf("type %s has no package path", t.Type.Name())
+				return nil, fmt.Errorf("type %s has no package path", typeName)
 			}
 			if pkgPath == "" {
 				pkgPath = typePkgPath
 			} else if pkgPath != typePkgPath {
-				return nil, fmt.Errorf("type %s has different package path than %s. cannot combine types from different packages in a single file", t.Type.Name(), file.Options.Types[0].Type.Name())
+				return nil, fmt.Errorf("type %s has different package path than %s. cannot combine types from different packages in a single file", typeName, otherTypeName)
 			}
 
-			desc, err := cg.dynSsz.GetTypeCache().GetTypeDescriptor(t.Type, t.Options.SizeHints, t.Options.MaxSizeHints, t.Options.TypeHints)
-			if err != nil {
-				return nil, fmt.Errorf("failed to analyze type %s: %w", t.Type.Name(), err)
+			otherTypeName = typeName
+			t.TypeName = typeName
+
+			var desc *dynssz.TypeDescriptor
+			var err error
+			if t.ReflectType != nil {
+				if t.ReflectType.Kind() == reflect.Struct {
+					t.ReflectType = reflect.PointerTo(t.ReflectType)
+				}
+				desc, err = cg.dynSsz.GetTypeCache().GetTypeDescriptor(t.ReflectType, t.Options.SizeHints, t.Options.MaxSizeHints, t.Options.TypeHints)
+			} else {
+				p := NewParser()
+				baseType := t.GoTypesType
+				if named, ok := baseType.(*types.Named); ok {
+					baseType = named.Underlying()
+				}
+				if _, ok := baseType.(*types.Struct); ok {
+					t.GoTypesType = types.NewPointer(t.GoTypesType)
+				}
+				desc, err = p.GetTypeDescriptor(t.GoTypesType, t.Options.TypeHints, t.Options.SizeHints, t.Options.MaxSizeHints)
 			}
+
+			if err != nil {
+				return nil, fmt.Errorf("failed to analyze type %s: %w", typeName, err)
+			}
+
+			descJson, err := json.MarshalIndent(desc, "", "  ")
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal type descriptor for %s: %w", typeName, err)
+			}
+			fmt.Printf("Type descriptor for %s: %s\n", typeName, string(descJson))
 
 			// set availability of dynamic methods (we will generate them in a bit and we want cross references)
 			if !t.Options.NoMarshalSSZ && !t.Options.WithoutDynamicExpressions {
@@ -279,18 +333,18 @@ func (cg *CodeGenerator) generateFile(fileName string, packagePath string, opts 
 
 	for _, t := range opts.Types {
 		if t.Descriptor == nil {
-			return "", fmt.Errorf("type %s has no descriptor", t.Type.Name())
+			return "", fmt.Errorf("type %s has no descriptor", t.TypeName)
 		}
 
 		hash, err := t.Descriptor.GetTypeHash()
 		if err != nil {
-			return "", fmt.Errorf("failed to get type hash for %s: %w", t.Type.Name(), err)
+			return "", fmt.Errorf("failed to get type hash for %s: %w", t.TypeName, err)
 		}
 		hashParts = append(hashParts, hash[:])
 
 		withDynSsz, err := cg.generateCode(t.Descriptor, typePrinter, &codeBuilder, &t.Options)
 		if err != nil {
-			return "", fmt.Errorf("failed to generate code for %s: %w", t.Type.Name(), err)
+			return "", fmt.Errorf("failed to generate code for %s: %w", t.TypeName, err)
 		}
 		usedDynSsz = usedDynSsz || withDynSsz
 	}
