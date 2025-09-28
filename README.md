@@ -12,6 +12,7 @@ Dynamic SSZ is a Go library for SSZ encoding/decoding with support for dynamic f
 - **🔧 Dynamic Field Sizes** - Support for runtime-determined field sizes based on configuration
 - **⚡ Reflection-Based Processing** - Works instantly with any SSZ-compatible types - no code generation required for prototyping
 - **🏗️ Code Generation** - Optional static code generation for maximum performance (2-3x faster than dynamic processing)
+- **🚀 CLI Tool** - Standalone `dynssz-gen` command for easy code generation from any Go package
 - **🔄 Hybrid Approach** - Seamlessly combines with fastssz for optimal efficiency
 - **📦 Minimal Dependencies** - Core library has minimal external dependencies
 - **✅ Spec Compliant** - Fully compliant with SSZ specification and Ethereum consensus tests
@@ -54,10 +55,32 @@ root, err := ds.HashTreeRoot(myObject)
 
 ### Using Code Generation (Recommended for Production)
 
-For maximum performance, use the code generator:
+For maximum performance, use code generation. You can use either the CLI tool or the programmatic API:
+
+#### Option 1: CLI Tool (Recommended)
+
+Install the CLI tool:
+```bash
+go install github.com/pk910/dynamic-ssz/dynssz-gen@latest
+```
+
+Generate SSZ methods:
+```bash
+# Generate for types in current package
+dynssz-gen -package . -types "MyStruct,OtherType" -output generated.go
+
+# Generate for types in external package
+dynssz-gen -package github.com/example/types -types "Block" -output block_ssz.go
+```
+
+#### Option 2: Programmatic API
+
+For integration with build systems:
 
 ```go
-// codegen/main.go
+//go:generate go run codegen.go
+
+// codegen.go
 package main
 
 import (
@@ -67,22 +90,15 @@ import (
 
 func main() {
     generator := codegen.NewCodeGenerator(nil)
-    
     generator.BuildFile(
         "generated.go",
         codegen.WithReflectType(reflect.TypeOf(MyStruct{})),
     )
-    
     generator.Generate()
 }
 ```
 
-Run the generator:
-```bash
-go run codegen/main.go
-```
-
-This generates optimized SSZ methods that are 2-3x faster than reflection-based encoding.
+Both approaches generate optimized SSZ methods that are faster than reflection-based encoding.
 
 ## Performance
 
