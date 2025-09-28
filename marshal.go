@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
@@ -131,7 +132,15 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 		case SszUint32Type:
 			buf = sszutils.MarshalUint32(buf, uint32(sourceValue.Uint()))
 		case SszUint64Type:
-			buf = sszutils.MarshalUint64(buf, uint64(sourceValue.Uint()))
+			if sourceType.GoTypeFlags&GoTypeFlagIsTime != 0 {
+				timeValue, isTime := sourceValue.Interface().(time.Time)
+				if !isTime {
+					return nil, fmt.Errorf("time.Time type expected, got %v", sourceType.Type.Name())
+				}
+				buf = sszutils.MarshalUint64(buf, uint64(timeValue.Unix()))
+			} else {
+				buf = sszutils.MarshalUint64(buf, uint64(sourceValue.Uint()))
+			}
 		default:
 			return nil, fmt.Errorf("unknown type: %v", sourceType)
 		}

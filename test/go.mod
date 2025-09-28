@@ -5,7 +5,7 @@ go 1.22.2
 require (
 	github.com/attestantio/go-eth2-client v0.25.2
 	github.com/holiman/uint256 v1.3.2
-	github.com/pk910/dynamic-ssz v0.0.4
+	github.com/pk910/dynamic-ssz v1.0.1
 	github.com/prysmaticlabs/go-bitfield v0.0.0-20240618144021-706c95b2dd15
 	gopkg.in/yaml.v2 v2.4.0
 )
@@ -28,7 +28,8 @@ require (
 	golang.org/x/xerrors v0.0.0-20231012003039-104605ab7028 // indirect
 )
 
-//replace github.com/attestantio/go-eth2-client => ../../go-eth2-client
-replace github.com/attestantio/go-eth2-client => github.com/pk910/go-eth2-client v0.0.0-20250624161731-3d549c5576da // waiting for https://github.com/attestantio/go-eth2-client/pull/242
+replace github.com/attestantio/go-eth2-client => ../../go-eth2-client
+
+//replace github.com/attestantio/go-eth2-client => github.com/pk910/go-eth2-client v0.0.0-20250624161731-3d549c5576da // waiting for https://github.com/attestantio/go-eth2-client/pull/242
 
 replace github.com/pk910/dynamic-ssz => ../
