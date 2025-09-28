@@ -1,12 +1,12 @@
 module basic-example
 
-go 1.22.2
+go 1.24.0
 
-toolchain go1.22.4
+toolchain go1.24.7
 
 require (
 	github.com/attestantio/go-eth2-client v0.26.0
-	github.com/pk910/dynamic-ssz v0.0.4
+	github.com/pk910/dynamic-ssz v1.1.0
 )
 
 require (
