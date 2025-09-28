@@ -150,7 +150,7 @@ jobs:
         # Sort and deduplicate coverage entries (keep header, process body)
         (head -n 1 combined-coverage.out; tail -n +2 combined-coverage.out | sort -k1,1 -k2,2n | sort -u -k1,1 -k2,2n) > combined-coverage-final.out
         # Filter out spectests package and non-dynamic-ssz packages
-        (head -n 1 combined-coverage-final.out; tail -n +2 combined-coverage-final.out | grep "github.com/pk910/dynamic-ssz" | grep -v "github.com/pk910/dynamic-ssz/spectests") > combined-coverage.out
+        (head -n 1 combined-coverage-final.out; tail -n +2 combined-coverage-final.out | grep "github.com/pk910/dynamic-ssz" | grep -v "github.com/pk910/dynamic-ssz/spectests" | grep -v "github.com/pk910/dynamic-ssz/dynssz-gen") > combined-coverage.out
         
         echo "Combined coverage report created:"
         wc -l combined-coverage.out
