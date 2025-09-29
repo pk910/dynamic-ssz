@@ -1,254 +1,232 @@
-# Getting Started with Dynamic SSZ
+# Getting Started
 
-Dynamic SSZ (`dynssz`) is a Go library that provides flexible SSZ (Simple Serialize) encoding and decoding for any Go data structures. While commonly used with Ethereum data structures, it works with any SSZ-compatible types and supports dynamic field sizing based on runtime specifications. This guide will help you get started with the library.
+Dynamic SSZ is a flexible Go implementation of the Simple Serialize (SSZ) encoding standard used in Ethereum. This guide will help you get started with the library.
 
 ## Installation
-
-Add the library to your Go project:
 
 ```bash
 go get github.com/pk910/dynamic-ssz
 ```
 
+For code generation tool:
+```bash
+go install github.com/pk910/dynamic-ssz/dynssz-gen@latest
+```
+
 ## Quick Start
 
-Here's a simple example to get you started:
+### Basic Serialization and Deserialization
 
 ```go
 package main
 
 import (
     "fmt"
-    "log"
-    
     dynssz "github.com/pk910/dynamic-ssz"
-    "github.com/attestantio/go-eth2-client/spec/phase0"
 )
 
+// Define a simple structure
+type Person struct {
+    Name    string
+    Age     uint64
+    Active  bool
+}
+
 func main() {
-    // Create a DynSsz instance with mainnet specifications
-    specs := map[string]any{
-        "SLOTS_PER_HISTORICAL_ROOT": uint64(8192),
-        "SYNC_COMMITTEE_SIZE":       uint64(512),
-    }
-    ds := dynssz.NewDynSsz(specs)
-    
-    // Create a sample beacon block header
-    header := &phase0.BeaconBlockHeader{
-        Slot:          12345,
-        ProposerIndex: 42,
-        ParentRoot:    [32]byte{1, 2, 3},
-        StateRoot:     [32]byte{4, 5, 6},
-        BodyRoot:      [32]byte{7, 8, 9},
+    // Create an instance
+    person := &Person{
+        Name:   "Alice",
+        Age:    30,
+        Active: true,
     }
     
-    // Encode to SSZ
-    encoded, err := ds.MarshalSSZ(header)
+    // Create DynSSZ instance
+    ds := dynssz.NewDynSsz(nil)
+    
+    // Serialize
+    encoded, err := ds.MarshalSSZ(person)
     if err != nil {
-        log.Fatal(err)
+        panic(err)
     }
-    fmt.Printf("Encoded %d bytes\n", len(encoded))
+
+    fmt.Printf("Encoded: %x\n", encoded)
     
-    // Decode from SSZ
-    var decoded phase0.BeaconBlockHeader
-    err = ds.UnmarshalSSZ(&decoded, encoded)
+    // Deserialize
+    decoded := &Person{}
+    err = ds.UnmarshalSSZ(decoded, encoded)
     if err != nil {
-        log.Fatal(err)
+        panic(err)
     }
-    fmt.Printf("Decoded slot: %d\n", decoded.Slot)
     
-    // Calculate hash tree root
-    root, err := ds.HashTreeRoot(header)
-    if err != nil {
-        log.Fatal(err)
-    }
-    fmt.Printf("Hash tree root: %x\n", root)
+    fmt.Printf("Decoded: %+v\n", decoded)
+}
+```
+
+### Computing Hash Tree Root
+
+```go
+// Compute the hash tree root
+root, err := ds.HashTreeRoot(person)
+if err != nil {
+    panic(err)
+}
+fmt.Printf("Root: %x\n", root)
+```
+
+### Using Specification Values
+
+Dynamic SSZ supports runtime specification values for dynamic sizing:
+
+```go
+// Define structure with dynamic sizing
+type Block struct {
+    Slot        uint64
+    Validators  []Validator `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
+}
+
+// Create DynSSZ with specification values
+specs := map[string]interface{}{
+    "VALIDATOR_REGISTRY_LIMIT": 1099511627776, // 2^40
+}
+ds := dynssz.NewDynSsz(specs)
+
+// Now you can marshal/unmarshal blocks with dynamic validator limits
+```
+
+## Basic Operations
+
+### Size Calculation
+
+Calculate the serialized size of an object:
+
+```go
+size, err := ds.SizeSSZ(person)
+if err != nil {
+    panic(err)
+}
+fmt.Printf("Serialized size: %d bytes\n", size)
+```
+
+### Type Validation
+
+Validate that a type can be serialized:
+
+```go
+err := ds.ValidateType(reflect.TypeOf(Person{}))
+if err != nil {
+    fmt.Printf("Type validation failed: %v\n", err)
+}
+```
+
+### Buffer Reuse
+
+For performance-critical applications, reuse buffers:
+
+```go
+buf := make([]byte, 0, 1024)
+encoded, err := ds.MarshalSSZTo(person, buf)
+if err != nil {
+    panic(err)
 }
 ```
 
 ## Core Concepts
 
-### Supported Types
+### SSZ Encoding
 
-Before diving into the details, it's important to understand which types are supported by Dynamic SSZ:
+SSZ (Simple Serialize) is a serialization format designed for deterministic encoding of data structures. Key features:
+- Fixed-size types are encoded in-place
+- Variable-size types use offset tables
+- All integers are little-endian
+- Merkle tree hashing for efficient proofs
 
-**✅ Supported:**
-- Unsigned integers: `uint8`, `uint16`, `uint32`, `uint64`
-- Booleans: `bool`
-- Byte arrays: `[N]byte` (fixed-size)
-- Slices and arrays of supported types
-- Structs containing only supported types
-- Pointers to supported types
-- Strings (handled as []byte)
+### Type System
 
-**❌ Not Supported:**
-- Signed integers (`int`, `int8`, etc.)
-- Floating-point numbers (`float32`, `float64`)
-- Maps, channels, functions, interfaces
-
-### Dynamic Specifications
-
-Dynamic SSZ supports runtime configuration through specifications. These specifications allow you to define dynamic field sizes that can adapt to different Ethereum presets (mainnet, minimal, custom).
+Dynamic SSZ automatically detects and handles:
+- Basic types: `bool`, `uint8`, `uint16`, `uint32`, `uint64`
+- Large integers: `uint128`, `uint256` (via uint256.Int, [n]byte or [n]uint64)
+- Collections: arrays, slices, bitvectors, bitlists
+- Complex types: structs, pointers
 
 ### Struct Tags
 
-The library uses struct tags to control encoding/decoding behavior:
-
-- `ssz-size`: Defines field sizes (compatible with fastssz). Use `?` for dynamic dimensions
-- `dynssz-size`: Specifies sizes based on specification properties with expression support
-- `ssz-max`: **Required** for dynamic fields to define maximum elements for hash tree root
-- `dynssz-max`: Dynamic maximum based on specifications
+Control serialization behavior with tags:
+- `ssz-size`: Fixed size for strings/byte arrays
+- `ssz-max`: Maximum size for dynamic arrays
+- `ssz-type`: Explicit type specification
 
 Example:
 ```go
-type BeaconState struct {
-    // Fixed-size fields (no ssz-max needed)
-    BlockRoots []phase0.Root `ssz-size:"8192,32" dynssz-size:"SLOTS_PER_HISTORICAL_ROOT,32"`
-    StateRoots []phase0.Root `ssz-size:"8192,32" dynssz-size:"SLOTS_PER_HISTORICAL_ROOT,32"`
-    
-    // Dynamic fields (ssz-max required)
-    HistoricalRoots []phase0.Root `ssz-size:"?,32" ssz-max:"16777216" dynssz-max:"HISTORICAL_ROOTS_LIMIT"`
-    Validators      []Validator   `ssz-max:"1099511627776" dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
+type Example struct {
+    FixedBytes  []byte    `ssz-size:"32"`
+    DynamicList []uint64  `ssz-max:"1024"`
+    CustomType  [4]uint64 `ssz-type:"uint256"`
 }
 ```
 
-**Important**: Every dynamic length field must have either an `ssz-max` or `dynssz-max` tag for proper hash tree root calculation.
+## Working with Collections
 
-### TypeWrapper for Non-Struct Types
-
-TypeWrapper allows you to apply SSZ annotations to non-struct types at the root level:
+### Fixed-Size Arrays
 
 ```go
-// Define descriptor with annotations
-type Hash32Descriptor struct {
-    Data [32]byte `ssz-type:"uint256"`
+type Data struct {
+    Values [10]uint32  // Fixed array of 10 elements
 }
-type Hash32 = dynssz.TypeWrapper[Hash32Descriptor, [32]byte]
-
-// Usage
-hash := Hash32{}
-hash.Set([32]byte{1, 2, 3, /* ... */})
-
-// Works with all SSZ operations
-encoded, _ := ds.MarshalSSZ(&hash)
-root, _ := ds.HashTreeRoot(&hash)
 ```
 
-See the [TypeWrapper documentation](type-wrapper.md) for comprehensive examples and patterns.
-
-### Hybrid Approach
-
-Dynamic SSZ automatically chooses between:
-- **Static processing**: Uses fastssz for types without dynamic specifications (faster)
-- **Dynamic processing**: Uses reflection for types with dynamic specifications (flexible)
-
-## Basic Operations
-
-### Creating a DynSsz Instance
+### Dynamic Arrays (Lists)
 
 ```go
-specs := map[string]any{
-    "SLOTS_PER_HISTORICAL_ROOT": uint64(8192),
-    "SYNC_COMMITTEE_SIZE":       uint64(512),
-    // Add more specifications as needed
+type Data struct {
+    Items []uint64 `ssz-max:"100"`
 }
-ds := dynssz.NewDynSsz(specs)
 ```
 
-### Encoding (Marshaling)
+### Bitvectors and Bitlists
 
 ```go
-// Marshal to SSZ bytes
-data, err := ds.MarshalSSZ(myStruct)
-
-// Marshal to existing buffer
-buf := make([]byte, 0, 1024)
-data, err := ds.MarshalSSZTo(myStruct, buf)
-
-// Get SSZ size without encoding
-size, err := ds.SizeSSZ(myStruct)
+type Flags struct {
+    FixedBits   [256]byte `ssz-type:"bitvector"` // Bitvector (fixed size)
+    DynamicBits []byte    `ssz-type:"bitlist"`   // Bitlist (variable size)
+}
 ```
 
-### Decoding (Unmarshaling)
+## Common Patterns
+
+### Nested Structures
 
 ```go
-var target MyStruct
-err := ds.UnmarshalSSZ(&target, sszData)
+type Header struct {
+    Version uint8
+    Length  uint32
+}
+
+type Message struct {
+    Header  Header
+    Payload []byte `ssz-max:"1024"`
+}
 ```
 
-### Hash Tree Root
+### Working with uint256
 
 ```go
-root, err := ds.HashTreeRoot(myStruct)
-```
+import "github.com/holiman/uint256"
 
-## Configuration Options
-
-The DynSsz instance supports several configuration options:
-
-```go
-ds := dynssz.NewDynSsz(specs)
-ds.NoFastSsz = true   // Disable fastssz optimization
-ds.NoFastHash = true  // Disable fast hashing
-ds.Verbose = true     // Enable verbose logging
+type Account struct {
+    Balance *uint256.Int `ssz-type:"uint256"`
+}
 ```
 
 ## Next Steps
 
-- Read the [API Reference](api-reference.md) for detailed function documentation
-- Learn about [go-eth2-client integration](go-eth2-client-integration.md)
-- Explore [performance optimization](performance.md) techniques
-- Check out [examples](../examples/) for more use cases
+- Explore [Supported Types](supported-types.md) for complete type reference
+- Learn about [SSZ Annotations](ssz-annotations.md) for advanced field control
+- Check the [API Reference](api-reference.md) for all available methods
+- Use the [Code Generator](code-generator.md) for optimal performance
 
-## Working with Custom Types
+## Example Projects
 
-Here's a comprehensive example using custom types with various tag combinations:
-
-```go
-type CustomData struct {
-    // Fixed-size fields
-    ID         uint64
-    Hash       [32]byte                    // Fixed array, no tags needed
-    FixedData  []byte    `ssz-size:"256"`  // Fixed 256-byte slice
-    
-    // Dynamic fields (require ssz-max)
-    Counts     []uint64  `ssz-max:"100"`                            // Max 100 counts
-    Data       []byte    `ssz-max:"4096" dynssz-max:"MAX_DATA"`    // Dynamic max from spec
-    
-    // Multi-dimensional arrays
-    Matrix     [][]byte  `ssz-size:"?,32" ssz-max:"64"`            // Dynamic outer, fixed inner
-    Dynamic2D  [][]uint8 `ssz-size:"?,?" ssz-max:"100,256"`        // Fully dynamic
-}
-
-// Usage
-specs := map[string]any{
-    "MAX_DATA": uint64(8192),
-}
-ds := dynssz.NewDynSsz(specs)
-
-data := &CustomData{
-    ID:        1,
-    Hash:      [32]byte{1, 2, 3},
-    FixedData: make([]byte, 256),
-    Counts:    []uint64{100, 200, 300},
-    Data:      []byte("dynamic data"),
-    Matrix:    [][]byte{{1, 2}, {3, 4}},
-    Dynamic2D: [][]uint8{{1}, {2, 3}, {4, 5, 6}},
-}
-
-encoded, _ := ds.MarshalSSZ(data)
-root, _ := ds.HashTreeRoot(data)
-```
-
-## Common Pitfalls
-
-1. **Missing ssz-max tags**: Dynamic fields without `ssz-max` will fail hash tree root calculation
-2. **Mixing size and max**: Don't use `ssz-max` on fixed-size fields (those with numeric `ssz-size`)
-3. **Pointer handling**: Always pass pointers to UnmarshalSSZ
-4. **Specification values**: Ensure your specs map contains all required values for dynamic sizing
-
-## Getting Help
-
-- Check the [troubleshooting guide](troubleshooting.md)
-- Look at the [examples](../examples/) directory
-- Review the [API documentation](api-reference.md)
+See the `examples/` directory for complete examples:
+- `basic/` - Simple serialization examples
+- `ethereum-types/` - Ethereum consensus types
+- `progressive-merkleization/` - Advanced merkleization features

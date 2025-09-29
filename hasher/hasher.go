@@ -20,14 +20,6 @@ var _ sszutils.HashWalker = (*Hasher)(nil)
 
 var debug = false
 
-var (
-	// ErrIncorrectByteSize means that the byte size is incorrect
-	ErrIncorrectByteSize = fmt.Errorf("incorrect byte size")
-
-	// ErrIncorrectListSize means that the size of the list is incorrect
-	ErrIncorrectListSize = fmt.Errorf("incorrect list size")
-)
-
 // DefaultHasherPool is a default hasher pool
 var DefaultHasherPool HasherPool
 

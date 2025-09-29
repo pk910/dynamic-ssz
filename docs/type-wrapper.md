@@ -1,342 +1,333 @@
-# TypeWrapper Documentation
+# Type Wrapper
 
-The `TypeWrapper[D, T]` provides a way to apply SSZ annotations to non-struct types at the root level. This solves the problem of not being able to directly annotate simple types like `[]byte` with SSZ-specific tags.
+Type Wrapper is a generic pattern in Dynamic SSZ that allows you to apply SSZ annotations to types that cannot have struct tags, such as primitive types, type aliases, or third-party types.
 
-## Table of Contents
+## Problem It Solves
 
-- [Overview](#overview)
-- [Basic Usage](#basic-usage)
-- [Common Patterns](#common-patterns)
-- [API Reference](#api-reference)
-- [Examples](#examples)
-- [Performance Considerations](#performance-considerations)
-- [Best Practices](#best-practices)
-
-## Overview
-
-### Problem Statement
-
-SSZ annotations in Go are applied via struct field tags. However, you cannot directly annotate non-struct types:
+Consider these scenarios where you cannot add struct tags:
 
 ```go
-// This doesn't work - no way to add SSZ annotations
-type MyByteSlice []byte `ssz-max:"32"`
+// Type alias - can't add tags
+type Epoch uint64  // How to add dynssz-max:"MAX_EPOCH"?
 
-// This works but requires wrapper struct, which has an effect on the corresponding SSZ
-type MyData struct {
-    Bytes []byte `ssz-max:"32"`
+// Third-party type - can't modify
+type ExternalType external.Type  // How to specify ssz-type?
+
+// Primitive in a slice - no place for tags
+type State struct {
+    Epochs []uint64  // How to add per-element constraints?
 }
 ```
 
-### Solution
-
-`TypeWrapper[D, T]` bridges this gap by providing a generic wrapper that:
-- Uses a descriptor struct `D` to carry SSZ annotations
-- Stores the actual value of type `T` 
-- Provides type-safe `Get()` and `Set()` methods
-- Works seamlessly with all SSZ operations
-
-```go
-type WrappedByteArray = TypeWrapper[struct {
-    Data []byte `ssz-size:"32"`
-}, []byte]
-```
+Type Wrapper solves this by providing a generic wrapper that carries the annotations.
 
 ## Basic Usage
 
-### 1. Define a Descriptor Struct
+### Step 1: Define a Descriptor
 
-The descriptor struct must have **exactly one field** with the desired SSZ annotations:
+Create a descriptor type that specifies the SSZ annotations:
 
 ```go
-type MyDescriptor struct {
-    Data []byte `ssz-size:"32" ssz-max:"1024"`
+import "github.com/pk910/dynamic-ssz/types"
+
+// Descriptor for Epoch type with dynamic max
+type EpochDescriptor struct{}
+
+func (EpochDescriptor) GetSszAnnotation() string {
+    return `dynssz-max:"MAX_EPOCH"`
 }
 ```
 
-### 2. Create the TypeWrapper Type
+### Step 2: Use TypeWrapper
 
 ```go
-type MyWrappedType = TypeWrapper[MyDescriptor, []byte]
+type State struct {
+    CurrentEpoch types.TypeWrapper[EpochDescriptor, uint64]
+    Epochs       []types.TypeWrapper[EpochDescriptor, uint64] `ssz-max:"100"`
+}
 ```
 
-### 3. Use the Wrapper
+### Step 3: Access the Value
 
 ```go
-// Create instance
-wrapper := MyWrappedType{}
+state := State{
+    CurrentEpoch: types.TypeWrapper[EpochDescriptor, uint64]{
+        Value: 12345,
+    },
+}
 
-// Set data
-wrapper.Set([]byte{1, 2, 3, 4})
-
-// Get data
-data := wrapper.Get() // Returns []byte with type safety
-
-// Use with SSZ operations
-marshaled, err := dynssz.MarshalSSZ(&wrapper)
-hash, err := dynssz.HashTreeRoot(&wrapper)
-err = dynssz.UnmarshalSSZ(&wrapper, marshaled)
+// Access the wrapped value
+epoch := state.CurrentEpoch.Value
 ```
+
+## Advanced Examples
+
+### Wrapping Large Integers
+
+```go
+// Descriptor for Gwei amounts using byte array
+type GweiDescriptor struct{}
+
+func (GweiDescriptor) GetSszAnnotation() string {
+    return `ssz-type:"uint256" dynssz-max:"MAX_EFFECTIVE_BALANCE"`
+}
+
+type Validator struct {
+    Balance types.TypeWrapper[GweiDescriptor, [32]byte]
+}
+```
+
+### Multiple Annotations
+
+```go
+// Descriptor with multiple SSZ tags
+type CommitteeIndexDescriptor struct{}
+
+func (CommitteeIndexDescriptor) GetSszAnnotation() string {
+    return `ssz-type:"uint64" dynssz-max:"MAX_COMMITTEES_PER_SLOT*SLOTS_PER_EPOCH"`
+}
+
+type Assignment struct {
+    Index types.TypeWrapper[CommitteeIndexDescriptor, uint64]
+}
+```
+
+### Wrapping External Types
+
+```go
+import "github.com/external/lib"
+
+// Descriptor for external type
+type ExternalDescriptor struct{}
+
+func (ExternalDescriptor) GetSszAnnotation() string {
+    return `ssz-type:"container" ssz-size:"48"`
+}
+
+type Data struct {
+    External types.TypeWrapper[ExternalDescriptor, lib.ExternalType]
+}
+```
+
+## Descriptor Interface
+
+The descriptor must implement the annotation method:
+
+```go
+type Descriptor interface {
+    GetSszAnnotation() string
+}
+```
+
+The returned string should contain valid SSZ struct tags:
+- `ssz-type:"type"` - Specify SSZ type
+- `ssz-size:"size"` - Fixed size constraint
+- `ssz-max:"max"` - Maximum size for lists
+- `dynssz-size:"expression"` - Dynamic size with expressions
+- `dynssz-max:"expression"` - Dynamic max with expressions
 
 ## Common Patterns
 
-### Fixed-Size Byte Arrays
+### Reusable Descriptors
+
+Create a library of common descriptors:
 
 ```go
-type ByteArray32 = TypeWrapper[struct {
-    Data []byte `ssz-size:"32"`
-}, []byte]
+package ssz_descriptors
 
-// Usage
-ba := ByteArray32{
-    Data: make([]byte, 32),
+// Common Ethereum types
+type SlotDescriptor struct{}
+func (SlotDescriptor) GetSszAnnotation() string {
+    return `ssz-type:"uint64"`
+}
+
+type EpochDescriptor struct{}
+func (EpochDescriptor) GetSszAnnotation() string {
+    return `ssz-type:"uint64" dynssz-max:"MAX_EPOCH"`
+}
+
+type ValidatorIndexDescriptor struct{}
+func (ValidatorIndexDescriptor) GetSszAnnotation() string {
+    return `ssz-type:"uint64" dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
+}
+
+type GweiDescriptor struct{}
+func (GweiDescriptor) GetSszAnnotation() string {
+    return `ssz-type:"uint256"`
 }
 ```
 
-### Dynamic Lists with Limits
+### Conditional Annotations
+
+Use descriptor fields for conditional behavior:
 
 ```go
-type Uint64List = TypeWrapper[struct {
-    Data []uint64 `ssz-max:"1024"`
-}, []uint64]
+type ConditionalDescriptor struct {
+    MaxSize string
+}
+
+func (d ConditionalDescriptor) GetSszAnnotation() string {
+    if d.MaxSize != "" {
+        return fmt.Sprintf(`dynssz-max:"%s"`, d.MaxSize)
+    }
+    return `ssz-type:"uint64"`
+}
 
 // Usage
-list := Uint64List{
-    Data: []uint64{1, 2, 3, 4, 5},
+type Data struct {
+    Value types.TypeWrapper[ConditionalDescriptor, uint64]
 }
 ```
 
-### Large Integer Types
+### Nested Wrappers
+
+Wrap complex types:
 
 ```go
-type Uint256 = TypeWrapper[struct {
-    Data [32]byte `ssz-type:"uint256"`
-}, [32]byte]
+type ComplexDescriptor struct{}
 
-// Usage
-val := Uint256{
-    Data: [32]byte{0x01, 0x02, /* ... */},
+func (ComplexDescriptor) GetSszAnnotation() string {
+    return `ssz-type:"container"`
 }
 
+type NestedData struct {
+    Field1 string
+    Field2 []byte `ssz-max:"1024"`
+}
+
+type Container struct {
+    Nested types.TypeWrapper[ComplexDescriptor, NestedData]
+}
 ```
 
-### Bitlists and Bitvectors
+## Integration with Code Generation
+
+TypeWrapper is fully supported by the code generator:
 
 ```go
-type Bitlist = TypeWrapper[struct {
-    Data []byte `ssz-type:"bitlist" ssz-max:"512"`
-}, []byte]
+//go:generate dynssz-gen -types State -output state_ssz.go
 
-type Bitvector64 = TypeWrapper[struct {
-    Data [8]byte `ssz-type:"bitvector"`
-}, [8]byte]
+type State struct {
+    Epoch types.TypeWrapper[EpochDescriptor, uint64]
+}
 ```
 
-### Custom Type Annotations
+The generated code will properly handle the wrapper types.
 
-```go
-type WrappedCustom = TypeWrapper[struct {
-    Data CustomStruct `ssz-type:"container"`
-}, CustomStruct]
-```
+## Performance Considerations
+
+TypeWrapper has minimal overhead:
+- Zero allocation for value types
+- Single pointer dereference for reference types
+- Descriptor methods are called during type analysis, not runtime
 
 ## API Reference
 
-### Type Definition
+### TypeWrapper[D, T]
 
 ```go
-type TypeWrapper[D, T any] struct {
-    Data T
+type TypeWrapper[D Descriptor, T any] struct {
+    Value T
 }
 ```
 
-**Generic Parameters:**
-- `D`: Descriptor struct type with exactly one field containing SSZ annotations
-- `T`: The actual value type being wrapped
+Generic parameters:
+- `D` - Descriptor type implementing GetSszAnnotation()
+- `T` - The wrapped type
 
 ### Methods
 
-#### `func NewTypeWrapper[D, T any](data T) (*TypeWrapper[D, T], error)`
-
-Creates a new TypeWrapper instance with the provided data.
-
-**Parameters:**
-- `data`: Initial value of type `T`
-
-**Returns:**
-- `*TypeWrapper[D, T]`: New wrapper instance
-- `error`: Always nil (reserved for future validation)
-
-#### `func (w *TypeWrapper[D, T]) Get() T`
-
-Returns the wrapped value with full type safety.
-
-**Returns:**
-- `T`: The wrapped value
-
-#### `func (w *TypeWrapper[D, T]) Set(value T)`
-
-Sets the wrapped value with compile-time type checking.
-
-**Parameters:**
-- `value`: New value of type `T`
-
-#### `func (w *TypeWrapper[D, T]) GetDescriptorType() reflect.Type`
-
-Returns the reflect.Type of the descriptor struct for internal use.
-
-**Returns:**
-- `reflect.Type`: Type information for descriptor struct
-
-### SSZ Operations
-
-All standard SSZ operations work transparently:
+TypeWrapper implements standard SSZ interfaces when the wrapped type supports them:
 
 ```go
-// Marshal to SSZ bytes
-bytes, err := dynssz.MarshalSSZ(&wrapper)
+// If T implements MarshalSSZ
+func (tw TypeWrapper[D, T]) MarshalSSZ() ([]byte, error)
 
-// Unmarshal from SSZ bytes  
-err = dynssz.UnmarshalSSZ(&wrapper, bytes)
+// If T implements UnmarshalSSZ
+func (tw *TypeWrapper[D, T]) UnmarshalSSZ(data []byte) error
 
-// Calculate hash tree root
-hash, err := dynssz.HashTreeRoot(&wrapper)
+// If T implements SizeSSZ
+func (tw TypeWrapper[D, T]) SizeSSZ() int
 
-// Get SSZ size
-size, err := dynssz.SizeSSZ(&wrapper)
+// If T implements HashTreeRoot
+func (tw TypeWrapper[D, T]) HashTreeRoot() ([32]byte, error)
 ```
 
 ## Examples
 
-### Example 1: Ethereum Block Hash
+### Ethereum Validator Registry
 
 ```go
-type BlockHash = TypeWrapper[struct {
-    Data [32]byte `ssz-type:"uint256"`
-}, [32]byte]
+// Descriptors for Ethereum types
+type ValidatorIndexDescriptor struct{}
+func (ValidatorIndexDescriptor) GetSszAnnotation() string {
+    return `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
+}
 
-func main() {
-    hash := BlockHash{}
-    hash.Set([32]byte{0xab, 0xcd, /* ... */})
-    
-    // Serialize for network transmission
-    serialized, _ := dynssz.MarshalSSZ(&hash)
-    
-    // Calculate merkle root
-    root, _ := dynssz.HashTreeRoot(&hash)
-    fmt.Printf("Root: %x\n", root)
+type GweiAmountDescriptor struct{}
+func (GweiAmountDescriptor) GetSszAnnotation() string {
+    return `ssz-type:"uint64"`
+}
+
+// Validator with wrapped types
+type Validator struct {
+    Index              types.TypeWrapper[ValidatorIndexDescriptor, uint64]
+    EffectiveBalance   types.TypeWrapper[GweiAmountDescriptor, uint64]
+    ActivationEpoch    types.TypeWrapper[EpochDescriptor, uint64]
 }
 ```
 
-### Example 2: Validator Pubkey List
+### Dynamic Committee Assignments
 
 ```go
-type PubkeyList = TypeWrapper[struct {
-    Data [][]byte `ssz-size:"?,48" ssz-max:"1000000"`
-}, [][]byte]
+type CommitteeSizeDescriptor struct{}
+func (CommitteeSizeDescriptor) GetSszAnnotation() string {
+    return `dynssz-max:"MAX_VALIDATORS_PER_COMMITTEE"`
+}
 
-func processValidators(pubkeys [][]byte) error {
-    wrapped := PubkeyList{}
-    wrapped.Set(pubkeys)
-    
-    // Efficient SSZ operations
-    size, _ := dynssz.SizeSSZ(&wrapped)
-    if size > maxSize {
-        return errors.New("too many validators")
-    }
-    
-    serialized, _ := dynssz.MarshalSSZ(&wrapped)
-    return storeData(serialized)
+type CommitteeAssignment struct {
+    Validators []types.TypeWrapper[ValidatorIndexDescriptor, uint64] `ssz-type:"?" dynssz-max:"MAX_VALIDATORS_PER_COMMITTEE"`
+    Index      types.TypeWrapper[CommitteeIndexDescriptor, uint64]
 }
 ```
 
-### Example 3: Bitfield Operations
+## Best Practices
 
+1. **Create descriptive descriptor names** that indicate the purpose
+2. **Reuse descriptors** across your codebase for consistency
+3. **Document descriptors** with their constraints and usage
+4. **Use TypeWrapper sparingly** - prefer struct tags when possible
+5. **Consider code generation** for better performance
+
+## Troubleshooting
+
+### "Invalid descriptor" Error
+
+Ensure your descriptor implements GetSszAnnotation():
 ```go
-type AttestationBits = TypeWrapper[struct {
-    Data []byte `ssz-type:"bitlist" ssz-max:"2048"`
-}, []byte]
-
-func createAttestation(participantBits []byte) AttestationBits {
-    bits := AttestationBits{}
-    bits.Set(participantBits)
-    return bits
+// Correct
+type MyDescriptor struct{}
+func (MyDescriptor) GetSszAnnotation() string {
+    return `ssz-type:"uint64"`
 }
 
-func countParticipants(bits AttestationBits) int {
-    data := bits.Get()
-    count := 0
-    for _, b := range data[:len(data)-1] { // Exclude length bit
-        count += popcount(b)
-    }
-    return count
-}
+// Incorrect - missing method
+type BadDescriptor struct{}
 ```
 
-### Example 4: Multi-dimensional Array
+### "Type mismatch" Error
 
+Ensure the annotation matches the wrapped type:
 ```go
-type Matrix3x3 = TypeWrapper[struct {
-    Data [3][3]uint64 `ssz-type:"vector,vector" ssz-size:"3,3"`
-}, [3][3]uint64]
+// Correct - uint64 annotation for uint64 type
+type GoodWrapper = types.TypeWrapper[UintDescriptor, uint64]
 
-func newIdentityMatrix() Matrix3x3 {
-    matrix := Matrix3x3{}
-    identity := [3][3]uint64{
-        {1, 0, 0},
-        {0, 1, 0},
-        {0, 0, 1},
-    }
-    matrix.Set(identity)
-    return matrix
-}
+// Incorrect - uint256 annotation for uint64 type
+type BadWrapper = types.TypeWrapper[BigIntDescriptor, uint64]
 ```
 
-## Performance Considerations
+## Related Documentation
 
-### Zero-Cost Abstraction
-
-TypeWrapper adds no runtime overhead:
-- Direct field access (no boxing/unboxing)
-- Same memory layout as the wrapped type
-- Compile-time type safety
-
-### SSZ Efficiency
-
-- All SSZ operations delegate directly to the wrapped type
-- FastSSZ compatibility when available
-- Optimal memory usage patterns
-
-### Benchmark Comparison
-
-```
-BenchmarkDirectType-8     1000000    1000 ns/op
-BenchmarkTypeWrapper-8    1000000    1000 ns/op  // Same performance
-```
-
-## Integration with Existing Code
-
-TypeWrapper integrates seamlessly with existing SSZ workflows:
-
-```go
-// Works in struct fields
-type BeaconBlock struct {
-    ParentRoot BlockHash             `json:"parent_root"`
-    StateRoot  BlockHash             `json:"state_root"`
-    Signature  Signature             `json:"signature"`
-    Pubkeys    PubkeyList            `json:"pubkeys"`
-}
-
-// Works with slices
-type Blocks []BeaconBlock
-
-// Works with all dynssz functions
-func processBlock(block *BeaconBlock) error {
-    size, _ := dynssz.SizeSSZ(block)
-    hash, _ := dynssz.HashTreeRoot(block)
-    serialized, _ := dynssz.MarshalSSZ(block)
-    
-    // All wrapper fields handled automatically
-    return nil
-}
-```
+- [Supported Types](supported-types.md) - Complete type reference
+- [SSZ Annotations](ssz-annotations.md) - Tag syntax reference
+- [API Reference](api-reference.md) - TypeWrapper API details
