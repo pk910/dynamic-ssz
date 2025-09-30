@@ -1,3 +1,7 @@
+// Copyright (c) 2025 pk910
+// SPDX-License-Identifier: Apache-2.0
+// This file is part of the dynamic-ssz library.
+
 package dynssz
 
 import (
@@ -7,7 +11,7 @@ import (
 // TestStrictTypeAnnotations tests various ssz-type annotations to improve coverage
 func TestStrictTypeAnnotations(t *testing.T) {
 	dynssz := NewDynSsz(nil)
-	
+
 	testCases := []struct {
 		name   string
 		value  interface{}
@@ -26,7 +30,7 @@ func TestStrictTypeAnnotations(t *testing.T) {
 			}{42},
 		},
 		{
-			name: "list type annotation", 
+			name: "list type annotation",
 			value: struct {
 				Values []uint32 `ssz-type:"list" ssz-max:"10"`
 			}{[]uint32{1, 2, 3}},
@@ -70,7 +74,7 @@ func TestStrictTypeAnnotations(t *testing.T) {
 			hasErr: true,
 		},
 		{
-			name: "uint256 with wrong size array", 
+			name: "uint256 with wrong size array",
 			value: struct {
 				Value [16]byte `ssz-type:"uint256"`
 			}{[16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}},
@@ -91,7 +95,7 @@ func TestStrictTypeAnnotations(t *testing.T) {
 			hasErr: true,
 		},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Test marshaling
@@ -101,7 +105,7 @@ func TestStrictTypeAnnotations(t *testing.T) {
 			} else if !tc.hasErr && err != nil {
 				t.Errorf("unexpected error: %v", err)
 			}
-			
+
 			// Test hash tree root
 			_, err = dynssz.HashTreeRoot(tc.value)
 			if tc.hasErr && err == nil {

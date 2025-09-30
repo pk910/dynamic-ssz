@@ -1,3 +1,6 @@
+// Copyright (c) 2025 pk910
+// SPDX-License-Identifier: Apache-2.0
+
 // Package main demonstrates basic usage of the dynamic-ssz library.
 // This example shows how to encode, decode, and compute hash tree roots
 // for Ethereum data structures using dynamic specifications.
@@ -7,8 +10,8 @@ import (
 	"fmt"
 	"log"
 
-	dynssz "github.com/pk910/dynamic-ssz"
 	"github.com/attestantio/go-eth2-client/spec/phase0"
+	dynssz "github.com/pk910/dynamic-ssz"
 )
 
 func main() {
@@ -17,8 +20,8 @@ func main() {
 
 	// Create DynSsz instance with mainnet specifications
 	specs := map[string]any{
-		"SLOTS_PER_HISTORICAL_ROOT": uint64(8192),
-		"SYNC_COMMITTEE_SIZE":       uint64(512),
+		"SLOTS_PER_HISTORICAL_ROOT":    uint64(8192),
+		"SYNC_COMMITTEE_SIZE":          uint64(512),
 		"MAX_VALIDATORS_PER_COMMITTEE": uint64(2048),
 	}
 	ds := dynssz.NewDynSsz(specs)
@@ -93,7 +96,7 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to unmarshal attestation:", err)
 	}
-	fmt.Printf("Decoded attestation slot: %d, index: %d\n", 
+	fmt.Printf("Decoded attestation slot: %d, index: %d\n",
 		decodedAttestation.Data.Slot, decodedAttestation.Data.Index)
 
 	// Example 3: Using MarshalSSZTo with buffer reuse

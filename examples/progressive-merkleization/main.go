@@ -1,3 +1,6 @@
+// Copyright (c) 2025 pk910
+// SPDX-License-Identifier: Apache-2.0
+
 // Progressive Merkleization Example
 //
 // This example demonstrates all 4 progressive merkleization features:

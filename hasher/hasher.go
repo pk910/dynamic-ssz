@@ -1,3 +1,11 @@
+// Copyright (c) 2025 pk910
+// SPDX-License-Identifier: Apache-2.0
+//
+// This file contains code derived from https://github.com/ferranbt/fastssz/blob/main/hasher.go
+// Copyright (c) 2020 Ferran Borreguero
+// Licensed under the MIT License
+// The code has been modified for dynamic-ssz needs.
+
 package hasher
 
 import (
@@ -10,10 +18,6 @@ import (
 
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
-
-// this hasher implementation was copied from the fastssz package
-// https://github.com/ferranbt/fastssz/blob/main/hasher.go
-// code has been modified for dynamis-ssz needs
 
 // Compile-time check to ensure Hasher implements HashWalker interface
 var _ sszutils.HashWalker = (*Hasher)(nil)
