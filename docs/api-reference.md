@@ -1,452 +1,296 @@
 # API Reference
 
-This document provides comprehensive documentation for all public APIs in the dynamic-ssz library.
-
-## Supported Types
-
-Dynamic SSZ supports only SSZ-compatible types as defined in the SSZ specification:
-
-### Base Types
-- `uint8`/`byte`, `uint16`, `uint32`, `uint64` - Unsigned integers
-- `bool` - Boolean values
-- `string` - Strings (treated like a []byte)
-
-### Composite Types
-- **Arrays**: Fixed-size arrays of supported types
-- **Slices**: Variable-size slices of supported types (require `ssz-size` or `ssz-max` tags)
-- **Structs**: Structs containing only supported types
-- **Pointers**: Pointers to structs (nil pointers will be filled with empty instances of the referred type)
-- **TypeWrapper**: Generic wrapper for applying SSZ annotations to non-struct types (see [TypeWrapper Guide](type-wrapper.md))
-- **Compatible Unions**: Generic union types (EIP-7495) with variant selection
-
-### Not Supported
-The following types are **not** part of the SSZ specification and therefore not supported:
-- Signed integers (`int`, `int8`, `int16`, `int32`, `int64`)
-- Floating-point numbers (`float32`, `float64`)
-- Maps
-- Channels
-- Functions
-- Complex numbers
-- Interfaces (except when referring to concrete SSZ-compatible types in unions)
-
-### Handling Large Integers (uint128/uint256)
-
-The SSZ specification defines `uint128` and `uint256` types, but Go doesn't have native support for these large integer types. This creates a gap between the SSZ specification and Go's type system.
-
-#### Current Approach
-- **For marshalling/unmarshalling**: Large integers are typically represented as byte arrays (`[16]byte` for uint128, `[32]byte` for uint256) or `uint64` arrays (`[2]uint64` for uint128, `[4]uint64` for uint256)
-- **For calculations**: Complex types that handle endianness and arithmetic operations are needed
-
-#### Recommended Libraries
-- **uint256**: Use `github.com/holiman/uint256` for proper uint256 handling
-  ```go
-  import "github.com/holiman/uint256"
-
-  type MyStruct struct {
-      // For SSZ marshalling/unmarshalling
-      Balance1 [32]byte
-
-      // For actual usage in calculations
-      Balance2 uint256.Int
-  }
-  ```
-
-**Note**: There is currently no widely adopted standard library for uint128 in Go. Consider using byte arrays or implementing custom handling based on your specific needs.
-
-### Type Examples
-
-```go
-// Supported types
-type ValidStruct struct {
-    // Base types
-    Count      uint64
-    Flag       bool
-    Hash       [32]byte
-    Name       string
-
-    // Composite types
-    Values     []uint32      `ssz-max:"100"`
-    Data       []byte        `ssz-max:"1024"`
-    Labels     []string      `ssz-max:"10"`
-    Matrix     [][]byte      `ssz-size:"?,32" ssz-max:"64"`
-    SubStruct  *OtherStruct  // Pointer treated as empty instance for nil pointer
-}
-
-// TypeWrapper examples - for annotating non-struct types
-type Hash32 = TypeWrapper[struct {
-    Data []byte `ssz-type:"uint256"`
-}, []byte]
-
-type ValidatorList = TypeWrapper[struct {
-    Data [][]byte `ssz-size:"?,48" ssz-max:"1000000"`
-}, [][]byte]
-
-// NOT supported
-type InvalidStruct struct {
-    Score   float64        // ❌ Not part of SSZ
-    Count   int            // ❌ Use uint64 instead
-    Mapping map[string]int // ❌ Maps not supported
-}
-```
+This reference documents all public interfaces and methods in Dynamic SSZ.
 
 ## Core Types
 
 ### DynSsz
 
-`DynSsz` is the main type for dynamic SSZ encoding/decoding operations.
+The main entry point for Dynamic SSZ operations.
 
 ```go
 type DynSsz struct {
-    NoFastSsz  bool // Disable fastssz optimization
-    NoFastHash bool // Disable fast hashing using the optimized gohashtree hasher
-    Verbose    bool // Enable verbose logging
+    // Internal fields
 }
 ```
 
 #### Constructor
 
-##### NewDynSsz
-
 ```go
 func NewDynSsz(specs map[string]any) *DynSsz
 ```
 
-Creates a new DynSsz instance with the provided specifications.
+Creates a new DynSsz instance.
 
-**Parameters:**
-- `specs`: A map containing dynamic properties and configurations for SSZ serialization
+**Parameters**:
+- `specs` - Map of specification values for dynamic expressions (can be nil)
 
-**Returns:**
-- A pointer to a new DynSsz instance
-
-**Example:**
+**Example**:
 ```go
+// Basic usage
+ssz := dynssz.NewDynSsz(nil)
+
+// With spec values
 specs := map[string]any{
-    "SLOTS_PER_HISTORICAL_ROOT": uint64(8192),
-    "SYNC_COMMITTEE_SIZE":       uint64(512),
+    "VALIDATOR_REGISTRY_LIMIT": 1099511627776,
+    "MAX_ATTESTATIONS": 128,
 }
-ds := dynssz.NewDynSsz(specs)
+ssz := dynssz.NewDynSsz(specs)
 ```
 
-## Encoding Methods
+## Serialization Methods
 
 ### MarshalSSZ
 
 ```go
-func (d *DynSsz) MarshalSSZ(source any) ([]byte, error)
+func (d *DynSsz) MarshalSSZ(source interface{}) ([]byte, error)
 ```
 
-Serializes the given source into its SSZ representation.
+Serializes an object to SSZ format.
 
-**Parameters:**
-- `source`: The Go value to be serialized
+**Parameters**:
+- `source` - Object to serialize
 
-**Returns:**
-- `[]byte`: The serialized data
-- `error`: Error if serialization fails
+**Returns**:
+- Serialized bytes
+- Error if serialization fails
 
-**Example:**
+**Example**:
 ```go
-data, err := ds.MarshalSSZ(myStruct)
+data, err := ssz.MarshalSSZ(myStruct)
 if err != nil {
-    log.Fatal(err)
+    return err
 }
 ```
 
 ### MarshalSSZTo
 
 ```go
-func (d *DynSsz) MarshalSSZTo(source any, buf []byte) ([]byte, error)
+func (d *DynSsz) MarshalSSZTo(source interface{}, buf []byte) ([]byte, error)
 ```
 
-Serializes the given source into the provided buffer.
+Serializes to SSZ format using provided buffer.
 
-**Parameters:**
-- `source`: The Go value to be serialized
-- `buf`: Pre-allocated buffer for the serialized data
+**Parameters**:
+- `source` - Object to serialize
+- `buf` - Buffer to write to (can be nil)
 
-**Returns:**
-- `[]byte`: The updated buffer containing serialized data
-- `error`: Error if serialization fails
+**Returns**:
+- Serialized bytes (may be same as buf if large enough)
+- Error if serialization fails
 
-**Example:**
+**Example**:
 ```go
 buf := make([]byte, 0, 1024)
-data, err := ds.MarshalSSZTo(myStruct, buf)
+data, err := ssz.MarshalSSZTo(myStruct, buf)
 ```
-
-### SizeSSZ
-
-```go
-func (d *DynSsz) SizeSSZ(source any) (int, error)
-```
-
-Calculates the SSZ size of the given source without performing serialization.
-
-**Parameters:**
-- `source`: The Go value to calculate size for
-
-**Returns:**
-- `int`: The calculated size in bytes
-- `error`: Error if size calculation fails
-
-**Example:**
-```go
-size, err := ds.SizeSSZ(myStruct)
-fmt.Printf("SSZ size: %d bytes\n", size)
-```
-
-## Decoding Methods
 
 ### UnmarshalSSZ
 
 ```go
-func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte) error
+func (d *DynSsz) UnmarshalSSZ(target interface{}, ssz []byte) error
 ```
 
-Decodes SSZ-encoded data into the target object.
+Deserializes from SSZ format.
 
-**Parameters:**
-- `target`: Pointer to the Go value that will hold the decoded data
-- `ssz`: The SSZ-encoded data to decode
+**Parameters**:
+- `target` - Pointer to object to deserialize into
+- `ssz` - SSZ encoded bytes
 
-**Returns:**
-- `error`: Error if decoding fails
+**Returns**:
+- Error if deserialization fails
 
-**Example:**
+**Example**:
 ```go
 var decoded MyStruct
-err := ds.UnmarshalSSZ(&decoded, sszData)
-if err != nil {
-    log.Fatal(err)
-}
+err := ssz.UnmarshalSSZ(&decoded, data)
 ```
 
-## Hashing Methods
+## Hash Tree Root
 
 ### HashTreeRoot
 
 ```go
-func (d *DynSsz) HashTreeRoot(source any) ([32]byte, error)
+func (d *DynSsz) HashTreeRoot(source interface{}) ([32]byte, error)
 ```
 
-Computes the hash tree root of the given source object.
+Computes the SSZ hash tree root.
 
-**Parameters:**
-- `source`: The Go value to compute hash tree root for
+**Parameters**:
+- `source` - Object to hash
 
-**Returns:**
-- `[32]byte`: The computed hash tree root
-- `error`: Error if computation fails
+**Returns**:
+- 32-byte hash root
+- Error if hashing fails
 
-**Example:**
+**Example**:
 ```go
-root, err := ds.HashTreeRoot(myStruct)
+root, err := ssz.HashTreeRoot(myStruct)
 if err != nil {
-    log.Fatal(err)
+    return err
 }
-fmt.Printf("Hash tree root: %x\n", root)
+fmt.Printf("Root: %x\n", root)
 ```
 
-## Struct Tags
+## Utility Methods
 
-### ssz-size
-
-Defines field sizes, compatible with fastssz. Use `?` to indicate dynamic length dimensions, or specify a number for fixed-size arrays/slices.
+### SizeSSZ
 
 ```go
-type MyStruct struct {
-    FixedData   []byte   `ssz-size:"32"`     // Fixed 32-byte slice
-    DynamicData []byte   `ssz-size:"?"`      // Dynamic slice (requires ssz-max)
-    Matrix      [][]byte `ssz-size:"4,32"`   // Fixed 4x32 matrix
-    Dynamic2D   [][]byte `ssz-size:"?,32"`   // Dynamic outer, fixed inner
-}
+func (d *DynSsz) SizeSSZ(source interface{}) (int, error)
 ```
 
-**Note**: Fixed-size fields (those with numeric values) do not use `ssz-max` tags.
+Calculates serialized size without serializing.
 
-### dynssz-size
+**Parameters**:
+- `source` - Object to calculate size for
 
-Specifies sizes based on specification properties with expression support.
+**Returns**:
+- Size in bytes
+- Error if calculation fails
+
+**Example**:
+```go
+size, err := ssz.SizeSSZ(myStruct)
+fmt.Printf("Size: %d bytes\n", size)
+```
+
+### ValidateType
 
 ```go
-type MyStruct struct {
-    Roots []Root `ssz-size:"8192,32" dynssz-size:"SLOTS_PER_HISTORICAL_ROOT,32"`
+func (d *DynSsz) ValidateType(t reflect.Type) error
+```
+
+Validates that a type can be serialized.
+
+**Parameters**:
+- `t` - Type to validate
+
+**Returns**:
+- Error if type is invalid for SSZ
+
+**Example**:
+```go
+err := ssz.ValidateType(reflect.TypeOf(MyStruct{}))
+if err != nil {
+    fmt.Printf("Invalid type: %v\n", err)
 }
 ```
 
-#### Expression Support
-
-The `dynssz-size` tag supports mathematical expressions:
-
-- Direct reference: `dynssz-size:"SPEC_VALUE"`
-- Mathematical expression: `dynssz-size:"(SPEC_VALUE*2)-5"`
-- Multiple values: `dynssz-size:"(SPEC_VALUE1*SPEC_VALUE2)+SPEC_VALUE3"`
-
-### ssz-max
-
-**Required** for all dynamic length fields to properly calculate hash tree root. Defines the maximum number of elements.
+### GetTypeCache
 
 ```go
-type MyStruct struct {
-    DynamicData []byte    `ssz-max:"1024"`              // Max 1024 bytes
-    Items       []Item    `ssz-max:"100"`               // Max 100 items
-    Matrix      [][]byte  `ssz-size:"?,32" ssz-max:"64"` // Max 64 rows of 32 bytes each
-}
+func (d *DynSsz) GetTypeCache() TypeCache
 ```
 
-### dynssz-max
+Returns the internal type cache for debugging purposes. Do not modify or build on the internal fields of the TypeCache. These might change in future versions of the library.
 
-Similar to `dynssz-size`, allows specification-based maximum sizes with expression support.
+**Returns**:
+- TypeCache instance
+
+### ResolveSpecValue
 
 ```go
-type MyStruct struct {
-    Validators []Validator `ssz-max:"1099511627776" dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
-    Data       []byte      `dynssz-max:"MAX_DATA_SIZE"`
-    Items      [][]byte    `ssz-size:"?,?" ssz-max:"100,256" dynssz-max:"MAX_ITEMS,MAX_ITEM_SIZE"`
-}
+func (d *DynSsz) ResolveSpecValue(name string) (bool, uint64, error)
 ```
 
-### Multi-dimensional Arrays
+Resolves a specification value, including expressions.
 
-For multi-dimensional arrays/slices, specify sizes and maximums for each dimension using comma-separated values:
+**Parameters**:
+- `name` - Spec name or expression (e.g., "SLOTS_PER_EPOCH*32")
+
+**Returns**:
+- Whether the value was found
+- Resolved value
+- Error if resolution fails
+
+**Example**:
+```go
+found, value, err := ssz.ResolveSpecValue("MAX_VALIDATORS_PER_COMMITTEE")
+```
+
+## Custom Marshaling Interfaces
+
+Types can implement these interfaces for custom behavior.
+
+### Standard Interfaces (fastssz compatible)
 
 ```go
-type MyStruct struct {
-    // Fixed dimensions
-    Fixed2D     [][]byte  `ssz-size:"4,32"`                // 4x32 fixed matrix
+// Custom marshaling
+type Marshaler interface {
+    MarshalSSZ() ([]byte, error)
+}
 
-    // Mixed dimensions
-    Mixed       [][]byte  `ssz-size:"?,32" ssz-max:"100"`  // Dynamic outer (max 100), fixed inner (32)
+// Custom marshaling to buffer
+type MarshalerTo interface {
+    MarshalSSZTo(buf []byte) ([]byte, error)
+}
 
-    // Fully dynamic
-    Dynamic2D   [][]byte  `ssz-size:"?,?" ssz-max:"64,256"` // Max 64x256 matrix
+// Custom unmarshaling
+type Unmarshaler interface {
+    UnmarshalSSZ(buf []byte) error
+}
 
-    // With spec values
-    SpecBased   [][]uint64 `ssz-size:"?,?" ssz-max:"100,100" dynssz-max:"MAX_COMMITTEES,MAX_VALIDATORS"`
+// Custom size calculation
+type Sizer interface {
+    SizeSSZ() int
+}
+
+// Custom hash tree root
+type HashRoot interface {
+    HashTreeRoot() ([32]byte, error)
+}
+
+// Custom hash tree root with hasher
+type HashRootWith interface {
+    HashTreeRootWith(hh HashWalker) error
 }
 ```
 
-Multi-dimensional slices are fully supported for all operations including hash tree root calculations, encoding, and decoding. This includes complex types like `[][]CustomType` and higher dimensional slices such as `[][][]byte`.
-
-## Progressive Merkleization (EIP-7916 & EIP-7495)
-
-Dynamic SSZ supports progressive merkleization features as defined in EIP-7916 and EIP-7495, enabling efficient incremental hashing for growing data structures.
-
-### Progressive Lists (EIP-7916)
-
-Progressive lists use progressive merkleization for better performance when appending elements to large lists.
+### Dynamic Interfaces (spec-aware)
 
 ```go
-type MyStruct struct {
-    Items []uint32 `ssz-type:"progressive-list"`
+// Dynamic marshaling with spec access
+type DynamicMarshaler interface {
+    MarshalSSZDyn(specs DynamicSpecs, buf []byte) ([]byte, error)
+}
+
+// Dynamic unmarshaling with spec access
+type DynamicUnmarshaler interface {
+    UnmarshalSSZDyn(specs DynamicSpecs, buf []byte) error
+}
+
+// Dynamic size calculation
+type DynamicSizer interface {
+    SizeSSZDyn(specs DynamicSpecs) int
+}
+
+// Dynamic hash tree root (common entrypoint)
+type DynamicHashRoot interface {
+    HashTreeRootDyn(specs DynamicSpecs) ([32]byte, error)
+}
+
+// Dynamic hash tree root with existing HashWalker
+type DynamicHashRootWith interface {
+    HashTreeRootWithDyn(specs DynamicSpecs, hh HashWalker) error
 }
 ```
 
-**Key Features:**
-- **Progressive Hashing**: Only rehashes the minimal tree path when elements are added
-- **Performance**: Significantly faster for large lists that grow incrementally
-- **Compatibility**: Standard SSZ serialization format, progressive hashing only affects merkleization
-
-### Progressive Bitlists (EIP-7916)
-
-Progressive bitlists apply progressive merkleization to bitlist structures for efficient bit manipulation.
+### DynamicSpecs Interface
 
 ```go
-type MyStruct struct {
-    Flags []byte `ssz-type:"progressive-bitlist"`
+type DynamicSpecs interface {
+    ResolveSpecValue(name string) (bool, uint64, error)
 }
 ```
 
-**Key Features:**
-- **Bitlist Format**: Standard SSZ bitlist with delimiter bit
-- **Progressive Hashing**: Optimized merkleization for growing bitlists
-- **Use Cases**: Large validator participation bitfields, attestation aggregation
+Provides access to specification values during marshaling.
 
-### Progressive Containers (EIP-7495)
+## Type Wrapper API
 
-Progressive containers track active fields using `ssz-index` tags, enabling efficient partial updates.
+### TypeWrapper[D, T]
 
-```go
-type BeaconBlock struct {
-    Slot        uint64 `ssz-index:"0"`
-    ProposerIndex uint64 `ssz-index:"1"`
-    ParentRoot  [32]byte `ssz-index:"2"`
-    StateRoot   [32]byte `ssz-index:"3"`
-    // Additional fields can be added with higher indices
-}
-```
-
-**Key Features:**
-- **Active Fields**: Automatically tracks which fields are present using bitlist
-- **Field Indexing**: Uses `ssz-index` tags to define field positions, indexes must be in icreasing order
-- **Progressive Merkleization**: Efficient hashing with active field mixing
-- **Forward Compatibility**: New fields can be added without breaking existing code
-
-**Active Fields Generation:**
-- The highest `ssz-index` determines the bitlist size
-- Each field with an `ssz-index` sets the corresponding bit to 1
-- The bitlist includes a delimiter bit at the highest index position
-
-### Compatible Unions (EIP-7495)
-
-Compatible unions provide type-safe variant types with automatic selector management.
-
-```go
-// Define possible variants
-type ExecutionPayload struct {
-    ParentHash [32]byte
-    // ... other fields
-}
-
-type ExecutionPayloadWithBlobs struct {
-    ParentHash [32]byte
-    BlobKzgCommitments [][]byte
-    // ... other fields
-}
-
-// Union type
-type MyUnion = CompatibleUnion[struct{
-    ExecutionPayload
-    ExecutionPayloadWithBlobs
-}]
-
-// Usage
-union := MyUnion{
-    Variant: 1,
-    Data: ExecutionPayloadWithBlobs{
-        ParentHash: [32]byte{1, 2, 3},
-        BlobKzgCommitments: [][]byte{{4, 5, 6}},
-    },
-}
-```
-
-**Key Features:**
-- **Type Safety**: Generic type parameter ensures compile-time variant validation
-- **Automatic Selectors**: Selector values assigned based on variant position
-- **Progressive Container Support**: Selector indexing starts at 0 if first variant is ProgressiveContainer
-- **Hash Tree Root**: Only hashes the data, selector is not mixed into the root
-- **Serialization**: Includes 1-byte selector + serialized data
-
-## Error Handling
-
-All methods return errors that provide context about what went wrong:
-
-- **Type errors**: When unsupported types are encountered
-- **Size errors**: When calculated sizes don't match actual data
-- **Parsing errors**: When SSZ data cannot be parsed
-- **Specification errors**: When required specifications are missing
-
-## Performance Considerations
-
-1. **Instance Reuse**: Reuse DynSsz instances to benefit from type caching
-2. **Buffer Reuse**: Use `MarshalSSZTo` with pre-allocated buffers
-3. **Static Optimization**: The library automatically uses fastssz for static types
-4. **Specification Caching**: Specification values are cached for performance
-
-## TypeWrapper API
-
-### Type Definition
+Generic wrapper for applying SSZ annotations.
 
 ```go
 type TypeWrapper[D, T any] struct {
@@ -454,47 +298,270 @@ type TypeWrapper[D, T any] struct {
 }
 ```
 
-Generic wrapper for applying SSZ annotations to non-struct types. See the [comprehensive TypeWrapper guide](type-wrapper.md) for detailed documentation and examples.
+**Type Parameters**:
+- `D` - Descriptor struct type containing SSZ annotations as struct tags
+- `T` - Wrapped value type
 
-**Type Parameters:**
-- `D`: Descriptor struct with exactly one field containing SSZ annotations
-- `T`: The actual value type being wrapped
-
-### Constructor
-
-```go
-func NewTypeWrapper[D, T any](data T) (*TypeWrapper[D, T], error)
-```
-
-Creates a new TypeWrapper instance.
-
-### Methods
-
+**Methods**:
 ```go
 func (w *TypeWrapper[D, T]) Get() T
 func (w *TypeWrapper[D, T]) Set(value T)
-func (w *TypeWrapper[D, T]) GetDescriptorType() reflect.Type // Internal use
+func (w *TypeWrapper[D, T]) GetDescriptorType() reflect.Type
 ```
 
-### Usage Example
+See [Type Wrapper](type-wrapper.md) for detailed usage.
+
+## Compatible Union API
+
+### CompatibleUnion[T]
+
+Generic union type for variant values (EIP-7495).
 
 ```go
-type ByteArray32 = TypeWrapper[struct {
-    Data []byte `ssz-size:"32"`
-}, []byte]
-
-// Usage
-wrapper := ByteArray32{}
-wrapper.Set([]byte{1, 2, 3})
-data := wrapper.Get() // Type-safe access
-
-// All SSZ operations work transparently
-marshaled, _ := dynssz.MarshalSSZ(&wrapper)
-hash, _ := dynssz.HashTreeRoot(&wrapper)
+type CompatibleUnion[T any] struct {
+    Variant uint8
+    Data    interface{}
+}
 ```
 
-## Thread Safety
+**Type Parameters**:
+- `T` - Descriptor struct type defining union variants as fields
 
-- DynSsz instances are thread-safe for all operations
-- Type cache uses read-write mutexes for concurrent access
-- Multiple goroutines can safely use the same DynSsz instance
+**Constructor**:
+```go
+func NewCompatibleUnion[T any](variantIndex uint8, data interface{}) (*CompatibleUnion[T], error)
+```
+
+**Methods**:
+```go
+func (u *CompatibleUnion[T]) GetDescriptorType() reflect.Type
+```
+
+**Usage**:
+```go
+// Define union descriptor
+type PayloadUnion = CompatibleUnion[struct {
+    ExecutionPayload
+    ExecutionPayloadWithBlobs
+}]
+
+// Create union with variant 0
+payload := PayloadUnion{
+    Variant: 0,
+    Data: ExecutionPayload{...},
+}
+```
+
+## Error Types
+
+Common errors returned by Dynamic SSZ:
+
+```go
+// From sszutils package
+var (
+    ErrListTooBig          = fmt.Errorf("list length is higher than max value")
+    ErrUnexpectedEOF       = fmt.Errorf("unexpected end of SSZ")
+    ErrOffset              = fmt.Errorf("incorrect offset")
+    ErrInvalidUnionVariant = fmt.Errorf("invalid union variant")
+    ErrVectorLength        = fmt.Errorf("incorrect vector length")
+    ErrNotImplemented      = fmt.Errorf("not implemented")
+)
+```
+
+## Code Generator API
+
+### CodeGenerator
+
+Programmatic code generation.
+
+```go
+type CodeGenerator struct {
+    // Internal fields
+}
+```
+
+#### NewCodeGenerator
+
+```go
+func NewCodeGenerator(dynSsz *dynssz.DynSsz) *CodeGenerator
+```
+
+#### BuildFile
+
+```go
+func (cg *CodeGenerator) BuildFile(fileName string, opts ...CodeGeneratorOption)
+```
+
+#### Generate
+
+```go
+func (cg *CodeGenerator) Generate() error
+func (cg *CodeGenerator) GenerateToMap() (map[string]string, error)
+```
+
+### CodeGeneratorOption
+
+```go
+type CodeGeneratorOption func(*CodeGeneratorOptions)
+```
+
+Available options:
+
+```go
+func WithNoMarshalSSZ() CodeGeneratorOption
+func WithNoUnmarshalSSZ() CodeGeneratorOption
+func WithNoSizeSSZ() CodeGeneratorOption
+func WithNoHashTreeRoot() CodeGeneratorOption
+func WithCreateLegacyFn() CodeGeneratorOption
+func WithoutDynamicExpressions() CodeGeneratorOption
+func WithSizeHints(hints []dynssz.SszSizeHint) CodeGeneratorOption
+func WithMaxSizeHints(hints []dynssz.SszMaxSizeHint) CodeGeneratorOption
+func WithTypeHints(hints []dynssz.SszTypeHint) CodeGeneratorOption
+func WithReflectType(t reflect.Type, typeOpts ...CodeGeneratorOption) CodeGeneratorOption
+func WithGoTypesType(t types.Type, typeOpts ...CodeGeneratorOption) CodeGeneratorOption
+```
+
+See [Code Generator](code-generator.md) for detailed usage.
+
+## Performance Utilities
+
+### Buffer Pooling
+
+Dynamic SSZ uses internal buffer pooling for performance:
+
+```go
+// Reuse buffers for marshaling
+buf := make([]byte, 0, 1024)
+data, err := ssz.MarshalSSZTo(obj, buf)
+
+// Buffers are pooled internally for hashing
+```
+
+### Type Caching
+
+Type descriptors are cached automatically:
+
+```go
+// First call analyzes type
+ssz.MarshalSSZ(obj1)
+
+// Subsequent calls use cache
+ssz.MarshalSSZ(obj2)  // Faster
+```
+
+## Examples
+
+### Basic Usage
+
+```go
+package main
+
+import (
+    dynssz "github.com/pk910/dynamic-ssz"
+)
+
+type Block struct {
+    Slot      uint64
+    StateRoot [32]byte
+    Body      BlockBody
+}
+
+type BlockBody struct {
+    Transactions []Transaction `ssz-max:"1048576"`
+}
+
+func main() {
+    // Create instance
+    ssz := dynssz.NewDynSsz(nil)
+    
+    // Create block
+    block := &Block{
+        Slot: 12345,
+        // ... fill fields
+    }
+    
+    // Serialize
+    data, err := ssz.MarshalSSZ(block)
+    if err != nil {
+        panic(err)
+    }
+    
+    // Compute root
+    root, err := ssz.HashTreeRoot(block)
+    if err != nil {
+        panic(err)
+    }
+    
+    // Deserialize
+    var decoded Block
+    err = ssz.UnmarshalSSZ(&decoded, data)
+    if err != nil {
+        panic(err)
+    }
+}
+```
+
+### With Spec Values
+
+```go
+// Define specs
+specs := map[string]interface{}{
+    "MAX_PROPOSER_SLASHINGS":     16,
+    "MAX_ATTESTER_SLASHINGS":     2,
+    "MAX_ATTESTATIONS":           128,
+    "MAX_DEPOSITS":               16,
+    "MAX_VOLUNTARY_EXITS":        16,
+}
+
+// Create instance
+ssz := dynssz.NewDynSsz(specs)
+
+// Use in types
+type BeaconBlockBody struct {
+    ProposerSlashings []ProposerSlashing `dynssz-max:"MAX_PROPOSER_SLASHINGS"`
+    AttesterSlashings []AttesterSlashing `dynssz-max:"MAX_ATTESTER_SLASHINGS"`
+    Attestations      []Attestation      `dynssz-max:"MAX_ATTESTATIONS"`
+    Deposits          []Deposit          `dynssz-max:"MAX_DEPOSITS"`
+    VoluntaryExits    []VoluntaryExit    `dynssz-max:"MAX_VOLUNTARY_EXITS"`
+}
+```
+
+### Custom Marshaling
+
+```go
+type CustomType struct {
+    data []byte
+}
+
+// Implement standard interface
+func (c *CustomType) MarshalSSZ() ([]byte, error) {
+    return c.data, nil
+}
+
+func (c *CustomType) UnmarshalSSZ(buf []byte) error {
+    c.data = make([]byte, len(buf))
+    copy(c.data, buf)
+    return nil
+}
+
+// Implement dynamic interface
+func (c *CustomType) MarshalSSZDyn(specs DynamicSpecs, buf []byte) ([]byte, error) {
+    size := specs.GetValue("CUSTOM_SIZE")
+    if len(c.data) != int(size) {
+        return nil, fmt.Errorf("invalid size")
+    }
+    if cap(buf) >= len(c.data) {
+        buf = buf[:len(c.data)]
+        copy(buf, c.data)
+        return buf, nil
+    }
+    return append(buf, c.data...), nil
+}
+```
+
+## Related Documentation
+
+- [Getting Started](getting-started.md) - Introduction and basics
+- [Supported Types](supported-types.md) - Type system reference
+- [SSZ Annotations](ssz-annotations.md) - Tag documentation
+- [Code Generator](code-generator.md) - Code generation tools

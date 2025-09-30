@@ -157,8 +157,9 @@ The library includes comprehensive testing infrastructure:
 
 - [Getting Started Guide](docs/getting-started.md)
 - [API Reference](docs/api-reference.md)
-- [Code Generation Guide](docs/codegen.md)
-- [Struct Tags & Annotations](docs/struct-tags.md)
+- [Supported Types](docs/supported-types.md)
+- [Code Generation Guide](docs/code-generator.md)
+- [Struct Tags & Annotations](docs/ssz-annotations.md)
 - [Performance Guide](docs/performance.md)
 - [Examples](examples/)
 
