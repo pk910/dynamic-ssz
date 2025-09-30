@@ -13,6 +13,22 @@ import (
 	dynssz "github.com/pk910/dynamic-ssz"
 )
 
+// unmarshalContext contains the state and utilities for generating unmarshal methods.
+//
+// This context structure maintains the necessary state during the unmarshal code generation
+// process, including code building utilities, variable management, and options that control
+// the generation behavior. It manages both main unmarshaling logic and helper size
+// calculation code.
+//
+// Fields:
+//   - appendCode: Function to append main unmarshaling code with proper indentation
+//   - appendSizeCode: Function to append size calculation helper code
+//   - typePrinter: Type name formatter and import tracker
+//   - options: Code generation options controlling output behavior
+//   - usedDynSsz: Flag tracking whether generated code uses dynamic SSZ functionality
+//   - valVarCounter: Counter for generating unique value variable names
+//   - sizeVarCounter: Counter for generating unique size variable names
+//   - sizeVarMap: Map tracking size variables for type descriptors to avoid duplication
 type unmarshalContext struct {
 	appendCode     func(indent int, code string, args ...any)
 	appendSizeCode func(indent int, code string, args ...any)
@@ -24,6 +40,25 @@ type unmarshalContext struct {
 	sizeVarMap     map[*dynssz.TypeDescriptor]string
 }
 
+// generateUnmarshal generates unmarshal methods for a specific type.
+//
+// This function creates the complete set of unmarshal methods for a type, including:
+//   - UnmarshalSSZDyn for dynamic specification support with runtime parsing
+//   - UnmarshalSSZ for static/legacy compatibility with compile-time known layouts
+//
+// The generated methods handle SSZ decoding according to the type's descriptor,
+// supporting variable-length fields, dynamic expressions, nested types, and
+// proper error handling for malformed or oversized data.
+//
+// Parameters:
+//   - rootTypeDesc: Type descriptor containing complete SSZ decoding metadata
+//   - codeBuilder: String builder to append generated method code to
+//   - typePrinter: Type formatter for handling imports and type names
+//   - options: Generation options controlling which methods to create
+//
+// Returns:
+//   - bool: True if generated code uses dynamic SSZ functionality
+//   - error: An error if code generation fails
 func generateUnmarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) (bool, error) {
 	codeBuf := strings.Builder{}
 	sizeCodeBuf := strings.Builder{}
@@ -89,11 +124,13 @@ func generateUnmarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings
 	return ctx.usedDynSsz, nil
 }
 
+// getValVar generates a unique variable name for temporary values.
 func (ctx *unmarshalContext) getValVar() string {
 	ctx.valVarCounter++
 	return fmt.Sprintf("val%d", ctx.valVarCounter)
 }
 
+// isInlinable determines if a type can be unmarshaled inline without temporary variables.
 func (ctx *unmarshalContext) isInlinable(desc *dynssz.TypeDescriptor) bool {
 	// Inline primitive types
 	if desc.SszType == dynssz.SszBoolType || desc.SszType == dynssz.SszUint8Type || desc.SszType == dynssz.SszUint16Type || desc.SszType == dynssz.SszUint32Type || desc.SszType == dynssz.SszUint64Type {
@@ -124,6 +161,7 @@ func (ctx *unmarshalContext) isInlinable(desc *dynssz.TypeDescriptor) bool {
 	return false
 }
 
+// getStaticSizeVar generates a variable name for cached static size calculations.
 func (ctx *unmarshalContext) getStaticSizeVar(desc *dynssz.TypeDescriptor) (string, error) {
 	if sizeVar, ok := ctx.sizeVarMap[desc]; ok {
 		return sizeVar, nil
@@ -205,6 +243,7 @@ func (ctx *unmarshalContext) getStaticSizeVar(desc *dynssz.TypeDescriptor) (stri
 	return sizeVar, nil
 }
 
+// unmarshalType generates unmarshal code for any SSZ type, delegating to specific unmarshalers.
 func (ctx *unmarshalContext) unmarshalType(desc *dynssz.TypeDescriptor, varName string, indent int, isRoot bool, noBufCheck bool) error {
 	// Handle types that have generated methods we can call
 	hasDynamicSize := desc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
@@ -307,6 +346,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *dynssz.TypeDescriptor, varName 
 	return nil
 }
 
+// unmarshalContainer generates unmarshal code for SSZ container (struct) types.
 func (ctx *unmarshalContext) unmarshalContainer(desc *dynssz.TypeDescriptor, varName string, indent int) error {
 	staticSize := 0
 	staticSizeVars := []string{}
@@ -424,6 +464,7 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *dynssz.TypeDescriptor, var
 	return nil
 }
 
+// unmarshalVector generates unmarshal code for SSZ vector (fixed-size array) types.
 func (ctx *unmarshalContext) unmarshalVector(desc *dynssz.TypeDescriptor, varName string, indent int, noBufCheck bool) error {
 	sizeExpression := desc.SizeExpression
 	if ctx.options.WithoutDynamicExpressions {
@@ -534,6 +575,7 @@ func (ctx *unmarshalContext) unmarshalVector(desc *dynssz.TypeDescriptor, varNam
 	return nil
 }
 
+// unmarshalList generates unmarshal code for SSZ list (variable-size array) types.
 func (ctx *unmarshalContext) unmarshalList(desc *dynssz.TypeDescriptor, varName string, indent int) error {
 	if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic == 0 {
 		// static byte arrays
@@ -645,6 +687,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *dynssz.TypeDescriptor, varName 
 	return nil
 }
 
+// unmarshalUnion generates unmarshal code for SSZ union types.
 func (ctx *unmarshalContext) unmarshalUnion(desc *dynssz.TypeDescriptor, varName string, indent int) error {
 	// Read selector
 	ctx.appendCode(indent, "if len(buf) < 1 {\n\treturn sszutils.ErrUnexpectedEOF\n}\n")

@@ -13,6 +13,18 @@ import (
 	dynssz "github.com/pk910/dynamic-ssz"
 )
 
+// hashTreeRootContext contains the state and utilities for generating hash tree root methods.
+//
+// This context structure maintains the necessary state during the hash tree root code
+// generation process, including code building utilities, variable management, and
+// options that control the generation behavior.
+//
+// Fields:
+//   - appendCode: Function to append formatted code with proper indentation
+//   - typePrinter: Type name formatter and import tracker
+//   - options: Code generation options controlling output behavior
+//   - usedDynSsz: Flag tracking whether generated code uses dynamic SSZ functionality
+//   - valVarCounter: Counter for generating unique variable names during code generation
 type hashTreeRootContext struct {
 	appendCode    func(indent int, code string, args ...any)
 	typePrinter   *TypePrinter
@@ -21,6 +33,27 @@ type hashTreeRootContext struct {
 	valVarCounter int
 }
 
+// generateHashTreeRoot generates hash tree root methods for a specific type.
+//
+// This function creates the complete set of hash tree root methods for a type, including:
+//   - HashTreeRootWithDyn for dynamic specification support
+//   - HashTreeRootWith for static/legacy compatibility
+//   - HashTreeRoot for legacy fastssz compatibility (if requested)
+//
+// The generated methods compute SSZ hash tree roots according to the SSZ specification,
+// handling nested structures, variable-length fields, and proper Merkle tree
+// construction. Hash tree roots are essential for cryptographic commitments
+// and Merkle proof generation.
+//
+// Parameters:
+//   - rootTypeDesc: Type descriptor containing complete SSZ hashing metadata
+//   - codeBuilder: String builder to append generated method code to
+//   - typePrinter: Type formatter for handling imports and type names
+//   - options: Generation options controlling which methods to create
+//
+// Returns:
+//   - bool: True if generated code uses dynamic SSZ functionality
+//   - error: An error if code generation fails
 func generateHashTreeRoot(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) (bool, error) {
 	codeBuf := strings.Builder{}
 	ctx := &hashTreeRootContext{
@@ -102,15 +135,18 @@ func generateHashTreeRoot(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *stri
 	return ctx.usedDynSsz, nil
 }
 
+// isPrimitive checks if a type is a primitive SSZ type that can be hashed directly.
 func (ctx *hashTreeRootContext) isPrimitive(desc *dynssz.TypeDescriptor) bool {
 	return desc.SszType == dynssz.SszBoolType || desc.SszType == dynssz.SszUint8Type || desc.SszType == dynssz.SszUint16Type || desc.SszType == dynssz.SszUint32Type || desc.SszType == dynssz.SszUint64Type || desc.SszType == dynssz.SszUint128Type
 }
 
+// getValVar generates a unique variable name for temporary values.
 func (ctx *hashTreeRootContext) getValVar() string {
 	ctx.valVarCounter++
 	return fmt.Sprintf("val%d", ctx.valVarCounter)
 }
 
+// hashType generates hash tree root code for any SSZ type, delegating to specific hashers.
 func (ctx *hashTreeRootContext) hashType(desc *dynssz.TypeDescriptor, varName string, indent int, isRoot bool, pack bool) error {
 	// Handle types that have generated methods we can call
 	if desc.SszCompatFlags&dynssz.SszCompatFlagDynamicHashRoot != 0 && !isRoot {
@@ -207,6 +243,7 @@ func (ctx *hashTreeRootContext) hashType(desc *dynssz.TypeDescriptor, varName st
 	return nil
 }
 
+// hashContainer generates hash tree root code for SSZ container (struct) types.
 func (ctx *hashTreeRootContext) hashContainer(desc *dynssz.TypeDescriptor, varName string, indent int) error {
 	// Start container merkleization
 	ctx.appendCode(indent, "idx := hh.Index()\n")
@@ -227,6 +264,7 @@ func (ctx *hashTreeRootContext) hashContainer(desc *dynssz.TypeDescriptor, varNa
 	return nil
 }
 
+// hashProgressiveContainer generates hash tree root code for progressive container types.
 func (ctx *hashTreeRootContext) hashProgressiveContainer(desc *dynssz.TypeDescriptor, varName string, indent int) error {
 	// Start container merkleization
 	ctx.appendCode(indent, "idx := hh.Index()\n")
@@ -261,6 +299,7 @@ func (ctx *hashTreeRootContext) hashProgressiveContainer(desc *dynssz.TypeDescri
 	return nil
 }
 
+// getActiveFieldsHex generates hex string representation of active fields for progressive containers.
 func (ctx *hashTreeRootContext) getActiveFieldsHex(sourceType *dynssz.TypeDescriptor) string {
 	// Find the highest ssz-index to determine bitlist size
 	maxIndex := uint16(0)
@@ -299,6 +338,7 @@ func (ctx *hashTreeRootContext) getActiveFieldsHex(sourceType *dynssz.TypeDescri
 	return hex
 }
 
+// hashVector generates hash tree root code for SSZ vector (fixed-size array) types.
 func (ctx *hashTreeRootContext) hashVector(desc *dynssz.TypeDescriptor, varName string, indent int, pack bool) error {
 	sizeExpression := desc.SizeExpression
 	if ctx.options.WithoutDynamicExpressions {
@@ -361,6 +401,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *dynssz.TypeDescriptor, varName 
 	return nil
 }
 
+// hashList generates hash tree root code for SSZ list (variable-size array) types.
 func (ctx *hashTreeRootContext) hashList(desc *dynssz.TypeDescriptor, varName string, indent int) error {
 	maxExpression := desc.MaxExpression
 	if ctx.options.WithoutDynamicExpressions {
@@ -429,6 +470,7 @@ func (ctx *hashTreeRootContext) hashList(desc *dynssz.TypeDescriptor, varName st
 	return nil
 }
 
+// hashBitlist generates hash tree root code for SSZ bitlist types.
 func (ctx *hashTreeRootContext) hashBitlist(desc *dynssz.TypeDescriptor, varName string, indent int) error {
 	maxExpression := desc.MaxExpression
 	if ctx.options.WithoutDynamicExpressions {
@@ -479,6 +521,7 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *dynssz.TypeDescriptor, varName
 	return nil
 }
 
+// hashUnion generates hash tree root code for SSZ union types.
 func (ctx *hashTreeRootContext) hashUnion(desc *dynssz.TypeDescriptor, varName string, indent int) error {
 	ctx.appendCode(indent, "idx := hh.Index()\n")
 	ctx.appendCode(indent, "switch %s.Variant {\n", varName)

@@ -13,6 +13,17 @@ import (
 	dynssz "github.com/pk910/dynamic-ssz"
 )
 
+// sizeContext contains the state and utilities for generating size calculation methods.
+//
+// This context structure maintains the necessary state during the size method code generation
+// process, including code building utilities, type formatting, and options that control
+// the generation behavior.
+//
+// Fields:
+//   - appendCode: Function to append formatted code with proper indentation
+//   - typePrinter: Type name formatter and import tracker
+//   - options: Code generation options controlling output behavior
+//   - usedDynSsz: Flag tracking whether generated code uses dynamic SSZ functionality
 type sizeContext struct {
 	appendCode  func(indent int, code string, args ...any)
 	typePrinter *TypePrinter
@@ -20,6 +31,25 @@ type sizeContext struct {
 	usedDynSsz  bool
 }
 
+// generateSize generates size calculation methods for a specific type.
+//
+// This function creates the complete set of size calculation methods for a type, including:
+//   - SizeSSZDyn for dynamic specification support with runtime size calculation
+//   - SizeSSZ for static/legacy compatibility with compile-time known sizes
+//
+// The generated methods calculate the exact SSZ encoding size for a type instance,
+// handling variable-length fields, dynamic expressions, and nested types. Size
+// calculation is essential for efficient buffer allocation during marshaling.
+//
+// Parameters:
+//   - rootTypeDesc: Type descriptor containing complete SSZ size calculation metadata
+//   - codeBuilder: String builder to append generated method code to
+//   - typePrinter: Type formatter for handling imports and type names
+//   - options: Generation options controlling which methods to create
+//
+// Returns:
+//   - bool: True if generated code uses dynamic SSZ functionality
+//   - error: An error if code generation fails
 func generateSize(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) (bool, error) {
 	codeBuf := strings.Builder{}
 	ctx := &sizeContext{
@@ -79,6 +109,7 @@ func generateSize(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Buil
 	return ctx.usedDynSsz, nil
 }
 
+// sizeType generates size calculation code for any SSZ type, delegating to specific sizers.
 func (ctx *sizeContext) sizeType(desc *dynssz.TypeDescriptor, varName string, indent int, isRoot bool) error {
 	// Handle types that have generated methods we can call
 	if desc.SszCompatFlags&dynssz.SszCompatFlagDynamicSizer != 0 && !isRoot {
@@ -142,6 +173,7 @@ func (ctx *sizeContext) sizeType(desc *dynssz.TypeDescriptor, varName string, in
 	return nil
 }
 
+// sizeContainer generates size calculation code for SSZ container (struct) types.
 func (ctx *sizeContext) sizeContainer(desc *dynssz.TypeDescriptor, varName string, indent int) error {
 	// Fixed part size
 	staticSize := 0
@@ -184,6 +216,7 @@ func (ctx *sizeContext) sizeContainer(desc *dynssz.TypeDescriptor, varName strin
 	return nil
 }
 
+// sizeVector generates size calculation code for SSZ vector (fixed-size array) types.
 func (ctx *sizeContext) sizeVector(desc *dynssz.TypeDescriptor, varName string, indent int) error {
 	sizeExpression := desc.SizeExpression
 	if ctx.options.WithoutDynamicExpressions {
@@ -246,6 +279,7 @@ func (ctx *sizeContext) sizeVector(desc *dynssz.TypeDescriptor, varName string, 
 	return nil
 }
 
+// sizeList generates size calculation code for SSZ list (variable-size array) types.
 func (ctx *sizeContext) sizeList(desc *dynssz.TypeDescriptor, varName string, indent int) error {
 	// For byte slices, size is just the length
 	if desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
@@ -284,6 +318,7 @@ func (ctx *sizeContext) sizeList(desc *dynssz.TypeDescriptor, varName string, in
 	return nil
 }
 
+// sizeUnion generates size calculation code for SSZ union types.
 func (ctx *sizeContext) sizeUnion(desc *dynssz.TypeDescriptor, varName string, indent int) error {
 	ctx.appendCode(indent, "size += 1 // Union selector\n")
 	ctx.appendCode(indent, "switch %s.Variant {\n", varName)

@@ -14,6 +14,24 @@ import (
 	dynssz "github.com/pk910/dynamic-ssz"
 )
 
+// TypePrinter manages type name formatting and import tracking for code generation.
+//
+// The TypePrinter provides intelligent type name formatting that handles package
+// qualification, import management, and alias generation. It ensures that generated
+// code has clean, readable type names while avoiding import conflicts.
+//
+// Key capabilities:
+//   - Automatic package qualification for types from other packages
+//   - Import path tracking and alias generation
+//   - Conflict resolution for import aliases
+//   - Support for both reflection and go/types type representations
+//   - Generic type name formatting with proper package path handling
+//
+// Fields:
+//   - CurrentPkg: The package path of the code being generated (types from this package are unqualified)
+//   - imports: Map of import paths to their assigned aliases
+//   - aliases: Map of import paths to their preferred aliases
+//   - UseRune: Whether to prefer "rune" over "int32" in type names
 type TypePrinter struct {
 	CurrentPkg string
 	imports    map[string]string
@@ -22,6 +40,22 @@ type TypePrinter struct {
 	UseRune bool
 }
 
+// NewTypePrinter creates a new type printer for the specified package.
+//
+// The type printer is configured to generate type names relative to the specified
+// current package. Types from the current package will be unqualified, while types
+// from other packages will be properly qualified with import aliases.
+//
+// Parameters:
+//   - currentPkg: The Go package path of the code being generated
+//
+// Returns:
+//   - *TypePrinter: A new type printer ready for type formatting and import tracking
+//
+// Example:
+//
+//	printer := NewTypePrinter("github.com/example/mypackage")
+//	typeName := printer.TypeString(myTypeDescriptor) // Will qualify external types
 func NewTypePrinter(currentPkg string) *TypePrinter {
 	return &TypePrinter{
 		CurrentPkg: currentPkg,
@@ -30,8 +64,33 @@ func NewTypePrinter(currentPkg string) *TypePrinter {
 	}
 }
 
+// Imports returns the map of import paths to their assigned aliases.
+//
+// This method provides access to all import paths that have been registered
+// during type formatting operations. The returned map can be used to generate
+// the import section of a Go source file.
+//
+// Returns:
+//   - map[string]string: Map of import paths to their assigned aliases
 func (p *TypePrinter) Imports() map[string]string { return p.imports }
 
+// AddImport registers an import path with a preferred alias and returns the assigned alias.
+//
+// This method adds an import path to the printer's import tracking system. If the path
+// is already registered, it returns the existing alias. If the preferred alias conflicts
+// with an existing import, it generates a unique alternative by appending numbers.
+//
+// Parameters:
+//   - path: The import path to register (e.g., "github.com/pkg/errors")
+//   - alias: The preferred alias for the import (e.g., "errors")
+//
+// Returns:
+//   - string: The actual alias assigned to the import (may differ from preferred if conflicts occur)
+//
+// Example:
+//
+//	alias := printer.AddImport("github.com/pkg/errors", "errors")
+//	// alias == "errors" if no conflict, or "errors1", "errors2", etc. if conflicts exist
 func (p *TypePrinter) AddImport(path, alias string) string {
 	if p.imports[path] == "" {
 		// ensure alias uniqueness
@@ -49,8 +108,31 @@ func (p *TypePrinter) AddImport(path, alias string) string {
 	return alias
 }
 
+// Aliases returns the map of import paths to their preferred aliases.
+//
+// This method provides access to the preferred alias mappings that were set
+// via AddAlias(). These aliases take precedence over automatically generated
+// aliases when formatting import statements.
+//
+// Returns:
+//   - map[string]string: Map of import paths to their preferred aliases
 func (p *TypePrinter) Aliases() map[string]string { return p.aliases }
 
+// AddAlias sets a preferred alias for an import path.
+//
+// This method establishes a preferred alias for a specific import path.
+// When generating import statements, these preferred aliases will be used
+// instead of automatically generated ones, providing consistent and
+// predictable import formatting.
+//
+// Parameters:
+//   - path: The import path to set an alias for
+//   - alias: The preferred alias to use for this import path
+//
+// Example:
+//
+//	printer.AddAlias("github.com/pk910/dynamic-ssz", "dynssz")
+//	// All references to dynamic-ssz types will use "dynssz" as the package qualifier
 func (p *TypePrinter) AddAlias(path, alias string) {
 	p.aliases[path] = alias
 }
@@ -155,7 +237,28 @@ func normalizeAlias(alias string) string {
 	return alias
 }
 
-// TypeString returns the string representation of the type and tracks uses of imports.
+// TypeString returns the qualified string representation of a type descriptor and tracks import usage.
+//
+// This method generates the appropriate Go type string for a TypeDescriptor, handling
+// package qualification and import tracking automatically. It works with both types
+// analyzed via go/types (compile-time) and reflection (runtime).
+//
+// The method automatically:
+//   - Qualifies types from other packages with appropriate import aliases
+//   - Tracks import usage for later import statement generation
+//   - Handles generic types with complex package path references
+//   - Prefers compile-time type information when available
+//
+// Parameters:
+//   - t: The TypeDescriptor containing type information for formatting
+//
+// Returns:
+//   - string: The qualified Go type string suitable for code generation
+//
+// Example:
+//
+//	typeName := printer.TypeString(descriptor)
+//	// Result: "phase0.BeaconBlock" or "*MyStruct" depending on the type
 func (p *TypePrinter) TypeString(t *dynssz.TypeDescriptor) string {
 	if t.CodegenInfo != nil {
 		if codegenInfo, ok := (*t.CodegenInfo).(*CodegenInfo); ok && codegenInfo.Type != nil {
@@ -165,7 +268,26 @@ func (p *TypePrinter) TypeString(t *dynssz.TypeDescriptor) string {
 	return p.reflectTypeString(t.Type, true)
 }
 
-// InnerTypeString returns the string representation of the inner type of the type and tracks uses of imports.
+// InnerTypeString returns the qualified string representation of the inner (dereferenced) type.
+//
+// This method is similar to TypeString but automatically dereferences pointer types
+// to get the underlying type. It's particularly useful when generating code that
+// needs to work with the actual value type rather than pointer types.
+//
+// For pointer types, this returns the element type. For non-pointer types,
+// this behaves identically to TypeString.
+//
+// Parameters:
+//   - t: The TypeDescriptor containing type information for formatting
+//
+// Returns:
+//   - string: The qualified Go type string of the inner/dereferenced type
+//
+// Example:
+//
+//	// For *MyStruct
+//	innerType := printer.InnerTypeString(descriptor)
+//	// Result: "MyStruct" (without the pointer)
 func (p *TypePrinter) InnerTypeString(t *dynssz.TypeDescriptor) string {
 	if t.CodegenInfo != nil {
 		if codegenInfo, ok := (*t.CodegenInfo).(*CodegenInfo); ok && codegenInfo.Type != nil {
@@ -179,7 +301,21 @@ func (p *TypePrinter) InnerTypeString(t *dynssz.TypeDescriptor) string {
 	return p.reflectTypeString(t.Type.Elem(), true)
 }
 
-// TypeStringWithoutTracking returns the string representation of the type without tracking imports.
+// TypeStringWithoutTracking returns the type string representation without tracking import usage.
+//
+// This method generates type strings without adding imports to the tracking system.
+// It's useful for scenarios where you need type names for analysis or comparison
+// but don't want to affect the import management (e.g., during validation or
+// debugging).
+//
+// The generated string will still be properly qualified but won't register
+// any imports for later code generation.
+//
+// Parameters:
+//   - t: The TypeDescriptor containing type information for formatting
+//
+// Returns:
+//   - string: The qualified Go type string without import tracking side effects
 func (p *TypePrinter) TypeStringWithoutTracking(t *dynssz.TypeDescriptor) string {
 	if t.CodegenInfo != nil {
 		if codegenInfo, ok := (*t.CodegenInfo).(*CodegenInfo); ok && codegenInfo.Type != nil {
