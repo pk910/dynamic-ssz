@@ -1,3 +1,7 @@
+// Copyright (c) 2025 pk910
+// SPDX-License-Identifier: Apache-2.0
+// This file is part of the dynamic-ssz library.
+
 package codegen
 
 import (
@@ -14,20 +18,101 @@ var (
 	byteType = types.Typ[types.Uint8]
 )
 
+// CodegenInfo contains type information specific to code generation from go/types analysis.
+//
+// This structure bridges the gap between compile-time type analysis (using go/types)
+// and runtime code generation. It stores type information that was obtained through
+// static analysis rather than runtime reflection, enabling more sophisticated
+// code generation scenarios.
+//
+// Fields:
+//   - Type: The types.Type from go/types package representing the analyzed type
+//
+// This information is embedded in TypeDescriptor.CodegenInfo to provide access
+// to compile-time type information during code generation.
 type CodegenInfo struct {
 	Type types.Type
 }
 
+// Parser provides compile-time type analysis for SSZ code generation.
+//
+// The Parser analyzes Go types using the go/types package to create TypeDescriptors
+// suitable for code generation. Unlike runtime reflection, this approach can analyze
+// types that may not be available at runtime and provides richer type information
+// for complex code generation scenarios.
+//
+// Key capabilities:
+//   - Compile-time type analysis using go/types
+//   - SSZ type inference and validation
+//   - Struct tag parsing for SSZ annotations
+//   - Interface compatibility checking
+//   - Type descriptor caching for performance
+//
+// The parser handles all SSZ-compatible types including basic types, containers,
+// vectors, lists, and custom types like unions and type wrappers.
+//
+// Fields:
+//   - cache: Type descriptor cache to avoid recomputing analysis for the same types
 type Parser struct {
 	cache map[string]*dynssz.TypeDescriptor
 }
 
+// NewParser creates a new compile-time type parser for code generation.
+//
+// The parser is initialized with an empty cache and is ready to analyze types
+// using the go/types package. The parser can be reused across multiple type
+// analysis operations to benefit from caching.
+//
+// Returns:
+//   - *Parser: A new parser instance ready for type analysis
+//
+// Example:
+//
+//	parser := NewParser()
+//	desc, err := parser.GetTypeDescriptor(myGoType, nil, nil, nil)
+//	if err != nil {
+//	    log.Fatal("Type analysis failed:", err)
+//	}
 func NewParser() *Parser {
 	return &Parser{
 		cache: make(map[string]*dynssz.TypeDescriptor),
 	}
 }
 
+// GetTypeDescriptor analyzes a Go type and creates an SSZ type descriptor for code generation.
+//
+// This method is the main entry point for type analysis. It examines the provided
+// go/types.Type and creates a comprehensive TypeDescriptor containing all information
+// needed for SSZ code generation, including size calculations, encoding strategies,
+// and interface compatibility.
+//
+// The analysis process includes:
+//   - Type structure examination and validation
+//   - SSZ type inference and mapping
+//   - Size and constraint analysis from hints
+//   - Interface compatibility checking
+//   - Nested type analysis for containers and collections
+//
+// Parameters:
+//   - typ: The go/types.Type to analyze
+//   - typeHints: Optional hints for explicit SSZ type mapping
+//   - sizeHints: Optional size constraints and expressions
+//   - maxSizeHints: Optional maximum size limits for variable-length types
+//
+// Returns:
+//   - *dynssz.TypeDescriptor: Complete type descriptor for code generation
+//   - error: An error if the type is incompatible with SSZ or analysis fails
+//
+// Example:
+//
+//	parser := NewParser()
+//	typeHints := []dynssz.SszTypeHint{{Type: dynssz.SszListType}}
+//	sizeHints := []dynssz.SszSizeHint{{Size: 1024}}
+//	
+//	desc, err := parser.GetTypeDescriptor(structType, typeHints, sizeHints, nil)
+//	if err != nil {
+//	    return fmt.Errorf("failed to analyze type: %w", err)
+//	}
 func (p *Parser) GetTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeHint, sizeHints []dynssz.SszSizeHint, maxSizeHints []dynssz.SszMaxSizeHint) (*dynssz.TypeDescriptor, error) {
 	desc, err := p.buildTypeDescriptor(typ, typeHints, sizeHints, maxSizeHints)
 	if err != nil {

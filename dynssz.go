@@ -1,9 +1,8 @@
-// Package dynssz provides dynamic SSZ (Simple Serialize) encoding and decoding for Ethereum data structures.
-// Unlike static code generation approaches, dynssz uses runtime reflection to handle dynamic field sizes,
-// making it suitable for various Ethereum presets beyond the mainnet. It seamlessly integrates with fastssz for
-// optimal performance when static definitions are applicable.
-//
-// Copyright (c) 2024 by pk910. See LICENSE file for details.
+// Copyright (c) 2025 pk910
+// SPDX-License-Identifier: Apache-2.0
+// This file is part of the dynamic-ssz library.
+
+// Package dynssz provides dynamic SSZ encoding and decoding with runtime reflection support.
 package dynssz
 
 import (

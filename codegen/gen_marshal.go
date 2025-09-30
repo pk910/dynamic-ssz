@@ -1,3 +1,7 @@
+// Copyright (c) 2025 pk910
+// SPDX-License-Identifier: Apache-2.0
+// This file is part of the dynamic-ssz library.
+
 package codegen
 
 import (
@@ -9,6 +13,17 @@ import (
 	dynssz "github.com/pk910/dynamic-ssz"
 )
 
+// marshalContext contains the state and utilities for generating marshal methods.
+//
+// This context structure maintains the necessary state during the marshal code generation
+// process, including code building utilities, type formatting, and options that control
+// the generation behavior.
+//
+// Fields:
+//   - appendCode: Function to append formatted code with proper indentation
+//   - typePrinter: Type name formatter and import tracker
+//   - options: Code generation options controlling output behavior
+//   - usedDynSsz: Flag tracking whether generated code uses dynamic SSZ functionality
 type marshalContext struct {
 	appendCode  func(indent int, code string, args ...any)
 	typePrinter *TypePrinter
@@ -16,6 +31,26 @@ type marshalContext struct {
 	usedDynSsz  bool
 }
 
+// generateMarshal generates marshal methods for a specific type.
+//
+// This function creates the complete set of marshal methods for a type, including:
+//   - MarshalSSZDyn for dynamic specification support
+//   - MarshalSSZTo for static/legacy compatibility
+//   - MarshalSSZ for legacy fastssz compatibility (if requested)
+//
+// The generated methods handle SSZ encoding according to the type's descriptor,
+// supporting both static and dynamic sizing, nested types, and performance
+// optimizations through fastssz delegation where appropriate.
+//
+// Parameters:
+//   - rootTypeDesc: Type descriptor containing complete SSZ encoding metadata
+//   - codeBuilder: String builder to append generated method code to
+//   - typePrinter: Type formatter for handling imports and type names
+//   - options: Generation options controlling which methods to create
+//
+// Returns:
+//   - bool: True if generated code uses dynamic SSZ functionality
+//   - error: An error if code generation fails
 func generateMarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) (bool, error) {
 	codeBuf := strings.Builder{}
 	ctx := &marshalContext{
@@ -81,6 +116,7 @@ func generateMarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.B
 	return ctx.usedDynSsz, nil
 }
 
+// marshalType generates marshal code for any SSZ type, delegating to specific marshalers.
 func (ctx *marshalContext) marshalType(desc *dynssz.TypeDescriptor, varName string, indent int, isRoot bool) error {
 	// Handle types that have generated methods we can call
 	hasDynamicSize := desc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
@@ -150,6 +186,7 @@ func (ctx *marshalContext) marshalType(desc *dynssz.TypeDescriptor, varName stri
 	return nil
 }
 
+// marshalContainer generates marshal code for SSZ container (struct) types.
 func (ctx *marshalContext) marshalContainer(desc *dynssz.TypeDescriptor, varName string, indent int) error {
 	hasDynamic := false
 	for _, field := range desc.ContainerDesc.Fields {
@@ -196,6 +233,7 @@ func (ctx *marshalContext) marshalContainer(desc *dynssz.TypeDescriptor, varName
 	return nil
 }
 
+// marshalVector generates marshal code for SSZ vector (fixed-size array) types.
 func (ctx *marshalContext) marshalVector(desc *dynssz.TypeDescriptor, varName string, indent int) error {
 	sizeExpression := desc.SizeExpression
 	if ctx.options.WithoutDynamicExpressions {
@@ -274,6 +312,7 @@ func (ctx *marshalContext) marshalVector(desc *dynssz.TypeDescriptor, varName st
 	return nil
 }
 
+// marshalList generates marshal code for SSZ list (variable-size array) types.
 func (ctx *marshalContext) marshalList(desc *dynssz.TypeDescriptor, varName string, indent int) error {
 	maxExpression := desc.MaxExpression
 	if ctx.options.WithoutDynamicExpressions {
@@ -339,6 +378,7 @@ func (ctx *marshalContext) marshalList(desc *dynssz.TypeDescriptor, varName stri
 	return nil
 }
 
+// marshalUnion generates marshal code for SSZ union types.
 func (ctx *marshalContext) marshalUnion(desc *dynssz.TypeDescriptor, varName string, indent int) error {
 	ctx.appendCode(indent, "dst = sszutils.MarshalUint8(dst, %s.Variant)\n", varName)
 	ctx.appendCode(indent, "switch %s.Variant {\n", varName)
