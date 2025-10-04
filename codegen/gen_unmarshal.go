@@ -25,7 +25,7 @@ import (
 //   - appendSizeCode: Function to append size calculation helper code
 //   - typePrinter: Type name formatter and import tracker
 //   - options: Code generation options controlling output behavior
-//   - usedDynSsz: Flag tracking whether generated code uses dynamic SSZ functionality
+//   - usedDynSpecs: Flag tracking whether generated code uses dynamic spec expressions
 //   - valVarCounter: Counter for generating unique value variable names
 //   - sizeVarCounter: Counter for generating unique size variable names
 //   - sizeVarMap: Map tracking size variables for type descriptors to avoid duplication
@@ -34,7 +34,7 @@ type unmarshalContext struct {
 	appendSizeCode func(indent int, code string, args ...any)
 	typePrinter    *TypePrinter
 	options        *CodeGeneratorOptions
-	usedDynSsz     bool
+	usedDynSpecs   bool
 	valVarCounter  int
 	sizeVarCounter int
 	sizeVarMap     map[*dynssz.TypeDescriptor]string
@@ -57,9 +57,8 @@ type unmarshalContext struct {
 //   - options: Generation options controlling which methods to create
 //
 // Returns:
-//   - bool: True if generated code uses dynamic SSZ functionality
 //   - error: An error if code generation fails
-func generateUnmarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) (bool, error) {
+func generateUnmarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
 	codeBuf := strings.Builder{}
 	sizeCodeBuf := strings.Builder{}
 	ctx := &unmarshalContext{
@@ -85,14 +84,14 @@ func generateUnmarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings
 
 	// Generate unmarshal code
 	if err := ctx.unmarshalType(rootTypeDesc, "t", 1, true, false); err != nil {
-		return false, err
+		return err
 	}
 
 	genDynamicFn := !options.WithoutDynamicExpressions
 	genStaticFn := options.WithoutDynamicExpressions || options.CreateLegacyFn
 
 	if genDynamicFn {
-		if ctx.usedDynSsz {
+		if ctx.usedDynSpecs {
 			codeBuilder.WriteString(fmt.Sprintf("func (t %s) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (err error) {\n", typeName))
 			codeBuilder.WriteString(sizeCodeBuf.String())
 			codeBuilder.WriteString(codeBuf.String())
@@ -107,7 +106,7 @@ func generateUnmarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings
 	}
 
 	if genStaticFn {
-		if !ctx.usedDynSsz {
+		if !ctx.usedDynSpecs {
 			codeBuilder.WriteString(fmt.Sprintf("func (t %s) UnmarshalSSZ(buf []byte) (err error) {\n", typeName))
 			codeBuilder.WriteString(sizeCodeBuf.String())
 			codeBuilder.WriteString(codeBuf.String())
@@ -121,7 +120,7 @@ func generateUnmarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings
 		}
 	}
 
-	return ctx.usedDynSsz, nil
+	return nil
 }
 
 // getValVar generates a unique variable name for temporary values.
@@ -228,7 +227,7 @@ func (ctx *unmarshalContext) getStaticSizeVar(desc *dynssz.TypeDescriptor) (stri
 				ctx.appendSizeCode(2, "if !hasLimit {\n\tlimit = %d\n}\n", desc.Len)
 				ctx.appendSizeCode(2, "%s = %s * int(limit)\n", sizeVar, sizeVar)
 				ctx.appendSizeCode(1, "}\n")
-				ctx.usedDynSsz = true
+				ctx.usedDynSpecs = true
 			} else {
 				ctx.appendSizeCode(1, "%s := %s * %d\n", sizeVar, itemSizeVar, desc.Len)
 			}
@@ -260,7 +259,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *dynssz.TypeDescriptor, varName 
 
 	if desc.SszCompatFlags&dynssz.SszCompatFlagDynamicUnmarshaler != 0 && !isRoot {
 		ctx.appendCode(indent, "if err = %s.UnmarshalSSZDyn(ds, buf); err != nil {\n\treturn err\n}\n", varName)
-		ctx.usedDynSsz = true
+		ctx.usedDynSpecs = true
 		return nil
 	}
 
@@ -472,18 +471,27 @@ func (ctx *unmarshalContext) unmarshalVector(desc *dynssz.TypeDescriptor, varNam
 	}
 
 	limitVar := ""
-	if sizeExpression != nil {
-		ctx.usedDynSsz = true
+	needExpression := !(desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 && noBufCheck)
+
+	if sizeExpression != nil && needExpression {
+		ctx.usedDynSpecs = true
 		ctx.appendCode(indent, "hasLimit, limit, err := ds.ResolveSpecValue(\"%s\")\n", *sizeExpression)
 		ctx.appendCode(indent, "if err != nil {\n\treturn err\n}\n")
 		ctx.appendCode(indent, "if !hasLimit {\n\tlimit = %d\n}\n", desc.Len)
 		limitVar = "int(limit)"
+
+		if desc.Kind == reflect.Array {
+			// check if dynamic limit is greater than the length of the array
+			ctx.appendCode(indent, "if limit > %d {\n", desc.Len)
+			ctx.appendCode(indent, "\treturn sszutils.ErrVectorLength\n")
+			ctx.appendCode(indent, "}\n")
+		}
 	} else {
 		limitVar = fmt.Sprintf("%d", desc.Len)
 	}
 
 	// create slice if needed
-	if desc.Kind != reflect.Array {
+	if desc.Kind != reflect.Array && desc.GoTypeFlags&dynssz.GoTypeFlagIsString == 0 {
 		ctx.appendCode(indent, "if len(%s) < %s {\n", varName, limitVar)
 		ctx.appendCode(indent, "\t%s = make(%s, %s)\n", varName, ctx.typePrinter.TypeString(desc), limitVar)
 		ctx.appendCode(indent, "} else if len(%s) > %s {\n", varName, limitVar)

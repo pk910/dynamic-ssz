@@ -622,7 +622,7 @@ func (cg *CodeGenerator) GenerateToMap() (map[string]string, error) {
 	// generate code for each file
 	results := make(map[string]string)
 	for _, file := range cg.files {
-		code, err := cg.generateFile(file.FileName, file.Options.Package, file.Options)
+		code, err := cg.generateFile(file.Options.Package, file.Options)
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate code for %s: %w", file.FileName, err)
 		}

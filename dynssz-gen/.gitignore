@@ -1,2 +1,3 @@
 test/
-dynssz-gen
+./dynssz-gen
+./dev-cli/dynssz-gen
