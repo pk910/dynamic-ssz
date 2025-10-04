@@ -110,6 +110,10 @@ func generateSize(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Buil
 
 // sizeType generates size calculation code for any SSZ type, delegating to specific sizers.
 func (ctx *sizeContext) sizeType(desc *dynssz.TypeDescriptor, varName string, indent int, isRoot bool) error {
+	if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+		ctx.appendCode(indent, "if %s == nil {\n\t%s = new(%s)\n}\n", varName, varName, ctx.typePrinter.InnerTypeString(desc))
+	}
+
 	// Handle types that have generated methods we can call
 	if desc.SszCompatFlags&dynssz.SszCompatFlagDynamicSizer != 0 && !isRoot {
 		ctx.appendCode(indent, "size += %s.SizeSSZDyn(ds)\n", varName)

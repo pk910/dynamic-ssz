@@ -21,6 +21,7 @@ func Run() {
 		verbose                   = flag.Bool("v", false, "Verbose output")
 		legacy                    = flag.Bool("legacy", false, "Generate legacy methods")
 		withoutDynamicExpressions = flag.Bool("without-dynamic-expressions", false, "Generate code without dynamic expressions")
+		withoutFastSsz            = flag.Bool("without-fastssz", false, "Generate code without using fast ssz generated methods")
 	)
 	flag.Parse()
 
@@ -124,6 +125,9 @@ func Run() {
 		}
 		if *withoutDynamicExpressions {
 			typeOptions = append(typeOptions, codegen.WithoutDynamicExpressions())
+		}
+		if *withoutFastSsz {
+			typeOptions = append(typeOptions, codegen.WithNoFastSsz())
 		}
 
 		// Build the file with all types
