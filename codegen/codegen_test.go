@@ -512,8 +512,8 @@ func runCodegen(tempDir, testName string) error {
 
 	// Build codegen binary with coverage
 	codegenBinary := filepath.Join(tempDir, "codegen_executable")
-	buildCmd := exec.CommandContext(ctx, "go", "build", "-cover", "-coverpkg=...", "-covermode=atomic", "-o", codegenBinary, ".")
-	buildCmd.Dir = path.Join(currentDir, "..", "dynssz-gen")
+	buildCmd := exec.CommandContext(ctx, "go", "build", "-cover", "-coverpkg=...", "-covermode=atomic", "-o", codegenBinary, "./dynssz-gen")
+	buildCmd.Dir = path.Join(currentDir, "..", "dynssz-gen", "dev-cli")
 	if output, err := buildCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("codegen build failed: %v\nOutput: %s", err, string(output))
 	}
