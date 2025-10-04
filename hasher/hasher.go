@@ -1,7 +1,7 @@
 // Copyright (c) 2025 pk910
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file contains code derived from https://github.com/ferranbt/fastssz/blob/main/hasher.go
+// This file contains code derived from https://github.com/ferranbt/fastssz/blob/v1.0.0/hasher.go
 // Copyright (c) 2020 Ferran Borreguero
 // Licensed under the MIT License
 // The code has been modified for dynamic-ssz needs.
@@ -417,22 +417,11 @@ func (h *Hasher) HashRoot() (res [32]byte, err error) {
 	return
 }
 
-func (h *Hasher) nextPowerOfTwo(v uint64) uint {
-	v--
-	v |= v >> 1
-	v |= v >> 2
-	v |= v >> 4
-	v |= v >> 8
-	v |= v >> 16
-	v++
-	return uint(v)
-}
-
 func (h *Hasher) getDepth(d uint64) uint8 {
 	if d <= 1 {
 		return 0
 	}
-	i := h.nextPowerOfTwo(d)
+	i := sszutils.NextPowerOfTwo(d)
 	return 64 - uint8(bits.LeadingZeros(i)) - 1
 }
 

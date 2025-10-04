@@ -1,3 +1,11 @@
+// Copyright (c) 2025 pk910
+// SPDX-License-Identifier: Apache-2.0
+//
+// This file contains code derived from https://github.com/ferranbt/fastssz/blob/v1.0.0/proof.go
+// Copyright (c) 2020 Ferran Borreguero
+// Licensed under the MIT License
+// The code has been modified for dynamic-ssz proof generation needs.
+
 package treeproof
 
 import (

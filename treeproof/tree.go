@@ -1,28 +1,73 @@
+// Copyright (c) 2025 pk910
+// SPDX-License-Identifier: Apache-2.0
+//
+// This file contains code derived from https://github.com/ferranbt/fastssz/blob/v1.0.0/tree.go
+// Copyright (c) 2020 Ferran Borreguero
+// Licensed under the MIT License
+// The code has been modified for dynamic-ssz proof generation needs.
+
+// Package treeproof provides Merkle tree construction and proof generation for SSZ structures.
+//
+// This package enables the construction of complete Merkle trees from SSZ-encoded data structures,
+// supporting both traditional binary trees and progressive trees for advanced use cases. It provides
+// functionality for generating and verifying Merkle proofs against generalized indices.
+//
+// Key features:
+//   - Binary tree construction: Standard SSZ merkleization for fixed-size containers
+//   - Progressive tree construction: Advanced merkleization for containers with optional fields
+//   - Proof generation: Single and multi-proof generation for any tree node
+//   - Proof verification: Standalone verification of generated proofs
+//   - Tree visualization: Debug-friendly tree structure display with generalized indices
+//
+// The package supports the generalized index system used in Ethereum 2.0 for addressing
+// nodes within Merkle trees, enabling efficient proof generation for any field or value
+// within complex data structures.
 package treeproof
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
-// Proof represents a merkle proof against a general index.
+// Proof represents a Merkle proof for a single leaf against a generalized index.
+//
+// A Merkle proof consists of the leaf value and a sequence of sibling hashes
+// needed to reconstruct the path from the leaf to the root. The proof can be
+// verified independently to confirm that the leaf value exists at the specified
+// generalized index within the tree.
+//
+// Fields:
+//   - Index: The generalized index of the leaf being proven
+//   - Leaf: The 32-byte value at the specified index
+//   - Hashes: Ordered sequence of sibling hashes for the path to root
 type Proof struct {
-	Index  int
-	Leaf   []byte
-	Hashes [][]byte
+	Index  int      // Generalized index of the proven leaf
+	Leaf   []byte   // 32-byte leaf value
+	Hashes [][]byte // Sibling hashes for verification path
 }
 
-// Multiproof represents a merkle proof of several leaves.
+// Multiproof represents an efficient Merkle proof for multiple leaves.
+//
+// Instead of generating separate proofs for each leaf, a multiproof consolidates
+// the verification data by sharing common intermediate hashes. This is more
+// efficient when proving multiple values from the same tree.
+//
+// Fields:
+//   - Indices: The generalized indices of all leaves being proven
+//   - Leaves: The 32-byte values at the specified indices (same order as Indices)
+//   - Hashes: Shared set of hashes needed to verify all leaves
 type Multiproof struct {
-	Indices []int
-	Leaves  [][]byte
-	Hashes  [][]byte
+	Indices []int    // Generalized indices of proven leaves
+	Leaves  [][]byte // 32-byte leaf values (ordered by Indices)
+	Hashes  [][]byte // Shared verification hashes
 }
 
 // Compress returns a new proof with zero hashes omitted.
@@ -79,22 +124,69 @@ func (c *CompressedMultiproof) Decompress() *Multiproof {
 	return p
 }
 
-// Node represents a node in the tree
-// backing of a SSZ object.
+// Node represents a single node in a Merkle tree constructed from SSZ data.
+//
+// Each node can be either a leaf node (containing actual data) or a branch node
+// (containing the hash of its children). The tree structure follows SSZ merkleization
+// rules and supports both binary and progressive tree layouts.
+//
+// For leaf nodes:
+//   - left and right are nil
+//   - value contains the 32-byte leaf data
+//
+// For branch nodes:
+//   - left and right point to child nodes
+//   - value contains the computed hash of children (cached after first calculation)
+//
+// The isEmpty field indicates whether this is a "zero" node used for padding
+// incomplete trees to maintain proper binary tree structure.
 type Node struct {
-	left    *Node
-	right   *Node
-	isEmpty bool
-
-	value []byte
+	left    *Node  // Left child node (nil for leaves)
+	right   *Node  // Right child node (nil for leaves)
+	isEmpty bool   // True if this is a zero-padding node
+	value   []byte // 32-byte value (data for leaves, hash for branches)
 }
 
+// Show displays the tree structure in a human-readable format for debugging.
+//
+// This method prints the complete tree hierarchy starting from this node,
+// showing generalized indices, hash values, and the tree structure. It's
+// particularly useful for understanding how SSZ data maps to tree nodes
+// and for debugging proof generation.
+//
+// Parameters:
+//   - maxDepth: Maximum depth to display (0 for unlimited depth)
+//
+// Output format:
+//   - INDEX: The generalized index of each node
+//   - HASH: 32-byte hash for branch nodes (computed from children)
+//   - VALUE: 32-byte data for leaf nodes (actual SSZ field data)
+//   - EMPTY: Indicates zero-padding nodes with their depth level
+//   - LEFT/RIGHT: Tree structure showing child relationships
+//
+// Example output:
+//
+//	--- Show node ---
+//	INDEX: 1
+//	HASH: a1b2c3d4...
+//	LEFT:
+//	    INDEX: 2
+//	    VALUE: e5f6g7h8...
+//	RIGHT:
+//	    INDEX: 3
+//	    HASH: i9j0k1l2...
+//	    LEFT:
+//	        INDEX: 6
+//	        VALUE: m3n4o5p6...
+//	    RIGHT:
+//	        INDEX: 7
+//	        EMPTY: true (depth: 0)
 func (n *Node) Show(maxDepth int) {
 	fmt.Printf("--- Show node ---\n")
-	n.show(0, maxDepth)
+	n.show(0, maxDepth, 1) // Start with index 1 (root)
 }
 
-func (n *Node) show(depth int, maxDepth int) {
+func (n *Node) show(depth int, maxDepth int, index int) {
 	space := ""
 	for i := 0; i < depth; i++ {
 		space += "\t"
@@ -105,34 +197,48 @@ func (n *Node) show(depth int, maxDepth int) {
 		}
 	}
 
+	// Always print the index first
+	print(fmt.Sprintf("INDEX: %d\n", index))
+
 	if n.left != nil || n.right != nil {
-		// leaf hash is the same as value
+		// Branch node - show hash
 		print("HASH: " + hex.EncodeToString(n.Hash()) + "\n")
-	}
-	if n.value != nil {
+	} else if n.value != nil {
+		// Leaf node - show value only (no hash for leaves)
 		print("VALUE: " + hex.EncodeToString(n.value) + "\n")
+	}
+
+	if n.isEmpty {
+		zeroLevel, _ := hasher.GetZeroHashLevel(string(n.Hash()))
+		print("EMPTY: true (depth: " + strconv.Itoa(zeroLevel) + ")\n")
 	}
 
 	if maxDepth > 0 {
 		if depth == maxDepth {
 			// only print hash if we are too deep
+			print(" ... (max depth reached)\n")
 			return
 		}
 	}
 
 	if n.left != nil {
 		print("LEFT: \n")
-		n.left.show(depth+1, maxDepth)
+		n.left.show(depth+1, maxDepth, index*2) // Left child index = parent * 2
 	}
 	if n.right != nil {
 		print("RIGHT: \n")
-		n.right.show(depth+1, maxDepth)
+		n.right.show(depth+1, maxDepth, index*2+1) // Right child index = parent * 2 + 1
 	}
 }
 
 // NewNodeWithValue initializes a leaf node.
 func NewNodeWithValue(value []byte) *Node {
-	return &Node{left: nil, right: nil, value: value}
+	return &Node{
+		left:    nil,
+		right:   nil,
+		value:   value,
+		isEmpty: bytes.Equal(value, sszutils.ZeroBytes()[:32]),
+	}
 }
 
 func NewEmptyNode(zeroOrderHash []byte) *Node {
@@ -239,6 +345,56 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 	return nodes[1], nil
 }
 
+// TreeFromNodesProgressive constructs a progressive tree from leaf nodes.
+// This implements the progressive merkleization algorithm where chunks are split
+// using base_size pattern (1, 4, 16, 64...) rather than even binary splits.
+// Based on subtree_fill_progressive from remerkleable.
+func TreeFromNodesProgressive(leaves []*Node) (*Node, error) {
+	if len(leaves) == 0 {
+		return NewEmptyNode(sszutils.ZeroBytes()[:32]), nil
+	}
+
+	return treeFromNodesProgressiveImpl(leaves, 0)
+}
+
+// treeFromNodesProgressiveImpl implements the recursive progressive tree construction
+func treeFromNodesProgressiveImpl(leaves []*Node, depth int) (*Node, error) {
+	if len(leaves) == 0 {
+		return NewEmptyNode(sszutils.ZeroBytes()[:32]), nil
+	}
+
+	// Calculate base_size = 1 << depth (1, 4, 16, 64, 256...)
+	baseSize := 1 << depth
+
+	// Split nodes: first baseSize nodes go to RIGHT (binary), rest go to LEFT (progressive)
+	splitPoint := baseSize
+	if splitPoint > len(leaves) {
+		splitPoint = len(leaves)
+	}
+
+	// Right child: binary merkleization of first baseSize nodes
+	rightNodes := leaves[:splitPoint]
+	rightChild, err := TreeFromNodes(rightNodes, baseSize)
+	if err != nil {
+		return nil, err
+	}
+
+	// Left child: recursive progressive merkleization of remaining nodes
+	leftNodes := leaves[splitPoint:]
+	var leftChild *Node
+	if len(leftNodes) == 0 {
+		leftChild = NewEmptyNode(sszutils.ZeroBytes()[:32])
+	} else {
+		leftChild, err = treeFromNodesProgressiveImpl(leftNodes, depth+2)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Return PairNode(left, right)
+	return NewNodeWithLR(leftChild, rightChild), nil
+}
+
 func TreeFromNodesWithMixin(leaves []*Node, num, limit int) (*Node, error) {
 	if !isPowerOfTwo(limit) {
 		return nil, errors.New("size of tree should be a power of 2")
@@ -252,6 +408,34 @@ func TreeFromNodesWithMixin(leaves []*Node, num, limit int) (*Node, error) {
 	// Mixin len
 	countLeaf := LeafFromUint64(uint64(num))
 	node := NewNodeWithLR(mainTree, countLeaf)
+	return node, nil
+}
+
+// TreeFromNodesProgressiveWithMixin constructs a progressive tree with length mixin.
+// The progressive tree is created first, then mixed with the length value.
+func TreeFromNodesProgressiveWithMixin(leaves []*Node, num int) (*Node, error) {
+	mainTree, err := TreeFromNodesProgressive(leaves)
+	if err != nil {
+		return nil, err
+	}
+
+	// Mixin length (same as binary version)
+	countLeaf := LeafFromUint64(uint64(num))
+	node := NewNodeWithLR(mainTree, countLeaf)
+	return node, nil
+}
+
+// TreeFromNodesProgressiveWithActiveFields constructs a progressive tree with active fields bitvector.
+// The progressive tree is created first, then mixed with the active fields.
+func TreeFromNodesProgressiveWithActiveFields(leaves []*Node, activeFields []byte) (*Node, error) {
+	mainTree, err := TreeFromNodesProgressive(leaves)
+	if err != nil {
+		return nil, err
+	}
+
+	// Mixin active fields bitvector (convert to 32-byte padded leaf)
+	activeFieldsLeaf := LeafFromBytes(activeFields)
+	node := NewNodeWithLR(mainTree, activeFieldsLeaf)
 	return node, nil
 }
 
