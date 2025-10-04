@@ -36,7 +36,7 @@ type DynamicSizer interface {
 }
 
 type DynamicHashRoot interface {
-	HashTreeRootDyn(ds DynamicSpecs, hh HashWalker) error
+	HashTreeRootWithDyn(ds DynamicSpecs, hh HashWalker) error
 }
 
 // DynamicSsz is the interface for a dynamic SSZ encoder/decoder
@@ -54,6 +54,7 @@ type HashWalker interface {
 	// Methods for appending single values
 	AppendBool(b bool)
 	AppendUint8(i uint8)
+	AppendUint16(i uint16)
 	AppendUint32(i uint32)
 	AppendUint64(i uint64)
 	AppendBytes32(b []byte)

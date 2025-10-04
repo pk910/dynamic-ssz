@@ -426,7 +426,7 @@ func (d *DynSsz) HashTreeRoot(source any) ([32]byte, error) {
 	}()
 
 	if hasher, ok := source.(sszutils.DynamicHashRoot); ok {
-		err := hasher.HashTreeRootDyn(d, hh)
+		err := hasher.HashTreeRootWithDyn(d, hh)
 		if err != nil {
 			return [32]byte{}, err
 		}

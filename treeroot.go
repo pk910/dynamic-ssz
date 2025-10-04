@@ -89,7 +89,7 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 		// Use dynamic hash root - can always be used even with dynamic specs
 		hasher, ok := sourceValue.Addr().Interface().(sszutils.DynamicHashRoot)
 		if ok {
-			err := hasher.HashTreeRootDyn(d, hh)
+			err := hasher.HashTreeRootWithDyn(d, hh)
 			if err != nil {
 				return fmt.Errorf("failed HashTreeRootDyn: %v", err)
 			}
@@ -453,7 +453,11 @@ func (d *DynSsz) buildRootFromVector(sourceType *TypeDescriptor, sourceValue ref
 
 	sliceLen := sourceValue.Len()
 	if uint32(sliceLen) > sourceType.Len {
-		return sszutils.ErrListTooBig
+		if sourceType.Kind == reflect.Array {
+			sliceLen = int(sourceType.Len)
+		} else {
+			return sszutils.ErrListTooBig
+		}
 	}
 
 	appendZero := 0
@@ -472,9 +476,9 @@ func (d *DynSsz) buildRootFromVector(sourceType *TypeDescriptor, sourceValue ref
 
 		var bytes []byte
 		if sourceType.GoTypeFlags&GoTypeFlagIsString != 0 {
-			bytes = []byte(sourceValue.String())
+			bytes = []byte(sourceValue.String())[:sliceLen]
 		} else {
-			bytes = sourceValue.Bytes()
+			bytes = sourceValue.Bytes()[:sliceLen]
 		}
 
 		if appendZero > 0 {
@@ -485,8 +489,7 @@ func (d *DynSsz) buildRootFromVector(sourceType *TypeDescriptor, sourceValue ref
 		hh.AppendBytes32(bytes)
 	} else {
 		// For other types, process each element
-		arrayLen := sourceValue.Len()
-		for i := 0; i < arrayLen; i++ {
+		for i := 0; i < sliceLen; i++ {
 			fieldValue := sourceValue.Index(i)
 
 			err := d.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, true, idt+2)
