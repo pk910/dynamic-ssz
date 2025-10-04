@@ -222,6 +222,7 @@ type Account struct {
 - Explore [Supported Types](supported-types.md) for complete type reference
 - Learn about [SSZ Annotations](ssz-annotations.md) for advanced field control
 - Check the [API Reference](api-reference.md) for all available methods
+- Generate [Merkle Proofs](merkle-proofs.md) for data verification
 - Use the [Code Generator](code-generator.md) for optimal performance
 
 ## Example Projects

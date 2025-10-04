@@ -6,39 +6,44 @@ package dynssz_test
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"fmt"
 	"testing"
 
 	. "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/treeproof"
 )
 
 var treerootTestMatrix = []struct {
+	name     string
 	payload  any
 	expected []byte
 }{
 	// primitive types
-	{bool(false), fromHex("0x0000000000000000000000000000000000000000000000000000000000000000")},
-	{bool(true), fromHex("0x0100000000000000000000000000000000000000000000000000000000000000")},
-	{uint8(0), fromHex("0x0000000000000000000000000000000000000000000000000000000000000000")},
-	{uint8(255), fromHex("0xff00000000000000000000000000000000000000000000000000000000000000")},
-	{uint8(42), fromHex("0x2a00000000000000000000000000000000000000000000000000000000000000")},
-	{uint16(0), fromHex("0x0000000000000000000000000000000000000000000000000000000000000000")},
-	{uint16(65535), fromHex("0xffff000000000000000000000000000000000000000000000000000000000000")},
-	{uint16(1337), fromHex("0x3905000000000000000000000000000000000000000000000000000000000000")},
-	{uint32(0), fromHex("0x0000000000000000000000000000000000000000000000000000000000000000")},
-	{uint32(4294967295), fromHex("0xffffffff00000000000000000000000000000000000000000000000000000000")},
-	{uint32(817482215), fromHex("0xe7c9b93000000000000000000000000000000000000000000000000000000000")},
-	{uint64(0), fromHex("0x0000000000000000000000000000000000000000000000000000000000000000")},
-	{uint64(18446744073709551615), fromHex("0xffffffffffffffff000000000000000000000000000000000000000000000000")},
-	{uint64(848028848028), fromHex("0x9c4f7572c5000000000000000000000000000000000000000000000000000000")},
+	{"bool_false", bool(false), fromHex("0x0000000000000000000000000000000000000000000000000000000000000000")},
+	{"bool_true", bool(true), fromHex("0x0100000000000000000000000000000000000000000000000000000000000000")},
+	{"uint8_min", uint8(0), fromHex("0x0000000000000000000000000000000000000000000000000000000000000000")},
+	{"uint8_max", uint8(255), fromHex("0xff00000000000000000000000000000000000000000000000000000000000000")},
+	{"uint8_val1", uint8(42), fromHex("0x2a00000000000000000000000000000000000000000000000000000000000000")},
+	{"uint16_min", uint16(0), fromHex("0x0000000000000000000000000000000000000000000000000000000000000000")},
+	{"uint16_max", uint16(65535), fromHex("0xffff000000000000000000000000000000000000000000000000000000000000")},
+	{"uint16_val1", uint16(1337), fromHex("0x3905000000000000000000000000000000000000000000000000000000000000")},
+	{"uint32_min", uint32(0), fromHex("0x0000000000000000000000000000000000000000000000000000000000000000")},
+	{"uint32_max", uint32(4294967295), fromHex("0xffffffff00000000000000000000000000000000000000000000000000000000")},
+	{"uint32_val1", uint32(817482215), fromHex("0xe7c9b93000000000000000000000000000000000000000000000000000000000")},
+	{"uint64_min", uint64(0), fromHex("0x0000000000000000000000000000000000000000000000000000000000000000")},
+	{"uint64_max", uint64(18446744073709551615), fromHex("0xffffffffffffffff000000000000000000000000000000000000000000000000")},
+	{"uint64_val1", uint64(848028848028), fromHex("0x9c4f7572c5000000000000000000000000000000000000000000000000000000")},
 
 	// arrays & slices
-	{[]uint8{}, fromHex("0x0000000000000000000000000000000000000000000000000000000000000000")},
-	{[]uint8{1, 2, 3, 4, 5}, fromHex("0x0102030405000000000000000000000000000000000000000000000000000000")},
-	{[5]uint8{1, 2, 3, 4, 5}, fromHex("0x0102030405000000000000000000000000000000000000000000000000000000")},
-	{[10]uint8{1, 2, 3, 4, 5}, fromHex("0x0102030405000000000000000000000000000000000000000000000000000000")},
+	{"array_empty", []uint8{}, fromHex("0x0000000000000000000000000000000000000000000000000000000000000000")},
+	{"array_val1", []uint8{1, 2, 3, 4, 5}, fromHex("0x0102030405000000000000000000000000000000000000000000000000000000")},
+	{"array_val2", [5]uint8{1, 2, 3, 4, 5}, fromHex("0x0102030405000000000000000000000000000000000000000000000000000000")},
+	{"array_val3", [10]uint8{1, 2, 3, 4, 5}, fromHex("0x0102030405000000000000000000000000000000000000000000000000000000")},
 
 	// complex types
 	{
+		"complex_struct1",
 		struct {
 			F1 bool
 			F2 uint8
@@ -49,6 +54,7 @@ var treerootTestMatrix = []struct {
 		fromHex("0x03cf6524e0c5dee777f18d8a15b724aa70da9d9393e3a47434fe352eff0e7375"),
 	},
 	{
+		"complex_struct2",
 		struct {
 			F1 bool
 			F2 []uint8  `ssz-max:"10"` // dynamic field
@@ -58,6 +64,7 @@ var treerootTestMatrix = []struct {
 		fromHex("0xcb141fb9e033499344f568ea05a6a77ada886fc6e856ece01ae5a329e184fbd1"),
 	},
 	{
+		"complex_struct3",
 		struct {
 			F1 uint8
 			F2 [][]uint8 `ssz-size:"?,2" ssz-max:"10"`
@@ -66,6 +73,7 @@ var treerootTestMatrix = []struct {
 		fromHex("0xf49f73d6aa7e15c5d26bea0830d9f342be22b7f4d4683391059f20e3dbce4b0a"),
 	},
 	{
+		"complex_struct4",
 		struct {
 			F1 uint8
 			F2 []slug_DynStruct1 `ssz-size:"3"`
@@ -74,6 +82,7 @@ var treerootTestMatrix = []struct {
 		fromHex("0x609aed07225400cb21de97260b267aab012358a235d1a1e9fc4df94859208c83"),
 	},
 	{
+		"complex_struct5",
 		struct {
 			F1 uint8
 			F2 []*slug_StaticStruct1 `ssz-size:"3"`
@@ -82,6 +91,7 @@ var treerootTestMatrix = []struct {
 		fromHex("0xcb36f82247d205d8fc9dc60d04a245fb588be35315b4c3406ed2b68f69de7eda"),
 	},
 	{
+		"complex_struct6",
 		struct {
 			F1 uint8
 			F2 [][]struct {
@@ -94,6 +104,7 @@ var treerootTestMatrix = []struct {
 		fromHex("0xc7b4839f561b9eed7da50de309ddb8bcde2a33a61a259b7377164251df4eac3c"),
 	},
 	{
+		"complex_struct7",
 		struct {
 			F1 uint8
 			F2 [][2][]struct {
@@ -106,6 +117,7 @@ var treerootTestMatrix = []struct {
 		fromHex("0x7d0b409af96c93a86b93503d0b53bdc1b90426224da00d610568c71d4a2d3e02"),
 	},
 	{
+		"complex_struct8",
 		struct {
 			F1 uint8
 			F2 [][2][]struct {
@@ -118,6 +130,7 @@ var treerootTestMatrix = []struct {
 		fromHex("0x031d9f2e588f41ecc10851cef557fd52c25414e44ff5fd0e8289c5a3c9efeaaf"),
 	},
 	{
+		"complex_struct9",
 		struct {
 			F1 [][]uint16 `ssz-size:"?,2" ssz-max:"10"`
 		}{[][]uint16{{2, 3}, {4, 5}, {8, 9}, {10, 11}}},
@@ -126,6 +139,7 @@ var treerootTestMatrix = []struct {
 
 	// ssz-type annotation tests
 	{
+		"complex_struct10",
 		struct {
 			BitlistData []byte `ssz-type:"bitlist" ssz-max:"100"`
 		}{[]byte{0x0f, 0x01}}, // bitlist with 4 bits set, length indicator
@@ -134,18 +148,21 @@ var treerootTestMatrix = []struct {
 
 	// uint128 type tests
 	{
+		"uint128_1",
 		struct {
 			Value [16]byte `ssz-type:"uint128"`
 		}{[16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}},
 		fromHex("0x0102030405060708090a0b0c0d0e0f1000000000000000000000000000000000"),
 	},
 	{
+		"uint128_2",
 		struct {
 			Value [2]uint64 `ssz-type:"uint128"`
 		}{[2]uint64{0x0807060504030201, 0x100f0e0d0c0b0a09}},
 		fromHex("0x0102030405060708090a0b0c0d0e0f1000000000000000000000000000000000"),
 	},
 	{
+		"uint128_3",
 		struct {
 			Value []byte `ssz-type:"uint128" ssz-size:"16"`
 		}{[]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}},
@@ -154,6 +171,7 @@ var treerootTestMatrix = []struct {
 
 	// uint256 type tests
 	{
+		"uint256_1",
 		struct {
 			Balance [32]byte `ssz-type:"uint256"`
 		}{[32]byte{
@@ -163,12 +181,14 @@ var treerootTestMatrix = []struct {
 		fromHex("0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"),
 	},
 	{
+		"uint256_2",
 		struct {
 			Balance [4]uint64 `ssz-type:"uint256"`
 		}{[4]uint64{0x0807060504030201, 0x100f0e0d0c0b0a09, 0x1817161514131211, 0x201f1e1d1c1b1a19}},
 		fromHex("0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"),
 	},
 	{
+		"uint256_3",
 		struct {
 			Balance []byte `ssz-type:"uint256" ssz-size:"32"`
 		}{[]byte{
@@ -180,6 +200,7 @@ var treerootTestMatrix = []struct {
 
 	// bitvector type tests
 	{
+		"bitvector_1",
 		struct {
 			Flags [4]byte `ssz-type:"bitvector"`
 		}{[4]byte{0xff, 0x0f, 0x00, 0xf0}},
@@ -188,12 +209,14 @@ var treerootTestMatrix = []struct {
 
 	// explicit basic type annotations
 	{
+		"type_uint32_1",
 		struct {
 			Value uint32 `ssz-type:"uint32"`
 		}{0x12345678},
 		fromHex("0x7856341200000000000000000000000000000000000000000000000000000000"),
 	},
 	{
+		"type_bool_1",
 		struct {
 			Value bool `ssz-type:"bool"`
 		}{true},
@@ -202,6 +225,7 @@ var treerootTestMatrix = []struct {
 
 	// vector type annotation
 	{
+		"type_vector_1",
 		struct {
 			Values []uint64 `ssz-type:"vector" ssz-size:"3"`
 		}{[]uint64{1, 2, 3}},
@@ -210,6 +234,7 @@ var treerootTestMatrix = []struct {
 
 	// container type annotation
 	{
+		"type_container_1",
 		struct {
 			Data struct {
 				A uint32
@@ -223,12 +248,14 @@ var treerootTestMatrix = []struct {
 	},
 
 	{
+		"type_progressive_list_1",
 		struct {
 			F1 []uint16 `ssz-type:"progressive-list"`
 		}{[]uint16{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100}},
 		fromHex("0xafc3646489c444662626be91d6630ba5671cb302733bd50822544f8c6be96005"),
 	},
 	{
+		"type_progressive_list_2",
 		func() any {
 			list := make([]uint32, 128)
 			list[0] = 123
@@ -243,6 +270,7 @@ var treerootTestMatrix = []struct {
 	},
 	// progressive bitlist test - matches Python test_progressive_bitlist.py output
 	{
+		"type_progressive_bitlist_1",
 		func() any {
 			// Create bitlist with 1000 bits where every 3rd bit is set (pattern: [false, false, true, ...])
 			bits := make([]bool, 1000)
@@ -270,6 +298,7 @@ var treerootTestMatrix = []struct {
 
 	// Progressive container tests - these should have different hashes than regular containers
 	{
+		"type_progressive_container_1",
 		struct {
 			Field0 uint64 `ssz-index:"0"`
 			Field1 uint32 `ssz-index:"1"`
@@ -281,6 +310,7 @@ var treerootTestMatrix = []struct {
 
 	// CompatibleUnion tests
 	{
+		"type_compatible_union_1",
 		struct {
 			Field0 uint16
 			Field1 CompatibleUnion[struct {
@@ -297,36 +327,42 @@ var treerootTestMatrix = []struct {
 
 	// string types
 	{
+		"type_string_1",
 		struct {
 			Data string `ssz-max:"100"`
 		}{""},
 		fromHex("0x28ba1834a3a7b657460ce79fa3a1d909ab8828fd557659d4d0554a9bdbc0ec30"),
 	},
 	{
+		"type_string_2",
 		struct {
 			Data string `ssz-max:"100"`
 		}{"hello"},
 		fromHex("0x19da29a0796bb0ad502164fb6362e551756896856128aa64e415d5304a317b40"),
 	},
 	{
+		"type_string_3",
 		struct {
 			Data string `ssz-max:"100"`
 		}{"hello 世界"},
 		fromHex("0xd08864f0ff9f68f992a72baefd9550f1f6735b7b0e334d80623021cc5a59eff1"),
 	},
 	{
+		"type_string_4",
 		struct {
 			Data string `ssz-size:"32"`
 		}{"hello"},
 		fromHex("0x68656c6c6f000000000000000000000000000000000000000000000000000000"),
 	},
 	{
+		"type_string_5",
 		struct {
 			Data string `ssz-size:"32"`
 		}{"abcdefghijklmnopqrstuvwxyz123456"},
 		fromHex("0x6162636465666768696a6b6c6d6e6f707172737475767778797a313233343536"),
 	},
 	{
+		"type_string_6",
 		struct {
 			Data string `ssz-type:"progressive-list"`
 		}{"abcdefghijklmnopqrstuvwxyz123456"},
@@ -335,6 +371,7 @@ var treerootTestMatrix = []struct {
 
 	// TypeWrapper test cases - should produce same hash as equivalent direct types
 	{
+		"type_wrapper_1",
 		func() any {
 			type WrappedByteArray = TypeWrapper[struct {
 				Data [32]byte
@@ -350,6 +387,7 @@ var treerootTestMatrix = []struct {
 		fromHex("0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"),
 	},
 	{
+		"type_wrapper_2",
 		func() any {
 			type WrappedBool = TypeWrapper[struct {
 				Data bool
@@ -361,6 +399,7 @@ var treerootTestMatrix = []struct {
 		fromHex("0x0100000000000000000000000000000000000000000000000000000000000000"),
 	},
 	{
+		"type_wrapper_3",
 		func() any {
 			type WrappedUint64 = TypeWrapper[struct {
 				Data []uint16 `ssz-max:"30"`
@@ -382,16 +421,18 @@ func TestTreeRoot(t *testing.T) {
 	dynssz.NoFastSsz = true
 
 	for idx, test := range treerootTestMatrix {
-		buf, err := dynssz.HashTreeRoot(test.payload)
+		t.Run(test.name, func(t *testing.T) {
+			buf, err := dynssz.HashTreeRoot(test.payload)
 
-		switch {
-		case test.expected == nil && err != nil:
-			// expected error
-		case err != nil:
-			t.Errorf("test %v error: %v", idx, err)
-		case !bytes.Equal(buf[:], test.expected):
-			t.Errorf("test %v failed: got 0x%x, wanted 0x%x", idx, buf, test.expected)
-		}
+			switch {
+			case test.expected == nil && err != nil:
+				// expected error
+			case err != nil:
+				t.Errorf("test %v error: %v", idx, err)
+			case !bytes.Equal(buf[:], test.expected):
+				t.Errorf("test %v failed: got 0x%x, wanted 0x%x", idx, buf, test.expected)
+			}
+		})
 	}
 }
 
@@ -740,6 +781,170 @@ func TestHashTreeRootErrors(t *testing.T) {
 				t.Errorf("expected error containing '%s', but got no error", tc.expectedErr)
 			} else if !contains(err.Error(), tc.expectedErr) {
 				t.Errorf("expected error containing '%s', but got: %v", tc.expectedErr, err)
+			}
+		})
+	}
+}
+
+// verifyTreeIntegrity recursively checks that each parent node's hash equals sha256(left+right)
+func verifyTreeIntegrity(node *treeproof.Node) error {
+	// If this is a leaf node (no children), skip verification
+	if node.IsLeaf() {
+		return nil
+	}
+
+	// Verify children first
+	if node.Left() != nil {
+		if err := verifyTreeIntegrity(node.Left()); err != nil {
+			return err
+		}
+	}
+	if node.Right() != nil {
+		if err := verifyTreeIntegrity(node.Right()); err != nil {
+			return err
+		}
+	}
+
+	// Verify this node's hash
+	h := sha256.New()
+	if node.Left() != nil {
+		h.Write(node.Left().Hash())
+	} else {
+		h.Write(make([]byte, 32)) // zero hash for nil left child
+	}
+	if node.Right() != nil {
+		h.Write(node.Right().Hash())
+	} else {
+		h.Write(make([]byte, 32)) // zero hash for nil right child
+	}
+	expectedHash := h.Sum(nil)
+
+	if !bytes.Equal(node.Hash(), expectedHash) {
+		return fmt.Errorf("hash mismatch at node: expected %x, got %x", expectedHash, node.Hash())
+	}
+
+	return nil
+}
+
+func TestTreeGeneration(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	for _, tc := range treerootTestMatrix {
+		t.Run(tc.name, func(t *testing.T) {
+			// Generate tree
+			tree, err := dynssz.GetTree(tc.payload)
+			if err != nil {
+				t.Fatalf("failed to generate tree: %v", err)
+			}
+
+			// Verify tree integrity
+			if err := verifyTreeIntegrity(tree); err != nil {
+				t.Errorf("tree integrity check failed: %v", err)
+			}
+
+			// Verify root hash matches HashTreeRoot
+			expectedRoot, err := dynssz.HashTreeRoot(tc.payload)
+			if err != nil {
+				t.Fatalf("failed to compute hash tree root: %v", err)
+			}
+
+			if !bytes.Equal(tree.Hash(), tc.expected) {
+				t.Errorf("tree root mismatch: tree=%x, expected=%x", tree.Hash(), tc.expected)
+			}
+
+			if !bytes.Equal(tree.Hash(), expectedRoot[:]) {
+				t.Errorf("tree root mismatch: tree=%x, expected=%x", tree.Hash(), expectedRoot)
+			}
+		})
+	}
+}
+
+func TestBinaryVsProgressiveTrees(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Test cases comparing binary and progressive merkleization
+	testCases := []struct {
+		name               string
+		binaryPayload      any
+		progressivePayload any
+	}{
+		{
+			"list_comparison_8_elements",
+			struct {
+				F1 []uint16 `ssz-max:"128"`
+			}{[]uint16{1, 2, 3, 4, 5, 6, 7, 8}},
+			struct {
+				F1 []uint16 `ssz-type:"progressive-list"`
+			}{[]uint16{1, 2, 3, 4, 5, 6, 7, 8}},
+		},
+		{
+			"list_comparison_16_elements",
+			struct {
+				F1 []uint32 `ssz-max:"200"`
+			}{make([]uint32, 16)},
+			struct {
+				F1 []uint32 `ssz-type:"progressive-list"`
+			}{make([]uint32, 16)},
+		},
+		{
+			"large_list_comparison_64_elements",
+			struct {
+				F1 []uint32 `ssz-max:"200"`
+			}{make([]uint32, 64)},
+			struct {
+				F1 []uint32 `ssz-type:"progressive-list"`
+			}{make([]uint32, 64)},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Generate both trees
+			binaryTree, err := dynssz.GetTree(tc.binaryPayload)
+			if err != nil {
+				t.Fatalf("failed to generate binary tree: %v", err)
+			}
+
+			progressiveTree, err := dynssz.GetTree(tc.progressivePayload)
+			if err != nil {
+				t.Fatalf("failed to generate progressive tree: %v", err)
+			}
+
+			// Verify both trees pass integrity checks
+			if err := verifyTreeIntegrity(binaryTree); err != nil {
+				t.Errorf("binary tree integrity check failed: %v", err)
+			}
+
+			if err := verifyTreeIntegrity(progressiveTree); err != nil {
+				t.Errorf("progressive tree integrity check failed: %v", err)
+			}
+
+			// Verify root hashes match their respective HashTreeRoot results
+			binaryRoot, err := dynssz.HashTreeRoot(tc.binaryPayload)
+			if err != nil {
+				t.Fatalf("failed to compute binary hash tree root: %v", err)
+			}
+
+			progressiveRoot, err := dynssz.HashTreeRoot(tc.progressivePayload)
+			if err != nil {
+				t.Fatalf("failed to compute progressive hash tree root: %v", err)
+			}
+
+			if !bytes.Equal(binaryTree.Hash(), binaryRoot[:]) {
+				t.Errorf("binary tree root mismatch: tree=%x, expected=%x", binaryTree.Hash(), binaryRoot)
+			}
+
+			if !bytes.Equal(progressiveTree.Hash(), progressiveRoot[:]) {
+				t.Errorf("progressive tree root mismatch: tree=%x, expected=%x", progressiveTree.Hash(), progressiveRoot)
+			}
+
+			// Trees should have different root hashes (progressive vs binary merkleization)
+			if bytes.Equal(binaryTree.Hash(), progressiveTree.Hash()) {
+				t.Logf("Note: Binary and progressive trees have the same root hash for %s", tc.name)
+			} else {
+				t.Logf("Binary and progressive trees have different root hashes (expected for different merkleization methods)")
 			}
 		})
 	}
