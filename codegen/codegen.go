@@ -370,6 +370,18 @@ func WithoutDynamicExpressions() CodeGeneratorOption {
 	}
 }
 
+// WithNoFastSsz creates an option to skip generating fast ssz generated methods.
+//
+// When this option is enabled, the generator will not use any fast ssz generated methods for static types.
+//
+// Returns:
+//   - CodeGeneratorOption: A functional option that disables fast ssz generated method generation
+func WithNoFastSsz() CodeGeneratorOption {
+	return func(opts *CodeGeneratorOptions) {
+		opts.NoFastSsz = true
+	}
+}
+
 // WithReflectType creates an option to include a specific type using runtime reflection.
 //
 // This function adds a type to the generation list using Go's reflection system to
