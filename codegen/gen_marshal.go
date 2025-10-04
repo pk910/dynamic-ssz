@@ -344,7 +344,7 @@ func (ctx *marshalContext) marshalList(desc *dynssz.TypeDescriptor, varName stri
 		maxExpression = nil
 	}
 
-	hasLimitVar := ""
+	hasMax := false
 	maxVar := ""
 
 	if maxExpression != nil {
@@ -353,7 +353,7 @@ func (ctx *marshalContext) marshalList(desc *dynssz.TypeDescriptor, varName stri
 		ctx.appendCode(indent, "if err != nil {\n")
 		ctx.appendCode(indent, "\treturn dst, err\n")
 		ctx.appendCode(indent, "}\n")
-		hasLimitVar = "hasMax"
+		hasMax = true
 		maxVar = "int(max)"
 		if desc.Limit > 0 {
 			ctx.appendCode(indent, "if !hasMax {\n")
@@ -362,9 +362,8 @@ func (ctx *marshalContext) marshalList(desc *dynssz.TypeDescriptor, varName stri
 		}
 	} else if desc.Limit > 0 {
 		maxVar = fmt.Sprintf("%d", desc.Limit)
-		hasLimitVar = "true"
+		hasMax = true
 	} else {
-		hasLimitVar = "false"
 		maxVar = "0"
 	}
 
@@ -377,13 +376,9 @@ func (ctx *marshalContext) marshalList(desc *dynssz.TypeDescriptor, varName stri
 		hasVlen = true
 	}
 
-	if hasLimitVar != "false" {
+	if hasMax {
 		addVlen()
-		if hasLimitVar == "true" {
-			ctx.appendCode(indent, "if vlen > %s {\n", maxVar)
-		} else {
-			ctx.appendCode(indent, "if %s && vlen > %s {\n", hasLimitVar, maxVar)
-		}
+		ctx.appendCode(indent, "if vlen > %s {\n", maxVar)
 		ctx.appendCode(indent, "\treturn dst, sszutils.ErrListTooBig\n")
 		ctx.appendCode(indent, "}\n")
 	}
