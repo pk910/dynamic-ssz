@@ -132,6 +132,43 @@ if err != nil {
 fmt.Printf("Root: %x\n", root)
 ```
 
+### GetTree
+
+```go
+func (d *DynSsz) GetTree(source interface{}) (*treeproof.Node, error)
+```
+
+Builds and returns the complete Merkle tree for proof generation.
+
+**Parameters**:
+- `source` - Object to build tree for
+
+**Returns**:
+- `*treeproof.Node` - Root node of the complete Merkle tree
+- Error if tree construction fails
+
+**Example**:
+```go
+tree, err := ssz.GetTree(myStruct)
+if err != nil {
+    return err
+}
+
+// Display tree structure
+tree.Show(3)
+
+// Generate proof for field at index 5
+proof, err := tree.Prove(5)
+if err != nil {
+    return err
+}
+
+// Verify proof
+isValid, err := treeproof.VerifyProof(tree.Hash(), proof)
+```
+
+See [Merkle Proofs](merkle-proofs.md) for complete tree and proof generation documentation.
+
 ## Utility Methods
 
 ### SizeSSZ
