@@ -4,6 +4,7 @@
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
+
       
         {
             "name": "Launch Package",
@@ -58,6 +59,60 @@
             "args": [
               "-test.run",
               ""
+            ]
+        },
+          {
+            "name": "Fuzz: MarshalUnmarshal",
+            "type": "go",
+            "request": "launch",
+            "mode": "test",
+            "program": "${workspaceFolder}/fuzz",
+            "env": {
+            },
+            "args": [
+              "-test.fuzz=FuzzMarshalUnmarshal",
+              "-test.fuzztime=30s",
+              "-test.fuzzcachedir=${workspaceFolder}/fuzz/testdata/fuzz"
+            ]
+        },
+        {
+            "name": "Fuzz: Size",
+            "type": "go",
+            "request": "launch",
+            "mode": "test",
+            "program": "${workspaceFolder}/fuzz",
+            "env": {
+            },
+            "args": [
+              "-test.fuzz=FuzzSize",
+              "-test.fuzztime=30s",
+              "-test.fuzzcachedir=${workspaceFolder}/fuzz/testdata/fuzz"
+            ]
+        },
+        {
+            "name": "Fuzz: HashTreeRoot",
+            "type": "go",
+            "request": "launch",
+            "mode": "test",
+            "program": "${workspaceFolder}/fuzz",
+            "env": {
+            },
+            "args": [
+              "-test.fuzz=FuzzHashTreeRoot",
+              "-test.fuzztime=30s",
+              "-test.fuzzcachedir=${workspaceFolder}/fuzz/testdata/fuzz"
+            ]
+        },
+        {
+            "name": "Test: Fuzz Basic",
+            "type": "go",
+            "request": "launch",
+            "mode": "test",
+            "program": "${workspaceFolder}/fuzz",
+            "env": {
+            },
+            "args": [
+              "-test.run=TestFuzzerBasic"
             ]
         },
 
