@@ -1,19 +1,15 @@
 // Copyright (c) 2025 pk910
 // SPDX-License-Identifier: Apache-2.0
 // This file is part of the dynamic-ssz library.
-//go:build cgo
-// +build cgo
 
-package hasher
+package nocgo
 
 import (
 	"fmt"
 	"unsafe"
-
-	"github.com/OffchainLabs/hashtree"
 )
 
-func hashtreeHashByteSlice(digests []byte, chunks []byte) error {
+func HashtreeHashByteSlice(digests []byte, chunks []byte) error {
 	if len(chunks) == 0 {
 		return nil
 	}
@@ -34,11 +30,7 @@ func hashtreeHashByteSlice(digests []byte, chunks []byte) error {
 	sizeDigests := (len(digests) >> 5)
 	chunkedDigest := unsafe.Slice((*[32]byte)(unsafe.Pointer(&digests[0])), sizeDigests)
 
-	hashtree.Hash(chunkedDigest, chunkedChunks)
+	sha256_1_generic(chunkedDigest, chunkedChunks)
 
 	return nil
-}
-
-func init() {
-	FastHasherPool.HashFn = hashtreeHashByteSlice
 }
