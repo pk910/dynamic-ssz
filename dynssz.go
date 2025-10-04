@@ -542,7 +542,13 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker) error {
 // Note: For progressive containers (with ssz-index tags), the tree structure will be
 // progressive rather than binary, which affects the generalized indices of fields.
 func (d *DynSsz) GetTree(source any) (*treeproof.Node, error) {
-	return treeproof.ProofTree(d, source)
+	w := treeproof.NewWrapper()
+
+	if err := d.HashTreeRootWith(source, w); err != nil {
+		return nil, err
+	}
+
+	return w.Node(), nil
 }
 
 // ValidateType validates whether a given type is compatible with SSZ encoding/decoding.

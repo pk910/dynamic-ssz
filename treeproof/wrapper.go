@@ -9,29 +9,24 @@
 package treeproof
 
 import (
-	dynssz "github.com/pk910/dynamic-ssz"
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 var _ sszutils.HashWalker = (*Wrapper)(nil)
 
-// ProofTree hashes a HashRoot object with a Hasher from
-// the default HasherPool
-func ProofTree(ds *dynssz.DynSsz, v any) (*Node, error) {
-	w := &Wrapper{
-		tmp: make([]byte, 64),
-	}
-	if err := ds.HashTreeRootWith(v, w); err != nil {
-		return nil, err
-	}
-	return w.Node(), nil
-}
-
 type Wrapper struct {
 	nodes []*Node
 	buf   []byte
 	tmp   []byte
+}
+
+func NewWrapper() *Wrapper {
+	return &Wrapper{
+		nodes: []*Node{},
+		buf:   make([]byte, 0),
+		tmp:   make([]byte, 64),
+	}
 }
 
 /// --- wrapper implements the HashWalker interface ---
