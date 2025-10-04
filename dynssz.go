@@ -11,6 +11,7 @@ import (
 
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
+	"github.com/pk910/dynamic-ssz/treeproof"
 )
 
 // DynSsz is a dynamic SSZ encoder/decoder that uses runtime reflection to handle dynamic field sizes.
@@ -425,10 +426,53 @@ func (d *DynSsz) HashTreeRoot(source any) ([32]byte, error) {
 		pool.Put(hh)
 	}()
 
+	err := d.HashTreeRootWith(source, hh)
+	if err != nil {
+		return [32]byte{}, err
+	}
+
+	return hh.HashRoot()
+}
+
+// HashTreeRootWith computes the hash tree root of the given source object according to SSZ specifications.
+//
+// This method is similar to HashTreeRoot, but allows for custom hasher instances to be used.
+// It dynamically handles hashing for types with both static and dynamic field sizes, automatically
+// using fastssz for optimal performance when applicable.
+//
+// Parameters:
+//   - source: Any Go value for which to compute the hash tree root
+//   - hh: The HashWalker instance to use for hashing
+//
+// Returns:
+//   - error: An error if the computation fails due to unsupported types or hashing errors
+//
+// The method handles all SSZ-supported types including:
+//   - Basic types (bool, uint8, uint16, uint32, uint64)
+//   - Fixed-size and variable-size arrays
+//   - Structs with nested fields
+//   - Slices with proper limit handling
+//   - Bitlists with maximum size constraints
+//
+// Example:
+//
+//	block := &phase0.BeaconBlock{
+//	    Slot:          12345,
+//	    ProposerIndex: 42,
+//	    // ... other fields
+//	}
+//
+//	hh := &hasher.Hasher{}
+//	err := ds.HashTreeRootWith(block, hh)
+//	if err != nil {
+//	    log.Fatal("Failed to compute root:", err)
+//	}
+//	fmt.Printf("Block root: %x\n", hh.HashRoot())
+func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker) error {
 	if hasher, ok := source.(sszutils.DynamicHashRoot); ok {
 		err := hasher.HashTreeRootWithDyn(d, hh)
 		if err != nil {
-			return [32]byte{}, err
+			return err
 		}
 	} else {
 		sourceType := reflect.TypeOf(source)
@@ -436,16 +480,75 @@ func (d *DynSsz) HashTreeRoot(source any) ([32]byte, error) {
 
 		sourceTypeDesc, err := d.typeCache.GetTypeDescriptor(sourceType, nil, nil, nil)
 		if err != nil {
-			return [32]byte{}, err
+			return err
 		}
 
 		err = d.buildRootFromType(sourceTypeDesc, sourceValue, hh, false, 0)
 		if err != nil {
-			return [32]byte{}, err
+			return err
 		}
 	}
 
-	return hh.HashRoot()
+	return nil
+}
+
+// GetTree builds and returns the complete Merkle tree for the given value.
+//
+// This method constructs a full Merkle tree representation of the SSZ-encoded structure,
+// which is useful for proof generation, debugging, and understanding the internal tree structure.
+// The returned tree can be used to generate Merkle proofs for any field or value within the structure.
+//
+// The tree construction follows the same SSZ merkleization rules as HashTreeRoot, but instead
+// of returning just the root hash, it provides access to the complete tree with all intermediate
+// nodes. This enables:
+//   - Generating Merkle proofs for specific fields using tree.Prove(index)
+//   - Debugging tree structure with tree.Show(maxDepth)
+//   - Understanding how different fields map to generalized indices
+//   - Analyzing the progressive vs binary tree structures
+//
+// Parameters:
+//   - source: Any Go value to be converted to a Merkle tree. Must be SSZ-compatible.
+//
+// Returns:
+//   - *treeproof.Node: The root node of the complete Merkle tree
+//   - error: An error if tree construction fails due to unsupported types or encoding errors
+//
+// The returned tree supports:
+//   - Navigation: Use Get(index) to fetch nodes by generalized index
+//   - Proof generation: Use Prove(index) to generate Merkle proofs
+//   - Debugging: Use Show(maxDepth) to visualize the tree structure
+//   - Multi-proofs: Use ProveMulti(indices) for efficient batch proofs
+//
+// Example:
+//
+//	// Build tree for a beacon block
+//	tree, err := ds.GetTree(beaconBlock)
+//	if err != nil {
+//	    log.Fatal("Failed to build tree:", err)
+//	}
+//
+//	// Show tree structure (limited to 3 levels deep)
+//	tree.Show(3)
+//
+//	// Generate proof for a specific field at generalized index 25
+//	proof, err := tree.Prove(25)
+//	if err != nil {
+//	    log.Fatal("Failed to generate proof:", err)
+//	}
+//
+//	// Verify the proof against the tree root
+//	isValid, err := treeproof.VerifyProof(tree.Hash(), proof)
+//
+// Note: For progressive containers (with ssz-index tags), the tree structure will be
+// progressive rather than binary, which affects the generalized indices of fields.
+func (d *DynSsz) GetTree(source any) (*treeproof.Node, error) {
+	w := treeproof.NewWrapper()
+
+	if err := d.HashTreeRootWith(source, w); err != nil {
+		return nil, err
+	}
+
+	return w.Node(), nil
 }
 
 // ValidateType validates whether a given type is compatible with SSZ encoding/decoding.

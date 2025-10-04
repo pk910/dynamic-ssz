@@ -14,3 +14,14 @@ func CalculateLimit(maxCapacity, numItems, size uint64) uint64 {
 	}
 	return numItems
 }
+
+func NextPowerOfTwo(v uint64) uint {
+	v--
+	v |= v >> 1
+	v |= v >> 2
+	v |= v >> 4
+	v |= v >> 8
+	v |= v >> 16
+	v++
+	return uint(v)
+}

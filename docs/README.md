@@ -9,6 +9,7 @@ Welcome to the comprehensive documentation for Dynamic SSZ - a flexible Go imple
 - **[Supported Types](supported-types.md)** - Complete type system reference including progressive types
 - **[SSZ Annotations](ssz-annotations.md)** - All struct tags and their usage
 - **[API Reference](api-reference.md)** - Complete public interface documentation
+- **[Merkle Proofs](merkle-proofs.md)** - Tree construction and proof generation
 - **[Code Generator](code-generator.md)** - CLI tool and programmatic code generation
 
 ### Advanced Topics
@@ -29,6 +30,7 @@ Welcome to the comprehensive documentation for Dynamic SSZ - a flexible Go imple
 ### By Topic
 - **Types & Annotations**: [Supported Types](supported-types.md) → [SSZ Annotations](ssz-annotations.md)
 - **API Usage**: [Getting Started](getting-started.md) → [API Reference](api-reference.md)
+- **Proofs & Trees**: [Merkle Proofs](merkle-proofs.md)
 - **Code Generation**: [Code Generator](code-generator.md)
 - **Integration**: [Ethereum Integration](go-eth2-client-integration.md)
 
@@ -40,6 +42,7 @@ Dynamic SSZ provides flexible SSZ encoding/decoding for Go applications with the
 - **Universal Compatibility**: Works with any SSZ-compatible Go types
 - **Dynamic Sizing**: Runtime field size configuration through specifications
 - **Progressive Types**: EIP-7916/7495 progressive merkleization and containers
+- **Merkle Proofs**: Complete tree construction and proof generation
 - **Hybrid Performance**: Automatically optimizes with fastssz when possible
 - **Type Safety**: Comprehensive validation and error handling
 
@@ -89,6 +92,12 @@ func main() {
     
     // Hash tree root
     root, err := ssz.HashTreeRoot(block)
+    if err != nil {
+        panic(err)
+    }
+    
+    // Generate Merkle tree and proofs
+    tree, err := ssz.GetTree(block)
     if err != nil {
         panic(err)
     }
