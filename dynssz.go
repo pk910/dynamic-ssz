@@ -1,9 +1,8 @@
-// Package dynssz provides dynamic SSZ (Simple Serialize) encoding and decoding for Ethereum data structures.
-// Unlike static code generation approaches, dynssz uses runtime reflection to handle dynamic field sizes,
-// making it suitable for various Ethereum presets beyond the mainnet. It seamlessly integrates with fastssz for
-// optimal performance when static definitions are applicable.
-//
-// Copyright (c) 2024 by pk910. See LICENSE file for details.
+// Copyright (c) 2025 pk910
+// SPDX-License-Identifier: Apache-2.0
+// This file is part of the dynamic-ssz library.
+
+// Package dynssz provides dynamic SSZ encoding and decoding with runtime reflection support.
 package dynssz
 
 import (
@@ -11,6 +10,7 @@ import (
 	"reflect"
 
 	"github.com/pk910/dynamic-ssz/hasher"
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 // DynSsz is a dynamic SSZ encoder/decoder that uses runtime reflection to handle dynamic field sizes.
@@ -172,6 +172,17 @@ func (d *DynSsz) GetTypeCache() *TypeCache {
 //	}
 //	fmt.Printf("Encoded %d bytes\n", len(data))
 func (d *DynSsz) MarshalSSZ(source any) ([]byte, error) {
+	if marshaler, ok := source.(sszutils.DynamicMarshaler); ok {
+		var buf []byte
+		if sizer, ok := source.(sszutils.DynamicSizer); ok {
+			size := sizer.SizeSSZDyn(d)
+			buf = make([]byte, 0, size)
+		} else {
+			buf = make([]byte, 0, 1024)
+		}
+		return marshaler.MarshalSSZDyn(d, buf)
+	}
+
 	sourceType := reflect.TypeOf(source)
 	sourceValue := reflect.ValueOf(source)
 
@@ -226,6 +237,10 @@ func (d *DynSsz) MarshalSSZ(source any) ([]byte, error) {
 //	}
 //	fmt.Printf("Serialized %d blocks into %d bytes\n", len(blocks), len(buf))
 func (d *DynSsz) MarshalSSZTo(source any, buf []byte) ([]byte, error) {
+	if marshaler, ok := source.(sszutils.DynamicMarshaler); ok {
+		return marshaler.MarshalSSZDyn(d, buf)
+	}
+
 	sourceType := reflect.TypeOf(source)
 	sourceValue := reflect.ValueOf(source)
 
@@ -275,6 +290,10 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte) ([]byte, error) {
 //	buf := make([]byte, 0, size)
 //	buf, err = ds.MarshalSSZTo(state, buf)
 func (d *DynSsz) SizeSSZ(source any) (int, error) {
+	if sizer, ok := source.(sszutils.DynamicSizer); ok {
+		return sizer.SizeSSZDyn(d), nil
+	}
+
 	sourceType := reflect.TypeOf(source)
 	sourceValue := reflect.ValueOf(source)
 
@@ -323,6 +342,10 @@ func (d *DynSsz) SizeSSZ(source any) (int, error) {
 //	}
 //	fmt.Printf("Decoded header for slot %d\n", header.Slot)
 func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte) error {
+	if unmarshaler, ok := target.(sszutils.DynamicUnmarshaler); ok {
+		return unmarshaler.UnmarshalSSZDyn(d, ssz)
+	}
+
 	targetType := reflect.TypeOf(target)
 	targetValue := reflect.ValueOf(target)
 
@@ -390,14 +413,6 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte) error {
 //	}
 //	fmt.Printf("Block root: %x\n", root)
 func (d *DynSsz) HashTreeRoot(source any) ([32]byte, error) {
-	sourceType := reflect.TypeOf(source)
-	sourceValue := reflect.ValueOf(source)
-
-	sourceTypeDesc, err := d.typeCache.GetTypeDescriptor(sourceType, nil, nil, nil)
-	if err != nil {
-		return [32]byte{}, err
-	}
-
 	var pool *hasher.HasherPool
 	if d.NoFastHash {
 		pool = &hasher.DefaultHasherPool
@@ -410,9 +425,24 @@ func (d *DynSsz) HashTreeRoot(source any) ([32]byte, error) {
 		pool.Put(hh)
 	}()
 
-	err = d.buildRootFromType(sourceTypeDesc, sourceValue, hh, false, 0)
-	if err != nil {
-		return [32]byte{}, err
+	if hasher, ok := source.(sszutils.DynamicHashRoot); ok {
+		err := hasher.HashTreeRootWithDyn(d, hh)
+		if err != nil {
+			return [32]byte{}, err
+		}
+	} else {
+		sourceType := reflect.TypeOf(source)
+		sourceValue := reflect.ValueOf(source)
+
+		sourceTypeDesc, err := d.typeCache.GetTypeDescriptor(sourceType, nil, nil, nil)
+		if err != nil {
+			return [32]byte{}, err
+		}
+
+		err = d.buildRootFromType(sourceTypeDesc, sourceValue, hh, false, 0)
+		if err != nil {
+			return [32]byte{}, err
+		}
 	}
 
 	return hh.HashRoot()

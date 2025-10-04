@@ -1,3 +1,6 @@
+// Copyright (c) 2025 pk910
+// SPDX-License-Identifier: Apache-2.0
+
 package main
 
 import (
@@ -15,6 +18,10 @@ func main() {
 	switch command {
 	case "performance":
 		performanceCommand()
+	case "codegen-test":
+		codegenTestCommand()
+	case "codegen":
+		codegenCommand()
 	case "help":
 		printUsage()
 	default:

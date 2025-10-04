@@ -106,11 +106,11 @@ jobs:
         
     - name: Run unit tests with coverage
       run: |
-        go test -v -race -coverprofile=unit-coverage.out -covermode=atomic ./...
+        go test -v -race -coverprofile=unit-coverage.out -coverpkg=... -covermode=atomic ./...
 
     - name: Run unit tests with coverage (without cgo)
       run: |
-        CGO_ENABLED=0 go test -v -coverprofile=unit-coverage-nocgo.out -covermode=atomic ./...
+        CGO_ENABLED=0 go test -v -coverprofile=unit-coverage-nocgo.out -coverpkg=... -covermode=atomic ./...
         
     - name: Download spec test coverage artifacts
       uses: actions/download-artifact@v4
@@ -128,6 +128,11 @@ jobs:
           tail -n +2 unit-coverage.out | grep -v '^$' >> combined-coverage.out
         fi
 
+        # Add codegen test coverage
+        if [ -f coverage_codegen.out ]; then
+          echo "Adding codegen test coverage..."
+          tail -n +2 coverage_codegen.out | grep -v '^$' >> combined-coverage.out
+        fi
         if [ -f unit-coverage-nocgo.out ]; then
           echo "Adding unit test coverage (without cgo)..."
           tail -n +2 unit-coverage-nocgo.out | grep -v '^$' >> combined-coverage.out
@@ -144,7 +149,8 @@ jobs:
         
         # Sort and deduplicate coverage entries (keep header, process body)
         (head -n 1 combined-coverage.out; tail -n +2 combined-coverage.out | sort -k1,1 -k2,2n | sort -u -k1,1 -k2,2n) > combined-coverage-final.out
-        mv combined-coverage-final.out combined-coverage.out
+        # Filter out spectests package and non-dynamic-ssz packages
+        (head -n 1 combined-coverage-final.out; tail -n +2 combined-coverage-final.out | grep "github.com/pk910/dynamic-ssz" | grep -v "github.com/pk910/dynamic-ssz/spectests" | grep -v "github.com/pk910/dynamic-ssz/dynssz-gen") > combined-coverage.out
         
         echo "Combined coverage report created:"
         wc -l combined-coverage.out
@@ -168,4 +174,5 @@ jobs:
         path: |
           coverage.html
           combined-coverage.out
+          coverage_codegen.out
           unit-coverage.out

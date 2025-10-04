@@ -1,2 +1,0 @@
-# This file prevents Go from scanning this directory during module operations
-# The directory contains ~500k test files which causes memory exhaustion

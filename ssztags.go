@@ -1,6 +1,7 @@
-// dynssz: Dynamic SSZ encoding/decoding for Ethereum with fastssz efficiency.
-// This file is part of the dynssz package.
-// Copyright (c) 2024 by pk910. Refer to LICENSE for more information.
+// Copyright (c) 2025 pk910
+// SPDX-License-Identifier: Apache-2.0
+// This file is part of the dynamic-ssz library.
+
 package dynssz
 
 import (
@@ -42,63 +43,70 @@ type SszTypeHint struct {
 	Type SszType
 }
 
+func ParseSszType(typeStr string) (SszType, error) {
+	switch typeStr {
+	case "?", "auto":
+		return SszUnspecifiedType, nil
+	case "custom":
+		return SszCustomType, nil
+	case "wrapper", "type-wrapper":
+		return SszTypeWrapperType, nil
+
+	// basic types
+	case "bool":
+		return SszBoolType, nil
+	case "uint8":
+		return SszUint8Type, nil
+	case "uint16":
+		return SszUint16Type, nil
+	case "uint32":
+		return SszUint32Type, nil
+	case "uint64":
+		return SszUint64Type, nil
+	case "uint128":
+		return SszUint128Type, nil
+	case "uint256":
+		return SszUint256Type, nil
+
+	// complex types
+	case "container":
+		return SszContainerType, nil
+	case "list":
+		return SszListType, nil
+	case "vector":
+		return SszVectorType, nil
+	case "bitlist":
+		return SszBitlistType, nil
+	case "bitvector":
+		return SszBitvectorType, nil
+	case "progressive-list":
+		return SszProgressiveListType, nil
+	case "progressive-bitlist":
+		return SszProgressiveBitlistType, nil
+	case "progressive-container":
+		return SszProgressiveContainerType, nil
+	case "compatible-union", "union":
+		return SszCompatibleUnionType, nil
+
+	default:
+		return SszUnspecifiedType, fmt.Errorf("invalid ssz-type tag '%v'", typeStr)
+	}
+}
+
 func (d *DynSsz) getSszTypeTag(field *reflect.StructField) ([]SszTypeHint, error) {
 	// parse `ssz-type`
 	sszTypeHints := []SszTypeHint{}
 
 	if fieldSszTypeStr, fieldHasSszType := field.Tag.Lookup("ssz-type"); fieldHasSszType {
 		for _, sszTypeStr := range strings.Split(fieldSszTypeStr, ",") {
-			sszType := SszTypeHint{}
-
-			switch sszTypeStr {
-			case "?", "auto":
-				sszType.Type = SszUnspecifiedType
-			case "custom":
-				sszType.Type = SszCustomType
-			case "wrapper", "type-wrapper":
-				sszType.Type = SszTypeWrapperType
-
-			// basic types
-			case "bool":
-				sszType.Type = SszBoolType
-			case "uint8":
-				sszType.Type = SszUint8Type
-			case "uint16":
-				sszType.Type = SszUint16Type
-			case "uint32":
-				sszType.Type = SszUint32Type
-			case "uint64":
-				sszType.Type = SszUint64Type
-			case "uint128":
-				sszType.Type = SszUint128Type
-			case "uint256":
-				sszType.Type = SszUint256Type
-
-			// complex types
-			case "container":
-				sszType.Type = SszContainerType
-			case "list":
-				sszType.Type = SszListType
-			case "vector":
-				sszType.Type = SszVectorType
-			case "bitlist":
-				sszType.Type = SszBitlistType
-			case "bitvector":
-				sszType.Type = SszBitvectorType
-			case "progressive-list":
-				sszType.Type = SszProgressiveListType
-			case "progressive-bitlist":
-				sszType.Type = SszProgressiveBitlistType
-			case "progressive-container":
-				sszType.Type = SszProgressiveContainerType
-			case "compatible-union", "union":
-				sszType.Type = SszCompatibleUnionType
-
-			default:
-				return nil, fmt.Errorf("invalid ssz-type tag for '%v' field: %v", field.Name, sszTypeStr)
+			sszType, err := ParseSszType(sszTypeStr)
+			if err != nil {
+				return sszTypeHints, fmt.Errorf("error parsing ssz-type tag for '%v' field: %v", field.Name, err)
 			}
 
-			sszTypeHints = append(sszTypeHints, sszType)
+			sszTypeHints = append(sszTypeHints, SszTypeHint{
+				Type: sszType,
+			})
 		}
 	}
 

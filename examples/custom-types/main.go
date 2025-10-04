@@ -1,3 +1,6 @@
+// Copyright (c) 2025 pk910
+// SPDX-License-Identifier: Apache-2.0
+
 // Package main demonstrates using dynamic-ssz with custom, non-Ethereum data structures.
 // This example shows how the library can be used for any SSZ-compatible types with dynamic sizing.
 package main

@@ -2,5 +2,7 @@ temp/
 ai_plans/
 profiles/
 coverage.*
+coverage_*
 spec-coverage.out
 unit-coverage.out
+dynssz-gen-*

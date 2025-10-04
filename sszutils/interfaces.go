@@ -1,3 +1,7 @@
+// Copyright (c) 2025 pk910
+// SPDX-License-Identifier: Apache-2.0
+// This file is part of the dynamic-ssz library.
+
 package sszutils
 
 // FastsszMarshaler is the interface implemented by types that can marshal themselves into valid SZZ using fastssz.
@@ -18,21 +22,26 @@ type FastsszHashRoot interface {
 
 // DynamicMarshaler is the interface implemented by types that can marshal themselves using dynamic SSZ
 type DynamicMarshaler interface {
-	MarshalSSZDyn(ds interface{}, buf []byte) ([]byte, error)
+	MarshalSSZDyn(ds DynamicSpecs, buf []byte) ([]byte, error)
 }
 
 // DynamicUnmarshaler is the interface implemented by types that can unmarshal using dynamic SSZ
 type DynamicUnmarshaler interface {
-	UnmarshalSSZDyn(ds interface{}, buf []byte) error
+	UnmarshalSSZDyn(ds DynamicSpecs, buf []byte) error
 }
 
 // DynamicSizer is the interface implemented by types that can calculate their own SSZ size dynamically
 type DynamicSizer interface {
-	SizeSSZDyn(ds interface{}) int
+	SizeSSZDyn(ds DynamicSpecs) int
 }
 
 type DynamicHashRoot interface {
-	HashTreeRootDyn(ds interface{}, hh HashWalker) error
+	HashTreeRootWithDyn(ds DynamicSpecs, hh HashWalker) error
+}
+
+// DynamicSsz is the interface for a dynamic SSZ encoder/decoder
+type DynamicSpecs interface {
+	ResolveSpecValue(name string) (bool, uint64, error)
 }
 
 // HashWalker is our own interface that mirrors fastssz.HashWalker
@@ -45,6 +54,7 @@ type HashWalker interface {
 	// Methods for appending single values
 	AppendBool(b bool)
 	AppendUint8(i uint8)
+	AppendUint16(i uint16)
 	AppendUint32(i uint32)
 	AppendUint64(i uint64)
 	AppendBytes32(b []byte)

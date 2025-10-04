@@ -2,15 +2,19 @@
 
 ## Supported Versions
 
-`dynssz` is currently in active development and has not reached a stable release yet. The library is functional and being improved on an ongoing basis, but it may be considered unstable. While testing and feedback are greatly appreciated, using it in production environments is recommended with caution.
+`dynamic-ssz` has different stability levels for its components:
+
+- **Reflection-based dynamic marshaling/unmarshaling/HTR**: Production ready and battle-tested in various toolings
+- **Code generator (`dynssz-gen`)**: Feature complete but in beta stage - hasn't been extensively tested in production environments
 
 | Version | Supported          |
 | ------- | ------------------ |
-| dev     | :white_check_mark: |
+| v1.x.x  | :white_check_mark: |
+| < v1.0  | :x:                |
 
 ## Reporting a Vulnerability
 
-I take the security of the `dynssz` library seriously. If you believe you have found a security vulnerability in `dynssz`, please report it to me in a responsible manner.
+I take the security of the `dynamic-ssz` library seriously. If you believe you have found a security vulnerability in `dynamic-ssz`, please report it to me in a responsible manner.
 
 **Please do not report security vulnerabilities through public GitHub issues.**
 
@@ -43,4 +47,4 @@ Upon receiving a report of a vulnerability:
 
 I aim to collaborate with the security community to identify and resolve vulnerabilities responsibly. I will keep the community informed of security issues that may arise during the development process.
 
-Thank you for helping ensure the security and reliability of `dynssz`.
+Thank you for helping ensure the security and reliability of `dynamic-ssz`.

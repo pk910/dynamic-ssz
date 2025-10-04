@@ -1,14 +1,14 @@
 module github.com/pk910/dynamic-ssz/spectests
 
-go 1.22.2
+go 1.24.0
 
-toolchain go1.22.4
+toolchain go1.24.7
 
 require (
 	github.com/attestantio/go-eth2-client v0.26.0
 	github.com/golang/snappy v0.0.4
 	github.com/huandu/go-clone/generic v1.6.0
-	github.com/pk910/dynamic-ssz v0.0.6
+	github.com/pk910/dynamic-ssz v1.1.0
 	github.com/stretchr/testify v1.8.4
 	gopkg.in/yaml.v2 v2.4.0
 )

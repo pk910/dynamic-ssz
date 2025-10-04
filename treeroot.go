@@ -1,12 +1,14 @@
-// dynssz: Dynamic SSZ encoding/decoding for Ethereum with fastssz efficiency.
-// This file is part of the dynssz package.
-// Copyright (c) 2024 by pk910. Refer to LICENSE for more information.
+// Copyright (c) 2025 pk910
+// SPDX-License-Identifier: Apache-2.0
+// This file is part of the dynamic-ssz library.
+
 package dynssz
 
 import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
@@ -87,7 +89,7 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 		// Use dynamic hash root - can always be used even with dynamic specs
 		hasher, ok := sourceValue.Addr().Interface().(sszutils.DynamicHashRoot)
 		if ok {
-			err := hasher.HashTreeRootDyn(d, hh)
+			err := hasher.HashTreeRootWithDyn(d, hh)
 			if err != nil {
 				return fmt.Errorf("failed HashTreeRootDyn: %v", err)
 			}
@@ -160,10 +162,20 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 				hh.PutUint32(uint32(sourceValue.Uint()))
 			}
 		case SszUint64Type:
-			if pack {
-				hh.AppendUint64(uint64(sourceValue.Uint()))
+			var uintVal uint64
+			if sourceType.GoTypeFlags&GoTypeFlagIsTime != 0 {
+				timeVal, isTime := sourceValue.Interface().(time.Time)
+				if !isTime {
+					return fmt.Errorf("time.Time type expected, got %v", sourceType.Type.Name())
+				}
+				uintVal = uint64(timeVal.Unix())
 			} else {
-				hh.PutUint64(uint64(sourceValue.Uint()))
+				uintVal = uint64(sourceValue.Uint())
+			}
+			if pack {
+				hh.AppendUint64(uintVal)
+			} else {
+				hh.PutUint64(uintVal)
 			}
 		case SszUint128Type, SszUint256Type:
 			err := d.buildRootFromLargeUint(sourceType, sourceValue, hh, pack, idt)
@@ -441,7 +453,11 @@ func (d *DynSsz) buildRootFromVector(sourceType *TypeDescriptor, sourceValue ref
 
 	sliceLen := sourceValue.Len()
 	if uint32(sliceLen) > sourceType.Len {
-		return sszutils.ErrListTooBig
+		if sourceType.Kind == reflect.Array {
+			sliceLen = int(sourceType.Len)
+		} else {
+			return sszutils.ErrListTooBig
+		}
 	}
 
 	appendZero := 0
@@ -460,9 +476,9 @@ func (d *DynSsz) buildRootFromVector(sourceType *TypeDescriptor, sourceValue ref
 
 		var bytes []byte
 		if sourceType.GoTypeFlags&GoTypeFlagIsString != 0 {
-			bytes = []byte(sourceValue.String())
+			bytes = []byte(sourceValue.String())[:sliceLen]
 		} else {
-			bytes = sourceValue.Bytes()
+			bytes = sourceValue.Bytes()[:sliceLen]
 		}
 
 		if appendZero > 0 {
@@ -473,8 +489,7 @@ func (d *DynSsz) buildRootFromVector(sourceType *TypeDescriptor, sourceValue ref
 		hh.AppendBytes32(bytes)
 	} else {
 		// For other types, process each element
-		arrayLen := sourceValue.Len()
-		for i := 0; i < arrayLen; i++ {
+		for i := 0; i < sliceLen; i++ {
 			fieldValue := sourceValue.Index(i)
 
 			err := d.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, true, idt+2)

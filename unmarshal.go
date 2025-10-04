@@ -1,12 +1,14 @@
-// dynssz: Dynamic SSZ encoding/decoding for Ethereum with fastssz efficiency.
-// This file is part of the dynssz package.
-// Copyright (c) 2024 by pk910. Refer to LICENSE for more information.
+// Copyright (c) 2025 pk910
+// SPDX-License-Identifier: Apache-2.0
+// This file is part of the dynamic-ssz library.
+
 package dynssz
 
 import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
@@ -156,7 +158,20 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 			if len(ssz) < 8 {
 				return 0, fmt.Errorf("unexpected end of SSZ")
 			}
-			targetValue.SetUint(uint64(sszutils.UnmarshallUint64(ssz)))
+			if targetType.GoTypeFlags&GoTypeFlagIsTime != 0 {
+				timeVal := time.Unix(int64(sszutils.UnmarshallUint64(ssz)), 0)
+				var timeRefVal reflect.Value
+				if targetType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
+					timeRefVal = reflect.New(targetType.Type.Elem())
+					timeRefVal.Elem().Set(reflect.ValueOf(timeVal))
+				} else {
+					timeRefVal = reflect.ValueOf(timeVal)
+				}
+
+				targetValue.Set(timeRefVal)
+			} else {
+				targetValue.SetUint(uint64(sszutils.UnmarshallUint64(ssz)))
+			}
 			consumedBytes = 8
 
 		default:

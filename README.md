@@ -5,17 +5,22 @@
 [![codecov](https://codecov.io/gh/pk910/dynamic-ssz/branch/master/graph/badge.svg)](https://codecov.io/gh/pk910/dynamic-ssz)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-Dynamic SSZ is a Go library for SSZ encoding/decoding with support for dynamic field sizes. It provides runtime flexibility while maintaining high performance through static code when found.
-
-> **Production Ready**: This library is ready for productive use. It has been thoroughly tested against Ethereum consensus specifications and is actively used in various toolings.
+Dynamic SSZ is a Go library for SSZ encoding/decoding with support for dynamic field sizes and code generation. It provides runtime flexibility while maintaining high performance through optional static code generation.
 
 ## Features
 
 - **🔧 Dynamic Field Sizes** - Support for runtime-determined field sizes based on configuration
 - **⚡ Reflection-Based Processing** - Works instantly with any SSZ-compatible types - no code generation required for prototyping
+- **🏗️ Code Generation** - Optional static code generation for maximum performance (2-3x faster than dynamic processing)
+- **🚀 CLI Tool** - Standalone `dynssz-gen` command for easy code generation from any Go package
 - **🔄 Hybrid Approach** - Seamlessly combines with fastssz for optimal efficiency
 - **📦 Minimal Dependencies** - Core library has minimal external dependencies
 - **✅ Spec Compliant** - Fully compliant with SSZ specification and Ethereum consensus tests
+
+## Production Readiness
+
+- **✅ Reflection-based dynamic marshaling/unmarshaling/HTR**: Production ready - battle-tested in various toolings and stable
+- **🚧 Code generator**: Feature complete but in beta stage - hasn't been extensively tested in production environments
 
 ## Quick Start
 
@@ -53,9 +58,56 @@ err = ds.UnmarshalSSZ(&myObject, data)
 root, err := ds.HashTreeRoot(myObject)
 ```
 
+### Using Code Generation (Recommended for Production)
+
+For maximum performance, use code generation. You can use either the CLI tool or the programmatic API:
+
+#### Option 1: CLI Tool (Recommended)
+
+Install the CLI tool:
+```bash
+go install github.com/pk910/dynamic-ssz/dynssz-gen@latest
+```
+
+Generate SSZ methods:
+```bash
+# Generate for types in current package
+dynssz-gen -package . -types "MyStruct,OtherType" -output generated.go
+
+# Generate for types in external package
+dynssz-gen -package github.com/example/types -types "Block" -output block_ssz.go
+```
+
+#### Option 2: Programmatic API
+
+For integration with build systems:
+
+```go
+//go:generate go run codegen.go
+
+// codegen.go
+package main
+
+import (
+    "github.com/pk910/dynamic-ssz/codegen"
+    "reflect"
+)
+
+func main() {
+    generator := codegen.NewCodeGenerator(nil)
+    generator.BuildFile(
+        "generated.go",
+        codegen.WithReflectType(reflect.TypeOf(MyStruct{})),
+    )
+    generator.Generate()
+}
+```
+
+Both approaches generate optimized SSZ methods that are faster than reflection-based encoding.
+
 ## Performance
 
-The performance of `dynssz` has been benchmarked against `fastssz` using BeaconBlocks and BeaconStates from small kurtosis testnets, providing a consistent and comparable set of data. These benchmarks compare four scenarios: exclusively using `fastssz`, exclusively using `dynssz`, and a hybrid approach where `dynssz` defaults to `fastssz` for static types for maximum performance. The results highlight the balance between flexibility and speed:
+The performance of `dynssz` has been benchmarked against `fastssz` using BeaconBlocks and BeaconStates from small kurtosis testnets, providing a consistent and comparable set of data. These benchmarks compare four scenarios: exclusively using `fastssz`, exclusively using `dynssz`, a hybrid approach where `dynssz` defaults to `fastssz` for static types, and `dynssz` with code generation for maximum performance. The results highlight the balance between flexibility and speed:
 
 **Legend:**
 - First number: Unmarshalling time in milliseconds.
@@ -68,11 +120,13 @@ The performance of `dynssz` has been benchmarked against `fastssz` using BeaconB
 - **fastssz only:** [6 ms / 2 ms / 87 ms] success
 - **dynssz only:** [29 ms / 15 ms / 57 ms] success
 - **dynssz + fastssz:** [9 ms / 3 ms / 64 ms] success
+- **dynssz + codegen:** [6 ms / 2 ms / 55 ms] success
 
 #### BeaconState Decode + Encode + Hash (10,000 times)
 - **fastssz only:** [5963 ms / 4026 ms / 70919 ms] success
 - **dynssz only:** [15728 ms / 13841 ms / 49248 ms] success
 - **dynssz + fastssz:** [6139 ms / 4094 ms / 36042 ms] success
+- **dynssz + codegen:** [6344 ms / 4869 ms / 36084 ms] success
 
 ### Minimal Preset
 
@@ -86,8 +140,9 @@ The performance of `dynssz` has been benchmarked against `fastssz` using BeaconB
 - **fastssz only:** failed (unmarshal error: incorrect size)
 - **dynssz only:** [762 ms / 434 ms / 1553 ms] success
 - **dynssz + fastssz:** [413 ms / 264 ms / 3921 ms] success
+- **dynssz + codegen:** [172 ms / 100 ms / 1329 ms] success
 
-These results showcase the dynamic processing capabilities of `dynssz`, particularly its ability to handle data structures that `fastssz` cannot process due to its static nature. The hybrid approach provides the best of both worlds: the flexibility to handle any preset configuration while delivering performance that is acceptable for productive use cases.
+These results showcase the dynamic processing capabilities of `dynssz`, particularly its ability to handle data structures that `fastssz` cannot process due to its static nature. The code generation option provides the best of both worlds: the flexibility to handle any preset configuration while delivering performance that matches or exceeds `fastssz`. The hybrid approach with `fastssz` provides excellent performance for compatible types, while code generation delivers optimal performance across all scenarios.
 
 ## Testing
 
@@ -102,7 +157,9 @@ The library includes comprehensive testing infrastructure:
 
 - [Getting Started Guide](docs/getting-started.md)
 - [API Reference](docs/api-reference.md)
-- [Struct Tags & Annotations](docs/struct-tags.md)
+- [Supported Types](docs/supported-types.md)
+- [Code Generation Guide](docs/code-generator.md)
+- [Struct Tags & Annotations](docs/ssz-annotations.md)
 - [Performance Guide](docs/performance.md)
 - [Examples](examples/)
 
@@ -110,6 +167,7 @@ The library includes comprehensive testing infrastructure:
 
 Check out the [examples](examples/) directory for:
 - Basic encoding/decoding
+- Code generation setup
 - Ethereum types integration
 - Custom specifications
 - Multi-dimensional arrays

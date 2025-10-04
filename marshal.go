@@ -1,6 +1,7 @@
-// dynssz: Dynamic SSZ encoding/decoding for Ethereum with fastssz efficiency.
-// This file is part of the dynssz package.
-// Copyright (c) 2024 by pk910. Refer to LICENSE for more information.
+// Copyright (c) 2025 pk910
+// SPDX-License-Identifier: Apache-2.0
+// This file is part of the dynamic-ssz library.
+
 package dynssz
 
 import (
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
@@ -131,7 +133,15 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 		case SszUint32Type:
 			buf = sszutils.MarshalUint32(buf, uint32(sourceValue.Uint()))
 		case SszUint64Type:
-			buf = sszutils.MarshalUint64(buf, uint64(sourceValue.Uint()))
+			if sourceType.GoTypeFlags&GoTypeFlagIsTime != 0 {
+				timeValue, isTime := sourceValue.Interface().(time.Time)
+				if !isTime {
+					return nil, fmt.Errorf("time.Time type expected, got %v", sourceType.Type.Name())
+				}
+				buf = sszutils.MarshalUint64(buf, uint64(timeValue.Unix()))
+			} else {
+				buf = sszutils.MarshalUint64(buf, uint64(sourceValue.Uint()))
+			}
 		default:
 			return nil, fmt.Errorf("unknown type: %v", sourceType)
 		}
@@ -260,12 +270,18 @@ func (d *DynSsz) marshalContainer(sourceType *TypeDescriptor, sourceValue reflec
 func (d *DynSsz) marshalVector(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
 	sliceLen := sourceValue.Len()
 	if uint32(sliceLen) > sourceType.Len {
-		return nil, sszutils.ErrListTooBig
+		if sourceType.Kind == reflect.Array {
+			sliceLen = int(sourceType.Len)
+		} else {
+			return nil, sszutils.ErrListTooBig
+		}
 	}
 
 	appendZero := 0
+	dataLen := int(sourceType.Len)
 	if uint32(sliceLen) < sourceType.Len {
 		appendZero = int(sourceType.Len) - sliceLen
+		dataLen = sliceLen
 	}
 
 	if sourceType.GoTypeFlags&(GoTypeFlagIsByteArray|GoTypeFlagIsString) != 0 {
@@ -284,13 +300,13 @@ func (d *DynSsz) marshalVector(sourceType *TypeDescriptor, sourceValue reflect.V
 			bytes = sourceValue.Bytes()
 		}
 
-		buf = append(buf, bytes...)
+		buf = append(buf, bytes[:dataLen]...)
 
 		if appendZero > 0 {
 			buf = sszutils.AppendZeroPadding(buf, appendZero)
 		}
 	} else {
-		for i := 0; i < int(sliceLen); i++ {
+		for i := 0; i < dataLen; i++ {
 			itemVal := sourceValue.Index(i)
 			newBuf, err := d.marshalType(sourceType.ElemDesc, itemVal, buf, idt+2)
 			if err != nil {

@@ -1,9 +1,12 @@
-// dynssz: Dynamic SSZ encoding/decoding for Ethereum with fastssz efficiency.
-// This file implements cached type descriptors with unsafe pointer optimization.
-// Copyright (c) 2024 by pk910. Refer to LICENSE for more information.
+// Copyright (c) 2025 pk910
+// SPDX-License-Identifier: Apache-2.0
+// This file is part of the dynamic-ssz library.
+
 package dynssz
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -48,45 +51,47 @@ const (
 	GoTypeFlagIsPointer   GoTypeFlag = 1 << iota // Whether the type is a pointer type
 	GoTypeFlagIsByteArray                        // Whether the type is a byte array
 	GoTypeFlagIsString                           // Whether the type is a string type
+	GoTypeFlagIsTime                             // Whether the type is a time.Time type
 )
 
 // TypeDescriptor represents a cached, optimized descriptor for a type's SSZ encoding/decoding
 type TypeDescriptor struct {
-	Type                   reflect.Type
-	Kind                   reflect.Kind              // Go kind of the type
-	Size                   uint32                    // SSZ size (-1 if dynamic)
-	Len                    uint32                    // Length of array/slice
-	Limit                  uint64                    // Limit of array/slice (ssz-max tag)
-	ContainerDesc          *ContainerDescriptor      // For structs
-	UnionVariants          map[uint8]*TypeDescriptor // Union variant types by index (for CompatibleUnion)
-	ElemDesc               *TypeDescriptor           // For slices/arrays
-	HashTreeRootWithMethod *reflect.Method           // Cached HashTreeRootWith method for performance
-	SizeExpression         *string                   // The dynamic expression used to calculate the size of the type
-	MaxExpression          *string                   // The dynamic expression used to calculate the max size of the type
-	SszType                SszType                   // SSZ type of the type
-	SszTypeFlags           SszTypeFlag               // SSZ type flags
-	SszCompatFlags         SszCompatFlag             // SSZ compatibility flags
-	GoTypeFlags            GoTypeFlag                // Additional go type flags
+	Type                   reflect.Type              `json:"-"`                   // Reflect type
+	CodegenInfo            *any                      `json:"-"`                   // Codegen information
+	Kind                   reflect.Kind              `json:"kind"`                // Reflect kind of the type
+	Size                   uint32                    `json:"size"`                // SSZ size (-1 if dynamic)
+	Len                    uint32                    `json:"len"`                 // Length of array/slice
+	Limit                  uint64                    `json:"limit"`               // Limit of array/slice (ssz-max tag)
+	ContainerDesc          *ContainerDescriptor      `json:"container,omitempty"` // For structs
+	UnionVariants          map[uint8]*TypeDescriptor `json:"union,omitempty"`     // Union variant types by index (for CompatibleUnion)
+	ElemDesc               *TypeDescriptor           `json:"field,omitempty"`     // For slices/arrays
+	HashTreeRootWithMethod *reflect.Method           `json:"-"`                   // Cached HashTreeRootWith method for performance
+	SizeExpression         *string                   `json:"size_expr,omitempty"` // The dynamic expression used to calculate the size of the type
+	MaxExpression          *string                   `json:"max_expr,omitempty"`  // The dynamic expression used to calculate the max size of the type
+	SszType                SszType                   `json:"type"`                // SSZ type of the type
+	SszTypeFlags           SszTypeFlag               `json:"flags"`               // SSZ type flags
+	SszCompatFlags         SszCompatFlag             `json:"compat"`              // SSZ compatibility flags
+	GoTypeFlags            GoTypeFlag                `json:"go_flags"`            // Additional go type flags
 }
 
 // FieldDescriptor represents a cached descriptor for a struct field
 type ContainerDescriptor struct {
-	Fields    []FieldDescriptor    // For structs
-	DynFields []DynFieldDescriptor // Dynamic struct fields
+	Fields    []FieldDescriptor    `json:"fields"`     // For structs
+	DynFields []DynFieldDescriptor `json:"dyn_fields"` // Dynamic struct fields
 }
 
 // FieldDescriptor represents a cached descriptor for a struct field
 type FieldDescriptor struct {
-	Name     string
-	Type     *TypeDescriptor // Type descriptor
-	SszIndex uint16          // SSZ index for progressive containers
+	Name     string          `json:"name"`            // Name of the field
+	Type     *TypeDescriptor `json:"type"`            // Type descriptor
+	SszIndex uint16          `json:"index,omitempty"` // SSZ index for progressive containers
 }
 
 // DynFieldDescriptor represents a dynamic field descriptor for a struct
 type DynFieldDescriptor struct {
-	Field  *FieldDescriptor
-	Offset uint32
-	Index  int16 // Index of the field in the struct
+	Field  *FieldDescriptor `json:"field"`
+	Offset uint32           `json:"offset"`
+	Index  int16            `json:"index"` // Index of the field in the struct
 }
 
 // NewTypeCache creates a new type cache
@@ -182,7 +187,9 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 
 	// check dynamic size and max size
 	if len(sizeHints) > 0 {
-		desc.SizeExpression = &sizeHints[0].Expr
+		if sizeHints[0].Expr != "" {
+			desc.SizeExpression = &sizeHints[0].Expr
+		}
 		for _, hint := range sizeHints {
 			if hint.Custom {
 				desc.SszTypeFlags |= SszTypeFlagHasDynamicSize
@@ -199,7 +206,10 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 			desc.SszTypeFlags |= SszTypeFlagHasLimit
 			desc.Limit = maxSizeHints[0].Size
 		}
-		desc.MaxExpression = &maxSizeHints[0].Expr
+
+		if maxSizeHints[0].Expr != "" {
+			desc.MaxExpression = &maxSizeHints[0].Expr
+		}
 
 		for _, hint := range maxSizeHints {
 			if hint.Custom {
@@ -220,13 +230,20 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 	if desc.Kind == reflect.String {
 		desc.GoTypeFlags |= GoTypeFlagIsString
 	}
+	if t.PkgPath() == "time" && t.Name() == "Time" {
+		desc.GoTypeFlags |= GoTypeFlagIsTime
+	}
 
 	// auto-detect ssz type if not specified
 	if sszType == SszUnspecifiedType {
 		// detect some well-known and widely used types
 		switch {
+		case t.PkgPath() == "time" && t.Name() == "Time":
+			sszType = SszUint64Type
 		case t.PkgPath() == "github.com/holiman/uint256" && t.Name() == "Int":
 			sszType = SszUint256Type
+		case t.PkgPath() == "github.com/prysmaticlabs/go-bitfield" && t.Name() == "Bitlist":
+			sszType = SszBitlistType
 		case t.PkgPath() == "github.com/pk910/dynamic-ssz" && strings.HasPrefix(t.Name(), "CompatibleUnion["):
 			sszType = SszCompatibleUnionType
 		}
@@ -331,8 +348,8 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		}
 		desc.Size = 4
 	case SszUint64Type:
-		if desc.Kind != reflect.Uint64 {
-			return nil, fmt.Errorf("uint64 ssz type can only be represented by uint64 types, got %v", desc.Kind)
+		if desc.Kind != reflect.Uint64 && desc.GoTypeFlags&GoTypeFlagIsTime == 0 {
+			return nil, fmt.Errorf("uint64 ssz type can only be represented by uint64 or time.Time types, got %v", desc.Kind)
 		}
 		if len(sizeHints) > 0 && sizeHints[0].Size != 8 {
 			return nil, fmt.Errorf("uint64 ssz type must be ssz-size:8, got %v", sizeHints[0].Size)
@@ -922,4 +939,14 @@ func (tc *TypeCache) extractGenericTypeParameter(unionType reflect.Type) (reflec
 	}
 
 	return descriptorType, nil
+}
+
+func (td *TypeDescriptor) GetTypeHash() ([32]byte, error) {
+	jsonDesc, err := json.Marshal(td)
+	if err != nil {
+		return [32]byte{}, err
+	}
+
+	hash := sha256.Sum256(jsonDesc)
+	return hash, nil
 }

@@ -1,3 +1,6 @@
+// Copyright (c) 2025 pk910
+// SPDX-License-Identifier: Apache-2.0
+
 // Package main demonstrates versioned block handling patterns with dynamic-ssz.
 // This example shows how to handle different Ethereum fork versions efficiently,
 // similar to patterns used in production indexers like Dora.
