@@ -23,12 +23,12 @@ import (
 //   - appendCode: Function to append formatted code with proper indentation
 //   - typePrinter: Type name formatter and import tracker
 //   - options: Code generation options controlling output behavior
-//   - usedDynSsz: Flag tracking whether generated code uses dynamic SSZ functionality
+//   - usedDynSpecs: Flag tracking whether generated code uses dynamic SSZ functionality
 type sizeContext struct {
-	appendCode  func(indent int, code string, args ...any)
-	typePrinter *TypePrinter
-	options     *CodeGeneratorOptions
-	usedDynSsz  bool
+	appendCode   func(indent int, code string, args ...any)
+	typePrinter  *TypePrinter
+	options      *CodeGeneratorOptions
+	usedDynSpecs bool
 }
 
 // generateSize generates size calculation methods for a specific type.
@@ -48,9 +48,8 @@ type sizeContext struct {
 //   - options: Generation options controlling which methods to create
 //
 // Returns:
-//   - bool: True if generated code uses dynamic SSZ functionality
 //   - error: An error if code generation fails
-func generateSize(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) (bool, error) {
+func generateSize(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
 	codeBuf := strings.Builder{}
 	ctx := &sizeContext{
 		appendCode: func(indent int, code string, args ...any) {
@@ -68,14 +67,14 @@ func generateSize(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Buil
 
 	// Generate size calculation code
 	if err := ctx.sizeType(rootTypeDesc, "t", 1, true); err != nil {
-		return false, err
+		return err
 	}
 
 	genDynamicFn := !options.WithoutDynamicExpressions
 	genStaticFn := options.WithoutDynamicExpressions || options.CreateLegacyFn
 
 	if genDynamicFn {
-		if ctx.usedDynSsz {
+		if ctx.usedDynSpecs {
 			codeBuilder.WriteString(fmt.Sprintf("func (t %s) SizeSSZDyn(ds sszutils.DynamicSpecs) (size int) {\n", typeName))
 			codeBuilder.WriteString(codeBuf.String())
 			codeBuilder.WriteString("\treturn size\n")
@@ -89,7 +88,7 @@ func generateSize(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Buil
 	}
 
 	if genStaticFn {
-		if !ctx.usedDynSsz {
+		if !ctx.usedDynSpecs {
 			codeBuilder.WriteString(fmt.Sprintf("func (t %s) SizeSSZ() (size int) {\n", typeName))
 			if rootTypeDesc.Size > 0 {
 				codeBuilder.WriteString(fmt.Sprintf("\treturn %d\n", rootTypeDesc.Size))
@@ -106,7 +105,7 @@ func generateSize(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Buil
 		}
 	}
 
-	return ctx.usedDynSsz, nil
+	return nil
 }
 
 // sizeType generates size calculation code for any SSZ type, delegating to specific sizers.
@@ -114,7 +113,7 @@ func (ctx *sizeContext) sizeType(desc *dynssz.TypeDescriptor, varName string, in
 	// Handle types that have generated methods we can call
 	if desc.SszCompatFlags&dynssz.SszCompatFlagDynamicSizer != 0 && !isRoot {
 		ctx.appendCode(indent, "size += %s.SizeSSZDyn(ds)\n", varName)
-		ctx.usedDynSsz = true
+		ctx.usedDynSpecs = true
 		return nil
 	}
 
@@ -224,7 +223,7 @@ func (ctx *sizeContext) sizeVector(desc *dynssz.TypeDescriptor, varName string, 
 	}
 
 	if sizeExpression != nil {
-		ctx.usedDynSsz = true
+		ctx.usedDynSpecs = true
 		ctx.appendCode(indent, "hasLimit, limit, err := ds.ResolveSpecValue(\"%s\")\n", *sizeExpression)
 		ctx.appendCode(indent, "if err != nil {\n")
 		ctx.appendCode(indent, "\treturn 0\n")
@@ -274,6 +273,9 @@ func (ctx *sizeContext) sizeVector(desc *dynssz.TypeDescriptor, varName string, 
 			ctx.appendCode(indent, "\t}\n")
 			ctx.appendCode(indent, "}\n")
 		}
+
+		// Add offsets
+		ctx.appendCode(indent, "size += int(limit) * 4\n")
 	}
 
 	return nil

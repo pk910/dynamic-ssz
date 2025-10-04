@@ -23,13 +23,13 @@ import (
 //   - appendCode: Function to append formatted code with proper indentation
 //   - typePrinter: Type name formatter and import tracker
 //   - options: Code generation options controlling output behavior
-//   - usedDynSsz: Flag tracking whether generated code uses dynamic SSZ functionality
+//   - usedDynSpecs: Flag tracking whether generated code uses dynamic SSZ functionality
 //   - valVarCounter: Counter for generating unique variable names during code generation
 type hashTreeRootContext struct {
 	appendCode    func(indent int, code string, args ...any)
 	typePrinter   *TypePrinter
 	options       *CodeGeneratorOptions
-	usedDynSsz    bool
+	usedDynSpecs  bool
 	valVarCounter int
 }
 
@@ -52,9 +52,8 @@ type hashTreeRootContext struct {
 //   - options: Generation options controlling which methods to create
 //
 // Returns:
-//   - bool: True if generated code uses dynamic SSZ functionality
 //   - error: An error if code generation fails
-func generateHashTreeRoot(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) (bool, error) {
+func generateHashTreeRoot(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
 	codeBuf := strings.Builder{}
 	ctx := &hashTreeRootContext{
 		appendCode: func(indent int, code string, args ...any) {
@@ -72,14 +71,14 @@ func generateHashTreeRoot(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *stri
 
 	// Generate hash tree root code
 	if err := ctx.hashType(rootTypeDesc, "t", 1, true, false); err != nil {
-		return false, err
+		return err
 	}
 
 	genDynamicFn := !options.WithoutDynamicExpressions
 	genStaticFn := options.WithoutDynamicExpressions || options.CreateLegacyFn
 
 	if genDynamicFn {
-		if ctx.usedDynSsz {
+		if ctx.usedDynSpecs {
 			codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName))
 			codeBuilder.WriteString(codeBuf.String())
 			codeBuilder.WriteString("\treturn nil\n")
@@ -93,7 +92,7 @@ func generateHashTreeRoot(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *stri
 	}
 
 	if genStaticFn {
-		if !ctx.usedDynSsz {
+		if !ctx.usedDynSpecs {
 			codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootWith(hh sszutils.HashWalker) error {\n", typeName))
 			codeBuilder.WriteString(codeBuf.String())
 			codeBuilder.WriteString("\treturn nil\n")
@@ -132,7 +131,7 @@ func generateHashTreeRoot(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *stri
 		codeBuilder.WriteString("}\n")
 	}
 
-	return ctx.usedDynSsz, nil
+	return nil
 }
 
 // isPrimitive checks if a type is a primitive SSZ type that can be hashed directly.
@@ -151,7 +150,7 @@ func (ctx *hashTreeRootContext) hashType(desc *dynssz.TypeDescriptor, varName st
 	// Handle types that have generated methods we can call
 	if desc.SszCompatFlags&dynssz.SszCompatFlagDynamicHashRoot != 0 && !isRoot {
 		ctx.appendCode(indent, "if err := %s.HashTreeRootWithDyn(ds, hh); err != nil {\n\treturn err\n}\n", varName)
-		ctx.usedDynSsz = true
+		ctx.usedDynSpecs = true
 		return nil
 	}
 
@@ -347,43 +346,77 @@ func (ctx *hashTreeRootContext) hashVector(desc *dynssz.TypeDescriptor, varName 
 
 	limitVar := ""
 	if sizeExpression != nil {
-		ctx.usedDynSsz = true
+		ctx.usedDynSpecs = true
 		ctx.appendCode(indent, "hasLimit, limit, err := ds.ResolveSpecValue(\"%s\")\n", *sizeExpression)
 		ctx.appendCode(indent, "if err != nil {\n\treturn err\n}\n")
 		ctx.appendCode(indent, "if !hasLimit {\n\tlimit = %d\n}\n", desc.Len)
 		limitVar = "int(limit)"
+
+		if desc.Kind == reflect.Array {
+			// check if dynamic limit is greater than the length of the array
+			ctx.appendCode(indent, "if limit > %d {\n", desc.Len)
+			ctx.appendCode(indent, "\treturn sszutils.ErrVectorLength\n")
+			ctx.appendCode(indent, "}\n")
+		}
 	} else {
 		limitVar = fmt.Sprintf("%d", desc.Len)
 	}
 
-	if !pack {
-		// Start vector merkleization
-		ctx.appendCode(indent, "idx := hh.Index()\n")
-	}
-
-	hasVLen := false
+	lenVar := ""
 	if desc.Kind != reflect.Array {
 		ctx.appendCode(indent, "vlen := len(%s)\n", varName)
 		ctx.appendCode(indent, "if vlen > %s {\n", limitVar)
 		ctx.appendCode(indent, "\treturn sszutils.ErrVectorLength\n")
 		ctx.appendCode(indent, "}\n")
-		hasVLen = true
+		lenVar = "vlen"
+	} else {
+		lenVar = fmt.Sprintf("%d", desc.Len)
 	}
 
+	itemSize := 0
+
 	// Handle byte arrays
-	if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
-		ctx.appendCode(indent, "hh.PutBytes([]byte(%s))\n", varName)
-	} else if desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
-		ctx.appendCode(indent, "hh.PutBytes(%s[:])\n", varName)
-	} else {
-		// Hash elements
-		if !hasVLen {
-			ctx.appendCode(indent, "vlen := len(%s)\n", varName)
+	if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 || desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
+		valVar := ""
+		if desc.Kind != reflect.Array {
+			if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
+				ctx.appendCode(indent, "val := []byte(%s)\n", varName)
+			} else {
+				ctx.appendCode(indent, "val := %s[:]\n", varName)
+			}
+			valVar = "val"
+
+			// append zero padding if we have less items than the limit
+			ctx.appendCode(indent, "if %s < %s {\n", lenVar, limitVar)
+			ctx.appendCode(indent, "\tval = sszutils.AppendZeroPadding(val, (%s-%s)*%d)\n", limitVar, lenVar, desc.ElemDesc.Size)
+			ctx.appendCode(indent, "}\n")
+		} else {
+			valVar = varName
 		}
+
+		if pack {
+			ctx.appendCode(indent, "hh.Append(%s[:%s])\n", valVar, limitVar)
+		} else {
+			ctx.appendCode(indent, "hh.PutBytes(%s[:%s])\n", valVar, limitVar)
+		}
+		itemSize = 1
+	} else {
+		// Hash individual elements
+		if !pack {
+			// Start vector merkleization
+			ctx.appendCode(indent, "idx := hh.Index()\n")
+		}
+
+		if ctx.isPrimitive(desc.ElemDesc) {
+			itemSize = int(desc.ElemDesc.Size)
+		} else {
+			itemSize = 32
+		}
+
 		valVar := ctx.getValVar()
 		ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", limitVar)
 		ctx.appendCode(indent, "\tvar %s %s\n", valVar, ctx.typePrinter.TypeString(desc.ElemDesc))
-		ctx.appendCode(indent, "\tif i < vlen {\n")
+		ctx.appendCode(indent, "\tif i < %s {\n", lenVar)
 		ctx.appendCode(indent, "\t\t%s = %s[i]\n", valVar, varName)
 		ctx.appendCode(indent, "\t}\n")
 
@@ -391,11 +424,15 @@ func (ctx *hashTreeRootContext) hashVector(desc *dynssz.TypeDescriptor, varName 
 			return err
 		}
 		ctx.appendCode(indent, "}\n")
-	}
 
-	if !pack {
-		// Finalize vector with bit limit
-		ctx.appendCode(indent, "hh.Merkleize(idx)\n")
+		if !pack {
+			if itemSize < 32 {
+				ctx.appendCode(indent, "hh.FillUpTo32()\n")
+			}
+
+			// Finalize vector with bit limit
+			ctx.appendCode(indent, "hh.Merkleize(idx)\n")
+		}
 	}
 
 	return nil
@@ -408,27 +445,43 @@ func (ctx *hashTreeRootContext) hashList(desc *dynssz.TypeDescriptor, varName st
 		maxExpression = nil
 	}
 
+	hasLimitVar := ""
 	maxVar := ""
 	if maxExpression != nil {
-		ctx.usedDynSsz = true
+		ctx.usedDynSpecs = true
 		ctx.appendCode(indent, "hasMax, max, err := ds.ResolveSpecValue(\"%s\")\n", *maxExpression)
 		ctx.appendCode(indent, "if err != nil {\n")
 		ctx.appendCode(indent, "\treturn err\n")
 		ctx.appendCode(indent, "}\n")
+		hasLimitVar = "hasMax"
+		maxVar = "uint64(max)"
 		if desc.Limit > 0 {
 			ctx.appendCode(indent, "if !hasMax {\n")
 			ctx.appendCode(indent, "\tmax = %d\n", desc.Limit)
 			ctx.appendCode(indent, "}\n")
 		}
-		maxVar = "uint64(max)"
 	} else if desc.Limit > 0 {
 		maxVar = fmt.Sprintf("%d", desc.Limit)
+		hasLimitVar = "true"
+	} else {
+		hasLimitVar = "false"
+		maxVar = "0"
+	}
+
+	ctx.appendCode(indent, "vlen := uint64(len(%s))\n", varName)
+
+	if hasLimitVar != "false" {
+		if hasLimitVar == "true" {
+			ctx.appendCode(indent, "if vlen > %s {\n", maxVar)
+		} else {
+			ctx.appendCode(indent, "if %s && vlen > %s {\n", hasLimitVar, maxVar)
+		}
+		ctx.appendCode(indent, "\treturn sszutils.ErrListTooBig\n")
+		ctx.appendCode(indent, "}\n")
 	}
 
 	// Start list merkleization
 	ctx.appendCode(indent, "idx := hh.Index()\n")
-	ctx.appendCode(indent, "vlen := uint64(len(%s))\n", varName)
-
 	itemSize := 0
 
 	// Handle byte slices
@@ -452,11 +505,15 @@ func (ctx *hashTreeRootContext) hashList(desc *dynssz.TypeDescriptor, varName st
 			return err
 		}
 		ctx.appendCode(indent, "}\n")
+
+		if itemSize < 32 {
+			ctx.appendCode(indent, "hh.FillUpTo32()\n")
+		}
 	}
 
 	if desc.SszType == dynssz.SszProgressiveListType {
 		ctx.appendCode(indent, "hh.MerkleizeProgressiveWithMixin(idx, vlen)\n")
-	} else if maxVar != "" {
+	} else if maxVar != "0" {
 		if itemSize > 0 {
 			ctx.appendCode(indent, "limit := sszutils.CalculateLimit(%s, vlen, %d)\n", maxVar, itemSize)
 			ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, vlen, limit)\n")
@@ -479,7 +536,7 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *dynssz.TypeDescriptor, varName
 
 	maxVar := ""
 	if maxExpression != nil {
-		ctx.usedDynSsz = true
+		ctx.usedDynSpecs = true
 		ctx.appendCode(indent, "hasMax, max, err := ds.ResolveSpecValue(\"%s\")\n", *maxExpression)
 		ctx.appendCode(indent, "if err != nil {\n")
 		ctx.appendCode(indent, "\treturn err\n")

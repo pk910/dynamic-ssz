@@ -42,11 +42,7 @@ import (
 //   - Reports detailed errors for analysis failures
 //
 // Returns:
-//   - error: An error if type analysis fails due to:
-//     - Invalid or missing package paths
-//     - Package path conflicts within a file
-//     - Type descriptor creation failures
-//     - SSZ compatibility issues
+//   - error: An error if type analysis fails
 //
 // This method must be called before any code generation attempts, as it populates
 // the essential type metadata that drives the entire generation process.
@@ -173,14 +169,13 @@ func (cg *CodeGenerator) analyzeTypes() error {
 //   - Organized import statements
 //   - Variable declarations for error handling
 //   - Generated SSZ methods for all specified types
-func (cg *CodeGenerator) generateFile(fileName string, packagePath string, opts *CodeGeneratorFileOptions) (string, error) {
+func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFileOptions) (string, error) {
 	if len(opts.Types) == 0 {
 		return "", fmt.Errorf("no types requested for generation")
 	}
 
 	typePrinter := NewTypePrinter(packagePath)
 	typePrinter.AddAlias("github.com/pk910/dynamic-ssz", "dynssz")
-	usedDynSsz := false
 	codeBuilder := strings.Builder{}
 	hashParts := [][]byte{}
 
@@ -195,18 +190,13 @@ func (cg *CodeGenerator) generateFile(fileName string, packagePath string, opts 
 		}
 		hashParts = append(hashParts, hash[:])
 
-		withDynSsz, err := cg.generateCode(t.Descriptor, typePrinter, &codeBuilder, &t.Options)
+		err = cg.generateCode(t.Descriptor, typePrinter, &codeBuilder, &t.Options)
 		if err != nil {
 			return "", fmt.Errorf("failed to generate code for %s: %w", t.TypeName, err)
 		}
-		usedDynSsz = usedDynSsz || withDynSsz
 	}
 
 	typesHash := sha256.Sum256(bytes.Join(hashParts, []byte{}))
-
-	if usedDynSsz {
-		typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
-	}
 	typePrinter.AddImport("github.com/pk910/dynamic-ssz/sszutils", "sszutils")
 
 	// collect & sort imports
@@ -286,43 +276,37 @@ func (cg *CodeGenerator) generateFile(fileName string, packagePath string, opts 
 // Returns:
 //   - bool: True if any generated code uses dynamic SSZ functionality
 //   - error: An error if any method generation fails
-func (cg *CodeGenerator) generateCode(desc *dynssz.TypeDescriptor, typePrinter *TypePrinter, codeBuilder *strings.Builder, options *CodeGeneratorOptions) (bool, error) {
+func (cg *CodeGenerator) generateCode(desc *dynssz.TypeDescriptor, typePrinter *TypePrinter, codeBuilder *strings.Builder, options *CodeGeneratorOptions) error {
 	// Generate the actual methods using flattened generators
 	var err error
-	var usedDynSsz bool
-	var usedDynSszResult bool
 
 	if !options.NoMarshalSSZ {
-		usedDynSsz, err = generateMarshal(desc, codeBuilder, typePrinter, options)
+		err = generateMarshal(desc, codeBuilder, typePrinter, options)
 		if err != nil {
-			return usedDynSsz, fmt.Errorf("failed to generate marshal for %s: %w", desc.Type.Name(), err)
+			return fmt.Errorf("failed to generate marshal for %s: %w", desc.Type.Name(), err)
 		}
-		usedDynSszResult = usedDynSsz
 	}
 
 	if !options.NoSizeSSZ {
-		usedDynSsz, err = generateSize(desc, codeBuilder, typePrinter, options)
+		err = generateSize(desc, codeBuilder, typePrinter, options)
 		if err != nil {
-			return usedDynSsz, fmt.Errorf("failed to generate size for %s: %w", desc.Type.Name(), err)
+			return fmt.Errorf("failed to generate size for %s: %w", desc.Type.Name(), err)
 		}
-		usedDynSszResult = usedDynSszResult || usedDynSsz
 	}
 
 	if !options.NoUnmarshalSSZ {
-		usedDynSsz, err = generateUnmarshal(desc, codeBuilder, typePrinter, options)
+		err = generateUnmarshal(desc, codeBuilder, typePrinter, options)
 		if err != nil {
-			return usedDynSsz, fmt.Errorf("failed to generate unmarshal for %s: %w", desc.Type.Name(), err)
+			return fmt.Errorf("failed to generate unmarshal for %s: %w", desc.Type.Name(), err)
 		}
-		usedDynSszResult = usedDynSszResult || usedDynSsz
 	}
 
 	if !options.NoHashTreeRoot {
-		usedDynSsz, err = generateHashTreeRoot(desc, codeBuilder, typePrinter, options)
+		err = generateHashTreeRoot(desc, codeBuilder, typePrinter, options)
 		if err != nil {
-			return usedDynSsz, fmt.Errorf("failed to generate hash tree root for %s: %w", desc.Type.Name(), err)
+			return fmt.Errorf("failed to generate hash tree root for %s: %w", desc.Type.Name(), err)
 		}
-		usedDynSszResult = usedDynSszResult || usedDynSsz
 	}
 
-	return usedDynSszResult, nil
+	return nil
 }

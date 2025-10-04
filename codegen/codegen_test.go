@@ -70,7 +70,9 @@ var testMatrix = []TestPayload{
 			Lst8     []uint8     `ssz-max:"4"`
 			Lst32    []uint32    `ssz-max:"4"`
 			Lst128   [][2]uint64 `ssz-type:"?,uint128" ssz-max:"4"`
-			Str      string      `ssz-max:"8"`
+			F1       [2][]uint16
+			F2       [10]uint8 `ssz-size:"5"`
+			Str      string    `ssz-max:"8"`
 			Wrapper1 dynssz.TypeWrapper[struct {
 				Data []byte `ssz-size:"32"`
 			}, []byte] `ssz-type:"wrapper"`
@@ -89,6 +91,8 @@ var testMatrix = []TestPayload{
 			Lst8:   []uint8{1, 2, 3, 4},
 			Lst32:  []uint32{1, 2, 3, 4},
 			Lst128: [][2]uint64{{1, 2}, {3, 4}},
+			F1:     [2][]uint16{{1, 2}, {3, 4}},
+			F2:     [10]uint8{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
 			Str:    "hello",
 			Wrapper1: dynssz.TypeWrapper[struct {
 				Data []byte `ssz-size:"32"`
@@ -108,7 +112,8 @@ var testMatrix = []TestPayload{
 			Lst8   []uint8     `ssz-max:"4" dynssz-max:"LST8_MAX"`
 			Lst32  []uint32    `ssz-max:"4" dynssz-max:"LST32_MAX"`
 			Lst128 [][2]uint64 `ssz-type:"?,uint128" ssz-max:"4" dynssz-max:"LST128_MAX"`
-			Str    string      `ssz-max:"8" dynssz-max:"STR_MAX"`
+			Str1   string      `ssz-max:"8" dynssz-max:"STR_MAX"`
+			Str2   string      `ssz-size:"10" dynssz-size:"STR_SIZE"`
 		}{
 			Vec8:   []uint8{1, 2, 3, 4, 5, 6},
 			Vec32:  []uint32{1, 2, 3, 4, 5, 6, 7, 8},
@@ -117,7 +122,8 @@ var testMatrix = []TestPayload{
 			Lst8:   []uint8{1, 2, 3, 4, 5, 6},
 			Lst32:  []uint32{1, 2, 3, 4, 5, 6, 7, 8},
 			Lst128: [][2]uint64{{1, 2}, {3, 4}},
-			Str:    "hello",
+			Str1:   "hello",
+			Str2:   "hello2",
 		},
 		Specs: map[string]any{
 			"VEC8_SIZE":   6,
@@ -128,6 +134,7 @@ var testMatrix = []TestPayload{
 			"LST32_MAX":   8,
 			"LST128_MAX":  2,
 			"STR_MAX":     16,
+			"STR_SIZE":    11,
 		},
 	},
 	{

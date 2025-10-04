@@ -108,7 +108,7 @@ func NewParser() *Parser {
 //	parser := NewParser()
 //	typeHints := []dynssz.SszTypeHint{{Type: dynssz.SszListType}}
 //	sizeHints := []dynssz.SszSizeHint{{Size: 1024}}
-//	
+//
 //	desc, err := parser.GetTypeDescriptor(structType, typeHints, sizeHints, nil)
 //	if err != nil {
 //	    return fmt.Errorf("failed to analyze type: %w", err)
@@ -635,6 +635,12 @@ func (p *Parser) buildVectorDescriptor(desc *dynssz.TypeDescriptor, typ types.Ty
 	case *types.Array:
 		elemType = t.Elem()
 		length = uint32(t.Len())
+		if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
+			if sizeHints[0].Size > length {
+				return fmt.Errorf("size hint for vector type is greater than the length of the array (%d > %d)", sizeHints[0].Size, length)
+			}
+			length = sizeHints[0].Size
+		}
 	case *types.Slice:
 		elemType = t.Elem()
 		if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
@@ -647,15 +653,14 @@ func (p *Parser) buildVectorDescriptor(desc *dynssz.TypeDescriptor, typ types.Ty
 			// String as vector
 			if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
 				length = sizeHints[0].Size
-				desc.Size = length
-				desc.Len = length
 				desc.GoTypeFlags |= dynssz.GoTypeFlagIsByteArray
-				return nil
+				elemType = byteType
 			} else {
 				return fmt.Errorf("string vector type requires explicit size hint")
 			}
+		} else {
+			return fmt.Errorf("unsupported vector base type: %v", t.Kind())
 		}
-		return fmt.Errorf("unsupported vector base type: %v", t.Kind())
 	default:
 		return fmt.Errorf("unsupported vector type: %T", typ)
 	}

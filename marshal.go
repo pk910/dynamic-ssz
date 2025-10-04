@@ -278,8 +278,10 @@ func (d *DynSsz) marshalVector(sourceType *TypeDescriptor, sourceValue reflect.V
 	}
 
 	appendZero := 0
+	dataLen := int(sourceType.Len)
 	if uint32(sliceLen) < sourceType.Len {
 		appendZero = int(sourceType.Len) - sliceLen
+		dataLen = sliceLen
 	}
 
 	if sourceType.GoTypeFlags&(GoTypeFlagIsByteArray|GoTypeFlagIsString) != 0 {
@@ -298,13 +300,13 @@ func (d *DynSsz) marshalVector(sourceType *TypeDescriptor, sourceValue reflect.V
 			bytes = sourceValue.Bytes()
 		}
 
-		buf = append(buf, bytes[:sourceType.Len]...)
+		buf = append(buf, bytes[:dataLen]...)
 
 		if appendZero > 0 {
 			buf = sszutils.AppendZeroPadding(buf, appendZero)
 		}
 	} else {
-		for i := 0; i < int(sliceLen); i++ {
+		for i := 0; i < dataLen; i++ {
 			itemVal := sourceValue.Index(i)
 			newBuf, err := d.marshalType(sourceType.ElemDesc, itemVal, buf, idt+2)
 			if err != nil {
