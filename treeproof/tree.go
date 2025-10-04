@@ -272,6 +272,10 @@ func TreeFromChunks(chunks [][]byte) (*Node, error) {
 func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 	numLeaves := len(leaves)
 
+	if limit <= 0 {
+		return NewEmptyNode(sszutils.ZeroBytes()[:32]), nil
+	}
+
 	depth := floorLog2(limit)
 	zeroOrderHashes := getZeroOrderHashes(depth)
 
@@ -397,7 +401,7 @@ func treeFromNodesProgressiveImpl(leaves []*Node, depth int) (*Node, error) {
 
 func TreeFromNodesWithMixin(leaves []*Node, num, limit int) (*Node, error) {
 	if !isPowerOfTwo(limit) {
-		return nil, errors.New("size of tree should be a power of 2")
+		limit = int(sszutils.NextPowerOfTwo(uint64(limit)))
 	}
 
 	mainTree, err := TreeFromNodes(leaves, limit)
@@ -462,6 +466,31 @@ func (n *Node) Get(index int) (*Node, error) {
 func (n *Node) Hash() []byte {
 	// TODO: handle special cases: empty root, one non-empty node
 	return hashNode(n)
+}
+
+// Left returns the left child node, or nil if this is a leaf.
+func (n *Node) Left() *Node {
+	return n.left
+}
+
+// Right returns the right child node, or nil if this is a leaf.
+func (n *Node) Right() *Node {
+	return n.right
+}
+
+// IsLeaf returns true if this node has no children (is a leaf node).
+func (n *Node) IsLeaf() bool {
+	return n.left == nil && n.right == nil
+}
+
+// IsEmpty returns true if this node represents zero-padding.
+func (n *Node) IsEmpty() bool {
+	return n.isEmpty
+}
+
+// Value returns the raw 32-byte value stored in this node.
+func (n *Node) Value() []byte {
+	return n.value
 }
 
 func hashNode(n *Node) []byte {
