@@ -136,8 +136,12 @@ func NewTypeCache(dynssz *DynSsz) *TypeCache {
 func (tc *TypeCache) GetTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) (*TypeDescriptor, error) {
 	// Check cache first (read lock)
 	if len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) == 0 {
+		cacheKey := t
+		if t.Kind() == reflect.Ptr {
+			cacheKey = t.Elem()
+		}
 		tc.mutex.RLock()
-		if desc, exists := tc.descriptors[t]; exists {
+		if desc, exists := tc.descriptors[cacheKey]; exists {
 			tc.mutex.RUnlock()
 			return desc, nil
 		}
@@ -154,7 +158,12 @@ func (tc *TypeCache) GetTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, 
 // getTypeDescriptor returns a cached type descriptor, computing it if necessary
 func (tc *TypeCache) getTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) (*TypeDescriptor, error) {
 	cacheable := len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) == 0
-	if desc, exists := tc.descriptors[t]; exists && cacheable {
+	cacheKey := t
+	if t.Kind() == reflect.Ptr {
+		cacheKey = t.Elem()
+	}
+
+	if desc, exists := tc.descriptors[cacheKey]; exists && cacheable {
 		return desc, nil
 	}
 
@@ -165,7 +174,7 @@ func (tc *TypeCache) getTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, 
 
 	// Cache only if no size hints (cacheable)
 	if cacheable {
-		tc.descriptors[t] = desc
+		tc.descriptors[cacheKey] = desc
 	}
 
 	return desc, nil
@@ -883,6 +892,10 @@ func (tc *TypeCache) GetAllTypes() []reflect.Type {
 func (tc *TypeCache) RemoveType(t reflect.Type) {
 	tc.mutex.Lock()
 	defer tc.mutex.Unlock()
+
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
 
 	delete(tc.descriptors, t)
 }

@@ -124,7 +124,11 @@ func (p *Parser) GetTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeHin
 
 func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeHint, sizeHints []dynssz.SszSizeHint, maxSizeHints []dynssz.SszMaxSizeHint) (*dynssz.TypeDescriptor, error) {
 	cacheable := len(typeHints) == 0 && len(sizeHints) == 0 && len(maxSizeHints) == 0
-	typeKey := fmt.Sprintf("%v", typ.String())
+	cacheType := typ
+	if ptr, ok := typ.(*types.Pointer); ok {
+		cacheType = ptr.Elem()
+	}
+	typeKey := fmt.Sprintf("%v", cacheType.String())
 	if cacheable && p.cache[typeKey] != nil {
 		return p.cache[typeKey], nil
 	}
@@ -946,8 +950,8 @@ func (p *Parser) parseFieldTags(tag string) (typeHints []dynssz.SszTypeHint, siz
 				sszSize.Custom = true
 				if i < len(sizeHints) {
 					sizeHints[i].Expr = sszSizeStr
+					continue
 				}
-				continue
 			}
 
 			if i >= len(sizeHints) {
