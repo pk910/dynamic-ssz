@@ -158,13 +158,22 @@ func (ctx *hashTreeRootContext) hashType(desc *dynssz.TypeDescriptor, varName st
 		return nil
 	}
 
-	useFastSsz := !ctx.options.NoFastSsz && desc.SszCompatFlags&dynssz.SszCompatFlagHashTreeRootWith != 0
+	isFastsszHasher := desc.SszCompatFlags&dynssz.SszCompatFlagFastSSZHasher != 0
+	isFastsszHashWith := desc.SszCompatFlags&dynssz.SszCompatFlagHashTreeRootWith != 0
+	hasDynamicSize := desc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0
+	hasDynamicMax := desc.SszTypeFlags&dynssz.SszTypeFlagHasMaxExpr != 0
+
+	useFastSsz := !isRoot && !ctx.options.NoFastSsz && !hasDynamicSize && !hasDynamicMax && (isFastsszHasher || isFastsszHashWith)
 	if !useFastSsz && desc.SszType == dynssz.SszCustomType {
 		useFastSsz = true
 	}
 
-	if useFastSsz && !isRoot {
-		ctx.appendCode(indent, "if err := %s.HashTreeRootWith(hh); err != nil {\n\treturn err\n}\n", varName)
+	if useFastSsz {
+		if isFastsszHashWith {
+			ctx.appendCode(indent, "if err := %s.HashTreeRootWith(hh); err != nil {\n\treturn err\n}\n", varName)
+		} else {
+			ctx.appendCode(indent, "if root, err := %s.HashTreeRoot(); err != nil {\n\treturn err\n} else {\n\thh.AppendBytes32(root[:])\n\t}\n", varName)
+		}
 		return nil
 	}
 

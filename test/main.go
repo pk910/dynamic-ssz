@@ -20,8 +20,6 @@ func main() {
 		performanceCommand()
 	case "codegen-test":
 		codegenTestCommand()
-	case "codegen":
-		codegenCommand()
 	case "help":
 		printUsage()
 	default:
