@@ -458,15 +458,16 @@ func (ctx *hashTreeRootContext) hashList(desc *dynssz.TypeDescriptor, varName st
 		maxExpression = nil
 	}
 
-	hasLimitVar := ""
+	hasMax := false
 	maxVar := ""
+
 	if maxExpression != nil {
 		ctx.usedDynSpecs = true
 		ctx.appendCode(indent, "hasMax, max, err := ds.ResolveSpecValue(\"%s\")\n", *maxExpression)
 		ctx.appendCode(indent, "if err != nil {\n")
 		ctx.appendCode(indent, "\treturn err\n")
 		ctx.appendCode(indent, "}\n")
-		hasLimitVar = "hasMax"
+		hasMax = true
 		maxVar = "uint64(max)"
 		if desc.Limit > 0 {
 			ctx.appendCode(indent, "if !hasMax {\n")
@@ -475,20 +476,23 @@ func (ctx *hashTreeRootContext) hashList(desc *dynssz.TypeDescriptor, varName st
 		}
 	} else if desc.Limit > 0 {
 		maxVar = fmt.Sprintf("%d", desc.Limit)
-		hasLimitVar = "true"
+		hasMax = true
 	} else {
-		hasLimitVar = "false"
 		maxVar = "0"
 	}
 
-	ctx.appendCode(indent, "vlen := uint64(len(%s))\n", varName)
-
-	if hasLimitVar != "false" {
-		if hasLimitVar == "true" {
-			ctx.appendCode(indent, "if vlen > %s {\n", maxVar)
-		} else {
-			ctx.appendCode(indent, "if %s && vlen > %s {\n", hasLimitVar, maxVar)
+	hasVlen := false
+	addVlen := func() {
+		if hasVlen {
+			return
 		}
+		ctx.appendCode(indent, "vlen := uint64(len(%s))\n", varName)
+		hasVlen = true
+	}
+
+	if hasMax {
+		addVlen()
+		ctx.appendCode(indent, "if vlen > %s {\n", maxVar)
 		ctx.appendCode(indent, "\treturn sszutils.ErrListTooBig\n")
 		ctx.appendCode(indent, "}\n")
 	}
@@ -512,6 +516,7 @@ func (ctx *hashTreeRootContext) hashList(desc *dynssz.TypeDescriptor, varName st
 		}
 
 		// Hash all elements
+		addVlen()
 		ctx.appendCode(indent, "for i := 0; i < int(vlen); i++ {\n")
 		ctx.appendCode(indent, "\tt := %s[i]\n", varName)
 		if err := ctx.hashType(desc.ElemDesc, "t", indent+1, false, true); err != nil {
@@ -525,8 +530,10 @@ func (ctx *hashTreeRootContext) hashList(desc *dynssz.TypeDescriptor, varName st
 	}
 
 	if desc.SszType == dynssz.SszProgressiveListType {
+		addVlen()
 		ctx.appendCode(indent, "hh.MerkleizeProgressiveWithMixin(idx, vlen)\n")
 	} else if maxVar != "0" {
+		addVlen()
 		if itemSize > 0 {
 			ctx.appendCode(indent, "limit := sszutils.CalculateLimit(%s, vlen, %d)\n", maxVar, itemSize)
 			ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, vlen, limit)\n")

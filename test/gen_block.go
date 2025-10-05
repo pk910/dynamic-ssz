@@ -826,7 +826,7 @@ func (t *TestBeaconBlock) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszut
 				max = 16
 			}
 			vlen := uint64(len(t))
-			if hasMax && vlen > uint64(max) {
+			if vlen > uint64(max) {
 				return sszutils.ErrListTooBig
 			}
 			idx := hh.Index()
@@ -852,7 +852,7 @@ func (t *TestBeaconBlock) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszut
 				max = 2
 			}
 			vlen := uint64(len(t))
-			if hasMax && vlen > uint64(max) {
+			if vlen > uint64(max) {
 				return sszutils.ErrListTooBig
 			}
 			idx := hh.Index()
@@ -878,7 +878,7 @@ func (t *TestBeaconBlock) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszut
 				max = 128
 			}
 			vlen := uint64(len(t))
-			if hasMax && vlen > uint64(max) {
+			if vlen > uint64(max) {
 				return sszutils.ErrListTooBig
 			}
 			idx := hh.Index()
@@ -939,7 +939,7 @@ func (t *TestBeaconBlock) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszut
 				max = 16
 			}
 			vlen := uint64(len(t))
-			if hasMax && vlen > uint64(max) {
+			if vlen > uint64(max) {
 				return sszutils.ErrListTooBig
 			}
 			idx := hh.Index()
@@ -1004,7 +1004,7 @@ func (t *TestBeaconBlock) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszut
 				max = 16
 			}
 			vlen := uint64(len(t))
-			if hasMax && vlen > uint64(max) {
+			if vlen > uint64(max) {
 				return sszutils.ErrListTooBig
 			}
 			idx := hh.Index()
@@ -1107,7 +1107,7 @@ func (t *TestBeaconBlock) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszut
 					max = 32
 				}
 				vlen := uint64(len(t))
-				if hasMax && vlen > uint64(max) {
+				if vlen > uint64(max) {
 					return sszutils.ErrListTooBig
 				}
 				idx := hh.Index()
@@ -1140,7 +1140,7 @@ func (t *TestBeaconBlock) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszut
 					max = 1048576
 				}
 				vlen := uint64(len(t))
-				if hasMax && vlen > uint64(max) {
+				if vlen > uint64(max) {
 					return sszutils.ErrListTooBig
 				}
 				idx := hh.Index()
@@ -1154,7 +1154,7 @@ func (t *TestBeaconBlock) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszut
 						max = 1073741824
 					}
 					vlen := uint64(len(t))
-					if hasMax && vlen > uint64(max) {
+					if vlen > uint64(max) {
 						return sszutils.ErrListTooBig
 					}
 					idx := hh.Index()
@@ -1175,7 +1175,7 @@ func (t *TestBeaconBlock) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszut
 					max = 16
 				}
 				vlen := uint64(len(t))
-				if hasMax && vlen > uint64(max) {
+				if vlen > uint64(max) {
 					return sszutils.ErrListTooBig
 				}
 				idx := hh.Index()
@@ -1211,7 +1211,7 @@ func (t *TestBeaconBlock) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszut
 				max = 16
 			}
 			vlen := uint64(len(t))
-			if hasMax && vlen > uint64(max) {
+			if vlen > uint64(max) {
 				return sszutils.ErrListTooBig
 			}
 			idx := hh.Index()
@@ -1237,7 +1237,7 @@ func (t *TestBeaconBlock) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszut
 				max = 4096
 			}
 			vlen := uint64(len(t))
-			if hasMax && vlen > uint64(max) {
+			if vlen > uint64(max) {
 				return sszutils.ErrListTooBig
 			}
 			idx := hh.Index()

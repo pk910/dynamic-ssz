@@ -1219,7 +1219,7 @@ func (t *TestBeaconState) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszut
 			max = 16777216
 		}
 		vlen := uint64(len(t))
-		if hasMax && vlen > uint64(max) {
+		if vlen > uint64(max) {
 			return sszutils.ErrListTooBig
 		}
 		idx := hh.Index()
@@ -1249,7 +1249,7 @@ func (t *TestBeaconState) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszut
 			max = 2048
 		}
 		vlen := uint64(len(t))
-		if hasMax && vlen > uint64(max) {
+		if vlen > uint64(max) {
 			return sszutils.ErrListTooBig
 		}
 		idx := hh.Index()
@@ -1279,7 +1279,7 @@ func (t *TestBeaconState) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszut
 			max = 1099511627776
 		}
 		vlen := uint64(len(t))
-		if hasMax && vlen > uint64(max) {
+		if vlen > uint64(max) {
 			return sszutils.ErrListTooBig
 		}
 		idx := hh.Index()
@@ -1305,7 +1305,7 @@ func (t *TestBeaconState) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszut
 			max = 1099511627776
 		}
 		vlen := uint64(len(t))
-		if hasMax && vlen > uint64(max) {
+		if vlen > uint64(max) {
 			return sszutils.ErrListTooBig
 		}
 		idx := hh.Index()
@@ -1374,7 +1374,7 @@ func (t *TestBeaconState) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszut
 			max = 1099511627776
 		}
 		vlen := uint64(len(t))
-		if hasMax && vlen > uint64(max) {
+		if vlen > uint64(max) {
 			return sszutils.ErrListTooBig
 		}
 		idx := hh.Index()
@@ -1396,7 +1396,7 @@ func (t *TestBeaconState) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszut
 			max = 1099511627776
 		}
 		vlen := uint64(len(t))
-		if hasMax && vlen > uint64(max) {
+		if vlen > uint64(max) {
 			return sszutils.ErrListTooBig
 		}
 		idx := hh.Index()
@@ -1457,7 +1457,7 @@ func (t *TestBeaconState) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszut
 			max = 1099511627776
 		}
 		vlen := uint64(len(t))
-		if hasMax && vlen > uint64(max) {
+		if vlen > uint64(max) {
 			return sszutils.ErrListTooBig
 		}
 		idx := hh.Index()
@@ -1566,7 +1566,7 @@ func (t *TestBeaconState) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszut
 			max = 16777216
 		}
 		vlen := uint64(len(t))
-		if hasMax && vlen > uint64(max) {
+		if vlen > uint64(max) {
 			return sszutils.ErrListTooBig
 		}
 		idx := hh.Index()
