@@ -714,7 +714,7 @@ func (ctx *unmarshalContext) unmarshalUnion(desc *dynssz.TypeDescriptor, varName
 		variantType := ctx.typePrinter.TypeString(variantDesc)
 		ctx.appendCode(indent, "case %d:\n", variant)
 		valVar := ctx.getValVar()
-		ctx.appendCode(indent, "\t%s := *new(%s)\n", valVar, variantType)
+		ctx.appendCode(indent, "\tvar %s %s\n", valVar, variantType)
 		ctx.appendCode(indent, "\tbuf := buf[1:]\n")
 		if err := ctx.unmarshalType(variantDesc, valVar, indent+1, false, true); err != nil {
 			return err

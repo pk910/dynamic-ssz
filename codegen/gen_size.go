@@ -339,8 +339,9 @@ func (ctx *sizeContext) sizeUnion(desc *dynssz.TypeDescriptor, varName string, i
 		variantDesc := desc.UnionVariants[uint8(variant)]
 		variantType := ctx.typePrinter.TypeString(variantDesc)
 		hasDynamicSize := variantDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0
+		hasSizeExpression := variantDesc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0
 		ctx.appendCode(indent, "case %d:\n", variant)
-		if hasDynamicSize {
+		if variantDesc.Size == 0 || hasDynamicSize || hasSizeExpression {
 			ctx.appendCode(indent, "\tv, ok := %s.Data.(%s)\n", varName, variantType)
 			ctx.appendCode(indent, "\tif !ok {\n")
 			ctx.appendCode(indent, "\t\treturn 0\n")
@@ -349,9 +350,7 @@ func (ctx *sizeContext) sizeUnion(desc *dynssz.TypeDescriptor, varName string, i
 				return err
 			}
 		} else {
-			if err := ctx.sizeType(variantDesc, "_", indent+1, false); err != nil {
-				return err
-			}
+			ctx.appendCode(indent, "\tsize += %d\n", variantDesc.Size)
 		}
 	}
 
