@@ -126,6 +126,28 @@ func (ctx *sizeContext) getLimitVar() string {
 	return fmt.Sprintf("l%d", ctx.limitVarCounter)
 }
 
+// getPtrPrefix returns & for types that are heavy to copy
+func (ctx *sizeContext) getPtrPrefix(desc *dynssz.TypeDescriptor) string {
+	if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+		return ""
+	}
+	if desc.Kind == reflect.Array {
+		fieldSize := uint32(8)
+		if desc.ElemDesc.GoTypeFlags&dynssz.GoTypeFlagIsPointer == 0 && desc.ElemDesc.Size > 0 {
+			fieldSize = desc.ElemDesc.Size
+		}
+		if desc.Len*fieldSize > 32 {
+			// big array with > 32 bytes
+			return "&"
+		}
+	}
+	if desc.Kind == reflect.Struct {
+		// use pointer to struct to avoid copying
+		return "&"
+	}
+	return ""
+}
+
 // sizeType generates size calculation code for any SSZ type, delegating to specific sizers.
 func (ctx *sizeContext) sizeType(desc *dynssz.TypeDescriptor, varName string, sizeVar string, indent int, isRoot bool) error {
 	// Handle types that have generated methods we can call
@@ -255,12 +277,7 @@ func (ctx *sizeContext) sizeVector(desc *dynssz.TypeDescriptor, varName string, 
 		if usedVar {
 			return
 		}
-		ptrPrefix := ""
-		if desc.Kind == reflect.Array {
-			// use pointer to array to avoid copying
-			ptrPrefix = "&"
-		}
-		ctx.appendCode(indent, "t := %s%s\n", ptrPrefix, varName)
+		ctx.appendCode(indent, "t := %s%s\n", ctx.getPtrPrefix(desc), varName)
 		varName = "t"
 		usedVar = true
 	}
@@ -354,12 +371,7 @@ func (ctx *sizeContext) sizeList(desc *dynssz.TypeDescriptor, varName string, si
 		if usedVar {
 			return
 		}
-		ptrPrefix := ""
-		if desc.Kind == reflect.Array {
-			// use pointer to array to avoid copying
-			ptrPrefix = "&"
-		}
-		ctx.appendCode(indent, "t := %s%s\n", ptrPrefix, varName)
+		ctx.appendCode(indent, "t := %s%s\n", ctx.getPtrPrefix(desc), varName)
 		varName = "t"
 		usedVar = true
 	}

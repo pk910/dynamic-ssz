@@ -145,6 +145,28 @@ func (ctx *hashTreeRootContext) getValVar() string {
 	return fmt.Sprintf("val%d", ctx.valVarCounter)
 }
 
+// getPtrPrefix returns & for types that are heavy to copy
+func (ctx *hashTreeRootContext) getPtrPrefix(desc *dynssz.TypeDescriptor, prefix string) string {
+	if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+		return ""
+	}
+	if desc.Kind == reflect.Array {
+		fieldSize := uint32(8)
+		if desc.ElemDesc.GoTypeFlags&dynssz.GoTypeFlagIsPointer == 0 && desc.ElemDesc.Size > 0 {
+			fieldSize = desc.ElemDesc.Size
+		}
+		if desc.Len*fieldSize > 32 {
+			// big array with > 32 bytes
+			return prefix
+		}
+	}
+	if desc.Kind == reflect.Struct {
+		// use pointer to struct to avoid copying
+		return prefix
+	}
+	return ""
+}
+
 // hashType generates hash tree root code for any SSZ type, delegating to specific hashers.
 func (ctx *hashTreeRootContext) hashType(desc *dynssz.TypeDescriptor, varName string, indent int, isRoot bool, pack bool) error {
 	if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
@@ -218,7 +240,7 @@ func (ctx *hashTreeRootContext) hashType(desc *dynssz.TypeDescriptor, varName st
 		}
 
 	case dynssz.SszTypeWrapperType:
-		ctx.appendCode(indent, "{\n\tt := %s.Data\n", varName)
+		ctx.appendCode(indent, "{\n\tt := %s%s.Data\n", ctx.getPtrPrefix(desc.ElemDesc, "&"), varName)
 		if err := ctx.hashType(desc.ElemDesc, "t", indent+1, false, pack); err != nil {
 			return err
 		}
@@ -263,7 +285,7 @@ func (ctx *hashTreeRootContext) hashContainer(desc *dynssz.TypeDescriptor, varNa
 	// Hash each field
 	for idx, field := range desc.ContainerDesc.Fields {
 		ctx.appendCode(indent, "{ // Field #%d '%s'\n", idx, field.Name)
-		ctx.appendCode(indent, "\tt := %s.%s\n", varName, field.Name)
+		ctx.appendCode(indent, "\tt := %s%s.%s\n", ctx.getPtrPrefix(field.Type, "&"), varName, field.Name)
 		if err := ctx.hashType(field.Type, "t", indent+1, false, false); err != nil {
 			return err
 		}
@@ -298,7 +320,7 @@ func (ctx *hashTreeRootContext) hashProgressiveContainer(desc *dynssz.TypeDescri
 		lastActiveField = int(field.SszIndex)
 
 		ctx.appendCode(indent, "{ // Field #%d '%s'\n", i, field.Name)
-		ctx.appendCode(indent, "\tt := %s.%s\n", varName, field.Name)
+		ctx.appendCode(indent, "\tt := %s%s.%s\n", ctx.getPtrPrefix(field.Type, "&"), varName, field.Name)
 		if err := ctx.hashType(field.Type, "t", indent+1, false, false); err != nil {
 			return err
 		}
@@ -428,9 +450,9 @@ func (ctx *hashTreeRootContext) hashVector(desc *dynssz.TypeDescriptor, varName 
 
 		valVar := ctx.getValVar()
 		ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", limitVar)
-		ctx.appendCode(indent, "\tvar %s %s\n", valVar, ctx.typePrinter.TypeString(desc.ElemDesc))
+		ctx.appendCode(indent, "\tvar %s %s%s\n", valVar, ctx.getPtrPrefix(desc.ElemDesc, "*"), ctx.typePrinter.TypeString(desc.ElemDesc))
 		ctx.appendCode(indent, "\tif i < %s {\n", lenVar)
-		ctx.appendCode(indent, "\t\t%s = %s[i]\n", valVar, varName)
+		ctx.appendCode(indent, "\t\t%s = %s%s[i]\n", valVar, ctx.getPtrPrefix(desc.ElemDesc, "&"), varName)
 		ctx.appendCode(indent, "\t}\n")
 
 		if err := ctx.hashType(desc.ElemDesc, valVar, indent+1, false, true); err != nil {
@@ -518,7 +540,7 @@ func (ctx *hashTreeRootContext) hashList(desc *dynssz.TypeDescriptor, varName st
 		// Hash all elements
 		addVlen()
 		ctx.appendCode(indent, "for i := 0; i < int(vlen); i++ {\n")
-		ctx.appendCode(indent, "\tt := %s[i]\n", varName)
+		ctx.appendCode(indent, "\tt := %s%s[i]\n", ctx.getPtrPrefix(desc.ElemDesc, "&"), varName)
 		if err := ctx.hashType(desc.ElemDesc, "t", indent+1, false, true); err != nil {
 			return err
 		}

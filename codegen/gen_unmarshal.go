@@ -5,6 +5,8 @@
 package codegen
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"slices"
@@ -37,7 +39,7 @@ type unmarshalContext struct {
 	usedDynSpecs   bool
 	valVarCounter  int
 	sizeVarCounter int
-	sizeVarMap     map[*dynssz.TypeDescriptor]string
+	sizeVarMap     map[[32]byte]string
 }
 
 // generateUnmarshal generates unmarshal methods for a specific type.
@@ -76,7 +78,7 @@ func generateUnmarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings
 		},
 		typePrinter: typePrinter,
 		options:     options,
-		sizeVarMap:  make(map[*dynssz.TypeDescriptor]string),
+		sizeVarMap:  make(map[[32]byte]string),
 	}
 
 	// Generate main function signature
@@ -162,13 +164,21 @@ func (ctx *unmarshalContext) isInlinable(desc *dynssz.TypeDescriptor) bool {
 
 // getStaticSizeVar generates a variable name for cached static size calculations.
 func (ctx *unmarshalContext) getStaticSizeVar(desc *dynssz.TypeDescriptor) (string, error) {
-	if sizeVar, ok := ctx.sizeVarMap[desc]; ok {
+	descCopy := *desc
+	descCopy.GoTypeFlags &= ^dynssz.GoTypeFlagIsPointer
+
+	descJson, err := json.Marshal(descCopy)
+	if err != nil {
+		return "", err
+	}
+	descHash := sha256.Sum256(descJson)
+
+	if sizeVar, ok := ctx.sizeVarMap[descHash]; ok {
 		return sizeVar, nil
 	}
 
 	ctx.sizeVarCounter++
 	sizeVar := fmt.Sprintf("size%d", ctx.sizeVarCounter)
-	var err error
 
 	// recursive resolve static size with size expressions
 	switch desc.SszType {
@@ -237,7 +247,7 @@ func (ctx *unmarshalContext) getStaticSizeVar(desc *dynssz.TypeDescriptor) (stri
 		return "", fmt.Errorf("unknown type for static size calculation: %v", desc.SszType)
 	}
 
-	ctx.sizeVarMap[desc] = sizeVar
+	ctx.sizeVarMap[descHash] = sizeVar
 
 	return sizeVar, nil
 }
