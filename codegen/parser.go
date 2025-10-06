@@ -54,7 +54,8 @@ type CodegenInfo struct {
 // Fields:
 //   - cache: Type descriptor cache to avoid recomputing analysis for the same types
 type Parser struct {
-	cache map[string]*dynssz.TypeDescriptor
+	cache       map[string]*dynssz.TypeDescriptor
+	CompatFlags map[string]dynssz.SszCompatFlag
 }
 
 // NewParser creates a new compile-time type parser for code generation.
@@ -75,7 +76,8 @@ type Parser struct {
 //	}
 func NewParser() *Parser {
 	return &Parser{
-		cache: make(map[string]*dynssz.TypeDescriptor),
+		cache:       make(map[string]*dynssz.TypeDescriptor),
+		CompatFlags: map[string]dynssz.SszCompatFlag{},
 	}
 }
 
@@ -122,13 +124,14 @@ func (p *Parser) GetTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeHin
 	return desc, nil
 }
 
+func (p *Parser) getCompatFlag(typ types.Type) dynssz.SszCompatFlag {
+	typeName := typ.String()
+	return p.CompatFlags[typeName]
+}
+
 func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeHint, sizeHints []dynssz.SszSizeHint, maxSizeHints []dynssz.SszMaxSizeHint) (*dynssz.TypeDescriptor, error) {
 	cacheable := len(typeHints) == 0 && len(sizeHints) == 0 && len(maxSizeHints) == 0
-	cacheType := typ
-	if ptr, ok := typ.(*types.Pointer); ok {
-		cacheType = ptr.Elem()
-	}
-	typeKey := fmt.Sprintf("%v", cacheType.String())
+	typeKey := fmt.Sprintf("%v", typ.String())
 	if cacheable && p.cache[typeKey] != nil {
 		return p.cache[typeKey], nil
 	}
@@ -461,6 +464,8 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 	if p.getDynamicHashRootCompatibility(originalType) {
 		desc.SszCompatFlags |= dynssz.SszCompatFlagDynamicHashRoot
 	}
+
+	desc.SszCompatFlags |= p.getCompatFlag(innerType)
 
 	if desc.SszType == dynssz.SszCustomType && (desc.SszCompatFlags&dynssz.SszCompatFlagFastSSZMarshaler == 0 || desc.SszCompatFlags&dynssz.SszCompatFlagFastSSZHasher == 0) {
 		return nil, fmt.Errorf("custom ssz type requires fastssz marshaler and hasher implementations")

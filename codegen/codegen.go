@@ -497,6 +497,7 @@ type CodeGenerator struct {
 	files       []*fileGenerationRequest
 	dynSsz      *dynssz.DynSsz
 	packageName string
+	compatFlags map[string]dynssz.SszCompatFlag
 }
 
 // NewCodeGenerator creates a new code generator instance with the specified DynSsz configuration.
@@ -530,8 +531,9 @@ func NewCodeGenerator(dynSsz *dynssz.DynSsz) *CodeGenerator {
 	}
 
 	return &CodeGenerator{
-		files:  make([]*fileGenerationRequest, 0),
-		dynSsz: dynSsz,
+		files:       make([]*fileGenerationRequest, 0),
+		dynSsz:      dynSsz,
+		compatFlags: map[string]dynssz.SszCompatFlag{},
 	}
 }
 

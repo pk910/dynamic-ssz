@@ -18,6 +18,7 @@ type TypeCache struct {
 	dynssz      *DynSsz
 	mutex       sync.RWMutex
 	descriptors map[reflect.Type]*TypeDescriptor
+	CompatFlags map[string]SszCompatFlag
 }
 
 // SszTypeFlag is a flag indicating whether a type has a specific SSZ type feature
@@ -99,6 +100,7 @@ func NewTypeCache(dynssz *DynSsz) *TypeCache {
 	return &TypeCache{
 		dynssz:      dynssz,
 		descriptors: make(map[reflect.Type]*TypeDescriptor),
+		CompatFlags: map[string]SszCompatFlag{},
 	}
 }
 
@@ -136,12 +138,8 @@ func NewTypeCache(dynssz *DynSsz) *TypeCache {
 func (tc *TypeCache) GetTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) (*TypeDescriptor, error) {
 	// Check cache first (read lock)
 	if len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) == 0 {
-		cacheKey := t
-		if t.Kind() == reflect.Ptr {
-			cacheKey = t.Elem()
-		}
 		tc.mutex.RLock()
-		if desc, exists := tc.descriptors[cacheKey]; exists {
+		if desc, exists := tc.descriptors[t]; exists {
 			tc.mutex.RUnlock()
 			return desc, nil
 		}
@@ -158,12 +156,7 @@ func (tc *TypeCache) GetTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, 
 // getTypeDescriptor returns a cached type descriptor, computing it if necessary
 func (tc *TypeCache) getTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) (*TypeDescriptor, error) {
 	cacheable := len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) == 0
-	cacheKey := t
-	if t.Kind() == reflect.Ptr {
-		cacheKey = t.Elem()
-	}
-
-	if desc, exists := tc.descriptors[cacheKey]; exists && cacheable {
+	if desc, exists := tc.descriptors[t]; exists && cacheable {
 		return desc, nil
 	}
 
@@ -174,10 +167,25 @@ func (tc *TypeCache) getTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, 
 
 	// Cache only if no size hints (cacheable)
 	if cacheable {
-		tc.descriptors[cacheKey] = desc
+		tc.descriptors[t] = desc
 	}
 
 	return desc, nil
+}
+
+func (tc *TypeCache) getCompatFlag(t reflect.Type) SszCompatFlag {
+	typeName := t.Name()
+	typePkgPath := t.PkgPath()
+	if typePkgPath == "" && t.Kind() == reflect.Ptr {
+		typePkgPath = t.Elem().PkgPath()
+	}
+
+	typeKey := typeName
+	if typePkgPath != "" {
+		typeKey = typePkgPath + "." + typeName
+	}
+
+	return tc.CompatFlags[typeKey]
 }
 
 // buildTypeDescriptor computes a type descriptor for the given type
@@ -436,6 +444,8 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 	if tc.dynssz.getDynamicHashRootCompatibility(t) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicHashRoot
 	}
+
+	desc.SszCompatFlags |= tc.getCompatFlag(t)
 
 	if desc.SszType == SszCustomType && (desc.SszCompatFlags&SszCompatFlagFastSSZMarshaler == 0 || desc.SszCompatFlags&SszCompatFlagFastSSZHasher == 0) {
 		return nil, fmt.Errorf("custom ssz type requires fastssz marshaler and hasher implementations")

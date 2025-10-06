@@ -49,25 +49,67 @@ import (
 func (cg *CodeGenerator) analyzeTypes() error {
 	var parser *Parser
 
+	getTypeName := func(t *CodeGeneratorTypeOptions) (string, string) {
+		var typeName, typePkgPath string
+		if t.ReflectType != nil {
+			typeName = t.ReflectType.Name()
+			typePkgPath = t.ReflectType.PkgPath()
+			if typePkgPath == "" && t.ReflectType.Kind() == reflect.Ptr {
+				typePkgPath = t.ReflectType.Elem().PkgPath()
+			}
+		} else if t.GoTypesType != nil {
+			typeName = t.GoTypesType.String()
+			types.TypeString(t.GoTypesType, func(pkg *types.Package) string {
+				typePkgPath = pkg.Path()
+				return ""
+			})
+		}
+		return typeName, typePkgPath
+	}
+
+	// add compat flags for generated types
+	for _, file := range cg.files {
+		for _, t := range file.Options.Types {
+			typeKey, _ := getTypeName(t)
+
+			var compatFlags dynssz.SszCompatFlag
+
+			// set availability of dynamic methods (we will generate them in a bit and we want cross references)
+			if !t.Options.NoMarshalSSZ && !t.Options.WithoutDynamicExpressions {
+				compatFlags |= dynssz.SszCompatFlagDynamicMarshaler
+			}
+			if !t.Options.NoUnmarshalSSZ && !t.Options.WithoutDynamicExpressions {
+				compatFlags |= dynssz.SszCompatFlagDynamicUnmarshaler
+			}
+			if !t.Options.NoSizeSSZ && !t.Options.WithoutDynamicExpressions {
+				compatFlags |= dynssz.SszCompatFlagDynamicSizer
+			}
+			if !t.Options.NoHashTreeRoot && !t.Options.WithoutDynamicExpressions {
+				compatFlags |= dynssz.SszCompatFlagDynamicHashRoot
+			}
+
+			if !t.Options.NoMarshalSSZ && !t.Options.NoUnmarshalSSZ && !t.Options.NoSizeSSZ && (t.Options.CreateLegacyFn || t.Options.WithoutDynamicExpressions) {
+				compatFlags |= dynssz.SszCompatFlagFastSSZMarshaler
+			}
+			if !t.Options.NoHashTreeRoot && (t.Options.CreateLegacyFn || t.Options.WithoutDynamicExpressions) {
+				if t.Options.CreateLegacyFn {
+					compatFlags |= dynssz.SszCompatFlagFastSSZHasher
+				}
+				compatFlags |= dynssz.SszCompatFlagHashTreeRootWith
+			}
+
+			cg.compatFlags[typeKey] = compatFlags
+		}
+	}
+
+	cg.dynSsz.GetTypeCache().CompatFlags = cg.compatFlags
+
 	// analyze all types to build complete dependency graph
 	for _, file := range cg.files {
 		pkgPath := ""
 		otherTypeName := ""
 		for _, t := range file.Options.Types {
-			var typeName, typePkgPath string
-			if t.ReflectType != nil {
-				typeName = t.ReflectType.Name()
-				typePkgPath = t.ReflectType.PkgPath()
-				if typePkgPath == "" && t.ReflectType.Kind() == reflect.Ptr {
-					typePkgPath = t.ReflectType.Elem().PkgPath()
-				}
-			} else if t.GoTypesType != nil {
-				typeName = t.GoTypesType.String()
-				types.TypeString(t.GoTypesType, func(pkg *types.Package) string {
-					typePkgPath = pkg.Path()
-					return ""
-				})
-			}
+			typeName, typePkgPath := getTypeName(t)
 
 			if typePkgPath == "" {
 				return fmt.Errorf("type %s has no package path", typeName)
@@ -91,6 +133,7 @@ func (cg *CodeGenerator) analyzeTypes() error {
 			} else {
 				if parser == nil {
 					parser = NewParser()
+					parser.CompatFlags = cg.compatFlags
 				}
 				baseType := t.GoTypesType
 				if named, ok := baseType.(*types.Named); ok {
@@ -104,38 +147,6 @@ func (cg *CodeGenerator) analyzeTypes() error {
 
 			if err != nil {
 				return fmt.Errorf("failed to analyze type %s: %w", typeName, err)
-			}
-
-			/*
-				descJson, err := json.MarshalIndent(desc, "", "  ")
-				if err != nil {
-					return nil, fmt.Errorf("failed to marshal type descriptor for %s: %w", typeName, err)
-				}
-				fmt.Printf("Type descriptor for %s: %s\n", typeName, string(descJson))
-			*/
-
-			// set availability of dynamic methods (we will generate them in a bit and we want cross references)
-			if !t.Options.NoMarshalSSZ && !t.Options.WithoutDynamicExpressions {
-				desc.SszCompatFlags |= dynssz.SszCompatFlagDynamicMarshaler
-			}
-			if !t.Options.NoUnmarshalSSZ && !t.Options.WithoutDynamicExpressions {
-				desc.SszCompatFlags |= dynssz.SszCompatFlagDynamicUnmarshaler
-			}
-			if !t.Options.NoSizeSSZ && !t.Options.WithoutDynamicExpressions {
-				desc.SszCompatFlags |= dynssz.SszCompatFlagDynamicSizer
-			}
-			if !t.Options.NoHashTreeRoot && !t.Options.WithoutDynamicExpressions {
-				desc.SszCompatFlags |= dynssz.SszCompatFlagDynamicHashRoot
-			}
-
-			if !t.Options.NoMarshalSSZ && !t.Options.NoUnmarshalSSZ && !t.Options.NoSizeSSZ && (t.Options.CreateLegacyFn || t.Options.WithoutDynamicExpressions) {
-				desc.SszCompatFlags |= dynssz.SszCompatFlagFastSSZMarshaler
-			}
-			if !t.Options.NoHashTreeRoot && (t.Options.CreateLegacyFn || t.Options.WithoutDynamicExpressions) {
-				if t.Options.CreateLegacyFn {
-					desc.SszCompatFlags |= dynssz.SszCompatFlagFastSSZHasher
-				}
-				desc.SszCompatFlags |= dynssz.SszCompatFlagHashTreeRootWith
 			}
 
 			t.Descriptor = desc
