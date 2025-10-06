@@ -76,18 +76,8 @@ func generateSize(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Buil
 	genDynamicFn := !options.WithoutDynamicExpressions
 	genStaticFn := options.WithoutDynamicExpressions || options.CreateLegacyFn
 
-	if genDynamicFn {
-		if ctx.usedDynSpecs {
-			codeBuilder.WriteString(fmt.Sprintf("func (t %s) SizeSSZDyn(ds sszutils.DynamicSpecs) (size int) {\n", typeName))
-			codeBuilder.WriteString(codeBuf.String())
-			codeBuilder.WriteString("\treturn size\n")
-			codeBuilder.WriteString("}\n\n")
-		} else {
-			codeBuilder.WriteString(fmt.Sprintf("func (t %s) SizeSSZDyn(_ sszutils.DynamicSpecs) (size int) {\n", typeName))
-			codeBuilder.WriteString("\treturn t.SizeSSZ()\n")
-			codeBuilder.WriteString("}\n\n")
-			genStaticFn = true
-		}
+	if genDynamicFn && !ctx.usedDynSpecs {
+		genStaticFn = true
 	}
 
 	if genStaticFn {
@@ -105,6 +95,20 @@ func generateSize(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Buil
 			codeBuilder.WriteString(fmt.Sprintf("func (t %s) SizeSSZ() (size int) {\n", typeName))
 			codeBuilder.WriteString(fmt.Sprintf("\treturn t.SizeSSZDyn(%s.GetGlobalDynSsz())\n", dynsszAlias))
 			codeBuilder.WriteString("}\n\n")
+		}
+	}
+
+	if genDynamicFn {
+		if ctx.usedDynSpecs {
+			codeBuilder.WriteString(fmt.Sprintf("func (t %s) SizeSSZDyn(ds sszutils.DynamicSpecs) (size int) {\n", typeName))
+			codeBuilder.WriteString(codeBuf.String())
+			codeBuilder.WriteString("\treturn size\n")
+			codeBuilder.WriteString("}\n\n")
+		} else {
+			codeBuilder.WriteString(fmt.Sprintf("func (t %s) SizeSSZDyn(_ sszutils.DynamicSpecs) (size int) {\n", typeName))
+			codeBuilder.WriteString("\treturn t.SizeSSZ()\n")
+			codeBuilder.WriteString("}\n\n")
+			genStaticFn = true
 		}
 	}
 

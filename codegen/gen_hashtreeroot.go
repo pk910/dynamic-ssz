@@ -77,18 +77,21 @@ func generateHashTreeRoot(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *stri
 	genDynamicFn := !options.WithoutDynamicExpressions
 	genStaticFn := options.WithoutDynamicExpressions || options.CreateLegacyFn
 
-	if genDynamicFn {
-		if ctx.usedDynSpecs {
-			codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName))
-			codeBuilder.WriteString(codeBuf.String())
-			codeBuilder.WriteString("\treturn nil\n")
-			codeBuilder.WriteString("}\n\n")
-		} else {
-			codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName))
-			codeBuilder.WriteString("\treturn t.HashTreeRootWith(hh)\n")
-			codeBuilder.WriteString("}\n\n")
-			genStaticFn = true
-		}
+	if genDynamicFn && !ctx.usedDynSpecs {
+		genStaticFn = true
+	}
+
+	// Static hash tree root function
+	if genStaticFn {
+		hasherAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
+		codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRoot() ([32]byte, error) {\n", typeName))
+		codeBuilder.WriteString(fmt.Sprintf("\tpool := &%s.FastHasherPool\n", hasherAlias))
+		codeBuilder.WriteString("\thh := pool.Get()\n")
+		codeBuilder.WriteString("\tdefer func() {\n\t\tpool.Put(hh)\n\t}()\n")
+		codeBuilder.WriteString("\tif err := t.HashTreeRootWith(hh); err != nil {\n\t\treturn [32]byte{}, err\n\t}\n")
+		codeBuilder.WriteString("\tr, _ := hh.HashRoot()\n")
+		codeBuilder.WriteString("\treturn r, nil\n")
+		codeBuilder.WriteString("}\n")
 	}
 
 	if genStaticFn {
@@ -118,17 +121,18 @@ func generateHashTreeRoot(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *stri
 		codeBuilder.WriteString("}\n\n")
 	}
 
-	// Static hash tree root function
-	if genStaticFn {
-		hasherAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
-		codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRoot() ([32]byte, error) {\n", typeName))
-		codeBuilder.WriteString(fmt.Sprintf("\tpool := &%s.FastHasherPool\n", hasherAlias))
-		codeBuilder.WriteString("\thh := pool.Get()\n")
-		codeBuilder.WriteString("\tdefer func() {\n\t\tpool.Put(hh)\n\t}()\n")
-		codeBuilder.WriteString("\tif err := t.HashTreeRootWith(hh); err != nil {\n\t\treturn [32]byte{}, err\n\t}\n")
-		codeBuilder.WriteString("\tr, _ := hh.HashRoot()\n")
-		codeBuilder.WriteString("\treturn r, nil\n")
-		codeBuilder.WriteString("}\n")
+	if genDynamicFn {
+		if ctx.usedDynSpecs {
+			codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName))
+			codeBuilder.WriteString(codeBuf.String())
+			codeBuilder.WriteString("\treturn nil\n")
+			codeBuilder.WriteString("}\n\n")
+		} else {
+			codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName))
+			codeBuilder.WriteString("\treturn t.HashTreeRootWith(hh)\n")
+			codeBuilder.WriteString("}\n\n")
+			genStaticFn = true
+		}
 	}
 
 	return nil

@@ -75,19 +75,15 @@ func generateMarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.B
 	genStaticFn := options.WithoutDynamicExpressions || options.CreateLegacyFn
 	genLegacyFn := options.CreateLegacyFn
 
-	if genDynamicFn {
-		if ctx.usedDynSpecs {
-			codeBuilder.WriteString(fmt.Sprintf("func (t %s) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {\n", typeName))
-			codeBuilder.WriteString("\tdst = buf\n")
-			codeBuilder.WriteString(codeBuf.String())
-			codeBuilder.WriteString("\treturn dst, nil\n")
-			codeBuilder.WriteString("}\n\n")
-		} else {
-			codeBuilder.WriteString(fmt.Sprintf("func (t %s) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {\n", typeName))
-			codeBuilder.WriteString("\treturn t.MarshalSSZTo(buf)\n")
-			codeBuilder.WriteString("}\n\n")
-			genStaticFn = true
-		}
+	if genDynamicFn && !ctx.usedDynSpecs {
+		genStaticFn = true
+	}
+
+	if genLegacyFn {
+		dynsszAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
+		codeBuilder.WriteString(fmt.Sprintf("func (t %s) MarshalSSZ() ([]byte, error) {\n", typeName))
+		codeBuilder.WriteString(fmt.Sprintf("\treturn %s.GetGlobalDynSsz().MarshalSSZ(t)\n", dynsszAlias))
+		codeBuilder.WriteString("}\n")
 	}
 
 	if genStaticFn {
@@ -105,11 +101,19 @@ func generateMarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.B
 		}
 	}
 
-	if genLegacyFn {
-		dynsszAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
-		codeBuilder.WriteString(fmt.Sprintf("func (t %s) MarshalSSZ() ([]byte, error) {\n", typeName))
-		codeBuilder.WriteString(fmt.Sprintf("\treturn %s.GetGlobalDynSsz().MarshalSSZ(t)\n", dynsszAlias))
-		codeBuilder.WriteString("}\n")
+	if genDynamicFn {
+		if ctx.usedDynSpecs {
+			codeBuilder.WriteString(fmt.Sprintf("func (t %s) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {\n", typeName))
+			codeBuilder.WriteString("\tdst = buf\n")
+			codeBuilder.WriteString(codeBuf.String())
+			codeBuilder.WriteString("\treturn dst, nil\n")
+			codeBuilder.WriteString("}\n\n")
+		} else {
+			codeBuilder.WriteString(fmt.Sprintf("func (t %s) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {\n", typeName))
+			codeBuilder.WriteString("\treturn t.MarshalSSZTo(buf)\n")
+			codeBuilder.WriteString("}\n\n")
+			genStaticFn = true
+		}
 	}
 
 	return nil

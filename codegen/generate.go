@@ -300,17 +300,17 @@ func (cg *CodeGenerator) generateCode(desc *dynssz.TypeDescriptor, typePrinter *
 		}
 	}
 
-	if !options.NoSizeSSZ {
-		err = generateSize(desc, codeBuilder, typePrinter, options)
-		if err != nil {
-			return fmt.Errorf("failed to generate size for %s: %w", desc.Type.Name(), err)
-		}
-	}
-
 	if !options.NoUnmarshalSSZ {
 		err = generateUnmarshal(desc, codeBuilder, typePrinter, options)
 		if err != nil {
 			return fmt.Errorf("failed to generate unmarshal for %s: %w", desc.Type.Name(), err)
+		}
+	}
+
+	if !options.NoSizeSSZ {
+		err = generateSize(desc, codeBuilder, typePrinter, options)
+		if err != nil {
+			return fmt.Errorf("failed to generate size for %s: %w", desc.Type.Name(), err)
 		}
 	}
 
