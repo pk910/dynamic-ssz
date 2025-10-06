@@ -403,7 +403,7 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *dynssz.TypeDescriptor, var
 			if len(dynamicFields) > 0 {
 				ctx.appendCode(indent, "if offset%d < offset%d || offset%d > buflen {\n\treturn sszutils.ErrOffset\n}\n", idx, dynamicFields[len(dynamicFields)-1], idx)
 			} else {
-				ctx.appendCode(indent, "if offset%d < %s || offset%d > buflen {\n\treturn sszutils.ErrOffset\n}\n", idx, strings.Join(staticSizeVars, "+"), idx)
+				ctx.appendCode(indent, "if offset%d != %s {\n\treturn sszutils.ErrOffset\n}\n", idx, strings.Join(staticSizeVars, "+"))
 			}
 			offset += 4
 			dynamicFields = append(dynamicFields, idx)
