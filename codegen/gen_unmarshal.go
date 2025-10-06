@@ -506,11 +506,7 @@ func (ctx *unmarshalContext) unmarshalVector(desc *dynssz.TypeDescriptor, varNam
 
 	// create slice if needed
 	if desc.Kind != reflect.Array && desc.GoTypeFlags&dynssz.GoTypeFlagIsString == 0 {
-		ctx.appendCode(indent, "if len(%s) < %s {\n", varName, limitVar)
-		ctx.appendCode(indent, "\t%s = make(%s, %s)\n", varName, ctx.typePrinter.TypeString(desc), limitVar)
-		ctx.appendCode(indent, "} else if len(%s) > %s {\n", varName, limitVar)
-		ctx.appendCode(indent, "\t%s = %s[:%s]\n", varName, varName, limitVar)
-		ctx.appendCode(indent, "}\n")
+		ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, %s)\n", varName, varName, limitVar)
 	}
 
 	if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic == 0 {
@@ -607,12 +603,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *dynssz.TypeDescriptor, varName 
 				ctx.appendCode(indent, "%s = %s(buf)\n", varName, typename)
 			} else {
 				if desc.Kind != reflect.Array {
-					ctx.appendCode(indent, "limit := len(buf)\n")
-					ctx.appendCode(indent, "if len(%s) < limit {\n", varName)
-					ctx.appendCode(indent, "\t%s = make(%s, limit)\n", varName, ctx.typePrinter.TypeString(desc))
-					ctx.appendCode(indent, "} else if len(%s) > limit {\n", varName)
-					ctx.appendCode(indent, "\t%s = %s[:limit]\n", varName, varName)
-					ctx.appendCode(indent, "}\n")
+					ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, len(buf))\n", varName, varName)
 				}
 				ctx.appendCode(indent, "copy(%s[:], buf)\n", varName)
 			}
@@ -638,11 +629,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *dynssz.TypeDescriptor, varName 
 			ctx.appendCode(indent, "if len(buf)%%%s != 0 {\n\treturn sszutils.ErrUnexpectedEOF\n}\n", fieldSizeVar)
 		}
 		if desc.Kind != reflect.Array {
-			ctx.appendCode(indent, "if len(%s) < itemCount {\n", varName)
-			ctx.appendCode(indent, "\t%s = make(%s, itemCount)\n", varName, ctx.typePrinter.TypeString(desc))
-			ctx.appendCode(indent, "} else if len(%s) > itemCount {\n", varName)
-			ctx.appendCode(indent, "\t%s = %s[:itemCount]\n", varName, varName)
-			ctx.appendCode(indent, "}\n")
+			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", varName, varName)
 		}
 
 		ctx.appendCode(indent, "for i := 0; i < itemCount; i++ {\n")
@@ -676,11 +663,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *dynssz.TypeDescriptor, varName 
 		ctx.appendCode(indent, "itemCount := startOffset / 4\n")
 		ctx.appendCode(indent, "if startOffset%4 != 0 || len(buf) < startOffset {\n\treturn sszutils.ErrUnexpectedEOF\n}\n")
 		if desc.Kind != reflect.Array {
-			ctx.appendCode(indent, "if len(%s) < itemCount {\n", varName)
-			ctx.appendCode(indent, "\t%s = make(%s, itemCount)\n", varName, ctx.typePrinter.TypeString(desc))
-			ctx.appendCode(indent, "} else if len(%s) > itemCount {\n", varName)
-			ctx.appendCode(indent, "\t%s = %s[:itemCount]\n", varName, varName)
-			ctx.appendCode(indent, "}\n")
+			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", varName, varName)
 		}
 		ctx.appendCode(indent, "for i := 0; i < itemCount; i++ {\n")
 		ctx.appendCode(indent, "\tvar endOffset int\n")
