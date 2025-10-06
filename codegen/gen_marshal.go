@@ -75,19 +75,15 @@ func generateMarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.B
 	genStaticFn := options.WithoutDynamicExpressions || options.CreateLegacyFn
 	genLegacyFn := options.CreateLegacyFn
 
-	if genDynamicFn {
-		if ctx.usedDynSpecs {
-			codeBuilder.WriteString(fmt.Sprintf("func (t %s) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {\n", typeName))
-			codeBuilder.WriteString("\tdst = buf\n")
-			codeBuilder.WriteString(codeBuf.String())
-			codeBuilder.WriteString("\treturn dst, nil\n")
-			codeBuilder.WriteString("}\n\n")
-		} else {
-			codeBuilder.WriteString(fmt.Sprintf("func (t %s) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {\n", typeName))
-			codeBuilder.WriteString("\treturn t.MarshalSSZTo(buf)\n")
-			codeBuilder.WriteString("}\n\n")
-			genStaticFn = true
-		}
+	if genDynamicFn && !ctx.usedDynSpecs {
+		genStaticFn = true
+	}
+
+	if genLegacyFn {
+		dynsszAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
+		codeBuilder.WriteString(fmt.Sprintf("func (t %s) MarshalSSZ() ([]byte, error) {\n", typeName))
+		codeBuilder.WriteString(fmt.Sprintf("\treturn %s.GetGlobalDynSsz().MarshalSSZ(t)\n", dynsszAlias))
+		codeBuilder.WriteString("}\n")
 	}
 
 	if genStaticFn {
@@ -105,14 +101,44 @@ func generateMarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.B
 		}
 	}
 
-	if genLegacyFn {
-		dynsszAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
-		codeBuilder.WriteString(fmt.Sprintf("func (t %s) MarshalSSZ() ([]byte, error) {\n", typeName))
-		codeBuilder.WriteString(fmt.Sprintf("\treturn %s.GetGlobalDynSsz().MarshalSSZ(t)\n", dynsszAlias))
-		codeBuilder.WriteString("}\n")
+	if genDynamicFn {
+		if ctx.usedDynSpecs {
+			codeBuilder.WriteString(fmt.Sprintf("func (t %s) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {\n", typeName))
+			codeBuilder.WriteString("\tdst = buf\n")
+			codeBuilder.WriteString(codeBuf.String())
+			codeBuilder.WriteString("\treturn dst, nil\n")
+			codeBuilder.WriteString("}\n\n")
+		} else {
+			codeBuilder.WriteString(fmt.Sprintf("func (t %s) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {\n", typeName))
+			codeBuilder.WriteString("\treturn t.MarshalSSZTo(buf)\n")
+			codeBuilder.WriteString("}\n\n")
+			genStaticFn = true
+		}
 	}
 
 	return nil
+}
+
+// getPtrPrefix returns & for types that are heavy to copy
+func (ctx *marshalContext) getPtrPrefix(desc *dynssz.TypeDescriptor) string {
+	if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+		return ""
+	}
+	if desc.Kind == reflect.Array {
+		fieldSize := uint32(8)
+		if desc.ElemDesc.GoTypeFlags&dynssz.GoTypeFlagIsPointer == 0 && desc.ElemDesc.Size > 0 {
+			fieldSize = desc.ElemDesc.Size
+		}
+		if desc.Len*fieldSize > 32 {
+			// big array with > 32 bytes
+			return "&"
+		}
+	}
+	if desc.Kind == reflect.Struct {
+		// use pointer to struct to avoid copying
+		return "&"
+	}
+	return ""
 }
 
 // marshalType generates marshal code for any SSZ type, delegating to specific marshalers.
@@ -161,7 +187,7 @@ func (ctx *marshalContext) marshalType(desc *dynssz.TypeDescriptor, varName stri
 		}
 
 	case dynssz.SszTypeWrapperType:
-		ctx.appendCode(indent, "{\n\tt := %s.Data\n", varName)
+		ctx.appendCode(indent, "{\n\tt := %s%s.Data\n", ctx.getPtrPrefix(desc.ElemDesc), varName)
 		if err := ctx.marshalType(desc.ElemDesc, "t", indent+1, false); err != nil {
 			return err
 		}
@@ -212,7 +238,7 @@ func (ctx *marshalContext) marshalContainer(desc *dynssz.TypeDescriptor, varName
 		} else {
 			// Marshal fixed fields
 			ctx.appendCode(indent, "{ // Field #%d '%s'\n", idx, field.Name)
-			ctx.appendCode(indent, "\tt := %s.%s\n", varName, field.Name)
+			ctx.appendCode(indent, "\tt := %s%s.%s\n", ctx.getPtrPrefix(field.Type), varName, field.Name)
 			if err := ctx.marshalType(field.Type, "t", indent+1, false); err != nil {
 				return err
 			}
@@ -225,7 +251,7 @@ func (ctx *marshalContext) marshalContainer(desc *dynssz.TypeDescriptor, varName
 		if field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
 			ctx.appendCode(indent, "{ // Dynamic Field #%d '%s'\n", idx, field.Name)
 			ctx.appendCode(indent, "\tsszutils.UpdateOffset(dst[offset%d:offset%d+4], len(dst)-dstlen)\n", idx, idx)
-			ctx.appendCode(indent, "\tt := %s.%s\n", varName, field.Name)
+			ctx.appendCode(indent, "\tt := %s%s.%s\n", ctx.getPtrPrefix(field.Type), varName, field.Name)
 			if err := ctx.marshalType(field.Type, "t", indent+1, false); err != nil {
 				return err
 			}
@@ -290,7 +316,7 @@ func (ctx *marshalContext) marshalVector(desc *dynssz.TypeDescriptor, varName st
 			ctx.appendCode(indent, "dst = append(dst, []byte(%s[:%s])...)\n", varName, lenVar)
 		} else {
 			ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", lenVar)
-			ctx.appendCode(indent, "\tt := %s[i]\n", varName)
+			ctx.appendCode(indent, "\tt := %s%s[i]\n", ctx.getPtrPrefix(desc.ElemDesc), varName)
 			if err := ctx.marshalType(desc.ElemDesc, "t", indent+1, false); err != nil {
 				return err
 			}
@@ -310,7 +336,7 @@ func (ctx *marshalContext) marshalVector(desc *dynssz.TypeDescriptor, varName st
 		ctx.appendCode(indent, "dst = sszutils.AppendZeroPadding(dst, %s*4)\n", limitVar)
 		ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", lenVar)
 		ctx.appendCode(indent, "\tsszutils.UpdateOffset(dst[dstlen+(i*4):dstlen+((i+1)*4)], len(dst)-dstlen)\n")
-		ctx.appendCode(indent, "\tt := %s[i]\n", varName)
+		ctx.appendCode(indent, "\tt := %s%s[i]\n", ctx.getPtrPrefix(desc.ElemDesc), varName)
 		if err := ctx.marshalType(desc.ElemDesc, "t", indent+1, false); err != nil {
 			return err
 		}
@@ -383,10 +409,6 @@ func (ctx *marshalContext) marshalList(desc *dynssz.TypeDescriptor, varName stri
 		ctx.appendCode(indent, "}\n")
 	}
 
-	if desc.ElemDesc == nil {
-		fmt.Printf("desc.ElemDesc is nil for %s\n", ctx.typePrinter.TypeString(desc))
-	}
-
 	if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic == 0 {
 		// static elements
 		if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
@@ -396,7 +418,7 @@ func (ctx *marshalContext) marshalList(desc *dynssz.TypeDescriptor, varName stri
 		} else {
 			addVlen()
 			ctx.appendCode(indent, "for i := 0; i < vlen; i++ {\n")
-			ctx.appendCode(indent, "\tt := %s[i]\n", varName)
+			ctx.appendCode(indent, "\tt := %s%s[i]\n", ctx.getPtrPrefix(desc.ElemDesc), varName)
 			if err := ctx.marshalType(desc.ElemDesc, "t", indent+1, false); err != nil {
 				return err
 			}
@@ -410,7 +432,7 @@ func (ctx *marshalContext) marshalList(desc *dynssz.TypeDescriptor, varName stri
 		ctx.appendCode(indent, "dst = sszutils.AppendZeroPadding(dst, vlen*4)\n")
 		ctx.appendCode(indent, "for i := 0; i < vlen; i++ {\n")
 		ctx.appendCode(indent, "\tsszutils.UpdateOffset(dst[dstlen+(i*4):dstlen+((i+1)*4)], len(dst)-dstlen)\n")
-		ctx.appendCode(indent, "\tt := %s[i]\n", varName)
+		ctx.appendCode(indent, "\tt := %s%s[i]\n", ctx.getPtrPrefix(desc.ElemDesc), varName)
 		if err := ctx.marshalType(desc.ElemDesc, "t", indent+1, false); err != nil {
 			return err
 		}

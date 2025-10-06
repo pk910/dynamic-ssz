@@ -77,18 +77,21 @@ func generateHashTreeRoot(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *stri
 	genDynamicFn := !options.WithoutDynamicExpressions
 	genStaticFn := options.WithoutDynamicExpressions || options.CreateLegacyFn
 
-	if genDynamicFn {
-		if ctx.usedDynSpecs {
-			codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName))
-			codeBuilder.WriteString(codeBuf.String())
-			codeBuilder.WriteString("\treturn nil\n")
-			codeBuilder.WriteString("}\n\n")
-		} else {
-			codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName))
-			codeBuilder.WriteString("\treturn t.HashTreeRootWith(hh)\n")
-			codeBuilder.WriteString("}\n\n")
-			genStaticFn = true
-		}
+	if genDynamicFn && !ctx.usedDynSpecs {
+		genStaticFn = true
+	}
+
+	// Static hash tree root function
+	if genStaticFn {
+		hasherAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
+		codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRoot() ([32]byte, error) {\n", typeName))
+		codeBuilder.WriteString(fmt.Sprintf("\tpool := &%s.FastHasherPool\n", hasherAlias))
+		codeBuilder.WriteString("\thh := pool.Get()\n")
+		codeBuilder.WriteString("\tdefer func() {\n\t\tpool.Put(hh)\n\t}()\n")
+		codeBuilder.WriteString("\tif err := t.HashTreeRootWith(hh); err != nil {\n\t\treturn [32]byte{}, err\n\t}\n")
+		codeBuilder.WriteString("\tr, _ := hh.HashRoot()\n")
+		codeBuilder.WriteString("\treturn r, nil\n")
+		codeBuilder.WriteString("}\n")
 	}
 
 	if genStaticFn {
@@ -118,17 +121,18 @@ func generateHashTreeRoot(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *stri
 		codeBuilder.WriteString("}\n\n")
 	}
 
-	// Static hash tree root function
-	if genStaticFn {
-		hasherAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
-		codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRoot() ([32]byte, error) {\n", typeName))
-		codeBuilder.WriteString(fmt.Sprintf("\tpool := &%s.FastHasherPool\n", hasherAlias))
-		codeBuilder.WriteString("\thh := pool.Get()\n")
-		codeBuilder.WriteString("\tdefer func() {\n\t\tpool.Put(hh)\n\t}()\n")
-		codeBuilder.WriteString("\tif err := t.HashTreeRootWith(hh); err != nil {\n\t\treturn [32]byte{}, err\n\t}\n")
-		codeBuilder.WriteString("\tr, _ := hh.HashRoot()\n")
-		codeBuilder.WriteString("\treturn r, nil\n")
-		codeBuilder.WriteString("}\n")
+	if genDynamicFn {
+		if ctx.usedDynSpecs {
+			codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName))
+			codeBuilder.WriteString(codeBuf.String())
+			codeBuilder.WriteString("\treturn nil\n")
+			codeBuilder.WriteString("}\n\n")
+		} else {
+			codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName))
+			codeBuilder.WriteString("\treturn t.HashTreeRootWith(hh)\n")
+			codeBuilder.WriteString("}\n\n")
+			genStaticFn = true
+		}
 	}
 
 	return nil
@@ -145,6 +149,28 @@ func (ctx *hashTreeRootContext) getValVar() string {
 	return fmt.Sprintf("val%d", ctx.valVarCounter)
 }
 
+// getPtrPrefix returns & for types that are heavy to copy
+func (ctx *hashTreeRootContext) getPtrPrefix(desc *dynssz.TypeDescriptor, prefix string) string {
+	if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+		return ""
+	}
+	if desc.Kind == reflect.Array {
+		fieldSize := uint32(8)
+		if desc.ElemDesc.GoTypeFlags&dynssz.GoTypeFlagIsPointer == 0 && desc.ElemDesc.Size > 0 {
+			fieldSize = desc.ElemDesc.Size
+		}
+		if desc.Len*fieldSize > 32 {
+			// big array with > 32 bytes
+			return prefix
+		}
+	}
+	if desc.Kind == reflect.Struct {
+		// use pointer to struct to avoid copying
+		return prefix
+	}
+	return ""
+}
+
 // hashType generates hash tree root code for any SSZ type, delegating to specific hashers.
 func (ctx *hashTreeRootContext) hashType(desc *dynssz.TypeDescriptor, varName string, indent int, isRoot bool, pack bool) error {
 	if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
@@ -158,13 +184,22 @@ func (ctx *hashTreeRootContext) hashType(desc *dynssz.TypeDescriptor, varName st
 		return nil
 	}
 
-	useFastSsz := !ctx.options.NoFastSsz && desc.SszCompatFlags&dynssz.SszCompatFlagHashTreeRootWith != 0
+	isFastsszHasher := desc.SszCompatFlags&dynssz.SszCompatFlagFastSSZHasher != 0
+	isFastsszHashWith := desc.SszCompatFlags&dynssz.SszCompatFlagHashTreeRootWith != 0
+	hasDynamicSize := desc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
+	hasDynamicMax := desc.SszTypeFlags&dynssz.SszTypeFlagHasMaxExpr != 0 && !ctx.options.WithoutDynamicExpressions
+
+	useFastSsz := !isRoot && !ctx.options.NoFastSsz && !hasDynamicSize && !hasDynamicMax && (isFastsszHasher || isFastsszHashWith)
 	if !useFastSsz && desc.SszType == dynssz.SszCustomType {
 		useFastSsz = true
 	}
 
-	if useFastSsz && !isRoot {
-		ctx.appendCode(indent, "if err := %s.HashTreeRootWith(hh); err != nil {\n\treturn err\n}\n", varName)
+	if useFastSsz {
+		if isFastsszHashWith {
+			ctx.appendCode(indent, "if err := %s.HashTreeRootWith(hh); err != nil {\n\treturn err\n}\n", varName)
+		} else {
+			ctx.appendCode(indent, "if root, err := %s.HashTreeRoot(); err != nil {\n\treturn err\n} else {\n\thh.AppendBytes32(root[:])\n}\n", varName)
+		}
 		return nil
 	}
 
@@ -209,7 +244,7 @@ func (ctx *hashTreeRootContext) hashType(desc *dynssz.TypeDescriptor, varName st
 		}
 
 	case dynssz.SszTypeWrapperType:
-		ctx.appendCode(indent, "{\n\tt := %s.Data\n", varName)
+		ctx.appendCode(indent, "{\n\tt := %s%s.Data\n", ctx.getPtrPrefix(desc.ElemDesc, "&"), varName)
 		if err := ctx.hashType(desc.ElemDesc, "t", indent+1, false, pack); err != nil {
 			return err
 		}
@@ -254,7 +289,7 @@ func (ctx *hashTreeRootContext) hashContainer(desc *dynssz.TypeDescriptor, varNa
 	// Hash each field
 	for idx, field := range desc.ContainerDesc.Fields {
 		ctx.appendCode(indent, "{ // Field #%d '%s'\n", idx, field.Name)
-		ctx.appendCode(indent, "\tt := %s.%s\n", varName, field.Name)
+		ctx.appendCode(indent, "\tt := %s%s.%s\n", ctx.getPtrPrefix(field.Type, "&"), varName, field.Name)
 		if err := ctx.hashType(field.Type, "t", indent+1, false, false); err != nil {
 			return err
 		}
@@ -289,7 +324,7 @@ func (ctx *hashTreeRootContext) hashProgressiveContainer(desc *dynssz.TypeDescri
 		lastActiveField = int(field.SszIndex)
 
 		ctx.appendCode(indent, "{ // Field #%d '%s'\n", i, field.Name)
-		ctx.appendCode(indent, "\tt := %s.%s\n", varName, field.Name)
+		ctx.appendCode(indent, "\tt := %s%s.%s\n", ctx.getPtrPrefix(field.Type, "&"), varName, field.Name)
 		if err := ctx.hashType(field.Type, "t", indent+1, false, false); err != nil {
 			return err
 		}
@@ -419,9 +454,9 @@ func (ctx *hashTreeRootContext) hashVector(desc *dynssz.TypeDescriptor, varName 
 
 		valVar := ctx.getValVar()
 		ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", limitVar)
-		ctx.appendCode(indent, "\tvar %s %s\n", valVar, ctx.typePrinter.TypeString(desc.ElemDesc))
+		ctx.appendCode(indent, "\tvar %s %s%s\n", valVar, ctx.getPtrPrefix(desc.ElemDesc, "*"), ctx.typePrinter.TypeString(desc.ElemDesc))
 		ctx.appendCode(indent, "\tif i < %s {\n", lenVar)
-		ctx.appendCode(indent, "\t\t%s = %s[i]\n", valVar, varName)
+		ctx.appendCode(indent, "\t\t%s = %s%s[i]\n", valVar, ctx.getPtrPrefix(desc.ElemDesc, "&"), varName)
 		ctx.appendCode(indent, "\t}\n")
 
 		if err := ctx.hashType(desc.ElemDesc, valVar, indent+1, false, true); err != nil {
@@ -449,15 +484,16 @@ func (ctx *hashTreeRootContext) hashList(desc *dynssz.TypeDescriptor, varName st
 		maxExpression = nil
 	}
 
-	hasLimitVar := ""
+	hasMax := false
 	maxVar := ""
+
 	if maxExpression != nil {
 		ctx.usedDynSpecs = true
 		ctx.appendCode(indent, "hasMax, max, err := ds.ResolveSpecValue(\"%s\")\n", *maxExpression)
 		ctx.appendCode(indent, "if err != nil {\n")
 		ctx.appendCode(indent, "\treturn err\n")
 		ctx.appendCode(indent, "}\n")
-		hasLimitVar = "hasMax"
+		hasMax = true
 		maxVar = "uint64(max)"
 		if desc.Limit > 0 {
 			ctx.appendCode(indent, "if !hasMax {\n")
@@ -466,20 +502,23 @@ func (ctx *hashTreeRootContext) hashList(desc *dynssz.TypeDescriptor, varName st
 		}
 	} else if desc.Limit > 0 {
 		maxVar = fmt.Sprintf("%d", desc.Limit)
-		hasLimitVar = "true"
+		hasMax = true
 	} else {
-		hasLimitVar = "false"
 		maxVar = "0"
 	}
 
-	ctx.appendCode(indent, "vlen := uint64(len(%s))\n", varName)
-
-	if hasLimitVar != "false" {
-		if hasLimitVar == "true" {
-			ctx.appendCode(indent, "if vlen > %s {\n", maxVar)
-		} else {
-			ctx.appendCode(indent, "if %s && vlen > %s {\n", hasLimitVar, maxVar)
+	hasVlen := false
+	addVlen := func() {
+		if hasVlen {
+			return
 		}
+		ctx.appendCode(indent, "vlen := uint64(len(%s))\n", varName)
+		hasVlen = true
+	}
+
+	if hasMax {
+		addVlen()
+		ctx.appendCode(indent, "if vlen > %s {\n", maxVar)
 		ctx.appendCode(indent, "\treturn sszutils.ErrListTooBig\n")
 		ctx.appendCode(indent, "}\n")
 	}
@@ -503,8 +542,9 @@ func (ctx *hashTreeRootContext) hashList(desc *dynssz.TypeDescriptor, varName st
 		}
 
 		// Hash all elements
+		addVlen()
 		ctx.appendCode(indent, "for i := 0; i < int(vlen); i++ {\n")
-		ctx.appendCode(indent, "\tt := %s[i]\n", varName)
+		ctx.appendCode(indent, "\tt := %s%s[i]\n", ctx.getPtrPrefix(desc.ElemDesc, "&"), varName)
 		if err := ctx.hashType(desc.ElemDesc, "t", indent+1, false, true); err != nil {
 			return err
 		}
@@ -516,8 +556,10 @@ func (ctx *hashTreeRootContext) hashList(desc *dynssz.TypeDescriptor, varName st
 	}
 
 	if desc.SszType == dynssz.SszProgressiveListType {
+		addVlen()
 		ctx.appendCode(indent, "hh.MerkleizeProgressiveWithMixin(idx, vlen)\n")
 	} else if maxVar != "0" {
+		addVlen()
 		if itemSize > 0 {
 			ctx.appendCode(indent, "limit := sszutils.CalculateLimit(%s, vlen, %d)\n", maxVar, itemSize)
 			ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, vlen, limit)\n")

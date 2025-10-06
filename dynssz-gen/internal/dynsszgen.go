@@ -16,6 +16,7 @@ import (
 func Run() {
 	var (
 		packagePath               = flag.String("package", "", "Go package path to analyze")
+		packageName               = flag.String("package-name", "", "Package name for generated code")
 		typeNames                 = flag.String("types", "", "Comma-separated list of type names to generate code for")
 		outputFile                = flag.String("output", "", "Output file path for generated code")
 		verbose                   = flag.Bool("v", false, "Verbose output")
@@ -112,6 +113,10 @@ func Run() {
 
 	// Create codegen instance
 	codeGen := codegen.NewCodeGenerator(dynssz.NewDynSsz(nil))
+
+	if *packageName != "" {
+		codeGen.SetPackageName(*packageName)
+	}
 
 	// Build options for all types
 	for outFile, foundTypes := range generateFiles {

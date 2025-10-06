@@ -5,6 +5,8 @@
 package codegen
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"slices"
@@ -37,7 +39,7 @@ type unmarshalContext struct {
 	usedDynSpecs   bool
 	valVarCounter  int
 	sizeVarCounter int
-	sizeVarMap     map[*dynssz.TypeDescriptor]string
+	sizeVarMap     map[[32]byte]string
 }
 
 // generateUnmarshal generates unmarshal methods for a specific type.
@@ -76,7 +78,7 @@ func generateUnmarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings
 		},
 		typePrinter: typePrinter,
 		options:     options,
-		sizeVarMap:  make(map[*dynssz.TypeDescriptor]string),
+		sizeVarMap:  make(map[[32]byte]string),
 	}
 
 	// Generate main function signature
@@ -90,19 +92,8 @@ func generateUnmarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings
 	genDynamicFn := !options.WithoutDynamicExpressions
 	genStaticFn := options.WithoutDynamicExpressions || options.CreateLegacyFn
 
-	if genDynamicFn {
-		if ctx.usedDynSpecs {
-			codeBuilder.WriteString(fmt.Sprintf("func (t %s) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (err error) {\n", typeName))
-			codeBuilder.WriteString(sizeCodeBuf.String())
-			codeBuilder.WriteString(codeBuf.String())
-			codeBuilder.WriteString("\treturn nil\n")
-			codeBuilder.WriteString("}\n\n")
-		} else {
-			codeBuilder.WriteString(fmt.Sprintf("func (t %s) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) (err error) {\n", typeName))
-			codeBuilder.WriteString("\treturn t.UnmarshalSSZ(buf)\n")
-			codeBuilder.WriteString("}\n\n")
-			genStaticFn = true
-		}
+	if genDynamicFn && !ctx.usedDynSpecs {
+		genStaticFn = true
 	}
 
 	if genStaticFn {
@@ -117,6 +108,21 @@ func generateUnmarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings
 			codeBuilder.WriteString(fmt.Sprintf("func (t %s) UnmarshalSSZ(buf []byte) (err error) {\n", typeName))
 			codeBuilder.WriteString(fmt.Sprintf("\treturn t.UnmarshalSSZDyn(%s.GetGlobalDynSsz(), buf)\n", dynsszAlias))
 			codeBuilder.WriteString("}\n\n")
+		}
+	}
+
+	if genDynamicFn {
+		if ctx.usedDynSpecs {
+			codeBuilder.WriteString(fmt.Sprintf("func (t %s) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (err error) {\n", typeName))
+			codeBuilder.WriteString(sizeCodeBuf.String())
+			codeBuilder.WriteString(codeBuf.String())
+			codeBuilder.WriteString("\treturn nil\n")
+			codeBuilder.WriteString("}\n\n")
+		} else {
+			codeBuilder.WriteString(fmt.Sprintf("func (t %s) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) (err error) {\n", typeName))
+			codeBuilder.WriteString("\treturn t.UnmarshalSSZ(buf)\n")
+			codeBuilder.WriteString("}\n\n")
+			genStaticFn = true
 		}
 	}
 
@@ -162,13 +168,21 @@ func (ctx *unmarshalContext) isInlinable(desc *dynssz.TypeDescriptor) bool {
 
 // getStaticSizeVar generates a variable name for cached static size calculations.
 func (ctx *unmarshalContext) getStaticSizeVar(desc *dynssz.TypeDescriptor) (string, error) {
-	if sizeVar, ok := ctx.sizeVarMap[desc]; ok {
+	descCopy := *desc
+	descCopy.GoTypeFlags &= ^dynssz.GoTypeFlagIsPointer
+
+	descJson, err := json.Marshal(descCopy)
+	if err != nil {
+		return "", err
+	}
+	descHash := sha256.Sum256(descJson)
+
+	if sizeVar, ok := ctx.sizeVarMap[descHash]; ok {
 		return sizeVar, nil
 	}
 
 	ctx.sizeVarCounter++
 	sizeVar := fmt.Sprintf("size%d", ctx.sizeVarCounter)
-	var err error
 
 	// recursive resolve static size with size expressions
 	switch desc.SszType {
@@ -237,7 +251,7 @@ func (ctx *unmarshalContext) getStaticSizeVar(desc *dynssz.TypeDescriptor) (stri
 		return "", fmt.Errorf("unknown type for static size calculation: %v", desc.SszType)
 	}
 
-	ctx.sizeVarMap[desc] = sizeVar
+	ctx.sizeVarMap[descHash] = sizeVar
 
 	return sizeVar, nil
 }
@@ -389,7 +403,7 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *dynssz.TypeDescriptor, var
 			if len(dynamicFields) > 0 {
 				ctx.appendCode(indent, "if offset%d < offset%d || offset%d > buflen {\n\treturn sszutils.ErrOffset\n}\n", idx, dynamicFields[len(dynamicFields)-1], idx)
 			} else {
-				ctx.appendCode(indent, "if offset%d < %s || offset%d > buflen {\n\treturn sszutils.ErrOffset\n}\n", idx, strings.Join(staticSizeVars, "+"), idx)
+				ctx.appendCode(indent, "if offset%d != %s {\n\treturn sszutils.ErrOffset\n}\n", idx, strings.Join(staticSizeVars, "+"))
 			}
 			offset += 4
 			dynamicFields = append(dynamicFields, idx)
@@ -492,11 +506,7 @@ func (ctx *unmarshalContext) unmarshalVector(desc *dynssz.TypeDescriptor, varNam
 
 	// create slice if needed
 	if desc.Kind != reflect.Array && desc.GoTypeFlags&dynssz.GoTypeFlagIsString == 0 {
-		ctx.appendCode(indent, "if len(%s) < %s {\n", varName, limitVar)
-		ctx.appendCode(indent, "\t%s = make(%s, %s)\n", varName, ctx.typePrinter.TypeString(desc), limitVar)
-		ctx.appendCode(indent, "} else if len(%s) > %s {\n", varName, limitVar)
-		ctx.appendCode(indent, "\t%s = %s[:%s]\n", varName, varName, limitVar)
-		ctx.appendCode(indent, "}\n")
+		ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, %s)\n", varName, varName, limitVar)
 	}
 
 	if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic == 0 {
@@ -593,12 +603,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *dynssz.TypeDescriptor, varName 
 				ctx.appendCode(indent, "%s = %s(buf)\n", varName, typename)
 			} else {
 				if desc.Kind != reflect.Array {
-					ctx.appendCode(indent, "limit := len(buf)\n")
-					ctx.appendCode(indent, "if len(%s) < limit {\n", varName)
-					ctx.appendCode(indent, "\t%s = make(%s, limit)\n", varName, ctx.typePrinter.TypeString(desc))
-					ctx.appendCode(indent, "} else if len(%s) > limit {\n", varName)
-					ctx.appendCode(indent, "\t%s = %s[:limit]\n", varName, varName)
-					ctx.appendCode(indent, "}\n")
+					ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, len(buf))\n", varName, varName)
 				}
 				ctx.appendCode(indent, "copy(%s[:], buf)\n", varName)
 			}
@@ -624,11 +629,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *dynssz.TypeDescriptor, varName 
 			ctx.appendCode(indent, "if len(buf)%%%s != 0 {\n\treturn sszutils.ErrUnexpectedEOF\n}\n", fieldSizeVar)
 		}
 		if desc.Kind != reflect.Array {
-			ctx.appendCode(indent, "if len(%s) < itemCount {\n", varName)
-			ctx.appendCode(indent, "\t%s = make(%s, itemCount)\n", varName, ctx.typePrinter.TypeString(desc))
-			ctx.appendCode(indent, "} else if len(%s) > itemCount {\n", varName)
-			ctx.appendCode(indent, "\t%s = %s[:itemCount]\n", varName, varName)
-			ctx.appendCode(indent, "}\n")
+			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", varName, varName)
 		}
 
 		ctx.appendCode(indent, "for i := 0; i < itemCount; i++ {\n")
@@ -662,11 +663,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *dynssz.TypeDescriptor, varName 
 		ctx.appendCode(indent, "itemCount := startOffset / 4\n")
 		ctx.appendCode(indent, "if startOffset%4 != 0 || len(buf) < startOffset {\n\treturn sszutils.ErrUnexpectedEOF\n}\n")
 		if desc.Kind != reflect.Array {
-			ctx.appendCode(indent, "if len(%s) < itemCount {\n", varName)
-			ctx.appendCode(indent, "\t%s = make(%s, itemCount)\n", varName, ctx.typePrinter.TypeString(desc))
-			ctx.appendCode(indent, "} else if len(%s) > itemCount {\n", varName)
-			ctx.appendCode(indent, "\t%s = %s[:itemCount]\n", varName, varName)
-			ctx.appendCode(indent, "}\n")
+			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", varName, varName)
 		}
 		ctx.appendCode(indent, "for i := 0; i < itemCount; i++ {\n")
 		ctx.appendCode(indent, "\tvar endOffset int\n")
@@ -714,7 +711,7 @@ func (ctx *unmarshalContext) unmarshalUnion(desc *dynssz.TypeDescriptor, varName
 		variantType := ctx.typePrinter.TypeString(variantDesc)
 		ctx.appendCode(indent, "case %d:\n", variant)
 		valVar := ctx.getValVar()
-		ctx.appendCode(indent, "\t%s := *new(%s)\n", valVar, variantType)
+		ctx.appendCode(indent, "\tvar %s %s\n", valVar, variantType)
 		ctx.appendCode(indent, "\tbuf := buf[1:]\n")
 		if err := ctx.unmarshalType(variantDesc, valVar, indent+1, false, true); err != nil {
 			return err

@@ -39,3 +39,16 @@ func UnmarshalBool(src []byte) bool {
 func ReadOffset(buf []byte) uint64 {
 	return uint64(binary.LittleEndian.Uint32(buf))
 }
+
+// ---- expansion functions ----
+
+// ExpandSlice expands a slice to a byte slice
+func ExpandSlice[T any](src []T, size int) []T {
+	if len(src) < size {
+		src = make([]T, size)
+	} else if len(src) > size {
+		src = src[:size]
+	}
+
+	return src
+}

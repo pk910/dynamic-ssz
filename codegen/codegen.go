@@ -146,8 +146,9 @@ type CodeGeneratorTypeOptions struct {
 // The generator ensures all types belong to the same package and handles import management,
 // method generation, and proper Go source code formatting for the entire file.
 type CodeGeneratorFileOptions struct {
-	Package string
-	Types   []*CodeGeneratorTypeOptions
+	Package     string
+	PackageName string
+	Types       []*CodeGeneratorTypeOptions
 }
 
 // WithNoMarshalSSZ creates an option to skip generating MarshalSSZTo and MarshalSSZDyn methods.
@@ -493,8 +494,10 @@ type fileGenerationRequest struct {
 //  2. Add files with BuildFile()
 //  3. Generate code with Generate() or GenerateToMap()
 type CodeGenerator struct {
-	files  []*fileGenerationRequest
-	dynSsz *dynssz.DynSsz
+	files       []*fileGenerationRequest
+	dynSsz      *dynssz.DynSsz
+	packageName string
+	compatFlags map[string]dynssz.SszCompatFlag
 }
 
 // NewCodeGenerator creates a new code generator instance with the specified DynSsz configuration.
@@ -528,9 +531,30 @@ func NewCodeGenerator(dynSsz *dynssz.DynSsz) *CodeGenerator {
 	}
 
 	return &CodeGenerator{
-		files:  make([]*fileGenerationRequest, 0),
-		dynSsz: dynSsz,
+		files:       make([]*fileGenerationRequest, 0),
+		dynSsz:      dynSsz,
+		compatFlags: map[string]dynssz.SszCompatFlag{},
 	}
+}
+
+// SetPackageName sets the package name for the code generator.
+//
+// This method sets the package name for the code generator.
+//
+// Parameters:
+//   - packageName: The package name to set
+//
+// Returns:
+//   - *CodeGenerator: The code generator instance
+//
+// Example:
+//
+//	cg := NewCodeGenerator(dynSsz)
+//	cg.SetPackageName("my_package")
+//	cg.BuildFile("types.go", WithReflectType(reflect.TypeOf((*MyStruct)(nil)).Elem()))
+//	cg.Generate()
+func (cg *CodeGenerator) SetPackageName(packageName string) {
+	cg.packageName = packageName
 }
 
 // BuildFile adds a file generation request to the code generator.

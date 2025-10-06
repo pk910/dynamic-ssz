@@ -4,16 +4,11 @@
 package main
 
 import (
-	"log"
-	"path/filepath"
-	"reflect"
-	"runtime"
-
 	"github.com/attestantio/go-eth2-client/spec/deneb"
 	"github.com/attestantio/go-eth2-client/spec/phase0"
-	dynssz "github.com/pk910/dynamic-ssz"
-	"github.com/pk910/dynamic-ssz/codegen"
 )
+
+//go:generate dynssz-gen -package . -package-name main -legacy -types TestBeaconBlock:gen_block.go,TestSignedBeaconBlock:gen_block.go,TestBeaconState:gen_state.go,Test1:gen_test1.go,Test2:gen_test1.go,Test3:gen_test1.go
 
 type TestBeaconState deneb.BeaconState
 type TestBeaconBlock deneb.BeaconBlock
@@ -42,44 +37,4 @@ type Test3 struct {
 	F1 uint64 `ssz-index:"1"`
 	F3 uint64 `ssz-index:"3"`
 	F4 uint64 `ssz-index:"4"`
-}
-
-func codegenCommand() {
-	ds := dynssz.NewDynSsz(nil)
-	//ds.NoFastSsz = true
-	generator := codegen.NewCodeGenerator(ds)
-
-	_, filePath, _, _ := runtime.Caller(0)
-	currentDir := filepath.Dir(filePath)
-
-	generator.BuildFile(
-		currentDir+"/gen_block.go",
-		codegen.WithReflectType(reflect.TypeOf(&TestBeaconBlock{})),
-		codegen.WithReflectType(reflect.TypeOf(&TestSignedBeaconBlock{})),
-		codegen.WithCreateLegacyFn(),
-	)
-
-	generator.BuildFile(
-		currentDir+"/gen_state.go",
-		codegen.WithReflectType(
-			reflect.TypeOf(&TestBeaconState{}),
-			codegen.WithCreateLegacyFn(),
-		),
-	)
-
-	generator.BuildFile(
-		currentDir+"/gen_test1.go",
-		codegen.WithReflectType(
-			reflect.TypeOf(&Test1{}),
-		),
-		codegen.WithReflectType(
-			reflect.TypeOf(&Test2{}),
-		),
-		codegen.WithCreateLegacyFn(),
-	)
-
-	err := generator.Generate()
-	if err != nil {
-		log.Fatal("Generation failed:", err)
-	}
 }

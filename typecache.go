@@ -18,6 +18,7 @@ type TypeCache struct {
 	dynssz      *DynSsz
 	mutex       sync.RWMutex
 	descriptors map[reflect.Type]*TypeDescriptor
+	CompatFlags map[string]SszCompatFlag
 }
 
 // SszTypeFlag is a flag indicating whether a type has a specific SSZ type feature
@@ -99,6 +100,7 @@ func NewTypeCache(dynssz *DynSsz) *TypeCache {
 	return &TypeCache{
 		dynssz:      dynssz,
 		descriptors: make(map[reflect.Type]*TypeDescriptor),
+		CompatFlags: map[string]SszCompatFlag{},
 	}
 }
 
@@ -169,6 +171,21 @@ func (tc *TypeCache) getTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, 
 	}
 
 	return desc, nil
+}
+
+func (tc *TypeCache) getCompatFlag(t reflect.Type) SszCompatFlag {
+	typeName := t.Name()
+	typePkgPath := t.PkgPath()
+	if typePkgPath == "" && t.Kind() == reflect.Ptr {
+		typePkgPath = t.Elem().PkgPath()
+	}
+
+	typeKey := typeName
+	if typePkgPath != "" {
+		typeKey = typePkgPath + "." + typeName
+	}
+
+	return tc.CompatFlags[typeKey]
 }
 
 // buildTypeDescriptor computes a type descriptor for the given type
@@ -427,6 +444,8 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 	if tc.dynssz.getDynamicHashRootCompatibility(t) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicHashRoot
 	}
+
+	desc.SszCompatFlags |= tc.getCompatFlag(t)
 
 	if desc.SszType == SszCustomType && (desc.SszCompatFlags&SszCompatFlagFastSSZMarshaler == 0 || desc.SszCompatFlags&SszCompatFlagFastSSZHasher == 0) {
 		return nil, fmt.Errorf("custom ssz type requires fastssz marshaler and hasher implementations")
@@ -883,6 +902,10 @@ func (tc *TypeCache) GetAllTypes() []reflect.Type {
 func (tc *TypeCache) RemoveType(t reflect.Type) {
 	tc.mutex.Lock()
 	defer tc.mutex.Unlock()
+
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
 
 	delete(tc.descriptors, t)
 }
