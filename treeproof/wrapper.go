@@ -9,6 +9,8 @@
 package treeproof
 
 import (
+	"fmt"
+
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
@@ -316,4 +318,12 @@ func (w *Wrapper) AddEmpty() {
 func (w *Wrapper) getLimit(i int) int {
 	size := len(w.nodes[i:])
 	return int(sszutils.NextPowerOfTwo(uint64(size)))
+}
+
+func (w *Wrapper) HashRoot() ([32]byte, error) {
+	root := w.Hash()
+	if len(root) != 32 {
+		return [32]byte{}, fmt.Errorf("expected 32 byte size")
+	}
+	return [32]byte(root), nil
 }
