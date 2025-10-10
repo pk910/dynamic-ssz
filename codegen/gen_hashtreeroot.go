@@ -84,13 +84,15 @@ func generateHashTreeRoot(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *stri
 	// Static hash tree root function
 	if genStaticFn {
 		hasherAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
-		codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRoot() ([32]byte, error) {\n", typeName))
-		codeBuilder.WriteString(fmt.Sprintf("\tpool := &%s.FastHasherPool\n", hasherAlias))
-		codeBuilder.WriteString("\thh := pool.Get()\n")
-		codeBuilder.WriteString("\tdefer func() {\n\t\tpool.Put(hh)\n\t}()\n")
-		codeBuilder.WriteString("\tif err := t.HashTreeRootWith(hh); err != nil {\n\t\treturn [32]byte{}, err\n\t}\n")
-		codeBuilder.WriteString("\tr, _ := hh.HashRoot()\n")
-		codeBuilder.WriteString("\treturn r, nil\n")
+		codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRoot() (root [32]byte, err error) {\n", typeName))
+		codeBuilder.WriteString(fmt.Sprintf("\terr = %s.WithDefaultHasher(func(hh sszutils.HashWalker) (err error) {\n", hasherAlias))
+		codeBuilder.WriteString("\t\terr = t.HashTreeRootWith(hh)\n")
+		codeBuilder.WriteString("\t\tif err == nil {\n")
+		codeBuilder.WriteString("\t\t\troot, err = hh.HashRoot()\n")
+		codeBuilder.WriteString("\t\t}\n")
+		codeBuilder.WriteString("\t\treturn\n")
+		codeBuilder.WriteString("\t})\n")
+		codeBuilder.WriteString("\treturn\n")
 		codeBuilder.WriteString("}\n")
 	}
 
@@ -111,13 +113,15 @@ func generateHashTreeRoot(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *stri
 	// Dynamic hash tree root function
 	if genDynamicFn {
 		hasherAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
-		codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootDyn(ds sszutils.DynamicSpecs) ([32]byte, error) {\n", typeName))
-		codeBuilder.WriteString(fmt.Sprintf("\tpool := &%s.FastHasherPool\n", hasherAlias))
-		codeBuilder.WriteString("\thh := pool.Get()\n")
-		codeBuilder.WriteString("\tdefer func() {\n\t\tpool.Put(hh)\n\t}()\n")
-		codeBuilder.WriteString("\tif err := t.HashTreeRootWithDyn(ds, hh); err != nil {\n\t\treturn [32]byte{}, err\n\t}\n")
-		codeBuilder.WriteString("\tr, _ := hh.HashRoot()\n")
-		codeBuilder.WriteString("\treturn r, nil\n")
+		codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootDyn(ds sszutils.DynamicSpecs) (root [32]byte, err error) {\n", typeName))
+		codeBuilder.WriteString(fmt.Sprintf("\terr = %s.WithDefaultHasher(func(hh sszutils.HashWalker) (err error) {\n", hasherAlias))
+		codeBuilder.WriteString("\t\terr = t.HashTreeRootWithDyn(ds, hh)\n")
+		codeBuilder.WriteString("\t\tif err == nil {\n")
+		codeBuilder.WriteString("\t\t\troot, err = hh.HashRoot()\n")
+		codeBuilder.WriteString("\t\t}\n")
+		codeBuilder.WriteString("\t\treturn\n")
+		codeBuilder.WriteString("\t})\n")
+		codeBuilder.WriteString("\treturn\n")
 		codeBuilder.WriteString("}\n\n")
 	}
 

@@ -84,4 +84,7 @@ type HashWalker interface {
 	MerkleizeProgressive(indx int)
 	MerkleizeProgressiveWithMixin(indx int, num uint64)
 	MerkleizeProgressiveWithActiveFields(indx int, activeFields []byte)
+
+	// HashRoot methods
+	HashRoot() ([32]byte, error)
 }
