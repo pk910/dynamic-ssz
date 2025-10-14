@@ -125,14 +125,7 @@ func (ctx *marshalContext) getPtrPrefix(desc *dynssz.TypeDescriptor) string {
 		return ""
 	}
 	if desc.Kind == reflect.Array {
-		fieldSize := uint32(8)
-		if desc.ElemDesc.GoTypeFlags&dynssz.GoTypeFlagIsPointer == 0 && desc.ElemDesc.Size > 0 {
-			fieldSize = desc.ElemDesc.Size
-		}
-		if desc.Len*fieldSize > 32 {
-			// big array with > 32 bytes
-			return "&"
-		}
+		return "&"
 	}
 	if desc.Kind == reflect.Struct {
 		// use pointer to struct to avoid copying

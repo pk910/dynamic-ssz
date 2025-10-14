@@ -216,9 +216,9 @@ func (ctx *hashTreeRootContext) hashType(desc *dynssz.TypeDescriptor, varName st
 	switch desc.SszType {
 	case dynssz.SszBoolType:
 		if pack {
-			ctx.appendCode(indent, "hh.AppendBool(%s)\n", varName)
+			ctx.appendCode(indent, "hh.AppendBool(bool(%s))\n", varName)
 		} else {
-			ctx.appendCode(indent, "hh.PutBool(%s)\n", varName)
+			ctx.appendCode(indent, "hh.PutBool(bool(%s))\n", varName)
 		}
 	case dynssz.SszUint8Type:
 		if pack {
@@ -491,7 +491,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *dynssz.TypeDescriptor, varName 
 		ctx.appendCode(indent, "\t\t%s = %s%s[i]\n", valVar, ctx.getPtrPrefix(desc.ElemDesc, "&"), varName)
 		ctx.appendCode(indent, "\t} else if i == %s {\n", lenVar)
 		if isPtrType {
-			ctx.appendCode(indent, "\t\t%s = new(%s)\n", valVar, ctx.typePrinter.TypeString(desc.ElemDesc))
+			ctx.appendCode(indent, "\t\t%s = new(%s)\n", valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
 		} else {
 			ctx.appendCode(indent, "\t\t%s = %sEmpty\n", valVar, valVar)
 		}

@@ -447,8 +447,12 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 
 	desc.SszCompatFlags |= tc.getCompatFlag(t)
 
-	if desc.SszType == SszCustomType && (desc.SszCompatFlags&SszCompatFlagFastSSZMarshaler == 0 || desc.SszCompatFlags&SszCompatFlagFastSSZHasher == 0) {
-		return nil, fmt.Errorf("custom ssz type requires fastssz marshaler and hasher implementations")
+	if desc.SszType == SszCustomType {
+		isCompatible := desc.SszCompatFlags&SszCompatFlagFastSSZMarshaler != 0 && desc.SszCompatFlags&SszCompatFlagFastSSZHasher != 0
+		//isCompatible = isCompatible || (desc.SszCompatFlags&SszCompatFlagDynamicMarshaler != 0 && desc.SszCompatFlags&SszCompatFlagDynamicUnmarshaler != 0 && desc.SszCompatFlags&SszCompatFlagDynamicSizer != 0 && desc.SszCompatFlags&SszCompatFlagDynamicHashRoot != 0)
+		if !isCompatible {
+			return nil, fmt.Errorf("custom ssz type requires fastssz marshaler, unmarshaler and hasher implementations")
+		}
 	}
 
 	return desc, nil

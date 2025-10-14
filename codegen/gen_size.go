@@ -136,14 +136,7 @@ func (ctx *sizeContext) getPtrPrefix(desc *dynssz.TypeDescriptor) string {
 		return ""
 	}
 	if desc.Kind == reflect.Array {
-		fieldSize := uint32(8)
-		if desc.ElemDesc.GoTypeFlags&dynssz.GoTypeFlagIsPointer == 0 && desc.ElemDesc.Size > 0 {
-			fieldSize = desc.ElemDesc.Size
-		}
-		if desc.Len*fieldSize > 32 {
-			// big array with > 32 bytes
-			return "&"
-		}
+		return "&"
 	}
 	if desc.Kind == reflect.Struct {
 		// use pointer to struct to avoid copying
@@ -239,7 +232,9 @@ func (ctx *sizeContext) sizeContainer(desc *dynssz.TypeDescriptor, varName strin
 		}
 	}
 
-	ctx.appendCode(indent, "%s += %d\n", sizeVar, staticSize)
+	if staticSize > 0 {
+		ctx.appendCode(indent, "%s += %d\n", sizeVar, staticSize)
+	}
 
 	// Add calculated size for static fields
 	for idx, field := range desc.ContainerDesc.Fields {
@@ -307,7 +302,7 @@ func (ctx *sizeContext) sizeVector(desc *dynssz.TypeDescriptor, varName string, 
 			innerVarName := fmt.Sprintf("%s[0]", varName)
 			innerSizeVar := ctx.getSizeVar()
 			ctx.appendCode(indent, "\t%s := 0\n", innerSizeVar)
-			if err := ctx.sizeType(desc.ElemDesc, innerVarName, sizeVar, indent+1, false); err != nil {
+			if err := ctx.sizeType(desc.ElemDesc, innerVarName, innerSizeVar, indent+1, false); err != nil {
 				return err
 			}
 			ctx.appendCode(indent, "\t%s += %s * %s\n", sizeVar, innerSizeVar, limitVar)
@@ -347,14 +342,14 @@ func (ctx *sizeContext) sizeVector(desc *dynssz.TypeDescriptor, varName string, 
 
 			// Add size for zero-padding
 			ctx.appendCode(indent, "if vlen < int(%s) {\n", limitVar)
-			typeName := ctx.typePrinter.TypeString(desc.ElemDesc)
+			typeName := ctx.typePrinter.InnerTypeString(desc.ElemDesc)
 			ctx.appendCode(indent, "\tzeroItem := &%s{}\n", typeName)
 			innerSizeVar := ctx.getSizeVar()
 			ctx.appendCode(indent, "\t%s := 0\n", innerSizeVar)
-			if err := ctx.sizeType(desc.ElemDesc, "zeroItem", innerSizeVar, indent+2, false); err != nil {
+			if err := ctx.sizeType(desc.ElemDesc, "zeroItem", innerSizeVar, indent+1, false); err != nil {
 				return err
 			}
-			ctx.appendCode(indent, "\t%s += %s * (vlen - int(%s))\n", sizeVar, innerSizeVar, limitVar)
+			ctx.appendCode(indent, "\t%s += %s * (int(%s) - vlen)\n", sizeVar, innerSizeVar, limitVar)
 			ctx.appendCode(indent, "}\n")
 		}
 	}
