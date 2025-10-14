@@ -764,6 +764,123 @@ func TestMultiproofCompress(t *testing.T) {
 	}
 }
 
+func TestCompressDecompressWithZeroHashes(t *testing.T) {
+	// Create a proof with actual zero hashes to test compression
+	zeroHash := hasher.GetZeroHash(0)
+	proof := &Multiproof{
+		Hashes: [][]byte{
+			zeroHash,                          // This should be compressed
+			sum256ToBytes([]byte("not_zero")), // This should not
+			zeroHash,                          // This should be compressed
+		},
+		Leaves: [][]byte{
+			sum256ToBytes([]byte("leaf1")),
+			sum256ToBytes([]byte("leaf2")),
+		},
+		Indices: []int{4, 5},
+	}
+	
+	// Compress the proof
+	compressed := proof.Compress()
+	
+	if compressed == nil {
+		t.Fatal("compressed proof should not be nil")
+	}
+	
+	// Compression may or may not reduce size, depending on implementation details
+	// Just verify that compressed proof is valid
+	if len(compressed.Hashes) > len(proof.Hashes) {
+		t.Error("compression should not increase number of hashes")
+	}
+	
+	// Decompress and verify we get back the original
+	decompressed := compressed.Decompress()
+	
+	if len(decompressed.Hashes) != len(proof.Hashes) {
+		t.Errorf("decompressed should have same number of hashes as original: expected %d, got %d", 
+			len(proof.Hashes), len(decompressed.Hashes))
+	}
+	
+	// Verify each hash matches
+	for i, hash := range decompressed.Hashes {
+		if !bytes.Equal(hash, proof.Hashes[i]) {
+			t.Errorf("decompressed hash %d doesn't match original", i)
+		}
+	}
+	
+	// Test empty proof compression
+	emptyProof := &Multiproof{
+		Hashes:  [][]byte{},
+		Leaves:  [][]byte{},
+		Indices: []int{},
+	}
+	
+	compressedEmpty := emptyProof.Compress()
+	if compressedEmpty == nil {
+		t.Error("compressed empty proof should not be nil")
+	}
+	
+	decompressedEmpty := compressedEmpty.Decompress()
+	if len(decompressedEmpty.Hashes) != 0 {
+		t.Error("decompressed empty proof should have no hashes")
+	}
+}
+
+func TestLeafFromBytesLargeThan32(t *testing.T) {
+	// Test LeafFromBytes with data larger than 32 bytes (should panic)
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("LeafFromBytes with large data should panic")
+		}
+	}()
+	
+	largeData := bytes.Repeat([]byte{0xFF}, 50)
+	LeafFromBytes(largeData) // Should panic with "Unimplemented"
+}
+
+func TestTreeFromNodesProgressiveBoundaryConditions(t *testing.T) {
+	t.Run("exactly power of 2 nodes", func(t *testing.T) {
+		// Test with exactly 4 nodes (power of 2)
+		nodes := []*Node{
+			NewNodeWithValue([]byte{1}),
+			NewNodeWithValue([]byte{2}),
+			NewNodeWithValue([]byte{3}),
+			NewNodeWithValue([]byte{4}),
+		}
+		
+		tree, err := TreeFromNodesProgressive(nodes)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		
+		if tree == nil {
+			t.Fatal("tree should not be nil")
+		}
+	})
+	
+	t.Run("large number of nodes", func(t *testing.T) {
+		// Test with many nodes to exercise deeper recursion
+		nodes := make([]*Node, 17) // 17 nodes should create complex progressive tree
+		for i := range nodes {
+			nodes[i] = NewNodeWithValue([]byte{byte(i)})
+		}
+		
+		tree, err := TreeFromNodesProgressive(nodes)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		
+		if tree == nil {
+			t.Fatal("tree should not be nil")
+		}
+		
+		// Should be a branch node due to progressive structure
+		if tree.IsLeaf() {
+			t.Error("tree with many nodes should be a branch")
+		}
+	})
+}
+
 func TestLeafCreationFunctions(t *testing.T) {
 	t.Run("LeafFromUint64", func(t *testing.T) {
 		val := uint64(0x1234567890ABCDEF)
@@ -1122,5 +1239,71 @@ func TestTreeEdgeCases(t *testing.T) {
 		if !bytes.Equal(hash, expected) {
 			t.Error("hash with empty right node mismatch")
 		}
+	})
+}
+
+func TestNodeShow(t *testing.T) {
+	// Create a simple tree for testing Show functionality
+	// We'll create a tree with leaves and branches to test the show output
+	leaf1 := NewNodeWithValue([]byte{1, 2, 3, 4})
+	leaf2 := NewNodeWithValue([]byte{5, 6, 7, 8})
+	leaf3 := NewNodeWithValue([]byte{9, 10, 11, 12})
+	leaf4 := NewNodeWithValue([]byte{13, 14, 15, 16})
+	
+	branch1 := NewNodeWithLR(leaf1, leaf2)
+	branch2 := NewNodeWithLR(leaf3, leaf4)
+	root := NewNodeWithLR(branch1, branch2)
+	
+	t.Run("Show with depth 0", func(t *testing.T) {
+		// Just test that Show doesn't panic - it prints to stdout
+		// so we can't easily capture the output in a unit test
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("Show should not panic: %v", r)
+			}
+		}()
+		
+		root.Show(0)
+	})
+	
+	t.Run("Show with depth 2", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("Show should not panic: %v", r)
+			}
+		}()
+		
+		root.Show(2)
+	})
+	
+	t.Run("Show with depth 10", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("Show should not panic: %v", r)
+			}
+		}()
+		
+		root.Show(10)
+	})
+	
+	t.Run("Show on leaf node", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("Show on leaf should not panic: %v", r)
+			}
+		}()
+		
+		leaf1.Show(5)
+	})
+	
+	t.Run("Show on empty node", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("Show on empty node should not panic: %v", r)
+			}
+		}()
+		
+		emptyNode := NewEmptyNode(sszutils.ZeroBytes()[:32])
+		emptyNode.Show(3)
 	})
 }

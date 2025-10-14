@@ -254,6 +254,28 @@ func TestVerifyMultiproof(t *testing.T) {
 			expectValid: true,
 			expectError: false,
 		},
+		{
+			name: "multiproof with duplicate indices",
+			root: func() []byte {
+				leaf0 := sum256ToBytes([]byte("leaf0"))
+				leaf1 := sum256ToBytes([]byte("leaf1"))
+				leaf2 := sum256ToBytes([]byte("leaf2"))
+				leaf3 := sum256ToBytes([]byte("leaf3"))
+
+				node0 := sum256ToBytes(append(leaf0, leaf1...))
+				node1 := sum256ToBytes(append(leaf2, leaf3...))
+				root := sum256ToBytes(append(node0, node1...))
+				return root
+			}(),
+			leaves: [][]byte{
+				sum256ToBytes([]byte("leaf0")),
+				sum256ToBytes([]byte("leaf0")), // Duplicate leaf
+			},
+			indices:     []int{4, 4}, // Duplicate index
+			proof:       [][]byte{sum256ToBytes([]byte("leaf1")), sum256ToBytes(append(sum256ToBytes([]byte("leaf2")), sum256ToBytes([]byte("leaf3"))...))},
+			expectValid: true,
+			expectError: false,
+		},
 	}
 
 	for _, tt := range tests {

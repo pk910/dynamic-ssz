@@ -283,6 +283,63 @@ func TestWrapperMerkleizeProgressive(t *testing.T) {
 	}
 }
 
+func TestWrapperMerkleizeProgressiveWithMixin(t *testing.T) {
+	w := NewWrapper()
+
+	// Add data to buffer
+	for i := 0; i < 3; i++ {
+		w.AppendUint64(uint64(i + 1))
+	}
+
+	// Call MerkleizeProgressiveWithMixin
+	w.MerkleizeProgressiveWithMixin(0, 3)
+
+	// Should have one node representing the progressive tree with mixin
+	if len(w.nodes) != 1 {
+		t.Errorf("expected 1 node, got %d", len(w.nodes))
+	}
+
+	// The root should be a branch node (has mixin)
+	if w.nodes[0].IsLeaf() {
+		t.Error("root should be a branch node with mixin")
+	}
+
+	// Buffer should be cleared
+	if len(w.buf) != 0 {
+		t.Error("buffer should be cleared after MerkleizeProgressiveWithMixin")
+	}
+}
+
+func TestWrapperMerkleizeProgressiveWithActiveFields(t *testing.T) {
+	w := NewWrapper()
+
+	// Add some field data to buffer
+	w.AppendUint64(1)
+	w.AppendUint64(2)
+	w.AppendUint64(3)
+
+	// Create active fields bitvector
+	activeFields := []byte{0b00000111} // First 3 fields active
+
+	// Call MerkleizeProgressiveWithActiveFields
+	w.MerkleizeProgressiveWithActiveFields(0, activeFields)
+
+	// Should have one node representing the progressive tree with active fields
+	if len(w.nodes) != 1 {
+		t.Errorf("expected 1 node, got %d", len(w.nodes))
+	}
+
+	// The root should be a branch node (has active fields mixin)
+	if w.nodes[0].IsLeaf() {
+		t.Error("root should be a branch node with active fields mixin")
+	}
+
+	// Buffer should be cleared
+	if len(w.buf) != 0 {
+		t.Error("buffer should be cleared after MerkleizeProgressiveWithActiveFields")
+	}
+}
+
 func TestWrapperPutBitlist(t *testing.T) {
 	w := NewWrapper()
 
@@ -554,6 +611,23 @@ func TestWrapperHashRoot(t *testing.T) {
 	}
 }
 
+func TestWrapperHashRootError(t *testing.T) {
+	w := NewWrapper()
+
+	// Test HashRoot with no nodes (should error or panic)
+	defer func() {
+		if r := recover(); r != nil {
+			// Expected behavior - panic due to no nodes
+			return
+		}
+	}()
+	
+	_, err := w.HashRoot()
+	if err == nil {
+		t.Error("HashRoot should return error when no nodes exist")
+	}
+}
+
 func TestWrapperCommit(t *testing.T) {
 	w := NewWrapper()
 
@@ -780,6 +854,48 @@ func TestWrapperEdgeCases(t *testing.T) {
 			t.Errorf("expected buffer length %d, got %d", expectedLen, len(w.buf))
 		}
 	})
+}
+
+func TestWrapperCommitErrorHandling(t *testing.T) {
+	t.Run("commit with no nodes from index", func(t *testing.T) {
+		w := NewWrapper()
+		w.AddNode(NewNodeWithValue([]byte{1}))
+		w.AddNode(NewNodeWithValue([]byte{2}))
+		
+		// Commit from an index that has nodes after it
+		initialCount := len(w.nodes)
+		w.Commit(1) // Should merkleize the nodes from index 1 onwards
+		
+		// Should have fewer or equal nodes after commit
+		if len(w.nodes) > initialCount {
+			t.Errorf("commit should not increase node count: initial=%d, after=%d", initialCount, len(w.nodes))
+		}
+	})
+	
+	t.Run("commit with single node", func(t *testing.T) {
+		w := NewWrapper()
+		w.AddNode(NewNodeWithValue([]byte{1}))
+		
+		// Commit from index 0 with only one node
+		w.Commit(0)
+		
+		// Should still have 1 node
+		if len(w.nodes) != 1 {
+			t.Errorf("expected 1 node, got %d", len(w.nodes))
+		}
+	})
+}
+
+func TestWrapperAddNodeNil(t *testing.T) {
+	w := NewWrapper()
+	
+	// Test AddNode with nil node - should handle gracefully
+	w.AddNode(nil)
+	
+	// Should have one node (even if nil)
+	if len(w.nodes) != 1 {
+		t.Error("AddNode should add the node even if nil")
+	}
 }
 
 func TestMin(t *testing.T) {
