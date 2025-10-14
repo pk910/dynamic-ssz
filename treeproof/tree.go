@@ -254,6 +254,9 @@ func NewNodeWithLR(left, right *Node) *Node {
 // The number of leaves should be a power of 2.
 func TreeFromChunks(chunks [][]byte) (*Node, error) {
 	numLeaves := len(chunks)
+	if numLeaves == 0 {
+		return nil, errors.New("cannot create tree from empty chunks")
+	}
 	if !isPowerOfTwo(numLeaves) {
 		return nil, errors.New("number of leaves should be a power of 2")
 	}
@@ -544,9 +547,15 @@ func (n *Node) Prove(index int) (*Proof, error) {
 	for i := pathLen - 1; i >= 0; i-- {
 		var siblingHash []byte
 		if isRight := getPosAtLevel(index, i); isRight {
+			if cur.left == nil {
+				return nil, errors.New("Node not found in tree")
+			}
 			siblingHash = hashNode(cur.left)
 			cur = cur.right
 		} else {
+			if cur.right == nil {
+				return nil, errors.New("Node not found in tree")
+			}
 			siblingHash = hashNode(cur.right)
 			cur = cur.left
 		}

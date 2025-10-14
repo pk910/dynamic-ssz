@@ -67,6 +67,9 @@ func GetZeroHashLevel(hash string) (int, bool) {
 }
 
 func GetZeroHash(depth int) []byte {
+	if !hasherInitialized {
+		initHasher()
+	}
 	return zeroHashes[depth][:]
 }
 
