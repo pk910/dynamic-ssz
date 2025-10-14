@@ -8,16 +8,16 @@ RUN apk add --no-cache git ca-certificates
 WORKDIR /app
 
 # Copy go mod files
-COPY dynssz-gen/go.mod dynssz-gen/go.sum ./
+COPY go.mod go.sum ./
 
 # Download dependencies
 RUN go mod download
 
 # Copy source code
-COPY dynssz-gen/ .
+COPY . .
 
 # Build the dynssz-gen binary
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o dynssz-gen .
+RUN GOOS=linux go build -ldflags="-s -w" -o dynssz-gen ./dynssz-gen
 
 # Final stage
 FROM alpine:latest
