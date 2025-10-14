@@ -141,6 +141,19 @@ func (ctx *marshalContext) getPtrPrefix(desc *dynssz.TypeDescriptor) string {
 	return ""
 }
 
+// isInlineable checks if a type can be inlined directly into the hash tree root code
+func (ctx *marshalContext) isInlineable(desc *dynssz.TypeDescriptor) bool {
+	if desc.SszType == dynssz.SszBoolType || desc.SszType == dynssz.SszUint8Type || desc.SszType == dynssz.SszUint16Type || desc.SszType == dynssz.SszUint32Type || desc.SszType == dynssz.SszUint64Type {
+		return true
+	}
+
+	if desc.SszType == dynssz.SszVectorType || desc.SszType == dynssz.SszListType {
+		return desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0
+	}
+
+	return false
+}
+
 // marshalType generates marshal code for any SSZ type, delegating to specific marshalers.
 func (ctx *marshalContext) marshalType(desc *dynssz.TypeDescriptor, varName string, indent int, isRoot bool) error {
 	if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
@@ -187,8 +200,14 @@ func (ctx *marshalContext) marshalType(desc *dynssz.TypeDescriptor, varName stri
 		}
 
 	case dynssz.SszTypeWrapperType:
-		ctx.appendCode(indent, "{\n\tt := %s%s.Data\n", ctx.getPtrPrefix(desc.ElemDesc), varName)
-		if err := ctx.marshalType(desc.ElemDesc, "t", indent+1, false); err != nil {
+		ctx.appendCode(indent, "{\n")
+		valVar := "t"
+		if ctx.isInlineable(desc.ElemDesc) {
+			valVar = fmt.Sprintf("%s.Data", varName)
+		} else {
+			ctx.appendCode(indent, "\tt := %s%s.Data\n", ctx.getPtrPrefix(desc.ElemDesc), varName)
+		}
+		if err := ctx.marshalType(desc.ElemDesc, valVar, indent+1, false); err != nil {
 			return err
 		}
 		ctx.appendCode(indent, "}\n")
@@ -238,8 +257,13 @@ func (ctx *marshalContext) marshalContainer(desc *dynssz.TypeDescriptor, varName
 		} else {
 			// Marshal fixed fields
 			ctx.appendCode(indent, "{ // Field #%d '%s'\n", idx, field.Name)
-			ctx.appendCode(indent, "\tt := %s%s.%s\n", ctx.getPtrPrefix(field.Type), varName, field.Name)
-			if err := ctx.marshalType(field.Type, "t", indent+1, false); err != nil {
+			valVar := "t"
+			if ctx.isInlineable(field.Type) {
+				valVar = fmt.Sprintf("%s.%s", varName, field.Name)
+			} else {
+				ctx.appendCode(indent, "\tt := %s%s.%s\n", ctx.getPtrPrefix(field.Type), varName, field.Name)
+			}
+			if err := ctx.marshalType(field.Type, valVar, indent+1, false); err != nil {
 				return err
 			}
 			ctx.appendCode(indent, "}\n")
@@ -251,8 +275,13 @@ func (ctx *marshalContext) marshalContainer(desc *dynssz.TypeDescriptor, varName
 		if field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
 			ctx.appendCode(indent, "{ // Dynamic Field #%d '%s'\n", idx, field.Name)
 			ctx.appendCode(indent, "\tsszutils.UpdateOffset(dst[offset%d:offset%d+4], len(dst)-dstlen)\n", idx, idx)
-			ctx.appendCode(indent, "\tt := %s%s.%s\n", ctx.getPtrPrefix(field.Type), varName, field.Name)
-			if err := ctx.marshalType(field.Type, "t", indent+1, false); err != nil {
+			valVar := "t"
+			if ctx.isInlineable(field.Type) {
+				valVar = fmt.Sprintf("%s.%s", varName, field.Name)
+			} else {
+				ctx.appendCode(indent, "\tt := %s%s.%s\n", ctx.getPtrPrefix(field.Type), varName, field.Name)
+			}
+			if err := ctx.marshalType(field.Type, valVar, indent+1, false); err != nil {
 				return err
 			}
 			ctx.appendCode(indent, "}\n")
@@ -316,8 +345,13 @@ func (ctx *marshalContext) marshalVector(desc *dynssz.TypeDescriptor, varName st
 			ctx.appendCode(indent, "dst = append(dst, []byte(%s[:%s])...)\n", varName, lenVar)
 		} else {
 			ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", lenVar)
-			ctx.appendCode(indent, "\tt := %s%s[i]\n", ctx.getPtrPrefix(desc.ElemDesc), varName)
-			if err := ctx.marshalType(desc.ElemDesc, "t", indent+1, false); err != nil {
+			valVar := "t"
+			if ctx.isInlineable(desc.ElemDesc) {
+				valVar = fmt.Sprintf("%s[i]", varName)
+			} else {
+				ctx.appendCode(indent, "\tt := %s%s[i]\n", ctx.getPtrPrefix(desc.ElemDesc), varName)
+			}
+			if err := ctx.marshalType(desc.ElemDesc, valVar, indent+1, false); err != nil {
 				return err
 			}
 			ctx.appendCode(indent, "}\n")
@@ -336,8 +370,13 @@ func (ctx *marshalContext) marshalVector(desc *dynssz.TypeDescriptor, varName st
 		ctx.appendCode(indent, "dst = sszutils.AppendZeroPadding(dst, %s*4)\n", limitVar)
 		ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", lenVar)
 		ctx.appendCode(indent, "\tsszutils.UpdateOffset(dst[dstlen+(i*4):dstlen+((i+1)*4)], len(dst)-dstlen)\n")
-		ctx.appendCode(indent, "\tt := %s%s[i]\n", ctx.getPtrPrefix(desc.ElemDesc), varName)
-		if err := ctx.marshalType(desc.ElemDesc, "t", indent+1, false); err != nil {
+		valVar := "t"
+		if ctx.isInlineable(desc.ElemDesc) {
+			valVar = fmt.Sprintf("%s[i]", varName)
+		} else {
+			ctx.appendCode(indent, "\tt := %s%s[i]\n", ctx.getPtrPrefix(desc.ElemDesc), varName)
+		}
+		if err := ctx.marshalType(desc.ElemDesc, valVar, indent+1, false); err != nil {
 			return err
 		}
 		ctx.appendCode(indent, "}\n")
@@ -418,8 +457,13 @@ func (ctx *marshalContext) marshalList(desc *dynssz.TypeDescriptor, varName stri
 		} else {
 			addVlen()
 			ctx.appendCode(indent, "for i := 0; i < vlen; i++ {\n")
-			ctx.appendCode(indent, "\tt := %s%s[i]\n", ctx.getPtrPrefix(desc.ElemDesc), varName)
-			if err := ctx.marshalType(desc.ElemDesc, "t", indent+1, false); err != nil {
+			valVar := "t"
+			if ctx.isInlineable(desc.ElemDesc) {
+				valVar = fmt.Sprintf("%s[i]", varName)
+			} else {
+				ctx.appendCode(indent, "\tt := %s%s[i]\n", ctx.getPtrPrefix(desc.ElemDesc), varName)
+			}
+			if err := ctx.marshalType(desc.ElemDesc, valVar, indent+1, false); err != nil {
 				return err
 			}
 			ctx.appendCode(indent, "}\n")
@@ -432,8 +476,13 @@ func (ctx *marshalContext) marshalList(desc *dynssz.TypeDescriptor, varName stri
 		ctx.appendCode(indent, "dst = sszutils.AppendZeroPadding(dst, vlen*4)\n")
 		ctx.appendCode(indent, "for i := 0; i < vlen; i++ {\n")
 		ctx.appendCode(indent, "\tsszutils.UpdateOffset(dst[dstlen+(i*4):dstlen+((i+1)*4)], len(dst)-dstlen)\n")
-		ctx.appendCode(indent, "\tt := %s%s[i]\n", ctx.getPtrPrefix(desc.ElemDesc), varName)
-		if err := ctx.marshalType(desc.ElemDesc, "t", indent+1, false); err != nil {
+		valVar := "t"
+		if ctx.isInlineable(desc.ElemDesc) {
+			valVar = fmt.Sprintf("%s[i]", varName)
+		} else {
+			ctx.appendCode(indent, "\tt := %s%s[i]\n", ctx.getPtrPrefix(desc.ElemDesc), varName)
+		}
+		if err := ctx.marshalType(desc.ElemDesc, valVar, indent+1, false); err != nil {
 			return err
 		}
 		ctx.appendCode(indent, "}\n")

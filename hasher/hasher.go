@@ -101,6 +101,15 @@ func NativeHashWrapper(hashFn hash.Hash) HashFn {
 	}
 }
 
+func WithDefaultHasher(fn func(hh sszutils.HashWalker) error) error {
+	hh := FastHasherPool.Get()
+	defer func() {
+		FastHasherPool.Put(hh)
+	}()
+
+	return fn(hh)
+}
+
 // HasherPool may be used for pooling Hashers for similarly typed SSZs.
 type HasherPool struct {
 	HashFn HashFn

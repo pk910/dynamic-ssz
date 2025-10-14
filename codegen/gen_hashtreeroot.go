@@ -84,13 +84,15 @@ func generateHashTreeRoot(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *stri
 	// Static hash tree root function
 	if genStaticFn {
 		hasherAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
-		codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRoot() ([32]byte, error) {\n", typeName))
-		codeBuilder.WriteString(fmt.Sprintf("\tpool := &%s.FastHasherPool\n", hasherAlias))
-		codeBuilder.WriteString("\thh := pool.Get()\n")
-		codeBuilder.WriteString("\tdefer func() {\n\t\tpool.Put(hh)\n\t}()\n")
-		codeBuilder.WriteString("\tif err := t.HashTreeRootWith(hh); err != nil {\n\t\treturn [32]byte{}, err\n\t}\n")
-		codeBuilder.WriteString("\tr, _ := hh.HashRoot()\n")
-		codeBuilder.WriteString("\treturn r, nil\n")
+		codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRoot() (root [32]byte, err error) {\n", typeName))
+		codeBuilder.WriteString(fmt.Sprintf("\terr = %s.WithDefaultHasher(func(hh sszutils.HashWalker) (err error) {\n", hasherAlias))
+		codeBuilder.WriteString("\t\terr = t.HashTreeRootWith(hh)\n")
+		codeBuilder.WriteString("\t\tif err == nil {\n")
+		codeBuilder.WriteString("\t\t\troot, err = hh.HashRoot()\n")
+		codeBuilder.WriteString("\t\t}\n")
+		codeBuilder.WriteString("\t\treturn\n")
+		codeBuilder.WriteString("\t})\n")
+		codeBuilder.WriteString("\treturn\n")
 		codeBuilder.WriteString("}\n")
 	}
 
@@ -111,13 +113,15 @@ func generateHashTreeRoot(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *stri
 	// Dynamic hash tree root function
 	if genDynamicFn {
 		hasherAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
-		codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootDyn(ds sszutils.DynamicSpecs) ([32]byte, error) {\n", typeName))
-		codeBuilder.WriteString(fmt.Sprintf("\tpool := &%s.FastHasherPool\n", hasherAlias))
-		codeBuilder.WriteString("\thh := pool.Get()\n")
-		codeBuilder.WriteString("\tdefer func() {\n\t\tpool.Put(hh)\n\t}()\n")
-		codeBuilder.WriteString("\tif err := t.HashTreeRootWithDyn(ds, hh); err != nil {\n\t\treturn [32]byte{}, err\n\t}\n")
-		codeBuilder.WriteString("\tr, _ := hh.HashRoot()\n")
-		codeBuilder.WriteString("\treturn r, nil\n")
+		codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootDyn(ds sszutils.DynamicSpecs) (root [32]byte, err error) {\n", typeName))
+		codeBuilder.WriteString(fmt.Sprintf("\terr = %s.WithDefaultHasher(func(hh sszutils.HashWalker) (err error) {\n", hasherAlias))
+		codeBuilder.WriteString("\t\terr = t.HashTreeRootWithDyn(ds, hh)\n")
+		codeBuilder.WriteString("\t\tif err == nil {\n")
+		codeBuilder.WriteString("\t\t\troot, err = hh.HashRoot()\n")
+		codeBuilder.WriteString("\t\t}\n")
+		codeBuilder.WriteString("\t\treturn\n")
+		codeBuilder.WriteString("\t})\n")
+		codeBuilder.WriteString("\treturn\n")
 		codeBuilder.WriteString("}\n\n")
 	}
 
@@ -143,6 +147,19 @@ func (ctx *hashTreeRootContext) isPrimitive(desc *dynssz.TypeDescriptor) bool {
 	return desc.SszType == dynssz.SszBoolType || desc.SszType == dynssz.SszUint8Type || desc.SszType == dynssz.SszUint16Type || desc.SszType == dynssz.SszUint32Type || desc.SszType == dynssz.SszUint64Type || desc.SszType == dynssz.SszUint128Type
 }
 
+// isInlineable checks if a type can be inlined directly into the hash tree root code
+func (ctx *hashTreeRootContext) isInlineable(desc *dynssz.TypeDescriptor) bool {
+	if desc.SszType == dynssz.SszBoolType || desc.SszType == dynssz.SszUint8Type || desc.SszType == dynssz.SszUint16Type || desc.SszType == dynssz.SszUint32Type || desc.SszType == dynssz.SszUint64Type {
+		return true
+	}
+
+	if desc.SszType == dynssz.SszVectorType || desc.SszType == dynssz.SszListType {
+		return desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0
+	}
+
+	return false
+}
+
 // getValVar generates a unique variable name for temporary values.
 func (ctx *hashTreeRootContext) getValVar() string {
 	ctx.valVarCounter++
@@ -155,14 +172,7 @@ func (ctx *hashTreeRootContext) getPtrPrefix(desc *dynssz.TypeDescriptor, prefix
 		return ""
 	}
 	if desc.Kind == reflect.Array {
-		fieldSize := uint32(8)
-		if desc.ElemDesc.GoTypeFlags&dynssz.GoTypeFlagIsPointer == 0 && desc.ElemDesc.Size > 0 {
-			fieldSize = desc.ElemDesc.Size
-		}
-		if desc.Len*fieldSize > 32 {
-			// big array with > 32 bytes
-			return prefix
-		}
+		return prefix
 	}
 	if desc.Kind == reflect.Struct {
 		// use pointer to struct to avoid copying
@@ -244,8 +254,14 @@ func (ctx *hashTreeRootContext) hashType(desc *dynssz.TypeDescriptor, varName st
 		}
 
 	case dynssz.SszTypeWrapperType:
-		ctx.appendCode(indent, "{\n\tt := %s%s.Data\n", ctx.getPtrPrefix(desc.ElemDesc, "&"), varName)
-		if err := ctx.hashType(desc.ElemDesc, "t", indent+1, false, pack); err != nil {
+		ctx.appendCode(indent, "{\n")
+		valVar := "t"
+		if ctx.isInlineable(desc.ElemDesc) {
+			valVar = fmt.Sprintf("%s.Data", varName)
+		} else {
+			ctx.appendCode(indent, "\tt := %s%s.Data\n", ctx.getPtrPrefix(desc.ElemDesc, "&"), varName)
+		}
+		if err := ctx.hashType(desc.ElemDesc, valVar, indent+1, false, pack); err != nil {
 			return err
 		}
 		ctx.appendCode(indent, "}\n")
@@ -289,8 +305,13 @@ func (ctx *hashTreeRootContext) hashContainer(desc *dynssz.TypeDescriptor, varNa
 	// Hash each field
 	for idx, field := range desc.ContainerDesc.Fields {
 		ctx.appendCode(indent, "{ // Field #%d '%s'\n", idx, field.Name)
-		ctx.appendCode(indent, "\tt := %s%s.%s\n", ctx.getPtrPrefix(field.Type, "&"), varName, field.Name)
-		if err := ctx.hashType(field.Type, "t", indent+1, false, false); err != nil {
+		valVar := "t"
+		if ctx.isInlineable(field.Type) {
+			valVar = fmt.Sprintf("%s.%s", varName, field.Name)
+		} else {
+			ctx.appendCode(indent, "\tt := %s%s.%s\n", ctx.getPtrPrefix(field.Type, "&"), varName, field.Name)
+		}
+		if err := ctx.hashType(field.Type, valVar, indent+1, false, false); err != nil {
 			return err
 		}
 		ctx.appendCode(indent, "}\n")
@@ -324,8 +345,13 @@ func (ctx *hashTreeRootContext) hashProgressiveContainer(desc *dynssz.TypeDescri
 		lastActiveField = int(field.SszIndex)
 
 		ctx.appendCode(indent, "{ // Field #%d '%s'\n", i, field.Name)
-		ctx.appendCode(indent, "\tt := %s%s.%s\n", ctx.getPtrPrefix(field.Type, "&"), varName, field.Name)
-		if err := ctx.hashType(field.Type, "t", indent+1, false, false); err != nil {
+		valVar := "t"
+		if ctx.isInlineable(field.Type) {
+			valVar = fmt.Sprintf("%s.%s", varName, field.Name)
+		} else {
+			ctx.appendCode(indent, "\tt := %s%s.%s\n", ctx.getPtrPrefix(field.Type, "&"), varName, field.Name)
+		}
+		if err := ctx.hashType(field.Type, valVar, indent+1, false, false); err != nil {
 			return err
 		}
 		ctx.appendCode(indent, "}\n")
@@ -453,10 +479,22 @@ func (ctx *hashTreeRootContext) hashVector(desc *dynssz.TypeDescriptor, varName 
 		}
 
 		valVar := ctx.getValVar()
+		valVarPtrPrefix := ctx.getPtrPrefix(desc.ElemDesc, "*")
+		isPtrType := desc.ElemDesc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 || valVarPtrPrefix != ""
+		emptyVarAddin := ""
+		if !isPtrType {
+			emptyVarAddin = fmt.Sprintf(", %sEmpty", valVar)
+		}
+		ctx.appendCode(indent, "var %s%s %s%s\n", valVar, emptyVarAddin, valVarPtrPrefix, ctx.typePrinter.TypeString(desc.ElemDesc))
 		ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", limitVar)
-		ctx.appendCode(indent, "\tvar %s %s%s\n", valVar, ctx.getPtrPrefix(desc.ElemDesc, "*"), ctx.typePrinter.TypeString(desc.ElemDesc))
 		ctx.appendCode(indent, "\tif i < %s {\n", lenVar)
 		ctx.appendCode(indent, "\t\t%s = %s%s[i]\n", valVar, ctx.getPtrPrefix(desc.ElemDesc, "&"), varName)
+		ctx.appendCode(indent, "\t} else if i == %s {\n", lenVar)
+		if isPtrType {
+			ctx.appendCode(indent, "\t\t%s = new(%s)\n", valVar, ctx.typePrinter.TypeString(desc.ElemDesc))
+		} else {
+			ctx.appendCode(indent, "\t\t%s = %sEmpty\n", valVar, valVar)
+		}
 		ctx.appendCode(indent, "\t}\n")
 
 		if err := ctx.hashType(desc.ElemDesc, valVar, indent+1, false, true); err != nil {
@@ -544,8 +582,13 @@ func (ctx *hashTreeRootContext) hashList(desc *dynssz.TypeDescriptor, varName st
 		// Hash all elements
 		addVlen()
 		ctx.appendCode(indent, "for i := 0; i < int(vlen); i++ {\n")
-		ctx.appendCode(indent, "\tt := %s%s[i]\n", ctx.getPtrPrefix(desc.ElemDesc, "&"), varName)
-		if err := ctx.hashType(desc.ElemDesc, "t", indent+1, false, true); err != nil {
+		valVar := "t"
+		if ctx.isInlineable(desc.ElemDesc) {
+			valVar = fmt.Sprintf("%s[i]", varName)
+		} else {
+			ctx.appendCode(indent, "\tt := %s%s[i]\n", ctx.getPtrPrefix(desc.ElemDesc, "&"), varName)
+		}
+		if err := ctx.hashType(desc.ElemDesc, valVar, indent+1, false, true); err != nil {
 			return err
 		}
 		ctx.appendCode(indent, "}\n")
@@ -561,8 +604,7 @@ func (ctx *hashTreeRootContext) hashList(desc *dynssz.TypeDescriptor, varName st
 	} else if maxVar != "0" {
 		addVlen()
 		if itemSize > 0 {
-			ctx.appendCode(indent, "limit := sszutils.CalculateLimit(%s, vlen, %d)\n", maxVar, itemSize)
-			ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, vlen, limit)\n")
+			ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, vlen, sszutils.CalculateLimit(%s, vlen, %d))\n", maxVar, itemSize)
 		} else {
 			ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, vlen, %s)\n", maxVar)
 		}
