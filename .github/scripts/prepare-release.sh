@@ -6,6 +6,9 @@ if [ -z "$new_version" ]; then
     exit 1
 fi
 
+echo "Updating codegen/version.go to use version $new_version"
+sed -i "s|^var Version = \"[0-9]\+\.[0-9]\+\.[0-9]\+\"|var Version = \"$new_version\"|g" codegen/version.go
+
 echo "Updating go.mod files to use version $new_version"
 
 # Find all go.mod files in subdirectories

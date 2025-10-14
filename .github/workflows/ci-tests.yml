@@ -77,7 +77,7 @@ jobs:
     - name: Upload spec test coverage artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: spec-coverage-go${{ matrix.go-version }}-${{ matrix.preset }}
+        name: coverage-spec-go${{ matrix.go-version }}-${{ matrix.preset }}
         path: spectests/spec-coverage.out
 
   # Run unit tests once on latest Go version and combine with spec test coverage
@@ -103,68 +103,29 @@ jobs:
           
     - name: Download dependencies
       run: go mod download
-        
+
+    - name: Run codegen tests with coverage
+      run: |
+        mkdir coverage
+        export GOCOVERDIR=$(pwd)/coverage
+        go generate ./...
+        go tool covdata textfmt -i=coverage -o=coverage-codegen.txt
     - name: Run unit tests with coverage
       run: |
-        go test -v -race -coverprofile=unit-coverage.out -coverpkg=... -covermode=atomic ./...
+        go test -v -race -coverprofile=coverage-unit.txt -coverpkg=./... ./...
 
     - name: Run unit tests with coverage (without cgo)
       run: |
-        CGO_ENABLED=0 go test -v -coverprofile=unit-coverage-nocgo.out -coverpkg=... -covermode=atomic ./...
-        
+        CGO_ENABLED=0 go test -v -coverprofile=coverage-unit-nocgo.txt -coverpkg=./... ./...
     - name: Download spec test coverage artifacts
       uses: actions/download-artifact@v4
       with:
-        pattern: spec-coverage-go1.25.x-*
+        pattern: coverage-spec-go1.25.x-*
         path: spec-coverage-artifacts
-        
-    - name: Combine all coverage reports
-      run: |
-        echo "mode: atomic" > combined-coverage.out
-        
-        # Add unit test coverage (exclude mode line, filter empty lines)
-        if [ -f unit-coverage.out ]; then
-          echo "Adding unit test coverage..."
-          tail -n +2 unit-coverage.out | grep -v '^$' >> combined-coverage.out
-        fi
-
-        # Add codegen test coverage
-        if [ -f coverage_codegen.out ]; then
-          echo "Adding codegen test coverage..."
-          tail -n +2 coverage_codegen.out | grep -v '^$' >> combined-coverage.out
-        fi
-        if [ -f unit-coverage-nocgo.out ]; then
-          echo "Adding unit test coverage (without cgo)..."
-          tail -n +2 unit-coverage-nocgo.out | grep -v '^$' >> combined-coverage.out
-        fi
-        
-        # Add spec test coverage from all presets (exclude mode line, adjust paths, filter empty lines)
-        for artifact_dir in spec-coverage-artifacts/*/; do
-          if [ -f "${artifact_dir}spec-coverage.out" ]; then
-            echo "Adding spec test coverage from ${artifact_dir}..."
-            # Adjust paths to be relative to root, exclude mode line, filter empty lines
-            tail -n +2 "${artifact_dir}spec-coverage.out" | grep -v '^$' >> combined-coverage.out
-          fi
-        done
-        
-        # Sort and deduplicate coverage entries (keep header, process body)
-        (head -n 1 combined-coverage.out; tail -n +2 combined-coverage.out | sort -k1,1 -k2,2n | sort -u -k1,1 -k2,2n) > combined-coverage-final.out
-        # Filter out spectests package and non-dynamic-ssz packages
-        (head -n 1 combined-coverage-final.out; tail -n +2 combined-coverage-final.out | grep "github.com/pk910/dynamic-ssz" | grep -v "github.com/pk910/dynamic-ssz/spectests" | grep -v "github.com/pk910/dynamic-ssz/dynssz-gen") > combined-coverage.out
-        
-        echo "Combined coverage report created:"
-        wc -l combined-coverage.out
-        head -5 combined-coverage.out
-        
-    - name: Generate coverage report
-      run: go tool cover -html=combined-coverage.out -o coverage.html
       
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v4
       with:
-        file: ./combined-coverage.out
-        flags: combined
-        name: codecov-combined
         token: ${{ secrets.CODECOV_TOKEN }}
         
     - name: Upload coverage artifacts
@@ -172,7 +133,6 @@ jobs:
       with:
         name: final-coverage-report
         path: |
-          coverage.html
-          combined-coverage.out
-          coverage_codegen.out
-          unit-coverage.out
+          coverage-codegen.txt
+          coverage-unit.txt
+          coverage-unit-nocgo.txt

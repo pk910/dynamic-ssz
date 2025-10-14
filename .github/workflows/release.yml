@@ -1,8 +1,11 @@
-name: Release
+name: Build Release
 
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version Number ('0.x.y')"
+        required: true
 
 jobs:
   release:
@@ -31,14 +34,17 @@ jobs:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-    - name: Extract version from tag
-      id: version
-      run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-
     - name: Prepare release
       run: |
         chmod +x .github/scripts/prepare-release.sh
-        .github/scripts/prepare-release.sh ${{ steps.version.outputs.VERSION }}
+        .github/scripts/prepare-release.sh ${{ inputs.version }}
+
+    - uses: stefanzweifel/git-auto-commit-action@v4
+      with:
+        commit_message: "release `${{ inputs.version }}`"
+        branch: master
+        push_options: '--force'
+        skip_checkout: true
 
     - name: Build dynssz-gen for multiple platforms
       run: |
@@ -59,14 +65,61 @@ jobs:
         # macOS arm64
         GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o ../dynssz-gen-darwin-arm64 .
 
+    - name: "Generate release changelog"
+      id: changelog
+      run: |
+        git fetch --tags
+        prev_tag=$(git tag --sort=-version:refname | grep -e "^v[0-9.]*$" | head -n 1)
+        echo "previous release: $prev_tag"
+        if [ "$prev_tag" ]; then
+          changelog=$(git log --oneline --merges --first-parent --no-decorate $prev_tag..HEAD)
+        else
+          changelog=$(git log --oneline --merges --first-parent --no-decorate)
+        fi
+        echo "changelog<<EOF" >> $GITHUB_OUTPUT
+        echo " - ${changelog//$'\n'/$'\n' - }" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+        echo "prev_tag=$prev_tag" >> $GITHUB_OUTPUT
+
+    - name: "Generate AI release notes"
+      id: ai_release_notes
+      run: |
+        ./.github/scripts/ai-release-notes.sh "${{ steps.changelog.outputs.prev_tag }}"
+      env:
+        OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL }}
+        OPENROUTER_TOKEN: ${{ secrets.OPENROUTER_TOKEN }}
+        GITHUB_TOKEN: ${{ github.token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+    - name: Create release
+      uses: actions/create-release@v1 # v1.1.4
+      id: create_release
+      with:
+        draft: true
+        prerelease: false
+        release_name: "v${{ inputs.version }}"
+        tag_name: "v${{ inputs.version }}"
+        body: |
+          ### Major Changes
+          ${{ steps.ai_release_notes.outputs.release_notes }}
+
+          <details>
+            <summary>Full changelog</summary>
+
+            ### Full changelog
+          ${{ steps.changelog.outputs.changelog }}
+          </details>
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+
     - name: Upload release artifacts
       uses: actions/upload-release-asset@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        upload_url: ${{ github.event.release.upload_url }}
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
         asset_path: ./dynssz-gen-linux-amd64
-        asset_name: dynssz-gen-${{ steps.version.outputs.VERSION }}-linux-amd64
+        asset_name: dynssz-gen-${{ inputs.version }}-linux-amd64
         asset_content_type: application/octet-stream
 
     - name: Upload release artifacts (Linux ARM64)
@@ -74,9 +127,9 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        upload_url: ${{ github.event.release.upload_url }}
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
         asset_path: ./dynssz-gen-linux-arm64
-        asset_name: dynssz-gen-${{ steps.version.outputs.VERSION }}-linux-arm64
+        asset_name: dynssz-gen-${{ inputs.version }}-linux-arm64
         asset_content_type: application/octet-stream
 
     - name: Upload release artifacts (Windows AMD64)
@@ -84,9 +137,9 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        upload_url: ${{ github.event.release.upload_url }}
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
         asset_path: ./dynssz-gen-windows-amd64.exe
-        asset_name: dynssz-gen-${{ steps.version.outputs.VERSION }}-windows-amd64.exe
+        asset_name: dynssz-gen-${{ inputs.version }}-windows-amd64.exe
         asset_content_type: application/octet-stream
 
     - name: Upload release artifacts (macOS AMD64)
@@ -94,9 +147,9 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        upload_url: ${{ github.event.release.upload_url }}
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
         asset_path: ./dynssz-gen-darwin-amd64
-        asset_name: dynssz-gen-${{ steps.version.outputs.VERSION }}-darwin-amd64
+        asset_name: dynssz-gen-${{ inputs.version }}-darwin-amd64
         asset_content_type: application/octet-stream
 
     - name: Upload release artifacts (macOS ARM64)
@@ -104,9 +157,9 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        upload_url: ${{ github.event.release.upload_url }}
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
         asset_path: ./dynssz-gen-darwin-arm64
-        asset_name: dynssz-gen-${{ steps.version.outputs.VERSION }}-darwin-arm64
+        asset_name: dynssz-gen-${{ inputs.version }}-darwin-arm64
         asset_content_type: application/octet-stream
 
     - name: Build and push Docker image
@@ -115,19 +168,6 @@ jobs:
         context: .
         push: true
         tags: |
-          pk910/dynamic-ssz:${{ steps.version.outputs.VERSION }}
+          pk910/dynamic-ssz:${{ inputs.version }}
           pk910/dynamic-ssz:latest
         platforms: linux/amd64,linux/arm64
-
-    - uses: stefanzweifel/git-auto-commit-action@v4
-      with:
-        commit_message: "release `${{ steps.version.outputs.VERSION }}`"
-        branch: master
-        push_options: '--force'
-        skip_checkout: true
-
-    - name: Create submodule tag
-      run: |
-        # Create a tag for the dynssz-gen submodule to enable go install
-        git tag -a "dynssz-gen/${{ steps.version.outputs.VERSION }}" -m "dynssz-gen ${{ steps.version.outputs.VERSION }}"
-        git push origin "dynssz-gen/${{ steps.version.outputs.VERSION }}"
