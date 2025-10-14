@@ -58,7 +58,7 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 	}
 
 	if useFastSsz {
-		marshaller, ok := sourceValue.Addr().Interface().(sszutils.FastsszMarshaler)
+		marshaller, ok := getPtr(sourceValue).Interface().(sszutils.FastsszMarshaler)
 		if ok {
 			newBuf, err := marshaller.MarshalSSZTo(buf)
 			if err != nil {
@@ -72,7 +72,7 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 
 	if !useFastSsz && useDynamicMarshal {
 		// Use dynamic marshaler - can always be used even with dynamic specs
-		marshaller, ok := sourceValue.Addr().Interface().(sszutils.DynamicMarshaler)
+		marshaller, ok := getPtr(sourceValue).Interface().(sszutils.DynamicMarshaler)
 		if ok {
 			newBuf, err := marshaller.MarshalSSZDyn(d, buf)
 			if err != nil {

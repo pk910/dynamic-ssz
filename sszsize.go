@@ -60,7 +60,7 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 	useDynamicSize := targetType.SszCompatFlags&SszCompatFlagDynamicSizer != 0
 
 	if useFastSsz {
-		marshaller, ok := targetValue.Addr().Interface().(sszutils.FastsszMarshaler)
+		marshaller, ok := getPtr(targetValue).Interface().(sszutils.FastsszMarshaler)
 		if ok {
 			staticSize = uint32(marshaller.SizeSSZ())
 		} else {
@@ -70,7 +70,7 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 
 	if !useFastSsz && useDynamicSize {
 		// Use dynamic sizer - can always be used even with dynamic specs
-		sizer, ok := targetValue.Addr().Interface().(sszutils.DynamicSizer)
+		sizer, ok := getPtr(targetValue).Interface().(sszutils.DynamicSizer)
 		if ok {
 			staticSize = uint32(sizer.SizeSSZDyn(d))
 		} else {

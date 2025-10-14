@@ -62,17 +62,19 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 	}
 
 	if useFastSsz {
+		sourceValuePtr := getPtr(sourceValue)
+
 		if sourceType.SszCompatFlags&SszCompatFlagHashTreeRootWith != 0 && sourceType.HashTreeRootWithMethod != nil {
 			// Use cached HashTreeRootWith method for better performance
-			value := sourceValue.Addr()
+
 			// Call the cached method with our hasher
-			results := sourceType.HashTreeRootWithMethod.Func.Call([]reflect.Value{value, reflect.ValueOf(hh)})
+			results := sourceType.HashTreeRootWithMethod.Func.Call([]reflect.Value{sourceValuePtr, reflect.ValueOf(hh)})
 			if len(results) > 0 && !results[0].IsNil() {
 				return fmt.Errorf("failed HashTreeRootWith: %v", results[0].Interface())
 			}
 		} else {
 			// Use regular HashTreeRoot
-			if hasher, ok := sourceValue.Addr().Interface().(sszutils.FastsszHashRoot); ok {
+			if hasher, ok := sourceValuePtr.Interface().(sszutils.FastsszHashRoot); ok {
 				hashBytes, err := hasher.HashTreeRoot()
 				if err != nil {
 					return fmt.Errorf("failed HashTreeRoot: %v", err)
@@ -87,7 +89,7 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 
 	if !useFastSsz && useDynamicHashRoot {
 		// Use dynamic hash root - can always be used even with dynamic specs
-		hasher, ok := sourceValue.Addr().Interface().(sszutils.DynamicHashRoot)
+		hasher, ok := getPtr(sourceValue).Interface().(sszutils.DynamicHashRoot)
 		if ok {
 			err := hasher.HashTreeRootWithDyn(d, hh)
 			if err != nil {
