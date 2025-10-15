@@ -6,6 +6,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"go/types"
@@ -17,6 +18,18 @@ import (
 	"github.com/pk910/dynamic-ssz/codegen"
 	"golang.org/x/tools/go/packages"
 )
+
+// Config holds the configuration for the code generator
+type Config struct {
+	PackagePath               string
+	PackageName               string
+	TypeNames                 string
+	OutputFile                string
+	Verbose                   bool
+	Legacy                    bool
+	WithoutDynamicExpressions bool
+	WithoutFastSsz            bool
+}
 
 func main() {
 	var (
@@ -31,16 +44,33 @@ func main() {
 	)
 	flag.Parse()
 
-	if *packagePath == "" {
-		log.Fatal("Package path is required (-package)")
-	}
-	if *typeNames == "" {
-		log.Fatal("Type names are required (-types)")
+	config := Config{
+		PackagePath:               *packagePath,
+		PackageName:               *packageName,
+		TypeNames:                 *typeNames,
+		OutputFile:                *outputFile,
+		Verbose:                   *verbose,
+		Legacy:                    *legacy,
+		WithoutDynamicExpressions: *withoutDynamicExpressions,
+		WithoutFastSsz:            *withoutFastSsz,
 	}
 
-	if *verbose {
-		log.Printf("Analyzing package: %s", *packagePath)
-		log.Printf("Looking for types: %s", *typeNames)
+	if err := run(config); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run(config Config) error {
+	if config.PackagePath == "" {
+		return errors.New("package path is required (-package)")
+	}
+	if config.TypeNames == "" {
+		return errors.New("type names are required (-types)")
+	}
+
+	if config.Verbose {
+		log.Printf("Analyzing package: %s", config.PackagePath)
+		log.Printf("Looking for types: %s", config.TypeNames)
 	}
 
 	// Parse the Go package
@@ -48,13 +78,13 @@ func main() {
 		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName,
 	}
 
-	pkgs, err := packages.Load(cfg, *packagePath)
+	pkgs, err := packages.Load(cfg, config.PackagePath)
 	if err != nil {
-		log.Fatalf("Failed to load package %s: %v", *packagePath, err)
+		return fmt.Errorf("failed to load package %s: %v", config.PackagePath, err)
 	}
 
 	if len(pkgs) == 0 {
-		log.Fatalf("No packages found for %s", *packagePath)
+		return fmt.Errorf("no packages found for %s", config.PackagePath)
 	}
 
 	pkg := pkgs[0]
@@ -62,15 +92,15 @@ func main() {
 		for _, err := range pkg.Errors {
 			log.Printf("Package error: %v", err)
 		}
-		log.Fatalf("Package %s has errors", *packagePath)
+		return fmt.Errorf("package %s has errors", config.PackagePath)
 	}
 
-	if *verbose {
+	if config.Verbose {
 		log.Printf("Successfully loaded package: %s", pkg.Name)
 	}
 
 	// Parse type names
-	requestedTypes := strings.Split(*typeNames, ",")
+	requestedTypes := strings.Split(config.TypeNames, ",")
 	for i, typeName := range requestedTypes {
 		requestedTypes[i] = strings.TrimSpace(typeName)
 	}
@@ -89,20 +119,20 @@ func main() {
 		}
 
 		if outFile == "" {
-			if *outputFile == "" {
-				log.Fatal("Output file is required (-output)")
+			if config.OutputFile == "" {
+				return errors.New("output file is required (-output)")
 			}
-			outFile = *outputFile
+			outFile = config.OutputFile
 		}
 
 		obj := scope.Lookup(typeName)
 		if obj == nil {
-			log.Fatalf("Type %s not found in package %s", typeName, *packagePath)
+			return fmt.Errorf("type %s not found in package %s", typeName, config.PackagePath)
 		}
 
 		typeObj, ok := obj.(*types.TypeName)
 		if !ok {
-			log.Fatalf("Object %s is not a type in package %s", typeName, *packagePath)
+			return fmt.Errorf("object %s is not a type in package %s", typeName, config.PackagePath)
 		}
 
 		if _, ok := generateFiles[outFile]; !ok {
@@ -111,7 +141,7 @@ func main() {
 		generateFiles[outFile] = append(generateFiles[outFile], typeObj.Type())
 		typeCount++
 
-		if *verbose {
+		if config.Verbose {
 			log.Printf("Found type: %s", typeName)
 		}
 	}
@@ -119,8 +149,8 @@ func main() {
 	// Create codegen instance
 	codeGen := codegen.NewCodeGenerator(dynssz.NewDynSsz(nil))
 
-	if *packageName != "" {
-		codeGen.SetPackageName(*packageName)
+	if config.PackageName != "" {
+		codeGen.SetPackageName(config.PackageName)
 	}
 
 	// Build options for all types
@@ -130,13 +160,13 @@ func main() {
 			typeOptions = append(typeOptions, codegen.WithGoTypesType(goType))
 		}
 
-		if *legacy {
+		if config.Legacy {
 			typeOptions = append(typeOptions, codegen.WithCreateLegacyFn())
 		}
-		if *withoutDynamicExpressions {
+		if config.WithoutDynamicExpressions {
 			typeOptions = append(typeOptions, codegen.WithoutDynamicExpressions())
 		}
-		if *withoutFastSsz {
+		if config.WithoutFastSsz {
 			typeOptions = append(typeOptions, codegen.WithNoFastSsz())
 		}
 
@@ -145,18 +175,18 @@ func main() {
 	}
 
 	// Generate the code
-	if *verbose {
+	if config.Verbose {
 		log.Printf("Generating code...")
 	}
 
 	codeMap, err := codeGen.GenerateToMap()
 	if err != nil {
-		log.Fatalf("Failed to generate code: %v", err)
+		return fmt.Errorf("failed to generate code: %v", err)
 	}
 
 	// Write to output file
-	if *verbose {
-		log.Printf("Writing output to %s", *outputFile)
+	if config.Verbose {
+		log.Printf("Writing output to %s", config.OutputFile)
 	}
 
 	codeSize := 0
@@ -164,13 +194,15 @@ func main() {
 		codeSize += len(generatedCode)
 		err = os.WriteFile(outFile, []byte(generatedCode), 0644)
 		if err != nil {
-			log.Fatalf("Failed to write output file %s: %v", outFile, err)
+			return fmt.Errorf("failed to write output file %s: %v", outFile, err)
 		}
 	}
 
-	if *verbose {
+	if config.Verbose {
 		log.Printf("Successfully generated %d bytes of code for %d types to %d files", codeSize, typeCount, len(generateFiles))
 	} else {
 		fmt.Printf("Generated SSZ code for %d types to %d files\n", typeCount, len(generateFiles))
 	}
+
+	return nil
 }
