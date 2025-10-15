@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unsafe"
 )
 
 // Test error cases in TypeCache.GetTypeDescriptor
@@ -34,6 +35,7 @@ func TestTypeCache_ErrorCases(t *testing.T) {
 			{"chan", reflect.TypeOf(make(chan int)), "channels are not supported"},
 			{"func", reflect.TypeOf(func() {}), "functions are not supported"},
 			{"interface", reflect.TypeOf((*interface{})(nil)).Elem(), "interfaces are not supported"},
+			{"unsafe", reflect.TypeOf((*unsafe.Pointer)(nil)).Elem(), "unsafe pointers are not supported"},
 		}
 
 		for _, tt := range unsupportedTypes {
@@ -121,6 +123,18 @@ func TestTypeCache_ErrorCases(t *testing.T) {
 				typ:      reflect.TypeOf(uint8(0)),
 				hints:    []SszTypeHint{{Type: SszBoolType}},
 				expected: "bool ssz type can only be represented by bool types",
+			},
+			{
+				name:     "uint16 with uint8 type hint",
+				typ:      reflect.TypeOf(uint8(0)),
+				hints:    []SszTypeHint{{Type: SszUint16Type}},
+				expected: "uint16 ssz type can only be represented by uint16 types",
+			},
+			{
+				name:     "uint32 with uint8 type hint",
+				typ:      reflect.TypeOf(uint8(0)),
+				hints:    []SszTypeHint{{Type: SszUint32Type}},
+				expected: "uint32 ssz type can only be represented by uint32 types",
 			},
 			{
 				name:     "string with uint64 type hint",
@@ -360,6 +374,73 @@ func TestTypeCache_ProgressiveContainerErrors(t *testing.T) {
 		_, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
 		if err != nil {
 			t.Errorf("Unexpected error for normal struct: %s", err.Error())
+		}
+	})
+
+	t.Run("DuplicateIndexTags", func(t *testing.T) {
+		type TestStruct struct {
+			Field1 uint32 `ssz-index:"0"`
+			Field2 uint32 `ssz-index:"0"`
+		}
+
+		_, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+		if err == nil {
+			t.Error("Expected error for duplicate ssz-index")
+			return
+		}
+		if !strings.Contains(err.Error(), "duplicate ssz-index 0 found in field Field2") {
+			t.Errorf("Unexpected error: %s", err.Error())
+		}
+	})
+
+	t.Run("InvalidIndexTag", func(t *testing.T) {
+		type TestStruct struct {
+			Field1 uint32 `ssz-index:"invalid"`
+			Field2 uint32 `ssz-index:"1"`
+		}
+
+		// This should work fine (no index tags)
+		_, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+		if err == nil {
+			t.Error("Expected error for invalid ssz-index")
+			return
+		}
+		if !strings.Contains(err.Error(), "parsing \"invalid\": invalid syntax") {
+			t.Errorf("Unexpected error: %s", err.Error())
+		}
+	})
+
+	t.Run("MissingIndexTag", func(t *testing.T) {
+		type TestStruct struct {
+			Field1 uint32 `ssz-index:"0"`
+			Field2 uint32 // mising index tag
+		}
+
+		// This should work fine (no index tags)
+		_, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+		if err == nil {
+			t.Error("Expected error for missing ssz-index")
+			return
+		}
+		if !strings.Contains(err.Error(), "progressive container field Field2 missing ssz-index tag") {
+			t.Errorf("Unexpected error: %s", err.Error())
+		}
+	})
+
+	t.Run("DecreasingIndexTag", func(t *testing.T) {
+		type TestStruct struct {
+			Field1 uint32 `ssz-index:"3"`
+			Field2 uint32 `ssz-index:"1"`
+		}
+
+		// This should work fine (no index tags)
+		_, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+		if err == nil {
+			t.Error("Expected error for decreasing ssz-index")
+			return
+		}
+		if !strings.Contains(err.Error(), "progressive container requires increasing ssz-index values") {
+			t.Errorf("Unexpected error: %s", err.Error())
 		}
 	})
 }

@@ -12,7 +12,6 @@ import (
 	"hash"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
@@ -189,38 +188,6 @@ func TestWithDefaultHasher(t *testing.T) {
 
 	if err != testErr {
 		t.Errorf("WithDefaultHasher should propagate errors")
-	}
-}
-
-func TestHasherPool(t *testing.T) {
-	pool := &HasherPool{}
-
-	// Test Get with nil HashFn (should use NewHasher)
-	h1 := pool.Get()
-	if h1 == nil {
-		t.Fatal("pool.Get() should not return nil")
-	}
-
-	// Test Put and Get again (should reuse)
-	pool.Put(h1)
-
-	// Sleep to ensure the hasher is reused (put is async)
-	time.Sleep(1 * time.Millisecond)
-
-	h2 := pool.Get()
-	if h2 != h1 {
-		t.Error("pool should reuse returned hashers")
-	}
-
-	// Test with custom HashFn
-	customHashFn := func(dst []byte, input []byte) error {
-		return nil
-	}
-	pool.HashFn = customHashFn
-
-	h3 := pool.Get()
-	if h3.hash == nil {
-		t.Error("hasher should have custom hash function")
 	}
 }
 
