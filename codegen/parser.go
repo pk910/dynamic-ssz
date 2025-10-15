@@ -439,36 +439,48 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 	}
 
 	// Check interface compatibility (like reflection-based code)
-	if desc.SszTypeFlags&dynssz.SszTypeFlagHasDynamicSize == 0 && p.getFastsszConvertCompatibility(originalType) {
+	otherType := originalType
+	if ptr, ok := otherType.(*types.Pointer); ok {
+		otherType = ptr.Elem()
+	} else {
+		otherType = types.NewPointer(otherType)
+	}
+
+	if (desc.SszTypeFlags&dynssz.SszTypeFlagHasDynamicSize == 0 || desc.SszType == dynssz.SszCustomType) && (p.getFastsszConvertCompatibility(originalType) || p.getFastsszConvertCompatibility(otherType)) {
 		desc.SszCompatFlags |= dynssz.SszCompatFlagFastSSZMarshaler
 	}
-	if desc.SszTypeFlags&dynssz.SszTypeFlagHasDynamicMax == 0 {
-		if p.getFastsszHashCompatibility(originalType) {
+	if desc.SszTypeFlags&dynssz.SszTypeFlagHasDynamicMax == 0 || desc.SszType == dynssz.SszCustomType {
+		if p.getFastsszHashCompatibility(originalType) || p.getFastsszHashCompatibility(otherType) {
 			desc.SszCompatFlags |= dynssz.SszCompatFlagFastSSZHasher
 		}
-		if p.getHashTreeRootWithCompatibility(originalType) {
+		if p.getHashTreeRootWithCompatibility(originalType) || p.getHashTreeRootWithCompatibility(otherType) {
 			desc.SszCompatFlags |= dynssz.SszCompatFlagHashTreeRootWith
 		}
 	}
 
 	// Check for dynamic interface implementations
-	if p.getDynamicMarshalerCompatibility(originalType) {
+	if p.getDynamicMarshalerCompatibility(originalType) || p.getDynamicMarshalerCompatibility(otherType) {
 		desc.SszCompatFlags |= dynssz.SszCompatFlagDynamicMarshaler
 	}
-	if p.getDynamicUnmarshalerCompatibility(originalType) {
+	if p.getDynamicUnmarshalerCompatibility(originalType) || p.getDynamicUnmarshalerCompatibility(otherType) {
 		desc.SszCompatFlags |= dynssz.SszCompatFlagDynamicUnmarshaler
 	}
-	if p.getDynamicSizerCompatibility(originalType) {
+	if p.getDynamicSizerCompatibility(originalType) || p.getDynamicSizerCompatibility(otherType) {
 		desc.SszCompatFlags |= dynssz.SszCompatFlagDynamicSizer
 	}
-	if p.getDynamicHashRootCompatibility(originalType) {
+	if p.getDynamicHashRootCompatibility(originalType) || p.getDynamicHashRootCompatibility(otherType) {
 		desc.SszCompatFlags |= dynssz.SszCompatFlagDynamicHashRoot
 	}
 
 	desc.SszCompatFlags |= p.getCompatFlag(innerType)
 
-	if desc.SszType == dynssz.SszCustomType && (desc.SszCompatFlags&dynssz.SszCompatFlagFastSSZMarshaler == 0 || desc.SszCompatFlags&dynssz.SszCompatFlagFastSSZHasher == 0) {
-		return nil, fmt.Errorf("custom ssz type requires fastssz marshaler and hasher implementations")
+	if desc.SszType == dynssz.SszCustomType {
+		isCompatible := desc.SszCompatFlags&dynssz.SszCompatFlagFastSSZMarshaler != 0 && desc.SszCompatFlags&dynssz.SszCompatFlagFastSSZHasher != 0
+		//isCompatible = isCompatible || (desc.SszCompatFlags&dynssz.SszCompatFlagDynamicMarshaler != 0 && desc.SszCompatFlags&dynssz.SszCompatFlagDynamicUnmarshaler != 0 && desc.SszCompatFlags&dynssz.SszCompatFlagDynamicSizer != 0 && desc.SszCompatFlags&dynssz.SszCompatFlagDynamicHashRoot != 0)
+
+		if !isCompatible {
+			return nil, fmt.Errorf("custom ssz type requires fastssz marshaler, unmarshaler and hasher implementations")
+		}
 	}
 
 	return desc, nil
@@ -1087,7 +1099,7 @@ func (p *Parser) getDynamicSizerCompatibility(typ types.Type) bool {
 func (p *Parser) getDynamicHashRootCompatibility(typ types.Type) bool {
 	// Check if type has HashTreeRootDyn method
 	methodSet := types.NewMethodSet(typ)
-	return p.hasMethodWithSignature(methodSet, "HashTreeRootDyn", []string{"DynamicSpecs", "HashWalker"}, []string{"error"})
+	return p.hasMethodWithSignature(methodSet, "HashTreeRootDynWith", []string{"DynamicSpecs", "HashWalker"}, []string{"error"})
 }
 
 // Interface implementation checks using go/types proper interface checking
@@ -1165,6 +1177,8 @@ func (p *Parser) typeMatches(typ types.Type, expectedTypeStr string) bool {
 		if basic, ok := typ.(*types.Basic); ok {
 			return basic.Kind() == types.Int
 		}
+	case "DynamicSpecs", "HashWalker":
+		return true
 	}
 	return false
 }

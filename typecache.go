@@ -447,8 +447,12 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 
 	desc.SszCompatFlags |= tc.getCompatFlag(t)
 
-	if desc.SszType == SszCustomType && (desc.SszCompatFlags&SszCompatFlagFastSSZMarshaler == 0 || desc.SszCompatFlags&SszCompatFlagFastSSZHasher == 0) {
-		return nil, fmt.Errorf("custom ssz type requires fastssz marshaler and hasher implementations")
+	if desc.SszType == SszCustomType {
+		isCompatible := desc.SszCompatFlags&SszCompatFlagFastSSZMarshaler != 0 && desc.SszCompatFlags&SszCompatFlagFastSSZHasher != 0
+		//isCompatible = isCompatible || (desc.SszCompatFlags&SszCompatFlagDynamicMarshaler != 0 && desc.SszCompatFlags&SszCompatFlagDynamicUnmarshaler != 0 && desc.SszCompatFlags&SszCompatFlagDynamicSizer != 0 && desc.SszCompatFlags&SszCompatFlagDynamicHashRoot != 0)
+		if !isCompatible {
+			return nil, fmt.Errorf("custom ssz type requires fastssz marshaler, unmarshaler and hasher implementations")
+		}
 	}
 
 	return desc, nil
@@ -582,7 +586,6 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 
 	// Check for progressive container detection
 	hasAnyIndexTag := false
-	allFieldsHaveIndex := true
 	fieldIndices := make(map[uint16]bool)
 
 	for i := 0; i < t.NumField(); i++ {
@@ -604,8 +607,6 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 				return fmt.Errorf("duplicate ssz-index %d found in field %s", *sszIndex, field.Name)
 			}
 			fieldIndices[*sszIndex] = true
-		} else {
-			allFieldsHaveIndex = false
 		}
 
 		// Get size hints from tags
@@ -651,9 +652,6 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 	// A container is progressive if it has ssz-index annotations on fields
 	// If it's progressive, all fields must have increasing ssz-index tags
 	if hasAnyIndexTag {
-		if !allFieldsHaveIndex {
-			return fmt.Errorf("progressive container requires all fields to have ssz-index tags")
-		}
 
 		// For progressive containers, ensure all ssz-index values are properly set
 		// and validate they are in increasing order

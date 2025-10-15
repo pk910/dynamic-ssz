@@ -20,19 +20,31 @@ var testMatrix = []TestPayload{
 		Name:    "SimpleTypes1",
 		Payload: SimpleTypes1_Payload,
 		Specs:   map[string]any{},
-		Hash:    "d1374d2c572d3f257fb1969ec9a0ad3dd20b480a124a18e26ab8d06a5369e9fe",
+		Hash:    "8b289e303e3c1a7a2e9b94c1b2de0add5efc367da06a61dab8cc9fe0e03c0dd6",
+	},
+	{
+		Name:    "SimpleTypes2",
+		Payload: SimpleTypes2_Payload,
+		Specs:   map[string]any{},
+		Hash:    "8026899f40abd06e808372e98a47af2d87cd60ed4d9b44a495a029b825ef2b34",
 	},
 	{
 		Name:    "SimpleTypesWithSpecs",
 		Payload: SimpleTypesWithSpecs_Payload,
 		Specs:   SimpleTypesWithSpecs_Specs,
-		Hash:    "81e24b3e3fc483146f660ae13ecab67961cf55ca2348d5b43e0892fdec6a3bdc",
+		Hash:    "958d906be4e3c9e8a4c7d17fb7641b8ce1a0a77f8d4f05fcfeaf3cf0d4db2bc1",
+	},
+	{
+		Name:    "SimpleTypesWithSpecs2",
+		Payload: SimpleTypesWithSpecs2_Payload,
+		Specs:   SimpleTypesWithSpecs_Specs,
+		Hash:    "966912b4d9e6b44fbebce56369fa255b76cd777d76e4dac2d396df93916ac077",
 	},
 	{
 		Name:    "ProgressiveTypes",
 		Payload: ProgressiveTypes_Payload,
 		Specs:   map[string]any{},
-		Hash:    "d6896b089f7b899e395f580a8eedda62900494a038fb738feda76d0d613e2619",
+		Hash:    "e4491c6133bb0e40f21224f73ccfcb3a6a7d8fc32816fa5a5f8b5f35265b5854",
 	},
 }
 
