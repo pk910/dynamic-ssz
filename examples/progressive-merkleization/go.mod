@@ -6,7 +6,7 @@ toolchain go1.24.7
 
 replace github.com/pk910/dynamic-ssz => ../..
 
-require github.com/pk910/dynamic-ssz v1.1.0
+require github.com/pk910/dynamic-ssz v1.1.1
 
 require (
 	github.com/OffchainLabs/hashtree v0.2.1-0.20250530191054-577f0b75c7f7 // indirect

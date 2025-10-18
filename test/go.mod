@@ -4,7 +4,8 @@ go 1.24.0
 
 require (
 	github.com/attestantio/go-eth2-client v0.25.2
-	github.com/pk910/dynamic-ssz v1.1.1-0.20251004172051-b8b4d9892e0c
+	github.com/holiman/uint256 v1.3.2
+	github.com/pk910/dynamic-ssz v1.1.1
 	github.com/prysmaticlabs/go-bitfield v0.0.0-20240618144021-706c95b2dd15
 	gopkg.in/yaml.v2 v2.4.0
 )
@@ -16,7 +17,6 @@ require (
 	github.com/fatih/color v1.16.0 // indirect
 	github.com/ferranbt/fastssz v0.1.4 // indirect
 	github.com/goccy/go-yaml v1.9.2 // indirect
-	github.com/holiman/uint256 v1.3.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect

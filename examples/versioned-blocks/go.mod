@@ -6,7 +6,7 @@ toolchain go1.24.7
 
 require (
 	github.com/attestantio/go-eth2-client v0.26.0
-	github.com/pk910/dynamic-ssz v1.1.0
+	github.com/pk910/dynamic-ssz v1.1.1
 )
 
 require (
