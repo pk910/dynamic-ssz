@@ -17,6 +17,7 @@ import (
 	"sync"
 
 	"github.com/pk910/dynamic-ssz/sszutils"
+	hashtree "github.com/pk910/hashtree-bindings"
 )
 
 // Compile-time check to ensure Hasher implements HashWalker interface
@@ -28,7 +29,9 @@ var debug = false
 var DefaultHasherPool HasherPool
 
 // FastHasherPool is the fast hasher pool that uses the hashtree library if cgo is enabled
-var FastHasherPool HasherPool
+var FastHasherPool HasherPool = HasherPool{
+	HashFn: hashtree.HashByteSlice,
+}
 
 var hasherInitialized bool
 var hasherInitMutex sync.Mutex
