@@ -132,31 +132,34 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 		// primitive types
 		case SszBoolType:
 			if len(ssz) < 1 {
-				return 0, fmt.Errorf("unexpected end of SSZ")
+				return 0, sszutils.ErrUnexpectedEOF
+			}
+			if ssz[0] != 1 && ssz[0] != 0 {
+				return 0, sszutils.ErrInvalidValueRange
 			}
 			targetValue.SetBool(sszutils.UnmarshalBool(ssz))
 			consumedBytes = 1
 		case SszUint8Type:
 			if len(ssz) < 1 {
-				return 0, fmt.Errorf("unexpected end of SSZ")
+				return 0, sszutils.ErrUnexpectedEOF
 			}
 			targetValue.SetUint(uint64(sszutils.UnmarshallUint8(ssz)))
 			consumedBytes = 1
 		case SszUint16Type:
 			if len(ssz) < 2 {
-				return 0, fmt.Errorf("unexpected end of SSZ")
+				return 0, sszutils.ErrUnexpectedEOF
 			}
 			targetValue.SetUint(uint64(sszutils.UnmarshallUint16(ssz)))
 			consumedBytes = 2
 		case SszUint32Type:
 			if len(ssz) < 4 {
-				return 0, fmt.Errorf("unexpected end of SSZ")
+				return 0, sszutils.ErrUnexpectedEOF
 			}
 			targetValue.SetUint(uint64(sszutils.UnmarshallUint32(ssz)))
 			consumedBytes = 4
 		case SszUint64Type:
 			if len(ssz) < 8 {
-				return 0, fmt.Errorf("unexpected end of SSZ")
+				return 0, sszutils.ErrUnexpectedEOF
 			}
 			if targetType.GoTypeFlags&GoTypeFlagIsTime != 0 {
 				timeVal := time.Unix(int64(sszutils.UnmarshallUint64(ssz)), 0)
