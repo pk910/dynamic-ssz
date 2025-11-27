@@ -10,6 +10,7 @@ var (
 	ErrListTooBig          = fmt.Errorf("list length is higher than max value")
 	ErrUnexpectedEOF       = fmt.Errorf("unexpected end of SSZ")
 	ErrOffset              = fmt.Errorf("incorrect offset")
+	ErrInvalidValueRange   = fmt.Errorf("invalid value range")
 	ErrInvalidUnionVariant = fmt.Errorf("invalid union variant")
 	ErrVectorLength        = fmt.Errorf("incorrect vector length")
 	ErrNotImplemented      = fmt.Errorf("not implemented")

@@ -282,6 +282,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *dynssz.TypeDescriptor, varName 
 		if !noBufCheck {
 			ctx.appendCode(indent, "if len(buf) < 1 {\n\treturn sszutils.ErrUnexpectedEOF\n}\n")
 		}
+		ctx.appendCode(indent, "if buf[0] != 1 && buf[0] != 0 {\n\treturn sszutils.ErrInvalidValueRange\n}\n")
 		ptrVarName := varName
 		if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
 			ptrVarName = fmt.Sprintf("*(%s)", varName)

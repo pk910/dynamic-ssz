@@ -499,6 +499,12 @@ func TestUnmarshalErrors(t *testing.T) {
 			expectedErr: "unexpected end of SSZ",
 		},
 		{
+			name:        "invalid_bool_value",
+			target:      new(bool),
+			data:        []byte{2},
+			expectedErr: "invalid value range",
+		},
+		{
 			name:        "truncated_data_uint16",
 			target:      new(uint16),
 			data:        []byte{0x01},
