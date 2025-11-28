@@ -705,6 +705,14 @@ func TestUnmarshalErrors(t *testing.T) {
 			data:        fromHex("0x080000000400000001020304"),
 			expectedErr: "incorrect offset",
 		},
+		{
+			name: "bitlist_not_terminated",
+			target: new(struct {
+				Data []byte `ssz-type:"bitlist"`
+			}),
+			data:        fromHex("0x0400000000"),
+			expectedErr: "bitlist misses mandatory termination bit",
+		},
 	}
 
 	for _, tc := range testCases {

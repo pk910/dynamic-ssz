@@ -211,8 +211,11 @@ func (ctx *marshalContext) marshalType(desc *dynssz.TypeDescriptor, varName stri
 	case dynssz.SszVectorType, dynssz.SszBitvectorType, dynssz.SszUint128Type, dynssz.SszUint256Type:
 		return ctx.marshalVector(desc, varName, indent)
 
-	case dynssz.SszListType, dynssz.SszBitlistType, dynssz.SszProgressiveListType, dynssz.SszProgressiveBitlistType:
+	case dynssz.SszListType, dynssz.SszProgressiveListType:
 		return ctx.marshalList(desc, varName, indent)
+
+	case dynssz.SszBitlistType, dynssz.SszProgressiveBitlistType:
+		return ctx.marshalBitlist(desc, varName, indent)
 
 	case dynssz.SszCompatibleUnionType:
 		return ctx.marshalUnion(desc, varName, indent)
@@ -479,6 +482,60 @@ func (ctx *marshalContext) marshalList(desc *dynssz.TypeDescriptor, varName stri
 			return err
 		}
 		ctx.appendCode(indent, "}\n")
+	}
+
+	return nil
+}
+
+// marshalBitlist generates marshal code for SSZ bitlist types.
+func (ctx *marshalContext) marshalBitlist(desc *dynssz.TypeDescriptor, varName string, indent int) error {
+	maxExpression := desc.MaxExpression
+	if ctx.options.WithoutDynamicExpressions {
+		maxExpression = nil
+	}
+
+	hasMax := false
+	maxVar := ""
+
+	if maxExpression != nil {
+		ctx.usedDynSpecs = true
+		ctx.appendCode(indent, "hasMax, max, err := ds.ResolveSpecValue(\"%s\")\n", *maxExpression)
+		ctx.appendCode(indent, "if err != nil {\n")
+		ctx.appendCode(indent, "\treturn dst, err\n")
+		ctx.appendCode(indent, "}\n")
+		hasMax = true
+		maxVar = "int(max)"
+		if desc.Limit > 0 {
+			ctx.appendCode(indent, "if !hasMax {\n")
+			ctx.appendCode(indent, "\tmax = %d\n", desc.Limit)
+			ctx.appendCode(indent, "}\n")
+		}
+	} else if desc.Limit > 0 {
+		maxVar = fmt.Sprintf("%d", desc.Limit)
+		hasMax = true
+	} else {
+		maxVar = "0"
+	}
+
+	ctx.appendCode(indent, "vlen := len(%s)\n", varName)
+
+	if hasMax {
+		ctx.appendCode(indent, "if vlen > %s {\n", maxVar)
+		ctx.appendCode(indent, "\treturn dst, sszutils.ErrListTooBig\n")
+		ctx.appendCode(indent, "}\n")
+	}
+
+	ctx.appendCode(indent, "bval := []byte(%s[:])\n", varName)
+	ctx.appendCode(indent, "if vlen == 0 {\n")
+	ctx.appendCode(indent, "\tbval = []byte{0x01}\n")
+	ctx.appendCode(indent, "} else if bval[vlen-1] == 0x00 {\n")
+	ctx.appendCode(indent, "\treturn dst, sszutils.ErrBitlistNotTerminated\n")
+	ctx.appendCode(indent, "}\n")
+
+	if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 || desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
+		ctx.appendCode(indent, "dst = append(dst, bval...)\n")
+	} else {
+		return fmt.Errorf("bitlist type can only be represented by byte slices or arrays, got %v", desc.Kind)
 	}
 
 	return nil

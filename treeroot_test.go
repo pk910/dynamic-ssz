@@ -620,7 +620,7 @@ func TestHashTreeRootErrors(t *testing.T) {
 			input: struct {
 				Bits []byte `ssz-type:"bitlist" ssz-max:"8"`
 			}{[]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x12}},
-			expectedErr: "bitlist too big",
+			expectedErr: "list length is higher than max value",
 		},
 		{
 			name: "invalid_uint128_size",
@@ -681,7 +681,7 @@ func TestHashTreeRootErrors(t *testing.T) {
 			input: struct {
 				Data []uint32 `ssz-max:"3"`
 			}{[]uint32{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}},
-			expectedErr: "list too big",
+			expectedErr: "list length is higher than max value",
 		},
 		{
 			name: "invalid_custom_type",
@@ -723,7 +723,7 @@ func TestHashTreeRootErrors(t *testing.T) {
 			input: struct {
 				Data string `ssz-max:"5"`
 			}{"hello world, hello world, hello world, hello world, hello world"},
-			expectedErr: "list too big",
+			expectedErr: "list length is higher than max value",
 		},
 		{
 			name: "multi_dimensional_size_mismatch",
@@ -737,7 +737,7 @@ func TestHashTreeRootErrors(t *testing.T) {
 			input: struct {
 				Data []byte `ssz-max:"100"`
 			}{make([]byte, 1000)},
-			expectedErr: "list too big",
+			expectedErr: "list length is higher than max value",
 		},
 		{
 			name: "invalid_large_uint_array_size",
