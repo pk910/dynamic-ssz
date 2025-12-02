@@ -290,7 +290,11 @@ func (ctx *sizeContext) sizeVector(desc *dynssz.TypeDescriptor, varName string, 
 		ctx.appendCode(indent, "}\n")
 		ctx.appendCode(indent, "if !hasLimit {\n")
 		ctx.appendCode(indent, "\t%s = %d\n", limitVar, desc.Len)
-		ctx.appendCode(indent, "}\n")
+		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
+			ctx.appendCode(indent, "} else {\n\t%s = (%s+7)/8\n}\n", limitVar, limitVar)
+		} else {
+			ctx.appendCode(indent, "}\n")
+		}
 	} else {
 		ctx.appendCode(indent, "%s := %d\n", limitVar, desc.Len)
 	}

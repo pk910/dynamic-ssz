@@ -486,6 +486,13 @@ func (d *DynSsz) buildRootFromVector(sourceType *TypeDescriptor, sourceValue ref
 		if appendZero > 0 {
 			zeroBytes := make([]byte, appendZero)
 			bytes = append(bytes, zeroBytes...)
+		} else if sourceType.BitSize > 0 && sourceType.BitSize < uint32(len(bytes))*8 {
+			// check padding bits
+			paddingMask := uint8((uint16(0xff) << (sourceType.BitSize % 8)) & 0xff)
+			paddingBits := bytes[len(bytes)-1] & paddingMask
+			if paddingBits != 0 {
+				return sszutils.ErrVectorLength
+			}
 		}
 
 		hh.AppendBytes32(bytes)

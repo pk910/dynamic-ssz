@@ -295,16 +295,26 @@ func (ctx *marshalContext) marshalVector(desc *dynssz.TypeDescriptor, varName st
 	}
 
 	limitVar := ""
+	bitlimitVar := ""
 	hasLimitVar := false
 	if sizeExpression != nil {
 		ctx.usedDynSpecs = true
-		ctx.appendCode(indent, "hasLimit, limit, err := ds.ResolveSpecValue(\"%s\")\n", *sizeExpression)
-		ctx.appendCode(indent, "if err != nil {\n")
-		ctx.appendCode(indent, "\treturn dst, err\n")
-		ctx.appendCode(indent, "}\n")
-		ctx.appendCode(indent, "if !hasLimit {\n")
-		ctx.appendCode(indent, "\tlimit = %d\n", desc.Len)
-		ctx.appendCode(indent, "}\n")
+		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
+			ctx.appendCode(indent, "hasLimit, bitlimit, err := ds.ResolveSpecValue(\"%s\")\n", *sizeExpression)
+			ctx.appendCode(indent, "if err != nil {\n\treturn dst, err\n}\n")
+			if desc.BitSize > 0 {
+				ctx.appendCode(indent, "if !hasLimit {\n\tbitlimit = %d\n}\n", desc.BitSize)
+			} else {
+				ctx.appendCode(indent, "if !hasLimit {\n\tbitlimit = %d\n}\n", desc.Len*8)
+			}
+			ctx.appendCode(indent, "limit := (bitlimit+7)/8\n")
+			bitlimitVar = "int(bitlimit)"
+		} else {
+			ctx.appendCode(indent, "hasLimit, limit, err := ds.ResolveSpecValue(\"%s\")\n", *sizeExpression)
+			ctx.appendCode(indent, "if err != nil {\n\treturn dst, err\n}\n")
+			ctx.appendCode(indent, "if !hasLimit {\n\tlimit = %d\n}\n", desc.Len)
+		}
+
 		limitVar = "int(limit)"
 		hasLimitVar = true
 
@@ -315,6 +325,9 @@ func (ctx *marshalContext) marshalVector(desc *dynssz.TypeDescriptor, varName st
 			ctx.appendCode(indent, "}\n")
 		}
 	} else {
+		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 && desc.BitSize > 0 && desc.BitSize%8 != 0 {
+			bitlimitVar = fmt.Sprintf("%d", desc.BitSize)
+		}
 		limitVar = fmt.Sprintf("%d", desc.Len)
 	}
 
@@ -335,10 +348,18 @@ func (ctx *marshalContext) marshalVector(desc *dynssz.TypeDescriptor, varName st
 
 	if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic == 0 {
 		// static elements
-		if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
-			ctx.appendCode(indent, "dst = append(dst, %s[:%s]...)\n", varName, lenVar)
-		} else if desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
-			ctx.appendCode(indent, "dst = append(dst, []byte(%s[:%s])...)\n", varName, lenVar)
+		if desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 || desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
+			if bitlimitVar != "" {
+				ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
+				ctx.appendCode(indent, "if %s[%s-1] & paddingMask != 0 {\n", varName, lenVar)
+				ctx.appendCode(indent, "\treturn dst, sszutils.ErrVectorLength\n")
+				ctx.appendCode(indent, "}\n")
+			}
+			if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
+				ctx.appendCode(indent, "dst = append(dst, %s[:%s]...)\n", varName, lenVar)
+			} else {
+				ctx.appendCode(indent, "dst = append(dst, []byte(%s[:%s])...)\n", varName, lenVar)
+			}
 		} else {
 			ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", lenVar)
 			valVar := "t"

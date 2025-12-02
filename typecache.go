@@ -31,6 +31,7 @@ const (
 	SszTypeFlagHasDynamicMax                          // Whether this type or any of its nested types uses dynamic spec max value that differs from the default
 	SszTypeFlagHasSizeExpr                            // Whether this type or any of its nested types uses a dynamic expression to calculate the size or max size
 	SszTypeFlagHasMaxExpr                             // Whether this type or any of its nested types uses a dynamic expression to calculate the max size
+	SszTypeFlagHasBitSize                             // Whether the type has a bit size tag
 )
 
 // SszCompatFlag is a flag indicating whether a type implements a specific SSZ compatibility interface
@@ -69,6 +70,7 @@ type TypeDescriptor struct {
 	HashTreeRootWithMethod *reflect.Method           `json:"-"`                   // Cached HashTreeRootWith method for performance
 	SizeExpression         *string                   `json:"size_expr,omitempty"` // The dynamic expression used to calculate the size of the type
 	MaxExpression          *string                   `json:"max_expr,omitempty"`  // The dynamic expression used to calculate the max size of the type
+	BitSize                uint32                    `json:"bit_size,omitempty"`  // Bit size for bit vector types (ssz-bitsize tag)
 	SszType                SszType                   `json:"type"`                // SSZ type of the type
 	SszTypeFlags           SszTypeFlag               `json:"flags"`               // SSZ type flags
 	SszCompatFlags         SszCompatFlag             `json:"compat"`              // SSZ compatibility flags
@@ -207,6 +209,9 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		if sizeHints[0].Expr != "" {
 			desc.SizeExpression = &sizeHints[0].Expr
 		}
+		if sizeHints[0].Bits {
+			desc.SszTypeFlags |= SszTypeFlagHasBitSize
+		}
 		for _, hint := range sizeHints {
 			if hint.Custom {
 				desc.SszTypeFlags |= SszTypeFlagHasDynamicSize
@@ -336,6 +341,9 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		if desc.Kind != reflect.Bool {
 			return nil, fmt.Errorf("bool ssz type can only be represented by bool types, got %v", desc.Kind)
 		}
+		if len(sizeHints) > 0 && sizeHints[0].Bits {
+			return nil, fmt.Errorf("bool ssz type cannot be limited by bits, use regular size tag instead")
+		}
 		if len(sizeHints) > 0 && sizeHints[0].Size != 1 {
 			return nil, fmt.Errorf("bool ssz type must be ssz-size:1, got %v", sizeHints[0].Size)
 		}
@@ -343,6 +351,9 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 	case SszUint8Type:
 		if desc.Kind != reflect.Uint8 {
 			return nil, fmt.Errorf("uint8 ssz type can only be represented by uint8 types, got %v", desc.Kind)
+		}
+		if len(sizeHints) > 0 && sizeHints[0].Bits {
+			return nil, fmt.Errorf("uint8 ssz type cannot be limited by bits, use regular size tag instead")
 		}
 		if len(sizeHints) > 0 && sizeHints[0].Size != 1 {
 			return nil, fmt.Errorf("uint8 ssz type must be ssz-size:1, got %v", sizeHints[0].Size)
@@ -352,6 +363,9 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		if desc.Kind != reflect.Uint16 {
 			return nil, fmt.Errorf("uint16 ssz type can only be represented by uint16 types, got %v", desc.Kind)
 		}
+		if len(sizeHints) > 0 && sizeHints[0].Bits {
+			return nil, fmt.Errorf("uint16 ssz type cannot be limited by bits, use regular size tag instead")
+		}
 		if len(sizeHints) > 0 && sizeHints[0].Size != 2 {
 			return nil, fmt.Errorf("uint16 ssz type must be ssz-size:2, got %v", sizeHints[0].Size)
 		}
@@ -359,6 +373,9 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 	case SszUint32Type:
 		if desc.Kind != reflect.Uint32 {
 			return nil, fmt.Errorf("uint32 ssz type can only be represented by uint32 types, got %v", desc.Kind)
+		}
+		if len(sizeHints) > 0 && sizeHints[0].Bits {
+			return nil, fmt.Errorf("uint32 ssz type cannot be limited by bits, use regular size tag instead")
 		}
 		if len(sizeHints) > 0 && sizeHints[0].Size != 4 {
 			return nil, fmt.Errorf("uint32 ssz type must be ssz-size:4, got %v", sizeHints[0].Size)
@@ -368,16 +385,25 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		if desc.Kind != reflect.Uint64 && desc.GoTypeFlags&GoTypeFlagIsTime == 0 {
 			return nil, fmt.Errorf("uint64 ssz type can only be represented by uint64 or time.Time types, got %v", desc.Kind)
 		}
+		if len(sizeHints) > 0 && sizeHints[0].Bits {
+			return nil, fmt.Errorf("uint64 ssz type cannot be limited by bits, use regular size tag instead")
+		}
 		if len(sizeHints) > 0 && sizeHints[0].Size != 8 {
 			return nil, fmt.Errorf("uint64 ssz type must be ssz-size:8, got %v", sizeHints[0].Size)
 		}
 		desc.Size = 8
 	case SszUint128Type:
+		if len(sizeHints) > 0 && sizeHints[0].Bits {
+			return nil, fmt.Errorf("uint128 ssz type cannot be limited by bits, use regular size tag instead")
+		}
 		err := tc.buildUint128Descriptor(desc, t) // handle as [16]uint8 or [2]uint64
 		if err != nil {
 			return nil, err
 		}
 	case SszUint256Type:
+		if len(sizeHints) > 0 && sizeHints[0].Bits {
+			return nil, fmt.Errorf("uint256 ssz type cannot be limited by bits, remove size tag instead")
+		}
 		err := tc.buildUint256Descriptor(desc, t) // handle as [32]uint8 or [4]uint64
 		if err != nil {
 			return nil, err
@@ -731,13 +757,23 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, t reflect.Type,
 	if desc.Kind == reflect.Array {
 		desc.Len = uint32(t.Len())
 		if len(sizeHints) > 0 {
-			if sizeHints[0].Size > desc.Len {
-				return fmt.Errorf("size hint for vector type is greater than the length of the array (%d > %d)", sizeHints[0].Size, desc.Len)
+			byteLen := sizeHints[0].Size
+			if sizeHints[0].Bits {
+				desc.BitSize = sizeHints[0].Size
+				byteLen = (byteLen + 7) / 8 // ceil up to the next multiple of 8
 			}
-			desc.Len = uint32(sizeHints[0].Size)
+			if byteLen > desc.Len {
+				return fmt.Errorf("size hint for vector type is greater than the length of the array (%d > %d)", byteLen, desc.Len)
+			}
+			desc.Len = uint32(byteLen)
 		}
 	} else if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
-		desc.Len = uint32(sizeHints[0].Size)
+		byteLen := sizeHints[0].Size
+		if sizeHints[0].Bits {
+			desc.BitSize = sizeHints[0].Size
+			byteLen = (byteLen + 7) / 8 // ceil up to the next multiple of 8
+		}
+		desc.Len = uint32(byteLen)
 	} else {
 		return fmt.Errorf("missing size hint for vector type")
 	}
@@ -839,7 +875,12 @@ func (tc *TypeCache) buildListDescriptor(desc *TypeDescriptor, t reflect.Type, s
 			desc.Size = 0 // Dynamic elements = dynamic size
 			desc.SszTypeFlags |= SszTypeFlagIsDynamic
 		} else {
-			desc.Size = elemDesc.Size * sizeHints[0].Size
+			byteLen := sizeHints[0].Size
+			if sizeHints[0].Bits {
+				desc.BitSize = sizeHints[0].Size
+				byteLen = (byteLen + 7) / 8 // ceil up to the next multiple of 8
+			}
+			desc.Size = elemDesc.Size * byteLen
 		}
 	} else {
 		desc.Size = 0 // Dynamic slice

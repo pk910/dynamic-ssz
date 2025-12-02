@@ -238,7 +238,11 @@ func (ctx *unmarshalContext) getStaticSizeVar(desc *dynssz.TypeDescriptor) (stri
 				ctx.appendSizeCode(1, "{\n")
 				ctx.appendSizeCode(2, "hasLimit, limit, err := ds.ResolveSpecValue(\"%s\")\n", *sizeExpression)
 				ctx.appendSizeCode(2, "if err != nil {\n\treturn err\n}\n")
-				ctx.appendSizeCode(2, "if !hasLimit {\n\tlimit = %d\n}\n", desc.Len)
+				if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
+					ctx.appendSizeCode(2, "if !hasLimit {\n\tlimit = %d\n} else {\n\tlimit = (limit+7)/8\n}\n", desc.Len)
+				} else {
+					ctx.appendSizeCode(2, "if !hasLimit {\n\tlimit = %d\n}\n", desc.Len)
+				}
 				ctx.appendSizeCode(2, "%s = %s * int(limit)\n", sizeVar, sizeVar)
 				ctx.appendSizeCode(1, "}\n")
 				ctx.usedDynSpecs = true
@@ -489,13 +493,26 @@ func (ctx *unmarshalContext) unmarshalVector(desc *dynssz.TypeDescriptor, varNam
 	}
 
 	limitVar := ""
+	bitlimitVar := ""
 	needExpression := !(desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 && noBufCheck)
 
 	if sizeExpression != nil && needExpression {
 		ctx.usedDynSpecs = true
-		ctx.appendCode(indent, "hasLimit, limit, err := ds.ResolveSpecValue(\"%s\")\n", *sizeExpression)
-		ctx.appendCode(indent, "if err != nil {\n\treturn err\n}\n")
-		ctx.appendCode(indent, "if !hasLimit {\n\tlimit = %d\n}\n", desc.Len)
+		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
+			ctx.appendCode(indent, "hasLimit, bitlimit, err := ds.ResolveSpecValue(\"%s\")\n", *sizeExpression)
+			ctx.appendCode(indent, "if err != nil {\n\treturn err\n}\n")
+			if desc.BitSize > 0 {
+				ctx.appendCode(indent, "if !hasLimit {\n\tbitlimit = %d\n}\n", desc.BitSize)
+			} else {
+				ctx.appendCode(indent, "if !hasLimit {\n\tbitlimit = %d\n}\n", desc.Len*8)
+			}
+			ctx.appendCode(indent, "limit := (bitlimit+7)/8\n")
+			bitlimitVar = "int(bitlimit)"
+		} else {
+			ctx.appendCode(indent, "hasLimit, limit, err := ds.ResolveSpecValue(\"%s\")\n", *sizeExpression)
+			ctx.appendCode(indent, "if err != nil {\n\treturn err\n}\n")
+			ctx.appendCode(indent, "if !hasLimit {\n\tlimit = %d\n}\n", desc.Len)
+		}
 		limitVar = "int(limit)"
 
 		if desc.Kind == reflect.Array {
@@ -505,6 +522,9 @@ func (ctx *unmarshalContext) unmarshalVector(desc *dynssz.TypeDescriptor, varNam
 			ctx.appendCode(indent, "}\n")
 		}
 	} else {
+		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 && desc.BitSize > 0 && desc.BitSize%8 != 0 {
+			bitlimitVar = fmt.Sprintf("%d", desc.BitSize)
+		}
 		limitVar = fmt.Sprintf("%d", desc.Len)
 	}
 
@@ -518,6 +538,12 @@ func (ctx *unmarshalContext) unmarshalVector(desc *dynssz.TypeDescriptor, varNam
 		if desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
 			if !noBufCheck {
 				ctx.appendCode(indent, "if %s > len(buf) {\n\treturn sszutils.ErrUnexpectedEOF\n}\n", limitVar)
+			}
+			if bitlimitVar != "" {
+				ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
+				ctx.appendCode(indent, "if buf[%s-1] & paddingMask != 0 {\n", limitVar)
+				ctx.appendCode(indent, "\treturn sszutils.ErrVectorLength\n")
+				ctx.appendCode(indent, "}\n")
 			}
 			if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
 				typename := ctx.typePrinter.TypeString(desc)

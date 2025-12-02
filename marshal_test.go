@@ -274,6 +274,12 @@ var marshalTestMatrix = []struct {
 		}{[4]byte{0xff, 0x0f, 0x00, 0xf0}},
 		fromHex("0xff0f00f0"),
 	},
+	{
+		struct {
+			Flags [3]byte `ssz-type:"bitvector" ssz-bitsize:"12"`
+		}{[3]byte{0xff, 0x0f, 0x00}},
+		fromHex("0xff0f"),
+	},
 
 	// explicit basic type annotations
 	{
@@ -581,6 +587,13 @@ func TestMarshalErrors(t *testing.T) {
 				Flags []uint16 `ssz-type:"bitvector" ssz-size:"4"`
 			}{[]uint16{1, 2, 3, 4}},
 			expectedErr: "bitvector ssz type can only be represented by byte slices or arrays, got uint16",
+		},
+		{
+			name: "invalid_bitvector_padding",
+			input: struct {
+				Flags []byte `ssz-type:"bitvector" ssz-bitsize:"12"`
+			}{[]byte{0xff, 0x1f}},
+			expectedErr: "bitvector padding bits are not zero",
 		},
 		{
 			name: "invalid_bitlist_type",

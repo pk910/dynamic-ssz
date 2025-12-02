@@ -309,6 +309,13 @@ func (d *DynSsz) marshalVector(sourceType *TypeDescriptor, sourceValue reflect.V
 
 		if appendZero > 0 {
 			buf = sszutils.AppendZeroPadding(buf, appendZero)
+		} else if sourceType.BitSize > 0 && sourceType.BitSize < uint32(len(bytes))*8 {
+			// check padding bits
+			paddingMask := uint8((uint16(0xff) << (sourceType.BitSize % 8)) & 0xff)
+			paddingBits := bytes[dataLen-1] & paddingMask
+			if paddingBits != 0 {
+				return nil, fmt.Errorf("bitvector padding bits are not zero")
+			}
 		}
 	} else {
 		for i := 0; i < dataLen; i++ {

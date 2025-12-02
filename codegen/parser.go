@@ -200,6 +200,10 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 		if sizeHints[0].Expr != "" {
 			desc.SizeExpression = &sizeHints[0].Expr
 		}
+		if sizeHints[0].Bits {
+			desc.SszTypeFlags |= dynssz.SszTypeFlagHasBitSize
+			desc.BitSize = sizeHints[0].Size
+		}
 		for _, hint := range sizeHints {
 			if hint.Custom {
 				desc.SszTypeFlags |= dynssz.SszTypeFlagHasDynamicSize
@@ -339,6 +343,9 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 		if desc.Kind != reflect.Bool {
 			return nil, fmt.Errorf("bool ssz type can only be represented by bool types, got %v", desc.Kind)
 		}
+		if len(sizeHints) > 0 && sizeHints[0].Bits {
+			return nil, fmt.Errorf("bool ssz type cannot be limited by bits, use regular size tag instead")
+		}
 		if len(sizeHints) > 0 && sizeHints[0].Size != 1 {
 			return nil, fmt.Errorf("bool ssz type must be ssz-size:1, got %v", sizeHints[0].Size)
 		}
@@ -346,6 +353,9 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 	case dynssz.SszUint8Type:
 		if desc.Kind != reflect.Uint8 {
 			return nil, fmt.Errorf("uint8 ssz type can only be represented by uint8 types, got %v", desc.Kind)
+		}
+		if len(sizeHints) > 0 && sizeHints[0].Bits {
+			return nil, fmt.Errorf("uint8 ssz type cannot be limited by bits, use regular size tag instead")
 		}
 		if len(sizeHints) > 0 && sizeHints[0].Size != 1 {
 			return nil, fmt.Errorf("uint8 ssz type must be ssz-size:1, got %v", sizeHints[0].Size)
@@ -355,6 +365,9 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 		if desc.Kind != reflect.Uint16 {
 			return nil, fmt.Errorf("uint16 ssz type can only be represented by uint16 types, got %v", desc.Kind)
 		}
+		if len(sizeHints) > 0 && sizeHints[0].Bits {
+			return nil, fmt.Errorf("uint16 ssz type cannot be limited by bits, use regular size tag instead")
+		}
 		if len(sizeHints) > 0 && sizeHints[0].Size != 2 {
 			return nil, fmt.Errorf("uint16 ssz type must be ssz-size:2, got %v", sizeHints[0].Size)
 		}
@@ -362,6 +375,9 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 	case dynssz.SszUint32Type:
 		if desc.Kind != reflect.Uint32 {
 			return nil, fmt.Errorf("uint32 ssz type can only be represented by uint32 types, got %v", desc.Kind)
+		}
+		if len(sizeHints) > 0 && sizeHints[0].Bits {
+			return nil, fmt.Errorf("uint32 ssz type cannot be limited by bits, use regular size tag instead")
 		}
 		if len(sizeHints) > 0 && sizeHints[0].Size != 4 {
 			return nil, fmt.Errorf("uint32 ssz type must be ssz-size:4, got %v", sizeHints[0].Size)
@@ -371,16 +387,25 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 		if desc.Kind != reflect.Uint64 && desc.GoTypeFlags&dynssz.GoTypeFlagIsTime == 0 {
 			return nil, fmt.Errorf("uint64 ssz type can only be represented by uint64 or time.Time types, got %v", desc.Kind)
 		}
+		if len(sizeHints) > 0 && sizeHints[0].Bits {
+			return nil, fmt.Errorf("uint64 ssz type cannot be limited by bits, use regular size tag instead")
+		}
 		if len(sizeHints) > 0 && sizeHints[0].Size != 8 {
 			return nil, fmt.Errorf("uint64 ssz type must be ssz-size:8, got %v", sizeHints[0].Size)
 		}
 		desc.Size = 8
 	case dynssz.SszUint128Type:
+		if len(sizeHints) > 0 && sizeHints[0].Bits {
+			return nil, fmt.Errorf("uint128 ssz type cannot be limited by bits, use regular size tag instead")
+		}
 		err := p.buildUint128Descriptor(desc, typ)
 		if err != nil {
 			return nil, err
 		}
 	case dynssz.SszUint256Type:
+		if len(sizeHints) > 0 && sizeHints[0].Bits {
+			return nil, fmt.Errorf("uint256 ssz type cannot be limited by bits, use regular size tag instead")
+		}
 		err := p.buildUint256Descriptor(desc, typ)
 		if err != nil {
 			return nil, err
@@ -432,6 +457,10 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 	case dynssz.SszCustomType:
 		if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
 			desc.Size = uint32(sizeHints[0].Size)
+			if sizeHints[0].Bits {
+				desc.BitSize = sizeHints[0].Size
+				desc.Size = (desc.Size + 7) / 8 // ceil up to the next multiple of 8
+			}
 		} else {
 			desc.Size = 0
 			desc.SszTypeFlags |= dynssz.SszTypeFlagIsDynamic
@@ -657,15 +686,22 @@ func (p *Parser) buildVectorDescriptor(desc *dynssz.TypeDescriptor, typ types.Ty
 		elemType = t.Elem()
 		length = uint32(t.Len())
 		if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
-			if sizeHints[0].Size > length {
-				return fmt.Errorf("size hint for vector type is greater than the length of the array (%d > %d)", sizeHints[0].Size, length)
+			byteSize := sizeHints[0].Size
+			if sizeHints[0].Bits {
+				byteSize = (byteSize + 7) / 8 // ceil up to the next multiple of 8
 			}
-			length = sizeHints[0].Size
+			if byteSize > length {
+				return fmt.Errorf("size hint for vector type is greater than the length of the array (%d > %d)", byteSize, length)
+			}
+			length = byteSize
 		}
 	case *types.Slice:
 		elemType = t.Elem()
 		if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
 			length = sizeHints[0].Size
+			if sizeHints[0].Bits {
+				length = (length + 7) / 8 // ceil up to the next multiple of 8
+			}
 		} else {
 			return fmt.Errorf("vector slice type requires explicit size hint")
 		}
@@ -674,6 +710,9 @@ func (p *Parser) buildVectorDescriptor(desc *dynssz.TypeDescriptor, typ types.Ty
 			// String as vector
 			if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
 				length = sizeHints[0].Size
+				if sizeHints[0].Bits {
+					length = (length + 7) / 8 // ceil up to the next multiple of 8
+				}
 				desc.GoTypeFlags |= dynssz.GoTypeFlagIsByteArray
 				elemType = byteType
 			} else {
@@ -929,19 +968,44 @@ func (p *Parser) parseFieldTags(tag string) (typeHints []dynssz.SszTypeHint, siz
 	}
 
 	// Parse size hints (matching getSszSizeTag logic)
-	if sszSize, ok := structTag.Lookup("ssz-size"); ok {
-		for _, sizeStr := range strings.Split(sszSize, ",") {
-			sizeStr = strings.TrimSpace(sizeStr)
+	var sszSizeParts, sszBitsizeParts []string
+
+	sszSizeLen := 0
+
+	if fieldSszSizeStr, fieldHasSszSize := structTag.Lookup("ssz-size"); fieldHasSszSize {
+		sszSizeParts = strings.Split(fieldSszSizeStr, ",")
+		sszSizeLen = len(sszSizeParts)
+	}
+
+	if fieldSszBitsizeStr, fieldHasSszBitsize := structTag.Lookup("ssz-bitsize"); fieldHasSszBitsize {
+		sszBitsizeParts = strings.Split(fieldSszBitsizeStr, ",")
+		if len(sszBitsizeParts) > sszSizeLen {
+			sszSizeLen = len(sszBitsizeParts)
+		}
+	}
+
+	if sszSizeLen > 0 {
+		for i := 0; i < sszSizeLen; i++ {
+			sszSizeStr := getTagPart(sszSizeParts, i)
+			sszBitsizeStr := getTagPart(sszBitsizeParts, i)
+
 			hint := dynssz.SszSizeHint{}
 
-			if sizeStr == "?" {
-				hint.Dynamic = true
-			} else {
-				sizeInt, err := strconv.ParseUint(sizeStr, 10, 32)
+			if sszBitsizeStr != "?" {
+				sizeInt, err := strconv.ParseUint(strings.TrimSpace(sszBitsizeStr), 10, 32)
 				if err != nil {
 					return nil, nil, nil, fmt.Errorf("error parsing ssz-size tag: %v", err)
 				}
 				hint.Size = uint32(sizeInt)
+				hint.Bits = true
+			} else if sszSizeStr != "?" {
+				sizeInt, err := strconv.ParseUint(strings.TrimSpace(sszSizeStr), 10, 32)
+				if err != nil {
+					return nil, nil, nil, fmt.Errorf("error parsing ssz-size tag: %v", err)
+				}
+				hint.Size = uint32(sizeInt)
+			} else {
+				hint.Dynamic = true
 			}
 
 			sizeHints = append(sizeHints, hint)
@@ -949,15 +1013,40 @@ func (p *Parser) parseFieldTags(tag string) (typeHints []dynssz.SszTypeHint, siz
 	}
 
 	// Parse dynamic size hints
-	fieldDynSszSizeStr, fieldHasDynSszSize := structTag.Lookup("dynssz-size")
-	if fieldHasDynSszSize {
-		for i, sszSizeStr := range strings.Split(fieldDynSszSizeStr, ",") {
+	sszSizeParts, sszBitsizeParts = nil, nil
+	sszSizeLen = 0
+
+	if fieldDynSszSizeStr, fieldHasDynSszSize := structTag.Lookup("dynssz-size"); fieldHasDynSszSize {
+		sszSizeParts = strings.Split(fieldDynSszSizeStr, ",")
+		sszSizeLen = len(sszSizeParts)
+	}
+
+	if fieldDynSszBitsizeStr, fieldHasDynSszBitsize := structTag.Lookup("dynssz-bitsize"); fieldHasDynSszBitsize {
+		sszBitsizeParts = strings.Split(fieldDynSszBitsizeStr, ",")
+		if len(sszBitsizeParts) > sszSizeLen {
+			sszSizeLen = len(sszBitsizeParts)
+		}
+	}
+
+	if sszSizeLen > 0 {
+		for i := 0; i < sszSizeLen; i++ {
+			sszSizeStr := getTagPart(sszSizeParts, i)
+			sszBitsizeStr := getTagPart(sszBitsizeParts, i)
+
 			sszSize := dynssz.SszSizeHint{}
 			isExpr := false
+			sizeExpr := "?"
 
-			if sszSizeStr == "?" {
+			if sszBitsizeStr != "?" {
+				sizeExpr = sszBitsizeStr
+				sszSize.Bits = true
+			} else if sszSizeStr != "?" {
+				sizeExpr = sszSizeStr
+			}
+
+			if sizeExpr == "?" {
 				sszSize.Dynamic = true
-			} else if sszSizeInt, err := strconv.ParseUint(sszSizeStr, 10, 32); err == nil {
+			} else if sszSizeInt, err := strconv.ParseUint(sizeExpr, 10, 32); err == nil {
 				sszSize.Size = uint32(sszSizeInt)
 			} else {
 				// For go/types parser, we can't resolve spec values at compile time
@@ -966,7 +1055,7 @@ func (p *Parser) parseFieldTags(tag string) (typeHints []dynssz.SszTypeHint, siz
 				sszSize.Dynamic = true
 				sszSize.Custom = true
 				if i < len(sizeHints) {
-					sizeHints[i].Expr = sszSizeStr
+					sizeHints[i].Expr = sizeExpr
 					continue
 				}
 			}
@@ -979,7 +1068,7 @@ func (p *Parser) parseFieldTags(tag string) (typeHints []dynssz.SszTypeHint, siz
 			}
 
 			if isExpr {
-				sizeHints[i].Expr = sszSizeStr
+				sizeHints[i].Expr = sizeExpr
 			}
 		}
 	}
@@ -1181,4 +1270,11 @@ func (p *Parser) typeMatches(typ types.Type, expectedTypeStr string) bool {
 		return true
 	}
 	return false
+}
+
+func getTagPart(parts []string, index int) string {
+	if index < len(parts) {
+		return parts[index]
+	}
+	return "?"
 }

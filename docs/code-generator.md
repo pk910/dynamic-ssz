@@ -376,8 +376,10 @@ All SSZ annotations are supported:
 - `ssz-size`
 - `ssz-max`
 - `ssz-type`
+- `ssz-bitsize` (bit-level sizing for bitvectors)
 - `dynssz-size`
 - `dynssz-max`
+- `dynssz-bitsize` (dynamic bit-level sizing for bitvectors)
 - `ssz-index`
 
 ## Performance Benefits

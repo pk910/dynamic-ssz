@@ -232,6 +232,22 @@ var treerootTestMatrix = []struct {
 		fromHex("0x0100000000000000020000000000000003000000000000000000000000000000"),
 	},
 
+	// bitvector type annotation
+	{
+		"type_bitvector_1",
+		struct {
+			Flags [4]byte `ssz-type:"bitvector" ssz-size:"4"`
+		}{[4]byte{0xff, 0x0f, 0x00, 0xf0}},
+		fromHex("0xff0f00f000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"type_bitvector_2",
+		struct {
+			Flags [3]byte `ssz-type:"bitvector" ssz-bitsize:"12"`
+		}{[3]byte{0xff, 0x0f, 0x00}},
+		fromHex("0xff0f000000000000000000000000000000000000000000000000000000000000"),
+	},
+
 	// container type annotation
 	{
 		"type_container_1",
@@ -664,6 +680,13 @@ func TestHashTreeRootErrors(t *testing.T) {
 				Inner complex64
 			}{{complex64(1)}, {complex64(2)}, {complex64(3)}}},
 			expectedErr: "complex numbers are not supported in SSZ",
+		},
+		{
+			name: "invalid_bitvector_padding",
+			input: struct {
+				Flags []byte `ssz-type:"bitvector" ssz-bitsize:"12"`
+			}{[]byte{0xff, 0x1f}},
+			expectedErr: "incorrect vector length",
 		},
 		{
 			name: "list_element_hash_error",
