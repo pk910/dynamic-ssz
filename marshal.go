@@ -108,12 +108,17 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 			if err != nil {
 				return nil, err
 			}
-		case SszListType, SszBitlistType, SszProgressiveListType, SszProgressiveBitlistType:
+		case SszListType, SszProgressiveListType:
 			if sourceType.ElemDesc.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
 				buf, err = d.marshalDynamicList(sourceType, sourceValue, buf, idt)
 			} else {
 				buf, err = d.marshalList(sourceType, sourceValue, buf, idt)
 			}
+			if err != nil {
+				return nil, err
+			}
+		case SszBitlistType, SszProgressiveBitlistType:
+			buf, err = d.marshalBitlist(sourceType, sourceValue, buf)
 			if err != nil {
 				return nil, err
 			}
@@ -505,6 +510,44 @@ func (d *DynSsz) marshalDynamicList(sourceType *TypeDescriptor, sourceValue refl
 		offset += newBufLen - bufLen
 		bufLen = newBufLen
 	}
+
+	return buf, nil
+}
+
+// marshalBitlist encodes bitlist values into SSZ-encoded data.
+//
+// This function handles bitlist encoding. The encoding follows SSZ specifications
+// where bitlists are encoded as their bits in sequence without a length prefix.
+//
+// Parameters:
+//   - sourceType: The TypeDescriptor containing bitlist metadata
+//   - sourceValue: The reflect.Value of the bitlist to encode
+//   - buf: The buffer to append encoded data to
+//
+// Returns:
+//   - []byte: The updated buffer with the encoded bitlist
+//   - error: An error if encoding fails or bitlist exceeds size constraints
+
+func (d *DynSsz) marshalBitlist(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte) ([]byte, error) {
+	var bytes []byte
+	if sourceType.GoTypeFlags&GoTypeFlagIsString != 0 {
+		bytes = []byte(sourceValue.String())
+	} else if sourceType.GoTypeFlags&GoTypeFlagIsByteArray != 0 {
+		bytes = sourceValue.Bytes()
+	} else {
+		return nil, fmt.Errorf("bitlist type can only be represented by byte slices or arrays, got %v", sourceType.Kind)
+	}
+
+	// check if last byte contains termination bit
+	if len(bytes) == 0 {
+		// empty bitlist, simply append termination bit (0x01)
+		// this is a fallback for uninitialized bitlists
+		bytes = []byte{0x01}
+	} else if bytes[len(bytes)-1] == 0x00 {
+		return nil, sszutils.ErrBitlistNotTerminated
+	}
+
+	buf = append(buf, bytes...)
 
 	return buf, nil
 }

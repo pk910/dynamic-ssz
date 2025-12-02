@@ -624,7 +624,7 @@ func (d *DynSsz) buildRootFromList(sourceType *TypeDescriptor, sourceValue refle
 		}
 		inputLen := hh.Index() - hashIndex
 		if (uint64(inputLen)+31)/32 > limit {
-			return fmt.Errorf("list too big: %d > %d", (uint64(inputLen)+31)/32, limit)
+			return sszutils.ErrListTooBig
 		}
 		hh.MerkleizeWithMixin(hashIndex, uint64(sliceLen), limit)
 	} else {
@@ -711,7 +711,7 @@ func (d *DynSsz) buildRootFromBitlist(sourceType *TypeDescriptor, sourceValue re
 	})
 
 	if size > maxSize {
-		return fmt.Errorf("bitlist too big: %d > %d", size, maxSize)
+		return sszutils.ErrListTooBig
 	}
 
 	// merkleize the content with mix in length

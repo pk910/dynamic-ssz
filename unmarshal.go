@@ -114,12 +114,17 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 			if err != nil {
 				return 0, err
 			}
-		case SszListType, SszBitlistType, SszProgressiveListType, SszProgressiveBitlistType:
+		case SszListType, SszProgressiveListType:
 			if targetType.ElemDesc.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
 				consumedBytes, err = d.unmarshalDynamicList(targetType, targetValue, ssz, idt)
 			} else {
 				consumedBytes, err = d.unmarshalList(targetType, targetValue, ssz, idt)
 			}
+			if err != nil {
+				return 0, err
+			}
+		case SszBitlistType, SszProgressiveBitlistType:
+			consumedBytes, err = d.unmarshalBitlist(targetType, targetValue, ssz)
 			if err != nil {
 				return 0, err
 			}
@@ -722,6 +727,66 @@ func (d *DynSsz) unmarshalDynamicList(targetType *TypeDescriptor, targetValue re
 	targetValue.Set(newValue)
 
 	return offset, nil
+}
+
+// unmarshalBitlist decodes bitlist values from SSZ-encoded data.
+//
+// This function handles bitlist decoding. The decoding follows SSZ specifications
+// where bitlists are encoded as their bits in sequence without a length prefix, but with a termination bit.
+// The termination bit is a single `1` bit appended immediately after the final data bit, then padded to a full byte.
+// The position of this termination bit defines the logical length of the bitlist. Bitlists without a termination bit are not allowed.
+//
+// Parameters:
+//   - targetType: The TypeDescriptor containing bitlist metadata
+//   - targetValue: The reflect.Value of the bitlist to populate
+//   - ssz: The SSZ-encoded data to decode
+//
+// Returns:
+//   - int: Total bytes consumed from the SSZ data
+//   - error: An error if decoding fails or bitlist is invalid
+
+func (d *DynSsz) unmarshalBitlist(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte) (int, error) {
+	var consumedBytes int
+
+	fieldType := targetType.ElemDesc
+	sszLen := len(ssz)
+
+	if sszLen == 0 || ssz[sszLen-1] == 0x00 {
+		return 0, sszutils.ErrBitlistNotTerminated
+	}
+
+	fieldT := targetType.Type
+	if targetType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
+		fieldT = fieldT.Elem()
+	}
+
+	var newValue reflect.Value
+	if targetType.Kind == reflect.Slice {
+		// Optimization: avoid reflect.MakeSlice for common byte slice types
+		if targetType.GoTypeFlags&GoTypeFlagIsByteArray != 0 && fieldType.Type.Kind() == reflect.Uint8 {
+			byteSlice := make([]byte, sszLen)
+			newValue = reflect.ValueOf(byteSlice)
+		} else {
+			newValue = reflect.MakeSlice(fieldT, sszLen, sszLen)
+		}
+	} else {
+		newValue = reflect.New(fieldT).Elem()
+	}
+
+	if targetType.GoTypeFlags&GoTypeFlagIsString != 0 {
+		newValue.SetString(string(ssz))
+		consumedBytes = len(ssz)
+	} else if targetType.GoTypeFlags&GoTypeFlagIsByteArray != 0 {
+		// shortcut for performance: use copy on []byte arrays
+		copy(newValue.Bytes(), ssz)
+		consumedBytes = sszLen
+	} else {
+		return 0, fmt.Errorf("bitlist type can only be represented by byte slices or arrays, got %v", targetType.Kind)
+	}
+
+	targetValue.Set(newValue)
+
+	return consumedBytes, nil
 }
 
 // unmarshalCompatibleUnion decodes SSZ-encoded data into a CompatibleUnion.

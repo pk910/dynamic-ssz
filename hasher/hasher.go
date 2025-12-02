@@ -293,6 +293,22 @@ func (h *Hasher) PutUint64Array(b []uint64, maxCapacity ...uint64) {
 	}
 }
 
+// ParseBitlist decodes an SSZ-encoded bitlist into its raw bit representation.
+//
+// SSZ bitlists include a mandatory termination bit: a single `1` bit appended
+// immediately after the final data bit, then padded to a full byte. The position
+// of this termination bit defines the logical length of the bitlist.
+//
+// This function performs the inverse transformation:
+//  1. Identify the termination bit in the final byte and compute the logical
+//     bitlist length (`size`).
+//  2. Clear the termination bit, leaving only the actual data bits.
+//  3. Trim any trailing zero bytes introduced by SSZ padding.
+//  4. Return the compact raw bitlist (no termination bit, no padding) together
+//     with its logical size.
+//
+// The returned `[]byte` contains the data bits packed little-endian in each byte,
+// and `size` is the exact number of meaningful bits in that raw bitlist.
 func ParseBitlist(dst, buf []byte) ([]byte, uint64) {
 	msb := uint8(bits.Len8(buf[len(buf)-1])) - 1
 	size := uint64(8*(len(buf)-1) + int(msb))

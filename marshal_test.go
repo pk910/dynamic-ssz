@@ -590,6 +590,13 @@ func TestMarshalErrors(t *testing.T) {
 			expectedErr: "bitlist ssz type can only be represented by byte slices or arrays, got uint64",
 		},
 		{
+			name: "unterminated_bitlist",
+			input: struct {
+				Bits []byte `ssz-type:"bitlist"`
+			}{[]byte{0x00}},
+			expectedErr: "bitlist misses mandatory termination bit",
+		},
+		{
 			name: "string_too_long_fixed",
 			input: struct {
 				Data string `ssz-size:"5"`
