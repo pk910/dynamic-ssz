@@ -376,12 +376,22 @@ func (d *DynSsz) unmarshalVector(targetType *TypeDescriptor, targetValue reflect
 		newValue = reflect.New(targetType.Type).Elem()
 	}
 
-	if targetType.GoTypeFlags&GoTypeFlagIsString != 0 {
-		newValue.SetString(string(ssz[0:arrLen]))
-		consumedBytes = arrLen
-	} else if targetType.GoTypeFlags&GoTypeFlagIsByteArray != 0 {
+	if targetType.GoTypeFlags&GoTypeFlagIsByteArray != 0 {
 		// shortcut for performance: use copy on []byte arrays
-		copy(newValue.Bytes(), ssz[0:arrLen])
+		if targetType.BitSize > 0 && targetType.BitSize < uint32(len(ssz))*8 {
+			// check padding bits
+			paddingMask := uint8((uint16(0xff) << (targetType.BitSize % 8)) & 0xff)
+			paddingBits := ssz[arrLen-1] & paddingMask
+			if paddingBits != 0 {
+				return 0, fmt.Errorf("bitvector padding bits are not zero")
+			}
+		}
+
+		if targetType.GoTypeFlags&GoTypeFlagIsString != 0 {
+			newValue.SetString(string(ssz[0:arrLen]))
+		} else {
+			copy(newValue.Bytes(), ssz[0:arrLen])
+		}
 		consumedBytes = arrLen
 	} else {
 		offset := 0

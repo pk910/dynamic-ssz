@@ -60,6 +60,12 @@ func TestStrictTypeAnnotations(t *testing.T) {
 			}{[][]uint8{{1, 2}, {3, 4}}},
 		},
 		{
+			name: "bitvector type annotation",
+			value: struct {
+				Flags [3]byte `ssz-type:"bitvector" ssz-bitsize:"12"`
+			}{[3]byte{0xff, 0x0f, 0x00}},
+		},
+		{
 			name: "invalid ssz-type",
 			value: struct {
 				Value uint32 `ssz-type:"invalid"`

@@ -157,6 +157,12 @@ var unmarshalTestMatrix = []struct {
 		}{[4]byte{0xff, 0x0f, 0x00, 0xf0}},
 		fromHex("0xff0f00f0"),
 	},
+	{
+		struct {
+			Flags [4]byte `ssz-type:"bitvector" ssz-bitsize:"12"`
+		}{[4]byte{0xff, 0x0f}},
+		fromHex("0xff0f"),
+	},
 
 	// explicit basic type annotations
 	{
@@ -570,6 +576,14 @@ func TestUnmarshalErrors(t *testing.T) {
 			}),
 			data:        fromHex("0x010203"),
 			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name: "bitvector_padding_mismatch",
+			target: new(struct {
+				Flags [4]byte `ssz-type:"bitvector" ssz-bitsize:"12"`
+			}),
+			data:        fromHex("0xff1f"),
+			expectedErr: "bitvector padding bits are not zero",
 		},
 		{
 			name: "vector_item_size_mismatch",

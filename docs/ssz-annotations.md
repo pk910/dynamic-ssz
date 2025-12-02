@@ -9,8 +9,10 @@ Dynamic SSZ uses struct tags to control serialization behavior. This guide provi
 | `ssz-size` | Fixed size for bytes/strings | `ssz-size:"32"` |
 | `ssz-max` | Maximum size for dynamic types | `ssz-max:"1024"` |
 | `ssz-type` | Explicit type specification | `ssz-type:"uint256"` |
+| `ssz-bitsize` | Fixed bit size for bitvectors | `ssz-bitsize:"12"` |
 | `dynssz-size` | Dynamic size with expressions | `dynssz-size:"EPOCH_LENGTH*32"` |
 | `dynssz-max` | Dynamic maximum with expressions | `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"` |
+| `dynssz-bitsize` | Dynamic bit size for bitvectors | `dynssz-bitsize:"COMMITTEE_SIZE"` |
 | `ssz-index` | Field index for progressive containers | `ssz-index:"0"` |
 
 ## Size Annotations
@@ -98,6 +100,64 @@ type Dynamic struct {
 }
 ```
 
+## Bit Size Annotations (Bitvectors)
+
+The `ssz-bitsize` and `dynssz-bitsize` annotations specify the size in **bits** rather than bytes. These are specifically designed for bitvectors where the exact bit count matters.
+
+**Why use bitsize?** When a bitvector's bit count is not a multiple of 8, the remaining bits in the last byte are padding bits. According to the SSZ specification, these padding bits must be zero. Using bitsize annotations enables validation of these padding bits during unmarshaling.
+
+### ssz-bitsize
+
+Specifies the exact bit size for bitvector types.
+
+**Syntax**: `ssz-bitsize:"<number>"`
+
+**Applies to**:
+- Bitvectors (byte arrays with `ssz-type:"bitvector"`)
+
+**Examples**:
+```go
+type Attestation struct {
+    // 12-bit bitvector: uses 2 bytes, but only 12 bits are valid
+    // Padding bits (bits 12-15) are validated to be zero
+    CommitteeBits [2]byte `ssz-type:"bitvector" ssz-bitsize:"12"`
+
+    // 64-bit bitvector: exact byte alignment, no padding validation needed
+    Flags [8]byte `ssz-type:"bitvector" ssz-bitsize:"64"`
+}
+```
+
+**Padding validation**: When `ssz-bitsize` is specified and the bit count is not a multiple of 8, unmarshaling will verify that the unused bits in the last byte are zero. This ensures strict SSZ specification compliance.
+
+### dynssz-bitsize
+
+Dynamic bit size specification using runtime expressions.
+
+**Syntax**: `dynssz-bitsize:"<expression>"`
+
+**Applies to**: Same as `ssz-bitsize`
+
+**Examples**:
+```go
+type DynamicAttestation struct {
+    // Bit size based on spec value
+    CommitteeBits []byte `ssz-type:"bitvector" ssz-bitsize:"12" dynssz-bitsize:"COMMITTEE_SIZE"`
+
+    // Expression-based bit size
+    SyncBits []byte `ssz-type:"bitvector" ssz-bitsize:"512" dynssz-bitsize:"SYNC_COMMITTEE_SIZE"`
+}
+```
+
+**Combining with ssz-size**: You can use `ssz-bitsize` alongside `ssz-size` when you need both byte-level sizing for fastssz compatibility and bit-level validation:
+
+```go
+type ValidatorFlags struct {
+    // ssz-size provides byte count for serialization
+    // ssz-bitsize enables padding bit validation
+    Flags []byte `ssz-type:"bitvector" ssz-size:"2" ssz-bitsize:"12"`
+}
+```
+
 ## Maximum Size Annotations
 
 ### ssz-max
@@ -110,15 +170,20 @@ Specifies maximum size for dynamic arrays. Highly recommended for hash tree root
 - Slices (except byte slices with `ssz-size`)
 - Bitlists (boolean slices)
 
+**Note on bitlists**: For bitlist types, `ssz-max` specifies the maximum number of **bits**, not bytes. This is consistent with the SSZ specification where bitlist limits are defined in bits.
+
 **Examples**:
 ```go
 type Container struct {
     // Maximum 1024 validators
     Validators []Validator `ssz-max:"1024"`
-    
-    // Maximum 2048 bits
+
+    // Maximum 2048 bits (not bytes!)
     Participation []bool `ssz-max:"2048"`
-    
+
+    // Bitlist with go-bitfield: max 2048 bits
+    AggregationBits bitfield.Bitlist `ssz-max:"2048"`
+
     // Multi-dimensional arrays
     Matrix [][]uint32 `ssz-max:"100,256"`
 }
@@ -229,7 +294,7 @@ type BeaconState struct {
 
 ## Expression Language
 
-Dynamic annotations (`dynssz-size`, `dynssz-max`) support expressions with spec values.
+Dynamic annotations (`dynssz-size`, `dynssz-max`, `dynssz-bitsize`) support expressions with spec values.
 
 ### Syntax
 
@@ -283,12 +348,18 @@ ssz := dynssz.NewDynSsz(specs)
 type Valid struct {
     // Size + type for byte arrays
     Hash []byte `ssz-size:"32" ssz-type:"vector"`
-    
+
     // Max + type for lists
     Items []uint64 `ssz-max:"1024" ssz-type:"list"`
-    
+
     // Progressive type with dynamic max
     Validators []Validator `ssz-type:"progressive-list" dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
+
+    // Bitvector with bitsize for padding validation
+    Bits [2]byte `ssz-type:"bitvector" ssz-bitsize:"12"`
+
+    // Dynamic bitvector with both static and dynamic bitsize
+    DynBits []byte `ssz-type:"bitvector" ssz-bitsize:"512" dynssz-bitsize:"COMMITTEE_SIZE"`
 }
 ```
 
@@ -329,12 +400,18 @@ type EthereumTypes struct {
 
 ```go
 type Bitfields struct {
-    // Fixed-size bitvector
-    Flags [256]byte
-    
+    // Fixed-size bitvector (byte-aligned, no padding validation needed)
+    Flags [32]byte `ssz-type:"bitvector"`
+
+    // Bitvector with bit-level size (enables padding bit validation)
+    CommitteeBits [2]byte `ssz-type:"bitvector" ssz-bitsize:"12"`
+
+    // Dynamic bitvector with spec-based bit size
+    SyncBits []byte `ssz-type:"bitvector" ssz-bitsize:"512" dynssz-bitsize:"SYNC_COMMITTEE_SIZE"`
+
     // Variable-size bitlist
     Votes []byte `ssz-max:"2048"`
-    
+
     // Using go-bitfield
     Attestation bitfield.Bitlist `ssz-max:"2048"`
 }

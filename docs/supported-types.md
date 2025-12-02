@@ -122,10 +122,29 @@ type Permissions struct {
 }
 ```
 
+#### Bitvector with bit-level sizing
+When a bitvector's bit count is not a multiple of 8, the remaining bits in the last byte are padding bits. Use `ssz-bitsize` to specify the exact bit count and enable padding validation:
+
+```go
+type CommitteeFlags struct {
+    // 12-bit bitvector stored in 2 bytes
+    // Bits 12-15 (padding) are validated to be zero during unmarshaling
+    Bits [2]byte `ssz-type:"bitvector" ssz-bitsize:"12"`
+
+    // Dynamic bit size based on spec value
+    DynBits []byte `ssz-type:"bitvector" ssz-bitsize:"512" dynssz-bitsize:"SYNC_COMMITTEE_SIZE"`
+}
+```
+
+**Padding bit validation**: According to the SSZ specification, unused bits in the last byte of a bitvector must be zero. When `ssz-bitsize` or `dynssz-bitsize` is specified, Dynamic SSZ validates these padding bits during unmarshaling and returns an error if any are non-zero.
+
 #### Bitlist (variable-size boolean array)
+
+**Note**: For bitlists, `ssz-max` specifies the maximum number of **bits**, not bytes. This is consistent with the SSZ specification.
+
 ```go
 type Votes struct {
-    Participants []bool `ssz-max:"2048"`  // Variable-size bitlist
+    Participants []bool `ssz-max:"2048"`  // Maximum 2048 bits
 }
 ```
 
@@ -134,7 +153,7 @@ type Votes struct {
 import bitfield "github.com/prysmaticlabs/go-bitfield"
 
 type Attestation struct {
-    AggregationBits bitfield.Bitlist `ssz-max:"2048"`
+    AggregationBits bitfield.Bitlist `ssz-max:"2048"`  // Maximum 2048 bits
 }
 ```
 

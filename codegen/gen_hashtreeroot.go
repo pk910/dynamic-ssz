@@ -410,11 +410,25 @@ func (ctx *hashTreeRootContext) hashVector(desc *dynssz.TypeDescriptor, varName 
 	}
 
 	limitVar := ""
+	bitlimitVar := ""
 	if sizeExpression != nil {
 		ctx.usedDynSpecs = true
-		ctx.appendCode(indent, "hasLimit, limit, err := ds.ResolveSpecValue(\"%s\")\n", *sizeExpression)
-		ctx.appendCode(indent, "if err != nil {\n\treturn err\n}\n")
-		ctx.appendCode(indent, "if !hasLimit {\n\tlimit = %d\n}\n", desc.Len)
+		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
+			ctx.appendCode(indent, "hasLimit, bitlimit, err := ds.ResolveSpecValue(\"%s\")\n", *sizeExpression)
+			ctx.appendCode(indent, "if err != nil {\n\treturn err\n}\n")
+			if desc.BitSize > 0 {
+				ctx.appendCode(indent, "if !hasLimit {\n\tbitlimit = %d\n}\n", desc.BitSize)
+			} else {
+				ctx.appendCode(indent, "if !hasLimit {\n\tbitlimit = %d\n}\n", desc.Len*8)
+			}
+			ctx.appendCode(indent, "limit := (bitlimit+7)/8\n")
+			bitlimitVar = "int(bitlimit)"
+		} else {
+			ctx.appendCode(indent, "hasLimit, limit, err := ds.ResolveSpecValue(\"%s\")\n", *sizeExpression)
+			ctx.appendCode(indent, "if err != nil {\n\treturn err\n}\n")
+			ctx.appendCode(indent, "if !hasLimit {\n\tlimit = %d\n}\n", desc.Len)
+		}
+
 		limitVar = "int(limit)"
 
 		if desc.Kind == reflect.Array {
@@ -424,6 +438,9 @@ func (ctx *hashTreeRootContext) hashVector(desc *dynssz.TypeDescriptor, varName 
 			ctx.appendCode(indent, "}\n")
 		}
 	} else {
+		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 && desc.BitSize > 0 && desc.BitSize%8 != 0 {
+			bitlimitVar = fmt.Sprintf("%d", desc.BitSize)
+		}
 		limitVar = fmt.Sprintf("%d", desc.Len)
 	}
 
@@ -457,6 +474,14 @@ func (ctx *hashTreeRootContext) hashVector(desc *dynssz.TypeDescriptor, varName 
 			ctx.appendCode(indent, "}\n")
 		} else {
 			valVar = varName
+		}
+
+		if bitlimitVar != "" {
+			// check padding bits
+			ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
+			ctx.appendCode(indent, "if %s[%s-1] & paddingMask != 0 {\n", valVar, limitVar)
+			ctx.appendCode(indent, "\treturn sszutils.ErrVectorLength\n")
+			ctx.appendCode(indent, "}\n")
 		}
 
 		if pack {
