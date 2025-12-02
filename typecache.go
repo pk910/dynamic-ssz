@@ -402,7 +402,7 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		}
 	case SszUint256Type:
 		if len(sizeHints) > 0 && sizeHints[0].Bits {
-			return nil, fmt.Errorf("uint256 ssz type cannot be limited by bits, remove size tag instead")
+			return nil, fmt.Errorf("uint256 ssz type cannot be limited by bits, use regular size tag instead")
 		}
 		err := tc.buildUint256Descriptor(desc, t) // handle as [32]uint8 or [4]uint64
 		if err != nil {
@@ -442,6 +442,10 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 			desc.Size = 0
 			desc.SszTypeFlags |= SszTypeFlagIsDynamic
 		}
+	}
+
+	if desc.SszTypeFlags&SszTypeFlagHasBitSize != 0 && desc.SszType != SszBitvectorType {
+		return nil, fmt.Errorf("bit size tag is only allowed for bitvector types, got %v", desc.SszType)
 	}
 
 	if desc.SszTypeFlags&SszTypeFlagHasDynamicSize == 0 && tc.dynssz.getFastsszConvertCompatibility(t) {

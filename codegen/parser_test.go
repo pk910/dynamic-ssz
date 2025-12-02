@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"go/token"
 	"go/types"
+	"strings"
 	"testing"
 
 	ssz "github.com/pk910/dynamic-ssz"
@@ -28,7 +29,7 @@ func TestNewParser(t *testing.T) {
 
 func TestGetCompatFlag(t *testing.T) {
 	parser := NewParser()
-	
+
 	t.Run("EmptyFlags", func(t *testing.T) {
 		uint64Type := types.Typ[types.Uint64]
 		flag := parser.getCompatFlag(uint64Type)
@@ -36,7 +37,7 @@ func TestGetCompatFlag(t *testing.T) {
 			t.Errorf("Expected 0 flag, got %v", flag)
 		}
 	})
-	
+
 	t.Run("SetFlag", func(t *testing.T) {
 		uint64Type := types.Typ[types.Uint64]
 		parser.CompatFlags["uint64"] = ssz.SszCompatFlagFastSSZMarshaler
@@ -184,23 +185,115 @@ func TestUnsupportedTypes(t *testing.T) {
 func TestSizeHints(t *testing.T) {
 	parser := NewParser()
 
-	t.Run("BasicTypeSizeValidation", func(t *testing.T) {
-		// Test size validation for basic types
-		boolType := types.Typ[types.Bool]
-		sizeHint := []ssz.SszSizeHint{{Size: 2}} // Wrong size for bool
-		_, err := parser.buildTypeDescriptor(boolType, nil, sizeHint, nil)
-		if err == nil {
-			t.Error("Expected error for wrong bool size")
-		}
+	tests := []struct {
+		name      string
+		typ       types.Type
+		typeHints []ssz.SszTypeHint
+		sizeHints []ssz.SszSizeHint
+		expected  string
+	}{
+		// Bool tests
+		{
+			name:      "bool with wrong size",
+			typ:       types.Typ[types.Bool],
+			sizeHints: []ssz.SszSizeHint{{Size: 2}},
+			expected:  "bool ssz type must be ssz-size:1",
+		},
+		{
+			name:      "bool with bit size",
+			typ:       types.Typ[types.Bool],
+			sizeHints: []ssz.SszSizeHint{{Bits: true}},
+			expected:  "bool ssz type cannot be limited by bits",
+		},
+		// Uint8 tests
+		{
+			name:      "uint8 with wrong size",
+			typ:       types.Typ[types.Uint8],
+			sizeHints: []ssz.SszSizeHint{{Size: 2}},
+			expected:  "uint8 ssz type must be ssz-size:1",
+		},
+		{
+			name:      "uint8 with bit size",
+			typ:       types.Typ[types.Uint8],
+			sizeHints: []ssz.SszSizeHint{{Bits: true}},
+			expected:  "uint8 ssz type cannot be limited by bits",
+		},
+		// Uint16 tests
+		{
+			name:      "uint16 with wrong size",
+			typ:       types.Typ[types.Uint16],
+			sizeHints: []ssz.SszSizeHint{{Size: 4}},
+			expected:  "uint16 ssz type must be ssz-size:2",
+		},
+		{
+			name:      "uint16 with bit size",
+			typ:       types.Typ[types.Uint16],
+			sizeHints: []ssz.SszSizeHint{{Bits: true}},
+			expected:  "uint16 ssz type cannot be limited by bits",
+		},
+		// Uint32 tests
+		{
+			name:      "uint32 with wrong size",
+			typ:       types.Typ[types.Uint32],
+			sizeHints: []ssz.SszSizeHint{{Size: 8}},
+			expected:  "uint32 ssz type must be ssz-size:4",
+		},
+		{
+			name:      "uint32 with bit size",
+			typ:       types.Typ[types.Uint32],
+			sizeHints: []ssz.SszSizeHint{{Bits: true}},
+			expected:  "uint32 ssz type cannot be limited by bits",
+		},
+		// Uint64 tests
+		{
+			name:      "uint64 with wrong size",
+			typ:       types.Typ[types.Uint64],
+			sizeHints: []ssz.SszSizeHint{{Size: 4}},
+			expected:  "uint64 ssz type must be ssz-size:8",
+		},
+		{
+			name:      "uint64 with bit size",
+			typ:       types.Typ[types.Uint64],
+			sizeHints: []ssz.SszSizeHint{{Bits: true}},
+			expected:  "uint64 ssz type cannot be limited by bits",
+		},
+		// Uint128 tests
+		{
+			name:      "uint128 with bit size",
+			typ:       types.NewArray(types.Typ[types.Uint8], 16),
+			typeHints: []ssz.SszTypeHint{{Type: ssz.SszUint128Type}},
+			sizeHints: []ssz.SszSizeHint{{Bits: true}},
+			expected:  "uint128 ssz type cannot be limited by bits",
+		},
+		// Uint256 tests
+		{
+			name:      "uint256 with bit size",
+			typ:       types.NewArray(types.Typ[types.Uint8], 32),
+			typeHints: []ssz.SszTypeHint{{Type: ssz.SszUint256Type}},
+			sizeHints: []ssz.SszSizeHint{{Bits: true}},
+			expected:  "uint256 ssz type cannot be limited by bits",
+		},
+		// Non-bitvector type with bit size
+		{
+			name:      "other non bitvector type with bit size",
+			typ:       types.NewArray(types.Typ[types.Uint8], 16),
+			sizeHints: []ssz.SszSizeHint{{Bits: true}},
+			expected:  "bit size tag is only allowed for bitvector types",
+		},
+	}
 
-		uint16Type := types.Typ[types.Uint16]
-		sizeHint = []ssz.SszSizeHint{{Size: 4}} // Wrong size for uint16
-		_, err = parser.buildTypeDescriptor(uint16Type, nil, sizeHint, nil)
-		if err == nil {
-			t.Error("Expected error for wrong uint16 size")
-		}
-	})
-
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parser.buildTypeDescriptor(tt.typ, tt.typeHints, tt.sizeHints, nil)
+			if err == nil {
+				t.Errorf("Expected error for %s", tt.name)
+				return
+			}
+			if !strings.Contains(err.Error(), tt.expected) {
+				t.Errorf("Expected error containing '%s', got: %s", tt.expected, err.Error())
+			}
+		})
+	}
 }
 
 func TestMaxSizeHints(t *testing.T) {
@@ -279,6 +372,62 @@ func TestTypeHints(t *testing.T) {
 			t.Error("Expected error for incompatible type hint")
 		}
 	})
+
+	tests := []struct {
+		name      string
+		typ       types.Type
+		typeHints []ssz.SszTypeHint
+		expected  string
+	}{
+		// Bool tests
+		{
+			name:      "bool with wrong type",
+			typ:       types.Typ[types.Uint8],
+			typeHints: []ssz.SszTypeHint{{Type: ssz.SszBoolType}},
+			expected:  "bool ssz type can only be represented by bool types",
+		},
+		// Uint8 tests
+		{
+			name:      "uint8 with wrong type",
+			typ:       types.Typ[types.Bool],
+			typeHints: []ssz.SszTypeHint{{Type: ssz.SszUint8Type}},
+			expected:  "uint8 ssz type can only be represented by uint8 types",
+		},
+		// Uint16 tests
+		{
+			name:      "uint16 with wrong type",
+			typ:       types.Typ[types.Uint8],
+			typeHints: []ssz.SszTypeHint{{Type: ssz.SszUint16Type}},
+			expected:  "uint16 ssz type can only be represented by uint16 types",
+		},
+		// Uint32 tests
+		{
+			name:      "uint32 with wrong type",
+			typ:       types.Typ[types.Uint8],
+			typeHints: []ssz.SszTypeHint{{Type: ssz.SszUint32Type}},
+			expected:  "uint32 ssz type can only be represented by uint32 types",
+		},
+		// Uint64 tests
+		{
+			name:      "uint64 with wrong type",
+			typ:       types.Typ[types.Uint8],
+			typeHints: []ssz.SszTypeHint{{Type: ssz.SszUint64Type}},
+			expected:  "uint64 ssz type can only be represented by uint64 or time.Time types",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parser.buildTypeDescriptor(tt.typ, tt.typeHints, nil, nil)
+			if err == nil {
+				t.Errorf("Expected error for %s", tt.name)
+				return
+			}
+			if !strings.Contains(err.Error(), tt.expected) {
+				t.Errorf("Expected error containing '%s', got: %s", tt.expected, err.Error())
+			}
+		})
+	}
 }
 
 func TestPointerTypes(t *testing.T) {
@@ -308,7 +457,7 @@ func TestNamedTypes(t *testing.T) {
 		pkg := types.NewPackage("test", "test")
 		obj := types.NewTypeName(token.NoPos, pkg, "MyInt", nil)
 		namedType := types.NewNamed(obj, types.Typ[types.Uint64], nil)
-		
+
 		desc, err := parser.buildTypeDescriptor(namedType, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("Failed to build named type descriptor: %v", err)
@@ -323,7 +472,7 @@ func TestNamedTypes(t *testing.T) {
 		pkg := types.NewPackage("test", "test")
 		obj := types.NewTypeName(token.NoPos, pkg, "MyIntAlias", nil)
 		aliasType := types.NewAlias(obj, types.Typ[types.Uint32])
-		
+
 		desc, err := parser.buildTypeDescriptor(aliasType, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("Failed to build alias type descriptor: %v", err)
@@ -455,7 +604,7 @@ func TestBuildContainerDescriptor(t *testing.T) {
 		fields := []*types.Var{field1, field2}
 		tags := []string{"", ""}
 		structType := types.NewStruct(fields, tags)
-		
+
 		desc, err := parser.buildTypeDescriptor(structType, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("Failed to build container descriptor: %v", err)
@@ -482,7 +631,7 @@ func TestBuildContainerDescriptor(t *testing.T) {
 		fields := []*types.Var{field1, field2, field3}
 		tags := []string{"", "", ""}
 		structType := types.NewStruct(fields, tags)
-		
+
 		desc, err := parser.buildTypeDescriptor(structType, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("Failed to build container descriptor: %v", err)
@@ -503,7 +652,7 @@ func TestBuildContainerDescriptor(t *testing.T) {
 		fields := []*types.Var{field1, field2}
 		tags := []string{"", ""}
 		structType := types.NewStruct(fields, tags)
-		
+
 		desc, err := parser.buildTypeDescriptor(structType, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("Failed to build container descriptor: %v", err)
@@ -525,7 +674,7 @@ func TestBuildContainerDescriptor(t *testing.T) {
 		fields := []*types.Var{field1}
 		tags := []string{`ssz-index:"5"`}
 		structType := types.NewStruct(fields, tags)
-		
+
 		desc, err := parser.buildTypeDescriptor(structType, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("Failed to build container descriptor: %v", err)
@@ -544,7 +693,7 @@ func TestBuildContainerDescriptor(t *testing.T) {
 		fields := []*types.Var{field1}
 		tags := []string{`ssz-index:"invalid"`}
 		structType := types.NewStruct(fields, tags)
-		
+
 		_, err := parser.buildTypeDescriptor(structType, nil, nil, nil)
 		if err == nil {
 			t.Error("Expected error for invalid ssz-index")
@@ -846,7 +995,6 @@ func TestParseFieldTags(t *testing.T) {
 		}
 	})
 
-
 	t.Run("InvalidSszTypeTag", func(t *testing.T) {
 		tags := `ssz-type:"invalid_type"`
 		_, _, _, err := parser.parseFieldTags(tags)
@@ -929,7 +1077,7 @@ func TestMethodSignatureChecking(t *testing.T) {
 
 	// Create a type with some methods for testing
 	pkg := types.NewPackage("test", "test")
-	
+
 	// Create a struct type
 	struct1 := types.NewStruct(nil, nil)
 	obj := types.NewTypeName(token.NoPos, pkg, "TestStruct", nil)
@@ -1001,12 +1149,12 @@ func TestTypeMatches(t *testing.T) {
 
 func TestInterfaceCompatibilityChecks(t *testing.T) {
 	parser := NewParser()
-	
+
 	// Create a simple type for testing
 	uint64Type := types.Typ[types.Uint64]
 	ptrType := types.NewPointer(uint64Type)
-	
-	// Test compatibility functions - these will return false for simple types, 
+
+	// Test compatibility functions - these will return false for simple types,
 	// but we're testing the function execution
 	t.Run("FastSSZConvert", func(t *testing.T) {
 		compat := parser.getFastsszConvertCompatibility(uint64Type)
@@ -1060,7 +1208,7 @@ func TestCustomTypesAndErrors(t *testing.T) {
 		// Mock a type with FastSSZ compatibility for testing
 		uint64Type := types.Typ[types.Uint64]
 		parser.CompatFlags[uint64Type.String()] = ssz.SszCompatFlagFastSSZMarshaler | ssz.SszCompatFlagFastSSZHasher
-		
+
 		typeHint := []ssz.SszTypeHint{{Type: ssz.SszCustomType}}
 		sizeHint := []ssz.SszSizeHint{{Size: 64}}
 		desc, err := parser.buildTypeDescriptor(uint64Type, typeHint, sizeHint, nil)
@@ -1075,7 +1223,7 @@ func TestCustomTypesAndErrors(t *testing.T) {
 	t.Run("CustomTypeWithoutSize", func(t *testing.T) {
 		uint64Type := types.Typ[types.Uint64]
 		parser.CompatFlags[uint64Type.String()] = ssz.SszCompatFlagFastSSZMarshaler | ssz.SszCompatFlagFastSSZHasher
-		
+
 		typeHint := []ssz.SszTypeHint{{Type: ssz.SszCustomType}}
 		desc, err := parser.buildTypeDescriptor(uint64Type, typeHint, nil, nil)
 		if err != nil {
@@ -1098,7 +1246,7 @@ func TestSpecialNamedTypes(t *testing.T) {
 		timePkg := types.NewPackage("time", "time")
 		timeObj := types.NewTypeName(token.NoPos, timePkg, "Time", nil)
 		timeType := types.NewNamed(timeObj, types.NewStruct(nil, nil), nil)
-		
+
 		desc, err := parser.buildTypeDescriptor(timeType, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("Failed to build time.Time descriptor: %v", err)
@@ -1127,7 +1275,7 @@ func TestSpecialNamedTypes(t *testing.T) {
 				pkg := types.NewPackage(tc.pkgPath, tc.pkgPath)
 				obj := types.NewTypeName(token.NoPos, pkg, tc.typeName, nil)
 				namedType := types.NewNamed(obj, types.NewStruct(nil, nil), nil)
-				
+
 				desc, err := parser.buildTypeDescriptor(namedType, nil, nil, nil)
 				// These will fail because they need special handling, but we're testing detection
 				_ = desc
@@ -1144,12 +1292,12 @@ func TestComplexStructures(t *testing.T) {
 		// Create inner struct
 		innerField := types.NewVar(token.NoPos, nil, "InnerField", types.Typ[types.Uint32])
 		innerStruct := types.NewStruct([]*types.Var{innerField}, []string{""})
-		
+
 		// Create outer struct with inner struct field
 		field1 := types.NewVar(token.NoPos, nil, "Field1", types.Typ[types.Uint64])
 		field2 := types.NewVar(token.NoPos, nil, "Inner", innerStruct)
 		outerStruct := types.NewStruct([]*types.Var{field1, field2}, []string{"", ""})
-		
+
 		desc, err := parser.buildTypeDescriptor(outerStruct, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("Failed to build nested struct descriptor: %v", err)
@@ -1166,10 +1314,10 @@ func TestComplexStructures(t *testing.T) {
 		// Create struct type
 		field := types.NewVar(token.NoPos, nil, "Field", types.Typ[types.Uint64])
 		structType := types.NewStruct([]*types.Var{field}, []string{""})
-		
+
 		// Create array of structs
 		arrayType := types.NewArray(structType, 5)
-		
+
 		desc, err := parser.buildTypeDescriptor(arrayType, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("Failed to build array of structs descriptor: %v", err)
@@ -1183,32 +1331,31 @@ func TestComplexStructures(t *testing.T) {
 	})
 }
 
-
 func TestCacheNotUsedWithHints(t *testing.T) {
 	parser := NewParser()
 
 	t.Run("CacheNotUsedWithHints", func(t *testing.T) {
 		uint64Type := types.Typ[types.Uint64]
-		
+
 		// First call without hints (should be cached)
 		desc1, err := parser.buildTypeDescriptor(uint64Type, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("Failed to build first descriptor: %v", err)
 		}
-		
+
 		// Second call with hints (should not use cache)
 		typeHint := []ssz.SszTypeHint{{Type: ssz.SszUint64Type}}
 		desc2, err := parser.buildTypeDescriptor(uint64Type, typeHint, nil, nil)
 		if err != nil {
 			t.Fatalf("Failed to build second descriptor: %v", err)
 		}
-		
+
 		// Third call without hints again (should use cache and be same as first)
 		desc3, err := parser.buildTypeDescriptor(uint64Type, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("Failed to build third descriptor: %v", err)
 		}
-		
+
 		// desc1 and desc3 should be same (cached), desc2 should be different
 		if desc1 != desc3 {
 			t.Error("Expected desc1 and desc3 to be same (cached)")

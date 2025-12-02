@@ -54,10 +54,11 @@ func TestTypeCache_ErrorCases(t *testing.T) {
 
 	t.Run("InvalidSizeHints", func(t *testing.T) {
 		tests := []struct {
-			name     string
-			typ      reflect.Type
-			hints    []SszSizeHint
-			expected string
+			name      string
+			typ       reflect.Type
+			hints     []SszSizeHint
+			typeHints []SszTypeHint
+			expected  string
 		}{
 			{
 				name:     "bool with wrong size",
@@ -66,10 +67,22 @@ func TestTypeCache_ErrorCases(t *testing.T) {
 				expected: "bool ssz type must be ssz-size:1",
 			},
 			{
+				name:     "bool with bit size",
+				typ:      reflect.TypeOf(bool(false)),
+				hints:    []SszSizeHint{{Bits: true}},
+				expected: "bool ssz type cannot be limited by bits, use regular size tag instead",
+			},
+			{
 				name:     "uint8 with wrong size",
 				typ:      reflect.TypeOf(uint8(0)),
 				hints:    []SszSizeHint{{Size: 2}},
 				expected: "uint8 ssz type must be ssz-size:1",
+			},
+			{
+				name:     "uint8 with bit size",
+				typ:      reflect.TypeOf(uint8(0)),
+				hints:    []SszSizeHint{{Bits: true}},
+				expected: "uint8 ssz type cannot be limited by bits, use regular size tag instead",
 			},
 			{
 				name:     "uint16 with wrong size",
@@ -78,10 +91,22 @@ func TestTypeCache_ErrorCases(t *testing.T) {
 				expected: "uint16 ssz type must be ssz-size:2",
 			},
 			{
+				name:     "uint16 with bit size",
+				typ:      reflect.TypeOf(uint16(0)),
+				hints:    []SszSizeHint{{Bits: true}},
+				expected: "uint16 ssz type cannot be limited by bits, use regular size tag instead",
+			},
+			{
 				name:     "uint32 with wrong size",
 				typ:      reflect.TypeOf(uint32(0)),
 				hints:    []SszSizeHint{{Size: 8}},
 				expected: "uint32 ssz type must be ssz-size:4",
+			},
+			{
+				name:     "uint32 with bit size",
+				typ:      reflect.TypeOf(uint32(0)),
+				hints:    []SszSizeHint{{Bits: true}},
+				expected: "uint32 ssz type cannot be limited by bits, use regular size tag instead",
 			},
 			{
 				name:     "uint64 with wrong size",
@@ -89,11 +114,37 @@ func TestTypeCache_ErrorCases(t *testing.T) {
 				hints:    []SszSizeHint{{Size: 4}},
 				expected: "uint64 ssz type must be ssz-size:8",
 			},
+			{
+				name:     "uint64 with bit size",
+				typ:      reflect.TypeOf(uint64(0)),
+				hints:    []SszSizeHint{{Bits: true}},
+				expected: "uint64 ssz type cannot be limited by bits, use regular size tag instead",
+			},
+			{
+				name:      "uint128 with bit size",
+				typ:       reflect.TypeOf([16]uint8{}),
+				hints:     []SszSizeHint{{Bits: true}},
+				typeHints: []SszTypeHint{{Type: SszUint128Type}},
+				expected:  "uint128 ssz type cannot be limited by bits, use regular size tag instead",
+			},
+			{
+				name:      "uint256 with bit size",
+				typ:       reflect.TypeOf([32]uint8{}),
+				hints:     []SszSizeHint{{Bits: true}},
+				typeHints: []SszTypeHint{{Type: SszUint256Type}},
+				expected:  "uint256 ssz type cannot be limited by bits, use regular size tag instead",
+			},
+			{
+				name:     "other non bitvector type with bit size",
+				typ:      reflect.TypeOf([16]uint8{}),
+				hints:    []SszSizeHint{{Bits: true}},
+				expected: "bit size tag is only allowed for bitvector types",
+			},
 		}
 
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				_, err := cache.GetTypeDescriptor(tt.typ, tt.hints, nil, nil)
+				_, err := cache.GetTypeDescriptor(tt.typ, tt.hints, nil, tt.typeHints)
 				if err == nil {
 					t.Errorf("Expected error for %s", tt.name)
 					return

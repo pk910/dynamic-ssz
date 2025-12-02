@@ -170,15 +170,20 @@ Specifies maximum size for dynamic arrays. Highly recommended for hash tree root
 - Slices (except byte slices with `ssz-size`)
 - Bitlists (boolean slices)
 
+**Note on bitlists**: For bitlist types, `ssz-max` specifies the maximum number of **bits**, not bytes. This is consistent with the SSZ specification where bitlist limits are defined in bits.
+
 **Examples**:
 ```go
 type Container struct {
     // Maximum 1024 validators
     Validators []Validator `ssz-max:"1024"`
-    
-    // Maximum 2048 bits
+
+    // Maximum 2048 bits (not bytes!)
     Participation []bool `ssz-max:"2048"`
-    
+
+    // Bitlist with go-bitfield: max 2048 bits
+    AggregationBits bitfield.Bitlist `ssz-max:"2048"`
+
     // Multi-dimensional arrays
     Matrix [][]uint32 `ssz-max:"100,256"`
 }

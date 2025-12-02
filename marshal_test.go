@@ -128,6 +128,31 @@ var marshalTestMatrix = []struct {
 		fromHex("0x040000000200030004000500080009000a000b00"),
 	},
 	{
+		struct {
+			F1 []uint16 `ssz-size:"2"`
+		}{[]uint16{2, 3}},
+		fromHex("0x02000300"),
+	},
+	{
+		struct {
+			F1 []uint16 `ssz-type:"list" ssz-size:"?"`
+		}{[]uint16{2, 3}},
+		fromHex("0x0400000002000300"),
+	},
+	{
+		struct {
+			F1 []uint16 `ssz-type:"list" ssz-size:"2"`
+		}{[]uint16{2, 3}},
+		fromHex("0x02000300"),
+	},
+	{
+		struct {
+			F1 []uint8 `ssz-type:"bitvector" ssz-bitsize:"12"`
+		}{[]uint8{0xff, 0x0f}},
+		fromHex("0xff0f"),
+	},
+
+	{
 		func() any {
 			list := make([]uint32, 128)
 			list[0] = 123

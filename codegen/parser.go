@@ -467,6 +467,10 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 		}
 	}
 
+	if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 && desc.SszType != dynssz.SszBitvectorType {
+		return nil, fmt.Errorf("bit size tag is only allowed for bitvector types, got %v", desc.SszType)
+	}
+
 	// Check interface compatibility (like reflection-based code)
 	otherType := originalType
 	if ptr, ok := otherType.(*types.Pointer); ok {
