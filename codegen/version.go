@@ -4,4 +4,4 @@
 
 package codegen
 
-var Version = "1.1.1"
+var Version = "1.1.2"
