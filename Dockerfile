@@ -1,8 +1,9 @@
-# Build stage
-FROM golang:1.25-alpine AS builder
+# Build stage - use xx for cross-compilation
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 
-# Install git and ca-certificates (needed for go modules)
-RUN apk add --no-cache git ca-certificates
+ARG TARGETPLATFORM
+ARG TARGETOS
+ARG TARGETARCH
 
 # Set working directory
 WORKDIR /app
@@ -16,8 +17,8 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build the dynssz-gen binary
-RUN GOOS=linux go build -ldflags="-s -w" -o dynssz-gen ./dynssz-gen
+# Build the dynssz-gen binary with cross-compilation
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -ldflags="-s -w" -o /app/bin/dynssz-gen ./dynssz-gen
 
 # Final stage
 FROM alpine:latest
@@ -30,7 +31,7 @@ RUN addgroup -g 1000 dynssz && \
 WORKDIR /data
 
 # Copy the binary from builder stage
-COPY --from=builder /app/dynssz-gen /usr/local/bin/dynssz-gen
+COPY --from=builder /app/bin/dynssz-gen /usr/local/bin/dynssz-gen
 
 # Change ownership and make executable
 RUN chmod +x /usr/local/bin/dynssz-gen
