@@ -7,6 +7,7 @@ package treeproof
 import (
 	"bytes"
 	"crypto/sha256"
+	"strconv"
 	"testing"
 )
 
@@ -490,4 +491,124 @@ func TestHashFn(t *testing.T) {
 	if !bytes.Equal(result, result2) {
 		t.Errorf("hashFn is not deterministic")
 	}
+}
+
+// ... (Your existing code and imports)
+
+// hashData is a helper to generate a unique 32-byte hash from an integer.
+func hashData(i int) []byte {
+    h := sha256.New()
+    h.Write([]byte(strconv.Itoa(i)))
+    return h.Sum(nil)
+}
+
+// buildMerkleTree creates a complete Merkle tree up to the root, 
+// returning the root hash and all leaves/nodes needed for benchmarking.
+func buildMerkleTree(numLeaves int) (root []byte, leaves [][]byte, nodes map[int][]byte) {
+    if numLeaves == 0 {
+        return nil, nil, nil
+    }
+
+    leaves = make([][]byte, numLeaves)
+    nodes = make(map[int][]byte)
+
+    // Generalized index for the first leaf is numLeaves (2^N)
+    leafStartIndex := numLeaves 
+    
+    // 1. Generate leaves and store them in the 'nodes' map
+    for i := 0; i < numLeaves; i++ {
+        leafData := hashData(i)
+        leaves[i] = leafData
+        nodes[leafStartIndex+i] = leafData
+    }
+
+    // 2. Compute intermediate hashes bottom-up
+    currentLayer := leafStartIndex
+    for currentLayer > 1 {
+        parentLayer := currentLayer / 2
+        for i := 0; i < currentLayer; i += 2 {
+            leftIndex := currentLayer + i
+            rightIndex := currentLayer + i + 1
+
+            leftHash := nodes[leftIndex]
+            rightHash := nodes[rightIndex]
+
+            parentHash := hashFn(append(leftHash, rightHash...))
+            nodes[parentLayer + (i/2)] = parentHash
+        }
+        currentLayer = parentLayer
+    }
+
+    return nodes[1], leaves, nodes
+}
+
+// findProofHashes is a simplified version of NodeProveMulti's logic 
+// to extract the required proof hashes (the siblings not provided as leaves)
+// for the VerifyMultiproof benchmark setup.
+func findProofHashes(indices []int, allNodes map[int][]byte) [][]byte {
+    requiredIndices := getRequiredIndices(indices)
+    proofHashes := make([][]byte, len(requiredIndices))
+    
+    for i, idx := range requiredIndices {
+        proofHashes[i] = allNodes[idx]
+    }
+    return proofHashes
+}
+
+
+// BenchmarkVerifyMultiproof measures the verification time for different proof sizes 
+func BenchmarkVerifyMultiproof(b *testing.B) {
+    // 2^16 = 65536 leaves, Tree Depth 16. A large, realistic size.
+    const numLeaves = 1 << 16 
+
+    // Build the large tree once for all benchmarks
+    b.Logf("Building Merkle tree with %d leaves...", numLeaves)
+    root, allLeaves, allNodes := buildMerkleTree(numLeaves)
+    b.Log("Tree built successfully.")
+
+    // --- Scenario 1: Proving two adjacent leaves (e.g., 65536 and 65537) ---
+    indicesAdj := []int{numLeaves, numLeaves + 1}
+    leavesAdj := [][]byte{allLeaves[0], allLeaves[1]}
+    proofAdj := findProofHashes(indicesAdj, allNodes)
+
+    b.Run("Prove_2_Adjacent_Leaves", func(b *testing.B) {
+        b.ReportAllocs()
+        for i := 0; i < b.N; i++ {
+            _, _ = VerifyMultiproof(root, proofAdj, leavesAdj, indicesAdj)
+        }
+    })
+
+    // --- Scenario 2: Proving 16 scattered leaves (low density proof) ---
+    // Scattered leaves require more proof hashes and a deeper traversal.
+    indicesScattered := make([]int, 16)
+    leavesScattered := make([][]byte, 16)
+    for i := 0; i < 16; i++ {
+        idx := numLeaves + i*1000 // Widely scattered indices
+        indicesScattered[i] = idx
+        leavesScattered[i] = allNodes[idx]
+    }
+    proofScattered := findProofHashes(indicesScattered, allNodes)
+    
+    b.Run("Prove_16_Scattered_Leaves", func(b *testing.B) {
+        b.ReportAllocs()
+        for i := 0; i < b.N; i++ {
+            _, _ = VerifyMultiproof(root, proofScattered, leavesScattered, indicesScattered)
+        }
+    })
+
+    // --- Scenario 3: Proving all leaves (high density proof) ---
+    // Should require zero proof hashes, only computation from leaves.
+    indicesAll := make([]int, numLeaves)
+    for i := 0; i < numLeaves; i++ {
+        indicesAll[i] = numLeaves + i
+    }
+    // Note: 'allLeaves' already contains all leaf hashes
+    proofAll := findProofHashes(indicesAll, allNodes) // Should be empty
+
+    b.Run("Prove_All_Leaves", func(b *testing.B) {
+        b.ReportAllocs()
+        for i := 0; i < b.N; i++ {
+            _, _ = VerifyMultiproof(root, proofAll, allLeaves, indicesAll)
+        }
+    })
 }
