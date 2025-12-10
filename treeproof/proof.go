@@ -13,7 +13,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"math"
+	"math/bits"
 	"sort"
 )
 
@@ -24,17 +24,17 @@ func VerifyProof(root []byte, proof *Proof) (bool, error) {
 		return false, errors.New("invalid proof length")
 	}
 
-	node := proof.Leaf[:]
-	tmp := make([]byte, 64)
+	node := proof.Leaf
+	var tmp [64]byte
 	for i, h := range proof.Hashes {
 		if getPosAtLevel(proof.Index, i) {
-			copy(tmp[:32], h[:])
-			copy(tmp[32:], node[:])
+			copy(tmp[:32], h)
+			copy(tmp[32:], node)
 		} else {
-			copy(tmp[:32], node[:])
-			copy(tmp[32:], h[:])
+			copy(tmp[:32], node)
+			copy(tmp[32:], h)
 		}
-		node = hashFn(tmp)
+		node = hashFn(tmp[:])
 	}
 
 	return bytes.Equal(root, node), nil
@@ -88,7 +88,7 @@ func VerifyMultiproof(root []byte, proof [][]byte, leaves [][]byte, indices []in
 		userGenIndices = append(userGenIndices, reqIndices[i])
 	}
 
-	// Sort all initial indices in reverse order
+	// Make sure keys are sorted in reverse order since we start from the leaves
 	sort.Sort(sort.Reverse(sort.IntSlice(userGenIndices)))
 
 	// The depth of the tree up to the greatest index
@@ -186,7 +186,7 @@ func getPosAtLevel(index int, level int) bool {
 
 // Returns the length of the path to a node represented by its generalized index.
 func getPathLength(index int) int {
-	return int(math.Log2(float64(index)))
+	return bits.Len(uint(index)) - 1
 }
 
 // Returns the generalized index for a node's sibling.
@@ -203,26 +203,32 @@ func getParent(index int) int {
 // required to prove the given leaf indices. The returned indices
 // are in a decreasing order.
 func getRequiredIndices(leafIndices []int) []int {
-	exists := struct{}{}
-	// Sibling hashes needed for verification
-	required := make(map[int]struct{})
-	// Set of hashes that will be computed
-	// on the path from leaf to root.
-	computed := make(map[int]struct{})
-	leaves := make(map[int]struct{})
+	if len(leafIndices) == 0 {
+		return nil
+	}
 
-	for _, leaf := range leafIndices {
+	// Make a local copy so we can sort if needed (callers often already sorted,
+	// but this keeps behavior identical even when they are not).
+	tmp := make([]int, len(leafIndices))
+	copy(tmp, leafIndices)
+	sort.Ints(tmp)
+
+	exists := struct{}{}
+
+	leaves := make(map[int]struct{}, len(tmp))
+	for _, leaf := range tmp {
 		leaves[leaf] = exists
 	}
 
-	// Phase 1: Identify all required siblings and computed parents
-	for _, leaf := range leafIndices {
+	required := make(map[int]struct{}, len(tmp))
+	computed := make(map[int]struct{}, len(tmp))
+
+	for _, leaf := range tmp {
 		cur := leaf
 		for cur > 1 {
 			sibling := getSibling(cur)
 			parent := getParent(cur)
 
-			// Only add the sibling to the 'required' set if it's NOT one of the leaves being proved.
 			if _, isLeaf := leaves[sibling]; !isLeaf {
 				required[sibling] = exists
 			}
@@ -231,11 +237,11 @@ func getRequiredIndices(leafIndices []int) []int {
 		}
 	}
 
+	// Filter out nodes that will be computed on‑the‑fly.
 	requiredList := make([]int, 0, len(required))
 	// Remove computed indices from required ones
 	for r := range required {
-		_, isComputed := computed[r]
-		if !isComputed {
+		if _, isComputed := computed[r]; !isComputed {
 			requiredList = append(requiredList, r)
 		}
 	}
