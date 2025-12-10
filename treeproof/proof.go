@@ -94,8 +94,7 @@ func VerifyMultiproof(root []byte, proof [][]byte, leaves [][]byte, indices []in
 	// The depth of the tree up to the greatest index
 	var cap int
 	if len(userGenIndices) > 0 {
-		maxIdx := userGenIndices[0]
-		cap = getPathLength(maxIdx)
+		cap = getPathLength(userGenIndices[0])
 	}
 
 	// Allocate space for auxiliary keys created when computing intermediate hashes
@@ -107,7 +106,7 @@ func VerifyMultiproof(root []byte, proof [][]byte, leaves [][]byte, indices []in
 	pos := 0
 	posAux := 0
 
-	tmp := make([]byte, 64)
+	var tmp [64]byte
 	var index int
 
 	// Iter over the tree, computing hashes and storing them
@@ -159,9 +158,9 @@ func VerifyMultiproof(root []byte, proof [][]byte, leaves [][]byte, indices []in
 			return false, fmt.Errorf("proof is missing required nodes, either %d or %d", leftIndex, rightIndex)
 		}
 
-		copy(tmp[:32], left[:])
-		copy(tmp[32:], right[:])
-		db[parentIndex] = hashFn(tmp)
+		copy(tmp[:32], left)
+		copy(tmp[32:], right)
+		db[parentIndex] = hashFn(tmp[:])
 
 		// An intermediate hash has been computed, as such we need to store its index
 		// to remember to examine it later
