@@ -516,7 +516,7 @@ func buildMerkleTree(numLeaves int) (root []byte, leaves [][]byte, nodes map[int
     leafStartIndex := numLeaves 
     
     // 1. Generate leaves and store them in the 'nodes' map
-    for i := 0; i < numLeaves; i++ {
+    for i := range numLeaves {
         leafData := hashData(i)
         leaves[i] = leafData
         nodes[leafStartIndex+i] = leafData
@@ -562,9 +562,7 @@ func BenchmarkVerifyMultiproof(b *testing.B) {
     const numLeaves = 1 << 16 
 
     // Build the large tree once for all benchmarks
-    b.Logf("Building Merkle tree with %d leaves...", numLeaves)
     root, allLeaves, allNodes := buildMerkleTree(numLeaves)
-    b.Log("Tree built successfully.")
 
     // --- Scenario 1: Proving two adjacent leaves (e.g., 65536 and 65537) ---
     indicesAdj := []int{numLeaves, numLeaves + 1}
@@ -573,7 +571,7 @@ func BenchmarkVerifyMultiproof(b *testing.B) {
 
     b.Run("Prove_2_Adjacent_Leaves", func(b *testing.B) {
         b.ReportAllocs()
-        for i := 0; i < b.N; i++ {
+        for b.Loop() {
             _, _ = VerifyMultiproof(root, proofAdj, leavesAdj, indicesAdj)
         }
     })
@@ -582,7 +580,7 @@ func BenchmarkVerifyMultiproof(b *testing.B) {
     // Scattered leaves require more proof hashes and a deeper traversal.
     indicesScattered := make([]int, 16)
     leavesScattered := make([][]byte, 16)
-    for i := 0; i < 16; i++ {
+    for i := range 16 {
         idx := numLeaves + i*1000 // Widely scattered indices
         indicesScattered[i] = idx
         leavesScattered[i] = allNodes[idx]
@@ -591,7 +589,7 @@ func BenchmarkVerifyMultiproof(b *testing.B) {
     
     b.Run("Prove_16_Scattered_Leaves", func(b *testing.B) {
         b.ReportAllocs()
-        for i := 0; i < b.N; i++ {
+        for b.Loop() {
             _, _ = VerifyMultiproof(root, proofScattered, leavesScattered, indicesScattered)
         }
     })
@@ -599,7 +597,7 @@ func BenchmarkVerifyMultiproof(b *testing.B) {
     // --- Scenario 3: Proving all leaves (high density proof) ---
     // Should require zero proof hashes, only computation from leaves.
     indicesAll := make([]int, numLeaves)
-    for i := 0; i < numLeaves; i++ {
+    for i := range numLeaves {
         indicesAll[i] = numLeaves + i
     }
     // Note: 'allLeaves' already contains all leaf hashes
@@ -607,7 +605,7 @@ func BenchmarkVerifyMultiproof(b *testing.B) {
 
     b.Run("Prove_All_Leaves", func(b *testing.B) {
         b.ReportAllocs()
-        for i := 0; i < b.N; i++ {
+        for b.Loop() {
             _, _ = VerifyMultiproof(root, proofAll, allLeaves, indicesAll)
         }
     })
