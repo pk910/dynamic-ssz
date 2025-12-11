@@ -29,13 +29,6 @@ jobs:
         chmod +x .github/scripts/prepare-release.sh
         .github/scripts/prepare-release.sh ${{ inputs.version }}
 
-    - uses: stefanzweifel/git-auto-commit-action@v4
-      with:
-        commit_message: "release `${{ inputs.version }}`"
-        branch: master
-        push_options: '--force'
-        skip_checkout: true
-
     - name: Build dynssz-gen for multiple platforms
       run: |
         cd dynssz-gen
@@ -81,7 +74,20 @@ jobs:
         GITHUB_TOKEN: ${{ github.token }}
         GITHUB_REPOSITORY: ${{ github.repository }}
 
-    - name: Create release
+    - uses: stefanzweifel/git-auto-commit-action@v4
+      id: auto_commit
+      with:
+        commit_message: "release `${{ inputs.version }}`"
+        branch: master
+        push_options: '--force'
+        skip_checkout: true
+
+    - name: Create and push tag (v${{ inputs.version }})
+      run: |
+        git tag "v${{ inputs.version }}" ${{ steps.auto_commit.outputs.commit_hash }}
+        git push origin "v${{ inputs.version }}"
+
+    - name: Create draft release
       uses: actions/create-release@v1 # v1.1.4
       id: create_release
       with:
@@ -89,6 +95,7 @@ jobs:
         prerelease: false
         release_name: "v${{ inputs.version }}"
         tag_name: "v${{ inputs.version }}"
+        commitish: ${{ steps.auto_commit.outputs.commit_hash }}
         body: |
           ### Major Changes
           ${{ steps.ai_release_notes.outputs.release_notes }}
