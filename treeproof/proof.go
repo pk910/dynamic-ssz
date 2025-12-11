@@ -13,7 +13,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"math"
+	"math/bits"
 	"sort"
 )
 
@@ -24,18 +24,17 @@ func VerifyProof(root []byte, proof *Proof) (bool, error) {
 		return false, errors.New("invalid proof length")
 	}
 
-	node := proof.Leaf[:]
-	tmp := make([]byte, 64)
+	node := proof.Leaf
+	var tmp [64]byte
 	for i, h := range proof.Hashes {
 		if getPosAtLevel(proof.Index, i) {
-			copy(tmp[:32], h[:])
-			copy(tmp[32:], node[:])
-			node = hashFn(tmp)
+			copy(tmp[:32], h)
+			copy(tmp[32:], node)
 		} else {
-			copy(tmp[:32], node[:])
-			copy(tmp[32:], h[:])
-			node = hashFn(tmp)
+			copy(tmp[:32], node)
+			copy(tmp[32:], h)
 		}
+		node = hashFn(tmp[:])
 	}
 
 	return bytes.Equal(root, node), nil
@@ -76,26 +75,27 @@ func VerifyMultiproof(root []byte, proof [][]byte, leaves [][]byte, indices []in
 
 	// userGenIndices contains all generalised indices between leaves and proof hashes
 	// i.e., the indices retrieved from the user of this function
-	userGenIndices := make([]int, len(indices)+len(reqIndices))
-	pos := 0
+	userGenIndices := make([]int, 0, len(indices)+len(reqIndices))
 	// Create database of index -> value (hash) from inputs
-	db := make(map[int][]byte)
+	db := make(map[int][]byte, len(indices)+len(reqIndices))
+
 	for i, leaf := range leaves {
 		db[indices[i]] = leaf
-		userGenIndices[pos] = indices[i]
-		pos++
+		userGenIndices = append(userGenIndices, indices[i])
 	}
 	for i, h := range proof {
 		db[reqIndices[i]] = h
-		userGenIndices[pos] = reqIndices[i]
-		pos++
+		userGenIndices = append(userGenIndices, reqIndices[i])
 	}
 
 	// Make sure keys are sorted in reverse order since we start from the leaves
 	sort.Sort(sort.Reverse(sort.IntSlice(userGenIndices)))
 
 	// The depth of the tree up to the greatest index
-	cap := int(math.Log2(float64(userGenIndices[0])))
+	var cap int
+	if len(userGenIndices) > 0 {
+		cap = getPathLength(userGenIndices[0])
+	}
 
 	// Allocate space for auxiliary keys created when computing intermediate hashes
 	// Auxiliary indices are useful to avoid using store all indices to traverse
@@ -103,10 +103,10 @@ func VerifyMultiproof(root []byte, proof [][]byte, leaves [][]byte, indices []in
 	auxGenIndices := make([]int, 0, cap)
 
 	// To keep track the current position to inspect in both arrays
-	pos = 0
+	pos := 0
 	posAux := 0
 
-	tmp := make([]byte, 64)
+	var tmp [64]byte
 	var index int
 
 	// Iter over the tree, computing hashes and storing them
@@ -119,10 +119,20 @@ func VerifyMultiproof(root []byte, proof [][]byte, leaves [][]byte, indices []in
 		// 1. If we've no auxiliary indices yet, we're going to use the generalised ones
 		// 2. If we have no more client indices, we're going to use the auxiliary ones
 		// 3. If we both, then we're going to compare them and take the biggest one
-		if len(auxGenIndices) == 0 || (pos < len(userGenIndices) && auxGenIndices[posAux] < userGenIndices[pos]) {
+		if posAux >= len(auxGenIndices) {
+			// Case 1: No more auxiliary indices
+			index = userGenIndices[pos]
+			pos++
+		} else if pos >= len(userGenIndices) {
+			// Case 2: No more user/proof indices
+			index = auxGenIndices[posAux]
+			posAux++
+		} else if auxGenIndices[posAux] < userGenIndices[pos] {
+			// Case 3: Both exist, take the larger (user/proof index)
 			index = userGenIndices[pos]
 			pos++
 		} else {
+			// Case 4: Both exist, take the larger (auxiliary index)
 			index = auxGenIndices[posAux]
 			posAux++
 		}
@@ -132,27 +142,29 @@ func VerifyMultiproof(root []byte, proof [][]byte, leaves [][]byte, indices []in
 			break
 		}
 
+		parentIndex := getParent(index)
+
 		// If the parent is already computed, we don't need to calculate the intermediate hash
-		_, hasParent := db[getParent(index)]
-		if hasParent {
+		if _, hasParent := db[parentIndex]; hasParent {
 			continue
 		}
 
-		left, hasLeft := db[(index|1)^1]
-		right, hasRight := db[index|1]
+		leftIndex := (index | 1) ^ 1
+		left, hasLeft := db[leftIndex]
+		rightIndex := index | 1
+		right, hasRight := db[rightIndex]
+
 		if !hasRight || !hasLeft {
-			return false, fmt.Errorf("proof is missing required nodes, either %d or %d", (index|1)^1, index|1)
+			return false, fmt.Errorf("proof is missing required nodes, either %d or %d", leftIndex, rightIndex)
 		}
 
-		copy(tmp[:32], left[:])
-		copy(tmp[32:], right[:])
-		parentIndex := getParent(index)
-		db[parentIndex] = hashFn(tmp)
+		copy(tmp[:32], left)
+		copy(tmp[32:], right)
+		db[parentIndex] = hashFn(tmp[:])
 
 		// An intermediate hash has been computed, as such we need to store its index
 		// to remember to examine it later
 		auxGenIndices = append(auxGenIndices, parentIndex)
-
 	}
 
 	res, ok := db[1]
@@ -173,7 +185,7 @@ func getPosAtLevel(index int, level int) bool {
 
 // Returns the length of the path to a node represented by its generalized index.
 func getPathLength(index int) int {
-	return int(math.Log2(float64(index)))
+	return bits.Len(uint(index)) - 1
 }
 
 // Returns the generalized index for a node's sibling.
@@ -190,32 +202,45 @@ func getParent(index int) int {
 // required to prove the given leaf indices. The returned indices
 // are in a decreasing order.
 func getRequiredIndices(leafIndices []int) []int {
-	exists := struct{}{}
-	// Sibling hashes needed for verification
-	required := make(map[int]struct{})
-	// Set of hashes that will be computed
-	// on the path from leaf to root.
-	computed := make(map[int]struct{})
-	leaves := make(map[int]struct{})
+	if len(leafIndices) == 0 {
+		return nil
+	}
 
-	for _, leaf := range leafIndices {
+	// Make a local copy so we can sort if needed (callers often already sorted,
+	// but this keeps behavior identical even when they are not).
+	tmp := make([]int, len(leafIndices))
+	copy(tmp, leafIndices)
+	sort.Ints(tmp)
+
+	exists := struct{}{}
+
+	leaves := make(map[int]struct{}, len(tmp))
+	for _, leaf := range tmp {
 		leaves[leaf] = exists
+	}
+
+	required := make(map[int]struct{}, len(tmp))
+	computed := make(map[int]struct{}, len(tmp))
+
+	for _, leaf := range tmp {
 		cur := leaf
 		for cur > 1 {
 			sibling := getSibling(cur)
 			parent := getParent(cur)
-			required[sibling] = exists
+
+			if _, isLeaf := leaves[sibling]; !isLeaf {
+				required[sibling] = exists
+			}
 			computed[parent] = exists
 			cur = parent
 		}
 	}
 
+	// Filter out nodes that will be computed on‑the‑fly.
 	requiredList := make([]int, 0, len(required))
 	// Remove computed indices from required ones
 	for r := range required {
-		_, isComputed := computed[r]
-		_, isLeaf := leaves[r]
-		if !isComputed && !isLeaf {
+		if _, isComputed := computed[r]; !isComputed {
 			requiredList = append(requiredList, r)
 		}
 	}
