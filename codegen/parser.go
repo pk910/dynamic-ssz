@@ -498,6 +498,12 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 	if p.getDynamicUnmarshalerCompatibility(originalType) || p.getDynamicUnmarshalerCompatibility(otherType) {
 		desc.SszCompatFlags |= dynssz.SszCompatFlagDynamicUnmarshaler
 	}
+	if p.getDynamicWriterCompatibility(originalType) || p.getDynamicWriterCompatibility(otherType) {
+		desc.SszCompatFlags |= dynssz.SszCompatFlagDynamicWriter
+	}
+	if p.getDynamicReaderCompatibility(originalType) || p.getDynamicReaderCompatibility(otherType) {
+		desc.SszCompatFlags |= dynssz.SszCompatFlagDynamicReader
+	}
 	if p.getDynamicSizerCompatibility(originalType) || p.getDynamicSizerCompatibility(otherType) {
 		desc.SszCompatFlags |= dynssz.SszCompatFlagDynamicSizer
 	}
@@ -1183,6 +1189,18 @@ func (p *Parser) getDynamicUnmarshalerCompatibility(typ types.Type) bool {
 	return p.hasMethodWithSignature(methodSet, "UnmarshalSSZDyn", []string{"DynamicSpecs", "[]byte"}, []string{"error"})
 }
 
+func (p *Parser) getDynamicWriterCompatibility(typ types.Type) bool {
+	// Check if type has MarshalSSZDyn method
+	methodSet := types.NewMethodSet(typ)
+	return p.hasMethodWithSignature(methodSet, "MarshalSSZDynWriter", []string{"DynamicSpecs", "io.Writer"}, []string{"error"})
+}
+
+func (p *Parser) getDynamicReaderCompatibility(typ types.Type) bool {
+	// Check if type has UnmarshalSSZDyn method
+	methodSet := types.NewMethodSet(typ)
+	return p.hasMethodWithSignature(methodSet, "UnmarshalSSZDynReader", []string{"DynamicSpecs", "io.Reader"}, []string{"error"})
+}
+
 func (p *Parser) getDynamicSizerCompatibility(typ types.Type) bool {
 	// Check if type has SizeSSZDyn method
 	methodSet := types.NewMethodSet(typ)
@@ -1270,7 +1288,7 @@ func (p *Parser) typeMatches(typ types.Type, expectedTypeStr string) bool {
 		if basic, ok := typ.(*types.Basic); ok {
 			return basic.Kind() == types.Int
 		}
-	case "DynamicSpecs", "HashWalker":
+	case "DynamicSpecs", "HashWalker", "io.Writer", "io.Reader":
 		return true
 	}
 	return false

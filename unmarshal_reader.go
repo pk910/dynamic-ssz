@@ -67,6 +67,7 @@ func (d *DynSsz) unmarshalTypeReader(ctx *unmarshalReaderContext, targetType *Ty
 
 	hasDynamicSize := targetType.SszTypeFlags&SszTypeFlagHasDynamicSize != 0
 	isFastsszUnmarshaler := targetType.SszCompatFlags&SszCompatFlagFastSSZMarshaler != 0
+	useDynamicReader := targetType.SszCompatFlags&SszCompatFlagDynamicReader != 0
 	useDynamicUnmarshal := targetType.SszCompatFlags&SszCompatFlagDynamicUnmarshaler != 0 && !(hasDynamicSize || targetType.Size > d.BufferSize)
 	useFastSsz := !d.NoFastSsz && isFastsszUnmarshaler && !(hasDynamicSize || targetType.Size > d.BufferSize)
 	if !useFastSsz && targetType.SszType == SszCustomType {
@@ -77,7 +78,20 @@ func (d *DynSsz) unmarshalTypeReader(ctx *unmarshalReaderContext, targetType *Ty
 		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), targetType.Type.Name(), targetType.Kind, useFastSsz, isFastsszUnmarshaler, hasDynamicSize)
 	}
 
-	if useFastSsz {
+	if useDynamicReader {
+		// Use dynamic unmarshaler - can always be used even with dynamic specs
+		unmarshaller, ok := targetValue.Addr().Interface().(sszutils.DynamicReader)
+		if ok {
+			err := unmarshaller.UnmarshalSSZDynReader(d, ctx.reader)
+			if err != nil {
+				return err
+			}
+		} else {
+			useDynamicReader = false
+		}
+	}
+
+	if !useDynamicReader && useFastSsz {
 		unmarshaller, ok := targetValue.Addr().Interface().(sszutils.FastsszUnmarshaler)
 		if ok {
 			buf := ctx.buffer[:targetType.Size]
@@ -94,7 +108,7 @@ func (d *DynSsz) unmarshalTypeReader(ctx *unmarshalReaderContext, targetType *Ty
 		}
 	}
 
-	if !useFastSsz && useDynamicUnmarshal {
+	if !useDynamicReader && !useFastSsz && useDynamicUnmarshal {
 		// Use dynamic unmarshaler - can always be used even with dynamic specs
 		unmarshaller, ok := targetValue.Addr().Interface().(sszutils.DynamicUnmarshaler)
 		if ok {
@@ -112,7 +126,7 @@ func (d *DynSsz) unmarshalTypeReader(ctx *unmarshalReaderContext, targetType *Ty
 		}
 	}
 
-	if !useFastSsz && !useDynamicUnmarshal {
+	if !useDynamicReader && !useFastSsz && !useDynamicUnmarshal {
 		// can't use fastssz, use dynamic unmarshaling
 		var err error
 		switch targetType.SszType {

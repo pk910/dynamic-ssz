@@ -4,6 +4,8 @@
 
 package sszutils
 
+import "io"
+
 // FastsszMarshaler is the interface implemented by types that can marshal themselves into valid SZZ using fastssz.
 type FastsszMarshaler interface {
 	MarshalSSZTo(dst []byte) ([]byte, error)
@@ -28,6 +30,16 @@ type DynamicMarshaler interface {
 // DynamicUnmarshaler is the interface implemented by types that can unmarshal using dynamic SSZ
 type DynamicUnmarshaler interface {
 	UnmarshalSSZDyn(ds DynamicSpecs, buf []byte) error
+}
+
+// DynamicReader is the interface implemented by types that can unmarshal themselves from an io.Reader using dynamic SSZ
+type DynamicReader interface {
+	UnmarshalSSZDynReader(ds DynamicSpecs, r io.Reader) error
+}
+
+// DynamicWriter is the interface implemented by types that can write themselves to an io.Writer using dynamic SSZ
+type DynamicWriter interface {
+	MarshalSSZDynWriter(ds DynamicSpecs, w io.Writer) error
 }
 
 // DynamicSizer is the interface implemented by types that can calculate their own SSZ size dynamically

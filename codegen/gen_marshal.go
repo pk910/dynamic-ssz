@@ -156,9 +156,17 @@ func (ctx *marshalContext) marshalType(desc *dynssz.TypeDescriptor, varName stri
 	// Handle types that have generated methods we can call
 	hasDynamicSize := desc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
 	isFastsszMarshaler := desc.SszCompatFlags&dynssz.SszCompatFlagFastSSZMarshaler != 0
+	isDynamicMarshaler := desc.SszCompatFlags&dynssz.SszCompatFlagDynamicMarshaler != 0 && !ctx.options.WithoutDynamicExpressions
+	isDynamicWriter := desc.SszCompatFlags&dynssz.SszCompatFlagDynamicWriter != 0 && !ctx.options.WithoutDynamicExpressions
 	useFastSsz := !ctx.options.NoFastSsz && isFastsszMarshaler && !hasDynamicSize
-	if !useFastSsz && desc.SszType == dynssz.SszCustomType {
+	if !useFastSsz && !isDynamicMarshaler && desc.SszType == dynssz.SszCustomType {
 		useFastSsz = true
+	}
+
+	if isDynamicMarshaler && !isRoot {
+		ctx.appendCode(indent, "if dst, err = %s.MarshalSSZDyn(ds, dst); err != nil {\n\treturn dst, err\n}\n", varName)
+		ctx.usedDynSpecs = true
+		return nil
 	}
 
 	if useFastSsz && !isRoot {
@@ -166,8 +174,11 @@ func (ctx *marshalContext) marshalType(desc *dynssz.TypeDescriptor, varName stri
 		return nil
 	}
 
-	if desc.SszCompatFlags&dynssz.SszCompatFlagDynamicMarshaler != 0 && !isRoot {
-		ctx.appendCode(indent, "if dst, err = %s.MarshalSSZDyn(ds, dst); err != nil {\n\treturn dst, err\n}\n", varName)
+	if isDynamicWriter && !isRoot {
+		streamAlias := ctx.typePrinter.AddImport("github.com/pk910/dynamic-ssz/stream", "stream")
+		ctx.appendCode(indent, "writer := %s.NewBufferWriter(dst)\n", streamAlias)
+		ctx.appendCode(indent, "if err = %s.MarshalSSZDynWriter(ds, writer); err != nil {\n\treturn dst, err\n}\n", varName)
+		ctx.appendCode(indent, "dst = writer.Bytes()\n")
 		ctx.usedDynSpecs = true
 		return nil
 	}

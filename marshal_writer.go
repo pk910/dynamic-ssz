@@ -64,6 +64,7 @@ func (d *DynSsz) marshalTypeWriter(ctx *marshalWriterContext, sourceType *TypeDe
 
 	hasDynamicSize := sourceType.SszTypeFlags&SszTypeFlagHasDynamicSize != 0
 	isFastsszMarshaler := sourceType.SszCompatFlags&SszCompatFlagFastSSZMarshaler != 0
+	useDynamicWriter := sourceType.SszCompatFlags&SszCompatFlagDynamicWriter != 0
 	useDynamicMarshal := sourceType.SszCompatFlags&SszCompatFlagDynamicMarshaler != 0 && !(hasDynamicSize || sourceType.Size > d.BufferSize)
 	useFastSsz := !d.NoFastSsz && isFastsszMarshaler && !(hasDynamicSize || sourceType.Size > d.BufferSize)
 	if !useFastSsz && sourceType.SszType == SszCustomType {
@@ -74,7 +75,20 @@ func (d *DynSsz) marshalTypeWriter(ctx *marshalWriterContext, sourceType *TypeDe
 		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, isFastsszMarshaler, hasDynamicSize)
 	}
 
-	if useFastSsz {
+	if useDynamicWriter {
+		// Use dynamic marshaler - can always be used even with dynamic specs
+		marshaller, ok := getPtr(sourceValue).Interface().(sszutils.DynamicWriter)
+		if ok {
+			err := marshaller.MarshalSSZDynWriter(d, ctx.writer)
+			if err != nil {
+				return err
+			}
+		} else {
+			useDynamicWriter = false
+		}
+	}
+
+	if !useDynamicWriter && useFastSsz {
 		marshaller, ok := getPtr(sourceValue).Interface().(sszutils.FastsszMarshaler)
 		if ok {
 			buf := ctx.buffer[:0]
@@ -91,7 +105,7 @@ func (d *DynSsz) marshalTypeWriter(ctx *marshalWriterContext, sourceType *TypeDe
 		}
 	}
 
-	if !useFastSsz && useDynamicMarshal {
+	if !useDynamicWriter && !useFastSsz && useDynamicMarshal {
 		// Use dynamic marshaler - can always be used even with dynamic specs
 		marshaller, ok := getPtr(sourceValue).Interface().(sszutils.DynamicMarshaler)
 		if ok {
@@ -109,7 +123,7 @@ func (d *DynSsz) marshalTypeWriter(ctx *marshalWriterContext, sourceType *TypeDe
 		}
 	}
 
-	if !useFastSsz && !useDynamicMarshal {
+	if !useDynamicWriter && !useFastSsz && !useDynamicMarshal {
 		// can't use fastssz, use dynamic marshaling
 		var err error
 		switch sourceType.SszType {

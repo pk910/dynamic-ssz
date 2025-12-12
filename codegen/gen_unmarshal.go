@@ -265,9 +265,17 @@ func (ctx *unmarshalContext) unmarshalType(desc *dynssz.TypeDescriptor, varName 
 	// Handle types that have generated methods we can call
 	hasDynamicSize := desc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
 	isFastsszUnmarshaler := desc.SszCompatFlags&dynssz.SszCompatFlagFastSSZMarshaler != 0
+	isDynamicUnmarshaler := desc.SszCompatFlags&dynssz.SszCompatFlagDynamicUnmarshaler != 0 && !ctx.options.WithoutDynamicExpressions
+	isDynamicReader := desc.SszCompatFlags&dynssz.SszCompatFlagDynamicReader != 0 && !ctx.options.WithoutDynamicExpressions
 	useFastSsz := !ctx.options.NoFastSsz && isFastsszUnmarshaler && !hasDynamicSize
-	if !useFastSsz && desc.SszType == dynssz.SszCustomType {
+	if !useFastSsz && !isDynamicUnmarshaler && desc.SszType == dynssz.SszCustomType {
 		useFastSsz = true
+	}
+
+	if isDynamicUnmarshaler && !isRoot {
+		ctx.appendCode(indent, "if err = %s.UnmarshalSSZDyn(ds, buf); err != nil {\n\treturn err\n}\n", varName)
+		ctx.usedDynSpecs = true
+		return nil
 	}
 
 	if useFastSsz && !isRoot {
@@ -275,8 +283,13 @@ func (ctx *unmarshalContext) unmarshalType(desc *dynssz.TypeDescriptor, varName 
 		return nil
 	}
 
-	if desc.SszCompatFlags&dynssz.SszCompatFlagDynamicUnmarshaler != 0 && !isRoot {
-		ctx.appendCode(indent, "if err = %s.UnmarshalSSZDyn(ds, buf); err != nil {\n\treturn err\n}\n", varName)
+	if isDynamicReader && !isRoot {
+		streamAlias := ctx.typePrinter.AddImport("github.com/pk910/dynamic-ssz/stream", "stream")
+		bytesAlias := ctx.typePrinter.AddImport("bytes", "bytes")
+		ctx.appendCode(indent, "reader := %s.NewLimitedReader(%s.NewReader(buf))\n", streamAlias, bytesAlias)
+		ctx.appendCode(indent, "reader.PushLimit(uint64(len(buf)))\n")
+		ctx.appendCode(indent, "if err = %s.UnmarshalSSZDynReader(ds, reader); err != nil {\n\treturn err\n}\n", varName)
+		ctx.appendCode(indent, "if reader.PopLimit() != uint64(len(buf)) {\n\treturn sszutils.ErrUnexpectedEOF\n}\n")
 		ctx.usedDynSpecs = true
 		return nil
 	}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pk910/dynamic-ssz/sszutils"
+	"github.com/pk910/dynamic-ssz/stream"
 )
 
 // marshalType is the core recursive function for marshalling Go values into SSZ-encoded data.
@@ -48,6 +49,7 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 	hasDynamicSize := sourceType.SszTypeFlags&SszTypeFlagHasDynamicSize != 0
 	isFastsszMarshaler := sourceType.SszCompatFlags&SszCompatFlagFastSSZMarshaler != 0
 	useDynamicMarshal := sourceType.SszCompatFlags&SszCompatFlagDynamicMarshaler != 0
+	useDynamicWriter := sourceType.SszCompatFlags&SszCompatFlagDynamicWriter != 0
 	useFastSsz := !d.NoFastSsz && isFastsszMarshaler && !hasDynamicSize
 	if !useFastSsz && sourceType.SszType == SszCustomType {
 		useFastSsz = true
@@ -84,7 +86,22 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 		}
 	}
 
-	if !useFastSsz && !useDynamicMarshal {
+	if !useFastSsz && useDynamicWriter {
+		// Use dynamic marshaler - can always be used even with dynamic specs
+		marshaller, ok := getPtr(sourceValue).Interface().(sszutils.DynamicWriter)
+		if ok {
+			writer := stream.NewBufferWriter(buf)
+			err := marshaller.MarshalSSZDynWriter(d, writer)
+			if err != nil {
+				return nil, err
+			}
+			buf = writer.Bytes()
+		} else {
+			useDynamicWriter = false
+		}
+	}
+
+	if !useFastSsz && !useDynamicMarshal && !useDynamicWriter {
 		// can't use fastssz, use dynamic marshaling
 		var err error
 		switch sourceType.SszType {

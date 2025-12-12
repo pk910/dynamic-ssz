@@ -15,6 +15,8 @@ var sszUnmarshalerType = reflect.TypeOf((*sszutils.FastsszUnmarshaler)(nil)).Ele
 var sszHashRootType = reflect.TypeOf((*sszutils.FastsszHashRoot)(nil)).Elem()
 var dynamicMarshalerType = reflect.TypeOf((*sszutils.DynamicMarshaler)(nil)).Elem()
 var dynamicUnmarshalerType = reflect.TypeOf((*sszutils.DynamicUnmarshaler)(nil)).Elem()
+var dynamicReaderType = reflect.TypeOf((*sszutils.DynamicReader)(nil)).Elem()
+var dynamicWriterType = reflect.TypeOf((*sszutils.DynamicWriter)(nil)).Elem()
 var dynamicSizerType = reflect.TypeOf((*sszutils.DynamicSizer)(nil)).Elem()
 var dynamicHashRootType = reflect.TypeOf((*sszutils.DynamicHashRoot)(nil)).Elem()
 
@@ -100,6 +102,18 @@ func (d *DynSsz) getDynamicMarshalerCompatibility(targetType reflect.Type) bool 
 func (d *DynSsz) getDynamicUnmarshalerCompatibility(targetType reflect.Type) bool {
 	targetPtrType := reflect.New(targetType).Type()
 	return targetPtrType.Implements(dynamicUnmarshalerType)
+}
+
+// getDynamicReaderCompatibility checks if a type implements the DynamicReader interface
+func (d *DynSsz) getDynamicReaderCompatibility(targetType reflect.Type) bool {
+	targetPtrType := reflect.New(targetType).Type()
+	return targetPtrType.Implements(dynamicReaderType)
+}
+
+// getDynamicWriterCompatibility checks if a type implements the DynamicWriter interface
+func (d *DynSsz) getDynamicWriterCompatibility(targetType reflect.Type) bool {
+	targetPtrType := reflect.New(targetType).Type()
+	return targetPtrType.Implements(dynamicWriterType)
 }
 
 // getDynamicSizerCompatibility checks if a type implements the DynamicSizer interface
