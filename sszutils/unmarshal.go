@@ -4,7 +4,10 @@
 
 package sszutils
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"io"
+)
 
 // ---- Unmarshal functions ----
 
@@ -31,6 +34,65 @@ func UnmarshallUint8(src []byte) uint8 {
 // UnmarshalBool unmarshals a boolean from the src input
 func UnmarshalBool(src []byte) bool {
 	return src[0] == 1
+}
+
+// ---- offset functions ----
+
+// ReadOffset reads an offset from buf
+func ReadOffsetReader(reader io.Reader) (uint64, error) {
+	var buf [4]byte
+	if read, err := io.ReadFull(reader, buf[:]); err != nil || read != 4 {
+		return 0, ErrUnexpectedEOF
+	}
+	return uint64(binary.LittleEndian.Uint32(buf[:])), nil
+}
+
+// UnmarshallUint64 unmarshals a little endian uint64 from the src input
+func UnmarshallUint64Reader(reader io.Reader) (uint64, error) {
+	var buf [8]byte
+	if read, err := io.ReadFull(reader, buf[:]); err != nil || read != 8 {
+		return 0, ErrUnexpectedEOF
+	}
+	return binary.LittleEndian.Uint64(buf[:]), nil
+}
+
+// UnmarshallUint32 unmarshals a little endian uint32 from the src input
+func UnmarshallUint32Reader(reader io.Reader) (uint32, error) {
+	var buf [4]byte
+	if read, err := io.ReadFull(reader, buf[:]); err != nil || read != 4 {
+		return 0, ErrUnexpectedEOF
+	}
+	return binary.LittleEndian.Uint32(buf[:]), nil
+}
+
+// UnmarshallUint16 unmarshals a little endian uint16 from the src input
+func UnmarshallUint16Reader(reader io.Reader) (uint16, error) {
+	var buf [2]byte
+	if read, err := io.ReadFull(reader, buf[:]); err != nil || read != 2 {
+		return 0, ErrUnexpectedEOF
+	}
+	return binary.LittleEndian.Uint16(buf[:]), nil
+}
+
+// UnmarshallUint8 unmarshals a little endian uint8 from the src input
+func UnmarshallUint8Reader(reader io.Reader) (uint8, error) {
+	var buf [1]byte
+	if read, err := io.ReadFull(reader, buf[:]); err != nil || read != 1 {
+		return 0, ErrUnexpectedEOF
+	}
+	return uint8(buf[0]), nil
+}
+
+// UnmarshalBool unmarshals a boolean from the src input
+func UnmarshalBoolReader(reader io.Reader) (bool, error) {
+	var buf [1]byte
+	if read, err := io.ReadFull(reader, buf[:]); err != nil || read != 1 {
+		return false, ErrUnexpectedEOF
+	}
+	if buf[0] != 1 && buf[0] != 0 {
+		return false, ErrInvalidValueRange
+	}
+	return buf[0] == 1, nil
 }
 
 // ---- offset functions ----

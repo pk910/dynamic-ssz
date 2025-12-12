@@ -371,6 +371,40 @@ func TestUnmarshal(t *testing.T) {
 	}
 }
 
+func TestUnmarshalReader(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	for idx, test := range unmarshalTestMatrix {
+		obj := &struct {
+			Data any
+		}{}
+		// reflection hack: create new instance of payload with zero values and assign to obj.Data
+		reflect.ValueOf(obj).Elem().Field(0).Set(reflect.New(reflect.TypeOf(test.payload)))
+
+		err := dynssz.UnmarshalSSZReader(obj.Data, bytes.NewReader(test.expected), int64(len(test.expected)))
+
+		switch {
+		case test.expected == nil && err != nil:
+			// expected error
+		case err != nil:
+			t.Errorf("test %v error: %v", idx, err)
+		default:
+			objJson, err1 := json.Marshal(obj.Data)
+			payloadJson, err2 := json.Marshal(test.payload)
+			if err1 != nil {
+				t.Errorf("failed json encode: %v", err1)
+			}
+			if err2 != nil {
+				t.Errorf("failed json encode: %v", err2)
+			}
+			if !bytes.Equal(objJson, payloadJson) {
+				t.Errorf("test %v failed: got %v, wanted %v", idx, string(objJson), string(payloadJson))
+			}
+		}
+	}
+}
+
 func TestStringVsByteContainerUnmarshalEquivalence(t *testing.T) {
 	type StringContainer struct {
 		Data string `ssz-max:"100"`

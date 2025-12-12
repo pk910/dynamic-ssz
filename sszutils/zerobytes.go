@@ -4,6 +4,8 @@
 
 package sszutils
 
+import "io"
+
 var zeroBytes []byte
 
 func ZeroBytes() []byte {
@@ -27,4 +29,23 @@ func AppendZeroPadding(buf []byte, count int) []byte {
 		count -= toCopy
 	}
 	return buf
+}
+
+// AppendZeroPaddingWriter appends the specified number of zero bytes to buf
+func AppendZeroPaddingWriter(writer io.Writer, count int) error {
+	if len(zeroBytes) == 0 {
+		zeroBytes = ZeroBytes()
+	}
+	for count > 0 {
+		toCopy := count
+		if toCopy > len(zeroBytes) {
+			toCopy = len(zeroBytes)
+		}
+		_, err := writer.Write(zeroBytes[:toCopy])
+		if err != nil {
+			return err
+		}
+		count -= toCopy
+	}
+	return nil
 }

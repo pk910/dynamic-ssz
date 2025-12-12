@@ -714,6 +714,7 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 	} else {
 		desc.Size = totalSize
 	}
+	desc.Len = totalSize
 
 	return nil
 }
