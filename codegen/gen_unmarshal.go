@@ -65,16 +65,10 @@ func generateUnmarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings
 	sizeCodeBuf := strings.Builder{}
 	ctx := &unmarshalContext{
 		appendCode: func(indent int, code string, args ...any) {
-			if len(args) > 0 {
-				code = fmt.Sprintf(code, args...)
-			}
-			codeBuf.WriteString(indentStr(code, indent))
+			appendCode(&codeBuf, indent, code, args...)
 		},
 		appendSizeCode: func(indent int, code string, args ...any) {
-			if len(args) > 0 {
-				code = fmt.Sprintf(code, args...)
-			}
-			sizeCodeBuf.WriteString(indentStr(code, indent))
+			appendCode(&sizeCodeBuf, indent, code, args...)
 		},
 		typePrinter: typePrinter,
 		options:     options,

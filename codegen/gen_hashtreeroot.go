@@ -57,10 +57,7 @@ func generateHashTreeRoot(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *stri
 	codeBuf := strings.Builder{}
 	ctx := &hashTreeRootContext{
 		appendCode: func(indent int, code string, args ...any) {
-			if len(args) > 0 {
-				code = fmt.Sprintf(code, args...)
-			}
-			codeBuf.WriteString(indentStr(code, indent))
+			appendCode(&codeBuf, indent, code, args...)
 		},
 		typePrinter: typePrinter,
 		options:     options,

@@ -86,8 +86,8 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 		}
 	}
 
-	if !useFastSsz && useDynamicWriter {
-		// Use dynamic marshaler - can always be used even with dynamic specs
+	if !useFastSsz && !useDynamicMarshal && useDynamicWriter {
+		// Use dynamic writer - can always be used even with dynamic specs
 		marshaller, ok := getPtr(sourceValue).Interface().(sszutils.DynamicWriter)
 		if ok {
 			writer := stream.NewBufferWriter(buf)

@@ -77,6 +77,7 @@ func (cg *CodeGenerator) analyzeTypes() error {
 			// set availability of dynamic methods (we will generate them in a bit and we want cross references)
 			if !t.Options.NoMarshalSSZ && !t.Options.WithoutDynamicExpressions {
 				compatFlags |= dynssz.SszCompatFlagDynamicMarshaler
+				compatFlags |= dynssz.SszCompatFlagDynamicWriter
 			}
 			if !t.Options.NoUnmarshalSSZ && !t.Options.WithoutDynamicExpressions {
 				compatFlags |= dynssz.SszCompatFlagDynamicUnmarshaler
@@ -297,6 +298,11 @@ func (cg *CodeGenerator) generateCode(desc *dynssz.TypeDescriptor, typePrinter *
 		err = generateMarshal(desc, codeBuilder, typePrinter, options)
 		if err != nil {
 			return fmt.Errorf("failed to generate marshal for %s: %w", desc.Type.Name(), err)
+		}
+
+		err = generateMarshalWriter(desc, codeBuilder, typePrinter, options)
+		if err != nil {
+			return fmt.Errorf("failed to generate marshal writer for %s: %w", desc.Type.Name(), err)
 		}
 	}
 
