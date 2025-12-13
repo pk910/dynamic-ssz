@@ -327,6 +327,23 @@ func ParseBitlist(dst, buf []byte) ([]byte, uint64) {
 	return res, size
 }
 
+func ParseBitlistWithHasher(hw sszutils.HashWalker, buf []byte) ([]byte, uint64) {
+	if h, ok := hw.(*Hasher); ok {
+		var size uint64
+		h.tmp, size = ParseBitlist(h.tmp[:0], buf)
+		return h.tmp, size
+	} else {
+		var size uint64
+		var bitlist []byte
+		hw.WithTemp(func(tmp []byte) []byte {
+			tmp, size = ParseBitlist(tmp[:0], buf)
+			bitlist = tmp
+			return tmp
+		})
+		return bitlist, size
+	}
+}
+
 // PutBitlist appends a ssz bitlist
 func (h *Hasher) PutBitlist(bb []byte, maxSize uint64) {
 	var size uint64

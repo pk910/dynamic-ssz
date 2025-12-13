@@ -709,14 +709,7 @@ func (d *DynSsz) buildRootFromBitlist(sourceType *TypeDescriptor, sourceValue re
 		maxSize = uint64(len(bytes) * 8)
 	}
 
-	var size uint64
-	var bitlist []byte
-	hh.WithTemp(func(tmp []byte) []byte {
-		tmp, size = hasher.ParseBitlist(tmp[:0], bytes)
-		bitlist = tmp
-		return tmp
-	})
-
+	bitlist, size := hasher.ParseBitlistWithHasher(hh, bytes)
 	if size > maxSize {
 		return sszutils.ErrListTooBig
 	}
