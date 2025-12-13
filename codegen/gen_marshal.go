@@ -5,6 +5,7 @@
 package codegen
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"reflect"
 	"slices"
@@ -25,10 +26,14 @@ import (
 //   - options: Code generation options controlling output behavior
 //   - usedDynSpecs: Flag tracking whether generated code uses dynamic SSZ functionality
 type marshalContext struct {
-	appendCode   func(indent int, code string, args ...any)
-	typePrinter  *TypePrinter
-	options      *CodeGeneratorOptions
-	usedDynSpecs bool
+	appendCode     func(indent int, code string, args ...any)
+	appendExprCode func(indent int, code string, args ...any)
+	typePrinter    *TypePrinter
+	options        *CodeGeneratorOptions
+	usedDynSpecs   bool
+	usedCtx        bool
+	exprVarCounter int
+	exprVarMap     map[[32]byte]string
 }
 
 // generateMarshal generates marshal methods for a specific type.
@@ -52,6 +57,7 @@ type marshalContext struct {
 //   - error: An error if code generation fails
 func generateMarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
 	codeBuf := strings.Builder{}
+	exprCodeBuf := strings.Builder{}
 	ctx := &marshalContext{
 		appendCode: func(indent int, code string, args ...any) {
 			if len(args) > 0 {
@@ -59,8 +65,15 @@ func generateMarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.B
 			}
 			codeBuf.WriteString(indentStr(code, indent))
 		},
+		appendExprCode: func(indent int, code string, args ...any) {
+			if len(args) > 0 {
+				code = fmt.Sprintf(code, args...)
+			}
+			exprCodeBuf.WriteString(indentStr(code, indent))
+		},
 		typePrinter: typePrinter,
 		options:     options,
+		exprVarMap:  make(map[[32]byte]string),
 	}
 
 	// Generate main function signature
@@ -86,11 +99,37 @@ func generateMarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.B
 		codeBuilder.WriteString("}\n")
 	}
 
+	buildFnCode := func() {
+		if ctx.usedCtx {
+			codeBuilder.WriteString("\ttype marshalCtx struct {\n")
+			structItems := 0
+			if ctx.exprVarCounter > 0 {
+				ctx.usedDynSpecs = true
+				codeBuilder.WriteString(fmt.Sprintf("\t\texpr [%v]uint64\n", ctx.exprVarCounter))
+				structItems++
+			}
+			if structItems > 0 {
+				codeBuilder.WriteString("\n")
+			}
+			if ctx.usedDynSpecs {
+				codeBuilder.WriteString("\t\tds sszutils.DynamicSpecs\n")
+			}
+			codeBuilder.WriteString("\t}\n\n")
+			codeBuilder.WriteString("\tctx := &marshalCtx{}\n")
+
+			if ctx.usedDynSpecs {
+				codeBuilder.WriteString("\tctx.ds = ds\n")
+			}
+		}
+		codeBuilder.WriteString(exprCodeBuf.String())
+		codeBuilder.WriteString(codeBuf.String())
+	}
+
 	if genStaticFn {
 		if !ctx.usedDynSpecs {
 			codeBuilder.WriteString(fmt.Sprintf("func (t %s) MarshalSSZTo(buf []byte) (dst []byte, err error) {\n", typeName))
 			codeBuilder.WriteString("\tdst = buf\n")
-			codeBuilder.WriteString(codeBuf.String())
+			buildFnCode()
 			codeBuilder.WriteString("\treturn dst, nil\n")
 			codeBuilder.WriteString("}\n\n")
 		} else {
@@ -105,7 +144,7 @@ func generateMarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.B
 		if ctx.usedDynSpecs {
 			codeBuilder.WriteString(fmt.Sprintf("func (t %s) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {\n", typeName))
 			codeBuilder.WriteString("\tdst = buf\n")
-			codeBuilder.WriteString(codeBuf.String())
+			buildFnCode()
 			codeBuilder.WriteString("\treturn dst, nil\n")
 			codeBuilder.WriteString("}\n\n")
 		} else {
@@ -147,6 +186,30 @@ func (ctx *marshalContext) isInlineable(desc *dynssz.TypeDescriptor) bool {
 	return false
 }
 
+// getLimitExprVar generates a variable name for cached limit expression calculations.
+func (ctx *marshalContext) getExprVar(expr string, defaultValue uint64) (string, error) {
+	if expr == "" {
+		return fmt.Sprintf("%v", defaultValue), nil
+	}
+
+	exprKey := sha256.Sum256([]byte(fmt.Sprintf("%s\n%v", expr, defaultValue)))
+	if exprVar, ok := ctx.exprVarMap[exprKey]; ok {
+		return exprVar, nil
+	}
+
+	exprVar := fmt.Sprintf("ctx.expr[%d]", ctx.exprVarCounter)
+	ctx.exprVarCounter++
+	ctx.usedCtx = true
+
+	ctx.appendExprCode(1, "%s, err = sszutils.ResolveSpecValueWithDefault(ds, \"%s\", %d)\n", exprVar, expr, defaultValue)
+	ctx.appendExprCode(1, "if err != nil {\n\treturn dst, err\n}\n")
+	ctx.usedDynSpecs = true
+
+	ctx.exprVarMap[exprKey] = exprVar
+
+	return exprVar, nil
+}
+
 // marshalType generates marshal code for any SSZ type, delegating to specific marshalers.
 func (ctx *marshalContext) marshalType(desc *dynssz.TypeDescriptor, varName string, indent int, isRoot bool) error {
 	if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
@@ -167,8 +230,9 @@ func (ctx *marshalContext) marshalType(desc *dynssz.TypeDescriptor, varName stri
 	}
 
 	if desc.SszCompatFlags&dynssz.SszCompatFlagDynamicMarshaler != 0 && !isRoot {
-		ctx.appendCode(indent, "if dst, err = %s.MarshalSSZDyn(ds, dst); err != nil {\n\treturn dst, err\n}\n", varName)
+		ctx.appendCode(indent, "if dst, err = %s.MarshalSSZDyn(ctx.ds, dst); err != nil {\n\treturn dst, err\n}\n", varName)
 		ctx.usedDynSpecs = true
+		ctx.usedCtx = true
 		return nil
 	}
 
@@ -300,19 +364,23 @@ func (ctx *marshalContext) marshalVector(desc *dynssz.TypeDescriptor, varName st
 	if sizeExpression != nil {
 		ctx.usedDynSpecs = true
 		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
-			ctx.appendCode(indent, "hasLimit, bitlimit, err := ds.ResolveSpecValue(\"%s\")\n", *sizeExpression)
-			ctx.appendCode(indent, "if err != nil {\n\treturn dst, err\n}\n")
+			defaultLimit := desc.Len * 8
 			if desc.BitSize > 0 {
-				ctx.appendCode(indent, "if !hasLimit {\n\tbitlimit = %d\n}\n", desc.BitSize)
-			} else {
-				ctx.appendCode(indent, "if !hasLimit {\n\tbitlimit = %d\n}\n", desc.Len*8)
+				defaultLimit = desc.BitSize
 			}
+			exprVar, err := ctx.getExprVar(*sizeExpression, uint64(defaultLimit))
+			if err != nil {
+				return err
+			}
+			ctx.appendCode(indent, "bitlimit := %s\n", exprVar)
 			ctx.appendCode(indent, "limit := (bitlimit+7)/8\n")
 			bitlimitVar = "int(bitlimit)"
 		} else {
-			ctx.appendCode(indent, "hasLimit, limit, err := ds.ResolveSpecValue(\"%s\")\n", *sizeExpression)
-			ctx.appendCode(indent, "if err != nil {\n\treturn dst, err\n}\n")
-			ctx.appendCode(indent, "if !hasLimit {\n\tlimit = %d\n}\n", desc.Len)
+			exprVar, err := ctx.getExprVar(*sizeExpression, uint64(desc.Len))
+			if err != nil {
+				return err
+			}
+			ctx.appendCode(indent, "limit := %s\n", exprVar)
 		}
 
 		limitVar = "int(limit)"
@@ -331,89 +399,72 @@ func (ctx *marshalContext) marshalVector(desc *dynssz.TypeDescriptor, varName st
 		limitVar = fmt.Sprintf("%d", desc.Len)
 	}
 
-	lenVar := ""
-	if desc.Kind != reflect.Array {
-		ctx.appendCode(indent, "vlen := len(%s)\n", varName)
-		ctx.appendCode(indent, "if vlen > %s {\n", limitVar)
-		ctx.appendCode(indent, "\treturn dst, sszutils.ErrVectorLength\n")
-		ctx.appendCode(indent, "}\n")
-		lenVar = "vlen"
-	} else if hasLimitVar {
-		ctx.appendCode(indent, "vlen := %d\n", desc.Len)
-		ctx.appendCode(indent, "if vlen > %s {\n\tvlen = %s\n}\n", limitVar, limitVar)
-		lenVar = "vlen"
-	} else {
-		lenVar = fmt.Sprintf("%d", desc.Len)
-	}
-
-	if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic == 0 {
-		// static elements
-		if desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 || desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
-			if bitlimitVar != "" {
-				ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
-				ctx.appendCode(indent, "if %s[%s-1] & paddingMask != 0 {\n", varName, lenVar)
-				ctx.appendCode(indent, "\treturn dst, sszutils.ErrVectorLength\n")
-				ctx.appendCode(indent, "}\n")
-			}
-			if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
-				ctx.appendCode(indent, "dst = append(dst, %s[:%s]...)\n", varName, lenVar)
-			} else {
-				ctx.appendCode(indent, "dst = append(dst, []byte(%s[:%s])...)\n", varName, lenVar)
-			}
+	if desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 || desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
+		lenVar := ""
+		if desc.Kind != reflect.Array {
+			ctx.appendCode(indent, "vlen := len(%s)\n", varName)
+			ctx.appendCode(indent, "if vlen > %s {\n", limitVar)
+			ctx.appendCode(indent, "\treturn dst, sszutils.ErrVectorLength\n")
+			ctx.appendCode(indent, "}\n")
+			lenVar = "vlen"
+		} else if hasLimitVar {
+			ctx.appendCode(indent, "vlen := %d\n", desc.Len)
+			ctx.appendCode(indent, "if vlen > %s {\n\tvlen = %s\n}\n", limitVar, limitVar)
+			lenVar = "vlen"
 		} else {
-			ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", lenVar)
-			valVar := "t"
-			if ctx.isInlineable(desc.ElemDesc) {
-				valVar = fmt.Sprintf("%s[i]", varName)
-			} else {
-				ctx.appendCode(indent, "\tt := %s%s[i]\n", ctx.getPtrPrefix(desc.ElemDesc), varName)
-			}
-			if err := ctx.marshalType(desc.ElemDesc, valVar, indent+1, false); err != nil {
-				return err
-			}
+			lenVar = fmt.Sprintf("%d", desc.Len)
+		}
+		if bitlimitVar != "" {
+			ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
+			ctx.appendCode(indent, "if %s[%s-1] & paddingMask != 0 {\n", varName, lenVar)
+			ctx.appendCode(indent, "\treturn dst, sszutils.ErrVectorLength\n")
 			ctx.appendCode(indent, "}\n")
 		}
-
+		if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
+			ctx.appendCode(indent, "dst = append(dst, %s[:%s]...)\n", varName, lenVar)
+		} else {
+			ctx.appendCode(indent, "dst = append(dst, []byte(%s[:%s])...)\n", varName, lenVar)
+		}
 		if desc.Kind != reflect.Array {
 			// append zero padding if we have less items than the limit
 			ctx.appendCode(indent, "if %s < %s {\n", lenVar, limitVar)
 			ctx.appendCode(indent, "\tdst = sszutils.AppendZeroPadding(dst, (%s-%s)*%d)\n", limitVar, lenVar, desc.ElemDesc.Size)
 			ctx.appendCode(indent, "}\n")
 		}
-	} else {
-		// dynamic elements
-		// reserve space for offsets
-		ctx.appendCode(indent, "dstlen := len(dst)\n")
-		ctx.appendCode(indent, "dst = sszutils.AppendZeroPadding(dst, %s*4)\n", limitVar)
-		ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", lenVar)
-		ctx.appendCode(indent, "\tsszutils.UpdateOffset(dst[dstlen+(i*4):dstlen+((i+1)*4)], len(dst)-dstlen)\n")
-		valVar := "t"
-		if ctx.isInlineable(desc.ElemDesc) {
-			valVar = fmt.Sprintf("%s[i]", varName)
-		} else {
-			ctx.appendCode(indent, "\tt := %s%s[i]\n", ctx.getPtrPrefix(desc.ElemDesc), varName)
+	} else if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic == 0 {
+		// static elements
+		isArrayStr := "false"
+		if desc.Kind == reflect.Array {
+			isArrayStr = "true"
+			ctx.appendCode(indent, "val := %s[:]\n", varName)
+			varName = "val"
 		}
-		if err := ctx.marshalType(desc.ElemDesc, valVar, indent+1, false); err != nil {
+		ctx.appendCode(indent, "dst, err = sszutils.MarshalStaticVector(ctx, dst, %s, %s, %v, %s, func(ctx *marshalCtx, buf []byte, v *%s) (dst []byte, err error) {\n", resolvePtrVar(varName), limitVar, desc.ElemDesc.Size, isArrayStr, ctx.typePrinter.TypeString(desc.ElemDesc))
+		ctx.usedCtx = true
+		ctx.appendCode(indent, "\tdst = buf\n")
+		if err := ctx.marshalType(desc.ElemDesc, "(*v)", indent+1, false); err != nil {
 			return err
 		}
-		ctx.appendCode(indent, "}\n")
-
-		if desc.Kind != reflect.Array {
-			// append zero padding if we have less items than the limit
-			ctx.appendCode(indent, "if %s < %s {\n", lenVar, limitVar)
-			if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
-				ctx.appendCode(indent, "\tzeroItem := new(%s)\n", ctx.typePrinter.InnerTypeString(desc.ElemDesc))
-			} else {
-				ctx.appendCode(indent, "\tvar zeroItem %s\n", ctx.typePrinter.TypeString(desc.ElemDesc))
-			}
-			ctx.appendCode(indent, "\tfor i := %s; i < %s; i++ {\n", lenVar, limitVar)
-			ctx.appendCode(indent, "\t\tsszutils.UpdateOffset(dst[dstlen+(i*4):dstlen+((i+1)*4)], len(dst)-dstlen)\n")
-			if err := ctx.marshalType(desc.ElemDesc, "zeroItem", indent+2, false); err != nil {
-				return err
-			}
-			ctx.appendCode(indent, "\t}\n")
-			ctx.appendCode(indent, "}\n")
+		ctx.appendCode(indent, "\treturn dst, nil\n")
+		ctx.appendCode(indent, "})\n")
+		ctx.appendCode(indent, "if err != nil {\n\treturn dst, err\n}\n")
+	} else {
+		// dynamic elements
+		isArrayStr := "false"
+		if desc.Kind == reflect.Array {
+			isArrayStr = "true"
+			ctx.appendCode(indent, "val := %s[:]\n", varName)
+			varName = "val"
 		}
+		ctx.appendCode(indent, "dst, err = sszutils.MarshalDynamicVector(ctx, dst, %s, %s, %v, func(ctx *marshalCtx, buf []byte, v *%s) (dst []byte, err error) {\n", resolvePtrVar(varName), limitVar, isArrayStr, ctx.typePrinter.TypeString(desc.ElemDesc))
+		ctx.usedCtx = true
+		ctx.appendCode(indent, "\tdst = buf\n")
+		if err := ctx.marshalType(desc.ElemDesc, "(*v)", indent+1, false); err != nil {
+			return err
+		}
+		ctx.appendCode(indent, "\treturn dst, nil\n")
+		ctx.appendCode(indent, "})\n")
+		ctx.appendCode(indent, "if err != nil {\n\treturn dst, err\n}\n")
 	}
 
 	return nil
@@ -431,17 +482,13 @@ func (ctx *marshalContext) marshalList(desc *dynssz.TypeDescriptor, varName stri
 
 	if maxExpression != nil {
 		ctx.usedDynSpecs = true
-		ctx.appendCode(indent, "hasMax, max, err := ds.ResolveSpecValue(\"%s\")\n", *maxExpression)
-		ctx.appendCode(indent, "if err != nil {\n")
-		ctx.appendCode(indent, "\treturn dst, err\n")
-		ctx.appendCode(indent, "}\n")
+		exprVar, err := ctx.getExprVar(*maxExpression, uint64(desc.Limit))
+		if err != nil {
+			return err
+		}
+		ctx.appendCode(indent, "max := %s\n", exprVar)
 		hasMax = true
 		maxVar = "int(max)"
-		if desc.Limit > 0 {
-			ctx.appendCode(indent, "if !hasMax {\n")
-			ctx.appendCode(indent, "\tmax = %d\n", desc.Limit)
-			ctx.appendCode(indent, "}\n")
-		}
 	} else if desc.Limit > 0 {
 		maxVar = fmt.Sprintf("%d", desc.Limit)
 		hasMax = true
@@ -465,44 +512,45 @@ func (ctx *marshalContext) marshalList(desc *dynssz.TypeDescriptor, varName stri
 		ctx.appendCode(indent, "}\n")
 	}
 
-	if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic == 0 {
+	if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
+		ctx.appendCode(indent, "dst = append(dst, %s[:]...)\n", varName)
+	} else if desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
+		ctx.appendCode(indent, "dst = append(dst, []byte(%s[:])...)\n", varName)
+	} else if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic == 0 {
 		// static elements
-		if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
-			ctx.appendCode(indent, "dst = append(dst, %s[:]...)\n", varName)
-		} else if desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
-			ctx.appendCode(indent, "dst = append(dst, []byte(%s[:])...)\n", varName)
-		} else {
-			addVlen()
-			ctx.appendCode(indent, "for i := 0; i < vlen; i++ {\n")
-			valVar := "t"
-			if ctx.isInlineable(desc.ElemDesc) {
-				valVar = fmt.Sprintf("%s[i]", varName)
-			} else {
-				ctx.appendCode(indent, "\tt := %s%s[i]\n", ctx.getPtrPrefix(desc.ElemDesc), varName)
-			}
-			if err := ctx.marshalType(desc.ElemDesc, valVar, indent+1, false); err != nil {
-				return err
-			}
-			ctx.appendCode(indent, "}\n")
+		isArrayStr := "false"
+		if desc.Kind == reflect.Array {
+			isArrayStr = "true"
+			ctx.appendCode(indent, "val := %s[:]\n", varName)
+			varName = "val"
 		}
-	} else {
-		// dynamic elements
-		// reserve space for offsets
-		ctx.appendCode(indent, "dstlen := len(dst)\n")
-		addVlen()
-		ctx.appendCode(indent, "dst = sszutils.AppendZeroPadding(dst, vlen*4)\n")
-		ctx.appendCode(indent, "for i := 0; i < vlen; i++ {\n")
-		ctx.appendCode(indent, "\tsszutils.UpdateOffset(dst[dstlen+(i*4):dstlen+((i+1)*4)], len(dst)-dstlen)\n")
-		valVar := "t"
-		if ctx.isInlineable(desc.ElemDesc) {
-			valVar = fmt.Sprintf("%s[i]", varName)
-		} else {
-			ctx.appendCode(indent, "\tt := %s%s[i]\n", ctx.getPtrPrefix(desc.ElemDesc), varName)
-		}
-		if err := ctx.marshalType(desc.ElemDesc, valVar, indent+1, false); err != nil {
+		ctx.appendCode(indent, "dst, err = sszutils.MarshalStaticList(ctx, dst, %s, %v, %s, func(ctx *marshalCtx, buf []byte, v *%s) (dst []byte, err error) {\n", resolvePtrVar(varName), desc.ElemDesc.Size, isArrayStr, ctx.typePrinter.TypeString(desc.ElemDesc))
+		ctx.usedCtx = true
+		ctx.appendCode(indent, "\tdst = buf\n")
+		if err := ctx.marshalType(desc.ElemDesc, "(*v)", indent+1, false); err != nil {
 			return err
 		}
-		ctx.appendCode(indent, "}\n")
+		ctx.appendCode(indent, "\treturn dst, nil\n")
+		ctx.appendCode(indent, "})\n")
+		ctx.appendCode(indent, "if err != nil {\n\treturn dst, err\n}\n")
+
+	} else {
+		// dynamic elements
+		isArrayStr := "false"
+		if desc.Kind == reflect.Array {
+			isArrayStr = "true"
+			ctx.appendCode(indent, "val := %s[:]\n", varName)
+			varName = "val"
+		}
+		ctx.appendCode(indent, "dst, err = sszutils.MarshalDynamicList(ctx, dst, %s, %s, func(ctx *marshalCtx, buf []byte, v *%s) (dst []byte, err error) {\n", resolvePtrVar(varName), isArrayStr, ctx.typePrinter.TypeString(desc.ElemDesc))
+		ctx.usedCtx = true
+		ctx.appendCode(indent, "\tdst = buf\n")
+		if err := ctx.marshalType(desc.ElemDesc, "(*v)", indent+1, false); err != nil {
+			return err
+		}
+		ctx.appendCode(indent, "\treturn dst, nil\n")
+		ctx.appendCode(indent, "})\n")
+		ctx.appendCode(indent, "if err != nil {\n\treturn dst, err\n}\n")
 	}
 
 	return nil
@@ -520,17 +568,13 @@ func (ctx *marshalContext) marshalBitlist(desc *dynssz.TypeDescriptor, varName s
 
 	if maxExpression != nil {
 		ctx.usedDynSpecs = true
-		ctx.appendCode(indent, "hasMax, max, err := ds.ResolveSpecValue(\"%s\")\n", *maxExpression)
-		ctx.appendCode(indent, "if err != nil {\n")
-		ctx.appendCode(indent, "\treturn dst, err\n")
-		ctx.appendCode(indent, "}\n")
+		exprVar, err := ctx.getExprVar(*maxExpression, uint64(desc.Limit))
+		if err != nil {
+			return err
+		}
+		ctx.appendCode(indent, "max := %s\n", exprVar)
 		hasMax = true
 		maxVar = "int(max)"
-		if desc.Limit > 0 {
-			ctx.appendCode(indent, "if !hasMax {\n")
-			ctx.appendCode(indent, "\tmax = %d\n", desc.Limit)
-			ctx.appendCode(indent, "}\n")
-		}
 	} else if desc.Limit > 0 {
 		maxVar = fmt.Sprintf("%d", desc.Limit)
 		hasMax = true

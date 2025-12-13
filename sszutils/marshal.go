@@ -48,3 +48,96 @@ func MarshalOffset(dst []byte, offset int) []byte {
 func UpdateOffset(dst []byte, offset int) {
 	binary.LittleEndian.PutUint32(dst, uint32(offset))
 }
+
+// MarshalStaticList marshals a list with static items from the src input with a callback function for each item
+func MarshalStaticList[C any, T any](ctx *C, dst []byte, val *[]T, itemSize int, isArray bool, itemCb func(ctx *C, dst []byte, val *T) ([]byte, error)) ([]byte, error) {
+	vlen := len(*val)
+	for i := 0; i < vlen; i++ {
+		if buf, err := itemCb(ctx, dst, &(*val)[i]); err != nil {
+			return nil, err
+		} else {
+			dst = buf
+		}
+	}
+
+	return dst, nil
+}
+
+// MarshalDynamicList marshals a list with dynamic items from the src input with a callback function for each item
+func MarshalDynamicList[C any, T any](ctx *C, dst []byte, val *[]T, isArray bool, itemCb func(ctx *C, dst []byte, val *T) ([]byte, error)) ([]byte, error) {
+	dstlen := len(dst)
+	vlen := len(*val)
+	dst = AppendZeroPadding(dst, vlen*4)
+
+	for i := 0; i < vlen; i++ {
+		UpdateOffset(dst[dstlen+(i*4):dstlen+((i+1)*4)], len(dst)-dstlen)
+		if buf, err := itemCb(ctx, dst, &(*val)[i]); err != nil {
+			return nil, err
+		} else {
+			dst = buf
+		}
+	}
+
+	return dst, nil
+}
+
+// UnmarshalStaticVector unmarshals a vector with static items from the src input with a callback function for each item
+func MarshalStaticVector[C any, T any](ctx *C, dst []byte, val *[]T, vectorSize int, itemSize int, isArray bool, itemCb func(ctx *C, dst []byte, val *T) ([]byte, error)) ([]byte, error) {
+	len := len(*val)
+	if len > vectorSize {
+		if !isArray {
+			return nil, ErrVectorLength
+		}
+		len = vectorSize
+	}
+
+	for i := 0; i < len; i++ {
+		if buf, err := itemCb(ctx, dst, &(*val)[i]); err != nil {
+			return nil, err
+		} else {
+			dst = buf
+		}
+	}
+
+	if !isArray && len < vectorSize {
+		dst = AppendZeroPadding(dst, (vectorSize-len)*itemSize)
+	}
+
+	return dst, nil
+}
+
+// MarshalDynamicVector marshals a vector with dynamic items from the src input with a callback function for each item
+func MarshalDynamicVector[C any, T any](ctx *C, dst []byte, val *[]T, vectorSize int, isArray bool, itemCb func(ctx *C, dst []byte, val *T) ([]byte, error)) ([]byte, error) {
+	vallen := len(*val)
+	if vallen > vectorSize {
+		if !isArray {
+			return nil, ErrVectorLength
+		}
+		vallen = vectorSize
+	}
+
+	dstlen := len(dst)
+	dst = AppendZeroPadding(dst, vectorSize*4)
+	for i := 0; i < vallen; i++ {
+		UpdateOffset(dst[dstlen+(i*4):dstlen+((i+1)*4)], len(dst)-dstlen)
+		if buf, err := itemCb(ctx, dst, &(*val)[i]); err != nil {
+			return nil, err
+		} else {
+			dst = buf
+		}
+	}
+
+	if !isArray && vectorSize > vallen {
+		zeroItem := new(T)
+		for i := vallen; i < vectorSize; i++ {
+			UpdateOffset(dst[dstlen+(i*4):dstlen+((i+1)*4)], len(dst)-dstlen)
+			if buf, err := itemCb(ctx, dst, zeroItem); err != nil {
+				return nil, err
+			} else {
+				dst = buf
+			}
+		}
+	}
+
+	return dst, nil
+}

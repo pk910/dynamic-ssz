@@ -34,12 +34,16 @@ import (
 type unmarshalContext struct {
 	appendCode     func(indent int, code string, args ...any)
 	appendSizeCode func(indent int, code string, args ...any)
+	appendExprCode func(indent int, code string, args ...any)
 	typePrinter    *TypePrinter
 	options        *CodeGeneratorOptions
 	usedDynSpecs   bool
+	usedCtx        bool
 	valVarCounter  int
 	sizeVarCounter int
+	exprVarCounter int
 	sizeVarMap     map[[32]byte]string
+	exprVarMap     map[[32]byte]string
 }
 
 // generateUnmarshal generates unmarshal methods for a specific type.
@@ -63,6 +67,7 @@ type unmarshalContext struct {
 func generateUnmarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
 	codeBuf := strings.Builder{}
 	sizeCodeBuf := strings.Builder{}
+	exprCodeBuf := strings.Builder{}
 	ctx := &unmarshalContext{
 		appendCode: func(indent int, code string, args ...any) {
 			if len(args) > 0 {
@@ -76,9 +81,16 @@ func generateUnmarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings
 			}
 			sizeCodeBuf.WriteString(indentStr(code, indent))
 		},
+		appendExprCode: func(indent int, code string, args ...any) {
+			if len(args) > 0 {
+				code = fmt.Sprintf(code, args...)
+			}
+			exprCodeBuf.WriteString(indentStr(code, indent))
+		},
 		typePrinter: typePrinter,
 		options:     options,
 		sizeVarMap:  make(map[[32]byte]string),
+		exprVarMap:  make(map[[32]byte]string),
 	}
 
 	// Generate main function signature
@@ -96,11 +108,33 @@ func generateUnmarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings
 		genStaticFn = true
 	}
 
+	buildFnCode := func() {
+		if ctx.usedCtx {
+			codeBuilder.WriteString("\ttype unmarshalCtx struct {\n")
+			if ctx.sizeVarCounter > 0 {
+				codeBuilder.WriteString(fmt.Sprintf("\t\tsize [%v]int\n", ctx.sizeVarCounter))
+			}
+			if ctx.exprVarCounter > 0 {
+				codeBuilder.WriteString(fmt.Sprintf("\t\texpr [%v]uint64\n", ctx.exprVarCounter))
+			}
+			if ctx.usedDynSpecs {
+				codeBuilder.WriteString("\t\tds sszutils.DynamicSpecs\n")
+			}
+			codeBuilder.WriteString("\t}\n\n")
+			codeBuilder.WriteString("\tctx := &unmarshalCtx{}\n")
+			if ctx.usedDynSpecs {
+				codeBuilder.WriteString("\tctx.ds = ds\n")
+			}
+		}
+		codeBuilder.WriteString(exprCodeBuf.String())
+		codeBuilder.WriteString(sizeCodeBuf.String())
+		codeBuilder.WriteString(codeBuf.String())
+	}
+
 	if genStaticFn {
 		if !ctx.usedDynSpecs {
 			codeBuilder.WriteString(fmt.Sprintf("func (t %s) UnmarshalSSZ(buf []byte) (err error) {\n", typeName))
-			codeBuilder.WriteString(sizeCodeBuf.String())
-			codeBuilder.WriteString(codeBuf.String())
+			buildFnCode()
 			codeBuilder.WriteString("\treturn nil\n")
 			codeBuilder.WriteString("}\n\n")
 		} else {
@@ -114,8 +148,7 @@ func generateUnmarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings
 	if genDynamicFn {
 		if ctx.usedDynSpecs {
 			codeBuilder.WriteString(fmt.Sprintf("func (t %s) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (err error) {\n", typeName))
-			codeBuilder.WriteString(sizeCodeBuf.String())
-			codeBuilder.WriteString(codeBuf.String())
+			buildFnCode()
 			codeBuilder.WriteString("\treturn nil\n")
 			codeBuilder.WriteString("}\n\n")
 		} else {
@@ -142,8 +175,8 @@ func (ctx *unmarshalContext) isInlinable(desc *dynssz.TypeDescriptor) bool {
 		return true
 	}
 
-	// Inline byte arrays/slices
-	if (desc.SszType == dynssz.SszVectorType || desc.SszType == dynssz.SszListType) && desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
+	// Inline arrays/slices
+	if desc.SszType == dynssz.SszVectorType || desc.SszType == dynssz.SszListType {
 		return true
 	}
 
@@ -181,8 +214,9 @@ func (ctx *unmarshalContext) getStaticSizeVar(desc *dynssz.TypeDescriptor) (stri
 		return sizeVar, nil
 	}
 
+	sizeVar := fmt.Sprintf("ctx.size[%d]", ctx.sizeVarCounter)
 	ctx.sizeVarCounter++
-	sizeVar := fmt.Sprintf("size%d", ctx.sizeVarCounter)
+	ctx.usedCtx = true
 
 	// recursive resolve static size with size expressions
 	switch desc.SszType {
@@ -213,7 +247,7 @@ func (ctx *unmarshalContext) getStaticSizeVar(desc *dynssz.TypeDescriptor) (stri
 		if len(fieldSizeVars) == 1 {
 			return fieldSizeVars[0], nil
 		}
-		ctx.appendSizeCode(1, "%s := %s // size expression for '%s'\n", sizeVar, strings.Join(fieldSizeVars, "+"), ctx.typePrinter.TypeStringWithoutTracking(desc))
+		ctx.appendSizeCode(1, "%s = %s // size expression for '%s'\n", sizeVar, strings.Join(fieldSizeVars, "+"), ctx.typePrinter.TypeStringWithoutTracking(desc))
 	case dynssz.SszVectorType, dynssz.SszBitvectorType, dynssz.SszUint128Type, dynssz.SszUint256Type:
 		sizeExpression := desc.SizeExpression
 		if ctx.options.WithoutDynamicExpressions {
@@ -234,20 +268,18 @@ func (ctx *unmarshalContext) getStaticSizeVar(desc *dynssz.TypeDescriptor) (stri
 			}
 
 			if sizeExpression != nil {
-				ctx.appendSizeCode(1, "%s := %s // size expression for '%s'\n", sizeVar, itemSizeVar, ctx.typePrinter.TypeStringWithoutTracking(desc))
-				ctx.appendSizeCode(1, "{\n")
-				ctx.appendSizeCode(2, "hasLimit, limit, err := ds.ResolveSpecValue(\"%s\")\n", *sizeExpression)
-				ctx.appendSizeCode(2, "if err != nil {\n\treturn err\n}\n")
-				if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
-					ctx.appendSizeCode(2, "if !hasLimit {\n\tlimit = %d\n} else {\n\tlimit = (limit+7)/8\n}\n", desc.Len)
-				} else {
-					ctx.appendSizeCode(2, "if !hasLimit {\n\tlimit = %d\n}\n", desc.Len)
+				exprVar, err := ctx.getLimitExprVar(desc)
+				if err != nil {
+					return "", err
 				}
-				ctx.appendSizeCode(2, "%s = %s * int(limit)\n", sizeVar, sizeVar)
-				ctx.appendSizeCode(1, "}\n")
-				ctx.usedDynSpecs = true
+
+				if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
+					exprVar = fmt.Sprintf("(%s+7)/8", exprVar)
+				}
+
+				ctx.appendSizeCode(1, "%s = %s * int(%s) // size expression for '%s'\n", sizeVar, itemSizeVar, exprVar, ctx.typePrinter.TypeStringWithoutTracking(desc))
 			} else {
-				ctx.appendSizeCode(1, "%s := %s * %d\n", sizeVar, itemSizeVar, desc.Len)
+				ctx.appendSizeCode(1, "%s = %s * %d\n", sizeVar, itemSizeVar, desc.Len)
 			}
 		}
 
@@ -258,6 +290,47 @@ func (ctx *unmarshalContext) getStaticSizeVar(desc *dynssz.TypeDescriptor) (stri
 	ctx.sizeVarMap[descHash] = sizeVar
 
 	return sizeVar, nil
+}
+
+// getLimitExprVar generates a variable name for cached limit expression calculations.
+func (ctx *unmarshalContext) getLimitExprVar(desc *dynssz.TypeDescriptor) (string, error) {
+	if desc.SszType != dynssz.SszVectorType && desc.SszType != dynssz.SszBitvectorType && desc.SszType != dynssz.SszUint128Type && desc.SszType != dynssz.SszUint256Type {
+		return "", fmt.Errorf("limit expression not supported for type: %v", desc.SszType)
+	}
+
+	sizeExpression := desc.SizeExpression
+	if ctx.options.WithoutDynamicExpressions {
+		sizeExpression = nil
+	}
+
+	if sizeExpression == nil {
+		return fmt.Sprintf("%v", desc.Len), nil
+	}
+
+	exprKey := sha256.Sum256([]byte(fmt.Sprintf("%s\n%v|%v", *sizeExpression, desc.Len, desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0)))
+	if exprVar, ok := ctx.exprVarMap[exprKey]; ok {
+		return exprVar, nil
+	}
+
+	exprVar := fmt.Sprintf("ctx.expr[%d]", ctx.exprVarCounter)
+	ctx.exprVarCounter++
+	ctx.usedCtx = true
+
+	defaultValue := uint64(desc.Len)
+	if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
+		if desc.BitSize > 0 {
+			defaultValue = uint64(desc.BitSize)
+		} else {
+			defaultValue = uint64(desc.Len * 8)
+		}
+	}
+	ctx.appendExprCode(1, "%s, err = sszutils.ResolveSpecValueWithDefault(ds, \"%s\", %d)\n", exprVar, *sizeExpression, defaultValue)
+	ctx.appendExprCode(1, "if err != nil {\n\treturn err\n}\n")
+	ctx.usedDynSpecs = true
+
+	ctx.exprVarMap[exprKey] = exprVar
+
+	return exprVar, nil
 }
 
 // unmarshalType generates unmarshal code for any SSZ type, delegating to specific unmarshalers.
@@ -276,8 +349,9 @@ func (ctx *unmarshalContext) unmarshalType(desc *dynssz.TypeDescriptor, varName 
 	}
 
 	if desc.SszCompatFlags&dynssz.SszCompatFlagDynamicUnmarshaler != 0 && !isRoot {
-		ctx.appendCode(indent, "if err = %s.UnmarshalSSZDyn(ds, buf); err != nil {\n\treturn err\n}\n", varName)
+		ctx.appendCode(indent, "if err = %s.UnmarshalSSZDyn(ctx.ds, buf); err != nil {\n\treturn err\n}\n", varName)
 		ctx.usedDynSpecs = true
+		ctx.usedCtx = true
 		return nil
 	}
 
@@ -435,12 +509,14 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *dynssz.TypeDescriptor, var
 				offset += int(field.Type.Size)
 			}
 
-			valVar := fmt.Sprintf("%s.%s", varName, field.Name)
 			isInlinable := ctx.isInlinable(field.Type)
+			valVar := fmt.Sprintf("%s.%s", varName, field.Name)
+
 			if !isInlinable {
 				valVar = ctx.getValVar()
 				ctx.appendCode(indent, "\t%s := %s.%s\n", valVar, varName, field.Name)
 			}
+
 			if field.Type.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
 				ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(field.Type))
 			}
@@ -467,8 +543,12 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *dynssz.TypeDescriptor, var
 		}
 		ctx.appendCode(indent, "\tbuf := buf[offset%d:%s]\n", fieldIdx, endOffset)
 
-		valVar := ctx.getValVar()
-		ctx.appendCode(indent, "\t%s := %s.%s\n", valVar, varName, field.Name)
+		valVar := fmt.Sprintf("%s.%s", varName, field.Name)
+		isInlinable := ctx.isInlinable(field.Type)
+		if !isInlinable {
+			valVar = ctx.getValVar()
+			ctx.appendCode(indent, "\t%s := %s.%s\n", valVar, varName, field.Name)
+		}
 
 		if field.Type.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
 			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(field.Type))
@@ -478,7 +558,9 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *dynssz.TypeDescriptor, var
 			return err
 		}
 
-		ctx.appendCode(indent, "\t%s.%s = %s\n", varName, field.Name, valVar)
+		if !isInlinable {
+			ctx.appendCode(indent, "\t%s.%s = %s\n", varName, field.Name, valVar)
+		}
 		ctx.appendCode(indent, "}\n")
 	}
 
@@ -498,26 +580,23 @@ func (ctx *unmarshalContext) unmarshalVector(desc *dynssz.TypeDescriptor, varNam
 
 	if sizeExpression != nil && needExpression {
 		ctx.usedDynSpecs = true
-		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
-			ctx.appendCode(indent, "hasLimit, bitlimit, err := ds.ResolveSpecValue(\"%s\")\n", *sizeExpression)
-			ctx.appendCode(indent, "if err != nil {\n\treturn err\n}\n")
-			if desc.BitSize > 0 {
-				ctx.appendCode(indent, "if !hasLimit {\n\tbitlimit = %d\n}\n", desc.BitSize)
-			} else {
-				ctx.appendCode(indent, "if !hasLimit {\n\tbitlimit = %d\n}\n", desc.Len*8)
-			}
-			ctx.appendCode(indent, "limit := (bitlimit+7)/8\n")
-			bitlimitVar = "int(bitlimit)"
-		} else {
-			ctx.appendCode(indent, "hasLimit, limit, err := ds.ResolveSpecValue(\"%s\")\n", *sizeExpression)
-			ctx.appendCode(indent, "if err != nil {\n\treturn err\n}\n")
-			ctx.appendCode(indent, "if !hasLimit {\n\tlimit = %d\n}\n", desc.Len)
+
+		exprVar, err := ctx.getLimitExprVar(desc)
+		if err != nil {
+			return err
 		}
-		limitVar = "int(limit)"
+
+		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
+			bitlimitVar = exprVar
+			ctx.appendCode(indent, "limit := int((%s+7)/8)\n", exprVar)
+			limitVar = "limit"
+		} else {
+			limitVar = fmt.Sprintf("int(%s)", exprVar)
+		}
 
 		if desc.Kind == reflect.Array {
 			// check if dynamic limit is greater than the length of the array
-			ctx.appendCode(indent, "if limit > %d {\n", desc.Len)
+			ctx.appendCode(indent, "if %s > %d {\n", limitVar, desc.Len)
 			ctx.appendCode(indent, "\treturn sszutils.ErrVectorLength\n")
 			ctx.appendCode(indent, "}\n")
 		}
@@ -528,32 +607,30 @@ func (ctx *unmarshalContext) unmarshalVector(desc *dynssz.TypeDescriptor, varNam
 		limitVar = fmt.Sprintf("%d", desc.Len)
 	}
 
-	// create slice if needed
-	if desc.Kind != reflect.Array && desc.GoTypeFlags&dynssz.GoTypeFlagIsString == 0 {
-		ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, %s)\n", varName, varName, limitVar)
+	// static byte arrays
+	if desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
+		if desc.Kind != reflect.Array && desc.GoTypeFlags&dynssz.GoTypeFlagIsString == 0 {
+			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, %s)\n", varName, varName, limitVar)
+		}
+		if !noBufCheck {
+			ctx.appendCode(indent, "if %s > len(buf) {\n\treturn sszutils.ErrUnexpectedEOF\n}\n", limitVar)
+		}
+		if bitlimitVar != "" {
+			ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
+			ctx.appendCode(indent, "if buf[%s-1] & paddingMask != 0 {\n", limitVar)
+			ctx.appendCode(indent, "\treturn sszutils.ErrVectorLength\n")
+			ctx.appendCode(indent, "}\n")
+		}
+		if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
+			typename := ctx.typePrinter.TypeString(desc)
+			ctx.appendCode(indent, "%s = %s(buf)\n", varName, typename)
+		} else {
+			ctx.appendCode(indent, "copy(%s[:], buf)\n", varName)
+		}
+		return nil
 	}
 
 	if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic == 0 {
-		// static byte arrays
-		if desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
-			if !noBufCheck {
-				ctx.appendCode(indent, "if %s > len(buf) {\n\treturn sszutils.ErrUnexpectedEOF\n}\n", limitVar)
-			}
-			if bitlimitVar != "" {
-				ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
-				ctx.appendCode(indent, "if buf[%s-1] & paddingMask != 0 {\n", limitVar)
-				ctx.appendCode(indent, "\treturn sszutils.ErrVectorLength\n")
-				ctx.appendCode(indent, "}\n")
-			}
-			if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
-				typename := ctx.typePrinter.TypeString(desc)
-				ctx.appendCode(indent, "%s = %s(buf)\n", varName, typename)
-			} else {
-				ctx.appendCode(indent, "copy(%s[:], buf)\n", varName)
-			}
-			return nil
-		}
-
 		// static elements
 		var fieldSizeVar string
 		var err error
@@ -566,58 +643,51 @@ func (ctx *unmarshalContext) unmarshalVector(desc *dynssz.TypeDescriptor, varNam
 			fieldSizeVar = fmt.Sprintf("%d", desc.ElemDesc.Size)
 		}
 
-		if !noBufCheck {
-			ctx.appendCode(indent, "if %s*%s > len(buf) {\n\treturn sszutils.ErrUnexpectedEOF\n}\n", limitVar, fieldSizeVar)
+		isArrayStr := "false"
+		if desc.Kind == reflect.Array {
+			isArrayStr = "true"
+			ctx.appendCode(indent, "val := %s[:]\n", varName)
+			varName = "val"
 		}
-
-		ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", limitVar)
-
-		valVar := fmt.Sprintf("%s[i]", varName)
-		isInlinable := ctx.isInlinable(desc.ElemDesc)
-		if !isInlinable {
-			valVar = ctx.getValVar()
-			ctx.appendCode(indent, "\t%s := %s[i]\n", valVar, varName)
+		noBufCheckStr := "false"
+		if noBufCheck {
+			noBufCheckStr = "true"
 		}
+		ctx.appendCode(indent, "if err := sszutils.UnmarshalStaticVector(ctx, buf, %s, %s, %s, %s, %s, func(ctx *unmarshalCtx, buf []byte, v *%s) error {\n", resolvePtrVar(varName), limitVar, fieldSizeVar, isArrayStr, noBufCheckStr, ctx.typePrinter.TypeString(desc.ElemDesc))
 		if desc.ElemDesc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
-			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
+			ctx.appendCode(indent+1, "if *v == nil {\n\t*v = new(%s)\n}\n", ctx.typePrinter.InnerTypeString(desc.ElemDesc))
 		}
-
-		ctx.appendCode(indent, "\tbuf := buf[%s*i : %s*(i+1)]\n", fieldSizeVar, fieldSizeVar)
-		if err := ctx.unmarshalType(desc.ElemDesc, valVar, indent+1, false, true); err != nil {
+		if err := ctx.unmarshalType(desc.ElemDesc, "(*v)", indent+1, false, true); err != nil {
 			return err
 		}
 
-		if !isInlinable {
-			ctx.appendCode(indent, "\t%s[i] = %s\n", varName, valVar)
-		}
-		ctx.appendCode(indent, "}\n")
+		ctx.usedCtx = true
+
+		ctx.appendCode(indent, "\treturn nil\n")
+		ctx.appendCode(indent, "}); err != nil {\n\treturn err\n}\n")
 	} else {
 		// dynamic elements
-		ctx.appendCode(indent, "if %s*4 > len(buf) {\n\treturn sszutils.ErrUnexpectedEOF\n}\n", limitVar)
-		ctx.appendCode(indent, "startOffset := int(sszutils.UnmarshallUint32(buf[0:4]))\n")
-		ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", limitVar)
-		ctx.appendCode(indent, "\tvar endOffset int\n")
-		ctx.appendCode(indent, "\tif i < %s-1 {\n", limitVar)
-		ctx.appendCode(indent, "\t\tendOffset = int(sszutils.UnmarshallUint32(buf[(i+1)*4 : (i+2)*4]))\n")
-		ctx.appendCode(indent, "\t} else {\n")
-		ctx.appendCode(indent, "\t\tendOffset = len(buf)\n")
-		ctx.appendCode(indent, "\t}\n")
-		ctx.appendCode(indent, "\tif endOffset < startOffset || endOffset > len(buf) {\n")
-		ctx.appendCode(indent, "\t\treturn sszutils.ErrOffset\n")
-		ctx.appendCode(indent, "\t}\n")
-		ctx.appendCode(indent, "\tbuf := buf[startOffset:endOffset]\n")
-		ctx.appendCode(indent, "\tstartOffset = endOffset\n")
-
-		valVar := ctx.getValVar()
-		ctx.appendCode(indent, "\t%s := %s[i]\n", valVar, varName)
-		if desc.ElemDesc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
-			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
+		isArrayStr := "false"
+		if desc.Kind == reflect.Array {
+			isArrayStr = "true"
+			ctx.appendCode(indent, "val := %s[:]\n", varName)
+			varName = "val"
 		}
-		if err := ctx.unmarshalType(desc.ElemDesc, valVar, indent+1, false, true); err != nil {
+		noBufCheckStr := "false"
+		if noBufCheck {
+			noBufCheckStr = "true"
+		}
+		ctx.appendCode(indent, "if err := sszutils.UnmarshalDynamicVector(ctx, buf, %s, %s, %s, %s, func(ctx *unmarshalCtx, buf []byte, v *%s) error {\n", resolvePtrVar(varName), limitVar, isArrayStr, noBufCheckStr, ctx.typePrinter.TypeString(desc.ElemDesc))
+		if desc.ElemDesc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+			ctx.appendCode(indent+1, "if *v == nil {\n\t*v = new(%s)\n}\n", ctx.typePrinter.InnerTypeString(desc.ElemDesc))
+		}
+		if err := ctx.unmarshalType(desc.ElemDesc, "(*v)", indent+1, false, true); err != nil {
 			return err
 		}
-		ctx.appendCode(indent, "\t%s[i] = %s\n", varName, valVar)
-		ctx.appendCode(indent, "}\n")
+		ctx.appendCode(indent, "\treturn nil\n")
+		ctx.appendCode(indent, "}); err != nil {\n\treturn err\n}\n")
+
+		ctx.usedCtx = true
 	}
 
 	return nil
@@ -640,7 +710,6 @@ func (ctx *unmarshalContext) unmarshalList(desc *dynssz.TypeDescriptor, varName 
 			return nil
 		}
 
-		// static elements
 		var fieldSizeVar string
 		var err error
 		if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
@@ -652,71 +721,44 @@ func (ctx *unmarshalContext) unmarshalList(desc *dynssz.TypeDescriptor, varName 
 			fieldSizeVar = fmt.Sprintf("%d", desc.ElemDesc.Size)
 		}
 
-		if fieldSizeVar == "1" {
-			ctx.appendCode(indent, "itemCount := len(buf)\n")
-		} else {
-			ctx.appendCode(indent, "itemCount := len(buf) / %s\n", fieldSizeVar)
-			ctx.appendCode(indent, "if len(buf)%%%s != 0 {\n\treturn sszutils.ErrUnexpectedEOF\n}\n", fieldSizeVar)
+		fieldTypeStr := ctx.typePrinter.TypeString(desc.ElemDesc)
+		isArrayStr := "false"
+		if desc.Kind == reflect.Array {
+			isArrayStr = "true"
+			ctx.appendCode(indent, "val := %s[:]\n", varName)
+			varName = "val"
 		}
-		if desc.Kind != reflect.Array {
-			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", varName, varName)
-		}
-
-		ctx.appendCode(indent, "for i := 0; i < itemCount; i++ {\n")
-
-		valVar := fmt.Sprintf("%s[i]", varName)
-		isInlinable := ctx.isInlinable(desc.ElemDesc)
-		if !isInlinable {
-			valVar = ctx.getValVar()
-			ctx.appendCode(indent, "\t%s := %s[i]\n", valVar, varName)
-		}
+		ctx.appendCode(indent, "if err := sszutils.UnmarshalStaticList(ctx, buf, %s, %s, %s, func(ctx *unmarshalCtx, buf []byte, v *%s) error {\n", resolvePtrVar(varName), fieldSizeVar, isArrayStr, fieldTypeStr)
 		if desc.ElemDesc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
-			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
+			ctx.appendCode(indent+1, "if *v == nil {\n\t*v = new(%s)\n}\n", ctx.typePrinter.InnerTypeString(desc.ElemDesc))
 		}
-
-		ctx.appendCode(indent, "\tbuf := buf[%s*i : %s*(i+1)]\n", fieldSizeVar, fieldSizeVar)
-		if err := ctx.unmarshalType(desc.ElemDesc, valVar, indent+1, false, true); err != nil {
+		if err := ctx.unmarshalType(desc.ElemDesc, "(*v)", indent+1, false, true); err != nil {
 			return err
 		}
+		ctx.appendCode(indent, "\treturn nil\n")
+		ctx.appendCode(indent, "}); err != nil {\n\treturn err\n}\n")
 
-		if !isInlinable {
-			ctx.appendCode(indent, "\t%s[i] = %s\n", varName, valVar)
-		}
-		ctx.appendCode(indent, "}\n")
+		ctx.usedCtx = true
 	} else {
 		// dynamic elements
-		ctx.appendCode(indent, "startOffset := int(0)\n")
-		ctx.appendCode(indent, "if len(buf) != 0 {\n")
-		ctx.appendCode(indent, "\tif len(buf) < 4 {\n\t\treturn sszutils.ErrUnexpectedEOF\n\t}\n")
-		ctx.appendCode(indent, "\tstartOffset = int(sszutils.UnmarshallUint32(buf[0:4]))\n")
-		ctx.appendCode(indent, "}\n")
-		ctx.appendCode(indent, "itemCount := startOffset / 4\n")
-		ctx.appendCode(indent, "if startOffset%4 != 0 || len(buf) < startOffset {\n\treturn sszutils.ErrUnexpectedEOF\n}\n")
-		if desc.Kind != reflect.Array {
-			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", varName, varName)
+		fieldTypeStr := ctx.typePrinter.TypeString(desc.ElemDesc)
+		isArrayStr := "false"
+		if desc.Kind == reflect.Array {
+			isArrayStr = "true"
+			ctx.appendCode(indent, "val := %s[:]\n", varName)
+			varName = "val"
 		}
-		ctx.appendCode(indent, "for i := 0; i < itemCount; i++ {\n")
-		ctx.appendCode(indent, "\tvar endOffset int\n")
-		ctx.appendCode(indent, "\tif i < itemCount-1 {\n")
-		ctx.appendCode(indent, "\t\tendOffset = int(sszutils.UnmarshallUint32(buf[(i+1)*4 : (i+2)*4]))\n")
-		ctx.appendCode(indent, "\t} else {\n")
-		ctx.appendCode(indent, "\t\tendOffset = len(buf)\n")
-		ctx.appendCode(indent, "\t}\n")
-		ctx.appendCode(indent, "\tif endOffset < startOffset || endOffset > len(buf) {\n")
-		ctx.appendCode(indent, "\t\treturn sszutils.ErrOffset\n")
-		ctx.appendCode(indent, "\t}\n")
-		ctx.appendCode(indent, "\tbuf := buf[startOffset:endOffset]\n")
-		ctx.appendCode(indent, "\tstartOffset = endOffset\n")
-		valVar := ctx.getValVar()
-		ctx.appendCode(indent, "\t%s := %s[i]\n", valVar, varName)
+		ctx.appendCode(indent, "if err := sszutils.UnmarshalDynamicList(ctx, buf, %s, %s, func(ctx *unmarshalCtx, buf []byte, v *%s) error {\n", resolvePtrVar(varName), isArrayStr, fieldTypeStr)
 		if desc.ElemDesc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
-			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
+			ctx.appendCode(indent+1, "if *v == nil {\n\t*v = new(%s)\n}\n", ctx.typePrinter.InnerTypeString(desc.ElemDesc))
 		}
-		if err := ctx.unmarshalType(desc.ElemDesc, valVar, indent+1, false, true); err != nil {
+		if err := ctx.unmarshalType(desc.ElemDesc, "(*v)", indent+1, false, true); err != nil {
 			return err
 		}
-		ctx.appendCode(indent, "\t%s[i] = %s\n", varName, valVar)
-		ctx.appendCode(indent, "}\n")
+		ctx.appendCode(indent, "\treturn nil\n")
+		ctx.appendCode(indent, "}); err != nil {\n\treturn err\n}\n")
+
+		ctx.usedCtx = true
 	}
 
 	return nil

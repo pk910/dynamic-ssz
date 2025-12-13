@@ -5,6 +5,8 @@
 package codegen
 
 import (
+	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -64,4 +66,17 @@ func escapeBackticks(s string) string {
 		return strconv.Quote(s)[1 : len(strconv.Quote(s))-1] // \"...\" sans outer quotes
 	}
 	return s
+}
+
+func resolvePtrVar(varName string) string {
+	// check regex (\*[a-zA-Z0-9]+)
+	re := regexp.MustCompile(`^(?:\*([a-zA-Z0-9]+)|\(\*([a-zA-Z0-9]+)\))$`)
+	matches := re.FindStringSubmatch(varName)
+	if len(matches) == 0 {
+		return fmt.Sprintf("&%s", varName)
+	}
+	if matches[1] != "" {
+		return matches[1]
+	}
+	return matches[2]
 }

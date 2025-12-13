@@ -296,28 +296,28 @@ func (cg *CodeGenerator) generateCode(desc *dynssz.TypeDescriptor, typePrinter *
 	if !options.NoMarshalSSZ {
 		err = generateMarshal(desc, codeBuilder, typePrinter, options)
 		if err != nil {
-			return fmt.Errorf("failed to generate marshal for %s: %w", desc.Type.Name(), err)
+			return fmt.Errorf("failed to generate marshal for %s: %w", typePrinter.TypeStringWithoutTracking(desc), err)
 		}
 	}
 
 	if !options.NoUnmarshalSSZ {
 		err = generateUnmarshal(desc, codeBuilder, typePrinter, options)
 		if err != nil {
-			return fmt.Errorf("failed to generate unmarshal for %s: %w", desc.Type.Name(), err)
+			return fmt.Errorf("failed to generate unmarshal for %s: %w", typePrinter.TypeStringWithoutTracking(desc), err)
 		}
 	}
 
 	if !options.NoSizeSSZ {
 		err = generateSize(desc, codeBuilder, typePrinter, options)
 		if err != nil {
-			return fmt.Errorf("failed to generate size for %s: %w", desc.Type.Name(), err)
+			return fmt.Errorf("failed to generate size for %s: %w", typePrinter.TypeStringWithoutTracking(desc), err)
 		}
 	}
 
 	if !options.NoHashTreeRoot {
 		err = generateHashTreeRoot(desc, codeBuilder, typePrinter, options)
 		if err != nil {
-			return fmt.Errorf("failed to generate hash tree root for %s: %w", desc.Type.Name(), err)
+			return fmt.Errorf("failed to generate hash tree root for %s: %w", typePrinter.TypeStringWithoutTracking(desc), err)
 		}
 	}
 
