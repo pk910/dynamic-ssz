@@ -665,13 +665,9 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *dynssz.TypeDescriptor, varName
 	}
 
 	ctx.appendCode(indent, "idx := hh.Index()\n")
-	ctx.appendCode(indent, "var size uint64\n")
-	ctx.appendCode(indent, "var bitlist []byte\n")
-	ctx.appendCode(indent, "hh.WithTemp(func(tmp []byte) []byte {\n")
-	ctx.appendCode(indent, "\ttmp, size = hasher.ParseBitlist(tmp[:0], %s[:])\n", varName)
-	ctx.appendCode(indent, "\tbitlist = tmp\n")
-	ctx.appendCode(indent, "\treturn tmp\n")
-	ctx.appendCode(indent, "})\n")
+
+	hasherAlias := ctx.typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
+	ctx.appendCode(indent, "bitlist, size := %s.ParseBitlistWithHasher(hh, %s[:])\n", hasherAlias, varName)
 
 	if maxVar != "" {
 		ctx.appendCode(indent, "if size > %s {\n", maxVar)
