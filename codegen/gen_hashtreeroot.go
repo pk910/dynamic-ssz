@@ -592,10 +592,10 @@ func (ctx *hashTreeRootContext) hashList(desc *dynssz.TypeDescriptor, varName st
 
 	// Handle byte slices
 	if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
-		ctx.appendCode(indent, "hh.PutBytes([]byte(%s))\n", varName)
+		ctx.appendCode(indent, "hh.AppendBytes32([]byte(%s))\n", varName)
 		itemSize = 1
 	} else if desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
-		ctx.appendCode(indent, "hh.PutBytes(%s[:])\n", varName)
+		ctx.appendCode(indent, "hh.AppendBytes32(%s[:])\n", varName)
 		itemSize = 1
 	} else {
 		if ctx.isPrimitive(desc.ElemDesc) {
