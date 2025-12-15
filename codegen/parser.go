@@ -265,6 +265,8 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 				sszType = dynssz.SszUint256Type
 			case pkgPath == "github.com/prysmaticlabs/go-bitfield" && typeName == "Bitlist":
 				sszType = dynssz.SszBitlistType
+			case pkgPath == "github.com/OffchainLabs/go-bitfield" && typeName == "Bitlist":
+				sszType = dynssz.SszBitlistType
 			case pkgPath == "github.com/pk910/dynamic-ssz" && typeName == "CompatibleUnion":
 				sszType = dynssz.SszCompatibleUnionType
 			case pkgPath == "github.com/pk910/dynamic-ssz" && typeName == "TypeWrapper":

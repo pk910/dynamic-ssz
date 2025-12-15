@@ -266,10 +266,11 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 			sszType = SszUint256Type
 		case t.PkgPath() == "github.com/prysmaticlabs/go-bitfield" && t.Name() == "Bitlist":
 			sszType = SszBitlistType
+		case t.PkgPath() == "github.com/OffchainLabs/go-bitfield" && t.Name() == "Bitlist":
+			sszType = SszBitlistType
 		case t.PkgPath() == "github.com/pk910/dynamic-ssz" && strings.HasPrefix(t.Name(), "CompatibleUnion["):
 			sszType = SszCompatibleUnionType
-		}
-		if t.PkgPath() == typeWrapperType.PkgPath() && strings.HasPrefix(t.Name(), "TypeWrapper[") {
+		case t.PkgPath() == "github.com/pk910/dynamic-ssz" && strings.HasPrefix(t.Name(), "TypeWrapper["):
 			sszType = SszTypeWrapperType
 		}
 	}
