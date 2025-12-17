@@ -365,21 +365,8 @@ func (ctx *hashTreeRootContext) hashProgressiveContainer(desc *dynssz.TypeDescri
 
 // getActiveFieldsHex generates hex string representation of active fields for progressive containers.
 func (ctx *hashTreeRootContext) getActiveFieldsHex(sourceType *dynssz.TypeDescriptor) string {
-	// Find the highest ssz-index to determine bitlist size
-	maxIndex := uint16(0)
-	for _, field := range sourceType.ContainerDesc.Fields {
-		if field.SszIndex > maxIndex {
-			maxIndex = field.SszIndex
-		}
-	}
-
-	// Create bitlist with enough bytes to hold maxIndex+1 bits
-	bytesNeeded := (int(maxIndex) + 8) / 8 // +7 for rounding up, +1 already included in maxIndex
-	activeFields := make([]byte, bytesNeeded)
-
-	// Set most significant bit for length bit
-	i := uint8(1 << (maxIndex % 8))
-	activeFields[maxIndex/8] |= i
+	activeFields := [32]byte{}
+	usedBytes := uint16(0)
 
 	// Set bit for each field that has an ssz-index
 	for _, field := range sourceType.ContainerDesc.Fields {
@@ -388,11 +375,17 @@ func (ctx *hashTreeRootContext) getActiveFieldsHex(sourceType *dynssz.TypeDescri
 		if int(byteIndex) < len(activeFields) {
 			activeFields[byteIndex] |= (1 << bitIndex)
 		}
+		if byteIndex > usedBytes {
+			usedBytes = byteIndex
+		}
 	}
 
 	// Convert to hex string
 	hex := "[]byte{"
 	for i, b := range activeFields {
+		if i > int(usedBytes) {
+			break
+		}
 		if i > 0 {
 			hex += ", "
 		}

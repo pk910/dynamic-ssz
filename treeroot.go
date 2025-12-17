@@ -375,7 +375,7 @@ func (d *DynSsz) buildRootFromProgressiveContainer(sourceType *TypeDescriptor, s
 	activeFields := d.getActiveFields(sourceType)
 
 	// merkleize progressively with active fields
-	hh.MerkleizeProgressiveWithActiveFields(hashIndex, activeFields)
+	hh.MerkleizeProgressiveWithActiveFields(hashIndex, activeFields[:])
 
 	return nil
 }
@@ -646,7 +646,6 @@ func (d *DynSsz) buildRootFromList(sourceType *TypeDescriptor, sourceValue refle
 // return value.__class__.active_fields.
 //
 // The active fields are determined by the ssz-index tags in the struct definition:
-// - The highest ssz-index determines the size of the bitlist
 // - Each field with an ssz-index has its corresponding bit set to 1
 // - All other bits are set to 0
 //
@@ -654,23 +653,9 @@ func (d *DynSsz) buildRootFromList(sourceType *TypeDescriptor, sourceValue refle
 //   - sourceType: The TypeDescriptor containing progressive container metadata
 //
 // Returns:
-//   - []byte: The active fields bitlist as bytes (≤256 bits, so max 32 bytes)
-func (d *DynSsz) getActiveFields(sourceType *TypeDescriptor) []byte {
-	// Find the highest ssz-index to determine bitlist size
-	maxIndex := uint16(0)
-	for _, field := range sourceType.ContainerDesc.Fields {
-		if field.SszIndex > maxIndex {
-			maxIndex = field.SszIndex
-		}
-	}
-
-	// Create bitlist with enough bytes to hold maxIndex+1 bits
-	bytesNeeded := (int(maxIndex) + 8) / 8 // +7 for rounding up, +1 already included in maxIndex
-	activeFields := make([]byte, bytesNeeded)
-
-	// Set most significant bit for length bit.
-	i := uint8(1 << (maxIndex % 8))
-	activeFields[maxIndex/8] |= i
+//   - [32]byte: The active fields bitvector as bytes
+func (d *DynSsz) getActiveFields(sourceType *TypeDescriptor) [32]byte {
+	activeFields := [32]byte{}
 
 	// Set bit for each field that has an ssz-index
 	for _, field := range sourceType.ContainerDesc.Fields {
