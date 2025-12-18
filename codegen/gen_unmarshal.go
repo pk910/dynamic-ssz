@@ -724,25 +724,15 @@ func (ctx *unmarshalContext) unmarshalList(desc *dynssz.TypeDescriptor, varName 
 
 // unmarshalBitlist generates unmarshal code for SSZ bitlist types.
 func (ctx *unmarshalContext) unmarshalBitlist(desc *dynssz.TypeDescriptor, varName string, indent int) error {
-	// static byte arrays
-	if desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
-		ctx.appendCode(indent, "blen := len(buf)\n")
-		ctx.appendCode(indent, "if blen == 0 || buf[blen-1] == 0x00 {\n")
-		ctx.appendCode(indent, "\treturn sszutils.ErrBitlistNotTerminated\n")
-		ctx.appendCode(indent, "}\n")
+	ctx.appendCode(indent, "blen := len(buf)\n")
+	ctx.appendCode(indent, "if blen == 0 || buf[blen-1] == 0x00 {\n")
+	ctx.appendCode(indent, "\treturn sszutils.ErrBitlistNotTerminated\n")
+	ctx.appendCode(indent, "}\n")
 
-		if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
-			typename := ctx.typePrinter.TypeString(desc)
-			ctx.appendCode(indent, "%s = %s(buf)\n", varName, typename)
-		} else {
-			if desc.Kind != reflect.Array {
-				ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, blen)\n", varName, varName)
-			}
-			ctx.appendCode(indent, "copy(%s[:], buf)\n", varName)
-		}
-	} else {
-		return fmt.Errorf("bitlist type can only be represented by byte slices or arrays, got %v", desc.Kind)
+	if desc.Kind != reflect.Array {
+		ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, blen)\n", varName, varName)
 	}
+	ctx.appendCode(indent, "copy(%s[:], buf)\n", varName)
 
 	return nil
 }

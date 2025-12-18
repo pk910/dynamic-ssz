@@ -871,8 +871,13 @@ func (tc *TypeCache) buildListDescriptor(desc *TypeDescriptor, t reflect.Type, s
 	desc.ElemDesc = elemDesc
 	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
 
-	if (desc.SszType == SszBitlistType || desc.SszType == SszProgressiveBitlistType) && desc.ElemDesc.Kind != reflect.Uint8 {
-		return fmt.Errorf("bitlist ssz type can only be represented by byte slices or arrays, got %v", desc.ElemDesc.Kind.String())
+	if desc.SszType == SszBitlistType || desc.SszType == SszProgressiveBitlistType {
+		if desc.Kind != reflect.Slice {
+			return fmt.Errorf("bitlist ssz type can only be represented by byte slices, got %v", desc.Kind.String())
+		}
+		if desc.ElemDesc.Kind != reflect.Uint8 {
+			return fmt.Errorf("bitlist ssz type can only be represented by byte slices, got []%v", desc.ElemDesc.Kind.String())
+		}
 	}
 
 	if len(sizeHints) > 0 && sizeHints[0].Size > 0 && !sizeHints[0].Dynamic {

@@ -11,448 +11,122 @@ import (
 	. "github.com/pk910/dynamic-ssz"
 )
 
-var marshalTestMatrix = []struct {
-	payload  any
-	expected []byte
+var marshalTestMatrix = append(commonTestMatrix, []struct {
+	name    string
+	payload any
+	ssz     []byte
+	htr     []byte
 }{
-	// primitive types
-	{bool(false), fromHex("0x00")},
-	{bool(true), fromHex("0x01")},
-	{uint8(0), fromHex("0x00")},
-	{uint8(255), fromHex("0xff")},
-	{uint8(42), fromHex("0x2a")},
-	{uint16(0), fromHex("0x0000")},
-	{uint16(65535), fromHex("0xffff")},
-	{uint16(1337), fromHex("0x3905")},
-	{uint32(0), fromHex("0x00000000")},
-	{uint32(4294967295), fromHex("0xffffffff")},
-	{uint32(817482215), fromHex("0xe7c9b930")},
-	{uint64(0), fromHex("0x0000000000000000")},
-	{uint64(18446744073709551615), fromHex("0xffffffffffffffff")},
-	{uint64(848028848028), fromHex("0x9c4f7572c5000000")},
-
-	// arrays & slices
-	{[]uint8{}, fromHex("0x")},
-	{[]uint8{1, 2, 3, 4, 5}, fromHex("0x0102030405")},
-	{[5]uint8{1, 2, 3, 4, 5}, fromHex("0x0102030405")},
-	{[10]uint8{1, 2, 3, 4, 5}, fromHex("0x01020304050000000000")},
-
-	// complex types
-	{
-		struct {
-			F1 bool
-			F2 uint8
-			F3 uint16
-			F4 uint32
-			F5 uint64
-		}{true, 1, 2, 3, 4},
-		fromHex("0x01010200030000000400000000000000"),
-	},
-	{
-		struct {
-			F1 bool
-			F2 []uint8  // dynamic field
-			F3 []uint16 `ssz-size:"5"` // static field due to tag
-			F4 uint32
-		}{true, []uint8{1, 1, 1, 1}, []uint16{2, 2, 2, 2}, 3},
-		fromHex("0x0113000000020002000200020000000300000001010101"),
-	},
-	{
-		struct {
-			F1 uint8
-			F2 [][]uint8 `ssz-size:"?,2"`
-			F3 uint8
-		}{42, [][]uint8{{2, 2}, {3}}, 43},
-		fromHex("0x2a060000002b02020300"),
-	},
-	{
-		struct {
-			F1 uint8
-			F2 []slug_DynStruct1 `ssz-size:"3"`
-			F3 uint8
-		}{42, []slug_DynStruct1{{true, []uint8{4}}, {true, []uint8{4, 8, 4}}}, 43},
-		fromHex("0x2a060000002b0c000000120000001a00000001050000000401050000000408040005000000"),
-	},
-	{
-		struct {
-			F1 uint8
-			F2 []*slug_StaticStruct1 `ssz-size:"3"`
-			F3 uint8
-		}{42, []*slug_StaticStruct1{nil, {true, []uint8{4, 8, 4}}}, 43},
-		fromHex("0x2a0000000001040804000000002b"),
-	},
-	{
-		struct {
-			F1 uint8
-			F2 []*slug_StaticStruct1 `ssz-size:"3"`
-			F3 uint8
-		}{42, []*slug_StaticStruct1{nil, nil, nil, nil}, 43},
-		nil, // size too long error
-	},
-	{
-		struct {
-			F1 uint8
-			F2 [2][]*slug_StaticStruct1 `ssz-size:"2,3"`
-			F3 uint8
-		}{42, [2][]*slug_StaticStruct1{{nil, nil, nil}, {nil, nil, nil, nil}}, 43},
-		nil, // size too long error
-	},
-	{
-		struct {
-			F1 uint8
-			F2 [][]struct {
-				F1 uint16
-			} `ssz-size:"?,2"`
-			F3 uint8
-		}{42, [][]struct {
-			F1 uint16
-		}{{{F1: 2}, {F1: 3}}, {{F1: 4}, {F1: 5}}}, 43},
-		fromHex("0x2a060000002b0200030004000500"),
-	},
-	{
-		struct {
-			F1 uint8
-			F2 [][2][]struct {
-				F1 uint16
-			} `ssz-size:"?,2"`
-			F3 uint8
-		}{42, [][2][]struct {
-			F1 uint16
-		}{{{{F1: 2}, {F1: 3}}, {{F1: 4}, {F1: 5}}}, {{{F1: 8}, {F1: 9}}, {{F1: 10}, {F1: 11}}}}, 43},
-		fromHex("0x2a060000002b0800000018000000080000000c0000000200030004000500080000000c000000080009000a000b00"),
-	},
-	{
-		struct {
-			F1 [][]uint16 `ssz-size:"?,2" ssz-max:"10"`
-		}{[][]uint16{{2, 3}, {4, 5}, {8, 9}, {10, 11}}},
-		fromHex("0x040000000200030004000500080009000a000b00"),
-	},
-	{
-		struct {
-			F1 []uint16 `ssz-size:"2"`
-		}{[]uint16{2, 3}},
-		fromHex("0x02000300"),
-	},
-	{
-		struct {
-			F1 []uint16 `ssz-type:"list" ssz-size:"?"`
-		}{[]uint16{2, 3}},
-		fromHex("0x0400000002000300"),
-	},
-	{
-		struct {
-			F1 []uint16 `ssz-type:"list" ssz-size:"2"`
-		}{[]uint16{2, 3}},
-		fromHex("0x02000300"),
-	},
-	{
-		struct {
-			F1 []uint8 `ssz-type:"bitvector" ssz-bitsize:"12"`
-		}{[]uint8{0xff, 0x0f}},
-		fromHex("0xff0f"),
-	},
-
-	{
-		func() any {
-			list := make([]uint32, 128)
-			list[0] = 123
-			list[1] = 654
-			list[127] = 222
-
-			return struct {
-				F1 []uint32 `ssz-type:"progressive-list"`
-			}{list}
-		}(),
-		fromHex("0x040000007b0000008e0200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000de000000"),
-	},
-	// progressive bitlist test - matches Python test_progressive_bitlist.py output
-	{
-		func() any {
-			// Create bitlist with 1000 bits where every 3rd bit is set (pattern: [false, false, true, ...])
-			bits := make([]bool, 1000)
-			for i := 0; i < 1000; i++ {
-				bits[i] = (i%3 == 2)
-			}
-			// Convert to bitlist format with delimiter bit
-			bytesNeeded := (len(bits) + 1 + 7) / 8
-			bl := make([]byte, bytesNeeded)
-			for i, bit := range bits {
-				if bit {
-					bl[i/8] |= 1 << (i % 8)
-				}
-			}
-
-			// Set delimiter bit at position 1000 (1000 % 8 = 0, byte 125)
-			bl[125] |= 0x01 // delimiter bit at position 7 of byte 125
-
-			return struct {
-				F1 []byte `ssz-type:"progressive-bitlist"`
-			}{bl}
-		}(),
-		fromHex("04000000244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244992244901"),
-	},
-
-	// Progressive container tests
-	{
-		struct {
-			Field0 uint64 `ssz-index:"0"`
-			Field1 uint32 `ssz-index:"1"`
-			Field2 bool   `ssz-index:"2"`
-			Field3 uint16 `ssz-index:"3"`
-		}{12345, 67890, true, 999},
-		fromHex("0x39300000000000003209010001e703"),
-	},
-	{
-		struct {
-			Field0 uint64 `ssz-index:"0"`
-			Field1 uint32 `ssz-index:"1"`
-			Field2 bool   `ssz-index:"2"`
-			Field3 uint16 `ssz-index:"3"`
-		}{0, 0, false, 0},
-		fromHex("0x000000000000000000000000000000"),
-	},
-
-	// CompatibleUnion tests
-	{
-		struct {
-			Field0 uint16
-			Field1 CompatibleUnion[struct {
-				Field1 uint32
-				Field2 [2]uint8
-			}]
-			Field3 uint16
-		}{0x1337, CompatibleUnion[struct {
-			Field1 uint32
-			Field2 [2]uint8
-		}]{Variant: 0, Data: uint32(0x12345678)}, 0x4242},
-		fromHex("0x37130800000042420078563412"),
-	},
-	{
-		[2]uint16{1, 2},
-		fromHex("0x01000200"),
-	},
-
-	// ssz-type annotation tests
-	{
-		struct {
-			BitlistData []byte `ssz-type:"bitlist" ssz-max:"100"`
-		}{[]byte{0x0f, 0x01}}, // bitlist with 4 bits set, length indicator
-		fromHex("0x040000000f01"),
-	},
-
 	// nil pointer tests
 	{
+		"nil_pointer_1",
 		(*struct{ A uint32 })(nil),
 		fromHex("0x00000000"),
+		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
 	},
 
-	// uint128 type tests
+	// dynamicssz value tests
 	{
-		struct {
-			Value [16]byte `ssz-type:"uint128"`
-		}{[16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}},
-		fromHex("0x0102030405060708090a0b0c0d0e0f10"),
+		"type_dynamicssz_val_1",
+		TestContainerWithDynamicSsz2{1, 2, true, 4},
+		fromHex("0x010000000000000002000000010400"),
+		fromHex("0x4138be0e47d6daea84065f2a1e4435e16d2b269f9c2c8fcf9e6cf03de1d5026e"),
 	},
 	{
-		struct {
-			Value [2]uint64 `ssz-type:"uint128"`
-		}{[2]uint64{0x0807060504030201, 0x100f0e0d0c0b0a09}},
-		fromHex("0x0102030405060708090a0b0c0d0e0f10"),
+		"type_dynamicssz_val_2",
+		TestContainerWithDynamicSsz3{1, 2, true, 4},
+		fromHex("0x010000000000000002000000010400"),
+		fromHex("0x4138be0e47d6daea84065f2a1e4435e16d2b269f9c2c8fcf9e6cf03de1d5026e"),
 	},
 	{
+		"type_dynamicssz_val_3",
 		struct {
-			Value []byte `ssz-type:"uint128" ssz-size:"16"`
-		}{[]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}},
-		fromHex("0x0102030405060708090a0b0c0d0e0f10"),
+			Field0 uint64
+			Field1 []TestContainerWithDynamicSsz2
+		}{1, []TestContainerWithDynamicSsz2{{1, 2, true, 4}, {5, 6, true, 8}}},
+		fromHex("0x01000000000000000c000000010000000000000002000000010400050000000000000006000000010800"),
+		fromHex("0x80b99000797f72ef1a9deae3e42fc1447648feaf1d7cd8dc1a4e20c7c64350ed"),
 	},
 
-	// uint256 type tests
+	// fastssz value tests
 	{
+		"type_fastssz_val_1",
+		TestContainerWithFastSsz2{1, 2, true, 4},
+		fromHex("0x010000000000000002000000010400"),
+		fromHex("0x4138be0e47d6daea84065f2a1e4435e16d2b269f9c2c8fcf9e6cf03de1d5026e"),
+	},
+	{
+		"type_fastssz_val_2",
 		struct {
-			Balance [32]byte `ssz-type:"uint256"`
-		}{[32]byte{
-			1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
-			17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
-		}},
-		fromHex("0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"),
+			Field0 uint64
+			Field1 []TestContainerWithFastSsz2
+		}{1, []TestContainerWithFastSsz2{{1, 2, true, 4}, {5, 6, true, 8}}},
+		fromHex("0x01000000000000000c000000010000000000000002000000010400050000000000000006000000010800"),
+		fromHex("0x80b99000797f72ef1a9deae3e42fc1447648feaf1d7cd8dc1a4e20c7c64350ed"),
 	},
-	{
-		struct {
-			Balance [4]uint64 `ssz-type:"uint256"`
-		}{[4]uint64{0x0807060504030201, 0x100f0e0d0c0b0a09, 0x1817161514131211, 0x201f1e1d1c1b1a19}},
-		fromHex("0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"),
-	},
-	{
-		struct {
-			Balance []byte `ssz-type:"uint256" ssz-size:"32"`
-		}{[]byte{
-			1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
-			17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
-		}},
-		fromHex("0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"),
-	},
-
-	// bitvector type tests
-	{
-		struct {
-			Flags [4]byte `ssz-type:"bitvector"`
-		}{[4]byte{0xff, 0x0f, 0x00, 0xf0}},
-		fromHex("0xff0f00f0"),
-	},
-	{
-		struct {
-			Flags [3]byte `ssz-type:"bitvector" ssz-bitsize:"12"`
-		}{[3]byte{0xff, 0x0f, 0x00}},
-		fromHex("0xff0f"),
-	},
-
-	// explicit basic type annotations
-	{
-		struct {
-			Value uint32 `ssz-type:"uint32"`
-		}{0x12345678},
-		fromHex("0x78563412"),
-	},
-	{
-		struct {
-			Value bool `ssz-type:"bool"`
-		}{true},
-		fromHex("0x01"),
-	},
-
-	// vector type annotation
-	{
-		struct {
-			Values []uint64 `ssz-type:"vector" ssz-size:"3"`
-		}{[]uint64{1, 2, 3}},
-		fromHex("0x010000000000000002000000000000000300000000000000"),
-	},
-
-	// container type annotation
-	{
-		struct {
-			Data struct {
-				A uint32
-				B uint64
-			} `ssz-type:"container"`
-		}{struct {
-			A uint32
-			B uint64
-		}{A: 100, B: 200}},
-		fromHex("0x64000000c800000000000000"),
-	},
-
-	// string types
-	{
-		struct {
-			Data string `ssz-max:"100"`
-		}{""},
-		fromHex("0x04000000"),
-	},
-	{
-		struct {
-			Data string `ssz-max:"100"`
-		}{"hello"},
-		fromHex("0x0400000068656c6c6f"),
-	},
-	{
-		struct {
-			Data string `ssz-max:"100"`
-		}{"hello 世界"},
-		fromHex("0x0400000068656c6c6f20e4b896e7958c"),
-	},
-	{
-		struct {
-			Data string `ssz-size:"32"`
-		}{"hello"},
-		fromHex("0x68656c6c6f000000000000000000000000000000000000000000000000000000"),
-	},
-	{
-		struct {
-			Data string `ssz-size:"32"`
-		}{"abcdefghijklmnopqrstuvwxyz123456"},
-		fromHex("0x6162636465666768696a6b6c6d6e6f707172737475767778797a313233343536"),
-	},
-
-	// TypeWrapper test cases
-	{
-		func() any {
-			type WrappedByteArray = TypeWrapper[struct {
-				Data []byte `ssz-size:"32"`
-			}, []byte]
-			testData := make([]byte, 32)
-			for i := range testData {
-				testData[i] = byte(i)
-			}
-			return WrappedByteArray{
-				Data: testData,
-			}
-		}(),
-		fromHex("0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"),
-	},
-	{
-		func() any {
-			type WrappedUint32List = TypeWrapper[struct {
-				Data []uint32 `ssz-max:"1024"`
-			}, []uint32]
-			return WrappedUint32List{
-				Data: []uint32{1, 2, 3, 4, 5},
-			}
-		}(),
-		fromHex("0x0100000002000000030000000400000005000000"),
-	},
-	{
-		func() any {
-			type WrappedBool = TypeWrapper[struct {
-				Data bool
-			}, bool]
-			return WrappedBool{
-				Data: true,
-			}
-		}(),
-		fromHex("0x01"),
-	},
-}
+}...)
 
 func TestMarshal(t *testing.T) {
 	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
 
-	for idx, test := range marshalTestMatrix {
-		buf, err := dynssz.MarshalSSZ(test.payload)
+	for _, test := range marshalTestMatrix {
+		t.Run(test.name, func(t *testing.T) {
+			buf, err := dynssz.MarshalSSZ(test.payload)
 
-		switch {
-		case test.expected == nil && err != nil:
-			// expected error
-		case err != nil:
-			t.Errorf("test %v error: %v", idx, err)
-		case !bytes.Equal(buf, test.expected):
-			t.Errorf("test %v failed: got 0x%x, wanted 0x%x", idx, buf, test.expected)
-		}
+			switch {
+			case test.ssz == nil && err != nil:
+				// expected error
+			case err != nil:
+				t.Errorf("test %v error: %v", test.name, err)
+			case !bytes.Equal(buf, test.ssz):
+				t.Errorf("test %v failed: got 0x%x, wanted 0x%x", test.name, buf, test.ssz)
+			}
+		})
 	}
 }
 
 func TestMarshalTo(t *testing.T) {
 	dynssz := NewDynSsz(nil)
+
+	for _, test := range marshalTestMatrix {
+		t.Run(test.name, func(t *testing.T) {
+			size, err := dynssz.SizeSSZ(test.payload)
+			if err != nil {
+				t.Errorf("test %v error: %v", test.name, err)
+			}
+
+			buf := make([]byte, 0, size)
+			buf, err = dynssz.MarshalSSZTo(test.payload, buf)
+
+			switch {
+			case test.ssz == nil && err != nil:
+				// expected error
+			case err != nil:
+				t.Errorf("test %v error: %v", test.name, err)
+			case !bytes.Equal(buf, test.ssz):
+				t.Errorf("test %v failed: got 0x%x, wanted 0x%x", test.name, buf, test.ssz)
+			}
+		})
+	}
+}
+
+func TestMarshalNoFastSsz(t *testing.T) {
+	dynssz := NewDynSsz(nil)
 	dynssz.NoFastSsz = true
 
-	for idx, test := range marshalTestMatrix {
-		size, err := dynssz.SizeSSZ(test.payload)
-		if err != nil {
-			t.Errorf("test %v error: %v", idx, err)
-		}
+	for _, test := range marshalTestMatrix {
+		t.Run(test.name, func(t *testing.T) {
+			buf, err := dynssz.MarshalSSZ(test.payload)
 
-		buf := make([]byte, 0, size)
-		buf, err = dynssz.MarshalSSZTo(test.payload, buf)
-
-		switch {
-		case test.expected == nil && err != nil:
-			// expected error
-		case err != nil:
-			t.Errorf("test %v error: %v", idx, err)
-		case !bytes.Equal(buf, test.expected):
-			t.Errorf("test %v failed: got 0x%x, wanted 0x%x", idx, buf, test.expected)
-		}
+			switch {
+			case test.ssz == nil && err != nil:
+				// expected error
+			case err != nil:
+				t.Errorf("test %v error: %v", test.name, err)
+			case !bytes.Equal(buf, test.ssz):
+				t.Errorf("test %v failed: got 0x%x, wanted 0x%x", test.name, buf, test.ssz)
+			}
+		})
 	}
 }
 
@@ -625,7 +299,7 @@ func TestMarshalErrors(t *testing.T) {
 			input: struct {
 				Bits []uint64 `ssz-type:"bitlist"`
 			}{[]uint64{0xff, 0xff}},
-			expectedErr: "bitlist ssz type can only be represented by byte slices or arrays, got uint64",
+			expectedErr: "bitlist ssz type can only be represented by byte slices, got []uint64",
 		},
 		{
 			name: "unterminated_bitlist",
@@ -760,4 +434,487 @@ func containsHelper(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestMarshalVerbose(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+	dynssz.Verbose = true
+
+	input := struct {
+		Field0 uint64
+		Field1 uint32
+	}{123, 456}
+
+	_, err := dynssz.MarshalSSZ(input)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestMarshalTypeWrapperVerbose(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+	dynssz.Verbose = true
+
+	type W = TypeWrapper[struct {
+		Data uint32
+	}, uint32]
+	input := W{Data: 42}
+
+	_, err := dynssz.MarshalSSZ(input)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestMarshalEmptyBitlist(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Test empty bitlist - should add termination bit automatically
+	// Use MarshalSSZTo to test the actual marshalBitlist function
+	input := struct {
+		Bits []byte `ssz-type:"bitlist" ssz-max:"100"`
+	}{[]byte{}} // Empty bitlist
+
+	// Pre-allocate buffer with known size to avoid size calculation issues
+	buf, err := dynssz.MarshalSSZTo(input, make([]byte, 0, 100))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should add termination bit 0x01 after the offset
+	if len(buf) < 5 || buf[4] != 0x01 {
+		t.Errorf("expected empty bitlist to have termination bit, got %x", buf)
+	}
+}
+
+func TestMarshalDynamicVectorSizeError(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Test dynamic vector exceeding size limit
+	input := struct {
+		Data []struct {
+			Value []uint8 `ssz-max:"10"`
+		} `ssz-size:"2"`
+	}{[]struct {
+		Value []uint8 `ssz-max:"10"`
+	}{{[]uint8{1}}, {[]uint8{2}}, {[]uint8{3}}}} // 3 elements when max is 2
+
+	_, err := dynssz.MarshalSSZ(input)
+	if err == nil {
+		t.Error("expected error for dynamic vector exceeding size")
+	}
+}
+
+func TestMarshalDynamicVectorAppendZeroPointer(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Test dynamic vector with pointer elements needing zero padding
+	input := struct {
+		Data []*slug_DynStruct1 `ssz-size:"3"`
+	}{[]*slug_DynStruct1{{true, []uint8{1}}}} // 1 element when size is 3
+
+	buf, err := dynssz.MarshalSSZ(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(buf) == 0 {
+		t.Error("buffer should not be empty")
+	}
+}
+
+func TestMarshalListNilPointerElement(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Test list with nil pointer element
+	input := struct {
+		Data []*slug_StaticStruct1 `ssz-max:"10"`
+	}{[]*slug_StaticStruct1{nil, {true, []uint8{1, 2, 3}}, nil}}
+
+	buf, err := dynssz.MarshalSSZ(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(buf) == 0 {
+		t.Error("buffer should not be empty")
+	}
+}
+
+func TestMarshalCompatibleUnionError(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Test compatible union with invalid variant
+	type TestUnion = CompatibleUnion[struct {
+		Field1 uint32
+	}]
+	input := struct {
+		Field0 uint16
+		Field1 TestUnion
+	}{
+		0x1234,
+		TestUnion{Variant: 99, Data: uint32(42)}, // Invalid variant
+	}
+
+	_, err := dynssz.MarshalSSZ(input)
+	if err == nil {
+		t.Error("expected error for invalid union variant")
+	}
+}
+
+func TestMarshalFastSszError(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	// NoFastSsz = false to use FastSSZ path
+
+	// Test with type that has MarshalSSZTo returning error
+	input := &TestContainerWithMarshalError{
+		Field0: 42,
+	}
+
+	_, err := dynssz.MarshalSSZ(input)
+	if err == nil {
+		t.Fatal("expected error from MarshalSSZTo")
+	}
+	if !contains(err.Error(), "test MarshalSSZTo error") {
+		t.Errorf("expected MarshalSSZTo error, got: %v", err)
+	}
+}
+
+func TestMarshalDynamicMarshalerError(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Test with type that has dynamic marshaler returning error
+	input := &TestContainerWithDynamicMarshalError{
+		Field0: 42,
+	}
+
+	_, err := dynssz.MarshalSSZ(input)
+	if err == nil {
+		t.Error("expected error from MarshalSSZDyn")
+	}
+	if !contains(err.Error(), "test MarshalSSZDyn error") {
+		t.Errorf("expected MarshalSSZDyn error, got: %v", err)
+	}
+}
+
+func TestSizeSSZUnionError(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Test size calculation for union with invalid variant
+	type TestUnion = CompatibleUnion[struct {
+		Field1 uint32
+	}]
+	input := struct {
+		Field0 uint16
+		Field1 TestUnion
+	}{
+		0x1234,
+		TestUnion{Variant: 99, Data: uint32(42)}, // Invalid variant
+	}
+
+	_, err := dynssz.SizeSSZ(input)
+	if err == nil {
+		t.Error("expected error for invalid union variant in size calculation")
+	}
+}
+
+func TestSizeSSZUint128(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Test size calculation for uint128
+	input := struct {
+		Value [16]byte `ssz-type:"uint128"`
+	}{[16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}}
+
+	size, err := dynssz.SizeSSZ(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if size != 16 {
+		t.Errorf("expected size 16, got %d", size)
+	}
+}
+
+func TestSizeSSZUint256(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Test size calculation for uint256
+	input := struct {
+		Value [32]byte `ssz-type:"uint256"`
+	}{[32]byte{}}
+
+	size, err := dynssz.SizeSSZ(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if size != 32 {
+		t.Errorf("expected size 32, got %d", size)
+	}
+}
+
+func TestSizeSSZFastSszPath(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	// NoFastSsz = false to use FastSSZ path
+
+	// Test with a type that implements FastSSZ and returns size
+	input := &TestContainerWithFastSsz{
+		Field0: 123,
+		Field1: 456,
+		Field2: true,
+		Field3: 789,
+	}
+
+	size, err := dynssz.SizeSSZ(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if size != 15 {
+		t.Errorf("expected size 15, got %d", size)
+	}
+}
+
+func TestSizeSSZDynamicSizerPath(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Test with a type that implements DynamicSizer
+	input := &TestContainerWithDynamicSsz{
+		Field0: 123,
+		Field1: 456,
+		Field2: true,
+		Field3: 789,
+	}
+
+	size, err := dynssz.SizeSSZ(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if size != 15 {
+		t.Errorf("expected size 15, got %d", size)
+	}
+}
+
+func TestSizeSSZTypeWrapper(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Test size calculation for TypeWrapper
+	type WrappedUint32List = TypeWrapper[struct {
+		Data []uint32 `ssz-max:"1024"`
+	}, []uint32]
+
+	input := struct {
+		Field WrappedUint32List
+	}{
+		WrappedUint32List{Data: []uint32{1, 2, 3, 4, 5}},
+	}
+
+	size, err := dynssz.SizeSSZ(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// 4 bytes offset + 5 * 4 bytes = 24
+	if size != 24 {
+		t.Errorf("expected size 24, got %d", size)
+	}
+}
+
+func TestSizeSSZVectorShortLength(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Test size calculation for vector with elements shorter than declared size
+	// This tests the appendZero path
+	input := struct {
+		Data []uint32 `ssz-size:"5"`
+	}{[]uint32{1, 2, 3}} // Only 3 elements but declared as 5
+
+	size, err := dynssz.SizeSSZ(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// 5 * 4 bytes = 20
+	if size != 20 {
+		t.Errorf("expected size 20, got %d", size)
+	}
+}
+
+func TestSizeSSZVectorStaticElements(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Test size calculation for vector with static elements (dataLen > 0)
+	input := struct {
+		Data [5]uint32
+	}{[5]uint32{1, 2, 3, 4, 5}}
+
+	size, err := dynssz.SizeSSZ(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// 5 * 4 bytes = 20
+	if size != 20 {
+		t.Errorf("expected size 20, got %d", size)
+	}
+}
+
+func TestSizeSSZVectorEmptyStaticElements(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Test size calculation for empty vector with static elements (dataLen = 0)
+	input := struct {
+		Data []uint32 `ssz-size:"5"`
+	}{[]uint32{}} // Empty slice but declared as vector of 5
+
+	size, err := dynssz.SizeSSZ(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// 5 * 4 bytes = 20
+	if size != 20 {
+		t.Errorf("expected size 20, got %d", size)
+	}
+}
+
+func TestSizeSSZVectorDynamicElements(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Test size calculation for vector with dynamic elements
+	input := struct {
+		Data [][]uint32 `ssz-size:"3" ssz-max:"?,10"`
+	}{[][]uint32{{1, 2}, {3, 4, 5}}} // 2 elements but declared as 3
+
+	size, err := dynssz.SizeSSZ(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Container offset (4) + 3 * 4 bytes (offsets) + 2*4 bytes + 3*4 bytes + 0 bytes = 4 + 12 + 8 + 12 + 0 = 36
+	if size != 36 {
+		t.Errorf("expected size 36, got %d", size)
+	}
+}
+
+func TestSizeSSZListDynamicElements(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Test size calculation for list with dynamic elements
+	input := struct {
+		Data [][]uint32 `ssz-max:"10,10"`
+	}{[][]uint32{{1, 2}, {3, 4, 5}, {6}}}
+
+	size, err := dynssz.SizeSSZ(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Container offset (4) + 3 * 4 bytes (offsets) + 2*4 bytes + 3*4 bytes + 1*4 bytes = 4 + 12 + 8 + 12 + 4 = 40
+	if size != 40 {
+		t.Errorf("expected size 40, got %d", size)
+	}
+}
+
+func TestSizeSSZListStaticElements(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Test size calculation for list with static elements
+	input := struct {
+		Data []uint64 `ssz-max:"10"`
+	}{[]uint64{1, 2, 3}}
+
+	size, err := dynssz.SizeSSZ(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Container offset (4) + 3 * 8 bytes = 4 + 24 = 28
+	if size != 28 {
+		t.Errorf("expected size 28, got %d", size)
+	}
+}
+
+func TestSizeSSZCompatibleUnion(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Test size calculation for compatible union
+	type TestUnion = CompatibleUnion[struct {
+		Field1 uint32
+		Field2 [8]uint8
+	}]
+
+	input := struct {
+		Field TestUnion
+	}{
+		TestUnion{Variant: 0, Data: uint32(42)},
+	}
+
+	size, err := dynssz.SizeSSZ(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// 4 bytes offset + 1 byte selector + 4 bytes uint32 = 9
+	if size != 9 {
+		t.Errorf("expected size 9, got %d", size)
+	}
+}
+
+func TestSizeSSZFastSszFallback(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	// Don't set NoFastSsz = true, but manually set CompatFlags to trigger fallback
+
+	// Clear any cached types
+	dynssz.GetTypeCache().RemoveAllTypes()
+
+	// Set compat flag for a type that doesn't actually implement FastSSZ
+	dynssz.GetTypeCache().CompatFlags["struct { Field0 uint64 }"] = SszCompatFlagFastSSZMarshaler
+
+	// Test with type that has CompatFlag but doesn't implement the interface
+	input := struct {
+		Field0 uint64
+	}{123}
+
+	size, err := dynssz.SizeSSZ(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should fallback to manual calculation: 8 bytes
+	if size != 8 {
+		t.Errorf("expected size 8, got %d", size)
+	}
+}
+
+func TestSizeSSZDynamicSizerFallback(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true // Disable FastSSZ to reach DynamicSizer path
+
+	// Clear any cached types
+	dynssz.GetTypeCache().RemoveAllTypes()
+
+	// Set compat flag for DynamicSizer on a type that doesn't implement it
+	dynssz.GetTypeCache().CompatFlags["struct { Field0 uint32 }"] = SszCompatFlagDynamicSizer
+
+	// Test with type that has CompatFlag but doesn't implement the interface
+	input := struct {
+		Field0 uint32
+	}{123}
+
+	size, err := dynssz.SizeSSZ(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should fallback to manual calculation: 4 bytes
+	if size != 4 {
+		t.Errorf("expected size 4, got %d", size)
+	}
 }
