@@ -355,11 +355,7 @@ func (ctx *marshalContext) marshalVector(desc *dynssz.TypeDescriptor, varName st
 				ctx.appendCode(indent, "\treturn dst, sszutils.ErrVectorLength\n")
 				ctx.appendCode(indent, "}\n")
 			}
-			if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
-				ctx.appendCode(indent, "dst = append(dst, %s[:%s]...)\n", varName, lenVar)
-			} else {
-				ctx.appendCode(indent, "dst = append(dst, []byte(%s[:%s])...)\n", varName, lenVar)
-			}
+			ctx.appendCode(indent, "dst = append(dst, %s[:%s]...)\n", varName, lenVar)
 		} else {
 			ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", lenVar)
 			valVar := "t"
@@ -467,10 +463,8 @@ func (ctx *marshalContext) marshalList(desc *dynssz.TypeDescriptor, varName stri
 
 	if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic == 0 {
 		// static elements
-		if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
+		if desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
 			ctx.appendCode(indent, "dst = append(dst, %s[:]...)\n", varName)
-		} else if desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
-			ctx.appendCode(indent, "dst = append(dst, []byte(%s[:])...)\n", varName)
 		} else {
 			addVlen()
 			ctx.appendCode(indent, "for i := 0; i < vlen; i++ {\n")
