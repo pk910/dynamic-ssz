@@ -107,9 +107,17 @@ Both approaches generate optimized SSZ methods that are faster than reflection-b
 
 ## Performance
 
-Dynamic SSZ is benchmarked against other SSZ libraries (including `fastssz`) in a dedicated benchmark repository: [pk910/ssz-benchmark](https://github.com/pk910/ssz-benchmark).
+Dynamic SSZ is benchmarked against other SSZ libraries (including `fastssz`) in a dedicated benchmark repository: [pk910/ssz-benchmark](https://github.com/pk910/ssz-benchmark) ([view graphs](https://pk910.github.io/ssz-benchmark/)).
 
-The benchmarks compare encoding, decoding, and hash tree root performance across different SSZ libraries using real Ethereum consensus data structures.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://pk910.github.io/ssz-benchmark/benchmark-table.svg">
+  <source media="(prefers-color-scheme: light)" srcset="https://pk910.github.io/ssz-benchmark/benchmark-table-light.svg">
+  <img alt="SSZ Benchmark Results" src="https://pk910.github.io/ssz-benchmark/benchmark-table-light.svg">
+</picture>
+
+The benchmarks compare encoding, decoding, and hash tree root performance across different SSZ libraries using common Ethereum consensus data structures.
+
+View interactive benchmark results and historical trends at: https://pk910.github.io/ssz-benchmark/
 
 ## Testing
 
