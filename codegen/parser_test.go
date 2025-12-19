@@ -1364,3 +1364,924 @@ func TestCacheNotUsedWithHints(t *testing.T) {
 		_ = desc2 // Avoid unused variable error
 	})
 }
+
+func TestBuildCompatibleUnionDescriptor(t *testing.T) {
+	parser := NewParser()
+
+	t.Run("UnionWithValidDescriptor", func(t *testing.T) {
+		// Create a descriptor struct with multiple variant fields
+		variant0 := types.NewVar(token.NoPos, nil, "Variant0", types.Typ[types.Uint64])
+		variant1 := types.NewVar(token.NoPos, nil, "Variant1", types.Typ[types.Uint32])
+		descriptorStruct := types.NewStruct([]*types.Var{variant0, variant1}, []string{"", ""})
+
+		// Create the CompatibleUnion generic type
+		pkg := types.NewPackage("github.com/pk910/dynamic-ssz", "dynssz")
+		typeParam := types.NewTypeParam(types.NewTypeName(token.NoPos, nil, "T", nil), types.NewInterfaceType(nil, nil))
+		unionObj := types.NewTypeName(token.NoPos, pkg, "CompatibleUnion", nil)
+
+		// Create the base struct for CompatibleUnion
+		variantField := types.NewVar(token.NoPos, nil, "Variant", types.Typ[types.Uint8])
+		dataField := types.NewVar(token.NoPos, nil, "Data", types.NewInterfaceType(nil, nil))
+		unionStruct := types.NewStruct([]*types.Var{variantField, dataField}, []string{"", ""})
+
+		unionType := types.NewNamed(unionObj, unionStruct, nil)
+		unionType.SetTypeParams([]*types.TypeParam{typeParam})
+
+		// Instantiate with the descriptor struct
+		instantiated, err := types.Instantiate(nil, unionType, []types.Type{descriptorStruct}, false)
+		if err != nil {
+			t.Fatalf("Failed to instantiate CompatibleUnion: %v", err)
+		}
+
+		namedInstantiated := instantiated.(*types.Named)
+
+		// Create descriptor and call buildCompatibleUnionDescriptor
+		desc := &ssz.TypeDescriptor{
+			SszType: ssz.SszCompatibleUnionType,
+		}
+		err = parser.buildCompatibleUnionDescriptor(desc, namedInstantiated)
+		if err != nil {
+			t.Fatalf("Failed to build CompatibleUnion descriptor: %v", err)
+		}
+
+		if len(desc.UnionVariants) != 2 {
+			t.Errorf("Expected 2 union variants, got %d", len(desc.UnionVariants))
+		}
+		if desc.SszTypeFlags&ssz.SszTypeFlagIsDynamic == 0 {
+			t.Error("Expected dynamic flag to be set")
+		}
+		if desc.Size != 0 {
+			t.Errorf("Expected size 0, got %d", desc.Size)
+		}
+	})
+
+	t.Run("UnionWithEmptyDescriptor", func(t *testing.T) {
+		// Create empty descriptor struct
+		descriptorStruct := types.NewStruct(nil, nil)
+
+		// Create the CompatibleUnion generic type
+		pkg := types.NewPackage("github.com/pk910/dynamic-ssz", "dynssz")
+		typeParam := types.NewTypeParam(types.NewTypeName(token.NoPos, nil, "T", nil), types.NewInterfaceType(nil, nil))
+		unionObj := types.NewTypeName(token.NoPos, pkg, "CompatibleUnion", nil)
+
+		variantField := types.NewVar(token.NoPos, nil, "Variant", types.Typ[types.Uint8])
+		dataField := types.NewVar(token.NoPos, nil, "Data", types.NewInterfaceType(nil, nil))
+		unionStruct := types.NewStruct([]*types.Var{variantField, dataField}, []string{"", ""})
+
+		unionType := types.NewNamed(unionObj, unionStruct, nil)
+		unionType.SetTypeParams([]*types.TypeParam{typeParam})
+
+		instantiated, err := types.Instantiate(nil, unionType, []types.Type{descriptorStruct}, false)
+		if err != nil {
+			t.Fatalf("Failed to instantiate CompatibleUnion: %v", err)
+		}
+
+		desc := &ssz.TypeDescriptor{
+			SszType: ssz.SszCompatibleUnionType,
+		}
+		err = parser.buildCompatibleUnionDescriptor(desc, instantiated.(*types.Named))
+		if err == nil {
+			t.Error("Expected error for empty descriptor struct")
+		}
+		if !strings.Contains(err.Error(), "no fields") {
+			t.Errorf("Expected 'no fields' error, got: %v", err)
+		}
+	})
+
+	t.Run("UnionWithNonStructDescriptor", func(t *testing.T) {
+		// Create union with non-struct type argument
+		pkg := types.NewPackage("github.com/pk910/dynamic-ssz", "dynssz")
+		typeParam := types.NewTypeParam(types.NewTypeName(token.NoPos, nil, "T", nil), types.NewInterfaceType(nil, nil))
+		unionObj := types.NewTypeName(token.NoPos, pkg, "CompatibleUnion", nil)
+
+		variantField := types.NewVar(token.NoPos, nil, "Variant", types.Typ[types.Uint8])
+		dataField := types.NewVar(token.NoPos, nil, "Data", types.NewInterfaceType(nil, nil))
+		unionStruct := types.NewStruct([]*types.Var{variantField, dataField}, []string{"", ""})
+
+		unionType := types.NewNamed(unionObj, unionStruct, nil)
+		unionType.SetTypeParams([]*types.TypeParam{typeParam})
+
+		// Instantiate with uint64 instead of struct
+		instantiated, err := types.Instantiate(nil, unionType, []types.Type{types.Typ[types.Uint64]}, false)
+		if err != nil {
+			t.Fatalf("Failed to instantiate CompatibleUnion: %v", err)
+		}
+
+		desc := &ssz.TypeDescriptor{
+			SszType: ssz.SszCompatibleUnionType,
+		}
+		err = parser.buildCompatibleUnionDescriptor(desc, instantiated.(*types.Named))
+		if err == nil {
+			t.Error("Expected error for non-struct descriptor")
+		}
+		if !strings.Contains(err.Error(), "must be a struct") {
+			t.Errorf("Expected 'must be a struct' error, got: %v", err)
+		}
+	})
+
+	t.Run("UnionWithNoTypeArgs", func(t *testing.T) {
+		// Create union without type args
+		pkg := types.NewPackage("github.com/pk910/dynamic-ssz", "dynssz")
+		unionObj := types.NewTypeName(token.NoPos, pkg, "CompatibleUnion", nil)
+
+		variantField := types.NewVar(token.NoPos, nil, "Variant", types.Typ[types.Uint8])
+		dataField := types.NewVar(token.NoPos, nil, "Data", types.NewInterfaceType(nil, nil))
+		unionStruct := types.NewStruct([]*types.Var{variantField, dataField}, []string{"", ""})
+
+		unionType := types.NewNamed(unionObj, unionStruct, nil)
+
+		desc := &ssz.TypeDescriptor{
+			SszType: ssz.SszCompatibleUnionType,
+		}
+		err := parser.buildCompatibleUnionDescriptor(desc, unionType)
+		if err == nil {
+			t.Error("Expected error for no type args")
+		}
+		if !strings.Contains(err.Error(), "exactly 1 type argument") {
+			t.Errorf("Expected 'exactly 1 type argument' error, got: %v", err)
+		}
+	})
+
+	t.Run("UnionWithTaggedVariants", func(t *testing.T) {
+		// Create descriptor with SSZ-tagged fields
+		variant0 := types.NewVar(token.NoPos, nil, "ByteList", types.NewSlice(types.Typ[types.Uint8]))
+		descriptorStruct := types.NewStruct([]*types.Var{variant0}, []string{`ssz-max:"1024"`})
+
+		pkg := types.NewPackage("github.com/pk910/dynamic-ssz", "dynssz")
+		typeParam := types.NewTypeParam(types.NewTypeName(token.NoPos, nil, "T", nil), types.NewInterfaceType(nil, nil))
+		unionObj := types.NewTypeName(token.NoPos, pkg, "CompatibleUnion", nil)
+
+		variantField := types.NewVar(token.NoPos, nil, "Variant", types.Typ[types.Uint8])
+		dataField := types.NewVar(token.NoPos, nil, "Data", types.NewInterfaceType(nil, nil))
+		unionStruct := types.NewStruct([]*types.Var{variantField, dataField}, []string{"", ""})
+
+		unionType := types.NewNamed(unionObj, unionStruct, nil)
+		unionType.SetTypeParams([]*types.TypeParam{typeParam})
+
+		instantiated, err := types.Instantiate(nil, unionType, []types.Type{descriptorStruct}, false)
+		if err != nil {
+			t.Fatalf("Failed to instantiate CompatibleUnion: %v", err)
+		}
+
+		desc := &ssz.TypeDescriptor{
+			SszType: ssz.SszCompatibleUnionType,
+		}
+		err = parser.buildCompatibleUnionDescriptor(desc, instantiated.(*types.Named))
+		if err != nil {
+			t.Fatalf("Failed to build CompatibleUnion descriptor: %v", err)
+		}
+
+		if len(desc.UnionVariants) != 1 {
+			t.Errorf("Expected 1 union variant, got %d", len(desc.UnionVariants))
+		}
+		// Variant should be a list type
+		if desc.UnionVariants[0].SszType != ssz.SszListType {
+			t.Errorf("Expected SszListType for variant 0, got %v", desc.UnionVariants[0].SszType)
+		}
+	})
+}
+
+func TestBuildTypeWrapperDescriptor(t *testing.T) {
+	parser := NewParser()
+
+	t.Run("WrapperWithValidDescriptor", func(t *testing.T) {
+		// Create descriptor struct with one field matching wrapped type
+		wrappedField := types.NewVar(token.NoPos, nil, "Value", types.NewSlice(types.Typ[types.Uint8]))
+		descriptorStruct := types.NewStruct([]*types.Var{wrappedField}, []string{`ssz-max:"256"`})
+
+		// Create TypeWrapper generic type
+		pkg := types.NewPackage("github.com/pk910/dynamic-ssz", "dynssz")
+		typeParamD := types.NewTypeParam(types.NewTypeName(token.NoPos, nil, "D", nil), types.NewInterfaceType(nil, nil))
+		typeParamT := types.NewTypeParam(types.NewTypeName(token.NoPos, nil, "T", nil), types.NewInterfaceType(nil, nil))
+		wrapperObj := types.NewTypeName(token.NoPos, pkg, "TypeWrapper", nil)
+
+		dataField := types.NewVar(token.NoPos, nil, "Data", typeParamT)
+		wrapperStruct := types.NewStruct([]*types.Var{dataField}, []string{""})
+
+		wrapperType := types.NewNamed(wrapperObj, wrapperStruct, nil)
+		wrapperType.SetTypeParams([]*types.TypeParam{typeParamD, typeParamT})
+
+		// Instantiate with descriptor and wrapped type
+		wrappedType := types.NewSlice(types.Typ[types.Uint8])
+		instantiated, err := types.Instantiate(nil, wrapperType, []types.Type{descriptorStruct, wrappedType}, false)
+		if err != nil {
+			t.Fatalf("Failed to instantiate TypeWrapper: %v", err)
+		}
+
+		desc := &ssz.TypeDescriptor{
+			SszType: ssz.SszTypeWrapperType,
+		}
+		err = parser.buildTypeWrapperDescriptor(desc, instantiated.(*types.Named), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("Failed to build TypeWrapper descriptor: %v", err)
+		}
+
+		if desc.ElemDesc == nil {
+			t.Error("Expected ElemDesc to be set")
+		}
+		if desc.ElemDesc.SszType != ssz.SszListType {
+			t.Errorf("Expected SszListType for wrapped type, got %v", desc.ElemDesc.SszType)
+		}
+	})
+
+	t.Run("WrapperWithNoTypeArgs", func(t *testing.T) {
+		pkg := types.NewPackage("github.com/pk910/dynamic-ssz", "dynssz")
+		wrapperObj := types.NewTypeName(token.NoPos, pkg, "TypeWrapper", nil)
+
+		dataField := types.NewVar(token.NoPos, nil, "Data", types.Typ[types.Uint64])
+		wrapperStruct := types.NewStruct([]*types.Var{dataField}, []string{""})
+
+		wrapperType := types.NewNamed(wrapperObj, wrapperStruct, nil)
+
+		desc := &ssz.TypeDescriptor{
+			SszType: ssz.SszTypeWrapperType,
+		}
+		err := parser.buildTypeWrapperDescriptor(desc, wrapperType, nil, nil, nil)
+		if err == nil {
+			t.Error("Expected error for no type args")
+		}
+		if !strings.Contains(err.Error(), "exactly 2 type arguments") {
+			t.Errorf("Expected 'exactly 2 type arguments' error, got: %v", err)
+		}
+	})
+
+	t.Run("WrapperWithNonStructDescriptor", func(t *testing.T) {
+		pkg := types.NewPackage("github.com/pk910/dynamic-ssz", "dynssz")
+		typeParamD := types.NewTypeParam(types.NewTypeName(token.NoPos, nil, "D", nil), types.NewInterfaceType(nil, nil))
+		typeParamT := types.NewTypeParam(types.NewTypeName(token.NoPos, nil, "T", nil), types.NewInterfaceType(nil, nil))
+		wrapperObj := types.NewTypeName(token.NoPos, pkg, "TypeWrapper", nil)
+
+		dataField := types.NewVar(token.NoPos, nil, "Data", typeParamT)
+		wrapperStruct := types.NewStruct([]*types.Var{dataField}, []string{""})
+
+		wrapperType := types.NewNamed(wrapperObj, wrapperStruct, nil)
+		wrapperType.SetTypeParams([]*types.TypeParam{typeParamD, typeParamT})
+
+		// Instantiate with non-struct descriptor
+		wrappedType := types.Typ[types.Uint64]
+		instantiated, err := types.Instantiate(nil, wrapperType, []types.Type{types.Typ[types.Uint64], wrappedType}, false)
+		if err != nil {
+			t.Fatalf("Failed to instantiate TypeWrapper: %v", err)
+		}
+
+		desc := &ssz.TypeDescriptor{
+			SszType: ssz.SszTypeWrapperType,
+		}
+		err = parser.buildTypeWrapperDescriptor(desc, instantiated.(*types.Named), nil, nil, nil)
+		if err == nil {
+			t.Error("Expected error for non-struct descriptor")
+		}
+		if !strings.Contains(err.Error(), "must be a struct") {
+			t.Errorf("Expected 'must be a struct' error, got: %v", err)
+		}
+	})
+
+	t.Run("WrapperWithWrongFieldCount", func(t *testing.T) {
+		// Create descriptor with 2 fields (should have exactly 1)
+		field1 := types.NewVar(token.NoPos, nil, "Field1", types.Typ[types.Uint64])
+		field2 := types.NewVar(token.NoPos, nil, "Field2", types.Typ[types.Uint64])
+		descriptorStruct := types.NewStruct([]*types.Var{field1, field2}, []string{"", ""})
+
+		pkg := types.NewPackage("github.com/pk910/dynamic-ssz", "dynssz")
+		typeParamD := types.NewTypeParam(types.NewTypeName(token.NoPos, nil, "D", nil), types.NewInterfaceType(nil, nil))
+		typeParamT := types.NewTypeParam(types.NewTypeName(token.NoPos, nil, "T", nil), types.NewInterfaceType(nil, nil))
+		wrapperObj := types.NewTypeName(token.NoPos, pkg, "TypeWrapper", nil)
+
+		dataField := types.NewVar(token.NoPos, nil, "Data", typeParamT)
+		wrapperStruct := types.NewStruct([]*types.Var{dataField}, []string{""})
+
+		wrapperType := types.NewNamed(wrapperObj, wrapperStruct, nil)
+		wrapperType.SetTypeParams([]*types.TypeParam{typeParamD, typeParamT})
+
+		wrappedType := types.Typ[types.Uint64]
+		instantiated, err := types.Instantiate(nil, wrapperType, []types.Type{descriptorStruct, wrappedType}, false)
+		if err != nil {
+			t.Fatalf("Failed to instantiate TypeWrapper: %v", err)
+		}
+
+		desc := &ssz.TypeDescriptor{
+			SszType: ssz.SszTypeWrapperType,
+		}
+		err = parser.buildTypeWrapperDescriptor(desc, instantiated.(*types.Named), nil, nil, nil)
+		if err == nil {
+			t.Error("Expected error for wrong field count")
+		}
+		if !strings.Contains(err.Error(), "exactly 1 field") {
+			t.Errorf("Expected 'exactly 1 field' error, got: %v", err)
+		}
+	})
+
+	t.Run("WrapperWithMismatchedTypes", func(t *testing.T) {
+		// Create descriptor with field type different from wrapped type
+		wrappedField := types.NewVar(token.NoPos, nil, "Value", types.Typ[types.Uint32])
+		descriptorStruct := types.NewStruct([]*types.Var{wrappedField}, []string{""})
+
+		pkg := types.NewPackage("github.com/pk910/dynamic-ssz", "dynssz")
+		typeParamD := types.NewTypeParam(types.NewTypeName(token.NoPos, nil, "D", nil), types.NewInterfaceType(nil, nil))
+		typeParamT := types.NewTypeParam(types.NewTypeName(token.NoPos, nil, "T", nil), types.NewInterfaceType(nil, nil))
+		wrapperObj := types.NewTypeName(token.NoPos, pkg, "TypeWrapper", nil)
+
+		dataField := types.NewVar(token.NoPos, nil, "Data", typeParamT)
+		wrapperStruct := types.NewStruct([]*types.Var{dataField}, []string{""})
+
+		wrapperType := types.NewNamed(wrapperObj, wrapperStruct, nil)
+		wrapperType.SetTypeParams([]*types.TypeParam{typeParamD, typeParamT})
+
+		// Instantiate with different wrapped type (uint64 vs uint32 in descriptor)
+		wrappedType := types.Typ[types.Uint64]
+		instantiated, err := types.Instantiate(nil, wrapperType, []types.Type{descriptorStruct, wrappedType}, false)
+		if err != nil {
+			t.Fatalf("Failed to instantiate TypeWrapper: %v", err)
+		}
+
+		desc := &ssz.TypeDescriptor{
+			SszType: ssz.SszTypeWrapperType,
+		}
+		err = parser.buildTypeWrapperDescriptor(desc, instantiated.(*types.Named), nil, nil, nil)
+		if err == nil {
+			t.Error("Expected error for mismatched types")
+		}
+		if !strings.Contains(err.Error(), "does not match") {
+			t.Errorf("Expected 'does not match' error, got: %v", err)
+		}
+	})
+
+	t.Run("WrapperWithStaticType", func(t *testing.T) {
+		// Create descriptor with static uint64 type
+		wrappedField := types.NewVar(token.NoPos, nil, "Value", types.Typ[types.Uint64])
+		descriptorStruct := types.NewStruct([]*types.Var{wrappedField}, []string{""})
+
+		pkg := types.NewPackage("github.com/pk910/dynamic-ssz", "dynssz")
+		typeParamD := types.NewTypeParam(types.NewTypeName(token.NoPos, nil, "D", nil), types.NewInterfaceType(nil, nil))
+		typeParamT := types.NewTypeParam(types.NewTypeName(token.NoPos, nil, "T", nil), types.NewInterfaceType(nil, nil))
+		wrapperObj := types.NewTypeName(token.NoPos, pkg, "TypeWrapper", nil)
+
+		dataField := types.NewVar(token.NoPos, nil, "Data", typeParamT)
+		wrapperStruct := types.NewStruct([]*types.Var{dataField}, []string{""})
+
+		wrapperType := types.NewNamed(wrapperObj, wrapperStruct, nil)
+		wrapperType.SetTypeParams([]*types.TypeParam{typeParamD, typeParamT})
+
+		wrappedType := types.Typ[types.Uint64]
+		instantiated, err := types.Instantiate(nil, wrapperType, []types.Type{descriptorStruct, wrappedType}, false)
+		if err != nil {
+			t.Fatalf("Failed to instantiate TypeWrapper: %v", err)
+		}
+
+		desc := &ssz.TypeDescriptor{
+			SszType: ssz.SszTypeWrapperType,
+		}
+		err = parser.buildTypeWrapperDescriptor(desc, instantiated.(*types.Named), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("Failed to build TypeWrapper descriptor: %v", err)
+		}
+
+		if desc.Size != 8 {
+			t.Errorf("Expected size 8, got %d", desc.Size)
+		}
+		if desc.ElemDesc.SszType != ssz.SszUint64Type {
+			t.Errorf("Expected SszUint64Type for wrapped type, got %v", desc.ElemDesc.SszType)
+		}
+	})
+}
+
+func TestParseFieldTagsEdgeCases(t *testing.T) {
+	parser := NewParser()
+
+	t.Run("SszBitsizeTags", func(t *testing.T) {
+		tags := `ssz-bitsize:"256"`
+		_, sizeHints, _, err := parser.parseFieldTags(tags)
+		if err != nil {
+			t.Fatalf("Failed to parse ssz-bitsize tags: %v", err)
+		}
+		if len(sizeHints) != 1 {
+			t.Errorf("Expected 1 size hint, got %d", len(sizeHints))
+		}
+		if sizeHints[0].Size != 256 {
+			t.Errorf("Expected size 256, got %d", sizeHints[0].Size)
+		}
+		if !sizeHints[0].Bits {
+			t.Error("Expected Bits flag to be set")
+		}
+	})
+
+	t.Run("SszBitsizeWithMultipleParts", func(t *testing.T) {
+		tags := `ssz-bitsize:"128,256"`
+		_, sizeHints, _, err := parser.parseFieldTags(tags)
+		if err != nil {
+			t.Fatalf("Failed to parse ssz-bitsize tags: %v", err)
+		}
+		if len(sizeHints) != 2 {
+			t.Errorf("Expected 2 size hints, got %d", len(sizeHints))
+		}
+		if sizeHints[0].Size != 128 || !sizeHints[0].Bits {
+			t.Errorf("Expected first hint to be 128 bits")
+		}
+		if sizeHints[1].Size != 256 || !sizeHints[1].Bits {
+			t.Errorf("Expected second hint to be 256 bits")
+		}
+	})
+
+	t.Run("SszSizeAndBitsizeCombined", func(t *testing.T) {
+		// ssz-bitsize takes precedence when both are present for same index
+		tags := `ssz-size:"32" ssz-bitsize:"256"`
+		_, sizeHints, _, err := parser.parseFieldTags(tags)
+		if err != nil {
+			t.Fatalf("Failed to parse combined tags: %v", err)
+		}
+		if len(sizeHints) != 1 {
+			t.Errorf("Expected 1 size hint, got %d", len(sizeHints))
+		}
+		// ssz-bitsize should take precedence
+		if sizeHints[0].Size != 256 || !sizeHints[0].Bits {
+			t.Errorf("Expected 256 bits (from ssz-bitsize), got size=%d, bits=%v", sizeHints[0].Size, sizeHints[0].Bits)
+		}
+	})
+
+	t.Run("DynSszBitsizeTags", func(t *testing.T) {
+		tags := `dynssz-bitsize:"512"`
+		_, sizeHints, _, err := parser.parseFieldTags(tags)
+		if err != nil {
+			t.Fatalf("Failed to parse dynssz-bitsize tags: %v", err)
+		}
+		if len(sizeHints) != 1 {
+			t.Errorf("Expected 1 size hint, got %d", len(sizeHints))
+		}
+		if sizeHints[0].Size != 512 {
+			t.Errorf("Expected size 512, got %d", sizeHints[0].Size)
+		}
+		if !sizeHints[0].Bits {
+			t.Error("Expected Bits flag to be set")
+		}
+	})
+
+	t.Run("DynSszMaxTags", func(t *testing.T) {
+		tags := `dynssz-max:"2048"`
+		_, _, maxSizeHints, err := parser.parseFieldTags(tags)
+		if err != nil {
+			t.Fatalf("Failed to parse dynssz-max tags: %v", err)
+		}
+		if len(maxSizeHints) != 1 {
+			t.Errorf("Expected 1 max size hint, got %d", len(maxSizeHints))
+		}
+		if maxSizeHints[0].Size != 2048 {
+			t.Errorf("Expected max size 2048, got %d", maxSizeHints[0].Size)
+		}
+	})
+
+	t.Run("DynSszMaxWithNoValue", func(t *testing.T) {
+		tags := `dynssz-max:"?"`
+		_, _, maxSizeHints, err := parser.parseFieldTags(tags)
+		if err != nil {
+			t.Fatalf("Failed to parse dynssz-max tags: %v", err)
+		}
+		if len(maxSizeHints) != 1 {
+			t.Errorf("Expected 1 max size hint, got %d", len(maxSizeHints))
+		}
+		if !maxSizeHints[0].NoValue {
+			t.Error("Expected NoValue flag to be set")
+		}
+	})
+
+	t.Run("DynSszMaxWithExpr", func(t *testing.T) {
+		tags := `ssz-max:"1024" dynssz-max:"MAX_VALIDATORS"`
+		_, _, maxSizeHints, err := parser.parseFieldTags(tags)
+		if err != nil {
+			t.Fatalf("Failed to parse dynssz-max expr tags: %v", err)
+		}
+		if len(maxSizeHints) != 1 {
+			t.Errorf("Expected 1 max size hint, got %d", len(maxSizeHints))
+		}
+		if maxSizeHints[0].Expr != "MAX_VALIDATORS" {
+			t.Errorf("Expected expression 'MAX_VALIDATORS', got %s", maxSizeHints[0].Expr)
+		}
+	})
+
+	t.Run("DynSszSizeWithDynamicMarker", func(t *testing.T) {
+		tags := `dynssz-size:"?"`
+		_, sizeHints, _, err := parser.parseFieldTags(tags)
+		if err != nil {
+			t.Fatalf("Failed to parse dynssz-size dynamic tags: %v", err)
+		}
+		if len(sizeHints) != 1 {
+			t.Errorf("Expected 1 size hint, got %d", len(sizeHints))
+		}
+		if !sizeHints[0].Dynamic {
+			t.Error("Expected Dynamic flag to be set")
+		}
+	})
+
+	t.Run("InvalidSszBitsizeTag", func(t *testing.T) {
+		tags := `ssz-bitsize:"invalid"`
+		_, _, _, err := parser.parseFieldTags(tags)
+		if err == nil {
+			t.Error("Expected error for invalid ssz-bitsize tag")
+		}
+	})
+
+	t.Run("DynSszSizeUpdatesExistingHint", func(t *testing.T) {
+		// When ssz-size and dynssz-size both exist with different values
+		tags := `ssz-size:"32" dynssz-size:"64"`
+		_, sizeHints, _, err := parser.parseFieldTags(tags)
+		if err != nil {
+			t.Fatalf("Failed to parse combined size tags: %v", err)
+		}
+		if len(sizeHints) != 1 {
+			t.Errorf("Expected 1 size hint, got %d", len(sizeHints))
+		}
+		// dynssz-size should override
+		if sizeHints[0].Size != 64 {
+			t.Errorf("Expected size 64 (from dynssz-size), got %d", sizeHints[0].Size)
+		}
+	})
+
+	t.Run("DynSszMaxUpdatesExistingHint", func(t *testing.T) {
+		// When ssz-max and dynssz-max both exist with different values
+		tags := `ssz-max:"1024" dynssz-max:"2048"`
+		_, _, maxSizeHints, err := parser.parseFieldTags(tags)
+		if err != nil {
+			t.Fatalf("Failed to parse combined max size tags: %v", err)
+		}
+		if len(maxSizeHints) != 1 {
+			t.Errorf("Expected 1 max size hint, got %d", len(maxSizeHints))
+		}
+		// dynssz-max should override
+		if maxSizeHints[0].Size != 2048 {
+			t.Errorf("Expected max size 2048 (from dynssz-max), got %d", maxSizeHints[0].Size)
+		}
+	})
+
+	t.Run("DynSszBitsizeWithExpression", func(t *testing.T) {
+		tags := `ssz-bitsize:"256" dynssz-bitsize:"SOME_EXPR"`
+		_, sizeHints, _, err := parser.parseFieldTags(tags)
+		if err != nil {
+			t.Fatalf("Failed to parse dynssz-bitsize expr tags: %v", err)
+		}
+		if len(sizeHints) != 1 {
+			t.Errorf("Expected 1 size hint, got %d", len(sizeHints))
+		}
+		if sizeHints[0].Expr != "SOME_EXPR" {
+			t.Errorf("Expected expression 'SOME_EXPR', got %s", sizeHints[0].Expr)
+		}
+		if !sizeHints[0].Bits {
+			t.Error("Expected Bits flag to be set for bitsize expression")
+		}
+	})
+}
+
+func TestBuildVectorDescriptorEdgeCases(t *testing.T) {
+	parser := NewParser()
+
+	t.Run("BitvectorWithBitsizeHint", func(t *testing.T) {
+		// Test bitvector with bitsize hint (bits are converted to bytes)
+		arr := types.NewArray(types.Typ[types.Uint8], 32)
+		typeHint := []ssz.SszTypeHint{{Type: ssz.SszBitvectorType}}
+		sizeHint := []ssz.SszSizeHint{{Size: 128, Bits: true}} // 128 bits = 16 bytes
+		desc, err := parser.buildTypeDescriptor(arr, typeHint, sizeHint, nil)
+		if err != nil {
+			t.Fatalf("Failed to build bitvector descriptor: %v", err)
+		}
+		if desc.Len != 16 { // 128 bits = 16 bytes
+			t.Errorf("Expected len 16 (128 bits), got %d", desc.Len)
+		}
+	})
+
+	t.Run("BitvectorSliceWithBitsizeHint", func(t *testing.T) {
+		// Test bitvector slice with bitsize hint
+		slice := types.NewSlice(types.Typ[types.Uint8])
+		typeHint := []ssz.SszTypeHint{{Type: ssz.SszBitvectorType}}
+		sizeHint := []ssz.SszSizeHint{{Size: 256, Bits: true}} // 256 bits = 32 bytes
+		desc, err := parser.buildTypeDescriptor(slice, typeHint, sizeHint, nil)
+		if err != nil {
+			t.Fatalf("Failed to build bitvector descriptor: %v", err)
+		}
+		if desc.Len != 32 { // 256 bits = 32 bytes
+			t.Errorf("Expected len 32 (256 bits), got %d", desc.Len)
+		}
+	})
+
+	t.Run("BitvectorStringWithBitsizeHint", func(t *testing.T) {
+		// Test string as bitvector with bitsize hint
+		stringType := types.Typ[types.String]
+		typeHint := []ssz.SszTypeHint{{Type: ssz.SszBitvectorType}}
+		sizeHint := []ssz.SszSizeHint{{Size: 160, Bits: true}} // 160 bits = 20 bytes
+		desc, err := parser.buildTypeDescriptor(stringType, typeHint, sizeHint, nil)
+		if err != nil {
+			t.Fatalf("Failed to build string bitvector descriptor: %v", err)
+		}
+		if desc.Len != 20 { // 160 bits = 20 bytes
+			t.Errorf("Expected len 20 (160 bits), got %d", desc.Len)
+		}
+	})
+
+	t.Run("UnsupportedVectorType", func(t *testing.T) {
+		// Test unsupported type for vector (map)
+		mapType := types.NewMap(types.Typ[types.String], types.Typ[types.Int])
+		typeHint := []ssz.SszTypeHint{{Type: ssz.SszVectorType}}
+		sizeHint := []ssz.SszSizeHint{{Size: 10}}
+		_, err := parser.buildTypeDescriptor(mapType, typeHint, sizeHint, nil)
+		if err == nil {
+			t.Error("Expected error for unsupported vector type")
+		}
+	})
+
+	t.Run("VectorWithChildHints", func(t *testing.T) {
+		// Test vector of vectors with child hints
+		innerSlice := types.NewSlice(types.Typ[types.Uint8])
+		outerArr := types.NewArray(innerSlice, 10)
+		typeHints := []ssz.SszTypeHint{{}, {Type: ssz.SszVectorType}}
+		sizeHints := []ssz.SszSizeHint{{}, {Size: 32}}
+		maxSizeHints := []ssz.SszMaxSizeHint{{}, {Size: 1024}}
+		desc, err := parser.buildTypeDescriptor(outerArr, typeHints, sizeHints, maxSizeHints)
+		if err != nil {
+			t.Fatalf("Failed to build nested vector descriptor: %v", err)
+		}
+		if desc.SszType != ssz.SszVectorType {
+			t.Errorf("Expected SszVectorType, got %v", desc.SszType)
+		}
+		if desc.ElemDesc.SszType != ssz.SszVectorType {
+			t.Errorf("Expected inner SszVectorType, got %v", desc.ElemDesc.SszType)
+		}
+	})
+
+	t.Run("VectorWithDynamicElements", func(t *testing.T) {
+		// Test vector of dynamic elements (slices)
+		innerSlice := types.NewSlice(types.Typ[types.Uint8])
+		outerArr := types.NewArray(innerSlice, 5)
+		desc, err := parser.buildTypeDescriptor(outerArr, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("Failed to build vector of dynamic elements: %v", err)
+		}
+		if desc.SszTypeFlags&ssz.SszTypeFlagIsDynamic == 0 {
+			t.Error("Expected dynamic flag to be set for vector of dynamic elements")
+		}
+		if desc.Size != 0 {
+			t.Errorf("Expected size 0 for dynamic vector, got %d", desc.Size)
+		}
+	})
+}
+
+func TestBuildListDescriptorEdgeCases(t *testing.T) {
+	parser := NewParser()
+
+	t.Run("ListWithChildHints", func(t *testing.T) {
+		// Test list of vectors with child hints
+		innerSlice := types.NewSlice(types.Typ[types.Uint8])
+		outerSlice := types.NewSlice(innerSlice)
+		typeHints := []ssz.SszTypeHint{{Type: ssz.SszListType}, {Type: ssz.SszVectorType}}
+		sizeHints := []ssz.SszSizeHint{{}, {Size: 32}}
+		maxSizeHints := []ssz.SszMaxSizeHint{{Size: 100}, {}}
+		desc, err := parser.buildTypeDescriptor(outerSlice, typeHints, sizeHints, maxSizeHints)
+		if err != nil {
+			t.Fatalf("Failed to build nested list descriptor: %v", err)
+		}
+		if desc.SszType != ssz.SszListType {
+			t.Errorf("Expected SszListType, got %v", desc.SszType)
+		}
+		if desc.ElemDesc.SszType != ssz.SszVectorType {
+			t.Errorf("Expected inner SszVectorType, got %v", desc.ElemDesc.SszType)
+		}
+	})
+
+	t.Run("UnsupportedListBaseType", func(t *testing.T) {
+		// Test unsupported basic type for list
+		uint64Type := types.Typ[types.Uint64]
+		typeHint := []ssz.SszTypeHint{{Type: ssz.SszListType}}
+		_, err := parser.buildTypeDescriptor(uint64Type, typeHint, nil, nil)
+		if err == nil {
+			t.Error("Expected error for unsupported list base type")
+		}
+	})
+
+	t.Run("UnsupportedListType", func(t *testing.T) {
+		// Test unsupported type for list (map)
+		mapType := types.NewMap(types.Typ[types.String], types.Typ[types.Int])
+		typeHint := []ssz.SszTypeHint{{Type: ssz.SszListType}}
+		_, err := parser.buildTypeDescriptor(mapType, typeHint, nil, nil)
+		if err == nil {
+			t.Error("Expected error for unsupported list type")
+		}
+	})
+}
+
+func TestHasMethodWithSignature(t *testing.T) {
+	parser := NewParser()
+
+	// Create a simple struct type with methods for testing
+	pkg := types.NewPackage("test", "test")
+	obj := types.NewTypeName(token.NoPos, pkg, "TestType", nil)
+	underlying := types.NewStruct(nil, nil)
+	namedType := types.NewNamed(obj, underlying, nil)
+
+	// Add methods to the type
+	// Method 1: SizeSSZ() int
+	sig1 := types.NewSignatureType(
+		types.NewVar(token.NoPos, pkg, "", types.NewPointer(namedType)),
+		nil, nil,
+		types.NewTuple(),
+		types.NewTuple(types.NewVar(token.NoPos, pkg, "", types.Typ[types.Int])),
+		false,
+	)
+	method1 := types.NewFunc(token.NoPos, pkg, "SizeSSZ", sig1)
+	namedType.AddMethod(method1)
+
+	// Method 2: MarshalSSZ() ([]byte, error)
+	errorType := types.Universe.Lookup("error").Type()
+	byteSliceType := types.NewSlice(types.Typ[types.Uint8])
+	sig2 := types.NewSignatureType(
+		types.NewVar(token.NoPos, pkg, "", types.NewPointer(namedType)),
+		nil, nil,
+		types.NewTuple(),
+		types.NewTuple(
+			types.NewVar(token.NoPos, pkg, "", byteSliceType),
+			types.NewVar(token.NoPos, pkg, "", errorType),
+		),
+		false,
+	)
+	method2 := types.NewFunc(token.NoPos, pkg, "MarshalSSZ", sig2)
+	namedType.AddMethod(method2)
+
+	// Method 3: HashTreeRoot() ([32]byte, error)
+	byte32Type := types.NewArray(types.Typ[types.Uint8], 32)
+	sig3 := types.NewSignatureType(
+		types.NewVar(token.NoPos, pkg, "", types.NewPointer(namedType)),
+		nil, nil,
+		types.NewTuple(),
+		types.NewTuple(
+			types.NewVar(token.NoPos, pkg, "", byte32Type),
+			types.NewVar(token.NoPos, pkg, "", errorType),
+		),
+		false,
+	)
+	method3 := types.NewFunc(token.NoPos, pkg, "HashTreeRoot", sig3)
+	namedType.AddMethod(method3)
+
+	methodSet := types.NewMethodSet(types.NewPointer(namedType))
+
+	t.Run("MatchingSizeSSZ", func(t *testing.T) {
+		found := parser.hasMethodWithSignature(methodSet, "SizeSSZ", []string{}, []string{"int"})
+		if !found {
+			t.Error("Expected to find SizeSSZ method")
+		}
+	})
+
+	t.Run("MatchingMarshalSSZ", func(t *testing.T) {
+		found := parser.hasMethodWithSignature(methodSet, "MarshalSSZ", []string{}, []string{"[]byte", "error"})
+		if !found {
+			t.Error("Expected to find MarshalSSZ method")
+		}
+	})
+
+	t.Run("MatchingHashTreeRoot", func(t *testing.T) {
+		found := parser.hasMethodWithSignature(methodSet, "HashTreeRoot", []string{}, []string{"[32]byte", "error"})
+		if !found {
+			t.Error("Expected to find HashTreeRoot method")
+		}
+	})
+
+	t.Run("NonExistentMethod", func(t *testing.T) {
+		found := parser.hasMethodWithSignature(methodSet, "NonExistent", []string{}, []string{})
+		if found {
+			t.Error("Expected not to find NonExistent method")
+		}
+	})
+
+	t.Run("WrongParamCount", func(t *testing.T) {
+		found := parser.hasMethodWithSignature(methodSet, "SizeSSZ", []string{"int"}, []string{"int"})
+		if found {
+			t.Error("Expected not to match with wrong param count")
+		}
+	})
+
+	t.Run("WrongReturnCount", func(t *testing.T) {
+		found := parser.hasMethodWithSignature(methodSet, "SizeSSZ", []string{}, []string{"int", "error"})
+		if found {
+			t.Error("Expected not to match with wrong return count")
+		}
+	})
+
+	t.Run("WrongReturnType", func(t *testing.T) {
+		found := parser.hasMethodWithSignature(methodSet, "SizeSSZ", []string{}, []string{"[]byte"})
+		if found {
+			t.Error("Expected not to match with wrong return type")
+		}
+	})
+
+	t.Run("WildcardMatch", func(t *testing.T) {
+		// "-" should match any type
+		found := parser.hasMethodWithSignature(methodSet, "SizeSSZ", []string{}, []string{"-"})
+		if !found {
+			t.Error("Expected to match with wildcard")
+		}
+	})
+}
+
+func TestBuildUint256DescriptorSlices(t *testing.T) {
+	parser := NewParser()
+
+	t.Run("Uint8Slice", func(t *testing.T) {
+		// Test []uint8 with uint256 type hint
+		sliceType := types.NewSlice(types.Typ[types.Uint8])
+		typeHint := []ssz.SszTypeHint{{Type: ssz.SszUint256Type}}
+		desc, err := parser.buildTypeDescriptor(sliceType, typeHint, nil, nil)
+		if err != nil {
+			t.Fatalf("Failed to build uint256 descriptor from []uint8: %v", err)
+		}
+		if desc.SszType != ssz.SszUint256Type {
+			t.Errorf("Expected SszUint256Type, got %v", desc.SszType)
+		}
+		if desc.Size != 32 {
+			t.Errorf("Expected size 32, got %d", desc.Size)
+		}
+		if desc.Len != 32 {
+			t.Errorf("Expected len 32, got %d", desc.Len)
+		}
+		if desc.GoTypeFlags&ssz.GoTypeFlagIsByteArray == 0 {
+			t.Error("Expected byte array flag to be set")
+		}
+	})
+
+	t.Run("Uint64Slice", func(t *testing.T) {
+		// Test []uint64 with uint256 type hint
+		sliceType := types.NewSlice(types.Typ[types.Uint64])
+		typeHint := []ssz.SszTypeHint{{Type: ssz.SszUint256Type}}
+		desc, err := parser.buildTypeDescriptor(sliceType, typeHint, nil, nil)
+		if err != nil {
+			t.Fatalf("Failed to build uint256 descriptor from []uint64: %v", err)
+		}
+		if desc.SszType != ssz.SszUint256Type {
+			t.Errorf("Expected SszUint256Type, got %v", desc.SszType)
+		}
+		if desc.Size != 32 {
+			t.Errorf("Expected size 32, got %d", desc.Size)
+		}
+		if desc.Len != 4 {
+			t.Errorf("Expected len 4, got %d", desc.Len)
+		}
+	})
+
+	t.Run("InvalidUint256Base", func(t *testing.T) {
+		// Test unsupported slice type with uint256 type hint
+		sliceType := types.NewSlice(types.Typ[types.Uint32])
+		typeHint := []ssz.SszTypeHint{{Type: ssz.SszUint256Type}}
+		_, err := parser.buildTypeDescriptor(sliceType, typeHint, nil, nil)
+		if err == nil {
+			t.Error("Expected error for invalid uint256 base type")
+		}
+	})
+
+	t.Run("Uint8Array32", func(t *testing.T) {
+		// Test [32]uint8 with uint256 type hint
+		arrayType := types.NewArray(types.Typ[types.Uint8], 32)
+		typeHint := []ssz.SszTypeHint{{Type: ssz.SszUint256Type}}
+		desc, err := parser.buildTypeDescriptor(arrayType, typeHint, nil, nil)
+		if err != nil {
+			t.Fatalf("Failed to build uint256 descriptor from [32]uint8: %v", err)
+		}
+		if desc.SszType != ssz.SszUint256Type {
+			t.Errorf("Expected SszUint256Type, got %v", desc.SszType)
+		}
+		if desc.Size != 32 {
+			t.Errorf("Expected size 32, got %d", desc.Size)
+		}
+	})
+
+	t.Run("Uint64Array4", func(t *testing.T) {
+		// Test [4]uint64 with uint256 type hint
+		arrayType := types.NewArray(types.Typ[types.Uint64], 4)
+		typeHint := []ssz.SszTypeHint{{Type: ssz.SszUint256Type}}
+		desc, err := parser.buildTypeDescriptor(arrayType, typeHint, nil, nil)
+		if err != nil {
+			t.Fatalf("Failed to build uint256 descriptor from [4]uint64: %v", err)
+		}
+		if desc.SszType != ssz.SszUint256Type {
+			t.Errorf("Expected SszUint256Type, got %v", desc.SszType)
+		}
+		if desc.Size != 32 {
+			t.Errorf("Expected size 32, got %d", desc.Size)
+		}
+		if desc.Len != 4 {
+			t.Errorf("Expected len 4, got %d", desc.Len)
+		}
+	})
+
+	t.Run("WrongSizedUint8Array", func(t *testing.T) {
+		// Test [16]uint8 with uint256 type hint - should fail
+		arrayType := types.NewArray(types.Typ[types.Uint8], 16)
+		typeHint := []ssz.SszTypeHint{{Type: ssz.SszUint256Type}}
+		_, err := parser.buildTypeDescriptor(arrayType, typeHint, nil, nil)
+		if err == nil {
+			t.Error("Expected error for wrong-sized uint8 array")
+		}
+	})
+
+	t.Run("WrongSizedUint64Array", func(t *testing.T) {
+		// Test [2]uint64 with uint256 type hint - should fail
+		arrayType := types.NewArray(types.Typ[types.Uint64], 2)
+		typeHint := []ssz.SszTypeHint{{Type: ssz.SszUint256Type}}
+		_, err := parser.buildTypeDescriptor(arrayType, typeHint, nil, nil)
+		if err == nil {
+			t.Error("Expected error for wrong-sized uint64 array")
+		}
+	})
+}

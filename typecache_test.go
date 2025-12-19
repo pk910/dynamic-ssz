@@ -372,7 +372,13 @@ func TestTypeCache_ErrorCases(t *testing.T) {
 				name:     "bitlist with wrong element type",
 				typ:      reflect.TypeOf([]uint32{}),
 				typeHint: []SszTypeHint{{Type: SszBitlistType}},
-				expected: "bitlist ssz type can only be represented by byte slices or arrays",
+				expected: "bitlist ssz type can only be represented by byte slices",
+			},
+			{
+				name:     "bitlist with string type",
+				typ:      reflect.TypeOf(""),
+				typeHint: []SszTypeHint{{Type: SszBitlistType}},
+				expected: "bitlist ssz type can only be represented by byte slices, got string",
 			},
 		}
 
@@ -659,5 +665,263 @@ func TestTypeCache_ConcurrentAccess(t *testing.T) {
 	// Wait for all goroutines to complete
 	for i := 0; i < 10; i++ {
 		<-done
+	}
+}
+
+// Test size hint expressions using dynssz-size tag
+func TestTypeCache_SizeHintExpressions(t *testing.T) {
+	// Create DynSsz with spec value resolver
+	ds := NewDynSsz(map[string]any{
+		"MAX_VALIDATORS_PER_COMMITTEE": float64(4096),
+	})
+	cache := ds.typeCache
+
+	// Test with size hint containing expression via dynssz-size tag
+	type TestStruct struct {
+		Data []byte `ssz-size:"32" dynssz-size:"MAX_VALIDATORS_PER_COMMITTEE"`
+	}
+
+	// This should use the expression (treated as dynamic size)
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify the field has the expression stored
+	if desc.ContainerDesc == nil || len(desc.ContainerDesc.Fields) == 0 {
+		t.Fatal("expected container with fields")
+	}
+
+	field := desc.ContainerDesc.Fields[0]
+	if field.Type.Len != 4096 {
+		t.Errorf("expected Len 4096, got %d", field.Type.Len)
+	}
+	// Should have dynamic size flag set
+	if field.Type.SszTypeFlags&SszTypeFlagHasDynamicSize == 0 {
+		t.Error("expected SszTypeFlagHasDynamicSize to be set")
+	}
+}
+
+// Test max hint expressions using dynssz-max tag
+func TestTypeCache_MaxHintExpressions(t *testing.T) {
+	// Create DynSsz with spec value resolver
+	ds := NewDynSsz(map[string]any{
+		"MAX_VALIDATORS": float64(65536),
+	})
+	cache := ds.typeCache
+
+	// Test with max hint containing expression via dynssz-max tag
+	type TestStruct struct {
+		Data []byte `ssz-max:"100" dynssz-max:"MAX_VALIDATORS"`
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify the limit was set
+	if desc.ContainerDesc == nil || len(desc.ContainerDesc.Fields) == 0 {
+		t.Fatal("expected container with fields")
+	}
+
+	field := desc.ContainerDesc.Fields[0]
+	if field.Type.SszTypeFlags&SszTypeFlagHasLimit == 0 {
+		t.Error("expected SszTypeFlagHasLimit to be set")
+	}
+	// Should have dynamic max flag set
+	if field.Type.SszTypeFlags&SszTypeFlagHasDynamicMax == 0 {
+		t.Error("expected SszTypeFlagHasDynamicMax to be set")
+	}
+}
+
+// Test list with string type for coverage
+func TestTypeCache_ListWithString(t *testing.T) {
+	ds := NewDynSsz(nil)
+	cache := ds.typeCache
+
+	// Test list with string type
+	type TestStruct struct {
+		Name string `ssz-max:"100"`
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify string flag is set on field
+	if desc.ContainerDesc == nil || len(desc.ContainerDesc.Fields) == 0 {
+		t.Fatal("expected container with fields")
+	}
+
+	field := desc.ContainerDesc.Fields[0]
+	if field.Type.GoTypeFlags&GoTypeFlagIsString == 0 {
+		t.Error("expected GoTypeFlagIsString to be set")
+	}
+}
+
+// Test vector with string type for coverage
+func TestTypeCache_VectorWithString(t *testing.T) {
+	ds := NewDynSsz(nil)
+	cache := ds.typeCache
+
+	// Test vector with string type
+	type TestStruct struct {
+		Name string `ssz-size:"32"`
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if desc.ContainerDesc == nil || len(desc.ContainerDesc.Fields) == 0 {
+		t.Fatal("expected container with fields")
+	}
+
+	field := desc.ContainerDesc.Fields[0]
+	if field.Type.SszType != SszVectorType {
+		t.Errorf("expected SszVectorType, got %v", field.Type.SszType)
+	}
+}
+
+// Test list with size hint
+func TestTypeCache_ListWithSizeHint(t *testing.T) {
+	ds := NewDynSsz(nil)
+	cache := ds.typeCache
+
+	// Test list with size and max hints
+	type TestStruct struct {
+		Data []uint32 `ssz-size:"10" ssz-max:"100"`
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if desc.ContainerDesc == nil || len(desc.ContainerDesc.Fields) == 0 {
+		t.Fatal("expected container with fields")
+	}
+
+	field := desc.ContainerDesc.Fields[0]
+	// With ssz-size hint, it becomes a vector, not a list
+	if field.Type.SszType != SszVectorType {
+		t.Errorf("expected SszVectorType, got %v", field.Type.SszType)
+	}
+}
+
+// Test list with dynamic size hint
+func TestTypeCache_ListWithDynamicSizeHint(t *testing.T) {
+	ds := NewDynSsz(nil)
+	cache := ds.typeCache
+
+	// Test list with dynamic size hint
+	type TestStruct struct {
+		Data []uint32 `ssz-size:"?" ssz-max:"100"`
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if desc.ContainerDesc == nil || len(desc.ContainerDesc.Fields) == 0 {
+		t.Fatal("expected container with fields")
+	}
+
+	field := desc.ContainerDesc.Fields[0]
+	// With dynamic size hint (?), it should be a list
+	if field.Type.SszType != SszListType {
+		t.Errorf("expected SszListType, got %v", field.Type.SszType)
+	}
+}
+
+// Test bitvector with bit size hint
+func TestTypeCache_BitvectorWithBitSize(t *testing.T) {
+	ds := NewDynSsz(nil)
+	cache := ds.typeCache
+
+	// Test bitvector with bit size hint
+	type TestStruct struct {
+		Flags []byte `ssz-type:"bitvector" ssz-bitsize:"32"`
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if desc.ContainerDesc == nil || len(desc.ContainerDesc.Fields) == 0 {
+		t.Fatal("expected container with fields")
+	}
+
+	field := desc.ContainerDesc.Fields[0]
+	if field.Type.BitSize != 32 {
+		t.Errorf("expected BitSize 32, got %d", field.Type.BitSize)
+	}
+}
+
+// Test container with embedded struct
+func TestTypeCache_EmbeddedStruct(t *testing.T) {
+	ds := NewDynSsz(nil)
+	cache := ds.typeCache
+
+	type Inner struct {
+		A uint32
+	}
+
+	type Outer struct {
+		B uint64
+		C Inner
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(Outer{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if desc.ContainerDesc == nil || len(desc.ContainerDesc.Fields) != 2 {
+		t.Fatal("expected container with 2 fields")
+	}
+
+	// Second field should be a container
+	field := desc.ContainerDesc.Fields[1]
+	if field.Type.SszType != SszContainerType {
+		t.Errorf("expected SszContainerType for inner struct, got %v", field.Type.SszType)
+	}
+}
+
+// Test vector with nested dynamic elements
+func TestTypeCache_VectorWithNestedDynamic(t *testing.T) {
+	ds := NewDynSsz(nil)
+	cache := ds.typeCache
+
+	// Test vector with dynamic nested type
+	type Inner struct {
+		Data []byte `ssz-max:"100"`
+	}
+
+	type Outer struct {
+		Items []Inner `ssz-size:"3"`
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(Outer{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if desc.ContainerDesc == nil || len(desc.ContainerDesc.Fields) == 0 {
+		t.Fatal("expected container with fields")
+	}
+
+	field := desc.ContainerDesc.Fields[0]
+	// Vector with dynamic elements should still be a vector but with IsDynamic flag
+	if field.Type.SszType != SszVectorType {
+		t.Errorf("expected SszVectorType, got %v", field.Type.SszType)
+	}
+	if field.Type.SszTypeFlags&SszTypeFlagIsDynamic == 0 {
+		t.Error("expected SszTypeFlagIsDynamic to be set for vector with dynamic elements")
 	}
 }

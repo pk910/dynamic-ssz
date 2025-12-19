@@ -553,11 +553,7 @@ func (ctx *marshalContext) marshalBitlist(desc *dynssz.TypeDescriptor, varName s
 	ctx.appendCode(indent, "\treturn dst, sszutils.ErrBitlistNotTerminated\n")
 	ctx.appendCode(indent, "}\n")
 
-	if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 || desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
-		ctx.appendCode(indent, "dst = append(dst, bval...)\n")
-	} else {
-		return fmt.Errorf("bitlist type can only be represented by byte slices or arrays, got %v", desc.Kind)
-	}
+	ctx.appendCode(indent, "dst = append(dst, bval...)\n")
 
 	return nil
 }

@@ -843,7 +843,7 @@ func (p *Parser) buildBitlistDescriptor(desc *dynssz.TypeDescriptor, typ types.T
 
 	// Bitlist must use byte (uint8) elements
 	if elemDesc.Kind != reflect.Uint8 {
-		return fmt.Errorf("bitlist ssz type can only be represented by byte slices or arrays, got %v", elemDesc.Kind)
+		return fmt.Errorf("bitlist ssz type can only be represented by byte slices, got []%v", elemDesc.Kind)
 	}
 
 	// Bitlists are always dynamic
