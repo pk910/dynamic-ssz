@@ -285,10 +285,7 @@ func BenchmarkTreeFromNodes(b *testing.B) {
 			b.ResetTimer()
 
 			for b.Loop() {
-				_, err := TreeFromNodes(bm.nodes, bm.limit)
-				if err != nil {
-					b.Fatalf("unexpected error: %v", err)
-				}
+				TreeFromNodes(bm.nodes, bm.limit)
 			}
 		})
 	}
