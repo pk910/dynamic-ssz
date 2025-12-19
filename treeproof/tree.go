@@ -279,20 +279,25 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 		return NewEmptyNode(sszutils.ZeroBytes()[:32]), nil
 	}
 
-	depth := floorLog2(limit)
-	zeroOrderHashes := getZeroOrderHashes(depth)
-
 	// there are no leaves, return a zero order hash node
 	if numLeaves == 0 {
-		return NewEmptyNode(zeroOrderHashes[0]), nil
+		depth := floorLog2(limit)
+		return NewEmptyNode(getZeroOrderHashes(depth)[0]), nil
 	}
 
 	// now we know numLeaves are at least 1.
-
 	// if the max leaf limit is 1, return the one leaf we have
 	if limit == 1 {
 		return leaves[0], nil
 	}
+
+	if !isPowerOfTwo(limit) {
+		return nil, errors.New("number of leaves should be a power of 2")
+	}
+
+	depth := floorLog2(limit)
+	zeroOrderHashes := getZeroOrderHashes(depth)
+
 	// if the max leaf limit is 2
 	if limit == 2 {
 		// but we only have 1 leaf, add a zero order hash as the right node
@@ -303,60 +308,44 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 		return NewNodeWithLR(leaves[0], leaves[1]), nil
 	}
 
-	if !isPowerOfTwo(limit) {
-		return nil, errors.New("number of leaves should be a power of 2")
-	}
+	// Pre-allocate exactly what we need for the first level to avoid slice growth
+	// Use numLeaves for the buffer size to stay O(N) memory
+	nodes := make([]*Node, (numLeaves+1)/2)
 
-	leavesStart := powerTwo(depth)
-	leafIndex := numLeaves - 1
+	for i := 0; i < len(nodes); i++ {
+		leftIdx := i * 2
+		rightIdx := i*2 + 1
 
-	// compute a safe size for nodes slice (1-indexed)
-	// max index we'll access: compute the subtree area; be generous to avoid out-of-range
-	maxPotentialIndex := (leavesStart + numLeaves) * 2 + 4
-	nodes := make([]*Node, maxPotentialIndex)
-
-	nodesStartIndex := leavesStart
-	nodesEndIndex := nodesStartIndex + numLeaves - 1
-
-	// for each tree level
-	for k := depth; k >= 0; k-- {
-		for i := nodesEndIndex; i >= nodesStartIndex; i-- {
-			// leaf node, add to slice
-			if k == depth {
-				// defensive check but should always be valid
-				if leafIndex < 0 {
-					return nil, errors.New("invalid leaf indexing")
-				}
-				nodes[i] = leaves[leafIndex]
-				leafIndex--
-			} else { // branch node, compute
-				leftIndex := i * 2
-				rightIndex := i*2 + 1
-				// both nodes are empty, unexpected condition
-				if (leftIndex >= len(nodes) || nodes[leftIndex] == nil) && (rightIndex >= len(nodes) || nodes[rightIndex] == nil) {
-					return nil, errors.New("unexpected empty right and left nodes")
-				}
-				// node with empty right node, add zero order hash as right node and mark right node as empty
-				if leftIndex < len(nodes) && nodes[leftIndex] != nil && (rightIndex >= len(nodes) || nodes[rightIndex] == nil) {
-					nodes[i] = NewNodeWithLR(nodes[leftIndex], NewEmptyNode(zeroOrderHashes[k+1]))
-				}
-				// node with left and right child
-				if leftIndex < len(nodes) && nodes[leftIndex] != nil && rightIndex < len(nodes) && nodes[rightIndex] != nil {
-					nodes[i] = NewNodeWithLR(nodes[leftIndex], nodes[rightIndex])
-				}
-			}
+		var left, right *Node
+		left = leaves[leftIdx]
+		if rightIdx < numLeaves {
+			right = leaves[rightIdx]
+		} else {
+			right = NewEmptyNode(zeroOrderHashes[depth])
 		}
-		nodesStartIndex = nodesStartIndex / 2
-		nodesEndIndex = nodesEndIndex / 2
+		nodes[i] = NewNodeWithLR(left, right)
 	}
 
-	rootNode := nodes[1]
+	activeCount := len(nodes)
+	for d := depth - 1; d > 0; d-- {
+		nextLevelCount := (activeCount + 1) / 2
+		for i := 0; i < nextLevelCount; i++ {
+			leftIdx := i * 2
+			rightIdx := i*2 + 1
 
-	if rootNode == nil {
-		return nil, errors.New("tree root node could not be computed")
+			var left, right *Node
+			left = nodes[leftIdx]
+			if rightIdx < activeCount {
+				right = nodes[rightIdx]
+			} else {
+				right = NewEmptyNode(zeroOrderHashes[d])
+			}
+			nodes[i] = NewNodeWithLR(left, right)
+		}
+		activeCount = nextLevelCount
 	}
 
-	return rootNode, nil
+	return nodes[0], nil
 }
 
 // TreeFromNodesProgressive constructs a progressive tree from leaf nodes.
