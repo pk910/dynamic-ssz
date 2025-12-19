@@ -279,11 +279,14 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 		return NewEmptyNode(sszutils.ZeroBytes()[:32]), nil
 	}
 
+	// there are no leaves, return a zero order hash node
 	if numLeaves == 0 {
 		depth := floorLog2(limit)
 		return NewEmptyNode(getZeroOrderHashes(depth)[0]), nil
 	}
-	
+
+	// now we know numLeaves are at least 1.
+	// if the max leaf limit is 1, return the one leaf we have
 	if limit == 1 {
 		return leaves[0], nil
 	}
@@ -295,10 +298,13 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 	depth := floorLog2(limit)
 	zeroOrderHashes := getZeroOrderHashes(depth)
 
+	// if the max leaf limit is 2
 	if limit == 2 {
+		// but we only have 1 leaf, add a zero order hash as the right node
 		if numLeaves == 1 {
 			return NewNodeWithLR(leaves[0], NewEmptyNode(zeroOrderHashes[1])), nil
 		}
+		// otherwise return the two nodes we have
 		return NewNodeWithLR(leaves[0], leaves[1]), nil
 	}
 
