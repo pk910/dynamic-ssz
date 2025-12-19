@@ -248,6 +248,24 @@ var TestCasesTreeFromNodes = []struct {
 			}
 		},
 	},
+	{
+		name: "large limit with few nodes does not OOM",
+		nodes: []*Node{
+			NewNodeWithValue([]byte{1}),
+			NewNodeWithValue([]byte{2}),
+		},
+
+		limit:       1 << 20, // ~1 million
+		expectError: false,
+		validateFn: func(t *testing.T, n *Node) {
+			if n == nil {
+				t.Fatal("expected non-nil tree")
+			}
+			if n.IsLeaf() {
+				t.Error("expected branch node for large limit")
+			}
+		},
+	},
 }
 
 func TestTreeFromNodes(t *testing.T) {
