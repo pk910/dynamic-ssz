@@ -34,12 +34,15 @@ import (
 type unmarshalContext struct {
 	appendCode     func(indent int, code string, args ...any)
 	appendSizeCode func(indent int, code string, args ...any)
+	appendExprCode func(indent int, code string, args ...any)
 	typePrinter    *TypePrinter
 	options        *CodeGeneratorOptions
 	usedDynSpecs   bool
 	valVarCounter  int
 	sizeVarCounter int
 	sizeVarMap     map[[32]byte]string
+	exprVarCounter int
+	exprVarMap     map[[32]byte]string
 }
 
 // generateUnmarshal generates unmarshal methods for a specific type.
@@ -63,6 +66,7 @@ type unmarshalContext struct {
 func generateUnmarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
 	codeBuf := strings.Builder{}
 	sizeCodeBuf := strings.Builder{}
+	exprCodeBuf := strings.Builder{}
 	ctx := &unmarshalContext{
 		appendCode: func(indent int, code string, args ...any) {
 			if len(args) > 0 {
@@ -76,9 +80,16 @@ func generateUnmarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings
 			}
 			sizeCodeBuf.WriteString(indentStr(code, indent))
 		},
+		appendExprCode: func(indent int, code string, args ...any) {
+			if len(args) > 0 {
+				code = fmt.Sprintf(code, args...)
+			}
+			exprCodeBuf.WriteString(indentStr(code, indent))
+		},
 		typePrinter: typePrinter,
 		options:     options,
 		sizeVarMap:  make(map[[32]byte]string),
+		exprVarMap:  make(map[[32]byte]string),
 	}
 
 	// Generate main function signature
@@ -99,6 +110,7 @@ func generateUnmarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings
 	if genStaticFn {
 		if !ctx.usedDynSpecs {
 			codeBuilder.WriteString(fmt.Sprintf("func (t %s) UnmarshalSSZ(buf []byte) (err error) {\n", typeName))
+			codeBuilder.WriteString(exprCodeBuf.String())
 			codeBuilder.WriteString(sizeCodeBuf.String())
 			codeBuilder.WriteString(codeBuf.String())
 			codeBuilder.WriteString("\treturn nil\n")
@@ -114,6 +126,7 @@ func generateUnmarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings
 	if genDynamicFn {
 		if ctx.usedDynSpecs {
 			codeBuilder.WriteString(fmt.Sprintf("func (t %s) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (err error) {\n", typeName))
+			codeBuilder.WriteString(exprCodeBuf.String())
 			codeBuilder.WriteString(sizeCodeBuf.String())
 			codeBuilder.WriteString(codeBuf.String())
 			codeBuilder.WriteString("\treturn nil\n")
@@ -234,18 +247,16 @@ func (ctx *unmarshalContext) getStaticSizeVar(desc *dynssz.TypeDescriptor) (stri
 			}
 
 			if sizeExpression != nil {
-				ctx.appendSizeCode(1, "%s := %s // size expression for '%s'\n", sizeVar, itemSizeVar, ctx.typePrinter.TypeStringWithoutTracking(desc))
-				ctx.appendSizeCode(1, "{\n")
-				ctx.appendSizeCode(2, "hasLimit, limit, err := ds.ResolveSpecValue(\"%s\")\n", *sizeExpression)
-				ctx.appendSizeCode(2, "if err != nil {\n\treturn err\n}\n")
-				if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
-					ctx.appendSizeCode(2, "if !hasLimit {\n\tlimit = %d\n} else {\n\tlimit = (limit+7)/8\n}\n", desc.Len)
-				} else {
-					ctx.appendSizeCode(2, "if !hasLimit {\n\tlimit = %d\n}\n", desc.Len)
+				exprVar, err := ctx.getExprVar(*sizeExpression, uint64(desc.Len))
+				if err != nil {
+					return "", err
 				}
-				ctx.appendSizeCode(2, "%s = %s * int(limit)\n", sizeVar, sizeVar)
-				ctx.appendSizeCode(1, "}\n")
-				ctx.usedDynSpecs = true
+
+				if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
+					exprVar = fmt.Sprintf("(%s+7)/8", exprVar)
+				}
+
+				ctx.appendSizeCode(1, "%s := %s * int(%s)\n", sizeVar, itemSizeVar, exprVar)
 			} else {
 				ctx.appendSizeCode(1, "%s := %s * %d\n", sizeVar, itemSizeVar, desc.Len)
 			}
@@ -258,6 +269,29 @@ func (ctx *unmarshalContext) getStaticSizeVar(desc *dynssz.TypeDescriptor) (stri
 	ctx.sizeVarMap[descHash] = sizeVar
 
 	return sizeVar, nil
+}
+
+// getExprVar generates a variable name for cached limit expression calculations.
+func (ctx *unmarshalContext) getExprVar(expr string, defaultValue uint64) (string, error) {
+	if expr == "" {
+		return fmt.Sprintf("%v", defaultValue), nil
+	}
+
+	exprKey := sha256.Sum256([]byte(fmt.Sprintf("%s\n%v", expr, defaultValue)))
+	if exprVar, ok := ctx.exprVarMap[exprKey]; ok {
+		return exprVar, nil
+	}
+
+	exprVar := fmt.Sprintf("expr%d", ctx.exprVarCounter)
+	ctx.exprVarCounter++
+
+	ctx.appendExprCode(1, "%s, err := sszutils.ResolveSpecValueWithDefault(ds, \"%s\", %d)\n", exprVar, expr, defaultValue)
+	ctx.appendExprCode(1, "if err != nil {\n\treturn err\n}\n")
+	ctx.usedDynSpecs = true
+
+	ctx.exprVarMap[exprKey] = exprVar
+
+	return exprVar, nil
 }
 
 // unmarshalType generates unmarshal code for any SSZ type, delegating to specific unmarshalers.
@@ -497,27 +531,28 @@ func (ctx *unmarshalContext) unmarshalVector(desc *dynssz.TypeDescriptor, varNam
 	needExpression := !(desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 && noBufCheck)
 
 	if sizeExpression != nil && needExpression {
-		ctx.usedDynSpecs = true
+		defaultValue := uint64(desc.Len)
+		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 && desc.BitSize > 0 {
+			defaultValue = uint64(desc.BitSize)
+		}
+
+		exprVar, err := ctx.getExprVar(*sizeExpression, defaultValue)
+		if err != nil {
+			return err
+		}
+
 		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
-			ctx.appendCode(indent, "hasLimit, bitlimit, err := ds.ResolveSpecValue(\"%s\")\n", *sizeExpression)
-			ctx.appendCode(indent, "if err != nil {\n\treturn err\n}\n")
-			if desc.BitSize > 0 {
-				ctx.appendCode(indent, "if !hasLimit {\n\tbitlimit = %d\n}\n", desc.BitSize)
-			} else {
-				ctx.appendCode(indent, "if !hasLimit {\n\tbitlimit = %d\n}\n", desc.Len*8)
-			}
+			ctx.appendCode(indent, "bitlimit := %s\n", exprVar)
 			ctx.appendCode(indent, "limit := (bitlimit+7)/8\n")
 			bitlimitVar = "int(bitlimit)"
+			limitVar = "int(limit)"
 		} else {
-			ctx.appendCode(indent, "hasLimit, limit, err := ds.ResolveSpecValue(\"%s\")\n", *sizeExpression)
-			ctx.appendCode(indent, "if err != nil {\n\treturn err\n}\n")
-			ctx.appendCode(indent, "if !hasLimit {\n\tlimit = %d\n}\n", desc.Len)
+			limitVar = fmt.Sprintf("int(%s)", exprVar)
 		}
-		limitVar = "int(limit)"
 
 		if desc.Kind == reflect.Array {
 			// check if dynamic limit is greater than the length of the array
-			ctx.appendCode(indent, "if limit > %d {\n", desc.Len)
+			ctx.appendCode(indent, "if %s > %d {\n", limitVar, desc.Len)
 			ctx.appendCode(indent, "\treturn sszutils.ErrVectorLength\n")
 			ctx.appendCode(indent, "}\n")
 		}

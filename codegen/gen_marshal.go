@@ -5,6 +5,7 @@
 package codegen
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"reflect"
 	"slices"
@@ -25,10 +26,13 @@ import (
 //   - options: Code generation options controlling output behavior
 //   - usedDynSpecs: Flag tracking whether generated code uses dynamic SSZ functionality
 type marshalContext struct {
-	appendCode   func(indent int, code string, args ...any)
-	typePrinter  *TypePrinter
-	options      *CodeGeneratorOptions
-	usedDynSpecs bool
+	appendCode     func(indent int, code string, args ...any)
+	appendExprCode func(indent int, code string, args ...any)
+	typePrinter    *TypePrinter
+	options        *CodeGeneratorOptions
+	usedDynSpecs   bool
+	exprVarCounter int
+	exprVarMap     map[[32]byte]string
 }
 
 // generateMarshal generates marshal methods for a specific type.
@@ -52,6 +56,7 @@ type marshalContext struct {
 //   - error: An error if code generation fails
 func generateMarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
 	codeBuf := strings.Builder{}
+	exprCodeBuf := strings.Builder{}
 	ctx := &marshalContext{
 		appendCode: func(indent int, code string, args ...any) {
 			if len(args) > 0 {
@@ -59,8 +64,15 @@ func generateMarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.B
 			}
 			codeBuf.WriteString(indentStr(code, indent))
 		},
+		appendExprCode: func(indent int, code string, args ...any) {
+			if len(args) > 0 {
+				code = fmt.Sprintf(code, args...)
+			}
+			exprCodeBuf.WriteString(indentStr(code, indent))
+		},
 		typePrinter: typePrinter,
 		options:     options,
+		exprVarMap:  make(map[[32]byte]string),
 	}
 
 	// Generate main function signature
@@ -90,6 +102,7 @@ func generateMarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.B
 		if !ctx.usedDynSpecs {
 			codeBuilder.WriteString(fmt.Sprintf("func (t %s) MarshalSSZTo(buf []byte) (dst []byte, err error) {\n", typeName))
 			codeBuilder.WriteString("\tdst = buf\n")
+			codeBuilder.WriteString(exprCodeBuf.String())
 			codeBuilder.WriteString(codeBuf.String())
 			codeBuilder.WriteString("\treturn dst, nil\n")
 			codeBuilder.WriteString("}\n\n")
@@ -105,6 +118,7 @@ func generateMarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.B
 		if ctx.usedDynSpecs {
 			codeBuilder.WriteString(fmt.Sprintf("func (t %s) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {\n", typeName))
 			codeBuilder.WriteString("\tdst = buf\n")
+			codeBuilder.WriteString(exprCodeBuf.String())
 			codeBuilder.WriteString(codeBuf.String())
 			codeBuilder.WriteString("\treturn dst, nil\n")
 			codeBuilder.WriteString("}\n\n")
@@ -145,6 +159,29 @@ func (ctx *marshalContext) isInlineable(desc *dynssz.TypeDescriptor) bool {
 	}
 
 	return false
+}
+
+// getExprVar generates a variable name for cached limit expression calculations.
+func (ctx *marshalContext) getExprVar(expr string, defaultValue uint64) (string, error) {
+	if expr == "" {
+		return fmt.Sprintf("%v", defaultValue), nil
+	}
+
+	exprKey := sha256.Sum256([]byte(fmt.Sprintf("%s\n%v", expr, defaultValue)))
+	if exprVar, ok := ctx.exprVarMap[exprKey]; ok {
+		return exprVar, nil
+	}
+
+	exprVar := fmt.Sprintf("expr%d", ctx.exprVarCounter)
+	ctx.exprVarCounter++
+
+	ctx.appendExprCode(1, "%s, err := sszutils.ResolveSpecValueWithDefault(ds, \"%s\", %d)\n", exprVar, expr, defaultValue)
+	ctx.appendExprCode(1, "if err != nil {\n\treturn dst, err\n}\n")
+	ctx.usedDynSpecs = true
+
+	ctx.exprVarMap[exprKey] = exprVar
+
+	return exprVar, nil
 }
 
 // marshalType generates marshal code for any SSZ type, delegating to specific marshalers.
@@ -298,29 +335,32 @@ func (ctx *marshalContext) marshalVector(desc *dynssz.TypeDescriptor, varName st
 	bitlimitVar := ""
 	hasLimitVar := false
 	if sizeExpression != nil {
-		ctx.usedDynSpecs = true
+		defaultValue := uint64(desc.Len)
 		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
-			ctx.appendCode(indent, "hasLimit, bitlimit, err := ds.ResolveSpecValue(\"%s\")\n", *sizeExpression)
-			ctx.appendCode(indent, "if err != nil {\n\treturn dst, err\n}\n")
 			if desc.BitSize > 0 {
-				ctx.appendCode(indent, "if !hasLimit {\n\tbitlimit = %d\n}\n", desc.BitSize)
+				defaultValue = uint64(desc.BitSize)
 			} else {
-				ctx.appendCode(indent, "if !hasLimit {\n\tbitlimit = %d\n}\n", desc.Len*8)
+				defaultValue = uint64(desc.Len * 8)
 			}
-			ctx.appendCode(indent, "limit := (bitlimit+7)/8\n")
-			bitlimitVar = "int(bitlimit)"
-		} else {
-			ctx.appendCode(indent, "hasLimit, limit, err := ds.ResolveSpecValue(\"%s\")\n", *sizeExpression)
-			ctx.appendCode(indent, "if err != nil {\n\treturn dst, err\n}\n")
-			ctx.appendCode(indent, "if !hasLimit {\n\tlimit = %d\n}\n", desc.Len)
 		}
 
-		limitVar = "int(limit)"
+		exprVar, err := ctx.getExprVar(*sizeExpression, defaultValue)
+		if err != nil {
+			return err
+		}
+
+		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
+			bitlimitVar = exprVar
+			limitVar = fmt.Sprintf("int((%s+7)/8)", exprVar)
+		} else {
+			limitVar = fmt.Sprintf("int(%s)", exprVar)
+		}
+
 		hasLimitVar = true
 
 		if desc.Kind == reflect.Array {
 			// check if dynamic limit is greater than the length of the array
-			ctx.appendCode(indent, "if limit > %d {\n", desc.Len)
+			ctx.appendCode(indent, "if %s > %d {\n", limitVar, desc.Len)
 			ctx.appendCode(indent, "\treturn dst, sszutils.ErrVectorLength\n")
 			ctx.appendCode(indent, "}\n")
 		}
@@ -426,18 +466,13 @@ func (ctx *marshalContext) marshalList(desc *dynssz.TypeDescriptor, varName stri
 	maxVar := ""
 
 	if maxExpression != nil {
-		ctx.usedDynSpecs = true
-		ctx.appendCode(indent, "hasMax, max, err := ds.ResolveSpecValue(\"%s\")\n", *maxExpression)
-		ctx.appendCode(indent, "if err != nil {\n")
-		ctx.appendCode(indent, "\treturn dst, err\n")
-		ctx.appendCode(indent, "}\n")
-		hasMax = true
-		maxVar = "int(max)"
-		if desc.Limit > 0 {
-			ctx.appendCode(indent, "if !hasMax {\n")
-			ctx.appendCode(indent, "\tmax = %d\n", desc.Limit)
-			ctx.appendCode(indent, "}\n")
+		exprVar, err := ctx.getExprVar(*maxExpression, uint64(desc.Limit))
+		if err != nil {
+			return err
 		}
+
+		hasMax = true
+		maxVar = fmt.Sprintf("int(%s)", exprVar)
 	} else if desc.Limit > 0 {
 		maxVar = fmt.Sprintf("%d", desc.Limit)
 		hasMax = true
@@ -513,18 +548,13 @@ func (ctx *marshalContext) marshalBitlist(desc *dynssz.TypeDescriptor, varName s
 	maxVar := ""
 
 	if maxExpression != nil {
-		ctx.usedDynSpecs = true
-		ctx.appendCode(indent, "hasMax, max, err := ds.ResolveSpecValue(\"%s\")\n", *maxExpression)
-		ctx.appendCode(indent, "if err != nil {\n")
-		ctx.appendCode(indent, "\treturn dst, err\n")
-		ctx.appendCode(indent, "}\n")
-		hasMax = true
-		maxVar = "int(max)"
-		if desc.Limit > 0 {
-			ctx.appendCode(indent, "if !hasMax {\n")
-			ctx.appendCode(indent, "\tmax = %d\n", desc.Limit)
-			ctx.appendCode(indent, "}\n")
+		exprVar, err := ctx.getExprVar(*maxExpression, uint64(desc.Limit))
+		if err != nil {
+			return err
 		}
+
+		hasMax = true
+		maxVar = fmt.Sprintf("int(%s)", exprVar)
 	} else if desc.Limit > 0 {
 		maxVar = fmt.Sprintf("%d", desc.Limit)
 		hasMax = true
