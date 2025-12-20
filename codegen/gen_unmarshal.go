@@ -247,10 +247,7 @@ func (ctx *unmarshalContext) getStaticSizeVar(desc *dynssz.TypeDescriptor) (stri
 			}
 
 			if sizeExpression != nil {
-				exprVar, err := ctx.getExprVar(*sizeExpression, uint64(desc.Len))
-				if err != nil {
-					return "", err
-				}
+				exprVar := ctx.getExprVar(*sizeExpression, uint64(desc.Len))
 
 				if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
 					exprVar = fmt.Sprintf("(%s+7)/8", exprVar)
@@ -272,14 +269,14 @@ func (ctx *unmarshalContext) getStaticSizeVar(desc *dynssz.TypeDescriptor) (stri
 }
 
 // getExprVar generates a variable name for cached limit expression calculations.
-func (ctx *unmarshalContext) getExprVar(expr string, defaultValue uint64) (string, error) {
+func (ctx *unmarshalContext) getExprVar(expr string, defaultValue uint64) string {
 	if expr == "" {
-		return fmt.Sprintf("%v", defaultValue), nil
+		return fmt.Sprintf("%v", defaultValue)
 	}
 
 	exprKey := sha256.Sum256([]byte(fmt.Sprintf("%s\n%v", expr, defaultValue)))
 	if exprVar, ok := ctx.exprVarMap[exprKey]; ok {
-		return exprVar, nil
+		return exprVar
 	}
 
 	exprVar := fmt.Sprintf("expr%d", ctx.exprVarCounter)
@@ -291,7 +288,7 @@ func (ctx *unmarshalContext) getExprVar(expr string, defaultValue uint64) (strin
 
 	ctx.exprVarMap[exprKey] = exprVar
 
-	return exprVar, nil
+	return exprVar
 }
 
 // unmarshalType generates unmarshal code for any SSZ type, delegating to specific unmarshalers.
@@ -536,10 +533,7 @@ func (ctx *unmarshalContext) unmarshalVector(desc *dynssz.TypeDescriptor, varNam
 			defaultValue = uint64(desc.BitSize)
 		}
 
-		exprVar, err := ctx.getExprVar(*sizeExpression, defaultValue)
-		if err != nil {
-			return err
-		}
+		exprVar := ctx.getExprVar(*sizeExpression, defaultValue)
 
 		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
 			ctx.appendCode(indent, "bitlimit := %s\n", exprVar)

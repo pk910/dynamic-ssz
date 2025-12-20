@@ -58,7 +58,7 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 	}
 
 	if d.Verbose {
-		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v/%v)\t index: %v\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, isFastsszHasher, hasDynamicSize, hasDynamicMax, hashIndex)
+		d.LogCb("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v/%v)\t index: %v\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, isFastsszHasher, hasDynamicSize, hasDynamicMax, hashIndex)
 	}
 
 	if useFastSsz {
@@ -190,7 +190,7 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 	}
 
 	if d.Verbose {
-		fmt.Printf("%shash: 0x%x\n", strings.Repeat(" ", idt), hh.Hash())
+		d.LogCb("%shash: 0x%x\n", strings.Repeat(" ", idt), hh.Hash())
 	}
 
 	return nil
@@ -212,14 +212,11 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 
 func (d *DynSsz) buildRootFromTypeWrapper(sourceType *TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, pack bool, idt int) error {
 	if d.Verbose {
-		fmt.Printf("%sbuildRootFromTypeWrapper: %s\n", strings.Repeat(" ", idt), sourceType.Type.Name())
+		d.LogCb("%sbuildRootFromTypeWrapper: %s\n", strings.Repeat(" ", idt), sourceType.Type.Name())
 	}
 
 	// Extract the Data field from the TypeWrapper
 	dataField := sourceValue.Field(0)
-	if !dataField.IsValid() {
-		return fmt.Errorf("TypeWrapper missing 'Data' field")
-	}
 
 	// Build hash tree root for the wrapped value using its type descriptor
 	return d.buildRootFromType(sourceType.ElemDesc, dataField, hh, pack, idt+2)
@@ -304,7 +301,7 @@ func (d *DynSsz) buildRootFromContainer(sourceType *TypeDescriptor, sourceValue 
 		fieldValue := sourceValue.Field(i)
 
 		if d.Verbose {
-			fmt.Printf("%sfield %v\n", strings.Repeat(" ", idt), field.Name)
+			d.LogCb("%sfield %v\n", strings.Repeat(" ", idt), field.Name)
 		}
 
 		err := d.buildRootFromType(fieldType, fieldValue, hh, false, idt+2)
@@ -362,7 +359,7 @@ func (d *DynSsz) buildRootFromProgressiveContainer(sourceType *TypeDescriptor, s
 		fieldValue := sourceValue.Field(i)
 
 		if d.Verbose {
-			fmt.Printf("%sfield %v\n", strings.Repeat(" ", idt), field.Name)
+			d.LogCb("%sfield %v\n", strings.Repeat(" ", idt), field.Name)
 		}
 
 		err := d.buildRootFromType(fieldType, fieldValue, hh, false, idt+2)
@@ -515,20 +512,11 @@ func (d *DynSsz) buildRootFromVector(sourceType *TypeDescriptor, sourceValue ref
 				zeroVal = reflect.New(sourceType.ElemDesc.Type).Elem()
 			}
 
-			index := hh.Index()
-			err := d.buildRootFromType(sourceType.ElemDesc, zeroVal, hh, true, idt+2)
-			if err != nil {
-				return err
-			}
-
-			zeroLen := hh.Index() - index
-			zeroBytes := hh.Hash()
-			if len(zeroBytes) > zeroLen {
-				zeroBytes = zeroBytes[len(zeroBytes)-zeroLen:]
-			}
-
-			for i := 1; i < appendZero; i++ {
-				hh.Append(zeroBytes)
+			for i := 0; i < appendZero; i++ {
+				err := d.buildRootFromType(sourceType.ElemDesc, zeroVal, hh, true, idt+2)
+				if err != nil {
+					return err
+				}
 			}
 		}
 

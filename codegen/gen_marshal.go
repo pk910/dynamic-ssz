@@ -162,14 +162,14 @@ func (ctx *marshalContext) isInlineable(desc *dynssz.TypeDescriptor) bool {
 }
 
 // getExprVar generates a variable name for cached limit expression calculations.
-func (ctx *marshalContext) getExprVar(expr string, defaultValue uint64) (string, error) {
+func (ctx *marshalContext) getExprVar(expr string, defaultValue uint64) string {
 	if expr == "" {
-		return fmt.Sprintf("%v", defaultValue), nil
+		return fmt.Sprintf("%v", defaultValue)
 	}
 
 	exprKey := sha256.Sum256([]byte(fmt.Sprintf("%s\n%v", expr, defaultValue)))
 	if exprVar, ok := ctx.exprVarMap[exprKey]; ok {
-		return exprVar, nil
+		return exprVar
 	}
 
 	exprVar := fmt.Sprintf("expr%d", ctx.exprVarCounter)
@@ -181,7 +181,7 @@ func (ctx *marshalContext) getExprVar(expr string, defaultValue uint64) (string,
 
 	ctx.exprVarMap[exprKey] = exprVar
 
-	return exprVar, nil
+	return exprVar
 }
 
 // marshalType generates marshal code for any SSZ type, delegating to specific marshalers.
@@ -344,10 +344,7 @@ func (ctx *marshalContext) marshalVector(desc *dynssz.TypeDescriptor, varName st
 			}
 		}
 
-		exprVar, err := ctx.getExprVar(*sizeExpression, defaultValue)
-		if err != nil {
-			return err
-		}
+		exprVar := ctx.getExprVar(*sizeExpression, defaultValue)
 
 		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
 			bitlimitVar = exprVar
@@ -466,10 +463,7 @@ func (ctx *marshalContext) marshalList(desc *dynssz.TypeDescriptor, varName stri
 	maxVar := ""
 
 	if maxExpression != nil {
-		exprVar, err := ctx.getExprVar(*maxExpression, uint64(desc.Limit))
-		if err != nil {
-			return err
-		}
+		exprVar := ctx.getExprVar(*maxExpression, uint64(desc.Limit))
 
 		hasMax = true
 		maxVar = fmt.Sprintf("int(%s)", exprVar)
@@ -548,10 +542,7 @@ func (ctx *marshalContext) marshalBitlist(desc *dynssz.TypeDescriptor, varName s
 	maxVar := ""
 
 	if maxExpression != nil {
-		exprVar, err := ctx.getExprVar(*maxExpression, uint64(desc.Limit))
-		if err != nil {
-			return err
-		}
+		exprVar := ctx.getExprVar(*maxExpression, uint64(desc.Limit))
 
 		hasMax = true
 		maxVar = fmt.Sprintf("int(%s)", exprVar)

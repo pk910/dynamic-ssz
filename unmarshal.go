@@ -58,7 +58,7 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 	}
 
 	if d.Verbose {
-		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), targetType.Type.Name(), targetType.Kind, useFastSsz, isFastsszUnmarshaler, hasDynamicSize)
+		d.LogCb("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), targetType.Type.Name(), targetType.Kind, useFastSsz, isFastsszUnmarshaler, hasDynamicSize)
 	}
 
 	if useFastSsz {
@@ -206,14 +206,11 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 
 func (d *DynSsz) unmarshalTypeWrapper(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
 	if d.Verbose {
-		fmt.Printf("%sunmarshalTypeWrapper: %s\n", strings.Repeat(" ", idt), targetType.Type.Name())
+		d.LogCb("%sunmarshalTypeWrapper: %s\n", strings.Repeat(" ", idt), targetType.Type.Name())
 	}
 
 	// Get the Data field from the TypeWrapper
 	dataField := targetValue.Field(0)
-	if !dataField.IsValid() {
-		return 0, fmt.Errorf("TypeWrapper missing 'Data' field")
-	}
 
 	// Unmarshal the wrapped value using its type descriptor
 	consumedBytes, err := d.unmarshalType(targetType.ElemDesc, dataField, ssz, idt+2)
