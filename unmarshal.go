@@ -61,7 +61,7 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 	}
 
 	if d.Verbose {
-		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), targetType.Type.Name(), targetType.Kind, useFastSsz, isFastsszUnmarshaler, hasDynamicSize)
+		d.LogCb("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), targetType.Type.Name(), targetType.Kind, useFastSsz, isFastsszUnmarshaler, hasDynamicSize)
 	}
 
 	if useFastSsz {
@@ -226,14 +226,11 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 
 func (d *DynSsz) unmarshalTypeWrapper(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
 	if d.Verbose {
-		fmt.Printf("%sunmarshalTypeWrapper: %s\n", strings.Repeat(" ", idt), targetType.Type.Name())
+		d.LogCb("%sunmarshalTypeWrapper: %s\n", strings.Repeat(" ", idt), targetType.Type.Name())
 	}
 
 	// Get the Data field from the TypeWrapper
 	dataField := targetValue.Field(0)
-	if !dataField.IsValid() {
-		return 0, fmt.Errorf("TypeWrapper missing 'Data' field")
-	}
 
 	// Unmarshal the wrapped value using its type descriptor
 	consumedBytes, err := d.unmarshalType(targetType.ElemDesc, dataField, ssz, idt+2)
@@ -471,11 +468,13 @@ func (d *DynSsz) unmarshalVector(targetType *TypeDescriptor, targetValue reflect
 //   - Each element consumes exactly the expected bytes
 
 func (d *DynSsz) unmarshalDynamicVector(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte, idt int) (int, error) {
-	if len(ssz) == 0 {
-		return 0, nil
-	}
-
 	vectorLen := int(targetType.Len)
+	requiredOffsetBytes := vectorLen * 4
+
+	// check if there's enough data for all offsets
+	if len(ssz) < requiredOffsetBytes {
+		return 0, fmt.Errorf("unexpected end of SSZ. dynamic vector expects at least %v bytes for offsets, got %v", requiredOffsetBytes, len(ssz))
+	}
 
 	// read all item offsets
 	sliceOffsets := defaultOffsetSlicePool.Get()
@@ -680,9 +679,20 @@ func (d *DynSsz) unmarshalDynamicList(targetType *TypeDescriptor, targetValue re
 		return 0, nil
 	}
 
+	// need at least 4 bytes to read the first offset
+	if len(ssz) < 4 {
+		return 0, fmt.Errorf("unexpected end of SSZ. dynamic list expects at least 4 bytes for first offset, got %v", len(ssz))
+	}
+
 	// derive number of items from first item offset
 	firstOffset := sszutils.ReadOffset(ssz[0:4])
 	sliceLen := int(firstOffset / 4)
+
+	// check if there's enough data for all offsets
+	requiredOffsetBytes := sliceLen * 4
+	if len(ssz) < requiredOffsetBytes {
+		return 0, fmt.Errorf("unexpected end of SSZ. dynamic list expects at least %v bytes for offsets, got %v", requiredOffsetBytes, len(ssz))
+	}
 
 	// read all item offsets
 	sliceOffsets := defaultOffsetSlicePool.Get()
@@ -705,13 +715,7 @@ func (d *DynSsz) unmarshalDynamicList(targetType *TypeDescriptor, targetValue re
 		fieldT = fieldT.Elem()
 	}
 
-	var newValue reflect.Value
-	if targetType.Kind == reflect.Slice {
-		newValue = reflect.MakeSlice(fieldT, sliceLen, sliceLen)
-	} else {
-		newValue = reflect.New(fieldT).Elem()
-	}
-
+	newValue := reflect.MakeSlice(fieldT, sliceLen, sliceLen)
 	offset := int(firstOffset)
 	sszLen := len(ssz)
 
@@ -776,47 +780,18 @@ func (d *DynSsz) unmarshalDynamicList(targetType *TypeDescriptor, targetValue re
 //   - error: An error if decoding fails or bitlist is invalid
 
 func (d *DynSsz) unmarshalBitlist(targetType *TypeDescriptor, targetValue reflect.Value, ssz []byte) (int, error) {
-	var consumedBytes int
-
-	fieldType := targetType.ElemDesc
 	sszLen := len(ssz)
 
 	if sszLen == 0 || ssz[sszLen-1] == 0x00 {
 		return 0, sszutils.ErrBitlistNotTerminated
 	}
 
-	fieldT := targetType.Type
-	if targetType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
-		fieldT = fieldT.Elem()
-	}
+	// Bitlists can only be []byte (validated by typecache)
+	byteSlice := make([]byte, sszLen)
+	copy(byteSlice, ssz)
+	targetValue.Set(reflect.ValueOf(byteSlice))
 
-	var newValue reflect.Value
-	if targetType.Kind == reflect.Slice {
-		// Optimization: avoid reflect.MakeSlice for common byte slice types
-		if targetType.GoTypeFlags&GoTypeFlagIsByteArray != 0 && fieldType.Type.Kind() == reflect.Uint8 {
-			byteSlice := make([]byte, sszLen)
-			newValue = reflect.ValueOf(byteSlice)
-		} else {
-			newValue = reflect.MakeSlice(fieldT, sszLen, sszLen)
-		}
-	} else {
-		newValue = reflect.New(fieldT).Elem()
-	}
-
-	if targetType.GoTypeFlags&GoTypeFlagIsString != 0 {
-		newValue.SetString(string(ssz))
-		consumedBytes = len(ssz)
-	} else if targetType.GoTypeFlags&GoTypeFlagIsByteArray != 0 {
-		// shortcut for performance: use copy on []byte arrays
-		copy(newValue.Bytes(), ssz)
-		consumedBytes = sszLen
-	} else {
-		return 0, fmt.Errorf("bitlist type can only be represented by byte slices or arrays, got %v", targetType.Kind)
-	}
-
-	targetValue.Set(newValue)
-
-	return consumedBytes, nil
+	return sszLen, nil
 }
 
 // unmarshalCompatibleUnion decodes SSZ-encoded data into a CompatibleUnion.

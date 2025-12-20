@@ -27,6 +27,7 @@ type SimpleTypes1 struct {
 	Lst8     []uint8     `ssz-max:"4"`
 	Lst32    []uint32    `ssz-max:"4"`
 	Lst128   [][2]uint64 `ssz-type:"?,uint128" ssz-max:"4"`
+	BigLst8  []uint8     `ssz-max:"35"`
 	BitLst   []byte      `ssz-max:"16"`
 	F1       [2][]uint16
 	F2       [10]uint8 `ssz-size:"5"`
@@ -61,6 +62,7 @@ var SimpleTypes1_Payload = SimpleTypes1{
 	Lst8:    []uint8{1, 2, 3, 4},
 	Lst32:   []uint32{1, 2, 3, 4},
 	Lst128:  [][2]uint64{{1, 2}, {3, 4}},
+	BigLst8: []uint8{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35},
 	BitLst:  []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
 	F1:      [2][]uint16{{1, 2}, {3, 4}},
 	F2:      [10]uint8{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},

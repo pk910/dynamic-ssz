@@ -5,10 +5,11 @@
 package dynssz
 
 import (
+	"strings"
 	"testing"
 )
 
-// TestStrictTypeAnnotations tests various ssz-type annotations to improve coverage
+// TestStrictTypeAnnotations tests various ssz-type annotations
 func TestStrictTypeAnnotations(t *testing.T) {
 	dynssz := NewDynSsz(nil)
 
@@ -16,6 +17,7 @@ func TestStrictTypeAnnotations(t *testing.T) {
 		name   string
 		value  interface{}
 		hasErr bool
+		errMsg string
 	}{
 		{
 			name: "auto type annotation",
@@ -66,11 +68,58 @@ func TestStrictTypeAnnotations(t *testing.T) {
 			}{[3]byte{0xff, 0x0f, 0x00}},
 		},
 		{
+			name: "multi-dimensional with dynssz hints",
+			value: struct {
+				Values [][]uint8 `dynssz-size:"?,2" dynssz-max:"10,?"`
+			}{[][]uint8{{1, 2}, {3, 4}}},
+		},
+		{
 			name: "invalid ssz-type",
 			value: struct {
 				Value uint32 `ssz-type:"invalid"`
 			}{42},
 			hasErr: true,
+			errMsg: "invalid ssz-type tag 'invalid'",
+		},
+		{
+			name: "invalid ssz-size",
+			value: struct {
+				Value []uint32 `ssz-size:"invalid"`
+			}{},
+			hasErr: true,
+			errMsg: "strconv.ParseUint: parsing \"invalid\": invalid syntax",
+		},
+		{
+			name: "invalid ssz-bitsize",
+			value: struct {
+				Value []uint32 `ssz-bitsize:"invalid"`
+			}{},
+			hasErr: true,
+			errMsg: "strconv.ParseUint: parsing \"invalid\": invalid syntax",
+		},
+		{
+			name: "invalid dynssz-size",
+			value: struct {
+				Value []uint32 `dynssz-size:"inv.()alid"`
+			}{},
+			hasErr: true,
+			errMsg: "error parsing dynamic spec expression:",
+		},
+		{
+			name: "invalid ssz-max",
+			value: struct {
+				Value []uint32 `ssz-max:"invalid"`
+			}{},
+			hasErr: true,
+			errMsg: "strconv.ParseUint: parsing \"invalid\": invalid syntax",
+		},
+		{
+			name: "invalid dynssz-max",
+			value: struct {
+				Value []uint32 `dynssz-max:"inv.()alid"`
+			}{},
+			hasErr: true,
+			errMsg: "error parsing dynamic spec expression:",
 		},
 		{
 			name: "uint128 with wrong size array",
@@ -78,6 +127,7 @@ func TestStrictTypeAnnotations(t *testing.T) {
 				Value [8]byte `ssz-type:"uint128"`
 			}{[8]byte{1, 2, 3, 4, 5, 6, 7, 8}},
 			hasErr: true,
+			errMsg: "uint128 ssz type does not fit in array",
 		},
 		{
 			name: "uint256 with wrong size array",
@@ -85,6 +135,7 @@ func TestStrictTypeAnnotations(t *testing.T) {
 				Value [16]byte `ssz-type:"uint256"`
 			}{[16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}},
 			hasErr: true,
+			errMsg: "uint256 ssz type does not fit in array",
 		},
 		{
 			name: "uint128 with wrong element type",
@@ -92,6 +143,7 @@ func TestStrictTypeAnnotations(t *testing.T) {
 				Value [16]uint16 `ssz-type:"uint128"`
 			}{[16]uint16{}},
 			hasErr: true,
+			errMsg: "uint128 ssz type can only be represented by slices or arrays of",
 		},
 		{
 			name: "uint256 with slice of uint16",
@@ -99,6 +151,7 @@ func TestStrictTypeAnnotations(t *testing.T) {
 				Value []uint16 `ssz-type:"uint256" ssz-size:"16"`
 			}{make([]uint16, 16)},
 			hasErr: true,
+			errMsg: "uint256 ssz type can only be represented by slices or arrays of",
 		},
 	}
 
@@ -109,6 +162,10 @@ func TestStrictTypeAnnotations(t *testing.T) {
 			if tc.hasErr && err == nil {
 				t.Errorf("expected error but got none")
 			} else if !tc.hasErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+
+			if tc.hasErr && err != nil && !strings.Contains(err.Error(), tc.errMsg) {
 				t.Errorf("unexpected error: %v", err)
 			}
 

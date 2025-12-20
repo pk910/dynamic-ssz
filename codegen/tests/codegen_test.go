@@ -20,7 +20,7 @@ var testMatrix = []TestPayload{
 		Name:    "SimpleTypes1",
 		Payload: SimpleTypes1_Payload,
 		Specs:   map[string]any{},
-		Hash:    "f30998943ae49a633f0e622dc038fb67fda46507d75794ce4c6dee8c4d3ae6fe",
+		Hash:    "b528ffea01ddd484a9c1e6d16063512f9ec3097803dbf50dcdfa68effb1508df",
 	},
 	{
 		Name:    "SimpleTypes2",

@@ -265,6 +265,8 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 				sszType = dynssz.SszUint256Type
 			case pkgPath == "github.com/prysmaticlabs/go-bitfield" && typeName == "Bitlist":
 				sszType = dynssz.SszBitlistType
+			case pkgPath == "github.com/OffchainLabs/go-bitfield" && typeName == "Bitlist":
+				sszType = dynssz.SszBitlistType
 			case pkgPath == "github.com/pk910/dynamic-ssz" && typeName == "CompatibleUnion":
 				sszType = dynssz.SszCompatibleUnionType
 			case pkgPath == "github.com/pk910/dynamic-ssz" && typeName == "TypeWrapper":
@@ -467,8 +469,8 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 		}
 	}
 
-	if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 && desc.SszType != dynssz.SszBitvectorType {
-		return nil, fmt.Errorf("bit size tag is only allowed for bitvector types, got %v", desc.SszType)
+	if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 && desc.SszType != dynssz.SszBitvectorType && desc.SszType != dynssz.SszBitlistType {
+		return nil, fmt.Errorf("bit size tag is only allowed for bitvector or bitlist types, got %v", desc.SszType)
 	}
 
 	// Check interface compatibility (like reflection-based code)
@@ -847,7 +849,7 @@ func (p *Parser) buildBitlistDescriptor(desc *dynssz.TypeDescriptor, typ types.T
 
 	// Bitlist must use byte (uint8) elements
 	if elemDesc.Kind != reflect.Uint8 {
-		return fmt.Errorf("bitlist ssz type can only be represented by byte slices or arrays, got %v", elemDesc.Kind)
+		return fmt.Errorf("bitlist ssz type can only be represented by byte slices, got []%v", elemDesc.Kind)
 	}
 
 	// Bitlists are always dynamic

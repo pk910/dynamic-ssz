@@ -5,6 +5,7 @@
 package dynssz
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -36,11 +37,12 @@ func TestTypeCache_ErrorCases(t *testing.T) {
 			{"func", reflect.TypeOf(func() {}), "functions are not supported"},
 			{"interface", reflect.TypeOf((*interface{})(nil)).Elem(), "interfaces are not supported"},
 			{"unsafe", reflect.TypeOf((*unsafe.Pointer)(nil)).Elem(), "unsafe pointers are not supported"},
+			{"pointer", reflect.TypeOf((***uint64)(nil)).Elem(), "unsupported type kind: ptr"},
 		}
 
 		for _, tt := range unsupportedTypes {
 			t.Run(tt.name, func(t *testing.T) {
-				_, err := cache.GetTypeDescriptor(tt.typ, nil, nil, nil)
+				err := ds.ValidateType(tt.typ)
 				if err == nil {
 					t.Errorf("Expected error for type %s", tt.name)
 					return
@@ -138,7 +140,7 @@ func TestTypeCache_ErrorCases(t *testing.T) {
 				name:     "other non bitvector type with bit size",
 				typ:      reflect.TypeOf([16]uint8{}),
 				hints:    []SszSizeHint{{Bits: true}},
-				expected: "bit size tag is only allowed for bitvector types",
+				expected: "bit size tag is only allowed for bitvector or bitlist types",
 			},
 		}
 
@@ -372,7 +374,13 @@ func TestTypeCache_ErrorCases(t *testing.T) {
 				name:     "bitlist with wrong element type",
 				typ:      reflect.TypeOf([]uint32{}),
 				typeHint: []SszTypeHint{{Type: SszBitlistType}},
-				expected: "bitlist ssz type can only be represented by byte slices or arrays",
+				expected: "bitlist ssz type can only be represented by byte slices",
+			},
+			{
+				name:     "bitlist with string type",
+				typ:      reflect.TypeOf(""),
+				typeHint: []SszTypeHint{{Type: SszBitlistType}},
+				expected: "bitlist ssz type can only be represented by byte slices, got string",
 			},
 		}
 
@@ -422,7 +430,7 @@ func TestTypeCache_ProgressiveContainerErrors(t *testing.T) {
 		}
 
 		// This should work fine (no index tags)
-		_, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+		err := ds.ValidateType(reflect.TypeOf(TestStruct{}))
 		if err != nil {
 			t.Errorf("Unexpected error for normal struct: %s", err.Error())
 		}
@@ -659,5 +667,517 @@ func TestTypeCache_ConcurrentAccess(t *testing.T) {
 	// Wait for all goroutines to complete
 	for i := 0; i < 10; i++ {
 		<-done
+	}
+}
+
+// Test size hint expressions using dynssz-size tag
+func TestTypeCache_SizeHintExpressions(t *testing.T) {
+	// Create DynSsz with spec value resolver
+	ds := NewDynSsz(map[string]any{
+		"MAX_VALIDATORS_PER_COMMITTEE": float64(4096),
+	})
+	cache := ds.typeCache
+
+	// Test with size hint containing expression via dynssz-size tag
+	type TestStruct struct {
+		Data []byte `ssz-size:"32" dynssz-size:"MAX_VALIDATORS_PER_COMMITTEE"`
+	}
+
+	// This should use the expression (treated as dynamic size)
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify the field has the expression stored
+	if desc.ContainerDesc == nil || len(desc.ContainerDesc.Fields) == 0 {
+		t.Fatal("expected container with fields")
+	}
+
+	field := desc.ContainerDesc.Fields[0]
+	if field.Type.Len != 4096 {
+		t.Errorf("expected Len 4096, got %d", field.Type.Len)
+	}
+	// Should have dynamic size flag set
+	if field.Type.SszTypeFlags&SszTypeFlagHasDynamicSize == 0 {
+		t.Error("expected SszTypeFlagHasDynamicSize to be set")
+	}
+}
+
+// Test max hint expressions using dynssz-max tag
+func TestTypeCache_MaxHintExpressions(t *testing.T) {
+	// Create DynSsz with spec value resolver
+	ds := NewDynSsz(map[string]any{
+		"MAX_VALIDATORS": float64(65536),
+	})
+	cache := ds.typeCache
+
+	// Test with max hint containing expression via dynssz-max tag
+	type TestStruct struct {
+		Data []byte `ssz-max:"100" dynssz-max:"MAX_VALIDATORS"`
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify the limit was set
+	if desc.ContainerDesc == nil || len(desc.ContainerDesc.Fields) == 0 {
+		t.Fatal("expected container with fields")
+	}
+
+	field := desc.ContainerDesc.Fields[0]
+	if field.Type.SszTypeFlags&SszTypeFlagHasLimit == 0 {
+		t.Error("expected SszTypeFlagHasLimit to be set")
+	}
+	// Should have dynamic max flag set
+	if field.Type.SszTypeFlags&SszTypeFlagHasDynamicMax == 0 {
+		t.Error("expected SszTypeFlagHasDynamicMax to be set")
+	}
+}
+
+// Test list with string type for coverage
+func TestTypeCache_ListWithString(t *testing.T) {
+	ds := NewDynSsz(nil)
+	cache := ds.typeCache
+
+	// Test list with string type
+	type TestStruct struct {
+		Name string `ssz-max:"100"`
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify string flag is set on field
+	if desc.ContainerDesc == nil || len(desc.ContainerDesc.Fields) == 0 {
+		t.Fatal("expected container with fields")
+	}
+
+	field := desc.ContainerDesc.Fields[0]
+	if field.Type.GoTypeFlags&GoTypeFlagIsString == 0 {
+		t.Error("expected GoTypeFlagIsString to be set")
+	}
+}
+
+// Test vector with string type for coverage
+func TestTypeCache_VectorWithString(t *testing.T) {
+	ds := NewDynSsz(nil)
+	cache := ds.typeCache
+
+	// Test vector with string type
+	type TestStruct struct {
+		Name string `ssz-size:"32"`
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if desc.ContainerDesc == nil || len(desc.ContainerDesc.Fields) == 0 {
+		t.Fatal("expected container with fields")
+	}
+
+	field := desc.ContainerDesc.Fields[0]
+	if field.Type.SszType != SszVectorType {
+		t.Errorf("expected SszVectorType, got %v", field.Type.SszType)
+	}
+}
+
+// Test list with size hint
+func TestTypeCache_ListWithSizeHint(t *testing.T) {
+	ds := NewDynSsz(nil)
+	cache := ds.typeCache
+
+	// Test list with size and max hints
+	type TestStruct struct {
+		Data []uint32 `ssz-size:"10" ssz-max:"100"`
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if desc.ContainerDesc == nil || len(desc.ContainerDesc.Fields) == 0 {
+		t.Fatal("expected container with fields")
+	}
+
+	field := desc.ContainerDesc.Fields[0]
+	// With ssz-size hint, it becomes a vector, not a list
+	if field.Type.SszType != SszVectorType {
+		t.Errorf("expected SszVectorType, got %v", field.Type.SszType)
+	}
+}
+
+// Test list with dynamic size hint
+func TestTypeCache_ListWithDynamicSizeHint(t *testing.T) {
+	ds := NewDynSsz(nil)
+	cache := ds.typeCache
+
+	// Test list with dynamic size hint
+	type TestStruct struct {
+		Data []uint32 `ssz-size:"?" ssz-max:"100"`
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if desc.ContainerDesc == nil || len(desc.ContainerDesc.Fields) == 0 {
+		t.Fatal("expected container with fields")
+	}
+
+	field := desc.ContainerDesc.Fields[0]
+	// With dynamic size hint (?), it should be a list
+	if field.Type.SszType != SszListType {
+		t.Errorf("expected SszListType, got %v", field.Type.SszType)
+	}
+}
+
+// Test bitvector with bit size hint
+func TestTypeCache_BitvectorWithBitSize(t *testing.T) {
+	ds := NewDynSsz(nil)
+	cache := ds.typeCache
+
+	// Test bitvector with bit size hint
+	type TestStruct struct {
+		Flags []byte `ssz-type:"bitvector" ssz-bitsize:"32"`
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if desc.ContainerDesc == nil || len(desc.ContainerDesc.Fields) == 0 {
+		t.Fatal("expected container with fields")
+	}
+
+	field := desc.ContainerDesc.Fields[0]
+	if field.Type.BitSize != 32 {
+		t.Errorf("expected BitSize 32, got %d", field.Type.BitSize)
+	}
+}
+
+// Test bitlist from type name detection
+func TestTypeCache_BitlistFromTypeNameDetection(t *testing.T) {
+	ds := NewDynSsz(nil)
+	cache := ds.typeCache
+
+	// Test bitlist from type name detection
+	type TestBitlist []uint8
+
+	type TestStruct struct {
+		Flags TestBitlist
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if desc.ContainerDesc == nil || len(desc.ContainerDesc.Fields) == 0 {
+		t.Fatal("expected container with fields")
+	}
+
+	field := desc.ContainerDesc.Fields[0]
+	if field.Type.SszType != SszBitlistType {
+		t.Errorf("expected SszBitlistType, got %v", field.Type.SszType)
+	}
+}
+
+// Test container with embedded struct
+func TestTypeCache_EmbeddedStruct(t *testing.T) {
+	ds := NewDynSsz(nil)
+	cache := ds.typeCache
+
+	type Inner struct {
+		A uint32
+	}
+
+	type Outer struct {
+		B uint64
+		C Inner
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(Outer{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if desc.ContainerDesc == nil || len(desc.ContainerDesc.Fields) != 2 {
+		t.Fatal("expected container with 2 fields")
+	}
+
+	// Second field should be a container
+	field := desc.ContainerDesc.Fields[1]
+	if field.Type.SszType != SszContainerType {
+		t.Errorf("expected SszContainerType for inner struct, got %v", field.Type.SszType)
+	}
+}
+
+// Test vector with nested dynamic elements
+func TestTypeCache_VectorWithNestedDynamic(t *testing.T) {
+	ds := NewDynSsz(nil)
+	cache := ds.typeCache
+
+	// Test vector with dynamic nested type
+	type Inner struct {
+		Data []byte `ssz-max:"100"`
+	}
+
+	type Outer struct {
+		Items []Inner `ssz-size:"3"`
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(Outer{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if desc.ContainerDesc == nil || len(desc.ContainerDesc.Fields) == 0 {
+		t.Fatal("expected container with fields")
+	}
+
+	field := desc.ContainerDesc.Fields[0]
+	// Vector with dynamic elements should still be a vector but with IsDynamic flag
+	if field.Type.SszType != SszVectorType {
+		t.Errorf("expected SszVectorType, got %v", field.Type.SszType)
+	}
+	if field.Type.SszTypeFlags&SszTypeFlagIsDynamic == 0 {
+		t.Error("expected SszTypeFlagIsDynamic to be set for vector with dynamic elements")
+	}
+}
+
+type TestTypeWithInvalidHashTreeRootWith1 struct{}
+
+func (t *TestTypeWithInvalidHashTreeRootWith1) HashTreeRootWith() error {
+	return errors.New("test HashTreeRootWith error")
+}
+
+type TestTypeWithInvalidHashTreeRootWith2 struct{}
+
+func (t *TestTypeWithInvalidHashTreeRootWith2) HashTreeRootWith(in1 uint64) uint64 {
+	return in1
+}
+
+// Test types with invalid HashTreeRootWith method
+func TestTypeCache_InvalidHashTreeRootWith(t *testing.T) {
+	ds := NewDynSsz(nil)
+	cache := ds.typeCache
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestTypeWithInvalidHashTreeRootWith1{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if desc.HashTreeRootWithMethod != nil {
+		t.Errorf("expected HashTreeRootWithMethod to be nil, got %v", desc.HashTreeRootWithMethod)
+	}
+
+	desc, err = cache.GetTypeDescriptor(reflect.TypeOf(TestTypeWithInvalidHashTreeRootWith2{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if desc.HashTreeRootWithMethod != nil {
+		t.Errorf("expected HashTreeRootWithMethod to be nil, got %v", desc.HashTreeRootWithMethod)
+	}
+}
+
+// Test SetGlobalSpecs function
+func TestSetGlobalSpecs(t *testing.T) {
+	// Reset global state after test
+	defer func() {
+		globalDynSsz = nil
+	}()
+
+	t.Run("SetGlobalSpecs creates new DynSsz with specs", func(t *testing.T) {
+		specs := map[string]any{
+			"MAX_VALIDATORS": float64(65536),
+			"MAX_COMMITTEES": float64(64),
+		}
+
+		SetGlobalSpecs(specs)
+
+		ds := GetGlobalDynSsz()
+		if ds == nil {
+			t.Fatal("expected GetGlobalDynSsz to return non-nil")
+		}
+
+		// Verify specs are available by testing with a type that uses them
+		type TestStruct struct {
+			Data []byte `ssz-max:"100" dynssz-max:"MAX_VALIDATORS"`
+		}
+
+		desc, err := ds.typeCache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if desc.ContainerDesc == nil || len(desc.ContainerDesc.Fields) == 0 {
+			t.Fatal("expected container with fields")
+		}
+
+		field := desc.ContainerDesc.Fields[0]
+		if field.Type.Limit != 65536 {
+			t.Errorf("expected Limit 65536 from specs, got %d", field.Type.Limit)
+		}
+	})
+
+	t.Run("SetGlobalSpecs replaces existing DynSsz", func(t *testing.T) {
+		specs1 := map[string]any{
+			"TEST_VALUE": float64(100),
+		}
+		SetGlobalSpecs(specs1)
+		ds1 := GetGlobalDynSsz()
+
+		specs2 := map[string]any{
+			"TEST_VALUE": float64(200),
+		}
+		SetGlobalSpecs(specs2)
+		ds2 := GetGlobalDynSsz()
+
+		if ds1 == ds2 {
+			t.Error("expected SetGlobalSpecs to create a new DynSsz instance")
+		}
+	})
+
+	t.Run("SetGlobalSpecs with nil specs", func(t *testing.T) {
+		SetGlobalSpecs(nil)
+
+		ds := GetGlobalDynSsz()
+		if ds == nil {
+			t.Fatal("expected GetGlobalDynSsz to return non-nil even with nil specs")
+		}
+	})
+}
+
+type TestInvalidUnion1 struct{}
+
+func (t *TestInvalidUnion1) GetDescriptorType() {}
+
+type TestInvalidUnion2 struct{}
+
+func (t *TestInvalidUnion2) GetDescriptorType() uint64 {
+	return 0
+}
+
+type TestInvalidUnion3 struct{}
+
+func (t *TestInvalidUnion3) GetDescriptorType() reflect.Type {
+	return reflect.TypeOf(uint64(0))
+}
+
+// Test types with invalid HashTreeRootWith method
+func TestTypeCache_InvalidUnionTypes(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	tests := []struct {
+		name          string
+		typ           reflect.Type
+		expectedError string
+	}{
+		{
+			name: "invalid union type 1",
+			typ: reflect.TypeOf(TypeWrapper[struct {
+				F struct{} `ssz-type:"union"`
+			}, struct{}]{}),
+			expectedError: "GetDescriptorType method not found on type",
+		},
+		{
+			name: "invalid union type 2",
+			typ: reflect.TypeOf(TypeWrapper[struct {
+				F TestInvalidUnion1 `ssz-type:"union"`
+			}, TestInvalidUnion1]{}),
+			expectedError: "GetDescriptorType returned no results",
+		},
+		{
+			name: "invalid union type 3",
+			typ: reflect.TypeOf(TypeWrapper[struct {
+				F TestInvalidUnion2 `ssz-type:"union"`
+			}, TestInvalidUnion2]{}),
+			expectedError: "GetDescriptorType did not return a reflect.Type",
+		},
+		{
+			name: "invalid union type 4",
+			typ: reflect.TypeOf(TypeWrapper[struct {
+				F TestInvalidUnion3 `ssz-type:"union"`
+			}, TestInvalidUnion3]{}),
+			expectedError: "failed to extract union variant info",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := ds.typeCache.GetTypeDescriptor(test.typ, nil, nil, nil)
+			if err == nil {
+				t.Errorf("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), test.expectedError) {
+				t.Errorf("expected error %q, got %q", test.expectedError, err.Error())
+			}
+		})
+	}
+}
+
+type TestInvalidTypeWrapper1 struct{}
+
+func (t *TestInvalidTypeWrapper1) GetDescriptorType() {}
+
+type TestInvalidTypeWrapper2 struct{}
+
+func (t *TestInvalidTypeWrapper2) GetDescriptorType() uint64 {
+	return 0
+}
+
+// Test types with invalid TypeWrapper method
+func TestTypeCache_InvalidTypeWrapperTypes(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	tests := []struct {
+		name          string
+		typ           reflect.Type
+		expectedError string
+	}{
+		{
+			name: "invalid type wrapper type 1",
+			typ: reflect.TypeOf(TypeWrapper[struct {
+				F struct{} `ssz-type:"wrapper"`
+			}, struct{}]{}),
+			expectedError: "GetDescriptorType method not found on type",
+		},
+		{
+			name: "invalid type wrapper type 2",
+			typ: reflect.TypeOf(TypeWrapper[struct {
+				F TestInvalidTypeWrapper1 `ssz-type:"wrapper"`
+			}, TestInvalidTypeWrapper1]{}),
+			expectedError: "GetDescriptorType returned no results",
+		},
+		{
+			name: "invalid type wrapper type 3",
+			typ: reflect.TypeOf(TypeWrapper[struct {
+				F TestInvalidTypeWrapper2 `ssz-type:"wrapper"`
+			}, TestInvalidTypeWrapper2]{}),
+			expectedError: "GetDescriptorType did not return a reflect.Type",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := ds.typeCache.GetTypeDescriptor(test.typ, nil, nil, nil)
+			if err == nil {
+				t.Errorf("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), test.expectedError) {
+				t.Errorf("expected error %q, got %q", test.expectedError, err.Error())
+			}
+		})
 	}
 }

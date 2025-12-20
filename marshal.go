@@ -56,7 +56,7 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 	}
 
 	if d.Verbose {
-		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, isFastsszMarshaler, hasDynamicSize)
+		d.LogCb("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, isFastsszMarshaler, hasDynamicSize)
 	}
 
 	if useFastSsz {
@@ -188,14 +188,11 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 
 func (d *DynSsz) marshalTypeWrapper(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
 	if d.Verbose {
-		fmt.Printf("%smarshalTypeWrapper: %s\n", strings.Repeat(" ", idt), sourceType.Type.Name())
+		d.LogCb("%smarshalTypeWrapper: %s\n", strings.Repeat(" ", idt), sourceType.Type.Name())
 	}
 
 	// Extract the Data field from the TypeWrapper
 	dataField := sourceValue.Field(0)
-	if !dataField.IsValid() {
-		return nil, fmt.Errorf("TypeWrapper missing 'Data' field")
-	}
 
 	// Marshal the wrapped value using its type descriptor
 	return d.marshalType(sourceType.ElemDesc, dataField, buf, idt+2)
@@ -553,14 +550,7 @@ func (d *DynSsz) marshalDynamicList(sourceType *TypeDescriptor, sourceValue refl
 //   - error: An error if encoding fails or bitlist exceeds size constraints
 
 func (d *DynSsz) marshalBitlist(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte) ([]byte, error) {
-	var bytes []byte
-	if sourceType.GoTypeFlags&GoTypeFlagIsString != 0 {
-		bytes = []byte(sourceValue.String())
-	} else if sourceType.GoTypeFlags&GoTypeFlagIsByteArray != 0 {
-		bytes = sourceValue.Bytes()
-	} else {
-		return nil, fmt.Errorf("bitlist type can only be represented by byte slices or arrays, got %v", sourceType.Kind)
-	}
+	bytes := sourceValue.Bytes()
 
 	// check if last byte contains termination bit
 	if len(bytes) == 0 {

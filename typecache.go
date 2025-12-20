@@ -268,10 +268,11 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 			sszType = SszUint256Type
 		case t.PkgPath() == "github.com/prysmaticlabs/go-bitfield" && t.Name() == "Bitlist":
 			sszType = SszBitlistType
+		case t.PkgPath() == "github.com/OffchainLabs/go-bitfield" && t.Name() == "Bitlist":
+			sszType = SszBitlistType
 		case t.PkgPath() == "github.com/pk910/dynamic-ssz" && strings.HasPrefix(t.Name(), "CompatibleUnion["):
 			sszType = SszCompatibleUnionType
-		}
-		if t.PkgPath() == typeWrapperType.PkgPath() && strings.HasPrefix(t.Name(), "TypeWrapper[") {
+		case t.PkgPath() == "github.com/pk910/dynamic-ssz" && strings.HasPrefix(t.Name(), "TypeWrapper["):
 			sszType = SszTypeWrapperType
 		}
 	}
@@ -446,8 +447,8 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		}
 	}
 
-	if desc.SszTypeFlags&SszTypeFlagHasBitSize != 0 && desc.SszType != SszBitvectorType {
-		return nil, fmt.Errorf("bit size tag is only allowed for bitvector types, got %v", desc.SszType)
+	if desc.SszTypeFlags&SszTypeFlagHasBitSize != 0 && (desc.SszType != SszBitvectorType && desc.SszType != SszBitlistType) {
+		return nil, fmt.Errorf("bit size tag is only allowed for bitvector or bitlist types, got %v", desc.SszType)
 	}
 
 	if desc.SszTypeFlags&SszTypeFlagHasDynamicSize == 0 && tc.dynssz.getFastsszConvertCompatibility(t) {
@@ -625,6 +626,7 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 	// Check for progressive container detection
 	hasAnyIndexTag := false
 	fieldIndices := make(map[uint16]bool)
+	sszIndexes := make([]*uint16, t.NumField())
 
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
@@ -639,6 +641,7 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 		}
 
 		if sszIndex != nil {
+			sszIndexes[i] = sszIndex
 			fieldDesc.SszIndex = *sszIndex
 			hasAnyIndexTag = true
 			if fieldIndices[*sszIndex] {
@@ -695,12 +698,7 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 		// and validate they are in increasing order
 		for i := 0; i < len(desc.ContainerDesc.Fields); i++ {
 			field := &desc.ContainerDesc.Fields[i]
-			structField := t.Field(i)
-			if sszIndex, err := tc.dynssz.getSszIndexTag(&structField); err != nil {
-				return err
-			} else if sszIndex != nil {
-				field.SszIndex = *sszIndex
-			} else {
+			if sszIndex := sszIndexes[i]; sszIndex == nil {
 				return fmt.Errorf("progressive container field %s missing ssz-index tag", field.Name)
 			}
 		}
@@ -879,8 +877,13 @@ func (tc *TypeCache) buildListDescriptor(desc *TypeDescriptor, t reflect.Type, s
 	desc.ElemDesc = elemDesc
 	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
 
-	if (desc.SszType == SszBitlistType || desc.SszType == SszProgressiveBitlistType) && desc.ElemDesc.Kind != reflect.Uint8 {
-		return fmt.Errorf("bitlist ssz type can only be represented by byte slices or arrays, got %v", desc.ElemDesc.Kind.String())
+	if desc.SszType == SszBitlistType || desc.SszType == SszProgressiveBitlistType {
+		if desc.Kind != reflect.Slice {
+			return fmt.Errorf("bitlist ssz type can only be represented by byte slices, got %v", desc.Kind.String())
+		}
+		if desc.ElemDesc.Kind != reflect.Uint8 {
+			return fmt.Errorf("bitlist ssz type can only be represented by byte slices, got []%v", desc.ElemDesc.Kind.String())
+		}
 	}
 
 	if len(sizeHints) > 0 && sizeHints[0].Size > 0 && !sizeHints[0].Dynamic {

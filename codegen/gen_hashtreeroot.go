@@ -5,6 +5,7 @@
 package codegen
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"reflect"
 	"slices"
@@ -26,11 +27,14 @@ import (
 //   - usedDynSpecs: Flag tracking whether generated code uses dynamic SSZ functionality
 //   - valVarCounter: Counter for generating unique variable names during code generation
 type hashTreeRootContext struct {
-	appendCode    func(indent int, code string, args ...any)
-	typePrinter   *TypePrinter
-	options       *CodeGeneratorOptions
-	usedDynSpecs  bool
-	valVarCounter int
+	appendCode     func(indent int, code string, args ...any)
+	appendExprCode func(indent int, code string, args ...any)
+	typePrinter    *TypePrinter
+	options        *CodeGeneratorOptions
+	usedDynSpecs   bool
+	valVarCounter  int
+	exprVarCounter int
+	exprVarMap     map[[32]byte]string
 }
 
 // generateHashTreeRoot generates hash tree root methods for a specific type.
@@ -55,6 +59,7 @@ type hashTreeRootContext struct {
 //   - error: An error if code generation fails
 func generateHashTreeRoot(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
 	codeBuf := strings.Builder{}
+	exprCodeBuf := strings.Builder{}
 	ctx := &hashTreeRootContext{
 		appendCode: func(indent int, code string, args ...any) {
 			if len(args) > 0 {
@@ -62,8 +67,15 @@ func generateHashTreeRoot(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *stri
 			}
 			codeBuf.WriteString(indentStr(code, indent))
 		},
+		appendExprCode: func(indent int, code string, args ...any) {
+			if len(args) > 0 {
+				code = fmt.Sprintf(code, args...)
+			}
+			exprCodeBuf.WriteString(indentStr(code, indent))
+		},
 		typePrinter: typePrinter,
 		options:     options,
+		exprVarMap:  make(map[[32]byte]string),
 	}
 
 	// Generate main function signature
@@ -99,6 +111,7 @@ func generateHashTreeRoot(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *stri
 	if genStaticFn {
 		if !ctx.usedDynSpecs {
 			codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootWith(hh sszutils.HashWalker) error {\n", typeName))
+			codeBuilder.WriteString(exprCodeBuf.String())
 			codeBuilder.WriteString(codeBuf.String())
 			codeBuilder.WriteString("\treturn nil\n")
 			codeBuilder.WriteString("}\n\n")
@@ -128,6 +141,7 @@ func generateHashTreeRoot(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *stri
 	if genDynamicFn {
 		if ctx.usedDynSpecs {
 			codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName))
+			codeBuilder.WriteString(exprCodeBuf.String())
 			codeBuilder.WriteString(codeBuf.String())
 			codeBuilder.WriteString("\treturn nil\n")
 			codeBuilder.WriteString("}\n\n")
@@ -179,6 +193,29 @@ func (ctx *hashTreeRootContext) getPtrPrefix(desc *dynssz.TypeDescriptor, prefix
 		return prefix
 	}
 	return ""
+}
+
+// getExprVar generates a variable name for cached limit expression calculations.
+func (ctx *hashTreeRootContext) getExprVar(expr string, defaultValue uint64) string {
+	if expr == "" {
+		return fmt.Sprintf("%v", defaultValue)
+	}
+
+	exprKey := sha256.Sum256([]byte(fmt.Sprintf("%s\n%v", expr, defaultValue)))
+	if exprVar, ok := ctx.exprVarMap[exprKey]; ok {
+		return exprVar
+	}
+
+	exprVar := fmt.Sprintf("expr%d", ctx.exprVarCounter)
+	ctx.exprVarCounter++
+
+	ctx.appendExprCode(1, "%s, err := sszutils.ResolveSpecValueWithDefault(ds, \"%s\", %d)\n", exprVar, expr, defaultValue)
+	ctx.appendExprCode(1, "if err != nil {\n\treturn err\n}\n")
+	ctx.usedDynSpecs = true
+
+	ctx.exprVarMap[exprKey] = exprVar
+
+	return exprVar
 }
 
 // hashType generates hash tree root code for any SSZ type, delegating to specific hashers.
@@ -412,28 +449,27 @@ func (ctx *hashTreeRootContext) hashVector(desc *dynssz.TypeDescriptor, varName 
 	limitVar := ""
 	bitlimitVar := ""
 	if sizeExpression != nil {
-		ctx.usedDynSpecs = true
+		defaultValue := uint64(desc.Len)
 		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
-			ctx.appendCode(indent, "hasLimit, bitlimit, err := ds.ResolveSpecValue(\"%s\")\n", *sizeExpression)
-			ctx.appendCode(indent, "if err != nil {\n\treturn err\n}\n")
 			if desc.BitSize > 0 {
-				ctx.appendCode(indent, "if !hasLimit {\n\tbitlimit = %d\n}\n", desc.BitSize)
+				defaultValue = uint64(desc.BitSize)
 			} else {
-				ctx.appendCode(indent, "if !hasLimit {\n\tbitlimit = %d\n}\n", desc.Len*8)
+				defaultValue = uint64(desc.Len * 8)
 			}
-			ctx.appendCode(indent, "limit := (bitlimit+7)/8\n")
-			bitlimitVar = "int(bitlimit)"
-		} else {
-			ctx.appendCode(indent, "hasLimit, limit, err := ds.ResolveSpecValue(\"%s\")\n", *sizeExpression)
-			ctx.appendCode(indent, "if err != nil {\n\treturn err\n}\n")
-			ctx.appendCode(indent, "if !hasLimit {\n\tlimit = %d\n}\n", desc.Len)
 		}
 
-		limitVar = "int(limit)"
+		exprVar := ctx.getExprVar(*sizeExpression, defaultValue)
+
+		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
+			bitlimitVar = fmt.Sprintf("int(%s)", exprVar)
+			limitVar = fmt.Sprintf("int((%s+7)/8)", exprVar)
+		} else {
+			limitVar = fmt.Sprintf("int(%s)", exprVar)
+		}
 
 		if desc.Kind == reflect.Array {
 			// check if dynamic limit is greater than the length of the array
-			ctx.appendCode(indent, "if limit > %d {\n", desc.Len)
+			ctx.appendCode(indent, "if %s > %d {\n", limitVar, desc.Len)
 			ctx.appendCode(indent, "\treturn sszutils.ErrVectorLength\n")
 			ctx.appendCode(indent, "}\n")
 		}
@@ -551,18 +587,10 @@ func (ctx *hashTreeRootContext) hashList(desc *dynssz.TypeDescriptor, varName st
 	maxVar := ""
 
 	if maxExpression != nil {
-		ctx.usedDynSpecs = true
-		ctx.appendCode(indent, "hasMax, max, err := ds.ResolveSpecValue(\"%s\")\n", *maxExpression)
-		ctx.appendCode(indent, "if err != nil {\n")
-		ctx.appendCode(indent, "\treturn err\n")
-		ctx.appendCode(indent, "}\n")
+		exprVar := ctx.getExprVar(*maxExpression, desc.Limit)
+
 		hasMax = true
-		maxVar = "uint64(max)"
-		if desc.Limit > 0 {
-			ctx.appendCode(indent, "if !hasMax {\n")
-			ctx.appendCode(indent, "\tmax = %d\n", desc.Limit)
-			ctx.appendCode(indent, "}\n")
-		}
+		maxVar = exprVar
 	} else if desc.Limit > 0 {
 		maxVar = fmt.Sprintf("%d", desc.Limit)
 		hasMax = true
@@ -592,10 +620,10 @@ func (ctx *hashTreeRootContext) hashList(desc *dynssz.TypeDescriptor, varName st
 
 	// Handle byte slices
 	if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
-		ctx.appendCode(indent, "hh.PutBytes([]byte(%s))\n", varName)
+		ctx.appendCode(indent, "hh.AppendBytes32([]byte(%s))\n", varName)
 		itemSize = 1
 	} else if desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
-		ctx.appendCode(indent, "hh.PutBytes(%s[:])\n", varName)
+		ctx.appendCode(indent, "hh.AppendBytes32(%s[:])\n", varName)
 		itemSize = 1
 	} else {
 		if ctx.isPrimitive(desc.ElemDesc) {
@@ -649,29 +677,17 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *dynssz.TypeDescriptor, varName
 
 	maxVar := ""
 	if maxExpression != nil {
-		ctx.usedDynSpecs = true
-		ctx.appendCode(indent, "hasMax, max, err := ds.ResolveSpecValue(\"%s\")\n", *maxExpression)
-		ctx.appendCode(indent, "if err != nil {\n")
-		ctx.appendCode(indent, "\treturn err\n")
-		ctx.appendCode(indent, "}\n")
-		if desc.Limit > 0 {
-			ctx.appendCode(indent, "if !hasMax {\n")
-			ctx.appendCode(indent, "\tmax = %d\n", desc.Limit)
-			ctx.appendCode(indent, "}\n")
-		}
-		maxVar = "uint64(max)"
+		exprVar := ctx.getExprVar(*maxExpression, desc.Limit)
+
+		maxVar = exprVar
 	} else if desc.Limit > 0 {
 		maxVar = fmt.Sprintf("%d", desc.Limit)
 	}
 
 	ctx.appendCode(indent, "idx := hh.Index()\n")
-	ctx.appendCode(indent, "var size uint64\n")
-	ctx.appendCode(indent, "var bitlist []byte\n")
-	ctx.appendCode(indent, "hh.WithTemp(func(tmp []byte) []byte {\n")
-	ctx.appendCode(indent, "\ttmp, size = hasher.ParseBitlist(tmp[:0], %s[:])\n", varName)
-	ctx.appendCode(indent, "\tbitlist = tmp\n")
-	ctx.appendCode(indent, "\treturn tmp\n")
-	ctx.appendCode(indent, "})\n")
+
+	hasherAlias := ctx.typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
+	ctx.appendCode(indent, "bitlist, size := %s.ParseBitlistWithHasher(hh, %s[:])\n", hasherAlias, varName)
 
 	if maxVar != "" {
 		ctx.appendCode(indent, "if size > %s {\n", maxVar)
