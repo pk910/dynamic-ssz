@@ -75,7 +75,7 @@ func (d *DynSsz) unmarshalTypeReader(ctx *unmarshalReaderContext, targetType *Ty
 	}
 
 	if d.Verbose {
-		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), targetType.Type.Name(), targetType.Kind, useFastSsz, isFastsszUnmarshaler, hasDynamicSize)
+		d.LogCb("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), targetType.Type.Name(), targetType.Kind, useFastSsz, isFastsszUnmarshaler, hasDynamicSize)
 	}
 
 	if useDynamicReader {
@@ -239,14 +239,11 @@ func (d *DynSsz) unmarshalTypeReader(ctx *unmarshalReaderContext, targetType *Ty
 
 func (d *DynSsz) unmarshalTypeWrapperReader(ctx *unmarshalReaderContext, targetType *TypeDescriptor, targetValue reflect.Value, idt int) error {
 	if d.Verbose {
-		fmt.Printf("%sunmarshalTypeWrapper: %s\n", strings.Repeat(" ", idt), targetType.Type.Name())
+		d.LogCb("%sunmarshalTypeWrapper: %s\n", strings.Repeat(" ", idt), targetType.Type.Name())
 	}
 
 	// Get the Data field from the TypeWrapper
 	dataField := targetValue.Field(0)
-	if !dataField.IsValid() {
-		return fmt.Errorf("TypeWrapper missing 'Data' field")
-	}
 
 	// Unmarshal the wrapped value using its type descriptor
 	err := d.unmarshalTypeReader(ctx, targetType.ElemDesc, dataField, idt+2)
@@ -284,6 +281,8 @@ func (d *DynSsz) unmarshalContainerReader(ctx *unmarshalReaderContext, targetTyp
 	dynamicOffsets := defaultOffsetSlicePool.Get()
 	defer defaultOffsetSlicePool.Put(dynamicOffsets)
 
+	offset := 0
+
 	for i := 0; i < len(targetType.ContainerDesc.Fields); i++ {
 		field := targetType.ContainerDesc.Fields[i]
 
@@ -304,6 +303,8 @@ func (d *DynSsz) unmarshalContainerReader(ctx *unmarshalReaderContext, targetTyp
 			if consumedBytes != uint64(fieldSize) {
 				return fmt.Errorf("container field did not consume expected ssz range (consumed: %v, expected: %v)", consumedBytes, fieldSize)
 			}
+
+			offset += fieldSize
 		} else {
 			// dynamic size field
 			fieldSize = 4
@@ -314,16 +315,24 @@ func (d *DynSsz) unmarshalContainerReader(ctx *unmarshalReaderContext, targetTyp
 			}
 
 			dynamicOffsets = append(dynamicOffsets, int(fieldOffset))
+			offset += fieldSize
 		}
 	}
 
 	// finished parsing the static size fields, process dynamic fields
 	for i, field := range targetType.ContainerDesc.DynFields {
+		if dynamicOffsets[i] != offset {
+			return sszutils.ErrOffset
+		}
+
 		// Calculate field size from this offset to the next offset or EOF
 		var fieldSize uint64
 		hasKnownSize := false
 		if i+1 < dynamicFieldCount {
 			// Next field starts at next offset
+			if dynamicOffsets[i+1] < dynamicOffsets[i] {
+				return sszutils.ErrOffset
+			}
 			fieldSize = uint64(dynamicOffsets[i+1] - dynamicOffsets[i])
 			ctx.reader.PushLimit(fieldSize)
 			hasKnownSize = true
@@ -520,6 +529,9 @@ func (d *DynSsz) unmarshalDynamicVectorReader(ctx *unmarshalReaderContext, targe
 		hasKnownSize := false
 		if i < vectorLen-1 {
 			// Next field starts at next offset
+			if sliceOffsets[i+1] < sliceOffsets[i] {
+				return sszutils.ErrOffset
+			}
 			fieldSize = uint64(sliceOffsets[i+1] - sliceOffsets[i])
 			ctx.reader.PushLimit(fieldSize)
 			hasKnownSize = true
@@ -636,129 +648,50 @@ func (d *DynSsz) unmarshalListReader(ctx *unmarshalReaderContext, targetType *Ty
 	if targetType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
 		containerT = containerT.Elem()
 	}
-	isSlice := targetType.Kind == reflect.Slice
-	if !isSlice && targetType.Kind != reflect.Array {
+	if targetType.Kind != reflect.Slice {
 		return fmt.Errorf("unsupported list container kind %v", targetType.Kind)
 	}
 
 	// Allocate destination container.
-	// - knownSize: exact-sized slice
-	// - unknownSize: start empty slice, or zero array and fill incrementally
 	var out reflect.Value
-	if isSlice {
-		if knownSize {
-			// Optimization: avoid reflect.MakeSlice for common byte slices.
-			if targetType.GoTypeFlags&GoTypeFlagIsByteArray != 0 && elemDesc.Type.Kind() == reflect.Uint8 {
-				out = reflect.ValueOf(make([]byte, count))
-			} else {
-				out = reflect.MakeSlice(containerT, count, count)
-			}
+	if knownSize {
+		// Optimization: avoid reflect.MakeSlice for common byte slices.
+		if targetType.GoTypeFlags&GoTypeFlagIsByteArray != 0 && elemDesc.Type.Kind() == reflect.Uint8 {
+			out = reflect.ValueOf(make([]byte, count))
 		} else {
-			// Unknown size: start with len=0, small cap.
-			out = reflect.MakeSlice(containerT, 0, 16)
+			out = reflect.MakeSlice(containerT, count, count)
 		}
-
 	} else {
-		out = reflect.New(containerT).Elem()
-		if knownSize && count > out.Len() {
-			return sszutils.ErrListTooBig
-		}
+		// Unknown size: start with len=0, small cap.
+		out = reflect.MakeSlice(containerT, 0, 16)
 	}
 
-	// --- Fast paths for string / []byte / [N]byte ---
-	if targetType.GoTypeFlags&GoTypeFlagIsString != 0 {
-		// Read the entire remaining stream.
-		// If you have a bounded reader, this stays safe even for unknownSize.
-		var b strings.Builder
-		for {
-			n, err := io.ReadFull(ctx.reader, ctx.buffer)
+	// --- Fast path for []byte ---
+	if targetType.GoTypeFlags&GoTypeFlagIsByteArray != 0 && elemDesc.Type.Kind() == reflect.Uint8 {
+		// Byte list shortcut: out is []byte (either exact-sized if known, or empty if unknown)
+		if knownSize {
+			n, err := io.ReadFull(ctx.reader, out.Bytes())
 			if err != nil {
-				if err == io.EOF {
-					break
-				}
-				// io.ReadFull returns ErrUnexpectedEOF when it reads some bytes then hits EOF;
-				// we still want to write those bytes.
-				if err == io.ErrUnexpectedEOF {
-					b.Write(ctx.buffer[:n])
-					break
-				}
 				return err
 			}
-			b.Write(ctx.buffer[:n])
-		}
-		out.SetString(b.String())
-		targetValue.Set(out)
-		return nil
-	}
-
-	if targetType.GoTypeFlags&GoTypeFlagIsByteArray != 0 && elemDesc.Type.Kind() == reflect.Uint8 {
-		// Byte list/array shortcut.
-		if isSlice {
-			// out is []byte (either exact-sized if known, or empty if unknown)
-			if knownSize {
-				n, err := io.ReadFull(ctx.reader, out.Bytes())
-				if err != nil {
-					return err
-				}
-				if n != len(out.Bytes()) {
-					return sszutils.ErrUnexpectedEOF
-				}
-			} else {
-				// Unknown size: append chunks.
-				for {
-					n, err := io.ReadFull(ctx.reader, ctx.buffer)
-					if err != nil {
-						if err == io.EOF {
-							break
-						}
-						if err == io.ErrUnexpectedEOF {
-							out = reflect.AppendSlice(out, reflect.ValueOf(ctx.buffer[:n]))
-							break
-						}
-						return err
-					}
-					out = reflect.AppendSlice(out, reflect.ValueOf(ctx.buffer[:n]))
-				}
+			if n != len(out.Bytes()) {
+				return sszutils.ErrUnexpectedEOF
 			}
-
 		} else {
-			dst := out.Slice(0, out.Len()).Bytes()
-			if knownSize {
-				// Only fill the first "count" bytes (count == sszLen for byte lists).
-				if count > len(dst) {
-					return sszutils.ErrListTooBig
-				}
-				n, err := io.ReadFull(ctx.reader, dst[:count])
+			// Unknown size: append chunks.
+			for {
+				n, err := io.ReadFull(ctx.reader, ctx.buffer)
 				if err != nil {
+					if err == io.EOF {
+						break
+					}
+					if err == io.ErrUnexpectedEOF {
+						out = reflect.AppendSlice(out, reflect.ValueOf(ctx.buffer[:n]))
+						break
+					}
 					return err
 				}
-				if n != count {
-					return sszutils.ErrUnexpectedEOF
-				}
-			} else {
-				// Unknown size: fill incrementally, no overflow.
-				offset := 0
-				for {
-					n, err := io.ReadFull(ctx.reader, ctx.buffer)
-					if err != nil {
-						if err == io.EOF {
-							break
-						}
-						if err == io.ErrUnexpectedEOF {
-							if offset+n > len(dst) {
-								return sszutils.ErrListTooBig
-							}
-							copy(dst[offset:offset+n], ctx.buffer[:n])
-							break
-						}
-						return err
-					}
-					if offset+n > len(dst) {
-						return sszutils.ErrListTooBig
-					}
-					copy(dst[offset:offset+n], ctx.buffer[:n])
-					offset += n
-				}
+				out = reflect.AppendSlice(out, reflect.ValueOf(ctx.buffer[:n]))
 			}
 		}
 
@@ -805,72 +738,31 @@ func (d *DynSsz) unmarshalListReader(ctx *unmarshalReaderContext, targetType *Ty
 	}
 
 	// Unknown-size: decode until EOF.
-	i := 0
 	for {
-		// Ensure capacity / bounds.
+		// Create a new element value to decode into, then append.
 		var itemVal reflect.Value
-		if isSlice {
-			// Create a new element value to decode into, then append.
-			var elem reflect.Value
-			if elemDesc.GoTypeFlags&GoTypeFlagIsPointer != 0 {
-				elem = reflect.New(elemDesc.Type.Elem())
-				itemVal = elem
-			} else {
-				elem = reflect.New(elemDesc.Type).Elem()
-				itemVal = elem
-			}
-
-			consumed, err := decodeOne(itemVal)
-			if err != nil {
-				if consumed == 0 {
-					break // clean end-of-list
-				}
-				return err
-			}
-			if consumed != elemSize {
-				return fmt.Errorf(
-					"list item did not consume expected ssz range (consumed: %v, expected: %v)",
-					consumed, elemSize,
-				)
-			}
-
-			// Append decoded element.
-			if elemDesc.GoTypeFlags&GoTypeFlagIsPointer != 0 {
-				out = reflect.Append(out, itemVal)
-			} else {
-				out = reflect.Append(out, itemVal)
-			}
-
+		if elemDesc.GoTypeFlags&GoTypeFlagIsPointer != 0 {
+			itemVal = reflect.New(elemDesc.Type.Elem())
 		} else {
-			// Arrays: decode into out[i] until EOF, but do not overflow.
-			if i >= out.Len() {
-				return sszutils.ErrListTooBig
-			}
-
-			slot := out.Index(i)
-			if elemDesc.GoTypeFlags&GoTypeFlagIsPointer != 0 {
-				itemVal = reflect.New(elemDesc.Type.Elem())
-				slot.Set(itemVal)
-			} else {
-				itemVal = slot
-			}
-
-			consumed, err := decodeOne(itemVal)
-			if err != nil {
-				if consumed == 0 {
-					break // clean end-of-list
-				}
-				return err
-			}
-			if consumed != elemSize {
-				return fmt.Errorf(
-					"list item did not consume expected ssz range (consumed: %v, expected: %v)",
-					consumed, elemSize,
-				)
-			}
-
-			i++
+			itemVal = reflect.New(elemDesc.Type).Elem()
 		}
+
+		consumed, err := decodeOne(itemVal)
+		if err != nil {
+			if consumed == 0 {
+				break // clean end-of-list
+			}
+			return err
+		}
+		if consumed != elemSize {
+			return fmt.Errorf(
+				"list item did not consume expected ssz range (consumed: %v, expected: %v)",
+				consumed, elemSize,
+			)
+		}
+
+		// Append decoded element.
+		out = reflect.Append(out, itemVal)
 	}
 
 	targetValue.Set(out)
@@ -902,7 +794,7 @@ func (d *DynSsz) unmarshalListReader(ctx *unmarshalReaderContext, targetType *Ty
 func (d *DynSsz) unmarshalDynamicListReader(ctx *unmarshalReaderContext, targetType *TypeDescriptor, targetValue reflect.Value, idt int) error {
 	// derive number of items from first item offset
 	firstOffset, err := sszutils.ReadOffsetReader(ctx.reader)
-	if err != nil && err != sszutils.ErrUnexpectedEOF {
+	if err != nil {
 		return err
 	}
 	sliceLen := int(firstOffset / 4)
@@ -956,6 +848,9 @@ func (d *DynSsz) unmarshalDynamicListReader(ctx *unmarshalReaderContext, targetT
 			if i < sliceLen-1 {
 				knownSize = true
 				itemSize = sliceOffsets[i+1] - sliceOffsets[i]
+				if itemSize < 0 {
+					return sszutils.ErrOffset
+				}
 				ctx.reader.PushLimit(uint64(itemSize))
 			}
 
@@ -1003,24 +898,16 @@ func (d *DynSsz) unmarshalBitlistReader(ctx *unmarshalReaderContext, targetType 
 		fieldT = fieldT.Elem()
 	}
 
-	isSlice := targetType.Kind == reflect.Slice
-	if !isSlice && targetType.Kind != reflect.Array {
-		return fmt.Errorf("bitlist must be []byte or [N]byte, got kind %v", targetType.Kind)
+	if targetType.Kind != reflect.Slice {
+		return fmt.Errorf("bitlist must be []byte, got kind %v", targetType.Kind)
 	}
 
 	// Allocate destination container.
 	var out reflect.Value
-	if isSlice {
-		if knownSize {
-			out = reflect.ValueOf(make([]byte, int(sszLen)))
-		} else {
-			out = reflect.MakeSlice(fieldT, 0, 16)
-		}
+	if knownSize {
+		out = reflect.ValueOf(make([]byte, int(sszLen)))
 	} else {
-		out = reflect.New(fieldT).Elem()
-		if knownSize && int(sszLen) > out.Len() {
-			return sszutils.ErrListTooBig
-		}
+		out = reflect.MakeSlice(fieldT, 0, 16)
 	}
 
 	// Termination rule: last byte must be non-zero.
@@ -1037,13 +924,7 @@ func (d *DynSsz) unmarshalBitlistReader(ctx *unmarshalReaderContext, targetType 
 			return sszutils.ErrBitlistNotTerminated
 		}
 
-		var dst []byte
-		if isSlice {
-			dst = out.Bytes()
-		} else {
-			dst = out.Slice(0, int(sszLen)).Bytes()
-		}
-
+		dst := out.Bytes()
 		n, err := io.ReadFull(ctx.reader, dst)
 		if err != nil {
 			return err
@@ -1060,82 +941,39 @@ func (d *DynSsz) unmarshalBitlistReader(ctx *unmarshalReaderContext, targetType 
 	}
 
 	// ---- Unknown total length: read until EOF ----
-	if isSlice {
-		last := byte(0)
-		total := 0
+	last := byte(0)
+	total := 0
 
-		for {
-			n, err := io.ReadFull(ctx.reader, ctx.buffer)
-			if err != nil {
-				if err == io.EOF {
-					break
-				}
-				if err == io.ErrUnexpectedEOF {
-					if n > 0 {
-						last = ctx.buffer[n-1]
-						out = reflect.AppendSlice(out, reflect.ValueOf(ctx.buffer[:n]))
-						total += n
-					}
-					break
-				}
-				return err
+	for {
+		n, err := io.ReadFull(ctx.reader, ctx.buffer)
+		if err != nil {
+			if err == io.EOF {
+				break
 			}
-
-			if n > 0 {
-				last = ctx.buffer[n-1]
-				out = reflect.AppendSlice(out, reflect.ValueOf(ctx.buffer[:n]))
-				total += n
+			if err == io.ErrUnexpectedEOF {
+				if n > 0 {
+					last = ctx.buffer[n-1]
+					out = reflect.AppendSlice(out, reflect.ValueOf(ctx.buffer[:n]))
+					total += n
+				}
+				break
 			}
-		}
-
-		if err := validateTerminated(total, last); err != nil {
 			return err
 		}
 
-		targetValue.Set(out)
-		return nil
-	} else {
-		dst := out.Slice(0, out.Len()).Bytes()
-		offset := 0
-		last := byte(0)
-
-		for {
-			n, err := io.ReadFull(ctx.reader, ctx.buffer)
-			if err != nil {
-				if err == io.EOF {
-					break
-				}
-				if err == io.ErrUnexpectedEOF {
-					if n > 0 {
-						if offset+n > len(dst) {
-							return sszutils.ErrListTooBig
-						}
-						copy(dst[offset:offset+n], ctx.buffer[:n])
-						offset += n
-						last = ctx.buffer[n-1]
-					}
-					break
-				}
-				return err
-			}
-
-			if n > 0 {
-				if offset+n > len(dst) {
-					return sszutils.ErrListTooBig
-				}
-				copy(dst[offset:offset+n], ctx.buffer[:n])
-				offset += n
-				last = ctx.buffer[n-1]
-			}
+		if n > 0 {
+			last = ctx.buffer[n-1]
+			out = reflect.AppendSlice(out, reflect.ValueOf(ctx.buffer[:n]))
+			total += n
 		}
-
-		if err := validateTerminated(offset, last); err != nil {
-			return err
-		}
-
-		targetValue.Set(out)
-		return nil
 	}
+
+	if err := validateTerminated(total, last); err != nil {
+		return err
+	}
+
+	targetValue.Set(out)
+	return nil
 }
 
 // unmarshalCompatibleUnionReader decodes SSZ-encoded data into a CompatibleUnion.
@@ -1158,10 +996,7 @@ func (d *DynSsz) unmarshalCompatibleUnionReader(ctx *unmarshalReaderContext, tar
 	// Read the variant byte
 	var variantBytes [1]byte
 	n, err := io.ReadFull(ctx.reader, variantBytes[:])
-	if err != nil {
-		return err
-	}
-	if n != 1 {
+	if err != nil || n != 1 {
 		return sszutils.ErrUnexpectedEOF
 	}
 	variant := variantBytes[0]

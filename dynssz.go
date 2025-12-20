@@ -536,6 +536,14 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int64) error {
 		return err
 	}
 
+	if targetTypeDesc.GoTypeFlags&GoTypeFlagIsPointer == 0 {
+		return fmt.Errorf("target must be a pointer")
+	}
+
+	if targetValue.IsNil() {
+		return fmt.Errorf("target pointer must not be nil")
+	}
+
 	// Create reader context with limitedReader
 	ctx := newUnmarshalReaderContext(r, d.BufferSize)
 

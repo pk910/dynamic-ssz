@@ -42,6 +42,9 @@ func UnmarshalBool(src []byte) bool {
 func ReadOffsetReader(reader io.Reader) (uint64, error) {
 	var buf [4]byte
 	if read, err := io.ReadFull(reader, buf[:]); err != nil || read != 4 {
+		if read == 0 {
+			return 0, io.EOF
+		}
 		return 0, ErrUnexpectedEOF
 	}
 	return uint64(binary.LittleEndian.Uint32(buf[:])), nil

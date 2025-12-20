@@ -6,6 +6,7 @@ package dynssz_test
 
 import (
 	"fmt"
+	"io"
 	"time"
 
 	dynssz "github.com/pk910/dynamic-ssz"
@@ -1079,4 +1080,224 @@ func (c *TestContainerWithSizerError) MarshalSSZTo(buf []byte) ([]byte, error) {
 
 func (c *TestContainerWithSizerError) SizeSSZ() int {
 	return 8
+}
+
+// streamingTestMatrix contains test cases for streaming marshal/unmarshal
+var streamingTestMatrix = []struct {
+	name    string
+	payload any
+	ssz     []byte
+}{
+	// DynamicWriter tests
+	{
+		"dynamic_writer_container",
+		struct {
+			Data TestContainerWithDynamicWriter
+		}{TestContainerWithDynamicWriter{Field0: 0x123456789ABCDEF0, Field1: 0x12345678}},
+		fromHex("0xf0debc9a7856341278563412"),
+	},
+
+	// DynamicReader tests
+	{
+		"dynamic_reader_container",
+		struct {
+			Data TestContainerWithDynamicReader
+		}{TestContainerWithDynamicReader{Field0: 0x123456789ABCDEF0, Field1: 0x12345678}},
+		fromHex("0xf0debc9a7856341278563412"),
+	},
+
+	// time.Time tests
+	{
+		"time_field",
+		struct {
+			Timestamp time.Time
+		}{time.Unix(1718236800, 0)},
+		fromHex("0x80366a6600000000"),
+	},
+	{
+		"time_field_zero",
+		struct {
+			Timestamp time.Time
+		}{time.Unix(0, 0)},
+		fromHex("0x0000000000000000"),
+	},
+
+	// String as list tests
+	{
+		"string_list_empty",
+		struct {
+			Data string `ssz-max:"100"`
+		}{""},
+		fromHex("0x04000000"),
+	},
+	{
+		"string_list_short",
+		struct {
+			Data string `ssz-max:"100"`
+		}{"ab"},
+		fromHex("0x040000006162"),
+	},
+	{
+		"string_list_unicode",
+		struct {
+			Data string `ssz-max:"100"`
+		}{"日本"},
+		fromHex("0x04000000e697a5e69cac"),
+	},
+
+	// Bitlist edge cases
+	{
+		"bitlist_single_termination_bit",
+		struct {
+			Bits []byte `ssz-type:"bitlist" ssz-max:"100"`
+		}{[]byte{0x01}}, // just termination bit
+		fromHex("0x0400000001"),
+	},
+	{
+		"bitlist_with_data",
+		struct {
+			Bits []byte `ssz-type:"bitlist" ssz-max:"100"`
+		}{[]byte{0xFF, 0x03}}, // 10 bits set + termination
+		fromHex("0x04000000ff03"),
+	},
+
+	// Dynamic vector with short slice (padding needed)
+	{
+		"dynamic_vector_padding",
+		struct {
+			Data []*slug_DynStruct1 `ssz-size:"3"`
+		}{[]*slug_DynStruct1{{true, []uint8{1}}}},
+		// container offset (4) + 3 item offsets (12,18,23) + item0 (6 bytes) + item1 (5 bytes) + item2 (5 bytes)
+		fromHex("0x040000000c000000120000001700000001050000000100050000000005000000"),
+	},
+
+	// List with nil pointer elements
+	{
+		"list_with_nil_pointers",
+		struct {
+			Data []*slug_StaticStruct1 `ssz-max:"10"`
+		}{[]*slug_StaticStruct1{nil, nil}},
+		// offset (4 bytes) + 2 items * 4 bytes (bool=0 + 3 byte array=000000)
+		fromHex("0x040000000000000000000000"),
+	},
+
+	// Static vector with various element counts
+	{
+		"static_vector_elements",
+		struct {
+			Data [3]uint64
+		}{[3]uint64{1, 2, 3}},
+		fromHex("0x010000000000000002000000000000000300000000000000"),
+	},
+
+	// Dynamic list with multiple items
+	{
+		"dynamic_list_multi",
+		struct {
+			Data [][]uint8 `ssz-max:"10,10"`
+		}{[][]uint8{{1, 2}, {3, 4, 5}}},
+		// container offset (4) + 2 offsets (8,10) + item0 (0102) + item1 (030405)
+		fromHex("0x04000000080000000a0000000102030405"),
+	},
+
+	// Byte slice vector
+	{
+		"byte_vector_slice",
+		struct {
+			Data []byte `ssz-size:"8"`
+		}{[]byte{1, 2, 3, 4, 5, 6, 7, 8}},
+		fromHex("0x0102030405060708"),
+	},
+
+	// Byte vector short (padding)
+	{
+		"byte_vector_short",
+		struct {
+			Data []byte `ssz-size:"8"`
+		}{[]byte{1, 2, 3}},
+		fromHex("0x0102030000000000"),
+	},
+
+	// String vector (fixed size)
+	{
+		"string_vector_fixed",
+		struct {
+			Data string `ssz-size:"8"`
+		}{"hello"},
+		fromHex("0x68656c6c6f000000"),
+	},
+
+	// Non-byte element vector short
+	{
+		"uint32_vector_short",
+		struct {
+			Data []uint32 `ssz-size:"4"`
+		}{[]uint32{1, 2}},
+		fromHex("0x01000000020000000000000000000000"),
+	},
+}
+
+// TestContainerWithDynamicWriter implements DynamicWriter interface for testing
+type TestContainerWithDynamicWriter struct {
+	Field0 uint64
+	Field1 uint32
+}
+
+var _ sszutils.DynamicWriter = (*TestContainerWithDynamicWriter)(nil)
+var _ sszutils.DynamicSizer = (*TestContainerWithDynamicWriter)(nil)
+
+func (c *TestContainerWithDynamicWriter) MarshalSSZDynWriter(_ sszutils.DynamicSpecs, w io.Writer) error {
+	buf := make([]byte, 12)
+	sszutils.MarshalUint64(buf[:0], c.Field0)
+	sszutils.MarshalUint32(buf[8:8], c.Field1)
+	_, err := w.Write(buf)
+	return err
+}
+
+func (c *TestContainerWithDynamicWriter) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
+	return 12
+}
+
+// TestContainerWithDynamicWriterError implements DynamicWriter that returns errors
+type TestContainerWithDynamicWriterError struct {
+	Field0 uint64
+}
+
+var _ sszutils.DynamicWriter = (*TestContainerWithDynamicWriterError)(nil)
+
+func (c *TestContainerWithDynamicWriterError) MarshalSSZDynWriter(_ sszutils.DynamicSpecs, w io.Writer) error {
+	return io.ErrClosedPipe
+}
+
+func (c *TestContainerWithDynamicWriterError) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
+	return 8
+}
+
+// TestContainerWithDynamicReader implements DynamicReader interface for testing
+type TestContainerWithDynamicReader struct {
+	Field0 uint64
+	Field1 uint32
+}
+
+var _ sszutils.DynamicReader = (*TestContainerWithDynamicReader)(nil)
+
+func (c *TestContainerWithDynamicReader) UnmarshalSSZDynReader(_ sszutils.DynamicSpecs, r io.Reader) error {
+	buf := make([]byte, 12)
+	if _, err := io.ReadFull(r, buf); err != nil {
+		return err
+	}
+	c.Field0 = sszutils.UnmarshallUint64(buf[:8])
+	c.Field1 = sszutils.UnmarshallUint32(buf[8:12])
+	return nil
+}
+
+// TestContainerWithDynamicReaderError implements DynamicReader that returns errors
+type TestContainerWithDynamicReaderError struct {
+	Field0 uint64
+}
+
+var _ sszutils.DynamicReader = (*TestContainerWithDynamicReaderError)(nil)
+
+func (c *TestContainerWithDynamicReaderError) UnmarshalSSZDynReader(_ sszutils.DynamicSpecs, r io.Reader) error {
+	return io.ErrClosedPipe
 }

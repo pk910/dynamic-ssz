@@ -6,8 +6,10 @@ package dynssz_test
 
 import (
 	"bytes"
+	"io"
 	"reflect"
 	"testing"
+	"time"
 
 	. "github.com/pk910/dynamic-ssz"
 )
@@ -555,6 +557,14 @@ func TestMarshalErrors(t *testing.T) {
 			} else if !contains(err.Error(), tc.expectedErr) {
 				t.Errorf("expected error containing '%s', but got: %v", tc.expectedErr, err)
 			}
+
+			memWriter := bytes.NewBuffer(nil)
+			err = dynssz.MarshalSSZWriter(tc.input, memWriter)
+			if err == nil {
+				t.Errorf("expected error containing '%s', but got no error", tc.expectedErr)
+			} else if !contains(err.Error(), tc.expectedErr) {
+				t.Errorf("expected error containing '%s', but got: %v", tc.expectedErr, err)
+			}
 		})
 	}
 }
@@ -1025,5 +1035,364 @@ func TestCustomFallbackMarshal(t *testing.T) {
 	_, err = dynssz.MarshalSSZ(&TestContainer{})
 	if err == nil {
 		t.Fatalf("Expected error, got nil")
+	}
+}
+
+func TestMarshalWriterStreaming(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	for _, test := range streamingTestMatrix {
+		t.Run(test.name, func(t *testing.T) {
+			memWriter := bytes.NewBuffer(nil)
+			err := dynssz.MarshalSSZWriter(test.payload, memWriter)
+
+			if err != nil {
+				t.Errorf("test %v error: %v", test.name, err)
+			} else if !bytes.Equal(memWriter.Bytes(), test.ssz) {
+				t.Errorf("test %v failed: got 0x%x, wanted 0x%x", test.name, memWriter.Bytes(), test.ssz)
+			}
+		})
+	}
+}
+
+func TestMarshalWriterWithDefaultBufferSize(t *testing.T) {
+	// Test with BufferSize = 0 to trigger default buffer size path
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+	dynssz.BufferSize = 0 // Should use default
+
+	input := struct {
+		Field0 uint64
+		Field1 []uint8 `ssz-max:"100"`
+	}{123, []uint8{1, 2, 3}}
+
+	memWriter := bytes.NewBuffer(nil)
+	err := dynssz.MarshalSSZWriter(input, memWriter)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestMarshalWriterDynamicWriterError(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	input := struct {
+		Data TestContainerWithDynamicWriterError
+	}{}
+
+	memWriter := bytes.NewBuffer(nil)
+	err := dynssz.MarshalSSZWriter(input, memWriter)
+	if err == nil {
+		t.Error("expected error from DynamicWriter")
+	}
+}
+
+func TestMarshalWriterVerboseStreaming(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+	dynssz.Verbose = true
+	dynssz.LogCb = func(format string, args ...any) {} // discard output
+
+	testCases := []struct {
+		name  string
+		input any
+	}{
+		{"type_wrapper", func() any {
+			type W = TypeWrapper[struct {
+				Data uint32
+			}, uint32]
+			return W{Data: 42}
+		}()},
+		{"bitlist", struct {
+			Bits []byte `ssz-type:"bitlist" ssz-max:"100"`
+		}{[]byte{0xff, 0x01}}},
+		{"progressive_container", struct {
+			Field0 uint64 `ssz-index:"0"`
+			Field1 uint32 `ssz-index:"1"`
+		}{123, 456}},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			memWriter := bytes.NewBuffer(nil)
+			err := dynssz.MarshalSSZWriter(tc.input, memWriter)
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// errorWriter is an io.Writer that always returns an error
+type errorWriter struct{}
+
+func (w *errorWriter) Write(p []byte) (n int, err error) {
+	return 0, io.ErrClosedPipe
+}
+
+func TestMarshalWriterErrors(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Use an error writer that fails on write
+	errWriter := &errorWriter{}
+
+	testCases := []struct {
+		name  string
+		input any
+	}{
+		{"simple_uint64", uint64(123)},
+		{"container", struct{ A uint32 }{42}},
+		{"bitlist", struct {
+			Bits []byte `ssz-type:"bitlist" ssz-max:"100"`
+		}{[]byte{0x01}}},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := dynssz.MarshalSSZWriter(tc.input, errWriter)
+			if err == nil {
+				t.Error("expected write error")
+			}
+		})
+	}
+}
+
+func TestMarshalWriterContainerDynamicFieldError(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Container with dynamic field containing invalid data
+	input := struct {
+		Static  uint32
+		Dynamic []struct {
+			Data complex64
+		} `ssz-max:"10"`
+	}{
+		Static:  42,
+		Dynamic: []struct{ Data complex64 }{{Data: complex(1, 2)}},
+	}
+
+	memWriter := bytes.NewBuffer(nil)
+	err := dynssz.MarshalSSZWriter(input, memWriter)
+	if err == nil {
+		t.Error("expected error for invalid type in dynamic field")
+	}
+}
+
+func TestMarshalWriterDynamicVectorElementError(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Dynamic vector with invalid element
+	input := struct {
+		Data []struct {
+			Inner complex64
+		} `ssz-max:"10"`
+	}{
+		Data: []struct{ Inner complex64 }{{complex(1, 2)}},
+	}
+
+	memWriter := bytes.NewBuffer(nil)
+	err := dynssz.MarshalSSZWriter(input, memWriter)
+	if err == nil {
+		t.Error("expected error for invalid element in dynamic vector")
+	}
+}
+
+func TestMarshalWriterDynamicListElementError(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Dynamic list with invalid element
+	input := struct {
+		Data []struct {
+			Inner []complex64 `ssz-max:"10"`
+		} `ssz-max:"10"`
+	}{
+		Data: []struct {
+			Inner []complex64 `ssz-max:"10"`
+		}{{Inner: []complex64{complex(1, 2)}}},
+	}
+
+	memWriter := bytes.NewBuffer(nil)
+	err := dynssz.MarshalSSZWriter(input, memWriter)
+	if err == nil {
+		t.Error("expected error for invalid element in dynamic list")
+	}
+}
+
+func TestMarshalWriterUnionVariantError(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Union with invalid variant embedded in type wrapper
+	type TestUnion = CompatibleUnion[struct {
+		Field1 uint32
+	}]
+
+	input := struct {
+		Field TypeWrapper[struct {
+			Data TestUnion
+		}, TestUnion]
+	}{
+		Field: TypeWrapper[struct {
+			Data TestUnion
+		}, TestUnion]{
+			Data: TestUnion{Variant: 99, Data: uint32(42)}, // Invalid variant
+		},
+	}
+
+	memWriter := bytes.NewBuffer(nil)
+	err := dynssz.MarshalSSZWriter(input, memWriter)
+	if err == nil {
+		t.Error("expected error for invalid union variant in type wrapper")
+	}
+}
+
+func TestMarshalWriterVectorWithPointerElements(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Vector with pointer elements (testing nil pointer handling)
+	input := struct {
+		Data [3]*uint32
+	}{[3]*uint32{nil, nil, nil}}
+
+	memWriter := bytes.NewBuffer(nil)
+	err := dynssz.MarshalSSZWriter(input, memWriter)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	expected := fromHex("0x000000000000000000000000")
+	if !bytes.Equal(memWriter.Bytes(), expected) {
+		t.Errorf("got 0x%x, wanted 0x%x", memWriter.Bytes(), expected)
+	}
+}
+
+func TestMarshalWriterProgressiveList(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Progressive list test
+	input := struct {
+		Data []uint32 `ssz-type:"progressive-list"`
+	}{[]uint32{1, 2, 3}}
+
+	memWriter := bytes.NewBuffer(nil)
+	err := dynssz.MarshalSSZWriter(input, memWriter)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestMarshalWriterListWithString(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// List as string
+	input := struct {
+		Data string `ssz-max:"100"`
+	}{"hello world"}
+
+	memWriter := bytes.NewBuffer(nil)
+	err := dynssz.MarshalSSZWriter(input, memWriter)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestMarshalWriterTimePointer(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Time pointer field
+	ts := time.Unix(1718236800, 0)
+	input := struct {
+		Timestamp *time.Time
+	}{&ts}
+
+	memWriter := bytes.NewBuffer(nil)
+	err := dynssz.MarshalSSZWriter(input, memWriter)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestMarshalWriterBitlistEmpty(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Empty bitlist (just termination bit)
+	input := struct {
+		Data []byte `ssz-type:"bitlist" ssz-max:"100"`
+	}{[]byte{0x01}}
+
+	memWriter := bytes.NewBuffer(nil)
+	err := dynssz.MarshalSSZWriter(input, memWriter)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestMarshalWriterRoundTrip(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Comprehensive round-trip test
+	testCases := []struct {
+		name    string
+		payload any
+	}{
+		{"bool_true", struct{ V bool }{true}},
+		{"bool_false", struct{ V bool }{false}},
+		{"uint8", struct{ V uint8 }{255}},
+		{"uint16", struct{ V uint16 }{65535}},
+		{"uint32", struct{ V uint32 }{0xDEADBEEF}},
+		{"uint64", struct{ V uint64 }{0xDEADBEEFCAFEBABE}},
+		{"byte_array", struct{ V [4]byte }{[4]byte{1, 2, 3, 4}}},
+		{"byte_slice", struct {
+			V []byte `ssz-max:"100"`
+		}{[]byte{1, 2, 3, 4, 5}}},
+		{"string_dynamic", struct {
+			V string `ssz-max:"100"`
+		}{"hello"}},
+		{"string_fixed", struct {
+			V string `ssz-size:"8"`
+		}{"test"}},
+		{"nested_container", struct {
+			A uint32
+			B struct {
+				C uint64
+				D []byte `ssz-max:"10"`
+			}
+		}{42, struct {
+			C uint64
+			D []byte `ssz-max:"10"`
+		}{123, []byte{1, 2, 3}}}},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Marshal
+			memWriter := bytes.NewBuffer(nil)
+			err := dynssz.MarshalSSZWriter(tc.payload, memWriter)
+			if err != nil {
+				t.Fatalf("marshal error: %v", err)
+			}
+
+			// Unmarshal to verify round-trip
+			obj := &struct {
+				Data any
+			}{}
+			reflect.ValueOf(obj).Elem().Field(0).Set(reflect.New(reflect.TypeOf(tc.payload)))
+
+			err = dynssz.UnmarshalSSZReader(obj.Data, bytes.NewReader(memWriter.Bytes()), int64(len(memWriter.Bytes())))
+			if err != nil {
+				t.Fatalf("unmarshal error: %v", err)
+			}
+		})
 	}
 }
