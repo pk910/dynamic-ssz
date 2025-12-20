@@ -160,14 +160,14 @@ func (ctx *sizeContext) getPtrPrefix(desc *dynssz.TypeDescriptor) string {
 }
 
 // getExprVar generates a variable name for cached limit expression calculations.
-func (ctx *sizeContext) getExprVar(expr string, defaultValue uint64) (string, error) {
+func (ctx *sizeContext) getExprVar(expr string, defaultValue uint64) string {
 	if expr == "" {
-		return fmt.Sprintf("%v", defaultValue), nil
+		return fmt.Sprintf("%v", defaultValue)
 	}
 
 	exprKey := sha256.Sum256([]byte(fmt.Sprintf("%s\n%v", expr, defaultValue)))
 	if exprVar, ok := ctx.exprVarMap[exprKey]; ok {
-		return exprVar, nil
+		return exprVar
 	}
 
 	exprVar := fmt.Sprintf("expr%d", ctx.exprVarCounter)
@@ -179,7 +179,7 @@ func (ctx *sizeContext) getExprVar(expr string, defaultValue uint64) (string, er
 
 	ctx.exprVarMap[exprKey] = exprVar
 
-	return exprVar, nil
+	return exprVar
 }
 
 // sizeType generates size calculation code for any SSZ type, delegating to specific sizers.
@@ -329,10 +329,7 @@ func (ctx *sizeContext) sizeVector(desc *dynssz.TypeDescriptor, varName string, 
 			}
 		}
 
-		exprVar, err := ctx.getExprVar(*sizeExpression, defaultValue)
-		if err != nil {
-			return err
-		}
+		exprVar := ctx.getExprVar(*sizeExpression, defaultValue)
 
 		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
 			limitVar = fmt.Sprintf("int((%s+7)/8)", exprVar)

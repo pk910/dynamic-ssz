@@ -196,14 +196,14 @@ func (ctx *hashTreeRootContext) getPtrPrefix(desc *dynssz.TypeDescriptor, prefix
 }
 
 // getExprVar generates a variable name for cached limit expression calculations.
-func (ctx *hashTreeRootContext) getExprVar(expr string, defaultValue uint64) (string, error) {
+func (ctx *hashTreeRootContext) getExprVar(expr string, defaultValue uint64) string {
 	if expr == "" {
-		return fmt.Sprintf("%v", defaultValue), nil
+		return fmt.Sprintf("%v", defaultValue)
 	}
 
 	exprKey := sha256.Sum256([]byte(fmt.Sprintf("%s\n%v", expr, defaultValue)))
 	if exprVar, ok := ctx.exprVarMap[exprKey]; ok {
-		return exprVar, nil
+		return exprVar
 	}
 
 	exprVar := fmt.Sprintf("expr%d", ctx.exprVarCounter)
@@ -215,7 +215,7 @@ func (ctx *hashTreeRootContext) getExprVar(expr string, defaultValue uint64) (st
 
 	ctx.exprVarMap[exprKey] = exprVar
 
-	return exprVar, nil
+	return exprVar
 }
 
 // hashType generates hash tree root code for any SSZ type, delegating to specific hashers.
@@ -458,10 +458,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *dynssz.TypeDescriptor, varName 
 			}
 		}
 
-		exprVar, err := ctx.getExprVar(*sizeExpression, defaultValue)
-		if err != nil {
-			return err
-		}
+		exprVar := ctx.getExprVar(*sizeExpression, defaultValue)
 
 		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
 			bitlimitVar = fmt.Sprintf("int(%s)", exprVar)
@@ -590,10 +587,7 @@ func (ctx *hashTreeRootContext) hashList(desc *dynssz.TypeDescriptor, varName st
 	maxVar := ""
 
 	if maxExpression != nil {
-		exprVar, err := ctx.getExprVar(*maxExpression, desc.Limit)
-		if err != nil {
-			return err
-		}
+		exprVar := ctx.getExprVar(*maxExpression, desc.Limit)
 
 		hasMax = true
 		maxVar = exprVar
@@ -683,10 +677,7 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *dynssz.TypeDescriptor, varName
 
 	maxVar := ""
 	if maxExpression != nil {
-		exprVar, err := ctx.getExprVar(*maxExpression, desc.Limit)
-		if err != nil {
-			return err
-		}
+		exprVar := ctx.getExprVar(*maxExpression, desc.Limit)
 
 		maxVar = exprVar
 	} else if desc.Limit > 0 {
