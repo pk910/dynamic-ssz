@@ -4,7 +4,10 @@
 
 package sszutils
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"io"
+)
 
 // ---- Marshal functions ----
 
@@ -47,4 +50,41 @@ func MarshalOffset(dst []byte, offset int) []byte {
 // UpdateOffset updates the offset in dst
 func UpdateOffset(dst []byte, offset int) {
 	binary.LittleEndian.PutUint32(dst, uint32(offset))
+}
+
+// MarshalUint64Writer writes a little endian uint64 to dst
+func MarshalUint64Writer(dst io.Writer, i uint64) error {
+	return binary.Write(dst, binary.LittleEndian, i)
+}
+
+// MarshalUint32Writer writes a little endian uint32 to dst
+func MarshalUint32Writer(dst io.Writer, i uint32) error {
+	return binary.Write(dst, binary.LittleEndian, i)
+}
+
+// MarshalUint16Writer writes a little endian uint16 to dst
+func MarshalUint16Writer(dst io.Writer, i uint16) error {
+	return binary.Write(dst, binary.LittleEndian, i)
+}
+
+// MarshalUint8Writer writes a little endian uint8 to dst
+func MarshalUint8Writer(dst io.Writer, i uint8) error {
+	_, err := dst.Write([]byte{byte(i)})
+	return err
+}
+
+// MarshalBoolWriter writes a boolean to dst
+func MarshalBoolWriter(dst io.Writer, b bool) error {
+	if b {
+		_, err := dst.Write([]byte{1})
+		return err
+	} else {
+		_, err := dst.Write([]byte{0})
+		return err
+	}
+}
+
+// MarshalOffsetWriter writes an offset to dst
+func MarshalOffsetWriter(dst io.Writer, offset uint32) error {
+	return binary.Write(dst, binary.LittleEndian, offset)
 }

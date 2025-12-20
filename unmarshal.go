@@ -5,12 +5,14 @@
 package dynssz
 
 import (
+	"bytes"
 	"fmt"
 	"reflect"
 	"strings"
 	"time"
 
 	"github.com/pk910/dynamic-ssz/sszutils"
+	"github.com/pk910/dynamic-ssz/stream"
 )
 
 // unmarshalType is the core recursive function for decoding SSZ-encoded data into Go values.
@@ -52,6 +54,7 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 	hasDynamicSize := targetType.SszTypeFlags&SszTypeFlagHasDynamicSize != 0
 	isFastsszUnmarshaler := targetType.SszCompatFlags&SszCompatFlagFastSSZMarshaler != 0
 	useDynamicUnmarshal := targetType.SszCompatFlags&SszCompatFlagDynamicUnmarshaler != 0
+	useDynamicReader := targetType.SszCompatFlags&SszCompatFlagDynamicReader != 0
 	useFastSsz := !d.NoFastSsz && isFastsszUnmarshaler && !hasDynamicSize
 	if !useFastSsz && targetType.SszType == SszCustomType {
 		useFastSsz = true
@@ -90,7 +93,24 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 		}
 	}
 
-	if !useFastSsz && !useDynamicUnmarshal {
+	if !useFastSsz && useDynamicReader {
+		// Use dynamic marshaler - can always be used even with dynamic specs
+		unmarshaller, ok := targetValue.Addr().Interface().(sszutils.DynamicReader)
+		if ok {
+			reader := stream.NewLimitedReader(bytes.NewReader(ssz))
+			reader.PushLimit(uint64(len(ssz)))
+			err := unmarshaller.UnmarshalSSZDynReader(d, reader)
+			if err != nil {
+				return 0, err
+			}
+
+			consumedBytes = int(reader.PopLimit())
+		} else {
+			useDynamicReader = false
+		}
+	}
+
+	if !useFastSsz && !useDynamicUnmarshal && !useDynamicReader {
 		// can't use fastssz, use dynamic unmarshaling
 		var err error
 		switch targetType.SszType {

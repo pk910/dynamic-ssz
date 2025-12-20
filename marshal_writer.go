@@ -5,26 +5,42 @@
 package dynssz
 
 import (
-	"encoding/binary"
 	"fmt"
+	"io"
 	"reflect"
 	"strings"
 	"time"
 
 	"github.com/pk910/dynamic-ssz/sszutils"
-	"github.com/pk910/dynamic-ssz/stream"
 )
 
-// marshalType is the core recursive function for marshalling Go values into SSZ-encoded data.
+// marshalWriterContext holds context for streaming marshal operations
+type marshalWriterContext struct {
+	writer io.Writer
+	buffer []byte
+}
+
+// newMarshalWriterContext creates a new marshal writer context
+func newMarshalWriterContext(w io.Writer, bufSize uint32) *marshalWriterContext {
+	if bufSize <= 0 {
+		bufSize = defaultBufferSize
+	}
+	return &marshalWriterContext{
+		writer: w,
+		buffer: make([]byte, 0, bufSize),
+	}
+}
+
+// marshalTypeWriter is the core recursive function for marshalling Go values into SSZ-encoded data streams.
 //
 // This function serves as the primary dispatcher within the marshalling process, handling both primitive
 // and composite types. It uses the TypeDescriptor's metadata to determine the most efficient encoding
 // path, automatically leveraging fastssz when possible for optimal performance.
 //
 // Parameters:
+//   - ctx: The marshal writer context
 //   - sourceType: The TypeDescriptor containing optimized metadata about the type to be encoded
 //   - sourceValue: The reflect.Value holding the data to be encoded
-//   - buf: The byte slice buffer where encoded data is appended
 //   - idt: Indentation level for verbose logging (when enabled)
 //
 // Returns:
@@ -37,7 +53,7 @@ import (
 //   - Primitive type encoding (bool, uint8, uint16, uint32, uint64)
 //   - Delegation to specialized functions for composite types (structs, arrays, slices)
 
-func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
+func (d *DynSsz) marshalTypeWriter(ctx *marshalWriterContext, sourceType *TypeDescriptor, sourceValue reflect.Value, idt int) error {
 	if sourceType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
 		if sourceValue.IsNil() {
 			sourceValue = reflect.New(sourceType.Type.Elem()).Elem()
@@ -48,131 +64,141 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 
 	hasDynamicSize := sourceType.SszTypeFlags&SszTypeFlagHasDynamicSize != 0
 	isFastsszMarshaler := sourceType.SszCompatFlags&SszCompatFlagFastSSZMarshaler != 0
-	useDynamicMarshal := sourceType.SszCompatFlags&SszCompatFlagDynamicMarshaler != 0
 	useDynamicWriter := sourceType.SszCompatFlags&SszCompatFlagDynamicWriter != 0
-	useFastSsz := !d.NoFastSsz && isFastsszMarshaler && !hasDynamicSize
+	useDynamicMarshal := sourceType.SszCompatFlags&SszCompatFlagDynamicMarshaler != 0 && !(hasDynamicSize || sourceType.Size > d.BufferSize)
+	useFastSsz := !d.NoFastSsz && isFastsszMarshaler && !(hasDynamicSize || sourceType.Size > d.BufferSize)
 	if !useFastSsz && sourceType.SszType == SszCustomType {
 		useFastSsz = true
 	}
 
 	if d.Verbose {
-		d.LogCb("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, isFastsszMarshaler, hasDynamicSize)
+		fmt.Printf("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, isFastsszMarshaler, hasDynamicSize)
 	}
 
-	if useFastSsz {
-		marshaller, ok := getPtr(sourceValue).Interface().(sszutils.FastsszMarshaler)
-		if ok {
-			newBuf, err := marshaller.MarshalSSZTo(buf)
-			if err != nil {
-				return nil, err
-			}
-			buf = newBuf
-		} else {
-			useFastSsz = false
-		}
-	}
-
-	if !useFastSsz && useDynamicMarshal {
-		// Use dynamic marshaler - can always be used even with dynamic specs
-		marshaller, ok := getPtr(sourceValue).Interface().(sszutils.DynamicMarshaler)
-		if ok {
-			newBuf, err := marshaller.MarshalSSZDyn(d, buf)
-			if err != nil {
-				return nil, err
-			}
-			buf = newBuf
-		} else {
-			useDynamicMarshal = false
-		}
-	}
-
-	if !useFastSsz && useDynamicWriter {
+	if useDynamicWriter {
 		// Use dynamic marshaler - can always be used even with dynamic specs
 		marshaller, ok := getPtr(sourceValue).Interface().(sszutils.DynamicWriter)
 		if ok {
-			writer := stream.NewBufferWriter(buf)
-			err := marshaller.MarshalSSZDynWriter(d, writer)
+			err := marshaller.MarshalSSZDynWriter(d, ctx.writer)
 			if err != nil {
-				return nil, err
+				return err
 			}
-			buf = writer.Bytes()
 		} else {
 			useDynamicWriter = false
 		}
 	}
 
-	if !useFastSsz && !useDynamicMarshal && !useDynamicWriter {
+	if !useDynamicWriter && useFastSsz {
+		marshaller, ok := getPtr(sourceValue).Interface().(sszutils.FastsszMarshaler)
+		if ok {
+			buf := ctx.buffer[:0]
+			newBuf, err := marshaller.MarshalSSZTo(buf)
+			if err != nil {
+				return err
+			}
+			_, err = ctx.writer.Write(newBuf)
+			if err != nil {
+				return err
+			}
+		} else {
+			useFastSsz = false
+		}
+	}
+
+	if !useDynamicWriter && !useFastSsz && useDynamicMarshal {
+		// Use dynamic marshaler - can always be used even with dynamic specs
+		marshaller, ok := getPtr(sourceValue).Interface().(sszutils.DynamicMarshaler)
+		if ok {
+			buf := ctx.buffer[:0]
+			newBuf, err := marshaller.MarshalSSZDyn(d, buf)
+			if err != nil {
+				return err
+			}
+			_, err = ctx.writer.Write(newBuf)
+			if err != nil {
+				return err
+			}
+		} else {
+			useDynamicMarshal = false
+		}
+	}
+
+	if !useDynamicWriter && !useFastSsz && !useDynamicMarshal {
 		// can't use fastssz, use dynamic marshaling
 		var err error
 		switch sourceType.SszType {
 		// complex types
 		case SszTypeWrapperType:
-			buf, err = d.marshalTypeWrapper(sourceType, sourceValue, buf, idt)
+			err = d.marshalTypeWrapperWriter(ctx, sourceType, sourceValue, idt)
 			if err != nil {
-				return nil, err
+				return err
 			}
 		case SszContainerType, SszProgressiveContainerType:
-			buf, err = d.marshalContainer(sourceType, sourceValue, buf, idt)
+			err = d.marshalContainerWriter(ctx, sourceType, sourceValue, idt)
 			if err != nil {
-				return nil, err
+				return err
 			}
 		case SszVectorType, SszBitvectorType, SszUint128Type, SszUint256Type:
 			if sourceType.ElemDesc.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
-				buf, err = d.marshalDynamicVector(sourceType, sourceValue, buf, idt)
+				err = d.marshalDynamicVectorWriter(ctx, sourceType, sourceValue, idt)
 			} else {
-				buf, err = d.marshalVector(sourceType, sourceValue, buf, idt)
+				err = d.marshalVectorWriter(ctx, sourceType, sourceValue, idt)
 			}
 			if err != nil {
-				return nil, err
+				return err
 			}
 		case SszListType, SszProgressiveListType:
 			if sourceType.ElemDesc.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
-				buf, err = d.marshalDynamicList(sourceType, sourceValue, buf, idt)
+				err = d.marshalDynamicListWriter(ctx, sourceType, sourceValue, idt)
 			} else {
-				buf, err = d.marshalList(sourceType, sourceValue, buf, idt)
+				err = d.marshalListWriter(ctx, sourceType, sourceValue, idt)
 			}
 			if err != nil {
-				return nil, err
+				return err
 			}
 		case SszBitlistType, SszProgressiveBitlistType:
-			buf, err = d.marshalBitlist(sourceType, sourceValue, buf)
+			err = d.marshalBitlistWriter(ctx, sourceType, sourceValue, idt)
 			if err != nil {
-				return nil, err
+				return err
 			}
 		case SszCompatibleUnionType:
-			buf, err = d.marshalCompatibleUnion(sourceType, sourceValue, buf, idt)
+			err = d.marshalCompatibleUnionWriter(ctx, sourceType, sourceValue, idt)
 			if err != nil {
-				return nil, err
+				return err
 			}
 
 		// primitive types
 		case SszBoolType:
-			buf = sszutils.MarshalBool(buf, sourceValue.Bool())
+			err = sszutils.MarshalBoolWriter(ctx.writer, sourceValue.Bool())
 		case SszUint8Type:
-			buf = sszutils.MarshalUint8(buf, uint8(sourceValue.Uint()))
+			err = sszutils.MarshalUint8Writer(ctx.writer, uint8(sourceValue.Uint()))
 		case SszUint16Type:
-			buf = sszutils.MarshalUint16(buf, uint16(sourceValue.Uint()))
+			err = sszutils.MarshalUint16Writer(ctx.writer, uint16(sourceValue.Uint()))
 		case SszUint32Type:
-			buf = sszutils.MarshalUint32(buf, uint32(sourceValue.Uint()))
+			err = sszutils.MarshalUint32Writer(ctx.writer, uint32(sourceValue.Uint()))
 		case SszUint64Type:
 			if sourceType.GoTypeFlags&GoTypeFlagIsTime != 0 {
 				timeValue, isTime := sourceValue.Interface().(time.Time)
 				if !isTime {
-					return nil, fmt.Errorf("time.Time type expected, got %v", sourceType.Type.Name())
+					return fmt.Errorf("time.Time type expected, got %v", sourceType.Type.Name())
 				}
-				buf = sszutils.MarshalUint64(buf, uint64(timeValue.Unix()))
+				err = sszutils.MarshalUint64Writer(ctx.writer, uint64(timeValue.Unix()))
 			} else {
-				buf = sszutils.MarshalUint64(buf, uint64(sourceValue.Uint()))
+				err = sszutils.MarshalUint64Writer(ctx.writer, uint64(sourceValue.Uint()))
 			}
 		default:
-			return nil, fmt.Errorf("unknown type: %v", sourceType)
+			return fmt.Errorf("unknown type: %v", sourceType)
+		}
+
+		if err != nil {
+			return err
 		}
 	}
 
-	return buf, nil
+	return nil
 }
 
-// marshalTypeWrapper marshals a TypeWrapper by extracting its data field and marshaling it as the wrapped type
+// marshalTypeWrapperWriter marshals a TypeWrapper by extracting its data field and marshaling it as the wrapped type
 //
 // Parameters:
 //   - sourceType: The TypeDescriptor containing wrapper field metadata
@@ -186,19 +212,22 @@ func (d *DynSsz) marshalType(sourceType *TypeDescriptor, sourceValue reflect.Val
 //
 // The function validates that the Data field is present and marshals the wrapped value using its type descriptor.
 
-func (d *DynSsz) marshalTypeWrapper(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
+func (d *DynSsz) marshalTypeWrapperWriter(ctx *marshalWriterContext, sourceType *TypeDescriptor, sourceValue reflect.Value, idt int) error {
 	if d.Verbose {
-		d.LogCb("%smarshalTypeWrapper: %s\n", strings.Repeat(" ", idt), sourceType.Type.Name())
+		fmt.Printf("%smarshalTypeWrapper: %s\n", strings.Repeat(" ", idt), sourceType.Type.Name())
 	}
 
 	// Extract the Data field from the TypeWrapper
 	dataField := sourceValue.Field(0)
+	if !dataField.IsValid() {
+		return fmt.Errorf("TypeWrapper missing 'Data' field")
+	}
 
 	// Marshal the wrapped value using its type descriptor
-	return d.marshalType(sourceType.ElemDesc, dataField, buf, idt+2)
+	return d.marshalTypeWriter(ctx, sourceType.ElemDesc, dataField, idt+2)
 }
 
-// marshalContainer handles the encoding of container values into SSZ-encoded data.
+// marshalContainerWriter handles the encoding of container values into SSZ-encoded data.
 //
 // This function implements the SSZ specification for container encoding, which requires:
 //   - Fixed-size fields are encoded first in field definition order
@@ -218,54 +247,53 @@ func (d *DynSsz) marshalTypeWrapper(sourceType *TypeDescriptor, sourceValue refl
 //   - []byte: The updated buffer with the encoded struct
 //   - error: An error if any field encoding fails
 
-func (d *DynSsz) marshalContainer(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
-	offset := 0
-	startLen := len(buf)
+func (d *DynSsz) marshalContainerWriter(ctx *marshalWriterContext, sourceType *TypeDescriptor, sourceValue reflect.Value, idt int) error {
+	currentOffset := sourceType.Len
 	fieldCount := len(sourceType.ContainerDesc.Fields)
 
 	for i := 0; i < fieldCount; i++ {
 		field := sourceType.ContainerDesc.Fields[i]
 		fieldSize := field.Type.Size
+		fieldValue := sourceValue.Field(i)
+
 		if fieldSize > 0 {
 			//fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
-
-			fieldValue := sourceValue.Field(i)
-			newBuf, err := d.marshalType(field.Type, fieldValue, buf, idt+2)
+			err := d.marshalTypeWriter(ctx, field.Type, fieldValue, idt+2)
 			if err != nil {
-				return nil, fmt.Errorf("failed encoding field %v: %v", field.Name, err)
+				return fmt.Errorf("failed encoding field %v: %v", field.Name, err)
 			}
-			buf = newBuf
-
 		} else {
-			fieldSize = 4
-			buf = binary.LittleEndian.AppendUint32(buf, 0)
-			//fmt.Printf("%sfield %d:\t offset [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
+			// Dynamic field - write offset
+			err := sszutils.MarshalOffsetWriter(ctx.writer, currentOffset)
+			if err != nil {
+				return err
+			}
+
+			size, err := d.getSszValueSize(field.Type, fieldValue)
+			if err != nil {
+				return err
+			}
+
+			// Get size from tree if available
+			currentOffset += size
 		}
-		offset += int(fieldSize)
 	}
 
 	for _, field := range sourceType.ContainerDesc.DynFields {
-		// set field offset
-		fieldOffset := int(field.Offset)
-		binary.LittleEndian.PutUint32(buf[fieldOffset+startLen:fieldOffset+startLen+4], uint32(offset))
-
 		//fmt.Printf("%sfield %d:\t dynamic [%v:]\t %v\n", strings.Repeat(" ", idt+1), field.Index[0], offset, field.Name)
 
 		fieldDescriptor := field.Field
 		fieldValue := sourceValue.Field(int(field.Index))
-		bufLen := len(buf)
-		newBuf, err := d.marshalType(fieldDescriptor.Type, fieldValue, buf, idt+2)
+		err := d.marshalTypeWriter(ctx, fieldDescriptor.Type, fieldValue, idt+2)
 		if err != nil {
-			return nil, fmt.Errorf("failed decoding field %v: %v", fieldDescriptor.Name, err)
+			return fmt.Errorf("failed decoding field %v: %v", fieldDescriptor.Name, err)
 		}
-		buf = newBuf
-		offset += len(buf) - bufLen
 	}
 
-	return buf, nil
+	return nil
 }
 
-// marshalVector encodes vector values into SSZ-encoded data.
+// marshalVectorWriter encodes vector values into SSZ-encoded data.
 //
 // Vectors in SSZ are encoded as fixed-size sequences where each element is encoded
 // sequentially without any length prefix (since the length is known from the type).
@@ -286,13 +314,13 @@ func (d *DynSsz) marshalContainer(sourceType *TypeDescriptor, sourceValue reflec
 //   - Byte arrays use reflect.Value.Bytes() for efficient bulk copying
 //   - Non-addressable arrays are made addressable via a temporary pointer
 
-func (d *DynSsz) marshalVector(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
+func (d *DynSsz) marshalVectorWriter(ctx *marshalWriterContext, sourceType *TypeDescriptor, sourceValue reflect.Value, idt int) error {
 	sliceLen := sourceValue.Len()
 	if uint32(sliceLen) > sourceType.Len {
 		if sourceType.Kind == reflect.Array {
 			sliceLen = int(sourceType.Len)
 		} else {
-			return nil, sszutils.ErrListTooBig
+			return sszutils.ErrListTooBig
 		}
 	}
 
@@ -319,38 +347,46 @@ func (d *DynSsz) marshalVector(sourceType *TypeDescriptor, sourceValue reflect.V
 			bytes = sourceValue.Bytes()
 		}
 
-		buf = append(buf, bytes[:dataLen]...)
+		_, err := ctx.writer.Write(bytes[:dataLen])
+		if err != nil {
+			return err
+		}
 
 		if appendZero > 0 {
-			buf = sszutils.AppendZeroPadding(buf, appendZero)
+			err = sszutils.AppendZeroPaddingWriter(ctx.writer, appendZero)
+			if err != nil {
+				return err
+			}
 		} else if sourceType.BitSize > 0 && sourceType.BitSize < uint32(len(bytes))*8 {
 			// check padding bits
 			paddingMask := uint8((uint16(0xff) << (sourceType.BitSize % 8)) & 0xff)
 			paddingBits := bytes[dataLen-1] & paddingMask
 			if paddingBits != 0 {
-				return nil, fmt.Errorf("bitvector padding bits are not zero")
+				return fmt.Errorf("bitvector padding bits are not zero")
 			}
 		}
 	} else {
 		for i := 0; i < dataLen; i++ {
 			itemVal := sourceValue.Index(i)
-			newBuf, err := d.marshalType(sourceType.ElemDesc, itemVal, buf, idt+2)
+			err := d.marshalTypeWriter(ctx, sourceType.ElemDesc, itemVal, idt+2)
 			if err != nil {
-				return nil, err
+				return err
 			}
-			buf = newBuf
 		}
 
 		if appendZero > 0 {
 			totalZeroBytes := int(sourceType.ElemDesc.Size) * appendZero
-			buf = sszutils.AppendZeroPadding(buf, totalZeroBytes)
+			err := sszutils.AppendZeroPaddingWriter(ctx.writer, totalZeroBytes)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
-	return buf, nil
+	return nil
 }
 
-// marshalDynamicVector encodes vectors with variable-size elements into SSZ format.
+// marshalDynamicVectorWriter encodes vectors with variable-size elements into SSZ format.
 //
 // For vectors with variable-size elements, SSZ requires a special encoding:
 //   1. A series of 4-byte offsets, one per element, indicating where each element's data begins
@@ -373,70 +409,89 @@ func (d *DynSsz) marshalVector(sourceType *TypeDescriptor, sourceValue reflect.V
 // length is less than the expected size. Zero values are efficiently batched
 // to minimize encoding overhead.
 
-func (d *DynSsz) marshalDynamicVector(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
+func (d *DynSsz) marshalDynamicVectorWriter(ctx *marshalWriterContext, sourceType *TypeDescriptor, sourceValue reflect.Value, idt int) error {
 	fieldType := sourceType.ElemDesc
-	sliceLen := sourceValue.Len()
+	sliceLen := uint32(sourceValue.Len())
 
-	appendZero := 0
+	appendZero := uint32(0)
 	if sourceType.Kind == reflect.Slice || sourceType.Kind == reflect.String {
-		sliceLen := sourceValue.Len()
-		if uint32(sliceLen) > sourceType.Len {
-			return nil, sszutils.ErrListTooBig
+		sliceLen := uint32(sourceValue.Len())
+		if sliceLen > sourceType.Len {
+			return sszutils.ErrListTooBig
 		}
 		if uint32(sliceLen) < sourceType.Len {
-			appendZero = int(sourceType.Len) - sliceLen
+			appendZero = sourceType.Len - sliceLen
 		}
 	}
 
-	startOffset := len(buf)
 	totalOffsets := sliceLen + appendZero
-	buf = sszutils.AppendZeroPadding(buf, 4*totalOffsets) // Reserve space for offsets
 
-	offset := 4 * totalOffsets
-	bufLen := len(buf)
+	// First pass: write offsets
+	currentOffset := 4 * totalOffsets
 
-	for i := 0; i < sliceLen; i++ {
-		itemVal := sourceValue.Index(i)
+	var zeroVal reflect.Value
 
-		newBuf, err := d.marshalType(fieldType, itemVal, buf, idt+2)
+	for i := uint32(0); i < sliceLen; i++ {
+		err := sszutils.MarshalOffsetWriter(ctx.writer, currentOffset)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		newBufLen := len(newBuf)
-		buf = newBuf
 
-		binary.LittleEndian.PutUint32(buf[startOffset+(i*4):startOffset+((i+1)*4)], uint32(offset))
+		// Get size of the element
+		size, err := d.getSszValueSize(fieldType, sourceValue.Index(int(i)))
+		if err != nil {
+			return err
+		}
 
-		offset += newBufLen - bufLen
-		bufLen = newBufLen
+		currentOffset += size
 	}
 
 	if appendZero > 0 {
-		var zeroVal reflect.Value
-
 		if fieldType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
 			zeroVal = reflect.New(fieldType.Type.Elem())
 		} else {
 			zeroVal = reflect.New(fieldType.Type).Elem()
 		}
 
-		zeroBuf, err := d.marshalType(fieldType, zeroVal, []byte{}, idt+2)
+		// Get size of the element
+		size, err := d.getSszValueSize(fieldType, zeroVal)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		zeroBufLen := len(zeroBuf)
 
-		for i := 0; i < appendZero; i++ {
-			buf = append(buf, zeroBuf...)
-			binary.LittleEndian.PutUint32(buf[startOffset+((sliceLen+i)*4):startOffset+(((sliceLen+i)+1)*4)], uint32(offset))
-			offset += zeroBufLen
+		for i := uint32(0); i < appendZero; i++ {
+			err := sszutils.MarshalOffsetWriter(ctx.writer, currentOffset)
+			if err != nil {
+				return err
+			}
+
+			currentOffset += size
 		}
 	}
 
-	return buf, nil
+	// Second pass: write elements
+	for i := uint32(0); i < sliceLen; i++ {
+		itemVal := sourceValue.Index(int(i))
+
+		err := d.marshalTypeWriter(ctx, fieldType, itemVal, idt+2)
+		if err != nil {
+			return err
+		}
+	}
+
+	if appendZero > 0 {
+		for i := uint32(0); i < appendZero; i++ {
+			err := d.marshalTypeWriter(ctx, fieldType, zeroVal, idt+2)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
-// marshalList encodes list values into SSZ-encoded data.
+// marshalListWriter encodes list values into SSZ-encoded data.
 //
 // This function handles lists with fixed-size elements. The encoding follows SSZ specifications
 // where lists are encoded as their elements in sequence without a length prefix.
@@ -457,12 +512,18 @@ func (d *DynSsz) marshalDynamicVector(sourceType *TypeDescriptor, sourceValue re
 //   - Zero-padding is applied when slice length is less than size hint
 //   - Returns ErrListTooBig if slice exceeds maximum size from hints
 
-func (d *DynSsz) marshalList(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
+func (d *DynSsz) marshalListWriter(ctx *marshalWriterContext, sourceType *TypeDescriptor, sourceValue reflect.Value, idt int) error {
 	if sourceType.GoTypeFlags&GoTypeFlagIsString != 0 {
 		stringBytes := []byte(sourceValue.String())
-		buf = append(buf, stringBytes...)
+		_, err := ctx.writer.Write(stringBytes)
+		if err != nil {
+			return err
+		}
 	} else if sourceType.GoTypeFlags&GoTypeFlagIsByteArray != 0 {
-		buf = append(buf, sourceValue.Bytes()...)
+		_, err := ctx.writer.Write(sourceValue.Bytes())
+		if err != nil {
+			return err
+		}
 	} else {
 		sliceLen := sourceValue.Len()
 		fieldType := sourceType.ElemDesc
@@ -475,18 +536,17 @@ func (d *DynSsz) marshalList(sourceType *TypeDescriptor, sourceValue reflect.Val
 				}
 			}
 
-			newBuf, err := d.marshalType(fieldType, itemVal, buf, idt+2)
+			err := d.marshalTypeWriter(ctx, fieldType, itemVal, idt+2)
 			if err != nil {
-				return nil, err
+				return err
 			}
-			buf = newBuf
 		}
 	}
 
-	return buf, nil
+	return nil
 }
 
-// marshalDynamicList encodes lists with variable-size elements into SSZ format.
+// marshalDynamicListWriter encodes lists with variable-size elements into SSZ format.
 //
 // For lists with variable-size elements, SSZ requires a special encoding:
 //   1. A series of 4-byte offsets, one per element, indicating where each element's data begins
@@ -505,34 +565,37 @@ func (d *DynSsz) marshalList(sourceType *TypeDescriptor, sourceValue reflect.Val
 //   - []byte: The updated buffer with offsets followed by encoded elements
 //   - error: An error if encoding fails or size constraints are violated
 
-func (d *DynSsz) marshalDynamicList(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
+func (d *DynSsz) marshalDynamicListWriter(ctx *marshalWriterContext, sourceType *TypeDescriptor, sourceValue reflect.Value, idt int) error {
 	fieldType := sourceType.ElemDesc
-	sliceLen := sourceValue.Len()
+	sliceLen := uint32(sourceValue.Len())
 
-	startOffset := len(buf)
-	totalOffsets := sliceLen
-	buf = sszutils.AppendZeroPadding(buf, 4*totalOffsets) // Reserve space for offsets
+	currentOffset := 4 * (sliceLen) // Space for offsets
 
-	offset := 4 * totalOffsets
-	bufLen := len(buf)
-
-	for i := 0; i < sliceLen; i++ {
-		itemVal := sourceValue.Index(i)
-
-		newBuf, err := d.marshalType(fieldType, itemVal, buf, idt+2)
+	// First pass: write offsets
+	for i := uint32(0); i < sliceLen; i++ {
+		err := sszutils.MarshalOffsetWriter(ctx.writer, currentOffset)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		newBufLen := len(newBuf)
-		buf = newBuf
 
-		binary.LittleEndian.PutUint32(buf[startOffset+(i*4):startOffset+((i+1)*4)], uint32(offset))
+		size, err := d.getSszValueSize(fieldType, sourceValue.Index(int(i)))
+		if err != nil {
+			return err
+		}
 
-		offset += newBufLen - bufLen
-		bufLen = newBufLen
+		currentOffset += size
 	}
 
-	return buf, nil
+	// Second pass: write elements
+	for i := uint32(0); i < sliceLen; i++ {
+		itemVal := sourceValue.Index(int(i))
+		err := d.marshalTypeWriter(ctx, fieldType, itemVal, idt+2)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // marshalBitlist encodes bitlist values into SSZ-encoded data.
@@ -549,8 +612,15 @@ func (d *DynSsz) marshalDynamicList(sourceType *TypeDescriptor, sourceValue refl
 //   - []byte: The updated buffer with the encoded bitlist
 //   - error: An error if encoding fails or bitlist exceeds size constraints
 
-func (d *DynSsz) marshalBitlist(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte) ([]byte, error) {
-	bytes := sourceValue.Bytes()
+func (d *DynSsz) marshalBitlistWriter(ctx *marshalWriterContext, sourceType *TypeDescriptor, sourceValue reflect.Value, idt int) error {
+	var bytes []byte
+	if sourceType.GoTypeFlags&GoTypeFlagIsString != 0 {
+		bytes = []byte(sourceValue.String())
+	} else if sourceType.GoTypeFlags&GoTypeFlagIsByteArray != 0 {
+		bytes = sourceValue.Bytes()
+	} else {
+		return fmt.Errorf("bitlist type can only be represented by byte slices or arrays, got %v", sourceType.Kind)
+	}
 
 	// check if last byte contains termination bit
 	if len(bytes) == 0 {
@@ -558,15 +628,18 @@ func (d *DynSsz) marshalBitlist(sourceType *TypeDescriptor, sourceValue reflect.
 		// this is a fallback for uninitialized bitlists
 		bytes = []byte{0x01}
 	} else if bytes[len(bytes)-1] == 0x00 {
-		return nil, sszutils.ErrBitlistNotTerminated
+		return sszutils.ErrBitlistNotTerminated
 	}
 
-	buf = append(buf, bytes...)
+	_, err := ctx.writer.Write(bytes)
+	if err != nil {
+		return err
+	}
 
-	return buf, nil
+	return nil
 }
 
-// marshalCompatibleUnion encodes CompatibleUnion values into SSZ-encoded data.
+// marshalCompatibleUnionWriter encodes CompatibleUnion values into SSZ-encoded data.
 //
 // According to the spec:
 // - The encoding is: selector.to_bytes(1, "little") + serialize(value.data)
@@ -582,26 +655,29 @@ func (d *DynSsz) marshalBitlist(sourceType *TypeDescriptor, sourceValue reflect.
 // Returns:
 //   - []byte: The updated buffer with the encoded union
 //   - error: An error if encoding fails
-func (d *DynSsz) marshalCompatibleUnion(sourceType *TypeDescriptor, sourceValue reflect.Value, buf []byte, idt int) ([]byte, error) {
+func (d *DynSsz) marshalCompatibleUnionWriter(ctx *marshalWriterContext, sourceType *TypeDescriptor, sourceValue reflect.Value, idt int) error {
 	// We know CompatibleUnion has exactly 2 fields: Variant (uint8) and Data (interface{})
 	// Field 0 is Variant, Field 1 is Data
 	variant := uint8(sourceValue.Field(0).Uint())
 	dataField := sourceValue.Field(1)
 
 	// Append variant byte
-	buf = append(buf, variant)
+	_, err := ctx.writer.Write([]byte{variant})
+	if err != nil {
+		return err
+	}
 
 	// Get the variant descriptor
 	variantDesc, ok := sourceType.UnionVariants[variant]
 	if !ok {
-		return nil, sszutils.ErrInvalidUnionVariant
+		return sszutils.ErrInvalidUnionVariant
 	}
 
 	// Marshal the data using the variant's type descriptor
-	newBuf, err := d.marshalType(variantDesc, dataField.Elem(), buf, idt+2)
+	err = d.marshalTypeWriter(ctx, variantDesc, dataField.Elem(), idt+2)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal union variant %d: %w", variant, err)
+		return fmt.Errorf("failed to marshal union variant %d: %w", variant, err)
 	}
 
-	return newBuf, nil
+	return nil
 }

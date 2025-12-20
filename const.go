@@ -10,3 +10,5 @@ import (
 
 var byteType = reflect.TypeOf(byte(0))
 var typeWrapperType = reflect.TypeOf((*TypeWrapper[struct{}, interface{}])(nil)).Elem()
+
+const defaultBufferSize = 1024
