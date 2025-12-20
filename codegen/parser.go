@@ -469,8 +469,8 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 		}
 	}
 
-	if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 && desc.SszType != dynssz.SszBitvectorType {
-		return nil, fmt.Errorf("bit size tag is only allowed for bitvector types, got %v", desc.SszType)
+	if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 && desc.SszType != dynssz.SszBitvectorType && desc.SszType != dynssz.SszBitlistType {
+		return nil, fmt.Errorf("bit size tag is only allowed for bitvector or bitlist types, got %v", desc.SszType)
 	}
 
 	// Check interface compatibility (like reflection-based code)

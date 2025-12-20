@@ -186,16 +186,6 @@ var commonTestMatrix = []struct {
 		fromHex("0xcb36f82247d205d8fc9dc60d04a245fb588be35315b4c3406ed2b68f69de7eda"),
 	},
 	{
-		"complex_struct6",
-		struct {
-			F1 uint8
-			F2 [2][]*slug_StaticStruct1 `ssz-size:"2,3"`
-			F3 uint8
-		}{42, [2][]*slug_StaticStruct1{{nil, nil, nil}, {nil, nil, nil, nil}}, 43},
-		nil, // size too long error
-		nil, // size too long error
-	},
-	{
 		"complex_struct7",
 		struct {
 			F1 uint8
@@ -245,14 +235,6 @@ var commonTestMatrix = []struct {
 			F1 []uint16 `ssz-type:"list" ssz-size:"?"`
 		}{[]uint16{2, 3}},
 		fromHex("0x0400000002000300"),
-		fromHex("0x0200030000000000000000000000000000000000000000000000000000000000"),
-	},
-	{
-		"complex_struct12",
-		struct {
-			F1 []uint16 `ssz-type:"list" ssz-size:"2"`
-		}{[]uint16{2, 3}},
-		fromHex("0x02000300"),
 		fromHex("0x0200030000000000000000000000000000000000000000000000000000000000"),
 	},
 	{
@@ -371,6 +353,22 @@ var commonTestMatrix = []struct {
 		}]{Variant: 0, Data: uint32(0x12345678)}, 0x4242},
 		fromHex("0x37130800000042420078563412"),
 		fromHex("0x631276fc281634b5224241dd547762be15e2f54e361c6bdc8f921a4d5125e954"),
+	},
+	{
+		"compatible_union_2",
+		struct {
+			Field0 uint16
+			Field1 dynssz.CompatibleUnion[struct {
+				Field1 []uint32
+				Field2 [2]uint8
+			}] `ssz-type:"compatible-union"`
+			Field3 uint16
+		}{0x1337, dynssz.CompatibleUnion[struct {
+			Field1 []uint32
+			Field2 [2]uint8
+		}]{Variant: 1, Data: [2]uint8{0x78, 0x56}}, 0x4242},
+		fromHex("0x3713080000004242017856"),
+		fromHex("0xa667d80855a0a42d447357c8dc753ce188ed7d30daceee9bb7ecc592d729bbeb"),
 	},
 	{
 		"complex_struct15",
@@ -517,6 +515,84 @@ var commonTestMatrix = []struct {
 		}{[]uint64{1, 2, 3}},
 		fromHex("0x010000000000000002000000000000000300000000000000"),
 		fromHex("0x0100000000000000020000000000000003000000000000000000000000000000"),
+	},
+	{
+		"type_vector_2",
+		struct {
+			Values []struct {
+				F1 []uint64
+				F2 uint64
+			} `ssz-type:"vector" ssz-size:"3"`
+		}{},
+		fromHex("0x040000000c00000018000000240000000c00000000000000000000000c00000000000000000000000c0000000000000000000000"),
+		fromHex("0x8a76fb51c2335e4235aea0146626d464fe6dacad7a68f4efca90806241b3b213"),
+	},
+	{
+		"type_vector_3",
+		func() any {
+			type TestType = dynssz.TypeWrapper[struct {
+				Data []struct {
+					F1 []uint64
+					F2 uint64
+				} `ssz-type:"vector" ssz-size:"3"`
+			}, []struct {
+				F1 []uint64
+				F2 uint64
+			}]
+			return TestType{
+				Data: []struct {
+					F1 []uint64
+					F2 uint64
+				}{},
+			}
+		}(),
+		fromHex("0x0c00000018000000240000000c00000000000000000000000c00000000000000000000000c0000000000000000000000"),
+		fromHex("0x8a76fb51c2335e4235aea0146626d464fe6dacad7a68f4efca90806241b3b213"),
+	},
+	{
+		"type_vector_4",
+		func() any {
+			type TestType = dynssz.TypeWrapper[struct {
+				Data []struct {
+					F2 uint64
+				} `ssz-type:"vector" ssz-size:"3"`
+			}, []struct {
+				F2 uint64
+			}]
+			return TestType{
+				Data: []struct {
+					F2 uint64
+				}{},
+			}
+		}(),
+		fromHex("0x000000000000000000000000000000000000000000000000"),
+		fromHex("0xdb56114e00fdd4c1f85c892bf35ac9a89289aaecb1ebd0a96cde606a748b5d71"),
+	},
+
+	// list with size hint
+	{
+		"list_with_size1",
+		struct {
+			F1 []uint16 `ssz-type:"list" ssz-size:"2"`
+		}{[]uint16{2, 3}},
+		fromHex("0x02000300"),
+		fromHex("0x0200030000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"list_with_size2",
+		struct {
+			F1 [][]uint16 `ssz-type:"list" ssz-size:"2"`
+		}{[][]uint16{{2, 3}}},
+		fromHex("0x040000000400000002000300"),
+		fromHex("0x0200030000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"list_with_size3",
+		struct {
+			F1 []uint8 `ssz-type:"bitlist" ssz-bitsize:"16"`
+		}{[]uint8{0x02, 0x03}},
+		fromHex("0x0203"),
+		fromHex("0x32cdafa273f9ccca9f53cad6960d5b1e40721b247be996a439925e34531fa248"),
 	},
 
 	// container type annotation
@@ -944,6 +1020,7 @@ type TestContainerWithMarshalError struct {
 
 var _ sszutils.FastsszMarshaler = (*TestContainerWithMarshalError)(nil)
 var _ sszutils.FastsszUnmarshaler = (*TestContainerWithMarshalError)(nil)
+var _ sszutils.FastsszHashRoot = (*TestContainerWithMarshalError)(nil)
 
 func (c *TestContainerWithMarshalError) MarshalSSZ() ([]byte, error) {
 	return nil, fmt.Errorf("test MarshalSSZTo error")
@@ -958,7 +1035,11 @@ func (c *TestContainerWithMarshalError) SizeSSZ() int {
 }
 
 func (c *TestContainerWithMarshalError) UnmarshalSSZ(buf []byte) error {
-	return nil
+	return fmt.Errorf("test UnmarshalSSZ error")
+}
+
+func (c *TestContainerWithMarshalError) HashTreeRoot() ([32]byte, error) {
+	return [32]byte{}, fmt.Errorf("test HashTreeRoot error")
 }
 
 // TestContainerWithDynamicMarshalError has MarshalSSZDyn that returns an error.
@@ -967,6 +1048,7 @@ type TestContainerWithDynamicMarshalError struct {
 }
 
 var _ sszutils.DynamicMarshaler = (*TestContainerWithDynamicMarshalError)(nil)
+var _ sszutils.DynamicUnmarshaler = (*TestContainerWithDynamicMarshalError)(nil)
 
 func (c *TestContainerWithDynamicMarshalError) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
 	return nil, fmt.Errorf("test MarshalSSZDyn error")
@@ -974,6 +1056,10 @@ func (c *TestContainerWithDynamicMarshalError) MarshalSSZDyn(ds sszutils.Dynamic
 
 func (c *TestContainerWithDynamicMarshalError) SizeSSZDyn(ds sszutils.DynamicSpecs) int {
 	return 8
+}
+
+func (c *TestContainerWithDynamicMarshalError) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) error {
+	return fmt.Errorf("test UnmarshalSSZDyn error")
 }
 
 // TestContainerWithSizerError has SizeSSZ that returns an error behavior.

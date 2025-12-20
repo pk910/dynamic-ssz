@@ -84,9 +84,6 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 		case SszTypeWrapperType:
 			// Extract the Data field from the TypeWrapper
 			dataField := targetValue.Field(0)
-			if !dataField.IsValid() {
-				return 0, fmt.Errorf("TypeWrapper missing 'Data' field")
-			}
 
 			// Calculate size for the wrapped value using its type descriptor
 			size, err := d.getSszValueSize(targetType.ElemDesc, dataField)
@@ -188,7 +185,7 @@ func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect
 			// Get the variant descriptor
 			variantDesc, ok := targetType.UnionVariants[variant]
 			if !ok {
-				return 0, fmt.Errorf("unknown union variant index: %d", variant)
+				return 0, sszutils.ErrInvalidUnionVariant
 			}
 
 			// Calculate size of the data

@@ -82,7 +82,6 @@ func TestUnmarshalNoFastSsz(t *testing.T) {
 
 func TestUnmarshalErrors(t *testing.T) {
 	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
 
 	type Uint32WithInvalidSize uint32
 	uint32desc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Uint32WithInvalidSize(0)), nil, nil, nil)
@@ -105,6 +104,12 @@ func TestUnmarshalErrors(t *testing.T) {
 		data        []byte
 		expectedErr string
 	}{
+		{
+			name:        "no_pointer_type",
+			target:      uint64(1),
+			data:        fromHex("0x00000000"),
+			expectedErr: "target must be a pointer",
+		},
 		{
 			name:        "unknown_type",
 			target:      new(complex64),
@@ -498,6 +503,33 @@ func TestUnmarshalErrors(t *testing.T) {
 			data:        fromHex("0x04000000" + "01020304"),
 			expectedErr: "incorrect offset",
 		},
+		{
+			name: "fastssz_unmarshal_error",
+			target: new(struct {
+				F1 *TestContainerWithMarshalError `ssz-type:"custom" ssz-size:"4"`
+			}),
+			data:        fromHex("0x04000000" + "01020304"),
+			expectedErr: "test UnmarshalSSZ error",
+		},
+		{
+			name: "dynssz_unmarshal_error",
+			target: new(struct {
+				F1 TestContainerWithDynamicMarshalError
+			}),
+			data:        fromHex("0x04000000" + "0102030405060708"),
+			expectedErr: "test UnmarshalSSZDyn error",
+		},
+		{
+			name: "invalid_compatible_union_variant",
+			target: new(CompatibleUnion[struct {
+				Field0 uint16
+				Field1 CompatibleUnion[struct {
+					Field1 uint32
+				}]
+			}]),
+			data:        fromHex("0x04000000" + "ff02030405060708"),
+			expectedErr: "invalid union variant",
+		},
 
 		// internal defensive check errors
 		{
@@ -557,6 +589,48 @@ func TestUnmarshalErrors(t *testing.T) {
 				t.Errorf("expected error containing '%s', but got no error", tc.expectedErr)
 			} else if !contains(err.Error(), tc.expectedErr) {
 				t.Errorf("expected error containing '%s', but got: %v", tc.expectedErr, err)
+			}
+		})
+	}
+}
+
+func TestUnmarshalVerbose(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+	dynssz.Verbose = true
+	dynssz.LogCb = func(format string, args ...any) {}
+
+	// Test with various types to exercise verbose logging paths
+	testCases := []struct {
+		name   string
+		target any
+		data   []byte
+	}{
+		{"simple_struct", &struct {
+			Field0 uint64
+			Field1 uint32
+		}{},
+			fromHex("0x7b00000000000000c8010000")},
+		{"progressive_container", &struct {
+			Field0 uint64 `ssz-index:"0"`
+			Field1 uint32 `ssz-index:"1"`
+		}{},
+			fromHex("0x7b00000000000000c8010000")},
+		{"vector", &struct {
+			Data [3]uint32
+		}{},
+			fromHex("0x010000000200000003000000")},
+		{"type_wrapper", &TypeWrapper[struct {
+			Data uint32
+		}, uint32]{},
+			fromHex("0x2a000000")},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := dynssz.UnmarshalSSZ(tc.target, tc.data)
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
 			}
 		})
 	}

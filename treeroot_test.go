@@ -109,6 +109,26 @@ func TestTreeRootNoFastSsz(t *testing.T) {
 	}
 }
 
+func TestTreeRootNoFastHash(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastHash = true
+
+	for idx, test := range treerootTestMatrix {
+		t.Run(test.name, func(t *testing.T) {
+			buf, err := dynssz.HashTreeRoot(test.payload)
+
+			switch {
+			case test.htr == nil && err != nil:
+				// expected error
+			case err != nil:
+				t.Errorf("test %v error: %v", idx, err)
+			case !bytes.Equal(buf[:], test.htr):
+				t.Errorf("test %v failed: got 0x%x, wanted 0x%x", idx, buf, test.htr)
+			}
+		})
+	}
+}
+
 func TestStringVsByteContainerTreeRootEquivalence(t *testing.T) {
 	type StringContainer struct {
 		Data string `ssz-max:"100"`
@@ -544,6 +564,191 @@ func TestTreeGeneration(t *testing.T) {
 	}
 }
 
+func TestGetTreeErrors(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	testCases := []struct {
+		name        string
+		input       any
+		expectedErr string
+	}{
+		{
+			name:        "unknown_type",
+			input:       complex64(1 + 2i),
+			expectedErr: "complex numbers are not supported in SSZ",
+		},
+		{
+			name: "vector_too_big",
+			input: struct {
+				Data []uint8 `ssz-size:"5"`
+			}{[]uint8{1, 2, 3, 4, 5, 6}},
+			expectedErr: "list length is higher than max value",
+		},
+		{
+			name: "type_wrapper_missing_data",
+			input: struct {
+				TypeWrapper struct{} `ssz-type:"wrapper"`
+			}{},
+			expectedErr: "method not found on type",
+		},
+		{
+			name: "bitlist_too_big",
+			input: struct {
+				Bits []byte `ssz-type:"bitlist" ssz-max:"8"`
+			}{[]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x12}},
+			expectedErr: "list length is higher than max value",
+		},
+		{
+			name: "invalid_uint128_size",
+			input: struct {
+				Value []byte `ssz-type:"uint128"`
+			}{[]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}},
+			expectedErr: "large uint type does not have expected data length (17 != 16)",
+		},
+		{
+			name: "invalid_uint256_size",
+			input: struct {
+				Value []byte `ssz-type:"uint256"`
+			}{[]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33}},
+			expectedErr: "large uint type does not have expected data length (33 != 32)",
+		},
+		{
+			name: "invalid_bitvector_type",
+			input: struct {
+				Flags []uint16 `ssz-type:"bitvector" ssz-size:"4"`
+			}{[]uint16{1, 2, 3, 4}},
+			expectedErr: "bitvector ssz type can only be represented by byte slices or arrays, got uint16",
+		},
+		{
+			name: "nested_container_field_error",
+			input: struct {
+				Inner struct {
+					Data complex128
+				}
+			}{struct {
+				Data complex128
+			}{complex128(1 + 2i)}},
+			expectedErr: "complex numbers are not supported in SSZ",
+		},
+		{
+			name: "vector_element_hash_error",
+			input: struct {
+				Data [3]struct {
+					Inner complex64
+				}
+			}{[3]struct {
+				Inner complex64
+			}{{complex64(1)}, {complex64(2)}, {complex64(3)}}},
+			expectedErr: "complex numbers are not supported in SSZ",
+		},
+		{
+			name: "invalid_bitvector_padding",
+			input: struct {
+				Flags []byte `ssz-type:"bitvector" ssz-bitsize:"12"`
+			}{[]byte{0xff, 0x1f}},
+			expectedErr: "incorrect vector length",
+		},
+		{
+			name: "list_element_hash_error",
+			input: struct {
+				Data []struct {
+					Value func()
+				} `ssz-max:"10"`
+			}{[]struct {
+				Value func()
+			}{{nil}, {nil}}},
+			expectedErr: "functions are not supported in SSZ",
+		},
+		{
+			name: "invalid_custom_type",
+			input: struct {
+				Data map[string]int
+			}{map[string]int{"a": 1}},
+			expectedErr: "maps are not supported in SSZ",
+		},
+		{
+			name: "invalid_interface_type",
+			input: struct {
+				Data interface{}
+			}{42},
+			expectedErr: "interfaces are not supported in SSZ",
+		},
+		{
+			name: "channel_type",
+			input: struct {
+				Ch chan int
+			}{make(chan int)},
+			expectedErr: "channels are not supported in SSZ",
+		},
+		{
+			name: "function_type",
+			input: struct {
+				Fn func() error
+			}{func() error { return nil }},
+			expectedErr: "functions are not supported in SSZ",
+		},
+		{
+			name: "string_too_long_fixed",
+			input: struct {
+				Data string `ssz-size:"5"`
+			}{"hello world"},
+			expectedErr: "list length is higher than max value",
+		},
+		{
+			name: "multi_dimensional_size_mismatch",
+			input: struct {
+				Data [2][]*slug_StaticStruct1 `ssz-size:"2,3"`
+			}{[2][]*slug_StaticStruct1{{nil, nil, nil}, {nil, nil, nil, nil}}},
+			expectedErr: "list length is higher than max value",
+		},
+		{
+			name: "invalid_large_uint_array_size",
+			input: struct {
+				Value [15]byte `ssz-type:"uint128"`
+			}{[15]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}},
+			expectedErr: "uint128 ssz type does not fit in array (15 < 16)",
+		},
+		{
+			name: "invalid_large_uint_slice_size",
+			input: struct {
+				Value [2]uint32 `ssz-type:"uint128"`
+			}{[2]uint32{1, 2}},
+			expectedErr: "uint128 ssz type can only be represented by slices or arrays of uint8 or uint64, got uint32",
+		},
+		{
+			name: "bitvector_wrong_element_type",
+			input: struct {
+				Flags [4]uint32 `ssz-type:"bitvector"`
+			}{[4]uint32{1, 2, 3, 4}},
+			expectedErr: "bitvector ssz type can only be represented by byte slices or arrays, got uint32",
+		},
+		{
+			name: "wrapper_recursive_error",
+			input: func() any {
+				type BadWrapper = TypeWrapper[struct {
+					Data complex64
+				}, complex64]
+				return BadWrapper{
+					Data: complex64(1 + 2i),
+				}
+			}(),
+			expectedErr: "complex numbers are not supported in SSZ",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := dynssz.GetTree(tc.input)
+			if err == nil {
+				t.Errorf("expected error containing '%s', but got no error", tc.expectedErr)
+			} else if !contains(err.Error(), tc.expectedErr) {
+				t.Errorf("expected error containing '%s', but got: %v", tc.expectedErr, err)
+			}
+		})
+	}
+}
+
 func TestBinaryVsProgressiveTrees(t *testing.T) {
 	dynssz := NewDynSsz(nil)
 	dynssz.NoFastSsz = true
@@ -909,6 +1114,7 @@ func TestHashTreeRootVerbose(t *testing.T) {
 	dynssz := NewDynSsz(nil)
 	dynssz.NoFastSsz = true
 	dynssz.Verbose = true
+	dynssz.LogCb = func(format string, args ...any) {}
 
 	// Test with various types to exercise verbose logging paths
 	testCases := []struct {

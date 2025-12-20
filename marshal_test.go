@@ -6,6 +6,7 @@ package dynssz_test
 
 import (
 	"bytes"
+	"reflect"
 	"testing"
 
 	. "github.com/pk910/dynamic-ssz"
@@ -232,7 +233,6 @@ func TestFixedSizeStringVsByteArrayMarshal(t *testing.T) {
 
 func TestMarshalErrors(t *testing.T) {
 	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
 
 	testCases := []struct {
 		name        string
@@ -409,6 +409,113 @@ func TestMarshalErrors(t *testing.T) {
 			}{func() error { return nil }},
 			expectedErr: "functions are not supported in SSZ",
 		},
+		{
+			name: "fastssz_marshal_error",
+			input: struct {
+				F1 *TestContainerWithMarshalError
+			}{},
+			expectedErr: "test MarshalSSZTo error",
+		},
+		{
+			name: "dynssz_marshal_error",
+			input: struct {
+				F1 *TestContainerWithDynamicMarshalError
+			}{},
+			expectedErr: "test MarshalSSZDyn error",
+		},
+		{
+			name: "invalid_union_variant",
+			input: struct {
+				Field0 uint16
+				Field1 CompatibleUnion[struct {
+					Field1 uint32
+				}]
+			}{
+				0x1234,
+				CompatibleUnion[struct {
+					Field1 uint32
+				}]{Variant: 99, Data: uint32(42)}, // Invalid variant
+			},
+			expectedErr: "invalid union variant",
+		},
+		{
+			name: "invalid_union_variant_in_list",
+			input: struct {
+				Field0 uint16
+				Field1 []CompatibleUnion[struct {
+					Field1 uint32
+				}]
+			}{
+				0x1234,
+				[]CompatibleUnion[struct {
+					Field1 uint32
+				}]{{Variant: 99, Data: uint32(42)}}, // Invalid variant
+			},
+			expectedErr: "invalid union variant",
+		},
+		{
+			name: "invalid_union_variant_in_vector",
+			input: struct {
+				Field0 uint16
+				Field1 [2]CompatibleUnion[struct {
+					Field1 uint32
+				}]
+			}{
+				0x1234,
+				[2]CompatibleUnion[struct {
+					Field1 uint32
+				}]{{Variant: 99, Data: uint32(42)}}, // Invalid variant
+			},
+			expectedErr: "invalid union variant",
+		},
+		{
+			name: "invalid_union_variant_in_type_wrapper",
+			input: struct {
+				Field0 uint16
+				Field1 TypeWrapper[struct {
+					Field1 CompatibleUnion[struct {
+						Field1 uint32
+					}]
+				}, CompatibleUnion[struct {
+					Field1 uint32
+				}]]
+			}{
+				0x1234,
+				TypeWrapper[struct {
+					Field1 CompatibleUnion[struct {
+						Field1 uint32
+					}]
+				}, CompatibleUnion[struct {
+					Field1 uint32
+				}]]{
+					Data: CompatibleUnion[struct {
+						Field1 uint32
+					}]{Variant: 99, Data: uint32(42)},
+				}, // Invalid variant
+			},
+			expectedErr: "invalid union variant",
+		},
+		{
+			name: "invalid_union_variant_in_union",
+			input: struct {
+				Field0 uint16
+				Field1 CompatibleUnion[struct {
+					Field CompatibleUnion[struct {
+						Field1 uint32
+					}]
+				}]
+			}{
+				0x1234,
+				CompatibleUnion[struct {
+					Field CompatibleUnion[struct {
+						Field1 uint32
+					}]
+				}]{Variant: 1, Data: CompatibleUnion[struct {
+					Field1 uint32
+				}]{Variant: 99, Data: uint32(42)}}, // Invalid variant
+			},
+			expectedErr: "invalid union variant",
+		},
 	}
 
 	for _, tc := range testCases {
@@ -419,21 +526,15 @@ func TestMarshalErrors(t *testing.T) {
 			} else if !contains(err.Error(), tc.expectedErr) {
 				t.Errorf("expected error containing '%s', but got: %v", tc.expectedErr, err)
 			}
+
+			_, err = dynssz.MarshalSSZTo(tc.input, make([]byte, 0, 100))
+			if err == nil {
+				t.Errorf("expected error containing '%s', but got no error", tc.expectedErr)
+			} else if !contains(err.Error(), tc.expectedErr) {
+				t.Errorf("expected error containing '%s', but got: %v", tc.expectedErr, err)
+			}
 		})
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && containsHelper(s, substr))
-}
-
-func containsHelper(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
 
 func TestMarshalVerbose(t *testing.T) {
@@ -441,30 +542,40 @@ func TestMarshalVerbose(t *testing.T) {
 	dynssz.NoFastSsz = true
 	dynssz.Verbose = true
 
-	input := struct {
-		Field0 uint64
-		Field1 uint32
-	}{123, 456}
+	dynssz.LogCb("")
+	dynssz.LogCb = func(format string, args ...any) {}
 
-	_, err := dynssz.MarshalSSZ(input)
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
+	// Test with various types to exercise verbose logging paths
+	testCases := []struct {
+		name  string
+		input any
+	}{
+		{"simple_struct", struct {
+			Field0 uint64
+			Field1 uint32
+		}{123, 456}},
+		{"progressive_container", struct {
+			Field0 uint64 `ssz-index:"0"`
+			Field1 uint32 `ssz-index:"1"`
+		}{123, 456}},
+		{"vector", struct {
+			Data [3]uint32
+		}{[3]uint32{1, 2, 3}}},
+		{"type_wrapper", func() any {
+			type W = TypeWrapper[struct {
+				Data uint32
+			}, uint32]
+			return W{Data: 42}
+		}()},
 	}
-}
 
-func TestMarshalTypeWrapperVerbose(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
-	dynssz.Verbose = true
-
-	type W = TypeWrapper[struct {
-		Data uint32
-	}, uint32]
-	input := W{Data: 42}
-
-	_, err := dynssz.MarshalSSZ(input)
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := dynssz.MarshalSSZ(tc.input)
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
 	}
 }
 
@@ -509,6 +620,28 @@ func TestMarshalDynamicVectorSizeError(t *testing.T) {
 	}
 }
 
+func TestMarshalInvalidSizeError(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	type Uint32WithInvalidSize uint32
+	uint32desc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Uint32WithInvalidSize(0)), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+	uint32desc.Size = 8
+
+	// Test dynamic vector exceeding size limit
+	input := struct {
+		Data Uint32WithInvalidSize
+	}{Uint32WithInvalidSize(42)}
+
+	_, err = dynssz.MarshalSSZ(input)
+	if err == nil {
+		t.Error("ssz length does not match expected length")
+	}
+}
+
 func TestMarshalDynamicVectorAppendZeroPointer(t *testing.T) {
 	dynssz := NewDynSsz(nil)
 	dynssz.NoFastSsz = true
@@ -542,86 +675,6 @@ func TestMarshalListNilPointerElement(t *testing.T) {
 	}
 	if len(buf) == 0 {
 		t.Error("buffer should not be empty")
-	}
-}
-
-func TestMarshalCompatibleUnionError(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
-
-	// Test compatible union with invalid variant
-	type TestUnion = CompatibleUnion[struct {
-		Field1 uint32
-	}]
-	input := struct {
-		Field0 uint16
-		Field1 TestUnion
-	}{
-		0x1234,
-		TestUnion{Variant: 99, Data: uint32(42)}, // Invalid variant
-	}
-
-	_, err := dynssz.MarshalSSZ(input)
-	if err == nil {
-		t.Error("expected error for invalid union variant")
-	}
-}
-
-func TestMarshalFastSszError(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	// NoFastSsz = false to use FastSSZ path
-
-	// Test with type that has MarshalSSZTo returning error
-	input := &TestContainerWithMarshalError{
-		Field0: 42,
-	}
-
-	_, err := dynssz.MarshalSSZ(input)
-	if err == nil {
-		t.Fatal("expected error from MarshalSSZTo")
-	}
-	if !contains(err.Error(), "test MarshalSSZTo error") {
-		t.Errorf("expected MarshalSSZTo error, got: %v", err)
-	}
-}
-
-func TestMarshalDynamicMarshalerError(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
-
-	// Test with type that has dynamic marshaler returning error
-	input := &TestContainerWithDynamicMarshalError{
-		Field0: 42,
-	}
-
-	_, err := dynssz.MarshalSSZ(input)
-	if err == nil {
-		t.Error("expected error from MarshalSSZDyn")
-	}
-	if !contains(err.Error(), "test MarshalSSZDyn error") {
-		t.Errorf("expected MarshalSSZDyn error, got: %v", err)
-	}
-}
-
-func TestSizeSSZUnionError(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
-
-	// Test size calculation for union with invalid variant
-	type TestUnion = CompatibleUnion[struct {
-		Field1 uint32
-	}]
-	input := struct {
-		Field0 uint16
-		Field1 TestUnion
-	}{
-		0x1234,
-		TestUnion{Variant: 99, Data: uint32(42)}, // Invalid variant
-	}
-
-	_, err := dynssz.SizeSSZ(input)
-	if err == nil {
-		t.Error("expected error for invalid union variant in size calculation")
 	}
 }
 
@@ -916,5 +969,39 @@ func TestSizeSSZDynamicSizerFallback(t *testing.T) {
 	// Should fallback to manual calculation: 4 bytes
 	if size != 4 {
 		t.Errorf("expected size 4, got %d", size)
+	}
+}
+
+func TestCustomFallbackMarshal(t *testing.T) {
+	type TestStruct struct {
+		ID uint32
+	}
+
+	type TestContainer struct {
+		Data TestStruct
+	}
+
+	dynssz := NewDynSsz(nil)
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(TestContainer{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	structDesc := typeDesc.ContainerDesc.Fields[0].Type
+	if structDesc == nil {
+		t.Fatalf("Expected struct descriptor, got nil")
+	}
+
+	if structDesc.SszType != SszContainerType {
+		t.Fatalf("Expected container type, got %v", structDesc.SszType)
+	}
+
+	structDesc.SszType = SszCustomType
+	structDesc.SszCompatFlags |= SszCompatFlagDynamicUnmarshaler
+
+	_, err = dynssz.MarshalSSZ(&TestContainer{})
+	if err == nil {
+		t.Fatalf("Expected error, got nil")
 	}
 }

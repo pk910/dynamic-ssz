@@ -61,6 +61,9 @@ type DynSsz struct {
 	// Verbose enables detailed logging of encoding/decoding operations.
 	// Useful for debugging but impacts performance.
 	Verbose bool
+
+	// LogCb is a callback function that will be called with the formatted log message.
+	LogCb func(format string, args ...any)
 }
 
 // NewDynSsz creates a new instance of the DynSsz encoder/decoder.
@@ -105,6 +108,9 @@ func NewDynSsz(specs map[string]any) *DynSsz {
 	dynssz := &DynSsz{
 		specValues:     specs,
 		specValueCache: map[string]*cachedSpecValue{},
+		LogCb: func(format string, args ...any) {
+			fmt.Printf(format, args...)
+		},
 	}
 	dynssz.typeCache = NewTypeCache(dynssz)
 

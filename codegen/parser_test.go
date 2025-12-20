@@ -278,7 +278,7 @@ func TestSizeHints(t *testing.T) {
 			name:      "other non bitvector type with bit size",
 			typ:       types.NewArray(types.Typ[types.Uint8], 16),
 			sizeHints: []ssz.SszSizeHint{{Bits: true}},
-			expected:  "bit size tag is only allowed for bitvector types",
+			expected:  "bit size tag is only allowed for bitvector or bitlist types",
 		},
 	}
 
