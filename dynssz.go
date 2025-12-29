@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"reflect"
 
+	"github.com/pk910/dynamic-ssz/buffer"
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
 	"github.com/pk910/dynamic-ssz/treeproof"
@@ -204,11 +205,13 @@ func (d *DynSsz) MarshalSSZ(source any) ([]byte, error) {
 	}
 
 	buf := make([]byte, 0, size)
-	newBuf, err := d.marshalType(sourceTypeDesc, sourceValue, buf, 0)
+	encoder := buffer.NewBufferEncoder(buf)
+	err = d.marshalType(sourceTypeDesc, sourceValue, encoder, 0)
 	if err != nil {
 		return nil, err
 	}
 
+	newBuf := encoder.GetBuffer()
 	if uint32(len(newBuf)) != size {
 		return nil, fmt.Errorf("ssz length does not match expected length (expected: %v, got: %v)", size, len(newBuf))
 	}
@@ -256,12 +259,13 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	newBuf, err := d.marshalType(sourceTypeDesc, sourceValue, buf, 0)
+	encoder := buffer.NewBufferEncoder(buf)
+	err = d.marshalType(sourceTypeDesc, sourceValue, encoder, 0)
 	if err != nil {
 		return nil, err
 	}
 
-	return newBuf, nil
+	return encoder.GetBuffer(), nil
 }
 
 // SizeSSZ calculates the size of the given source object when serialized using SSZ encoding.

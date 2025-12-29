@@ -62,7 +62,7 @@ type TypeDescriptor struct {
 	CodegenInfo            *any                      `json:"-"`                   // Codegen information
 	Kind                   reflect.Kind              `json:"kind"`                // Reflect kind of the type
 	Size                   uint32                    `json:"size"`                // SSZ size (-1 if dynamic)
-	Len                    uint32                    `json:"len"`                 // Length of array/slice
+	Len                    uint32                    `json:"len"`                 // Length of array/slice / static size of container
 	Limit                  uint64                    `json:"limit"`               // Limit of array/slice (ssz-max tag)
 	ContainerDesc          *ContainerDescriptor      `json:"container,omitempty"` // For structs
 	UnionVariants          map[uint8]*TypeDescriptor `json:"union,omitempty"`     // Union variant types by index (for CompatibleUnion)
@@ -706,6 +706,7 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 		desc.SszType = SszProgressiveContainerType
 	}
 
+	desc.Len = totalSize
 	if isDynamic {
 		desc.Size = 0
 		desc.SszTypeFlags |= SszTypeFlagIsDynamic

@@ -673,6 +673,7 @@ func (p *Parser) buildContainerDescriptor(desc *dynssz.TypeDescriptor, struc *ty
 	}
 	desc.ContainerDesc = containerDesc
 
+	desc.Len = size
 	if isDynamic {
 		desc.SszTypeFlags |= dynssz.SszTypeFlagIsDynamic
 		desc.Size = 0
