@@ -652,9 +652,9 @@ func (p *Parser) buildContainerDescriptor(desc *dynssz.TypeDescriptor, struc *ty
 		if typeDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
 			// Dynamic field
 			dynFieldDesc := dynssz.DynFieldDescriptor{
-				Field:  &fieldDesc,
-				Offset: size,
-				Index:  int16(len(fields)),
+				Field:        &fieldDesc,
+				HeaderOffset: size,
+				Index:        int16(len(fields)),
 			}
 			dynFields = append(dynFields, dynFieldDesc)
 			isDynamic = true

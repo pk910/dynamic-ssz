@@ -191,7 +191,7 @@ func TestUnmarshalErrors(t *testing.T) {
 				A []uint8 `ssz-size:"100"`
 			}),
 			data:        fromHex("0x0400000001"),
-			expectedErr: "field A expects 100 bytes, got 5",
+			expectedErr: "unexpected end of SSZ",
 		},
 		{
 			name: "vector_size_mismatch",
@@ -215,7 +215,7 @@ func TestUnmarshalErrors(t *testing.T) {
 				Data [2]uint32
 			}),
 			data:        fromHex("0x0100000002000000030000"),
-			expectedErr: "did not consume full ssz range (consumed: 8, ssz size: 11)",
+			expectedErr: "did not consume full ssz range (diff: 3, ssz size: 11)",
 		},
 		{
 			name: "dynamic_vector_odd_byte_count",
@@ -231,7 +231,7 @@ func TestUnmarshalErrors(t *testing.T) {
 				Data [][2]uint16 `ssz-size:"1"`
 			}),
 			data:        fromHex("0x0400000001000200"),
-			expectedErr: "did not consume full ssz range (consumed: 4, ssz size: 8)",
+			expectedErr: "did not consume full ssz range (diff: 4, ssz size: 8)",
 		},
 		{
 			name: "dynamic_list_offset_bounds",
@@ -290,7 +290,7 @@ func TestUnmarshalErrors(t *testing.T) {
 				Value []byte `ssz-type:"uint128" ssz-size:"15"`
 			}),
 			data:        fromHex("0x0102030405060708090a0b0c0d0e0f"),
-			expectedErr: "field Value expects 16 bytes, got 15",
+			expectedErr: "unexpected end of SSZ",
 		},
 		{
 			name: "invalid_uint256_size",
@@ -298,7 +298,7 @@ func TestUnmarshalErrors(t *testing.T) {
 				Value []byte `ssz-type:"uint256" ssz-size:"31"`
 			}),
 			data:        fromHex("0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"),
-			expectedErr: "field Value expects 32 bytes, got 31",
+			expectedErr: "unexpected end of SSZ",
 		},
 		{
 			name: "string_fixed_size_mismatch",
@@ -306,7 +306,7 @@ func TestUnmarshalErrors(t *testing.T) {
 				Data string `ssz-size:"5"`
 			}),
 			data:        fromHex("0x68656c6c6f20776f726c64"),
-			expectedErr: "did not consume full ssz range (consumed: 5, ssz size: 11)",
+			expectedErr: "did not consume full ssz range (diff: 6, ssz size: 11)",
 		},
 		{
 			name: "nested_unmarshal_error",
@@ -316,7 +316,7 @@ func TestUnmarshalErrors(t *testing.T) {
 				}
 			}),
 			data:        fromHex("0x010000"),
-			expectedErr: "unexpected end of SSZ. field Inner expects 8 bytes, got 3",
+			expectedErr: "unexpected end of SSZ",
 		},
 		{
 			name: "dynamic_nested_offset_error",
@@ -384,7 +384,7 @@ func TestUnmarshalErrors(t *testing.T) {
 				A []uint8 `ssz-max:"100"`
 			}),
 			data:        fromHex("0x0400"),
-			expectedErr: "unexpected end of SSZ. dynamic field A expects 4 bytes (offset)",
+			expectedErr: "unexpected end of SSZ",
 		},
 		{
 			name: "static_vector_item_error",
@@ -497,7 +497,9 @@ func TestUnmarshalErrors(t *testing.T) {
 					Data struct {
 						Inner []uint8 `ssz-max:"10"`
 					}
-				}, []uint8]
+				}, struct {
+					Inner []uint8 `ssz-max:"10"`
+				}]
 			}),
 			// Container offset (4) + first offset claims 2 items (8) but only 5 bytes total
 			data:        fromHex("0x04000000" + "01020304"),

@@ -373,13 +373,17 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte) error {
 		return fmt.Errorf("target pointer must not be nil")
 	}
 
-	consumedBytes, err := d.unmarshalType(targetTypeDesc, targetValue, ssz, 0)
+	decoder := buffer.NewBufferDecoder(ssz)
+	decoder.PushLimit(len(ssz))
+
+	err = d.unmarshalType(targetTypeDesc, targetValue, decoder, 0)
 	if err != nil {
 		return err
 	}
 
-	if consumedBytes != len(ssz) {
-		return fmt.Errorf("did not consume full ssz range (consumed: %v, ssz size: %v)", consumedBytes, len(ssz))
+	consumedDiff := decoder.PopLimit()
+	if consumedDiff != 0 {
+		return fmt.Errorf("did not consume full ssz range (diff: %v, ssz size: %v)", consumedDiff, len(ssz))
 	}
 
 	return nil

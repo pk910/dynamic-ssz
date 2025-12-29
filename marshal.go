@@ -241,7 +241,7 @@ func (d *DynSsz) marshalContainer(sourceType *TypeDescriptor, sourceValue reflec
 	for _, field := range sourceType.ContainerDesc.DynFields {
 		// set field offset
 		if canSeek {
-			fieldOffset := int(field.Offset)
+			fieldOffset := int(field.HeaderOffset)
 			encoder.EncodeOffsetAt(fieldOffset+startLen, uint32(offset))
 		}
 

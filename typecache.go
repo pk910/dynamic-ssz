@@ -92,9 +92,9 @@ type FieldDescriptor struct {
 
 // DynFieldDescriptor represents a dynamic field descriptor for a struct
 type DynFieldDescriptor struct {
-	Field  *FieldDescriptor `json:"field"`
-	Offset uint32           `json:"offset"`
-	Index  int16            `json:"index"` // Index of the field in the struct
+	Field        *FieldDescriptor `json:"field"`
+	HeaderOffset uint32           `json:"offset"`
+	Index        int16            `json:"index"` // Index of the field in the struct
 }
 
 // NewTypeCache creates a new type cache
@@ -670,9 +670,9 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 			sszSize = 4 // Offset size for dynamic fields
 
 			desc.ContainerDesc.DynFields = append(desc.ContainerDesc.DynFields, DynFieldDescriptor{
-				Field:  &desc.ContainerDesc.Fields[i],
-				Offset: uint32(totalSize),
-				Index:  int16(i),
+				Field:        &desc.ContainerDesc.Fields[i],
+				HeaderOffset: uint32(totalSize),
+				Index:        int16(i),
 			})
 		}
 
