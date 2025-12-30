@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"bytes"
 	"encoding/hex"
 	"reflect"
 	"testing"
@@ -90,5 +91,16 @@ func testCodegenPayload(t *testing.T, payload TestPayload) {
 	hashRootHex = hex.EncodeToString(hashRoot[:])
 	if hashRootHex != payload.Hash {
 		t.Fatalf("Hash root mismatch 2: expected %s, got %s", payload.Hash, hashRootHex)
+	}
+
+	memBuf := make([]byte, 0, len(sszBytes))
+	memWriter := bytes.NewBuffer(memBuf)
+	err = ds.MarshalSSZWriter(payload.Payload, memWriter)
+	if err != nil {
+		t.Fatalf("Failed to marshal payload: %v", err)
+	}
+	memBuf = memWriter.Bytes()
+	if !bytes.Equal(memBuf, sszBytes) {
+		t.Fatalf("MarshalSSZWriter mismatch: expected %x, got %x", sszBytes, memBuf)
 	}
 }

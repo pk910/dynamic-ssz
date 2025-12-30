@@ -88,7 +88,7 @@ func unmarshalType[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, ta
 	}
 
 	if !useFastSsz && useDynamicDecoder {
-		if !decoder.CanSeek() && useDynamicUnmarshal {
+		if decoder.CanSeek() && useDynamicUnmarshal {
 			// prefer static unmarshaller for non-seekable decoders (buffer based)
 			useDynamicDecoder = false
 		} else if sszDecoder, ok := targetValue.Addr().Interface().(sszutils.DynamicDecoder); ok {
@@ -101,7 +101,7 @@ func unmarshalType[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, ta
 		}
 	}
 
-	if !useFastSsz && useDynamicUnmarshal {
+	if !useFastSsz && !useDynamicDecoder && useDynamicUnmarshal {
 		// Use dynamic unmarshaler - can always be used even with dynamic specs
 		unmarshaller, ok := targetValue.Addr().Interface().(sszutils.DynamicUnmarshaler)
 		if ok {
@@ -124,7 +124,7 @@ func unmarshalType[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, ta
 		}
 	}
 
-	if !useFastSsz && !useDynamicUnmarshal {
+	if !useFastSsz && !useDynamicDecoder && !useDynamicUnmarshal {
 		// can't use fastssz, use dynamic unmarshaling
 		var err error
 		switch targetType.SszType {

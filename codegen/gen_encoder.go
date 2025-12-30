@@ -6,6 +6,7 @@ package codegen
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"slices"
@@ -28,13 +29,16 @@ import (
 type encoderContext struct {
 	appendCode        func(indent int, code string, args ...any)
 	appendExprCode    func(indent int, code string, args ...any)
+	appendSizeCode    func(indent int, code string, args ...any)
 	typePrinter       *TypePrinter
 	options           *CodeGeneratorOptions
 	usedDynSpecs      bool
 	usedCanSeek       bool
 	usedContext       bool
 	exprVarCounter    int
+	sizeVarCounter    int
 	exprVarMap        map[[32]byte]string
+	sizeVarMap        map[[32]byte]string
 	sizeFnNameMap     map[*dynssz.TypeDescriptor]int
 	sizeFnSignature   map[string]string
 	sizeFnNameCounter int
@@ -56,6 +60,7 @@ type encoderContext struct {
 func generateEncoder(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
 	codeBuf := strings.Builder{}
 	exprCodeBuf := strings.Builder{}
+	sizeCodeBuf := strings.Builder{}
 	ctx := &encoderContext{
 		appendCode: func(indent int, code string, args ...any) {
 			if len(args) > 0 {
@@ -69,9 +74,16 @@ func generateEncoder(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.B
 			}
 			exprCodeBuf.WriteString(indentStr(code, indent))
 		},
+		appendSizeCode: func(indent int, code string, args ...any) {
+			if len(args) > 0 {
+				code = fmt.Sprintf(code, args...)
+			}
+			sizeCodeBuf.WriteString(indentStr(code, indent))
+		},
 		typePrinter:     typePrinter,
 		options:         options,
 		exprVarMap:      make(map[[32]byte]string),
+		sizeVarMap:      make(map[[32]byte]string),
 		sizeFnNameMap:   make(map[*dynssz.TypeDescriptor]int),
 		sizeFnSignature: make(map[string]string),
 	}
@@ -102,6 +114,7 @@ func generateEncoder(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.B
 	}
 	codeBuilder.WriteString(exprCodeBuf.String())
 	codeBuilder.WriteString(sizeFnCode)
+	codeBuilder.WriteString(sizeCodeBuf.String())
 	codeBuilder.WriteString(codeBuf.String())
 	codeBuilder.WriteString("\treturn nil\n")
 	codeBuilder.WriteString("}\n\n")
@@ -135,6 +148,95 @@ func (ctx *encoderContext) isInlineable(desc *dynssz.TypeDescriptor) bool {
 	}
 
 	return false
+}
+
+// getStaticSizeVar generates a variable name for cached static size calculations.
+func (ctx *encoderContext) getStaticSizeVar(desc *dynssz.TypeDescriptor) (string, error) {
+	descCopy := *desc
+	descCopy.GoTypeFlags &= ^dynssz.GoTypeFlagIsPointer
+
+	descJson, err := json.Marshal(descCopy)
+	if err != nil {
+		return "", err
+	}
+	descHash := sha256.Sum256(descJson)
+
+	if sizeVar, ok := ctx.sizeVarMap[descHash]; ok {
+		return sizeVar, nil
+	}
+
+	ctx.sizeVarCounter++
+	sizeVar := fmt.Sprintf("size%d", ctx.sizeVarCounter)
+
+	// recursive resolve static size with size expressions
+	switch desc.SszType {
+	case dynssz.SszTypeWrapperType:
+		sizeVar, err = ctx.getStaticSizeVar(desc.ElemDesc)
+		if err != nil {
+			return "", err
+		}
+	case dynssz.SszContainerType, dynssz.SszProgressiveContainerType:
+		fieldSizeVars := []string{}
+		staticSize := 0
+		for _, field := range desc.ContainerDesc.Fields {
+			if field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
+				return "", fmt.Errorf("dynamic field not supported for static size calculation")
+			} else if field.Type.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+				fieldSizeVar, err := ctx.getStaticSizeVar(field.Type)
+				if err != nil {
+					return "", err
+				}
+
+				fieldSizeVars = append(fieldSizeVars, fieldSizeVar)
+			} else {
+				staticSize += int(field.Type.Size)
+			}
+		}
+
+		fieldSizeVars = append(fieldSizeVars, fmt.Sprintf("%d", staticSize))
+		if len(fieldSizeVars) == 1 {
+			return fieldSizeVars[0], nil
+		}
+		ctx.appendSizeCode(1, "%s := %s // size expression for '%s'\n", sizeVar, strings.Join(fieldSizeVars, "+"), ctx.typePrinter.TypeStringWithoutTracking(desc))
+	case dynssz.SszVectorType, dynssz.SszBitvectorType, dynssz.SszUint128Type, dynssz.SszUint256Type:
+		sizeExpression := desc.SizeExpression
+		if ctx.options.WithoutDynamicExpressions {
+			sizeExpression = nil
+		}
+
+		if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
+			return "", fmt.Errorf("dynamic vector not supported for static size calculation")
+		} else {
+			itemSizeVar := ""
+			if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+				itemSizeVar, err = ctx.getStaticSizeVar(desc.ElemDesc)
+				if err != nil {
+					return "", err
+				}
+			} else {
+				itemSizeVar = fmt.Sprintf("%d", desc.ElemDesc.Size)
+			}
+
+			if sizeExpression != nil {
+				exprVar := ctx.getExprVar(*sizeExpression, uint64(desc.Len))
+
+				if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
+					exprVar = fmt.Sprintf("(%s+7)/8", exprVar)
+				}
+
+				ctx.appendSizeCode(1, "%s := %s * int(%s)\n", sizeVar, itemSizeVar, exprVar)
+			} else {
+				ctx.appendSizeCode(1, "%s := %s * %d\n", sizeVar, itemSizeVar, desc.Len)
+			}
+		}
+
+	default:
+		return "", fmt.Errorf("unknown type for static size calculation: %v", desc.SszType)
+	}
+
+	ctx.sizeVarMap[descHash] = sizeVar
+
+	return sizeVar, nil
 }
 
 // getExprVar generates a variable name for cached limit expression calculations.
@@ -355,17 +457,30 @@ func (ctx *encoderContext) marshalType(desc *dynssz.TypeDescriptor, varName stri
 // marshalContainer generates marshal code for SSZ container (struct) types.
 func (ctx *encoderContext) marshalContainer(desc *dynssz.TypeDescriptor, varName string, indent int) error {
 	hasDynamic := false
+	staticSize := 0
+	staticSizeVars := []string{}
 	for _, field := range desc.ContainerDesc.Fields {
 		if field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
 			hasDynamic = true
-			break
+			staticSize += 4
+		} else {
+			if field.Type.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+				sizeVar, err := ctx.getStaticSizeVar(field.Type)
+				if err != nil {
+					return err
+				}
+				staticSizeVars = append(staticSizeVars, sizeVar)
+			} else {
+				staticSize += int(field.Type.Size)
+			}
 		}
 	}
+	staticSizeVars = append(staticSizeVars, fmt.Sprintf("%d", staticSize))
 
 	if hasDynamic {
 		ctx.usedCanSeek = true
 		ctx.appendCode(indent, "dstlen := enc.GetPosition()\n")
-		ctx.appendCode(indent, "dynoff := uint32(%v)\n", desc.Len)
+		ctx.appendCode(indent, "dynoff := uint32(%v)\n", strings.Join(staticSizeVars, "+"))
 	}
 
 	// Write offsets for dynamic fields

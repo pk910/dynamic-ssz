@@ -76,10 +76,10 @@ func marshalType[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescriptor, sour
 	}
 
 	if !useFastSsz && useDynamicEncoder {
-		if !encoder.CanSeek() && useDynamicMarshal {
+		if encoder.CanSeek() && useDynamicMarshal {
 			// prefer static marshaller for non-seekable encoders (buffer based)
 			useDynamicEncoder = false
-		} else if sszEncoder, ok := sourceValue.Addr().Interface().(sszutils.DynamicEncoder); ok {
+		} else if sszEncoder, ok := getPtr(sourceValue).Interface().(sszutils.DynamicEncoder); ok {
 			err := sszEncoder.MarshalSSZEncoder(d, encoder)
 			if err != nil {
 				return err
@@ -89,7 +89,7 @@ func marshalType[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescriptor, sour
 		}
 	}
 
-	if !useFastSsz && useDynamicMarshal {
+	if !useFastSsz && !useDynamicEncoder && useDynamicMarshal {
 		// Use dynamic marshaler - can always be used even with dynamic specs
 		marshaller, ok := getPtr(sourceValue).Interface().(sszutils.DynamicMarshaler)
 		if ok {
@@ -103,7 +103,7 @@ func marshalType[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescriptor, sour
 		}
 	}
 
-	if !useFastSsz && !useDynamicMarshal {
+	if !useFastSsz && !useDynamicEncoder && !useDynamicMarshal {
 		// can't use fastssz, use dynamic marshaling
 		var err error
 		switch sourceType.SszType {
