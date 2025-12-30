@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // This file is part of the dynamic-ssz library.
 
-package buffer
+package dynssz
 
 import (
 	"encoding/binary"
@@ -11,18 +11,22 @@ import (
 )
 
 type BufferDecoder struct {
-	buffer   []byte
-	limits   []int
-	position int
+	buffer    []byte
+	limits    []int
+	lastLimit int
+	bufferLen int
+	position  int
 }
 
 var _ sszutils.Decoder = (*BufferDecoder)(nil)
 
 func NewBufferDecoder(buffer []byte) *BufferDecoder {
 	return &BufferDecoder{
-		buffer:   buffer,
-		limits:   make([]int, 0, 16),
-		position: 0,
+		buffer:    buffer,
+		limits:    make([]int, 0, 16),
+		lastLimit: len(buffer),
+		bufferLen: len(buffer),
+		position:  0,
 	}
 }
 
@@ -34,29 +38,32 @@ func (e *BufferDecoder) GetPosition() int {
 	return e.position
 }
 
-func (e *BufferDecoder) getLimit() int {
-	if len(e.limits) == 0 {
-		return len(e.buffer)
-	}
-	return e.limits[len(e.limits)-1]
-}
-
 func (e *BufferDecoder) GetLength() int {
-	return e.getLimit() - e.position
+	return e.lastLimit - e.position
 }
 
 func (e *BufferDecoder) PushLimit(limit int) {
 	limitPos := e.position + limit
-	if curLimit := e.getLimit(); limitPos > curLimit {
-		limitPos = curLimit
+	if limitPos > e.lastLimit {
+		limitPos = e.lastLimit
 	}
 
 	e.limits = append(e.limits, limitPos)
+	e.lastLimit = limitPos
 }
 
 func (e *BufferDecoder) PopLimit() int {
-	limit := e.limits[len(e.limits)-1]
-	e.limits = e.limits[:len(e.limits)-1]
+	limitsLen := len(e.limits)
+	if limitsLen == 0 {
+		return 0
+	}
+	limit := e.limits[limitsLen-1]
+	if limitsLen <= 1 {
+		e.lastLimit = e.bufferLen
+	} else {
+		e.lastLimit = e.limits[limitsLen-2]
+	}
+	e.limits = e.limits[:limitsLen-1]
 	return limit - e.position
 }
 
@@ -119,7 +126,7 @@ func (e *BufferDecoder) DecodeBytes(buf []byte) ([]byte, error) {
 }
 
 func (e *BufferDecoder) DecodeBytesBuf(len int) ([]byte, error) {
-	limit := e.getLimit()
+	limit := e.lastLimit
 	if len < 0 {
 		len = limit - e.position
 	} else if limit-e.position < len {

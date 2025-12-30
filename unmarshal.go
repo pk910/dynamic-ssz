@@ -14,20 +14,26 @@ import (
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
-// unmarshalType is the core recursive function for decoding SSZ-encoded data into Go values.
+// unmarshalType is the core recursive generic function for decoding SSZ-encoded data into Go values.
 //
 // This function serves as the primary dispatcher within the unmarshalling process, handling both
 // primitive and composite types. It uses the TypeDescriptor's metadata to determine the most
 // efficient decoding path, automatically leveraging fastssz when possible for optimal performance.
 //
+// The generic type parameter D allows the compiler to generate specialized code for each decoder
+// implementation, eliminating interface dispatch overhead.
+//
+// Type Parameters:
+//   - D: A decoder type implementing sszutils.Decoder
+//
 // Parameters:
+//   - d: The DynSsz instance providing configuration and caching
 //   - targetType: The TypeDescriptor containing optimized metadata about the type to decode
 //   - targetValue: The reflect.Value where decoded data will be stored
-//   - decoder: The decoder to use
+//   - decoder: The decoder instance used to read SSZ-encoded data
 //   - idt: Indentation level for verbose logging (when enabled)
 //
 // Returns:
-//   - int: The number of bytes consumed from the SSZ data
 //   - error: An error if decoding fails
 //
 // The function handles:
@@ -37,7 +43,7 @@ import (
 //   - Delegation to specialized functions for composite types (structs, arrays, slices)
 //   - Validation that consumed bytes match expected sizes
 
-func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
+func unmarshalType[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder D, idt int) error {
 	if targetType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
 		// target is a pointer type, resolve type & value to actual value type
 		if targetValue.IsNil() {
@@ -110,40 +116,40 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 		switch targetType.SszType {
 		// complex types
 		case SszTypeWrapperType:
-			err = d.unmarshalTypeWrapper(targetType, targetValue, decoder, idt)
+			err = unmarshalTypeWrapper(d, targetType, targetValue, decoder, idt)
 			if err != nil {
 				return err
 			}
 		case SszContainerType, SszProgressiveContainerType:
-			err = d.unmarshalContainer(targetType, targetValue, decoder, idt)
+			err = unmarshalContainer(d, targetType, targetValue, decoder, idt)
 			if err != nil {
 				return err
 			}
 		case SszVectorType, SszBitvectorType, SszUint128Type, SszUint256Type:
 			if targetType.ElemDesc.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
-				err = d.unmarshalDynamicVector(targetType, targetValue, decoder, idt)
+				err = unmarshalDynamicVector(d, targetType, targetValue, decoder, idt)
 			} else {
-				err = d.unmarshalVector(targetType, targetValue, decoder, idt)
+				err = unmarshalVector(d, targetType, targetValue, decoder, idt)
 			}
 			if err != nil {
 				return err
 			}
 		case SszListType, SszProgressiveListType:
 			if targetType.ElemDesc.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
-				err = d.unmarshalDynamicList(targetType, targetValue, decoder, idt)
+				err = unmarshalDynamicList(d, targetType, targetValue, decoder, idt)
 			} else {
-				err = d.unmarshalList(targetType, targetValue, decoder, idt)
+				err = unmarshalList(d, targetType, targetValue, decoder, idt)
 			}
 			if err != nil {
 				return err
 			}
 		case SszBitlistType, SszProgressiveBitlistType:
-			err = d.unmarshalBitlist(targetType, targetValue, decoder)
+			err = unmarshalBitlist(d, targetType, targetValue, decoder)
 			if err != nil {
 				return err
 			}
 		case SszCompatibleUnionType:
-			err = d.unmarshalCompatibleUnion(targetType, targetValue, decoder, idt)
+			err = unmarshalCompatibleUnion(d, targetType, targetValue, decoder, idt)
 			if err != nil {
 				return err
 			}
@@ -201,12 +207,16 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 	return nil
 }
 
-// unmarshalTypeWrapper unmarshals a TypeWrapper by extracting the wrapped data and unmarshaling it as the wrapped type
+// unmarshalTypeWrapper unmarshals a TypeWrapper by extracting the wrapped data and unmarshaling it as the wrapped type.
+//
+// Type Parameters:
+//   - D: A decoder type implementing sszutils.Decoder
 //
 // Parameters:
+//   - d: The DynSsz instance providing configuration and caching
 //   - targetType: The TypeDescriptor containing wrapper field metadata
 //   - targetValue: The reflect.Value of the wrapper to populate
-//   - decoder: The decoder to use
+//   - decoder: The decoder instance used to read SSZ-encoded data
 //   - idt: Indentation level for verbose logging
 //
 // Returns:
@@ -214,7 +224,7 @@ func (d *DynSsz) unmarshalType(targetType *TypeDescriptor, targetValue reflect.V
 //
 // The function validates that the Data field is present and unmarshals the wrapped value using its type descriptor.
 
-func (d *DynSsz) unmarshalTypeWrapper(targetType *TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
+func unmarshalTypeWrapper[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder D, idt int) error {
 	if d.Verbose {
 		d.LogCb("%sunmarshalTypeWrapper: %s\n", strings.Repeat(" ", idt), targetType.Type.Name())
 	}
@@ -223,7 +233,7 @@ func (d *DynSsz) unmarshalTypeWrapper(targetType *TypeDescriptor, targetValue re
 	dataField := targetValue.Field(0)
 
 	// Unmarshal the wrapped value using its type descriptor
-	err := d.unmarshalType(targetType.ElemDesc, dataField, decoder, idt+2)
+	err := unmarshalType(d, targetType.ElemDesc, dataField, decoder, idt+2)
 	if err != nil {
 		return err
 	}
@@ -241,10 +251,14 @@ func (d *DynSsz) unmarshalTypeWrapper(targetType *TypeDescriptor, targetValue re
 // The function uses the pre-computed TypeDescriptor to efficiently navigate the container's
 // layout without repeated reflection calls.
 //
+// Type Parameters:
+//   - D: A decoder type implementing sszutils.Decoder
+//
 // Parameters:
+//   - d: The DynSsz instance providing configuration and caching
 //   - targetType: The TypeDescriptor containing container field metadata
 //   - targetValue: The reflect.Value of the container to populate
-//   - decoder: The decoder to use
+//   - decoder: The decoder instance used to read SSZ-encoded data
 //   - idt: Indentation level for verbose logging
 //
 // Returns:
@@ -253,7 +267,7 @@ func (d *DynSsz) unmarshalTypeWrapper(targetType *TypeDescriptor, targetValue re
 // The function validates offset integrity to ensure variable fields don't overlap
 // and that all data is consumed correctly.
 
-func (d *DynSsz) unmarshalContainer(targetType *TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
+func unmarshalContainer[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder D, idt int) error {
 	canSeek := decoder.CanSeek()
 
 	var dynamicOffsets []int
@@ -280,7 +294,7 @@ func (d *DynSsz) unmarshalContainer(targetType *TypeDescriptor, targetValue refl
 			expectedPos := decoder.GetPosition() + fieldSize
 
 			fieldValue := targetValue.Field(i)
-			err := d.unmarshalType(field.Type, fieldValue, decoder, idt+2)
+			err := unmarshalType(d, field.Type, fieldValue, decoder, idt+2)
 			if err != nil {
 				return fmt.Errorf("failed decoding field %v: %v", field.Name, err)
 			}
@@ -352,7 +366,7 @@ func (d *DynSsz) unmarshalContainer(targetType *TypeDescriptor, targetValue refl
 
 			fieldDescriptor := field.Field
 			fieldValue := targetValue.Field(int(field.Index))
-			err := d.unmarshalType(fieldDescriptor.Type, fieldValue, decoder, idt+2)
+			err := unmarshalType(d, fieldDescriptor.Type, fieldValue, decoder, idt+2)
 			if err != nil {
 				return fmt.Errorf("failed decoding field %v: %v", fieldDescriptor.Name, err)
 			}
@@ -373,21 +387,25 @@ func (d *DynSsz) unmarshalContainer(targetType *TypeDescriptor, targetValue refl
 // from the type, the function can calculate each element's size by dividing the total
 // SSZ data length by the vector length.
 //
+// Type Parameters:
+//   - D: A decoder type implementing sszutils.Decoder
+//
 // Parameters:
+//   - d: The DynSsz instance providing configuration and caching
 //   - targetType: The TypeDescriptor containing vector metadata
 //   - targetValue: The reflect.Value of the vector to populate
-//   - decoder: The decoder to use
+//   - decoder: The decoder instance used to read SSZ-encoded data
 //   - idt: Indentation level for verbose logging
 //
 // Returns:
 //   - error: An error if decoding fails
 //
 // Special handling:
-//   - Byte arrays use reflect.Copy for efficient bulk copying
+//   - Byte arrays use unsafe.Slice for efficient bulk copying without allocation
 //   - Pointer elements are automatically initialized
 //   - Each element must consume exactly itemSize bytes
 
-func (d *DynSsz) unmarshalVector(targetType *TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
+func unmarshalVector[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder D, idt int) error {
 	fieldType := targetType.ElemDesc
 	arrLen := int(targetType.Len)
 
@@ -456,7 +474,7 @@ func (d *DynSsz) unmarshalVector(targetType *TypeDescriptor, targetValue reflect
 
 			expectedPos := decoder.GetPosition() + itemSize
 
-			err := d.unmarshalType(fieldType, itemVal, decoder, idt+2)
+			err := unmarshalType(d, fieldType, itemVal, decoder, idt+2)
 			if err != nil {
 				return err
 			}
@@ -480,10 +498,14 @@ func (d *DynSsz) unmarshalVector(targetType *TypeDescriptor, targetValue reflect
 //   - The given number of offsets are decoded first, 4 bytes each
 //   - Element data appears after all offsets, in order
 //
+// Type Parameters:
+//   - D: A decoder type implementing sszutils.Decoder
+//
 // Parameters:
+//   - d: The DynSsz instance providing configuration and caching
 //   - targetType: The TypeDescriptor with vector metadata
 //   - targetValue: The reflect.Value where the vector will be stored
-//   - decoder: The decoder to use
+//   - decoder: The decoder instance used to read SSZ-encoded data
 //   - idt: Indentation level for verbose logging
 //
 // Returns:
@@ -494,7 +516,7 @@ func (d *DynSsz) unmarshalVector(targetType *TypeDescriptor, targetValue reflect
 //   - No offset points outside the data bounds
 //   - Each element consumes exactly the expected bytes
 
-func (d *DynSsz) unmarshalDynamicVector(targetType *TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
+func unmarshalDynamicVector[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder D, idt int) error {
 	vectorLen := int(targetType.Len)
 	requiredOffsetBytes := vectorLen * 4
 	canSeek := decoder.CanSeek()
@@ -592,7 +614,7 @@ func (d *DynSsz) unmarshalDynamicVector(targetType *TypeDescriptor, targetValue 
 
 		itemSize := endOffset - startOffset
 		decoder.PushLimit(int(itemSize))
-		err := d.unmarshalType(fieldType, itemVal, decoder, idt+2)
+		err := unmarshalType(d, fieldType, itemVal, decoder, idt+2)
 		if err != nil {
 			return err
 		}
@@ -610,27 +632,27 @@ func (d *DynSsz) unmarshalDynamicVector(targetType *TypeDescriptor, targetValue 
 
 // unmarshalList decodes SSZ-encoded list data.
 //
-// This function handles lists with fixed-size elements. For lists with variable-size
-// elements, it delegates to unmarshalDynamicList. The list length is determined by
+// This function handles lists with fixed-size elements. The list length is determined by
 // dividing the SSZ data length by the element size.
 //
+// Type Parameters:
+//   - D: A decoder type implementing sszutils.Decoder
+//
 // Parameters:
+//   - d: The DynSsz instance providing configuration and caching
 //   - targetType: The TypeDescriptor containing list metadata
 //   - targetValue: The reflect.Value where the list will be stored
-//   - decoder: The decoder to use
+//   - decoder: The decoder instance used to read SSZ-encoded data
 //   - idt: Indentation level for verbose logging
 //
 // Returns:
-//   - int: Total bytes consumed (should equal len(ssz))
 //   - error: An error if decoding fails or data length is invalid
 //
 // The function:
-//   - Handles both fixed-size and variable-size elements
-//   - Delegate to unmarshalDynamicList for variable-size elements
 //   - Uses optimized copying for byte lists
 //   - Validates that each element consumes exactly the expected bytes
 
-func (d *DynSsz) unmarshalList(targetType *TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
+func unmarshalList[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder D, idt int) error {
 	fieldType := targetType.ElemDesc
 	sszLen := decoder.GetLength()
 
@@ -662,7 +684,9 @@ func (d *DynSsz) unmarshalList(targetType *TypeDescriptor, targetValue reflect.V
 		newValue = reflect.New(fieldT).Elem()
 	}
 
-	if targetType.GoTypeFlags&GoTypeFlagIsString != 0 {
+	if sliceLen == 0 {
+		// do nothing
+	} else if targetType.GoTypeFlags&GoTypeFlagIsString != 0 {
 		buf, err := decoder.DecodeBytesBuf(sliceLen)
 		if err != nil {
 			return err
@@ -674,7 +698,7 @@ func (d *DynSsz) unmarshalList(targetType *TypeDescriptor, targetValue reflect.V
 		if err != nil {
 			return err
 		}
-	} else if sliceLen > 0 {
+	} else {
 		// decode list items
 
 		for i := 0; i < sliceLen; i++ {
@@ -689,7 +713,7 @@ func (d *DynSsz) unmarshalList(targetType *TypeDescriptor, targetValue reflect.V
 
 			expectedPos := decoder.GetPosition() + itemSize
 
-			err := d.unmarshalType(fieldType, itemVal, decoder, idt+2)
+			err := unmarshalType(d, fieldType, itemVal, decoder, idt+2)
 			if err != nil {
 				return err
 			}
@@ -713,10 +737,14 @@ func (d *DynSsz) unmarshalList(targetType *TypeDescriptor, targetValue reflect.V
 //   - Each subsequent 4-byte value is an offset to the next element
 //   - Element data appears after all offsets, in order
 //
+// Type Parameters:
+//   - D: A decoder type implementing sszutils.Decoder
+//
 // Parameters:
+//   - d: The DynSsz instance providing configuration and caching
 //   - targetType: The TypeDescriptor with list metadata
 //   - targetValue: The reflect.Value where the list will be stored
-//   - decoder: The decoder to use
+//   - decoder: The decoder instance used to read SSZ-encoded data
 //   - idt: Indentation level for verbose logging
 //
 // Returns:
@@ -727,7 +755,7 @@ func (d *DynSsz) unmarshalList(targetType *TypeDescriptor, targetValue reflect.V
 //   - No offset points outside the data bounds
 //   - Each element consumes exactly the expected bytes
 
-func (d *DynSsz) unmarshalDynamicList(targetType *TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
+func unmarshalDynamicList[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder D, idt int) error {
 	sszLen := decoder.GetLength()
 	if sszLen == 0 {
 		return nil
@@ -822,7 +850,7 @@ func (d *DynSsz) unmarshalDynamicList(targetType *TypeDescriptor, targetValue re
 			itemSize := endOffset - startOffset
 
 			decoder.PushLimit(itemSize)
-			err := d.unmarshalType(fieldType, itemVal, decoder, idt+2)
+			err := unmarshalType(d, fieldType, itemVal, decoder, idt+2)
 			if err != nil {
 				return err
 			}
@@ -848,15 +876,19 @@ func (d *DynSsz) unmarshalDynamicList(targetType *TypeDescriptor, targetValue re
 // The termination bit is a single `1` bit appended immediately after the final data bit, then padded to a full byte.
 // The position of this termination bit defines the logical length of the bitlist. Bitlists without a termination bit are not allowed.
 //
+// Type Parameters:
+//   - D: A decoder type implementing sszutils.Decoder
+//
 // Parameters:
+//   - d: The DynSsz instance providing configuration and caching
 //   - targetType: The TypeDescriptor containing bitlist metadata
 //   - targetValue: The reflect.Value of the bitlist to populate
-//   - decoder: The decoder to use
+//   - decoder: The decoder instance used to read SSZ-encoded data
 //
 // Returns:
 //   - error: An error if decoding fails or bitlist is invalid
 
-func (d *DynSsz) unmarshalBitlist(targetType *TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder) error {
+func unmarshalBitlist[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder D) error {
 	sszLen := decoder.GetLength()
 
 	if sszLen == 0 {
@@ -882,19 +914,23 @@ func (d *DynSsz) unmarshalBitlist(targetType *TypeDescriptor, targetValue reflec
 // unmarshalCompatibleUnion decodes SSZ-encoded data into a CompatibleUnion.
 //
 // According to the spec:
-// - The encoding is: selector.to_bytes(1, "little") + serialize(value.data)
-// - The selector index is based at 0 if a ProgressiveContainer type option is present
-// - Otherwise, it is based at 1
+//   - The encoding is: selector.to_bytes(1, "little") + serialize(value.data)
+//   - The selector index is based at 0 if a ProgressiveContainer type option is present
+//   - Otherwise, it is based at 1
+//
+// Type Parameters:
+//   - D: A decoder type implementing sszutils.Decoder
 //
 // Parameters:
+//   - d: The DynSsz instance providing configuration and caching
 //   - targetType: The TypeDescriptor containing union metadata and variant descriptors
 //   - targetValue: The reflect.Value of the CompatibleUnion to populate
-//   - decoder: The decoder to use
+//   - decoder: The decoder instance used to read SSZ-encoded data
 //   - idt: Indentation level for verbose logging
 //
 // Returns:
 //   - error: An error if decoding fails
-func (d *DynSsz) unmarshalCompatibleUnion(targetType *TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
+func unmarshalCompatibleUnion[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder D, idt int) error {
 	if decoder.GetLength() < 1 {
 		return fmt.Errorf("CompatibleUnion requires at least 1 byte for selector")
 	}
@@ -915,7 +951,7 @@ func (d *DynSsz) unmarshalCompatibleUnion(targetType *TypeDescriptor, targetValu
 	variantValue := reflect.New(variantDesc.Type).Elem()
 
 	// Unmarshal the data
-	err = d.unmarshalType(variantDesc, variantValue, decoder, idt+2)
+	err = unmarshalType(d, variantDesc, variantValue, decoder, idt+2)
 	if err != nil {
 		return fmt.Errorf("failed to unmarshal union variant %d: %w", variant, err)
 	}

@@ -80,6 +80,38 @@ func TestUnmarshalNoFastSsz(t *testing.T) {
 	}
 }
 
+func TestUnmarshalReader(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	for _, test := range unmarshalTestMatrix {
+		t.Run(test.name, func(t *testing.T) {
+			obj := &struct {
+				Data any
+			}{}
+			// reflection hack: create new instance of payload with zero values and assign to obj.Data
+			reflect.ValueOf(obj).Elem().Field(0).Set(reflect.New(reflect.TypeOf(test.payload)))
+
+			err := dynssz.UnmarshalSSZReader(obj.Data, bytes.NewReader(test.ssz), len(test.ssz))
+
+			switch {
+			case test.ssz == nil && err != nil:
+				// expected error
+			case err != nil:
+				t.Errorf("test %v error: %v", test.name, err)
+			default:
+				htr, err := dynssz.HashTreeRoot(obj.Data)
+				if err != nil {
+					t.Errorf("test %v error: %v", test.name, err)
+				}
+				if !bytes.Equal(htr[:], test.htr) {
+					t.Errorf("test %v failed: got %x, wanted %x", test.name, htr[:], test.htr)
+				}
+			}
+		})
+	}
+}
+
 func TestUnmarshalErrors(t *testing.T) {
 	dynssz := NewDynSsz(nil)
 

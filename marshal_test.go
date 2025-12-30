@@ -131,6 +131,28 @@ func TestMarshalNoFastSsz(t *testing.T) {
 	}
 }
 
+func TestMarshalWriter(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	for _, test := range marshalTestMatrix {
+		t.Run(test.name, func(t *testing.T) {
+			memWriter := bytes.NewBuffer(nil)
+
+			err := dynssz.MarshalSSZWriter(test.payload, memWriter)
+
+			switch {
+			case test.ssz == nil && err != nil:
+				// expected error
+			case err != nil:
+				t.Errorf("test %v error: %v", test.name, err)
+			case !bytes.Equal(memWriter.Bytes(), test.ssz):
+				t.Errorf("test %v failed: got 0x%x, wanted 0x%x", test.name, memWriter.Bytes(), test.ssz)
+			}
+		})
+	}
+}
+
 func TestStringVsByteContainerMarshalEquivalence(t *testing.T) {
 	type StringContainer struct {
 		Data string `ssz-max:"100"`

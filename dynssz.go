@@ -7,9 +7,9 @@ package dynssz
 
 import (
 	"fmt"
+	"io"
 	"reflect"
 
-	"github.com/pk910/dynamic-ssz/buffer"
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
 	"github.com/pk910/dynamic-ssz/treeproof"
@@ -205,8 +205,8 @@ func (d *DynSsz) MarshalSSZ(source any) ([]byte, error) {
 	}
 
 	buf := make([]byte, 0, size)
-	encoder := buffer.NewBufferEncoder(buf)
-	err = d.marshalType(sourceTypeDesc, sourceValue, encoder, 0)
+	encoder := NewBufferEncoder(buf)
+	err = marshalType(d, sourceTypeDesc, sourceValue, encoder, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -259,13 +259,90 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	encoder := buffer.NewBufferEncoder(buf)
-	err = d.marshalType(sourceTypeDesc, sourceValue, encoder, 0)
+	encoder := NewBufferEncoder(buf)
+	err = marshalType(d, sourceTypeDesc, sourceValue, encoder, 0)
 	if err != nil {
 		return nil, err
 	}
 
 	return encoder.GetBuffer(), nil
+}
+
+// MarshalSSZWriter serializes the given source into its SSZ representation and writes it directly to an io.Writer.
+//
+// This method provides memory-efficient streaming serialization for SSZ encoding, particularly beneficial
+// for large data structures that would be expensive to buffer entirely in memory. Unlike MarshalSSZ which
+// returns a complete byte slice, this method writes data incrementally to the provided writer, enabling
+// direct output to files, network connections, or other I/O destinations.
+//
+// The implementation employs several optimizations:
+//   - Internal buffering (default 1KB) to reduce system call overhead for small writes
+//   - Automatic delegation to regular MarshalSSZ for structures smaller than the buffer size
+//   - Pre-computed dynamic size trees for efficient offset calculation in complex structures
+//   - Seamless integration with fastssz for types without dynamic fields
+//
+// For structures with dynamic fields, the method builds a size tree during the first pass to calculate
+// all necessary offsets, then streams the actual data in a second pass. This two-pass approach ensures
+// correct SSZ encoding while maintaining streaming efficiency.
+//
+// Parameters:
+//   - source: Any Go value to be serialized. Must be a type supported by SSZ encoding.
+//   - w: The io.Writer destination for the SSZ-encoded output. Common writers include:
+//   - os.File for file output
+//   - net.Conn for network transmission
+//   - bytes.Buffer for in-memory buffering
+//   - Any custom io.Writer implementation
+//
+// Returns:
+//   - error: An error if serialization fails due to:
+//   - Type validation errors
+//   - I/O write failures
+//   - Size calculation errors for dynamic fields
+//   - Unsupported type structures
+//
+// Example usage:
+//
+//	// Write directly to a file
+//	file, err := os.Create("beacon_state.ssz")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	defer file.Close()
+//
+//	err = ds.MarshalSSZWriter(state, file)
+//	if err != nil {
+//	    log.Fatal("Failed to write state:", err)
+//	}
+//
+//	// Stream over network
+//	conn, err := net.Dial("tcp", "localhost:8080")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	defer conn.Close()
+//
+//	err = ds.MarshalSSZWriter(block, conn)
+func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error {
+	sourceType := reflect.TypeOf(source)
+	sourceValue := reflect.ValueOf(source)
+
+	sourceTypeDesc, err := d.typeCache.GetTypeDescriptor(sourceType, nil, nil, nil)
+	if err != nil {
+		return err
+	}
+
+	encoder := NewStreamEncoder(w)
+	err = marshalType(d, sourceTypeDesc, sourceValue, encoder, 0)
+	if err != nil {
+		return err
+	}
+
+	writeErr := encoder.GetWriteError()
+	if writeErr != nil {
+		return writeErr
+	}
+
+	return nil
 }
 
 // SizeSSZ calculates the size of the given source object when serialized using SSZ encoding.
@@ -373,10 +450,10 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte) error {
 		return fmt.Errorf("target pointer must not be nil")
 	}
 
-	decoder := buffer.NewBufferDecoder(ssz)
+	decoder := NewBufferDecoder(ssz)
 	decoder.PushLimit(len(ssz))
 
-	err = d.unmarshalType(targetTypeDesc, targetValue, decoder, 0)
+	err = unmarshalType(d, targetTypeDesc, targetValue, decoder, 0)
 	if err != nil {
 		return err
 	}
@@ -384,6 +461,101 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte) error {
 	consumedDiff := decoder.PopLimit()
 	if consumedDiff != 0 {
 		return fmt.Errorf("did not consume full ssz range (diff: %v, ssz size: %v)", consumedDiff, len(ssz))
+	}
+
+	return nil
+}
+
+// UnmarshalSSZReader decodes SSZ-encoded data from an io.Reader directly into the target object.
+//
+// This method implements memory-efficient streaming deserialization for SSZ data, reading incrementally
+// from any io.Reader source. Unlike UnmarshalSSZ which requires the complete data in memory as a byte
+// slice, this method processes data in chunks, making it ideal for large files, network streams, or
+// memory-constrained environments.
+//
+// The implementation handles SSZ's offset-based encoding for dynamic fields by:
+//   - Reading offsets to determine field boundaries for variable-length data
+//   - Using limited readers to enforce exact byte consumption per field
+//   - Processing static fields directly from the stream
+//   - Dynamically allocating slices based on discovered sizes
+//
+// For optimal performance with small static types (≤ buffer size), the method automatically
+// reads into an internal buffer and delegates to the regular unmarshal function.
+//
+// Parameters:
+//   - target: A pointer to the Go value where decoded data will be stored. Must be a pointer
+//     to a type compatible with SSZ decoding. The method will allocate memory for slices
+//     and initialize pointer fields as needed during decoding.
+//   - r: An io.Reader source containing the SSZ-encoded data. Common readers include:
+//   - os.File for file input
+//   - net.Conn for network reception
+//   - bytes.Reader for in-memory data
+//   - Any custom io.Reader implementation
+//   - size: The expected total size of the SSZ data in bytes.
+//
+// Returns:
+//   - error: An error if decoding fails due to:
+//   - I/O read failures
+//   - Invalid SSZ format or structure
+//   - Type mismatches between data and target
+//   - Unexpected EOF or excess data
+//   - Size constraint violations
+//
+// The method ensures strict compliance with SSZ specifications, validating that:
+//   - All expected bytes are consumed (when size is specified)
+//   - Dynamic field offsets are valid and properly ordered
+//   - Field boundaries are respected
+//   - No data is left unread
+//
+// Example usage:
+//
+//	// Read from file
+//	file, err := os.Open("beacon_state.ssz")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	defer file.Close()
+//
+//	// Get file size for exact reading
+//	info, _ := file.Stat()
+//	var state phase0.BeaconState
+//	err = ds.UnmarshalSSZReader(&state, file, info.Size())
+//	if err != nil {
+//	    log.Fatal("Failed to read state:", err)
+//	}
+//
+//	// Read from network with unknown size
+//	conn, _ := net.Dial("tcp", "localhost:8080")
+//	var block phase0.BeaconBlock
+//	err = ds.UnmarshalSSZReader(&block, conn, -1)
+func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int) error {
+	targetType := reflect.TypeOf(target)
+	targetValue := reflect.ValueOf(target)
+
+	targetTypeDesc, err := d.typeCache.GetTypeDescriptor(targetType, nil, nil, nil)
+	if err != nil {
+		return err
+	}
+
+	if targetTypeDesc.GoTypeFlags&GoTypeFlagIsPointer == 0 {
+		return fmt.Errorf("target must be a pointer")
+	}
+
+	if targetValue.IsNil() {
+		return fmt.Errorf("target pointer must not be nil")
+	}
+
+	decoder := NewStreamDecoder(r, size)
+	decoder.PushLimit(size)
+
+	err = unmarshalType(d, targetTypeDesc, targetValue, decoder, 0)
+	if err != nil {
+		return err
+	}
+
+	consumedDiff := decoder.PopLimit()
+	if consumedDiff != 0 {
+		return fmt.Errorf("did not consume full ssz range (diff: %v, ssz size: %v)", consumedDiff, size)
 	}
 
 	return nil
