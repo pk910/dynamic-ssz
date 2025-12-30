@@ -36,7 +36,6 @@ import (
 //   - Nil pointers are sized as zero-valued instances
 //   - Dynamic slices include padding for size hint compliance
 //   - Struct fields are sized based on their static/dynamic nature
-
 func (d *DynSsz) getSszValueSize(targetType *TypeDescriptor, targetValue reflect.Value) (uint32, error) {
 	staticSize := uint32(0)
 

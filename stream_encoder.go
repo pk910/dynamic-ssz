@@ -145,6 +145,7 @@ func (e *StreamEncoder) EncodeZeroPadding(n int) {
 		if written != len(buf) {
 			e.writeErr = fmt.Errorf("expected to write %d bytes, wrote %d", len(buf), written)
 		}
+		e.position += len(buf)
 		n -= len(buf)
 	}
 }

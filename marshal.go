@@ -40,7 +40,6 @@ import (
 //   - FastSSZ delegation for compatible types without dynamic sizing
 //   - Primitive type encoding (bool, uint8, uint16, uint32, uint64)
 //   - Delegation to specialized functions for composite types (structs, arrays, slices)
-
 func marshalType[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescriptor, sourceValue reflect.Value, encoder E, idt int) error {
 	if sourceType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
 		if sourceValue.IsNil() {
@@ -176,7 +175,6 @@ func marshalType[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescriptor, sour
 //   - error: An error if any field encoding fails
 //
 // The function validates that the Data field is present and marshals the wrapped value using its type descriptor.
-
 func marshalTypeWrapper[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescriptor, sourceValue reflect.Value, encoder E, idt int) error {
 	if d.Verbose {
 		d.LogCb("%smarshalTypeWrapper: %s\n", strings.Repeat(" ", idt), sourceType.Type.Name())
@@ -211,7 +209,6 @@ func marshalTypeWrapper[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescripto
 //
 // Returns:
 //   - error: An error if any field encoding fails
-
 func marshalContainer[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescriptor, sourceValue reflect.Value, encoder E, idt int) error {
 	offset := 0
 	dynObjOffset := 0
@@ -301,7 +298,6 @@ func marshalContainer[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescriptor,
 // Special handling:
 //   - Byte arrays use reflect.Value.Bytes() for efficient bulk copying
 //   - Non-addressable arrays are made addressable via a temporary pointer
-
 func marshalVector[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescriptor, sourceValue reflect.Value, encoder E, idt int) error {
 	sliceLen := sourceValue.Len()
 	if uint32(sliceLen) > sourceType.Len {
@@ -390,7 +386,6 @@ func marshalVector[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescriptor, so
 // The function handles size hints for padding with zero values when the list
 // length is less than the expected size. Zero values are efficiently batched
 // to minimize encoding overhead.
-
 func marshalDynamicVector[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescriptor, sourceValue reflect.Value, encoder E, idt int) error {
 	fieldType := sourceType.ElemDesc
 	sliceLen := sourceValue.Len()
@@ -506,7 +501,6 @@ func marshalDynamicVector[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescrip
 // Special handling:
 //   - Byte slices use optimized bulk append
 //   - Returns ErrListTooBig if slice exceeds maximum size from hints
-
 func marshalList[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescriptor, sourceValue reflect.Value, encoder E, idt int) error {
 	if sourceType.GoTypeFlags&GoTypeFlagIsString != 0 {
 		stringBytes := []byte(sourceValue.String())
@@ -556,7 +550,6 @@ func marshalList[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescriptor, sour
 //
 // Returns:
 //   - error: An error if encoding fails or size constraints are violated
-
 func marshalDynamicList[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescriptor, sourceValue reflect.Value, encoder E, idt int) error {
 	fieldType := sourceType.ElemDesc
 	sliceLen := sourceValue.Len()
@@ -623,7 +616,6 @@ func marshalDynamicList[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescripto
 //
 // Returns:
 //   - error: An error if encoding fails or bitlist exceeds size constraints
-
 func marshalBitlist[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescriptor, sourceValue reflect.Value, encoder E, idt int) error {
 	bytes := sourceValue.Bytes()
 
