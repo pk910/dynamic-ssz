@@ -2,19 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // This file is part of the dynamic-ssz library.
 
-package dynssz
+package sszutils
 
 import (
 	"encoding/binary"
-
-	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 type BufferEncoder struct {
 	buffer []byte
 }
 
-var _ sszutils.Encoder = (*BufferEncoder)(nil)
+var _ Encoder = (*BufferEncoder)(nil)
 
 func NewBufferEncoder(buffer []byte) *BufferEncoder {
 	return &BufferEncoder{
@@ -75,5 +73,5 @@ func (e *BufferEncoder) EncodeOffsetAt(pos int, v uint32) {
 }
 
 func (e *BufferEncoder) EncodeZeroPadding(n int) {
-	e.buffer = sszutils.AppendZeroPadding(e.buffer, n)
+	e.buffer = AppendZeroPadding(e.buffer, n)
 }

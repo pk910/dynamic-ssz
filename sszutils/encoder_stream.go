@@ -2,14 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // This file is part of the dynamic-ssz library.
 
-package dynssz
+package sszutils
 
 import (
 	"encoding/binary"
 	"fmt"
 	"io"
-
-	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 type StreamEncoder struct {
@@ -19,7 +17,7 @@ type StreamEncoder struct {
 	writeErr error
 }
 
-var _ sszutils.Encoder = (*StreamEncoder)(nil)
+var _ Encoder = (*StreamEncoder)(nil)
 
 func NewStreamEncoder(writer io.Writer) *StreamEncoder {
 	return &StreamEncoder{
@@ -132,7 +130,7 @@ func (e *StreamEncoder) EncodeOffsetAt(pos int, v uint32) {
 }
 
 func (e *StreamEncoder) EncodeZeroPadding(n int) {
-	zeroBytes := sszutils.ZeroBytes()
+	zeroBytes := ZeroBytes()
 	for n > 0 {
 		buf := zeroBytes
 		if n < 1024 {

@@ -5,9 +5,37 @@
 package codegen
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 )
+
+// appendCode appends a formatted code string to a strings.Builder with proper indentation.
+//
+// This function is used to append formatted code to a strings.Builder with the specified
+// indentation level. It handles string formatting with optional arguments and ensures
+// that each line is properly indented.
+//
+// Parameters:
+//   - codeBuf: The strings.Builder to append the code to
+//   - indent: The number of tab characters to prepend to each non-empty line
+//   - code: The format string to append
+//   - args: Optional arguments to format the code string
+//
+// Returns:
+//   - None
+//
+// Example:
+//
+//	codeBuf := strings.Builder{}
+//	appendCode(&codeBuf, 1, "func example() {\nreturn nil\n}")
+//	// Result: "\tfunc example() {\n\treturn nil\n\t}"
+func appendCode(codeBuf *strings.Builder, indent int, code string, args ...any) {
+	if len(args) > 0 {
+		code = fmt.Sprintf(code, args...)
+	}
+	codeBuf.WriteString(indentStr(code, indent))
+}
 
 // indentStr indents each non-empty line in a string by the specified number of tab characters.
 //

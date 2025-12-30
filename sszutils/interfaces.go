@@ -25,9 +25,19 @@ type DynamicMarshaler interface {
 	MarshalSSZDyn(ds DynamicSpecs, buf []byte) ([]byte, error)
 }
 
+// DynamicEncoder is the interface implemented by types that can marshal themselves using dynamic SSZ and an encoder
+type DynamicEncoder interface {
+	MarshalSSZEncoder(ds DynamicSpecs, encoder Encoder) error
+}
+
 // DynamicUnmarshaler is the interface implemented by types that can unmarshal using dynamic SSZ
 type DynamicUnmarshaler interface {
 	UnmarshalSSZDyn(ds DynamicSpecs, buf []byte) error
+}
+
+// DynamicDecoder is the interface implemented by types that can unmarshal using dynamic SSZ and a decoder
+type DynamicDecoder interface {
+	UnmarshalSSZDecoder(ds DynamicSpecs, decoder Decoder) error
 }
 
 // DynamicSizer is the interface implemented by types that can calculate their own SSZ size dynamically

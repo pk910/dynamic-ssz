@@ -75,6 +75,8 @@ type CodeGeneratorOptions struct {
 	NoSizeSSZ                 bool
 	NoHashTreeRoot            bool
 	CreateLegacyFn            bool
+	CreateEncoderFn           bool
+	CreateDecoderFn           bool
 	WithoutDynamicExpressions bool
 	NoFastSsz                 bool
 	SizeHints                 []dynssz.SszSizeHint
@@ -380,6 +382,30 @@ func WithoutDynamicExpressions() CodeGeneratorOption {
 func WithNoFastSsz() CodeGeneratorOption {
 	return func(opts *CodeGeneratorOptions) {
 		opts.NoFastSsz = true
+	}
+}
+
+// WithCreateEncoderFn creates an option to generate encoder functions.
+//
+// When this option is enabled, the generator will generate encoder functions for the types.
+//
+// Returns:
+//   - CodeGeneratorOption: A functional option that enables encoder function generation
+func WithCreateEncoderFn() CodeGeneratorOption {
+	return func(opts *CodeGeneratorOptions) {
+		opts.CreateEncoderFn = true
+	}
+}
+
+// WithCreateDecoderFn creates an option to generate decoder functions.
+//
+// When this option is enabled, the generator will generate decoder functions for the types.
+//
+// Returns:
+//   - CodeGeneratorOption: A functional option that enables decoder function generation
+func WithCreateDecoderFn() CodeGeneratorOption {
+	return func(opts *CodeGeneratorOptions) {
+		opts.CreateDecoderFn = true
 	}
 }
 

@@ -35,7 +35,7 @@ const (
 )
 
 // SszCompatFlag is a flag indicating whether a type implements a specific SSZ compatibility interface
-type SszCompatFlag uint8
+type SszCompatFlag uint16
 
 const (
 	SszCompatFlagFastSSZMarshaler   SszCompatFlag = 1 << iota // Whether the type implements fastssz.Marshaler
@@ -45,6 +45,8 @@ const (
 	SszCompatFlagDynamicUnmarshaler                           // Whether the type implements DynamicUnmarshaler
 	SszCompatFlagDynamicSizer                                 // Whether the type implements DynamicSizer
 	SszCompatFlagDynamicHashRoot                              // Whether the type implements DynamicHashRoot
+	SszCompatFlagDynamicEncoder                               // Whether the type implements DynamicEncoder
+	SszCompatFlagDynamicDecoder                               // Whether the type implements DynamicDecoder
 )
 
 type GoTypeFlag uint8
@@ -468,6 +470,12 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 	}
 	if tc.dynssz.getDynamicUnmarshalerCompatibility(t) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicUnmarshaler
+	}
+	if tc.dynssz.getDynamicEncoderCompatibility(t) {
+		desc.SszCompatFlags |= SszCompatFlagDynamicEncoder
+	}
+	if tc.dynssz.getDynamicDecoderCompatibility(t) {
+		desc.SszCompatFlags |= SszCompatFlagDynamicDecoder
 	}
 	if tc.dynssz.getDynamicSizerCompatibility(t) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicSizer

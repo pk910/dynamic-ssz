@@ -56,6 +56,7 @@ func unmarshalType[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, ta
 	hasDynamicSize := targetType.SszTypeFlags&SszTypeFlagHasDynamicSize != 0
 	isFastsszUnmarshaler := targetType.SszCompatFlags&SszCompatFlagFastSSZMarshaler != 0
 	useDynamicUnmarshal := targetType.SszCompatFlags&SszCompatFlagDynamicUnmarshaler != 0
+	useDynamicDecoder := targetType.SszCompatFlags&SszCompatFlagDynamicDecoder != 0
 	useFastSsz := !d.NoFastSsz && isFastsszUnmarshaler && !hasDynamicSize
 	if !useFastSsz && targetType.SszType == SszCustomType {
 		useFastSsz = true
@@ -83,6 +84,20 @@ func unmarshalType[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, ta
 			}
 		} else {
 			useFastSsz = false
+		}
+	}
+
+	if !useFastSsz && useDynamicDecoder {
+		if !decoder.CanSeek() && useDynamicUnmarshal {
+			// prefer static unmarshaller for non-seekable decoders (buffer based)
+			useDynamicDecoder = false
+		} else if sszDecoder, ok := targetValue.Addr().Interface().(sszutils.DynamicDecoder); ok {
+			err := sszDecoder.UnmarshalSSZDecoder(d, decoder)
+			if err != nil {
+				return err
+			}
+		} else {
+			useDynamicDecoder = false
 		}
 	}
 

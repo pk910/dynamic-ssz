@@ -52,6 +52,7 @@ func marshalType[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescriptor, sour
 	hasDynamicSize := sourceType.SszTypeFlags&SszTypeFlagHasDynamicSize != 0
 	isFastsszMarshaler := sourceType.SszCompatFlags&SszCompatFlagFastSSZMarshaler != 0
 	useDynamicMarshal := sourceType.SszCompatFlags&SszCompatFlagDynamicMarshaler != 0
+	useDynamicEncoder := sourceType.SszCompatFlags&SszCompatFlagDynamicEncoder != 0
 	useFastSsz := !d.NoFastSsz && isFastsszMarshaler && !hasDynamicSize
 	if !useFastSsz && sourceType.SszType == SszCustomType {
 		useFastSsz = true
@@ -71,6 +72,20 @@ func marshalType[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescriptor, sour
 			encoder.SetBuffer(newBuf)
 		} else {
 			useFastSsz = false
+		}
+	}
+
+	if !useFastSsz && useDynamicEncoder {
+		if !encoder.CanSeek() && useDynamicMarshal {
+			// prefer static marshaller for non-seekable encoders (buffer based)
+			useDynamicEncoder = false
+		} else if sszEncoder, ok := sourceValue.Addr().Interface().(sszutils.DynamicEncoder); ok {
+			err := sszEncoder.MarshalSSZEncoder(d, encoder)
+			if err != nil {
+				return err
+			}
+		} else {
+			useDynamicEncoder = false
 		}
 	}
 

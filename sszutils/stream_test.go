@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // This file is part of the dynamic-ssz library.
 
-package dynssz
+package sszutils
 
 import (
 	"bytes"
@@ -10,8 +10,6 @@ import (
 	"io"
 	"strings"
 	"testing"
-
-	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 // errWriter is a writer that returns an error after writing a specified number of bytes.
@@ -479,7 +477,7 @@ func TestStreamDecoder_DecodeBool_ShortRead(t *testing.T) {
 
 	_, err := dec.DecodeBool()
 
-	if !errors.Is(err, sszutils.ErrUnexpectedEOF) {
+	if !errors.Is(err, ErrUnexpectedEOF) {
 		t.Errorf("expected ErrUnexpectedEOF, got %v", err)
 	}
 }
@@ -490,7 +488,7 @@ func TestStreamDecoder_DecodeBool_InvalidValue(t *testing.T) {
 
 	_, err := dec.DecodeBool()
 
-	if !errors.Is(err, sszutils.ErrInvalidValueRange) {
+	if !errors.Is(err, ErrInvalidValueRange) {
 		t.Errorf("expected ErrInvalidValueRange, got %v", err)
 	}
 }
@@ -543,7 +541,7 @@ func TestStreamDecoder_DecodeUint8_ShortRead(t *testing.T) {
 
 	_, err := dec.DecodeUint8()
 
-	if !errors.Is(err, sszutils.ErrUnexpectedEOF) {
+	if !errors.Is(err, ErrUnexpectedEOF) {
 		t.Errorf("expected ErrUnexpectedEOF, got %v", err)
 	}
 }
@@ -566,7 +564,7 @@ func TestStreamDecoder_DecodeUint16_ShortRead(t *testing.T) {
 
 	_, err := dec.DecodeUint16()
 
-	if !errors.Is(err, sszutils.ErrUnexpectedEOF) {
+	if !errors.Is(err, ErrUnexpectedEOF) {
 		t.Errorf("expected ErrUnexpectedEOF, got %v", err)
 	}
 }
@@ -589,7 +587,7 @@ func TestStreamDecoder_DecodeUint32_ShortRead(t *testing.T) {
 
 	_, err := dec.DecodeUint32()
 
-	if !errors.Is(err, sszutils.ErrUnexpectedEOF) {
+	if !errors.Is(err, ErrUnexpectedEOF) {
 		t.Errorf("expected ErrUnexpectedEOF, got %v", err)
 	}
 }
@@ -612,7 +610,7 @@ func TestStreamDecoder_DecodeUint64_ShortRead(t *testing.T) {
 
 	_, err := dec.DecodeUint64()
 
-	if !errors.Is(err, sszutils.ErrUnexpectedEOF) {
+	if !errors.Is(err, ErrUnexpectedEOF) {
 		t.Errorf("expected ErrUnexpectedEOF, got %v", err)
 	}
 }
@@ -637,7 +635,7 @@ func TestStreamDecoder_DecodeBytes_ShortRead(t *testing.T) {
 	buf := make([]byte, 3)
 	_, err := dec.DecodeBytes(buf)
 
-	if !errors.Is(err, sszutils.ErrUnexpectedEOF) {
+	if !errors.Is(err, ErrUnexpectedEOF) {
 		t.Errorf("expected ErrUnexpectedEOF, got %v", err)
 	}
 }
@@ -648,7 +646,7 @@ func TestStreamDecoder_DecodeBytesBuf_LengthExceedsLimit(t *testing.T) {
 
 	_, err := dec.DecodeBytesBuf(10)
 
-	if !errors.Is(err, sszutils.ErrUnexpectedEOF) {
+	if !errors.Is(err, ErrUnexpectedEOF) {
 		t.Errorf("expected ErrUnexpectedEOF, got %v", err)
 	}
 }
@@ -688,7 +686,7 @@ func TestStreamDecoder_DecodeBytesBuf_ShortRead(t *testing.T) {
 
 	_, err := dec.DecodeBytesBuf(3)
 
-	if !errors.Is(err, sszutils.ErrUnexpectedEOF) {
+	if !errors.Is(err, ErrUnexpectedEOF) {
 		t.Errorf("expected ErrUnexpectedEOF, got %v", err)
 	}
 }
@@ -738,7 +736,7 @@ func TestStreamDecoder_DecodeOffset_ShortRead(t *testing.T) {
 
 	_, err := dec.DecodeOffset()
 
-	if !errors.Is(err, sszutils.ErrUnexpectedEOF) {
+	if !errors.Is(err, ErrUnexpectedEOF) {
 		t.Errorf("expected ErrUnexpectedEOF, got %v", err)
 	}
 }

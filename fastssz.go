@@ -15,6 +15,8 @@ var sszUnmarshalerType = reflect.TypeOf((*sszutils.FastsszUnmarshaler)(nil)).Ele
 var sszHashRootType = reflect.TypeOf((*sszutils.FastsszHashRoot)(nil)).Elem()
 var dynamicMarshalerType = reflect.TypeOf((*sszutils.DynamicMarshaler)(nil)).Elem()
 var dynamicUnmarshalerType = reflect.TypeOf((*sszutils.DynamicUnmarshaler)(nil)).Elem()
+var dynamicEncoderType = reflect.TypeOf((*sszutils.DynamicEncoder)(nil)).Elem()
+var dynamicDecoderType = reflect.TypeOf((*sszutils.DynamicDecoder)(nil)).Elem()
 var dynamicSizerType = reflect.TypeOf((*sszutils.DynamicSizer)(nil)).Elem()
 var dynamicHashRootType = reflect.TypeOf((*sszutils.DynamicHashRoot)(nil)).Elem()
 
@@ -100,6 +102,18 @@ func (d *DynSsz) getDynamicMarshalerCompatibility(targetType reflect.Type) bool 
 func (d *DynSsz) getDynamicUnmarshalerCompatibility(targetType reflect.Type) bool {
 	targetPtrType := reflect.New(targetType).Type()
 	return targetPtrType.Implements(dynamicUnmarshalerType)
+}
+
+// getDynamicEncoderCompatibility checks if a type implements the DynamicEncoder interface
+func (d *DynSsz) getDynamicEncoderCompatibility(targetType reflect.Type) bool {
+	targetPtrType := reflect.New(targetType).Type()
+	return targetPtrType.Implements(dynamicEncoderType)
+}
+
+// getDynamicDecoderCompatibility checks if a type implements the DynamicDecoder interface
+func (d *DynSsz) getDynamicDecoderCompatibility(targetType reflect.Type) bool {
+	targetPtrType := reflect.New(targetType).Type()
+	return targetPtrType.Implements(dynamicDecoderType)
 }
 
 // getDynamicSizerCompatibility checks if a type implements the DynamicSizer interface

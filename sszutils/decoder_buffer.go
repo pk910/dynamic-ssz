@@ -2,12 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // This file is part of the dynamic-ssz library.
 
-package dynssz
+package sszutils
 
 import (
 	"encoding/binary"
-
-	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 type BufferDecoder struct {
@@ -18,7 +16,7 @@ type BufferDecoder struct {
 	position  int
 }
 
-var _ sszutils.Decoder = (*BufferDecoder)(nil)
+var _ Decoder = (*BufferDecoder)(nil)
 
 func NewBufferDecoder(buffer []byte) *BufferDecoder {
 	return &BufferDecoder{
@@ -69,11 +67,11 @@ func (e *BufferDecoder) PopLimit() int {
 
 func (e *BufferDecoder) DecodeBool() (bool, error) {
 	if e.GetLength() < 1 {
-		return false, sszutils.ErrUnexpectedEOF
+		return false, ErrUnexpectedEOF
 	}
 	val := e.buffer[e.position]
 	if val != 1 && val != 0 {
-		return false, sszutils.ErrInvalidValueRange
+		return false, ErrInvalidValueRange
 	}
 	e.position++
 	return val == 1, nil
@@ -81,7 +79,7 @@ func (e *BufferDecoder) DecodeBool() (bool, error) {
 
 func (e *BufferDecoder) DecodeUint8() (uint8, error) {
 	if e.GetLength() < 1 {
-		return 0, sszutils.ErrUnexpectedEOF
+		return 0, ErrUnexpectedEOF
 	}
 	val := e.buffer[e.position]
 	e.position++
@@ -90,7 +88,7 @@ func (e *BufferDecoder) DecodeUint8() (uint8, error) {
 
 func (e *BufferDecoder) DecodeUint16() (uint16, error) {
 	if e.GetLength() < 2 {
-		return 0, sszutils.ErrUnexpectedEOF
+		return 0, ErrUnexpectedEOF
 	}
 	val := binary.LittleEndian.Uint16(e.buffer[e.position:])
 	e.position += 2
@@ -99,7 +97,7 @@ func (e *BufferDecoder) DecodeUint16() (uint16, error) {
 
 func (e *BufferDecoder) DecodeUint32() (uint32, error) {
 	if e.GetLength() < 4 {
-		return 0, sszutils.ErrUnexpectedEOF
+		return 0, ErrUnexpectedEOF
 	}
 	val := binary.LittleEndian.Uint32(e.buffer[e.position:])
 	e.position += 4
@@ -108,7 +106,7 @@ func (e *BufferDecoder) DecodeUint32() (uint32, error) {
 
 func (e *BufferDecoder) DecodeUint64() (uint64, error) {
 	if e.GetLength() < 8 {
-		return 0, sszutils.ErrUnexpectedEOF
+		return 0, ErrUnexpectedEOF
 	}
 	val := binary.LittleEndian.Uint64(e.buffer[e.position:])
 	e.position += 8
@@ -117,7 +115,7 @@ func (e *BufferDecoder) DecodeUint64() (uint64, error) {
 
 func (e *BufferDecoder) DecodeBytes(buf []byte) ([]byte, error) {
 	if e.GetLength() < len(buf) {
-		return nil, sszutils.ErrUnexpectedEOF
+		return nil, ErrUnexpectedEOF
 	}
 	bufLen := len(buf)
 	copy(buf, e.buffer[e.position:e.position+bufLen])
@@ -130,7 +128,7 @@ func (e *BufferDecoder) DecodeBytesBuf(len int) ([]byte, error) {
 	if len < 0 {
 		len = limit - e.position
 	} else if limit-e.position < len {
-		return nil, sszutils.ErrUnexpectedEOF
+		return nil, ErrUnexpectedEOF
 	}
 	buf := e.buffer[e.position : e.position+len]
 	e.position += len
@@ -139,7 +137,7 @@ func (e *BufferDecoder) DecodeBytesBuf(len int) ([]byte, error) {
 
 func (e *BufferDecoder) DecodeOffset() (uint32, error) {
 	if e.GetLength() < 4 {
-		return 0, sszutils.ErrUnexpectedEOF
+		return 0, ErrUnexpectedEOF
 	}
 
 	val := binary.LittleEndian.Uint32(e.buffer[e.position:])

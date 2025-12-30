@@ -205,7 +205,7 @@ func (d *DynSsz) MarshalSSZ(source any) ([]byte, error) {
 	}
 
 	buf := make([]byte, 0, size)
-	encoder := NewBufferEncoder(buf)
+	encoder := sszutils.NewBufferEncoder(buf)
 	err = marshalType(d, sourceTypeDesc, sourceValue, encoder, 0)
 	if err != nil {
 		return nil, err
@@ -259,7 +259,7 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	encoder := NewBufferEncoder(buf)
+	encoder := sszutils.NewBufferEncoder(buf)
 	err = marshalType(d, sourceTypeDesc, sourceValue, encoder, 0)
 	if err != nil {
 		return nil, err
@@ -323,6 +323,17 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte) ([]byte, error) {
 //
 //	err = ds.MarshalSSZWriter(block, conn)
 func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error {
+	encoder := sszutils.NewStreamEncoder(w)
+
+	if sszEncoder, ok := source.(sszutils.DynamicEncoder); ok {
+		err := sszEncoder.MarshalSSZEncoder(d, encoder)
+		if err != nil {
+			return err
+		}
+
+		return encoder.GetWriteError()
+	}
+
 	sourceType := reflect.TypeOf(source)
 	sourceValue := reflect.ValueOf(source)
 
@@ -331,18 +342,12 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error {
 		return err
 	}
 
-	encoder := NewStreamEncoder(w)
 	err = marshalType(d, sourceTypeDesc, sourceValue, encoder, 0)
 	if err != nil {
 		return err
 	}
 
-	writeErr := encoder.GetWriteError()
-	if writeErr != nil {
-		return writeErr
-	}
-
-	return nil
+	return encoder.GetWriteError()
 }
 
 // SizeSSZ calculates the size of the given source object when serialized using SSZ encoding.
@@ -450,7 +455,7 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte) error {
 		return fmt.Errorf("target pointer must not be nil")
 	}
 
-	decoder := NewBufferDecoder(ssz)
+	decoder := sszutils.NewBufferDecoder(ssz)
 	decoder.PushLimit(len(ssz))
 
 	err = unmarshalType(d, targetTypeDesc, targetValue, decoder, 0)
@@ -529,6 +534,23 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte) error {
 //	var block phase0.BeaconBlock
 //	err = ds.UnmarshalSSZReader(&block, conn, -1)
 func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int) error {
+	decoder := sszutils.NewStreamDecoder(r, size)
+	decoder.PushLimit(size)
+
+	if sszDecoder, ok := target.(sszutils.DynamicDecoder); ok {
+		err := sszDecoder.UnmarshalSSZDecoder(d, decoder)
+		if err != nil {
+			return err
+		}
+
+		consumedDiff := decoder.PopLimit()
+		if consumedDiff != 0 {
+			return fmt.Errorf("did not consume full ssz range (diff: %v, ssz size: %v)", consumedDiff, size)
+		}
+
+		return nil
+	}
+
 	targetType := reflect.TypeOf(target)
 	targetValue := reflect.ValueOf(target)
 
@@ -544,9 +566,6 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int) error {
 	if targetValue.IsNil() {
 		return fmt.Errorf("target pointer must not be nil")
 	}
-
-	decoder := NewStreamDecoder(r, size)
-	decoder.PushLimit(size)
 
 	err = unmarshalType(d, targetTypeDesc, targetValue, decoder, 0)
 	if err != nil {

@@ -2,13 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // This file is part of the dynamic-ssz library.
 
-package dynssz
+package sszutils
 
 import (
 	"encoding/binary"
 	"io"
-
-	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 type StreamDecoder struct {
@@ -20,7 +18,7 @@ type StreamDecoder struct {
 	buffer    []byte
 }
 
-var _ sszutils.Decoder = (*StreamDecoder)(nil)
+var _ Decoder = (*StreamDecoder)(nil)
 
 func NewStreamDecoder(reader io.Reader, totalLen int) *StreamDecoder {
 	return &StreamDecoder{
@@ -76,10 +74,10 @@ func (e *StreamDecoder) DecodeBool() (bool, error) {
 		return false, err
 	}
 	if n != 1 {
-		return false, sszutils.ErrUnexpectedEOF
+		return false, ErrUnexpectedEOF
 	}
 	if buf[0] != 1 && buf[0] != 0 {
-		return false, sszutils.ErrInvalidValueRange
+		return false, ErrInvalidValueRange
 	}
 	e.position++
 	return buf[0] == 1, nil
@@ -92,7 +90,7 @@ func (e *StreamDecoder) DecodeUint8() (uint8, error) {
 		return 0, err
 	}
 	if n != 1 {
-		return 0, sszutils.ErrUnexpectedEOF
+		return 0, ErrUnexpectedEOF
 	}
 	e.position++
 	return buf[0], nil
@@ -105,7 +103,7 @@ func (e *StreamDecoder) DecodeUint16() (uint16, error) {
 		return 0, err
 	}
 	if n != 2 {
-		return 0, sszutils.ErrUnexpectedEOF
+		return 0, ErrUnexpectedEOF
 	}
 	e.position += 2
 	return binary.LittleEndian.Uint16(buf[:]), nil
@@ -118,7 +116,7 @@ func (e *StreamDecoder) DecodeUint32() (uint32, error) {
 		return 0, err
 	}
 	if n != 4 {
-		return 0, sszutils.ErrUnexpectedEOF
+		return 0, ErrUnexpectedEOF
 	}
 	e.position += 4
 	return binary.LittleEndian.Uint32(buf[:]), nil
@@ -131,7 +129,7 @@ func (e *StreamDecoder) DecodeUint64() (uint64, error) {
 		return 0, err
 	}
 	if n != 8 {
-		return 0, sszutils.ErrUnexpectedEOF
+		return 0, ErrUnexpectedEOF
 	}
 	e.position += 8
 	return binary.LittleEndian.Uint64(buf[:]), nil
@@ -143,7 +141,7 @@ func (e *StreamDecoder) DecodeBytes(buf []byte) ([]byte, error) {
 		return nil, err
 	}
 	if n != len(buf) {
-		return nil, sszutils.ErrUnexpectedEOF
+		return nil, ErrUnexpectedEOF
 	}
 	e.position += n
 	return buf[:n], nil
@@ -154,7 +152,7 @@ func (e *StreamDecoder) DecodeBytesBuf(l int) ([]byte, error) {
 	if l < 0 {
 		l = limit - e.position
 	} else if limit-e.position < l {
-		return nil, sszutils.ErrUnexpectedEOF
+		return nil, ErrUnexpectedEOF
 	}
 
 	if len(e.buffer) < l {
@@ -168,7 +166,7 @@ func (e *StreamDecoder) DecodeBytesBuf(l int) ([]byte, error) {
 		return nil, err
 	}
 	if n != l {
-		return nil, sszutils.ErrUnexpectedEOF
+		return nil, ErrUnexpectedEOF
 	}
 	e.position += l
 	return e.buffer[:n], nil
@@ -181,7 +179,7 @@ func (e *StreamDecoder) DecodeOffset() (uint32, error) {
 		return 0, err
 	}
 	if n != 4 {
-		return 0, sszutils.ErrUnexpectedEOF
+		return 0, ErrUnexpectedEOF
 	}
 	e.position += 4
 	return binary.LittleEndian.Uint32(buf[:]), nil

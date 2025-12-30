@@ -312,6 +312,13 @@ func (ctx *unmarshalContext) unmarshalType(desc *dynssz.TypeDescriptor, varName 
 		return nil
 	}
 
+	if desc.SszCompatFlags&dynssz.SszCompatFlagDynamicDecoder != 0 && !isRoot {
+		ctx.appendCode(indent, "dec := sszutils.NewBufferDecoder(buf)\n")
+		ctx.appendCode(indent, "if err = %s.UnmarshalSSZDecoder(ds, dec); err != nil {\n\treturn err\n}\n", varName)
+		ctx.usedDynSpecs = true
+		return nil
+	}
+
 	switch desc.SszType {
 	case dynssz.SszBoolType:
 		if !noBufCheck {
