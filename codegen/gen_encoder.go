@@ -5,8 +5,6 @@
 package codegen
 
 import (
-	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"reflect"
 	"slices"
@@ -28,17 +26,13 @@ import (
 //   - usedDynSpecs: Flag tracking whether generated code uses dynamic SSZ functionality
 type encoderContext struct {
 	appendCode        func(indent int, code string, args ...any)
-	appendExprCode    func(indent int, code string, args ...any)
-	appendSizeCode    func(indent int, code string, args ...any)
 	typePrinter       *TypePrinter
 	options           *CodeGeneratorOptions
+	exprVars          *exprVarGenerator
+	staticSizeVars    *staticSizeVarGenerator
 	usedDynSpecs      bool
 	usedCanSeek       bool
 	usedContext       bool
-	exprVarCounter    int
-	sizeVarCounter    int
-	exprVarMap        map[[32]byte]string
-	sizeVarMap        map[[32]byte]string
 	sizeFnNameMap     map[*dynssz.TypeDescriptor]int
 	sizeFnSignature   map[string]string
 	sizeFnNameCounter int
@@ -59,8 +53,6 @@ type encoderContext struct {
 //   - error: An error if code generation fails
 func generateEncoder(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
 	codeBuf := strings.Builder{}
-	exprCodeBuf := strings.Builder{}
-	sizeCodeBuf := strings.Builder{}
 	ctx := &encoderContext{
 		appendCode: func(indent int, code string, args ...any) {
 			if len(args) > 0 {
@@ -68,31 +60,21 @@ func generateEncoder(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.B
 			}
 			codeBuf.WriteString(indentStr(code, indent))
 		},
-		appendExprCode: func(indent int, code string, args ...any) {
-			if len(args) > 0 {
-				code = fmt.Sprintf(code, args...)
-			}
-			exprCodeBuf.WriteString(indentStr(code, indent))
-		},
-		appendSizeCode: func(indent int, code string, args ...any) {
-			if len(args) > 0 {
-				code = fmt.Sprintf(code, args...)
-			}
-			sizeCodeBuf.WriteString(indentStr(code, indent))
-		},
 		typePrinter:     typePrinter,
 		options:         options,
-		exprVarMap:      make(map[[32]byte]string),
-		sizeVarMap:      make(map[[32]byte]string),
 		sizeFnNameMap:   make(map[*dynssz.TypeDescriptor]int),
 		sizeFnSignature: make(map[string]string),
 	}
+
+	ctx.exprVars = newExprVarGenerator("ctx.exprs", typePrinter, options)
+	ctx.exprVars.isSlice = true
+	ctx.staticSizeVars = newStaticSizeVarGenerator("size", typePrinter, options, ctx.exprVars)
 
 	// Generate main function signature
 	typeName := typePrinter.TypeString(rootTypeDesc)
 
 	// Generate marshaling code
-	if err := ctx.marshalType(rootTypeDesc, "t", 1, true); err != nil {
+	if err := ctx.marshalType(rootTypeDesc, "t", 0, true); err != nil {
 		return err
 	}
 
@@ -102,22 +84,27 @@ func generateEncoder(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.B
 		return err
 	}
 
-	codeBuilder.WriteString(fmt.Sprintf("func (t %s) MarshalSSZEncoder(ds sszutils.DynamicSpecs, enc sszutils.Encoder) (err error) {\n", typeName))
+	if ctx.exprVars.varCounter > 0 {
+		ctx.usedContext = true
+		ctx.usedDynSpecs = true
+	}
+
+	appendCode(codeBuilder, 0, "func (t %s) MarshalSSZEncoder(ds sszutils.DynamicSpecs, enc sszutils.Encoder) (err error) {\n", typeName)
 
 	if ctx.usedContext {
-		codeBuilder.WriteString(ctx.generateEncodeContext(1))
-		codeBuilder.WriteString("\tctx := &encoderCtx{ds: ds}\n")
+		appendCode(codeBuilder, 1, ctx.generateEncodeContext(0))
+		appendCode(codeBuilder, 1, "ctx := &encoderCtx{ds: ds}\n")
 	}
 
 	if ctx.usedCanSeek {
-		codeBuilder.WriteString("\tcanSeek := enc.CanSeek()\n")
+		appendCode(codeBuilder, 1, "canSeek := enc.CanSeek()\n")
 	}
-	codeBuilder.WriteString(exprCodeBuf.String())
-	codeBuilder.WriteString(sizeFnCode)
-	codeBuilder.WriteString(sizeCodeBuf.String())
-	codeBuilder.WriteString(codeBuf.String())
-	codeBuilder.WriteString("\treturn nil\n")
-	codeBuilder.WriteString("}\n\n")
+	appendCode(codeBuilder, 1, ctx.exprVars.getCode())
+	appendCode(codeBuilder, 1, sizeFnCode)
+	appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
+	appendCode(codeBuilder, 1, codeBuf.String())
+	appendCode(codeBuilder, 1, "return nil\n")
+	appendCode(codeBuilder, 0, "}\n\n")
 
 	return nil
 }
@@ -151,119 +138,6 @@ func (ctx *encoderContext) isInlineable(desc *dynssz.TypeDescriptor) bool {
 }
 
 // getStaticSizeVar generates a variable name for cached static size calculations.
-func (ctx *encoderContext) getStaticSizeVar(desc *dynssz.TypeDescriptor) (string, error) {
-	descCopy := *desc
-	descCopy.GoTypeFlags &= ^dynssz.GoTypeFlagIsPointer
-
-	descJson, err := json.Marshal(descCopy)
-	if err != nil {
-		return "", err
-	}
-	descHash := sha256.Sum256(descJson)
-
-	if sizeVar, ok := ctx.sizeVarMap[descHash]; ok {
-		return sizeVar, nil
-	}
-
-	ctx.sizeVarCounter++
-	sizeVar := fmt.Sprintf("size%d", ctx.sizeVarCounter)
-
-	// recursive resolve static size with size expressions
-	switch desc.SszType {
-	case dynssz.SszTypeWrapperType:
-		sizeVar, err = ctx.getStaticSizeVar(desc.ElemDesc)
-		if err != nil {
-			return "", err
-		}
-	case dynssz.SszContainerType, dynssz.SszProgressiveContainerType:
-		fieldSizeVars := []string{}
-		staticSize := 0
-		for _, field := range desc.ContainerDesc.Fields {
-			if field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
-				return "", fmt.Errorf("dynamic field not supported for static size calculation")
-			} else if field.Type.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
-				fieldSizeVar, err := ctx.getStaticSizeVar(field.Type)
-				if err != nil {
-					return "", err
-				}
-
-				fieldSizeVars = append(fieldSizeVars, fieldSizeVar)
-			} else {
-				staticSize += int(field.Type.Size)
-			}
-		}
-
-		fieldSizeVars = append(fieldSizeVars, fmt.Sprintf("%d", staticSize))
-		if len(fieldSizeVars) == 1 {
-			return fieldSizeVars[0], nil
-		}
-		ctx.appendSizeCode(1, "%s := %s // size expression for '%s'\n", sizeVar, strings.Join(fieldSizeVars, "+"), ctx.typePrinter.TypeStringWithoutTracking(desc))
-	case dynssz.SszVectorType, dynssz.SszBitvectorType, dynssz.SszUint128Type, dynssz.SszUint256Type:
-		sizeExpression := desc.SizeExpression
-		if ctx.options.WithoutDynamicExpressions {
-			sizeExpression = nil
-		}
-
-		if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
-			return "", fmt.Errorf("dynamic vector not supported for static size calculation")
-		} else {
-			itemSizeVar := ""
-			if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
-				itemSizeVar, err = ctx.getStaticSizeVar(desc.ElemDesc)
-				if err != nil {
-					return "", err
-				}
-			} else {
-				itemSizeVar = fmt.Sprintf("%d", desc.ElemDesc.Size)
-			}
-
-			if sizeExpression != nil {
-				exprVar := ctx.getExprVar(*sizeExpression, uint64(desc.Len))
-
-				if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
-					exprVar = fmt.Sprintf("(%s+7)/8", exprVar)
-				}
-
-				ctx.appendSizeCode(1, "%s := %s * int(%s)\n", sizeVar, itemSizeVar, exprVar)
-			} else {
-				ctx.appendSizeCode(1, "%s := %s * %d\n", sizeVar, itemSizeVar, desc.Len)
-			}
-		}
-
-	default:
-		return "", fmt.Errorf("unknown type for static size calculation: %v", desc.SszType)
-	}
-
-	ctx.sizeVarMap[descHash] = sizeVar
-
-	return sizeVar, nil
-}
-
-// getExprVar generates a variable name for cached limit expression calculations.
-func (ctx *encoderContext) getExprVar(expr string, defaultValue uint64) string {
-	if expr == "" {
-		return fmt.Sprintf("%v", defaultValue)
-	}
-
-	exprKey := sha256.Sum256([]byte(fmt.Sprintf("%s\n%v", expr, defaultValue)))
-	if exprVar, ok := ctx.exprVarMap[exprKey]; ok {
-		return exprVar
-	}
-
-	exprVar := fmt.Sprintf("ctx.exprs[%d]", ctx.exprVarCounter)
-	ctx.exprVarCounter++
-	ctx.usedContext = true
-
-	ctx.appendExprCode(1, "%s, err = sszutils.ResolveSpecValueWithDefault(ds, \"%s\", %d)\n", exprVar, expr, defaultValue)
-	ctx.appendExprCode(1, "if err != nil {\n\treturn err\n}\n")
-	ctx.usedDynSpecs = true
-
-	ctx.exprVarMap[exprKey] = exprVar
-
-	return exprVar
-}
-
-// getStaticSizeVar generates a variable name for cached static size calculations.
 func (ctx *encoderContext) getSizeFnCall(desc *dynssz.TypeDescriptor, varName string) string {
 	if sizeFnIdx, ok := ctx.sizeFnNameMap[desc]; ok {
 		return fmt.Sprintf("ctx.sizeFn%d(ctx, %s)", sizeFnIdx, varName)
@@ -293,9 +167,13 @@ func (ctx *encoderContext) generateSizeFnCode(indent int) (string, error) {
 		return nameA - nameB
 	})
 
+	resetRetVars := ctx.exprVars.withRetVars("0")
+	defer resetRetVars()
+
 	for _, desc := range fnTypeList {
 		fnName := fmt.Sprintf("sizeFn%d", ctx.sizeFnNameMap[desc])
 		sizeCtx := newSizeContext(ctx.typePrinter, ctx.options)
+		sizeCtx.exprVars = ctx.exprVars
 
 		sizeFnMap := make(map[*dynssz.TypeDescriptor]*sizeFnPtr)
 		for desc2, idx := range ctx.sizeFnNameMap {
@@ -309,10 +187,6 @@ func (ctx *encoderContext) generateSizeFnCode(indent int) (string, error) {
 			}
 		}
 		sizeCtx.useTypeFnMap = sizeFnMap
-
-		sizeCtx.getExprVarFn = func(expr string, defaultValue uint64) string {
-			return ctx.getExprVar(expr, defaultValue)
-		}
 
 		ctx.sizeFnSignature[fnName] = fmt.Sprintf("func(ctx *encoderCtx, t %s) (size int)", ctx.typePrinter.TypeString(desc))
 
@@ -354,7 +228,7 @@ func (ctx *encoderContext) generateEncodeContext(indent int) string {
 
 	appendCode(&codeBuf, indent, "type encoderCtx struct {\n")
 	appendCode(&codeBuf, indent, "\t%s sszutils.DynamicSpecs\n", padField("ds"))
-	appendCode(&codeBuf, indent, "\t%s [%d]uint64\n", padField("exprs"), ctx.exprVarCounter)
+	appendCode(&codeBuf, indent, "\t%s [%d]uint64\n", padField("exprs"), ctx.exprVars.varCounter)
 
 	for _, fnName := range fnNameList {
 		appendCode(&codeBuf, indent, "\t%s %s\n", padField(fnName), ctx.sizeFnSignature[fnName])
@@ -465,7 +339,7 @@ func (ctx *encoderContext) marshalContainer(desc *dynssz.TypeDescriptor, varName
 			staticSize += 4
 		} else {
 			if field.Type.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
-				sizeVar, err := ctx.getStaticSizeVar(field.Type)
+				sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(field.Type)
 				if err != nil {
 					return err
 				}
@@ -556,7 +430,7 @@ func (ctx *encoderContext) marshalVector(desc *dynssz.TypeDescriptor, varName st
 			}
 		}
 
-		exprVar := ctx.getExprVar(*sizeExpression, defaultValue)
+		exprVar := ctx.exprVars.getExprVar(*sizeExpression, defaultValue)
 
 		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
 			bitlimitVar = exprVar
@@ -719,7 +593,7 @@ func (ctx *encoderContext) marshalList(desc *dynssz.TypeDescriptor, varName stri
 	maxVar := ""
 
 	if maxExpression != nil {
-		exprVar := ctx.getExprVar(*maxExpression, uint64(desc.Limit))
+		exprVar := ctx.exprVars.getExprVar(*maxExpression, uint64(desc.Limit))
 
 		hasMax = true
 		maxVar = fmt.Sprintf("int(%s)", exprVar)
@@ -813,7 +687,7 @@ func (ctx *encoderContext) marshalBitlist(desc *dynssz.TypeDescriptor, varName s
 	maxVar := ""
 
 	if maxExpression != nil {
-		exprVar := ctx.getExprVar(*maxExpression, uint64(desc.Limit))
+		exprVar := ctx.exprVars.getExprVar(*maxExpression, uint64(desc.Limit))
 
 		hasMax = true
 		maxVar = fmt.Sprintf("int(%s)", exprVar)
