@@ -33,6 +33,8 @@ dynssz-gen -package /path/to/package -types BeaconBlock,BeaconState -output gene
 | `-v` | Verbose output | `false` |
 | `-legacy` | Generate legacy compatibility methods | `false` |
 | `-without-dynamic-expressions` | Generate only legacy methods, disable dynamic methods | `false` |
+| `-without-fastssz` | Generate code without using fast ssz generated methods | `false` |
+| `-with-streaming` | Generate streaming encoder/decoder functions | `false` |
 
 ### Examples
 
@@ -91,6 +93,14 @@ For maximum flexibility:
 
 ```bash
 dynssz-gen -legacy -package . -types BeaconState -output full_ssz.go
+```
+
+#### Generate Streaming Functions
+
+For memory-efficient streaming to/from `io.Reader`/`io.Writer`:
+
+```bash
+dynssz-gen -with-streaming -package . -types BeaconState -output streaming_ssz.go
 ```
 
 ## Programmatic API
@@ -155,22 +165,28 @@ codeGen := codegen.NewCodeGenerator(dynSsz)
 codeGen.BuildFile("output.go",
     // Skip marshal method generation
     codegen.WithNoMarshalSSZ(),
-    
+
     // Skip unmarshal method generation
     codegen.WithNoUnmarshalSSZ(),
-    
+
     // Skip size calculation
     codegen.WithNoSizeSSZ(),
-    
+
     // Skip hash tree root generation
     codegen.WithNoHashTreeRoot(),
-    
+
     // Generate legacy methods (adds MarshalSSZ, UnmarshalSSZ, etc.)
     codegen.WithCreateLegacyFn(),
-    
+
     // Skip dynamic expressions (generates only static legacy methods)
     codegen.WithoutDynamicExpressions(),
-    
+
+    // Generate streaming encoder function (MarshalSSZEncoder)
+    codegen.WithCreateEncoderFn(),
+
+    // Generate streaming decoder function (UnmarshalSSZDecoder)
+    codegen.WithCreateDecoderFn(),
+
     // Add type to generate
     codegen.WithReflectType(reflect.TypeOf(MyType{})),
 )
@@ -521,6 +537,32 @@ Generates: Only `MarshalSSZ`, `UnmarshalSSZ`, `SizeSSZ`, `HashTreeRoot`, `Marsha
 
 **Key Point**: `-without-dynamic-expressions` is especially useful when you want to generate optimized code for the default preset and fall back to reflection-based Dynamic SSZ for other presets.
 
+### With `-with-streaming`: Streaming Encoder/Decoder Methods
+
+When using `-with-streaming` flag, streaming-capable methods are generated:
+
+#### MarshalSSZEncoder
+
+```go
+func (b *BeaconBlock) MarshalSSZEncoder(ds sszutils.DynamicSpecs, encoder sszutils.Encoder) error {
+    // Streaming-compatible encoding that works with both buffer and stream encoders
+}
+```
+
+#### UnmarshalSSZDecoder
+
+```go
+func (b *BeaconBlock) UnmarshalSSZDecoder(ds sszutils.DynamicSpecs, decoder sszutils.Decoder) error {
+    // Streaming-compatible decoding that works with both buffer and stream decoders
+}
+```
+
+These methods enable efficient streaming I/O by implementing the `DynamicEncoder` and `DynamicDecoder` interfaces. They are automatically used by `MarshalSSZWriter` and `UnmarshalSSZReader` when available.
+
+**Use case**: Generate streaming methods for types that need memory-efficient encoding/decoding to/from `io.Reader`/`io.Writer`.
+
+**Performance note**: Streaming trades memory for CPU time. Expect ~2x CPU overhead for unmarshal and ~1.3x for marshal operations, as streams cannot seek back to update offsets. See [Streaming Support](streaming.md#cpu-vs-memory-trade-off) for details.
+
 ## Troubleshooting
 
 ### "Type not found" Error
@@ -718,5 +760,6 @@ To migrate from fastssz code generation:
 
 - [Getting Started](getting-started.md) - Basic usage
 - [API Reference](api-reference.md) - Generator API details
+- [Streaming Support](streaming.md) - Streaming encoding/decoding
 - [SSZ Annotations](ssz-annotations.md) - Supported tags
 - [Supported Types](supported-types.md) - Type compatibility

@@ -87,6 +87,12 @@ func (cg *CodeGenerator) analyzeTypes() error {
 			if !t.Options.NoHashTreeRoot && !t.Options.WithoutDynamicExpressions {
 				compatFlags |= dynssz.SszCompatFlagDynamicHashRoot
 			}
+			if t.Options.CreateEncoderFn {
+				compatFlags |= dynssz.SszCompatFlagDynamicEncoder
+			}
+			if t.Options.CreateDecoderFn {
+				compatFlags |= dynssz.SszCompatFlagDynamicDecoder
+			}
 
 			if !t.Options.NoMarshalSSZ && !t.Options.NoUnmarshalSSZ && !t.Options.NoSizeSSZ && (t.Options.CreateLegacyFn || t.Options.WithoutDynamicExpressions) {
 				compatFlags |= dynssz.SszCompatFlagFastSSZMarshaler
@@ -300,10 +306,24 @@ func (cg *CodeGenerator) generateCode(desc *dynssz.TypeDescriptor, typePrinter *
 		}
 	}
 
+	if options.CreateEncoderFn {
+		err = generateEncoder(desc, codeBuilder, typePrinter, options)
+		if err != nil {
+			return fmt.Errorf("failed to generate encoder for %s: %w", desc.Type.Name(), err)
+		}
+	}
+
 	if !options.NoUnmarshalSSZ {
 		err = generateUnmarshal(desc, codeBuilder, typePrinter, options)
 		if err != nil {
 			return fmt.Errorf("failed to generate unmarshal for %s: %w", desc.Type.Name(), err)
+		}
+	}
+
+	if options.CreateEncoderFn {
+		err = generateDecoder(desc, codeBuilder, typePrinter, options)
+		if err != nil {
+			return fmt.Errorf("failed to generate decoder for %s: %w", desc.Type.Name(), err)
 		}
 	}
 

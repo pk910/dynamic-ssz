@@ -35,7 +35,7 @@ const (
 )
 
 // SszCompatFlag is a flag indicating whether a type implements a specific SSZ compatibility interface
-type SszCompatFlag uint8
+type SszCompatFlag uint16
 
 const (
 	SszCompatFlagFastSSZMarshaler   SszCompatFlag = 1 << iota // Whether the type implements fastssz.Marshaler
@@ -45,6 +45,8 @@ const (
 	SszCompatFlagDynamicUnmarshaler                           // Whether the type implements DynamicUnmarshaler
 	SszCompatFlagDynamicSizer                                 // Whether the type implements DynamicSizer
 	SszCompatFlagDynamicHashRoot                              // Whether the type implements DynamicHashRoot
+	SszCompatFlagDynamicEncoder                               // Whether the type implements DynamicEncoder
+	SszCompatFlagDynamicDecoder                               // Whether the type implements DynamicDecoder
 )
 
 type GoTypeFlag uint8
@@ -62,7 +64,7 @@ type TypeDescriptor struct {
 	CodegenInfo            *any                      `json:"-"`                   // Codegen information
 	Kind                   reflect.Kind              `json:"kind"`                // Reflect kind of the type
 	Size                   uint32                    `json:"size"`                // SSZ size (-1 if dynamic)
-	Len                    uint32                    `json:"len"`                 // Length of array/slice
+	Len                    uint32                    `json:"len"`                 // Length of array/slice / static size of container
 	Limit                  uint64                    `json:"limit"`               // Limit of array/slice (ssz-max tag)
 	ContainerDesc          *ContainerDescriptor      `json:"container,omitempty"` // For structs
 	UnionVariants          map[uint8]*TypeDescriptor `json:"union,omitempty"`     // Union variant types by index (for CompatibleUnion)
@@ -92,9 +94,9 @@ type FieldDescriptor struct {
 
 // DynFieldDescriptor represents a dynamic field descriptor for a struct
 type DynFieldDescriptor struct {
-	Field  *FieldDescriptor `json:"field"`
-	Offset uint32           `json:"offset"`
-	Index  int16            `json:"index"` // Index of the field in the struct
+	Field        *FieldDescriptor `json:"field"`
+	HeaderOffset uint32           `json:"offset"`
+	Index        int16            `json:"index"` // Index of the field in the struct
 }
 
 // NewTypeCache creates a new type cache
@@ -469,6 +471,12 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 	if tc.dynssz.getDynamicUnmarshalerCompatibility(t) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicUnmarshaler
 	}
+	if tc.dynssz.getDynamicEncoderCompatibility(t) {
+		desc.SszCompatFlags |= SszCompatFlagDynamicEncoder
+	}
+	if tc.dynssz.getDynamicDecoderCompatibility(t) {
+		desc.SszCompatFlags |= SszCompatFlagDynamicDecoder
+	}
 	if tc.dynssz.getDynamicSizerCompatibility(t) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicSizer
 	}
@@ -670,9 +678,9 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 			sszSize = 4 // Offset size for dynamic fields
 
 			desc.ContainerDesc.DynFields = append(desc.ContainerDesc.DynFields, DynFieldDescriptor{
-				Field:  &desc.ContainerDesc.Fields[i],
-				Offset: uint32(totalSize),
-				Index:  int16(i),
+				Field:        &desc.ContainerDesc.Fields[i],
+				HeaderOffset: uint32(totalSize),
+				Index:        int16(i),
 			})
 		}
 
@@ -706,6 +714,7 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 		desc.SszType = SszProgressiveContainerType
 	}
 
+	desc.Len = totalSize
 	if isDynamic {
 		desc.Size = 0
 		desc.SszTypeFlags |= SszTypeFlagIsDynamic

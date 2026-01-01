@@ -5,7 +5,6 @@
 package codegen
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"reflect"
 	"slices"
@@ -27,14 +26,12 @@ import (
 //   - usedDynSpecs: Flag tracking whether generated code uses dynamic SSZ functionality
 //   - valVarCounter: Counter for generating unique variable names during code generation
 type hashTreeRootContext struct {
-	appendCode     func(indent int, code string, args ...any)
-	appendExprCode func(indent int, code string, args ...any)
-	typePrinter    *TypePrinter
-	options        *CodeGeneratorOptions
-	usedDynSpecs   bool
-	valVarCounter  int
-	exprVarCounter int
-	exprVarMap     map[[32]byte]string
+	appendCode    func(indent int, code string, args ...any)
+	typePrinter   *TypePrinter
+	options       *CodeGeneratorOptions
+	exprVars      *exprVarGenerator
+	usedDynSpecs  bool
+	valVarCounter int
 }
 
 // generateHashTreeRoot generates hash tree root methods for a specific type.
@@ -59,7 +56,6 @@ type hashTreeRootContext struct {
 //   - error: An error if code generation fails
 func generateHashTreeRoot(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
 	codeBuf := strings.Builder{}
-	exprCodeBuf := strings.Builder{}
 	ctx := &hashTreeRootContext{
 		appendCode: func(indent int, code string, args ...any) {
 			if len(args) > 0 {
@@ -67,23 +63,21 @@ func generateHashTreeRoot(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *stri
 			}
 			codeBuf.WriteString(indentStr(code, indent))
 		},
-		appendExprCode: func(indent int, code string, args ...any) {
-			if len(args) > 0 {
-				code = fmt.Sprintf(code, args...)
-			}
-			exprCodeBuf.WriteString(indentStr(code, indent))
-		},
 		typePrinter: typePrinter,
 		options:     options,
-		exprVarMap:  make(map[[32]byte]string),
+		exprVars:    newExprVarGenerator("expr", typePrinter, options),
 	}
 
 	// Generate main function signature
 	typeName := typePrinter.TypeString(rootTypeDesc)
 
 	// Generate hash tree root code
-	if err := ctx.hashType(rootTypeDesc, "t", 1, true, false); err != nil {
+	if err := ctx.hashType(rootTypeDesc, "t", 0, true, false); err != nil {
 		return err
+	}
+
+	if ctx.exprVars.varCounter > 0 {
+		ctx.usedDynSpecs = true
 	}
 
 	genDynamicFn := !options.WithoutDynamicExpressions
@@ -96,59 +90,59 @@ func generateHashTreeRoot(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *stri
 	// Static hash tree root function
 	if genStaticFn {
 		hasherAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
-		codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRoot() (root [32]byte, err error) {\n", typeName))
-		codeBuilder.WriteString(fmt.Sprintf("\terr = %s.WithDefaultHasher(func(hh sszutils.HashWalker) (err error) {\n", hasherAlias))
-		codeBuilder.WriteString("\t\terr = t.HashTreeRootWith(hh)\n")
-		codeBuilder.WriteString("\t\tif err == nil {\n")
-		codeBuilder.WriteString("\t\t\troot, err = hh.HashRoot()\n")
-		codeBuilder.WriteString("\t\t}\n")
-		codeBuilder.WriteString("\t\treturn\n")
-		codeBuilder.WriteString("\t})\n")
-		codeBuilder.WriteString("\treturn\n")
-		codeBuilder.WriteString("}\n")
+		appendCode(codeBuilder, 0, "func (t %s) HashTreeRoot() (root [32]byte, err error) {\n", typeName)
+		appendCode(codeBuilder, 1, "err = %s.WithDefaultHasher(func(hh sszutils.HashWalker) (err error) {\n", hasherAlias)
+		appendCode(codeBuilder, 2, "err = t.HashTreeRootWith(hh)\n")
+		appendCode(codeBuilder, 2, "if err == nil {\n")
+		appendCode(codeBuilder, 3, "root, err = hh.HashRoot()\n")
+		appendCode(codeBuilder, 2, "}\n")
+		appendCode(codeBuilder, 2, "return\n")
+		appendCode(codeBuilder, 1, "})\n")
+		appendCode(codeBuilder, 1, "return\n")
+		appendCode(codeBuilder, 0, "}\n")
 	}
 
 	if genStaticFn {
 		if !ctx.usedDynSpecs {
-			codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootWith(hh sszutils.HashWalker) error {\n", typeName))
-			codeBuilder.WriteString(exprCodeBuf.String())
-			codeBuilder.WriteString(codeBuf.String())
-			codeBuilder.WriteString("\treturn nil\n")
-			codeBuilder.WriteString("}\n\n")
+			appendCode(codeBuilder, 0, fmt.Sprintf("func (t %s) HashTreeRootWith(hh sszutils.HashWalker) error {\n", typeName))
+			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
+			appendCode(codeBuilder, 1, codeBuf.String())
+			appendCode(codeBuilder, 1, "return nil\n")
+			appendCode(codeBuilder, 0, "}\n\n")
 		} else {
 			dynsszAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
-			codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootWith(hh sszutils.HashWalker) error {\n", typeName))
-			codeBuilder.WriteString(fmt.Sprintf("\treturn t.HashTreeRootWithDyn(%s.GetGlobalDynSsz(), hh)\n", dynsszAlias))
-			codeBuilder.WriteString("}\n\n")
+			appendCode(codeBuilder, 0, "func (t %s) HashTreeRootWith(hh sszutils.HashWalker) error {\n", typeName)
+			appendCode(codeBuilder, 1, "return t.HashTreeRootWithDyn(%s.GetGlobalDynSsz(), hh)\n", dynsszAlias)
+			appendCode(codeBuilder, 0, "}\n\n")
 		}
 	}
 
 	// Dynamic hash tree root function
 	if genDynamicFn {
 		hasherAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
-		codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootDyn(ds sszutils.DynamicSpecs) (root [32]byte, err error) {\n", typeName))
-		codeBuilder.WriteString(fmt.Sprintf("\terr = %s.WithDefaultHasher(func(hh sszutils.HashWalker) (err error) {\n", hasherAlias))
-		codeBuilder.WriteString("\t\terr = t.HashTreeRootWithDyn(ds, hh)\n")
-		codeBuilder.WriteString("\t\tif err == nil {\n")
-		codeBuilder.WriteString("\t\t\troot, err = hh.HashRoot()\n")
-		codeBuilder.WriteString("\t\t}\n")
-		codeBuilder.WriteString("\t\treturn\n")
-		codeBuilder.WriteString("\t})\n")
-		codeBuilder.WriteString("\treturn\n")
-		codeBuilder.WriteString("}\n\n")
+		appendCode(codeBuilder, 0, "func (t %s) HashTreeRootDyn(ds sszutils.DynamicSpecs) (root [32]byte, err error) {\n", typeName)
+		appendCode(codeBuilder, 1, "err = %s.WithDefaultHasher(func(hh sszutils.HashWalker) (err error) {\n", hasherAlias)
+		appendCode(codeBuilder, 2, "err = t.HashTreeRootWithDyn(ds, hh)\n")
+		appendCode(codeBuilder, 2, "if err == nil {\n")
+		appendCode(codeBuilder, 3, "root, err = hh.HashRoot()\n")
+		appendCode(codeBuilder, 2, "}\n")
+		appendCode(codeBuilder, 2, "return\n")
+		appendCode(codeBuilder, 1, "})\n")
+		appendCode(codeBuilder, 1, "return\n")
+		appendCode(codeBuilder, 0, "}\n\n")
 	}
 
 	if genDynamicFn {
 		if ctx.usedDynSpecs {
-			codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName))
-			codeBuilder.WriteString(exprCodeBuf.String())
-			codeBuilder.WriteString(codeBuf.String())
-			codeBuilder.WriteString("\treturn nil\n")
-			codeBuilder.WriteString("}\n\n")
+			appendCode(codeBuilder, 0, "func (t %s) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName)
+			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
+			appendCode(codeBuilder, 1, codeBuf.String())
+			appendCode(codeBuilder, 1, "return nil\n")
+			appendCode(codeBuilder, 0, "}\n\n")
 		} else {
-			codeBuilder.WriteString(fmt.Sprintf("func (t %s) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName))
-			codeBuilder.WriteString("\treturn t.HashTreeRootWith(hh)\n")
-			codeBuilder.WriteString("}\n\n")
+			appendCode(codeBuilder, 0, "func (t %s) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName)
+			appendCode(codeBuilder, 1, "return t.HashTreeRootWith(hh)\n")
+			appendCode(codeBuilder, 0, "}\n\n")
 			genStaticFn = true
 		}
 	}
@@ -193,29 +187,6 @@ func (ctx *hashTreeRootContext) getPtrPrefix(desc *dynssz.TypeDescriptor, prefix
 		return prefix
 	}
 	return ""
-}
-
-// getExprVar generates a variable name for cached limit expression calculations.
-func (ctx *hashTreeRootContext) getExprVar(expr string, defaultValue uint64) string {
-	if expr == "" {
-		return fmt.Sprintf("%v", defaultValue)
-	}
-
-	exprKey := sha256.Sum256([]byte(fmt.Sprintf("%s\n%v", expr, defaultValue)))
-	if exprVar, ok := ctx.exprVarMap[exprKey]; ok {
-		return exprVar
-	}
-
-	exprVar := fmt.Sprintf("expr%d", ctx.exprVarCounter)
-	ctx.exprVarCounter++
-
-	ctx.appendExprCode(1, "%s, err := sszutils.ResolveSpecValueWithDefault(ds, \"%s\", %d)\n", exprVar, expr, defaultValue)
-	ctx.appendExprCode(1, "if err != nil {\n\treturn err\n}\n")
-	ctx.usedDynSpecs = true
-
-	ctx.exprVarMap[exprKey] = exprVar
-
-	return exprVar
 }
 
 // hashType generates hash tree root code for any SSZ type, delegating to specific hashers.
@@ -458,7 +429,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *dynssz.TypeDescriptor, varName 
 			}
 		}
 
-		exprVar := ctx.getExprVar(*sizeExpression, defaultValue)
+		exprVar := ctx.exprVars.getExprVar(*sizeExpression, defaultValue)
 
 		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
 			bitlimitVar = fmt.Sprintf("int(%s)", exprVar)
@@ -587,7 +558,7 @@ func (ctx *hashTreeRootContext) hashList(desc *dynssz.TypeDescriptor, varName st
 	maxVar := ""
 
 	if maxExpression != nil {
-		exprVar := ctx.getExprVar(*maxExpression, desc.Limit)
+		exprVar := ctx.exprVars.getExprVar(*maxExpression, desc.Limit)
 
 		hasMax = true
 		maxVar = exprVar
@@ -677,7 +648,7 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *dynssz.TypeDescriptor, varName
 
 	maxVar := ""
 	if maxExpression != nil {
-		exprVar := ctx.getExprVar(*maxExpression, desc.Limit)
+		exprVar := ctx.exprVars.getExprVar(*maxExpression, desc.Limit)
 
 		maxVar = exprVar
 	} else if desc.Limit > 0 {

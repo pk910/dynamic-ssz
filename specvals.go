@@ -23,7 +23,7 @@ func (d *DynSsz) ResolveSpecValue(name string) (bool, uint64, error) {
 	cachedValue := &cachedSpecValue{}
 	expression, err := govaluate.NewEvaluableExpression(name)
 	if err != nil {
-		return false, 0, fmt.Errorf("error parsing dynamic spec expression: %v", err)
+		return false, 0, fmt.Errorf("error parsing dynamic spec expression: %w", err)
 	}
 
 	result, err := expression.Evaluate(d.specValues)

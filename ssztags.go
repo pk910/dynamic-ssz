@@ -101,7 +101,7 @@ func (d *DynSsz) getSszTypeTag(field *reflect.StructField) ([]SszTypeHint, error
 		for _, sszTypeStr := range strings.Split(fieldSszTypeStr, ",") {
 			sszType, err := ParseSszType(sszTypeStr)
 			if err != nil {
-				return sszTypeHints, fmt.Errorf("error parsing ssz-type tag for '%v' field: %v", field.Name, err)
+				return sszTypeHints, fmt.Errorf("error parsing ssz-type tag for '%v' field: %w", field.Name, err)
 			}
 
 			sszTypeHints = append(sszTypeHints, SszTypeHint{
@@ -140,17 +140,16 @@ type SszSizeHint struct {
 // particularly when dealing with slices or arrays that may have fixed or dynamic lengths specified through these tags.
 //
 // Parameters:
-// - field: A pointer to the reflect.StructField being examined. The field's tags are inspected to extract 'ssz-size'/'ssz-bitsize'
-//   and 'dynssz-size'/'dynssz-bitsize' annotations, which provide crucial size information for encoding or decoding processes.
+//   - field: A pointer to the reflect.StructField being examined. The field's tags are inspected to extract 'ssz-size'/'ssz-bitsize'
+//     and 'dynssz-size'/'dynssz-bitsize' annotations, which provide crucial size information for encoding or decoding processes.
 //
 // Returns:
-// - A slice of SszSizeHint, which are derived from the parsed tag annotations. These hints inform the marshalling
-//   and unmarshalling functions about the size characteristics of the field, enabling accurate handling of both
-//   static and dynamic sized elements within struct fields.
-// - An error if the tag parsing encounters issues, such as malformed annotations or unsupported specifications within
-//   the tags. This ensures that size calculations and subsequent encoding or decoding actions can rely on valid and
-//   correctly interpreted size information.
-
+//   - A slice of SszSizeHint, which are derived from the parsed tag annotations. These hints inform the marshalling
+//     and unmarshalling functions about the size characteristics of the field, enabling accurate handling of both
+//     static and dynamic sized elements within struct fields.
+//   - An error if the tag parsing encounters issues, such as malformed annotations or unsupported specifications within
+//     the tags. This ensures that size calculations and subsequent encoding or decoding actions can rely on valid and
+//     correctly interpreted size information.
 func (d *DynSsz) getSszSizeTag(field *reflect.StructField) ([]SszSizeHint, error) {
 	sszSizes := []SszSizeHint{}
 
@@ -181,14 +180,14 @@ func (d *DynSsz) getSszSizeTag(field *reflect.StructField) ([]SszSizeHint, error
 			if sszBitsizeStr != "?" {
 				sszSizeInt, err := strconv.ParseUint(sszBitsizeStr, 10, 32)
 				if err != nil {
-					return sszSizes, fmt.Errorf("error parsing ssz-bitsize tag for '%v' field: %v", field.Name, err)
+					return sszSizes, fmt.Errorf("error parsing ssz-bitsize tag for '%v' field: %w", field.Name, err)
 				}
 				sszSize.Size = uint32(sszSizeInt)
 				sszSize.Bits = true
 			} else if sszSizeStr != "?" {
 				sszSizeInt, err := strconv.ParseUint(sszSizeStr, 10, 32)
 				if err != nil {
-					return sszSizes, fmt.Errorf("error parsing ssz-size tag for '%v' field: %v", field.Name, err)
+					return sszSizes, fmt.Errorf("error parsing ssz-size tag for '%v' field: %w", field.Name, err)
 				}
 				sszSize.Size = uint32(sszSizeInt)
 			} else {
@@ -238,7 +237,7 @@ func (d *DynSsz) getSszSizeTag(field *reflect.StructField) ([]SszSizeHint, error
 			} else {
 				ok, specVal, err := d.ResolveSpecValue(sizeExpr)
 				if err != nil {
-					return sszSizes, fmt.Errorf("error parsing dynssz-size tag for '%v' field (%v): %v", field.Name, sizeExpr, err)
+					return sszSizes, fmt.Errorf("error parsing dynssz-size tag for '%v' field (%v): %w", field.Name, sizeExpr, err)
 				}
 
 				isExpr = true
@@ -296,17 +295,16 @@ type SszMaxSizeHint struct {
 // particularly when dealing with slices or arrays that may have fixed or dynamic lengths specified through these tags.
 //
 // Parameters:
-// - field: A pointer to the reflect.StructField being examined. The field's tags are inspected to extract 'ssz-max'/'ssz-bitmax'
-//   and 'dynssz-max'/'dynssz-bitmax' annotations, which provide crucial max size information for encoding or decoding processes.
+//   - field: A pointer to the reflect.StructField being examined. The field's tags are inspected to extract 'ssz-max'/'ssz-bitmax'
+//     and 'dynssz-max'/'dynssz-bitmax' annotations, which provide crucial max size information for encoding or decoding processes.
 //
 // Returns:
-// - A slice of SszMaxSizeHint, which are derived from the parsed tag annotations. These hints inform the marshalling
-//   and unmarshalling functions about the max size characteristics of the field, enabling accurate handling of both
-//   static and dynamic sized elements within struct fields.
-// - An error if the tag parsing encounters issues, such as malformed annotations or unsupported specifications within
-//   the tags. This ensures that max size calculations and subsequent encoding or decoding actions can rely on valid and
-//   correctly interpreted max size information.
-
+//   - A slice of SszMaxSizeHint, which are derived from the parsed tag annotations. These hints inform the marshalling
+//     and unmarshalling functions about the max size characteristics of the field, enabling accurate handling of both
+//     static and dynamic sized elements within struct fields.
+//   - An error if the tag parsing encounters issues, such as malformed annotations or unsupported specifications within
+//     the tags. This ensures that max size calculations and subsequent encoding or decoding actions can rely on valid and
+//     correctly interpreted max size information.
 func (d *DynSsz) getSszMaxSizeTag(field *reflect.StructField) ([]SszMaxSizeHint, error) {
 	sszMaxSizes := []SszMaxSizeHint{}
 
@@ -320,7 +318,7 @@ func (d *DynSsz) getSszMaxSizeTag(field *reflect.StructField) ([]SszMaxSizeHint,
 			} else {
 				sszSizeInt, err := strconv.ParseUint(sszSizeStr, 10, 64)
 				if err != nil {
-					return sszMaxSizes, fmt.Errorf("error parsing ssz-max tag for '%v' field: %v", field.Name, err)
+					return sszMaxSizes, fmt.Errorf("error parsing ssz-max tag for '%v' field: %w", field.Name, err)
 				}
 				sszMaxSize.Size = sszSizeInt
 			}
@@ -342,7 +340,7 @@ func (d *DynSsz) getSszMaxSizeTag(field *reflect.StructField) ([]SszMaxSizeHint,
 			} else {
 				ok, specVal, err := d.ResolveSpecValue(sszMaxSizeStr)
 				if err != nil {
-					return sszMaxSizes, fmt.Errorf("error parsing dynssz-max tag for '%v' field (%v): %v", field.Name, sszMaxSizeStr, err)
+					return sszMaxSizes, fmt.Errorf("error parsing dynssz-max tag for '%v' field (%v): %w", field.Name, sszMaxSizeStr, err)
 				}
 
 				isExpr = true
@@ -382,7 +380,7 @@ func (d *DynSsz) getSszIndexTag(field *reflect.StructField) (*uint16, error) {
 	if fieldSszIndexStr, fieldHasSszIndex := field.Tag.Lookup("ssz-index"); fieldHasSszIndex {
 		sszSizeInt, err := strconv.ParseUint(fieldSszIndexStr, 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf("error parsing ssz-index tag for '%v' field: %v", field.Name, err)
+			return nil, fmt.Errorf("error parsing ssz-index tag for '%v' field: %w", field.Name, err)
 		}
 
 		index := uint16(sszSizeInt)

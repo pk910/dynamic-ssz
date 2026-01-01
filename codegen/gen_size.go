@@ -5,7 +5,6 @@
 package codegen
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"reflect"
 	"slices"
@@ -26,16 +25,49 @@ import (
 //   - options: Code generation options controlling output behavior
 //   - usedDynSpecs: Flag tracking whether generated code uses dynamic SSZ functionality
 type sizeContext struct {
+	codeBuf         *strings.Builder
 	appendCode      func(indent int, code string, args ...any)
-	appendExprCode  func(indent int, code string, args ...any)
 	typePrinter     *TypePrinter
 	options         *CodeGeneratorOptions
+	exprVars        *exprVarGenerator
 	usedDynSpecs    bool
 	indexVarCounter int
 	sizeVarCounter  int
 	limitVarCounter int
-	exprVarCounter  int
-	exprVarMap      map[[32]byte]string
+
+	useTypeFnMap map[*dynssz.TypeDescriptor]*sizeFnPtr
+}
+
+func newSizeContext(typePrinter *TypePrinter, options *CodeGeneratorOptions) *sizeContext {
+	codeBuf := strings.Builder{}
+	var ctx *sizeContext
+	ctx = &sizeContext{
+		codeBuf: &codeBuf,
+		appendCode: func(indent int, code string, args ...any) {
+			appendCode(ctx.codeBuf, indent, code, args...)
+		},
+		typePrinter:  typePrinter,
+		options:      options,
+		exprVars:     newExprVarGenerator("expr", typePrinter, options),
+		useTypeFnMap: make(map[*dynssz.TypeDescriptor]*sizeFnPtr),
+	}
+	ctx.exprVars.retVars = "0"
+	return ctx
+}
+
+type sizeFnPtr struct {
+	fnName       string
+	fnArgs       []string
+	needDynSpecs bool
+	used         bool
+}
+
+func (s *sizeFnPtr) getFnCall(varName string) string {
+	args := make([]string, 0, 1+len(s.fnArgs))
+	args = append(args, s.fnArgs...)
+	args = append(args, varName)
+	s.used = true
+	return fmt.Sprintf("%s(%s)", s.fnName, strings.Join(args, ", "))
 }
 
 // generateSize generates size calculation methods for a specific type.
@@ -57,32 +89,18 @@ type sizeContext struct {
 // Returns:
 //   - error: An error if code generation fails
 func generateSize(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
-	codeBuf := strings.Builder{}
-	exprCodeBuf := strings.Builder{}
-	ctx := &sizeContext{
-		appendCode: func(indent int, code string, args ...any) {
-			if len(args) > 0 {
-				code = fmt.Sprintf(code, args...)
-			}
-			codeBuf.WriteString(indentStr(code, indent))
-		},
-		appendExprCode: func(indent int, code string, args ...any) {
-			if len(args) > 0 {
-				code = fmt.Sprintf(code, args...)
-			}
-			exprCodeBuf.WriteString(indentStr(code, indent))
-		},
-		typePrinter: typePrinter,
-		options:     options,
-		exprVarMap:  make(map[[32]byte]string),
-	}
+	ctx := newSizeContext(typePrinter, options)
 
 	// Generate main function signature
 	typeName := typePrinter.TypeString(rootTypeDesc)
 
 	// Generate size calculation code
-	if err := ctx.sizeType(rootTypeDesc, "t", "size", 1, true); err != nil {
+	if err := ctx.sizeType(rootTypeDesc, "t", "size", 0, true); err != nil {
 		return err
+	}
+
+	if ctx.exprVars.varCounter > 0 {
+		ctx.usedDynSpecs = true
 	}
 
 	genDynamicFn := !options.WithoutDynamicExpressions
@@ -94,34 +112,34 @@ func generateSize(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Buil
 
 	if genStaticFn {
 		if !ctx.usedDynSpecs {
-			codeBuilder.WriteString(fmt.Sprintf("func (t %s) SizeSSZ() (size int) {\n", typeName))
+			appendCode(codeBuilder, 0, "func (t %s) SizeSSZ() (size int) {\n", typeName)
 			if rootTypeDesc.Size > 0 {
-				codeBuilder.WriteString(fmt.Sprintf("\treturn %d\n", rootTypeDesc.Size))
+				appendCode(codeBuilder, 1, "return %d\n", rootTypeDesc.Size)
 			} else {
-				codeBuilder.WriteString(exprCodeBuf.String())
-				codeBuilder.WriteString(codeBuf.String())
-				codeBuilder.WriteString("\treturn size\n")
+				appendCode(codeBuilder, 1, ctx.exprVars.getCode())
+				appendCode(codeBuilder, 1, ctx.codeBuf.String())
+				appendCode(codeBuilder, 1, "return size\n")
 			}
-			codeBuilder.WriteString("}\n\n")
+			appendCode(codeBuilder, 0, "}\n\n")
 		} else {
 			dynsszAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
-			codeBuilder.WriteString(fmt.Sprintf("func (t %s) SizeSSZ() (size int) {\n", typeName))
-			codeBuilder.WriteString(fmt.Sprintf("\treturn t.SizeSSZDyn(%s.GetGlobalDynSsz())\n", dynsszAlias))
-			codeBuilder.WriteString("}\n\n")
+			appendCode(codeBuilder, 0, "func (t %s) SizeSSZ() (size int) {\n", typeName)
+			appendCode(codeBuilder, 1, "return t.SizeSSZDyn(%s.GetGlobalDynSsz())\n", dynsszAlias)
+			appendCode(codeBuilder, 0, "}\n\n")
 		}
 	}
 
 	if genDynamicFn {
 		if ctx.usedDynSpecs {
-			codeBuilder.WriteString(fmt.Sprintf("func (t %s) SizeSSZDyn(ds sszutils.DynamicSpecs) (size int) {\n", typeName))
-			codeBuilder.WriteString(exprCodeBuf.String())
-			codeBuilder.WriteString(codeBuf.String())
-			codeBuilder.WriteString("\treturn size\n")
-			codeBuilder.WriteString("}\n\n")
+			appendCode(codeBuilder, 0, "func (t %s) SizeSSZDyn(ds sszutils.DynamicSpecs) (size int) {\n", typeName)
+			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
+			appendCode(codeBuilder, 1, ctx.codeBuf.String())
+			appendCode(codeBuilder, 1, "return size\n")
+			appendCode(codeBuilder, 0, "}\n\n")
 		} else {
-			codeBuilder.WriteString(fmt.Sprintf("func (t %s) SizeSSZDyn(_ sszutils.DynamicSpecs) (size int) {\n", typeName))
-			codeBuilder.WriteString("\treturn t.SizeSSZ()\n")
-			codeBuilder.WriteString("}\n\n")
+			appendCode(codeBuilder, 0, "func (t %s) SizeSSZDyn(_ sszutils.DynamicSpecs) (size int) {\n", typeName)
+			appendCode(codeBuilder, 1, "return t.SizeSSZ()\n")
+			appendCode(codeBuilder, 0, "}\n\n")
 			genStaticFn = true
 		}
 	}
@@ -159,32 +177,17 @@ func (ctx *sizeContext) getPtrPrefix(desc *dynssz.TypeDescriptor) string {
 	return ""
 }
 
-// getExprVar generates a variable name for cached limit expression calculations.
-func (ctx *sizeContext) getExprVar(expr string, defaultValue uint64) string {
-	if expr == "" {
-		return fmt.Sprintf("%v", defaultValue)
-	}
-
-	exprKey := sha256.Sum256([]byte(fmt.Sprintf("%s\n%v", expr, defaultValue)))
-	if exprVar, ok := ctx.exprVarMap[exprKey]; ok {
-		return exprVar
-	}
-
-	exprVar := fmt.Sprintf("expr%d", ctx.exprVarCounter)
-	ctx.exprVarCounter++
-
-	ctx.appendExprCode(1, "%s, err := sszutils.ResolveSpecValueWithDefault(ds, \"%s\", %d)\n", exprVar, expr, defaultValue)
-	ctx.appendExprCode(1, "if err != nil {\n\treturn 0\n}\n")
-	ctx.usedDynSpecs = true
-
-	ctx.exprVarMap[exprKey] = exprVar
-
-	return exprVar
-}
-
 // sizeType generates size calculation code for any SSZ type, delegating to specific sizers.
 func (ctx *sizeContext) sizeType(desc *dynssz.TypeDescriptor, varName string, sizeVar string, indent int, isRoot bool) error {
 	// Handle types that have generated methods we can call
+	if ptr, ok := ctx.useTypeFnMap[desc]; ok {
+		ctx.appendCode(indent, "%s += %s\n", sizeVar, ptr.getFnCall(varName))
+		if ptr.needDynSpecs {
+			ctx.usedDynSpecs = true
+		}
+		return nil
+	}
+
 	if desc.SszCompatFlags&dynssz.SszCompatFlagDynamicSizer != 0 && !isRoot {
 		ctx.appendCode(indent, "%s += %s.SizeSSZDyn(ds)\n", sizeVar, varName)
 		ctx.usedDynSpecs = true
@@ -313,8 +316,10 @@ func (ctx *sizeContext) sizeVector(desc *dynssz.TypeDescriptor, varName string, 
 		if usedVar {
 			return
 		}
-		ctx.appendCode(indent, "t := %s%s\n", ctx.getPtrPrefix(desc), varName)
-		varName = "t"
+		if len(varName) > 1 {
+			ctx.appendCode(indent, "t := %s%s\n", ctx.getPtrPrefix(desc), varName)
+			varName = "t"
+		}
 		usedVar = true
 	}
 
@@ -329,7 +334,7 @@ func (ctx *sizeContext) sizeVector(desc *dynssz.TypeDescriptor, varName string, 
 			}
 		}
 
-		exprVar := ctx.getExprVar(*sizeExpression, defaultValue)
+		exprVar := ctx.exprVars.getExprVar(*sizeExpression, defaultValue)
 
 		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
 			limitVar = fmt.Sprintf("int((%s+7)/8)", exprVar)
@@ -415,8 +420,10 @@ func (ctx *sizeContext) sizeList(desc *dynssz.TypeDescriptor, varName string, si
 		if usedVar {
 			return
 		}
-		ctx.appendCode(indent, "t := %s%s\n", ctx.getPtrPrefix(desc), varName)
-		varName = "t"
+		if len(varName) > 1 {
+			ctx.appendCode(indent, "t := %s%s\n", ctx.getPtrPrefix(desc), varName)
+			varName = "t"
+		}
 		usedVar = true
 	}
 
@@ -464,8 +471,10 @@ func (ctx *sizeContext) sizeList(desc *dynssz.TypeDescriptor, varName string, si
 
 // sizeUnion generates size calculation code for SSZ union types.
 func (ctx *sizeContext) sizeUnion(desc *dynssz.TypeDescriptor, varName string, sizeVar string, indent int) error {
-	ctx.appendCode(indent, "t := %s\n", varName)
-	varName = "t"
+	if len(varName) > 1 {
+		ctx.appendCode(indent, "t := %s\n", varName)
+		varName = "t"
+	}
 
 	ctx.appendCode(indent, "%s += 1 // Union selector\n", sizeVar)
 	ctx.appendCode(indent, "switch %s.Variant {\n", varName)

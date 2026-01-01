@@ -500,6 +500,12 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 	if p.getDynamicUnmarshalerCompatibility(originalType) || p.getDynamicUnmarshalerCompatibility(otherType) {
 		desc.SszCompatFlags |= dynssz.SszCompatFlagDynamicUnmarshaler
 	}
+	if p.getDynamicEncoderCompatibility(originalType) || p.getDynamicEncoderCompatibility(otherType) {
+		desc.SszCompatFlags |= dynssz.SszCompatFlagDynamicEncoder
+	}
+	if p.getDynamicDecoderCompatibility(originalType) || p.getDynamicDecoderCompatibility(otherType) {
+		desc.SszCompatFlags |= dynssz.SszCompatFlagDynamicDecoder
+	}
 	if p.getDynamicSizerCompatibility(originalType) || p.getDynamicSizerCompatibility(otherType) {
 		desc.SszCompatFlags |= dynssz.SszCompatFlagDynamicSizer
 	}
@@ -652,9 +658,9 @@ func (p *Parser) buildContainerDescriptor(desc *dynssz.TypeDescriptor, struc *ty
 		if typeDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
 			// Dynamic field
 			dynFieldDesc := dynssz.DynFieldDescriptor{
-				Field:  &fieldDesc,
-				Offset: size,
-				Index:  int16(len(fields)),
+				Field:        &fieldDesc,
+				HeaderOffset: size,
+				Index:        int16(len(fields)),
 			}
 			dynFields = append(dynFields, dynFieldDesc)
 			isDynamic = true
@@ -673,6 +679,7 @@ func (p *Parser) buildContainerDescriptor(desc *dynssz.TypeDescriptor, struc *ty
 	}
 	desc.ContainerDesc = containerDesc
 
+	desc.Len = size
 	if isDynamic {
 		desc.SszTypeFlags |= dynssz.SszTypeFlagIsDynamic
 		desc.Size = 0
@@ -1185,6 +1192,18 @@ func (p *Parser) getDynamicUnmarshalerCompatibility(typ types.Type) bool {
 	return p.hasMethodWithSignature(methodSet, "UnmarshalSSZDyn", []string{"DynamicSpecs", "[]byte"}, []string{"error"})
 }
 
+func (p *Parser) getDynamicEncoderCompatibility(typ types.Type) bool {
+	// Check if type has MarshalSSZEncoder method
+	methodSet := types.NewMethodSet(typ)
+	return p.hasMethodWithSignature(methodSet, "MarshalSSZEncoder", []string{"DynamicSpecs", "Encoder"}, []string{"error"})
+}
+
+func (p *Parser) getDynamicDecoderCompatibility(typ types.Type) bool {
+	// Check if type has UnmarshalSSZDecoder method
+	methodSet := types.NewMethodSet(typ)
+	return p.hasMethodWithSignature(methodSet, "UnmarshalSSZDecoder", []string{"DynamicSpecs", "Decoder"}, []string{"error"})
+}
+
 func (p *Parser) getDynamicSizerCompatibility(typ types.Type) bool {
 	// Check if type has SizeSSZDyn method
 	methodSet := types.NewMethodSet(typ)
@@ -1272,7 +1291,7 @@ func (p *Parser) typeMatches(typ types.Type, expectedTypeStr string) bool {
 		if basic, ok := typ.(*types.Basic); ok {
 			return basic.Kind() == types.Int
 		}
-	case "DynamicSpecs", "HashWalker":
+	case "DynamicSpecs", "HashWalker", "Encoder", "Decoder":
 		return true
 	}
 	return false

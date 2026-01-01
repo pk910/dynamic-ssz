@@ -36,7 +36,6 @@ import (
 //   - Special handling for Bitlist types
 //   - Primitive type hashing (bool, uint8, uint16, uint32, uint64)
 //   - Delegation to specialized functions for composite types (structs, arrays, slices)
-
 func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, pack bool, idt int) error {
 	hashIndex := hh.Index()
 
@@ -77,7 +76,7 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 			if hasher, ok := sourceValuePtr.Interface().(sszutils.FastsszHashRoot); ok {
 				hashBytes, err := hasher.HashTreeRoot()
 				if err != nil {
-					return fmt.Errorf("failed HashTreeRoot: %v", err)
+					return fmt.Errorf("failed HashTreeRoot: %w", err)
 				}
 
 				hh.PutBytes(hashBytes[:])
@@ -93,7 +92,7 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 		if ok {
 			err := hasher.HashTreeRootWithDyn(d, hh)
 			if err != nil {
-				return fmt.Errorf("failed HashTreeRootDyn: %v", err)
+				return fmt.Errorf("failed HashTreeRootDyn: %w", err)
 			}
 		} else {
 			useDynamicHashRoot = false
@@ -209,7 +208,6 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 //   - error: An error if hashing fails
 //
 // The function extracts the Data field from the TypeWrapper and builds the hash tree root for the wrapped value using its type descriptor.
-
 func (d *DynSsz) buildRootFromTypeWrapper(sourceType *TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, pack bool, idt int) error {
 	if d.Verbose {
 		d.LogCb("%sbuildRootFromTypeWrapper: %s\n", strings.Repeat(" ", idt), sourceType.Type.Name())
@@ -240,7 +238,6 @@ func (d *DynSsz) buildRootFromTypeWrapper(sourceType *TypeDescriptor, sourceValu
 //
 // Returns:
 //   - error: An error if hashing fails
-
 func (d *DynSsz) buildRootFromLargeUint(sourceType *TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, pack bool, idt int) error {
 	// Handle unaddressable arrays
 	if !sourceValue.CanAddr() && sourceValue.Kind() == reflect.Array {
@@ -291,7 +288,6 @@ func (d *DynSsz) buildRootFromLargeUint(sourceType *TypeDescriptor, sourceValue 
 //
 // The Merkleize call at the end combines all field hashes into the final root
 // using binary tree hashing with zero-padding to the next power of two.
-
 func (d *DynSsz) buildRootFromContainer(sourceType *TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
 	hashIndex := hh.Index()
 
@@ -338,7 +334,6 @@ func (d *DynSsz) buildRootFromContainer(sourceType *TypeDescriptor, sourceValue 
 //
 // The Merkleize call at the end combines all field hashes into the final root
 // using binary tree hashing with zero-padding to the next power of two.
-
 func (d *DynSsz) buildRootFromProgressiveContainer(sourceType *TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
 	hashIndex := hh.Index()
 	lastActiveField := -1
@@ -446,7 +441,6 @@ func (d *DynSsz) buildRootFromCompatibleUnion(sourceType *TypeDescriptor, source
 // Special handling:
 //   - Byte arrays use PutBytes for efficient chunk-based hashing
 //   - Arrays with max size hints include length mixing for proper limits
-
 func (d *DynSsz) buildRootFromVector(sourceType *TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
 	hashIndex := hh.Index()
 
@@ -550,7 +544,6 @@ func (d *DynSsz) buildRootFromVector(sourceType *TypeDescriptor, sourceValue ref
 //
 // For slices with max size hints, MerkleizeWithMixin ensures the length is
 // properly mixed into the root, implementing the SSZ list hashing algorithm.
-
 func (d *DynSsz) buildRootFromList(sourceType *TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
 	hashIndex := hh.Index()
 
@@ -686,7 +679,6 @@ func (d *DynSsz) getActiveFields(sourceType *TypeDescriptor) []byte {
 //
 // Returns:
 //   - error: An error if bitlist hashing fails
-
 func (d *DynSsz) buildRootFromBitlist(sourceType *TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
 	maxSize := uint64(0)
 	bytes := sourceValue.Bytes()
