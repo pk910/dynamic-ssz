@@ -37,6 +37,7 @@ type unmarshalContext struct {
 	staticSizeVars *staticSizeVarGenerator
 	usedDynSpecs   bool
 	valVarCounter  int
+	binaryPkgName  string
 }
 
 // generateUnmarshal generates unmarshal methods for a specific type.
@@ -66,8 +67,9 @@ func generateUnmarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings
 			}
 			codeBuf.WriteString(indentStr(code, indent))
 		},
-		typePrinter: typePrinter,
-		options:     options,
+		typePrinter:   typePrinter,
+		options:       options,
+		binaryPkgName: typePrinter.AddImport("encoding/binary", "binary"),
 	}
 
 	ctx.exprVars = newExprVarGenerator("expr", typePrinter, options)
@@ -202,7 +204,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *dynssz.TypeDescriptor, varName 
 		if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
 			ptrVarName = fmt.Sprintf("*(%s)", varName)
 		}
-		ctx.appendCode(indent, "%s = %s(sszutils.UnmarshalBool(buf))\n", ptrVarName, ctx.typePrinter.TypeString(desc))
+		ctx.appendCode(indent, "%s = buf[0] == 1\n", ptrVarName)
 	case dynssz.SszUint8Type:
 		if !noBufCheck {
 			ctx.appendCode(indent, "if len(buf) < 1 {\n\treturn sszutils.ErrUnexpectedEOF\n}\n")
@@ -211,7 +213,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *dynssz.TypeDescriptor, varName 
 		if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
 			ptrVarName = fmt.Sprintf("*(%s)", varName)
 		}
-		ctx.appendCode(indent, "%s = %s(sszutils.UnmarshallUint8(buf))\n", ptrVarName, ctx.typePrinter.TypeString(desc))
+		ctx.appendCode(indent, "%s = %s(buf[0])\n", ptrVarName, ctx.typePrinter.TypeString(desc))
 
 	case dynssz.SszUint16Type:
 		if !noBufCheck {
@@ -221,7 +223,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *dynssz.TypeDescriptor, varName 
 		if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
 			ptrVarName = fmt.Sprintf("*(%s)", varName)
 		}
-		ctx.appendCode(indent, "%s = %s(sszutils.UnmarshallUint16(buf))\n", ptrVarName, ctx.typePrinter.TypeString(desc))
+		ctx.appendCode(indent, "%s = %s(%s.LittleEndian.Uint16(buf))\n", ptrVarName, ctx.typePrinter.TypeString(desc), ctx.binaryPkgName)
 
 	case dynssz.SszUint32Type:
 		if !noBufCheck {
@@ -231,7 +233,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *dynssz.TypeDescriptor, varName 
 		if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
 			ptrVarName = fmt.Sprintf("*(%s)", varName)
 		}
-		ctx.appendCode(indent, "%s = %s(sszutils.UnmarshallUint32(buf))\n", ptrVarName, ctx.typePrinter.TypeString(desc))
+		ctx.appendCode(indent, "%s = %s(%s.LittleEndian.Uint32(buf))\n", ptrVarName, ctx.typePrinter.TypeString(desc), ctx.binaryPkgName)
 
 	case dynssz.SszUint64Type:
 		if !noBufCheck {
@@ -242,10 +244,10 @@ func (ctx *unmarshalContext) unmarshalType(desc *dynssz.TypeDescriptor, varName 
 			ptrVarName = fmt.Sprintf("*(%s)", varName)
 		}
 		if desc.GoTypeFlags&dynssz.GoTypeFlagIsTime != 0 {
-			ctx.appendCode(indent, "%s = %s(time.Unix(int64(sszutils.UnmarshallUint64(buf)), 0).UTC())\n", ptrVarName, ctx.typePrinter.TypeString(desc))
+			ctx.appendCode(indent, "%s = %s(time.Unix(int64(%s.LittleEndian.Uint64(buf)), 0).UTC())\n", ptrVarName, ctx.typePrinter.TypeString(desc), ctx.binaryPkgName)
 			ctx.typePrinter.AddImport("time", "time")
 		} else {
-			ctx.appendCode(indent, "%s = %s(sszutils.UnmarshallUint64(buf))\n", ptrVarName, ctx.typePrinter.TypeString(desc))
+			ctx.appendCode(indent, "%s = %s(%s.LittleEndian.Uint64(buf))\n", ptrVarName, ctx.typePrinter.TypeString(desc), ctx.binaryPkgName)
 		}
 
 	case dynssz.SszTypeWrapperType:
@@ -318,7 +320,7 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *dynssz.TypeDescriptor, var
 			if offsetPrefix != "" {
 				fmtSpace = " "
 			}
-			ctx.appendCode(indent, "offset%d := int(sszutils.UnmarshallUint32(buf[%s%d%s:%s%s%d]))\n", idx, offsetPrefix, offset, fmtSpace, fmtSpace, offsetPrefix, offset+4)
+			ctx.appendCode(indent, "offset%d := int(%s.LittleEndian.Uint32(buf[%s%d%s:%s%s%d]))\n", idx, ctx.binaryPkgName, offsetPrefix, offset, fmtSpace, fmtSpace, offsetPrefix, offset+4)
 			if len(dynamicFields) > 0 {
 				ctx.appendCode(indent, "if offset%d < offset%d || offset%d > buflen {\n\treturn sszutils.ErrOffset\n}\n", idx, dynamicFields[len(dynamicFields)-1], idx)
 			} else {
@@ -503,11 +505,11 @@ func (ctx *unmarshalContext) unmarshalVector(desc *dynssz.TypeDescriptor, varNam
 	} else {
 		// dynamic elements
 		ctx.appendCode(indent, "if %s*4 > len(buf) {\n\treturn sszutils.ErrUnexpectedEOF\n}\n", limitVar)
-		ctx.appendCode(indent, "startOffset := int(sszutils.UnmarshallUint32(buf[0:4]))\n")
+		ctx.appendCode(indent, "startOffset := int(%s.LittleEndian.Uint32(buf[0:4]))\n", ctx.binaryPkgName)
 		ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", limitVar)
 		ctx.appendCode(indent, "\tvar endOffset int\n")
 		ctx.appendCode(indent, "\tif i < %s-1 {\n", limitVar)
-		ctx.appendCode(indent, "\t\tendOffset = int(sszutils.UnmarshallUint32(buf[(i+1)*4 : (i+2)*4]))\n")
+		ctx.appendCode(indent, "\t\tendOffset = int(%s.LittleEndian.Uint32(buf[(i+1)*4 : (i+2)*4]))\n", ctx.binaryPkgName)
 		ctx.appendCode(indent, "\t} else {\n")
 		ctx.appendCode(indent, "\t\tendOffset = len(buf)\n")
 		ctx.appendCode(indent, "\t}\n")
@@ -597,7 +599,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *dynssz.TypeDescriptor, varName 
 		ctx.appendCode(indent, "startOffset := int(0)\n")
 		ctx.appendCode(indent, "if len(buf) != 0 {\n")
 		ctx.appendCode(indent, "\tif len(buf) < 4 {\n\t\treturn sszutils.ErrUnexpectedEOF\n\t}\n")
-		ctx.appendCode(indent, "\tstartOffset = int(sszutils.UnmarshallUint32(buf[0:4]))\n")
+		ctx.appendCode(indent, "\tstartOffset = int(%s.LittleEndian.Uint32(buf[0:4]))\n", ctx.binaryPkgName)
 		ctx.appendCode(indent, "}\n")
 		ctx.appendCode(indent, "itemCount := startOffset / 4\n")
 		ctx.appendCode(indent, "if startOffset%4 != 0 || len(buf) < startOffset {\n\treturn sszutils.ErrUnexpectedEOF\n}\n")
@@ -607,7 +609,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *dynssz.TypeDescriptor, varName 
 		ctx.appendCode(indent, "for i := 0; i < itemCount; i++ {\n")
 		ctx.appendCode(indent, "\tvar endOffset int\n")
 		ctx.appendCode(indent, "\tif i < itemCount-1 {\n")
-		ctx.appendCode(indent, "\t\tendOffset = int(sszutils.UnmarshallUint32(buf[(i+1)*4 : (i+2)*4]))\n")
+		ctx.appendCode(indent, "\t\tendOffset = int(%s.LittleEndian.Uint32(buf[(i+1)*4 : (i+2)*4]))\n", ctx.binaryPkgName)
 		ctx.appendCode(indent, "\t} else {\n")
 		ctx.appendCode(indent, "\t\tendOffset = len(buf)\n")
 		ctx.appendCode(indent, "\t}\n")
@@ -650,7 +652,7 @@ func (ctx *unmarshalContext) unmarshalBitlist(desc *dynssz.TypeDescriptor, varNa
 func (ctx *unmarshalContext) unmarshalUnion(desc *dynssz.TypeDescriptor, varName string, indent int) error {
 	// Read selector
 	ctx.appendCode(indent, "if len(buf) < 1 {\n\treturn sszutils.ErrUnexpectedEOF\n}\n")
-	ctx.appendCode(indent, "selector := sszutils.UnmarshallUint8(buf[0:1])\n")
+	ctx.appendCode(indent, "selector := buf[0]\n")
 	ctx.appendCode(indent, "%s.Variant = selector\n", varName)
 	ctx.appendCode(indent, "switch selector {\n")
 

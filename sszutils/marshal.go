@@ -48,3 +48,15 @@ func MarshalOffset(dst []byte, offset int) []byte {
 func UpdateOffset(dst []byte, offset int) {
 	binary.LittleEndian.PutUint32(dst, uint32(offset))
 }
+
+// ExpandBuffer ensures the buffer has enough capacity to reach endPos.
+// Returns the buffer extended to full capacity and the current position.
+func ExpandBuffer(buf []byte, endPos int) (dst []byte, pos int) {
+	pos = len(buf)
+	if cap(buf) < endPos {
+		newBuf := make([]byte, pos, endPos)
+		copy(newBuf, buf)
+		buf = newBuf
+	}
+	return buf[:cap(buf)], pos
+}
