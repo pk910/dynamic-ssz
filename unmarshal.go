@@ -42,7 +42,7 @@ import (
 //   - Primitive type decoding (bool, uint8, uint16, uint32, uint64)
 //   - Delegation to specialized functions for composite types (structs, arrays, slices)
 //   - Validation that consumed bytes match expected sizes
-func unmarshalType[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder D, idt int) error {
+func unmarshalType(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
 	if targetType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
 		// target is a pointer type, resolve type & value to actual value type
 		if targetValue.IsNil() {
@@ -237,7 +237,7 @@ func unmarshalType[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, ta
 //   - error: An error if decoding fails or data is malformed
 //
 // The function validates that the Data field is present and unmarshals the wrapped value using its type descriptor.
-func unmarshalTypeWrapper[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder D, idt int) error {
+func unmarshalTypeWrapper(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
 	if d.Verbose {
 		d.LogCb("%sunmarshalTypeWrapper: %s\n", strings.Repeat(" ", idt), targetType.Type.Name())
 	}
@@ -279,7 +279,7 @@ func unmarshalTypeWrapper[D sszutils.Decoder](d *DynSsz, targetType *TypeDescrip
 //
 // The function validates offset integrity to ensure variable fields don't overlap
 // and that all data is consumed correctly.
-func unmarshalContainer[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder D, idt int) error {
+func unmarshalContainer(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
 	canSeek := decoder.Seekable()
 
 	var dynamicOffsets []uint32
@@ -418,7 +418,7 @@ func unmarshalContainer[D sszutils.Decoder](d *DynSsz, targetType *TypeDescripto
 //   - Byte arrays use unsafe.Slice for efficient bulk copying without allocation
 //   - Pointer elements are automatically initialized
 //   - Each element must consume exactly itemSize bytes
-func unmarshalVector[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder D, idt int) error {
+func unmarshalVector(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
 	fieldType := targetType.ElemDesc
 	arrLen := int(targetType.Len)
 
@@ -528,7 +528,7 @@ func unmarshalVector[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, 
 //   - Offsets are monotonically increasing
 //   - No offset points outside the data bounds
 //   - Each element consumes exactly the expected bytes
-func unmarshalDynamicVector[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder D, idt int) error {
+func unmarshalDynamicVector(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
 	vectorLen := int(targetType.Len)
 	requiredOffsetBytes := vectorLen * 4
 	canSeek := decoder.Seekable()
@@ -657,7 +657,7 @@ func unmarshalDynamicVector[D sszutils.Decoder](d *DynSsz, targetType *TypeDescr
 // The function:
 //   - Uses optimized copying for byte lists
 //   - Validates that each element consumes exactly the expected bytes
-func unmarshalList[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder D, idt int) error {
+func unmarshalList(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
 	fieldType := targetType.ElemDesc
 	sszLen := decoder.GetLength()
 
@@ -759,7 +759,7 @@ func unmarshalList[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, ta
 //   - Offsets are monotonically increasing
 //   - No offset points outside the data bounds
 //   - Each element consumes exactly the expected bytes
-func unmarshalDynamicList[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder D, idt int) error {
+func unmarshalDynamicList(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
 	sszLen := decoder.GetLength()
 	if sszLen == 0 {
 		return nil
@@ -887,7 +887,7 @@ func unmarshalDynamicList[D sszutils.Decoder](d *DynSsz, targetType *TypeDescrip
 //
 // Returns:
 //   - error: An error if decoding fails or bitlist is invalid
-func unmarshalBitlist[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder D) error {
+func unmarshalBitlist(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder) error {
 	sszLen := decoder.GetLength()
 
 	if sszLen == 0 {
@@ -929,7 +929,7 @@ func unmarshalBitlist[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor,
 //
 // Returns:
 //   - error: An error if decoding fails
-func unmarshalCompatibleUnion[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder D, idt int) error {
+func unmarshalCompatibleUnion(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
 	if decoder.GetLength() < 1 {
 		return fmt.Errorf("CompatibleUnion requires at least 1 byte for selector")
 	}

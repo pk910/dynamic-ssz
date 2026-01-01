@@ -10,13 +10,18 @@ import (
 
 type BufferEncoder struct {
 	buffer []byte
+	pos    int
 }
 
 var _ Encoder = (*BufferEncoder)(nil)
 
+// NewBufferEncoder creates a new BufferEncoder using the provided buffer.
+// The buffer should have sufficient capacity for the expected output.
 func NewBufferEncoder(buffer []byte) *BufferEncoder {
+	// Use the full capacity for direct indexing
 	return &BufferEncoder{
-		buffer: buffer,
+		buffer: buffer[:cap(buffer)],
+		pos:    len(buffer),
 	}
 }
 
@@ -25,47 +30,55 @@ func (e *BufferEncoder) Seekable() bool {
 }
 
 func (e *BufferEncoder) GetPosition() int {
-	return len(e.buffer)
+	return e.pos
 }
 
 func (e *BufferEncoder) GetBuffer() []byte {
-	return e.buffer
+	return e.buffer[:e.pos]
 }
 
 func (e *BufferEncoder) SetBuffer(buffer []byte) {
-	e.buffer = buffer
+	e.buffer = buffer[:cap(buffer)]
+	e.pos = len(buffer)
 }
 
 func (e *BufferEncoder) EncodeBool(v bool) {
 	if v {
-		e.buffer = append(e.buffer, byte(0x01))
+		e.buffer[e.pos] = 0x01
 	} else {
-		e.buffer = append(e.buffer, byte(0x00))
+		e.buffer[e.pos] = 0x00
 	}
+	e.pos++
 }
 
 func (e *BufferEncoder) EncodeUint8(v uint8) {
-	e.buffer = append(e.buffer, v)
+	e.buffer[e.pos] = v
+	e.pos++
 }
 
 func (e *BufferEncoder) EncodeUint16(v uint16) {
-	e.buffer = binary.LittleEndian.AppendUint16(e.buffer, v)
+	binary.LittleEndian.PutUint16(e.buffer[e.pos:], v)
+	e.pos += 2
 }
 
 func (e *BufferEncoder) EncodeUint32(v uint32) {
-	e.buffer = binary.LittleEndian.AppendUint32(e.buffer, v)
+	binary.LittleEndian.PutUint32(e.buffer[e.pos:], v)
+	e.pos += 4
 }
 
 func (e *BufferEncoder) EncodeUint64(v uint64) {
-	e.buffer = binary.LittleEndian.AppendUint64(e.buffer, v)
+	binary.LittleEndian.PutUint64(e.buffer[e.pos:], v)
+	e.pos += 8
 }
 
 func (e *BufferEncoder) EncodeBytes(v []byte) {
-	e.buffer = append(e.buffer, v...)
+	copy(e.buffer[e.pos:], v)
+	e.pos += len(v)
 }
 
 func (e *BufferEncoder) EncodeOffset(v uint32) {
-	e.buffer = binary.LittleEndian.AppendUint32(e.buffer, v)
+	binary.LittleEndian.PutUint32(e.buffer[e.pos:], v)
+	e.pos += 4
 }
 
 func (e *BufferEncoder) EncodeOffsetAt(pos int, v uint32) {
@@ -73,5 +86,7 @@ func (e *BufferEncoder) EncodeOffsetAt(pos int, v uint32) {
 }
 
 func (e *BufferEncoder) EncodeZeroPadding(n int) {
-	e.buffer = AppendZeroPadding(e.buffer, n)
+	// Use clear for efficient zeroing (Go 1.21+)
+	clear(e.buffer[e.pos : e.pos+n])
+	e.pos += n
 }
