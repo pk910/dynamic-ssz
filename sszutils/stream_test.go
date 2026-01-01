@@ -559,7 +559,8 @@ func TestStreamDecoder_DecodeUint16_ReadError(t *testing.T) {
 }
 
 func TestStreamDecoder_DecodeUint16_ShortRead(t *testing.T) {
-	r := &shortReader{data: []byte{0x01, 0x02}, maxRead: 1}
+	// Reader has only 1 byte but we need 2
+	r := &shortReader{data: []byte{0x01}, maxRead: 1}
 	dec := NewStreamDecoder(r, 2)
 
 	_, err := dec.DecodeUint16()
@@ -582,7 +583,8 @@ func TestStreamDecoder_DecodeUint32_ReadError(t *testing.T) {
 }
 
 func TestStreamDecoder_DecodeUint32_ShortRead(t *testing.T) {
-	r := &shortReader{data: []byte{0x01, 0x02, 0x03, 0x04}, maxRead: 3}
+	// Reader has only 3 bytes but we need 4
+	r := &shortReader{data: []byte{0x01, 0x02, 0x03}, maxRead: 3}
 	dec := NewStreamDecoder(r, 4)
 
 	_, err := dec.DecodeUint32()
@@ -605,7 +607,8 @@ func TestStreamDecoder_DecodeUint64_ReadError(t *testing.T) {
 }
 
 func TestStreamDecoder_DecodeUint64_ShortRead(t *testing.T) {
-	r := &shortReader{data: make([]byte, 8), maxRead: 7}
+	// Reader has only 7 bytes but we need 8
+	r := &shortReader{data: make([]byte, 7), maxRead: 7}
 	dec := NewStreamDecoder(r, 8)
 
 	_, err := dec.DecodeUint64()
@@ -629,7 +632,8 @@ func TestStreamDecoder_DecodeBytes_ReadError(t *testing.T) {
 }
 
 func TestStreamDecoder_DecodeBytes_ShortRead(t *testing.T) {
-	r := &shortReader{data: []byte{0x01, 0x02, 0x03}, maxRead: 2}
+	// Reader has only 2 bytes but we need 3
+	r := &shortReader{data: []byte{0x01, 0x02}, maxRead: 2}
 	dec := NewStreamDecoder(r, 3)
 
 	buf := make([]byte, 3)
@@ -681,7 +685,8 @@ func TestStreamDecoder_DecodeBytesBuf_ReadError(t *testing.T) {
 }
 
 func TestStreamDecoder_DecodeBytesBuf_ShortRead(t *testing.T) {
-	r := &shortReader{data: []byte{0x01, 0x02, 0x03}, maxRead: 2}
+	// Reader has only 2 bytes but we need 3
+	r := &shortReader{data: []byte{0x01, 0x02}, maxRead: 2}
 	dec := NewStreamDecoder(r, 3)
 
 	_, err := dec.DecodeBytesBuf(3)
@@ -731,7 +736,8 @@ func TestStreamDecoder_DecodeOffset_ReadError(t *testing.T) {
 }
 
 func TestStreamDecoder_DecodeOffset_ShortRead(t *testing.T) {
-	r := &shortReader{data: []byte{0x01, 0x02, 0x03, 0x04}, maxRead: 3}
+	// Reader has only 3 bytes but we need 4
+	r := &shortReader{data: []byte{0x01, 0x02, 0x03}, maxRead: 3}
 	dec := NewStreamDecoder(r, 4)
 
 	_, err := dec.DecodeOffset()
