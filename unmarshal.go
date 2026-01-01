@@ -282,20 +282,21 @@ func unmarshalTypeWrapper[D sszutils.Decoder](d *DynSsz, targetType *TypeDescrip
 func unmarshalContainer[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder D, idt int) error {
 	canSeek := decoder.CanSeek()
 
-	var dynamicOffsets []int
+	var dynamicOffsets []uint32
 	var startPos int
 
 	if canSeek {
 		startPos = decoder.GetPosition()
 	} else {
-		dynamicOffsets = defaultOffsetSlicePool.Get()
-		defer defaultOffsetSlicePool.Put(dynamicOffsets)
+		dynamicOffsets = sszutils.GetOffsetSlice(len(targetType.ContainerDesc.DynFields))
+		defer sszutils.PutOffsetSlice(dynamicOffsets)
 	}
 	sszSize := uint32(decoder.GetLength())
 	if sszSize < targetType.Len {
 		return sszutils.ErrUnexpectedEOF
 	}
 
+	dynIdx := 0
 	for i := 0; i < len(targetType.ContainerDesc.Fields); i++ {
 		field := targetType.ContainerDesc.Fields[i]
 
@@ -330,7 +331,8 @@ func unmarshalContainer[D sszutils.Decoder](d *DynSsz, targetType *TypeDescripto
 				}
 
 				// store dynamic field offset for later
-				dynamicOffsets = append(dynamicOffsets, int(fieldOffset))
+				dynamicOffsets[dynIdx] = fieldOffset
+				dynIdx++
 			}
 		}
 	}
@@ -343,7 +345,7 @@ func unmarshalContainer[D sszutils.Decoder](d *DynSsz, targetType *TypeDescripto
 		if canSeek {
 			dynOffset = decoder.DecodeOffsetAt(startPos + int(targetType.ContainerDesc.DynFields[0].HeaderOffset))
 		} else {
-			dynOffset = uint32(dynamicOffsets[0])
+			dynOffset = dynamicOffsets[0]
 		}
 
 		if dynOffset != targetType.Len { // check first dynamic field offset
@@ -358,7 +360,7 @@ func unmarshalContainer[D sszutils.Decoder](d *DynSsz, targetType *TypeDescripto
 				if canSeek {
 					dynOffset = decoder.DecodeOffsetAt(startPos + int(targetType.ContainerDesc.DynFields[i+1].HeaderOffset))
 				} else {
-					dynOffset = uint32(dynamicOffsets[i+1])
+					dynOffset = dynamicOffsets[i+1]
 				}
 
 				endOffset = dynOffset
@@ -537,7 +539,7 @@ func unmarshalDynamicVector[D sszutils.Decoder](d *DynSsz, targetType *TypeDescr
 		return fmt.Errorf("unexpected end of SSZ. dynamic vector expects at least %v bytes for offsets, got %v", requiredOffsetBytes, sszLen)
 	}
 
-	var sliceOffsets []int
+	var sliceOffsets []uint32
 	var startPos int
 
 	if canSeek {
@@ -546,14 +548,8 @@ func unmarshalDynamicVector[D sszutils.Decoder](d *DynSsz, targetType *TypeDescr
 		decoder.SkipBytes(requiredOffsetBytes)
 	} else {
 		// read all item offsets
-		sliceOffsets = defaultOffsetSlicePool.Get()
-		defer defaultOffsetSlicePool.Put(sliceOffsets)
-
-		if cap(sliceOffsets) < vectorLen {
-			sliceOffsets = make([]int, vectorLen)
-		} else {
-			sliceOffsets = sliceOffsets[:vectorLen]
-		}
+		sliceOffsets = sszutils.GetOffsetSlice(vectorLen)
+		defer sszutils.PutOffsetSlice(sliceOffsets)
 
 		for i := 0; i < vectorLen; i++ {
 			offset, err := decoder.DecodeOffset()
@@ -561,7 +557,7 @@ func unmarshalDynamicVector[D sszutils.Decoder](d *DynSsz, targetType *TypeDescr
 				return err
 			}
 
-			sliceOffsets[i] = int(offset)
+			sliceOffsets[i] = offset
 		}
 	}
 
@@ -790,27 +786,23 @@ func unmarshalDynamicList[D sszutils.Decoder](d *DynSsz, targetType *TypeDescrip
 	}
 
 	// read all item offsets
-	var sliceOffsets []int
+	var sliceOffsets []uint32
 	var startPos int
 
 	if canSeek {
 		startPos = decoder.GetPosition() - 4
 		decoder.SkipBytes(requiredOffsetBytes - 4)
 	} else {
-		sliceOffsets = defaultOffsetSlicePool.Get()
-		defer defaultOffsetSlicePool.Put(sliceOffsets)
-		if cap(sliceOffsets) < sliceLen {
-			sliceOffsets = make([]int, sliceLen)
-		} else {
-			sliceOffsets = sliceOffsets[:sliceLen]
-		}
-		sliceOffsets[0] = int(firstOffset)
+		sliceOffsets = sszutils.GetOffsetSlice(sliceLen)
+		defer sszutils.PutOffsetSlice(sliceOffsets)
+
+		sliceOffsets[0] = firstOffset
 		for i := 1; i < sliceLen; i++ {
 			offset, err := decoder.DecodeOffset()
 			if err != nil {
 				return err
 			}
-			sliceOffsets[i] = int(offset)
+			sliceOffsets[i] = offset
 		}
 	}
 
@@ -825,7 +817,7 @@ func unmarshalDynamicList[D sszutils.Decoder](d *DynSsz, targetType *TypeDescrip
 	newValue := reflect.MakeSlice(fieldT, sliceLen, sliceLen)
 
 	if sliceLen > 0 {
-		offset := int(firstOffset)
+		offset := firstOffset
 
 		// decode slice items
 		for i := 0; i < sliceLen; i++ {
@@ -839,25 +831,25 @@ func unmarshalDynamicList[D sszutils.Decoder](d *DynSsz, targetType *TypeDescrip
 			}
 
 			startOffset := offset
-			var endOffset int
+			var endOffset uint32
 
 			if i == sliceLen-1 {
-				endOffset = sszLen
+				endOffset = uint32(sszLen)
 			} else {
 				if canSeek {
-					endOffset = int(decoder.DecodeOffsetAt(startPos + (i+1)*4))
+					endOffset = decoder.DecodeOffsetAt(startPos + (i+1)*4)
 				} else {
 					endOffset = sliceOffsets[i+1]
 				}
 			}
 
-			if endOffset < startOffset || endOffset > sszLen {
+			if endOffset < startOffset || endOffset > uint32(sszLen) {
 				return sszutils.ErrOffset
 			}
 
 			itemSize := endOffset - startOffset
 
-			decoder.PushLimit(itemSize)
+			decoder.PushLimit(int(itemSize))
 			err := unmarshalType(d, fieldType, itemVal, decoder, idt+2)
 			if err != nil {
 				return err

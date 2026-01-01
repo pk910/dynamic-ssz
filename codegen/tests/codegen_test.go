@@ -103,4 +103,9 @@ func testCodegenPayload(t *testing.T, payload TestPayload) {
 	if !bytes.Equal(memBuf, sszBytes) {
 		t.Fatalf("MarshalSSZWriter mismatch: expected %x, got %x", sszBytes, memBuf)
 	}
+
+	err = ds.UnmarshalSSZReader(obj.Data, bytes.NewReader(sszBytes), len(sszBytes))
+	if err != nil {
+		t.Fatalf("Failed to unmarshal payload: %v", err)
+	}
 }

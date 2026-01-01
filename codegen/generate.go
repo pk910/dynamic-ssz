@@ -320,6 +320,13 @@ func (cg *CodeGenerator) generateCode(desc *dynssz.TypeDescriptor, typePrinter *
 		}
 	}
 
+	if options.CreateEncoderFn {
+		err = generateDecoder(desc, codeBuilder, typePrinter, options)
+		if err != nil {
+			return fmt.Errorf("failed to generate decoder for %s: %w", desc.Type.Name(), err)
+		}
+	}
+
 	if !options.NoSizeSSZ {
 		err = generateSize(desc, codeBuilder, typePrinter, options)
 		if err != nil {
