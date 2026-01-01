@@ -240,7 +240,7 @@ func marshalContainer[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescriptor,
 			fieldValue := sourceValue.Field(i)
 			err := marshalType(d, field.Type, fieldValue, encoder, idt+2)
 			if err != nil {
-				return fmt.Errorf("failed encoding field %v: %v", field.Name, err)
+				return fmt.Errorf("failed encoding field %v: %w", field.Name, err)
 			}
 
 		} else {
@@ -252,7 +252,7 @@ func marshalContainer[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescriptor,
 				// we can't seek, so we need to calculate the object size now
 				size, err := d.getSszValueSize(field.Type, sourceValue.Field(i))
 				if err != nil {
-					return fmt.Errorf("failed to get size of dynamic field %v: %v", field.Name, err)
+					return fmt.Errorf("failed to get size of dynamic field %v: %w", field.Name, err)
 				}
 
 				encoder.EncodeOffset(sourceType.Len + uint32(dynObjOffset))
@@ -277,7 +277,7 @@ func marshalContainer[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescriptor,
 		fieldValue := sourceValue.Field(int(field.Index))
 		err := marshalType(d, fieldDescriptor.Type, fieldValue, encoder, idt+2)
 		if err != nil {
-			return fmt.Errorf("failed decoding field %v: %v", fieldDescriptor.Name, err)
+			return fmt.Errorf("failed encoding field %v: %w", fieldDescriptor.Name, err)
 		}
 
 		if canSeek {
@@ -438,7 +438,7 @@ func marshalDynamicVector[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescrip
 			itemVal := sourceValue.Index(i)
 			size, err := d.getSszValueSize(fieldType, itemVal)
 			if err != nil {
-				return fmt.Errorf("failed to get size of dynamic vector element %v: %v", itemVal.Type().Name(), err)
+				return fmt.Errorf("failed to get size of dynamic vector element %v: %w", itemVal.Type().Name(), err)
 			}
 
 			encoder.EncodeOffset(uint32(offset))
@@ -447,7 +447,7 @@ func marshalDynamicVector[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescrip
 		if appendZero > 0 {
 			size, err := d.getSszValueSize(fieldType, zeroVal)
 			if err != nil {
-				return fmt.Errorf("failed to get size of dynamic vector element %v: %v", zeroVal.Type().Name(), err)
+				return fmt.Errorf("failed to get size of zero vector element %v: %w", zeroVal.Type().Name(), err)
 			}
 
 			for i := 0; i < appendZero; i++ {
@@ -576,7 +576,7 @@ func marshalDynamicList[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescripto
 
 	if canSeek {
 		encoder.EncodeZeroPadding(4 * totalOffsets) // Reserve space for offsets
-	} else {
+	} else if sliceLen > 0 {
 		// need to calculate the object sizes now
 		encoder.EncodeOffset(uint32(offset))
 
@@ -584,7 +584,7 @@ func marshalDynamicList[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescripto
 			itemVal := sourceValue.Index(i)
 			size, err := d.getSszValueSize(fieldType, itemVal)
 			if err != nil {
-				return fmt.Errorf("failed to get size of dynamic list element %v: %v", itemVal.Type().Name(), err)
+				return fmt.Errorf("failed to get size of dynamic list element %v: %w", itemVal.Type().Name(), err)
 			}
 
 			offset += int(size)

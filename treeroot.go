@@ -76,7 +76,7 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 			if hasher, ok := sourceValuePtr.Interface().(sszutils.FastsszHashRoot); ok {
 				hashBytes, err := hasher.HashTreeRoot()
 				if err != nil {
-					return fmt.Errorf("failed HashTreeRoot: %v", err)
+					return fmt.Errorf("failed HashTreeRoot: %w", err)
 				}
 
 				hh.PutBytes(hashBytes[:])
@@ -92,7 +92,7 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 		if ok {
 			err := hasher.HashTreeRootWithDyn(d, hh)
 			if err != nil {
-				return fmt.Errorf("failed HashTreeRootDyn: %v", err)
+				return fmt.Errorf("failed HashTreeRootDyn: %w", err)
 			}
 		} else {
 			useDynamicHashRoot = false

@@ -994,6 +994,55 @@ func TestSizeSSZDynamicSizerFallback(t *testing.T) {
 	}
 }
 
+func TestMarshalEmptyDynamicList(t *testing.T) {
+	dynssz := NewDynSsz(nil)
+	dynssz.NoFastSsz = true
+
+	// Test empty dynamic list - buffer vs streaming should produce identical output
+	// This tests the fix for the bug where non-seekable encoder incorrectly wrote
+	// an offset for empty dynamic lists
+	type DynamicElement struct {
+		Value []uint8 `ssz-max:"10"`
+	}
+
+	input := struct {
+		Static  uint32
+		Dynamic []DynamicElement `ssz-max:"10"`
+	}{
+		Static:  42,
+		Dynamic: []DynamicElement{}, // Empty dynamic list
+	}
+
+	// Marshal using buffer (seekable)
+	bufResult, err := dynssz.MarshalSSZ(input)
+	if err != nil {
+		t.Fatalf("MarshalSSZ error: %v", err)
+	}
+
+	// Marshal using writer (non-seekable streaming)
+	memWriter := bytes.NewBuffer(nil)
+	err = dynssz.MarshalSSZWriter(input, memWriter)
+	if err != nil {
+		t.Fatalf("MarshalSSZWriter error: %v", err)
+	}
+
+	// Both methods must produce identical output
+	if !bytes.Equal(bufResult, memWriter.Bytes()) {
+		t.Errorf("Empty dynamic list encoding mismatch:\n  Buffer (seekable):  %x\n  Writer (streaming): %x",
+			bufResult, memWriter.Bytes())
+	}
+
+	// Verify expected SSZ format: 4 bytes (Static) + 4 bytes (offset) = 8 bytes
+	// The offset should point to position 8, where the empty list starts (and ends)
+	expectedSSZ := []byte{
+		0x2a, 0x00, 0x00, 0x00, // Static = 42
+		0x08, 0x00, 0x00, 0x00, // Offset = 8 (pointing to end of fixed part)
+	}
+	if !bytes.Equal(bufResult, expectedSSZ) {
+		t.Errorf("Expected SSZ: %x, got: %x", expectedSSZ, bufResult)
+	}
+}
+
 func TestCustomFallbackMarshal(t *testing.T) {
 	type TestStruct struct {
 		ID uint32

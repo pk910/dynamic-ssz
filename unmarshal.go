@@ -309,7 +309,7 @@ func unmarshalContainer[D sszutils.Decoder](d *DynSsz, targetType *TypeDescripto
 			fieldValue := targetValue.Field(i)
 			err := unmarshalType(d, field.Type, fieldValue, decoder, idt+2)
 			if err != nil {
-				return fmt.Errorf("failed decoding field %v: %v", field.Name, err)
+				return fmt.Errorf("failed decoding field %v: %w", field.Name, err)
 			}
 
 			if decoder.GetPosition() != expectedPos {
@@ -382,7 +382,7 @@ func unmarshalContainer[D sszutils.Decoder](d *DynSsz, targetType *TypeDescripto
 			fieldValue := targetValue.Field(int(field.Index))
 			err := unmarshalType(d, fieldDescriptor.Type, fieldValue, decoder, idt+2)
 			if err != nil {
-				return fmt.Errorf("failed decoding field %v: %v", fieldDescriptor.Name, err)
+				return fmt.Errorf("failed decoding field %v: %w", fieldDescriptor.Name, err)
 			}
 
 			consumedDiff := decoder.PopLimit()
