@@ -106,6 +106,62 @@ var decoded MyStruct
 err := ssz.UnmarshalSSZ(&decoded, data)
 ```
 
+## Streaming Methods
+
+### MarshalSSZWriter
+
+```go
+func (d *DynSsz) MarshalSSZWriter(source interface{}, w io.Writer) error
+```
+
+Serializes an object directly to an `io.Writer` for memory-efficient streaming.
+
+**Parameters**:
+- `source` - Object to serialize
+- `w` - Destination writer (file, network connection, etc.)
+
+**Returns**:
+- Error if serialization or writing fails
+
+**Example**:
+```go
+file, _ := os.Create("beacon_state.ssz")
+defer file.Close()
+
+err := ssz.MarshalSSZWriter(state, file)
+if err != nil {
+    return err
+}
+```
+
+### UnmarshalSSZReader
+
+```go
+func (d *DynSsz) UnmarshalSSZReader(target interface{}, r io.Reader, size int) error
+```
+
+Deserializes from an `io.Reader` for memory-efficient streaming.
+
+**Parameters**:
+- `target` - Pointer to object to deserialize into
+- `r` - Source reader
+- `size` - Expected total size of the SSZ data in bytes
+
+**Returns**:
+- Error if deserialization fails
+
+**Example**:
+```go
+file, _ := os.Open("beacon_state.ssz")
+defer file.Close()
+
+info, _ := file.Stat()
+var state BeaconState
+err := ssz.UnmarshalSSZReader(&state, file, int(info.Size()))
+```
+
+See [Streaming Support](streaming.md) for detailed streaming documentation.
+
 ## Hash Tree Root
 
 ### HashTreeRoot
@@ -313,6 +369,68 @@ type DynamicHashRootWith interface {
 }
 ```
 
+### Streaming Interfaces
+
+```go
+// Streaming encoder for memory-efficient marshaling
+type DynamicEncoder interface {
+    MarshalSSZEncoder(specs DynamicSpecs, encoder Encoder) error
+}
+
+// Streaming decoder for memory-efficient unmarshaling
+type DynamicDecoder interface {
+    UnmarshalSSZDecoder(specs DynamicSpecs, decoder Decoder) error
+}
+```
+
+### Encoder Interface
+
+The `Encoder` interface abstracts buffer-based and stream-based encoding:
+
+```go
+type Encoder interface {
+    CanSeek() bool                    // Returns false for stream encoder
+    GetPosition() int                 // Current write position
+    GetBuffer() []byte                // Get output buffer (temp buffer for streams)
+    SetBuffer(buffer []byte)          // Set/write buffer
+    EncodeBool(v bool)
+    EncodeUint8(v uint8)
+    EncodeUint16(v uint16)
+    EncodeUint32(v uint32)
+    EncodeUint64(v uint64)
+    EncodeBytes(v []byte)
+    EncodeOffset(v uint32)
+    EncodeOffsetAt(pos int, v uint32) // Not supported for streams
+    EncodeZeroPadding(n int)
+}
+```
+
+### Decoder Interface
+
+The `Decoder` interface abstracts buffer-based and stream-based decoding:
+
+```go
+type Decoder interface {
+    CanSeek() bool                        // Returns false for stream decoder
+    GetPosition() int                     // Current read position
+    GetLength() int                       // Remaining length
+    PushLimit(limit int)
+    PopLimit() int
+    DecodeBool() (bool, error)
+    DecodeUint8() (uint8, error)
+    DecodeUint16() (uint16, error)
+    DecodeUint32() (uint32, error)
+    DecodeUint64() (uint64, error)
+    DecodeBytes(buf []byte) ([]byte, error)
+    DecodeBytesBuf(len int) ([]byte, error)
+    DecodeOffset() (uint32, error)
+    DecodeOffsetAt(pos int) uint32        // Not supported for streams
+    SkipBytes(n int)                      // Not supported for streams
+}
+```
+
+See [Streaming Support](streaming.md) for detailed streaming documentation.
+
 ### DynamicSpecs Interface
 
 ```go
@@ -451,6 +569,9 @@ func WithNoSizeSSZ() CodeGeneratorOption
 func WithNoHashTreeRoot() CodeGeneratorOption
 func WithCreateLegacyFn() CodeGeneratorOption
 func WithoutDynamicExpressions() CodeGeneratorOption
+func WithNoFastSsz() CodeGeneratorOption
+func WithCreateEncoderFn() CodeGeneratorOption  // Generate streaming encoder
+func WithCreateDecoderFn() CodeGeneratorOption  // Generate streaming decoder
 func WithSizeHints(hints []dynssz.SszSizeHint) CodeGeneratorOption
 func WithMaxSizeHints(hints []dynssz.SszMaxSizeHint) CodeGeneratorOption
 func WithTypeHints(hints []dynssz.SszTypeHint) CodeGeneratorOption
@@ -602,3 +723,4 @@ func (c *CustomType) MarshalSSZDyn(specs DynamicSpecs, buf []byte) ([]byte, erro
 - [Supported Types](supported-types.md) - Type system reference
 - [SSZ Annotations](ssz-annotations.md) - Tag documentation
 - [Code Generator](code-generator.md) - Code generation tools
+- [Streaming Support](streaming.md) - Streaming encoding/decoding

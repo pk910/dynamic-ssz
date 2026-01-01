@@ -13,6 +13,7 @@ Dynamic SSZ is a Go library for SSZ encoding/decoding with support for dynamic f
 - **⚡ Reflection-Based Processing** - Works instantly with any SSZ-compatible types - no code generation required for prototyping
 - **🏗️ Code Generation** - Optional static code generation for maximum performance (2-3x faster than dynamic processing)
 - **🚀 CLI Tool** - Standalone `dynssz-gen` command for easy code generation from any Go package
+- **📡 Streaming Support** - Memory-efficient streaming to/from `io.Reader`/`io.Writer` for large data
 - **🔄 Hybrid Approach** - Seamlessly combines with fastssz for optimal efficiency
 - **📦 Minimal Dependencies** - Core library has minimal external dependencies
 - **✅ Spec Compliant** - Fully compliant with SSZ specification and Ethereum consensus tests
@@ -134,6 +135,7 @@ The library includes comprehensive testing infrastructure:
 - [API Reference](docs/api-reference.md)
 - [Supported Types](docs/supported-types.md)
 - [Code Generation Guide](docs/code-generator.md)
+- [Streaming Support](docs/streaming.md)
 - [Struct Tags & Annotations](docs/ssz-annotations.md)
 - [Performance Guide](docs/performance.md)
 - [Examples](examples/)

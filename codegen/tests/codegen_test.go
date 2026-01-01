@@ -104,8 +104,19 @@ func testCodegenPayload(t *testing.T, payload TestPayload) {
 		t.Fatalf("MarshalSSZWriter mismatch: expected %x, got %x", sszBytes, memBuf)
 	}
 
+	reflect.ValueOf(obj).Elem().Field(0).Set(reflect.New(reflect.TypeOf(payload.Payload)))
+
 	err = ds.UnmarshalSSZReader(obj.Data, bytes.NewReader(sszBytes), len(sszBytes))
 	if err != nil {
 		t.Fatalf("Failed to unmarshal payload: %v", err)
+	}
+
+	hashRoot, err = ds.HashTreeRoot(obj.Data)
+	if err != nil {
+		t.Fatalf("Failed to hash tree root: %v", err)
+	}
+	hashRootHex = hex.EncodeToString(hashRoot[:])
+	if hashRootHex != payload.Hash {
+		t.Fatalf("Hash root mismatch 2: expected %s, got %s", payload.Hash, hashRootHex)
 	}
 }
