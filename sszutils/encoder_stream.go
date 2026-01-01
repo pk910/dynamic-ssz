@@ -26,7 +26,7 @@ func NewStreamEncoder(writer io.Writer) *StreamEncoder {
 	}
 }
 
-func (e *StreamEncoder) CanSeek() bool {
+func (e *StreamEncoder) Seekable() bool {
 	return false
 }
 

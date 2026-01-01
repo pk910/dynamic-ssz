@@ -5,7 +5,7 @@
 package sszutils
 
 type Decoder interface {
-	CanSeek() bool    // can use DecodeOffsetAt() and SkipBytes()
+	Seekable() bool   // can use DecodeOffsetAt() and SkipBytes()
 	GetPosition() int // return current position
 	GetLength() int   // return remaining length
 	PushLimit(limit int)

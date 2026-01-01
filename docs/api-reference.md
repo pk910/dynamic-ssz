@@ -389,7 +389,7 @@ The `Encoder` interface abstracts buffer-based and stream-based encoding:
 
 ```go
 type Encoder interface {
-    CanSeek() bool                    // Returns false for stream encoder
+    Seekable() bool                    // Returns false for stream encoder
     GetPosition() int                 // Current write position
     GetBuffer() []byte                // Get output buffer (temp buffer for streams)
     SetBuffer(buffer []byte)          // Set/write buffer
@@ -411,7 +411,7 @@ The `Decoder` interface abstracts buffer-based and stream-based decoding:
 
 ```go
 type Decoder interface {
-    CanSeek() bool                        // Returns false for stream decoder
+    Seekable() bool                        // Returns false for stream decoder
     GetPosition() int                     // Current read position
     GetLength() int                       // Remaining length
     PushLimit(limit int)

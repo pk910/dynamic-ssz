@@ -31,7 +31,7 @@ type encoderContext struct {
 	exprVars          *exprVarGenerator
 	staticSizeVars    *staticSizeVarGenerator
 	usedDynSpecs      bool
-	usedCanSeek       bool
+	usedSeekable      bool
 	usedContext       bool
 	sizeFnNameMap     map[*dynssz.TypeDescriptor]int
 	sizeFnSignature   map[string]string
@@ -96,8 +96,8 @@ func generateEncoder(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.B
 		appendCode(codeBuilder, 1, "ctx := &encoderCtx{ds: ds}\n")
 	}
 
-	if ctx.usedCanSeek {
-		appendCode(codeBuilder, 1, "canSeek := enc.CanSeek()\n")
+	if ctx.usedSeekable {
+		appendCode(codeBuilder, 1, "canSeek := enc.Seekable()\n")
 	}
 	appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 	appendCode(codeBuilder, 1, sizeFnCode)
@@ -352,7 +352,7 @@ func (ctx *encoderContext) marshalContainer(desc *dynssz.TypeDescriptor, varName
 	staticSizeVars = append(staticSizeVars, fmt.Sprintf("%d", staticSize))
 
 	if hasDynamic {
-		ctx.usedCanSeek = true
+		ctx.usedSeekable = true
 		ctx.appendCode(indent, "dstlen := enc.GetPosition()\n")
 		ctx.appendCode(indent, "dynoff := uint32(%v)\n", strings.Join(staticSizeVars, "+"))
 	}
@@ -506,7 +506,7 @@ func (ctx *encoderContext) marshalVector(desc *dynssz.TypeDescriptor, varName st
 		// reserve space for offsets
 		ctx.appendCode(indent, "dstlen := enc.GetPosition()\n")
 
-		ctx.usedCanSeek = true
+		ctx.usedSeekable = true
 		ctx.appendCode(indent, "if canSeek {\n")
 		ctx.appendCode(indent, "\tenc.EncodeZeroPadding(%s*4)\n", limitVar)
 		ctx.appendCode(indent, "} else {\n")

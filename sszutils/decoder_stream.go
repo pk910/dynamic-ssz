@@ -51,7 +51,7 @@ func NewStreamDecoder(reader io.Reader, totalLen int) *StreamDecoder {
 	}
 }
 
-func (e *StreamDecoder) CanSeek() bool {
+func (e *StreamDecoder) Seekable() bool {
 	return false
 }
 

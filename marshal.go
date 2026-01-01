@@ -76,7 +76,7 @@ func marshalType[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescriptor, sour
 	}
 
 	if !useFastSsz && useDynamicEncoder {
-		if encoder.CanSeek() && useDynamicMarshal {
+		if encoder.Seekable() && useDynamicMarshal {
 			// prefer static marshaller for non-seekable encoders (buffer based)
 			useDynamicEncoder = false
 		} else if sszEncoder, ok := getPtr(sourceValue).Interface().(sszutils.DynamicEncoder); ok {
@@ -227,7 +227,7 @@ func marshalTypeWrapper[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescripto
 func marshalContainer[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescriptor, sourceValue reflect.Value, encoder E, idt int) error {
 	offset := 0
 	dynObjOffset := 0
-	canSeek := encoder.CanSeek()
+	canSeek := encoder.Seekable()
 	startLen := encoder.GetPosition()
 	fieldCount := len(sourceType.ContainerDesc.Fields)
 
@@ -416,7 +416,7 @@ func marshalDynamicVector[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescrip
 		}
 	}
 
-	canSeek := encoder.CanSeek()
+	canSeek := encoder.Seekable()
 	startOffset := encoder.GetPosition()
 	totalOffsets := sliceLen + appendZero
 	offset := 4 * totalOffsets
@@ -569,7 +569,7 @@ func marshalDynamicList[E sszutils.Encoder](d *DynSsz, sourceType *TypeDescripto
 	fieldType := sourceType.ElemDesc
 	sliceLen := sourceValue.Len()
 
-	canSeek := encoder.CanSeek()
+	canSeek := encoder.Seekable()
 	startOffset := encoder.GetPosition()
 	totalOffsets := sliceLen
 	offset := 4 * totalOffsets

@@ -117,7 +117,7 @@ The `Encoder` interface abstracts over buffer-based and stream-based encoding:
 
 ```go
 type Encoder interface {
-    CanSeek() bool                    // Returns false for stream encoder
+    Seekable() bool                    // Returns false for stream encoder
     GetPosition() int                 // Current write position
     GetBuffer() []byte                // Get output buffer (temp buffer for streams)
     SetBuffer(buffer []byte)          // Set/write buffer
@@ -139,7 +139,7 @@ The `Decoder` interface abstracts over buffer-based and stream-based decoding:
 
 ```go
 type Decoder interface {
-    CanSeek() bool                        // Returns false for stream decoder
+    Seekable() bool                        // Returns false for stream decoder
     GetPosition() int                     // Current read position
     GetLength() int                       // Remaining length
     PushLimit(limit int)
@@ -174,7 +174,7 @@ encoder := sszutils.NewStreamEncoder(writer)
 The `StreamEncoder`:
 - Writes SSZ data directly to the underlying `io.Writer`
 - Maintains internal position tracking
-- Does not support seeking (`CanSeek()` returns `false`)
+- Does not support seeking (`Seekable()` returns `false`)
 - Reports write errors via `GetWriteError()`
 
 ### StreamDecoder
@@ -189,7 +189,7 @@ The `StreamDecoder`:
 - Reads SSZ data directly from the underlying `io.Reader`
 - Uses internal buffering (2KB default) for efficient small reads
 - Supports limit-based reading for nested structures
-- Does not support seeking (`CanSeek()` returns `false`)
+- Does not support seeking (`Seekable()` returns `false`)
 
 ## Code Generation with Streaming
 

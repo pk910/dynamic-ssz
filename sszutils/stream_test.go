@@ -112,8 +112,8 @@ func TestStreamEncoder_NewStreamEncoder(t *testing.T) {
 	if enc.GetPosition() != 0 {
 		t.Errorf("expected position 0, got %d", enc.GetPosition())
 	}
-	if enc.CanSeek() {
-		t.Error("expected CanSeek to be false")
+	if enc.Seekable() {
+		t.Error("expected Seekable to be false")
 	}
 }
 
@@ -454,8 +454,8 @@ func TestStreamDecoder_NewStreamDecoder(t *testing.T) {
 	if dec.GetLength() != 1 {
 		t.Errorf("expected length 1, got %d", dec.GetLength())
 	}
-	if dec.CanSeek() {
-		t.Error("expected CanSeek to be false")
+	if dec.Seekable() {
+		t.Error("expected Seekable to be false")
 	}
 }
 

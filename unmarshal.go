@@ -88,7 +88,7 @@ func unmarshalType[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, ta
 	}
 
 	if !useFastSsz && useDynamicDecoder {
-		if decoder.CanSeek() && useDynamicUnmarshal {
+		if decoder.Seekable() && useDynamicUnmarshal {
 			// prefer static unmarshaller for non-seekable decoders (buffer based)
 			useDynamicDecoder = false
 		} else if sszDecoder, ok := targetValue.Addr().Interface().(sszutils.DynamicDecoder); ok {
@@ -280,7 +280,7 @@ func unmarshalTypeWrapper[D sszutils.Decoder](d *DynSsz, targetType *TypeDescrip
 // The function validates offset integrity to ensure variable fields don't overlap
 // and that all data is consumed correctly.
 func unmarshalContainer[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder D, idt int) error {
-	canSeek := decoder.CanSeek()
+	canSeek := decoder.Seekable()
 
 	var dynamicOffsets []uint32
 	var startPos int
@@ -531,7 +531,7 @@ func unmarshalVector[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, 
 func unmarshalDynamicVector[D sszutils.Decoder](d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder D, idt int) error {
 	vectorLen := int(targetType.Len)
 	requiredOffsetBytes := vectorLen * 4
-	canSeek := decoder.CanSeek()
+	canSeek := decoder.Seekable()
 
 	// check if there's enough data for all offsets
 	sszLen := decoder.GetLength()
@@ -771,7 +771,7 @@ func unmarshalDynamicList[D sszutils.Decoder](d *DynSsz, targetType *TypeDescrip
 	}
 
 	// derive number of items from first item offset
-	canSeek := decoder.CanSeek()
+	canSeek := decoder.Seekable()
 
 	firstOffset, err := decoder.DecodeOffset()
 	if err != nil {

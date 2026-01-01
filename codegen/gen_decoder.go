@@ -36,7 +36,7 @@ type decoderContext struct {
 	exprVars           *exprVarGenerator
 	staticSizeVars     *staticSizeVarGenerator
 	usedDynSpecs       bool
-	useCanSeek         bool
+	useSeekable        bool
 	valVarCounter      int
 	startPosVarCounter int
 
@@ -93,8 +93,8 @@ func generateDecoder(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.B
 
 	appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 	appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
-	if ctx.useCanSeek {
-		appendCode(codeBuilder, 1, "canSeek := dec.CanSeek()\n")
+	if ctx.useSeekable {
+		appendCode(codeBuilder, 1, "canSeek := dec.Seekable()\n")
 	}
 	if ctx.offsetSliceLimit > 0 {
 		appendCode(codeBuilder, 1, "offsetSlices := [%d][]uint32{\n", ctx.offsetSliceLimit)
@@ -537,7 +537,7 @@ func (ctx *decoderContext) unmarshalVector(desc *dynssz.TypeDescriptor, varName 
 		ctx.appendCode(indent+2, "offsets[i-1] = offset\n")
 		ctx.appendCode(indent+1, "}\n")
 		ctx.appendCode(indent, "}\n")
-		ctx.useCanSeek = true
+		ctx.useSeekable = true
 		ctx.offsetSliceCounter++
 		if ctx.offsetSliceCounter > ctx.offsetSliceLimit {
 			ctx.offsetSliceLimit = ctx.offsetSliceCounter
@@ -686,7 +686,7 @@ func (ctx *decoderContext) unmarshalList(desc *dynssz.TypeDescriptor, varName st
 		ctx.appendCode(indent+2, "offsets[i-1] = offset\n")
 		ctx.appendCode(indent+1, "}\n")
 		ctx.appendCode(indent, "}\n")
-		ctx.useCanSeek = true
+		ctx.useSeekable = true
 		ctx.offsetSliceCounter++
 		if ctx.offsetSliceCounter > ctx.offsetSliceLimit {
 			ctx.offsetSliceLimit = ctx.offsetSliceCounter

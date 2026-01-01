@@ -20,7 +20,7 @@ func NewBufferEncoder(buffer []byte) *BufferEncoder {
 	}
 }
 
-func (e *BufferEncoder) CanSeek() bool {
+func (e *BufferEncoder) Seekable() bool {
 	return true
 }
 

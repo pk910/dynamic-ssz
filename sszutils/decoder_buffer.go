@@ -28,7 +28,7 @@ func NewBufferDecoder(buffer []byte) *BufferDecoder {
 	}
 }
 
-func (e *BufferDecoder) CanSeek() bool {
+func (e *BufferDecoder) Seekable() bool {
 	return true
 }
 
