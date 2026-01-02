@@ -3,7 +3,7 @@ module github.com/pk910/dynamic-ssz/spectests
 go 1.25.0
 
 require (
-	github.com/attestantio/go-eth2-client v0.26.0
+	github.com/attestantio/go-eth2-client v0.27.1
 	github.com/golang/snappy v0.0.4
 	github.com/huandu/go-clone/generic v1.6.0
 	github.com/pk910/dynamic-ssz v1.1.2
@@ -37,4 +37,4 @@ require (
 
 replace github.com/pk910/dynamic-ssz => ../
 
-replace github.com/attestantio/go-eth2-client => github.com/pk910/go-eth2-client v0.0.0-20250624213751-460cfc4a25b0 // waiting for https://github.com/attestantio/go-eth2-client/pull/242
+replace github.com/attestantio/go-eth2-client => github.com/pk910/go-eth2-client v0.0.0-20260102043133-a34bb133f3ec // waiting for https://github.com/attestantio/go-eth2-client/pull/242
