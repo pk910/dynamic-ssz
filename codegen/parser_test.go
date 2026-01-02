@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	ssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/ssztypes"
 )
 
 func TestNewParser(t *testing.T) {
@@ -40,9 +40,9 @@ func TestGetCompatFlag(t *testing.T) {
 
 	t.Run("SetFlag", func(t *testing.T) {
 		uint64Type := types.Typ[types.Uint64]
-		parser.CompatFlags["uint64"] = ssz.SszCompatFlagFastSSZMarshaler
+		parser.CompatFlags["uint64"] = ssztypes.SszCompatFlagFastSSZMarshaler
 		flag := parser.getCompatFlag(uint64Type)
-		if flag != ssz.SszCompatFlagFastSSZMarshaler {
+		if flag != ssztypes.SszCompatFlagFastSSZMarshaler {
 			t.Errorf("Expected FastSSZMarshaler flag, got %v", flag)
 		}
 	})
@@ -63,7 +63,7 @@ func TestGetTypeDescriptor(t *testing.T) {
 		if desc.Size != 8 {
 			t.Errorf("Expected size 8, got %d", desc.Size)
 		}
-		if desc.SszType != ssz.SszUint64Type {
+		if desc.SszType != ssztypes.SszUint64Type {
 			t.Errorf("Expected SszUint64Type, got %v", desc.SszType)
 		}
 	})
@@ -91,16 +91,16 @@ func TestBuildTypeDescriptorBasicTypes(t *testing.T) {
 	tests := []struct {
 		name     string
 		typeKind types.BasicKind
-		expected ssz.SszType
+		expected ssztypes.SszType
 		size     uint32
 	}{
-		{"bool", types.Bool, ssz.SszBoolType, 1},
-		{"uint8", types.Uint8, ssz.SszUint8Type, 1},
-		{"uint16", types.Uint16, ssz.SszUint16Type, 2},
-		{"uint32", types.Uint32, ssz.SszUint32Type, 4},
-		{"uint64", types.Uint64, ssz.SszUint64Type, 8},
-		{"uint", types.Uint, ssz.SszUint64Type, 8},
-		{"string", types.String, ssz.SszListType, 0},
+		{"bool", types.Bool, ssztypes.SszBoolType, 1},
+		{"uint8", types.Uint8, ssztypes.SszUint8Type, 1},
+		{"uint16", types.Uint16, ssztypes.SszUint16Type, 2},
+		{"uint32", types.Uint32, ssztypes.SszUint32Type, 4},
+		{"uint64", types.Uint64, ssztypes.SszUint64Type, 8},
+		{"uint", types.Uint, ssztypes.SszUint64Type, 8},
+		{"string", types.String, ssztypes.SszListType, 0},
 	}
 
 	for _, tt := range tests {
@@ -117,10 +117,10 @@ func TestBuildTypeDescriptorBasicTypes(t *testing.T) {
 				t.Errorf("Expected size %d, got %d", tt.size, desc.Size)
 			}
 			if tt.name == "string" {
-				if desc.GoTypeFlags&ssz.GoTypeFlagIsString == 0 {
+				if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString == 0 {
 					t.Error("Expected string flag to be set")
 				}
-				if desc.SszTypeFlags&ssz.SszTypeFlagIsDynamic == 0 {
+				if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 					t.Error("Expected dynamic flag for string list")
 				}
 			}
@@ -188,96 +188,96 @@ func TestSizeHints(t *testing.T) {
 	tests := []struct {
 		name      string
 		typ       types.Type
-		typeHints []ssz.SszTypeHint
-		sizeHints []ssz.SszSizeHint
+		typeHints []ssztypes.SszTypeHint
+		sizeHints []ssztypes.SszSizeHint
 		expected  string
 	}{
 		// Bool tests
 		{
 			name:      "bool with wrong size",
 			typ:       types.Typ[types.Bool],
-			sizeHints: []ssz.SszSizeHint{{Size: 2}},
+			sizeHints: []ssztypes.SszSizeHint{{Size: 2}},
 			expected:  "bool ssz type must be ssz-size:1",
 		},
 		{
 			name:      "bool with bit size",
 			typ:       types.Typ[types.Bool],
-			sizeHints: []ssz.SszSizeHint{{Bits: true}},
+			sizeHints: []ssztypes.SszSizeHint{{Bits: true}},
 			expected:  "bool ssz type cannot be limited by bits",
 		},
 		// Uint8 tests
 		{
 			name:      "uint8 with wrong size",
 			typ:       types.Typ[types.Uint8],
-			sizeHints: []ssz.SszSizeHint{{Size: 2}},
+			sizeHints: []ssztypes.SszSizeHint{{Size: 2}},
 			expected:  "uint8 ssz type must be ssz-size:1",
 		},
 		{
 			name:      "uint8 with bit size",
 			typ:       types.Typ[types.Uint8],
-			sizeHints: []ssz.SszSizeHint{{Bits: true}},
+			sizeHints: []ssztypes.SszSizeHint{{Bits: true}},
 			expected:  "uint8 ssz type cannot be limited by bits",
 		},
 		// Uint16 tests
 		{
 			name:      "uint16 with wrong size",
 			typ:       types.Typ[types.Uint16],
-			sizeHints: []ssz.SszSizeHint{{Size: 4}},
+			sizeHints: []ssztypes.SszSizeHint{{Size: 4}},
 			expected:  "uint16 ssz type must be ssz-size:2",
 		},
 		{
 			name:      "uint16 with bit size",
 			typ:       types.Typ[types.Uint16],
-			sizeHints: []ssz.SszSizeHint{{Bits: true}},
+			sizeHints: []ssztypes.SszSizeHint{{Bits: true}},
 			expected:  "uint16 ssz type cannot be limited by bits",
 		},
 		// Uint32 tests
 		{
 			name:      "uint32 with wrong size",
 			typ:       types.Typ[types.Uint32],
-			sizeHints: []ssz.SszSizeHint{{Size: 8}},
+			sizeHints: []ssztypes.SszSizeHint{{Size: 8}},
 			expected:  "uint32 ssz type must be ssz-size:4",
 		},
 		{
 			name:      "uint32 with bit size",
 			typ:       types.Typ[types.Uint32],
-			sizeHints: []ssz.SszSizeHint{{Bits: true}},
+			sizeHints: []ssztypes.SszSizeHint{{Bits: true}},
 			expected:  "uint32 ssz type cannot be limited by bits",
 		},
 		// Uint64 tests
 		{
 			name:      "uint64 with wrong size",
 			typ:       types.Typ[types.Uint64],
-			sizeHints: []ssz.SszSizeHint{{Size: 4}},
+			sizeHints: []ssztypes.SszSizeHint{{Size: 4}},
 			expected:  "uint64 ssz type must be ssz-size:8",
 		},
 		{
 			name:      "uint64 with bit size",
 			typ:       types.Typ[types.Uint64],
-			sizeHints: []ssz.SszSizeHint{{Bits: true}},
+			sizeHints: []ssztypes.SszSizeHint{{Bits: true}},
 			expected:  "uint64 ssz type cannot be limited by bits",
 		},
 		// Uint128 tests
 		{
 			name:      "uint128 with bit size",
 			typ:       types.NewArray(types.Typ[types.Uint8], 16),
-			typeHints: []ssz.SszTypeHint{{Type: ssz.SszUint128Type}},
-			sizeHints: []ssz.SszSizeHint{{Bits: true}},
+			typeHints: []ssztypes.SszTypeHint{{Type: ssztypes.SszUint128Type}},
+			sizeHints: []ssztypes.SszSizeHint{{Bits: true}},
 			expected:  "uint128 ssz type cannot be limited by bits",
 		},
 		// Uint256 tests
 		{
 			name:      "uint256 with bit size",
 			typ:       types.NewArray(types.Typ[types.Uint8], 32),
-			typeHints: []ssz.SszTypeHint{{Type: ssz.SszUint256Type}},
-			sizeHints: []ssz.SszSizeHint{{Bits: true}},
+			typeHints: []ssztypes.SszTypeHint{{Type: ssztypes.SszUint256Type}},
+			sizeHints: []ssztypes.SszSizeHint{{Bits: true}},
 			expected:  "uint256 ssz type cannot be limited by bits",
 		},
 		// Non-bitvector type with bit size
 		{
 			name:      "other non bitvector type with bit size",
 			typ:       types.NewArray(types.Typ[types.Uint8], 16),
-			sizeHints: []ssz.SszSizeHint{{Bits: true}},
+			sizeHints: []ssztypes.SszSizeHint{{Bits: true}},
 			expected:  "bit size tag is only allowed for bitvector or bitlist types",
 		},
 	}
@@ -301,12 +301,12 @@ func TestMaxSizeHints(t *testing.T) {
 
 	t.Run("MaxSizeWithValue", func(t *testing.T) {
 		uint64Type := types.Typ[types.Uint64]
-		maxSizeHint := []ssz.SszMaxSizeHint{{Size: 1024}}
+		maxSizeHint := []ssztypes.SszMaxSizeHint{{Size: 1024}}
 		desc, err := parser.buildTypeDescriptor(uint64Type, nil, nil, maxSizeHint)
 		if err != nil {
 			t.Fatalf("Failed to build descriptor with max size: %v", err)
 		}
-		if desc.SszTypeFlags&ssz.SszTypeFlagHasLimit == 0 {
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasLimit == 0 {
 			t.Error("Expected limit flag to be set")
 		}
 		if desc.Limit != 1024 {
@@ -316,27 +316,27 @@ func TestMaxSizeHints(t *testing.T) {
 
 	t.Run("MaxSizeNoValue", func(t *testing.T) {
 		uint64Type := types.Typ[types.Uint64]
-		maxSizeHint := []ssz.SszMaxSizeHint{{NoValue: true}}
+		maxSizeHint := []ssztypes.SszMaxSizeHint{{NoValue: true}}
 		desc, err := parser.buildTypeDescriptor(uint64Type, nil, nil, maxSizeHint)
 		if err != nil {
 			t.Fatalf("Failed to build descriptor with no max size: %v", err)
 		}
-		if desc.SszTypeFlags&ssz.SszTypeFlagHasLimit != 0 {
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
 			t.Error("Expected limit flag to be unset")
 		}
 	})
 
 	t.Run("MaxSizeExpression", func(t *testing.T) {
 		uint64Type := types.Typ[types.Uint64]
-		maxSizeHint := []ssz.SszMaxSizeHint{{Expr: "maxSize", Custom: true}}
+		maxSizeHint := []ssztypes.SszMaxSizeHint{{Expr: "maxSize", Custom: true}}
 		desc, err := parser.buildTypeDescriptor(uint64Type, nil, nil, maxSizeHint)
 		if err != nil {
 			t.Fatalf("Failed to build descriptor with max size expression: %v", err)
 		}
-		if desc.SszTypeFlags&ssz.SszTypeFlagHasDynamicMax == 0 {
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicMax == 0 {
 			t.Error("Expected dynamic max flag to be set")
 		}
-		if desc.SszTypeFlags&ssz.SszTypeFlagHasMaxExpr == 0 {
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasMaxExpr == 0 {
 			t.Error("Expected max expr flag to be set")
 		}
 		if desc.MaxExpression == nil || *desc.MaxExpression != "maxSize" {
@@ -352,13 +352,13 @@ func TestTypeHints(t *testing.T) {
 		// Force a slice to be a vector with type hint
 		byteType := types.Typ[types.Uint8]
 		byteSlice := types.NewSlice(byteType)
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszVectorType}}
-		sizeHint := []ssz.SszSizeHint{{Size: 32}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszVectorType}}
+		sizeHint := []ssztypes.SszSizeHint{{Size: 32}}
 		desc, err := parser.buildTypeDescriptor(byteSlice, typeHint, sizeHint, nil)
 		if err != nil {
 			t.Fatalf("Failed to build descriptor with type hint: %v", err)
 		}
-		if desc.SszType != ssz.SszVectorType {
+		if desc.SszType != ssztypes.SszVectorType {
 			t.Errorf("Expected SszVectorType, got %v", desc.SszType)
 		}
 	})
@@ -366,7 +366,7 @@ func TestTypeHints(t *testing.T) {
 	t.Run("TypeCompatibilityValidation", func(t *testing.T) {
 		// Try to use bool type as uint8
 		boolType := types.Typ[types.Bool]
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszUint8Type}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszUint8Type}}
 		_, err := parser.buildTypeDescriptor(boolType, typeHint, nil, nil)
 		if err == nil {
 			t.Error("Expected error for incompatible type hint")
@@ -376,42 +376,42 @@ func TestTypeHints(t *testing.T) {
 	tests := []struct {
 		name      string
 		typ       types.Type
-		typeHints []ssz.SszTypeHint
+		typeHints []ssztypes.SszTypeHint
 		expected  string
 	}{
 		// Bool tests
 		{
 			name:      "bool with wrong type",
 			typ:       types.Typ[types.Uint8],
-			typeHints: []ssz.SszTypeHint{{Type: ssz.SszBoolType}},
+			typeHints: []ssztypes.SszTypeHint{{Type: ssztypes.SszBoolType}},
 			expected:  "bool ssz type can only be represented by bool types",
 		},
 		// Uint8 tests
 		{
 			name:      "uint8 with wrong type",
 			typ:       types.Typ[types.Bool],
-			typeHints: []ssz.SszTypeHint{{Type: ssz.SszUint8Type}},
+			typeHints: []ssztypes.SszTypeHint{{Type: ssztypes.SszUint8Type}},
 			expected:  "uint8 ssz type can only be represented by uint8 types",
 		},
 		// Uint16 tests
 		{
 			name:      "uint16 with wrong type",
 			typ:       types.Typ[types.Uint8],
-			typeHints: []ssz.SszTypeHint{{Type: ssz.SszUint16Type}},
+			typeHints: []ssztypes.SszTypeHint{{Type: ssztypes.SszUint16Type}},
 			expected:  "uint16 ssz type can only be represented by uint16 types",
 		},
 		// Uint32 tests
 		{
 			name:      "uint32 with wrong type",
 			typ:       types.Typ[types.Uint8],
-			typeHints: []ssz.SszTypeHint{{Type: ssz.SszUint32Type}},
+			typeHints: []ssztypes.SszTypeHint{{Type: ssztypes.SszUint32Type}},
 			expected:  "uint32 ssz type can only be represented by uint32 types",
 		},
 		// Uint64 tests
 		{
 			name:      "uint64 with wrong type",
 			typ:       types.Typ[types.Uint8],
-			typeHints: []ssz.SszTypeHint{{Type: ssz.SszUint64Type}},
+			typeHints: []ssztypes.SszTypeHint{{Type: ssztypes.SszUint64Type}},
 			expected:  "uint64 ssz type can only be represented by uint64 or time.Time types",
 		},
 	}
@@ -440,10 +440,10 @@ func TestPointerTypes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to build pointer type descriptor: %v", err)
 		}
-		if desc.SszType != ssz.SszUint64Type {
+		if desc.SszType != ssztypes.SszUint64Type {
 			t.Errorf("Expected SszUint64Type, got %v", desc.SszType)
 		}
-		if desc.GoTypeFlags&ssz.GoTypeFlagIsPointer == 0 {
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer == 0 {
 			t.Error("Expected pointer flag to be set")
 		}
 	})
@@ -462,7 +462,7 @@ func TestNamedTypes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to build named type descriptor: %v", err)
 		}
-		if desc.SszType != ssz.SszUint64Type {
+		if desc.SszType != ssztypes.SszUint64Type {
 			t.Errorf("Expected SszUint64Type, got %v", desc.SszType)
 		}
 	})
@@ -477,7 +477,7 @@ func TestNamedTypes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to build alias type descriptor: %v", err)
 		}
-		if desc.SszType != ssz.SszUint32Type {
+		if desc.SszType != ssztypes.SszUint32Type {
 			t.Errorf("Expected SszUint32Type, got %v", desc.SszType)
 		}
 	})
@@ -489,7 +489,7 @@ func TestBuildUint128Descriptor(t *testing.T) {
 	t.Run("Uint128Array16Bytes", func(t *testing.T) {
 		byteType := types.Typ[types.Uint8]
 		arr := types.NewArray(byteType, 16)
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszUint128Type}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszUint128Type}}
 		desc, err := parser.buildTypeDescriptor(arr, typeHint, nil, nil)
 		if err != nil {
 			t.Fatalf("Failed to build uint128 descriptor: %v", err)
@@ -500,7 +500,7 @@ func TestBuildUint128Descriptor(t *testing.T) {
 		if desc.Len != 16 {
 			t.Errorf("Expected len 16, got %d", desc.Len)
 		}
-		if desc.GoTypeFlags&ssz.GoTypeFlagIsByteArray == 0 {
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray == 0 {
 			t.Error("Expected byte array flag to be set")
 		}
 	})
@@ -508,7 +508,7 @@ func TestBuildUint128Descriptor(t *testing.T) {
 	t.Run("Uint128Array2Uint64", func(t *testing.T) {
 		uint64Type := types.Typ[types.Uint64]
 		arr := types.NewArray(uint64Type, 2)
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszUint128Type}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszUint128Type}}
 		desc, err := parser.buildTypeDescriptor(arr, typeHint, nil, nil)
 		if err != nil {
 			t.Fatalf("Failed to build uint128 descriptor: %v", err)
@@ -524,7 +524,7 @@ func TestBuildUint128Descriptor(t *testing.T) {
 	t.Run("Uint128InvalidSize", func(t *testing.T) {
 		byteType := types.Typ[types.Uint8]
 		arr := types.NewArray(byteType, 8) // Wrong size
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszUint128Type}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszUint128Type}}
 		_, err := parser.buildTypeDescriptor(arr, typeHint, nil, nil)
 		if err == nil {
 			t.Error("Expected error for invalid uint128 size")
@@ -534,7 +534,7 @@ func TestBuildUint128Descriptor(t *testing.T) {
 	t.Run("Uint128Slice", func(t *testing.T) {
 		byteType := types.Typ[types.Uint8]
 		slice := types.NewSlice(byteType)
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszUint128Type}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszUint128Type}}
 		desc, err := parser.buildTypeDescriptor(slice, typeHint, nil, nil)
 		if err != nil {
 			t.Fatalf("Failed to build uint128 slice descriptor: %v", err)
@@ -551,7 +551,7 @@ func TestBuildUint256Descriptor(t *testing.T) {
 	t.Run("Uint256Array32Bytes", func(t *testing.T) {
 		byteType := types.Typ[types.Uint8]
 		arr := types.NewArray(byteType, 32)
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszUint256Type}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszUint256Type}}
 		desc, err := parser.buildTypeDescriptor(arr, typeHint, nil, nil)
 		if err != nil {
 			t.Fatalf("Failed to build uint256 descriptor: %v", err)
@@ -562,7 +562,7 @@ func TestBuildUint256Descriptor(t *testing.T) {
 		if desc.Len != 32 {
 			t.Errorf("Expected len 32, got %d", desc.Len)
 		}
-		if desc.GoTypeFlags&ssz.GoTypeFlagIsByteArray == 0 {
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray == 0 {
 			t.Error("Expected byte array flag to be set")
 		}
 	})
@@ -570,7 +570,7 @@ func TestBuildUint256Descriptor(t *testing.T) {
 	t.Run("Uint256Array4Uint64", func(t *testing.T) {
 		uint64Type := types.Typ[types.Uint64]
 		arr := types.NewArray(uint64Type, 4)
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszUint256Type}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszUint256Type}}
 		desc, err := parser.buildTypeDescriptor(arr, typeHint, nil, nil)
 		if err != nil {
 			t.Fatalf("Failed to build uint256 descriptor: %v", err)
@@ -586,7 +586,7 @@ func TestBuildUint256Descriptor(t *testing.T) {
 	t.Run("Uint256InvalidSize", func(t *testing.T) {
 		byteType := types.Typ[types.Uint8]
 		arr := types.NewArray(byteType, 16) // Wrong size
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszUint256Type}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszUint256Type}}
 		_, err := parser.buildTypeDescriptor(arr, typeHint, nil, nil)
 		if err == nil {
 			t.Error("Expected error for invalid uint256 size")
@@ -609,7 +609,7 @@ func TestBuildContainerDescriptor(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to build container descriptor: %v", err)
 		}
-		if desc.SszType != ssz.SszContainerType {
+		if desc.SszType != ssztypes.SszContainerType {
 			t.Errorf("Expected SszContainerType, got %v", desc.SszType)
 		}
 		if desc.Size != 9 { // 8 + 1
@@ -657,7 +657,7 @@ func TestBuildContainerDescriptor(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to build container descriptor: %v", err)
 		}
-		if desc.SszTypeFlags&ssz.SszTypeFlagIsDynamic == 0 {
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 			t.Error("Expected dynamic flag to be set")
 		}
 		if desc.Size != 0 {
@@ -711,7 +711,7 @@ func TestBuildVectorDescriptor(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to build vector descriptor: %v", err)
 		}
-		if desc.SszType != ssz.SszVectorType {
+		if desc.SszType != ssztypes.SszVectorType {
 			t.Errorf("Expected SszVectorType, got %v", desc.SszType)
 		}
 		if desc.Size != 32 {
@@ -720,7 +720,7 @@ func TestBuildVectorDescriptor(t *testing.T) {
 		if desc.Len != 32 {
 			t.Errorf("Expected len 32, got %d", desc.Len)
 		}
-		if desc.GoTypeFlags&ssz.GoTypeFlagIsByteArray == 0 {
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray == 0 {
 			t.Error("Expected byte array flag to be set")
 		}
 	})
@@ -728,12 +728,12 @@ func TestBuildVectorDescriptor(t *testing.T) {
 	t.Run("SliceWithSizeHint", func(t *testing.T) {
 		byteType := types.Typ[types.Uint8]
 		slice := types.NewSlice(byteType)
-		sizeHint := []ssz.SszSizeHint{{Size: 64}}
+		sizeHint := []ssztypes.SszSizeHint{{Size: 64}}
 		desc, err := parser.buildTypeDescriptor(slice, nil, sizeHint, nil)
 		if err != nil {
 			t.Fatalf("Failed to build vector descriptor: %v", err)
 		}
-		if desc.SszType != ssz.SszVectorType {
+		if desc.SszType != ssztypes.SszVectorType {
 			t.Errorf("Expected SszVectorType, got %v", desc.SszType)
 		}
 		if desc.Len != 64 {
@@ -744,7 +744,7 @@ func TestBuildVectorDescriptor(t *testing.T) {
 	t.Run("SliceWithoutSizeHint", func(t *testing.T) {
 		byteType := types.Typ[types.Uint8]
 		slice := types.NewSlice(byteType)
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszVectorType}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszVectorType}}
 		_, err := parser.buildTypeDescriptor(slice, typeHint, nil, nil)
 		if err == nil {
 			t.Error("Expected error for slice vector without size hint")
@@ -753,26 +753,26 @@ func TestBuildVectorDescriptor(t *testing.T) {
 
 	t.Run("StringVector", func(t *testing.T) {
 		stringType := types.Typ[types.String]
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszVectorType}}
-		sizeHint := []ssz.SszSizeHint{{Size: 20}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszVectorType}}
+		sizeHint := []ssztypes.SszSizeHint{{Size: 20}}
 		desc, err := parser.buildTypeDescriptor(stringType, typeHint, sizeHint, nil)
 		if err != nil {
 			t.Fatalf("Failed to build string vector descriptor: %v", err)
 		}
-		if desc.SszType != ssz.SszVectorType {
+		if desc.SszType != ssztypes.SszVectorType {
 			t.Errorf("Expected SszVectorType, got %v", desc.SszType)
 		}
 		if desc.Len != 20 {
 			t.Errorf("Expected len 20, got %d", desc.Len)
 		}
-		if desc.GoTypeFlags&ssz.GoTypeFlagIsByteArray == 0 {
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray == 0 {
 			t.Error("Expected byte array flag to be set")
 		}
 	})
 
 	t.Run("StringVectorWithoutSize", func(t *testing.T) {
 		stringType := types.Typ[types.String]
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszVectorType}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszVectorType}}
 		_, err := parser.buildTypeDescriptor(stringType, typeHint, nil, nil)
 		if err == nil {
 			t.Error("Expected error for string vector without size hint")
@@ -782,7 +782,7 @@ func TestBuildVectorDescriptor(t *testing.T) {
 	t.Run("ArraySizeHintValidation", func(t *testing.T) {
 		byteType := types.Typ[types.Uint8]
 		arr := types.NewArray(byteType, 32)
-		sizeHint := []ssz.SszSizeHint{{Size: 64}} // Size hint bigger than array
+		sizeHint := []ssztypes.SszSizeHint{{Size: 64}} // Size hint bigger than array
 		_, err := parser.buildTypeDescriptor(arr, nil, sizeHint, nil)
 		if err == nil {
 			t.Error("Expected error for size hint greater than array length")
@@ -791,7 +791,7 @@ func TestBuildVectorDescriptor(t *testing.T) {
 
 	t.Run("UnsupportedVectorBaseType", func(t *testing.T) {
 		uintType := types.Typ[types.Uint]
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszVectorType}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszVectorType}}
 		_, err := parser.buildTypeDescriptor(uintType, typeHint, nil, nil)
 		if err == nil {
 			t.Error("Expected error for unsupported vector base type")
@@ -806,7 +806,7 @@ func TestBuildVectorDescriptor(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to build vector with dynamic elements: %v", err)
 		}
-		if desc.SszTypeFlags&ssz.SszTypeFlagIsDynamic == 0 {
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 			t.Error("Expected dynamic flag to be set")
 		}
 		if desc.Size != 0 {
@@ -825,16 +825,16 @@ func TestBuildListDescriptor(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to build list descriptor: %v", err)
 		}
-		if desc.SszType != ssz.SszListType {
+		if desc.SszType != ssztypes.SszListType {
 			t.Errorf("Expected SszListType, got %v", desc.SszType)
 		}
-		if desc.SszTypeFlags&ssz.SszTypeFlagIsDynamic == 0 {
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 			t.Error("Expected dynamic flag to be set")
 		}
 		if desc.Size != 0 {
 			t.Errorf("Expected size 0 for dynamic list, got %d", desc.Size)
 		}
-		if desc.GoTypeFlags&ssz.GoTypeFlagIsByteArray == 0 {
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray == 0 {
 			t.Error("Expected byte array flag to be set")
 		}
 	})
@@ -845,20 +845,20 @@ func TestBuildListDescriptor(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to build string list descriptor: %v", err)
 		}
-		if desc.SszType != ssz.SszListType {
+		if desc.SszType != ssztypes.SszListType {
 			t.Errorf("Expected SszListType, got %v", desc.SszType)
 		}
-		if desc.SszTypeFlags&ssz.SszTypeFlagIsDynamic == 0 {
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 			t.Error("Expected dynamic flag to be set")
 		}
-		if desc.GoTypeFlags&ssz.GoTypeFlagIsByteArray == 0 {
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray == 0 {
 			t.Error("Expected byte array flag to be set")
 		}
 	})
 
 	t.Run("UnsupportedListBaseType", func(t *testing.T) {
 		uintType := types.Typ[types.Uint]
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszListType}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszListType}}
 		_, err := parser.buildTypeDescriptor(uintType, typeHint, nil, nil)
 		if err == nil {
 			t.Error("Expected error for unsupported list base type")
@@ -872,21 +872,21 @@ func TestBuildBitlistDescriptor(t *testing.T) {
 	t.Run("ValidBitlist", func(t *testing.T) {
 		byteType := types.Typ[types.Uint8]
 		slice := types.NewSlice(byteType)
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszBitlistType}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszBitlistType}}
 		desc, err := parser.buildTypeDescriptor(slice, typeHint, nil, nil)
 		if err != nil {
 			t.Fatalf("Failed to build bitlist descriptor: %v", err)
 		}
-		if desc.SszType != ssz.SszBitlistType {
+		if desc.SszType != ssztypes.SszBitlistType {
 			t.Errorf("Expected SszBitlistType, got %v", desc.SszType)
 		}
-		if desc.SszTypeFlags&ssz.SszTypeFlagIsDynamic == 0 {
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 			t.Error("Expected dynamic flag to be set")
 		}
 		if desc.Size != 0 {
 			t.Errorf("Expected size 0 for dynamic bitlist, got %d", desc.Size)
 		}
-		if desc.GoTypeFlags&ssz.GoTypeFlagIsByteArray == 0 {
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray == 0 {
 			t.Error("Expected byte array flag to be set")
 		}
 	})
@@ -894,7 +894,7 @@ func TestBuildBitlistDescriptor(t *testing.T) {
 	t.Run("BitlistWrongElementType", func(t *testing.T) {
 		uint16Type := types.Typ[types.Uint16]
 		slice := types.NewSlice(uint16Type)
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszBitlistType}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszBitlistType}}
 		_, err := parser.buildTypeDescriptor(slice, typeHint, nil, nil)
 		if err == nil {
 			t.Error("Expected error for bitlist with non-byte elements")
@@ -903,7 +903,7 @@ func TestBuildBitlistDescriptor(t *testing.T) {
 
 	t.Run("BitlistWrongBaseType", func(t *testing.T) {
 		uint64Type := types.Typ[types.Uint64]
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszBitlistType}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszBitlistType}}
 		_, err := parser.buildTypeDescriptor(uint64Type, typeHint, nil, nil)
 		if err == nil {
 			t.Error("Expected error for bitlist with non-slice type")
@@ -933,10 +933,10 @@ func TestParseFieldTags(t *testing.T) {
 		if len(typeHints) != 2 {
 			t.Errorf("Expected 2 type hints, got %d", len(typeHints))
 		}
-		if typeHints[0].Type != ssz.SszVectorType {
+		if typeHints[0].Type != ssztypes.SszVectorType {
 			t.Errorf("Expected SszVectorType, got %v", typeHints[0].Type)
 		}
-		if typeHints[1].Type != ssz.SszUint8Type {
+		if typeHints[1].Type != ssztypes.SszUint8Type {
 			t.Errorf("Expected SszUint8Type, got %v", typeHints[1].Type)
 		}
 	})
@@ -1197,7 +1197,7 @@ func TestCustomTypesAndErrors(t *testing.T) {
 
 	t.Run("CustomTypeWithoutCompatibility", func(t *testing.T) {
 		uint64Type := types.Typ[types.Uint64]
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszCustomType}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszCustomType}}
 		_, err := parser.buildTypeDescriptor(uint64Type, typeHint, nil, nil)
 		if err == nil {
 			t.Error("Expected error for custom type without compatibility")
@@ -1207,10 +1207,10 @@ func TestCustomTypesAndErrors(t *testing.T) {
 	t.Run("CustomTypeWithSizeHint", func(t *testing.T) {
 		// Mock a type with FastSSZ compatibility for testing
 		uint64Type := types.Typ[types.Uint64]
-		parser.CompatFlags[uint64Type.String()] = ssz.SszCompatFlagFastSSZMarshaler | ssz.SszCompatFlagFastSSZHasher
+		parser.CompatFlags[uint64Type.String()] = ssztypes.SszCompatFlagFastSSZMarshaler | ssztypes.SszCompatFlagFastSSZHasher
 
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszCustomType}}
-		sizeHint := []ssz.SszSizeHint{{Size: 64}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszCustomType}}
+		sizeHint := []ssztypes.SszSizeHint{{Size: 64}}
 		desc, err := parser.buildTypeDescriptor(uint64Type, typeHint, sizeHint, nil)
 		if err != nil {
 			t.Fatalf("Failed to build custom type descriptor: %v", err)
@@ -1222,9 +1222,9 @@ func TestCustomTypesAndErrors(t *testing.T) {
 
 	t.Run("CustomTypeWithoutSize", func(t *testing.T) {
 		uint64Type := types.Typ[types.Uint64]
-		parser.CompatFlags[uint64Type.String()] = ssz.SszCompatFlagFastSSZMarshaler | ssz.SszCompatFlagFastSSZHasher
+		parser.CompatFlags[uint64Type.String()] = ssztypes.SszCompatFlagFastSSZMarshaler | ssztypes.SszCompatFlagFastSSZHasher
 
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszCustomType}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszCustomType}}
 		desc, err := parser.buildTypeDescriptor(uint64Type, typeHint, nil, nil)
 		if err != nil {
 			t.Fatalf("Failed to build custom type descriptor: %v", err)
@@ -1232,7 +1232,7 @@ func TestCustomTypesAndErrors(t *testing.T) {
 		if desc.Size != 0 {
 			t.Errorf("Expected size 0, got %d", desc.Size)
 		}
-		if desc.SszTypeFlags&ssz.SszTypeFlagIsDynamic == 0 {
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 			t.Error("Expected dynamic flag to be set")
 		}
 	})
@@ -1251,10 +1251,10 @@ func TestSpecialNamedTypes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to build time.Time descriptor: %v", err)
 		}
-		if desc.SszType != ssz.SszUint64Type {
+		if desc.SszType != ssztypes.SszUint64Type {
 			t.Errorf("Expected SszUint64Type for time.Time, got %v", desc.SszType)
 		}
-		if desc.GoTypeFlags&ssz.GoTypeFlagIsTime == 0 {
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
 			t.Error("Expected time flag to be set")
 		}
 	})
@@ -1264,10 +1264,10 @@ func TestSpecialNamedTypes(t *testing.T) {
 		testCases := []struct {
 			pkgPath  string
 			typeName string
-			expected ssz.SszType
+			expected ssztypes.SszType
 		}{
-			{"github.com/pk910/dynamic-ssz", "CompatibleUnion", ssz.SszCompatibleUnionType},
-			{"github.com/pk910/dynamic-ssz", "TypeWrapper", ssz.SszTypeWrapperType},
+			{"github.com/pk910/dynamic-ssz", "CompatibleUnion", ssztypes.SszCompatibleUnionType},
+			{"github.com/pk910/dynamic-ssz", "TypeWrapper", ssztypes.SszTypeWrapperType},
 		}
 
 		for _, tc := range testCases {
@@ -1302,7 +1302,7 @@ func TestComplexStructures(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to build nested struct descriptor: %v", err)
 		}
-		if desc.SszType != ssz.SszContainerType {
+		if desc.SszType != ssztypes.SszContainerType {
 			t.Errorf("Expected SszContainerType, got %v", desc.SszType)
 		}
 		if len(desc.ContainerDesc.Fields) != 2 {
@@ -1322,7 +1322,7 @@ func TestComplexStructures(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to build array of structs descriptor: %v", err)
 		}
-		if desc.SszType != ssz.SszVectorType {
+		if desc.SszType != ssztypes.SszVectorType {
 			t.Errorf("Expected SszVectorType, got %v", desc.SszType)
 		}
 		if desc.Len != 5 {
@@ -1344,7 +1344,7 @@ func TestCacheNotUsedWithHints(t *testing.T) {
 		}
 
 		// Second call with hints (should not use cache)
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszUint64Type}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszUint64Type}}
 		desc2, err := parser.buildTypeDescriptor(uint64Type, typeHint, nil, nil)
 		if err != nil {
 			t.Fatalf("Failed to build second descriptor: %v", err)
@@ -1396,8 +1396,8 @@ func TestBuildCompatibleUnionDescriptor(t *testing.T) {
 		namedInstantiated := instantiated.(*types.Named)
 
 		// Create descriptor and call buildCompatibleUnionDescriptor
-		desc := &ssz.TypeDescriptor{
-			SszType: ssz.SszCompatibleUnionType,
+		desc := &ssztypes.TypeDescriptor{
+			SszType: ssztypes.SszCompatibleUnionType,
 		}
 		err = parser.buildCompatibleUnionDescriptor(desc, namedInstantiated)
 		if err != nil {
@@ -1407,7 +1407,7 @@ func TestBuildCompatibleUnionDescriptor(t *testing.T) {
 		if len(desc.UnionVariants) != 2 {
 			t.Errorf("Expected 2 union variants, got %d", len(desc.UnionVariants))
 		}
-		if desc.SszTypeFlags&ssz.SszTypeFlagIsDynamic == 0 {
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 			t.Error("Expected dynamic flag to be set")
 		}
 		if desc.Size != 0 {
@@ -1436,8 +1436,8 @@ func TestBuildCompatibleUnionDescriptor(t *testing.T) {
 			t.Fatalf("Failed to instantiate CompatibleUnion: %v", err)
 		}
 
-		desc := &ssz.TypeDescriptor{
-			SszType: ssz.SszCompatibleUnionType,
+		desc := &ssztypes.TypeDescriptor{
+			SszType: ssztypes.SszCompatibleUnionType,
 		}
 		err = parser.buildCompatibleUnionDescriptor(desc, instantiated.(*types.Named))
 		if err == nil {
@@ -1467,8 +1467,8 @@ func TestBuildCompatibleUnionDescriptor(t *testing.T) {
 			t.Fatalf("Failed to instantiate CompatibleUnion: %v", err)
 		}
 
-		desc := &ssz.TypeDescriptor{
-			SszType: ssz.SszCompatibleUnionType,
+		desc := &ssztypes.TypeDescriptor{
+			SszType: ssztypes.SszCompatibleUnionType,
 		}
 		err = parser.buildCompatibleUnionDescriptor(desc, instantiated.(*types.Named))
 		if err == nil {
@@ -1490,8 +1490,8 @@ func TestBuildCompatibleUnionDescriptor(t *testing.T) {
 
 		unionType := types.NewNamed(unionObj, unionStruct, nil)
 
-		desc := &ssz.TypeDescriptor{
-			SszType: ssz.SszCompatibleUnionType,
+		desc := &ssztypes.TypeDescriptor{
+			SszType: ssztypes.SszCompatibleUnionType,
 		}
 		err := parser.buildCompatibleUnionDescriptor(desc, unionType)
 		if err == nil {
@@ -1523,8 +1523,8 @@ func TestBuildCompatibleUnionDescriptor(t *testing.T) {
 			t.Fatalf("Failed to instantiate CompatibleUnion: %v", err)
 		}
 
-		desc := &ssz.TypeDescriptor{
-			SszType: ssz.SszCompatibleUnionType,
+		desc := &ssztypes.TypeDescriptor{
+			SszType: ssztypes.SszCompatibleUnionType,
 		}
 		err = parser.buildCompatibleUnionDescriptor(desc, instantiated.(*types.Named))
 		if err != nil {
@@ -1535,7 +1535,7 @@ func TestBuildCompatibleUnionDescriptor(t *testing.T) {
 			t.Errorf("Expected 1 union variant, got %d", len(desc.UnionVariants))
 		}
 		// Variant should be a list type
-		if desc.UnionVariants[0].SszType != ssz.SszListType {
+		if desc.UnionVariants[0].SszType != ssztypes.SszListType {
 			t.Errorf("Expected SszListType for variant 0, got %v", desc.UnionVariants[0].SszType)
 		}
 	})
@@ -1568,8 +1568,8 @@ func TestBuildTypeWrapperDescriptor(t *testing.T) {
 			t.Fatalf("Failed to instantiate TypeWrapper: %v", err)
 		}
 
-		desc := &ssz.TypeDescriptor{
-			SszType: ssz.SszTypeWrapperType,
+		desc := &ssztypes.TypeDescriptor{
+			SszType: ssztypes.SszTypeWrapperType,
 		}
 		err = parser.buildTypeWrapperDescriptor(desc, instantiated.(*types.Named), nil, nil, nil)
 		if err != nil {
@@ -1579,7 +1579,7 @@ func TestBuildTypeWrapperDescriptor(t *testing.T) {
 		if desc.ElemDesc == nil {
 			t.Error("Expected ElemDesc to be set")
 		}
-		if desc.ElemDesc.SszType != ssz.SszListType {
+		if desc.ElemDesc.SszType != ssztypes.SszListType {
 			t.Errorf("Expected SszListType for wrapped type, got %v", desc.ElemDesc.SszType)
 		}
 	})
@@ -1593,8 +1593,8 @@ func TestBuildTypeWrapperDescriptor(t *testing.T) {
 
 		wrapperType := types.NewNamed(wrapperObj, wrapperStruct, nil)
 
-		desc := &ssz.TypeDescriptor{
-			SszType: ssz.SszTypeWrapperType,
+		desc := &ssztypes.TypeDescriptor{
+			SszType: ssztypes.SszTypeWrapperType,
 		}
 		err := parser.buildTypeWrapperDescriptor(desc, wrapperType, nil, nil, nil)
 		if err == nil {
@@ -1624,8 +1624,8 @@ func TestBuildTypeWrapperDescriptor(t *testing.T) {
 			t.Fatalf("Failed to instantiate TypeWrapper: %v", err)
 		}
 
-		desc := &ssz.TypeDescriptor{
-			SszType: ssz.SszTypeWrapperType,
+		desc := &ssztypes.TypeDescriptor{
+			SszType: ssztypes.SszTypeWrapperType,
 		}
 		err = parser.buildTypeWrapperDescriptor(desc, instantiated.(*types.Named), nil, nil, nil)
 		if err == nil {
@@ -1659,8 +1659,8 @@ func TestBuildTypeWrapperDescriptor(t *testing.T) {
 			t.Fatalf("Failed to instantiate TypeWrapper: %v", err)
 		}
 
-		desc := &ssz.TypeDescriptor{
-			SszType: ssz.SszTypeWrapperType,
+		desc := &ssztypes.TypeDescriptor{
+			SszType: ssztypes.SszTypeWrapperType,
 		}
 		err = parser.buildTypeWrapperDescriptor(desc, instantiated.(*types.Named), nil, nil, nil)
 		if err == nil {
@@ -1694,8 +1694,8 @@ func TestBuildTypeWrapperDescriptor(t *testing.T) {
 			t.Fatalf("Failed to instantiate TypeWrapper: %v", err)
 		}
 
-		desc := &ssz.TypeDescriptor{
-			SszType: ssz.SszTypeWrapperType,
+		desc := &ssztypes.TypeDescriptor{
+			SszType: ssztypes.SszTypeWrapperType,
 		}
 		err = parser.buildTypeWrapperDescriptor(desc, instantiated.(*types.Named), nil, nil, nil)
 		if err == nil {
@@ -1728,8 +1728,8 @@ func TestBuildTypeWrapperDescriptor(t *testing.T) {
 			t.Fatalf("Failed to instantiate TypeWrapper: %v", err)
 		}
 
-		desc := &ssz.TypeDescriptor{
-			SszType: ssz.SszTypeWrapperType,
+		desc := &ssztypes.TypeDescriptor{
+			SszType: ssztypes.SszTypeWrapperType,
 		}
 		err = parser.buildTypeWrapperDescriptor(desc, instantiated.(*types.Named), nil, nil, nil)
 		if err != nil {
@@ -1739,7 +1739,7 @@ func TestBuildTypeWrapperDescriptor(t *testing.T) {
 		if desc.Size != 8 {
 			t.Errorf("Expected size 8, got %d", desc.Size)
 		}
-		if desc.ElemDesc.SszType != ssz.SszUint64Type {
+		if desc.ElemDesc.SszType != ssztypes.SszUint64Type {
 			t.Errorf("Expected SszUint64Type for wrapped type, got %v", desc.ElemDesc.SszType)
 		}
 	})
@@ -1935,8 +1935,8 @@ func TestBuildVectorDescriptorEdgeCases(t *testing.T) {
 	t.Run("BitvectorWithBitsizeHint", func(t *testing.T) {
 		// Test bitvector with bitsize hint (bits are converted to bytes)
 		arr := types.NewArray(types.Typ[types.Uint8], 32)
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszBitvectorType}}
-		sizeHint := []ssz.SszSizeHint{{Size: 128, Bits: true}} // 128 bits = 16 bytes
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszBitvectorType}}
+		sizeHint := []ssztypes.SszSizeHint{{Size: 128, Bits: true}} // 128 bits = 16 bytes
 		desc, err := parser.buildTypeDescriptor(arr, typeHint, sizeHint, nil)
 		if err != nil {
 			t.Fatalf("Failed to build bitvector descriptor: %v", err)
@@ -1949,8 +1949,8 @@ func TestBuildVectorDescriptorEdgeCases(t *testing.T) {
 	t.Run("BitvectorSliceWithBitsizeHint", func(t *testing.T) {
 		// Test bitvector slice with bitsize hint
 		slice := types.NewSlice(types.Typ[types.Uint8])
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszBitvectorType}}
-		sizeHint := []ssz.SszSizeHint{{Size: 256, Bits: true}} // 256 bits = 32 bytes
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszBitvectorType}}
+		sizeHint := []ssztypes.SszSizeHint{{Size: 256, Bits: true}} // 256 bits = 32 bytes
 		desc, err := parser.buildTypeDescriptor(slice, typeHint, sizeHint, nil)
 		if err != nil {
 			t.Fatalf("Failed to build bitvector descriptor: %v", err)
@@ -1963,8 +1963,8 @@ func TestBuildVectorDescriptorEdgeCases(t *testing.T) {
 	t.Run("BitvectorStringWithBitsizeHint", func(t *testing.T) {
 		// Test string as bitvector with bitsize hint
 		stringType := types.Typ[types.String]
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszBitvectorType}}
-		sizeHint := []ssz.SszSizeHint{{Size: 160, Bits: true}} // 160 bits = 20 bytes
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszBitvectorType}}
+		sizeHint := []ssztypes.SszSizeHint{{Size: 160, Bits: true}} // 160 bits = 20 bytes
 		desc, err := parser.buildTypeDescriptor(stringType, typeHint, sizeHint, nil)
 		if err != nil {
 			t.Fatalf("Failed to build string bitvector descriptor: %v", err)
@@ -1977,8 +1977,8 @@ func TestBuildVectorDescriptorEdgeCases(t *testing.T) {
 	t.Run("UnsupportedVectorType", func(t *testing.T) {
 		// Test unsupported type for vector (map)
 		mapType := types.NewMap(types.Typ[types.String], types.Typ[types.Int])
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszVectorType}}
-		sizeHint := []ssz.SszSizeHint{{Size: 10}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszVectorType}}
+		sizeHint := []ssztypes.SszSizeHint{{Size: 10}}
 		_, err := parser.buildTypeDescriptor(mapType, typeHint, sizeHint, nil)
 		if err == nil {
 			t.Error("Expected error for unsupported vector type")
@@ -1989,17 +1989,17 @@ func TestBuildVectorDescriptorEdgeCases(t *testing.T) {
 		// Test vector of vectors with child hints
 		innerSlice := types.NewSlice(types.Typ[types.Uint8])
 		outerArr := types.NewArray(innerSlice, 10)
-		typeHints := []ssz.SszTypeHint{{}, {Type: ssz.SszVectorType}}
-		sizeHints := []ssz.SszSizeHint{{}, {Size: 32}}
-		maxSizeHints := []ssz.SszMaxSizeHint{{}, {Size: 1024}}
+		typeHints := []ssztypes.SszTypeHint{{}, {Type: ssztypes.SszVectorType}}
+		sizeHints := []ssztypes.SszSizeHint{{}, {Size: 32}}
+		maxSizeHints := []ssztypes.SszMaxSizeHint{{}, {Size: 1024}}
 		desc, err := parser.buildTypeDescriptor(outerArr, typeHints, sizeHints, maxSizeHints)
 		if err != nil {
 			t.Fatalf("Failed to build nested vector descriptor: %v", err)
 		}
-		if desc.SszType != ssz.SszVectorType {
+		if desc.SszType != ssztypes.SszVectorType {
 			t.Errorf("Expected SszVectorType, got %v", desc.SszType)
 		}
-		if desc.ElemDesc.SszType != ssz.SszVectorType {
+		if desc.ElemDesc.SszType != ssztypes.SszVectorType {
 			t.Errorf("Expected inner SszVectorType, got %v", desc.ElemDesc.SszType)
 		}
 	})
@@ -2012,7 +2012,7 @@ func TestBuildVectorDescriptorEdgeCases(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to build vector of dynamic elements: %v", err)
 		}
-		if desc.SszTypeFlags&ssz.SszTypeFlagIsDynamic == 0 {
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 			t.Error("Expected dynamic flag to be set for vector of dynamic elements")
 		}
 		if desc.Size != 0 {
@@ -2028,17 +2028,17 @@ func TestBuildListDescriptorEdgeCases(t *testing.T) {
 		// Test list of vectors with child hints
 		innerSlice := types.NewSlice(types.Typ[types.Uint8])
 		outerSlice := types.NewSlice(innerSlice)
-		typeHints := []ssz.SszTypeHint{{Type: ssz.SszListType}, {Type: ssz.SszVectorType}}
-		sizeHints := []ssz.SszSizeHint{{}, {Size: 32}}
-		maxSizeHints := []ssz.SszMaxSizeHint{{Size: 100}, {}}
+		typeHints := []ssztypes.SszTypeHint{{Type: ssztypes.SszListType}, {Type: ssztypes.SszVectorType}}
+		sizeHints := []ssztypes.SszSizeHint{{}, {Size: 32}}
+		maxSizeHints := []ssztypes.SszMaxSizeHint{{Size: 100}, {}}
 		desc, err := parser.buildTypeDescriptor(outerSlice, typeHints, sizeHints, maxSizeHints)
 		if err != nil {
 			t.Fatalf("Failed to build nested list descriptor: %v", err)
 		}
-		if desc.SszType != ssz.SszListType {
+		if desc.SszType != ssztypes.SszListType {
 			t.Errorf("Expected SszListType, got %v", desc.SszType)
 		}
-		if desc.ElemDesc.SszType != ssz.SszVectorType {
+		if desc.ElemDesc.SszType != ssztypes.SszVectorType {
 			t.Errorf("Expected inner SszVectorType, got %v", desc.ElemDesc.SszType)
 		}
 	})
@@ -2046,7 +2046,7 @@ func TestBuildListDescriptorEdgeCases(t *testing.T) {
 	t.Run("UnsupportedListBaseType", func(t *testing.T) {
 		// Test unsupported basic type for list
 		uint64Type := types.Typ[types.Uint64]
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszListType}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszListType}}
 		_, err := parser.buildTypeDescriptor(uint64Type, typeHint, nil, nil)
 		if err == nil {
 			t.Error("Expected error for unsupported list base type")
@@ -2056,7 +2056,7 @@ func TestBuildListDescriptorEdgeCases(t *testing.T) {
 	t.Run("UnsupportedListType", func(t *testing.T) {
 		// Test unsupported type for list (map)
 		mapType := types.NewMap(types.Typ[types.String], types.Typ[types.Int])
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszListType}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszListType}}
 		_, err := parser.buildTypeDescriptor(mapType, typeHint, nil, nil)
 		if err == nil {
 			t.Error("Expected error for unsupported list type")
@@ -2182,12 +2182,12 @@ func TestBuildUint256DescriptorSlices(t *testing.T) {
 	t.Run("Uint8Slice", func(t *testing.T) {
 		// Test []uint8 with uint256 type hint
 		sliceType := types.NewSlice(types.Typ[types.Uint8])
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszUint256Type}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszUint256Type}}
 		desc, err := parser.buildTypeDescriptor(sliceType, typeHint, nil, nil)
 		if err != nil {
 			t.Fatalf("Failed to build uint256 descriptor from []uint8: %v", err)
 		}
-		if desc.SszType != ssz.SszUint256Type {
+		if desc.SszType != ssztypes.SszUint256Type {
 			t.Errorf("Expected SszUint256Type, got %v", desc.SszType)
 		}
 		if desc.Size != 32 {
@@ -2196,7 +2196,7 @@ func TestBuildUint256DescriptorSlices(t *testing.T) {
 		if desc.Len != 32 {
 			t.Errorf("Expected len 32, got %d", desc.Len)
 		}
-		if desc.GoTypeFlags&ssz.GoTypeFlagIsByteArray == 0 {
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray == 0 {
 			t.Error("Expected byte array flag to be set")
 		}
 	})
@@ -2204,12 +2204,12 @@ func TestBuildUint256DescriptorSlices(t *testing.T) {
 	t.Run("Uint64Slice", func(t *testing.T) {
 		// Test []uint64 with uint256 type hint
 		sliceType := types.NewSlice(types.Typ[types.Uint64])
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszUint256Type}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszUint256Type}}
 		desc, err := parser.buildTypeDescriptor(sliceType, typeHint, nil, nil)
 		if err != nil {
 			t.Fatalf("Failed to build uint256 descriptor from []uint64: %v", err)
 		}
-		if desc.SszType != ssz.SszUint256Type {
+		if desc.SszType != ssztypes.SszUint256Type {
 			t.Errorf("Expected SszUint256Type, got %v", desc.SszType)
 		}
 		if desc.Size != 32 {
@@ -2223,7 +2223,7 @@ func TestBuildUint256DescriptorSlices(t *testing.T) {
 	t.Run("InvalidUint256Base", func(t *testing.T) {
 		// Test unsupported slice type with uint256 type hint
 		sliceType := types.NewSlice(types.Typ[types.Uint32])
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszUint256Type}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszUint256Type}}
 		_, err := parser.buildTypeDescriptor(sliceType, typeHint, nil, nil)
 		if err == nil {
 			t.Error("Expected error for invalid uint256 base type")
@@ -2233,12 +2233,12 @@ func TestBuildUint256DescriptorSlices(t *testing.T) {
 	t.Run("Uint8Array32", func(t *testing.T) {
 		// Test [32]uint8 with uint256 type hint
 		arrayType := types.NewArray(types.Typ[types.Uint8], 32)
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszUint256Type}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszUint256Type}}
 		desc, err := parser.buildTypeDescriptor(arrayType, typeHint, nil, nil)
 		if err != nil {
 			t.Fatalf("Failed to build uint256 descriptor from [32]uint8: %v", err)
 		}
-		if desc.SszType != ssz.SszUint256Type {
+		if desc.SszType != ssztypes.SszUint256Type {
 			t.Errorf("Expected SszUint256Type, got %v", desc.SszType)
 		}
 		if desc.Size != 32 {
@@ -2249,12 +2249,12 @@ func TestBuildUint256DescriptorSlices(t *testing.T) {
 	t.Run("Uint64Array4", func(t *testing.T) {
 		// Test [4]uint64 with uint256 type hint
 		arrayType := types.NewArray(types.Typ[types.Uint64], 4)
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszUint256Type}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszUint256Type}}
 		desc, err := parser.buildTypeDescriptor(arrayType, typeHint, nil, nil)
 		if err != nil {
 			t.Fatalf("Failed to build uint256 descriptor from [4]uint64: %v", err)
 		}
-		if desc.SszType != ssz.SszUint256Type {
+		if desc.SszType != ssztypes.SszUint256Type {
 			t.Errorf("Expected SszUint256Type, got %v", desc.SszType)
 		}
 		if desc.Size != 32 {
@@ -2268,7 +2268,7 @@ func TestBuildUint256DescriptorSlices(t *testing.T) {
 	t.Run("WrongSizedUint8Array", func(t *testing.T) {
 		// Test [16]uint8 with uint256 type hint - should fail
 		arrayType := types.NewArray(types.Typ[types.Uint8], 16)
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszUint256Type}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszUint256Type}}
 		_, err := parser.buildTypeDescriptor(arrayType, typeHint, nil, nil)
 		if err == nil {
 			t.Error("Expected error for wrong-sized uint8 array")
@@ -2278,7 +2278,7 @@ func TestBuildUint256DescriptorSlices(t *testing.T) {
 	t.Run("WrongSizedUint64Array", func(t *testing.T) {
 		// Test [2]uint64 with uint256 type hint - should fail
 		arrayType := types.NewArray(types.Typ[types.Uint64], 2)
-		typeHint := []ssz.SszTypeHint{{Type: ssz.SszUint256Type}}
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszUint256Type}}
 		_, err := parser.buildTypeDescriptor(arrayType, typeHint, nil, nil)
 		if err == nil {
 			t.Error("Expected error for wrong-sized uint64 array")

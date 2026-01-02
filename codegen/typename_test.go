@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	dynssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/ssztypes"
 )
 
 func TestNewTypePrinter(t *testing.T) {
@@ -806,7 +806,7 @@ func TestTypeDescriptorMethods(t *testing.T) {
 
 		codegenInfo := &CodegenInfo{Type: namedType}
 		var genericCodegenInfo interface{} = codegenInfo
-		desc := &dynssz.TypeDescriptor{
+		desc := &ssztypes.TypeDescriptor{
 			CodegenInfo: &genericCodegenInfo,
 			Type:        reflect.TypeOf(int(0)),
 		}
@@ -822,7 +822,7 @@ func TestTypeDescriptorMethods(t *testing.T) {
 	})
 
 	t.Run("TypeStringWithoutCodegenInfo", func(t *testing.T) {
-		desc := &dynssz.TypeDescriptor{
+		desc := &ssztypes.TypeDescriptor{
 			Type: reflect.TypeOf(int(0)),
 		}
 
@@ -841,7 +841,7 @@ func TestTypeDescriptorMethods(t *testing.T) {
 
 		codegenInfo := &CodegenInfo{Type: namedType}
 		var genericCodegenInfo interface{} = codegenInfo
-		desc := &dynssz.TypeDescriptor{
+		desc := &ssztypes.TypeDescriptor{
 			CodegenInfo: &genericCodegenInfo,
 			Type:        reflect.TypeOf(int(0)),
 		}
@@ -865,7 +865,7 @@ func TestTypeDescriptorMethods(t *testing.T) {
 
 		codegenInfo := &CodegenInfo{Type: ptrType}
 		var genericCodegenInfo interface{} = codegenInfo
-		desc := &dynssz.TypeDescriptor{
+		desc := &ssztypes.TypeDescriptor{
 			CodegenInfo: &genericCodegenInfo,
 			Type:        reflect.TypeOf((*int)(nil)),
 		}
@@ -878,7 +878,7 @@ func TestTypeDescriptorMethods(t *testing.T) {
 	})
 
 	t.Run("InnerTypeStringWithReflectType", func(t *testing.T) {
-		desc := &dynssz.TypeDescriptor{
+		desc := &ssztypes.TypeDescriptor{
 			Type: reflect.TypeOf((*int)(nil)),
 		}
 
@@ -902,7 +902,7 @@ func TestTypeDescriptorMethods(t *testing.T) {
 
 		codegenInfo := &CodegenInfo{Type: namedPtrType}
 		var genericCodegenInfo interface{} = codegenInfo
-		desc := &dynssz.TypeDescriptor{
+		desc := &ssztypes.TypeDescriptor{
 			CodegenInfo: &genericCodegenInfo,
 			Type:        reflect.TypeOf((*int)(nil)),
 		}
@@ -923,7 +923,7 @@ func TestTypeDescriptorMethods(t *testing.T) {
 
 		codegenInfo := &CodegenInfo{Type: ptrType}
 		var genericCodegenInfo interface{} = codegenInfo
-		desc := &dynssz.TypeDescriptor{
+		desc := &ssztypes.TypeDescriptor{
 			CodegenInfo: &genericCodegenInfo,
 			Type:        reflect.TypeOf((*int)(nil)),
 		}
@@ -1272,27 +1272,27 @@ func TestComplexIntegrationScenarios(t *testing.T) {
 		// Test various type scenarios
 		tests := []struct {
 			name     string
-			desc     *dynssz.TypeDescriptor
+			desc     *ssztypes.TypeDescriptor
 			expected string
 		}{
 			{
 				name:     "SimpleInt",
-				desc:     &dynssz.TypeDescriptor{Type: reflect.TypeOf(int(0))},
+				desc:     &ssztypes.TypeDescriptor{Type: reflect.TypeOf(int(0))},
 				expected: "int",
 			},
 			{
 				name:     "ByteSlice",
-				desc:     &dynssz.TypeDescriptor{Type: reflect.TypeOf([]byte{})},
+				desc:     &ssztypes.TypeDescriptor{Type: reflect.TypeOf([]byte{})},
 				expected: "[]byte",
 			},
 			{
 				name:     "PointerToInt",
-				desc:     &dynssz.TypeDescriptor{Type: reflect.TypeOf((*int)(nil))},
+				desc:     &ssztypes.TypeDescriptor{Type: reflect.TypeOf((*int)(nil))},
 				expected: "*int",
 			},
 			{
 				name:     "EmptyStruct",
-				desc:     &dynssz.TypeDescriptor{Type: reflect.StructOf([]reflect.StructField{})},
+				desc:     &ssztypes.TypeDescriptor{Type: reflect.StructOf([]reflect.StructField{})},
 				expected: "struct{}",
 			},
 		}
@@ -1525,7 +1525,7 @@ func TestEdgeCases(t *testing.T) {
 			}
 		}()
 
-		desc := &dynssz.TypeDescriptor{
+		desc := &ssztypes.TypeDescriptor{
 			Type: reflect.TypeOf(int(0)), // Provide a valid type to avoid panic
 		}
 

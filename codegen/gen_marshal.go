@@ -10,7 +10,7 @@ import (
 	"slices"
 	"strings"
 
-	dynssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/ssztypes"
 )
 
 // marshalContext contains the state and utilities for generating marshal methods.
@@ -52,7 +52,7 @@ type marshalContext struct {
 //
 // Returns:
 //   - error: An error if code generation fails
-func generateMarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
+func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
 	codeBuf := strings.Builder{}
 	ctx := &marshalContext{
 		appendCode: func(indent int, code string, args ...any) {
@@ -132,8 +132,8 @@ func generateMarshal(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.B
 }
 
 // getPtrPrefix returns & for types that are heavy to copy
-func (ctx *marshalContext) getPtrPrefix(desc *dynssz.TypeDescriptor) string {
-	if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+func (ctx *marshalContext) getPtrPrefix(desc *ssztypes.TypeDescriptor) string {
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 		return ""
 	}
 	if desc.Kind == reflect.Array {
@@ -147,29 +147,29 @@ func (ctx *marshalContext) getPtrPrefix(desc *dynssz.TypeDescriptor) string {
 }
 
 // isInlineable checks if a type can be inlined directly into the hash tree root code
-func (ctx *marshalContext) isInlineable(desc *dynssz.TypeDescriptor) bool {
-	if desc.SszType == dynssz.SszBoolType || desc.SszType == dynssz.SszUint8Type || desc.SszType == dynssz.SszUint16Type || desc.SszType == dynssz.SszUint32Type || desc.SszType == dynssz.SszUint64Type {
+func (ctx *marshalContext) isInlineable(desc *ssztypes.TypeDescriptor) bool {
+	if desc.SszType == ssztypes.SszBoolType || desc.SszType == ssztypes.SszUint8Type || desc.SszType == ssztypes.SszUint16Type || desc.SszType == ssztypes.SszUint32Type || desc.SszType == ssztypes.SszUint64Type {
 		return true
 	}
 
-	if desc.SszType == dynssz.SszVectorType || desc.SszType == dynssz.SszListType {
-		return desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0
+	if desc.SszType == ssztypes.SszVectorType || desc.SszType == ssztypes.SszListType {
+		return desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0
 	}
 
 	return false
 }
 
 // marshalType generates marshal code for any SSZ type, delegating to specific marshalers.
-func (ctx *marshalContext) marshalType(desc *dynssz.TypeDescriptor, varName string, indent int, isRoot bool) error {
-	if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+func (ctx *marshalContext) marshalType(desc *ssztypes.TypeDescriptor, varName string, indent int, isRoot bool) error {
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 		ctx.appendCode(indent, "if %s == nil {\n\t%s = new(%s)\n}\n", varName, varName, ctx.typePrinter.InnerTypeString(desc))
 	}
 
 	// Handle types that have generated methods we can call
-	hasDynamicSize := desc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
-	isFastsszMarshaler := desc.SszCompatFlags&dynssz.SszCompatFlagFastSSZMarshaler != 0
+	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
+	isFastsszMarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
 	useFastSsz := !ctx.options.NoFastSsz && isFastsszMarshaler && !hasDynamicSize
-	if !useFastSsz && desc.SszType == dynssz.SszCustomType {
+	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
 		useFastSsz = true
 	}
 
@@ -178,13 +178,13 @@ func (ctx *marshalContext) marshalType(desc *dynssz.TypeDescriptor, varName stri
 		return nil
 	}
 
-	if desc.SszCompatFlags&dynssz.SszCompatFlagDynamicMarshaler != 0 && !isRoot {
+	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 && !isRoot {
 		ctx.appendCode(indent, "if dst, err = %s.MarshalSSZDyn(ds, dst); err != nil {\n\treturn nil, err\n}\n", varName)
 		ctx.usedDynSpecs = true
 		return nil
 	}
 
-	if desc.SszCompatFlags&dynssz.SszCompatFlagDynamicEncoder != 0 && !isRoot {
+	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicEncoder != 0 && !isRoot {
 		ctx.appendCode(indent, "enc := sszutils.NewBufferEncoder(dst)\n")
 		ctx.appendCode(indent, "if err = %s.MarshalSSZEncoder(ds, enc); err != nil {\n\treturn nil, err\n}\n", varName)
 		ctx.appendCode(indent, "dst = enc.GetBuffer()\n")
@@ -193,26 +193,26 @@ func (ctx *marshalContext) marshalType(desc *dynssz.TypeDescriptor, varName stri
 	}
 
 	switch desc.SszType {
-	case dynssz.SszBoolType:
+	case ssztypes.SszBoolType:
 		ctx.appendCode(indent, "dst = sszutils.MarshalBool(dst, bool(%s))\n", varName)
 
-	case dynssz.SszUint8Type:
+	case ssztypes.SszUint8Type:
 		ctx.appendCode(indent, "dst = append(dst, byte(%s))\n", varName)
 
-	case dynssz.SszUint16Type:
+	case ssztypes.SszUint16Type:
 		ctx.appendCode(indent, "dst = %s.LittleEndian.AppendUint16(dst, uint16(%s))\n", ctx.binaryPkgName, varName)
 
-	case dynssz.SszUint32Type:
+	case ssztypes.SszUint32Type:
 		ctx.appendCode(indent, "dst = %s.LittleEndian.AppendUint32(dst, uint32(%s))\n", ctx.binaryPkgName, varName)
 
-	case dynssz.SszUint64Type:
-		if desc.GoTypeFlags&dynssz.GoTypeFlagIsTime != 0 {
+	case ssztypes.SszUint64Type:
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsTime != 0 {
 			ctx.appendCode(indent, "dst = %s.LittleEndian.AppendUint64(dst, uint64(%s.Unix()))\n", ctx.binaryPkgName, varName)
 		} else {
 			ctx.appendCode(indent, "dst = %s.LittleEndian.AppendUint64(dst, uint64(%s))\n", ctx.binaryPkgName, varName)
 		}
 
-	case dynssz.SszTypeWrapperType:
+	case ssztypes.SszTypeWrapperType:
 		ctx.appendCode(indent, "{\n")
 		valVar := "t"
 		if ctx.isInlineable(desc.ElemDesc) {
@@ -225,22 +225,22 @@ func (ctx *marshalContext) marshalType(desc *dynssz.TypeDescriptor, varName stri
 		}
 		ctx.appendCode(indent, "}\n")
 
-	case dynssz.SszContainerType, dynssz.SszProgressiveContainerType:
+	case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
 		return ctx.marshalContainer(desc, varName, indent)
 
-	case dynssz.SszVectorType, dynssz.SszBitvectorType, dynssz.SszUint128Type, dynssz.SszUint256Type:
+	case ssztypes.SszVectorType, ssztypes.SszBitvectorType, ssztypes.SszUint128Type, ssztypes.SszUint256Type:
 		return ctx.marshalVector(desc, varName, indent)
 
-	case dynssz.SszListType, dynssz.SszProgressiveListType:
+	case ssztypes.SszListType, ssztypes.SszProgressiveListType:
 		return ctx.marshalList(desc, varName, indent)
 
-	case dynssz.SszBitlistType, dynssz.SszProgressiveBitlistType:
+	case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType:
 		return ctx.marshalBitlist(desc, varName, indent)
 
-	case dynssz.SszCompatibleUnionType:
+	case ssztypes.SszCompatibleUnionType:
 		return ctx.marshalUnion(desc, varName, indent)
 
-	case dynssz.SszCustomType:
+	case ssztypes.SszCustomType:
 		ctx.appendCode(indent, "return nil, sszutils.ErrNotImplemented\n")
 
 	default:
@@ -251,10 +251,10 @@ func (ctx *marshalContext) marshalType(desc *dynssz.TypeDescriptor, varName stri
 }
 
 // marshalContainer generates marshal code for SSZ container (struct) types.
-func (ctx *marshalContext) marshalContainer(desc *dynssz.TypeDescriptor, varName string, indent int) error {
+func (ctx *marshalContext) marshalContainer(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
 	hasDynamic := false
 	for _, field := range desc.ContainerDesc.Fields {
-		if field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
+		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 			hasDynamic = true
 			break
 		}
@@ -266,7 +266,7 @@ func (ctx *marshalContext) marshalContainer(desc *dynssz.TypeDescriptor, varName
 
 	// Write offsets for dynamic fields
 	for idx, field := range desc.ContainerDesc.Fields {
-		if field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
+		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 			ctx.appendCode(indent, "// Offset #%d '%s'\n", idx, field.Name)
 			ctx.appendCode(indent, "offset%d := len(dst)\n", idx)
 			ctx.appendCode(indent, "dst = append(dst, 0, 0, 0, 0)\n")
@@ -288,7 +288,7 @@ func (ctx *marshalContext) marshalContainer(desc *dynssz.TypeDescriptor, varName
 
 	// Marshal dynamic fields
 	for idx, field := range desc.ContainerDesc.Fields {
-		if field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
+		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 			ctx.appendCode(indent, "{ // Dynamic Field #%d '%s'\n", idx, field.Name)
 			ctx.appendCode(indent, "\t%s.LittleEndian.PutUint32(dst[offset%d:], uint32(len(dst)-dstlen))\n", ctx.binaryPkgName, idx)
 			valVar := "t"
@@ -308,7 +308,7 @@ func (ctx *marshalContext) marshalContainer(desc *dynssz.TypeDescriptor, varName
 }
 
 // marshalVector generates marshal code for SSZ vector (fixed-size array) types.
-func (ctx *marshalContext) marshalVector(desc *dynssz.TypeDescriptor, varName string, indent int) error {
+func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
 	sizeExpression := desc.SizeExpression
 	if ctx.options.WithoutDynamicExpressions {
 		sizeExpression = nil
@@ -319,7 +319,7 @@ func (ctx *marshalContext) marshalVector(desc *dynssz.TypeDescriptor, varName st
 	hasLimitVar := false
 	if sizeExpression != nil {
 		defaultValue := uint64(desc.Len)
-		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
 			if desc.BitSize > 0 {
 				defaultValue = uint64(desc.BitSize)
 			} else {
@@ -329,7 +329,7 @@ func (ctx *marshalContext) marshalVector(desc *dynssz.TypeDescriptor, varName st
 
 		exprVar := ctx.exprVars.getExprVar(*sizeExpression, defaultValue)
 
-		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
 			bitlimitVar = exprVar
 			limitVar = fmt.Sprintf("int((%s+7)/8)", exprVar)
 		} else {
@@ -345,7 +345,7 @@ func (ctx *marshalContext) marshalVector(desc *dynssz.TypeDescriptor, varName st
 			ctx.appendCode(indent, "}\n")
 		}
 	} else {
-		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 && desc.BitSize > 0 && desc.BitSize%8 != 0 {
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 && desc.BitSize > 0 && desc.BitSize%8 != 0 {
 			bitlimitVar = fmt.Sprintf("%d", desc.BitSize)
 		}
 		limitVar = fmt.Sprintf("%d", desc.Len)
@@ -366,9 +366,9 @@ func (ctx *marshalContext) marshalVector(desc *dynssz.TypeDescriptor, varName st
 		lenVar = fmt.Sprintf("%d", desc.Len)
 	}
 
-	if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic == 0 {
+	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 		// static elements
-		if desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 || desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 || desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
 			if bitlimitVar != "" {
 				ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
 				ctx.appendCode(indent, "if %s[%s-1] & paddingMask != 0 {\n", varName, lenVar)
@@ -418,7 +418,7 @@ func (ctx *marshalContext) marshalVector(desc *dynssz.TypeDescriptor, varName st
 		if desc.Kind != reflect.Array {
 			// append zero padding if we have less items than the limit
 			ctx.appendCode(indent, "if %s < %s {\n", lenVar, limitVar)
-			if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 				ctx.appendCode(indent, "\tzeroItem := new(%s)\n", ctx.typePrinter.InnerTypeString(desc.ElemDesc))
 			} else {
 				ctx.appendCode(indent, "\tvar zeroItem %s\n", ctx.typePrinter.TypeString(desc.ElemDesc))
@@ -437,7 +437,7 @@ func (ctx *marshalContext) marshalVector(desc *dynssz.TypeDescriptor, varName st
 }
 
 // marshalList generates marshal code for SSZ list (variable-size array) types.
-func (ctx *marshalContext) marshalList(desc *dynssz.TypeDescriptor, varName string, indent int) error {
+func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
 	maxExpression := desc.MaxExpression
 	if ctx.options.WithoutDynamicExpressions {
 		maxExpression = nil
@@ -474,9 +474,9 @@ func (ctx *marshalContext) marshalList(desc *dynssz.TypeDescriptor, varName stri
 		ctx.appendCode(indent, "}\n")
 	}
 
-	if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic == 0 {
+	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 		// static elements
-		if desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
 			ctx.appendCode(indent, "dst = append(dst, %s[:]...)\n", varName)
 		} else {
 			addVlen()
@@ -516,7 +516,7 @@ func (ctx *marshalContext) marshalList(desc *dynssz.TypeDescriptor, varName stri
 }
 
 // marshalBitlist generates marshal code for SSZ bitlist types.
-func (ctx *marshalContext) marshalBitlist(desc *dynssz.TypeDescriptor, varName string, indent int) error {
+func (ctx *marshalContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
 	maxExpression := desc.MaxExpression
 	if ctx.options.WithoutDynamicExpressions {
 		maxExpression = nil
@@ -558,7 +558,7 @@ func (ctx *marshalContext) marshalBitlist(desc *dynssz.TypeDescriptor, varName s
 }
 
 // marshalUnion generates marshal code for SSZ union types.
-func (ctx *marshalContext) marshalUnion(desc *dynssz.TypeDescriptor, varName string, indent int) error {
+func (ctx *marshalContext) marshalUnion(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
 	ctx.appendCode(indent, "dst = append(dst, %s.Variant)\n", varName)
 	ctx.appendCode(indent, "switch %s.Variant {\n", varName)
 

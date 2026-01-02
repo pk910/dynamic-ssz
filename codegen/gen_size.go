@@ -10,7 +10,7 @@ import (
 	"slices"
 	"strings"
 
-	dynssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/ssztypes"
 )
 
 // sizeContext contains the state and utilities for generating size calculation methods.
@@ -35,7 +35,7 @@ type sizeContext struct {
 	sizeVarCounter  int
 	limitVarCounter int
 
-	useTypeFnMap map[*dynssz.TypeDescriptor]*sizeFnPtr
+	useTypeFnMap map[*ssztypes.TypeDescriptor]*sizeFnPtr
 }
 
 func newSizeContext(typePrinter *TypePrinter, options *CodeGeneratorOptions) *sizeContext {
@@ -49,7 +49,7 @@ func newSizeContext(typePrinter *TypePrinter, options *CodeGeneratorOptions) *si
 		typePrinter:  typePrinter,
 		options:      options,
 		exprVars:     newExprVarGenerator("expr", typePrinter, options),
-		useTypeFnMap: make(map[*dynssz.TypeDescriptor]*sizeFnPtr),
+		useTypeFnMap: make(map[*ssztypes.TypeDescriptor]*sizeFnPtr),
 	}
 	ctx.exprVars.retVars = "0"
 	return ctx
@@ -88,7 +88,7 @@ func (s *sizeFnPtr) getFnCall(varName string) string {
 //
 // Returns:
 //   - error: An error if code generation fails
-func generateSize(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
+func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
 	ctx := newSizeContext(typePrinter, options)
 
 	// Generate main function signature
@@ -163,8 +163,8 @@ func (ctx *sizeContext) getLimitVar() string {
 }
 
 // getPtrPrefix returns & for types that are heavy to copy
-func (ctx *sizeContext) getPtrPrefix(desc *dynssz.TypeDescriptor) string {
-	if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+func (ctx *sizeContext) getPtrPrefix(desc *ssztypes.TypeDescriptor) string {
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 		return ""
 	}
 	if desc.Kind == reflect.Array {
@@ -178,7 +178,7 @@ func (ctx *sizeContext) getPtrPrefix(desc *dynssz.TypeDescriptor) string {
 }
 
 // sizeType generates size calculation code for any SSZ type, delegating to specific sizers.
-func (ctx *sizeContext) sizeType(desc *dynssz.TypeDescriptor, varName string, sizeVar string, indent int, isRoot bool) error {
+func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName string, sizeVar string, indent int, isRoot bool) error {
 	// Handle types that have generated methods we can call
 	if ptr, ok := ctx.useTypeFnMap[desc]; ok {
 		ctx.appendCode(indent, "%s += %s\n", sizeVar, ptr.getFnCall(varName))
@@ -188,14 +188,14 @@ func (ctx *sizeContext) sizeType(desc *dynssz.TypeDescriptor, varName string, si
 		return nil
 	}
 
-	if desc.SszCompatFlags&dynssz.SszCompatFlagDynamicSizer != 0 && !isRoot {
+	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 && !isRoot {
 		ctx.appendCode(indent, "%s += %s.SizeSSZDyn(ds)\n", sizeVar, varName)
 		ctx.usedDynSpecs = true
 		return nil
 	}
 
-	useFastSsz := !ctx.options.NoFastSsz && desc.SszCompatFlags&dynssz.SszCompatFlagFastSSZMarshaler != 0
-	if !useFastSsz && desc.SszType == dynssz.SszCustomType {
+	useFastSsz := !ctx.options.NoFastSsz && desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
 		useFastSsz = true
 	}
 
@@ -205,7 +205,7 @@ func (ctx *sizeContext) sizeType(desc *dynssz.TypeDescriptor, varName string, si
 	}
 
 	// create temporary instance for nil pointers
-	if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 		if len(varName) > 1 {
 			ctx.appendCode(indent, "t := %s\n", varName)
 			varName = "t"
@@ -214,40 +214,40 @@ func (ctx *sizeContext) sizeType(desc *dynssz.TypeDescriptor, varName string, si
 	}
 
 	switch desc.SszType {
-	case dynssz.SszBoolType:
+	case ssztypes.SszBoolType:
 		ctx.appendCode(indent, "%s += 1\n", sizeVar)
 
-	case dynssz.SszUint8Type:
+	case ssztypes.SszUint8Type:
 		ctx.appendCode(indent, "%s += 1\n", sizeVar)
 
-	case dynssz.SszUint16Type:
+	case ssztypes.SszUint16Type:
 		ctx.appendCode(indent, "%s += 2\n", sizeVar)
 
-	case dynssz.SszUint32Type:
+	case ssztypes.SszUint32Type:
 		ctx.appendCode(indent, "%s += 4\n", sizeVar)
 
-	case dynssz.SszUint64Type:
+	case ssztypes.SszUint64Type:
 		ctx.appendCode(indent, "%s += 8\n", sizeVar)
 
-	case dynssz.SszTypeWrapperType:
+	case ssztypes.SszTypeWrapperType:
 		innerVarName := fmt.Sprintf("%s.Data", varName)
 		if err := ctx.sizeType(desc.ElemDesc, innerVarName, sizeVar, indent, false); err != nil {
 			return err
 		}
 
-	case dynssz.SszContainerType, dynssz.SszProgressiveContainerType:
+	case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
 		return ctx.sizeContainer(desc, varName, sizeVar, indent)
 
-	case dynssz.SszVectorType, dynssz.SszBitvectorType, dynssz.SszUint128Type, dynssz.SszUint256Type:
+	case ssztypes.SszVectorType, ssztypes.SszBitvectorType, ssztypes.SszUint128Type, ssztypes.SszUint256Type:
 		return ctx.sizeVector(desc, varName, sizeVar, indent)
 
-	case dynssz.SszListType, dynssz.SszBitlistType, dynssz.SszProgressiveListType, dynssz.SszProgressiveBitlistType:
+	case ssztypes.SszListType, ssztypes.SszBitlistType, ssztypes.SszProgressiveListType, ssztypes.SszProgressiveBitlistType:
 		return ctx.sizeList(desc, varName, sizeVar, indent)
 
-	case dynssz.SszCompatibleUnionType:
+	case ssztypes.SszCompatibleUnionType:
 		return ctx.sizeUnion(desc, varName, sizeVar, indent)
 
-	case dynssz.SszCustomType:
+	case ssztypes.SszCustomType:
 		ctx.appendCode(indent, "// Custom type - size unknown\n")
 
 	default:
@@ -258,15 +258,15 @@ func (ctx *sizeContext) sizeType(desc *dynssz.TypeDescriptor, varName string, si
 }
 
 // sizeContainer generates size calculation code for SSZ container (struct) types.
-func (ctx *sizeContext) sizeContainer(desc *dynssz.TypeDescriptor, varName string, sizeVar string, indent int) error {
+func (ctx *sizeContext) sizeContainer(desc *ssztypes.TypeDescriptor, varName string, sizeVar string, indent int) error {
 	// Fixed part size
 	staticSize := 0
 	for idx, field := range desc.ContainerDesc.Fields {
-		if field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
+		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 			// Dynamic field - add offset size
 			staticSize += 4
 			ctx.appendCode(indent, "// Field #%d '%s' offset (4 bytes)\n", idx, field.Name)
-		} else if field.Type.Size > 0 && (field.Type.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr == 0 || ctx.options.WithoutDynamicExpressions) {
+		} else if field.Type.Size > 0 && (field.Type.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr == 0 || ctx.options.WithoutDynamicExpressions) {
 			staticSize += int(field.Type.Size)
 			ctx.appendCode(indent, "// Field #%d '%s' static (%d bytes)\n", idx, field.Name, field.Type.Size)
 		}
@@ -278,7 +278,7 @@ func (ctx *sizeContext) sizeContainer(desc *dynssz.TypeDescriptor, varName strin
 
 	// Add calculated size for static fields
 	for idx, field := range desc.ContainerDesc.Fields {
-		if field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic == 0 && (field.Type.Size == 0 || (field.Type.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions)) {
+		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 && (field.Type.Size == 0 || (field.Type.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions)) {
 			// Need to calculate size
 			ctx.appendCode(indent, "{ // Field #%d '%s'\n", idx, field.Name)
 			fieldVarName := fmt.Sprintf("%s.%s", varName, field.Name)
@@ -291,7 +291,7 @@ func (ctx *sizeContext) sizeContainer(desc *dynssz.TypeDescriptor, varName strin
 
 	// Dynamic part size
 	for idx, field := range desc.ContainerDesc.Fields {
-		if field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
+		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 			ctx.appendCode(indent, "{ // Dynamic field #%d '%s'\n", idx, field.Name)
 			fieldVarName := fmt.Sprintf("%s.%s", varName, field.Name)
 			if err := ctx.sizeType(field.Type, fieldVarName, sizeVar, indent+1, false); err != nil {
@@ -305,7 +305,7 @@ func (ctx *sizeContext) sizeContainer(desc *dynssz.TypeDescriptor, varName strin
 }
 
 // sizeVector generates size calculation code for SSZ vector (fixed-size array) types.
-func (ctx *sizeContext) sizeVector(desc *dynssz.TypeDescriptor, varName string, sizeVar string, indent int) error {
+func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName string, sizeVar string, indent int) error {
 	sizeExpression := desc.SizeExpression
 	if ctx.options.WithoutDynamicExpressions {
 		sizeExpression = nil
@@ -326,7 +326,7 @@ func (ctx *sizeContext) sizeVector(desc *dynssz.TypeDescriptor, varName string, 
 	limitVar := ctx.getLimitVar()
 	if sizeExpression != nil {
 		defaultValue := uint64(desc.Len)
-		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
 			if desc.BitSize > 0 {
 				defaultValue = uint64(desc.BitSize)
 			} else {
@@ -336,7 +336,7 @@ func (ctx *sizeContext) sizeVector(desc *dynssz.TypeDescriptor, varName string, 
 
 		exprVar := ctx.exprVars.getExprVar(*sizeExpression, defaultValue)
 
-		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
 			limitVar = fmt.Sprintf("int((%s+7)/8)", exprVar)
 		} else {
 			limitVar = fmt.Sprintf("int(%s)", exprVar)
@@ -345,8 +345,8 @@ func (ctx *sizeContext) sizeVector(desc *dynssz.TypeDescriptor, varName string, 
 		ctx.appendCode(indent, "%s := %d\n", limitVar, desc.Len)
 	}
 
-	if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic == 0 {
-		if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
+		if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
 			useVar()
 			ctx.appendCode(indent, "if len(%s) > 0 {\n", varName)
 			innerVarName := fmt.Sprintf("%s[0]", varName)
@@ -357,7 +357,7 @@ func (ctx *sizeContext) sizeVector(desc *dynssz.TypeDescriptor, varName string, 
 			}
 			ctx.appendCode(indent, "\t%s += %s * %s\n", sizeVar, innerSizeVar, limitVar)
 			ctx.appendCode(indent, "}\n")
-		} else if desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 || desc.ElemDesc.Size == 1 {
+		} else if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 || desc.ElemDesc.Size == 1 {
 			// For byte arrays, size is just the vector length
 			ctx.appendCode(indent, "%s += %s\n", sizeVar, limitVar)
 		} else {
@@ -408,9 +408,9 @@ func (ctx *sizeContext) sizeVector(desc *dynssz.TypeDescriptor, varName string, 
 }
 
 // sizeList generates size calculation code for SSZ list (variable-size array) types.
-func (ctx *sizeContext) sizeList(desc *dynssz.TypeDescriptor, varName string, sizeVar string, indent int) error {
+func (ctx *sizeContext) sizeList(desc *ssztypes.TypeDescriptor, varName string, sizeVar string, indent int) error {
 	// For byte slices, size is just the length
-	if desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
 		ctx.appendCode(indent, "%s += len(%s)\n", sizeVar, varName)
 		return nil
 	}
@@ -428,7 +428,7 @@ func (ctx *sizeContext) sizeList(desc *dynssz.TypeDescriptor, varName string, si
 	}
 
 	// Handle lists with dynamic elements
-	if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
+	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 		useVar()
 		ctx.appendCode(indent, "vlen := len(%s)\n", varName)
 
@@ -445,7 +445,7 @@ func (ctx *sizeContext) sizeList(desc *dynssz.TypeDescriptor, varName string, si
 		ctx.appendCode(indent, "}\n")
 	} else {
 		// Fixed size elements
-		if desc.ElemDesc.Size > 0 && (desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr == 0 || ctx.options.WithoutDynamicExpressions) {
+		if desc.ElemDesc.Size > 0 && (desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr == 0 || ctx.options.WithoutDynamicExpressions) {
 			if desc.ElemDesc.Size == 1 {
 				ctx.appendCode(indent, "%s += len(%s)\n", sizeVar, varName)
 			} else {
@@ -470,7 +470,7 @@ func (ctx *sizeContext) sizeList(desc *dynssz.TypeDescriptor, varName string, si
 }
 
 // sizeUnion generates size calculation code for SSZ union types.
-func (ctx *sizeContext) sizeUnion(desc *dynssz.TypeDescriptor, varName string, sizeVar string, indent int) error {
+func (ctx *sizeContext) sizeUnion(desc *ssztypes.TypeDescriptor, varName string, sizeVar string, indent int) error {
 	if len(varName) > 1 {
 		ctx.appendCode(indent, "t := %s\n", varName)
 		varName = "t"
@@ -488,8 +488,8 @@ func (ctx *sizeContext) sizeUnion(desc *dynssz.TypeDescriptor, varName string, s
 	for _, variant := range variants {
 		variantDesc := desc.UnionVariants[uint8(variant)]
 		variantType := ctx.typePrinter.TypeString(variantDesc)
-		hasDynamicSize := variantDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0
-		hasSizeExpression := variantDesc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0
+		hasDynamicSize := variantDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0
+		hasSizeExpression := variantDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0
 		ctx.appendCode(indent, "case %d:\n", variant)
 		if variantDesc.Size == 0 || hasDynamicSize || hasSizeExpression {
 			ctx.appendCode(indent, "\tv, ok := %s.Data.(%s)\n", varName, variantType)

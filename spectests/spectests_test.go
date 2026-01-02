@@ -82,13 +82,9 @@ func testForkConsensusSpec(t *testing.T, fork string, preset string, tests []Spe
 					require.NoError(t, err)
 					generatedRoot := fmt.Sprintf("root: '%#x'\n", string(generatedRootBytes[:]))
 					if string(specYAMLRoot) != generatedRoot {
-						dynssz.Verbose = true
 						fmt.Printf("\n\ngeneratedRoot: %v", generatedRoot)
 						fmt.Printf("specYAMLRoot: %v\n", string(specYAMLRoot))
-						generatedRootBytes, err = dynssz.HashTreeRoot(s2)
 						require.NoError(t, err)
-
-						dynssz.Verbose = false
 					}
 					require.YAMLEq(t, string(specYAMLRoot), generatedRoot)
 				})

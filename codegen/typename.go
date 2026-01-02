@@ -11,7 +11,7 @@ import (
 	"regexp"
 	"strings"
 
-	dynssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/ssztypes"
 )
 
 // TypePrinter manages type name formatting and import tracking for code generation.
@@ -259,7 +259,7 @@ func normalizeAlias(alias string) string {
 //
 //	typeName := printer.TypeString(descriptor)
 //	// Result: "phase0.BeaconBlock" or "*MyStruct" depending on the type
-func (p *TypePrinter) TypeString(t *dynssz.TypeDescriptor) string {
+func (p *TypePrinter) TypeString(t *ssztypes.TypeDescriptor) string {
 	if t.CodegenInfo != nil {
 		if codegenInfo, ok := (*t.CodegenInfo).(*CodegenInfo); ok && codegenInfo.Type != nil {
 			return p.packageQualify(codegenInfo.Type, true)
@@ -288,7 +288,7 @@ func (p *TypePrinter) TypeString(t *dynssz.TypeDescriptor) string {
 //	// For *MyStruct
 //	innerType := printer.InnerTypeString(descriptor)
 //	// Result: "MyStruct" (without the pointer)
-func (p *TypePrinter) InnerTypeString(t *dynssz.TypeDescriptor) string {
+func (p *TypePrinter) InnerTypeString(t *ssztypes.TypeDescriptor) string {
 	if t.CodegenInfo != nil {
 		if codegenInfo, ok := (*t.CodegenInfo).(*CodegenInfo); ok && codegenInfo.Type != nil {
 			innerType := codegenInfo.Type
@@ -322,7 +322,7 @@ func (p *TypePrinter) InnerTypeString(t *dynssz.TypeDescriptor) string {
 //
 // Returns:
 //   - string: The qualified Go type string without import tracking side effects
-func (p *TypePrinter) TypeStringWithoutTracking(t *dynssz.TypeDescriptor) string {
+func (p *TypePrinter) TypeStringWithoutTracking(t *ssztypes.TypeDescriptor) string {
 	if t.CodegenInfo != nil {
 		if codegenInfo, ok := (*t.CodegenInfo).(*CodegenInfo); ok && codegenInfo.Type != nil {
 			return p.packageQualify(codegenInfo.Type, false)

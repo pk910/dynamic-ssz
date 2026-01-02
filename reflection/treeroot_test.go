@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // This file is part of the dynamic-ssz library.
 
-package dynssz_test
+package reflection_test
 
 import (
 	"bytes"
@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	. "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/treeproof"
 )
 
@@ -90,8 +91,7 @@ func TestTreeRoot(t *testing.T) {
 }
 
 func TestTreeRootNoFastSsz(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	for idx, test := range treerootTestMatrix {
 		t.Run(test.name, func(t *testing.T) {
@@ -110,8 +110,7 @@ func TestTreeRootNoFastSsz(t *testing.T) {
 }
 
 func TestTreeRootNoFastHash(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastHash = true
+	dynssz := NewDynSsz(nil, WithNoFastHash())
 
 	for idx, test := range treerootTestMatrix {
 		t.Run(test.name, func(t *testing.T) {
@@ -281,8 +280,7 @@ func TestStringSliceVsByteSliceTreeRoot(t *testing.T) {
 }
 
 func TestHashTreeRootErrors(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	testCases := []struct {
 		name        string
@@ -527,8 +525,7 @@ func verifyTreeIntegrity(node *treeproof.Node) error {
 }
 
 func TestTreeGeneration(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	for _, tc := range treerootTestMatrix {
 		if tc.htr == nil {
@@ -565,8 +562,7 @@ func TestTreeGeneration(t *testing.T) {
 }
 
 func TestGetTreeErrors(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	testCases := []struct {
 		name        string
@@ -750,8 +746,7 @@ func TestGetTreeErrors(t *testing.T) {
 }
 
 func TestBinaryVsProgressiveTrees(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Test cases comparing binary and progressive merkleization
 	testCases := []struct {
@@ -840,8 +835,7 @@ func TestBinaryVsProgressiveTrees(t *testing.T) {
 }
 
 func TestCompatibleUnionHashErrors(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Test invalid variant
 	t.Run("invalid_variant", func(t *testing.T) {
@@ -899,8 +893,7 @@ func TestCompatibleUnionHashErrors(t *testing.T) {
 }
 
 func TestVectorWithAppendZeroElements(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Test vector with non-byte elements that requires zero padding
 	t.Run("uint32_vector_append_zero", func(t *testing.T) {
@@ -937,8 +930,7 @@ func TestVectorWithAppendZeroElements(t *testing.T) {
 }
 
 func TestListElementTypesCoverage(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Test bool list
 	t.Run("bool_list", func(t *testing.T) {
@@ -1002,8 +994,7 @@ func TestListElementTypesCoverage(t *testing.T) {
 }
 
 func TestProgressiveContainerFieldError(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Test progressive container with a field that causes an error
 	input := struct {
@@ -1041,12 +1032,12 @@ func TestCustomFallbackHashRoot(t *testing.T) {
 		t.Fatalf("Expected struct descriptor, got nil")
 	}
 
-	if structDesc.SszType != SszContainerType {
+	if structDesc.SszType != ssztypes.SszContainerType {
 		t.Fatalf("Expected container type, got %v", structDesc.SszType)
 	}
 
-	structDesc.SszType = SszCustomType
-	structDesc.SszCompatFlags |= SszCompatFlagDynamicUnmarshaler
+	structDesc.SszType = ssztypes.SszCustomType
+	structDesc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicUnmarshaler
 
 	_, err = dynssz.HashTreeRoot(&TestContainer{})
 	if err == nil {
@@ -1072,8 +1063,7 @@ func TestHashTreeRootWithMethodError(t *testing.T) {
 }
 
 func TestVectorElementHashError(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Test vector element hash error - this covers line 520 in treeroot.go
 	// when building zero elements for a vector causes an error
@@ -1092,8 +1082,7 @@ func TestVectorElementHashError(t *testing.T) {
 }
 
 func TestListElementHashError(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Test list element hash error - this covers line 595 in treeroot.go
 	input := struct {
@@ -1111,10 +1100,7 @@ func TestListElementHashError(t *testing.T) {
 }
 
 func TestHashTreeRootVerbose(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
-	dynssz.Verbose = true
-	dynssz.LogCb = func(format string, args ...any) {}
+	dynssz := NewDynSsz(nil, WithNoFastSsz(), WithVerbose(), WithLogCb(func(format string, args ...any) {}))
 
 	// Test with various types to exercise verbose logging paths
 	testCases := []struct {
@@ -1169,8 +1155,7 @@ func TestFastSszHashRootPath(t *testing.T) {
 }
 
 func TestDynamicHashRootErrorPath(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Test with a type that has DynamicHashRoot that returns an error
 	input := &TestContainerWithDynamicHashError{
@@ -1187,8 +1172,7 @@ func TestDynamicHashRootErrorPath(t *testing.T) {
 }
 
 func TestContainerFieldError(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Test container with a field that causes an error during hashing
 	input := struct {
@@ -1223,8 +1207,7 @@ func TestFastSszHashRootError(t *testing.T) {
 }
 
 func TestPackedUint8InVector(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Test vector with uint8 elements to exercise pack=true path for SszUint8Type
 	// Note: []uint8 is treated as byte array, so we use [N]uint8 inside a struct
@@ -1244,8 +1227,7 @@ func TestPackedUint8InVector(t *testing.T) {
 }
 
 func TestPackedBoolInVector(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Test vector with bool elements to exercise pack=true path for SszBoolType
 	input := struct {

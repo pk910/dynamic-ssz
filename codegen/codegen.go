@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 
-	dynssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/ssztypes"
 )
 
 // TypeImport represents an import declaration for generated code files.
@@ -79,9 +79,9 @@ type CodeGeneratorOptions struct {
 	CreateDecoderFn           bool
 	WithoutDynamicExpressions bool
 	NoFastSsz                 bool
-	SizeHints                 []dynssz.SszSizeHint
-	MaxSizeHints              []dynssz.SszMaxSizeHint
-	TypeHints                 []dynssz.SszTypeHint
+	SizeHints                 []ssztypes.SszSizeHint
+	MaxSizeHints              []ssztypes.SszMaxSizeHint
+	TypeHints                 []ssztypes.SszTypeHint
 	Types                     []CodeGeneratorTypeOption
 }
 
@@ -132,7 +132,7 @@ type CodeGeneratorTypeOptions struct {
 	GoTypesType types.Type
 	TypeName    string
 	Options     CodeGeneratorOptions
-	Descriptor  *dynssz.TypeDescriptor
+	Descriptor  *ssztypes.TypeDescriptor
 }
 
 // CodeGeneratorFileOptions contains the configuration for generating a complete Go source file.
@@ -251,7 +251,7 @@ func WithNoHashTreeRoot() CodeGeneratorOption {
 //	WithSizeHints([]dynssz.SszSizeHint{
 //	    {Size: 8192, Expr: "SLOTS_PER_HISTORICAL_ROOT"},
 //	})
-func WithSizeHints(hints []dynssz.SszSizeHint) CodeGeneratorOption {
+func WithSizeHints(hints []ssztypes.SszSizeHint) CodeGeneratorOption {
 	return func(opts *CodeGeneratorOptions) {
 		opts.SizeHints = hints
 	}
@@ -280,7 +280,7 @@ func WithSizeHints(hints []dynssz.SszSizeHint) CodeGeneratorOption {
 //	WithMaxSizeHints([]dynssz.SszMaxSizeHint{
 //	    {Size: 1048576, Expr: "MAX_VALIDATORS_PER_COMMITTEE"},
 //	})
-func WithMaxSizeHints(hints []dynssz.SszMaxSizeHint) CodeGeneratorOption {
+func WithMaxSizeHints(hints []ssztypes.SszMaxSizeHint) CodeGeneratorOption {
 	return func(opts *CodeGeneratorOptions) {
 		opts.MaxSizeHints = hints
 	}
@@ -311,7 +311,7 @@ func WithMaxSizeHints(hints []dynssz.SszMaxSizeHint) CodeGeneratorOption {
 //	    {Type: dynssz.SszListType}, // Force slice to be treated as list not vector
 //	    {Type: dynssz.SszContainerType}, // Force struct to be treated as container
 //	})
-func WithTypeHints(hints []dynssz.SszTypeHint) CodeGeneratorOption {
+func WithTypeHints(hints []ssztypes.SszTypeHint) CodeGeneratorOption {
 	return func(opts *CodeGeneratorOptions) {
 		opts.TypeHints = hints
 	}
@@ -521,9 +521,9 @@ type fileGenerationRequest struct {
 //  3. Generate code with Generate() or GenerateToMap()
 type CodeGenerator struct {
 	files       []*fileGenerationRequest
-	dynSsz      *dynssz.DynSsz
+	typeCache   *ssztypes.TypeCache
 	packageName string
-	compatFlags map[string]dynssz.SszCompatFlag
+	compatFlags map[string]ssztypes.SszCompatFlag
 }
 
 // NewCodeGenerator creates a new code generator instance with the specified DynSsz configuration.
@@ -551,15 +551,15 @@ type CodeGenerator struct {
 //
 //	// Create with default configuration
 //	cg := NewCodeGenerator(nil)
-func NewCodeGenerator(dynSsz *dynssz.DynSsz) *CodeGenerator {
-	if dynSsz == nil {
-		dynSsz = dynssz.NewDynSsz(nil)
+func NewCodeGenerator(typeCache *ssztypes.TypeCache) *CodeGenerator {
+	if typeCache == nil {
+		typeCache = ssztypes.NewTypeCache(nil)
 	}
 
 	return &CodeGenerator{
 		files:       make([]*fileGenerationRequest, 0),
-		dynSsz:      dynSsz,
-		compatFlags: map[string]dynssz.SszCompatFlag{},
+		typeCache:   typeCache,
+		compatFlags: map[string]ssztypes.SszCompatFlag{},
 	}
 }
 

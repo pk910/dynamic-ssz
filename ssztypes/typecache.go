@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // This file is part of the dynamic-ssz library.
 
-package dynssz
+package ssztypes
 
 import (
 	"crypto/sha256"
@@ -11,98 +11,22 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 // TypeCache manages cached type descriptors
 type TypeCache struct {
-	dynssz      *DynSsz
+	specs       sszutils.DynamicSpecs
 	mutex       sync.RWMutex
 	descriptors map[reflect.Type]*TypeDescriptor
 	CompatFlags map[string]SszCompatFlag
 }
 
-// SszTypeFlag is a flag indicating whether a type has a specific SSZ type feature
-type SszTypeFlag uint8
-
-const (
-	SszTypeFlagIsDynamic      SszTypeFlag = 1 << iota // Whether the type is a dynamic type (or has nested dynamic types)
-	SszTypeFlagHasLimit                               // Whether the type has a max size tag
-	SszTypeFlagHasDynamicSize                         // Whether this type or any of its nested types uses dynamic spec size value that differs from the default
-	SszTypeFlagHasDynamicMax                          // Whether this type or any of its nested types uses dynamic spec max value that differs from the default
-	SszTypeFlagHasSizeExpr                            // Whether this type or any of its nested types uses a dynamic expression to calculate the size or max size
-	SszTypeFlagHasMaxExpr                             // Whether this type or any of its nested types uses a dynamic expression to calculate the max size
-	SszTypeFlagHasBitSize                             // Whether the type has a bit size tag
-)
-
-// SszCompatFlag is a flag indicating whether a type implements a specific SSZ compatibility interface
-type SszCompatFlag uint16
-
-const (
-	SszCompatFlagFastSSZMarshaler   SszCompatFlag = 1 << iota // Whether the type implements fastssz.Marshaler
-	SszCompatFlagFastSSZHasher                                // Whether the type implements fastssz.HashRoot
-	SszCompatFlagHashTreeRootWith                             // Whether the type implements HashTreeRootWith
-	SszCompatFlagDynamicMarshaler                             // Whether the type implements DynamicMarshaler
-	SszCompatFlagDynamicUnmarshaler                           // Whether the type implements DynamicUnmarshaler
-	SszCompatFlagDynamicSizer                                 // Whether the type implements DynamicSizer
-	SszCompatFlagDynamicHashRoot                              // Whether the type implements DynamicHashRoot
-	SszCompatFlagDynamicEncoder                               // Whether the type implements DynamicEncoder
-	SszCompatFlagDynamicDecoder                               // Whether the type implements DynamicDecoder
-)
-
-type GoTypeFlag uint8
-
-const (
-	GoTypeFlagIsPointer   GoTypeFlag = 1 << iota // Whether the type is a pointer type
-	GoTypeFlagIsByteArray                        // Whether the type is a byte array
-	GoTypeFlagIsString                           // Whether the type is a string type
-	GoTypeFlagIsTime                             // Whether the type is a time.Time type
-)
-
-// TypeDescriptor represents a cached, optimized descriptor for a type's SSZ encoding/decoding
-type TypeDescriptor struct {
-	Type                   reflect.Type              `json:"-"`                   // Reflect type
-	CodegenInfo            *any                      `json:"-"`                   // Codegen information
-	Kind                   reflect.Kind              `json:"kind"`                // Reflect kind of the type
-	Size                   uint32                    `json:"size"`                // SSZ size (-1 if dynamic)
-	Len                    uint32                    `json:"len"`                 // Length of array/slice / static size of container
-	Limit                  uint64                    `json:"limit"`               // Limit of array/slice (ssz-max tag)
-	ContainerDesc          *ContainerDescriptor      `json:"container,omitempty"` // For structs
-	UnionVariants          map[uint8]*TypeDescriptor `json:"union,omitempty"`     // Union variant types by index (for CompatibleUnion)
-	ElemDesc               *TypeDescriptor           `json:"field,omitempty"`     // For slices/arrays
-	HashTreeRootWithMethod *reflect.Method           `json:"-"`                   // Cached HashTreeRootWith method for performance
-	SizeExpression         *string                   `json:"size_expr,omitempty"` // The dynamic expression used to calculate the size of the type
-	MaxExpression          *string                   `json:"max_expr,omitempty"`  // The dynamic expression used to calculate the max size of the type
-	BitSize                uint32                    `json:"bit_size,omitempty"`  // Bit size for bit vector types (ssz-bitsize tag)
-	SszType                SszType                   `json:"type"`                // SSZ type of the type
-	SszTypeFlags           SszTypeFlag               `json:"flags"`               // SSZ type flags
-	SszCompatFlags         SszCompatFlag             `json:"compat"`              // SSZ compatibility flags
-	GoTypeFlags            GoTypeFlag                `json:"go_flags"`            // Additional go type flags
-}
-
-// FieldDescriptor represents a cached descriptor for a struct field
-type ContainerDescriptor struct {
-	Fields    []FieldDescriptor    `json:"fields"`     // For structs
-	DynFields []DynFieldDescriptor `json:"dyn_fields"` // Dynamic struct fields
-}
-
-// FieldDescriptor represents a cached descriptor for a struct field
-type FieldDescriptor struct {
-	Name     string          `json:"name"`            // Name of the field
-	Type     *TypeDescriptor `json:"type"`            // Type descriptor
-	SszIndex uint16          `json:"index,omitempty"` // SSZ index for progressive containers
-}
-
-// DynFieldDescriptor represents a dynamic field descriptor for a struct
-type DynFieldDescriptor struct {
-	Field        *FieldDescriptor `json:"field"`
-	HeaderOffset uint32           `json:"offset"`
-	Index        int16            `json:"index"` // Index of the field in the struct
-}
-
 // NewTypeCache creates a new type cache
-func NewTypeCache(dynssz *DynSsz) *TypeCache {
+func NewTypeCache(specs sszutils.DynamicSpecs) *TypeCache {
 	return &TypeCache{
-		dynssz:      dynssz,
+		specs:       specs,
 		descriptors: make(map[reflect.Type]*TypeDescriptor),
 		CompatFlags: map[string]SszCompatFlag{},
 	}
@@ -451,36 +375,36 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		return nil, fmt.Errorf("bit size tag is only allowed for bitvector or bitlist types, got %v", desc.SszType)
 	}
 
-	if desc.SszTypeFlags&SszTypeFlagHasDynamicSize == 0 && tc.dynssz.getFastsszConvertCompatibility(t) {
+	if desc.SszTypeFlags&SszTypeFlagHasDynamicSize == 0 && getFastsszConvertCompatibility(t) {
 		desc.SszCompatFlags |= SszCompatFlagFastSSZMarshaler
 	}
 	if desc.SszTypeFlags&SszTypeFlagHasDynamicMax == 0 {
-		if tc.dynssz.getFastsszHashCompatibility(t) {
+		if getFastsszHashCompatibility(t) {
 			desc.SszCompatFlags |= SszCompatFlagFastSSZHasher
 		}
-		if method := tc.dynssz.getHashTreeRootWithCompatibility(t); method != nil {
+		if method := getHashTreeRootWithCompatibility(t); method != nil {
 			desc.HashTreeRootWithMethod = method
 			desc.SszCompatFlags |= SszCompatFlagHashTreeRootWith
 		}
 	}
 
 	// Check for dynamic interface implementations
-	if tc.dynssz.getDynamicMarshalerCompatibility(t) {
+	if getDynamicMarshalerCompatibility(t) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicMarshaler
 	}
-	if tc.dynssz.getDynamicUnmarshalerCompatibility(t) {
+	if getDynamicUnmarshalerCompatibility(t) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicUnmarshaler
 	}
-	if tc.dynssz.getDynamicEncoderCompatibility(t) {
+	if getDynamicEncoderCompatibility(t) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicEncoder
 	}
-	if tc.dynssz.getDynamicDecoderCompatibility(t) {
+	if getDynamicDecoderCompatibility(t) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicDecoder
 	}
-	if tc.dynssz.getDynamicSizerCompatibility(t) {
+	if getDynamicSizerCompatibility(t) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicSizer
 	}
-	if tc.dynssz.getDynamicHashRootCompatibility(t) {
+	if getDynamicHashRootCompatibility(t) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicHashRoot
 	}
 
@@ -522,7 +446,7 @@ func (tc *TypeCache) buildTypeWrapperDescriptor(desc *TypeDescriptor, t reflect.
 	}
 
 	// Extract wrapper information from descriptor struct (includes SSZ annotations)
-	wrapperInfo, err := extractWrapperDescriptorInfo(descriptorType, tc.dynssz)
+	wrapperInfo, err := extractWrapperDescriptorInfo(descriptorType, tc.specs)
 	if err != nil {
 		return fmt.Errorf("failed to extract wrapper descriptor info: %w", err)
 	}
@@ -635,7 +559,7 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 		}
 
 		// Get ssz-index tag
-		sszIndex, err := tc.dynssz.getSszIndexTag(&field)
+		sszIndex, err := getSszIndexTag(&field)
 		if err != nil {
 			return err
 		}
@@ -651,17 +575,17 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 		}
 
 		// Get size hints from tags
-		sizeHints, err := tc.dynssz.getSszSizeTag(&field)
+		sizeHints, err := getSszSizeTag(tc.specs, &field)
 		if err != nil {
 			return err
 		}
 
-		maxSizeHints, err := tc.dynssz.getSszMaxSizeTag(&field)
+		maxSizeHints, err := getSszMaxSizeTag(tc.specs, &field)
 		if err != nil {
 			return err
 		}
 
-		typeHints, err := tc.dynssz.getSszTypeTag(&field)
+		typeHints, err := getSszTypeTag(&field)
 		if err != nil {
 			return err
 		}
@@ -741,7 +665,7 @@ func (tc *TypeCache) buildCompatibleUnionDescriptor(desc *TypeDescriptor, t refl
 	desc.UnionVariants = make(map[uint8]*TypeDescriptor)
 
 	// Extract variant information from descriptor struct (includes SSZ annotations)
-	variantInfo, err := ExtractUnionDescriptorInfo(descriptorType, tc.dynssz)
+	variantInfo, err := extractUnionDescriptorInfo(descriptorType, tc.specs)
 	if err != nil {
 		return fmt.Errorf("failed to extract union variant info: %w", err)
 	}
