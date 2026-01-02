@@ -58,7 +58,7 @@ func testForkConsensusSpec(t *testing.T, fork string, preset string, tests []Spe
 			}
 			require.NoError(t, err)
 			if info.IsDir() {
-				t.Run(fmt.Sprintf("%s/%s", test.name, info.Name()), func(t *testing.T) {
+				t.Run(fmt.Sprintf("%s/%s/%s", test.name, preset, info.Name()), func(t *testing.T) {
 					// Obtain the struct from the SSZ.
 					s2 := clone.Clone(test.s)
 					compressedSpecSSZ, err := os.ReadFile(filepath.Join(path, "serialized.ssz_snappy"))
@@ -90,7 +90,7 @@ func testForkConsensusSpec(t *testing.T, fork string, preset string, tests []Spe
 					require.YAMLEq(t, string(specYAMLRoot), generatedRoot)
 				})
 
-				t.Run(fmt.Sprintf("%s/%s-streaming", test.name, info.Name()), func(t *testing.T) {
+				t.Run(fmt.Sprintf("%s/%s/%s-streaming", test.name, preset, info.Name()), func(t *testing.T) {
 					// Obtain the struct from the SSZ.
 					s2 := clone.Clone(test.s)
 					compressedSpecSSZ, err := os.ReadFile(filepath.Join(path, "serialized.ssz_snappy"))

@@ -12,7 +12,6 @@ import (
 	"github.com/attestantio/go-eth2-client/spec/capella"
 	"github.com/attestantio/go-eth2-client/spec/deneb"
 	"github.com/attestantio/go-eth2-client/spec/electra"
-	"github.com/attestantio/go-eth2-client/spec/fulu"
 	"github.com/attestantio/go-eth2-client/spec/phase0"
 )
 
@@ -53,7 +52,7 @@ func TestConsensusSpecFulu(t *testing.T) {
 		},
 		{
 			name: "BeaconState",
-			s:    &fulu.BeaconState{},
+			s:    &electra.BeaconState{}, // TODO: Update to Fulu (latest spectests release still uses Electra)
 		},
 		{
 			name: "BlobIdentifier",
