@@ -1,0 +1,102 @@
+name: Post Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  binaries:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.25'
+
+    - name: Extract version
+      id: version
+      run: |
+        if [ "${{ github.event_name }}" = "release" ]; then
+          echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+          echo "tag=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+        else
+          version=$(grep -oP 'Version = "\K[^"]+' codegen/version.go)
+          echo "version=$version" >> $GITHUB_OUTPUT
+          echo "tag=v$version" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Build dynssz-gen for multiple platforms
+      run: |
+        cd dynssz-gen
+
+        # Linux amd64
+        GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o ../dynssz-gen-linux-amd64 .
+
+        # Linux arm64
+        GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o ../dynssz-gen-linux-arm64 .
+
+        # Windows amd64
+        GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o ../dynssz-gen-windows-amd64.exe .
+
+        # macOS amd64
+        GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o ../dynssz-gen-darwin-amd64 .
+
+        # macOS arm64
+        GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o ../dynssz-gen-darwin-arm64 .
+
+    - name: Upload binaries to release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        version="${{ steps.version.outputs.version }}"
+        tag="${{ steps.version.outputs.tag }}"
+
+        gh release upload "$tag" \
+          "dynssz-gen-linux-amd64#dynssz-gen-${version}-linux-amd64" \
+          "dynssz-gen-linux-arm64#dynssz-gen-${version}-linux-arm64" \
+          "dynssz-gen-windows-amd64.exe#dynssz-gen-${version}-windows-amd64.exe" \
+          "dynssz-gen-darwin-amd64#dynssz-gen-${version}-darwin-amd64" \
+          "dynssz-gen-darwin-arm64#dynssz-gen-${version}-darwin-arm64"
+
+  docker:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Extract version
+      id: version
+      run: |
+        if [ "${{ github.event_name }}" = "release" ]; then
+          echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+        else
+          version=$(grep -oP 'Version = "\K[^"]+' codegen/version.go)
+          echo "version=$version" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: true
+        tags: |
+          pk910/dynamic-ssz:${{ steps.version.outputs.version }}
+          pk910/dynamic-ssz:latest
+        platforms: linux/amd64,linux/arm64
