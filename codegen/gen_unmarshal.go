@@ -100,7 +100,7 @@ func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strin
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 			appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
 			appendCode(codeBuilder, 1, codeBuf.String())
-			appendCode(codeBuilder, 1, "\treturn nil\n")
+			appendCode(codeBuilder, 1, "return nil\n")
 			appendCode(codeBuilder, 0, "}\n\n")
 		} else {
 			dynsszAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
@@ -116,7 +116,7 @@ func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strin
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 			appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
 			appendCode(codeBuilder, 1, codeBuf.String())
-			appendCode(codeBuilder, 1, "\treturn nil\n")
+			appendCode(codeBuilder, 1, "return nil\n")
 			appendCode(codeBuilder, 0, "}\n\n")
 		} else {
 			appendCode(codeBuilder, 0, "func (t %s) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) (err error) {\n", typeName)

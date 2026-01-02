@@ -79,7 +79,7 @@ func generateEncoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 	}
 
 	// Generate size function code
-	sizeFnCode, err := ctx.generateSizeFnCode(1)
+	sizeFnCode, err := ctx.generateSizeFnCode(0)
 	if err != nil {
 		return err
 	}
@@ -354,7 +354,7 @@ func (ctx *encoderContext) marshalContainer(desc *ssztypes.TypeDescriptor, varNa
 	if hasDynamic {
 		ctx.usedSeekable = true
 		ctx.appendCode(indent, "dstlen := enc.GetPosition()\n")
-		ctx.appendCode(indent, "dynoff := uint32(%v)\n", strings.Join(staticSizeVars, "+"))
+		ctx.appendCode(indent, "dynoff := uint32(%v)\n", strings.Join(staticSizeVars, " + "))
 	}
 
 	// Write offsets for dynamic fields
@@ -498,7 +498,7 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		if desc.Kind != reflect.Array {
 			// append zero padding if we have less items than the limit
 			ctx.appendCode(indent, "if %s < %s {\n", lenVar, limitVar)
-			ctx.appendCode(indent, "\tenc.EncodeZeroPadding((%s-%s)*%d)\n", limitVar, lenVar, desc.ElemDesc.Size)
+			ctx.appendCode(indent, "\tenc.EncodeZeroPadding((%s - %s) * %d)\n", limitVar, lenVar, desc.ElemDesc.Size)
 			ctx.appendCode(indent, "}\n")
 		}
 	} else {
@@ -508,7 +508,7 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 
 		ctx.usedSeekable = true
 		ctx.appendCode(indent, "if canSeek {\n")
-		ctx.appendCode(indent, "\tenc.EncodeZeroPadding(%s*4)\n", limitVar)
+		ctx.appendCode(indent, "\tenc.EncodeZeroPadding(%s * 4)\n", limitVar)
 		ctx.appendCode(indent, "} else {\n")
 
 		sizeFnCall := ctx.getSizeFnCall(desc.ElemDesc, fmt.Sprintf("%s[i]", varName))
@@ -569,7 +569,7 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			}
 			ctx.appendCode(indent, "\tfor i := %s; i < %s; i++ {\n", lenVar, limitVar)
 			ctx.appendCode(indent, "\t\tif canSeek {\n")
-			ctx.appendCode(indent, "\t\t\tenc.EncodeOffsetAt(dstlen+(i*4), uint32(enc.GetPosition() - dstlen))\n")
+			ctx.appendCode(indent, "\t\t\tenc.EncodeOffsetAt(dstlen+(i*4), uint32(enc.GetPosition()-dstlen))\n")
 			ctx.appendCode(indent, "\t\t}\n")
 			if err := ctx.marshalType(desc.ElemDesc, "zeroItem", indent+2, false); err != nil {
 				return err
@@ -646,7 +646,7 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 		ctx.appendCode(indent, "dstlen := enc.GetPosition()\n")
 		addVlen()
 		ctx.appendCode(indent, "if canSeek {\n")
-		ctx.appendCode(indent, "\tenc.EncodeZeroPadding(vlen*4)\n")
+		ctx.appendCode(indent, "\tenc.EncodeZeroPadding(vlen * 4)\n")
 		ctx.appendCode(indent, "} else if vlen > 0 {\n")
 		sizeFnCall := ctx.getSizeFnCall(desc.ElemDesc, fmt.Sprintf("%s[i]", varName))
 		ctx.appendCode(indent, "\toffset := vlen * 4\n")
@@ -659,7 +659,7 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 
 		ctx.appendCode(indent, "for i := 0; i < vlen; i++ {\n")
 		ctx.appendCode(indent, "\tif canSeek {\n")
-		ctx.appendCode(indent, "\t\tenc.EncodeOffsetAt(dstlen+(i*4), uint32(enc.GetPosition() - dstlen))\n")
+		ctx.appendCode(indent, "\t\tenc.EncodeOffsetAt(dstlen+(i*4), uint32(enc.GetPosition()-dstlen))\n")
 		ctx.appendCode(indent, "\t}\n")
 		valVar := "t"
 		if ctx.isInlineable(desc.ElemDesc) {

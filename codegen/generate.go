@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"go/types"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -226,21 +227,35 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 
 	// collect & sort imports
 	importsMap := typePrinter.Imports()
-	imports := make([]TypeImport, 0, len(importsMap))
+
+	sysImports := make([]TypeImport, 0, len(importsMap))
+	pkgImports := make([]TypeImport, 0, len(importsMap))
 	for path, alias := range importsMap {
 		if presetAlias := typePrinter.Aliases()[path]; presetAlias != "" {
 			alias = presetAlias
 		} else if defaultAlias := typePrinter.defaultAlias(path); alias == defaultAlias {
 			alias = ""
 		}
-		imports = append(imports, TypeImport{
-			Alias: alias,
-			Path:  path,
-		})
+
+		if regexp.MustCompile(`^[^/]+\.[a-zA-Z]+/.*$`).MatchString(path) {
+			pkgImports = append(pkgImports, TypeImport{
+				Alias: alias,
+				Path:  path,
+			})
+		} else {
+			sysImports = append(sysImports, TypeImport{
+				Alias: alias,
+				Path:  path,
+			})
+		}
 	}
 
-	sort.Slice(imports, func(i, j int) bool {
-		return imports[i].Path < imports[j].Path
+	sort.Slice(sysImports, func(i, j int) bool {
+		return sysImports[i].Path < sysImports[j].Path
+	})
+
+	sort.Slice(pkgImports, func(i, j int) bool {
+		return pkgImports[i].Path < pkgImports[j].Path
 	})
 
 	// Build the file content directly
@@ -253,9 +268,21 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 	mainCodeBuilder.WriteString(fmt.Sprintf("package %s\n\n", opts.PackageName))
 
 	// Imports
-	if len(imports) > 0 {
+	if len(sysImports) > 0 || len(pkgImports) > 0 {
 		mainCodeBuilder.WriteString("import (\n")
-		for _, imp := range imports {
+		for _, imp := range sysImports {
+			if imp.Alias != "" {
+				mainCodeBuilder.WriteString(fmt.Sprintf("\t%s \"%s\"\n", imp.Alias, imp.Path))
+			} else {
+				mainCodeBuilder.WriteString(fmt.Sprintf("\t\"%s\"\n", imp.Path))
+			}
+		}
+
+		if len(sysImports) > 0 && len(pkgImports) > 0 {
+			mainCodeBuilder.WriteString("\n")
+		}
+
+		for _, imp := range pkgImports {
 			if imp.Alias != "" {
 				mainCodeBuilder.WriteString(fmt.Sprintf("\t%s \"%s\"\n", imp.Alias, imp.Path))
 			} else {
