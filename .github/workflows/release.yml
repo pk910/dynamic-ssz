@@ -19,34 +19,10 @@ jobs:
         token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
         fetch-depth: 0
 
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.25'
-
     - name: Prepare release
       run: |
         chmod +x .github/scripts/prepare-release.sh
         .github/scripts/prepare-release.sh ${{ inputs.version }}
-
-    - name: Build dynssz-gen for multiple platforms
-      run: |
-        cd dynssz-gen
-        
-        # Linux amd64
-        GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o ../dynssz-gen-linux-amd64 .
-        
-        # Linux arm64
-        GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o ../dynssz-gen-linux-arm64 .
-        
-        # Windows amd64
-        GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o ../dynssz-gen-windows-amd64.exe .
-        
-        # macOS amd64
-        GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o ../dynssz-gen-darwin-amd64 .
-        
-        # macOS arm64
-        GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o ../dynssz-gen-darwin-arm64 .
 
     - name: "Generate release changelog"
       id: changelog
@@ -108,53 +84,3 @@ jobs:
           </details>
       env:
         GITHUB_TOKEN: ${{ github.token }}
-
-    - name: Upload release artifacts
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./dynssz-gen-linux-amd64
-        asset_name: dynssz-gen-${{ inputs.version }}-linux-amd64
-        asset_content_type: application/octet-stream
-
-    - name: Upload release artifacts (Linux ARM64)
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./dynssz-gen-linux-arm64
-        asset_name: dynssz-gen-${{ inputs.version }}-linux-arm64
-        asset_content_type: application/octet-stream
-
-    - name: Upload release artifacts (Windows AMD64)
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./dynssz-gen-windows-amd64.exe
-        asset_name: dynssz-gen-${{ inputs.version }}-windows-amd64.exe
-        asset_content_type: application/octet-stream
-
-    - name: Upload release artifacts (macOS AMD64)
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./dynssz-gen-darwin-amd64
-        asset_name: dynssz-gen-${{ inputs.version }}-darwin-amd64
-        asset_content_type: application/octet-stream
-
-    - name: Upload release artifacts (macOS ARM64)
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./dynssz-gen-darwin-arm64
-        asset_name: dynssz-gen-${{ inputs.version }}-darwin-arm64
-        asset_content_type: application/octet-stream
