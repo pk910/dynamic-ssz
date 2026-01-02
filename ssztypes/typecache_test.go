@@ -12,6 +12,15 @@ import (
 	"unsafe"
 )
 
+type dummyDynamicSpecs struct {
+	specValues map[string]uint64
+}
+
+func (d *dummyDynamicSpecs) ResolveSpecValue(name string) (bool, uint64, error) {
+	value, ok := d.specValues[name]
+	return ok, value, nil
+}
+
 // Test error cases in TypeCache.GetTypeDescriptor
 func TestTypeCache_ErrorCases(t *testing.T) {
 	ds := &dummyDynamicSpecs{}

@@ -50,17 +50,10 @@ func initializeDynSszInstances() {
 		panic("Failed to load minimal preset: " + err.Error())
 	}
 
-	dynSszOnlyMainnet = ssz.NewDynSsz(mainnetSpecs)
-	dynSszOnlyMainnet.NoFastSsz = true
-
-	dynsszHybridMainnet = ssz.NewDynSsz(mainnetSpecs)
-	dynsszHybridMainnet.NoFastSsz = false
-
-	dynSszOnlyMinimal = ssz.NewDynSsz(minimalSpecs)
-	dynSszOnlyMinimal.NoFastSsz = true
-
-	dynsszHybridMinimal = ssz.NewDynSsz(minimalSpecs)
-	dynsszHybridMinimal.NoFastSsz = false
+	dynSszOnlyMainnet = ssz.NewDynSsz(mainnetSpecs, ssz.WithNoFastSsz())
+	dynsszHybridMainnet = ssz.NewDynSsz(mainnetSpecs, ssz.WithNoFastSsz())
+	dynSszOnlyMinimal = ssz.NewDynSsz(minimalSpecs, ssz.WithNoFastSsz())
+	dynsszHybridMinimal = ssz.NewDynSsz(minimalSpecs, ssz.WithNoFastSsz())
 }
 
 func init() {
