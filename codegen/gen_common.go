@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"strings"
 
-	dynssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/ssztypes"
 )
 
 type exprVarGenerator struct {
@@ -101,9 +101,9 @@ func newStaticSizeVarGenerator(prefix string, typePrinter *TypePrinter, options 
 }
 
 // getStaticSizeVar generates a variable name for cached static size calculations.
-func (g *staticSizeVarGenerator) getStaticSizeVar(desc *dynssz.TypeDescriptor) (string, error) {
+func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor) (string, error) {
 	descCopy := *desc
-	descCopy.GoTypeFlags &= ^dynssz.GoTypeFlagIsPointer
+	descCopy.GoTypeFlags &= ^ssztypes.GoTypeFlagIsPointer
 
 	descJson, err := json.Marshal(descCopy)
 	if err != nil {
@@ -120,18 +120,18 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *dynssz.TypeDescriptor) (
 
 	// recursive resolve static size with size expressions
 	switch desc.SszType {
-	case dynssz.SszTypeWrapperType:
+	case ssztypes.SszTypeWrapperType:
 		sizeVar, err = g.getStaticSizeVar(desc.ElemDesc)
 		if err != nil {
 			return "", err
 		}
-	case dynssz.SszContainerType, dynssz.SszProgressiveContainerType:
+	case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
 		fieldSizeVars := []string{}
 		staticSize := 0
 		for _, field := range desc.ContainerDesc.Fields {
-			if field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
+			if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 				return "", fmt.Errorf("dynamic field not supported for static size calculation")
-			} else if field.Type.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !g.options.WithoutDynamicExpressions {
+			} else if field.Type.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !g.options.WithoutDynamicExpressions {
 				fieldSizeVar, err := g.getStaticSizeVar(field.Type)
 				if err != nil {
 					return "", err
@@ -148,17 +148,17 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *dynssz.TypeDescriptor) (
 			return fieldSizeVars[0], nil
 		}
 		appendCode(g.codeBuf, 0, "%s := %s // size expression for '%s'\n", sizeVar, strings.Join(fieldSizeVars, "+"), g.typePrinter.TypeStringWithoutTracking(desc))
-	case dynssz.SszVectorType, dynssz.SszBitvectorType, dynssz.SszUint128Type, dynssz.SszUint256Type:
+	case ssztypes.SszVectorType, ssztypes.SszBitvectorType, ssztypes.SszUint128Type, ssztypes.SszUint256Type:
 		sizeExpression := desc.SizeExpression
 		if g.options.WithoutDynamicExpressions {
 			sizeExpression = nil
 		}
 
-		if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
+		if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 			return "", fmt.Errorf("dynamic vector not supported for static size calculation")
 		} else {
 			itemSizeVar := ""
-			if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !g.options.WithoutDynamicExpressions {
+			if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !g.options.WithoutDynamicExpressions {
 				itemSizeVar, err = g.getStaticSizeVar(desc.ElemDesc)
 				if err != nil {
 					return "", err
@@ -170,7 +170,7 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *dynssz.TypeDescriptor) (
 			if sizeExpression != nil {
 				exprVar := g.exprVarGenerator.getExprVar(*sizeExpression, uint64(desc.Len))
 
-				if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
+				if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
 					exprVar = fmt.Sprintf("(%s+7)/8", exprVar)
 				}
 

@@ -14,8 +14,8 @@ import (
 	"os"
 	"strings"
 
-	dynssz "github.com/pk910/dynamic-ssz"
 	"github.com/pk910/dynamic-ssz/codegen"
+	"github.com/pk910/dynamic-ssz/ssztypes"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -150,7 +150,8 @@ func run(config Config) error {
 	}
 
 	// Create codegen instance
-	codeGen := codegen.NewCodeGenerator(dynssz.NewDynSsz(nil))
+	typeCache := ssztypes.NewTypeCache(nil)
+	codeGen := codegen.NewCodeGenerator(typeCache)
 
 	if config.PackageName != "" {
 		codeGen.SetPackageName(config.PackageName)

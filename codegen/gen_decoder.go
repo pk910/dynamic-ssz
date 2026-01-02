@@ -10,7 +10,7 @@ import (
 	"slices"
 	"strings"
 
-	dynssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/ssztypes"
 )
 
 // decoderContext contains the state and utilities for generating unmarshal methods.
@@ -57,7 +57,7 @@ type decoderContext struct {
 //
 // Returns:
 //   - error: An error if code generation fails
-func generateDecoder(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
+func generateDecoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
 	codeBuf := strings.Builder{}
 	ctx := &decoderContext{
 		appendCode: func(indent int, code string, args ...any) {
@@ -122,22 +122,22 @@ func (ctx *decoderContext) getValVar() string {
 }
 
 // isInlinable determines if a type can be unmarshaled inline without temporary variables.
-func (ctx *decoderContext) isInlinable(desc *dynssz.TypeDescriptor) bool {
+func (ctx *decoderContext) isInlinable(desc *ssztypes.TypeDescriptor) bool {
 	// Inline primitive types
-	if desc.SszType == dynssz.SszBoolType || desc.SszType == dynssz.SszUint8Type || desc.SszType == dynssz.SszUint16Type || desc.SszType == dynssz.SszUint32Type || desc.SszType == dynssz.SszUint64Type {
+	if desc.SszType == ssztypes.SszBoolType || desc.SszType == ssztypes.SszUint8Type || desc.SszType == ssztypes.SszUint16Type || desc.SszType == ssztypes.SszUint32Type || desc.SszType == ssztypes.SszUint64Type {
 		return true
 	}
 
 	// Inline byte arrays/slices
-	if (desc.SszType == dynssz.SszVectorType || desc.SszType == dynssz.SszListType) && desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
+	if (desc.SszType == ssztypes.SszVectorType || desc.SszType == ssztypes.SszListType) && desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
 		return true
 	}
 
 	// Inline types with fastssz unmarshaler
-	hasDynamicSize := desc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
-	isFastsszUnmarshaler := desc.SszCompatFlags&dynssz.SszCompatFlagFastSSZMarshaler != 0
+	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
+	isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
 	useFastSsz := !ctx.options.NoFastSsz && isFastsszUnmarshaler && !hasDynamicSize
-	if !useFastSsz && desc.SszType == dynssz.SszCustomType {
+	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
 		useFastSsz = true
 	}
 	if useFastSsz {
@@ -145,12 +145,12 @@ func (ctx *decoderContext) isInlinable(desc *dynssz.TypeDescriptor) bool {
 	}
 
 	// Inline types with generated unmarshal methods
-	if desc.SszCompatFlags&dynssz.SszCompatFlagDynamicUnmarshaler != 0 {
+	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
 		return true
 	}
 
 	// Inline types with generated decoder methods
-	if desc.SszCompatFlags&dynssz.SszCompatFlagDynamicDecoder != 0 {
+	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 {
 		return true
 	}
 
@@ -158,16 +158,16 @@ func (ctx *decoderContext) isInlinable(desc *dynssz.TypeDescriptor) bool {
 }
 
 // unmarshalType generates unmarshal code for any SSZ type, delegating to specific unmarshalers.
-func (ctx *decoderContext) unmarshalType(desc *dynssz.TypeDescriptor, varName string, indent int, isRoot bool, noBufCheck bool) error {
+func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName string, indent int, isRoot bool, noBufCheck bool) error {
 	// Handle types that have generated methods we can call
-	hasDynamicSize := desc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
-	isFastsszUnmarshaler := desc.SszCompatFlags&dynssz.SszCompatFlagFastSSZMarshaler != 0
+	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
+	isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
 	useFastSsz := !ctx.options.NoFastSsz && isFastsszUnmarshaler && !hasDynamicSize
-	if !useFastSsz && desc.SszType == dynssz.SszCustomType {
+	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
 		useFastSsz = true
 	}
 
-	if desc.SszCompatFlags&dynssz.SszCompatFlagDynamicDecoder != 0 && !isRoot {
+	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 && !isRoot {
 		ctx.appendCode(indent, "if err = %s.UnmarshalSSZDecoder(ds, dec); err != nil {\n\treturn err\n}\n", varName)
 		ctx.usedDynSpecs = true
 		return nil
@@ -186,7 +186,7 @@ func (ctx *decoderContext) unmarshalType(desc *dynssz.TypeDescriptor, varName st
 		return nil
 	}
 
-	if desc.SszCompatFlags&dynssz.SszCompatFlagDynamicUnmarshaler != 0 && !isRoot {
+	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 && !isRoot {
 		sizeStr := "dec.GetLength()"
 		if desc.Size > 0 {
 			sizeStr = fmt.Sprintf("%d", desc.Size)
@@ -201,58 +201,58 @@ func (ctx *decoderContext) unmarshalType(desc *dynssz.TypeDescriptor, varName st
 	}
 
 	switch desc.SszType {
-	case dynssz.SszBoolType:
+	case ssztypes.SszBoolType:
 		ctx.appendCode(indent, "if val, err := dec.DecodeBool(); err != nil {\n")
 		ctx.appendCode(indent+1, "return err\n")
 		ctx.appendCode(indent, "} else {\n")
 		ptrVarName := varName
-		if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ptrVarName = fmt.Sprintf("*(%s)", varName)
 		}
 		ctx.appendCode(indent+1, "%s = %s(val)\n", ptrVarName, ctx.typePrinter.TypeString(desc))
 		ctx.appendCode(indent, "}\n")
-	case dynssz.SszUint8Type:
+	case ssztypes.SszUint8Type:
 		ctx.appendCode(indent, "if val, err := dec.DecodeUint8(); err != nil {\n")
 		ctx.appendCode(indent+1, "return err\n")
 		ctx.appendCode(indent, "} else {\n")
 		ptrVarName := varName
-		if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ptrVarName = fmt.Sprintf("*(%s)", varName)
 		}
 		ctx.appendCode(indent+1, "%s = %s(val)\n", ptrVarName, ctx.typePrinter.TypeString(desc))
 		ctx.appendCode(indent, "}\n")
 
-	case dynssz.SszUint16Type:
+	case ssztypes.SszUint16Type:
 		ctx.appendCode(indent, "if val, err := dec.DecodeUint16(); err != nil {\n")
 		ctx.appendCode(indent+1, "return err\n")
 		ctx.appendCode(indent, "} else {\n")
 		ptrVarName := varName
-		if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ptrVarName = fmt.Sprintf("*(%s)", varName)
 		}
 		ctx.appendCode(indent+1, "%s = %s(val)\n", ptrVarName, ctx.typePrinter.TypeString(desc))
 		ctx.appendCode(indent, "}\n")
 
-	case dynssz.SszUint32Type:
+	case ssztypes.SszUint32Type:
 		ctx.appendCode(indent, "if val, err := dec.DecodeUint32(); err != nil {\n")
 		ctx.appendCode(indent+1, "return err\n")
 		ctx.appendCode(indent, "} else {\n")
 		ptrVarName := varName
-		if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ptrVarName = fmt.Sprintf("*(%s)", varName)
 		}
 		ctx.appendCode(indent+1, "%s = %s(val)\n", ptrVarName, ctx.typePrinter.TypeString(desc))
 		ctx.appendCode(indent, "}\n")
 
-	case dynssz.SszUint64Type:
+	case ssztypes.SszUint64Type:
 		ctx.appendCode(indent, "if val, err := dec.DecodeUint64(); err != nil {\n")
 		ctx.appendCode(indent+1, "return err\n")
 		ctx.appendCode(indent, "} else {\n")
 		ptrVarName := varName
-		if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ptrVarName = fmt.Sprintf("*(%s)", varName)
 		}
-		if desc.GoTypeFlags&dynssz.GoTypeFlagIsTime != 0 {
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsTime != 0 {
 			ctx.appendCode(indent+1, "%s = %s(time.Unix(int64(val), 0).UTC())\n", ptrVarName, ctx.typePrinter.TypeString(desc))
 			ctx.typePrinter.AddImport("time", "time")
 		} else {
@@ -260,27 +260,27 @@ func (ctx *decoderContext) unmarshalType(desc *dynssz.TypeDescriptor, varName st
 		}
 		ctx.appendCode(indent, "}\n")
 
-	case dynssz.SszTypeWrapperType:
+	case ssztypes.SszTypeWrapperType:
 		if err := ctx.unmarshalType(desc.ElemDesc, fmt.Sprintf("%s.Data", varName), indent, false, noBufCheck); err != nil {
 			return err
 		}
 
-	case dynssz.SszContainerType, dynssz.SszProgressiveContainerType:
+	case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
 		return ctx.unmarshalContainer(desc, varName, indent)
 
-	case dynssz.SszVectorType, dynssz.SszBitvectorType, dynssz.SszUint128Type, dynssz.SszUint256Type:
+	case ssztypes.SszVectorType, ssztypes.SszBitvectorType, ssztypes.SszUint128Type, ssztypes.SszUint256Type:
 		return ctx.unmarshalVector(desc, varName, indent, noBufCheck)
 
-	case dynssz.SszListType, dynssz.SszProgressiveListType:
+	case ssztypes.SszListType, ssztypes.SszProgressiveListType:
 		return ctx.unmarshalList(desc, varName, indent)
 
-	case dynssz.SszBitlistType, dynssz.SszProgressiveBitlistType:
+	case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType:
 		return ctx.unmarshalBitlist(desc, varName, indent)
 
-	case dynssz.SszCompatibleUnionType:
+	case ssztypes.SszCompatibleUnionType:
 		return ctx.unmarshalUnion(desc, varName, indent)
 
-	case dynssz.SszCustomType:
+	case ssztypes.SszCustomType:
 		ctx.appendCode(indent, "return sszutils.ErrNotImplemented\n")
 
 	default:
@@ -291,16 +291,16 @@ func (ctx *decoderContext) unmarshalType(desc *dynssz.TypeDescriptor, varName st
 }
 
 // unmarshalContainer generates unmarshal code for SSZ container (struct) types.
-func (ctx *decoderContext) unmarshalContainer(desc *dynssz.TypeDescriptor, varName string, indent int) error {
+func (ctx *decoderContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
 	staticSize := 0
 	staticSizeVars := []string{}
 	hasDynamicFields := false
 	for _, field := range desc.ContainerDesc.Fields {
-		if field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
+		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 			staticSize += 4
 			hasDynamicFields = true
 		} else {
-			if field.Type.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+			if field.Type.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
 				sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(field.Type)
 				if err != nil {
 					return err
@@ -325,7 +325,7 @@ func (ctx *decoderContext) unmarshalContainer(desc *dynssz.TypeDescriptor, varNa
 	dynamicFields := make([]int, 0)
 
 	for idx, field := range desc.ContainerDesc.Fields {
-		if field.Type.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
+		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 			// Read offset
 			ctx.appendCode(indent, "// Field #%d '%s' (offset)\n", idx, field.Name)
 			ctx.appendCode(indent, "offset%d, err := dec.DecodeOffset()\n", idx)
@@ -349,7 +349,7 @@ func (ctx *decoderContext) unmarshalContainer(desc *dynssz.TypeDescriptor, varNa
 			} else {
 				ctx.appendCode(indent, "// Field #%d '%s' (static)\n", idx, field.Name)
 			}
-			if field.Type.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+			if field.Type.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 				ctx.appendCode(indent+inlineIndent, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(field.Type))
 			}
 
@@ -382,7 +382,7 @@ func (ctx *decoderContext) unmarshalContainer(desc *dynssz.TypeDescriptor, varNa
 		valVar := ctx.getValVar()
 		ctx.appendCode(indent+1, "%s := %s.%s\n", valVar, varName, field.Name)
 
-		if field.Type.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+		if field.Type.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(field.Type))
 		}
 
@@ -399,7 +399,7 @@ func (ctx *decoderContext) unmarshalContainer(desc *dynssz.TypeDescriptor, varNa
 }
 
 // unmarshalVector generates unmarshal code for SSZ vector (fixed-size array) types.
-func (ctx *decoderContext) unmarshalVector(desc *dynssz.TypeDescriptor, varName string, indent int, noBufCheck bool) error {
+func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varName string, indent int, noBufCheck bool) error {
 	sizeExpression := desc.SizeExpression
 	if ctx.options.WithoutDynamicExpressions {
 		sizeExpression = nil
@@ -410,13 +410,13 @@ func (ctx *decoderContext) unmarshalVector(desc *dynssz.TypeDescriptor, varName 
 
 	if sizeExpression != nil {
 		defaultValue := uint64(desc.Len)
-		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 && desc.BitSize > 0 {
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 && desc.BitSize > 0 {
 			defaultValue = uint64(desc.BitSize)
 		}
 
 		exprVar := ctx.exprVars.getExprVar(*sizeExpression, defaultValue)
 
-		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
 			ctx.appendCode(indent, "bitlimit := %s\n", exprVar)
 			ctx.appendCode(indent, "limit := (bitlimit+7)/8\n")
 			bitlimitVar = "int(bitlimit)"
@@ -432,24 +432,24 @@ func (ctx *decoderContext) unmarshalVector(desc *dynssz.TypeDescriptor, varName 
 			ctx.appendCode(indent, "}\n")
 		}
 	} else {
-		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 && desc.BitSize > 0 && desc.BitSize%8 != 0 {
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 && desc.BitSize > 0 && desc.BitSize%8 != 0 {
 			bitlimitVar = fmt.Sprintf("%d", desc.BitSize)
 		}
 		limitVar = fmt.Sprintf("%d", desc.Len)
 	}
 
 	// create slice if needed
-	if desc.Kind != reflect.Array && desc.GoTypeFlags&dynssz.GoTypeFlagIsString == 0 {
+	if desc.Kind != reflect.Array && desc.GoTypeFlags&ssztypes.GoTypeFlagIsString == 0 {
 		ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, %s)\n", varName, varName, limitVar)
 	}
 
-	if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic == 0 {
+	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 		// static byte arrays
-		if desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
 			if !noBufCheck {
 				ctx.appendCode(indent, "if %s > dec.GetLength() {\n\treturn sszutils.ErrUnexpectedEOF\n}\n", limitVar)
 			}
-			if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
+			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
 				typename := ctx.typePrinter.TypeString(desc)
 				ctx.appendCode(indent, "if buf, err := dec.DecodeBytesBuf(%s); err != nil {\n", limitVar)
 				ctx.appendCode(indent+1, "return err\n")
@@ -471,7 +471,7 @@ func (ctx *decoderContext) unmarshalVector(desc *dynssz.TypeDescriptor, varName 
 		// static elements
 		var fieldSizeVar string
 		var err error
-		if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+		if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
 			fieldSizeVar, err = ctx.staticSizeVars.getStaticSizeVar(desc.ElemDesc)
 			if err != nil {
 				return err
@@ -496,7 +496,7 @@ func (ctx *decoderContext) unmarshalVector(desc *dynssz.TypeDescriptor, varName 
 			valVar = ctx.getValVar()
 			ctx.appendCode(indent, "\t%s := %s[i]\n", valVar, varName)
 		}
-		if desc.ElemDesc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+		if desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
 		}
 
@@ -567,7 +567,7 @@ func (ctx *decoderContext) unmarshalVector(desc *dynssz.TypeDescriptor, varName 
 
 		valVar := ctx.getValVar()
 		ctx.appendCode(indent+1, "%s := %s[i]\n", valVar, varName)
-		if desc.ElemDesc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+		if desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
 		}
 
@@ -587,11 +587,11 @@ func (ctx *decoderContext) unmarshalVector(desc *dynssz.TypeDescriptor, varName 
 }
 
 // unmarshalList generates unmarshal code for SSZ list (variable-size array) types.
-func (ctx *decoderContext) unmarshalList(desc *dynssz.TypeDescriptor, varName string, indent int) error {
-	if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic == 0 {
+func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
+	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 		// static byte arrays
-		if desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
-			if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
+			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
 
 				typename := ctx.typePrinter.TypeString(desc)
 				ctx.appendCode(indent, "if buf, err := dec.DecodeBytesBuf(dec.GetLength()); err != nil {\n")
@@ -612,7 +612,7 @@ func (ctx *decoderContext) unmarshalList(desc *dynssz.TypeDescriptor, varName st
 		// static elements
 		var fieldSizeVar string
 		var err error
-		if desc.ElemDesc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+		if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
 			fieldSizeVar, err = ctx.staticSizeVars.getStaticSizeVar(desc.ElemDesc)
 			if err != nil {
 				return err
@@ -644,7 +644,7 @@ func (ctx *decoderContext) unmarshalList(desc *dynssz.TypeDescriptor, varName st
 			valVar = ctx.getValVar()
 			ctx.appendCode(indent+1, "%s := %s[i]\n", valVar, varName)
 		}
-		if desc.ElemDesc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+		if desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
 		}
 
@@ -720,7 +720,7 @@ func (ctx *decoderContext) unmarshalList(desc *dynssz.TypeDescriptor, varName st
 
 		valVar := ctx.getValVar()
 		ctx.appendCode(indent+1, "%s := %s[i]\n", valVar, varName)
-		if desc.ElemDesc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+		if desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
 		}
 		if err := ctx.unmarshalType(desc.ElemDesc, valVar, indent+1, false, true); err != nil {
@@ -737,7 +737,7 @@ func (ctx *decoderContext) unmarshalList(desc *dynssz.TypeDescriptor, varName st
 }
 
 // unmarshalBitlist generates unmarshal code for SSZ bitlist types.
-func (ctx *decoderContext) unmarshalBitlist(desc *dynssz.TypeDescriptor, varName string, indent int) error {
+func (ctx *decoderContext) unmarshalBitlist(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
 	ctx.appendCode(indent, "blen := dec.GetLength()\n")
 
 	if desc.Kind != reflect.Array {
@@ -752,7 +752,7 @@ func (ctx *decoderContext) unmarshalBitlist(desc *dynssz.TypeDescriptor, varName
 }
 
 // unmarshalUnion generates unmarshal code for SSZ union types.
-func (ctx *decoderContext) unmarshalUnion(desc *dynssz.TypeDescriptor, varName string, indent int) error {
+func (ctx *decoderContext) unmarshalUnion(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
 	// Read selector
 	ctx.appendCode(indent, "selector, err := dec.DecodeUint8()\n")
 	ctx.appendCode(indent, "if err != nil {\n\treturn err\n}\n")

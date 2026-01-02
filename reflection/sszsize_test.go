@@ -2,13 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // This file is part of the dynamic-ssz library.
 
-package dynssz_test
+package reflection_test
 
 import (
 	"reflect"
 	"testing"
 
 	. "github.com/pk910/dynamic-ssz"
+	dynssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/ssztypes"
 )
 
 var ssizeTestMatrix = append(commonTestMatrix, []struct {
@@ -68,17 +70,17 @@ var ssizeTestMatrix = append(commonTestMatrix, []struct {
 	// uint128 and uint256 tests
 	{
 		"type_uint128_val_1",
-		TypeWrapper[struct {
+		dynssz.TypeWrapper[struct {
 			Field0 [16]byte `ssz-type:"uint128"`
-		}, [16]byte]{[16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}},
+		}, [16]byte]{Data: [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}},
 		fromHex("0x00000000000000000000000000000000"),
 		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
 	},
 	{
 		"type_uint256_val_1",
-		TypeWrapper[struct {
+		dynssz.TypeWrapper[struct {
 			Field0 [32]byte `ssz-type:"uint256"`
-		}, [32]byte]{[32]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}},
+		}, [32]byte]{Data: [32]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}},
 		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
 		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
 	},
@@ -104,8 +106,7 @@ func TestSizeSSZ(t *testing.T) {
 }
 
 func TestSizeSSZNoFastSsz(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	for _, test := range marshalTestMatrix {
 		t.Run(test.name, func(t *testing.T) {
@@ -124,24 +125,23 @@ func TestSizeSSZNoFastSsz(t *testing.T) {
 }
 
 func TestSizeSSZErrors(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	type InvalidDynamicType struct{}
 	invalidTypeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(InvalidDynamicType{}), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to get type descriptor: %v", err)
 	}
-	invalidTypeDesc.SszType = SszCustomType
+	invalidTypeDesc.SszType = ssztypes.SszCustomType
 	invalidTypeDesc.Size = 0
-	invalidTypeDesc.SszTypeFlags |= SszTypeFlagIsDynamic
+	invalidTypeDesc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
 
 	type InvalidStaticType struct{}
 	invalidTypeDesc2, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(InvalidStaticType{}), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to get type descriptor: %v", err)
 	}
-	invalidTypeDesc2.SszType = SszCustomType
+	invalidTypeDesc2.SszType = ssztypes.SszCustomType
 	invalidTypeDesc2.Size = 10
 
 	testCases := []struct {
@@ -302,12 +302,12 @@ func TestCustomFallbackSizeSSZ(t *testing.T) {
 		t.Fatalf("Expected struct descriptor, got nil")
 	}
 
-	if structDesc.SszType != SszContainerType {
+	if structDesc.SszType != ssztypes.SszContainerType {
 		t.Fatalf("Expected container type, got %v", structDesc.SszType)
 	}
 
-	structDesc.SszType = SszCustomType
-	structDesc.SszCompatFlags |= SszCompatFlagDynamicSizer
+	structDesc.SszType = ssztypes.SszCustomType
+	structDesc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicSizer
 
 	_, err = dynssz.SizeSSZ(&TestContainer{})
 	if err == nil {

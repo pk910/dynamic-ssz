@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // This file is part of the dynamic-ssz library.
 
-package dynssz
+package reflection
 
 import (
 	"fmt"
@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/pk910/dynamic-ssz/hasher"
+	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
@@ -36,10 +37,10 @@ import (
 //   - Special handling for Bitlist types
 //   - Primitive type hashing (bool, uint8, uint16, uint32, uint64)
 //   - Delegation to specialized functions for composite types (structs, arrays, slices)
-func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, pack bool, idt int) error {
+func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, pack bool, idt int) error {
 	hashIndex := hh.Index()
 
-	if sourceType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
+	if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 		if sourceValue.IsNil() {
 			sourceValue = reflect.New(sourceType.Type.Elem()).Elem()
 		} else {
@@ -47,23 +48,23 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 		}
 	}
 
-	isFastsszHasher := sourceType.SszCompatFlags&SszCompatFlagFastSSZHasher != 0
-	useDynamicHashRoot := sourceType.SszCompatFlags&SszCompatFlagDynamicHashRoot != 0
-	hasDynamicSize := sourceType.SszTypeFlags&SszTypeFlagHasDynamicSize != 0
-	hasDynamicMax := sourceType.SszTypeFlags&SszTypeFlagHasDynamicMax != 0
-	useFastSsz := !d.NoFastSsz && isFastsszHasher && !hasDynamicSize && !hasDynamicMax
-	if !useFastSsz && sourceType.SszType == SszCustomType {
+	isFastsszHasher := sourceType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0
+	useDynamicHashRoot := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0
+	hasDynamicSize := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
+	hasDynamicMax := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicMax != 0
+	useFastSsz := !ctx.noFastSsz && isFastsszHasher && !hasDynamicSize && !hasDynamicMax
+	if !useFastSsz && sourceType.SszType == ssztypes.SszCustomType {
 		useFastSsz = true
 	}
 
-	if d.Verbose {
-		d.LogCb("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v/%v)\t index: %v\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, isFastsszHasher, hasDynamicSize, hasDynamicMax, hashIndex)
+	if ctx.verbose {
+		ctx.logCb("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v/%v)\t index: %v\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, isFastsszHasher, hasDynamicSize, hasDynamicMax, hashIndex)
 	}
 
 	if useFastSsz {
 		sourceValuePtr := getPtr(sourceValue)
 
-		if sourceType.SszCompatFlags&SszCompatFlagHashTreeRootWith != 0 && sourceType.HashTreeRootWithMethod != nil {
+		if sourceType.SszCompatFlags&ssztypes.SszCompatFlagHashTreeRootWith != 0 && sourceType.HashTreeRootWithMethod != nil {
 			// Use cached HashTreeRootWith method for better performance
 
 			// Call the cached method with our hasher
@@ -90,7 +91,7 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 		// Use dynamic hash root - can always be used even with dynamic specs
 		hasher, ok := getPtr(sourceValue).Interface().(sszutils.DynamicHashRoot)
 		if ok {
-			err := hasher.HashTreeRootWithDyn(d, hh)
+			err := hasher.HashTreeRootWithDyn(ctx.ds, hh)
 			if err != nil {
 				return fmt.Errorf("failed HashTreeRootDyn: %w", err)
 			}
@@ -102,69 +103,69 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 	if !useFastSsz && !useDynamicHashRoot {
 		// Route to appropriate handler based on type
 		switch sourceType.SszType {
-		case SszTypeWrapperType:
-			err := d.buildRootFromTypeWrapper(sourceType, sourceValue, hh, pack, idt)
+		case ssztypes.SszTypeWrapperType:
+			err := ctx.buildRootFromTypeWrapper(sourceType, sourceValue, hh, pack, idt)
 			if err != nil {
 				return err
 			}
-		case SszContainerType:
-			err := d.buildRootFromContainer(sourceType, sourceValue, hh, idt)
+		case ssztypes.SszContainerType:
+			err := ctx.buildRootFromContainer(sourceType, sourceValue, hh, idt)
 			if err != nil {
 				return err
 			}
-		case SszProgressiveContainerType:
-			err := d.buildRootFromProgressiveContainer(sourceType, sourceValue, hh, idt)
+		case ssztypes.SszProgressiveContainerType:
+			err := ctx.buildRootFromProgressiveContainer(sourceType, sourceValue, hh, idt)
 			if err != nil {
 				return err
 			}
-		case SszVectorType, SszBitvectorType:
-			err := d.buildRootFromVector(sourceType, sourceValue, hh, idt)
+		case ssztypes.SszVectorType, ssztypes.SszBitvectorType:
+			err := ctx.buildRootFromVector(sourceType, sourceValue, hh, idt)
 			if err != nil {
 				return err
 			}
-		case SszListType, SszProgressiveListType:
-			err := d.buildRootFromList(sourceType, sourceValue, hh, idt)
+		case ssztypes.SszListType, ssztypes.SszProgressiveListType:
+			err := ctx.buildRootFromList(sourceType, sourceValue, hh, idt)
 			if err != nil {
 				return err
 			}
-		case SszBitlistType, SszProgressiveBitlistType:
-			err := d.buildRootFromBitlist(sourceType, sourceValue, hh, idt)
+		case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType:
+			err := ctx.buildRootFromBitlist(sourceType, sourceValue, hh, idt)
 			if err != nil {
 				return err
 			}
-		case SszCompatibleUnionType:
-			err := d.buildRootFromCompatibleUnion(sourceType, sourceValue, hh, idt)
+		case ssztypes.SszCompatibleUnionType:
+			err := ctx.buildRootFromCompatibleUnion(sourceType, sourceValue, hh, idt)
 			if err != nil {
 				return err
 			}
 
-		case SszBoolType:
+		case ssztypes.SszBoolType:
 			if pack {
 				hh.AppendBool(sourceValue.Bool())
 			} else {
 				hh.PutBool(sourceValue.Bool())
 			}
-		case SszUint8Type:
+		case ssztypes.SszUint8Type:
 			if pack {
 				hh.AppendUint8(uint8(sourceValue.Uint()))
 			} else {
 				hh.PutUint8(uint8(sourceValue.Uint()))
 			}
-		case SszUint16Type:
+		case ssztypes.SszUint16Type:
 			if pack {
 				hh.AppendUint16(uint16(sourceValue.Uint()))
 			} else {
 				hh.PutUint16(uint16(sourceValue.Uint()))
 			}
-		case SszUint32Type:
+		case ssztypes.SszUint32Type:
 			if pack {
 				hh.AppendUint32(uint32(sourceValue.Uint()))
 			} else {
 				hh.PutUint32(uint32(sourceValue.Uint()))
 			}
-		case SszUint64Type:
+		case ssztypes.SszUint64Type:
 			var uintVal uint64
-			if sourceType.GoTypeFlags&GoTypeFlagIsTime != 0 {
+			if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsTime != 0 {
 				timeVal, isTime := sourceValue.Interface().(time.Time)
 				if !isTime {
 					return fmt.Errorf("time.Time type expected, got %v", sourceType.Type.Name())
@@ -178,8 +179,8 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 			} else {
 				hh.PutUint64(uintVal)
 			}
-		case SszUint128Type, SszUint256Type:
-			err := d.buildRootFromLargeUint(sourceType, sourceValue, hh, pack, idt)
+		case ssztypes.SszUint128Type, ssztypes.SszUint256Type:
+			err := ctx.buildRootFromLargeUint(sourceType, sourceValue, hh, pack, idt)
 			if err != nil {
 				return err
 			}
@@ -188,8 +189,8 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 		}
 	}
 
-	if d.Verbose {
-		d.LogCb("%shash: 0x%x\n", strings.Repeat(" ", idt), hh.Hash())
+	if ctx.verbose {
+		ctx.logCb("%shash: 0x%x\n", strings.Repeat(" ", idt), hh.Hash())
 	}
 
 	return nil
@@ -208,16 +209,16 @@ func (d *DynSsz) buildRootFromType(sourceType *TypeDescriptor, sourceValue refle
 //   - error: An error if hashing fails
 //
 // The function extracts the Data field from the TypeWrapper and builds the hash tree root for the wrapped value using its type descriptor.
-func (d *DynSsz) buildRootFromTypeWrapper(sourceType *TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, pack bool, idt int) error {
-	if d.Verbose {
-		d.LogCb("%sbuildRootFromTypeWrapper: %s\n", strings.Repeat(" ", idt), sourceType.Type.Name())
+func (ctx *ReflectionCtx) buildRootFromTypeWrapper(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, pack bool, idt int) error {
+	if ctx.verbose {
+		ctx.logCb("%sbuildRootFromTypeWrapper: %s\n", strings.Repeat(" ", idt), sourceType.Type.Name())
 	}
 
 	// Extract the Data field from the TypeWrapper
 	dataField := sourceValue.Field(0)
 
 	// Build hash tree root for the wrapped value using its type descriptor
-	return d.buildRootFromType(sourceType.ElemDesc, dataField, hh, pack, idt+2)
+	return ctx.buildRootFromType(sourceType.ElemDesc, dataField, hh, pack, idt+2)
 }
 
 // buildRootFromLargeUint handles hashing of large uint types.
@@ -238,7 +239,7 @@ func (d *DynSsz) buildRootFromTypeWrapper(sourceType *TypeDescriptor, sourceValu
 //
 // Returns:
 //   - error: An error if hashing fails
-func (d *DynSsz) buildRootFromLargeUint(sourceType *TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, pack bool, idt int) error {
+func (ctx *ReflectionCtx) buildRootFromLargeUint(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, pack bool, idt int) error {
 	// Handle unaddressable arrays
 	if !sourceValue.CanAddr() && sourceValue.Kind() == reflect.Array {
 		// workaround for unaddressable static arrays
@@ -288,7 +289,7 @@ func (d *DynSsz) buildRootFromLargeUint(sourceType *TypeDescriptor, sourceValue 
 //
 // The Merkleize call at the end combines all field hashes into the final root
 // using binary tree hashing with zero-padding to the next power of two.
-func (d *DynSsz) buildRootFromContainer(sourceType *TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
+func (ctx *ReflectionCtx) buildRootFromContainer(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
 	hashIndex := hh.Index()
 
 	for i := 0; i < len(sourceType.ContainerDesc.Fields); i++ {
@@ -296,11 +297,11 @@ func (d *DynSsz) buildRootFromContainer(sourceType *TypeDescriptor, sourceValue 
 		fieldType := field.Type
 		fieldValue := sourceValue.Field(i)
 
-		if d.Verbose {
-			d.LogCb("%sfield %v\n", strings.Repeat(" ", idt), field.Name)
+		if ctx.verbose {
+			ctx.logCb("%sfield %v\n", strings.Repeat(" ", idt), field.Name)
 		}
 
-		err := d.buildRootFromType(fieldType, fieldValue, hh, false, idt+2)
+		err := ctx.buildRootFromType(fieldType, fieldValue, hh, false, idt+2)
 		if err != nil {
 			return err
 		}
@@ -334,7 +335,7 @@ func (d *DynSsz) buildRootFromContainer(sourceType *TypeDescriptor, sourceValue 
 //
 // The Merkleize call at the end combines all field hashes into the final root
 // using binary tree hashing with zero-padding to the next power of two.
-func (d *DynSsz) buildRootFromProgressiveContainer(sourceType *TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
+func (ctx *ReflectionCtx) buildRootFromProgressiveContainer(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
 	hashIndex := hh.Index()
 	lastActiveField := -1
 
@@ -353,18 +354,18 @@ func (d *DynSsz) buildRootFromProgressiveContainer(sourceType *TypeDescriptor, s
 		fieldType := field.Type
 		fieldValue := sourceValue.Field(i)
 
-		if d.Verbose {
-			d.LogCb("%sfield %v\n", strings.Repeat(" ", idt), field.Name)
+		if ctx.verbose {
+			ctx.logCb("%sfield %v\n", strings.Repeat(" ", idt), field.Name)
 		}
 
-		err := d.buildRootFromType(fieldType, fieldValue, hh, false, idt+2)
+		err := ctx.buildRootFromType(fieldType, fieldValue, hh, false, idt+2)
 		if err != nil {
 			return err
 		}
 	}
 
 	// Get active fields based on the struct value
-	activeFields := d.getActiveFields(sourceType)
+	activeFields := ctx.getActiveFields(sourceType)
 
 	// merkleize progressively with active fields
 	hh.MerkleizeProgressiveWithActiveFields(hashIndex, activeFields)
@@ -386,7 +387,7 @@ func (d *DynSsz) buildRootFromProgressiveContainer(sourceType *TypeDescriptor, s
 //
 // Returns:
 //   - error: An error if hashing fails
-func (d *DynSsz) buildRootFromCompatibleUnion(sourceType *TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
+func (ctx *ReflectionCtx) buildRootFromCompatibleUnion(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
 	// We know CompatibleUnion has exactly 2 fields: Variant (uint8) and Data (interface{})
 	// Field 0 is Variant, Field 1 is Data
 	variant := uint8(sourceValue.Field(0).Uint())
@@ -406,7 +407,7 @@ func (d *DynSsz) buildRootFromCompatibleUnion(sourceType *TypeDescriptor, source
 
 	hashIndex := hh.Index()
 
-	err := d.buildRootFromType(variantDesc, dataField, hh, false, idt+2)
+	err := ctx.buildRootFromType(variantDesc, dataField, hh, false, idt+2)
 	if err != nil {
 		return fmt.Errorf("failed to hash union variant %d: %w", variant, err)
 	}
@@ -441,7 +442,7 @@ func (d *DynSsz) buildRootFromCompatibleUnion(sourceType *TypeDescriptor, source
 // Special handling:
 //   - Byte arrays use PutBytes for efficient chunk-based hashing
 //   - Arrays with max size hints include length mixing for proper limits
-func (d *DynSsz) buildRootFromVector(sourceType *TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
+func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
 	hashIndex := hh.Index()
 
 	sliceLen := sourceValue.Len()
@@ -459,7 +460,7 @@ func (d *DynSsz) buildRootFromVector(sourceType *TypeDescriptor, sourceValue ref
 	}
 
 	// For byte arrays, handle as a single unit
-	if sourceType.GoTypeFlags&GoTypeFlagIsByteArray != 0 {
+	if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
 		if !sourceValue.CanAddr() {
 			// workaround for unaddressable static arrays
 			sourceValPtr := reflect.New(sourceType.Type)
@@ -468,7 +469,7 @@ func (d *DynSsz) buildRootFromVector(sourceType *TypeDescriptor, sourceValue ref
 		}
 
 		var bytes []byte
-		if sourceType.GoTypeFlags&GoTypeFlagIsString != 0 {
+		if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
 			bytes = []byte(sourceValue.String())[:sliceLen]
 		} else {
 			bytes = sourceValue.Bytes()[:sliceLen]
@@ -492,7 +493,7 @@ func (d *DynSsz) buildRootFromVector(sourceType *TypeDescriptor, sourceValue ref
 		for i := 0; i < sliceLen; i++ {
 			fieldValue := sourceValue.Index(i)
 
-			err := d.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, true, idt+2)
+			err := ctx.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, true, idt+2)
 			if err != nil {
 				return err
 			}
@@ -500,14 +501,14 @@ func (d *DynSsz) buildRootFromVector(sourceType *TypeDescriptor, sourceValue ref
 
 		if appendZero > 0 {
 			var zeroVal reflect.Value
-			if sourceType.ElemDesc.GoTypeFlags&GoTypeFlagIsPointer != 0 {
+			if sourceType.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 				zeroVal = reflect.New(sourceType.ElemDesc.Type.Elem())
 			} else {
 				zeroVal = reflect.New(sourceType.ElemDesc.Type).Elem()
 			}
 
 			for i := 0; i < appendZero; i++ {
-				err := d.buildRootFromType(sourceType.ElemDesc, zeroVal, hh, true, idt+2)
+				err := ctx.buildRootFromType(sourceType.ElemDesc, zeroVal, hh, true, idt+2)
 				if err != nil {
 					return err
 				}
@@ -544,13 +545,13 @@ func (d *DynSsz) buildRootFromVector(sourceType *TypeDescriptor, sourceValue ref
 //
 // For slices with max size hints, MerkleizeWithMixin ensures the length is
 // properly mixed into the root, implementing the SSZ list hashing algorithm.
-func (d *DynSsz) buildRootFromList(sourceType *TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
+func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
 	hashIndex := hh.Index()
 
 	sliceLen := sourceValue.Len()
 
 	// For byte arrays, handle as a single unit
-	if sourceType.GoTypeFlags&GoTypeFlagIsByteArray != 0 {
+	if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
 		if !sourceValue.CanAddr() {
 			// workaround for unaddressable static arrays
 			sourceValPtr := reflect.New(sourceType.Type)
@@ -559,7 +560,7 @@ func (d *DynSsz) buildRootFromList(sourceType *TypeDescriptor, sourceValue refle
 		}
 
 		var bytes []byte
-		if sourceType.GoTypeFlags&GoTypeFlagIsString != 0 {
+		if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
 			bytes = []byte(sourceValue.String())
 		} else {
 			bytes = sourceValue.Bytes()
@@ -572,7 +573,7 @@ func (d *DynSsz) buildRootFromList(sourceType *TypeDescriptor, sourceValue refle
 		for i := 0; i < arrayLen; i++ {
 			fieldValue := sourceValue.Index(i)
 
-			err := d.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, true, idt+2)
+			err := ctx.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, true, idt+2)
 			if err != nil {
 				return err
 			}
@@ -581,25 +582,25 @@ func (d *DynSsz) buildRootFromList(sourceType *TypeDescriptor, sourceValue refle
 		hh.FillUpTo32()
 	}
 
-	if sourceType.SszType == SszProgressiveListType {
+	if sourceType.SszType == ssztypes.SszProgressiveListType {
 		hh.MerkleizeProgressiveWithMixin(hashIndex, uint64(sliceLen))
-	} else if sourceType.SszTypeFlags&SszTypeFlagHasLimit != 0 {
+	} else if sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
 		var limit, itemSize uint64
 
 		switch sourceType.ElemDesc.SszType {
-		case SszBoolType:
+		case ssztypes.SszBoolType:
 			itemSize = 1
-		case SszUint8Type:
+		case ssztypes.SszUint8Type:
 			itemSize = 1
-		case SszUint16Type:
+		case ssztypes.SszUint16Type:
 			itemSize = 2
-		case SszUint32Type:
+		case ssztypes.SszUint32Type:
 			itemSize = 4
-		case SszUint64Type:
+		case ssztypes.SszUint64Type:
 			itemSize = 8
-		case SszUint128Type:
+		case ssztypes.SszUint128Type:
 			itemSize = 16
-		case SszUint256Type:
+		case ssztypes.SszUint256Type:
 			itemSize = 32
 		default:
 			itemSize = 0
@@ -636,7 +637,7 @@ func (d *DynSsz) buildRootFromList(sourceType *TypeDescriptor, sourceValue refle
 //
 // Returns:
 //   - []byte: The active fields bitlist as bytes (≤256 bits, so max 32 bytes)
-func (d *DynSsz) getActiveFields(sourceType *TypeDescriptor) []byte {
+func (ctx *ReflectionCtx) getActiveFields(sourceType *ssztypes.TypeDescriptor) []byte {
 	// Find the highest ssz-index to determine bitlist size
 	maxIndex := uint16(0)
 	for _, field := range sourceType.ContainerDesc.Fields {
@@ -679,11 +680,11 @@ func (d *DynSsz) getActiveFields(sourceType *TypeDescriptor) []byte {
 //
 // Returns:
 //   - error: An error if bitlist hashing fails
-func (d *DynSsz) buildRootFromBitlist(sourceType *TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
+func (ctx *ReflectionCtx) buildRootFromBitlist(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
 	maxSize := uint64(0)
 	bytes := sourceValue.Bytes()
 
-	if sourceType.SszTypeFlags&SszTypeFlagHasLimit != 0 {
+	if sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
 		maxSize = sourceType.Limit
 	} else {
 		maxSize = uint64(len(bytes) * 8)
@@ -697,7 +698,7 @@ func (d *DynSsz) buildRootFromBitlist(sourceType *TypeDescriptor, sourceValue re
 	// merkleize the content with mix in length
 	indx := hh.Index()
 	hh.AppendBytes32(bitlist)
-	if sourceType.SszType == SszProgressiveBitlistType {
+	if sourceType.SszType == ssztypes.SszProgressiveBitlistType {
 		hh.MerkleizeProgressiveWithMixin(indx, size)
 	} else {
 		hh.MerkleizeWithMixin(indx, size, (maxSize+255)/256)

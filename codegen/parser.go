@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	dynssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/ssztypes"
 )
 
 var (
@@ -54,8 +54,8 @@ type CodegenInfo struct {
 // Fields:
 //   - cache: Type descriptor cache to avoid recomputing analysis for the same types
 type Parser struct {
-	cache       map[string]*dynssz.TypeDescriptor
-	CompatFlags map[string]dynssz.SszCompatFlag
+	cache       map[string]*ssztypes.TypeDescriptor
+	CompatFlags map[string]ssztypes.SszCompatFlag
 }
 
 // NewParser creates a new compile-time type parser for code generation.
@@ -76,8 +76,8 @@ type Parser struct {
 //	}
 func NewParser() *Parser {
 	return &Parser{
-		cache:       make(map[string]*dynssz.TypeDescriptor),
-		CompatFlags: map[string]dynssz.SszCompatFlag{},
+		cache:       make(map[string]*ssztypes.TypeDescriptor),
+		CompatFlags: map[string]ssztypes.SszCompatFlag{},
 	}
 }
 
@@ -102,20 +102,20 @@ func NewParser() *Parser {
 //   - maxSizeHints: Optional maximum size limits for variable-length types
 //
 // Returns:
-//   - *dynssz.TypeDescriptor: Complete type descriptor for code generation
+//   - *ssztypes.TypeDescriptor: Complete type descriptor for code generation
 //   - error: An error if the type is incompatible with SSZ or analysis fails
 //
 // Example:
 //
 //	parser := NewParser()
-//	typeHints := []dynssz.SszTypeHint{{Type: dynssz.SszListType}}
-//	sizeHints := []dynssz.SszSizeHint{{Size: 1024}}
+//	typeHints := []ssztypes.SszTypeHint{{Type: ssztypes.SszListType}}
+//	sizeHints := []ssztypes.SszSizeHint{{Size: 1024}}
 //
 //	desc, err := parser.GetTypeDescriptor(structType, typeHints, sizeHints, nil)
 //	if err != nil {
 //	    return fmt.Errorf("failed to analyze type: %w", err)
 //	}
-func (p *Parser) GetTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeHint, sizeHints []dynssz.SszSizeHint, maxSizeHints []dynssz.SszMaxSizeHint) (*dynssz.TypeDescriptor, error) {
+func (p *Parser) GetTypeDescriptor(typ types.Type, typeHints []ssztypes.SszTypeHint, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint) (*ssztypes.TypeDescriptor, error) {
 	desc, err := p.buildTypeDescriptor(typ, typeHints, sizeHints, maxSizeHints)
 	if err != nil {
 		return nil, err
@@ -124,12 +124,12 @@ func (p *Parser) GetTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeHin
 	return desc, nil
 }
 
-func (p *Parser) getCompatFlag(typ types.Type) dynssz.SszCompatFlag {
+func (p *Parser) getCompatFlag(typ types.Type) ssztypes.SszCompatFlag {
 	typeName := typ.String()
 	return p.CompatFlags[typeName]
 }
 
-func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeHint, sizeHints []dynssz.SszSizeHint, maxSizeHints []dynssz.SszMaxSizeHint) (*dynssz.TypeDescriptor, error) {
+func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []ssztypes.SszTypeHint, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint) (*ssztypes.TypeDescriptor, error) {
 	cacheable := len(typeHints) == 0 && len(sizeHints) == 0 && len(maxSizeHints) == 0
 	typeKey := fmt.Sprintf("%v", typ.String())
 	if cacheable && p.cache[typeKey] != nil {
@@ -139,7 +139,7 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 	// Create descriptor
 	codegenInfo := &CodegenInfo{Type: typ}
 	var anyCodegenInfo any = codegenInfo
-	desc := &dynssz.TypeDescriptor{
+	desc := &ssztypes.TypeDescriptor{
 		CodegenInfo: &anyCodegenInfo,
 	}
 
@@ -156,7 +156,7 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 			typ = named.Underlying()
 		} else if ptr, ok := typ.(*types.Pointer); ok {
 			typ = ptr.Elem()
-			desc.GoTypeFlags |= dynssz.GoTypeFlagIsPointer
+			desc.GoTypeFlags |= ssztypes.GoTypeFlagIsPointer
 			innerType = typ
 		} else if alias, ok := typ.(*types.Alias); ok {
 			typ = alias.Underlying()
@@ -181,7 +181,7 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 			desc.Kind = reflect.Uint64
 		case types.String:
 			desc.Kind = reflect.String
-			desc.GoTypeFlags |= dynssz.GoTypeFlagIsString
+			desc.GoTypeFlags |= ssztypes.GoTypeFlagIsString
 		default:
 			desc.Kind = reflect.Invalid
 		}
@@ -201,22 +201,22 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 			desc.SizeExpression = &sizeHints[0].Expr
 		}
 		if sizeHints[0].Bits {
-			desc.SszTypeFlags |= dynssz.SszTypeFlagHasBitSize
+			desc.SszTypeFlags |= ssztypes.SszTypeFlagHasBitSize
 			desc.BitSize = sizeHints[0].Size
 		}
 		for _, hint := range sizeHints {
 			if hint.Custom {
-				desc.SszTypeFlags |= dynssz.SszTypeFlagHasDynamicSize
+				desc.SszTypeFlags |= ssztypes.SszTypeFlagHasDynamicSize
 			}
 			if hint.Expr != "" {
-				desc.SszTypeFlags |= dynssz.SszTypeFlagHasSizeExpr
+				desc.SszTypeFlags |= ssztypes.SszTypeFlagHasSizeExpr
 			}
 		}
 	}
 
 	if len(maxSizeHints) > 0 {
 		if !maxSizeHints[0].NoValue {
-			desc.SszTypeFlags |= dynssz.SszTypeFlagHasLimit
+			desc.SszTypeFlags |= ssztypes.SszTypeFlagHasLimit
 			desc.Limit = maxSizeHints[0].Size
 		}
 		if maxSizeHints[0].Expr != "" {
@@ -224,26 +224,26 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 		}
 		for _, hint := range maxSizeHints {
 			if hint.Custom {
-				desc.SszTypeFlags |= dynssz.SszTypeFlagHasDynamicMax
+				desc.SszTypeFlags |= ssztypes.SszTypeFlagHasDynamicMax
 			}
 			if hint.Expr != "" {
-				desc.SszTypeFlags |= dynssz.SszTypeFlagHasMaxExpr
+				desc.SszTypeFlags |= ssztypes.SszTypeFlagHasMaxExpr
 			}
 		}
 	}
 
 	// Determine SSZ type - first use type hints if specified
-	sszType := dynssz.SszUnspecifiedType
+	sszType := ssztypes.SszUnspecifiedType
 	if len(typeHints) > 0 {
 		sszType = typeHints[0].Type
 	}
 
 	if desc.Kind == reflect.String {
-		desc.GoTypeFlags |= dynssz.GoTypeFlagIsString
+		desc.GoTypeFlags |= ssztypes.GoTypeFlagIsString
 	}
 
 	// Auto-detect ssz type if not specified
-	if sszType == dynssz.SszUnspecifiedType {
+	if sszType == ssztypes.SszUnspecifiedType {
 		// Detect well-known types first (named types)
 		var obj *types.TypeName
 		if alias, ok := innerType.(*types.Alias); ok {
@@ -259,52 +259,52 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 
 			switch {
 			case pkgPath == "time" && typeName == "Time":
-				sszType = dynssz.SszUint64Type
-				desc.GoTypeFlags |= dynssz.GoTypeFlagIsTime
+				sszType = ssztypes.SszUint64Type
+				desc.GoTypeFlags |= ssztypes.GoTypeFlagIsTime
 			case pkgPath == "github.com/holiman/uint256" && typeName == "Int":
-				sszType = dynssz.SszUint256Type
+				sszType = ssztypes.SszUint256Type
 			case pkgPath == "github.com/prysmaticlabs/go-bitfield" && typeName == "Bitlist":
-				sszType = dynssz.SszBitlistType
+				sszType = ssztypes.SszBitlistType
 			case pkgPath == "github.com/OffchainLabs/go-bitfield" && typeName == "Bitlist":
-				sszType = dynssz.SszBitlistType
+				sszType = ssztypes.SszBitlistType
 			case pkgPath == "github.com/pk910/dynamic-ssz" && typeName == "CompatibleUnion":
-				sszType = dynssz.SszCompatibleUnionType
+				sszType = ssztypes.SszCompatibleUnionType
 			case pkgPath == "github.com/pk910/dynamic-ssz" && typeName == "TypeWrapper":
-				sszType = dynssz.SszTypeWrapperType
+				sszType = ssztypes.SszTypeWrapperType
 			}
 		}
 	}
 
-	if sszType == dynssz.SszUnspecifiedType {
+	if sszType == ssztypes.SszUnspecifiedType {
 		switch desc.Kind {
 		// basic types
 		case reflect.Bool:
-			sszType = dynssz.SszBoolType
+			sszType = ssztypes.SszBoolType
 		case reflect.Uint8:
-			sszType = dynssz.SszUint8Type
+			sszType = ssztypes.SszUint8Type
 		case reflect.Uint16:
-			sszType = dynssz.SszUint16Type
+			sszType = ssztypes.SszUint16Type
 		case reflect.Uint32:
-			sszType = dynssz.SszUint32Type
+			sszType = ssztypes.SszUint32Type
 		case reflect.Uint64:
-			sszType = dynssz.SszUint64Type
+			sszType = ssztypes.SszUint64Type
 
 		// complex types
 		case reflect.Struct:
-			sszType = dynssz.SszContainerType
+			sszType = ssztypes.SszContainerType
 		case reflect.Array:
-			sszType = dynssz.SszVectorType
+			sszType = ssztypes.SszVectorType
 		case reflect.Slice:
 			if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
-				sszType = dynssz.SszVectorType
+				sszType = ssztypes.SszVectorType
 			} else {
-				sszType = dynssz.SszListType
+				sszType = ssztypes.SszListType
 			}
 		case reflect.String:
 			if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
-				sszType = dynssz.SszVectorType
+				sszType = ssztypes.SszVectorType
 			} else {
-				sszType = dynssz.SszListType
+				sszType = ssztypes.SszListType
 			}
 
 		// unsupported types
@@ -341,7 +341,7 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 	// Check type compatibility and build descriptor based on SSZ type
 	switch sszType {
 	// basic types
-	case dynssz.SszBoolType:
+	case ssztypes.SszBoolType:
 		if desc.Kind != reflect.Bool {
 			return nil, fmt.Errorf("bool ssz type can only be represented by bool types, got %v", desc.Kind)
 		}
@@ -352,7 +352,7 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 			return nil, fmt.Errorf("bool ssz type must be ssz-size:1, got %v", sizeHints[0].Size)
 		}
 		desc.Size = 1
-	case dynssz.SszUint8Type:
+	case ssztypes.SszUint8Type:
 		if desc.Kind != reflect.Uint8 {
 			return nil, fmt.Errorf("uint8 ssz type can only be represented by uint8 types, got %v", desc.Kind)
 		}
@@ -363,7 +363,7 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 			return nil, fmt.Errorf("uint8 ssz type must be ssz-size:1, got %v", sizeHints[0].Size)
 		}
 		desc.Size = 1
-	case dynssz.SszUint16Type:
+	case ssztypes.SszUint16Type:
 		if desc.Kind != reflect.Uint16 {
 			return nil, fmt.Errorf("uint16 ssz type can only be represented by uint16 types, got %v", desc.Kind)
 		}
@@ -374,7 +374,7 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 			return nil, fmt.Errorf("uint16 ssz type must be ssz-size:2, got %v", sizeHints[0].Size)
 		}
 		desc.Size = 2
-	case dynssz.SszUint32Type:
+	case ssztypes.SszUint32Type:
 		if desc.Kind != reflect.Uint32 {
 			return nil, fmt.Errorf("uint32 ssz type can only be represented by uint32 types, got %v", desc.Kind)
 		}
@@ -385,8 +385,8 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 			return nil, fmt.Errorf("uint32 ssz type must be ssz-size:4, got %v", sizeHints[0].Size)
 		}
 		desc.Size = 4
-	case dynssz.SszUint64Type:
-		if desc.Kind != reflect.Uint64 && desc.GoTypeFlags&dynssz.GoTypeFlagIsTime == 0 {
+	case ssztypes.SszUint64Type:
+		if desc.Kind != reflect.Uint64 && desc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
 			return nil, fmt.Errorf("uint64 ssz type can only be represented by uint64 or time.Time types, got %v", desc.Kind)
 		}
 		if len(sizeHints) > 0 && sizeHints[0].Bits {
@@ -396,7 +396,7 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 			return nil, fmt.Errorf("uint64 ssz type must be ssz-size:8, got %v", sizeHints[0].Size)
 		}
 		desc.Size = 8
-	case dynssz.SszUint128Type:
+	case ssztypes.SszUint128Type:
 		if len(sizeHints) > 0 && sizeHints[0].Bits {
 			return nil, fmt.Errorf("uint128 ssz type cannot be limited by bits, use regular size tag instead")
 		}
@@ -404,7 +404,7 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 		if err != nil {
 			return nil, err
 		}
-	case dynssz.SszUint256Type:
+	case ssztypes.SszUint256Type:
 		if len(sizeHints) > 0 && sizeHints[0].Bits {
 			return nil, fmt.Errorf("uint256 ssz type cannot be limited by bits, use regular size tag instead")
 		}
@@ -414,7 +414,7 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 		}
 
 	// complex types
-	case dynssz.SszTypeWrapperType:
+	case ssztypes.SszTypeWrapperType:
 		if named, ok := innerType.(*types.Named); ok {
 			err := p.buildTypeWrapperDescriptor(desc, named, typeHints, sizeHints, maxSizeHints)
 			if err != nil {
@@ -423,7 +423,7 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 		} else {
 			return nil, fmt.Errorf("TypeWrapper must be a named type")
 		}
-	case dynssz.SszContainerType, dynssz.SszProgressiveContainerType:
+	case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
 		if struc, ok := typ.(*types.Struct); ok {
 			err := p.buildContainerDescriptor(desc, struc)
 			if err != nil {
@@ -432,22 +432,22 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 		} else {
 			return nil, fmt.Errorf("container ssz type can only be represented by struct types, got %v", desc.Kind)
 		}
-	case dynssz.SszVectorType, dynssz.SszBitvectorType:
+	case ssztypes.SszVectorType, ssztypes.SszBitvectorType:
 		err := p.buildVectorDescriptor(desc, typ, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
 			return nil, err
 		}
-	case dynssz.SszListType, dynssz.SszProgressiveListType:
+	case ssztypes.SszListType, ssztypes.SszProgressiveListType:
 		err := p.buildListDescriptor(desc, typ, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
 			return nil, err
 		}
-	case dynssz.SszBitlistType, dynssz.SszProgressiveBitlistType:
+	case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType:
 		err := p.buildBitlistDescriptor(desc, typ, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
 			return nil, err
 		}
-	case dynssz.SszCompatibleUnionType:
+	case ssztypes.SszCompatibleUnionType:
 		if named, ok := innerType.(*types.Named); ok {
 			err := p.buildCompatibleUnionDescriptor(desc, named)
 			if err != nil {
@@ -456,7 +456,7 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 		} else {
 			return nil, fmt.Errorf("CompatibleUnion must be a named type")
 		}
-	case dynssz.SszCustomType:
+	case ssztypes.SszCustomType:
 		if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
 			desc.Size = uint32(sizeHints[0].Size)
 			if sizeHints[0].Bits {
@@ -465,11 +465,11 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 			}
 		} else {
 			desc.Size = 0
-			desc.SszTypeFlags |= dynssz.SszTypeFlagIsDynamic
+			desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
 		}
 	}
 
-	if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 && desc.SszType != dynssz.SszBitvectorType && desc.SszType != dynssz.SszBitlistType {
+	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 && desc.SszType != ssztypes.SszBitvectorType && desc.SszType != ssztypes.SszBitlistType {
 		return nil, fmt.Errorf("bit size tag is only allowed for bitvector or bitlist types, got %v", desc.SszType)
 	}
 
@@ -481,43 +481,43 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 		otherType = types.NewPointer(otherType)
 	}
 
-	if (desc.SszTypeFlags&dynssz.SszTypeFlagHasDynamicSize == 0 || desc.SszType == dynssz.SszCustomType) && (p.getFastsszConvertCompatibility(originalType) || p.getFastsszConvertCompatibility(otherType)) {
-		desc.SszCompatFlags |= dynssz.SszCompatFlagFastSSZMarshaler
+	if (desc.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize == 0 || desc.SszType == ssztypes.SszCustomType) && (p.getFastsszConvertCompatibility(originalType) || p.getFastsszConvertCompatibility(otherType)) {
+		desc.SszCompatFlags |= ssztypes.SszCompatFlagFastSSZMarshaler
 	}
-	if desc.SszTypeFlags&dynssz.SszTypeFlagHasDynamicMax == 0 || desc.SszType == dynssz.SszCustomType {
+	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicMax == 0 || desc.SszType == ssztypes.SszCustomType {
 		if p.getFastsszHashCompatibility(originalType) || p.getFastsszHashCompatibility(otherType) {
-			desc.SszCompatFlags |= dynssz.SszCompatFlagFastSSZHasher
+			desc.SszCompatFlags |= ssztypes.SszCompatFlagFastSSZHasher
 		}
 		if p.getHashTreeRootWithCompatibility(originalType) || p.getHashTreeRootWithCompatibility(otherType) {
-			desc.SszCompatFlags |= dynssz.SszCompatFlagHashTreeRootWith
+			desc.SszCompatFlags |= ssztypes.SszCompatFlagHashTreeRootWith
 		}
 	}
 
 	// Check for dynamic interface implementations
 	if p.getDynamicMarshalerCompatibility(originalType) || p.getDynamicMarshalerCompatibility(otherType) {
-		desc.SszCompatFlags |= dynssz.SszCompatFlagDynamicMarshaler
+		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicMarshaler
 	}
 	if p.getDynamicUnmarshalerCompatibility(originalType) || p.getDynamicUnmarshalerCompatibility(otherType) {
-		desc.SszCompatFlags |= dynssz.SszCompatFlagDynamicUnmarshaler
+		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicUnmarshaler
 	}
 	if p.getDynamicEncoderCompatibility(originalType) || p.getDynamicEncoderCompatibility(otherType) {
-		desc.SszCompatFlags |= dynssz.SszCompatFlagDynamicEncoder
+		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicEncoder
 	}
 	if p.getDynamicDecoderCompatibility(originalType) || p.getDynamicDecoderCompatibility(otherType) {
-		desc.SszCompatFlags |= dynssz.SszCompatFlagDynamicDecoder
+		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicDecoder
 	}
 	if p.getDynamicSizerCompatibility(originalType) || p.getDynamicSizerCompatibility(otherType) {
-		desc.SszCompatFlags |= dynssz.SszCompatFlagDynamicSizer
+		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicSizer
 	}
 	if p.getDynamicHashRootCompatibility(originalType) || p.getDynamicHashRootCompatibility(otherType) {
-		desc.SszCompatFlags |= dynssz.SszCompatFlagDynamicHashRoot
+		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicHashRoot
 	}
 
 	desc.SszCompatFlags |= p.getCompatFlag(innerType)
 
-	if desc.SszType == dynssz.SszCustomType {
-		isCompatible := desc.SszCompatFlags&dynssz.SszCompatFlagFastSSZMarshaler != 0 && desc.SszCompatFlags&dynssz.SszCompatFlagFastSSZHasher != 0
-		//isCompatible = isCompatible || (desc.SszCompatFlags&dynssz.SszCompatFlagDynamicMarshaler != 0 && desc.SszCompatFlags&dynssz.SszCompatFlagDynamicUnmarshaler != 0 && desc.SszCompatFlags&dynssz.SszCompatFlagDynamicSizer != 0 && desc.SszCompatFlags&dynssz.SszCompatFlagDynamicHashRoot != 0)
+	if desc.SszType == ssztypes.SszCustomType {
+		isCompatible := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0 && desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0
+		//isCompatible = isCompatible || (desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0)
 
 		if !isCompatible {
 			return nil, fmt.Errorf("custom ssz type requires fastssz marshaler, unmarshaler and hasher implementations")
@@ -527,7 +527,7 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []dynssz.SszTypeH
 	return desc, nil
 }
 
-func (p *Parser) buildUint128Descriptor(desc *dynssz.TypeDescriptor, typ types.Type) error {
+func (p *Parser) buildUint128Descriptor(desc *ssztypes.TypeDescriptor, typ types.Type) error {
 	// Handle as [16]uint8, [2]uint64
 	var elemType types.Type
 	if arr, ok := typ.(*types.Array); ok {
@@ -566,13 +566,13 @@ func (p *Parser) buildUint128Descriptor(desc *dynssz.TypeDescriptor, typ types.T
 
 	// Set byte array flag for byte types
 	if p.isByteType(elemType) {
-		desc.GoTypeFlags |= dynssz.GoTypeFlagIsByteArray
+		desc.GoTypeFlags |= ssztypes.GoTypeFlagIsByteArray
 	}
 
 	return nil
 }
 
-func (p *Parser) buildUint256Descriptor(desc *dynssz.TypeDescriptor, typ types.Type) error {
+func (p *Parser) buildUint256Descriptor(desc *ssztypes.TypeDescriptor, typ types.Type) error {
 	// Handle as [32]uint8, [4]uint64
 	var elemType types.Type
 	if arr, ok := typ.(*types.Array); ok {
@@ -611,15 +611,15 @@ func (p *Parser) buildUint256Descriptor(desc *dynssz.TypeDescriptor, typ types.T
 
 	// Set byte array flag for byte types
 	if p.isByteType(elemType) {
-		desc.GoTypeFlags |= dynssz.GoTypeFlagIsByteArray
+		desc.GoTypeFlags |= ssztypes.GoTypeFlagIsByteArray
 	}
 
 	return nil
 }
 
-func (p *Parser) buildContainerDescriptor(desc *dynssz.TypeDescriptor, struc *types.Struct) error {
-	fields := []dynssz.FieldDescriptor{}
-	dynFields := []dynssz.DynFieldDescriptor{}
+func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, struc *types.Struct) error {
+	fields := []ssztypes.FieldDescriptor{}
+	dynFields := []ssztypes.DynFieldDescriptor{}
 	size := uint32(0)
 	isDynamic := false
 
@@ -641,7 +641,7 @@ func (p *Parser) buildContainerDescriptor(desc *dynssz.TypeDescriptor, struc *ty
 			return fmt.Errorf("failed to build field %v descriptor: %v", field.Name(), err)
 		}
 
-		fieldDesc := dynssz.FieldDescriptor{
+		fieldDesc := ssztypes.FieldDescriptor{
 			Name: field.Name(),
 			Type: typeDesc,
 		}
@@ -655,9 +655,9 @@ func (p *Parser) buildContainerDescriptor(desc *dynssz.TypeDescriptor, struc *ty
 			fieldDesc.SszIndex = uint16(idx)
 		}
 
-		if typeDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
+		if typeDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 			// Dynamic field
-			dynFieldDesc := dynssz.DynFieldDescriptor{
+			dynFieldDesc := ssztypes.DynFieldDescriptor{
 				Field:        &fieldDesc,
 				HeaderOffset: size,
 				Index:        int16(len(fields)),
@@ -669,11 +669,11 @@ func (p *Parser) buildContainerDescriptor(desc *dynssz.TypeDescriptor, struc *ty
 			size += typeDesc.Size
 		}
 
-		desc.SszTypeFlags |= fieldDesc.Type.SszTypeFlags & (dynssz.SszTypeFlagHasDynamicSize | dynssz.SszTypeFlagHasDynamicMax | dynssz.SszTypeFlagHasSizeExpr | dynssz.SszTypeFlagHasMaxExpr)
+		desc.SszTypeFlags |= fieldDesc.Type.SszTypeFlags & (ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr)
 		fields = append(fields, fieldDesc)
 	}
 
-	containerDesc := &dynssz.ContainerDescriptor{
+	containerDesc := &ssztypes.ContainerDescriptor{
 		Fields:    fields,
 		DynFields: dynFields,
 	}
@@ -681,7 +681,7 @@ func (p *Parser) buildContainerDescriptor(desc *dynssz.TypeDescriptor, struc *ty
 
 	desc.Len = size
 	if isDynamic {
-		desc.SszTypeFlags |= dynssz.SszTypeFlagIsDynamic
+		desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
 		desc.Size = 0
 	} else {
 		desc.Size = size
@@ -690,7 +690,7 @@ func (p *Parser) buildContainerDescriptor(desc *dynssz.TypeDescriptor, struc *ty
 	return nil
 }
 
-func (p *Parser) buildVectorDescriptor(desc *dynssz.TypeDescriptor, typ types.Type, sizeHints []dynssz.SszSizeHint, maxSizeHints []dynssz.SszMaxSizeHint, typeHints []dynssz.SszTypeHint) error {
+func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, typ types.Type, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint, typeHints []ssztypes.SszTypeHint) error {
 	var elemType types.Type
 	var length uint32
 
@@ -726,7 +726,7 @@ func (p *Parser) buildVectorDescriptor(desc *dynssz.TypeDescriptor, typ types.Ty
 				if sizeHints[0].Bits {
 					length = (length + 7) / 8 // ceil up to the next multiple of 8
 				}
-				desc.GoTypeFlags |= dynssz.GoTypeFlagIsByteArray
+				desc.GoTypeFlags |= ssztypes.GoTypeFlagIsByteArray
 				elemType = byteType
 			} else {
 				return fmt.Errorf("string vector type requires explicit size hint")
@@ -738,15 +738,15 @@ func (p *Parser) buildVectorDescriptor(desc *dynssz.TypeDescriptor, typ types.Ty
 		return fmt.Errorf("unsupported vector type: %T", typ)
 	}
 
-	childTypeHints := []dynssz.SszTypeHint{}
+	childTypeHints := []ssztypes.SszTypeHint{}
 	if len(typeHints) > 1 {
 		childTypeHints = typeHints[1:]
 	}
-	childSizeHints := []dynssz.SszSizeHint{}
+	childSizeHints := []ssztypes.SszSizeHint{}
 	if len(sizeHints) > 1 {
 		childSizeHints = sizeHints[1:]
 	}
-	childMaxSizeHints := []dynssz.SszMaxSizeHint{}
+	childMaxSizeHints := []ssztypes.SszMaxSizeHint{}
 	if len(maxSizeHints) > 1 {
 		childMaxSizeHints = maxSizeHints[1:]
 	}
@@ -761,14 +761,14 @@ func (p *Parser) buildVectorDescriptor(desc *dynssz.TypeDescriptor, typ types.Ty
 
 	// Set byte array flag for byte types
 	if p.isByteType(elemType) {
-		desc.GoTypeFlags |= dynssz.GoTypeFlagIsByteArray
+		desc.GoTypeFlags |= ssztypes.GoTypeFlagIsByteArray
 	}
 
-	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (dynssz.SszTypeFlagHasDynamicSize | dynssz.SszTypeFlagHasDynamicMax | dynssz.SszTypeFlagHasSizeExpr | dynssz.SszTypeFlagHasMaxExpr)
+	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr)
 
 	// Calculate size
-	if elemDesc.SszTypeFlags&dynssz.SszTypeFlagIsDynamic != 0 {
-		desc.SszTypeFlags |= dynssz.SszTypeFlagIsDynamic
+	if elemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+		desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
 		desc.Size = 0
 	} else {
 		desc.Size = length * elemDesc.Size
@@ -777,7 +777,7 @@ func (p *Parser) buildVectorDescriptor(desc *dynssz.TypeDescriptor, typ types.Ty
 	return nil
 }
 
-func (p *Parser) buildListDescriptor(desc *dynssz.TypeDescriptor, typ types.Type, sizeHints []dynssz.SszSizeHint, maxSizeHints []dynssz.SszMaxSizeHint, typeHints []dynssz.SszTypeHint) error {
+func (p *Parser) buildListDescriptor(desc *ssztypes.TypeDescriptor, typ types.Type, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint, typeHints []ssztypes.SszTypeHint) error {
 	var elemType types.Type
 
 	switch t := typ.(type) {
@@ -786,9 +786,9 @@ func (p *Parser) buildListDescriptor(desc *dynssz.TypeDescriptor, typ types.Type
 	case *types.Basic:
 		if t.Kind() == types.String {
 			// String as list - set byte array flag and make dynamic
-			desc.SszTypeFlags |= dynssz.SszTypeFlagIsDynamic
+			desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
 			desc.Size = 0
-			desc.GoTypeFlags |= dynssz.GoTypeFlagIsByteArray
+			desc.GoTypeFlags |= ssztypes.GoTypeFlagIsByteArray
 			elemType = byteType
 		} else {
 			return fmt.Errorf("unsupported list base type: %v", t.Kind())
@@ -797,15 +797,15 @@ func (p *Parser) buildListDescriptor(desc *dynssz.TypeDescriptor, typ types.Type
 		return fmt.Errorf("unsupported list type: %T", typ)
 	}
 
-	childTypeHints := []dynssz.SszTypeHint{}
+	childTypeHints := []ssztypes.SszTypeHint{}
 	if len(typeHints) > 1 {
 		childTypeHints = typeHints[1:]
 	}
-	childSizeHints := []dynssz.SszSizeHint{}
+	childSizeHints := []ssztypes.SszSizeHint{}
 	if len(sizeHints) > 1 {
 		childSizeHints = sizeHints[1:]
 	}
-	childMaxSizeHints := []dynssz.SszMaxSizeHint{}
+	childMaxSizeHints := []ssztypes.SszMaxSizeHint{}
 	if len(maxSizeHints) > 1 {
 		childMaxSizeHints = maxSizeHints[1:]
 	}
@@ -819,19 +819,19 @@ func (p *Parser) buildListDescriptor(desc *dynssz.TypeDescriptor, typ types.Type
 
 	// Set byte array flag for byte types
 	if p.isByteType(elemType) {
-		desc.GoTypeFlags |= dynssz.GoTypeFlagIsByteArray
+		desc.GoTypeFlags |= ssztypes.GoTypeFlagIsByteArray
 	}
 
-	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (dynssz.SszTypeFlagHasDynamicSize | dynssz.SszTypeFlagHasDynamicMax | dynssz.SszTypeFlagHasSizeExpr | dynssz.SszTypeFlagHasMaxExpr)
+	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr)
 
 	// Lists are always dynamic
-	desc.SszTypeFlags |= dynssz.SszTypeFlagIsDynamic
+	desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
 	desc.Size = 0
 
 	return nil
 }
 
-func (p *Parser) buildBitlistDescriptor(desc *dynssz.TypeDescriptor, typ types.Type, sizeHints []dynssz.SszSizeHint, maxSizeHints []dynssz.SszMaxSizeHint, typeHints []dynssz.SszTypeHint) error {
+func (p *Parser) buildBitlistDescriptor(desc *ssztypes.TypeDescriptor, typ types.Type, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint, typeHints []ssztypes.SszTypeHint) error {
 	var elemType types.Type
 
 	switch t := typ.(type) {
@@ -854,14 +854,14 @@ func (p *Parser) buildBitlistDescriptor(desc *dynssz.TypeDescriptor, typ types.T
 	}
 
 	// Bitlists are always dynamic
-	desc.SszTypeFlags |= dynssz.SszTypeFlagIsDynamic
+	desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
 	desc.Size = 0
-	desc.GoTypeFlags |= dynssz.GoTypeFlagIsByteArray
+	desc.GoTypeFlags |= ssztypes.GoTypeFlagIsByteArray
 
 	return nil
 }
 
-func (p *Parser) buildCompatibleUnionDescriptor(desc *dynssz.TypeDescriptor, named *types.Named) error {
+func (p *Parser) buildCompatibleUnionDescriptor(desc *ssztypes.TypeDescriptor, named *types.Named) error {
 	// Extract generic type arguments from CompatibleUnion[T]
 	typeArgs := named.TypeArgs()
 	if typeArgs == nil || typeArgs.Len() != 1 {
@@ -877,7 +877,7 @@ func (p *Parser) buildCompatibleUnionDescriptor(desc *dynssz.TypeDescriptor, nam
 	}
 
 	// Build union variants
-	variantInfo := make(map[uint8]*dynssz.TypeDescriptor)
+	variantInfo := make(map[uint8]*ssztypes.TypeDescriptor)
 
 	for i := 0; i < descriptorStruct.NumFields(); i++ {
 		field := descriptorStruct.Field(i)
@@ -903,13 +903,13 @@ func (p *Parser) buildCompatibleUnionDescriptor(desc *dynssz.TypeDescriptor, nam
 	}
 
 	desc.UnionVariants = variantInfo
-	desc.SszTypeFlags |= dynssz.SszTypeFlagIsDynamic
+	desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
 	desc.Size = 0
 
 	return nil
 }
 
-func (p *Parser) buildTypeWrapperDescriptor(desc *dynssz.TypeDescriptor, named *types.Named, typeHints []dynssz.SszTypeHint, sizeHints []dynssz.SszSizeHint, maxSizeHints []dynssz.SszMaxSizeHint) error {
+func (p *Parser) buildTypeWrapperDescriptor(desc *ssztypes.TypeDescriptor, named *types.Named, typeHints []ssztypes.SszTypeHint, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint) error {
 	// Extract generic type arguments from TypeWrapper[D, T]
 	typeArgs := named.TypeArgs()
 	if typeArgs == nil || typeArgs.Len() != 2 {
@@ -953,12 +953,12 @@ func (p *Parser) buildTypeWrapperDescriptor(desc *dynssz.TypeDescriptor, named *
 
 	// The TypeWrapper inherits properties from the wrapped type
 	desc.Size = wrappedDesc.Size
-	desc.SszTypeFlags |= wrappedDesc.SszTypeFlags & (dynssz.SszTypeFlagIsDynamic | dynssz.SszTypeFlagHasDynamicSize | dynssz.SszTypeFlagHasDynamicMax | dynssz.SszTypeFlagHasSizeExpr | dynssz.SszTypeFlagHasMaxExpr)
+	desc.SszTypeFlags |= wrappedDesc.SszTypeFlags & (ssztypes.SszTypeFlagIsDynamic | ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr)
 
 	return nil
 }
 
-func (p *Parser) parseFieldTags(tag string) (typeHints []dynssz.SszTypeHint, sizeHints []dynssz.SszSizeHint, maxSizeHints []dynssz.SszMaxSizeHint, err error) {
+func (p *Parser) parseFieldTags(tag string) (typeHints []ssztypes.SszTypeHint, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint, err error) {
 	if tag == "" {
 		return nil, nil, nil, nil
 	}
@@ -969,9 +969,9 @@ func (p *Parser) parseFieldTags(tag string) (typeHints []dynssz.SszTypeHint, siz
 	if sszType, ok := structTag.Lookup("ssz-type"); ok {
 		for _, typeStr := range strings.Split(sszType, ",") {
 			typeStr = strings.TrimSpace(typeStr)
-			hint := dynssz.SszTypeHint{}
+			hint := ssztypes.SszTypeHint{}
 
-			hint.Type, err = dynssz.ParseSszType(typeStr)
+			hint.Type, err = ssztypes.ParseSszType(typeStr)
 			if err != nil {
 				return nil, nil, nil, fmt.Errorf("error parsing ssz-type tag: %v", err)
 			}
@@ -1002,7 +1002,7 @@ func (p *Parser) parseFieldTags(tag string) (typeHints []dynssz.SszTypeHint, siz
 			sszSizeStr := getTagPart(sszSizeParts, i)
 			sszBitsizeStr := getTagPart(sszBitsizeParts, i)
 
-			hint := dynssz.SszSizeHint{}
+			hint := ssztypes.SszSizeHint{}
 
 			if sszBitsizeStr != "?" {
 				sizeInt, err := strconv.ParseUint(strings.TrimSpace(sszBitsizeStr), 10, 32)
@@ -1046,7 +1046,7 @@ func (p *Parser) parseFieldTags(tag string) (typeHints []dynssz.SszTypeHint, siz
 			sszSizeStr := getTagPart(sszSizeParts, i)
 			sszBitsizeStr := getTagPart(sszBitsizeParts, i)
 
-			sszSize := dynssz.SszSizeHint{}
+			sszSize := ssztypes.SszSizeHint{}
 			isExpr := false
 			sizeExpr := "?"
 
@@ -1090,7 +1090,7 @@ func (p *Parser) parseFieldTags(tag string) (typeHints []dynssz.SszTypeHint, siz
 	if sszMax, ok := structTag.Lookup("ssz-max"); ok {
 		for _, maxStr := range strings.Split(sszMax, ",") {
 			maxStr = strings.TrimSpace(maxStr)
-			hint := dynssz.SszMaxSizeHint{}
+			hint := ssztypes.SszMaxSizeHint{}
 
 			if maxStr == "?" {
 				hint.NoValue = true
@@ -1110,7 +1110,7 @@ func (p *Parser) parseFieldTags(tag string) (typeHints []dynssz.SszTypeHint, siz
 	fieldDynSszMaxStr, fieldHasDynSszMax := structTag.Lookup("dynssz-max")
 	if fieldHasDynSszMax {
 		for i, sszMaxSizeStr := range strings.Split(fieldDynSszMaxStr, ",") {
-			sszMaxSize := dynssz.SszMaxSizeHint{}
+			sszMaxSize := ssztypes.SszMaxSizeHint{}
 			isExpr := false
 
 			if sszMaxSizeStr == "?" {

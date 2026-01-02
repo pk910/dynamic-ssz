@@ -6,6 +6,7 @@ package dynssz
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -91,6 +92,74 @@ func TestNewCompatibleUnion(t *testing.T) {
 	}
 }
 
+type TestInvalidUnion1 struct{}
+
+func (t *TestInvalidUnion1) GetDescriptorType() {}
+
+type TestInvalidUnion2 struct{}
+
+func (t *TestInvalidUnion2) GetDescriptorType() uint64 {
+	return 0
+}
+
+type TestInvalidUnion3 struct{}
+
+func (t *TestInvalidUnion3) GetDescriptorType() reflect.Type {
+	return reflect.TypeOf(uint64(0))
+}
+
+// Test types with invalid HashTreeRootWith method
+func TestTypeCache_InvalidUnionTypes(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	tests := []struct {
+		name          string
+		typ           reflect.Type
+		expectedError string
+	}{
+		{
+			name: "invalid union type 1",
+			typ: reflect.TypeOf(TypeWrapper[struct {
+				F struct{} `ssz-type:"union"`
+			}, struct{}]{}),
+			expectedError: "GetDescriptorType method not found on type",
+		},
+		{
+			name: "invalid union type 2",
+			typ: reflect.TypeOf(TypeWrapper[struct {
+				F TestInvalidUnion1 `ssz-type:"union"`
+			}, TestInvalidUnion1]{}),
+			expectedError: "GetDescriptorType returned no results",
+		},
+		{
+			name: "invalid union type 3",
+			typ: reflect.TypeOf(TypeWrapper[struct {
+				F TestInvalidUnion2 `ssz-type:"union"`
+			}, TestInvalidUnion2]{}),
+			expectedError: "GetDescriptorType did not return a reflect.Type",
+		},
+		{
+			name: "invalid union type 4",
+			typ: reflect.TypeOf(TypeWrapper[struct {
+				F TestInvalidUnion3 `ssz-type:"union"`
+			}, TestInvalidUnion3]{}),
+			expectedError: "failed to extract union variant info",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := ds.GetTypeCache().GetTypeDescriptor(test.typ, nil, nil, nil)
+			if err == nil {
+				t.Errorf("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), test.expectedError) {
+				t.Errorf("expected error %q, got %q", test.expectedError, err.Error())
+			}
+		})
+	}
+}
+
 func TestCompatibleUnionGetDescriptorType(t *testing.T) {
 	type TestVariantA struct {
 		FieldA uint64
@@ -127,121 +196,6 @@ func TestCompatibleUnionGetDescriptorType(t *testing.T) {
 	// Verify it has the expected fields
 	if descriptorType.NumField() != 2 {
 		t.Errorf("descriptor should have 2 fields, got %d", descriptorType.NumField())
-	}
-}
-
-func TestExtractUnionDescriptorInfo(t *testing.T) {
-	dynssz := NewDynSsz(map[string]any{})
-
-	tests := []struct {
-		name           string
-		descriptorType reflect.Type
-		expectError    bool
-		errorContains  string
-		validateInfo   func(*testing.T, map[uint8]UnionVariantInfo)
-	}{
-		{
-			name: "valid union descriptor",
-			descriptorType: reflect.TypeOf(struct {
-				VariantA struct {
-					Field []byte `ssz-size:"32"`
-				}
-				VariantB struct {
-					Field []uint64 `ssz-max:"1024"`
-				}
-			}{}),
-			expectError: false,
-			validateInfo: func(t *testing.T, info map[uint8]UnionVariantInfo) {
-				if len(info) != 2 {
-					t.Errorf("expected 2 variants, got %d", len(info))
-				}
-
-				// Check that both variants exist
-				if _, ok := info[0]; !ok {
-					t.Error("variant 0 not found")
-				}
-				if _, ok := info[1]; !ok {
-					t.Error("variant 1 not found")
-				}
-			},
-		},
-		{
-			name: "union with type hints",
-			descriptorType: reflect.TypeOf(struct {
-				VariantA struct {
-					Field uint64 `ssz-type:"uint64"`
-				}
-			}{}),
-			expectError: false,
-			validateInfo: func(t *testing.T, info map[uint8]UnionVariantInfo) {
-				if _, ok := info[0]; !ok {
-					t.Error("variant 0 not found")
-				}
-			},
-		},
-		{
-			name:           "non-struct descriptor",
-			descriptorType: reflect.TypeOf("not a struct"),
-			expectError:    true,
-			errorContains:  "union descriptor must be a struct",
-		},
-		{
-			name:           "empty union descriptor",
-			descriptorType: reflect.TypeOf(struct{}{}),
-			expectError:    true,
-			errorContains:  "union descriptor struct has no fields",
-		},
-		{
-			name: "invalid ssz-size",
-			descriptorType: reflect.TypeOf(struct {
-				Data []uint8 `ssz-size:"invalid"`
-			}{}),
-			expectError:   true,
-			errorContains: "failed to parse ssz-size tag for field",
-		},
-		{
-			name: "invalid ssz-max",
-			descriptorType: reflect.TypeOf(struct {
-				Data []uint8 `ssz-max:"invalid"`
-			}{}),
-			expectError:   true,
-			errorContains: "failed to parse ssz-max tag for field",
-		},
-		{
-			name: "invalid ssz-type",
-			descriptorType: reflect.TypeOf(struct {
-				Data []uint8 `ssz-type:"invalid"`
-			}{}),
-			expectError:   true,
-			errorContains: "failed to parse ssz-type tag for field",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			info, err := ExtractUnionDescriptorInfo(tt.descriptorType, dynssz)
-
-			if tt.expectError {
-				if err == nil {
-					t.Error("expected error but got none")
-				} else if tt.errorContains != "" && !contains(err.Error(), tt.errorContains) {
-					t.Errorf("error should contain %q, got %v", tt.errorContains, err)
-				}
-				return
-			}
-
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			if info == nil {
-				t.Fatal("info should not be nil")
-			}
-
-			if tt.validateInfo != nil {
-				tt.validateInfo(t, info)
-			}
-		})
 	}
 }
 
@@ -321,55 +275,6 @@ func TestCompatibleUnionWithComplexTypes(t *testing.T) {
 	})
 }
 
-func TestCompatibleUnionVariantIndexing(t *testing.T) {
-	// Test that variant indices are assigned based on field order
-	type OrderedUnion struct {
-		First  struct{ Value uint8 }
-		Second struct{ Value uint16 }
-		Third  struct{ Value uint32 }
-		Fourth struct{ Value uint64 }
-	}
-
-	dynssz := NewDynSsz(map[string]any{})
-	info, err := ExtractUnionDescriptorInfo(reflect.TypeOf(OrderedUnion{}), dynssz)
-	if err != nil {
-		t.Fatalf("failed to extract union info: %v", err)
-	}
-
-	// Verify that indices 0-3 are present
-	for i := uint8(0); i < 4; i++ {
-		if _, ok := info[i]; !ok {
-			t.Errorf("expected variant at index %d", i)
-		}
-	}
-
-	// Verify field types match expected order
-	expectedKinds := []reflect.Kind{
-		reflect.Uint8,
-		reflect.Uint16,
-		reflect.Uint32,
-		reflect.Uint64,
-	}
-
-	for i, expectedKind := range expectedKinds {
-		variant := info[uint8(i)]
-		if variant.Type.Kind() != reflect.Struct {
-			t.Errorf("variant %d should be struct", i)
-			continue
-		}
-
-		if variant.Type.NumField() != 1 {
-			t.Errorf("variant %d should have 1 field", i)
-			continue
-		}
-
-		field := variant.Type.Field(0)
-		if field.Type.Kind() != expectedKind {
-			t.Errorf("variant %d field type mismatch: got %v, want %v", i, field.Type.Kind(), expectedKind)
-		}
-	}
-}
-
 func TestCompatibleUnionEdgeCases(t *testing.T) {
 	t.Run("union with single variant", func(t *testing.T) {
 		type SingleVariantUnion struct {
@@ -432,38 +337,6 @@ func TestCompatibleUnionEdgeCases(t *testing.T) {
 		// Both should return the same descriptor type
 		if type1 != type2 {
 			t.Error("GetDescriptorType should return same type for same union descriptor")
-		}
-	})
-
-	t.Run("union with anonymous fields", func(t *testing.T) {
-		type AnonymousUnion struct {
-			VariantA struct {
-				X int
-				Y int
-			}
-			VariantB struct {
-				A string
-				B string
-			}
-		}
-
-		dynssz := NewDynSsz(map[string]any{})
-		info, err := ExtractUnionDescriptorInfo(reflect.TypeOf(AnonymousUnion{}), dynssz)
-		if err != nil {
-			t.Fatalf("failed to extract union info: %v", err)
-		}
-
-		if len(info) != 2 {
-			t.Errorf("expected 2 variants, got %d", len(info))
-		}
-
-		// Both variants should be embedded structs
-		for i := uint8(0); i < 2; i++ {
-			if variant, ok := info[i]; ok {
-				if variant.Type.Kind() != reflect.Struct {
-					t.Errorf("variant %d should be struct", i)
-				}
-			}
 		}
 	})
 }

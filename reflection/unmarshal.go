@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // This file is part of the dynamic-ssz library.
 
-package dynssz
+package reflection
 
 import (
 	"fmt"
@@ -11,6 +11,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
@@ -23,11 +24,7 @@ import (
 // The generic type parameter D allows the compiler to generate specialized code for each decoder
 // implementation, eliminating interface dispatch overhead.
 //
-// Type Parameters:
-//   - D: A decoder type implementing sszutils.Decoder
-//
 // Parameters:
-//   - d: The DynSsz instance providing configuration and caching
 //   - targetType: The TypeDescriptor containing optimized metadata about the type to decode
 //   - targetValue: The reflect.Value where decoded data will be stored
 //   - decoder: The decoder instance used to read SSZ-encoded data
@@ -42,8 +39,8 @@ import (
 //   - Primitive type decoding (bool, uint8, uint16, uint32, uint64)
 //   - Delegation to specialized functions for composite types (structs, arrays, slices)
 //   - Validation that consumed bytes match expected sizes
-func unmarshalType(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
-	if targetType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
+func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
+	if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 		// target is a pointer type, resolve type & value to actual value type
 		if targetValue.IsNil() {
 			// create new instance of target type for null pointers
@@ -53,17 +50,17 @@ func unmarshalType(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Va
 		targetValue = targetValue.Elem()
 	}
 
-	hasDynamicSize := targetType.SszTypeFlags&SszTypeFlagHasDynamicSize != 0
-	isFastsszUnmarshaler := targetType.SszCompatFlags&SszCompatFlagFastSSZMarshaler != 0
-	useDynamicUnmarshal := targetType.SszCompatFlags&SszCompatFlagDynamicUnmarshaler != 0
-	useDynamicDecoder := targetType.SszCompatFlags&SszCompatFlagDynamicDecoder != 0
-	useFastSsz := !d.NoFastSsz && isFastsszUnmarshaler && !hasDynamicSize
-	if !useFastSsz && targetType.SszType == SszCustomType {
+	hasDynamicSize := targetType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
+	isFastsszUnmarshaler := targetType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+	useDynamicUnmarshal := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0
+	useDynamicDecoder := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0
+	useFastSsz := !ctx.noFastSsz && isFastsszUnmarshaler && !hasDynamicSize
+	if !useFastSsz && targetType.SszType == ssztypes.SszCustomType {
 		useFastSsz = true
 	}
 
-	if d.Verbose {
-		d.LogCb("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), targetType.Type.Name(), targetType.Kind, useFastSsz, isFastsszUnmarshaler, hasDynamicSize)
+	if ctx.verbose {
+		ctx.logCb("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), targetType.Type.Name(), targetType.Kind, useFastSsz, isFastsszUnmarshaler, hasDynamicSize)
 	}
 
 	if useFastSsz {
@@ -92,7 +89,7 @@ func unmarshalType(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Va
 			// prefer static unmarshaller for non-seekable decoders (buffer based)
 			useDynamicDecoder = false
 		} else if sszDecoder, ok := targetValue.Addr().Interface().(sszutils.DynamicDecoder); ok {
-			err := sszDecoder.UnmarshalSSZDecoder(d, decoder)
+			err := sszDecoder.UnmarshalSSZDecoder(ctx.ds, decoder)
 			if err != nil {
 				return err
 			}
@@ -115,7 +112,7 @@ func unmarshalType(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Va
 				return err
 			}
 
-			err = unmarshaller.UnmarshalSSZDyn(d, sszBuf)
+			err = unmarshaller.UnmarshalSSZDyn(ctx.ds, sszBuf)
 			if err != nil {
 				return err
 			}
@@ -129,80 +126,80 @@ func unmarshalType(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Va
 		var err error
 		switch targetType.SszType {
 		// complex types
-		case SszTypeWrapperType:
-			err = unmarshalTypeWrapper(d, targetType, targetValue, decoder, idt)
+		case ssztypes.SszTypeWrapperType:
+			err = ctx.unmarshalTypeWrapper(targetType, targetValue, decoder, idt)
 			if err != nil {
 				return err
 			}
-		case SszContainerType, SszProgressiveContainerType:
-			err = unmarshalContainer(d, targetType, targetValue, decoder, idt)
+		case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
+			err = ctx.unmarshalContainer(targetType, targetValue, decoder, idt)
 			if err != nil {
 				return err
 			}
-		case SszVectorType, SszBitvectorType, SszUint128Type, SszUint256Type:
-			if targetType.ElemDesc.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
-				err = unmarshalDynamicVector(d, targetType, targetValue, decoder, idt)
+		case ssztypes.SszVectorType, ssztypes.SszBitvectorType, ssztypes.SszUint128Type, ssztypes.SszUint256Type:
+			if targetType.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+				err = ctx.unmarshalDynamicVector(targetType, targetValue, decoder, idt)
 			} else {
-				err = unmarshalVector(d, targetType, targetValue, decoder, idt)
+				err = ctx.unmarshalVector(targetType, targetValue, decoder, idt)
 			}
 			if err != nil {
 				return err
 			}
-		case SszListType, SszProgressiveListType:
-			if targetType.ElemDesc.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
-				err = unmarshalDynamicList(d, targetType, targetValue, decoder, idt)
+		case ssztypes.SszListType, ssztypes.SszProgressiveListType:
+			if targetType.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+				err = ctx.unmarshalDynamicList(targetType, targetValue, decoder, idt)
 			} else {
-				err = unmarshalList(d, targetType, targetValue, decoder, idt)
+				err = ctx.unmarshalList(targetType, targetValue, decoder, idt)
 			}
 			if err != nil {
 				return err
 			}
-		case SszBitlistType, SszProgressiveBitlistType:
-			err = unmarshalBitlist(d, targetType, targetValue, decoder)
+		case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType:
+			err = ctx.unmarshalBitlist(targetType, targetValue, decoder)
 			if err != nil {
 				return err
 			}
-		case SszCompatibleUnionType:
-			err = unmarshalCompatibleUnion(d, targetType, targetValue, decoder, idt)
+		case ssztypes.SszCompatibleUnionType:
+			err = ctx.unmarshalCompatibleUnion(targetType, targetValue, decoder, idt)
 			if err != nil {
 				return err
 			}
 
 		// primitive types
-		case SszBoolType:
+		case ssztypes.SszBoolType:
 			val, err := decoder.DecodeBool()
 			if err != nil {
 				return err
 			}
 			targetValue.SetBool(val)
-		case SszUint8Type:
+		case ssztypes.SszUint8Type:
 			val, err := decoder.DecodeUint8()
 			if err != nil {
 				return err
 			}
 			targetValue.SetUint(uint64(val))
-		case SszUint16Type:
+		case ssztypes.SszUint16Type:
 			val, err := decoder.DecodeUint16()
 			if err != nil {
 				return err
 			}
 			targetValue.SetUint(uint64(val))
-		case SszUint32Type:
+		case ssztypes.SszUint32Type:
 			val, err := decoder.DecodeUint32()
 			if err != nil {
 				return err
 			}
 			targetValue.SetUint(uint64(val))
-		case SszUint64Type:
+		case ssztypes.SszUint64Type:
 			val, err := decoder.DecodeUint64()
 			if err != nil {
 				return err
 			}
 
-			if targetType.GoTypeFlags&GoTypeFlagIsTime != 0 {
+			if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsTime != 0 {
 				timeVal := time.Unix(int64(val), 0)
 				var timeRefVal reflect.Value
-				if targetType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
+				if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 					timeRefVal = reflect.New(targetType.Type.Elem())
 					timeRefVal.Elem().Set(reflect.ValueOf(timeVal))
 				} else {
@@ -223,11 +220,7 @@ func unmarshalType(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Va
 
 // unmarshalTypeWrapper unmarshals a TypeWrapper by extracting the wrapped data and unmarshaling it as the wrapped type.
 //
-// Type Parameters:
-//   - D: A decoder type implementing sszutils.Decoder
-//
 // Parameters:
-//   - d: The DynSsz instance providing configuration and caching
 //   - targetType: The TypeDescriptor containing wrapper field metadata
 //   - targetValue: The reflect.Value of the wrapper to populate
 //   - decoder: The decoder instance used to read SSZ-encoded data
@@ -237,16 +230,16 @@ func unmarshalType(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Va
 //   - error: An error if decoding fails or data is malformed
 //
 // The function validates that the Data field is present and unmarshals the wrapped value using its type descriptor.
-func unmarshalTypeWrapper(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
-	if d.Verbose {
-		d.LogCb("%sunmarshalTypeWrapper: %s\n", strings.Repeat(" ", idt), targetType.Type.Name())
+func (ctx *ReflectionCtx) unmarshalTypeWrapper(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
+	if ctx.verbose {
+		ctx.logCb("%sunmarshalTypeWrapper: %s\n", strings.Repeat(" ", idt), targetType.Type.Name())
 	}
 
 	// Get the Data field from the TypeWrapper
 	dataField := targetValue.Field(0)
 
 	// Unmarshal the wrapped value using its type descriptor
-	err := unmarshalType(d, targetType.ElemDesc, dataField, decoder, idt+2)
+	err := ctx.unmarshalType(targetType.ElemDesc, dataField, decoder, idt+2)
 	if err != nil {
 		return err
 	}
@@ -264,11 +257,7 @@ func unmarshalTypeWrapper(d *DynSsz, targetType *TypeDescriptor, targetValue ref
 // The function uses the pre-computed TypeDescriptor to efficiently navigate the container's
 // layout without repeated reflection calls.
 //
-// Type Parameters:
-//   - D: A decoder type implementing sszutils.Decoder
-//
 // Parameters:
-//   - d: The DynSsz instance providing configuration and caching
 //   - targetType: The TypeDescriptor containing container field metadata
 //   - targetValue: The reflect.Value of the container to populate
 //   - decoder: The decoder instance used to read SSZ-encoded data
@@ -279,7 +268,7 @@ func unmarshalTypeWrapper(d *DynSsz, targetType *TypeDescriptor, targetValue ref
 //
 // The function validates offset integrity to ensure variable fields don't overlap
 // and that all data is consumed correctly.
-func unmarshalContainer(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
+func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
 	canSeek := decoder.Seekable()
 
 	var dynamicOffsets []uint32
@@ -307,7 +296,7 @@ func unmarshalContainer(d *DynSsz, targetType *TypeDescriptor, targetValue refle
 			expectedPos := decoder.GetPosition() + fieldSize
 
 			fieldValue := targetValue.Field(i)
-			err := unmarshalType(d, field.Type, fieldValue, decoder, idt+2)
+			err := ctx.unmarshalType(field.Type, fieldValue, decoder, idt+2)
 			if err != nil {
 				return fmt.Errorf("failed decoding field %v: %w", field.Name, err)
 			}
@@ -380,7 +369,7 @@ func unmarshalContainer(d *DynSsz, targetType *TypeDescriptor, targetValue refle
 
 			fieldDescriptor := field.Field
 			fieldValue := targetValue.Field(int(field.Index))
-			err := unmarshalType(d, fieldDescriptor.Type, fieldValue, decoder, idt+2)
+			err := ctx.unmarshalType(fieldDescriptor.Type, fieldValue, decoder, idt+2)
 			if err != nil {
 				return fmt.Errorf("failed decoding field %v: %w", fieldDescriptor.Name, err)
 			}
@@ -401,11 +390,7 @@ func unmarshalContainer(d *DynSsz, targetType *TypeDescriptor, targetValue refle
 // from the type, the function can calculate each element's size by dividing the total
 // SSZ data length by the vector length.
 //
-// Type Parameters:
-//   - D: A decoder type implementing sszutils.Decoder
-//
 // Parameters:
-//   - d: The DynSsz instance providing configuration and caching
 //   - targetType: The TypeDescriptor containing vector metadata
 //   - targetValue: The reflect.Value of the vector to populate
 //   - decoder: The decoder instance used to read SSZ-encoded data
@@ -418,7 +403,7 @@ func unmarshalContainer(d *DynSsz, targetType *TypeDescriptor, targetValue refle
 //   - Byte arrays use unsafe.Slice for efficient bulk copying without allocation
 //   - Pointer elements are automatically initialized
 //   - Each element must consume exactly itemSize bytes
-func unmarshalVector(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
+func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
 	fieldType := targetType.ElemDesc
 	arrLen := int(targetType.Len)
 
@@ -426,7 +411,7 @@ func unmarshalVector(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.
 	switch targetType.Kind {
 	case reflect.Slice:
 		// Optimization: avoid reflect.MakeSlice for common byte slice types
-		if targetType.GoTypeFlags&GoTypeFlagIsByteArray != 0 && targetType.ElemDesc.Type.Kind() == reflect.Uint8 {
+		if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 && targetType.ElemDesc.Type.Kind() == reflect.Uint8 {
 			byteSlice := make([]byte, arrLen)
 			newValue = reflect.ValueOf(byteSlice)
 		} else {
@@ -438,10 +423,10 @@ func unmarshalVector(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.
 		newValue = reflect.New(targetType.Type).Elem()
 	}
 
-	if targetType.GoTypeFlags&GoTypeFlagIsByteArray != 0 {
+	if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
 		// shortcut for performance: use copy on []byte arrays
 
-		if targetType.GoTypeFlags&GoTypeFlagIsString != 0 {
+		if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
 			buf, err := decoder.DecodeBytesBuf(arrLen)
 			if err != nil {
 				return err
@@ -477,7 +462,7 @@ func unmarshalVector(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.
 
 		for i := 0; i < arrLen; i++ {
 			var itemVal reflect.Value
-			if fieldType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
+			if fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 				// fmt.Printf("new array item %v\n", fieldType.Name())
 				itemVal = reflect.New(fieldType.Type.Elem())
 				newValue.Index(i).Set(itemVal.Elem().Addr())
@@ -487,7 +472,7 @@ func unmarshalVector(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.
 
 			expectedPos := decoder.GetPosition() + itemSize
 
-			err := unmarshalType(d, fieldType, itemVal, decoder, idt+2)
+			err := ctx.unmarshalType(fieldType, itemVal, decoder, idt+2)
 			if err != nil {
 				return err
 			}
@@ -511,11 +496,7 @@ func unmarshalVector(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.
 //   - The given number of offsets are decoded first, 4 bytes each
 //   - Element data appears after all offsets, in order
 //
-// Type Parameters:
-//   - D: A decoder type implementing sszutils.Decoder
-//
 // Parameters:
-//   - d: The DynSsz instance providing configuration and caching
 //   - targetType: The TypeDescriptor with vector metadata
 //   - targetValue: The reflect.Value where the vector will be stored
 //   - decoder: The decoder instance used to read SSZ-encoded data
@@ -528,7 +509,7 @@ func unmarshalVector(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.
 //   - Offsets are monotonically increasing
 //   - No offset points outside the data bounds
 //   - Each element consumes exactly the expected bytes
-func unmarshalDynamicVector(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
+func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
 	vectorLen := int(targetType.Len)
 	requiredOffsetBytes := vectorLen * 4
 	canSeek := decoder.Seekable()
@@ -565,7 +546,7 @@ func unmarshalDynamicVector(d *DynSsz, targetType *TypeDescriptor, targetValue r
 
 	// fmt.Printf("new dynamic slice %v  %v\n", fieldType.Name(), sliceLen)
 	fieldT := targetType.Type
-	if targetType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
+	if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 		fieldT = fieldT.Elem()
 	}
 
@@ -591,7 +572,7 @@ func unmarshalDynamicVector(d *DynSsz, targetType *TypeDescriptor, targetValue r
 	// decode slice items
 	for i := 0; i < vectorLen; i++ {
 		var itemVal reflect.Value
-		if fieldType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
+		if fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			// fmt.Printf("new slice item %v\n", fieldType.Name())
 			itemVal = reflect.New(fieldType.Type.Elem())
 			newValue.Index(i).Set(itemVal)
@@ -620,7 +601,7 @@ func unmarshalDynamicVector(d *DynSsz, targetType *TypeDescriptor, targetValue r
 
 		itemSize := endOffset - startOffset
 		decoder.PushLimit(int(itemSize))
-		err := unmarshalType(d, fieldType, itemVal, decoder, idt+2)
+		err := ctx.unmarshalType(fieldType, itemVal, decoder, idt+2)
 		if err != nil {
 			return err
 		}
@@ -641,11 +622,7 @@ func unmarshalDynamicVector(d *DynSsz, targetType *TypeDescriptor, targetValue r
 // This function handles lists with fixed-size elements. The list length is determined by
 // dividing the SSZ data length by the element size.
 //
-// Type Parameters:
-//   - D: A decoder type implementing sszutils.Decoder
-//
 // Parameters:
-//   - d: The DynSsz instance providing configuration and caching
 //   - targetType: The TypeDescriptor containing list metadata
 //   - targetValue: The reflect.Value where the list will be stored
 //   - decoder: The decoder instance used to read SSZ-encoded data
@@ -657,7 +634,7 @@ func unmarshalDynamicVector(d *DynSsz, targetType *TypeDescriptor, targetValue r
 // The function:
 //   - Uses optimized copying for byte lists
 //   - Validates that each element consumes exactly the expected bytes
-func unmarshalList(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
+func (ctx *ReflectionCtx) unmarshalList(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
 	fieldType := targetType.ElemDesc
 	sszLen := decoder.GetLength()
 
@@ -672,14 +649,14 @@ func unmarshalList(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Va
 	// fmt.Printf("new slice %v  %v\n", fieldType.Name(), sliceLen)
 
 	fieldT := targetType.Type
-	if targetType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
+	if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 		fieldT = fieldT.Elem()
 	}
 
 	var newValue reflect.Value
 	if targetType.Kind == reflect.Slice {
 		// Optimization: avoid reflect.MakeSlice for common byte slice types
-		if targetType.GoTypeFlags&GoTypeFlagIsByteArray != 0 && fieldType.Type.Kind() == reflect.Uint8 {
+		if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 && fieldType.Type.Kind() == reflect.Uint8 {
 			byteSlice := make([]byte, sliceLen)
 			newValue = reflect.ValueOf(byteSlice)
 		} else {
@@ -691,13 +668,13 @@ func unmarshalList(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Va
 
 	if sliceLen == 0 {
 		// do nothing
-	} else if targetType.GoTypeFlags&GoTypeFlagIsString != 0 {
+	} else if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
 		buf, err := decoder.DecodeBytesBuf(sliceLen)
 		if err != nil {
 			return err
 		}
 		newValue.SetString(string(buf))
-	} else if targetType.GoTypeFlags&GoTypeFlagIsByteArray != 0 {
+	} else if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
 		// shortcut for performance: use copy on []byte arrays
 		_, err := decoder.DecodeBytes(newValue.Bytes())
 		if err != nil {
@@ -708,7 +685,7 @@ func unmarshalList(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Va
 
 		for i := 0; i < sliceLen; i++ {
 			var itemVal reflect.Value
-			if fieldType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
+			if fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 				// fmt.Printf("new list item %v\n", fieldType.Name())
 				itemVal = reflect.New(fieldType.Type.Elem())
 				newValue.Index(i).Set(itemVal.Elem().Addr())
@@ -718,7 +695,7 @@ func unmarshalList(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Va
 
 			expectedPos := decoder.GetPosition() + itemSize
 
-			err := unmarshalType(d, fieldType, itemVal, decoder, idt+2)
+			err := ctx.unmarshalType(fieldType, itemVal, decoder, idt+2)
 			if err != nil {
 				return err
 			}
@@ -742,11 +719,7 @@ func unmarshalList(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Va
 //   - Each subsequent 4-byte value is an offset to the next element
 //   - Element data appears after all offsets, in order
 //
-// Type Parameters:
-//   - D: A decoder type implementing sszutils.Decoder
-//
 // Parameters:
-//   - d: The DynSsz instance providing configuration and caching
 //   - targetType: The TypeDescriptor with list metadata
 //   - targetValue: The reflect.Value where the list will be stored
 //   - decoder: The decoder instance used to read SSZ-encoded data
@@ -759,7 +732,7 @@ func unmarshalList(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Va
 //   - Offsets are monotonically increasing
 //   - No offset points outside the data bounds
 //   - Each element consumes exactly the expected bytes
-func unmarshalDynamicList(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
+func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
 	sszLen := decoder.GetLength()
 	if sszLen == 0 {
 		return nil
@@ -810,7 +783,7 @@ func unmarshalDynamicList(d *DynSsz, targetType *TypeDescriptor, targetValue ref
 
 	// fmt.Printf("new dynamic slice %v  %v\n", fieldType.Name(), sliceLen)
 	fieldT := targetType.Type
-	if targetType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
+	if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 		fieldT = fieldT.Elem()
 	}
 
@@ -822,7 +795,7 @@ func unmarshalDynamicList(d *DynSsz, targetType *TypeDescriptor, targetValue ref
 		// decode slice items
 		for i := 0; i < sliceLen; i++ {
 			var itemVal reflect.Value
-			if fieldType.GoTypeFlags&GoTypeFlagIsPointer != 0 {
+			if fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 				// fmt.Printf("new slice item %v\n", fieldType.Name())
 				itemVal = reflect.New(fieldType.Type.Elem())
 				newValue.Index(i).Set(itemVal)
@@ -850,7 +823,7 @@ func unmarshalDynamicList(d *DynSsz, targetType *TypeDescriptor, targetValue ref
 			itemSize := endOffset - startOffset
 
 			decoder.PushLimit(int(itemSize))
-			err := unmarshalType(d, fieldType, itemVal, decoder, idt+2)
+			err := ctx.unmarshalType(fieldType, itemVal, decoder, idt+2)
 			if err != nil {
 				return err
 			}
@@ -876,18 +849,14 @@ func unmarshalDynamicList(d *DynSsz, targetType *TypeDescriptor, targetValue ref
 // The termination bit is a single `1` bit appended immediately after the final data bit, then padded to a full byte.
 // The position of this termination bit defines the logical length of the bitlist. Bitlists without a termination bit are not allowed.
 //
-// Type Parameters:
-//   - D: A decoder type implementing sszutils.Decoder
-//
 // Parameters:
-//   - d: The DynSsz instance providing configuration and caching
 //   - targetType: The TypeDescriptor containing bitlist metadata
 //   - targetValue: The reflect.Value of the bitlist to populate
 //   - decoder: The decoder instance used to read SSZ-encoded data
 //
 // Returns:
 //   - error: An error if decoding fails or bitlist is invalid
-func unmarshalBitlist(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder) error {
+func (ctx *ReflectionCtx) unmarshalBitlist(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder) error {
 	sszLen := decoder.GetLength()
 
 	if sszLen == 0 {
@@ -917,11 +886,7 @@ func unmarshalBitlist(d *DynSsz, targetType *TypeDescriptor, targetValue reflect
 //   - The selector index is based at 0 if a ProgressiveContainer type option is present
 //   - Otherwise, it is based at 1
 //
-// Type Parameters:
-//   - D: A decoder type implementing sszutils.Decoder
-//
 // Parameters:
-//   - d: The DynSsz instance providing configuration and caching
 //   - targetType: The TypeDescriptor containing union metadata and variant descriptors
 //   - targetValue: The reflect.Value of the CompatibleUnion to populate
 //   - decoder: The decoder instance used to read SSZ-encoded data
@@ -929,7 +894,7 @@ func unmarshalBitlist(d *DynSsz, targetType *TypeDescriptor, targetValue reflect
 //
 // Returns:
 //   - error: An error if decoding fails
-func unmarshalCompatibleUnion(d *DynSsz, targetType *TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
+func (ctx *ReflectionCtx) unmarshalCompatibleUnion(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
 	if decoder.GetLength() < 1 {
 		return fmt.Errorf("CompatibleUnion requires at least 1 byte for selector")
 	}
@@ -950,7 +915,7 @@ func unmarshalCompatibleUnion(d *DynSsz, targetType *TypeDescriptor, targetValue
 	variantValue := reflect.New(variantDesc.Type).Elem()
 
 	// Unmarshal the data
-	err = unmarshalType(d, variantDesc, variantValue, decoder, idt+2)
+	err = ctx.unmarshalType(variantDesc, variantValue, decoder, idt+2)
 	if err != nil {
 		return fmt.Errorf("failed to unmarshal union variant %d: %w", variant, err)
 	}

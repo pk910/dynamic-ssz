@@ -10,7 +10,7 @@ import (
 	"slices"
 	"strings"
 
-	dynssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/ssztypes"
 )
 
 // hashTreeRootContext contains the state and utilities for generating hash tree root methods.
@@ -54,7 +54,7 @@ type hashTreeRootContext struct {
 //
 // Returns:
 //   - error: An error if code generation fails
-func generateHashTreeRoot(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
+func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
 	codeBuf := strings.Builder{}
 	ctx := &hashTreeRootContext{
 		appendCode: func(indent int, code string, args ...any) {
@@ -151,18 +151,18 @@ func generateHashTreeRoot(rootTypeDesc *dynssz.TypeDescriptor, codeBuilder *stri
 }
 
 // isPrimitive checks if a type is a primitive SSZ type that can be hashed directly.
-func (ctx *hashTreeRootContext) isPrimitive(desc *dynssz.TypeDescriptor) bool {
-	return desc.SszType == dynssz.SszBoolType || desc.SszType == dynssz.SszUint8Type || desc.SszType == dynssz.SszUint16Type || desc.SszType == dynssz.SszUint32Type || desc.SszType == dynssz.SszUint64Type || desc.SszType == dynssz.SszUint128Type
+func (ctx *hashTreeRootContext) isPrimitive(desc *ssztypes.TypeDescriptor) bool {
+	return desc.SszType == ssztypes.SszBoolType || desc.SszType == ssztypes.SszUint8Type || desc.SszType == ssztypes.SszUint16Type || desc.SszType == ssztypes.SszUint32Type || desc.SszType == ssztypes.SszUint64Type || desc.SszType == ssztypes.SszUint128Type
 }
 
 // isInlineable checks if a type can be inlined directly into the hash tree root code
-func (ctx *hashTreeRootContext) isInlineable(desc *dynssz.TypeDescriptor) bool {
-	if desc.SszType == dynssz.SszBoolType || desc.SszType == dynssz.SszUint8Type || desc.SszType == dynssz.SszUint16Type || desc.SszType == dynssz.SszUint32Type || desc.SszType == dynssz.SszUint64Type {
+func (ctx *hashTreeRootContext) isInlineable(desc *ssztypes.TypeDescriptor) bool {
+	if desc.SszType == ssztypes.SszBoolType || desc.SszType == ssztypes.SszUint8Type || desc.SszType == ssztypes.SszUint16Type || desc.SszType == ssztypes.SszUint32Type || desc.SszType == ssztypes.SszUint64Type {
 		return true
 	}
 
-	if desc.SszType == dynssz.SszVectorType || desc.SszType == dynssz.SszListType {
-		return desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0
+	if desc.SszType == ssztypes.SszVectorType || desc.SszType == ssztypes.SszListType {
+		return desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0
 	}
 
 	return false
@@ -175,8 +175,8 @@ func (ctx *hashTreeRootContext) getValVar() string {
 }
 
 // getPtrPrefix returns & for types that are heavy to copy
-func (ctx *hashTreeRootContext) getPtrPrefix(desc *dynssz.TypeDescriptor, prefix string) string {
-	if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+func (ctx *hashTreeRootContext) getPtrPrefix(desc *ssztypes.TypeDescriptor, prefix string) string {
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 		return ""
 	}
 	if desc.Kind == reflect.Array {
@@ -190,25 +190,25 @@ func (ctx *hashTreeRootContext) getPtrPrefix(desc *dynssz.TypeDescriptor, prefix
 }
 
 // hashType generates hash tree root code for any SSZ type, delegating to specific hashers.
-func (ctx *hashTreeRootContext) hashType(desc *dynssz.TypeDescriptor, varName string, indent int, isRoot bool, pack bool) error {
-	if desc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 {
+func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName string, indent int, isRoot bool, pack bool) error {
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 		ctx.appendCode(indent, "if %s == nil {\n\t%s = new(%s)\n}\n", varName, varName, ctx.typePrinter.InnerTypeString(desc))
 	}
 
 	// Handle types that have generated methods we can call
-	if desc.SszCompatFlags&dynssz.SszCompatFlagDynamicHashRoot != 0 && !isRoot {
+	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0 && !isRoot {
 		ctx.appendCode(indent, "if err := %s.HashTreeRootWithDyn(ds, hh); err != nil {\n\treturn err\n}\n", varName)
 		ctx.usedDynSpecs = true
 		return nil
 	}
 
-	isFastsszHasher := desc.SszCompatFlags&dynssz.SszCompatFlagFastSSZHasher != 0
-	isFastsszHashWith := desc.SszCompatFlags&dynssz.SszCompatFlagHashTreeRootWith != 0
-	hasDynamicSize := desc.SszTypeFlags&dynssz.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
-	hasDynamicMax := desc.SszTypeFlags&dynssz.SszTypeFlagHasMaxExpr != 0 && !ctx.options.WithoutDynamicExpressions
+	isFastsszHasher := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0
+	isFastsszHashWith := desc.SszCompatFlags&ssztypes.SszCompatFlagHashTreeRootWith != 0
+	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
+	hasDynamicMax := desc.SszTypeFlags&ssztypes.SszTypeFlagHasMaxExpr != 0 && !ctx.options.WithoutDynamicExpressions
 
 	useFastSsz := !isRoot && !ctx.options.NoFastSsz && !hasDynamicSize && !hasDynamicMax && (isFastsszHasher || isFastsszHashWith)
-	if !useFastSsz && desc.SszType == dynssz.SszCustomType {
+	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
 		useFastSsz = true
 	}
 
@@ -222,35 +222,35 @@ func (ctx *hashTreeRootContext) hashType(desc *dynssz.TypeDescriptor, varName st
 	}
 
 	switch desc.SszType {
-	case dynssz.SszBoolType:
+	case ssztypes.SszBoolType:
 		if pack {
 			ctx.appendCode(indent, "hh.AppendBool(bool(%s))\n", varName)
 		} else {
 			ctx.appendCode(indent, "hh.PutBool(bool(%s))\n", varName)
 		}
-	case dynssz.SszUint8Type:
+	case ssztypes.SszUint8Type:
 		if pack {
 			ctx.appendCode(indent, "hh.AppendUint8(uint8(%s))\n", varName)
 		} else {
 			ctx.appendCode(indent, "hh.PutUint8(uint8(%s))\n", varName)
 		}
-	case dynssz.SszUint16Type:
+	case ssztypes.SszUint16Type:
 		if pack {
 			ctx.appendCode(indent, "hh.AppendUint16(uint16(%s))\n", varName)
 		} else {
 			ctx.appendCode(indent, "hh.PutUint16(uint16(%s))\n", varName)
 		}
 
-	case dynssz.SszUint32Type:
+	case ssztypes.SszUint32Type:
 		if pack {
 			ctx.appendCode(indent, "hh.AppendUint32(uint32(%s))\n", varName)
 		} else {
 			ctx.appendCode(indent, "hh.PutUint32(uint32(%s))\n", varName)
 		}
 
-	case dynssz.SszUint64Type:
+	case ssztypes.SszUint64Type:
 		var valVar string
-		if desc.GoTypeFlags&dynssz.GoTypeFlagIsTime != 0 {
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsTime != 0 {
 			valVar = fmt.Sprintf("uint64(%s.Unix())", varName)
 		} else {
 			valVar = fmt.Sprintf("uint64(%s)", varName)
@@ -261,7 +261,7 @@ func (ctx *hashTreeRootContext) hashType(desc *dynssz.TypeDescriptor, varName st
 			ctx.appendCode(indent, "hh.PutUint64(%s)\n", valVar)
 		}
 
-	case dynssz.SszTypeWrapperType:
+	case ssztypes.SszTypeWrapperType:
 		ctx.appendCode(indent, "{\n")
 		valVar := "t"
 		if ctx.isInlineable(desc.ElemDesc) {
@@ -274,28 +274,28 @@ func (ctx *hashTreeRootContext) hashType(desc *dynssz.TypeDescriptor, varName st
 		}
 		ctx.appendCode(indent, "}\n")
 
-	case dynssz.SszContainerType:
+	case ssztypes.SszContainerType:
 		return ctx.hashContainer(desc, varName, indent)
 
-	case dynssz.SszProgressiveContainerType:
+	case ssztypes.SszProgressiveContainerType:
 		return ctx.hashProgressiveContainer(desc, varName, indent)
 
-	case dynssz.SszUint128Type, dynssz.SszUint256Type:
+	case ssztypes.SszUint128Type, ssztypes.SszUint256Type:
 		return ctx.hashVector(desc, varName, indent, true)
 
-	case dynssz.SszVectorType, dynssz.SszBitvectorType:
+	case ssztypes.SszVectorType, ssztypes.SszBitvectorType:
 		return ctx.hashVector(desc, varName, indent, false)
 
-	case dynssz.SszListType, dynssz.SszProgressiveListType:
+	case ssztypes.SszListType, ssztypes.SszProgressiveListType:
 		return ctx.hashList(desc, varName, indent)
 
-	case dynssz.SszBitlistType, dynssz.SszProgressiveBitlistType:
+	case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType:
 		return ctx.hashBitlist(desc, varName, indent)
 
-	case dynssz.SszCompatibleUnionType:
+	case ssztypes.SszCompatibleUnionType:
 		return ctx.hashUnion(desc, varName, indent)
 
-	case dynssz.SszCustomType:
+	case ssztypes.SszCustomType:
 		ctx.appendCode(indent, "// Custom type - hash unknown\n")
 
 	default:
@@ -306,7 +306,7 @@ func (ctx *hashTreeRootContext) hashType(desc *dynssz.TypeDescriptor, varName st
 }
 
 // hashContainer generates hash tree root code for SSZ container (struct) types.
-func (ctx *hashTreeRootContext) hashContainer(desc *dynssz.TypeDescriptor, varName string, indent int) error {
+func (ctx *hashTreeRootContext) hashContainer(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
 	// Start container merkleization
 	ctx.appendCode(indent, "idx := hh.Index()\n")
 
@@ -332,7 +332,7 @@ func (ctx *hashTreeRootContext) hashContainer(desc *dynssz.TypeDescriptor, varNa
 }
 
 // hashProgressiveContainer generates hash tree root code for progressive container types.
-func (ctx *hashTreeRootContext) hashProgressiveContainer(desc *dynssz.TypeDescriptor, varName string, indent int) error {
+func (ctx *hashTreeRootContext) hashProgressiveContainer(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
 	// Start container merkleization
 	ctx.appendCode(indent, "idx := hh.Index()\n")
 
@@ -372,7 +372,7 @@ func (ctx *hashTreeRootContext) hashProgressiveContainer(desc *dynssz.TypeDescri
 }
 
 // getActiveFieldsHex generates hex string representation of active fields for progressive containers.
-func (ctx *hashTreeRootContext) getActiveFieldsHex(sourceType *dynssz.TypeDescriptor) string {
+func (ctx *hashTreeRootContext) getActiveFieldsHex(sourceType *ssztypes.TypeDescriptor) string {
 	// Find the highest ssz-index to determine bitlist size
 	maxIndex := uint16(0)
 	for _, field := range sourceType.ContainerDesc.Fields {
@@ -411,7 +411,7 @@ func (ctx *hashTreeRootContext) getActiveFieldsHex(sourceType *dynssz.TypeDescri
 }
 
 // hashVector generates hash tree root code for SSZ vector (fixed-size array) types.
-func (ctx *hashTreeRootContext) hashVector(desc *dynssz.TypeDescriptor, varName string, indent int, pack bool) error {
+func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varName string, indent int, pack bool) error {
 	sizeExpression := desc.SizeExpression
 	if ctx.options.WithoutDynamicExpressions {
 		sizeExpression = nil
@@ -421,7 +421,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *dynssz.TypeDescriptor, varName 
 	bitlimitVar := ""
 	if sizeExpression != nil {
 		defaultValue := uint64(desc.Len)
-		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
 			if desc.BitSize > 0 {
 				defaultValue = uint64(desc.BitSize)
 			} else {
@@ -431,7 +431,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *dynssz.TypeDescriptor, varName 
 
 		exprVar := ctx.exprVars.getExprVar(*sizeExpression, defaultValue)
 
-		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 {
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
 			bitlimitVar = fmt.Sprintf("int(%s)", exprVar)
 			limitVar = fmt.Sprintf("int((%s+7)/8)", exprVar)
 		} else {
@@ -445,7 +445,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *dynssz.TypeDescriptor, varName 
 			ctx.appendCode(indent, "}\n")
 		}
 	} else {
-		if desc.SszTypeFlags&dynssz.SszTypeFlagHasBitSize != 0 && desc.BitSize > 0 && desc.BitSize%8 != 0 {
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 && desc.BitSize > 0 && desc.BitSize%8 != 0 {
 			bitlimitVar = fmt.Sprintf("%d", desc.BitSize)
 		}
 		limitVar = fmt.Sprintf("%d", desc.Len)
@@ -465,10 +465,10 @@ func (ctx *hashTreeRootContext) hashVector(desc *dynssz.TypeDescriptor, varName 
 	itemSize := 0
 
 	// Handle byte arrays
-	if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 || desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 || desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
 		valVar := ""
 		if desc.Kind != reflect.Array {
-			if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
+			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
 				ctx.appendCode(indent, "val := []byte(%s)\n", varName)
 			} else {
 				ctx.appendCode(indent, "val := %s[:]\n", varName)
@@ -512,7 +512,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *dynssz.TypeDescriptor, varName 
 
 		valVar := ctx.getValVar()
 		valVarPtrPrefix := ctx.getPtrPrefix(desc.ElemDesc, "*")
-		isPtrType := desc.ElemDesc.GoTypeFlags&dynssz.GoTypeFlagIsPointer != 0 || valVarPtrPrefix != ""
+		isPtrType := desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 || valVarPtrPrefix != ""
 		emptyVarAddin := ""
 		if !isPtrType {
 			emptyVarAddin = fmt.Sprintf(", %sEmpty", valVar)
@@ -548,7 +548,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *dynssz.TypeDescriptor, varName 
 }
 
 // hashList generates hash tree root code for SSZ list (variable-size array) types.
-func (ctx *hashTreeRootContext) hashList(desc *dynssz.TypeDescriptor, varName string, indent int) error {
+func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
 	maxExpression := desc.MaxExpression
 	if ctx.options.WithoutDynamicExpressions {
 		maxExpression = nil
@@ -590,10 +590,10 @@ func (ctx *hashTreeRootContext) hashList(desc *dynssz.TypeDescriptor, varName st
 	itemSize := 0
 
 	// Handle byte slices
-	if desc.GoTypeFlags&dynssz.GoTypeFlagIsString != 0 {
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
 		ctx.appendCode(indent, "hh.AppendBytes32([]byte(%s))\n", varName)
 		itemSize = 1
-	} else if desc.GoTypeFlags&dynssz.GoTypeFlagIsByteArray != 0 {
+	} else if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
 		ctx.appendCode(indent, "hh.AppendBytes32(%s[:])\n", varName)
 		itemSize = 1
 	} else {
@@ -622,7 +622,7 @@ func (ctx *hashTreeRootContext) hashList(desc *dynssz.TypeDescriptor, varName st
 		}
 	}
 
-	if desc.SszType == dynssz.SszProgressiveListType {
+	if desc.SszType == ssztypes.SszProgressiveListType {
 		addVlen()
 		ctx.appendCode(indent, "hh.MerkleizeProgressiveWithMixin(idx, vlen)\n")
 	} else if maxVar != "0" {
@@ -640,7 +640,7 @@ func (ctx *hashTreeRootContext) hashList(desc *dynssz.TypeDescriptor, varName st
 }
 
 // hashBitlist generates hash tree root code for SSZ bitlist types.
-func (ctx *hashTreeRootContext) hashBitlist(desc *dynssz.TypeDescriptor, varName string, indent int) error {
+func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
 	maxExpression := desc.MaxExpression
 	if ctx.options.WithoutDynamicExpressions {
 		maxExpression = nil
@@ -667,7 +667,7 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *dynssz.TypeDescriptor, varName
 	}
 	ctx.appendCode(indent, "hh.AppendBytes32(bitlist)\n")
 
-	if desc.SszType == dynssz.SszProgressiveBitlistType {
+	if desc.SszType == ssztypes.SszProgressiveBitlistType {
 		ctx.appendCode(indent, "hh.MerkleizeProgressiveWithMixin(idx, size)\n")
 	} else if maxVar != "" {
 		ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, size, (%s+255)/256)\n", maxVar)
@@ -679,7 +679,7 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *dynssz.TypeDescriptor, varName
 }
 
 // hashUnion generates hash tree root code for SSZ union types.
-func (ctx *hashTreeRootContext) hashUnion(desc *dynssz.TypeDescriptor, varName string, indent int) error {
+func (ctx *hashTreeRootContext) hashUnion(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
 	ctx.appendCode(indent, "idx := hh.Index()\n")
 	ctx.appendCode(indent, "switch %s.Variant {\n", varName)
 

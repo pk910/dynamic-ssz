@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	dynssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/ssztypes"
 )
 
 // TestGenerateSizeUnsupportedType tests that generateSize returns an error
@@ -17,15 +17,15 @@ import (
 func TestGenerateSizeUnsupportedType(t *testing.T) {
 	tests := []struct {
 		name    string
-		sszType dynssz.SszType
+		sszType ssztypes.SszType
 	}{
-		{"UnsupportedType_255", dynssz.SszType(255)},
-		{"UnsupportedType_100", dynssz.SszType(100)},
+		{"UnsupportedType_255", ssztypes.SszType(255)},
+		{"UnsupportedType_100", ssztypes.SszType(100)},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			desc := &dynssz.TypeDescriptor{
+			desc := &ssztypes.TypeDescriptor{
 				Type:    testDummyReflectType,
 				SszType: tt.sszType,
 				Kind:    reflect.Struct,
@@ -49,19 +49,19 @@ func TestGenerateSizeUnsupportedType(t *testing.T) {
 // TestSizeContainerWithNestedUnsupportedType tests that sizeContainer propagates
 // errors from nested unsupported types.
 func TestSizeContainerWithNestedUnsupportedType(t *testing.T) {
-	unsupportedFieldDesc := &dynssz.TypeDescriptor{
+	unsupportedFieldDesc := &ssztypes.TypeDescriptor{
 		Type:    testDummyReflectType,
-		SszType: dynssz.SszType(255),
+		SszType: ssztypes.SszType(255),
 		Kind:    reflect.Struct,
 		Size:    0,
 	}
 
-	containerDesc := &dynssz.TypeDescriptor{
+	containerDesc := &ssztypes.TypeDescriptor{
 		Type:    testDummyReflectType,
-		SszType: dynssz.SszContainerType,
+		SszType: ssztypes.SszContainerType,
 		Kind:    reflect.Struct,
-		ContainerDesc: &dynssz.ContainerDescriptor{
-			Fields: []dynssz.FieldDescriptor{
+		ContainerDesc: &ssztypes.ContainerDescriptor{
+			Fields: []ssztypes.FieldDescriptor{
 				{
 					Name: "UnsupportedField",
 					Type: unsupportedFieldDesc,
@@ -86,29 +86,29 @@ func TestSizeContainerWithNestedUnsupportedType(t *testing.T) {
 // TestSizeDynamicContainerFieldError tests sizeContainer error propagation
 // for dynamic fields with unsupported types.
 func TestSizeDynamicContainerFieldError(t *testing.T) {
-	unsupportedNestedDesc := &dynssz.TypeDescriptor{
+	unsupportedNestedDesc := &ssztypes.TypeDescriptor{
 		Type:         testDummyReflectType,
-		SszType:      dynssz.SszType(255),
-		SszTypeFlags: dynssz.SszTypeFlagIsDynamic,
+		SszType:      ssztypes.SszType(255),
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
 		Kind:         reflect.Uint8, // Use Uint8 to avoid getPtrPrefix returning "*" which triggers InnerTypeString
 		Size:         0,
 	}
 
-	dynamicFieldDesc := &dynssz.TypeDescriptor{
+	dynamicFieldDesc := &ssztypes.TypeDescriptor{
 		Type:         testDummySliceReflectType,
-		SszType:      dynssz.SszListType,
-		SszTypeFlags: dynssz.SszTypeFlagIsDynamic,
+		SszType:      ssztypes.SszListType,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
 		Kind:         reflect.Slice,
 		ElemDesc:     unsupportedNestedDesc,
 		Limit:        100,
 	}
 
-	containerDesc := &dynssz.TypeDescriptor{
+	containerDesc := &ssztypes.TypeDescriptor{
 		Type:    testDummyReflectType,
-		SszType: dynssz.SszContainerType,
+		SszType: ssztypes.SszContainerType,
 		Kind:    reflect.Struct,
-		ContainerDesc: &dynssz.ContainerDescriptor{
-			Fields: []dynssz.FieldDescriptor{
+		ContainerDesc: &ssztypes.ContainerDescriptor{
+			Fields: []ssztypes.FieldDescriptor{
 				{
 					Name: "DynamicField",
 					Type: dynamicFieldDesc,
@@ -133,18 +133,18 @@ func TestSizeDynamicContainerFieldError(t *testing.T) {
 // TestSizeListWithNestedUnsupportedType tests that sizeList propagates
 // errors from nested unsupported element types when dynamic elements are present.
 func TestSizeListWithNestedUnsupportedType(t *testing.T) {
-	unsupportedElemDesc := &dynssz.TypeDescriptor{
+	unsupportedElemDesc := &ssztypes.TypeDescriptor{
 		Type:         testDummyReflectType,
-		SszType:      dynssz.SszType(255),
-		SszTypeFlags: dynssz.SszTypeFlagIsDynamic,
+		SszType:      ssztypes.SszType(255),
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
 		Kind:         reflect.Uint8, // Use Uint8 to avoid getPtrPrefix returning "*" which triggers InnerTypeString
 		Size:         0,
 	}
 
-	listDesc := &dynssz.TypeDescriptor{
+	listDesc := &ssztypes.TypeDescriptor{
 		Type:         testDummySliceReflectType,
-		SszType:      dynssz.SszListType,
-		SszTypeFlags: dynssz.SszTypeFlagIsDynamic,
+		SszType:      ssztypes.SszListType,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
 		Kind:         reflect.Slice,
 		ElemDesc:     unsupportedElemDesc,
 		Limit:        100,
@@ -166,20 +166,20 @@ func TestSizeListWithNestedUnsupportedType(t *testing.T) {
 // TestSizeUnionWithNestedUnsupportedType tests that sizeUnion propagates
 // errors from nested unsupported variant types.
 func TestSizeUnionWithNestedUnsupportedType(t *testing.T) {
-	unsupportedVariantDesc := &dynssz.TypeDescriptor{
+	unsupportedVariantDesc := &ssztypes.TypeDescriptor{
 		Type:         testDummyReflectType,
-		SszType:      dynssz.SszType(255),
-		SszTypeFlags: dynssz.SszTypeFlagIsDynamic,
+		SszType:      ssztypes.SszType(255),
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
 		Kind:         reflect.Struct,
 		Size:         0,
 	}
 
-	unionDesc := &dynssz.TypeDescriptor{
+	unionDesc := &ssztypes.TypeDescriptor{
 		Type:         testDummyReflectType,
-		SszType:      dynssz.SszCompatibleUnionType,
-		SszTypeFlags: dynssz.SszTypeFlagIsDynamic,
+		SszType:      ssztypes.SszCompatibleUnionType,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
 		Kind:         reflect.Struct,
-		UnionVariants: map[uint8]*dynssz.TypeDescriptor{
+		UnionVariants: map[uint8]*ssztypes.TypeDescriptor{
 			0: unsupportedVariantDesc,
 		},
 	}
@@ -200,16 +200,16 @@ func TestSizeUnionWithNestedUnsupportedType(t *testing.T) {
 // TestSizeTypeWrapperWithNestedUnsupportedType tests that sizeType handles
 // TypeWrapper with nested unsupported types.
 func TestSizeTypeWrapperWithNestedUnsupportedType(t *testing.T) {
-	unsupportedElemDesc := &dynssz.TypeDescriptor{
+	unsupportedElemDesc := &ssztypes.TypeDescriptor{
 		Type:    testDummyReflectType,
-		SszType: dynssz.SszType(255),
+		SszType: ssztypes.SszType(255),
 		Kind:    reflect.Struct,
 		Size:    0,
 	}
 
-	wrapperDesc := &dynssz.TypeDescriptor{
+	wrapperDesc := &ssztypes.TypeDescriptor{
 		Type:     testDummyReflectType,
-		SszType:  dynssz.SszTypeWrapperType,
+		SszType:  ssztypes.SszTypeWrapperType,
 		Kind:     reflect.Struct,
 		ElemDesc: unsupportedElemDesc,
 	}
@@ -229,18 +229,18 @@ func TestSizeTypeWrapperWithNestedUnsupportedType(t *testing.T) {
 
 // TestSizeProgressiveListError tests that progressive lists properly propagate errors.
 func TestSizeProgressiveListError(t *testing.T) {
-	unsupportedElemDesc := &dynssz.TypeDescriptor{
+	unsupportedElemDesc := &ssztypes.TypeDescriptor{
 		Type:         testDummyReflectType,
-		SszType:      dynssz.SszType(255),
-		SszTypeFlags: dynssz.SszTypeFlagIsDynamic,
+		SszType:      ssztypes.SszType(255),
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
 		Kind:         reflect.Uint8, // Use Uint8 to avoid getPtrPrefix returning "*" which triggers InnerTypeString
 		Size:         0,
 	}
 
-	listDesc := &dynssz.TypeDescriptor{
+	listDesc := &ssztypes.TypeDescriptor{
 		Type:         testDummySliceReflectType,
-		SszType:      dynssz.SszProgressiveListType,
-		SszTypeFlags: dynssz.SszTypeFlagIsDynamic,
+		SszType:      ssztypes.SszProgressiveListType,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
 		Kind:         reflect.Slice,
 		ElemDesc:     unsupportedElemDesc,
 		Limit:        100,

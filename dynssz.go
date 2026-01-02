@@ -11,6 +11,8 @@ import (
 	"reflect"
 
 	"github.com/pk910/dynamic-ssz/hasher"
+	"github.com/pk910/dynamic-ssz/reflection"
+	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
 	"github.com/pk910/dynamic-ssz/treeproof"
 )
@@ -46,25 +48,10 @@ import (
 //	// Hash tree root
 //	root, err := ds.HashTreeRoot(myStruct)
 type DynSsz struct {
-	typeCache      *TypeCache                  // Cache for type descriptors
+	typeCache      *ssztypes.TypeCache         // Cache for type descriptors
 	specValues     map[string]any              // Dynamic specification values
 	specValueCache map[string]*cachedSpecValue // Cache for parsed specification expressions
-
-	// NoFastSsz disables the use of fastssz for static types.
-	// When true, all encoding/decoding uses reflection-based processing.
-	// Generally not recommended unless you need consistent behavior across all types.
-	NoFastSsz bool
-
-	// NoFastHash disables the use of optimized hash tree root calculation.
-	// When true, uses the standard hasher instead of the fast gohashtree implementation.
-	NoFastHash bool
-
-	// Verbose enables detailed logging of encoding/decoding operations.
-	// Useful for debugging but impacts performance.
-	Verbose bool
-
-	// LogCb is a callback function that will be called with the formatted log message.
-	LogCb func(format string, args ...any)
+	options        *DynSszOptions
 }
 
 // NewDynSsz creates a new instance of the DynSsz encoder/decoder.
@@ -101,19 +88,27 @@ type DynSsz struct {
 //	    "CUSTOM_ARRAY_LENGTH": uint64(256),
 //	}
 //	dsCustom := dynssz.NewDynSsz(customSpecs)
-func NewDynSsz(specs map[string]any) *DynSsz {
+func NewDynSsz(specs map[string]any, options ...DynSszOption) *DynSsz {
 	if specs == nil {
 		specs = map[string]any{}
+	}
+
+	opts := &DynSszOptions{
+		LogCb: func(format string, args ...any) {
+			fmt.Printf(format, args...)
+		},
+	}
+
+	for _, option := range options {
+		option(opts)
 	}
 
 	dynssz := &DynSsz{
 		specValues:     specs,
 		specValueCache: map[string]*cachedSpecValue{},
-		LogCb: func(format string, args ...any) {
-			fmt.Printf(format, args...)
-		},
+		options:        opts,
 	}
-	dynssz.typeCache = NewTypeCache(dynssz)
+	dynssz.typeCache = ssztypes.NewTypeCache(dynssz)
 
 	return dynssz
 }
@@ -138,7 +133,7 @@ func NewDynSsz(specs map[string]any) *DynSsz {
 //	// Inspect cached types
 //	types := cache.GetAllTypes()
 //	fmt.Printf("Cache contains %d types\n", len(types))
-func (d *DynSsz) GetTypeCache() *TypeCache {
+func (d *DynSsz) GetTypeCache() *ssztypes.TypeCache {
 	return d.typeCache
 }
 
@@ -199,14 +194,16 @@ func (d *DynSsz) MarshalSSZ(source any) ([]byte, error) {
 		return nil, err
 	}
 
-	size, err := d.getSszValueSize(sourceTypeDesc, sourceValue)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz)
+
+	size, err := ctx.SizeSSZ(sourceTypeDesc, sourceValue)
 	if err != nil {
 		return nil, err
 	}
 
 	buf := make([]byte, 0, size)
 	encoder := sszutils.NewBufferEncoder(buf)
-	err = marshalType(d, sourceTypeDesc, sourceValue, encoder, 0)
+	err = ctx.MarshalSSZ(sourceTypeDesc, sourceValue, encoder)
 	if err != nil {
 		return nil, err
 	}
@@ -259,8 +256,10 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte) ([]byte, error) {
 		return nil, err
 	}
 
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz)
+
 	encoder := sszutils.NewBufferEncoder(buf)
-	err = marshalType(d, sourceTypeDesc, sourceValue, encoder, 0)
+	err = ctx.MarshalSSZ(sourceTypeDesc, sourceValue, encoder)
 	if err != nil {
 		return nil, err
 	}
@@ -342,7 +341,9 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error {
 		return err
 	}
 
-	err = marshalType(d, sourceTypeDesc, sourceValue, encoder, 0)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz)
+
+	err = ctx.MarshalSSZ(sourceTypeDesc, sourceValue, encoder)
 	if err != nil {
 		return err
 	}
@@ -395,7 +396,9 @@ func (d *DynSsz) SizeSSZ(source any) (int, error) {
 		return 0, err
 	}
 
-	size, err := d.getSszValueSize(sourceTypeDesc, sourceValue)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz)
+
+	size, err := ctx.SizeSSZ(sourceTypeDesc, sourceValue)
 	if err != nil {
 		return 0, err
 	}
@@ -447,7 +450,7 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte) error {
 		return err
 	}
 
-	if targetTypeDesc.GoTypeFlags&GoTypeFlagIsPointer == 0 {
+	if targetTypeDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer == 0 {
 		return fmt.Errorf("target must be a pointer")
 	}
 
@@ -455,10 +458,12 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte) error {
 		return fmt.Errorf("target pointer must not be nil")
 	}
 
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz)
+
 	decoder := sszutils.NewBufferDecoder(ssz)
 	decoder.PushLimit(len(ssz))
 
-	err = unmarshalType(d, targetTypeDesc, targetValue, decoder, 0)
+	err = ctx.UnmarshalSSZ(targetTypeDesc, targetValue, decoder)
 	if err != nil {
 		return err
 	}
@@ -559,7 +564,7 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int) error {
 		return err
 	}
 
-	if targetTypeDesc.GoTypeFlags&GoTypeFlagIsPointer == 0 {
+	if targetTypeDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer == 0 {
 		return fmt.Errorf("target must be a pointer")
 	}
 
@@ -567,7 +572,9 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int) error {
 		return fmt.Errorf("target pointer must not be nil")
 	}
 
-	err = unmarshalType(d, targetTypeDesc, targetValue, decoder, 0)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz)
+
+	err = ctx.UnmarshalSSZ(targetTypeDesc, targetValue, decoder)
 	if err != nil {
 		return err
 	}
@@ -620,7 +627,7 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int) error {
 //	fmt.Printf("Block root: %x\n", root)
 func (d *DynSsz) HashTreeRoot(source any) ([32]byte, error) {
 	var pool *hasher.HasherPool
-	if d.NoFastHash {
+	if d.options.NoFastHash {
 		pool = &hasher.DefaultHasherPool
 	} else {
 		pool = &hasher.FastHasherPool
@@ -688,7 +695,9 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker) error {
 			return err
 		}
 
-		err = d.buildRootFromType(sourceTypeDesc, sourceValue, hh, false, 0)
+		ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz)
+
+		err = ctx.HashTreeRoot(sourceTypeDesc, sourceValue, hh)
 		if err != nil {
 			return err
 		}

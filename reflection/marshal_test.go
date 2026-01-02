@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // This file is part of the dynamic-ssz library.
 
-package dynssz_test
+package reflection_test
 
 import (
 	"bytes"
@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	. "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/ssztypes"
 )
 
 var marshalTestMatrix = append(commonTestMatrix, []struct {
@@ -112,8 +113,7 @@ func TestMarshalTo(t *testing.T) {
 }
 
 func TestMarshalNoFastSsz(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	for _, test := range marshalTestMatrix {
 		t.Run(test.name, func(t *testing.T) {
@@ -132,8 +132,7 @@ func TestMarshalNoFastSsz(t *testing.T) {
 }
 
 func TestMarshalWriter(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	for _, test := range marshalTestMatrix {
 		t.Run(test.name, func(t *testing.T) {
@@ -560,12 +559,7 @@ func TestMarshalErrors(t *testing.T) {
 }
 
 func TestMarshalVerbose(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
-	dynssz.Verbose = true
-
-	dynssz.LogCb("")
-	dynssz.LogCb = func(format string, args ...any) {}
+	dynssz := NewDynSsz(nil, WithNoFastSsz(), WithVerbose(), WithLogCb(func(format string, args ...any) {}))
 
 	// Test with various types to exercise verbose logging paths
 	testCases := []struct {
@@ -602,8 +596,7 @@ func TestMarshalVerbose(t *testing.T) {
 }
 
 func TestMarshalEmptyBitlist(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Test empty bitlist - should add termination bit automatically
 	// Use MarshalSSZTo to test the actual marshalBitlist function
@@ -624,8 +617,7 @@ func TestMarshalEmptyBitlist(t *testing.T) {
 }
 
 func TestMarshalDynamicVectorSizeError(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Test dynamic vector exceeding size limit
 	input := struct {
@@ -643,8 +635,7 @@ func TestMarshalDynamicVectorSizeError(t *testing.T) {
 }
 
 func TestMarshalInvalidSizeError(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	type Uint32WithInvalidSize uint32
 	uint32desc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Uint32WithInvalidSize(0)), nil, nil, nil)
@@ -665,8 +656,7 @@ func TestMarshalInvalidSizeError(t *testing.T) {
 }
 
 func TestMarshalDynamicVectorAppendZeroPointer(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Test dynamic vector with pointer elements needing zero padding
 	input := struct {
@@ -683,8 +673,7 @@ func TestMarshalDynamicVectorAppendZeroPointer(t *testing.T) {
 }
 
 func TestMarshalListNilPointerElement(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Test list with nil pointer element
 	input := struct {
@@ -701,8 +690,7 @@ func TestMarshalListNilPointerElement(t *testing.T) {
 }
 
 func TestSizeSSZUint128(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Test size calculation for uint128
 	input := struct {
@@ -719,8 +707,7 @@ func TestSizeSSZUint128(t *testing.T) {
 }
 
 func TestSizeSSZUint256(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Test size calculation for uint256
 	input := struct {
@@ -758,8 +745,7 @@ func TestSizeSSZFastSszPath(t *testing.T) {
 }
 
 func TestSizeSSZDynamicSizerPath(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Test with a type that implements DynamicSizer
 	input := &TestContainerWithDynamicSsz{
@@ -779,8 +765,7 @@ func TestSizeSSZDynamicSizerPath(t *testing.T) {
 }
 
 func TestSizeSSZTypeWrapper(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Test size calculation for TypeWrapper
 	type WrappedUint32List = TypeWrapper[struct {
@@ -804,8 +789,7 @@ func TestSizeSSZTypeWrapper(t *testing.T) {
 }
 
 func TestSizeSSZVectorShortLength(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Test size calculation for vector with elements shorter than declared size
 	// This tests the appendZero path
@@ -824,8 +808,7 @@ func TestSizeSSZVectorShortLength(t *testing.T) {
 }
 
 func TestSizeSSZVectorStaticElements(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Test size calculation for vector with static elements (dataLen > 0)
 	input := struct {
@@ -843,8 +826,7 @@ func TestSizeSSZVectorStaticElements(t *testing.T) {
 }
 
 func TestSizeSSZVectorEmptyStaticElements(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Test size calculation for empty vector with static elements (dataLen = 0)
 	input := struct {
@@ -862,8 +844,7 @@ func TestSizeSSZVectorEmptyStaticElements(t *testing.T) {
 }
 
 func TestSizeSSZVectorDynamicElements(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Test size calculation for vector with dynamic elements
 	input := struct {
@@ -881,8 +862,7 @@ func TestSizeSSZVectorDynamicElements(t *testing.T) {
 }
 
 func TestSizeSSZListDynamicElements(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Test size calculation for list with dynamic elements
 	input := struct {
@@ -900,8 +880,7 @@ func TestSizeSSZListDynamicElements(t *testing.T) {
 }
 
 func TestSizeSSZListStaticElements(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Test size calculation for list with static elements
 	input := struct {
@@ -919,8 +898,7 @@ func TestSizeSSZListStaticElements(t *testing.T) {
 }
 
 func TestSizeSSZCompatibleUnion(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Test size calculation for compatible union
 	type TestUnion = CompatibleUnion[struct {
@@ -952,7 +930,7 @@ func TestSizeSSZFastSszFallback(t *testing.T) {
 	dynssz.GetTypeCache().RemoveAllTypes()
 
 	// Set compat flag for a type that doesn't actually implement FastSSZ
-	dynssz.GetTypeCache().CompatFlags["struct { Field0 uint64 }"] = SszCompatFlagFastSSZMarshaler
+	dynssz.GetTypeCache().CompatFlags["struct { Field0 uint64 }"] = ssztypes.SszCompatFlagFastSSZMarshaler
 
 	// Test with type that has CompatFlag but doesn't implement the interface
 	input := struct {
@@ -970,14 +948,13 @@ func TestSizeSSZFastSszFallback(t *testing.T) {
 }
 
 func TestSizeSSZDynamicSizerFallback(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true // Disable FastSSZ to reach DynamicSizer path
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Clear any cached types
 	dynssz.GetTypeCache().RemoveAllTypes()
 
 	// Set compat flag for DynamicSizer on a type that doesn't implement it
-	dynssz.GetTypeCache().CompatFlags["struct { Field0 uint32 }"] = SszCompatFlagDynamicSizer
+	dynssz.GetTypeCache().CompatFlags["struct { Field0 uint32 }"] = ssztypes.SszCompatFlagDynamicSizer
 
 	// Test with type that has CompatFlag but doesn't implement the interface
 	input := struct {
@@ -995,8 +972,7 @@ func TestSizeSSZDynamicSizerFallback(t *testing.T) {
 }
 
 func TestMarshalEmptyDynamicList(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	// Test empty dynamic list - buffer vs streaming should produce identical output
 	// This tests the fix for the bug where non-seekable encoder incorrectly wrote
@@ -1064,12 +1040,12 @@ func TestCustomFallbackMarshal(t *testing.T) {
 		t.Fatalf("Expected struct descriptor, got nil")
 	}
 
-	if structDesc.SszType != SszContainerType {
+	if structDesc.SszType != ssztypes.SszContainerType {
 		t.Fatalf("Expected container type, got %v", structDesc.SszType)
 	}
 
-	structDesc.SszType = SszCustomType
-	structDesc.SszCompatFlags |= SszCompatFlagDynamicUnmarshaler
+	structDesc.SszType = ssztypes.SszCustomType
+	structDesc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicUnmarshaler
 
 	_, err = dynssz.MarshalSSZ(&TestContainer{})
 	if err == nil {

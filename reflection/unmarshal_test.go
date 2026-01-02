@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // This file is part of the dynamic-ssz library.
 
-package dynssz_test
+package reflection_test
 
 import (
 	"bytes"
@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	. "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/ssztypes"
 )
 
 var unmarshalTestMatrix = append(commonTestMatrix, []struct {
@@ -51,8 +52,7 @@ func TestUnmarshal(t *testing.T) {
 }
 
 func TestUnmarshalNoFastSsz(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	for _, test := range unmarshalTestMatrix {
 		obj := &struct {
@@ -81,8 +81,7 @@ func TestUnmarshalNoFastSsz(t *testing.T) {
 }
 
 func TestUnmarshalReader(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	for _, test := range unmarshalTestMatrix {
 		t.Run(test.name, func(t *testing.T) {
@@ -127,7 +126,7 @@ func TestUnmarshalErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get type descriptor: %v", err)
 	}
-	uint32desc2.SszTypeFlags |= SszTypeFlagIsDynamic
+	uint32desc2.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
 	uint32desc2.Size = 0
 
 	testCases := []struct {
@@ -629,10 +628,7 @@ func TestUnmarshalErrors(t *testing.T) {
 }
 
 func TestUnmarshalVerbose(t *testing.T) {
-	dynssz := NewDynSsz(nil)
-	dynssz.NoFastSsz = true
-	dynssz.Verbose = true
-	dynssz.LogCb = func(format string, args ...any) {}
+	dynssz := NewDynSsz(nil, WithNoFastSsz(), WithVerbose(), WithLogCb(func(format string, args ...any) {}))
 
 	// Test with various types to exercise verbose logging paths
 	testCases := []struct {
@@ -802,12 +798,12 @@ func TestCustomFallbackUnmarshal(t *testing.T) {
 		t.Fatalf("Expected struct descriptor, got nil")
 	}
 
-	if structDesc.SszType != SszContainerType {
+	if structDesc.SszType != ssztypes.SszContainerType {
 		t.Fatalf("Expected container type, got %v", structDesc.SszType)
 	}
 
-	structDesc.SszType = SszCustomType
-	structDesc.SszCompatFlags |= SszCompatFlagDynamicUnmarshaler
+	structDesc.SszType = ssztypes.SszCustomType
+	structDesc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicUnmarshaler
 
 	err = dynssz.UnmarshalSSZ(&TestContainer{}, fromHex("0x01020304"))
 	if err == nil {

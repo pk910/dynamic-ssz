@@ -14,7 +14,7 @@ import (
 	"sort"
 	"strings"
 
-	dynssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/ssztypes"
 )
 
 // analyzeTypes performs comprehensive type analysis and validation for all types in the generation request.
@@ -72,43 +72,43 @@ func (cg *CodeGenerator) analyzeTypes() error {
 		for _, t := range file.Options.Types {
 			typeKey, _ := getTypeName(t)
 
-			var compatFlags dynssz.SszCompatFlag
+			var compatFlags ssztypes.SszCompatFlag
 
 			// set availability of dynamic methods (we will generate them in a bit and we want cross references)
 			if !t.Options.NoMarshalSSZ && !t.Options.WithoutDynamicExpressions {
-				compatFlags |= dynssz.SszCompatFlagDynamicMarshaler
+				compatFlags |= ssztypes.SszCompatFlagDynamicMarshaler
 			}
 			if !t.Options.NoUnmarshalSSZ && !t.Options.WithoutDynamicExpressions {
-				compatFlags |= dynssz.SszCompatFlagDynamicUnmarshaler
+				compatFlags |= ssztypes.SszCompatFlagDynamicUnmarshaler
 			}
 			if !t.Options.NoSizeSSZ && !t.Options.WithoutDynamicExpressions {
-				compatFlags |= dynssz.SszCompatFlagDynamicSizer
+				compatFlags |= ssztypes.SszCompatFlagDynamicSizer
 			}
 			if !t.Options.NoHashTreeRoot && !t.Options.WithoutDynamicExpressions {
-				compatFlags |= dynssz.SszCompatFlagDynamicHashRoot
+				compatFlags |= ssztypes.SszCompatFlagDynamicHashRoot
 			}
 			if t.Options.CreateEncoderFn {
-				compatFlags |= dynssz.SszCompatFlagDynamicEncoder
+				compatFlags |= ssztypes.SszCompatFlagDynamicEncoder
 			}
 			if t.Options.CreateDecoderFn {
-				compatFlags |= dynssz.SszCompatFlagDynamicDecoder
+				compatFlags |= ssztypes.SszCompatFlagDynamicDecoder
 			}
 
 			if !t.Options.NoMarshalSSZ && !t.Options.NoUnmarshalSSZ && !t.Options.NoSizeSSZ && (t.Options.CreateLegacyFn || t.Options.WithoutDynamicExpressions) {
-				compatFlags |= dynssz.SszCompatFlagFastSSZMarshaler
+				compatFlags |= ssztypes.SszCompatFlagFastSSZMarshaler
 			}
 			if !t.Options.NoHashTreeRoot && (t.Options.CreateLegacyFn || t.Options.WithoutDynamicExpressions) {
 				if t.Options.CreateLegacyFn {
-					compatFlags |= dynssz.SszCompatFlagFastSSZHasher
+					compatFlags |= ssztypes.SszCompatFlagFastSSZHasher
 				}
-				compatFlags |= dynssz.SszCompatFlagHashTreeRootWith
+				compatFlags |= ssztypes.SszCompatFlagHashTreeRootWith
 			}
 
 			cg.compatFlags[typeKey] = compatFlags
 		}
 	}
 
-	cg.dynSsz.GetTypeCache().CompatFlags = cg.compatFlags
+	cg.typeCache.CompatFlags = cg.compatFlags
 
 	// analyze all types to build complete dependency graph
 	for _, file := range cg.files {
@@ -129,13 +129,13 @@ func (cg *CodeGenerator) analyzeTypes() error {
 			otherTypeName = typeName
 			t.TypeName = typeName
 
-			var desc *dynssz.TypeDescriptor
+			var desc *ssztypes.TypeDescriptor
 			var err error
 			if t.ReflectType != nil {
 				if t.ReflectType.Kind() == reflect.Struct {
 					t.ReflectType = reflect.PointerTo(t.ReflectType)
 				}
-				desc, err = cg.dynSsz.GetTypeCache().GetTypeDescriptor(t.ReflectType, t.Options.SizeHints, t.Options.MaxSizeHints, t.Options.TypeHints)
+				desc, err = cg.typeCache.GetTypeDescriptor(t.ReflectType, t.Options.SizeHints, t.Options.MaxSizeHints, t.Options.TypeHints)
 			} else {
 				if parser == nil {
 					parser = NewParser()
@@ -295,7 +295,7 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 // Returns:
 //   - bool: True if any generated code uses dynamic SSZ functionality
 //   - error: An error if any method generation fails
-func (cg *CodeGenerator) generateCode(desc *dynssz.TypeDescriptor, typePrinter *TypePrinter, codeBuilder *strings.Builder, options *CodeGeneratorOptions) error {
+func (cg *CodeGenerator) generateCode(desc *ssztypes.TypeDescriptor, typePrinter *TypePrinter, codeBuilder *strings.Builder, options *CodeGeneratorOptions) error {
 	// Generate the actual methods using flattened generators
 	var err error
 

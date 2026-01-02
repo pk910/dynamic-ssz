@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // This file is part of the dynamic-ssz library.
 
-package dynssz
+package ssztypes
 
 import (
 	"reflect"
@@ -10,6 +10,7 @@ import (
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
+var byteType = reflect.TypeOf(byte(0))
 var sszMarshalerType = reflect.TypeOf((*sszutils.FastsszMarshaler)(nil)).Elem()
 var sszUnmarshalerType = reflect.TypeOf((*sszutils.FastsszUnmarshaler)(nil)).Elem()
 var sszHashRootType = reflect.TypeOf((*sszutils.FastsszHashRoot)(nil)).Elem()
@@ -30,7 +31,7 @@ var dynamicHashRootType = reflect.TypeOf((*sszutils.DynamicHashRoot)(nil)).Elem(
 // Returns:
 // - A boolean indicating whether the type is compatible with fastssz's static encoding and decoding.
 
-func (d *DynSsz) getFastsszConvertCompatibility(targetType reflect.Type) bool {
+func getFastsszConvertCompatibility(targetType reflect.Type) bool {
 	targetPtrType := reflect.New(targetType).Type()
 	return targetPtrType.Implements(sszMarshalerType) && targetPtrType.Implements(sszUnmarshalerType)
 }
@@ -45,7 +46,7 @@ func (d *DynSsz) getFastsszConvertCompatibility(targetType reflect.Type) bool {
 // Returns:
 // - A boolean indicating whether the type is compatible with fastssz's static hash tree root computation.
 
-func (d *DynSsz) getFastsszHashCompatibility(targetType reflect.Type) bool {
+func getFastsszHashCompatibility(targetType reflect.Type) bool {
 	targetPtrType := reflect.New(targetType).Type()
 	return targetPtrType.Implements(sszHashRootType)
 }
@@ -63,7 +64,7 @@ func (d *DynSsz) getFastsszHashCompatibility(targetType reflect.Type) bool {
 //
 // Returns:
 //   - The method if found and valid, nil otherwise. This allows caching for performance optimization.
-func (d *DynSsz) getHashTreeRootWithCompatibility(targetType reflect.Type) *reflect.Method {
+func getHashTreeRootWithCompatibility(targetType reflect.Type) *reflect.Method {
 	targetPtrType := reflect.New(targetType).Type()
 
 	// Check if the type has a method named "HashTreeRootWith"
@@ -93,37 +94,37 @@ func (d *DynSsz) getHashTreeRootWithCompatibility(targetType reflect.Type) *refl
 }
 
 // getDynamicMarshalerCompatibility checks if a type implements the DynamicMarshaler interface
-func (d *DynSsz) getDynamicMarshalerCompatibility(targetType reflect.Type) bool {
+func getDynamicMarshalerCompatibility(targetType reflect.Type) bool {
 	targetPtrType := reflect.New(targetType).Type()
 	return targetPtrType.Implements(dynamicMarshalerType)
 }
 
 // getDynamicUnmarshalerCompatibility checks if a type implements the DynamicUnmarshaler interface
-func (d *DynSsz) getDynamicUnmarshalerCompatibility(targetType reflect.Type) bool {
+func getDynamicUnmarshalerCompatibility(targetType reflect.Type) bool {
 	targetPtrType := reflect.New(targetType).Type()
 	return targetPtrType.Implements(dynamicUnmarshalerType)
 }
 
 // getDynamicEncoderCompatibility checks if a type implements the DynamicEncoder interface
-func (d *DynSsz) getDynamicEncoderCompatibility(targetType reflect.Type) bool {
+func getDynamicEncoderCompatibility(targetType reflect.Type) bool {
 	targetPtrType := reflect.New(targetType).Type()
 	return targetPtrType.Implements(dynamicEncoderType)
 }
 
 // getDynamicDecoderCompatibility checks if a type implements the DynamicDecoder interface
-func (d *DynSsz) getDynamicDecoderCompatibility(targetType reflect.Type) bool {
+func getDynamicDecoderCompatibility(targetType reflect.Type) bool {
 	targetPtrType := reflect.New(targetType).Type()
 	return targetPtrType.Implements(dynamicDecoderType)
 }
 
 // getDynamicSizerCompatibility checks if a type implements the DynamicSizer interface
-func (d *DynSsz) getDynamicSizerCompatibility(targetType reflect.Type) bool {
+func getDynamicSizerCompatibility(targetType reflect.Type) bool {
 	targetPtrType := reflect.New(targetType).Type()
 	return targetPtrType.Implements(dynamicSizerType)
 }
 
 // getDynamicHashRootCompatibility checks if a type implements the DynamicHashRoot interface
-func (d *DynSsz) getDynamicHashRootCompatibility(targetType reflect.Type) bool {
+func getDynamicHashRootCompatibility(targetType reflect.Type) bool {
 	targetPtrType := reflect.New(targetType).Type()
 	return targetPtrType.Implements(dynamicHashRootType)
 }

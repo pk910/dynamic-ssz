@@ -2,13 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // This file is part of the dynamic-ssz library.
 
-package dynssz
+package ssztypes
 
 import (
 	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
+
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 type SszType uint8
@@ -93,7 +95,7 @@ func ParseSszType(typeStr string) (SszType, error) {
 	}
 }
 
-func (d *DynSsz) getSszTypeTag(field *reflect.StructField) ([]SszTypeHint, error) {
+func getSszTypeTag(field *reflect.StructField) ([]SszTypeHint, error) {
 	// parse `ssz-type`
 	sszTypeHints := []SszTypeHint{}
 
@@ -140,6 +142,7 @@ type SszSizeHint struct {
 // particularly when dealing with slices or arrays that may have fixed or dynamic lengths specified through these tags.
 //
 // Parameters:
+//   - ds: The dynamic specs to use for resolving spec values.
 //   - field: A pointer to the reflect.StructField being examined. The field's tags are inspected to extract 'ssz-size'/'ssz-bitsize'
 //     and 'dynssz-size'/'dynssz-bitsize' annotations, which provide crucial size information for encoding or decoding processes.
 //
@@ -150,7 +153,7 @@ type SszSizeHint struct {
 //   - An error if the tag parsing encounters issues, such as malformed annotations or unsupported specifications within
 //     the tags. This ensures that size calculations and subsequent encoding or decoding actions can rely on valid and
 //     correctly interpreted size information.
-func (d *DynSsz) getSszSizeTag(field *reflect.StructField) ([]SszSizeHint, error) {
+func getSszSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]SszSizeHint, error) {
 	sszSizes := []SszSizeHint{}
 
 	// parse `ssz-size` first, these are the default values used by fastssz
@@ -235,7 +238,7 @@ func (d *DynSsz) getSszSizeTag(field *reflect.StructField) ([]SszSizeHint, error
 			} else if sszSizeInt, err := strconv.ParseUint(sizeExpr, 10, 32); err == nil {
 				sszSize.Size = uint32(sszSizeInt)
 			} else {
-				ok, specVal, err := d.ResolveSpecValue(sizeExpr)
+				ok, specVal, err := ds.ResolveSpecValue(sizeExpr)
 				if err != nil {
 					return sszSizes, fmt.Errorf("error parsing dynssz-size tag for '%v' field (%v): %w", field.Name, sizeExpr, err)
 				}
@@ -295,6 +298,7 @@ type SszMaxSizeHint struct {
 // particularly when dealing with slices or arrays that may have fixed or dynamic lengths specified through these tags.
 //
 // Parameters:
+//   - ds: The dynamic specs to use for resolving spec values.
 //   - field: A pointer to the reflect.StructField being examined. The field's tags are inspected to extract 'ssz-max'/'ssz-bitmax'
 //     and 'dynssz-max'/'dynssz-bitmax' annotations, which provide crucial max size information for encoding or decoding processes.
 //
@@ -305,7 +309,7 @@ type SszMaxSizeHint struct {
 //   - An error if the tag parsing encounters issues, such as malformed annotations or unsupported specifications within
 //     the tags. This ensures that max size calculations and subsequent encoding or decoding actions can rely on valid and
 //     correctly interpreted max size information.
-func (d *DynSsz) getSszMaxSizeTag(field *reflect.StructField) ([]SszMaxSizeHint, error) {
+func getSszMaxSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]SszMaxSizeHint, error) {
 	sszMaxSizes := []SszMaxSizeHint{}
 
 	// parse `ssz-max` first, these are the default values used by fastssz
@@ -338,7 +342,7 @@ func (d *DynSsz) getSszMaxSizeTag(field *reflect.StructField) ([]SszMaxSizeHint,
 			} else if sszSizeInt, err := strconv.ParseUint(sszMaxSizeStr, 10, 64); err == nil {
 				sszMaxSize.Size = sszSizeInt
 			} else {
-				ok, specVal, err := d.ResolveSpecValue(sszMaxSizeStr)
+				ok, specVal, err := ds.ResolveSpecValue(sszMaxSizeStr)
 				if err != nil {
 					return sszMaxSizes, fmt.Errorf("error parsing dynssz-max tag for '%v' field (%v): %w", field.Name, sszMaxSizeStr, err)
 				}
@@ -373,7 +377,7 @@ func (d *DynSsz) getSszMaxSizeTag(field *reflect.StructField) ([]SszMaxSizeHint,
 	return sszMaxSizes, nil
 }
 
-func (d *DynSsz) getSszIndexTag(field *reflect.StructField) (*uint16, error) {
+func getSszIndexTag(field *reflect.StructField) (*uint16, error) {
 	var sszIndex *uint16
 
 	// parse `ssz-index` first, these are the default values used by fastssz

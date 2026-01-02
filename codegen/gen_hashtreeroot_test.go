@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	dynssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/ssztypes"
 )
 
 // TestGenerateHashTreeRootUnsupportedType tests that generateHashTreeRoot returns an error
@@ -17,15 +17,15 @@ import (
 func TestGenerateHashTreeRootUnsupportedType(t *testing.T) {
 	tests := []struct {
 		name    string
-		sszType dynssz.SszType
+		sszType ssztypes.SszType
 	}{
-		{"UnsupportedType_255", dynssz.SszType(255)},
-		{"UnsupportedType_100", dynssz.SszType(100)},
+		{"UnsupportedType_255", ssztypes.SszType(255)},
+		{"UnsupportedType_100", ssztypes.SszType(100)},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			desc := &dynssz.TypeDescriptor{
+			desc := &ssztypes.TypeDescriptor{
 				Type:    testDummyReflectType,
 				SszType: tt.sszType,
 				Kind:    reflect.Struct,
@@ -49,18 +49,18 @@ func TestGenerateHashTreeRootUnsupportedType(t *testing.T) {
 // TestHashTreeRootContainerWithNestedUnsupportedType tests that hashContainer propagates
 // errors from nested unsupported types.
 func TestHashTreeRootContainerWithNestedUnsupportedType(t *testing.T) {
-	unsupportedFieldDesc := &dynssz.TypeDescriptor{
+	unsupportedFieldDesc := &ssztypes.TypeDescriptor{
 		Type:    testDummyReflectType,
-		SszType: dynssz.SszType(255),
+		SszType: ssztypes.SszType(255),
 		Kind:    reflect.Struct,
 	}
 
-	containerDesc := &dynssz.TypeDescriptor{
+	containerDesc := &ssztypes.TypeDescriptor{
 		Type:    testDummyReflectType,
-		SszType: dynssz.SszContainerType,
+		SszType: ssztypes.SszContainerType,
 		Kind:    reflect.Struct,
-		ContainerDesc: &dynssz.ContainerDescriptor{
-			Fields: []dynssz.FieldDescriptor{
+		ContainerDesc: &ssztypes.ContainerDescriptor{
+			Fields: []ssztypes.FieldDescriptor{
 				{
 					Name: "UnsupportedField",
 					Type: unsupportedFieldDesc,
@@ -85,18 +85,18 @@ func TestHashTreeRootContainerWithNestedUnsupportedType(t *testing.T) {
 // TestHashTreeRootProgressiveContainerError tests that progressive containers also
 // properly propagate errors for hash tree root.
 func TestHashTreeRootProgressiveContainerError(t *testing.T) {
-	unsupportedFieldDesc := &dynssz.TypeDescriptor{
+	unsupportedFieldDesc := &ssztypes.TypeDescriptor{
 		Type:    testDummyReflectType,
-		SszType: dynssz.SszType(255),
+		SszType: ssztypes.SszType(255),
 		Kind:    reflect.Struct,
 	}
 
-	containerDesc := &dynssz.TypeDescriptor{
+	containerDesc := &ssztypes.TypeDescriptor{
 		Type:    testDummyReflectType,
-		SszType: dynssz.SszProgressiveContainerType,
+		SszType: ssztypes.SszProgressiveContainerType,
 		Kind:    reflect.Struct,
-		ContainerDesc: &dynssz.ContainerDescriptor{
-			Fields: []dynssz.FieldDescriptor{
+		ContainerDesc: &ssztypes.ContainerDescriptor{
+			Fields: []ssztypes.FieldDescriptor{
 				{
 					Name:     "UnsupportedField",
 					SszIndex: 0,
@@ -122,15 +122,15 @@ func TestHashTreeRootProgressiveContainerError(t *testing.T) {
 // TestHashTreeRootVectorWithNestedUnsupportedType tests that hashVector propagates
 // errors from nested unsupported element types.
 func TestHashTreeRootVectorWithNestedUnsupportedType(t *testing.T) {
-	unsupportedElemDesc := &dynssz.TypeDescriptor{
+	unsupportedElemDesc := &ssztypes.TypeDescriptor{
 		Type:    testDummyReflectType,
-		SszType: dynssz.SszType(255),
+		SszType: ssztypes.SszType(255),
 		Kind:    reflect.Uint8, // Use Uint8 to avoid getPtrPrefix returning "*" which triggers InnerTypeString
 	}
 
-	vectorDesc := &dynssz.TypeDescriptor{
+	vectorDesc := &ssztypes.TypeDescriptor{
 		Type:     testDummyArrayReflectType,
-		SszType:  dynssz.SszVectorType,
+		SszType:  ssztypes.SszVectorType,
 		Kind:     reflect.Array,
 		ElemDesc: unsupportedElemDesc,
 		Len:      10,
@@ -152,16 +152,16 @@ func TestHashTreeRootVectorWithNestedUnsupportedType(t *testing.T) {
 // TestHashTreeRootListWithNestedUnsupportedType tests that hashList propagates
 // errors from nested unsupported element types.
 func TestHashTreeRootListWithNestedUnsupportedType(t *testing.T) {
-	unsupportedElemDesc := &dynssz.TypeDescriptor{
+	unsupportedElemDesc := &ssztypes.TypeDescriptor{
 		Type:    testDummyReflectType,
-		SszType: dynssz.SszType(255),
+		SszType: ssztypes.SszType(255),
 		Kind:    reflect.Uint8, // Use Uint8 to avoid getPtrPrefix returning "*" which triggers InnerTypeString
 	}
 
-	listDesc := &dynssz.TypeDescriptor{
+	listDesc := &ssztypes.TypeDescriptor{
 		Type:         testDummySliceReflectType,
-		SszType:      dynssz.SszListType,
-		SszTypeFlags: dynssz.SszTypeFlagIsDynamic,
+		SszType:      ssztypes.SszListType,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
 		Kind:         reflect.Slice,
 		ElemDesc:     unsupportedElemDesc,
 		Limit:        100,
@@ -182,16 +182,16 @@ func TestHashTreeRootListWithNestedUnsupportedType(t *testing.T) {
 
 // TestHashTreeRootProgressiveListError tests that progressive lists properly propagate errors.
 func TestHashTreeRootProgressiveListError(t *testing.T) {
-	unsupportedElemDesc := &dynssz.TypeDescriptor{
+	unsupportedElemDesc := &ssztypes.TypeDescriptor{
 		Type:    testDummyReflectType,
-		SszType: dynssz.SszType(255),
+		SszType: ssztypes.SszType(255),
 		Kind:    reflect.Uint8, // Use Uint8 to avoid getPtrPrefix returning "*" which triggers InnerTypeString
 	}
 
-	listDesc := &dynssz.TypeDescriptor{
+	listDesc := &ssztypes.TypeDescriptor{
 		Type:         testDummySliceReflectType,
-		SszType:      dynssz.SszProgressiveListType,
-		SszTypeFlags: dynssz.SszTypeFlagIsDynamic,
+		SszType:      ssztypes.SszProgressiveListType,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
 		Kind:         reflect.Slice,
 		ElemDesc:     unsupportedElemDesc,
 		Limit:        100,
@@ -213,18 +213,18 @@ func TestHashTreeRootProgressiveListError(t *testing.T) {
 // TestHashTreeRootUnionWithNestedUnsupportedType tests that hashUnion propagates
 // errors from nested unsupported variant types.
 func TestHashTreeRootUnionWithNestedUnsupportedType(t *testing.T) {
-	unsupportedVariantDesc := &dynssz.TypeDescriptor{
+	unsupportedVariantDesc := &ssztypes.TypeDescriptor{
 		Type:    testDummyReflectType,
-		SszType: dynssz.SszType(255),
+		SszType: ssztypes.SszType(255),
 		Kind:    reflect.Struct,
 	}
 
-	unionDesc := &dynssz.TypeDescriptor{
+	unionDesc := &ssztypes.TypeDescriptor{
 		Type:         testDummyReflectType,
-		SszType:      dynssz.SszCompatibleUnionType,
-		SszTypeFlags: dynssz.SszTypeFlagIsDynamic,
+		SszType:      ssztypes.SszCompatibleUnionType,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
 		Kind:         reflect.Struct,
-		UnionVariants: map[uint8]*dynssz.TypeDescriptor{
+		UnionVariants: map[uint8]*ssztypes.TypeDescriptor{
 			0: unsupportedVariantDesc,
 		},
 	}
@@ -245,15 +245,15 @@ func TestHashTreeRootUnionWithNestedUnsupportedType(t *testing.T) {
 // TestHashTreeRootTypeWrapperWithNestedUnsupportedType tests that hashType handles
 // TypeWrapper with nested unsupported types.
 func TestHashTreeRootTypeWrapperWithNestedUnsupportedType(t *testing.T) {
-	unsupportedElemDesc := &dynssz.TypeDescriptor{
+	unsupportedElemDesc := &ssztypes.TypeDescriptor{
 		Type:    testDummyReflectType,
-		SszType: dynssz.SszType(255),
+		SszType: ssztypes.SszType(255),
 		Kind:    reflect.Struct,
 	}
 
-	wrapperDesc := &dynssz.TypeDescriptor{
+	wrapperDesc := &ssztypes.TypeDescriptor{
 		Type:     testDummyReflectType,
-		SszType:  dynssz.SszTypeWrapperType,
+		SszType:  ssztypes.SszTypeWrapperType,
 		Kind:     reflect.Struct,
 		ElemDesc: unsupportedElemDesc,
 	}

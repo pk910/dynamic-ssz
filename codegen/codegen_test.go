@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	dynssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/ssztypes"
 )
 
 // Simple test types for API testing
@@ -91,7 +91,7 @@ func TestCodeGeneratorOptions(t *testing.T) {
 
 func TestCodeGeneratorHints(t *testing.T) {
 	t.Run("WithSizeHints", func(t *testing.T) {
-		hints := []dynssz.SszSizeHint{
+		hints := []ssztypes.SszSizeHint{
 			{Size: 32, Expr: "BYTES_PER_FIELD_ELEMENT"},
 			{Size: 64, Expr: "SLOTS_PER_EPOCH"},
 		}
@@ -111,7 +111,7 @@ func TestCodeGeneratorHints(t *testing.T) {
 	})
 
 	t.Run("WithMaxSizeHints", func(t *testing.T) {
-		hints := []dynssz.SszMaxSizeHint{
+		hints := []ssztypes.SszMaxSizeHint{
 			{Size: 1048576, Expr: "MAX_VALIDATORS"},
 			{Size: 4096, Expr: "MAX_COMMITTEES"},
 		}
@@ -131,9 +131,9 @@ func TestCodeGeneratorHints(t *testing.T) {
 	})
 
 	t.Run("WithTypeHints", func(t *testing.T) {
-		hints := []dynssz.SszTypeHint{
-			{Type: dynssz.SszListType},
-			{Type: dynssz.SszContainerType},
+		hints := []ssztypes.SszTypeHint{
+			{Type: ssztypes.SszListType},
+			{Type: ssztypes.SszContainerType},
 		}
 		opts := CodeGeneratorOptions{}
 		option := WithTypeHints(hints)
@@ -142,10 +142,10 @@ func TestCodeGeneratorHints(t *testing.T) {
 		if len(opts.TypeHints) != 2 {
 			t.Errorf("Expected 2 type hints, got %d", len(opts.TypeHints))
 		}
-		if opts.TypeHints[0].Type != dynssz.SszListType {
+		if opts.TypeHints[0].Type != ssztypes.SszListType {
 			t.Error("First type hint not set correctly")
 		}
-		if opts.TypeHints[1].Type != dynssz.SszContainerType {
+		if opts.TypeHints[1].Type != ssztypes.SszContainerType {
 			t.Error("Second type hint not set correctly")
 		}
 	})
@@ -197,14 +197,23 @@ func TestCodeGeneratorTypeOptions(t *testing.T) {
 	})
 }
 
+type dummyDynamicSpecs struct {
+	specValues map[string]uint64
+}
+
+func (d *dummyDynamicSpecs) ResolveSpecValue(name string) (bool, uint64, error) {
+	value, ok := d.specValues[name]
+	return ok, value, nil
+}
+
 func TestNewCodeGenerator(t *testing.T) {
 	t.Run("WithDynSsz", func(t *testing.T) {
-		specs := map[string]any{
+		specs := map[string]uint64{
 			"SLOTS_PER_EPOCH": uint64(32),
 			"MAX_VALIDATORS":  uint64(1048576),
 		}
-		dynSsz := dynssz.NewDynSsz(specs)
-		cg := NewCodeGenerator(dynSsz)
+		typeCache := ssztypes.NewTypeCache(&dummyDynamicSpecs{specValues: specs})
+		cg := NewCodeGenerator(typeCache)
 
 		if cg == nil {
 			t.Fatal("NewCodeGenerator returned nil")
@@ -254,9 +263,9 @@ func TestCodeGeneratorBuildFile(t *testing.T) {
 
 	t.Run("WithAllOptions", func(t *testing.T) {
 		reflectType := reflect.TypeOf((*SimpleTestStruct)(nil)).Elem()
-		sizeHints := []dynssz.SszSizeHint{{Size: 32, Expr: "FIELD_SIZE"}}
-		maxSizeHints := []dynssz.SszMaxSizeHint{{Size: 1024, Expr: "MAX_SIZE"}}
-		typeHints := []dynssz.SszTypeHint{{Type: dynssz.SszContainerType}}
+		sizeHints := []ssztypes.SszSizeHint{{Size: 32, Expr: "FIELD_SIZE"}}
+		maxSizeHints := []ssztypes.SszMaxSizeHint{{Size: 1024, Expr: "MAX_SIZE"}}
+		typeHints := []ssztypes.SszTypeHint{{Type: ssztypes.SszContainerType}}
 
 		cg.BuildFile("test.go",
 			WithReflectType(reflectType,

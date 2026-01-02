@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // This file is part of the dynamic-ssz library.
 
-package dynssz
+package ssztypes
 
 import (
 	"crypto/sha256"
@@ -11,11 +11,13 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 // TypeCache manages cached type descriptors
 type TypeCache struct {
-	dynssz      *DynSsz
+	specs       sszutils.DynamicSpecs
 	mutex       sync.RWMutex
 	descriptors map[reflect.Type]*TypeDescriptor
 	CompatFlags map[string]SszCompatFlag
@@ -100,9 +102,9 @@ type DynFieldDescriptor struct {
 }
 
 // NewTypeCache creates a new type cache
-func NewTypeCache(dynssz *DynSsz) *TypeCache {
+func NewTypeCache(specs sszutils.DynamicSpecs) *TypeCache {
 	return &TypeCache{
-		dynssz:      dynssz,
+		specs:       specs,
 		descriptors: make(map[reflect.Type]*TypeDescriptor),
 		CompatFlags: map[string]SszCompatFlag{},
 	}
@@ -451,36 +453,36 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		return nil, fmt.Errorf("bit size tag is only allowed for bitvector or bitlist types, got %v", desc.SszType)
 	}
 
-	if desc.SszTypeFlags&SszTypeFlagHasDynamicSize == 0 && tc.dynssz.getFastsszConvertCompatibility(t) {
+	if desc.SszTypeFlags&SszTypeFlagHasDynamicSize == 0 && getFastsszConvertCompatibility(t) {
 		desc.SszCompatFlags |= SszCompatFlagFastSSZMarshaler
 	}
 	if desc.SszTypeFlags&SszTypeFlagHasDynamicMax == 0 {
-		if tc.dynssz.getFastsszHashCompatibility(t) {
+		if getFastsszHashCompatibility(t) {
 			desc.SszCompatFlags |= SszCompatFlagFastSSZHasher
 		}
-		if method := tc.dynssz.getHashTreeRootWithCompatibility(t); method != nil {
+		if method := getHashTreeRootWithCompatibility(t); method != nil {
 			desc.HashTreeRootWithMethod = method
 			desc.SszCompatFlags |= SszCompatFlagHashTreeRootWith
 		}
 	}
 
 	// Check for dynamic interface implementations
-	if tc.dynssz.getDynamicMarshalerCompatibility(t) {
+	if getDynamicMarshalerCompatibility(t) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicMarshaler
 	}
-	if tc.dynssz.getDynamicUnmarshalerCompatibility(t) {
+	if getDynamicUnmarshalerCompatibility(t) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicUnmarshaler
 	}
-	if tc.dynssz.getDynamicEncoderCompatibility(t) {
+	if getDynamicEncoderCompatibility(t) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicEncoder
 	}
-	if tc.dynssz.getDynamicDecoderCompatibility(t) {
+	if getDynamicDecoderCompatibility(t) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicDecoder
 	}
-	if tc.dynssz.getDynamicSizerCompatibility(t) {
+	if getDynamicSizerCompatibility(t) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicSizer
 	}
-	if tc.dynssz.getDynamicHashRootCompatibility(t) {
+	if getDynamicHashRootCompatibility(t) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicHashRoot
 	}
 
@@ -522,7 +524,7 @@ func (tc *TypeCache) buildTypeWrapperDescriptor(desc *TypeDescriptor, t reflect.
 	}
 
 	// Extract wrapper information from descriptor struct (includes SSZ annotations)
-	wrapperInfo, err := extractWrapperDescriptorInfo(descriptorType, tc.dynssz)
+	wrapperInfo, err := extractWrapperDescriptorInfo(descriptorType, tc.specs)
 	if err != nil {
 		return fmt.Errorf("failed to extract wrapper descriptor info: %w", err)
 	}
@@ -635,7 +637,7 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 		}
 
 		// Get ssz-index tag
-		sszIndex, err := tc.dynssz.getSszIndexTag(&field)
+		sszIndex, err := getSszIndexTag(&field)
 		if err != nil {
 			return err
 		}
@@ -651,17 +653,17 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 		}
 
 		// Get size hints from tags
-		sizeHints, err := tc.dynssz.getSszSizeTag(&field)
+		sizeHints, err := getSszSizeTag(tc.specs, &field)
 		if err != nil {
 			return err
 		}
 
-		maxSizeHints, err := tc.dynssz.getSszMaxSizeTag(&field)
+		maxSizeHints, err := getSszMaxSizeTag(tc.specs, &field)
 		if err != nil {
 			return err
 		}
 
-		typeHints, err := tc.dynssz.getSszTypeTag(&field)
+		typeHints, err := getSszTypeTag(&field)
 		if err != nil {
 			return err
 		}
@@ -741,7 +743,7 @@ func (tc *TypeCache) buildCompatibleUnionDescriptor(desc *TypeDescriptor, t refl
 	desc.UnionVariants = make(map[uint8]*TypeDescriptor)
 
 	// Extract variant information from descriptor struct (includes SSZ annotations)
-	variantInfo, err := ExtractUnionDescriptorInfo(descriptorType, tc.dynssz)
+	variantInfo, err := extractUnionDescriptorInfo(descriptorType, tc.specs)
 	if err != nil {
 		return fmt.Errorf("failed to extract union variant info: %w", err)
 	}
