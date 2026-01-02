@@ -393,7 +393,7 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		if desc.Kind != reflect.Array {
 			// append zero padding if we have less items than the limit
 			ctx.appendCode(indent, "if %s < %s {\n", lenVar, limitVar)
-			ctx.appendCode(indent, "\tpadding := (%s-%s)*%d\n", limitVar, lenVar, desc.ElemDesc.Size)
+			ctx.appendCode(indent, "\tpadding := (%s - %s) * %d\n", limitVar, lenVar, desc.ElemDesc.Size)
 			ctx.appendCode(indent, "\tdst = append(dst, make([]byte, padding)...)\n")
 			ctx.appendCode(indent, "}\n")
 		}

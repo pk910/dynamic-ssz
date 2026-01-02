@@ -109,7 +109,7 @@ func generateDecoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 		appendCode(codeBuilder, 1, "}()\n")
 	}
 	appendCode(codeBuilder, 1, codeBuf.String())
-	appendCode(codeBuilder, 1, "\treturn nil\n")
+	appendCode(codeBuilder, 1, "return nil\n")
 	appendCode(codeBuilder, 0, "}\n\n")
 
 	return nil
@@ -368,7 +368,7 @@ func (ctx *decoderContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, var
 	for idx, fieldIdx := range dynamicFields {
 		field := desc.ContainerDesc.Fields[fieldIdx]
 		ctx.appendCode(indent, "{ // Field #%d '%s' (dynamic)\n", fieldIdx, field.Name)
-		ctx.appendCode(indent+1, "if dec.GetPosition() != %s + int(offset%d) {\n\treturn sszutils.ErrOffset\n}\n", startPosVar, fieldIdx)
+		ctx.appendCode(indent+1, "if dec.GetPosition() != %s+int(offset%d) {\n\treturn sszutils.ErrOffset\n}\n", startPosVar, fieldIdx)
 
 		endOffset := ""
 		if idx < len(dynamicFields)-1 {
@@ -504,7 +504,7 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 			return err
 		}
 
-		ctx.appendCode(indent+1, "if dec.GetPosition() != %s + int(%s*(i+1)) {\n\treturn sszutils.ErrOffset\n}\n", startPosVar, fieldSizeVar)
+		ctx.appendCode(indent+1, "if dec.GetPosition() != %s+int(%s*(i+1)) {\n\treturn sszutils.ErrOffset\n}\n", startPosVar, fieldSizeVar)
 
 		if !isInlinable {
 			ctx.appendCode(indent, "\t%s[i] = %s\n", varName, valVar)
@@ -526,7 +526,7 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 		// read offsets
 		ctx.appendCode(indent, "var offsets []uint32\n")
 		ctx.appendCode(indent, "if canSeek {\n")
-		ctx.appendCode(indent+1, "dec.SkipBytes((%s-1)*4)\n", limitVar)
+		ctx.appendCode(indent+1, "dec.SkipBytes((%s - 1) * 4)\n", limitVar)
 		ctx.appendCode(indent, "} else if %s > 1 {\n", limitVar)
 		ctx.appendCode(indent+1, "offsetSlices[%d] = sszutils.ExpandSlice(offsetSlices[%d], %s-1)\n", ctx.offsetSliceCounter, ctx.offsetSliceCounter, limitVar)
 		ctx.appendCode(indent+1, "offsets = offsetSlices[%d]\n", ctx.offsetSliceCounter)
@@ -652,7 +652,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 			return err
 		}
 
-		ctx.appendCode(indent+1, "if dec.GetPosition() != %s + int(%s*(i+1)) {\n\treturn sszutils.ErrOffset\n}\n", startPosVar, fieldSizeVar)
+		ctx.appendCode(indent+1, "if dec.GetPosition() != %s+int(%s*(i+1)) {\n\treturn sszutils.ErrOffset\n}\n", startPosVar, fieldSizeVar)
 
 		if !isInlinable {
 			ctx.appendCode(indent+1, "%s[i] = %s\n", varName, valVar)
@@ -676,7 +676,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		// read offsets
 		ctx.appendCode(indent, "var offsets []uint32\n")
 		ctx.appendCode(indent, "if canSeek {\n")
-		ctx.appendCode(indent+1, "dec.SkipBytes((itemCount-1)*4)\n")
+		ctx.appendCode(indent+1, "dec.SkipBytes((itemCount - 1) * 4)\n")
 		ctx.appendCode(indent, "} else if itemCount > 1 {\n")
 		ctx.appendCode(indent+1, "offsetSlices[%d] = sszutils.ExpandSlice(offsetSlices[%d], itemCount-1)\n", ctx.offsetSliceCounter, ctx.offsetSliceCounter)
 		ctx.appendCode(indent+1, "offsets = offsetSlices[%d]\n", ctx.offsetSliceCounter)
