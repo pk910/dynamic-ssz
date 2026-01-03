@@ -304,7 +304,10 @@ func (p *TypePrinter) InnerTypeString(t *ssztypes.TypeDescriptor) string {
 			return p.packageQualify(innerType, true)
 		}
 	}
-	return p.reflectTypeString(t.Type.Elem(), true)
+	if t.Type.Kind() == reflect.Pointer {
+		return p.reflectTypeString(t.Type.Elem(), true)
+	}
+	return p.reflectTypeString(t.Type, true)
 }
 
 // TypeStringWithoutTracking returns the type string representation without tracking import usage.
