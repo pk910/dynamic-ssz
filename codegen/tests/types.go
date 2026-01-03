@@ -131,6 +131,91 @@ var SimpleTypes2_Payload = SimpleTypes2{
 	},
 }
 
+type TestBool bool
+type TestUint8 uint8
+type TestUint16 uint16
+type TestUint32 uint32
+type TestUint64 uint64
+
+type SimpleTypes3 struct {
+	B1       *bool
+	B2       *TestBool
+	I8       *uint8
+	I82      *TestUint8
+	I16      *uint16
+	I162     *TestUint16
+	I32      *uint32
+	I322     *TestUint32
+	I64      *uint64
+	I642     *TestUint64
+	I128     *[16]byte
+	I256     *[4]uint64
+	Vec8     []*uint8     `ssz-size:"4"`
+	Vec32    []*uint32    `ssz-size:"4"`
+	Vec128   []*[2]uint64 `ssz-type:"?,uint128" ssz-size:"4"`
+	BitVec   [8]*byte     `ssz-type:"bitvector"`
+	BitVec2  [8]*byte     `ssz-type:"bitvector" ssz-bitsize:"12"`
+	Lst8     []*uint8     `ssz-max:"4"`
+	Lst32    []*uint32    `ssz-max:"4"`
+	Lst128   []*[2]uint64 `ssz-type:"?,uint128" ssz-max:"4"`
+	BigLst8  []*uint8     `ssz-max:"35"`
+	BitLst   []*byte      `ssz-max:"16"`
+	F1       [2][]*uint16
+	F2       [10]*uint8 `ssz-size:"5"`
+	Str      *string    `ssz-max:"8"`
+	Wrapper1 *dynssz.TypeWrapper[struct {
+		Data []*byte `ssz-size:"32"`
+	}, []*byte] `ssz-type:"wrapper"`
+	Wrapper2 dynssz.TypeWrapper[struct {
+		Data []*uint16 `ssz-size:"2"`
+	}, []*uint16] `ssz-type:"wrapper"`
+}
+
+var (
+	b1   = true
+	i8   = uint8(1)
+	i16  = uint16(2)
+	i32  = uint32(3)
+	i64  = uint64(4)
+	str  = "hello"
+	i128 = [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	v128 = [2]uint64{1, 2}
+	i256 = [4]uint64{1, 2, 3, 4}
+)
+
+var SimpleTypes3_Payload = SimpleTypes3{
+	B1:      &b1,
+	B2:      (*TestBool)(&b1),
+	I8:      &i8,
+	I82:     (*TestUint8)(&i8),
+	I16:     &i16,
+	I162:    (*TestUint16)(&i16),
+	I32:     &i32,
+	I322:    (*TestUint32)(&i32),
+	I64:     &i64,
+	I642:    (*TestUint64)(&i64),
+	I128:    &i128,
+	I256:    &i256,
+	Vec8:    []*uint8{&i8, &i8, &i8, &i8},
+	Vec32:   []*uint32{&i32, &i32, &i32, &i32},
+	Vec128:  []*[2]uint64{&v128, &v128},
+	BitVec:  [8]*byte{&i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8},
+	BitVec2: [8]*byte{&i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8},
+	Lst8:    []*uint8{&i8, &i8, &i8, &i8},
+	Lst32:   []*uint32{&i32, &i32, &i32, &i32},
+	Lst128:  []*[2]uint64{&v128, &v128},
+	BigLst8: []*uint8{&i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8},
+	BitLst:  []*byte{&i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8},
+	F1:      [2][]*uint16{{&i16, &i16}, {&i16, &i16}},
+	F2:      [10]*uint8{&i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8},
+	Str:     &str,
+	Wrapper1: &dynssz.TypeWrapper[struct {
+		Data []*byte `ssz-size:"32"`
+	}, []*byte]{
+		Data: []*byte{&i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8},
+	},
+}
+
 type SimpleTypesWithSpecs struct {
 	Vec8    []uint8     `ssz-size:"4" dynssz-size:"VEC8_SIZE"`
 	Vec32   []uint32    `ssz-size:"4" dynssz-size:"VEC32_SIZE"`

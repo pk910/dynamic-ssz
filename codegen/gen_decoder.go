@@ -121,6 +121,15 @@ func (ctx *decoderContext) getValVar() string {
 	return fmt.Sprintf("val%d", ctx.valVarCounter)
 }
 
+// getCastedValueVar returns the variable name for the value of a type, converting to the source type if needed
+func (ctx *decoderContext) getCastedValueVar(desc *ssztypes.TypeDescriptor, varName string, sourceType string) string {
+	if targetType := ctx.typePrinter.InnerTypeString(desc); targetType != sourceType {
+		varName = fmt.Sprintf("%s(%s)", targetType, varName)
+	}
+
+	return varName
+}
+
 // isInlinable determines if a type can be unmarshaled inline without temporary variables.
 func (ctx *decoderContext) isInlinable(desc *ssztypes.TypeDescriptor) bool {
 	// Inline primitive types
@@ -209,7 +218,7 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ptrVarName = fmt.Sprintf("*(%s)", varName)
 		}
-		ctx.appendCode(indent+1, "%s = %s(val)\n", ptrVarName, ctx.typePrinter.TypeString(desc))
+		ctx.appendCode(indent+1, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, "val", "bool"))
 		ctx.appendCode(indent, "}\n")
 	case ssztypes.SszUint8Type:
 		ctx.appendCode(indent, "if val, err := dec.DecodeUint8(); err != nil {\n")
@@ -219,7 +228,7 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ptrVarName = fmt.Sprintf("*(%s)", varName)
 		}
-		ctx.appendCode(indent+1, "%s = %s(val)\n", ptrVarName, ctx.typePrinter.TypeString(desc))
+		ctx.appendCode(indent+1, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, "val", "uint8"))
 		ctx.appendCode(indent, "}\n")
 
 	case ssztypes.SszUint16Type:
@@ -230,7 +239,7 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ptrVarName = fmt.Sprintf("*(%s)", varName)
 		}
-		ctx.appendCode(indent+1, "%s = %s(val)\n", ptrVarName, ctx.typePrinter.TypeString(desc))
+		ctx.appendCode(indent+1, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, "val", "uint16"))
 		ctx.appendCode(indent, "}\n")
 
 	case ssztypes.SszUint32Type:
@@ -241,7 +250,7 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ptrVarName = fmt.Sprintf("*(%s)", varName)
 		}
-		ctx.appendCode(indent+1, "%s = %s(val)\n", ptrVarName, ctx.typePrinter.TypeString(desc))
+		ctx.appendCode(indent+1, "%s = %s(val)\n", ptrVarName, ctx.typePrinter.InnerTypeString(desc))
 		ctx.appendCode(indent, "}\n")
 
 	case ssztypes.SszUint64Type:
@@ -253,10 +262,10 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 			ptrVarName = fmt.Sprintf("*(%s)", varName)
 		}
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsTime != 0 {
-			ctx.appendCode(indent+1, "%s = %s(time.Unix(int64(val), 0).UTC())\n", ptrVarName, ctx.typePrinter.TypeString(desc))
+			ctx.appendCode(indent+1, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, "time.Unix(int64(val), 0).UTC()", "time.Time"))
 			ctx.typePrinter.AddImport("time", "time")
 		} else {
-			ctx.appendCode(indent+1, "%s = %s(val)\n", ptrVarName, ctx.typePrinter.TypeString(desc))
+			ctx.appendCode(indent+1, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, "val", "uint64"))
 		}
 		ctx.appendCode(indent, "}\n")
 
@@ -450,11 +459,14 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 				ctx.appendCode(indent, "if %s > dec.GetLength() {\n\treturn sszutils.ErrUnexpectedEOF\n}\n", limitVar)
 			}
 			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
-				typename := ctx.typePrinter.TypeString(desc)
 				ctx.appendCode(indent, "if buf, err := dec.DecodeBytesBuf(%s); err != nil {\n", limitVar)
 				ctx.appendCode(indent+1, "return err\n")
 				ctx.appendCode(indent, "} else {\n")
-				ctx.appendCode(indent+1, "%s = %s(buf)\n", varName, typename)
+				ptrVarName := varName
+				if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+					ptrVarName = fmt.Sprintf("*(%s)", varName)
+				}
+				ctx.appendCode(indent+1, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, "buf", ""))
 				ctx.appendCode(indent, "}\n")
 			} else {
 				ctx.appendCode(indent, "if _, err = dec.DecodeBytes(%s[:%s]); err != nil {\n\treturn err\n}\n", varName, limitVar)
@@ -592,12 +604,14 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		// static byte arrays
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
 			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
-
-				typename := ctx.typePrinter.TypeString(desc)
 				ctx.appendCode(indent, "if buf, err := dec.DecodeBytesBuf(dec.GetLength()); err != nil {\n")
 				ctx.appendCode(indent+1, "return err\n")
 				ctx.appendCode(indent, "} else {\n")
-				ctx.appendCode(indent+1, "%s = %s(buf)\n", varName, typename)
+				ptrVarName := varName
+				if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+					ptrVarName = fmt.Sprintf("*(%s)", varName)
+				}
+				ctx.appendCode(indent+1, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, "buf", ""))
 				ctx.appendCode(indent, "}\n")
 			} else {
 				ctx.appendCode(indent, "listLen := dec.GetLength()\n")

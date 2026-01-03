@@ -177,6 +177,19 @@ func (ctx *sizeContext) getPtrPrefix(desc *ssztypes.TypeDescriptor) string {
 	return ""
 }
 
+// getValueVar returns the variable name for the value of a type, dereferencing pointer types and converting to the target type if needed
+func (ctx *sizeContext) getValueVar(desc *ssztypes.TypeDescriptor, varName string, targetType string) string {
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
+		varName = fmt.Sprintf("*%s", varName)
+	}
+
+	if targetType != "" && ctx.typePrinter.InnerTypeString(desc) != targetType {
+		varName = fmt.Sprintf("%s(%s)", targetType, varName)
+	}
+
+	return varName
+}
+
 // sizeType generates size calculation code for any SSZ type, delegating to specific sizers.
 func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName string, sizeVar string, indent int, isRoot bool) error {
 	// Handle types that have generated methods we can call
@@ -411,7 +424,7 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName string
 func (ctx *sizeContext) sizeList(desc *ssztypes.TypeDescriptor, varName string, sizeVar string, indent int) error {
 	// For byte slices, size is just the length
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
-		ctx.appendCode(indent, "%s += len(%s)\n", sizeVar, varName)
+		ctx.appendCode(indent, "%s += len(%s)\n", sizeVar, ctx.getValueVar(desc, varName, ""))
 		return nil
 	}
 
