@@ -500,7 +500,7 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 		ctx.startPosVarCounter++
 		ctx.appendCode(indent, "%s := dec.GetPosition()\n", startPosVar)
 
-		ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", limitVar)
+		ctx.appendCode(indent, "for i := range %s {\n", limitVar)
 
 		valVar := fmt.Sprintf("%s[i]", varName)
 		isInlinable := ctx.isInlinable(desc.ElemDesc)
@@ -542,12 +542,12 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 		ctx.appendCode(indent, "} else if %s > 1 {\n", limitVar)
 		ctx.appendCode(indent+1, "offsetSlices[%d] = sszutils.ExpandSlice(offsetSlices[%d], %s-1)\n", ctx.offsetSliceCounter, ctx.offsetSliceCounter, limitVar)
 		ctx.appendCode(indent+1, "offsets = offsetSlices[%d]\n", ctx.offsetSliceCounter)
-		ctx.appendCode(indent+1, "for i := 1; i < %s; i++ {\n", limitVar)
+		ctx.appendCode(indent+1, "for i := range %s-1 {\n", limitVar)
 		ctx.appendCode(indent+2, "offset, err := dec.DecodeOffset()\n")
 		ctx.appendCode(indent+2, "if err != nil {\n")
 		ctx.appendCode(indent+3, "return err\n")
 		ctx.appendCode(indent+2, "}\n")
-		ctx.appendCode(indent+2, "offsets[i-1] = offset\n")
+		ctx.appendCode(indent+2, "offsets[i] = offset\n")
 		ctx.appendCode(indent+1, "}\n")
 		ctx.appendCode(indent, "}\n")
 		ctx.useSeekable = true
@@ -556,7 +556,7 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 			ctx.offsetSliceLimit = ctx.offsetSliceCounter
 		}
 
-		ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", limitVar)
+		ctx.appendCode(indent, "for i := range %s {\n", limitVar)
 
 		ctx.appendCode(indent+1, "var endOffset uint32\n")
 		ctx.appendCode(indent+1, "if i < %s-1 {\n", limitVar)
@@ -650,7 +650,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		ctx.startPosVarCounter++
 		ctx.appendCode(indent, "%s := dec.GetPosition()\n", startPosVar)
 
-		ctx.appendCode(indent, "for i := 0; i < itemCount; i++ {\n")
+		ctx.appendCode(indent, "for i := range itemCount {\n")
 
 		valVar := fmt.Sprintf("%s[i]", varName)
 		isInlinable := ctx.isInlinable(desc.ElemDesc)
@@ -694,12 +694,12 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent, "} else if itemCount > 1 {\n")
 		ctx.appendCode(indent+1, "offsetSlices[%d] = sszutils.ExpandSlice(offsetSlices[%d], itemCount-1)\n", ctx.offsetSliceCounter, ctx.offsetSliceCounter)
 		ctx.appendCode(indent+1, "offsets = offsetSlices[%d]\n", ctx.offsetSliceCounter)
-		ctx.appendCode(indent+1, "for i := 1; i < itemCount; i++ {\n")
+		ctx.appendCode(indent+1, "for i := range itemCount-1 {\n")
 		ctx.appendCode(indent+2, "offset, err := dec.DecodeOffset()\n")
 		ctx.appendCode(indent+2, "if err != nil {\n")
 		ctx.appendCode(indent+3, "return err\n")
 		ctx.appendCode(indent+2, "}\n")
-		ctx.appendCode(indent+2, "offsets[i-1] = offset\n")
+		ctx.appendCode(indent+2, "offsets[i] = offset\n")
 		ctx.appendCode(indent+1, "}\n")
 		ctx.appendCode(indent, "}\n")
 		ctx.useSeekable = true
@@ -712,7 +712,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		if desc.Kind != reflect.Array {
 			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", varName, varName)
 		}
-		ctx.appendCode(indent, "for i := 0; i < itemCount; i++ {\n")
+		ctx.appendCode(indent, "for i := range itemCount {\n")
 
 		ctx.appendCode(indent+1, "var endOffset uint32\n")
 		ctx.appendCode(indent+1, "if i < itemCount-1 {\n")

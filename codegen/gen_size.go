@@ -383,7 +383,7 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName string
 
 		if desc.Kind == reflect.Array {
 			indexVar := ctx.getIndexVar()
-			ctx.appendCode(indent, "for %s := 0; %s < %s; %s++ {\n", indexVar, indexVar, limitVar, indexVar)
+			ctx.appendCode(indent, "for %s := range %s {\n", indexVar, limitVar)
 			itemVarName := fmt.Sprintf("%s[%s]", varName, indexVar)
 			if err := ctx.sizeType(desc.ElemDesc, itemVarName, sizeVar, indent+1, false); err != nil {
 				return err
@@ -396,7 +396,7 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName string
 			ctx.appendCode(indent, "\tvlen = %s\n", limitVar)
 			ctx.appendCode(indent, "}\n")
 			indexVar := ctx.getIndexVar()
-			ctx.appendCode(indent, "for %s := 0; %s < vlen; %s++ {\n", indexVar, indexVar, indexVar)
+			ctx.appendCode(indent, "for %s := range vlen {\n", indexVar)
 			itemVarName := fmt.Sprintf("%s[%s]", varName, indexVar)
 			if err := ctx.sizeType(desc.ElemDesc, itemVarName, sizeVar, indent+1, false); err != nil {
 				return err
@@ -450,7 +450,7 @@ func (ctx *sizeContext) sizeList(desc *ssztypes.TypeDescriptor, varName string, 
 
 		// Add size of each element
 		indexVar := ctx.getIndexVar()
-		ctx.appendCode(indent, "for %s := 0; %s < vlen; %s++ {\n", indexVar, indexVar, indexVar)
+		ctx.appendCode(indent, "for %s := range vlen {\n", indexVar)
 		itemVarName := fmt.Sprintf("%s[%s]", varName, indexVar)
 		if err := ctx.sizeType(desc.ElemDesc, itemVarName, sizeVar, indent+1, false); err != nil {
 			return err

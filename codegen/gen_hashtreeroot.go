@@ -539,7 +539,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 			emptyVarAddin = fmt.Sprintf(", %sEmpty", valVar)
 		}
 		ctx.appendCode(indent, "var %s%s %s%s\n", valVar, emptyVarAddin, valVarPtrPrefix, ctx.typePrinter.TypeString(desc.ElemDesc))
-		ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", limitVar)
+		ctx.appendCode(indent, "for i := range %s {\n", limitVar)
 		ctx.appendCode(indent, "\tif i < %s {\n", lenVar)
 		ctx.appendCode(indent, "\t\t%s = %s%s[i]\n", valVar, ctx.getPtrPrefix(desc.ElemDesc, "&"), varName)
 		ctx.appendCode(indent, "\t} else if i == %s {\n", lenVar)
@@ -634,7 +634,7 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 
 		// Hash all elements
 		addVlen()
-		ctx.appendCode(indent, "for i := 0; i < int(vlen); i++ {\n")
+		ctx.appendCode(indent, "for i := range int(vlen) {\n")
 		valVar := "t"
 		if ctx.isInlineable(desc.ElemDesc) {
 			valVar = fmt.Sprintf("%s[i]", varName)

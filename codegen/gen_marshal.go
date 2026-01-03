@@ -398,7 +398,7 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			}
 			ctx.appendCode(indent, "dst = append(dst, %s[:%s]...)\n", valueVar, lenVar)
 		} else {
-			ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", lenVar)
+			ctx.appendCode(indent, "for i := range %s {\n", lenVar)
 			valVar := "t"
 			if ctx.isInlineable(desc.ElemDesc) {
 				valVar = fmt.Sprintf("%s[i]", varName)
@@ -423,7 +423,7 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		// reserve space for offsets
 		ctx.appendCode(indent, "dstlen := len(dst)\n")
 		ctx.appendCode(indent, "dst = append(dst, make([]byte, %s*4)...)\n", limitVar)
-		ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", lenVar)
+		ctx.appendCode(indent, "for i := range %s {\n", lenVar)
 		ctx.appendCode(indent, "\t%s.LittleEndian.PutUint32(dst[dstlen+(i*4):], uint32(len(dst)-dstlen))\n", ctx.binaryPkgName)
 		valVar := "t"
 		if ctx.isInlineable(desc.ElemDesc) {
@@ -509,7 +509,7 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 			ctx.appendCode(indent, "dst = append(dst, %s[:]...)\n", valueVar)
 		} else {
 			addVlen()
-			ctx.appendCode(indent, "for i := 0; i < vlen; i++ {\n")
+			ctx.appendCode(indent, "for i := range vlen {\n")
 			valVar := "t"
 			if ctx.isInlineable(desc.ElemDesc) {
 				valVar = fmt.Sprintf("%s[i]", varName)
@@ -527,7 +527,7 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 		ctx.appendCode(indent, "dstlen := len(dst)\n")
 		addVlen()
 		ctx.appendCode(indent, "dst = append(dst, make([]byte, vlen*4)...)\n")
-		ctx.appendCode(indent, "for i := 0; i < vlen; i++ {\n")
+		ctx.appendCode(indent, "for i := range vlen {\n")
 		ctx.appendCode(indent, "\t%s.LittleEndian.PutUint32(dst[dstlen+(i*4):], uint32(len(dst)-dstlen))\n", ctx.binaryPkgName)
 		valVar := "t"
 		if ctx.isInlineable(desc.ElemDesc) {

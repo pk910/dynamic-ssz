@@ -504,7 +504,7 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			}
 			ctx.appendCode(indent, "enc.EncodeBytes(%s[:%s])\n", valueVar, lenVar)
 		} else {
-			ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", lenVar)
+			ctx.appendCode(indent, "for i := range %s {\n", lenVar)
 			valVar := "t"
 			if ctx.isInlineable(desc.ElemDesc) {
 				valVar = fmt.Sprintf("%s[i]", varName)
@@ -536,7 +536,7 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		sizeFnCall := ctx.getSizeFnCall(desc.ElemDesc, fmt.Sprintf("%s[i]", varName))
 		ctx.appendCode(indent, "\toffset := %s * 4\n", lenVar)
 		ctx.appendCode(indent, "\tenc.EncodeOffset(uint32(offset))\n")
-		ctx.appendCode(indent, "\tfor i := 0; i < %s-1; i++ {\n", lenVar)
+		ctx.appendCode(indent, "\tfor i := range %s-1 {\n", lenVar)
 		ctx.appendCode(indent, "\t\toffset += %s\n", sizeFnCall)
 		ctx.appendCode(indent, "\t\tenc.EncodeOffset(uint32(offset))\n")
 		ctx.appendCode(indent, "\t}\n")
@@ -564,7 +564,7 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 
 		ctx.appendCode(indent, "}\n")
 
-		ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", lenVar)
+		ctx.appendCode(indent, "for i := range %s {\n", lenVar)
 
 		ctx.appendCode(indent, "\tif canSeek {\n")
 		ctx.appendCode(indent, "\t\tenc.EncodeOffsetAt(dstlen+(i*4), uint32(enc.GetPosition() - dstlen))\n")
@@ -659,7 +659,7 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 			ctx.appendCode(indent, "enc.EncodeBytes(%s[:])\n", valueVar)
 		} else {
 			addVlen()
-			ctx.appendCode(indent, "for i := 0; i < vlen; i++ {\n")
+			ctx.appendCode(indent, "for i := range vlen {\n")
 			valVar := "t"
 			if ctx.isInlineable(desc.ElemDesc) {
 				valVar = fmt.Sprintf("%s[i]", varName)
@@ -682,13 +682,13 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 		sizeFnCall := ctx.getSizeFnCall(desc.ElemDesc, fmt.Sprintf("%s[i]", varName))
 		ctx.appendCode(indent, "\toffset := vlen * 4\n")
 		ctx.appendCode(indent, "\tenc.EncodeOffset(uint32(offset))\n")
-		ctx.appendCode(indent, "\tfor i := 0; i < vlen-1; i++ {\n")
+		ctx.appendCode(indent, "\tfor i := range vlen-1 {\n")
 		ctx.appendCode(indent, "\t\toffset += %s\n", sizeFnCall)
 		ctx.appendCode(indent, "\t\tenc.EncodeOffset(uint32(offset))\n")
 		ctx.appendCode(indent, "\t}\n")
 		ctx.appendCode(indent, "}\n")
 
-		ctx.appendCode(indent, "for i := 0; i < vlen; i++ {\n")
+		ctx.appendCode(indent, "for i := range vlen {\n")
 		ctx.appendCode(indent, "\tif canSeek {\n")
 		ctx.appendCode(indent, "\t\tenc.EncodeOffsetAt(dstlen+(i*4), uint32(enc.GetPosition()-dstlen))\n")
 		ctx.appendCode(indent, "\t}\n")

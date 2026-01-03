@@ -494,7 +494,7 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 			ctx.appendCode(indent, "if %s*%s > len(buf) {\n\treturn sszutils.ErrUnexpectedEOF\n}\n", limitVar, fieldSizeVar)
 		}
 
-		ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", limitVar)
+		ctx.appendCode(indent, "for i := range %s {\n", limitVar)
 
 		valVar := fmt.Sprintf("%s[i]", varName)
 		isInlinable := ctx.isInlinable(desc.ElemDesc)
@@ -519,7 +519,7 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 		// dynamic elements
 		ctx.appendCode(indent, "if %s*4 > len(buf) {\n\treturn sszutils.ErrUnexpectedEOF\n}\n", limitVar)
 		ctx.appendCode(indent, "startOffset := int(%s.LittleEndian.Uint32(buf[0:4]))\n", ctx.binaryPkgName)
-		ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", limitVar)
+		ctx.appendCode(indent, "for i := range %s {\n", limitVar)
 		ctx.appendCode(indent, "\tvar endOffset int\n")
 		ctx.appendCode(indent, "\tif i < %s-1 {\n", limitVar)
 		ctx.appendCode(indent, "\t\tendOffset = int(%s.LittleEndian.Uint32(buf[(i+1)*4 : (i+2)*4]))\n", ctx.binaryPkgName)
@@ -590,7 +590,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", varName, varName)
 		}
 
-		ctx.appendCode(indent, "for i := 0; i < itemCount; i++ {\n")
+		ctx.appendCode(indent, "for i := range itemCount {\n")
 
 		valVar := fmt.Sprintf("%s[i]", varName)
 		isInlinable := ctx.isInlinable(desc.ElemDesc)
@@ -623,7 +623,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 		if desc.Kind != reflect.Array {
 			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", varName, varName)
 		}
-		ctx.appendCode(indent, "for i := 0; i < itemCount; i++ {\n")
+		ctx.appendCode(indent, "for i := range itemCount {\n")
 		ctx.appendCode(indent, "\tvar endOffset int\n")
 		ctx.appendCode(indent, "\tif i < itemCount-1 {\n")
 		ctx.appendCode(indent, "\t\tendOffset = int(%s.LittleEndian.Uint32(buf[(i+1)*4 : (i+2)*4]))\n", ctx.binaryPkgName)
