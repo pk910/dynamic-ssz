@@ -135,6 +135,15 @@ func (ctx *unmarshalContext) getValVar() string {
 	return fmt.Sprintf("val%d", ctx.valVarCounter)
 }
 
+// getCastedValueVar returns the variable name for the value of a type, converting to the source type if needed
+func (ctx *unmarshalContext) getCastedValueVar(desc *ssztypes.TypeDescriptor, varName string, sourceType string) string {
+	if targetType := ctx.typePrinter.InnerTypeString(desc); targetType != sourceType {
+		varName = fmt.Sprintf("%s(%s)", targetType, varName)
+	}
+
+	return varName
+}
+
 // isInlinable determines if a type can be unmarshaled inline without temporary variables.
 func (ctx *unmarshalContext) isInlinable(desc *ssztypes.TypeDescriptor) bool {
 	// Inline primitive types
@@ -213,7 +222,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ptrVarName = fmt.Sprintf("*(%s)", varName)
 		}
-		ctx.appendCode(indent, "%s = %s(buf[0])\n", ptrVarName, ctx.typePrinter.TypeString(desc))
+		ctx.appendCode(indent, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, "buf[0]", "uint8"))
 
 	case ssztypes.SszUint16Type:
 		if !noBufCheck {
@@ -223,7 +232,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ptrVarName = fmt.Sprintf("*(%s)", varName)
 		}
-		ctx.appendCode(indent, "%s = %s(%s.LittleEndian.Uint16(buf))\n", ptrVarName, ctx.typePrinter.TypeString(desc), ctx.binaryPkgName)
+		ctx.appendCode(indent, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, fmt.Sprintf("%s.LittleEndian.Uint16(buf)", ctx.binaryPkgName), "uint16"))
 
 	case ssztypes.SszUint32Type:
 		if !noBufCheck {
@@ -233,7 +242,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ptrVarName = fmt.Sprintf("*(%s)", varName)
 		}
-		ctx.appendCode(indent, "%s = %s(%s.LittleEndian.Uint32(buf))\n", ptrVarName, ctx.typePrinter.TypeString(desc), ctx.binaryPkgName)
+		ctx.appendCode(indent, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, fmt.Sprintf("%s.LittleEndian.Uint32(buf)", ctx.binaryPkgName), "uint32"))
 
 	case ssztypes.SszUint64Type:
 		if !noBufCheck {
@@ -244,10 +253,10 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 			ptrVarName = fmt.Sprintf("*(%s)", varName)
 		}
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsTime != 0 {
-			ctx.appendCode(indent, "%s = %s(time.Unix(int64(%s.LittleEndian.Uint64(buf)), 0).UTC())\n", ptrVarName, ctx.typePrinter.TypeString(desc), ctx.binaryPkgName)
+			ctx.appendCode(indent, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, fmt.Sprintf("time.Unix(int64(%s.LittleEndian.Uint64(buf)), 0).UTC()", ctx.binaryPkgName), "time.Time"))
 			ctx.typePrinter.AddImport("time", "time")
 		} else {
-			ctx.appendCode(indent, "%s = %s(%s.LittleEndian.Uint64(buf))\n", ptrVarName, ctx.typePrinter.TypeString(desc), ctx.binaryPkgName)
+			ctx.appendCode(indent, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, fmt.Sprintf("%s.LittleEndian.Uint64(buf)", ctx.binaryPkgName), "uint64"))
 		}
 
 	case ssztypes.SszTypeWrapperType:
@@ -457,8 +466,12 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 				ctx.appendCode(indent, "}\n")
 			}
 			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
-				typename := ctx.typePrinter.TypeString(desc)
-				ctx.appendCode(indent, "%s = %s(buf)\n", varName, typename)
+				ptrVarName := varName
+				if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+					ptrVarName = fmt.Sprintf("*(%s)", varName)
+				}
+				typename := ctx.typePrinter.InnerTypeString(desc)
+				ctx.appendCode(indent, "%s = %s(buf)\n", ptrVarName, typename)
 			} else {
 				ctx.appendCode(indent, "copy(%s[:], buf)\n", varName)
 			}
@@ -481,7 +494,7 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 			ctx.appendCode(indent, "if %s*%s > len(buf) {\n\treturn sszutils.ErrUnexpectedEOF\n}\n", limitVar, fieldSizeVar)
 		}
 
-		ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", limitVar)
+		ctx.appendCode(indent, "for i := range %s {\n", limitVar)
 
 		valVar := fmt.Sprintf("%s[i]", varName)
 		isInlinable := ctx.isInlinable(desc.ElemDesc)
@@ -506,7 +519,7 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 		// dynamic elements
 		ctx.appendCode(indent, "if %s*4 > len(buf) {\n\treturn sszutils.ErrUnexpectedEOF\n}\n", limitVar)
 		ctx.appendCode(indent, "startOffset := int(%s.LittleEndian.Uint32(buf[0:4]))\n", ctx.binaryPkgName)
-		ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", limitVar)
+		ctx.appendCode(indent, "for i := range %s {\n", limitVar)
 		ctx.appendCode(indent, "\tvar endOffset int\n")
 		ctx.appendCode(indent, "\tif i < %s-1 {\n", limitVar)
 		ctx.appendCode(indent, "\t\tendOffset = int(%s.LittleEndian.Uint32(buf[(i+1)*4 : (i+2)*4]))\n", ctx.binaryPkgName)
@@ -540,8 +553,12 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 		// static byte arrays
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
 			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
-				typename := ctx.typePrinter.TypeString(desc)
-				ctx.appendCode(indent, "%s = %s(buf)\n", varName, typename)
+				ptrVarName := varName
+				if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+					ptrVarName = fmt.Sprintf("*(%s)", varName)
+				}
+				typename := ctx.typePrinter.InnerTypeString(desc)
+				ctx.appendCode(indent, "%s = %s(buf)\n", ptrVarName, typename)
 			} else {
 				if desc.Kind != reflect.Array {
 					ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, len(buf))\n", varName, varName)
@@ -573,7 +590,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", varName, varName)
 		}
 
-		ctx.appendCode(indent, "for i := 0; i < itemCount; i++ {\n")
+		ctx.appendCode(indent, "for i := range itemCount {\n")
 
 		valVar := fmt.Sprintf("%s[i]", varName)
 		isInlinable := ctx.isInlinable(desc.ElemDesc)
@@ -606,7 +623,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 		if desc.Kind != reflect.Array {
 			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", varName, varName)
 		}
-		ctx.appendCode(indent, "for i := 0; i < itemCount; i++ {\n")
+		ctx.appendCode(indent, "for i := range itemCount {\n")
 		ctx.appendCode(indent, "\tvar endOffset int\n")
 		ctx.appendCode(indent, "\tif i < itemCount-1 {\n")
 		ctx.appendCode(indent, "\t\tendOffset = int(%s.LittleEndian.Uint32(buf[(i+1)*4 : (i+2)*4]))\n", ctx.binaryPkgName)

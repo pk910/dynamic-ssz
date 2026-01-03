@@ -30,6 +30,12 @@ var testMatrix = []TestPayload{
 		Hash:    "8026899f40abd06e808372e98a47af2d87cd60ed4d9b44a495a029b825ef2b34",
 	},
 	{
+		Name:    "SimpleTypes3",
+		Payload: SimpleTypes3_Payload,
+		Specs:   map[string]any{},
+		Hash:    "dea6e96a178704df1f792e0374fa60301d5fab10699687c4a395ecbfa9b78cc4",
+	},
+	{
 		Name:    "SimpleTypesWithSpecs",
 		Payload: SimpleTypesWithSpecs_Payload,
 		Specs:   SimpleTypesWithSpecs_Specs,

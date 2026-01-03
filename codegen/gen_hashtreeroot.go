@@ -174,6 +174,19 @@ func (ctx *hashTreeRootContext) getValVar() string {
 	return fmt.Sprintf("val%d", ctx.valVarCounter)
 }
 
+// getValueVar returns the variable name for the value of a type, dereferencing pointer types and converting to the target type if needed
+func (ctx *hashTreeRootContext) getValueVar(desc *ssztypes.TypeDescriptor, varName string, targetType string) string {
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
+		varName = fmt.Sprintf("*%s", varName)
+	}
+
+	if targetType != "" && ctx.typePrinter.InnerTypeString(desc) != targetType {
+		varName = fmt.Sprintf("%s(%s)", targetType, varName)
+	}
+
+	return varName
+}
+
 // getPtrPrefix returns & for types that are heavy to copy
 func (ctx *hashTreeRootContext) getPtrPrefix(desc *ssztypes.TypeDescriptor, prefix string) string {
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
@@ -224,36 +237,36 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 	switch desc.SszType {
 	case ssztypes.SszBoolType:
 		if pack {
-			ctx.appendCode(indent, "hh.AppendBool(bool(%s))\n", varName)
+			ctx.appendCode(indent, "hh.AppendBool(%s)\n", ctx.getValueVar(desc, varName, "bool"))
 		} else {
-			ctx.appendCode(indent, "hh.PutBool(bool(%s))\n", varName)
+			ctx.appendCode(indent, "hh.PutBool(%s)\n", ctx.getValueVar(desc, varName, "bool"))
 		}
 	case ssztypes.SszUint8Type:
 		if pack {
-			ctx.appendCode(indent, "hh.AppendUint8(uint8(%s))\n", varName)
+			ctx.appendCode(indent, "hh.AppendUint8(%s)\n", ctx.getValueVar(desc, varName, "uint8"))
 		} else {
-			ctx.appendCode(indent, "hh.PutUint8(uint8(%s))\n", varName)
+			ctx.appendCode(indent, "hh.PutUint8(%s)\n", ctx.getValueVar(desc, varName, "uint8"))
 		}
 	case ssztypes.SszUint16Type:
 		if pack {
-			ctx.appendCode(indent, "hh.AppendUint16(uint16(%s))\n", varName)
+			ctx.appendCode(indent, "hh.AppendUint16(%s)\n", ctx.getValueVar(desc, varName, "uint16"))
 		} else {
-			ctx.appendCode(indent, "hh.PutUint16(uint16(%s))\n", varName)
+			ctx.appendCode(indent, "hh.PutUint16(%s)\n", ctx.getValueVar(desc, varName, "uint16"))
 		}
 
 	case ssztypes.SszUint32Type:
 		if pack {
-			ctx.appendCode(indent, "hh.AppendUint32(uint32(%s))\n", varName)
+			ctx.appendCode(indent, "hh.AppendUint32(%s)\n", ctx.getValueVar(desc, varName, "uint32"))
 		} else {
-			ctx.appendCode(indent, "hh.PutUint32(uint32(%s))\n", varName)
+			ctx.appendCode(indent, "hh.PutUint32(%s)\n", ctx.getValueVar(desc, varName, "uint32"))
 		}
 
 	case ssztypes.SszUint64Type:
 		var valVar string
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsTime != 0 {
-			valVar = fmt.Sprintf("uint64(%s.Unix())", varName)
+			valVar = ctx.getValueVar(desc, fmt.Sprintf("%s.Unix()", varName), "uint64")
 		} else {
-			valVar = fmt.Sprintf("uint64(%s)", varName)
+			valVar = ctx.getValueVar(desc, varName, "uint64")
 		}
 		if pack {
 			ctx.appendCode(indent, "hh.AppendUint64(%s)\n", valVar)
@@ -451,9 +464,14 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		limitVar = fmt.Sprintf("%d", desc.Len)
 	}
 
+	valueVar := varName
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
+		valueVar = ctx.getValueVar(desc, varName, "string")
+	}
+
 	lenVar := ""
 	if desc.Kind != reflect.Array {
-		ctx.appendCode(indent, "vlen := len(%s)\n", varName)
+		ctx.appendCode(indent, "vlen := len(%s)\n", valueVar)
 		ctx.appendCode(indent, "if vlen > %s {\n", limitVar)
 		ctx.appendCode(indent, "\treturn sszutils.ErrVectorLength\n")
 		ctx.appendCode(indent, "}\n")
@@ -469,9 +487,12 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		valVar := ""
 		if desc.Kind != reflect.Array {
 			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
-				ctx.appendCode(indent, "val := []byte(%s)\n", varName)
+				ctx.appendCode(indent, "val := []byte(%s)\n", valueVar)
 			} else {
-				ctx.appendCode(indent, "val := %s[:]\n", varName)
+				if strings.HasPrefix(valueVar, "*") {
+					valueVar = fmt.Sprintf("(%s)", valueVar)
+				}
+				ctx.appendCode(indent, "val := %s[:]\n", valueVar)
 			}
 			valVar = "val"
 
@@ -518,7 +539,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 			emptyVarAddin = fmt.Sprintf(", %sEmpty", valVar)
 		}
 		ctx.appendCode(indent, "var %s%s %s%s\n", valVar, emptyVarAddin, valVarPtrPrefix, ctx.typePrinter.TypeString(desc.ElemDesc))
-		ctx.appendCode(indent, "for i := 0; i < %s; i++ {\n", limitVar)
+		ctx.appendCode(indent, "for i := range %s {\n", limitVar)
 		ctx.appendCode(indent, "\tif i < %s {\n", lenVar)
 		ctx.appendCode(indent, "\t\t%s = %s%s[i]\n", valVar, ctx.getPtrPrefix(desc.ElemDesc, "&"), varName)
 		ctx.appendCode(indent, "\t} else if i == %s {\n", lenVar)
@@ -569,12 +590,17 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 		maxVar = "0"
 	}
 
+	valueVar := varName
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
+		valueVar = ctx.getValueVar(desc, varName, "string")
+	}
+
 	hasVlen := false
 	addVlen := func() {
 		if hasVlen {
 			return
 		}
-		ctx.appendCode(indent, "vlen := uint64(len(%s))\n", varName)
+		ctx.appendCode(indent, "vlen := uint64(len(%s))\n", valueVar)
 		hasVlen = true
 	}
 
@@ -591,10 +617,13 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 
 	// Handle byte slices
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
-		ctx.appendCode(indent, "hh.AppendBytes32([]byte(%s))\n", varName)
+		ctx.appendCode(indent, "hh.AppendBytes32([]byte(%s))\n", valueVar)
 		itemSize = 1
 	} else if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
-		ctx.appendCode(indent, "hh.AppendBytes32(%s[:])\n", varName)
+		if strings.HasPrefix(valueVar, "*") {
+			valueVar = fmt.Sprintf("(%s)", valueVar)
+		}
+		ctx.appendCode(indent, "hh.AppendBytes32(%s[:])\n", valueVar)
 		itemSize = 1
 	} else {
 		if ctx.isPrimitive(desc.ElemDesc) {
@@ -605,7 +634,7 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 
 		// Hash all elements
 		addVlen()
-		ctx.appendCode(indent, "for i := 0; i < int(vlen); i++ {\n")
+		ctx.appendCode(indent, "for i := range int(vlen) {\n")
 		valVar := "t"
 		if ctx.isInlineable(desc.ElemDesc) {
 			valVar = fmt.Sprintf("%s[i]", varName)
