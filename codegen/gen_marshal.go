@@ -25,12 +25,11 @@ import (
 //   - options: Code generation options controlling output behavior
 //   - usedDynSpecs: Flag tracking whether generated code uses dynamic SSZ functionality
 type marshalContext struct {
-	appendCode    func(indent int, code string, args ...any)
-	typePrinter   *TypePrinter
-	options       *CodeGeneratorOptions
-	usedDynSpecs  bool
-	exprVars      *exprVarGenerator
-	binaryPkgName string
+	appendCode   func(indent int, code string, args ...any)
+	typePrinter  *TypePrinter
+	options      *CodeGeneratorOptions
+	usedDynSpecs bool
+	exprVars     *exprVarGenerator
 }
 
 // generateMarshal generates marshal methods for a specific type.
@@ -61,10 +60,9 @@ func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 			}
 			codeBuf.WriteString(indentStr(code, indent))
 		},
-		typePrinter:   typePrinter,
-		options:       options,
-		exprVars:      newExprVarGenerator("expr", typePrinter, options),
-		binaryPkgName: typePrinter.AddImport("encoding/binary", "binary"),
+		typePrinter: typePrinter,
+		options:     options,
+		exprVars:    newExprVarGenerator("expr", typePrinter, options),
 	}
 
 	ctx.exprVars.retVars = "dst, err"
@@ -207,23 +205,37 @@ func (ctx *marshalContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 
 	switch desc.SszType {
 	case ssztypes.SszBoolType:
-		ctx.appendCode(indent, "dst = sszutils.MarshalBool(dst, %s)\n", ctx.getValueVar(desc, varName, "bool"))
-
+		ctx.appendCode(indent,
+			"dst = sszutils.MarshalBool(dst, %s)\n",
+			ctx.getValueVar(desc, varName, "bool"),
+		)
 	case ssztypes.SszUint8Type:
-		ctx.appendCode(indent, "dst = append(dst, %s)\n", ctx.getValueVar(desc, varName, "byte"))
-
+		ctx.appendCode(indent,
+			"dst = append(dst, %s)\n",
+			ctx.getValueVar(desc, varName, "byte"),
+		)
 	case ssztypes.SszUint16Type:
-		ctx.appendCode(indent, "dst = %s.LittleEndian.AppendUint16(dst, %s)\n", ctx.binaryPkgName, ctx.getValueVar(desc, varName, "uint16"))
-
+		ctx.appendCode(indent,
+			"dst = %s.LittleEndian.AppendUint16(dst, %s)\n",
+			ctx.typePrinter.AddImport("encoding/binary", "binary"),
+			ctx.getValueVar(desc, varName, "uint16"),
+		)
 	case ssztypes.SszUint32Type:
-		ctx.appendCode(indent, "dst = %s.LittleEndian.AppendUint32(dst, %s)\n", ctx.binaryPkgName, ctx.getValueVar(desc, varName, "uint32"))
-
+		ctx.appendCode(indent,
+			"dst = %s.LittleEndian.AppendUint32(dst, %s)\n",
+			ctx.typePrinter.AddImport("encoding/binary", "binary"),
+			ctx.getValueVar(desc, varName, "uint32"),
+		)
 	case ssztypes.SszUint64Type:
 		valueVar := varName
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsTime != 0 {
 			valueVar = fmt.Sprintf("%s.Unix()", varName)
 		}
-		ctx.appendCode(indent, "dst = %s.LittleEndian.AppendUint64(dst, %s)\n", ctx.binaryPkgName, ctx.getValueVar(desc, valueVar, "uint64"))
+		ctx.appendCode(indent,
+			"dst = %s.LittleEndian.AppendUint64(dst, %s)\n",
+			ctx.typePrinter.AddImport("encoding/binary", "binary"),
+			ctx.getValueVar(desc, valueVar, "uint64"),
+		)
 
 	case ssztypes.SszTypeWrapperType:
 		ctx.appendCode(indent, "{\n")
@@ -303,7 +315,8 @@ func (ctx *marshalContext) marshalContainer(desc *ssztypes.TypeDescriptor, varNa
 	for idx, field := range desc.ContainerDesc.Fields {
 		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 			ctx.appendCode(indent, "{ // Dynamic Field #%d '%s'\n", idx, field.Name)
-			ctx.appendCode(indent, "\t%s.LittleEndian.PutUint32(dst[offset%d:], uint32(len(dst)-dstlen))\n", ctx.binaryPkgName, idx)
+			binaryPkgName := ctx.typePrinter.AddImport("encoding/binary", "binary")
+			ctx.appendCode(indent, "\t%s.LittleEndian.PutUint32(dst[offset%d:], uint32(len(dst)-dstlen))\n", binaryPkgName, idx)
 			valVar := "t"
 			if ctx.isInlineable(field.Type) {
 				valVar = fmt.Sprintf("%s.%s", varName, field.Name)
@@ -414,17 +427,17 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		if desc.Kind != reflect.Array {
 			// append zero padding if we have less items than the limit
 			ctx.appendCode(indent, "if %s < %s {\n", lenVar, limitVar)
-			ctx.appendCode(indent, "\tpadding := (%s - %s) * %d\n", limitVar, lenVar, desc.ElemDesc.Size)
-			ctx.appendCode(indent, "\tdst = append(dst, make([]byte, padding)...)\n")
+			ctx.appendCode(indent, "\tdst = sszutils.AppendZeroPadding(dst, (%s - %s) * %d)\n", limitVar, lenVar, desc.ElemDesc.Size)
 			ctx.appendCode(indent, "}\n")
 		}
 	} else {
 		// dynamic elements
 		// reserve space for offsets
 		ctx.appendCode(indent, "dstlen := len(dst)\n")
-		ctx.appendCode(indent, "dst = append(dst, make([]byte, %s*4)...)\n", limitVar)
+		ctx.appendCode(indent, "dst = sszutils.AppendZeroPadding(dst, %s*4)\n", limitVar)
 		ctx.appendCode(indent, "for i := range %s {\n", lenVar)
-		ctx.appendCode(indent, "\t%s.LittleEndian.PutUint32(dst[dstlen+(i*4):], uint32(len(dst)-dstlen))\n", ctx.binaryPkgName)
+		binaryPkgName := ctx.typePrinter.AddImport("encoding/binary", "binary")
+		ctx.appendCode(indent, "\t%s.LittleEndian.PutUint32(dst[dstlen+(i*4):], uint32(len(dst)-dstlen))\n", binaryPkgName)
 		valVar := "t"
 		if ctx.isInlineable(desc.ElemDesc) {
 			valVar = fmt.Sprintf("%s[i]", varName)
@@ -445,7 +458,7 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 				ctx.appendCode(indent, "\tvar zeroItem %s\n", ctx.typePrinter.TypeString(desc.ElemDesc))
 			}
 			ctx.appendCode(indent, "\tfor i := %s; i < %s; i++ {\n", lenVar, limitVar)
-			ctx.appendCode(indent, "\t\t%s.LittleEndian.PutUint32(dst[dstlen+(i*4):], uint32(len(dst)-dstlen))\n", ctx.binaryPkgName)
+			ctx.appendCode(indent, "\t\t%s.LittleEndian.PutUint32(dst[dstlen+(i*4):], uint32(len(dst)-dstlen))\n", binaryPkgName)
 			if err := ctx.marshalType(desc.ElemDesc, "zeroItem", indent+2, false); err != nil {
 				return err
 			}
@@ -526,9 +539,10 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 		// reserve space for offsets
 		ctx.appendCode(indent, "dstlen := len(dst)\n")
 		addVlen()
-		ctx.appendCode(indent, "dst = append(dst, make([]byte, vlen*4)...)\n")
+		ctx.appendCode(indent, "dst = sszutils.AppendZeroPadding(dst, vlen*4)\n")
 		ctx.appendCode(indent, "for i := range vlen {\n")
-		ctx.appendCode(indent, "\t%s.LittleEndian.PutUint32(dst[dstlen+(i*4):], uint32(len(dst)-dstlen))\n", ctx.binaryPkgName)
+		binaryPkgName := ctx.typePrinter.AddImport("encoding/binary", "binary")
+		ctx.appendCode(indent, "\t%s.LittleEndian.PutUint32(dst[dstlen+(i*4):], uint32(len(dst)-dstlen))\n", binaryPkgName)
 		valVar := "t"
 		if ctx.isInlineable(desc.ElemDesc) {
 			valVar = fmt.Sprintf("%s[i]", varName)
