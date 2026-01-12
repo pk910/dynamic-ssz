@@ -74,7 +74,7 @@ var treerootTestMatrix = append(commonTestMatrix, []struct {
 func TestTreeRoot(t *testing.T) {
 	dynssz := NewDynSsz(nil)
 
-	for idx, test := range treerootTestMatrix {
+	for _, test := range treerootTestMatrix {
 		t.Run(test.name, func(t *testing.T) {
 			buf, err := dynssz.HashTreeRoot(test.payload)
 
@@ -82,9 +82,9 @@ func TestTreeRoot(t *testing.T) {
 			case test.htr == nil && err != nil:
 				// expected error
 			case err != nil:
-				t.Errorf("test %v error: %v", idx, err)
+				t.Errorf("test %v error: %v", test.name, err)
 			case !bytes.Equal(buf[:], test.htr):
-				t.Errorf("test %v failed: got 0x%x, wanted 0x%x", idx, buf, test.htr)
+				t.Errorf("test %v failed: got 0x%x, wanted 0x%x", test.name, buf, test.htr)
 			}
 		})
 	}
@@ -93,7 +93,7 @@ func TestTreeRoot(t *testing.T) {
 func TestTreeRootNoFastSsz(t *testing.T) {
 	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
-	for idx, test := range treerootTestMatrix {
+	for _, test := range treerootTestMatrix {
 		t.Run(test.name, func(t *testing.T) {
 			buf, err := dynssz.HashTreeRoot(test.payload)
 
@@ -101,9 +101,9 @@ func TestTreeRootNoFastSsz(t *testing.T) {
 			case test.htr == nil && err != nil:
 				// expected error
 			case err != nil:
-				t.Errorf("test %v error: %v", idx, err)
+				t.Errorf("test %v error: %v", test.name, err)
 			case !bytes.Equal(buf[:], test.htr):
-				t.Errorf("test %v failed: got 0x%x, wanted 0x%x", idx, buf, test.htr)
+				t.Errorf("test %v failed: got 0x%x, wanted 0x%x", test.name, buf, test.htr)
 			}
 		})
 	}
@@ -112,7 +112,7 @@ func TestTreeRootNoFastSsz(t *testing.T) {
 func TestTreeRootNoFastHash(t *testing.T) {
 	dynssz := NewDynSsz(nil, WithNoFastHash())
 
-	for idx, test := range treerootTestMatrix {
+	for _, test := range treerootTestMatrix {
 		t.Run(test.name, func(t *testing.T) {
 			buf, err := dynssz.HashTreeRoot(test.payload)
 
@@ -120,9 +120,9 @@ func TestTreeRootNoFastHash(t *testing.T) {
 			case test.htr == nil && err != nil:
 				// expected error
 			case err != nil:
-				t.Errorf("test %v error: %v", idx, err)
+				t.Errorf("test %v error: %v", test.name, err)
 			case !bytes.Equal(buf[:], test.htr):
-				t.Errorf("test %v failed: got 0x%x, wanted 0x%x", idx, buf, test.htr)
+				t.Errorf("test %v failed: got 0x%x, wanted 0x%x", test.name, buf, test.htr)
 			}
 		})
 	}

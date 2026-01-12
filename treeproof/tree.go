@@ -369,26 +369,26 @@ func treeFromNodesProgressiveImpl(leaves []*Node, depth int) (*Node, error) {
 	// Calculate base_size = 1 << depth (1, 4, 16, 64, 256...)
 	baseSize := 1 << depth
 
-	// Split nodes: first baseSize nodes go to RIGHT (binary), rest go to LEFT (progressive)
+	// Split nodes: first baseSize nodes go to LEFT (binary), rest go to RIGHT (progressive)
 	splitPoint := baseSize
 	if splitPoint > len(leaves) {
 		splitPoint = len(leaves)
 	}
 
-	// Right child: binary merkleization of first baseSize nodes
-	rightNodes := leaves[:splitPoint]
-	rightChild, err := TreeFromNodes(rightNodes, baseSize)
+	// Left child: binary merkleization of first baseSize nodes
+	leftNodes := leaves[:splitPoint]
+	leftChild, err := TreeFromNodes(leftNodes, baseSize)
 	if err != nil {
 		return nil, err
 	}
 
-	// Left child: recursive progressive merkleization of remaining nodes
-	leftNodes := leaves[splitPoint:]
-	var leftChild *Node
-	if len(leftNodes) == 0 {
-		leftChild = NewEmptyNode(sszutils.ZeroBytes()[:32])
+	// Right child: recursive progressive merkleization of remaining nodes
+	rightNodes := leaves[splitPoint:]
+	var rightChild *Node
+	if len(rightNodes) == 0 {
+		rightChild = NewEmptyNode(sszutils.ZeroBytes()[:32])
 	} else {
-		leftChild, err = treeFromNodesProgressiveImpl(leftNodes, depth+2)
+		rightChild, err = treeFromNodesProgressiveImpl(rightNodes, depth+2)
 		if err != nil {
 			return nil, err
 		}

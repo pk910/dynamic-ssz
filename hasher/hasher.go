@@ -614,43 +614,43 @@ func (h *Hasher) merkleizeProgressiveImpl(dst []byte, chunks []byte, depth uint8
 	//         return zero_node(0)
 	//     base_size = 1 << depth
 	//     return PairNode(
-	//         subtree_fill_progressive(nodes[base_size:], depth + 2),
 	//         subtree_fill_to_contents(nodes[:base_size], depth),
+	//         subtree_fill_progressive(nodes[base_size:], depth + 2),
 	//     )
 
 	// Calculate base_size = 1 << depth (1, 4, 16, 64, 256...)
 	baseSize := uint64(1) << depth
 
-	// Split chunks: first baseSize chunks go to RIGHT (binary), rest go to LEFT (progressive)
+	// Split chunks: first baseSize chunks go to LEFT (binary), rest go to RIGHT (progressive)
 	splitPoint := int(baseSize * 32)
 	if splitPoint > len(chunks) {
 		splitPoint = len(chunks)
 	}
 
-	// Right child: subtree_fill_to_contents(nodes[:base_size], depth) - binary merkleization
-	rightChunks := chunks[:splitPoint]
+	// Left child: subtree_fill_to_contents(nodes[:base_size], depth) - binary merkleization
+	leftChunks := chunks[:splitPoint]
 
-	// Ensure rightChunks are properly padded to 32-byte boundaries
-	if len(rightChunks) > 0 && len(rightChunks)%32 != 0 {
-		padNeeded := 32 - (len(rightChunks) % 32)
-		rightChunks = append(rightChunks, zeroBytes[:padNeeded]...)
+	// Ensure leftChunks are properly padded to 32-byte boundaries
+	if len(leftChunks) > 0 && len(leftChunks)%32 != 0 {
+		padNeeded := 32 - (len(leftChunks) % 32)
+		leftChunks = append(leftChunks, zeroBytes[:padNeeded]...)
 	}
 
-	rightRoot := h.merkleizeImpl(rightChunks[:0], rightChunks, baseSize)
+	leftRoot := h.merkleizeImpl(leftChunks[:0], leftChunks, baseSize)
 
-	// Left child: subtree_fill_progressive(nodes[base_size:], depth + 2) - recursive progressive
-	leftChunks := chunks[splitPoint:]
-	var leftRoot []byte
-	if len(leftChunks) == 0 {
-		leftRoot = zeroHashes[0][:]
+	// Right child: subtree_fill_progressive(nodes[base_size:], depth + 2) - recursive progressive
+	rightChunks := chunks[splitPoint:]
+	var rightRoot []byte
+	if len(rightChunks) == 0 {
+		rightRoot = zeroHashes[0][:]
 	} else {
-		// Ensure leftChunks are properly padded to 32-byte boundaries
-		if len(leftChunks)%32 != 0 {
-			padNeeded := 32 - (len(leftChunks) % 32)
-			leftChunks = append(leftChunks, zeroBytes[:padNeeded]...)
+		// Ensure rightChunks are properly padded to 32-byte boundaries
+		if len(rightChunks)%32 != 0 {
+			padNeeded := 32 - (len(rightChunks) % 32)
+			rightChunks = append(rightChunks, zeroBytes[:padNeeded]...)
 		}
 
-		leftRoot = h.merkleizeProgressiveImpl(leftChunks[:0], leftChunks, depth+2)
+		rightRoot = h.merkleizeProgressiveImpl(rightChunks[:0], rightChunks, depth+2)
 	}
 
 	if len(h.tmp) < 64 {
