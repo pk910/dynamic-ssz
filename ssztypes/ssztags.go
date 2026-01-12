@@ -45,74 +45,67 @@ type SszTypeHint struct {
 	Type SszType
 }
 
+var sszTypeMap = map[string]SszType{
+	"?":            SszUnspecifiedType,
+	"auto":         SszUnspecifiedType,
+	"custom":       SszCustomType,
+	"wrapper":      SszTypeWrapperType,
+	"type-wrapper": SszTypeWrapperType,
+
+	"bool":    SszBoolType,
+	"uint8":   SszUint8Type,
+	"uint16":  SszUint16Type,
+	"uint32":  SszUint32Type,
+	"uint64":  SszUint64Type,
+	"uint128": SszUint128Type,
+	"uint256": SszUint256Type,
+
+	"container":             SszContainerType,
+	"list":                  SszListType,
+	"vector":                SszVectorType,
+	"bitlist":               SszBitlistType,
+	"bitvector":             SszBitvectorType,
+	"progressive-list":      SszProgressiveListType,
+	"progressive-bitlist":   SszProgressiveBitlistType,
+	"progressive-container": SszProgressiveContainerType,
+	"compatible-union":      SszCompatibleUnionType,
+	"union":                 SszCompatibleUnionType,
+}
+
 func ParseSszType(typeStr string) (SszType, error) {
-	switch typeStr {
-	case "?", "auto":
-		return SszUnspecifiedType, nil
-	case "custom":
-		return SszCustomType, nil
-	case "wrapper", "type-wrapper":
-		return SszTypeWrapperType, nil
-
-	// basic types
-	case "bool":
-		return SszBoolType, nil
-	case "uint8":
-		return SszUint8Type, nil
-	case "uint16":
-		return SszUint16Type, nil
-	case "uint32":
-		return SszUint32Type, nil
-	case "uint64":
-		return SszUint64Type, nil
-	case "uint128":
-		return SszUint128Type, nil
-	case "uint256":
-		return SszUint256Type, nil
-
-	// complex types
-	case "container":
-		return SszContainerType, nil
-	case "list":
-		return SszListType, nil
-	case "vector":
-		return SszVectorType, nil
-	case "bitlist":
-		return SszBitlistType, nil
-	case "bitvector":
-		return SszBitvectorType, nil
-	case "progressive-list":
-		return SszProgressiveListType, nil
-	case "progressive-bitlist":
-		return SszProgressiveBitlistType, nil
-	case "progressive-container":
-		return SszProgressiveContainerType, nil
-	case "compatible-union", "union":
-		return SszCompatibleUnionType, nil
-
-	default:
-		return SszUnspecifiedType, fmt.Errorf("invalid ssz-type tag '%v'", typeStr)
+	if t, ok := sszTypeMap[typeStr]; ok {
+		return t, nil
 	}
+	return SszUnspecifiedType, fmt.Errorf("invalid ssz-type tag '%v'", typeStr)
 }
 
 func getSszTypeTag(field *reflect.StructField) ([]SszTypeHint, error) {
-	// parse `ssz-type`
-	sszTypeHints := []SszTypeHint{}
-
-	if fieldSszTypeStr, fieldHasSszType := field.Tag.Lookup("ssz-type"); fieldHasSszType {
-		for _, sszTypeStr := range strings.Split(fieldSszTypeStr, ",") {
-			sszType, err := ParseSszType(sszTypeStr)
-			if err != nil {
-				return sszTypeHints, fmt.Errorf("error parsing ssz-type tag for '%v' field: %w", field.Name, err)
-			}
-
-			sszTypeHints = append(sszTypeHints, SszTypeHint{
-				Type: sszType,
-			})
-		}
+	tag, ok := field.Tag.Lookup("ssz-type")
+	if !ok {
+		return nil, nil
 	}
 
-	return sszTypeHints, nil
+	// Fast path: single value
+	if !strings.Contains(tag, ",") {
+		t, err := ParseSszType(tag)
+		if err != nil {
+			return nil, fmt.Errorf("error parsing ssz-type tag for '%v' field: %w", field.Name, err)
+		}
+		return []SszTypeHint{{Type: t}}, nil
+	}
+
+	parts := strings.Split(tag, ",")
+	hints := make([]SszTypeHint, 0, len(parts))
+
+	for _, p := range parts {
+		t, err := ParseSszType(p)
+		if err != nil {
+			return hints, fmt.Errorf("error parsing ssz-type tag for '%v' field: %w", field.Name, err)
+		}
+		hints = append(hints, SszTypeHint{Type: t})
+	}
+
+	return hints, nil
 }
 
 // SszSizeHint encapsulates size information for SSZ encoding and decoding, derived from 'ssz-size' and 'dynssz-size' tag annotations.
@@ -154,118 +147,105 @@ type SszSizeHint struct {
 //     the tags. This ensures that size calculations and subsequent encoding or decoding actions can rely on valid and
 //     correctly interpreted size information.
 func getSszSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]SszSizeHint, error) {
-	sszSizes := []SszSizeHint{}
+	fieldSszSizeStr, hasSszSize := field.Tag.Lookup("ssz-size")
+	fieldSszBitsizeStr, hasSszBitsize := field.Tag.Lookup("ssz-bitsize")
+	fieldDynSszSizeStr, hasDynSszSize := field.Tag.Lookup("dynssz-size")
+	fieldDynSszBitsizeStr, hasDynSszBitsize := field.Tag.Lookup("dynssz-bitsize")
 
-	// parse `ssz-size` first, these are the default values used by fastssz
-	var sszSizeParts, sszBitsizeParts []string
+	if !hasSszSize && !hasSszBitsize && !hasDynSszSize && !hasDynSszBitsize {
+		return nil, nil
+	}
 
-	sszSizeLen := 0
+	var sszSizeParts, sszBitsizeParts, dynSszSizeParts, dynSszBitsizeParts []string
+	maxLen := 0
 
-	if fieldSszSizeStr, fieldHasSszSize := field.Tag.Lookup("ssz-size"); fieldHasSszSize {
+	if hasSszSize {
 		sszSizeParts = strings.Split(fieldSszSizeStr, ",")
-		sszSizeLen = len(sszSizeParts)
+		maxLen = len(sszSizeParts)
 	}
-
-	if fieldSszBitsizeStr, fieldHasSszBitsize := field.Tag.Lookup("ssz-bitsize"); fieldHasSszBitsize {
+	if hasSszBitsize {
 		sszBitsizeParts = strings.Split(fieldSszBitsizeStr, ",")
-		if len(sszBitsizeParts) > sszSizeLen {
-			sszSizeLen = len(sszBitsizeParts)
+		if len(sszBitsizeParts) > maxLen {
+			maxLen = len(sszBitsizeParts)
+		}
+	}
+	if hasDynSszSize {
+		dynSszSizeParts = strings.Split(fieldDynSszSizeStr, ",")
+		if len(dynSszSizeParts) > maxLen {
+			maxLen = len(dynSszSizeParts)
+		}
+	}
+	if hasDynSszBitsize {
+		dynSszBitsizeParts = strings.Split(fieldDynSszBitsizeStr, ",")
+		if len(dynSszBitsizeParts) > maxLen {
+			maxLen = len(dynSszBitsizeParts)
 		}
 	}
 
-	if sszSizeLen > 0 {
-		for i := 0; i < sszSizeLen; i++ {
-			sszSizeStr := getTagPart(sszSizeParts, i)
-			sszBitsizeStr := getTagPart(sszBitsizeParts, i)
+	if maxLen == 0 {
+		return nil, nil
+	}
 
-			sszSize := SszSizeHint{}
+	sszSizes := make([]SszSizeHint, maxLen)
 
-			if sszBitsizeStr != "?" {
-				sszSizeInt, err := strconv.ParseUint(sszBitsizeStr, 10, 32)
-				if err != nil {
-					return sszSizes, fmt.Errorf("error parsing ssz-bitsize tag for '%v' field: %w", field.Name, err)
-				}
-				sszSize.Size = uint32(sszSizeInt)
-				sszSize.Bits = true
-			} else if sszSizeStr != "?" {
-				sszSizeInt, err := strconv.ParseUint(sszSizeStr, 10, 32)
-				if err != nil {
-					return sszSizes, fmt.Errorf("error parsing ssz-size tag for '%v' field: %w", field.Name, err)
-				}
-				sszSize.Size = uint32(sszSizeInt)
+	for i := 0; i < maxLen; i++ {
+		sszSize := &sszSizes[i]
+
+		sszBitsizeStr := getTagPart(sszBitsizeParts, i)
+		sszSizeStr := getTagPart(sszSizeParts, i)
+
+		if sszBitsizeStr != "?" {
+			sszSizeInt, err := strconv.ParseUint(sszBitsizeStr, 10, 32)
+			if err != nil {
+				return sszSizes[:i], fmt.Errorf("error parsing ssz-bitsize tag for '%v' field: %w", field.Name, err)
+			}
+			sszSize.Size = uint32(sszSizeInt)
+			sszSize.Bits = true
+		} else if sszSizeStr != "?" {
+			sszSizeInt, err := strconv.ParseUint(sszSizeStr, 10, 32)
+			if err != nil {
+				return sszSizes[:i], fmt.Errorf("error parsing ssz-size tag for '%v' field: %w", field.Name, err)
+			}
+			sszSize.Size = uint32(sszSizeInt)
+		} else {
+			sszSize.Dynamic = true
+		}
+
+		dynSszBitsizeStr := getTagPart(dynSszBitsizeParts, i)
+		dynSszSizeStr := getTagPart(dynSszSizeParts, i)
+
+		var sizeExpr string
+		var isBitsize bool
+
+		if dynSszBitsizeStr != "?" {
+			sizeExpr = dynSszBitsizeStr
+			isBitsize = true
+		} else if dynSszSizeStr != "?" {
+			sizeExpr = dynSszSizeStr
+		} else {
+			continue
+		}
+
+		if sizeExpr == "?" {
+			sszSize.Dynamic = true
+			sszSize.Bits = isBitsize
+		} else if sszSizeInt, err := strconv.ParseUint(sizeExpr, 10, 32); err == nil {
+			sszSize.Size = uint32(sszSizeInt)
+			sszSize.Bits = isBitsize
+			sszSize.Expr = sizeExpr
+		} else {
+			ok, specVal, err := ds.ResolveSpecValue(sizeExpr)
+			if err != nil {
+				return sszSizes[:i], fmt.Errorf("error parsing dynssz-size tag for '%v' field (%v): %w", field.Name, sizeExpr, err)
+			}
+
+			if ok {
+				sszSize.Size = uint32(specVal)
+				sszSize.Bits = isBitsize
+				sszSize.Custom = true
+				sszSize.Expr = sizeExpr
 			} else {
-				sszSize.Dynamic = true
-			}
-
-			sszSizes = append(sszSizes, sszSize)
-		}
-	}
-
-	// parse `dynssz-size`/`dynssz-bitsize` next, these are the dynamic values used by dynamic-ssz
-	sszSizeParts, sszBitsizeParts = nil, nil
-	sszSizeLen = 0
-
-	if fieldSszSizeStr, fieldHasSszSize := field.Tag.Lookup("dynssz-size"); fieldHasSszSize {
-		sszSizeParts = strings.Split(fieldSszSizeStr, ",")
-		sszSizeLen = len(sszSizeParts)
-	}
-
-	if fieldSszBitsizeStr, fieldHasSszBitsize := field.Tag.Lookup("dynssz-bitsize"); fieldHasSszBitsize {
-		sszBitsizeParts = strings.Split(fieldSszBitsizeStr, ",")
-		if len(sszBitsizeParts) > sszSizeLen {
-			sszSizeLen = len(sszBitsizeParts)
-		}
-	}
-
-	if sszSizeLen > 0 {
-		for i := 0; i < sszSizeLen; i++ {
-			sszSizeStr := getTagPart(sszSizeParts, i)
-			sszBitsizeStr := getTagPart(sszBitsizeParts, i)
-
-			sszSize := SszSizeHint{}
-			isExpr := false
-			sizeExpr := "?"
-
-			if sszBitsizeStr != "?" {
-				sizeExpr = sszBitsizeStr
-				sszSize.Bits = true
-			} else if sszSizeStr != "?" {
-				sizeExpr = sszSizeStr
-			}
-
-			if sizeExpr == "?" {
-				sszSize.Dynamic = true
-			} else if sszSizeInt, err := strconv.ParseUint(sizeExpr, 10, 32); err == nil {
-				sszSize.Size = uint32(sszSizeInt)
-			} else {
-				ok, specVal, err := ds.ResolveSpecValue(sizeExpr)
-				if err != nil {
-					return sszSizes, fmt.Errorf("error parsing dynssz-size tag for '%v' field (%v): %w", field.Name, sizeExpr, err)
-				}
-
-				isExpr = true
-				if ok {
-					// dynamic value from spec
-					sszSize.Size = uint32(specVal)
-					sszSize.Custom = true
-				} else {
-					// unknown spec value? fallback to fastssz defaults
-					if i < len(sszSizes) {
-						sszSizes[i].Expr = sizeExpr
-					}
-					break
-				}
-			}
-
-			if i >= len(sszSizes) {
-				sszSizes = append(sszSizes, sszSize)
-			} else if sszSizes[i].Size != sszSize.Size {
-				// update if resolved size differs from default
-				sszSizes[i] = sszSize
-			}
-
-			if isExpr {
-				sszSizes[i].Expr = sszSizeStr
+				sszSize.Expr = sizeExpr
 			}
 		}
 	}
@@ -310,67 +290,73 @@ type SszMaxSizeHint struct {
 //     the tags. This ensures that max size calculations and subsequent encoding or decoding actions can rely on valid and
 //     correctly interpreted max size information.
 func getSszMaxSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]SszMaxSizeHint, error) {
-	sszMaxSizes := []SszMaxSizeHint{}
+	fieldSszMaxStr, hasSszMax := field.Tag.Lookup("ssz-max")
+	fieldDynSszMaxStr, hasDynSszMax := field.Tag.Lookup("dynssz-max")
 
-	// parse `ssz-max` first, these are the default values used by fastssz
-	if fieldSszMaxStr, fieldHasSszMax := field.Tag.Lookup("ssz-max"); fieldHasSszMax {
-		for _, sszSizeStr := range strings.Split(fieldSszMaxStr, ",") {
-			sszMaxSize := SszMaxSizeHint{}
+	if !hasSszMax && !hasDynSszMax {
+		return nil, nil
+	}
 
-			if sszSizeStr == "?" {
-				sszMaxSize.NoValue = true
-			} else {
-				sszSizeInt, err := strconv.ParseUint(sszSizeStr, 10, 64)
-				if err != nil {
-					return sszMaxSizes, fmt.Errorf("error parsing ssz-max tag for '%v' field: %w", field.Name, err)
-				}
-				sszMaxSize.Size = sszSizeInt
-			}
+	var sszMaxParts, dynSszMaxParts []string
+	maxLen := 0
 
-			sszMaxSizes = append(sszMaxSizes, sszMaxSize)
+	if hasSszMax {
+		sszMaxParts = strings.Split(fieldSszMaxStr, ",")
+		maxLen = len(sszMaxParts)
+	}
+	if hasDynSszMax {
+		dynSszMaxParts = strings.Split(fieldDynSszMaxStr, ",")
+		if len(dynSszMaxParts) > maxLen {
+			maxLen = len(dynSszMaxParts)
 		}
 	}
 
-	fieldDynSszMaxStr, fieldHasDynSszMax := field.Tag.Lookup("dynssz-max")
-	if fieldHasDynSszMax {
-		for i, sszMaxSizeStr := range strings.Split(fieldDynSszMaxStr, ",") {
-			sszMaxSize := SszMaxSizeHint{}
-			isExpr := false
+	if maxLen == 0 {
+		return nil, nil
+	}
 
-			if sszMaxSizeStr == "?" {
+	sszMaxSizes := make([]SszMaxSizeHint, maxLen)
+
+	for i := 0; i < maxLen; i++ {
+		sszMaxSize := &sszMaxSizes[i]
+
+		sszMaxStr := getTagPart(sszMaxParts, i)
+
+		if sszMaxStr == "?" {
+			sszMaxSize.NoValue = true
+		} else if sszMaxStr != "" {
+			sszSizeInt, err := strconv.ParseUint(sszMaxStr, 10, 64)
+			if err != nil {
+				return sszMaxSizes[:i], fmt.Errorf("error parsing ssz-max tag for '%v' field: %w", field.Name, err)
+			}
+			sszMaxSize.Size = sszSizeInt
+		}
+
+		dynSszMaxStr := getTagPart(dynSszMaxParts, i)
+		if dynSszMaxStr == "?" || dynSszMaxStr == "" {
+			if dynSszMaxStr == "?" {
 				sszMaxSize.NoValue = true
-			} else if sszSizeInt, err := strconv.ParseUint(sszMaxSizeStr, 10, 64); err == nil {
-				sszMaxSize.Size = sszSizeInt
-			} else {
-				ok, specVal, err := ds.ResolveSpecValue(sszMaxSizeStr)
-				if err != nil {
-					return sszMaxSizes, fmt.Errorf("error parsing dynssz-max tag for '%v' field (%v): %w", field.Name, sszMaxSizeStr, err)
-				}
-
-				isExpr = true
-				if ok {
-					// dynamic value from spec
-					sszMaxSize.Size = specVal
-					sszMaxSize.Custom = true
-				} else {
-					// unknown spec value? fallback to fastssz defaults
-					if i < len(sszMaxSizes) {
-						sszMaxSizes[i].Expr = sszMaxSizeStr
-					}
-					continue
-				}
 			}
+			continue
+		}
 
-			if i >= len(sszMaxSizes) {
-				sszMaxSizes = append(sszMaxSizes, sszMaxSize)
-			} else if sszMaxSizes[i].Size != sszMaxSize.Size {
-				// update if resolved max size differs from default
-				sszMaxSizes[i] = sszMaxSize
-			}
+		if sszSizeInt, err := strconv.ParseUint(dynSszMaxStr, 10, 64); err == nil {
+			sszMaxSize.Size = sszSizeInt
+			sszMaxSize.Expr = dynSszMaxStr
+			continue
+		}
 
-			if isExpr {
-				sszMaxSizes[i].Expr = sszMaxSizeStr
-			}
+		ok, specVal, err := ds.ResolveSpecValue(dynSszMaxStr)
+		if err != nil {
+			return sszMaxSizes[:i], fmt.Errorf("error parsing dynssz-max tag for '%v' field (%v): %w", field.Name, dynSszMaxStr, err)
+		}
+
+		if ok {
+			sszMaxSize.Size = specVal
+			sszMaxSize.Custom = true
+			sszMaxSize.Expr = dynSszMaxStr
+		} else {
+			sszMaxSize.Expr = dynSszMaxStr
 		}
 	}
 
@@ -378,20 +364,18 @@ func getSszMaxSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]S
 }
 
 func getSszIndexTag(field *reflect.StructField) (*uint16, error) {
-	var sszIndex *uint16
-
-	// parse `ssz-index` first, these are the default values used by fastssz
-	if fieldSszIndexStr, fieldHasSszIndex := field.Tag.Lookup("ssz-index"); fieldHasSszIndex {
-		sszSizeInt, err := strconv.ParseUint(fieldSszIndexStr, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("error parsing ssz-index tag for '%v' field: %w", field.Name, err)
-		}
-
-		index := uint16(sszSizeInt)
-		sszIndex = &index
+	fieldSszIndexStr, ok := field.Tag.Lookup("ssz-index")
+	if !ok {
+		return nil, nil
 	}
 
-	return sszIndex, nil
+	sszSizeInt, err := strconv.ParseUint(fieldSszIndexStr, 10, 16)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing ssz-index tag for '%v' field: %w", field.Name, err)
+	}
+
+	index := uint16(sszSizeInt)
+	return &index, nil
 }
 
 func getTagPart(parts []string, index int) string {
