@@ -328,12 +328,12 @@ func TestTreeFromNodesProgressive(t *testing.T) {
 			name:  "single node",
 			nodes: []*Node{NewNodeWithValue([]byte{1})},
 			validateFn: func(t *testing.T, n *Node) {
-				// Progressive tree with 1 node: base_size=1, so right gets the node, left is empty
+				// Progressive tree with 1 node: base_size=1, so left gets the node, right is empty
 				if n.IsLeaf() {
 					t.Error("expected branch node")
 				}
-				if !n.left.IsEmpty() {
-					t.Error("expected empty left child")
+				if !n.right.IsEmpty() {
+					t.Error("expected empty right child")
 				}
 			},
 		},

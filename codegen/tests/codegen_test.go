@@ -51,7 +51,7 @@ var testMatrix = []TestPayload{
 		Name:    "ProgressiveTypes",
 		Payload: ProgressiveTypes_Payload,
 		Specs:   map[string]any{},
-		Hash:    "e4491c6133bb0e40f21224f73ccfcb3a6a7d8fc32816fa5a5f8b5f35265b5854",
+		Hash:    "317f412cd2d042f367c4f2fb6447828ef9524396428eb2ed0837524bcc70433c",
 	},
 }
 
