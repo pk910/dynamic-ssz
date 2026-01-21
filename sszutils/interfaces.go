@@ -45,8 +45,40 @@ type DynamicSizer interface {
 	SizeSSZDyn(ds DynamicSpecs) int
 }
 
+// DynamicHashRoot is the interface implemented by types that can calculate their own SSZ hash tree root dynamically
 type DynamicHashRoot interface {
 	HashTreeRootWithDyn(ds DynamicSpecs, hh HashWalker) error
+}
+
+// DynamicViewMarshaler is the interface implemented by types that can marshal themselves using dynamic SSZ and a view
+type DynamicViewMarshaler interface {
+	MarshalSSZDynView(ds DynamicSpecs, buf []byte, view any) ([]byte, error)
+}
+
+// DynamicViewEncoder is the interface implemented by types that can marshal themselves using dynamic SSZ, an encoder, and a view
+type DynamicViewEncoder interface {
+	MarshalSSZEncoderView(ds DynamicSpecs, encoder Encoder, view any) error
+}
+
+// DynamicViewUnmarshaler is the interface implemented by types that can unmarshal using dynamic SSZ and a view
+type DynamicViewUnmarshaler interface {
+	UnmarshalSSZDynView(ds DynamicSpecs, buf []byte, view any) error
+}
+
+// DynamicViewDecoder is the interface implemented by types that can unmarshal using dynamic SSZ, a decoder, and a view
+type DynamicViewDecoder interface {
+	UnmarshalSSZDecoderView(ds DynamicSpecs, decoder Decoder, view any) error
+}
+
+// DynamicViewSizer is the interface implemented by types that can calculate their own SSZ size dynamically with a view.
+// Returns (size, error) where error is ErrNoCodeForView if the view is not supported.
+type DynamicViewSizer interface {
+	SizeSSZDynView(ds DynamicSpecs, view any) (int, error)
+}
+
+// DynamicViewHashRoot is the interface implemented by types that can calculate their own SSZ hash tree root dynamically
+type DynamicViewHashRoot interface {
+	HashTreeRootWithDynView(ds DynamicSpecs, hh HashWalker, view any) error
 }
 
 // DynamicSpecs is the interface for a dynamic SSZ encoder/decoder that provides

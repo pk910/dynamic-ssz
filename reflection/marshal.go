@@ -5,6 +5,7 @@
 package reflection
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -46,61 +47,98 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 		}
 	}
 
-	hasDynamicSize := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
-	isFastsszMarshaler := sourceType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
-	useDynamicMarshal := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0
-	useDynamicEncoder := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicEncoder != 0
-	useFastSsz := !ctx.noFastSsz && isFastsszMarshaler && !hasDynamicSize
-	if !useFastSsz && sourceType.SszType == ssztypes.SszCustomType {
-		useFastSsz = true
-	}
-
 	if ctx.verbose {
-		ctx.logCb("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, isFastsszMarshaler, hasDynamicSize)
+		ctx.logCb("%stype: %s\t kind: %v\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind)
 	}
 
-	if useFastSsz {
-		marshaller, ok := getPtr(sourceValue).Interface().(sszutils.FastsszMarshaler)
-		if ok {
-			newBuf, err := marshaller.MarshalSSZTo(encoder.GetBuffer())
-			if err != nil {
-				return err
+	// Try DynamicView methods first - they take precedence over all other methods.
+	// This supports fork-dependent SSZ schemas where generated code handles
+	// different view types. If ErrNoCodeForView is returned, fall through to
+	// other marshaling methods.
+	useViewEncoder := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewEncoder != 0
+	useViewMarshaler := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewMarshaler != 0
+	useReflection := true
+
+	if useViewEncoder || useViewMarshaler {
+		view := reflect.Zero(reflect.PointerTo(sourceType.SchemaType)).Interface()
+
+		// Prefer encoder for seekable encoders, marshaler otherwise
+		if useViewEncoder && encoder.Seekable() {
+			if enc, ok := getPtr(sourceValue).Interface().(sszutils.DynamicViewEncoder); ok {
+				err := enc.MarshalSSZEncoderView(ctx.ds, encoder, view)
+				if err == nil {
+					useReflection = false
+				} else if !errors.Is(err, sszutils.ErrNoCodeForView) {
+					return err
+				}
 			}
-			encoder.SetBuffer(newBuf)
-		} else {
-			useFastSsz = false
+		}
+
+		if useViewMarshaler {
+			if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.DynamicViewMarshaler); ok {
+				newBuf, err := marshaller.MarshalSSZDynView(ctx.ds, encoder.GetBuffer(), view)
+				if err == nil {
+					encoder.SetBuffer(newBuf)
+					useReflection = false
+				} else if !errors.Is(err, sszutils.ErrNoCodeForView) {
+					return err
+				}
+			}
+		}
+	} else {
+		hasDynamicSize := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
+		isFastsszMarshaler := sourceType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+		useDynamicMarshal := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0
+		useDynamicEncoder := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicEncoder != 0
+		useFastSsz := !ctx.noFastSsz && isFastsszMarshaler && !hasDynamicSize
+		if !useFastSsz && sourceType.SszType == ssztypes.SszCustomType {
+			useFastSsz = true
+		}
+
+		if useFastSsz {
+			marshaller, ok := getPtr(sourceValue).Interface().(sszutils.FastsszMarshaler)
+			if ok {
+				newBuf, err := marshaller.MarshalSSZTo(encoder.GetBuffer())
+				if err != nil {
+					return err
+				}
+				encoder.SetBuffer(newBuf)
+				useReflection = false
+			} else {
+				useFastSsz = false
+			}
+		}
+
+		if useReflection && useDynamicEncoder {
+			if encoder.Seekable() && useDynamicMarshal {
+				// prefer static marshaller for non-seekable encoders (buffer based)
+				useDynamicEncoder = false
+			} else if sszEncoder, ok := getPtr(sourceValue).Interface().(sszutils.DynamicEncoder); ok {
+				err := sszEncoder.MarshalSSZEncoder(ctx.ds, encoder)
+				if err != nil {
+					return err
+				}
+				useReflection = false
+			} else {
+				useDynamicEncoder = false
+			}
+		}
+
+		if useReflection && useDynamicMarshal {
+			// Use dynamic marshaler - can always be used even with dynamic specs
+			marshaller, ok := getPtr(sourceValue).Interface().(sszutils.DynamicMarshaler)
+			if ok {
+				newBuf, err := marshaller.MarshalSSZDyn(ctx.ds, encoder.GetBuffer())
+				if err != nil {
+					return err
+				}
+				encoder.SetBuffer(newBuf)
+				useReflection = false
+			}
 		}
 	}
 
-	if !useFastSsz && useDynamicEncoder {
-		if encoder.Seekable() && useDynamicMarshal {
-			// prefer static marshaller for non-seekable encoders (buffer based)
-			useDynamicEncoder = false
-		} else if sszEncoder, ok := getPtr(sourceValue).Interface().(sszutils.DynamicEncoder); ok {
-			err := sszEncoder.MarshalSSZEncoder(ctx.ds, encoder)
-			if err != nil {
-				return err
-			}
-		} else {
-			useDynamicEncoder = false
-		}
-	}
-
-	if !useFastSsz && !useDynamicEncoder && useDynamicMarshal {
-		// Use dynamic marshaler - can always be used even with dynamic specs
-		marshaller, ok := getPtr(sourceValue).Interface().(sszutils.DynamicMarshaler)
-		if ok {
-			newBuf, err := marshaller.MarshalSSZDyn(ctx.ds, encoder.GetBuffer())
-			if err != nil {
-				return err
-			}
-			encoder.SetBuffer(newBuf)
-		} else {
-			useDynamicMarshal = false
-		}
-	}
-
-	if !useFastSsz && !useDynamicEncoder && !useDynamicMarshal {
+	if useReflection {
 		// can't use fastssz, use dynamic marshaling
 		var err error
 		switch sourceType.SszType {

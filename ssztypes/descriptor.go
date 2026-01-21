@@ -25,15 +25,21 @@ const (
 type SszCompatFlag uint16
 
 const (
-	SszCompatFlagFastSSZMarshaler   SszCompatFlag = 1 << iota // Whether the type implements fastssz.Marshaler
-	SszCompatFlagFastSSZHasher                                // Whether the type implements fastssz.HashRoot
-	SszCompatFlagHashTreeRootWith                             // Whether the type implements HashTreeRootWith
-	SszCompatFlagDynamicMarshaler                             // Whether the type implements DynamicMarshaler
-	SszCompatFlagDynamicUnmarshaler                           // Whether the type implements DynamicUnmarshaler
-	SszCompatFlagDynamicSizer                                 // Whether the type implements DynamicSizer
-	SszCompatFlagDynamicHashRoot                              // Whether the type implements DynamicHashRoot
-	SszCompatFlagDynamicEncoder                               // Whether the type implements DynamicEncoder
-	SszCompatFlagDynamicDecoder                               // Whether the type implements DynamicDecoder
+	SszCompatFlagFastSSZMarshaler       SszCompatFlag = 1 << iota // Whether the type implements fastssz.Marshaler
+	SszCompatFlagFastSSZHasher                                    // Whether the type implements fastssz.HashRoot
+	SszCompatFlagHashTreeRootWith                                 // Whether the type implements HashTreeRootWith
+	SszCompatFlagDynamicMarshaler                                 // Whether the type implements DynamicMarshaler
+	SszCompatFlagDynamicUnmarshaler                               // Whether the type implements DynamicUnmarshaler
+	SszCompatFlagDynamicSizer                                     // Whether the type implements DynamicSizer
+	SszCompatFlagDynamicHashRoot                                  // Whether the type implements DynamicHashRoot
+	SszCompatFlagDynamicEncoder                                   // Whether the type implements DynamicEncoder
+	SszCompatFlagDynamicDecoder                                   // Whether the type implements DynamicDecoder
+	SszCompatFlagDynamicViewMarshaler                             // Whether the type implements DynamicViewMarshaler
+	SszCompatFlagDynamicViewUnmarshaler                           // Whether the type implements DynamicViewUnmarshaler
+	SszCompatFlagDynamicViewSizer                                 // Whether the type implements DynamicViewSizer
+	SszCompatFlagDynamicViewHashRoot                              // Whether the type implements DynamicViewHashRoot
+	SszCompatFlagDynamicViewEncoder                               // Whether the type implements DynamicViewEncoder
+	SszCompatFlagDynamicViewDecoder                               // Whether the type implements DynamicViewDecoder
 )
 
 type GoTypeFlag uint8
@@ -47,7 +53,8 @@ const (
 
 // TypeDescriptor represents a cached, optimized descriptor for a type's SSZ encoding/decoding
 type TypeDescriptor struct {
-	Type                   reflect.Type              `json:"-"`                   // Reflect type
+	Type                   reflect.Type              `json:"-"`                   // Reflect type (runtime type where data lives)
+	SchemaType             reflect.Type              `json:"-"`                   // Schema type that defines SSZ layout (may differ from Type for view descriptors)
 	CodegenInfo            *any                      `json:"-"`                   // Codegen information
 	Kind                   reflect.Kind              `json:"kind"`                // Reflect kind of the type
 	Size                   uint32                    `json:"size"`                // SSZ size (-1 if dynamic)

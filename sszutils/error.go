@@ -15,4 +15,8 @@ var (
 	ErrVectorLength         = fmt.Errorf("incorrect vector length")
 	ErrNotImplemented       = fmt.Errorf("not implemented")
 	ErrBitlistNotTerminated = fmt.Errorf("bitlist misses mandatory termination bit")
+
+	// ErrNoCodeForView is returned by DynamicView* methods when no generated code exists
+	// for the requested view. This signals that reflection-based processing should be used.
+	ErrNoCodeForView = fmt.Errorf("no generated code for this view")
 )

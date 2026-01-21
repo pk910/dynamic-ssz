@@ -5,6 +5,7 @@
 package reflection
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 
@@ -48,37 +49,56 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		}
 	}
 
-	// use fastssz to calculate size if:
-	// - struct implements fastssz Marshaler interface
-	// - this structure or any child structure does not use spec specific field sizes
-	useFastSsz := !ctx.noFastSsz && targetType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
-	if !useFastSsz && targetType.SszType == ssztypes.SszCustomType {
-		useFastSsz = true
-	}
+	// Try DynamicViewSizer first - it takes precedence over all other methods.
+	// This supports fork-dependent SSZ schemas where generated code handles
+	// different view types. If ErrNoCodeForView is returned, fall through to
+	// other sizing methods.
+	useReflection := true
 
-	// Check if we should use dynamic sizer - can ALWAYS be used unlike fastssz
-	useDynamicSize := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0
+	if targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewSizer != 0 {
+		view := reflect.Zero(reflect.PointerTo(targetType.SchemaType)).Interface()
+		if sizer, ok := getPtr(targetValue).Interface().(sszutils.DynamicViewSizer); ok {
+			size, err := sizer.SizeSSZDynView(ctx.ds, view)
+			if err == nil {
+				staticSize = uint32(size)
+				useReflection = false
+			} else if !errors.Is(err, sszutils.ErrNoCodeForView) {
+				return 0, err
+			}
+		}
+	} else {
+		// use fastssz to calculate size if:
+		// - struct implements fastssz Marshaler interface
+		// - this structure or any child structure does not use spec specific field sizes
+		useFastSsz := !ctx.noFastSsz && targetType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+		if !useFastSsz && targetType.SszType == ssztypes.SszCustomType {
+			useFastSsz = true
+		}
 
-	if useFastSsz {
-		marshaller, ok := getPtr(targetValue).Interface().(sszutils.FastsszMarshaler)
-		if ok {
-			staticSize = uint32(marshaller.SizeSSZ())
-		} else {
-			useFastSsz = false
+		// Check if we should use dynamic sizer - can ALWAYS be used unlike fastssz
+		useDynamicSize := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0
+
+		if useFastSsz {
+			marshaller, ok := getPtr(targetValue).Interface().(sszutils.FastsszMarshaler)
+			if ok {
+				staticSize = uint32(marshaller.SizeSSZ())
+				useReflection = false
+			} else {
+				useFastSsz = false
+			}
+		}
+
+		if useReflection && useDynamicSize {
+			// Use dynamic sizer - can always be used even with dynamic specs
+			sizer, ok := getPtr(targetValue).Interface().(sszutils.DynamicSizer)
+			if ok {
+				staticSize = uint32(sizer.SizeSSZDyn(ctx.ds))
+				useReflection = false
+			}
 		}
 	}
 
-	if !useFastSsz && useDynamicSize {
-		// Use dynamic sizer - can always be used even with dynamic specs
-		sizer, ok := getPtr(targetValue).Interface().(sszutils.DynamicSizer)
-		if ok {
-			staticSize = uint32(sizer.SizeSSZDyn(ctx.ds))
-		} else {
-			useDynamicSize = false
-		}
-	}
-
-	if !useFastSsz && !useDynamicSize {
+	if useReflection {
 		// can't use fastssz, use dynamic size calculation
 		switch targetType.SszType {
 		case ssztypes.SszTypeWrapperType:

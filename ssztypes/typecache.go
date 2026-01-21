@@ -180,7 +180,8 @@ func (tc *TypeCache) getCompatFlag(t reflect.Type) SszCompatFlag {
 func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) (*TypeDescriptor, error) {
 	// Use runtime type for the descriptor's Type field (where data is accessed)
 	desc := &TypeDescriptor{
-		Type: runtimeType,
+		Type:       runtimeType,
+		SchemaType: schemaType,
 	}
 
 	// Handle pointer types - dereference both runtime and schema
@@ -474,6 +475,26 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 	}
 	if getDynamicHashRootCompatibility(t) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicHashRoot
+	}
+
+	// Check for dynamic view interface implementations (for fork-dependent SSZ schemas)
+	if getDynamicViewMarshalerCompatibility(t) {
+		desc.SszCompatFlags |= SszCompatFlagDynamicViewMarshaler
+	}
+	if getDynamicViewUnmarshalerCompatibility(t) {
+		desc.SszCompatFlags |= SszCompatFlagDynamicViewUnmarshaler
+	}
+	if getDynamicViewEncoderCompatibility(t) {
+		desc.SszCompatFlags |= SszCompatFlagDynamicViewEncoder
+	}
+	if getDynamicViewDecoderCompatibility(t) {
+		desc.SszCompatFlags |= SszCompatFlagDynamicViewDecoder
+	}
+	if getDynamicViewSizerCompatibility(t) {
+		desc.SszCompatFlags |= SszCompatFlagDynamicViewSizer
+	}
+	if getDynamicViewHashRootCompatibility(t) {
+		desc.SszCompatFlags |= SszCompatFlagDynamicViewHashRoot
 	}
 
 	desc.SszCompatFlags |= tc.getCompatFlag(t)
