@@ -72,11 +72,15 @@ type ContainerDescriptor struct {
 	DynFields []DynFieldDescriptor `json:"dyn_fields"` // Dynamic struct fields
 }
 
-// FieldDescriptor represents a cached descriptor for a struct field
+// FieldDescriptor represents a cached descriptor for a struct field.
+// When using view descriptors (schema type differs from runtime type), the
+// FieldIndex points to the corresponding field in the runtime struct, while
+// Name and Type come from the schema struct's field definition.
 type FieldDescriptor struct {
-	Name     string          `json:"name"`            // Name of the field
-	Type     *TypeDescriptor `json:"type"`            // Type descriptor
-	SszIndex uint16          `json:"index,omitempty"` // SSZ index for progressive containers
+	Name       string          `json:"name"`                  // Name of the field (from schema struct)
+	Type       *TypeDescriptor `json:"type"`                  // Type descriptor (built from runtime/schema pair)
+	SszIndex   uint16          `json:"index,omitempty"`       // SSZ index for progressive containers
+	FieldIndex uint16          `json:"field_index,omitempty"` // Index into the runtime struct's field list
 }
 
 // DynFieldDescriptor represents a dynamic field descriptor for a struct

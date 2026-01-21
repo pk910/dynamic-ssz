@@ -15,11 +15,20 @@ import (
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
+// typeKey represents a composite cache key for type descriptors.
+// When schema type differs from runtime type (fork views), we need to cache
+// descriptors based on both types since the same runtime type may have
+// different SSZ layouts depending on the schema.
+type typeKey struct {
+	runtime reflect.Type // The type where actual data lives
+	schema  reflect.Type // The type that defines SSZ layout (may differ for views)
+}
+
 // TypeCache manages cached type descriptors
 type TypeCache struct {
 	specs       sszutils.DynamicSpecs
 	mutex       sync.RWMutex
-	descriptors map[reflect.Type]*TypeDescriptor
+	descriptors map[typeKey]*TypeDescriptor
 	CompatFlags map[string]SszCompatFlag
 }
 
@@ -27,7 +36,7 @@ type TypeCache struct {
 func NewTypeCache(specs sszutils.DynamicSpecs) *TypeCache {
 	return &TypeCache{
 		specs:       specs,
-		descriptors: make(map[reflect.Type]*TypeDescriptor),
+		descriptors: make(map[typeKey]*TypeDescriptor),
 		CompatFlags: map[string]SszCompatFlag{},
 	}
 }
@@ -64,10 +73,50 @@ func NewTypeCache(specs sszutils.DynamicSpecs) *TypeCache {
 //	}
 //	fmt.Printf("Type size: %d bytes (dynamic: %v)\n", typeDesc.Size, typeDesc.Size < 0)
 func (tc *TypeCache) GetTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) (*TypeDescriptor, error) {
+	// When no view descriptor is used, runtime and schema types are the same
+	return tc.GetTypeDescriptorWithSchema(t, t, sizeHints, maxSizeHints, typeHints)
+}
+
+// GetTypeDescriptorWithSchema returns a cached type descriptor for a (runtime, schema) type pair.
+//
+// This method supports fork-dependent SSZ schemas (view descriptors) where the schema type
+// defines the SSZ layout while the runtime type holds the actual data. This allows different
+// SSZ serializations of the same runtime data based on the schema provided.
+//
+// When runtimeType == schemaType, this behaves identically to GetTypeDescriptor.
+// When they differ, the descriptor is built using schema's field definitions (names, tags,
+// order) but accessing data from the runtime type's fields.
+//
+// Parameters:
+//   - runtimeType: The reflect.Type where actual data lives
+//   - schemaType: The reflect.Type that defines SSZ layout (field order, tags, limits)
+//   - sizeHints: Optional size hints from parent structures' tags
+//   - maxSizeHints: Optional max size hints from parent structures' tags
+//   - typeHints: Optional type hints from parent structures' tags
+//
+// Returns:
+//   - *TypeDescriptor: The type descriptor for the (runtime, schema) pair
+//   - error: An error if types are incompatible or analysis fails
+//
+// Example with view descriptor:
+//
+//	// Runtime type (superset)
+//	type BeaconBlockBody struct { ... }
+//	// Schema/view type for Altair fork
+//	type BodyAltairView struct { ... }
+//
+//	desc, err := cache.GetTypeDescriptorWithSchema(
+//	    reflect.TypeOf(BeaconBlockBody{}),
+//	    reflect.TypeOf(BodyAltairView{}),
+//	    nil, nil, nil,
+//	)
+func (tc *TypeCache) GetTypeDescriptorWithSchema(runtimeType, schemaType reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) (*TypeDescriptor, error) {
+	key := typeKey{runtime: runtimeType, schema: schemaType}
+
 	// Check cache first (read lock)
 	if len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) == 0 {
 		tc.mutex.RLock()
-		if desc, exists := tc.descriptors[t]; exists {
+		if desc, exists := tc.descriptors[key]; exists {
 			tc.mutex.RUnlock()
 			return desc, nil
 		}
@@ -78,24 +127,28 @@ func (tc *TypeCache) GetTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, 
 	tc.mutex.Lock()
 	defer tc.mutex.Unlock()
 
-	return tc.getTypeDescriptor(t, sizeHints, maxSizeHints, typeHints)
+	return tc.getTypeDescriptor(runtimeType, schemaType, sizeHints, maxSizeHints, typeHints)
 }
 
-// getTypeDescriptor returns a cached type descriptor, computing it if necessary
-func (tc *TypeCache) getTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) (*TypeDescriptor, error) {
+// getTypeDescriptor returns a cached type descriptor for a (runtime, schema) pair.
+// When runtimeType == schemaType, this is the standard descriptor building.
+// When they differ, it handles view descriptors where schema defines SSZ layout.
+func (tc *TypeCache) getTypeDescriptor(runtimeType, schemaType reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) (*TypeDescriptor, error) {
+	key := typeKey{runtime: runtimeType, schema: schemaType}
 	cacheable := len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) == 0
-	if desc, exists := tc.descriptors[t]; exists && cacheable {
+
+	if desc, exists := tc.descriptors[key]; exists && cacheable {
 		return desc, nil
 	}
 
-	desc, err := tc.buildTypeDescriptor(t, sizeHints, maxSizeHints, typeHints)
+	desc, err := tc.buildTypeDescriptor(runtimeType, schemaType, sizeHints, maxSizeHints, typeHints)
 	if err != nil {
 		return nil, err
 	}
 
 	// Cache only if no size hints (cacheable)
 	if cacheable {
-		tc.descriptors[t] = desc
+		tc.descriptors[key] = desc
 	}
 
 	return desc, nil
@@ -116,17 +169,32 @@ func (tc *TypeCache) getCompatFlag(t reflect.Type) SszCompatFlag {
 	return tc.CompatFlags[typeKey]
 }
 
-// buildTypeDescriptor computes a type descriptor for the given type
-func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) (*TypeDescriptor, error) {
+// buildTypeDescriptor computes a type descriptor for a (runtime, schema) type pair.
+//
+// When runtimeType == schemaType, this produces a standard descriptor.
+// When they differ (view descriptor scenario), the schema type defines the SSZ layout
+// (field order, tags, annotations) while the runtime type provides the actual data storage.
+//
+// The descriptor's Type field stores the runtime type (where data lives), while the
+// SSZ structure (fields, sizes, limits) is derived from the schema type.
+func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) (*TypeDescriptor, error) {
+	// Use runtime type for the descriptor's Type field (where data is accessed)
 	desc := &TypeDescriptor{
-		Type: t,
+		Type: runtimeType,
 	}
 
-	// Handle pointer types
-	if t.Kind() == reflect.Ptr {
+	// Handle pointer types - dereference both runtime and schema
+	if schemaType.Kind() == reflect.Ptr {
 		desc.GoTypeFlags |= GoTypeFlagIsPointer
-		t = t.Elem()
+		schemaType = schemaType.Elem()
 	}
+	if runtimeType.Kind() == reflect.Ptr {
+		desc.GoTypeFlags |= GoTypeFlagIsPointer
+		runtimeType = runtimeType.Elem()
+	}
+
+	// Use schema type for determining the SSZ layout
+	t := schemaType
 
 	desc.Kind = t.Kind()
 
@@ -343,17 +411,17 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 			return nil, err
 		}
 	case SszContainerType, SszProgressiveContainerType:
-		err := tc.buildContainerDescriptor(desc, t)
+		err := tc.buildContainerDescriptor(desc, runtimeType, schemaType)
 		if err != nil {
 			return nil, err
 		}
 	case SszVectorType, SszBitvectorType:
-		err := tc.buildVectorDescriptor(desc, t, sizeHints, maxSizeHints, typeHints)
+		err := tc.buildVectorDescriptor(desc, runtimeType, schemaType, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
 			return nil, err
 		}
 	case SszListType, SszBitlistType, SszProgressiveListType, SszProgressiveBitlistType:
-		err := tc.buildListDescriptor(desc, t, sizeHints, maxSizeHints, typeHints)
+		err := tc.buildListDescriptor(desc, runtimeType, schemaType, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
 			return nil, err
 		}
@@ -452,7 +520,8 @@ func (tc *TypeCache) buildTypeWrapperDescriptor(desc *TypeDescriptor, t reflect.
 	}
 
 	// Build type descriptor for the wrapped type using the extracted information
-	wrappedDesc, err := tc.getTypeDescriptor(wrapperInfo.Type, wrapperInfo.SizeHints, wrapperInfo.MaxSizeHints, wrapperInfo.TypeHints)
+	// For type wrappers, runtime and schema types are the same (the wrapped type)
+	wrappedDesc, err := tc.getTypeDescriptor(wrapperInfo.Type, wrapperInfo.Type, wrapperInfo.SizeHints, wrapperInfo.MaxSizeHints, wrapperInfo.TypeHints)
 	if err != nil {
 		return fmt.Errorf("failed to build descriptor for wrapped type: %w", err)
 	}
@@ -481,7 +550,7 @@ func (tc *TypeCache) buildUint128Descriptor(desc *TypeDescriptor, t reflect.Type
 		desc.GoTypeFlags |= GoTypeFlagIsByteArray
 	}
 
-	elemDesc, err := tc.getTypeDescriptor(fieldType, nil, nil, nil)
+	elemDesc, err := tc.getTypeDescriptor(fieldType, fieldType, nil, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -514,7 +583,7 @@ func (tc *TypeCache) buildUint256Descriptor(desc *TypeDescriptor, t reflect.Type
 		desc.GoTypeFlags |= GoTypeFlagIsByteArray
 	}
 
-	elemDesc, err := tc.getTypeDescriptor(fieldType, nil, nil, nil)
+	elemDesc, err := tc.getTypeDescriptor(fieldType, fieldType, nil, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -533,14 +602,44 @@ func (tc *TypeCache) buildUint256Descriptor(desc *TypeDescriptor, t reflect.Type
 	return nil
 }
 
-// buildContainerDescriptor builds a descriptor for ssz container types
-func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Type) error {
+// buildContainerDescriptor builds a descriptor for ssz container types with runtime/schema pairing.
+//
+// This method supports fork-dependent SSZ schemas (view descriptors) where the schema type
+// defines the SSZ layout (field order, tags, limits) while the runtime type holds the actual data.
+//
+// When runtimeType == schemaType, this behaves identically to the original buildContainerDescriptor.
+// When they differ, the method:
+//   - Iterates over schema fields to define SSZ layout
+//   - Maps each schema field to the corresponding runtime field by name
+//   - Stores the runtime field index in FieldIndex for direct field access
+//   - Builds child descriptors using (runtimeFieldType, schemaFieldType) pairs
+//
+// Parameters:
+//   - desc: The TypeDescriptor being built
+//   - runtimeType: The type where actual data lives (must be a struct)
+//   - schemaType: The type that defines SSZ layout (must be a struct)
+//
+// Returns:
+//   - error: An error if schema fields cannot be mapped to runtime fields
+func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType, schemaType reflect.Type) error {
 	if desc.Kind != reflect.Struct {
 		return fmt.Errorf("container ssz type can only be represented by struct types, got %v", desc.Kind)
 	}
 
+	// Determine if runtime and schema types differ (view descriptor mode)
+	isViewDescriptor := runtimeType != schemaType
+
+	// Pre-build a map of runtime field names to indices for efficient lookup in view descriptor mode
+	var runtimeFieldMap map[string]int
+	if isViewDescriptor {
+		runtimeFieldMap = make(map[string]int, runtimeType.NumField())
+		for i := 0; i < runtimeType.NumField(); i++ {
+			runtimeFieldMap[runtimeType.Field(i).Name] = i
+		}
+	}
+
 	desc.ContainerDesc = &ContainerDescriptor{
-		Fields:    make([]FieldDescriptor, t.NumField()),
+		Fields:    make([]FieldDescriptor, schemaType.NumField()),
 		DynFields: make([]DynFieldDescriptor, 0),
 	}
 
@@ -550,16 +649,36 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 	// Check for progressive container detection
 	hasAnyIndexTag := false
 	fieldIndices := make(map[uint16]bool)
-	sszIndexes := make([]*uint16, t.NumField())
+	sszIndexes := make([]*uint16, schemaType.NumField())
 
-	for i := 0; i < t.NumField(); i++ {
-		field := t.Field(i)
+	// Iterate over schema fields - they define the SSZ layout
+	for i := 0; i < schemaType.NumField(); i++ {
+		schemaField := schemaType.Field(i)
 		fieldDesc := FieldDescriptor{
-			Name: field.Name,
+			Name: schemaField.Name,
 		}
 
-		// Get ssz-index tag
-		sszIndex, err := getSszIndexTag(&field)
+		// Resolve the corresponding runtime field
+		var runtimeFieldIndex int
+
+		if isViewDescriptor {
+			// In view descriptor mode, map schema field to runtime field by name
+			idx, found := runtimeFieldMap[schemaField.Name]
+			if !found {
+				return fmt.Errorf("schema field %q not found in runtime type %s", schemaField.Name, runtimeType.Name())
+			}
+			runtimeFieldIndex = idx
+		} else {
+			// When schema == runtime, field indices match directly
+			runtimeFieldIndex = i
+		}
+
+		// Store the runtime field index for direct field access during encode/decode/hash
+		fieldDesc.FieldIndex = uint16(runtimeFieldIndex)
+		runtimeFieldType := runtimeType.Field(runtimeFieldIndex).Type
+
+		// Get ssz-index tag from schema field (for progressive containers)
+		sszIndex, err := getSszIndexTag(&schemaField)
 		if err != nil {
 			return err
 		}
@@ -569,31 +688,34 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 			fieldDesc.SszIndex = *sszIndex
 			hasAnyIndexTag = true
 			if fieldIndices[*sszIndex] {
-				return fmt.Errorf("duplicate ssz-index %d found in field %s", *sszIndex, field.Name)
+				return fmt.Errorf("duplicate ssz-index %d found in field %s", *sszIndex, schemaField.Name)
 			}
 			fieldIndices[*sszIndex] = true
 		}
 
-		// Get size hints from tags
-		sizeHints, err := getSszSizeTag(tc.specs, &field)
+		// Get size hints from schema field tags (schema defines SSZ constraints)
+		sizeHints, err := getSszSizeTag(tc.specs, &schemaField)
 		if err != nil {
 			return err
 		}
 
-		maxSizeHints, err := getSszMaxSizeTag(tc.specs, &field)
+		maxSizeHints, err := getSszMaxSizeTag(tc.specs, &schemaField)
 		if err != nil {
 			return err
 		}
 
-		typeHints, err := getSszTypeTag(&field)
+		typeHints, err := getSszTypeTag(&schemaField)
 		if err != nil {
 			return err
 		}
 
-		// Build type descriptor for field
-		fieldDesc.Type, err = tc.getTypeDescriptor(field.Type, sizeHints, maxSizeHints, typeHints)
+		// Build child type descriptor using (runtimeFieldType, schemaFieldType) pair.
+		// This is the key to supporting nested view descriptors: the schema field type
+		// may itself be a view type that differs from the runtime field type.
+		schemaFieldType := schemaField.Type
+		fieldDesc.Type, err = tc.getTypeDescriptor(runtimeFieldType, schemaFieldType, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to build descriptor for field %s: %w", schemaField.Name, err)
 		}
 
 		sszSize := fieldDesc.Type.Size
@@ -604,7 +726,7 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 			desc.ContainerDesc.DynFields = append(desc.ContainerDesc.DynFields, DynFieldDescriptor{
 				Field:        &desc.ContainerDesc.Fields[i],
 				HeaderOffset: uint32(totalSize),
-				Index:        int16(i),
+				Index:        int16(runtimeFieldIndex), // Use runtime field index for data access
 			})
 		}
 
@@ -617,7 +739,6 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 	// A container is progressive if it has ssz-index annotations on fields
 	// If it's progressive, all fields must have increasing ssz-index tags
 	if hasAnyIndexTag {
-
 		// For progressive containers, ensure all ssz-index values are properly set
 		// and validate they are in increasing order
 		for i := 0; i < len(desc.ContainerDesc.Fields); i++ {
@@ -671,8 +792,9 @@ func (tc *TypeCache) buildCompatibleUnionDescriptor(desc *TypeDescriptor, t refl
 	}
 
 	// Build type descriptors for each variant using the extracted information
+	// For union variants, runtime and schema types are the same
 	for variantIndex, info := range variantInfo {
-		variantDesc, err := tc.getTypeDescriptor(info.Type, info.SizeHints, info.MaxSizeHints, info.TypeHints)
+		variantDesc, err := tc.getTypeDescriptor(info.Type, info.Type, info.SizeHints, info.MaxSizeHints, info.TypeHints)
 		if err != nil {
 			return fmt.Errorf("failed to build descriptor for union variant %d: %w", variantIndex, err)
 		}
@@ -683,8 +805,15 @@ func (tc *TypeCache) buildCompatibleUnionDescriptor(desc *TypeDescriptor, t refl
 	return nil
 }
 
-// buildVectorDescriptor builds a descriptor for ssz vector types
-func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) error {
+// buildVectorDescriptor builds a descriptor for ssz vector types with runtime/schema pairing.
+//
+// For vectors, the element type may differ between runtime and schema when using view descriptors.
+// The schema type defines the SSZ layout (element type, size hints) while the runtime type provides
+// the actual element type for data access.
+func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, schemaType reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) error {
+	// Use schema type for SSZ layout determination
+	t := schemaType
+
 	if desc.Kind != reflect.Array && desc.Kind != reflect.Slice && desc.Kind != reflect.String {
 		return fmt.Errorf("vector ssz type can only be represented by array or slice types, got %v", desc.Kind)
 	}
@@ -728,18 +857,25 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, t reflect.Type,
 		childTypeHints = typeHints[1:]
 	}
 
-	var fieldType reflect.Type
+	// Determine element types for runtime and schema
+	var runtimeElemType, schemaElemType reflect.Type
 	if desc.Kind == reflect.String {
-		fieldType = byteType
+		// Strings are treated as []byte
+		runtimeElemType = byteType
+		schemaElemType = byteType
 		desc.GoTypeFlags |= GoTypeFlagIsByteArray
 	} else {
-		fieldType = t.Elem()
-		if fieldType == byteType {
+		// Get element type from both runtime and schema types
+		schemaElemType = t.Elem()
+		runtimeElemType = runtimeType.Elem()
+		if schemaElemType == byteType {
 			desc.GoTypeFlags |= GoTypeFlagIsByteArray
 		}
 	}
 
-	elemDesc, err := tc.getTypeDescriptor(fieldType, childSizeHints, childMaxSizeHints, childTypeHints)
+	// Build element descriptor using (runtimeElemType, schemaElemType) pair
+	// This supports nested view descriptors within vector elements
+	elemDesc, err := tc.getTypeDescriptor(runtimeElemType, schemaElemType, childSizeHints, childMaxSizeHints, childTypeHints)
 	if err != nil {
 		return err
 	}
@@ -761,8 +897,15 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, t reflect.Type,
 	return nil
 }
 
-// buildListDescriptor builds a descriptor for ssz list types
-func (tc *TypeCache) buildListDescriptor(desc *TypeDescriptor, t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) error {
+// buildListDescriptor builds a descriptor for ssz list types with runtime/schema pairing.
+//
+// For lists, the element type may differ between runtime and schema when using view descriptors.
+// The schema type defines the SSZ layout (element type, size hints) while the runtime type provides
+// the actual element type for data access.
+func (tc *TypeCache) buildListDescriptor(desc *TypeDescriptor, runtimeType, schemaType reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) error {
+	// Use schema type for SSZ layout determination
+	t := schemaType
+
 	if desc.Kind != reflect.Slice && desc.Kind != reflect.String {
 		return fmt.Errorf("list ssz type can only be represented by slice types, got %v", desc.Kind)
 	}
@@ -782,18 +925,25 @@ func (tc *TypeCache) buildListDescriptor(desc *TypeDescriptor, t reflect.Type, s
 		childTypeHints = typeHints[1:]
 	}
 
-	var fieldType reflect.Type
+	// Determine element types for runtime and schema
+	var runtimeElemType, schemaElemType reflect.Type
 	if desc.Kind == reflect.String {
-		fieldType = byteType
+		// Strings are treated as []byte
+		runtimeElemType = byteType
+		schemaElemType = byteType
 		desc.GoTypeFlags |= GoTypeFlagIsByteArray
 	} else {
-		fieldType = t.Elem()
-		if fieldType == byteType {
+		// Get element type from both runtime and schema types
+		schemaElemType = t.Elem()
+		runtimeElemType = runtimeType.Elem()
+		if schemaElemType == byteType {
 			desc.GoTypeFlags |= GoTypeFlagIsByteArray
 		}
 	}
 
-	elemDesc, err := tc.getTypeDescriptor(fieldType, childSizeHints, childMaxSizeHints, childTypeHints)
+	// Build element descriptor using (runtimeElemType, schemaElemType) pair
+	// This supports nested view descriptors within list elements
+	elemDesc, err := tc.getTypeDescriptor(runtimeElemType, schemaElemType, childSizeHints, childMaxSizeHints, childTypeHints)
 	if err != nil {
 		return err
 	}
@@ -830,43 +980,52 @@ func (tc *TypeCache) buildListDescriptor(desc *TypeDescriptor, t reflect.Type, s
 	return nil
 }
 
-// GetAllTypes returns a slice of all types currently cached in the TypeCache.
+// GetAllTypes returns a slice of all type keys currently cached in the TypeCache.
 //
 // This method is useful for cache inspection, debugging, and understanding which types
 // have been processed and cached during the application's lifetime. The returned slice
-// contains the reflect.Type values in no particular order.
+// contains pairs of (runtime, schema) types in no particular order.
+//
+// When runtime == schema (normal usage), these represent standard type descriptors.
+// When they differ, the pair represents a view descriptor for fork-dependent SSZ.
 //
 // The method acquires a read lock to ensure thread-safe access to the cache.
 //
 // Returns:
-//   - []reflect.Type: A slice containing all cached types
+//   - [][2]reflect.Type: A slice of [runtime, schema] type pairs
 //
 // Example:
 //
 //	cachedTypes := cache.GetAllTypes()
-//	fmt.Printf("TypeCache contains %d types\n", len(cachedTypes))
-//	for _, t := range cachedTypes {
-//	    fmt.Printf("  - %s\n", t.String())
+//	fmt.Printf("TypeCache contains %d type pairs\n", len(cachedTypes))
+//	for _, pair := range cachedTypes {
+//	    if pair[0] == pair[1] {
+//	        fmt.Printf("  - %s\n", pair[0].String())
+//	    } else {
+//	        fmt.Printf("  - %s (view: %s)\n", pair[0].String(), pair[1].String())
+//	    }
 //	}
-func (tc *TypeCache) GetAllTypes() []reflect.Type {
+func (tc *TypeCache) GetAllTypes() [][2]reflect.Type {
 	tc.mutex.RLock()
 	defer tc.mutex.RUnlock()
 
-	types := make([]reflect.Type, 0, len(tc.descriptors))
-	for t := range tc.descriptors {
-		types = append(types, t)
+	types := make([][2]reflect.Type, 0, len(tc.descriptors))
+	for key := range tc.descriptors {
+		types = append(types, [2]reflect.Type{key.runtime, key.schema})
 	}
 
 	return types
 }
 
-// RemoveType removes a specific type from the cache.
+// RemoveType removes a specific type (with runtime == schema) from the cache.
 //
 // This method is useful for cache management scenarios where you need to force
 // recomputation of a type descriptor, such as after configuration changes or
 // when testing different type configurations.
 //
 // The method acquires a write lock to ensure thread-safe removal.
+// Note: This only removes entries where runtime type equals schema type.
+// Use RemoveTypeKey to remove view descriptor entries.
 //
 // Parameters:
 //   - t: The reflect.Type to remove from the cache
@@ -879,14 +1038,28 @@ func (tc *TypeCache) GetAllTypes() []reflect.Type {
 //	// Next call to GetTypeDescriptor will rebuild the descriptor
 //	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(MyStruct{}), nil, nil)
 func (tc *TypeCache) RemoveType(t reflect.Type) {
+	tc.RemoveTypeKey(t, t)
+}
+
+// RemoveTypeKey removes a specific (runtime, schema) type pair from the cache.
+//
+// This method supports removing view descriptor entries where runtime differs from schema.
+//
+// Parameters:
+//   - runtimeType: The runtime type of the cache entry to remove
+//   - schemaType: The schema type of the cache entry to remove
+func (tc *TypeCache) RemoveTypeKey(runtimeType, schemaType reflect.Type) {
 	tc.mutex.Lock()
 	defer tc.mutex.Unlock()
 
-	if t.Kind() == reflect.Ptr {
-		t = t.Elem()
+	if runtimeType.Kind() == reflect.Ptr {
+		runtimeType = runtimeType.Elem()
+	}
+	if schemaType.Kind() == reflect.Ptr {
+		schemaType = schemaType.Elem()
 	}
 
-	delete(tc.descriptors, t)
+	delete(tc.descriptors, typeKey{runtime: runtimeType, schema: schemaType})
 }
 
 // RemoveAllTypes clears all cached type descriptors from the cache.
@@ -913,7 +1086,7 @@ func (tc *TypeCache) RemoveAllTypes() {
 	defer tc.mutex.Unlock()
 
 	// Create new map to clear all references
-	tc.descriptors = make(map[reflect.Type]*TypeDescriptor)
+	tc.descriptors = make(map[typeKey]*TypeDescriptor)
 }
 
 // extractGenericTypeParameter extracts the generic type parameter from a CompatibleUnion type.

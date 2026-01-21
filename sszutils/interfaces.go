@@ -49,7 +49,8 @@ type DynamicHashRoot interface {
 	HashTreeRootWithDyn(ds DynamicSpecs, hh HashWalker) error
 }
 
-// DynamicSsz is the interface for a dynamic SSZ encoder/decoder
+// DynamicSpecs is the interface for a dynamic SSZ encoder/decoder that provides
+// specification values for dynamic sizing.
 type DynamicSpecs interface {
 	ResolveSpecValue(name string) (bool, uint64, error)
 }
