@@ -295,7 +295,9 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 			// fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
 			expectedPos := decoder.GetPosition() + fieldSize
 
-			fieldValue := targetValue.Field(i)
+			// Use FieldIndex to access the runtime struct's field, which may differ
+			// from the schema field index when using view descriptors.
+			fieldValue := targetValue.Field(int(field.FieldIndex))
 			err := ctx.unmarshalType(field.Type, fieldValue, decoder, idt+2)
 			if err != nil {
 				return fmt.Errorf("failed decoding field %v: %w", field.Name, err)
@@ -368,7 +370,9 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 			decoder.PushLimit(int(sszSize))
 
 			fieldDescriptor := field.Field
-			fieldValue := targetValue.Field(int(field.Index))
+			// Use FieldIndex to access the runtime struct's field, which may differ
+			// from the schema field index when using view descriptors.
+			fieldValue := targetValue.Field(int(fieldDescriptor.FieldIndex))
 			err := ctx.unmarshalType(fieldDescriptor.Type, fieldValue, decoder, idt+2)
 			if err != nil {
 				return fmt.Errorf("failed decoding field %v: %w", fieldDescriptor.Name, err)

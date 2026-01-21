@@ -226,7 +226,9 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 		if fieldSize > 0 {
 			//fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
 
-			fieldValue := sourceValue.Field(i)
+			// Use FieldIndex to access the runtime struct's field, which may differ
+			// from the schema field index when using view descriptors.
+			fieldValue := sourceValue.Field(int(field.FieldIndex))
 			err := ctx.marshalType(field.Type, fieldValue, encoder, idt+2)
 			if err != nil {
 				return fmt.Errorf("failed encoding field %v: %w", field.Name, err)
@@ -239,7 +241,8 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 				encoder.EncodeOffset(0)
 			} else {
 				// we can't seek, so we need to calculate the object size now
-				size, err := ctx.getSszValueSize(field.Type, sourceValue.Field(i))
+				// Use FieldIndex to access the correct runtime field.
+				size, err := ctx.getSszValueSize(field.Type, sourceValue.Field(int(field.FieldIndex)))
 				if err != nil {
 					return fmt.Errorf("failed to get size of dynamic field %v: %w", field.Name, err)
 				}
@@ -263,7 +266,9 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 		//fmt.Printf("%sfield %d:\t dynamic [%v:]\t %v\n", strings.Repeat(" ", idt+1), field.Index[0], offset, field.Name)
 
 		fieldDescriptor := field.Field
-		fieldValue := sourceValue.Field(int(field.Index))
+		// Use FieldIndex to access the runtime struct's field, which may differ
+		// from the schema field index when using view descriptors.
+		fieldValue := sourceValue.Field(int(fieldDescriptor.FieldIndex))
 		err := ctx.marshalType(fieldDescriptor.Type, fieldValue, encoder, idt+2)
 		if err != nil {
 			return fmt.Errorf("failed encoding field %v: %w", fieldDescriptor.Name, err)

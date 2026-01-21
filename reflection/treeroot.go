@@ -295,7 +295,9 @@ func (ctx *ReflectionCtx) buildRootFromContainer(sourceType *ssztypes.TypeDescri
 	for i := 0; i < len(sourceType.ContainerDesc.Fields); i++ {
 		field := sourceType.ContainerDesc.Fields[i]
 		fieldType := field.Type
-		fieldValue := sourceValue.Field(i)
+		// Use FieldIndex to access the runtime struct's field, which may differ
+		// from the schema field index when using view descriptors.
+		fieldValue := sourceValue.Field(int(field.FieldIndex))
 
 		if ctx.verbose {
 			ctx.logCb("%sfield %v\n", strings.Repeat(" ", idt), field.Name)
@@ -352,7 +354,9 @@ func (ctx *ReflectionCtx) buildRootFromProgressiveContainer(sourceType *ssztypes
 		lastActiveField = int(field.SszIndex)
 
 		fieldType := field.Type
-		fieldValue := sourceValue.Field(i)
+		// Use FieldIndex to access the runtime struct's field, which may differ
+		// from the schema field index when using view descriptors.
+		fieldValue := sourceValue.Field(int(field.FieldIndex))
 
 		if ctx.verbose {
 			ctx.logCb("%sfield %v\n", strings.Repeat(" ", idt), field.Name)

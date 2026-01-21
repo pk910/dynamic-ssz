@@ -94,7 +94,9 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
 			for i := 0; i < len(targetType.ContainerDesc.Fields); i++ {
 				fieldType := targetType.ContainerDesc.Fields[i]
-				fieldValue := targetValue.Field(i)
+				// Use FieldIndex to access the runtime struct's field, which may differ
+				// from the schema field index when using view descriptors.
+				fieldValue := targetValue.Field(int(fieldType.FieldIndex))
 
 				if fieldType.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 					size, err := ctx.getSszValueSize(fieldType.Type, fieldValue)
