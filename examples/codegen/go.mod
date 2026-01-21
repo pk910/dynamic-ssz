@@ -4,7 +4,7 @@ go 1.25.0
 
 replace github.com/pk910/dynamic-ssz => ../../
 
-require github.com/pk910/dynamic-ssz v1.2.0
+require github.com/pk910/dynamic-ssz v1.2.1
 
 require (
 	github.com/casbin/govaluate v1.8.0 // indirect

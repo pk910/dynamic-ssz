@@ -6,7 +6,7 @@ require (
 	github.com/attestantio/go-eth2-client v0.27.1
 	github.com/golang/snappy v0.0.4
 	github.com/huandu/go-clone/generic v1.6.0
-	github.com/pk910/dynamic-ssz v1.2.0
+	github.com/pk910/dynamic-ssz v1.2.1
 	github.com/stretchr/testify v1.8.4
 	gopkg.in/yaml.v2 v2.4.0
 )
