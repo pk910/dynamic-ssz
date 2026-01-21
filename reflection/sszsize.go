@@ -5,7 +5,6 @@
 package reflection
 
 import (
-	"errors"
 	"fmt"
 	"reflect"
 
@@ -51,19 +50,16 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 
 	// Try DynamicViewSizer first - it takes precedence over all other methods.
 	// This supports fork-dependent SSZ schemas where generated code handles
-	// different view types. If ErrNoCodeForView is returned, fall through to
+	// different view types. If the method returns nil, fall through to
 	// other sizing methods.
 	useReflection := true
 
 	if targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewSizer != 0 {
 		view := reflect.Zero(reflect.PointerTo(targetType.SchemaType)).Interface()
 		if sizer, ok := getPtr(targetValue).Interface().(sszutils.DynamicViewSizer); ok {
-			size, err := sizer.SizeSSZDynView(ctx.ds, view)
-			if err == nil {
-				staticSize = uint32(size)
+			if sizeFn := sizer.SizeSSZDynView(view); sizeFn != nil {
+				staticSize = uint32(sizeFn(ctx.ds))
 				useReflection = false
-			} else if !errors.Is(err, sszutils.ErrNoCodeForView) {
-				return 0, err
 			}
 		}
 	} else {

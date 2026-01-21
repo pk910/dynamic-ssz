@@ -5,7 +5,6 @@
 package reflection
 
 import (
-	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -53,7 +52,7 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 
 	// Try DynamicView methods first - they take precedence over all other methods.
 	// This supports fork-dependent SSZ schemas where generated code handles
-	// different view types. If ErrNoCodeForView is returned, fall through to
+	// different view types. If the method returns nil, fall through to
 	// other marshaling methods.
 	useViewEncoder := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewEncoder != 0
 	useViewMarshaler := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewMarshaler != 0
@@ -65,23 +64,24 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 		// Prefer encoder for seekable encoders, marshaler otherwise
 		if useViewEncoder && encoder.Seekable() {
 			if enc, ok := getPtr(sourceValue).Interface().(sszutils.DynamicViewEncoder); ok {
-				err := enc.MarshalSSZEncoderView(ctx.ds, encoder, view)
-				if err == nil {
+				if encodeFn := enc.MarshalSSZEncoderView(view); encodeFn != nil {
+					if err := encodeFn(ctx.ds, encoder); err != nil {
+						return err
+					}
 					useReflection = false
-				} else if !errors.Is(err, sszutils.ErrNoCodeForView) {
-					return err
 				}
 			}
 		}
 
-		if useViewMarshaler {
+		if useReflection && useViewMarshaler {
 			if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.DynamicViewMarshaler); ok {
-				newBuf, err := marshaller.MarshalSSZDynView(ctx.ds, encoder.GetBuffer(), view)
-				if err == nil {
+				if marshalFn := marshaller.MarshalSSZDynView(view); marshalFn != nil {
+					newBuf, err := marshalFn(ctx.ds, encoder.GetBuffer())
+					if err != nil {
+						return err
+					}
 					encoder.SetBuffer(newBuf)
 					useReflection = false
-				} else if !errors.Is(err, sszutils.ErrNoCodeForView) {
-					return err
 				}
 			}
 		}

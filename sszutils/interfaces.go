@@ -50,35 +50,40 @@ type DynamicHashRoot interface {
 	HashTreeRootWithDyn(ds DynamicSpecs, hh HashWalker) error
 }
 
-// DynamicViewMarshaler is the interface implemented by types that can marshal themselves using dynamic SSZ and a view
+// DynamicViewMarshaler is the interface implemented by types that can marshal themselves using dynamic SSZ and a view.
+// Returns nil if the view is not supported, otherwise returns the marshal function.
 type DynamicViewMarshaler interface {
-	MarshalSSZDynView(ds DynamicSpecs, buf []byte, view any) ([]byte, error)
+	MarshalSSZDynView(view any) func(ds DynamicSpecs, buf []byte) ([]byte, error)
 }
 
-// DynamicViewEncoder is the interface implemented by types that can marshal themselves using dynamic SSZ, an encoder, and a view
+// DynamicViewEncoder is the interface implemented by types that can marshal themselves using dynamic SSZ, an encoder, and a view.
+// Returns nil if the view is not supported, otherwise returns the encode function.
 type DynamicViewEncoder interface {
-	MarshalSSZEncoderView(ds DynamicSpecs, encoder Encoder, view any) error
+	MarshalSSZEncoderView(view any) func(ds DynamicSpecs, encoder Encoder) error
 }
 
-// DynamicViewUnmarshaler is the interface implemented by types that can unmarshal using dynamic SSZ and a view
+// DynamicViewUnmarshaler is the interface implemented by types that can unmarshal using dynamic SSZ and a view.
+// Returns nil if the view is not supported, otherwise returns the unmarshal function.
 type DynamicViewUnmarshaler interface {
-	UnmarshalSSZDynView(ds DynamicSpecs, buf []byte, view any) error
+	UnmarshalSSZDynView(view any) func(ds DynamicSpecs, buf []byte) error
 }
 
-// DynamicViewDecoder is the interface implemented by types that can unmarshal using dynamic SSZ, a decoder, and a view
+// DynamicViewDecoder is the interface implemented by types that can unmarshal using dynamic SSZ, a decoder, and a view.
+// Returns nil if the view is not supported, otherwise returns the decode function.
 type DynamicViewDecoder interface {
-	UnmarshalSSZDecoderView(ds DynamicSpecs, decoder Decoder, view any) error
+	UnmarshalSSZDecoderView(view any) func(ds DynamicSpecs, decoder Decoder) error
 }
 
 // DynamicViewSizer is the interface implemented by types that can calculate their own SSZ size dynamically with a view.
-// Returns (size, error) where error is ErrNoCodeForView if the view is not supported.
+// Returns nil if the view is not supported, otherwise returns the size function.
 type DynamicViewSizer interface {
-	SizeSSZDynView(ds DynamicSpecs, view any) (int, error)
+	SizeSSZDynView(view any) func(ds DynamicSpecs) int
 }
 
-// DynamicViewHashRoot is the interface implemented by types that can calculate their own SSZ hash tree root dynamically
+// DynamicViewHashRoot is the interface implemented by types that can calculate their own SSZ hash tree root dynamically.
+// Returns nil if the view is not supported, otherwise returns the hash function.
 type DynamicViewHashRoot interface {
-	HashTreeRootWithDynView(ds DynamicSpecs, hh HashWalker, view any) error
+	HashTreeRootWithDynView(view any) func(ds DynamicSpecs, hh HashWalker) error
 }
 
 // DynamicSpecs is the interface for a dynamic SSZ encoder/decoder that provides

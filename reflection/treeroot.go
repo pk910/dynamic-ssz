@@ -5,7 +5,6 @@
 package reflection
 
 import (
-	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -55,18 +54,18 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 
 	// Try DynamicViewHashRoot first - it takes precedence over all other methods.
 	// This supports fork-dependent SSZ schemas where generated code handles
-	// different view types. If ErrNoCodeForView is returned, fall through to
+	// different view types. If the method returns nil, fall through to
 	// other hashing methods.
 	useReflection := true
 
 	if sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewHashRoot != 0 {
 		view := reflect.Zero(reflect.PointerTo(sourceType.SchemaType)).Interface()
 		if viewHasher, ok := getPtr(sourceValue).Interface().(sszutils.DynamicViewHashRoot); ok {
-			err := viewHasher.HashTreeRootWithDynView(ctx.ds, hh, view)
-			if err == nil {
+			if hashFn := viewHasher.HashTreeRootWithDynView(view); hashFn != nil {
+				if err := hashFn(ctx.ds, hh); err != nil {
+					return err
+				}
 				useReflection = false
-			} else if !errors.Is(err, sszutils.ErrNoCodeForView) {
-				return err
 			}
 		}
 	} else {

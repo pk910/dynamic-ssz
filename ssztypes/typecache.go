@@ -444,56 +444,58 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 		return nil, fmt.Errorf("bit size tag is only allowed for bitvector or bitlist types, got %v", desc.SszType)
 	}
 
-	if desc.SszTypeFlags&SszTypeFlagHasDynamicSize == 0 && getFastsszConvertCompatibility(t) {
+	if desc.SszTypeFlags&SszTypeFlagHasDynamicSize == 0 && getFastsszConvertCompatibility(runtimeType) {
 		desc.SszCompatFlags |= SszCompatFlagFastSSZMarshaler
 	}
 	if desc.SszTypeFlags&SszTypeFlagHasDynamicMax == 0 {
-		if getFastsszHashCompatibility(t) {
+		if getFastsszHashCompatibility(runtimeType) {
 			desc.SszCompatFlags |= SszCompatFlagFastSSZHasher
 		}
-		if method := getHashTreeRootWithCompatibility(t); method != nil {
+		if method := getHashTreeRootWithCompatibility(runtimeType); method != nil {
 			desc.HashTreeRootWithMethod = method
 			desc.SszCompatFlags |= SszCompatFlagHashTreeRootWith
 		}
 	}
 
 	// Check for dynamic interface implementations
-	if getDynamicMarshalerCompatibility(t) {
+	if getDynamicMarshalerCompatibility(runtimeType) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicMarshaler
 	}
-	if getDynamicUnmarshalerCompatibility(t) {
+	if getDynamicUnmarshalerCompatibility(runtimeType) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicUnmarshaler
 	}
-	if getDynamicEncoderCompatibility(t) {
+	if getDynamicEncoderCompatibility(runtimeType) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicEncoder
 	}
-	if getDynamicDecoderCompatibility(t) {
+	if getDynamicDecoderCompatibility(runtimeType) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicDecoder
 	}
-	if getDynamicSizerCompatibility(t) {
+	if getDynamicSizerCompatibility(runtimeType) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicSizer
 	}
-	if getDynamicHashRootCompatibility(t) {
+	if getDynamicHashRootCompatibility(runtimeType) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicHashRoot
 	}
 
-	// Check for dynamic view interface implementations (for fork-dependent SSZ schemas)
-	if getDynamicViewMarshalerCompatibility(t) {
+	// Check for dynamic view interface implementations (for fork-dependent SSZ schemas).
+	// View interfaces are checked on runtimeType because the methods are implemented
+	// on the runtime type, while schemaType only defines the SSZ layout.
+	if getDynamicViewMarshalerCompatibility(runtimeType) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicViewMarshaler
 	}
-	if getDynamicViewUnmarshalerCompatibility(t) {
+	if getDynamicViewUnmarshalerCompatibility(runtimeType) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicViewUnmarshaler
 	}
-	if getDynamicViewEncoderCompatibility(t) {
+	if getDynamicViewEncoderCompatibility(runtimeType) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicViewEncoder
 	}
-	if getDynamicViewDecoderCompatibility(t) {
+	if getDynamicViewDecoderCompatibility(runtimeType) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicViewDecoder
 	}
-	if getDynamicViewSizerCompatibility(t) {
+	if getDynamicViewSizerCompatibility(runtimeType) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicViewSizer
 	}
-	if getDynamicViewHashRootCompatibility(t) {
+	if getDynamicViewHashRootCompatibility(runtimeType) {
 		desc.SszCompatFlags |= SszCompatFlagDynamicViewHashRoot
 	}
 

@@ -5,7 +5,6 @@
 package reflection
 
 import (
-	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -55,23 +54,45 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 		ctx.logCb("%stype: %s\t kind: %v\n", strings.Repeat(" ", idt), targetType.Type.Name(), targetType.Kind)
 	}
 
-	// Try DynamicViewDecoder first - it takes precedence over all other methods.
+	// Try DynamicView methods first - they take precedence over all other methods.
 	// This supports fork-dependent SSZ schemas where generated code handles
-	// different view types. If ErrNoCodeForView is returned, fall through to
+	// different view types. If the method returns nil, fall through to
 	// other unmarshaling methods.
-	// Note: We only use the decoder-based approach here because the buffer-based
-	// approach (DynamicViewUnmarshaler) would consume bytes before we know if the
-	// view is supported, making fallback to reflection problematic.
+	useViewDecoder := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewDecoder != 0
+	useViewUnmarshaler := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewUnmarshaler != 0
 	useReflection := true
 
-	if targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewDecoder != 0 {
+	if useViewDecoder || useViewUnmarshaler {
 		view := reflect.Zero(reflect.PointerTo(targetType.SchemaType)).Interface()
-		if dec, ok := targetValue.Addr().Interface().(sszutils.DynamicViewDecoder); ok {
-			err := dec.UnmarshalSSZDecoderView(ctx.ds, decoder, view)
-			if err == nil {
-				useReflection = false
-			} else if !errors.Is(err, sszutils.ErrNoCodeForView) {
-				return err
+
+		// Prefer decoder for stream-based decoders, unmarshaler for buffer-based
+		if useViewDecoder {
+			if decoder.Seekable() && useViewUnmarshaler {
+				// prefer dynamic unmarshaller for seekable decoders (stream based)
+				useViewDecoder = false
+			} else if dec, ok := targetValue.Addr().Interface().(sszutils.DynamicViewDecoder); ok {
+				if decodeFn := dec.UnmarshalSSZDecoderView(view); decodeFn != nil {
+					if err := decodeFn(ctx.ds, decoder); err != nil {
+						return err
+					}
+					useReflection = false
+				}
+			}
+		}
+
+		if useReflection && useViewUnmarshaler {
+			if unmarshaler, ok := targetValue.Addr().Interface().(sszutils.DynamicViewUnmarshaler); ok {
+				if unmarshalFn := unmarshaler.UnmarshalSSZDynView(view); unmarshalFn != nil {
+					bufLen := decoder.GetLength()
+					buf, err := decoder.DecodeBytesBuf(bufLen)
+					if err != nil {
+						return err
+					}
+					if err := unmarshalFn(ctx.ds, buf); err != nil {
+						return err
+					}
+					useReflection = false
+				}
 			}
 		}
 	} else {

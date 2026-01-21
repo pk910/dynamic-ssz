@@ -1244,3 +1244,92 @@ func TestPackedBoolInVector(t *testing.T) {
 		t.Error("hash should not be zero")
 	}
 }
+
+// TestViewHashRoot tests the DynamicViewHashRoot interface via HashTreeRoot.
+func TestViewHashRoot(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	// Expected hash for the test container with Field0=0x0807060504030201, Field1=0x0c0b0a09
+	// computed via reflection (container with two fields hashed and merkleized)
+	expectedHash := fromHex("0xfceef46b8a8d2490c9ea24cc3d8b784860e4c3091cfa52955041577e50d76653")
+
+	testCases := []struct {
+		name        string
+		view        any
+		expectError string
+	}{
+		{
+			name: "ViewHashRoot_Success",
+			view: (*TestViewType1)(nil),
+		},
+		{
+			name:        "ViewHashRoot_Error",
+			view:        (*TestViewType2)(nil),
+			expectError: "test view hash root error",
+		},
+		{
+			name: "ViewHashRoot_NoCodeForView_FallbackToReflection",
+			view: (*TestViewTypeUnknown)(nil),
+		},
+	}
+
+	container := TestContainerWithViewHashRoot{Field0: 0x0807060504030201, Field1: 0x0c0b0a09}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			hash, err := ds.HashTreeRoot(&container, WithViewDescriptor(tc.view))
+
+			if tc.expectError != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.expectError)
+				}
+				if !contains(err.Error(), tc.expectError) {
+					t.Fatalf("expected error containing %q, got %v", tc.expectError, err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if !bytes.Equal(hash[:], expectedHash) {
+				t.Fatalf("expected hash %x, got %x", expectedHash, hash)
+			}
+		})
+	}
+}
+
+// TestViewHashRootFlagsDetection verifies that the type cache correctly detects view hash root flags.
+func TestViewHashRootFlagsDetection(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	// Test that view hash root flags are detected on runtime type
+	typeDesc, err := ds.GetTypeCache().GetTypeDescriptor(
+		reflect.TypeOf(TestContainerWithViewHashRoot{}),
+		nil, nil, nil,
+	)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	// Check for DynamicViewHashRoot flag
+	if typeDesc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewHashRoot == 0 {
+		t.Error("Expected DynamicViewHashRoot flag to be set")
+	}
+
+	// Test that the flags are set based on runtime type when using view descriptor
+	viewTypeDesc, err := ds.GetTypeCache().GetTypeDescriptorWithSchema(
+		reflect.TypeOf(TestContainerWithViewHashRoot{}),
+		reflect.TypeOf(TestViewType1{}),
+		nil, nil, nil,
+	)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor with view: %v", err)
+	}
+
+	// Verify flag is set
+	if viewTypeDesc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewHashRoot == 0 {
+		t.Error("Expected DynamicViewHashRoot flag to be set with view descriptor")
+	}
+}
