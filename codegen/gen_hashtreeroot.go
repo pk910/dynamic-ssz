@@ -50,11 +50,12 @@ type hashTreeRootContext struct {
 //   - rootTypeDesc: Type descriptor containing complete SSZ hashing metadata
 //   - codeBuilder: String builder to append generated method code to
 //   - typePrinter: Type formatter for handling imports and type names
+//   - viewName: Name of the view type for function name postfix (empty string for data type)
 //   - options: Generation options controlling which methods to create
 //
 // Returns:
 //   - error: An error if code generation fails
-func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
+func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, viewName string, options *CodeGeneratorOptions) error {
 	codeBuf := strings.Builder{}
 	ctx := &hashTreeRootContext{
 		appendCode: func(indent int, code string, args ...any) {
@@ -80,10 +81,10 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 		ctx.usedDynSpecs = true
 	}
 
-	genDynamicFn := !options.WithoutDynamicExpressions
-	genStaticFn := options.WithoutDynamicExpressions || options.CreateLegacyFn
+	genDynamicFn := !options.WithoutDynamicExpressions || viewName != ""
+	genStaticFn := (options.WithoutDynamicExpressions || options.CreateLegacyFn) && viewName == ""
 
-	if genDynamicFn && !ctx.usedDynSpecs {
+	if genDynamicFn && !ctx.usedDynSpecs && viewName == "" {
 		genStaticFn = true
 	}
 
@@ -118,7 +119,7 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 	}
 
 	// Dynamic hash tree root function
-	if genDynamicFn {
+	if genDynamicFn && viewName == "" {
 		hasherAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
 		appendCode(codeBuilder, 0, "func (t %s) HashTreeRootDyn(ds sszutils.DynamicSpecs) (root [32]byte, err error) {\n", typeName)
 		appendCode(codeBuilder, 1, "err = %s.WithDefaultHasher(func(hh sszutils.HashWalker) (err error) {\n", hasherAlias)
@@ -133,14 +134,18 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 	}
 
 	if genDynamicFn {
-		if ctx.usedDynSpecs {
-			appendCode(codeBuilder, 0, "func (t %s) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName)
+		fnName := "HashTreeRootWithDyn"
+		if viewName != "" {
+			fnName = fmt.Sprintf("hashTreeRootView_%s", viewName)
+		}
+		if ctx.usedDynSpecs || viewName != "" {
+			appendCode(codeBuilder, 0, "func (t %s) %s(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName, fnName)
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 			appendCode(codeBuilder, 1, codeBuf.String())
 			appendCode(codeBuilder, 1, "return nil\n")
 			appendCode(codeBuilder, 0, "}\n\n")
 		} else {
-			appendCode(codeBuilder, 0, "func (t %s) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName)
+			appendCode(codeBuilder, 0, "func (t %s) %s(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName, fnName)
 			appendCode(codeBuilder, 1, "return t.HashTreeRootWith(hh)\n")
 			appendCode(codeBuilder, 0, "}\n\n")
 			genStaticFn = true

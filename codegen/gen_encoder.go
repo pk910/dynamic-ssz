@@ -47,11 +47,12 @@ type encoderContext struct {
 //   - rootTypeDesc: Type descriptor containing complete SSZ encoding metadata
 //   - codeBuilder: String builder to append generated method code to
 //   - typePrinter: Type formatter for handling imports and type names
+//   - viewName: Name of the view type for function name postfix (empty string for data type)
 //   - options: Generation options controlling which methods to create
 //
 // Returns:
 //   - error: An error if code generation fails
-func generateEncoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
+func generateEncoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, viewName string, options *CodeGeneratorOptions) error {
 	codeBuf := strings.Builder{}
 	ctx := &encoderContext{
 		appendCode: func(indent int, code string, args ...any) {
@@ -89,7 +90,11 @@ func generateEncoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 		ctx.usedDynSpecs = true
 	}
 
-	appendCode(codeBuilder, 0, "func (t %s) MarshalSSZEncoder(ds sszutils.DynamicSpecs, enc sszutils.Encoder) (err error) {\n", typeName)
+	fnName := "MarshalSSZEncoder"
+	if viewName != "" {
+		fnName = fmt.Sprintf("marshalSSZEncoderView_%s", viewName)
+	}
+	appendCode(codeBuilder, 0, "func (t %s) %s(ds sszutils.DynamicSpecs, enc sszutils.Encoder) (err error) {\n", typeName, fnName)
 
 	if ctx.usedContext {
 		appendCode(codeBuilder, 1, ctx.generateEncodeContext(0))

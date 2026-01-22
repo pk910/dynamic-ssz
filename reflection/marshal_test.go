@@ -1072,7 +1072,7 @@ func TestViewMarshaler(t *testing.T) {
 		{
 			name:        "ViewMarshaler_Error",
 			view:        (*TestViewType2)(nil),
-			expectError: "test view marshaler error",
+			expectError: "test view encoder error",
 		},
 		{
 			name: "ViewMarshaler_NoCodeForView_FallbackToReflection",
@@ -1123,7 +1123,7 @@ func TestViewEncoder(t *testing.T) {
 		{
 			name:        "ViewEncoder_Error",
 			view:        (*TestViewType2)(nil),
-			expectError: "test view encoder error",
+			expectError: "test view marshaler error",
 		},
 		{
 			name: "ViewEncoder_NoCodeForView_FallbackToReflection",

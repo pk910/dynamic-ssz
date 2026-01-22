@@ -53,11 +53,12 @@ type decoderContext struct {
 //   - rootTypeDesc: Type descriptor containing complete SSZ decoder metadata
 //   - codeBuilder: String builder to append generated method code to
 //   - typePrinter: Type formatter for handling imports and type names
+//   - viewName: Name of the view type for function name postfix (empty string for data type)
 //   - options: Generation options controlling which methods to create
 //
 // Returns:
 //   - error: An error if code generation fails
-func generateDecoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
+func generateDecoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, viewName string, options *CodeGeneratorOptions) error {
 	codeBuf := strings.Builder{}
 	ctx := &decoderContext{
 		appendCode: func(indent int, code string, args ...any) {
@@ -85,10 +86,14 @@ func generateDecoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 		ctx.usedDynSpecs = true
 	}
 
+	fnName := "UnmarshalSSZDecoder"
+	if viewName != "" {
+		fnName = fmt.Sprintf("unmarshalSSZDecoderView_%s", viewName)
+	}
 	if ctx.usedDynSpecs {
-		appendCode(codeBuilder, 0, "func (t %s) UnmarshalSSZDecoder(ds sszutils.DynamicSpecs, dec sszutils.Decoder) (err error) {\n", typeName)
+		appendCode(codeBuilder, 0, "func (t %s) %s(ds sszutils.DynamicSpecs, dec sszutils.Decoder) (err error) {\n", typeName, fnName)
 	} else {
-		appendCode(codeBuilder, 0, "func (t %s) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, dec sszutils.Decoder) (err error) {\n", typeName)
+		appendCode(codeBuilder, 0, "func (t %s) %s(_ sszutils.DynamicSpecs, dec sszutils.Decoder) (err error) {\n", typeName, fnName)
 	}
 
 	appendCode(codeBuilder, 1, ctx.exprVars.getCode())

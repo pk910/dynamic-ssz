@@ -32,6 +32,14 @@ type Config struct {
 	WithStreaming             bool
 }
 
+// typeSpec holds parsed information about a type specification
+type typeSpec struct {
+	TypeName   string
+	OutputFile string
+	ViewTypes  []string // view types for data+views mode
+	IsViewOnly bool     // whether this is a view-only type
+}
+
 func main() {
 	var (
 		packagePath               = flag.String("package", "", "Go package path to analyze")
@@ -102,50 +110,96 @@ func run(config Config) error {
 		log.Printf("Successfully loaded package: %s", pkg.Name)
 	}
 
-	// Parse type names
+	// Parse type names with extended format:
+	// TypeName[:output.go][:views=View1,View2][:viewonly]
 	requestedTypes := strings.Split(config.TypeNames, ",")
-	for i, typeName := range requestedTypes {
-		requestedTypes[i] = strings.TrimSpace(typeName)
-	}
+	typeSpecs := make([]typeSpec, 0, len(requestedTypes))
 
-	// Find the requested types in the package
-	generateFiles := make(map[string][]types.Type)
-	scope := pkg.Types.Scope()
-	typeCount := 0
-
-	for _, typeName := range requestedTypes {
-		outFile := ""
-		outFileParts := strings.Split(typeName, ":")
-		if len(outFileParts) > 1 {
-			outFile = outFileParts[1]
-			typeName = outFileParts[0]
+	for _, typeStr := range requestedTypes {
+		typeStr = strings.TrimSpace(typeStr)
+		if typeStr == "" {
+			continue
 		}
 
-		if outFile == "" {
+		spec := typeSpec{}
+		parts := strings.Split(typeStr, ":")
+
+		// First part is always the type name
+		spec.TypeName = parts[0]
+
+		// Process remaining parts
+		for i := 1; i < len(parts); i++ {
+			part := parts[i]
+			if strings.HasPrefix(part, "views=") {
+				// Parse view types: views=View1;View2 or views=View1,View2
+				viewsStr := strings.TrimPrefix(part, "views=")
+				// Use semicolon as separator since comma is used for type list
+				spec.ViewTypes = strings.Split(viewsStr, ";")
+				for j := range spec.ViewTypes {
+					spec.ViewTypes[j] = strings.TrimSpace(spec.ViewTypes[j])
+				}
+			} else if part == "viewonly" {
+				spec.IsViewOnly = true
+			} else if spec.OutputFile == "" {
+				// First non-special part after type name is the output file
+				spec.OutputFile = part
+			}
+		}
+
+		// Use default output file if not specified
+		if spec.OutputFile == "" {
 			if config.OutputFile == "" {
 				return errors.New("output file is required (-output)")
 			}
-			outFile = config.OutputFile
+			spec.OutputFile = config.OutputFile
 		}
 
-		obj := scope.Lookup(typeName)
+		typeSpecs = append(typeSpecs, spec)
+	}
+
+	// Find the requested types in the package
+	// Map from output file to list of type specs
+	generateFiles := make(map[string][]typeSpec)
+	scope := pkg.Types.Scope()
+	typeCount := 0
+
+	for _, spec := range typeSpecs {
+		// Validate that the main type exists
+		obj := scope.Lookup(spec.TypeName)
 		if obj == nil {
-			return fmt.Errorf("type %s not found in package %s", typeName, config.PackagePath)
+			return fmt.Errorf("type %s not found in package %s", spec.TypeName, config.PackagePath)
 		}
 
 		typeObj, ok := obj.(*types.TypeName)
 		if !ok {
-			return fmt.Errorf("object %s is not a type in package %s", typeName, config.PackagePath)
+			return fmt.Errorf("object %s is not a type in package %s", spec.TypeName, config.PackagePath)
 		}
 
-		if _, ok := generateFiles[outFile]; !ok {
-			generateFiles[outFile] = make([]types.Type, 0)
+		// Validate view types exist
+		for _, viewTypeName := range spec.ViewTypes {
+			viewObj := scope.Lookup(viewTypeName)
+			if viewObj == nil {
+				return fmt.Errorf("view type %s not found in package %s", viewTypeName, config.PackagePath)
+			}
+			if _, ok := viewObj.(*types.TypeName); !ok {
+				return fmt.Errorf("view object %s is not a type in package %s", viewTypeName, config.PackagePath)
+			}
 		}
-		generateFiles[outFile] = append(generateFiles[outFile], typeObj.Type())
+
+		if _, ok := generateFiles[spec.OutputFile]; !ok {
+			generateFiles[spec.OutputFile] = make([]typeSpec, 0)
+		}
+		generateFiles[spec.OutputFile] = append(generateFiles[spec.OutputFile], spec)
 		typeCount++
 
 		if config.Verbose {
-			log.Printf("Found type: %s", typeName)
+			mode := "data-only"
+			if spec.IsViewOnly {
+				mode = "view-only"
+			} else if len(spec.ViewTypes) > 0 {
+				mode = fmt.Sprintf("data+views(%s)", strings.Join(spec.ViewTypes, ","))
+			}
+			log.Printf("Found type: %s [%s]", typeObj.Name(), mode)
 		}
 	}
 
@@ -158,10 +212,36 @@ func run(config Config) error {
 	}
 
 	// Build options for all types
-	for outFile, foundTypes := range generateFiles {
+	for outFile, specs := range generateFiles {
 		var typeOptions []codegen.CodeGeneratorOption
-		for _, goType := range foundTypes {
-			typeOptions = append(typeOptions, codegen.WithGoTypesType(goType))
+
+		for _, spec := range specs {
+			// Look up the main type
+			obj := scope.Lookup(spec.TypeName)
+			typeObj := obj.(*types.TypeName)
+			goType := typeObj.Type()
+
+			// Build type-specific options
+			var typeSpecificOpts []codegen.CodeGeneratorOption
+
+			// Add view types if specified
+			if len(spec.ViewTypes) > 0 {
+				viewTypes := make([]types.Type, 0, len(spec.ViewTypes))
+				for _, viewTypeName := range spec.ViewTypes {
+					viewObj := scope.Lookup(viewTypeName)
+					viewTypeObj := viewObj.(*types.TypeName)
+					viewTypes = append(viewTypes, viewTypeObj.Type())
+				}
+				typeSpecificOpts = append(typeSpecificOpts, codegen.WithGoTypesViewTypes(viewTypes...))
+			}
+
+			// Add view-only flag if specified
+			if spec.IsViewOnly {
+				typeSpecificOpts = append(typeSpecificOpts, codegen.WithViewOnly())
+			}
+
+			// Add the type with its options
+			typeOptions = append(typeOptions, codegen.WithGoTypesType(goType, typeSpecificOpts...))
 		}
 
 		if config.Legacy {

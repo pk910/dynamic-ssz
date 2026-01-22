@@ -184,12 +184,16 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	innerSchemaType := schemaType
 	innerDataType := dataType
 
+	var schemaNamedType, dataNamedType *types.Named
+
 	for {
 		// Resolve named types
 		if named, ok := schemaType.(*types.Named); ok {
 			schemaType = named.Underlying()
+			schemaNamedType = named
 			if named, ok := dataType.(*types.Named); ok {
 				dataType = named.Underlying()
+				dataNamedType = named
 			} else {
 				return nil, fmt.Errorf("incompatible types: data kind %v != schema kind %v", dataType.String(), schemaType.String())
 			}
@@ -480,15 +484,10 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	// complex types
 	case ssztypes.SszTypeWrapperType:
 		// Resolve both data and schema types to named types
-		dataNamed, ok := dataType.(*types.Named)
-		if !ok {
+		if dataNamedType == nil {
 			return nil, fmt.Errorf("data TypeWrapper must be a named type")
 		}
-		schemaNamed, ok := schemaType.(*types.Named)
-		if !ok {
-			return nil, fmt.Errorf("schema TypeWrapper must be a named type")
-		}
-		err := p.buildTypeWrapperDescriptor(desc, dataNamed, schemaNamed, typeHints, sizeHints, maxSizeHints)
+		err := p.buildTypeWrapperDescriptor(desc, dataNamedType, schemaNamedType, typeHints, sizeHints, maxSizeHints)
 		if err != nil {
 			return nil, err
 		}
@@ -525,15 +524,10 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		}
 	case ssztypes.SszCompatibleUnionType:
 		// Resolve both data and schema types to named types
-		dataNamed, ok := dataType.(*types.Named)
-		if !ok {
+		if dataNamedType == nil {
 			return nil, fmt.Errorf("data CompatibleUnion must be a named type")
 		}
-		schemaNamed, ok := schemaType.(*types.Named)
-		if !ok {
-			return nil, fmt.Errorf("schema CompatibleUnion must be a named type")
-		}
-		err := p.buildCompatibleUnionDescriptor(desc, dataNamed, schemaNamed)
+		err := p.buildCompatibleUnionDescriptor(desc, dataNamedType, schemaNamedType)
 		if err != nil {
 			return nil, err
 		}

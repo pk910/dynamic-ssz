@@ -218,6 +218,22 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 			}
 			return marshaler.MarshalSSZDyn(d, buf)
 		}
+	} else if viewMarshaler, ok := source.(sszutils.DynamicViewMarshaler); ok {
+		if marshalFn := viewMarshaler.MarshalSSZDynView(cfg.viewDescriptor); marshalFn != nil {
+			var buf []byte
+			if sizer, ok := source.(sszutils.DynamicViewSizer); ok {
+				sizeFn := sizer.SizeSSZDynView(cfg.viewDescriptor)
+				if sizeFn != nil {
+					size := sizeFn(d)
+					buf = make([]byte, 0, size)
+				} else {
+					buf = make([]byte, 0, 1024)
+				}
+			} else {
+				buf = make([]byte, 0, 1024)
+			}
+			return marshalFn(d, buf)
+		}
 	}
 
 	sourceType := reflect.TypeOf(source)
@@ -287,6 +303,10 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 	if cfg.viewDescriptor == nil {
 		if marshaler, ok := source.(sszutils.DynamicMarshaler); ok {
 			return marshaler.MarshalSSZDyn(d, buf)
+		}
+	} else if viewMarshaler, ok := source.(sszutils.DynamicViewMarshaler); ok {
+		if marshalFn := viewMarshaler.MarshalSSZDynView(cfg.viewDescriptor); marshalFn != nil {
+			return marshalFn(d, buf)
 		}
 	}
 
@@ -380,6 +400,14 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 
 			return encoder.GetWriteError()
 		}
+	} else if viewEncoder, ok := source.(sszutils.DynamicViewEncoder); ok {
+		if marshalFn := viewEncoder.MarshalSSZEncoderView(cfg.viewDescriptor); marshalFn != nil {
+			err := marshalFn(d, encoder)
+			if err != nil {
+				return err
+			}
+			return encoder.GetWriteError()
+		}
 	}
 
 	sourceType := reflect.TypeOf(source)
@@ -443,6 +471,11 @@ func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error) {
 		if sizer, ok := source.(sszutils.DynamicSizer); ok {
 			return sizer.SizeSSZDyn(d), nil
 		}
+	} else if viewSizer, ok := source.(sszutils.DynamicViewSizer); ok {
+		sizeFn := viewSizer.SizeSSZDynView(cfg.viewDescriptor)
+		if sizeFn != nil {
+			return sizeFn(d), nil
+		}
 	}
 
 	sourceType := reflect.TypeOf(source)
@@ -504,6 +537,10 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 	if cfg.viewDescriptor == nil {
 		if unmarshaler, ok := target.(sszutils.DynamicUnmarshaler); ok {
 			return unmarshaler.UnmarshalSSZDyn(d, ssz)
+		}
+	} else if viewUnmarshaler, ok := target.(sszutils.DynamicViewUnmarshaler); ok {
+		if unmarshalFn := viewUnmarshaler.UnmarshalSSZDynView(cfg.viewDescriptor); unmarshalFn != nil {
+			return unmarshalFn(d, ssz)
 		}
 	}
 
@@ -615,6 +652,20 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 	if cfg.viewDescriptor == nil {
 		if sszDecoder, ok := target.(sszutils.DynamicDecoder); ok {
 			err := sszDecoder.UnmarshalSSZDecoder(d, decoder)
+			if err != nil {
+				return err
+			}
+
+			consumedDiff := decoder.PopLimit()
+			if consumedDiff != 0 {
+				return fmt.Errorf("did not consume full ssz range (diff: %v, ssz size: %v)", consumedDiff, size)
+			}
+
+			return nil
+		}
+	} else if viewDecoder, ok := target.(sszutils.DynamicViewDecoder); ok {
+		if unmarshalFn := viewDecoder.UnmarshalSSZDecoderView(cfg.viewDescriptor); unmarshalFn != nil {
+			err := unmarshalFn(d, decoder)
 			if err != nil {
 				return err
 			}
@@ -762,6 +813,14 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...Ca
 	if cfg.viewDescriptor == nil {
 		if hasher, ok := source.(sszutils.DynamicHashRoot); ok {
 			err := hasher.HashTreeRootWithDyn(d, hh)
+			if err != nil {
+				return err
+			}
+			return nil
+		}
+	} else if viewHasher, ok := source.(sszutils.DynamicViewHashRoot); ok {
+		if hashFn := viewHasher.HashTreeRootWithDynView(cfg.viewDescriptor); hashFn != nil {
+			err := hashFn(d, hh)
 			if err != nil {
 				return err
 			}

@@ -268,6 +268,38 @@ func (p *TypePrinter) TypeString(t *ssztypes.TypeDescriptor) string {
 	return p.reflectTypeString(t.Type, true)
 }
 
+// ViewTypeString returns the qualified string representation of a view type descriptor and tracks import usage.
+//
+// This method generates the appropriate Go type string for a view TypeDescriptor, handling
+// package qualification and import tracking automatically.
+//
+// Parameters:
+//   - t: The view TypeDescriptor containing type information for formatting
+//
+// Returns:
+//   - string: The qualified Go type string suitable for code generation
+//
+// Example:
+//
+//	typeName := printer.TypeString(descriptor)
+//	// Result: "phase0.BeaconBlock" or "*MyStruct" depending on the type
+func (p *TypePrinter) ViewTypeString(t *ssztypes.TypeDescriptor) string {
+	if t.CodegenInfo != nil {
+		if codegenInfo, ok := (*t.CodegenInfo).(*CodegenInfo); ok {
+			if codegenInfo.SchemaType != nil {
+				return p.packageQualify(codegenInfo.SchemaType, true)
+			} else if codegenInfo.Type != nil {
+				return p.packageQualify(codegenInfo.Type, true)
+			}
+		}
+	}
+
+	if t.SchemaType != nil {
+		return p.reflectTypeString(t.SchemaType, true)
+	}
+	return p.reflectTypeString(t.Type, true)
+}
+
 // InnerTypeString returns the qualified string representation of the inner (dereferenced) type.
 //
 // This method is similar to TypeString but automatically dereferences pointer types
@@ -325,11 +357,19 @@ func (p *TypePrinter) InnerTypeString(t *ssztypes.TypeDescriptor) string {
 //
 // Returns:
 //   - string: The qualified Go type string without import tracking side effects
-func (p *TypePrinter) TypeStringWithoutTracking(t *ssztypes.TypeDescriptor) string {
+func (p *TypePrinter) TypeStringWithoutTracking(t *ssztypes.TypeDescriptor, viewType bool) string {
 	if t.CodegenInfo != nil {
-		if codegenInfo, ok := (*t.CodegenInfo).(*CodegenInfo); ok && codegenInfo.Type != nil {
-			return p.packageQualify(codegenInfo.Type, false)
+		if codegenInfo, ok := (*t.CodegenInfo).(*CodegenInfo); ok {
+			if viewType && codegenInfo.SchemaType != nil {
+				return p.packageQualify(codegenInfo.SchemaType, false)
+			} else if codegenInfo.Type != nil {
+				return p.packageQualify(codegenInfo.Type, false)
+			}
 		}
+	}
+
+	if viewType && t.SchemaType != nil {
+		return p.reflectTypeString(t.SchemaType, false)
 	}
 	return p.reflectTypeString(t.Type, false)
 }

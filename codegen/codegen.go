@@ -83,6 +83,11 @@ type CodeGeneratorOptions struct {
 	MaxSizeHints              []ssztypes.SszMaxSizeHint
 	TypeHints                 []ssztypes.SszTypeHint
 	Types                     []CodeGeneratorTypeOption
+
+	// View support options (type-specific)
+	ViewGoTypesTypes []types.Type   // View types for data+views mode (compile-time)
+	ViewReflectTypes []reflect.Type // View types for data+views mode (runtime)
+	ViewOnly         bool           // Only generate view methods, not data methods
 }
 
 // CodeGeneratorTypeOption specifies a type to include in code generation with its specific options.
@@ -99,13 +104,21 @@ type CodeGeneratorOptions struct {
 // Configuration:
 //   - Opts: Type-specific options that will be applied in addition to base options
 //
+// View support is configured via options:
+//   - WithGoTypesViewTypes() / WithReflectViewTypes(): Specify view types for data+views mode
+//   - WithViewOnly(): Only generate view methods, not data methods
+//
 // Example:
 //
-//	// Generate different method sets for different types
+//	// Generate type with view support
 //	WithReflectType(reflect.TypeOf((*MyStruct)(nil)).Elem(),
-//	    WithNoHashTreeRoot(), // Skip hash tree root for this type only
+//	    WithReflectViewTypes(reflect.TypeOf((*MyView)(nil)).Elem()),
 //	),
-//	WithReflectType(reflect.TypeOf((*AnotherStruct)(nil)).Elem()),
+//	// Generate view-only type
+//	WithReflectType(reflect.TypeOf((*ViewType)(nil)).Elem(),
+//	    WithViewOnly(),
+//	    WithReflectViewTypes(reflect.TypeOf((*OtherView)(nil)).Elem()),
+//	),
 type CodeGeneratorTypeOption struct {
 	ReflectType reflect.Type
 	GoTypesType types.Type
@@ -124,6 +137,12 @@ type CodeGeneratorTypeOption struct {
 //   - GoTypesType: Compile-time type analysis representation
 //   - TypeName: Resolved type name for code generation
 //
+// View Support:
+//   - ViewGoTypesTypes: Resolved view types for data+views mode
+//   - ViewReflectTypes: Resolved view types for data+views mode
+//   - IsViewOnly: Whether this is a view-only type
+//   - SchemaDescriptor: Schema type descriptor for view-only mode
+//
 // Generation Configuration:
 //   - Options: Final resolved options after applying base and type-specific settings
 //   - Descriptor: Analyzed SSZ type descriptor containing encoding/decoding metadata
@@ -133,6 +152,14 @@ type CodeGeneratorTypeOptions struct {
 	TypeName    string
 	Options     CodeGeneratorOptions
 	Descriptor  *ssztypes.TypeDescriptor
+
+	// View types for data+views mode
+	ViewGoTypesTypes []types.Type
+	ViewReflectTypes []reflect.Type
+	ViewDescriptors  []*ssztypes.TypeDescriptor
+
+	// IsViewOnly marks this type as view-only (only generates view methods)
+	IsViewOnly bool
 }
 
 // CodeGeneratorFileOptions contains the configuration for generating a complete Go source file.
@@ -478,6 +505,76 @@ func WithGoTypesType(t types.Type, typeOpts ...CodeGeneratorOption) CodeGenerato
 	}
 }
 
+// WithGoTypesViewTypes creates an option to specify view types for data+views mode.
+//
+// This option specifies view types that share the same SSZ schema as the data type.
+// When code is generated, both regular data methods and view-compatible methods will be
+// created, allowing the data type's methods to work with these view types.
+//
+// Parameters:
+//   - viewTypes: View types that share the same SSZ schema as the data type
+//
+// Returns:
+//   - CodeGeneratorOption: A functional option that sets view types
+//
+// Example:
+//
+//	WithGoTypesType(dataType,
+//	    WithGoTypesViewTypes(viewType1, viewType2),
+//	)
+func WithGoTypesViewTypes(viewTypes ...types.Type) CodeGeneratorOption {
+	return func(opts *CodeGeneratorOptions) {
+		opts.ViewGoTypesTypes = append(opts.ViewGoTypesTypes, viewTypes...)
+	}
+}
+
+// WithReflectViewTypes creates an option to specify view types for data+views mode.
+//
+// This option specifies view types that share the same SSZ schema as the data type.
+// When code is generated, both regular data methods and view-compatible methods will be
+// created, allowing the data type's methods to work with these view types.
+//
+// Parameters:
+//   - viewTypes: View types that share the same SSZ schema as the data type
+//
+// Returns:
+//   - CodeGeneratorOption: A functional option that sets view types
+//
+// Example:
+//
+//	WithReflectType(dataType,
+//	    WithReflectViewTypes(viewType1, viewType2),
+//	)
+func WithReflectViewTypes(viewTypes ...reflect.Type) CodeGeneratorOption {
+	return func(opts *CodeGeneratorOptions) {
+		opts.ViewReflectTypes = append(opts.ViewReflectTypes, viewTypes...)
+	}
+}
+
+// WithViewOnly creates an option to generate only view methods, not data methods.
+//
+// When this option is set, the generator will only produce view-compatible methods
+// (like MarshalSSZToView, UnmarshalSSZView, etc.) and skip generating standard data
+// methods (MarshalSSZTo, UnmarshalSSZ, etc.).
+//
+// This is useful when you have a type that is only used as a view for another data type
+// and doesn't need its own data serialization methods.
+//
+// Returns:
+//   - CodeGeneratorOption: A functional option that enables view-only mode
+//
+// Example:
+//
+//	WithGoTypesType(viewType,
+//	    WithViewOnly(),
+//	    WithGoTypesViewTypes(otherViewType), // additional views
+//	)
+func WithViewOnly() CodeGeneratorOption {
+	return func(opts *CodeGeneratorOptions) {
+		opts.ViewOnly = true
+	}
+}
+
 // fileGenerationRequest represents an internal request to generate a single file with SSZ methods.
 //
 // This structure is used internally by the CodeGenerator to track individual file generation
@@ -624,9 +721,12 @@ func (cg *CodeGenerator) BuildFile(fileName string, opts ...CodeGeneratorOption)
 		}
 
 		fileOpts.Types = append(fileOpts.Types, &CodeGeneratorTypeOptions{
-			ReflectType: t.ReflectType,
-			GoTypesType: t.GoTypesType,
-			Options:     codeOpts,
+			ReflectType:      t.ReflectType,
+			GoTypesType:      t.GoTypesType,
+			Options:          codeOpts,
+			ViewGoTypesTypes: codeOpts.ViewGoTypesTypes,
+			ViewReflectTypes: codeOpts.ViewReflectTypes,
+			IsViewOnly:       codeOpts.ViewOnly,
 		})
 	}
 
