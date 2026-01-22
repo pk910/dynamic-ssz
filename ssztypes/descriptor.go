@@ -55,7 +55,7 @@ const (
 type TypeDescriptor struct {
 	Type                   reflect.Type              `json:"-"`                   // Reflect type (runtime type where data lives)
 	SchemaType             reflect.Type              `json:"-"`                   // Schema type that defines SSZ layout (may differ from Type for view descriptors)
-	CodegenInfo            *any                      `json:"-"`                   // Codegen information
+	CodegenInfo            *any                      `json:"-"`                   // Codegen information or view pointer
 	Kind                   reflect.Kind              `json:"kind"`                // Reflect kind of the type
 	Size                   uint32                    `json:"size"`                // SSZ size (-1 if dynamic)
 	Len                    uint32                    `json:"len"`                 // Length of array/slice / static size of container

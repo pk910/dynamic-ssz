@@ -284,7 +284,7 @@ func TestMarshalErrors(t *testing.T) {
 			input: struct {
 				TypeWrapper struct{} `ssz-type:"wrapper"`
 			}{},
-			expectedErr: "method not found on type",
+			expectedErr: "method not found on",
 		},
 
 		{

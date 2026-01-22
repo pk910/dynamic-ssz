@@ -59,9 +59,8 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 	useReflection := true
 
 	if sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewHashRoot != 0 {
-		view := reflect.Zero(reflect.PointerTo(sourceType.SchemaType)).Interface()
 		if viewHasher, ok := getPtr(sourceValue).Interface().(sszutils.DynamicViewHashRoot); ok {
-			if hashFn := viewHasher.HashTreeRootWithDynView(view); hashFn != nil {
+			if hashFn := viewHasher.HashTreeRootWithDynView(*sourceType.CodegenInfo); hashFn != nil {
 				if err := hashFn(ctx.ds, hh); err != nil {
 					return err
 				}

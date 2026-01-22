@@ -634,21 +634,21 @@ func TestTypeCache_GetCompatFlag(t *testing.T) {
 	cache := NewTypeCache(ds)
 
 	// Test with empty compat flags
-	flag := cache.getCompatFlag(reflect.TypeOf(uint32(0)))
+	flag := cache.getCompatFlag(reflect.TypeOf(uint32(0)), reflect.TypeOf(uint32(0)))
 	if flag != 0 {
 		t.Errorf("Expected 0 compat flag for uint32, got %d", flag)
 	}
 
 	// Test with pointer type
 	ptrType := reflect.TypeOf((*uint32)(nil))
-	flag = cache.getCompatFlag(ptrType)
+	flag = cache.getCompatFlag(ptrType, ptrType)
 	if flag != 0 {
 		t.Errorf("Expected 0 compat flag for pointer type, got %d", flag)
 	}
 
 	// Add a compat flag and test
 	cache.CompatFlags["uint32"] = SszCompatFlagFastSSZMarshaler
-	flag = cache.getCompatFlag(reflect.TypeOf(uint32(0)))
+	flag = cache.getCompatFlag(reflect.TypeOf(uint32(0)), reflect.TypeOf(uint32(0)))
 	if flag != SszCompatFlagFastSSZMarshaler {
 		t.Errorf("Expected SszCompatFlagFastSSZMarshaler, got %d", flag)
 	}

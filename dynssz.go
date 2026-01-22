@@ -154,16 +154,15 @@ func (d *DynSsz) resolveSchemaType(runtimeType reflect.Type, cfg *callConfig) re
 	if cfg != nil && cfg.viewDescriptor != nil {
 		viewType := reflect.TypeOf(cfg.viewDescriptor)
 		// Handle both pointer and value forms
-		if viewType.Kind() == reflect.Ptr {
+		if viewType.Kind() == reflect.Ptr && runtimeType.Kind() != reflect.Ptr {
 			viewType = viewType.Elem()
+		} else if viewType.Kind() != reflect.Ptr && runtimeType.Kind() == reflect.Ptr {
+			viewType = reflect.New(viewType).Type()
 		}
 		return viewType
 	}
 
 	// Default to runtime type (schema == runtime)
-	if runtimeType.Kind() == reflect.Ptr {
-		return runtimeType.Elem()
-	}
 	return runtimeType
 }
 

@@ -63,15 +63,13 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 	useReflection := true
 
 	if useViewDecoder || useViewUnmarshaler {
-		view := reflect.Zero(reflect.PointerTo(targetType.SchemaType)).Interface()
-
 		// Prefer decoder for stream-based decoders, unmarshaler for buffer-based
 		if useViewDecoder {
 			if decoder.Seekable() && useViewUnmarshaler {
 				// prefer dynamic unmarshaller for seekable decoders (stream based)
 				useViewDecoder = false
 			} else if dec, ok := targetValue.Addr().Interface().(sszutils.DynamicViewDecoder); ok {
-				if decodeFn := dec.UnmarshalSSZDecoderView(view); decodeFn != nil {
+				if decodeFn := dec.UnmarshalSSZDecoderView(*targetType.CodegenInfo); decodeFn != nil {
 					if err := decodeFn(ctx.ds, decoder); err != nil {
 						return err
 					}
@@ -82,7 +80,7 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 
 		if useReflection && useViewUnmarshaler {
 			if unmarshaler, ok := targetValue.Addr().Interface().(sszutils.DynamicViewUnmarshaler); ok {
-				if unmarshalFn := unmarshaler.UnmarshalSSZDynView(view); unmarshalFn != nil {
+				if unmarshalFn := unmarshaler.UnmarshalSSZDynView(*targetType.CodegenInfo); unmarshalFn != nil {
 					bufLen := decoder.GetLength()
 					buf, err := decoder.DecodeBytesBuf(bufLen)
 					if err != nil {

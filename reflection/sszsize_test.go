@@ -159,7 +159,7 @@ func TestSizeSSZErrors(t *testing.T) {
 			input: struct {
 				TypeWrapper struct{} `ssz-type:"wrapper"`
 			}{},
-			expectedErr: "method not found on type",
+			expectedErr: "method not found on",
 		},
 		{
 			name: "invalid_bitvector_type",

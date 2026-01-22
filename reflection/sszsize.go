@@ -55,9 +55,8 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 	useReflection := true
 
 	if targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewSizer != 0 {
-		view := reflect.Zero(reflect.PointerTo(targetType.SchemaType)).Interface()
 		if sizer, ok := getPtr(targetValue).Interface().(sszutils.DynamicViewSizer); ok {
-			if sizeFn := sizer.SizeSSZDynView(view); sizeFn != nil {
+			if sizeFn := sizer.SizeSSZDynView(*targetType.CodegenInfo); sizeFn != nil {
 				staticSize = uint32(sizeFn(ctx.ds))
 				useReflection = false
 			}

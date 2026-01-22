@@ -154,19 +154,34 @@ func (tc *TypeCache) getTypeDescriptor(runtimeType, schemaType reflect.Type, siz
 	return desc, nil
 }
 
-func (tc *TypeCache) getCompatFlag(t reflect.Type) SszCompatFlag {
-	typeName := t.Name()
-	typePkgPath := t.PkgPath()
-	if typePkgPath == "" && t.Kind() == reflect.Ptr {
-		typePkgPath = t.Elem().PkgPath()
+func (tc *TypeCache) getCompatFlag(runtimeType, schemaType reflect.Type) SszCompatFlag {
+	runtimeTypeName := runtimeType.Name()
+	runtimeTypePkgPath := runtimeType.PkgPath()
+	if runtimeTypePkgPath == "" && runtimeType.Kind() == reflect.Ptr {
+		runtimeTypePkgPath = runtimeType.Elem().PkgPath()
 	}
 
-	typeKey := typeName
-	if typePkgPath != "" {
-		typeKey = typePkgPath + "." + typeName
+	runtimeTypeKey := runtimeTypeName
+	if runtimeTypePkgPath != "" {
+		runtimeTypeKey = runtimeTypePkgPath + "." + runtimeTypeName
 	}
 
-	return tc.CompatFlags[typeKey]
+	schemaTypeName := schemaType.Name()
+	schemaTypePkgPath := schemaType.PkgPath()
+	if schemaTypePkgPath == "" && schemaType.Kind() == reflect.Ptr {
+		schemaTypePkgPath = schemaType.Elem().PkgPath()
+	}
+
+	schemaTypeKey := schemaTypeName
+	if schemaTypePkgPath != "" {
+		schemaTypeKey = schemaTypePkgPath + "." + schemaTypeName
+	}
+
+	if runtimeTypeKey != schemaTypeKey {
+		runtimeTypeKey = fmt.Sprintf("%v|%v", runtimeTypeKey, schemaTypeKey)
+	}
+
+	return tc.CompatFlags[runtimeTypeKey]
 }
 
 // buildTypeDescriptor computes a type descriptor for a (runtime, schema) type pair.
@@ -184,14 +199,30 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 		SchemaType: schemaType,
 	}
 
+	// Verify runtime and schema types have compatible base kinds
+	if runtimeType != schemaType {
+		if runtimeType.Kind() != schemaType.Kind() {
+			return nil, fmt.Errorf("incompatible types: runtime kind %v != schema kind %v", runtimeType.Kind(), schemaType.Kind())
+		}
+
+		var view any
+		if schemaType.Kind() == reflect.Ptr {
+			view = reflect.Zero(schemaType).Interface()
+		} else {
+			view = reflect.Zero(reflect.PointerTo(schemaType)).Interface()
+		}
+		desc.CodegenInfo = &view
+	}
+
 	// Handle pointer types - dereference both runtime and schema
 	if schemaType.Kind() == reflect.Ptr {
 		desc.GoTypeFlags |= GoTypeFlagIsPointer
 		schemaType = schemaType.Elem()
-	}
-	if runtimeType.Kind() == reflect.Ptr {
-		desc.GoTypeFlags |= GoTypeFlagIsPointer
 		runtimeType = runtimeType.Elem()
+
+		if runtimeType != schemaType && runtimeType.Kind() != schemaType.Kind() {
+			return nil, fmt.Errorf("incompatible pointer types: runtime kind %v != schema kind %v", runtimeType.Kind(), schemaType.Kind())
+		}
 	}
 
 	// Use schema type for determining the SSZ layout
@@ -407,7 +438,7 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 
 	// complex types
 	case SszTypeWrapperType:
-		err := tc.buildTypeWrapperDescriptor(desc, t)
+		err := tc.buildTypeWrapperDescriptor(desc, runtimeType, schemaType)
 		if err != nil {
 			return nil, err
 		}
@@ -427,7 +458,7 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 			return nil, err
 		}
 	case SszCompatibleUnionType:
-		err := tc.buildCompatibleUnionDescriptor(desc, t)
+		err := tc.buildCompatibleUnionDescriptor(desc, runtimeType, schemaType)
 		if err != nil {
 			return nil, err
 		}
@@ -499,7 +530,7 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 		desc.SszCompatFlags |= SszCompatFlagDynamicViewHashRoot
 	}
 
-	desc.SszCompatFlags |= tc.getCompatFlag(t)
+	desc.SszCompatFlags |= tc.getCompatFlag(runtimeType, schemaType)
 
 	if desc.SszType == SszCustomType {
 		isCompatible := desc.SszCompatFlags&SszCompatFlagFastSSZMarshaler != 0 && desc.SszCompatFlags&SszCompatFlagFastSSZHasher != 0
@@ -512,39 +543,70 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 	return desc, nil
 }
 
-// buildTypeWrapperDescriptor builds a descriptor for TypeWrapper types
-func (tc *TypeCache) buildTypeWrapperDescriptor(desc *TypeDescriptor, t reflect.Type) error {
+// buildTypeWrapperDescriptor builds a descriptor for TypeWrapper types with runtime/schema pairing.
+//
+// For TypeWrappers, the wrapped type may differ between runtime and schema when using view descriptors.
+// The schema type defines the SSZ annotations while the runtime type provides actual data access.
+func (tc *TypeCache) buildTypeWrapperDescriptor(desc *TypeDescriptor, runtimeType, schemaType reflect.Type) error {
 	if desc.Kind != reflect.Struct {
 		return fmt.Errorf("TypeWrapper ssz type can only be represented by struct types, got %v", desc.Kind)
 	}
 
-	// Create a zero value instance to call the GetDescriptorType method
-	wrapperValue := reflect.New(t)
-	method := wrapperValue.MethodByName("GetDescriptorType")
-	if !method.IsValid() {
-		return fmt.Errorf("GetDescriptorType method not found on type %s", t)
+	// Extract schema wrapper information (determines SSZ layout)
+	schemaWrapperValue := reflect.New(schemaType)
+	schemaMethod := schemaWrapperValue.MethodByName("GetDescriptorType")
+	if !schemaMethod.IsValid() {
+		return fmt.Errorf("GetDescriptorType method not found on schema type %s", schemaType)
 	}
 
-	// Call the method to get the descriptor type
-	results := method.Call(nil)
-	if len(results) == 0 {
-		return fmt.Errorf("GetDescriptorType returned no results")
+	schemaResults := schemaMethod.Call(nil)
+	if len(schemaResults) == 0 {
+		return fmt.Errorf("GetDescriptorType returned no results for schema type")
 	}
 
-	descriptorType, ok := results[0].Interface().(reflect.Type)
+	schemaDescriptorType, ok := schemaResults[0].Interface().(reflect.Type)
 	if !ok {
-		return fmt.Errorf("GetDescriptorType did not return a reflect.Type")
+		return fmt.Errorf("GetDescriptorType did not return a reflect.Type for schema type")
 	}
 
-	// Extract wrapper information from descriptor struct (includes SSZ annotations)
-	wrapperInfo, err := extractWrapperDescriptorInfo(descriptorType, tc.specs)
+	// Extract wrapper information from schema descriptor (includes SSZ annotations)
+	schemaWrapperInfo, err := extractWrapperDescriptorInfo(schemaDescriptorType, tc.specs)
 	if err != nil {
-		return fmt.Errorf("failed to extract wrapper descriptor info: %w", err)
+		return fmt.Errorf("failed to extract schema wrapper descriptor info: %w", err)
 	}
 
-	// Build type descriptor for the wrapped type using the extracted information
-	// For type wrappers, runtime and schema types are the same (the wrapped type)
-	wrappedDesc, err := tc.getTypeDescriptor(wrapperInfo.Type, wrapperInfo.Type, wrapperInfo.SizeHints, wrapperInfo.MaxSizeHints, wrapperInfo.TypeHints)
+	// Determine runtime wrapped type
+	var runtimeWrappedType reflect.Type
+	if runtimeType != schemaType {
+		// Extract runtime wrapper information for the wrapped type
+		runtimeWrapperValue := reflect.New(runtimeType)
+		runtimeMethod := runtimeWrapperValue.MethodByName("GetDescriptorType")
+		if !runtimeMethod.IsValid() {
+			return fmt.Errorf("GetDescriptorType method not found on runtime type %s", runtimeType)
+		}
+
+		runtimeResults := runtimeMethod.Call(nil)
+		if len(runtimeResults) == 0 {
+			return fmt.Errorf("GetDescriptorType returned no results for runtime type")
+		}
+
+		runtimeDescriptorType, ok := runtimeResults[0].Interface().(reflect.Type)
+		if !ok {
+			return fmt.Errorf("GetDescriptorType did not return a reflect.Type for runtime type")
+		}
+
+		// Get the wrapped type from runtime descriptor
+		runtimeWrapperInfo, err := extractWrapperDescriptorInfo(runtimeDescriptorType, tc.specs)
+		if err != nil {
+			return fmt.Errorf("failed to extract runtime wrapper descriptor info: %w", err)
+		}
+		runtimeWrappedType = runtimeWrapperInfo.Type
+	} else {
+		runtimeWrappedType = schemaWrapperInfo.Type
+	}
+
+	// Build type descriptor for the wrapped type traversing both type trees
+	wrappedDesc, err := tc.getTypeDescriptor(runtimeWrappedType, schemaWrapperInfo.Type, schemaWrapperInfo.SizeHints, schemaWrapperInfo.MaxSizeHints, schemaWrapperInfo.TypeHints)
 	if err != nil {
 		return fmt.Errorf("failed to build descriptor for wrapped type: %w", err)
 	}
@@ -793,14 +855,18 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 	return nil
 }
 
-// buildCompatibleUnionDescriptor builds a descriptor for CompatibleUnion types
-func (tc *TypeCache) buildCompatibleUnionDescriptor(desc *TypeDescriptor, t reflect.Type) error {
+// buildCompatibleUnionDescriptor builds a descriptor for CompatibleUnion types with runtime/schema pairing.
+//
+// For CompatibleUnion types, the variant types may differ between runtime and schema when using view descriptors.
+// The schema type defines the SSZ layout (variant order, annotations) while the runtime type provides
+// the actual variant types for data access.
+func (tc *TypeCache) buildCompatibleUnionDescriptor(desc *TypeDescriptor, runtimeType, schemaType reflect.Type) error {
 	// CompatibleUnion is always dynamic size (1 byte for type + variable data)
 	desc.Size = 0
 	desc.SszTypeFlags |= SszTypeFlagIsDynamic
 
-	// Try to extract the descriptor type from the generic type parameter
-	descriptorType, err := tc.extractGenericTypeParameter(t)
+	// Extract the schema descriptor type from the generic type parameter (determines SSZ layout)
+	schemaDescriptorType, err := tc.extractGenericTypeParameter(schemaType)
 	if err != nil {
 		return err
 	}
@@ -808,16 +874,47 @@ func (tc *TypeCache) buildCompatibleUnionDescriptor(desc *TypeDescriptor, t refl
 	// Populate union variants immediately since we have the descriptor type
 	desc.UnionVariants = make(map[uint8]*TypeDescriptor)
 
-	// Extract variant information from descriptor struct (includes SSZ annotations)
-	variantInfo, err := extractUnionDescriptorInfo(descriptorType, tc.specs)
+	// Extract variant information from schema descriptor struct (includes SSZ annotations)
+	schemaVariantInfo, err := extractUnionDescriptorInfo(schemaDescriptorType, tc.specs)
 	if err != nil {
-		return fmt.Errorf("failed to extract union variant info: %w", err)
+		return fmt.Errorf("failed to extract union variant info from schema: %w", err)
 	}
 
-	// Build type descriptors for each variant using the extracted information
-	// For union variants, runtime and schema types are the same
-	for variantIndex, info := range variantInfo {
-		variantDesc, err := tc.getTypeDescriptor(info.Type, info.Type, info.SizeHints, info.MaxSizeHints, info.TypeHints)
+	// Check if we're using a view descriptor (runtime and schema types differ)
+	isViewDescriptor := runtimeType != schemaType
+
+	// Extract runtime variant info if using view descriptor
+	var runtimeVariantMap map[string]reflect.Type
+	if isViewDescriptor {
+		runtimeDescriptorType, err := tc.extractGenericTypeParameter(runtimeType)
+		if err != nil {
+			return fmt.Errorf("failed to extract runtime union descriptor type: %w", err)
+		}
+		runtimeVariantInfo, err := extractUnionDescriptorInfo(runtimeDescriptorType, tc.specs)
+		if err != nil {
+			return fmt.Errorf("failed to extract union variant info from runtime: %w", err)
+		}
+		// Build map of runtime variant names to types
+		runtimeVariantMap = make(map[string]reflect.Type, len(runtimeVariantInfo))
+		for _, info := range runtimeVariantInfo {
+			runtimeVariantMap[info.Name] = info.Type
+		}
+	}
+
+	// Build type descriptors for each variant using schema for layout, runtime for data
+	for variantIndex, schemaInfo := range schemaVariantInfo {
+		var runtimeVariantType reflect.Type
+		if isViewDescriptor {
+			var ok bool
+			runtimeVariantType, ok = runtimeVariantMap[schemaInfo.Name]
+			if !ok {
+				return fmt.Errorf("runtime union missing variant %q defined in schema", schemaInfo.Name)
+			}
+		} else {
+			runtimeVariantType = schemaInfo.Type
+		}
+
+		variantDesc, err := tc.getTypeDescriptor(runtimeVariantType, schemaInfo.Type, schemaInfo.SizeHints, schemaInfo.MaxSizeHints, schemaInfo.TypeHints)
 		if err != nil {
 			return fmt.Errorf("failed to build descriptor for union variant %d: %w", variantIndex, err)
 		}

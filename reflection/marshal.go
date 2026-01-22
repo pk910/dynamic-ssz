@@ -59,12 +59,10 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 	useReflection := true
 
 	if useViewEncoder || useViewMarshaler {
-		view := reflect.Zero(reflect.PointerTo(sourceType.SchemaType)).Interface()
-
 		// Prefer encoder for seekable encoders, marshaler otherwise
 		if useViewEncoder && encoder.Seekable() {
 			if enc, ok := getPtr(sourceValue).Interface().(sszutils.DynamicViewEncoder); ok {
-				if encodeFn := enc.MarshalSSZEncoderView(view); encodeFn != nil {
+				if encodeFn := enc.MarshalSSZEncoderView(*sourceType.CodegenInfo); encodeFn != nil {
 					if err := encodeFn(ctx.ds, encoder); err != nil {
 						return err
 					}
@@ -75,7 +73,7 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 
 		if useReflection && useViewMarshaler {
 			if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.DynamicViewMarshaler); ok {
-				if marshalFn := marshaller.MarshalSSZDynView(view); marshalFn != nil {
+				if marshalFn := marshaller.MarshalSSZDynView(*sourceType.CodegenInfo); marshalFn != nil {
 					newBuf, err := marshalFn(ctx.ds, encoder.GetBuffer())
 					if err != nil {
 						return err

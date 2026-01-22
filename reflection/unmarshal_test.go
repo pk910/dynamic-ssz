@@ -278,7 +278,7 @@ func TestUnmarshalErrors(t *testing.T) {
 				TypeWrapper struct{} `ssz-type:"wrapper"`
 			}),
 			data:        fromHex("0x"),
-			expectedErr: "method not found on type",
+			expectedErr: "method not found on",
 		},
 		{
 			name: "compatible_union_missing_selector",
