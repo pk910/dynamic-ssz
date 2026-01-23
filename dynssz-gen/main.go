@@ -30,6 +30,7 @@ type Config struct {
 	WithoutDynamicExpressions bool
 	WithoutFastSsz            bool
 	WithStreaming             bool
+	Aliases                   string
 }
 
 // typeSpec holds parsed information about a type specification
@@ -76,6 +77,7 @@ func main() {
 		withoutDynamicExpressions = flag.Bool("without-dynamic-expressions", false, "Generate code without dynamic expressions")
 		withoutFastSsz            = flag.Bool("without-fastssz", false, "Generate code without using fast ssz generated methods")
 		withStreaming             = flag.Bool("with-streaming", false, "Generate streaming functions")
+		aliases                   = flag.String("alias", "", "Comma-separated list of type aliases to use for delegation (e.g., Alias1,pkg.Alias2)")
 	)
 	flag.Parse()
 
@@ -89,6 +91,7 @@ func main() {
 		WithoutDynamicExpressions: *withoutDynamicExpressions,
 		WithoutFastSsz:            *withoutFastSsz,
 		WithStreaming:             *withStreaming,
+		Aliases:                   *aliases,
 	}
 
 	if err := run(config); err != nil {
@@ -290,6 +293,30 @@ func run(config Config) error {
 
 	if config.PackageName != "" {
 		codeGen.SetPackageName(config.PackageName)
+	}
+
+	// Parse and resolve aliases
+	if config.Aliases != "" {
+		aliasStrs := strings.Split(config.Aliases, ",")
+
+		for _, aliasStr := range aliasStrs {
+			aliasStr = strings.TrimSpace(aliasStr)
+			if aliasStr == "" {
+				continue
+			}
+
+			// Parse the alias reference (can be pkg.Type or full/path.Type)
+			ref := parseViewTypeRef(aliasStr)
+			aliasType, err := resolveTypeRef(ref)
+			if err != nil {
+				return fmt.Errorf("failed to resolve alias %s: %w", aliasStr, err)
+			}
+			codeGen.AddGoTypesAlias(aliasType)
+
+			if config.Verbose {
+				log.Printf("Registered alias: %s", aliasStr)
+			}
+		}
 	}
 
 	// Build options for all types

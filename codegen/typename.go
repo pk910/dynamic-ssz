@@ -342,6 +342,28 @@ func (p *TypePrinter) InnerTypeString(t *ssztypes.TypeDescriptor) string {
 	return p.reflectTypeString(t.Type, true)
 }
 
+// AliasTypeString returns the qualified string representation of an AliasInfo.
+//
+// This method generates the appropriate Go type string for an AliasInfo, handling
+// package qualification and import tracking automatically.
+//
+// Parameters:
+//   - a: The AliasInfo containing type information for formatting
+//
+// Returns:
+//   - string: The qualified Go type string suitable for code generation
+//
+// Example:
+//
+//	typeName := printer.AliasTypeString(aliasInfo)
+//	// Result: "github.com/example/mypackage.MyStruct" or "*MyStruct" depending on the type
+func (p *TypePrinter) AliasTypeString(aliasInfo *AliasInfo) string {
+	if aliasInfo.GoType != nil {
+		return p.packageQualify(aliasInfo.GoType, true)
+	}
+	return p.reflectTypeString(aliasInfo.ReflectType, true)
+}
+
 // TypeStringWithoutTracking returns the type string representation without tracking import usage.
 //
 // This method generates type strings without adding imports to the tracking system.

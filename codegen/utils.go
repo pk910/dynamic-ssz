@@ -6,8 +6,12 @@ package codegen
 
 import (
 	"fmt"
+	"go/types"
+	"reflect"
 	"strconv"
 	"strings"
+
+	"github.com/pk910/dynamic-ssz/ssztypes"
 )
 
 // appendCode appends a formatted code string to a strings.Builder with proper indentation.
@@ -94,25 +98,87 @@ func escapeBackticks(s string) string {
 	return s
 }
 
-// escapeViewFnName escapes a view function name for use in generated Go code.
-//
-// This function replaces all dots, dashes, and slashes in the view name
-// with underscores to avoid conflicts with package names and function names.
+// getTypeName returns the type name and package path for a given go/types type or reflection type.
 //
 // Parameters:
-//   - viewName: The input view name to escape
+//   - goType: The go/types type to get the type name and package path for
+//   - reflectType: The reflection type to get the type name and package path for
 //
 // Returns:
-//   - string: The escaped view function name with dots replaced by underscores
+//   - string: The type name
+//   - string: The package path
 //
 // Example:
 //
-//	viewName := "pkg.View2"
-//	escaped := escapeViewFnName(viewName)
-//	// Result: "pkg_View2"
-func escapeViewFnName(viewName string) string {
-	viewName = strings.ReplaceAll(viewName, ".", "_")
-	viewName = strings.ReplaceAll(viewName, "-", "_")
-	viewName = strings.ReplaceAll(viewName, "/", "_")
-	return viewName
+//	typeName, pkgPath := getTypeName(goType, reflectType)
+func getTypeName(goType types.Type, reflectType reflect.Type) (string, string) {
+	var typeName, typePkgPath string
+	if reflectType != nil {
+		typeName = reflectType.Name()
+		typePkgPath = reflectType.PkgPath()
+		if typePkgPath == "" && reflectType.Kind() == reflect.Ptr {
+			typePkgPath = reflectType.Elem().PkgPath()
+		}
+	} else if goType != nil {
+		typeName = goType.String()
+		types.TypeString(goType, func(pkg *types.Package) string {
+			typePkgPath = pkg.Path()
+			return ""
+		})
+	}
+	return typeName, typePkgPath
+}
+
+// getFullTypeName returns the full type name and package path for a given go/types type or reflection type.
+//
+// Parameters:
+//   - goType: The go/types type to get the full type name and package path for
+//   - reflectType: The reflection type to get the full type name and package path for
+//
+// Returns:
+//   - string: The full type name and package path
+//
+// Example:
+//
+//	fullTypeName := getFullTypeName(goType, reflectType)
+func getFullTypeName(goType types.Type, reflectType reflect.Type) string {
+	typeName, typePkgPath := getTypeName(goType, reflectType)
+	if typePkgPath != "" {
+		return typePkgPath + "." + typeName
+	}
+	return typeName
+}
+
+// getFullTypeNameFromDescriptor returns the full type name and package path for a given TypeDescriptor.
+//
+// Parameters:
+//   - desc: The TypeDescriptor to get the full type name and package path for
+//
+// Returns:
+//   - string: The full type name and package path
+//
+// Example:
+//
+//	fullTypeName := getFullTypeNameFromDescriptor(desc)
+func getFullTypeNameFromDescriptor(desc *ssztypes.TypeDescriptor) string {
+	if desc.CodegenInfo != nil {
+		if codegenInfo, ok := (*desc.CodegenInfo).(*CodegenInfo); ok && codegenInfo.Type != nil {
+			underlyingType := codegenInfo.Type
+
+			for {
+				if ptr, ok := underlyingType.(*types.Pointer); ok {
+					underlyingType = ptr.Elem()
+				} else if named, ok := underlyingType.(*types.Named); ok {
+					underlyingType = named.Underlying()
+				} else if alias, ok := underlyingType.(*types.Alias); ok {
+					underlyingType = alias.Underlying()
+				} else {
+					break
+				}
+			}
+
+			return getFullTypeName(underlyingType, nil)
+		}
+	}
+	return getFullTypeName(nil, desc.Type)
 }

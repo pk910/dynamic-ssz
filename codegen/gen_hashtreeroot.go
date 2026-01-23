@@ -29,6 +29,7 @@ type hashTreeRootContext struct {
 	appendCode    func(indent int, code string, args ...any)
 	typePrinter   *TypePrinter
 	options       *CodeGeneratorOptions
+	aliases       AliasInfoMap
 	exprVars      *exprVarGenerator
 	usedDynSpecs  bool
 	valVarCounter int
@@ -52,10 +53,11 @@ type hashTreeRootContext struct {
 //   - typePrinter: Type formatter for handling imports and type names
 //   - viewName: Name of the view type for function name postfix (empty string for data type)
 //   - options: Generation options controlling which methods to create
+//   - aliases: Map of type names to their alias information
 //
 // Returns:
 //   - error: An error if code generation fails
-func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, viewName string, options *CodeGeneratorOptions) error {
+func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, viewName string, options *CodeGeneratorOptions, aliases AliasInfoMap) error {
 	codeBuf := strings.Builder{}
 	ctx := &hashTreeRootContext{
 		appendCode: func(indent int, code string, args ...any) {
@@ -66,6 +68,7 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 		},
 		typePrinter: typePrinter,
 		options:     options,
+		aliases:     aliases,
 		exprVars:    newExprVarGenerator("expr", typePrinter, options),
 	}
 
@@ -214,29 +217,63 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 	}
 
 	// Handle types that have generated methods we can call
-	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0 && !isRoot {
-		ctx.appendCode(indent, "if err := %s.HashTreeRootWithDyn(ds, hh); err != nil {\n\treturn err\n}\n", varName)
-		ctx.usedDynSpecs = true
-		return nil
-	}
+	if !isRoot || desc.SszType == ssztypes.SszCustomType {
+		isFastsszHasher := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0
+		isFastsszHashWith := desc.SszCompatFlags&ssztypes.SszCompatFlagHashTreeRootWith != 0
+		hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
+		hasDynamicMax := desc.SszTypeFlags&ssztypes.SszTypeFlagHasMaxExpr != 0 && !ctx.options.WithoutDynamicExpressions
 
-	isFastsszHasher := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0
-	isFastsszHashWith := desc.SszCompatFlags&ssztypes.SszCompatFlagHashTreeRootWith != 0
-	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
-	hasDynamicMax := desc.SszTypeFlags&ssztypes.SszTypeFlagHasMaxExpr != 0 && !ctx.options.WithoutDynamicExpressions
-
-	useFastSsz := !isRoot && !ctx.options.NoFastSsz && !hasDynamicSize && !hasDynamicMax && (isFastsszHasher || isFastsszHashWith)
-	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
-		useFastSsz = true
-	}
-
-	if useFastSsz {
-		if isFastsszHashWith {
-			ctx.appendCode(indent, "if err := %s.HashTreeRootWith(hh); err != nil {\n\treturn err\n}\n", varName)
-		} else {
-			ctx.appendCode(indent, "if root, err := %s.HashTreeRoot(); err != nil {\n\treturn err\n} else {\n\thh.AppendBytes32(root[:])\n}\n", varName)
+		useFastSsz := !ctx.options.NoFastSsz && !hasDynamicSize && !hasDynamicMax && (isFastsszHasher || isFastsszHashWith)
+		if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
+			useFastSsz = true
 		}
-		return nil
+
+		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0 && !isRoot {
+			ctx.appendCode(indent, "if err := %s.HashTreeRootWithDyn(ds, hh); err != nil {\n\treturn err\n}\n", varName)
+			ctx.usedDynSpecs = true
+			return nil
+		}
+
+		if useFastSsz {
+			if isFastsszHashWith {
+				ctx.appendCode(indent, "if err := %s.HashTreeRootWith(hh); err != nil {\n\treturn err\n}\n", varName)
+			} else {
+				ctx.appendCode(indent, "if root, err := %s.HashTreeRoot(); err != nil {\n\treturn err\n} else {\n\thh.AppendBytes32(root[:])\n}\n", varName)
+			}
+			return nil
+		}
+
+		// check if we have an alias for this type
+		if aliasInfo, ok := ctx.aliases[getFullTypeNameFromDescriptor(desc)]; ok {
+			isFastsszHasher := aliasInfo.CompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0
+			useFastSsz := !ctx.options.NoFastSsz && isFastsszHasher && !hasDynamicSize
+			if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
+				useFastSsz = true
+			}
+
+			if aliasInfo.CompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0 {
+				aliasType := ctx.typePrinter.AliasTypeString(aliasInfo)
+				if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+					aliasType = fmt.Sprintf("*%s", aliasType)
+				}
+				ctx.usedDynSpecs = true
+				ctx.appendCode(indent, "if err := (%s)(%s).HashTreeRootWithDyn(ds, hh); err != nil {\n\treturn err\n}\n", aliasType, varName)
+				return nil
+			}
+
+			if useFastSsz {
+				aliasType := ctx.typePrinter.AliasTypeString(aliasInfo)
+				if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+					aliasType = fmt.Sprintf("*%s", aliasType)
+				}
+				if aliasInfo.CompatFlags&ssztypes.SszCompatFlagHashTreeRootWith != 0 {
+					ctx.appendCode(indent, "if err := (%s)(%s).HashTreeRootWith(hh); err != nil {\n\treturn err\n}\n", aliasType, varName)
+				} else {
+					ctx.appendCode(indent, "if root, err := (%s)(%s).HashTreeRoot(); err != nil {\n\treturn err\n} else {\n\thh.AppendBytes32(root[:])\n}\n", aliasType, varName)
+				}
+				return nil
+			}
+		}
 	}
 
 	switch desc.SszType {

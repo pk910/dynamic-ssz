@@ -58,6 +58,7 @@ type CodegenInfo struct {
 type Parser struct {
 	cache       map[string]*ssztypes.TypeDescriptor
 	CompatFlags map[string]ssztypes.SszCompatFlag
+	Aliases     AliasInfoMap
 }
 
 // NewParser creates a new compile-time type parser for code generation.
@@ -168,7 +169,10 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	}
 
 	// Create descriptor with both data and schema types
-	codegenInfo := &CodegenInfo{Type: dataType, SchemaType: schemaType}
+	codegenInfo := &CodegenInfo{
+		Type:       dataType,
+		SchemaType: schemaType,
+	}
 	var anyCodegenInfo any = codegenInfo
 	desc := &ssztypes.TypeDescriptor{
 		CodegenInfo: &anyCodegenInfo,

@@ -621,6 +621,7 @@ type CodeGenerator struct {
 	typeCache   *ssztypes.TypeCache
 	packageName string
 	compatFlags map[string]ssztypes.SszCompatFlag
+	aliases     AliasInfoMap
 }
 
 // NewCodeGenerator creates a new code generator instance with the specified DynSsz configuration.
@@ -657,6 +658,7 @@ func NewCodeGenerator(typeCache *ssztypes.TypeCache) *CodeGenerator {
 		files:       make([]*fileGenerationRequest, 0),
 		typeCache:   typeCache,
 		compatFlags: map[string]ssztypes.SszCompatFlag{},
+		aliases:     make(AliasInfoMap),
 	}
 }
 
@@ -678,6 +680,40 @@ func NewCodeGenerator(typeCache *ssztypes.TypeCache) *CodeGenerator {
 //	cg.Generate()
 func (cg *CodeGenerator) SetPackageName(packageName string) {
 	cg.packageName = packageName
+}
+
+// AddAlias adds an alias to the code generator.
+//
+// This method adds an alias to the code generator.
+//
+// Parameters:
+//   - aliasType: The alias type to add
+//
+// Example:
+//
+//	cg := NewCodeGenerator(dynSsz)
+//	cg.AddGoTypesAlias(types.NewAlias("github.com/example/mypackage", "mypackage"))
+//	cg.BuildFile("types.go", WithReflectType(reflect.TypeOf((*MyStruct)(nil)).Elem()))
+//	cg.Generate()
+func (cg *CodeGenerator) AddGoTypesAlias(aliasType types.Type) {
+	cg.aliases.AddGoTypesAlias(aliasType)
+}
+
+// AddReflectAlias adds a reflect alias to the code generator.
+
+// This method adds a reflect alias to the code generator.
+//
+// Parameters:
+//   - aliasType: The alias type to add
+//
+// Example:
+//
+//	cg := NewCodeGenerator(dynSsz)
+//	cg.AddReflectAlias(reflect.TypeOf((*MyStruct)(nil)).Elem())
+//	cg.BuildFile("types.go", WithReflectType(reflect.TypeOf((*MyStruct)(nil)).Elem()))
+//	cg.Generate()
+func (cg *CodeGenerator) AddReflectAlias(aliasType reflect.Type) {
+	cg.aliases.AddReflectAlias(aliasType)
 }
 
 // BuildFile adds a file generation request to the code generator.

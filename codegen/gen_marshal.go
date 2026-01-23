@@ -28,6 +28,7 @@ type marshalContext struct {
 	appendCode   func(indent int, code string, args ...any)
 	typePrinter  *TypePrinter
 	options      *CodeGeneratorOptions
+	aliases      AliasInfoMap
 	usedDynSpecs bool
 	exprVars     *exprVarGenerator
 }
@@ -49,10 +50,11 @@ type marshalContext struct {
 //   - typePrinter: Type formatter for handling imports and type names
 //   - viewName: Name of the view type for function name postfix (empty string for data type)
 //   - options: Generation options controlling which methods to create
+//   - aliases: Aliases map
 //
 // Returns:
 //   - error: An error if code generation fails
-func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, viewName string, options *CodeGeneratorOptions) error {
+func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, viewName string, options *CodeGeneratorOptions, aliases AliasInfoMap) error {
 	codeBuf := strings.Builder{}
 	ctx := &marshalContext{
 		appendCode: func(indent int, code string, args ...any) {
@@ -63,6 +65,7 @@ func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 		},
 		typePrinter: typePrinter,
 		options:     options,
+		aliases:     aliases,
 		exprVars:    newExprVarGenerator("expr", typePrinter, options),
 	}
 
@@ -182,30 +185,72 @@ func (ctx *marshalContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 	}
 
 	// Handle types that have generated methods we can call
-	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
-	isFastsszMarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
-	useFastSsz := !ctx.options.NoFastSsz && isFastsszMarshaler && !hasDynamicSize
-	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
-		useFastSsz = true
-	}
+	if !isRoot || desc.SszType == ssztypes.SszCustomType {
+		hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
+		isFastsszMarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+		useFastSsz := !ctx.options.NoFastSsz && isFastsszMarshaler && !hasDynamicSize
+		if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
+			useFastSsz = true
+		}
 
-	if useFastSsz && !isRoot {
-		ctx.appendCode(indent, "if dst, err = %s.MarshalSSZTo(dst); err != nil {\n\treturn nil, err\n}\n", varName)
-		return nil
-	}
+		if useFastSsz {
+			ctx.appendCode(indent, "if dst, err = %s.MarshalSSZTo(dst); err != nil {\n\treturn nil, err\n}\n", varName)
+			return nil
+		}
 
-	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 && !isRoot {
-		ctx.appendCode(indent, "if dst, err = %s.MarshalSSZDyn(ds, dst); err != nil {\n\treturn nil, err\n}\n", varName)
-		ctx.usedDynSpecs = true
-		return nil
-	}
+		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 {
+			ctx.appendCode(indent, "if dst, err = %s.MarshalSSZDyn(ds, dst); err != nil {\n\treturn nil, err\n}\n", varName)
+			ctx.usedDynSpecs = true
+			return nil
+		}
 
-	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicEncoder != 0 && !isRoot {
-		ctx.appendCode(indent, "enc := sszutils.NewBufferEncoder(dst)\n")
-		ctx.appendCode(indent, "if err = %s.MarshalSSZEncoder(ds, enc); err != nil {\n\treturn nil, err\n}\n", varName)
-		ctx.appendCode(indent, "dst = enc.GetBuffer()\n")
-		ctx.usedDynSpecs = true
-		return nil
+		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicEncoder != 0 {
+			ctx.appendCode(indent, "enc := sszutils.NewBufferEncoder(dst)\n")
+			ctx.appendCode(indent, "if err = %s.MarshalSSZEncoder(ds, enc); err != nil {\n\treturn nil, err\n}\n", varName)
+			ctx.appendCode(indent, "dst = enc.GetBuffer()\n")
+			ctx.usedDynSpecs = true
+			return nil
+		}
+
+		// check if we have an alias for this type
+		if aliasInfo, ok := ctx.aliases[getFullTypeNameFromDescriptor(desc)]; ok {
+			isFastsszMarshaler := aliasInfo.CompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+			useFastSsz := !ctx.options.NoFastSsz && isFastsszMarshaler && !hasDynamicSize
+			if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
+				useFastSsz = true
+			}
+
+			if useFastSsz {
+				aliasType := ctx.typePrinter.AliasTypeString(aliasInfo)
+				if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+					aliasType = fmt.Sprintf("*%s", aliasType)
+				}
+				ctx.appendCode(indent, "if dst, err = (%s)(%s).MarshalSSZTo(dst); err != nil {\n\treturn nil, err\n}\n", aliasType, varName)
+				return nil
+			}
+
+			if aliasInfo.CompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 {
+				aliasType := ctx.typePrinter.AliasTypeString(aliasInfo)
+				if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+					aliasType = fmt.Sprintf("*%s", aliasType)
+				}
+				ctx.usedDynSpecs = true
+				ctx.appendCode(indent, "if dst, err = (%s)(%s).MarshalSSZDyn(ds, dst); err != nil {\n\treturn nil, err\n}\n", aliasType, varName)
+				return nil
+			}
+
+			if aliasInfo.CompatFlags&ssztypes.SszCompatFlagDynamicEncoder != 0 {
+				aliasType := ctx.typePrinter.AliasTypeString(aliasInfo)
+				if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+					aliasType = fmt.Sprintf("*%s", aliasType)
+				}
+				ctx.usedDynSpecs = true
+				ctx.appendCode(indent, "enc := sszutils.NewBufferEncoder(dst)\n")
+				ctx.appendCode(indent, "if err = (%s)(%s).MarshalSSZEncoder(ds, enc); err != nil {\n\treturn nil, err\n}\n", aliasType, varName)
+				ctx.appendCode(indent, "dst = enc.GetBuffer()\n")
+				return nil
+			}
+		}
 	}
 
 	switch desc.SszType {
