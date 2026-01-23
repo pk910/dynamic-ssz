@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	dynssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/codegen/tests/views"
 )
 
 type TestPayload struct {
@@ -67,6 +68,13 @@ var testMatrix = []TestPayload{
 		View:    (*ViewTypes1_View2)(nil),
 		Specs:   map[string]any{},
 		Hash:    "82acb108812798107c2bed326c83a2881c90f942883a6e3de6144f30b2987959",
+	},
+	{
+		Name:    "ViewTypes_View3",
+		Payload: ViewTypes1_Payload,
+		View:    (*views.ViewTypes1_View3)(nil),
+		Specs:   map[string]any{},
+		Hash:    "1bee9de04dd4f275d8c785741e5ae754bc95d6cf3d6abf1f98c3a41d066f557f",
 	},
 }
 
