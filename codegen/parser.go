@@ -187,17 +187,27 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	var schemaNamedType, dataNamedType *types.Named
 
 	for {
-		// Resolve named types
+		// Resolve named types - allow independent unwrapping since view and data types
+		// may have different naming structures (e.g., schema: [32]byte, data: Root where Root = [32]byte)
+		schemaIsNamed := false
 		if named, ok := schemaType.(*types.Named); ok {
 			schemaType = named.Underlying()
 			schemaNamedType = named
-			if named, ok := dataType.(*types.Named); ok {
-				dataType = named.Underlying()
-				dataNamedType = named
-			} else {
-				return nil, fmt.Errorf("incompatible types: data kind %v != schema kind %v", dataType.String(), schemaType.String())
-			}
-		} else if ptr, ok := schemaType.(*types.Pointer); ok {
+			schemaIsNamed = true
+		}
+		if named, ok := dataType.(*types.Named); ok {
+			dataType = named.Underlying()
+			dataNamedType = named
+		} else if schemaIsNamed {
+			// Schema was named but data wasn't - this is an error
+			return nil, fmt.Errorf("incompatible types: data kind %v != schema kind %v", dataType.String(), schemaType.String())
+		}
+		if schemaIsNamed {
+			continue
+		}
+
+		// Resolve pointers - must match on both sides
+		if ptr, ok := schemaType.(*types.Pointer); ok {
 			schemaType = ptr.Elem()
 			desc.GoTypeFlags |= ssztypes.GoTypeFlagIsPointer
 			if ptr, ok := dataType.(*types.Pointer); ok {
@@ -207,16 +217,37 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 			}
 			innerSchemaType = schemaType
 			innerDataType = dataType
-		} else if alias, ok := schemaType.(*types.Alias); ok {
-			schemaType = alias.Underlying()
-			if alias, ok := dataType.(*types.Alias); ok {
-				dataType = alias.Underlying()
-			} else {
-				return nil, fmt.Errorf("incompatible types: data kind %v != schema kind %v", dataType.String(), schemaType.String())
-			}
-		} else {
-			break
+			continue
 		}
+
+		// Resolve aliases - allow independent unwrapping
+		schemaIsAlias := false
+		if alias, ok := schemaType.(*types.Alias); ok {
+			schemaType = alias.Underlying()
+			schemaIsAlias = true
+		}
+		if alias, ok := dataType.(*types.Alias); ok {
+			dataType = alias.Underlying()
+		} else if schemaIsAlias {
+			// Schema was alias but data wasn't - this is an error
+			return nil, fmt.Errorf("incompatible types: data kind %v != schema kind %v", dataType.String(), schemaType.String())
+		}
+		if schemaIsAlias {
+			continue
+		}
+
+		// If data type is still a named type or alias but schema is not, unwrap data
+		if named, ok := dataType.(*types.Named); ok {
+			dataType = named.Underlying()
+			dataNamedType = named
+			continue
+		}
+		if alias, ok := dataType.(*types.Alias); ok {
+			dataType = alias.Underlying()
+			continue
+		}
+
+		break
 	}
 
 	// Verify data and schema types have compatible base kinds
