@@ -257,6 +257,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		if schemaKindStr != dataKindStr {
 			return nil, fmt.Errorf("incompatible types: data kind %v != schema kind %v", dataKindStr, schemaKindStr)
 		}
+		desc.GoTypeFlags |= ssztypes.GoTypeFlagIsView
 	}
 
 	// Set kind based on underlying type

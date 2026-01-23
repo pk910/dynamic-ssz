@@ -56,15 +56,18 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 	// This supports fork-dependent SSZ schemas where generated code handles
 	// different view types. If the method returns nil, fall through to
 	// other hashing methods.
+	isView := sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
 	useReflection := true
 
-	if sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewHashRoot != 0 {
-		if viewHasher, ok := getPtr(sourceValue).Interface().(sszutils.DynamicViewHashRoot); ok {
-			if hashFn := viewHasher.HashTreeRootWithDynView(*sourceType.CodegenInfo); hashFn != nil {
-				if err := hashFn(ctx.ds, hh); err != nil {
-					return err
+	if isView {
+		if sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewHashRoot != 0 {
+			if viewHasher, ok := getPtr(sourceValue).Interface().(sszutils.DynamicViewHashRoot); ok {
+				if hashFn := viewHasher.HashTreeRootWithDynView(*sourceType.CodegenInfo); hashFn != nil {
+					if err := hashFn(ctx.ds, hh); err != nil {
+						return err
+					}
+					useReflection = false
 				}
-				useReflection = false
 			}
 		}
 	} else {

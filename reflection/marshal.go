@@ -54,11 +54,13 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 	// This supports fork-dependent SSZ schemas where generated code handles
 	// different view types. If the method returns nil, fall through to
 	// other marshaling methods.
-	useViewEncoder := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewEncoder != 0
-	useViewMarshaler := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewMarshaler != 0
+	isView := sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
 	useReflection := true
 
-	if useViewEncoder || useViewMarshaler {
+	if isView {
+		useViewEncoder := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewEncoder != 0
+		useViewMarshaler := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewMarshaler != 0
+
 		// Prefer encoder for seekable encoders, marshaler otherwise
 		if useViewEncoder && encoder.Seekable() {
 			if enc, ok := getPtr(sourceValue).Interface().(sszutils.DynamicViewEncoder); ok {

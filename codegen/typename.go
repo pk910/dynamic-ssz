@@ -283,21 +283,59 @@ func (p *TypePrinter) TypeString(t *ssztypes.TypeDescriptor) string {
 //
 //	typeName := printer.TypeString(descriptor)
 //	// Result: "phase0.BeaconBlock" or "*MyStruct" depending on the type
-func (p *TypePrinter) ViewTypeString(t *ssztypes.TypeDescriptor) string {
+func (p *TypePrinter) ViewTypeString(t *ssztypes.TypeDescriptor, ensurePointer bool) string {
 	if t.CodegenInfo != nil {
 		if codegenInfo, ok := (*t.CodegenInfo).(*CodegenInfo); ok {
+			isPtr := func(t types.Type) bool {
+				for {
+					if _, ok := t.(*types.Pointer); ok {
+						return true
+					} else if named, ok := t.(*types.Named); ok {
+						t = named.Underlying()
+					} else if alias, ok := t.(*types.Alias); ok {
+						t = alias.Underlying()
+					} else {
+						break
+					}
+				}
+				return false
+			}
+
 			if codegenInfo.SchemaType != nil {
-				return p.packageQualify(codegenInfo.SchemaType, true)
+				ptrPrefix := ""
+				if ensurePointer && !isPtr(codegenInfo.SchemaType) {
+					ptrPrefix = "*"
+				}
+				return fmt.Sprintf("%s%s", ptrPrefix, p.packageQualify(codegenInfo.SchemaType, true))
 			} else if codegenInfo.Type != nil {
-				return p.packageQualify(codegenInfo.Type, true)
+				ptrPrefix := ""
+				if ensurePointer && !isPtr(codegenInfo.Type) {
+					ptrPrefix = "*"
+				}
+				return fmt.Sprintf("%s%s", ptrPrefix, p.packageQualify(codegenInfo.Type, true))
 			}
 		}
 	}
 
-	if t.SchemaType != nil {
-		return p.reflectTypeString(t.SchemaType, true)
+	isPtr := func(t reflect.Type) bool {
+		if t.Kind() == reflect.Pointer {
+			return true
+		}
+		return false
 	}
-	return p.reflectTypeString(t.Type, true)
+
+	if t.SchemaType != nil {
+		ptrPrefix := ""
+		if ensurePointer && !isPtr(t.SchemaType) {
+			ptrPrefix = "*"
+		}
+		return fmt.Sprintf("%s%s", ptrPrefix, p.reflectTypeString(t.SchemaType, true))
+	}
+	ptrPrefix := ""
+	if ensurePointer && !isPtr(t.Type) {
+		ptrPrefix = "*"
+	}
+	return fmt.Sprintf("%s%s", ptrPrefix, p.reflectTypeString(t.Type, true))
 }
 
 // InnerTypeString returns the qualified string representation of the inner (dereferenced) type.

@@ -561,7 +561,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 		}
 
 		for _, view := range views {
-			typeName := typePrinter.ViewTypeString(view)
+			typeName := typePrinter.ViewTypeString(view, true)
 			viewFnName := getViewFnName(view)
 			appendCode(codeBuilder, 1, "case %s:\n", typeName)
 			appendCode(codeBuilder, 2, "return t.%s_%s\n", fnPrefix, viewFnName)

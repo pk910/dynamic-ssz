@@ -49,6 +49,7 @@ const (
 	GoTypeFlagIsByteArray                        // Whether the type is a byte array
 	GoTypeFlagIsString                           // Whether the type is a string type
 	GoTypeFlagIsTime                             // Whether the type is a time.Time type
+	GoTypeFlagIsView                             // Whether the type uses a view descriptor
 )
 
 // TypeDescriptor represents a cached, optimized descriptor for a type's SSZ encoding/decoding

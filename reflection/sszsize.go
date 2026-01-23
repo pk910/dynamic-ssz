@@ -52,13 +52,16 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 	// This supports fork-dependent SSZ schemas where generated code handles
 	// different view types. If the method returns nil, fall through to
 	// other sizing methods.
+	isView := targetType.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
 	useReflection := true
 
-	if targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewSizer != 0 {
-		if sizer, ok := getPtr(targetValue).Interface().(sszutils.DynamicViewSizer); ok {
-			if sizeFn := sizer.SizeSSZDynView(*targetType.CodegenInfo); sizeFn != nil {
-				staticSize = uint32(sizeFn(ctx.ds))
-				useReflection = false
+	if isView {
+		if targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewSizer != 0 {
+			if sizer, ok := getPtr(targetValue).Interface().(sszutils.DynamicViewSizer); ok {
+				if sizeFn := sizer.SizeSSZDynView(*targetType.CodegenInfo); sizeFn != nil {
+					staticSize = uint32(sizeFn(ctx.ds))
+					useReflection = false
+				}
 			}
 		}
 	} else {

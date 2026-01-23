@@ -212,6 +212,7 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 			view = reflect.Zero(reflect.PointerTo(schemaType)).Interface()
 		}
 		desc.CodegenInfo = &view
+		desc.GoTypeFlags |= GoTypeFlagIsView
 	}
 
 	// Handle pointer types - dereference both runtime and schema

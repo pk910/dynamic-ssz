@@ -58,11 +58,13 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 	// This supports fork-dependent SSZ schemas where generated code handles
 	// different view types. If the method returns nil, fall through to
 	// other unmarshaling methods.
-	useViewDecoder := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewDecoder != 0
-	useViewUnmarshaler := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewUnmarshaler != 0
+	isView := targetType.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
 	useReflection := true
 
-	if useViewDecoder || useViewUnmarshaler {
+	if isView {
+		useViewDecoder := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewDecoder != 0
+		useViewUnmarshaler := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewUnmarshaler != 0
+
 		// Prefer decoder for stream-based decoders, unmarshaler for buffer-based
 		if useViewDecoder {
 			if decoder.Seekable() && useViewUnmarshaler {

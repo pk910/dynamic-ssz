@@ -60,7 +60,7 @@ func runForkConsensusSpecTest(t *testing.T, fork string, preset string, tests []
 			}
 			require.NoError(t, err)
 			if info.IsDir() {
-				runTestWithType := func(name string, s any) {
+				runTestWithType := func(name string, s any, opts ...ssz.CallOption) {
 					t.Run(fmt.Sprintf("%s/%s/%s:%s", test.name, preset, info.Name(), name), func(t *testing.T) {
 						// Obtain the struct from the SSZ.
 						s2 := clone.Clone(s)
@@ -70,11 +70,11 @@ func runForkConsensusSpecTest(t *testing.T, fork string, preset string, tests []
 						require.NoError(t, err)
 
 						// Unmarshal the SSZ.
-						err = dynssz.UnmarshalSSZ(s2, specSSZ)
+						err = dynssz.UnmarshalSSZ(s2, specSSZ, opts...)
 						require.NoError(t, err)
 
 						// Confirm we can return to the SSZ.
-						remarshalledSpecSSZ, err := dynssz.MarshalSSZ(s2)
+						remarshalledSpecSSZ, err := dynssz.MarshalSSZ(s2, opts...)
 						require.NoError(t, err)
 						require.Equal(t, specSSZ, remarshalledSpecSSZ)
 
@@ -82,7 +82,7 @@ func runForkConsensusSpecTest(t *testing.T, fork string, preset string, tests []
 						specYAMLRoot, err := os.ReadFile(filepath.Join(path, "roots.yaml"))
 						require.NoError(t, err)
 						// Confirm we calculate the same root.
-						generatedRootBytes, err := dynssz.HashTreeRoot(s2)
+						generatedRootBytes, err := dynssz.HashTreeRoot(s2, opts...)
 						require.NoError(t, err)
 						generatedRoot := fmt.Sprintf("root: '%#x'\n", string(generatedRootBytes[:]))
 						if string(specYAMLRoot) != generatedRoot {
@@ -104,12 +104,12 @@ func runForkConsensusSpecTest(t *testing.T, fork string, preset string, tests []
 						reader := bytes.NewReader(specSSZ)
 
 						// Unmarshal the SSZ.
-						err = dynssz.UnmarshalSSZReader(s2, reader, len(specSSZ))
+						err = dynssz.UnmarshalSSZReader(s2, reader, len(specSSZ), opts...)
 						require.NoError(t, err)
 
 						// Confirm we can return to the SSZ.
 						writer := bytes.NewBuffer(make([]byte, 0, len(specSSZ)))
-						err = dynssz.MarshalSSZWriter(s2, writer)
+						err = dynssz.MarshalSSZWriter(s2, writer, opts...)
 						require.NoError(t, err)
 						require.Equal(t, specSSZ, writer.Bytes(), "specSSZ and writer.Bytes() are not equal")
 
@@ -117,7 +117,7 @@ func runForkConsensusSpecTest(t *testing.T, fork string, preset string, tests []
 						specYAMLRoot, err := os.ReadFile(filepath.Join(path, "roots.yaml"))
 						require.NoError(t, err)
 						// Confirm we calculate the same root.
-						generatedRootBytes, err := dynssz.HashTreeRoot(s2)
+						generatedRootBytes, err := dynssz.HashTreeRoot(s2, opts...)
 						require.NoError(t, err)
 						generatedRoot := fmt.Sprintf("root: '%#x'\n", string(generatedRootBytes[:]))
 						if string(specYAMLRoot) != generatedRoot {
@@ -132,6 +132,9 @@ func runForkConsensusSpecTest(t *testing.T, fork string, preset string, tests []
 				runTestWithType("reflection", test.s)
 				if test.s2 != nil {
 					runTestWithType("codegen", test.s2)
+				}
+				if test.s3 != nil {
+					runTestWithType("codegen+views", test.s3[0], ssz.WithViewDescriptor(test.s3[1]))
 				}
 			}
 
