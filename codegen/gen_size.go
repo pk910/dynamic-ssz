@@ -212,7 +212,8 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName string, 
 		return nil
 	}
 
-	useFastSsz := !ctx.options.NoFastSsz && desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
+	useFastSsz := !ctx.options.NoFastSsz && desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0 && !hasDynamicSize
 	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
 		useFastSsz = true
 	}

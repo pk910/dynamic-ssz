@@ -222,10 +222,6 @@ func (ctx *encoderContext) generateSizeFnCode(indent int) (string, error) {
 }
 
 func (ctx *encoderContext) generateEncodeContext(indent int) string {
-	if len(ctx.sizeFnSignature) == 0 {
-		return ""
-	}
-
 	codeBuf := strings.Builder{}
 	maxFnNameLen := 5 // "exprs"
 
@@ -348,29 +344,26 @@ func (ctx *encoderContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 
 // marshalContainer generates marshal code for SSZ container (struct) types.
 func (ctx *encoderContext) marshalContainer(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
-	hasDynamic := false
-	staticSize := 0
-	staticSizeVars := []string{}
-	for _, field := range desc.ContainerDesc.Fields {
-		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
-			hasDynamic = true
-			staticSize += 4
-		} else {
-			if field.Type.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
-				sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(field.Type)
-				if err != nil {
-					return err
-				}
-				staticSizeVars = append(staticSizeVars, sizeVar)
+	if len(desc.ContainerDesc.DynFields) > 0 {
+		ctx.usedSeekable = true
+		staticSize := 0
+		staticSizeVars := []string{}
+		for _, field := range desc.ContainerDesc.Fields {
+			if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+				staticSize += 4
 			} else {
-				staticSize += int(field.Type.Size)
+				if field.Type.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+					sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(field.Type)
+					if err != nil {
+						return err
+					}
+					staticSizeVars = append(staticSizeVars, sizeVar)
+				} else {
+					staticSize += int(field.Type.Size)
+				}
 			}
 		}
-	}
-	staticSizeVars = append(staticSizeVars, fmt.Sprintf("%d", staticSize))
-
-	if hasDynamic {
-		ctx.usedSeekable = true
+		staticSizeVars = append(staticSizeVars, fmt.Sprintf("%d", staticSize))
 		ctx.appendCode(indent, "dstlen := enc.GetPosition()\n")
 		ctx.appendCode(indent, "dynoff := uint32(%v)\n", strings.Join(staticSizeVars, " + "))
 	}
