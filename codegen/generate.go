@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"go/build"
 	"go/types"
 	"reflect"
 	"regexp"
@@ -50,22 +51,29 @@ import (
 func (cg *CodeGenerator) analyzeTypes() error {
 	var parser *Parser
 
-	getTypeName := func(t *CodeGeneratorTypeOptions) (string, string) {
-		var typeName, typePkgPath string
+	getTypeName := func(t *CodeGeneratorTypeOptions) (string, string, string) {
+		var typeName, typePkgPath, typePkgName string
 		if t.ReflectType != nil {
 			typeName = t.ReflectType.Name()
 			typePkgPath = t.ReflectType.PkgPath()
 			if typePkgPath == "" && t.ReflectType.Kind() == reflect.Ptr {
 				typePkgPath = t.ReflectType.Elem().PkgPath()
 			}
+			// Look up the actual package name from the import path
+			if typePkgPath != "" {
+				if pkg, err := build.Import(typePkgPath, "", build.FindOnly); err == nil {
+					typePkgName = pkg.Name
+				}
+			}
 		} else if t.GoTypesType != nil {
 			typeName = t.GoTypesType.String()
 			types.TypeString(t.GoTypesType, func(pkg *types.Package) string {
 				typePkgPath = pkg.Path()
+				typePkgName = pkg.Name()
 				return ""
 			})
 		}
-		return typeName, typePkgPath
+		return typeName, typePkgPath, typePkgName
 	}
 
 	getGoTypesTypeName := func(t types.Type) string {
@@ -164,7 +172,7 @@ func (cg *CodeGenerator) analyzeTypes() error {
 	// add compat flags for generated types
 	for _, file := range cg.files {
 		for _, t := range file.Options.Types {
-			typeKey, _ := getTypeName(t)
+			typeKey, _, _ := getTypeName(t)
 			compatFlags := getCompatFlags(t)
 
 			cg.compatFlags[typeKey] = compatFlags
@@ -187,15 +195,17 @@ func (cg *CodeGenerator) analyzeTypes() error {
 	// analyze all types to build complete dependency graph
 	for _, file := range cg.files {
 		pkgPath := ""
+		pkgName := ""
 		otherTypeName := ""
 		for _, t := range file.Options.Types {
-			typeName, typePkgPath := getTypeName(t)
+			typeName, typePkgPath, typePkgName := getTypeName(t)
 
 			if typePkgPath == "" {
 				return fmt.Errorf("type %s has no package path", typeName)
 			}
 			if pkgPath == "" {
 				pkgPath = typePkgPath
+				pkgName = typePkgName
 			} else if pkgPath != typePkgPath {
 				return fmt.Errorf("type %s has different package path than %s. cannot combine types from different packages in a single file", typeName, otherTypeName)
 			}
@@ -268,11 +278,14 @@ func (cg *CodeGenerator) analyzeTypes() error {
 
 		file.Options.Package = pkgPath
 
-		pkgName := pkgPath
 		if cg.packageName != "" {
 			pkgName = cg.packageName
-		} else if slashIdx := strings.LastIndex(pkgName, "/"); slashIdx != -1 {
-			pkgName = pkgName[slashIdx+1:]
+		} else if pkgName == "" {
+			// fallback: derive package name from path if not available from go/types
+			pkgName = pkgPath
+			if slashIdx := strings.LastIndex(pkgName, "/"); slashIdx != -1 {
+				pkgName = pkgName[slashIdx+1:]
+			}
 		}
 		file.Options.PackageName = pkgName
 	}

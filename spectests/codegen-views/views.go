@@ -5,76 +5,52 @@ import (
 	"github.com/prysmaticlabs/go-bitfield"
 )
 
-//go:generate ./generate.sh
-
-// base types
-type ValidatorIndex uint64
-type BLSSignature [96]byte
-type Slot uint64
-type CommitteeIndex uint64
-type Root [32]byte
-type Gwei uint64
-type Epoch uint64
-type Version [4]byte
-type BLSPubKey [48]byte
-type ParticipationFlags uint8
-type ExecutionAddress [20]byte
-type Hash32 [32]byte
-type Transaction []byte
-type WithdrawalIndex uint64
-type KZGCommitment [48]byte
-type BlobIndex uint64
-type Blob [131072]byte
-type KZGProof [48]byte
-type KZGCommitmentInclusionProofElement [32]byte
-type KZGCommitmentInclusionProof []KZGCommitmentInclusionProofElement
-
-// Phase0 types
-type AggregateAndProof struct {
+// Phase0 views
+type Phase0AggregateAndProof struct {
 	AggregatorIndex ValidatorIndex
-	Aggregate       *Attestation
+	Aggregate       *Phase0Attestation
 	SelectionProof  BLSSignature `ssz-size:"96"`
 }
 
-type Attestation struct {
+type Phase0Attestation struct {
 	AggregationBits bitfield.Bitlist `dynssz-max:"MAX_VALIDATORS_PER_COMMITTEE" ssz-max:"2048"`
-	Data            *AttestationData
+	Data            *Phase0AttestationData
 	Signature       BLSSignature `ssz-size:"96"`
 }
 
-type AttestationData struct {
+type Phase0AttestationData struct {
 	Slot            Slot
 	Index           CommitteeIndex
 	BeaconBlockRoot Root `ssz-size:"32"`
-	Source          *Checkpoint
-	Target          *Checkpoint
+	Source          *Phase0Checkpoint
+	Target          *Phase0Checkpoint
 }
 
-type AttesterSlashing struct {
-	Attestation1 *IndexedAttestation
-	Attestation2 *IndexedAttestation
+type Phase0AttesterSlashing struct {
+	Attestation1 *Phase0IndexedAttestation
+	Attestation2 *Phase0IndexedAttestation
 }
 
-type BeaconBlock struct {
+type Phase0BeaconBlock struct {
 	Slot          Slot
 	ProposerIndex ValidatorIndex
 	ParentRoot    Root `ssz-size:"32"`
 	StateRoot     Root `ssz-size:"32"`
-	Body          *BeaconBlockBody
+	Body          *Phase0BeaconBlockBody
 }
 
-type BeaconBlockBody struct {
+type Phase0BeaconBlockBody struct {
 	RANDAOReveal      BLSSignature `ssz-size:"96"`
-	ETH1Data          *ETH1Data
-	Graffiti          [32]byte               `ssz-size:"32"`
-	ProposerSlashings []*ProposerSlashing    `dynssz-max:"MAX_PROPOSER_SLASHINGS" ssz-max:"16"`
-	AttesterSlashings []*AttesterSlashing    `dynssz-max:"MAX_ATTESTER_SLASHINGS" ssz-max:"2"`
-	Attestations      []*Attestation         `dynssz-max:"MAX_ATTESTATIONS"       ssz-max:"128"`
-	Deposits          []*Deposit             `dynssz-max:"MAX_DEPOSITS"           ssz-max:"16"`
-	VoluntaryExits    []*SignedVoluntaryExit `dynssz-max:"MAX_VOLUNTARY_EXITS"    ssz-max:"16"`
+	ETH1Data          *Phase0ETH1Data
+	Graffiti          [32]byte                     `ssz-size:"32"`
+	ProposerSlashings []*Phase0ProposerSlashing    `dynssz-max:"MAX_PROPOSER_SLASHINGS" ssz-max:"16"`
+	AttesterSlashings []*Phase0AttesterSlashing    `dynssz-max:"MAX_ATTESTER_SLASHINGS" ssz-max:"2"`
+	Attestations      []*Phase0Attestation         `dynssz-max:"MAX_ATTESTATIONS"       ssz-max:"128"`
+	Deposits          []*Phase0Deposit             `dynssz-max:"MAX_DEPOSITS"           ssz-max:"16"`
+	VoluntaryExits    []*Phase0SignedVoluntaryExit `dynssz-max:"MAX_VOLUNTARY_EXITS"    ssz-max:"16"`
 }
 
-type BeaconBlockHeader struct {
+type Phase0BeaconBlockHeader struct {
 	Slot          Slot
 	ProposerIndex ValidatorIndex
 	ParentRoot    Root `ssz-size:"32"`
@@ -82,109 +58,109 @@ type BeaconBlockHeader struct {
 	BodyRoot      Root `ssz-size:"32"`
 }
 
-type BeaconState struct {
+type Phase0BeaconState struct {
 	GenesisTime                 uint64
 	GenesisValidatorsRoot       Root `ssz-size:"32"`
 	Slot                        Slot
-	Fork                        *Fork
-	LatestBlockHeader           *BeaconBlockHeader
+	Fork                        *Phase0Fork
+	LatestBlockHeader           *Phase0BeaconBlockHeader
 	BlockRoots                  []Root `dynssz-size:"SLOTS_PER_HISTORICAL_ROOT,32" ssz-size:"8192,32"`
 	StateRoots                  []Root `dynssz-size:"SLOTS_PER_HISTORICAL_ROOT,32" ssz-size:"8192,32"`
 	HistoricalRoots             []Root `dynssz-max:"HISTORICAL_ROOTS_LIMIT"        ssz-max:"16777216" ssz-size:"?,32"`
-	ETH1Data                    *ETH1Data
-	ETH1DataVotes               []*ETH1Data `dynssz-max:"EPOCHS_PER_ETH1_VOTING_PERIOD*SLOTS_PER_EPOCH" ssz-max:"2048"`
+	ETH1Data                    *Phase0ETH1Data
+	ETH1DataVotes               []*Phase0ETH1Data `dynssz-max:"EPOCHS_PER_ETH1_VOTING_PERIOD*SLOTS_PER_EPOCH" ssz-max:"2048"`
 	ETH1DepositIndex            uint64
-	Validators                  []*Validator          `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
-	Balances                    []Gwei                `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
-	RANDAOMixes                 []Root                `dynssz-size:"EPOCHS_PER_HISTORICAL_VECTOR,32" ssz-size:"65536,32"`
-	Slashings                   []Gwei                `dynssz-size:"EPOCHS_PER_SLASHINGS_VECTOR"     ssz-size:"8192"`
-	PreviousEpochAttestations   []*PendingAttestation `dynssz-max:"MAX_ATTESTATIONS*SLOTS_PER_EPOCH" ssz-max:"4096"`
-	CurrentEpochAttestations    []*PendingAttestation `dynssz-max:"MAX_ATTESTATIONS*SLOTS_PER_EPOCH" ssz-max:"4096"`
-	JustificationBits           bitfield.Bitvector4   `ssz-size:"1"`
-	PreviousJustifiedCheckpoint *Checkpoint
-	CurrentJustifiedCheckpoint  *Checkpoint
-	FinalizedCheckpoint         *Checkpoint
+	Validators                  []*Phase0Validator          `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
+	Balances                    []Gwei                      `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
+	RANDAOMixes                 []Root                      `dynssz-size:"EPOCHS_PER_HISTORICAL_VECTOR,32" ssz-size:"65536,32"`
+	Slashings                   []Gwei                      `dynssz-size:"EPOCHS_PER_SLASHINGS_VECTOR"     ssz-size:"8192"`
+	PreviousEpochAttestations   []*Phase0PendingAttestation `dynssz-max:"MAX_ATTESTATIONS*SLOTS_PER_EPOCH" ssz-max:"4096"`
+	CurrentEpochAttestations    []*Phase0PendingAttestation `dynssz-max:"MAX_ATTESTATIONS*SLOTS_PER_EPOCH" ssz-max:"4096"`
+	JustificationBits           bitfield.Bitvector4         `ssz-size:"1"`
+	PreviousJustifiedCheckpoint *Phase0Checkpoint
+	CurrentJustifiedCheckpoint  *Phase0Checkpoint
+	FinalizedCheckpoint         *Phase0Checkpoint
 }
 
-type Checkpoint struct {
+type Phase0Checkpoint struct {
 	Epoch Epoch
 	Root  Root `ssz-size:"32"`
 }
 
-type Deposit struct {
+type Phase0Deposit struct {
 	Proof [][]byte `dynssz-size:"DEPOSIT_CONTRACT_TREE_DEPTH+1,32" ssz-size:"33,32"`
-	Data  *DepositData
+	Data  *Phase0DepositData
 }
 
-type DepositData struct {
+type Phase0DepositData struct {
 	PublicKey             BLSPubKey `ssz-size:"48"`
 	WithdrawalCredentials []byte    `ssz-size:"32"`
 	Amount                Gwei
 	Signature             BLSSignature `ssz-size:"96"`
 }
 
-type DepositMessage struct {
+type Phase0DepositMessage struct {
 	PublicKey             BLSPubKey `ssz-size:"48"`
 	WithdrawalCredentials []byte    `ssz-size:"32"`
 	Amount                Gwei
 }
 
-type ETH1Data struct {
+type Phase0ETH1Data struct {
 	DepositRoot  Root `ssz-size:"32"`
 	DepositCount uint64
 	BlockHash    []byte `ssz-size:"32"`
 }
 
-type Fork struct {
+type Phase0Fork struct {
 	PreviousVersion Version `ssz-size:"4"`
 	CurrentVersion  Version `ssz-size:"4"`
 	Epoch           Epoch
 }
 
-type ForkData struct {
+type Phase0ForkData struct {
 	CurrentVersion        Version `ssz-size:"4"`
 	GenesisValidatorsRoot Root    `ssz-size:"32"`
 }
 
-type IndexedAttestation struct {
+type Phase0IndexedAttestation struct {
 	AttestingIndices []uint64 `ssz-max:"2048"`
-	Data             *AttestationData
+	Data             *Phase0AttestationData
 	Signature        BLSSignature `ssz-size:"96"`
 }
 
-type PendingAttestation struct {
+type Phase0PendingAttestation struct {
 	AggregationBits bitfield.Bitlist `ssz-max:"2048"`
-	Data            *AttestationData
+	Data            *Phase0AttestationData
 	InclusionDelay  Slot
 	ProposerIndex   ValidatorIndex
 }
 
-type ProposerSlashing struct {
-	SignedHeader1 *SignedBeaconBlockHeader
-	SignedHeader2 *SignedBeaconBlockHeader
+type Phase0ProposerSlashing struct {
+	SignedHeader1 *Phase0SignedBeaconBlockHeader
+	SignedHeader2 *Phase0SignedBeaconBlockHeader
 }
 
-type SignedAggregateAndProof struct {
-	Message   *AggregateAndProof
+type Phase0SignedAggregateAndProof struct {
+	Message   *Phase0AggregateAndProof
 	Signature BLSSignature `ssz-size:"96"`
 }
 
-type SignedBeaconBlock struct {
-	Message   *BeaconBlock
+type Phase0SignedBeaconBlock struct {
+	Message   *Phase0BeaconBlock
 	Signature BLSSignature `ssz-size:"96"`
 }
 
-type SignedBeaconBlockHeader struct {
-	Message   *BeaconBlockHeader
+type Phase0SignedBeaconBlockHeader struct {
+	Message   *Phase0BeaconBlockHeader
 	Signature BLSSignature `ssz-size:"96"`
 }
 
-type SignedVoluntaryExit struct {
-	Message   *VoluntaryExit
+type Phase0SignedVoluntaryExit struct {
+	Message   *Phase0VoluntaryExit
 	Signature BLSSignature `ssz-size:"96"`
 }
 
-type Validator struct {
+type Phase0Validator struct {
 	PublicKey                  BLSPubKey `ssz-size:"48"`
 	WithdrawalCredentials      []byte    `ssz-size:"32"`
 	EffectiveBalance           Gwei
@@ -195,12 +171,13 @@ type Validator struct {
 	WithdrawableEpoch          Epoch
 }
 
-type VoluntaryExit struct {
+type Phase0VoluntaryExit struct {
 	Epoch          Epoch
 	ValidatorIndex ValidatorIndex
 }
 
-// Altair types
+// Altair views
+
 type AltairBeaconBlock struct {
 	Slot          Slot
 	ProposerIndex ValidatorIndex
@@ -211,13 +188,13 @@ type AltairBeaconBlock struct {
 
 type AltairBeaconBlockBody struct {
 	RANDAOReveal      BLSSignature `ssz-size:"96"`
-	ETH1Data          *ETH1Data
-	Graffiti          [32]byte               `ssz-size:"32"`
-	ProposerSlashings []*ProposerSlashing    `dynssz-max:"MAX_PROPOSER_SLASHINGS" ssz-max:"16"`
-	AttesterSlashings []*AttesterSlashing    `dynssz-max:"MAX_ATTESTER_SLASHINGS" ssz-max:"2"`
-	Attestations      []*Attestation         `dynssz-max:"MAX_ATTESTATIONS"       ssz-max:"128"`
-	Deposits          []*Deposit             `dynssz-max:"MAX_DEPOSITS"           ssz-max:"16"`
-	VoluntaryExits    []*SignedVoluntaryExit `dynssz-max:"MAX_VOLUNTARY_EXITS"    ssz-max:"16"`
+	ETH1Data          *Phase0ETH1Data
+	Graffiti          [32]byte                     `ssz-size:"32"`
+	ProposerSlashings []*Phase0ProposerSlashing    `dynssz-max:"MAX_PROPOSER_SLASHINGS" ssz-max:"16"`
+	AttesterSlashings []*Phase0AttesterSlashing    `dynssz-max:"MAX_ATTESTER_SLASHINGS" ssz-max:"2"`
+	Attestations      []*Phase0Attestation         `dynssz-max:"MAX_ATTESTATIONS"       ssz-max:"128"`
+	Deposits          []*Phase0Deposit             `dynssz-max:"MAX_DEPOSITS"           ssz-max:"16"`
+	VoluntaryExits    []*Phase0SignedVoluntaryExit `dynssz-max:"MAX_VOLUNTARY_EXITS"    ssz-max:"16"`
 	SyncAggregate     *AltairSyncAggregate
 }
 
@@ -225,24 +202,24 @@ type AltairBeaconState struct {
 	GenesisTime                 uint64
 	GenesisValidatorsRoot       Root `ssz-size:"32"`
 	Slot                        Slot
-	Fork                        *Fork
-	LatestBlockHeader           *BeaconBlockHeader
+	Fork                        *Phase0Fork
+	LatestBlockHeader           *Phase0BeaconBlockHeader
 	BlockRoots                  []Root `dynssz-size:"SLOTS_PER_HISTORICAL_ROOT,32" ssz-size:"8192,32"`
 	StateRoots                  []Root `dynssz-size:"SLOTS_PER_HISTORICAL_ROOT,32" ssz-size:"8192,32"`
 	HistoricalRoots             []Root `dynssz-max:"HISTORICAL_ROOTS_LIMIT"        ssz-max:"16777216" ssz-size:"?,32"`
-	ETH1Data                    *ETH1Data
-	ETH1DataVotes               []*ETH1Data `dynssz-max:"EPOCHS_PER_ETH1_VOTING_PERIOD*SLOTS_PER_EPOCH" ssz-max:"2048"`
+	ETH1Data                    *Phase0ETH1Data
+	ETH1DataVotes               []*Phase0ETH1Data `dynssz-max:"EPOCHS_PER_ETH1_VOTING_PERIOD*SLOTS_PER_EPOCH" ssz-max:"2048"`
 	ETH1DepositIndex            uint64
-	Validators                  []*Validator         `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
+	Validators                  []*Phase0Validator   `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	Balances                    []Gwei               `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	RANDAOMixes                 []Root               `dynssz-size:"EPOCHS_PER_HISTORICAL_VECTOR,32" ssz-size:"65536,32"`
 	Slashings                   []Gwei               `dynssz-size:"EPOCHS_PER_SLASHINGS_VECTOR"     ssz-size:"8192"`
 	PreviousEpochParticipation  []ParticipationFlags `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	CurrentEpochParticipation   []ParticipationFlags `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	JustificationBits           bitfield.Bitvector4  `ssz-size:"1"`
-	PreviousJustifiedCheckpoint *Checkpoint
-	CurrentJustifiedCheckpoint  *Checkpoint
-	FinalizedCheckpoint         *Checkpoint
+	PreviousJustifiedCheckpoint *Phase0Checkpoint
+	CurrentJustifiedCheckpoint  *Phase0Checkpoint
+	FinalizedCheckpoint         *Phase0Checkpoint
 	InactivityScores            []uint64 `dynssz-max:"VALIDATOR_REGISTRY_LIMIT" ssz-max:"1099511627776"`
 	CurrentSyncCommittee        *AltairSyncCommittee
 	NextSyncCommittee           *AltairSyncCommittee
@@ -300,13 +277,13 @@ type BellatrixBeaconBlock struct {
 
 type BellatrixBeaconBlockBody struct {
 	RANDAOReveal      BLSSignature `ssz-size:"96"`
-	ETH1Data          *ETH1Data
-	Graffiti          [32]byte               `ssz-size:"32"`
-	ProposerSlashings []*ProposerSlashing    `dynssz-max:"MAX_PROPOSER_SLASHINGS" ssz-max:"16"`
-	AttesterSlashings []*AttesterSlashing    `dynssz-max:"MAX_ATTESTER_SLASHINGS" ssz-max:"2"`
-	Attestations      []*Attestation         `dynssz-max:"MAX_ATTESTATIONS"       ssz-max:"128"`
-	Deposits          []*Deposit             `dynssz-max:"MAX_DEPOSITS"           ssz-max:"16"`
-	VoluntaryExits    []*SignedVoluntaryExit `dynssz-max:"MAX_VOLUNTARY_EXITS"    ssz-max:"16"`
+	ETH1Data          *Phase0ETH1Data
+	Graffiti          [32]byte                     `ssz-size:"32"`
+	ProposerSlashings []*Phase0ProposerSlashing    `dynssz-max:"MAX_PROPOSER_SLASHINGS" ssz-max:"16"`
+	AttesterSlashings []*Phase0AttesterSlashing    `dynssz-max:"MAX_ATTESTER_SLASHINGS" ssz-max:"2"`
+	Attestations      []*Phase0Attestation         `dynssz-max:"MAX_ATTESTATIONS"       ssz-max:"128"`
+	Deposits          []*Phase0Deposit             `dynssz-max:"MAX_DEPOSITS"           ssz-max:"16"`
+	VoluntaryExits    []*Phase0SignedVoluntaryExit `dynssz-max:"MAX_VOLUNTARY_EXITS"    ssz-max:"16"`
 	SyncAggregate     *AltairSyncAggregate
 	ExecutionPayload  *BellatrixExecutionPayload
 }
@@ -315,24 +292,24 @@ type BellatrixBeaconState struct {
 	GenesisTime                  uint64
 	GenesisValidatorsRoot        Root `ssz-size:"32"`
 	Slot                         Slot
-	Fork                         *Fork
-	LatestBlockHeader            *BeaconBlockHeader
+	Fork                         *Phase0Fork
+	LatestBlockHeader            *Phase0BeaconBlockHeader
 	BlockRoots                   []Root `dynssz-size:"SLOTS_PER_HISTORICAL_ROOT,32" ssz-size:"8192,32"`
 	StateRoots                   []Root `dynssz-size:"SLOTS_PER_HISTORICAL_ROOT,32" ssz-size:"8192,32"`
 	HistoricalRoots              []Root `dynssz-max:"HISTORICAL_ROOTS_LIMIT"        ssz-max:"16777216" ssz-size:"?,32"`
-	ETH1Data                     *ETH1Data
-	ETH1DataVotes                []*ETH1Data `dynssz-max:"EPOCHS_PER_ETH1_VOTING_PERIOD*SLOTS_PER_EPOCH" ssz-max:"2048"`
+	ETH1Data                     *Phase0ETH1Data
+	ETH1DataVotes                []*Phase0ETH1Data `dynssz-max:"EPOCHS_PER_ETH1_VOTING_PERIOD*SLOTS_PER_EPOCH" ssz-max:"2048"`
 	ETH1DepositIndex             uint64
-	Validators                   []*Validator         `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
+	Validators                   []*Phase0Validator   `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	Balances                     []Gwei               `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	RANDAOMixes                  []Root               `dynssz-size:"EPOCHS_PER_HISTORICAL_VECTOR,32" ssz-size:"65536,32"`
 	Slashings                    []Gwei               `dynssz-size:"EPOCHS_PER_SLASHINGS_VECTOR"     ssz-size:"8192"`
 	PreviousEpochParticipation   []ParticipationFlags `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	CurrentEpochParticipation    []ParticipationFlags `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	JustificationBits            bitfield.Bitvector4  `ssz-size:"1"`
-	PreviousJustifiedCheckpoint  *Checkpoint
-	CurrentJustifiedCheckpoint   *Checkpoint
-	FinalizedCheckpoint          *Checkpoint
+	PreviousJustifiedCheckpoint  *Phase0Checkpoint
+	CurrentJustifiedCheckpoint   *Phase0Checkpoint
+	FinalizedCheckpoint          *Phase0Checkpoint
 	InactivityScores             []uint64 `dynssz-max:"VALIDATOR_REGISTRY_LIMIT" ssz-max:"1099511627776"`
 	CurrentSyncCommittee         *AltairSyncCommittee
 	NextSyncCommittee            *AltairSyncCommittee
@@ -389,13 +366,13 @@ type CapellaBeaconBlock struct {
 
 type CapellaBeaconBlockBody struct {
 	RANDAOReveal          BLSSignature `ssz-size:"96"`
-	ETH1Data              *ETH1Data
-	Graffiti              [32]byte               `ssz-size:"32"`
-	ProposerSlashings     []*ProposerSlashing    `dynssz-max:"MAX_PROPOSER_SLASHINGS" ssz-max:"16"`
-	AttesterSlashings     []*AttesterSlashing    `dynssz-max:"MAX_ATTESTER_SLASHINGS" ssz-max:"2"`
-	Attestations          []*Attestation         `dynssz-max:"MAX_ATTESTATIONS"       ssz-max:"128"`
-	Deposits              []*Deposit             `dynssz-max:"MAX_DEPOSITS"           ssz-max:"16"`
-	VoluntaryExits        []*SignedVoluntaryExit `dynssz-max:"MAX_VOLUNTARY_EXITS"    ssz-max:"16"`
+	ETH1Data              *Phase0ETH1Data
+	Graffiti              [32]byte                     `ssz-size:"32"`
+	ProposerSlashings     []*Phase0ProposerSlashing    `dynssz-max:"MAX_PROPOSER_SLASHINGS" ssz-max:"16"`
+	AttesterSlashings     []*Phase0AttesterSlashing    `dynssz-max:"MAX_ATTESTER_SLASHINGS" ssz-max:"2"`
+	Attestations          []*Phase0Attestation         `dynssz-max:"MAX_ATTESTATIONS"       ssz-max:"128"`
+	Deposits              []*Phase0Deposit             `dynssz-max:"MAX_DEPOSITS"           ssz-max:"16"`
+	VoluntaryExits        []*Phase0SignedVoluntaryExit `dynssz-max:"MAX_VOLUNTARY_EXITS"    ssz-max:"16"`
 	SyncAggregate         *AltairSyncAggregate
 	ExecutionPayload      *CapellaExecutionPayload
 	BLSToExecutionChanges []*CapellaSignedBLSToExecutionChange `dynssz-max:"MAX_BLS_TO_EXECUTION_CHANGES" ssz-max:"16"`
@@ -405,24 +382,24 @@ type CapellaBeaconState struct {
 	GenesisTime                  uint64
 	GenesisValidatorsRoot        Root `ssz-size:"32"`
 	Slot                         Slot
-	Fork                         *Fork
-	LatestBlockHeader            *BeaconBlockHeader
+	Fork                         *Phase0Fork
+	LatestBlockHeader            *Phase0BeaconBlockHeader
 	BlockRoots                   []Root `dynssz-size:"SLOTS_PER_HISTORICAL_ROOT,32" ssz-size:"8192,32"`
 	StateRoots                   []Root `dynssz-size:"SLOTS_PER_HISTORICAL_ROOT,32" ssz-size:"8192,32"`
 	HistoricalRoots              []Root `dynssz-max:"HISTORICAL_ROOTS_LIMIT"        ssz-max:"16777216" ssz-size:"?,32"`
-	ETH1Data                     *ETH1Data
-	ETH1DataVotes                []*ETH1Data `dynssz-max:"EPOCHS_PER_ETH1_VOTING_PERIOD*SLOTS_PER_EPOCH" ssz-max:"2048"`
+	ETH1Data                     *Phase0ETH1Data
+	ETH1DataVotes                []*Phase0ETH1Data `dynssz-max:"EPOCHS_PER_ETH1_VOTING_PERIOD*SLOTS_PER_EPOCH" ssz-max:"2048"`
 	ETH1DepositIndex             uint64
-	Validators                   []*Validator         `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
+	Validators                   []*Phase0Validator   `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	Balances                     []Gwei               `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	RANDAOMixes                  []Root               `dynssz-size:"EPOCHS_PER_HISTORICAL_VECTOR,32" ssz-size:"65536,32"`
 	Slashings                    []Gwei               `dynssz-size:"EPOCHS_PER_SLASHINGS_VECTOR"     ssz-size:"8192"`
 	PreviousEpochParticipation   []ParticipationFlags `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	CurrentEpochParticipation    []ParticipationFlags `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	JustificationBits            bitfield.Bitvector4  `ssz-size:"1"`
-	PreviousJustifiedCheckpoint  *Checkpoint
-	CurrentJustifiedCheckpoint   *Checkpoint
-	FinalizedCheckpoint          *Checkpoint
+	PreviousJustifiedCheckpoint  *Phase0Checkpoint
+	CurrentJustifiedCheckpoint   *Phase0Checkpoint
+	FinalizedCheckpoint          *Phase0Checkpoint
 	InactivityScores             []uint64 `dynssz-max:"VALIDATOR_REGISTRY_LIMIT" ssz-max:"1099511627776"`
 	CurrentSyncCommittee         *AltairSyncCommittee
 	NextSyncCommittee            *AltairSyncCommittee
@@ -507,13 +484,13 @@ type DenebBeaconBlock struct {
 
 type DenebBeaconBlockBody struct {
 	RANDAOReveal          BLSSignature `ssz-size:"96"`
-	ETH1Data              *ETH1Data
-	Graffiti              [32]byte               `ssz-size:"32"`
-	ProposerSlashings     []*ProposerSlashing    `dynssz-max:"MAX_PROPOSER_SLASHINGS" ssz-max:"16"`
-	AttesterSlashings     []*AttesterSlashing    `dynssz-max:"MAX_ATTESTER_SLASHINGS" ssz-max:"2"`
-	Attestations          []*Attestation         `dynssz-max:"MAX_ATTESTATIONS"       ssz-max:"128"`
-	Deposits              []*Deposit             `dynssz-max:"MAX_DEPOSITS"           ssz-max:"16"`
-	VoluntaryExits        []*SignedVoluntaryExit `dynssz-max:"MAX_VOLUNTARY_EXITS"    ssz-max:"16"`
+	ETH1Data              *Phase0ETH1Data
+	Graffiti              [32]byte                     `ssz-size:"32"`
+	ProposerSlashings     []*Phase0ProposerSlashing    `dynssz-max:"MAX_PROPOSER_SLASHINGS" ssz-max:"16"`
+	AttesterSlashings     []*Phase0AttesterSlashing    `dynssz-max:"MAX_ATTESTER_SLASHINGS" ssz-max:"2"`
+	Attestations          []*Phase0Attestation         `dynssz-max:"MAX_ATTESTATIONS"       ssz-max:"128"`
+	Deposits              []*Phase0Deposit             `dynssz-max:"MAX_DEPOSITS"           ssz-max:"16"`
+	VoluntaryExits        []*Phase0SignedVoluntaryExit `dynssz-max:"MAX_VOLUNTARY_EXITS"    ssz-max:"16"`
 	SyncAggregate         *AltairSyncAggregate
 	ExecutionPayload      *DenebExecutionPayload
 	BLSToExecutionChanges []*CapellaSignedBLSToExecutionChange `dynssz-max:"MAX_BLS_TO_EXECUTION_CHANGES"   ssz-max:"16"`
@@ -524,24 +501,24 @@ type DenebBeaconState struct {
 	GenesisTime                  uint64
 	GenesisValidatorsRoot        Root `ssz-size:"32"`
 	Slot                         Slot
-	Fork                         *Fork
-	LatestBlockHeader            *BeaconBlockHeader
+	Fork                         *Phase0Fork
+	LatestBlockHeader            *Phase0BeaconBlockHeader
 	BlockRoots                   []Root `dynssz-size:"SLOTS_PER_HISTORICAL_ROOT,32" ssz-size:"8192,32"`
 	StateRoots                   []Root `dynssz-size:"SLOTS_PER_HISTORICAL_ROOT,32" ssz-size:"8192,32"`
 	HistoricalRoots              []Root `dynssz-max:"HISTORICAL_ROOTS_LIMIT"        ssz-max:"16777216" ssz-size:"?,32"`
-	ETH1Data                     *ETH1Data
-	ETH1DataVotes                []*ETH1Data `dynssz-max:"EPOCHS_PER_ETH1_VOTING_PERIOD*SLOTS_PER_EPOCH" ssz-max:"2048"`
+	ETH1Data                     *Phase0ETH1Data
+	ETH1DataVotes                []*Phase0ETH1Data `dynssz-max:"EPOCHS_PER_ETH1_VOTING_PERIOD*SLOTS_PER_EPOCH" ssz-max:"2048"`
 	ETH1DepositIndex             uint64
-	Validators                   []*Validator         `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
+	Validators                   []*Phase0Validator   `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	Balances                     []Gwei               `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	RANDAOMixes                  []Root               `dynssz-size:"EPOCHS_PER_HISTORICAL_VECTOR,32" ssz-size:"65536,32"`
 	Slashings                    []Gwei               `dynssz-size:"EPOCHS_PER_SLASHINGS_VECTOR"     ssz-size:"8192"`
 	PreviousEpochParticipation   []ParticipationFlags `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	CurrentEpochParticipation    []ParticipationFlags `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	JustificationBits            bitfield.Bitvector4  `ssz-size:"1"`
-	PreviousJustifiedCheckpoint  *Checkpoint
-	CurrentJustifiedCheckpoint   *Checkpoint
-	FinalizedCheckpoint          *Checkpoint
+	PreviousJustifiedCheckpoint  *Phase0Checkpoint
+	CurrentJustifiedCheckpoint   *Phase0Checkpoint
+	FinalizedCheckpoint          *Phase0Checkpoint
 	InactivityScores             []uint64 `dynssz-max:"VALIDATOR_REGISTRY_LIMIT" ssz-max:"1099511627776"`
 	CurrentSyncCommittee         *AltairSyncCommittee
 	NextSyncCommittee            *AltairSyncCommittee
@@ -561,48 +538,48 @@ type DenebBlobSidecar struct {
 	Blob                        Blob          `ssz-size:"131072"`
 	KZGCommitment               KZGCommitment `ssz-size:"48"`
 	KZGProof                    KZGProof      `ssz-size:"48"`
-	SignedBlockHeader           *SignedBeaconBlockHeader
+	SignedBlockHeader           *Phase0SignedBeaconBlockHeader
 	KZGCommitmentInclusionProof KZGCommitmentInclusionProof `dynssz-size:"KZG_COMMITMENT_INCLUSION_PROOF_DEPTH,32" ssz-size:"17,32"`
 }
 
 type DenebExecutionPayload struct {
-	ParentHash    Hash32           `ssz-size:"32"`
-	FeeRecipient  ExecutionAddress `ssz-size:"20"`
-	StateRoot     Root             `ssz-size:"32"`
-	ReceiptsRoot  Root             `ssz-size:"32"`
-	LogsBloom     [256]byte        `ssz-size:"256"`
-	PrevRandao    [32]byte         `ssz-size:"32"`
-	BlockNumber   uint64
-	GasLimit      uint64
-	GasUsed       uint64
-	Timestamp     uint64
-	ExtraData     []byte               `dynssz-max:"MAX_EXTRA_DATA_BYTES"                                   ssz-max:"32"`
-	BaseFeePerGas *uint256.Int         `ssz-size:"32"`
-	BlockHash     Hash32               `ssz-size:"32"`
-	Transactions  []Transaction        `dynssz-max:"MAX_TRANSACTIONS_PER_PAYLOAD,MAX_BYTES_PER_TRANSACTION" ssz-max:"1048576,1073741824" ssz-size:"?,?"`
-	Withdrawals   []*CapellaWithdrawal `dynssz-max:"MAX_WITHDRAWALS_PER_PAYLOAD"                            ssz-max:"16"`
-	BlobGasUsed   uint64
-	ExcessBlobGas uint64
+	ParentHash           Hash32           `ssz-size:"32"`
+	FeeRecipient         ExecutionAddress `ssz-size:"20"`
+	StateRoot            Root             `ssz-size:"32"`
+	ReceiptsRoot         Root             `ssz-size:"32"`
+	LogsBloom            [256]byte        `ssz-size:"256"`
+	PrevRandao           [32]byte         `ssz-size:"32"`
+	BlockNumber          uint64
+	GasLimit             uint64
+	GasUsed              uint64
+	Timestamp            uint64
+	ExtraData            []byte               `dynssz-max:"MAX_EXTRA_DATA_BYTES"                                   ssz-max:"32"`
+	BaseFeePerGasUint256 *uint256.Int         `ssz-size:"32"`
+	BlockHash            Hash32               `ssz-size:"32"`
+	Transactions         []Transaction        `dynssz-max:"MAX_TRANSACTIONS_PER_PAYLOAD,MAX_BYTES_PER_TRANSACTION" ssz-max:"1048576,1073741824" ssz-size:"?,?"`
+	Withdrawals          []*CapellaWithdrawal `dynssz-max:"MAX_WITHDRAWALS_PER_PAYLOAD"                            ssz-max:"16"`
+	BlobGasUsed          uint64
+	ExcessBlobGas        uint64
 }
 
 type DenebExecutionPayloadHeader struct {
-	ParentHash       Hash32           `ssz-size:"32"`
-	FeeRecipient     ExecutionAddress `ssz-size:"20"`
-	StateRoot        Root             `ssz-size:"32"`
-	ReceiptsRoot     Root             `ssz-size:"32"`
-	LogsBloom        [256]byte        `ssz-size:"256"`
-	PrevRandao       [32]byte         `ssz-size:"32"`
-	BlockNumber      uint64
-	GasLimit         uint64
-	GasUsed          uint64
-	Timestamp        uint64
-	ExtraData        []byte       `ssz-max:"32"`
-	BaseFeePerGas    *uint256.Int `ssz-size:"32"`
-	BlockHash        Hash32       `ssz-size:"32"`
-	TransactionsRoot Root         `ssz-size:"32"`
-	WithdrawalsRoot  Root         `ssz-size:"32"`
-	BlobGasUsed      uint64
-	ExcessBlobGas    uint64
+	ParentHash           Hash32           `ssz-size:"32"`
+	FeeRecipient         ExecutionAddress `ssz-size:"20"`
+	StateRoot            Root             `ssz-size:"32"`
+	ReceiptsRoot         Root             `ssz-size:"32"`
+	LogsBloom            [256]byte        `ssz-size:"256"`
+	PrevRandao           [32]byte         `ssz-size:"32"`
+	BlockNumber          uint64
+	GasLimit             uint64
+	GasUsed              uint64
+	Timestamp            uint64
+	ExtraData            []byte       `ssz-max:"32"`
+	BaseFeePerGasUint256 *uint256.Int `ssz-size:"32"`
+	BlockHash            Hash32       `ssz-size:"32"`
+	TransactionsRoot     Root         `ssz-size:"32"`
+	WithdrawalsRoot      Root         `ssz-size:"32"`
+	BlobGasUsed          uint64
+	ExcessBlobGas        uint64
 }
 
 type DenebSignedBeaconBlock struct {
@@ -619,7 +596,7 @@ type ElectraAggregateAndProof struct {
 
 type ElectraAttestation struct {
 	AggregationBits bitfield.Bitlist `dynssz-max:"MAX_VALIDATORS_PER_COMMITTEE*MAX_COMMITTEES_PER_SLOT" ssz-max:"131072"`
-	Data            *AttestationData
+	Data            *Phase0AttestationData
 	Signature       BLSSignature         `ssz-size:"96"`
 	CommitteeBits   bitfield.Bitvector64 `dynssz-size:"MAX_COMMITTEES_PER_SLOT/8" ssz-size:"8"`
 }
@@ -639,13 +616,13 @@ type ElectraBeaconBlock struct {
 
 type ElectraBeaconBlockBody struct {
 	RANDAOReveal          BLSSignature `ssz-size:"96"`
-	ETH1Data              *ETH1Data
-	Graffiti              [32]byte                   `ssz-size:"32"`
-	ProposerSlashings     []*ProposerSlashing        `dynssz-max:"MAX_PROPOSER_SLASHINGS"         ssz-max:"16"`
-	AttesterSlashings     []*ElectraAttesterSlashing `dynssz-max:"MAX_ATTESTER_SLASHINGS_ELECTRA" ssz-max:"1"`
-	Attestations          []*ElectraAttestation      `dynssz-max:"MAX_ATTESTATIONS_ELECTRA"       ssz-max:"8"`
-	Deposits              []*Deposit                 `dynssz-max:"MAX_DEPOSITS"                   ssz-max:"16"`
-	VoluntaryExits        []*SignedVoluntaryExit     `dynssz-max:"MAX_VOLUNTARY_EXITS"            ssz-max:"16"`
+	ETH1Data              *Phase0ETH1Data
+	Graffiti              [32]byte                     `ssz-size:"32"`
+	ProposerSlashings     []*Phase0ProposerSlashing    `dynssz-max:"MAX_PROPOSER_SLASHINGS"         ssz-max:"16"`
+	AttesterSlashings     []*ElectraAttesterSlashing   `dynssz-max:"MAX_ATTESTER_SLASHINGS_ELECTRA" ssz-max:"1"`
+	Attestations          []*ElectraAttestation        `dynssz-max:"MAX_ATTESTATIONS_ELECTRA"       ssz-max:"8"`
+	Deposits              []*Phase0Deposit             `dynssz-max:"MAX_DEPOSITS"                   ssz-max:"16"`
+	VoluntaryExits        []*Phase0SignedVoluntaryExit `dynssz-max:"MAX_VOLUNTARY_EXITS"            ssz-max:"16"`
 	SyncAggregate         *AltairSyncAggregate
 	ExecutionPayload      *DenebExecutionPayload
 	BLSToExecutionChanges []*CapellaSignedBLSToExecutionChange `dynssz-max:"MAX_BLS_TO_EXECUTION_CHANGES"   ssz-max:"16"`
@@ -657,24 +634,24 @@ type ElectraBeaconState struct {
 	GenesisTime                   uint64
 	GenesisValidatorsRoot         Root `ssz-size:"32"`
 	Slot                          Slot
-	Fork                          *Fork
-	LatestBlockHeader             *BeaconBlockHeader
+	Fork                          *Phase0Fork
+	LatestBlockHeader             *Phase0BeaconBlockHeader
 	BlockRoots                    []Root `dynssz-size:"SLOTS_PER_HISTORICAL_ROOT,32" ssz-size:"8192,32"`
 	StateRoots                    []Root `dynssz-size:"SLOTS_PER_HISTORICAL_ROOT,32" ssz-size:"8192,32"`
 	HistoricalRoots               []Root `dynssz-max:"HISTORICAL_ROOTS_LIMIT"        ssz-max:"16777216" ssz-size:"?,32"`
-	ETH1Data                      *ETH1Data
-	ETH1DataVotes                 []*ETH1Data `dynssz-max:"EPOCHS_PER_ETH1_VOTING_PERIOD*SLOTS_PER_EPOCH" ssz-max:"2048"`
+	ETH1Data                      *Phase0ETH1Data
+	ETH1DataVotes                 []*Phase0ETH1Data `dynssz-max:"EPOCHS_PER_ETH1_VOTING_PERIOD*SLOTS_PER_EPOCH" ssz-max:"2048"`
 	ETH1DepositIndex              uint64
-	Validators                    []*Validator         `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
+	Validators                    []*Phase0Validator   `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	Balances                      []Gwei               `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	RANDAOMixes                   []Root               `dynssz-size:"EPOCHS_PER_HISTORICAL_VECTOR,32" ssz-size:"65536,32"`
 	Slashings                     []Gwei               `dynssz-size:"EPOCHS_PER_SLASHINGS_VECTOR"     ssz-size:"8192"`
 	PreviousEpochParticipation    []ParticipationFlags `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	CurrentEpochParticipation     []ParticipationFlags `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	JustificationBits             bitfield.Bitvector4  `ssz-size:"1"`
-	PreviousJustifiedCheckpoint   *Checkpoint
-	CurrentJustifiedCheckpoint    *Checkpoint
-	FinalizedCheckpoint           *Checkpoint
+	PreviousJustifiedCheckpoint   *Phase0Checkpoint
+	CurrentJustifiedCheckpoint    *Phase0Checkpoint
+	FinalizedCheckpoint           *Phase0Checkpoint
 	InactivityScores              []uint64 `dynssz-max:"VALIDATOR_REGISTRY_LIMIT" ssz-max:"1099511627776"`
 	CurrentSyncCommittee          *AltairSyncCommittee
 	NextSyncCommittee             *AltairSyncCommittee
@@ -721,7 +698,7 @@ type ElectraExecutionRequests struct {
 
 type ElectraIndexedAttestation struct {
 	AttestingIndices []uint64 `dynssz-max:"MAX_VALIDATORS_PER_COMMITTEE*MAX_COMMITTEES_PER_SLOT" ssz-max:"131072"`
-	Data             *AttestationData
+	Data             *Phase0AttestationData
 	Signature        BLSSignature `ssz-size:"96"`
 }
 
@@ -765,24 +742,24 @@ type FuluBeaconState struct { // TODO: Update to Fulu (latest spectests release 
 	GenesisTime                   uint64
 	GenesisValidatorsRoot         Root `ssz-size:"32"`
 	Slot                          Slot
-	Fork                          *Fork
-	LatestBlockHeader             *BeaconBlockHeader
+	Fork                          *Phase0Fork
+	LatestBlockHeader             *Phase0BeaconBlockHeader
 	BlockRoots                    []Root `dynssz-size:"SLOTS_PER_HISTORICAL_ROOT,32" ssz-size:"8192,32"`
 	StateRoots                    []Root `dynssz-size:"SLOTS_PER_HISTORICAL_ROOT,32" ssz-size:"8192,32"`
 	HistoricalRoots               []Root `dynssz-max:"HISTORICAL_ROOTS_LIMIT"        ssz-max:"16777216" ssz-size:"?,32"`
-	ETH1Data                      *ETH1Data
-	ETH1DataVotes                 []*ETH1Data `dynssz-max:"EPOCHS_PER_ETH1_VOTING_PERIOD*SLOTS_PER_EPOCH" ssz-max:"2048"`
+	ETH1Data                      *Phase0ETH1Data
+	ETH1DataVotes                 []*Phase0ETH1Data `dynssz-max:"EPOCHS_PER_ETH1_VOTING_PERIOD*SLOTS_PER_EPOCH" ssz-max:"2048"`
 	ETH1DepositIndex              uint64
-	Validators                    []*Validator         `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
+	Validators                    []*Phase0Validator   `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	Balances                      []Gwei               `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	RANDAOMixes                   []Root               `dynssz-size:"EPOCHS_PER_HISTORICAL_VECTOR,32" ssz-size:"65536,32"`
 	Slashings                     []Gwei               `dynssz-size:"EPOCHS_PER_SLASHINGS_VECTOR"     ssz-size:"8192"`
 	PreviousEpochParticipation    []ParticipationFlags `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	CurrentEpochParticipation     []ParticipationFlags `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"         ssz-max:"1099511627776"`
 	JustificationBits             bitfield.Bitvector4  `ssz-size:"1"`
-	PreviousJustifiedCheckpoint   *Checkpoint
-	CurrentJustifiedCheckpoint    *Checkpoint
-	FinalizedCheckpoint           *Checkpoint
+	PreviousJustifiedCheckpoint   *Phase0Checkpoint
+	CurrentJustifiedCheckpoint    *Phase0Checkpoint
+	FinalizedCheckpoint           *Phase0Checkpoint
 	InactivityScores              []uint64 `dynssz-max:"VALIDATOR_REGISTRY_LIMIT" ssz-max:"1099511627776"`
 	CurrentSyncCommittee          *AltairSyncCommittee
 	NextSyncCommittee             *AltairSyncCommittee

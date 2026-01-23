@@ -693,7 +693,7 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varNa
 
 	hasherAlias := ctx.typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
 	sizeVar := "_"
-	if maxVar != "" || maxVar != "" || desc.SszType == ssztypes.SszProgressiveBitlistType {
+	if maxVar != "" || desc.SszType == ssztypes.SszProgressiveBitlistType {
 		sizeVar = "size"
 	}
 	ctx.appendCode(indent, "bitlist, %s := %s.ParseBitlistWithHasher(hh, %s[:])\n", sizeVar, hasherAlias, varName)

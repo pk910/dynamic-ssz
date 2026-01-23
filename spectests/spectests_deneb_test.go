@@ -105,7 +105,7 @@ func TestConsensusSpecDeneb(t *testing.T) {
 		{
 			name: "Eth1Data",
 			s:    &phase0.ETH1Data{},
-			s2:   &codegen.Eth1Data{},
+			s2:   &codegen.ETH1Data{},
 		},
 		{
 			name: "ExecutionPayload",

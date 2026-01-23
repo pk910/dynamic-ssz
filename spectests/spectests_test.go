@@ -21,6 +21,7 @@ type SpecTestStruct struct {
 	name string
 	s    any
 	s2   any
+	s3   []any
 }
 
 func runForkConsensusSpecTest(t *testing.T, fork string, preset string, tests []SpecTestStruct) bool {
