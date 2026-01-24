@@ -38,18 +38,69 @@ specs := map[string]any{
 ssz := dynssz.NewDynSsz(specs)
 ```
 
+## Call Options
+
+### CallOption
+
+Per-call configuration for SSZ operations.
+
+```go
+type CallOption func(*callConfig)
+```
+
+### WithViewDescriptor
+
+```go
+func WithViewDescriptor(view any) CallOption
+```
+
+Specifies a view descriptor for fork-dependent SSZ schemas.
+
+The view descriptor defines the SSZ layout (field order, tags, sizes) while the actual data is read from/written to the runtime object. This enables a single runtime type to support multiple SSZ representations for different forks.
+
+**Parameters**:
+- `view` - A struct or pointer to struct defining the SSZ schema. Its fields are mapped to the runtime type's fields by name. The view's field values are not used; only its type information matters.
+
+**Example**:
+```go
+// Define view types for different forks
+type Phase0BeaconBlockBodyView struct {
+    RANDAOReveal [96]byte `ssz-size:"96"`
+    // ... Phase0 fields only
+}
+
+type AltairBeaconBlockBodyView struct {
+    RANDAOReveal  [96]byte `ssz-size:"96"`
+    SyncAggregate *SyncAggregateView
+    // ... Altair fields
+}
+
+// Use views in SSZ operations
+data, err := ssz.MarshalSSZ(body, dynssz.WithViewDescriptor(&Phase0BeaconBlockBodyView{}))
+
+err = ssz.UnmarshalSSZ(&body, data, dynssz.WithViewDescriptor(&AltairBeaconBlockBodyView{}))
+
+root, err := ssz.HashTreeRoot(body, dynssz.WithViewDescriptor(&AltairBeaconBlockBodyView{}))
+
+// Nil pointer works too (only type information is used)
+data, err = ssz.MarshalSSZ(body, dynssz.WithViewDescriptor((*Phase0BeaconBlockBodyView)(nil)))
+```
+
+See [SSZ Views](views.md) for detailed view documentation.
+
 ## Serialization Methods
 
 ### MarshalSSZ
 
 ```go
-func (d *DynSsz) MarshalSSZ(source interface{}) ([]byte, error)
+func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error)
 ```
 
 Serializes an object to SSZ format.
 
 **Parameters**:
 - `source` - Object to serialize
+- `opts` - Optional call options (e.g., `WithViewDescriptor`)
 
 **Returns**:
 - Serialized bytes
@@ -61,12 +112,15 @@ data, err := ssz.MarshalSSZ(myStruct)
 if err != nil {
     return err
 }
+
+// With view descriptor
+data, err = ssz.MarshalSSZ(myStruct, dynssz.WithViewDescriptor(&MyView{}))
 ```
 
 ### MarshalSSZTo
 
 ```go
-func (d *DynSsz) MarshalSSZTo(source interface{}, buf []byte) ([]byte, error)
+func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byte, error)
 ```
 
 Serializes to SSZ format using provided buffer.
@@ -74,6 +128,7 @@ Serializes to SSZ format using provided buffer.
 **Parameters**:
 - `source` - Object to serialize
 - `buf` - Buffer to write to (can be nil)
+- `opts` - Optional call options (e.g., `WithViewDescriptor`)
 
 **Returns**:
 - Serialized bytes (may be same as buf if large enough)
@@ -88,7 +143,7 @@ data, err := ssz.MarshalSSZTo(myStruct, buf)
 ### UnmarshalSSZ
 
 ```go
-func (d *DynSsz) UnmarshalSSZ(target interface{}, ssz []byte) error
+func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error
 ```
 
 Deserializes from SSZ format.
@@ -96,6 +151,7 @@ Deserializes from SSZ format.
 **Parameters**:
 - `target` - Pointer to object to deserialize into
 - `ssz` - SSZ encoded bytes
+- `opts` - Optional call options (e.g., `WithViewDescriptor`)
 
 **Returns**:
 - Error if deserialization fails
@@ -104,6 +160,9 @@ Deserializes from SSZ format.
 ```go
 var decoded MyStruct
 err := ssz.UnmarshalSSZ(&decoded, data)
+
+// With view descriptor
+err = ssz.UnmarshalSSZ(&decoded, data, dynssz.WithViewDescriptor(&Phase0View{}))
 ```
 
 ## Streaming Methods
@@ -111,7 +170,7 @@ err := ssz.UnmarshalSSZ(&decoded, data)
 ### MarshalSSZWriter
 
 ```go
-func (d *DynSsz) MarshalSSZWriter(source interface{}, w io.Writer) error
+func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) error
 ```
 
 Serializes an object directly to an `io.Writer` for memory-efficient streaming.
@@ -119,6 +178,7 @@ Serializes an object directly to an `io.Writer` for memory-efficient streaming.
 **Parameters**:
 - `source` - Object to serialize
 - `w` - Destination writer (file, network connection, etc.)
+- `opts` - Optional call options (e.g., `WithViewDescriptor`)
 
 **Returns**:
 - Error if serialization or writing fails
@@ -132,12 +192,15 @@ err := ssz.MarshalSSZWriter(state, file)
 if err != nil {
     return err
 }
+
+// With view descriptor
+err = ssz.MarshalSSZWriter(state, file, dynssz.WithViewDescriptor(&Phase0StateView{}))
 ```
 
 ### UnmarshalSSZReader
 
 ```go
-func (d *DynSsz) UnmarshalSSZReader(target interface{}, r io.Reader, size int) error
+func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...CallOption) error
 ```
 
 Deserializes from an `io.Reader` for memory-efficient streaming.
@@ -146,6 +209,7 @@ Deserializes from an `io.Reader` for memory-efficient streaming.
 - `target` - Pointer to object to deserialize into
 - `r` - Source reader
 - `size` - Expected total size of the SSZ data in bytes
+- `opts` - Optional call options (e.g., `WithViewDescriptor`)
 
 **Returns**:
 - Error if deserialization fails
@@ -158,6 +222,9 @@ defer file.Close()
 info, _ := file.Stat()
 var state BeaconState
 err := ssz.UnmarshalSSZReader(&state, file, int(info.Size()))
+
+// With view descriptor
+err = ssz.UnmarshalSSZReader(&state, file, int(info.Size()), dynssz.WithViewDescriptor(&AltairStateView{}))
 ```
 
 See [Streaming Support](streaming.md) for detailed streaming documentation.
@@ -167,13 +234,14 @@ See [Streaming Support](streaming.md) for detailed streaming documentation.
 ### HashTreeRoot
 
 ```go
-func (d *DynSsz) HashTreeRoot(source interface{}) ([32]byte, error)
+func (d *DynSsz) HashTreeRoot(source any, opts ...CallOption) ([32]byte, error)
 ```
 
 Computes the SSZ hash tree root.
 
 **Parameters**:
 - `source` - Object to hash
+- `opts` - Optional call options (e.g., `WithViewDescriptor`)
 
 **Returns**:
 - 32-byte hash root
@@ -186,18 +254,22 @@ if err != nil {
     return err
 }
 fmt.Printf("Root: %x\n", root)
+
+// With view descriptor for fork-specific hashing
+root, err = ssz.HashTreeRoot(myStruct, dynssz.WithViewDescriptor(&AltairView{}))
 ```
 
 ### GetTree
 
 ```go
-func (d *DynSsz) GetTree(source interface{}) (*treeproof.Node, error)
+func (d *DynSsz) GetTree(source any, opts ...CallOption) (*treeproof.Node, error)
 ```
 
 Builds and returns the complete Merkle tree for proof generation.
 
 **Parameters**:
 - `source` - Object to build tree for
+- `opts` - Optional call options (e.g., `WithViewDescriptor`)
 
 **Returns**:
 - `*treeproof.Node` - Root node of the complete Merkle tree
@@ -221,6 +293,9 @@ if err != nil {
 
 // Verify proof
 isValid, err := treeproof.VerifyProof(tree.Hash(), proof)
+
+// With view descriptor
+tree, err = ssz.GetTree(myStruct, dynssz.WithViewDescriptor(&AltairView{}))
 ```
 
 See [Merkle Proofs](merkle-proofs.md) for complete tree and proof generation documentation.
@@ -230,13 +305,14 @@ See [Merkle Proofs](merkle-proofs.md) for complete tree and proof generation doc
 ### SizeSSZ
 
 ```go
-func (d *DynSsz) SizeSSZ(source interface{}) (int, error)
+func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error)
 ```
 
 Calculates serialized size without serializing.
 
 **Parameters**:
 - `source` - Object to calculate size for
+- `opts` - Optional call options (e.g., `WithViewDescriptor`)
 
 **Returns**:
 - Size in bytes
@@ -246,27 +322,40 @@ Calculates serialized size without serializing.
 ```go
 size, err := ssz.SizeSSZ(myStruct)
 fmt.Printf("Size: %d bytes\n", size)
+
+// With view descriptor
+size, err = ssz.SizeSSZ(myStruct, dynssz.WithViewDescriptor(&Phase0View{}))
 ```
 
 ### ValidateType
 
 ```go
-func (d *DynSsz) ValidateType(t reflect.Type) error
+func (d *DynSsz) ValidateType(t reflect.Type, opts ...CallOption) error
 ```
 
-Validates that a type can be serialized.
+Validates that a type can be serialized. When a view descriptor is provided, also validates that the view type is compatible with the runtime type.
 
 **Parameters**:
 - `t` - Type to validate
+- `opts` - Optional call options (e.g., `WithViewDescriptor` for view compatibility validation)
 
 **Returns**:
-- Error if type is invalid for SSZ
+- Error if type is invalid for SSZ or view is incompatible
 
 **Example**:
 ```go
 err := ssz.ValidateType(reflect.TypeOf(MyStruct{}))
 if err != nil {
     fmt.Printf("Invalid type: %v\n", err)
+}
+
+// Validate view compatibility
+err = ssz.ValidateType(
+    reflect.TypeOf(BeaconState{}),
+    dynssz.WithViewDescriptor(&Phase0BeaconStateView{}),
+)
+if err != nil {
+    fmt.Printf("View incompatible: %v\n", err)
 }
 ```
 
@@ -382,6 +471,46 @@ type DynamicDecoder interface {
     UnmarshalSSZDecoder(specs DynamicSpecs, decoder Decoder) error
 }
 ```
+
+### View Interfaces
+
+These interfaces enable a single runtime type to support multiple SSZ schemas (views). Typically implemented via code generation.
+
+```go
+// View-aware marshaling - returns nil if view not supported
+type DynamicViewMarshaler interface {
+    MarshalSSZDynView(view any) func(ds DynamicSpecs, buf []byte) ([]byte, error)
+}
+
+// View-aware unmarshaling - returns nil if view not supported
+type DynamicViewUnmarshaler interface {
+    UnmarshalSSZDynView(view any) func(ds DynamicSpecs, buf []byte) error
+}
+
+// View-aware size calculation - returns nil if view not supported
+type DynamicViewSizer interface {
+    SizeSSZDynView(view any) func(ds DynamicSpecs) int
+}
+
+// View-aware hash tree root - returns nil if view not supported
+type DynamicViewHashRoot interface {
+    HashTreeRootWithDynView(view any) func(ds DynamicSpecs, hh HashWalker) error
+}
+
+// View-aware streaming encoder - returns nil if view not supported
+type DynamicViewEncoder interface {
+    MarshalSSZEncoderView(view any) func(ds DynamicSpecs, encoder Encoder) error
+}
+
+// View-aware streaming decoder - returns nil if view not supported
+type DynamicViewDecoder interface {
+    UnmarshalSSZDecoderView(view any) func(ds DynamicSpecs, decoder Decoder) error
+}
+```
+
+**Note**: These methods return `nil` if the view type is not recognized, causing Dynamic SSZ to fall back to reflection-based processing.
+
+See [SSZ Views](views.md) for detailed view documentation.
 
 ### Encoder Interface
 
@@ -563,6 +692,7 @@ type CodeGeneratorOption func(*CodeGeneratorOptions)
 Available options:
 
 ```go
+// Method generation control
 func WithNoMarshalSSZ() CodeGeneratorOption
 func WithNoUnmarshalSSZ() CodeGeneratorOption
 func WithNoSizeSSZ() CodeGeneratorOption
@@ -572,11 +702,20 @@ func WithoutDynamicExpressions() CodeGeneratorOption
 func WithNoFastSsz() CodeGeneratorOption
 func WithCreateEncoderFn() CodeGeneratorOption  // Generate streaming encoder
 func WithCreateDecoderFn() CodeGeneratorOption  // Generate streaming decoder
+
+// Hint options
 func WithSizeHints(hints []dynssz.SszSizeHint) CodeGeneratorOption
 func WithMaxSizeHints(hints []dynssz.SszMaxSizeHint) CodeGeneratorOption
 func WithTypeHints(hints []dynssz.SszTypeHint) CodeGeneratorOption
+
+// Type specification
 func WithReflectType(t reflect.Type, typeOpts ...CodeGeneratorOption) CodeGeneratorOption
 func WithGoTypesType(t types.Type, typeOpts ...CodeGeneratorOption) CodeGeneratorOption
+
+// View support (used as nested options within WithReflectType/WithGoTypesType)
+func WithReflectViewTypes(views ...reflect.Type) CodeGeneratorOption  // Add view types using reflection
+func WithGoTypesViewTypes(views ...types.Type) CodeGeneratorOption    // Add view types using go/types
+func WithViewOnly() CodeGeneratorOption                               // Generate only view methods
 ```
 
 See [Code Generator](code-generator.md) for detailed usage.
@@ -722,5 +861,6 @@ func (c *CustomType) MarshalSSZDyn(specs DynamicSpecs, buf []byte) ([]byte, erro
 - [Getting Started](getting-started.md) - Introduction and basics
 - [Supported Types](supported-types.md) - Type system reference
 - [SSZ Annotations](ssz-annotations.md) - Tag documentation
+- [SSZ Views](views.md) - Fork handling with view descriptors
 - [Code Generator](code-generator.md) - Code generation tools
 - [Streaming Support](streaming.md) - Streaming encoding/decoding
