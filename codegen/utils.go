@@ -93,3 +93,26 @@ func escapeBackticks(s string) string {
 	}
 	return s
 }
+
+// escapeViewFnName escapes a view function name for use in generated Go code.
+//
+// This function replaces all dots, dashes, and slashes in the view name
+// with underscores to avoid conflicts with package names and function names.
+//
+// Parameters:
+//   - viewName: The input view name to escape
+//
+// Returns:
+//   - string: The escaped view function name with dots replaced by underscores
+//
+// Example:
+//
+//	viewName := "pkg.View2"
+//	escaped := escapeViewFnName(viewName)
+//	// Result: "pkg_View2"
+func escapeViewFnName(viewName string) string {
+	viewName = strings.ReplaceAll(viewName, ".", "_")
+	viewName = strings.ReplaceAll(viewName, "-", "_")
+	viewName = strings.ReplaceAll(viewName, "/", "_")
+	return viewName
+}

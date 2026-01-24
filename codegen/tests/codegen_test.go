@@ -7,11 +7,13 @@ import (
 	"testing"
 
 	dynssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/codegen/tests/views"
 )
 
 type TestPayload struct {
 	Name    string         // Test name
 	Payload any            // Test payload
+	View    any            // Test view
 	Specs   map[string]any // Dynamic specifications
 	Hash    string         // Expected hash root
 }
@@ -53,6 +55,27 @@ var testMatrix = []TestPayload{
 		Specs:   map[string]any{},
 		Hash:    "317f412cd2d042f367c4f2fb6447828ef9524396428eb2ed0837524bcc70433c",
 	},
+	{
+		Name:    "ViewTypes_View1",
+		Payload: ViewTypes1_Payload,
+		View:    (*ViewTypes1_View1)(nil),
+		Specs:   map[string]any{},
+		Hash:    "e356af1d78a71ba3c5d8dd1d513f58bb82f6640b413bf9648d0a0435f967a5fe",
+	},
+	{
+		Name:    "ViewTypes_View2",
+		Payload: ViewTypes1_Payload,
+		View:    (*ViewTypes1_View2)(nil),
+		Specs:   map[string]any{},
+		Hash:    "82acb108812798107c2bed326c83a2881c90f942883a6e3de6144f30b2987959",
+	},
+	{
+		Name:    "ViewTypes_View3",
+		Payload: ViewTypes1_Payload,
+		View:    (*views.ViewTypes1_View3)(nil),
+		Specs:   map[string]any{},
+		Hash:    "1bee9de04dd4f275d8c785741e5ae754bc95d6cf3d6abf1f98c3a41d066f557f",
+	},
 }
 
 func TestCodegenGeneration(t *testing.T) {
@@ -66,7 +89,12 @@ func TestCodegenGeneration(t *testing.T) {
 func testCodegenPayload(t *testing.T, payload TestPayload) {
 	ds := dynssz.NewDynSsz(payload.Specs)
 
-	hashRoot, err := ds.HashTreeRoot(payload.Payload)
+	opts := []dynssz.CallOption{}
+	if payload.View != nil {
+		opts = append(opts, dynssz.WithViewDescriptor(payload.View))
+	}
+
+	hashRoot, err := ds.HashTreeRoot(payload.Payload, opts...)
 	if err != nil {
 		t.Fatalf("Failed to hash tree root: %v", err)
 	}
@@ -75,7 +103,7 @@ func testCodegenPayload(t *testing.T, payload TestPayload) {
 		t.Fatalf("Hash root mismatch 1: expected %s, got %s", payload.Hash, hashRootHex)
 	}
 
-	sszBytes, err := ds.MarshalSSZ(payload.Payload)
+	sszBytes, err := ds.MarshalSSZ(payload.Payload, opts...)
 	if err != nil {
 		t.Fatalf("Failed to marshal payload: %v", err)
 	}
@@ -85,12 +113,12 @@ func testCodegenPayload(t *testing.T, payload TestPayload) {
 	}{}
 	reflect.ValueOf(obj).Elem().Field(0).Set(reflect.New(reflect.TypeOf(payload.Payload)))
 
-	err = ds.UnmarshalSSZ(obj.Data, sszBytes)
+	err = ds.UnmarshalSSZ(obj.Data, sszBytes, opts...)
 	if err != nil {
 		t.Fatalf("Failed to unmarshal payload: %v", err)
 	}
 
-	hashRoot, err = ds.HashTreeRoot(obj.Data)
+	hashRoot, err = ds.HashTreeRoot(obj.Data, opts...)
 	if err != nil {
 		t.Fatalf("Failed to hash tree root: %v", err)
 	}
@@ -101,7 +129,7 @@ func testCodegenPayload(t *testing.T, payload TestPayload) {
 
 	memBuf := make([]byte, 0, len(sszBytes))
 	memWriter := bytes.NewBuffer(memBuf)
-	err = ds.MarshalSSZWriter(payload.Payload, memWriter)
+	err = ds.MarshalSSZWriter(payload.Payload, memWriter, opts...)
 	if err != nil {
 		t.Fatalf("Failed to marshal payload: %v", err)
 	}
@@ -112,12 +140,12 @@ func testCodegenPayload(t *testing.T, payload TestPayload) {
 
 	reflect.ValueOf(obj).Elem().Field(0).Set(reflect.New(reflect.TypeOf(payload.Payload)))
 
-	err = ds.UnmarshalSSZReader(obj.Data, bytes.NewReader(sszBytes), len(sszBytes))
+	err = ds.UnmarshalSSZReader(obj.Data, bytes.NewReader(sszBytes), len(sszBytes), opts...)
 	if err != nil {
 		t.Fatalf("Failed to unmarshal payload: %v", err)
 	}
 
-	hashRoot, err = ds.HashTreeRoot(obj.Data)
+	hashRoot, err = ds.HashTreeRoot(obj.Data, opts...)
 	if err != nil {
 		t.Fatalf("Failed to hash tree root: %v", err)
 	}

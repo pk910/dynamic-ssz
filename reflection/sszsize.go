@@ -48,37 +48,55 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		}
 	}
 
-	// use fastssz to calculate size if:
-	// - struct implements fastssz Marshaler interface
-	// - this structure or any child structure does not use spec specific field sizes
-	useFastSsz := !ctx.noFastSsz && targetType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
-	if !useFastSsz && targetType.SszType == ssztypes.SszCustomType {
-		useFastSsz = true
-	}
+	// Try DynamicViewSizer first - it takes precedence over all other methods.
+	// This supports fork-dependent SSZ schemas where generated code handles
+	// different view types. If the method returns nil, fall through to
+	// other sizing methods.
+	isView := targetType.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
+	useReflection := true
 
-	// Check if we should use dynamic sizer - can ALWAYS be used unlike fastssz
-	useDynamicSize := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0
+	if isView {
+		if targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewSizer != 0 {
+			if sizer, ok := getPtr(targetValue).Interface().(sszutils.DynamicViewSizer); ok {
+				if sizeFn := sizer.SizeSSZDynView(*targetType.CodegenInfo); sizeFn != nil {
+					staticSize = uint32(sizeFn(ctx.ds))
+					useReflection = false
+				}
+			}
+		}
+	} else {
+		// use fastssz to calculate size if:
+		// - struct implements fastssz Marshaler interface
+		// - this structure or any child structure does not use spec specific field sizes
+		useFastSsz := !ctx.noFastSsz && targetType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+		if !useFastSsz && targetType.SszType == ssztypes.SszCustomType {
+			useFastSsz = true
+		}
 
-	if useFastSsz {
-		marshaller, ok := getPtr(targetValue).Interface().(sszutils.FastsszMarshaler)
-		if ok {
-			staticSize = uint32(marshaller.SizeSSZ())
-		} else {
-			useFastSsz = false
+		// Check if we should use dynamic sizer - can ALWAYS be used unlike fastssz
+		useDynamicSize := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0
+
+		if useFastSsz {
+			marshaller, ok := getPtr(targetValue).Interface().(sszutils.FastsszMarshaler)
+			if ok {
+				staticSize = uint32(marshaller.SizeSSZ())
+				useReflection = false
+			} else {
+				useFastSsz = false
+			}
+		}
+
+		if useReflection && useDynamicSize {
+			// Use dynamic sizer - can always be used even with dynamic specs
+			sizer, ok := getPtr(targetValue).Interface().(sszutils.DynamicSizer)
+			if ok {
+				staticSize = uint32(sizer.SizeSSZDyn(ctx.ds))
+				useReflection = false
+			}
 		}
 	}
 
-	if !useFastSsz && useDynamicSize {
-		// Use dynamic sizer - can always be used even with dynamic specs
-		sizer, ok := getPtr(targetValue).Interface().(sszutils.DynamicSizer)
-		if ok {
-			staticSize = uint32(sizer.SizeSSZDyn(ctx.ds))
-		} else {
-			useDynamicSize = false
-		}
-	}
-
-	if !useFastSsz && !useDynamicSize {
+	if useReflection {
 		// can't use fastssz, use dynamic size calculation
 		switch targetType.SszType {
 		case ssztypes.SszTypeWrapperType:
@@ -94,7 +112,9 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
 			for i := 0; i < len(targetType.ContainerDesc.Fields); i++ {
 				fieldType := targetType.ContainerDesc.Fields[i]
-				fieldValue := targetValue.Field(i)
+				// Use FieldIndex to access the runtime struct's field, which may differ
+				// from the schema field index when using view descriptors.
+				fieldValue := targetValue.Field(int(fieldType.FieldIndex))
 
 				if fieldType.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 					size, err := ctx.getSszValueSize(fieldType.Type, fieldValue)

@@ -47,11 +47,12 @@ type marshalContext struct {
 //   - rootTypeDesc: Type descriptor containing complete SSZ encoding metadata
 //   - codeBuilder: String builder to append generated method code to
 //   - typePrinter: Type formatter for handling imports and type names
+//   - viewName: Name of the view type for function name postfix (empty string for data type)
 //   - options: Generation options controlling which methods to create
 //
 // Returns:
 //   - error: An error if code generation fails
-func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
+func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, viewName string, options *CodeGeneratorOptions) error {
 	codeBuf := strings.Builder{}
 	ctx := &marshalContext{
 		appendCode: func(indent int, code string, args ...any) {
@@ -79,11 +80,11 @@ func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 		ctx.usedDynSpecs = true
 	}
 
-	genDynamicFn := !options.WithoutDynamicExpressions
-	genStaticFn := options.WithoutDynamicExpressions || options.CreateLegacyFn
-	genLegacyFn := options.CreateLegacyFn
+	genDynamicFn := !options.WithoutDynamicExpressions || viewName != ""
+	genStaticFn := (options.WithoutDynamicExpressions || options.CreateLegacyFn) && viewName == ""
+	genLegacyFn := options.CreateLegacyFn && viewName == ""
 
-	if genDynamicFn && !ctx.usedDynSpecs {
+	if genDynamicFn && !ctx.usedDynSpecs && viewName == "" {
 		genStaticFn = true
 	}
 
@@ -111,15 +112,19 @@ func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 	}
 
 	if genDynamicFn {
-		if ctx.usedDynSpecs {
-			appendCode(codeBuilder, 0, "func (t %s) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {\n", typeName)
+		fnName := "MarshalSSZDyn"
+		if viewName != "" {
+			fnName = fmt.Sprintf("marshalSSZView_%s", viewName)
+		}
+		if ctx.usedDynSpecs || viewName != "" {
+			appendCode(codeBuilder, 0, "func (t %s) %s(ds sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {\n", typeName, fnName)
 			appendCode(codeBuilder, 1, "dst = buf\n")
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 			appendCode(codeBuilder, 1, codeBuf.String())
 			appendCode(codeBuilder, 1, "return dst, nil\n")
 			appendCode(codeBuilder, 0, "}\n\n")
 		} else {
-			appendCode(codeBuilder, 0, "func (t %s) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {\n", typeName)
+			appendCode(codeBuilder, 0, "func (t %s) %s(_ sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {\n", typeName, fnName)
 			appendCode(codeBuilder, 1, "return t.MarshalSSZTo(buf)\n")
 			appendCode(codeBuilder, 0, "}\n\n")
 			genStaticFn = true
@@ -177,30 +182,53 @@ func (ctx *marshalContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 	}
 
 	// Handle types that have generated methods we can call
-	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
-	isFastsszMarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
-	useFastSsz := !ctx.options.NoFastSsz && isFastsszMarshaler && !hasDynamicSize
-	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
-		useFastSsz = true
+	isView := desc.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
+	if !isRoot && isView {
+		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewMarshaler != 0 {
+			ctx.appendCode(indent, "if viewFn := %s.MarshalSSZDynView((%s)(nil)); viewFn != nil {\n", varName, ctx.typePrinter.ViewTypeString(desc, true))
+			ctx.appendCode(indent+1, "if dst, err = viewFn(ds, dst); err != nil {\n\treturn nil, err\n}\n")
+			ctx.appendCode(indent, "} else {\n\treturn nil, sszutils.ErrNotImplemented\n}\n")
+			ctx.usedDynSpecs = true
+			return nil
+		}
+
+		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewEncoder != 0 {
+			ctx.appendCode(indent, "enc := sszutils.NewBufferEncoder(dst)\n")
+			ctx.appendCode(indent, "if viewFn := %s.MarshalSSZEncoderView((%s)(nil)); viewFn != nil {\n", varName, ctx.typePrinter.ViewTypeString(desc, true))
+			ctx.appendCode(indent+1, "if err = viewFn(ds, enc); err != nil {\n\treturn nil, err\n}\n")
+			ctx.appendCode(indent, "} else {\n\treturn nil, sszutils.ErrNotImplemented\n}\n")
+			ctx.appendCode(indent, "dst = enc.GetBuffer()\n")
+			ctx.usedDynSpecs = true
+			return nil
+		}
 	}
 
-	if useFastSsz && !isRoot {
-		ctx.appendCode(indent, "if dst, err = %s.MarshalSSZTo(dst); err != nil {\n\treturn nil, err\n}\n", varName)
-		return nil
-	}
+	if !isRoot && !isView {
+		hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
+		isFastsszMarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+		useFastSsz := !ctx.options.NoFastSsz && isFastsszMarshaler && !hasDynamicSize
+		if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
+			useFastSsz = true
+		}
 
-	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 && !isRoot {
-		ctx.appendCode(indent, "if dst, err = %s.MarshalSSZDyn(ds, dst); err != nil {\n\treturn nil, err\n}\n", varName)
-		ctx.usedDynSpecs = true
-		return nil
-	}
+		if useFastSsz {
+			ctx.appendCode(indent, "if dst, err = %s.MarshalSSZTo(dst); err != nil {\n\treturn nil, err\n}\n", varName)
+			return nil
+		}
 
-	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicEncoder != 0 && !isRoot {
-		ctx.appendCode(indent, "enc := sszutils.NewBufferEncoder(dst)\n")
-		ctx.appendCode(indent, "if err = %s.MarshalSSZEncoder(ds, enc); err != nil {\n\treturn nil, err\n}\n", varName)
-		ctx.appendCode(indent, "dst = enc.GetBuffer()\n")
-		ctx.usedDynSpecs = true
-		return nil
+		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 {
+			ctx.appendCode(indent, "if dst, err = %s.MarshalSSZDyn(ds, dst); err != nil {\n\treturn nil, err\n}\n", varName)
+			ctx.usedDynSpecs = true
+			return nil
+		}
+
+		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicEncoder != 0 {
+			ctx.appendCode(indent, "enc := sszutils.NewBufferEncoder(dst)\n")
+			ctx.appendCode(indent, "if err = %s.MarshalSSZEncoder(ds, enc); err != nil {\n\treturn nil, err\n}\n", varName)
+			ctx.appendCode(indent, "dst = enc.GetBuffer()\n")
+			ctx.usedDynSpecs = true
+			return nil
+		}
 	}
 
 	switch desc.SszType {

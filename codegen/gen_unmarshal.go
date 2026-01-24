@@ -53,11 +53,12 @@ type unmarshalContext struct {
 //   - rootTypeDesc: Type descriptor containing complete SSZ decoding metadata
 //   - codeBuilder: String builder to append generated method code to
 //   - typePrinter: Type formatter for handling imports and type names
+//   - viewName: Name of the view type for function name postfix (empty string for data type)
 //   - options: Generation options controlling which methods to create
 //
 // Returns:
 //   - error: An error if code generation fails
-func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
+func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, viewName string, options *CodeGeneratorOptions) error {
 	codeBuf := strings.Builder{}
 	ctx := &unmarshalContext{
 		appendCode: func(indent int, code string, args ...any) {
@@ -85,10 +86,10 @@ func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strin
 		ctx.usedDynSpecs = true
 	}
 
-	genDynamicFn := !options.WithoutDynamicExpressions
-	genStaticFn := options.WithoutDynamicExpressions || options.CreateLegacyFn
+	genDynamicFn := !options.WithoutDynamicExpressions || viewName != ""
+	genStaticFn := (options.WithoutDynamicExpressions || options.CreateLegacyFn) && viewName == ""
 
-	if genDynamicFn && !ctx.usedDynSpecs {
+	if genDynamicFn && !ctx.usedDynSpecs && viewName == "" {
 		genStaticFn = true
 	}
 
@@ -109,15 +110,19 @@ func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strin
 	}
 
 	if genDynamicFn {
-		if ctx.usedDynSpecs {
-			appendCode(codeBuilder, 0, "func (t %s) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (err error) {\n", typeName)
+		fnName := "UnmarshalSSZDyn"
+		if viewName != "" {
+			fnName = fmt.Sprintf("unmarshalSSZView_%s", viewName)
+		}
+		if ctx.usedDynSpecs || viewName != "" {
+			appendCode(codeBuilder, 0, "func (t %s) %s(ds sszutils.DynamicSpecs, buf []byte) (err error) {\n", typeName, fnName)
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 			appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
 			appendCode(codeBuilder, 1, codeBuf.String())
 			appendCode(codeBuilder, 1, "return nil\n")
 			appendCode(codeBuilder, 0, "}\n\n")
 		} else {
-			appendCode(codeBuilder, 0, "func (t %s) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) (err error) {\n", typeName)
+			appendCode(codeBuilder, 0, "func (t %s) %s(_ sszutils.DynamicSpecs, buf []byte) (err error) {\n", typeName, fnName)
 			appendCode(codeBuilder, 1, "return t.UnmarshalSSZ(buf)\n")
 			appendCode(codeBuilder, 0, "}\n\n")
 			genStaticFn = true
@@ -176,29 +181,51 @@ func (ctx *unmarshalContext) isInlinable(desc *ssztypes.TypeDescriptor) bool {
 // unmarshalType generates unmarshal code for any SSZ type, delegating to specific unmarshalers.
 func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName string, indent int, isRoot bool, noBufCheck bool) error {
 	// Handle types that have generated methods we can call
-	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
-	isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
-	useFastSsz := !ctx.options.NoFastSsz && isFastsszUnmarshaler && !hasDynamicSize
-	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
-		useFastSsz = true
+	isView := desc.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
+	if !isRoot && isView {
+		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewUnmarshaler != 0 {
+			ctx.appendCode(indent, "if viewFn := %s.UnmarshalSSZDynView((%s)(nil)); viewFn != nil {\n", varName, ctx.typePrinter.ViewTypeString(desc, true))
+			ctx.appendCode(indent+1, "if err = viewFn(ds, buf); err != nil {\n\treturn err\n}\n")
+			ctx.appendCode(indent, "} else {\n\treturn sszutils.ErrNotImplemented\n}\n")
+			ctx.usedDynSpecs = true
+			return nil
+		}
+
+		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewDecoder != 0 {
+			ctx.appendCode(indent, "dec := sszutils.NewBufferDecoder(buf)\n")
+			ctx.appendCode(indent, "if viewFn := %s.UnmarshalSSZDecoderView((%s)(nil)); viewFn != nil {\n", varName, ctx.typePrinter.ViewTypeString(desc, true))
+			ctx.appendCode(indent+1, "if err = viewFn(ds, dec); err != nil {\n\treturn err\n}\n")
+			ctx.appendCode(indent, "} else {\n\treturn sszutils.ErrNotImplemented\n}\n")
+			ctx.usedDynSpecs = true
+			return nil
+		}
 	}
 
-	if useFastSsz && !isRoot {
-		ctx.appendCode(indent, "if err = %s.UnmarshalSSZ(buf); err != nil {\n\treturn err\n}\n", varName)
-		return nil
-	}
+	if !isRoot && !isView {
+		hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
+		isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+		useFastSsz := !ctx.options.NoFastSsz && isFastsszUnmarshaler && !hasDynamicSize
+		if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
+			useFastSsz = true
+		}
 
-	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 && !isRoot {
-		ctx.appendCode(indent, "if err = %s.UnmarshalSSZDyn(ds, buf); err != nil {\n\treturn err\n}\n", varName)
-		ctx.usedDynSpecs = true
-		return nil
-	}
+		if useFastSsz {
+			ctx.appendCode(indent, "if err = %s.UnmarshalSSZ(buf); err != nil {\n\treturn err\n}\n", varName)
+			return nil
+		}
 
-	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 && !isRoot {
-		ctx.appendCode(indent, "dec := sszutils.NewBufferDecoder(buf)\n")
-		ctx.appendCode(indent, "if err = %s.UnmarshalSSZDecoder(ds, dec); err != nil {\n\treturn err\n}\n", varName)
-		ctx.usedDynSpecs = true
-		return nil
+		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
+			ctx.appendCode(indent, "if err = %s.UnmarshalSSZDyn(ds, buf); err != nil {\n\treturn err\n}\n", varName)
+			ctx.usedDynSpecs = true
+			return nil
+		}
+
+		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 {
+			ctx.appendCode(indent, "dec := sszutils.NewBufferDecoder(buf)\n")
+			ctx.appendCode(indent, "if err = %s.UnmarshalSSZDecoder(ds, dec); err != nil {\n\treturn err\n}\n", varName)
+			ctx.usedDynSpecs = true
+			return nil
+		}
 	}
 
 	switch desc.SszType {

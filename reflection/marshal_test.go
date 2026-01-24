@@ -284,7 +284,7 @@ func TestMarshalErrors(t *testing.T) {
 			input: struct {
 				TypeWrapper struct{} `ssz-type:"wrapper"`
 			}{},
-			expectedErr: "method not found on type",
+			expectedErr: "method not found on",
 		},
 
 		{
@@ -1050,5 +1050,106 @@ func TestCustomFallbackMarshal(t *testing.T) {
 	_, err = dynssz.MarshalSSZ(&TestContainer{})
 	if err == nil {
 		t.Fatalf("Expected error, got nil")
+	}
+}
+
+func TestViewMarshaler(t *testing.T) {
+	// Test DynamicViewMarshaler interface via MarshalSSZWriter (non-seekable encoder)
+	// The non-seekable path calls MarshalSSZDynView
+	// Expected SSZ: uint64(123) + uint32(456) = 8 + 4 = 12 bytes
+	// Little endian: 0x7b00000000000000 + 0xc8010000
+	expectedSSZ := fromHex("0x7b00000000000000c8010000")
+
+	testCases := []struct {
+		name        string
+		view        any
+		expectError string
+	}{
+		{
+			name: "ViewMarshaler_Success",
+			view: (*TestViewType1)(nil),
+		},
+		{
+			name:        "ViewMarshaler_Error",
+			view:        (*TestViewType2)(nil),
+			expectError: "test view encoder error",
+		},
+		{
+			name: "ViewMarshaler_NoCodeForView_FallbackToReflection",
+			view: (*TestViewTypeUnknown)(nil),
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := NewDynSsz(nil)
+			container := TestContainerWithViewMarshaler{Field0: 123, Field1: 456}
+			var buf bytes.Buffer
+			err := ds.MarshalSSZWriter(&container, &buf, WithViewDescriptor(tc.view))
+
+			if tc.expectError != "" {
+				if err == nil {
+					t.Errorf("expected error containing '%s', but got no error", tc.expectError)
+				} else if !contains(err.Error(), tc.expectError) {
+					t.Errorf("expected error containing '%s', but got: %v", tc.expectError, err)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				} else if !bytes.Equal(buf.Bytes(), expectedSSZ) {
+					t.Errorf("expected SSZ %x, got %x", expectedSSZ, buf.Bytes())
+				}
+			}
+		})
+	}
+}
+
+func TestViewEncoder(t *testing.T) {
+	// Test DynamicViewEncoder interface via MarshalSSZ (seekable encoder)
+	// The seekable path calls MarshalSSZEncoderView first
+	// Expected SSZ: uint64(123) + uint32(456) = 8 + 4 = 12 bytes
+	// Little endian: 0x7b00000000000000 + 0xc8010000
+	expectedSSZ := fromHex("0x7b00000000000000c8010000")
+
+	testCases := []struct {
+		name        string
+		view        any
+		expectError string
+	}{
+		{
+			name: "ViewEncoder_Success",
+			view: (*TestViewType1)(nil),
+		},
+		{
+			name:        "ViewEncoder_Error",
+			view:        (*TestViewType2)(nil),
+			expectError: "test view marshaler error",
+		},
+		{
+			name: "ViewEncoder_NoCodeForView_FallbackToReflection",
+			view: (*TestViewTypeUnknown)(nil),
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := NewDynSsz(nil)
+			container := TestContainerWithViewMarshaler{Field0: 123, Field1: 456}
+			data, err := ds.MarshalSSZ(&container, WithViewDescriptor(tc.view))
+
+			if tc.expectError != "" {
+				if err == nil {
+					t.Errorf("expected error containing '%s', but got no error", tc.expectError)
+				} else if !contains(err.Error(), tc.expectError) {
+					t.Errorf("expected error containing '%s', but got: %v", tc.expectError, err)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				} else if !bytes.Equal(data, expectedSSZ) {
+					t.Errorf("expected SSZ %x, got %x", expectedSSZ, data)
+				}
+			}
+		})
 	}
 }

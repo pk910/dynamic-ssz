@@ -50,11 +50,12 @@ type hashTreeRootContext struct {
 //   - rootTypeDesc: Type descriptor containing complete SSZ hashing metadata
 //   - codeBuilder: String builder to append generated method code to
 //   - typePrinter: Type formatter for handling imports and type names
+//   - viewName: Name of the view type for function name postfix (empty string for data type)
 //   - options: Generation options controlling which methods to create
 //
 // Returns:
 //   - error: An error if code generation fails
-func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
+func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, viewName string, options *CodeGeneratorOptions) error {
 	codeBuf := strings.Builder{}
 	ctx := &hashTreeRootContext{
 		appendCode: func(indent int, code string, args ...any) {
@@ -80,10 +81,10 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 		ctx.usedDynSpecs = true
 	}
 
-	genDynamicFn := !options.WithoutDynamicExpressions
-	genStaticFn := options.WithoutDynamicExpressions || options.CreateLegacyFn
+	genDynamicFn := !options.WithoutDynamicExpressions || viewName != ""
+	genStaticFn := (options.WithoutDynamicExpressions || options.CreateLegacyFn) && viewName == ""
 
-	if genDynamicFn && !ctx.usedDynSpecs {
+	if genDynamicFn && !ctx.usedDynSpecs && viewName == "" {
 		genStaticFn = true
 	}
 
@@ -118,7 +119,7 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 	}
 
 	// Dynamic hash tree root function
-	if genDynamicFn {
+	if genDynamicFn && viewName == "" {
 		hasherAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
 		appendCode(codeBuilder, 0, "func (t %s) HashTreeRootDyn(ds sszutils.DynamicSpecs) (root [32]byte, err error) {\n", typeName)
 		appendCode(codeBuilder, 1, "err = %s.WithDefaultHasher(func(hh sszutils.HashWalker) (err error) {\n", hasherAlias)
@@ -133,14 +134,18 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 	}
 
 	if genDynamicFn {
-		if ctx.usedDynSpecs {
-			appendCode(codeBuilder, 0, "func (t %s) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName)
+		fnName := "HashTreeRootWithDyn"
+		if viewName != "" {
+			fnName = fmt.Sprintf("hashTreeRootView_%s", viewName)
+		}
+		if ctx.usedDynSpecs || viewName != "" {
+			appendCode(codeBuilder, 0, "func (t %s) %s(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName, fnName)
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 			appendCode(codeBuilder, 1, codeBuf.String())
 			appendCode(codeBuilder, 1, "return nil\n")
 			appendCode(codeBuilder, 0, "}\n\n")
 		} else {
-			appendCode(codeBuilder, 0, "func (t %s) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName)
+			appendCode(codeBuilder, 0, "func (t %s) %s(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName, fnName)
 			appendCode(codeBuilder, 1, "return t.HashTreeRootWith(hh)\n")
 			appendCode(codeBuilder, 0, "}\n\n")
 			genStaticFn = true
@@ -209,29 +214,42 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 	}
 
 	// Handle types that have generated methods we can call
-	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0 && !isRoot {
-		ctx.appendCode(indent, "if err := %s.HashTreeRootWithDyn(ds, hh); err != nil {\n\treturn err\n}\n", varName)
-		ctx.usedDynSpecs = true
-		return nil
-	}
-
-	isFastsszHasher := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0
-	isFastsszHashWith := desc.SszCompatFlags&ssztypes.SszCompatFlagHashTreeRootWith != 0
-	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
-	hasDynamicMax := desc.SszTypeFlags&ssztypes.SszTypeFlagHasMaxExpr != 0 && !ctx.options.WithoutDynamicExpressions
-
-	useFastSsz := !isRoot && !ctx.options.NoFastSsz && !hasDynamicSize && !hasDynamicMax && (isFastsszHasher || isFastsszHashWith)
-	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
-		useFastSsz = true
-	}
-
-	if useFastSsz {
-		if isFastsszHashWith {
-			ctx.appendCode(indent, "if err := %s.HashTreeRootWith(hh); err != nil {\n\treturn err\n}\n", varName)
-		} else {
-			ctx.appendCode(indent, "if root, err := %s.HashTreeRoot(); err != nil {\n\treturn err\n} else {\n\thh.AppendBytes32(root[:])\n}\n", varName)
+	isView := desc.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
+	if !isRoot && isView {
+		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewHashRoot != 0 {
+			ctx.appendCode(indent, "if viewFn := %s.HashTreeRootWithDynView((%s)(nil)); viewFn != nil {\n", varName, ctx.typePrinter.ViewTypeString(desc, true))
+			ctx.appendCode(indent+1, "if err := viewFn(ds, hh); err != nil {\n\treturn err\n}\n")
+			ctx.appendCode(indent, "} else {\n\treturn sszutils.ErrNotImplemented\n}\n")
+			ctx.usedDynSpecs = true
+			return nil
 		}
-		return nil
+	}
+
+	if !isRoot && !isView {
+		isFastsszHasher := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0
+		isFastsszHashWith := desc.SszCompatFlags&ssztypes.SszCompatFlagHashTreeRootWith != 0
+		hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
+		hasDynamicMax := desc.SszTypeFlags&ssztypes.SszTypeFlagHasMaxExpr != 0 && !ctx.options.WithoutDynamicExpressions
+
+		useFastSsz := !isRoot && !ctx.options.NoFastSsz && !hasDynamicSize && !hasDynamicMax && (isFastsszHasher || isFastsszHashWith)
+		if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
+			useFastSsz = true
+		}
+
+		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0 && !isRoot {
+			ctx.appendCode(indent, "if err := %s.HashTreeRootWithDyn(ds, hh); err != nil {\n\treturn err\n}\n", varName)
+			ctx.usedDynSpecs = true
+			return nil
+		}
+
+		if useFastSsz {
+			if isFastsszHashWith {
+				ctx.appendCode(indent, "if err := %s.HashTreeRootWith(hh); err != nil {\n\treturn err\n}\n", varName)
+			} else {
+				ctx.appendCode(indent, "if root, err := %s.HashTreeRoot(); err != nil {\n\treturn err\n} else {\n\thh.AppendBytes32(root[:])\n}\n", varName)
+			}
+			return nil
+		}
 	}
 
 	switch desc.SszType {
@@ -687,7 +705,11 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varNa
 	ctx.appendCode(indent, "idx := hh.Index()\n")
 
 	hasherAlias := ctx.typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
-	ctx.appendCode(indent, "bitlist, size := %s.ParseBitlistWithHasher(hh, %s[:])\n", hasherAlias, varName)
+	sizeVar := "_"
+	if maxVar != "" || desc.SszType == ssztypes.SszProgressiveBitlistType {
+		sizeVar = "size"
+	}
+	ctx.appendCode(indent, "bitlist, %s := %s.ParseBitlistWithHasher(hh, %s[:])\n", sizeVar, hasherAlias, varName)
 
 	if maxVar != "" {
 		ctx.appendCode(indent, "if size > %s {\n", maxVar)

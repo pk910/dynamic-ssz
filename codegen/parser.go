@@ -27,11 +27,13 @@ var (
 //
 // Fields:
 //   - Type: The types.Type from go/types package representing the analyzed type
+//   - SchemaType: The types.Type representing the schema structure (may differ from Type for view descriptors)
 //
 // This information is embedded in TypeDescriptor.CodegenInfo to provide access
 // to compile-time type information during code generation.
 type CodegenInfo struct {
-	Type types.Type
+	Type       types.Type
+	SchemaType types.Type
 }
 
 // Parser provides compile-time type analysis for SSZ code generation.
@@ -116,7 +118,32 @@ func NewParser() *Parser {
 //	    return fmt.Errorf("failed to analyze type: %w", err)
 //	}
 func (p *Parser) GetTypeDescriptor(typ types.Type, typeHints []ssztypes.SszTypeHint, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint) (*ssztypes.TypeDescriptor, error) {
-	desc, err := p.buildTypeDescriptor(typ, typeHints, sizeHints, maxSizeHints)
+	// When no view descriptor is used, runtime and schema types are the same
+	return p.GetTypeDescriptorWithSchema(typ, typ, typeHints, sizeHints, maxSizeHints)
+}
+
+// GetTypeDescriptorWithSchema analyzes Go types and creates an SSZ type descriptor with separate schema and data types.
+//
+// This method supports fork-dependent SSZ schemas (view descriptors) where the schema type
+// defines the SSZ layout while the data type holds the actual data. This allows different
+// SSZ serializations of the same data based on the schema provided.
+//
+// When dataType == schemaType, this behaves identically to GetTypeDescriptor.
+// When they differ, the descriptor is built using schema's field definitions (names, tags,
+// order) but code generation targets the data type's fields.
+//
+// Parameters:
+//   - dataType: The types.Type where actual data lives (runtime type)
+//   - schemaType: The types.Type that defines SSZ layout (field order, tags, limits)
+//   - typeHints: Optional hints for explicit SSZ type mapping
+//   - sizeHints: Optional size constraints and expressions
+//   - maxSizeHints: Optional maximum size limits for variable-length types
+//
+// Returns:
+//   - *ssztypes.TypeDescriptor: Complete type descriptor for code generation
+//   - error: An error if the type is incompatible with SSZ or analysis fails
+func (p *Parser) GetTypeDescriptorWithSchema(dataType, schemaType types.Type, typeHints []ssztypes.SszTypeHint, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint) (*ssztypes.TypeDescriptor, error) {
+	desc, err := p.buildTypeDescriptor(dataType, schemaType, typeHints, sizeHints, maxSizeHints)
 	if err != nil {
 		return nil, err
 	}
@@ -124,20 +151,24 @@ func (p *Parser) GetTypeDescriptor(typ types.Type, typeHints []ssztypes.SszTypeH
 	return desc, nil
 }
 
-func (p *Parser) getCompatFlag(typ types.Type) ssztypes.SszCompatFlag {
-	typeName := typ.String()
+func (p *Parser) getCompatFlag(dataType types.Type, schemaType types.Type) ssztypes.SszCompatFlag {
+	typeName := dataType.String()
+	if dataType != schemaType {
+		typeName = fmt.Sprintf("%v|%v", dataType.String(), schemaType.String())
+	}
 	return p.CompatFlags[typeName]
 }
 
-func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []ssztypes.SszTypeHint, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint) (*ssztypes.TypeDescriptor, error) {
-	cacheable := len(typeHints) == 0 && len(sizeHints) == 0 && len(maxSizeHints) == 0
-	typeKey := fmt.Sprintf("%v", typ.String())
+func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints []ssztypes.SszTypeHint, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint) (*ssztypes.TypeDescriptor, error) {
+	// Only cache when types match and no hints provided
+	cacheable := dataType == schemaType && len(typeHints) == 0 && len(sizeHints) == 0 && len(maxSizeHints) == 0
+	typeKey := fmt.Sprintf("%v|%v", dataType.String(), schemaType.String())
 	if cacheable && p.cache[typeKey] != nil {
 		return p.cache[typeKey], nil
 	}
 
-	// Create descriptor
-	codegenInfo := &CodegenInfo{Type: typ}
+	// Create descriptor with both data and schema types
+	codegenInfo := &CodegenInfo{Type: dataType, SchemaType: schemaType}
 	var anyCodegenInfo any = codegenInfo
 	desc := &ssztypes.TypeDescriptor{
 		CodegenInfo: &anyCodegenInfo,
@@ -147,26 +178,90 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []ssztypes.SszTyp
 		p.cache[typeKey] = desc
 	}
 
-	originalType := typ
-	innerType := typ
+	// Use schemaType for SSZ layout analysis, dataType for interface checks
+
+	originalType := dataType
+	innerSchemaType := schemaType
+	innerDataType := dataType
+
+	var schemaNamedType, dataNamedType *types.Named
 
 	for {
-		// Resolve named types
-		if named, ok := typ.(*types.Named); ok {
-			typ = named.Underlying()
-		} else if ptr, ok := typ.(*types.Pointer); ok {
-			typ = ptr.Elem()
-			desc.GoTypeFlags |= ssztypes.GoTypeFlagIsPointer
-			innerType = typ
-		} else if alias, ok := typ.(*types.Alias); ok {
-			typ = alias.Underlying()
-		} else {
-			break
+		// Resolve named types - allow independent unwrapping since view and data types
+		// may have different naming structures (e.g., schema: [32]byte, data: Root where Root = [32]byte)
+		schemaIsNamed := false
+		if named, ok := schemaType.(*types.Named); ok {
+			schemaType = named.Underlying()
+			schemaNamedType = named
+			schemaIsNamed = true
 		}
+		if named, ok := dataType.(*types.Named); ok {
+			dataType = named.Underlying()
+			dataNamedType = named
+		} else if schemaIsNamed {
+			// Schema was named but data wasn't - this is an error
+			return nil, fmt.Errorf("incompatible types: data kind %v != schema kind %v", dataType.String(), schemaType.String())
+		}
+		if schemaIsNamed {
+			continue
+		}
+
+		// Resolve pointers - must match on both sides
+		if ptr, ok := schemaType.(*types.Pointer); ok {
+			schemaType = ptr.Elem()
+			desc.GoTypeFlags |= ssztypes.GoTypeFlagIsPointer
+			if ptr, ok := dataType.(*types.Pointer); ok {
+				dataType = ptr.Elem()
+			} else {
+				return nil, fmt.Errorf("incompatible types: data kind %v != schema kind %v", dataType.String(), schemaType.String())
+			}
+			innerSchemaType = schemaType
+			innerDataType = dataType
+			continue
+		}
+
+		// Resolve aliases - allow independent unwrapping
+		schemaIsAlias := false
+		if alias, ok := schemaType.(*types.Alias); ok {
+			schemaType = alias.Underlying()
+			schemaIsAlias = true
+		}
+		if alias, ok := dataType.(*types.Alias); ok {
+			dataType = alias.Underlying()
+		} else if schemaIsAlias {
+			// Schema was alias but data wasn't - this is an error
+			return nil, fmt.Errorf("incompatible types: data kind %v != schema kind %v", dataType.String(), schemaType.String())
+		}
+		if schemaIsAlias {
+			continue
+		}
+
+		// If data type is still a named type or alias but schema is not, unwrap data
+		if named, ok := dataType.(*types.Named); ok {
+			dataType = named.Underlying()
+			dataNamedType = named
+			continue
+		}
+		if alias, ok := dataType.(*types.Alias); ok {
+			dataType = alias.Underlying()
+			continue
+		}
+
+		break
+	}
+
+	// Verify data and schema types have compatible base kinds
+	if dataType != schemaType {
+		schemaKindStr := p.getTypeKindString(schemaType)
+		dataKindStr := p.getTypeKindString(dataType)
+		if schemaKindStr != dataKindStr {
+			return nil, fmt.Errorf("incompatible types: data kind %v != schema kind %v", dataKindStr, schemaKindStr)
+		}
+		desc.GoTypeFlags |= ssztypes.GoTypeFlagIsView
 	}
 
 	// Set kind based on underlying type
-	switch t := typ.(type) {
+	switch t := schemaType.(type) {
 	case *types.Basic:
 		switch t.Kind() {
 		case types.Bool:
@@ -246,10 +341,15 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []ssztypes.SszTyp
 	if sszType == ssztypes.SszUnspecifiedType {
 		// Detect well-known types first (named types)
 		var obj *types.TypeName
-		if alias, ok := innerType.(*types.Alias); ok {
-			innerType = types.Unalias(alias)
+		if alias, ok := innerSchemaType.(*types.Alias); ok {
+			innerSchemaType = types.Unalias(alias)
+			if alias, ok := innerDataType.(*types.Alias); ok {
+				innerDataType = types.Unalias(alias)
+			} else {
+				return nil, fmt.Errorf("incompatible types: data kind %v != schema kind %v", innerDataType.String(), innerSchemaType.String())
+			}
 		}
-		if named, ok := innerType.(*types.Named); ok {
+		if named, ok := innerSchemaType.(*types.Named); ok {
 			obj = named.Obj()
 		}
 
@@ -310,7 +410,7 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []ssztypes.SszTyp
 		// unsupported types
 		default:
 			// Check for unsupported basic types
-			if basic, ok := typ.(*types.Basic); ok {
+			if basic, ok := schemaType.(*types.Basic); ok {
 				switch basic.Kind() {
 				case types.Int, types.Int8, types.Int16, types.Int32, types.Int64:
 					return nil, fmt.Errorf("signed integers are not supported in SSZ (use unsigned integers instead)")
@@ -321,7 +421,7 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []ssztypes.SszTyp
 				}
 			}
 			// Check for other unsupported types
-			switch typ.(type) {
+			switch schemaType.(type) {
 			case *types.Map:
 				return nil, fmt.Errorf("maps are not supported in SSZ (use structs or arrays instead)")
 			case *types.Chan:
@@ -400,7 +500,7 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []ssztypes.SszTyp
 		if len(sizeHints) > 0 && sizeHints[0].Bits {
 			return nil, fmt.Errorf("uint128 ssz type cannot be limited by bits, use regular size tag instead")
 		}
-		err := p.buildUint128Descriptor(desc, typ)
+		err := p.buildUint128Descriptor(desc, schemaType)
 		if err != nil {
 			return nil, err
 		}
@@ -408,53 +508,60 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []ssztypes.SszTyp
 		if len(sizeHints) > 0 && sizeHints[0].Bits {
 			return nil, fmt.Errorf("uint256 ssz type cannot be limited by bits, use regular size tag instead")
 		}
-		err := p.buildUint256Descriptor(desc, typ)
+		err := p.buildUint256Descriptor(desc, schemaType)
 		if err != nil {
 			return nil, err
 		}
 
 	// complex types
 	case ssztypes.SszTypeWrapperType:
-		if named, ok := innerType.(*types.Named); ok {
-			err := p.buildTypeWrapperDescriptor(desc, named, typeHints, sizeHints, maxSizeHints)
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			return nil, fmt.Errorf("TypeWrapper must be a named type")
+		// Resolve both data and schema types to named types
+		if dataNamedType == nil {
+			return nil, fmt.Errorf("data TypeWrapper must be a named type")
+		}
+		err := p.buildTypeWrapperDescriptor(desc, dataNamedType, schemaNamedType, typeHints, sizeHints, maxSizeHints)
+		if err != nil {
+			return nil, err
 		}
 	case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
-		if struc, ok := typ.(*types.Struct); ok {
-			err := p.buildContainerDescriptor(desc, struc)
-			if err != nil {
-				return nil, err
-			}
-		} else {
+		schemaStruct, ok := schemaType.(*types.Struct)
+		if !ok {
 			return nil, fmt.Errorf("container ssz type can only be represented by struct types, got %v", desc.Kind)
 		}
+		// Resolve data type to underlying struct
+		dataStruct, ok := dataType.(*types.Struct)
+		if !ok {
+			return nil, fmt.Errorf("data container must be a struct type")
+		}
+		err := p.buildContainerDescriptor(desc, dataStruct, schemaStruct)
+		if err != nil {
+			return nil, err
+		}
 	case ssztypes.SszVectorType, ssztypes.SszBitvectorType:
-		err := p.buildVectorDescriptor(desc, typ, sizeHints, maxSizeHints, typeHints)
+		// Resolve data type for element type traversal
+		err := p.buildVectorDescriptor(desc, dataType, schemaType, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
 			return nil, err
 		}
 	case ssztypes.SszListType, ssztypes.SszProgressiveListType:
-		err := p.buildListDescriptor(desc, typ, sizeHints, maxSizeHints, typeHints)
+		// Resolve data type for element type traversal
+		err := p.buildListDescriptor(desc, dataType, schemaType, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
 			return nil, err
 		}
 	case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType:
-		err := p.buildBitlistDescriptor(desc, typ, sizeHints, maxSizeHints, typeHints)
+		err := p.buildBitlistDescriptor(desc, schemaType, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
 			return nil, err
 		}
 	case ssztypes.SszCompatibleUnionType:
-		if named, ok := innerType.(*types.Named); ok {
-			err := p.buildCompatibleUnionDescriptor(desc, named)
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			return nil, fmt.Errorf("CompatibleUnion must be a named type")
+		// Resolve both data and schema types to named types
+		if dataNamedType == nil {
+			return nil, fmt.Errorf("data CompatibleUnion must be a named type")
+		}
+		err := p.buildCompatibleUnionDescriptor(desc, dataNamedType, schemaNamedType)
+		if err != nil {
+			return nil, err
 		}
 	case ssztypes.SszCustomType:
 		if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
@@ -513,7 +620,27 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []ssztypes.SszTyp
 		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicHashRoot
 	}
 
-	desc.SszCompatFlags |= p.getCompatFlag(innerType)
+	// Check for dynamic view interface implementations (for fork-dependent SSZ schemas)
+	if p.getDynamicViewMarshalerCompatibility(originalType) || p.getDynamicViewMarshalerCompatibility(otherType) {
+		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicViewMarshaler
+	}
+	if p.getDynamicViewUnmarshalerCompatibility(originalType) || p.getDynamicViewUnmarshalerCompatibility(otherType) {
+		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicViewUnmarshaler
+	}
+	if p.getDynamicViewEncoderCompatibility(originalType) || p.getDynamicViewEncoderCompatibility(otherType) {
+		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicViewEncoder
+	}
+	if p.getDynamicViewDecoderCompatibility(originalType) || p.getDynamicViewDecoderCompatibility(otherType) {
+		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicViewDecoder
+	}
+	if p.getDynamicViewSizerCompatibility(originalType) || p.getDynamicViewSizerCompatibility(otherType) {
+		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicViewSizer
+	}
+	if p.getDynamicViewHashRootCompatibility(originalType) || p.getDynamicViewHashRootCompatibility(otherType) {
+		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicViewHashRoot
+	}
+
+	desc.SszCompatFlags |= p.getCompatFlag(innerDataType, innerSchemaType)
 
 	if desc.SszType == ssztypes.SszCustomType {
 		isCompatible := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0 && desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0
@@ -556,8 +683,8 @@ func (p *Parser) buildUint128Descriptor(desc *ssztypes.TypeDescriptor, typ types
 		return fmt.Errorf("uint128 ssz type can only be represented by [16]uint8 or [2]uint64 types")
 	}
 
-	// Build element descriptor
-	elemDesc, err := p.buildTypeDescriptor(elemType, nil, nil, nil)
+	// Build element descriptor (element types use same type for data and schema)
+	elemDesc, err := p.buildTypeDescriptor(elemType, elemType, nil, nil, nil)
 	if err != nil {
 		return fmt.Errorf("failed to build vector element descriptor: %v", err)
 	}
@@ -601,8 +728,8 @@ func (p *Parser) buildUint256Descriptor(desc *ssztypes.TypeDescriptor, typ types
 		return fmt.Errorf("uint256 ssz type can only be represented by [32]uint8 or [4]uint64 types")
 	}
 
-	// Build element descriptor
-	elemDesc, err := p.buildTypeDescriptor(elemType, nil, nil, nil)
+	// Build element descriptor (element types use same type for data and schema)
+	elemDesc, err := p.buildTypeDescriptor(elemType, elemType, nil, nil, nil)
 	if err != nil {
 		return fmt.Errorf("failed to build vector element descriptor: %v", err)
 	}
@@ -617,37 +744,65 @@ func (p *Parser) buildUint256Descriptor(desc *ssztypes.TypeDescriptor, typ types
 	return nil
 }
 
-func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, struc *types.Struct) error {
+func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStruct, schemaStruct *types.Struct) error {
 	fields := []ssztypes.FieldDescriptor{}
 	dynFields := []ssztypes.DynFieldDescriptor{}
 	size := uint32(0)
 	isDynamic := false
 
-	for i := 0; i < struc.NumFields(); i++ {
-		field := struc.Field(i)
-		fieldName := field.Name()
-		if !field.Exported() || fieldName == "_" {
+	// Check if we're using a view descriptor (data and schema types differ)
+	isViewDescriptor := dataStruct != schemaStruct
+
+	// Build a map of data field names to their types when using view descriptors
+	var dataFieldMap map[string]types.Type
+	if isViewDescriptor {
+		dataFieldMap = make(map[string]types.Type, dataStruct.NumFields())
+		for i := 0; i < dataStruct.NumFields(); i++ {
+			dataField := dataStruct.Field(i)
+			dataFieldMap[dataField.Name()] = dataField.Type()
+		}
+	}
+
+	// Iterate over schema fields (determines SSZ layout)
+	for i := 0; i < schemaStruct.NumFields(); i++ {
+		schemaField := schemaStruct.Field(i)
+		fieldName := schemaField.Name()
+		if !schemaField.Exported() || fieldName == "_" {
 			continue
 		}
 
-		typeHints, sizeHints, maxSizeHints, err := p.parseFieldTags(struc.Tag(i))
+		typeHints, sizeHints, maxSizeHints, err := p.parseFieldTags(schemaStruct.Tag(i))
 		if err != nil {
-			return fmt.Errorf("failed to parse tags for field %v: %v", field.Name(), err)
+			return fmt.Errorf("failed to parse tags for field %v: %v", schemaField.Name(), err)
 		}
 
-		// Build type descriptor with field-specific hints
-		typeDesc, err := p.buildTypeDescriptor(field.Type(), typeHints, sizeHints, maxSizeHints)
+		// Determine data and schema field types
+		schemaFieldType := schemaField.Type()
+		var dataFieldType types.Type
+		if isViewDescriptor {
+			// Look up corresponding data field by name
+			var ok bool
+			dataFieldType, ok = dataFieldMap[fieldName]
+			if !ok {
+				return fmt.Errorf("data type missing field %q defined in schema", fieldName)
+			}
+		} else {
+			dataFieldType = schemaFieldType
+		}
+
+		// Build type descriptor traversing both type trees
+		typeDesc, err := p.buildTypeDescriptor(dataFieldType, schemaFieldType, typeHints, sizeHints, maxSizeHints)
 		if err != nil {
-			return fmt.Errorf("failed to build field %v descriptor: %v", field.Name(), err)
+			return fmt.Errorf("failed to build field %v descriptor: %v", schemaField.Name(), err)
 		}
 
 		fieldDesc := ssztypes.FieldDescriptor{
-			Name: field.Name(),
+			Name: schemaField.Name(),
 			Type: typeDesc,
 		}
 
 		// Handle ssz-index for progressive containers - extract from original tag parsing
-		if indexStr := p.extractSszIndex(struc.Tag(i)); indexStr != "" {
+		if indexStr := p.extractSszIndex(schemaStruct.Tag(i)); indexStr != "" {
 			idx, err := strconv.ParseUint(indexStr, 10, 16)
 			if err != nil {
 				return fmt.Errorf("invalid ssz-index: %v", indexStr)
@@ -690,13 +845,15 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, struc *
 	return nil
 }
 
-func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, typ types.Type, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint, typeHints []ssztypes.SszTypeHint) error {
-	var elemType types.Type
+func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, dataType, schemaType types.Type, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint, typeHints []ssztypes.SszTypeHint) error {
+	var schemaElemType types.Type
+	var dataElemType types.Type
 	var length uint32
 
-	switch t := typ.(type) {
+	// Extract element type from schema (determines SSZ layout)
+	switch t := schemaType.(type) {
 	case *types.Array:
-		elemType = t.Elem()
+		schemaElemType = t.Elem()
 		length = uint32(t.Len())
 		if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
 			byteSize := sizeHints[0].Size
@@ -709,7 +866,7 @@ func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, typ types.
 			length = byteSize
 		}
 	case *types.Slice:
-		elemType = t.Elem()
+		schemaElemType = t.Elem()
 		if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
 			length = sizeHints[0].Size
 			if sizeHints[0].Bits {
@@ -727,7 +884,7 @@ func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, typ types.
 					length = (length + 7) / 8 // ceil up to the next multiple of 8
 				}
 				desc.GoTypeFlags |= ssztypes.GoTypeFlagIsByteArray
-				elemType = byteType
+				schemaElemType = byteType
 			} else {
 				return fmt.Errorf("string vector type requires explicit size hint")
 			}
@@ -735,7 +892,23 @@ func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, typ types.
 			return fmt.Errorf("unsupported vector base type: %v", t.Kind())
 		}
 	default:
-		return fmt.Errorf("unsupported vector type: %T", typ)
+		return fmt.Errorf("unsupported vector type: %T", schemaType)
+	}
+
+	// Extract element type from data type
+	switch t := dataType.(type) {
+	case *types.Array:
+		dataElemType = t.Elem()
+	case *types.Slice:
+		dataElemType = t.Elem()
+	case *types.Basic:
+		if t.Kind() == types.String {
+			dataElemType = byteType
+		} else {
+			dataElemType = schemaElemType // fallback to schema for primitives
+		}
+	default:
+		dataElemType = schemaElemType // fallback to schema
 	}
 
 	childTypeHints := []ssztypes.SszTypeHint{}
@@ -751,8 +924,8 @@ func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, typ types.
 		childMaxSizeHints = maxSizeHints[1:]
 	}
 
-	// Build element descriptor
-	elemDesc, err := p.buildTypeDescriptor(elemType, childTypeHints, childSizeHints, childMaxSizeHints)
+	// Build element descriptor traversing both type trees
+	elemDesc, err := p.buildTypeDescriptor(dataElemType, schemaElemType, childTypeHints, childSizeHints, childMaxSizeHints)
 	if err != nil {
 		return fmt.Errorf("failed to build vector element descriptor: %v", err)
 	}
@@ -760,7 +933,7 @@ func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, typ types.
 	desc.Len = length
 
 	// Set byte array flag for byte types
-	if p.isByteType(elemType) {
+	if p.isByteType(schemaElemType) {
 		desc.GoTypeFlags |= ssztypes.GoTypeFlagIsByteArray
 	}
 
@@ -777,24 +950,40 @@ func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, typ types.
 	return nil
 }
 
-func (p *Parser) buildListDescriptor(desc *ssztypes.TypeDescriptor, typ types.Type, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint, typeHints []ssztypes.SszTypeHint) error {
-	var elemType types.Type
+func (p *Parser) buildListDescriptor(desc *ssztypes.TypeDescriptor, dataType, schemaType types.Type, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint, typeHints []ssztypes.SszTypeHint) error {
+	var schemaElemType types.Type
+	var dataElemType types.Type
 
-	switch t := typ.(type) {
+	// Extract element type from schema (determines SSZ layout)
+	switch t := schemaType.(type) {
 	case *types.Slice:
-		elemType = t.Elem()
+		schemaElemType = t.Elem()
 	case *types.Basic:
 		if t.Kind() == types.String {
 			// String as list - set byte array flag and make dynamic
 			desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
 			desc.Size = 0
 			desc.GoTypeFlags |= ssztypes.GoTypeFlagIsByteArray
-			elemType = byteType
+			schemaElemType = byteType
 		} else {
 			return fmt.Errorf("unsupported list base type: %v", t.Kind())
 		}
 	default:
-		return fmt.Errorf("unsupported list type: %T", typ)
+		return fmt.Errorf("unsupported list type: %T", schemaType)
+	}
+
+	// Extract element type from data type
+	switch t := dataType.(type) {
+	case *types.Slice:
+		dataElemType = t.Elem()
+	case *types.Basic:
+		if t.Kind() == types.String {
+			dataElemType = byteType
+		} else {
+			dataElemType = schemaElemType // fallback to schema for primitives
+		}
+	default:
+		dataElemType = schemaElemType // fallback to schema
 	}
 
 	childTypeHints := []ssztypes.SszTypeHint{}
@@ -810,15 +999,15 @@ func (p *Parser) buildListDescriptor(desc *ssztypes.TypeDescriptor, typ types.Ty
 		childMaxSizeHints = maxSizeHints[1:]
 	}
 
-	// Build element descriptor
-	elemDesc, err := p.buildTypeDescriptor(elemType, childTypeHints, childSizeHints, childMaxSizeHints)
+	// Build element descriptor traversing both type trees
+	elemDesc, err := p.buildTypeDescriptor(dataElemType, schemaElemType, childTypeHints, childSizeHints, childMaxSizeHints)
 	if err != nil {
 		return fmt.Errorf("failed to build list element descriptor: %v", err)
 	}
 	desc.ElemDesc = elemDesc
 
 	// Set byte array flag for byte types
-	if p.isByteType(elemType) {
+	if p.isByteType(schemaElemType) {
 		desc.GoTypeFlags |= ssztypes.GoTypeFlagIsByteArray
 	}
 
@@ -841,8 +1030,8 @@ func (p *Parser) buildBitlistDescriptor(desc *ssztypes.TypeDescriptor, typ types
 		return fmt.Errorf("bitlist type can only be represented by slice types, got %T", typ)
 	}
 
-	// Build element descriptor
-	elemDesc, err := p.buildTypeDescriptor(elemType, nil, nil, nil)
+	// Build element descriptor (element types use same type for data and schema)
+	elemDesc, err := p.buildTypeDescriptor(elemType, elemType, nil, nil, nil)
 	if err != nil {
 		return fmt.Errorf("failed to build bitlist element descriptor: %v", err)
 	}
@@ -861,36 +1050,74 @@ func (p *Parser) buildBitlistDescriptor(desc *ssztypes.TypeDescriptor, typ types
 	return nil
 }
 
-func (p *Parser) buildCompatibleUnionDescriptor(desc *ssztypes.TypeDescriptor, named *types.Named) error {
-	// Extract generic type arguments from CompatibleUnion[T]
-	typeArgs := named.TypeArgs()
-	if typeArgs == nil || typeArgs.Len() != 1 {
+func (p *Parser) buildCompatibleUnionDescriptor(desc *ssztypes.TypeDescriptor, dataNamed, schemaNamed *types.Named) error {
+	// Extract generic type arguments from CompatibleUnion[T] for schema (determines SSZ layout)
+	schemaTypeArgs := schemaNamed.TypeArgs()
+	if schemaTypeArgs == nil || schemaTypeArgs.Len() != 1 {
 		return fmt.Errorf("CompatibleUnion must have exactly 1 type argument")
 	}
 
-	descriptorType := typeArgs.At(0) // T - the descriptor struct
+	schemaDescriptorType := schemaTypeArgs.At(0) // T - the schema descriptor struct
 
 	// The descriptor must be a struct type
-	descriptorStruct, ok := descriptorType.Underlying().(*types.Struct)
+	schemaDescriptorStruct, ok := schemaDescriptorType.Underlying().(*types.Struct)
 	if !ok {
-		return fmt.Errorf("CompatibleUnion descriptor must be a struct, got %T", descriptorType.Underlying())
+		return fmt.Errorf("CompatibleUnion descriptor must be a struct, got %T", schemaDescriptorType.Underlying())
 	}
 
-	// Build union variants
+	// Check if we're using a view descriptor (data and schema types differ)
+	isViewDescriptor := dataNamed != schemaNamed
+
+	// Extract data descriptor struct if using view descriptor
+	var dataDescriptorStruct *types.Struct
+	var dataVariantMap map[string]types.Type
+	if isViewDescriptor {
+		dataTypeArgs := dataNamed.TypeArgs()
+		if dataTypeArgs == nil || dataTypeArgs.Len() != 1 {
+			return fmt.Errorf("data CompatibleUnion must have exactly 1 type argument")
+		}
+		dataDescriptorType := dataTypeArgs.At(0)
+		var ok bool
+		dataDescriptorStruct, ok = dataDescriptorType.Underlying().(*types.Struct)
+		if !ok {
+			return fmt.Errorf("data CompatibleUnion descriptor must be a struct, got %T", dataDescriptorType.Underlying())
+		}
+		// Build map of data variant field names to types
+		dataVariantMap = make(map[string]types.Type, dataDescriptorStruct.NumFields())
+		for i := 0; i < dataDescriptorStruct.NumFields(); i++ {
+			field := dataDescriptorStruct.Field(i)
+			dataVariantMap[field.Name()] = field.Type()
+		}
+	}
+
+	// Build union variants iterating over schema (determines SSZ layout)
 	variantInfo := make(map[uint8]*ssztypes.TypeDescriptor)
 
-	for i := 0; i < descriptorStruct.NumFields(); i++ {
-		field := descriptorStruct.Field(i)
+	for i := 0; i < schemaDescriptorStruct.NumFields(); i++ {
+		schemaField := schemaDescriptorStruct.Field(i)
 		variantIndex := uint8(i) // Field order determines variant index
 
-		// Extract SSZ annotations from the field
-		typeHints, sizeHints, maxSizeHints, err := p.parseFieldTags(descriptorStruct.Tag(i))
+		// Extract SSZ annotations from the schema field
+		typeHints, sizeHints, maxSizeHints, err := p.parseFieldTags(schemaDescriptorStruct.Tag(i))
 		if err != nil {
-			return fmt.Errorf("failed to parse union variant field %s tags: %v", field.Name(), err)
+			return fmt.Errorf("failed to parse union variant field %s tags: %v", schemaField.Name(), err)
 		}
 
-		// Build variant type descriptor
-		variantDesc, err := p.buildTypeDescriptor(field.Type(), typeHints, sizeHints, maxSizeHints)
+		// Determine data and schema variant types
+		schemaVariantType := schemaField.Type()
+		var dataVariantType types.Type
+		if isViewDescriptor {
+			var ok bool
+			dataVariantType, ok = dataVariantMap[schemaField.Name()]
+			if !ok {
+				return fmt.Errorf("data union missing variant %q defined in schema", schemaField.Name())
+			}
+		} else {
+			dataVariantType = schemaVariantType
+		}
+
+		// Build variant type descriptor traversing both type trees
+		variantDesc, err := p.buildTypeDescriptor(dataVariantType, schemaVariantType, typeHints, sizeHints, maxSizeHints)
 		if err != nil {
 			return fmt.Errorf("failed to build union variant %d descriptor: %v", variantIndex, err)
 		}
@@ -909,41 +1136,54 @@ func (p *Parser) buildCompatibleUnionDescriptor(desc *ssztypes.TypeDescriptor, n
 	return nil
 }
 
-func (p *Parser) buildTypeWrapperDescriptor(desc *ssztypes.TypeDescriptor, named *types.Named, typeHints []ssztypes.SszTypeHint, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint) error {
-	// Extract generic type arguments from TypeWrapper[D, T]
-	typeArgs := named.TypeArgs()
-	if typeArgs == nil || typeArgs.Len() != 2 {
+func (p *Parser) buildTypeWrapperDescriptor(desc *ssztypes.TypeDescriptor, dataNamed, schemaNamed *types.Named, typeHints []ssztypes.SszTypeHint, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint) error {
+	// Extract generic type arguments from TypeWrapper[D, T] for schema (determines SSZ layout)
+	schemaTypeArgs := schemaNamed.TypeArgs()
+	if schemaTypeArgs == nil || schemaTypeArgs.Len() != 2 {
 		return fmt.Errorf("TypeWrapper must have exactly 2 type arguments")
 	}
 
-	descriptorType := typeArgs.At(0) // D - the descriptor struct
-	wrappedType := typeArgs.At(1)    // T - the actual value type
+	schemaDescriptorType := schemaTypeArgs.At(0) // D - the schema descriptor struct
+	schemaWrappedType := schemaTypeArgs.At(1)    // T - the schema wrapped type
 
 	// The descriptor must be a struct type
-	descriptorStruct, ok := descriptorType.Underlying().(*types.Struct)
+	schemaDescriptorStruct, ok := schemaDescriptorType.Underlying().(*types.Struct)
 	if !ok {
-		return fmt.Errorf("TypeWrapper descriptor must be a struct, got %T", descriptorType.Underlying())
+		return fmt.Errorf("TypeWrapper descriptor must be a struct, got %T", schemaDescriptorType.Underlying())
 	}
 
 	// The descriptor must have exactly 1 field
-	if descriptorStruct.NumFields() != 1 {
-		return fmt.Errorf("TypeWrapper descriptor must have exactly 1 field, got %d", descriptorStruct.NumFields())
+	if schemaDescriptorStruct.NumFields() != 1 {
+		return fmt.Errorf("TypeWrapper descriptor must have exactly 1 field, got %d", schemaDescriptorStruct.NumFields())
 	}
 
-	// Extract SSZ annotations from the descriptor field
-	field := descriptorStruct.Field(0)
-	fieldTypeHints, fieldSizeHints, fieldMaxSizeHints, err := p.parseFieldTags(descriptorStruct.Tag(0))
+	// Extract SSZ annotations from the schema descriptor field
+	schemaField := schemaDescriptorStruct.Field(0)
+	fieldTypeHints, fieldSizeHints, fieldMaxSizeHints, err := p.parseFieldTags(schemaDescriptorStruct.Tag(0))
 	if err != nil {
 		return fmt.Errorf("failed to parse TypeWrapper descriptor field tags: %v", err)
 	}
 
-	// Verify the field type matches the wrapped type
-	if !types.Identical(field.Type(), wrappedType) {
-		return fmt.Errorf("TypeWrapper descriptor field type %v does not match wrapped type %v", field.Type(), wrappedType)
+	// Verify the schema field type matches the schema wrapped type
+	if !types.Identical(schemaField.Type(), schemaWrappedType) {
+		return fmt.Errorf("TypeWrapper descriptor field type %v does not match wrapped type %v", schemaField.Type(), schemaWrappedType)
 	}
 
-	// Build the wrapped type descriptor using the extracted annotations
-	wrappedDesc, err := p.buildTypeDescriptor(wrappedType, fieldTypeHints, fieldSizeHints, fieldMaxSizeHints)
+	// Determine data wrapped type
+	var dataWrappedType types.Type
+	if dataNamed != schemaNamed {
+		// Extract data wrapped type from data TypeWrapper
+		dataTypeArgs := dataNamed.TypeArgs()
+		if dataTypeArgs == nil || dataTypeArgs.Len() != 2 {
+			return fmt.Errorf("data TypeWrapper must have exactly 2 type arguments")
+		}
+		dataWrappedType = dataTypeArgs.At(1) // T - the data wrapped type
+	} else {
+		dataWrappedType = schemaWrappedType
+	}
+
+	// Build the wrapped type descriptor traversing both type trees
+	wrappedDesc, err := p.buildTypeDescriptor(dataWrappedType, schemaWrappedType, fieldTypeHints, fieldSizeHints, fieldMaxSizeHints)
 	if err != nil {
 		return fmt.Errorf("failed to build TypeWrapper wrapped type descriptor: %v", err)
 	}
@@ -1160,6 +1400,49 @@ func (p *Parser) isByteType(typ types.Type) bool {
 	return ok && basic.Kind() == types.Uint8
 }
 
+// resolveToUnderlying resolves a type to its underlying type,
+// traversing named types, pointers, and aliases.
+func (p *Parser) resolveToUnderlying(typ types.Type) types.Type {
+	for {
+		switch t := typ.(type) {
+		case *types.Named:
+			typ = t.Underlying()
+		case *types.Pointer:
+			typ = t.Elem()
+		case *types.Alias:
+			typ = t.Underlying()
+		default:
+			return typ
+		}
+	}
+}
+
+// getTypeKindString returns a string representation of a go/types type's kind.
+func (p *Parser) getTypeKindString(typ types.Type) string {
+	switch t := typ.(type) {
+	case *types.Basic:
+		return fmt.Sprintf("basic:%v", t.Kind())
+	case *types.Array:
+		return "array"
+	case *types.Slice:
+		return "slice"
+	case *types.Struct:
+		return "struct"
+	case *types.Pointer:
+		return "pointer"
+	case *types.Map:
+		return "map"
+	case *types.Chan:
+		return "chan"
+	case *types.Signature:
+		return "func"
+	case *types.Interface:
+		return "interface"
+	default:
+		return "unknown"
+	}
+}
+
 // Interface compatibility checks using proper go/types interface implementation checking
 
 func (p *Parser) getFastsszConvertCompatibility(typ types.Type) bool {
@@ -1214,6 +1497,45 @@ func (p *Parser) getDynamicHashRootCompatibility(typ types.Type) bool {
 	// Check if type has HashTreeRootDyn method
 	methodSet := types.NewMethodSet(typ)
 	return p.hasMethodWithSignature(methodSet, "HashTreeRootDynWith", []string{"DynamicSpecs", "HashWalker"}, []string{"error"})
+}
+
+// View interface compatibility checks for fork-dependent SSZ schemas.
+// These interfaces return function pointers that can be used if the view is supported.
+
+func (p *Parser) getDynamicViewMarshalerCompatibility(typ types.Type) bool {
+	// Check if type has MarshalSSZDynView method: func(view any) func(DynamicSpecs, []byte) ([]byte, error)
+	methodSet := types.NewMethodSet(typ)
+	return p.hasMethodWithSignature(methodSet, "MarshalSSZDynView", []string{"any"}, []string{"func"})
+}
+
+func (p *Parser) getDynamicViewUnmarshalerCompatibility(typ types.Type) bool {
+	// Check if type has UnmarshalSSZDynView method: func(view any) func(DynamicSpecs, []byte) error
+	methodSet := types.NewMethodSet(typ)
+	return p.hasMethodWithSignature(methodSet, "UnmarshalSSZDynView", []string{"any"}, []string{"func"})
+}
+
+func (p *Parser) getDynamicViewEncoderCompatibility(typ types.Type) bool {
+	// Check if type has MarshalSSZEncoderView method: func(view any) func(DynamicSpecs, Encoder) error
+	methodSet := types.NewMethodSet(typ)
+	return p.hasMethodWithSignature(methodSet, "MarshalSSZEncoderView", []string{"any"}, []string{"func"})
+}
+
+func (p *Parser) getDynamicViewDecoderCompatibility(typ types.Type) bool {
+	// Check if type has UnmarshalSSZDecoderView method: func(view any) func(DynamicSpecs, Decoder) error
+	methodSet := types.NewMethodSet(typ)
+	return p.hasMethodWithSignature(methodSet, "UnmarshalSSZDecoderView", []string{"any"}, []string{"func"})
+}
+
+func (p *Parser) getDynamicViewSizerCompatibility(typ types.Type) bool {
+	// Check if type has SizeSSZDynView method: func(view any) func(DynamicSpecs) int
+	methodSet := types.NewMethodSet(typ)
+	return p.hasMethodWithSignature(methodSet, "SizeSSZDynView", []string{"any"}, []string{"func"})
+}
+
+func (p *Parser) getDynamicViewHashRootCompatibility(typ types.Type) bool {
+	// Check if type has HashTreeRootWithDynView method: func(view any) func(DynamicSpecs, HashWalker) error
+	methodSet := types.NewMethodSet(typ)
+	return p.hasMethodWithSignature(methodSet, "HashTreeRootWithDynView", []string{"any"}, []string{"func"})
 }
 
 // Interface implementation checks using go/types proper interface checking
@@ -1293,6 +1615,15 @@ func (p *Parser) typeMatches(typ types.Type, expectedTypeStr string) bool {
 		}
 	case "DynamicSpecs", "HashWalker", "Encoder", "Decoder":
 		return true
+	case "any":
+		// Check for interface{} or any type
+		if iface, ok := typ.(*types.Interface); ok {
+			return iface.Empty()
+		}
+	case "func":
+		// Check if it's a function type (signature)
+		_, ok := typ.(*types.Signature)
+		return ok
 	}
 	return false
 }

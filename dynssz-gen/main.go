@@ -32,6 +32,39 @@ type Config struct {
 	WithStreaming             bool
 }
 
+// typeSpec holds parsed information about a type specification
+type typeSpec struct {
+	TypeName   string
+	OutputFile string
+	ViewTypes  []string // view types for data+views mode (can include package paths)
+	IsViewOnly bool     // whether this is a view-only type
+}
+
+// viewTypeRef holds a parsed view type reference
+type viewTypeRef struct {
+	PackagePath string // empty for local types
+	TypeName    string
+}
+
+// parseViewTypeRef parses a view type reference string.
+// Format: "TypeName" for local types, "pkgpath.TypeName" for external types.
+// The last dot separates the package path from the type name.
+func parseViewTypeRef(ref string) viewTypeRef {
+	// Find the last dot to split package path from type name
+	lastDot := strings.LastIndex(ref, ".")
+	if lastDot == -1 {
+		// No dot means local type
+		return viewTypeRef{TypeName: ref}
+	}
+
+	// Check if this looks like a package path (contains "/" or starts with known prefixes)
+	pkgPath := ref[:lastDot]
+	return viewTypeRef{
+		PackagePath: pkgPath,
+		TypeName:    ref[lastDot+1:],
+	}
+}
+
 func main() {
 	var (
 		packagePath               = flag.String("package", "", "Go package path to analyze")
@@ -102,50 +135,167 @@ func run(config Config) error {
 		log.Printf("Successfully loaded package: %s", pkg.Name)
 	}
 
-	// Parse type names
+	// Parse type names with extended format:
+	// TypeName[:output=file.go][:views=View1;View2][:viewonly]
+	// All :xy args are optional and can be specified in any order.
+	// Output file can also be specified without prefix for backward compatibility.
 	requestedTypes := strings.Split(config.TypeNames, ",")
-	for i, typeName := range requestedTypes {
-		requestedTypes[i] = strings.TrimSpace(typeName)
-	}
+	typeSpecs := make([]typeSpec, 0, len(requestedTypes))
 
-	// Find the requested types in the package
-	generateFiles := make(map[string][]types.Type)
-	scope := pkg.Types.Scope()
-	typeCount := 0
-
-	for _, typeName := range requestedTypes {
-		outFile := ""
-		outFileParts := strings.Split(typeName, ":")
-		if len(outFileParts) > 1 {
-			outFile = outFileParts[1]
-			typeName = outFileParts[0]
+	for _, typeStr := range requestedTypes {
+		typeStr = strings.TrimSpace(typeStr)
+		if typeStr == "" {
+			continue
 		}
 
-		if outFile == "" {
+		spec := typeSpec{}
+		parts := strings.Split(typeStr, ":")
+
+		// First part is always the type name
+		spec.TypeName = parts[0]
+
+		// Process remaining parts - all are optional and can be in any order
+		for i := 1; i < len(parts); i++ {
+			part := parts[i]
+
+			// Skip empty parts (from consecutive colons like TypeName::views=X)
+			if part == "" {
+				continue
+			}
+
+			switch {
+			case strings.HasPrefix(part, "views="):
+				// Parse view types: views=View1;View2
+				viewsStr := strings.TrimPrefix(part, "views=")
+				// Use semicolon as separator since comma is used for type list
+				spec.ViewTypes = strings.Split(viewsStr, ";")
+				for j := range spec.ViewTypes {
+					spec.ViewTypes[j] = strings.TrimSpace(spec.ViewTypes[j])
+				}
+			case strings.HasPrefix(part, "output="):
+				// Explicit output file with prefix
+				spec.OutputFile = strings.TrimPrefix(part, "output=")
+			case part == "viewonly":
+				spec.IsViewOnly = true
+			default:
+				// For backward compatibility: first unrecognized non-empty part
+				// is treated as output file (only if not already set)
+				if spec.OutputFile == "" {
+					spec.OutputFile = part
+				}
+			}
+		}
+
+		// Use default output file if not specified
+		if spec.OutputFile == "" {
 			if config.OutputFile == "" {
 				return errors.New("output file is required (-output)")
 			}
-			outFile = config.OutputFile
+			spec.OutputFile = config.OutputFile
 		}
 
-		obj := scope.Lookup(typeName)
+		typeSpecs = append(typeSpecs, spec)
+	}
+
+	// Find the requested types in the package
+	// Map from output file to list of type specs
+	generateFiles := make(map[string][]typeSpec)
+	mainScope := pkg.Types.Scope()
+	typeCount := 0
+
+	// Cache for loaded external packages
+	externalPackages := make(map[string]*packages.Package)
+
+	// Helper to load and cache an external package
+	loadExternalPackage := func(pkgPath string) (*packages.Package, error) {
+		if cached, ok := externalPackages[pkgPath]; ok {
+			return cached, nil
+		}
+
+		extPkgs, err := packages.Load(cfg, pkgPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load external package %s: %w", pkgPath, err)
+		}
+		if len(extPkgs) == 0 {
+			return nil, fmt.Errorf("external package %s not found", pkgPath)
+		}
+		if len(extPkgs[0].Errors) > 0 {
+			return nil, fmt.Errorf("external package %s has errors: %v", pkgPath, extPkgs[0].Errors[0])
+		}
+
+		externalPackages[pkgPath] = extPkgs[0]
+		if config.Verbose {
+			log.Printf("Loaded external package: %s", pkgPath)
+		}
+		return extPkgs[0], nil
+	}
+
+	// Helper to resolve a type reference (local or external)
+	resolveTypeRef := func(ref viewTypeRef) (types.Type, error) {
+		var scope *types.Scope
+		var pkgPath string
+
+		if ref.PackagePath == "" {
+			// Local type
+			scope = mainScope
+			pkgPath = config.PackagePath
+		} else {
+			// External type
+			extPkg, err := loadExternalPackage(ref.PackagePath)
+			if err != nil {
+				return nil, err
+			}
+			scope = extPkg.Types.Scope()
+			pkgPath = ref.PackagePath
+		}
+
+		obj := scope.Lookup(ref.TypeName)
 		if obj == nil {
-			return fmt.Errorf("type %s not found in package %s", typeName, config.PackagePath)
+			return nil, fmt.Errorf("type %s not found in package %s", ref.TypeName, pkgPath)
 		}
 
 		typeObj, ok := obj.(*types.TypeName)
 		if !ok {
-			return fmt.Errorf("object %s is not a type in package %s", typeName, config.PackagePath)
+			return nil, fmt.Errorf("object %s is not a type in package %s", ref.TypeName, pkgPath)
 		}
 
-		if _, ok := generateFiles[outFile]; !ok {
-			generateFiles[outFile] = make([]types.Type, 0)
+		return typeObj.Type(), nil
+	}
+
+	for _, spec := range typeSpecs {
+		// Validate that the main type exists
+		obj := mainScope.Lookup(spec.TypeName)
+		if obj == nil {
+			return fmt.Errorf("type %s not found in package %s", spec.TypeName, config.PackagePath)
 		}
-		generateFiles[outFile] = append(generateFiles[outFile], typeObj.Type())
+
+		typeObj, ok := obj.(*types.TypeName)
+		if !ok {
+			return fmt.Errorf("object %s is not a type in package %s", spec.TypeName, config.PackagePath)
+		}
+
+		// Validate view types exist (can be local or external)
+		for _, viewTypeStr := range spec.ViewTypes {
+			ref := parseViewTypeRef(viewTypeStr)
+			if _, err := resolveTypeRef(ref); err != nil {
+				return fmt.Errorf("view type %s: %w", viewTypeStr, err)
+			}
+		}
+
+		if _, ok := generateFiles[spec.OutputFile]; !ok {
+			generateFiles[spec.OutputFile] = make([]typeSpec, 0)
+		}
+		generateFiles[spec.OutputFile] = append(generateFiles[spec.OutputFile], spec)
 		typeCount++
 
 		if config.Verbose {
-			log.Printf("Found type: %s", typeName)
+			mode := "data-only"
+			if spec.IsViewOnly {
+				mode = "view-only"
+			} else if len(spec.ViewTypes) > 0 {
+				mode = fmt.Sprintf("data+views(%s)", strings.Join(spec.ViewTypes, ","))
+			}
+			log.Printf("Found type: %s [%s]", typeObj.Name(), mode)
 		}
 	}
 
@@ -158,10 +308,39 @@ func run(config Config) error {
 	}
 
 	// Build options for all types
-	for outFile, foundTypes := range generateFiles {
+	for outFile, specs := range generateFiles {
 		var typeOptions []codegen.CodeGeneratorOption
-		for _, goType := range foundTypes {
-			typeOptions = append(typeOptions, codegen.WithGoTypesType(goType))
+
+		for _, spec := range specs {
+			// Look up the main type
+			obj := mainScope.Lookup(spec.TypeName)
+			typeObj := obj.(*types.TypeName)
+			goType := typeObj.Type()
+
+			// Build type-specific options
+			var typeSpecificOpts []codegen.CodeGeneratorOption
+
+			// Add view types if specified
+			if len(spec.ViewTypes) > 0 {
+				viewTypes := make([]types.Type, 0, len(spec.ViewTypes))
+				for _, viewTypeStr := range spec.ViewTypes {
+					ref := parseViewTypeRef(viewTypeStr)
+					viewType, err := resolveTypeRef(ref)
+					if err != nil {
+						return fmt.Errorf("failed to resolve view type %s: %w", viewTypeStr, err)
+					}
+					viewTypes = append(viewTypes, viewType)
+				}
+				typeSpecificOpts = append(typeSpecificOpts, codegen.WithGoTypesViewTypes(viewTypes...))
+			}
+
+			// Add view-only flag if specified
+			if spec.IsViewOnly {
+				typeSpecificOpts = append(typeSpecificOpts, codegen.WithViewOnly())
+			}
+
+			// Add the type with its options
+			typeOptions = append(typeOptions, codegen.WithGoTypesType(goType, typeSpecificOpts...))
 		}
 
 		if config.Legacy {

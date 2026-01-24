@@ -11,6 +11,7 @@ Welcome to the comprehensive documentation for Dynamic SSZ - a flexible Go imple
 - **[API Reference](api-reference.md)** - Complete public interface documentation
 - **[Merkle Proofs](merkle-proofs.md)** - Tree construction and proof generation
 - **[Code Generator](code-generator.md)** - CLI tool and programmatic code generation
+- **[SSZ Views](views.md)** - Multiple SSZ schemas for fork handling
 
 ### Advanced Topics
 - **[Type Wrapper](type-wrapper.md)** - Applying SSZ annotations to non-struct types
@@ -22,16 +23,18 @@ Welcome to the comprehensive documentation for Dynamic SSZ - a flexible Go imple
 
 ### By Use Case
 - **New Users**: Start with [Getting Started](getting-started.md)
-- **Ethereum Developers**: See [Ethereum Integration](go-eth2-client-integration.md)
+- **Ethereum Developers**: See [Ethereum Integration](go-eth2-client-integration.md) and [SSZ Views](views.md)
 - **Performance Optimization**: Read [Performance Guide](performance.md)
 - **Type Issues**: Check [Troubleshooting](troubleshooting.md)
 - **Advanced Types**: Explore [Type Wrapper](type-wrapper.md)
+- **Fork Handling**: Use [SSZ Views](views.md) for multi-fork support
 
 ### By Topic
 - **Types & Annotations**: [Supported Types](supported-types.md) → [SSZ Annotations](ssz-annotations.md)
 - **API Usage**: [Getting Started](getting-started.md) → [API Reference](api-reference.md)
 - **Proofs & Trees**: [Merkle Proofs](merkle-proofs.md)
 - **Code Generation**: [Code Generator](code-generator.md)
+- **Fork Handling**: [SSZ Views](views.md) → [Code Generator](code-generator.md)
 - **Integration**: [Ethereum Integration](go-eth2-client-integration.md)
 
 ## Overview

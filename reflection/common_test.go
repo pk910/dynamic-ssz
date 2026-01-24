@@ -1080,3 +1080,288 @@ func (c *TestContainerWithSizerError) MarshalSSZTo(buf []byte) ([]byte, error) {
 func (c *TestContainerWithSizerError) SizeSSZ() int {
 	return 8
 }
+
+// View type definitions for testing view-based interfaces.
+// These types have fields matching the runtime types to enable proper type descriptor mapping.
+type TestViewType1 struct {
+	Field0 uint64
+	Field1 uint32
+}
+type TestViewType2 struct {
+	Field0 uint64
+	Field1 uint32
+}
+type TestViewTypeUnknown struct {
+	Field0 uint64
+	Field1 uint32
+}
+
+// TestContainerWithViewSizer implements DynamicViewSizer with success, error, and nil (unsupported) behaviors.
+type TestContainerWithViewSizer struct {
+	Field0 uint64
+	Field1 uint32
+}
+
+var _ sszutils.DynamicViewSizer = (*TestContainerWithViewSizer)(nil)
+
+func (c *TestContainerWithViewSizer) SizeSSZDynView(view any) func(sszutils.DynamicSpecs) int {
+	switch view.(type) {
+	case *TestViewType1:
+		return func(_ sszutils.DynamicSpecs) int { return 12 }
+	case *TestViewType2:
+		// For error case, we return a valid function but the test will check
+		// the error via a different mechanism (e.g., a separate error-returning type)
+		// Since size functions don't return errors, we just return 0
+		return func(_ sszutils.DynamicSpecs) int { return 0 }
+	default:
+		return nil // Not supported
+	}
+}
+
+// TestContainerWithViewMarshaler implements DynamicViewMarshaler and DynamicViewEncoder.
+type TestContainerWithViewMarshaler struct {
+	Field0 uint64
+	Field1 uint32
+}
+
+var _ sszutils.DynamicViewSizer = (*TestContainerWithViewMarshaler)(nil)
+var _ sszutils.DynamicViewMarshaler = (*TestContainerWithViewMarshaler)(nil)
+var _ sszutils.DynamicViewEncoder = (*TestContainerWithViewMarshaler)(nil)
+
+func (c *TestContainerWithViewMarshaler) SizeSSZDynView(view any) func(sszutils.DynamicSpecs) int {
+	switch view.(type) {
+	case *TestViewType1, *TestViewType2:
+		return func(_ sszutils.DynamicSpecs) int { return 12 }
+	default:
+		return nil
+	}
+}
+
+func (c *TestContainerWithViewMarshaler) MarshalSSZDynView(view any) func(sszutils.DynamicSpecs, []byte) ([]byte, error) {
+	switch view.(type) {
+	case *TestViewType1:
+		return func(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+			buf = sszutils.MarshalUint64(buf, c.Field0)
+			buf = sszutils.MarshalUint32(buf, c.Field1)
+			return buf, nil
+		}
+	case *TestViewType2:
+		return func(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+			return nil, fmt.Errorf("test view marshaler error")
+		}
+	default:
+		return nil
+	}
+}
+
+func (c *TestContainerWithViewMarshaler) MarshalSSZEncoderView(view any) func(sszutils.DynamicSpecs, sszutils.Encoder) error {
+	switch view.(type) {
+	case *TestViewType1:
+		return func(_ sszutils.DynamicSpecs, encoder sszutils.Encoder) error {
+			encoder.EncodeUint64(c.Field0)
+			encoder.EncodeUint32(c.Field1)
+			return nil
+		}
+	case *TestViewType2:
+		return func(_ sszutils.DynamicSpecs, encoder sszutils.Encoder) error {
+			return fmt.Errorf("test view encoder error")
+		}
+	default:
+		return nil
+	}
+}
+
+// TestContainerWithViewUnmarshaler implements DynamicViewDecoder and DynamicViewUnmarshaler.
+type TestContainerWithViewUnmarshaler struct {
+	Field0 uint64
+	Field1 uint32
+}
+
+var _ sszutils.DynamicViewDecoder = (*TestContainerWithViewUnmarshaler)(nil)
+var _ sszutils.DynamicViewUnmarshaler = (*TestContainerWithViewUnmarshaler)(nil)
+
+func (c *TestContainerWithViewUnmarshaler) UnmarshalSSZDecoderView(view any) func(sszutils.DynamicSpecs, sszutils.Decoder) error {
+	switch view.(type) {
+	case *TestViewType1:
+		return func(_ sszutils.DynamicSpecs, decoder sszutils.Decoder) error {
+			var err error
+			c.Field0, err = decoder.DecodeUint64()
+			if err != nil {
+				return err
+			}
+			c.Field1, err = decoder.DecodeUint32()
+			return err
+		}
+	case *TestViewType2:
+		return func(_ sszutils.DynamicSpecs, decoder sszutils.Decoder) error {
+			return fmt.Errorf("test view decoder error")
+		}
+	default:
+		return nil
+	}
+}
+
+func (c *TestContainerWithViewUnmarshaler) UnmarshalSSZDynView(view any) func(sszutils.DynamicSpecs, []byte) error {
+	switch view.(type) {
+	case *TestViewType1:
+		return func(_ sszutils.DynamicSpecs, buf []byte) error {
+			if len(buf) < 12 {
+				return fmt.Errorf("buffer too short")
+			}
+			c.Field0 = sszutils.UnmarshallUint64(buf[:8])
+			c.Field1 = sszutils.UnmarshallUint32(buf[8:12])
+			return nil
+		}
+	case *TestViewType2:
+		return func(_ sszutils.DynamicSpecs, buf []byte) error {
+			return fmt.Errorf("test view unmarshaler error")
+		}
+	default:
+		return nil
+	}
+}
+
+// TestContainerWithViewHashRoot implements DynamicViewHashRoot.
+type TestContainerWithViewHashRoot struct {
+	Field0 uint64
+	Field1 uint32
+}
+
+var _ sszutils.DynamicViewHashRoot = (*TestContainerWithViewHashRoot)(nil)
+
+func (c *TestContainerWithViewHashRoot) HashTreeRootWithDynView(view any) func(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	switch view.(type) {
+	case *TestViewType1:
+		return func(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+			indx := hh.Index()
+			hh.PutUint64(c.Field0)
+			hh.PutUint32(c.Field1)
+			hh.Merkleize(indx)
+			return nil
+		}
+	case *TestViewType2:
+		return func(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+			return fmt.Errorf("test view hash root error")
+		}
+	default:
+		return nil
+	}
+}
+
+// TestContainerWithAllViewInterfaces implements all view interfaces for comprehensive testing.
+type TestContainerWithAllViewInterfaces struct {
+	Field0 uint64
+	Field1 uint32
+}
+
+var _ sszutils.DynamicViewSizer = (*TestContainerWithAllViewInterfaces)(nil)
+var _ sszutils.DynamicViewMarshaler = (*TestContainerWithAllViewInterfaces)(nil)
+var _ sszutils.DynamicViewEncoder = (*TestContainerWithAllViewInterfaces)(nil)
+var _ sszutils.DynamicViewUnmarshaler = (*TestContainerWithAllViewInterfaces)(nil)
+var _ sszutils.DynamicViewDecoder = (*TestContainerWithAllViewInterfaces)(nil)
+var _ sszutils.DynamicViewHashRoot = (*TestContainerWithAllViewInterfaces)(nil)
+
+func (c *TestContainerWithAllViewInterfaces) SizeSSZDynView(view any) func(sszutils.DynamicSpecs) int {
+	switch view.(type) {
+	case *TestViewType1:
+		return func(_ sszutils.DynamicSpecs) int { return 12 }
+	case *TestViewType2:
+		return func(_ sszutils.DynamicSpecs) int { return 0 }
+	default:
+		return nil
+	}
+}
+
+func (c *TestContainerWithAllViewInterfaces) MarshalSSZDynView(view any) func(sszutils.DynamicSpecs, []byte) ([]byte, error) {
+	switch view.(type) {
+	case *TestViewType1:
+		return func(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+			buf = sszutils.MarshalUint64(buf, c.Field0)
+			buf = sszutils.MarshalUint32(buf, c.Field1)
+			return buf, nil
+		}
+	case *TestViewType2:
+		return func(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+			return nil, fmt.Errorf("test view marshaler error")
+		}
+	default:
+		return nil
+	}
+}
+
+func (c *TestContainerWithAllViewInterfaces) MarshalSSZEncoderView(view any) func(sszutils.DynamicSpecs, sszutils.Encoder) error {
+	switch view.(type) {
+	case *TestViewType1:
+		return func(_ sszutils.DynamicSpecs, encoder sszutils.Encoder) error {
+			encoder.EncodeUint64(c.Field0)
+			encoder.EncodeUint32(c.Field1)
+			return nil
+		}
+	case *TestViewType2:
+		return func(_ sszutils.DynamicSpecs, encoder sszutils.Encoder) error {
+			return fmt.Errorf("test view encoder error")
+		}
+	default:
+		return nil
+	}
+}
+
+func (c *TestContainerWithAllViewInterfaces) UnmarshalSSZDynView(view any) func(sszutils.DynamicSpecs, []byte) error {
+	switch view.(type) {
+	case *TestViewType1:
+		return func(_ sszutils.DynamicSpecs, buf []byte) error {
+			if len(buf) < 12 {
+				return fmt.Errorf("buffer too short")
+			}
+			c.Field0 = sszutils.UnmarshallUint64(buf[:8])
+			c.Field1 = sszutils.UnmarshallUint32(buf[8:12])
+			return nil
+		}
+	case *TestViewType2:
+		return func(_ sszutils.DynamicSpecs, buf []byte) error {
+			return fmt.Errorf("test view unmarshaler error")
+		}
+	default:
+		return nil
+	}
+}
+
+func (c *TestContainerWithAllViewInterfaces) UnmarshalSSZDecoderView(view any) func(sszutils.DynamicSpecs, sszutils.Decoder) error {
+	switch view.(type) {
+	case *TestViewType1:
+		return func(_ sszutils.DynamicSpecs, decoder sszutils.Decoder) error {
+			var err error
+			c.Field0, err = decoder.DecodeUint64()
+			if err != nil {
+				return err
+			}
+			c.Field1, err = decoder.DecodeUint32()
+			return err
+		}
+	case *TestViewType2:
+		return func(_ sszutils.DynamicSpecs, decoder sszutils.Decoder) error {
+			return fmt.Errorf("test view decoder error")
+		}
+	default:
+		return nil
+	}
+}
+
+func (c *TestContainerWithAllViewInterfaces) HashTreeRootWithDynView(view any) func(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	switch view.(type) {
+	case *TestViewType1:
+		return func(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+			indx := hh.Index()
+			hh.PutUint64(c.Field0)
+			hh.PutUint32(c.Field1)
+			hh.Merkleize(indx)
+			return nil
+		}
+	case *TestViewType2:
+		return func(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+			return fmt.Errorf("test view hash root error")
+		}
+	default:
+		return nil
+	}
+}

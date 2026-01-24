@@ -384,3 +384,45 @@ func (c *CustomType1) HashTreeRoot() ([32]byte, error) {
 	sszutils.MarshalUint64(buf, uint64(*c))
 	return [32]byte(buf), nil
 }
+
+type ViewTypes1_Base struct {
+	F1 uint64
+	F2 []uint64
+	F3 [2][]uint64
+	C1 *ViewTypes1_C1
+}
+
+type ViewTypes1_C1 struct {
+	F1 uint64
+	F2 []uint64
+}
+
+type ViewTypes1_View1 struct {
+	F1 uint64
+	F3 [2][]uint64 `ssz-size:"2,5"`
+	C1 *ViewTypes1_View1_C1
+}
+
+type ViewTypes1_View1_C1 struct {
+	F1 uint64
+}
+
+type ViewTypes1_View2 struct {
+	F1 uint64
+	F2 []uint64
+	C1 *ViewTypes1_View2_C1
+}
+
+type ViewTypes1_View2_C1 struct {
+	F2 []uint64
+}
+
+var ViewTypes1_Payload = ViewTypes1_Base{
+	F1: 12345,
+	F2: []uint64{12345, 67890},
+	F3: [2][]uint64{{12345, 67890}, {12345, 67890}},
+	C1: &ViewTypes1_C1{
+		F1: 12345,
+		F2: []uint64{12345, 67890},
+	},
+}

@@ -137,6 +137,35 @@ func (d *DynSsz) GetTypeCache() *ssztypes.TypeCache {
 	return d.typeCache
 }
 
+// resolveSchemaType determines the schema type to use for SSZ operations.
+//
+// This method implements view descriptor selection:
+//   - If callConfig has a viewDescriptor, use that type
+//   - Otherwise, default to the runtime type (schema == runtime)
+//
+// Parameters:
+//   - runtimeType: The reflect.Type of the actual data (where data lives)
+//   - cfg: The call configuration containing optional viewDescriptor
+//
+// Returns:
+//   - reflect.Type: The schema type to use for SSZ layout definition
+func (d *DynSsz) resolveSchemaType(runtimeType reflect.Type, cfg *callConfig) reflect.Type {
+	// Check for explicit view descriptor from call options
+	if cfg != nil && cfg.viewDescriptor != nil {
+		viewType := reflect.TypeOf(cfg.viewDescriptor)
+		// Handle both pointer and value forms
+		if viewType.Kind() == reflect.Ptr && runtimeType.Kind() != reflect.Ptr {
+			viewType = viewType.Elem()
+		} else if viewType.Kind() != reflect.Ptr && runtimeType.Kind() == reflect.Ptr {
+			viewType = reflect.New(viewType).Type()
+		}
+		return viewType
+	}
+
+	// Default to runtime type (schema == runtime)
+	return runtimeType
+}
+
 // MarshalSSZ serializes the given source into its SSZ (Simple Serialize) representation.
 //
 // This method dynamically handles the serialization of Go types to SSZ format, supporting both
@@ -174,22 +203,46 @@ func (d *DynSsz) GetTypeCache() *ssztypes.TypeCache {
 //	    log.Fatal("Failed to marshal:", err)
 //	}
 //	fmt.Printf("Encoded %d bytes\n", len(data))
-func (d *DynSsz) MarshalSSZ(source any) ([]byte, error) {
-	if marshaler, ok := source.(sszutils.DynamicMarshaler); ok {
-		var buf []byte
-		if sizer, ok := source.(sszutils.DynamicSizer); ok {
-			size := sizer.SizeSSZDyn(d)
-			buf = make([]byte, 0, size)
-		} else {
-			buf = make([]byte, 0, 1024)
+func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
+	cfg := applyCallOptions(opts)
+
+	// Skip view descriptor logic for types implementing DynamicMarshaler (they handle their own serialization)
+	if cfg.viewDescriptor == nil {
+		if marshaler, ok := source.(sszutils.DynamicMarshaler); ok {
+			var buf []byte
+			if sizer, ok := source.(sszutils.DynamicSizer); ok {
+				size := sizer.SizeSSZDyn(d)
+				buf = make([]byte, 0, size)
+			} else {
+				buf = make([]byte, 0, 1024)
+			}
+			return marshaler.MarshalSSZDyn(d, buf)
 		}
-		return marshaler.MarshalSSZDyn(d, buf)
+	} else if viewMarshaler, ok := source.(sszutils.DynamicViewMarshaler); ok {
+		if marshalFn := viewMarshaler.MarshalSSZDynView(cfg.viewDescriptor); marshalFn != nil {
+			var buf []byte
+			if sizer, ok := source.(sszutils.DynamicViewSizer); ok {
+				sizeFn := sizer.SizeSSZDynView(cfg.viewDescriptor)
+				if sizeFn != nil {
+					size := sizeFn(d)
+					buf = make([]byte, 0, size)
+				} else {
+					buf = make([]byte, 0, 1024)
+				}
+			} else {
+				buf = make([]byte, 0, 1024)
+			}
+			return marshalFn(d, buf)
+		}
 	}
 
 	sourceType := reflect.TypeOf(source)
 	sourceValue := reflect.ValueOf(source)
 
-	sourceTypeDesc, err := d.typeCache.GetTypeDescriptor(sourceType, nil, nil, nil)
+	// Resolve schema type from view descriptor option
+	schemaType := d.resolveSchemaType(sourceType, cfg)
+
+	sourceTypeDesc, err := d.typeCache.GetTypeDescriptorWithSchema(sourceType, schemaType, nil, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -243,15 +296,27 @@ func (d *DynSsz) MarshalSSZ(source any) ([]byte, error) {
 //	    }
 //	}
 //	fmt.Printf("Serialized %d blocks into %d bytes\n", len(blocks), len(buf))
-func (d *DynSsz) MarshalSSZTo(source any, buf []byte) ([]byte, error) {
-	if marshaler, ok := source.(sszutils.DynamicMarshaler); ok {
-		return marshaler.MarshalSSZDyn(d, buf)
+func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byte, error) {
+	cfg := applyCallOptions(opts)
+
+	// Skip view descriptor logic for types implementing DynamicMarshaler
+	if cfg.viewDescriptor == nil {
+		if marshaler, ok := source.(sszutils.DynamicMarshaler); ok {
+			return marshaler.MarshalSSZDyn(d, buf)
+		}
+	} else if viewMarshaler, ok := source.(sszutils.DynamicViewMarshaler); ok {
+		if marshalFn := viewMarshaler.MarshalSSZDynView(cfg.viewDescriptor); marshalFn != nil {
+			return marshalFn(d, buf)
+		}
 	}
 
 	sourceType := reflect.TypeOf(source)
 	sourceValue := reflect.ValueOf(source)
 
-	sourceTypeDesc, err := d.typeCache.GetTypeDescriptor(sourceType, nil, nil, nil)
+	// Resolve schema type from view descriptor option
+	schemaType := d.resolveSchemaType(sourceType, cfg)
+
+	sourceTypeDesc, err := d.typeCache.GetTypeDescriptorWithSchema(sourceType, schemaType, nil, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -321,22 +386,37 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte) ([]byte, error) {
 //	defer conn.Close()
 //
 //	err = ds.MarshalSSZWriter(block, conn)
-func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error {
+func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) error {
+	cfg := applyCallOptions(opts)
 	encoder := sszutils.NewStreamEncoder(w)
 
-	if sszEncoder, ok := source.(sszutils.DynamicEncoder); ok {
-		err := sszEncoder.MarshalSSZEncoder(d, encoder)
-		if err != nil {
-			return err
-		}
+	// Skip view descriptor logic for types implementing DynamicEncoder
+	if cfg.viewDescriptor == nil {
+		if sszEncoder, ok := source.(sszutils.DynamicEncoder); ok {
+			err := sszEncoder.MarshalSSZEncoder(d, encoder)
+			if err != nil {
+				return err
+			}
 
-		return encoder.GetWriteError()
+			return encoder.GetWriteError()
+		}
+	} else if viewEncoder, ok := source.(sszutils.DynamicViewEncoder); ok {
+		if marshalFn := viewEncoder.MarshalSSZEncoderView(cfg.viewDescriptor); marshalFn != nil {
+			err := marshalFn(d, encoder)
+			if err != nil {
+				return err
+			}
+			return encoder.GetWriteError()
+		}
 	}
 
 	sourceType := reflect.TypeOf(source)
 	sourceValue := reflect.ValueOf(source)
 
-	sourceTypeDesc, err := d.typeCache.GetTypeDescriptor(sourceType, nil, nil, nil)
+	// Resolve schema type from view descriptor option
+	schemaType := d.resolveSchemaType(sourceType, cfg)
+
+	sourceTypeDesc, err := d.typeCache.GetTypeDescriptorWithSchema(sourceType, schemaType, nil, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -383,15 +463,28 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error {
 //	// Pre-allocate buffer with exact size
 //	buf := make([]byte, 0, size)
 //	buf, err = ds.MarshalSSZTo(state, buf)
-func (d *DynSsz) SizeSSZ(source any) (int, error) {
-	if sizer, ok := source.(sszutils.DynamicSizer); ok {
-		return sizer.SizeSSZDyn(d), nil
+func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error) {
+	cfg := applyCallOptions(opts)
+
+	// Skip view descriptor logic for types implementing DynamicSizer
+	if cfg.viewDescriptor == nil {
+		if sizer, ok := source.(sszutils.DynamicSizer); ok {
+			return sizer.SizeSSZDyn(d), nil
+		}
+	} else if viewSizer, ok := source.(sszutils.DynamicViewSizer); ok {
+		sizeFn := viewSizer.SizeSSZDynView(cfg.viewDescriptor)
+		if sizeFn != nil {
+			return sizeFn(d), nil
+		}
 	}
 
 	sourceType := reflect.TypeOf(source)
 	sourceValue := reflect.ValueOf(source)
 
-	sourceTypeDesc, err := d.typeCache.GetTypeDescriptor(sourceType, nil, nil, nil)
+	// Resolve schema type from view descriptor option
+	schemaType := d.resolveSchemaType(sourceType, cfg)
+
+	sourceTypeDesc, err := d.typeCache.GetTypeDescriptorWithSchema(sourceType, schemaType, nil, nil, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -437,15 +530,27 @@ func (d *DynSsz) SizeSSZ(source any) (int, error) {
 //	    log.Fatal("Failed to unmarshal:", err)
 //	}
 //	fmt.Printf("Decoded header for slot %d\n", header.Slot)
-func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte) error {
-	if unmarshaler, ok := target.(sszutils.DynamicUnmarshaler); ok {
-		return unmarshaler.UnmarshalSSZDyn(d, ssz)
+func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error {
+	cfg := applyCallOptions(opts)
+
+	// Skip view descriptor logic for types implementing DynamicUnmarshaler
+	if cfg.viewDescriptor == nil {
+		if unmarshaler, ok := target.(sszutils.DynamicUnmarshaler); ok {
+			return unmarshaler.UnmarshalSSZDyn(d, ssz)
+		}
+	} else if viewUnmarshaler, ok := target.(sszutils.DynamicViewUnmarshaler); ok {
+		if unmarshalFn := viewUnmarshaler.UnmarshalSSZDynView(cfg.viewDescriptor); unmarshalFn != nil {
+			return unmarshalFn(d, ssz)
+		}
 	}
 
 	targetType := reflect.TypeOf(target)
 	targetValue := reflect.ValueOf(target)
 
-	targetTypeDesc, err := d.typeCache.GetTypeDescriptor(targetType, nil, nil, nil)
+	// Resolve schema type from view descriptor option
+	schemaType := d.resolveSchemaType(targetType, cfg)
+
+	targetTypeDesc, err := d.typeCache.GetTypeDescriptorWithSchema(targetType, schemaType, nil, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -538,28 +643,49 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte) error {
 //	conn, _ := net.Dial("tcp", "localhost:8080")
 //	var block phase0.BeaconBlock
 //	err = ds.UnmarshalSSZReader(&block, conn, -1)
-func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int) error {
+func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...CallOption) error {
+	cfg := applyCallOptions(opts)
 	decoder := sszutils.NewStreamDecoder(r, size)
 	decoder.PushLimit(size)
 
-	if sszDecoder, ok := target.(sszutils.DynamicDecoder); ok {
-		err := sszDecoder.UnmarshalSSZDecoder(d, decoder)
-		if err != nil {
-			return err
-		}
+	// Skip view descriptor logic for types implementing DynamicDecoder
+	if cfg.viewDescriptor == nil {
+		if sszDecoder, ok := target.(sszutils.DynamicDecoder); ok {
+			err := sszDecoder.UnmarshalSSZDecoder(d, decoder)
+			if err != nil {
+				return err
+			}
 
-		consumedDiff := decoder.PopLimit()
-		if consumedDiff != 0 {
-			return fmt.Errorf("did not consume full ssz range (diff: %v, ssz size: %v)", consumedDiff, size)
-		}
+			consumedDiff := decoder.PopLimit()
+			if consumedDiff != 0 {
+				return fmt.Errorf("did not consume full ssz range (diff: %v, ssz size: %v)", consumedDiff, size)
+			}
 
-		return nil
+			return nil
+		}
+	} else if viewDecoder, ok := target.(sszutils.DynamicViewDecoder); ok {
+		if unmarshalFn := viewDecoder.UnmarshalSSZDecoderView(cfg.viewDescriptor); unmarshalFn != nil {
+			err := unmarshalFn(d, decoder)
+			if err != nil {
+				return err
+			}
+
+			consumedDiff := decoder.PopLimit()
+			if consumedDiff != 0 {
+				return fmt.Errorf("did not consume full ssz range (diff: %v, ssz size: %v)", consumedDiff, size)
+			}
+
+			return nil
+		}
 	}
 
 	targetType := reflect.TypeOf(target)
 	targetValue := reflect.ValueOf(target)
 
-	targetTypeDesc, err := d.typeCache.GetTypeDescriptor(targetType, nil, nil, nil)
+	// Resolve schema type from view descriptor option
+	schemaType := d.resolveSchemaType(targetType, cfg)
+
+	targetTypeDesc, err := d.typeCache.GetTypeDescriptorWithSchema(targetType, schemaType, nil, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -625,7 +751,7 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int) error {
 //	    log.Fatal("Failed to compute root:", err)
 //	}
 //	fmt.Printf("Block root: %x\n", root)
-func (d *DynSsz) HashTreeRoot(source any) ([32]byte, error) {
+func (d *DynSsz) HashTreeRoot(source any, opts ...CallOption) ([32]byte, error) {
 	var pool *hasher.HasherPool
 	if d.options.NoFastHash {
 		pool = &hasher.DefaultHasherPool
@@ -638,7 +764,7 @@ func (d *DynSsz) HashTreeRoot(source any) ([32]byte, error) {
 		pool.Put(hh)
 	}()
 
-	err := d.HashTreeRootWith(source, hh)
+	err := d.HashTreeRootWith(source, hh, opts...)
 	if err != nil {
 		return [32]byte{}, err
 	}
@@ -680,27 +806,44 @@ func (d *DynSsz) HashTreeRoot(source any) ([32]byte, error) {
 //	    log.Fatal("Failed to compute root:", err)
 //	}
 //	fmt.Printf("Block root: %x\n", hh.HashRoot())
-func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker) error {
-	if hasher, ok := source.(sszutils.DynamicHashRoot); ok {
-		err := hasher.HashTreeRootWithDyn(d, hh)
-		if err != nil {
-			return err
-		}
-	} else {
-		sourceType := reflect.TypeOf(source)
-		sourceValue := reflect.ValueOf(source)
+func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...CallOption) error {
+	cfg := applyCallOptions(opts)
 
-		sourceTypeDesc, err := d.typeCache.GetTypeDescriptor(sourceType, nil, nil, nil)
-		if err != nil {
-			return err
+	// Skip view descriptor logic for types implementing DynamicHashRoot
+	if cfg.viewDescriptor == nil {
+		if hasher, ok := source.(sszutils.DynamicHashRoot); ok {
+			err := hasher.HashTreeRootWithDyn(d, hh)
+			if err != nil {
+				return err
+			}
+			return nil
 		}
-
-		ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz)
-
-		err = ctx.HashTreeRoot(sourceTypeDesc, sourceValue, hh)
-		if err != nil {
-			return err
+	} else if viewHasher, ok := source.(sszutils.DynamicViewHashRoot); ok {
+		if hashFn := viewHasher.HashTreeRootWithDynView(cfg.viewDescriptor); hashFn != nil {
+			err := hashFn(d, hh)
+			if err != nil {
+				return err
+			}
+			return nil
 		}
+	}
+
+	sourceType := reflect.TypeOf(source)
+	sourceValue := reflect.ValueOf(source)
+
+	// Resolve schema type from view descriptor option
+	schemaType := d.resolveSchemaType(sourceType, cfg)
+
+	sourceTypeDesc, err := d.typeCache.GetTypeDescriptorWithSchema(sourceType, schemaType, nil, nil, nil)
+	if err != nil {
+		return err
+	}
+
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz)
+
+	err = ctx.HashTreeRoot(sourceTypeDesc, sourceValue, hh)
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -755,10 +898,10 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker) error {
 //
 // Note: For progressive containers (with ssz-index tags), the tree structure will be
 // progressive rather than binary, which affects the generalized indices of fields.
-func (d *DynSsz) GetTree(source any) (*treeproof.Node, error) {
+func (d *DynSsz) GetTree(source any, opts ...CallOption) (*treeproof.Node, error) {
 	w := treeproof.NewWrapper()
 
-	if err := d.HashTreeRootWith(source, w); err != nil {
+	if err := d.HashTreeRootWith(source, w, opts...); err != nil {
 		return nil, err
 	}
 
@@ -779,14 +922,21 @@ func (d *DynSsz) GetTree(source any) (*treeproof.Node, error) {
 //   - Correct tag syntax and values
 //   - No unsupported types (strings, maps, channels, signed integers, floats, etc.)
 //
+// When a view descriptor is provided via WithViewDescriptor option, the method validates:
+//   - The schema type (view descriptor) is compatible with SSZ
+//   - Schema fields can be mapped to corresponding runtime fields by name
+//   - Field type compatibility between schema and runtime types
+//
 // This method is particularly useful for:
 //   - Pre-validation before attempting marshalling/unmarshalling operations
 //   - Development-time type checking to catch errors early
 //   - Runtime validation of dynamically constructed types
 //   - Ensuring type compatibility when integrating with external systems
+//   - Validating view descriptor compatibility with runtime types
 //
 // Parameters:
 //   - t: The reflect.Type to validate for SSZ compatibility
+//   - opts: Optional CallOptions, including WithViewDescriptor for fork-dependent validation
 //
 // Returns:
 //   - error: nil if the type is valid for SSZ encoding/decoding, or a descriptive error
@@ -806,12 +956,19 @@ func (d *DynSsz) GetTree(source any) (*treeproof.Node, error) {
 //	    // Output: Type validation failed: field 'InvalidField': unsupported type 'string'
 //	}
 //
+//	// With view descriptor validation:
+//	err = ds.ValidateType(reflect.TypeOf(RuntimeBody{}), WithViewDescriptor(&AltairBodyView{}))
+//
 // The method validates at the type level without requiring an instance of the type,
 // making it suitable for early validation scenarios. For performance-critical paths,
 // validation results can be cached as type compatibility doesn't change at runtime.
-func (d *DynSsz) ValidateType(t reflect.Type) error {
-	// Attempt to get type descriptor which will validate the type structure
-	_, err := d.typeCache.GetTypeDescriptor(t, nil, nil, nil)
+func (d *DynSsz) ValidateType(t reflect.Type, opts ...CallOption) error {
+	cfg := applyCallOptions(opts)
+	schemaType := d.resolveSchemaType(t, cfg)
+
+	// Attempt to get type descriptor which will validate the type structure.
+	// When a view descriptor is specified, this validates the schema/runtime pairing.
+	_, err := d.typeCache.GetTypeDescriptorWithSchema(t, schemaType, nil, nil, nil)
 	if err != nil {
 		return fmt.Errorf("type validation failed: %w", err)
 	}

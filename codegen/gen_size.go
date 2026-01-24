@@ -84,11 +84,12 @@ func (s *sizeFnPtr) getFnCall(varName string) string {
 //   - rootTypeDesc: Type descriptor containing complete SSZ size calculation metadata
 //   - codeBuilder: String builder to append generated method code to
 //   - typePrinter: Type formatter for handling imports and type names
+//   - viewName: Name of the view type for function name postfix (empty string for data type)
 //   - options: Generation options controlling which methods to create
 //
 // Returns:
 //   - error: An error if code generation fails
-func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
+func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, viewName string, options *CodeGeneratorOptions) error {
 	ctx := newSizeContext(typePrinter, options)
 
 	// Generate main function signature
@@ -103,10 +104,10 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 		ctx.usedDynSpecs = true
 	}
 
-	genDynamicFn := !options.WithoutDynamicExpressions
-	genStaticFn := options.WithoutDynamicExpressions || options.CreateLegacyFn
+	genDynamicFn := !options.WithoutDynamicExpressions || viewName != ""
+	genStaticFn := (options.WithoutDynamicExpressions || options.CreateLegacyFn) && viewName == ""
 
-	if genDynamicFn && !ctx.usedDynSpecs {
+	if genDynamicFn && !ctx.usedDynSpecs && viewName == "" {
 		genStaticFn = true
 	}
 
@@ -130,14 +131,18 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 	}
 
 	if genDynamicFn {
-		if ctx.usedDynSpecs {
-			appendCode(codeBuilder, 0, "func (t %s) SizeSSZDyn(ds sszutils.DynamicSpecs) (size int) {\n", typeName)
+		fnName := "SizeSSZDyn"
+		if viewName != "" {
+			fnName = fmt.Sprintf("sizeSSZView_%s", viewName)
+		}
+		if ctx.usedDynSpecs || viewName != "" {
+			appendCode(codeBuilder, 0, "func (t %s) %s(ds sszutils.DynamicSpecs) (size int) {\n", typeName, fnName)
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 			appendCode(codeBuilder, 1, ctx.codeBuf.String())
 			appendCode(codeBuilder, 1, "return size\n")
 			appendCode(codeBuilder, 0, "}\n\n")
 		} else {
-			appendCode(codeBuilder, 0, "func (t %s) SizeSSZDyn(_ sszutils.DynamicSpecs) (size int) {\n", typeName)
+			appendCode(codeBuilder, 0, "func (t %s) %s(_ sszutils.DynamicSpecs) (size int) {\n", typeName, fnName)
 			appendCode(codeBuilder, 1, "return t.SizeSSZ()\n")
 			appendCode(codeBuilder, 0, "}\n\n")
 			genStaticFn = true
@@ -201,20 +206,34 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName string, 
 		return nil
 	}
 
-	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 && !isRoot {
-		ctx.appendCode(indent, "%s += %s.SizeSSZDyn(ds)\n", sizeVar, varName)
-		ctx.usedDynSpecs = true
-		return nil
+	isView := desc.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
+	if !isRoot && isView {
+		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewSizer != 0 {
+			ctx.appendCode(indent, "if viewFn := %s.SizeSSZDynView((%s)(nil)); viewFn != nil {\n", varName, ctx.typePrinter.ViewTypeString(desc, true))
+			ctx.appendCode(indent+1, "%s += viewFn(ds)\n", sizeVar)
+			ctx.appendCode(indent, "}\n")
+			ctx.usedDynSpecs = true
+			return nil
+		}
 	}
 
-	useFastSsz := !ctx.options.NoFastSsz && desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
-	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
-		useFastSsz = true
-	}
+	if !isRoot && !isView {
+		hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
+		useFastSsz := !ctx.options.NoFastSsz && desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0 && !hasDynamicSize
+		if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
+			useFastSsz = true
+		}
 
-	if useFastSsz && !isRoot {
-		ctx.appendCode(indent, "%s += %s.SizeSSZ()\n", sizeVar, varName)
-		return nil
+		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 {
+			ctx.appendCode(indent, "%s += %s.SizeSSZDyn(ds)\n", sizeVar, varName)
+			ctx.usedDynSpecs = true
+			return nil
+		}
+
+		if useFastSsz {
+			ctx.appendCode(indent, "%s += %s.SizeSSZ()\n", sizeVar, varName)
+			return nil
+		}
 	}
 
 	// create temporary instance for nil pointers

@@ -48,59 +48,80 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 		}
 	}
 
-	isFastsszHasher := sourceType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0
-	useDynamicHashRoot := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0
-	hasDynamicSize := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
-	hasDynamicMax := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicMax != 0
-	useFastSsz := !ctx.noFastSsz && isFastsszHasher && !hasDynamicSize && !hasDynamicMax
-	if !useFastSsz && sourceType.SszType == ssztypes.SszCustomType {
-		useFastSsz = true
-	}
-
 	if ctx.verbose {
-		ctx.logCb("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v/%v)\t index: %v\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, isFastsszHasher, hasDynamicSize, hasDynamicMax, hashIndex)
+		ctx.logCb("%stype: %s\t kind: %v\t index: %v\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, hashIndex)
 	}
 
-	if useFastSsz {
-		sourceValuePtr := getPtr(sourceValue)
+	// Try DynamicViewHashRoot first - it takes precedence over all other methods.
+	// This supports fork-dependent SSZ schemas where generated code handles
+	// different view types. If the method returns nil, fall through to
+	// other hashing methods.
+	isView := sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
+	useReflection := true
 
-		if sourceType.SszCompatFlags&ssztypes.SszCompatFlagHashTreeRootWith != 0 && sourceType.HashTreeRootWithMethod != nil {
-			// Use cached HashTreeRootWith method for better performance
-
-			// Call the cached method with our hasher
-			results := sourceType.HashTreeRootWithMethod.Func.Call([]reflect.Value{sourceValuePtr, reflect.ValueOf(hh)})
-			if len(results) > 0 && !results[0].IsNil() {
-				return fmt.Errorf("failed HashTreeRootWith: %v", results[0].Interface())
-			}
-		} else {
-			// Use regular HashTreeRoot
-			if hasher, ok := sourceValuePtr.Interface().(sszutils.FastsszHashRoot); ok {
-				hashBytes, err := hasher.HashTreeRoot()
-				if err != nil {
-					return fmt.Errorf("failed HashTreeRoot: %w", err)
+	if isView {
+		if sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewHashRoot != 0 {
+			if viewHasher, ok := getPtr(sourceValue).Interface().(sszutils.DynamicViewHashRoot); ok {
+				if hashFn := viewHasher.HashTreeRootWithDynView(*sourceType.CodegenInfo); hashFn != nil {
+					if err := hashFn(ctx.ds, hh); err != nil {
+						return err
+					}
+					useReflection = false
 				}
+			}
+		}
+	} else {
+		isFastsszHasher := sourceType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0
+		useDynamicHashRoot := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0
+		hasDynamicSize := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
+		hasDynamicMax := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicMax != 0
+		useFastSsz := !ctx.noFastSsz && isFastsszHasher && !hasDynamicSize && !hasDynamicMax
+		if !useFastSsz && sourceType.SszType == ssztypes.SszCustomType {
+			useFastSsz = true
+		}
 
-				hh.PutBytes(hashBytes[:])
+		if useFastSsz {
+			sourceValuePtr := getPtr(sourceValue)
+
+			if sourceType.SszCompatFlags&ssztypes.SszCompatFlagHashTreeRootWith != 0 && sourceType.HashTreeRootWithMethod != nil {
+				// Use cached HashTreeRootWith method for better performance
+
+				// Call the cached method with our hasher
+				results := sourceType.HashTreeRootWithMethod.Func.Call([]reflect.Value{sourceValuePtr, reflect.ValueOf(hh)})
+				if len(results) > 0 && !results[0].IsNil() {
+					return fmt.Errorf("failed HashTreeRootWith: %v", results[0].Interface())
+				}
+				useReflection = false
 			} else {
-				useFastSsz = false
+				// Use regular HashTreeRoot
+				if hasher, ok := sourceValuePtr.Interface().(sszutils.FastsszHashRoot); ok {
+					hashBytes, err := hasher.HashTreeRoot()
+					if err != nil {
+						return fmt.Errorf("failed HashTreeRoot: %w", err)
+					}
+
+					hh.PutBytes(hashBytes[:])
+					useReflection = false
+				} else {
+					useFastSsz = false
+				}
+			}
+		}
+
+		if useReflection && useDynamicHashRoot {
+			// Use dynamic hash root - can always be used even with dynamic specs
+			hasher, ok := getPtr(sourceValue).Interface().(sszutils.DynamicHashRoot)
+			if ok {
+				err := hasher.HashTreeRootWithDyn(ctx.ds, hh)
+				if err != nil {
+					return fmt.Errorf("failed HashTreeRootDyn: %w", err)
+				}
+				useReflection = false
 			}
 		}
 	}
 
-	if !useFastSsz && useDynamicHashRoot {
-		// Use dynamic hash root - can always be used even with dynamic specs
-		hasher, ok := getPtr(sourceValue).Interface().(sszutils.DynamicHashRoot)
-		if ok {
-			err := hasher.HashTreeRootWithDyn(ctx.ds, hh)
-			if err != nil {
-				return fmt.Errorf("failed HashTreeRootDyn: %w", err)
-			}
-		} else {
-			useDynamicHashRoot = false
-		}
-	}
-
-	if !useFastSsz && !useDynamicHashRoot {
+	if useReflection {
 		// Route to appropriate handler based on type
 		switch sourceType.SszType {
 		case ssztypes.SszTypeWrapperType:
@@ -295,7 +316,9 @@ func (ctx *ReflectionCtx) buildRootFromContainer(sourceType *ssztypes.TypeDescri
 	for i := 0; i < len(sourceType.ContainerDesc.Fields); i++ {
 		field := sourceType.ContainerDesc.Fields[i]
 		fieldType := field.Type
-		fieldValue := sourceValue.Field(i)
+		// Use FieldIndex to access the runtime struct's field, which may differ
+		// from the schema field index when using view descriptors.
+		fieldValue := sourceValue.Field(int(field.FieldIndex))
 
 		if ctx.verbose {
 			ctx.logCb("%sfield %v\n", strings.Repeat(" ", idt), field.Name)
@@ -352,7 +375,9 @@ func (ctx *ReflectionCtx) buildRootFromProgressiveContainer(sourceType *ssztypes
 		lastActiveField = int(field.SszIndex)
 
 		fieldType := field.Type
-		fieldValue := sourceValue.Field(i)
+		// Use FieldIndex to access the runtime struct's field, which may differ
+		// from the schema field index when using view descriptors.
+		fieldValue := sourceValue.Field(int(field.FieldIndex))
 
 		if ctx.verbose {
 			ctx.logCb("%sfield %v\n", strings.Repeat(" ", idt), field.Name)

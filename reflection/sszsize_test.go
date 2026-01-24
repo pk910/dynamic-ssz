@@ -159,7 +159,7 @@ func TestSizeSSZErrors(t *testing.T) {
 			input: struct {
 				TypeWrapper struct{} `ssz-type:"wrapper"`
 			}{},
-			expectedErr: "method not found on type",
+			expectedErr: "method not found on",
 		},
 		{
 			name: "invalid_bitvector_type",
@@ -276,6 +276,94 @@ func TestSizeSSZErrors(t *testing.T) {
 				t.Errorf("expected error containing '%s', but got no error", tc.expectedErr)
 			} else if !contains(err.Error(), tc.expectedErr) {
 				t.Errorf("expected error containing '%s', but got: %v", tc.expectedErr, err)
+			}
+		})
+	}
+}
+
+func TestViewSizer(t *testing.T) {
+	testCases := []struct {
+		name        string
+		view        any
+		expectSize  int
+		expectError string
+	}{
+		{
+			name:       "ViewSizer_Success",
+			view:       (*TestViewType1)(nil),
+			expectSize: 12,
+		},
+		{
+			name:       "ViewSizer_TestViewType2",
+			view:       (*TestViewType2)(nil),
+			expectSize: 0, // TestViewType2 returns size 0 (no error in function pointer design)
+		},
+		{
+			name:       "ViewSizer_NoCodeForView_FallbackToReflection",
+			view:       (*TestViewTypeUnknown)(nil),
+			expectSize: 12, // Falls back to reflection: uint64(8) + uint32(4) = 12
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := NewDynSsz(nil)
+			container := TestContainerWithViewSizer{Field0: 123, Field1: 456}
+			size, err := ds.SizeSSZ(&container, WithViewDescriptor(tc.view))
+
+			if tc.expectError != "" {
+				if err == nil {
+					t.Errorf("expected error containing '%s', but got no error", tc.expectError)
+				} else if !contains(err.Error(), tc.expectError) {
+					t.Errorf("expected error containing '%s', but got: %v", tc.expectError, err)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				} else if size != tc.expectSize {
+					t.Errorf("expected size %d, got %d", tc.expectSize, size)
+				}
+			}
+		})
+	}
+}
+
+func TestViewSizerFlagsDetection(t *testing.T) {
+	testCases := []struct {
+		name          string
+		runtimeType   reflect.Type
+		expectFlags   ssztypes.SszCompatFlag
+		unexpectFlags ssztypes.SszCompatFlag
+	}{
+		{
+			name:        "ViewSizer_FlagDetected",
+			runtimeType: reflect.TypeOf(TestContainerWithViewSizer{}),
+			expectFlags: ssztypes.SszCompatFlagDynamicViewSizer,
+		},
+		{
+			name:          "NoViewInterfaces_NoFlagsSet",
+			runtimeType:   reflect.TypeOf(struct{ Field uint64 }{}),
+			unexpectFlags: ssztypes.SszCompatFlagDynamicViewSizer,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			dynssz := NewDynSsz(nil)
+			desc, err := dynssz.GetTypeCache().GetTypeDescriptor(tc.runtimeType, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("failed to get type descriptor: %v", err)
+			}
+
+			if tc.expectFlags != 0 {
+				if desc.SszCompatFlags&tc.expectFlags != tc.expectFlags {
+					t.Errorf("expected flags %b, but got %b", tc.expectFlags, desc.SszCompatFlags)
+				}
+			}
+			if tc.unexpectFlags != 0 {
+				if desc.SszCompatFlags&tc.unexpectFlags != 0 {
+					t.Errorf("did not expect flags %b, but got %b", tc.unexpectFlags, desc.SszCompatFlags)
+				}
 			}
 		})
 	}

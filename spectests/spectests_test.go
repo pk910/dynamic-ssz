@@ -20,9 +20,11 @@ import (
 type SpecTestStruct struct {
 	name string
 	s    any
+	s2   any
+	s3   []any
 }
 
-func testForkConsensusSpec(t *testing.T, fork string, preset string, tests []SpecTestStruct) bool {
+func runForkConsensusSpecTest(t *testing.T, fork string, preset string, tests []SpecTestStruct) bool {
 	var dynssz *ssz.DynSsz
 	if preset == "mainnet" {
 		dynssz = dynSszOnlyMainnet
@@ -58,72 +60,82 @@ func testForkConsensusSpec(t *testing.T, fork string, preset string, tests []Spe
 			}
 			require.NoError(t, err)
 			if info.IsDir() {
-				t.Run(fmt.Sprintf("%s/%s/%s", test.name, preset, info.Name()), func(t *testing.T) {
-					// Obtain the struct from the SSZ.
-					s2 := clone.Clone(test.s)
-					compressedSpecSSZ, err := os.ReadFile(filepath.Join(path, "serialized.ssz_snappy"))
-					require.NoError(t, err)
-					specSSZ, err := snappy.Decode(nil, compressedSpecSSZ)
-					require.NoError(t, err)
-
-					// Unmarshal the SSZ.
-					err = dynssz.UnmarshalSSZ(s2, specSSZ)
-					require.NoError(t, err)
-
-					// Confirm we can return to the SSZ.
-					remarshalledSpecSSZ, err := dynssz.MarshalSSZ(s2)
-					require.NoError(t, err)
-					require.Equal(t, specSSZ, remarshalledSpecSSZ)
-
-					// Obtain the hash tree root from the YAML.
-					specYAMLRoot, err := os.ReadFile(filepath.Join(path, "roots.yaml"))
-					require.NoError(t, err)
-					// Confirm we calculate the same root.
-					generatedRootBytes, err := dynssz.HashTreeRoot(s2)
-					require.NoError(t, err)
-					generatedRoot := fmt.Sprintf("root: '%#x'\n", string(generatedRootBytes[:]))
-					if string(specYAMLRoot) != generatedRoot {
-						fmt.Printf("\n\ngeneratedRoot: %v", generatedRoot)
-						fmt.Printf("specYAMLRoot: %v\n", string(specYAMLRoot))
+				runTestWithType := func(name string, s any, opts ...ssz.CallOption) {
+					t.Run(fmt.Sprintf("%s/%s/%s:%s", test.name, preset, info.Name(), name), func(t *testing.T) {
+						// Obtain the struct from the SSZ.
+						s2 := clone.Clone(s)
+						compressedSpecSSZ, err := os.ReadFile(filepath.Join(path, "serialized.ssz_snappy"))
 						require.NoError(t, err)
-					}
-					require.YAMLEq(t, string(specYAMLRoot), generatedRoot)
-				})
-
-				t.Run(fmt.Sprintf("%s/%s/%s-streaming", test.name, preset, info.Name()), func(t *testing.T) {
-					// Obtain the struct from the SSZ.
-					s2 := clone.Clone(test.s)
-					compressedSpecSSZ, err := os.ReadFile(filepath.Join(path, "serialized.ssz_snappy"))
-					require.NoError(t, err)
-					specSSZ, err := snappy.Decode(nil, compressedSpecSSZ)
-					require.NoError(t, err)
-
-					reader := bytes.NewReader(specSSZ)
-
-					// Unmarshal the SSZ.
-					err = dynssz.UnmarshalSSZReader(s2, reader, len(specSSZ))
-					require.NoError(t, err)
-
-					// Confirm we can return to the SSZ.
-					writer := bytes.NewBuffer(make([]byte, 0, len(specSSZ)))
-					err = dynssz.MarshalSSZWriter(s2, writer)
-					require.NoError(t, err)
-					require.Equal(t, specSSZ, writer.Bytes())
-
-					// Obtain the hash tree root from the YAML.
-					specYAMLRoot, err := os.ReadFile(filepath.Join(path, "roots.yaml"))
-					require.NoError(t, err)
-					// Confirm we calculate the same root.
-					generatedRootBytes, err := dynssz.HashTreeRoot(s2)
-					require.NoError(t, err)
-					generatedRoot := fmt.Sprintf("root: '%#x'\n", string(generatedRootBytes[:]))
-					if string(specYAMLRoot) != generatedRoot {
-						fmt.Printf("\n\ngeneratedRoot: %v", generatedRoot)
-						fmt.Printf("specYAMLRoot: %v\n", string(specYAMLRoot))
+						specSSZ, err := snappy.Decode(nil, compressedSpecSSZ)
 						require.NoError(t, err)
-					}
-					require.YAMLEq(t, string(specYAMLRoot), generatedRoot)
-				})
+
+						// Unmarshal the SSZ.
+						err = dynssz.UnmarshalSSZ(s2, specSSZ, opts...)
+						require.NoError(t, err)
+
+						// Confirm we can return to the SSZ.
+						remarshalledSpecSSZ, err := dynssz.MarshalSSZ(s2, opts...)
+						require.NoError(t, err)
+						require.Equal(t, specSSZ, remarshalledSpecSSZ)
+
+						// Obtain the hash tree root from the YAML.
+						specYAMLRoot, err := os.ReadFile(filepath.Join(path, "roots.yaml"))
+						require.NoError(t, err)
+						// Confirm we calculate the same root.
+						generatedRootBytes, err := dynssz.HashTreeRoot(s2, opts...)
+						require.NoError(t, err)
+						generatedRoot := fmt.Sprintf("root: '%#x'\n", string(generatedRootBytes[:]))
+						if string(specYAMLRoot) != generatedRoot {
+							fmt.Printf("\n\ngeneratedRoot: %v", generatedRoot)
+							fmt.Printf("specYAMLRoot: %v\n", string(specYAMLRoot))
+							require.NoError(t, err)
+						}
+						require.YAMLEq(t, string(specYAMLRoot), generatedRoot)
+					})
+
+					t.Run(fmt.Sprintf("%s/%s/%s-streaming:%s", test.name, preset, info.Name(), name), func(t *testing.T) {
+						// Obtain the struct from the SSZ.
+						s2 := clone.Clone(s)
+						compressedSpecSSZ, err := os.ReadFile(filepath.Join(path, "serialized.ssz_snappy"))
+						require.NoError(t, err)
+						specSSZ, err := snappy.Decode(nil, compressedSpecSSZ)
+						require.NoError(t, err)
+
+						reader := bytes.NewReader(specSSZ)
+
+						// Unmarshal the SSZ.
+						err = dynssz.UnmarshalSSZReader(s2, reader, len(specSSZ), opts...)
+						require.NoError(t, err)
+
+						// Confirm we can return to the SSZ.
+						writer := bytes.NewBuffer(make([]byte, 0, len(specSSZ)))
+						err = dynssz.MarshalSSZWriter(s2, writer, opts...)
+						require.NoError(t, err)
+						require.Equal(t, specSSZ, writer.Bytes(), "specSSZ and writer.Bytes() are not equal")
+
+						// Obtain the hash tree root from the YAML.
+						specYAMLRoot, err := os.ReadFile(filepath.Join(path, "roots.yaml"))
+						require.NoError(t, err)
+						// Confirm we calculate the same root.
+						generatedRootBytes, err := dynssz.HashTreeRoot(s2, opts...)
+						require.NoError(t, err)
+						generatedRoot := fmt.Sprintf("root: '%#x'\n", string(generatedRootBytes[:]))
+						if string(specYAMLRoot) != generatedRoot {
+							fmt.Printf("\n\ngeneratedRoot: %v", generatedRoot)
+							fmt.Printf("specYAMLRoot: %v\n", string(specYAMLRoot))
+							require.NoError(t, err)
+						}
+						require.YAMLEq(t, string(specYAMLRoot), generatedRoot)
+					})
+				}
+
+				runTestWithType("reflection", test.s)
+				if test.s2 != nil {
+					runTestWithType("codegen", test.s2)
+				}
+				if test.s3 != nil {
+					runTestWithType("codegen+views", test.s3[0], ssz.WithViewDescriptor(test.s3[1]))
+				}
 			}
 
 			return nil

@@ -50,78 +50,122 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 		targetValue = targetValue.Elem()
 	}
 
-	hasDynamicSize := targetType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
-	isFastsszUnmarshaler := targetType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
-	useDynamicUnmarshal := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0
-	useDynamicDecoder := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0
-	useFastSsz := !ctx.noFastSsz && isFastsszUnmarshaler && !hasDynamicSize
-	if !useFastSsz && targetType.SszType == ssztypes.SszCustomType {
-		useFastSsz = true
-	}
-
 	if ctx.verbose {
-		ctx.logCb("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), targetType.Type.Name(), targetType.Kind, useFastSsz, isFastsszUnmarshaler, hasDynamicSize)
+		ctx.logCb("%stype: %s\t kind: %v\n", strings.Repeat(" ", idt), targetType.Type.Name(), targetType.Kind)
 	}
 
-	if useFastSsz {
-		unmarshaller, ok := targetValue.Addr().Interface().(sszutils.FastsszUnmarshaler)
-		if ok {
-			sszLen := decoder.GetLength()
-			if targetType.Size > 0 {
-				sszLen = int(targetType.Size)
-			}
-			sszBuf, err := decoder.DecodeBytesBuf(sszLen)
-			if err != nil {
-				return err
-			}
+	// Try DynamicView methods first - they take precedence over all other methods.
+	// This supports fork-dependent SSZ schemas where generated code handles
+	// different view types. If the method returns nil, fall through to
+	// other unmarshaling methods.
+	isView := targetType.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
+	useReflection := true
 
-			err = unmarshaller.UnmarshalSSZ(sszBuf)
-			if err != nil {
-				return err
+	if isView {
+		useViewDecoder := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewDecoder != 0
+		useViewUnmarshaler := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewUnmarshaler != 0
+
+		// Prefer decoder for stream-based decoders, unmarshaler for buffer-based
+		if useViewDecoder {
+			if decoder.Seekable() && useViewUnmarshaler {
+				// prefer dynamic unmarshaller for seekable decoders (stream based)
+				useViewDecoder = false
+			} else if dec, ok := targetValue.Addr().Interface().(sszutils.DynamicViewDecoder); ok {
+				if decodeFn := dec.UnmarshalSSZDecoderView(*targetType.CodegenInfo); decodeFn != nil {
+					if err := decodeFn(ctx.ds, decoder); err != nil {
+						return err
+					}
+					useReflection = false
+				}
 			}
-		} else {
-			useFastSsz = false
+		}
+
+		if useReflection && useViewUnmarshaler {
+			if unmarshaler, ok := targetValue.Addr().Interface().(sszutils.DynamicViewUnmarshaler); ok {
+				if unmarshalFn := unmarshaler.UnmarshalSSZDynView(*targetType.CodegenInfo); unmarshalFn != nil {
+					bufLen := decoder.GetLength()
+					buf, err := decoder.DecodeBytesBuf(bufLen)
+					if err != nil {
+						return err
+					}
+					if err := unmarshalFn(ctx.ds, buf); err != nil {
+						return err
+					}
+					useReflection = false
+				}
+			}
+		}
+	} else {
+		hasDynamicSize := targetType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
+		isFastsszUnmarshaler := targetType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+		useDynamicUnmarshal := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0
+		useDynamicDecoder := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0
+		useFastSsz := !ctx.noFastSsz && isFastsszUnmarshaler && !hasDynamicSize
+		if !useFastSsz && targetType.SszType == ssztypes.SszCustomType {
+			useFastSsz = true
+		}
+
+		if useFastSsz {
+			unmarshaller, ok := targetValue.Addr().Interface().(sszutils.FastsszUnmarshaler)
+			if ok {
+				sszLen := decoder.GetLength()
+				if targetType.Size > 0 {
+					sszLen = int(targetType.Size)
+				}
+				sszBuf, err := decoder.DecodeBytesBuf(sszLen)
+				if err != nil {
+					return err
+				}
+
+				err = unmarshaller.UnmarshalSSZ(sszBuf)
+				if err != nil {
+					return err
+				}
+				useReflection = false
+			} else {
+				useFastSsz = false
+			}
+		}
+
+		if useReflection && useDynamicDecoder {
+			if decoder.Seekable() && useDynamicUnmarshal {
+				// prefer static unmarshaller for non-seekable decoders (buffer based)
+				useDynamicDecoder = false
+			} else if sszDecoder, ok := targetValue.Addr().Interface().(sszutils.DynamicDecoder); ok {
+				err := sszDecoder.UnmarshalSSZDecoder(ctx.ds, decoder)
+				if err != nil {
+					return err
+				}
+				useReflection = false
+			} else {
+				useDynamicDecoder = false
+			}
+		}
+
+		if useReflection && useDynamicUnmarshal {
+			// Use dynamic unmarshaler - can always be used even with dynamic specs
+			unmarshaller, ok := targetValue.Addr().Interface().(sszutils.DynamicUnmarshaler)
+			if ok {
+				sszLen := decoder.GetLength()
+				if targetType.Size > 0 {
+					sszLen = int(targetType.Size)
+				}
+
+				sszBuf, err := decoder.DecodeBytesBuf(sszLen)
+				if err != nil {
+					return err
+				}
+
+				err = unmarshaller.UnmarshalSSZDyn(ctx.ds, sszBuf)
+				if err != nil {
+					return err
+				}
+				useReflection = false
+			}
 		}
 	}
 
-	if !useFastSsz && useDynamicDecoder {
-		if decoder.Seekable() && useDynamicUnmarshal {
-			// prefer static unmarshaller for non-seekable decoders (buffer based)
-			useDynamicDecoder = false
-		} else if sszDecoder, ok := targetValue.Addr().Interface().(sszutils.DynamicDecoder); ok {
-			err := sszDecoder.UnmarshalSSZDecoder(ctx.ds, decoder)
-			if err != nil {
-				return err
-			}
-		} else {
-			useDynamicDecoder = false
-		}
-	}
-
-	if !useFastSsz && !useDynamicDecoder && useDynamicUnmarshal {
-		// Use dynamic unmarshaler - can always be used even with dynamic specs
-		unmarshaller, ok := targetValue.Addr().Interface().(sszutils.DynamicUnmarshaler)
-		if ok {
-			sszLen := decoder.GetLength()
-			if targetType.Size > 0 {
-				sszLen = int(targetType.Size)
-			}
-
-			sszBuf, err := decoder.DecodeBytesBuf(sszLen)
-			if err != nil {
-				return err
-			}
-
-			err = unmarshaller.UnmarshalSSZDyn(ctx.ds, sszBuf)
-			if err != nil {
-				return err
-			}
-		} else {
-			useDynamicUnmarshal = false
-		}
-	}
-
-	if !useFastSsz && !useDynamicDecoder && !useDynamicUnmarshal {
+	if useReflection {
 		// can't use fastssz, use dynamic unmarshaling
 		var err error
 		switch targetType.SszType {
@@ -295,7 +339,9 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 			// fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
 			expectedPos := decoder.GetPosition() + fieldSize
 
-			fieldValue := targetValue.Field(i)
+			// Use FieldIndex to access the runtime struct's field, which may differ
+			// from the schema field index when using view descriptors.
+			fieldValue := targetValue.Field(int(field.FieldIndex))
 			err := ctx.unmarshalType(field.Type, fieldValue, decoder, idt+2)
 			if err != nil {
 				return fmt.Errorf("failed decoding field %v: %w", field.Name, err)
@@ -368,7 +414,9 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 			decoder.PushLimit(int(sszSize))
 
 			fieldDescriptor := field.Field
-			fieldValue := targetValue.Field(int(field.Index))
+			// Use FieldIndex to access the runtime struct's field, which may differ
+			// from the schema field index when using view descriptors.
+			fieldValue := targetValue.Field(int(fieldDescriptor.FieldIndex))
 			err := ctx.unmarshalType(fieldDescriptor.Type, fieldValue, decoder, idt+2)
 			if err != nil {
 				return fmt.Errorf("failed decoding field %v: %w", fieldDescriptor.Name, err)
