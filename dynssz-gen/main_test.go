@@ -9,33 +9,104 @@ import (
 	"testing"
 )
 
+// parseTypeSpec mimics the parsing logic from run() for testing
+func parseTypeSpec(typeStr string) (typeName, outputFile string, viewTypes []string, isViewOnly bool) {
+	parts := strings.Split(typeStr, ":")
+	typeName = parts[0]
+
+	for i := 1; i < len(parts); i++ {
+		part := parts[i]
+		if part == "" {
+			continue
+		}
+
+		switch {
+		case strings.HasPrefix(part, "views="):
+			viewsStr := strings.TrimPrefix(part, "views=")
+			viewTypes = strings.Split(viewsStr, ";")
+			for j := range viewTypes {
+				viewTypes[j] = strings.TrimSpace(viewTypes[j])
+			}
+		case strings.HasPrefix(part, "output="):
+			outputFile = strings.TrimPrefix(part, "output=")
+		case part == "viewonly":
+			isViewOnly = true
+		default:
+			if outputFile == "" {
+				outputFile = part
+			}
+		}
+	}
+	return
+}
+
 // Test helper functions for parsing logic
 func TestTypeNameParsing(t *testing.T) {
 	tests := []struct {
-		input        string
-		expectedType string
-		expectedFile string
+		input            string
+		expectedType     string
+		expectedFile     string
+		expectedViews    []string
+		expectedViewOnly bool
 	}{
-		{"TestStruct", "TestStruct", ""},
-		{"TestStruct:output.go", "TestStruct", "output.go"},
-		{"MyType:path/to/file.go", "MyType", "path/to/file.go"},
-		{"SimpleType:", "SimpleType", ""},
+		// Basic cases
+		{"TestStruct", "TestStruct", "", nil, false},
+		{"TestStruct:output.go", "TestStruct", "output.go", nil, false},
+		{"MyType:path/to/file.go", "MyType", "path/to/file.go", nil, false},
+		{"SimpleType:", "SimpleType", "", nil, false},
+
+		// With output= prefix
+		{"TestType:output=file.go", "TestType", "file.go", nil, false},
+		{"TestType:output=path/to/file.go", "TestType", "path/to/file.go", nil, false},
+
+		// With views
+		{"TestType:views=View1", "TestType", "", []string{"View1"}, false},
+		{"TestType:views=View1;View2", "TestType", "", []string{"View1", "View2"}, false},
+		{"TestType:output.go:views=View1", "TestType", "output.go", []string{"View1"}, false},
+		{"TestType:views=View1:output.go", "TestType", "output.go", []string{"View1"}, false},
+		{"TestType:output=file.go:views=View1;View2", "TestType", "file.go", []string{"View1", "View2"}, false},
+
+		// With viewonly
+		{"TestType:viewonly", "TestType", "", nil, true},
+		{"TestType:output.go:viewonly", "TestType", "output.go", nil, true},
+		{"TestType:viewonly:output.go", "TestType", "output.go", nil, true},
+		{"TestType:output=file.go:viewonly", "TestType", "file.go", nil, true},
+
+		// Combined views and viewonly
+		{"TestType:views=V1;V2:viewonly", "TestType", "", []string{"V1", "V2"}, true},
+		{"TestType:viewonly:views=V1;V2", "TestType", "", []string{"V1", "V2"}, true},
+		{"TestType:output.go:views=V1:viewonly", "TestType", "output.go", []string{"V1"}, true},
+		{"TestType:views=V1:output.go:viewonly", "TestType", "output.go", []string{"V1"}, true},
+		{"TestType:viewonly:output.go:views=V1", "TestType", "output.go", []string{"V1"}, true},
+
+		// Empty parts (consecutive colons) should be skipped
+		{"TestType::views=View1", "TestType", "", []string{"View1"}, false},
+		{"TestType:::viewonly", "TestType", "", nil, true},
+		{"TestType::output.go", "TestType", "output.go", nil, false},
+		{"TestType:output.go::views=V1", "TestType", "output.go", []string{"V1"}, false},
 	}
 
 	for _, test := range tests {
 		t.Run(test.input, func(t *testing.T) {
-			parts := strings.Split(test.input, ":")
-			typeName := parts[0]
-			outFile := ""
-			if len(parts) > 1 {
-				outFile = parts[1]
-			}
+			typeName, outFile, views, viewOnly := parseTypeSpec(test.input)
 
 			if typeName != test.expectedType {
 				t.Errorf("Expected type name %s, got %s", test.expectedType, typeName)
 			}
 			if outFile != test.expectedFile {
-				t.Errorf("Expected output file %s, got %s", test.expectedFile, outFile)
+				t.Errorf("Expected output file %q, got %q", test.expectedFile, outFile)
+			}
+			if len(views) != len(test.expectedViews) {
+				t.Errorf("Expected views %v, got %v", test.expectedViews, views)
+			} else {
+				for i, v := range views {
+					if v != test.expectedViews[i] {
+						t.Errorf("Expected view[%d] %s, got %s", i, test.expectedViews[i], v)
+					}
+				}
+			}
+			if viewOnly != test.expectedViewOnly {
+				t.Errorf("Expected viewonly %v, got %v", test.expectedViewOnly, viewOnly)
 			}
 		})
 	}

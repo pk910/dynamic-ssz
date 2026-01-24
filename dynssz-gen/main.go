@@ -136,7 +136,9 @@ func run(config Config) error {
 	}
 
 	// Parse type names with extended format:
-	// TypeName[:output.go][:views=View1,View2][:viewonly]
+	// TypeName[:output=file.go][:views=View1;View2][:viewonly]
+	// All :xy args are optional and can be specified in any order.
+	// Output file can also be specified without prefix for backward compatibility.
 	requestedTypes := strings.Split(config.TypeNames, ",")
 	typeSpecs := make([]typeSpec, 0, len(requestedTypes))
 
@@ -152,22 +154,35 @@ func run(config Config) error {
 		// First part is always the type name
 		spec.TypeName = parts[0]
 
-		// Process remaining parts
+		// Process remaining parts - all are optional and can be in any order
 		for i := 1; i < len(parts); i++ {
 			part := parts[i]
-			if strings.HasPrefix(part, "views=") {
-				// Parse view types: views=View1;View2 or views=View1,View2
+
+			// Skip empty parts (from consecutive colons like TypeName::views=X)
+			if part == "" {
+				continue
+			}
+
+			switch {
+			case strings.HasPrefix(part, "views="):
+				// Parse view types: views=View1;View2
 				viewsStr := strings.TrimPrefix(part, "views=")
 				// Use semicolon as separator since comma is used for type list
 				spec.ViewTypes = strings.Split(viewsStr, ";")
 				for j := range spec.ViewTypes {
 					spec.ViewTypes[j] = strings.TrimSpace(spec.ViewTypes[j])
 				}
-			} else if part == "viewonly" {
+			case strings.HasPrefix(part, "output="):
+				// Explicit output file with prefix
+				spec.OutputFile = strings.TrimPrefix(part, "output=")
+			case part == "viewonly":
 				spec.IsViewOnly = true
-			} else if spec.OutputFile == "" {
-				// First non-special part after type name is the output file
-				spec.OutputFile = part
+			default:
+				// For backward compatibility: first unrecognized non-empty part
+				// is treated as output file (only if not already set)
+				if spec.OutputFile == "" {
+					spec.OutputFile = part
+				}
 			}
 		}
 
