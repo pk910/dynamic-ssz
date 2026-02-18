@@ -296,7 +296,11 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 	mainCodeBuilder.WriteString("var _ = sszutils.ErrListTooBig\n\n")
 
 	// Generated code
-	mainCodeBuilder.WriteString(codeBuilder.String())
+	generatedCode := codeBuilder.String()
+	if strings.HasSuffix(generatedCode, "\n\n") {
+		generatedCode = generatedCode[:len(generatedCode)-1] // trim final double line break
+	}
+	mainCodeBuilder.WriteString(generatedCode)
 
 	return mainCodeBuilder.String(), nil
 }
