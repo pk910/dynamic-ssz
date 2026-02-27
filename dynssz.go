@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"sync"
 
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/reflection"
@@ -51,6 +52,7 @@ type DynSsz struct {
 	typeCache      *ssztypes.TypeCache         // Cache for type descriptors
 	specValues     map[string]any              // Dynamic specification values
 	specValueCache map[string]*cachedSpecValue // Cache for parsed specification expressions
+	specCacheMutex sync.RWMutex
 	options        *DynSszOptions
 }
 

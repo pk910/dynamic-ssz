@@ -16,11 +16,14 @@ type cachedSpecValue struct {
 }
 
 func (d *DynSsz) ResolveSpecValue(name string) (bool, uint64, error) {
-	if cachedValue := d.specValueCache[name]; cachedValue != nil {
+	d.specCacheMutex.RLock()
+	cachedValue := d.specValueCache[name]
+	d.specCacheMutex.RUnlock()
+	if cachedValue != nil {
 		return cachedValue.resolved, cachedValue.value, nil
 	}
 
-	cachedValue := &cachedSpecValue{}
+	cachedValue = &cachedSpecValue{}
 	expression, err := govaluate.NewEvaluableExpression(name)
 	if err != nil {
 		return false, 0, fmt.Errorf("error parsing dynamic spec expression: %w", err)
@@ -40,7 +43,9 @@ func (d *DynSsz) ResolveSpecValue(name string) (bool, uint64, error) {
 	}
 
 	// fmt.Printf("spec lookup %v,  ok: %v, value: %v\n", name, cachedValue.resolved, cachedValue.value)
-
+	d.specCacheMutex.Lock()
 	d.specValueCache[name] = cachedValue
+	d.specCacheMutex.Unlock()
+
 	return cachedValue.resolved, cachedValue.value, nil
 }
