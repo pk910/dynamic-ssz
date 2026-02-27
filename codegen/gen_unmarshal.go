@@ -420,8 +420,12 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, v
 		}
 		ctx.appendCode(indent, "\tbuf := buf[offset%d:%s]\n", fieldIdx, endOffset)
 
-		valVar := ctx.getValVar()
-		ctx.appendCode(indent, "\t%s := %s.%s\n", valVar, varName, field.Name)
+		valVar := fmt.Sprintf("%s.%s", varName, field.Name)
+		isInlinable := ctx.isInlinable(field.Type)
+		if !isInlinable {
+			valVar = ctx.getValVar()
+			ctx.appendCode(indent, "\t%s := %s.%s\n", valVar, varName, field.Name)
+		}
 
 		if field.Type.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(field.Type))
@@ -431,7 +435,9 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, v
 			return err
 		}
 
-		ctx.appendCode(indent, "\t%s.%s = %s\n", varName, field.Name, valVar)
+		if !isInlinable {
+			ctx.appendCode(indent, "\t%s.%s = %s\n", varName, field.Name, valVar)
+		}
 		ctx.appendCode(indent, "}\n")
 	}
 
