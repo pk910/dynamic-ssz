@@ -520,11 +520,19 @@ func hashNode(n *Node) []byte {
 // getZeroOrderHashes precomputes zero order hashes to create an easy map lookup
 // for zero leafs and their parent nodes.
 func getZeroOrderHashes(depth int) [][]byte {
+	// Reuse the globally precomputed zero hashes from the `hasher` package
+	// instead of recomputing them for every call. The expected layout for this
+	// helper is:
+	//   hashes[depth]   = zero bytes (leaf)
+	//   hashes[depth-1] = hash(zero, zero)
+	//   ...
+	// which corresponds to:
+	//   hasher.GetZeroHash(0) = hashes[depth]
+	//   hasher.GetZeroHash(1) = hashes[depth-1]
+	//   ...
 	res := make([][]byte, depth+1)
-	emptyValue := make([]byte, 32)
-	res[depth] = emptyValue
-	for i := depth - 1; i >= 0; i-- {
-		res[i] = hashFn(append(res[i+1], res[i+1]...))
+	for i := 0; i <= depth; i++ {
+		res[depth-i] = hasher.GetZeroHash(i)
 	}
 	return res
 }
