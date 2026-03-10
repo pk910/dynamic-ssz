@@ -1101,7 +1101,6 @@ func (p *Parser) buildOptionalDescriptor(desc *ssztypes.TypeDescriptor, typ type
 	desc.ElemDesc = elemDesc
 
 	// The Optional inherits properties from the child type
-	desc.Size = elemDesc.Size
 	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (ssztypes.SszTypeFlagIsDynamic | ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr)
 
 	return nil

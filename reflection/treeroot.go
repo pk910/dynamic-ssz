@@ -804,6 +804,10 @@ func (ctx *ReflectionCtx) buildRootFromBigInt(sourceType *ssztypes.TypeDescripto
 		return fmt.Errorf("big.Int type expected, got %v", sourceType.Type.Name())
 	}
 	bigIntBytes := bigInt.Bytes()
-	hh.AppendBytes32(bigIntBytes)
+	if len(bigIntBytes) == 0 {
+		hh.AppendBytes32(sszutils.AppendZeroPadding(bigIntBytes, 32))
+	} else {
+		hh.AppendBytes32(bigIntBytes)
+	}
 	return nil
 }

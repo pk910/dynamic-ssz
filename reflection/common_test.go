@@ -6,6 +6,7 @@ package reflection_test
 
 import (
 	"fmt"
+	"math/big"
 	"time"
 
 	dynssz "github.com/pk910/dynamic-ssz"
@@ -769,6 +770,8 @@ var commonTestMatrix = []struct {
 	},
 }
 
+var opt1 = int16(1337)
+
 var commonExtendedTypesTestMatrix = []struct {
 	name    string
 	payload any
@@ -847,6 +850,50 @@ var commonExtendedTypesTestMatrix = []struct {
 		int64(848028848028),
 		fromHex("0x9c4f7572c5000000"),
 		fromHex("0x9c4f7572c5000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"float32_min",
+		float32(0),
+		fromHex("0x00000000"),
+		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"float32_val1",
+		float32(3.14),
+		fromHex("0xc3f54840"),
+		fromHex("0xc3f5484000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"float64_min",
+		float64(0),
+		fromHex("0x0000000000000000"),
+		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"float64_val1",
+		float64(2.718281828),
+		fromHex("0x9b91048b0abf0540"),
+		fromHex("0x9b91048b0abf0540000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"bigint_min",
+		*big.NewInt(0),
+		fromHex("0x"),
+		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"bigint_val1",
+		*big.NewInt(123456789),
+		fromHex("0x075bcd15"),
+		fromHex("0x075bcd1500000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"optional_int16",
+		struct {
+			Opt1 *int16 `ssz-type:"optional"`
+		}{Opt1: &opt1},
+		fromHex("0x04000000013905"),
+		fromHex("0x3905000000000000000000000000000000000000000000000000000000000000"),
 	},
 }
 

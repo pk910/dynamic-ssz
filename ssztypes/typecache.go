@@ -798,7 +798,6 @@ func (tc *TypeCache) buildOptionalDescriptor(desc *TypeDescriptor, t reflect.Typ
 	desc.ElemDesc = elemDesc
 
 	// The Optional inherits properties from the child type
-	desc.Size = elemDesc.Size
 	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (SszTypeFlagIsDynamic | SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
 
 	return nil
