@@ -54,8 +54,9 @@ type CodegenInfo struct {
 // Fields:
 //   - cache: Type descriptor cache to avoid recomputing analysis for the same types
 type Parser struct {
-	cache       map[string]*ssztypes.TypeDescriptor
-	CompatFlags map[string]ssztypes.SszCompatFlag
+	cache         map[string]*ssztypes.TypeDescriptor
+	CompatFlags   map[string]ssztypes.SszCompatFlag
+	ExtendedTypes bool
 }
 
 // NewParser creates a new compile-time type parser for code generation.
@@ -150,11 +151,14 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []ssztypes.SszTyp
 	originalType := typ
 	innerType := typ
 
+	var ptrType *types.Pointer
+
 	for {
 		// Resolve named types
 		if named, ok := typ.(*types.Named); ok {
 			typ = named.Underlying()
 		} else if ptr, ok := typ.(*types.Pointer); ok {
+			ptrType = ptr
 			typ = ptr.Elem()
 			desc.GoTypeFlags |= ssztypes.GoTypeFlagIsPointer
 			innerType = typ
@@ -183,7 +187,24 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []ssztypes.SszTyp
 			desc.Kind = reflect.String
 			desc.GoTypeFlags |= ssztypes.GoTypeFlagIsString
 		default:
-			desc.Kind = reflect.Invalid
+			if p.ExtendedTypes {
+				switch t.Kind() {
+				case types.Int8:
+					desc.Kind = reflect.Int8
+				case types.Int16:
+					desc.Kind = reflect.Int16
+				case types.Int32:
+					desc.Kind = reflect.Int32
+				case types.Int64:
+					desc.Kind = reflect.Int64
+				case types.Float32:
+					desc.Kind = reflect.Float32
+				case types.Float64:
+					desc.Kind = reflect.Float64
+				}
+			} else {
+				desc.Kind = reflect.Invalid
+			}
 		}
 	case *types.Array:
 		desc.Kind = reflect.Array
@@ -261,6 +282,12 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []ssztypes.SszTyp
 			case pkgPath == "time" && typeName == "Time":
 				sszType = ssztypes.SszUint64Type
 				desc.GoTypeFlags |= ssztypes.GoTypeFlagIsTime
+			case pkgPath == "math/big" && typeName == "Int":
+				if p.ExtendedTypes {
+					sszType = ssztypes.SszBigIntType
+				} else {
+					return nil, fmt.Errorf("big.Int is not supported in SSZ (use unsigned integers instead)")
+				}
 			case pkgPath == "github.com/holiman/uint256" && typeName == "Int":
 				sszType = ssztypes.SszUint256Type
 			case pkgPath == "github.com/prysmaticlabs/go-bitfield" && typeName == "Bitlist":
@@ -307,13 +334,27 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []ssztypes.SszTyp
 				sszType = ssztypes.SszListType
 			}
 
+		// extended types
+		case reflect.Int8:
+			sszType = ssztypes.SszInt8Type
+		case reflect.Int16:
+			sszType = ssztypes.SszInt16Type
+		case reflect.Int32:
+			sszType = ssztypes.SszInt32Type
+		case reflect.Int64:
+			sszType = ssztypes.SszInt64Type
+		case reflect.Float32:
+			sszType = ssztypes.SszFloat32Type
+		case reflect.Float64:
+			sszType = ssztypes.SszFloat64Type
+
 		// unsupported types
 		default:
 			// Check for unsupported basic types
 			if basic, ok := typ.(*types.Basic); ok {
 				switch basic.Kind() {
-				case types.Int, types.Int8, types.Int16, types.Int32, types.Int64:
-					return nil, fmt.Errorf("signed integers are not supported in SSZ (use unsigned integers instead)")
+				case types.Int, types.Uint:
+					return nil, fmt.Errorf("signed or unsigned integers with unspecified size are not supported in SSZ")
 				case types.Float32, types.Float64:
 					return nil, fmt.Errorf("floating-point numbers are not supported in SSZ")
 				case types.Complex64, types.Complex128:
@@ -467,6 +508,76 @@ func (p *Parser) buildTypeDescriptor(typ types.Type, typeHints []ssztypes.SszTyp
 			desc.Size = 0
 			desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
 		}
+
+	// extended types
+	case ssztypes.SszInt8Type:
+		if !p.ExtendedTypes {
+			return nil, fmt.Errorf("signed integers are not supported in SSZ (use unsigned integers instead)")
+		}
+		if desc.Kind != reflect.Int8 {
+			return nil, fmt.Errorf("int8 ssz type can only be represented by int8 types, got %v", desc.Kind)
+		}
+		desc.Size = 1
+	case ssztypes.SszInt16Type:
+		if !p.ExtendedTypes {
+			return nil, fmt.Errorf("signed integers are not supported in SSZ (use unsigned integers instead)")
+		}
+		if desc.Kind != reflect.Int16 {
+			return nil, fmt.Errorf("int16 ssz type can only be represented by int16 types, got %v", desc.Kind)
+		}
+		desc.Size = 2
+	case ssztypes.SszInt32Type:
+		if !p.ExtendedTypes {
+			return nil, fmt.Errorf("signed integers are not supported in SSZ (use unsigned integers instead)")
+		}
+		if desc.Kind != reflect.Int32 {
+			return nil, fmt.Errorf("int32 ssz type can only be represented by int32 types, got %v", desc.Kind)
+		}
+		desc.Size = 4
+	case ssztypes.SszInt64Type:
+		if !p.ExtendedTypes {
+			return nil, fmt.Errorf("signed integers are not supported in SSZ (use unsigned integers instead)")
+		}
+		if desc.Kind != reflect.Int64 {
+			return nil, fmt.Errorf("int64 ssz type can only be represented by int64 types, got %v", desc.Kind)
+		}
+		desc.Size = 8
+	case ssztypes.SszFloat32Type:
+		if !p.ExtendedTypes {
+			return nil, fmt.Errorf("floating-point numbers are not supported in SSZ (use unsigned integers instead)")
+		}
+		if desc.Kind != reflect.Float32 {
+			return nil, fmt.Errorf("float32 ssz type can only be represented by float32 types, got %v", desc.Kind)
+		}
+		desc.Size = 4
+	case ssztypes.SszFloat64Type:
+		if !p.ExtendedTypes {
+			return nil, fmt.Errorf("floating-point numbers are not supported in SSZ (use unsigned integers instead)")
+		}
+		if desc.Kind != reflect.Float64 {
+			return nil, fmt.Errorf("float64 ssz type can only be represented by float64 types, got %v", desc.Kind)
+		}
+		desc.Size = 8
+	case ssztypes.SszOptionalType:
+		if !p.ExtendedTypes {
+			return nil, fmt.Errorf("optional types are not supported in SSZ (use unsigned integers instead)")
+		}
+		if ptrType == nil {
+			return nil, fmt.Errorf("optional ssz type can only be represented by pointer types, got %v", desc.Kind)
+		}
+		err := p.buildOptionalDescriptor(desc, typ, sizeHints, maxSizeHints, typeHints)
+		if err != nil {
+			return nil, err
+		}
+	case ssztypes.SszBigIntType:
+		if !p.ExtendedTypes {
+			return nil, fmt.Errorf("big.Int is not supported in SSZ (use unsigned integers instead)")
+		}
+		err := p.buildBigIntDescriptor(desc, typ)
+		if err != nil {
+			return nil, err
+		}
+
 	}
 
 	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 && desc.SszType != ssztypes.SszBitvectorType && desc.SszType != ssztypes.SszBitlistType {
@@ -955,6 +1066,53 @@ func (p *Parser) buildTypeWrapperDescriptor(desc *ssztypes.TypeDescriptor, named
 	desc.Size = wrappedDesc.Size
 	desc.SszTypeFlags |= wrappedDesc.SszTypeFlags & (ssztypes.SszTypeFlagIsDynamic | ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr)
 
+	return nil
+}
+
+func (p *Parser) buildOptionalDescriptor(desc *ssztypes.TypeDescriptor, typ types.Type, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint, typeHints []ssztypes.SszTypeHint) error {
+	// Optional is always dynamic size (1 byte for presence + variable data)
+	desc.Size = 0
+	desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
+
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer == 0 {
+		return fmt.Errorf("optional ssz type can only be represented by pointer types, got %v", desc.Kind)
+	}
+
+	childSizeHints := []ssztypes.SszSizeHint{}
+	if len(sizeHints) > 1 {
+		childSizeHints = sizeHints[1:]
+	}
+
+	childMaxSizeHints := []ssztypes.SszMaxSizeHint{}
+	if len(maxSizeHints) > 1 {
+		childMaxSizeHints = maxSizeHints[1:]
+	}
+
+	childTypeHints := []ssztypes.SszTypeHint{}
+	if len(typeHints) > 1 {
+		childTypeHints = typeHints[1:]
+	}
+
+	elemDesc, err := p.buildTypeDescriptor(typ, childTypeHints, childSizeHints, childMaxSizeHints)
+	if err != nil {
+		return err
+	}
+
+	desc.ElemDesc = elemDesc
+
+	// The Optional inherits properties from the child type
+	desc.Size = elemDesc.Size
+	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (ssztypes.SszTypeFlagIsDynamic | ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr)
+
+	return nil
+}
+
+func (p *Parser) buildBigIntDescriptor(desc *ssztypes.TypeDescriptor, typ types.Type) error {
+	if desc.Kind != reflect.Struct {
+		return fmt.Errorf("bigint type can only be represented by struct types, got %v", desc.Kind)
+	}
+	desc.Size = 0
+	desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
 	return nil
 }
 

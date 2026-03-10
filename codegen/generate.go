@@ -141,6 +141,7 @@ func (cg *CodeGenerator) analyzeTypes() error {
 				if parser == nil {
 					parser = NewParser()
 					parser.CompatFlags = cg.compatFlags
+					parser.ExtendedTypes = t.Options.ExtendedTypes
 				}
 				baseType := t.GoTypesType
 				if named, ok := baseType.(*types.Named); ok {
