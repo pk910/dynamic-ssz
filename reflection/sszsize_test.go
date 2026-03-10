@@ -124,6 +124,25 @@ func TestSizeSSZNoFastSsz(t *testing.T) {
 	}
 }
 
+func TestSizeSSZExtendedTypes(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes())
+
+	for _, test := range commonExtendedTypesTestMatrix {
+		t.Run(test.name, func(t *testing.T) {
+			size, err := dynssz.SizeSSZ(test.payload)
+
+			switch {
+			case test.ssz == nil && err != nil:
+				// expected error
+			case err != nil:
+				t.Errorf("test %v error: %v", test.name, err)
+			case size != len(test.ssz):
+				t.Errorf("test %v failed: got %d, wanted %d", test.name, size, len(test.ssz))
+			}
+		})
+	}
+}
+
 func TestSizeSSZErrors(t *testing.T) {
 	dynssz := NewDynSsz(nil, WithNoFastSsz())
 

@@ -769,6 +769,87 @@ var commonTestMatrix = []struct {
 	},
 }
 
+var commonExtendedTypesTestMatrix = []struct {
+	name    string
+	payload any
+	ssz     []byte
+	htr     []byte
+}{
+	// primitive types
+	{
+		"int8_min",
+		int8(0),
+		fromHex("0x00"),
+		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int8_max",
+		int8(-1),
+		fromHex("0xff"),
+		fromHex("0xff00000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int8_val1",
+		int8(42),
+		fromHex("0x2a"),
+		fromHex("0x2a00000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int16_min",
+		int16(0),
+		fromHex("0x0000"),
+		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int16_max",
+		int16(-1),
+		fromHex("0xffff"),
+		fromHex("0xffff000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int16_val1",
+		int16(1337),
+		fromHex("0x3905"),
+		fromHex("0x3905000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int32_min",
+		uint32(0),
+		fromHex("0x00000000"),
+		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int32_max",
+		int32(-1),
+		fromHex("0xffffffff"),
+		fromHex("0xffffffff00000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int32_val1",
+		int32(817482215),
+		fromHex("0xe7c9b930"),
+		fromHex("0xe7c9b93000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int64_min",
+		int64(0),
+		fromHex("0x0000000000000000"),
+		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int64_max",
+		int64(-1),
+		fromHex("0xffffffffffffffff"),
+		fromHex("0xffffffffffffffff000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int64_val1",
+		int64(848028848028),
+		fromHex("0x9c4f7572c5000000"),
+		fromHex("0x9c4f7572c5000000000000000000000000000000000000000000000000000000"),
+	},
+}
+
 // TestContainerWithFastSsz is a test container with fast ssz methods.
 type TestContainerWithFastSsz struct {
 	Field0 uint64

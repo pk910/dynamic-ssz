@@ -32,7 +32,8 @@ func TestTypeCache_ErrorCases(t *testing.T) {
 			typ      reflect.Type
 			expected string
 		}{
-			{"int", reflect.TypeOf(int(0)), "signed integers are not supported"},
+			{"int", reflect.TypeOf(int(0)), "signed or unsigned integers with unspecified size are not supported"},
+			{"uint", reflect.TypeOf(uint(0)), "signed or unsigned integers with unspecified size are not supported"},
 			{"int8", reflect.TypeOf(int8(0)), "signed integers are not supported"},
 			{"int16", reflect.TypeOf(int16(0)), "signed integers are not supported"},
 			{"int32", reflect.TypeOf(int32(0)), "signed integers are not supported"},

@@ -39,6 +39,16 @@ const (
 	SszProgressiveBitlistType
 	SszProgressiveContainerType
 	SszCompatibleUnionType
+
+	// extended types (not supported by SSZ spec)
+	SszInt8Type
+	SszInt16Type
+	SszInt32Type
+	SszInt64Type
+	SszBigIntType
+	SszFloat32Type
+	SszFloat64Type
+	SszOptionalType
 )
 
 type SszTypeHint struct {
@@ -89,6 +99,24 @@ func ParseSszType(typeStr string) (SszType, error) {
 		return SszProgressiveContainerType, nil
 	case "compatible-union", "union":
 		return SszCompatibleUnionType, nil
+
+	// extended types (not supported by SSZ spec)
+	case "int8":
+		return SszInt8Type, nil
+	case "int16":
+		return SszInt16Type, nil
+	case "int32":
+		return SszInt32Type, nil
+	case "int64":
+		return SszInt64Type, nil
+	case "bigint":
+		return SszBigIntType, nil
+	case "float32":
+		return SszFloat32Type, nil
+	case "float64":
+		return SszFloat64Type, nil
+	case "optional":
+		return SszOptionalType, nil
 
 	default:
 		return SszUnspecifiedType, fmt.Errorf("invalid ssz-type tag '%v'", typeStr)

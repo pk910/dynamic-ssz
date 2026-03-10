@@ -28,6 +28,10 @@ func NewReflectionCtx(ds sszutils.DynamicSpecs, logCb func(format string, args .
 }
 
 func getPtr(v reflect.Value) reflect.Value {
+	if v.Kind() == reflect.Ptr {
+		return v
+	}
+
 	if v.CanAddr() {
 		return v.Addr()
 	}

@@ -128,6 +128,25 @@ func TestTreeRootNoFastHash(t *testing.T) {
 	}
 }
 
+func TestTreeRootExtendedTypes(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes())
+
+	for _, test := range commonExtendedTypesTestMatrix {
+		t.Run(test.name, func(t *testing.T) {
+			buf, err := dynssz.HashTreeRoot(test.payload)
+
+			switch {
+			case test.htr == nil && err != nil:
+				// expected error
+			case err != nil:
+				t.Errorf("test %v error: %v", test.name, err)
+			case !bytes.Equal(buf[:], test.htr):
+				t.Errorf("test %v failed: got 0x%x, wanted 0x%x", test.name, buf, test.htr)
+			}
+		})
+	}
+}
+
 func TestStringVsByteContainerTreeRootEquivalence(t *testing.T) {
 	type StringContainer struct {
 		Data string `ssz-max:"100"`

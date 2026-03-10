@@ -6,6 +6,8 @@ package reflection
 
 import (
 	"fmt"
+	"math"
+	"math/big"
 	"reflect"
 	"strings"
 	"time"
@@ -40,7 +42,7 @@ import (
 //   - Delegation to specialized functions for composite types (structs, arrays, slices)
 //   - Validation that consumed bytes match expected sizes
 func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
-	if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+	if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && targetType.SszType != ssztypes.SszOptionalType {
 		// target is a pointer type, resolve type & value to actual value type
 		if targetValue.IsNil() {
 			// create new instance of target type for null pointers
@@ -64,7 +66,7 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 	}
 
 	if useFastSsz {
-		unmarshaller, ok := targetValue.Addr().Interface().(sszutils.FastsszUnmarshaler)
+		unmarshaller, ok := getPtr(targetValue).Interface().(sszutils.FastsszUnmarshaler)
 		if ok {
 			sszLen := decoder.GetLength()
 			if targetType.Size > 0 {
@@ -88,7 +90,7 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 		if decoder.Seekable() && useDynamicUnmarshal {
 			// prefer static unmarshaller for non-seekable decoders (buffer based)
 			useDynamicDecoder = false
-		} else if sszDecoder, ok := targetValue.Addr().Interface().(sszutils.DynamicDecoder); ok {
+		} else if sszDecoder, ok := getPtr(targetValue).Interface().(sszutils.DynamicDecoder); ok {
 			err := sszDecoder.UnmarshalSSZDecoder(ctx.ds, decoder)
 			if err != nil {
 				return err
@@ -100,7 +102,7 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 
 	if !useFastSsz && !useDynamicDecoder && useDynamicUnmarshal {
 		// Use dynamic unmarshaler - can always be used even with dynamic specs
-		unmarshaller, ok := targetValue.Addr().Interface().(sszutils.DynamicUnmarshaler)
+		unmarshaller, ok := getPtr(targetValue).Interface().(sszutils.DynamicUnmarshaler)
 		if ok {
 			sszLen := decoder.GetLength()
 			if targetType.Size > 0 {
@@ -209,6 +211,54 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 				targetValue.Set(timeRefVal)
 			} else {
 				targetValue.SetUint(uint64(val))
+			}
+
+		// extended types
+		case ssztypes.SszInt8Type:
+			val, err := decoder.DecodeUint8()
+			if err != nil {
+				return err
+			}
+			targetValue.SetInt(int64(val))
+		case ssztypes.SszInt16Type:
+			val, err := decoder.DecodeUint16()
+			if err != nil {
+				return err
+			}
+			targetValue.SetInt(int64(val))
+		case ssztypes.SszInt32Type:
+			val, err := decoder.DecodeUint32()
+			if err != nil {
+				return err
+			}
+			targetValue.SetInt(int64(val))
+		case ssztypes.SszInt64Type:
+			val, err := decoder.DecodeUint64()
+			if err != nil {
+				return err
+			}
+			targetValue.SetInt(int64(val))
+		case ssztypes.SszFloat32Type:
+			val, err := decoder.DecodeUint32()
+			if err != nil {
+				return err
+			}
+			targetValue.SetFloat(float64(math.Float32frombits(val)))
+		case ssztypes.SszFloat64Type:
+			val, err := decoder.DecodeUint64()
+			if err != nil {
+				return err
+			}
+			targetValue.SetFloat(math.Float64frombits(val))
+		case ssztypes.SszOptionalType:
+			err = ctx.unmarshalOptional(targetType, targetValue, decoder, idt)
+			if err != nil {
+				return err
+			}
+		case ssztypes.SszBigIntType:
+			err = ctx.unmarshalBigInt(targetType, targetValue, decoder, idt)
+			if err != nil {
+				return err
 			}
 		default:
 			return fmt.Errorf("unknown type: %v", targetType)
@@ -924,6 +974,74 @@ func (ctx *ReflectionCtx) unmarshalCompatibleUnion(targetType *ssztypes.TypeDesc
 	// Field 0 is Variant, Field 1 is Data
 	targetValue.Field(0).SetUint(uint64(variant))
 	targetValue.Field(1).Set(variantValue)
+
+	return nil
+}
+
+// unmarshalOptional decodes an Optional by unmarshalling its data field.
+//
+// Parameters:
+//   - targetType: The TypeDescriptor containing optional metadata
+//   - targetValue: The reflect.Value of the optional to populate
+//   - decoder: The decoder instance used to read SSZ-encoded data
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - error: An error if decoding fails
+func (ctx *ReflectionCtx) unmarshalOptional(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
+	if decoder.GetLength() < 1 {
+		return fmt.Errorf("Optional requires at least 1 byte for availability")
+	}
+
+	// Read the availability byte
+	availability, err := decoder.DecodeUint8()
+	if err != nil {
+		return err
+	}
+
+	if availability == 0 {
+		targetValue.Set(reflect.Zero(targetType.Type))
+		return nil
+	}
+
+	if targetValue.IsNil() {
+		// create new instance of target type for null pointers
+		newValue := reflect.New(targetType.Type.Elem())
+		targetValue.Set(newValue)
+	}
+
+	err = ctx.unmarshalType(targetType.ElemDesc, targetValue.Elem(), decoder, idt+2)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// unmarshalBigInt decodes a BigInt by unmarshalling its data field.
+//
+// Parameters:
+//   - targetType: The TypeDescriptor containing big int metadata
+//   - targetValue: The reflect.Value of the big int to populate
+//   - decoder: The decoder instance used to read SSZ-encoded data
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - error: An error if decoding fails
+func (ctx *ReflectionCtx) unmarshalBigInt(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
+	len := decoder.GetLength()
+	bigInt := new(big.Int)
+
+	if len > 0 {
+		bigIntBytes, err := decoder.DecodeBytesBuf(len)
+		if err != nil {
+			return err
+		}
+
+		bigInt.SetBytes(bigIntBytes)
+	}
+
+	targetValue.Set(reflect.ValueOf(*bigInt))
 
 	return nil
 }
