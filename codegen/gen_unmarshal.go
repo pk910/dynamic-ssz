@@ -414,6 +414,13 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 func (ctx *unmarshalContext) unmarshalOptional(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
 	ctx.appendCode(indent, "if len(buf) < 1 {\n\treturn sszutils.ErrUnexpectedEOF\n}\n")
 	ctx.appendCode(indent, "if buf[0] == 1 {\n")
+
+	// Check that buf has enough bytes for the presence flag plus the value
+	elemSize := desc.ElemDesc.Size
+	if elemSize > 0 {
+		ctx.appendCode(indent+1, "if len(buf) < %d {\n\treturn sszutils.ErrUnexpectedEOF\n}\n", 1+elemSize)
+	}
+
 	valVar := ctx.getValVar()
 	ctx.appendCode(indent+1, "var %s %s\n", valVar, ctx.typePrinter.TypeString(desc.ElemDesc))
 	ctx.appendCode(indent+1, "buf := buf[1:]\n")
