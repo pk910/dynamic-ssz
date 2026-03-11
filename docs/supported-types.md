@@ -507,8 +507,17 @@ type ComplexData struct {
 }
 ```
 
+## Extended Types (Non-Standard)
+
+Dynamic SSZ also supports an extended set of types that are **not part of the SSZ specification**. These include signed integers (`int8`, `int16`, `int32`, `int64`), floating-point numbers (`float32`, `float64`), arbitrary-precision integers (`big.Int`), and optional types (pointer types annotated with `ssz-type:"optional"`).
+
+Extended types must be explicitly enabled with `WithExtendedTypes()` and are **not compatible with other SSZ libraries**.
+
+See [Extended Types](extended-types.md) for full documentation.
+
 ## Related Documentation
 
+- [Extended Types](extended-types.md) - Non-standard type extensions
 - [SSZ Annotations](ssz-annotations.md) - Detailed tag reference
 - [Type Wrapper](type-wrapper.md) - Advanced type patterns
 - [API Reference](api-reference.md) - Type-related APIs

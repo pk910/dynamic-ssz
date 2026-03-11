@@ -1187,6 +1187,28 @@ func TestTypeCache_ExtendedTypes(t *testing.T) {
 		}
 	})
 
+	t.Run("OptionalDescriptorWithHints", func(t *testing.T) {
+		cache := NewTypeCache(ds)
+		cache.ExtendedTypes = true
+
+		// optional pointer to uint16 with extra hints that get forwarded
+		desc, err := cache.GetTypeDescriptor(
+			reflect.TypeOf((*uint16)(nil)),
+			[]SszSizeHint{{Size: 0}, {Size: 2}},
+			[]SszMaxSizeHint{{Size: 0}, {Size: 2}},
+			[]SszTypeHint{{Type: SszOptionalType}, {Type: SszUint16Type}},
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if desc.SszType != SszOptionalType {
+			t.Errorf("expected SszOptionalType, got %v", desc.SszType)
+		}
+		if desc.ElemDesc == nil {
+			t.Error("expected ElemDesc to be set")
+		}
+	})
+
 	t.Run("BigIntDescriptor", func(t *testing.T) {
 		cache := NewTypeCache(ds)
 		cache.ExtendedTypes = true
@@ -1212,12 +1234,41 @@ func TestTypeCache_ExtendedTypes(t *testing.T) {
 	})
 }
 
-// Test ParseSszType for extended types
-func TestParseSszType_ExtendedTypes(t *testing.T) {
+// Test ParseSszType for all types
+func TestParseSszType(t *testing.T) {
 	tests := []struct {
 		input    string
 		expected SszType
 	}{
+		// auto/unspecified
+		{"?", SszUnspecifiedType},
+		{"auto", SszUnspecifiedType},
+		{"custom", SszCustomType},
+		{"wrapper", SszTypeWrapperType},
+		{"type-wrapper", SszTypeWrapperType},
+
+		// basic types
+		{"bool", SszBoolType},
+		{"uint8", SszUint8Type},
+		{"uint16", SszUint16Type},
+		{"uint32", SszUint32Type},
+		{"uint64", SszUint64Type},
+		{"uint128", SszUint128Type},
+		{"uint256", SszUint256Type},
+
+		// complex types
+		{"container", SszContainerType},
+		{"list", SszListType},
+		{"vector", SszVectorType},
+		{"bitlist", SszBitlistType},
+		{"bitvector", SszBitvectorType},
+		{"progressive-list", SszProgressiveListType},
+		{"progressive-bitlist", SszProgressiveBitlistType},
+		{"progressive-container", SszProgressiveContainerType},
+		{"compatible-union", SszCompatibleUnionType},
+		{"union", SszCompatibleUnionType},
+
+		// extended types
 		{"int8", SszInt8Type},
 		{"int16", SszInt16Type},
 		{"int32", SszInt32Type},
