@@ -943,21 +943,13 @@ func (tc *TypeCache) buildListDescriptor(desc *TypeDescriptor, t reflect.Type, s
 	}
 
 	if len(sizeHints) > 0 && sizeHints[0].Size > 0 && !sizeHints[0].Dynamic {
-		if elemDesc.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
-			desc.Size = 0 // Dynamic elements = dynamic size
-			desc.SszTypeFlags |= SszTypeFlagIsDynamic
-		} else {
-			byteLen := sizeHints[0].Size
-			if sizeHints[0].Bits {
-				desc.BitSize = sizeHints[0].Size
-				byteLen = (byteLen + 7) / 8 // ceil up to the next multiple of 8
-			}
-			desc.Size = elemDesc.Size * byteLen
-		}
-	} else {
-		desc.Size = 0 // Dynamic slice
-		desc.SszTypeFlags |= SszTypeFlagIsDynamic
+		// Lists cannot have a fixed ssz-size; that's a vector.
+		// Lists use ssz-max to specify the maximum length.
+		return fmt.Errorf("list types cannot have a fixed ssz-size (use ssz-max for lists, or ssz-size with vector type)")
 	}
+
+	desc.Size = 0 // Dynamic slice
+	desc.SszTypeFlags |= SszTypeFlagIsDynamic
 
 	return nil
 }

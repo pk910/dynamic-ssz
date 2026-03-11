@@ -1322,3 +1322,38 @@ func TestTypeCache_InvalidHashTreeRootWith(t *testing.T) {
 		t.Errorf("expected HashTreeRootWithMethod to be nil, got %v", desc.HashTreeRootWithMethod)
 	}
 }
+
+func TestListWithFixedSizeRejected(t *testing.T) {
+	// Bug fix: ssz-type:"list" combined with a fixed ssz-size is invalid.
+	// Lists use ssz-max, not ssz-size. This should return an error.
+	cache := NewTypeCache(nil)
+
+	type InvalidListWithSize struct {
+		Field []uint16 `ssz-type:"list" ssz-size:"4"`
+	}
+
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(InvalidListWithSize{}), nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for list with fixed ssz-size, got nil")
+	}
+	if !strings.Contains(err.Error(), "list types cannot have a fixed ssz-size") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestListWithDynamicSizeAccepted(t *testing.T) {
+	// ssz-type:"list" with ssz-size:"?" (dynamic) should be accepted
+	cache := NewTypeCache(nil)
+
+	type ValidListWithDynamicSize struct {
+		Field []uint16 `ssz-type:"list" ssz-size:"?" ssz-max:"10"`
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(ValidListWithDynamicSize{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error for valid list: %v", err)
+	}
+	if desc == nil {
+		t.Fatal("descriptor should not be nil")
+	}
+}

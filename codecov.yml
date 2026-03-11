@@ -3,6 +3,9 @@ coverage:
     project: off
     patch: off
 
+ignore:
+  - "fuzz/**"
+
 comment:
   layout: "header, diff, flags, components"
 

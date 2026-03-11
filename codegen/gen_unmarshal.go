@@ -852,6 +852,13 @@ func (ctx *unmarshalContext) unmarshalUnion(desc *ssztypes.TypeDescriptor, varNa
 		variantDesc := desc.UnionVariants[uint8(variant)]
 		variantType := ctx.typePrinter.TypeString(variantDesc)
 		ctx.appendCode(indent, "case %d:\n", variant)
+
+		// Check that buf has enough bytes for the selector plus the variant value
+		elemSize := variantDesc.Size
+		if elemSize > 0 {
+			ctx.appendCode(indent+1, "if len(buf) < %d {\n\treturn sszutils.ErrUnexpectedEOF\n}\n", 1+elemSize)
+		}
+
 		valVar := ctx.getValVar()
 		ctx.appendCode(indent, "\tvar %s %s\n", valVar, variantType)
 		ctx.appendCode(indent, "\tbuf := buf[1:]\n")
