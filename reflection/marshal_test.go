@@ -1038,6 +1038,116 @@ func TestMarshalEmptyDynamicList(t *testing.T) {
 	}
 }
 
+func TestMarshalExtendedTypesDisabled(t *testing.T) {
+	dynssz := NewDynSsz(nil) // no WithExtendedTypes()
+
+	testCases := []struct {
+		name        string
+		input       any
+		expectedErr string
+	}{
+		{
+			name:        "int8_disabled",
+			input:       int8(42),
+			expectedErr: "signed integers are not supported in SSZ",
+		},
+		{
+			name:        "int16_disabled",
+			input:       int16(42),
+			expectedErr: "signed integers are not supported in SSZ",
+		},
+		{
+			name:        "int32_disabled",
+			input:       int32(42),
+			expectedErr: "signed integers are not supported in SSZ",
+		},
+		{
+			name:        "int64_disabled",
+			input:       int64(42),
+			expectedErr: "signed integers are not supported in SSZ",
+		},
+		{
+			name:        "float32_disabled",
+			input:       float32(3.14),
+			expectedErr: "floating-point numbers are not supported in SSZ",
+		},
+		{
+			name:        "float64_disabled",
+			input:       float64(2.718),
+			expectedErr: "floating-point numbers are not supported in SSZ",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := dynssz.MarshalSSZ(tc.input)
+			if err == nil {
+				t.Errorf("expected error containing '%s', but got no error", tc.expectedErr)
+			} else if !contains(err.Error(), tc.expectedErr) {
+				t.Errorf("expected error containing '%s', but got: %v", tc.expectedErr, err)
+			}
+		})
+	}
+}
+
+func TestMarshalExtendedTypesVerbose(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz(), WithVerbose(), WithLogCb(func(format string, args ...any) {}))
+
+	for _, test := range commonExtendedTypesTestMatrix {
+		t.Run(test.name, func(t *testing.T) {
+			buf, err := dynssz.MarshalSSZ(test.payload)
+
+			switch {
+			case test.ssz == nil && err != nil:
+				// expected error
+			case err != nil:
+				t.Errorf("test %v error: %v", test.name, err)
+			case !bytes.Equal(buf, test.ssz):
+				t.Errorf("test %v failed: got 0x%x, wanted 0x%x", test.name, buf, test.ssz)
+			}
+		})
+	}
+}
+
+func TestMarshalExtendedTypesWriter(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	for _, test := range commonExtendedTypesTestMatrix {
+		t.Run(test.name, func(t *testing.T) {
+			memWriter := bytes.NewBuffer(nil)
+			err := dynssz.MarshalSSZWriter(test.payload, memWriter)
+
+			switch {
+			case test.ssz == nil && err != nil:
+				// expected error
+			case err != nil:
+				t.Errorf("test %v error: %v", test.name, err)
+			case !bytes.Equal(memWriter.Bytes(), test.ssz):
+				t.Errorf("test %v failed: got 0x%x, wanted 0x%x", test.name, memWriter.Bytes(), test.ssz)
+			}
+		})
+	}
+}
+
+func TestMarshalExtendedTypesNoFastSsz(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	for _, test := range commonExtendedTypesTestMatrix {
+		t.Run(test.name, func(t *testing.T) {
+			buf, err := dynssz.MarshalSSZ(test.payload)
+
+			switch {
+			case test.ssz == nil && err != nil:
+				// expected error
+			case err != nil:
+				t.Errorf("test %v error: %v", test.name, err)
+			case !bytes.Equal(buf, test.ssz):
+				t.Errorf("test %v failed: got 0x%x, wanted 0x%x", test.name, buf, test.ssz)
+			}
+		})
+	}
+}
+
 func TestCustomFallbackMarshal(t *testing.T) {
 	type TestStruct struct {
 		ID uint32

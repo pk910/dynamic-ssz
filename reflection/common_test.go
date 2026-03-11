@@ -895,6 +895,38 @@ var commonExtendedTypesTestMatrix = []struct {
 		fromHex("0x04000000013905"),
 		fromHex("0x3905000000000000000000000000000000000000000000000000000000000000"),
 	},
+	{
+		"optional_int16_nil",
+		struct {
+			Opt1 *int16 `ssz-type:"optional"`
+		}{Opt1: nil},
+		fromHex("0x0400000000"),
+		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"extended_struct_1",
+		struct {
+			F1 int8
+			F2 int16
+			F3 int32
+			F4 int64
+			F5 float32
+			F6 float64
+		}{1, 2, 3, 4, 5.0, 6.0},
+		fromHex("0x0102000300000004000000000000000000a0400000000000001840"),
+		fromHex("0x94fdb9baeea5a2d3b9bcf25b71cb8fb67f83dfaaa330cd69fda6ccc41c41a680"),
+	},
+	{
+		"extended_struct_2",
+		struct {
+			F1  uint32
+			F2  *int16 `ssz-type:"optional"`
+			F3  float64
+			Big big.Int
+		}{42, &opt1, 3.14, *big.NewInt(999999)},
+		fromHex("0x2a000000140000001f85eb51b81e0940170000000139050f423f"),
+		fromHex("0x6a2b0143a450c236cbfee0c6c7d94288a5968c1e033ee60e91fd6604d1b1be9c"),
+	},
 }
 
 // TestContainerWithFastSsz is a test container with fast ssz methods.

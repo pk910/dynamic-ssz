@@ -143,6 +143,57 @@ func TestSizeSSZExtendedTypes(t *testing.T) {
 	}
 }
 
+func TestSizeSSZExtendedTypesNoFastSsz(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	for _, test := range commonExtendedTypesTestMatrix {
+		t.Run(test.name, func(t *testing.T) {
+			size, err := dynssz.SizeSSZ(test.payload)
+
+			switch {
+			case test.ssz == nil && err != nil:
+				// expected error
+			case err != nil:
+				t.Errorf("test %v error: %v", test.name, err)
+			case size != len(test.ssz):
+				t.Errorf("test %v failed: got %d, wanted %d", test.name, size, len(test.ssz))
+			}
+		})
+	}
+}
+
+func TestSizeSSZExtendedTypesDisabled(t *testing.T) {
+	dynssz := NewDynSsz(nil) // no WithExtendedTypes()
+
+	testCases := []struct {
+		name        string
+		input       any
+		expectedErr string
+	}{
+		{
+			name:        "int8_disabled",
+			input:       int8(42),
+			expectedErr: "signed integers are not supported in SSZ",
+		},
+		{
+			name:        "float64_disabled",
+			input:       float64(2.718),
+			expectedErr: "floating-point numbers are not supported in SSZ",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := dynssz.SizeSSZ(tc.input)
+			if err == nil {
+				t.Errorf("expected error containing '%s', but got no error", tc.expectedErr)
+			} else if !contains(err.Error(), tc.expectedErr) {
+				t.Errorf("expected error containing '%s', but got: %v", tc.expectedErr, err)
+			}
+		})
+	}
+}
+
 func TestSizeSSZErrors(t *testing.T) {
 	dynssz := NewDynSsz(nil, WithNoFastSsz())
 

@@ -805,9 +805,8 @@ func (ctx *ReflectionCtx) buildRootFromBigInt(sourceType *ssztypes.TypeDescripto
 	}
 	bigIntBytes := bigInt.Bytes()
 	if len(bigIntBytes) == 0 {
-		hh.AppendBytes32(sszutils.AppendZeroPadding(bigIntBytes, 32))
-	} else {
-		hh.AppendBytes32(bigIntBytes)
+		bigIntBytes = make([]byte, 1)
 	}
+	hh.PutBytes(bigIntBytes)
 	return nil
 }
