@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	dynssz "github.com/pk910/dynamic-ssz"
 	"github.com/pk910/dynamic-ssz/fuzz/corpus"
 	"github.com/pk910/dynamic-ssz/fuzz/engine"
 )
@@ -54,6 +55,25 @@ func main() {
 	}
 	defer reporter.Close()
 
+	// Create shared DynSsz instances (TypeCache is thread-safe via RWMutex).
+	// Sharing avoids duplicating large type caches across workers.
+	ds := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz())
+	dsExt := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithExtendedTypes())
+
+	// Warm up type caches by doing one marshal per type.
+	// This populates the cache before workers start, avoiding write contention.
+	log.Println("Warming up type caches...")
+	for _, entry := range corpus.Registry {
+		instance := entry.New()
+		target := ds
+		if entry.Extended {
+			target = dsExt
+		}
+		// SizeSSZ triggers type descriptor caching for the type and all nested types
+		_, _ = target.SizeSSZ(instance)
+	}
+	log.Println("Cache warm-up complete")
+
 	stats := &engine.Stats{}
 
 	// Stop channel for coordinating shutdown
@@ -63,7 +83,6 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	// Set up deadline if specified
 	if *duration > 0 {
 		log.Printf("Will run for %s", *duration)
 	}
@@ -72,15 +91,14 @@ func main() {
 	statsTicker := time.NewTicker(*statsEvery)
 	defer statsTicker.Stop()
 
-	// Launch workers
+	// Launch workers - each gets its own RNG but shares DynSsz instances
 	var wg sync.WaitGroup
 	for i := range *workers {
 		wg.Add(1)
-		// Each worker gets a unique seed derived from the base seed
 		workerSeed := *seed + int64(i)*6364136223846793005
 		go func() {
 			defer wg.Done()
-			eng := engine.NewEngine(reporter, stats, workerSeed, *maxData)
+			eng := engine.NewEngine(reporter, stats, ds, dsExt, workerSeed, *maxData)
 			typeIdx := i // stagger starting positions
 			for {
 				select {

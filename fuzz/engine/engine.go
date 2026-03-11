@@ -32,8 +32,8 @@ type Stats struct {
 }
 
 // Engine is the core fuzz testing engine.
-// Each Engine instance is NOT thread-safe; create one per goroutine.
-// Stats and Reporter are shared safely across engines.
+// Each Engine instance owns a private RNG and Filler (not thread-safe),
+// but shares DynSsz instances, Stats, and Reporter across workers.
 type Engine struct {
 	ds         *dynssz.DynSsz
 	dsExtended *dynssz.DynSsz
@@ -44,16 +44,15 @@ type Engine struct {
 	maxDataLen int
 }
 
-// NewEngine creates a new fuzz engine with its own RNG and DynSsz instances.
-// The reporter and stats are shared across engines and are thread-safe.
-func NewEngine(reporter *Reporter, stats *Stats, seed int64, maxDataLen int) *Engine {
+// NewEngine creates a new fuzz engine with its own RNG but shared DynSsz
+// instances. The DynSsz TypeCache is thread-safe (uses sync.RWMutex),
+// so sharing avoids duplicating large type caches across workers.
+func NewEngine(reporter *Reporter, stats *Stats, ds, dsExtended *dynssz.DynSsz, seed int64, maxDataLen int) *Engine {
 	rng := rand.New(rand.NewSource(seed))
-	ds := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz())
-	dsExt := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithExtendedTypes())
 
 	return &Engine{
 		ds:         ds,
-		dsExtended: dsExt,
+		dsExtended: dsExtended,
 		reporter:   reporter,
 		stats:      stats,
 		rng:        rng,
