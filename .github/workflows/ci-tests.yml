@@ -136,3 +136,61 @@ jobs:
           coverage-codegen.txt
           coverage-unit.txt
           coverage-unit-nocgo.txt
+
+  # Quick smoke fuzz test to catch regressions early
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: 1.25.x
+
+    - name: Cache Go modules
+      uses: actions/cache@v3
+      with:
+        path: ~/go/pkg/mod
+        key: ${{ runner.os }}-go-1.25.x-fuzz-${{ hashFiles('**/go.sum') }}
+
+    - name: Download dependencies
+      run: go mod download
+
+    - name: Run smoke fuzz test
+      env:
+        GOMEMLIMIT: 4GiB
+      run: |
+        set -e
+
+        REPORT_DIR="${RUNNER_TEMP}/fuzz-reports"
+        mkdir -p "${REPORT_DIR}"
+
+        # Generate a fresh corpus with a random seed
+        SEED=$(od -A n -t u4 -N 4 /dev/urandom | tr -d ' ')
+        echo "Generating corpus with seed=$SEED"
+        rm -f fuzz/corpus/*_gen.go
+        go run ./fuzz/cmd/generate -num-types 50 -seed "$SEED" -extended=true
+
+        # Run fuzzer for 30 seconds
+        go run ./fuzz/cmd/fuzz \
+          -duration 30s \
+          -report-dir "${REPORT_DIR}" \
+          -workers 2
+
+        # Check for issues
+        ISSUES=$(find "${REPORT_DIR}" -maxdepth 2 -name "issue-*" -type d 2>/dev/null | wc -l)
+        if [ "$ISSUES" -gt "0" ]; then
+          echo "::error::Smoke fuzz found $ISSUES issues!"
+          for d in "${REPORT_DIR}"/round-*/issue-*/; do
+            if [ -d "$d" ]; then
+              echo "--- $(basename "$d") ---"
+              cat "$d/details.txt"
+            fi
+          done
+          exit 1
+        fi
+        echo "Smoke fuzz passed (seed=$SEED)"
