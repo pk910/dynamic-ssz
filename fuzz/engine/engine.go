@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand"
 	"reflect"
+	"runtime"
 	"sync/atomic"
 	"time"
 
@@ -698,9 +699,13 @@ func PrintStats(stats *Stats, elapsed time.Duration) {
 		rate = float64(iters) / elapsed.Seconds()
 	}
 
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+
 	fmt.Printf(
 		"\r[%s] iters: %d (%.0f/s) | valid: %d mutated: %d random: %d | "+
-			"ok: %d panic: %d marshal: %d htr: %d stream: %d unmarshal: %d",
+			"ok: %d panic: %d marshal: %d htr: %d stream: %d unmarshal: %d | "+
+			"mem: %s alloc, %s sys, %d gc",
 		elapsed.Truncate(time.Second),
 		iters, rate,
 		stats.ValidFills.Load(),
@@ -712,5 +717,21 @@ func PrintStats(stats *Stats, elapsed time.Duration) {
 		stats.HTRMismatches.Load(),
 		stats.StreamMismatches.Load(),
 		stats.UnmarshalDiffs.Load(),
+		formatBytes(mem.Alloc),
+		formatBytes(mem.Sys),
+		mem.NumGC,
 	)
+}
+
+func formatBytes(b uint64) string {
+	switch {
+	case b >= 1<<30:
+		return fmt.Sprintf("%.1fG", float64(b)/(1<<30))
+	case b >= 1<<20:
+		return fmt.Sprintf("%.1fM", float64(b)/(1<<20))
+	case b >= 1<<10:
+		return fmt.Sprintf("%.1fK", float64(b)/(1<<10))
+	default:
+		return fmt.Sprintf("%dB", b)
+	}
 }

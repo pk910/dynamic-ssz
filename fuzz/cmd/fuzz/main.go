@@ -121,6 +121,10 @@ func main() {
 		deadlineCh = time.After(*duration)
 	}
 
+	// Periodic GC to keep memory in check
+	gcTicker := time.NewTicker(1 * time.Second)
+	defer gcTicker.Stop()
+
 	// Main control loop
 	for {
 		select {
@@ -136,6 +140,8 @@ func main() {
 			wg.Wait()
 			printFinalStats(stats, time.Since(startTime), reporter)
 			return
+		case <-gcTicker.C:
+			runtime.GC()
 		case <-statsTicker.C:
 			engine.PrintStats(stats, time.Since(startTime))
 		}
