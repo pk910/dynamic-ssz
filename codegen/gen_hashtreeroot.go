@@ -152,12 +152,12 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 
 // isPrimitive checks if a type is a primitive SSZ type that can be hashed directly.
 func (ctx *hashTreeRootContext) isPrimitive(desc *ssztypes.TypeDescriptor) bool {
-	return desc.SszType == ssztypes.SszBoolType || desc.SszType == ssztypes.SszUint8Type || desc.SszType == ssztypes.SszUint16Type || desc.SszType == ssztypes.SszUint32Type || desc.SszType == ssztypes.SszUint64Type || desc.SszType == ssztypes.SszUint128Type
+	return desc.SszType == ssztypes.SszBoolType || desc.SszType == ssztypes.SszUint8Type || desc.SszType == ssztypes.SszUint16Type || desc.SszType == ssztypes.SszUint32Type || desc.SszType == ssztypes.SszUint64Type || desc.SszType == ssztypes.SszUint128Type || desc.SszType == ssztypes.SszInt8Type || desc.SszType == ssztypes.SszInt16Type || desc.SszType == ssztypes.SszInt32Type || desc.SszType == ssztypes.SszInt64Type || desc.SszType == ssztypes.SszFloat32Type || desc.SszType == ssztypes.SszFloat64Type
 }
 
 // isInlineable checks if a type can be inlined directly into the hash tree root code
 func (ctx *hashTreeRootContext) isInlineable(desc *ssztypes.TypeDescriptor) bool {
-	if desc.SszType == ssztypes.SszBoolType || desc.SszType == ssztypes.SszUint8Type || desc.SszType == ssztypes.SszUint16Type || desc.SszType == ssztypes.SszUint32Type || desc.SszType == ssztypes.SszUint64Type {
+	if desc.SszType == ssztypes.SszBoolType || desc.SszType == ssztypes.SszUint8Type || desc.SszType == ssztypes.SszUint16Type || desc.SszType == ssztypes.SszUint32Type || desc.SszType == ssztypes.SszUint64Type || desc.SszType == ssztypes.SszInt8Type || desc.SszType == ssztypes.SszInt16Type || desc.SszType == ssztypes.SszInt32Type || desc.SszType == ssztypes.SszInt64Type || desc.SszType == ssztypes.SszFloat32Type || desc.SszType == ssztypes.SszFloat64Type {
 		return true
 	}
 
@@ -204,7 +204,7 @@ func (ctx *hashTreeRootContext) getPtrPrefix(desc *ssztypes.TypeDescriptor, pref
 
 // hashType generates hash tree root code for any SSZ type, delegating to specific hashers.
 func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName string, indent int, isRoot bool, pack bool) error {
-	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.SszType != ssztypes.SszOptionalType {
 		ctx.appendCode(indent, "if %s == nil {\n\t%s = new(%s)\n}\n", varName, varName, ctx.typePrinter.InnerTypeString(desc))
 	}
 
@@ -311,10 +311,81 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 	case ssztypes.SszCustomType:
 		ctx.appendCode(indent, "// Custom type - hash unknown\n")
 
+	// extended types
+	case ssztypes.SszInt8Type:
+		if pack {
+			ctx.appendCode(indent, "hh.AppendUint8(%s)\n", ctx.getValueVar(desc, varName, "uint8"))
+		} else {
+			ctx.appendCode(indent, "hh.PutUint8(%s)\n", ctx.getValueVar(desc, varName, "uint8"))
+		}
+	case ssztypes.SszInt16Type:
+		if pack {
+			ctx.appendCode(indent, "hh.AppendUint16(%s)\n", ctx.getValueVar(desc, varName, "uint16"))
+		} else {
+			ctx.appendCode(indent, "hh.PutUint16(%s)\n", ctx.getValueVar(desc, varName, "uint16"))
+		}
+	case ssztypes.SszInt32Type:
+		if pack {
+			ctx.appendCode(indent, "hh.AppendUint32(%s)\n", ctx.getValueVar(desc, varName, "uint32"))
+		} else {
+			ctx.appendCode(indent, "hh.PutUint32(%s)\n", ctx.getValueVar(desc, varName, "uint32"))
+		}
+	case ssztypes.SszInt64Type:
+		if pack {
+			ctx.appendCode(indent, "hh.AppendUint64(%s)\n", ctx.getValueVar(desc, varName, "uint64"))
+		} else {
+			ctx.appendCode(indent, "hh.PutUint64(%s)\n", ctx.getValueVar(desc, varName, "uint64"))
+		}
+	case ssztypes.SszFloat32Type:
+		mathImport := ctx.typePrinter.AddImport("math", "math")
+		valExpr := fmt.Sprintf("%s.Float32bits(%s)", mathImport, ctx.getValueVar(desc, varName, "float32"))
+		if pack {
+			ctx.appendCode(indent, "hh.AppendUint32(%s)\n", valExpr)
+		} else {
+			ctx.appendCode(indent, "hh.PutUint32(%s)\n", valExpr)
+		}
+	case ssztypes.SszFloat64Type:
+		mathImport := ctx.typePrinter.AddImport("math", "math")
+		valExpr := fmt.Sprintf("%s.Float64bits(%s)", mathImport, ctx.getValueVar(desc, varName, "float64"))
+		if pack {
+			ctx.appendCode(indent, "hh.AppendUint64(%s)\n", valExpr)
+		} else {
+			ctx.appendCode(indent, "hh.PutUint64(%s)\n", valExpr)
+		}
+	case ssztypes.SszOptionalType:
+		return ctx.hashOptional(desc, varName, indent)
+	case ssztypes.SszBigIntType:
+		return ctx.hashBigInt(desc, varName, indent)
+
 	default:
 		return fmt.Errorf("unsupported SSZ type: %v", desc.SszType)
 	}
 
+	return nil
+}
+
+// hashOptional generates hash tree root code for SSZ optional types.
+func (ctx *hashTreeRootContext) hashOptional(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
+	ctx.appendCode(indent, "if %s == nil {\n", varName)
+	ctx.appendCode(indent+1, "hh.PutUint8(0)\n")
+	ctx.appendCode(indent, "} else {\n")
+	innerVarName := fmt.Sprintf("(*%s)", varName)
+	if err := ctx.hashType(desc.ElemDesc, innerVarName, indent+1, false, false); err != nil {
+		return err
+	}
+	ctx.appendCode(indent, "}\n")
+	return nil
+}
+
+// hashBigInt generates hash tree root code for SSZ big int types.
+func (ctx *hashTreeRootContext) hashBigInt(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
+	ctx.appendCode(indent, "{\n")
+	ctx.appendCode(indent+1, "bigIntBytes := %s.Bytes()\n", varName)
+	ctx.appendCode(indent+1, "if len(bigIntBytes) == 0 {\n")
+	ctx.appendCode(indent+2, "bigIntBytes = make([]byte, 1)\n")
+	ctx.appendCode(indent+1, "}\n")
+	ctx.appendCode(indent+1, "hh.PutBytes(bigIntBytes)\n")
+	ctx.appendCode(indent, "}\n")
 	return nil
 }
 

@@ -32,7 +32,8 @@ func TestTypeCache_ErrorCases(t *testing.T) {
 			typ      reflect.Type
 			expected string
 		}{
-			{"int", reflect.TypeOf(int(0)), "signed integers are not supported"},
+			{"int", reflect.TypeOf(int(0)), "signed or unsigned integers with unspecified size are not supported"},
+			{"uint", reflect.TypeOf(uint(0)), "signed or unsigned integers with unspecified size are not supported"},
 			{"int8", reflect.TypeOf(int8(0)), "signed integers are not supported"},
 			{"int16", reflect.TypeOf(int16(0)), "signed integers are not supported"},
 			{"int32", reflect.TypeOf(int32(0)), "signed integers are not supported"},
@@ -978,6 +979,324 @@ type TestTypeWithInvalidHashTreeRootWith2 struct{}
 
 func (t *TestTypeWithInvalidHashTreeRootWith2) HashTreeRootWith(in1 uint64) uint64 {
 	return in1
+}
+
+// Test extended type error cases
+func TestTypeCache_ExtendedTypes(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+
+	t.Run("DisabledExtendedTypes", func(t *testing.T) {
+		cache := NewTypeCache(ds)
+		// ExtendedTypes defaults to false
+
+		tests := []struct {
+			name     string
+			typ      reflect.Type
+			hints    []SszTypeHint
+			expected string
+		}{
+			{
+				name:     "int8 disabled",
+				typ:      reflect.TypeOf(int8(0)),
+				hints:    []SszTypeHint{{Type: SszInt8Type}},
+				expected: "signed integers are not supported in SSZ",
+			},
+			{
+				name:     "int16 disabled",
+				typ:      reflect.TypeOf(int16(0)),
+				hints:    []SszTypeHint{{Type: SszInt16Type}},
+				expected: "signed integers are not supported in SSZ",
+			},
+			{
+				name:     "int32 disabled",
+				typ:      reflect.TypeOf(int32(0)),
+				hints:    []SszTypeHint{{Type: SszInt32Type}},
+				expected: "signed integers are not supported in SSZ",
+			},
+			{
+				name:     "int64 disabled",
+				typ:      reflect.TypeOf(int64(0)),
+				hints:    []SszTypeHint{{Type: SszInt64Type}},
+				expected: "signed integers are not supported in SSZ",
+			},
+			{
+				name:     "float32 disabled",
+				typ:      reflect.TypeOf(float32(0)),
+				hints:    []SszTypeHint{{Type: SszFloat32Type}},
+				expected: "floating-point numbers are not supported in SSZ",
+			},
+			{
+				name:     "float64 disabled",
+				typ:      reflect.TypeOf(float64(0)),
+				hints:    []SszTypeHint{{Type: SszFloat64Type}},
+				expected: "floating-point numbers are not supported in SSZ",
+			},
+			{
+				name:     "optional disabled",
+				typ:      reflect.TypeOf((*int16)(nil)),
+				hints:    []SszTypeHint{{Type: SszOptionalType}},
+				expected: "optional types are not supported in SSZ",
+			},
+			{
+				name:     "bigint disabled",
+				typ:      reflect.TypeOf(struct{}{}),
+				hints:    []SszTypeHint{{Type: SszBigIntType}},
+				expected: "big integers are not supported in SSZ",
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				_, err := cache.GetTypeDescriptor(tt.typ, nil, nil, tt.hints)
+				if err == nil {
+					t.Errorf("Expected error for %s", tt.name)
+					return
+				}
+				if !strings.Contains(err.Error(), tt.expected) {
+					t.Errorf("Expected error containing '%s', got: %s", tt.expected, err.Error())
+				}
+			})
+		}
+	})
+
+	t.Run("EnabledExtendedTypes", func(t *testing.T) {
+		cache := NewTypeCache(ds)
+		cache.ExtendedTypes = true
+
+		successTests := []struct {
+			name string
+			typ  reflect.Type
+		}{
+			{"int8", reflect.TypeOf(int8(0))},
+			{"int16", reflect.TypeOf(int16(0))},
+			{"int32", reflect.TypeOf(int32(0))},
+			{"int64", reflect.TypeOf(int64(0))},
+			{"float32", reflect.TypeOf(float32(0))},
+			{"float64", reflect.TypeOf(float64(0))},
+		}
+
+		for _, tt := range successTests {
+			t.Run(tt.name, func(t *testing.T) {
+				desc, err := cache.GetTypeDescriptor(tt.typ, nil, nil, nil)
+				if err != nil {
+					t.Errorf("Unexpected error for %s: %v", tt.name, err)
+					return
+				}
+				if desc == nil {
+					t.Errorf("Expected descriptor for %s", tt.name)
+				}
+			})
+		}
+	})
+
+	t.Run("WrongKindErrors", func(t *testing.T) {
+		cache := NewTypeCache(ds)
+		cache.ExtendedTypes = true
+
+		tests := []struct {
+			name     string
+			typ      reflect.Type
+			hints    []SszTypeHint
+			expected string
+		}{
+			{
+				name:     "int8 with wrong kind",
+				typ:      reflect.TypeOf(uint8(0)),
+				hints:    []SszTypeHint{{Type: SszInt8Type}},
+				expected: "int8 ssz type can only be represented by int8 types",
+			},
+			{
+				name:     "int16 with wrong kind",
+				typ:      reflect.TypeOf(uint16(0)),
+				hints:    []SszTypeHint{{Type: SszInt16Type}},
+				expected: "int16 ssz type can only be represented by int16 types",
+			},
+			{
+				name:     "int32 with wrong kind",
+				typ:      reflect.TypeOf(uint32(0)),
+				hints:    []SszTypeHint{{Type: SszInt32Type}},
+				expected: "int32 ssz type can only be represented by int32 types",
+			},
+			{
+				name:     "int64 with wrong kind",
+				typ:      reflect.TypeOf(uint64(0)),
+				hints:    []SszTypeHint{{Type: SszInt64Type}},
+				expected: "int64 ssz type can only be represented by int64 types",
+			},
+			{
+				name:     "float32 with wrong kind",
+				typ:      reflect.TypeOf(uint32(0)),
+				hints:    []SszTypeHint{{Type: SszFloat32Type}},
+				expected: "float32 ssz type can only be represented by float32 types",
+			},
+			{
+				name:     "float64 with wrong kind",
+				typ:      reflect.TypeOf(uint64(0)),
+				hints:    []SszTypeHint{{Type: SszFloat64Type}},
+				expected: "float64 ssz type can only be represented by float64 types",
+			},
+			{
+				name:     "optional with non-pointer",
+				typ:      reflect.TypeOf(int16(0)),
+				hints:    []SszTypeHint{{Type: SszOptionalType}},
+				expected: "optional ssz type can only be represented by pointer types",
+			},
+			{
+				name:     "bigint with non-struct",
+				typ:      reflect.TypeOf(uint64(0)),
+				hints:    []SszTypeHint{{Type: SszBigIntType}},
+				expected: "bigint type can only be represented by struct types",
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				_, err := cache.GetTypeDescriptor(tt.typ, nil, nil, tt.hints)
+				if err == nil {
+					t.Errorf("Expected error for %s", tt.name)
+					return
+				}
+				if !strings.Contains(err.Error(), tt.expected) {
+					t.Errorf("Expected error containing '%s', got: %s", tt.expected, err.Error())
+				}
+			})
+		}
+	})
+
+	t.Run("OptionalDescriptor", func(t *testing.T) {
+		cache := NewTypeCache(ds)
+		cache.ExtendedTypes = true
+
+		// optional pointer to uint16
+		desc, err := cache.GetTypeDescriptor(
+			reflect.TypeOf((*uint16)(nil)),
+			nil, nil,
+			[]SszTypeHint{{Type: SszOptionalType}},
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if desc.SszType != SszOptionalType {
+			t.Errorf("expected SszOptionalType, got %v", desc.SszType)
+		}
+		if desc.SszTypeFlags&SszTypeFlagIsDynamic == 0 {
+			t.Error("expected optional to be dynamic")
+		}
+		if desc.ElemDesc == nil {
+			t.Error("expected ElemDesc to be set")
+		}
+	})
+
+	t.Run("OptionalDescriptorWithHints", func(t *testing.T) {
+		cache := NewTypeCache(ds)
+		cache.ExtendedTypes = true
+
+		// optional pointer to uint16 with extra hints that get forwarded
+		desc, err := cache.GetTypeDescriptor(
+			reflect.TypeOf((*uint16)(nil)),
+			[]SszSizeHint{{Size: 0}, {Size: 2}},
+			[]SszMaxSizeHint{{Size: 0}, {Size: 2}},
+			[]SszTypeHint{{Type: SszOptionalType}, {Type: SszUint16Type}},
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if desc.SszType != SszOptionalType {
+			t.Errorf("expected SszOptionalType, got %v", desc.SszType)
+		}
+		if desc.ElemDesc == nil {
+			t.Error("expected ElemDesc to be set")
+		}
+	})
+
+	t.Run("BigIntDescriptor", func(t *testing.T) {
+		cache := NewTypeCache(ds)
+		cache.ExtendedTypes = true
+
+		type BigIntLike struct {
+			// big.Int is a struct, so we test with a struct type
+		}
+
+		desc, err := cache.GetTypeDescriptor(
+			reflect.TypeOf(BigIntLike{}),
+			nil, nil,
+			[]SszTypeHint{{Type: SszBigIntType}},
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if desc.SszType != SszBigIntType {
+			t.Errorf("expected SszBigIntType, got %v", desc.SszType)
+		}
+		if desc.SszTypeFlags&SszTypeFlagIsDynamic == 0 {
+			t.Error("expected bigint to be dynamic")
+		}
+	})
+}
+
+// Test ParseSszType for all types
+func TestParseSszType(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected SszType
+	}{
+		// auto/unspecified
+		{"?", SszUnspecifiedType},
+		{"auto", SszUnspecifiedType},
+		{"custom", SszCustomType},
+		{"wrapper", SszTypeWrapperType},
+		{"type-wrapper", SszTypeWrapperType},
+
+		// basic types
+		{"bool", SszBoolType},
+		{"uint8", SszUint8Type},
+		{"uint16", SszUint16Type},
+		{"uint32", SszUint32Type},
+		{"uint64", SszUint64Type},
+		{"uint128", SszUint128Type},
+		{"uint256", SszUint256Type},
+
+		// complex types
+		{"container", SszContainerType},
+		{"list", SszListType},
+		{"vector", SszVectorType},
+		{"bitlist", SszBitlistType},
+		{"bitvector", SszBitvectorType},
+		{"progressive-list", SszProgressiveListType},
+		{"progressive-bitlist", SszProgressiveBitlistType},
+		{"progressive-container", SszProgressiveContainerType},
+		{"compatible-union", SszCompatibleUnionType},
+		{"union", SszCompatibleUnionType},
+
+		// extended types
+		{"int8", SszInt8Type},
+		{"int16", SszInt16Type},
+		{"int32", SszInt32Type},
+		{"int64", SszInt64Type},
+		{"float32", SszFloat32Type},
+		{"float64", SszFloat64Type},
+		{"bigint", SszBigIntType},
+		{"optional", SszOptionalType},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result, err := ParseSszType(tt.input)
+			if err != nil {
+				t.Errorf("unexpected error for '%s': %v", tt.input, err)
+				return
+			}
+			if result != tt.expected {
+				t.Errorf("expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+
+	// Test invalid type
+	_, err := ParseSszType("invalidtype")
+	if err == nil {
+		t.Error("expected error for invalid type")
+	}
 }
 
 // Test types with invalid HashTreeRootWith method

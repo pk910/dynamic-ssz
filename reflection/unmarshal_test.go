@@ -111,6 +111,169 @@ func TestUnmarshalReader(t *testing.T) {
 	}
 }
 
+func TestUnmarshalExtendedTypes(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes())
+
+	for _, test := range commonExtendedTypesTestMatrix {
+		obj := &struct {
+			Data any
+		}{}
+		// reflection hack: create new instance of payload with zero values and assign to obj.Data
+		reflect.ValueOf(obj).Elem().Field(0).Set(reflect.New(reflect.TypeOf(test.payload)))
+
+		err := dynssz.UnmarshalSSZ(obj.Data, test.ssz)
+
+		switch {
+		case test.ssz == nil && err != nil:
+			// expected error
+		case err != nil:
+			t.Errorf("test %v error: %v", test.name, err)
+		default:
+			htr, err := dynssz.HashTreeRoot(obj.Data)
+			if err != nil {
+				t.Errorf("test %v error: %v", test.name, err)
+			}
+			if !bytes.Equal(htr[:], test.htr) {
+				t.Errorf("test %v failed: got %x, wanted %x", test.name, htr[:], test.htr)
+			}
+		}
+	}
+}
+
+func TestUnmarshalExtendedTypesNoFastSsz(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	for _, test := range commonExtendedTypesTestMatrix {
+		t.Run(test.name, func(t *testing.T) {
+			obj := &struct {
+				Data any
+			}{}
+			reflect.ValueOf(obj).Elem().Field(0).Set(reflect.New(reflect.TypeOf(test.payload)))
+
+			err := dynssz.UnmarshalSSZ(obj.Data, test.ssz)
+
+			switch {
+			case test.ssz == nil && err != nil:
+				// expected error
+			case err != nil:
+				t.Errorf("test %v error: %v", test.name, err)
+			default:
+				htr, err := dynssz.HashTreeRoot(obj.Data)
+				if err != nil {
+					t.Errorf("test %v error: %v", test.name, err)
+				}
+				if !bytes.Equal(htr[:], test.htr) {
+					t.Errorf("test %v failed: got %x, wanted %x", test.name, htr[:], test.htr)
+				}
+			}
+		})
+	}
+}
+
+func TestUnmarshalExtendedTypesReader(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	for _, test := range commonExtendedTypesTestMatrix {
+		t.Run(test.name, func(t *testing.T) {
+			obj := &struct {
+				Data any
+			}{}
+			reflect.ValueOf(obj).Elem().Field(0).Set(reflect.New(reflect.TypeOf(test.payload)))
+
+			err := dynssz.UnmarshalSSZReader(obj.Data, bytes.NewReader(test.ssz), len(test.ssz))
+
+			switch {
+			case test.ssz == nil && err != nil:
+				// expected error
+			case err != nil:
+				t.Errorf("test %v error: %v", test.name, err)
+			default:
+				htr, err := dynssz.HashTreeRoot(obj.Data)
+				if err != nil {
+					t.Errorf("test %v error: %v", test.name, err)
+				}
+				if !bytes.Equal(htr[:], test.htr) {
+					t.Errorf("test %v failed: got %x, wanted %x", test.name, htr[:], test.htr)
+				}
+			}
+		})
+	}
+}
+
+func TestUnmarshalExtendedTypesDisabled(t *testing.T) {
+	dynssz := NewDynSsz(nil) // no WithExtendedTypes()
+
+	testCases := []struct {
+		name        string
+		target      any
+		data        []byte
+		expectedErr string
+	}{
+		{
+			name:        "int8_disabled",
+			target:      new(int8),
+			data:        fromHex("0x2a"),
+			expectedErr: "signed integers are not supported in SSZ",
+		},
+		{
+			name:        "float32_disabled",
+			target:      new(float32),
+			data:        fromHex("0xc3f54840"),
+			expectedErr: "floating-point numbers are not supported in SSZ",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := dynssz.UnmarshalSSZ(tc.target, tc.data)
+			if err == nil {
+				t.Errorf("expected error containing '%s', but got no error", tc.expectedErr)
+			} else if !contains(err.Error(), tc.expectedErr) {
+				t.Errorf("expected error containing '%s', but got: %v", tc.expectedErr, err)
+			}
+		})
+	}
+}
+
+func TestUnmarshalExtendedTypesErrors(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes())
+
+	testCases := []struct {
+		name        string
+		target      any
+		data        []byte
+		expectedErr string
+	}{
+		{
+			name: "optional_truncated",
+			target: new(struct {
+				Opt *int16 `ssz-type:"optional"`
+			}),
+			data:        fromHex("0x04000000"),
+			expectedErr: "Optional requires at least 1 byte",
+		},
+		{
+			name: "optional_present_truncated",
+			target: new(struct {
+				Opt *uint32 `ssz-type:"optional"`
+			}),
+			data:        fromHex("0x0400000001"),
+			expectedErr: "unexpected end of SSZ",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := dynssz.UnmarshalSSZ(tc.target, tc.data)
+			if err == nil {
+				t.Errorf("expected error containing '%s', but got no error", tc.expectedErr)
+			} else if !contains(err.Error(), tc.expectedErr) {
+				t.Errorf("expected error containing '%s', but got: %v", tc.expectedErr, err)
+			}
+		})
+	}
+}
+
 func TestUnmarshalErrors(t *testing.T) {
 	dynssz := NewDynSsz(nil)
 

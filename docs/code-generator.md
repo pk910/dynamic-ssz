@@ -35,6 +35,7 @@ dynssz-gen -package /path/to/package -types BeaconBlock,BeaconState -output gene
 | `-without-dynamic-expressions` | Generate only legacy methods, disable dynamic methods | `false` |
 | `-without-fastssz` | Generate code without using fast ssz generated methods | `false` |
 | `-with-streaming` | Generate streaming encoder/decoder functions | `false` |
+| `-with-extended-types` | Enable support for non-standard extended types (signed ints, floats, big.Int, optionals) | `false` |
 
 ### Examples
 

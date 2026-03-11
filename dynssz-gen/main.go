@@ -30,6 +30,7 @@ type Config struct {
 	WithoutDynamicExpressions bool
 	WithoutFastSsz            bool
 	WithStreaming             bool
+	WithExtendedTypes         bool
 }
 
 func main() {
@@ -43,6 +44,7 @@ func main() {
 		withoutDynamicExpressions = flag.Bool("without-dynamic-expressions", false, "Generate code without dynamic expressions")
 		withoutFastSsz            = flag.Bool("without-fastssz", false, "Generate code without using fast ssz generated methods")
 		withStreaming             = flag.Bool("with-streaming", false, "Generate streaming functions")
+		withExtendedTypes         = flag.Bool("with-extended-types", false, "Generate code with extended types")
 	)
 	flag.Parse()
 
@@ -56,6 +58,7 @@ func main() {
 		WithoutDynamicExpressions: *withoutDynamicExpressions,
 		WithoutFastSsz:            *withoutFastSsz,
 		WithStreaming:             *withStreaming,
+		WithExtendedTypes:         *withExtendedTypes,
 	}
 
 	if err := run(config); err != nil {
@@ -176,6 +179,9 @@ func run(config Config) error {
 		if config.WithStreaming {
 			typeOptions = append(typeOptions, codegen.WithCreateEncoderFn())
 			typeOptions = append(typeOptions, codegen.WithCreateDecoderFn())
+		}
+		if config.WithExtendedTypes {
+			typeOptions = append(typeOptions, codegen.WithExtendedTypes())
 		}
 
 		// Build the file with all types

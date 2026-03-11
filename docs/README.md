@@ -13,6 +13,7 @@ Welcome to the comprehensive documentation for Dynamic SSZ - a flexible Go imple
 - **[Code Generator](code-generator.md)** - CLI tool and programmatic code generation
 
 ### Advanced Topics
+- **[Extended Types](extended-types.md)** - Non-standard type extensions (signed ints, floats, big.Int, optionals)
 - **[Type Wrapper](type-wrapper.md)** - Applying SSZ annotations to non-struct types
 - **[Ethereum Integration](go-eth2-client-integration.md)** - Working with Ethereum types
 - **[Performance Guide](performance.md)** - Optimization techniques and benchmarks
@@ -29,6 +30,7 @@ Welcome to the comprehensive documentation for Dynamic SSZ - a flexible Go imple
 
 ### By Topic
 - **Types & Annotations**: [Supported Types](supported-types.md) → [SSZ Annotations](ssz-annotations.md)
+- **Extended Types**: [Extended Types](extended-types.md) (non-standard extensions)
 - **API Usage**: [Getting Started](getting-started.md) → [API Reference](api-reference.md)
 - **Proofs & Trees**: [Merkle Proofs](merkle-proofs.md)
 - **Code Generation**: [Code Generator](code-generator.md)
@@ -50,7 +52,7 @@ Dynamic SSZ provides flexible SSZ encoding/decoding for Go applications with the
 
 ```
 ┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   Your Types    │──▶│   Dynamic SSZ    │──▶│  SSZ Encoding   │
+│   Your Types    │───▶│   Dynamic SSZ    │───▶│  SSZ Encoding   │
 │                 │    │                  │    │                 │
 │ • Structs       │    │ • Type Cache     │    │ • Serialization │
 │ • Annotations   │    │ • Spec Values    │    │ • Hash Roots    │
@@ -121,6 +123,7 @@ Comprehensive examples in the [examples/](../examples/) directory:
 ### Type System
 - **Basic Types**: `bool`, `uint8-64`, fixed arrays, slices
 - **Advanced Types**: `uint128/256`, bitfields, progressive containers
+- **Extended Types**: Signed integers, floats, `big.Int`, optionals (non-standard, opt-in)
 - **Custom Types**: Implement marshaling interfaces for any type
 - **Type Wrapper**: Apply annotations to non-struct types
 

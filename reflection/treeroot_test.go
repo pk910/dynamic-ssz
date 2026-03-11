@@ -128,6 +128,120 @@ func TestTreeRootNoFastHash(t *testing.T) {
 	}
 }
 
+func TestTreeRootExtendedTypes(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes())
+
+	for _, test := range commonExtendedTypesTestMatrix {
+		t.Run(test.name, func(t *testing.T) {
+			buf, err := dynssz.HashTreeRoot(test.payload)
+
+			switch {
+			case test.htr == nil && err != nil:
+				// expected error
+			case err != nil:
+				t.Errorf("test %v error: %v", test.name, err)
+			case !bytes.Equal(buf[:], test.htr):
+				t.Errorf("test %v failed: got 0x%x, wanted 0x%x", test.name, buf, test.htr)
+			}
+		})
+	}
+}
+
+func TestTreeRootExtendedTypesNoFastSsz(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	for _, test := range commonExtendedTypesTestMatrix {
+		t.Run(test.name, func(t *testing.T) {
+			buf, err := dynssz.HashTreeRoot(test.payload)
+
+			switch {
+			case test.htr == nil && err != nil:
+				// expected error
+			case err != nil:
+				t.Errorf("test %v error: %v", test.name, err)
+			case !bytes.Equal(buf[:], test.htr):
+				t.Errorf("test %v failed: got 0x%x, wanted 0x%x", test.name, buf, test.htr)
+			}
+		})
+	}
+}
+
+func TestTreeRootExtendedTypesNoFastHash(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastHash())
+
+	for _, test := range commonExtendedTypesTestMatrix {
+		t.Run(test.name, func(t *testing.T) {
+			buf, err := dynssz.HashTreeRoot(test.payload)
+
+			switch {
+			case test.htr == nil && err != nil:
+				// expected error
+			case err != nil:
+				t.Errorf("test %v error: %v", test.name, err)
+			case !bytes.Equal(buf[:], test.htr):
+				t.Errorf("test %v failed: got 0x%x, wanted 0x%x", test.name, buf, test.htr)
+			}
+		})
+	}
+}
+
+func TestTreeRootExtendedTypesDisabled(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz()) // no WithExtendedTypes()
+
+	testCases := []struct {
+		name        string
+		input       any
+		expectedErr string
+	}{
+		{
+			name:        "int8_disabled",
+			input:       int8(42),
+			expectedErr: "signed integers are not supported in SSZ",
+		},
+		{
+			name:        "float32_disabled",
+			input:       float32(3.14),
+			expectedErr: "floating-point numbers are not supported in SSZ",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := dynssz.HashTreeRoot(tc.input)
+			if err == nil {
+				t.Errorf("expected error containing '%s', but got no error", tc.expectedErr)
+			} else if !contains(err.Error(), tc.expectedErr) {
+				t.Errorf("expected error containing '%s', but got: %v", tc.expectedErr, err)
+			}
+		})
+	}
+}
+
+func TestTreeGenExtendedTypes(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	for _, tc := range commonExtendedTypesTestMatrix {
+		if tc.htr == nil {
+			continue
+		}
+
+		t.Run(tc.name, func(t *testing.T) {
+			tree, err := dynssz.GetTree(tc.payload)
+			if err != nil {
+				t.Fatalf("failed to generate tree: %v", err)
+			}
+
+			if err := verifyTreeIntegrity(tree); err != nil {
+				t.Errorf("tree integrity check failed: %v", err)
+			}
+
+			if !bytes.Equal(tree.Hash(), tc.htr) {
+				t.Errorf("tree root mismatch: tree=%x, expected=%x", tree.Hash(), tc.htr)
+			}
+		})
+	}
+}
+
 func TestStringVsByteContainerTreeRootEquivalence(t *testing.T) {
 	type StringContainer struct {
 		Data string `ssz-max:"100"`

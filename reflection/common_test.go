@@ -6,6 +6,7 @@ package reflection_test
 
 import (
 	"fmt"
+	"math/big"
 	"time"
 
 	dynssz "github.com/pk910/dynamic-ssz"
@@ -766,6 +767,165 @@ var commonTestMatrix = []struct {
 		}{1, []TestContainerWithDynamicSsz{{1, 2, true, 4}, {5, 6, true, 8}}},
 		fromHex("0x01000000000000000c000000010000000000000002000000010400050000000000000006000000010800"),
 		fromHex("0x80b99000797f72ef1a9deae3e42fc1447648feaf1d7cd8dc1a4e20c7c64350ed"),
+	},
+}
+
+var opt1 = int16(1337)
+
+var commonExtendedTypesTestMatrix = []struct {
+	name    string
+	payload any
+	ssz     []byte
+	htr     []byte
+}{
+	// primitive types
+	{
+		"int8_min",
+		int8(0),
+		fromHex("0x00"),
+		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int8_max",
+		int8(-1),
+		fromHex("0xff"),
+		fromHex("0xff00000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int8_val1",
+		int8(42),
+		fromHex("0x2a"),
+		fromHex("0x2a00000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int16_min",
+		int16(0),
+		fromHex("0x0000"),
+		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int16_max",
+		int16(-1),
+		fromHex("0xffff"),
+		fromHex("0xffff000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int16_val1",
+		int16(1337),
+		fromHex("0x3905"),
+		fromHex("0x3905000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int32_min",
+		uint32(0),
+		fromHex("0x00000000"),
+		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int32_max",
+		int32(-1),
+		fromHex("0xffffffff"),
+		fromHex("0xffffffff00000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int32_val1",
+		int32(817482215),
+		fromHex("0xe7c9b930"),
+		fromHex("0xe7c9b93000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int64_min",
+		int64(0),
+		fromHex("0x0000000000000000"),
+		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int64_max",
+		int64(-1),
+		fromHex("0xffffffffffffffff"),
+		fromHex("0xffffffffffffffff000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int64_val1",
+		int64(848028848028),
+		fromHex("0x9c4f7572c5000000"),
+		fromHex("0x9c4f7572c5000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"float32_min",
+		float32(0),
+		fromHex("0x00000000"),
+		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"float32_val1",
+		float32(3.14),
+		fromHex("0xc3f54840"),
+		fromHex("0xc3f5484000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"float64_min",
+		float64(0),
+		fromHex("0x0000000000000000"),
+		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"float64_val1",
+		float64(2.718281828),
+		fromHex("0x9b91048b0abf0540"),
+		fromHex("0x9b91048b0abf0540000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"bigint_min",
+		*big.NewInt(0),
+		fromHex("0x"),
+		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"bigint_val1",
+		*big.NewInt(123456789),
+		fromHex("0x075bcd15"),
+		fromHex("0x075bcd1500000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"optional_int16",
+		struct {
+			Opt1 *int16 `ssz-type:"optional"`
+		}{Opt1: &opt1},
+		fromHex("0x04000000013905"),
+		fromHex("0x3905000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"optional_int16_nil",
+		struct {
+			Opt1 *int16 `ssz-type:"optional"`
+		}{Opt1: nil},
+		fromHex("0x0400000000"),
+		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"extended_struct_1",
+		struct {
+			F1 int8
+			F2 int16
+			F3 int32
+			F4 int64
+			F5 float32
+			F6 float64
+		}{1, 2, 3, 4, 5.0, 6.0},
+		fromHex("0x0102000300000004000000000000000000a0400000000000001840"),
+		fromHex("0x94fdb9baeea5a2d3b9bcf25b71cb8fb67f83dfaaa330cd69fda6ccc41c41a680"),
+	},
+	{
+		"extended_struct_2",
+		struct {
+			F1  uint32
+			F2  *int16 `ssz-type:"optional"`
+			F3  float64
+			Big big.Int
+		}{42, &opt1, 3.14, *big.NewInt(999999)},
+		fromHex("0x2a000000140000001f85eb51b81e0940170000000139050f423f"),
+		fromHex("0x6a2b0143a450c236cbfee0c6c7d94288a5968c1e033ee60e91fd6604d1b1be9c"),
 	},
 }
 

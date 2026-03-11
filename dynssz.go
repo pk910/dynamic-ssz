@@ -111,6 +111,7 @@ func NewDynSsz(specs map[string]any, options ...DynSszOption) *DynSsz {
 		options:        opts,
 	}
 	dynssz.typeCache = ssztypes.NewTypeCache(dynssz)
+	dynssz.typeCache.ExtendedTypes = opts.ExtendedTypes
 
 	return dynssz
 }

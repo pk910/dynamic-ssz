@@ -145,7 +145,7 @@ func (ctx *unmarshalContext) getCastedValueVar(desc *ssztypes.TypeDescriptor, va
 // isInlinable determines if a type can be unmarshaled inline without temporary variables.
 func (ctx *unmarshalContext) isInlinable(desc *ssztypes.TypeDescriptor) bool {
 	// Inline primitive types
-	if desc.SszType == ssztypes.SszBoolType || desc.SszType == ssztypes.SszUint8Type || desc.SszType == ssztypes.SszUint16Type || desc.SszType == ssztypes.SszUint32Type || desc.SszType == ssztypes.SszUint64Type {
+	if desc.SszType == ssztypes.SszBoolType || desc.SszType == ssztypes.SszUint8Type || desc.SszType == ssztypes.SszUint16Type || desc.SszType == ssztypes.SszUint32Type || desc.SszType == ssztypes.SszUint64Type || desc.SszType == ssztypes.SszInt8Type || desc.SszType == ssztypes.SszInt16Type || desc.SszType == ssztypes.SszInt32Type || desc.SszType == ssztypes.SszInt64Type || desc.SszType == ssztypes.SszFloat32Type || desc.SszType == ssztypes.SszFloat64Type {
 		return true
 	}
 
@@ -312,10 +312,133 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 	case ssztypes.SszCustomType:
 		ctx.appendCode(indent, "return sszutils.ErrNotImplemented\n")
 
+	// extended types
+	case ssztypes.SszInt8Type:
+		if !noBufCheck {
+			ctx.appendCode(indent, "if len(buf) < 1 {\n\treturn sszutils.ErrUnexpectedEOF\n}\n")
+		}
+		ptrVarName := varName
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+			ptrVarName = fmt.Sprintf("*(%s)", varName)
+		}
+		ctx.appendCode(indent,
+			"%s = %s\n",
+			ptrVarName,
+			ctx.getCastedValueVar(desc, "int8(buf[0])", "int8"),
+		)
+	case ssztypes.SszInt16Type:
+		if !noBufCheck {
+			ctx.appendCode(indent, "if len(buf) < 2 {\n\treturn sszutils.ErrUnexpectedEOF\n}\n")
+		}
+		ptrVarName := varName
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+			ptrVarName = fmt.Sprintf("*(%s)", varName)
+		}
+		binaryImport := ctx.typePrinter.AddImport("encoding/binary", "binary")
+		ctx.appendCode(indent,
+			"%s = %s\n",
+			ptrVarName,
+			ctx.getCastedValueVar(desc, fmt.Sprintf("int16(%s.LittleEndian.Uint16(buf))", binaryImport), "int16"),
+		)
+	case ssztypes.SszInt32Type:
+		if !noBufCheck {
+			ctx.appendCode(indent, "if len(buf) < 4 {\n\treturn sszutils.ErrUnexpectedEOF\n}\n")
+		}
+		ptrVarName := varName
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+			ptrVarName = fmt.Sprintf("*(%s)", varName)
+		}
+		binaryImport := ctx.typePrinter.AddImport("encoding/binary", "binary")
+		ctx.appendCode(indent,
+			"%s = %s\n",
+			ptrVarName,
+			ctx.getCastedValueVar(desc, fmt.Sprintf("int32(%s.LittleEndian.Uint32(buf))", binaryImport), "int32"),
+		)
+	case ssztypes.SszInt64Type:
+		if !noBufCheck {
+			ctx.appendCode(indent, "if len(buf) < 8 {\n\treturn sszutils.ErrUnexpectedEOF\n}\n")
+		}
+		ptrVarName := varName
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+			ptrVarName = fmt.Sprintf("*(%s)", varName)
+		}
+		binaryImport := ctx.typePrinter.AddImport("encoding/binary", "binary")
+		ctx.appendCode(indent,
+			"%s = %s\n",
+			ptrVarName,
+			ctx.getCastedValueVar(desc, fmt.Sprintf("int64(%s.LittleEndian.Uint64(buf))", binaryImport), "int64"),
+		)
+	case ssztypes.SszFloat32Type:
+		if !noBufCheck {
+			ctx.appendCode(indent, "if len(buf) < 4 {\n\treturn sszutils.ErrUnexpectedEOF\n}\n")
+		}
+		ptrVarName := varName
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+			ptrVarName = fmt.Sprintf("*(%s)", varName)
+		}
+		mathImport := ctx.typePrinter.AddImport("math", "math")
+		binaryImport := ctx.typePrinter.AddImport("encoding/binary", "binary")
+		ctx.appendCode(indent,
+			"%s = %s\n",
+			ptrVarName,
+			ctx.getCastedValueVar(desc, fmt.Sprintf("%s.Float32frombits(%s.LittleEndian.Uint32(buf))", mathImport, binaryImport), "float32"),
+		)
+	case ssztypes.SszFloat64Type:
+		if !noBufCheck {
+			ctx.appendCode(indent, "if len(buf) < 8 {\n\treturn sszutils.ErrUnexpectedEOF\n}\n")
+		}
+		ptrVarName := varName
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+			ptrVarName = fmt.Sprintf("*(%s)", varName)
+		}
+		mathImport := ctx.typePrinter.AddImport("math", "math")
+		binaryImport := ctx.typePrinter.AddImport("encoding/binary", "binary")
+		ctx.appendCode(indent,
+			"%s = %s\n",
+			ptrVarName,
+			ctx.getCastedValueVar(desc, fmt.Sprintf("%s.Float64frombits(%s.LittleEndian.Uint64(buf))", mathImport, binaryImport), "float64"),
+		)
+	case ssztypes.SszOptionalType:
+		return ctx.unmarshalOptional(desc, varName, indent)
+	case ssztypes.SszBigIntType:
+		return ctx.unmarshalBigInt(desc, varName, indent)
+
 	default:
 		return fmt.Errorf("unsupported SSZ type: %v", desc.SszType)
 	}
 
+	return nil
+}
+
+// unmarshalOptional generates unmarshal code for SSZ optional types.
+func (ctx *unmarshalContext) unmarshalOptional(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
+	ctx.appendCode(indent, "if len(buf) < 1 {\n\treturn sszutils.ErrUnexpectedEOF\n}\n")
+	ctx.appendCode(indent, "if buf[0] == 1 {\n")
+	valVar := ctx.getValVar()
+	ctx.appendCode(indent+1, "var %s %s\n", valVar, ctx.typePrinter.TypeString(desc.ElemDesc))
+	ctx.appendCode(indent+1, "buf := buf[1:]\n")
+	if err := ctx.unmarshalType(desc.ElemDesc, valVar, indent+1, false, true); err != nil {
+		return err
+	}
+	ctx.appendCode(indent+1, "%s = &%s\n", varName, valVar)
+	ctx.appendCode(indent, "} else {\n")
+	ctx.appendCode(indent+1, "%s = nil\n", varName)
+	ctx.appendCode(indent, "}\n")
+	return nil
+}
+
+// unmarshalBigInt generates unmarshal code for SSZ big int types.
+func (ctx *unmarshalContext) unmarshalBigInt(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
+	bigImport := ctx.typePrinter.AddImport("math/big", "big")
+	ptrVarName := varName
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		ptrVarName = fmt.Sprintf("*(%s)", varName)
+	}
+	ctx.appendCode(indent,
+		"%s = %s\n",
+		ptrVarName,
+		ctx.getCastedValueVar(desc, fmt.Sprintf("*(%s.NewInt(0).SetBytes(buf))", bigImport), "big.Int"),
+	)
 	return nil
 }
 
