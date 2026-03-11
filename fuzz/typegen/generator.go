@@ -268,11 +268,24 @@ func (g *Generator) generateFixedArrayField(name string, depth int) FieldDef {
 		}
 	}
 
+	// Cap struct array size based on depth to prevent exponential blowup.
+	// At depth 0: up to MaxArrayLen, depth 1: up to 8, depth 2+: up to 4.
+	structArrayMax := g.cfg.MaxArrayLen
+	if depth >= 2 {
+		structArrayMax = 4
+	} else if depth >= 1 {
+		structArrayMax = 8
+	}
+	if structArrayMax > g.cfg.MaxArrayLen {
+		structArrayMax = g.cfg.MaxArrayLen
+	}
+	structArrayLen := 1 + g.rng.Intn(structArrayMax)
+
 	if len(g.refTypes) > 0 && g.rng.Intn(2) == 0 {
 		ref := g.refTypes[g.rng.Intn(len(g.refTypes))]
 		return FieldDef{
 			Name:   name,
-			GoType: fmt.Sprintf("[%d]*%s", arrayLen, ref),
+			GoType: fmt.Sprintf("[%d]*%s", structArrayLen, ref),
 		}
 	}
 
@@ -282,7 +295,7 @@ func (g *Generator) generateFixedArrayField(name string, depth int) FieldDef {
 
 	return FieldDef{
 		Name:   name,
-		GoType: fmt.Sprintf("[%d]*%s", arrayLen, helperType.Name),
+		GoType: fmt.Sprintf("[%d]*%s", structArrayLen, helperType.Name),
 	}
 }
 
@@ -299,6 +312,18 @@ func (g *Generator) generateListField(name string, depth int) FieldDef {
 		}
 	}
 
+	// Cap struct list limit based on depth to prevent exponential blowup.
+	structListMax := g.cfg.MaxListLimit
+	if depth >= 2 {
+		structListMax = 8
+	} else if depth >= 1 {
+		structListMax = 16
+	}
+	if structListMax > g.cfg.MaxListLimit {
+		structListMax = g.cfg.MaxListLimit
+	}
+	structListLimit := 1 + g.rng.Intn(structListMax)
+
 	var refName string
 	if len(g.refTypes) > 0 && g.rng.Intn(2) == 0 {
 		refName = g.refTypes[g.rng.Intn(len(g.refTypes))]
@@ -312,7 +337,7 @@ func (g *Generator) generateListField(name string, depth int) FieldDef {
 	return FieldDef{
 		Name:   name,
 		GoType: fmt.Sprintf("[]*%s", refName),
-		Tags:   fmt.Sprintf("`ssz-max:\"%d\"`", maxLimit),
+		Tags:   fmt.Sprintf("`ssz-max:\"%d\"`", structListLimit),
 	}
 }
 

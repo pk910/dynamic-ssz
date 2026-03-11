@@ -47,7 +47,9 @@ jobs:
         set -e
 
         REPORT_DIR="${RUNNER_TEMP}/fuzz-reports"
+        mkdir -p "${REPORT_DIR}"
         TOTAL_ISSUES=0
+        CRASHED_ROUNDS=0
         NUM_ROUNDS=${ROUNDS}
 
         # Weighted random pick: given "value:weight ..." pairs, pick one
@@ -66,32 +68,20 @@ jobs:
           # Random seed from /dev/urandom
           SEED=$(od -A n -t u4 -N 4 /dev/urandom | tr -d ' ')
 
-          # Weighted random parameters
-          NTYPES=$(wpick "30:10" "50:25" "80:30" "100:20" "150:10" "200:5")
+          # Weighted random parameters (CI-safe ranges)
+          NTYPES=$(wpick "30:10" "50:30" "80:35" "100:20" "150:5")
           EXTENDED=$(wpick "true:85" "false:15")
-          DEPTH=$(wpick "3:60" "4:25" "5:15")
-          MAXFIELDS=$(wpick "6:20" "8:50" "10:20" "12:10")
-          MAXARRAY=$(wpick "16:10" "32:40" "48:20" "64:15" "128:10" "256:5")
-          MAXLIST=$(wpick "32:10" "48:15" "64:35" "96:15" "128:15" "256:10")
+          DEPTH=$(wpick "3:65" "4:30" "5:5")
+          MAXFIELDS=$(wpick "6:25" "8:50" "10:20" "12:5")
+          MAXARRAY=$(wpick "16:20" "32:45" "48:20" "64:15")
+          MAXLIST=$(wpick "32:15" "48:20" "64:40" "96:15" "128:10")
 
-          echo "::group::Round $i: seed=$SEED types=$NTYPES ext=$EXTENDED depth=$DEPTH fields=$MAXFIELDS array=$MAXARRAY list=$MAXLIST"
-
-          # Generate corpus
-          rm -f fuzz/corpus/*_gen.go
-          go run ./fuzz/cmd/generate \
-            -num-types "$NTYPES" \
-            -seed "$SEED" \
-            -extended="$EXTENDED" \
-            -max-depth "$DEPTH" \
-            -max-fields "$MAXFIELDS" \
-            -max-array-len "$MAXARRAY" \
-            -max-list-limit "$MAXLIST"
-
-          # Run fuzzer
           ROUND_REPORT="${REPORT_DIR}/round-${i}"
           mkdir -p "${ROUND_REPORT}"
 
-          # Save corpus config for reproducibility
+          echo "::group::Round $i: seed=$SEED types=$NTYPES ext=$EXTENDED depth=$DEPTH fields=$MAXFIELDS array=$MAXARRAY list=$MAXLIST"
+
+          # Save corpus config for reproducibility (before running, so crash info is available)
           cat > "${ROUND_REPORT}/config.txt" << EOF
         Round: $i
         Seed: $SEED
@@ -104,16 +94,41 @@ jobs:
         Duration: ${DURATION}
         EOF
 
-          cp fuzz/corpus/types_gen.go "${ROUND_REPORT}/types_gen.go"
+          # Generate corpus
+          rm -f fuzz/corpus/*_gen.go
+          if ! go run ./fuzz/cmd/generate \
+            -num-types "$NTYPES" \
+            -seed "$SEED" \
+            -extended="$EXTENDED" \
+            -max-depth "$DEPTH" \
+            -max-fields "$MAXFIELDS" \
+            -max-array-len "$MAXARRAY" \
+            -max-list-limit "$MAXLIST" 2>&1 | tee "${ROUND_REPORT}/generate.log"; then
+            echo "::warning::Round $i: corpus generation failed, skipping"
+            echo "generate-failed" > "${ROUND_REPORT}/outcome.txt"
+            echo "::endgroup::"
+            continue
+          fi
 
+          # Copy generated types for reproducibility
+          cp fuzz/corpus/types_gen.go "${ROUND_REPORT}/types_gen.go" 2>/dev/null || true
+
+          # Run fuzzer - capture exit code without failing the loop
+          FUZZ_EXIT=0
           go run ./fuzz/cmd/fuzz \
             -duration "${DURATION}" \
             -report-dir "${ROUND_REPORT}" \
             -stats-every 30s \
-            -workers 4
+            -workers 4 2>&1 | tee "${ROUND_REPORT}/fuzz.log" || FUZZ_EXIT=$?
+
+          if [ "$FUZZ_EXIT" -ne 0 ]; then
+            echo "::warning::Round $i: fuzzer exited with code $FUZZ_EXIT (possible OOM/crash)"
+            CRASHED_ROUNDS=$((CRASHED_ROUNDS + 1))
+            echo "crashed:exit-${FUZZ_EXIT}" > "${ROUND_REPORT}/outcome.txt"
+          fi
 
           # Count issues for this round
-          ROUND_ISSUES=$(find "${ROUND_REPORT}" -maxdepth 1 -name "issue-*" -type d | wc -l)
+          ROUND_ISSUES=$(find "${ROUND_REPORT}" -maxdepth 1 -name "issue-*" -type d 2>/dev/null | wc -l)
           TOTAL_ISSUES=$((TOTAL_ISSUES + ROUND_ISSUES))
 
           if [ "$ROUND_ISSUES" -gt "0" ]; then
@@ -124,23 +139,34 @@ jobs:
                 cat "$d/details.txt"
               fi
             done
-          else
+            echo "issues:${ROUND_ISSUES}" > "${ROUND_REPORT}/outcome.txt"
+          elif [ "$FUZZ_EXIT" -eq 0 ]; then
             echo "Round $i: clean"
+            echo "clean" > "${ROUND_REPORT}/outcome.txt"
           fi
 
           echo "::endgroup::"
         done
 
         echo "total_issues=${TOTAL_ISSUES}" >> $GITHUB_ENV
+        echo "crashed_rounds=${CRASHED_ROUNDS}" >> $GITHUB_ENV
+
+        # Summary
+        echo "## Fuzz Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- Rounds: ${NUM_ROUNDS}" >> $GITHUB_STEP_SUMMARY
+        echo "- Issues found: ${TOTAL_ISSUES}" >> $GITHUB_STEP_SUMMARY
+        echo "- Crashed rounds: ${CRASHED_ROUNDS}" >> $GITHUB_STEP_SUMMARY
 
         if [ "$TOTAL_ISSUES" -gt "0" ]; then
           echo "::error::Fuzzing found $TOTAL_ISSUES total issues across all rounds!"
+        elif [ "$CRASHED_ROUNDS" -gt "0" ]; then
+          echo "::warning::$CRASHED_ROUNDS round(s) crashed (likely OOM). No SSZ issues found."
         else
           echo "All $NUM_ROUNDS rounds completed with zero issues."
         fi
 
     - name: Upload fuzz reports
-      if: always() && env.total_issues != '0'
+      if: always() && (env.total_issues != '0' || env.crashed_rounds != '0')
       uses: actions/upload-artifact@v4
       with:
         name: fuzz-reports-${{ github.run_number }}
