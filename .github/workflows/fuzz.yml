@@ -1,0 +1,154 @@
+name: SSZ Fuzzing
+
+on:
+  schedule:
+    # Run daily at 4 AM UTC
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Fuzz duration per round (e.g. 5m, 10m)'
+        default: '5m'
+        type: string
+      rounds:
+        description: 'Number of fuzzing rounds'
+        default: '12'
+        type: string
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: 1.25.x
+
+    - name: Cache Go modules
+      uses: actions/cache@v3
+      with:
+        path: ~/go/pkg/mod
+        key: ${{ runner.os }}-go-1.25.x-fuzz-${{ hashFiles('**/go.sum') }}
+
+    - name: Download dependencies
+      run: go mod download
+
+    - name: Run fuzz rounds
+      env:
+        GOMEMLIMIT: 6GiB
+        DURATION: ${{ inputs.duration || '5m' }}
+        ROUNDS: ${{ inputs.rounds || '12' }}
+      run: |
+        set -e
+
+        REPORT_DIR="${RUNNER_TEMP}/fuzz-reports"
+        TOTAL_ISSUES=0
+        NUM_ROUNDS=${ROUNDS}
+
+        # Weighted random pick: given "value:weight ..." pairs, pick one
+        wpick() {
+          local total=0
+          for pair in "$@"; do total=$((total + ${pair#*:})); done
+          local roll=$((RANDOM % total))
+          local cum=0
+          for pair in "$@"; do
+            cum=$((cum + ${pair#*:}))
+            if [ "$roll" -lt "$cum" ]; then echo "${pair%%:*}"; return; fi
+          done
+        }
+
+        for i in $(seq 1 "$NUM_ROUNDS"); do
+          # Random seed from /dev/urandom
+          SEED=$(od -A n -t u4 -N 4 /dev/urandom | tr -d ' ')
+
+          # Weighted random parameters
+          NTYPES=$(wpick "30:10" "50:25" "80:30" "100:20" "150:10" "200:5")
+          EXTENDED=$(wpick "true:85" "false:15")
+          DEPTH=$(wpick "3:60" "4:25" "5:15")
+          MAXFIELDS=$(wpick "6:20" "8:50" "10:20" "12:10")
+          MAXARRAY=$(wpick "16:10" "32:40" "48:20" "64:15" "128:10" "256:5")
+          MAXLIST=$(wpick "32:10" "48:15" "64:35" "96:15" "128:15" "256:10")
+
+          echo "::group::Round $i: seed=$SEED types=$NTYPES ext=$EXTENDED depth=$DEPTH fields=$MAXFIELDS array=$MAXARRAY list=$MAXLIST"
+
+          # Generate corpus
+          rm -f fuzz/corpus/*_gen.go
+          go run ./fuzz/cmd/generate \
+            -num-types "$NTYPES" \
+            -seed "$SEED" \
+            -extended="$EXTENDED" \
+            -max-depth "$DEPTH" \
+            -max-fields "$MAXFIELDS" \
+            -max-array-len "$MAXARRAY" \
+            -max-list-limit "$MAXLIST"
+
+          # Run fuzzer
+          ROUND_REPORT="${REPORT_DIR}/round-${i}"
+          mkdir -p "${ROUND_REPORT}"
+
+          # Save corpus config for reproducibility
+          cat > "${ROUND_REPORT}/config.txt" << EOF
+        Round: $i
+        Seed: $SEED
+        Types: $NTYPES
+        Extended: $EXTENDED
+        Depth: $DEPTH
+        MaxFields: $MAXFIELDS
+        MaxArray: $MAXARRAY
+        MaxList: $MAXLIST
+        Duration: ${DURATION}
+        EOF
+
+          cp fuzz/corpus/types_gen.go "${ROUND_REPORT}/types_gen.go"
+
+          go run ./fuzz/cmd/fuzz \
+            -duration "${DURATION}" \
+            -report-dir "${ROUND_REPORT}" \
+            -stats-every 30s \
+            -workers 4
+
+          # Count issues for this round
+          ROUND_ISSUES=$(find "${ROUND_REPORT}" -maxdepth 1 -name "issue-*" -type d | wc -l)
+          TOTAL_ISSUES=$((TOTAL_ISSUES + ROUND_ISSUES))
+
+          if [ "$ROUND_ISSUES" -gt "0" ]; then
+            echo "::error::Round $i found $ROUND_ISSUES issues!"
+            for d in "${ROUND_REPORT}"/issue-*/; do
+              if [ -d "$d" ]; then
+                echo "--- $(basename "$d") ---"
+                cat "$d/details.txt"
+              fi
+            done
+          else
+            echo "Round $i: clean"
+          fi
+
+          echo "::endgroup::"
+        done
+
+        echo "total_issues=${TOTAL_ISSUES}" >> $GITHUB_ENV
+
+        if [ "$TOTAL_ISSUES" -gt "0" ]; then
+          echo "::error::Fuzzing found $TOTAL_ISSUES total issues across all rounds!"
+        else
+          echo "All $NUM_ROUNDS rounds completed with zero issues."
+        fi
+
+    - name: Upload fuzz reports
+      if: always() && env.total_issues != '0'
+      uses: actions/upload-artifact@v4
+      with:
+        name: fuzz-reports-${{ github.run_number }}
+        path: ${{ runner.temp }}/fuzz-reports/
+        retention-days: 30
+
+    - name: Fail if issues found
+      if: env.total_issues != '0'
+      run: |
+        echo "Fuzzing found ${{ env.total_issues }} issues. See uploaded artifacts for details."
+        exit 1
