@@ -32,18 +32,21 @@ type Stats struct {
 }
 
 // Engine is the core fuzz testing engine.
+// Each Engine instance is NOT thread-safe; create one per goroutine.
+// Stats and Reporter are shared safely across engines.
 type Engine struct {
 	ds         *dynssz.DynSsz
 	dsExtended *dynssz.DynSsz
 	reporter   *Reporter
-	stats      Stats
+	stats      *Stats
 	rng        *rand.Rand
 	filler     *Filler
 	maxDataLen int
 }
 
-// NewEngine creates a new fuzz engine.
-func NewEngine(reporter *Reporter, seed int64, maxDataLen int) *Engine {
+// NewEngine creates a new fuzz engine with its own RNG and DynSsz instances.
+// The reporter and stats are shared across engines and are thread-safe.
+func NewEngine(reporter *Reporter, stats *Stats, seed int64, maxDataLen int) *Engine {
 	rng := rand.New(rand.NewSource(seed))
 	ds := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz())
 	dsExt := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithExtendedTypes())
@@ -52,15 +55,11 @@ func NewEngine(reporter *Reporter, seed int64, maxDataLen int) *Engine {
 		ds:         ds,
 		dsExtended: dsExt,
 		reporter:   reporter,
+		stats:      stats,
 		rng:        rng,
 		filler:     NewFiller(rng),
 		maxDataLen: maxDataLen,
 	}
-}
-
-// GetStats returns the current fuzzing statistics.
-func (e *Engine) GetStats() *Stats {
-	return &e.stats
 }
 
 // FuzzEntry runs one fuzz iteration on a given type entry.

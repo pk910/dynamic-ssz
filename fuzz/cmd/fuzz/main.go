@@ -11,6 +11,8 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"runtime"
+	"sync"
 	"syscall"
 	"time"
 
@@ -26,6 +28,7 @@ func main() {
 		maxIssues  = flag.Int("max-issues", 10000, "Maximum issues to persist (0 = unlimited)")
 		duration   = flag.Duration("duration", 0, "Maximum run duration (0 = infinite)")
 		statsEvery = flag.Duration("stats-every", 5*time.Second, "Stats print interval")
+		workers    = flag.Int("workers", runtime.NumCPU(), "Number of parallel workers")
 	)
 	flag.Parse()
 
@@ -37,7 +40,12 @@ func main() {
 		*seed = time.Now().UnixNano()
 	}
 
-	log.Printf("Starting fuzzer with %d types, seed=%d", len(corpus.Registry), *seed)
+	if *workers < 1 {
+		*workers = 1
+	}
+
+	log.Printf("Starting fuzzer with %d types, seed=%d, workers=%d",
+		len(corpus.Registry), *seed, *workers)
 	log.Printf("Reports will be saved to: %s", *reportDir)
 
 	reporter, err := engine.NewReporter(*reportDir, *maxIssues)
@@ -46,17 +54,17 @@ func main() {
 	}
 	defer reporter.Close()
 
-	eng := engine.NewEngine(reporter, *seed, *maxData)
-	stats := eng.GetStats()
+	stats := &engine.Stats{}
+
+	// Stop channel for coordinating shutdown
+	stopCh := make(chan struct{})
 
 	// Handle graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	// Set up deadline if specified
-	var deadline <-chan time.Time
 	if *duration > 0 {
-		deadline = time.After(*duration)
 		log.Printf("Will run for %s", *duration)
 	}
 
@@ -64,26 +72,54 @@ func main() {
 	statsTicker := time.NewTicker(*statsEvery)
 	defer statsTicker.Stop()
 
-	typeIdx := 0
+	// Launch workers
+	var wg sync.WaitGroup
+	for i := range *workers {
+		wg.Add(1)
+		// Each worker gets a unique seed derived from the base seed
+		workerSeed := *seed + int64(i)*6364136223846793005
+		go func() {
+			defer wg.Done()
+			eng := engine.NewEngine(reporter, stats, workerSeed, *maxData)
+			typeIdx := i // stagger starting positions
+			for {
+				select {
+				case <-stopCh:
+					return
+				default:
+					entry := corpus.Registry[typeIdx%len(corpus.Registry)]
+					eng.FuzzEntry(entry)
+					typeIdx++
+				}
+			}
+		}()
+	}
 
 	log.Println("Fuzzing...")
+
+	// Set up deadline channel
+	var deadlineCh <-chan time.Time
+	if *duration > 0 {
+		deadlineCh = time.After(*duration)
+	}
+
+	// Main control loop
 	for {
 		select {
 		case <-sigCh:
-			fmt.Println() // newline after stats
+			fmt.Println()
+			close(stopCh)
+			wg.Wait()
 			printFinalStats(stats, time.Since(startTime), reporter)
 			return
-		case <-deadline:
+		case <-deadlineCh:
 			fmt.Println()
+			close(stopCh)
+			wg.Wait()
 			printFinalStats(stats, time.Since(startTime), reporter)
 			return
 		case <-statsTicker.C:
 			engine.PrintStats(stats, time.Since(startTime))
-		default:
-			// Fuzz next type
-			entry := corpus.Registry[typeIdx]
-			eng.FuzzEntry(entry)
-			typeIdx = (typeIdx + 1) % len(corpus.Registry)
 		}
 	}
 }
