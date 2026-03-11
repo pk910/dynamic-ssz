@@ -570,32 +570,6 @@ var commonTestMatrix = []struct {
 		fromHex("0xdb56114e00fdd4c1f85c892bf35ac9a89289aaecb1ebd0a96cde606a748b5d71"),
 	},
 
-	// list with size hint
-	{
-		"list_with_size1",
-		struct {
-			F1 []uint16 `ssz-type:"list" ssz-size:"2"`
-		}{[]uint16{2, 3}},
-		fromHex("0x02000300"),
-		fromHex("0x0200030000000000000000000000000000000000000000000000000000000000"),
-	},
-	{
-		"list_with_size2",
-		struct {
-			F1 [][]uint16 `ssz-type:"list" ssz-size:"2"`
-		}{[][]uint16{{2, 3}}},
-		fromHex("0x040000000400000002000300"),
-		fromHex("0x0200030000000000000000000000000000000000000000000000000000000000"),
-	},
-	{
-		"list_with_size3",
-		struct {
-			F1 []uint8 `ssz-type:"bitlist" ssz-bitsize:"16"`
-		}{[]uint8{0x02, 0x03}},
-		fromHex("0x0203"),
-		fromHex("0x32cdafa273f9ccca9f53cad6960d5b1e40721b247be996a439925e34531fa248"),
-	},
-
 	// container type annotation
 	{
 		"type_container_1",

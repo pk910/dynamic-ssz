@@ -310,7 +310,15 @@ func (h *Hasher) PutUint64Array(b []uint64, maxCapacity ...uint64) {
 // The returned `[]byte` contains the data bits packed little-endian in each byte,
 // and `size` is the exact number of meaningful bits in that raw bitlist.
 func ParseBitlist(dst, buf []byte) ([]byte, uint64) {
-	msb := uint8(bits.Len8(buf[len(buf)-1])) - 1
+	if len(buf) == 0 {
+		return dst, 0
+	}
+	msbLen := bits.Len8(buf[len(buf)-1])
+	if msbLen == 0 {
+		// No sentinel bit found in last byte — invalid bitlist, treat as empty
+		return dst, 0
+	}
+	msb := uint8(msbLen) - 1
 	size := uint64(8*(len(buf)-1) + int(msb))
 
 	dst = append(dst, buf...)
@@ -331,14 +339,18 @@ func ParseBitlistWithHasher(hw sszutils.HashWalker, buf []byte) ([]byte, uint64)
 	if h, ok := hw.(*Hasher); ok {
 		var size uint64
 		h.tmp, size = ParseBitlist(h.tmp[:0], buf)
-		return h.tmp, size
+		bitlist := h.tmp
+		// Restore h.tmp to full capacity so subsequent operations (PutUint8, etc.) don't panic
+		h.tmp = h.tmp[:cap(h.tmp)]
+		return bitlist, size
 	} else {
 		var size uint64
 		var bitlist []byte
 		hw.WithTemp(func(tmp []byte) []byte {
 			tmp, size = ParseBitlist(tmp[:0], buf)
 			bitlist = tmp
-			return tmp
+			// Restore tmp to full capacity
+			return tmp[:cap(tmp)]
 		})
 		return bitlist, size
 	}
@@ -348,20 +360,24 @@ func ParseBitlistWithHasher(hw sszutils.HashWalker, buf []byte) ([]byte, uint64)
 func (h *Hasher) PutBitlist(bb []byte, maxSize uint64) {
 	var size uint64
 	h.tmp, size = ParseBitlist(h.tmp[:0], bb)
+	bitlist := h.tmp
+	h.tmp = h.tmp[:cap(h.tmp)]
 
 	// merkleize the content with mix in length
 	indx := h.Index()
-	h.AppendBytes32(h.tmp)
+	h.AppendBytes32(bitlist)
 	h.MerkleizeWithMixin(indx, size, (maxSize+255)/256)
 }
 
 func (h *Hasher) PutProgressiveBitlist(bb []byte) {
 	var size uint64
 	h.tmp, size = ParseBitlist(h.tmp[:0], bb)
+	bitlist := h.tmp
+	h.tmp = h.tmp[:cap(h.tmp)]
 
 	// merkleize the content with mix in length
 	indx := h.Index()
-	h.AppendBytes32(h.tmp)
+	h.AppendBytes32(bitlist)
 	h.MerkleizeProgressiveWithMixin(indx, size)
 }
 

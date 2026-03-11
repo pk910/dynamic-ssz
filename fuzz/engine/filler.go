@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Filler populates Go struct instances with random valid values using reflection.
@@ -54,6 +55,11 @@ func (f *Filler) fillValue(v reflect.Value, tags string) {
 	case reflect.Ptr:
 		f.fillPointer(v, tags)
 	case reflect.Struct:
+		if v.Type() == reflect.TypeOf(time.Time{}) {
+			// SSZ encodes time.Time as uint64 unix timestamp
+			v.Set(reflect.ValueOf(time.Unix(f.rng.Int63n(2000000000), 0).UTC()))
+			return
+		}
 		f.fillStructFields(v)
 	case reflect.Array:
 		f.fillArray(v)
@@ -109,6 +115,17 @@ func (f *Filler) fillPointer(v reflect.Value, tags string) {
 
 func (f *Filler) fillStructFields(v reflect.Value) {
 	t := v.Type()
+
+	// Detect CompatibleUnion: has Variant (uint8) + Data (interface{})
+	if t.NumField() == 2 {
+		variantField, hasVariant := t.FieldByName("Variant")
+		_, hasData := t.FieldByName("Data")
+		if hasVariant && hasData && variantField.Type.Kind() == reflect.Uint8 {
+			f.fillUnion(v)
+			return
+		}
+	}
+
 	for i := range t.NumField() {
 		field := t.Field(i)
 		if !field.IsExported() {
@@ -117,6 +134,41 @@ func (f *Filler) fillStructFields(v reflect.Value) {
 		fieldTags := string(field.Tag)
 		f.fillValue(v.Field(i), fieldTags)
 	}
+}
+
+// fillUnion fills a CompatibleUnion by picking a random variant and creating
+// the appropriate typed value. It calls GetDescriptorType via reflection to
+// discover available variants.
+func (f *Filler) fillUnion(v reflect.Value) {
+	// Call GetDescriptorType() on a pointer to the union
+	ptr := reflect.New(v.Type())
+	ptr.Elem().Set(v)
+	method := ptr.MethodByName("GetDescriptorType")
+	if !method.IsValid() {
+		return
+	}
+
+	results := method.Call(nil)
+	if len(results) == 0 {
+		return
+	}
+
+	descType, ok := results[0].Interface().(reflect.Type)
+	if !ok || descType.Kind() != reflect.Struct || descType.NumField() == 0 {
+		return
+	}
+
+	// Pick a random variant
+	variantIdx := f.rng.Intn(descType.NumField())
+	variantType := descType.Field(variantIdx).Type
+
+	// Create and fill the variant value
+	variantVal := reflect.New(variantType).Elem()
+	f.fillValue(variantVal, "")
+
+	// Set Variant and Data
+	v.FieldByName("Variant").SetUint(uint64(variantIdx))
+	v.FieldByName("Data").Set(variantVal)
 }
 
 func (f *Filler) fillArray(v reflect.Value) {
@@ -188,6 +240,19 @@ func (f *Filler) fillSlice(v reflect.Value, tags string) {
 		for i := range length {
 			slice.Index(i).SetUint(uint64(f.rng.Intn(256)))
 		}
+		// For bitlist []byte fields, ensure the sentinel bit is set in the last byte
+		if f.isByteBitlist(tags) && length > 0 {
+			lastByte := uint8(slice.Index(length - 1).Uint())
+			if lastByte == 0 {
+				// Set at least the sentinel bit
+				lastByte = 1
+			}
+			// Ensure the highest set bit is the sentinel
+			// Set a random bit position as sentinel, with all lower bits random
+			sentinelPos := f.rng.Intn(8)
+			lastByte |= 1 << sentinelPos
+			slice.Index(length - 1).SetUint(uint64(lastByte))
+		}
 	} else {
 		for i := range length {
 			f.fillValue(slice.Index(i), "")
@@ -195,6 +260,10 @@ func (f *Filler) fillSlice(v reflect.Value, tags string) {
 	}
 
 	v.Set(slice)
+}
+
+func (f *Filler) isByteBitlist(tags string) bool {
+	return strings.Contains(tags, `ssz-type:"bitlist"`) || strings.Contains(tags, `ssz-type:"progressive-bitlist"`)
 }
 
 func (f *Filler) parseMaxFromTags(tags string) int {

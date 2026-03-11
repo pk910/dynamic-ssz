@@ -294,7 +294,7 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 		return ctx.hashProgressiveContainer(desc, varName, indent)
 
 	case ssztypes.SszUint128Type, ssztypes.SszUint256Type:
-		return ctx.hashVector(desc, varName, indent, true)
+		return ctx.hashVector(desc, varName, indent, pack)
 
 	case ssztypes.SszVectorType, ssztypes.SszBitvectorType:
 		return ctx.hashVector(desc, varName, indent, false)

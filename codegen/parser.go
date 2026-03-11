@@ -921,6 +921,11 @@ func (p *Parser) buildListDescriptor(desc *ssztypes.TypeDescriptor, typ types.Ty
 		childMaxSizeHints = maxSizeHints[1:]
 	}
 
+	// Lists cannot have a fixed ssz-size; that's a vector.
+	if len(sizeHints) > 0 && sizeHints[0].Size > 0 && !sizeHints[0].Dynamic {
+		return fmt.Errorf("list types cannot have a fixed ssz-size (use ssz-max for lists, or ssz-size with vector type)")
+	}
+
 	// Build element descriptor
 	elemDesc, err := p.buildTypeDescriptor(elemType, childTypeHints, childSizeHints, childMaxSizeHints)
 	if err != nil {

@@ -435,8 +435,13 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName string
 
 			// Add size for zero-padding
 			ctx.appendCode(indent, "if vlen < %s {\n", limitVar)
-			typeName := ctx.typePrinter.InnerTypeString(desc.ElemDesc)
-			ctx.appendCode(indent, "\tzeroItem := &%s{}\n", typeName)
+			if desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+				typeName := ctx.typePrinter.InnerTypeString(desc.ElemDesc)
+				ctx.appendCode(indent, "\tzeroItem := &%s{}\n", typeName)
+			} else {
+				typeName := ctx.typePrinter.TypeString(desc.ElemDesc)
+				ctx.appendCode(indent, "\tvar zeroItem %s\n", typeName)
+			}
 			innerSizeVar := ctx.getSizeVar()
 			ctx.appendCode(indent, "\t%s := 0\n", innerSizeVar)
 			if err := ctx.sizeType(desc.ElemDesc, "zeroItem", innerSizeVar, indent+1, false); err != nil {
@@ -454,7 +459,17 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName string
 func (ctx *sizeContext) sizeList(desc *ssztypes.TypeDescriptor, varName string, sizeVar string, indent int) error {
 	// For byte slices, size is just the length
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
-		ctx.appendCode(indent, "%s += len(%s)\n", sizeVar, ctx.getValueVar(desc, varName, ""))
+		valueVar := ctx.getValueVar(desc, varName, "")
+		if desc.SszType == ssztypes.SszBitlistType || desc.SszType == ssztypes.SszProgressiveBitlistType {
+			// Bitlists always have at least 1 byte (sentinel byte for empty bitlists)
+			ctx.appendCode(indent, "if len(%s) == 0 {\n", valueVar)
+			ctx.appendCode(indent, "\t%s += 1\n", sizeVar)
+			ctx.appendCode(indent, "} else {\n")
+			ctx.appendCode(indent, "\t%s += len(%s)\n", sizeVar, valueVar)
+			ctx.appendCode(indent, "}\n")
+		} else {
+			ctx.appendCode(indent, "%s += len(%s)\n", sizeVar, valueVar)
+		}
 		return nil
 	}
 
