@@ -120,7 +120,6 @@ func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strin
 			appendCode(codeBuilder, 0, "func (t %s) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) (err error) {\n", typeName)
 			appendCode(codeBuilder, 1, "return t.UnmarshalSSZ(buf)\n")
 			appendCode(codeBuilder, 0, "}\n\n")
-			genStaticFn = true
 		}
 	}
 

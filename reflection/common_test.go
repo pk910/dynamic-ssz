@@ -1366,3 +1366,60 @@ func (c *TestContainerWithSizerError) MarshalSSZTo(buf []byte) ([]byte, error) {
 func (c *TestContainerWithSizerError) SizeSSZ() int {
 	return 8
 }
+
+type TestContainerWithDynamicEncoderError struct {
+	Field0 uint64
+}
+
+var _ sszutils.DynamicEncoder = (*TestContainerWithDynamicEncoderError)(nil)
+var _ sszutils.DynamicSizer = (*TestContainerWithDynamicEncoderError)(nil)
+
+func (c *TestContainerWithDynamicEncoderError) MarshalSSZEncoder(ds sszutils.DynamicSpecs, encoder sszutils.Encoder) error {
+	return fmt.Errorf("test MarshalSSZEncoder error")
+}
+
+func (c *TestContainerWithDynamicEncoderError) SizeSSZDyn(ds sszutils.DynamicSpecs) int {
+	return 8
+}
+
+type TestContainerWithDynamicEncoderAndMarshaler struct {
+	Field0 uint64
+	Field1 uint32
+	Field2 bool
+	Field3 uint16
+}
+
+var _ sszutils.DynamicEncoder = (*TestContainerWithDynamicEncoderAndMarshaler)(nil)
+var _ sszutils.DynamicMarshaler = (*TestContainerWithDynamicEncoderAndMarshaler)(nil)
+var _ sszutils.DynamicSizer = (*TestContainerWithDynamicEncoderAndMarshaler)(nil)
+var _ sszutils.DynamicHashRoot = (*TestContainerWithDynamicEncoderAndMarshaler)(nil)
+
+func (c *TestContainerWithDynamicEncoderAndMarshaler) MarshalSSZEncoder(ds sszutils.DynamicSpecs, encoder sszutils.Encoder) error {
+	encoder.EncodeUint64(c.Field0)
+	encoder.EncodeUint32(c.Field1)
+	encoder.EncodeBool(c.Field2)
+	encoder.EncodeUint16(c.Field3)
+	return nil
+}
+
+func (c *TestContainerWithDynamicEncoderAndMarshaler) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	buf = sszutils.MarshalUint64(buf, c.Field0)
+	buf = sszutils.MarshalUint32(buf, c.Field1)
+	buf = sszutils.MarshalBool(buf, c.Field2)
+	buf = sszutils.MarshalUint16(buf, c.Field3)
+	return buf, nil
+}
+
+func (c *TestContainerWithDynamicEncoderAndMarshaler) SizeSSZDyn(ds sszutils.DynamicSpecs) int {
+	return 15
+}
+
+func (c *TestContainerWithDynamicEncoderAndMarshaler) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	indx := hh.Index()
+	hh.PutUint64(c.Field0)
+	hh.PutUint32(c.Field1)
+	hh.PutBool(c.Field2)
+	hh.PutUint16(c.Field3)
+	hh.Merkleize(indx)
+	return nil
+}

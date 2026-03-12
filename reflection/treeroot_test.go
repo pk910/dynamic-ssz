@@ -1577,3 +1577,324 @@ func TestPackedBoolInVector(t *testing.T) {
 		t.Error("hash should not be zero")
 	}
 }
+
+func TestNestedDynamicHashRootError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	input := struct {
+		Field0 uint32
+		Field1 TestContainerWithDynamicHashError
+	}{42, TestContainerWithDynamicHashError{Field0: 1}}
+
+	_, err := dynssz.HashTreeRoot(input)
+	if err == nil {
+		t.Error("expected error from nested DynamicHashRoot")
+	}
+	if !contains(err.Error(), "test DynamicHashRoot error") {
+		t.Errorf("expected DynamicHashRoot error, got: %v", err)
+	}
+}
+
+func TestDynamicHashRootInterfaceFallback(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type FakeHashRoot struct {
+		ID uint32
+	}
+
+	type Container struct {
+		Value FakeHashRoot
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	fieldDesc := typeDesc.ContainerDesc.Fields[0].Type
+	fieldDesc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicHashRoot
+
+	hash, err := dynssz.HashTreeRoot(Container{Value: FakeHashRoot{ID: 42}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hash == [32]byte{} {
+		t.Error("hash should not be zero")
+	}
+}
+
+func TestProgressiveContainerFieldBuildRootError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type Inner struct {
+		Value uint32
+	}
+
+	type Container struct {
+		Field0 uint64 `ssz-index:"0"`
+		Field1 Inner  `ssz-index:"2"`
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	fieldDesc := typeDesc.ContainerDesc.Fields[1].Type
+	fieldDesc.SszType = ssztypes.SszCustomType
+	fieldDesc.SszCompatFlags = 0
+
+	_, err = dynssz.HashTreeRoot(Container{Field0: 12345, Field1: Inner{Value: 42}})
+	if err == nil {
+		t.Error("expected error for invalid field type in progressive container")
+	}
+}
+
+func TestCompatibleUnionBuildRootError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type UnionVariant struct {
+		Field1 uint32
+	}
+
+	type TestUnion = CompatibleUnion[UnionVariant]
+	type Container struct {
+		Field0 uint16
+		Field1 TestUnion
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	unionDesc := typeDesc.ContainerDesc.Fields[1].Type
+	variantDesc := unionDesc.UnionVariants[0]
+	variantDesc.SszType = ssztypes.SszCustomType
+	variantDesc.SszCompatFlags = 0
+
+	input := Container{
+		Field0: 0x1234,
+		Field1: TestUnion{Variant: 0, Data: UnionVariant{Field1: 42}},
+	}
+	_, err = dynssz.HashTreeRoot(input)
+	if err == nil {
+		t.Error("expected error for union variant hash error")
+	}
+}
+
+func TestVectorZeroPaddingBuildRootError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type ElemType struct {
+		Value uint32
+	}
+
+	type Container struct {
+		Data []ElemType `ssz-size:"3"`
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	vecDesc := typeDesc.ContainerDesc.Fields[0].Type
+	elemDescCopy := *vecDesc.ElemDesc
+	elemDescCopy.SszType = ssztypes.SszCustomType
+	elemDescCopy.SszCompatFlags = 0
+	vecDesc.ElemDesc = &elemDescCopy
+
+	_, err = dynssz.HashTreeRoot(Container{Data: []ElemType{}})
+	if err == nil {
+		t.Error("expected error for vector zero-padding build root error")
+	}
+}
+
+func TestListElementBuildRootError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type ElemType struct {
+		Value uint32
+	}
+
+	type Container struct {
+		Data []ElemType `ssz-max:"10"`
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	listDesc := typeDesc.ContainerDesc.Fields[0].Type
+	listDesc.ElemDesc.SszType = ssztypes.SszCustomType
+	listDesc.ElemDesc.SszCompatFlags = 0
+
+	_, err = dynssz.HashTreeRoot(Container{Data: []ElemType{{Value: 1}, {Value: 2}}})
+	if err == nil {
+		t.Error("expected error for list element build root error")
+	}
+}
+
+func TestUint128InListBuildRoot(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type Uint128Element [16]byte
+
+	type Container struct {
+		Data []Uint128Element `ssz-max:"10"`
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	listDesc := typeDesc.ContainerDesc.Fields[0].Type
+	listDesc.ElemDesc.SszType = ssztypes.SszUint128Type
+	listDesc.ElemDesc.Size = 16
+
+	hash, err := dynssz.HashTreeRoot(Container{
+		Data: []Uint128Element{{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hash == [32]byte{} {
+		t.Error("hash should not be zero")
+	}
+}
+
+func TestUint256InListBuildRoot(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type Uint256Element [32]byte
+
+	type Container struct {
+		Data []Uint256Element `ssz-max:"10"`
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	listDesc := typeDesc.ContainerDesc.Fields[0].Type
+	listDesc.ElemDesc.SszType = ssztypes.SszUint256Type
+	listDesc.ElemDesc.Size = 32
+
+	hash, err := dynssz.HashTreeRoot(Container{
+		Data: []Uint256Element{{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+			17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hash == [32]byte{} {
+		t.Error("hash should not be zero")
+	}
+}
+
+func TestOptionalInnerBuildRootError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	type Inner struct {
+		Value uint32
+	}
+
+	type Container struct {
+		Opt *Inner `ssz-type:"optional"`
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	optDesc := typeDesc.ContainerDesc.Fields[0].Type
+	optDesc.ElemDesc.SszType = ssztypes.SszCustomType
+	optDesc.ElemDesc.SszCompatFlags = 0
+
+	_, err = dynssz.HashTreeRoot(Container{Opt: &Inner{Value: 42}})
+	if err == nil {
+		t.Error("expected error for optional inner build root error")
+	}
+}
+
+func TestBuildRootFromTypeWrapperError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type InnerType struct {
+		Data uint32
+	}
+
+	type WrapperType = TypeWrapper[InnerType, uint32]
+
+	type Container struct {
+		Field0 uint64
+		Field1 WrapperType
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	wrapperDesc := typeDesc.ContainerDesc.Fields[1].Type
+	elemDescCopy := *wrapperDesc.ElemDesc
+	elemDescCopy.SszType = ssztypes.SszCustomType
+	elemDescCopy.SszCompatFlags = 0
+	wrapperDesc.ElemDesc = &elemDescCopy
+
+	_, err = dynssz.HashTreeRoot(Container{Field0: 42, Field1: WrapperType{Data: 1}})
+	if err == nil {
+		t.Error("expected error for type wrapper build root error")
+	}
+}
+
+type NonByteUint8 uint8
+
+func TestPackedUint8InNonByteVector(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type Container struct {
+		Data []NonByteUint8 `ssz-size:"5"`
+	}
+
+	input := Container{Data: []NonByteUint8{1, 2, 3}}
+	hash1, err := dynssz.HashTreeRoot(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hash1 == [32]byte{} {
+		t.Error("hash should not be zero")
+	}
+}
+
+func TestBuildRootFromProgressiveContainerError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type Inner struct {
+		Value uint32
+	}
+
+	type Container struct {
+		Field0 uint64 `ssz-index:"0"`
+		Field1 Inner  `ssz-index:"1"`
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	fieldDesc := typeDesc.ContainerDesc.Fields[1].Type
+	fieldDesc.SszType = ssztypes.SszCustomType
+	fieldDesc.SszCompatFlags = 0
+
+	_, err = dynssz.HashTreeRoot(Container{Field0: 123, Field1: Inner{Value: 42}})
+	if err == nil {
+		t.Error("expected error for progressive container error")
+	}
+}

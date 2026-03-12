@@ -95,7 +95,7 @@ var SimpleTypes1_Payload = SimpleTypes1{
 	C2: SimpleTypes1_C1{
 		F1: 2,
 	},
-	LC1: []SimpleTypes1_C1{SimpleTypes1_C1{F1: 1}},
+	LC1: []SimpleTypes1_C1{{F1: 1}},
 	LC2: [][]*SimpleTypes1_C1{
 		{
 			&SimpleTypes1_C1{F1: 1},

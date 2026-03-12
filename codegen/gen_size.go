@@ -140,7 +140,6 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 			appendCode(codeBuilder, 0, "func (t %s) SizeSSZDyn(_ sszutils.DynamicSpecs) (size int) {\n", typeName)
 			appendCode(codeBuilder, 1, "return t.SizeSSZ()\n")
 			appendCode(codeBuilder, 0, "}\n\n")
-			genStaticFn = true
 		}
 	}
 

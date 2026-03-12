@@ -143,7 +143,6 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 			appendCode(codeBuilder, 0, "func (t %s) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName)
 			appendCode(codeBuilder, 1, "return t.HashTreeRootWith(hh)\n")
 			appendCode(codeBuilder, 0, "}\n\n")
-			genStaticFn = true
 		}
 	}
 
@@ -551,7 +550,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		lenVar = fmt.Sprintf("%d", desc.Len)
 	}
 
-	itemSize := 0
+	var itemSize int
 
 	// Handle byte arrays
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 || desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
@@ -684,7 +683,7 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 
 	// Start list merkleization
 	ctx.appendCode(indent, "idx := hh.Index()\n")
-	itemSize := 0
+	var itemSize int
 
 	// Handle byte slices
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {

@@ -351,6 +351,68 @@ func TestSizeSSZErrors(t *testing.T) {
 	}
 }
 
+func TestSizeSSZOptionalError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	type Inner struct {
+		Value uint32
+	}
+
+	type Container struct {
+		Opt *Inner `ssz-type:"optional"`
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	optDesc := typeDesc.ContainerDesc.Fields[0].Type
+	optDesc.ElemDesc.SszType = ssztypes.SszCustomType
+	optDesc.ElemDesc.SszCompatFlags = 0
+	optDesc.ElemDesc.Size = 0
+	optDesc.ElemDesc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
+
+	_, err = dynssz.SizeSSZ(Container{Opt: &Inner{Value: 42}})
+	if err == nil {
+		t.Error("expected error for optional with invalid inner type")
+	}
+	if !contains(err.Error(), "failed to get size of optional data") {
+		t.Errorf("expected optional size error, got: %v", err)
+	}
+}
+
+func TestSizeSSZBigIntTypeAssertionFailure(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	type FakeBigInt struct {
+		ID uint32
+	}
+
+	type Container struct {
+		Value FakeBigInt
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	fieldDesc := typeDesc.ContainerDesc.Fields[0].Type
+	fieldDesc.SszType = ssztypes.SszBigIntType
+	fieldDesc.SszCompatFlags = 0
+	fieldDesc.Size = 0
+	fieldDesc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
+
+	_, err = dynssz.SizeSSZ(Container{Value: FakeBigInt{ID: 42}})
+	if err == nil {
+		t.Error("expected error for non-big.Int type")
+	}
+	if !contains(err.Error(), "big.Int type expected") {
+		t.Errorf("expected 'big.Int type expected' error, got: %v", err)
+	}
+}
+
 func TestCustomFallbackSizeSSZ(t *testing.T) {
 	type TestStruct struct {
 		ID []uint32
