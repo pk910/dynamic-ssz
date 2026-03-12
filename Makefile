@@ -1,10 +1,22 @@
-.PHONY: test bench perf spec clean help coverage coverage-func coverage-merge coverage-clean
+.PHONY: build test bench perf spec clean help coverage coverage-func coverage-merge coverage-clean
+
+# Build variables
+LDFLAGS_PKG := github.com/pk910/dynamic-ssz/codegen
+BUILD_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null)
+BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS := -s -w -X $(LDFLAGS_PKG).BuildCommit=$(BUILD_COMMIT) -X $(LDFLAGS_PKG).BuildTime=$(BUILD_TIME)
 
 # Default target
 help: ## Show this help message
 	@echo "Dynamic SSZ Makefile Commands:"
 	@echo "=============================="
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
+
+build: ## Build dynssz-gen binary
+	@echo "Building dynssz-gen..."
+	@mkdir -p bin
+	@go build -ldflags="$(LDFLAGS)" -o bin/dynssz-gen ./dynssz-gen
+	@echo "Built bin/dynssz-gen"
 
 test: ## Run all unit tests
 	@echo "Running unit tests..."
@@ -39,6 +51,7 @@ clean: ## Clean test artifacts and profiles
 	@rm -rf profiles/
 	@rm -f *.prof
 	@rm -f *.test
+	@rm -rf bin/
 	@$(MAKE) coverage-clean
 	@go clean -testcache
 
