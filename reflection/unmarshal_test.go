@@ -940,6 +940,424 @@ func TestMixedStringTypesUnmarshal(t *testing.T) {
 	}
 }
 
+func TestUnmarshalDynamicDecoder(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	data := fromHex("0x010000000000000002000000010400")
+	var result TestContainerWithDynamicDecoder
+	err := dynssz.UnmarshalSSZ(&result, data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Field0 != 1 || result.Field1 != 2 || !result.Field2 || result.Field3 != 4 {
+		t.Errorf("unexpected values: %+v", result)
+	}
+
+	// Test reader-based (non-seekable) path
+	var result2 TestContainerWithDynamicDecoder
+	err = dynssz.UnmarshalSSZReader(&result2, bytes.NewReader(data), len(data))
+	if err != nil {
+		t.Fatalf("unexpected reader error: %v", err)
+	}
+	if result2.Field0 != 1 || result2.Field1 != 2 || !result2.Field2 || result2.Field3 != 4 {
+		t.Errorf("unexpected reader values: %+v", result2)
+	}
+}
+
+func TestUnmarshalDynamicDecoderError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	data := fromHex("0x0100000000000000")
+	var result TestContainerWithDynamicDecoderError
+	err := dynssz.UnmarshalSSZ(&result, data)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !contains(err.Error(), "test UnmarshalSSZDecoder error") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestUnmarshalPointerDynamicVector(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type Inner struct {
+		Data []uint8 `ssz-max:"10"`
+	}
+
+	type Container struct {
+		Items []*Inner `ssz-size:"2"`
+	}
+
+	// Encode first
+	original := Container{
+		Items: []*Inner{{Data: []uint8{1, 2}}, {Data: []uint8{3, 4, 5}}},
+	}
+	encoded, err := dynssz.MarshalSSZ(original)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+
+	// Decode
+	var result Container
+	err = dynssz.UnmarshalSSZ(&result, encoded)
+	if err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if len(result.Items) != 2 || result.Items[0] == nil || result.Items[1] == nil {
+		t.Fatal("expected 2 non-nil items")
+	}
+	if !bytes.Equal(result.Items[0].Data, []uint8{1, 2}) {
+		t.Errorf("item 0 mismatch: got %v", result.Items[0].Data)
+	}
+	if !bytes.Equal(result.Items[1].Data, []uint8{3, 4, 5}) {
+		t.Errorf("item 1 mismatch: got %v", result.Items[1].Data)
+	}
+
+	// Test with reader (non-seekable)
+	var result2 Container
+	err = dynssz.UnmarshalSSZReader(&result2, bytes.NewReader(encoded), len(encoded))
+	if err != nil {
+		t.Fatalf("reader unmarshal error: %v", err)
+	}
+	if len(result2.Items) != 2 || result2.Items[0] == nil || result2.Items[1] == nil {
+		t.Fatal("expected 2 non-nil items from reader")
+	}
+}
+
+func TestUnmarshalPointerDynamicList(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type Inner struct {
+		Data []uint8 `ssz-max:"10"`
+	}
+
+	type Container struct {
+		Items []*Inner `ssz-max:"10"`
+	}
+
+	original := Container{
+		Items: []*Inner{{Data: []uint8{1, 2}}, {Data: []uint8{3, 4, 5}}},
+	}
+	encoded, err := dynssz.MarshalSSZ(original)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+
+	var result Container
+	err = dynssz.UnmarshalSSZ(&result, encoded)
+	if err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if len(result.Items) != 2 || result.Items[0] == nil || result.Items[1] == nil {
+		t.Fatal("expected 2 non-nil items")
+	}
+
+	// Test with reader (non-seekable)
+	var result2 Container
+	err = dynssz.UnmarshalSSZReader(&result2, bytes.NewReader(encoded), len(encoded))
+	if err != nil {
+		t.Fatalf("reader unmarshal error: %v", err)
+	}
+	if len(result2.Items) != 2 || result2.Items[0] == nil || result2.Items[1] == nil {
+		t.Fatal("expected 2 non-nil items from reader")
+	}
+}
+
+func TestUnmarshalStringList(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type Container struct {
+		Names []string `ssz-max:"10"`
+	}
+
+	original := Container{
+		Names: []string{"hello", "world"},
+	}
+	encoded, err := dynssz.MarshalSSZ(original)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+
+	var result Container
+	err = dynssz.UnmarshalSSZ(&result, encoded)
+	if err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if len(result.Names) != 2 || result.Names[0] != "hello" || result.Names[1] != "world" {
+		t.Errorf("string list mismatch: got %v", result.Names)
+	}
+}
+
+func TestUnmarshalPointerToVector(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type Inner struct {
+		Data []uint8 `ssz-max:"10"`
+	}
+
+	type Container struct {
+		Items *[2]Inner
+	}
+
+	original := Container{
+		Items: &[2]Inner{{Data: []uint8{1, 2}}, {Data: []uint8{3, 4, 5}}},
+	}
+	encoded, err := dynssz.MarshalSSZ(original)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+
+	var result Container
+	err = dynssz.UnmarshalSSZ(&result, encoded)
+	if err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if result.Items == nil {
+		t.Fatal("expected non-nil items pointer")
+	}
+	if !bytes.Equal(result.Items[0].Data, []uint8{1, 2}) {
+		t.Errorf("item 0 mismatch: got %v", result.Items[0].Data)
+	}
+}
+
+func TestUnmarshalPointerToList(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type Inner struct {
+		Data []uint8 `ssz-max:"10"`
+	}
+
+	type Container struct {
+		Items *[]Inner `ssz-max:"10"`
+	}
+
+	original := Container{
+		Items: &[]Inner{{Data: []uint8{1, 2}}, {Data: []uint8{3, 4, 5}}},
+	}
+	encoded, err := dynssz.MarshalSSZ(original)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+
+	var result Container
+	err = dynssz.UnmarshalSSZ(&result, encoded)
+	if err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if result.Items == nil {
+		t.Fatal("expected non-nil items pointer")
+	}
+	if len(*result.Items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(*result.Items))
+	}
+}
+
+func TestUnmarshalPointerStaticListElements(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type Container struct {
+		Items []*slug_StaticStruct1 `ssz-max:"10"`
+	}
+
+	original := Container{
+		Items: []*slug_StaticStruct1{{true, []uint8{1, 2, 3}}, {false, []uint8{4, 5, 6}}},
+	}
+	encoded, err := dynssz.MarshalSSZ(original)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+
+	var result Container
+	err = dynssz.UnmarshalSSZ(&result, encoded)
+	if err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if len(result.Items) != 2 || result.Items[0] == nil || result.Items[1] == nil {
+		t.Fatal("expected 2 non-nil items")
+	}
+	if !result.Items[0].F1 {
+		t.Error("item 0 F1 should be true")
+	}
+}
+
+func TestUnmarshalEmptyDynamicList(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type Inner struct {
+		Data []uint8 `ssz-max:"10"`
+	}
+
+	type Container struct {
+		F1    uint32
+		Items []Inner `ssz-max:"10"`
+	}
+
+	original := Container{F1: 42, Items: []Inner{}}
+	encoded, err := dynssz.MarshalSSZ(original)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+
+	var result Container
+	err = dynssz.UnmarshalSSZ(&result, encoded)
+	if err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if result.F1 != 42 {
+		t.Errorf("F1 mismatch: got %d", result.F1)
+	}
+	if len(result.Items) != 0 {
+		t.Errorf("expected empty list, got %d items", len(result.Items))
+	}
+}
+
+func TestUnmarshalDynamicDecoderWithUnmarshal(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type Container struct {
+		Data TestContainerWithDynamicDecoderAndUnmarshaler
+	}
+
+	data := fromHex("0x010000000000000002000000010400")
+	var result Container
+	err := dynssz.UnmarshalSSZ(&result, data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Data.Field0 != 1 || result.Data.Field1 != 2 {
+		t.Errorf("unexpected values: %+v", result.Data)
+	}
+}
+
+func TestUnmarshalReaderErrors(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	testCases := []struct {
+		name        string
+		target      any
+		data        []byte
+		expectedErr string
+	}{
+		{
+			name: "reader_container_dynamic_offset_truncated",
+			target: new(struct {
+				A []uint8 `ssz-max:"100"`
+			}),
+			data:        fromHex("0x0400"),
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name: "reader_dynamic_vector_offset_error",
+			target: new(struct {
+				Data [2]struct {
+					Inner []uint8 `ssz-max:"10"`
+				}
+			}),
+			data:        fromHex("0x04000000" + "08000000"),
+			expectedErr: "dynamic vector expects at least 8 bytes for offsets",
+		},
+		{
+			name: "reader_dynamic_list_offset_error",
+			target: new(struct {
+				Data []struct {
+					Inner []uint8 `ssz-max:"10"`
+				} `ssz-max:"10"`
+			}),
+			data:        fromHex("0x04000000" + "0800000004"),
+			expectedErr: "dynamic list expects at least 8 bytes for offsets",
+		},
+		{
+			name: "reader_bitlist_zero_length",
+			target: new(struct {
+				Data []byte `ssz-type:"bitlist"`
+			}),
+			data:        fromHex("0x04000000"),
+			expectedErr: "bitlist misses mandatory termination bit",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := dynssz.UnmarshalSSZReader(tc.target, bytes.NewReader(tc.data), len(tc.data))
+			if err == nil {
+				t.Errorf("expected error containing '%s', but got no error", tc.expectedErr)
+			} else if !contains(err.Error(), tc.expectedErr) {
+				t.Errorf("expected error containing '%s', but got: %v", tc.expectedErr, err)
+			}
+		})
+	}
+}
+
+func TestUnmarshalExtendedTypesReaderErrors(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	testCases := []struct {
+		name        string
+		target      any
+		data        []byte
+		expectedErr string
+	}{
+		{
+			name:        "int8_truncated",
+			target:      new(int8),
+			data:        []byte{},
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name:        "int16_truncated",
+			target:      new(int16),
+			data:        []byte{0x01},
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name:        "int32_truncated",
+			target:      new(int32),
+			data:        []byte{0x01, 0x02, 0x03},
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name:        "int64_truncated",
+			target:      new(int64),
+			data:        fromHex("0x01020304050607"),
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name:        "float32_truncated",
+			target:      new(float32),
+			data:        []byte{0x01, 0x02, 0x03},
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name:        "float64_truncated",
+			target:      new(float64),
+			data:        fromHex("0x01020304050607"),
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name: "optional_availability_truncated",
+			target: new(struct {
+				Opt *int16 `ssz-type:"optional"`
+			}),
+			data:        fromHex("0x04000000"),
+			expectedErr: "Optional requires at least 1 byte",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := dynssz.UnmarshalSSZ(tc.target, tc.data)
+			if err == nil {
+				t.Errorf("expected error containing '%s', but got no error", tc.expectedErr)
+			} else if !contains(err.Error(), tc.expectedErr) {
+				t.Errorf("expected error containing '%s', but got: %v", tc.expectedErr, err)
+			}
+		})
+	}
+}
+
 func TestCustomFallbackUnmarshal(t *testing.T) {
 	type TestStruct struct {
 		ID uint32

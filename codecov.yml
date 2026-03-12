@@ -5,6 +5,7 @@ coverage:
 
 ignore:
   - "fuzz/**"
+  - "spectests/**"
 
 comment:
   layout: "header, diff, flags, components"
@@ -15,6 +16,11 @@ component_management:
       name: dynssz
       paths:
         - "*"
+        - "hasher/**"
+        - "reflection/**"
+        - "ssztypes/**"
+        - "sszutils/**"
+        - "treeproof/**"
     - component_id: command_dynsszgen
       name: dynsszgen
       paths:

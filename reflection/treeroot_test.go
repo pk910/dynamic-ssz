@@ -1340,6 +1340,225 @@ func TestPackedUint8InVector(t *testing.T) {
 	}
 }
 
+func TestExtendedTypesPackedInList(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	t.Run("int8_list", func(t *testing.T) {
+		input := struct {
+			Data []int8 `ssz-max:"10"`
+		}{[]int8{1, -1, 42, -128}}
+		hash, err := dynssz.HashTreeRoot(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if hash == [32]byte{} {
+			t.Error("hash should not be zero")
+		}
+	})
+
+	t.Run("int16_list", func(t *testing.T) {
+		input := struct {
+			Data []int16 `ssz-max:"10"`
+		}{[]int16{100, -200, 300}}
+		hash, err := dynssz.HashTreeRoot(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if hash == [32]byte{} {
+			t.Error("hash should not be zero")
+		}
+	})
+
+	t.Run("int32_list", func(t *testing.T) {
+		input := struct {
+			Data []int32 `ssz-max:"10"`
+		}{[]int32{1000, -2000, 3000}}
+		hash, err := dynssz.HashTreeRoot(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if hash == [32]byte{} {
+			t.Error("hash should not be zero")
+		}
+	})
+
+	t.Run("int64_list", func(t *testing.T) {
+		input := struct {
+			Data []int64 `ssz-max:"10"`
+		}{[]int64{10000, -20000, 30000}}
+		hash, err := dynssz.HashTreeRoot(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if hash == [32]byte{} {
+			t.Error("hash should not be zero")
+		}
+	})
+
+	t.Run("float32_list", func(t *testing.T) {
+		input := struct {
+			Data []float32 `ssz-max:"10"`
+		}{[]float32{1.5, 2.5, 3.14}}
+		hash, err := dynssz.HashTreeRoot(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if hash == [32]byte{} {
+			t.Error("hash should not be zero")
+		}
+	})
+
+	t.Run("float64_list", func(t *testing.T) {
+		input := struct {
+			Data []float64 `ssz-max:"10"`
+		}{[]float64{1.5, 2.718, 3.14159}}
+		hash, err := dynssz.HashTreeRoot(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if hash == [32]byte{} {
+			t.Error("hash should not be zero")
+		}
+	})
+}
+
+func TestExtendedTypesPackedInVector(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	t.Run("int8_vector", func(t *testing.T) {
+		input := struct {
+			Data [4]int8
+		}{[4]int8{1, -1, 42, -128}}
+		hash, err := dynssz.HashTreeRoot(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if hash == [32]byte{} {
+			t.Error("hash should not be zero")
+		}
+	})
+
+	t.Run("float32_vector", func(t *testing.T) {
+		input := struct {
+			Data [3]float32
+		}{[3]float32{1.5, 2.5, 3.14}}
+		hash, err := dynssz.HashTreeRoot(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if hash == [32]byte{} {
+			t.Error("hash should not be zero")
+		}
+	})
+}
+
+func TestUint128Uint256InList(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	t.Run("uint128_list", func(t *testing.T) {
+		input := struct {
+			Data [][]byte `ssz-type:"list" ssz-size:"?,16" ssz-max:"10"`
+		}{[][]byte{
+			{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+			{17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32},
+		}}
+		hash, err := dynssz.HashTreeRoot(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if hash == [32]byte{} {
+			t.Error("hash should not be zero")
+		}
+	})
+
+	t.Run("uint256_list", func(t *testing.T) {
+		input := struct {
+			Data [][32]byte `ssz-max:"10"`
+		}{[][32]byte{
+			{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+				17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32},
+		}}
+		hash, err := dynssz.HashTreeRoot(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if hash == [32]byte{} {
+			t.Error("hash should not be zero")
+		}
+	})
+}
+
+func TestOptionalHashErrorPath(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	t.Run("optional_inner_error", func(t *testing.T) {
+		input := struct {
+			Opt *complex64 `ssz-type:"optional"`
+		}{func() *complex64 { c := complex64(1 + 2i); return &c }()}
+		_, err := dynssz.HashTreeRoot(input)
+		if err == nil {
+			t.Error("expected error for optional with invalid inner type")
+		}
+	})
+}
+
+func TestBigIntTypeAssertionFailure(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	type FakeBigInt struct {
+		ID uint32
+	}
+
+	type Container struct {
+		Value FakeBigInt
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	fieldDesc := typeDesc.ContainerDesc.Fields[0].Type
+	fieldDesc.SszType = ssztypes.SszBigIntType
+
+	_, err = dynssz.HashTreeRoot(Container{Value: FakeBigInt{ID: 42}})
+	if err == nil {
+		t.Error("expected error for non-big.Int type")
+	}
+	if !contains(err.Error(), "big.Int type expected") {
+		t.Errorf("expected 'big.Int type expected' error, got: %v", err)
+	}
+}
+
+func TestTimeTypeAssertionFailure(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type FakeTime struct {
+		ID uint64
+	}
+
+	type Container struct {
+		Value FakeTime
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	fieldDesc := typeDesc.ContainerDesc.Fields[0].Type
+	fieldDesc.SszType = ssztypes.SszUint64Type
+	fieldDesc.GoTypeFlags |= ssztypes.GoTypeFlagIsTime
+
+	_, err = dynssz.HashTreeRoot(Container{Value: FakeTime{ID: 42}})
+	if err == nil {
+		t.Error("expected error for non-time.Time type")
+	}
+	if !contains(err.Error(), "time.Time type expected") {
+		t.Errorf("expected 'time.Time type expected' error, got: %v", err)
+	}
+}
+
 func TestPackedBoolInVector(t *testing.T) {
 	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
