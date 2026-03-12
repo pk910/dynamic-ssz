@@ -138,7 +138,7 @@ func (ctx *decoderContext) getCastedValueVar(desc *ssztypes.TypeDescriptor, varN
 // isInlinable determines if a type can be unmarshaled inline without temporary variables.
 func (ctx *decoderContext) isInlinable(desc *ssztypes.TypeDescriptor) bool {
 	// Inline primitive types
-	if desc.SszType == ssztypes.SszBoolType || desc.SszType == ssztypes.SszUint8Type || desc.SszType == ssztypes.SszUint16Type || desc.SszType == ssztypes.SszUint32Type || desc.SszType == ssztypes.SszUint64Type {
+	if desc.SszType == ssztypes.SszBoolType || desc.SszType == ssztypes.SszUint8Type || desc.SszType == ssztypes.SszUint16Type || desc.SszType == ssztypes.SszUint32Type || desc.SszType == ssztypes.SszUint64Type || desc.SszType == ssztypes.SszInt8Type || desc.SszType == ssztypes.SszInt16Type || desc.SszType == ssztypes.SszInt32Type || desc.SszType == ssztypes.SszInt64Type || desc.SszType == ssztypes.SszFloat32Type || desc.SszType == ssztypes.SszFloat64Type {
 		return true
 	}
 
@@ -252,7 +252,7 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 		}
 		ctx.appendCode(indent+1, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, "val", "bool"))
 		ctx.appendCode(indent, "}\n")
-	case ssztypes.SszUint8Type:
+	case ssztypes.SszUint8Type, ssztypes.SszInt8Type:
 		ctx.appendCode(indent, "if val, err := dec.DecodeUint8(); err != nil {\n")
 		ctx.appendCode(indent+1, "return err\n")
 		ctx.appendCode(indent, "} else {\n")
@@ -263,7 +263,7 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent+1, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, "val", "uint8"))
 		ctx.appendCode(indent, "}\n")
 
-	case ssztypes.SszUint16Type:
+	case ssztypes.SszUint16Type, ssztypes.SszInt16Type:
 		ctx.appendCode(indent, "if val, err := dec.DecodeUint16(); err != nil {\n")
 		ctx.appendCode(indent+1, "return err\n")
 		ctx.appendCode(indent, "} else {\n")
@@ -274,7 +274,7 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent+1, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, "val", "uint16"))
 		ctx.appendCode(indent, "}\n")
 
-	case ssztypes.SszUint32Type:
+	case ssztypes.SszUint32Type, ssztypes.SszInt32Type:
 		ctx.appendCode(indent, "if val, err := dec.DecodeUint32(); err != nil {\n")
 		ctx.appendCode(indent+1, "return err\n")
 		ctx.appendCode(indent, "} else {\n")
@@ -285,7 +285,7 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent+1, "%s = %s(val)\n", ptrVarName, ctx.typePrinter.InnerTypeString(desc))
 		ctx.appendCode(indent, "}\n")
 
-	case ssztypes.SszUint64Type:
+	case ssztypes.SszUint64Type, ssztypes.SszInt64Type:
 		ctx.appendCode(indent, "if val, err := dec.DecodeUint64(); err != nil {\n")
 		ctx.appendCode(indent+1, "return err\n")
 		ctx.appendCode(indent, "} else {\n")
@@ -294,8 +294,8 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 			ptrVarName = fmt.Sprintf("*(%s)", varName)
 		}
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsTime != 0 {
-			ctx.appendCode(indent+1, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, "time.Unix(int64(val), 0).UTC()", "time.Time"))
-			ctx.typePrinter.AddImport("time", "time")
+			timeImport := ctx.typePrinter.AddImport("time", "time")
+			ctx.appendCode(indent+1, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, fmt.Sprintf("%s.Unix(int64(val), 0).UTC()", timeImport), fmt.Sprintf("%s.Time", timeImport)))
 		} else {
 			ctx.appendCode(indent+1, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, "val", "uint64"))
 		}
@@ -323,6 +323,34 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 
 	case ssztypes.SszCustomType:
 		ctx.appendCode(indent, "return sszutils.ErrNotImplemented\n")
+
+	// extended types
+	case ssztypes.SszFloat32Type:
+		ctx.appendCode(indent, "if val, err := dec.DecodeUint32(); err != nil {\n")
+		ctx.appendCode(indent+1, "return err\n")
+		ctx.appendCode(indent, "} else {\n")
+		ptrVarName := varName
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+			ptrVarName = fmt.Sprintf("*(%s)", varName)
+		}
+		mathImport := ctx.typePrinter.AddImport("math", "math")
+		ctx.appendCode(indent+1, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, fmt.Sprintf("%s.Float32frombits(val)", mathImport), "float32"))
+		ctx.appendCode(indent, "}\n")
+	case ssztypes.SszFloat64Type:
+		ctx.appendCode(indent, "if val, err := dec.DecodeUint64(); err != nil {\n")
+		ctx.appendCode(indent+1, "return err\n")
+		ctx.appendCode(indent, "} else {\n")
+		ptrVarName := varName
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+			ptrVarName = fmt.Sprintf("*(%s)", varName)
+		}
+		mathImport := ctx.typePrinter.AddImport("math", "math")
+		ctx.appendCode(indent+1, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, fmt.Sprintf("%s.Float64frombits(val)", mathImport), "float64"))
+		ctx.appendCode(indent, "}\n")
+	case ssztypes.SszOptionalType:
+		return ctx.unmarshalOptional(desc, varName, indent)
+	case ssztypes.SszBigIntType:
+		return ctx.unmarshalBigInt(desc, varName, indent)
 
 	default:
 		return fmt.Errorf("unsupported SSZ type: %v", desc.SszType)
@@ -827,5 +855,41 @@ func (ctx *decoderContext) unmarshalUnion(desc *ssztypes.TypeDescriptor, varName
 	ctx.appendCode(indent, "\treturn sszutils.ErrInvalidUnionVariant\n")
 	ctx.appendCode(indent, "}\n")
 
+	return nil
+}
+
+// unmarshalOptional generates unmarshal code for SSZ optional types.
+func (ctx *decoderContext) unmarshalOptional(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
+	ctx.appendCode(indent, "if hasVal, err := dec.DecodeBool(); err != nil {\n")
+	ctx.appendCode(indent+1, "return err\n")
+	ctx.appendCode(indent, "} else if hasVal {\n")
+	ptrVarName := varName
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		ptrVarName = fmt.Sprintf("*(%s)", varName)
+	}
+	valVar := ctx.getValVar()
+	ctx.appendCode(indent+1, "\tvar %s %s\n", valVar, ctx.typePrinter.TypeString(desc.ElemDesc))
+	if err := ctx.unmarshalType(desc.ElemDesc, valVar, indent+1, false, true); err != nil {
+		return err
+	}
+	ctx.appendCode(indent+1, "\t%s = %s\n", ptrVarName, valVar)
+	ctx.appendCode(indent, "} else {\n")
+	ctx.appendCode(indent+1, "\t%s = nil\n", varName)
+	ctx.appendCode(indent, "}\n")
+	return nil
+}
+
+// unmarshalBigInt generates unmarshal code for SSZ big int types.
+func (ctx *decoderContext) unmarshalBigInt(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
+	ctx.appendCode(indent, "if buf, err := dec.DecodeBytesBuf(dec.GetLength()); err != nil {\n")
+	ctx.appendCode(indent+1, "return err\n")
+	ctx.appendCode(indent, "} else {\n")
+	ptrVarName := varName
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		ptrVarName = fmt.Sprintf("*(%s)", varName)
+	}
+	mathImport := ctx.typePrinter.AddImport("math/big", "big")
+	ctx.appendCode(indent+1, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, fmt.Sprintf("*(%s.NewInt(0).SetBytes(buf))", mathImport), "big.Int"))
+	ctx.appendCode(indent, "}\n")
 	return nil
 }

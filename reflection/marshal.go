@@ -6,6 +6,8 @@ package reflection
 
 import (
 	"fmt"
+	"math"
+	"math/big"
 	"reflect"
 	"strings"
 	"time"
@@ -38,7 +40,7 @@ import (
 //   - Primitive type encoding (bool, uint8, uint16, uint32, uint64)
 //   - Delegation to specialized functions for composite types (structs, arrays, slices)
 func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, idt int) error {
-	if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+	if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && sourceType.SszType != ssztypes.SszOptionalType {
 		if sourceValue.IsNil() {
 			sourceValue = reflect.New(sourceType.Type.Elem()).Elem()
 		} else {
@@ -200,6 +202,30 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 				encoder.EncodeUint64(uint64(timeValue.Unix()))
 			} else {
 				encoder.EncodeUint64(uint64(sourceValue.Uint()))
+			}
+
+		// extended types
+		case ssztypes.SszInt8Type:
+			encoder.EncodeUint8(uint8(sourceValue.Int()))
+		case ssztypes.SszInt16Type:
+			encoder.EncodeUint16(uint16(sourceValue.Int()))
+		case ssztypes.SszInt32Type:
+			encoder.EncodeUint32(uint32(sourceValue.Int()))
+		case ssztypes.SszInt64Type:
+			encoder.EncodeUint64(uint64(sourceValue.Int()))
+		case ssztypes.SszFloat32Type:
+			encoder.EncodeUint32(math.Float32bits(float32(sourceValue.Float())))
+		case ssztypes.SszFloat64Type:
+			encoder.EncodeUint64(math.Float64bits(sourceValue.Float()))
+		case ssztypes.SszOptionalType:
+			err = ctx.marshalOptional(sourceType, sourceValue, encoder, idt)
+			if err != nil {
+				return err
+			}
+		case ssztypes.SszBigIntType:
+			err = ctx.marshalBigInt(sourceType, sourceValue, encoder, idt)
+			if err != nil {
+				return err
 			}
 		default:
 			return fmt.Errorf("unknown type: %v", sourceType)
@@ -695,6 +721,61 @@ func (ctx *ReflectionCtx) marshalCompatibleUnion(sourceType *ssztypes.TypeDescri
 	if err != nil {
 		return fmt.Errorf("failed to marshal union variant %d: %w", variant, err)
 	}
+
+	return nil
+}
+
+// marshalOptional marshals an Optional by marshaling its data field as the wrapped type.
+//
+// Parameters:
+//   - sourceType: The TypeDescriptor containing optional field metadata
+//   - sourceValue: The reflect.Value of the optional to encode
+//   - encoder: The encoder instance used to write SSZ-encoded data
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - error: An error if any field encoding fails
+//
+// The function validates that the Data field is present and marshals the wrapped value using its type descriptor.
+func (ctx *ReflectionCtx) marshalOptional(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, idt int) error {
+	if ctx.verbose {
+		ctx.logCb("%smarshalOptional: %s\n", strings.Repeat(" ", idt), sourceType.Type.Name())
+	}
+
+	if sourceValue.IsNil() {
+		encoder.EncodeBool(false)
+		return nil
+	}
+
+	encoder.EncodeBool(true)
+
+	// Marshal the wrapped value using its type descriptor
+	return ctx.marshalType(sourceType.ElemDesc, sourceValue.Elem(), encoder, idt+2)
+}
+
+// marshalBigInt marshals a BigInt by marshaling its data field as the wrapped type.
+//
+// Parameters:
+//   - sourceType: The TypeDescriptor containing big int field metadata
+//   - sourceValue: The reflect.Value of the big int to encode
+//   - encoder: The encoder instance used to write SSZ-encoded data
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - error: An error if any field encoding fails
+//
+// The function validates that the Data field is present and marshals the wrapped value using its type descriptor.
+func (ctx *ReflectionCtx) marshalBigInt(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, idt int) error {
+	if ctx.verbose {
+		ctx.logCb("%smarshalBigInt: %s\n", strings.Repeat(" ", idt), sourceType.Type.Name())
+	}
+
+	bigInt, isBigInt := sourceValue.Interface().(big.Int)
+	if !isBigInt {
+		return fmt.Errorf("big.Int type expected, got %v", sourceType.Type.Name())
+	}
+	bigIntBytes := bigInt.Bytes()
+	encoder.EncodeBytes(bigIntBytes)
 
 	return nil
 }

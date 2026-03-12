@@ -127,7 +127,6 @@ func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 			appendCode(codeBuilder, 0, "func (t %s) %s(_ sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {\n", typeName, fnName)
 			appendCode(codeBuilder, 1, "return t.MarshalSSZTo(buf)\n")
 			appendCode(codeBuilder, 0, "}\n\n")
-			genStaticFn = true
 		}
 	}
 
@@ -164,7 +163,7 @@ func (ctx *marshalContext) getValueVar(desc *ssztypes.TypeDescriptor, varName st
 
 // isInlineable checks if a type can be inlined directly into the hash tree root code
 func (ctx *marshalContext) isInlineable(desc *ssztypes.TypeDescriptor) bool {
-	if desc.SszType == ssztypes.SszBoolType || desc.SszType == ssztypes.SszUint8Type || desc.SszType == ssztypes.SszUint16Type || desc.SszType == ssztypes.SszUint32Type || desc.SszType == ssztypes.SszUint64Type {
+	if desc.SszType == ssztypes.SszBoolType || desc.SszType == ssztypes.SszUint8Type || desc.SszType == ssztypes.SszUint16Type || desc.SszType == ssztypes.SszUint32Type || desc.SszType == ssztypes.SszUint64Type || desc.SszType == ssztypes.SszInt8Type || desc.SszType == ssztypes.SszInt16Type || desc.SszType == ssztypes.SszInt32Type || desc.SszType == ssztypes.SszInt64Type || desc.SszType == ssztypes.SszFloat32Type || desc.SszType == ssztypes.SszFloat64Type {
 		return true
 	}
 
@@ -177,7 +176,7 @@ func (ctx *marshalContext) isInlineable(desc *ssztypes.TypeDescriptor) bool {
 
 // marshalType generates marshal code for any SSZ type, delegating to specific marshalers.
 func (ctx *marshalContext) marshalType(desc *ssztypes.TypeDescriptor, varName string, indent int, isRoot bool) error {
-	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.SszType != ssztypes.SszOptionalType {
 		ctx.appendCode(indent, "if %s == nil {\n\t%s = new(%s)\n}\n", varName, varName, ctx.typePrinter.InnerTypeString(desc))
 	}
 
@@ -296,10 +295,75 @@ func (ctx *marshalContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 	case ssztypes.SszCustomType:
 		ctx.appendCode(indent, "return nil, sszutils.ErrNotImplemented\n")
 
+	// extended types
+	case ssztypes.SszInt8Type:
+		ctx.appendCode(indent,
+			"dst = append(dst, %s)\n",
+			ctx.getValueVar(desc, varName, "byte"),
+		)
+	case ssztypes.SszInt16Type:
+		ctx.appendCode(indent,
+			"dst = %s.LittleEndian.AppendUint16(dst, %s)\n",
+			ctx.typePrinter.AddImport("encoding/binary", "binary"),
+			ctx.getValueVar(desc, varName, "uint16"),
+		)
+	case ssztypes.SszInt32Type:
+		ctx.appendCode(indent,
+			"dst = %s.LittleEndian.AppendUint32(dst, %s)\n",
+			ctx.typePrinter.AddImport("encoding/binary", "binary"),
+			ctx.getValueVar(desc, varName, "uint32"),
+		)
+	case ssztypes.SszInt64Type:
+		ctx.appendCode(indent,
+			"dst = %s.LittleEndian.AppendUint64(dst, %s)\n",
+			ctx.typePrinter.AddImport("encoding/binary", "binary"),
+			ctx.getValueVar(desc, varName, "uint64"),
+		)
+	case ssztypes.SszFloat32Type:
+		mathImport := ctx.typePrinter.AddImport("math", "math")
+		ctx.appendCode(indent,
+			"dst = %s.LittleEndian.AppendUint32(dst, %s.Float32bits(%s))\n",
+			ctx.typePrinter.AddImport("encoding/binary", "binary"),
+			mathImport,
+			ctx.getValueVar(desc, varName, "float32"),
+		)
+	case ssztypes.SszFloat64Type:
+		mathImport := ctx.typePrinter.AddImport("math", "math")
+		ctx.appendCode(indent,
+			"dst = %s.LittleEndian.AppendUint64(dst, %s.Float64bits(%s))\n",
+			ctx.typePrinter.AddImport("encoding/binary", "binary"),
+			mathImport,
+			ctx.getValueVar(desc, varName, "float64"),
+		)
+	case ssztypes.SszOptionalType:
+		return ctx.marshalOptional(desc, varName, indent)
+	case ssztypes.SszBigIntType:
+		return ctx.marshalBigInt(desc, varName, indent)
+
 	default:
 		return fmt.Errorf("unsupported SSZ type: %v", desc.SszType)
 	}
 
+	return nil
+}
+
+// marshalOptional generates marshal code for SSZ optional types.
+func (ctx *marshalContext) marshalOptional(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
+	ctx.appendCode(indent, "if %s == nil {\n", varName)
+	ctx.appendCode(indent+1, "dst = sszutils.MarshalBool(dst, false)\n")
+	ctx.appendCode(indent, "} else {\n")
+	ctx.appendCode(indent+1, "dst = sszutils.MarshalBool(dst, true)\n")
+	innerVarName := fmt.Sprintf("(*%s)", varName)
+	if err := ctx.marshalType(desc.ElemDesc, innerVarName, indent+1, false); err != nil {
+		return err
+	}
+	ctx.appendCode(indent, "}\n")
+	return nil
+}
+
+// marshalBigInt generates marshal code for SSZ big int types.
+func (ctx *marshalContext) marshalBigInt(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
+	ctx.appendCode(indent, "dst = append(dst, %s.Bytes()...)\n", varName)
 	return nil
 }
 
@@ -455,7 +519,7 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		if desc.Kind != reflect.Array {
 			// append zero padding if we have less items than the limit
 			ctx.appendCode(indent, "if %s < %s {\n", lenVar, limitVar)
-			ctx.appendCode(indent, "\tdst = sszutils.AppendZeroPadding(dst, (%s - %s) * %d)\n", limitVar, lenVar, desc.ElemDesc.Size)
+			ctx.appendCode(indent, "\tdst = sszutils.AppendZeroPadding(dst, (%s-%s)*%d)\n", limitVar, lenVar, desc.ElemDesc.Size)
 			ctx.appendCode(indent, "}\n")
 		}
 	} else {

@@ -8,7 +8,9 @@ package dynssz
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"reflect"
+	"sync"
 
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/reflection"
@@ -51,6 +53,7 @@ type DynSsz struct {
 	typeCache      *ssztypes.TypeCache         // Cache for type descriptors
 	specValues     map[string]any              // Dynamic specification values
 	specValueCache map[string]*cachedSpecValue // Cache for parsed specification expressions
+	specCacheMutex sync.RWMutex
 	options        *DynSszOptions
 }
 
@@ -95,7 +98,7 @@ func NewDynSsz(specs map[string]any, options ...DynSszOption) *DynSsz {
 
 	opts := &DynSszOptions{
 		LogCb: func(format string, args ...any) {
-			fmt.Printf(format, args...)
+			slog.Debug(fmt.Sprintf(format, args...))
 		},
 	}
 
@@ -109,6 +112,7 @@ func NewDynSsz(specs map[string]any, options ...DynSszOption) *DynSsz {
 		options:        opts,
 	}
 	dynssz.typeCache = ssztypes.NewTypeCache(dynssz)
+	dynssz.typeCache.ExtendedTypes = opts.ExtendedTypes
 
 	return dynssz
 }

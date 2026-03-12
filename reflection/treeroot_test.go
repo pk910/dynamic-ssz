@@ -128,6 +128,120 @@ func TestTreeRootNoFastHash(t *testing.T) {
 	}
 }
 
+func TestTreeRootExtendedTypes(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes())
+
+	for _, test := range commonExtendedTypesTestMatrix {
+		t.Run(test.name, func(t *testing.T) {
+			buf, err := dynssz.HashTreeRoot(test.payload)
+
+			switch {
+			case test.htr == nil && err != nil:
+				// expected error
+			case err != nil:
+				t.Errorf("test %v error: %v", test.name, err)
+			case !bytes.Equal(buf[:], test.htr):
+				t.Errorf("test %v failed: got 0x%x, wanted 0x%x", test.name, buf, test.htr)
+			}
+		})
+	}
+}
+
+func TestTreeRootExtendedTypesNoFastSsz(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	for _, test := range commonExtendedTypesTestMatrix {
+		t.Run(test.name, func(t *testing.T) {
+			buf, err := dynssz.HashTreeRoot(test.payload)
+
+			switch {
+			case test.htr == nil && err != nil:
+				// expected error
+			case err != nil:
+				t.Errorf("test %v error: %v", test.name, err)
+			case !bytes.Equal(buf[:], test.htr):
+				t.Errorf("test %v failed: got 0x%x, wanted 0x%x", test.name, buf, test.htr)
+			}
+		})
+	}
+}
+
+func TestTreeRootExtendedTypesNoFastHash(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastHash())
+
+	for _, test := range commonExtendedTypesTestMatrix {
+		t.Run(test.name, func(t *testing.T) {
+			buf, err := dynssz.HashTreeRoot(test.payload)
+
+			switch {
+			case test.htr == nil && err != nil:
+				// expected error
+			case err != nil:
+				t.Errorf("test %v error: %v", test.name, err)
+			case !bytes.Equal(buf[:], test.htr):
+				t.Errorf("test %v failed: got 0x%x, wanted 0x%x", test.name, buf, test.htr)
+			}
+		})
+	}
+}
+
+func TestTreeRootExtendedTypesDisabled(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz()) // no WithExtendedTypes()
+
+	testCases := []struct {
+		name        string
+		input       any
+		expectedErr string
+	}{
+		{
+			name:        "int8_disabled",
+			input:       int8(42),
+			expectedErr: "signed integers are not supported in SSZ",
+		},
+		{
+			name:        "float32_disabled",
+			input:       float32(3.14),
+			expectedErr: "floating-point numbers are not supported in SSZ",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := dynssz.HashTreeRoot(tc.input)
+			if err == nil {
+				t.Errorf("expected error containing '%s', but got no error", tc.expectedErr)
+			} else if !contains(err.Error(), tc.expectedErr) {
+				t.Errorf("expected error containing '%s', but got: %v", tc.expectedErr, err)
+			}
+		})
+	}
+}
+
+func TestTreeGenExtendedTypes(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	for _, tc := range commonExtendedTypesTestMatrix {
+		if tc.htr == nil {
+			continue
+		}
+
+		t.Run(tc.name, func(t *testing.T) {
+			tree, err := dynssz.GetTree(tc.payload)
+			if err != nil {
+				t.Fatalf("failed to generate tree: %v", err)
+			}
+
+			if err := verifyTreeIntegrity(tree); err != nil {
+				t.Errorf("tree integrity check failed: %v", err)
+			}
+
+			if !bytes.Equal(tree.Hash(), tc.htr) {
+				t.Errorf("tree root mismatch: tree=%x, expected=%x", tree.Hash(), tc.htr)
+			}
+		})
+	}
+}
+
 func TestStringVsByteContainerTreeRootEquivalence(t *testing.T) {
 	type StringContainer struct {
 		Data string `ssz-max:"100"`
@@ -1226,6 +1340,225 @@ func TestPackedUint8InVector(t *testing.T) {
 	}
 }
 
+func TestExtendedTypesPackedInList(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	t.Run("int8_list", func(t *testing.T) {
+		input := struct {
+			Data []int8 `ssz-max:"10"`
+		}{[]int8{1, -1, 42, -128}}
+		hash, err := dynssz.HashTreeRoot(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if hash == [32]byte{} {
+			t.Error("hash should not be zero")
+		}
+	})
+
+	t.Run("int16_list", func(t *testing.T) {
+		input := struct {
+			Data []int16 `ssz-max:"10"`
+		}{[]int16{100, -200, 300}}
+		hash, err := dynssz.HashTreeRoot(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if hash == [32]byte{} {
+			t.Error("hash should not be zero")
+		}
+	})
+
+	t.Run("int32_list", func(t *testing.T) {
+		input := struct {
+			Data []int32 `ssz-max:"10"`
+		}{[]int32{1000, -2000, 3000}}
+		hash, err := dynssz.HashTreeRoot(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if hash == [32]byte{} {
+			t.Error("hash should not be zero")
+		}
+	})
+
+	t.Run("int64_list", func(t *testing.T) {
+		input := struct {
+			Data []int64 `ssz-max:"10"`
+		}{[]int64{10000, -20000, 30000}}
+		hash, err := dynssz.HashTreeRoot(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if hash == [32]byte{} {
+			t.Error("hash should not be zero")
+		}
+	})
+
+	t.Run("float32_list", func(t *testing.T) {
+		input := struct {
+			Data []float32 `ssz-max:"10"`
+		}{[]float32{1.5, 2.5, 3.14}}
+		hash, err := dynssz.HashTreeRoot(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if hash == [32]byte{} {
+			t.Error("hash should not be zero")
+		}
+	})
+
+	t.Run("float64_list", func(t *testing.T) {
+		input := struct {
+			Data []float64 `ssz-max:"10"`
+		}{[]float64{1.5, 2.718, 3.14159}}
+		hash, err := dynssz.HashTreeRoot(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if hash == [32]byte{} {
+			t.Error("hash should not be zero")
+		}
+	})
+}
+
+func TestExtendedTypesPackedInVector(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	t.Run("int8_vector", func(t *testing.T) {
+		input := struct {
+			Data [4]int8
+		}{[4]int8{1, -1, 42, -128}}
+		hash, err := dynssz.HashTreeRoot(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if hash == [32]byte{} {
+			t.Error("hash should not be zero")
+		}
+	})
+
+	t.Run("float32_vector", func(t *testing.T) {
+		input := struct {
+			Data [3]float32
+		}{[3]float32{1.5, 2.5, 3.14}}
+		hash, err := dynssz.HashTreeRoot(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if hash == [32]byte{} {
+			t.Error("hash should not be zero")
+		}
+	})
+}
+
+func TestUint128Uint256InList(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	t.Run("uint128_list", func(t *testing.T) {
+		input := struct {
+			Data [][]byte `ssz-type:"list" ssz-size:"?,16" ssz-max:"10"`
+		}{[][]byte{
+			{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+			{17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32},
+		}}
+		hash, err := dynssz.HashTreeRoot(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if hash == [32]byte{} {
+			t.Error("hash should not be zero")
+		}
+	})
+
+	t.Run("uint256_list", func(t *testing.T) {
+		input := struct {
+			Data [][32]byte `ssz-max:"10"`
+		}{[][32]byte{
+			{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+				17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32},
+		}}
+		hash, err := dynssz.HashTreeRoot(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if hash == [32]byte{} {
+			t.Error("hash should not be zero")
+		}
+	})
+}
+
+func TestOptionalHashErrorPath(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	t.Run("optional_inner_error", func(t *testing.T) {
+		input := struct {
+			Opt *complex64 `ssz-type:"optional"`
+		}{func() *complex64 { c := complex64(1 + 2i); return &c }()}
+		_, err := dynssz.HashTreeRoot(input)
+		if err == nil {
+			t.Error("expected error for optional with invalid inner type")
+		}
+	})
+}
+
+func TestBigIntTypeAssertionFailure(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	type FakeBigInt struct {
+		ID uint32
+	}
+
+	type Container struct {
+		Value FakeBigInt
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	fieldDesc := typeDesc.ContainerDesc.Fields[0].Type
+	fieldDesc.SszType = ssztypes.SszBigIntType
+
+	_, err = dynssz.HashTreeRoot(Container{Value: FakeBigInt{ID: 42}})
+	if err == nil {
+		t.Error("expected error for non-big.Int type")
+	}
+	if !contains(err.Error(), "big.Int type expected") {
+		t.Errorf("expected 'big.Int type expected' error, got: %v", err)
+	}
+}
+
+func TestTimeTypeAssertionFailure(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type FakeTime struct {
+		ID uint64
+	}
+
+	type Container struct {
+		Value FakeTime
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	fieldDesc := typeDesc.ContainerDesc.Fields[0].Type
+	fieldDesc.SszType = ssztypes.SszUint64Type
+	fieldDesc.GoTypeFlags |= ssztypes.GoTypeFlagIsTime
+
+	_, err = dynssz.HashTreeRoot(Container{Value: FakeTime{ID: 42}})
+	if err == nil {
+		t.Error("expected error for non-time.Time type")
+	}
+	if !contains(err.Error(), "time.Time type expected") {
+		t.Errorf("expected 'time.Time type expected' error, got: %v", err)
+	}
+}
+
 func TestPackedBoolInVector(t *testing.T) {
 	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
@@ -1331,5 +1664,326 @@ func TestViewHashRootFlagsDetection(t *testing.T) {
 	// Verify flag is set
 	if viewTypeDesc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewHashRoot == 0 {
 		t.Error("Expected DynamicViewHashRoot flag to be set with view descriptor")
+	}
+}
+
+func TestNestedDynamicHashRootError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	input := struct {
+		Field0 uint32
+		Field1 TestContainerWithDynamicHashError
+	}{42, TestContainerWithDynamicHashError{Field0: 1}}
+
+	_, err := dynssz.HashTreeRoot(input)
+	if err == nil {
+		t.Error("expected error from nested DynamicHashRoot")
+	}
+	if !contains(err.Error(), "test DynamicHashRoot error") {
+		t.Errorf("expected DynamicHashRoot error, got: %v", err)
+	}
+}
+
+func TestDynamicHashRootInterfaceFallback(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type FakeHashRoot struct {
+		ID uint32
+	}
+
+	type Container struct {
+		Value FakeHashRoot
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	fieldDesc := typeDesc.ContainerDesc.Fields[0].Type
+	fieldDesc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicHashRoot
+
+	hash, err := dynssz.HashTreeRoot(Container{Value: FakeHashRoot{ID: 42}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hash == [32]byte{} {
+		t.Error("hash should not be zero")
+	}
+}
+
+func TestProgressiveContainerFieldBuildRootError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type Inner struct {
+		Value uint32
+	}
+
+	type Container struct {
+		Field0 uint64 `ssz-index:"0"`
+		Field1 Inner  `ssz-index:"2"`
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	fieldDesc := typeDesc.ContainerDesc.Fields[1].Type
+	fieldDesc.SszType = ssztypes.SszCustomType
+	fieldDesc.SszCompatFlags = 0
+
+	_, err = dynssz.HashTreeRoot(Container{Field0: 12345, Field1: Inner{Value: 42}})
+	if err == nil {
+		t.Error("expected error for invalid field type in progressive container")
+	}
+}
+
+func TestCompatibleUnionBuildRootError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type UnionVariant struct {
+		Field1 uint32
+	}
+
+	type TestUnion = CompatibleUnion[UnionVariant]
+	type Container struct {
+		Field0 uint16
+		Field1 TestUnion
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	unionDesc := typeDesc.ContainerDesc.Fields[1].Type
+	variantDesc := unionDesc.UnionVariants[0]
+	variantDesc.SszType = ssztypes.SszCustomType
+	variantDesc.SszCompatFlags = 0
+
+	input := Container{
+		Field0: 0x1234,
+		Field1: TestUnion{Variant: 0, Data: UnionVariant{Field1: 42}},
+	}
+	_, err = dynssz.HashTreeRoot(input)
+	if err == nil {
+		t.Error("expected error for union variant hash error")
+	}
+}
+
+func TestVectorZeroPaddingBuildRootError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type ElemType struct {
+		Value uint32
+	}
+
+	type Container struct {
+		Data []ElemType `ssz-size:"3"`
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	vecDesc := typeDesc.ContainerDesc.Fields[0].Type
+	elemDescCopy := *vecDesc.ElemDesc
+	elemDescCopy.SszType = ssztypes.SszCustomType
+	elemDescCopy.SszCompatFlags = 0
+	vecDesc.ElemDesc = &elemDescCopy
+
+	_, err = dynssz.HashTreeRoot(Container{Data: []ElemType{}})
+	if err == nil {
+		t.Error("expected error for vector zero-padding build root error")
+	}
+}
+
+func TestListElementBuildRootError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type ElemType struct {
+		Value uint32
+	}
+
+	type Container struct {
+		Data []ElemType `ssz-max:"10"`
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	listDesc := typeDesc.ContainerDesc.Fields[0].Type
+	listDesc.ElemDesc.SszType = ssztypes.SszCustomType
+	listDesc.ElemDesc.SszCompatFlags = 0
+
+	_, err = dynssz.HashTreeRoot(Container{Data: []ElemType{{Value: 1}, {Value: 2}}})
+	if err == nil {
+		t.Error("expected error for list element build root error")
+	}
+}
+
+func TestUint128InListBuildRoot(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type Uint128Element [16]byte
+
+	type Container struct {
+		Data []Uint128Element `ssz-max:"10"`
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	listDesc := typeDesc.ContainerDesc.Fields[0].Type
+	listDesc.ElemDesc.SszType = ssztypes.SszUint128Type
+	listDesc.ElemDesc.Size = 16
+
+	hash, err := dynssz.HashTreeRoot(Container{
+		Data: []Uint128Element{{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hash == [32]byte{} {
+		t.Error("hash should not be zero")
+	}
+}
+
+func TestUint256InListBuildRoot(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type Uint256Element [32]byte
+
+	type Container struct {
+		Data []Uint256Element `ssz-max:"10"`
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	listDesc := typeDesc.ContainerDesc.Fields[0].Type
+	listDesc.ElemDesc.SszType = ssztypes.SszUint256Type
+	listDesc.ElemDesc.Size = 32
+
+	hash, err := dynssz.HashTreeRoot(Container{
+		Data: []Uint256Element{{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+			17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hash == [32]byte{} {
+		t.Error("hash should not be zero")
+	}
+}
+
+func TestOptionalInnerBuildRootError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	type Inner struct {
+		Value uint32
+	}
+
+	type Container struct {
+		Opt *Inner `ssz-type:"optional"`
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	optDesc := typeDesc.ContainerDesc.Fields[0].Type
+	optDesc.ElemDesc.SszType = ssztypes.SszCustomType
+	optDesc.ElemDesc.SszCompatFlags = 0
+
+	_, err = dynssz.HashTreeRoot(Container{Opt: &Inner{Value: 42}})
+	if err == nil {
+		t.Error("expected error for optional inner build root error")
+	}
+}
+
+func TestBuildRootFromTypeWrapperError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type InnerType struct {
+		Data uint32
+	}
+
+	type WrapperType = TypeWrapper[InnerType, uint32]
+
+	type Container struct {
+		Field0 uint64
+		Field1 WrapperType
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	wrapperDesc := typeDesc.ContainerDesc.Fields[1].Type
+	elemDescCopy := *wrapperDesc.ElemDesc
+	elemDescCopy.SszType = ssztypes.SszCustomType
+	elemDescCopy.SszCompatFlags = 0
+	wrapperDesc.ElemDesc = &elemDescCopy
+
+	_, err = dynssz.HashTreeRoot(Container{Field0: 42, Field1: WrapperType{Data: 1}})
+	if err == nil {
+		t.Error("expected error for type wrapper build root error")
+	}
+}
+
+type NonByteUint8 uint8
+
+func TestPackedUint8InNonByteVector(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type Container struct {
+		Data []NonByteUint8 `ssz-size:"5"`
+	}
+
+	input := Container{Data: []NonByteUint8{1, 2, 3}}
+	hash1, err := dynssz.HashTreeRoot(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hash1 == [32]byte{} {
+		t.Error("hash should not be zero")
+	}
+}
+
+func TestBuildRootFromProgressiveContainerError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type Inner struct {
+		Value uint32
+	}
+
+	type Container struct {
+		Field0 uint64 `ssz-index:"0"`
+		Field1 Inner  `ssz-index:"1"`
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	fieldDesc := typeDesc.ContainerDesc.Fields[1].Type
+	fieldDesc.SszType = ssztypes.SszCustomType
+	fieldDesc.SszCompatFlags = 0
+
+	_, err = dynssz.HashTreeRoot(Container{Field0: 123, Field1: Inner{Value: 42}})
+	if err == nil {
+		t.Error("expected error for progressive container error")
 	}
 }

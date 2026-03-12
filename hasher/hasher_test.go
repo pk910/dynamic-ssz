@@ -1098,6 +1098,120 @@ func TestHasherInterfaceCompliance(t *testing.T) {
 	}
 }
 
+func TestParseBitlistEmptyInput(t *testing.T) {
+	// Bug fix: ParseBitlist panicked on empty input (index out of range [-1])
+	dst := make([]byte, 0, 10)
+	result, size := ParseBitlist(dst, []byte{})
+
+	if size != 0 {
+		t.Errorf("expected size 0 for empty input, got %d", size)
+	}
+	if len(result) != 0 {
+		t.Errorf("expected empty result for empty input, got %d bytes", len(result))
+	}
+}
+
+func TestParseBitlistNoSentinel(t *testing.T) {
+	// Bug fix: ParseBitlist panicked when last byte was 0x00 (no sentinel bit)
+	// bits.Len8(0x00) returns 0, causing uint8(0) - 1 = 255 underflow
+	dst := make([]byte, 0, 10)
+	result, size := ParseBitlist(dst, []byte{0x00})
+
+	if size != 0 {
+		t.Errorf("expected size 0 for no sentinel, got %d", size)
+	}
+	if len(result) != 0 {
+		t.Errorf("expected empty result for no sentinel, got %d bytes", len(result))
+	}
+
+	// Multiple zero bytes
+	result, size = ParseBitlist(dst[:0], []byte{0xFF, 0x00})
+	if size != 0 {
+		t.Errorf("expected size 0 for trailing zero sentinel, got %d", size)
+	}
+}
+
+func TestPutBitlistPreservesTmp(t *testing.T) {
+	// Bug fix: PutBitlist/PutProgressiveBitlist corrupted h.tmp by setting it
+	// to a zero-length slice via ParseBitlist, causing subsequent PutUint8 etc.
+	// to panic with "index out of range [0] with length 0"
+	h := NewHasher()
+
+	// Call PutBitlist with empty bitlist
+	h.PutBitlist([]byte{}, 16)
+
+	// h.tmp should still be usable (length >= 1)
+	if len(h.tmp) < 1 {
+		t.Fatalf("h.tmp should have length >= 1 after PutBitlist, got %d", len(h.tmp))
+	}
+
+	// PutUint8 should not panic
+	h.Reset()
+	h.PutUint8(42)
+	if len(h.buf) != 32 {
+		t.Errorf("PutUint8 after PutBitlist should work, got %d bytes", len(h.buf))
+	}
+}
+
+func TestPutProgressiveBitlistPreservesTmp(t *testing.T) {
+	// Same bug as PutBitlist - PutProgressiveBitlist also corrupted h.tmp
+	h := NewHasher()
+
+	h.PutProgressiveBitlist([]byte{})
+
+	if len(h.tmp) < 1 {
+		t.Fatalf("h.tmp should have length >= 1 after PutProgressiveBitlist, got %d", len(h.tmp))
+	}
+
+	// PutUint8 should not panic
+	h.Reset()
+	h.PutUint8(42)
+	if len(h.buf) != 32 {
+		t.Errorf("PutUint8 after PutProgressiveBitlist should work, got %d bytes", len(h.buf))
+	}
+}
+
+func TestParseBitlistWithHasherPreservesTmp(t *testing.T) {
+	// ParseBitlistWithHasher also corrupted h.tmp via the same pattern
+	h := NewHasher()
+
+	_, size := ParseBitlistWithHasher(h, []byte{})
+	if size != 0 {
+		t.Errorf("expected size 0, got %d", size)
+	}
+
+	if len(h.tmp) < 1 {
+		t.Fatalf("h.tmp should have length >= 1 after ParseBitlistWithHasher, got %d", len(h.tmp))
+	}
+
+	// PutUint8 should not panic
+	h.PutUint8(42)
+}
+
+func TestBitlistThenHashTreeRoot(t *testing.T) {
+	// Integration test: a container with a bitlist field followed by other fields
+	// should not panic during HashTreeRoot when the bitlist is empty
+	h := NewHasher()
+	idx := h.Index()
+
+	// Simulate a container with: bitlist field, then uint8 field
+	// Field 0: empty bitlist
+	h.PutBitlist([]byte{}, 64)
+
+	// Field 1: uint8 - this used to panic because PutBitlist corrupted h.tmp
+	h.PutUint8(42)
+
+	h.Merkleize(idx)
+
+	root, err := h.HashRoot()
+	if err != nil {
+		t.Fatalf("HashRoot failed: %v", err)
+	}
+	if len(root) != 32 {
+		t.Errorf("expected 32-byte root, got %d", len(root))
+	}
+}
+
 // Helper function for min
 func min(a, b int) int {
 	if a < b {

@@ -6,6 +6,7 @@ package ssztypes
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -32,7 +33,8 @@ func TestTypeCache_ErrorCases(t *testing.T) {
 			typ      reflect.Type
 			expected string
 		}{
-			{"int", reflect.TypeOf(int(0)), "signed integers are not supported"},
+			{"int", reflect.TypeOf(int(0)), "signed or unsigned integers with unspecified size are not supported"},
+			{"uint", reflect.TypeOf(uint(0)), "signed or unsigned integers with unspecified size are not supported"},
 			{"int8", reflect.TypeOf(int8(0)), "signed integers are not supported"},
 			{"int16", reflect.TypeOf(int16(0)), "signed integers are not supported"},
 			{"int32", reflect.TypeOf(int32(0)), "signed integers are not supported"},
@@ -980,6 +982,324 @@ func (t *TestTypeWithInvalidHashTreeRootWith2) HashTreeRootWith(in1 uint64) uint
 	return in1
 }
 
+// Test extended type error cases
+func TestTypeCache_ExtendedTypes(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+
+	t.Run("DisabledExtendedTypes", func(t *testing.T) {
+		cache := NewTypeCache(ds)
+		// ExtendedTypes defaults to false
+
+		tests := []struct {
+			name     string
+			typ      reflect.Type
+			hints    []SszTypeHint
+			expected string
+		}{
+			{
+				name:     "int8 disabled",
+				typ:      reflect.TypeOf(int8(0)),
+				hints:    []SszTypeHint{{Type: SszInt8Type}},
+				expected: "signed integers are not supported in SSZ",
+			},
+			{
+				name:     "int16 disabled",
+				typ:      reflect.TypeOf(int16(0)),
+				hints:    []SszTypeHint{{Type: SszInt16Type}},
+				expected: "signed integers are not supported in SSZ",
+			},
+			{
+				name:     "int32 disabled",
+				typ:      reflect.TypeOf(int32(0)),
+				hints:    []SszTypeHint{{Type: SszInt32Type}},
+				expected: "signed integers are not supported in SSZ",
+			},
+			{
+				name:     "int64 disabled",
+				typ:      reflect.TypeOf(int64(0)),
+				hints:    []SszTypeHint{{Type: SszInt64Type}},
+				expected: "signed integers are not supported in SSZ",
+			},
+			{
+				name:     "float32 disabled",
+				typ:      reflect.TypeOf(float32(0)),
+				hints:    []SszTypeHint{{Type: SszFloat32Type}},
+				expected: "floating-point numbers are not supported in SSZ",
+			},
+			{
+				name:     "float64 disabled",
+				typ:      reflect.TypeOf(float64(0)),
+				hints:    []SszTypeHint{{Type: SszFloat64Type}},
+				expected: "floating-point numbers are not supported in SSZ",
+			},
+			{
+				name:     "optional disabled",
+				typ:      reflect.TypeOf((*int16)(nil)),
+				hints:    []SszTypeHint{{Type: SszOptionalType}},
+				expected: "optional types are not supported in SSZ",
+			},
+			{
+				name:     "bigint disabled",
+				typ:      reflect.TypeOf(struct{}{}),
+				hints:    []SszTypeHint{{Type: SszBigIntType}},
+				expected: "big integers are not supported in SSZ",
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				_, err := cache.GetTypeDescriptor(tt.typ, nil, nil, tt.hints)
+				if err == nil {
+					t.Errorf("Expected error for %s", tt.name)
+					return
+				}
+				if !strings.Contains(err.Error(), tt.expected) {
+					t.Errorf("Expected error containing '%s', got: %s", tt.expected, err.Error())
+				}
+			})
+		}
+	})
+
+	t.Run("EnabledExtendedTypes", func(t *testing.T) {
+		cache := NewTypeCache(ds)
+		cache.ExtendedTypes = true
+
+		successTests := []struct {
+			name string
+			typ  reflect.Type
+		}{
+			{"int8", reflect.TypeOf(int8(0))},
+			{"int16", reflect.TypeOf(int16(0))},
+			{"int32", reflect.TypeOf(int32(0))},
+			{"int64", reflect.TypeOf(int64(0))},
+			{"float32", reflect.TypeOf(float32(0))},
+			{"float64", reflect.TypeOf(float64(0))},
+		}
+
+		for _, tt := range successTests {
+			t.Run(tt.name, func(t *testing.T) {
+				desc, err := cache.GetTypeDescriptor(tt.typ, nil, nil, nil)
+				if err != nil {
+					t.Errorf("Unexpected error for %s: %v", tt.name, err)
+					return
+				}
+				if desc == nil {
+					t.Errorf("Expected descriptor for %s", tt.name)
+				}
+			})
+		}
+	})
+
+	t.Run("WrongKindErrors", func(t *testing.T) {
+		cache := NewTypeCache(ds)
+		cache.ExtendedTypes = true
+
+		tests := []struct {
+			name     string
+			typ      reflect.Type
+			hints    []SszTypeHint
+			expected string
+		}{
+			{
+				name:     "int8 with wrong kind",
+				typ:      reflect.TypeOf(uint8(0)),
+				hints:    []SszTypeHint{{Type: SszInt8Type}},
+				expected: "int8 ssz type can only be represented by int8 types",
+			},
+			{
+				name:     "int16 with wrong kind",
+				typ:      reflect.TypeOf(uint16(0)),
+				hints:    []SszTypeHint{{Type: SszInt16Type}},
+				expected: "int16 ssz type can only be represented by int16 types",
+			},
+			{
+				name:     "int32 with wrong kind",
+				typ:      reflect.TypeOf(uint32(0)),
+				hints:    []SszTypeHint{{Type: SszInt32Type}},
+				expected: "int32 ssz type can only be represented by int32 types",
+			},
+			{
+				name:     "int64 with wrong kind",
+				typ:      reflect.TypeOf(uint64(0)),
+				hints:    []SszTypeHint{{Type: SszInt64Type}},
+				expected: "int64 ssz type can only be represented by int64 types",
+			},
+			{
+				name:     "float32 with wrong kind",
+				typ:      reflect.TypeOf(uint32(0)),
+				hints:    []SszTypeHint{{Type: SszFloat32Type}},
+				expected: "float32 ssz type can only be represented by float32 types",
+			},
+			{
+				name:     "float64 with wrong kind",
+				typ:      reflect.TypeOf(uint64(0)),
+				hints:    []SszTypeHint{{Type: SszFloat64Type}},
+				expected: "float64 ssz type can only be represented by float64 types",
+			},
+			{
+				name:     "optional with non-pointer",
+				typ:      reflect.TypeOf(int16(0)),
+				hints:    []SszTypeHint{{Type: SszOptionalType}},
+				expected: "optional ssz type can only be represented by pointer types",
+			},
+			{
+				name:     "bigint with non-struct",
+				typ:      reflect.TypeOf(uint64(0)),
+				hints:    []SszTypeHint{{Type: SszBigIntType}},
+				expected: "bigint type can only be represented by struct types",
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				_, err := cache.GetTypeDescriptor(tt.typ, nil, nil, tt.hints)
+				if err == nil {
+					t.Errorf("Expected error for %s", tt.name)
+					return
+				}
+				if !strings.Contains(err.Error(), tt.expected) {
+					t.Errorf("Expected error containing '%s', got: %s", tt.expected, err.Error())
+				}
+			})
+		}
+	})
+
+	t.Run("OptionalDescriptor", func(t *testing.T) {
+		cache := NewTypeCache(ds)
+		cache.ExtendedTypes = true
+
+		// optional pointer to uint16
+		desc, err := cache.GetTypeDescriptor(
+			reflect.TypeOf((*uint16)(nil)),
+			nil, nil,
+			[]SszTypeHint{{Type: SszOptionalType}},
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if desc.SszType != SszOptionalType {
+			t.Errorf("expected SszOptionalType, got %v", desc.SszType)
+		}
+		if desc.SszTypeFlags&SszTypeFlagIsDynamic == 0 {
+			t.Error("expected optional to be dynamic")
+		}
+		if desc.ElemDesc == nil {
+			t.Error("expected ElemDesc to be set")
+		}
+	})
+
+	t.Run("OptionalDescriptorWithHints", func(t *testing.T) {
+		cache := NewTypeCache(ds)
+		cache.ExtendedTypes = true
+
+		// optional pointer to uint16 with extra hints that get forwarded
+		desc, err := cache.GetTypeDescriptor(
+			reflect.TypeOf((*uint16)(nil)),
+			[]SszSizeHint{{Size: 0}, {Size: 2}},
+			[]SszMaxSizeHint{{Size: 0}, {Size: 2}},
+			[]SszTypeHint{{Type: SszOptionalType}, {Type: SszUint16Type}},
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if desc.SszType != SszOptionalType {
+			t.Errorf("expected SszOptionalType, got %v", desc.SszType)
+		}
+		if desc.ElemDesc == nil {
+			t.Error("expected ElemDesc to be set")
+		}
+	})
+
+	t.Run("BigIntDescriptor", func(t *testing.T) {
+		cache := NewTypeCache(ds)
+		cache.ExtendedTypes = true
+
+		type BigIntLike struct {
+			// big.Int is a struct, so we test with a struct type
+		}
+
+		desc, err := cache.GetTypeDescriptor(
+			reflect.TypeOf(BigIntLike{}),
+			nil, nil,
+			[]SszTypeHint{{Type: SszBigIntType}},
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if desc.SszType != SszBigIntType {
+			t.Errorf("expected SszBigIntType, got %v", desc.SszType)
+		}
+		if desc.SszTypeFlags&SszTypeFlagIsDynamic == 0 {
+			t.Error("expected bigint to be dynamic")
+		}
+	})
+}
+
+// Test ParseSszType for all types
+func TestParseSszType(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected SszType
+	}{
+		// auto/unspecified
+		{"?", SszUnspecifiedType},
+		{"auto", SszUnspecifiedType},
+		{"custom", SszCustomType},
+		{"wrapper", SszTypeWrapperType},
+		{"type-wrapper", SszTypeWrapperType},
+
+		// basic types
+		{"bool", SszBoolType},
+		{"uint8", SszUint8Type},
+		{"uint16", SszUint16Type},
+		{"uint32", SszUint32Type},
+		{"uint64", SszUint64Type},
+		{"uint128", SszUint128Type},
+		{"uint256", SszUint256Type},
+
+		// complex types
+		{"container", SszContainerType},
+		{"list", SszListType},
+		{"vector", SszVectorType},
+		{"bitlist", SszBitlistType},
+		{"bitvector", SszBitvectorType},
+		{"progressive-list", SszProgressiveListType},
+		{"progressive-bitlist", SszProgressiveBitlistType},
+		{"progressive-container", SszProgressiveContainerType},
+		{"compatible-union", SszCompatibleUnionType},
+		{"union", SszCompatibleUnionType},
+
+		// extended types
+		{"int8", SszInt8Type},
+		{"int16", SszInt16Type},
+		{"int32", SszInt32Type},
+		{"int64", SszInt64Type},
+		{"float32", SszFloat32Type},
+		{"float64", SszFloat64Type},
+		{"bigint", SszBigIntType},
+		{"optional", SszOptionalType},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result, err := ParseSszType(tt.input)
+			if err != nil {
+				t.Errorf("unexpected error for '%s': %v", tt.input, err)
+				return
+			}
+			if result != tt.expected {
+				t.Errorf("expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+
+	// Test invalid type
+	_, err := ParseSszType("invalidtype")
+	if err == nil {
+		t.Error("expected error for invalid type")
+	}
+}
+
 // Test types with invalid HashTreeRootWith method
 func TestTypeCache_InvalidHashTreeRootWith(t *testing.T) {
 	ds := &dummyDynamicSpecs{}
@@ -1398,5 +1718,263 @@ func TestTypeCache_ConcurrentAccessWithSchema(t *testing.T) {
 	// Wait for all goroutines
 	for i := 0; i < 20; i++ {
 		<-done
+	}
+}
+
+func TestListWithFixedSizeRejected(t *testing.T) {
+	// Bug fix: ssz-type:"list" combined with a fixed ssz-size is invalid.
+	// Lists use ssz-max, not ssz-size. This should return an error.
+	cache := NewTypeCache(nil)
+
+	type InvalidListWithSize struct {
+		Field []uint16 `ssz-type:"list" ssz-size:"4"`
+	}
+
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(InvalidListWithSize{}), nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for list with fixed ssz-size, got nil")
+	}
+	if !strings.Contains(err.Error(), "list types cannot have a fixed ssz-size") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+// errorDynamicSpecs returns an error from ResolveSpecValue for testing error paths.
+type errorDynamicSpecs struct {
+	err error
+}
+
+func (d *errorDynamicSpecs) ResolveSpecValue(name string) (bool, uint64, error) {
+	return false, 0, d.err
+}
+
+func makeField(name string, typ reflect.Type, tag reflect.StructTag) *reflect.StructField {
+	return &reflect.StructField{
+		Name: name,
+		Type: typ,
+		Tag:  tag,
+	}
+}
+
+func TestGetSszSizeTagBitsizeParseError(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	field := makeField("Bad", reflect.TypeOf(uint32(0)), `ssz-bitsize:"notanumber"`)
+
+	_, err := getSszSizeTag(ds, field)
+	if err == nil {
+		t.Fatal("expected error for invalid ssz-bitsize")
+	}
+	if !strings.Contains(err.Error(), "error parsing ssz-bitsize tag") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestGetSszSizeTagDynSszDynamic(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	// dynssz-size:"?" should set Dynamic=true (lines 264-265)
+	field := makeField("Dyn", reflect.TypeOf([]byte{}), `ssz-size:"32" dynssz-size:"?"`)
+
+	sizes, err := getSszSizeTag(ds, field)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sizes) != 1 {
+		t.Fatalf("expected 1 size hint, got %d", len(sizes))
+	}
+	// The dynssz-size:"?" case: sizeExpr == "?" → sszSize.Dynamic = true
+	// But since ssz-size:"32" was parsed first, the size remains 32
+	// and the dynssz loop processes "?" which sets Dynamic on the new hint,
+	// but then i < len(sszSizes) so it checks if sizes differ.
+	// Actually: sszSize has Dynamic=true, Size=0. sszSizes[0] has Size=32.
+	// 0 != 32, so it updates sszSizes[0] to the dynamic version.
+	if !sizes[0].Dynamic {
+		t.Fatal("expected Dynamic=true for dynssz-size:\"?\"")
+	}
+}
+
+func TestGetSszSizeTagDynSszResolveError(t *testing.T) {
+	ds := &errorDynamicSpecs{err: fmt.Errorf("resolve failed")}
+	// dynssz-size with an expression that triggers ResolveSpecValue error (lines 270-271)
+	field := makeField("Expr", reflect.TypeOf([]byte{}), `ssz-size:"32" dynssz-size:"SOME_EXPR"`)
+
+	_, err := getSszSizeTag(ds, field)
+	if err == nil {
+		t.Fatal("expected error for failed spec resolution")
+	}
+	if !strings.Contains(err.Error(), "error parsing dynssz-size tag") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestGetSszSizeTagDynSszExtraDimension(t *testing.T) {
+	ds := &dummyDynamicSpecs{specValues: map[string]uint64{"X": 100}}
+	// dynssz-size has more dimensions than ssz-size → i >= len(sszSizes) (lines 288-289)
+	field := makeField("Extra", reflect.TypeOf([]byte{}), `dynssz-size:"X"`)
+
+	sizes, err := getSszSizeTag(ds, field)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sizes) != 1 {
+		t.Fatalf("expected 1 size hint, got %d", len(sizes))
+	}
+	if sizes[0].Size != 100 {
+		t.Fatalf("expected size 100, got %d", sizes[0].Size)
+	}
+}
+
+func TestGetSszMaxSizeTagDynSszMaxDynamic(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	// dynssz-max:"?" should set NoValue=true (lines 368-369)
+	field := makeField("Dyn", reflect.TypeOf([]byte{}), `ssz-max:"100" dynssz-max:"?"`)
+
+	maxSizes, err := getSszMaxSizeTag(ds, field)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(maxSizes) != 1 {
+		t.Fatalf("expected 1 max size hint, got %d", len(maxSizes))
+	}
+}
+
+func TestGetSszMaxSizeTagDynSszMaxNumeric(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	// dynssz-max:"200" with numeric value (lines 370-371)
+	field := makeField("Num", reflect.TypeOf([]byte{}), `ssz-max:"100" dynssz-max:"200"`)
+
+	maxSizes, err := getSszMaxSizeTag(ds, field)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(maxSizes) != 1 {
+		t.Fatalf("expected 1 max size hint, got %d", len(maxSizes))
+	}
+	if maxSizes[0].Size != 200 {
+		t.Fatalf("expected max size 200, got %d", maxSizes[0].Size)
+	}
+}
+
+func TestGetSszMaxSizeTagDynSszMaxResolveError(t *testing.T) {
+	ds := &errorDynamicSpecs{err: fmt.Errorf("resolve failed")}
+	// dynssz-max with expression that triggers ResolveSpecValue error (lines 374-375)
+	field := makeField("Expr", reflect.TypeOf([]byte{}), `ssz-max:"100" dynssz-max:"BAD_EXPR"`)
+
+	_, err := getSszMaxSizeTag(ds, field)
+	if err == nil {
+		t.Fatal("expected error for failed spec resolution")
+	}
+	if !strings.Contains(err.Error(), "error parsing dynssz-max tag") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestGetSszMaxSizeTagDynSszMaxExtraDimension(t *testing.T) {
+	ds := &dummyDynamicSpecs{specValues: map[string]uint64{"Y": 500}}
+	// dynssz-max has more dimensions than ssz-max → i >= len(sszMaxSizes) (lines 392-393)
+	field := makeField("Extra", reflect.TypeOf([]byte{}), `dynssz-max:"Y"`)
+
+	maxSizes, err := getSszMaxSizeTag(ds, field)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(maxSizes) != 1 {
+		t.Fatalf("expected 1 max size hint, got %d", len(maxSizes))
+	}
+	if maxSizes[0].Size != 500 {
+		t.Fatalf("expected max size 500, got %d", maxSizes[0].Size)
+	}
+}
+
+// TypeWrapper descriptor tests (lines 521-522, 526-527)
+
+type testWrapperNoReturn struct{}
+
+func (t *testWrapperNoReturn) GetDescriptorType() {}
+
+type testWrapperWrongReturn struct{}
+
+func (t *testWrapperWrongReturn) GetDescriptorType() string { return "not a type" }
+
+func TestBuildTypeWrapperNoResults(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	typeHints := []SszTypeHint{{Type: SszTypeWrapperType}}
+
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(testWrapperNoReturn{}), nil, nil, typeHints)
+	if err == nil {
+		t.Fatal("expected error for GetDescriptorType with no return values")
+	}
+	if !strings.Contains(err.Error(), "GetDescriptorType returned no results") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestBuildTypeWrapperWrongReturnType(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	typeHints := []SszTypeHint{{Type: SszTypeWrapperType}}
+
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(testWrapperWrongReturn{}), nil, nil, typeHints)
+	if err == nil {
+		t.Fatal("expected error for GetDescriptorType with wrong return type")
+	}
+	if !strings.Contains(err.Error(), "GetDescriptorType did not return a reflect.Type") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// Container descriptor error tests (lines 661-662, 666-667, 671-672)
+
+type containerBadSszSize struct {
+	Field []byte `ssz-size:"abc"`
+}
+
+func TestBuildContainerSszSizeTagError(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(containerBadSszSize{}), nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for invalid ssz-size tag")
+	}
+}
+
+type containerBadSszMax struct {
+	Field []byte `ssz-max:"abc"`
+}
+
+func TestBuildContainerSszMaxTagError(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(containerBadSszMax{}), nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for invalid ssz-max tag")
+	}
+}
+
+type containerBadSszType struct {
+	Field uint32 `ssz-type:"invalidtype"`
+}
+
+func TestBuildContainerSszTypeTagError(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(containerBadSszType{}), nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for invalid ssz-type tag")
+	}
+}
+
+func TestListWithDynamicSizeAccepted(t *testing.T) {
+	// ssz-type:"list" with ssz-size:"?" (dynamic) should be accepted
+	cache := NewTypeCache(nil)
+
+	type ValidListWithDynamicSize struct {
+		Field []uint16 `ssz-type:"list" ssz-size:"?" ssz-max:"10"`
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(ValidListWithDynamicSize{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error for valid list: %v", err)
+	}
+	if desc == nil {
+		t.Fatal("descriptor should not be nil")
 	}
 }

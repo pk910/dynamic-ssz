@@ -10,7 +10,9 @@ import (
 	"testing"
 
 	. "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/reflection"
 	"github.com/pk910/dynamic-ssz/ssztypes"
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 var marshalTestMatrix = append(commonTestMatrix, []struct {
@@ -147,6 +149,25 @@ func TestMarshalWriter(t *testing.T) {
 				t.Errorf("test %v error: %v", test.name, err)
 			case !bytes.Equal(memWriter.Bytes(), test.ssz):
 				t.Errorf("test %v failed: got 0x%x, wanted 0x%x", test.name, memWriter.Bytes(), test.ssz)
+			}
+		})
+	}
+}
+
+func TestMarshalExtendedTypes(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes())
+
+	for _, test := range commonExtendedTypesTestMatrix {
+		t.Run(test.name, func(t *testing.T) {
+			buf, err := dynssz.MarshalSSZ(test.payload)
+
+			switch {
+			case test.ssz == nil && err != nil:
+				// expected error
+			case err != nil:
+				t.Errorf("test %v error: %v", test.name, err)
+			case !bytes.Equal(buf, test.ssz):
+				t.Errorf("test %v failed: got 0x%x, wanted 0x%x", test.name, buf, test.ssz)
 			}
 		})
 	}
@@ -1016,6 +1037,482 @@ func TestMarshalEmptyDynamicList(t *testing.T) {
 	}
 	if !bytes.Equal(bufResult, expectedSSZ) {
 		t.Errorf("Expected SSZ: %x, got: %x", expectedSSZ, bufResult)
+	}
+}
+
+func TestMarshalExtendedTypesDisabled(t *testing.T) {
+	dynssz := NewDynSsz(nil) // no WithExtendedTypes()
+
+	testCases := []struct {
+		name        string
+		input       any
+		expectedErr string
+	}{
+		{
+			name:        "int8_disabled",
+			input:       int8(42),
+			expectedErr: "signed integers are not supported in SSZ",
+		},
+		{
+			name:        "int16_disabled",
+			input:       int16(42),
+			expectedErr: "signed integers are not supported in SSZ",
+		},
+		{
+			name:        "int32_disabled",
+			input:       int32(42),
+			expectedErr: "signed integers are not supported in SSZ",
+		},
+		{
+			name:        "int64_disabled",
+			input:       int64(42),
+			expectedErr: "signed integers are not supported in SSZ",
+		},
+		{
+			name:        "float32_disabled",
+			input:       float32(3.14),
+			expectedErr: "floating-point numbers are not supported in SSZ",
+		},
+		{
+			name:        "float64_disabled",
+			input:       float64(2.718),
+			expectedErr: "floating-point numbers are not supported in SSZ",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := dynssz.MarshalSSZ(tc.input)
+			if err == nil {
+				t.Errorf("expected error containing '%s', but got no error", tc.expectedErr)
+			} else if !contains(err.Error(), tc.expectedErr) {
+				t.Errorf("expected error containing '%s', but got: %v", tc.expectedErr, err)
+			}
+		})
+	}
+}
+
+func TestMarshalExtendedTypesVerbose(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz(), WithVerbose(), WithLogCb(func(format string, args ...any) {}))
+
+	for _, test := range commonExtendedTypesTestMatrix {
+		t.Run(test.name, func(t *testing.T) {
+			buf, err := dynssz.MarshalSSZ(test.payload)
+
+			switch {
+			case test.ssz == nil && err != nil:
+				// expected error
+			case err != nil:
+				t.Errorf("test %v error: %v", test.name, err)
+			case !bytes.Equal(buf, test.ssz):
+				t.Errorf("test %v failed: got 0x%x, wanted 0x%x", test.name, buf, test.ssz)
+			}
+		})
+	}
+}
+
+func TestMarshalExtendedTypesWriter(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	for _, test := range commonExtendedTypesTestMatrix {
+		t.Run(test.name, func(t *testing.T) {
+			memWriter := bytes.NewBuffer(nil)
+			err := dynssz.MarshalSSZWriter(test.payload, memWriter)
+
+			switch {
+			case test.ssz == nil && err != nil:
+				// expected error
+			case err != nil:
+				t.Errorf("test %v error: %v", test.name, err)
+			case !bytes.Equal(memWriter.Bytes(), test.ssz):
+				t.Errorf("test %v failed: got 0x%x, wanted 0x%x", test.name, memWriter.Bytes(), test.ssz)
+			}
+		})
+	}
+}
+
+func TestMarshalExtendedTypesNoFastSsz(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	for _, test := range commonExtendedTypesTestMatrix {
+		t.Run(test.name, func(t *testing.T) {
+			buf, err := dynssz.MarshalSSZ(test.payload)
+
+			switch {
+			case test.ssz == nil && err != nil:
+				// expected error
+			case err != nil:
+				t.Errorf("test %v error: %v", test.name, err)
+			case !bytes.Equal(buf, test.ssz):
+				t.Errorf("test %v failed: got 0x%x, wanted 0x%x", test.name, buf, test.ssz)
+			}
+		})
+	}
+}
+
+func TestDynamicEncoderError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	input := struct {
+		F1 *TestContainerWithDynamicEncoderError
+	}{}
+
+	memWriter := bytes.NewBuffer(nil)
+	err := dynssz.MarshalSSZWriter(input, memWriter)
+	if err == nil {
+		t.Error("expected error from DynamicEncoder")
+	}
+	if !contains(err.Error(), "test MarshalSSZEncoder error") {
+		t.Errorf("expected MarshalSSZEncoder error, got: %v", err)
+	}
+}
+
+func TestDynamicEncoderSeekablePrefersDynamicMarshal(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	input := struct {
+		Field0 uint32
+		Field1 TestContainerWithDynamicEncoderAndMarshaler
+	}{42, TestContainerWithDynamicEncoderAndMarshaler{Field0: 1, Field1: 2, Field2: true, Field3: 4}}
+
+	buf, err := dynssz.MarshalSSZ(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(buf) == 0 {
+		t.Error("buffer should not be empty")
+	}
+
+	memWriter := bytes.NewBuffer(nil)
+	err = dynssz.MarshalSSZWriter(input, memWriter)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !bytes.Equal(buf, memWriter.Bytes()) {
+		t.Errorf("seekable and non-seekable results differ: %x vs %x", buf, memWriter.Bytes())
+	}
+}
+
+func TestDynamicEncoderInterfaceFallback(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type FakeEncoder struct {
+		ID uint32
+	}
+
+	type Container struct {
+		Value FakeEncoder
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	fieldDesc := typeDesc.ContainerDesc.Fields[0].Type
+	fieldDesc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicEncoder
+
+	buf, err := dynssz.MarshalSSZ(Container{Value: FakeEncoder{ID: 42}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(buf) == 0 {
+		t.Error("buffer should not be empty")
+	}
+}
+
+func TestDynamicMarshalerInterfaceFallback(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type FakeMarshaler struct {
+		ID uint32
+	}
+
+	type Container struct {
+		Value FakeMarshaler
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	fieldDesc := typeDesc.ContainerDesc.Fields[0].Type
+	fieldDesc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicMarshaler
+
+	buf, err := dynssz.MarshalSSZ(Container{Value: FakeMarshaler{ID: 42}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(buf) == 0 {
+		t.Error("buffer should not be empty")
+	}
+}
+
+func TestMarshalTimeTypeAssertionFailure(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type FakeTime struct {
+		ID uint64
+	}
+
+	type Container struct {
+		Value FakeTime
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	fieldDesc := typeDesc.ContainerDesc.Fields[0].Type
+	fieldDesc.SszType = ssztypes.SszUint64Type
+	fieldDesc.GoTypeFlags |= ssztypes.GoTypeFlagIsTime
+
+	_, err = dynssz.MarshalSSZTo(Container{Value: FakeTime{ID: 42}}, make([]byte, 0, 100))
+	if err == nil {
+		t.Error("expected error for non-time.Time type")
+	}
+	if !contains(err.Error(), "time.Time type expected") {
+		t.Errorf("expected 'time.Time type expected' error, got: %v", err)
+	}
+}
+
+func TestMarshalOptionalError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	type Inner struct {
+		Value uint32
+	}
+
+	type Container struct {
+		Opt *Inner `ssz-type:"optional"`
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	optDesc := typeDesc.ContainerDesc.Fields[0].Type
+	optDesc.ElemDesc.SszType = ssztypes.SszCustomType
+	optDesc.ElemDesc.SszCompatFlags = 0
+
+	_, err = dynssz.MarshalSSZTo(Container{Opt: &Inner{Value: 42}}, make([]byte, 0, 100))
+	if err == nil {
+		t.Error("expected error for optional with invalid inner type")
+	}
+}
+
+func TestMarshalBigIntTypeAssertionFailure(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	type FakeBigInt struct {
+		ID uint32
+	}
+
+	type Container struct {
+		Value FakeBigInt
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	fieldDesc := typeDesc.ContainerDesc.Fields[0].Type
+	fieldDesc.SszType = ssztypes.SszBigIntType
+
+	_, err = dynssz.MarshalSSZTo(Container{Value: FakeBigInt{ID: 42}}, make([]byte, 0, 100))
+	if err == nil {
+		t.Error("expected error for non-big.Int type")
+	}
+	if !contains(err.Error(), "big.Int type expected") {
+		t.Errorf("expected 'big.Int type expected' error, got: %v", err)
+	}
+}
+
+func TestMarshalContainerNonSeekableDynamicFieldError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type DynElem struct {
+		Value uint32
+	}
+
+	type Container struct {
+		Static  uint32
+		Dynamic []DynElem `ssz-max:"10"`
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	listDesc := typeDesc.ContainerDesc.Fields[1].Type
+	listDesc.ElemDesc.SszType = ssztypes.SszCustomType
+	listDesc.ElemDesc.SszCompatFlags = 0
+	listDesc.ElemDesc.Size = 0
+	listDesc.ElemDesc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
+
+	memWriter := bytes.NewBuffer(nil)
+	err = dynssz.MarshalSSZWriter(Container{Static: 42, Dynamic: []DynElem{{Value: 1}}}, memWriter)
+	if err == nil {
+		t.Error("expected error for non-seekable dynamic field size error")
+	}
+}
+
+func TestMarshalDynamicVectorNonSeekableSizeError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type DynElem struct {
+		Value uint32
+	}
+
+	type Container struct {
+		Data []DynElem `ssz-size:"2"`
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	vecDesc := typeDesc.ContainerDesc.Fields[0].Type
+	vecDesc.ElemDesc.SszType = ssztypes.SszCustomType
+	vecDesc.ElemDesc.SszCompatFlags = 0
+	vecDesc.ElemDesc.Size = 0
+	vecDesc.ElemDesc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
+
+	memWriter := bytes.NewBuffer(nil)
+	err = dynssz.MarshalSSZWriter(Container{Data: []DynElem{{Value: 1}, {Value: 2}}}, memWriter)
+	if err == nil {
+		t.Error("expected error for non-seekable dynamic vector size error")
+	}
+}
+
+func TestMarshalDynamicVectorNonSeekableZeroElementSizeError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type DynElem struct {
+		Value uint32
+	}
+
+	type Container struct {
+		Data []DynElem `ssz-size:"3"`
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	vecDesc := typeDesc.ContainerDesc.Fields[0].Type
+	elemDescCopy := *vecDesc.ElemDesc
+	elemDescCopy.SszType = ssztypes.SszCustomType
+	elemDescCopy.SszCompatFlags = 0
+	elemDescCopy.Size = 0
+	elemDescCopy.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
+	vecDesc.ElemDesc = &elemDescCopy
+
+	memWriter := bytes.NewBuffer(nil)
+	err = dynssz.MarshalSSZWriter(Container{Data: []DynElem{}}, memWriter)
+	if err == nil {
+		t.Error("expected error for non-seekable dynamic vector zero element size error")
+	}
+}
+
+func TestMarshalDynamicVectorZeroElementMarshalError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type DynElem struct {
+		Value uint32
+	}
+
+	type Container struct {
+		Data []DynElem `ssz-size:"3"`
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	vecDesc := typeDesc.ContainerDesc.Fields[0].Type
+	vecDesc.ElemDesc.SszType = ssztypes.SszCustomType
+	vecDesc.ElemDesc.SszCompatFlags = 0
+	vecDesc.ElemDesc.Size = 0
+	vecDesc.ElemDesc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
+
+	_, err = dynssz.MarshalSSZTo(Container{Data: []DynElem{}}, make([]byte, 0, 100))
+	if err == nil {
+		t.Error("expected error for dynamic vector zero element marshal error")
+	}
+}
+
+func TestMarshalDynamicListNonSeekableSizeError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type DynElem struct {
+		Value uint32
+	}
+
+	type Container struct {
+		Data []DynElem `ssz-max:"10"`
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	listDesc := typeDesc.ContainerDesc.Fields[0].Type
+	elemDescCopy := *listDesc.ElemDesc
+	elemDescCopy.SszType = ssztypes.SszCustomType
+	elemDescCopy.SszCompatFlags = 0
+	elemDescCopy.Size = 0
+	elemDescCopy.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
+	listDesc.ElemDesc = &elemDescCopy
+
+	ctx := reflection.NewReflectionCtx(nil, nil, false, true)
+	encoder := sszutils.NewStreamEncoder(bytes.NewBuffer(nil))
+	data := []DynElem{{Value: 1}, {Value: 2}}
+	err = ctx.MarshalSSZ(listDesc, reflect.ValueOf(data), encoder)
+	if err == nil {
+		t.Error("expected error for non-seekable dynamic list size error")
+	}
+}
+
+func TestMarshalUnionMarshalTypeError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type UnionVariant struct {
+		Field1 uint32
+	}
+
+	type TestUnion = CompatibleUnion[UnionVariant]
+	type Container struct {
+		Field0 uint16
+		Field1 TestUnion
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	unionDesc := typeDesc.ContainerDesc.Fields[1].Type
+	variantDesc := unionDesc.UnionVariants[0]
+	variantDesc.SszType = ssztypes.SszCustomType
+	variantDesc.SszCompatFlags = 0
+
+	input := Container{
+		Field0: 0x1234,
+		Field1: TestUnion{Variant: 0, Data: UnionVariant{Field1: 42}},
+	}
+	_, err = dynssz.MarshalSSZTo(input, make([]byte, 0, 100))
+	if err == nil {
+		t.Error("expected error for union marshal type error")
 	}
 }
 

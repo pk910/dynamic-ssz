@@ -6,6 +6,7 @@ package reflection
 
 import (
 	"fmt"
+	"math/big"
 	"reflect"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
@@ -40,7 +41,7 @@ import (
 func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value) (uint32, error) {
 	staticSize := uint32(0)
 
-	if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+	if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && targetType.SszType != ssztypes.SszOptionalType {
 		if targetValue.IsNil() {
 			targetValue = reflect.New(targetType.Type.Elem()).Elem()
 		} else {
@@ -231,6 +232,39 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 			staticSize = 16
 		case ssztypes.SszUint256Type:
 			staticSize = 32
+
+		// extended types
+		case ssztypes.SszInt8Type:
+			staticSize = 1
+		case ssztypes.SszInt16Type:
+			staticSize = 2
+		case ssztypes.SszInt32Type:
+			staticSize = 4
+		case ssztypes.SszInt64Type:
+			staticSize = 8
+		case ssztypes.SszFloat32Type:
+			staticSize = 4
+		case ssztypes.SszFloat64Type:
+			staticSize = 8
+		case ssztypes.SszOptionalType:
+			if targetValue.IsNil() {
+				staticSize = 1
+			} else {
+				// Calculate size of the data
+				dataSize, err := ctx.getSszValueSize(targetType.ElemDesc, targetValue.Elem())
+				if err != nil {
+					return 0, fmt.Errorf("failed to get size of optional data: %w", err)
+				}
+
+				staticSize = dataSize + 1 // data size + 1 byte availability
+			}
+		case ssztypes.SszBigIntType:
+			bigInt, isBigInt := targetValue.Interface().(big.Int)
+			if !isBigInt {
+				return 0, fmt.Errorf("big.Int type expected, got %v", targetType.Type.Name())
+			}
+			bigIntBytes := bigInt.Bytes()
+			staticSize = uint32(len(bigIntBytes))
 
 		default:
 			return 0, fmt.Errorf("unhandled reflection kind in size check: %v", targetType.Kind)

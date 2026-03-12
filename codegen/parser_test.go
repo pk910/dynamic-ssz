@@ -2285,3 +2285,41 @@ func TestBuildUint256DescriptorSlices(t *testing.T) {
 		}
 	})
 }
+
+func TestParserListWithFixedSizeRejected(t *testing.T) {
+	parser := NewParser()
+
+	// ssz-type:"list" with a fixed ssz-size should be rejected
+	sliceType := types.NewSlice(types.Typ[types.Uint16])
+	typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszListType}}
+	sizeHint := []ssztypes.SszSizeHint{{Size: 4}}
+
+	_, err := parser.buildTypeDescriptor(sliceType, sliceType, typeHint, sizeHint, nil)
+	if err == nil {
+		t.Fatal("Expected error for list with fixed ssz-size")
+	}
+	if !strings.Contains(err.Error(), "list types cannot have a fixed ssz-size") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestParserListWithDynamicSizeAccepted(t *testing.T) {
+	parser := NewParser()
+
+	// ssz-type:"list" with dynamic ssz-size:"?" should be accepted
+	sliceType := types.NewSlice(types.Typ[types.Uint16])
+	typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszListType}}
+	sizeHint := []ssztypes.SszSizeHint{{Dynamic: true}}
+	maxHint := []ssztypes.SszMaxSizeHint{{Size: 10}}
+
+	desc, err := parser.buildTypeDescriptor(sliceType, sliceType, typeHint, sizeHint, maxHint)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if desc.SszType != ssztypes.SszListType {
+		t.Errorf("expected SszListType, got %v", desc.SszType)
+	}
+	if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
+		t.Error("list should have dynamic flag set")
+	}
+}

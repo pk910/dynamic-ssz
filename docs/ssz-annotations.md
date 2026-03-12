@@ -243,6 +243,14 @@ Explicitly specifies the SSZ type for a field.
 - `progressive-container` - Forward-compatible container
 - `compatible-union` or `union` - Variant type
 
+#### Extended Types (Non-Standard, requires `WithExtendedTypes()`)
+- `int8`, `int16`, `int32`, `int64` - Signed integers
+- `float32`, `float64` - Floating-point numbers
+- `bigint` - Arbitrary-precision integer (`math/big.Int`)
+- `optional` - Optional value (pointer type)
+
+See [Extended Types](extended-types.md) for details. These types are not part of the SSZ spec and are incompatible with other SSZ libraries.
+
 #### Special Types
 - `custom` - Type implements custom SSZ interfaces
 - `wrapper` or `type-wrapper` - Uses TypeWrapper pattern

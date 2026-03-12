@@ -1,6 +1,8 @@
 package tests
 
 import (
+	"math/big"
+
 	dynssz "github.com/pk910/dynamic-ssz"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
@@ -93,7 +95,7 @@ var SimpleTypes1_Payload = SimpleTypes1{
 	C2: SimpleTypes1_C1{
 		F1: 2,
 	},
-	LC1: []SimpleTypes1_C1{SimpleTypes1_C1{F1: 1}},
+	LC1: []SimpleTypes1_C1{{F1: 1}},
 	LC2: [][]*SimpleTypes1_C1{
 		{
 			&SimpleTypes1_C1{F1: 1},
@@ -425,4 +427,45 @@ var ViewTypes1_Payload = ViewTypes1_Base{
 		F1: 12345,
 		F2: []uint64{12345, 67890},
 	},
+}
+
+type ExtendedTypes1 struct {
+	I8   int8
+	I16  int16
+	I32  int32
+	I64  int64
+	F32  float32
+	F64  float64
+	Opt1 *uint64 `ssz-type:"optional"`
+	Opt2 *int32  `ssz-type:"optional"`
+	Big1 big.Int
+}
+
+var (
+	extOpt1 = uint64(12345)
+	extOpt2 = int32(-42)
+)
+
+var ExtendedTypes1_Payload1 = ExtendedTypes1{
+	I8:   -42,
+	I16:  -1337,
+	I32:  817482215,
+	I64:  -848028848028,
+	F32:  3.14,
+	F64:  2.718281828,
+	Opt1: &extOpt1,
+	Opt2: &extOpt2,
+	Big1: *big.NewInt(123456789),
+}
+
+var ExtendedTypes1_Payload2 = ExtendedTypes1{
+	I8:   0,
+	I16:  0,
+	I32:  0,
+	I64:  0,
+	F32:  0,
+	F64:  0,
+	Opt1: nil,
+	Opt2: nil,
+	Big1: *big.NewInt(0),
 }

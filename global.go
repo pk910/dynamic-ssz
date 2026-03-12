@@ -4,15 +4,42 @@
 
 package dynssz
 
-var globalDynSsz *DynSsz
+import (
+	"sync"
+	"sync/atomic"
+)
 
+var (
+	globalDynSsz atomic.Pointer[DynSsz]
+	globalMu     sync.Mutex
+)
+
+// GetGlobalDynSsz returns the global DynSsz instance, creating one with default
+// settings if none exists. Safe for concurrent use.
 func GetGlobalDynSsz() *DynSsz {
-	if globalDynSsz == nil {
-		globalDynSsz = NewDynSsz(nil)
+	if ds := globalDynSsz.Load(); ds != nil {
+		return ds
 	}
-	return globalDynSsz
+
+	globalMu.Lock()
+	defer globalMu.Unlock()
+
+	// Double-check after acquiring lock.
+	if ds := globalDynSsz.Load(); ds != nil {
+		return ds
+	}
+
+	ds := NewDynSsz(nil)
+	globalDynSsz.Store(ds)
+
+	return ds
 }
 
+// SetGlobalSpecs replaces the global DynSsz instance with a new one configured
+// with the given specification values. Safe for concurrent use.
 func SetGlobalSpecs(specs map[string]any) {
-	globalDynSsz = NewDynSsz(specs)
+	globalMu.Lock()
+	defer globalMu.Unlock()
+
+	globalDynSsz.Store(NewDynSsz(specs))
 }

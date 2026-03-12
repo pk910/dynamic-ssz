@@ -1274,6 +1274,99 @@ func TestTreeEdgeCases(t *testing.T) {
 	})
 }
 
+func TestProveIntermediateNodeSetsValue(t *testing.T) {
+	// Create a fresh tree and prove an intermediate node FIRST
+	// (before any Hash() calls) to hit the cur.value == nil branch (lines 574-576)
+	chunks := [][]byte{
+		sum256ToBytes([]byte("a")),
+		sum256ToBytes([]byte("b")),
+		sum256ToBytes([]byte("c")),
+		sum256ToBytes([]byte("d")),
+	}
+
+	tree, err := TreeFromChunks(chunks)
+	if err != nil {
+		t.Fatalf("failed to create tree: %v", err)
+	}
+
+	// Prove index 2 (left branch) on a fresh tree where branch values haven't been cached
+	proof, err := tree.Prove(2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if proof.Leaf == nil {
+		t.Fatal("proof leaf should not be nil for intermediate node")
+	}
+	if len(proof.Leaf) != 32 {
+		t.Fatalf("expected 32-byte leaf, got %d bytes", len(proof.Leaf))
+	}
+}
+
+func TestProveNilLeftChild(t *testing.T) {
+	// Create malformed tree: left is nil, right exists
+	rightLeaf := NewNodeWithValue(bytes.Repeat([]byte{1}, 32))
+	root := &Node{left: nil, right: rightLeaf}
+
+	// Index 3 (binary 11): pathLen=1, level 0 goes RIGHT, checks cur.left == nil → error
+	_, err := root.Prove(3)
+	if err == nil {
+		t.Fatal("expected error for nil left child")
+	}
+}
+
+func TestProveNilAfterTraversal(t *testing.T) {
+	// Create tree: left exists but right is nil
+	leftLeaf := NewNodeWithValue(bytes.Repeat([]byte{1}, 32))
+	root := &Node{left: leftLeaf, right: nil}
+
+	// Index 3: goes RIGHT, left != nil (sibling OK), cur = right = nil → error
+	_, err := root.Prove(3)
+	if err == nil {
+		t.Fatal("expected error for nil node after traversal")
+	}
+}
+
+func TestProveMultiMissingRequiredNode(t *testing.T) {
+	// Create tree where right child of root is nil, but left subtree has leaves
+	leaf4 := NewNodeWithValue(bytes.Repeat([]byte{1}, 32))
+	leaf5 := NewNodeWithValue(bytes.Repeat([]byte{2}, 32))
+	leftBranch := NewNodeWithLR(leaf4, leaf5)
+	root := &Node{left: leftBranch, right: nil}
+
+	// Prove [4, 5]: leaf Gets succeed, but getRequiredIndices([4,5])=[3]
+	// Get(3) traverses root→right which is nil → error at reqIndices Get
+	_, err := root.ProveMulti([]int{4, 5})
+	if err == nil {
+		t.Fatal("expected error for missing required node")
+	}
+}
+
+func TestProveMultiEmptyIndices(t *testing.T) {
+	tree := NewNodeWithValue(bytes.Repeat([]byte{1}, 32))
+
+	proof, err := tree.ProveMulti([]int{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(proof.Leaves) != 0 {
+		t.Error("expected empty leaves for empty indices")
+	}
+	if len(proof.Hashes) != 0 {
+		t.Error("expected empty hashes for empty indices")
+	}
+}
+
+func TestTreeFromNodesProgressiveImplEmpty(t *testing.T) {
+	// Directly call internal function with empty leaves to cover line 365-366
+	node, err := treeFromNodesProgressiveImpl(nil, 5)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !node.IsEmpty() {
+		t.Fatal("expected empty node for nil leaves")
+	}
+}
+
 func TestNodeShow(t *testing.T) {
 	// Create a simple tree for testing Show functionality
 	// We'll create a tree with leaves and branches to test the show output

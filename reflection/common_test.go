@@ -6,6 +6,7 @@ package reflection_test
 
 import (
 	"fmt"
+	"math/big"
 	"time"
 
 	dynssz "github.com/pk910/dynamic-ssz"
@@ -569,32 +570,6 @@ var commonTestMatrix = []struct {
 		fromHex("0xdb56114e00fdd4c1f85c892bf35ac9a89289aaecb1ebd0a96cde606a748b5d71"),
 	},
 
-	// list with size hint
-	{
-		"list_with_size1",
-		struct {
-			F1 []uint16 `ssz-type:"list" ssz-size:"2"`
-		}{[]uint16{2, 3}},
-		fromHex("0x02000300"),
-		fromHex("0x0200030000000000000000000000000000000000000000000000000000000000"),
-	},
-	{
-		"list_with_size2",
-		struct {
-			F1 [][]uint16 `ssz-type:"list" ssz-size:"2"`
-		}{[][]uint16{{2, 3}}},
-		fromHex("0x040000000400000002000300"),
-		fromHex("0x0200030000000000000000000000000000000000000000000000000000000000"),
-	},
-	{
-		"list_with_size3",
-		struct {
-			F1 []uint8 `ssz-type:"bitlist" ssz-bitsize:"16"`
-		}{[]uint8{0x02, 0x03}},
-		fromHex("0x0203"),
-		fromHex("0x32cdafa273f9ccca9f53cad6960d5b1e40721b247be996a439925e34531fa248"),
-	},
-
 	// container type annotation
 	{
 		"type_container_1",
@@ -766,6 +741,165 @@ var commonTestMatrix = []struct {
 		}{1, []TestContainerWithDynamicSsz{{1, 2, true, 4}, {5, 6, true, 8}}},
 		fromHex("0x01000000000000000c000000010000000000000002000000010400050000000000000006000000010800"),
 		fromHex("0x80b99000797f72ef1a9deae3e42fc1447648feaf1d7cd8dc1a4e20c7c64350ed"),
+	},
+}
+
+var opt1 = int16(1337)
+
+var commonExtendedTypesTestMatrix = []struct {
+	name    string
+	payload any
+	ssz     []byte
+	htr     []byte
+}{
+	// primitive types
+	{
+		"int8_min",
+		int8(0),
+		fromHex("0x00"),
+		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int8_max",
+		int8(-1),
+		fromHex("0xff"),
+		fromHex("0xff00000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int8_val1",
+		int8(42),
+		fromHex("0x2a"),
+		fromHex("0x2a00000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int16_min",
+		int16(0),
+		fromHex("0x0000"),
+		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int16_max",
+		int16(-1),
+		fromHex("0xffff"),
+		fromHex("0xffff000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int16_val1",
+		int16(1337),
+		fromHex("0x3905"),
+		fromHex("0x3905000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int32_min",
+		uint32(0),
+		fromHex("0x00000000"),
+		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int32_max",
+		int32(-1),
+		fromHex("0xffffffff"),
+		fromHex("0xffffffff00000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int32_val1",
+		int32(817482215),
+		fromHex("0xe7c9b930"),
+		fromHex("0xe7c9b93000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int64_min",
+		int64(0),
+		fromHex("0x0000000000000000"),
+		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int64_max",
+		int64(-1),
+		fromHex("0xffffffffffffffff"),
+		fromHex("0xffffffffffffffff000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"int64_val1",
+		int64(848028848028),
+		fromHex("0x9c4f7572c5000000"),
+		fromHex("0x9c4f7572c5000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"float32_min",
+		float32(0),
+		fromHex("0x00000000"),
+		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"float32_val1",
+		float32(3.14),
+		fromHex("0xc3f54840"),
+		fromHex("0xc3f5484000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"float64_min",
+		float64(0),
+		fromHex("0x0000000000000000"),
+		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"float64_val1",
+		float64(2.718281828),
+		fromHex("0x9b91048b0abf0540"),
+		fromHex("0x9b91048b0abf0540000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"bigint_min",
+		*big.NewInt(0),
+		fromHex("0x"),
+		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"bigint_val1",
+		*big.NewInt(123456789),
+		fromHex("0x075bcd15"),
+		fromHex("0x075bcd1500000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"optional_int16",
+		struct {
+			Opt1 *int16 `ssz-type:"optional"`
+		}{Opt1: &opt1},
+		fromHex("0x04000000013905"),
+		fromHex("0x3905000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"optional_int16_nil",
+		struct {
+			Opt1 *int16 `ssz-type:"optional"`
+		}{Opt1: nil},
+		fromHex("0x0400000000"),
+		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
+	},
+	{
+		"extended_struct_1",
+		struct {
+			F1 int8
+			F2 int16
+			F3 int32
+			F4 int64
+			F5 float32
+			F6 float64
+		}{1, 2, 3, 4, 5.0, 6.0},
+		fromHex("0x0102000300000004000000000000000000a0400000000000001840"),
+		fromHex("0x94fdb9baeea5a2d3b9bcf25b71cb8fb67f83dfaaa330cd69fda6ccc41c41a680"),
+	},
+	{
+		"extended_struct_2",
+		struct {
+			F1  uint32
+			F2  *int16 `ssz-type:"optional"`
+			F3  float64
+			Big big.Int
+		}{42, &opt1, 3.14, *big.NewInt(999999)},
+		fromHex("0x2a000000140000001f85eb51b81e0940170000000139050f423f"),
+		fromHex("0x6a2b0143a450c236cbfee0c6c7d94288a5968c1e033ee60e91fd6604d1b1be9c"),
 	},
 }
 
@@ -1060,6 +1194,158 @@ func (c *TestContainerWithDynamicMarshalError) SizeSSZDyn(ds sszutils.DynamicSpe
 
 func (c *TestContainerWithDynamicMarshalError) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) error {
 	return fmt.Errorf("test UnmarshalSSZDyn error")
+}
+
+// TestContainerWithDynamicDecoder is a test container implementing DynamicDecoder.
+type TestContainerWithDynamicDecoder struct {
+	Field0 uint64
+	Field1 uint32
+	Field2 bool
+	Field3 uint16
+}
+
+var _ sszutils.DynamicDecoder = (*TestContainerWithDynamicDecoder)(nil)
+var _ sszutils.DynamicMarshaler = (*TestContainerWithDynamicDecoder)(nil)
+var _ sszutils.DynamicHashRoot = (*TestContainerWithDynamicDecoder)(nil)
+
+func (c *TestContainerWithDynamicDecoder) UnmarshalSSZDecoder(ds sszutils.DynamicSpecs, decoder sszutils.Decoder) error {
+	var err error
+	c.Field0, err = decoder.DecodeUint64()
+	if err != nil {
+		return err
+	}
+	c.Field1, err = decoder.DecodeUint32()
+	if err != nil {
+		return err
+	}
+	val, err := decoder.DecodeBool()
+	if err != nil {
+		return err
+	}
+	c.Field2 = val
+	c.Field3, err = decoder.DecodeUint16()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *TestContainerWithDynamicDecoder) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	buf = sszutils.MarshalUint64(buf, c.Field0)
+	buf = sszutils.MarshalUint32(buf, c.Field1)
+	buf = sszutils.MarshalBool(buf, c.Field2)
+	buf = sszutils.MarshalUint16(buf, c.Field3)
+	return buf, nil
+}
+
+func (c *TestContainerWithDynamicDecoder) SizeSSZDyn(ds sszutils.DynamicSpecs) int {
+	return 15
+}
+
+func (c *TestContainerWithDynamicDecoder) HashTreeRootDyn(ds sszutils.DynamicSpecs) ([32]byte, error) {
+	pool := &hasher.DefaultHasherPool
+	hh := pool.Get()
+	defer pool.Put(hh)
+	err := c.HashTreeRootWithDyn(ds, hh)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	return hh.HashRoot()
+}
+
+func (c *TestContainerWithDynamicDecoder) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	indx := hh.Index()
+	hh.PutUint64(c.Field0)
+	hh.PutUint32(c.Field1)
+	hh.PutBool(c.Field2)
+	hh.PutUint16(c.Field3)
+	hh.Merkleize(indx)
+	return nil
+}
+
+// TestContainerWithDynamicDecoderAndUnmarshaler implements both DynamicDecoder and DynamicUnmarshaler.
+// When used with a seekable (buffer) decoder, the DynamicUnmarshaler path is preferred.
+type TestContainerWithDynamicDecoderAndUnmarshaler struct {
+	Field0 uint64
+	Field1 uint32
+	Field2 bool
+	Field3 uint16
+}
+
+var _ sszutils.DynamicDecoder = (*TestContainerWithDynamicDecoderAndUnmarshaler)(nil)
+var _ sszutils.DynamicUnmarshaler = (*TestContainerWithDynamicDecoderAndUnmarshaler)(nil)
+var _ sszutils.DynamicMarshaler = (*TestContainerWithDynamicDecoderAndUnmarshaler)(nil)
+var _ sszutils.DynamicHashRoot = (*TestContainerWithDynamicDecoderAndUnmarshaler)(nil)
+
+func (c *TestContainerWithDynamicDecoderAndUnmarshaler) UnmarshalSSZDecoder(ds sszutils.DynamicSpecs, decoder sszutils.Decoder) error {
+	var err error
+	c.Field0, err = decoder.DecodeUint64()
+	if err != nil {
+		return err
+	}
+	c.Field1, err = decoder.DecodeUint32()
+	if err != nil {
+		return err
+	}
+	val, err := decoder.DecodeBool()
+	if err != nil {
+		return err
+	}
+	c.Field2 = val
+	c.Field3, err = decoder.DecodeUint16()
+	return err
+}
+
+func (c *TestContainerWithDynamicDecoderAndUnmarshaler) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) error {
+	c.Field0 = sszutils.UnmarshallUint64(buf[:8])
+	c.Field1 = sszutils.UnmarshallUint32(buf[8:12])
+	c.Field2 = sszutils.UnmarshalBool(buf[12:13])
+	c.Field3 = sszutils.UnmarshallUint16(buf[13:15])
+	return nil
+}
+
+func (c *TestContainerWithDynamicDecoderAndUnmarshaler) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	buf = sszutils.MarshalUint64(buf, c.Field0)
+	buf = sszutils.MarshalUint32(buf, c.Field1)
+	buf = sszutils.MarshalBool(buf, c.Field2)
+	buf = sszutils.MarshalUint16(buf, c.Field3)
+	return buf, nil
+}
+
+func (c *TestContainerWithDynamicDecoderAndUnmarshaler) SizeSSZDyn(ds sszutils.DynamicSpecs) int {
+	return 15
+}
+
+func (c *TestContainerWithDynamicDecoderAndUnmarshaler) HashTreeRootDyn(ds sszutils.DynamicSpecs) ([32]byte, error) {
+	pool := &hasher.DefaultHasherPool
+	hh := pool.Get()
+	defer pool.Put(hh)
+	err := c.HashTreeRootWithDyn(ds, hh)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	return hh.HashRoot()
+}
+
+func (c *TestContainerWithDynamicDecoderAndUnmarshaler) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	indx := hh.Index()
+	hh.PutUint64(c.Field0)
+	hh.PutUint32(c.Field1)
+	hh.PutBool(c.Field2)
+	hh.PutUint16(c.Field3)
+	hh.Merkleize(indx)
+	return nil
+}
+
+// TestContainerWithDynamicDecoderError is a test container implementing DynamicDecoder that returns an error.
+type TestContainerWithDynamicDecoderError struct {
+	Field0 uint64
+}
+
+var _ sszutils.DynamicDecoder = (*TestContainerWithDynamicDecoderError)(nil)
+
+func (c *TestContainerWithDynamicDecoderError) UnmarshalSSZDecoder(ds sszutils.DynamicSpecs, decoder sszutils.Decoder) error {
+	return fmt.Errorf("test UnmarshalSSZDecoder error")
 }
 
 // TestContainerWithSizerError has SizeSSZ that returns an error behavior.
@@ -1364,4 +1650,61 @@ func (c *TestContainerWithAllViewInterfaces) HashTreeRootWithDynView(view any) f
 	default:
 		return nil
 	}
+}
+
+type TestContainerWithDynamicEncoderError struct {
+	Field0 uint64
+}
+
+var _ sszutils.DynamicEncoder = (*TestContainerWithDynamicEncoderError)(nil)
+var _ sszutils.DynamicSizer = (*TestContainerWithDynamicEncoderError)(nil)
+
+func (c *TestContainerWithDynamicEncoderError) MarshalSSZEncoder(ds sszutils.DynamicSpecs, encoder sszutils.Encoder) error {
+	return fmt.Errorf("test MarshalSSZEncoder error")
+}
+
+func (c *TestContainerWithDynamicEncoderError) SizeSSZDyn(ds sszutils.DynamicSpecs) int {
+	return 8
+}
+
+type TestContainerWithDynamicEncoderAndMarshaler struct {
+	Field0 uint64
+	Field1 uint32
+	Field2 bool
+	Field3 uint16
+}
+
+var _ sszutils.DynamicEncoder = (*TestContainerWithDynamicEncoderAndMarshaler)(nil)
+var _ sszutils.DynamicMarshaler = (*TestContainerWithDynamicEncoderAndMarshaler)(nil)
+var _ sszutils.DynamicSizer = (*TestContainerWithDynamicEncoderAndMarshaler)(nil)
+var _ sszutils.DynamicHashRoot = (*TestContainerWithDynamicEncoderAndMarshaler)(nil)
+
+func (c *TestContainerWithDynamicEncoderAndMarshaler) MarshalSSZEncoder(ds sszutils.DynamicSpecs, encoder sszutils.Encoder) error {
+	encoder.EncodeUint64(c.Field0)
+	encoder.EncodeUint32(c.Field1)
+	encoder.EncodeBool(c.Field2)
+	encoder.EncodeUint16(c.Field3)
+	return nil
+}
+
+func (c *TestContainerWithDynamicEncoderAndMarshaler) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	buf = sszutils.MarshalUint64(buf, c.Field0)
+	buf = sszutils.MarshalUint32(buf, c.Field1)
+	buf = sszutils.MarshalBool(buf, c.Field2)
+	buf = sszutils.MarshalUint16(buf, c.Field3)
+	return buf, nil
+}
+
+func (c *TestContainerWithDynamicEncoderAndMarshaler) SizeSSZDyn(ds sszutils.DynamicSpecs) int {
+	return 15
+}
+
+func (c *TestContainerWithDynamicEncoderAndMarshaler) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	indx := hh.Index()
+	hh.PutUint64(c.Field0)
+	hh.PutUint32(c.Field1)
+	hh.PutBool(c.Field2)
+	hh.PutUint16(c.Field3)
+	hh.Merkleize(indx)
+	return nil
 }

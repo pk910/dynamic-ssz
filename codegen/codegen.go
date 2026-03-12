@@ -79,6 +79,7 @@ type CodeGeneratorOptions struct {
 	CreateDecoderFn           bool
 	WithoutDynamicExpressions bool
 	NoFastSsz                 bool
+	ExtendedTypes             bool
 	SizeHints                 []ssztypes.SszSizeHint
 	MaxSizeHints              []ssztypes.SszMaxSizeHint
 	TypeHints                 []ssztypes.SszTypeHint
@@ -433,6 +434,18 @@ func WithCreateEncoderFn() CodeGeneratorOption {
 func WithCreateDecoderFn() CodeGeneratorOption {
 	return func(opts *CodeGeneratorOptions) {
 		opts.CreateDecoderFn = true
+	}
+}
+
+// WithExtendedTypes creates an option to generate code with extended types.
+//
+// When this option is enabled, the generator will generate code with extended types.
+//
+// Returns:
+//   - CodeGeneratorOption: A functional option that enables extended type generation
+func WithExtendedTypes() CodeGeneratorOption {
+	return func(opts *CodeGeneratorOptions) {
+		opts.ExtendedTypes = true
 	}
 }
 

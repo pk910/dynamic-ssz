@@ -124,6 +124,76 @@ func TestSizeSSZNoFastSsz(t *testing.T) {
 	}
 }
 
+func TestSizeSSZExtendedTypes(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes())
+
+	for _, test := range commonExtendedTypesTestMatrix {
+		t.Run(test.name, func(t *testing.T) {
+			size, err := dynssz.SizeSSZ(test.payload)
+
+			switch {
+			case test.ssz == nil && err != nil:
+				// expected error
+			case err != nil:
+				t.Errorf("test %v error: %v", test.name, err)
+			case size != len(test.ssz):
+				t.Errorf("test %v failed: got %d, wanted %d", test.name, size, len(test.ssz))
+			}
+		})
+	}
+}
+
+func TestSizeSSZExtendedTypesNoFastSsz(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	for _, test := range commonExtendedTypesTestMatrix {
+		t.Run(test.name, func(t *testing.T) {
+			size, err := dynssz.SizeSSZ(test.payload)
+
+			switch {
+			case test.ssz == nil && err != nil:
+				// expected error
+			case err != nil:
+				t.Errorf("test %v error: %v", test.name, err)
+			case size != len(test.ssz):
+				t.Errorf("test %v failed: got %d, wanted %d", test.name, size, len(test.ssz))
+			}
+		})
+	}
+}
+
+func TestSizeSSZExtendedTypesDisabled(t *testing.T) {
+	dynssz := NewDynSsz(nil) // no WithExtendedTypes()
+
+	testCases := []struct {
+		name        string
+		input       any
+		expectedErr string
+	}{
+		{
+			name:        "int8_disabled",
+			input:       int8(42),
+			expectedErr: "signed integers are not supported in SSZ",
+		},
+		{
+			name:        "float64_disabled",
+			input:       float64(2.718),
+			expectedErr: "floating-point numbers are not supported in SSZ",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := dynssz.SizeSSZ(tc.input)
+			if err == nil {
+				t.Errorf("expected error containing '%s', but got no error", tc.expectedErr)
+			} else if !contains(err.Error(), tc.expectedErr) {
+				t.Errorf("expected error containing '%s', but got: %v", tc.expectedErr, err)
+			}
+		})
+	}
+}
+
 func TestSizeSSZErrors(t *testing.T) {
 	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
@@ -366,6 +436,68 @@ func TestViewSizerFlagsDetection(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSizeSSZOptionalError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	type Inner struct {
+		Value uint32
+	}
+
+	type Container struct {
+		Opt *Inner `ssz-type:"optional"`
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	optDesc := typeDesc.ContainerDesc.Fields[0].Type
+	optDesc.ElemDesc.SszType = ssztypes.SszCustomType
+	optDesc.ElemDesc.SszCompatFlags = 0
+	optDesc.ElemDesc.Size = 0
+	optDesc.ElemDesc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
+
+	_, err = dynssz.SizeSSZ(Container{Opt: &Inner{Value: 42}})
+	if err == nil {
+		t.Error("expected error for optional with invalid inner type")
+	}
+	if !contains(err.Error(), "failed to get size of optional data") {
+		t.Errorf("expected optional size error, got: %v", err)
+	}
+}
+
+func TestSizeSSZBigIntTypeAssertionFailure(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	type FakeBigInt struct {
+		ID uint32
+	}
+
+	type Container struct {
+		Value FakeBigInt
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	fieldDesc := typeDesc.ContainerDesc.Fields[0].Type
+	fieldDesc.SszType = ssztypes.SszBigIntType
+	fieldDesc.SszCompatFlags = 0
+	fieldDesc.Size = 0
+	fieldDesc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
+
+	_, err = dynssz.SizeSSZ(Container{Value: FakeBigInt{ID: 42}})
+	if err == nil {
+		t.Error("expected error for non-big.Int type")
+	}
+	if !contains(err.Error(), "big.Int type expected") {
+		t.Errorf("expected 'big.Int type expected' error, got: %v", err)
 	}
 }
 

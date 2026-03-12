@@ -145,7 +145,6 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 			appendCode(codeBuilder, 0, "func (t %s) %s(_ sszutils.DynamicSpecs) (size int) {\n", typeName, fnName)
 			appendCode(codeBuilder, 1, "return t.SizeSSZ()\n")
 			appendCode(codeBuilder, 0, "}\n\n")
-			genStaticFn = true
 		}
 	}
 
@@ -237,7 +236,7 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName string, 
 	}
 
 	// create temporary instance for nil pointers
-	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.SszType != ssztypes.SszOptionalType {
 		if len(varName) > 1 {
 			ctx.appendCode(indent, "t := %s\n", varName)
 			varName = "t"
@@ -282,10 +281,40 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName string, 
 	case ssztypes.SszCustomType:
 		ctx.appendCode(indent, "// Custom type - size unknown\n")
 
+	// extended types
+	case ssztypes.SszInt8Type:
+		ctx.appendCode(indent, "%s += 1\n", sizeVar)
+	case ssztypes.SszInt16Type:
+		ctx.appendCode(indent, "%s += 2\n", sizeVar)
+	case ssztypes.SszInt32Type:
+		ctx.appendCode(indent, "%s += 4\n", sizeVar)
+	case ssztypes.SszInt64Type:
+		ctx.appendCode(indent, "%s += 8\n", sizeVar)
+	case ssztypes.SszFloat32Type:
+		ctx.appendCode(indent, "%s += 4\n", sizeVar)
+	case ssztypes.SszFloat64Type:
+		ctx.appendCode(indent, "%s += 8\n", sizeVar)
+	case ssztypes.SszOptionalType:
+		return ctx.sizeOptional(desc, varName, sizeVar, indent)
+	case ssztypes.SszBigIntType:
+		ctx.appendCode(indent, "%s += len(%s.Bytes())\n", sizeVar, varName)
+
 	default:
 		return fmt.Errorf("unsupported SSZ type: %v", desc.SszType)
 	}
 
+	return nil
+}
+
+// sizeOptional generates size calculation code for SSZ optional types.
+func (ctx *sizeContext) sizeOptional(desc *ssztypes.TypeDescriptor, varName string, sizeVar string, indent int) error {
+	ctx.appendCode(indent, "%s += 1 // presence byte\n", sizeVar)
+	ctx.appendCode(indent, "if %s != nil {\n", varName)
+	innerVarName := fmt.Sprintf("(*%s)", varName)
+	if err := ctx.sizeType(desc.ElemDesc, innerVarName, sizeVar, indent+1, false); err != nil {
+		return err
+	}
+	ctx.appendCode(indent, "}\n")
 	return nil
 }
 
@@ -424,8 +453,13 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName string
 
 			// Add size for zero-padding
 			ctx.appendCode(indent, "if vlen < %s {\n", limitVar)
-			typeName := ctx.typePrinter.InnerTypeString(desc.ElemDesc)
-			ctx.appendCode(indent, "\tzeroItem := &%s{}\n", typeName)
+			if desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+				typeName := ctx.typePrinter.InnerTypeString(desc.ElemDesc)
+				ctx.appendCode(indent, "\tzeroItem := &%s{}\n", typeName)
+			} else {
+				typeName := ctx.typePrinter.TypeString(desc.ElemDesc)
+				ctx.appendCode(indent, "\tvar zeroItem %s\n", typeName)
+			}
 			innerSizeVar := ctx.getSizeVar()
 			ctx.appendCode(indent, "\t%s := 0\n", innerSizeVar)
 			if err := ctx.sizeType(desc.ElemDesc, "zeroItem", innerSizeVar, indent+1, false); err != nil {
@@ -443,7 +477,17 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName string
 func (ctx *sizeContext) sizeList(desc *ssztypes.TypeDescriptor, varName string, sizeVar string, indent int) error {
 	// For byte slices, size is just the length
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
-		ctx.appendCode(indent, "%s += len(%s)\n", sizeVar, ctx.getValueVar(desc, varName, ""))
+		valueVar := ctx.getValueVar(desc, varName, "")
+		if desc.SszType == ssztypes.SszBitlistType || desc.SszType == ssztypes.SszProgressiveBitlistType {
+			// Bitlists always have at least 1 byte (sentinel byte for empty bitlists)
+			ctx.appendCode(indent, "if len(%s) == 0 {\n", valueVar)
+			ctx.appendCode(indent, "\t%s += 1\n", sizeVar)
+			ctx.appendCode(indent, "} else {\n")
+			ctx.appendCode(indent, "\t%s += len(%s)\n", sizeVar, valueVar)
+			ctx.appendCode(indent, "}\n")
+		} else {
+			ctx.appendCode(indent, "%s += len(%s)\n", sizeVar, valueVar)
+		}
 		return nil
 	}
 

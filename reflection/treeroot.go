@@ -6,6 +6,8 @@ package reflection
 
 import (
 	"fmt"
+	"math"
+	"math/big"
 	"reflect"
 	"strings"
 	"time"
@@ -40,7 +42,7 @@ import (
 func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, pack bool, idt int) error {
 	hashIndex := hh.Index()
 
-	if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+	if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && sourceType.SszType != ssztypes.SszOptionalType {
 		if sourceValue.IsNil() {
 			sourceValue = reflect.New(sourceType.Type.Elem()).Elem()
 		} else {
@@ -202,6 +204,54 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 			}
 		case ssztypes.SszUint128Type, ssztypes.SszUint256Type:
 			err := ctx.buildRootFromLargeUint(sourceType, sourceValue, hh, pack, idt)
+			if err != nil {
+				return err
+			}
+
+		// extended types
+		case ssztypes.SszInt8Type:
+			if pack {
+				hh.AppendUint8(uint8(sourceValue.Int()))
+			} else {
+				hh.PutUint8(uint8(sourceValue.Int()))
+			}
+		case ssztypes.SszInt16Type:
+			if pack {
+				hh.AppendUint16(uint16(sourceValue.Int()))
+			} else {
+				hh.PutUint16(uint16(sourceValue.Int()))
+			}
+		case ssztypes.SszInt32Type:
+			if pack {
+				hh.AppendUint32(uint32(sourceValue.Int()))
+			} else {
+				hh.PutUint32(uint32(sourceValue.Int()))
+			}
+		case ssztypes.SszInt64Type:
+			if pack {
+				hh.AppendUint64(uint64(sourceValue.Int()))
+			} else {
+				hh.PutUint64(uint64(sourceValue.Int()))
+			}
+		case ssztypes.SszFloat32Type:
+			if pack {
+				hh.AppendUint32(math.Float32bits(float32(sourceValue.Float())))
+			} else {
+				hh.PutUint32(math.Float32bits(float32(sourceValue.Float())))
+			}
+		case ssztypes.SszFloat64Type:
+			if pack {
+				hh.AppendUint64(math.Float64bits(sourceValue.Float()))
+			} else {
+				hh.PutUint64(math.Float64bits(sourceValue.Float()))
+			}
+		case ssztypes.SszOptionalType:
+			err := ctx.buildRootFromOptional(sourceType, sourceValue, hh, idt)
+			if err != nil {
+				return err
+			}
+		case ssztypes.SszBigIntType:
+			err := ctx.buildRootFromBigInt(sourceType, sourceValue, hh, idt)
 			if err != nil {
 				return err
 			}
@@ -729,5 +779,59 @@ func (ctx *ReflectionCtx) buildRootFromBitlist(sourceType *ssztypes.TypeDescript
 		hh.MerkleizeWithMixin(indx, size, (maxSize+255)/256)
 	}
 
+	return nil
+}
+
+// buildRootFromOptional computes the hash tree root for ssz optionals.
+//
+// Optionals in SSZ are hashed as follows:
+//   - The optional is hashed as the data field if it is not nil
+//   - The optional is hashed as uint8(0) value if it is nil
+//
+// Parameters:
+//   - sourceType: The TypeDescriptor containing optional metadata
+//   - sourceValue: The reflect.Value of the optional to hash
+//   - hh: The Hasher instance for hash computation
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - error: An error if hashing fails
+func (ctx *ReflectionCtx) buildRootFromOptional(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
+	if sourceValue.IsNil() {
+		hh.PutUint8(0)
+		return nil
+	}
+
+	err := ctx.buildRootFromType(sourceType.ElemDesc, sourceValue.Elem(), hh, false, idt+2)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// buildRootFromBigInt computes the hash tree root for ssz big ints.
+//
+// Big ints in SSZ are hashed as follows:
+//   - The big int is hashed as the bytes of the big int
+//
+// Parameters:
+//   - sourceType: The TypeDescriptor containing big int metadata
+//   - sourceValue: The reflect.Value of the big int to hash
+//   - hh: The Hasher instance for hash computation
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - error: An error if hashing fails
+func (ctx *ReflectionCtx) buildRootFromBigInt(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
+	bigInt, isBigInt := sourceValue.Interface().(big.Int)
+	if !isBigInt {
+		return fmt.Errorf("big.Int type expected, got %v", sourceType.Type.Name())
+	}
+	bigIntBytes := bigInt.Bytes()
+	if len(bigIntBytes) == 0 {
+		bigIntBytes = make([]byte, 1)
+	}
+	hh.PutBytes(bigIntBytes)
 	return nil
 }
