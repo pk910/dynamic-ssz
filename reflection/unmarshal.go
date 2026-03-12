@@ -200,15 +200,7 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 
 			if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsTime != 0 {
 				timeVal := time.Unix(int64(val), 0)
-				var timeRefVal reflect.Value
-				if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
-					timeRefVal = reflect.New(targetType.Type.Elem())
-					timeRefVal.Elem().Set(reflect.ValueOf(timeVal))
-				} else {
-					timeRefVal = reflect.ValueOf(timeVal)
-				}
-
-				targetValue.Set(timeRefVal)
+				targetValue.Set(reflect.ValueOf(timeVal))
 			} else {
 				targetValue.SetUint(uint64(val))
 			}

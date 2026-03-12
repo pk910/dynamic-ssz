@@ -124,13 +124,13 @@ func (e *StreamDecoder) ensureBuffered(n int) error {
 	readBuf := e.buffer[e.bufferLen : e.bufferLen+toRead]
 	totalRead := 0
 	for totalRead < toRead {
-		n, err := e.reader.Read(readBuf[totalRead:])
-		totalRead += n
-		e.bufferLen += n
+		nr, err := e.reader.Read(readBuf[totalRead:])
+		totalRead += nr
+		e.bufferLen += nr
 
 		if err != nil {
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
-				if e.bufferLen-e.bufferPos >= needed {
+				if e.bufferLen-e.bufferPos >= n {
 					return nil
 				}
 				return ErrUnexpectedEOF
@@ -140,8 +140,8 @@ func (e *StreamDecoder) ensureBuffered(n int) error {
 
 		// If reader returned 0 bytes without error, it's an unusual case
 		// Check if we have enough data, otherwise return EOF
-		if n == 0 {
-			if e.bufferLen-e.bufferPos >= needed {
+		if nr == 0 {
+			if e.bufferLen-e.bufferPos >= n {
 				return nil
 			}
 			return ErrUnexpectedEOF

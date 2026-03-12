@@ -6,6 +6,7 @@ package reflection_test
 
 import (
 	"bytes"
+	"math/big"
 	"reflect"
 	"testing"
 
@@ -1355,6 +1356,269 @@ func TestUnmarshalExtendedTypesReaderErrors(t *testing.T) {
 				t.Errorf("expected error containing '%s', but got: %v", tc.expectedErr, err)
 			}
 		})
+	}
+}
+
+func TestUnmarshalTruncatedReaderErrors(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+	dynssz_fastssz := NewDynSsz(nil)
+	dynssz_ext := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	type ByteVectorContainer struct {
+		Data [8]byte
+	}
+	type StringVectorContainer struct {
+		Data string `ssz-size:"8"`
+	}
+	type DynFieldContainer struct {
+		F1 uint32
+		F2 []uint8 `ssz-max:"100"`
+	}
+	type DynVectorContainer struct {
+		Items [2]struct {
+			Inner []uint8 `ssz-max:"10"`
+		}
+	}
+	type DynStringContainer struct {
+		Value string `ssz-max:"100"`
+	}
+	type ByteListContainer struct {
+		Data []byte `ssz-max:"100"`
+	}
+	type DynListContainer struct {
+		Items []struct {
+			Inner []uint8 `ssz-max:"10"`
+		} `ssz-max:"10"`
+	}
+	type BitlistContainer struct {
+		Data []byte `ssz-type:"bitlist"`
+	}
+	type UnionInner struct {
+		A uint32
+		B uint64
+	}
+	type UnionContainer struct {
+		Data CompatibleUnion[UnionInner]
+	}
+	type OptionalContainer struct {
+		Opt *uint32 `ssz-type:"optional"`
+	}
+	type BigIntContainer struct {
+		Value big.Int `ssz-max:"256"`
+	}
+
+	marshalValid := func(t *testing.T, d *DynSsz, v any) []byte {
+		t.Helper()
+		data, err := d.MarshalSSZ(v)
+		if err != nil {
+			t.Fatalf("marshal error: %v", err)
+		}
+		return data
+	}
+
+	testCases := []struct {
+		name        string
+		dynssz      *DynSsz
+		target      func() any
+		fullData    func(t *testing.T) []byte
+		truncateAt  int
+		expectedErr string
+	}{
+		{
+			name:   "fastssz_decode_bytes_buf_error",
+			dynssz: dynssz_fastssz,
+			target: func() any { return new(TestContainerWithFastSsz) },
+			fullData: func(t *testing.T) []byte {
+				return marshalValid(t, dynssz_fastssz, &TestContainerWithFastSsz{1, 2, true, 4})
+			},
+			truncateAt:  5,
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name:   "dynssz_decode_bytes_buf_error",
+			dynssz: dynssz,
+			target: func() any { return new(TestContainerWithDynamicSsz) },
+			fullData: func(t *testing.T) []byte {
+				return marshalValid(t, dynssz, &TestContainerWithDynamicSsz{1, 2, true, 4})
+			},
+			truncateAt:  5,
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name:   "container_dynamic_offset_non_seekable",
+			dynssz: dynssz,
+			target: func() any { return new(DynFieldContainer) },
+			fullData: func(t *testing.T) []byte {
+				return marshalValid(t, dynssz, &DynFieldContainer{42, []uint8{1, 2, 3}})
+			},
+			truncateAt:  6,
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name:   "string_vector_decode_error",
+			dynssz: dynssz,
+			target: func() any { return new(StringVectorContainer) },
+			fullData: func(t *testing.T) []byte {
+				return marshalValid(t, dynssz, &StringVectorContainer{"abcdefgh"})
+			},
+			truncateAt:  4,
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name:   "byte_vector_decode_error",
+			dynssz: dynssz,
+			target: func() any { return new(ByteVectorContainer) },
+			fullData: func(t *testing.T) []byte {
+				return marshalValid(t, dynssz, &ByteVectorContainer{[8]byte{1, 2, 3, 4, 5, 6, 7, 8}})
+			},
+			truncateAt:  4,
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name:   "dynamic_vector_offset_non_seekable",
+			dynssz: dynssz,
+			target: func() any { return new(DynVectorContainer) },
+			fullData: func(t *testing.T) []byte {
+				return marshalValid(t, dynssz, &DynVectorContainer{Items: [2]struct {
+					Inner []uint8 `ssz-max:"10"`
+				}{{[]uint8{1, 2}}, {[]uint8{3, 4, 5}}}})
+			},
+			truncateAt:  5,
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name:   "dynamic_string_decode_error",
+			dynssz: dynssz,
+			target: func() any { return new(DynStringContainer) },
+			fullData: func(t *testing.T) []byte {
+				return marshalValid(t, dynssz, &DynStringContainer{Value: "hello world"})
+			},
+			truncateAt:  6,
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name:   "byte_list_decode_error",
+			dynssz: dynssz,
+			target: func() any { return new(ByteListContainer) },
+			fullData: func(t *testing.T) []byte {
+				return marshalValid(t, dynssz, &ByteListContainer{Data: []byte{1, 2, 3, 4, 5, 6, 7, 8}})
+			},
+			truncateAt:  4,
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name:   "dynamic_list_first_offset_error",
+			dynssz: dynssz,
+			target: func() any { return new(DynListContainer) },
+			fullData: func(t *testing.T) []byte {
+				return marshalValid(t, dynssz, &DynListContainer{Items: []struct {
+					Inner []uint8 `ssz-max:"10"`
+				}{{[]uint8{1}}}})
+			},
+			truncateAt:  5,
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name:   "dynamic_list_subsequent_offset_error",
+			dynssz: dynssz,
+			target: func() any { return new(DynListContainer) },
+			fullData: func(t *testing.T) []byte {
+				return marshalValid(t, dynssz, &DynListContainer{Items: []struct {
+					Inner []uint8 `ssz-max:"10"`
+				}{{[]uint8{1}}, {[]uint8{2}}}})
+			},
+			truncateAt:  9,
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name:   "bitlist_decode_bytes_error",
+			dynssz: dynssz,
+			target: func() any { return new(BitlistContainer) },
+			fullData: func(t *testing.T) []byte {
+				return marshalValid(t, dynssz, &BitlistContainer{Data: []byte{0xff, 0x01}})
+			},
+			truncateAt:  5,
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name:   "union_variant_decode_error",
+			dynssz: dynssz,
+			target: func() any { return new(UnionContainer) },
+			fullData: func(t *testing.T) []byte {
+				// selector(1) + uint32(4) + uint64(8) = 13 bytes for union data
+				// container offset(4) + union data(13) = 17 bytes total
+				return fromHex("0x04000000" + "00" + "01000000" + "0200000000000000")
+			},
+			truncateAt:  4,
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name:   "optional_availability_decode_error",
+			dynssz: dynssz_ext,
+			target: func() any { return new(OptionalContainer) },
+			fullData: func(t *testing.T) []byte {
+				v := uint32(42)
+				return marshalValid(t, dynssz_ext, &OptionalContainer{Opt: &v})
+			},
+			truncateAt:  4,
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name:   "bigint_decode_bytes_buf_error",
+			dynssz: dynssz_ext,
+			target: func() any { return new(BigIntContainer) },
+			fullData: func(t *testing.T) []byte {
+				return marshalValid(t, dynssz_ext, &BigIntContainer{Value: *big.NewInt(42)})
+			},
+			truncateAt:  4,
+			expectedErr: "unexpected end of SSZ",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			fullData := tc.fullData(t)
+			truncated := fullData[:tc.truncateAt]
+			target := tc.target()
+
+			err := tc.dynssz.UnmarshalSSZReader(target, bytes.NewReader(truncated), len(fullData))
+			if err == nil {
+				t.Errorf("expected error containing '%s', but got no error", tc.expectedErr)
+			} else if !contains(err.Error(), tc.expectedErr) {
+				t.Errorf("expected error containing '%s', but got: %v", tc.expectedErr, err)
+			}
+		})
+	}
+}
+
+func TestUnmarshalDynamicDecoderInterfaceCheckFailure(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type PlainStruct struct {
+		Field0 uint64
+	}
+
+	// Get descriptor for both value and pointer types and set flag on both
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(PlainStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+	typeDesc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicDecoder
+
+	ptrDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(&PlainStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get pointer type descriptor: %v", err)
+	}
+	ptrDesc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicDecoder
+
+	data := fromHex("0x0100000000000000")
+	var result PlainStruct
+	err = dynssz.UnmarshalSSZ(&result, data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Field0 != 1 {
+		t.Errorf("expected Field0=1, got %d", result.Field0)
 	}
 }
 
