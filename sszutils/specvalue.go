@@ -4,6 +4,8 @@
 
 package sszutils
 
+// ResolveSpecValueWithDefault resolves a named specification value using ds,
+// returning defaultValue if the name is not found.
 func ResolveSpecValueWithDefault(ds DynamicSpecs, name string, defaultValue uint64) (uint64, error) {
 	hasLimit, limit, err := ds.ResolveSpecValue(name)
 	if err != nil {

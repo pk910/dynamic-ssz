@@ -14,6 +14,9 @@ const (
 	maxDecoderBufferSize = 2 * 1024 // 2KB
 )
 
+// StreamDecoder is a non-seekable Decoder implementation that reads SSZ data
+// from an io.Reader. It uses an internal buffer for efficient sequential reads
+// but does not support DecodeOffsetAt or SkipBytes.
 type StreamDecoder struct {
 	reader    io.Reader
 	limits    []int
@@ -29,6 +32,9 @@ type StreamDecoder struct {
 
 var _ Decoder = (*StreamDecoder)(nil)
 
+// NewStreamDecoder creates a new StreamDecoder that reads SSZ data from the
+// provided io.Reader. totalLen specifies the total expected byte length of the
+// SSZ payload.
 func NewStreamDecoder(reader io.Reader, totalLen int) *StreamDecoder {
 	// Use smaller buffer for small streams
 	bufferSize := maxDecoderBufferSize

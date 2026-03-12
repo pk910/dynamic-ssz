@@ -4,6 +4,8 @@
 
 package sszutils
 
+// Encoder is the interface for writing SSZ-encoded data. It supports both
+// seekable (buffer-backed) and non-seekable (stream-backed) implementations.
 type Encoder interface {
 	Seekable() bool // can use EncodeOffsetAt()
 	GetPosition() int

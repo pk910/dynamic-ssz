@@ -2,6 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // This file is part of the dynamic-ssz library.
 
+// Package ssztypes provides SSZ type descriptors, caching, and struct tag
+// parsing for the dynamic-ssz library.
+//
+// It defines the core type system used to describe how Go types map to SSZ
+// encoding: containers, lists, vectors, bitlists, bitvectors, unions, and
+// all basic SSZ types. Type descriptors are computed from Go reflect types
+// and SSZ struct tags (ssz-size, ssz-max, dynssz-size, dynssz-max, etc.)
+// and cached in a TypeCache for reuse.
 package ssztypes
 
 import (
@@ -36,6 +44,8 @@ const (
 	SszCompatFlagDynamicDecoder                               // Whether the type implements DynamicDecoder
 )
 
+// GoTypeFlag is a bitmask indicating Go-specific type properties that affect
+// SSZ encoding behavior.
 type GoTypeFlag uint8
 
 const (

@@ -6,6 +6,13 @@
 // Licensed under the MIT License
 // The code has been modified for dynamic-ssz needs.
 
+// Package hasher provides SSZ merkle tree hashing utilities.
+//
+// It implements the SSZ hash tree root computation including merkleization,
+// mixin with length, progressive merkleization, and bitlist handling.
+// The package provides pooled hashers for efficient reuse and supports
+// both the native Go sha256 implementation and the accelerated hashtree
+// library via cgo.
 package hasher
 
 import (
@@ -64,11 +71,15 @@ func initHasher() {
 	}
 }
 
+// GetZeroHashLevel returns the merkle tree depth level for a known zero hash.
+// Returns the level and true if the hash is a recognized zero hash, or 0 and
+// false otherwise.
 func GetZeroHashLevel(hash string) (int, bool) {
 	level, ok := zeroHashLevels[hash]
 	return level, ok
 }
 
+// GetZeroHash returns the precomputed zero hash at the given merkle tree depth.
 func GetZeroHash(depth int) []byte {
 	if !hasherInitialized {
 		initHasher()
@@ -76,6 +87,8 @@ func GetZeroHash(depth int) []byte {
 	return zeroHashes[depth][:]
 }
 
+// GetZeroHashes returns the full array of precomputed zero hashes for all 65
+// merkle tree depth levels.
 func GetZeroHashes() [65][32]byte {
 	return zeroHashes
 }
@@ -84,6 +97,9 @@ func logfn(format string, a ...any) {
 	fmt.Printf(format, a...)
 }
 
+// HashFn is a function that hashes pairs of 32-byte chunks from input into dst.
+// It processes the input as consecutive 64-byte pairs and writes each 32-byte
+// hash result into dst.
 type HashFn func(dst []byte, input []byte) error
 
 // NativeHashWrapper wraps a hash.Hash function into a HashFn
@@ -107,6 +123,9 @@ func NativeHashWrapper(hashFn hash.Hash) HashFn {
 	}
 }
 
+// WithDefaultHasher acquires a Hasher from the FastHasherPool, passes it to
+// fn, and returns it to the pool when done. This is a convenience wrapper for
+// one-off hashing operations.
 func WithDefaultHasher(fn func(hh sszutils.HashWalker) error) error {
 	hh := FastHasherPool.Get()
 	defer func() {
@@ -175,6 +194,9 @@ func NewHasherWithHashFn(hh HashFn) *Hasher {
 	}
 }
 
+// WithTemp provides access to the hasher's temporary buffer for use in
+// callback fn. The callback receives the tmp buffer and must return a
+// (possibly reallocated) replacement.
 func (h *Hasher) WithTemp(fn func(tmp []byte) []byte) {
 	h.tmp = fn(h.tmp)
 }
@@ -184,6 +206,8 @@ func (h *Hasher) Reset() {
 	h.buf = h.buf[:0]
 }
 
+// AppendBytes32 appends b to the hash buffer, right-padding with zeros to
+// align to a 32-byte boundary.
 func (h *Hasher) AppendBytes32(b []byte) {
 	h.buf = append(h.buf, b...)
 	if rest := len(b) % 32; rest != 0 {
@@ -216,6 +240,8 @@ func (h *Hasher) PutUint8(i uint8) {
 	h.AppendBytes32(h.tmp[:1])
 }
 
+// FillUpTo32 pads the hash buffer with zero bytes to align to a 32-byte
+// boundary.
 func (h *Hasher) FillUpTo32() {
 	// pad zero bytes to the left
 	if rest := len(h.buf) % 32; rest != 0 {
@@ -223,6 +249,8 @@ func (h *Hasher) FillUpTo32() {
 	}
 }
 
+// AppendBool appends a single byte (0 or 1) representing the boolean value
+// to the hash buffer without 32-byte padding.
 func (h *Hasher) AppendBool(b bool) {
 	if b {
 		h.buf = append(h.buf, 1)
@@ -231,22 +259,31 @@ func (h *Hasher) AppendBool(b bool) {
 	}
 }
 
+// AppendUint8 appends a uint8 as a single byte to the hash buffer without
+// 32-byte padding.
 func (h *Hasher) AppendUint8(i uint8) {
 	h.buf = sszutils.MarshalUint8(h.buf, i)
 }
 
+// AppendUint16 appends a little-endian uint16 to the hash buffer without
+// 32-byte padding.
 func (h *Hasher) AppendUint16(i uint16) {
 	h.buf = sszutils.MarshalUint16(h.buf, i)
 }
 
+// AppendUint32 appends a little-endian uint32 to the hash buffer without
+// 32-byte padding.
 func (h *Hasher) AppendUint32(i uint32) {
 	h.buf = sszutils.MarshalUint32(h.buf, i)
 }
 
+// AppendUint64 appends a little-endian uint64 to the hash buffer without
+// 32-byte padding.
 func (h *Hasher) AppendUint64(i uint64) {
 	h.buf = sszutils.MarshalUint64(h.buf, i)
 }
 
+// Append appends raw bytes directly to the hash buffer without any padding.
 func (h *Hasher) Append(i []byte) {
 	h.buf = append(h.buf, i...)
 }
@@ -335,6 +372,9 @@ func ParseBitlist(dst, buf []byte) ([]byte, uint64) {
 	return res, size
 }
 
+// ParseBitlistWithHasher decodes an SSZ-encoded bitlist using the hasher's
+// temporary buffer to avoid allocations. It returns the raw bit data and the
+// logical bit count, same as ParseBitlist.
 func ParseBitlistWithHasher(hw sszutils.HashWalker, buf []byte) ([]byte, uint64) {
 	if h, ok := hw.(*Hasher); ok {
 		var size uint64
@@ -369,6 +409,8 @@ func (h *Hasher) PutBitlist(bb []byte, maxSize uint64) {
 	h.MerkleizeWithMixin(indx, size, (maxSize+255)/256)
 }
 
+// PutProgressiveBitlist appends an SSZ bitlist and merkleizes it using
+// progressive merkleization with a length mixin.
 func (h *Hasher) PutProgressiveBitlist(bb []byte) {
 	var size uint64
 	h.tmp, size = ParseBitlist(h.tmp[:0], bb)
@@ -463,6 +505,7 @@ func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 	}
 }
 
+// Hash returns the last 32-byte hash from the buffer.
 func (h *Hasher) Hash() []byte {
 	start := 0
 	if len(h.buf) > 32 {
@@ -534,7 +577,10 @@ func (h *Hasher) merkleizeImpl(dst []byte, input []byte, limit uint64) []byte {
 	return append(dst, input...)
 }
 
-// Merkleize is used to merkleize the last group of the hasher
+// MerkleizeProgressive performs progressive merkleization on the buffer
+// contents from indx onwards. Progressive merkleization uses the
+// subtree_fill_progressive algorithm from remerkleable, suitable for
+// progressive list types.
 func (h *Hasher) MerkleizeProgressive(indx int) {
 	// merkleizeImpl will expand the `input` by 32 bytes if some hashing depth
 	// hits an odd chunk length. But if we're at the end of `h.buf` already,
@@ -586,7 +632,10 @@ func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 	}
 }
 
-// MerkleizeProgressiveWithMixin is used to merkleize progressive lists with length mixin
+// MerkleizeProgressiveWithActiveFields performs progressive merkleization on
+// the buffer from indx onwards, then mixes in the active fields bitvector.
+// This is used for progressive container types where only a subset of fields
+// may be active.
 func (h *Hasher) MerkleizeProgressiveWithActiveFields(indx int, activeFields []byte) {
 	h.FillUpTo32()
 	input := h.buf[indx:]
