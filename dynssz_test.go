@@ -265,7 +265,7 @@ func TestValidateTypeFailure(t *testing.T) {
 	}
 }
 
-// Verify the default LogCb option is set (covers lines 99-101)
+// Verify the default LogCb option is set
 func TestNewDynSszDefaultLogCbIsSet(t *testing.T) {
 	ds := NewDynSsz(nil)
 	if ds.options.LogCb == nil {
@@ -356,7 +356,7 @@ func TestResolveSpecValueInvalidExpression(t *testing.T) {
 
 func TestResolveSpecValueRoundsUp(t *testing.T) {
 	// Use specs where the expression evaluates to a non-integer (e.g., 7/2 = 3.5)
-	// to exercise the rounding-up branch (lines 38-40)
+	// to exercise the rounding-up branch
 	specs := map[string]any{
 		"A": float64(7),
 		"B": float64(2),

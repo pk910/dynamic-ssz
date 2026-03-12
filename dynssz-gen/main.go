@@ -66,6 +66,21 @@ func parseViewTypeRef(ref string) viewTypeRef {
 	}
 }
 
+// getVersionString returns the full version string with build metadata.
+func getVersionString() string {
+	v := "v" + codegen.Version
+
+	if codegen.BuildCommit != "" {
+		v += " (commit: " + codegen.BuildCommit
+		if codegen.BuildTime != "" {
+			v += ", built: " + codegen.BuildTime
+		}
+		v += ")"
+	}
+
+	return v
+}
+
 func main() {
 	var (
 		packagePath               = flag.String("package", "", "Go package path to analyze")
@@ -78,8 +93,59 @@ func main() {
 		withoutFastSsz            = flag.Bool("without-fastssz", false, "Generate code without using fast ssz generated methods")
 		withStreaming             = flag.Bool("with-streaming", false, "Generate streaming functions")
 		withExtendedTypes         = flag.Bool("with-extended-types", false, "Generate code with extended types")
+		showVersion               = flag.Bool("version", false, "Print version and exit")
 	)
+
+	flag.Usage = func() {
+		w := os.Stderr
+		fmt.Fprintf(w, "dynssz-gen %s\n\n", getVersionString())
+		fmt.Fprintf(w, "Go code generator for dynamic SSZ marshaling, unmarshaling, and hash tree root.\n\n")
+		fmt.Fprintf(w, "Usage:\n")
+		fmt.Fprintf(w, "  dynssz-gen -package <path> -types <types> [-output <file>] [flags]\n\n")
+		fmt.Fprintf(w, "Types syntax:\n")
+		fmt.Fprintf(w, "  Comma-separated list of type names from the target package.\n")
+		fmt.Fprintf(w, "  Each type can optionally specify its output file with a colon:\n")
+		fmt.Fprintf(w, "    TypeName              uses the -output file\n")
+		fmt.Fprintf(w, "    TypeName:path/out.go  writes to a specific file\n\n")
+		fmt.Fprintf(w, "  Example: -types \"BeaconState:state_gen.go,BeaconBlock:block_gen.go\"\n\n")
+		fmt.Fprintf(w, "Required flags:\n")
+		fmt.Fprintf(w, "  -package string\n")
+		fmt.Fprintf(w, "        Go package path to analyze\n")
+		fmt.Fprintf(w, "  -types string\n")
+		fmt.Fprintf(w, "        Comma-separated list of type names to generate code for\n\n")
+		fmt.Fprintf(w, "Output flags:\n")
+		fmt.Fprintf(w, "  -output string\n")
+		fmt.Fprintf(w, "        Default output file path (used for types without a ':path' suffix)\n")
+		fmt.Fprintf(w, "  -package-name string\n")
+		fmt.Fprintf(w, "        Package name for generated code (default: same as source package)\n\n")
+		fmt.Fprintf(w, "Code generation flags:\n")
+		fmt.Fprintf(w, "  -legacy\n")
+		fmt.Fprintf(w, "        Generate legacy MarshalSSZ/UnmarshalSSZ/HashTreeRoot methods\n")
+		fmt.Fprintf(w, "  -with-streaming\n")
+		fmt.Fprintf(w, "        Generate streaming encoder/decoder functions\n")
+		fmt.Fprintf(w, "  -with-extended-types\n")
+		fmt.Fprintf(w, "        Generate code with extended types\n")
+		fmt.Fprintf(w, "  -without-dynamic-expressions\n")
+		fmt.Fprintf(w, "        Generate code without dynamic expressions\n")
+		fmt.Fprintf(w, "  -without-fastssz\n")
+		fmt.Fprintf(w, "        Generate code without using fast ssz generated methods\n\n")
+		fmt.Fprintf(w, "Other flags:\n")
+		fmt.Fprintf(w, "  -v    Verbose output\n")
+		fmt.Fprintf(w, "  -version\n")
+		fmt.Fprintf(w, "        Print version and exit\n")
+	}
+
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("dynssz-gen %s\n", getVersionString())
+		return
+	}
+
+	if *packagePath == "" && *typeNames == "" {
+		flag.Usage()
+		return
+	}
 
 	config := Config{
 		PackagePath:               *packagePath,

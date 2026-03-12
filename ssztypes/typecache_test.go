@@ -1771,7 +1771,7 @@ func TestGetSszSizeTagBitsizeParseError(t *testing.T) {
 
 func TestGetSszSizeTagDynSszDynamic(t *testing.T) {
 	ds := &dummyDynamicSpecs{}
-	// dynssz-size:"?" should set Dynamic=true (lines 264-265)
+	// dynssz-size:"?" should set Dynamic=true
 	field := makeField("Dyn", reflect.TypeOf([]byte{}), `ssz-size:"32" dynssz-size:"?"`)
 
 	sizes, err := getSszSizeTag(ds, field)
@@ -1794,7 +1794,7 @@ func TestGetSszSizeTagDynSszDynamic(t *testing.T) {
 
 func TestGetSszSizeTagDynSszResolveError(t *testing.T) {
 	ds := &errorDynamicSpecs{err: fmt.Errorf("resolve failed")}
-	// dynssz-size with an expression that triggers ResolveSpecValue error (lines 270-271)
+	// dynssz-size with an expression that triggers ResolveSpecValue error
 	field := makeField("Expr", reflect.TypeOf([]byte{}), `ssz-size:"32" dynssz-size:"SOME_EXPR"`)
 
 	_, err := getSszSizeTag(ds, field)
@@ -1808,7 +1808,7 @@ func TestGetSszSizeTagDynSszResolveError(t *testing.T) {
 
 func TestGetSszSizeTagDynSszExtraDimension(t *testing.T) {
 	ds := &dummyDynamicSpecs{specValues: map[string]uint64{"X": 100}}
-	// dynssz-size has more dimensions than ssz-size → i >= len(sszSizes) (lines 288-289)
+	// dynssz-size has more dimensions than ssz-size → i >= len(sszSizes)
 	field := makeField("Extra", reflect.TypeOf([]byte{}), `dynssz-size:"X"`)
 
 	sizes, err := getSszSizeTag(ds, field)
@@ -1825,7 +1825,7 @@ func TestGetSszSizeTagDynSszExtraDimension(t *testing.T) {
 
 func TestGetSszMaxSizeTagDynSszMaxDynamic(t *testing.T) {
 	ds := &dummyDynamicSpecs{}
-	// dynssz-max:"?" should set NoValue=true (lines 368-369)
+	// dynssz-max:"?" should set NoValue=true
 	field := makeField("Dyn", reflect.TypeOf([]byte{}), `ssz-max:"100" dynssz-max:"?"`)
 
 	maxSizes, err := getSszMaxSizeTag(ds, field)
@@ -1839,7 +1839,7 @@ func TestGetSszMaxSizeTagDynSszMaxDynamic(t *testing.T) {
 
 func TestGetSszMaxSizeTagDynSszMaxNumeric(t *testing.T) {
 	ds := &dummyDynamicSpecs{}
-	// dynssz-max:"200" with numeric value (lines 370-371)
+	// dynssz-max:"200" with numeric value
 	field := makeField("Num", reflect.TypeOf([]byte{}), `ssz-max:"100" dynssz-max:"200"`)
 
 	maxSizes, err := getSszMaxSizeTag(ds, field)
@@ -1856,7 +1856,7 @@ func TestGetSszMaxSizeTagDynSszMaxNumeric(t *testing.T) {
 
 func TestGetSszMaxSizeTagDynSszMaxResolveError(t *testing.T) {
 	ds := &errorDynamicSpecs{err: fmt.Errorf("resolve failed")}
-	// dynssz-max with expression that triggers ResolveSpecValue error (lines 374-375)
+	// dynssz-max with expression that triggers ResolveSpecValue error
 	field := makeField("Expr", reflect.TypeOf([]byte{}), `ssz-max:"100" dynssz-max:"BAD_EXPR"`)
 
 	_, err := getSszMaxSizeTag(ds, field)
@@ -1870,7 +1870,7 @@ func TestGetSszMaxSizeTagDynSszMaxResolveError(t *testing.T) {
 
 func TestGetSszMaxSizeTagDynSszMaxExtraDimension(t *testing.T) {
 	ds := &dummyDynamicSpecs{specValues: map[string]uint64{"Y": 500}}
-	// dynssz-max has more dimensions than ssz-max → i >= len(sszMaxSizes) (lines 392-393)
+	// dynssz-max has more dimensions than ssz-max → i >= len(sszMaxSizes)
 	field := makeField("Extra", reflect.TypeOf([]byte{}), `dynssz-max:"Y"`)
 
 	maxSizes, err := getSszMaxSizeTag(ds, field)
@@ -1885,7 +1885,7 @@ func TestGetSszMaxSizeTagDynSszMaxExtraDimension(t *testing.T) {
 	}
 }
 
-// TypeWrapper descriptor tests (lines 521-522, 526-527)
+// TypeWrapper descriptor tests
 
 type testWrapperNoReturn struct{}
 
@@ -1921,7 +1921,7 @@ func TestBuildTypeWrapperWrongReturnType(t *testing.T) {
 	}
 }
 
-// Container descriptor error tests (lines 661-662, 666-667, 671-672)
+// Container descriptor error tests
 
 type containerBadSszSize struct {
 	Field []byte `ssz-size:"abc"`

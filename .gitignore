@@ -6,3 +6,4 @@ coverage.*
 coverage_*
 coverage-*
 dynssz-gen-*
+bin/
