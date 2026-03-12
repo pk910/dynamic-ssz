@@ -4,6 +4,8 @@
 
 package sszutils
 
+// Decoder is the interface for reading SSZ-encoded data. It supports both
+// seekable (buffer-backed) and non-seekable (stream-backed) implementations.
 type Decoder interface {
 	Seekable() bool   // can use DecodeOffsetAt() and SkipBytes()
 	GetPosition() int // return current position

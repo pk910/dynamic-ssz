@@ -8,6 +8,9 @@ import (
 	"encoding/binary"
 )
 
+// BufferDecoder is a seekable Decoder implementation backed by an in-memory
+// byte buffer. It supports random-access offset reads via DecodeOffsetAt and
+// byte skipping via SkipBytes.
 type BufferDecoder struct {
 	buffer    []byte
 	limits    []int
@@ -18,6 +21,8 @@ type BufferDecoder struct {
 
 var _ Decoder = (*BufferDecoder)(nil)
 
+// NewBufferDecoder creates a new BufferDecoder that reads SSZ data from the
+// provided byte buffer.
 func NewBufferDecoder(buffer []byte) *BufferDecoder {
 	return &BufferDecoder{
 		buffer:    buffer,

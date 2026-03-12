@@ -13,6 +13,10 @@ import (
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
+// SszType identifies the SSZ encoding type for a field or value.
+// It covers basic types (bool, uintN), complex types (container, list, vector,
+// bitlist, bitvector), progressive types, unions, and extended non-standard
+// types (signed integers, floats, bigint).
 type SszType uint8
 
 const (
@@ -51,10 +55,15 @@ const (
 	SszOptionalType
 )
 
+// SszTypeHint holds a parsed SSZ type hint from an ssz-type struct tag.
+// Multiple hints may be present for nested types (e.g., a list of vectors).
 type SszTypeHint struct {
 	Type SszType
 }
 
+// ParseSszType converts an ssz-type tag string value (e.g., "container",
+// "list", "uint64") into the corresponding SszType constant. Returns an
+// error for unrecognized type strings.
 func ParseSszType(typeStr string) (SszType, error) {
 	switch typeStr {
 	case "?", "auto":

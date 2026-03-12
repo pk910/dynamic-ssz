@@ -10,6 +10,8 @@ import (
 	"io"
 )
 
+// StreamEncoder is a non-seekable Encoder implementation that writes SSZ data
+// directly to an io.Writer. It does not support EncodeOffsetAt.
 type StreamEncoder struct {
 	writer   io.Writer
 	position int
@@ -19,6 +21,8 @@ type StreamEncoder struct {
 
 var _ Encoder = (*StreamEncoder)(nil)
 
+// NewStreamEncoder creates a new StreamEncoder that writes SSZ data to the
+// provided io.Writer.
 func NewStreamEncoder(writer io.Writer) *StreamEncoder {
 	return &StreamEncoder{
 		writer: writer,
@@ -148,6 +152,8 @@ func (e *StreamEncoder) EncodeZeroPadding(n int) {
 	}
 }
 
+// GetWriteError returns the first write error encountered during encoding,
+// or nil if no errors occurred.
 func (e *StreamEncoder) GetWriteError() error {
 	return e.writeErr
 }

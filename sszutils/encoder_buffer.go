@@ -8,6 +8,8 @@ import (
 	"encoding/binary"
 )
 
+// BufferEncoder is a seekable Encoder implementation backed by an in-memory
+// byte buffer. It supports random-access offset writes via EncodeOffsetAt.
 type BufferEncoder struct {
 	buffer []byte
 	pos    int
