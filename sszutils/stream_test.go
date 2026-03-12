@@ -1021,6 +1021,273 @@ func TestStreamEncoder_EncodeZeroPadding_Zero(t *testing.T) {
 	}
 }
 
+// partialThenEOFReader returns data and EOF simultaneously when all data is consumed.
+type partialThenEOFReader struct {
+	data []byte
+	pos  int
+}
+
+func (r *partialThenEOFReader) Read(p []byte) (n int, err error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	toRead := min(len(p), len(r.data)-r.pos)
+	copy(p, r.data[r.pos:r.pos+toRead])
+	r.pos += toRead
+	if r.pos >= len(r.data) {
+		return toRead, io.EOF
+	}
+	return toRead, nil
+}
+
+// zeroAfterNReader provides real data for the first N bytes, then returns 0 without error.
+type zeroAfterNReader struct {
+	data       []byte
+	pos        int
+	stallAfter int
+}
+
+func (r *zeroAfterNReader) Read(p []byte) (n int, err error) {
+	if r.pos >= r.stallAfter {
+		return 0, nil
+	}
+	toRead := min(len(p), r.stallAfter-r.pos)
+	toRead = min(toRead, len(r.data)-r.pos)
+	copy(p, r.data[r.pos:r.pos+toRead])
+	r.pos += toRead
+	return toRead, nil
+}
+
+func TestStreamDecoder_EnsureBuffered_BufferShift(t *testing.T) {
+	// totalLen > maxDecoderBufferSize so buffer=2048. Prime buffer with a small
+	// read, then consume most of it, leaving 4 bytes. Next uint64 needs 8,
+	// triggering buffer shift since bufferPos > 0 and available < needed.
+	totalLen := maxDecoderBufferSize + 100
+	data := make([]byte, totalLen)
+	for i := range data {
+		data[i] = byte(i % 256)
+	}
+	reader := bytes.NewReader(data)
+	dec := NewStreamDecoder(reader, totalLen)
+
+	// Prime the buffer (ensureBuffered fills it to 2048 bytes)
+	_, err := dec.DecodeUint8()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Consume most of the buffer via the buffered path (available=2047 >= 2043)
+	buf := make([]byte, maxDecoderBufferSize-5)
+	_, err = dec.DecodeBytes(buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Now bufferPos=2044, available=4. Reading uint64 needs 8, triggers shift.
+	val, err := dec.DecodeUint64()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if val == 0 {
+		t.Error("expected non-zero value")
+	}
+}
+
+func TestStreamDecoder_EnsureBuffered_StreamExhausted(t *testing.T) {
+	data := []byte{0x01, 0x02}
+	reader := bytes.NewReader(data)
+	dec := NewStreamDecoder(reader, 2)
+
+	_, err := dec.DecodeUint32()
+	if !errors.Is(err, ErrUnexpectedEOF) {
+		t.Errorf("expected ErrUnexpectedEOF, got %v", err)
+	}
+}
+
+func TestStreamDecoder_EnsureBuffered_EOFWithEnoughData(t *testing.T) {
+	data := []byte{0x04, 0x03, 0x02, 0x01}
+	reader := &partialThenEOFReader{data: data}
+	dec := NewStreamDecoder(reader, 4)
+
+	val, err := dec.DecodeUint32()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if val != 0x01020304 {
+		t.Errorf("expected 0x01020304, got 0x%x", val)
+	}
+}
+
+func TestStreamDecoder_EnsureBuffered_EOFInsufficientData(t *testing.T) {
+	data := []byte{0x01, 0x02}
+	reader := &partialThenEOFReader{data: data}
+	dec := NewStreamDecoder(reader, 8)
+
+	_, err := dec.DecodeUint64()
+	if !errors.Is(err, ErrUnexpectedEOF) {
+		t.Errorf("expected ErrUnexpectedEOF, got %v", err)
+	}
+}
+
+func TestStreamDecoder_EnsureBuffered_ZeroReadReturnsEOF(t *testing.T) {
+	data := []byte{0x42}
+	reader := &zeroAfterNReader{data: data, stallAfter: 0}
+	dec := NewStreamDecoder(reader, 1)
+
+	_, err := dec.DecodeUint8()
+	if !errors.Is(err, ErrUnexpectedEOF) {
+		t.Errorf("expected ErrUnexpectedEOF, got %v", err)
+	}
+}
+
+func TestStreamDecoder_EnsureBuffered_NonEOFError(t *testing.T) {
+	testErr := errors.New("network error")
+	reader := &errReader{data: make([]byte, 8), errAfter: 0, err: testErr}
+	dec := NewStreamDecoder(reader, 8)
+
+	_, err := dec.DecodeUint32()
+	if !errors.Is(err, testErr) {
+		t.Errorf("expected %v, got %v", testErr, err)
+	}
+}
+
+func TestStreamDecoder_ReadBytes_ExceedsStreamLength(t *testing.T) {
+	data := []byte{0x01, 0x02, 0x03}
+	reader := bytes.NewReader(data)
+	dec := NewStreamDecoder(reader, 3)
+
+	_, err := dec.DecodeUint8()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	buf := make([]byte, 5)
+	_, err = dec.DecodeBytes(buf)
+	if !errors.Is(err, ErrUnexpectedEOF) {
+		t.Errorf("expected ErrUnexpectedEOF, got %v", err)
+	}
+}
+
+func TestStreamDecoder_ReadBytes_ZeroByteRead(t *testing.T) {
+	data := make([]byte, 16)
+	for i := range data {
+		data[i] = byte(i)
+	}
+	stallReader := &zeroAfterNReader{data: data, stallAfter: 8}
+	dec := NewStreamDecoder(stallReader, 16)
+
+	_, err := dec.DecodeUint64()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	largeBuf := make([]byte, 8)
+	_, err = dec.DecodeBytes(largeBuf)
+	if !errors.Is(err, ErrUnexpectedEOF) {
+		t.Errorf("expected ErrUnexpectedEOF, got %v", err)
+	}
+}
+
+func TestStreamDecoder_ReadBytes_DirectReadWithPartialReads(t *testing.T) {
+	data := make([]byte, 30)
+	for i := range data {
+		data[i] = byte(i)
+	}
+	reader := &shortReader{data: data, maxRead: 3}
+	dec := NewStreamDecoder(reader, 30)
+
+	_, err := dec.DecodeUint64()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	buf := make([]byte, 20)
+	result, err := dec.DecodeBytes(buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for i := range 20 {
+		if result[i] != byte(i+8) {
+			t.Errorf("byte %d: expected %d, got %d", i, i+8, result[i])
+		}
+	}
+}
+
+func TestStreamDecoder_ReadBytes_EOFDuringDirectRead(t *testing.T) {
+	data := make([]byte, 12)
+	reader := &errReader{data: data, errAfter: 10, err: io.EOF}
+	dec := NewStreamDecoder(reader, 12)
+
+	_, err := dec.DecodeUint64()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	buf := make([]byte, 4)
+	_, err = dec.DecodeBytes(buf)
+	if !errors.Is(err, ErrUnexpectedEOF) {
+		t.Errorf("expected ErrUnexpectedEOF, got %v", err)
+	}
+}
+
+func TestStreamDecoder_ReadBytes_NonEOFErrorDuringDirectRead(t *testing.T) {
+	totalLen := maxDecoderBufferSize + 500
+	data := make([]byte, totalLen)
+	testErr := errors.New("disk error")
+	reader := &errReader{data: data, errAfter: maxDecoderBufferSize + 100, err: testErr}
+	dec := NewStreamDecoder(reader, totalLen)
+
+	buf := make([]byte, maxDecoderBufferSize)
+	_, err := dec.DecodeBytes(buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	buf2 := make([]byte, 400)
+	_, err = dec.DecodeBytes(buf2)
+	if !errors.Is(err, testErr) {
+		t.Errorf("expected %v, got %v", testErr, err)
+	}
+}
+
+func TestStreamDecoder_DecodeBytesBuf_LargeBufferGrowth(t *testing.T) {
+	size := maxDecoderBufferSize + 100
+	data := make([]byte, size)
+	for i := range data {
+		data[i] = byte(i % 256)
+	}
+	reader := bytes.NewReader(data)
+	dec := NewStreamDecoder(reader, size)
+
+	result, err := dec.DecodeBytesBuf(size)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != size {
+		t.Errorf("expected %d bytes, got %d", size, len(result))
+	}
+}
+
+func TestStreamDecoder_DecodeBytesBuf_LargeGrowthDoubling(t *testing.T) {
+	// buffer=2048 (maxDecoderBufferSize). Request l=5000 > 2*2048=4096,
+	// so newSize = buffer*2 = 4096 < 5000, triggering newSize=l.
+	size := maxDecoderBufferSize*2 + 500
+	data := make([]byte, size)
+	for i := range data {
+		data[i] = byte(i % 256)
+	}
+	reader := bytes.NewReader(data)
+	dec := NewStreamDecoder(reader, size)
+
+	result, err := dec.DecodeBytesBuf(size)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != size {
+		t.Errorf("expected %d bytes, got %d", size, len(result))
+	}
+}
+
 func TestStreamDecoder_GetLength_WithLimits(t *testing.T) {
 	reader := bytes.NewReader(make([]byte, 100))
 	dec := NewStreamDecoder(reader, 100)

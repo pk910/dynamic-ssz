@@ -11,24 +11,28 @@ The spec tests automatically download the latest consensus spec test data from t
 ```
 spectests/
 ├── README.md                    # This file
-├── go.mod                       # Go module for spec tests
+├── go.mod / go.sum              # Go module for spec tests
 ├── init.go                      # Initialization with preset configurations
 ├── setup_test_data.sh           # Script to download/manage test data
 ├── run_tests.sh                 # Local test runner
+├── presets/                     # Preset configurations
+├── codegen/                     # Generated SSZ code for spec types
+├── codegen-views/               # Generated SSZ code for spec type views
 ├── spectests_test.go            # Core test framework
 ├── spectests_phase0_test.go     # Phase 0 tests
 ├── spectests_altair_test.go     # Altair tests
 ├── spectests_bellatrix_test.go  # Bellatrix tests
 ├── spectests_capella_test.go    # Capella tests
 ├── spectests_deneb_test.go      # Deneb tests
-└── spectests_electra_test.go    # Electra tests
+├── spectests_electra_test.go    # Electra tests
+└── spectests_fulu_test.go       # Fulu tests
 ```
 
 ## Running Tests Locally
 
 ### Prerequisites
 
-- Go 1.20 or later
+- Go 1.25 or later
 - Internet connection (for downloading test data)
 - ~500MB disk space for test data
 
@@ -91,7 +95,7 @@ The GitHub Actions workflow automatically:
 - Runs tests for both mainnet and minimal presets
 - Runs on push, PR, and daily schedule
 
-See [.github/workflows/ci-spec-tests.yml](../.github/workflows/ci-spec-tests.yml) for the complete CI configuration.
+See [.github/workflows/ci-tests.yml](../.github/workflows/ci-tests.yml) for the complete CI configuration.
 
 ## Test Process
 

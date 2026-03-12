@@ -621,7 +621,7 @@ func TestWrapperHashRootError(t *testing.T) {
 			return
 		}
 	}()
-	
+
 	_, err := w.HashRoot()
 	if err == nil {
 		t.Error("HashRoot should return error when no nodes exist")
@@ -829,9 +829,9 @@ func TestWrapperEdgeCases(t *testing.T) {
 		w := NewWrapper()
 		// Add some nodes but force an invalid limit that's not a power of 2
 		w.AddBytes([]byte{1, 2, 3})
-		w.AddBytes([]byte{4, 5, 6}) 
+		w.AddBytes([]byte{4, 5, 6})
 		w.AddBytes([]byte{7, 8, 9}) // 3 nodes
-		
+
 		// Directly call TreeFromNodes with invalid limit
 		_, err := TreeFromNodes(w.nodes, 3) // 3 is not a power of 2, should error
 		if err != nil {
@@ -861,24 +861,24 @@ func TestWrapperCommitErrorHandling(t *testing.T) {
 		w := NewWrapper()
 		w.AddNode(NewNodeWithValue([]byte{1}))
 		w.AddNode(NewNodeWithValue([]byte{2}))
-		
+
 		// Commit from an index that has nodes after it
 		initialCount := len(w.nodes)
 		w.Commit(1) // Should merkleize the nodes from index 1 onwards
-		
+
 		// Should have fewer or equal nodes after commit
 		if len(w.nodes) > initialCount {
 			t.Errorf("commit should not increase node count: initial=%d, after=%d", initialCount, len(w.nodes))
 		}
 	})
-	
+
 	t.Run("commit with single node", func(t *testing.T) {
 		w := NewWrapper()
 		w.AddNode(NewNodeWithValue([]byte{1}))
-		
+
 		// Commit from index 0 with only one node
 		w.Commit(0)
-		
+
 		// Should still have 1 node
 		if len(w.nodes) != 1 {
 			t.Errorf("expected 1 node, got %d", len(w.nodes))
@@ -886,12 +886,22 @@ func TestWrapperCommitErrorHandling(t *testing.T) {
 	})
 }
 
+func TestAddNodeWithNilSlice(t *testing.T) {
+	// Create wrapper with zero value (nil nodes) to cover the nil check in AddNode
+	w := &Wrapper{}
+	w.AddNode(NewNodeWithValue([]byte{1}))
+
+	if len(w.nodes) != 1 {
+		t.Fatalf("expected 1 node, got %d", len(w.nodes))
+	}
+}
+
 func TestWrapperAddNodeNil(t *testing.T) {
 	w := NewWrapper()
-	
+
 	// Test AddNode with nil node - should handle gracefully
 	w.AddNode(nil)
-	
+
 	// Should have one node (even if nil)
 	if len(w.nodes) != 1 {
 		t.Error("AddNode should add the node even if nil")

@@ -1196,6 +1196,158 @@ func (c *TestContainerWithDynamicMarshalError) UnmarshalSSZDyn(ds sszutils.Dynam
 	return fmt.Errorf("test UnmarshalSSZDyn error")
 }
 
+// TestContainerWithDynamicDecoder is a test container implementing DynamicDecoder.
+type TestContainerWithDynamicDecoder struct {
+	Field0 uint64
+	Field1 uint32
+	Field2 bool
+	Field3 uint16
+}
+
+var _ sszutils.DynamicDecoder = (*TestContainerWithDynamicDecoder)(nil)
+var _ sszutils.DynamicMarshaler = (*TestContainerWithDynamicDecoder)(nil)
+var _ sszutils.DynamicHashRoot = (*TestContainerWithDynamicDecoder)(nil)
+
+func (c *TestContainerWithDynamicDecoder) UnmarshalSSZDecoder(ds sszutils.DynamicSpecs, decoder sszutils.Decoder) error {
+	var err error
+	c.Field0, err = decoder.DecodeUint64()
+	if err != nil {
+		return err
+	}
+	c.Field1, err = decoder.DecodeUint32()
+	if err != nil {
+		return err
+	}
+	val, err := decoder.DecodeBool()
+	if err != nil {
+		return err
+	}
+	c.Field2 = val
+	c.Field3, err = decoder.DecodeUint16()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *TestContainerWithDynamicDecoder) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	buf = sszutils.MarshalUint64(buf, c.Field0)
+	buf = sszutils.MarshalUint32(buf, c.Field1)
+	buf = sszutils.MarshalBool(buf, c.Field2)
+	buf = sszutils.MarshalUint16(buf, c.Field3)
+	return buf, nil
+}
+
+func (c *TestContainerWithDynamicDecoder) SizeSSZDyn(ds sszutils.DynamicSpecs) int {
+	return 15
+}
+
+func (c *TestContainerWithDynamicDecoder) HashTreeRootDyn(ds sszutils.DynamicSpecs) ([32]byte, error) {
+	pool := &hasher.DefaultHasherPool
+	hh := pool.Get()
+	defer pool.Put(hh)
+	err := c.HashTreeRootWithDyn(ds, hh)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	return hh.HashRoot()
+}
+
+func (c *TestContainerWithDynamicDecoder) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	indx := hh.Index()
+	hh.PutUint64(c.Field0)
+	hh.PutUint32(c.Field1)
+	hh.PutBool(c.Field2)
+	hh.PutUint16(c.Field3)
+	hh.Merkleize(indx)
+	return nil
+}
+
+// TestContainerWithDynamicDecoderAndUnmarshaler implements both DynamicDecoder and DynamicUnmarshaler.
+// When used with a seekable (buffer) decoder, the DynamicUnmarshaler path is preferred.
+type TestContainerWithDynamicDecoderAndUnmarshaler struct {
+	Field0 uint64
+	Field1 uint32
+	Field2 bool
+	Field3 uint16
+}
+
+var _ sszutils.DynamicDecoder = (*TestContainerWithDynamicDecoderAndUnmarshaler)(nil)
+var _ sszutils.DynamicUnmarshaler = (*TestContainerWithDynamicDecoderAndUnmarshaler)(nil)
+var _ sszutils.DynamicMarshaler = (*TestContainerWithDynamicDecoderAndUnmarshaler)(nil)
+var _ sszutils.DynamicHashRoot = (*TestContainerWithDynamicDecoderAndUnmarshaler)(nil)
+
+func (c *TestContainerWithDynamicDecoderAndUnmarshaler) UnmarshalSSZDecoder(ds sszutils.DynamicSpecs, decoder sszutils.Decoder) error {
+	var err error
+	c.Field0, err = decoder.DecodeUint64()
+	if err != nil {
+		return err
+	}
+	c.Field1, err = decoder.DecodeUint32()
+	if err != nil {
+		return err
+	}
+	val, err := decoder.DecodeBool()
+	if err != nil {
+		return err
+	}
+	c.Field2 = val
+	c.Field3, err = decoder.DecodeUint16()
+	return err
+}
+
+func (c *TestContainerWithDynamicDecoderAndUnmarshaler) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) error {
+	c.Field0 = sszutils.UnmarshallUint64(buf[:8])
+	c.Field1 = sszutils.UnmarshallUint32(buf[8:12])
+	c.Field2 = sszutils.UnmarshalBool(buf[12:13])
+	c.Field3 = sszutils.UnmarshallUint16(buf[13:15])
+	return nil
+}
+
+func (c *TestContainerWithDynamicDecoderAndUnmarshaler) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	buf = sszutils.MarshalUint64(buf, c.Field0)
+	buf = sszutils.MarshalUint32(buf, c.Field1)
+	buf = sszutils.MarshalBool(buf, c.Field2)
+	buf = sszutils.MarshalUint16(buf, c.Field3)
+	return buf, nil
+}
+
+func (c *TestContainerWithDynamicDecoderAndUnmarshaler) SizeSSZDyn(ds sszutils.DynamicSpecs) int {
+	return 15
+}
+
+func (c *TestContainerWithDynamicDecoderAndUnmarshaler) HashTreeRootDyn(ds sszutils.DynamicSpecs) ([32]byte, error) {
+	pool := &hasher.DefaultHasherPool
+	hh := pool.Get()
+	defer pool.Put(hh)
+	err := c.HashTreeRootWithDyn(ds, hh)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	return hh.HashRoot()
+}
+
+func (c *TestContainerWithDynamicDecoderAndUnmarshaler) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	indx := hh.Index()
+	hh.PutUint64(c.Field0)
+	hh.PutUint32(c.Field1)
+	hh.PutBool(c.Field2)
+	hh.PutUint16(c.Field3)
+	hh.Merkleize(indx)
+	return nil
+}
+
+// TestContainerWithDynamicDecoderError is a test container implementing DynamicDecoder that returns an error.
+type TestContainerWithDynamicDecoderError struct {
+	Field0 uint64
+}
+
+var _ sszutils.DynamicDecoder = (*TestContainerWithDynamicDecoderError)(nil)
+
+func (c *TestContainerWithDynamicDecoderError) UnmarshalSSZDecoder(ds sszutils.DynamicSpecs, decoder sszutils.Decoder) error {
+	return fmt.Errorf("test UnmarshalSSZDecoder error")
+}
+
 // TestContainerWithSizerError has SizeSSZ that returns an error behavior.
 type TestContainerWithSizerError struct {
 	Field0 uint64
@@ -1213,4 +1365,61 @@ func (c *TestContainerWithSizerError) MarshalSSZTo(buf []byte) ([]byte, error) {
 
 func (c *TestContainerWithSizerError) SizeSSZ() int {
 	return 8
+}
+
+type TestContainerWithDynamicEncoderError struct {
+	Field0 uint64
+}
+
+var _ sszutils.DynamicEncoder = (*TestContainerWithDynamicEncoderError)(nil)
+var _ sszutils.DynamicSizer = (*TestContainerWithDynamicEncoderError)(nil)
+
+func (c *TestContainerWithDynamicEncoderError) MarshalSSZEncoder(ds sszutils.DynamicSpecs, encoder sszutils.Encoder) error {
+	return fmt.Errorf("test MarshalSSZEncoder error")
+}
+
+func (c *TestContainerWithDynamicEncoderError) SizeSSZDyn(ds sszutils.DynamicSpecs) int {
+	return 8
+}
+
+type TestContainerWithDynamicEncoderAndMarshaler struct {
+	Field0 uint64
+	Field1 uint32
+	Field2 bool
+	Field3 uint16
+}
+
+var _ sszutils.DynamicEncoder = (*TestContainerWithDynamicEncoderAndMarshaler)(nil)
+var _ sszutils.DynamicMarshaler = (*TestContainerWithDynamicEncoderAndMarshaler)(nil)
+var _ sszutils.DynamicSizer = (*TestContainerWithDynamicEncoderAndMarshaler)(nil)
+var _ sszutils.DynamicHashRoot = (*TestContainerWithDynamicEncoderAndMarshaler)(nil)
+
+func (c *TestContainerWithDynamicEncoderAndMarshaler) MarshalSSZEncoder(ds sszutils.DynamicSpecs, encoder sszutils.Encoder) error {
+	encoder.EncodeUint64(c.Field0)
+	encoder.EncodeUint32(c.Field1)
+	encoder.EncodeBool(c.Field2)
+	encoder.EncodeUint16(c.Field3)
+	return nil
+}
+
+func (c *TestContainerWithDynamicEncoderAndMarshaler) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	buf = sszutils.MarshalUint64(buf, c.Field0)
+	buf = sszutils.MarshalUint32(buf, c.Field1)
+	buf = sszutils.MarshalBool(buf, c.Field2)
+	buf = sszutils.MarshalUint16(buf, c.Field3)
+	return buf, nil
+}
+
+func (c *TestContainerWithDynamicEncoderAndMarshaler) SizeSSZDyn(ds sszutils.DynamicSpecs) int {
+	return 15
+}
+
+func (c *TestContainerWithDynamicEncoderAndMarshaler) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	indx := hh.Index()
+	hh.PutUint64(c.Field0)
+	hh.PutUint32(c.Field1)
+	hh.PutBool(c.Field2)
+	hh.PutUint16(c.Field3)
+	hh.Merkleize(indx)
+	return nil
 }

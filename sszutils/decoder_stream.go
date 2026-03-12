@@ -99,19 +99,8 @@ func (e *StreamDecoder) ensureBuffered(n int) error {
 	// Need to read more data
 	needed := n - available
 
-	// If buffer is too small, grow it
-	if len(e.buffer) < n {
-		newSize := len(e.buffer) * 2
-		if newSize < n {
-			newSize = n
-		}
-		newBuf := make([]byte, newSize)
-		// Copy remaining data to start of new buffer
-		copy(newBuf, e.buffer[e.bufferPos:e.bufferLen])
-		e.buffer = newBuf
-		e.bufferLen = available
-		e.bufferPos = 0
-	} else if e.bufferPos > 0 {
+	// Shift remaining data to start of buffer
+	if e.bufferPos > 0 {
 		// Shift remaining data to start of buffer
 		copy(e.buffer, e.buffer[e.bufferPos:e.bufferLen])
 		e.bufferLen = available
@@ -120,9 +109,6 @@ func (e *StreamDecoder) ensureBuffered(n int) error {
 
 	// Calculate how much to read - at least needed, but prefer larger chunks
 	toRead := len(e.buffer) - e.bufferLen
-	if toRead < needed {
-		toRead = needed
-	}
 
 	// Don't read more than remaining in stream
 	remaining := e.streamLen - e.position - available
@@ -138,13 +124,13 @@ func (e *StreamDecoder) ensureBuffered(n int) error {
 	readBuf := e.buffer[e.bufferLen : e.bufferLen+toRead]
 	totalRead := 0
 	for totalRead < toRead {
-		n, err := e.reader.Read(readBuf[totalRead:])
-		totalRead += n
-		e.bufferLen += n
+		nr, err := e.reader.Read(readBuf[totalRead:])
+		totalRead += nr
+		e.bufferLen += nr
 
 		if err != nil {
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
-				if e.bufferLen-e.bufferPos >= needed {
+				if e.bufferLen-e.bufferPos >= n {
 					return nil
 				}
 				return ErrUnexpectedEOF
@@ -154,8 +140,8 @@ func (e *StreamDecoder) ensureBuffered(n int) error {
 
 		// If reader returned 0 bytes without error, it's an unusual case
 		// Check if we have enough data, otherwise return EOF
-		if n == 0 {
-			if e.bufferLen-e.bufferPos >= needed {
+		if nr == 0 {
+			if e.bufferLen-e.bufferPos >= n {
 				return nil
 			}
 			return ErrUnexpectedEOF
@@ -208,15 +194,7 @@ func (e *StreamDecoder) readBytes(buf []byte) error {
 	remaining := n - available
 	totalRead := 0
 	for totalRead < remaining {
-		// Cap read to not exceed streamLen
 		toRead := remaining - totalRead
-		streamLeft := e.streamLen - e.position
-		if toRead > streamLeft {
-			toRead = streamLeft
-		}
-		if toRead <= 0 {
-			return ErrUnexpectedEOF
-		}
 
 		nr, err := e.reader.Read(buf[available+totalRead : available+totalRead+toRead])
 		totalRead += nr

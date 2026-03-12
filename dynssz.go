@@ -8,6 +8,7 @@ package dynssz
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"reflect"
 	"sync"
 
@@ -97,7 +98,7 @@ func NewDynSsz(specs map[string]any, options ...DynSszOption) *DynSsz {
 
 	opts := &DynSszOptions{
 		LogCb: func(format string, args ...any) {
-			fmt.Printf(format, args...)
+			slog.Debug(fmt.Sprintf(format, args...))
 		},
 	}
 
