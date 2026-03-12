@@ -404,6 +404,13 @@ func TestGetParent(t *testing.T) {
 	}
 }
 
+func TestGetRequiredIndicesEmpty(t *testing.T) {
+	result := getRequiredIndices([]int{})
+	if result != nil {
+		t.Fatalf("expected nil for empty input, got %v", result)
+	}
+}
+
 func TestGetRequiredIndices(t *testing.T) {
 	tests := []struct {
 		name             string

@@ -886,6 +886,16 @@ func TestWrapperCommitErrorHandling(t *testing.T) {
 	})
 }
 
+func TestAddNodeWithNilSlice(t *testing.T) {
+	// Create wrapper with zero value (nil nodes) to cover the nil check in AddNode
+	w := &Wrapper{}
+	w.AddNode(NewNodeWithValue([]byte{1}))
+
+	if len(w.nodes) != 1 {
+		t.Fatalf("expected 1 node, got %d", len(w.nodes))
+	}
+}
+
 func TestWrapperAddNodeNil(t *testing.T) {
 	w := NewWrapper()
 
