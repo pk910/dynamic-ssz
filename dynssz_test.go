@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -299,4 +300,78 @@ type errorWriter struct {
 
 func (w *errorWriter) Write(p []byte) (int, error) {
 	return 0, w.err
+}
+
+// global.go tests
+
+func TestGetGlobalDynSszDoubleCheck(t *testing.T) {
+	// Reset global state
+	globalDynSsz.Store(nil)
+	defer globalDynSsz.Store(nil)
+
+	// Hold the lock, start a goroutine that will block on it,
+	// then store a value so the double-check at line 28 finds it.
+	globalMu.Lock()
+
+	ready := make(chan struct{})
+	done := make(chan *DynSsz, 1)
+	go func() {
+		// Signal that we've started (line 20 check will see nil)
+		close(ready)
+		// This will block on globalMu.Lock() at line 24
+		done <- GetGlobalDynSsz()
+	}()
+
+	// Wait for goroutine to start, then yield to let it reach the lock
+	<-ready
+	for i := 0; i < 100; i++ {
+		runtime.Gosched()
+	}
+
+	// Store a value while the goroutine is blocked on the lock.
+	// When it acquires the lock, the double-check at line 28 will find it.
+	preSet := NewDynSsz(nil)
+	globalDynSsz.Store(preSet)
+	globalMu.Unlock()
+
+	result := <-done
+	if result != preSet {
+		t.Fatal("expected the pre-stored instance from double-check path")
+	}
+}
+
+// specvals.go tests
+
+func TestResolveSpecValueInvalidExpression(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	_, _, err := ds.ResolveSpecValue("!!!invalid[")
+	if err == nil {
+		t.Fatal("expected error for invalid expression")
+	}
+	if !strings.Contains(err.Error(), "error parsing dynamic spec expression") {
+		t.Fatalf("expected parsing error, got: %v", err)
+	}
+}
+
+func TestResolveSpecValueRoundsUp(t *testing.T) {
+	// Use specs where the expression evaluates to a non-integer (e.g., 7/2 = 3.5)
+	// to exercise the rounding-up branch (lines 38-40)
+	specs := map[string]any{
+		"A": float64(7),
+		"B": float64(2),
+	}
+	ds := NewDynSsz(specs)
+
+	resolved, value, err := ds.ResolveSpecValue("A / B")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resolved {
+		t.Fatal("expected resolved=true")
+	}
+	// 7/2 = 3.5, uint64(3.5) = 3, but should round up to 4
+	if value != 4 {
+		t.Fatalf("expected 4 (rounded up from 3.5), got %d", value)
+	}
 }

@@ -6,6 +6,7 @@ package ssztypes
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -1338,6 +1339,229 @@ func TestListWithFixedSizeRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "list types cannot have a fixed ssz-size") {
 		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+// errorDynamicSpecs returns an error from ResolveSpecValue for testing error paths.
+type errorDynamicSpecs struct {
+	err error
+}
+
+func (d *errorDynamicSpecs) ResolveSpecValue(name string) (bool, uint64, error) {
+	return false, 0, d.err
+}
+
+func makeField(name string, typ reflect.Type, tag reflect.StructTag) *reflect.StructField {
+	return &reflect.StructField{
+		Name: name,
+		Type: typ,
+		Tag:  tag,
+	}
+}
+
+func TestGetSszSizeTagBitsizeParseError(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	field := makeField("Bad", reflect.TypeOf(uint32(0)), `ssz-bitsize:"notanumber"`)
+
+	_, err := getSszSizeTag(ds, field)
+	if err == nil {
+		t.Fatal("expected error for invalid ssz-bitsize")
+	}
+	if !strings.Contains(err.Error(), "error parsing ssz-bitsize tag") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestGetSszSizeTagDynSszDynamic(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	// dynssz-size:"?" should set Dynamic=true (lines 264-265)
+	field := makeField("Dyn", reflect.TypeOf([]byte{}), `ssz-size:"32" dynssz-size:"?"`)
+
+	sizes, err := getSszSizeTag(ds, field)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sizes) != 1 {
+		t.Fatalf("expected 1 size hint, got %d", len(sizes))
+	}
+	// The dynssz-size:"?" case: sizeExpr == "?" → sszSize.Dynamic = true
+	// But since ssz-size:"32" was parsed first, the size remains 32
+	// and the dynssz loop processes "?" which sets Dynamic on the new hint,
+	// but then i < len(sszSizes) so it checks if sizes differ.
+	// Actually: sszSize has Dynamic=true, Size=0. sszSizes[0] has Size=32.
+	// 0 != 32, so it updates sszSizes[0] to the dynamic version.
+	if !sizes[0].Dynamic {
+		t.Fatal("expected Dynamic=true for dynssz-size:\"?\"")
+	}
+}
+
+func TestGetSszSizeTagDynSszResolveError(t *testing.T) {
+	ds := &errorDynamicSpecs{err: fmt.Errorf("resolve failed")}
+	// dynssz-size with an expression that triggers ResolveSpecValue error (lines 270-271)
+	field := makeField("Expr", reflect.TypeOf([]byte{}), `ssz-size:"32" dynssz-size:"SOME_EXPR"`)
+
+	_, err := getSszSizeTag(ds, field)
+	if err == nil {
+		t.Fatal("expected error for failed spec resolution")
+	}
+	if !strings.Contains(err.Error(), "error parsing dynssz-size tag") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestGetSszSizeTagDynSszExtraDimension(t *testing.T) {
+	ds := &dummyDynamicSpecs{specValues: map[string]uint64{"X": 100}}
+	// dynssz-size has more dimensions than ssz-size → i >= len(sszSizes) (lines 288-289)
+	field := makeField("Extra", reflect.TypeOf([]byte{}), `dynssz-size:"X"`)
+
+	sizes, err := getSszSizeTag(ds, field)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sizes) != 1 {
+		t.Fatalf("expected 1 size hint, got %d", len(sizes))
+	}
+	if sizes[0].Size != 100 {
+		t.Fatalf("expected size 100, got %d", sizes[0].Size)
+	}
+}
+
+func TestGetSszMaxSizeTagDynSszMaxDynamic(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	// dynssz-max:"?" should set NoValue=true (lines 368-369)
+	field := makeField("Dyn", reflect.TypeOf([]byte{}), `ssz-max:"100" dynssz-max:"?"`)
+
+	maxSizes, err := getSszMaxSizeTag(ds, field)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(maxSizes) != 1 {
+		t.Fatalf("expected 1 max size hint, got %d", len(maxSizes))
+	}
+}
+
+func TestGetSszMaxSizeTagDynSszMaxNumeric(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	// dynssz-max:"200" with numeric value (lines 370-371)
+	field := makeField("Num", reflect.TypeOf([]byte{}), `ssz-max:"100" dynssz-max:"200"`)
+
+	maxSizes, err := getSszMaxSizeTag(ds, field)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(maxSizes) != 1 {
+		t.Fatalf("expected 1 max size hint, got %d", len(maxSizes))
+	}
+	if maxSizes[0].Size != 200 {
+		t.Fatalf("expected max size 200, got %d", maxSizes[0].Size)
+	}
+}
+
+func TestGetSszMaxSizeTagDynSszMaxResolveError(t *testing.T) {
+	ds := &errorDynamicSpecs{err: fmt.Errorf("resolve failed")}
+	// dynssz-max with expression that triggers ResolveSpecValue error (lines 374-375)
+	field := makeField("Expr", reflect.TypeOf([]byte{}), `ssz-max:"100" dynssz-max:"BAD_EXPR"`)
+
+	_, err := getSszMaxSizeTag(ds, field)
+	if err == nil {
+		t.Fatal("expected error for failed spec resolution")
+	}
+	if !strings.Contains(err.Error(), "error parsing dynssz-max tag") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestGetSszMaxSizeTagDynSszMaxExtraDimension(t *testing.T) {
+	ds := &dummyDynamicSpecs{specValues: map[string]uint64{"Y": 500}}
+	// dynssz-max has more dimensions than ssz-max → i >= len(sszMaxSizes) (lines 392-393)
+	field := makeField("Extra", reflect.TypeOf([]byte{}), `dynssz-max:"Y"`)
+
+	maxSizes, err := getSszMaxSizeTag(ds, field)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(maxSizes) != 1 {
+		t.Fatalf("expected 1 max size hint, got %d", len(maxSizes))
+	}
+	if maxSizes[0].Size != 500 {
+		t.Fatalf("expected max size 500, got %d", maxSizes[0].Size)
+	}
+}
+
+// TypeWrapper descriptor tests (lines 521-522, 526-527)
+
+type testWrapperNoReturn struct{}
+
+func (t *testWrapperNoReturn) GetDescriptorType() {}
+
+type testWrapperWrongReturn struct{}
+
+func (t *testWrapperWrongReturn) GetDescriptorType() string { return "not a type" }
+
+func TestBuildTypeWrapperNoResults(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	typeHints := []SszTypeHint{{Type: SszTypeWrapperType}}
+
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(testWrapperNoReturn{}), nil, nil, typeHints)
+	if err == nil {
+		t.Fatal("expected error for GetDescriptorType with no return values")
+	}
+	if !strings.Contains(err.Error(), "GetDescriptorType returned no results") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestBuildTypeWrapperWrongReturnType(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	typeHints := []SszTypeHint{{Type: SszTypeWrapperType}}
+
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(testWrapperWrongReturn{}), nil, nil, typeHints)
+	if err == nil {
+		t.Fatal("expected error for GetDescriptorType with wrong return type")
+	}
+	if !strings.Contains(err.Error(), "GetDescriptorType did not return a reflect.Type") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// Container descriptor error tests (lines 661-662, 666-667, 671-672)
+
+type containerBadSszSize struct {
+	Field []byte `ssz-size:"abc"`
+}
+
+func TestBuildContainerSszSizeTagError(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(containerBadSszSize{}), nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for invalid ssz-size tag")
+	}
+}
+
+type containerBadSszMax struct {
+	Field []byte `ssz-max:"abc"`
+}
+
+func TestBuildContainerSszMaxTagError(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(containerBadSszMax{}), nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for invalid ssz-max tag")
+	}
+}
+
+type containerBadSszType struct {
+	Field uint32 `ssz-type:"invalidtype"`
+}
+
+func TestBuildContainerSszTypeTagError(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(containerBadSszType{}), nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for invalid ssz-type tag")
 	}
 }
 
