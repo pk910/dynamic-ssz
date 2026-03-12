@@ -1276,7 +1276,7 @@ func TestTreeEdgeCases(t *testing.T) {
 
 func TestProveIntermediateNodeSetsValue(t *testing.T) {
 	// Create a fresh tree and prove an intermediate node FIRST
-	// (before any Hash() calls) to hit the cur.value == nil branch (lines 574-576)
+	// (before any Hash() calls) to hit the cur.value == nil branch
 	chunks := [][]byte{
 		sum256ToBytes([]byte("a")),
 		sum256ToBytes([]byte("b")),
@@ -1357,7 +1357,7 @@ func TestProveMultiEmptyIndices(t *testing.T) {
 }
 
 func TestTreeFromNodesProgressiveImplEmpty(t *testing.T) {
-	// Directly call internal function with empty leaves to cover line 365-366
+	// Directly call internal function with empty leaves
 	node, err := treeFromNodesProgressiveImpl(nil, 5)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

@@ -33,22 +33,27 @@ jobs:
 
     - name: Build dynssz-gen for multiple platforms
       run: |
+        LDFLAGS_PKG="github.com/pk910/dynamic-ssz/codegen"
+        BUILD_COMMIT="${{ steps.version.outputs.tag }}"
+        BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        LDFLAGS="-s -w -X ${LDFLAGS_PKG}.BuildCommit=${BUILD_COMMIT} -X ${LDFLAGS_PKG}.BuildTime=${BUILD_TIME}"
+
         cd dynssz-gen
 
         # Linux amd64
-        GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o ../dynssz-gen-linux-amd64 .
+        GOOS=linux GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o ../dynssz-gen-linux-amd64 .
 
         # Linux arm64
-        GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o ../dynssz-gen-linux-arm64 .
+        GOOS=linux GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o ../dynssz-gen-linux-arm64 .
 
         # Windows amd64
-        GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o ../dynssz-gen-windows-amd64.exe .
+        GOOS=windows GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o ../dynssz-gen-windows-amd64.exe .
 
         # macOS amd64
-        GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o ../dynssz-gen-darwin-amd64 .
+        GOOS=darwin GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o ../dynssz-gen-darwin-amd64 .
 
         # macOS arm64
-        GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o ../dynssz-gen-darwin-arm64 .
+        GOOS=darwin GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o ../dynssz-gen-darwin-arm64 .
 
     - name: Upload binaries to release
       env:
@@ -86,9 +91,11 @@ jobs:
       run: |
         if [ "${{ github.event_name }}" = "release" ]; then
           echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+          echo "tag=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
         else
           version=$(grep -oP 'Version = "\K[^"]+' codegen/version.go)
           echo "version=$version" >> $GITHUB_OUTPUT
+          echo "tag=v$version" >> $GITHUB_OUTPUT
         fi
 
     - name: Build and push Docker image
@@ -100,3 +107,6 @@ jobs:
           pk910/dynamic-ssz:${{ steps.version.outputs.version }}
           pk910/dynamic-ssz:latest
         platforms: linux/amd64,linux/arm64
+        build-args: |
+          BUILD_COMMIT=${{ steps.version.outputs.tag }}
+          BUILD_TIME=${{ github.event.release.published_at || github.event.repository.updated_at }}
