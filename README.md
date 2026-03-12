@@ -22,7 +22,7 @@ Dynamic SSZ is a Go library for SSZ encoding/decoding with support for dynamic f
 ## Production Readiness
 
 - **✅ Reflection-based dynamic marshaling/unmarshaling/HTR**: Production ready - battle-tested in various toolings and stable
-- **🚧 Code generator**: Feature complete but in beta stage - hasn't been extensively tested in production environments
+- **✅ Code generator**: Production ready - feature complete and functionally verified through extensive fuzz testing, though less battle-tested in production environments compared to the reflection code paths
 
 ## Quick Start
 
@@ -62,11 +62,8 @@ root, err := ds.HashTreeRoot(myObject)
 
 ### Using Code Generation (Recommended for Production)
 
-For maximum performance, use code generation. You can use either the CLI tool or the programmatic API:
+For maximum performance, use code generation with the `dynssz-gen` CLI tool:
 
-#### Option 1: CLI Tool (Recommended)
-
-Install the CLI tool:
 ```bash
 go install github.com/pk910/dynamic-ssz/dynssz-gen@latest
 ```
@@ -80,32 +77,7 @@ dynssz-gen -package . -types "MyStruct,OtherType" -output generated.go
 dynssz-gen -package github.com/example/types -types "Block" -output block_ssz.go
 ```
 
-#### Option 2: Programmatic API
-
-For integration with build systems:
-
-```go
-//go:generate go run codegen.go
-
-// codegen.go
-package main
-
-import (
-    "github.com/pk910/dynamic-ssz/codegen"
-    "reflect"
-)
-
-func main() {
-    generator := codegen.NewCodeGenerator(nil)
-    generator.BuildFile(
-        "generated.go",
-        codegen.WithReflectType(reflect.TypeOf(MyStruct{})),
-    )
-    generator.Generate()
-}
-```
-
-Both approaches generate optimized SSZ methods that are faster than reflection-based encoding.
+Generated code produces optimized SSZ methods that are faster than reflection-based encoding. See the [Code Generation Guide](docs/code-generator.md) for advanced usage including the programmatic API, cross-reference handling, and build system integration.
 
 ## Performance
 
@@ -127,6 +99,7 @@ The library includes comprehensive testing infrastructure:
 
 - **Unit Tests**: Fast, isolated tests for core functionality
 - **Spec Tests**: Ethereum consensus specification compliance tests
+- **Fuzz Testing**: Continuous fuzzing via CI that generates random SSZ type structures and verifies correctness by comparing reflection and codegen implementations across marshal, unmarshal, hash tree root, and streaming operations
 - **Examples**: Working examples that are automatically tested
 - **Performance Tests**: Benchmarking and regression testing
 
