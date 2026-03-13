@@ -4,10 +4,10 @@ go 1.25.8
 
 require (
 	github.com/attestantio/go-eth2-client v0.27.1
-	github.com/golang/snappy v0.0.4
-	github.com/huandu/go-clone/generic v1.6.0
+	github.com/golang/snappy v1.0.0
+	github.com/huandu/go-clone/generic v1.7.3
 	github.com/pk910/dynamic-ssz v1.2.2
-	github.com/stretchr/testify v1.8.4
+	github.com/stretchr/testify v1.11.1
 	gopkg.in/yaml.v2 v2.4.0
 )
 
@@ -19,7 +19,7 @@ require (
 	github.com/ferranbt/fastssz v0.1.4 // indirect
 	github.com/goccy/go-yaml v1.9.2 // indirect
 	github.com/holiman/uint256 v1.3.2 // indirect
-	github.com/huandu/go-clone v1.6.0 // indirect
+	github.com/huandu/go-clone v1.7.3 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
