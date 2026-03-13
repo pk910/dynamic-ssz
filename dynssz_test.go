@@ -44,7 +44,7 @@ func (t *testDynamicDecoder) UnmarshalSSZDecoder(ds sszutils.DynamicSpecs, decod
 	}
 	if t.ConsumeAll {
 		buf := make([]byte, decoder.GetLength())
-		decoder.DecodeBytes(buf)
+		_, _ = decoder.DecodeBytes(buf)
 	}
 	return nil
 }
@@ -306,7 +306,7 @@ type errorWriter struct {
 	err error
 }
 
-func (w *errorWriter) Write(p []byte) (int, error) {
+func (w *errorWriter) Write(_ []byte) (int, error) {
 	return 0, w.err
 }
 

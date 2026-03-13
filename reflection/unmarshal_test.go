@@ -251,7 +251,7 @@ func TestUnmarshalExtendedTypesErrors(t *testing.T) {
 				Opt *int16 `ssz-type:"optional"`
 			}),
 			data:        fromHex("0x04000000"),
-			expectedErr: "Optional requires at least 1 byte",
+			expectedErr: "optional requires at least 1 byte",
 		},
 		{
 			name: "optional_present_truncated",
@@ -1343,7 +1343,7 @@ func TestUnmarshalExtendedTypesReaderErrors(t *testing.T) {
 				Opt *int16 `ssz-type:"optional"`
 			}),
 			data:        fromHex("0x04000000"),
-			expectedErr: "Optional requires at least 1 byte",
+			expectedErr: "optional requires at least 1 byte",
 		},
 	}
 
@@ -1429,6 +1429,7 @@ func TestUnmarshalTruncatedReaderErrors(t *testing.T) {
 			dynssz: dynssz_fastssz,
 			target: func() any { return new(TestContainerWithFastSsz) },
 			fullData: func(t *testing.T) []byte {
+				t.Helper()
 				return marshalValid(t, dynssz_fastssz, &TestContainerWithFastSsz{1, 2, true, 4})
 			},
 			truncateAt:  5,
@@ -1439,6 +1440,7 @@ func TestUnmarshalTruncatedReaderErrors(t *testing.T) {
 			dynssz: dynssz,
 			target: func() any { return new(TestContainerWithDynamicSsz) },
 			fullData: func(t *testing.T) []byte {
+				t.Helper()
 				return marshalValid(t, dynssz, &TestContainerWithDynamicSsz{1, 2, true, 4})
 			},
 			truncateAt:  5,
@@ -1449,6 +1451,7 @@ func TestUnmarshalTruncatedReaderErrors(t *testing.T) {
 			dynssz: dynssz,
 			target: func() any { return new(DynFieldContainer) },
 			fullData: func(t *testing.T) []byte {
+				t.Helper()
 				return marshalValid(t, dynssz, &DynFieldContainer{42, []uint8{1, 2, 3}})
 			},
 			truncateAt:  6,
@@ -1459,6 +1462,8 @@ func TestUnmarshalTruncatedReaderErrors(t *testing.T) {
 			dynssz: dynssz,
 			target: func() any { return new(StringVectorContainer) },
 			fullData: func(t *testing.T) []byte {
+				t.Helper()
+
 				return marshalValid(t, dynssz, &StringVectorContainer{"abcdefgh"})
 			},
 			truncateAt:  4,
@@ -1469,6 +1474,7 @@ func TestUnmarshalTruncatedReaderErrors(t *testing.T) {
 			dynssz: dynssz,
 			target: func() any { return new(ByteVectorContainer) },
 			fullData: func(t *testing.T) []byte {
+				t.Helper()
 				return marshalValid(t, dynssz, &ByteVectorContainer{[8]byte{1, 2, 3, 4, 5, 6, 7, 8}})
 			},
 			truncateAt:  4,
@@ -1479,6 +1485,7 @@ func TestUnmarshalTruncatedReaderErrors(t *testing.T) {
 			dynssz: dynssz,
 			target: func() any { return new(DynVectorContainer) },
 			fullData: func(t *testing.T) []byte {
+				t.Helper()
 				return marshalValid(t, dynssz, &DynVectorContainer{Items: [2]struct {
 					Inner []uint8 `ssz-max:"10"`
 				}{{[]uint8{1, 2}}, {[]uint8{3, 4, 5}}}})
@@ -1491,6 +1498,7 @@ func TestUnmarshalTruncatedReaderErrors(t *testing.T) {
 			dynssz: dynssz,
 			target: func() any { return new(DynStringContainer) },
 			fullData: func(t *testing.T) []byte {
+				t.Helper()
 				return marshalValid(t, dynssz, &DynStringContainer{Value: "hello world"})
 			},
 			truncateAt:  6,
@@ -1501,6 +1509,7 @@ func TestUnmarshalTruncatedReaderErrors(t *testing.T) {
 			dynssz: dynssz,
 			target: func() any { return new(ByteListContainer) },
 			fullData: func(t *testing.T) []byte {
+				t.Helper()
 				return marshalValid(t, dynssz, &ByteListContainer{Data: []byte{1, 2, 3, 4, 5, 6, 7, 8}})
 			},
 			truncateAt:  4,
@@ -1511,6 +1520,7 @@ func TestUnmarshalTruncatedReaderErrors(t *testing.T) {
 			dynssz: dynssz,
 			target: func() any { return new(DynListContainer) },
 			fullData: func(t *testing.T) []byte {
+				t.Helper()
 				return marshalValid(t, dynssz, &DynListContainer{Items: []struct {
 					Inner []uint8 `ssz-max:"10"`
 				}{{[]uint8{1}}}})
@@ -1523,6 +1533,7 @@ func TestUnmarshalTruncatedReaderErrors(t *testing.T) {
 			dynssz: dynssz,
 			target: func() any { return new(DynListContainer) },
 			fullData: func(t *testing.T) []byte {
+				t.Helper()
 				return marshalValid(t, dynssz, &DynListContainer{Items: []struct {
 					Inner []uint8 `ssz-max:"10"`
 				}{{[]uint8{1}}, {[]uint8{2}}}})
@@ -1535,6 +1546,7 @@ func TestUnmarshalTruncatedReaderErrors(t *testing.T) {
 			dynssz: dynssz,
 			target: func() any { return new(BitlistContainer) },
 			fullData: func(t *testing.T) []byte {
+				t.Helper()
 				return marshalValid(t, dynssz, &BitlistContainer{Data: []byte{0xff, 0x01}})
 			},
 			truncateAt:  5,
@@ -1545,6 +1557,7 @@ func TestUnmarshalTruncatedReaderErrors(t *testing.T) {
 			dynssz: dynssz,
 			target: func() any { return new(UnionContainer) },
 			fullData: func(t *testing.T) []byte {
+				t.Helper()
 				// selector(1) + uint32(4) + uint64(8) = 13 bytes for union data
 				// container offset(4) + union data(13) = 17 bytes total
 				return fromHex("0x04000000" + "00" + "01000000" + "0200000000000000")
@@ -1557,6 +1570,7 @@ func TestUnmarshalTruncatedReaderErrors(t *testing.T) {
 			dynssz: dynssz_ext,
 			target: func() any { return new(OptionalContainer) },
 			fullData: func(t *testing.T) []byte {
+				t.Helper()
 				v := uint32(42)
 				return marshalValid(t, dynssz_ext, &OptionalContainer{Opt: &v})
 			},
@@ -1568,6 +1582,7 @@ func TestUnmarshalTruncatedReaderErrors(t *testing.T) {
 			dynssz: dynssz_ext,
 			target: func() any { return new(BigIntContainer) },
 			fullData: func(t *testing.T) []byte {
+				t.Helper()
 				return marshalValid(t, dynssz_ext, &BigIntContainer{Value: *big.NewInt(42)})
 			},
 			truncateAt:  4,

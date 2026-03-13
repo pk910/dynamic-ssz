@@ -53,7 +53,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create reporter: %v", err)
 	}
-	defer reporter.Close()
+	defer func() { _ = reporter.Close() }()
 
 	// Create shared DynSsz instances (TypeCache is thread-safe via RWMutex).
 	// Sharing avoids duplicating large type caches across workers.

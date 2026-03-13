@@ -276,7 +276,7 @@ func (e *Engine) fuzzUnmarshalCompare(entry corpus.TypeEntry, ds *dynssz.DynSsz,
 
 	if reflOk != codegenOk {
 		e.stats.UnmarshalDiffs.Add(1)
-		e.reporter.Report(Issue{
+		e.reporter.Report(&Issue{
 			Type:     IssueUnmarshalDiff,
 			TypeName: entry.Name,
 			Data:     data,
@@ -323,7 +323,7 @@ func (e *Engine) compareMarshal(entry corpus.TypeEntry, ds *dynssz.DynSsz, reflT
 	if reflMarshalErr != nil || codegenMarshalErr != nil {
 		if (reflMarshalErr == nil) != (codegenMarshalErr == nil) {
 			e.stats.MarshalMismatches.Add(1)
-			e.reporter.Report(Issue{
+			e.reporter.Report(&Issue{
 				Type:     IssueMarshalMismatch,
 				TypeName: entry.Name,
 				Data:     origData,
@@ -338,7 +338,7 @@ func (e *Engine) compareMarshal(entry corpus.TypeEntry, ds *dynssz.DynSsz, reflT
 
 	if !bytes.Equal(reflBytes, codegenBytes) {
 		e.stats.MarshalMismatches.Add(1)
-		e.reporter.Report(Issue{
+		e.reporter.Report(&Issue{
 			Type:     IssueMarshalMismatch,
 			TypeName: entry.Name,
 			Data:     origData,
@@ -374,7 +374,7 @@ func (e *Engine) compareHTR(entry corpus.TypeEntry, ds *dynssz.DynSsz, reflTarge
 	if reflHTRErr != nil || codegenHTRErr != nil {
 		if (reflHTRErr == nil) != (codegenHTRErr == nil) {
 			e.stats.HTRMismatches.Add(1)
-			e.reporter.Report(Issue{
+			e.reporter.Report(&Issue{
 				Type:     IssueHTRMismatch,
 				TypeName: entry.Name,
 				Data:     origData,
@@ -389,7 +389,7 @@ func (e *Engine) compareHTR(entry corpus.TypeEntry, ds *dynssz.DynSsz, reflTarge
 
 	if reflRoot != codegenRoot {
 		e.stats.HTRMismatches.Add(1)
-		e.reporter.Report(Issue{
+		e.reporter.Report(&Issue{
 			Type:     IssueHTRMismatch,
 			TypeName: entry.Name,
 			Data:     origData,
@@ -426,7 +426,7 @@ func (e *Engine) compareStreaming(entry corpus.TypeEntry, ds *dynssz.DynSsz, tar
 
 	if streamErr != nil {
 		e.stats.StreamMismatches.Add(1)
-		e.reporter.Report(Issue{
+		e.reporter.Report(&Issue{
 			Type:     IssueStreamMismatch,
 			TypeName: entry.Name,
 			Data:     origData,
@@ -437,7 +437,7 @@ func (e *Engine) compareStreaming(entry corpus.TypeEntry, ds *dynssz.DynSsz, tar
 
 	if !bytes.Equal(bufBytes, streamBuf.Bytes()) {
 		e.stats.StreamMismatches.Add(1)
-		e.reporter.Report(Issue{
+		e.reporter.Report(&Issue{
 			Type:     IssueStreamMismatch,
 			TypeName: entry.Name,
 			Data:     origData,
@@ -464,7 +464,7 @@ func (e *Engine) compareStreaming(entry corpus.TypeEntry, ds *dynssz.DynSsz, tar
 
 	if streamUnmarshalErr != nil {
 		e.stats.StreamMismatches.Add(1)
-		e.reporter.Report(Issue{
+		e.reporter.Report(&Issue{
 			Type:     IssueStreamMismatch,
 			TypeName: entry.Name,
 			Data:     origData,
@@ -487,7 +487,7 @@ func (e *Engine) compareStreaming(entry corpus.TypeEntry, ds *dynssz.DynSsz, tar
 
 	if !bytes.Equal(bufBytes, streamRemarshal) {
 		e.stats.StreamMismatches.Add(1)
-		e.reporter.Report(Issue{
+		e.reporter.Report(&Issue{
 			Type:     IssueStreamMismatch,
 			TypeName: entry.Name,
 			Data:     origData,
@@ -533,7 +533,7 @@ func (e *Engine) testRoundTrip(entry corpus.TypeEntry, ds *dynssz.DynSsz, target
 
 	if !bytes.Equal(marshaledBytes, remarshaledBytes) {
 		e.stats.MarshalMismatches.Add(1)
-		e.reporter.Report(Issue{
+		e.reporter.Report(&Issue{
 			Type:     IssueMarshalMismatch,
 			TypeName: entry.Name,
 			Data:     origData,
@@ -671,7 +671,7 @@ func (e *Engine) catchPanic(context string, entry corpus.TypeEntry, data []byte,
 	defer func() {
 		if r := recover(); r != nil {
 			e.stats.Panics.Add(1)
-			e.reporter.Report(Issue{
+			e.reporter.Report(&Issue{
 				Type:     IssuePanic,
 				TypeName: entry.Name,
 				Data:     data,

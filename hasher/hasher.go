@@ -151,7 +151,8 @@ func (hh *HasherPool) Get() *Hasher {
 			return NewHasherWithHashFn(hh.HashFn)
 		}
 	}
-	return h.(*Hasher)
+	hasher, _ := h.(*Hasher)
+	return hasher
 }
 
 // Put releases the Hasher to the pool.
@@ -236,7 +237,7 @@ func (h *Hasher) PutUint16(i uint16) {
 
 // PutUint8 appends a uint8 in 32 bytes
 func (h *Hasher) PutUint8(i uint8) {
-	h.tmp[0] = byte(i)
+	h.tmp[0] = i
 	h.AppendBytes32(h.tmp[:1])
 }
 
@@ -497,7 +498,7 @@ func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 	}
 
 	// input is of the form [<input><size>] of 64 bytes
-	h.hash(input, input)
+	_ = h.hash(input, input)
 	h.buf = append(h.buf[:indx], input[:32]...)
 
 	if debug {
@@ -532,7 +533,7 @@ func (h *Hasher) getDepth(d uint64) uint8 {
 	return 64 - uint8(bits.LeadingZeros(i)) - 1
 }
 
-func (h *Hasher) merkleizeImpl(dst []byte, input []byte, limit uint64) []byte {
+func (h *Hasher) merkleizeImpl(dst, input []byte, limit uint64) []byte {
 	// count is the number of 32 byte chunks from the input, after right-padding
 	// with zeroes to the next multiple of 32 bytes when the input is not aligned
 	// to a multiple of 32 bytes.
@@ -548,7 +549,7 @@ func (h *Hasher) merkleizeImpl(dst []byte, input []byte, limit uint64) []byte {
 	}
 	if limit == 1 {
 		if count == 1 {
-			return append(dst, input[:32]...)
+			return append(dst, input[:32]...) //nolint:gosec // G602: callers always pass 32-byte-aligned chunks; count==1 guarantees len(input)>=32
 		}
 		return append(dst, zeroBytes[:32]...)
 	}
@@ -570,7 +571,7 @@ func (h *Hasher) merkleizeImpl(dst []byte, input []byte, limit uint64) []byte {
 
 		outputLen := (layerLen / 2) * 32
 
-		h.hash(input, input)
+		_ = h.hash(input, input)
 		input = input[:outputLen]
 	}
 
@@ -624,7 +625,7 @@ func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 	}
 
 	// input is of the form [<progressive_root><size>] of 64 bytes
-	h.hash(input, input)
+	_ = h.hash(input, input)
 	h.buf = append(h.buf[:indx], input[:32]...)
 
 	if debug {
@@ -658,7 +659,7 @@ func (h *Hasher) MerkleizeProgressiveWithActiveFields(indx int, activeFields []b
 	}
 
 	// input is of the form [<progressive_root><active_fields>] of 64 bytes
-	h.hash(input, input)
+	_ = h.hash(input, input)
 	h.buf = append(h.buf[:indx], input[:32]...)
 
 	if debug {
@@ -666,7 +667,7 @@ func (h *Hasher) MerkleizeProgressiveWithActiveFields(indx int, activeFields []b
 	}
 }
 
-func (h *Hasher) merkleizeProgressiveImpl(dst []byte, chunks []byte, depth uint8) []byte {
+func (h *Hasher) merkleizeProgressiveImpl(dst, chunks []byte, depth uint8) []byte {
 	count := uint64((len(chunks) + 31) / 32)
 
 	if count == 0 {
@@ -730,7 +731,7 @@ func (h *Hasher) merkleizeProgressiveImpl(dst []byte, chunks []byte, depth uint8
 	// PairNode(left, right) - hash(left, right)
 	copy(h.tmp[:32], leftRoot)
 	copy(h.tmp[32:], rightRoot)
-	h.hash(h.tmp[:32], h.tmp[0:64])
+	_ = h.hash(h.tmp[:32], h.tmp[0:64])
 
 	return append(dst, h.tmp[:32]...)
 }

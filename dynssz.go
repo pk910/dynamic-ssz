@@ -687,8 +687,8 @@ func (d *DynSsz) HashTreeRoot(source any) ([32]byte, error) {
 //	}
 //	fmt.Printf("Block root: %x\n", hh.HashRoot())
 func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker) error {
-	if hasher, ok := source.(sszutils.DynamicHashRoot); ok {
-		err := hasher.HashTreeRootWithDyn(d, hh)
+	if dynamicHasher, ok := source.(sszutils.DynamicHashRoot); ok {
+		err := dynamicHasher.HashTreeRootWithDyn(d, hh)
 		if err != nil {
 			return err
 		}

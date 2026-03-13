@@ -244,7 +244,7 @@ func TestFixedSizeStringVsByteArrayMarshal(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			var byteData [32]byte
-			copy(byteData[:], []byte(tc.value))
+			copy(byteData[:], tc.value)
 
 			strStruct := WithFixedString{
 				Data: tc.value,

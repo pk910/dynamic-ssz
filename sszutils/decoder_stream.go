@@ -35,7 +35,7 @@ var _ Decoder = (*StreamDecoder)(nil)
 // provided io.Reader. totalLen specifies the total expected byte length of the
 // SSZ payload. maxBufSize controls the maximum internal read buffer size; if
 // <= 0, DefaultStreamDecoderBufSize is used.
-func NewStreamDecoder(reader io.Reader, totalLen int, maxBufSize int) *StreamDecoder {
+func NewStreamDecoder(reader io.Reader, totalLen, maxBufSize int) *StreamDecoder {
 	if maxBufSize <= 0 {
 		maxBufSize = DefaultStreamDecoderBufSize
 	}

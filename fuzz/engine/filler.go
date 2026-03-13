@@ -51,7 +51,7 @@ func (f *Filler) fillValue(v reflect.Value, tags string) {
 		return
 	}
 
-	switch v.Kind() {
+	switch v.Kind() { //nolint:exhaustive // intentionally handles only SSZ-relevant kinds
 	case reflect.Ptr:
 		f.fillPointer(v, tags)
 	case reflect.Struct:
@@ -98,14 +98,8 @@ func (f *Filler) fillPointer(v reflect.Value, tags string) {
 		return // leave nil
 	}
 
-	// For struct pointers (nested containers), small chance of nil
-	elemType := v.Type().Elem()
-	if elemType.Kind() == reflect.Struct && f.rng.Float64() < f.nilChance {
-		// Actually, SSZ struct pointers should generally not be nil
-		// unless optional. Don't leave nil for non-optional structs.
-	}
-
 	// Allocate and fill
+	elemType := v.Type().Elem()
 	if v.IsNil() {
 		v.Set(reflect.New(elemType))
 	}
@@ -215,11 +209,12 @@ func (f *Filler) fillSlice(v reflect.Value, tags string) {
 
 	// Determine actual length
 	var length int
-	if fixedLen > 0 {
+	switch {
+	case fixedLen > 0:
 		length = fixedLen
-	} else if f.rng.Float64() < f.emptyChance {
+	case f.rng.Float64() < f.emptyChance:
 		length = 0
-	} else {
+	default:
 		// Cap at maxListFill for performance
 		capMax := maxLen
 		if capMax > f.maxListFill {

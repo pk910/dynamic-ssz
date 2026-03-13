@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	. "github.com/pk910/dynamic-ssz"
-	dynssz "github.com/pk910/dynamic-ssz"
 	"github.com/pk910/dynamic-ssz/ssztypes"
 )
 
@@ -70,7 +69,7 @@ var ssizeTestMatrix = append(commonTestMatrix, []struct {
 	// uint128 and uint256 tests
 	{
 		"type_uint128_val_1",
-		dynssz.TypeWrapper[struct {
+		TypeWrapper[struct {
 			Field0 [16]byte `ssz-type:"uint128"`
 		}, [16]byte]{Data: [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}},
 		fromHex("0x00000000000000000000000000000000"),
@@ -78,7 +77,7 @@ var ssizeTestMatrix = append(commonTestMatrix, []struct {
 	},
 	{
 		"type_uint256_val_1",
-		dynssz.TypeWrapper[struct {
+		TypeWrapper[struct {
 			Field0 [32]byte `ssz-type:"uint256"`
 		}, [32]byte]{Data: [32]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}},
 		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),

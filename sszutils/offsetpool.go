@@ -25,7 +25,8 @@ var defaultOffsetSlicePool = &offsetSlicePool{
 
 // Get returns an int slice from the pool, consumer can grow it as needed
 func (p *offsetSlicePool) Get() []uint32 {
-	return (*p.pool.Get().(*[]uint32))[:0] // Reset length to 0
+	item, _ := p.pool.Get().(*[]uint32)
+	return (*item)[:0]
 }
 
 // Put returns an int slice to the pool

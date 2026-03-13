@@ -243,7 +243,7 @@ func TestCodeGeneratorSetPackageName(t *testing.T) {
 func TestCodeGeneratorBuildFile(t *testing.T) {
 	cg := NewCodeGenerator(nil)
 
-	t.Run("SingleType", func(t *testing.T) {
+	t.Run("SingleType", func(_ *testing.T) {
 		reflectType := reflect.TypeOf((*SimpleTestStruct)(nil)).Elem()
 		cg.BuildFile("test.go", WithReflectType(reflectType))
 
@@ -251,7 +251,7 @@ func TestCodeGeneratorBuildFile(t *testing.T) {
 		// But we can verify it doesn't panic
 	})
 
-	t.Run("MultipleTypes", func(t *testing.T) {
+	t.Run("MultipleTypes", func(_ *testing.T) {
 		reflectType1 := reflect.TypeOf((*SimpleTestStruct)(nil)).Elem()
 		reflectType2 := reflect.TypeOf((*SimpleTestStruct2)(nil)).Elem()
 
@@ -261,7 +261,7 @@ func TestCodeGeneratorBuildFile(t *testing.T) {
 		)
 	})
 
-	t.Run("WithAllOptions", func(t *testing.T) {
+	t.Run("WithAllOptions", func(_ *testing.T) {
 		reflectType := reflect.TypeOf((*SimpleTestStruct)(nil)).Elem()
 		sizeHints := []ssztypes.SszSizeHint{{Size: 32, Expr: "FIELD_SIZE"}}
 		maxSizeHints := []ssztypes.SszMaxSizeHint{{Size: 1024, Expr: "MAX_SIZE"}}

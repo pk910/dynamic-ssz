@@ -25,7 +25,7 @@ func MarshalUint16(dst []byte, i uint16) []byte {
 
 // MarshalUint8 marshals a little endian uint8 to dst
 func MarshalUint8(dst []byte, i uint8) []byte {
-	dst = append(dst, byte(i))
+	dst = append(dst, i)
 	return dst
 }
 

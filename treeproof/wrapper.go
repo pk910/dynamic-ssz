@@ -196,13 +196,6 @@ func (w *Wrapper) PutUint64Array(b []uint64, maxCapacity ...uint64) {
 
 /// --- legacy ones ---
 
-func min(i, j int) int {
-	if i < j {
-		return i
-	}
-	return j
-}
-
 func (w *Wrapper) AddBytes(b []byte) {
 	if len(b) <= 32 {
 		w.AddNode(LeafFromBytes(b))

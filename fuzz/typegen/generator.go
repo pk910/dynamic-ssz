@@ -176,7 +176,7 @@ func (g *Generator) generateType(depth int) TypeDef {
 
 // generateProgressiveContainer generates a struct type with ssz-index annotations
 // (progressive container). Fields have increasing, possibly sparse indices.
-func (g *Generator) generateProgressiveContainer(depth int) TypeDef {
+func (g *Generator) generateProgressiveContainer(_ int) TypeDef {
 	name := fmt.Sprintf("FuzzType%d", g.nextID)
 	g.nextID++
 
@@ -484,7 +484,7 @@ func (g *Generator) generateVectorOfStructsField(name string, depth int) FieldDe
 
 // generateMultiDimArrayField generates multi-dimensional arrays like [4][8]uint32,
 // [2][]byte with ssz-size:"2,32", or mixed array/list like [N][]T with ssz-size:"N,?".
-func (g *Generator) generateMultiDimArrayField(name string, depth int) FieldDef {
+func (g *Generator) generateMultiDimArrayField(name string, _ int) FieldDef {
 	outerLen := 1 + g.rng.Intn(min(g.cfg.MaxArrayLen, 8))
 
 	basics := []string{"uint8", "uint16", "uint32", "uint64"}
@@ -706,7 +706,7 @@ func (g *Generator) generateProgressiveContainerField(name string, depth int) Fi
 func (g *Generator) generateUnionField(name string) FieldDef {
 	numVariants := 2 + g.rng.Intn(3) // 2-4 variants
 
-	var variants []string
+	variants := make([]string, 0, numVariants)
 	for i := range numVariants {
 		variantType := g.randomBasicOrByteType()
 		variants = append(variants, fmt.Sprintf("\t\tVariant%d %s", i, variantType))
