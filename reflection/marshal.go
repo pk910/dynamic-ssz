@@ -48,150 +48,143 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 		}
 	}
 
-	hasDynamicSize := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
-	isFastsszMarshaler := sourceType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
-	useDynamicMarshal := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0
-	useDynamicEncoder := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicEncoder != 0
-	useFastSsz := !ctx.noFastSsz && isFastsszMarshaler && !hasDynamicSize
-	if !useFastSsz && sourceType.SszType == ssztypes.SszCustomType {
-		useFastSsz = true
-	}
-
 	if ctx.verbose {
+		isFastsszMarshaler := sourceType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+		hasDynamicSize := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
+		useFastSsz := !ctx.noFastSsz && isFastsszMarshaler && !hasDynamicSize
 		ctx.logCb("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, isFastsszMarshaler, hasDynamicSize)
 	}
 
-	if useFastSsz {
-		marshaller, ok := getPtr(sourceValue).Interface().(sszutils.FastsszMarshaler)
-		if ok {
-			newBuf, err := marshaller.MarshalSSZTo(encoder.GetBuffer())
-			if err != nil {
-				return err
-			}
-			encoder.SetBuffer(newBuf)
-		} else {
-			useFastSsz = false
+	// Fast path: skip compat interface checks for types that don't implement any
+	if sourceType.SszCompatFlags != 0 || sourceType.SszType == ssztypes.SszCustomType {
+		hasDynamicSize := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
+		isFastsszMarshaler := sourceType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+		useDynamicMarshal := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0
+		useDynamicEncoder := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicEncoder != 0
+		useFastSsz := !ctx.noFastSsz && isFastsszMarshaler && !hasDynamicSize
+		if !useFastSsz && sourceType.SszType == ssztypes.SszCustomType {
+			useFastSsz = true
 		}
-	}
 
-	if !useFastSsz && useDynamicEncoder {
-		if encoder.Seekable() && useDynamicMarshal {
-			// prefer static marshaller for non-seekable encoders (buffer based)
-			useDynamicEncoder = false
-		} else if sszEncoder, ok := getPtr(sourceValue).Interface().(sszutils.DynamicEncoder); ok {
-			err := sszEncoder.MarshalSSZEncoder(ctx.ds, encoder)
-			if err != nil {
-				return err
-			}
-		} else {
-			useDynamicEncoder = false
-		}
-	}
-
-	if !useFastSsz && !useDynamicEncoder && useDynamicMarshal {
-		// Use dynamic marshaler - can always be used even with dynamic specs
-		marshaller, ok := getPtr(sourceValue).Interface().(sszutils.DynamicMarshaler)
-		if ok {
-			newBuf, err := marshaller.MarshalSSZDyn(ctx.ds, encoder.GetBuffer())
-			if err != nil {
-				return err
-			}
-			encoder.SetBuffer(newBuf)
-		} else {
-			useDynamicMarshal = false
-		}
-	}
-
-	if !useFastSsz && !useDynamicEncoder && !useDynamicMarshal {
-		// can't use fastssz, use dynamic marshaling
-		var err error
-		switch sourceType.SszType {
-		// complex types
-		case ssztypes.SszTypeWrapperType:
-			err = ctx.marshalTypeWrapper(sourceType, sourceValue, encoder, idt)
-			if err != nil {
-				return err
-			}
-		case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
-			err = ctx.marshalContainer(sourceType, sourceValue, encoder, idt)
-			if err != nil {
-				return err
-			}
-		case ssztypes.SszVectorType, ssztypes.SszBitvectorType, ssztypes.SszUint128Type, ssztypes.SszUint256Type:
-			if sourceType.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
-				err = ctx.marshalDynamicVector(sourceType, sourceValue, encoder, idt)
-			} else {
-				err = ctx.marshalVector(sourceType, sourceValue, encoder, idt)
-			}
-			if err != nil {
-				return err
-			}
-		case ssztypes.SszListType, ssztypes.SszProgressiveListType:
-			if sourceType.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
-				err = ctx.marshalDynamicList(sourceType, sourceValue, encoder, idt)
-			} else {
-				err = ctx.marshalList(sourceType, sourceValue, encoder, idt)
-			}
-			if err != nil {
-				return err
-			}
-		case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType:
-			err = ctx.marshalBitlist(sourceType, sourceValue, encoder, idt)
-			if err != nil {
-				return err
-			}
-		case ssztypes.SszCompatibleUnionType:
-			err = ctx.marshalCompatibleUnion(sourceType, sourceValue, encoder, idt)
-			if err != nil {
-				return err
-			}
-
-		// primitive types
-		case ssztypes.SszBoolType:
-			encoder.EncodeBool(sourceValue.Bool())
-		case ssztypes.SszUint8Type:
-			encoder.EncodeUint8(uint8(sourceValue.Uint()))
-		case ssztypes.SszUint16Type:
-			encoder.EncodeUint16(uint16(sourceValue.Uint()))
-		case ssztypes.SszUint32Type:
-			encoder.EncodeUint32(uint32(sourceValue.Uint()))
-		case ssztypes.SszUint64Type:
-			if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsTime != 0 {
-				timeValue, isTime := sourceValue.Interface().(time.Time)
-				if !isTime {
-					return fmt.Errorf("time.Time type expected, got %v", sourceType.Type.Name())
+		if useFastSsz {
+			if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.FastsszMarshaler); ok {
+				newBuf, err := marshaller.MarshalSSZTo(encoder.GetBuffer())
+				if err != nil {
+					return err
 				}
-				encoder.EncodeUint64(uint64(timeValue.Unix()))
-			} else {
-				encoder.EncodeUint64(sourceValue.Uint())
+				encoder.SetBuffer(newBuf)
+				return nil
 			}
-
-		// extended types
-		case ssztypes.SszInt8Type:
-			encoder.EncodeUint8(uint8(sourceValue.Int()))
-		case ssztypes.SszInt16Type:
-			encoder.EncodeUint16(uint16(sourceValue.Int()))
-		case ssztypes.SszInt32Type:
-			encoder.EncodeUint32(uint32(sourceValue.Int()))
-		case ssztypes.SszInt64Type:
-			encoder.EncodeUint64(uint64(sourceValue.Int()))
-		case ssztypes.SszFloat32Type:
-			encoder.EncodeUint32(math.Float32bits(float32(sourceValue.Float())))
-		case ssztypes.SszFloat64Type:
-			encoder.EncodeUint64(math.Float64bits(sourceValue.Float()))
-		case ssztypes.SszOptionalType:
-			err = ctx.marshalOptional(sourceType, sourceValue, encoder, idt)
-			if err != nil {
-				return err
-			}
-		case ssztypes.SszBigIntType:
-			err = ctx.marshalBigInt(sourceType, sourceValue, encoder, idt)
-			if err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("unknown type: %v", sourceType)
 		}
+
+		if useDynamicEncoder {
+			if !encoder.Seekable() || !useDynamicMarshal {
+				// prefer dynamic marshaller for seekable encoders (buffer based)
+				if sszEncoder, ok := getPtr(sourceValue).Interface().(sszutils.DynamicEncoder); ok {
+					return sszEncoder.MarshalSSZEncoder(ctx.ds, encoder)
+				}
+			}
+		}
+
+		if useDynamicMarshal {
+			if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.DynamicMarshaler); ok {
+				newBuf, err := marshaller.MarshalSSZDyn(ctx.ds, encoder.GetBuffer())
+				if err != nil {
+					return err
+				}
+				encoder.SetBuffer(newBuf)
+				return nil
+			}
+		}
+	}
+
+	var err error
+	switch sourceType.SszType {
+	// complex types
+	case ssztypes.SszTypeWrapperType:
+		err = ctx.marshalTypeWrapper(sourceType, sourceValue, encoder, idt)
+		if err != nil {
+			return err
+		}
+	case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
+		err = ctx.marshalContainer(sourceType, sourceValue, encoder, idt)
+		if err != nil {
+			return err
+		}
+	case ssztypes.SszVectorType, ssztypes.SszBitvectorType, ssztypes.SszUint128Type, ssztypes.SszUint256Type:
+		if sourceType.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+			err = ctx.marshalDynamicVector(sourceType, sourceValue, encoder, idt)
+		} else {
+			err = ctx.marshalVector(sourceType, sourceValue, encoder, idt)
+		}
+		if err != nil {
+			return err
+		}
+	case ssztypes.SszListType, ssztypes.SszProgressiveListType:
+		if sourceType.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+			err = ctx.marshalDynamicList(sourceType, sourceValue, encoder, idt)
+		} else {
+			err = ctx.marshalList(sourceType, sourceValue, encoder, idt)
+		}
+		if err != nil {
+			return err
+		}
+	case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType:
+		err = ctx.marshalBitlist(sourceType, sourceValue, encoder, idt)
+		if err != nil {
+			return err
+		}
+	case ssztypes.SszCompatibleUnionType:
+		err = ctx.marshalCompatibleUnion(sourceType, sourceValue, encoder, idt)
+		if err != nil {
+			return err
+		}
+
+	// primitive types
+	case ssztypes.SszBoolType:
+		encoder.EncodeBool(sourceValue.Bool())
+	case ssztypes.SszUint8Type:
+		encoder.EncodeUint8(uint8(sourceValue.Uint()))
+	case ssztypes.SszUint16Type:
+		encoder.EncodeUint16(uint16(sourceValue.Uint()))
+	case ssztypes.SszUint32Type:
+		encoder.EncodeUint32(uint32(sourceValue.Uint()))
+	case ssztypes.SszUint64Type:
+		if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsTime != 0 {
+			timeValue, isTime := sourceValue.Interface().(time.Time)
+			if !isTime {
+				return fmt.Errorf("time.Time type expected, got %v", sourceType.Type.Name())
+			}
+			encoder.EncodeUint64(uint64(timeValue.Unix()))
+		} else {
+			encoder.EncodeUint64(sourceValue.Uint())
+		}
+
+	// extended types
+	case ssztypes.SszInt8Type:
+		encoder.EncodeUint8(uint8(sourceValue.Int()))
+	case ssztypes.SszInt16Type:
+		encoder.EncodeUint16(uint16(sourceValue.Int()))
+	case ssztypes.SszInt32Type:
+		encoder.EncodeUint32(uint32(sourceValue.Int()))
+	case ssztypes.SszInt64Type:
+		encoder.EncodeUint64(uint64(sourceValue.Int()))
+	case ssztypes.SszFloat32Type:
+		encoder.EncodeUint32(math.Float32bits(float32(sourceValue.Float())))
+	case ssztypes.SszFloat64Type:
+		encoder.EncodeUint64(math.Float64bits(sourceValue.Float()))
+	case ssztypes.SszOptionalType:
+		err = ctx.marshalOptional(sourceType, sourceValue, encoder, idt)
+		if err != nil {
+			return err
+		}
+	case ssztypes.SszBigIntType:
+		err = ctx.marshalBigInt(sourceType, sourceValue, encoder, idt)
+		if err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("unknown type: %v", sourceType)
 	}
 
 	return nil
@@ -240,14 +233,28 @@ func (ctx *ReflectionCtx) marshalTypeWrapper(sourceType *ssztypes.TypeDescriptor
 // Returns:
 //   - error: An error if any field encoding fails
 func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, idt int) error {
+	fields := sourceType.ContainerDesc.Fields
+	fieldCount := len(fields)
+
+	// Fast path: containers with no dynamic fields (e.g. Validator)
+	if len(sourceType.ContainerDesc.DynFields) == 0 {
+		for i := 0; i < fieldCount; i++ {
+			field := &fields[i]
+			fieldValue := sourceValue.Field(i)
+			if err := ctx.marshalType(field.Type, fieldValue, encoder, idt+2); err != nil {
+				return fmt.Errorf("failed encoding field %v: %w", field.Name, err)
+			}
+		}
+		return nil
+	}
+
 	offset := 0
 	dynObjOffset := 0
 	canSeek := encoder.Seekable()
 	startLen := encoder.GetPosition()
-	fieldCount := len(sourceType.ContainerDesc.Fields)
 
 	for i := 0; i < fieldCount; i++ {
-		field := sourceType.ContainerDesc.Fields[i]
+		field := &fields[i]
 		fieldSize := field.Type.Size
 		if fieldSize > 0 {
 			// fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
@@ -527,13 +534,12 @@ func (ctx *ReflectionCtx) marshalList(sourceType *ssztypes.TypeDescriptor, sourc
 	default:
 		sliceLen := sourceValue.Len()
 		fieldType := sourceType.ElemDesc
+		isPointer := fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0
 
 		for i := 0; i < sliceLen; i++ {
 			itemVal := sourceValue.Index(i)
-			if fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
-				if itemVal.IsNil() {
-					itemVal = reflect.New(fieldType.Type.Elem())
-				}
+			if isPointer && itemVal.IsNil() {
+				itemVal = reflect.New(fieldType.Type.Elem())
 			}
 
 			err := ctx.marshalType(fieldType, itemVal, encoder, idt+2)

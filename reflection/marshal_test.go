@@ -363,9 +363,10 @@ func TestMarshalErrors(t *testing.T) {
 				Inner struct {
 					Data []uint32 `ssz-size:"2"`
 				}
+				Dyn []uint8 `ssz-max:"100"`
 			}{struct {
 				Data []uint32 `ssz-size:"2"`
-			}{[]uint32{1, 2, 3}}},
+			}{[]uint32{1, 2, 3}}, nil},
 			expectedErr: "list length is higher than max value",
 		},
 		{
