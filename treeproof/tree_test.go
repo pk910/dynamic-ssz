@@ -1207,7 +1207,6 @@ func TestHelperFunctions(t *testing.T) {
 	})
 }
 
-
 func TestTreeEdgeCases(t *testing.T) {
 	t.Run("panic on incomplete tree", func(t *testing.T) {
 		defer func() {
