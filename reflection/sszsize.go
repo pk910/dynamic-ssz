@@ -117,7 +117,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 				staticSize += size + 4
 			}
 
-			if dataLen < int(targetType.Len) {
+			if uint32(dataLen) < targetType.Len {
 				appendZero := targetType.Len - uint32(dataLen)
 				zeroVal := reflect.New(fieldType.Type).Elem()
 				size, err := ctx.getSszValueSize(fieldType, zeroVal)

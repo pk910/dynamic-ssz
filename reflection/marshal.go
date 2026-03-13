@@ -331,6 +331,13 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 //   - Byte arrays use reflect.Value.Bytes() for efficient bulk copying
 //   - Non-addressable arrays are made addressable via a temporary pointer
 func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, idt int) error {
+	if int64(sourceType.Len) > platformMaxInt {
+		return fmt.Errorf("vector length %d exceeds platform int max", sourceType.Len)
+	}
+	if sourceType.ElemDesc.Size > 0 && int64(sourceType.ElemDesc.Size) > platformMaxInt {
+		return fmt.Errorf("element size %d exceeds platform int max", sourceType.ElemDesc.Size)
+	}
+
 	sliceLen := sourceValue.Len()
 	if uint32(sliceLen) > sourceType.Len {
 		if sourceType.Kind == reflect.Array {
@@ -415,6 +422,10 @@ func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sou
 // length is less than the expected size. Zero values are efficiently batched
 // to minimize encoding overhead.
 func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, idt int) error {
+	if int64(sourceType.Len) > platformMaxInt {
+		return fmt.Errorf("dynamic vector length %d exceeds platform int max", sourceType.Len)
+	}
+
 	fieldType := sourceType.ElemDesc
 	sliceLen := sourceValue.Len()
 
@@ -432,7 +443,7 @@ func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescript
 	canSeek := encoder.Seekable()
 	startOffset := encoder.GetPosition()
 	totalOffsets := sliceLen + appendZero
-	offset := 4 * totalOffsets
+	offset := uint32(4 * totalOffsets)
 
 	var zeroVal reflect.Value
 	if appendZero > 0 {
@@ -454,8 +465,8 @@ func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescript
 				return fmt.Errorf("failed to get size of dynamic vector element %v: %w", itemVal.Type().Name(), err)
 			}
 
-			encoder.EncodeOffset(uint32(offset))
-			offset += int(size)
+			encoder.EncodeOffset(offset)
+			offset += size
 		}
 		if appendZero > 0 {
 			size, err := ctx.getSszValueSize(fieldType, zeroVal)
@@ -464,8 +475,8 @@ func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescript
 			}
 
 			for i := 0; i < appendZero; i++ {
-				encoder.EncodeOffset(uint32(offset))
-				offset += int(size)
+				encoder.EncodeOffset(offset)
+				offset += size
 			}
 		}
 	}
@@ -481,10 +492,10 @@ func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescript
 		}
 
 		if canSeek {
-			encoder.EncodeOffsetAt(startOffset+(i*4), uint32(offset))
+			encoder.EncodeOffsetAt(startOffset+(i*4), offset)
 
 			newPos := encoder.GetPosition()
-			offset += newPos - bufLen
+			offset += uint32(newPos - bufLen)
 			bufLen = newPos
 		}
 	}
@@ -496,10 +507,10 @@ func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescript
 		}
 
 		if canSeek {
-			encoder.EncodeOffsetAt(startOffset+((sliceLen+i)*4), uint32(offset))
+			encoder.EncodeOffsetAt(startOffset+((sliceLen+i)*4), offset)
 
 			newPos := encoder.GetPosition()
-			offset += newPos - bufLen
+			offset += uint32(newPos - bufLen)
 			bufLen = newPos
 		}
 	}
@@ -576,13 +587,13 @@ func (ctx *ReflectionCtx) marshalDynamicList(sourceType *ssztypes.TypeDescriptor
 	canSeek := encoder.Seekable()
 	startOffset := encoder.GetPosition()
 	totalOffsets := sliceLen
-	offset := 4 * totalOffsets
+	offset := uint32(4 * totalOffsets)
 
 	if canSeek {
 		encoder.EncodeZeroPadding(4 * totalOffsets) // Reserve space for offsets
 	} else if sliceLen > 0 {
 		// need to calculate the object sizes now
-		encoder.EncodeOffset(uint32(offset))
+		encoder.EncodeOffset(offset)
 
 		for i := 0; i < sliceLen-1; i++ {
 			itemVal := sourceValue.Index(i)
@@ -591,8 +602,8 @@ func (ctx *ReflectionCtx) marshalDynamicList(sourceType *ssztypes.TypeDescriptor
 				return fmt.Errorf("failed to get size of dynamic list element %v: %w", itemVal.Type().Name(), err)
 			}
 
-			offset += int(size)
-			encoder.EncodeOffset(uint32(offset))
+			offset += size
+			encoder.EncodeOffset(offset)
 		}
 	}
 
@@ -607,10 +618,10 @@ func (ctx *ReflectionCtx) marshalDynamicList(sourceType *ssztypes.TypeDescriptor
 		}
 
 		if canSeek {
-			encoder.EncodeOffsetAt(startOffset+(i*4), uint32(offset))
+			encoder.EncodeOffsetAt(startOffset+(i*4), offset)
 
 			newPos := encoder.GetPosition()
-			offset += newPos - bufLen
+			offset += uint32(newPos - bufLen)
 			bufLen = newPos
 		}
 	}

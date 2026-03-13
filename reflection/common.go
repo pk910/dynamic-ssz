@@ -13,11 +13,16 @@
 package reflection
 
 import (
+	"math"
 	"reflect"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
+
+// platformMaxInt is the maximum int value for the current platform.
+// It is a variable (not constant) to allow testing overflow checks on 64-bit systems.
+var platformMaxInt = int64(math.MaxInt)
 
 // ReflectionCtx holds the configuration for reflection-based SSZ operations.
 // It wraps a DynamicSpecs provider for resolving dynamic field sizes, along

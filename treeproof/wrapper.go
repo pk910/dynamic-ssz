@@ -10,6 +10,7 @@ package treeproof
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
@@ -86,6 +87,12 @@ func (w *Wrapper) Merkleize(indx int) {
 }
 
 func (w *Wrapper) MerkleizeWithMixin(indx int, num, limit uint64) {
+	if num > math.MaxInt64 {
+		panic(fmt.Sprintf("MerkleizeWithMixin: num %d exceeds max int64", num))
+	}
+	if limit > math.MaxInt64 {
+		panic(fmt.Sprintf("MerkleizeWithMixin: limit %d exceeds max int64", limit))
+	}
 	if len(w.buf) != 0 {
 		w.appendBytesAsNodes(w.buf)
 		w.buf = w.buf[:0]
@@ -102,6 +109,9 @@ func (w *Wrapper) MerkleizeProgressive(indx int) {
 }
 
 func (w *Wrapper) MerkleizeProgressiveWithMixin(indx int, num uint64) {
+	if num > math.MaxInt64 {
+		panic(fmt.Sprintf("MerkleizeProgressiveWithMixin: num %d exceeds max int64", num))
+	}
 	if len(w.buf) != 0 {
 		w.appendBytesAsNodes(w.buf)
 		w.buf = w.buf[:0]
@@ -123,7 +133,15 @@ func (w *Wrapper) PutBitlist(bb []byte, maxSize uint64) {
 
 	indx := w.Index()
 	w.appendBytesAsNodes(b)
-	w.CommitWithMixin(indx, int(size), int((maxSize+255)/256))
+
+	limit := (maxSize + 255) / 256
+	if size > math.MaxInt64 {
+		panic(fmt.Sprintf("PutBitlist: size %d exceeds max int64", size))
+	}
+	if limit > math.MaxInt64 {
+		panic(fmt.Sprintf("PutBitlist: limit %d exceeds max int64", limit))
+	}
+	w.CommitWithMixin(indx, int(size), int(limit))
 }
 
 func (w *Wrapper) PutProgressiveBitlist(bb []byte) {
@@ -132,6 +150,10 @@ func (w *Wrapper) PutProgressiveBitlist(bb []byte) {
 
 	indx := w.Index()
 	w.appendBytesAsNodes(b)
+
+	if size > math.MaxInt64 {
+		panic(fmt.Sprintf("PutProgressiveBitlist: size %d exceeds max int64", size))
+	}
 	w.CommitProgressiveWithMixin(indx, int(size))
 }
 
