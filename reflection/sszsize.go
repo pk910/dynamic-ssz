@@ -93,8 +93,9 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 			}
 			staticSize = size
 		case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
-			for i := 0; i < len(targetType.ContainerDesc.Fields); i++ {
-				fieldType := targetType.ContainerDesc.Fields[i]
+			sizeFields := targetType.ContainerDesc.Fields
+			for i := 0; i < len(sizeFields); i++ {
+				fieldType := &sizeFields[i]
 				fieldValue := targetValue.Field(i)
 
 				if fieldType.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {

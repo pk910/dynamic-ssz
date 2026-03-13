@@ -339,8 +339,9 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 	}
 
 	dynIdx := 0
-	for i := 0; i < len(targetType.ContainerDesc.Fields); i++ {
-		field := targetType.ContainerDesc.Fields[i]
+	fields := targetType.ContainerDesc.Fields
+	for i := 0; i < len(fields); i++ {
+		field := &fields[i]
 
 		fieldSize := int(field.Type.Size)
 		if fieldSize > 0 {
@@ -510,28 +511,8 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 			}
 		}
 	} else {
-		itemSize := int(fieldType.Size)
-
-		for i := 0; i < arrLen; i++ {
-			var itemVal reflect.Value
-			if fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
-				// fmt.Printf("new array item %v\n", fieldType.Name())
-				itemVal = reflect.New(fieldType.Type.Elem())
-				newValue.Index(i).Set(itemVal.Elem().Addr())
-			} else {
-				itemVal = newValue.Index(i)
-			}
-
-			expectedPos := decoder.GetPosition() + itemSize
-
-			err := ctx.unmarshalType(fieldType, itemVal, decoder, idt+2)
-			if err != nil {
-				return err
-			}
-
-			if decoder.GetPosition() != expectedPos {
-				return fmt.Errorf("unmarshalling vector item did not consume expected ssz range (pos: %v, expected: %v)", decoder.GetPosition(), expectedPos)
-			}
+		if err := ctx.unmarshalFixedElements(fieldType, newValue, arrLen, decoder, idt, "vector"); err != nil {
+			return err
 		}
 	}
 
@@ -669,6 +650,34 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 	return nil
 }
 
+// unmarshalFixedElements decodes a sequence of fixed-size elements into target slice/array positions.
+// It handles both pointer and non-pointer element types.
+func (ctx *ReflectionCtx) unmarshalFixedElements(fieldType *ssztypes.TypeDescriptor, newValue reflect.Value, count int, decoder sszutils.Decoder, idt int, context string) error {
+	itemSize := int(fieldType.Size)
+
+	for i := 0; i < count; i++ {
+		var itemVal reflect.Value
+		if fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+			itemVal = reflect.New(fieldType.Type.Elem())
+			newValue.Index(i).Set(itemVal.Elem().Addr())
+		} else {
+			itemVal = newValue.Index(i)
+		}
+
+		expectedPos := decoder.GetPosition() + itemSize
+
+		if err := ctx.unmarshalType(fieldType, itemVal, decoder, idt+2); err != nil {
+			return err
+		}
+
+		if decoder.GetPosition() != expectedPos {
+			return fmt.Errorf("%s item did not consume expected ssz range (pos: %v, expected: %v)", context, decoder.GetPosition(), expectedPos)
+		}
+	}
+
+	return nil
+}
+
 // unmarshalList decodes SSZ-encoded list data.
 //
 // This function handles lists with fixed-size elements. The list length is determined by
@@ -735,27 +744,8 @@ func (ctx *ReflectionCtx) unmarshalList(targetType *ssztypes.TypeDescriptor, tar
 		}
 	default:
 		// decode list items
-
-		for i := 0; i < sliceLen; i++ {
-			var itemVal reflect.Value
-			if fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
-				// fmt.Printf("new list item %v\n", fieldType.Name())
-				itemVal = reflect.New(fieldType.Type.Elem())
-				newValue.Index(i).Set(itemVal.Elem().Addr())
-			} else {
-				itemVal = newValue.Index(i)
-			}
-
-			expectedPos := decoder.GetPosition() + itemSize
-
-			err := ctx.unmarshalType(fieldType, itemVal, decoder, idt+2)
-			if err != nil {
-				return err
-			}
-
-			if decoder.GetPosition() != expectedPos {
-				return fmt.Errorf("list item did not consume expected ssz range (pos: %v, expected: %v)", decoder.GetPosition(), expectedPos)
-			}
+		if err := ctx.unmarshalFixedElements(fieldType, newValue, sliceLen, decoder, idt, "list"); err != nil {
+			return err
 		}
 	}
 

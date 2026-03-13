@@ -342,8 +342,9 @@ func (ctx *ReflectionCtx) buildRootFromLargeUint(sourceType *ssztypes.TypeDescri
 func (ctx *ReflectionCtx) buildRootFromContainer(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
 	hashIndex := hh.Index()
 
-	for i := 0; i < len(sourceType.ContainerDesc.Fields); i++ {
-		field := sourceType.ContainerDesc.Fields[i]
+	htrFields := sourceType.ContainerDesc.Fields
+	for i := 0; i < len(htrFields); i++ {
+		field := &htrFields[i]
 		fieldType := field.Type
 		fieldValue := sourceValue.Field(i)
 
@@ -389,8 +390,9 @@ func (ctx *ReflectionCtx) buildRootFromProgressiveContainer(sourceType *ssztypes
 	hashIndex := hh.Index()
 	lastActiveField := -1
 
-	for i := 0; i < len(sourceType.ContainerDesc.Fields); i++ {
-		field := sourceType.ContainerDesc.Fields[i]
+	progFields := sourceType.ContainerDesc.Fields
+	for i := 0; i < len(progFields); i++ {
+		field := &progFields[i]
 
 		if int(field.SszIndex) > lastActiveField+1 {
 			// fill the gap with empty fields

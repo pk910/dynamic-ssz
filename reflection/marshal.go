@@ -244,10 +244,11 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 	dynObjOffset := 0
 	canSeek := encoder.Seekable()
 	startLen := encoder.GetPosition()
-	fieldCount := len(sourceType.ContainerDesc.Fields)
+	fields := sourceType.ContainerDesc.Fields
+	fieldCount := len(fields)
 
 	for i := 0; i < fieldCount; i++ {
-		field := sourceType.ContainerDesc.Fields[i]
+		field := &fields[i]
 		fieldSize := field.Type.Size
 		if fieldSize > 0 {
 			// fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
