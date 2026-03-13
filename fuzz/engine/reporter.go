@@ -112,10 +112,10 @@ func (r *Reporter) Report(issue Issue) {
 
 	// Write outputs if present
 	if issue.ReflectionOutput != nil {
-		os.WriteFile(filepath.Join(issueDir, "reflection_output.bin"), issue.ReflectionOutput, 0644)
+		_ = os.WriteFile(filepath.Join(issueDir, "reflection_output.bin"), issue.ReflectionOutput, 0644)
 	}
 	if issue.CodegenOutput != nil {
-		os.WriteFile(filepath.Join(issueDir, "codegen_output.bin"), issue.CodegenOutput, 0644)
+		_ = os.WriteFile(filepath.Join(issueDir, "codegen_output.bin"), issue.CodegenOutput, 0644)
 	}
 
 	// Append to log
@@ -126,7 +126,7 @@ func (r *Reporter) Report(issue Issue) {
 		issue.TypeName,
 		issue.Details,
 	)
-	fmt.Fprint(r.logFile, logEntry)
+	_, _ = fmt.Fprint(r.logFile, logEntry)
 	fmt.Fprintf(os.Stderr, "\n*** ISSUE #%d: %s in %s: %s\n", r.issueID, issue.Type, issue.TypeName, issue.Details)
 }
 

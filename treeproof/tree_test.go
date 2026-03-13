@@ -303,7 +303,7 @@ func BenchmarkTreeFromNodes(b *testing.B) {
 			b.ResetTimer()
 
 			for b.Loop() {
-				TreeFromNodes(bm.nodes, bm.limit)
+				_, _ = TreeFromNodes(bm.nodes, bm.limit)
 			}
 		})
 	}

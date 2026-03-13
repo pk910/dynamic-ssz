@@ -982,7 +982,7 @@ func (ctx *ReflectionCtx) unmarshalCompatibleUnion(targetType *ssztypes.TypeDesc
 //   - error: An error if decoding fails
 func (ctx *ReflectionCtx) unmarshalOptional(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
 	if decoder.GetLength() < 1 {
-		return fmt.Errorf("Optional requires at least 1 byte for availability")
+		return fmt.Errorf("optional requires at least 1 byte for availability")
 	}
 
 	// Read the availability byte

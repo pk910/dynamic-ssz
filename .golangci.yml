@@ -1,0 +1,107 @@
+version: "2"
+run:
+  issues-exit-code: 1
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - dogsled
+    - dupl
+    - errcheck
+    - exhaustive
+    - goconst
+    - gocritic
+    - gocyclo
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - nakedret
+    - nolintlint
+    - prealloc
+    - revive
+    - staticcheck
+    - thelper
+    - tparallel
+    - unconvert
+    - unparam
+    - unused
+    - whitespace
+  settings:
+    dupl:
+      threshold: 150
+    errcheck:
+      check-type-assertions: true
+    goconst:
+      min-len: 2
+      min-occurrences: 3
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - experimental
+        - opinionated
+        - performance
+        - style
+      disabled-checks:
+        - importShadow
+    gocyclo:
+      min-complexity: 60
+    gosec:
+      excludes:
+        - G115 # integer overflow conversions are intentional in SSZ serialization
+        - G404 # weak RNG is fine for fuzzing/testing
+    govet:
+      enable:
+        - shadow
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    revive:
+      rules:
+        - name: var-naming
+          disabled: true
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+    rules:
+      - linters:
+          - goconst
+        path: _test\.go$
+      - linters:
+          - dupl
+        path: _test\.go$
+      - linters:
+          - gocyclo
+        path: _test\.go$
+      - linters:
+          - gocritic
+        text: "unnamedResult"
+      - linters:
+          - gocritic
+        text: "commentedOutCode"
+      - linters:
+          - revive
+        text: "unused-parameter"
+        path: _test\.go$
+      - linters:
+          - gosec
+        text: "G204"
+        path: _test\.go$
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

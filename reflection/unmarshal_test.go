@@ -251,7 +251,7 @@ func TestUnmarshalExtendedTypesErrors(t *testing.T) {
 				Opt *int16 `ssz-type:"optional"`
 			}),
 			data:        fromHex("0x04000000"),
-			expectedErr: "Optional requires at least 1 byte",
+			expectedErr: "optional requires at least 1 byte",
 		},
 		{
 			name: "optional_present_truncated",
@@ -1343,7 +1343,7 @@ func TestUnmarshalExtendedTypesReaderErrors(t *testing.T) {
 				Opt *int16 `ssz-type:"optional"`
 			}),
 			data:        fromHex("0x04000000"),
-			expectedErr: "Optional requires at least 1 byte",
+			expectedErr: "optional requires at least 1 byte",
 		},
 	}
 

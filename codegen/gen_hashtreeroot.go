@@ -550,7 +550,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		lenVar = fmt.Sprintf("%d", desc.Len)
 	}
 
-	var itemSize int
+	itemSize := 0
 
 	// Handle byte arrays
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 || desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
@@ -587,7 +587,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		} else {
 			ctx.appendCode(indent, "hh.PutBytes(%s[:%s])\n", valVar, limitVar)
 		}
-		itemSize = 1
+		_ = itemSize // itemSize only used in element hashing branch
 	} else {
 		// Hash individual elements
 		if !pack {

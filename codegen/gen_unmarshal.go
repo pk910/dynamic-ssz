@@ -582,7 +582,7 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 
 	limitVar := ""
 	bitlimitVar := ""
-	needExpression := !(desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 && noBufCheck)
+	needExpression := desc.GoTypeFlags&ssztypes.GoTypeFlagIsString == 0 || !noBufCheck
 
 	if sizeExpression != nil && needExpression {
 		defaultValue := uint64(desc.Len)

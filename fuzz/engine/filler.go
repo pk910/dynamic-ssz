@@ -98,14 +98,8 @@ func (f *Filler) fillPointer(v reflect.Value, tags string) {
 		return // leave nil
 	}
 
-	// For struct pointers (nested containers), small chance of nil
-	elemType := v.Type().Elem()
-	if elemType.Kind() == reflect.Struct && f.rng.Float64() < f.nilChance {
-		// Actually, SSZ struct pointers should generally not be nil
-		// unless optional. Don't leave nil for non-optional structs.
-	}
-
 	// Allocate and fill
+	elemType := v.Type().Elem()
 	if v.IsNil() {
 		v.Set(reflect.New(elemType))
 	}

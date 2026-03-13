@@ -122,7 +122,7 @@ func cleanGeneratedFiles(dir string) {
 	}
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), "_gen.go") {
-			os.Remove(filepath.Join(dir, e.Name()))
+			_ = os.Remove(filepath.Join(dir, e.Name()))
 		}
 	}
 }

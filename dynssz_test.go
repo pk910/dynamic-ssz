@@ -44,7 +44,7 @@ func (t *testDynamicDecoder) UnmarshalSSZDecoder(ds sszutils.DynamicSpecs, decod
 	}
 	if t.ConsumeAll {
 		buf := make([]byte, decoder.GetLength())
-		decoder.DecodeBytes(buf)
+		_, _ = decoder.DecodeBytes(buf)
 	}
 	return nil
 }
