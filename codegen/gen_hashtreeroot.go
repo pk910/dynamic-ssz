@@ -706,7 +706,6 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 
 		// Bulk uint64 list hashing
 		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
-			addVlen()
 			ctx.appendCode(indent, "sszutils.HashUint64Slice(hh, %s)\n", varName)
 		} else {
 			// Hash all elements
