@@ -331,10 +331,10 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 //   - Byte arrays use reflect.Value.Bytes() for efficient bulk copying
 //   - Non-addressable arrays are made addressable via a temporary pointer
 func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, idt int) error {
-	if int64(sourceType.Len) > platformMaxInt {
+	if exceedsMaxInt(sourceType.Len) {
 		return fmt.Errorf("vector length %d exceeds platform int max", sourceType.Len)
 	}
-	if sourceType.ElemDesc.Size > 0 && int64(sourceType.ElemDesc.Size) > platformMaxInt {
+	if sourceType.ElemDesc.Size > 0 && exceedsMaxInt(sourceType.ElemDesc.Size) {
 		return fmt.Errorf("element size %d exceeds platform int max", sourceType.ElemDesc.Size)
 	}
 
@@ -422,7 +422,7 @@ func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sou
 // length is less than the expected size. Zero values are efficiently batched
 // to minimize encoding overhead.
 func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, idt int) error {
-	if int64(sourceType.Len) > platformMaxInt {
+	if exceedsMaxInt(sourceType.Len) {
 		return fmt.Errorf("dynamic vector length %d exceeds platform int max", sourceType.Len)
 	}
 

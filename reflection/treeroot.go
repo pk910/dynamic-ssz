@@ -495,7 +495,7 @@ func (ctx *ReflectionCtx) buildRootFromCompatibleUnion(sourceType *ssztypes.Type
 //   - Byte arrays use PutBytes for efficient chunk-based hashing
 //   - Arrays with max size hints include length mixing for proper limits
 func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
-	if int64(sourceType.Len) > platformMaxInt {
+	if exceedsMaxInt(sourceType.Len) {
 		return fmt.Errorf("vector length %d exceeds platform int max", sourceType.Len)
 	}
 
