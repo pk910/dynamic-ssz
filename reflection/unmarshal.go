@@ -301,6 +301,31 @@ func (ctx *ReflectionCtx) unmarshalTypeWrapper(targetType *ssztypes.TypeDescript
 // The function validates offset integrity to ensure variable fields don't overlap
 // and that all data is consumed correctly.
 func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
+	// Fast path: containers with no dynamic fields (e.g. Validator)
+	if len(targetType.ContainerDesc.DynFields) == 0 {
+		sszSize := uint32(decoder.GetLength())
+		if sszSize < targetType.Len {
+			return sszutils.ErrUnexpectedEOF
+		}
+
+		fields := targetType.ContainerDesc.Fields
+		for i := 0; i < len(fields); i++ {
+			field := &fields[i]
+			fieldSize := int(field.Type.Size)
+			expectedPos := decoder.GetPosition() + fieldSize
+
+			fieldValue := targetValue.Field(i)
+			if err := ctx.unmarshalType(field.Type, fieldValue, decoder, idt+2); err != nil {
+				return fmt.Errorf("failed decoding field %v: %w", field.Name, err)
+			}
+
+			if decoder.GetPosition() != expectedPos {
+				return fmt.Errorf("container field did not consume expected ssz range (pos: %v, expected: %v)", decoder.GetPosition(), expectedPos)
+			}
+		}
+		return nil
+	}
+
 	canSeek := decoder.Seekable()
 
 	var dynamicOffsets []uint32

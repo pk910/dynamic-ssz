@@ -230,12 +230,25 @@ func (ctx *ReflectionCtx) marshalTypeWrapper(sourceType *ssztypes.TypeDescriptor
 // Returns:
 //   - error: An error if any field encoding fails
 func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, idt int) error {
+	fields := sourceType.ContainerDesc.Fields
+	fieldCount := len(fields)
+
+	// Fast path: containers with no dynamic fields (e.g. Validator)
+	if len(sourceType.ContainerDesc.DynFields) == 0 {
+		for i := 0; i < fieldCount; i++ {
+			field := &fields[i]
+			fieldValue := sourceValue.Field(i)
+			if err := ctx.marshalType(field.Type, fieldValue, encoder, idt+2); err != nil {
+				return fmt.Errorf("failed encoding field %v: %w", field.Name, err)
+			}
+		}
+		return nil
+	}
+
 	offset := 0
 	dynObjOffset := 0
 	canSeek := encoder.Seekable()
 	startLen := encoder.GetPosition()
-	fields := sourceType.ContainerDesc.Fields
-	fieldCount := len(fields)
 
 	for i := 0; i < fieldCount; i++ {
 		field := &fields[i]
