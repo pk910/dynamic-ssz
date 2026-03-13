@@ -1,6 +1,6 @@
 module github.com/pk910/dynamic-ssz/spectests
 
-go 1.25.0
+go 1.25.8
 
 require (
 	github.com/attestantio/go-eth2-client v0.27.1
