@@ -28,12 +28,12 @@ jobs:
           go-version: '1.25.8'
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@9792ccaef0455e446c567163589397e8c3ac2e0d # v3
+        uses: github/codeql-action/init@820e3160e279568db735cee8ed8f8e77a6da7818 # v3
         with:
           languages: go
 
       - name: Autobuild
-        uses: github/codeql-action/autobuild@9792ccaef0455e446c567163589397e8c3ac2e0d # v3
+        uses: github/codeql-action/autobuild@820e3160e279568db735cee8ed8f8e77a6da7818 # v3
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@9792ccaef0455e446c567163589397e8c3ac2e0d # v3
+        uses: github/codeql-action/analyze@820e3160e279568db735cee8ed8f8e77a6da7818 # v3
