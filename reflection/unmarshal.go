@@ -52,220 +52,199 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 		targetValue = targetValue.Elem()
 	}
 
-	hasDynamicSize := targetType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
-	isFastsszUnmarshaler := targetType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
-	useDynamicUnmarshal := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0
-	useDynamicDecoder := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0
-	useFastSsz := !ctx.noFastSsz && isFastsszUnmarshaler && !hasDynamicSize
-	if !useFastSsz && targetType.SszType == ssztypes.SszCustomType {
-		useFastSsz = true
+	// Fast path: skip compat interface checks for types that don't implement any
+	if targetType.SszCompatFlags != 0 || targetType.SszType == ssztypes.SszCustomType {
+		hasDynamicSize := targetType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
+		isFastsszUnmarshaler := targetType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+		useDynamicUnmarshal := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0
+		useDynamicDecoder := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0
+		useFastSsz := !ctx.noFastSsz && isFastsszUnmarshaler && !hasDynamicSize
+		if !useFastSsz && targetType.SszType == ssztypes.SszCustomType {
+			useFastSsz = true
+		}
+
+		if ctx.verbose {
+			ctx.logCb("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), targetType.Type.Name(), targetType.Kind, useFastSsz, isFastsszUnmarshaler, hasDynamicSize)
+		}
+
+		if useFastSsz {
+			if unmarshaller, ok := getPtr(targetValue).Interface().(sszutils.FastsszUnmarshaler); ok {
+				sszLen := decoder.GetLength()
+				if targetType.Size > 0 {
+					sszLen = int(targetType.Size)
+				}
+				sszBuf, err := decoder.DecodeBytesBuf(sszLen)
+				if err != nil {
+					return err
+				}
+				return unmarshaller.UnmarshalSSZ(sszBuf)
+			}
+		}
+
+		if useDynamicDecoder {
+			if !decoder.Seekable() || !useDynamicUnmarshal {
+				// prefer dynamic unmarshaller for seekable decoders (buffer based)
+				if sszDecoder, ok := getPtr(targetValue).Interface().(sszutils.DynamicDecoder); ok {
+					return sszDecoder.UnmarshalSSZDecoder(ctx.ds, decoder)
+				}
+			}
+		}
+
+		if useDynamicUnmarshal {
+			if unmarshaller, ok := getPtr(targetValue).Interface().(sszutils.DynamicUnmarshaler); ok {
+				sszLen := decoder.GetLength()
+				if targetType.Size > 0 {
+					sszLen = int(targetType.Size)
+				}
+				sszBuf, err := decoder.DecodeBytesBuf(sszLen)
+				if err != nil {
+					return err
+				}
+				return unmarshaller.UnmarshalSSZDyn(ctx.ds, sszBuf)
+			}
+		}
 	}
 
-	if ctx.verbose {
-		ctx.logCb("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), targetType.Type.Name(), targetType.Kind, useFastSsz, isFastsszUnmarshaler, hasDynamicSize)
-	}
-
-	if useFastSsz {
-		unmarshaller, ok := getPtr(targetValue).Interface().(sszutils.FastsszUnmarshaler)
-		if ok {
-			sszLen := decoder.GetLength()
-			if targetType.Size > 0 {
-				sszLen = int(targetType.Size)
-			}
-			sszBuf, err := decoder.DecodeBytesBuf(sszLen)
-			if err != nil {
-				return err
-			}
-
-			err = unmarshaller.UnmarshalSSZ(sszBuf)
-			if err != nil {
-				return err
-			}
+	var err error
+	switch targetType.SszType {
+	// complex types
+	case ssztypes.SszTypeWrapperType:
+		err = ctx.unmarshalTypeWrapper(targetType, targetValue, decoder, idt)
+		if err != nil {
+			return err
+		}
+	case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
+		err = ctx.unmarshalContainer(targetType, targetValue, decoder, idt)
+		if err != nil {
+			return err
+		}
+	case ssztypes.SszVectorType, ssztypes.SszBitvectorType, ssztypes.SszUint128Type, ssztypes.SszUint256Type:
+		if targetType.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+			err = ctx.unmarshalDynamicVector(targetType, targetValue, decoder, idt)
 		} else {
-			useFastSsz = false
+			err = ctx.unmarshalVector(targetType, targetValue, decoder, idt)
 		}
-	}
-
-	if !useFastSsz && useDynamicDecoder {
-		if decoder.Seekable() && useDynamicUnmarshal {
-			// prefer static unmarshaller for non-seekable decoders (buffer based)
-			useDynamicDecoder = false
-		} else if sszDecoder, ok := getPtr(targetValue).Interface().(sszutils.DynamicDecoder); ok {
-			err := sszDecoder.UnmarshalSSZDecoder(ctx.ds, decoder)
-			if err != nil {
-				return err
-			}
+		if err != nil {
+			return err
+		}
+	case ssztypes.SszListType, ssztypes.SszProgressiveListType:
+		if targetType.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+			err = ctx.unmarshalDynamicList(targetType, targetValue, decoder, idt)
 		} else {
-			useDynamicDecoder = false
+			err = ctx.unmarshalList(targetType, targetValue, decoder, idt)
 		}
-	}
+		if err != nil {
+			return err
+		}
+	case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType:
+		err = ctx.unmarshalBitlist(targetType, targetValue, decoder)
+		if err != nil {
+			return err
+		}
+	case ssztypes.SszCompatibleUnionType:
+		err = ctx.unmarshalCompatibleUnion(targetType, targetValue, decoder, idt)
+		if err != nil {
+			return err
+		}
 
-	if !useFastSsz && !useDynamicDecoder && useDynamicUnmarshal {
-		// Use dynamic unmarshaler - can always be used even with dynamic specs
-		unmarshaller, ok := getPtr(targetValue).Interface().(sszutils.DynamicUnmarshaler)
-		if ok {
-			sszLen := decoder.GetLength()
-			if targetType.Size > 0 {
-				sszLen = int(targetType.Size)
-			}
+	// primitive types
+	case ssztypes.SszBoolType:
+		var boolVal bool
+		boolVal, err = decoder.DecodeBool()
+		if err != nil {
+			return err
+		}
+		targetValue.SetBool(boolVal)
+	case ssztypes.SszUint8Type:
+		var u8Val uint8
+		u8Val, err = decoder.DecodeUint8()
+		if err != nil {
+			return err
+		}
+		targetValue.SetUint(uint64(u8Val))
+	case ssztypes.SszUint16Type:
+		var u16Val uint16
+		u16Val, err = decoder.DecodeUint16()
+		if err != nil {
+			return err
+		}
+		targetValue.SetUint(uint64(u16Val))
+	case ssztypes.SszUint32Type:
+		var u32Val uint32
+		u32Val, err = decoder.DecodeUint32()
+		if err != nil {
+			return err
+		}
+		targetValue.SetUint(uint64(u32Val))
+	case ssztypes.SszUint64Type:
+		var u64Val uint64
+		u64Val, err = decoder.DecodeUint64()
+		if err != nil {
+			return err
+		}
 
-			sszBuf, err := decoder.DecodeBytesBuf(sszLen)
-			if err != nil {
-				return err
-			}
-
-			err = unmarshaller.UnmarshalSSZDyn(ctx.ds, sszBuf)
-			if err != nil {
-				return err
-			}
+		if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsTime != 0 {
+			timeVal := time.Unix(int64(u64Val), 0)
+			targetValue.Set(reflect.ValueOf(timeVal))
 		} else {
-			useDynamicUnmarshal = false
+			targetValue.SetUint(u64Val)
 		}
-	}
 
-	if !useFastSsz && !useDynamicDecoder && !useDynamicUnmarshal {
-		// can't use fastssz, use dynamic unmarshaling
-		var err error
-		switch targetType.SszType {
-		// complex types
-		case ssztypes.SszTypeWrapperType:
-			err = ctx.unmarshalTypeWrapper(targetType, targetValue, decoder, idt)
-			if err != nil {
-				return err
-			}
-		case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
-			err = ctx.unmarshalContainer(targetType, targetValue, decoder, idt)
-			if err != nil {
-				return err
-			}
-		case ssztypes.SszVectorType, ssztypes.SszBitvectorType, ssztypes.SszUint128Type, ssztypes.SszUint256Type:
-			if targetType.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
-				err = ctx.unmarshalDynamicVector(targetType, targetValue, decoder, idt)
-			} else {
-				err = ctx.unmarshalVector(targetType, targetValue, decoder, idt)
-			}
-			if err != nil {
-				return err
-			}
-		case ssztypes.SszListType, ssztypes.SszProgressiveListType:
-			if targetType.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
-				err = ctx.unmarshalDynamicList(targetType, targetValue, decoder, idt)
-			} else {
-				err = ctx.unmarshalList(targetType, targetValue, decoder, idt)
-			}
-			if err != nil {
-				return err
-			}
-		case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType:
-			err = ctx.unmarshalBitlist(targetType, targetValue, decoder)
-			if err != nil {
-				return err
-			}
-		case ssztypes.SszCompatibleUnionType:
-			err = ctx.unmarshalCompatibleUnion(targetType, targetValue, decoder, idt)
-			if err != nil {
-				return err
-			}
-
-		// primitive types
-		case ssztypes.SszBoolType:
-			var boolVal bool
-			boolVal, err = decoder.DecodeBool()
-			if err != nil {
-				return err
-			}
-			targetValue.SetBool(boolVal)
-		case ssztypes.SszUint8Type:
-			var u8Val uint8
-			u8Val, err = decoder.DecodeUint8()
-			if err != nil {
-				return err
-			}
-			targetValue.SetUint(uint64(u8Val))
-		case ssztypes.SszUint16Type:
-			var u16Val uint16
-			u16Val, err = decoder.DecodeUint16()
-			if err != nil {
-				return err
-			}
-			targetValue.SetUint(uint64(u16Val))
-		case ssztypes.SszUint32Type:
-			var u32Val uint32
-			u32Val, err = decoder.DecodeUint32()
-			if err != nil {
-				return err
-			}
-			targetValue.SetUint(uint64(u32Val))
-		case ssztypes.SszUint64Type:
-			var u64Val uint64
-			u64Val, err = decoder.DecodeUint64()
-			if err != nil {
-				return err
-			}
-
-			if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsTime != 0 {
-				timeVal := time.Unix(int64(u64Val), 0)
-				targetValue.Set(reflect.ValueOf(timeVal))
-			} else {
-				targetValue.SetUint(u64Val)
-			}
-
-		// extended types
-		case ssztypes.SszInt8Type:
-			var i8Val uint8
-			i8Val, err = decoder.DecodeUint8()
-			if err != nil {
-				return err
-			}
-			targetValue.SetInt(int64(i8Val))
-		case ssztypes.SszInt16Type:
-			var i16Val uint16
-			i16Val, err = decoder.DecodeUint16()
-			if err != nil {
-				return err
-			}
-			targetValue.SetInt(int64(i16Val))
-		case ssztypes.SszInt32Type:
-			var i32Val uint32
-			i32Val, err = decoder.DecodeUint32()
-			if err != nil {
-				return err
-			}
-			targetValue.SetInt(int64(i32Val))
-		case ssztypes.SszInt64Type:
-			var i64Val uint64
-			i64Val, err = decoder.DecodeUint64()
-			if err != nil {
-				return err
-			}
-			targetValue.SetInt(int64(i64Val))
-		case ssztypes.SszFloat32Type:
-			var f32Val uint32
-			f32Val, err = decoder.DecodeUint32()
-			if err != nil {
-				return err
-			}
-			targetValue.SetFloat(float64(math.Float32frombits(f32Val)))
-		case ssztypes.SszFloat64Type:
-			var f64Val uint64
-			f64Val, err = decoder.DecodeUint64()
-			if err != nil {
-				return err
-			}
-			targetValue.SetFloat(math.Float64frombits(f64Val))
-		case ssztypes.SszOptionalType:
-			err = ctx.unmarshalOptional(targetType, targetValue, decoder, idt)
-			if err != nil {
-				return err
-			}
-		case ssztypes.SszBigIntType:
-			err = ctx.unmarshalBigInt(targetType, targetValue, decoder, idt)
-			if err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("unknown type: %v", targetType)
+	// extended types
+	case ssztypes.SszInt8Type:
+		var i8Val uint8
+		i8Val, err = decoder.DecodeUint8()
+		if err != nil {
+			return err
 		}
+		targetValue.SetInt(int64(i8Val))
+	case ssztypes.SszInt16Type:
+		var i16Val uint16
+		i16Val, err = decoder.DecodeUint16()
+		if err != nil {
+			return err
+		}
+		targetValue.SetInt(int64(i16Val))
+	case ssztypes.SszInt32Type:
+		var i32Val uint32
+		i32Val, err = decoder.DecodeUint32()
+		if err != nil {
+			return err
+		}
+		targetValue.SetInt(int64(i32Val))
+	case ssztypes.SszInt64Type:
+		var i64Val uint64
+		i64Val, err = decoder.DecodeUint64()
+		if err != nil {
+			return err
+		}
+		targetValue.SetInt(int64(i64Val))
+	case ssztypes.SszFloat32Type:
+		var f32Val uint32
+		f32Val, err = decoder.DecodeUint32()
+		if err != nil {
+			return err
+		}
+		targetValue.SetFloat(float64(math.Float32frombits(f32Val)))
+	case ssztypes.SszFloat64Type:
+		var f64Val uint64
+		f64Val, err = decoder.DecodeUint64()
+		if err != nil {
+			return err
+		}
+		targetValue.SetFloat(math.Float64frombits(f64Val))
+	case ssztypes.SszOptionalType:
+		err = ctx.unmarshalOptional(targetType, targetValue, decoder, idt)
+		if err != nil {
+			return err
+		}
+	case ssztypes.SszBigIntType:
+		err = ctx.unmarshalBigInt(targetType, targetValue, decoder, idt)
+		if err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("unknown type: %v", targetType)
 	}
 
 	return nil
