@@ -255,7 +255,7 @@ func TestHashUint64Slice_NonEmpty(t *testing.T) {
 func TestNextPowerOfTwo(t *testing.T) {
 	tests := []struct {
 		input    uint64
-		expected uint
+		expected uint64
 	}{
 		{1, 1},
 		{2, 2},

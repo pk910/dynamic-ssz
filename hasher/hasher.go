@@ -530,7 +530,7 @@ func (h *Hasher) getDepth(d uint64) uint8 {
 		return 0
 	}
 	i := sszutils.NextPowerOfTwo(d)
-	return 64 - uint8(bits.LeadingZeros(i)) - 1
+	return 64 - uint8(bits.LeadingZeros64(i)) - 1
 }
 
 func (h *Hasher) merkleizeImpl(dst, input []byte, limit uint64) []byte {
@@ -688,9 +688,10 @@ func (h *Hasher) merkleizeProgressiveImpl(dst, chunks []byte, depth uint8) []byt
 	baseSize := uint64(1) << depth
 
 	// Split chunks: first baseSize chunks go to LEFT (binary), rest go to RIGHT (progressive)
-	splitPoint := int(baseSize * 32)
-	if splitPoint > len(chunks) {
-		splitPoint = len(chunks)
+	splitBytes := baseSize * 32
+	splitPoint := len(chunks)
+	if splitBytes < uint64(splitPoint) {
+		splitPoint = int(splitBytes)
 	}
 
 	// Left child: subtree_fill_to_contents(nodes[:base_size], depth) - binary merkleization
