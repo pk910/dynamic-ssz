@@ -199,6 +199,59 @@ func TestCalculateLimit_ZeroWithNonZeroItems(t *testing.T) {
 	}
 }
 
+type mockHashWalker struct {
+	appendCalled bool
+	appendData   []byte
+}
+
+func (m *mockHashWalker) Hash() []byte                                         { return nil }
+func (m *mockHashWalker) AppendBool(_ bool)                                    {}
+func (m *mockHashWalker) AppendUint8(_ uint8)                                  {}
+func (m *mockHashWalker) AppendUint16(_ uint16)                                {}
+func (m *mockHashWalker) AppendUint32(_ uint32)                                {}
+func (m *mockHashWalker) AppendUint64(_ uint64)                                {}
+func (m *mockHashWalker) AppendBytes32(_ []byte)                               {}
+func (m *mockHashWalker) PutUint64Array(_ []uint64, _ ...uint64)               {}
+func (m *mockHashWalker) PutUint64(_ uint64)                                   {}
+func (m *mockHashWalker) PutUint32(_ uint32)                                   {}
+func (m *mockHashWalker) PutUint16(_ uint16)                                   {}
+func (m *mockHashWalker) PutUint8(_ uint8)                                     {}
+func (m *mockHashWalker) PutBitlist(_ []byte, _ uint64)                        {}
+func (m *mockHashWalker) PutProgressiveBitlist(_ []byte)                       {}
+func (m *mockHashWalker) PutBool(_ bool)                                       {}
+func (m *mockHashWalker) PutBytes(_ []byte)                                    {}
+func (m *mockHashWalker) FillUpTo32()                                          {}
+func (m *mockHashWalker) Append(i []byte)                                      { m.appendCalled = true; m.appendData = i }
+func (m *mockHashWalker) Index() int                                           { return 0 }
+func (m *mockHashWalker) WithTemp(_ func(tmp []byte) []byte)                   {}
+func (m *mockHashWalker) Merkleize(_ int)                                      {}
+func (m *mockHashWalker) MerkleizeWithMixin(_ int, _, _ uint64)                {}
+func (m *mockHashWalker) MerkleizeProgressive(_ int)                           {}
+func (m *mockHashWalker) MerkleizeProgressiveWithMixin(_ int, _ uint64)        {}
+func (m *mockHashWalker) MerkleizeProgressiveWithActiveFields(_ int, _ []byte) {}
+func (m *mockHashWalker) HashRoot() ([32]byte, error)                          { return [32]byte{}, nil }
+
+func TestHashUint64Slice_Empty(t *testing.T) {
+	hh := &mockHashWalker{}
+	var empty []uint64
+	HashUint64Slice(hh, empty)
+	if hh.appendCalled {
+		t.Error("expected Append not to be called for empty slice")
+	}
+}
+
+func TestHashUint64Slice_NonEmpty(t *testing.T) {
+	hh := &mockHashWalker{}
+	input := []uint64{1, 2}
+	HashUint64Slice(hh, input)
+	if !hh.appendCalled {
+		t.Error("expected Append to be called")
+	}
+	if len(hh.appendData) != 16 {
+		t.Errorf("expected 16 bytes appended, got %d", len(hh.appendData))
+	}
+}
+
 func TestNextPowerOfTwo(t *testing.T) {
 	tests := []struct {
 		input    uint64
@@ -238,6 +291,87 @@ func TestUnmarshalBool(t *testing.T) {
 	}
 	if UnmarshalBool([]byte{0x00}) {
 		t.Error("expected false")
+	}
+}
+
+// ============================================================================
+// Uint64 Slice Tests
+// ============================================================================
+
+func TestMarshalUint64Slice_Empty(t *testing.T) {
+	var empty []uint64
+	result := MarshalUint64Slice(nil, empty)
+	if len(result) != 0 {
+		t.Errorf("expected empty result, got %d bytes", len(result))
+	}
+}
+
+func TestMarshalUint64Slice_NonEmpty(t *testing.T) {
+	input := []uint64{1, 2}
+	result := MarshalUint64Slice(nil, input)
+	if len(result) != 16 {
+		t.Fatalf("expected 16 bytes, got %d", len(result))
+	}
+	// Verify round-trip
+	output := make([]uint64, 2)
+	UnmarshalUint64Slice(output, result)
+	if output[0] != 1 || output[1] != 2 {
+		t.Errorf("expected [1, 2], got %v", output)
+	}
+}
+
+func TestEncodeUint64Slice_Empty(t *testing.T) {
+	enc := NewBufferEncoder(nil)
+	var empty []uint64
+	EncodeUint64Slice(enc, empty)
+	if enc.GetPosition() != 0 {
+		t.Errorf("expected position 0, got %d", enc.GetPosition())
+	}
+}
+
+func TestEncodeUint64Slice_NonEmpty(t *testing.T) {
+	enc := NewBufferEncoder(make([]byte, 0, 16))
+	input := []uint64{1, 2}
+	EncodeUint64Slice(enc, input)
+	if enc.GetPosition() != 16 {
+		t.Errorf("expected position 16, got %d", enc.GetPosition())
+	}
+	buf := enc.GetBuffer()
+	// Verify by unmarshalling
+	output := make([]uint64, 2)
+	UnmarshalUint64Slice(output, buf)
+	if output[0] != 1 || output[1] != 2 {
+		t.Errorf("expected [1, 2], got %v", output)
+	}
+}
+
+func TestUnmarshalUint64Slice_Empty(t *testing.T) {
+	var empty []uint64
+	// Should not panic
+	UnmarshalUint64Slice(empty, nil)
+}
+
+func TestDecodeUint64Slice_Empty(t *testing.T) {
+	dec := NewBufferDecoder(nil)
+	var empty []uint64
+	err := DecodeUint64Slice(dec, empty)
+	if err != nil {
+		t.Errorf("expected nil error, got %v", err)
+	}
+}
+
+func TestDecodeUint64Slice_NonEmpty(t *testing.T) {
+	// Marshal first, then decode
+	input := []uint64{42, 99}
+	data := MarshalUint64Slice(nil, input)
+	dec := NewBufferDecoder(data)
+	output := make([]uint64, 2)
+	err := DecodeUint64Slice(dec, output)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if output[0] != 42 || output[1] != 99 {
+		t.Errorf("expected [42, 99], got %v", output)
 	}
 }
 

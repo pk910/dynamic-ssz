@@ -1163,6 +1163,20 @@ func TestStreamEncoder_EncodeBytes_FlushError(t *testing.T) {
 	}
 }
 
+func TestStreamEncoder_EncodeBytes_LargeDirectWriteError(t *testing.T) {
+	// Buffer size 4: writing 8 bytes goes to direct write path after flush.
+	// errWriter succeeds on flush (errAfter > 4) but fails on direct write.
+	testErr := errors.New("disk full")
+	w := &errWriter{errAfter: 4, err: testErr}
+	enc := NewStreamEncoder(w, 4)
+
+	enc.EncodeBytes(make([]byte, 8))
+
+	if !errors.Is(enc.GetWriteError(), testErr) {
+		t.Errorf("expected error %v, got %v", testErr, enc.GetWriteError())
+	}
+}
+
 func TestStreamEncoder_EncodeBytes_LargeDirectShortWrite(t *testing.T) {
 	// Buffer size 4: writing 8 bytes goes to direct write path.
 	// shortWriter writes fewer bytes than requested.
