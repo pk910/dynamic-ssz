@@ -81,7 +81,9 @@ func TestGetZeroHash(t *testing.T) {
 		currentHash := GetZeroHash(i)
 
 		// Calculate expected hash: sha256(prevHash + prevHash)
-		tmp := append(prevHash, prevHash...)
+		tmp := make([]byte, 0, 64)
+		tmp = append(tmp, prevHash...)
+		tmp = append(tmp, prevHash...)
 		expected := sha256.Sum256(tmp)
 
 		if !bytes.Equal(currentHash, expected[:]) {
@@ -1204,12 +1206,4 @@ func TestBitlistThenHashTreeRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HashRoot failed: %v", err)
 	}
-}
-
-// Helper function for min
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

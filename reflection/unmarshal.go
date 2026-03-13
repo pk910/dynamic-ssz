@@ -41,7 +41,7 @@ import (
 //   - Primitive type decoding (bool, uint8, uint16, uint32, uint64)
 //   - Delegation to specialized functions for composite types (structs, arrays, slices)
 //   - Validation that consumed bytes match expected sizes
-func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
+func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error { //nolint:gocyclo // SSZ unmarshaling handles many type cases
 	if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && targetType.SszType != ssztypes.SszOptionalType {
 		// target is a pointer type, resolve type & value to actual value type
 		if targetValue.IsNil() {
@@ -126,7 +126,7 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 	if !useFastSsz && !useDynamicDecoder && !useDynamicUnmarshal {
 		// can't use fastssz, use dynamic unmarshaling
 		var err error
-		switch targetType.SszType {
+		switch targetType.SszType { //nolint:exhaustive // intentionally handles only relevant SSZ types
 		// complex types
 		case ssztypes.SszTypeWrapperType:
 			err = ctx.unmarshalTypeWrapper(targetType, targetValue, decoder, idt)
@@ -169,79 +169,90 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 
 		// primitive types
 		case ssztypes.SszBoolType:
-			val, err := decoder.DecodeBool()
+			var boolVal bool
+			boolVal, err = decoder.DecodeBool()
 			if err != nil {
 				return err
 			}
-			targetValue.SetBool(val)
+			targetValue.SetBool(boolVal)
 		case ssztypes.SszUint8Type:
-			val, err := decoder.DecodeUint8()
+			var u8Val uint8
+			u8Val, err = decoder.DecodeUint8()
 			if err != nil {
 				return err
 			}
-			targetValue.SetUint(uint64(val))
+			targetValue.SetUint(uint64(u8Val))
 		case ssztypes.SszUint16Type:
-			val, err := decoder.DecodeUint16()
+			var u16Val uint16
+			u16Val, err = decoder.DecodeUint16()
 			if err != nil {
 				return err
 			}
-			targetValue.SetUint(uint64(val))
+			targetValue.SetUint(uint64(u16Val))
 		case ssztypes.SszUint32Type:
-			val, err := decoder.DecodeUint32()
+			var u32Val uint32
+			u32Val, err = decoder.DecodeUint32()
 			if err != nil {
 				return err
 			}
-			targetValue.SetUint(uint64(val))
+			targetValue.SetUint(uint64(u32Val))
 		case ssztypes.SszUint64Type:
-			val, err := decoder.DecodeUint64()
+			var u64Val uint64
+			u64Val, err = decoder.DecodeUint64()
 			if err != nil {
 				return err
 			}
 
 			if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsTime != 0 {
-				timeVal := time.Unix(int64(val), 0)
+				timeVal := time.Unix(int64(u64Val), 0)
 				targetValue.Set(reflect.ValueOf(timeVal))
 			} else {
-				targetValue.SetUint(uint64(val))
+				targetValue.SetUint(u64Val)
 			}
 
 		// extended types
 		case ssztypes.SszInt8Type:
-			val, err := decoder.DecodeUint8()
+			var i8Val uint8
+			i8Val, err = decoder.DecodeUint8()
 			if err != nil {
 				return err
 			}
-			targetValue.SetInt(int64(val))
+			targetValue.SetInt(int64(i8Val))
 		case ssztypes.SszInt16Type:
-			val, err := decoder.DecodeUint16()
+			var i16Val uint16
+			i16Val, err = decoder.DecodeUint16()
 			if err != nil {
 				return err
 			}
-			targetValue.SetInt(int64(val))
+			targetValue.SetInt(int64(i16Val))
 		case ssztypes.SszInt32Type:
-			val, err := decoder.DecodeUint32()
+			var i32Val uint32
+			i32Val, err = decoder.DecodeUint32()
 			if err != nil {
 				return err
 			}
-			targetValue.SetInt(int64(val))
+			targetValue.SetInt(int64(i32Val))
 		case ssztypes.SszInt64Type:
-			val, err := decoder.DecodeUint64()
+			var i64Val uint64
+			i64Val, err = decoder.DecodeUint64()
 			if err != nil {
 				return err
 			}
-			targetValue.SetInt(int64(val))
+			targetValue.SetInt(int64(i64Val))
 		case ssztypes.SszFloat32Type:
-			val, err := decoder.DecodeUint32()
+			var f32Val uint32
+			f32Val, err = decoder.DecodeUint32()
 			if err != nil {
 				return err
 			}
-			targetValue.SetFloat(float64(math.Float32frombits(val)))
+			targetValue.SetFloat(float64(math.Float32frombits(f32Val)))
 		case ssztypes.SszFloat64Type:
-			val, err := decoder.DecodeUint64()
+			var f64Val uint64
+			f64Val, err = decoder.DecodeUint64()
 			if err != nil {
 				return err
 			}
-			targetValue.SetFloat(math.Float64frombits(val))
+			targetValue.SetFloat(math.Float64frombits(f64Val))
 		case ssztypes.SszOptionalType:
 			err = ctx.unmarshalOptional(targetType, targetValue, decoder, idt)
 			if err != nil {
@@ -346,7 +357,6 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 			if decoder.GetPosition() != expectedPos {
 				return fmt.Errorf("container field did not consume expected ssz range (pos: %v, expected: %v)", decoder.GetPosition(), expectedPos)
 			}
-
 		} else {
 			// dynamic size field
 			// get the 4 byte offset where the fields ssz range starts
@@ -450,7 +460,7 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 	arrLen := int(targetType.Len)
 
 	var newValue reflect.Value
-	switch targetType.Kind {
+	switch targetType.Kind { //nolint:exhaustive // only slice and array are valid vector kinds
 	case reflect.Slice:
 		// Optimization: avoid reflect.MakeSlice for common byte slice types
 		if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 && targetType.ElemDesc.Type.Kind() == reflect.Uint8 {
@@ -597,7 +607,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 	if canSeek {
 		offset = decoder.DecodeOffsetAt(startPos)
 	} else {
-		offset = uint32(sliceOffsets[0])
+		offset = sliceOffsets[0]
 	}
 
 	if offset != uint32(vectorLen*4) {
@@ -629,7 +639,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 			if canSeek {
 				endOffset = decoder.DecodeOffsetAt(startPos + (i+1)*4)
 			} else {
-				endOffset = uint32(sliceOffsets[i+1])
+				endOffset = sliceOffsets[i+1]
 			}
 		} else {
 			endOffset = uint32(sszLen)
@@ -708,21 +718,22 @@ func (ctx *ReflectionCtx) unmarshalList(targetType *ssztypes.TypeDescriptor, tar
 		newValue = reflect.New(fieldT).Elem()
 	}
 
-	if sliceLen == 0 {
+	switch {
+	case sliceLen == 0:
 		// do nothing
-	} else if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
+	case targetType.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0:
 		buf, err := decoder.DecodeBytesBuf(sliceLen)
 		if err != nil {
 			return err
 		}
 		newValue.SetString(string(buf))
-	} else if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
+	case targetType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0:
 		// shortcut for performance: use copy on []byte arrays
 		_, err := decoder.DecodeBytes(newValue.Bytes())
 		if err != nil {
 			return err
 		}
-	} else {
+	default:
 		// decode list items
 
 		for i := 0; i < sliceLen; i++ {
@@ -898,7 +909,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 //
 // Returns:
 //   - error: An error if decoding fails or bitlist is invalid
-func (ctx *ReflectionCtx) unmarshalBitlist(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder) error {
+func (ctx *ReflectionCtx) unmarshalBitlist(_ *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder) error {
 	sszLen := decoder.GetLength()
 
 	if sszLen == 0 {
@@ -1020,12 +1031,12 @@ func (ctx *ReflectionCtx) unmarshalOptional(targetType *ssztypes.TypeDescriptor,
 //
 // Returns:
 //   - error: An error if decoding fails
-func (ctx *ReflectionCtx) unmarshalBigInt(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
-	len := decoder.GetLength()
+func (ctx *ReflectionCtx) unmarshalBigInt(_ *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, _ int) error {
+	dataLen := decoder.GetLength()
 	bigInt := new(big.Int)
 
-	if len > 0 {
-		bigIntBytes, err := decoder.DecodeBytesBuf(len)
+	if dataLen > 0 {
+		bigIntBytes, err := decoder.DecodeBytesBuf(dataLen)
 		if err != nil {
 			return err
 		}

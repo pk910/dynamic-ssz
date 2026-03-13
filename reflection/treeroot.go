@@ -39,7 +39,7 @@ import (
 //   - Special handling for Bitlist types
 //   - Primitive type hashing (bool, uint8, uint16, uint32, uint64)
 //   - Delegation to specialized functions for composite types (structs, arrays, slices)
-func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, pack bool, idt int) error {
+func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, pack bool, idt int) error { //nolint:gocyclo // SSZ hash tree root builder handles many type cases
 	hashIndex := hh.Index()
 
 	if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && sourceType.SszType != ssztypes.SszOptionalType {
@@ -104,7 +104,7 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 
 	if !useFastSsz && !useDynamicHashRoot {
 		// Route to appropriate handler based on type
-		switch sourceType.SszType {
+		switch sourceType.SszType { //nolint:exhaustive // intentionally handles only relevant SSZ types
 		case ssztypes.SszTypeWrapperType:
 			err := ctx.buildRootFromTypeWrapper(sourceType, sourceValue, hh, pack, idt)
 			if err != nil {
@@ -174,7 +174,7 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 				}
 				uintVal = uint64(timeVal.Unix())
 			} else {
-				uintVal = uint64(sourceValue.Uint())
+				uintVal = sourceValue.Uint()
 			}
 			if pack {
 				hh.AppendUint64(uintVal)
@@ -289,7 +289,7 @@ func (ctx *ReflectionCtx) buildRootFromTypeWrapper(sourceType *ssztypes.TypeDesc
 //
 // Returns:
 //   - error: An error if hashing fails
-func (ctx *ReflectionCtx) buildRootFromLargeUint(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, pack bool, idt int) error {
+func (ctx *ReflectionCtx) buildRootFromLargeUint(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, pack bool, _ int) error {
 	// Handle unaddressable arrays
 	if !sourceValue.CanAddr() && sourceValue.Kind() == reflect.Array {
 		// workaround for unaddressable static arrays
@@ -632,21 +632,22 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 		hh.FillUpTo32()
 	}
 
-	if sourceType.SszType == ssztypes.SszProgressiveListType {
+	switch {
+	case sourceType.SszType == ssztypes.SszProgressiveListType:
 		hh.MerkleizeProgressiveWithMixin(hashIndex, uint64(sliceLen))
-	} else if sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
+	case sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0:
 		var limit, itemSize uint64
 
-		switch sourceType.ElemDesc.SszType {
+		switch sourceType.ElemDesc.SszType { //nolint:exhaustive // intentionally handles only relevant SSZ types
 		case ssztypes.SszBoolType:
 			itemSize = 1
-		case ssztypes.SszUint8Type:
+		case ssztypes.SszUint8Type, ssztypes.SszInt8Type:
 			itemSize = 1
-		case ssztypes.SszUint16Type:
+		case ssztypes.SszUint16Type, ssztypes.SszInt16Type:
 			itemSize = 2
-		case ssztypes.SszUint32Type:
+		case ssztypes.SszUint32Type, ssztypes.SszInt32Type, ssztypes.SszFloat32Type:
 			itemSize = 4
-		case ssztypes.SszUint64Type:
+		case ssztypes.SszUint64Type, ssztypes.SszInt64Type, ssztypes.SszFloat64Type:
 			itemSize = 8
 		case ssztypes.SszUint128Type:
 			itemSize = 16
@@ -657,7 +658,7 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 		}
 
 		if itemSize > 0 {
-			limit = sszutils.CalculateLimit(sourceType.Limit, uint64(sliceLen), uint64(itemSize))
+			limit = sszutils.CalculateLimit(sourceType.Limit, uint64(sliceLen), itemSize)
 		} else {
 			limit = sourceType.Limit
 		}
@@ -666,7 +667,7 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 			return sszutils.ErrListTooBig
 		}
 		hh.MerkleizeWithMixin(hashIndex, uint64(sliceLen), limit)
-	} else {
+	default:
 		hh.Merkleize(hashIndex)
 	}
 
@@ -730,7 +731,7 @@ func (ctx *ReflectionCtx) getActiveFields(sourceType *ssztypes.TypeDescriptor) [
 //
 // Returns:
 //   - error: An error if bitlist hashing fails
-func (ctx *ReflectionCtx) buildRootFromBitlist(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
+func (ctx *ReflectionCtx) buildRootFromBitlist(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, _ int) error {
 	maxSize := uint64(0)
 	bytes := sourceValue.Bytes()
 
@@ -798,7 +799,7 @@ func (ctx *ReflectionCtx) buildRootFromOptional(sourceType *ssztypes.TypeDescrip
 //
 // Returns:
 //   - error: An error if hashing fails
-func (ctx *ReflectionCtx) buildRootFromBigInt(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
+func (ctx *ReflectionCtx) buildRootFromBigInt(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, _ int) error {
 	bigInt, isBigInt := sourceValue.Interface().(big.Int)
 	if !isBigInt {
 		return fmt.Errorf("big.Int type expected, got %v", sourceType.Type.Name())

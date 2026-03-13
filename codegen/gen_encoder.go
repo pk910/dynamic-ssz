@@ -125,7 +125,7 @@ func (ctx *encoderContext) getPtrPrefix(desc *ssztypes.TypeDescriptor) string {
 }
 
 // getValueVar returns the variable name for the value of a type, dereferencing pointer types and converting to the target type if needed
-func (ctx *encoderContext) getValueVar(desc *ssztypes.TypeDescriptor, varName string, targetType string) string {
+func (ctx *encoderContext) getValueVar(desc *ssztypes.TypeDescriptor, varName, targetType string) string {
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
 		varName = fmt.Sprintf("*%s", varName)
 	}
@@ -231,9 +231,7 @@ func (ctx *encoderContext) generateEncodeContext(indent int) string {
 			maxFnNameLen = len(fnName)
 		}
 	}
-	slices.SortFunc(fnNameList, func(a, b string) int {
-		return strings.Compare(a, b)
-	})
+	slices.SortFunc(fnNameList, strings.Compare)
 
 	padField := func(field string) string {
 		return field + strings.Repeat(" ", maxFnNameLen-len(field))
@@ -283,7 +281,7 @@ func (ctx *encoderContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 		return nil
 	}
 
-	switch desc.SszType {
+	switch desc.SszType { //nolint:exhaustive // intentionally handles only relevant SSZ types
 	case ssztypes.SszBoolType:
 		ctx.appendCode(indent, "enc.EncodeBool(%s)\n", ctx.getValueVar(desc, varName, "bool"))
 
@@ -376,7 +374,7 @@ func (ctx *encoderContext) marshalOptional(desc *ssztypes.TypeDescriptor, varNam
 }
 
 // marshalBigInt generates marshal code for SSZ big int types.
-func (ctx *encoderContext) marshalBigInt(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
+func (ctx *encoderContext) marshalBigInt(_ *ssztypes.TypeDescriptor, varName string, indent int) error {
 	ctx.appendCode(indent, "enc.EncodeBytes(%s.Bytes())\n", varName)
 	return nil
 }
@@ -440,30 +438,34 @@ func (ctx *encoderContext) marshalContainer(desc *ssztypes.TypeDescriptor, varNa
 
 	// Marshal dynamic fields
 	for idx, field := range desc.ContainerDesc.Fields {
-		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
-			ctx.appendCode(indent, "{ // Dynamic Field #%d '%s'\n", idx, field.Name)
-
-			ctx.appendCode(indent, "\tif canSeek {\n")
-			ctx.appendCode(indent, "\t\tenc.EncodeOffsetAt(offset%d, uint32(enc.GetPosition()-dstlen))\n", idx)
-			ctx.appendCode(indent, "\t}\n")
-
-			valVar := "t"
-			if ctx.isInlineable(field.Type) {
-				valVar = fmt.Sprintf("%s.%s", varName, field.Name)
-			} else {
-				ctx.appendCode(indent, "\tt := %s%s.%s\n", ctx.getPtrPrefix(field.Type), varName, field.Name)
-			}
-			if err := ctx.marshalType(field.Type, valVar, indent+1, false); err != nil {
-				return err
-			}
-			ctx.appendCode(indent, "}\n")
+		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
+			continue
 		}
+
+		ctx.appendCode(indent, "{ // Dynamic Field #%d '%s'\n", idx, field.Name)
+
+		ctx.appendCode(indent, "\tif canSeek {\n")
+		ctx.appendCode(indent, "\t\tenc.EncodeOffsetAt(offset%d, uint32(enc.GetPosition()-dstlen))\n", idx)
+		ctx.appendCode(indent, "\t}\n")
+
+		valVar := "t"
+		if ctx.isInlineable(field.Type) {
+			valVar = fmt.Sprintf("%s.%s", varName, field.Name)
+		} else {
+			ctx.appendCode(indent, "\tt := %s%s.%s\n", ctx.getPtrPrefix(field.Type), varName, field.Name)
+		}
+		if err := ctx.marshalType(field.Type, valVar, indent+1, false); err != nil {
+			return err
+		}
+		ctx.appendCode(indent, "}\n")
 	}
 
 	return nil
 }
 
 // marshalVector generates marshal code for SSZ vector (fixed-size array) types.
+//
+//nolint:dupl // intentionally similar to gen_marshal.go but generates different output
 func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
 	sizeExpression := desc.SizeExpression
 	if ctx.options.WithoutDynamicExpressions {
@@ -513,17 +515,18 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 	}
 
 	lenVar := ""
-	if desc.Kind != reflect.Array {
-		ctx.appendCode(indent, "vlen := len(%s)\n", valueVar)
-		ctx.appendCode(indent, "if vlen > %s {\n", limitVar)
+	switch {
+	case desc.Kind != reflect.Array:
+		ctx.appendCode(indent, varNameVLen+" := len(%s)\n", valueVar)
+		ctx.appendCode(indent, "if "+varNameVLen+" > %s {\n", limitVar)
 		ctx.appendCode(indent, "\treturn sszutils.ErrVectorLength\n")
 		ctx.appendCode(indent, "}\n")
-		lenVar = "vlen"
-	} else if hasLimitVar {
-		ctx.appendCode(indent, "vlen := %d\n", desc.Len)
-		ctx.appendCode(indent, "if vlen > %s {\n\tvlen = %s\n}\n", limitVar, limitVar)
-		lenVar = "vlen"
-	} else {
+		lenVar = varNameVLen
+	case hasLimitVar:
+		ctx.appendCode(indent, varNameVLen+" := %d\n", desc.Len)
+		ctx.appendCode(indent, "if "+varNameVLen+" > %s {\n\t"+varNameVLen+" = %s\n}\n", limitVar, limitVar)
+		lenVar = varNameVLen
+	default:
 		lenVar = fmt.Sprintf("%d", desc.Len)
 	}
 
@@ -654,15 +657,16 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 	hasMax := false
 	maxVar := ""
 
-	if maxExpression != nil {
-		exprVar := ctx.exprVars.getExprVar(*maxExpression, uint64(desc.Limit))
+	switch {
+	case maxExpression != nil:
+		exprVar := ctx.exprVars.getExprVar(*maxExpression, desc.Limit)
 
 		hasMax = true
 		maxVar = fmt.Sprintf("int(%s)", exprVar)
-	} else if desc.Limit > 0 {
+	case desc.Limit > 0:
 		maxVar = fmt.Sprintf("%d", desc.Limit)
 		hasMax = true
-	} else {
+	default:
 		maxVar = "0"
 	}
 
@@ -747,7 +751,7 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 	return nil
 }
 
-// marshalBitlist generates marshal code for SSZ bitlist types.
+//nolint:dupl // intentionally similar to marshalContext.marshalBitlist
 func (ctx *encoderContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
 	maxExpression := desc.MaxExpression
 	if ctx.options.WithoutDynamicExpressions {
@@ -757,15 +761,16 @@ func (ctx *encoderContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName
 	hasMax := false
 	maxVar := ""
 
-	if maxExpression != nil {
-		exprVar := ctx.exprVars.getExprVar(*maxExpression, uint64(desc.Limit))
+	switch {
+	case maxExpression != nil:
+		exprVar := ctx.exprVars.getExprVar(*maxExpression, desc.Limit)
 
 		hasMax = true
 		maxVar = fmt.Sprintf("int(%s)", exprVar)
-	} else if desc.Limit > 0 {
+	case desc.Limit > 0:
 		maxVar = fmt.Sprintf("%d", desc.Limit)
 		hasMax = true
-	} else {
+	default:
 		maxVar = "0"
 	}
 

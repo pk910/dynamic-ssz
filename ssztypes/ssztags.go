@@ -217,20 +217,21 @@ func getSszSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]SszS
 
 			sszSize := SszSizeHint{}
 
-			if sszBitsizeStr != "?" {
+			switch {
+			case sszBitsizeStr != "?":
 				sszSizeInt, err := strconv.ParseUint(sszBitsizeStr, 10, 32)
 				if err != nil {
 					return sszSizes, fmt.Errorf("error parsing ssz-bitsize tag for '%v' field: %w", field.Name, err)
 				}
 				sszSize.Size = uint32(sszSizeInt)
 				sszSize.Bits = true
-			} else if sszSizeStr != "?" {
+			case sszSizeStr != "?":
 				sszSizeInt, err := strconv.ParseUint(sszSizeStr, 10, 32)
 				if err != nil {
 					return sszSizes, fmt.Errorf("error parsing ssz-size tag for '%v' field: %w", field.Name, err)
 				}
 				sszSize.Size = uint32(sszSizeInt)
-			} else {
+			default:
 				sszSize.Dynamic = true
 			}
 

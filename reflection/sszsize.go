@@ -81,7 +81,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 
 	if !useFastSsz && !useDynamicSize {
 		// can't use fastssz, use dynamic size calculation
-		switch targetType.SszType {
+		switch targetType.SszType { //nolint:exhaustive // intentionally handles only relevant SSZ types
 		case ssztypes.SszTypeWrapperType:
 			// Extract the Data field from the TypeWrapper
 			dataField := targetValue.Field(0)
@@ -107,14 +107,15 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 					staticSize += size + 4
 				} else {
 					// static field
-					staticSize += uint32(fieldType.Type.Size)
+					staticSize += fieldType.Type.Size
 				}
 			}
 		case ssztypes.SszVectorType, ssztypes.SszBitvectorType:
 			fieldType := targetType.ElemDesc
-			if fieldType.Kind == reflect.Uint8 {
+			switch {
+			case fieldType.Kind == reflect.Uint8:
 				staticSize = targetType.Len
-			} else if fieldType.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+			case fieldType.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0:
 				// vector with dynamic size items, so we have to go through each item
 				dataLen := targetValue.Len()
 
@@ -137,7 +138,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 
 					staticSize += (size + 4) * appendZero
 				}
-			} else {
+			default:
 				dataLen := targetValue.Len()
 
 				if dataLen > 0 {
@@ -162,9 +163,10 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 			sliceLen := uint32(targetValue.Len())
 
 			if sliceLen > 0 {
-				if fieldType.Kind == reflect.Uint8 {
-					staticSize = uint32(sliceLen)
-				} else if fieldType.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+				switch {
+				case fieldType.Kind == reflect.Uint8:
+					staticSize = sliceLen
+				case fieldType.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0:
 					// slice with dynamic size items, so we have to go through each item
 					for i := 0; i < int(sliceLen); i++ {
 						size, err := ctx.getSszValueSize(fieldType, targetValue.Index(i))
@@ -174,8 +176,8 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 						// add 4 bytes for offset in dynamic slice
 						staticSize += size + 4
 					}
-				} else {
-					staticSize = uint32(fieldType.Size) * sliceLen
+				default:
+					staticSize = fieldType.Size * sliceLen
 				}
 			}
 		case ssztypes.SszCompatibleUnionType:

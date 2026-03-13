@@ -133,7 +133,7 @@ func (ctx *unmarshalContext) getValVar() string {
 }
 
 // getCastedValueVar returns the variable name for the value of a type, converting to the source type if needed
-func (ctx *unmarshalContext) getCastedValueVar(desc *ssztypes.TypeDescriptor, varName string, sourceType string) string {
+func (ctx *unmarshalContext) getCastedValueVar(desc *ssztypes.TypeDescriptor, varName, sourceType string) string {
 	if targetType := ctx.typePrinter.InnerTypeString(desc); targetType != sourceType {
 		varName = fmt.Sprintf("%s(%s)", targetType, varName)
 	}
@@ -173,7 +173,7 @@ func (ctx *unmarshalContext) isInlinable(desc *ssztypes.TypeDescriptor) bool {
 }
 
 // unmarshalType generates unmarshal code for any SSZ type, delegating to specific unmarshalers.
-func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName string, indent int, isRoot bool, noBufCheck bool) error {
+func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName string, indent int, isRoot, noBufCheck bool) error {
 	// Handle types that have generated methods we can call
 	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
 	isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
@@ -200,7 +200,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 		return nil
 	}
 
-	switch desc.SszType {
+	switch desc.SszType { //nolint:exhaustive // intentionally handles only relevant SSZ types
 	case ssztypes.SszBoolType:
 		if !noBufCheck {
 			ctx.appendCode(indent, "if len(buf) < 1 {\n\treturn sszutils.ErrUnexpectedEOF\n}\n")

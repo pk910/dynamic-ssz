@@ -173,6 +173,7 @@ var TestCasesTreeFromNodes = []struct {
 		limit:       0,
 		expectError: false,
 		validateFn: func(t *testing.T, n *Node) {
+			t.Helper()
 			if !n.IsEmpty() {
 				t.Error("expected empty node for zero limit")
 			}
@@ -184,6 +185,7 @@ var TestCasesTreeFromNodes = []struct {
 		limit:       4,
 		expectError: false,
 		validateFn: func(t *testing.T, n *Node) {
+			t.Helper()
 			if !n.IsEmpty() {
 				t.Error("expected empty node for no leaves")
 			}
@@ -195,6 +197,7 @@ var TestCasesTreeFromNodes = []struct {
 		limit:       1,
 		expectError: false,
 		validateFn: func(t *testing.T, n *Node) {
+			t.Helper()
 			if !n.IsLeaf() {
 				t.Error("expected leaf node")
 			}
@@ -206,6 +209,7 @@ var TestCasesTreeFromNodes = []struct {
 		limit:       2,
 		expectError: false,
 		validateFn: func(t *testing.T, n *Node) {
+			t.Helper()
 			if n.IsLeaf() {
 				t.Error("expected branch node")
 			}
@@ -220,6 +224,7 @@ var TestCasesTreeFromNodes = []struct {
 		limit:       2,
 		expectError: false,
 		validateFn: func(t *testing.T, n *Node) {
+			t.Helper()
 			if n.IsLeaf() {
 				t.Error("expected branch node")
 			}
@@ -242,6 +247,7 @@ var TestCasesTreeFromNodes = []struct {
 		limit:       8,
 		expectError: false,
 		validateFn: func(t *testing.T, n *Node) {
+			t.Helper()
 			// Should have padding on the right side
 			if n.IsLeaf() {
 				t.Error("expected branch node")
@@ -258,6 +264,7 @@ var TestCasesTreeFromNodes = []struct {
 		limit:       1 << 20, // ~1 million
 		expectError: false,
 		validateFn: func(t *testing.T, n *Node) {
+			t.Helper()
 			if n == nil {
 				t.Fatal("expected non-nil tree")
 			}
@@ -298,7 +305,6 @@ func TestTreeFromNodes(t *testing.T) {
 func BenchmarkTreeFromNodes(b *testing.B) {
 	for _, bm := range TestCasesTreeFromNodes {
 		b.Run(bm.name, func(b *testing.B) {
-
 			b.ReportAllocs()
 			b.ResetTimer()
 
@@ -319,6 +325,7 @@ func TestTreeFromNodesProgressive(t *testing.T) {
 			name:  "empty nodes",
 			nodes: []*Node{},
 			validateFn: func(t *testing.T, n *Node) {
+				t.Helper()
 				if !n.IsEmpty() {
 					t.Error("expected empty node")
 				}
@@ -328,6 +335,7 @@ func TestTreeFromNodesProgressive(t *testing.T) {
 			name:  "single node",
 			nodes: []*Node{NewNodeWithValue([]byte{1})},
 			validateFn: func(t *testing.T, n *Node) {
+				t.Helper()
 				// Progressive tree with 1 node: base_size=1, so left gets the node, right is empty
 				if n.IsLeaf() {
 					t.Error("expected branch node")
@@ -347,6 +355,7 @@ func TestTreeFromNodesProgressive(t *testing.T) {
 				NewNodeWithValue([]byte{5}),
 			},
 			validateFn: func(t *testing.T, n *Node) {
+				t.Helper()
 				// With 5 nodes: first 1 goes to right (binary), remaining 4 go to left (progressive)
 				if n.IsLeaf() {
 					t.Error("expected branch node")
@@ -444,7 +453,9 @@ func TestTreeFromNodesProgressiveWithActiveFields(t *testing.T) {
 	}
 
 	// Right child should be the active fields bitvector
-	expectedLeaf := append(activeFields, bytes.Repeat([]byte{0}, 30)...)
+	expectedLeaf := make([]byte, 0, 32)
+	expectedLeaf = append(expectedLeaf, activeFields...)
+	expectedLeaf = append(expectedLeaf, make([]byte, 30)...)
 	if !bytes.Equal(tree.right.value, expectedLeaf) {
 		t.Error("right child should be active fields bitvector")
 	}
@@ -983,9 +994,12 @@ func TestLeafCreationFunctions(t *testing.T) {
 
 	t.Run("LeafFromBytes", func(t *testing.T) {
 		// Test < 32 bytes
-		smallBytes := []byte{1, 2, 3, 4}
+		smallBytes := make([]byte, 0, 32)
+		smallBytes = append(smallBytes, 1, 2, 3, 4)
 		leafSmall := LeafFromBytes(smallBytes)
-		expectedSmall := append(smallBytes, bytes.Repeat([]byte{0}, 28)...)
+		expectedSmall := make([]byte, 0, 32)
+		expectedSmall = append(expectedSmall, smallBytes...)
+		expectedSmall = append(expectedSmall, make([]byte, 28)...)
 
 		if !bytes.Equal(leafSmall.value, expectedSmall) {
 			t.Error("LeafFromBytes (small) value mismatch")

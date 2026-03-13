@@ -13,6 +13,8 @@ import (
 	"github.com/pk910/dynamic-ssz/ssztypes"
 )
 
+const varNameVLen = "vlen"
+
 type exprVarGenerator struct {
 	prefix      string
 	typePrinter *TypePrinter
@@ -119,7 +121,7 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 	sizeVar := fmt.Sprintf("%s%d", g.prefix, g.varCounter)
 
 	// recursive resolve static size with size expressions
-	switch desc.SszType {
+	switch desc.SszType { //nolint:exhaustive // intentionally handles only relevant SSZ types
 	case ssztypes.SszTypeWrapperType:
 		sizeVar, err = g.getStaticSizeVar(desc.ElemDesc)
 		if err != nil {
@@ -129,16 +131,18 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 		fieldSizeVars := []string{}
 		staticSize := 0
 		for _, field := range desc.ContainerDesc.Fields {
-			if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+			var fieldSizeVar string
+			switch {
+			case field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0:
 				return "", fmt.Errorf("dynamic field not supported for static size calculation")
-			} else if field.Type.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !g.options.WithoutDynamicExpressions {
-				fieldSizeVar, err := g.getStaticSizeVar(field.Type)
+			case field.Type.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !g.options.WithoutDynamicExpressions:
+				fieldSizeVar, err = g.getStaticSizeVar(field.Type)
 				if err != nil {
 					return "", err
 				}
 
 				fieldSizeVars = append(fieldSizeVars, fieldSizeVar)
-			} else {
+			default:
 				staticSize += int(field.Type.Size)
 			}
 		}

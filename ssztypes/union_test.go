@@ -32,6 +32,8 @@ func TestExtractUnionDescriptorInfo(t *testing.T) {
 			}{}),
 			expectError: false,
 			validateInfo: func(t *testing.T, info map[uint8]unionVariantInfo) {
+				t.Helper()
+
 				if len(info) != 2 {
 					t.Errorf("expected 2 variants, got %d", len(info))
 				}
@@ -54,6 +56,8 @@ func TestExtractUnionDescriptorInfo(t *testing.T) {
 			}{}),
 			expectError: false,
 			validateInfo: func(t *testing.T, info map[uint8]unionVariantInfo) {
+				t.Helper()
+
 				if _, ok := info[0]; !ok {
 					t.Error("variant 0 not found")
 				}

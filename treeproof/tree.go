@@ -186,47 +186,47 @@ func (n *Node) Show(maxDepth int) {
 	n.show(0, maxDepth, 1) // Start with index 1 (root)
 }
 
-func (n *Node) show(depth int, maxDepth int, index int) {
+func (n *Node) show(depth, maxDepth, index int) {
 	space := ""
 	for i := 0; i < depth; i++ {
 		space += "\t"
 	}
-	print := func(msgs ...string) {
+	printNode := func(msgs ...string) {
 		for _, msg := range msgs {
 			fmt.Printf("%s%s", space, msg)
 		}
 	}
 
 	// Always print the index first
-	print(fmt.Sprintf("INDEX: %d\n", index))
+	printNode(fmt.Sprintf("INDEX: %d\n", index))
 
 	if n.left != nil || n.right != nil {
 		// Branch node - show hash
-		print("HASH: " + hex.EncodeToString(n.Hash()) + "\n")
+		printNode("HASH: " + hex.EncodeToString(n.Hash()) + "\n")
 	} else if n.value != nil {
 		// Leaf node - show value only (no hash for leaves)
-		print("VALUE: " + hex.EncodeToString(n.value) + "\n")
+		printNode("VALUE: " + hex.EncodeToString(n.value) + "\n")
 	}
 
 	if n.isEmpty {
 		zeroLevel, _ := hasher.GetZeroHashLevel(string(n.Hash()))
-		print("EMPTY: true (depth: " + strconv.Itoa(zeroLevel) + ")\n")
+		printNode("EMPTY: true (depth: " + strconv.Itoa(zeroLevel) + ")\n")
 	}
 
 	if maxDepth > 0 {
 		if depth == maxDepth {
 			// only print hash if we are too deep
-			print(" ... (max depth reached)\n")
+			printNode(" ... (max depth reached)\n")
 			return
 		}
 	}
 
 	if n.left != nil {
-		print("LEFT: \n")
+		printNode("LEFT: \n")
 		n.left.show(depth+1, maxDepth, index*2) // Left child index = parent * 2
 	}
 	if n.right != nil {
-		print("RIGHT: \n")
+		printNode("RIGHT: \n")
 		n.right.show(depth+1, maxDepth, index*2+1) // Right child index = parent * 2 + 1
 	}
 }
@@ -623,7 +623,7 @@ func LeafFromUint16(i uint16) *Node {
 
 func LeafFromUint8(i uint8) *Node {
 	buf := make([]byte, 32)
-	buf[0] = byte(i)
+	buf[0] = i
 	return NewNodeWithValue(buf)
 }
 
@@ -642,7 +642,7 @@ func LeafFromBytes(b []byte) *Node {
 	}
 
 	if l == 32 {
-		return NewNodeWithValue(b[:])
+		return NewNodeWithValue(b)
 	}
 
 	// < 32

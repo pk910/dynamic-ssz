@@ -159,6 +159,7 @@ func TestCodegenExtendedTypes(t *testing.T) {
 }
 
 func testCodegenPayload(t *testing.T, payload TestPayload) {
+	t.Helper()
 	ds := dynssz.NewDynSsz(payload.Specs)
 
 	hashRoot, err := ds.HashTreeRoot(payload.Payload)

@@ -174,7 +174,7 @@ func (ctx *hashTreeRootContext) getValVar() string {
 }
 
 // getValueVar returns the variable name for the value of a type, dereferencing pointer types and converting to the target type if needed
-func (ctx *hashTreeRootContext) getValueVar(desc *ssztypes.TypeDescriptor, varName string, targetType string) string {
+func (ctx *hashTreeRootContext) getValueVar(desc *ssztypes.TypeDescriptor, varName, targetType string) string {
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
 		varName = fmt.Sprintf("*%s", varName)
 	}
@@ -202,7 +202,7 @@ func (ctx *hashTreeRootContext) getPtrPrefix(desc *ssztypes.TypeDescriptor, pref
 }
 
 // hashType generates hash tree root code for any SSZ type, delegating to specific hashers.
-func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName string, indent int, isRoot bool, pack bool) error {
+func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName string, indent int, isRoot, pack bool) error {
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.SszType != ssztypes.SszOptionalType {
 		ctx.appendCode(indent, "if %s == nil {\n\t%s = new(%s)\n}\n", varName, varName, ctx.typePrinter.InnerTypeString(desc))
 	}
@@ -233,7 +233,7 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 		return nil
 	}
 
-	switch desc.SszType {
+	switch desc.SszType { //nolint:exhaustive // intentionally handles only relevant SSZ types
 	case ssztypes.SszBoolType:
 		if pack {
 			ctx.appendCode(indent, "hh.AppendBool(%s)\n", ctx.getValueVar(desc, varName, "bool"))
@@ -377,7 +377,7 @@ func (ctx *hashTreeRootContext) hashOptional(desc *ssztypes.TypeDescriptor, varN
 }
 
 // hashBigInt generates hash tree root code for SSZ big int types.
-func (ctx *hashTreeRootContext) hashBigInt(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
+func (ctx *hashTreeRootContext) hashBigInt(_ *ssztypes.TypeDescriptor, varName string, indent int) error {
 	ctx.appendCode(indent, "{\n")
 	ctx.appendCode(indent+1, "bigIntBytes := %s.Bytes()\n", varName)
 	ctx.appendCode(indent+1, "if len(bigIntBytes) == 0 {\n")
@@ -545,7 +545,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		ctx.appendCode(indent, "if vlen > %s {\n", limitVar)
 		ctx.appendCode(indent, "\treturn sszutils.ErrVectorLength\n")
 		ctx.appendCode(indent, "}\n")
-		lenVar = "vlen"
+		lenVar = varNameVLen
 	} else {
 		lenVar = fmt.Sprintf("%d", desc.Len)
 	}
@@ -648,15 +648,16 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 	hasMax := false
 	maxVar := ""
 
-	if maxExpression != nil {
+	switch {
+	case maxExpression != nil:
 		exprVar := ctx.exprVars.getExprVar(*maxExpression, desc.Limit)
 
 		hasMax = true
 		maxVar = exprVar
-	} else if desc.Limit > 0 {
+	case desc.Limit > 0:
 		maxVar = fmt.Sprintf("%d", desc.Limit)
 		hasMax = true
-	} else {
+	default:
 		maxVar = "0"
 	}
 
@@ -686,16 +687,17 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 	var itemSize int
 
 	// Handle byte slices
-	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
+	switch {
+	case desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0:
 		ctx.appendCode(indent, "hh.AppendBytes32([]byte(%s))\n", valueVar)
 		itemSize = 1
-	} else if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
+	case desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0:
 		if strings.HasPrefix(valueVar, "*") {
 			valueVar = fmt.Sprintf("(%s)", valueVar)
 		}
 		ctx.appendCode(indent, "hh.AppendBytes32(%s[:])\n", valueVar)
 		itemSize = 1
-	} else {
+	default:
 		if ctx.isPrimitive(desc.ElemDesc) {
 			itemSize = int(desc.ElemDesc.Size)
 		} else {
@@ -721,17 +723,18 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 		}
 	}
 
-	if desc.SszType == ssztypes.SszProgressiveListType {
+	switch {
+	case desc.SszType == ssztypes.SszProgressiveListType:
 		addVlen()
 		ctx.appendCode(indent, "hh.MerkleizeProgressiveWithMixin(idx, vlen)\n")
-	} else if maxVar != "0" {
+	case maxVar != "0":
 		addVlen()
 		if itemSize > 0 {
 			ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, vlen, sszutils.CalculateLimit(%s, vlen, %d))\n", maxVar, itemSize)
 		} else {
 			ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, vlen, %s)\n", maxVar)
 		}
-	} else {
+	default:
 		ctx.appendCode(indent, "hh.Merkleize(idx)\n")
 	}
 
@@ -766,11 +769,12 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varNa
 	}
 	ctx.appendCode(indent, "hh.AppendBytes32(bitlist)\n")
 
-	if desc.SszType == ssztypes.SszProgressiveBitlistType {
+	switch {
+	case desc.SszType == ssztypes.SszProgressiveBitlistType:
 		ctx.appendCode(indent, "hh.MerkleizeProgressiveWithMixin(idx, size)\n")
-	} else if maxVar != "" {
+	case maxVar != "":
 		ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, size, (%s+255)/256)\n", maxVar)
-	} else {
+	default:
 		ctx.appendCode(indent, "hh.Merkleize(idx)\n")
 	}
 

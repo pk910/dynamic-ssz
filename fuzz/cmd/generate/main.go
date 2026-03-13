@@ -53,7 +53,7 @@ func main() {
 	log.Printf("Generated %d types total (including helper types)", len(types))
 
 	// Ensure corpus directory exists
-	if err := os.MkdirAll(*corpusDir, 0755); err != nil {
+	if err := os.MkdirAll(*corpusDir, 0o755); err != nil {
 		log.Fatalf("Failed to create corpus dir: %v", err)
 	}
 
@@ -63,7 +63,7 @@ func main() {
 	// Write type definitions
 	typesSource := gen.WriteGoSource("corpus")
 	typesPath := filepath.Join(*corpusDir, "types_gen.go")
-	if err := os.WriteFile(typesPath, []byte(typesSource), 0644); err != nil {
+	if err := os.WriteFile(typesPath, []byte(typesSource), 0o600); err != nil {
 		log.Fatalf("Failed to write types: %v", err)
 	}
 	log.Printf("Wrote type definitions to %s", typesPath)
@@ -71,7 +71,7 @@ func main() {
 	// Write registry
 	registrySource := gen.WriteRegistry("corpus")
 	registryPath := filepath.Join(*corpusDir, "registry_gen.go")
-	if err := os.WriteFile(registryPath, []byte(registrySource), 0644); err != nil {
+	if err := os.WriteFile(registryPath, []byte(registrySource), 0o600); err != nil {
 		log.Fatalf("Failed to write registry: %v", err)
 	}
 	log.Printf("Wrote registry to %s", registryPath)

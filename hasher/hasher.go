@@ -151,7 +151,8 @@ func (hh *HasherPool) Get() *Hasher {
 			return NewHasherWithHashFn(hh.HashFn)
 		}
 	}
-	return h.(*Hasher)
+	hasher, _ := h.(*Hasher)
+	return hasher
 }
 
 // Put releases the Hasher to the pool.
@@ -236,7 +237,7 @@ func (h *Hasher) PutUint16(i uint16) {
 
 // PutUint8 appends a uint8 in 32 bytes
 func (h *Hasher) PutUint8(i uint8) {
-	h.tmp[0] = byte(i)
+	h.tmp[0] = i
 	h.AppendBytes32(h.tmp[:1])
 }
 
@@ -532,7 +533,7 @@ func (h *Hasher) getDepth(d uint64) uint8 {
 	return 64 - uint8(bits.LeadingZeros(i)) - 1
 }
 
-func (h *Hasher) merkleizeImpl(dst []byte, input []byte, limit uint64) []byte {
+func (h *Hasher) merkleizeImpl(dst, input []byte, limit uint64) []byte {
 	// count is the number of 32 byte chunks from the input, after right-padding
 	// with zeroes to the next multiple of 32 bytes when the input is not aligned
 	// to a multiple of 32 bytes.
@@ -548,7 +549,7 @@ func (h *Hasher) merkleizeImpl(dst []byte, input []byte, limit uint64) []byte {
 	}
 	if limit == 1 {
 		if count == 1 {
-			return append(dst, input[:32]...)
+			return append(dst, input[:32]...) //nolint:gosec // G602: callers always pass 32-byte-aligned chunks; count==1 guarantees len(input)>=32
 		}
 		return append(dst, zeroBytes[:32]...)
 	}
@@ -666,7 +667,7 @@ func (h *Hasher) MerkleizeProgressiveWithActiveFields(indx int, activeFields []b
 	}
 }
 
-func (h *Hasher) merkleizeProgressiveImpl(dst []byte, chunks []byte, depth uint8) []byte {
+func (h *Hasher) merkleizeProgressiveImpl(dst, chunks []byte, depth uint8) []byte {
 	count := uint64((len(chunks) + 31) / 32)
 
 	if count == 0 {

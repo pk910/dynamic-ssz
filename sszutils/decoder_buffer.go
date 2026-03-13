@@ -128,15 +128,15 @@ func (e *BufferDecoder) DecodeBytes(buf []byte) ([]byte, error) {
 	return buf[:bufLen], nil
 }
 
-func (e *BufferDecoder) DecodeBytesBuf(len int) ([]byte, error) {
+func (e *BufferDecoder) DecodeBytesBuf(length int) ([]byte, error) {
 	limit := e.lastLimit
-	if len < 0 {
-		len = limit - e.position
-	} else if limit-e.position < len {
+	if length < 0 {
+		length = limit - e.position
+	} else if limit-e.position < length {
 		return nil, ErrUnexpectedEOF
 	}
-	buf := e.buffer[e.position : e.position+len]
-	e.position += len
+	buf := e.buffer[e.position : e.position+length]
+	e.position += length
 	return buf, nil
 }
 

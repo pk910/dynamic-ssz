@@ -243,8 +243,7 @@ func run(config Config) error {
 			typeOptions = append(typeOptions, codegen.WithNoFastSsz())
 		}
 		if config.WithStreaming {
-			typeOptions = append(typeOptions, codegen.WithCreateEncoderFn())
-			typeOptions = append(typeOptions, codegen.WithCreateDecoderFn())
+			typeOptions = append(typeOptions, codegen.WithCreateEncoderFn(), codegen.WithCreateDecoderFn())
 		}
 		if config.WithExtendedTypes {
 			typeOptions = append(typeOptions, codegen.WithExtendedTypes())
@@ -272,7 +271,7 @@ func run(config Config) error {
 	codeSize := 0
 	for outFile, generatedCode := range codeMap {
 		codeSize += len(generatedCode)
-		err = os.WriteFile(outFile, []byte(generatedCode), 0644)
+		err = os.WriteFile(outFile, []byte(generatedCode), 0o600)
 		if err != nil {
 			return fmt.Errorf("failed to write output file %s: %v", outFile, err)
 		}

@@ -152,7 +152,9 @@ func TestWrapperAppendMethods(t *testing.T) {
 		data := bytes.Repeat([]byte{0xFF}, 16)
 		w.AppendBytes32(data)
 
-		expected := append(data, bytes.Repeat([]byte{0}, 16)...)
+		expected := make([]byte, 0, 32)
+		expected = append(expected, data...)
+		expected = append(expected, make([]byte, 16)...)
 		if !bytes.Equal(w.buf, expected) {
 			t.Error("AppendBytes32 failed to pad to 32 bytes")
 		}

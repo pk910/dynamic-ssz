@@ -37,7 +37,7 @@ type ReflectionCtx struct {
 //   - verbose: enables verbose logging output
 //   - noFastSsz: when true, disables fastssz fallback for types that implement
 //     fastssz interfaces, forcing all operations through reflection
-func NewReflectionCtx(ds sszutils.DynamicSpecs, logCb func(format string, args ...any), verbose bool, noFastSsz bool) *ReflectionCtx {
+func NewReflectionCtx(ds sszutils.DynamicSpecs, logCb func(format string, args ...any), verbose, noFastSsz bool) *ReflectionCtx {
 	return &ReflectionCtx{
 		ds:        ds,
 		logCb:     logCb,

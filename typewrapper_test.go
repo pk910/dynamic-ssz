@@ -99,6 +99,7 @@ func (t *TestInvalidTypeWrapper2) GetDescriptorType() uint64 {
 
 // Test types with invalid TypeWrapper method
 func InvalidTypeWrapperTypes(t *testing.T) {
+	t.Helper()
 	ds := NewDynSsz(nil)
 
 	tests := []struct {

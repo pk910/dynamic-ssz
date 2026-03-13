@@ -25,7 +25,7 @@ func UnmarshallUint16(src []byte) uint16 {
 
 // UnmarshallUint8 unmarshals a little endian uint8 from the src input
 func UnmarshallUint8(src []byte) uint8 {
-	return uint8(src[0])
+	return src[0]
 }
 
 // UnmarshalBool unmarshals a boolean from the src input
