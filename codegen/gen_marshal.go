@@ -586,15 +586,16 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 
 	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 		// static elements
-		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
+		switch {
+		case desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0:
 			if strings.HasPrefix(valueVar, "*") {
 				valueVar = fmt.Sprintf("(%s)", valueVar)
 			}
 			ctx.appendCode(indent, "dst = append(dst, %s[:]...)\n", valueVar)
-		} else if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
+		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0:
 			addVlen()
 			ctx.appendCode(indent, "dst = sszutils.MarshalUint64Slice(dst, %s[:vlen])\n", varName)
-		} else {
+		default:
 			addVlen()
 			ctx.appendCode(indent, "for i := range vlen {\n")
 			valVar := "t"
