@@ -383,3 +383,19 @@ func TestResolveSpecValueRoundsUp(t *testing.T) {
 		t.Fatalf("expected 4 (rounded up from 3.5), got %d", value)
 	}
 }
+
+// SizeSSZ overflow test
+
+type testLargeContainer struct {
+	Data []byte `ssz-size:"2147483648"` // MaxInt32 + 1
+}
+
+func TestSizeSSZExceedsMaxInt32(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz())
+	container := &testLargeContainer{}
+
+	_, err := ds.SizeSSZ(container)
+	if err == nil || !strings.Contains(err.Error(), "exceeds maximum int32") {
+		t.Fatalf("expected 'exceeds maximum int32' error, got: %v", err)
+	}
+}
