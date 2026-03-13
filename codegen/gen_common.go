@@ -121,7 +121,7 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 	sizeVar := fmt.Sprintf("%s%d", g.prefix, g.varCounter)
 
 	// recursive resolve static size with size expressions
-	switch desc.SszType { //nolint:exhaustive // intentionally handles only relevant SSZ types
+	switch desc.SszType {
 	case ssztypes.SszTypeWrapperType:
 		sizeVar, err = g.getStaticSizeVar(desc.ElemDesc)
 		if err != nil {

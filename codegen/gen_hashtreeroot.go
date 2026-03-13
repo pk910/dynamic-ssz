@@ -233,7 +233,7 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 		return nil
 	}
 
-	switch desc.SszType { //nolint:exhaustive // intentionally handles only relevant SSZ types
+	switch desc.SszType {
 	case ssztypes.SszBoolType:
 		if pack {
 			ctx.appendCode(indent, "hh.AppendBool(%s)\n", ctx.getValueVar(desc, varName, "bool"))

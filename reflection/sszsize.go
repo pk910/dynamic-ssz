@@ -81,7 +81,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 
 	if !useFastSsz && !useDynamicSize {
 		// can't use fastssz, use dynamic size calculation
-		switch targetType.SszType { //nolint:exhaustive // intentionally handles only relevant SSZ types
+		switch targetType.SszType {
 		case ssztypes.SszTypeWrapperType:
 			// Extract the Data field from the TypeWrapper
 			dataField := targetValue.Field(0)

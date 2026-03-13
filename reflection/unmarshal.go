@@ -126,7 +126,7 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 	if !useFastSsz && !useDynamicDecoder && !useDynamicUnmarshal {
 		// can't use fastssz, use dynamic unmarshaling
 		var err error
-		switch targetType.SszType { //nolint:exhaustive // intentionally handles only relevant SSZ types
+		switch targetType.SszType {
 		// complex types
 		case ssztypes.SszTypeWrapperType:
 			err = ctx.unmarshalTypeWrapper(targetType, targetValue, decoder, idt)
@@ -460,7 +460,7 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 	arrLen := int(targetType.Len)
 
 	var newValue reflect.Value
-	switch targetType.Kind { //nolint:exhaustive // only slice and array are valid vector kinds
+	switch targetType.Kind {
 	case reflect.Slice:
 		// Optimization: avoid reflect.MakeSlice for common byte slice types
 		if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 && targetType.ElemDesc.Type.Kind() == reflect.Uint8 {

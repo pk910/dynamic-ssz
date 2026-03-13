@@ -200,7 +200,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 		return nil
 	}
 
-	switch desc.SszType { //nolint:exhaustive // intentionally handles only relevant SSZ types
+	switch desc.SszType {
 	case ssztypes.SszBoolType:
 		if !noBufCheck {
 			ctx.appendCode(indent, "if len(buf) < 1 {\n\treturn sszutils.ErrUnexpectedEOF\n}\n")

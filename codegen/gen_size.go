@@ -225,7 +225,7 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 		ctx.appendCode(indent, "if %s == nil {\n\t%s = new(%s)\n}\n", varName, varName, ctx.typePrinter.InnerTypeString(desc))
 	}
 
-	switch desc.SszType { //nolint:exhaustive // intentionally handles only relevant SSZ types
+	switch desc.SszType {
 	case ssztypes.SszBoolType:
 		ctx.appendCode(indent, "%s += 1\n", sizeVar)
 

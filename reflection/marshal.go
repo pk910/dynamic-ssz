@@ -105,7 +105,7 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 	if !useFastSsz && !useDynamicEncoder && !useDynamicMarshal {
 		// can't use fastssz, use dynamic marshaling
 		var err error
-		switch sourceType.SszType { //nolint:exhaustive // intentionally handles only relevant SSZ types
+		switch sourceType.SszType {
 		// complex types
 		case ssztypes.SszTypeWrapperType:
 			err = ctx.marshalTypeWrapper(sourceType, sourceValue, encoder, idt)

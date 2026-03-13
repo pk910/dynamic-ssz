@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	typeNameError = "error"
-	typeNameInt   = "int"
+	typeNameError     = "error"
+	typeNameInt       = "int"
+	typeNameByteSlice = "[]byte"
 )
 
 var (
@@ -180,7 +181,7 @@ doneResolving:
 	// Set kind based on underlying type
 	switch t := typ.(type) {
 	case *types.Basic:
-		switch t.Kind() { //nolint:exhaustive // intentionally handles only relevant SSZ types
+		switch t.Kind() {
 		case types.Bool:
 			desc.Kind = reflect.Bool
 		case types.Uint8:
@@ -196,7 +197,7 @@ doneResolving:
 			desc.GoTypeFlags |= ssztypes.GoTypeFlagIsString
 		default:
 			if p.ExtendedTypes {
-				switch t.Kind() { //nolint:exhaustive // intentionally handles only relevant SSZ types
+				switch t.Kind() {
 				case types.Int8:
 					desc.Kind = reflect.Int8
 				case types.Int16:
@@ -209,6 +210,8 @@ doneResolving:
 					desc.Kind = reflect.Float32
 				case types.Float64:
 					desc.Kind = reflect.Float64
+				default:
+					desc.Kind = reflect.Invalid
 				}
 			} else {
 				desc.Kind = reflect.Invalid
@@ -311,7 +314,7 @@ doneResolving:
 	}
 
 	if sszType == ssztypes.SszUnspecifiedType {
-		switch desc.Kind { //nolint:exhaustive // intentionally handles only relevant SSZ types
+		switch desc.Kind {
 		// basic types
 		case reflect.Bool:
 			sszType = ssztypes.SszBoolType
@@ -360,13 +363,14 @@ doneResolving:
 		default:
 			// Check for unsupported basic types
 			if basic, ok := typ.(*types.Basic); ok {
-				switch basic.Kind() { //nolint:exhaustive // intentionally handles only relevant SSZ types
+				switch basic.Kind() {
 				case types.Int, types.Uint:
 					return nil, fmt.Errorf("signed or unsigned integers with unspecified size are not supported in SSZ")
 				case types.Float32, types.Float64:
 					return nil, fmt.Errorf("floating-point numbers are not supported in SSZ")
 				case types.Complex64, types.Complex128:
 					return nil, fmt.Errorf("complex numbers are not supported in SSZ")
+				default:
 				}
 			}
 			// Check for other unsupported types
@@ -388,7 +392,6 @@ doneResolving:
 	desc.SszType = sszType
 
 	// Check type compatibility and build descriptor based on SSZ type
-	//nolint:exhaustive // not all SszType values have dedicated handling here
 	switch sszType {
 	// basic types
 	case ssztypes.SszBoolType:
@@ -586,6 +589,7 @@ doneResolving:
 		if err != nil {
 			return nil, err
 		}
+	default:
 	}
 
 	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 && desc.SszType != ssztypes.SszBitvectorType && desc.SszType != ssztypes.SszBitlistType {
@@ -1339,9 +1343,9 @@ func (p *Parser) isByteType(typ types.Type) bool {
 
 func (p *Parser) getFastsszConvertCompatibility(typ types.Type) bool {
 	methodSet := types.NewMethodSet(typ)
-	return (p.hasMethodWithSignature(methodSet, "MarshalSSZTo", []string{"[]byte"}, []string{"[]byte", "error"}) &&
+	return (p.hasMethodWithSignature(methodSet, "MarshalSSZTo", []string{typeNameByteSlice}, []string{typeNameByteSlice, "error"}) &&
 		p.hasMethodWithSignature(methodSet, "SizeSSZ", []string{}, []string{"int"}) &&
-		p.hasMethodWithSignature(methodSet, "UnmarshalSSZ", []string{"[]byte"}, []string{"error"}))
+		p.hasMethodWithSignature(methodSet, "UnmarshalSSZ", []string{typeNameByteSlice}, []string{"error"}))
 }
 
 func (p *Parser) getFastsszHashCompatibility(typ types.Type) bool {
@@ -1358,13 +1362,13 @@ func (p *Parser) getHashTreeRootWithCompatibility(typ types.Type) bool {
 func (p *Parser) getDynamicMarshalerCompatibility(typ types.Type) bool {
 	// Check if type has MarshalSSZDyn method
 	methodSet := types.NewMethodSet(typ)
-	return p.hasMethodWithSignature(methodSet, "MarshalSSZDyn", []string{"DynamicSpecs", "[]byte"}, []string{"[]byte", "error"})
+	return p.hasMethodWithSignature(methodSet, "MarshalSSZDyn", []string{"DynamicSpecs", typeNameByteSlice}, []string{typeNameByteSlice, "error"})
 }
 
 func (p *Parser) getDynamicUnmarshalerCompatibility(typ types.Type) bool {
 	// Check if type has UnmarshalSSZDyn method
 	methodSet := types.NewMethodSet(typ)
-	return p.hasMethodWithSignature(methodSet, "UnmarshalSSZDyn", []string{"DynamicSpecs", "[]byte"}, []string{"error"})
+	return p.hasMethodWithSignature(methodSet, "UnmarshalSSZDyn", []string{"DynamicSpecs", typeNameByteSlice}, []string{"error"})
 }
 
 func (p *Parser) getDynamicEncoderCompatibility(typ types.Type) bool {
@@ -1446,7 +1450,7 @@ func (p *Parser) typeMatches(typ types.Type, expectedTypeStr string) bool {
 	switch expectedTypeStr {
 	case "-":
 		return true
-	case "[]byte":
+	case typeNameByteSlice:
 		if slice, ok := typ.(*types.Slice); ok {
 			if basic, ok := slice.Elem().(*types.Basic); ok {
 				return basic.Kind() == types.Uint8

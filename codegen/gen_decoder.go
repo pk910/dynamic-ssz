@@ -209,7 +209,7 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 		return nil
 	}
 
-	switch desc.SszType { //nolint:exhaustive // intentionally handles only relevant SSZ types
+	switch desc.SszType {
 	case ssztypes.SszBoolType:
 		ctx.appendCode(indent, "if val, err := dec.DecodeBool(); err != nil {\n")
 		ctx.appendCode(indent+1, "return err\n")

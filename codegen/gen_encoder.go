@@ -281,7 +281,7 @@ func (ctx *encoderContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 		return nil
 	}
 
-	switch desc.SszType { //nolint:exhaustive // intentionally handles only relevant SSZ types
+	switch desc.SszType {
 	case ssztypes.SszBoolType:
 		ctx.appendCode(indent, "enc.EncodeBool(%s)\n", ctx.getValueVar(desc, varName, "bool"))
 

@@ -352,7 +352,7 @@ func (p *TypePrinter) reflectTypeString(t reflect.Type, trackImports bool) strin
 	}
 
 	// Unnamed kinds
-	switch t.Kind() { //nolint:exhaustive // intentionally handles only relevant SSZ types
+	switch t.Kind() {
 	case reflect.Pointer:
 		return "*" + p.reflectTypeString(t.Elem(), trackImports)
 	case reflect.Slice:

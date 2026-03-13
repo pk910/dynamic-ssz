@@ -104,7 +104,7 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 
 	if !useFastSsz && !useDynamicHashRoot {
 		// Route to appropriate handler based on type
-		switch sourceType.SszType { //nolint:exhaustive // intentionally handles only relevant SSZ types
+		switch sourceType.SszType {
 		case ssztypes.SszTypeWrapperType:
 			err := ctx.buildRootFromTypeWrapper(sourceType, sourceValue, hh, pack, idt)
 			if err != nil {
@@ -638,7 +638,7 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 	case sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0:
 		var limit, itemSize uint64
 
-		switch sourceType.ElemDesc.SszType { //nolint:exhaustive // intentionally handles only relevant SSZ types
+		switch sourceType.ElemDesc.SszType {
 		case ssztypes.SszBoolType:
 			itemSize = 1
 		case ssztypes.SszUint8Type, ssztypes.SszInt8Type:

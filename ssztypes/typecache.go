@@ -207,7 +207,7 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		}
 	}
 	if sszType == SszUnspecifiedType {
-		switch desc.Kind { //nolint:exhaustive // intentionally handles only relevant kinds
+		switch desc.Kind {
 		// basic types
 		case reflect.Bool:
 			sszType = SszBoolType

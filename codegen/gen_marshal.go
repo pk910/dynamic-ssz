@@ -202,7 +202,7 @@ func (ctx *marshalContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 		return nil
 	}
 
-	switch desc.SszType { //nolint:exhaustive // intentionally handles only relevant SSZ types
+	switch desc.SszType {
 	case ssztypes.SszBoolType:
 		ctx.appendCode(indent,
 			"dst = sszutils.MarshalBool(dst, %s)\n",
