@@ -738,6 +738,24 @@ func TestUnmarshalErrors(t *testing.T) {
 			expectedErr: "container field did not consume expected ssz range",
 		},
 		{
+			name: "internal_container_field_size_mismatch_mixed",
+			target: new(struct {
+				Data Uint32WithInvalidSize
+				Dyn  []uint8 `ssz-max:"100"`
+			}),
+			data:        fromHex("0x0102030405060708" + "0c000000"),
+			expectedErr: "container field did not consume expected ssz range",
+		},
+		{
+			name: "internal_container_static_field_error_mixed",
+			target: new(struct {
+				A bool
+				B []uint8 `ssz-max:"100"`
+			}),
+			data:        fromHex("0x02" + "05000000"),
+			expectedErr: "invalid value range",
+		},
+		{
 			name: "internal_container_dynamic_field_size_mismatch",
 			target: new(struct {
 				Data Uint32AsDynamicType

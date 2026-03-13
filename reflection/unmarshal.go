@@ -52,6 +52,13 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 		targetValue = targetValue.Elem()
 	}
 
+	if ctx.verbose {
+		isFastsszUnmarshaler := targetType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+		hasDynamicSize := targetType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
+		useFastSsz := !ctx.noFastSsz && isFastsszUnmarshaler && !hasDynamicSize
+		ctx.logCb("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), targetType.Type.Name(), targetType.Kind, useFastSsz, isFastsszUnmarshaler, hasDynamicSize)
+	}
+
 	// Fast path: skip compat interface checks for types that don't implement any
 	if targetType.SszCompatFlags != 0 || targetType.SszType == ssztypes.SszCustomType {
 		hasDynamicSize := targetType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
@@ -61,10 +68,6 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 		useFastSsz := !ctx.noFastSsz && isFastsszUnmarshaler && !hasDynamicSize
 		if !useFastSsz && targetType.SszType == ssztypes.SszCustomType {
 			useFastSsz = true
-		}
-
-		if ctx.verbose {
-			ctx.logCb("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), targetType.Type.Name(), targetType.Kind, useFastSsz, isFastsszUnmarshaler, hasDynamicSize)
 		}
 
 		if useFastSsz {
