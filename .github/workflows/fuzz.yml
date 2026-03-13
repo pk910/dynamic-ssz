@@ -30,13 +30,13 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
       with:
-        go-version: 1.25.x
+        go-version: '1.25.8'
 
     - name: Cache Go modules
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
         path: ~/go/pkg/mod
-        key: ${{ runner.os }}-go-1.25.x-fuzz-${{ hashFiles('**/go.sum') }}
+        key: ${{ runner.os }}-go-1.25.8-fuzz-${{ hashFiles('**/go.sum') }}
 
     - name: Download dependencies
       run: go mod download
