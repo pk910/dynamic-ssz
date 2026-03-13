@@ -4,7 +4,10 @@
 
 package sszutils
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"unsafe"
+)
 
 // ---- Marshal functions ----
 
@@ -37,6 +40,25 @@ func MarshalBool(dst []byte, b bool) []byte {
 		dst = append(dst, 0)
 	}
 	return dst
+}
+
+// MarshalUint64Slice appends the little-endian encoding of a uint64 slice to dst.
+// On little-endian architectures (x86, ARM64) this is a single bulk memory copy,
+// avoiding per-element encoding overhead.
+func MarshalUint64Slice[T ~uint64](dst []byte, s []T) []byte {
+	if len(s) == 0 {
+		return dst
+	}
+	return append(dst, unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(s))), len(s)*8)...)
+}
+
+// EncodeUint64Slice encodes a uint64 slice to an Encoder using bulk memory copy.
+// On little-endian architectures (x86, ARM64) this avoids per-element EncodeUint64 overhead.
+func EncodeUint64Slice[T ~uint64](enc Encoder, s []T) {
+	if len(s) == 0 {
+		return
+	}
+	enc.EncodeBytes(unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(s))), len(s)*8))
 }
 
 // MarshalOffset marshals an offset to dst

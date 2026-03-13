@@ -704,19 +704,24 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 			itemSize = 32
 		}
 
-		// Hash all elements
-		addVlen()
-		ctx.appendCode(indent, "for i := range int(vlen) {\n")
-		valVar := "t"
-		if ctx.isInlineable(desc.ElemDesc) {
-			valVar = fmt.Sprintf("%s[i]", varName)
+		// Bulk uint64 list hashing
+		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
+			ctx.appendCode(indent, "sszutils.HashUint64Slice(hh, %s)\n", varName)
 		} else {
-			ctx.appendCode(indent, "\tt := %s%s[i]\n", ctx.getPtrPrefix(desc.ElemDesc, "&"), varName)
+			// Hash all elements
+			addVlen()
+			ctx.appendCode(indent, "for i := range int(vlen) {\n")
+			valVar := "t"
+			if ctx.isInlineable(desc.ElemDesc) {
+				valVar = fmt.Sprintf("%s[i]", varName)
+			} else {
+				ctx.appendCode(indent, "\tt := %s%s[i]\n", ctx.getPtrPrefix(desc.ElemDesc, "&"), varName)
+			}
+			if err := ctx.hashType(desc.ElemDesc, valVar, indent+1, false, true); err != nil {
+				return err
+			}
+			ctx.appendCode(indent, "}\n")
 		}
-		if err := ctx.hashType(desc.ElemDesc, valVar, indent+1, false, true); err != nil {
-			return err
-		}
-		ctx.appendCode(indent, "}\n")
 
 		if itemSize < 32 {
 			ctx.appendCode(indent, "hh.FillUpTo32()\n")

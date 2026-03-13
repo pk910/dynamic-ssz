@@ -4,6 +4,8 @@
 
 package sszutils
 
+import "unsafe"
+
 // CalculateLimit computes the merkle tree chunk limit for a list or vector
 // given its maximum capacity, current number of items, and per-item byte size.
 func CalculateLimit(maxCapacity, numItems, size uint64) uint64 {
@@ -27,4 +29,14 @@ func NextPowerOfTwo(v uint64) uint {
 	v |= v >> 16
 	v++
 	return uint(v)
+}
+
+// HashUint64Slice appends the little-endian encoding of a uint64 slice directly
+// to a HashWalker's buffer. On little-endian architectures (x86, ARM64) this is
+// a single bulk memory copy, avoiding per-element AppendUint64 overhead.
+func HashUint64Slice[T ~uint64](hh HashWalker, s []T) {
+	if len(s) == 0 {
+		return
+	}
+	hh.Append(unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(s))), len(s)*8))
 }

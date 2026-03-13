@@ -658,17 +658,17 @@ func (p *Parser) buildUint128Descriptor(desc *ssztypes.TypeDescriptor, typ types
 	case *types.Array:
 		elemType = t.Elem()
 		if t.Len() == 16 {
-			if elem, ok := t.Elem().(*types.Basic); ok && elem.Kind() == types.Uint8 {
+			if elem, ok := types.Unalias(t.Elem()).(*types.Basic); ok && elem.Kind() == types.Uint8 {
 				desc.Size = 16
 			}
 		} else if t.Len() == 2 {
-			if elem, ok := t.Elem().(*types.Basic); ok && elem.Kind() == types.Uint64 {
+			if elem, ok := types.Unalias(t.Elem()).(*types.Basic); ok && elem.Kind() == types.Uint64 {
 				desc.Size = 16
 			}
 		}
 	case *types.Slice:
 		elemType = t.Elem()
-		if elem, ok := t.Elem().(*types.Basic); ok {
+		if elem, ok := types.Unalias(t.Elem()).(*types.Basic); ok {
 			if elem.Kind() == types.Uint8 {
 				desc.Size = 16
 			} else if elem.Kind() == types.Uint64 {
@@ -705,17 +705,17 @@ func (p *Parser) buildUint256Descriptor(desc *ssztypes.TypeDescriptor, typ types
 	case *types.Array:
 		elemType = t.Elem()
 		if t.Len() == 32 {
-			if elem, ok := t.Elem().(*types.Basic); ok && elem.Kind() == types.Uint8 {
+			if elem, ok := types.Unalias(t.Elem()).(*types.Basic); ok && elem.Kind() == types.Uint8 {
 				desc.Size = 32
 			}
 		} else if t.Len() == 4 {
-			if elem, ok := t.Elem().(*types.Basic); ok && elem.Kind() == types.Uint64 {
+			if elem, ok := types.Unalias(t.Elem()).(*types.Basic); ok && elem.Kind() == types.Uint64 {
 				desc.Size = 32
 			}
 		}
 	case *types.Slice:
 		elemType = t.Elem()
-		if elem, ok := t.Elem().(*types.Basic); ok {
+		if elem, ok := types.Unalias(t.Elem()).(*types.Basic); ok {
 			if elem.Kind() == types.Uint8 {
 				desc.Size = 32
 			} else if elem.Kind() == types.Uint64 {
@@ -1335,7 +1335,7 @@ func (p *Parser) extractSszIndex(tag string) string {
 }
 
 func (p *Parser) isByteType(typ types.Type) bool {
-	basic, ok := typ.(*types.Basic)
+	basic, ok := types.Unalias(typ).(*types.Basic)
 	return ok && basic.Kind() == types.Uint8
 }
 
@@ -1452,13 +1452,13 @@ func (p *Parser) typeMatches(typ types.Type, expectedTypeStr string) bool {
 		return true
 	case typeNameByteSlice:
 		if slice, ok := typ.(*types.Slice); ok {
-			if basic, ok := slice.Elem().(*types.Basic); ok {
+			if basic, ok := types.Unalias(slice.Elem()).(*types.Basic); ok {
 				return basic.Kind() == types.Uint8
 			}
 		}
 	case "[32]byte":
 		if array, ok := typ.(*types.Array); ok && array.Len() == 32 {
-			if basic, ok := array.Elem().(*types.Basic); ok {
+			if basic, ok := types.Unalias(array.Elem()).(*types.Basic); ok {
 				return basic.Kind() == types.Uint8
 			}
 		}
@@ -1467,7 +1467,7 @@ func (p *Parser) typeMatches(typ types.Type, expectedTypeStr string) bool {
 			return named.Obj().Name() == typeNameError && named.Obj().Pkg() == nil
 		}
 	case typeNameInt:
-		if basic, ok := typ.(*types.Basic); ok {
+		if basic, ok := types.Unalias(typ).(*types.Basic); ok {
 			return basic.Kind() == types.Int
 		}
 	case "DynamicSpecs", "HashWalker", "Encoder", "Decoder":

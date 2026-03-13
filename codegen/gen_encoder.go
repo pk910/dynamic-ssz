@@ -693,7 +693,8 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 
 	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 		// static elements
-		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
+		switch {
+		case desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0:
 			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
 				valueVar = fmt.Sprintf("[]byte(%s)", valueVar)
 			}
@@ -701,7 +702,10 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 				valueVar = fmt.Sprintf("(%s)", valueVar)
 			}
 			ctx.appendCode(indent, "enc.EncodeBytes(%s[:])\n", valueVar)
-		} else {
+		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0:
+			addVlen()
+			ctx.appendCode(indent, "sszutils.EncodeUint64Slice(enc, %s[:vlen])\n", varName)
+		default:
 			addVlen()
 			ctx.appendCode(indent, "for i := range vlen {\n")
 			valVar := "t"
