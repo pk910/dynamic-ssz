@@ -495,7 +495,8 @@ func (ctx *ReflectionCtx) buildRootFromCompatibleUnion(sourceType *ssztypes.Type
 //   - Byte arrays use PutBytes for efficient chunk-based hashing
 //   - Arrays with max size hints include length mixing for proper limits
 func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
-	if exceedsMaxInt(sourceType.Len) {
+	vecLen := int64(sourceType.Len)
+	if vecLen > math.MaxInt {
 		return fmt.Errorf("vector length %d exceeds platform int max", sourceType.Len)
 	}
 
@@ -504,7 +505,7 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 	sliceLen := sourceValue.Len()
 	if uint32(sliceLen) > sourceType.Len {
 		if sourceType.Kind == reflect.Array {
-			sliceLen = int(sourceType.Len)
+			sliceLen = int(vecLen)
 		} else {
 			return sszutils.ErrListTooBig
 		}
@@ -512,7 +513,7 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 
 	appendZero := 0
 	if uint32(sliceLen) < sourceType.Len {
-		appendZero = int(sourceType.Len) - sliceLen
+		appendZero = int(vecLen) - sliceLen
 	}
 
 	// For byte arrays, handle as a single unit

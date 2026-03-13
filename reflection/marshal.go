@@ -331,26 +331,28 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 //   - Byte arrays use reflect.Value.Bytes() for efficient bulk copying
 //   - Non-addressable arrays are made addressable via a temporary pointer
 func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, idt int) error {
-	if exceedsMaxInt(sourceType.Len) {
+	vecLen := int64(sourceType.Len)
+	if vecLen > math.MaxInt {
 		return fmt.Errorf("vector length %d exceeds platform int max", sourceType.Len)
 	}
-	if sourceType.ElemDesc.Size > 0 && exceedsMaxInt(sourceType.ElemDesc.Size) {
+	vecElemSize := int64(sourceType.ElemDesc.Size)
+	if vecElemSize > math.MaxInt {
 		return fmt.Errorf("element size %d exceeds platform int max", sourceType.ElemDesc.Size)
 	}
 
 	sliceLen := sourceValue.Len()
 	if uint32(sliceLen) > sourceType.Len {
 		if sourceType.Kind == reflect.Array {
-			sliceLen = int(sourceType.Len)
+			sliceLen = int(vecLen)
 		} else {
 			return sszutils.ErrListTooBig
 		}
 	}
 
 	appendZero := 0
-	dataLen := int(sourceType.Len)
+	dataLen := int(vecLen)
 	if uint32(sliceLen) < sourceType.Len {
-		appendZero = int(sourceType.Len) - sliceLen
+		appendZero = int(vecLen) - sliceLen
 		dataLen = sliceLen
 	}
 
@@ -392,7 +394,7 @@ func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sou
 		}
 
 		if appendZero > 0 {
-			totalZeroBytes := int(sourceType.ElemDesc.Size) * appendZero
+			totalZeroBytes := int(vecElemSize) * appendZero
 			encoder.EncodeZeroPadding(totalZeroBytes)
 		}
 	}
@@ -422,7 +424,8 @@ func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sou
 // length is less than the expected size. Zero values are efficiently batched
 // to minimize encoding overhead.
 func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, idt int) error {
-	if exceedsMaxInt(sourceType.Len) {
+	dynVecLen := int64(sourceType.Len)
+	if dynVecLen > math.MaxInt {
 		return fmt.Errorf("dynamic vector length %d exceeds platform int max", sourceType.Len)
 	}
 
@@ -436,7 +439,7 @@ func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescript
 			return sszutils.ErrListTooBig
 		}
 		if uint32(innerSliceLen) < sourceType.Len {
-			appendZero = int(sourceType.Len) - innerSliceLen
+			appendZero = int(dynVecLen) - innerSliceLen
 		}
 	}
 

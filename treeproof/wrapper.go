@@ -87,11 +87,11 @@ func (w *Wrapper) Merkleize(indx int) {
 }
 
 func (w *Wrapper) MerkleizeWithMixin(indx int, num, limit uint64) {
-	if num > math.MaxInt64 {
-		panic(fmt.Sprintf("MerkleizeWithMixin: num %d exceeds max int64", num))
+	if num > math.MaxInt {
+		panic(fmt.Sprintf("MerkleizeWithMixin: num %d exceeds max int", num))
 	}
-	if limit > math.MaxInt64 {
-		panic(fmt.Sprintf("MerkleizeWithMixin: limit %d exceeds max int64", limit))
+	if limit > math.MaxInt {
+		panic(fmt.Sprintf("MerkleizeWithMixin: limit %d exceeds max int", limit))
 	}
 	if len(w.buf) != 0 {
 		w.appendBytesAsNodes(w.buf)
@@ -109,8 +109,8 @@ func (w *Wrapper) MerkleizeProgressive(indx int) {
 }
 
 func (w *Wrapper) MerkleizeProgressiveWithMixin(indx int, num uint64) {
-	if num > math.MaxInt64 {
-		panic(fmt.Sprintf("MerkleizeProgressiveWithMixin: num %d exceeds max int64", num))
+	if num > math.MaxInt {
+		panic(fmt.Sprintf("MerkleizeProgressiveWithMixin: num %d exceeds max int", num))
 	}
 	if len(w.buf) != 0 {
 		w.appendBytesAsNodes(w.buf)
@@ -135,11 +135,11 @@ func (w *Wrapper) PutBitlist(bb []byte, maxSize uint64) {
 	w.appendBytesAsNodes(b)
 
 	limit := (maxSize + 255) / 256
-	if size > math.MaxInt64 {
-		panic(fmt.Sprintf("PutBitlist: size %d exceeds max int64", size))
+	if size > math.MaxInt {
+		panic(fmt.Sprintf("PutBitlist: size %d exceeds max int", size))
 	}
-	if limit > math.MaxInt64 {
-		panic(fmt.Sprintf("PutBitlist: limit %d exceeds max int64", limit))
+	if limit > math.MaxInt {
+		panic(fmt.Sprintf("PutBitlist: limit %d exceeds max int", limit))
 	}
 	w.CommitWithMixin(indx, int(size), int(limit))
 }
@@ -151,8 +151,8 @@ func (w *Wrapper) PutProgressiveBitlist(bb []byte) {
 	indx := w.Index()
 	w.appendBytesAsNodes(b)
 
-	if size > math.MaxInt64 {
-		panic(fmt.Sprintf("PutProgressiveBitlist: size %d exceeds max int64", size))
+	if size > math.MaxInt {
+		panic(fmt.Sprintf("PutProgressiveBitlist: size %d exceeds max int", size))
 	}
 	w.CommitProgressiveWithMixin(indx, int(size))
 }
