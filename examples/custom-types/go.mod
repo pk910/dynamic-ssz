@@ -1,6 +1,6 @@
 module custom-types-example
 
-go 1.25.0
+go 1.25.8
 
 require github.com/pk910/dynamic-ssz v1.2.2
 

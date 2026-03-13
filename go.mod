@@ -1,6 +1,6 @@
 module github.com/pk910/dynamic-ssz
 
-go 1.25.0
+go 1.25.8
 
 require (
 	github.com/casbin/govaluate v1.8.0

@@ -1,6 +1,6 @@
 module versioned-blocks-example
 
-go 1.25.0
+go 1.25.8
 
 require (
 	github.com/attestantio/go-eth2-client v0.26.0

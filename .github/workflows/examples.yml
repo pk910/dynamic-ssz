@@ -6,36 +6,39 @@ on:
   pull_request:
     branches: [ master, main ]
 
+permissions:
+  contents: read
+
 jobs:
   examples:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go-version: [1.22.x, 1.25.x]
+        go-version: ['1.25.8', 1.26.x]
         example:
           - basic
           - versioned-blocks
           - custom-types
           - progressive-merkleization
-    
+
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
-      
+      uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
     - name: Set up Go
-      uses: actions/setup-go@v4
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
       with:
         go-version: ${{ matrix.go-version }}
-        
+
     - name: Cache Go modules
-      uses: actions/cache@v3
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
         path: ~/go/pkg/mod
         key: ${{ runner.os }}-go-${{ matrix.go-version }}-examples-${{ hashFiles('**/go.sum') }}
-          
+
     - name: Download main module dependencies
       run: go mod download
-      
+
     - name: Build and run example
       run: |
         cd examples/${{ matrix.example }}
