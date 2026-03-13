@@ -10,23 +10,34 @@ import (
 	"io"
 )
 
+// DefaultStreamEncoderBufSize is the default internal write buffer size for
+// StreamEncoder (2KB).
+const DefaultStreamEncoderBufSize = 2 * 1024
+
 // StreamEncoder is a non-seekable Encoder implementation that writes SSZ data
-// directly to an io.Writer. It does not support EncodeOffsetAt.
+// to an io.Writer with internal buffering. It does not support EncodeOffsetAt.
 type StreamEncoder struct {
 	writer   io.Writer
 	position int
-	buffer   []byte
+	scratch  []byte // small scratch buffer for GetBuffer/SetBuffer
+	writeBuf []byte
+	bufPos   int
 	writeErr error
 }
 
 var _ Encoder = (*StreamEncoder)(nil)
 
 // NewStreamEncoder creates a new StreamEncoder that writes SSZ data to the
-// provided io.Writer.
-func NewStreamEncoder(writer io.Writer) *StreamEncoder {
+// provided io.Writer. bufSize controls the internal write buffer size; if <= 0,
+// DefaultStreamEncoderBufSize is used.
+func NewStreamEncoder(writer io.Writer, bufSize int) *StreamEncoder {
+	if bufSize <= 0 {
+		bufSize = DefaultStreamEncoderBufSize
+	}
 	return &StreamEncoder{
-		writer: writer,
-		buffer: make([]byte, 0, 32),
+		writer:   writer,
+		scratch:  make([]byte, 0, 32),
+		writeBuf: make([]byte, bufSize),
 	}
 }
 
@@ -39,116 +50,152 @@ func (e *StreamEncoder) GetPosition() int {
 }
 
 func (e *StreamEncoder) GetBuffer() []byte {
-	return e.buffer[:0]
+	return e.scratch[:0]
 }
 
 func (e *StreamEncoder) SetBuffer(buffer []byte) {
-	e.buffer = buffer
+	e.scratch = buffer
 	e.EncodeBytes(buffer)
 }
 
-func (e *StreamEncoder) EncodeBool(v bool) {
-	buf := []byte{0x00}
-	if v {
-		buf[0] = 0x01
+// flush writes the internal buffer to the underlying io.Writer.
+func (e *StreamEncoder) flush() {
+	if e.bufPos == 0 || e.writeErr != nil {
+		return
 	}
-	written, err := e.writer.Write(buf)
+	written, err := e.writer.Write(e.writeBuf[:e.bufPos])
 	if err != nil {
 		e.writeErr = err
+	} else if written != e.bufPos {
+		e.writeErr = fmt.Errorf(
+			"expected to write %d bytes, wrote %d", e.bufPos, written,
+		)
 	}
-	if written != 1 {
-		e.writeErr = fmt.Errorf("expected to write 1 byte, wrote %d", written)
+	e.bufPos = 0
+}
+
+// Flush flushes any buffered data to the underlying io.Writer.
+func (e *StreamEncoder) Flush() {
+	e.flush()
+}
+
+func (e *StreamEncoder) EncodeBool(v bool) {
+	if e.bufPos+1 > len(e.writeBuf) {
+		e.flush()
 	}
+	if v {
+		e.writeBuf[e.bufPos] = 0x01
+	} else {
+		e.writeBuf[e.bufPos] = 0x00
+	}
+	e.bufPos++
 	e.position++
 }
 
 func (e *StreamEncoder) EncodeUint8(v uint8) {
-	written, err := e.writer.Write([]byte{v})
-	if err != nil {
-		e.writeErr = err
+	if e.bufPos+1 > len(e.writeBuf) {
+		e.flush()
 	}
-	if written != 1 {
-		e.writeErr = fmt.Errorf("expected to write 1 byte, wrote %d", written)
-	}
+	e.writeBuf[e.bufPos] = v
+	e.bufPos++
 	e.position++
 }
 
 func (e *StreamEncoder) EncodeUint16(v uint16) {
-	written, err := e.writer.Write(binary.LittleEndian.AppendUint16(e.buffer[:0], v))
-	if err != nil {
-		e.writeErr = err
+	if e.bufPos+2 > len(e.writeBuf) {
+		e.flush()
 	}
-	if written != 2 {
-		e.writeErr = fmt.Errorf("expected to write 2 bytes, wrote %d", written)
-	}
+	binary.LittleEndian.PutUint16(e.writeBuf[e.bufPos:], v)
+	e.bufPos += 2
 	e.position += 2
 }
 
 func (e *StreamEncoder) EncodeUint32(v uint32) {
-	written, err := e.writer.Write(binary.LittleEndian.AppendUint32(e.buffer[:0], v))
-	if err != nil {
-		e.writeErr = err
+	if e.bufPos+4 > len(e.writeBuf) {
+		e.flush()
 	}
-	if written != 4 {
-		e.writeErr = fmt.Errorf("expected to write 4 bytes, wrote %d", written)
-	}
+	binary.LittleEndian.PutUint32(e.writeBuf[e.bufPos:], v)
+	e.bufPos += 4
 	e.position += 4
 }
 
 func (e *StreamEncoder) EncodeUint64(v uint64) {
-	written, err := e.writer.Write(binary.LittleEndian.AppendUint64(e.buffer[:0], v))
-	if err != nil {
-		e.writeErr = err
+	if e.bufPos+8 > len(e.writeBuf) {
+		e.flush()
 	}
-	if written != 8 {
-		e.writeErr = fmt.Errorf("expected to write 8 bytes, wrote %d", written)
-	}
+	binary.LittleEndian.PutUint64(e.writeBuf[e.bufPos:], v)
+	e.bufPos += 8
 	e.position += 8
 }
 
 func (e *StreamEncoder) EncodeBytes(v []byte) {
+	e.position += len(v)
+
+	// Fast path: fits entirely in the buffer
+	if e.bufPos+len(v) <= len(e.writeBuf) {
+		copy(e.writeBuf[e.bufPos:], v)
+		e.bufPos += len(v)
+		return
+	}
+
+	// Flush existing buffer first
+	e.flush()
+	if e.writeErr != nil {
+		return
+	}
+
+	// If data fits in buffer now, copy it
+	if len(v) <= len(e.writeBuf) {
+		copy(e.writeBuf[e.bufPos:], v)
+		e.bufPos += len(v)
+		return
+	}
+
+	// Large data: write directly to avoid extra copy
 	written, err := e.writer.Write(v)
 	if err != nil {
 		e.writeErr = err
+	} else if written != len(v) {
+		e.writeErr = fmt.Errorf(
+			"expected to write %d bytes, wrote %d", len(v), written,
+		)
 	}
-	if written != len(v) {
-		e.writeErr = fmt.Errorf("expected to write %d bytes, wrote %d", len(v), written)
-	}
-	e.position += len(v)
 }
 
 func (e *StreamEncoder) EncodeOffset(v uint32) {
-	written, err := e.writer.Write(binary.LittleEndian.AppendUint32(e.buffer[:0], v))
-	if err != nil {
-		e.writeErr = err
+	if e.bufPos+4 > len(e.writeBuf) {
+		e.flush()
 	}
-	if written != 4 {
-		e.writeErr = fmt.Errorf("expected to write 4 bytes, wrote %d", written)
-	}
+	binary.LittleEndian.PutUint32(e.writeBuf[e.bufPos:], v)
+	e.bufPos += 4
 	e.position += 4
 }
 
 func (e *StreamEncoder) EncodeOffsetAt(pos int, v uint32) {
 	// not supported
-	e.writeErr = fmt.Errorf("EncodeOffsetAt is not supported for stream encoder")
+	e.writeErr = fmt.Errorf(
+		"EncodeOffsetAt is not supported for stream encoder",
+	)
 }
 
 func (e *StreamEncoder) EncodeZeroPadding(n int) {
-	zeroBytes := ZeroBytes()
+	e.position += n
+
 	for n > 0 {
-		buf := zeroBytes
-		if n < 1024 {
-			buf = buf[:n]
+		if e.bufPos >= len(e.writeBuf) {
+			e.flush()
+			if e.writeErr != nil {
+				return
+			}
 		}
-		written, err := e.writer.Write(buf)
-		if err != nil {
-			e.writeErr = err
+		available := len(e.writeBuf) - e.bufPos
+		toWrite := n
+		if toWrite > available {
+			toWrite = available
 		}
-		if written != len(buf) {
-			e.writeErr = fmt.Errorf("expected to write %d bytes, wrote %d", len(buf), written)
-		}
-		e.position += len(buf)
-		n -= len(buf)
+		clear(e.writeBuf[e.bufPos : e.bufPos+toWrite])
+		e.bufPos += toWrite
+		n -= toWrite
 	}
 }
 

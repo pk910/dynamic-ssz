@@ -326,7 +326,7 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte) ([]byte, error) {
 //
 //	err = ds.MarshalSSZWriter(block, conn)
 func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error {
-	encoder := sszutils.NewStreamEncoder(w)
+	encoder := sszutils.NewStreamEncoder(w, d.options.StreamWriterBufferSize)
 
 	if sszEncoder, ok := source.(sszutils.DynamicEncoder); ok {
 		err := sszEncoder.MarshalSSZEncoder(d, encoder)
@@ -334,6 +334,7 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error {
 			return err
 		}
 
+		encoder.Flush()
 		return encoder.GetWriteError()
 	}
 
@@ -352,6 +353,7 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error {
 		return err
 	}
 
+	encoder.Flush()
 	return encoder.GetWriteError()
 }
 
@@ -543,7 +545,7 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte) error {
 //	var block phase0.BeaconBlock
 //	err = ds.UnmarshalSSZReader(&block, conn, -1)
 func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int) error {
-	decoder := sszutils.NewStreamDecoder(r, size)
+	decoder := sszutils.NewStreamDecoder(r, size, d.options.StreamReaderBufferSize)
 	decoder.PushLimit(size)
 
 	if sszDecoder, ok := target.(sszutils.DynamicDecoder); ok {
