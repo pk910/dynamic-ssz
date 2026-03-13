@@ -1,50 +1,11 @@
 version: 2
 updates:
-  # Go modules for the main module
-  - package-ecosystem: "gomod"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-    labels:
-      - "dependencies"
-    commit-message:
-      prefix: "deps"
-    groups:
-      all-go-deps:
-        patterns:
-          - "*"
-
-  # Go modules for the spectests module
-  - package-ecosystem: "gomod"
-    directory: "/spectests"
-    schedule:
-      interval: "weekly"
-    labels:
-      - "dependencies"
-    commit-message:
-      prefix: "deps"
-    groups:
-      all-go-deps:
-        patterns:
-          - "*"
-
-  # Go modules for the spectests/consensus-spec-tests module
-  - package-ecosystem: "gomod"
-    directory: "/spectests/consensus-spec-tests"
-    schedule:
-      interval: "weekly"
-    labels:
-      - "dependencies"
-    commit-message:
-      prefix: "deps"
-    groups:
-      all-go-deps:
-        patterns:
-          - "*"
-
-  # Go modules for the examples
+  # Go modules for all packages
   - package-ecosystem: "gomod"
     directories:
+      - "/"
+      - "/spectests"
+      - "/spectests/consensus-spec-tests"
       - "/examples/basic"
       - "/examples/codegen"
       - "/examples/custom-types"
