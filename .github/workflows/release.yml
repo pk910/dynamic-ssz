@@ -7,14 +7,15 @@ on:
         description: "Version Number ('0.x.y')"
         required: true
 
+permissions:
+  contents: write
+
 jobs:
   release:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       with:
         token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
         fetch-depth: 0
@@ -50,7 +51,7 @@ jobs:
         GITHUB_TOKEN: ${{ github.token }}
         GITHUB_REPOSITORY: ${{ github.repository }}
 
-    - uses: stefanzweifel/git-auto-commit-action@v4
+    - uses: stefanzweifel/git-auto-commit-action@b863ae1933cb653a53c021fe36dbb774e1fb9403 # v5
       id: auto_commit
       with:
         commit_message: "release `${{ inputs.version }}`"
@@ -64,7 +65,7 @@ jobs:
         git push origin "v${{ inputs.version }}"
 
     - name: Create draft release
-      uses: actions/create-release@v1 # v1.1.4
+      uses: actions/create-release@0cb9c9b65d5d1901c1f53e5e66eaf4afd303e70e # v1
       id: create_release
       with:
         draft: true
