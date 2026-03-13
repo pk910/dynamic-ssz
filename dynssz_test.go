@@ -72,6 +72,8 @@ func TestWithOptions(t *testing.T) {
 		WithExtendedTypes(),
 		WithVerbose(),
 		WithLogCb(func(format string, args ...any) {}),
+		WithStreamWriterBufferSize(4096),
+		WithStreamReaderBufferSize(1024),
 	)
 	if !ds.options.NoFastSsz {
 		t.Fatal("expected NoFastSsz")
@@ -84,6 +86,12 @@ func TestWithOptions(t *testing.T) {
 	}
 	if !ds.options.Verbose {
 		t.Fatal("expected Verbose")
+	}
+	if ds.options.StreamWriterBufferSize != 4096 {
+		t.Fatalf("expected StreamWriterBufferSize 4096, got %d", ds.options.StreamWriterBufferSize)
+	}
+	if ds.options.StreamReaderBufferSize != 1024 {
+		t.Fatalf("expected StreamReaderBufferSize 1024, got %d", ds.options.StreamReaderBufferSize)
 	}
 }
 

@@ -1045,6 +1045,140 @@ func TestStreamEncoder_EncodeZeroPadding_Zero(t *testing.T) {
 	}
 }
 
+func TestStreamEncoder_TinyBuffer_FlushOnEncodeBool(t *testing.T) {
+	var buf bytes.Buffer
+	// Buffer size 1: first EncodeBool fills it, second triggers flush
+	enc := NewStreamEncoder(&buf, 1)
+
+	enc.EncodeBool(true)
+	enc.EncodeBool(false)
+	enc.Flush()
+
+	if enc.GetWriteError() != nil {
+		t.Fatalf("unexpected error: %v", enc.GetWriteError())
+	}
+	if enc.GetPosition() != 2 {
+		t.Errorf("expected position 2, got %d", enc.GetPosition())
+	}
+	if buf.Len() != 2 {
+		t.Errorf("expected 2 bytes written, got %d", buf.Len())
+	}
+	if buf.Bytes()[0] != 0x01 || buf.Bytes()[1] != 0x00 {
+		t.Errorf("expected [0x01, 0x00], got %v", buf.Bytes())
+	}
+}
+
+func TestStreamEncoder_TinyBuffer_FlushOnEncodeUint8(t *testing.T) {
+	var buf bytes.Buffer
+	enc := NewStreamEncoder(&buf, 1)
+
+	enc.EncodeUint8(0xAA)
+	enc.EncodeUint8(0xBB)
+	enc.Flush()
+
+	if enc.GetWriteError() != nil {
+		t.Fatalf("unexpected error: %v", enc.GetWriteError())
+	}
+	if buf.Len() != 2 {
+		t.Errorf("expected 2 bytes, got %d", buf.Len())
+	}
+}
+
+func TestStreamEncoder_TinyBuffer_FlushOnEncodeUint16(t *testing.T) {
+	var buf bytes.Buffer
+	// Buffer size 2: first uint16 fills it, second triggers flush
+	enc := NewStreamEncoder(&buf, 2)
+
+	enc.EncodeUint16(0x0102)
+	enc.EncodeUint16(0x0304)
+	enc.Flush()
+
+	if enc.GetWriteError() != nil {
+		t.Fatalf("unexpected error: %v", enc.GetWriteError())
+	}
+	if buf.Len() != 4 {
+		t.Errorf("expected 4 bytes, got %d", buf.Len())
+	}
+}
+
+func TestStreamEncoder_TinyBuffer_FlushOnEncodeUint32(t *testing.T) {
+	var buf bytes.Buffer
+	enc := NewStreamEncoder(&buf, 4)
+
+	enc.EncodeUint32(1)
+	enc.EncodeUint32(2)
+	enc.Flush()
+
+	if enc.GetWriteError() != nil {
+		t.Fatalf("unexpected error: %v", enc.GetWriteError())
+	}
+	if buf.Len() != 8 {
+		t.Errorf("expected 8 bytes, got %d", buf.Len())
+	}
+}
+
+func TestStreamEncoder_TinyBuffer_FlushOnEncodeUint64(t *testing.T) {
+	var buf bytes.Buffer
+	enc := NewStreamEncoder(&buf, 8)
+
+	enc.EncodeUint64(1)
+	enc.EncodeUint64(2)
+	enc.Flush()
+
+	if enc.GetWriteError() != nil {
+		t.Fatalf("unexpected error: %v", enc.GetWriteError())
+	}
+	if buf.Len() != 16 {
+		t.Errorf("expected 16 bytes, got %d", buf.Len())
+	}
+}
+
+func TestStreamEncoder_TinyBuffer_FlushOnEncodeOffset(t *testing.T) {
+	var buf bytes.Buffer
+	enc := NewStreamEncoder(&buf, 4)
+
+	enc.EncodeOffset(10)
+	enc.EncodeOffset(20)
+	enc.Flush()
+
+	if enc.GetWriteError() != nil {
+		t.Fatalf("unexpected error: %v", enc.GetWriteError())
+	}
+	if buf.Len() != 8 {
+		t.Errorf("expected 8 bytes, got %d", buf.Len())
+	}
+}
+
+func TestStreamEncoder_EncodeBytes_FlushError(t *testing.T) {
+	testErr := errors.New("write error")
+	// Buffer size 4: write 2 bytes, then write 4 bytes to trigger flush+early return
+	w := &errWriter{errAfter: 0, err: testErr}
+	enc := NewStreamEncoder(w, 4)
+
+	enc.EncodeBytes([]byte{0x01, 0x02})       // fits in buffer
+	enc.EncodeBytes([]byte{0x03, 0x04, 0x05}) // triggers flush, flush fails
+
+	if !errors.Is(enc.GetWriteError(), testErr) {
+		t.Errorf("expected error %v, got %v", testErr, enc.GetWriteError())
+	}
+}
+
+func TestStreamEncoder_EncodeBytes_LargeDirectShortWrite(t *testing.T) {
+	// Buffer size 4: writing 8 bytes goes to direct write path.
+	// shortWriter writes fewer bytes than requested.
+	w := &shortWriter{maxWrite: 3}
+	enc := NewStreamEncoder(w, 4)
+
+	enc.EncodeBytes(make([]byte, 8))
+
+	if enc.GetWriteError() == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(enc.GetWriteError().Error(), "expected to write") {
+		t.Errorf("expected short write error, got: %v", enc.GetWriteError())
+	}
+}
+
 // partialThenEOFReader returns data and EOF simultaneously when all data is consumed.
 type partialThenEOFReader struct {
 	data []byte
