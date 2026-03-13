@@ -701,6 +701,9 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 				valueVar = fmt.Sprintf("(%s)", valueVar)
 			}
 			ctx.appendCode(indent, "enc.EncodeBytes(%s[:])\n", valueVar)
+		} else if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
+			addVlen()
+			ctx.appendCode(indent, "sszutils.EncodeUint64Slice(enc, %s[:vlen])\n", varName)
 		} else {
 			addVlen()
 			ctx.appendCode(indent, "for i := range vlen {\n")

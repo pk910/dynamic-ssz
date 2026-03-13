@@ -735,6 +735,17 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 			return nil
 		}
 
+		// bulk uint64 lists
+		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
+			ctx.appendCode(indent, "itemCount := len(buf) / 8\n")
+			ctx.appendCode(indent, "if len(buf)%s8 != 0 {\n\treturn sszutils.ErrUnexpectedEOF\n}\n", "%")
+			if desc.Kind != reflect.Array {
+				ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", varName, varName)
+			}
+			ctx.appendCode(indent, "sszutils.UnmarshalUint64Slice(%s, buf)\n", varName)
+			return nil
+		}
+
 		// static elements
 		var fieldSizeVar string
 		var err error

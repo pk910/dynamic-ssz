@@ -591,6 +591,9 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 				valueVar = fmt.Sprintf("(%s)", valueVar)
 			}
 			ctx.appendCode(indent, "dst = append(dst, %s[:]...)\n", valueVar)
+		} else if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
+			addVlen()
+			ctx.appendCode(indent, "dst = sszutils.MarshalUint64Slice(dst, %s[:vlen])\n", varName)
 		} else {
 			addVlen()
 			ctx.appendCode(indent, "for i := range vlen {\n")
