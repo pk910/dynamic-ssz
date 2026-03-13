@@ -10,11 +10,13 @@ type DynSszOption func(*DynSszOptions)
 
 // DynSszOptions holds the configuration options for a DynSsz instance.
 type DynSszOptions struct {
-	NoFastSsz     bool
-	NoFastHash    bool
-	ExtendedTypes bool
-	Verbose       bool
-	LogCb         func(format string, args ...any)
+	NoFastSsz              bool
+	NoFastHash             bool
+	ExtendedTypes          bool
+	Verbose                bool
+	LogCb                  func(format string, args ...any)
+	StreamWriterBufferSize int
+	StreamReaderBufferSize int
 }
 
 // WithNoFastSsz disables fastssz fallback for types that implement fastssz
@@ -55,5 +57,21 @@ func WithVerbose() DynSszOption {
 func WithLogCb(logCb func(format string, args ...any)) DynSszOption {
 	return func(opts *DynSszOptions) {
 		opts.LogCb = logCb
+	}
+}
+
+// WithStreamWriterBufferSize sets the internal buffer size for the streaming
+// SSZ encoder used by MarshalSSZWriter. Defaults to 2KB if not set.
+func WithStreamWriterBufferSize(size int) DynSszOption {
+	return func(opts *DynSszOptions) {
+		opts.StreamWriterBufferSize = size
+	}
+}
+
+// WithStreamReaderBufferSize sets the maximum internal buffer size for the
+// streaming SSZ decoder used by UnmarshalSSZReader. Defaults to 2KB if not set.
+func WithStreamReaderBufferSize(size int) DynSszOption {
+	return func(opts *DynSszOptions) {
+		opts.StreamReaderBufferSize = size
 	}
 }

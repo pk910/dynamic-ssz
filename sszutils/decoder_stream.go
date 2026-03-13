@@ -9,10 +9,9 @@ import (
 	"io"
 )
 
-const (
-	// maxDecoderBufferSize is the maximum buffer size for streaming decode
-	maxDecoderBufferSize = 2 * 1024 // 2KB
-)
+// DefaultStreamDecoderBufSize is the default maximum buffer size for
+// StreamDecoder (2KB).
+const DefaultStreamDecoderBufSize = 2 * 1024
 
 // StreamDecoder is a non-seekable Decoder implementation that reads SSZ data
 // from an io.Reader. It uses an internal buffer for efficient sequential reads
@@ -34,10 +33,14 @@ var _ Decoder = (*StreamDecoder)(nil)
 
 // NewStreamDecoder creates a new StreamDecoder that reads SSZ data from the
 // provided io.Reader. totalLen specifies the total expected byte length of the
-// SSZ payload.
-func NewStreamDecoder(reader io.Reader, totalLen int) *StreamDecoder {
+// SSZ payload. maxBufSize controls the maximum internal read buffer size; if
+// <= 0, DefaultStreamDecoderBufSize is used.
+func NewStreamDecoder(reader io.Reader, totalLen int, maxBufSize int) *StreamDecoder {
+	if maxBufSize <= 0 {
+		maxBufSize = DefaultStreamDecoderBufSize
+	}
 	// Use smaller buffer for small streams
-	bufferSize := maxDecoderBufferSize
+	bufferSize := maxBufSize
 	if totalLen < bufferSize {
 		bufferSize = totalLen
 	}
