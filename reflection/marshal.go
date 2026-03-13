@@ -531,13 +531,12 @@ func (ctx *ReflectionCtx) marshalList(sourceType *ssztypes.TypeDescriptor, sourc
 	default:
 		sliceLen := sourceValue.Len()
 		fieldType := sourceType.ElemDesc
+		isPointer := fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0
 
 		for i := 0; i < sliceLen; i++ {
 			itemVal := sourceValue.Index(i)
-			if fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
-				if itemVal.IsNil() {
-					itemVal = reflect.New(fieldType.Type.Elem())
-				}
+			if isPointer && itemVal.IsNil() {
+				itemVal = reflect.New(fieldType.Type.Elem())
 			}
 
 			err := ctx.marshalType(fieldType, itemVal, encoder, idt+2)

@@ -658,10 +658,11 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 // It handles both pointer and non-pointer element types.
 func (ctx *ReflectionCtx) unmarshalFixedElements(fieldType *ssztypes.TypeDescriptor, newValue reflect.Value, count int, decoder sszutils.Decoder, idt int, context string) error {
 	itemSize := int(fieldType.Size)
+	isPointer := fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0
 
 	for i := 0; i < count; i++ {
 		var itemVal reflect.Value
-		if fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		if isPointer {
 			itemVal = reflect.New(fieldType.Type.Elem())
 			newValue.Index(i).Set(itemVal.Elem().Addr())
 		} else {
