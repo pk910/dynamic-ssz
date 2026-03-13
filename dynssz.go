@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"reflect"
 	"sync"
 
@@ -407,6 +408,10 @@ func (d *DynSsz) SizeSSZ(source any) (int, error) {
 	size, err := ctx.SizeSSZ(sourceTypeDesc, sourceValue)
 	if err != nil {
 		return 0, err
+	}
+
+	if size > math.MaxInt32 {
+		return 0, fmt.Errorf("SSZ size %d exceeds maximum int32", size)
 	}
 
 	return int(size), nil

@@ -420,7 +420,7 @@ func getSszIndexTag(field *reflect.StructField) (*uint16, error) {
 
 	// parse `ssz-index` first, these are the default values used by fastssz
 	if fieldSszIndexStr, fieldHasSszIndex := field.Tag.Lookup("ssz-index"); fieldHasSszIndex {
-		sszSizeInt, err := strconv.ParseUint(fieldSszIndexStr, 10, 64)
+		sszSizeInt, err := strconv.ParseUint(fieldSszIndexStr, 10, 16)
 		if err != nil {
 			return nil, fmt.Errorf("error parsing ssz-index tag for '%v' field: %w", field.Name, err)
 		}

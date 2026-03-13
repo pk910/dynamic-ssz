@@ -20,9 +20,13 @@ import (
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
-// platformMaxInt is the maximum int value for the current platform.
-// It is a variable (not constant) to allow testing overflow checks on 64-bit systems.
-var platformMaxInt = int64(math.MaxInt)
+// exceedsMaxInt reports whether a uint32 value exceeds the platform's
+// maximum int. On 64-bit systems this is always false; on 32-bit it
+// protects against overflow. It is a variable so tests can override it
+// to exercise the error paths on 64-bit.
+var exceedsMaxInt = func(v uint32) bool {
+	return int64(v) > int64(math.MaxInt)
+}
 
 // ReflectionCtx holds the configuration for reflection-based SSZ operations.
 // It wraps a DynamicSpecs provider for resolving dynamic field sizes, along

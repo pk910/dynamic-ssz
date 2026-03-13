@@ -14,13 +14,14 @@ import (
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
-// withLowMaxInt temporarily sets platformMaxInt to 100 for testing
-// overflow checks on 64-bit systems. It restores the original value when done.
+// withLowMaxInt temporarily replaces exceedsMaxInt with a function that
+// treats 100 as the platform max, allowing overflow checks to be exercised
+// on 64-bit systems. It restores the original function when done.
 func withLowMaxInt(t *testing.T, fn func()) {
 	t.Helper()
-	old := platformMaxInt
-	platformMaxInt = 100
-	t.Cleanup(func() { platformMaxInt = old })
+	old := exceedsMaxInt
+	exceedsMaxInt = func(v uint32) bool { return v > 100 }
+	t.Cleanup(func() { exceedsMaxInt = old })
 	fn()
 }
 

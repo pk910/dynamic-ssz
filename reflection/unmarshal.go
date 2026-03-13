@@ -74,7 +74,7 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 			if unmarshaller, ok := getPtr(targetValue).Interface().(sszutils.FastsszUnmarshaler); ok {
 				sszLen := decoder.GetLength()
 				if targetType.Size > 0 {
-					if int64(targetType.Size) > platformMaxInt {
+					if exceedsMaxInt(targetType.Size) {
 						return fmt.Errorf("type size %d exceeds platform int max", targetType.Size)
 					}
 					sszLen = int(targetType.Size)
@@ -100,7 +100,7 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 			if unmarshaller, ok := getPtr(targetValue).Interface().(sszutils.DynamicUnmarshaler); ok {
 				sszLen := decoder.GetLength()
 				if targetType.Size > 0 {
-					if int64(targetType.Size) > platformMaxInt {
+					if exceedsMaxInt(targetType.Size) {
 						return fmt.Errorf("type size %d exceeds platform int max", targetType.Size)
 					}
 					sszLen = int(targetType.Size)
@@ -470,7 +470,7 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 //   - Pointer elements are automatically initialized
 //   - Each element must consume exactly itemSize bytes
 func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
-	if int64(targetType.Len) > platformMaxInt {
+	if exceedsMaxInt(targetType.Len) {
 		return fmt.Errorf("vector length %d exceeds platform int max", targetType.Len)
 	}
 
@@ -560,7 +560,7 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 //   - No offset points outside the data bounds
 //   - Each element consumes exactly the expected bytes
 func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
-	if int64(targetType.Len) > platformMaxInt {
+	if exceedsMaxInt(targetType.Len) {
 		return fmt.Errorf("dynamic vector length %d exceeds platform int max", targetType.Len)
 	}
 
@@ -674,7 +674,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 // unmarshalFixedElements decodes a sequence of fixed-size elements into target slice/array positions.
 // It handles both pointer and non-pointer element types.
 func (ctx *ReflectionCtx) unmarshalFixedElements(fieldType *ssztypes.TypeDescriptor, newValue reflect.Value, count int, decoder sszutils.Decoder, idt int, context string) error {
-	if int64(fieldType.Size) > platformMaxInt {
+	if exceedsMaxInt(fieldType.Size) {
 		return fmt.Errorf("field size %d exceeds platform int max", fieldType.Size)
 	}
 
@@ -725,7 +725,7 @@ func (ctx *ReflectionCtx) unmarshalList(targetType *ssztypes.TypeDescriptor, tar
 	fieldType := targetType.ElemDesc
 	sszLen := decoder.GetLength()
 
-	if int64(fieldType.Size) > platformMaxInt {
+	if exceedsMaxInt(fieldType.Size) {
 		return fmt.Errorf("field size %d exceeds platform int max", fieldType.Size)
 	}
 
