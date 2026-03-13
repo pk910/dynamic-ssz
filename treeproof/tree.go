@@ -282,7 +282,7 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 	// there are no leaves, return a zero order hash node
 	if numLeaves == 0 {
 		depth := floorLog2(limit)
-		return NewEmptyNode(getZeroOrderHashes(depth)[0]), nil
+		return NewEmptyNode(hasher.GetZeroHash(depth)), nil
 	}
 
 	// now we know numLeaves are at least 1.
@@ -296,13 +296,12 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 	}
 
 	depth := floorLog2(limit)
-	zeroOrderHashes := getZeroOrderHashes(depth)
 
 	// if the max leaf limit is 2
 	if limit == 2 {
 		// but we only have 1 leaf, add a zero order hash as the right node
 		if numLeaves == 1 {
-			return NewNodeWithLR(leaves[0], NewEmptyNode(zeroOrderHashes[1])), nil
+			return NewNodeWithLR(leaves[0], NewEmptyNode(hasher.GetZeroHash(0))), nil
 		}
 		// otherwise return the two nodes we have
 		return NewNodeWithLR(leaves[0], leaves[1]), nil
@@ -321,7 +320,7 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 		if rightIdx < numLeaves {
 			right = leaves[rightIdx]
 		} else {
-			right = NewEmptyNode(zeroOrderHashes[depth])
+			right = NewEmptyNode(hasher.GetZeroHash(0))
 		}
 		nodes[i] = NewNodeWithLR(left, right)
 	}
@@ -338,7 +337,7 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 			if rightIdx < activeCount {
 				right = nodes[rightIdx]
 			} else {
-				right = NewEmptyNode(zeroOrderHashes[d])
+				right = NewEmptyNode(hasher.GetZeroHash(depth - d))
 			}
 			nodes[i] = NewNodeWithLR(left, right)
 		}
@@ -517,25 +516,6 @@ func hashNode(n *Node) []byte {
 	return result
 }
 
-// getZeroOrderHashes precomputes zero order hashes to create an easy map lookup
-// for zero leafs and their parent nodes.
-func getZeroOrderHashes(depth int) [][]byte {
-	// Reuse the globally precomputed zero hashes from the `hasher` package
-	// instead of recomputing them for every call. The expected layout for this
-	// helper is:
-	//   hashes[depth]   = zero bytes (leaf)
-	//   hashes[depth-1] = hash(zero, zero)
-	//   ...
-	// which corresponds to:
-	//   hasher.GetZeroHash(0) = hashes[depth]
-	//   hasher.GetZeroHash(1) = hashes[depth-1]
-	//   ...
-	res := make([][]byte, depth+1)
-	for i := 0; i <= depth; i++ {
-		res[depth-i] = hasher.GetZeroHash(i)
-	}
-	return res
-}
 
 // Prove returns a list of sibling values and hashes needed
 // to compute the root hash for a given general index.

@@ -1207,40 +1207,6 @@ func TestHelperFunctions(t *testing.T) {
 	})
 }
 
-func TestGetZeroOrderHashes(t *testing.T) {
-	depth := 3
-	hashes := getZeroOrderHashes(depth)
-
-	// Should have hashes for depths 0, 1, 2, 3
-	if len(hashes) != depth+1 {
-		t.Errorf("expected %d hashes, got %d", depth+1, len(hashes))
-	}
-
-	// Depth 3 should be zero bytes
-	if !bytes.Equal(hashes[3], make([]byte, 32)) {
-		t.Error("depth 3 hash should be zero bytes")
-	}
-
-	// Each level should be hash of two children
-	for i := depth - 1; i >= 0; i-- {
-		expected := hashFn(append(hashes[i+1], hashes[i+1]...))
-		if !bytes.Equal(hashes[i], expected) {
-			t.Errorf("hash at depth %d mismatch", i)
-		}
-	}
-
-	// Verify against precomputed zero hashes
-	// hasher.GetZeroHash(0) = zero bytes = hashes[depth]
-	// hasher.GetZeroHash(1) = hash(zero, zero) = hashes[depth-1]
-	// etc.
-	for i := 0; i <= depth; i++ {
-		precomputed := hasher.GetZeroHash(i)
-		computed := hashes[depth-i]
-		if !bytes.Equal(computed, precomputed) {
-			t.Errorf("hash at depth %d doesn't match precomputed: computed=%x, precomputed=%x", i, computed, precomputed)
-		}
-	}
-}
 
 func TestTreeEdgeCases(t *testing.T) {
 	t.Run("panic on incomplete tree", func(t *testing.T) {
