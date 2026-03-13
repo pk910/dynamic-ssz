@@ -3,7 +3,7 @@ module github.com/pk910/dynamic-ssz
 go 1.25.8
 
 require (
-	github.com/casbin/govaluate v1.8.0
+	github.com/casbin/govaluate v1.10.0
 	github.com/pk910/hashtree-bindings v0.0.1
 	golang.org/x/tools v0.37.0
 )
