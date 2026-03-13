@@ -20,10 +20,11 @@ I take the security of the `dynamic-ssz` library seriously. If you believe you h
 
 ### How to Report a Security Vulnerability?
 
-For critical security issues, please contact me privately:
+For critical security issues, please use one of the following methods:
 
-- **Matrix:** `@pk910:matrix.org`
-- **Twitter:** `@_pk910_`
+- **GitHub Security Advisories:** [Report a vulnerability](https://github.com/pk910/dynamic-ssz/security/advisories/new) (preferred)
+- **Matrix:** [@pk910:matrix.org](https://matrix.to/#/@pk910:matrix.org)
+- **Twitter:** [@_pk910_](https://twitter.com/_pk910_)
 - **Discord:** `pk910` (find me at EthStaker or ETH R&D communities)
 
 I appreciate your effort to responsibly disclose your findings.

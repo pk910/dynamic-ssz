@@ -5,11 +5,15 @@ on:
     types: [published]
   workflow_dispatch:
 
+permissions: read-all
+
 jobs:
   binaries:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
     - name: Checkout code
       uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -54,6 +58,16 @@ jobs:
 
         # macOS arm64
         GOOS=darwin GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o ../dynssz-gen-darwin-arm64 .
+
+    - name: Generate artifact attestations
+      uses: actions/attest-build-provenance@db473fddc028af60658334401dc6fa3ffd8669fd # v2
+      with:
+        subject-path: |
+          dynssz-gen-linux-amd64
+          dynssz-gen-linux-arm64
+          dynssz-gen-windows-amd64.exe
+          dynssz-gen-darwin-amd64
+          dynssz-gen-darwin-arm64
 
     - name: Upload binaries to release
       env:
