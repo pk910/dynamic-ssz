@@ -9,6 +9,10 @@ updates:
       - "dependencies"
     commit-message:
       prefix: "deps"
+    groups:
+      all-go-deps:
+        patterns:
+          - "*"
 
   # Go modules for the spectests module
   - package-ecosystem: "gomod"
@@ -19,16 +23,43 @@ updates:
       - "dependencies"
     commit-message:
       prefix: "deps"
+    groups:
+      all-go-deps:
+        patterns:
+          - "*"
 
-  # Go modules for the examples module
+  # Go modules for the spectests/consensus-spec-tests module
   - package-ecosystem: "gomod"
-    directory: "/examples"
+    directory: "/spectests/consensus-spec-tests"
     schedule:
       interval: "weekly"
     labels:
       - "dependencies"
     commit-message:
       prefix: "deps"
+    groups:
+      all-go-deps:
+        patterns:
+          - "*"
+
+  # Go modules for the examples
+  - package-ecosystem: "gomod"
+    directories:
+      - "/examples/basic"
+      - "/examples/codegen"
+      - "/examples/custom-types"
+      - "/examples/progressive-merkleization"
+      - "/examples/versioned-blocks"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "deps"
+    groups:
+      all-go-deps:
+        patterns:
+          - "*"
 
   # GitHub Actions
   - package-ecosystem: "github-actions"
@@ -40,3 +71,7 @@ updates:
       - "ci"
     commit-message:
       prefix: "ci"
+    groups:
+      all-actions:
+        patterns:
+          - "*"
