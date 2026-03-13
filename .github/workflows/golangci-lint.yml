@@ -23,4 +23,28 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v8
         with:
-          version: v2
+          version: v2.11.3
+
+  go-checks:
+    name: go vet / fmt
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: 1.25.x
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l $(find . -name '*.go' -not -path '*/vendor/*' | grep -v '_gen\.go$' | grep -v '/gen_'))
+          if [ -n "$unformatted" ]; then
+            echo "::error::Files not formatted with gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Run go vet
+        run: go vet ./...
