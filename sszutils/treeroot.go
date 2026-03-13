@@ -20,15 +20,16 @@ func CalculateLimit(maxCapacity, numItems, size uint64) uint64 {
 }
 
 // NextPowerOfTwo returns the smallest power of two greater than or equal to v.
-func NextPowerOfTwo(v uint64) uint {
+func NextPowerOfTwo(v uint64) uint64 {
 	v--
 	v |= v >> 1
 	v |= v >> 2
 	v |= v >> 4
 	v |= v >> 8
 	v |= v >> 16
+	v |= v >> 32
 	v++
-	return uint(v)
+	return v
 }
 
 // HashUint64Slice appends the little-endian encoding of a uint64 slice directly

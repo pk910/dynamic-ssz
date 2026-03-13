@@ -206,6 +206,10 @@ func (d *DynSsz) MarshalSSZ(source any) ([]byte, error) {
 		return nil, err
 	}
 
+	if int64(size) > int64(math.MaxInt) {
+		return nil, fmt.Errorf("SSZ size %d exceeds platform int max", size)
+	}
+
 	buf := make([]byte, 0, size)
 	encoder := sszutils.NewBufferEncoder(buf)
 	err = ctx.MarshalSSZ(sourceTypeDesc, sourceValue, encoder)
