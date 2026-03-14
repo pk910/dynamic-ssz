@@ -88,87 +88,6 @@ func (cg *CodeGenerator) analyzeTypes() error {
 		return len(t.ViewGoTypesTypes) > 0 || len(t.ViewReflectTypes) > 0
 	}
 
-	getCompatFlags := func(t *CodeGeneratorTypeOptions) ssztypes.SszCompatFlag {
-		var compatFlags ssztypes.SszCompatFlag
-
-		// For view-only types, only set view compat flags
-		if t.IsViewOnly {
-			// View-only mode: only generate view methods
-			if !t.Options.NoMarshalSSZ && !t.Options.WithoutDynamicExpressions {
-				compatFlags |= ssztypes.SszCompatFlagDynamicViewMarshaler
-			}
-			if !t.Options.NoUnmarshalSSZ && !t.Options.WithoutDynamicExpressions {
-				compatFlags |= ssztypes.SszCompatFlagDynamicViewUnmarshaler
-			}
-			if !t.Options.NoSizeSSZ && !t.Options.WithoutDynamicExpressions {
-				compatFlags |= ssztypes.SszCompatFlagDynamicViewSizer
-			}
-			if !t.Options.NoHashTreeRoot && !t.Options.WithoutDynamicExpressions {
-				compatFlags |= ssztypes.SszCompatFlagDynamicViewHashRoot
-			}
-			if t.Options.CreateEncoderFn {
-				compatFlags |= ssztypes.SszCompatFlagDynamicViewEncoder
-			}
-			if t.Options.CreateDecoderFn {
-				compatFlags |= ssztypes.SszCompatFlagDynamicViewDecoder
-			}
-		} else {
-			// Data-only or data+views mode: set data compat flags
-			if !t.Options.NoMarshalSSZ && !t.Options.WithoutDynamicExpressions {
-				compatFlags |= ssztypes.SszCompatFlagDynamicMarshaler
-			}
-			if !t.Options.NoUnmarshalSSZ && !t.Options.WithoutDynamicExpressions {
-				compatFlags |= ssztypes.SszCompatFlagDynamicUnmarshaler
-			}
-			if !t.Options.NoSizeSSZ && !t.Options.WithoutDynamicExpressions {
-				compatFlags |= ssztypes.SszCompatFlagDynamicSizer
-			}
-			if !t.Options.NoHashTreeRoot && !t.Options.WithoutDynamicExpressions {
-				compatFlags |= ssztypes.SszCompatFlagDynamicHashRoot
-			}
-			if t.Options.CreateEncoderFn {
-				compatFlags |= ssztypes.SszCompatFlagDynamicEncoder
-			}
-			if t.Options.CreateDecoderFn {
-				compatFlags |= ssztypes.SszCompatFlagDynamicDecoder
-			}
-
-			if !t.Options.NoMarshalSSZ && !t.Options.NoUnmarshalSSZ && !t.Options.NoSizeSSZ && (t.Options.CreateLegacyFn || t.Options.WithoutDynamicExpressions) {
-				compatFlags |= ssztypes.SszCompatFlagFastSSZMarshaler
-			}
-			if !t.Options.NoHashTreeRoot && (t.Options.CreateLegacyFn || t.Options.WithoutDynamicExpressions) {
-				if t.Options.CreateLegacyFn {
-					compatFlags |= ssztypes.SszCompatFlagFastSSZHasher
-				}
-				compatFlags |= ssztypes.SszCompatFlagHashTreeRootWith
-			}
-
-			// Data+views mode: also set view compat flags for the data type
-			if hasViews(t) {
-				if !t.Options.NoMarshalSSZ && !t.Options.WithoutDynamicExpressions {
-					compatFlags |= ssztypes.SszCompatFlagDynamicViewMarshaler
-				}
-				if !t.Options.NoUnmarshalSSZ && !t.Options.WithoutDynamicExpressions {
-					compatFlags |= ssztypes.SszCompatFlagDynamicViewUnmarshaler
-				}
-				if !t.Options.NoSizeSSZ && !t.Options.WithoutDynamicExpressions {
-					compatFlags |= ssztypes.SszCompatFlagDynamicViewSizer
-				}
-				if !t.Options.NoHashTreeRoot && !t.Options.WithoutDynamicExpressions {
-					compatFlags |= ssztypes.SszCompatFlagDynamicViewHashRoot
-				}
-				if t.Options.CreateEncoderFn {
-					compatFlags |= ssztypes.SszCompatFlagDynamicViewEncoder
-				}
-				if t.Options.CreateDecoderFn {
-					compatFlags |= ssztypes.SszCompatFlagDynamicViewDecoder
-				}
-			}
-		}
-
-		return compatFlags
-	}
-
 	// add compat flags for generated types
 	for _, file := range cg.files {
 		for _, t := range file.Options.Types {
@@ -292,6 +211,85 @@ func (cg *CodeGenerator) analyzeTypes() error {
 	}
 
 	return nil
+}
+
+// getCompatFlags computes the SszCompatFlag set for a type based on its generation options.
+func getCompatFlags(t *CodeGeneratorTypeOptions) ssztypes.SszCompatFlag {
+	var compatFlags ssztypes.SszCompatFlag
+	hasViews := len(t.ViewGoTypesTypes) > 0 || len(t.ViewReflectTypes) > 0
+
+	// For view-only types, only set view compat flags
+	if t.IsViewOnly {
+		compatFlags |= viewCompatFlags(&t.Options)
+	} else {
+		// Data-only or data+views mode: set data compat flags
+		compatFlags |= dataCompatFlags(&t.Options)
+
+		// Data+views mode: also set view compat flags for the data type
+		if hasViews {
+			compatFlags |= viewCompatFlags(&t.Options)
+		}
+	}
+
+	return compatFlags
+}
+
+// viewCompatFlags returns the view compat flags based on options.
+func viewCompatFlags(opts *CodeGeneratorOptions) ssztypes.SszCompatFlag {
+	var flags ssztypes.SszCompatFlag
+	if !opts.NoMarshalSSZ && !opts.WithoutDynamicExpressions {
+		flags |= ssztypes.SszCompatFlagDynamicViewMarshaler
+	}
+	if !opts.NoUnmarshalSSZ && !opts.WithoutDynamicExpressions {
+		flags |= ssztypes.SszCompatFlagDynamicViewUnmarshaler
+	}
+	if !opts.NoSizeSSZ && !opts.WithoutDynamicExpressions {
+		flags |= ssztypes.SszCompatFlagDynamicViewSizer
+	}
+	if !opts.NoHashTreeRoot && !opts.WithoutDynamicExpressions {
+		flags |= ssztypes.SszCompatFlagDynamicViewHashRoot
+	}
+	if opts.CreateEncoderFn {
+		flags |= ssztypes.SszCompatFlagDynamicViewEncoder
+	}
+	if opts.CreateDecoderFn {
+		flags |= ssztypes.SszCompatFlagDynamicViewDecoder
+	}
+	return flags
+}
+
+// dataCompatFlags returns the data compat flags based on options.
+func dataCompatFlags(opts *CodeGeneratorOptions) ssztypes.SszCompatFlag {
+	var flags ssztypes.SszCompatFlag
+	if !opts.NoMarshalSSZ && !opts.WithoutDynamicExpressions {
+		flags |= ssztypes.SszCompatFlagDynamicMarshaler
+	}
+	if !opts.NoUnmarshalSSZ && !opts.WithoutDynamicExpressions {
+		flags |= ssztypes.SszCompatFlagDynamicUnmarshaler
+	}
+	if !opts.NoSizeSSZ && !opts.WithoutDynamicExpressions {
+		flags |= ssztypes.SszCompatFlagDynamicSizer
+	}
+	if !opts.NoHashTreeRoot && !opts.WithoutDynamicExpressions {
+		flags |= ssztypes.SszCompatFlagDynamicHashRoot
+	}
+	if opts.CreateEncoderFn {
+		flags |= ssztypes.SszCompatFlagDynamicEncoder
+	}
+	if opts.CreateDecoderFn {
+		flags |= ssztypes.SszCompatFlagDynamicDecoder
+	}
+
+	if !opts.NoMarshalSSZ && !opts.NoUnmarshalSSZ && !opts.NoSizeSSZ && (opts.CreateLegacyFn || opts.WithoutDynamicExpressions) {
+		flags |= ssztypes.SszCompatFlagFastSSZMarshaler
+	}
+	if !opts.NoHashTreeRoot && (opts.CreateLegacyFn || opts.WithoutDynamicExpressions) {
+		if opts.CreateLegacyFn {
+			flags |= ssztypes.SszCompatFlagFastSSZHasher
+		}
+		flags |= ssztypes.SszCompatFlagHashTreeRootWith
+	}
+	return flags
 }
 
 // generateFile creates the complete Go source code for a single file.

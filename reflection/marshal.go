@@ -57,29 +57,8 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 	// other marshaling methods.
 	isView := sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
 	if isView {
-		useViewEncoder := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewEncoder != 0
-		useViewMarshaler := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewMarshaler != 0
-
-		// Prefer encoder for seekable encoders, marshaler otherwise
-		if useViewEncoder && encoder.Seekable() {
-			if enc, ok := getPtr(sourceValue).Interface().(sszutils.DynamicViewEncoder); ok {
-				if encodeFn := enc.MarshalSSZEncoderView(*sourceType.CodegenInfo); encodeFn != nil {
-					return encodeFn(ctx.ds, encoder)
-				}
-			}
-		}
-
-		if useViewMarshaler {
-			if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.DynamicViewMarshaler); ok {
-				if marshalFn := marshaller.MarshalSSZDynView(*sourceType.CodegenInfo); marshalFn != nil {
-					newBuf, err := marshalFn(ctx.ds, encoder.GetBuffer())
-					if err != nil {
-						return err
-					}
-					encoder.SetBuffer(newBuf)
-					return nil
-				}
-			}
+		if done, err := ctx.tryMarshalView(sourceType, sourceValue, encoder); err != nil || done {
+			return err
 		}
 	} else if sourceType.SszCompatFlags != 0 || sourceType.SszType == ssztypes.SszCustomType {
 		// Fast path: skip compat interface checks for types that don't implement any
@@ -214,6 +193,37 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 	}
 
 	return nil
+}
+
+// tryMarshalView attempts to marshal using view-specific generated methods.
+// Returns (true, nil) if a view method handled it, (true, err) on error, or (false, nil) to fall through.
+func (ctx *ReflectionCtx) tryMarshalView(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder) (bool, error) {
+	useViewEncoder := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewEncoder != 0
+	useViewMarshaler := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewMarshaler != 0
+
+	// Prefer encoder for seekable encoders, marshaler otherwise
+	if useViewEncoder && encoder.Seekable() {
+		if enc, ok := getPtr(sourceValue).Interface().(sszutils.DynamicViewEncoder); ok {
+			if encodeFn := enc.MarshalSSZEncoderView(*sourceType.CodegenInfo); encodeFn != nil {
+				return true, encodeFn(ctx.ds, encoder)
+			}
+		}
+	}
+
+	if useViewMarshaler {
+		if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.DynamicViewMarshaler); ok {
+			if marshalFn := marshaller.MarshalSSZDynView(*sourceType.CodegenInfo); marshalFn != nil {
+				newBuf, err := marshalFn(ctx.ds, encoder.GetBuffer())
+				if err != nil {
+					return true, err
+				}
+				encoder.SetBuffer(newBuf)
+				return true, nil
+			}
+		}
+	}
+
+	return false, nil
 }
 
 // marshalTypeWrapper marshals a TypeWrapper by extracting its data field and marshaling it as the wrapped type.
