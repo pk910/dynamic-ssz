@@ -5,7 +5,6 @@
 package reflection
 
 import (
-	"fmt"
 	"math/big"
 	"reflect"
 
@@ -111,7 +110,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 			for i := 0; i < dataLen; i++ {
 				size, err := ctx.getSszValueSize(fieldType, targetValue.Index(i))
 				if err != nil {
-					return 0, err
+					return 0, sszutils.ErrorWithPathf(err, "[%d]", i)
 				}
 				// add 4 bytes for offset in dynamic array
 				staticSize += size + 4
@@ -122,7 +121,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 				zeroVal := reflect.New(fieldType.Type).Elem()
 				size, err := ctx.getSszValueSize(fieldType, zeroVal)
 				if err != nil {
-					return 0, err
+					return 0, sszutils.ErrorWithPathf(err, "[+%d:%d]", dataLen, uint32(dataLen)+appendZero-1)
 				}
 
 				staticSize += (size + 4) * appendZero
@@ -133,7 +132,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 			if dataLen > 0 {
 				size, err := ctx.getSszValueSize(fieldType, targetValue.Index(0))
 				if err != nil {
-					return 0, err
+					return 0, sszutils.ErrorWithPathf(err, "[0:%d]", dataLen-1)
 				}
 
 				staticSize = size * targetType.Len
@@ -141,7 +140,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 				zeroVal := reflect.New(fieldType.Type).Elem()
 				size, err := ctx.getSszValueSize(fieldType, zeroVal)
 				if err != nil {
-					return 0, err
+					return 0, sszutils.ErrorWithPathf(err, "[+0:%d]", targetType.Len-1)
 				}
 
 				staticSize += size * targetType.Len
@@ -160,7 +159,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 				for i := 0; i < int(sliceLen); i++ {
 					size, err := ctx.getSszValueSize(fieldType, targetValue.Index(i))
 					if err != nil {
-						return 0, err
+						return 0, sszutils.ErrorWithPathf(err, "[%d]", i)
 					}
 					// add 4 bytes for offset in dynamic slice
 					staticSize += size + 4
@@ -177,13 +176,13 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		// Get the variant descriptor
 		variantDesc, ok := targetType.UnionVariants[variant]
 		if !ok {
-			return 0, sszutils.ErrInvalidUnionVariant
+			return 0, sszutils.NewSszError(sszutils.ErrInvalidUnionVariant, "invalid union variant")
 		}
 
 		// Calculate size of the data
 		dataSize, err := ctx.getSszValueSize(variantDesc, dataField.Elem())
 		if err != nil {
-			return 0, fmt.Errorf("failed to get size of union variant %d: %w", variant, err)
+			return 0, sszutils.ErrorWithPathf(err, "[v:%d]", variant)
 		}
 
 		staticSize = 1 + dataSize // 1 byte selector + data size
@@ -224,7 +223,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 			// Calculate size of the data
 			dataSize, err := ctx.getSszValueSize(targetType.ElemDesc, targetValue.Elem())
 			if err != nil {
-				return 0, fmt.Errorf("failed to get size of optional data: %w", err)
+				return 0, err
 			}
 
 			staticSize = dataSize + 1 // data size + 1 byte availability
@@ -232,13 +231,13 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 	case ssztypes.SszBigIntType:
 		bigInt, isBigInt := targetValue.Interface().(big.Int)
 		if !isBigInt {
-			return 0, fmt.Errorf("big.Int type expected, got %v", targetType.Type.Name())
+			return 0, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "big.Int type expected, got %v", targetType.Type.Name())
 		}
 		bigIntBytes := bigInt.Bytes()
 		staticSize = uint32(len(bigIntBytes))
 
 	default:
-		return 0, fmt.Errorf("unhandled reflection kind in size check: %v", targetType.Kind)
+		return 0, sszutils.NewSszErrorf(sszutils.ErrNotImplemented, "unhandled reflection kind in size check: %v", targetType.Kind)
 	}
 
 	return staticSize, nil

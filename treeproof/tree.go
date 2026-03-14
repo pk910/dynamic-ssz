@@ -241,6 +241,9 @@ func NewNodeWithValue(value []byte) *Node {
 	}
 }
 
+// NewEmptyNode creates an empty (zero-padding) tree node with the given
+// precomputed zero-order hash. Empty nodes represent unused positions in the
+// binary tree and are marked with isEmpty=true for efficient proof compression.
 func NewEmptyNode(zeroOrderHash []byte) *Node {
 	return &Node{left: nil, right: nil, value: zeroOrderHash, isEmpty: true}
 }
@@ -397,6 +400,10 @@ func treeFromNodesProgressiveImpl(leaves []*Node, depth int) (*Node, error) {
 	return NewNodeWithLR(leftChild, rightChild), nil
 }
 
+// TreeFromNodesWithMixin constructs a Merkle tree from leaves and mixes in the
+// element count as a right sibling of the root. This is the standard SSZ
+// merkleization for lists, where the tree root is hash(merkle_root || length).
+// The limit is rounded up to the next power of two if not already one.
 func TreeFromNodesWithMixin(leaves []*Node, num, limit int) (*Node, error) {
 	if !isPowerOfTwo(limit) {
 		limit = int(sszutils.NextPowerOfTwo(uint64(limit)))
@@ -559,6 +566,10 @@ func (n *Node) Prove(index int) (*Proof, error) {
 	return proof, nil
 }
 
+// ProveMulti generates a Multiproof for the given set of generalized indices.
+// It collects the leaf values at each index and the minimal set of auxiliary
+// hashes needed to reconstruct the root. Returns an error if any index cannot
+// be found in the tree.
 func (n *Node) ProveMulti(indices []int) (*Multiproof, error) {
 	reqIndices := getRequiredIndices(indices)
 	proof := &Multiproof{Indices: indices, Leaves: make([][]byte, len(indices)), Hashes: make([][]byte, len(reqIndices))}
@@ -582,30 +593,40 @@ func (n *Node) ProveMulti(indices []int) (*Multiproof, error) {
 	return proof, nil
 }
 
+// LeafFromUint64 creates a 32-byte leaf node from a uint64 value, encoded as
+// little-endian in the first 8 bytes with the remaining 24 bytes zero-padded.
 func LeafFromUint64(i uint64) *Node {
 	buf := make([]byte, 32)
 	binary.LittleEndian.PutUint64(buf[:8], i)
 	return NewNodeWithValue(buf)
 }
 
+// LeafFromUint32 creates a 32-byte leaf node from a uint32 value, encoded as
+// little-endian in the first 4 bytes with the remaining 28 bytes zero-padded.
 func LeafFromUint32(i uint32) *Node {
 	buf := make([]byte, 32)
 	binary.LittleEndian.PutUint32(buf[:4], i)
 	return NewNodeWithValue(buf)
 }
 
+// LeafFromUint16 creates a 32-byte leaf node from a uint16 value, encoded as
+// little-endian in the first 2 bytes with the remaining 30 bytes zero-padded.
 func LeafFromUint16(i uint16) *Node {
 	buf := make([]byte, 32)
 	binary.LittleEndian.PutUint16(buf[:2], i)
 	return NewNodeWithValue(buf)
 }
 
+// LeafFromUint8 creates a 32-byte leaf node from a uint8 value, stored in the
+// first byte with the remaining 31 bytes zero-padded.
 func LeafFromUint8(i uint8) *Node {
 	buf := make([]byte, 32)
 	buf[0] = i
 	return NewNodeWithValue(buf)
 }
 
+// LeafFromBool creates a 32-byte leaf node from a boolean value, encoded as
+// 0x01 (true) or 0x00 (false) in the first byte with 31 bytes zero-padded.
 func LeafFromBool(b bool) *Node {
 	buf := make([]byte, 32)
 	if b {
@@ -614,6 +635,9 @@ func LeafFromBool(b bool) *Node {
 	return NewNodeWithValue(buf)
 }
 
+// LeafFromBytes creates a 32-byte leaf node from a byte slice. If the slice is
+// shorter than 32 bytes, it is right-padded with zeros. Panics if the slice
+// exceeds 32 bytes.
 func LeafFromBytes(b []byte) *Node {
 	l := len(b)
 	if l > 32 {
@@ -628,10 +652,15 @@ func LeafFromBytes(b []byte) *Node {
 	return NewNodeWithValue(append(b, sszutils.ZeroBytes()[:32-l]...))
 }
 
+// EmptyLeaf creates a leaf node containing 32 zero bytes, representing an
+// empty or unset value in the Merkle tree.
 func EmptyLeaf() *Node {
 	return NewNodeWithValue(sszutils.ZeroBytes()[:32])
 }
 
+// LeavesFromUint64 packs a slice of uint64 values into leaf nodes, with 4
+// values per 32-byte leaf (8 bytes each, little-endian). The final leaf is
+// zero-padded if the number of items is not a multiple of 4.
 func LeavesFromUint64(items []uint64) []*Node {
 	if len(items) == 0 {
 		return []*Node{}

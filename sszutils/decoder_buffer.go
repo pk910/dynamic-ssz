@@ -33,18 +33,26 @@ func NewBufferDecoder(buffer []byte) *BufferDecoder {
 	}
 }
 
+// Seekable returns true, indicating that BufferDecoder supports random-access
+// offset reads via DecodeOffsetAt and byte skipping via SkipBytes.
 func (e *BufferDecoder) Seekable() bool {
 	return true
 }
 
+// GetPosition returns the current read position in the buffer.
 func (e *BufferDecoder) GetPosition() int {
 	return e.position
 }
 
+// GetLength returns the number of remaining bytes available for reading,
+// taking into account the current limit.
 func (e *BufferDecoder) GetLength() int {
 	return e.lastLimit - e.position
 }
 
+// PushLimit restricts reading to the next limit bytes from the current position.
+// If the limit extends beyond the enclosing limit, it is clamped. Limits can be
+// nested and must be removed with PopLimit.
 func (e *BufferDecoder) PushLimit(limit int) {
 	limitPos := e.position + limit
 	if limitPos > e.lastLimit {
@@ -55,6 +63,8 @@ func (e *BufferDecoder) PushLimit(limit int) {
 	e.lastLimit = limitPos
 }
 
+// PopLimit removes the most recently pushed limit and returns the number of
+// unconsumed bytes that were remaining within that limit.
 func (e *BufferDecoder) PopLimit() int {
 	limitsLen := len(e.limits)
 	if limitsLen == 0 {
@@ -70,6 +80,9 @@ func (e *BufferDecoder) PopLimit() int {
 	return limit - e.position
 }
 
+// DecodeBool reads a single byte and returns its boolean value. Returns
+// ErrUnexpectedEOF if no bytes remain, or ErrInvalidValueRange if the byte
+// is not 0x00 or 0x01.
 func (e *BufferDecoder) DecodeBool() (bool, error) {
 	if e.GetLength() < 1 {
 		return false, ErrUnexpectedEOF
@@ -82,6 +95,8 @@ func (e *BufferDecoder) DecodeBool() (bool, error) {
 	return val == 1, nil
 }
 
+// DecodeUint8 reads a single byte and returns it as uint8. Returns
+// ErrUnexpectedEOF if no bytes remain.
 func (e *BufferDecoder) DecodeUint8() (uint8, error) {
 	if e.GetLength() < 1 {
 		return 0, ErrUnexpectedEOF
@@ -91,6 +106,8 @@ func (e *BufferDecoder) DecodeUint8() (uint8, error) {
 	return val, nil
 }
 
+// DecodeUint16 reads 2 bytes in little-endian order and returns a uint16.
+// Returns ErrUnexpectedEOF if fewer than 2 bytes remain.
 func (e *BufferDecoder) DecodeUint16() (uint16, error) {
 	if e.GetLength() < 2 {
 		return 0, ErrUnexpectedEOF
@@ -100,6 +117,8 @@ func (e *BufferDecoder) DecodeUint16() (uint16, error) {
 	return val, nil
 }
 
+// DecodeUint32 reads 4 bytes in little-endian order and returns a uint32.
+// Returns ErrUnexpectedEOF if fewer than 4 bytes remain.
 func (e *BufferDecoder) DecodeUint32() (uint32, error) {
 	if e.GetLength() < 4 {
 		return 0, ErrUnexpectedEOF
@@ -109,6 +128,8 @@ func (e *BufferDecoder) DecodeUint32() (uint32, error) {
 	return val, nil
 }
 
+// DecodeUint64 reads 8 bytes in little-endian order and returns a uint64.
+// Returns ErrUnexpectedEOF if fewer than 8 bytes remain.
 func (e *BufferDecoder) DecodeUint64() (uint64, error) {
 	if e.GetLength() < 8 {
 		return 0, ErrUnexpectedEOF
@@ -118,6 +139,8 @@ func (e *BufferDecoder) DecodeUint64() (uint64, error) {
 	return val, nil
 }
 
+// DecodeBytes reads len(buf) bytes into the provided buffer and returns the
+// filled slice. Returns ErrUnexpectedEOF if fewer bytes remain than requested.
 func (e *BufferDecoder) DecodeBytes(buf []byte) ([]byte, error) {
 	if e.GetLength() < len(buf) {
 		return nil, ErrUnexpectedEOF
@@ -128,6 +151,11 @@ func (e *BufferDecoder) DecodeBytes(buf []byte) ([]byte, error) {
 	return buf[:bufLen], nil
 }
 
+// DecodeBytesBuf returns a slice of the underlying buffer containing the next
+// length bytes. If length is negative, all remaining bytes within the current
+// limit are returned. The returned slice shares memory with the decoder's
+// buffer and must not be modified. Returns ErrUnexpectedEOF if fewer bytes
+// remain than requested.
 func (e *BufferDecoder) DecodeBytesBuf(length int) ([]byte, error) {
 	limit := e.lastLimit
 	if length < 0 {
@@ -140,6 +168,9 @@ func (e *BufferDecoder) DecodeBytesBuf(length int) ([]byte, error) {
 	return buf, nil
 }
 
+// DecodeOffset reads a 4-byte little-endian SSZ offset from the current
+// position and advances by 4 bytes. Returns ErrUnexpectedEOF if fewer than
+// 4 bytes remain.
 func (e *BufferDecoder) DecodeOffset() (uint32, error) {
 	if e.GetLength() < 4 {
 		return 0, ErrUnexpectedEOF
@@ -150,10 +181,14 @@ func (e *BufferDecoder) DecodeOffset() (uint32, error) {
 	return val, nil
 }
 
+// DecodeOffsetAt reads a 4-byte little-endian SSZ offset at the given absolute
+// position without advancing the current read position. The caller must ensure
+// pos is within bounds.
 func (e *BufferDecoder) DecodeOffsetAt(pos int) uint32 {
 	return binary.LittleEndian.Uint32(e.buffer[pos:])
 }
 
+// SkipBytes advances the read position by n bytes without reading the data.
 func (e *BufferDecoder) SkipBytes(n int) {
 	e.position += n
 }
