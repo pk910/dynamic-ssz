@@ -54,6 +54,39 @@ var (
 	ErrInvalidUnionVariant = ErrInvalidValueRange
 )
 
+// Sentinel errors for type introspection (type cache / descriptor building).
+// These are returned during schema analysis of Go types, not at
+// marshal/unmarshal time. Check with errors.Is(err, sszutils.ErrUnsupportedType) etc.
+var (
+	// ErrUnsupportedType is returned when a Go type kind is fundamentally
+	// incompatible with SSZ (e.g. maps, channels, functions, interfaces).
+	ErrUnsupportedType = fmt.Errorf("unsupported type")
+
+	// ErrTypeMismatch is returned when the SSZ type assigned via tag or
+	// auto-detection does not match the Go type's kind (e.g. ssz-type:"uint64"
+	// on a bool field).
+	ErrTypeMismatch = fmt.Errorf("type mismatch")
+
+	// ErrInvalidTag is returned when a struct tag is malformed or contains
+	// an unrecognized value (e.g. ssz-type:"foobar", non-numeric ssz-size).
+	ErrInvalidTag = fmt.Errorf("invalid tag")
+
+	// ErrInvalidConstraint is returned when tag values are syntactically
+	// valid but semantically wrong (e.g. ssz-size:2 on a bool, bit-size on
+	// a non-bitvector, vector size exceeding array length, duplicate ssz-index).
+	ErrInvalidConstraint = fmt.Errorf("invalid constraint")
+
+	// ErrExtendedTypeDisabled is returned when an extended SSZ type (signed
+	// integers, floats, optionals, big.Int) is used without enabling the
+	// ExtendedTypes flag on the TypeCache.
+	ErrExtendedTypeDisabled = fmt.Errorf("extended type not enabled")
+
+	// ErrMissingInterface is returned when a required method or interface
+	// is not found on a type (e.g. missing GetDescriptorType method,
+	// custom type without fastssz marshaler/hasher).
+	ErrMissingInterface = fmt.Errorf("missing interface")
+)
+
 // SszError is a structured error type for SSZ operations. It wraps a base
 // sentinel error (e.g. ErrUnexpectedEOF) with a detail message and a field
 // path that is built up as the error bubbles through the call stack.
@@ -81,7 +114,7 @@ func (e *SszError) Error() string {
 		// Path is stored innermost-first, so iterate in reverse for jq-style output.
 		for i := len(e.Path) - 1; i >= 0; i-- {
 			seg := e.Path[i]
-			if seg != "" && seg[0] == '[' {
+			if i == len(e.Path)-1 || (seg != "" && seg[0] == '[') {
 				b.WriteString(seg)
 			} else {
 				b.WriteByte('.')

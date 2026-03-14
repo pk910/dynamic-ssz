@@ -5,7 +5,6 @@
 package ssztypes
 
 import (
-	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
@@ -128,7 +127,7 @@ func ParseSszType(typeStr string) (SszType, error) {
 		return SszOptionalType, nil
 
 	default:
-		return SszUnspecifiedType, fmt.Errorf("invalid ssz-type tag '%v'", typeStr)
+		return SszUnspecifiedType, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "invalid ssz-type tag '%v'", typeStr)
 	}
 }
 
@@ -140,7 +139,7 @@ func getSszTypeTag(field *reflect.StructField) ([]SszTypeHint, error) {
 		for _, sszTypeStr := range strings.Split(fieldSszTypeStr, ",") {
 			sszType, err := ParseSszType(sszTypeStr)
 			if err != nil {
-				return sszTypeHints, fmt.Errorf("error parsing ssz-type tag for '%v' field: %w", field.Name, err)
+				return sszTypeHints, sszutils.ErrorWithPath(err, field.Name)
 			}
 
 			sszTypeHints = append(sszTypeHints, SszTypeHint{
@@ -221,14 +220,14 @@ func getSszSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]SszS
 			case sszBitsizeStr != "?":
 				sszSizeInt, err := strconv.ParseUint(sszBitsizeStr, 10, 32)
 				if err != nil {
-					return sszSizes, fmt.Errorf("error parsing ssz-bitsize tag for '%v' field: %w", field.Name, err)
+					return sszSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "error parsing ssz-bitsize tag for '%v' field: %v", field.Name, err)
 				}
 				sszSize.Size = uint32(sszSizeInt)
 				sszSize.Bits = true
 			case sszSizeStr != "?":
 				sszSizeInt, err := strconv.ParseUint(sszSizeStr, 10, 32)
 				if err != nil {
-					return sszSizes, fmt.Errorf("error parsing ssz-size tag for '%v' field: %w", field.Name, err)
+					return sszSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "error parsing ssz-size tag for '%v' field: %v", field.Name, err)
 				}
 				sszSize.Size = uint32(sszSizeInt)
 			default:
@@ -278,7 +277,7 @@ func getSszSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]SszS
 			} else {
 				ok, specVal, err := ds.ResolveSpecValue(sizeExpr)
 				if err != nil {
-					return sszSizes, fmt.Errorf("error parsing dynssz-size tag for '%v' field (%v): %w", field.Name, sizeExpr, err)
+					return sszSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "error parsing dynssz-size tag for '%v' field (%v): %v", field.Name, sizeExpr, err)
 				}
 
 				isExpr = true
@@ -360,7 +359,7 @@ func getSszMaxSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]S
 			} else {
 				sszSizeInt, err := strconv.ParseUint(sszSizeStr, 10, 64)
 				if err != nil {
-					return sszMaxSizes, fmt.Errorf("error parsing ssz-max tag for '%v' field: %w", field.Name, err)
+					return sszMaxSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "error parsing ssz-max tag for '%v' field: %v", field.Name, err)
 				}
 				sszMaxSize.Size = sszSizeInt
 			}
@@ -382,7 +381,7 @@ func getSszMaxSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]S
 			} else {
 				ok, specVal, err := ds.ResolveSpecValue(sszMaxSizeStr)
 				if err != nil {
-					return sszMaxSizes, fmt.Errorf("error parsing dynssz-max tag for '%v' field (%v): %w", field.Name, sszMaxSizeStr, err)
+					return sszMaxSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "error parsing dynssz-max tag for '%v' field (%v): %v", field.Name, sszMaxSizeStr, err)
 				}
 
 				isExpr = true
@@ -422,7 +421,7 @@ func getSszIndexTag(field *reflect.StructField) (*uint16, error) {
 	if fieldSszIndexStr, fieldHasSszIndex := field.Tag.Lookup("ssz-index"); fieldHasSszIndex {
 		sszSizeInt, err := strconv.ParseUint(fieldSszIndexStr, 10, 16)
 		if err != nil {
-			return nil, fmt.Errorf("error parsing ssz-index tag for '%v' field: %w", field.Name, err)
+			return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "error parsing ssz-index tag for '%v' field: %v", field.Name, err)
 		}
 
 		index := uint16(sszSizeInt)

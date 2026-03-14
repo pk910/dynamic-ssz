@@ -87,7 +87,7 @@ func TestExtractWrapperDescriptorInfo(t *testing.T) {
 				Data []uint8 `ssz-size:"invalid"`
 			}{}),
 			expectError:   true,
-			errorContains: "failed to parse ssz-size tag for field",
+			errorContains: "error parsing ssz-size tag for",
 		},
 		{
 			name: "descriptor with invalid ssz-max",
@@ -95,7 +95,7 @@ func TestExtractWrapperDescriptorInfo(t *testing.T) {
 				Data []uint8 `ssz-max:"invalid"`
 			}{}),
 			expectError:   true,
-			errorContains: "failed to parse ssz-max tag for field",
+			errorContains: "error parsing ssz-max tag for",
 		},
 		{
 			name: "descriptor with invalid ssz-type",
@@ -103,7 +103,7 @@ func TestExtractWrapperDescriptorInfo(t *testing.T) {
 				Data []uint8 `ssz-type:"invalid"`
 			}{}),
 			expectError:   true,
-			errorContains: "failed to parse ssz-type tag for field",
+			errorContains: "invalid ssz-type tag",
 		},
 	}
 

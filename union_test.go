@@ -143,7 +143,7 @@ func TestTypeCache_InvalidUnionTypes(t *testing.T) {
 			typ: reflect.TypeOf(TypeWrapper[struct {
 				F TestInvalidUnion3 `ssz-type:"union"`
 			}, TestInvalidUnion3]{}),
-			expectedError: "failed to extract union variant info",
+			expectedError: "union descriptor must be a struct",
 		},
 	}
 

@@ -5,7 +5,6 @@
 package ssztypes
 
 import (
-	"fmt"
 	"reflect"
 
 	"github.com/pk910/dynamic-ssz/sszutils"
@@ -23,7 +22,7 @@ type unionVariantInfo struct {
 // This function is used by the type cache to extract variant information including SSZ annotations.
 func extractUnionDescriptorInfo(descriptorType reflect.Type, ds sszutils.DynamicSpecs) (map[uint8]unionVariantInfo, error) {
 	if descriptorType.Kind() != reflect.Struct {
-		return nil, fmt.Errorf("union descriptor must be a struct, got %v", descriptorType.Kind())
+		return nil, sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "union descriptor must be a struct, got %v", descriptorType.Kind())
 	}
 
 	variantInfo := make(map[uint8]unionVariantInfo)
@@ -35,17 +34,17 @@ func extractUnionDescriptorInfo(descriptorType reflect.Type, ds sszutils.Dynamic
 		// Extract SSZ annotations using existing DynSsz methods
 		sizeHints, err := getSszSizeTag(ds, &field)
 		if err != nil {
-			return nil, fmt.Errorf("failed to parse ssz-size tag for field %s: %w", field.Name, err)
+			return nil, err
 		}
 
 		maxSizeHints, err := getSszMaxSizeTag(ds, &field)
 		if err != nil {
-			return nil, fmt.Errorf("failed to parse ssz-max tag for field %s: %w", field.Name, err)
+			return nil, err
 		}
 
 		typeHints, err := getSszTypeTag(&field)
 		if err != nil {
-			return nil, fmt.Errorf("failed to parse ssz-type tag for field %s: %w", field.Name, err)
+			return nil, err
 		}
 
 		variantInfo[variantIndex] = unionVariantInfo{
@@ -57,7 +56,7 @@ func extractUnionDescriptorInfo(descriptorType reflect.Type, ds sszutils.Dynamic
 	}
 
 	if len(variantInfo) == 0 {
-		return nil, fmt.Errorf("union descriptor struct has no fields")
+		return nil, sszutils.NewSszError(sszutils.ErrInvalidConstraint, "union descriptor struct has no fields")
 	}
 
 	return variantInfo, nil
