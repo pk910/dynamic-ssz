@@ -5,7 +5,6 @@
 package reflection
 
 import (
-	"fmt"
 	"math"
 	"math/big"
 	"reflect"
@@ -153,7 +152,7 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 		if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsTime != 0 {
 			timeValue, isTime := sourceValue.Interface().(time.Time)
 			if !isTime {
-				return fmt.Errorf("time.Time type expected, got %v", sourceType.Type.Name())
+				return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "time.Time type expected, got %v", sourceType.Type.Name())
 			}
 			encoder.EncodeUint64(uint64(timeValue.Unix()))
 		} else {
@@ -184,7 +183,7 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 			return err
 		}
 	default:
-		return fmt.Errorf("unknown type: %v", sourceType)
+		return sszutils.NewSszErrorf(sszutils.ErrNotImplemented, "unknown type: %v", sourceType)
 	}
 
 	return nil
@@ -242,7 +241,7 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 			field := &fields[i]
 			fieldValue := sourceValue.Field(i)
 			if err := ctx.marshalType(field.Type, fieldValue, encoder, idt+2); err != nil {
-				return fmt.Errorf("failed encoding field %v: %w", field.Name, err)
+				return sszutils.ErrorWithPath(err, field.Name)
 			}
 		}
 		return nil
@@ -262,7 +261,7 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 			fieldValue := sourceValue.Field(i)
 			err := ctx.marshalType(field.Type, fieldValue, encoder, idt+2)
 			if err != nil {
-				return fmt.Errorf("failed encoding field %v: %w", field.Name, err)
+				return sszutils.ErrorWithPath(err, field.Name)
 			}
 		} else {
 			fieldSize = 4
@@ -273,7 +272,7 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 				// we can't seek, so we need to calculate the object size now
 				size, err := ctx.getSszValueSize(field.Type, sourceValue.Field(i))
 				if err != nil {
-					return fmt.Errorf("failed to get size of dynamic field %v: %w", field.Name, err)
+					return sszutils.ErrorWithPathf(err, "%s:o", field.Name)
 				}
 
 				encoder.EncodeOffset(sourceType.Len + uint32(dynObjOffset))
@@ -298,7 +297,7 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 		fieldValue := sourceValue.Field(int(field.Index))
 		err := ctx.marshalType(fieldDescriptor.Type, fieldValue, encoder, idt+2)
 		if err != nil {
-			return fmt.Errorf("failed encoding field %v: %w", fieldDescriptor.Name, err)
+			return sszutils.ErrorWithPath(err, fieldDescriptor.Name)
 		}
 
 		if canSeek {
@@ -333,11 +332,11 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, idt int) error {
 	vecLen := int64(sourceType.Len)
 	if vecLen > math.MaxInt {
-		return fmt.Errorf("vector length %d exceeds platform int max", sourceType.Len)
+		return sszutils.NewSszErrorf(sszutils.ErrPlatformOverflow, "vector length %d exceeds platform int max", sourceType.Len)
 	}
 	vecElemSize := int64(sourceType.ElemDesc.Size)
 	if vecElemSize > math.MaxInt {
-		return fmt.Errorf("element size %d exceeds platform int max", sourceType.ElemDesc.Size)
+		return sszutils.NewSszErrorf(sszutils.ErrPlatformOverflow, "element size %d exceeds platform int max", sourceType.ElemDesc.Size)
 	}
 
 	sliceLen := sourceValue.Len()
@@ -381,7 +380,7 @@ func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sou
 			paddingMask := uint8((uint16(0xff) << (sourceType.BitSize % 8)) & 0xff)
 			paddingBits := bytes[dataLen-1] & paddingMask
 			if paddingBits != 0 {
-				return fmt.Errorf("bitvector padding bits are not zero")
+				return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "bitvector padding bits are not zero")
 			}
 		}
 	} else {
@@ -389,7 +388,7 @@ func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sou
 			itemVal := sourceValue.Index(i)
 			err := ctx.marshalType(sourceType.ElemDesc, itemVal, encoder, idt+2)
 			if err != nil {
-				return err
+				return sszutils.ErrorWithPathf(err, "[%d]", i)
 			}
 		}
 
@@ -426,7 +425,7 @@ func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sou
 func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, idt int) error {
 	dynVecLen := int64(sourceType.Len)
 	if dynVecLen > math.MaxInt {
-		return fmt.Errorf("dynamic vector length %d exceeds platform int max", sourceType.Len)
+		return sszutils.NewSszErrorf(sszutils.ErrPlatformOverflow, "dynamic vector length %d exceeds platform int max", sourceType.Len)
 	}
 
 	fieldType := sourceType.ElemDesc
@@ -465,7 +464,7 @@ func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescript
 			itemVal := sourceValue.Index(i)
 			size, err := ctx.getSszValueSize(fieldType, itemVal)
 			if err != nil {
-				return fmt.Errorf("failed to get size of dynamic vector element %v: %w", itemVal.Type().Name(), err)
+				return sszutils.ErrorWithPathf(err, "[%d]", i)
 			}
 
 			encoder.EncodeOffset(offset)
@@ -474,7 +473,7 @@ func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescript
 		if appendZero > 0 {
 			size, err := ctx.getSszValueSize(fieldType, zeroVal)
 			if err != nil {
-				return fmt.Errorf("failed to get size of zero vector element %v: %w", zeroVal.Type().Name(), err)
+				return sszutils.ErrorWithPathf(err, "[+%d:%d]", sliceLen, sliceLen+appendZero-1)
 			}
 
 			for i := 0; i < appendZero; i++ {
@@ -491,7 +490,7 @@ func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescript
 
 		err := ctx.marshalType(fieldType, itemVal, encoder, idt+2)
 		if err != nil {
-			return err
+			return sszutils.ErrorWithPathf(err, "[%d]", i)
 		}
 
 		if canSeek {
@@ -506,7 +505,7 @@ func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescript
 	for i := 0; i < appendZero; i++ {
 		err := ctx.marshalType(fieldType, zeroVal, encoder, idt+2)
 		if err != nil {
-			return err
+			return sszutils.ErrorWithPathf(err, "[+%d]", sliceLen+i)
 		}
 
 		if canSeek {
@@ -558,7 +557,7 @@ func (ctx *ReflectionCtx) marshalList(sourceType *ssztypes.TypeDescriptor, sourc
 
 			err := ctx.marshalType(fieldType, itemVal, encoder, idt+2)
 			if err != nil {
-				return err
+				return sszutils.ErrorWithPathf(err, "[%d]", i)
 			}
 		}
 	}
@@ -602,7 +601,7 @@ func (ctx *ReflectionCtx) marshalDynamicList(sourceType *ssztypes.TypeDescriptor
 			itemVal := sourceValue.Index(i)
 			size, err := ctx.getSszValueSize(fieldType, itemVal)
 			if err != nil {
-				return fmt.Errorf("failed to get size of dynamic list element %v: %w", itemVal.Type().Name(), err)
+				return sszutils.ErrorWithPathf(err, "[%d]", i)
 			}
 
 			offset += size
@@ -617,7 +616,7 @@ func (ctx *ReflectionCtx) marshalDynamicList(sourceType *ssztypes.TypeDescriptor
 
 		err := ctx.marshalType(fieldType, itemVal, encoder, idt+2)
 		if err != nil {
-			return err
+			return sszutils.ErrorWithPathf(err, "[%d]", i)
 		}
 
 		if canSeek {
@@ -654,7 +653,7 @@ func (ctx *ReflectionCtx) marshalBitlist(_ *ssztypes.TypeDescriptor, sourceValue
 		// this is a fallback for uninitialized bitlists
 		bytes = []byte{0x01}
 	} else if bytes[len(bytes)-1] == 0x00 {
-		return sszutils.ErrBitlistNotTerminated
+		return sszutils.NewSszError(sszutils.ErrBitlistNotTerminated, "bitlist misses mandatory termination bit")
 	}
 
 	encoder.EncodeBytes(bytes)
@@ -689,13 +688,13 @@ func (ctx *ReflectionCtx) marshalCompatibleUnion(sourceType *ssztypes.TypeDescri
 	// Get the variant descriptor
 	variantDesc, ok := sourceType.UnionVariants[variant]
 	if !ok {
-		return sszutils.ErrInvalidUnionVariant
+		return sszutils.NewSszError(sszutils.ErrInvalidUnionVariant, "invalid union variant")
 	}
 
 	// Marshal the data using the variant's type descriptor
 	err := ctx.marshalType(variantDesc, dataField.Elem(), encoder, idt+2)
 	if err != nil {
-		return fmt.Errorf("failed to marshal union variant %d: %w", variant, err)
+		return sszutils.ErrorWithPathf(err, "[v:%d]", variant)
 	}
 
 	return nil
@@ -748,7 +747,7 @@ func (ctx *ReflectionCtx) marshalBigInt(sourceType *ssztypes.TypeDescriptor, sou
 
 	bigInt, isBigInt := sourceValue.Interface().(big.Int)
 	if !isBigInt {
-		return fmt.Errorf("big.Int type expected, got %v", sourceType.Type.Name())
+		return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "big.Int type expected, got %v", sourceType.Type.Name())
 	}
 	bigIntBytes := bigInt.Bytes()
 	encoder.EncodeBytes(bigIntBytes)

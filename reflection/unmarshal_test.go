@@ -522,7 +522,7 @@ func TestUnmarshalErrors(t *testing.T) {
 				} `ssz-max:"10"`
 			}),
 			data:        fromHex("0x010000000800000008000000ff000000"),
-			expectedErr: "failed decoding field B: incorrect offset",
+			expectedErr: "incorrect offset: dynamic list item offset out of range",
 		},
 		{
 			name: "map_type",

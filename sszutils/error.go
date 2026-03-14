@@ -10,15 +10,48 @@ import (
 	"strings"
 )
 
+// Sentinel errors for SSZ operations. Downstream consumers can check error
+// categories via errors.Is(err, sszutils.ErrOffset) etc.
 var (
-	ErrListTooBig           = fmt.Errorf("list length is higher than max value")
-	ErrUnexpectedEOF        = fmt.Errorf("unexpected end of SSZ")
-	ErrOffset               = fmt.Errorf("incorrect offset")
-	ErrInvalidValueRange    = fmt.Errorf("invalid value range")
-	ErrInvalidUnionVariant  = fmt.Errorf("invalid union variant")
-	ErrVectorLength         = fmt.Errorf("incorrect vector length")
-	ErrNotImplemented       = fmt.Errorf("not implemented")
-	ErrBitlistNotTerminated = fmt.Errorf("bitlist misses mandatory termination bit")
+	// ErrUnexpectedEOF is returned when the SSZ input is shorter than the
+	// type requires (e.g. not enough bytes to decode a uint64).
+	ErrUnexpectedEOF = fmt.Errorf("unexpected end of SSZ")
+
+	// ErrOffset is returned when an SSZ offset is out of range, does not
+	// monotonically increase, or a field does not consume exactly the
+	// byte range its offset pair implied.
+	ErrOffset = fmt.Errorf("incorrect offset")
+
+	// ErrInvalidValueRange is returned when an SSZ value is outside the
+	// valid domain for its type (e.g. non-zero padding bits in a
+	// bitvector, unterminated bitlist, or invalid union selector).
+	ErrInvalidValueRange = fmt.Errorf("invalid value range")
+
+	// ErrVectorLength is returned when a vector or fixed-length byte
+	// array has a length that does not match the schema.
+	ErrVectorLength = fmt.Errorf("incorrect vector length")
+
+	// ErrListTooBig is returned when a list's length exceeds its declared
+	// SSZ maximum.
+	ErrListTooBig = fmt.Errorf("list length is higher than max value")
+
+	// ErrNotImplemented is returned when the SSZ codec encounters a Go
+	// type or feature it does not support.
+	ErrNotImplemented = fmt.Errorf("not implemented")
+
+	// ErrPlatformOverflow is returned when a SSZ length or count exceeds
+	// the platform's integer range (>31-bit sizes on 32-bit platforms).
+	ErrPlatformOverflow = fmt.Errorf("value exceeds platform integer range")
+
+	// ErrBitlistNotTerminated is an alias for ErrInvalidValueRange,
+	// retained for backward compatibility. New code should use
+	// ErrInvalidValueRange with a descriptive message instead.
+	ErrBitlistNotTerminated = ErrInvalidValueRange
+
+	// ErrInvalidUnionVariant is an alias for ErrInvalidValueRange,
+	// retained for backward compatibility. New code should use
+	// ErrInvalidValueRange with a descriptive message instead.
+	ErrInvalidUnionVariant = ErrInvalidValueRange
 )
 
 // SszError is a structured error type for SSZ operations. It wraps a base
@@ -95,4 +128,11 @@ func ErrorWithPath(err error, segment string) error {
 	}
 
 	return &SszError{Err: err, Path: []string{segment}}
+}
+
+// ErrorWithPathf appends a formatted path segment to an SszError as it bubbles up.
+// If err is not already an SszError, it is wrapped in one.
+// Segments are collected innermost-first and reversed when formatting.
+func ErrorWithPathf(err error, format string, args ...any) error {
+	return ErrorWithPath(err, fmt.Sprintf(format, args...))
 }

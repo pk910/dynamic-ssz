@@ -109,9 +109,32 @@ func TestNewSszErrorf(t *testing.T) {
 }
 
 func TestSszError_EmptyPath(t *testing.T) {
-	err := NewSszError(ErrBitlistNotTerminated, "")
-	expected := "bitlist misses mandatory termination bit"
+	err := NewSszError(ErrInvalidValueRange, "")
+	expected := "invalid value range"
 	if err.Error() != expected {
 		t.Errorf("got %q, want %q", err.Error(), expected)
+	}
+}
+
+func TestSszError_AliasBackwardCompat(t *testing.T) {
+	// ErrBitlistNotTerminated and ErrInvalidUnionVariant are aliases for ErrInvalidValueRange.
+	if !errors.Is(ErrBitlistNotTerminated, ErrInvalidValueRange) {
+		t.Error("ErrBitlistNotTerminated should match ErrInvalidValueRange")
+	}
+
+	if !errors.Is(ErrInvalidUnionVariant, ErrInvalidValueRange) {
+		t.Error("ErrInvalidUnionVariant should match ErrInvalidValueRange")
+	}
+}
+
+func TestSszError_PlatformOverflow(t *testing.T) {
+	err := NewSszError(ErrPlatformOverflow, "size exceeds int")
+	expected := "value exceeds platform integer range: size exceeds int"
+	if err.Error() != expected {
+		t.Errorf("got %q, want %q", err.Error(), expected)
+	}
+
+	if !errors.Is(err, ErrPlatformOverflow) {
+		t.Error("errors.Is should match ErrPlatformOverflow")
 	}
 }

@@ -376,7 +376,7 @@ func TestSizeSSZOptionalError(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for optional with invalid inner type")
 	}
-	if !contains(err.Error(), "failed to get size of optional data") {
+	if !contains(err.Error(), "unhandled reflection kind in size check") {
 		t.Errorf("expected optional size error, got: %v", err)
 	}
 }
