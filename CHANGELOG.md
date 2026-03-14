@@ -2,7 +2,7 @@
 
 All notable changes to the `dynamic-ssz` library are documented here.
 
-## [v1.2.2] — 2026-03-12
+## [v1.2.2] 2026-03-12
 
 ### Added
 - Fuzz testing framework with parallel workers and multi-dimensional list/vector support
@@ -11,37 +11,35 @@ All notable changes to the `dynamic-ssz` library are documented here.
 - Smoke tests for fuzzer in CI
 - Codecov exclusion for fuzzer code
 
+### Changed
+- Refactored `getZeroOrderHashes` for clarity
+
 ### Fixed
 - Concurrent map read/write panic in `specValueCache` (added mutex synchronization)
 - Minor code generation formatting issues
 
-### Changed
-- Refactored `getZeroOrderHashes` for clarity
-
-### Breaking Changes
-None.
-
 ---
 
-## [v1.2.1] — 2026-01-21
+## [v1.2.1] 2026-01-21
 
 ### Added
 - Progressive tree shape change implementation (EIP-7916 compatibility)
+
+### Changed
+- Use `for range` syntax in generated code
 
 ### Fixed
 - Code generation for primitive pointer types
 - Unused `encoding/binary` import in generated code
 - Codegen indentation and spacing (now `go fmt` compatible)
 
-### Changed
-- Use `for range` syntax in generated code
-
-### Breaking Changes
-None.
-
 ---
 
-## [v1.2.0] — 2026-01-02
+## [v1.2.0] 2026-01-02 Streaming support
+
+### Breaking Changes
+- **`sszutils` package extracted** — interfaces and utilities previously in the root package moved to `sszutils`. Import paths for `Encoder`, `Decoder`, `HashWalker`, `DynamicSpecs`, and related types must be updated.
+- **`CanSeek` renamed to `Seekable`** on `Encoder` and `Decoder` interfaces. Implementations of these interfaces must update the method name.
 
 ### Added
 - **Streaming SSZ support** — new `MarshalSSZWriter` and `UnmarshalSSZReader` entry points
@@ -54,26 +52,22 @@ None.
 - `OffchainLabs/go-bitfield.Bitlist` auto-detection
 - OOM protection test for tree proofs
 
+### Changed
+- Inlined primitive encoding/decoding in generated code for performance
+- Deduplicated dynamic expression evaluation in codegen
+- Improved test coverage significantly
+
 ### Fixed
 - Hash tree root calculation for dynamic byte slices with >32 bytes in generated code
 - Heap allocation in bitlist HTR calculation
 - Various tree proof optimizations
 
-### Changed
-- Major codebase reorganization (`sszutils` package extracted)
-- Inlined primitive encoding/decoding in generated code for performance
-- Deduplicated dynamic expression evaluation in codegen
-- Renamed `CanSeek` to `Seekable` on encoder/decoder interfaces
-- Improved test coverage significantly
-
-### Breaking Changes
-- **`sszutils` package extracted** — interfaces previously in root package moved to `sszutils`
-- **`CanSeek` renamed to `Seekable`** on `Encoder` and `Decoder` interfaces
-- **Codebase reorganization** — internal package structure changed; import paths for sub-packages may differ
-
 ---
 
-## [v1.1.2] — 2025-12-08
+## [v1.1.2] 2025-12-08
+
+### Breaking Changes
+- **Stricter unmarshal validation** — previously accepted invalid booleans (>1), unterminated bitlists, and bitvectors with set padding bits now return errors. Code relying on lenient parsing may break.
 
 ### Added
 - `ssz-bitsize` / `dynssz-bitsize` struct tags for bitvector types with padding bit validation
@@ -84,16 +78,22 @@ None.
 - Bumped Go version to 1.25
 - Switched to custom `libhashtree` bindings to avoid misleading CGO build warning
 
-### Breaking Changes
-- **Stricter unmarshal validation** — previously accepted invalid booleans (>1), unterminated bitlists, and bitvectors with set padding bits now return errors. Code relying on lenient parsing may break.
-
 ---
 
-## [v1.1.1] — 2025-10-18
+## [v1.1.1] 2025-10-18
 
 ### Added
 - Comprehensive unit tests for `TypeCache`, codegen, `treeproof`, `hasher`, `CompatibleUnion`, `TypeWrapper`
 - `nohashtree` build tag to exclude `OffchainLabs/hashtree` CGO dependency
+
+### Changed
+- Generalized default hasher pool usage in codegen
+- Improved marshal & HTR codegen to avoid temporary allocations
+- Offloaded common slice expansion logic to `sszutils.ExpandSlice`
+- Pointer optimizations in generated code
+- Reordered generated code for readability
+- Added `-package-name` flag to `dynssz-gen` CLI
+- Simplified project structure
 
 ### Fixed
 - Version header in generated files
@@ -105,21 +105,9 @@ None.
 - CGO-less builds (avoid `hashtree` dependency without CGO)
 - Named pointer type resolution
 
-### Changed
-- Generalized default hasher pool usage in codegen
-- Improved marshal & HTR codegen to avoid temporary allocations
-- Offloaded common slice expansion logic to `sszutils.ExpandSlice`
-- Pointer optimizations in generated code
-- Reordered generated code for readability
-- Added `-package-name` flag to `dynssz-gen` CLI
-- Simplified project structure
-
-### Breaking Changes
-None. Generated code from v1.1.0 should be regenerated for correctness fixes.
-
 ---
 
-## [v1.1.0] — 2025-09-28 (prerelease)
+## [v1.1.0] 2025-09-28 Code generator
 
 ### Added
 - **Code generator** (`codegen` package) — compile-time SSZ method generation as alternative to reflection
@@ -129,7 +117,6 @@ None. Generated code from v1.1.0 should be regenerated for correctness fixes.
 - `DynSsz.GetTree()` method for building complete Merkle trees
 - `CompatibleUnion` variant mixin in tree root calculation
 - `time.Time` support (serialized as uint64)
-- `nohashtree` build tag groundwork
 - CodeGenerator options: `WithNoMarshalSSZ`, `WithNoUnmarshalSSZ`, `WithNoSizeSSZ`, `WithNoHashTreeRoot`, `WithCreateLegacyFn`, `WithoutDynamicExpressions`, `WithNoFastSsz`, `WithReflectType`, `WithGoTypesType`, size/max/type hint options
 - Release workflow for automated builds
 
@@ -138,12 +125,13 @@ None. Generated code from v1.1.0 should be regenerated for correctness fixes.
 - Improved codegen formatting for `go fmt` compatibility
 - Added codegen header with hash and version
 
-### Breaking Changes
-- **New interfaces** — `DynamicMarshaler`, `DynamicUnmarshaler`, `DynamicSizer`, `DynamicHashRoot` added to the public API surface. Types implementing these are preferred over reflection.
-
 ---
 
-## [v1.0.2] — 2025-09-02
+## [v1.0.2] 2025-09-02
+
+### Breaking Changes
+- **Hasher backend changed** to `OffchainLabs/hashtree` which requires CGO by default. Use build tag `nohashtree` for pure-Go fallback.
+- **`TypeDescriptor` restructured** — fields reorganized for compactness. Code accessing `TypeDescriptor` fields directly may need updates.
 
 ### Added
 - `TypeWrapper[D, T]` generic type for wrapping non-struct top-level SSZ types with tag annotations
@@ -157,6 +145,13 @@ None. Generated code from v1.1.0 should be regenerated for correctness fixes.
 - Offset slice pool (`GetOffsetSlice`/`PutOffsetSlice`) to reduce allocations
 - Static size specification for custom SSZ types
 
+### Changed
+- Bumped Go version requirement in CI
+- Made `TypeDescriptor` more compact
+- Cached `HashTreeRootWith` method for call performance
+- Removed `remerkleable` dependency
+- Improved error handling and test coverage
+
 ### Fixed
 - Hash tree root calculation for multi-dimensional slices
 - Panic when hashing lists exceeding the limit
@@ -164,32 +159,16 @@ None. Generated code from v1.1.0 should be regenerated for correctness fixes.
 - Byte slice/array allocation performance
 - Unmarshal performance for byte slices and arrays
 
-### Changed
-- Switched low-level hasher to `OffchainLabs/hashtree` (significant performance improvement)
-- Bumped Go version requirement in CI
-- Made `TypeDescriptor` more compact
-- Cached `HashTreeRootWith` method for call performance
-- Removed `remerkleable` dependency
-- Improved error handling and test coverage
+---
 
-### Breaking Changes
-- **Hasher backend changed** to `OffchainLabs/hashtree` (requires CGO by default). Use build tag `nohashtree` for pure-Go fallback.
-- **`TypeDescriptor` restructured** — fields reorganized for compactness. Code accessing `TypeDescriptor` fields directly may need updates.
-- **`ssz-type` tag introduced** — changes how types are resolved. Existing tags remain compatible.
+## [v1.0.1] 2025-08-06
+
+### Changed
+- Switched `govaluate` dependency to maintained fork
 
 ---
 
-## [v1.0.1] — 2025-08-06
-
-### Changed
-- Switched `govaluate` dependency to maintained fork (`Knetic/govaluate` → maintained alternative)
-
-### Breaking Changes
-None.
-
----
-
-## [v1.0.0] — 2025-06-25
+## [v1.0.0] 2025-06-25
 
 ### Added
 - Consensus spec test validation (static SSZ samples from `ethereum/consensus-spec-tests`)
@@ -202,81 +181,65 @@ None.
 ### Changed
 - Refactored hash tree root calculation
 - Refactored type cache to minimize reflection overhead
-- Fixed `ssz-max` overflow handling
 - Improved slice creation in unmarshaler
 - Removed unused code
 
-### Breaking Changes
-- **v1.0.0 stable release** — API considered stable from this point. Prior v0.x releases had no stability guarantees.
+### Fixed
+- `ssz-max` overflow handling
 
 ---
 
-## [v0.0.6] — 2025-02-20
+## [v0.0.6] 2025-02-20
 
 ### Added
 - Hash tree root calculation (`HashTreeRoot`, `HashTreeRootWith`)
 - `hasher` package — SSZ Merkle hasher (ported from fastssz, removed fastssz dependency)
 
-### Breaking Changes
-- **`fastssz` dependency removed** — hasher implementation is now internal.
-
 ---
 
-## [v0.0.5] — 2024-08-05
+## [v0.0.5] 2024-08-05
 
 ### Fixed
 - Panic on concurrent use (concurrent map writes in type cache)
 - FastSSZ compatibility check extended to all types (not just structs)
 
-### Breaking Changes
-None.
-
 ---
 
-## [v0.0.4] — 2024-05-14
+## [v0.0.4] 2024-05-14
 
 ### Fixed
-- Bitvector rounding issue — sizes not a multiple of 8 now correctly round up (can't serialize partial bytes)
-
-### Breaking Changes
-None.
+- Bitvector rounding issue — sizes not a multiple of 8 now correctly round up
 
 ---
 
-## [v0.0.3] — 2024-05-03
+## [v0.0.3] 2024-05-03
 
 ### Added
 - Unmarshal tests and marshal tests
 - Offset validation in dynamic slice unmarshaling
-
-### Fixed
-- Size calculation errors
-- Marshaling of nil pointers
 
 ### Changed
 - License changed to Apache-2.0
 - Removed direct `fastssz` dependency
 - Refactored fastssz compatibility check
 
-### Breaking Changes
-- **License changed** from unspecified to Apache-2.0.
+### Fixed
+- Size calculation errors
+- Marshaling of nil pointers
 
 ---
 
-## [v0.0.2] — 2024-04-01
+## [v0.0.2] 2024-04-01
 
 ### Added
-- Dynamic expression parser (`govaluate` integration) for evaluating spec values in struct tags (e.g., `ssz-size:"MAX_VALIDATORS_PER_COMMITTEE"`)
+- Dynamic expression parser (`govaluate` integration) for evaluating spec values in struct tags
 
 ### Fixed
 - `govaluate` import path
 
-### Breaking Changes
-None.
-
 ---
 
-## [v0.0.1] — 2024-03-31
+## [v0.0.1] 2024-03-31
 
 ### Added
 - Initial release — prototype ported from [go-eth2-client PR #123](https://github.com/attestantio/go-eth2-client/pull/123)
@@ -286,6 +249,3 @@ None.
 - Struct tag support: `ssz-size`, `ssz-max`, `dynssz-size`, `dynssz-max`
 - Size caching for performance
 - Basic test and example code
-
-### Breaking Changes
-N/A (initial release).
