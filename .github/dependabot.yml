@@ -13,6 +13,8 @@ updates:
       all-go-deps:
         patterns:
           - "*"
+        exclude-patterns:
+          - "golang.org/x/*"
     ignore:
       # Cap golang.org/x/* to versions compatible with go 1.22
       - dependency-name: "golang.org/x/tools"
