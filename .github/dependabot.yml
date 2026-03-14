@@ -1,9 +1,32 @@
 version: 2
 updates:
-  # Go modules for all packages
+  # Go modules for root library (capped to stay compatible with go 1.22)
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "deps"
+    groups:
+      all-go-deps:
+        patterns:
+          - "*"
+    ignore:
+      # Cap golang.org/x/* to versions compatible with go 1.22
+      - dependency-name: "golang.org/x/tools"
+        versions: [">= 0.31.0"]
+      - dependency-name: "golang.org/x/mod"
+        versions: [">= 0.24.0"]
+      - dependency-name: "golang.org/x/sync"
+        versions: [">= 0.12.0"]
+      - dependency-name: "golang.org/x/sys"
+        versions: [">= 0.31.0"]
+
+  # Go modules for sub-modules (no version caps)
   - package-ecosystem: "gomod"
     directories:
-      - "/"
       - "/spectests"
       - "/spectests/consensus-spec-tests"
       - "/examples/basic"
