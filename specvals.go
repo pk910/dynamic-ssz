@@ -15,6 +15,12 @@ type cachedSpecValue struct {
 	value    uint64
 }
 
+// ResolveSpecValue resolves a dynamic specification value by name. The name can
+// be a simple identifier (e.g., "MAX_VALIDATORS_PER_COMMITTEE") or a mathematical
+// expression referencing spec values. Results are cached for subsequent lookups.
+//
+// Returns whether the value was resolved, the uint64 value, and any parse error.
+// If the name references undefined spec values, resolved will be false with no error.
 func (d *DynSsz) ResolveSpecValue(name string) (bool, uint64, error) {
 	d.specCacheMutex.RLock()
 	cachedValue := d.specValueCache[name]

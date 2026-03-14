@@ -575,7 +575,7 @@ func BenchmarkVerifyMultiproof(b *testing.B) {
 
 	b.Run("Prove_2_Adjacent_Leaves", func(b *testing.B) {
 		b.ReportAllocs()
-		for b.Loop() {
+		for i := 0; i < b.N; i++ {
 			_, _ = VerifyMultiproof(root, proofAdj, leavesAdj, indicesAdj)
 		}
 	})
@@ -593,7 +593,7 @@ func BenchmarkVerifyMultiproof(b *testing.B) {
 
 	b.Run("Prove_16_Scattered_Leaves", func(b *testing.B) {
 		b.ReportAllocs()
-		for b.Loop() {
+		for i := 0; i < b.N; i++ {
 			_, _ = VerifyMultiproof(root, proofScattered, leavesScattered, indicesScattered)
 		}
 	})
@@ -609,7 +609,7 @@ func BenchmarkVerifyMultiproof(b *testing.B) {
 
 	b.Run("Prove_All_Leaves", func(b *testing.B) {
 		b.ReportAllocs()
-		for b.Loop() {
+		for i := 0; i < b.N; i++ {
 			_, _ = VerifyMultiproof(root, proofAll, allLeaves, indicesAll)
 		}
 	})

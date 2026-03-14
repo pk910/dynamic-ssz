@@ -293,7 +293,7 @@ func (ctx *marshalContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 		return ctx.marshalUnion(desc, varName, indent)
 
 	case ssztypes.SszCustomType:
-		ctx.appendCode(indent, "return nil, sszutils.ErrNotImplemented\n")
+		ctx.appendCode(indent, "return nil, sszutils.NewSszError(sszutils.ErrNotImplemented, \"custom type marshaling not supported\")\n")
 
 	// extended types
 	case ssztypes.SszInt8Type:
@@ -463,7 +463,7 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		if desc.Kind == reflect.Array {
 			// check if dynamic limit is greater than the length of the array
 			ctx.appendCode(indent, "if %s > %d {\n", limitVar, desc.Len)
-			ctx.appendCode(indent, "\treturn nil, sszutils.ErrVectorLength\n")
+			ctx.appendCode(indent, "\treturn nil, sszutils.NewSszErrorf(sszutils.ErrVectorLength, \"dynamic vector size %%d exceeds array length %d\", %s)\n", desc.Len, limitVar)
 			ctx.appendCode(indent, "}\n")
 		}
 	} else {
@@ -484,7 +484,7 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 	case desc.Kind != reflect.Array:
 		ctx.appendCode(indent, "vlen := len(%s)\n", valueVar)
 		ctx.appendCode(indent, "if vlen > %s {\n", limitVar)
-		ctx.appendCode(indent, "\treturn nil, sszutils.ErrVectorLength\n")
+		ctx.appendCode(indent, "\treturn nil, sszutils.NewSszErrorf(sszutils.ErrVectorLength, \"vector length %%d exceeds limit %s\", vlen)\n", limitVar)
 		ctx.appendCode(indent, "}\n")
 		lenVar = varNameVLen
 	case hasLimitVar:
@@ -504,7 +504,7 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			if bitlimitVar != "" {
 				ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
 				ctx.appendCode(indent, "if %s[%s-1] & paddingMask != 0 {\n", valueVar, lenVar)
-				ctx.appendCode(indent, "\treturn nil, sszutils.ErrVectorLength\n")
+				ctx.appendCode(indent, "\treturn nil, sszutils.NewSszError(sszutils.ErrVectorLength, \"bitvector padding bits are non-zero\")\n")
 				ctx.appendCode(indent, "}\n")
 			}
 			ctx.appendCode(indent, "dst = append(dst, %s[:%s]...)\n", valueVar, lenVar)
@@ -608,7 +608,7 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 	if hasMax {
 		addVlen()
 		ctx.appendCode(indent, "if vlen > %s {\n", maxVar)
-		ctx.appendCode(indent, "\treturn nil, sszutils.ErrListTooBig\n")
+		ctx.appendCode(indent, "\treturn nil, sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"list length %%d exceeds maximum %s\", vlen)\n", maxVar)
 		ctx.appendCode(indent, "}\n")
 	}
 
@@ -688,7 +688,7 @@ func (ctx *marshalContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName
 
 	if hasMax {
 		ctx.appendCode(indent, "if vlen > %s {\n", maxVar)
-		ctx.appendCode(indent, "\treturn nil, sszutils.ErrListTooBig\n")
+		ctx.appendCode(indent, "\treturn nil, sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"bitlist length %%d exceeds maximum %s\", vlen)\n", maxVar)
 		ctx.appendCode(indent, "}\n")
 	}
 
@@ -696,7 +696,7 @@ func (ctx *marshalContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName
 	ctx.appendCode(indent, "if vlen == 0 {\n")
 	ctx.appendCode(indent, "\tbval = []byte{0x01}\n")
 	ctx.appendCode(indent, "} else if bval[vlen-1] == 0x00 {\n")
-	ctx.appendCode(indent, "\treturn nil, sszutils.ErrBitlistNotTerminated\n")
+	ctx.appendCode(indent, "\treturn nil, sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"bitlist missing termination bit\")\n")
 	ctx.appendCode(indent, "}\n")
 
 	ctx.appendCode(indent, "dst = append(dst, bval...)\n")
@@ -721,14 +721,14 @@ func (ctx *marshalContext) marshalUnion(desc *ssztypes.TypeDescriptor, varName s
 		ctx.appendCode(indent, "case %d:\n", variant)
 		ctx.appendCode(indent, "\tv, ok := %s.Data.(%s)\n", varName, variantType)
 		ctx.appendCode(indent, "\tif !ok {\n")
-		ctx.appendCode(indent, "\t\treturn nil, sszutils.ErrInvalidUnionVariant\n")
+		ctx.appendCode(indent, "\t\treturn nil, sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"union variant type mismatch\")\n")
 		ctx.appendCode(indent, "\t}\n")
 		if err := ctx.marshalType(variantDesc, "v", indent+1, false); err != nil {
 			return err
 		}
 	}
 	ctx.appendCode(indent, "default:\n")
-	ctx.appendCode(indent, "\treturn nil, sszutils.ErrInvalidUnionVariant\n")
+	ctx.appendCode(indent, "\treturn nil, sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"invalid union variant selector\")\n")
 	ctx.appendCode(indent, "}\n")
 
 	return nil

@@ -75,7 +75,6 @@ jobs:
         tag_name: "v${{ inputs.version }}"
         commitish: ${{ steps.auto_commit.outputs.commit_hash }}
         body: |
-          ### Major Changes
           ${{ steps.ai_release_notes.outputs.release_notes }}
 
           <details>

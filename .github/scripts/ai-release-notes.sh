@@ -5,7 +5,7 @@ previous_tag="${1}"
 # Get merge commits only
 if [ "$previous_tag" ]; then
     merge_commits=$(git log --oneline --merges --first-parent --no-decorate $previous_tag..HEAD)
-else 
+else
     merge_commits=$(git log --oneline --merges --first-parent --no-decorate)
 fi
 
@@ -20,7 +20,7 @@ pr_details=""
 if [ ${#pr_array[@]} -gt 0 ]; then
     # Split repository into owner and name
     IFS='/' read -r repo_owner repo_name <<< "$GITHUB_REPOSITORY"
-    
+
     # Process PRs in batches of 50 (GraphQL limit)
     batch_size=50
     for ((i=0; i<${#pr_array[@]}; i+=batch_size)); do
@@ -30,20 +30,20 @@ if [ ${#pr_array[@]} -gt 0 ]; then
         if [ $batch_end -gt ${#pr_array[@]} ]; then
             batch_end=${#pr_array[@]}
         fi
-        
+
         for ((j=i; j<batch_end; j++)); do
             pr_num=${pr_array[j]}
             graphql_query="${graphql_query} pr${pr_num}: repository(owner: \"${repo_owner}\", name: \"${repo_name}\") { pullRequest(number: ${pr_num}) { number title body author { login } } }"
         done
         graphql_query="${graphql_query} }"
-        
+
         # Execute GraphQL query
         graphql_response=$(curl -s -X POST \
             -H "Authorization: bearer $GITHUB_TOKEN" \
             -H "Content-Type: application/json" \
             -d "{\"query\": \"$(echo $graphql_query | sed 's/"/\\"/g')\"}" \
             "https://api.github.com/graphql")
-        
+
         # Parse response
         if [ -f ./pr-details.txt ]; then
             rm ./pr-details.txt
@@ -51,12 +51,12 @@ if [ ${#pr_array[@]} -gt 0 ]; then
         for ((j=i; j<batch_end; j++)); do
             pr_num=${pr_array[j]}
             pr_data=$(echo "$graphql_response" | jq -r ".data.pr${pr_num}.pullRequest")
-            
+
             if [ "$pr_data" != "null" ]; then
                 pr_title=$(echo "$pr_data" | jq -r '.title // empty')
                 pr_body=$(echo "$pr_data" | jq -r '.body // empty' | head -n 20)
                 pr_user=$(echo "$pr_data" | jq -r '.author.login // "unknown"')
-                
+
                 if [ -n "$pr_title" ]; then
                     echo "PR #${pr_num}: ${pr_title} (by @${pr_user})" >> ./pr-details.txt
                     if [ -n "$pr_body" ] && [ "$pr_body" != "null" ]; then
@@ -104,37 +104,48 @@ while IFS= read -r release; do
 done < <(curl -s https://api.github.com/repos/$GITHUB_REPOSITORY/releases | jq -c '.[] | select(.prerelease == false and .draft == false)')
 previous_release_notes=$(echo -e "Recent releases for reference:\n${previous_releases}")
 
-conv=$(cat <<EOF
-You are a helpful assistant that generates release notes for a software project.
+conv=$(cat <<'PROMPT_HEADER'
+You are a helpful assistant that generates release notes for a Go library.
 You will be given a changelog with merged pull requests and their details.
 
-$changelog_safe
+PROMPT_HEADER
+)
 
-Based on the PR titles and descriptions above, generate concise release notes highlighting the most important changes.
-Focus on user-facing features, bug fixes, and breaking changes.
+conv="${conv}
+${changelog_safe}
 
-The release notes will be embedded in the following format:
-### Major Changes
-{{ AI RESPONSE }}
+$(cat <<'PROMPT_BODY'
+Based on the PR titles and descriptions above, generate release notes in the following exact format.
+Only include sections that have content — omit empty sections entirely.
+The sections MUST appear in this exact order:
 
-<details>
-...
-</details>
+### Breaking Changes
+- Only list changes that require downstream projects to modify their code
+- Examples: renamed/removed exported functions, changed function signatures, removed packages, changed default behavior that causes errors
+
+### Added
+- New features, new exported functions/types, new CLI flags
+
+### Changed
+- Modified behavior, performance improvements, dependency updates, refactoring
+
+### Fixed
+- Bug fixes, crash fixes, correctness fixes
 
 Guidelines:
-- Keep it short and concise, maximum 5-6 bullet points
-- Prioritize user-facing changes and important bug fixes
+- Keep it concise, typically 3-8 bullet points total across all sections
+- Focus on user-facing changes
 - Group similar changes together when possible
-- Use clear, non-technical language when possible
-- Use markdown formatting
+- Use backticks for code identifiers (function names, types, packages)
+- Do NOT include sections with no items
+- Do NOT add any text before or after the sections
+- Do NOT include a version header — just the ### sections
 
-Do NOT respond with suggestions! The response will be processed programmatically and embedded in the release notes.
-Do NOT include the details tag or content in the response. Do NOT include the Major Changes header in the response.
+PROMPT_BODY
+)
 
 Previous release notes for context:
-$previous_release_notes
-EOF
-)
+${previous_release_notes}"
 
 #echo "$conv"
 #exit 0

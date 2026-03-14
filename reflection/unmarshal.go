@@ -5,7 +5,6 @@
 package reflection
 
 import (
-	"fmt"
 	"math"
 	"math/big"
 	"reflect"
@@ -105,7 +104,7 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 				if targetType.Size > 0 {
 					typeSize := int64(targetType.Size)
 					if typeSize > math.MaxInt {
-						return fmt.Errorf("type size %d exceeds platform int max", targetType.Size)
+						return sszutils.NewSszErrorf(sszutils.ErrPlatformOverflow, "type size %d exceeds platform int max", targetType.Size)
 					}
 					sszLen = int(typeSize)
 				}
@@ -132,7 +131,7 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 				if targetType.Size > 0 {
 					typeSize := int64(targetType.Size)
 					if typeSize > math.MaxInt {
-						return fmt.Errorf("type size %d exceeds platform int max", targetType.Size)
+						return sszutils.NewSszErrorf(sszutils.ErrPlatformOverflow, "type size %d exceeds platform int max", targetType.Size)
 					}
 					sszLen = int(typeSize)
 				}
@@ -284,7 +283,7 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 			return err
 		}
 	default:
-		return fmt.Errorf("unknown type: %v", targetType)
+		return sszutils.NewSszErrorf(sszutils.ErrNotImplemented, "unknown type: %v", targetType)
 	}
 
 	return nil
@@ -356,11 +355,11 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 
 			fieldValue := targetValue.Field(int(field.FieldIndex))
 			if err := ctx.unmarshalType(field.Type, fieldValue, decoder, idt+2); err != nil {
-				return fmt.Errorf("failed decoding field %v: %w", field.Name, err)
+				return sszutils.ErrorWithPath(err, field.Name)
 			}
 
 			if decoder.GetPosition() != expectedPos {
-				return fmt.Errorf("container field did not consume expected ssz range (pos: %v, expected: %v)", decoder.GetPosition(), expectedPos)
+				return sszutils.NewSszErrorf(sszutils.ErrOffset, "container field did not consume expected ssz range (pos: %v, expected: %v)", decoder.GetPosition(), expectedPos)
 			}
 		}
 		return nil
@@ -398,11 +397,11 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 			fieldValue := targetValue.Field(int(field.FieldIndex))
 			err := ctx.unmarshalType(field.Type, fieldValue, decoder, idt+2)
 			if err != nil {
-				return fmt.Errorf("failed decoding field %v: %w", field.Name, err)
+				return sszutils.ErrorWithPath(err, field.Name)
 			}
 
 			if decoder.GetPosition() != expectedPos {
-				return fmt.Errorf("container field did not consume expected ssz range (pos: %v, expected: %v)", decoder.GetPosition(), expectedPos)
+				return sszutils.NewSszErrorf(sszutils.ErrOffset, "container field did not consume expected ssz range (pos: %v, expected: %v)", decoder.GetPosition(), expectedPos)
 			}
 		} else {
 			// dynamic size field
@@ -415,7 +414,7 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 			} else {
 				fieldOffset, err := decoder.DecodeOffset()
 				if err != nil {
-					return err
+					return sszutils.ErrorWithPathf(err, "%s:o", field.Name)
 				}
 
 				// store dynamic field offset for later
@@ -437,7 +436,10 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 		}
 
 		if dynOffset != targetType.Len { // check first dynamic field offset
-			return sszutils.ErrOffset
+			return sszutils.ErrorWithPathf(
+				sszutils.NewSszErrorf(sszutils.ErrOffset, "first dynamic field offset does not match expected offset (offset: %v, expected: %v)", dynOffset, targetType.Len),
+				"%s:o", targetType.ContainerDesc.DynFields[0].Field.Name,
+			)
 		}
 
 		for i, field := range targetType.ContainerDesc.DynFields {
@@ -458,7 +460,10 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 
 			// check offset integrity (not before previous field offset & not after range end)
 			if endOffset > sszSize || endOffset < startOffset {
-				return sszutils.ErrOffset
+				return sszutils.ErrorWithPathf(
+					sszutils.NewSszErrorf(sszutils.ErrOffset, "dynamic field offset out of range (end: %v, start: %v, ssz size: %v)", endOffset, startOffset, sszSize),
+					"%s:o", field.Field.Name,
+				)
 			}
 
 			// fmt.Printf("%sfield %d:\t dynamic [%v:%v]\t %v\n", strings.Repeat(" ", idt+1), field.Index[0], startOffset, endOffset, field.Name)
@@ -472,12 +477,12 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 			fieldValue := targetValue.Field(int(fieldDescriptor.FieldIndex))
 			err := ctx.unmarshalType(fieldDescriptor.Type, fieldValue, decoder, idt+2)
 			if err != nil {
-				return fmt.Errorf("failed decoding field %v: %w", fieldDescriptor.Name, err)
+				return sszutils.ErrorWithPath(err, fieldDescriptor.Name)
 			}
 
 			consumedDiff := decoder.PopLimit()
 			if consumedDiff != 0 {
-				return fmt.Errorf("struct field did not consume expected ssz range (diff: %v, expected: %v)", consumedDiff, sszSize)
+				return sszutils.NewSszErrorf(sszutils.ErrOffset, "struct field did not consume expected ssz range (diff: %v, expected: %v)", consumedDiff, sszSize)
 			}
 		}
 	}
@@ -507,7 +512,7 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
 	vecLen := int64(targetType.Len)
 	if vecLen > math.MaxInt {
-		return fmt.Errorf("vector length %d exceeds platform int max", targetType.Len)
+		return sszutils.NewSszErrorf(sszutils.ErrPlatformOverflow, "vector length %d exceeds platform int max", targetType.Len)
 	}
 
 	fieldType := targetType.ElemDesc
@@ -559,7 +564,7 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 				paddingMask := uint8((uint16(0xff) << (targetType.BitSize % 8)) & 0xff)
 				paddingBits := buf[arrLen-1] & paddingMask
 				if paddingBits != 0 {
-					return fmt.Errorf("bitvector padding bits are not zero")
+					return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "bitvector padding bits are not zero")
 				}
 			}
 		}
@@ -598,7 +603,7 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
 	dynVecLen := int64(targetType.Len)
 	if dynVecLen > math.MaxInt {
-		return fmt.Errorf("dynamic vector length %d exceeds platform int max", targetType.Len)
+		return sszutils.NewSszErrorf(sszutils.ErrPlatformOverflow, "dynamic vector length %d exceeds platform int max", targetType.Len)
 	}
 
 	vectorLen := int(dynVecLen)
@@ -608,7 +613,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 	// check if there's enough data for all offsets
 	sszLen := decoder.GetLength()
 	if sszLen < requiredOffsetBytes {
-		return fmt.Errorf("unexpected end of SSZ. dynamic vector expects at least %v bytes for offsets, got %v", requiredOffsetBytes, sszLen)
+		return sszutils.NewSszErrorf(sszutils.ErrUnexpectedEOF, "dynamic vector expects at least %v bytes for offsets, got %v", requiredOffsetBytes, sszLen)
 	}
 
 	var sliceOffsets []uint32
@@ -626,7 +631,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 		for i := 0; i < vectorLen; i++ {
 			offset, err := decoder.DecodeOffset()
 			if err != nil {
-				return err
+				return sszutils.ErrorWithPathf(err, "[%d:o]", i)
 			}
 
 			sliceOffsets[i] = offset
@@ -650,7 +655,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 	}
 
 	if offset != uint32(vectorLen*4) {
-		return fmt.Errorf("dynamic vector offset of first item does not match expected offset (offset: %v, expected: %v)", offset, vectorLen*4)
+		return sszutils.NewSszErrorf(sszutils.ErrOffset, "dynamic vector offset of first item does not match expected offset (offset: %v, expected: %v)", offset, vectorLen*4)
 	}
 
 	var newValue reflect.Value
@@ -687,19 +692,25 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 		offset = endOffset
 
 		if endOffset < startOffset || endOffset > uint32(sszLen) {
-			return sszutils.ErrOffset
+			return sszutils.ErrorWithPathf(
+				sszutils.NewSszErrorf(sszutils.ErrOffset, "dynamic vector item offset out of range (end: %v, start: %v, ssz size: %v)", endOffset, startOffset, sszLen),
+				"[%d:o]", i,
+			)
 		}
 
 		itemSize := endOffset - startOffset
 		decoder.PushLimit(int(itemSize))
 		err := ctx.unmarshalType(fieldType, itemVal, decoder, idt+2)
 		if err != nil {
-			return err
+			return sszutils.ErrorWithPathf(err, "[%d]", i)
 		}
 
 		consumedDiff := decoder.PopLimit()
 		if consumedDiff != 0 {
-			return fmt.Errorf("dynamic vector item did not consume expected ssz range (diff: %v, expected: %v)", consumedDiff, itemSize)
+			return sszutils.ErrorWithPathf(
+				sszutils.NewSszErrorf(sszutils.ErrOffset, "dynamic vector item did not consume expected ssz range (diff: %v, expected: %v)", consumedDiff, itemSize),
+				"[%d]", i,
+			)
 		}
 	}
 
@@ -713,7 +724,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 func (ctx *ReflectionCtx) unmarshalFixedElements(fieldType *ssztypes.TypeDescriptor, newValue reflect.Value, count int, decoder sszutils.Decoder, idt int, context string) error {
 	fieldSize := int64(fieldType.Size)
 	if fieldSize > math.MaxInt {
-		return fmt.Errorf("field size %d exceeds platform int max", fieldType.Size)
+		return sszutils.NewSszErrorf(sszutils.ErrPlatformOverflow, "field size %d exceeds platform int max", fieldType.Size)
 	}
 
 	itemSize := int(fieldSize)
@@ -731,11 +742,14 @@ func (ctx *ReflectionCtx) unmarshalFixedElements(fieldType *ssztypes.TypeDescrip
 		expectedPos := decoder.GetPosition() + itemSize
 
 		if err := ctx.unmarshalType(fieldType, itemVal, decoder, idt+2); err != nil {
-			return err
+			return sszutils.ErrorWithPathf(err, "[%d]", i)
 		}
 
 		if decoder.GetPosition() != expectedPos {
-			return fmt.Errorf("%s item did not consume expected ssz range (pos: %v, expected: %v)", context, decoder.GetPosition(), expectedPos)
+			return sszutils.ErrorWithPathf(
+				sszutils.NewSszErrorf(sszutils.ErrOffset, "%s item did not consume expected ssz range (pos: %v, expected: %v)", context, decoder.GetPosition(), expectedPos),
+				"[%d]", i,
+			)
 		}
 	}
 
@@ -765,14 +779,14 @@ func (ctx *ReflectionCtx) unmarshalList(targetType *ssztypes.TypeDescriptor, tar
 
 	elemSize := int64(fieldType.Size)
 	if elemSize > math.MaxInt {
-		return fmt.Errorf("field size %d exceeds platform int max", fieldType.Size)
+		return sszutils.NewSszErrorf(sszutils.ErrPlatformOverflow, "field size %d exceeds platform int max", fieldType.Size)
 	}
 
 	// Calculate slice length once
 	itemSize := int(elemSize)
 	sliceLen := sszLen / itemSize
 	if sszLen%itemSize != 0 {
-		return fmt.Errorf("invalid list length, expected multiple of %v, got %v", itemSize, sszLen)
+		return sszutils.NewSszErrorf(sszutils.ErrOffset, "invalid list length, expected multiple of %v, got %v", itemSize, sszLen)
 	}
 
 	// slice with static size items
@@ -852,7 +866,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 
 	// need at least 4 bytes to read the first offset
 	if sszLen < 4 {
-		return fmt.Errorf("unexpected end of SSZ. dynamic list expects at least 4 bytes for first offset, got %v", sszLen)
+		return sszutils.NewSszErrorf(sszutils.ErrUnexpectedEOF, "dynamic list expects at least 4 bytes for first offset, got %v", sszLen)
 	}
 
 	// derive number of items from first item offset
@@ -867,7 +881,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 	// check if there's enough data for all offsets
 	requiredOffsetBytes := sliceLen * 4
 	if sszLen < requiredOffsetBytes {
-		return fmt.Errorf("unexpected end of SSZ. dynamic list expects at least %v bytes for offsets, got %v", requiredOffsetBytes, sszLen)
+		return sszutils.NewSszErrorf(sszutils.ErrUnexpectedEOF, "dynamic list expects at least %v bytes for offsets, got %v", requiredOffsetBytes, sszLen)
 	}
 
 	// read all item offsets
@@ -885,7 +899,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 		for i := 1; i < sliceLen; i++ {
 			offset, err := decoder.DecodeOffset()
 			if err != nil {
-				return err
+				return sszutils.ErrorWithPathf(err, "[%d:o]", i)
 			}
 			sliceOffsets[i] = offset
 		}
@@ -929,7 +943,10 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 			}
 
 			if endOffset < startOffset || endOffset > uint32(sszLen) {
-				return sszutils.ErrOffset
+				return sszutils.ErrorWithPathf(
+					sszutils.NewSszErrorf(sszutils.ErrOffset, "dynamic list item offset out of range (end: %v, start: %v, ssz size: %v)", endOffset, startOffset, sszLen),
+					"[%d:o]", i,
+				)
 			}
 
 			itemSize := endOffset - startOffset
@@ -937,12 +954,15 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 			decoder.PushLimit(int(itemSize))
 			err := ctx.unmarshalType(fieldType, itemVal, decoder, idt+2)
 			if err != nil {
-				return err
+				return sszutils.ErrorWithPathf(err, "[%d]", i)
 			}
 
 			consumedDiff := decoder.PopLimit()
 			if consumedDiff != 0 {
-				return fmt.Errorf("dynamic list item did not consume expected ssz range (diff: %v, expected: %v)", consumedDiff, itemSize)
+				return sszutils.ErrorWithPathf(
+					sszutils.NewSszErrorf(sszutils.ErrOffset, "dynamic list item did not consume expected ssz range (diff: %v, expected: %v)", consumedDiff, itemSize),
+					"[%d]", i,
+				)
 			}
 
 			offset += itemSize
@@ -972,7 +992,7 @@ func (ctx *ReflectionCtx) unmarshalBitlist(_ *ssztypes.TypeDescriptor, targetVal
 	sszLen := decoder.GetLength()
 
 	if sszLen == 0 {
-		return sszutils.ErrBitlistNotTerminated
+		return sszutils.NewSszError(sszutils.ErrBitlistNotTerminated, "bitlist misses mandatory termination bit")
 	}
 
 	// Bitlists can only be []byte (validated by typecache)
@@ -983,7 +1003,7 @@ func (ctx *ReflectionCtx) unmarshalBitlist(_ *ssztypes.TypeDescriptor, targetVal
 	}
 
 	if byteSlice[sszLen-1] == 0x00 {
-		return sszutils.ErrBitlistNotTerminated
+		return sszutils.NewSszError(sszutils.ErrBitlistNotTerminated, "bitlist misses mandatory termination bit")
 	}
 
 	targetValue.Set(reflect.ValueOf(byteSlice))
@@ -1008,7 +1028,7 @@ func (ctx *ReflectionCtx) unmarshalBitlist(_ *ssztypes.TypeDescriptor, targetVal
 //   - error: An error if decoding fails
 func (ctx *ReflectionCtx) unmarshalCompatibleUnion(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
 	if decoder.GetLength() < 1 {
-		return fmt.Errorf("CompatibleUnion requires at least 1 byte for selector")
+		return sszutils.NewSszError(sszutils.ErrUnexpectedEOF, "CompatibleUnion requires at least 1 byte for selector")
 	}
 
 	// Read the variant byte
@@ -1020,7 +1040,7 @@ func (ctx *ReflectionCtx) unmarshalCompatibleUnion(targetType *ssztypes.TypeDesc
 	// Get the variant descriptor
 	variantDesc, ok := targetType.UnionVariants[variant]
 	if !ok {
-		return sszutils.ErrInvalidUnionVariant
+		return sszutils.NewSszError(sszutils.ErrInvalidUnionVariant, "invalid union variant")
 	}
 
 	// Create a new value of the variant type
@@ -1029,7 +1049,7 @@ func (ctx *ReflectionCtx) unmarshalCompatibleUnion(targetType *ssztypes.TypeDesc
 	// Unmarshal the data
 	err = ctx.unmarshalType(variantDesc, variantValue, decoder, idt+2)
 	if err != nil {
-		return fmt.Errorf("failed to unmarshal union variant %d: %w", variant, err)
+		return sszutils.ErrorWithPathf(err, "[v:%d]", variant)
 	}
 
 	// We know CompatibleUnion has exactly 2 fields: Variant (uint8) and Data (interface{})
@@ -1052,7 +1072,7 @@ func (ctx *ReflectionCtx) unmarshalCompatibleUnion(targetType *ssztypes.TypeDesc
 //   - error: An error if decoding fails
 func (ctx *ReflectionCtx) unmarshalOptional(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
 	if decoder.GetLength() < 1 {
-		return fmt.Errorf("optional requires at least 1 byte for availability")
+		return sszutils.NewSszError(sszutils.ErrUnexpectedEOF, "optional requires at least 1 byte for availability")
 	}
 
 	// Read the availability byte

@@ -188,7 +188,7 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 		if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsTime != 0 {
 			timeVal, isTime := sourceValue.Interface().(time.Time)
 			if !isTime {
-				return fmt.Errorf("time.Time type expected, got %v", sourceType.Type.Name())
+				return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "time.Time type expected, got %v", sourceType.Type.Name())
 			}
 			uintVal = uint64(timeVal.Unix())
 		} else {
@@ -253,7 +253,7 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 			return err
 		}
 	default:
-		return fmt.Errorf("unknown type: %v", sourceType)
+		return sszutils.NewSszErrorf(sszutils.ErrNotImplemented, "unknown type: %v", sourceType)
 	}
 
 	if ctx.verbose {
@@ -317,7 +317,7 @@ func (ctx *ReflectionCtx) buildRootFromLargeUint(sourceType *ssztypes.TypeDescri
 
 	sourceLen := uint32(sourceValue.Len())
 	if sourceLen != sourceType.Size/sourceType.ElemDesc.Size {
-		return fmt.Errorf("large uint type does not have expected data length (%d != %d)", sourceLen, sourceType.Size/sourceType.ElemDesc.Size)
+		return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "large uint type does not have expected data length (%d != %d)", sourceLen, sourceType.Size/sourceType.ElemDesc.Size)
 	}
 
 	isUint64 := sourceType.ElemDesc.Kind == reflect.Uint64
@@ -373,7 +373,7 @@ func (ctx *ReflectionCtx) buildRootFromContainer(sourceType *ssztypes.TypeDescri
 
 		err := ctx.buildRootFromType(fieldType, fieldValue, hh, false, idt+2)
 		if err != nil {
-			return err
+			return sszutils.ErrorWithPathf(err, "[%d]", i)
 		}
 	}
 
@@ -433,7 +433,7 @@ func (ctx *ReflectionCtx) buildRootFromProgressiveContainer(sourceType *ssztypes
 
 		err := ctx.buildRootFromType(fieldType, fieldValue, hh, false, idt+2)
 		if err != nil {
-			return err
+			return sszutils.ErrorWithPathf(err, "[%d]", i)
 		}
 	}
 
@@ -469,12 +469,12 @@ func (ctx *ReflectionCtx) buildRootFromCompatibleUnion(sourceType *ssztypes.Type
 	// Get the variant descriptor
 	variantDesc, ok := sourceType.UnionVariants[variant]
 	if !ok {
-		return sszutils.ErrInvalidUnionVariant
+		return sszutils.NewSszError(sszutils.ErrInvalidUnionVariant, "invalid union variant")
 	}
 
 	// Hash only the data, not the selector
 	if dataField.IsNil() {
-		return sszutils.ErrInvalidUnionVariant
+		return sszutils.NewSszError(sszutils.ErrInvalidUnionVariant, "invalid union variant")
 	}
 	dataField = dataField.Elem()
 
@@ -482,7 +482,7 @@ func (ctx *ReflectionCtx) buildRootFromCompatibleUnion(sourceType *ssztypes.Type
 
 	err := ctx.buildRootFromType(variantDesc, dataField, hh, false, idt+2)
 	if err != nil {
-		return fmt.Errorf("failed to hash union variant %d: %w", variant, err)
+		return sszutils.ErrorWithPathf(err, "[v:%d]", variant)
 	}
 
 	// mixin the selector
@@ -518,7 +518,7 @@ func (ctx *ReflectionCtx) buildRootFromCompatibleUnion(sourceType *ssztypes.Type
 func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
 	vecLen := int64(sourceType.Len)
 	if vecLen > math.MaxInt {
-		return fmt.Errorf("vector length %d exceeds platform int max", sourceType.Len)
+		return sszutils.NewSszErrorf(sszutils.ErrPlatformOverflow, "vector length %d exceeds platform int max", sourceType.Len)
 	}
 
 	hashIndex := hh.Index()
@@ -528,7 +528,7 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 		if sourceType.Kind == reflect.Array {
 			sliceLen = int(vecLen)
 		} else {
-			return sszutils.ErrListTooBig
+			return sszutils.NewSszErrorf(sszutils.ErrListTooBig, "vector length %d is bigger than max value %d", sliceLen, sourceType.Len)
 		}
 	}
 
@@ -561,7 +561,7 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 			paddingMask := uint8((uint16(0xff) << (sourceType.BitSize % 8)) & 0xff)
 			paddingBits := bytes[len(bytes)-1] & paddingMask
 			if paddingBits != 0 {
-				return sszutils.ErrVectorLength
+				return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "bitvector padding bits are not zero")
 			}
 		}
 
@@ -573,7 +573,7 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 
 			err := ctx.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, true, idt+2)
 			if err != nil {
-				return err
+				return sszutils.ErrorWithPathf(err, "[%d]", i)
 			}
 		}
 
@@ -588,7 +588,7 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 			for i := 0; i < appendZero; i++ {
 				err := ctx.buildRootFromType(sourceType.ElemDesc, zeroVal, hh, true, idt+2)
 				if err != nil {
-					return err
+					return sszutils.ErrorWithPathf(err, "[+%d]", sliceLen+i)
 				}
 			}
 		}
@@ -653,7 +653,7 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 
 			err := ctx.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, true, idt+2)
 			if err != nil {
-				return err
+				return sszutils.ErrorWithPathf(err, "[%d]", i)
 			}
 		}
 
@@ -692,7 +692,7 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 		}
 		inputLen := hh.Index() - hashIndex
 		if (uint64(inputLen)+31)/32 > limit {
-			return sszutils.ErrListTooBig
+			return sszutils.NewSszErrorf(sszutils.ErrListTooBig, "list length %d is bigger than limit %d", inputLen, limit)
 		}
 		hh.MerkleizeWithMixin(hashIndex, uint64(sliceLen), limit)
 	default:
@@ -771,7 +771,7 @@ func (ctx *ReflectionCtx) buildRootFromBitlist(sourceType *ssztypes.TypeDescript
 
 	bitlist, size := hasher.ParseBitlistWithHasher(hh, bytes)
 	if size > maxSize {
-		return sszutils.ErrListTooBig
+		return sszutils.NewSszErrorf(sszutils.ErrListTooBig, "bitlist length %d is bigger than limit %d", size, maxSize)
 	}
 
 	// merkleize the content with mix in length
@@ -830,7 +830,7 @@ func (ctx *ReflectionCtx) buildRootFromOptional(sourceType *ssztypes.TypeDescrip
 func (ctx *ReflectionCtx) buildRootFromBigInt(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, _ int) error {
 	bigInt, isBigInt := sourceValue.Interface().(big.Int)
 	if !isBigInt {
-		return fmt.Errorf("big.Int type expected, got %v", sourceType.Type.Name())
+		return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "big.Int type expected, got %v", sourceType.Type.Name())
 	}
 	bigIntBytes := bigInt.Bytes()
 	if len(bigIntBytes) == 0 {

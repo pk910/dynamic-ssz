@@ -475,7 +475,7 @@ func TestHashTreeRootErrors(t *testing.T) {
 			input: struct {
 				Flags []byte `ssz-type:"bitvector" ssz-bitsize:"12"`
 			}{[]byte{0xff, 0x1f}},
-			expectedErr: "incorrect vector length",
+			expectedErr: "bitvector padding bits are not zero",
 		},
 		{
 			name: "list_element_hash_error",
@@ -758,7 +758,7 @@ func TestGetTreeErrors(t *testing.T) {
 			input: struct {
 				Flags []byte `ssz-type:"bitvector" ssz-bitsize:"12"`
 			}{[]byte{0xff, 0x1f}},
-			expectedErr: "incorrect vector length",
+			expectedErr: "bitvector padding bits are not zero",
 		},
 		{
 			name: "list_element_hash_error",

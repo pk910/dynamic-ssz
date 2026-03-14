@@ -83,6 +83,37 @@ jobs:
           "dynssz-gen-darwin-amd64#dynssz-gen-${version}-darwin-amd64" \
           "dynssz-gen-darwin-arm64#dynssz-gen-${version}-darwin-arm64"
 
+  changelog:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    permissions:
+      contents: write
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        ref: master
+        token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+
+    - name: Extract release info
+      id: release_info
+      run: |
+        echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+        echo "date=$(echo '${{ github.event.release.published_at }}' | cut -dT -f1)" >> $GITHUB_OUTPUT
+
+    - name: Update CHANGELOG.md
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        chmod +x .github/scripts/update-changelog.sh
+        .github/scripts/update-changelog.sh "${{ steps.release_info.outputs.tag }}" "${{ steps.release_info.outputs.date }}"
+
+    - uses: stefanzweifel/git-auto-commit-action@04702edda442b2e678b25b537cec683a1493fcb9 # v7.1.0
+      with:
+        commit_message: "update CHANGELOG.md for ${{ github.event.release.tag_name }}"
+        branch: master
+        file_pattern: CHANGELOG.md
+
   docker:
     runs-on: ubuntu-latest
     permissions:
