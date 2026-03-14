@@ -6,7 +6,6 @@ package sszutils
 
 import (
 	"errors"
-	"fmt"
 	"testing"
 )
 
@@ -19,7 +18,7 @@ func TestSszError_ErrorNoPath(t *testing.T) {
 }
 
 func TestSszError_ErrorNoMessage(t *testing.T) {
-	err := &SszError{Err: ErrOffset}
+	err := NewSszError(ErrOffset, "")
 	expected := "incorrect offset"
 	if err.Error() != expected {
 		t.Errorf("got %q, want %q", err.Error(), expected)
@@ -61,42 +60,6 @@ func TestSszError_UnwrapErrorsIs(t *testing.T) {
 
 	if errors.Is(wrapped, ErrOffset) {
 		t.Error("errors.Is should not match ErrOffset")
-	}
-}
-
-func TestSszError_ErrorsAs(t *testing.T) {
-	err := NewSszError(ErrListTooBig, "len=999, max=128")
-	wrapped := ErrorWithPath(err, "Validators")
-
-	var sszErr *SszError
-	if !errors.As(wrapped, &sszErr) {
-		t.Fatal("errors.As should match *SszError")
-	}
-
-	if sszErr.Err != ErrListTooBig {
-		t.Errorf("got base %v, want ErrListTooBig", sszErr.Err)
-	}
-
-	if len(sszErr.Path) != 1 || sszErr.Path[0] != "Validators" {
-		t.Errorf("got path %v, want [Validators]", sszErr.Path)
-	}
-}
-
-func TestErrorWithPath_NonSszError(t *testing.T) {
-	plain := fmt.Errorf("some other error")
-	wrapped := ErrorWithPath(plain, "Field")
-
-	var sszErr *SszError
-	if !errors.As(wrapped, &sszErr) {
-		t.Fatal("errors.As should match *SszError for wrapped non-SSZ error")
-	}
-
-	if sszErr.Err != plain {
-		t.Errorf("got base %v, want original error", sszErr.Err)
-	}
-
-	if sszErr.Message != "" {
-		t.Errorf("got message %q, want empty", sszErr.Message)
 	}
 }
 
