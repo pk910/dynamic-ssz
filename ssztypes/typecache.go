@@ -1073,6 +1073,10 @@ func (tc *TypeCache) extractGenericTypeParameter(unionType reflect.Type) (reflec
 	return descriptorType, nil
 }
 
+// GetTypeHash computes a SHA-256 hash of the TypeDescriptor's JSON
+// representation. This hash uniquely identifies the type's SSZ layout and is
+// used by the code generator to detect when a type's structure has changed and
+// regeneration is needed.
 func (td *TypeDescriptor) GetTypeHash() ([32]byte, error) {
 	jsonDesc, err := json.Marshal(td)
 	if err != nil {
