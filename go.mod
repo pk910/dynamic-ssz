@@ -4,7 +4,7 @@ go 1.25.8
 
 require (
 	github.com/casbin/govaluate v1.10.0
-	github.com/pk910/hashtree-bindings v0.0.1
+	github.com/pk910/hashtree-bindings v0.1.0
 	golang.org/x/tools v0.43.0
 )
 
