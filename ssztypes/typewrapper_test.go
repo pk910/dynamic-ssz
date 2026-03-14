@@ -27,6 +27,7 @@ func TestExtractWrapperDescriptorInfo(t *testing.T) {
 			}{}),
 			expectError: false,
 			validateInfo: func(t *testing.T, info *wrapperDescriptorInfo) {
+				t.Helper()
 				if info.Type.Kind() != reflect.Slice {
 					t.Error("expected slice type")
 				}
@@ -39,6 +40,7 @@ func TestExtractWrapperDescriptorInfo(t *testing.T) {
 			}{}),
 			expectError: false,
 			validateInfo: func(t *testing.T, info *wrapperDescriptorInfo) {
+				t.Helper()
 				if info.Type.Kind() != reflect.Slice {
 					t.Error("expected slice type")
 				}
@@ -51,6 +53,7 @@ func TestExtractWrapperDescriptorInfo(t *testing.T) {
 			}{}),
 			expectError: false,
 			validateInfo: func(t *testing.T, info *wrapperDescriptorInfo) {
+				t.Helper()
 				if info.Type.Kind() != reflect.Uint64 {
 					t.Error("expected uint64 type")
 				}

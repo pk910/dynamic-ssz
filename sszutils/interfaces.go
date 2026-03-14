@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // This file is part of the dynamic-ssz library.
 
+// Package sszutils provides shared interfaces, encoding/decoding primitives,
+// and utility functions for SSZ (Simple Serialize) operations.
+//
+// It defines the core interfaces used across the dynamic-ssz library:
+// encoder/decoder abstractions for both buffer and stream modes, hash walker
+// for merkle tree computation, and compatibility interfaces for interoperating
+// with fastssz and dynamic SSZ implementations.
 package sszutils
 
 // FastsszMarshaler is the interface implemented by types that can marshal themselves into valid SZZ using fastssz.
@@ -16,6 +23,8 @@ type FastsszUnmarshaler interface {
 	UnmarshalSSZ(buf []byte) error
 }
 
+// FastsszHashRoot is the interface implemented by types that can compute their
+// SSZ hash tree root using fastssz.
 type FastsszHashRoot interface {
 	HashTreeRoot() ([32]byte, error)
 }
@@ -45,7 +54,8 @@ type DynamicSizer interface {
 	SizeSSZDyn(ds DynamicSpecs) int
 }
 
-// DynamicHashRoot is the interface implemented by types that can calculate their own SSZ hash tree root dynamically
+// DynamicHashRoot is the interface implemented by types that can compute their
+// SSZ hash tree root using dynamic specification values and a HashWalker.
 type DynamicHashRoot interface {
 	HashTreeRootWithDyn(ds DynamicSpecs, hh HashWalker) error
 }
@@ -86,8 +96,13 @@ type DynamicViewHashRoot interface {
 	HashTreeRootWithDynView(view any) func(ds DynamicSpecs, hh HashWalker) error
 }
 
-// DynamicSpecs is the interface for a dynamic SSZ encoder/decoder that provides
-// specification values for dynamic sizing.
+// DynamicSpecs is the interface for resolving dynamic specification values at
+// runtime. Implementations provide named values (e.g., "SYNC_COMMITTEE_SIZE")
+// that control SSZ field sizes.
+//
+// ResolveSpecValue returns whether the named value exists, its uint64 value,
+// and any error. The name may be a simple identifier or a mathematical
+// expression referencing other spec values.
 type DynamicSpecs interface {
 	ResolveSpecValue(name string) (bool, uint64, error)
 }

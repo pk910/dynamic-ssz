@@ -244,7 +244,7 @@ func TestFixedSizeStringVsByteArrayMarshal(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			var byteData [32]byte
-			copy(byteData[:], []byte(tc.value))
+			copy(byteData[:], tc.value)
 
 			strStruct := WithFixedString{
 				Data: tc.value,
@@ -363,9 +363,10 @@ func TestMarshalErrors(t *testing.T) {
 				Inner struct {
 					Data []uint32 `ssz-size:"2"`
 				}
+				Dyn []uint8 `ssz-max:"100"`
 			}{struct {
 				Data []uint32 `ssz-size:"2"`
-			}{[]uint32{1, 2, 3}}},
+			}{[]uint32{1, 2, 3}}, nil},
 			expectedErr: "list length is higher than max value",
 		},
 		{
@@ -1475,7 +1476,7 @@ func TestMarshalDynamicListNonSeekableSizeError(t *testing.T) {
 	listDesc.ElemDesc = &elemDescCopy
 
 	ctx := reflection.NewReflectionCtx(nil, nil, false, true)
-	encoder := sszutils.NewStreamEncoder(bytes.NewBuffer(nil))
+	encoder := sszutils.NewStreamEncoder(bytes.NewBuffer(nil), 0)
 	data := []DynElem{{Value: 1}, {Value: 2}}
 	err = ctx.MarshalSSZ(listDesc, reflect.ValueOf(data), encoder)
 	if err == nil {

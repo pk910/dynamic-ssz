@@ -240,7 +240,7 @@ type SimpleTypesWithSpecs struct {
 type SimpleTypesWithSpecs_C1 struct {
 	F1 []uint16   `ssz-size:"4" dynssz-size:"F1_MAX"`
 	F2 [][]uint16 `ssz-max:"4,4" dynssz-max:"F2_MAX,F2_MAX"`
-	//C1 []*SimpleTypesWithSpecs_C2 `ssz-size:"4" dynssz-size:"F1_MAX"`
+	// C1 []*SimpleTypesWithSpecs_C2 `ssz-size:"4" dynssz-size:"F1_MAX"`
 }
 
 type SimpleTypesWithSpecs_C2 struct {

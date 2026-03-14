@@ -127,7 +127,7 @@ func (ctx *decoderContext) getValVar() string {
 }
 
 // getCastedValueVar returns the variable name for the value of a type, converting to the source type if needed
-func (ctx *decoderContext) getCastedValueVar(desc *ssztypes.TypeDescriptor, varName string, sourceType string) string {
+func (ctx *decoderContext) getCastedValueVar(desc *ssztypes.TypeDescriptor, varName, sourceType string) string {
 	if targetType := ctx.typePrinter.InnerTypeString(desc); targetType != sourceType {
 		varName = fmt.Sprintf("%s(%s)", targetType, varName)
 	}
@@ -172,7 +172,7 @@ func (ctx *decoderContext) isInlinable(desc *ssztypes.TypeDescriptor) bool {
 }
 
 // unmarshalType generates unmarshal code for any SSZ type, delegating to specific unmarshalers.
-func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName string, indent int, isRoot bool, noBufCheck bool) error {
+func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName string, indent int, isRoot, noBufCheck bool) error {
 	// Handle types that have generated methods we can call
 	isView := desc.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
 	if !isRoot && isView {
@@ -680,6 +680,18 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 				}
 				ctx.appendCode(indent, "if _, err = dec.DecodeBytes(%s[:listLen]); err != nil {\n\treturn err\n}\n", varName)
 			}
+			return nil
+		}
+
+		// bulk uint64 lists
+		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
+			ctx.appendCode(indent, "sszLen := dec.GetLength()\n")
+			ctx.appendCode(indent, "itemCount := sszLen / 8\n")
+			ctx.appendCode(indent, "if sszLen%s8 != 0 {\n\treturn sszutils.ErrUnexpectedEOF\n}\n", "%")
+			if desc.Kind != reflect.Array {
+				ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", varName, varName)
+			}
+			ctx.appendCode(indent, "if err = sszutils.DecodeUint64Slice(dec, %s); err != nil {\n\treturn err\n}\n", varName)
 			return nil
 		}
 

@@ -10,6 +10,7 @@ package treeproof
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
@@ -86,6 +87,8 @@ func (w *Wrapper) Merkleize(indx int) {
 }
 
 func (w *Wrapper) MerkleizeWithMixin(indx int, num, limit uint64) {
+	checkUint64FitsInt(num, "MerkleizeWithMixin num")
+	checkUint64FitsInt(limit, "MerkleizeWithMixin limit")
 	if len(w.buf) != 0 {
 		w.appendBytesAsNodes(w.buf)
 		w.buf = w.buf[:0]
@@ -102,6 +105,7 @@ func (w *Wrapper) MerkleizeProgressive(indx int) {
 }
 
 func (w *Wrapper) MerkleizeProgressiveWithMixin(indx int, num uint64) {
+	checkUint64FitsInt(num, "MerkleizeProgressiveWithMixin num")
 	if len(w.buf) != 0 {
 		w.appendBytesAsNodes(w.buf)
 		w.buf = w.buf[:0]
@@ -117,13 +121,25 @@ func (w *Wrapper) MerkleizeProgressiveWithActiveFields(indx int, activeFields []
 	w.CommitProgressiveWithActiveFields(indx, activeFields)
 }
 
+// checkUint64FitsInt panics if v exceeds the platform's int range, preventing
+// silent truncation when converting uint64 to int on 32-bit systems.
+func checkUint64FitsInt(v uint64, context string) {
+	if v > math.MaxInt {
+		panic(fmt.Sprintf("%s: %d exceeds max int", context, v))
+	}
+}
+
 func (w *Wrapper) PutBitlist(bb []byte, maxSize uint64) {
 	b, size := hasher.ParseBitlist(w.tmp[:0], bb)
 	w.tmp = b
 
 	indx := w.Index()
 	w.appendBytesAsNodes(b)
-	w.CommitWithMixin(indx, int(size), int((maxSize+255)/256))
+
+	limit := (maxSize + 255) / 256
+	checkUint64FitsInt(size, "PutBitlist size")
+	checkUint64FitsInt(limit, "PutBitlist limit")
+	w.CommitWithMixin(indx, int(size), int(limit))
 }
 
 func (w *Wrapper) PutProgressiveBitlist(bb []byte) {
@@ -132,6 +148,8 @@ func (w *Wrapper) PutProgressiveBitlist(bb []byte) {
 
 	indx := w.Index()
 	w.appendBytesAsNodes(b)
+
+	checkUint64FitsInt(size, "PutProgressiveBitlist size")
 	w.CommitProgressiveWithMixin(indx, int(size))
 }
 
@@ -195,13 +213,6 @@ func (w *Wrapper) PutUint64Array(b []uint64, maxCapacity ...uint64) {
 }
 
 /// --- legacy ones ---
-
-func min(i, j int) int {
-	if i < j {
-		return i
-	}
-	return j
-}
 
 func (w *Wrapper) AddBytes(b []byte) {
 	if len(b) <= 32 {

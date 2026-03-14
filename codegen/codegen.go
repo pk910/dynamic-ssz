@@ -842,11 +842,11 @@ func (cg *CodeGenerator) Generate() error {
 
 	for fileName, code := range results {
 		dir := filepath.Dir(fileName)
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("failed to create directory %s: %w", dir, err)
 		}
 
-		if err := os.WriteFile(fileName, []byte(code), 0644); err != nil {
+		if err := os.WriteFile(fileName, []byte(code), 0o600); err != nil {
 			return fmt.Errorf("failed to write code to file %s: %w", fileName, err)
 		}
 	}

@@ -25,7 +25,8 @@ var defaultOffsetSlicePool = &offsetSlicePool{
 
 // Get returns an int slice from the pool, consumer can grow it as needed
 func (p *offsetSlicePool) Get() []uint32 {
-	return (*p.pool.Get().(*[]uint32))[:0] // Reset length to 0
+	item, _ := p.pool.Get().(*[]uint32)
+	return (*item)[:0]
 }
 
 // Put returns an int slice to the pool
@@ -35,11 +36,15 @@ func (p *offsetSlicePool) Put(slice []uint32) {
 	}
 }
 
+// GetOffsetSlice returns a uint32 slice of the given size from a shared pool,
+// suitable for use as an SSZ offset buffer. The caller must return it via
+// PutOffsetSlice when done.
 func GetOffsetSlice(size int) []uint32 {
 	buf := defaultOffsetSlicePool.Get()
 	return ExpandSlice(buf, size)
 }
 
+// PutOffsetSlice returns a uint32 offset slice to the shared pool for reuse.
 func PutOffsetSlice(slice []uint32) {
 	defaultOffsetSlicePool.Put(slice)
 }

@@ -1,0 +1,38 @@
+version: 2
+updates:
+  # Go modules for all packages
+  - package-ecosystem: "gomod"
+    directories:
+      - "/"
+      - "/spectests"
+      - "/spectests/consensus-spec-tests"
+      - "/examples/basic"
+      - "/examples/codegen"
+      - "/examples/custom-types"
+      - "/examples/progressive-merkleization"
+      - "/examples/versioned-blocks"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "deps"
+    groups:
+      all-go-deps:
+        patterns:
+          - "*"
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "ci"
+    commit-message:
+      prefix: "ci"
+    groups:
+      all-actions:
+        patterns:
+          - "*"

@@ -1393,7 +1393,10 @@ func TestBuildCompatibleUnionDescriptor(t *testing.T) {
 			t.Fatalf("Failed to instantiate CompatibleUnion: %v", err)
 		}
 
-		namedInstantiated := instantiated.(*types.Named)
+		namedInstantiated, ok := instantiated.(*types.Named)
+		if !ok {
+			t.Fatalf("Expected *types.Named, got %T", instantiated)
+		}
 
 		// Create descriptor and call buildCompatibleUnionDescriptor
 		desc := &ssztypes.TypeDescriptor{
@@ -1436,6 +1439,11 @@ func TestBuildCompatibleUnionDescriptor(t *testing.T) {
 			t.Fatalf("Failed to instantiate CompatibleUnion: %v", err)
 		}
 
+		_, ok := instantiated.(*types.Named)
+		if !ok {
+			t.Fatalf("Expected *types.Named, got %T", instantiated)
+		}
+
 		desc := &ssztypes.TypeDescriptor{
 			SszType: ssztypes.SszCompatibleUnionType,
 		}
@@ -1466,6 +1474,13 @@ func TestBuildCompatibleUnionDescriptor(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to instantiate CompatibleUnion: %v", err)
 		}
+
+		namedNonStruct, ok := instantiated.(*types.Named)
+		if !ok {
+			t.Fatalf("Expected *types.Named, got %T", instantiated)
+		}
+
+		_ = namedNonStruct // used via instantiated cast below
 
 		desc := &ssztypes.TypeDescriptor{
 			SszType: ssztypes.SszCompatibleUnionType,

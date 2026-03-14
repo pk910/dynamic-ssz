@@ -59,7 +59,7 @@ func VerifyProof(root []byte, proof *Proof) (bool, error) {
 // In the example above, we have three intermediate hashes in position 5, 6 and 15.
 // Let's call such hashes "*5", "*6" and "*15" respectively.
 // Then, when calling this function `proof` should be ordered as [*15, *6, *5].
-func VerifyMultiproof(root []byte, proof [][]byte, leaves [][]byte, indices []int) (bool, error) {
+func VerifyMultiproof(root []byte, proof, leaves [][]byte, indices []int) (bool, error) {
 	if len(indices) == 0 {
 		return false, errors.New("indices length is zero")
 	}
@@ -92,15 +92,15 @@ func VerifyMultiproof(root []byte, proof [][]byte, leaves [][]byte, indices []in
 	sort.Sort(sort.Reverse(sort.IntSlice(userGenIndices)))
 
 	// The depth of the tree up to the greatest index
-	var cap int
+	var capacity int
 	if len(userGenIndices) > 0 {
-		cap = getPathLength(userGenIndices[0])
+		capacity = getPathLength(userGenIndices[0])
 	}
 
 	// Allocate space for auxiliary keys created when computing intermediate hashes
 	// Auxiliary indices are useful to avoid using store all indices to traverse
 	// in a single array and sort upon an insertion, which would be inefficient.
-	auxGenIndices := make([]int, 0, cap)
+	auxGenIndices := make([]int, 0, capacity)
 
 	// To keep track the current position to inspect in both arrays
 	pos := 0
@@ -119,19 +119,20 @@ func VerifyMultiproof(root []byte, proof [][]byte, leaves [][]byte, indices []in
 		// 1. If we've no auxiliary indices yet, we're going to use the generalised ones
 		// 2. If we have no more client indices, we're going to use the auxiliary ones
 		// 3. If we both, then we're going to compare them and take the biggest one
-		if posAux >= len(auxGenIndices) {
+		switch {
+		case posAux >= len(auxGenIndices):
 			// Case 1: No more auxiliary indices
 			index = userGenIndices[pos]
 			pos++
-		} else if pos >= len(userGenIndices) {
+		case pos >= len(userGenIndices):
 			// Case 2: No more user/proof indices
 			index = auxGenIndices[posAux]
 			posAux++
-		} else if auxGenIndices[posAux] < userGenIndices[pos] {
+		case auxGenIndices[posAux] < userGenIndices[pos]:
 			// Case 3: Both exist, take the larger (user/proof index)
 			index = userGenIndices[pos]
 			pos++
-		} else {
+		default:
 			// Case 4: Both exist, take the larger (auxiliary index)
 			index = auxGenIndices[posAux]
 			posAux++
@@ -179,7 +180,7 @@ func VerifyMultiproof(root []byte, proof [][]byte, leaves [][]byte, indices []in
 // of an index at a given level.
 // Level 0 is the actual index's level, Level 1 is the position
 // of the parent, etc.
-func getPosAtLevel(index int, level int) bool {
+func getPosAtLevel(index, level int) bool {
 	return (index & (1 << level)) > 0
 }
 

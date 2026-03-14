@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"reflect"
 	"runtime"
 	"strings"
@@ -44,7 +45,7 @@ func (t *testDynamicDecoder) UnmarshalSSZDecoder(ds sszutils.DynamicSpecs, decod
 	}
 	if t.ConsumeAll {
 		buf := make([]byte, decoder.GetLength())
-		decoder.DecodeBytes(buf)
+		_, _ = decoder.DecodeBytes(buf)
 	}
 	return nil
 }
@@ -72,6 +73,8 @@ func TestWithOptions(t *testing.T) {
 		WithExtendedTypes(),
 		WithVerbose(),
 		WithLogCb(func(format string, args ...any) {}),
+		WithStreamWriterBufferSize(4096),
+		WithStreamReaderBufferSize(1024),
 	)
 	if !ds.options.NoFastSsz {
 		t.Fatal("expected NoFastSsz")
@@ -84,6 +87,12 @@ func TestWithOptions(t *testing.T) {
 	}
 	if !ds.options.Verbose {
 		t.Fatal("expected Verbose")
+	}
+	if ds.options.StreamWriterBufferSize != 4096 {
+		t.Fatalf("expected StreamWriterBufferSize 4096, got %d", ds.options.StreamWriterBufferSize)
+	}
+	if ds.options.StreamReaderBufferSize != 1024 {
+		t.Fatalf("expected StreamReaderBufferSize 1024, got %d", ds.options.StreamReaderBufferSize)
 	}
 }
 
@@ -298,7 +307,7 @@ type errorWriter struct {
 	err error
 }
 
-func (w *errorWriter) Write(p []byte) (int, error) {
+func (w *errorWriter) Write(_ []byte) (int, error) {
 	return 0, w.err
 }
 
@@ -373,5 +382,99 @@ func TestResolveSpecValueRoundsUp(t *testing.T) {
 	// 7/2 = 3.5, uint64(3.5) = 3, but should round up to 4
 	if value != 4 {
 		t.Fatalf("expected 4 (rounded up from 3.5), got %d", value)
+	}
+}
+
+// SizeSSZ overflow test
+
+type testLargeContainer struct {
+	Data []byte `ssz-size:"2147483648"` // MaxInt32 + 1
+}
+
+func TestSizeSSZExceedsMaxInt32(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz())
+	container := &testLargeContainer{}
+
+	_, err := ds.SizeSSZ(container)
+	if err == nil || !strings.Contains(err.Error(), "exceeds maximum int32") {
+		t.Fatalf("expected 'exceeds maximum int32' error, got: %v", err)
+	}
+}
+
+// skipUnless32Bit skips the test on platforms where int is wider than 32 bits.
+func skipUnless32Bit(t *testing.T) {
+	t.Helper()
+	if math.MaxInt > math.MaxInt32 {
+		t.Skip("overflow checks are only active on 32-bit platforms")
+	}
+}
+
+func TestMarshalSSZLargeObjectOverflow(t *testing.T) {
+	skipUnless32Bit(t)
+	ds := NewDynSsz(nil, WithNoFastSsz())
+	container := &testLargeContainer{}
+
+	_, err := ds.MarshalSSZ(container)
+	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
+		t.Fatalf("expected 'exceeds platform int max' error, got: %v", err)
+	}
+}
+
+func TestMarshalSSZToLargeObjectOverflow(t *testing.T) {
+	skipUnless32Bit(t)
+	ds := NewDynSsz(nil, WithNoFastSsz())
+	container := &testLargeContainer{}
+
+	_, err := ds.MarshalSSZTo(container, nil)
+	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
+		t.Fatalf("expected 'exceeds platform int max' error, got: %v", err)
+	}
+}
+
+func TestMarshalSSZWriterLargeObjectOverflow(t *testing.T) {
+	skipUnless32Bit(t)
+	ds := NewDynSsz(nil, WithNoFastSsz())
+	container := &testLargeContainer{}
+
+	var buf bytes.Buffer
+	err := ds.MarshalSSZWriter(container, &buf)
+	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
+		t.Fatalf("expected 'exceeds platform int max' error, got: %v", err)
+	}
+}
+
+func TestUnmarshalSSZLargeObjectOverflow(t *testing.T) {
+	skipUnless32Bit(t)
+	ds := NewDynSsz(nil, WithNoFastSsz())
+	container := &testLargeContainer{}
+
+	// The container's 2GB vector field exceeds what 32-bit int can address.
+	// The exact error depends on which check triggers first (size vs data length).
+	err := ds.UnmarshalSSZ(container, make([]byte, 100))
+	if err == nil {
+		t.Fatal("expected error for large object unmarshal on 32-bit")
+	}
+}
+
+func TestUnmarshalSSZReaderLargeObjectOverflow(t *testing.T) {
+	skipUnless32Bit(t)
+	ds := NewDynSsz(nil, WithNoFastSsz())
+	container := &testLargeContainer{}
+
+	data := make([]byte, 100)
+	err := ds.UnmarshalSSZReader(container, bytes.NewReader(data), len(data))
+	if err == nil {
+		t.Fatal("expected error for large object unmarshal on 32-bit")
+	}
+}
+
+func TestHashTreeRootLargeObjectOverflow(t *testing.T) {
+	skipUnless32Bit(t)
+	ds := NewDynSsz(nil, WithNoFastSsz())
+	container := &testLargeContainer{}
+
+	_, err := ds.HashTreeRoot(container)
+	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
+		t.Fatalf("expected 'exceeds platform int max' error, got: %v", err)
 	}
 }

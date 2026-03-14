@@ -194,6 +194,8 @@ func (tc *TypeCache) getCompatFlag(runtimeType, schemaType reflect.Type) SszComp
 //
 // The descriptor's Type field stores the runtime type (where data lives), while the
 // SSZ structure (fields, sizes, limits) is derived from the schema type.
+//
+//nolint:gocyclo // SSZ type descriptor builder is inherently complex
 func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) (*TypeDescriptor, error) {
 	// Use runtime type for the descriptor's Type field (where data is accessed)
 	desc := &TypeDescriptor{
@@ -380,6 +382,9 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 
 	// Check type compatibility and compute size
 	switch sszType {
+	case SszUnspecifiedType:
+		return nil, fmt.Errorf("unspecified SSZ type for %v", t)
+
 	// basic types
 	case SszBoolType:
 		if desc.Kind != reflect.Bool {
@@ -481,7 +486,7 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 		}
 	case SszCustomType:
 		if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
-			desc.Size = uint32(sizeHints[0].Size)
+			desc.Size = sizeHints[0].Size
 		} else {
 			desc.Size = 0
 			desc.SszTypeFlags |= SszTypeFlagIsDynamic
@@ -617,7 +622,7 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 
 	if desc.SszType == SszCustomType {
 		isCompatible := desc.SszCompatFlags&SszCompatFlagFastSSZMarshaler != 0 && desc.SszCompatFlags&SszCompatFlagFastSSZHasher != 0
-		//isCompatible = isCompatible || (desc.SszCompatFlags&SszCompatFlagDynamicMarshaler != 0 && desc.SszCompatFlags&SszCompatFlagDynamicUnmarshaler != 0 && desc.SszCompatFlags&SszCompatFlagDynamicSizer != 0 && desc.SszCompatFlags&SszCompatFlagDynamicHashRoot != 0)
+		// isCompatible = isCompatible || (desc.SszCompatFlags&SszCompatFlagDynamicMarshaler != 0 && desc.SszCompatFlags&SszCompatFlagDynamicUnmarshaler != 0 && desc.SszCompatFlags&SszCompatFlagDynamicSizer != 0 && desc.SszCompatFlags&SszCompatFlagDynamicHashRoot != 0)
 		if !isCompatible {
 			return nil, fmt.Errorf("custom ssz type requires fastssz marshaler, unmarshaler and hasher implementations")
 		}
@@ -705,6 +710,8 @@ func (tc *TypeCache) buildTypeWrapperDescriptor(desc *TypeDescriptor, runtimeTyp
 }
 
 // buildUint128Descriptor builds a descriptor for uint128 types
+//
+//nolint:dupl // intentionally similar to buildUint256Descriptor; differ only in size constant and error messages
 func (tc *TypeCache) buildUint128Descriptor(desc *TypeDescriptor, t reflect.Type) error {
 	if desc.Kind != reflect.Slice && desc.Kind != reflect.Array {
 		return fmt.Errorf("uint128 ssz type can only be represented by slice or array types, got %v", desc.Kind)
@@ -725,7 +732,7 @@ func (tc *TypeCache) buildUint128Descriptor(desc *TypeDescriptor, t reflect.Type
 
 	desc.ElemDesc = elemDesc
 	desc.Size = 16 // hardcoded size for uint128
-	desc.Len = uint32(desc.Size / elemDesc.Size)
+	desc.Len = desc.Size / elemDesc.Size
 
 	if desc.Kind == reflect.Array {
 		dstLen := uint32(t.Len())
@@ -737,7 +744,7 @@ func (tc *TypeCache) buildUint128Descriptor(desc *TypeDescriptor, t reflect.Type
 	return nil
 }
 
-// buildUint256Descriptor builds a descriptor for uint256 types
+//nolint:dupl // intentionally similar to buildUint128Descriptor; differ only in size constant and error messages
 func (tc *TypeCache) buildUint256Descriptor(desc *TypeDescriptor, t reflect.Type) error {
 	if desc.Kind != reflect.Slice && desc.Kind != reflect.Array {
 		return fmt.Errorf("uint256 ssz type can only be represented by slice or array types, got %v", desc.Kind)
@@ -758,7 +765,7 @@ func (tc *TypeCache) buildUint256Descriptor(desc *TypeDescriptor, t reflect.Type
 
 	desc.ElemDesc = elemDesc
 	desc.Size = 32 // hardcoded size for uint256
-	desc.Len = uint32(desc.Size / elemDesc.Size)
+	desc.Len = desc.Size / elemDesc.Size
 
 	if desc.Kind == reflect.Array {
 		dstLen := uint32(t.Len())
@@ -1071,7 +1078,8 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 		return fmt.Errorf("vector ssz type can only be represented by array or slice types, got %v", desc.Kind)
 	}
 
-	if desc.Kind == reflect.Array {
+	switch {
+	case desc.Kind == reflect.Array:
 		desc.Len = uint32(t.Len())
 		if len(sizeHints) > 0 {
 			byteLen := sizeHints[0].Size
@@ -1082,16 +1090,16 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 			if byteLen > desc.Len {
 				return fmt.Errorf("size hint for vector type is greater than the length of the array (%d > %d)", byteLen, desc.Len)
 			}
-			desc.Len = uint32(byteLen)
+			desc.Len = byteLen
 		}
-	} else if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
+	case len(sizeHints) > 0 && sizeHints[0].Size > 0:
 		byteLen := sizeHints[0].Size
 		if sizeHints[0].Bits {
 			desc.BitSize = sizeHints[0].Size
 			byteLen = (byteLen + 7) / 8 // ceil up to the next multiple of 8
 		}
-		desc.Len = uint32(byteLen)
-	} else {
+		desc.Len = byteLen
+	default:
 		return fmt.Errorf("missing size hint for vector type")
 	}
 

@@ -57,8 +57,6 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 	// different view types. If the method returns nil, fall through to
 	// other marshaling methods.
 	isView := sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
-	useReflection := true
-
 	if isView {
 		useViewEncoder := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewEncoder != 0
 		useViewMarshaler := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewMarshaler != 0
@@ -67,15 +65,12 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 		if useViewEncoder && encoder.Seekable() {
 			if enc, ok := getPtr(sourceValue).Interface().(sszutils.DynamicViewEncoder); ok {
 				if encodeFn := enc.MarshalSSZEncoderView(*sourceType.CodegenInfo); encodeFn != nil {
-					if err := encodeFn(ctx.ds, encoder); err != nil {
-						return err
-					}
-					useReflection = false
+					return encodeFn(ctx.ds, encoder)
 				}
 			}
 		}
 
-		if useReflection && useViewMarshaler {
+		if useViewMarshaler {
 			if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.DynamicViewMarshaler); ok {
 				if marshalFn := marshaller.MarshalSSZDynView(*sourceType.CodegenInfo); marshalFn != nil {
 					newBuf, err := marshalFn(ctx.ds, encoder.GetBuffer())
@@ -83,11 +78,12 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 						return err
 					}
 					encoder.SetBuffer(newBuf)
-					useReflection = false
+					return nil
 				}
 			}
 		}
-	} else {
+	} else if sourceType.SszCompatFlags != 0 || sourceType.SszType == ssztypes.SszCustomType {
+		// Fast path: skip compat interface checks for types that don't implement any
 		hasDynamicSize := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
 		isFastsszMarshaler := sourceType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
 		useDynamicMarshal := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0
@@ -98,138 +94,124 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 		}
 
 		if useFastSsz {
-			marshaller, ok := getPtr(sourceValue).Interface().(sszutils.FastsszMarshaler)
-			if ok {
+			if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.FastsszMarshaler); ok {
 				newBuf, err := marshaller.MarshalSSZTo(encoder.GetBuffer())
 				if err != nil {
 					return err
 				}
 				encoder.SetBuffer(newBuf)
-				useReflection = false
-			} else {
-				useFastSsz = false
+				return nil
 			}
 		}
 
-		if useReflection && useDynamicEncoder {
-			if encoder.Seekable() && useDynamicMarshal {
-				// prefer static marshaller for non-seekable encoders (buffer based)
-				useDynamicEncoder = false
-			} else if sszEncoder, ok := getPtr(sourceValue).Interface().(sszutils.DynamicEncoder); ok {
-				err := sszEncoder.MarshalSSZEncoder(ctx.ds, encoder)
-				if err != nil {
-					return err
+		if useDynamicEncoder {
+			if !encoder.Seekable() || !useDynamicMarshal {
+				// prefer dynamic marshaller for seekable encoders (buffer based)
+				if sszEncoder, ok := getPtr(sourceValue).Interface().(sszutils.DynamicEncoder); ok {
+					return sszEncoder.MarshalSSZEncoder(ctx.ds, encoder)
 				}
-				useReflection = false
-			} else {
-				useDynamicEncoder = false
 			}
 		}
 
-		if useReflection && useDynamicMarshal {
-			// Use dynamic marshaler - can always be used even with dynamic specs
-			marshaller, ok := getPtr(sourceValue).Interface().(sszutils.DynamicMarshaler)
-			if ok {
+		if useDynamicMarshal {
+			if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.DynamicMarshaler); ok {
 				newBuf, err := marshaller.MarshalSSZDyn(ctx.ds, encoder.GetBuffer())
 				if err != nil {
 					return err
 				}
 				encoder.SetBuffer(newBuf)
-				useReflection = false
+				return nil
 			}
 		}
 	}
 
-	if useReflection {
-		// can't use fastssz, use dynamic marshaling
-		var err error
-		switch sourceType.SszType {
-		// complex types
-		case ssztypes.SszTypeWrapperType:
-			err = ctx.marshalTypeWrapper(sourceType, sourceValue, encoder, idt)
-			if err != nil {
-				return err
-			}
-		case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
-			err = ctx.marshalContainer(sourceType, sourceValue, encoder, idt)
-			if err != nil {
-				return err
-			}
-		case ssztypes.SszVectorType, ssztypes.SszBitvectorType, ssztypes.SszUint128Type, ssztypes.SszUint256Type:
-			if sourceType.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
-				err = ctx.marshalDynamicVector(sourceType, sourceValue, encoder, idt)
-			} else {
-				err = ctx.marshalVector(sourceType, sourceValue, encoder, idt)
-			}
-			if err != nil {
-				return err
-			}
-		case ssztypes.SszListType, ssztypes.SszProgressiveListType:
-			if sourceType.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
-				err = ctx.marshalDynamicList(sourceType, sourceValue, encoder, idt)
-			} else {
-				err = ctx.marshalList(sourceType, sourceValue, encoder, idt)
-			}
-			if err != nil {
-				return err
-			}
-		case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType:
-			err = ctx.marshalBitlist(sourceType, sourceValue, encoder, idt)
-			if err != nil {
-				return err
-			}
-		case ssztypes.SszCompatibleUnionType:
-			err = ctx.marshalCompatibleUnion(sourceType, sourceValue, encoder, idt)
-			if err != nil {
-				return err
-			}
-
-		// primitive types
-		case ssztypes.SszBoolType:
-			encoder.EncodeBool(sourceValue.Bool())
-		case ssztypes.SszUint8Type:
-			encoder.EncodeUint8(uint8(sourceValue.Uint()))
-		case ssztypes.SszUint16Type:
-			encoder.EncodeUint16(uint16(sourceValue.Uint()))
-		case ssztypes.SszUint32Type:
-			encoder.EncodeUint32(uint32(sourceValue.Uint()))
-		case ssztypes.SszUint64Type:
-			if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsTime != 0 {
-				timeValue, isTime := sourceValue.Interface().(time.Time)
-				if !isTime {
-					return fmt.Errorf("time.Time type expected, got %v", sourceType.Type.Name())
-				}
-				encoder.EncodeUint64(uint64(timeValue.Unix()))
-			} else {
-				encoder.EncodeUint64(uint64(sourceValue.Uint()))
-			}
-
-		// extended types
-		case ssztypes.SszInt8Type:
-			encoder.EncodeUint8(uint8(sourceValue.Int()))
-		case ssztypes.SszInt16Type:
-			encoder.EncodeUint16(uint16(sourceValue.Int()))
-		case ssztypes.SszInt32Type:
-			encoder.EncodeUint32(uint32(sourceValue.Int()))
-		case ssztypes.SszInt64Type:
-			encoder.EncodeUint64(uint64(sourceValue.Int()))
-		case ssztypes.SszFloat32Type:
-			encoder.EncodeUint32(math.Float32bits(float32(sourceValue.Float())))
-		case ssztypes.SszFloat64Type:
-			encoder.EncodeUint64(math.Float64bits(sourceValue.Float()))
-		case ssztypes.SszOptionalType:
-			err = ctx.marshalOptional(sourceType, sourceValue, encoder, idt)
-			if err != nil {
-				return err
-			}
-		case ssztypes.SszBigIntType:
-			err = ctx.marshalBigInt(sourceType, sourceValue, encoder, idt)
-			if err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("unknown type: %v", sourceType)
+	var err error
+	switch sourceType.SszType {
+	// complex types
+	case ssztypes.SszTypeWrapperType:
+		err = ctx.marshalTypeWrapper(sourceType, sourceValue, encoder, idt)
+		if err != nil {
+			return err
 		}
+	case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
+		err = ctx.marshalContainer(sourceType, sourceValue, encoder, idt)
+		if err != nil {
+			return err
+		}
+	case ssztypes.SszVectorType, ssztypes.SszBitvectorType, ssztypes.SszUint128Type, ssztypes.SszUint256Type:
+		if sourceType.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+			err = ctx.marshalDynamicVector(sourceType, sourceValue, encoder, idt)
+		} else {
+			err = ctx.marshalVector(sourceType, sourceValue, encoder, idt)
+		}
+		if err != nil {
+			return err
+		}
+	case ssztypes.SszListType, ssztypes.SszProgressiveListType:
+		if sourceType.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+			err = ctx.marshalDynamicList(sourceType, sourceValue, encoder, idt)
+		} else {
+			err = ctx.marshalList(sourceType, sourceValue, encoder, idt)
+		}
+		if err != nil {
+			return err
+		}
+	case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType:
+		err = ctx.marshalBitlist(sourceType, sourceValue, encoder, idt)
+		if err != nil {
+			return err
+		}
+	case ssztypes.SszCompatibleUnionType:
+		err = ctx.marshalCompatibleUnion(sourceType, sourceValue, encoder, idt)
+		if err != nil {
+			return err
+		}
+
+	// primitive types
+	case ssztypes.SszBoolType:
+		encoder.EncodeBool(sourceValue.Bool())
+	case ssztypes.SszUint8Type:
+		encoder.EncodeUint8(uint8(sourceValue.Uint()))
+	case ssztypes.SszUint16Type:
+		encoder.EncodeUint16(uint16(sourceValue.Uint()))
+	case ssztypes.SszUint32Type:
+		encoder.EncodeUint32(uint32(sourceValue.Uint()))
+	case ssztypes.SszUint64Type:
+		if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsTime != 0 {
+			timeValue, isTime := sourceValue.Interface().(time.Time)
+			if !isTime {
+				return fmt.Errorf("time.Time type expected, got %v", sourceType.Type.Name())
+			}
+			encoder.EncodeUint64(uint64(timeValue.Unix()))
+		} else {
+			encoder.EncodeUint64(sourceValue.Uint())
+		}
+
+	// extended types
+	case ssztypes.SszInt8Type:
+		encoder.EncodeUint8(uint8(sourceValue.Int()))
+	case ssztypes.SszInt16Type:
+		encoder.EncodeUint16(uint16(sourceValue.Int()))
+	case ssztypes.SszInt32Type:
+		encoder.EncodeUint32(uint32(sourceValue.Int()))
+	case ssztypes.SszInt64Type:
+		encoder.EncodeUint64(uint64(sourceValue.Int()))
+	case ssztypes.SszFloat32Type:
+		encoder.EncodeUint32(math.Float32bits(float32(sourceValue.Float())))
+	case ssztypes.SszFloat64Type:
+		encoder.EncodeUint64(math.Float64bits(sourceValue.Float()))
+	case ssztypes.SszOptionalType:
+		err = ctx.marshalOptional(sourceType, sourceValue, encoder, idt)
+		if err != nil {
+			return err
+		}
+	case ssztypes.SszBigIntType:
+		err = ctx.marshalBigInt(sourceType, sourceValue, encoder, idt)
+		if err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("unknown type: %v", sourceType)
 	}
 
 	return nil
@@ -278,17 +260,31 @@ func (ctx *ReflectionCtx) marshalTypeWrapper(sourceType *ssztypes.TypeDescriptor
 // Returns:
 //   - error: An error if any field encoding fails
 func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, idt int) error {
+	fields := sourceType.ContainerDesc.Fields
+	fieldCount := len(fields)
+
+	// Fast path: containers with no dynamic fields (e.g. Validator)
+	if len(sourceType.ContainerDesc.DynFields) == 0 {
+		for i := 0; i < fieldCount; i++ {
+			field := &fields[i]
+			fieldValue := sourceValue.Field(int(field.FieldIndex))
+			if err := ctx.marshalType(field.Type, fieldValue, encoder, idt+2); err != nil {
+				return fmt.Errorf("failed encoding field %v: %w", field.Name, err)
+			}
+		}
+		return nil
+	}
+
 	offset := 0
 	dynObjOffset := 0
 	canSeek := encoder.Seekable()
 	startLen := encoder.GetPosition()
-	fieldCount := len(sourceType.ContainerDesc.Fields)
 
 	for i := 0; i < fieldCount; i++ {
-		field := sourceType.ContainerDesc.Fields[i]
+		field := &fields[i]
 		fieldSize := field.Type.Size
 		if fieldSize > 0 {
-			//fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
+			// fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
 
 			// Use FieldIndex to access the runtime struct's field, which may differ
 			// from the schema field index when using view descriptors.
@@ -297,7 +293,6 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 			if err != nil {
 				return fmt.Errorf("failed encoding field %v: %w", field.Name, err)
 			}
-
 		} else {
 			fieldSize = 4
 			if canSeek {
@@ -314,7 +309,7 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 				encoder.EncodeOffset(sourceType.Len + uint32(dynObjOffset))
 				dynObjOffset += int(size)
 			}
-			//fmt.Printf("%sfield %d:\t offset [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
+			// fmt.Printf("%sfield %d:\t offset [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
 		}
 		offset += int(fieldSize)
 	}
@@ -327,7 +322,7 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 			encoder.EncodeOffsetAt(fieldOffset+startLen, uint32(offset))
 		}
 
-		//fmt.Printf("%sfield %d:\t dynamic [%v:]\t %v\n", strings.Repeat(" ", idt+1), field.Index[0], offset, field.Name)
+		// fmt.Printf("%sfield %d:\t dynamic [%v:]\t %v\n", strings.Repeat(" ", idt+1), field.Index[0], offset, field.Name)
 
 		fieldDescriptor := field.Field
 		// Use FieldIndex to access the runtime struct's field, which may differ
@@ -368,19 +363,28 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 //   - Byte arrays use reflect.Value.Bytes() for efficient bulk copying
 //   - Non-addressable arrays are made addressable via a temporary pointer
 func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, idt int) error {
+	vecLen := int64(sourceType.Len)
+	if vecLen > math.MaxInt {
+		return fmt.Errorf("vector length %d exceeds platform int max", sourceType.Len)
+	}
+	vecElemSize := int64(sourceType.ElemDesc.Size)
+	if vecElemSize > math.MaxInt {
+		return fmt.Errorf("element size %d exceeds platform int max", sourceType.ElemDesc.Size)
+	}
+
 	sliceLen := sourceValue.Len()
 	if uint32(sliceLen) > sourceType.Len {
 		if sourceType.Kind == reflect.Array {
-			sliceLen = int(sourceType.Len)
+			sliceLen = int(vecLen)
 		} else {
 			return sszutils.ErrListTooBig
 		}
 	}
 
 	appendZero := 0
-	dataLen := int(sourceType.Len)
+	dataLen := int(vecLen)
 	if uint32(sliceLen) < sourceType.Len {
-		appendZero = int(sourceType.Len) - sliceLen
+		appendZero = int(vecLen) - sliceLen
 		dataLen = sliceLen
 	}
 
@@ -422,7 +426,7 @@ func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sou
 		}
 
 		if appendZero > 0 {
-			totalZeroBytes := int(sourceType.ElemDesc.Size) * appendZero
+			totalZeroBytes := int(vecElemSize) * appendZero
 			encoder.EncodeZeroPadding(totalZeroBytes)
 		}
 	}
@@ -452,24 +456,29 @@ func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sou
 // length is less than the expected size. Zero values are efficiently batched
 // to minimize encoding overhead.
 func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, idt int) error {
+	dynVecLen := int64(sourceType.Len)
+	if dynVecLen > math.MaxInt {
+		return fmt.Errorf("dynamic vector length %d exceeds platform int max", sourceType.Len)
+	}
+
 	fieldType := sourceType.ElemDesc
 	sliceLen := sourceValue.Len()
 
 	appendZero := 0
 	if sourceType.Kind == reflect.Slice || sourceType.Kind == reflect.String {
-		sliceLen := sourceValue.Len()
-		if uint32(sliceLen) > sourceType.Len {
+		innerSliceLen := sourceValue.Len()
+		if uint32(innerSliceLen) > sourceType.Len {
 			return sszutils.ErrListTooBig
 		}
-		if uint32(sliceLen) < sourceType.Len {
-			appendZero = int(sourceType.Len) - sliceLen
+		if uint32(innerSliceLen) < sourceType.Len {
+			appendZero = int(dynVecLen) - innerSliceLen
 		}
 	}
 
 	canSeek := encoder.Seekable()
 	startOffset := encoder.GetPosition()
 	totalOffsets := sliceLen + appendZero
-	offset := 4 * totalOffsets
+	offset := uint32(4 * totalOffsets)
 
 	var zeroVal reflect.Value
 	if appendZero > 0 {
@@ -491,8 +500,8 @@ func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescript
 				return fmt.Errorf("failed to get size of dynamic vector element %v: %w", itemVal.Type().Name(), err)
 			}
 
-			encoder.EncodeOffset(uint32(offset))
-			offset += int(size)
+			encoder.EncodeOffset(offset)
+			offset += size
 		}
 		if appendZero > 0 {
 			size, err := ctx.getSszValueSize(fieldType, zeroVal)
@@ -501,10 +510,9 @@ func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescript
 			}
 
 			for i := 0; i < appendZero; i++ {
-				encoder.EncodeOffset(uint32(offset))
-				offset += int(size)
+				encoder.EncodeOffset(offset)
+				offset += size
 			}
-
 		}
 	}
 
@@ -519,10 +527,10 @@ func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescript
 		}
 
 		if canSeek {
-			encoder.EncodeOffsetAt(startOffset+(i*4), uint32(offset))
+			encoder.EncodeOffsetAt(startOffset+(i*4), offset)
 
 			newPos := encoder.GetPosition()
-			offset += newPos - bufLen
+			offset += uint32(newPos - bufLen)
 			bufLen = newPos
 		}
 	}
@@ -534,10 +542,10 @@ func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescript
 		}
 
 		if canSeek {
-			encoder.EncodeOffsetAt(startOffset+((sliceLen+i)*4), uint32(offset))
+			encoder.EncodeOffsetAt(startOffset+((sliceLen+i)*4), offset)
 
 			newPos := encoder.GetPosition()
-			offset += newPos - bufLen
+			offset += uint32(newPos - bufLen)
 			bufLen = newPos
 		}
 	}
@@ -563,21 +571,21 @@ func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescript
 //   - Byte slices use optimized bulk append
 //   - Returns ErrListTooBig if slice exceeds maximum size from hints
 func (ctx *ReflectionCtx) marshalList(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, idt int) error {
-	if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
+	switch {
+	case sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0:
 		stringBytes := []byte(sourceValue.String())
 		encoder.EncodeBytes(stringBytes)
-	} else if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
+	case sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0:
 		encoder.EncodeBytes(sourceValue.Bytes())
-	} else {
+	default:
 		sliceLen := sourceValue.Len()
 		fieldType := sourceType.ElemDesc
+		isPointer := fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0
 
 		for i := 0; i < sliceLen; i++ {
 			itemVal := sourceValue.Index(i)
-			if fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
-				if itemVal.IsNil() {
-					itemVal = reflect.New(fieldType.Type.Elem())
-				}
+			if isPointer && itemVal.IsNil() {
+				itemVal = reflect.New(fieldType.Type.Elem())
 			}
 
 			err := ctx.marshalType(fieldType, itemVal, encoder, idt+2)
@@ -614,13 +622,13 @@ func (ctx *ReflectionCtx) marshalDynamicList(sourceType *ssztypes.TypeDescriptor
 	canSeek := encoder.Seekable()
 	startOffset := encoder.GetPosition()
 	totalOffsets := sliceLen
-	offset := 4 * totalOffsets
+	offset := uint32(4 * totalOffsets)
 
 	if canSeek {
 		encoder.EncodeZeroPadding(4 * totalOffsets) // Reserve space for offsets
 	} else if sliceLen > 0 {
 		// need to calculate the object sizes now
-		encoder.EncodeOffset(uint32(offset))
+		encoder.EncodeOffset(offset)
 
 		for i := 0; i < sliceLen-1; i++ {
 			itemVal := sourceValue.Index(i)
@@ -629,8 +637,8 @@ func (ctx *ReflectionCtx) marshalDynamicList(sourceType *ssztypes.TypeDescriptor
 				return fmt.Errorf("failed to get size of dynamic list element %v: %w", itemVal.Type().Name(), err)
 			}
 
-			offset += int(size)
-			encoder.EncodeOffset(uint32(offset))
+			offset += size
+			encoder.EncodeOffset(offset)
 		}
 	}
 
@@ -645,10 +653,10 @@ func (ctx *ReflectionCtx) marshalDynamicList(sourceType *ssztypes.TypeDescriptor
 		}
 
 		if canSeek {
-			encoder.EncodeOffsetAt(startOffset+(i*4), uint32(offset))
+			encoder.EncodeOffsetAt(startOffset+(i*4), offset)
 
 			newPos := encoder.GetPosition()
-			offset += newPos - bufLen
+			offset += uint32(newPos - bufLen)
 			bufLen = newPos
 		}
 	}
@@ -669,7 +677,7 @@ func (ctx *ReflectionCtx) marshalDynamicList(sourceType *ssztypes.TypeDescriptor
 //
 // Returns:
 //   - error: An error if encoding fails or bitlist exceeds size constraints
-func (ctx *ReflectionCtx) marshalBitlist(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, idt int) error {
+func (ctx *ReflectionCtx) marshalBitlist(_ *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, _ int) error {
 	bytes := sourceValue.Bytes()
 
 	// check if last byte contains termination bit

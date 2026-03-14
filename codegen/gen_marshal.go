@@ -149,7 +149,7 @@ func (ctx *marshalContext) getPtrPrefix(desc *ssztypes.TypeDescriptor) string {
 }
 
 // getValueVar returns the variable name for the value of a type, dereferencing pointer types and converting to the target type if needed
-func (ctx *marshalContext) getValueVar(desc *ssztypes.TypeDescriptor, varName string, targetType string) string {
+func (ctx *marshalContext) getValueVar(desc *ssztypes.TypeDescriptor, varName, targetType string) string {
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
 		varName = fmt.Sprintf("*%s", varName)
 	}
@@ -362,7 +362,7 @@ func (ctx *marshalContext) marshalOptional(desc *ssztypes.TypeDescriptor, varNam
 }
 
 // marshalBigInt generates marshal code for SSZ big int types.
-func (ctx *marshalContext) marshalBigInt(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
+func (ctx *marshalContext) marshalBigInt(_ *ssztypes.TypeDescriptor, varName string, indent int) error {
 	ctx.appendCode(indent, "dst = append(dst, %s.Bytes()...)\n", varName)
 	return nil
 }
@@ -405,27 +405,31 @@ func (ctx *marshalContext) marshalContainer(desc *ssztypes.TypeDescriptor, varNa
 
 	// Marshal dynamic fields
 	for idx, field := range desc.ContainerDesc.Fields {
-		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
-			ctx.appendCode(indent, "{ // Dynamic Field #%d '%s'\n", idx, field.Name)
-			binaryPkgName := ctx.typePrinter.AddImport("encoding/binary", "binary")
-			ctx.appendCode(indent, "\t%s.LittleEndian.PutUint32(dst[offset%d:], uint32(len(dst)-dstlen))\n", binaryPkgName, idx)
-			valVar := "t"
-			if ctx.isInlineable(field.Type) {
-				valVar = fmt.Sprintf("%s.%s", varName, field.Name)
-			} else {
-				ctx.appendCode(indent, "\tt := %s%s.%s\n", ctx.getPtrPrefix(field.Type), varName, field.Name)
-			}
-			if err := ctx.marshalType(field.Type, valVar, indent+1, false); err != nil {
-				return err
-			}
-			ctx.appendCode(indent, "}\n")
+		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
+			continue
 		}
+
+		ctx.appendCode(indent, "{ // Dynamic Field #%d '%s'\n", idx, field.Name)
+		binaryPkgName := ctx.typePrinter.AddImport("encoding/binary", "binary")
+		ctx.appendCode(indent, "\t%s.LittleEndian.PutUint32(dst[offset%d:], uint32(len(dst)-dstlen))\n", binaryPkgName, idx)
+		valVar := "t"
+		if ctx.isInlineable(field.Type) {
+			valVar = fmt.Sprintf("%s.%s", varName, field.Name)
+		} else {
+			ctx.appendCode(indent, "\tt := %s%s.%s\n", ctx.getPtrPrefix(field.Type), varName, field.Name)
+		}
+		if err := ctx.marshalType(field.Type, valVar, indent+1, false); err != nil {
+			return err
+		}
+		ctx.appendCode(indent, "}\n")
 	}
 
 	return nil
 }
 
 // marshalVector generates marshal code for SSZ vector (fixed-size array) types.
+//
+//nolint:dupl // intentionally similar to gen_encoder.go but generates different output
 func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
 	sizeExpression := desc.SizeExpression
 	if ctx.options.WithoutDynamicExpressions {
@@ -475,17 +479,19 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 	}
 
 	lenVar := ""
-	if desc.Kind != reflect.Array {
+
+	switch {
+	case desc.Kind != reflect.Array:
 		ctx.appendCode(indent, "vlen := len(%s)\n", valueVar)
 		ctx.appendCode(indent, "if vlen > %s {\n", limitVar)
 		ctx.appendCode(indent, "\treturn nil, sszutils.ErrVectorLength\n")
 		ctx.appendCode(indent, "}\n")
-		lenVar = "vlen"
-	} else if hasLimitVar {
+		lenVar = varNameVLen
+	case hasLimitVar:
 		ctx.appendCode(indent, "vlen := %d\n", desc.Len)
 		ctx.appendCode(indent, "if vlen > %s {\n\tvlen = %s\n}\n", limitVar, limitVar)
-		lenVar = "vlen"
-	} else {
+		lenVar = varNameVLen
+	default:
 		lenVar = fmt.Sprintf("%d", desc.Len)
 	}
 
@@ -572,15 +578,16 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 	hasMax := false
 	maxVar := ""
 
-	if maxExpression != nil {
-		exprVar := ctx.exprVars.getExprVar(*maxExpression, uint64(desc.Limit))
+	switch {
+	case maxExpression != nil:
+		exprVar := ctx.exprVars.getExprVar(*maxExpression, desc.Limit)
 
 		hasMax = true
 		maxVar = fmt.Sprintf("int(%s)", exprVar)
-	} else if desc.Limit > 0 {
+	case desc.Limit > 0:
 		maxVar = fmt.Sprintf("%d", desc.Limit)
 		hasMax = true
-	} else {
+	default:
 		maxVar = "0"
 	}
 
@@ -607,12 +614,16 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 
 	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 		// static elements
-		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
+		switch {
+		case desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0:
 			if strings.HasPrefix(valueVar, "*") {
 				valueVar = fmt.Sprintf("(%s)", valueVar)
 			}
 			ctx.appendCode(indent, "dst = append(dst, %s[:]...)\n", valueVar)
-		} else {
+		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0:
+			addVlen()
+			ctx.appendCode(indent, "dst = sszutils.MarshalUint64Slice(dst, %s[:vlen])\n", varName)
+		default:
 			addVlen()
 			ctx.appendCode(indent, "for i := range vlen {\n")
 			valVar := "t"
@@ -650,7 +661,7 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 	return nil
 }
 
-// marshalBitlist generates marshal code for SSZ bitlist types.
+//nolint:dupl // intentionally similar to encoderContext.marshalBitlist
 func (ctx *marshalContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
 	maxExpression := desc.MaxExpression
 	if ctx.options.WithoutDynamicExpressions {
@@ -660,15 +671,16 @@ func (ctx *marshalContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName
 	hasMax := false
 	maxVar := ""
 
-	if maxExpression != nil {
-		exprVar := ctx.exprVars.getExprVar(*maxExpression, uint64(desc.Limit))
+	switch {
+	case maxExpression != nil:
+		exprVar := ctx.exprVars.getExprVar(*maxExpression, desc.Limit)
 
 		hasMax = true
 		maxVar = fmt.Sprintf("int(%s)", exprVar)
-	} else if desc.Limit > 0 {
+	case desc.Limit > 0:
 		maxVar = fmt.Sprintf("%d", desc.Limit)
 		hasMax = true
-	} else {
+	default:
 		maxVar = "0"
 	}
 

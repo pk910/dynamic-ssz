@@ -6,6 +6,8 @@ package sszutils
 
 var zeroBytes []byte
 
+// ZeroBytes returns a shared 1024-byte slice of zeros, initializing it on
+// first call. The returned slice must not be modified by callers.
 func ZeroBytes() []byte {
 	if len(zeroBytes) == 0 {
 		zeroBytes = make([]byte, 1024)

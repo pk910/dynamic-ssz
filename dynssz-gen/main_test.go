@@ -190,7 +190,7 @@ func TestRun_ValidationErrors(t *testing.T) {
 
 // main() tests — call main() directly with reset flag state
 
-func TestMain_VersionFlag(t *testing.T) {
+func TestMain_VersionFlag(_ *testing.T) {
 	oldArgs := os.Args
 	oldCommandLine := flag.CommandLine
 	defer func() {
@@ -203,7 +203,7 @@ func TestMain_VersionFlag(t *testing.T) {
 	main()
 }
 
-func TestMain_NoArgs(t *testing.T) {
+func TestMain_NoArgs(_ *testing.T) {
 	oldArgs := os.Args
 	oldCommandLine := flag.CommandLine
 	defer func() {
@@ -224,7 +224,7 @@ func TestMain_RunError(t *testing.T) {
 		return
 	}
 
-	cmd := exec.Command(os.Args[0], "-test.run=^TestMain_RunError$")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestMain_RunError$") //nolint:gosec // G204: test helper with controlled input
 	cmd.Env = append(os.Environ(), "TEST_DYNSSZ_MAIN_RUN_ERROR=1")
 	err := cmd.Run()
 	if err == nil {

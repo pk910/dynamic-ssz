@@ -1044,10 +1044,10 @@ func TestCleanGenericTypeName(t *testing.T) {
 	})
 
 	t.Run("NoRegisteredImports", func(t *testing.T) {
-		printer := NewTypePrinter("test") // Fresh printer
+		freshPrinter := NewTypePrinter("test") // Fresh printer
 
 		genericStr := "Map[github.com/unknown/pkg.Type]"
-		result := printer.cleanGenericTypeName(genericStr)
+		result := freshPrinter.cleanGenericTypeName(genericStr)
 
 		// Should remain unchanged if import not registered
 		if result != genericStr {

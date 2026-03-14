@@ -1,6 +1,6 @@
 module github.com/pk910/dynamic-ssz/test
 
-go 1.25.0
+go 1.25.8
 
 require (
 	github.com/attestantio/go-eth2-client v0.25.2
@@ -11,7 +11,7 @@ require (
 )
 
 require (
-	github.com/casbin/govaluate v1.8.0 // indirect
+	github.com/casbin/govaluate v1.10.0 // indirect
 	github.com/emicklei/dot v1.6.4 // indirect
 	github.com/fatih/color v1.16.0 // indirect
 	github.com/ferranbt/fastssz v0.1.4 // indirect
@@ -23,8 +23,8 @@ require (
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/pk910/hashtree-bindings v0.0.1 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	golang.org/x/crypto v0.42.0 // indirect
-	golang.org/x/sys v0.36.0 // indirect
+	golang.org/x/crypto v0.49.0 // indirect
+	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/xerrors v0.0.0-20231012003039-104605ab7028 // indirect
 )
 

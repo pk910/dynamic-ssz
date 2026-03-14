@@ -35,8 +35,8 @@ func TestAllTypesNoPanic(t *testing.T) {
 					instance := entry.New()
 					filler.FillStruct(instance)
 
-					target.HashTreeRoot(instance)
-					target.MarshalSSZ(instance)
+					_, _ = target.HashTreeRoot(instance)
+					_, _ = target.MarshalSSZ(instance)
 				}()
 			}
 		})

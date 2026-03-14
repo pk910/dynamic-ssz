@@ -42,12 +42,12 @@ type Reporter struct {
 
 // NewReporter creates a new issue reporter that writes to the given directory.
 func NewReporter(dir string, maxIssues int) (*Reporter, error) {
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create report dir: %w", err)
 	}
 
 	logPath := filepath.Join(dir, "fuzz.log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open log file: %w", err)
 	}
@@ -66,7 +66,7 @@ func (r *Reporter) Close() error {
 }
 
 // Report persists an issue to disk.
-func (r *Reporter) Report(issue Issue) {
+func (r *Reporter) Report(issue *Issue) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -84,13 +84,13 @@ func (r *Reporter) Report(issue Issue) {
 	r.issueID++
 	issueDir := filepath.Join(r.dir, fmt.Sprintf("issue-%05d-%s", r.issueID, issue.Type))
 
-	if err := os.MkdirAll(issueDir, 0755); err != nil {
+	if err := os.MkdirAll(issueDir, 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create issue dir: %v\n", err)
 		return
 	}
 
 	// Write input data
-	if err := os.WriteFile(filepath.Join(issueDir, "input.bin"), issue.Data, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(issueDir, "input.bin"), issue.Data, 0o600); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to write input: %v\n", err)
 	}
 
@@ -106,16 +106,16 @@ func (r *Reporter) Report(issue Issue) {
 		issue.Details,
 	)
 
-	if err := os.WriteFile(filepath.Join(issueDir, "details.txt"), []byte(details), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(issueDir, "details.txt"), []byte(details), 0o600); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to write details: %v\n", err)
 	}
 
 	// Write outputs if present
 	if issue.ReflectionOutput != nil {
-		os.WriteFile(filepath.Join(issueDir, "reflection_output.bin"), issue.ReflectionOutput, 0644)
+		_ = os.WriteFile(filepath.Join(issueDir, "reflection_output.bin"), issue.ReflectionOutput, 0o600)
 	}
 	if issue.CodegenOutput != nil {
-		os.WriteFile(filepath.Join(issueDir, "codegen_output.bin"), issue.CodegenOutput, 0644)
+		_ = os.WriteFile(filepath.Join(issueDir, "codegen_output.bin"), issue.CodegenOutput, 0o600)
 	}
 
 	// Append to log
@@ -126,7 +126,7 @@ func (r *Reporter) Report(issue Issue) {
 		issue.TypeName,
 		issue.Details,
 	)
-	fmt.Fprint(r.logFile, logEntry)
+	_, _ = fmt.Fprint(r.logFile, logEntry)
 	fmt.Fprintf(os.Stderr, "\n*** ISSUE #%d: %s in %s: %s\n", r.issueID, issue.Type, issue.TypeName, issue.Details)
 }
 

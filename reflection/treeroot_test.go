@@ -313,7 +313,7 @@ func TestFixedSizeStringVsByteArrayTreeRoot(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			var byteData [32]byte
-			copy(byteData[:], []byte(tc.value))
+			copy(byteData[:], tc.value)
 
 			strStruct := WithFixedString{
 				Data: tc.value,
@@ -654,7 +654,8 @@ func TestTreeGeneration(t *testing.T) {
 			}
 
 			// Verify tree integrity
-			if err := verifyTreeIntegrity(tree); err != nil {
+			err = verifyTreeIntegrity(tree)
+			if err != nil {
 				t.Errorf("tree integrity check failed: %v", err)
 			}
 
@@ -911,11 +912,13 @@ func TestBinaryVsProgressiveTrees(t *testing.T) {
 			}
 
 			// Verify both trees pass integrity checks
-			if err := verifyTreeIntegrity(binaryTree); err != nil {
+			err = verifyTreeIntegrity(binaryTree)
+			if err != nil {
 				t.Errorf("binary tree integrity check failed: %v", err)
 			}
 
-			if err := verifyTreeIntegrity(progressiveTree); err != nil {
+			err = verifyTreeIntegrity(progressiveTree)
+			if err != nil {
 				t.Errorf("progressive tree integrity check failed: %v", err)
 			}
 

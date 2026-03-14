@@ -919,10 +919,10 @@ func (c *TestContainerWithFastSsz) UnmarshalSSZ(buf []byte) error {
 	if c == nil {
 		c = new(TestContainerWithFastSsz)
 	}
-	c.Field0 = uint64(sszutils.UnmarshallUint64(buf[:8]))
-	c.Field1 = uint32(sszutils.UnmarshallUint32(buf[8:12]))
+	c.Field0 = sszutils.UnmarshallUint64(buf[:8])
+	c.Field1 = sszutils.UnmarshallUint32(buf[8:12])
 	c.Field2 = sszutils.UnmarshalBool(buf[12:13])
-	c.Field3 = uint16(sszutils.UnmarshallUint16(buf[13:15]))
+	c.Field3 = sszutils.UnmarshallUint16(buf[13:15])
 	return nil
 }
 func (c *TestContainerWithFastSsz) MarshalSSZ() ([]byte, error) {
@@ -930,10 +930,10 @@ func (c *TestContainerWithFastSsz) MarshalSSZ() ([]byte, error) {
 	return c.MarshalSSZTo(buf)
 }
 func (c *TestContainerWithFastSsz) MarshalSSZTo(buf []byte) ([]byte, error) {
-	buf = sszutils.MarshalUint64(buf, uint64(c.Field0))
-	buf = sszutils.MarshalUint32(buf, uint32(c.Field1))
+	buf = sszutils.MarshalUint64(buf, c.Field0)
+	buf = sszutils.MarshalUint32(buf, c.Field1)
 	buf = sszutils.MarshalBool(buf, c.Field2)
-	buf = sszutils.MarshalUint16(buf, uint16(c.Field3))
+	buf = sszutils.MarshalUint16(buf, c.Field3)
 	return buf, nil
 }
 func (c *TestContainerWithFastSsz) SizeSSZ() int {
@@ -1003,17 +1003,17 @@ func (c *TestContainerWithDynamicSsz) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, b
 	if c == nil {
 		c = new(TestContainerWithDynamicSsz)
 	}
-	c.Field0 = uint64(sszutils.UnmarshallUint64(buf[:8]))
-	c.Field1 = uint32(sszutils.UnmarshallUint32(buf[8:12]))
+	c.Field0 = sszutils.UnmarshallUint64(buf[:8])
+	c.Field1 = sszutils.UnmarshallUint32(buf[8:12])
 	c.Field2 = sszutils.UnmarshalBool(buf[12:13])
-	c.Field3 = uint16(sszutils.UnmarshallUint16(buf[13:15]))
+	c.Field3 = sszutils.UnmarshallUint16(buf[13:15])
 	return nil
 }
 func (c *TestContainerWithDynamicSsz) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
-	buf = sszutils.MarshalUint64(buf, uint64(c.Field0))
-	buf = sszutils.MarshalUint32(buf, uint32(c.Field1))
+	buf = sszutils.MarshalUint64(buf, c.Field0)
+	buf = sszutils.MarshalUint32(buf, c.Field1)
 	buf = sszutils.MarshalBool(buf, c.Field2)
-	buf = sszutils.MarshalUint16(buf, uint16(c.Field3))
+	buf = sszutils.MarshalUint16(buf, c.Field3)
 	return buf, nil
 }
 func (c *TestContainerWithDynamicSsz) SizeSSZDyn(_ sszutils.DynamicSpecs) int {

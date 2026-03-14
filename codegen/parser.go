@@ -14,6 +14,12 @@ import (
 	"github.com/pk910/dynamic-ssz/ssztypes"
 )
 
+const (
+	typeNameError     = "error"
+	typeNameInt       = "int"
+	typeNameByteSlice = "[]byte"
+)
+
 var (
 	byteType = types.Typ[types.Uint8]
 )
@@ -160,6 +166,7 @@ func (p *Parser) getCompatFlag(dataType types.Type, schemaType types.Type) sszty
 	return p.CompatFlags[typeName]
 }
 
+//nolint:gocyclo // SSZ type descriptor builder is inherently complex
 func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints []ssztypes.SszTypeHint, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint) (*ssztypes.TypeDescriptor, error) {
 	// Only cache when types match and no hints provided
 	cacheable := dataType == schemaType && len(typeHints) == 0 && len(sizeHints) == 0 && len(maxSizeHints) == 0
@@ -263,7 +270,6 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		}
 		desc.GoTypeFlags |= ssztypes.GoTypeFlagIsView
 	}
-
 	// Set kind based on underlying type
 	switch t := schemaType.(type) {
 	case *types.Basic:
@@ -296,6 +302,8 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 					desc.Kind = reflect.Float32
 				case types.Float64:
 					desc.Kind = reflect.Float64
+				default:
+					desc.Kind = reflect.Invalid
 				}
 			} else {
 				desc.Kind = reflect.Invalid
@@ -459,6 +467,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 					return nil, fmt.Errorf("floating-point numbers are not supported in SSZ")
 				case types.Complex64, types.Complex128:
 					return nil, fmt.Errorf("complex numbers are not supported in SSZ")
+				default:
 				}
 			}
 			// Check for other unsupported types
@@ -606,7 +615,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		}
 	case ssztypes.SszCustomType:
 		if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
-			desc.Size = uint32(sizeHints[0].Size)
+			desc.Size = sizeHints[0].Size
 			if sizeHints[0].Bits {
 				desc.BitSize = sizeHints[0].Size
 				desc.Size = (desc.Size + 7) / 8 // ceil up to the next multiple of 8
@@ -684,7 +693,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		if err != nil {
 			return nil, err
 		}
-
+	default:
 	}
 
 	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 && desc.SszType != ssztypes.SszBitvectorType && desc.SszType != ssztypes.SszBitlistType {
@@ -755,7 +764,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 
 	if desc.SszType == ssztypes.SszCustomType {
 		isCompatible := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0 && desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0
-		//isCompatible = isCompatible || (desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0)
+		// isCompatible = isCompatible || (desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0)
 
 		if !isCompatible {
 			return nil, fmt.Errorf("custom ssz type requires fastssz marshaler, unmarshaler and hasher implementations")
@@ -765,23 +774,25 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	return desc, nil
 }
 
+//nolint:dupl // intentionally similar to buildUint256Descriptor but handles 128-bit types
 func (p *Parser) buildUint128Descriptor(desc *ssztypes.TypeDescriptor, typ types.Type) error {
 	// Handle as [16]uint8, [2]uint64
 	var elemType types.Type
-	if arr, ok := typ.(*types.Array); ok {
-		elemType = arr.Elem()
-		if arr.Len() == 16 {
-			if elem, ok := arr.Elem().(*types.Basic); ok && elem.Kind() == types.Uint8 {
+	switch t := typ.(type) {
+	case *types.Array:
+		elemType = t.Elem()
+		if t.Len() == 16 {
+			if elem, ok := types.Unalias(t.Elem()).(*types.Basic); ok && elem.Kind() == types.Uint8 {
 				desc.Size = 16
 			}
-		} else if arr.Len() == 2 {
-			if elem, ok := arr.Elem().(*types.Basic); ok && elem.Kind() == types.Uint64 {
+		} else if t.Len() == 2 {
+			if elem, ok := types.Unalias(t.Elem()).(*types.Basic); ok && elem.Kind() == types.Uint64 {
 				desc.Size = 16
 			}
 		}
-	} else if named, ok := typ.(*types.Slice); ok {
-		elemType = named.Elem()
-		if elem, ok := named.Elem().(*types.Basic); ok {
+	case *types.Slice:
+		elemType = t.Elem()
+		if elem, ok := types.Unalias(t.Elem()).(*types.Basic); ok {
 			if elem.Kind() == types.Uint8 {
 				desc.Size = 16
 			} else if elem.Kind() == types.Uint64 {
@@ -800,7 +811,7 @@ func (p *Parser) buildUint128Descriptor(desc *ssztypes.TypeDescriptor, typ types
 		return fmt.Errorf("failed to build vector element descriptor: %v", err)
 	}
 	desc.ElemDesc = elemDesc
-	desc.Len = uint32(desc.Size / elemDesc.Size)
+	desc.Len = desc.Size / elemDesc.Size
 
 	// Set byte array flag for byte types
 	if p.isByteType(elemType) {
@@ -810,23 +821,25 @@ func (p *Parser) buildUint128Descriptor(desc *ssztypes.TypeDescriptor, typ types
 	return nil
 }
 
+//nolint:dupl // intentionally similar to buildUint128Descriptor but handles 256-bit types
 func (p *Parser) buildUint256Descriptor(desc *ssztypes.TypeDescriptor, typ types.Type) error {
 	// Handle as [32]uint8, [4]uint64
 	var elemType types.Type
-	if arr, ok := typ.(*types.Array); ok {
-		elemType = arr.Elem()
-		if arr.Len() == 32 {
-			if elem, ok := arr.Elem().(*types.Basic); ok && elem.Kind() == types.Uint8 {
+	switch t := typ.(type) {
+	case *types.Array:
+		elemType = t.Elem()
+		if t.Len() == 32 {
+			if elem, ok := types.Unalias(t.Elem()).(*types.Basic); ok && elem.Kind() == types.Uint8 {
 				desc.Size = 32
 			}
-		} else if arr.Len() == 4 {
-			if elem, ok := arr.Elem().(*types.Basic); ok && elem.Kind() == types.Uint64 {
+		} else if t.Len() == 4 {
+			if elem, ok := types.Unalias(t.Elem()).(*types.Basic); ok && elem.Kind() == types.Uint64 {
 				desc.Size = 32
 			}
 		}
-	} else if named, ok := typ.(*types.Slice); ok {
-		elemType = named.Elem()
-		if elem, ok := named.Elem().(*types.Basic); ok {
+	case *types.Slice:
+		elemType = t.Elem()
+		if elem, ok := types.Unalias(t.Elem()).(*types.Basic); ok {
 			if elem.Kind() == types.Uint8 {
 				desc.Size = 32
 			} else if elem.Kind() == types.Uint64 {
@@ -845,7 +858,7 @@ func (p *Parser) buildUint256Descriptor(desc *ssztypes.TypeDescriptor, typ types
 		return fmt.Errorf("failed to build vector element descriptor: %v", err)
 	}
 	desc.ElemDesc = elemDesc
-	desc.Len = uint32(desc.Size / elemDesc.Size)
+	desc.Len = desc.Size / elemDesc.Size
 
 	// Set byte array flag for byte types
 	if p.isByteType(elemType) {
@@ -1136,7 +1149,7 @@ func (p *Parser) buildListDescriptor(desc *ssztypes.TypeDescriptor, dataType, sc
 	return nil
 }
 
-func (p *Parser) buildBitlistDescriptor(desc *ssztypes.TypeDescriptor, typ types.Type, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint, typeHints []ssztypes.SszTypeHint) error {
+func (p *Parser) buildBitlistDescriptor(desc *ssztypes.TypeDescriptor, typ types.Type, _ []ssztypes.SszSizeHint, _ []ssztypes.SszMaxSizeHint, _ []ssztypes.SszTypeHint) error {
 	var elemType types.Type
 
 	switch t := typ.(type) {
@@ -1351,7 +1364,7 @@ func (p *Parser) buildOptionalDescriptor(desc *ssztypes.TypeDescriptor, typ type
 	return nil
 }
 
-func (p *Parser) buildBigIntDescriptor(desc *ssztypes.TypeDescriptor, typ types.Type) error {
+func (p *Parser) buildBigIntDescriptor(desc *ssztypes.TypeDescriptor, _ types.Type) error {
 	if desc.Kind != reflect.Struct {
 		return fmt.Errorf("bigint type can only be represented by struct types, got %v", desc.Kind)
 	}
@@ -1406,20 +1419,21 @@ func (p *Parser) parseFieldTags(tag string) (typeHints []ssztypes.SszTypeHint, s
 
 			hint := ssztypes.SszSizeHint{}
 
-			if sszBitsizeStr != "?" {
+			switch {
+			case sszBitsizeStr != "?":
 				sizeInt, err := strconv.ParseUint(strings.TrimSpace(sszBitsizeStr), 10, 32)
 				if err != nil {
 					return nil, nil, nil, fmt.Errorf("error parsing ssz-size tag: %v", err)
 				}
 				hint.Size = uint32(sizeInt)
 				hint.Bits = true
-			} else if sszSizeStr != "?" {
+			case sszSizeStr != "?":
 				sizeInt, err := strconv.ParseUint(strings.TrimSpace(sszSizeStr), 10, 32)
 				if err != nil {
 					return nil, nil, nil, fmt.Errorf("error parsing ssz-size tag: %v", err)
 				}
 				hint.Size = uint32(sizeInt)
-			} else {
+			default:
 				hint.Dynamic = true
 			}
 
@@ -1558,7 +1572,7 @@ func (p *Parser) extractSszIndex(tag string) string {
 }
 
 func (p *Parser) isByteType(typ types.Type) bool {
-	basic, ok := typ.(*types.Basic)
+	basic, ok := types.Unalias(typ).(*types.Basic)
 	return ok && basic.Kind() == types.Uint8
 }
 
@@ -1609,9 +1623,9 @@ func (p *Parser) getTypeKindString(typ types.Type) string {
 
 func (p *Parser) getFastsszConvertCompatibility(typ types.Type) bool {
 	methodSet := types.NewMethodSet(typ)
-	return (p.hasMethodWithSignature(methodSet, "MarshalSSZTo", []string{"[]byte"}, []string{"[]byte", "error"}) &&
+	return (p.hasMethodWithSignature(methodSet, "MarshalSSZTo", []string{typeNameByteSlice}, []string{typeNameByteSlice, "error"}) &&
 		p.hasMethodWithSignature(methodSet, "SizeSSZ", []string{}, []string{"int"}) &&
-		p.hasMethodWithSignature(methodSet, "UnmarshalSSZ", []string{"[]byte"}, []string{"error"}))
+		p.hasMethodWithSignature(methodSet, "UnmarshalSSZ", []string{typeNameByteSlice}, []string{"error"}))
 }
 
 func (p *Parser) getFastsszHashCompatibility(typ types.Type) bool {
@@ -1628,13 +1642,13 @@ func (p *Parser) getHashTreeRootWithCompatibility(typ types.Type) bool {
 func (p *Parser) getDynamicMarshalerCompatibility(typ types.Type) bool {
 	// Check if type has MarshalSSZDyn method
 	methodSet := types.NewMethodSet(typ)
-	return p.hasMethodWithSignature(methodSet, "MarshalSSZDyn", []string{"DynamicSpecs", "[]byte"}, []string{"[]byte", "error"})
+	return p.hasMethodWithSignature(methodSet, "MarshalSSZDyn", []string{"DynamicSpecs", typeNameByteSlice}, []string{typeNameByteSlice, "error"})
 }
 
 func (p *Parser) getDynamicUnmarshalerCompatibility(typ types.Type) bool {
 	// Check if type has UnmarshalSSZDyn method
 	methodSet := types.NewMethodSet(typ)
-	return p.hasMethodWithSignature(methodSet, "UnmarshalSSZDyn", []string{"DynamicSpecs", "[]byte"}, []string{"error"})
+	return p.hasMethodWithSignature(methodSet, "UnmarshalSSZDyn", []string{"DynamicSpecs", typeNameByteSlice}, []string{"error"})
 }
 
 func (p *Parser) getDynamicEncoderCompatibility(typ types.Type) bool {
@@ -1727,7 +1741,7 @@ func (p *Parser) hasMethodWithSignature(methodSet *types.MethodSet, methodName s
 		}
 
 		// Check parameter types
-		for j := 0; j < sig.Params().Len(); j++ {
+		for j := 0; j < sig.Params().Len() && j < len(paramTypes); j++ {
 			paramType := sig.Params().At(j).Type()
 			expectedType := paramTypes[j]
 			if !p.typeMatches(paramType, expectedType) {
@@ -1736,7 +1750,7 @@ func (p *Parser) hasMethodWithSignature(methodSet *types.MethodSet, methodName s
 		}
 
 		// Check return types
-		for j := 0; j < sig.Results().Len(); j++ {
+		for j := 0; j < sig.Results().Len() && j < len(returnTypes); j++ {
 			returnType := sig.Results().At(j).Type()
 			expectedType := returnTypes[j]
 			if !p.typeMatches(returnType, expectedType) {
@@ -1755,24 +1769,24 @@ func (p *Parser) typeMatches(typ types.Type, expectedTypeStr string) bool {
 	switch expectedTypeStr {
 	case "-":
 		return true
-	case "[]byte":
+	case typeNameByteSlice:
 		if slice, ok := typ.(*types.Slice); ok {
-			if basic, ok := slice.Elem().(*types.Basic); ok {
+			if basic, ok := types.Unalias(slice.Elem()).(*types.Basic); ok {
 				return basic.Kind() == types.Uint8
 			}
 		}
 	case "[32]byte":
 		if array, ok := typ.(*types.Array); ok && array.Len() == 32 {
-			if basic, ok := array.Elem().(*types.Basic); ok {
+			if basic, ok := types.Unalias(array.Elem()).(*types.Basic); ok {
 				return basic.Kind() == types.Uint8
 			}
 		}
-	case "error":
+	case typeNameError:
 		if named, ok := typ.(*types.Named); ok {
-			return named.Obj().Name() == "error" && named.Obj().Pkg() == nil
+			return named.Obj().Name() == typeNameError && named.Obj().Pkg() == nil
 		}
-	case "int":
-		if basic, ok := typ.(*types.Basic); ok {
+	case typeNameInt:
+		if basic, ok := types.Unalias(typ).(*types.Basic); ok {
 			return basic.Kind() == types.Int
 		}
 	case "DynamicSpecs", "HashWalker", "Encoder", "Decoder":

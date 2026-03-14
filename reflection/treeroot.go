@@ -39,7 +39,7 @@ import (
 //   - Special handling for Bitlist types
 //   - Primitive type hashing (bool, uint8, uint16, uint32, uint64)
 //   - Delegation to specialized functions for composite types (structs, arrays, slices)
-func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, pack bool, idt int) error {
+func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, pack bool, idt int) error { //nolint:gocyclo // SSZ hash tree root builder handles many type cases
 	hashIndex := hh.Index()
 
 	if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && sourceType.SszType != ssztypes.SszOptionalType {
@@ -59,8 +59,6 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 	// different view types. If the method returns nil, fall through to
 	// other hashing methods.
 	isView := sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
-	useReflection := true
-
 	if isView {
 		if sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewHashRoot != 0 {
 			if viewHasher, ok := getPtr(sourceValue).Interface().(sszutils.DynamicViewHashRoot); ok {
@@ -68,11 +66,17 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 					if err := hashFn(ctx.ds, hh); err != nil {
 						return err
 					}
-					useReflection = false
+
+					if ctx.verbose {
+						ctx.logCb("%shash: 0x%x\n", strings.Repeat(" ", idt), hh.Hash())
+					}
+
+					return nil
 				}
 			}
 		}
-	} else {
+	} else if sourceType.SszCompatFlags != 0 || sourceType.SszType == ssztypes.SszCustomType {
+		// Fast path: skip compat interface checks for types that don't implement any
 		isFastsszHasher := sourceType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0
 		useDynamicHashRoot := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0
 		hasDynamicSize := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
@@ -86,178 +90,170 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 			sourceValuePtr := getPtr(sourceValue)
 
 			if sourceType.SszCompatFlags&ssztypes.SszCompatFlagHashTreeRootWith != 0 && sourceType.HashTreeRootWithMethod != nil {
-				// Use cached HashTreeRootWith method for better performance
-
-				// Call the cached method with our hasher
 				results := sourceType.HashTreeRootWithMethod.Func.Call([]reflect.Value{sourceValuePtr, reflect.ValueOf(hh)})
 				if len(results) > 0 && !results[0].IsNil() {
 					return fmt.Errorf("failed HashTreeRootWith: %v", results[0].Interface())
 				}
-				useReflection = false
-			} else {
-				// Use regular HashTreeRoot
-				if hasher, ok := sourceValuePtr.Interface().(sszutils.FastsszHashRoot); ok {
-					hashBytes, err := hasher.HashTreeRoot()
-					if err != nil {
-						return fmt.Errorf("failed HashTreeRoot: %w", err)
-					}
 
-					hh.PutBytes(hashBytes[:])
-					useReflection = false
-				} else {
-					useFastSsz = false
+				return nil
+			}
+
+			if hasher, ok := sourceValuePtr.Interface().(sszutils.FastsszHashRoot); ok {
+				hashBytes, err := hasher.HashTreeRoot()
+				if err != nil {
+					return fmt.Errorf("failed HashTreeRoot: %w", err)
 				}
+
+				hh.PutBytes(hashBytes[:])
+				return nil
 			}
 		}
 
-		if useReflection && useDynamicHashRoot {
-			// Use dynamic hash root - can always be used even with dynamic specs
-			hasher, ok := getPtr(sourceValue).Interface().(sszutils.DynamicHashRoot)
-			if ok {
+		if useDynamicHashRoot {
+			if hasher, ok := getPtr(sourceValue).Interface().(sszutils.DynamicHashRoot); ok {
 				err := hasher.HashTreeRootWithDyn(ctx.ds, hh)
 				if err != nil {
 					return fmt.Errorf("failed HashTreeRootDyn: %w", err)
 				}
-				useReflection = false
+
+				return nil
 			}
 		}
 	}
 
-	if useReflection {
-		// Route to appropriate handler based on type
-		switch sourceType.SszType {
-		case ssztypes.SszTypeWrapperType:
-			err := ctx.buildRootFromTypeWrapper(sourceType, sourceValue, hh, pack, idt)
-			if err != nil {
-				return err
-			}
-		case ssztypes.SszContainerType:
-			err := ctx.buildRootFromContainer(sourceType, sourceValue, hh, idt)
-			if err != nil {
-				return err
-			}
-		case ssztypes.SszProgressiveContainerType:
-			err := ctx.buildRootFromProgressiveContainer(sourceType, sourceValue, hh, idt)
-			if err != nil {
-				return err
-			}
-		case ssztypes.SszVectorType, ssztypes.SszBitvectorType:
-			err := ctx.buildRootFromVector(sourceType, sourceValue, hh, idt)
-			if err != nil {
-				return err
-			}
-		case ssztypes.SszListType, ssztypes.SszProgressiveListType:
-			err := ctx.buildRootFromList(sourceType, sourceValue, hh, idt)
-			if err != nil {
-				return err
-			}
-		case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType:
-			err := ctx.buildRootFromBitlist(sourceType, sourceValue, hh, idt)
-			if err != nil {
-				return err
-			}
-		case ssztypes.SszCompatibleUnionType:
-			err := ctx.buildRootFromCompatibleUnion(sourceType, sourceValue, hh, idt)
-			if err != nil {
-				return err
-			}
-
-		case ssztypes.SszBoolType:
-			if pack {
-				hh.AppendBool(sourceValue.Bool())
-			} else {
-				hh.PutBool(sourceValue.Bool())
-			}
-		case ssztypes.SszUint8Type:
-			if pack {
-				hh.AppendUint8(uint8(sourceValue.Uint()))
-			} else {
-				hh.PutUint8(uint8(sourceValue.Uint()))
-			}
-		case ssztypes.SszUint16Type:
-			if pack {
-				hh.AppendUint16(uint16(sourceValue.Uint()))
-			} else {
-				hh.PutUint16(uint16(sourceValue.Uint()))
-			}
-		case ssztypes.SszUint32Type:
-			if pack {
-				hh.AppendUint32(uint32(sourceValue.Uint()))
-			} else {
-				hh.PutUint32(uint32(sourceValue.Uint()))
-			}
-		case ssztypes.SszUint64Type:
-			var uintVal uint64
-			if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsTime != 0 {
-				timeVal, isTime := sourceValue.Interface().(time.Time)
-				if !isTime {
-					return fmt.Errorf("time.Time type expected, got %v", sourceType.Type.Name())
-				}
-				uintVal = uint64(timeVal.Unix())
-			} else {
-				uintVal = uint64(sourceValue.Uint())
-			}
-			if pack {
-				hh.AppendUint64(uintVal)
-			} else {
-				hh.PutUint64(uintVal)
-			}
-		case ssztypes.SszUint128Type, ssztypes.SszUint256Type:
-			err := ctx.buildRootFromLargeUint(sourceType, sourceValue, hh, pack, idt)
-			if err != nil {
-				return err
-			}
-
-		// extended types
-		case ssztypes.SszInt8Type:
-			if pack {
-				hh.AppendUint8(uint8(sourceValue.Int()))
-			} else {
-				hh.PutUint8(uint8(sourceValue.Int()))
-			}
-		case ssztypes.SszInt16Type:
-			if pack {
-				hh.AppendUint16(uint16(sourceValue.Int()))
-			} else {
-				hh.PutUint16(uint16(sourceValue.Int()))
-			}
-		case ssztypes.SszInt32Type:
-			if pack {
-				hh.AppendUint32(uint32(sourceValue.Int()))
-			} else {
-				hh.PutUint32(uint32(sourceValue.Int()))
-			}
-		case ssztypes.SszInt64Type:
-			if pack {
-				hh.AppendUint64(uint64(sourceValue.Int()))
-			} else {
-				hh.PutUint64(uint64(sourceValue.Int()))
-			}
-		case ssztypes.SszFloat32Type:
-			if pack {
-				hh.AppendUint32(math.Float32bits(float32(sourceValue.Float())))
-			} else {
-				hh.PutUint32(math.Float32bits(float32(sourceValue.Float())))
-			}
-		case ssztypes.SszFloat64Type:
-			if pack {
-				hh.AppendUint64(math.Float64bits(sourceValue.Float()))
-			} else {
-				hh.PutUint64(math.Float64bits(sourceValue.Float()))
-			}
-		case ssztypes.SszOptionalType:
-			err := ctx.buildRootFromOptional(sourceType, sourceValue, hh, idt)
-			if err != nil {
-				return err
-			}
-		case ssztypes.SszBigIntType:
-			err := ctx.buildRootFromBigInt(sourceType, sourceValue, hh, idt)
-			if err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("unknown type: %v", sourceType)
+	// Route to appropriate handler based on type
+	switch sourceType.SszType {
+	case ssztypes.SszTypeWrapperType:
+		err := ctx.buildRootFromTypeWrapper(sourceType, sourceValue, hh, pack, idt)
+		if err != nil {
+			return err
 		}
+	case ssztypes.SszContainerType:
+		err := ctx.buildRootFromContainer(sourceType, sourceValue, hh, idt)
+		if err != nil {
+			return err
+		}
+	case ssztypes.SszProgressiveContainerType:
+		err := ctx.buildRootFromProgressiveContainer(sourceType, sourceValue, hh, idt)
+		if err != nil {
+			return err
+		}
+	case ssztypes.SszVectorType, ssztypes.SszBitvectorType:
+		err := ctx.buildRootFromVector(sourceType, sourceValue, hh, idt)
+		if err != nil {
+			return err
+		}
+	case ssztypes.SszListType, ssztypes.SszProgressiveListType:
+		err := ctx.buildRootFromList(sourceType, sourceValue, hh, idt)
+		if err != nil {
+			return err
+		}
+	case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType:
+		err := ctx.buildRootFromBitlist(sourceType, sourceValue, hh, idt)
+		if err != nil {
+			return err
+		}
+	case ssztypes.SszCompatibleUnionType:
+		err := ctx.buildRootFromCompatibleUnion(sourceType, sourceValue, hh, idt)
+		if err != nil {
+			return err
+		}
+
+	case ssztypes.SszBoolType:
+		if pack {
+			hh.AppendBool(sourceValue.Bool())
+		} else {
+			hh.PutBool(sourceValue.Bool())
+		}
+	case ssztypes.SszUint8Type:
+		if pack {
+			hh.AppendUint8(uint8(sourceValue.Uint()))
+		} else {
+			hh.PutUint8(uint8(sourceValue.Uint()))
+		}
+	case ssztypes.SszUint16Type:
+		if pack {
+			hh.AppendUint16(uint16(sourceValue.Uint()))
+		} else {
+			hh.PutUint16(uint16(sourceValue.Uint()))
+		}
+	case ssztypes.SszUint32Type:
+		if pack {
+			hh.AppendUint32(uint32(sourceValue.Uint()))
+		} else {
+			hh.PutUint32(uint32(sourceValue.Uint()))
+		}
+	case ssztypes.SszUint64Type:
+		var uintVal uint64
+		if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsTime != 0 {
+			timeVal, isTime := sourceValue.Interface().(time.Time)
+			if !isTime {
+				return fmt.Errorf("time.Time type expected, got %v", sourceType.Type.Name())
+			}
+			uintVal = uint64(timeVal.Unix())
+		} else {
+			uintVal = sourceValue.Uint()
+		}
+		if pack {
+			hh.AppendUint64(uintVal)
+		} else {
+			hh.PutUint64(uintVal)
+		}
+	case ssztypes.SszUint128Type, ssztypes.SszUint256Type:
+		err := ctx.buildRootFromLargeUint(sourceType, sourceValue, hh, pack, idt)
+		if err != nil {
+			return err
+		}
+
+	// extended types
+	case ssztypes.SszInt8Type:
+		if pack {
+			hh.AppendUint8(uint8(sourceValue.Int()))
+		} else {
+			hh.PutUint8(uint8(sourceValue.Int()))
+		}
+	case ssztypes.SszInt16Type:
+		if pack {
+			hh.AppendUint16(uint16(sourceValue.Int()))
+		} else {
+			hh.PutUint16(uint16(sourceValue.Int()))
+		}
+	case ssztypes.SszInt32Type:
+		if pack {
+			hh.AppendUint32(uint32(sourceValue.Int()))
+		} else {
+			hh.PutUint32(uint32(sourceValue.Int()))
+		}
+	case ssztypes.SszInt64Type:
+		if pack {
+			hh.AppendUint64(uint64(sourceValue.Int()))
+		} else {
+			hh.PutUint64(uint64(sourceValue.Int()))
+		}
+	case ssztypes.SszFloat32Type:
+		if pack {
+			hh.AppendUint32(math.Float32bits(float32(sourceValue.Float())))
+		} else {
+			hh.PutUint32(math.Float32bits(float32(sourceValue.Float())))
+		}
+	case ssztypes.SszFloat64Type:
+		if pack {
+			hh.AppendUint64(math.Float64bits(sourceValue.Float()))
+		} else {
+			hh.PutUint64(math.Float64bits(sourceValue.Float()))
+		}
+	case ssztypes.SszOptionalType:
+		err := ctx.buildRootFromOptional(sourceType, sourceValue, hh, idt)
+		if err != nil {
+			return err
+		}
+	case ssztypes.SszBigIntType:
+		err := ctx.buildRootFromBigInt(sourceType, sourceValue, hh, idt)
+		if err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("unknown type: %v", sourceType)
 	}
 
 	if ctx.verbose {
@@ -310,7 +306,7 @@ func (ctx *ReflectionCtx) buildRootFromTypeWrapper(sourceType *ssztypes.TypeDesc
 //
 // Returns:
 //   - error: An error if hashing fails
-func (ctx *ReflectionCtx) buildRootFromLargeUint(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, pack bool, idt int) error {
+func (ctx *ReflectionCtx) buildRootFromLargeUint(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, pack bool, _ int) error {
 	// Handle unaddressable arrays
 	if !sourceValue.CanAddr() && sourceValue.Kind() == reflect.Array {
 		// workaround for unaddressable static arrays
@@ -363,8 +359,9 @@ func (ctx *ReflectionCtx) buildRootFromLargeUint(sourceType *ssztypes.TypeDescri
 func (ctx *ReflectionCtx) buildRootFromContainer(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
 	hashIndex := hh.Index()
 
-	for i := 0; i < len(sourceType.ContainerDesc.Fields); i++ {
-		field := sourceType.ContainerDesc.Fields[i]
+	htrFields := sourceType.ContainerDesc.Fields
+	for i := 0; i < len(htrFields); i++ {
+		field := &htrFields[i]
 		fieldType := field.Type
 		// Use FieldIndex to access the runtime struct's field, which may differ
 		// from the schema field index when using view descriptors.
@@ -412,8 +409,9 @@ func (ctx *ReflectionCtx) buildRootFromProgressiveContainer(sourceType *ssztypes
 	hashIndex := hh.Index()
 	lastActiveField := -1
 
-	for i := 0; i < len(sourceType.ContainerDesc.Fields); i++ {
-		field := sourceType.ContainerDesc.Fields[i]
+	progFields := sourceType.ContainerDesc.Fields
+	for i := 0; i < len(progFields); i++ {
+		field := &progFields[i]
 
 		if int(field.SszIndex) > lastActiveField+1 {
 			// fill the gap with empty fields
@@ -518,12 +516,17 @@ func (ctx *ReflectionCtx) buildRootFromCompatibleUnion(sourceType *ssztypes.Type
 //   - Byte arrays use PutBytes for efficient chunk-based hashing
 //   - Arrays with max size hints include length mixing for proper limits
 func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
+	vecLen := int64(sourceType.Len)
+	if vecLen > math.MaxInt {
+		return fmt.Errorf("vector length %d exceeds platform int max", sourceType.Len)
+	}
+
 	hashIndex := hh.Index()
 
 	sliceLen := sourceValue.Len()
 	if uint32(sliceLen) > sourceType.Len {
 		if sourceType.Kind == reflect.Array {
-			sliceLen = int(sourceType.Len)
+			sliceLen = int(vecLen)
 		} else {
 			return sszutils.ErrListTooBig
 		}
@@ -531,7 +534,7 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 
 	appendZero := 0
 	if uint32(sliceLen) < sourceType.Len {
-		appendZero = int(sourceType.Len) - sliceLen
+		appendZero = int(vecLen) - sliceLen
 	}
 
 	// For byte arrays, handle as a single unit
@@ -657,21 +660,22 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 		hh.FillUpTo32()
 	}
 
-	if sourceType.SszType == ssztypes.SszProgressiveListType {
+	switch {
+	case sourceType.SszType == ssztypes.SszProgressiveListType:
 		hh.MerkleizeProgressiveWithMixin(hashIndex, uint64(sliceLen))
-	} else if sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
+	case sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0:
 		var limit, itemSize uint64
 
 		switch sourceType.ElemDesc.SszType {
 		case ssztypes.SszBoolType:
 			itemSize = 1
-		case ssztypes.SszUint8Type:
+		case ssztypes.SszUint8Type, ssztypes.SszInt8Type:
 			itemSize = 1
-		case ssztypes.SszUint16Type:
+		case ssztypes.SszUint16Type, ssztypes.SszInt16Type:
 			itemSize = 2
-		case ssztypes.SszUint32Type:
+		case ssztypes.SszUint32Type, ssztypes.SszInt32Type, ssztypes.SszFloat32Type:
 			itemSize = 4
-		case ssztypes.SszUint64Type:
+		case ssztypes.SszUint64Type, ssztypes.SszInt64Type, ssztypes.SszFloat64Type:
 			itemSize = 8
 		case ssztypes.SszUint128Type:
 			itemSize = 16
@@ -682,7 +686,7 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 		}
 
 		if itemSize > 0 {
-			limit = sszutils.CalculateLimit(sourceType.Limit, uint64(sliceLen), uint64(itemSize))
+			limit = sszutils.CalculateLimit(sourceType.Limit, uint64(sliceLen), itemSize)
 		} else {
 			limit = sourceType.Limit
 		}
@@ -691,7 +695,7 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 			return sszutils.ErrListTooBig
 		}
 		hh.MerkleizeWithMixin(hashIndex, uint64(sliceLen), limit)
-	} else {
+	default:
 		hh.Merkleize(hashIndex)
 	}
 
@@ -755,7 +759,7 @@ func (ctx *ReflectionCtx) getActiveFields(sourceType *ssztypes.TypeDescriptor) [
 //
 // Returns:
 //   - error: An error if bitlist hashing fails
-func (ctx *ReflectionCtx) buildRootFromBitlist(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
+func (ctx *ReflectionCtx) buildRootFromBitlist(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, _ int) error {
 	maxSize := uint64(0)
 	bytes := sourceValue.Bytes()
 
@@ -823,7 +827,7 @@ func (ctx *ReflectionCtx) buildRootFromOptional(sourceType *ssztypes.TypeDescrip
 //
 // Returns:
 //   - error: An error if hashing fails
-func (ctx *ReflectionCtx) buildRootFromBigInt(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
+func (ctx *ReflectionCtx) buildRootFromBigInt(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, _ int) error {
 	bigInt, isBigInt := sourceValue.Interface().(big.Int)
 	if !isBigInt {
 		return fmt.Errorf("big.Int type expected, got %v", sourceType.Type.Name())

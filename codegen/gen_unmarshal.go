@@ -138,7 +138,7 @@ func (ctx *unmarshalContext) getValVar() string {
 }
 
 // getCastedValueVar returns the variable name for the value of a type, converting to the source type if needed
-func (ctx *unmarshalContext) getCastedValueVar(desc *ssztypes.TypeDescriptor, varName string, sourceType string) string {
+func (ctx *unmarshalContext) getCastedValueVar(desc *ssztypes.TypeDescriptor, varName, sourceType string) string {
 	if targetType := ctx.typePrinter.InnerTypeString(desc); targetType != sourceType {
 		varName = fmt.Sprintf("%s(%s)", targetType, varName)
 	}
@@ -178,7 +178,7 @@ func (ctx *unmarshalContext) isInlinable(desc *ssztypes.TypeDescriptor) bool {
 }
 
 // unmarshalType generates unmarshal code for any SSZ type, delegating to specific unmarshalers.
-func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName string, indent int, isRoot bool, noBufCheck bool) error {
+func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName string, indent int, isRoot, noBufCheck bool) error {
 	// Handle types that have generated methods we can call
 	isView := desc.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
 	if !isRoot && isView {
@@ -609,7 +609,7 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 
 	limitVar := ""
 	bitlimitVar := ""
-	needExpression := !(desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 && noBufCheck)
+	needExpression := desc.GoTypeFlags&ssztypes.GoTypeFlagIsString == 0 || !noBufCheck
 
 	if sizeExpression != nil && needExpression {
 		defaultValue := uint64(desc.Len)
@@ -759,6 +759,17 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 				}
 				ctx.appendCode(indent, "copy(%s[:], buf)\n", varName)
 			}
+			return nil
+		}
+
+		// bulk uint64 lists
+		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
+			ctx.appendCode(indent, "itemCount := len(buf) / 8\n")
+			ctx.appendCode(indent, "if len(buf)%s8 != 0 {\n\treturn sszutils.ErrUnexpectedEOF\n}\n", "%")
+			if desc.Kind != reflect.Array {
+				ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", varName, varName)
+			}
+			ctx.appendCode(indent, "sszutils.UnmarshalUint64Slice(%s, buf)\n", varName)
 			return nil
 		}
 

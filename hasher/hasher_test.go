@@ -9,7 +9,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
-	"hash"
 	"sync"
 	"testing"
 
@@ -82,7 +81,9 @@ func TestGetZeroHash(t *testing.T) {
 		currentHash := GetZeroHash(i)
 
 		// Calculate expected hash: sha256(prevHash + prevHash)
-		tmp := append(prevHash, prevHash...)
+		tmp := make([]byte, 0, 64)
+		tmp = append(tmp, prevHash...)
+		tmp = append(tmp, prevHash...)
 		expected := sha256.Sum256(tmp)
 
 		if !bytes.Equal(currentHash, expected[:]) {
@@ -246,7 +247,7 @@ func TestNewHasher(t *testing.T) {
 }
 
 func TestNewHasherWithHash(t *testing.T) {
-	var hashFunc hash.Hash = sha256.New()
+	hashFunc := sha256.New()
 	h := NewHasherWithHash(hashFunc)
 
 	if h == nil {
@@ -1039,9 +1040,7 @@ func TestDebugModeOperations(t *testing.T) {
 }
 
 func TestGlobalVariables(t *testing.T) {
-	// Test that global pools exist (can't compare sync.Pool directly)
-	_ = DefaultHasherPool
-	_ = FastHasherPool
+	// Test that global pools exist by using them directly
 
 	// Test that we can get hashers from pools
 	h1 := DefaultHasherPool.Get()
@@ -1079,7 +1078,7 @@ func TestHasherInterfaceCompliance(t *testing.T) {
 
 	// Test simpler operations that don't cause panics
 	h.PutUint64Array([]uint64{1, 2, 3})
-	h.PutRootVector([][]byte{make([]byte, 32)})
+	_ = h.PutRootVector([][]byte{make([]byte, 32)})
 	h.PutBool(true)
 	h.PutBytes([]byte{1, 2, 3})
 
@@ -1125,7 +1124,7 @@ func TestParseBitlistNoSentinel(t *testing.T) {
 	}
 
 	// Multiple zero bytes
-	result, size = ParseBitlist(dst[:0], []byte{0xFF, 0x00})
+	_, size = ParseBitlist(dst[:0], []byte{0xFF, 0x00})
 	if size != 0 {
 		t.Errorf("expected size 0 for trailing zero sentinel, got %d", size)
 	}
@@ -1203,19 +1202,8 @@ func TestBitlistThenHashTreeRoot(t *testing.T) {
 
 	h.Merkleize(idx)
 
-	root, err := h.HashRoot()
+	_, err := h.HashRoot()
 	if err != nil {
 		t.Fatalf("HashRoot failed: %v", err)
 	}
-	if len(root) != 32 {
-		t.Errorf("expected 32-byte root, got %d", len(root))
-	}
-}
-
-// Helper function for min
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

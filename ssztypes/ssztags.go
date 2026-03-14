@@ -13,6 +13,10 @@ import (
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
+// SszType identifies the SSZ encoding type for a field or value.
+// It covers basic types (bool, uintN), complex types (container, list, vector,
+// bitlist, bitvector), progressive types, unions, and extended non-standard
+// types (signed integers, floats, bigint).
 type SszType uint8
 
 const (
@@ -51,10 +55,15 @@ const (
 	SszOptionalType
 )
 
+// SszTypeHint holds a parsed SSZ type hint from an ssz-type struct tag.
+// Multiple hints may be present for nested types (e.g., a list of vectors).
 type SszTypeHint struct {
 	Type SszType
 }
 
+// ParseSszType converts an ssz-type tag string value (e.g., "container",
+// "list", "uint64") into the corresponding SszType constant. Returns an
+// error for unrecognized type strings.
 func ParseSszType(typeStr string) (SszType, error) {
 	switch typeStr {
 	case "?", "auto":
@@ -208,20 +217,21 @@ func getSszSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]SszS
 
 			sszSize := SszSizeHint{}
 
-			if sszBitsizeStr != "?" {
+			switch {
+			case sszBitsizeStr != "?":
 				sszSizeInt, err := strconv.ParseUint(sszBitsizeStr, 10, 32)
 				if err != nil {
 					return sszSizes, fmt.Errorf("error parsing ssz-bitsize tag for '%v' field: %w", field.Name, err)
 				}
 				sszSize.Size = uint32(sszSizeInt)
 				sszSize.Bits = true
-			} else if sszSizeStr != "?" {
+			case sszSizeStr != "?":
 				sszSizeInt, err := strconv.ParseUint(sszSizeStr, 10, 32)
 				if err != nil {
 					return sszSizes, fmt.Errorf("error parsing ssz-size tag for '%v' field: %w", field.Name, err)
 				}
 				sszSize.Size = uint32(sszSizeInt)
-			} else {
+			default:
 				sszSize.Dynamic = true
 			}
 
@@ -410,7 +420,7 @@ func getSszIndexTag(field *reflect.StructField) (*uint16, error) {
 
 	// parse `ssz-index` first, these are the default values used by fastssz
 	if fieldSszIndexStr, fieldHasSszIndex := field.Tag.Lookup("ssz-index"); fieldHasSszIndex {
-		sszSizeInt, err := strconv.ParseUint(fieldSszIndexStr, 10, 64)
+		sszSizeInt, err := strconv.ParseUint(fieldSszIndexStr, 10, 16)
 		if err != nil {
 			return nil, fmt.Errorf("error parsing ssz-index tag for '%v' field: %w", field.Name, err)
 		}
