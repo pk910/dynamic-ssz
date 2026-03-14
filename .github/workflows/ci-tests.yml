@@ -159,17 +159,30 @@ jobs:
         pattern: coverage-*
         path: coverage-artifacts
 
+    - name: Flatten coverage files
+      run: |
+        cp coverage-artifacts/coverage-unit/* . 2>/dev/null || true
+        cp coverage-artifacts/coverage-spec-mainnet/spec-coverage.out spec-coverage-mainnet.out 2>/dev/null || true
+        cp coverage-artifacts/coverage-spec-minimal/spec-coverage.out spec-coverage-minimal.out 2>/dev/null || true
+        rm -rf coverage-artifacts
+
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
-        directory: coverage-artifacts
+        files: coverage-codegen.txt,coverage-unit.txt,coverage-unit-nocgo.txt,coverage-unit-386.txt,spec-coverage-mainnet.out,spec-coverage-minimal.out
 
     - name: Upload final coverage artifacts
       uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
       with:
         name: final-coverage-report
-        path: coverage-artifacts/
+        path: |
+          coverage-codegen.txt
+          coverage-unit.txt
+          coverage-unit-nocgo.txt
+          coverage-unit-386.txt
+          spec-coverage-mainnet.out
+          spec-coverage-minimal.out
 
   # Run govulncheck to detect known vulnerabilities in dependencies
   govulncheck:
