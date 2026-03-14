@@ -499,7 +499,7 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		if desc.Kind == reflect.Array {
 			// check if dynamic limit is greater than the length of the array
 			ctx.appendCode(indent, "if %s > %d {\n", limitVar, desc.Len)
-			ctx.appendCode(indent, "\treturn sszutils.NewSszErrorf(sszutils.ErrVectorLength, \"dynamic vector size %%d exceeds array length %d\", %s)\n", desc.Len, limitVar)
+			ctx.appendCode(indent+1, "return sszutils.NewSszErrorf(sszutils.ErrVectorLength, \"dynamic vector size %%d exceeds array length %%d\", %d, %s)\n", desc.Len, limitVar)
 			ctx.appendCode(indent, "}\n")
 		}
 	} else {
@@ -517,9 +517,9 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 	lenVar := ""
 	switch {
 	case desc.Kind != reflect.Array:
-		ctx.appendCode(indent, varNameVLen+" := len(%s)\n", valueVar)
-		ctx.appendCode(indent, "if "+varNameVLen+" > %s {\n", limitVar)
-		ctx.appendCode(indent, "\treturn sszutils.NewSszErrorf(sszutils.ErrVectorLength, \"vector length %%d exceeds limit %s\", "+varNameVLen+")\n", limitVar)
+		ctx.appendCode(indent, "%s := len(%s)\n", varNameVLen, valueVar)
+		ctx.appendCode(indent, "if %s > %s {\n", varNameVLen, limitVar)
+		ctx.appendCode(indent+1, "return sszutils.NewSszErrorf(sszutils.ErrVectorLength, \"vector length %%d exceeds limit %%d\", %s, %s)\n", varNameVLen, limitVar)
 		ctx.appendCode(indent, "}\n")
 		lenVar = varNameVLen
 	case hasLimitVar:
@@ -687,7 +687,7 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 	if hasMax {
 		addVlen()
 		ctx.appendCode(indent, "if vlen > %s {\n", maxVar)
-		ctx.appendCode(indent, "\treturn sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"list length %%d exceeds maximum %s\", vlen)\n", maxVar)
+		ctx.appendCode(indent, "\treturn sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"list length %%d exceeds maximum %%d\", vlen, %s)\n", maxVar)
 		ctx.appendCode(indent, "}\n")
 	}
 
@@ -782,7 +782,7 @@ func (ctx *encoderContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName
 
 	if hasMax {
 		ctx.appendCode(indent, "if vlen > %s {\n", maxVar)
-		ctx.appendCode(indent, "\treturn sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"bitlist length %%d exceeds maximum %s\", vlen)\n", maxVar)
+		ctx.appendCode(indent, "\treturn sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"bitlist length %%d exceeds maximum %%d\", vlen, %s)\n", maxVar)
 		ctx.appendCode(indent, "}\n")
 	}
 

@@ -350,6 +350,12 @@ func (ctx *decoderContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, var
 	}
 	staticSizeVars = append(staticSizeVars, fmt.Sprintf("%d", staticSize))
 
+	totalStaticSizeExpr := strings.Join(staticSizeVars, "+")
+	if len(staticSizeVars) > 1 {
+		ctx.appendCode(indent, "totalSize := %s\n", totalStaticSizeExpr)
+		totalStaticSizeExpr = "totalSize"
+	}
+
 	// Read fixed fields and offsets
 	ctx.appendCode(indent, "maxOffset := uint32(dec.GetLength())\n")
 
@@ -358,7 +364,7 @@ func (ctx *decoderContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, var
 		ctx.appendCode(indent, "%s := dec.GetPosition()\n", startPosVar)
 		ctx.startPosVarCounter++
 	}
-	ctx.appendCode(indent, "if maxOffset < uint32(%s) {\n\treturn sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"not enough data for fixed fields\")\n}\n", strings.Join(staticSizeVars, "+"))
+	ctx.appendCode(indent, "if maxOffset < uint32(%s) {\n\treturn sszutils.NewSszErrorf(sszutils.ErrUnexpectedEOF, \"not enough data for fixed fields (have %%d, needed %%d)\", maxOffset, uint32(%s))\n}\n", totalStaticSizeExpr, totalStaticSizeExpr)
 	dynamicFields := make([]int, 0)
 
 	for idx, field := range desc.ContainerDesc.Fields {
@@ -370,7 +376,7 @@ func (ctx *decoderContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, var
 			if len(dynamicFields) > 0 {
 				ctx.appendCode(indent, "if offset%d < offset%d || offset%d > maxOffset {\n\treturn sszutils.NewSszErrorf(sszutils.ErrOffset, \"field '%s' offset %%d out of range (prev=%%d, maxOffset=%%d)\", offset%d, offset%d, maxOffset)\n}\n", idx, dynamicFields[len(dynamicFields)-1], idx, field.Name, idx, dynamicFields[len(dynamicFields)-1])
 			} else {
-				ctx.appendCode(indent, "if offset%d != uint32(%s) {\n\treturn sszutils.NewSszErrorf(sszutils.ErrOffset, \"first offset %%d does not match expected %s\", offset%d)\n}\n", idx, strings.Join(staticSizeVars, "+"), strings.Join(staticSizeVars, "+"), idx)
+				ctx.appendCode(indent, "if offset%d != uint32(%s) {\n\treturn sszutils.NewSszErrorf(sszutils.ErrOffset, \"first offset %%d does not match expected %%d\", offset%d, %s)\n}\n", idx, totalStaticSizeExpr, idx, totalStaticSizeExpr)
 			}
 			dynamicFields = append(dynamicFields, idx)
 		} else {
@@ -465,7 +471,7 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 		if desc.Kind == reflect.Array {
 			// check if dynamic limit is greater than the length of the array
 			ctx.appendCode(indent, "if %s > %d {\n", limitVar, desc.Len)
-			ctx.appendCode(indent, "\treturn sszutils.NewSszErrorf(sszutils.ErrVectorLength, \"dynamic vector size %%d exceeds array length %d\", %s)\n", desc.Len, limitVar)
+			ctx.appendCode(indent, "\treturn sszutils.NewSszErrorf(sszutils.ErrVectorLength, \"dynamic vector size %%d exceeds array length %%d\", %d, %s)\n", desc.Len, limitVar)
 			ctx.appendCode(indent, "}\n")
 		}
 	} else {

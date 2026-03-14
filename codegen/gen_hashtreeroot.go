@@ -524,7 +524,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		if desc.Kind == reflect.Array {
 			// check if dynamic limit is greater than the length of the array
 			ctx.appendCode(indent, "if %s > %d {\n", limitVar, desc.Len)
-			ctx.appendCode(indent, "\treturn sszutils.NewSszErrorf(sszutils.ErrVectorLength, \"dynamic vector size %%d exceeds array length %d\", %s)\n", desc.Len, limitVar)
+			ctx.appendCode(indent, "\treturn sszutils.NewSszErrorf(sszutils.ErrVectorLength, \"dynamic vector size %%d exceeds array length %%d\", %d, %s)\n", desc.Len, limitVar)
 			ctx.appendCode(indent, "}\n")
 		}
 	} else {
@@ -543,7 +543,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 	if desc.Kind != reflect.Array {
 		ctx.appendCode(indent, "vlen := len(%s)\n", valueVar)
 		ctx.appendCode(indent, "if vlen > %s {\n", limitVar)
-		ctx.appendCode(indent, "\treturn sszutils.NewSszErrorf(sszutils.ErrVectorLength, \"vector length %%d exceeds limit %s\", vlen)\n", limitVar)
+		ctx.appendCode(indent, "\treturn sszutils.NewSszErrorf(sszutils.ErrVectorLength, \"vector length %%d exceeds limit %%d\", vlen, %s)\n", limitVar)
 		ctx.appendCode(indent, "}\n")
 		lenVar = varNameVLen
 	} else {
@@ -678,7 +678,7 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 	if hasMax {
 		addVlen()
 		ctx.appendCode(indent, "if vlen > %s {\n", maxVar)
-		ctx.appendCode(indent, "\treturn sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"list length %%d exceeds maximum %s\", vlen)\n", maxVar)
+		ctx.appendCode(indent, "\treturn sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"list length %%d exceeds maximum %%d\", vlen, %s)\n", maxVar)
 		ctx.appendCode(indent, "}\n")
 	}
 
@@ -769,7 +769,7 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varNa
 
 	if maxVar != "" {
 		ctx.appendCode(indent, "if size > %s {\n", maxVar)
-		ctx.appendCode(indent, "\treturn sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"bitlist length %%d exceeds maximum %s\", size)\n", maxVar)
+		ctx.appendCode(indent, "\treturn sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"bitlist length %%d exceeds maximum %%d\", size, %s)\n", maxVar)
 		ctx.appendCode(indent, "}\n")
 	}
 	ctx.appendCode(indent, "hh.AppendBytes32(bitlist)\n")
