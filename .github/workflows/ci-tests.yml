@@ -163,7 +163,13 @@ jobs:
       uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
-        directory: coverage-artifacts
+        files: >-
+          coverage-artifacts/coverage-unit/coverage-codegen.txt,
+          coverage-artifacts/coverage-unit/coverage-unit.txt,
+          coverage-artifacts/coverage-unit/coverage-unit-nocgo.txt,
+          coverage-artifacts/coverage-unit/coverage-unit-386.txt,
+          coverage-artifacts/coverage-spec-mainnet/spec-coverage.out,
+          coverage-artifacts/coverage-spec-minimal/spec-coverage.out
 
     - name: Upload final coverage artifacts
       uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
