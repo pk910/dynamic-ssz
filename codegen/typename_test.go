@@ -846,7 +846,7 @@ func TestTypeDescriptorMethods(t *testing.T) {
 			Type:        reflect.TypeOf(int(0)),
 		}
 
-		result := freshPrinter.TypeStringWithoutTracking(desc)
+		result := freshPrinter.TypeStringWithoutTracking(desc, false)
 
 		if result != "ExternalType" {
 			t.Errorf("Expected 'ExternalType', got %s", result)

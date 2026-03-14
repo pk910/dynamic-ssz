@@ -12,6 +12,7 @@ import (
 
 // unionVariantInfo contains type and annotation information for a union variant
 type unionVariantInfo struct {
+	Name         string
 	Type         reflect.Type
 	SizeHints    []SszSizeHint
 	MaxSizeHints []SszMaxSizeHint
@@ -48,6 +49,7 @@ func extractUnionDescriptorInfo(descriptorType reflect.Type, ds sszutils.Dynamic
 		}
 
 		variantInfo[variantIndex] = unionVariantInfo{
+			Name:         field.Name,
 			Type:         field.Type,
 			SizeHints:    sizeHints,
 			MaxSizeHints: maxSizeHints,

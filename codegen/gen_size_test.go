@@ -35,7 +35,7 @@ func TestGenerateSizeUnsupportedType(t *testing.T) {
 			typePrinter := NewTypePrinter("test/package")
 			options := &CodeGeneratorOptions{}
 
-			err := generateSize(desc, codeBuilder, typePrinter, options)
+			err := generateSize(desc, codeBuilder, typePrinter, "", options)
 			if err == nil {
 				t.Error("expected error for unsupported SSZ type, got nil")
 			}
@@ -74,7 +74,7 @@ func TestSizeContainerWithNestedUnsupportedType(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateSize(containerDesc, codeBuilder, typePrinter, options)
+	err := generateSize(containerDesc, codeBuilder, typePrinter, "", options)
 	if err == nil {
 		t.Error("expected error for nested unsupported type, got nil")
 	}
@@ -121,7 +121,7 @@ func TestSizeDynamicContainerFieldError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateSize(containerDesc, codeBuilder, typePrinter, options)
+	err := generateSize(containerDesc, codeBuilder, typePrinter, "", options)
 	if err == nil {
 		t.Error("expected error for dynamic field with nested unsupported type, got nil")
 	}
@@ -154,7 +154,7 @@ func TestSizeListWithNestedUnsupportedType(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateSize(listDesc, codeBuilder, typePrinter, options)
+	err := generateSize(listDesc, codeBuilder, typePrinter, "", options)
 	if err == nil {
 		t.Error("expected error for nested unsupported element type in list, got nil")
 	}
@@ -188,7 +188,7 @@ func TestSizeUnionWithNestedUnsupportedType(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateSize(unionDesc, codeBuilder, typePrinter, options)
+	err := generateSize(unionDesc, codeBuilder, typePrinter, "", options)
 	if err == nil {
 		t.Error("expected error for nested unsupported variant type in union, got nil")
 	}
@@ -218,7 +218,7 @@ func TestSizeTypeWrapperWithNestedUnsupportedType(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateSize(wrapperDesc, codeBuilder, typePrinter, options)
+	err := generateSize(wrapperDesc, codeBuilder, typePrinter, "", options)
 	if err == nil {
 		t.Error("expected error for nested unsupported type in TypeWrapper, got nil")
 	}
@@ -250,7 +250,7 @@ func TestSizeProgressiveListError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateSize(listDesc, codeBuilder, typePrinter, options)
+	err := generateSize(listDesc, codeBuilder, typePrinter, "", options)
 	if err == nil {
 		t.Error("expected error for progressive list with unsupported element type, got nil")
 	}

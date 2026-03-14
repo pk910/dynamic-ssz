@@ -268,6 +268,73 @@ func (p *TypePrinter) TypeString(t *ssztypes.TypeDescriptor) string {
 	return p.reflectTypeString(t.Type, true)
 }
 
+// ViewTypeString returns the qualified string representation of a view type descriptor and tracks import usage.
+//
+// This method generates the appropriate Go type string for a view TypeDescriptor, handling
+// package qualification and import tracking automatically.
+//
+// Parameters:
+//   - t: The view TypeDescriptor containing type information for formatting
+//
+// Returns:
+//   - string: The qualified Go type string suitable for code generation
+//
+// Example:
+//
+//	typeName := printer.TypeString(descriptor)
+//	// Result: "phase0.BeaconBlock" or "*MyStruct" depending on the type
+func (p *TypePrinter) ViewTypeString(t *ssztypes.TypeDescriptor, ensurePointer bool) string {
+	if t.CodegenInfo != nil {
+		if codegenInfo, ok := (*t.CodegenInfo).(*CodegenInfo); ok {
+			isPtr := func(t types.Type) bool {
+				for {
+					switch v := t.(type) {
+					case *types.Pointer:
+						return true
+					case *types.Named:
+						t = v.Underlying()
+					case *types.Alias:
+						t = v.Underlying()
+					default:
+						return false
+					}
+				}
+			}
+
+			if codegenInfo.SchemaType != nil {
+				ptrPrefix := ""
+				if ensurePointer && !isPtr(codegenInfo.SchemaType) {
+					ptrPrefix = "*"
+				}
+				return fmt.Sprintf("%s%s", ptrPrefix, p.packageQualify(codegenInfo.SchemaType, true))
+			} else if codegenInfo.Type != nil {
+				ptrPrefix := ""
+				if ensurePointer && !isPtr(codegenInfo.Type) {
+					ptrPrefix = "*"
+				}
+				return fmt.Sprintf("%s%s", ptrPrefix, p.packageQualify(codegenInfo.Type, true))
+			}
+		}
+	}
+
+	isPtr := func(t reflect.Type) bool {
+		return t.Kind() == reflect.Pointer
+	}
+
+	if t.SchemaType != nil {
+		ptrPrefix := ""
+		if ensurePointer && !isPtr(t.SchemaType) {
+			ptrPrefix = "*"
+		}
+		return fmt.Sprintf("%s%s", ptrPrefix, p.reflectTypeString(t.SchemaType, true))
+	}
+	ptrPrefix := ""
+	if ensurePointer && !isPtr(t.Type) {
+		ptrPrefix = "*"
+	}
+	return fmt.Sprintf("%s%s", ptrPrefix, p.reflectTypeString(t.Type, true))
+}
+
 // InnerTypeString returns the qualified string representation of the inner (dereferenced) type.
 //
 // This method is similar to TypeString but automatically dereferences pointer types
@@ -325,11 +392,19 @@ func (p *TypePrinter) InnerTypeString(t *ssztypes.TypeDescriptor) string {
 //
 // Returns:
 //   - string: The qualified Go type string without import tracking side effects
-func (p *TypePrinter) TypeStringWithoutTracking(t *ssztypes.TypeDescriptor) string {
+func (p *TypePrinter) TypeStringWithoutTracking(t *ssztypes.TypeDescriptor, viewType bool) string {
 	if t.CodegenInfo != nil {
-		if codegenInfo, ok := (*t.CodegenInfo).(*CodegenInfo); ok && codegenInfo.Type != nil {
-			return p.packageQualify(codegenInfo.Type, false)
+		if codegenInfo, ok := (*t.CodegenInfo).(*CodegenInfo); ok {
+			if viewType && codegenInfo.SchemaType != nil {
+				return p.packageQualify(codegenInfo.SchemaType, false)
+			} else if codegenInfo.Type != nil {
+				return p.packageQualify(codegenInfo.Type, false)
+			}
 		}
+	}
+
+	if viewType && t.SchemaType != nil {
+		return p.reflectTypeString(t.SchemaType, false)
 	}
 	return p.reflectTypeString(t.Type, false)
 }

@@ -34,6 +34,11 @@ ls -la "${CONSENSUS_SPEC_TESTS_DIR}"
 echo "Downloading Go dependencies..."
 go mod download
 
+# Generate code
+echo "Generating code..."
+go generate ./...
+echo "Code generated!"
+
 # Run tests
 echo "Running tests..."
 if [ -n "${FORK}" ]; then
