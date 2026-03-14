@@ -286,9 +286,9 @@ func run(config Config) error {
 			return cached, nil
 		}
 
-		extPkgs, err := packages.Load(cfg, pkgPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load external package %s: %w", pkgPath, err)
+		extPkgs, err2 := packages.Load(cfg, pkgPath)
+		if err2 != nil {
+			return nil, fmt.Errorf("failed to load external package %s: %w", pkgPath, err2)
 		}
 		if len(extPkgs) == 0 {
 			return nil, fmt.Errorf("external package %s not found", pkgPath)
@@ -315,9 +315,9 @@ func run(config Config) error {
 			pkgPath = config.PackagePath
 		} else {
 			// External type
-			extPkg, err := loadExternalPackage(ref.PackagePath)
-			if err != nil {
-				return nil, err
+			extPkg, err2 := loadExternalPackage(ref.PackagePath)
+			if err2 != nil {
+				return nil, err2
 			}
 			scope = extPkg.Types.Scope()
 			pkgPath = ref.PackagePath
@@ -351,8 +351,8 @@ func run(config Config) error {
 		// Validate view types exist (can be local or external)
 		for _, viewTypeStr := range spec.ViewTypes {
 			ref := parseViewTypeRef(viewTypeStr)
-			if _, err := resolveTypeRef(ref); err != nil {
-				return fmt.Errorf("view type %s: %w", viewTypeStr, err)
+			if _, err2 := resolveTypeRef(ref); err2 != nil {
+				return fmt.Errorf("view type %s: %w", viewTypeStr, err2)
 			}
 		}
 
@@ -386,9 +386,12 @@ func run(config Config) error {
 		var typeOptions []codegen.CodeGeneratorOption
 
 		for _, spec := range specs {
-			// Look up the main type
+			// Look up the main type (already validated in the loop above)
 			obj := mainScope.Lookup(spec.TypeName)
-			typeObj := obj.(*types.TypeName)
+			typeObj, ok := obj.(*types.TypeName)
+			if !ok {
+				return fmt.Errorf("object %s is not a type", spec.TypeName)
+			}
 			goType := typeObj.Type()
 
 			// Build type-specific options
@@ -399,9 +402,9 @@ func run(config Config) error {
 				viewTypes := make([]types.Type, 0, len(spec.ViewTypes))
 				for _, viewTypeStr := range spec.ViewTypes {
 					ref := parseViewTypeRef(viewTypeStr)
-					viewType, err := resolveTypeRef(ref)
-					if err != nil {
-						return fmt.Errorf("failed to resolve view type %s: %w", viewTypeStr, err)
+					viewType, err2 := resolveTypeRef(ref)
+					if err2 != nil {
+						return fmt.Errorf("failed to resolve view type %s: %w", viewTypeStr, err2)
 					}
 					viewTypes = append(viewTypes, viewType)
 				}

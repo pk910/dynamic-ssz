@@ -684,9 +684,9 @@ func (tc *TypeCache) buildTypeWrapperDescriptor(desc *TypeDescriptor, runtimeTyp
 		}
 
 		// Get the wrapped type from runtime descriptor
-		runtimeWrapperInfo, err := extractWrapperDescriptorInfo(runtimeDescriptorType, tc.specs)
-		if err != nil {
-			return sszutils.ErrorWithPath(err, "(wrapper)")
+		runtimeWrapperInfo, err2 := extractWrapperDescriptorInfo(runtimeDescriptorType, tc.specs)
+		if err2 != nil {
+			return sszutils.ErrorWithPath(err2, "(wrapper)")
 		}
 		runtimeWrappedType = runtimeWrapperInfo.Type
 	} else {
@@ -900,7 +900,7 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 
 			desc.ContainerDesc.DynFields = append(desc.ContainerDesc.DynFields, DynFieldDescriptor{
 				Field:        &desc.ContainerDesc.Fields[i],
-				HeaderOffset: uint32(totalSize),
+				HeaderOffset: totalSize,
 				Index:        int16(runtimeFieldIndex), // Use runtime field index for data access
 			})
 		}

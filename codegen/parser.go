@@ -158,7 +158,7 @@ func (p *Parser) GetTypeDescriptorWithSchema(dataType, schemaType types.Type, ty
 	return desc, nil
 }
 
-func (p *Parser) getCompatFlag(dataType types.Type, schemaType types.Type) ssztypes.SszCompatFlag {
+func (p *Parser) getCompatFlag(dataType, schemaType types.Type) ssztypes.SszCompatFlag {
 	typeName := dataType.String()
 	if dataType != schemaType {
 		typeName = fmt.Sprintf("%v|%v", dataType.String(), schemaType.String())
@@ -1265,7 +1265,7 @@ func (p *Parser) buildCompatibleUnionDescriptor(desc *ssztypes.TypeDescriptor, d
 	return nil
 }
 
-func (p *Parser) buildTypeWrapperDescriptor(desc *ssztypes.TypeDescriptor, dataNamed, schemaNamed *types.Named, typeHints []ssztypes.SszTypeHint, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint) error {
+func (p *Parser) buildTypeWrapperDescriptor(desc *ssztypes.TypeDescriptor, dataNamed, schemaNamed *types.Named, _ []ssztypes.SszTypeHint, _ []ssztypes.SszSizeHint, _ []ssztypes.SszMaxSizeHint) error {
 	// Extract generic type arguments from TypeWrapper[D, T] for schema (determines SSZ layout)
 	schemaTypeArgs := schemaNamed.TypeArgs()
 	if schemaTypeArgs == nil || schemaTypeArgs.Len() != 2 {
@@ -1574,23 +1574,6 @@ func (p *Parser) extractSszIndex(tag string) string {
 func (p *Parser) isByteType(typ types.Type) bool {
 	basic, ok := types.Unalias(typ).(*types.Basic)
 	return ok && basic.Kind() == types.Uint8
-}
-
-// resolveToUnderlying resolves a type to its underlying type,
-// traversing named types, pointers, and aliases.
-func (p *Parser) resolveToUnderlying(typ types.Type) types.Type {
-	for {
-		switch t := typ.(type) {
-		case *types.Named:
-			typ = t.Underlying()
-		case *types.Pointer:
-			typ = t.Elem()
-		case *types.Alias:
-			typ = t.Underlying()
-		default:
-			return typ
-		}
-	}
 }
 
 // getTypeKindString returns a string representation of a go/types type's kind.

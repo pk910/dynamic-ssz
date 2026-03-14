@@ -1439,7 +1439,7 @@ func TestBuildCompatibleUnionDescriptor(t *testing.T) {
 			t.Fatalf("Failed to instantiate CompatibleUnion: %v", err)
 		}
 
-		_, ok := instantiated.(*types.Named)
+		namedInst, ok := instantiated.(*types.Named)
 		if !ok {
 			t.Fatalf("Expected *types.Named, got %T", instantiated)
 		}
@@ -1447,7 +1447,7 @@ func TestBuildCompatibleUnionDescriptor(t *testing.T) {
 		desc := &ssztypes.TypeDescriptor{
 			SszType: ssztypes.SszCompatibleUnionType,
 		}
-		err = parser.buildCompatibleUnionDescriptor(desc, instantiated.(*types.Named), instantiated.(*types.Named))
+		err = parser.buildCompatibleUnionDescriptor(desc, namedInst, namedInst)
 		if err == nil {
 			t.Error("Expected error for empty descriptor struct")
 		}
@@ -1480,12 +1480,10 @@ func TestBuildCompatibleUnionDescriptor(t *testing.T) {
 			t.Fatalf("Expected *types.Named, got %T", instantiated)
 		}
 
-		_ = namedNonStruct // used via instantiated cast below
-
 		desc := &ssztypes.TypeDescriptor{
 			SszType: ssztypes.SszCompatibleUnionType,
 		}
-		err = parser.buildCompatibleUnionDescriptor(desc, instantiated.(*types.Named), instantiated.(*types.Named))
+		err = parser.buildCompatibleUnionDescriptor(desc, namedNonStruct, namedNonStruct)
 		if err == nil {
 			t.Error("Expected error for non-struct descriptor")
 		}
@@ -1538,10 +1536,15 @@ func TestBuildCompatibleUnionDescriptor(t *testing.T) {
 			t.Fatalf("Failed to instantiate CompatibleUnion: %v", err)
 		}
 
+		namedInst, ok := instantiated.(*types.Named)
+		if !ok {
+			t.Fatalf("Expected *types.Named, got %T", instantiated)
+		}
+
 		desc := &ssztypes.TypeDescriptor{
 			SszType: ssztypes.SszCompatibleUnionType,
 		}
-		err = parser.buildCompatibleUnionDescriptor(desc, instantiated.(*types.Named), instantiated.(*types.Named))
+		err = parser.buildCompatibleUnionDescriptor(desc, namedInst, namedInst)
 		if err != nil {
 			t.Fatalf("Failed to build CompatibleUnion descriptor: %v", err)
 		}
@@ -1586,7 +1589,11 @@ func TestBuildTypeWrapperDescriptor(t *testing.T) {
 		desc := &ssztypes.TypeDescriptor{
 			SszType: ssztypes.SszTypeWrapperType,
 		}
-		err = parser.buildTypeWrapperDescriptor(desc, instantiated.(*types.Named), instantiated.(*types.Named), nil, nil, nil)
+		namedInst, ok := instantiated.(*types.Named)
+		if !ok {
+			t.Fatalf("Expected *types.Named, got %T", instantiated)
+		}
+		err = parser.buildTypeWrapperDescriptor(desc, namedInst, namedInst, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("Failed to build TypeWrapper descriptor: %v", err)
 		}
@@ -1642,7 +1649,11 @@ func TestBuildTypeWrapperDescriptor(t *testing.T) {
 		desc := &ssztypes.TypeDescriptor{
 			SszType: ssztypes.SszTypeWrapperType,
 		}
-		err = parser.buildTypeWrapperDescriptor(desc, instantiated.(*types.Named), instantiated.(*types.Named), nil, nil, nil)
+		namedInst, ok := instantiated.(*types.Named)
+		if !ok {
+			t.Fatalf("Expected *types.Named, got %T", instantiated)
+		}
+		err = parser.buildTypeWrapperDescriptor(desc, namedInst, namedInst, nil, nil, nil)
 		if err == nil {
 			t.Error("Expected error for non-struct descriptor")
 		}
@@ -1677,7 +1688,11 @@ func TestBuildTypeWrapperDescriptor(t *testing.T) {
 		desc := &ssztypes.TypeDescriptor{
 			SszType: ssztypes.SszTypeWrapperType,
 		}
-		err = parser.buildTypeWrapperDescriptor(desc, instantiated.(*types.Named), instantiated.(*types.Named), nil, nil, nil)
+		namedInst, ok := instantiated.(*types.Named)
+		if !ok {
+			t.Fatalf("Expected *types.Named, got %T", instantiated)
+		}
+		err = parser.buildTypeWrapperDescriptor(desc, namedInst, namedInst, nil, nil, nil)
 		if err == nil {
 			t.Error("Expected error for wrong field count")
 		}
@@ -1712,7 +1727,11 @@ func TestBuildTypeWrapperDescriptor(t *testing.T) {
 		desc := &ssztypes.TypeDescriptor{
 			SszType: ssztypes.SszTypeWrapperType,
 		}
-		err = parser.buildTypeWrapperDescriptor(desc, instantiated.(*types.Named), instantiated.(*types.Named), nil, nil, nil)
+		namedInst, ok := instantiated.(*types.Named)
+		if !ok {
+			t.Fatalf("Expected *types.Named, got %T", instantiated)
+		}
+		err = parser.buildTypeWrapperDescriptor(desc, namedInst, namedInst, nil, nil, nil)
 		if err == nil {
 			t.Error("Expected error for mismatched types")
 		}
@@ -1746,7 +1765,11 @@ func TestBuildTypeWrapperDescriptor(t *testing.T) {
 		desc := &ssztypes.TypeDescriptor{
 			SszType: ssztypes.SszTypeWrapperType,
 		}
-		err = parser.buildTypeWrapperDescriptor(desc, instantiated.(*types.Named), instantiated.(*types.Named), nil, nil, nil)
+		namedInst, ok := instantiated.(*types.Named)
+		if !ok {
+			t.Fatalf("Expected *types.Named, got %T", instantiated)
+		}
+		err = parser.buildTypeWrapperDescriptor(desc, namedInst, namedInst, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("Failed to build TypeWrapper descriptor: %v", err)
 		}

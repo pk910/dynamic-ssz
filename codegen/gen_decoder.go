@@ -185,7 +185,7 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 		}
 
 		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewUnmarshaler != 0 {
-			sizeStr := "dec.GetLength()"
+			sizeStr := "dec.GetLength()" //nolint:goconst // generated code template string
 			if desc.Size > 0 {
 				sizeStr = fmt.Sprintf("%d", desc.Size)
 			}

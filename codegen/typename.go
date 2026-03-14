@@ -288,17 +288,17 @@ func (p *TypePrinter) ViewTypeString(t *ssztypes.TypeDescriptor, ensurePointer b
 		if codegenInfo, ok := (*t.CodegenInfo).(*CodegenInfo); ok {
 			isPtr := func(t types.Type) bool {
 				for {
-					if _, ok := t.(*types.Pointer); ok {
+					switch v := t.(type) {
+					case *types.Pointer:
 						return true
-					} else if named, ok := t.(*types.Named); ok {
-						t = named.Underlying()
-					} else if alias, ok := t.(*types.Alias); ok {
-						t = alias.Underlying()
-					} else {
-						break
+					case *types.Named:
+						t = v.Underlying()
+					case *types.Alias:
+						t = v.Underlying()
+					default:
+						return false
 					}
 				}
-				return false
 			}
 
 			if codegenInfo.SchemaType != nil {
@@ -318,10 +318,7 @@ func (p *TypePrinter) ViewTypeString(t *ssztypes.TypeDescriptor, ensurePointer b
 	}
 
 	isPtr := func(t reflect.Type) bool {
-		if t.Kind() == reflect.Pointer {
-			return true
-		}
-		return false
+		return t.Kind() == reflect.Pointer
 	}
 
 	if t.SchemaType != nil {

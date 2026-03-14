@@ -351,7 +351,6 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 					return "", fmt.Errorf("failed to get view hash for %s: %w", t.TypeName, err)
 				}
 				hashParts = append(hashParts, hash[:])
-
 			}
 
 			err := cg.generateSSZViewMethods(t.Descriptor, t.ViewDescriptors, typePrinter, &codeBuilder, &t.Options)
@@ -570,7 +569,6 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 			viewFnName := getViewFnName(view)
 			appendCode(codeBuilder, 1, "case %s:\n", typeName)
 			appendCode(codeBuilder, 2, "return t.%s_%s\n", fnPrefix, viewFnName)
-
 		}
 		appendCode(codeBuilder, 1, "}\n")
 	}
