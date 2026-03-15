@@ -32,6 +32,7 @@ type hashTreeRootContext struct {
 	exprVars      *exprVarGenerator
 	usedDynSpecs  bool
 	valVarCounter int
+	indexCounter  int
 }
 
 // generateHashTreeRoot generates hash tree root methods for a specific type.
@@ -72,7 +73,7 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 	typeName := typePrinter.TypeString(rootTypeDesc)
 
 	// Generate hash tree root code
-	if err := ctx.hashType(rootTypeDesc, "t", 0, true, false); err != nil {
+	if err := ctx.hashType(rootTypeDesc, "t", typePathList{}, 0, true, false); err != nil {
 		return err
 	}
 
@@ -186,6 +187,15 @@ func (ctx *hashTreeRootContext) getValueVar(desc *ssztypes.TypeDescriptor, varNa
 	return varName
 }
 
+// getIndexVar returns a unique index variable name
+func (ctx *hashTreeRootContext) getIndexVar() (string, func()) {
+	ctx.indexCounter++
+	thisIndex := ctx.indexCounter
+	return fmt.Sprintf("idx%d", thisIndex), func() {
+		ctx.indexCounter = thisIndex - 1
+	}
+}
+
 // getPtrPrefix returns & for types that are heavy to copy
 func (ctx *hashTreeRootContext) getPtrPrefix(desc *ssztypes.TypeDescriptor, prefix string) string {
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
@@ -202,14 +212,14 @@ func (ctx *hashTreeRootContext) getPtrPrefix(desc *ssztypes.TypeDescriptor, pref
 }
 
 // hashType generates hash tree root code for any SSZ type, delegating to specific hashers.
-func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName string, indent int, isRoot, pack bool) error {
+func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, isRoot, pack bool) error {
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.SszType != ssztypes.SszOptionalType {
 		ctx.appendCode(indent, "if %s == nil {\n\t%s = new(%s)\n}\n", varName, varName, ctx.typePrinter.InnerTypeString(desc))
 	}
 
 	// Handle types that have generated methods we can call
 	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0 && !isRoot {
-		ctx.appendCode(indent, "if err := %s.HashTreeRootWithDyn(ds, hh); err != nil {\n\treturn err\n}\n", varName)
+		ctx.appendCode(indent, "if err := %s.HashTreeRootWithDyn(ds, hh); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
 		ctx.usedDynSpecs = true
 		return nil
 	}
@@ -226,9 +236,9 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 
 	if useFastSsz {
 		if isFastsszHashWith {
-			ctx.appendCode(indent, "if err := %s.HashTreeRootWith(hh); err != nil {\n\treturn err\n}\n", varName)
+			ctx.appendCode(indent, "if err := %s.HashTreeRootWith(hh); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
 		} else {
-			ctx.appendCode(indent, "if root, err := %s.HashTreeRoot(); err != nil {\n\treturn err\n} else {\n\thh.AppendBytes32(root[:])\n}\n", varName)
+			ctx.appendCode(indent, "if root, err := %s.HashTreeRoot(); err != nil {\n\treturn %s\n} else {\n\thh.AppendBytes32(root[:])\n}\n", varName, typePath.getErrorWith("err"))
 		}
 		return nil
 	}
@@ -281,31 +291,31 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 		} else {
 			ctx.appendCode(indent, "\tt := %s%s.Data\n", ctx.getPtrPrefix(desc.ElemDesc, "&"), varName)
 		}
-		if err := ctx.hashType(desc.ElemDesc, valVar, indent+1, false, pack); err != nil {
+		if err := ctx.hashType(desc.ElemDesc, valVar, typePath, indent+1, false, pack); err != nil {
 			return err
 		}
 		ctx.appendCode(indent, "}\n")
 
 	case ssztypes.SszContainerType:
-		return ctx.hashContainer(desc, varName, indent)
+		return ctx.hashContainer(desc, varName, typePath, indent)
 
 	case ssztypes.SszProgressiveContainerType:
-		return ctx.hashProgressiveContainer(desc, varName, indent)
+		return ctx.hashProgressiveContainer(desc, varName, typePath, indent)
 
 	case ssztypes.SszUint128Type, ssztypes.SszUint256Type:
-		return ctx.hashVector(desc, varName, indent, pack)
+		return ctx.hashVector(desc, varName, typePath, indent, pack)
 
 	case ssztypes.SszVectorType, ssztypes.SszBitvectorType:
-		return ctx.hashVector(desc, varName, indent, false)
+		return ctx.hashVector(desc, varName, typePath, indent, false)
 
 	case ssztypes.SszListType, ssztypes.SszProgressiveListType:
-		return ctx.hashList(desc, varName, indent)
+		return ctx.hashList(desc, varName, typePath, indent)
 
 	case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType:
-		return ctx.hashBitlist(desc, varName, indent)
+		return ctx.hashBitlist(desc, varName, typePath, indent)
 
 	case ssztypes.SszCompatibleUnionType:
-		return ctx.hashUnion(desc, varName, indent)
+		return ctx.hashUnion(desc, varName, typePath, indent)
 
 	case ssztypes.SszCustomType:
 		ctx.appendCode(indent, "// Custom type - hash unknown\n")
@@ -352,7 +362,7 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 			ctx.appendCode(indent, "hh.PutUint64(%s)\n", valExpr)
 		}
 	case ssztypes.SszOptionalType:
-		return ctx.hashOptional(desc, varName, indent)
+		return ctx.hashOptional(desc, varName, typePath, indent)
 	case ssztypes.SszBigIntType:
 		return ctx.hashBigInt(desc, varName, indent)
 
@@ -364,12 +374,12 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 }
 
 // hashOptional generates hash tree root code for SSZ optional types.
-func (ctx *hashTreeRootContext) hashOptional(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
+func (ctx *hashTreeRootContext) hashOptional(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	ctx.appendCode(indent, "if %s == nil {\n", varName)
 	ctx.appendCode(indent+1, "hh.PutUint8(0)\n")
 	ctx.appendCode(indent, "} else {\n")
 	innerVarName := fmt.Sprintf("(*%s)", varName)
-	if err := ctx.hashType(desc.ElemDesc, innerVarName, indent+1, false, false); err != nil {
+	if err := ctx.hashType(desc.ElemDesc, innerVarName, typePath, indent+1, false, false); err != nil {
 		return err
 	}
 	ctx.appendCode(indent, "}\n")
@@ -389,7 +399,7 @@ func (ctx *hashTreeRootContext) hashBigInt(_ *ssztypes.TypeDescriptor, varName s
 }
 
 // hashContainer generates hash tree root code for SSZ container (struct) types.
-func (ctx *hashTreeRootContext) hashContainer(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
+func (ctx *hashTreeRootContext) hashContainer(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	// Start container merkleization
 	ctx.appendCode(indent, "idx := hh.Index()\n")
 
@@ -402,7 +412,7 @@ func (ctx *hashTreeRootContext) hashContainer(desc *ssztypes.TypeDescriptor, var
 		} else {
 			ctx.appendCode(indent, "\tt := %s%s.%s\n", ctx.getPtrPrefix(field.Type, "&"), varName, field.Name)
 		}
-		if err := ctx.hashType(field.Type, valVar, indent+1, false, false); err != nil {
+		if err := ctx.hashType(field.Type, valVar, typePath.append(field.Name), indent+1, false, false); err != nil {
 			return err
 		}
 		ctx.appendCode(indent, "}\n")
@@ -415,7 +425,7 @@ func (ctx *hashTreeRootContext) hashContainer(desc *ssztypes.TypeDescriptor, var
 }
 
 // hashProgressiveContainer generates hash tree root code for progressive container types.
-func (ctx *hashTreeRootContext) hashProgressiveContainer(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
+func (ctx *hashTreeRootContext) hashProgressiveContainer(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	// Start container merkleization
 	ctx.appendCode(indent, "idx := hh.Index()\n")
 
@@ -442,7 +452,7 @@ func (ctx *hashTreeRootContext) hashProgressiveContainer(desc *ssztypes.TypeDesc
 		} else {
 			ctx.appendCode(indent, "\tt := %s%s.%s\n", ctx.getPtrPrefix(field.Type, "&"), varName, field.Name)
 		}
-		if err := ctx.hashType(field.Type, valVar, indent+1, false, false); err != nil {
+		if err := ctx.hashType(field.Type, valVar, typePath.append(field.Name), indent+1, false, false); err != nil {
 			return err
 		}
 		ctx.appendCode(indent, "}\n")
@@ -494,7 +504,7 @@ func (ctx *hashTreeRootContext) getActiveFieldsHex(sourceType *ssztypes.TypeDesc
 }
 
 // hashVector generates hash tree root code for SSZ vector (fixed-size array) types.
-func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varName string, indent int, pack bool) error {
+func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, pack bool) error {
 	sizeExpression := desc.SizeExpression
 	if ctx.options.WithoutDynamicExpressions {
 		sizeExpression = nil
@@ -524,7 +534,8 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		if desc.Kind == reflect.Array {
 			// check if dynamic limit is greater than the length of the array
 			ctx.appendCode(indent, "if %s > %d {\n", limitVar, desc.Len)
-			ctx.appendCode(indent, "\treturn sszutils.NewSszErrorf(sszutils.ErrVectorLength, \"dynamic vector size %%d exceeds array length %d\", %s)\n", desc.Len, limitVar)
+			errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrVectorLength, \"dynamic vector size %%d exceeds array length %%d\", %d, %s)", desc.Len, limitVar)
+			ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 			ctx.appendCode(indent, "}\n")
 		}
 	} else {
@@ -543,7 +554,8 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 	if desc.Kind != reflect.Array {
 		ctx.appendCode(indent, "vlen := len(%s)\n", valueVar)
 		ctx.appendCode(indent, "if vlen > %s {\n", limitVar)
-		ctx.appendCode(indent, "\treturn sszutils.NewSszErrorf(sszutils.ErrVectorLength, \"vector length %%d exceeds limit %s\", vlen)\n", limitVar)
+		errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrVectorLength, \"vector length %%d exceeds limit %%d\", vlen, %s)", limitVar)
+		ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "}\n")
 		lenVar = varNameVLen
 	} else {
@@ -578,7 +590,8 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 			// check padding bits
 			ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
 			ctx.appendCode(indent, "if %s[%s-1] & paddingMask != 0 {\n", valVar, limitVar)
-			ctx.appendCode(indent, "\treturn sszutils.NewSszError(sszutils.ErrVectorLength, \"bitvector padding bits are non-zero\")\n")
+			errCode := "sszutils.NewSszError(sszutils.ErrVectorLength, \"bitvector padding bits are non-zero during hashing\")"
+			ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 			ctx.appendCode(indent, "}\n")
 		}
 
@@ -608,11 +621,15 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		if !isPtrType {
 			emptyVarAddin = fmt.Sprintf(", %sEmpty", valVar)
 		}
+
+		indexVar, indexDefer := ctx.getIndexVar()
+		defer indexDefer()
+
 		ctx.appendCode(indent, "var %s%s %s%s\n", valVar, emptyVarAddin, valVarPtrPrefix, ctx.typePrinter.TypeString(desc.ElemDesc))
-		ctx.appendCode(indent, "for i := range %s {\n", limitVar)
-		ctx.appendCode(indent, "\tif i < %s {\n", lenVar)
-		ctx.appendCode(indent, "\t\t%s = %s%s[i]\n", valVar, ctx.getPtrPrefix(desc.ElemDesc, "&"), varName)
-		ctx.appendCode(indent, "\t} else if i == %s {\n", lenVar)
+		ctx.appendCode(indent, "for %s := range %s {\n", indexVar, limitVar)
+		ctx.appendCode(indent, "\tif %s < %s {\n", indexVar, lenVar)
+		ctx.appendCode(indent, "\t\t%s = %s%s[%s]\n", valVar, ctx.getPtrPrefix(desc.ElemDesc, "&"), varName, indexVar)
+		ctx.appendCode(indent, "\t} else if %s == %s {\n", indexVar, lenVar)
 		if isPtrType {
 			ctx.appendCode(indent, "\t\t%s = new(%s)\n", valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
 		} else {
@@ -620,7 +637,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		}
 		ctx.appendCode(indent, "\t}\n")
 
-		if err := ctx.hashType(desc.ElemDesc, valVar, indent+1, false, true); err != nil {
+		if err := ctx.hashType(desc.ElemDesc, valVar, typePath.append("[%d]", indexVar), indent+1, false, true); err != nil {
 			return err
 		}
 		ctx.appendCode(indent, "}\n")
@@ -639,7 +656,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 }
 
 // hashList generates hash tree root code for SSZ list (variable-size array) types.
-func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
+func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	maxExpression := desc.MaxExpression
 	if ctx.options.WithoutDynamicExpressions {
 		maxExpression = nil
@@ -678,7 +695,8 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 	if hasMax {
 		addVlen()
 		ctx.appendCode(indent, "if vlen > %s {\n", maxVar)
-		ctx.appendCode(indent, "\treturn sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"list length %%d exceeds maximum %s\", vlen)\n", maxVar)
+		errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"list length %%d exceeds maximum %%d\", vlen, %s)", maxVar)
+		ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "}\n")
 	}
 
@@ -710,14 +728,18 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 		} else {
 			// Hash all elements
 			addVlen()
-			ctx.appendCode(indent, "for i := range int(vlen) {\n")
+
+			indexVar, indexDefer := ctx.getIndexVar()
+			defer indexDefer()
+
+			ctx.appendCode(indent, "for %s := range int(vlen) {\n", indexVar)
 			valVar := "t"
 			if ctx.isInlineable(desc.ElemDesc) {
-				valVar = fmt.Sprintf("%s[i]", varName)
+				valVar = fmt.Sprintf("%s[%s]", varName, indexVar)
 			} else {
-				ctx.appendCode(indent, "\tt := %s%s[i]\n", ctx.getPtrPrefix(desc.ElemDesc, "&"), varName)
+				ctx.appendCode(indent, "\tt := %s%s[%s]\n", ctx.getPtrPrefix(desc.ElemDesc, "&"), varName, indexVar)
 			}
-			if err := ctx.hashType(desc.ElemDesc, valVar, indent+1, false, true); err != nil {
+			if err := ctx.hashType(desc.ElemDesc, valVar, typePath.append("[%d]", indexVar), indent+1, false, true); err != nil {
 				return err
 			}
 			ctx.appendCode(indent, "}\n")
@@ -747,7 +769,7 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 }
 
 // hashBitlist generates hash tree root code for SSZ bitlist types.
-func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
+func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	maxExpression := desc.MaxExpression
 	if ctx.options.WithoutDynamicExpressions {
 		maxExpression = nil
@@ -769,7 +791,8 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varNa
 
 	if maxVar != "" {
 		ctx.appendCode(indent, "if size > %s {\n", maxVar)
-		ctx.appendCode(indent, "\treturn sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"bitlist length %%d exceeds maximum %s\", size)\n", maxVar)
+		errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"bitlist length %%d exceeds maximum %%d\", size, %s)", maxVar)
+		ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "}\n")
 	}
 	ctx.appendCode(indent, "hh.AppendBytes32(bitlist)\n")
@@ -787,7 +810,7 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varNa
 }
 
 // hashUnion generates hash tree root code for SSZ union types.
-func (ctx *hashTreeRootContext) hashUnion(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
+func (ctx *hashTreeRootContext) hashUnion(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	ctx.appendCode(indent, "idx := hh.Index()\n")
 	ctx.appendCode(indent, "switch %s.Variant {\n", varName)
 
@@ -800,16 +823,19 @@ func (ctx *hashTreeRootContext) hashUnion(desc *ssztypes.TypeDescriptor, varName
 	for _, variant := range variants {
 		variantDesc := desc.UnionVariants[uint8(variant)]
 		variantType := ctx.typePrinter.TypeString(variantDesc)
+		variantTypePath := typePath.append(fmt.Sprintf("[v:%d]", variant))
 		ctx.appendCode(indent, "case %d:\n", variant)
 		ctx.appendCode(indent, "\tv, ok := %s.Data.(%s)\n", varName, variantType)
-		ctx.appendCode(indent, "\tif !ok {\n\t\treturn sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"union variant type mismatch\")\n\t}\n")
-		if err := ctx.hashType(variantDesc, "v", indent+1, false, false); err != nil {
+		errCode := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"union variant type mismatch during hashing\")"
+		ctx.appendCode(indent, "\tif !ok {\n\t\treturn %s\n\t}\n", variantTypePath.getErrorWith(errCode))
+		if err := ctx.hashType(variantDesc, "v", variantTypePath, indent+1, false, false); err != nil {
 			return err
 		}
 	}
 
 	ctx.appendCode(indent, "default:\n")
-	ctx.appendCode(indent, "\treturn sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"invalid union variant selector\")\n")
+	errCode := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"invalid union variant selector during hashing\")"
+	ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 	ctx.appendCode(indent, "}\n")
 
 	ctx.appendCode(indent, "hh.PutUint8(%s.Variant)\n", varName)
