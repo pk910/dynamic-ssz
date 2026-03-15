@@ -469,7 +469,8 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 
 	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 		// static elements
-		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 || desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
+		switch {
+		case desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 || desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0:
 			if strings.HasPrefix(valueVar, "*") {
 				valueVar = fmt.Sprintf("(%s)", valueVar)
 			}
@@ -480,7 +481,9 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 				ctx.appendCode(indent, "}\n")
 			}
 			ctx.appendCode(indent, "dst = append(dst, %s[:%s]...)\n", valueVar, lenVar)
-		} else {
+		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0:
+			ctx.appendCode(indent, "dst = sszutils.MarshalUint64Slice(dst, %s[:%s])\n", varName, lenVar)
+		default:
 			ctx.appendCode(indent, "for i := range %s {\n", lenVar)
 			valVar := "t"
 			if ctx.isInlineable(desc.ElemDesc) {

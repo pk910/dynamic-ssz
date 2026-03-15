@@ -530,6 +530,12 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 			ctx.appendCode(indent, "if %s*%s > dec.GetLength() {\n\treturn sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"not enough data for static vector elements\")\n}\n", limitVar, fieldSizeVar)
 		}
 
+		// bulk uint64 lists
+		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
+			ctx.appendCode(indent, "if err = sszutils.DecodeUint64Slice(dec, %s[:%s]); err != nil {\n\treturn err\n}\n", varName, limitVar)
+			return nil
+		}
+
 		startPosVar := fmt.Sprintf("startPos%d", ctx.startPosVarCounter)
 		ctx.startPosVarCounter++
 		ctx.appendCode(indent, "%s := dec.GetPosition()\n", startPosVar)

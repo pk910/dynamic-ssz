@@ -665,6 +665,12 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 			ctx.appendCode(indent, "}\n")
 		}
 
+		// bulk uint64 lists
+		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
+			ctx.appendCode(indent, "sszutils.UnmarshalUint64Slice(%s[:%s], buf)\n", varName, limitVar)
+			return nil
+		}
+
 		ctx.appendCode(indent, "for i := range %s {\n", limitVar)
 
 		valVar := fmt.Sprintf("%s[i]", varName)
