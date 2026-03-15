@@ -37,6 +37,7 @@ type unmarshalContext struct {
 	staticSizeVars *staticSizeVarGenerator
 	usedDynSpecs   bool
 	valVarCounter  int
+	indexCounter   int
 }
 
 // generateUnmarshal generates unmarshal methods for a specific type.
@@ -77,7 +78,7 @@ func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strin
 	typeName := typePrinter.TypeString(rootTypeDesc)
 
 	// Generate unmarshal code
-	if err := ctx.unmarshalType(rootTypeDesc, "t", 0, true, false); err != nil {
+	if err := ctx.unmarshalType(rootTypeDesc, "t", typePathList{}, 0, true, false); err != nil {
 		return err
 	}
 
@@ -141,6 +142,15 @@ func (ctx *unmarshalContext) getCastedValueVar(desc *ssztypes.TypeDescriptor, va
 	return varName
 }
 
+// getIndexVar returns a unique index variable name
+func (ctx *unmarshalContext) getIndexVar() (string, func()) {
+	ctx.indexCounter++
+	thisIndex := ctx.indexCounter
+	return fmt.Sprintf("idx%d", thisIndex), func() {
+		ctx.indexCounter = thisIndex - 1
+	}
+}
+
 // isInlinable determines if a type can be unmarshaled inline without temporary variables.
 func (ctx *unmarshalContext) isInlinable(desc *ssztypes.TypeDescriptor) bool {
 	// Inline primitive types
@@ -173,7 +183,7 @@ func (ctx *unmarshalContext) isInlinable(desc *ssztypes.TypeDescriptor) bool {
 }
 
 // unmarshalType generates unmarshal code for any SSZ type, delegating to specific unmarshalers.
-func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName string, indent int, isRoot, noBufCheck bool) error {
+func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, isRoot, noBufCheck bool) error {
 	// Handle types that have generated methods we can call
 	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
 	isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
@@ -183,19 +193,19 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 	}
 
 	if useFastSsz && !isRoot {
-		ctx.appendCode(indent, "if err = %s.UnmarshalSSZ(buf); err != nil {\n\treturn err\n}\n", varName)
+		ctx.appendCode(indent, "if err = %s.UnmarshalSSZ(buf); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
 		return nil
 	}
 
 	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 && !isRoot {
-		ctx.appendCode(indent, "if err = %s.UnmarshalSSZDyn(ds, buf); err != nil {\n\treturn err\n}\n", varName)
+		ctx.appendCode(indent, "if err = %s.UnmarshalSSZDyn(ds, buf); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
 		ctx.usedDynSpecs = true
 		return nil
 	}
 
 	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 && !isRoot {
 		ctx.appendCode(indent, "dec := sszutils.NewBufferDecoder(buf)\n")
-		ctx.appendCode(indent, "if err = %s.UnmarshalSSZDecoder(ds, dec); err != nil {\n\treturn err\n}\n", varName)
+		ctx.appendCode(indent, "if err = %s.UnmarshalSSZDecoder(ds, dec); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
 		ctx.usedDynSpecs = true
 		return nil
 	}
@@ -203,7 +213,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 	switch desc.SszType {
 	case ssztypes.SszBoolType:
 		if !noBufCheck {
-			ctx.appendCode(indent, "if len(buf) < 1 {\n\treturn sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"need 1 byte for bool\")\n}\n")
+			ctx.appendCode(indent, "if len(buf) < 1 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"need 1 byte for bool\")"))
 		}
 		ctx.appendCode(indent, "if buf[0] != 1 && buf[0] != 0 {\n\treturn sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"bool value must be 0 or 1\")\n}\n")
 		ptrVarName := varName
@@ -213,7 +223,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 		ctx.appendCode(indent, "%s = buf[0] == 1\n", ptrVarName)
 	case ssztypes.SszUint8Type:
 		if !noBufCheck {
-			ctx.appendCode(indent, "if len(buf) < 1 {\n\treturn sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"need 1 byte for uint8\")\n}\n")
+			ctx.appendCode(indent, "if len(buf) < 1 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"need 1 byte for uint8\")"))
 		}
 		ptrVarName := varName
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
@@ -227,7 +237,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 
 	case ssztypes.SszUint16Type:
 		if !noBufCheck {
-			ctx.appendCode(indent, "if len(buf) < 2 {\n\treturn sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"need 2 bytes for uint16\")\n}\n")
+			ctx.appendCode(indent, "if len(buf) < 2 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"need 2 bytes for uint16\")"))
 		}
 		ptrVarName := varName
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
@@ -244,7 +254,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 
 	case ssztypes.SszUint32Type:
 		if !noBufCheck {
-			ctx.appendCode(indent, "if len(buf) < 4 {\n\treturn sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"need 4 bytes for uint32\")\n}\n")
+			ctx.appendCode(indent, "if len(buf) < 4 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"need 4 bytes for uint32\")"))
 		}
 		ptrVarName := varName
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
@@ -261,7 +271,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 
 	case ssztypes.SszUint64Type:
 		if !noBufCheck {
-			ctx.appendCode(indent, "if len(buf) < 8 {\n\treturn sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"need 8 bytes for uint64\")\n}\n")
+			ctx.appendCode(indent, "if len(buf) < 8 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"need 8 bytes for uint64\")"))
 		}
 		ptrVarName := varName
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
@@ -289,32 +299,32 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 		}
 
 	case ssztypes.SszTypeWrapperType:
-		if err := ctx.unmarshalType(desc.ElemDesc, fmt.Sprintf("%s.Data", varName), indent+1, false, noBufCheck); err != nil {
+		if err := ctx.unmarshalType(desc.ElemDesc, fmt.Sprintf("%s.Data", varName), typePath, indent+1, false, noBufCheck); err != nil {
 			return err
 		}
 
 	case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
-		return ctx.unmarshalContainer(desc, varName, indent)
+		return ctx.unmarshalContainer(desc, varName, typePath, indent)
 
 	case ssztypes.SszVectorType, ssztypes.SszBitvectorType, ssztypes.SszUint128Type, ssztypes.SszUint256Type:
-		return ctx.unmarshalVector(desc, varName, indent, noBufCheck)
+		return ctx.unmarshalVector(desc, varName, typePath, indent, noBufCheck)
 
 	case ssztypes.SszListType, ssztypes.SszProgressiveListType:
-		return ctx.unmarshalList(desc, varName, indent)
+		return ctx.unmarshalList(desc, varName, typePath, indent)
 
 	case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType:
-		return ctx.unmarshalBitlist(desc, varName, indent)
+		return ctx.unmarshalBitlist(desc, varName, typePath, indent)
 
 	case ssztypes.SszCompatibleUnionType:
-		return ctx.unmarshalUnion(desc, varName, indent)
+		return ctx.unmarshalUnion(desc, varName, typePath, indent)
 
 	case ssztypes.SszCustomType:
-		ctx.appendCode(indent, "return sszutils.NewSszError(sszutils.ErrNotImplemented, \"custom type unmarshaling not supported\")\n")
+		ctx.appendCode(indent, "return %s\n", typePath.getErrorWith("sszutils.NewSszError(sszutils.ErrNotImplemented, \"custom type unmarshaling not supported\")"))
 
 	// extended types
 	case ssztypes.SszInt8Type:
 		if !noBufCheck {
-			ctx.appendCode(indent, "if len(buf) < 1 {\n\treturn sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"need 1 byte for int8\")\n}\n")
+			ctx.appendCode(indent, "if len(buf) < 1 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"need 1 byte for int8\")"))
 		}
 		ptrVarName := varName
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
@@ -327,7 +337,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 		)
 	case ssztypes.SszInt16Type:
 		if !noBufCheck {
-			ctx.appendCode(indent, "if len(buf) < 2 {\n\treturn sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"need 2 bytes for int16\")\n}\n")
+			ctx.appendCode(indent, "if len(buf) < 2 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"need 2 bytes for int16\")"))
 		}
 		ptrVarName := varName
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
@@ -341,7 +351,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 		)
 	case ssztypes.SszInt32Type:
 		if !noBufCheck {
-			ctx.appendCode(indent, "if len(buf) < 4 {\n\treturn sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"need 4 bytes for int32\")\n}\n")
+			ctx.appendCode(indent, "if len(buf) < 4 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"need 4 bytes for int32\")"))
 		}
 		ptrVarName := varName
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
@@ -355,7 +365,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 		)
 	case ssztypes.SszInt64Type:
 		if !noBufCheck {
-			ctx.appendCode(indent, "if len(buf) < 8 {\n\treturn sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"need 8 bytes for int64\")\n}\n")
+			ctx.appendCode(indent, "if len(buf) < 8 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"need 8 bytes for int64\")"))
 		}
 		ptrVarName := varName
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
@@ -369,7 +379,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 		)
 	case ssztypes.SszFloat32Type:
 		if !noBufCheck {
-			ctx.appendCode(indent, "if len(buf) < 4 {\n\treturn sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"need 4 bytes for float32\")\n}\n")
+			ctx.appendCode(indent, "if len(buf) < 4 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"need 4 bytes for float32\")"))
 		}
 		ptrVarName := varName
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
@@ -384,7 +394,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 		)
 	case ssztypes.SszFloat64Type:
 		if !noBufCheck {
-			ctx.appendCode(indent, "if len(buf) < 8 {\n\treturn sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"need 8 bytes for float64\")\n}\n")
+			ctx.appendCode(indent, "if len(buf) < 8 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"need 8 bytes for float64\")"))
 		}
 		ptrVarName := varName
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
@@ -398,7 +408,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 			ctx.getCastedValueVar(desc, fmt.Sprintf("%s.Float64frombits(%s.LittleEndian.Uint64(buf))", mathImport, binaryImport), "float64"),
 		)
 	case ssztypes.SszOptionalType:
-		return ctx.unmarshalOptional(desc, varName, indent)
+		return ctx.unmarshalOptional(desc, varName, typePath, indent)
 	case ssztypes.SszBigIntType:
 		return ctx.unmarshalBigInt(desc, varName, indent)
 
@@ -410,20 +420,20 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 }
 
 // unmarshalOptional generates unmarshal code for SSZ optional types.
-func (ctx *unmarshalContext) unmarshalOptional(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
-	ctx.appendCode(indent, "if len(buf) < 1 {\n\treturn sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"need 1 byte for optional presence flag\")\n}\n")
+func (ctx *unmarshalContext) unmarshalOptional(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
+	ctx.appendCode(indent, "if len(buf) < 1 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"need 1 byte for optional presence flag\")"))
 	ctx.appendCode(indent, "if buf[0] == 1 {\n")
 
 	// Check that buf has enough bytes for the presence flag plus the value
 	elemSize := desc.ElemDesc.Size
 	if elemSize > 0 {
-		ctx.appendCode(indent+1, "if len(buf) < %d {\n\treturn sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"not enough data for optional value\")\n}\n", 1+elemSize)
+		ctx.appendCode(indent+1, "if len(buf) < %d {\n\treturn %s\n}\n", 1+elemSize, typePath.getErrorWith("sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"not enough data for optional value\")"))
 	}
 
 	valVar := ctx.getValVar()
 	ctx.appendCode(indent+1, "var %s %s\n", valVar, ctx.typePrinter.TypeString(desc.ElemDesc))
 	ctx.appendCode(indent+1, "buf := buf[1:]\n")
-	if err := ctx.unmarshalType(desc.ElemDesc, valVar, indent+1, false, true); err != nil {
+	if err := ctx.unmarshalType(desc.ElemDesc, valVar, typePath, indent+1, false, true); err != nil {
 		return err
 	}
 	ctx.appendCode(indent+1, "%s = &%s\n", varName, valVar)
@@ -449,7 +459,7 @@ func (ctx *unmarshalContext) unmarshalBigInt(desc *ssztypes.TypeDescriptor, varN
 }
 
 // unmarshalContainer generates unmarshal code for SSZ container (struct) types.
-func (ctx *unmarshalContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
+func (ctx *unmarshalContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	staticSize := 0
 	staticSizeVars := []string{}
 	for _, field := range desc.ContainerDesc.Fields {
@@ -480,7 +490,8 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, v
 	offset := 0
 	offsetPrefix := ""
 	ctx.appendCode(indent, "buflen := len(buf)\n")
-	ctx.appendCode(indent, "if buflen < %s {\n\treturn sszutils.NewSszErrorf(sszutils.ErrUnexpectedEOF, \"not enough data for fixed fields (have %%d, needed %%d)\", buflen, %s)\n}\n", totalStaticSizeExpr, totalStaticSizeExpr)
+	errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrUnexpectedEOF, \"not enough data for fixed fields (have %%d, needed %%d)\", buflen, %s)", totalStaticSizeExpr)
+	ctx.appendCode(indent, "if buflen < %s {\n\treturn %s\n}\n", totalStaticSizeExpr, typePath.getErrorWith(errCode))
 	dynamicFields := make([]int, 0)
 
 	for idx, field := range desc.ContainerDesc.Fields {
@@ -493,10 +504,13 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, v
 			}
 			binaryPkgName := ctx.typePrinter.AddImport("encoding/binary", "binary")
 			ctx.appendCode(indent, "offset%d := int(%s.LittleEndian.Uint32(buf[%s%d%s:%s%s%d]))\n", idx, binaryPkgName, offsetPrefix, offset, fmtSpace, fmtSpace, offsetPrefix, offset+4)
+			fieldOffsetPath := typePath.append(fmt.Sprintf("%s:o", field.Name))
 			if len(dynamicFields) > 0 {
-				ctx.appendCode(indent, "if offset%d < offset%d || offset%d > buflen {\n\treturn sszutils.NewSszErrorf(sszutils.ErrOffset, \"field '%s' offset %%d out of range (prev=%%d, buflen=%%d)\", offset%d, offset%d, buflen)\n}\n", idx, dynamicFields[len(dynamicFields)-1], idx, field.Name, idx, dynamicFields[len(dynamicFields)-1])
+				errCode = fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrOffset, \"offset out of range (offset=%%d, prev=%%d, buflen=%%d)\", offset%d, offset%d, buflen)", idx, dynamicFields[len(dynamicFields)-1])
+				ctx.appendCode(indent, "if offset%d < offset%d || offset%d > buflen {\n\treturn %s\n}\n", idx, dynamicFields[len(dynamicFields)-1], idx, fieldOffsetPath.getErrorWith(errCode))
 			} else {
-				ctx.appendCode(indent, "if offset%d != %s {\n\treturn sszutils.NewSszErrorf(sszutils.ErrOffset, \"first offset %%d does not match expected %%d\", offset%d, %s)\n}\n", idx, totalStaticSizeExpr, idx, totalStaticSizeExpr)
+				errCode = fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrOffset, \"first offset does not match (offset: %%d, static len: %%d)\", offset%d, %s)", idx, totalStaticSizeExpr)
+				ctx.appendCode(indent, "if offset%d != %s {\n\treturn %s\n}\n", idx, totalStaticSizeExpr, fieldOffsetPath.getErrorWith(errCode))
 			}
 			offset += 4
 			dynamicFields = append(dynamicFields, idx)
@@ -530,7 +544,7 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, v
 				ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(field.Type))
 			}
 
-			if err := ctx.unmarshalType(field.Type, valVar, indent+1, false, true); err != nil {
+			if err := ctx.unmarshalType(field.Type, valVar, typePath.append(field.Name), indent+1, false, true); err != nil {
 				return err
 			}
 
@@ -563,7 +577,7 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, v
 			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(field.Type))
 		}
 
-		if err := ctx.unmarshalType(field.Type, valVar, indent+1, false, true); err != nil {
+		if err := ctx.unmarshalType(field.Type, valVar, typePath.append(field.Name), indent+1, false, true); err != nil {
 			return err
 		}
 
@@ -577,7 +591,7 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, v
 }
 
 // unmarshalVector generates unmarshal code for SSZ vector (fixed-size array) types.
-func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varName string, indent int, noBufCheck bool) error {
+func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, noBufCheck bool) error {
 	sizeExpression := desc.SizeExpression
 	if ctx.options.WithoutDynamicExpressions {
 		sizeExpression = nil
@@ -607,7 +621,8 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 		if desc.Kind == reflect.Array {
 			// check if dynamic limit is greater than the length of the array
 			ctx.appendCode(indent, "if %s > %d {\n", limitVar, desc.Len)
-			ctx.appendCode(indent, "\treturn sszutils.NewSszErrorf(sszutils.ErrVectorLength, \"dynamic vector size %%d exceeds array length %%d\", %d, %s)\n", desc.Len, limitVar)
+			errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrVectorLength, \"dynamic vector size %%d exceeds array length %%d\", %d, %s)", desc.Len, limitVar)
+			ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 			ctx.appendCode(indent, "}\n")
 		}
 	} else {
@@ -626,12 +641,14 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 		// static byte arrays
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
 			if !noBufCheck {
-				ctx.appendCode(indent, "if %s > len(buf) {\n\treturn sszutils.NewSszErrorf(sszutils.ErrUnexpectedEOF, \"not enough data for byte vector (have %%d, needed %%d)\", len(buf), %s)\n}\n", limitVar, limitVar)
+				errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrUnexpectedEOF, \"not enough data for byte vector (have %%d, needed %%d)\", len(buf), %s)", limitVar)
+				ctx.appendCode(indent, "if %s > len(buf) {\n\treturn %s\n}\n", limitVar, typePath.getErrorWith(errCode))
 			}
 			if bitlimitVar != "" {
 				ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
 				ctx.appendCode(indent, "if buf[%s-1] & paddingMask != 0 {\n", limitVar)
-				ctx.appendCode(indent, "\treturn sszutils.NewSszError(sszutils.ErrVectorLength, \"bitvector padding bits are non-zero\")\n")
+				errCode := "sszutils.NewSszError(sszutils.ErrVectorLength, \"bitvector padding bits are non-zero\")"
+				ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 				ctx.appendCode(indent, "}\n")
 			}
 			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
@@ -661,7 +678,8 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 
 		if !noBufCheck {
 			ctx.appendCode(indent, "if %s*%s > len(buf) {\n", limitVar, fieldSizeVar)
-			ctx.appendCode(indent+1, "return sszutils.NewSszErrorf(sszutils.ErrUnexpectedEOF, \"not enough data for static vector elements (have %%d, needed %%d)\", len(buf), %s*%s)\n", limitVar, fieldSizeVar)
+			errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrUnexpectedEOF, \"not enough data for static vector elements (have %%d, needed %%d)\", len(buf), %s*%s)", limitVar, fieldSizeVar)
+			ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith(errCode))
 			ctx.appendCode(indent, "}\n")
 		}
 
@@ -671,54 +689,63 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 			return nil
 		}
 
-		ctx.appendCode(indent, "for i := range %s {\n", limitVar)
+		indexVar, indexDefer := ctx.getIndexVar()
+		defer indexDefer()
 
-		valVar := fmt.Sprintf("%s[i]", varName)
+		ctx.appendCode(indent, "for %s := range %s {\n", indexVar, limitVar)
+
+		valVar := fmt.Sprintf("%s[%s]", varName, indexVar)
 		isInlinable := ctx.isInlinable(desc.ElemDesc)
 		if !isInlinable {
 			valVar = ctx.getValVar()
-			ctx.appendCode(indent+1, "%s := %s[i]\n", valVar, varName)
+			ctx.appendCode(indent+1, "%s := %s[%s]\n", valVar, varName, indexVar)
 		}
 		if desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
 		}
 
-		ctx.appendCode(indent, "\tbuf := buf[%s*i : %s*(i+1)]\n", fieldSizeVar, fieldSizeVar)
-		if err := ctx.unmarshalType(desc.ElemDesc, valVar, indent+1, false, true); err != nil {
+		ctx.appendCode(indent, "\tbuf := buf[%s*%s : %s*(%s+1)]\n", fieldSizeVar, indexVar, fieldSizeVar, indexVar)
+		if err := ctx.unmarshalType(desc.ElemDesc, valVar, typePath.append("[%d]", indexVar), indent+1, false, true); err != nil {
 			return err
 		}
 
 		if !isInlinable {
-			ctx.appendCode(indent, "\t%s[i] = %s\n", varName, valVar)
+			ctx.appendCode(indent, "\t%s[%s] = %s\n", varName, indexVar, valVar)
 		}
 		ctx.appendCode(indent, "}\n")
 	} else {
 		// dynamic elements
 		binaryPkgName := ctx.typePrinter.AddImport("encoding/binary", "binary")
-		ctx.appendCode(indent, "if %s*4 > len(buf) {\n\treturn sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"not enough data for vector offsets\")\n}\n", limitVar)
+		errCode := "sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"not enough data for vector offsets\")"
+		ctx.appendCode(indent, "if %s*4 > len(buf) {\n\treturn %s\n}\n", limitVar, typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "startOffset := int(%s.LittleEndian.Uint32(buf[0:4]))\n", binaryPkgName)
-		ctx.appendCode(indent, "for i := range %s {\n", limitVar)
+
+		indexVar, indexDefer := ctx.getIndexVar()
+		defer indexDefer()
+
+		ctx.appendCode(indent, "for %s := range %s {\n", indexVar, limitVar)
 		ctx.appendCode(indent, "\tvar endOffset int\n")
-		ctx.appendCode(indent, "\tif i < %s-1 {\n", limitVar)
-		ctx.appendCode(indent, "\t\tendOffset = int(%s.LittleEndian.Uint32(buf[(i+1)*4 : (i+2)*4]))\n", binaryPkgName)
+		ctx.appendCode(indent, "\tif %s < %s-1 {\n", indexVar, limitVar)
+		ctx.appendCode(indent, "\t\tendOffset = int(%s.LittleEndian.Uint32(buf[(%s+1)*4 : (%s+2)*4]))\n", binaryPkgName, indexVar, indexVar)
 		ctx.appendCode(indent, "\t} else {\n")
 		ctx.appendCode(indent, "\t\tendOffset = len(buf)\n")
 		ctx.appendCode(indent, "\t}\n")
 		ctx.appendCode(indent, "\tif endOffset < startOffset || endOffset > len(buf) {\n")
-		ctx.appendCode(indent, "\t\treturn sszutils.NewSszErrorf(sszutils.ErrOffset, \"dynamic vector element offset %d out of range (start=%d, buflen=%d)\", endOffset, startOffset, len(buf))\n")
+		errCode = "sszutils.NewSszErrorf(sszutils.ErrOffset, \"dynamic vector element offset %d out of range (start=%d, buflen=%d)\", endOffset, startOffset, len(buf))"
+		ctx.appendCode(indent, "\t\treturn %s\n", typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "\t}\n")
 		ctx.appendCode(indent, "\tbuf := buf[startOffset:endOffset]\n")
 		ctx.appendCode(indent, "\tstartOffset = endOffset\n")
 
 		valVar := ctx.getValVar()
-		ctx.appendCode(indent, "\t%s := %s[i]\n", valVar, varName)
+		ctx.appendCode(indent, "\t%s := %s[%s]\n", valVar, varName, indexVar)
 		if desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
 		}
-		if err := ctx.unmarshalType(desc.ElemDesc, valVar, indent+1, false, true); err != nil {
+		if err := ctx.unmarshalType(desc.ElemDesc, valVar, typePath.append("[%d]", indexVar), indent+1, false, true); err != nil {
 			return err
 		}
-		ctx.appendCode(indent, "\t%s[i] = %s\n", varName, valVar)
+		ctx.appendCode(indent, "\t%s[%s] = %s\n", varName, indexVar, valVar)
 		ctx.appendCode(indent, "}\n")
 	}
 
@@ -726,7 +753,7 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 }
 
 // unmarshalList generates unmarshal code for SSZ list (variable-size array) types.
-func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
+func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 		// static byte arrays
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
@@ -749,7 +776,8 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 		// bulk uint64 lists
 		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
 			ctx.appendCode(indent, "itemCount := len(buf) / 8\n")
-			ctx.appendCode(indent, "if len(buf)%8 != 0 {\n\treturn sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"uint64 list length not a multiple of 8\")\n}\n")
+			errCode := "sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"uint64 list length not a multiple of 8\")"
+			ctx.appendCode(indent, "if len(buf)%%8 != 0 {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
 			if desc.Kind != reflect.Array {
 				ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", varName, varName)
 			}
@@ -773,31 +801,35 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 			ctx.appendCode(indent, "itemCount := len(buf)\n")
 		} else {
 			ctx.appendCode(indent, "itemCount := len(buf) / %s\n", fieldSizeVar)
-			ctx.appendCode(indent, "if len(buf)%%%s != 0 {\n\treturn sszutils.NewSszErrorf(sszutils.ErrUnexpectedEOF, \"list length %%d not a multiple of element size %%d\", len(buf), %s)\n}\n", fieldSizeVar, fieldSizeVar)
+			errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrUnexpectedEOF, \"list length %%d not a multiple of element size %%d\", len(buf), %s)", fieldSizeVar)
+			ctx.appendCode(indent, "if len(buf)%%%s != 0 {\n\treturn %s\n}\n", fieldSizeVar, typePath.getErrorWith(errCode))
 		}
 		if desc.Kind != reflect.Array {
 			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", varName, varName)
 		}
 
-		ctx.appendCode(indent, "for i := range itemCount {\n")
+		indexVar, indexDefer := ctx.getIndexVar()
+		defer indexDefer()
 
-		valVar := fmt.Sprintf("%s[i]", varName)
+		ctx.appendCode(indent, "for %s := range itemCount {\n", indexVar)
+
+		valVar := fmt.Sprintf("%s[%s]", varName, indexVar)
 		isInlinable := ctx.isInlinable(desc.ElemDesc)
 		if !isInlinable {
 			valVar = ctx.getValVar()
-			ctx.appendCode(indent, "\t%s := %s[i]\n", valVar, varName)
+			ctx.appendCode(indent, "\t%s := %s[%s]\n", valVar, varName, indexVar)
 		}
 		if desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
 		}
 
-		ctx.appendCode(indent, "\tbuf := buf[%s*i : %s*(i+1)]\n", fieldSizeVar, fieldSizeVar)
-		if err := ctx.unmarshalType(desc.ElemDesc, valVar, indent+1, false, true); err != nil {
+		ctx.appendCode(indent, "\tbuf := buf[%s*%s : %s*(%s+1)]\n", fieldSizeVar, indexVar, fieldSizeVar, indexVar)
+		if err := ctx.unmarshalType(desc.ElemDesc, valVar, typePath.append("[%d]", indexVar), indent+1, false, true); err != nil {
 			return err
 		}
 
 		if !isInlinable {
-			ctx.appendCode(indent, "\t%s[i] = %s\n", varName, valVar)
+			ctx.appendCode(indent, "\t%s[%s] = %s\n", varName, indexVar, valVar)
 		}
 		ctx.appendCode(indent, "}\n")
 	} else {
@@ -805,35 +837,43 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 		binaryPkgName := ctx.typePrinter.AddImport("encoding/binary", "binary")
 		ctx.appendCode(indent, "startOffset := int(0)\n")
 		ctx.appendCode(indent, "if len(buf) != 0 {\n")
-		ctx.appendCode(indent, "\tif len(buf) < 4 {\n\t\treturn sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"need 4 bytes for first list offset\")\n\t}\n")
+		errCode := "sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"need 4 bytes for first list offset\")"
+		ctx.appendCode(indent, "\tif len(buf) < 4 {\n\t\treturn %s\n\t}\n", typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "\tstartOffset = int(%s.LittleEndian.Uint32(buf[0:4]))\n", binaryPkgName)
 		ctx.appendCode(indent, "}\n")
 		ctx.appendCode(indent, "itemCount := startOffset / 4\n")
-		ctx.appendCode(indent, "if startOffset%4 != 0 || len(buf) < startOffset {\n\treturn sszutils.NewSszErrorf(sszutils.ErrUnexpectedEOF, \"invalid list start offset %d (buflen=%d)\", startOffset, len(buf))\n}\n")
+		errCode = "sszutils.NewSszErrorf(sszutils.ErrUnexpectedEOF, \"invalid list start offset %d (buflen=%d)\", startOffset, len(buf))"
+		ctx.appendCode(indent, "if startOffset%%4 != 0 || len(buf) < startOffset {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
 		if desc.Kind != reflect.Array {
 			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", varName, varName)
 		}
-		ctx.appendCode(indent, "for i := range itemCount {\n")
+
+		indexVar, indexDefer := ctx.getIndexVar()
+		defer indexDefer()
+
+		ctx.appendCode(indent, "for %s := range itemCount {\n", indexVar)
 		ctx.appendCode(indent, "\tvar endOffset int\n")
-		ctx.appendCode(indent, "\tif i < itemCount-1 {\n")
-		ctx.appendCode(indent, "\t\tendOffset = int(%s.LittleEndian.Uint32(buf[(i+1)*4 : (i+2)*4]))\n", binaryPkgName)
+		ctx.appendCode(indent, "\tif %s < itemCount-1 {\n", indexVar)
+		ctx.appendCode(indent, "\t\tendOffset = int(%s.LittleEndian.Uint32(buf[(%s+1)*4 : (%s+2)*4]))\n", binaryPkgName, indexVar, indexVar)
 		ctx.appendCode(indent, "\t} else {\n")
 		ctx.appendCode(indent, "\t\tendOffset = len(buf)\n")
 		ctx.appendCode(indent, "\t}\n")
 		ctx.appendCode(indent, "\tif endOffset < startOffset || endOffset > len(buf) {\n")
-		ctx.appendCode(indent, "\t\treturn sszutils.NewSszErrorf(sszutils.ErrOffset, \"dynamic list element offset %d out of range (start=%d, buflen=%d)\", endOffset, startOffset, len(buf))\n")
+		childTypePath := typePath.append("[%d]", indexVar)
+		errCode = "sszutils.NewSszErrorf(sszutils.ErrOffset, \"dynamic list element offset %d out of range (start=%d, buflen=%d)\", endOffset, startOffset, len(buf))"
+		ctx.appendCode(indent, "\t\treturn %s\n", childTypePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "\t}\n")
 		ctx.appendCode(indent, "\tbuf := buf[startOffset:endOffset]\n")
 		ctx.appendCode(indent, "\tstartOffset = endOffset\n")
 		valVar := ctx.getValVar()
-		ctx.appendCode(indent, "\t%s := %s[i]\n", valVar, varName)
+		ctx.appendCode(indent, "\t%s := %s[%s]\n", valVar, varName, indexVar)
 		if desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
 		}
-		if err := ctx.unmarshalType(desc.ElemDesc, valVar, indent+1, false, true); err != nil {
+		if err := ctx.unmarshalType(desc.ElemDesc, valVar, childTypePath, indent+1, false, true); err != nil {
 			return err
 		}
-		ctx.appendCode(indent, "\t%s[i] = %s\n", varName, valVar)
+		ctx.appendCode(indent, "\t%s[%s] = %s\n", varName, indexVar, valVar)
 		ctx.appendCode(indent, "}\n")
 	}
 
@@ -841,10 +881,11 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 }
 
 // unmarshalBitlist generates unmarshal code for SSZ bitlist types.
-func (ctx *unmarshalContext) unmarshalBitlist(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
+func (ctx *unmarshalContext) unmarshalBitlist(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	ctx.appendCode(indent, "blen := len(buf)\n")
 	ctx.appendCode(indent, "if blen == 0 || buf[blen-1] == 0x00 {\n")
-	ctx.appendCode(indent, "\treturn sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"bitlist missing termination bit\")\n")
+	errCode := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"bitlist missing termination bit\")"
+	ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 	ctx.appendCode(indent, "}\n")
 
 	if desc.Kind != reflect.Array {
@@ -856,9 +897,10 @@ func (ctx *unmarshalContext) unmarshalBitlist(desc *ssztypes.TypeDescriptor, var
 }
 
 // unmarshalUnion generates unmarshal code for SSZ union types.
-func (ctx *unmarshalContext) unmarshalUnion(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
+func (ctx *unmarshalContext) unmarshalUnion(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	// Read selector
-	ctx.appendCode(indent, "if len(buf) < 1 {\n\treturn sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"need 1 byte for union selector\")\n}\n")
+	errCode := "sszutils.NewSszError(sszutils.ErrUnexpectedEOF, \"need 1 byte for union selector\")"
+	ctx.appendCode(indent, "if len(buf) < 1 {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
 	ctx.appendCode(indent, "selector := buf[0]\n")
 	ctx.appendCode(indent, "%s.Variant = selector\n", varName)
 	ctx.appendCode(indent, "switch selector {\n")
@@ -874,23 +916,27 @@ func (ctx *unmarshalContext) unmarshalUnion(desc *ssztypes.TypeDescriptor, varNa
 		variantType := ctx.typePrinter.TypeString(variantDesc)
 		ctx.appendCode(indent, "case %d:\n", variant)
 
+		childTypePath := typePath.append(fmt.Sprintf("[v:%d]", variant))
+
 		// Check that buf has enough bytes for the selector plus the variant value
 		elemSize := variantDesc.Size
 		if elemSize > 0 {
-			ctx.appendCode(indent+1, "if len(buf) < %d {\n\treturn sszutils.NewSszErrorf(sszutils.ErrUnexpectedEOF, \"not enough data for union variant (have %%d, needed %%d)\", len(buf), %d)\n}\n", 1+elemSize, 1+elemSize)
+			errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrUnexpectedEOF, \"not enough data for union variant (have %%d, needed %%d)\", len(buf), %d)", 1+elemSize)
+			ctx.appendCode(indent+1, "if len(buf) < %d {\n\treturn %s\n}\n", 1+elemSize, childTypePath.getErrorWith(errCode))
 		}
 
 		valVar := ctx.getValVar()
 		ctx.appendCode(indent, "\tvar %s %s\n", valVar, variantType)
 		ctx.appendCode(indent, "\tbuf := buf[1:]\n")
-		if err := ctx.unmarshalType(variantDesc, valVar, indent+1, false, true); err != nil {
+		if err := ctx.unmarshalType(variantDesc, valVar, childTypePath, indent+1, false, true); err != nil {
 			return err
 		}
 		ctx.appendCode(indent, "\t%s.Data = %s\n", varName, valVar)
 	}
 
 	ctx.appendCode(indent, "default:\n")
-	ctx.appendCode(indent, "\treturn sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"invalid union variant selector\")\n")
+	errCode = "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"invalid union variant selector\")"
+	ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 	ctx.appendCode(indent, "}\n")
 
 	return nil
