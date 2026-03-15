@@ -204,26 +204,6 @@ type typePathSegment struct {
 	args []string
 }
 
-func (tp typePathList) String() string {
-	segments := make([]string, 0, len(tp))
-	for _, segment := range tp {
-		args := make([]any, 0, len(segment.args))
-		for _, arg := range segment.args {
-			args = append(args, arg)
-		}
-		segments = append(segments, fmt.Sprintf(segment.tpl, args...))
-	}
-
-	path := strings.Builder{}
-	for _, segment := range segments {
-		if path.Len() > 0 && !strings.HasSuffix(segment, "[") {
-			path.WriteString(".")
-		}
-		path.WriteString(segment)
-	}
-	return path.String()
-}
-
 func (tp typePathList) append(tpl string, args ...string) typePathList {
 	segment := typePathSegment{
 		tpl:  tpl,

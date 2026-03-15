@@ -419,10 +419,8 @@ func (ctx *marshalContext) marshalContainer(desc *ssztypes.TypeDescriptor, varNa
 			}
 		} else {
 			if offsetGroup != -1 {
-				if offsetGroupBytes > 0 {
-					appendOffsetBytes(offsetGroupBytes)
-					offsetGroupBytes = 0
-				}
+				appendOffsetBytes(offsetGroupBytes)
+				offsetGroupBytes = 0
 				if field.Type.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
 					offsetGroup = -1
 				} else {
@@ -446,9 +444,7 @@ func (ctx *marshalContext) marshalContainer(desc *ssztypes.TypeDescriptor, varNa
 		}
 	}
 
-	if offsetGroupBytes > 0 {
-		appendOffsetBytes(offsetGroupBytes)
-	}
+	appendOffsetBytes(offsetGroupBytes)
 
 	// Marshal dynamic fields
 	for idx, field := range desc.ContainerDesc.Fields {
