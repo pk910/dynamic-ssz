@@ -25,11 +25,12 @@ import (
 //   - options: Code generation options controlling output behavior
 //   - usedDynSpecs: Flag tracking whether generated code uses dynamic SSZ functionality
 type marshalContext struct {
-	appendCode   func(indent int, code string, args ...any)
-	typePrinter  *TypePrinter
-	options      *CodeGeneratorOptions
-	usedDynSpecs bool
-	exprVars     *exprVarGenerator
+	appendCode    func(indent int, code string, args ...any)
+	typePrinter   *TypePrinter
+	options       *CodeGeneratorOptions
+	usedDynSpecs  bool
+	usedZeroBytes bool
+	exprVars      *exprVarGenerator
 }
 
 // generateMarshal generates marshal methods for a specific type.
@@ -99,6 +100,9 @@ func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 			appendCode(codeBuilder, 0, "func (t %s) MarshalSSZTo(buf []byte) (dst []byte, err error) {\n", typeName)
 			appendCode(codeBuilder, 1, "dst = buf\n")
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
+			if ctx.usedZeroBytes {
+				appendCode(codeBuilder, 1, "zeroBytes := sszutils.ZeroBytes()\n")
+			}
 			appendCode(codeBuilder, 1, codeBuf.String())
 			appendCode(codeBuilder, 1, "return dst, nil\n")
 			appendCode(codeBuilder, 0, "}\n\n")
@@ -115,6 +119,9 @@ func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 			appendCode(codeBuilder, 0, "func (t %s) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {\n", typeName)
 			appendCode(codeBuilder, 1, "dst = buf\n")
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
+			if ctx.usedZeroBytes {
+				appendCode(codeBuilder, 1, "zeroBytes := sszutils.ZeroBytes()\n")
+			}
 			appendCode(codeBuilder, 1, codeBuf.String())
 			appendCode(codeBuilder, 1, "return dst, nil\n")
 			appendCode(codeBuilder, 0, "}\n\n")
@@ -353,15 +360,62 @@ func (ctx *marshalContext) marshalContainer(desc *ssztypes.TypeDescriptor, varNa
 		ctx.appendCode(indent, "dstlen := len(dst)\n")
 	}
 
+	offsetExprs := map[int]string{
+		-2: "dstlen",
+	}
+	offsetGroup := -2
+	offsetGroupDiff := 0
+	offsetGroupBytes := 0
+	appendOffsetBytes := func(count int) {
+		switch {
+		case count > 1024:
+			ctx.appendCode(indent, "dst = sszutils.AppendZeroPadding(dst, %d)\n", count)
+		case count == 4:
+			ctx.appendCode(indent, "dst = append(dst, 0, 0, 0, 0)\n")
+		case count == 8:
+			ctx.appendCode(indent, "dst = append(dst, 0, 0, 0, 0, 0, 0, 0, 0)\n")
+		case count > 0:
+			ctx.appendCode(indent, "dst = append(dst, zeroBytes[:%d]...)\n", count)
+			ctx.usedZeroBytes = true
+		default:
+			return
+		}
+	}
+
 	// Write offsets for dynamic fields
 	for idx, field := range desc.ContainerDesc.Fields {
 		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
-			ctx.appendCode(indent, "// Offset #%d '%s'\n", idx, field.Name)
-			ctx.appendCode(indent, "offset%d := len(dst)\n", idx)
-			ctx.appendCode(indent, "dst = append(dst, 0, 0, 0, 0)\n")
+			ctx.appendCode(indent, "// Offset Field #%d '%s'\n", idx, field.Name)
+			if offsetGroup != -1 {
+				offsetGroupBytes += 4
+				if offsetGroupDiff > 0 {
+					offsetExprs[idx] = fmt.Sprintf("%s+%d", offsetExprs[offsetGroup], offsetGroupDiff)
+				} else {
+					offsetExprs[idx] = offsetExprs[offsetGroup]
+				}
+				offsetGroupDiff += 4
+			} else {
+				offsetGroup = idx
+				offsetGroupDiff = 4
+				offsetGroupBytes = 4
+				offsetExprs[idx] = fmt.Sprintf("offset%d", idx)
+				ctx.appendCode(indent, "offset%d := len(dst)\n", idx)
+			}
 		} else {
+			if offsetGroup != -1 {
+				if offsetGroupBytes > 0 {
+					appendOffsetBytes(offsetGroupBytes)
+					offsetGroupBytes = 0
+				}
+				if field.Type.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+					offsetGroup = -1
+				} else {
+					offsetGroupDiff += int(field.Type.Size)
+				}
+			}
+
 			// Marshal fixed fields
-			ctx.appendCode(indent, "{ // Field #%d '%s'\n", idx, field.Name)
+			ctx.appendCode(indent, "{ // Static Field #%d '%s'\n", idx, field.Name)
 			valVar := "t"
 			if ctx.isInlineable(field.Type) {
 				valVar = fmt.Sprintf("%s.%s", varName, field.Name)
@@ -375,6 +429,11 @@ func (ctx *marshalContext) marshalContainer(desc *ssztypes.TypeDescriptor, varNa
 		}
 	}
 
+	if offsetGroupBytes > 0 {
+		appendOffsetBytes(offsetGroupBytes)
+		offsetGroupBytes = 0
+	}
+
 	// Marshal dynamic fields
 	for idx, field := range desc.ContainerDesc.Fields {
 		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
@@ -383,7 +442,7 @@ func (ctx *marshalContext) marshalContainer(desc *ssztypes.TypeDescriptor, varNa
 
 		ctx.appendCode(indent, "{ // Dynamic Field #%d '%s'\n", idx, field.Name)
 		binaryPkgName := ctx.typePrinter.AddImport("encoding/binary", "binary")
-		ctx.appendCode(indent, "\t%s.LittleEndian.PutUint32(dst[offset%d:], uint32(len(dst)-dstlen))\n", binaryPkgName, idx)
+		ctx.appendCode(indent, "\t%s.LittleEndian.PutUint32(dst[%s:], uint32(len(dst)-dstlen))\n", binaryPkgName, offsetExprs[idx])
 		valVar := "t"
 		if ctx.isInlineable(field.Type) {
 			valVar = fmt.Sprintf("%s.%s", varName, field.Name)
