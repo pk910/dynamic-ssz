@@ -205,9 +205,9 @@ type typePathSegment struct {
 }
 
 func (tp typePathList) String() string {
-	segments := []string{}
+	segments := make([]string, 0, len(tp))
 	for _, segment := range tp {
-		args := []any{}
+		args := make([]any, 0, len(segment.args))
 		for _, arg := range segment.args {
 			args = append(args, arg)
 		}
@@ -244,10 +244,10 @@ func (tp typePathList) getErrorWithArgs() (string, int) {
 	}
 
 	if len(pathArgs) == 0 {
-		return fmt.Sprintf("\"%s\"", pathFormat.String()), 0
+		return fmt.Sprintf("%q", pathFormat.String()), 0
 	}
 
-	return fmt.Sprintf("\"%s\", %s", pathFormat.String(), strings.Join(pathArgs, ", ")), len(pathArgs)
+	return fmt.Sprintf("%q, %s", pathFormat.String(), strings.Join(pathArgs, ", ")), len(pathArgs)
 }
 
 func (tp typePathList) getErrorWith(err string) string {

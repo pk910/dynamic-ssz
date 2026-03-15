@@ -590,7 +590,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 			// check padding bits
 			ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
 			ctx.appendCode(indent, "if %s[%s-1] & paddingMask != 0 {\n", valVar, limitVar)
-			errCode := "sszutils.NewSszError(sszutils.ErrVectorLength, \"bitvector padding bits are non-zero\")"
+			errCode := "sszutils.NewSszError(sszutils.ErrVectorLength, \"bitvector padding bits are non-zero during hashing\")"
 			ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 			ctx.appendCode(indent, "}\n")
 		}
@@ -826,7 +826,7 @@ func (ctx *hashTreeRootContext) hashUnion(desc *ssztypes.TypeDescriptor, varName
 		variantTypePath := typePath.append(fmt.Sprintf("[v:%d]", variant))
 		ctx.appendCode(indent, "case %d:\n", variant)
 		ctx.appendCode(indent, "\tv, ok := %s.Data.(%s)\n", varName, variantType)
-		errCode := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"union variant type mismatch\")"
+		errCode := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"union variant type mismatch during hashing\")"
 		ctx.appendCode(indent, "\tif !ok {\n\t\treturn %s\n\t}\n", variantTypePath.getErrorWith(errCode))
 		if err := ctx.hashType(variantDesc, "v", variantTypePath, indent+1, false, false); err != nil {
 			return err
@@ -834,7 +834,7 @@ func (ctx *hashTreeRootContext) hashUnion(desc *ssztypes.TypeDescriptor, varName
 	}
 
 	ctx.appendCode(indent, "default:\n")
-	errCode := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"invalid union variant selector\")"
+	errCode := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"invalid union variant selector during hashing\")"
 	ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 	ctx.appendCode(indent, "}\n")
 

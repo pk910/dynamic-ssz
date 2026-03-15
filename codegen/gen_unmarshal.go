@@ -647,7 +647,7 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 			if bitlimitVar != "" {
 				ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
 				ctx.appendCode(indent, "if buf[%s-1] & paddingMask != 0 {\n", limitVar)
-				errCode := "sszutils.NewSszError(sszutils.ErrVectorLength, \"bitvector padding bits are non-zero\")"
+				errCode := "sszutils.NewSszError(sszutils.ErrVectorLength, \"bitvector padding bits are non-zero during unmarshaling\")"
 				ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 				ctx.appendCode(indent, "}\n")
 			}
@@ -884,7 +884,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 func (ctx *unmarshalContext) unmarshalBitlist(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	ctx.appendCode(indent, "blen := len(buf)\n")
 	ctx.appendCode(indent, "if blen == 0 || buf[blen-1] == 0x00 {\n")
-	errCode := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"bitlist missing termination bit\")"
+	errCode := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"bitlist missing termination bit during unmarshaling\")"
 	ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 	ctx.appendCode(indent, "}\n")
 
@@ -921,7 +921,7 @@ func (ctx *unmarshalContext) unmarshalUnion(desc *ssztypes.TypeDescriptor, varNa
 		// Check that buf has enough bytes for the selector plus the variant value
 		elemSize := variantDesc.Size
 		if elemSize > 0 {
-			errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrUnexpectedEOF, \"not enough data for union variant (have %%d, needed %%d)\", len(buf), %d)", 1+elemSize)
+			errCode = fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrUnexpectedEOF, \"not enough data for union variant (have %%d, needed %%d)\", len(buf), %d)", 1+elemSize)
 			ctx.appendCode(indent+1, "if len(buf) < %d {\n\treturn %s\n}\n", 1+elemSize, childTypePath.getErrorWith(errCode))
 		}
 
@@ -935,7 +935,7 @@ func (ctx *unmarshalContext) unmarshalUnion(desc *ssztypes.TypeDescriptor, varNa
 	}
 
 	ctx.appendCode(indent, "default:\n")
-	errCode = "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"invalid union variant selector\")"
+	errCode = "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"invalid union variant selector during unmarshaling\")"
 	ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 	ctx.appendCode(indent, "}\n")
 

@@ -475,8 +475,6 @@ func (ctx *encoderContext) marshalContainer(desc *ssztypes.TypeDescriptor, varNa
 }
 
 // marshalVector generates marshal code for SSZ vector (fixed-size array) types.
-//
-//nolint:dupl // intentionally similar to gen_marshal.go but generates different output
 func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	sizeExpression := desc.SizeExpression
 	if ctx.options.WithoutDynamicExpressions {
@@ -556,7 +554,7 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			if bitlimitVar != "" {
 				ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
 				ctx.appendCode(indent, "if %s[%s-1] & paddingMask != 0 {\n", valueVar, lenVar)
-				errCode := "sszutils.NewSszError(sszutils.ErrVectorLength, \"bitvector padding bits are non-zero\")"
+				errCode := "sszutils.NewSszError(sszutils.ErrVectorLength, \"bitvector padding bits are non-zero during encoding\")"
 				ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 				ctx.appendCode(indent, "}\n")
 			}
@@ -820,7 +818,7 @@ func (ctx *encoderContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName
 	ctx.appendCode(indent, "if vlen == 0 {\n")
 	ctx.appendCode(indent, "\tbval = []byte{0x01}\n")
 	ctx.appendCode(indent, "} else if bval[vlen-1] == 0x00 {\n")
-	errCode := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"bitlist missing termination bit\")"
+	errCode := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"bitlist missing termination bit during encoding\")"
 	ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 	ctx.appendCode(indent, "}\n")
 
@@ -847,7 +845,7 @@ func (ctx *encoderContext) marshalUnion(desc *ssztypes.TypeDescriptor, varName s
 		ctx.appendCode(indent, "case %d:\n", variant)
 		ctx.appendCode(indent, "\tv, ok := %s.Data.(%s)\n", varName, variantType)
 		ctx.appendCode(indent, "\tif !ok {\n")
-		errCode := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"union variant type mismatch\")"
+		errCode := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"union variant type mismatch during encoding\")"
 		ctx.appendCode(indent, "\t\treturn %s\n", variantPath.getErrorWith(errCode))
 		ctx.appendCode(indent, "\t}\n")
 		if err := ctx.marshalType(variantDesc, "v", variantPath, indent+1, false); err != nil {
@@ -855,7 +853,7 @@ func (ctx *encoderContext) marshalUnion(desc *ssztypes.TypeDescriptor, varName s
 		}
 	}
 	ctx.appendCode(indent, "default:\n")
-	errCode := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"invalid union variant selector\")"
+	errCode := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"invalid union variant selector during encoding\")"
 	ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 	ctx.appendCode(indent, "}\n")
 

@@ -525,7 +525,7 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 				if bitlimitVar != "" {
 					ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
 					ctx.appendCode(indent, "if %s[%s-1] & paddingMask != 0 {\n", varName, limitVar)
-					errCode := "sszutils.NewSszError(sszutils.ErrVectorLength, \"bitvector padding bits are non-zero\")"
+					errCode := "sszutils.NewSszError(sszutils.ErrVectorLength, \"bitvector padding bits are non-zero during decoding\")"
 					ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 					ctx.appendCode(indent, "}\n")
 				}
@@ -865,7 +865,7 @@ func (ctx *decoderContext) unmarshalBitlist(desc *ssztypes.TypeDescriptor, varNa
 	}
 	ctx.appendCode(indent, "if _, err = dec.DecodeBytes(%s[:blen]); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
 	ctx.appendCode(indent, "if blen == 0 || %s[blen-1] == 0x00 {\n", varName)
-	errCode := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"bitlist missing termination bit\")"
+	errCode := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"bitlist missing termination bit during decoding\")"
 	ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 	ctx.appendCode(indent, "}\n")
 
@@ -899,7 +899,7 @@ func (ctx *decoderContext) unmarshalUnion(desc *ssztypes.TypeDescriptor, varName
 	}
 
 	ctx.appendCode(indent, "default:\n")
-	errCode := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"invalid union variant selector\")"
+	errCode := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"invalid union variant selector during decoding\")"
 	ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 	ctx.appendCode(indent, "}\n")
 
