@@ -502,13 +502,18 @@ func (n *Node) Value() []byte {
 }
 
 func getEmptyNode(depth int) *Node {
-	if node, ok := emptyNodeCache.Load(depth); ok {
-		return node.(*Node)
+	if cached, ok := emptyNodeCache.Load(depth); ok {
+		if node, ok := cached.(*Node); ok {
+			return node
+		}
 	}
 
 	node := NewEmptyNode(hasher.GetZeroHash(depth))
 	actual, _ := emptyNodeCache.LoadOrStore(depth, node)
-	return actual.(*Node)
+	if cached, ok := actual.(*Node); ok {
+		return cached
+	}
+	return node
 }
 
 func hashNode(n *Node) []byte {
