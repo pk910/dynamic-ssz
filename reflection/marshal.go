@@ -391,11 +391,11 @@ func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sou
 	} else {
 		bulkDone := false
 		// Fast path: bulk encode uint64 vectors without per-element reflection dispatch
-		if dataLen > 0 && sourceType.ElemDesc.SszType == ssztypes.SszUint64Type && sourceType.ElemDesc.GoTypeFlags == 0 && sourceType.ElemDesc.Kind == reflect.Uint64 {
-			if u64s, ok := sourceValue.Interface().([]uint64); ok {
-				sszutils.EncodeUint64Slice(encoder, u64s[:dataLen])
-				bulkDone = true
-			}
+		if dataLen > 0 && sourceType.ElemDesc.SszType == ssztypes.SszUint64Type && sourceType.ElemDesc.GoTypeFlags == 0 && sourceType.ElemDesc.Kind == reflect.Uint64 && sourceType.Kind == reflect.Slice {
+			ptr := unsafe.Pointer(sourceValue.Pointer())
+			u64s := unsafe.Slice((*uint64)(ptr), sourceValue.Len())
+			sszutils.EncodeUint64Slice(encoder, u64s[:dataLen])
+			bulkDone = true
 		}
 
 		if !bulkDone {
@@ -566,10 +566,10 @@ func (ctx *ReflectionCtx) marshalList(sourceType *ssztypes.TypeDescriptor, sourc
 
 		// Fast path: bulk encode uint64 slices without per-element reflection dispatch
 		if sliceLen > 0 && fieldType.SszType == ssztypes.SszUint64Type && fieldType.GoTypeFlags == 0 && fieldType.Kind == reflect.Uint64 {
-			if u64s, ok := sourceValue.Interface().([]uint64); ok {
-				sszutils.EncodeUint64Slice(encoder, u64s)
-				break
-			}
+			ptr := unsafe.Pointer(sourceValue.Pointer())
+			u64s := unsafe.Slice((*uint64)(ptr), sliceLen)
+			sszutils.EncodeUint64Slice(encoder, u64s)
+			break
 		}
 
 		isPointer := fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0

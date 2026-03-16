@@ -552,10 +552,10 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 		bulkDone := false
 		// Fast path: bulk append uint64 vectors without per-element reflection dispatch
 		if sliceLen > 0 && sourceType.ElemDesc.SszType == ssztypes.SszUint64Type && sourceType.ElemDesc.GoTypeFlags == 0 && sourceType.ElemDesc.Kind == reflect.Uint64 {
-			if u64s, ok := sourceValue.Interface().([]uint64); ok {
-				sszutils.HashUint64Slice(hh, u64s[:sliceLen])
-				bulkDone = true
-			}
+			ptr := unsafe.Pointer(sourceValue.Pointer())
+			u64s := unsafe.Slice((*uint64)(ptr), sliceLen)
+			sszutils.HashUint64Slice(hh, u64s)
+			bulkDone = true
 		}
 
 		if !bulkDone {
