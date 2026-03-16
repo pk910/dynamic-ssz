@@ -219,26 +219,30 @@ func (h *Hasher) AppendBytes32(b []byte) {
 
 // PutUint64 appends a uint64 in 32 bytes
 func (h *Hasher) PutUint64(i uint64) {
-	binary.LittleEndian.PutUint64(h.tmp[:8], i)
-	h.AppendBytes32(h.tmp[:8])
+	n := len(h.buf)
+	h.buf = append(h.buf, zeroBytes[:32]...)
+	binary.LittleEndian.PutUint64(h.buf[n:], i)
 }
 
 // PutUint32 appends a uint32 in 32 bytes
 func (h *Hasher) PutUint32(i uint32) {
-	binary.LittleEndian.PutUint32(h.tmp[:4], i)
-	h.AppendBytes32(h.tmp[:4])
+	n := len(h.buf)
+	h.buf = append(h.buf, zeroBytes[:32]...)
+	binary.LittleEndian.PutUint32(h.buf[n:], i)
 }
 
 // PutUint16 appends a uint16 in 32 bytes
 func (h *Hasher) PutUint16(i uint16) {
-	binary.LittleEndian.PutUint16(h.tmp[:2], i)
-	h.AppendBytes32(h.tmp[:2])
+	n := len(h.buf)
+	h.buf = append(h.buf, zeroBytes[:32]...)
+	binary.LittleEndian.PutUint16(h.buf[n:], i)
 }
 
 // PutUint8 appends a uint8 in 32 bytes
 func (h *Hasher) PutUint8(i uint8) {
-	h.tmp[0] = i
-	h.AppendBytes32(h.tmp[:1])
+	n := len(h.buf)
+	h.buf = append(h.buf, zeroBytes[:32]...)
+	h.buf[n] = i
 }
 
 // FillUpTo32 pads the hash buffer with zero bytes to align to a 32-byte
@@ -426,10 +430,10 @@ func (h *Hasher) PutProgressiveBitlist(bb []byte) {
 
 // PutBool appends a boolean
 func (h *Hasher) PutBool(b bool) {
+	n := len(h.buf)
+	h.buf = append(h.buf, zeroBytes[:32]...)
 	if b {
-		h.buf = append(h.buf, trueBytes...)
-	} else {
-		h.buf = append(h.buf, falseBytes...)
+		h.buf[n] = 1
 	}
 }
 
