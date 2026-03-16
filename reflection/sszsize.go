@@ -38,6 +38,24 @@ import (
 //   - Dynamic slices include padding for size hint compliance
 //   - Struct fields are sized based on their static/dynamic nature
 func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value) (uint32, error) {
+	// Fast path: primitive types with known static size don't need traversal.
+	// Only use for types that have no nested complexity (basic SSZ types and byte arrays).
+	if targetType.Size > 0 && targetType.SszCompatFlags == 0 {
+		switch targetType.SszType {
+		case ssztypes.SszBoolType, ssztypes.SszUint8Type, ssztypes.SszUint16Type,
+			ssztypes.SszUint32Type, ssztypes.SszUint64Type,
+			ssztypes.SszInt8Type, ssztypes.SszInt16Type, ssztypes.SszInt32Type, ssztypes.SszInt64Type,
+			ssztypes.SszFloat32Type, ssztypes.SszFloat64Type,
+			ssztypes.SszUint128Type, ssztypes.SszUint256Type:
+			return targetType.Size, nil
+		case ssztypes.SszVectorType, ssztypes.SszBitvectorType:
+			// Only for byte arrays (element type is uint8)
+			if targetType.ElemDesc != nil && targetType.ElemDesc.Kind == reflect.Uint8 {
+				return targetType.Size, nil
+			}
+		}
+	}
+
 	staticSize := uint32(0)
 
 	if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && targetType.SszType != ssztypes.SszOptionalType {
