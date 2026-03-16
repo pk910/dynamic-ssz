@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"sync"
 
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
@@ -146,6 +147,8 @@ type Node struct {
 	isEmpty bool   // True if this is a zero-padding node
 	value   []byte // 32-byte value (data for leaves, hash for branches)
 }
+
+var emptyNodeCache sync.Map
 
 // Show displays the tree structure in a human-readable format for debugging.
 //
@@ -279,13 +282,13 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 	numLeaves := len(leaves)
 
 	if limit <= 0 {
-		return NewEmptyNode(sszutils.ZeroBytes()[:32]), nil
+		return getEmptyNode(0), nil
 	}
 
 	// there are no leaves, return a zero order hash node
 	if numLeaves == 0 {
 		depth := floorLog2(limit)
-		return NewEmptyNode(hasher.GetZeroHash(depth)), nil
+		return getEmptyNode(depth), nil
 	}
 
 	// now we know numLeaves are at least 1.
@@ -304,7 +307,7 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 	if limit == 2 {
 		// but we only have 1 leaf, add a zero order hash as the right node
 		if numLeaves == 1 {
-			return NewNodeWithLR(leaves[0], NewEmptyNode(hasher.GetZeroHash(0))), nil
+			return NewNodeWithLR(leaves[0], getEmptyNode(0)), nil
 		}
 		// otherwise return the two nodes we have
 		return NewNodeWithLR(leaves[0], leaves[1]), nil
@@ -323,7 +326,7 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 		if rightIdx < numLeaves {
 			right = leaves[rightIdx]
 		} else {
-			right = NewEmptyNode(hasher.GetZeroHash(0))
+			right = getEmptyNode(0)
 		}
 		nodes[i] = NewNodeWithLR(left, right)
 	}
@@ -340,7 +343,7 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 			if rightIdx < activeCount {
 				right = nodes[rightIdx]
 			} else {
-				right = NewEmptyNode(hasher.GetZeroHash(depth - d))
+				right = getEmptyNode(depth - d)
 			}
 			nodes[i] = NewNodeWithLR(left, right)
 		}
@@ -356,7 +359,7 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 // Based on subtree_fill_progressive from remerkleable.
 func TreeFromNodesProgressive(leaves []*Node) (*Node, error) {
 	if len(leaves) == 0 {
-		return NewEmptyNode(sszutils.ZeroBytes()[:32]), nil
+		return getEmptyNode(0), nil
 	}
 
 	return treeFromNodesProgressiveImpl(leaves, 0)
@@ -365,7 +368,7 @@ func TreeFromNodesProgressive(leaves []*Node) (*Node, error) {
 // treeFromNodesProgressiveImpl implements the recursive progressive tree construction
 func treeFromNodesProgressiveImpl(leaves []*Node, depth int) (*Node, error) {
 	if len(leaves) == 0 {
-		return NewEmptyNode(sszutils.ZeroBytes()[:32]), nil
+		return getEmptyNode(0), nil
 	}
 
 	// Calculate base_size = 1 << depth (1, 4, 16, 64, 256...)
@@ -388,7 +391,7 @@ func treeFromNodesProgressiveImpl(leaves []*Node, depth int) (*Node, error) {
 	rightNodes := leaves[splitPoint:]
 	var rightChild *Node
 	if len(rightNodes) == 0 {
-		rightChild = NewEmptyNode(sszutils.ZeroBytes()[:32])
+		rightChild = getEmptyNode(0)
 	} else {
 		rightChild, err = treeFromNodesProgressiveImpl(rightNodes, depth+2)
 		if err != nil {
@@ -496,6 +499,16 @@ func (n *Node) IsEmpty() bool {
 // Value returns the raw 32-byte value stored in this node.
 func (n *Node) Value() []byte {
 	return n.value
+}
+
+func getEmptyNode(depth int) *Node {
+	if node, ok := emptyNodeCache.Load(depth); ok {
+		return node.(*Node)
+	}
+
+	node := NewEmptyNode(hasher.GetZeroHash(depth))
+	actual, _ := emptyNodeCache.LoadOrStore(depth, node)
+	return actual.(*Node)
 }
 
 func hashNode(n *Node) []byte {
