@@ -464,7 +464,7 @@ func (h *Hasher) Index() int {
 // Merkleize is used to merkleize the last group of the hasher
 func (h *Hasher) Merkleize(indx int) {
 	inputLen := len(h.buf) - indx
-	if inputLen <= 64 {
+	if inputLen <= 128 {
 		if inputLen <= 32 {
 			// Fast path: single chunk, no merkleization needed
 			if inputLen == 32 {
@@ -479,11 +479,27 @@ func (h *Hasher) Merkleize(indx int) {
 			h.buf = append(h.buf[:indx], zeroBytes[:32]...)
 			return
 		}
-		// Fast path: two chunks, single hash operation
-		if inputLen < 64 {
-			// Pad to 64 bytes
-			h.buf = append(h.buf, zeroBytes[:64-inputLen]...)
+		if inputLen <= 64 {
+			// Fast path: two chunks, single hash operation
+			if inputLen < 64 {
+				// Pad to 64 bytes
+				h.buf = append(h.buf, zeroBytes[:64-inputLen]...)
+			}
+			_ = h.hash(h.buf[indx:indx+32], h.buf[indx:indx+64])
+			h.buf = h.buf[:indx+32]
+			return
 		}
+		// Fast path: 3-4 chunks, two hash operations
+		if inputLen <= 96 {
+			// 3 chunks: pad to 4 chunks (128 bytes)
+			h.buf = append(h.buf, zeroHashes[0][:]...)
+		} else if inputLen < 128 {
+			// Partial 4th chunk: pad to 128 bytes
+			h.buf = append(h.buf, zeroBytes[:128-inputLen]...)
+		}
+		// Hash 4 chunks → 2 chunks
+		_ = h.hash(h.buf[indx:indx+64], h.buf[indx:indx+128])
+		// Hash 2 chunks → 1 chunk
 		_ = h.hash(h.buf[indx:indx+32], h.buf[indx:indx+64])
 		h.buf = h.buf[:indx+32]
 		return
