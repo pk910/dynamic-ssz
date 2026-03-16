@@ -513,6 +513,15 @@ func (h *Hasher) Merkleize(indx int) {
 		h.buf = h.buf[:indx+32]
 		return
 	}
+	// Fast path: exactly 16 chunks (512 bytes), four hash operations
+	if inputLen == 512 {
+		_ = h.hash(h.buf[indx:indx+256], h.buf[indx:indx+512])
+		_ = h.hash(h.buf[indx:indx+128], h.buf[indx:indx+256])
+		_ = h.hash(h.buf[indx:indx+64], h.buf[indx:indx+128])
+		_ = h.hash(h.buf[indx:indx+32], h.buf[indx:indx+64])
+		h.buf = h.buf[:indx+32]
+		return
+	}
 
 	// merkleizeImpl will expand the `input` by 32 bytes if some hashing depth
 	// hits an odd chunk length. But if we're at the end of `h.buf` already,
