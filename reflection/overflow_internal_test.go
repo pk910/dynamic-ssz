@@ -19,7 +19,8 @@ import (
 const overflowLen = math.MaxInt32 + 1 // triggers > math.MaxInt checks on 32-bit platforms
 
 func newCtx() *ReflectionCtx {
-	return NewReflectionCtx(nil, nil, false, true)
+	ctx := NewReflectionCtx(nil, nil, false, true)
+	return &ctx
 }
 
 // stubFastsszUnmarshaler implements sszutils.FastsszUnmarshaler for testing.

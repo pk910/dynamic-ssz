@@ -492,6 +492,9 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 		if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 && targetType.ElemDesc.Type.Kind() == reflect.Uint8 {
 			byteSlice := make([]byte, arrLen)
 			newValue = reflect.ValueOf(byteSlice)
+		} else if targetValue.Cap() >= arrLen {
+			// Reuse existing slice backing array when capacity is sufficient
+			newValue = targetValue.Slice(0, arrLen)
 		} else {
 			newValue = reflect.MakeSlice(targetType.Type, arrLen, arrLen)
 		}
@@ -636,6 +639,8 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 	var newValue reflect.Value
 	if targetType.Kind == reflect.Array {
 		newValue = targetValue
+	} else if targetValue.Cap() >= vectorLen {
+		newValue = targetValue.Slice(0, vectorLen)
 	} else {
 		newValue = reflect.MakeSlice(fieldT, vectorLen, vectorLen)
 	}
@@ -789,6 +794,9 @@ func (ctx *ReflectionCtx) unmarshalList(targetType *ssztypes.TypeDescriptor, tar
 		if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 && fieldType.Type.Kind() == reflect.Uint8 {
 			byteSlice := make([]byte, sliceLen)
 			newValue = reflect.ValueOf(byteSlice)
+		} else if targetValue.Cap() >= sliceLen {
+			// Reuse existing slice backing array when capacity is sufficient
+			newValue = targetValue.Slice(0, sliceLen)
 		} else {
 			newValue = reflect.MakeSlice(fieldT, sliceLen, sliceLen)
 		}
@@ -899,7 +907,12 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 		fieldT = fieldT.Elem()
 	}
 
-	newValue := reflect.MakeSlice(fieldT, sliceLen, sliceLen)
+	var newValue reflect.Value
+	if targetValue.Cap() >= sliceLen {
+		newValue = targetValue.Slice(0, sliceLen)
+	} else {
+		newValue = reflect.MakeSlice(fieldT, sliceLen, sliceLen)
+	}
 
 	if sliceLen > 0 {
 		offset := firstOffset
