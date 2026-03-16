@@ -184,12 +184,18 @@ func NewHasherWithHash(hh hash.Hash) *Hasher {
 }
 
 // NewHasherWithHashFn creates a new Hasher object with a custom HashFn function
+// defaultHasherBufSize is the default initial capacity for the hasher buffer.
+// This is sized to handle most BeaconState HTR operations without regrowth
+// (100K validators * 32 bytes per hash = 3.2MB peak).
+const defaultHasherBufSize = 4 * 1024 * 1024
+
 func NewHasherWithHashFn(hh HashFn) *Hasher {
 	if !hasherInitialized {
 		initHasher()
 	}
 
 	return &Hasher{
+		buf:  make([]byte, 0, defaultHasherBufSize),
 		hash: hh,
 		tmp:  make([]byte, 64),
 	}
