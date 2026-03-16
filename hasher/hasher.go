@@ -440,6 +440,11 @@ func (h *Hasher) PutBool(b bool) {
 // PutBytes appends bytes
 func (h *Hasher) PutBytes(b []byte) {
 	if len(b) <= 32 {
+		if len(b) == 32 {
+			// Fast path: exactly 32 bytes, no padding needed
+			h.buf = append(h.buf, b...)
+			return
+		}
 		h.AppendBytes32(b)
 		return
 	}
