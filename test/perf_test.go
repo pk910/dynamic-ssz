@@ -38,12 +38,8 @@ func init() {
 	// Create SSZ instances
 	dynSszMainnet = ssz.NewDynSsz(nil)
 	dynSszMinimal = ssz.NewDynSsz(minimalSpecs)
-	dynSszOnlyMainnet = ssz.NewDynSsz(nil)
-	dynSszOnlyMinimal = ssz.NewDynSsz(minimalSpecs)
-
-	// Disable fastssz for pure dynssz tests
-	dynSszOnlyMainnet.NoFastSsz = true
-	dynSszOnlyMinimal.NoFastSsz = true
+	dynSszOnlyMainnet = ssz.NewDynSsz(nil, ssz.WithNoFastSsz())
+	dynSszOnlyMinimal = ssz.NewDynSsz(minimalSpecs, ssz.WithNoFastSsz())
 }
 
 // ========================= BLOCK BENCHMARKS =========================

@@ -19,16 +19,10 @@ func performanceCommand() {
 	minimalSpecs := make(map[string]any)
 	yaml.Unmarshal(minimalPresetBytes, &minimalSpecs)
 
-	dynssz_only_mainnet := ssz.NewDynSsz(nil)
-	dynssz_only_minimal := ssz.NewDynSsz(minimalSpecs)
+	dynssz_only_mainnet := ssz.NewDynSsz(nil, ssz.WithNoFastSsz())
+	dynssz_only_minimal := ssz.NewDynSsz(minimalSpecs, ssz.WithNoFastSsz())
 	dynssz_hybrid_mainnet := ssz.NewDynSsz(nil)
 	dynssz_hybrid_minimal := ssz.NewDynSsz(minimalSpecs)
-
-	// this has a huge negative performance impact.
-	// it prevents dynssz from using fastssz for structures where no dynamic marshalling is required.
-	// it's here for demonstration, don't use if not required.
-	dynssz_only_mainnet.NoFastSsz = true
-	dynssz_only_minimal.NoFastSsz = true
 
 	//dynssz_hybrid_minimal.Verbose = true
 

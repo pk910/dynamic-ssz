@@ -12,8 +12,7 @@ import (
 )
 
 func codegenTestCommand() {
-	ds := dynssz.NewDynSsz(nil)
-	ds.NoFastSsz = true
+	ds := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz())
 
 	t1 := &Test1{
 		F1: phase0.ValidatorIndex(1),
