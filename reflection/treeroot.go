@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"time"
+	"unsafe"
 
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/ssztypes"
@@ -518,17 +519,19 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 
 	// For byte arrays, handle as a single unit
 	if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
-		if !sourceValue.CanAddr() {
-			// workaround for unaddressable static arrays
-			sourceValPtr := reflect.New(sourceType.Type)
-			sourceValPtr.Elem().Set(sourceValue)
-			sourceValue = sourceValPtr.Elem()
-		}
-
 		var bytes []byte
 		if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
 			bytes = []byte(sourceValue.String())[:sliceLen]
+		} else if sourceValue.CanAddr() && sourceType.Kind == reflect.Array {
+			// Fast path: use unsafe to get bytes from addressable arrays
+			ptr := unsafe.Pointer(sourceValue.UnsafeAddr())
+			bytes = unsafe.Slice((*byte)(ptr), sourceValue.Len())[:sliceLen]
 		} else {
+			if !sourceValue.CanAddr() {
+				sourceValPtr := reflect.New(sourceType.Type)
+				sourceValPtr.Elem().Set(sourceValue)
+				sourceValue = sourceValPtr.Elem()
+			}
 			bytes = sourceValue.Bytes()[:sliceLen]
 		}
 

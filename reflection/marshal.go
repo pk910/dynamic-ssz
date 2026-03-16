@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"time"
+	"unsafe"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
@@ -357,17 +358,21 @@ func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sou
 
 	if sourceType.GoTypeFlags&(ssztypes.GoTypeFlagIsByteArray|ssztypes.GoTypeFlagIsString) != 0 {
 		// shortcut for performance: use append on []byte arrays
-		if !sourceValue.CanAddr() {
-			// workaround for unaddressable static arrays
-			sourceValPtr := reflect.New(sourceType.Type)
-			sourceValPtr.Elem().Set(sourceValue)
-			sourceValue = sourceValPtr.Elem()
-		}
-
 		var bytes []byte
 		if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
 			bytes = []byte(sourceValue.String())
+		} else if sourceValue.CanAddr() && sourceType.Kind == reflect.Array {
+			// Fast path: use unsafe to get bytes from addressable arrays
+			// avoiding reflect.Value.Bytes() slow path for arrays
+			ptr := unsafe.Pointer(sourceValue.UnsafeAddr())
+			bytes = unsafe.Slice((*byte)(ptr), sourceValue.Len())
 		} else {
+			if !sourceValue.CanAddr() {
+				// workaround for unaddressable static arrays
+				sourceValPtr := reflect.New(sourceType.Type)
+				sourceValPtr.Elem().Set(sourceValue)
+				sourceValue = sourceValPtr.Elem()
+			}
 			bytes = sourceValue.Bytes()
 		}
 
