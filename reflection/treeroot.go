@@ -546,13 +546,26 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 
 		hh.AppendBytes32(bytes)
 	} else {
-		// For other types, process each element
-		for i := 0; i < sliceLen; i++ {
-			fieldValue := sourceValue.Index(i)
+		bulkDone := false
+		// Fast path: bulk append uint64 vectors without per-element reflection dispatch
+		if sliceLen > 0 && sourceType.ElemDesc.SszType == ssztypes.SszUint64Type && sourceType.ElemDesc.GoTypeFlags == 0 && sourceType.ElemDesc.Kind == reflect.Uint64 {
+			if u64s, ok := sourceValue.Interface().([]uint64); ok {
+				for _, v := range u64s[:sliceLen] {
+					hh.AppendUint64(v)
+				}
+				bulkDone = true
+			}
+		}
 
-			err := ctx.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, true, idt+2)
-			if err != nil {
-				return sszutils.ErrorWithPathf(err, "[%d]", i)
+		if !bulkDone {
+			// For other types, process each element
+			for i := 0; i < sliceLen; i++ {
+				fieldValue := sourceValue.Index(i)
+
+				err := ctx.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, true, idt+2)
+				if err != nil {
+					return sszutils.ErrorWithPathf(err, "[%d]", i)
+				}
 			}
 		}
 
@@ -625,14 +638,27 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 
 		hh.AppendBytes32(bytes)
 	} else {
-		// For other types, process each element
-		arrayLen := sourceValue.Len()
-		for i := 0; i < arrayLen; i++ {
-			fieldValue := sourceValue.Index(i)
+		bulkDone := false
+		// Fast path: bulk append uint64 slices without per-element reflection dispatch
+		if sliceLen > 0 && sourceType.ElemDesc.SszType == ssztypes.SszUint64Type && sourceType.ElemDesc.GoTypeFlags == 0 && sourceType.ElemDesc.Kind == reflect.Uint64 {
+			if u64s, ok := sourceValue.Interface().([]uint64); ok {
+				for _, v := range u64s {
+					hh.AppendUint64(v)
+				}
+				bulkDone = true
+			}
+		}
 
-			err := ctx.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, true, idt+2)
-			if err != nil {
-				return sszutils.ErrorWithPathf(err, "[%d]", i)
+		if !bulkDone {
+			// For other types, process each element
+			arrayLen := sourceValue.Len()
+			for i := 0; i < arrayLen; i++ {
+				fieldValue := sourceValue.Index(i)
+
+				err := ctx.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, true, idt+2)
+				if err != nil {
+					return sszutils.ErrorWithPathf(err, "[%d]", i)
+				}
 			}
 		}
 

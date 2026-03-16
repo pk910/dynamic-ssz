@@ -535,6 +535,14 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 				}
 			}
 		}
+	} else if arrLen > 0 && targetType.Kind == reflect.Slice && fieldType.SszType == ssztypes.SszUint64Type && fieldType.GoTypeFlags == 0 && fieldType.Kind == reflect.Uint64 {
+		// Fast path: bulk decode uint64 vectors without per-element reflection dispatch
+		u64s := make([]uint64, arrLen)
+		if err := sszutils.DecodeUint64Slice(decoder, u64s); err != nil {
+			return err
+		}
+		targetValue.Set(reflect.ValueOf(u64s))
+		return nil
 	} else {
 		if err := ctx.unmarshalFixedElements(fieldType, newValue, arrLen, decoder, idt, "vector"); err != nil {
 			return err
@@ -765,6 +773,17 @@ func (ctx *ReflectionCtx) unmarshalList(targetType *ssztypes.TypeDescriptor, tar
 	}
 
 	var newValue reflect.Value
+
+	// Fast path: bulk decode uint64 slices without per-element reflection dispatch
+	if sliceLen > 0 && targetType.Kind == reflect.Slice && fieldType.SszType == ssztypes.SszUint64Type && fieldType.GoTypeFlags == 0 && fieldType.Kind == reflect.Uint64 {
+		u64s := make([]uint64, sliceLen)
+		if err := sszutils.DecodeUint64Slice(decoder, u64s); err != nil {
+			return err
+		}
+		targetValue.Set(reflect.ValueOf(u64s))
+		return nil
+	}
+
 	if targetType.Kind == reflect.Slice {
 		// Optimization: avoid reflect.MakeSlice for common byte slice types
 		if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 && fieldType.Type.Kind() == reflect.Uint8 {
