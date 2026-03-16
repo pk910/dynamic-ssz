@@ -17,12 +17,13 @@ const DefaultStreamEncoderBufSize = 2 * 1024
 // StreamEncoder is a non-seekable Encoder implementation that writes SSZ data
 // to an io.Writer with internal buffering. It does not support EncodeOffsetAt.
 type StreamEncoder struct {
-	writer   io.Writer
-	position int
-	scratch  []byte // small scratch buffer for GetBuffer/SetBuffer
-	writeBuf []byte
-	bufPos   int
-	writeErr error
+	writer       io.Writer
+	position     int
+	scratch      []byte   // small scratch buffer for GetBuffer/SetBuffer
+	scratchStack [32]byte // inline backing array for scratch
+	writeBuf     []byte
+	bufPos       int
+	writeErr     error
 }
 
 var _ Encoder = (*StreamEncoder)(nil)
@@ -34,11 +35,12 @@ func NewStreamEncoder(writer io.Writer, bufSize int) *StreamEncoder {
 	if bufSize <= 0 {
 		bufSize = DefaultStreamEncoderBufSize
 	}
-	return &StreamEncoder{
+	e := &StreamEncoder{
 		writer:   writer,
-		scratch:  make([]byte, 0, 32),
 		writeBuf: make([]byte, bufSize),
 	}
+	e.scratch = e.scratchStack[:0]
+	return e
 }
 
 func (e *StreamEncoder) Seekable() bool {

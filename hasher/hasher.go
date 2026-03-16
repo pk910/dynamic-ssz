@@ -184,12 +184,18 @@ func NewHasherWithHash(hh hash.Hash) *Hasher {
 }
 
 // NewHasherWithHashFn creates a new Hasher object with a custom HashFn function
+// defaultHasherBufSize is the default initial capacity for the hasher buffer.
+// This is sized to handle most BeaconState HTR operations without regrowth
+// (100K validators * 32 bytes per hash = 3.2MB peak).
+const defaultHasherBufSize = 4 * 1024 * 1024
+
 func NewHasherWithHashFn(hh HashFn) *Hasher {
 	if !hasherInitialized {
 		initHasher()
 	}
 
 	return &Hasher{
+		buf:  make([]byte, 0, defaultHasherBufSize),
 		hash: hh,
 		tmp:  make([]byte, 64),
 	}
@@ -219,26 +225,30 @@ func (h *Hasher) AppendBytes32(b []byte) {
 
 // PutUint64 appends a uint64 in 32 bytes
 func (h *Hasher) PutUint64(i uint64) {
-	binary.LittleEndian.PutUint64(h.tmp[:8], i)
-	h.AppendBytes32(h.tmp[:8])
+	n := len(h.buf)
+	h.buf = append(h.buf, zeroBytes[:32]...)
+	binary.LittleEndian.PutUint64(h.buf[n:], i)
 }
 
 // PutUint32 appends a uint32 in 32 bytes
 func (h *Hasher) PutUint32(i uint32) {
-	binary.LittleEndian.PutUint32(h.tmp[:4], i)
-	h.AppendBytes32(h.tmp[:4])
+	n := len(h.buf)
+	h.buf = append(h.buf, zeroBytes[:32]...)
+	binary.LittleEndian.PutUint32(h.buf[n:], i)
 }
 
 // PutUint16 appends a uint16 in 32 bytes
 func (h *Hasher) PutUint16(i uint16) {
-	binary.LittleEndian.PutUint16(h.tmp[:2], i)
-	h.AppendBytes32(h.tmp[:2])
+	n := len(h.buf)
+	h.buf = append(h.buf, zeroBytes[:32]...)
+	binary.LittleEndian.PutUint16(h.buf[n:], i)
 }
 
 // PutUint8 appends a uint8 in 32 bytes
 func (h *Hasher) PutUint8(i uint8) {
-	h.tmp[0] = i
-	h.AppendBytes32(h.tmp[:1])
+	n := len(h.buf)
+	h.buf = append(h.buf, zeroBytes[:32]...)
+	h.buf[n] = i
 }
 
 // FillUpTo32 pads the hash buffer with zero bytes to align to a 32-byte
@@ -426,16 +436,21 @@ func (h *Hasher) PutProgressiveBitlist(bb []byte) {
 
 // PutBool appends a boolean
 func (h *Hasher) PutBool(b bool) {
+	n := len(h.buf)
+	h.buf = append(h.buf, zeroBytes[:32]...)
 	if b {
-		h.buf = append(h.buf, trueBytes...)
-	} else {
-		h.buf = append(h.buf, falseBytes...)
+		h.buf[n] = 1
 	}
 }
 
 // PutBytes appends bytes
 func (h *Hasher) PutBytes(b []byte) {
 	if len(b) <= 32 {
+		if len(b) == 32 {
+			// Fast path: exactly 32 bytes, no padding needed
+			h.buf = append(h.buf, b...)
+			return
+		}
 		h.AppendBytes32(b)
 		return
 	}
@@ -454,6 +469,66 @@ func (h *Hasher) Index() int {
 
 // Merkleize is used to merkleize the last group of the hasher
 func (h *Hasher) Merkleize(indx int) {
+	inputLen := len(h.buf) - indx
+	if inputLen <= 128 {
+		if inputLen <= 32 {
+			// Fast path: single chunk, no merkleization needed
+			if inputLen == 32 {
+				return
+			}
+			// Zero-pad a partial chunk to 32 bytes and keep as single chunk
+			if inputLen > 0 {
+				h.buf = append(h.buf, zeroBytes[:32-inputLen]...)
+				return
+			}
+			// Empty input: replace with zero hash (depth 0)
+			h.buf = append(h.buf[:indx], zeroBytes[:32]...)
+			return
+		}
+		if inputLen <= 64 {
+			// Fast path: two chunks, single hash operation
+			if inputLen < 64 {
+				// Pad to 64 bytes
+				h.buf = append(h.buf, zeroBytes[:64-inputLen]...)
+			}
+			_ = h.hash(h.buf[indx:indx+32], h.buf[indx:indx+64])
+			h.buf = h.buf[:indx+32]
+			return
+		}
+		// Fast path: 3-4 chunks, two hash operations
+		if inputLen <= 96 {
+			// 3 chunks: pad to 4 chunks (128 bytes)
+			h.buf = append(h.buf, zeroHashes[0][:]...)
+		} else if inputLen < 128 {
+			// Partial 4th chunk: pad to 128 bytes
+			h.buf = append(h.buf, zeroBytes[:128-inputLen]...)
+		}
+		// Hash 4 chunks → 2 chunks
+		_ = h.hash(h.buf[indx:indx+64], h.buf[indx:indx+128])
+		// Hash 2 chunks → 1 chunk
+		_ = h.hash(h.buf[indx:indx+32], h.buf[indx:indx+64])
+		h.buf = h.buf[:indx+32]
+		return
+	}
+	// Fast path: exactly 8 chunks (256 bytes), three hash operations
+	// Common for containers with 8 fields (e.g. Validator)
+	if inputLen == 256 {
+		_ = h.hash(h.buf[indx:indx+128], h.buf[indx:indx+256])
+		_ = h.hash(h.buf[indx:indx+64], h.buf[indx:indx+128])
+		_ = h.hash(h.buf[indx:indx+32], h.buf[indx:indx+64])
+		h.buf = h.buf[:indx+32]
+		return
+	}
+	// Fast path: exactly 16 chunks (512 bytes), four hash operations
+	if inputLen == 512 {
+		_ = h.hash(h.buf[indx:indx+256], h.buf[indx:indx+512])
+		_ = h.hash(h.buf[indx:indx+128], h.buf[indx:indx+256])
+		_ = h.hash(h.buf[indx:indx+64], h.buf[indx:indx+128])
+		_ = h.hash(h.buf[indx:indx+32], h.buf[indx:indx+64])
+		h.buf = h.buf[:indx+32]
+		return
+	}
+
 	// merkleizeImpl will expand the `input` by 32 bytes if some hashing depth
 	// hits an odd chunk length. But if we're at the end of `h.buf` already,
 	// appending to `input` will allocate a new buffer, *not* expand `h.buf`,
@@ -462,7 +537,7 @@ func (h *Hasher) Merkleize(indx int) {
 	// available.
 	if len(h.buf) == cap(h.buf) {
 		h.buf = append(h.buf, zeroBytes[:32]...)
-		h.buf = h.buf[:len(h.buf)-len(zeroBytes[:32])]
+		h.buf = h.buf[:len(h.buf)-32]
 	}
 	input := h.buf[indx:]
 
@@ -487,11 +562,10 @@ func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 	// merkleize the input
 	input = h.merkleizeImpl(input[:0], input, limit)
 
-	// mixin with the size
-	output := h.tmp[:0]
-	output = sszutils.MarshalUint64(output, num)
-	input = append(input, output...)
-	input = append(input, zeroBytes[:24]...)
+	// mixin with the size: append 32 zero bytes then write the uint64 value
+	n := len(input)
+	input = append(input, zeroBytes[:32]...)
+	binary.LittleEndian.PutUint64(input[n:], num)
 
 	if debug {
 		logfn("merkleize-mixin: %x (%d, %d) ", input, num, limit)
@@ -614,11 +688,10 @@ func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 	// progressive merkleize the input
 	input = h.merkleizeProgressiveImpl(input[:0], input, 0)
 
-	// mixin with the size (same as MerkleizeWithMixin)
-	output := h.tmp[:0]
-	output = sszutils.MarshalUint64(output, num)
-	input = append(input, output...)
-	input = append(input, zeroBytes[:24]...)
+	// mixin with the size: append 32 zero bytes then write the uint64 value
+	n := len(input)
+	input = append(input, zeroBytes[:32]...)
+	binary.LittleEndian.PutUint64(input[n:], num)
 
 	if debug {
 		logfn("merkleize-progressive-mixin: %x (%d) ", input, num)

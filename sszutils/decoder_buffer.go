@@ -12,11 +12,12 @@ import (
 // byte buffer. It supports random-access offset reads via DecodeOffsetAt and
 // byte skipping via SkipBytes.
 type BufferDecoder struct {
-	buffer    []byte
-	limits    []int
-	lastLimit int
-	bufferLen int
-	position  int
+	buffer      []byte
+	limits      []int
+	limitsStack [16]int // inline backing array to avoid separate allocation
+	lastLimit   int
+	bufferLen   int
+	position    int
 }
 
 var _ Decoder = (*BufferDecoder)(nil)
@@ -24,13 +25,13 @@ var _ Decoder = (*BufferDecoder)(nil)
 // NewBufferDecoder creates a new BufferDecoder that reads SSZ data from the
 // provided byte buffer.
 func NewBufferDecoder(buffer []byte) *BufferDecoder {
-	return &BufferDecoder{
+	d := &BufferDecoder{
 		buffer:    buffer,
-		limits:    make([]int, 0, 16),
 		lastLimit: len(buffer),
 		bufferLen: len(buffer),
-		position:  0,
 	}
+	d.limits = d.limitsStack[:0]
+	return d
 }
 
 // Seekable returns true, indicating that BufferDecoder supports random-access
