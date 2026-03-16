@@ -24,20 +24,20 @@ func VerifyProof(root []byte, proof *Proof) (bool, error) {
 		return false, errors.New("invalid proof length")
 	}
 
-	node := proof.Leaf
 	var tmp [64]byte
+	node := bytesToChunk(proof.Leaf)
 	for i, h := range proof.Hashes {
 		if getPosAtLevel(proof.Index, i) {
 			copy(tmp[:32], h)
-			copy(tmp[32:], node)
+			copy(tmp[32:], node[:])
 		} else {
-			copy(tmp[:32], node)
+			copy(tmp[:32], node[:])
 			copy(tmp[32:], h)
 		}
-		node = hashFn(tmp[:])
+		node = sha256.Sum256(tmp[:])
 	}
 
-	return bytes.Equal(root, node), nil
+	return bytes.Equal(root, node[:]), nil
 }
 
 // VerifyMultiproof verifies a proof for multiple leaves against the given root.
@@ -77,14 +77,14 @@ func VerifyMultiproof(root []byte, proof, leaves [][]byte, indices []int) (bool,
 	// i.e., the indices retrieved from the user of this function
 	userGenIndices := make([]int, 0, len(indices)+len(reqIndices))
 	// Create database of index -> value (hash) from inputs
-	db := make(map[int][]byte, len(indices)+len(reqIndices))
+	db := make(map[int][32]byte, len(indices)+len(reqIndices))
 
 	for i, leaf := range leaves {
-		db[indices[i]] = leaf
+		db[indices[i]] = bytesToChunk(leaf)
 		userGenIndices = append(userGenIndices, indices[i])
 	}
 	for i, h := range proof {
-		db[reqIndices[i]] = h
+		db[reqIndices[i]] = bytesToChunk(h)
 		userGenIndices = append(userGenIndices, reqIndices[i])
 	}
 
@@ -159,9 +159,9 @@ func VerifyMultiproof(root []byte, proof, leaves [][]byte, indices []int) (bool,
 			return false, fmt.Errorf("proof is missing required nodes, either %d or %d", leftIndex, rightIndex)
 		}
 
-		copy(tmp[:32], left)
-		copy(tmp[32:], right)
-		db[parentIndex] = hashFn(tmp[:])
+		copy(tmp[:32], left[:])
+		copy(tmp[32:], right[:])
+		db[parentIndex] = sha256.Sum256(tmp[:])
 
 		// An intermediate hash has been computed, as such we need to store its index
 		// to remember to examine it later
@@ -173,7 +173,7 @@ func VerifyMultiproof(root []byte, proof, leaves [][]byte, indices []int) (bool,
 		return false, fmt.Errorf("root was not computed during proof verification")
 	}
 
-	return bytes.Equal(res, root), nil
+	return bytes.Equal(res[:], root), nil
 }
 
 // Returns the position (i.e. false for left, true for right)
@@ -207,11 +207,12 @@ func getRequiredIndices(leafIndices []int) []int {
 		return nil
 	}
 
-	// Make a local copy so we can sort if needed (callers often already sorted,
-	// but this keeps behavior identical even when they are not).
-	tmp := make([]int, len(leafIndices))
-	copy(tmp, leafIndices)
-	sort.Ints(tmp)
+	tmp := leafIndices
+	if !sort.IntsAreSorted(leafIndices) {
+		tmp = make([]int, len(leafIndices))
+		copy(tmp, leafIndices)
+		sort.Ints(tmp)
+	}
 
 	exists := struct{}{}
 
@@ -253,4 +254,10 @@ func getRequiredIndices(leafIndices []int) []int {
 func hashFn(data []byte) []byte {
 	res := sha256.Sum256(data)
 	return res[:]
+}
+
+func bytesToChunk(src []byte) [32]byte {
+	var chunk [32]byte
+	copy(chunk[:], src)
+	return chunk
 }
