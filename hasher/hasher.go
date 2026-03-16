@@ -458,6 +458,32 @@ func (h *Hasher) Index() int {
 
 // Merkleize is used to merkleize the last group of the hasher
 func (h *Hasher) Merkleize(indx int) {
+	inputLen := len(h.buf) - indx
+	if inputLen <= 64 {
+		if inputLen <= 32 {
+			// Fast path: single chunk, no merkleization needed
+			if inputLen == 32 {
+				return
+			}
+			// Zero-pad a partial chunk to 32 bytes and keep as single chunk
+			if inputLen > 0 {
+				h.buf = append(h.buf, zeroBytes[:32-inputLen]...)
+				return
+			}
+			// Empty input: replace with zero hash (depth 0)
+			h.buf = append(h.buf[:indx], zeroBytes[:32]...)
+			return
+		}
+		// Fast path: two chunks, single hash operation
+		if inputLen < 64 {
+			// Pad to 64 bytes
+			h.buf = append(h.buf, zeroBytes[:64-inputLen]...)
+		}
+		_ = h.hash(h.buf[indx:indx+32], h.buf[indx:indx+64])
+		h.buf = h.buf[:indx+32]
+		return
+	}
+
 	// merkleizeImpl will expand the `input` by 32 bytes if some hashing depth
 	// hits an odd chunk length. But if we're at the end of `h.buf` already,
 	// appending to `input` will allocate a new buffer, *not* expand `h.buf`,
@@ -466,7 +492,7 @@ func (h *Hasher) Merkleize(indx int) {
 	// available.
 	if len(h.buf) == cap(h.buf) {
 		h.buf = append(h.buf, zeroBytes[:32]...)
-		h.buf = h.buf[:len(h.buf)-len(zeroBytes[:32])]
+		h.buf = h.buf[:len(h.buf)-32]
 	}
 	input := h.buf[indx:]
 
