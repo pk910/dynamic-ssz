@@ -522,11 +522,10 @@ func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 	// merkleize the input
 	input = h.merkleizeImpl(input[:0], input, limit)
 
-	// mixin with the size
-	output := h.tmp[:0]
-	output = sszutils.MarshalUint64(output, num)
-	input = append(input, output...)
-	input = append(input, zeroBytes[:24]...)
+	// mixin with the size: append 32 zero bytes then write the uint64 value
+	n := len(input)
+	input = append(input, zeroBytes[:32]...)
+	binary.LittleEndian.PutUint64(input[n:], num)
 
 	if debug {
 		logfn("merkleize-mixin: %x (%d, %d) ", input, num, limit)
@@ -649,11 +648,10 @@ func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 	// progressive merkleize the input
 	input = h.merkleizeProgressiveImpl(input[:0], input, 0)
 
-	// mixin with the size (same as MerkleizeWithMixin)
-	output := h.tmp[:0]
-	output = sszutils.MarshalUint64(output, num)
-	input = append(input, output...)
-	input = append(input, zeroBytes[:24]...)
+	// mixin with the size: append 32 zero bytes then write the uint64 value
+	n := len(input)
+	input = append(input, zeroBytes[:32]...)
+	binary.LittleEndian.PutUint64(input[n:], num)
 
 	if debug {
 		logfn("merkleize-progressive-mixin: %x (%d) ", input, num)
