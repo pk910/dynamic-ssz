@@ -742,7 +742,30 @@ var commonTestMatrix = []struct {
 		fromHex("0x01000000000000000c000000010000000000000002000000010400050000000000000006000000010800"),
 		fromHex("0x80b99000797f72ef1a9deae3e42fc1447648feaf1d7cd8dc1a4e20c7c64350ed"),
 	},
+
+	// defined uint64 types (type MyUint uint64, not alias)
+	// ensures bulk uint64 paths handle non-alias types correctly
+	{
+		"defined_uint64_list",
+		struct {
+			Values []DefinedUint64 `ssz-max:"8"`
+		}{[]DefinedUint64{1, 2, 3}},
+		fromHex("0x04000000010000000000000002000000000000000300000000000000"),
+		fromHex("0x7e0adeccea8b17f07c3d1531a414d0b1f25543d5ddd519604ce30d5af83b1859"),
+	},
+	{
+		"defined_uint64_vector",
+		struct {
+			Values []DefinedUint64 `ssz-size:"3"`
+		}{[]DefinedUint64{10, 20, 30}},
+		fromHex("0x0a0000000000000014000000000000001e00000000000000"),
+		fromHex("0x0a0000000000000014000000000000001e000000000000000000000000000000"),
+	},
 }
+
+// DefinedUint64 is a defined type (not alias) to test that bulk uint64
+// paths handle non-alias types correctly (e.g. []DefinedUint64 is not []uint64).
+type DefinedUint64 uint64
 
 var opt1 = int16(1337)
 
