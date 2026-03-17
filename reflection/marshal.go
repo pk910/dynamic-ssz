@@ -565,7 +565,8 @@ func (ctx *ReflectionCtx) marshalList(sourceType *ssztypes.TypeDescriptor, sourc
 		fieldType := sourceType.ElemDesc
 
 		// Fast path: bulk encode uint64 slices without per-element reflection dispatch
-		if sliceLen > 0 && fieldType.SszType == ssztypes.SszUint64Type && fieldType.GoTypeFlags == 0 && fieldType.Kind == reflect.Uint64 {
+		// Pointer() is only valid for slices, not arrays
+		if sliceLen > 0 && sourceType.Kind == reflect.Slice && fieldType.SszType == ssztypes.SszUint64Type && fieldType.GoTypeFlags == 0 && fieldType.Kind == reflect.Uint64 {
 			ptr := unsafe.Pointer(sourceValue.Pointer())
 			u64s := unsafe.Slice((*uint64)(ptr), sliceLen)
 			sszutils.EncodeUint64Slice(encoder, u64s)
