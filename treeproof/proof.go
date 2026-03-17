@@ -189,7 +189,7 @@ func verifyFullTreeLeaves(root []byte, leaves [][]byte, indices []int) (bool, bo
 	}
 
 	reverse := false
-	switch  indices[0]{
+	switch indices[0] {
 	case count:
 		for i := 1; i < count; i++ {
 			if indices[i] != count+i {
