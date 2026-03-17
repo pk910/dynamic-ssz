@@ -75,12 +75,12 @@ type DynamicSpecs interface {
 type TreeType uint8
 
 const (
+	// TreeTypeNone disables incremental hashing for this scope.
+	TreeTypeNone TreeType = iota
 	// TreeTypeBinary is the standard SSZ binary merkle tree.
-	TreeTypeBinary TreeType = iota
+	TreeTypeBinary
 	// TreeTypeProgressive is the progressive merkle tree (subtree_fill_progressive).
 	TreeTypeProgressive
-	// TreeTypeNone disables incremental hashing for this scope (testing/debug).
-	TreeTypeNone
 )
 
 // HashWalker is our own interface that mirrors fastssz.HashWalker
@@ -112,9 +112,10 @@ type HashWalker interface {
 	// Buffer manipulation methods
 	FillUpTo32()
 	Append(i []byte)
-	Index() int
-	StartTree(treeType TreeType) int
-	Collapse() // Hint to collapse accumulated chunks if threshold is reached
+	Index() int                      // deprecated: use StartTree(TreeTypeNone) instead
+	CurrentIndex() int               // returns the current buffer index (debug only)
+	StartTree(treeType TreeType) int // start a new SSZ object scope and return the buffer index (close with Merkleize*)
+	Collapse()                       // Hint to collapse accumulated chunks if threshold is reached
 
 	// temporary buffer methods
 	WithTemp(func(tmp []byte) []byte)

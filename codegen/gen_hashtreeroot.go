@@ -401,7 +401,7 @@ func (ctx *hashTreeRootContext) hashBigInt(_ *ssztypes.TypeDescriptor, varName s
 // hashContainer generates hash tree root code for SSZ container (struct) types.
 func (ctx *hashTreeRootContext) hashContainer(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	// Start container merkleization
-	ctx.appendCode(indent, "idx := hh.StartTree(sszutils.TreeTypeBinary)\n")
+	ctx.appendCode(indent, "idx := hh.StartTree(sszutils.TreeTypeNone)\n")
 
 	// Hash each field
 	for idx, field := range desc.ContainerDesc.Fields {
@@ -427,7 +427,7 @@ func (ctx *hashTreeRootContext) hashContainer(desc *ssztypes.TypeDescriptor, var
 // hashProgressiveContainer generates hash tree root code for progressive container types.
 func (ctx *hashTreeRootContext) hashProgressiveContainer(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	// Start container merkleization
-	ctx.appendCode(indent, "idx := hh.StartTree(sszutils.TreeTypeProgressive)\n")
+	ctx.appendCode(indent, "idx := hh.StartTree(sszutils.TreeTypeNone)\n")
 
 	// Hash each field
 	lastActiveField := -1
@@ -640,7 +640,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		if err := ctx.hashType(desc.ElemDesc, valVar, typePath.append("[%d]", indexVar), indent+1, false, true); err != nil {
 			return err
 		}
-		ctx.appendCode(indent, "\tif (%s+1) %% 128 == 0 {\n\t\thh.Collapse()\n\t}\n", indexVar)
+		ctx.appendCode(indent, "\tif (%s+1) %% 256 == 0 {\n\t\thh.Collapse()\n\t}\n", indexVar)
 		ctx.appendCode(indent, "}\n")
 
 		if !pack {
@@ -790,12 +790,7 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varNa
 		maxVar = fmt.Sprintf("%d", desc.Limit)
 	}
 
-	if desc.SszType == ssztypes.SszProgressiveBitlistType {
-		ctx.appendCode(indent, "idx := hh.StartTree(sszutils.TreeTypeProgressive)\n")
-	} else {
-		ctx.appendCode(indent, "idx := hh.StartTree(sszutils.TreeTypeBinary)\n")
-	}
-
+	ctx.appendCode(indent, "idx := hh.StartTree(sszutils.TreeTypeNone)\n")
 	hasherAlias := ctx.typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
 	ctx.appendCode(indent, "bitlist, size := %s.ParseBitlistWithHasher(hh, %s[:])\n", hasherAlias, varName)
 
@@ -821,7 +816,7 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varNa
 
 // hashUnion generates hash tree root code for SSZ union types.
 func (ctx *hashTreeRootContext) hashUnion(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
-	ctx.appendCode(indent, "idx := hh.StartTree(sszutils.TreeTypeBinary)\n")
+	ctx.appendCode(indent, "idx := hh.StartTree(sszutils.TreeTypeNone)\n")
 	ctx.appendCode(indent, "switch %s.Variant {\n", varName)
 
 	variants := make([]int, 0, len(desc.UnionVariants))

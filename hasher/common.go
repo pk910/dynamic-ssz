@@ -191,8 +191,12 @@ func ParseBitlist(dst, buf []byte) ([]byte, uint64) {
 }
 
 // ParseBitlistWithHasher decodes an SSZ-encoded bitlist using the hasher's
-// temporary buffer to avoid allocations. It returns the raw bit data and the
+// internal buffer to avoid allocations. It returns the raw bit data and the
 // logical bit count, same as ParseBitlist.
+//
+// IMPORTANT: The returned bitlist slice references the hasher's internal buffer
+// spare capacity. It must be consumed (e.g. passed to AppendBytes32) before any
+// operation that may grow the buffer, as a reallocation would invalidate it.
 func ParseBitlistWithHasher(hw sszutils.HashWalker, buf []byte) ([]byte, uint64) {
 	if h, ok := hw.(*Hasher); ok {
 		var size uint64

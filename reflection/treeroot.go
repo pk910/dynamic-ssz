@@ -40,8 +40,6 @@ import (
 //   - Primitive type hashing (bool, uint8, uint16, uint32, uint64)
 //   - Delegation to specialized functions for composite types (structs, arrays, slices)
 func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, pack bool, idt int) error { //nolint:gocyclo // SSZ hash tree root builder handles many type cases
-	hashIndex := hh.StartTree(sszutils.TreeTypeNone)
-
 	if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && sourceType.SszType != ssztypes.SszOptionalType {
 		if sourceValue.IsNil() {
 			sourceValue = reflect.New(sourceType.Type.Elem()).Elem()
@@ -55,6 +53,7 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 		hasDynamicSize := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
 		hasDynamicMax := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicMax != 0
 		useFastSsz := !ctx.noFastSsz && isFastsszHasher && !hasDynamicSize && !hasDynamicMax
+		hashIndex := hh.CurrentIndex()
 		ctx.logCb("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v/%v)\t index: %v\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, isFastsszHasher, hasDynamicSize, hasDynamicMax, hashIndex)
 	}
 
@@ -390,7 +389,7 @@ func (ctx *ReflectionCtx) buildRootFromContainer(sourceType *ssztypes.TypeDescri
 // The Merkleize call at the end combines all field hashes into the final root
 // using binary tree hashing with zero-padding to the next power of two.
 func (ctx *ReflectionCtx) buildRootFromProgressiveContainer(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
-	hashIndex := hh.StartTree(sszutils.TreeTypeProgressive)
+	hashIndex := hh.StartTree(sszutils.TreeTypeNone)
 	lastActiveField := -1
 
 	progFields := sourceType.ContainerDesc.Fields
@@ -506,7 +505,7 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 		return sszutils.NewSszErrorf(sszutils.ErrPlatformOverflow, "vector length %d exceeds platform int max", sourceType.Len)
 	}
 
-	hashIndex := hh.StartTree(sszutils.TreeTypeNone)
+	hashIndex := hh.StartTree(sszutils.TreeTypeBinary)
 
 	sliceLen := sourceValue.Len()
 	if uint32(sliceLen) > sourceType.Len {
@@ -685,7 +684,7 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 		} else {
 			limit = sourceType.Limit
 		}
-		inputLen := hh.StartTree(sszutils.TreeTypeNone) - hashIndex
+		inputLen := hh.CurrentIndex() - hashIndex
 		if (uint64(inputLen)+31)/32 > limit {
 			return sszutils.NewSszErrorf(sszutils.ErrListTooBig, "list length %d is bigger than limit %d", inputLen, limit)
 		}

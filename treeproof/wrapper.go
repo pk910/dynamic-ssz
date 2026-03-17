@@ -61,6 +61,11 @@ func (w *Wrapper) Index() int {
 	return len(w.nodes)
 }
 
+// CurrentIndex returns the current buffer index (debug only)
+func (w *Wrapper) CurrentIndex() int {
+	return len(w.buf)
+}
+
 // StartTree opens a new SSZ object scope. For the tree proof wrapper,
 // this is identical to Index() since the wrapper does not support
 // incremental hashing.
