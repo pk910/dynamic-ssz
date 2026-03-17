@@ -69,7 +69,8 @@ type Hasher struct {
 	buf []byte
 
 	// tmp array used for uint64 and bitlist processing
-	tmp []byte
+	tmp    []byte
+	tmpBuf [64]byte // inline backing to avoid heap allocation
 
 	// sha256 hash function
 	hash HashFn
@@ -97,8 +98,9 @@ func NewHasherWithHashFn(hh HashFn) *Hasher {
 
 	h := &Hasher{
 		hash: hh,
-		tmp:  make([]byte, 64),
+		buf:  make([]byte, 0, 32*1024), // 32KB default buffer size
 	}
+	h.tmp = h.tmpBuf[:]
 	h.layers = h.layerBuf[:0]
 	return h
 }
@@ -155,36 +157,50 @@ func (h *Hasher) AppendUint64(i uint64) {
 	h.buf = sszutils.MarshalUint64(h.buf, i)
 }
 
+// PutBool appends a boolean
 func (h *Hasher) PutBool(b bool) {
+	n := len(h.buf)
+	h.buf = append(h.buf, zeroBytes[:32]...)
 	if b {
-		h.buf = append(h.buf, trueBytes...)
-	} else {
-		h.buf = append(h.buf, falseBytes...)
+		h.buf[n] = 1
 	}
 }
 
-func (h *Hasher) PutUint8(i uint8) {
-	h.tmp[0] = i
-	h.AppendBytes32(h.tmp[:1])
-}
-
-func (h *Hasher) PutUint16(i uint16) {
-	binary.LittleEndian.PutUint16(h.tmp[:2], i)
-	h.AppendBytes32(h.tmp[:2])
-}
-
-func (h *Hasher) PutUint32(i uint32) {
-	binary.LittleEndian.PutUint32(h.tmp[:4], i)
-	h.AppendBytes32(h.tmp[:4])
-}
-
+// PutUint64 appends a uint64 in 32 bytes
 func (h *Hasher) PutUint64(i uint64) {
-	binary.LittleEndian.PutUint64(h.tmp[:8], i)
-	h.AppendBytes32(h.tmp[:8])
+	n := len(h.buf)
+	h.buf = append(h.buf, zeroBytes[:32]...)
+	binary.LittleEndian.PutUint64(h.buf[n:], i)
+}
+
+// PutUint32 appends a uint32 in 32 bytes
+func (h *Hasher) PutUint32(i uint32) {
+	n := len(h.buf)
+	h.buf = append(h.buf, zeroBytes[:32]...)
+	binary.LittleEndian.PutUint32(h.buf[n:], i)
+}
+
+// PutUint16 appends a uint16 in 32 bytes
+func (h *Hasher) PutUint16(i uint16) {
+	n := len(h.buf)
+	h.buf = append(h.buf, zeroBytes[:32]...)
+	binary.LittleEndian.PutUint16(h.buf[n:], i)
+}
+
+// PutUint8 appends a uint8 in 32 bytes
+func (h *Hasher) PutUint8(i uint8) {
+	n := len(h.buf)
+	h.buf = append(h.buf, zeroBytes[:32]...)
+	h.buf[n] = i
 }
 
 func (h *Hasher) PutBytes(b []byte) {
-	if len(b) <= 32 {
+	if blen := len(b); blen <= 32 {
+		if blen == 32 {
+			// Fast path: exactly 32 bytes, no padding needed
+			h.buf = append(h.buf, b...)
+			return
+		}
 		h.AppendBytes32(b)
 		return
 	}

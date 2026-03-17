@@ -33,7 +33,7 @@ var hasherInitialized bool
 var hasherInitMutex sync.Mutex
 var zeroHashes [65][32]byte
 var zeroHashLevels map[string]int
-var trueBytes, falseBytes, zeroBytes []byte
+var zeroBytes []byte
 
 func initHasher() {
 	hasherInitMutex.Lock()
@@ -44,12 +44,9 @@ func initHasher() {
 	}
 
 	hasherInitialized = true
-	falseBytes = make([]byte, 32)
-	trueBytes = make([]byte, 32)
 	zeroBytes = sszutils.ZeroBytes()
-	trueBytes[0] = 1
 	zeroHashLevels = make(map[string]int)
-	zeroHashLevels[string(falseBytes)] = 0
+	zeroHashLevels[string(zeroBytes[:32])] = 0
 
 	tmp := [64]byte{}
 	for i := 0; i < 64; i++ {
@@ -178,11 +175,12 @@ func ParseBitlist(dst, buf []byte) ([]byte, uint64) {
 	msb := uint8(msbLen) - 1
 	size := uint64(8*(len(buf)-1) + int(msb))
 
+	dstlen := len(dst)
 	dst = append(dst, buf...)
 	dst[len(dst)-1] &^= uint8(1 << msb)
 
 	newLen := len(dst)
-	for i := len(dst) - 1; i >= 0; i-- {
+	for i := len(dst) - 1; i >= dstlen; i-- {
 		if dst[i] != 0x00 {
 			break
 		}
@@ -198,10 +196,11 @@ func ParseBitlist(dst, buf []byte) ([]byte, uint64) {
 func ParseBitlistWithHasher(hw sszutils.HashWalker, buf []byte) ([]byte, uint64) {
 	if h, ok := hw.(*Hasher); ok {
 		var size uint64
-		h.tmp, size = ParseBitlist(h.tmp[:0], buf)
-		bitlist := h.tmp
+		buflen := len(h.buf)
+		h.buf, size = ParseBitlist(h.buf, buf)
+		bitlist := h.buf[buflen:]
 		// Restore h.tmp to full capacity so subsequent operations (PutUint8, etc.) don't panic
-		h.tmp = h.tmp[:cap(h.tmp)]
+		h.buf = h.buf[:buflen]
 		return bitlist, size
 	} else {
 		var size uint64

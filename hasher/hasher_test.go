@@ -25,19 +25,6 @@ func TestInitHasher(t *testing.T) {
 		t.Error("hasher should be initialized")
 	}
 
-	// Test that falseBytes is all zeros
-	expectedFalse := make([]byte, 32)
-	if !bytes.Equal(falseBytes, expectedFalse) {
-		t.Error("falseBytes should be all zeros")
-	}
-
-	// Test that trueBytes has first byte set to 1
-	expectedTrue := make([]byte, 32)
-	expectedTrue[0] = 1
-	if !bytes.Equal(trueBytes, expectedTrue) {
-		t.Error("trueBytes should have first byte set to 1")
-	}
-
 	// Test that zeroBytes comes from sszutils
 	if !bytes.Equal(zeroBytes, sszutils.ZeroBytes()) {
 		t.Error("zeroBytes should match sszutils.ZeroBytes()")
@@ -49,7 +36,7 @@ func TestInitHasher(t *testing.T) {
 	}
 
 	// Test that zeroHashLevels contains falseBytes at level 0
-	if level, ok := zeroHashLevels[string(falseBytes)]; !ok || level != 0 {
+	if level, ok := zeroHashLevels[string(zeroBytes[:32])]; !ok || level != 0 {
 		t.Error("zeroHashLevels should contain falseBytes at level 0")
 	}
 
@@ -102,7 +89,7 @@ func TestGetZeroHashLevel(t *testing.T) {
 		shouldFind bool
 	}{
 		{
-			hash:       falseBytes,
+			hash:       zeroBytes[:32],
 			expected:   0,
 			shouldFind: true,
 		},
