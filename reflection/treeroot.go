@@ -40,7 +40,7 @@ import (
 //   - Primitive type hashing (bool, uint8, uint16, uint32, uint64)
 //   - Delegation to specialized functions for composite types (structs, arrays, slices)
 func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, pack bool, idt int) error { //nolint:gocyclo // SSZ hash tree root builder handles many type cases
-	hashIndex := hh.Index()
+	hashIndex := hh.StartTree(sszutils.TreeTypeNone)
 
 	if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && sourceType.SszType != ssztypes.SszOptionalType {
 		if sourceValue.IsNil() {
@@ -340,7 +340,7 @@ func (ctx *ReflectionCtx) buildRootFromLargeUint(sourceType *ssztypes.TypeDescri
 // The Merkleize call at the end combines all field hashes into the final root
 // using binary tree hashing with zero-padding to the next power of two.
 func (ctx *ReflectionCtx) buildRootFromContainer(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
-	hashIndex := hh.Index()
+	hashIndex := hh.StartTree(sszutils.TreeTypeNone)
 
 	htrFields := sourceType.ContainerDesc.Fields
 	for i := 0; i < len(htrFields); i++ {
@@ -388,7 +388,7 @@ func (ctx *ReflectionCtx) buildRootFromContainer(sourceType *ssztypes.TypeDescri
 // The Merkleize call at the end combines all field hashes into the final root
 // using binary tree hashing with zero-padding to the next power of two.
 func (ctx *ReflectionCtx) buildRootFromProgressiveContainer(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
-	hashIndex := hh.Index()
+	hashIndex := hh.StartTree(sszutils.TreeTypeProgressive)
 	lastActiveField := -1
 
 	progFields := sourceType.ContainerDesc.Fields
@@ -459,7 +459,7 @@ func (ctx *ReflectionCtx) buildRootFromCompatibleUnion(sourceType *ssztypes.Type
 	}
 	dataField = dataField.Elem()
 
-	hashIndex := hh.Index()
+	hashIndex := hh.StartTree(sszutils.TreeTypeNone)
 
 	err := ctx.buildRootFromType(variantDesc, dataField, hh, false, idt+2)
 	if err != nil {
@@ -502,7 +502,7 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 		return sszutils.NewSszErrorf(sszutils.ErrPlatformOverflow, "vector length %d exceeds platform int max", sourceType.Len)
 	}
 
-	hashIndex := hh.Index()
+	hashIndex := hh.StartTree(sszutils.TreeTypeNone)
 
 	sliceLen := sourceValue.Len()
 	if uint32(sliceLen) > sourceType.Len {
@@ -677,7 +677,7 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 		} else {
 			limit = sourceType.Limit
 		}
-		inputLen := hh.Index() - hashIndex
+		inputLen := hh.StartTree(sszutils.TreeTypeNone) - hashIndex
 		if (uint64(inputLen)+31)/32 > limit {
 			return sszutils.NewSszErrorf(sszutils.ErrListTooBig, "list length %d is bigger than limit %d", inputLen, limit)
 		}
@@ -762,7 +762,7 @@ func (ctx *ReflectionCtx) buildRootFromBitlist(sourceType *ssztypes.TypeDescript
 	}
 
 	// merkleize the content with mix in length
-	indx := hh.Index()
+	indx := hh.StartTree(sszutils.TreeTypeNone)
 	hh.AppendBytes32(bitlist)
 	if sourceType.SszType == ssztypes.SszProgressiveBitlistType {
 		hh.MerkleizeProgressiveWithMixin(indx, size)

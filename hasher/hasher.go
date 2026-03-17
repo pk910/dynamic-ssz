@@ -190,10 +190,41 @@ func (h *Hasher) PutBytes(b []byte) {
 	}
 
 	// if the bytes are longer than 32 we have to
-	// merkleize the content
+	// merkleize the content — use merkleizeImpl directly to avoid
+	// interacting with the layer stack (PutBytes is an internal operation,
+	// not an SSZ object scope).
 	indx := len(h.buf)
 	h.AppendBytes32(b)
-	h.Merkleize(indx)
+	input := h.buf[indx:]
+	input = h.merkleizeImpl(input[:0], input, 0)
+	h.buf = append(h.buf[:indx], input...)
+}
+
+// internalMerkleize is like Merkleize but does NOT interact with the layer
+// stack. Used by Put* methods which are internal operations, not SSZ scopes.
+func (h *Hasher) internalMerkleize(indx int) {
+	if len(h.buf) == cap(h.buf) {
+		h.buf = append(h.buf, zeroBytes[:32]...)
+		h.buf = h.buf[:len(h.buf)-32]
+	}
+	input := h.buf[indx:]
+	input = h.merkleizeImpl(input[:0], input, 0)
+	h.buf = append(h.buf[:indx], input...)
+}
+
+// internalMerkleizeWithMixin is like MerkleizeWithMixin but does NOT interact
+// with the layer stack.
+func (h *Hasher) internalMerkleizeWithMixin(indx int, num, limit uint64) {
+	h.FillUpTo32()
+	input := h.buf[indx:]
+	input = h.merkleizeImpl(input[:0], input, limit)
+
+	n := len(input)
+	input = append(input, zeroBytes[:32]...)
+	binary.LittleEndian.PutUint64(input[n:], num)
+
+	_ = h.hash(input, input)
+	h.buf = append(h.buf[:indx], input[:32]...)
 }
 
 func (h *Hasher) PutRootVector(b [][]byte, maxCapacity ...uint64) error {
@@ -206,12 +237,11 @@ func (h *Hasher) PutRootVector(b [][]byte, maxCapacity ...uint64) error {
 	}
 
 	if len(maxCapacity) == 0 {
-		h.Merkleize(indx)
+		h.internalMerkleize(indx)
 	} else {
 		numItems := uint64(len(b))
 		limit := sszutils.CalculateLimit(maxCapacity[0], numItems, 32)
-
-		h.MerkleizeWithMixin(indx, numItems, limit)
+		h.internalMerkleizeWithMixin(indx, numItems, limit)
 	}
 	return nil
 }
@@ -222,17 +252,14 @@ func (h *Hasher) PutUint64Array(b []uint64, maxCapacity ...uint64) {
 		h.AppendUint64(i)
 	}
 
-	// pad zero bytes to the left
 	h.FillUpTo32()
 
 	if len(maxCapacity) == 0 {
-		// Array with fixed size
-		h.Merkleize(indx)
+		h.internalMerkleize(indx)
 	} else {
 		numItems := uint64(len(b))
 		limit := sszutils.CalculateLimit(maxCapacity[0], numItems, 8)
-
-		h.MerkleizeWithMixin(indx, numItems, limit)
+		h.internalMerkleizeWithMixin(indx, numItems, limit)
 	}
 }
 
@@ -242,10 +269,9 @@ func (h *Hasher) PutBitlist(bb []byte, maxSize uint64) {
 	bitlist := h.tmp
 	h.tmp = h.tmp[:cap(h.tmp)]
 
-	// merkleize the content with mix in length
 	indx := len(h.buf)
 	h.AppendBytes32(bitlist)
-	h.MerkleizeWithMixin(indx, size, (maxSize+255)/256)
+	h.internalMerkleizeWithMixin(indx, size, (maxSize+255)/256)
 }
 
 func (h *Hasher) PutProgressiveBitlist(bb []byte) {
@@ -254,12 +280,23 @@ func (h *Hasher) PutProgressiveBitlist(bb []byte) {
 	bitlist := h.tmp
 	h.tmp = h.tmp[:cap(h.tmp)]
 
-	// merkleize the content with mix in length
+	// merkleize the content with mix in length using progressive algorithm
 	indx := len(h.buf)
 	h.AppendBytes32(bitlist)
-	h.MerkleizeProgressiveWithMixin(indx, size)
+	h.FillUpTo32()
+	input := h.buf[indx:]
+	input = h.merkleizeProgressiveImpl(input[:0], input, 0)
+
+	n := len(input)
+	input = append(input, zeroBytes[:32]...)
+	binary.LittleEndian.PutUint64(input[n:], size)
+	_ = h.hash(input, input)
+	h.buf = append(h.buf[:indx], input[:32]...)
 }
 
+// StartTree opens a new SSZ object scope and returns the buffer index.
+// TreeTypeBinary/Progressive: pushes an incremental layer (supports Collapse).
+// TreeTypeNone: returns position only, no layer pushed (testing/debug).
 func (h *Hasher) StartTree(treeType sszutils.TreeType) int {
 	idx := len(h.buf)
 	if treeType == sszutils.TreeTypeNone {
@@ -273,11 +310,18 @@ func (h *Hasher) StartTree(treeType sszutils.TreeType) int {
 	return idx
 }
 
+// Index returns the current buffer position and pushes a non-incremental
+// layer. This is for legacy/external code that doesn't use StartTree.
+// The non-incremental layer blocks Collapse on this scope but is properly
+// popped by Merkleize. Collapse on the parent layer is unaffected — it
+// only sees completed child roots after the child's Merkleize pops this layer.
 func (h *Hasher) Index() int {
-	if layer := h.topLayer(); layer != nil && layer.incremental {
-		layer.incremental = false
-	}
-	return len(h.buf)
+	idx := len(h.buf)
+	h.layers = append(h.layers, treeLayer{
+		bufIdx:      idx,
+		incremental: false,
+	})
+	return idx
 }
 
 func (h *Hasher) Collapse() {
