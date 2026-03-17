@@ -68,6 +68,12 @@ func VerifyMultiproof(root []byte, proof, leaves [][]byte, indices []int) (bool,
 		return false, errors.New("number of leaves and indices mismatch")
 	}
 
+	if len(proof) == 0 {
+		if ok, valid := verifyFullTreeLeaves(root, leaves, indices); ok {
+			return valid, nil
+		}
+	}
+
 	reqIndices := getRequiredIndices(indices)
 	if len(reqIndices) != len(proof) {
 		return false, fmt.Errorf("number of proof hashes %d and required indices %d mismatch", len(proof), len(reqIndices))
@@ -174,6 +180,50 @@ func VerifyMultiproof(root []byte, proof, leaves [][]byte, indices []int) (bool,
 	}
 
 	return bytes.Equal(res[:], root), nil
+}
+
+func verifyFullTreeLeaves(root []byte, leaves [][]byte, indices []int) (bool, bool) {
+	count := len(indices)
+	if count == 0 || count != len(leaves) || count&(count-1) != 0 {
+		return false, false
+	}
+
+	reverse := false
+	switch  indices[0]{
+	case count:
+		for i := 1; i < count; i++ {
+			if indices[i] != count+i {
+				return false, false
+			}
+		}
+	case (count * 2) - 1:
+		reverse = true
+		for i := 1; i < count; i++ {
+			if indices[i] != (count*2)-1-i {
+				return false, false
+			}
+		}
+	default:
+		return false, false
+	}
+
+	buf := make([]byte, count*32)
+	for i := range leaves {
+		idx := i
+		if reverse {
+			idx = count - 1 - i
+		}
+		copy(buf[idx*32:], leaves[i])
+	}
+
+	for width := count; width > 1; width >>= 1 {
+		for i := 0; i < width; i += 2 {
+			sum := sha256.Sum256(buf[i*32 : (i+2)*32])
+			copy(buf[(i/2)*32:], sum[:])
+		}
+	}
+
+	return true, bytes.Equal(root, buf[:32])
 }
 
 // Returns the position (i.e. false for left, true for right)

@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/bits"
 	"strconv"
 	"sync"
 
@@ -704,7 +705,7 @@ func isPowerOfTwo(n int) bool {
 }
 
 func floorLog2(n int) int {
-	return int(math.Floor(math.Log2(float64(n))))
+	return bits.Len(uint(n)) - 1
 }
 
 func powerTwo(n int) int {
