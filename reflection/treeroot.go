@@ -356,6 +356,7 @@ func (ctx *ReflectionCtx) buildRootFromContainer(sourceType *ssztypes.TypeDescri
 		if err != nil {
 			return sszutils.ErrorWithPathf(err, "[%d]", i)
 		}
+		if (i+1)%128 == 0 { hh.Collapse() }
 	}
 
 	hh.Merkleize(hashIndex)
@@ -414,6 +415,7 @@ func (ctx *ReflectionCtx) buildRootFromProgressiveContainer(sourceType *ssztypes
 		if err != nil {
 			return sszutils.ErrorWithPathf(err, "[%d]", i)
 		}
+		if (i+1)%128 == 0 { hh.Collapse() }
 	}
 
 	// Get active fields based on the struct value
@@ -554,6 +556,7 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 			if err != nil {
 				return sszutils.ErrorWithPathf(err, "[%d]", i)
 			}
+			if (i+1)%128 == 0 { hh.Collapse() }
 		}
 
 		if appendZero > 0 {
@@ -603,7 +606,11 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 // For slices with max size hints, MerkleizeWithMixin ensures the length is
 // properly mixed into the root, implementing the SSZ list hashing algorithm.
 func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
-	hashIndex := hh.Index()
+	treeType := sszutils.TreeTypeBinary
+	if sourceType.SszType == ssztypes.SszProgressiveListType {
+		treeType = sszutils.TreeTypeProgressive
+	}
+	hashIndex := hh.StartTree(treeType)
 
 	sliceLen := sourceValue.Len()
 
@@ -634,6 +641,7 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 			if err != nil {
 				return sszutils.ErrorWithPathf(err, "[%d]", i)
 			}
+			if (i+1)%128 == 0 { hh.Collapse() }
 		}
 
 		hh.FillUpTo32()

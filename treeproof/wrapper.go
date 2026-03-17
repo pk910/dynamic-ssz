@@ -61,6 +61,16 @@ func (w *Wrapper) Index() int {
 	return len(w.nodes)
 }
 
+// StartTree opens a new SSZ object scope. For the tree proof wrapper,
+// this is identical to Index() since the wrapper does not support
+// incremental hashing.
+func (w *Wrapper) StartTree(_ sszutils.TreeType) int {
+	return len(w.nodes)
+}
+
+// Collapse is a no-op for the tree proof wrapper.
+func (w *Wrapper) Collapse() {}
+
 // Append appends raw bytes to the internal buffer. These bytes are converted
 // to leaf nodes when a Merkleize method is called.
 func (w *Wrapper) Append(i []byte) {
