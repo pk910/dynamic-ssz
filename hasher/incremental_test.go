@@ -800,7 +800,7 @@ func TestIncrementalBinaryVeryLargeOdd(t *testing.T) {
 		{"2000001_every1", 2_000_001, 1},
 		{"2097153_every128", 2_097_153, 128}, // 2^21 + 1
 		{"3000001_every128", 3_000_001, 128},
-		{"2000003_every17", 2_000_003, 17},   // prime total, prime interval
+		{"2000003_every17", 2_000_003, 17}, // prime total, prime interval
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			hRef := FastHasherPool.Get()

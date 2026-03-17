@@ -573,7 +573,7 @@ func (h *Hasher) syncCollapseStateWithEnd(layer *treeLayer, bufEnd int) {
 	}
 }
 
-func (h *Hasher) collapseAllDepths(layer *treeLayer, indx int, bufEnd int, limit uint64) {
+func (h *Hasher) collapseAllDepths(layer *treeLayer, indx, bufEnd int, limit uint64) {
 	h.syncCollapseStateWithEnd(layer, bufEnd)
 
 	for {

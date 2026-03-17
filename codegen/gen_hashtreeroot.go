@@ -640,7 +640,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		if err := ctx.hashType(desc.ElemDesc, valVar, typePath.append("[%d]", indexVar), indent+1, false, true); err != nil {
 			return err
 		}
-		ctx.appendCode(indent, "\tif (%s+1) %% 128 == 0 { hh.Collapse() }\n", indexVar)
+		ctx.appendCode(indent, "\tif (%s+1) %% 128 == 0 {\n\t\thh.Collapse()\n\t}\n", indexVar)
 		ctx.appendCode(indent, "}\n")
 
 		if !pack {
@@ -747,7 +747,7 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 			if err := ctx.hashType(desc.ElemDesc, valVar, typePath.append("[%d]", indexVar), indent+1, false, true); err != nil {
 				return err
 			}
-			ctx.appendCode(indent, "\tif (%s+1) %% 128 == 0 { hh.Collapse() }\n", indexVar)
+			ctx.appendCode(indent, "\tif (%s+1) %% 128 == 0 {\n\t\thh.Collapse()\n\t}\n", indexVar)
 			ctx.appendCode(indent, "}\n")
 		}
 
