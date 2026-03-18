@@ -1,0 +1,153 @@
+name: Benchmarks
+
+on:
+  pull_request:
+    branches: [ master, main ]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+    - name: Checkout PR
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        path: pr
+
+    - name: Checkout base
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        ref: ${{ github.event.pull_request.base.sha }}
+        path: base
+
+    - name: Set up Go
+      uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+      with:
+        go-version: '1.25.8'
+
+    - name: Install benchstat
+      run: go install golang.org/x/perf/cmd/benchstat@latest
+
+    - name: Download test data
+      run: |
+        cd pr/tests/perftests
+        ./setup_testdata.sh
+        cp -r res ../../../base/tests/perftests/res 2>/dev/null || true
+
+    - name: Generate codegen (PR)
+      run: |
+        cd pr/tests/perftests
+        go generate ./...
+
+    - name: Generate codegen (base)
+      run: |
+        cd base/tests/perftests
+        go generate ./... 2>/dev/null || true
+
+    - name: Cache Go modules
+      uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+      with:
+        path: ~/go/pkg/mod
+        key: ${{ runner.os }}-go-bench-${{ hashFiles('pr/tests/perftests/go.sum') }}
+
+    - name: Run library benchmarks (base)
+      id: base-lib-bench
+      continue-on-error: true
+      run: |
+        cd base
+        go test -run=^$ -bench=. -benchmem -count=5 -timeout=10m ./... > /tmp/base-lib.txt 2>&1
+        echo "has_base_lib=true" >> "$GITHUB_OUTPUT"
+
+    - name: Run library benchmarks (PR)
+      run: |
+        cd pr
+        go test -run=^$ -bench=. -benchmem -count=5 -timeout=10m ./... > /tmp/pr-lib.txt 2>&1
+
+    - name: Run perf benchmarks (base)
+      id: base-bench
+      continue-on-error: true
+      run: |
+        if [ -d "base/tests/perftests" ] && [ -f "base/tests/perftests/bench_test.go" ]; then
+          cd base/tests/perftests
+          go test -run=^$ -bench=. -benchmem -count=5 -timeout=30m > /tmp/base.txt 2>&1
+          echo "has_base=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "has_base=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Run perf benchmarks (PR)
+      run: |
+        cd pr/tests/perftests
+        go test -run=^$ -bench=. -benchmem -count=5 -timeout=30m > /tmp/pr.txt 2>&1
+
+    - name: Compare library benchmarks
+      id: libstat
+      run: |
+        if [ "${{ steps.base-lib-bench.outputs.has_base_lib }}" = "true" ] && [ -f /tmp/base-lib.txt ]; then
+          benchstat /tmp/base-lib.txt /tmp/pr-lib.txt > /tmp/lib-stat.txt 2>&1 || true
+          {
+            echo 'RESULT<<EOF'
+            cat /tmp/lib-stat.txt
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+          echo "has_comparison=true" >> "$GITHUB_OUTPUT"
+        else
+          {
+            echo 'RESULT<<EOF'
+            cat /tmp/pr-lib.txt
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+          echo "has_comparison=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Compare perf benchmarks
+      id: perfstat
+      run: |
+        if [ "${{ steps.base-bench.outputs.has_base }}" = "true" ] && [ -f /tmp/base.txt ]; then
+          benchstat /tmp/base.txt /tmp/pr.txt > /tmp/perf-stat.txt 2>&1 || true
+          {
+            echo 'RESULT<<EOF'
+            cat /tmp/perf-stat.txt
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+          echo "has_comparison=true" >> "$GITHUB_OUTPUT"
+        else
+          {
+            echo 'RESULT<<EOF'
+            cat /tmp/pr.txt
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+          echo "has_comparison=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Comment on PR
+      uses: marocchino/sticky-pull-request-comment@67d0dec7b07ed060a405f9b2a64b8ab319fdd7db # v2.9.2
+      with:
+        header: benchmark
+        message: |
+          ## Benchmark Results
+
+          ### Library Benchmarks ${{ steps.libstat.outputs.has_comparison == 'true' && '(base vs PR)' || '(no base to compare)' }}
+
+          <details><summary>Click to expand</summary>
+
+          ```
+          ${{ steps.libstat.outputs.RESULT }}
+          ```
+
+          </details>
+
+          ### Performance Benchmarks ${{ steps.perfstat.outputs.has_comparison == 'true' && '(base vs PR)' || '(no base to compare)' }}
+
+          <details><summary>Click to expand</summary>
+
+          ```
+          ${{ steps.perfstat.outputs.RESULT }}
+          ```
+
+          </details>

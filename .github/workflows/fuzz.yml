@@ -98,8 +98,8 @@ jobs:
         EOF
 
           # Generate corpus
-          rm -f fuzz/corpus/*_gen.go
-          if ! go run ./fuzz/cmd/generate \
+          rm -f tests/fuzz/corpus/*_gen.go
+          if ! go run ./tests/fuzz/cmd/generate \
             -num-types "$NTYPES" \
             -seed "$SEED" \
             -extended="$EXTENDED" \
@@ -114,11 +114,11 @@ jobs:
           fi
 
           # Copy generated types for reproducibility
-          cp fuzz/corpus/types_gen.go "${ROUND_REPORT}/types_gen.go" 2>/dev/null || true
+          cp tests/fuzz/corpus/types_gen.go "${ROUND_REPORT}/types_gen.go" 2>/dev/null || true
 
           # Run fuzzer - capture exit code without failing the loop
           FUZZ_EXIT=0
-          go run ./fuzz/cmd/fuzz \
+          go run ./tests/fuzz/cmd/fuzz \
             -duration "${DURATION}" \
             -report-dir "${ROUND_REPORT}" \
             -stats-every 30s \
