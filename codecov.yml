@@ -5,8 +5,7 @@ coverage:
 
 ignore:
   - "codegen/tests/**"
-  - "fuzz/**"
-  - "spectests/**"
+  - "tests/**"
 
 comment:
   layout: "header, diff, flags, components"
