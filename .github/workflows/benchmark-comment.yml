@@ -1,0 +1,109 @@
+name: Benchmark Comment
+
+on:
+  workflow_run:
+    workflows: [ "Benchmarks" ]
+    types: [ completed ]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  comment:
+    if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+    - name: Download benchmark results
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: benchmark-results
+        path: results
+        run-id: ${{ github.event.workflow_run.id }}
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Get PR number
+      id: pr
+      run: |
+        # workflow_run doesn't directly expose the PR number, extract from artifacts or API
+        PR_NUMBER=$(gh api \
+          repos/${{ github.repository }}/actions/runs/${{ github.event.workflow_run.id }} \
+          --jq '.pull_requests[0].number' 2>/dev/null || echo "")
+        if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
+          echo "Could not determine PR number, skipping comment"
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+        fi
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Build comment body
+      if: steps.pr.outputs.skip != 'true'
+      id: body
+      run: |
+        {
+          echo 'COMMENT<<EOF'
+          echo '## Benchmark Results'
+          echo ''
+
+          # Library benchmarks
+          if [ -f results/tmp/lib-stat.txt ] && [ -s results/tmp/lib-stat.txt ]; then
+            echo '### Library Benchmarks (base vs PR)'
+            echo ''
+            echo '<details><summary>Click to expand</summary>'
+            echo ''
+            echo '```'
+            cat results/tmp/lib-stat.txt
+            echo '```'
+            echo ''
+            echo '</details>'
+          elif [ -f results/tmp/pr-lib.txt ]; then
+            echo '### Library Benchmarks (no base to compare)'
+            echo ''
+            echo '<details><summary>Click to expand</summary>'
+            echo ''
+            echo '```'
+            cat results/tmp/pr-lib.txt
+            echo '```'
+            echo ''
+            echo '</details>'
+          fi
+
+          echo ''
+
+          # Perf benchmarks
+          if [ -f results/tmp/perf-stat.txt ] && [ -s results/tmp/perf-stat.txt ]; then
+            echo '### Performance Benchmarks (base vs PR)'
+            echo ''
+            echo '<details><summary>Click to expand</summary>'
+            echo ''
+            echo '```'
+            cat results/tmp/perf-stat.txt
+            echo '```'
+            echo ''
+            echo '</details>'
+          elif [ -f results/tmp/pr-perf.txt ]; then
+            echo '### Performance Benchmarks (no base to compare)'
+            echo ''
+            echo '<details><summary>Click to expand</summary>'
+            echo ''
+            echo '```'
+            cat results/tmp/pr-perf.txt
+            echo '```'
+            echo ''
+            echo '</details>'
+          fi
+
+          echo 'EOF'
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Comment on PR
+      if: steps.pr.outputs.skip != 'true'
+      uses: marocchino/sticky-pull-request-comment@67d0dec7b07ed060a405f9b2a64b8ab319fdd7db # v2.9.2
+      with:
+        header: benchmark
+        number: ${{ steps.pr.outputs.number }}
+        message: ${{ steps.body.outputs.COMMENT }}
