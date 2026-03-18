@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"math/bits"
 	"sort"
+
+	"github.com/pk910/dynamic-ssz/hasher"
 )
 
 // VerifyProof verifies a single merkle branch. It's more
@@ -216,14 +218,13 @@ func verifyFullTreeLeaves(root []byte, leaves [][]byte, indices []int) (bool, bo
 		copy(buf[idx*32:], leaves[i])
 	}
 
-	for width := count; width > 1; width >>= 1 {
-		for i := 0; i < width; i += 2 {
-			sum := sha256.Sum256(buf[i*32 : (i+2)*32])
-			copy(buf[(i/2)*32:], sum[:])
-		}
-	}
+	hh := hasher.FastHasherPool.Get()
+	defer hasher.FastHasherPool.Put(hh)
 
-	return true, bytes.Equal(root, buf[:32])
+	hh.Append(buf)
+	hh.Merkleize(0)
+
+	return true, bytes.Equal(root, hh.Hash())
 }
 
 // Returns the position (i.e. false for left, true for right)
