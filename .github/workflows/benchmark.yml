@@ -45,9 +45,10 @@ jobs:
         go generate ./...
 
     - name: Generate codegen (base)
+      continue-on-error: true
       run: |
         cd base/tests/perftests
-        go generate ./... 2>/dev/null || true
+        go generate ./...
 
     - name: Cache Go modules
       uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
@@ -72,13 +73,9 @@ jobs:
       id: base-bench
       continue-on-error: true
       run: |
-        if [ -d "base/tests/perftests" ] && [ -f "base/tests/perftests/bench_test.go" ]; then
-          cd base/tests/perftests
-          go test -run=^$ -bench=. -benchmem -count=5 -timeout=30m > /tmp/base.txt 2>&1
-          echo "has_base=true" >> "$GITHUB_OUTPUT"
-        else
-          echo "has_base=false" >> "$GITHUB_OUTPUT"
-        fi
+        cd base/tests/perftests
+        go test -run=^$ -bench=. -benchmem -count=5 -timeout=30m > /tmp/base.txt 2>&1
+        echo "has_base=true" >> "$GITHUB_OUTPUT"
 
     - name: Run perf benchmarks (PR)
       run: |
