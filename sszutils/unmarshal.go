@@ -64,13 +64,12 @@ func ReadOffset(buf []byte) uint64 {
 
 // ---- expansion functions ----
 
-// ExpandSlice expands a slice to a byte slice
+// ExpandSlice ensures the slice has exactly the requested length. It reuses
+// the existing backing array when the capacity is sufficient, avoiding a
+// heap allocation for repeated unmarshal calls on the same target.
 func ExpandSlice[T any](src []T, size int) []T {
-	if len(src) < size {
-		src = make([]T, size)
-	} else if len(src) > size {
-		src = src[:size]
+	if cap(src) >= size {
+		return src[:size]
 	}
-
-	return src
+	return make([]T, size)
 }

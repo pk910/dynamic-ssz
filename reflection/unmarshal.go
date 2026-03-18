@@ -492,6 +492,9 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 		if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 && targetType.ElemDesc.Type.Kind() == reflect.Uint8 {
 			byteSlice := make([]byte, arrLen)
 			newValue = reflect.ValueOf(byteSlice)
+		} else if targetValue.Cap() >= arrLen {
+			// Reuse existing slice backing array when capacity is sufficient
+			newValue = targetValue.Slice(0, arrLen)
 		} else {
 			newValue = reflect.MakeSlice(targetType.Type, arrLen, arrLen)
 		}
@@ -535,6 +538,21 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 				}
 			}
 		}
+	} else if arrLen > 0 && targetType.Kind == reflect.Slice && fieldType.SszType == ssztypes.SszUint64Type && fieldType.GoTypeFlags == 0 && fieldType.Kind == reflect.Uint64 {
+		// Fast path: bulk decode uint64 vectors without per-element reflection dispatch
+		var sliceValue reflect.Value
+		if targetValue.Cap() >= arrLen {
+			sliceValue = targetValue.Slice(0, arrLen)
+		} else {
+			sliceValue = reflect.MakeSlice(targetType.Type, arrLen, arrLen)
+		}
+		ptr := unsafe.Pointer(sliceValue.Pointer())
+		u64s := unsafe.Slice((*uint64)(ptr), arrLen)
+		if err := sszutils.DecodeUint64Slice(decoder, u64s); err != nil {
+			return err
+		}
+		targetValue.Set(sliceValue)
+		return nil
 	} else {
 		if err := ctx.unmarshalFixedElements(fieldType, newValue, arrLen, decoder, idt, "vector"); err != nil {
 			return err
@@ -628,6 +646,8 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 	var newValue reflect.Value
 	if targetType.Kind == reflect.Array {
 		newValue = targetValue
+	} else if targetValue.Cap() >= vectorLen {
+		newValue = targetValue.Slice(0, vectorLen)
 	} else {
 		newValue = reflect.MakeSlice(fieldT, vectorLen, vectorLen)
 	}
@@ -765,11 +785,33 @@ func (ctx *ReflectionCtx) unmarshalList(targetType *ssztypes.TypeDescriptor, tar
 	}
 
 	var newValue reflect.Value
+
+	// Fast path: bulk decode uint64 slices without per-element reflection dispatch
+	if sliceLen > 0 && targetType.Kind == reflect.Slice && fieldType.SszType == ssztypes.SszUint64Type && fieldType.GoTypeFlags == 0 && fieldType.Kind == reflect.Uint64 {
+		var sliceValue reflect.Value
+		if targetValue.Cap() >= sliceLen {
+			sliceValue = targetValue.Slice(0, sliceLen)
+		} else {
+			sliceValue = reflect.MakeSlice(fieldT, sliceLen, sliceLen)
+		}
+		// Use unsafe to get a []uint64 view of the slice data for bulk decode
+		ptr := unsafe.Pointer(sliceValue.Pointer())
+		u64s := unsafe.Slice((*uint64)(ptr), sliceLen)
+		if err := sszutils.DecodeUint64Slice(decoder, u64s); err != nil {
+			return err
+		}
+		targetValue.Set(sliceValue)
+		return nil
+	}
+
 	if targetType.Kind == reflect.Slice {
 		// Optimization: avoid reflect.MakeSlice for common byte slice types
 		if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 && fieldType.Type.Kind() == reflect.Uint8 {
 			byteSlice := make([]byte, sliceLen)
 			newValue = reflect.ValueOf(byteSlice)
+		} else if targetValue.Cap() >= sliceLen {
+			// Reuse existing slice backing array when capacity is sufficient
+			newValue = targetValue.Slice(0, sliceLen)
 		} else {
 			newValue = reflect.MakeSlice(fieldT, sliceLen, sliceLen)
 		}
@@ -880,7 +922,12 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 		fieldT = fieldT.Elem()
 	}
 
-	newValue := reflect.MakeSlice(fieldT, sliceLen, sliceLen)
+	var newValue reflect.Value
+	if targetValue.Cap() >= sliceLen {
+		newValue = targetValue.Slice(0, sliceLen)
+	} else {
+		newValue = reflect.MakeSlice(fieldT, sliceLen, sliceLen)
+	}
 
 	if sliceLen > 0 {
 		offset := firstOffset

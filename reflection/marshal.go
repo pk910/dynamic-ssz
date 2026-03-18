@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"time"
+	"unsafe"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
@@ -357,17 +358,21 @@ func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sou
 
 	if sourceType.GoTypeFlags&(ssztypes.GoTypeFlagIsByteArray|ssztypes.GoTypeFlagIsString) != 0 {
 		// shortcut for performance: use append on []byte arrays
-		if !sourceValue.CanAddr() {
-			// workaround for unaddressable static arrays
-			sourceValPtr := reflect.New(sourceType.Type)
-			sourceValPtr.Elem().Set(sourceValue)
-			sourceValue = sourceValPtr.Elem()
-		}
-
 		var bytes []byte
 		if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
 			bytes = []byte(sourceValue.String())
+		} else if sourceValue.CanAddr() && sourceType.Kind == reflect.Array {
+			// Fast path: use unsafe to get bytes from addressable arrays
+			// avoiding reflect.Value.Bytes() slow path for arrays
+			ptr := unsafe.Pointer(sourceValue.UnsafeAddr())
+			bytes = unsafe.Slice((*byte)(ptr), sourceValue.Len())
 		} else {
+			if !sourceValue.CanAddr() {
+				// workaround for unaddressable static arrays
+				sourceValPtr := reflect.New(sourceType.Type)
+				sourceValPtr.Elem().Set(sourceValue)
+				sourceValue = sourceValPtr.Elem()
+			}
 			bytes = sourceValue.Bytes()
 		}
 
@@ -384,11 +389,22 @@ func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sou
 			}
 		}
 	} else {
-		for i := 0; i < dataLen; i++ {
-			itemVal := sourceValue.Index(i)
-			err := ctx.marshalType(sourceType.ElemDesc, itemVal, encoder, idt+2)
-			if err != nil {
-				return sszutils.ErrorWithPathf(err, "[%d]", i)
+		bulkDone := false
+		// Fast path: bulk encode uint64 vectors without per-element reflection dispatch
+		if dataLen > 0 && sourceType.ElemDesc.SszType == ssztypes.SszUint64Type && sourceType.ElemDesc.GoTypeFlags == 0 && sourceType.ElemDesc.Kind == reflect.Uint64 && sourceType.Kind == reflect.Slice {
+			ptr := unsafe.Pointer(sourceValue.Pointer())
+			u64s := unsafe.Slice((*uint64)(ptr), sourceValue.Len())
+			sszutils.EncodeUint64Slice(encoder, u64s[:dataLen])
+			bulkDone = true
+		}
+
+		if !bulkDone {
+			for i := 0; i < dataLen; i++ {
+				itemVal := sourceValue.Index(i)
+				err := ctx.marshalType(sourceType.ElemDesc, itemVal, encoder, idt+2)
+				if err != nil {
+					return sszutils.ErrorWithPathf(err, "[%d]", i)
+				}
 			}
 		}
 
@@ -547,6 +563,16 @@ func (ctx *ReflectionCtx) marshalList(sourceType *ssztypes.TypeDescriptor, sourc
 	default:
 		sliceLen := sourceValue.Len()
 		fieldType := sourceType.ElemDesc
+
+		// Fast path: bulk encode uint64 slices without per-element reflection dispatch
+		// Pointer() is only valid for slices, not arrays
+		if sliceLen > 0 && sourceType.Kind == reflect.Slice && fieldType.SszType == ssztypes.SszUint64Type && fieldType.GoTypeFlags == 0 && fieldType.Kind == reflect.Uint64 {
+			ptr := unsafe.Pointer(sourceValue.Pointer())
+			u64s := unsafe.Slice((*uint64)(ptr), sliceLen)
+			sszutils.EncodeUint64Slice(encoder, u64s)
+			break
+		}
+
 		isPointer := fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0
 
 		for i := 0; i < sliceLen; i++ {

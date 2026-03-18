@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"time"
+	"unsafe"
 
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/ssztypes"
@@ -518,17 +519,19 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 
 	// For byte arrays, handle as a single unit
 	if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
-		if !sourceValue.CanAddr() {
-			// workaround for unaddressable static arrays
-			sourceValPtr := reflect.New(sourceType.Type)
-			sourceValPtr.Elem().Set(sourceValue)
-			sourceValue = sourceValPtr.Elem()
-		}
-
 		var bytes []byte
 		if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
 			bytes = []byte(sourceValue.String())[:sliceLen]
+		} else if sourceValue.CanAddr() && sourceType.Kind == reflect.Array {
+			// Fast path: use unsafe to get bytes from addressable arrays
+			ptr := unsafe.Pointer(sourceValue.UnsafeAddr())
+			bytes = unsafe.Slice((*byte)(ptr), sourceValue.Len())[:sliceLen]
 		} else {
+			if !sourceValue.CanAddr() {
+				sourceValPtr := reflect.New(sourceType.Type)
+				sourceValPtr.Elem().Set(sourceValue)
+				sourceValue = sourceValPtr.Elem()
+			}
 			bytes = sourceValue.Bytes()[:sliceLen]
 		}
 
@@ -546,13 +549,25 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 
 		hh.AppendBytes32(bytes)
 	} else {
-		// For other types, process each element
-		for i := 0; i < sliceLen; i++ {
-			fieldValue := sourceValue.Index(i)
+		bulkDone := false
+		// Fast path: bulk append uint64 vectors without per-element reflection dispatch
+		// Pointer() is only valid for slices, not arrays
+		if sliceLen > 0 && sourceType.Kind == reflect.Slice && sourceType.ElemDesc.SszType == ssztypes.SszUint64Type && sourceType.ElemDesc.GoTypeFlags == 0 && sourceType.ElemDesc.Kind == reflect.Uint64 {
+			ptr := unsafe.Pointer(sourceValue.Pointer())
+			u64s := unsafe.Slice((*uint64)(ptr), sliceLen)
+			sszutils.HashUint64Slice(hh, u64s)
+			bulkDone = true
+		}
 
-			err := ctx.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, true, idt+2)
-			if err != nil {
-				return sszutils.ErrorWithPathf(err, "[%d]", i)
+		if !bulkDone {
+			// For other types, process each element
+			for i := 0; i < sliceLen; i++ {
+				fieldValue := sourceValue.Index(i)
+
+				err := ctx.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, true, idt+2)
+				if err != nil {
+					return sszutils.ErrorWithPathf(err, "[%d]", i)
+				}
 			}
 		}
 
@@ -625,14 +640,25 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 
 		hh.AppendBytes32(bytes)
 	} else {
-		// For other types, process each element
-		arrayLen := sourceValue.Len()
-		for i := 0; i < arrayLen; i++ {
-			fieldValue := sourceValue.Index(i)
+		bulkDone := false
+		// Fast path: bulk append uint64 slices without per-element reflection dispatch
+		if sliceLen > 0 && sourceType.Kind == reflect.Slice && sourceType.ElemDesc.SszType == ssztypes.SszUint64Type && sourceType.ElemDesc.GoTypeFlags == 0 && sourceType.ElemDesc.Kind == reflect.Uint64 {
+			ptr := unsafe.Pointer(sourceValue.Pointer())
+			u64s := unsafe.Slice((*uint64)(ptr), sliceLen)
+			sszutils.HashUint64Slice(hh, u64s)
+			bulkDone = true
+		}
 
-			err := ctx.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, true, idt+2)
-			if err != nil {
-				return sszutils.ErrorWithPathf(err, "[%d]", i)
+		if !bulkDone {
+			// For other types, process each element
+			arrayLen := sourceValue.Len()
+			for i := 0; i < arrayLen; i++ {
+				fieldValue := sourceValue.Index(i)
+
+				err := ctx.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, true, idt+2)
+				if err != nil {
+					return sszutils.ErrorWithPathf(err, "[%d]", i)
+				}
 			}
 		}
 
