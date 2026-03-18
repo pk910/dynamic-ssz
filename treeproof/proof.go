@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"math/bits"
 	"sort"
+
+	"github.com/pk910/dynamic-ssz/hasher"
 )
 
 // VerifyProof verifies a single merkle branch. It's more
@@ -66,6 +68,12 @@ func VerifyMultiproof(root []byte, proof, leaves [][]byte, indices []int) (bool,
 
 	if len(leaves) != len(indices) {
 		return false, errors.New("number of leaves and indices mismatch")
+	}
+
+	if len(proof) == 0 {
+		if ok, valid := verifyFullTreeLeaves(root, leaves, indices); ok {
+			return valid, nil
+		}
 	}
 
 	reqIndices := getRequiredIndices(indices)
@@ -174,6 +182,49 @@ func VerifyMultiproof(root []byte, proof, leaves [][]byte, indices []int) (bool,
 	}
 
 	return bytes.Equal(res[:], root), nil
+}
+
+func verifyFullTreeLeaves(root []byte, leaves [][]byte, indices []int) (bool, bool) {
+	count := len(indices)
+	if count == 0 || count != len(leaves) || count&(count-1) != 0 {
+		return false, false
+	}
+
+	reverse := false
+	switch indices[0] {
+	case count:
+		for i := 1; i < count; i++ {
+			if indices[i] != count+i {
+				return false, false
+			}
+		}
+	case (count * 2) - 1:
+		reverse = true
+		for i := 1; i < count; i++ {
+			if indices[i] != (count*2)-1-i {
+				return false, false
+			}
+		}
+	default:
+		return false, false
+	}
+
+	buf := make([]byte, count*32)
+	for i := range leaves {
+		idx := i
+		if reverse {
+			idx = count - 1 - i
+		}
+		copy(buf[idx*32:], leaves[i])
+	}
+
+	hh := hasher.FastHasherPool.Get()
+	defer hasher.FastHasherPool.Put(hh)
+
+	hh.Append(buf)
+	hh.Merkleize(0)
+
+	return true, bytes.Equal(root, hh.Hash())
 }
 
 // Returns the position (i.e. false for left, true for right)
