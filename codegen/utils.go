@@ -34,7 +34,9 @@ func appendCode(codeBuf *strings.Builder, indent int, code string, args ...any) 
 	if len(args) > 0 {
 		code = fmt.Sprintf(code, args...)
 	}
-	codeBuf.WriteString(indentStr(code, indent))
+	// Write directly into the target builder so common codegen paths avoid
+	// creating an extra indented string first.
+	writeIndented(codeBuf, code, indent)
 }
 
 // indentStr indents each non-empty line in a string by the specified number of tab characters.
@@ -55,14 +57,41 @@ func appendCode(codeBuf *strings.Builder, indent int, code string, args ...any) 
 //	indented := indentStr(code, 1)
 //	// Result: "\tfunc example() {\n\treturn nil\n\t}"
 func indentStr(s string, spaces int) string {
-	lines := strings.Split(s, "\n")
-	for i := range lines {
-		if lines[i] != "" {
-			lines[i] = strings.Repeat("\t", spaces) + lines[i]
-		}
+	if spaces <= 0 || s == "" {
+		return s
 	}
 
-	return strings.Join(lines, "\n")
+	var b strings.Builder
+	// Reserve enough room for the original string plus one indent prefix per line.
+	b.Grow(len(s) + (spaces * (strings.Count(s, "\n") + 1)))
+	writeIndented(&b, s, spaces)
+	return b.String()
+}
+
+func writeIndented(codeBuf *strings.Builder, s string, spaces int) {
+	if spaces <= 0 || s == "" {
+		codeBuf.WriteString(s)
+		return
+	}
+
+	prefix := strings.Repeat("\t", spaces)
+	lineStart := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\n' {
+			continue
+		}
+		if i > lineStart {
+			codeBuf.WriteString(prefix)
+			codeBuf.WriteString(s[lineStart:i])
+		}
+		codeBuf.WriteByte('\n')
+		lineStart = i + 1
+	}
+
+	if lineStart < len(s) {
+		codeBuf.WriteString(prefix)
+		codeBuf.WriteString(s[lineStart:])
+	}
 }
 
 // escapeBackticks properly escapes backtick characters for use in generated Go string literals.
@@ -89,7 +118,8 @@ func indentStr(s string, spaces int) string {
 func escapeBackticks(s string) string {
 	// Backticks cannot appear in raw string literals; encode as a quoted + strconv backtick
 	if strings.Contains(s, "`") {
-		return strconv.Quote(s)[1 : len(strconv.Quote(s))-1] // \"...\" sans outer quotes
+		quoted := strconv.Quote(s)
+		return quoted[1 : len(quoted)-1] // \"...\" sans outer quotes
 	}
 	return s
 }
