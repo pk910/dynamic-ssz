@@ -291,14 +291,14 @@ func TestMarshalErrors(t *testing.T) {
 			input: struct {
 				Data []uint8 `ssz-size:"5"`
 			}{[]uint8{1, 2, 3, 4, 5, 6}},
-			expectedErr: "list length is higher than max value",
+			expectedErr: "vector length",
 		},
 		{
 			name: "vector_too_big_nested",
 			input: struct {
 				Data []*slug_StaticStruct1 `ssz-size:"3"`
 			}{[]*slug_StaticStruct1{nil, nil, nil, nil}},
-			expectedErr: "list length is higher than max value",
+			expectedErr: "exceeds limit",
 		},
 		{
 			name: "type_wrapper_missing_data",
@@ -313,14 +313,14 @@ func TestMarshalErrors(t *testing.T) {
 			input: struct {
 				Value []byte `ssz-type:"uint128" ssz-size:"15"`
 			}{[]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}},
-			expectedErr: "list length is higher than max value",
+			expectedErr: "exceeds limit",
 		},
 		{
 			name: "invalid_uint256_size",
 			input: struct {
 				Value []byte `ssz-type:"uint256" ssz-size:"31"`
 			}{[]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33}},
-			expectedErr: "list length is higher than max value",
+			expectedErr: "exceeds limit",
 		},
 		{
 			name: "invalid_bitvector_type",
@@ -348,14 +348,14 @@ func TestMarshalErrors(t *testing.T) {
 			input: struct {
 				Bits []byte `ssz-type:"bitlist"`
 			}{[]byte{0x00}},
-			expectedErr: "bitlist misses mandatory termination bit",
+			expectedErr: "bitlist missing termination bit",
 		},
 		{
 			name: "string_too_long_fixed",
 			input: struct {
 				Data string `ssz-size:"5"`
 			}{"hello world"},
-			expectedErr: "list length is higher than max value",
+			expectedErr: "exceeds limit",
 		},
 		{
 			name: "nested_container_field_error",
@@ -367,7 +367,7 @@ func TestMarshalErrors(t *testing.T) {
 			}{struct {
 				Data []uint32 `ssz-size:"2"`
 			}{[]uint32{1, 2, 3}}, nil},
-			expectedErr: "list length is higher than max value",
+			expectedErr: "exceeds limit",
 		},
 		{
 			name: "dynamic_container_field_error",
@@ -382,7 +382,7 @@ func TestMarshalErrors(t *testing.T) {
 					Data []uint8 `ssz-size:"3"`
 				}{{[]uint8{1, 2, 3, 4}}},
 			},
-			expectedErr: "list length is higher than max value",
+			expectedErr: "exceeds limit",
 		},
 		{
 			name: "vector_element_marshal_error",
@@ -422,7 +422,7 @@ func TestMarshalErrors(t *testing.T) {
 			input: struct {
 				Data [2][]*slug_StaticStruct1 `ssz-size:"2,3"`
 			}{[2][]*slug_StaticStruct1{{nil, nil, nil}, {nil, nil, nil, nil}}},
-			expectedErr: "list length is higher than max value",
+			expectedErr: "exceeds limit",
 		},
 		{
 			name: "invalid_custom_type",

@@ -411,7 +411,7 @@ func TestHashTreeRootErrors(t *testing.T) {
 			input: struct {
 				Data []uint8 `ssz-size:"5"`
 			}{[]uint8{1, 2, 3, 4, 5, 6}},
-			expectedErr: "list length is higher than max value",
+			expectedErr: "exceeds limit",
 		},
 		{
 			name: "type_wrapper_missing_data",
@@ -425,7 +425,7 @@ func TestHashTreeRootErrors(t *testing.T) {
 			input: struct {
 				Bits []byte `ssz-type:"bitlist" ssz-max:"8"`
 			}{[]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x12}},
-			expectedErr: "list length is higher than max value",
+			expectedErr: "exceeds maximum",
 		},
 		{
 			name: "invalid_uint128_size",
@@ -493,7 +493,7 @@ func TestHashTreeRootErrors(t *testing.T) {
 			input: struct {
 				Data []uint32 `ssz-max:"3"`
 			}{[]uint32{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}},
-			expectedErr: "list length is higher than max value",
+			expectedErr: "exceeds maximum",
 		},
 		{
 			name: "invalid_custom_type",
@@ -528,28 +528,28 @@ func TestHashTreeRootErrors(t *testing.T) {
 			input: struct {
 				Data string `ssz-size:"5"`
 			}{"hello world"},
-			expectedErr: "list length is higher than max value",
+			expectedErr: "exceeds limit",
 		},
 		{
 			name: "string_too_long_dynamic",
 			input: struct {
 				Data string `ssz-max:"5"`
 			}{"hello world, hello world, hello world, hello world, hello world"},
-			expectedErr: "list length is higher than max value",
+			expectedErr: "exceeds maximum",
 		},
 		{
 			name: "multi_dimensional_size_mismatch",
 			input: struct {
 				Data [2][]*slug_StaticStruct1 `ssz-size:"2,3"`
 			}{[2][]*slug_StaticStruct1{{nil, nil, nil}, {nil, nil, nil, nil}}},
-			expectedErr: "list length is higher than max value",
+			expectedErr: "exceeds limit",
 		},
 		{
 			name: "very_large_dynamic_list",
 			input: struct {
 				Data []byte `ssz-max:"100"`
 			}{make([]byte, 1000)},
-			expectedErr: "list length is higher than max value",
+			expectedErr: "exceeds maximum",
 		},
 		{
 			name: "invalid_large_uint_array_size",
@@ -694,7 +694,7 @@ func TestGetTreeErrors(t *testing.T) {
 			input: struct {
 				Data []uint8 `ssz-size:"5"`
 			}{[]uint8{1, 2, 3, 4, 5, 6}},
-			expectedErr: "list length is higher than max value",
+			expectedErr: "exceeds limit",
 		},
 		{
 			name: "type_wrapper_missing_data",
@@ -708,7 +708,7 @@ func TestGetTreeErrors(t *testing.T) {
 			input: struct {
 				Bits []byte `ssz-type:"bitlist" ssz-max:"8"`
 			}{[]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x12}},
-			expectedErr: "list length is higher than max value",
+			expectedErr: "exceeds maximum",
 		},
 		{
 			name: "invalid_uint128_size",
@@ -804,14 +804,14 @@ func TestGetTreeErrors(t *testing.T) {
 			input: struct {
 				Data string `ssz-size:"5"`
 			}{"hello world"},
-			expectedErr: "list length is higher than max value",
+			expectedErr: "exceeds limit",
 		},
 		{
 			name: "multi_dimensional_size_mismatch",
 			input: struct {
 				Data [2][]*slug_StaticStruct1 `ssz-size:"2,3"`
 			}{[2][]*slug_StaticStruct1{{nil, nil, nil}, {nil, nil, nil, nil}}},
-			expectedErr: "list length is higher than max value",
+			expectedErr: "exceeds limit",
 		},
 		{
 			name: "invalid_large_uint_array_size",
