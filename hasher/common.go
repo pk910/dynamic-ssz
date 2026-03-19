@@ -33,6 +33,7 @@ var hasherInitialized bool
 var hasherInitMutex sync.Mutex
 var zeroHashes [65][32]byte
 var zeroHashLevels map[string]int
+var zeroHashLevelsBytes map[[32]byte]int
 var zeroBytes []byte
 
 func initHasher() {
@@ -46,14 +47,17 @@ func initHasher() {
 	hasherInitialized = true
 	zeroBytes = sszutils.ZeroBytes()
 	zeroHashLevels = make(map[string]int)
+	zeroHashLevelsBytes = make(map[[32]byte]int)
 	zeroHashLevels[string(zeroBytes[:32])] = 0
+	zeroHashLevelsBytes[[32]byte{}] = 0
 
 	tmp := [64]byte{}
-	for i := 0; i < 64; i++ {
+	for i := range 64 {
 		copy(tmp[:32], zeroHashes[i][:])
 		copy(tmp[32:], zeroHashes[i][:])
 		zeroHashes[i+1] = sha256.Sum256(tmp[:])
 		zeroHashLevels[string(zeroHashes[i+1][:])] = i + 1
+		zeroHashLevelsBytes[zeroHashes[i+1]] = i + 1
 	}
 }
 
@@ -62,6 +66,18 @@ func initHasher() {
 // false otherwise.
 func GetZeroHashLevel(hash string) (int, bool) {
 	level, ok := zeroHashLevels[hash]
+	return level, ok
+}
+
+// GetZeroHashLevelBytes returns the merkle tree depth level for a known zero hash.
+// Returns the level and true if the hash is a recognized zero hash, or 0 and false otherwise.
+func GetZeroHashLevelBytes(hash []byte) (int, bool) {
+	if len(hash) != 32 {
+		return 0, false
+	}
+	var key [32]byte
+	copy(key[:], hash)
+	level, ok := zeroHashLevelsBytes[key]
 	return level, ok
 }
 

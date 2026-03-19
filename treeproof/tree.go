@@ -25,7 +25,7 @@
 package treeproof
 
 import (
-	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -83,7 +83,7 @@ func (p *Multiproof) Compress() *CompressedMultiproof {
 	}
 
 	for _, h := range p.Hashes {
-		if l, ok := hasher.GetZeroHashLevel(string(h)); ok {
+		if l, ok := hasher.GetZeroHashLevelBytes(h); ok {
 			compressed.ZeroLevels = append(compressed.ZeroLevels, l)
 			compressed.Hashes = append(compressed.Hashes, nil)
 		} else {
@@ -149,7 +149,10 @@ type Node struct {
 	value   []byte // 32-byte value (data for leaves, hash for branches)
 }
 
-var emptyNodeCache sync.Map
+var (
+	emptyNodeInit  sync.Once
+	emptyNodeCache [65]*Node
+)
 
 // Show displays the tree structure in a human-readable format for debugging.
 //
@@ -213,7 +216,7 @@ func (n *Node) show(depth, maxDepth, index int) {
 	}
 
 	if n.isEmpty {
-		zeroLevel, _ := hasher.GetZeroHashLevel(string(n.Hash()))
+		zeroLevel, _ := hasher.GetZeroHashLevelBytes(n.Hash())
 		printNode("EMPTY: true (depth: " + strconv.Itoa(zeroLevel) + ")\n")
 	}
 
@@ -241,7 +244,7 @@ func NewNodeWithValue(value []byte) *Node {
 		left:    nil,
 		right:   nil,
 		value:   value,
-		isEmpty: bytes.Equal(value, sszutils.ZeroBytes()[:32]),
+		isEmpty: isZeroLeafValue(value),
 	}
 }
 
@@ -314,11 +317,20 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 		return NewNodeWithLR(leaves[0], leaves[1]), nil
 	}
 
-	// Pre-allocate exactly what we need for the first level to avoid slice growth
-	// Use numLeaves for the buffer size to stay O(N) memory
-	nodes := make([]*Node, (numLeaves+1)/2)
+	firstLevelCount := (numLeaves + 1) / 2
+	activeCount := firstLevelCount
+	totalBranches := firstLevelCount
+	for d := depth - 1; d > 0; d-- {
+		activeCount = (activeCount + 1) / 2
+		totalBranches += activeCount
+	}
 
-	for i := 0; i < len(nodes); i++ {
+	branchNodes := make([]Node, totalBranches)
+	current := make([]*Node, firstLevelCount)
+	next := make([]*Node, firstLevelCount)
+	branchPos := 0
+
+	for i := range firstLevelCount {
 		leftIdx := i * 2
 		rightIdx := i*2 + 1
 
@@ -329,29 +341,34 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 		} else {
 			right = getEmptyNode(0)
 		}
-		nodes[i] = NewNodeWithLR(left, right)
+		branchNodes[branchPos] = Node{left: left, right: right}
+		current[i] = &branchNodes[branchPos]
+		branchPos++
 	}
 
-	activeCount := len(nodes)
+	activeCount = firstLevelCount
 	for d := depth - 1; d > 0; d-- {
 		nextLevelCount := (activeCount + 1) / 2
-		for i := 0; i < nextLevelCount; i++ {
+		for i := range nextLevelCount {
 			leftIdx := i * 2
 			rightIdx := i*2 + 1
 
 			var left, right *Node
-			left = nodes[leftIdx]
+			left = current[leftIdx]
 			if rightIdx < activeCount {
-				right = nodes[rightIdx]
+				right = current[rightIdx]
 			} else {
 				right = getEmptyNode(depth - d)
 			}
-			nodes[i] = NewNodeWithLR(left, right)
+			branchNodes[branchPos] = Node{left: left, right: right}
+			next[i] = &branchNodes[branchPos]
+			branchPos++
 		}
+		current, next = next[:nextLevelCount], current
 		activeCount = nextLevelCount
 	}
 
-	return nodes[0], nil
+	return current[0], nil
 }
 
 // TreeFromNodesProgressive constructs a progressive tree from leaf nodes.
@@ -503,18 +520,12 @@ func (n *Node) Value() []byte {
 }
 
 func getEmptyNode(depth int) *Node {
-	if cached, ok := emptyNodeCache.Load(depth); ok {
-		if node, ok := cached.(*Node); ok {
-			return node
+	emptyNodeInit.Do(func() {
+		for i := range emptyNodeCache {
+			emptyNodeCache[i] = NewEmptyNode(hasher.GetZeroHash(i))
 		}
-	}
-
-	node := NewEmptyNode(hasher.GetZeroHash(depth))
-	actual, _ := emptyNodeCache.LoadOrStore(depth, node)
-	if cached, ok := actual.(*Node); ok {
-		return cached
-	}
-	return node
+	})
+	return emptyNodeCache[depth]
 }
 
 func hashNode(n *Node) []byte {
@@ -532,12 +543,12 @@ func hashNode(n *Node) []byte {
 	}
 
 	if n.right.isEmpty {
-		result := hashFn(append(hashNode(n.left), n.right.value...))
+		result := hashPair(hashNode(n.left), n.right.value)
 		n.value = result // Set the hash result on each node so that proofs can be generated for any level
 		return result
 	}
 
-	result := hashFn(append(hashNode(n.left), hashNode(n.right)...))
+	result := hashPair(hashNode(n.left), hashNode(n.right))
 	n.value = result
 	return result
 }
@@ -702,6 +713,29 @@ func LeavesFromUint64(items []uint64) []*Node {
 
 func isPowerOfTwo(n int) bool {
 	return (n & (n - 1)) == 0
+}
+
+func isZeroLeafValue(value []byte) bool {
+	if len(value) != 32 {
+		return false
+	}
+	for _, b := range value {
+		if b != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func hashPair(left, right []byte) []byte {
+	var input [64]byte
+	copy(input[:32], left)
+	copy(input[32:], right)
+
+	sum := sha256.Sum256(input[:])
+	out := make([]byte, 32)
+	copy(out, sum[:])
+	return out
 }
 
 func floorLog2(n int) int {
