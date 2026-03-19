@@ -364,7 +364,7 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 			next[i] = &branchNodes[branchPos]
 			branchPos++
 		}
-		current, next = next[:nextLevelCount], current[:]
+		current, next = next[:nextLevelCount], current
 		activeCount = nextLevelCount
 	}
 
