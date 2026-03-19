@@ -15,6 +15,43 @@ Dynamic SSZ uses struct tags to control serialization behavior. This guide provi
 | `dynssz-bitsize` | Dynamic bit size for bitvectors | `dynssz-bitsize:"COMMITTEE_SIZE"` |
 | `ssz-index` | Field index for progressive containers | `ssz-index:"0"` |
 
+## Annotation Locations
+
+### Struct Field Tags (Standard)
+
+The standard way to annotate SSZ types is through Go struct field tags:
+
+```go
+type BeaconState struct {
+    Validators []Validator `ssz-max:"1024" dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
+}
+```
+
+### Comment Annotations (Non-Struct Types)
+
+For top-level non-struct type definitions (e.g., named slices, arrays), Go does not allow struct tags. The code generator supports SSZ annotations in comments using the same struct tag syntax:
+
+**Line comment** (on the same line as the type definition):
+```go
+type Blobs []*Blob          //ssz-max:"4096"
+type BlobKZGs [][48]byte    //ssz-max:"4096" dynssz-max:"MAX_BLOB_COMMITMENTS_PER_BLOCK"
+type FixedHash [32]byte     //ssz-size:"32"
+```
+
+**Doc comment** (above the type definition):
+```go
+// ssz-max:"4096" dynssz-max:"MAX_BLOB_COMMITMENTS_PER_BLOCK"
+type Blobs []*Blob
+```
+
+All standard SSZ tags are supported in comments: `ssz-size`, `ssz-max`, `ssz-type`, `ssz-bitsize`, `dynssz-size`, `dynssz-max`, `dynssz-bitsize`.
+
+**Important notes:**
+- Comment annotations are only used by the **code generator** (`dynssz-gen`). The runtime reflection layer does not read comments (use [Type Wrapper](type-wrapper.md) or pass hints via the programmatic API for runtime).
+- The annotation must use the exact struct tag format with quoted values: `ssz-max:"4096"`, not `ssz-max:4096`.
+- Multiple annotations can be placed on the same line, separated by spaces.
+- For doc comments, annotations can span multiple lines; they are joined with spaces for parsing.
+
 ## Size Annotations
 
 ### Multi-dimensional Syntax
