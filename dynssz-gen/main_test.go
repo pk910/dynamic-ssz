@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/pk910/dynamic-ssz/codegen"
+	"golang.org/x/tools/go/packages"
 )
 
 // Test helper functions for parsing logic
@@ -337,5 +338,156 @@ func TestRun_TypeSpecificOutputFile(t *testing.T) {
 
 	if _, err := os.Stat(outFile); os.IsNotExist(err) {
 		t.Fatal("expected output file to be created")
+	}
+}
+
+// Comment annotation tests
+
+func TestParseCommentAnnotations_Empty(t *testing.T) {
+	opts, err := parseCommentAnnotations("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(opts) != 0 {
+		t.Fatalf("expected no options, got %d", len(opts))
+	}
+}
+
+func TestParseCommentAnnotations_SszMax(t *testing.T) {
+	opts, err := parseCommentAnnotations(`ssz-max:"4096"`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(opts) != 1 {
+		t.Fatalf("expected 1 option (max size hints), got %d", len(opts))
+	}
+}
+
+func TestParseCommentAnnotations_SszSize(t *testing.T) {
+	opts, err := parseCommentAnnotations(`ssz-size:"32"`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(opts) != 1 {
+		t.Fatalf("expected 1 option (size hints), got %d", len(opts))
+	}
+}
+
+func TestParseCommentAnnotations_SszType(t *testing.T) {
+	opts, err := parseCommentAnnotations(`ssz-type:"list"`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(opts) != 1 {
+		t.Fatalf("expected 1 option (type hints), got %d", len(opts))
+	}
+}
+
+func TestParseCommentAnnotations_Multiple(t *testing.T) {
+	opts, err := parseCommentAnnotations(`ssz-max:"4096" dynssz-max:"MAX_BLOBS"`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(opts) != 1 {
+		t.Fatalf("expected 1 option (max size hints with dynamic), got %d", len(opts))
+	}
+}
+
+func TestParseCommentAnnotations_MultiLine(t *testing.T) {
+	opts, err := parseCommentAnnotations("ssz-max:\"20\"\nssz-type:\"list\"")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(opts) != 2 {
+		t.Fatalf("expected 2 options (max + type hints), got %d", len(opts))
+	}
+}
+
+func TestParseCommentAnnotations_NoSszKeys(t *testing.T) {
+	opts, err := parseCommentAnnotations("This is a regular comment with no annotations")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(opts) != 0 {
+		t.Fatalf("expected no options for non-SSZ comment, got %d", len(opts))
+	}
+}
+
+func TestFindTypeComment_LineComment(t *testing.T) {
+	cfg := &packages.Config{
+		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName,
+	}
+
+	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
+	if err != nil {
+		t.Fatalf("failed to load package: %v", err)
+	}
+
+	comment := findTypeComment(pkgs[0], "CommentAnnotatedList")
+	if !strings.Contains(comment, `ssz-max:"20"`) {
+		t.Fatalf("expected line comment with ssz-max:\"20\", got: %q", comment)
+	}
+}
+
+func TestFindTypeComment_DocComment(t *testing.T) {
+	cfg := &packages.Config{
+		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName,
+	}
+
+	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
+	if err != nil {
+		t.Fatalf("failed to load package: %v", err)
+	}
+
+	comment := findTypeComment(pkgs[0], "DocCommentAnnotatedList")
+	if !strings.Contains(comment, `ssz-max:"10"`) {
+		t.Fatalf("expected doc comment with ssz-max:\"10\", got: %q", comment)
+	}
+}
+
+func TestFindTypeComment_NotFound(t *testing.T) {
+	cfg := &packages.Config{
+		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName,
+	}
+
+	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
+	if err != nil {
+		t.Fatalf("failed to load package: %v", err)
+	}
+
+	comment := findTypeComment(pkgs[0], "NonExistentType")
+	if comment != "" {
+		t.Fatalf("expected empty comment for non-existent type, got: %q", comment)
+	}
+}
+
+func TestRun_CommentAnnotatedType(t *testing.T) {
+	tmpDir := t.TempDir()
+	outFile := filepath.Join(tmpDir, "gen_output.go")
+
+	config := Config{
+		PackagePath: "github.com/pk910/dynamic-ssz/codegen/tests",
+		TypeNames:   "CommentAnnotatedList",
+		OutputFile:  outFile,
+		PackageName: "tests",
+	}
+
+	err := run(config)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify the output file was created and contains generated code
+	data, readErr := os.ReadFile(outFile)
+	if readErr != nil {
+		t.Fatalf("failed to read output file: %v", readErr)
+	}
+
+	content := string(data)
+	if !strings.Contains(content, "CommentAnnotatedList") {
+		t.Fatal("expected generated code to reference CommentAnnotatedList")
+	}
+	if !strings.Contains(content, "MarshalSSZDyn") {
+		t.Fatal("expected generated code to contain MarshalSSZDyn method")
 	}
 }
