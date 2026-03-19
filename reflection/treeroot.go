@@ -355,9 +355,6 @@ func (ctx *ReflectionCtx) buildRootFromContainer(sourceType *ssztypes.TypeDescri
 		if err != nil {
 			return sszutils.ErrorWithPathf(err, "[%d]", i)
 		}
-		if (i+1)%128 == 0 {
-			hh.Collapse()
-		}
 	}
 
 	hh.Merkleize(hashIndex)
@@ -415,9 +412,6 @@ func (ctx *ReflectionCtx) buildRootFromProgressiveContainer(sourceType *ssztypes
 		err := ctx.buildRootFromType(fieldType, fieldValue, hh, false, idt+2)
 		if err != nil {
 			return sszutils.ErrorWithPathf(err, "[%d]", i)
-		}
-		if (i+1)%128 == 0 {
-			hh.Collapse()
 		}
 	}
 
@@ -559,7 +553,7 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 			if err != nil {
 				return sszutils.ErrorWithPathf(err, "[%d]", i)
 			}
-			if (i+1)%128 == 0 {
+			if (i+1)%256 == 0 {
 				hh.Collapse()
 			}
 		}
@@ -646,7 +640,7 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 			if err != nil {
 				return sszutils.ErrorWithPathf(err, "[%d]", i)
 			}
-			if (i+1)%128 == 0 {
+			if (i+1)%256 == 0 {
 				hh.Collapse()
 			}
 		}
