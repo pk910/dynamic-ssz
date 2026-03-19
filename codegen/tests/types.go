@@ -427,3 +427,9 @@ var ExtendedTypes1_Payload2 = ExtendedTypes1{
 	Opt2: nil,
 	Big1: *big.NewInt(0),
 }
+
+// Comment-annotated non-struct types for testing comment-based SSZ annotations.
+type CommentAnnotatedList []uint32 //ssz-max:"20"
+
+// ssz-max:"10"
+type DocCommentAnnotatedList []uint64
