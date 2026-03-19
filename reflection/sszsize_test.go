@@ -294,47 +294,47 @@ func TestSizeSSZErrors(t *testing.T) {
 			input: struct {
 				Data [3]InvalidDynamicType
 			}{[3]InvalidDynamicType{{}, {}, {}}},
-			expectedErr: "unhandled reflection kind in size check",
+			expectedErr: "unknown type",
 		},
 		{
 			name: "invalid_dynamic_type_in_empty_vector",
 			input: struct {
 				Data []InvalidDynamicType `ssz-size:"3"`
 			}{[]InvalidDynamicType{}},
-			expectedErr: "unhandled reflection kind in size check",
+			expectedErr: "unknown type",
 		},
 		{
 			name:        "invalid_static_type_in_vector",
 			input:       [3]InvalidStaticType{{}, {}, {}},
-			expectedErr: "unhandled reflection kind in size check",
+			expectedErr: "unknown type",
 		},
 		{
 			name: "invalid_dynamic_type_in_list",
 			input: struct {
 				Data []InvalidDynamicType
 			}{[]InvalidDynamicType{{}, {}, {}}},
-			expectedErr: "unhandled reflection kind in size check",
+			expectedErr: "unknown type",
 		},
 		{
 			name: "invalid_dynamic_type_in_union",
 			input: CompatibleUnion[struct {
 				V1 InvalidDynamicType
 			}]{Variant: 0, Data: InvalidDynamicType{}},
-			expectedErr: "unhandled reflection kind in size check",
+			expectedErr: "unknown type",
 		},
 		{
 			name: "invalid_dynamic_type_in_type_wrapper",
 			input: TypeWrapper[struct {
 				Data []InvalidDynamicType
 			}, []InvalidDynamicType]{Data: []InvalidDynamicType{{}, {}, {}}},
-			expectedErr: "unhandled reflection kind in size check",
+			expectedErr: "unknown type",
 		},
 		{
 			name: "invalid_static_type_in_empty_vector",
 			input: TypeWrapper[struct {
 				Data []InvalidStaticType `ssz-size:"3"`
 			}, []InvalidStaticType]{Data: []InvalidStaticType{}},
-			expectedErr: "unhandled reflection kind in size check",
+			expectedErr: "unknown type",
 		},
 	}
 
@@ -376,7 +376,7 @@ func TestSizeSSZOptionalError(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for optional with invalid inner type")
 	}
-	if !contains(err.Error(), "unhandled reflection kind in size check") {
+	if !contains(err.Error(), "unknown type") {
 		t.Errorf("expected optional size error, got: %v", err)
 	}
 }

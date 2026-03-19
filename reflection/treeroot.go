@@ -170,7 +170,7 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 		if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsTime != 0 {
 			timeVal, isTime := sourceValue.Interface().(time.Time)
 			if !isTime {
-				return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "time.Time type expected, got %v", sourceType.Type.Name())
+				return sszutils.ErrTimeTypeExpectedFn(sourceType.Type.Name())
 			}
 			uintVal = uint64(timeVal.Unix())
 		} else {
@@ -235,7 +235,7 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 			return err
 		}
 	default:
-		return sszutils.NewSszErrorf(sszutils.ErrNotImplemented, "unknown type: %v", sourceType)
+		return sszutils.ErrUnknownTypeFn(sourceType)
 	}
 
 	if ctx.verbose {
@@ -299,7 +299,7 @@ func (ctx *ReflectionCtx) buildRootFromLargeUint(sourceType *ssztypes.TypeDescri
 
 	sourceLen := uint32(sourceValue.Len())
 	if sourceLen != sourceType.Size/sourceType.ElemDesc.Size {
-		return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "large uint type does not have expected data length (%d != %d)", sourceLen, sourceType.Size/sourceType.ElemDesc.Size)
+		return sszutils.ErrLargeUintLengthFn(sourceLen, sourceType.Size/sourceType.ElemDesc.Size)
 	}
 
 	isUint64 := sourceType.ElemDesc.Kind == reflect.Uint64
@@ -453,12 +453,12 @@ func (ctx *ReflectionCtx) buildRootFromCompatibleUnion(sourceType *ssztypes.Type
 	// Get the variant descriptor
 	variantDesc, ok := sourceType.UnionVariants[variant]
 	if !ok {
-		return sszutils.NewSszError(sszutils.ErrInvalidUnionVariant, "invalid union variant")
+		return sszutils.ErrInvalidUnionVariantFn()
 	}
 
 	// Hash only the data, not the selector
 	if dataField.IsNil() {
-		return sszutils.NewSszError(sszutils.ErrInvalidUnionVariant, "invalid union variant")
+		return sszutils.ErrInvalidUnionVariantFn()
 	}
 	dataField = dataField.Elem()
 
@@ -502,7 +502,7 @@ func (ctx *ReflectionCtx) buildRootFromCompatibleUnion(sourceType *ssztypes.Type
 func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
 	vecLen := int64(sourceType.Len)
 	if vecLen > math.MaxInt {
-		return sszutils.NewSszErrorf(sszutils.ErrPlatformOverflow, "vector length %d exceeds platform int max", sourceType.Len)
+		return sszutils.ErrPlatformOverflowFn("vector length", sourceType.Len)
 	}
 
 	hashIndex := hh.StartTree(sszutils.TreeTypeBinary)
@@ -512,7 +512,7 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 		if sourceType.Kind == reflect.Array {
 			sliceLen = int(vecLen)
 		} else {
-			return sszutils.NewSszErrorf(sszutils.ErrListTooBig, "vector length %d is bigger than max value %d", sliceLen, sourceType.Len)
+			return sszutils.ErrVectorLengthFn(sliceLen, sourceType.Len)
 		}
 	}
 
@@ -545,7 +545,7 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 			paddingMask := uint8((uint16(0xff) << (sourceType.BitSize % 8)) & 0xff)
 			paddingBits := bytes[len(bytes)-1] & paddingMask
 			if paddingBits != 0 {
-				return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "bitvector padding bits are not zero")
+				return sszutils.ErrBitvectorPaddingFn()
 			}
 		}
 
@@ -686,7 +686,7 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 		}
 		inputLen := hh.CurrentIndex() - hashIndex
 		if (uint64(inputLen)+31)/32 > limit {
-			return sszutils.NewSszErrorf(sszutils.ErrListTooBig, "list length %d is bigger than limit %d", inputLen, limit)
+			return sszutils.ErrListLengthFn(inputLen, limit)
 		}
 		hh.MerkleizeWithMixin(hashIndex, uint64(sliceLen), limit)
 	default:
@@ -765,7 +765,7 @@ func (ctx *ReflectionCtx) buildRootFromBitlist(sourceType *ssztypes.TypeDescript
 
 	bitlist, size := hasher.ParseBitlistWithHasher(hh, bytes)
 	if size > maxSize {
-		return sszutils.NewSszErrorf(sszutils.ErrListTooBig, "bitlist length %d is bigger than limit %d", size, maxSize)
+		return sszutils.ErrBitlistLengthFn(size, maxSize)
 	}
 
 	// merkleize the content with mix in length
@@ -824,7 +824,7 @@ func (ctx *ReflectionCtx) buildRootFromOptional(sourceType *ssztypes.TypeDescrip
 func (ctx *ReflectionCtx) buildRootFromBigInt(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, _ int) error {
 	bigInt, isBigInt := sourceValue.Interface().(big.Int)
 	if !isBigInt {
-		return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "big.Int type expected, got %v", sourceType.Type.Name())
+		return sszutils.ErrBigIntTypeExpectedFn(sourceType.Type.Name())
 	}
 	bigIntBytes := bigInt.Bytes()
 	if len(bigIntBytes) == 0 {

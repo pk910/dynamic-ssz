@@ -222,7 +222,7 @@ func TestUnmarshalFixedElementsSizeOverflow(t *testing.T) {
 	dec := sszutils.NewBufferDecoder(make([]byte, 1000))
 	newValue := reflect.MakeSlice(reflect.TypeOf([]uint32{}), 5, 5)
 
-	err := ctx.unmarshalFixedElements(fieldType, newValue, 5, dec, 0, "test")
+	err := ctx.unmarshalFixedElements(fieldType, newValue, 5, dec, 0)
 	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
 		t.Fatalf("expected overflow error for field Size, got: %v", err)
 	}

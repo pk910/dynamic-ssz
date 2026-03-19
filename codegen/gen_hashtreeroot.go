@@ -534,7 +534,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		if desc.Kind == reflect.Array {
 			// check if dynamic limit is greater than the length of the array
 			ctx.appendCode(indent, "if %s > %d {\n", limitVar, desc.Len)
-			errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrVectorLength, \"dynamic vector size %%d exceeds array length %%d\", %d, %s)", desc.Len, limitVar)
+			errCode := fmt.Sprintf("sszutils.ErrVectorSizeExceedsArrayFn(%s, %d)", limitVar, desc.Len)
 			ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 			ctx.appendCode(indent, "}\n")
 		}
@@ -554,7 +554,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 	if desc.Kind != reflect.Array {
 		ctx.appendCode(indent, "vlen := len(%s)\n", valueVar)
 		ctx.appendCode(indent, "if vlen > %s {\n", limitVar)
-		errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrVectorLength, \"vector length %%d exceeds limit %%d\", vlen, %s)", limitVar)
+		errCode := fmt.Sprintf("sszutils.ErrVectorLengthFn(%s, %s)", varNameVLen, limitVar)
 		ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "}\n")
 		lenVar = varNameVLen
@@ -590,7 +590,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 			// check padding bits
 			ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
 			ctx.appendCode(indent, "if %s[%s-1] & paddingMask != 0 {\n", valVar, limitVar)
-			errCode := "sszutils.NewSszError(sszutils.ErrVectorLength, \"bitvector padding bits are non-zero during hashing\")"
+			errCode := errCodeBitvectorPadding
 			ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 			ctx.appendCode(indent, "}\n")
 		}
@@ -696,7 +696,7 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 	if hasMax {
 		addVlen()
 		ctx.appendCode(indent, "if vlen > %s {\n", maxVar)
-		errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"list length %%d exceeds maximum %%d\", vlen, %s)", maxVar)
+		errCode := fmt.Sprintf("sszutils.ErrListLengthFn(vlen, %s)", maxVar)
 		ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "}\n")
 	}
@@ -796,7 +796,7 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varNa
 
 	if maxVar != "" {
 		ctx.appendCode(indent, "if size > %s {\n", maxVar)
-		errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"bitlist length %%d exceeds maximum %%d\", size, %s)", maxVar)
+		errCode := fmt.Sprintf("sszutils.ErrBitlistLengthFn(size, %s)", maxVar)
 		ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "}\n")
 	}
@@ -831,7 +831,7 @@ func (ctx *hashTreeRootContext) hashUnion(desc *ssztypes.TypeDescriptor, varName
 		variantTypePath := typePath.append(fmt.Sprintf("[v:%d]", variant))
 		ctx.appendCode(indent, "case %d:\n", variant)
 		ctx.appendCode(indent, "\tv, ok := %s.Data.(%s)\n", varName, variantType)
-		errCode := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"union variant type mismatch during hashing\")"
+		errCode := errCodeUnionTypeMismatch
 		ctx.appendCode(indent, "\tif !ok {\n\t\treturn %s\n\t}\n", variantTypePath.getErrorWith(errCode))
 		if err := ctx.hashType(variantDesc, "v", variantTypePath, indent+1, false, false); err != nil {
 			return err
@@ -839,7 +839,7 @@ func (ctx *hashTreeRootContext) hashUnion(desc *ssztypes.TypeDescriptor, varName
 	}
 
 	ctx.appendCode(indent, "default:\n")
-	errCode := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"invalid union variant selector during hashing\")"
+	errCode := errCodeInvalidUnionVariant
 	ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 	ctx.appendCode(indent, "}\n")
 

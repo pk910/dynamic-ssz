@@ -176,7 +176,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		// Get the variant descriptor
 		variantDesc, ok := targetType.UnionVariants[variant]
 		if !ok {
-			return 0, sszutils.NewSszError(sszutils.ErrInvalidUnionVariant, "invalid union variant")
+			return 0, sszutils.ErrInvalidUnionVariantFn()
 		}
 
 		// Calculate size of the data
@@ -231,13 +231,13 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 	case ssztypes.SszBigIntType:
 		bigInt, isBigInt := targetValue.Interface().(big.Int)
 		if !isBigInt {
-			return 0, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "big.Int type expected, got %v", targetType.Type.Name())
+			return 0, sszutils.ErrBigIntTypeExpectedFn(targetType.Type.Name())
 		}
 		bigIntBytes := bigInt.Bytes()
 		staticSize = uint32(len(bigIntBytes))
 
 	default:
-		return 0, sszutils.NewSszErrorf(sszutils.ErrNotImplemented, "unhandled reflection kind in size check: %v", targetType.Kind)
+		return 0, sszutils.ErrUnknownTypeFn(targetType.Kind)
 	}
 
 	return staticSize, nil

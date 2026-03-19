@@ -288,7 +288,7 @@ func (ctx *marshalContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 		return ctx.marshalUnion(desc, varName, typePath, indent)
 
 	case ssztypes.SszCustomType:
-		ctx.appendCode(indent, "return nil, %s\n", typePath.getErrorWith("sszutils.NewSszError(sszutils.ErrNotImplemented, \"custom type marshaling not supported\")"))
+		ctx.appendCode(indent, "return nil, %s\n", typePath.getErrorWith(errCodeCustomTypeNotSupported))
 
 	// extended types
 	case ssztypes.SszInt8Type:
@@ -504,7 +504,7 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		if desc.Kind == reflect.Array {
 			// check if dynamic limit is greater than the length of the array
 			ctx.appendCode(indent, "if %s > %d {\n", limitVar, desc.Len)
-			errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrVectorLength, \"dynamic vector size %%d exceeds array length %%d\", %d, %s)", desc.Len, limitVar)
+			errCode := fmt.Sprintf("sszutils.ErrVectorSizeExceedsArrayFn(%s, %d)", limitVar, desc.Len)
 			ctx.appendCode(indent, "\treturn nil, %s\n", typePath.getErrorWith(errCode))
 			ctx.appendCode(indent, "}\n")
 		}
@@ -526,7 +526,7 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 	case desc.Kind != reflect.Array:
 		ctx.appendCode(indent, "vlen := len(%s)\n", valueVar)
 		ctx.appendCode(indent, "if vlen > %s {\n", limitVar)
-		errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrVectorLength, \"vector length %%d exceeds limit %%d\", vlen, %s)", limitVar)
+		errCode := fmt.Sprintf("sszutils.ErrVectorLengthFn(%s, %s)", varNameVLen, limitVar)
 		ctx.appendCode(indent, "\treturn nil, %s\n", typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "}\n")
 		lenVar = varNameVLen
@@ -548,7 +548,7 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			if bitlimitVar != "" {
 				ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
 				ctx.appendCode(indent, "if %s[%s-1] & paddingMask != 0 {\n", valueVar, lenVar)
-				errCode := "sszutils.NewSszError(sszutils.ErrVectorLength, \"bitvector padding bits are non-zero during marshaling\")"
+				errCode := errCodeBitvectorPadding
 				ctx.appendCode(indent, "\treturn nil, %s\n", typePath.getErrorWith(errCode))
 				ctx.appendCode(indent, "}\n")
 			}
@@ -661,7 +661,7 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 	if hasMax {
 		addVlen()
 		ctx.appendCode(indent, "if vlen > %s {\n", maxVar)
-		errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"list length %%d exceeds maximum %%d\", vlen, %s)", maxVar)
+		errCode := fmt.Sprintf("sszutils.ErrListLengthFn(vlen, %s)", maxVar)
 		ctx.appendCode(indent, "\treturn nil, %s\n", typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "}\n")
 	}
@@ -748,7 +748,7 @@ func (ctx *marshalContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName
 
 	if hasMax {
 		ctx.appendCode(indent, "if vlen > %s {\n", maxVar)
-		errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"bitlist length %%d exceeds maximum %%d\", vlen, %s)", maxVar)
+		errCode := fmt.Sprintf("sszutils.ErrBitlistLengthFn(vlen, %s)", maxVar)
 		ctx.appendCode(indent, "\treturn nil, %s\n", typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "}\n")
 	}
@@ -757,7 +757,7 @@ func (ctx *marshalContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName
 	ctx.appendCode(indent, "if vlen == 0 {\n")
 	ctx.appendCode(indent, "\tbval = []byte{0x01}\n")
 	ctx.appendCode(indent, "} else if bval[vlen-1] == 0x00 {\n")
-	errCode := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"bitlist missing termination bit during marshaling\")"
+	errCode := errCodeBitlistNotTerminated
 	ctx.appendCode(indent, "\treturn nil, %s\n", typePath.getErrorWith(errCode))
 	ctx.appendCode(indent, "}\n")
 
@@ -783,7 +783,7 @@ func (ctx *marshalContext) marshalUnion(desc *ssztypes.TypeDescriptor, varName s
 		ctx.appendCode(indent, "case %d:\n", variant)
 		ctx.appendCode(indent, "\tv, ok := %s.Data.(%s)\n", varName, variantType)
 		ctx.appendCode(indent, "\tif !ok {\n")
-		errCode := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"union variant type mismatch during marshaling\")"
+		errCode := errCodeUnionTypeMismatch
 		ctx.appendCode(indent, "\t\treturn nil, %s\n", typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "\t}\n")
 		if err := ctx.marshalType(variantDesc, "v", typePath.append(fmt.Sprintf("[v:%d]", variant)), indent+1, false); err != nil {
@@ -791,7 +791,7 @@ func (ctx *marshalContext) marshalUnion(desc *ssztypes.TypeDescriptor, varName s
 		}
 	}
 	ctx.appendCode(indent, "default:\n")
-	errCode := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"invalid union variant selector during marshaling\")"
+	errCode := errCodeInvalidUnionVariant
 	ctx.appendCode(indent, "\treturn nil, %s\n", typePath.getErrorWith(errCode))
 	ctx.appendCode(indent, "}\n")
 

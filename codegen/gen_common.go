@@ -15,6 +15,16 @@ import (
 
 const varNameVLen = "vlen"
 
+// Generated error expression constants shared across codegen files.
+const (
+	errCodeBitvectorPadding       = "sszutils.ErrBitvectorPaddingFn()"
+	errCodeUnionTypeMismatch      = "sszutils.ErrUnionTypeMismatchFn()"
+	errCodeInvalidUnionVariant    = "sszutils.ErrInvalidUnionVariantFn()"
+	errCodeBitlistNotTerminated   = "sszutils.ErrBitlistNotTerminatedFn()"
+	errCodeCustomTypeNotSupported = "sszutils.ErrCustomTypeNotSupportedFn()"
+	errCodeTrailingData           = "sszutils.ErrTrailingDataFn(diff)"
+)
+
 type exprVarGenerator struct {
 	prefix      string
 	typePrinter *TypePrinter
