@@ -223,6 +223,9 @@ func (m *mockHashWalker) PutBytes(_ []byte)                                    {
 func (m *mockHashWalker) FillUpTo32()                                          {}
 func (m *mockHashWalker) Append(i []byte)                                      { m.appendCalled = true; m.appendData = i }
 func (m *mockHashWalker) Index() int                                           { return 0 }
+func (m *mockHashWalker) CurrentIndex() int                                    { return 0 }
+func (m *mockHashWalker) StartTree(_ TreeType) int                             { return 0 }
+func (m *mockHashWalker) Collapse()                                            {}
 func (m *mockHashWalker) WithTemp(_ func(tmp []byte) []byte)                   {}
 func (m *mockHashWalker) Merkleize(_ int)                                      {}
 func (m *mockHashWalker) MerkleizeWithMixin(_ int, _, _ uint64)                {}
