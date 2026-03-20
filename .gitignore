@@ -2,6 +2,7 @@ temp/
 temp-*/
 ai_plans/
 profiles/
+codegen/compat-tests/v*
 coverage/
 coverage.*
 coverage_*
