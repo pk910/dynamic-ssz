@@ -102,7 +102,7 @@ jobs:
 
     - name: Comment on PR
       if: steps.pr.outputs.skip != 'true'
-      uses: marocchino/sticky-pull-request-comment@67d0dec7b07ed060a405f9b2a64b8ab319fdd7db # v2.9.2
+      uses: marocchino/sticky-pull-request-comment@70d2764d1a7d5d9560b100cbea0077fc8f633987 # v3.0.2
       with:
         header: benchmark
         number: ${{ steps.pr.outputs.number }}
