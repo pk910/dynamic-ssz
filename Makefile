@@ -1,4 +1,4 @@
-.PHONY: build test bench bench-perf fuzz spec lint fmt clean help
+.PHONY: build test bench bench-perf fuzz spec lint fmt clean help unpack-compat-tests
 
 # Build variables
 LDFLAGS_PKG := github.com/pk910/dynamic-ssz/codegen
@@ -34,6 +34,17 @@ lint: ## Run go vet and format check
 
 fmt: ## Format code
 	gofmt -w .
+
+unpack-compat-tests: ## Unpack codegen compat-test archives for testing
+	@for archive in codegen/compat-tests/codegen_v*.tar.gz; do \
+		[ -f "$$archive" ] || continue; \
+		ver=$$(basename "$$archive" .tar.gz | sed 's/^codegen_//'); \
+		dest="codegen/compat-tests/$$ver"; \
+		mkdir -p "$$dest"; \
+		tar -xzf "$$archive" -C "$$dest"; \
+		rm -f "$$dest/generate.go"; \
+		echo "Unpacked $$archive -> $$dest"; \
+	done
 
 clean: ## Remove build artifacts
 	rm -rf bin/

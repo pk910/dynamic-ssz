@@ -108,6 +108,9 @@ jobs:
     - name: Download dependencies
       run: go mod download
 
+    - name: Unpack compat-tests archives
+      run: make unpack-compat-tests
+
     - name: Run codegen tests with coverage
       run: |
         mkdir coverage
@@ -172,6 +175,9 @@ jobs:
 
     - name: Download dependencies
       run: go mod download
+
+    - name: Unpack compat-tests archives
+      run: make unpack-compat-tests
 
     - name: Run unit tests
       run: go test -v -race ./...
