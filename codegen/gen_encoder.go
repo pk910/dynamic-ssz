@@ -400,15 +400,16 @@ func (ctx *encoderContext) marshalContainer(desc *ssztypes.TypeDescriptor, varNa
 	staticSize := 0
 	staticSizeVars := []string{}
 	for _, field := range desc.ContainerDesc.Fields {
-		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+		switch {
+		case field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0:
 			staticSize += 4
-		} else if hasDynamic && field.Type.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+		case hasDynamic && field.Type.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions:
 			sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(field.Type)
 			if err != nil {
 				return err
 			}
 			staticSizeVars = append(staticSizeVars, sizeVar)
-		} else {
+		default:
 			staticSize += int(field.Type.Size)
 		}
 	}
