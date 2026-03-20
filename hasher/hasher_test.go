@@ -1194,3 +1194,399 @@ func TestBitlistThenHashTreeRoot(t *testing.T) {
 		t.Fatalf("HashRoot failed: %v", err)
 	}
 }
+
+func TestGetZeroHashLevelBytesWrongLength(t *testing.T) {
+	// Non-32-byte input exercises the early return guard.
+	level, ok := GetZeroHashLevelBytes([]byte{1, 2, 3})
+	if ok || level != 0 {
+		t.Errorf("expected (0, false), got (%d, %v)", level, ok)
+	}
+}
+
+func TestGetZeroHashLevelBytesValid(t *testing.T) {
+	hash := GetZeroHash(3)
+	level, ok := GetZeroHashLevelBytes(hash)
+	if !ok || level != 3 {
+		t.Errorf("expected (3, true), got (%d, %v)", level, ok)
+	}
+}
+
+func TestCollapseWithoutLayer(t *testing.T) {
+	h := FastHasherPool.Get()
+	defer FastHasherPool.Put(h)
+
+	// Collapse with no active layer should return immediately.
+	h.Collapse()
+}
+
+func TestInternalMerkleizeAtCapacity(t *testing.T) {
+	h := FastHasherPool.Get()
+	defer FastHasherPool.Put(h)
+
+	// Fill buffer so that PutUint64Array brings it to exact capacity,
+	// exercising the capacity-growth guard in internalMerkleize.
+	h.buf = make([]byte, 96, 128)
+	for i := range h.buf {
+		h.buf[i] = 0
+	}
+
+	h.PutUint64Array([]uint64{1, 2, 3, 4})
+
+	if len(h.buf) != 96+32 {
+		t.Errorf("expected 128 bytes, got %d", len(h.buf))
+	}
+}
+
+func TestCollapseAllDepthsCapacityExpansion(t *testing.T) {
+	h := FastHasherPool.Get()
+	defer FastHasherPool.Put(h)
+
+	// Shrink buffer capacity before Merkleize so collapseAllDepths
+	// triggers its capacity expansion guard.
+	indx := h.StartTree(sszutils.TreeTypeBinary)
+	h.PutUint64(1)
+	h.PutUint64(2)
+
+	data := make([]byte, len(h.buf), len(h.buf)+32)
+	copy(data, h.buf)
+	h.buf = data
+
+	h.Merkleize(indx)
+
+	_, err := h.HashRoot()
+	if err != nil {
+		t.Fatalf("HashRoot failed: %v", err)
+	}
+}
+
+func TestProgressiveLayerZeroRoots(t *testing.T) {
+	h := FastHasherPool.Get()
+	defer FastHasherPool.Put(h)
+
+	// Empty progressive layer exercises the nRoots==0 path.
+	indx := h.StartTree(sszutils.TreeTypeProgressive)
+	h.MerkleizeProgressive(indx)
+
+	_, err := h.HashRoot()
+	if err != nil {
+		t.Fatalf("HashRoot failed: %v", err)
+	}
+}
+
+func TestProgressiveLayerZeroRootsWithMixin(t *testing.T) {
+	h := FastHasherPool.Get()
+	defer FastHasherPool.Put(h)
+
+	indx := h.StartTree(sszutils.TreeTypeProgressive)
+	h.MerkleizeProgressiveWithMixin(indx, 0)
+
+	_, err := h.HashRoot()
+	if err != nil {
+		t.Fatalf("HashRoot failed: %v", err)
+	}
+}
+
+func TestMerkleizeProgressiveImplSmallTmp(t *testing.T) {
+	h := FastHasherPool.Get()
+	defer FastHasherPool.Put(h)
+
+	// Shrink tmp below 64 bytes to exercise the tmp expansion guard.
+	h.tmp = h.tmp[:10]
+
+	indx := h.Index()
+	h.PutUint64(1)
+	h.PutUint64(2)
+	h.PutUint64(3)
+	h.FillUpTo32()
+	h.MerkleizeProgressive(indx)
+
+	_, err := h.HashRoot()
+	if err != nil {
+		t.Fatalf("HashRoot failed: %v", err)
+	}
+}
+
+func TestPutBytesExact32(t *testing.T) {
+	h := FastHasherPool.Get()
+	defer FastHasherPool.Put(h)
+
+	// Exactly 32 bytes exercises the fast copy path (no padding).
+	data := make([]byte, 32)
+	for i := range data {
+		data[i] = byte(i + 1)
+	}
+	h.PutBytes(data)
+
+	if len(h.buf) != 32 {
+		t.Errorf("expected 32 bytes, got %d", len(h.buf))
+	}
+	if !bytes.Equal(h.buf, data) {
+		t.Error("PutBytes(32 bytes) should copy data directly")
+	}
+}
+
+func TestCurrentIndex(t *testing.T) {
+	h := FastHasherPool.Get()
+	defer FastHasherPool.Put(h)
+
+	if h.CurrentIndex() != 0 {
+		t.Errorf("expected 0, got %d", h.CurrentIndex())
+	}
+
+	h.PutUint64(42)
+	if h.CurrentIndex() != 32 {
+		t.Errorf("expected 32, got %d", h.CurrentIndex())
+	}
+}
+
+func TestMerkleizeImplEmptyWithLimit(t *testing.T) {
+	h := FastHasherPool.Get()
+	defer FastHasherPool.Put(h)
+
+	// Empty input with limit > 1 exercises the zero-hash-at-depth path.
+	indx := h.Index()
+	h.MerkleizeWithMixin(indx, 0, 4)
+
+	_, err := h.HashRoot()
+	if err != nil {
+		t.Fatalf("HashRoot failed: %v", err)
+	}
+}
+
+func TestCollapseAllDepthsTightCapacity(t *testing.T) {
+	h := FastHasherPool.Get()
+	defer FastHasherPool.Put(h)
+
+	// Build a collapsed layer, then shrink buffer capacity before Merkleize
+	// to exercise the capacity expansion guard in collapseAllDepths.
+	indx := h.StartTree(sszutils.TreeTypeBinary)
+	for i := range 300 {
+		var chunk [32]byte
+		binary.LittleEndian.PutUint64(chunk[:], uint64(i))
+		h.buf = append(h.buf, chunk[:]...)
+		if (i+1)%256 == 0 {
+			h.Collapse()
+		}
+	}
+
+	tightBuf := make([]byte, len(h.buf))
+	copy(tightBuf, h.buf)
+	h.buf = tightBuf
+
+	h.Merkleize(indx)
+
+	_, err := h.HashRoot()
+	if err != nil {
+		t.Fatalf("HashRoot failed: %v", err)
+	}
+}
+
+func TestCollapseAllDepthsRootMove(t *testing.T) {
+	h := FastHasherPool.Get()
+	defer FastHasherPool.Put(h)
+
+	// Collapsed binary layer with limit exercises collapseAllDepths
+	// depth expansion where the final root may need to be moved.
+	indx := h.StartTree(sszutils.TreeTypeBinary)
+	for i := range 512 {
+		var chunk [32]byte
+		binary.LittleEndian.PutUint64(chunk[:], uint64(i))
+		h.buf = append(h.buf, chunk[:]...)
+		if (i+1)%256 == 0 {
+			h.Collapse()
+		}
+	}
+
+	h.FillUpTo32()
+	h.MerkleizeWithMixin(indx, 512, 1024)
+
+	_, err := h.HashRoot()
+	if err != nil {
+		t.Fatalf("HashRoot failed: %v", err)
+	}
+}
+
+func TestCollapseAllDepthsEmptyCounts(t *testing.T) {
+	h := FastHasherPool.Get()
+	defer FastHasherPool.Put(h)
+
+	// Call collapseAllDepths with an empty region (bufIdx == bufEnd)
+	// so syncCollapseStateWithEnd finds zero chunks, exercising the
+	// lowestDepth < 0 safety break. bufEnd must be >= 32 so the
+	// post-loop root-move check doesn't underflow.
+	h.buf = make([]byte, 64, 128)
+	layer := &treeLayer{
+		bufIdx:   32,
+		maxDepth: 0,
+		counts:   [maxTreeDepth]uint32{},
+	}
+	h.collapseAllDepths(layer, 32, 32, 0)
+}
+
+func TestCollapseAllDepthsRootNotAtIndx(t *testing.T) {
+	h := FastHasherPool.Get()
+	defer FastHasherPool.Put(h)
+
+	// Mixed-depth data where the root ends up at a position different from indx.
+	// With indx offset and limit-based expansion, the final root position
+	// after collapse and depth expansion differs from indx.
+	indx := 32
+	h.buf = make([]byte, 32+3*32, 32+6*32)
+	for i := range h.buf {
+		h.buf[i] = byte(i)
+	}
+
+	layer := &treeLayer{
+		bufIdx:    indx,
+		collapsed: true,
+		maxDepth:  1,
+		counts:    [maxTreeDepth]uint32{1, 1},
+	}
+	h.collapseAllDepths(layer, indx, indx+3*32, 16)
+}
+
+func TestMaybeCollapseProgressiveConsumedZero(t *testing.T) {
+	h := FastHasherPool.Get()
+	defer FastHasherPool.Put(h)
+
+	// Craft a state where leafCount >= baseSize but consuming any single
+	// chunk would exceed baseSize, so consumed stays 0 (safety break).
+	// counts[20] = 1 represents 2^20 leaves. baseSize at level 0 = 1.
+	// A d20 chunk has 2^20 > 1 leaves, so it can't be consumed.
+	// Use collapsed=true so syncCollapseState preserves our crafted counts
+	// (the else branch would reinitialize from the buffer).
+	h.buf = make([]byte, 32, 128)
+
+	layer := h.pushLayer()
+	layer.bufIdx = 0
+	layer.incremental = true
+	layer.progressive = true
+	layer.collapsed = true
+	layer.counts = [maxTreeDepth]uint32{}
+	layer.counts[20] = 1
+	layer.maxDepth = 20
+	layer.progressiveCount = 0
+	layer.progressiveLevel = 0
+
+	h.maybeCollapseProgressive(layer)
+}
+
+func TestProgressiveRemainderOddHighDepth(t *testing.T) {
+	h := FastHasherPool.Get()
+	defer FastHasherPool.Put(h)
+
+	// Exercise the `d > newMaxDepth` branch in the progressive remainder
+	// compaction. We need a remainder where the ONLY data is a single chunk
+	// at depth > 0 (so pairs=0, odd=1, and d > newMaxDepth which starts at 0).
+	//
+	// Set up: progressive layer at level 1 (baseSize=4), with collapsed=true
+	// and counts = [0, 1, 1]. leafCount = 2+4 = 6 >= 4.
+	// Finalization consumes 1 d2 chunk (4 leaves), leaving [0, 1].
+	// Remainder compaction: d=1, n=1, pairs=0, odd=1. d(1) > newMaxDepth(0) = true.
+	h.buf = make([]byte, 3*32, 256)
+	for i := range h.buf {
+		h.buf[i] = byte(i)
+	}
+
+	layer := h.pushLayer()
+	layer.bufIdx = 0
+	layer.incremental = true
+	layer.progressive = true
+	layer.collapsed = true
+	layer.counts = [maxTreeDepth]uint32{0, 1, 1}
+	layer.maxDepth = 2
+	layer.progressiveCount = 0
+	layer.progressiveLevel = 1
+
+	h.maybeCollapseProgressive(layer)
+}
+
+func TestProgressiveLayerNotCollapsedWithActiveChunks(t *testing.T) {
+	h := FastHasherPool.Get()
+	defer FastHasherPool.Put(h)
+
+	// Exercise the !layer.collapsed branch in collapseProgressiveLayer.
+	// We need: after maybeCollapseProgressive, layer.collapsed is still false
+	// AND activeChunks > 0. Since maybeCollapseProgressive with collapsed=false
+	// reinitializes counts from the buffer and then tries to finalize groups,
+	// even 1 item would be finalized at level 0 (baseSize=1), setting
+	// collapsed=true. So we need 0 groups to be finalized.
+	//
+	// However, we can force the state by pretending progressive roots already
+	// exist (progressiveCount > 0) at a high level where baseSize > available
+	// leaves. maybeCollapseProgressive sees leafCount < baseSize, !finalized,
+	// calls maybeCollapseBinary which needs >= 256 items. With few items,
+	// collapsed stays false. Then collapseProgressiveLayer has active chunks
+	// with !collapsed.
+	h.buf = h.buf[:0]
+
+	// 2 "progressive root" chunks + 3 active chunks = 5 total
+	for i := range 5 {
+		var chunk [32]byte
+		binary.LittleEndian.PutUint64(chunk[:], uint64(i))
+		h.buf = append(h.buf, chunk[:]...)
+	}
+
+	layer := h.pushLayer()
+	layer.bufIdx = 0
+	layer.incremental = true
+	layer.progressive = true
+	layer.collapsed = false
+	layer.progressiveCount = 2 // 2 roots already done
+	layer.progressiveLevel = 2 // level 2 → baseSize=16
+
+	h.collapseProgressiveLayer(layer, 0)
+}
+
+func TestMerkleizeProgressiveImplNonAlignedLeft(t *testing.T) {
+	h := FastHasherPool.Get()
+	defer FastHasherPool.Put(h)
+
+	// Input shorter than 32 bytes: left chunks get the full input
+	// which is not 32-byte-aligned, exercising the left padding guard.
+	input := make([]byte, 20)
+	for i := range input {
+		input[i] = byte(i + 1)
+	}
+
+	result := h.merkleizeProgressiveImpl(input[:0], input, 0)
+	if len(result) != 32 {
+		t.Errorf("expected 32-byte root, got %d", len(result))
+	}
+}
+
+func TestMerkleizeProgressiveImplNonAlignedRight(t *testing.T) {
+	h := FastHasherPool.Get()
+	defer FastHasherPool.Put(h)
+
+	// Input > 32 bytes where the right portion is not 32-byte-aligned,
+	// exercising the right chunk padding guard.
+	input := make([]byte, 50)
+	for i := range input {
+		input[i] = byte(i + 1)
+	}
+
+	result := h.merkleizeProgressiveImpl(input[:0], input, 0)
+	if len(result) != 32 {
+		t.Errorf("expected 32-byte root, got %d", len(result))
+	}
+}
+
+func TestMerkleizeProgressiveImplTmpBelow32(t *testing.T) {
+	h := FastHasherPool.Get()
+	defer FastHasherPool.Put(h)
+
+	// Shrink tmp below 32 bytes to exercise the inner tmp expansion guard.
+	h.tmp = h.tmp[:5]
+
+	indx := h.Index()
+	h.PutUint64(1)
+	h.PutUint64(2)
+	h.FillUpTo32()
+	h.MerkleizeProgressive(indx)
+
+	_, err := h.HashRoot()
+	if err != nil {
+		t.Fatalf("HashRoot failed: %v", err)
+	}
+}

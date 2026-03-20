@@ -912,7 +912,7 @@ func TestWrapperAddNodeNil(t *testing.T) {
 
 func TestWrapperHashRootNon32Bytes(t *testing.T) {
 	w := NewWrapper()
-	// Create a leaf node with non-32-byte value to trigger the HashRoot error path
+	// Leaf node with non-32-byte value exercises the HashRoot error path.
 	w.nodes = []*Node{{value: []byte{1, 2, 3}}}
 
 	_, err := w.HashRoot()

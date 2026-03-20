@@ -574,9 +574,8 @@ func TestVerifyMultiproofUnsortedIndices(t *testing.T) {
 	// Build a tree with 8 leaves (indices 8..15)
 	root, _, allNodes := buildMerkleTree(8)
 
-	// Use indices that are neither ascending nor descending.
-	// This exercises the default branch in descendingIndices (lines 203-207)
-	// and the unsorted branch in getRequiredIndices (lines 294-297).
+	// Indices that are neither ascending nor descending exercise
+	// the sort fallback in both descendingIndices and getRequiredIndices.
 	indices := []int{10, 8, 13}
 	leafData := make([][]byte, len(indices))
 	for i, idx := range indices {
