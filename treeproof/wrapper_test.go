@@ -910,6 +910,20 @@ func TestWrapperAddNodeNil(t *testing.T) {
 	}
 }
 
+func TestWrapperHashRootNon32Bytes(t *testing.T) {
+	w := NewWrapper()
+	// Create a leaf node with non-32-byte value to trigger the HashRoot error path
+	w.nodes = []*Node{{value: []byte{1, 2, 3}}}
+
+	_, err := w.HashRoot()
+	if err == nil {
+		t.Fatal("expected error for non-32-byte hash")
+	}
+	if err.Error() != "expected 32 byte size" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestMin(t *testing.T) {
 	tests := []struct {
 		i, j     int

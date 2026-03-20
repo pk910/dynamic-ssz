@@ -182,3 +182,131 @@ func TestSszError_IntrospectionWithPath(t *testing.T) {
 		t.Error("errors.Is should match ErrTypeMismatch through path wrapping")
 	}
 }
+
+func TestSszError_PathMethod(t *testing.T) {
+	err := NewSszError(ErrOffset, "detail")
+	wrapped := ErrorWithPath(err, "Inner")
+	wrapped = ErrorWithPath(wrapped, "Outer")
+
+	var se *sszError
+	if !errors.As(wrapped, &se) {
+		t.Fatal("expected sszError type")
+	}
+
+	path := se.Path()
+	if len(path) != 2 || path[0] != "Inner" || path[1] != "Outer" {
+		t.Errorf("unexpected path: %v", path)
+	}
+}
+
+func TestSszError_MessageMethod(t *testing.T) {
+	err := NewSszError(ErrUnexpectedEOF, "need 8 bytes for uint64")
+
+	var se *sszError
+	if !errors.As(err, &se) {
+		t.Fatal("expected sszError type")
+	}
+
+	msg := se.Message()
+	if msg != "need 8 bytes for uint64" {
+		t.Errorf("unexpected message: %q", msg)
+	}
+}
+
+func TestSszError_PathMethodEmpty(t *testing.T) {
+	err := NewSszError(ErrOffset, "detail")
+
+	var se *sszError
+	if !errors.As(err, &se) {
+		t.Fatal("expected sszError type")
+	}
+
+	path := se.Path()
+	if len(path) != 0 {
+		t.Errorf("expected empty path, got: %v", path)
+	}
+}
+
+func TestSszError_MessageMethodEmpty(t *testing.T) {
+	err := NewSszError(ErrOffset, "")
+
+	var se *sszError
+	if !errors.As(err, &se) {
+		t.Fatal("expected sszError type")
+	}
+
+	msg := se.Message()
+	if msg != "" {
+		t.Errorf("expected empty message, got: %q", msg)
+	}
+}
+
+func TestErrorConstructorFunctions(t *testing.T) {
+	tests := []struct {
+		name         string
+		err          error
+		sentinel     error
+		wantContains string
+	}{
+		// ErrUnexpectedEOF constructors
+		{"ErrFixedFieldsEOFFn", ErrFixedFieldsEOFFn(10, 20), ErrUnexpectedEOF, "not enough data for fixed fields (have 10, needed 20)"},
+		{"ErrNeedBytesFn_singular", ErrNeedBytesFn(1, "bool"), ErrUnexpectedEOF, "need 1 byte for bool"},
+		{"ErrNeedBytesFn_plural", ErrNeedBytesFn(4, "uint32"), ErrUnexpectedEOF, "need 4 bytes for uint32"},
+		{"ErrByteVectorEOFFn", ErrByteVectorEOFFn(5, 32), ErrUnexpectedEOF, "not enough data for byte vector (have 5, needed 32)"},
+		{"ErrVectorElementsEOFFn", ErrVectorElementsEOFFn(8, 16), ErrUnexpectedEOF, "not enough data for vector elements (have 8, needed 16)"},
+		{"ErrVectorOffsetsEOFFn", ErrVectorOffsetsEOFFn(4, 12), ErrUnexpectedEOF, "not enough data for vector offsets (have 4, needed 12)"},
+		{"ErrListOffsetsEOFFn", ErrListOffsetsEOFFn(0, 8), ErrUnexpectedEOF, "not enough data for list offsets (have 0, needed 8)"},
+		{"ErrListNotAlignedFn", ErrListNotAlignedFn(13, 4), ErrUnexpectedEOF, "list length 13 is not a multiple of element size 4"},
+		{"ErrInvalidListStartOffsetFn", ErrInvalidListStartOffsetFn(99, 50), ErrUnexpectedEOF, "invalid list start offset 99 (length 50)"},
+		{"ErrUnionSelectorEOFFn", ErrUnionSelectorEOFFn(), ErrUnexpectedEOF, "need 1 byte for union selector"},
+		{"ErrUnionVariantEOFFn", ErrUnionVariantEOFFn(3, 10), ErrUnexpectedEOF, "not enough data for union variant (have 3, needed 10)"},
+		{"ErrOptionalFlagEOFFn", ErrOptionalFlagEOFFn(), ErrUnexpectedEOF, "need 1 byte for optional presence flag"},
+		{"ErrOptionalValueEOFFn", ErrOptionalValueEOFFn(), ErrUnexpectedEOF, "not enough data for optional value"},
+
+		// ErrOffset constructors
+		{"ErrFirstOffsetMismatchFn", ErrFirstOffsetMismatchFn(8, 12), ErrOffset, "first offset 8 does not match expected 12"},
+		{"ErrOffsetOutOfRangeFn", ErrOffsetOutOfRangeFn(100, 50, 80), ErrOffset, "offset 100 out of range (prev 50, max 80)"},
+		{"ErrFieldNotConsumedFn", ErrFieldNotConsumedFn(10, 12), ErrOffset, "field consumed to position 10, expected 12"},
+		{"ErrTrailingDataFn", ErrTrailingDataFn(5), ErrOffset, "5 bytes trailing data"},
+		{"ErrElementOffsetOutOfRangeFn", ErrElementOffsetOutOfRangeFn(99, 10, 50), ErrOffset, "element offset 99 out of range (start 10, max 50)"},
+		{"ErrStaticElementNotConsumedFn", ErrStaticElementNotConsumedFn(6, 8), ErrOffset, "element consumed to position 6, expected 8"},
+
+		// ErrVectorLength constructors
+		{"ErrVectorLengthFn", ErrVectorLengthFn(10, 5), ErrVectorLength, "vector length 10 exceeds limit 5"},
+		{"ErrVectorSizeExceedsArrayFn", ErrVectorSizeExceedsArrayFn(100, 50), ErrVectorLength, "dynamic vector size 100 exceeds array length 50"},
+
+		// ErrInvalidValueRange constructors
+		{"ErrBitvectorPaddingFn", ErrBitvectorPaddingFn(), ErrInvalidValueRange, "bitvector padding bits are not zero"},
+		{"ErrBitlistNotTerminatedFn", ErrBitlistNotTerminatedFn(), ErrInvalidValueRange, "bitlist missing termination bit"},
+		{"ErrInvalidBoolValueFn", ErrInvalidBoolValueFn(), ErrInvalidValueRange, "bool value must be 0 or 1"},
+		{"ErrInvalidUnionVariantFn", ErrInvalidUnionVariantFn(), ErrInvalidValueRange, "invalid union variant selector"},
+		{"ErrUnionTypeMismatchFn", ErrUnionTypeMismatchFn(), ErrInvalidValueRange, "union variant type mismatch"},
+		{"ErrTimeTypeExpectedFn", ErrTimeTypeExpectedFn("MyStruct"), ErrInvalidValueRange, "time.Time type expected, got MyStruct"},
+		{"ErrBigIntTypeExpectedFn", ErrBigIntTypeExpectedFn("NotBigInt"), ErrInvalidValueRange, "big.Int type expected, got NotBigInt"},
+		{"ErrLargeUintLengthFn", ErrLargeUintLengthFn(17, 16), ErrInvalidValueRange, "large uint type does not have expected data length (17 != 16)"},
+
+		// ErrListTooBig constructors
+		{"ErrListLengthFn", ErrListLengthFn(100, 50), ErrListTooBig, "list length 100 exceeds maximum 50"},
+		{"ErrBitlistLengthFn", ErrBitlistLengthFn(256, 128), ErrListTooBig, "bitlist length 256 exceeds maximum 128"},
+
+		// ErrNotImplemented constructors
+		{"ErrUnknownTypeFn", ErrUnknownTypeFn("mysteryType"), ErrNotImplemented, "unknown type: mysteryType"},
+		{"ErrCustomTypeNotSupportedFn", ErrCustomTypeNotSupportedFn(), ErrNotImplemented, "custom type not supported"},
+
+		// ErrPlatformOverflow constructors
+		{"ErrPlatformOverflowFn", ErrPlatformOverflowFn("list count", 999999999), ErrPlatformOverflow, "list count 999999999 exceeds platform int max"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !errors.Is(tt.err, tt.sentinel) {
+				t.Errorf("errors.Is should match sentinel %v", tt.sentinel)
+			}
+
+			got := tt.err.Error()
+			if got != tt.sentinel.Error()+": "+tt.wantContains {
+				t.Errorf("got %q, want %q", got, tt.sentinel.Error()+": "+tt.wantContains)
+			}
+		})
+	}
+}
