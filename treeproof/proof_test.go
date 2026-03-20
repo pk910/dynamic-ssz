@@ -570,6 +570,90 @@ func TestGetRequiredIndices(t *testing.T) {
 	}
 }
 
+func TestVerifyMultiproofUnsortedIndices(t *testing.T) {
+	// Build a tree with 8 leaves (indices 8..15)
+	root, _, allNodes := buildMerkleTree(8)
+
+	// Indices that are neither ascending nor descending exercise
+	// the sort fallback in both descendingIndices and getRequiredIndices.
+	indices := []int{10, 8, 13}
+	leafData := make([][]byte, len(indices))
+	for i, idx := range indices {
+		leafData[i] = allNodes[idx]
+	}
+	proofHashes := findProofHashes(indices, allNodes)
+
+	valid, err := VerifyMultiproof(root, proofHashes, leafData, indices)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !valid {
+		t.Fatal("expected valid proof with unsorted indices")
+	}
+}
+
+func TestVerifyMultiproofMissingNodes(t *testing.T) {
+	// Build a tree with 4 leaves (indices 4..7)
+	root, leaves, allNodes := buildMerkleTree(4)
+
+	// Prove leaf 4 with correct proof
+	indices := []int{4}
+	leafData := [][]byte{leaves[0]}
+	proofHashes := findProofHashes(indices, allNodes)
+
+	// Verify it works normally
+	valid, err := VerifyMultiproof(root, proofHashes, leafData, indices)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !valid {
+		t.Fatal("expected valid proof")
+	}
+
+	// Now corrupt a proof hash so verification fails but doesn't crash
+	corruptProof := make([][]byte, len(proofHashes))
+	for i := range proofHashes {
+		corruptProof[i] = make([]byte, 32)
+	}
+	valid, err = VerifyMultiproof(root, corruptProof, leafData, indices)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if valid {
+		t.Fatal("expected invalid proof with corrupted hashes")
+	}
+}
+
+func TestGetRequiredIndicesUnsorted(t *testing.T) {
+	// Provide unsorted indices to exercise the sort branch (lines 294-297)
+	result := getRequiredIndices([]int{7, 4, 6})
+
+	// Should still return valid required indices in descending order
+	for i := 1; i < len(result); i++ {
+		if result[i] >= result[i-1] {
+			t.Errorf("result not sorted in descending order: %v", result)
+			break
+		}
+	}
+}
+
+func TestDescendingIndicesUnsorted(t *testing.T) {
+	// Neither ascending nor descending: exercises the default sort branch
+	indices := []int{5, 3, 7, 1}
+	result := descendingIndices(indices)
+
+	// Should be sorted descending
+	expected := []int{7, 5, 3, 1}
+	if len(result) != len(expected) {
+		t.Fatalf("expected %d indices, got %d", len(expected), len(result))
+	}
+	for i, v := range expected {
+		if result[i] != v {
+			t.Errorf("result[%d] = %d, want %d", i, result[i], v)
+		}
+	}
+}
+
 func TestHashFn(t *testing.T) {
 	// Test that hashFn produces correct SHA256 hash
 	input := []byte("test data")

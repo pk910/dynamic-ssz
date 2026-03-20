@@ -77,6 +77,39 @@ func TestPutBitlistLimitOverflow(t *testing.T) {
 	})
 }
 
+func TestPutBitlistSizeOverflow32Bit(t *testing.T) {
+	if math.MaxInt > math.MaxInt32 {
+		t.Skip("size overflow only possible on 32-bit platforms")
+	}
+
+	// On 32-bit, math.MaxInt == MaxInt32 == 2147483647.
+	// ParseBitlist computes size = 8*(len(buf)-1) + msb.
+	// We need size > MaxInt32, so len(buf) must be > MaxInt32/8 + 1 = 268435457.
+	bufLen := math.MaxInt32/8 + 2 // 268435458
+	buf := make([]byte, bufLen)
+	buf[bufLen-1] = 0x80 // sentinel bit at position 7
+
+	w := NewWrapper()
+	expectPanic(t, "PutBitlist: size", func() {
+		w.PutBitlist(buf, math.MaxUint64)
+	})
+}
+
+func TestPutProgressiveBitlistSizeOverflow32Bit(t *testing.T) {
+	if math.MaxInt > math.MaxInt32 {
+		t.Skip("size overflow only possible on 32-bit platforms")
+	}
+
+	bufLen := math.MaxInt32/8 + 2
+	buf := make([]byte, bufLen)
+	buf[bufLen-1] = 0x80
+
+	w := NewWrapper()
+	expectPanic(t, "PutProgressiveBitlist: size", func() {
+		w.PutProgressiveBitlist(buf)
+	})
+}
+
 func TestPutProgressiveBitlistNormal(t *testing.T) {
 	w := NewWrapper()
 	// Verify normal operation doesn't panic

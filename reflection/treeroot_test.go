@@ -1875,6 +1875,28 @@ func TestPackedUint8InNonByteVector(t *testing.T) {
 	}
 }
 
+func TestListCollapseEvery256(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	// List with 257 non-byte elements exercises the Collapse() call
+	// that fires every 256th element during list hash tree root.
+	input := struct {
+		Data []uint32 `ssz-max:"1000"`
+	}{make([]uint32, 257)}
+
+	for i := range input.Data {
+		input.Data[i] = uint32(i)
+	}
+
+	hash, err := dynssz.HashTreeRoot(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hash == [32]byte{} {
+		t.Error("hash should not be zero")
+	}
+}
+
 func TestBuildRootFromProgressiveContainerError(t *testing.T) {
 	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
