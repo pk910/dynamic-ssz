@@ -2,6 +2,7 @@ package tests
 
 import (
 	"math/big"
+	"time"
 
 	dynssz "github.com/pk910/dynamic-ssz"
 	"github.com/pk910/dynamic-ssz/sszutils"
@@ -426,6 +427,110 @@ var ExtendedTypes1_Payload2 = ExtendedTypes1{
 	Opt1: nil,
 	Opt2: nil,
 	Big1: *big.NewInt(0),
+}
+
+// CoverageTypes1 covers: regular bitlists, bitlists with spec max,
+// dynamic vectors/lists (slice-based with zero-padding), bool vectors.
+type CoverageTypes1 struct {
+	BitLst1 []byte                     `ssz-type:"bitlist" ssz-max:"16"`                         // regular bitlist with static max
+	BitLst2 []byte                     `ssz-type:"bitlist" ssz-max:"16" dynssz-max:"BITLST_MAX"` // regular bitlist with spec max
+	DynVec1 []*CoverageTypes1_DynChild `ssz-size:"4"`                                            // slice vector of dynamic ptrs
+	DynLst1 []*CoverageTypes1_DynChild `ssz-max:"4"`                                             // list of dynamic ptrs
+	DynVec2 []CoverageTypes1_DynChild  `ssz-size:"2"`                                            // slice vector of dynamic values
+	DynLst2 []CoverageTypes1_DynChild  `ssz-max:"4"`                                             // list of dynamic values
+	VecBool [4]bool                    // array vector of bools (hash pack mode)
+	LstBool []bool                     `ssz-max:"8"`  // list of bools
+	VecU16  []uint16                   `ssz-size:"4"` // slice vector of uint16 (hash pack mode)
+	LstU16  []uint16                   `ssz-max:"8"`  // list of uint16
+}
+
+type CoverageTypes1_DynChild struct {
+	F1 uint32
+	F2 []byte `ssz-max:"8"` // makes it dynamic
+}
+
+var CoverageTypes1_Payload = CoverageTypes1{
+	BitLst1: []byte{0x03},
+	BitLst2: []byte{0x07},
+	DynVec1: []*CoverageTypes1_DynChild{
+		{F1: 1, F2: []byte{1, 2}},
+		{F1: 2, F2: []byte{3, 4, 5}},
+	},
+	DynLst1: []*CoverageTypes1_DynChild{
+		{F1: 3, F2: []byte{6}},
+	},
+	DynVec2: []CoverageTypes1_DynChild{
+		{F1: 4, F2: []byte{7, 8}},
+	},
+	DynLst2: []CoverageTypes1_DynChild{
+		{F1: 5, F2: []byte{9, 10, 11}},
+	},
+	VecBool: [4]bool{true, false, true, false},
+	LstBool: []bool{true, true, false},
+	VecU16:  []uint16{100, 200, 300, 400},
+	LstU16:  []uint16{500, 600},
+}
+
+// CoverageTypes2 covers: time.Time, pointer extended types, pointer big.Int,
+// vectors/lists of extended types (pack-mode hashing, sizeType paths).
+type CoverageTypes2 struct {
+	T1     time.Time
+	I8p    *int8
+	I16p   *int16
+	I32p   *int32
+	I64p   *int64
+	F32p   *float32
+	F64p   *float64
+	Bigp   *big.Int
+	VecI8  [4]int8    // vector of int8 (hash pack mode)
+	LstI16 []int16    `ssz-max:"8"`  // list of int16
+	VecI32 []int32    `ssz-size:"4"` // vector of int32 (slice)
+	LstI64 []int64    `ssz-max:"4"`  // list of int64
+	VecF32 [2]float32 // vector of float32
+	LstF64 []float64  `ssz-max:"4"` // list of float64
+}
+
+var (
+	covI8  = int8(-42)
+	covI16 = int16(-1337)
+	covI32 = int32(817482215)
+	covI64 = int64(-848028848028)
+	covF32 = float32(3.14)
+	covF64 = float64(2.718281828)
+)
+
+var CoverageTypes2_Payload1 = CoverageTypes2{
+	T1:     time.Unix(1234567890, 0),
+	I8p:    &covI8,
+	I16p:   &covI16,
+	I32p:   &covI32,
+	I64p:   &covI64,
+	F32p:   &covF32,
+	F64p:   &covF64,
+	Bigp:   big.NewInt(42),
+	VecI8:  [4]int8{-1, 2, -3, 4},
+	LstI16: []int16{100, -200, 300},
+	VecI32: []int32{1000, -2000, 3000, -4000},
+	LstI64: []int64{100000, -200000},
+	VecF32: [2]float32{1.5, -2.5},
+	LstF64: []float64{3.14, -2.718},
+}
+
+var CoverageTypes2_Payload2 = CoverageTypes2{
+	T1:     time.Time{},
+	I8p:    nil,
+	I16p:   nil,
+	I32p:   nil,
+	I64p:   nil,
+	F32p:   nil,
+	F64p:   nil,
+	Bigp:   nil,
+	VecI8:  [4]int8{},
+	LstI16: nil,
+	VecI32: []int32{0, 0, 0, 0},
+	LstI64: nil,
+	VecF32: [2]float32{},
+	LstF64: nil,
 }
 
 // Comment-annotated non-struct types for testing comment-based SSZ annotations.

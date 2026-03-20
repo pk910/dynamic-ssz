@@ -227,10 +227,6 @@ func (ctx *encoderContext) generateSizeFnCode(indent int) (string, error) {
 }
 
 func (ctx *encoderContext) generateEncodeContext(indent int) string {
-	if len(ctx.sizeFnSignature) == 0 {
-		return ""
-	}
-
 	codeBuf := strings.Builder{}
 	maxFnNameLen := 5 // "exprs"
 
@@ -392,23 +388,28 @@ func (ctx *encoderContext) marshalBigInt(_ *ssztypes.TypeDescriptor, varName str
 
 // marshalContainer generates marshal code for SSZ container (struct) types.
 func (ctx *encoderContext) marshalContainer(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
+	// Pre-scan for dynamic fields since staticSizeVars are only needed for dynoff
 	hasDynamic := false
+	for _, field := range desc.ContainerDesc.Fields {
+		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+			hasDynamic = true
+			break
+		}
+	}
+
 	staticSize := 0
 	staticSizeVars := []string{}
 	for _, field := range desc.ContainerDesc.Fields {
 		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
-			hasDynamic = true
 			staticSize += 4
-		} else {
-			if field.Type.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
-				sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(field.Type)
-				if err != nil {
-					return err
-				}
-				staticSizeVars = append(staticSizeVars, sizeVar)
-			} else {
-				staticSize += int(field.Type.Size)
+		} else if hasDynamic && field.Type.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+			sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(field.Type)
+			if err != nil {
+				return err
 			}
+			staticSizeVars = append(staticSizeVars, sizeVar)
+		} else {
+			staticSize += int(field.Type.Size)
 		}
 	}
 	staticSizeVars = append(staticSizeVars, fmt.Sprintf("%d", staticSize))
