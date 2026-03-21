@@ -309,7 +309,7 @@ func verifyFullTreeLeaves(root []byte, leaves [][]byte, indices []int) (bool, bo
 }
 
 // appendProofLeaf writes one proof leaf as a full 32-byte SSZ chunk.
-func appendProofLeaf(hh *hasher.Hasher, zeroChunk []byte, leaf []byte) {
+func appendProofLeaf(hh *hasher.Hasher, zeroChunk, leaf []byte) {
 	switch {
 	case len(leaf) == 32:
 		hh.Append(leaf)
