@@ -76,31 +76,38 @@ func VerifyMultiproof(root []byte, proof, leaves [][]byte, indices []int) (bool,
 		}
 	}
 
-	reqIndices := getRequiredIndices(indices)
-	if len(reqIndices) != len(proof) {
-		return false, fmt.Errorf("number of proof hashes %d and required indices %d mismatch", len(proof), len(reqIndices))
+	requiredProofIndices := getRequiredIndices(indices)
+	if len(requiredProofIndices) != len(proof) {
+		return false, fmt.Errorf("number of proof hashes %d and required indices %d mismatch", len(proof), len(requiredProofIndices))
 	}
 
-	// userGenIndices contains all generalised indices between leaves and proof hashes
-	// in descending order so we can walk the tree bottom-up without an extra sort.
-	leafGenIndices := descendingIndices(indices)
-	// Create database of index -> value (hash) from inputs
-	db := make(map[int][32]byte, len(indices)+len(reqIndices))
+	// Keep leaf indices in descending generalized-index order so verification can
+	// walk the tree bottom-up without building another sorted slice.
+	leafGenIndices := newDescendingIndexCursor(indices)
+	// Pre-size the hash lookup with leaves, proof nodes, and a small allowance
+	// for the intermediate parents we will compute during verification.
+	hashByIndexCap := len(indices) + len(requiredProofIndices)
+	if maxReqIndex := len(requiredProofIndices); maxReqIndex > 0 {
+		hashByIndexCap += getPathLength(requiredProofIndices[0])
+	} else if leafGenIndices.ok() {
+		hashByIndexCap += getPathLength(leafGenIndices.current())
+	}
+	hashByIndex := make(map[int][32]byte, hashByIndexCap)
 
 	for i, leaf := range leaves {
-		db[indices[i]] = bytesToChunk(leaf)
+		hashByIndex[indices[i]] = bytesToChunk(leaf)
 	}
 	for i, h := range proof {
-		db[reqIndices[i]] = bytesToChunk(h)
+		hashByIndex[requiredProofIndices[i]] = bytesToChunk(h)
 	}
 
 	// The depth of the tree up to the greatest index
 	maxIndex := 0
-	if len(leafGenIndices) > 0 {
-		maxIndex = leafGenIndices[0]
+	if leafGenIndices.ok() {
+		maxIndex = leafGenIndices.current()
 	}
-	if len(reqIndices) > 0 && reqIndices[0] > maxIndex {
-		maxIndex = reqIndices[0]
+	if len(requiredProofIndices) > 0 && requiredProofIndices[0] > maxIndex {
+		maxIndex = requiredProofIndices[0]
 	}
 
 	var capacity int
@@ -111,12 +118,11 @@ func VerifyMultiproof(root []byte, proof, leaves [][]byte, indices []int) (bool,
 	// Allocate space for auxiliary keys created when computing intermediate hashes
 	// Auxiliary indices are useful to avoid using store all indices to traverse
 	// in a single array and sort upon an insertion, which would be inefficient.
-	auxGenIndices := make([]int, 0, capacity)
+	pendingParentIndices := make([]int, 0, capacity)
 
 	// To keep track the current position to inspect in both arrays
-	posLeaf := 0
-	posProof := 0
-	posAux := 0
+	proofPos := 0
+	pendingPos := 0
 
 	var tmp [64]byte
 	var index int
@@ -125,31 +131,36 @@ func VerifyMultiproof(root []byte, proof, leaves [][]byte, indices []int) (bool,
 	// in the in-memory database, until the root is reached.
 	//
 	// EXIT CONDITION: no more indices to use in both arrays
-	for posAux < len(auxGenIndices) || posLeaf < len(leafGenIndices) || posProof < len(reqIndices) {
+	const (
+		sourcePendingParent = 1
+		sourceLeaf          = 2
+		sourceProof         = 3
+	)
+	for pendingPos < len(pendingParentIndices) || leafGenIndices.ok() || proofPos < len(requiredProofIndices) {
 		// We need to establish from which array we're going to take the next index
 		// by taking the largest available generalized index.
 		index = 0
 		source := 0
-		if posAux < len(auxGenIndices) {
-			index = auxGenIndices[posAux]
-			source = 1
+		if pendingPos < len(pendingParentIndices) {
+			index = pendingParentIndices[pendingPos]
+			source = sourcePendingParent
 		}
-		if posLeaf < len(leafGenIndices) && leafGenIndices[posLeaf] > index {
-			index = leafGenIndices[posLeaf]
-			source = 2
+		if leafGenIndices.ok() && leafGenIndices.current() > index {
+			index = leafGenIndices.current()
+			source = sourceLeaf
 		}
-		if posProof < len(reqIndices) && reqIndices[posProof] > index {
-			index = reqIndices[posProof]
-			source = 3
+		if proofPos < len(requiredProofIndices) && requiredProofIndices[proofPos] > index {
+			index = requiredProofIndices[proofPos]
+			source = sourceProof
 		}
 
 		switch source {
-		case 1:
-			posAux++
-		case 2:
-			posLeaf++
-		case 3:
-			posProof++
+		case sourcePendingParent:
+			pendingPos++
+		case sourceLeaf:
+			leafGenIndices.advance()
+		case sourceProof:
+			proofPos++
 		}
 
 		// Root has been reached
@@ -160,14 +171,14 @@ func VerifyMultiproof(root []byte, proof, leaves [][]byte, indices []int) (bool,
 		parentIndex := getParent(index)
 
 		// If the parent is already computed, we don't need to calculate the intermediate hash
-		if _, hasParent := db[parentIndex]; hasParent {
+		if _, hasParent := hashByIndex[parentIndex]; hasParent {
 			continue
 		}
 
 		leftIndex := (index | 1) ^ 1
-		left, hasLeft := db[leftIndex]
+		left, hasLeft := hashByIndex[leftIndex]
 		rightIndex := index | 1
-		right, hasRight := db[rightIndex]
+		right, hasRight := hashByIndex[rightIndex]
 
 		if !hasRight || !hasLeft {
 			return false, fmt.Errorf("proof is missing required nodes, either %d or %d", leftIndex, rightIndex)
@@ -175,19 +186,27 @@ func VerifyMultiproof(root []byte, proof, leaves [][]byte, indices []int) (bool,
 
 		copy(tmp[:32], left[:])
 		copy(tmp[32:], right[:])
-		db[parentIndex] = sha256.Sum256(tmp[:])
+		hashByIndex[parentIndex] = sha256.Sum256(tmp[:])
 
 		// An intermediate hash has been computed, as such we need to store its index
 		// to remember to examine it later
-		auxGenIndices = append(auxGenIndices, parentIndex)
+		pendingParentIndices = append(pendingParentIndices, parentIndex)
 	}
 
-	res, ok := db[1]
+	res, ok := hashByIndex[1]
 	if !ok {
 		return false, fmt.Errorf("root was not computed during proof verification")
 	}
 
 	return res == bytesToChunk(root), nil
+}
+
+// descendingIndexCursor iterates a set of generalized indices from largest to
+// smallest while reusing the caller's slice whenever it is already ordered.
+type descendingIndexCursor struct {
+	values []int
+	pos    int
+	step   int
 }
 
 func descendingIndices(indices []int) []int {
@@ -206,6 +225,34 @@ func descendingIndices(indices []int) []int {
 		sort.Sort(sort.Reverse(sort.IntSlice(out)))
 		return out
 	}
+}
+
+func newDescendingIndexCursor(indices []int) descendingIndexCursor {
+	switch {
+	case len(indices) == 0:
+		return descendingIndexCursor{pos: -1}
+	case intsSortedDescending(indices):
+		return descendingIndexCursor{values: indices, pos: 0, step: 1}
+	case sort.IntsAreSorted(indices):
+		return descendingIndexCursor{values: indices, pos: len(indices) - 1, step: -1}
+	default:
+		out := make([]int, len(indices))
+		copy(out, indices)
+		sort.Sort(sort.Reverse(sort.IntSlice(out)))
+		return descendingIndexCursor{values: out, pos: 0, step: 1}
+	}
+}
+
+func (c descendingIndexCursor) ok() bool {
+	return c.pos >= 0 && c.pos < len(c.values)
+}
+
+func (c descendingIndexCursor) current() int {
+	return c.values[c.pos]
+}
+
+func (c *descendingIndexCursor) advance() {
+	c.pos += c.step
 }
 
 func intsSortedDescending(indices []int) bool {
@@ -245,18 +292,35 @@ func verifyFullTreeLeaves(root []byte, leaves [][]byte, indices []int) (bool, bo
 	hh := hasher.FastHasherPool.Get()
 	defer hasher.FastHasherPool.Put(hh)
 
-	buf := make([]byte, count*32)
-	for i := range leaves {
-		idx := i
-		if reverse {
-			idx = count - 1 - i
+	appendStart := hh.Index()
+	zeroChunk := hasher.GetZeroHash(0)
+	if reverse {
+		for i := count - 1; i >= 0; i-- {
+			appendProofLeaf(hh, zeroChunk, leaves[i])
 		}
-		copy(buf[idx*32:], leaves[i])
+	} else {
+		for i := range leaves {
+			appendProofLeaf(hh, zeroChunk, leaves[i])
+		}
 	}
-	hh.Append(buf)
-	hh.Merkleize(0)
+	hh.Merkleize(appendStart)
 
 	return true, bytes.Equal(root, hh.Hash())
+}
+
+// appendProofLeaf writes one proof leaf as a full 32-byte SSZ chunk.
+func appendProofLeaf(hh *hasher.Hasher, zeroChunk []byte, leaf []byte) {
+	switch {
+	case len(leaf) == 32:
+		hh.Append(leaf)
+	case len(leaf) > 32:
+		hh.Append(leaf[:32])
+	case len(leaf) == 0:
+		hh.Append(zeroChunk)
+	default:
+		hh.Append(leaf)
+		hh.Append(zeroChunk[:32-len(leaf)])
+	}
 }
 
 // Returns the position (i.e. false for left, true for right)
@@ -290,50 +354,58 @@ func getRequiredIndices(leafIndices []int) []int {
 		return nil
 	}
 
-	tmp := leafIndices
-	if !sort.IntsAreSorted(leafIndices) {
-		tmp = make([]int, len(leafIndices))
-		copy(tmp, leafIndices)
-		sort.Ints(tmp)
-	}
+	// Walk upward level by level. At each level, siblings that are not already
+	// part of the current frontier must come from the proof.
+	current := descendingUniqueIndices(leafIndices)
+	depth := getPathLength(current[0])
+	required := make([]int, 0, len(current)*min(depth, 8))
+	next := make([]int, 0, len(current))
 
-	exists := struct{}{}
-	depth := getPathLength(tmp[len(tmp)-1])
+	for len(current) > 0 && current[0] > 1 {
+		next = next[:0]
+		producedPos := 0
 
-	leaves := make(map[int]struct{}, len(tmp))
-	for _, leaf := range tmp {
-		leaves[leaf] = exists
-	}
+		for i := 0; i < len(current); {
+			idx := current[i]
+			parent := getParent(idx)
 
-	requiredCap := len(tmp) * min(depth, 8)
-	required := make(map[int]struct{}, requiredCap)
-	computed := make(map[int]struct{}, requiredCap)
-
-	for _, leaf := range tmp {
-		cur := leaf
-		for cur > 1 {
-			sibling := getSibling(cur)
-			parent := getParent(cur)
-
-			if _, isLeaf := leaves[sibling]; !isLeaf {
-				required[sibling] = exists
+			if idx&1 == 1 && i+1 < len(current) && current[i+1] == idx-1 {
+				next = append(next, parent)
+				i += 2
+				continue
 			}
-			computed[parent] = exists
-			cur = parent
+
+			sibling := getSibling(idx)
+			for producedPos < len(next) && next[producedPos] > sibling {
+				producedPos++
+			}
+			if producedPos >= len(next) || next[producedPos] != sibling {
+				required = append(required, sibling)
+			}
+
+			next = append(next, parent)
+			i++
 		}
+
+		current, next = next, current[:0]
 	}
 
-	// Filter out nodes that will be computed on‑the‑fly.
-	requiredList := make([]int, 0, len(required))
-	// Remove computed indices from required ones
-	for r := range required {
-		if _, isComputed := computed[r]; !isComputed {
-			requiredList = append(requiredList, r)
+	return required
+}
+
+// descendingUniqueIndices returns generalized indices in descending order with
+// duplicates removed so each tree node is processed once.
+func descendingUniqueIndices(indices []int) []int {
+	sorted := descendingIndices(indices)
+	unique := make([]int, 0, len(sorted))
+	prev := 0
+	for i, idx := range sorted {
+		if i == 0 || idx != prev {
+			unique = append(unique, idx)
+			prev = idx
 		}
 	}
-
-	sort.Sort(sort.Reverse(sort.IntSlice(requiredList)))
-	return requiredList
+	return unique
 }
 
 func hashFn(data []byte) []byte {
