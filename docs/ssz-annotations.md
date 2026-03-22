@@ -27,30 +27,36 @@ type BeaconState struct {
 }
 ```
 
-### Comment Annotations (Non-Struct Types)
+### Type Annotations with `sszutils.Annotate[T]()` (Non-Struct Types)
 
-For top-level non-struct type definitions (e.g., named slices, arrays), Go does not allow struct tags. The code generator supports SSZ annotations in comments using the same struct tag syntax:
+For top-level non-struct type definitions (e.g., named slices, arrays), Go does not allow struct tags. Use `sszutils.Annotate[T]()` to register SSZ annotations for these types:
 
-**Line comment** (on the same line as the type definition):
 ```go
-type Blobs []*Blob          //ssz-max:"4096"
-type BlobKZGs [][48]byte    //ssz-max:"4096" dynssz-max:"MAX_BLOB_COMMITMENTS_PER_BLOCK"
-type FixedHash [32]byte     //ssz-size:"32"
-```
+import "github.com/pk910/dynamic-ssz/sszutils"
 
-**Doc comment** (above the type definition):
-```go
-// ssz-max:"4096" dynssz-max:"MAX_BLOB_COMMITMENTS_PER_BLOCK"
 type Blobs []*Blob
+var _ = sszutils.Annotate[Blobs](`ssz-max:"4096"`)
+
+type BlobKZGs [][48]byte
+var _ = sszutils.Annotate[BlobKZGs](`ssz-max:"4096" dynssz-max:"MAX_BLOB_COMMITMENTS_PER_BLOCK"`)
+
+type FixedHash [32]byte
+var _ = sszutils.Annotate[FixedHash](`ssz-size:"32"`)
 ```
 
-All standard SSZ tags are supported in comments: `ssz-size`, `ssz-max`, `ssz-type`, `ssz-bitsize`, `dynssz-size`, `dynssz-max`, `dynssz-bitsize`.
+The tag string uses the same `key:"value"` syntax as Go struct field tags. All standard SSZ tags are supported: `ssz-size`, `ssz-max`, `ssz-type`, `ssz-bitsize`, `dynssz-size`, `dynssz-max`, `dynssz-bitsize`.
+
+**How it works:**
+- `Annotate[T]()` registers the tag string in a global registry at package init time.
+- Both the **code generator** (`dynssz-gen`) and the **runtime reflection** path read from this registry, ensuring consistent behavior.
+- The code generator discovers `Annotate` calls by scanning the source AST.
+- The reflection path reads the registry when building type descriptors.
 
 **Important notes:**
-- Comment annotations are only used by the **code generator** (`dynssz-gen`). The runtime reflection layer does not read comments (use [Type Wrapper](type-wrapper.md) or pass hints via the programmatic API for runtime).
-- The annotation must use the exact struct tag format with quoted values: `ssz-max:"4096"`, not `ssz-max:4096`.
-- Multiple annotations can be placed on the same line, separated by spaces.
-- For doc comments, annotations can span multiple lines; they are joined with spaces for parsing.
+- Call `Annotate[T]()` at package level (in a `var` block or `init()` function) so the annotation is registered before any SSZ operation.
+- The tag string must use the exact struct tag format with quoted values: `ssz-max:"4096"`, not `ssz-max:4096`.
+- Multiple annotations can be placed in the same tag string, separated by spaces.
+- When a struct field uses an annotated type but also has its own field tags, the field tags take precedence over the type-level annotation.
 
 ## Size Annotations
 

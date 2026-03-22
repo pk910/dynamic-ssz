@@ -132,7 +132,9 @@ func (cg *CodeGenerator) analyzeTypes() error {
 			var desc *ssztypes.TypeDescriptor
 			var err error
 			if t.ReflectType != nil {
-				if t.ReflectType.Kind() == reflect.Struct {
+				// Always wrap in pointer so generated methods use pointer receivers
+				// (needed for unmarshal to write back modified values).
+				if t.ReflectType.Kind() != reflect.Pointer {
 					t.ReflectType = reflect.PointerTo(t.ReflectType)
 				}
 				desc, err = cg.typeCache.GetTypeDescriptor(t.ReflectType, t.Options.SizeHints, t.Options.MaxSizeHints, t.Options.TypeHints)
@@ -142,11 +144,7 @@ func (cg *CodeGenerator) analyzeTypes() error {
 					parser.CompatFlags = cg.compatFlags
 					parser.ExtendedTypes = t.Options.ExtendedTypes
 				}
-				baseType := t.GoTypesType
-				if named, ok := baseType.(*types.Named); ok {
-					baseType = named.Underlying()
-				}
-				if _, ok := baseType.(*types.Struct); ok {
+				if _, ok := t.GoTypesType.(*types.Pointer); !ok {
 					t.GoTypesType = types.NewPointer(t.GoTypesType)
 				}
 				desc, err = parser.GetTypeDescriptor(t.GoTypesType, t.Options.TypeHints, t.Options.SizeHints, t.Options.MaxSizeHints)

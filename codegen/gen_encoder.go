@@ -523,14 +523,31 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 	}
 
 	valueVar := varName
-	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
-		valueVar = ctx.getValueVar(desc, varName, "string")
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		targetType := ""
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
+			targetType = typeNameString
+		}
+		valueVar = ctx.getValueVar(desc, varName, targetType)
+	}
+
+	getValueVar := func(bracketCtx bool, ptrPrefix string) string {
+		if bracketCtx {
+			return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
+		}
+		if strings.HasPrefix(valueVar, "*") {
+			if ptrPrefix == "&" {
+				return strings.TrimPrefix(valueVar, "*")
+			}
+			return fmt.Sprintf("(%s%s)", ptrPrefix, valueVar)
+		}
+		return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 	}
 
 	lenVar := ""
 	switch {
 	case desc.Kind != reflect.Array:
-		ctx.appendCode(indent, "%s := len(%s)\n", varNameVLen, valueVar)
+		ctx.appendCode(indent, "%s := len(%s)\n", varNameVLen, getValueVar(true, ""))
 		ctx.appendCode(indent, "if %s > %s {\n", varNameVLen, limitVar)
 		errCode := fmt.Sprintf("sszutils.ErrVectorLengthFn(%s, %s)", varNameVLen, limitVar)
 		ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith(errCode))
@@ -556,14 +573,14 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			}
 			if bitlimitVar != "" {
 				ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
-				ctx.appendCode(indent, "if %s[%s-1] & paddingMask != 0 {\n", valueVar, lenVar)
+				ctx.appendCode(indent, "if %s[%s-1] & paddingMask != 0 {\n", getValueVar(false, ""), lenVar)
 				errCode := errCodeBitvectorPadding
 				ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 				ctx.appendCode(indent, "}\n")
 			}
-			ctx.appendCode(indent, "enc.EncodeBytes(%s[:%s])\n", valueVar, lenVar)
+			ctx.appendCode(indent, "enc.EncodeBytes(%s[:%s])\n", getValueVar(false, ""), lenVar)
 		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0:
-			ctx.appendCode(indent, "sszutils.EncodeUint64Slice(enc, %s[:%s])\n", varName, lenVar)
+			ctx.appendCode(indent, "sszutils.EncodeUint64Slice(enc, %s[:%s])\n", getValueVar(false, ""), lenVar)
 		default:
 			indexVar, indexDefer := ctx.getIndexVar()
 			defer indexDefer()
@@ -571,9 +588,9 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			ctx.appendCode(indent, "for %s := range %s {\n", indexVar, lenVar)
 			valVar := "t"
 			if ctx.isInlineable(desc.ElemDesc) {
-				valVar = fmt.Sprintf("%s[%s]", varName, indexVar)
+				valVar = fmt.Sprintf("%s[%s]", getValueVar(false, ""), indexVar)
 			} else {
-				ctx.appendCode(indent, "\tt := %s%s[%s]\n", ctx.getPtrPrefix(desc.ElemDesc), varName, indexVar)
+				ctx.appendCode(indent, "\tt := %s[%s]\n", getValueVar(false, ctx.getPtrPrefix(desc.ElemDesc)), indexVar)
 			}
 			if err := ctx.marshalType(desc.ElemDesc, valVar, typePath.append("[%d]", indexVar), indent+1, false); err != nil {
 				return err
@@ -597,7 +614,7 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent, "\tenc.EncodeZeroPadding(%s * 4)\n", limitVar)
 		ctx.appendCode(indent, "} else {\n")
 
-		sizeFnCall := ctx.getSizeFnCall(desc.ElemDesc, fmt.Sprintf("%s[i]", varName))
+		sizeFnCall := ctx.getSizeFnCall(desc.ElemDesc, fmt.Sprintf("%s[i]", getValueVar(false, "")))
 		ctx.appendCode(indent, "\toffset := %s * 4\n", lenVar)
 		ctx.appendCode(indent, "\tenc.EncodeOffset(uint32(offset))\n")
 		ctx.appendCode(indent, "\tfor i := range %s-1 {\n", lenVar)
@@ -608,7 +625,7 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		if desc.Kind != reflect.Array {
 			// append zero padding if we have less items than the limit
 			ctx.appendCode(indent, "\tif %s < %s {\n", lenVar, limitVar)
-			sizeFnCall := ctx.getSizeFnCall(desc.ElemDesc, fmt.Sprintf("%s[%s]", varName, lenVar))
+			sizeFnCall := ctx.getSizeFnCall(desc.ElemDesc, fmt.Sprintf("%s[%s]", getValueVar(false, ""), lenVar))
 			ctx.appendCode(indent, "\t\toffset += %s\n", sizeFnCall)
 			ctx.appendCode(indent, "\t\tenc.EncodeOffset(uint32(offset))\n")
 			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
@@ -638,9 +655,9 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 
 		valVar := "t"
 		if ctx.isInlineable(desc.ElemDesc) {
-			valVar = fmt.Sprintf("%s[%s]", varName, indexVar)
+			valVar = fmt.Sprintf("%s[%s]", getValueVar(false, ""), indexVar)
 		} else {
-			ctx.appendCode(indent, "\tt := %s%s[%s]\n", ctx.getPtrPrefix(desc.ElemDesc), varName, indexVar)
+			ctx.appendCode(indent, "\tt := %s[%s]\n", getValueVar(false, ctx.getPtrPrefix(desc.ElemDesc)), indexVar)
 		}
 		if err := ctx.marshalType(desc.ElemDesc, valVar, typePath.append("[%d]", indexVar), indent+1, false); err != nil {
 			return err
@@ -694,8 +711,25 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 	}
 
 	valueVar := varName
-	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
-		valueVar = ctx.getValueVar(desc, varName, "string")
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		targetType := ""
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
+			targetType = typeNameString
+		}
+		valueVar = ctx.getValueVar(desc, varName, targetType)
+	}
+
+	getValueVar := func(bracketCtx bool, ptrPrefix string) string {
+		if bracketCtx {
+			return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
+		}
+		if strings.HasPrefix(valueVar, "*") {
+			if ptrPrefix == "&" {
+				return strings.TrimPrefix(valueVar, "*")
+			}
+			return fmt.Sprintf("(%s%s)", ptrPrefix, valueVar)
+		}
+		return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 	}
 
 	hasVlen := false
@@ -703,7 +737,7 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 		if hasVlen {
 			return
 		}
-		ctx.appendCode(indent, "vlen := len(%s)\n", valueVar)
+		ctx.appendCode(indent, "vlen := len(%s)\n", getValueVar(true, ""))
 		hasVlen = true
 	}
 
@@ -725,10 +759,10 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 			if strings.HasPrefix(valueVar, "*") {
 				valueVar = fmt.Sprintf("(%s)", valueVar)
 			}
-			ctx.appendCode(indent, "enc.EncodeBytes(%s[:])\n", valueVar)
+			ctx.appendCode(indent, "enc.EncodeBytes(%s[:])\n", getValueVar(false, ""))
 		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0:
 			addVlen()
-			ctx.appendCode(indent, "sszutils.EncodeUint64Slice(enc, %s[:vlen])\n", varName)
+			ctx.appendCode(indent, "sszutils.EncodeUint64Slice(enc, %s[:vlen])\n", getValueVar(false, ""))
 		default:
 			addVlen()
 			indexVar, indexDefer := ctx.getIndexVar()
@@ -737,9 +771,9 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 			ctx.appendCode(indent, "for %s := range vlen {\n", indexVar)
 			valVar := "t"
 			if ctx.isInlineable(desc.ElemDesc) {
-				valVar = fmt.Sprintf("%s[%s]", varName, indexVar)
+				valVar = fmt.Sprintf("%s[%s]", getValueVar(false, ""), indexVar)
 			} else {
-				ctx.appendCode(indent, "\tt := %s%s[%s]\n", ctx.getPtrPrefix(desc.ElemDesc), varName, indexVar)
+				ctx.appendCode(indent, "\tt := %s[%s]\n", getValueVar(false, ctx.getPtrPrefix(desc.ElemDesc)), indexVar)
 			}
 			if err := ctx.marshalType(desc.ElemDesc, valVar, typePath.append("[%d]", indexVar), indent+1, false); err != nil {
 				return err
@@ -754,7 +788,7 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 		ctx.appendCode(indent, "if canSeek {\n")
 		ctx.appendCode(indent, "\tenc.EncodeZeroPadding(vlen * 4)\n")
 		ctx.appendCode(indent, "} else if vlen > 0 {\n")
-		sizeFnCall := ctx.getSizeFnCall(desc.ElemDesc, fmt.Sprintf("%s[i]", varName))
+		sizeFnCall := ctx.getSizeFnCall(desc.ElemDesc, fmt.Sprintf("%s[i]", getValueVar(false, "")))
 		ctx.appendCode(indent, "\toffset := vlen * 4\n")
 		ctx.appendCode(indent, "\tenc.EncodeOffset(uint32(offset))\n")
 		ctx.appendCode(indent, "\tfor i := range vlen-1 {\n")
@@ -772,9 +806,9 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 		ctx.appendCode(indent, "\t}\n")
 		valVar := "t"
 		if ctx.isInlineable(desc.ElemDesc) {
-			valVar = fmt.Sprintf("%s[%s]", varName, indexVar)
+			valVar = fmt.Sprintf("%s[%s]", getValueVar(false, ""), indexVar)
 		} else {
-			ctx.appendCode(indent, "\tt := %s%s[%s]\n", ctx.getPtrPrefix(desc.ElemDesc), varName, indexVar)
+			ctx.appendCode(indent, "\tt := %s[%s]\n", getValueVar(false, ctx.getPtrPrefix(desc.ElemDesc)), indexVar)
 		}
 		if err := ctx.marshalType(desc.ElemDesc, valVar, typePath.append("[%d]", indexVar), indent+1, false); err != nil {
 			return err
@@ -785,7 +819,6 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 	return nil
 }
 
-//nolint:dupl // intentionally similar to marshalContext.marshalBitlist
 func (ctx *encoderContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	maxExpression := desc.MaxExpression
 	if ctx.options.WithoutDynamicExpressions {

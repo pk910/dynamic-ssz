@@ -521,15 +521,32 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 	}
 
 	valueVar := varName
-	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
-		valueVar = ctx.getValueVar(desc, varName, "string")
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		targetType := ""
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
+			targetType = typeNameString
+		}
+		valueVar = ctx.getValueVar(desc, varName, targetType)
+	}
+
+	getValueVar := func(bracketCtx bool, ptrPrefix string) string {
+		if bracketCtx {
+			return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
+		}
+		if strings.HasPrefix(valueVar, "*") {
+			if ptrPrefix == "&" {
+				return strings.TrimPrefix(valueVar, "*")
+			}
+			return fmt.Sprintf("(%s%s)", ptrPrefix, valueVar)
+		}
+		return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 	}
 
 	lenVar := ""
 
 	switch {
 	case desc.Kind != reflect.Array:
-		ctx.appendCode(indent, "vlen := len(%s)\n", valueVar)
+		ctx.appendCode(indent, "vlen := len(%s)\n", getValueVar(true, ""))
 		ctx.appendCode(indent, "if vlen > %s {\n", limitVar)
 		errCode := fmt.Sprintf("sszutils.ErrVectorLengthFn(%s, %s)", varNameVLen, limitVar)
 		ctx.appendCode(indent, "\treturn nil, %s\n", typePath.getErrorWith(errCode))
@@ -547,19 +564,16 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		// static elements
 		switch {
 		case desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 || desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0:
-			if strings.HasPrefix(valueVar, "*") {
-				valueVar = fmt.Sprintf("(%s)", valueVar)
-			}
 			if bitlimitVar != "" {
 				ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
-				ctx.appendCode(indent, "if %s[%s-1] & paddingMask != 0 {\n", valueVar, lenVar)
+				ctx.appendCode(indent, "if %s[%s-1] & paddingMask != 0 {\n", getValueVar(false, ""), lenVar)
 				errCode := errCodeBitvectorPadding
 				ctx.appendCode(indent, "\treturn nil, %s\n", typePath.getErrorWith(errCode))
 				ctx.appendCode(indent, "}\n")
 			}
-			ctx.appendCode(indent, "dst = append(dst, %s[:%s]...)\n", valueVar, lenVar)
+			ctx.appendCode(indent, "dst = append(dst, %s[:%s]...)\n", getValueVar(false, ""), lenVar)
 		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0:
-			ctx.appendCode(indent, "dst = sszutils.MarshalUint64Slice(dst, %s[:%s])\n", varName, lenVar)
+			ctx.appendCode(indent, "dst = sszutils.MarshalUint64Slice(dst, %s[:%s])\n", getValueVar(false, ""), lenVar)
 		default:
 			indexVar, indexDefer := ctx.getIndexVar()
 			defer indexDefer()
@@ -567,9 +581,9 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			ctx.appendCode(indent, "for %s := range %s {\n", indexVar, lenVar)
 			valVar := "t"
 			if ctx.isInlineable(desc.ElemDesc) {
-				valVar = fmt.Sprintf("%s[%s]", varName, indexVar)
+				valVar = fmt.Sprintf("%s[%s]", getValueVar(false, ""), indexVar)
 			} else {
-				ctx.appendCode(indent, "\tt := %s%s[%s]\n", ctx.getPtrPrefix(desc.ElemDesc), varName, indexVar)
+				ctx.appendCode(indent, "\tt := %s[%s]\n", getValueVar(false, ctx.getPtrPrefix(desc.ElemDesc)), indexVar)
 			}
 			if err := ctx.marshalType(desc.ElemDesc, valVar, typePath.append("[%d]", indexVar), indent+1, false); err != nil {
 				return err
@@ -596,9 +610,9 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent, "\t%s.LittleEndian.PutUint32(dst[dstlen+(%s*4):], uint32(len(dst)-dstlen))\n", binaryPkgName, indexVar)
 		valVar := "t"
 		if ctx.isInlineable(desc.ElemDesc) {
-			valVar = fmt.Sprintf("%s[%s]", varName, indexVar)
+			valVar = fmt.Sprintf("%s[%s]", getValueVar(false, ""), indexVar)
 		} else {
-			ctx.appendCode(indent, "\tt := %s%s[%s]\n", ctx.getPtrPrefix(desc.ElemDesc), varName, indexVar)
+			ctx.appendCode(indent, "\tt := %s[%s]\n", getValueVar(false, ctx.getPtrPrefix(desc.ElemDesc)), indexVar)
 		}
 		if err := ctx.marshalType(desc.ElemDesc, valVar, typePath.append("[%d]", indexVar), indent+1, false); err != nil {
 			return err
@@ -650,8 +664,25 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 	}
 
 	valueVar := varName
-	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
-		valueVar = ctx.getValueVar(desc, varName, "string")
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		targetType := ""
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
+			targetType = typeNameString
+		}
+		valueVar = ctx.getValueVar(desc, varName, targetType)
+	}
+
+	getValueVar := func(bracketCtx bool, ptrPrefix string) string {
+		if bracketCtx {
+			return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
+		}
+		if strings.HasPrefix(valueVar, "*") {
+			if ptrPrefix == "&" {
+				return strings.TrimPrefix(valueVar, "*")
+			}
+			return fmt.Sprintf("(%s%s)", ptrPrefix, valueVar)
+		}
+		return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 	}
 
 	hasVlen := false
@@ -659,7 +690,7 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 		if hasVlen {
 			return
 		}
-		ctx.appendCode(indent, "vlen := len(%s)\n", valueVar)
+		ctx.appendCode(indent, "vlen := len(%s)\n", getValueVar(true, ""))
 		hasVlen = true
 	}
 
@@ -675,13 +706,10 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 		// static elements
 		switch {
 		case desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0:
-			if strings.HasPrefix(valueVar, "*") {
-				valueVar = fmt.Sprintf("(%s)", valueVar)
-			}
-			ctx.appendCode(indent, "dst = append(dst, %s[:]...)\n", valueVar)
+			ctx.appendCode(indent, "dst = append(dst, %s[:]...)\n", getValueVar(false, ""))
 		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0:
 			addVlen()
-			ctx.appendCode(indent, "dst = sszutils.MarshalUint64Slice(dst, %s[:vlen])\n", varName)
+			ctx.appendCode(indent, "dst = sszutils.MarshalUint64Slice(dst, %s[:vlen])\n", getValueVar(false, ""))
 		default:
 			addVlen()
 			indexVar, indexDefer := ctx.getIndexVar()
@@ -690,9 +718,9 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 			ctx.appendCode(indent, "for %s := range vlen {\n", indexVar)
 			valVar := "t"
 			if ctx.isInlineable(desc.ElemDesc) {
-				valVar = fmt.Sprintf("%s[%s]", varName, indexVar)
+				valVar = fmt.Sprintf("%s[%s]", getValueVar(false, ""), indexVar)
 			} else {
-				ctx.appendCode(indent, "\tt := %s%s[%s]\n", ctx.getPtrPrefix(desc.ElemDesc), varName, indexVar)
+				ctx.appendCode(indent, "\tt := %s[%s]\n", getValueVar(false, ctx.getPtrPrefix(desc.ElemDesc)), indexVar)
 			}
 			if err := ctx.marshalType(desc.ElemDesc, valVar, typePath.append("[%d]", indexVar), indent+1, false); err != nil {
 				return err
@@ -713,9 +741,9 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 		ctx.appendCode(indent, "\t%s.LittleEndian.PutUint32(dst[dstlen+(%s*4):], uint32(len(dst)-dstlen))\n", binaryPkgName, indexVar)
 		valVar := "t"
 		if ctx.isInlineable(desc.ElemDesc) {
-			valVar = fmt.Sprintf("%s[%s]", varName, indexVar)
+			valVar = fmt.Sprintf("%s[%s]", getValueVar(false, ""), indexVar)
 		} else {
-			ctx.appendCode(indent, "\tt := %s%s[%s]\n", ctx.getPtrPrefix(desc.ElemDesc), varName, indexVar)
+			ctx.appendCode(indent, "\tt := %s[%s]\n", getValueVar(false, ctx.getPtrPrefix(desc.ElemDesc)), indexVar)
 		}
 		if err := ctx.marshalType(desc.ElemDesc, valVar, typePath.append("[%d]", indexVar), indent+1, false); err != nil {
 			return err
@@ -726,7 +754,6 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 	return nil
 }
 
-//nolint:dupl // intentionally similar to encoderContext.marshalBitlist
 func (ctx *marshalContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	maxExpression := desc.MaxExpression
 	if ctx.options.WithoutDynamicExpressions {
@@ -749,7 +776,25 @@ func (ctx *marshalContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName
 		maxVar = "0"
 	}
 
-	ctx.appendCode(indent, "vlen := len(%s)\n", varName)
+	valueVar := varName
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		valueVar = ctx.getValueVar(desc, varName, "")
+	}
+
+	getValueVar := func(bracketCtx bool, ptrPrefix string) string {
+		if bracketCtx {
+			return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
+		}
+		if strings.HasPrefix(valueVar, "*") {
+			if ptrPrefix == "&" {
+				return strings.TrimPrefix(valueVar, "*")
+			}
+			return fmt.Sprintf("(%s%s)", ptrPrefix, valueVar)
+		}
+		return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
+	}
+
+	ctx.appendCode(indent, "vlen := len(%s)\n", getValueVar(true, ""))
 
 	if hasMax {
 		ctx.appendCode(indent, "if vlen > %s {\n", maxVar)
@@ -758,7 +803,7 @@ func (ctx *marshalContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName
 		ctx.appendCode(indent, "}\n")
 	}
 
-	ctx.appendCode(indent, "bval := []byte(%s[:])\n", varName)
+	ctx.appendCode(indent, "bval := []byte(%s[:])\n", getValueVar(false, ""))
 	ctx.appendCode(indent, "if vlen == 0 {\n")
 	ctx.appendCode(indent, "\tbval = []byte{0x01}\n")
 	ctx.appendCode(indent, "} else if bval[vlen-1] == 0x00 {\n")

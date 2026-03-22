@@ -533,8 +533,112 @@ var CoverageTypes2_Payload2 = CoverageTypes2{
 	LstF64: nil,
 }
 
-// Comment-annotated non-struct types for testing comment-based SSZ annotations.
-type CommentAnnotatedList []uint32 //ssz-max:"20"
+// Annotated non-struct types for testing sszutils.Annotate-based SSZ annotations.
 
-// ssz-max:"10"
-type DocCommentAnnotatedList []uint64
+// AnnotatedList is a basic annotated list of uint32 with max 20.
+type AnnotatedList []uint32
+
+var _ = sszutils.Annotate[AnnotatedList](`ssz-max:"20"`)
+
+// AnnotatedList2 is a basic annotated list of uint64 with max 10.
+type AnnotatedList2 []uint64
+
+var _ = sszutils.Annotate[AnnotatedList2](`ssz-max:"10"`)
+
+// AnnotatedByteList is an annotated byte list with max 32.
+type AnnotatedByteList []byte
+
+var _ = sszutils.Annotate[AnnotatedByteList](`ssz-max:"32"`)
+
+// AnnotatedWithSpecs uses a dynamic spec expression for the max size.
+type AnnotatedWithSpecs []uint32
+
+var _ = sszutils.Annotate[AnnotatedWithSpecs](`ssz-max:"10" dynssz-max:"ANNOTATED_MAX"`)
+
+// AnnotatedContainer uses annotated types as fields WITHOUT field tags.
+// The reflection path must resolve limits from the annotation registry;
+// the codegen path delegates to each field's generated methods.
+type AnnotatedContainer struct {
+	F1 uint32
+	L1 AnnotatedList     // limit 20 from annotation
+	L2 AnnotatedList2    // limit 10 from annotation
+	B1 AnnotatedByteList // limit 32 from annotation
+}
+
+var AnnotatedContainer_Payload = AnnotatedContainer{
+	F1: 42,
+	L1: AnnotatedList{1, 2, 3},
+	L2: AnnotatedList2{100, 200},
+	B1: AnnotatedByteList{0xaa, 0xbb, 0xcc, 0xdd},
+}
+
+// AnnotatedOverrideContainer has a field tag that overrides the annotation.
+// AnnotatedList has ssz-max:"20" from its annotation, but the field tag
+// narrows it to ssz-max:"5".
+type AnnotatedOverrideContainer struct {
+	F1 uint32
+	L1 AnnotatedList `ssz-max:"5"`
+}
+
+var AnnotatedOverrideContainer_Payload = AnnotatedOverrideContainer{
+	F1: 7,
+	L1: AnnotatedList{10, 20, 30},
+}
+
+// AnnotatedSpecsContainer uses an annotated type with dynamic spec expressions.
+type AnnotatedSpecsContainer struct {
+	F1 uint32
+	L1 AnnotatedWithSpecs // limit from ANNOTATED_MAX spec
+}
+
+var AnnotatedSpecsContainer_Payload = AnnotatedSpecsContainer{
+	F1: 99,
+	L1: AnnotatedWithSpecs{1, 2, 3, 4, 5},
+}
+
+var AnnotatedSpecs = map[string]any{
+	"ANNOTATED_MAX": 20,
+}
+
+// AnnotatedNestedContainer uses annotated types at multiple nesting levels.
+type AnnotatedNestedContainer struct {
+	F1   uint32
+	L1   AnnotatedList                // direct annotated field
+	Lst  []AnnotatedList              `ssz-max:"4"` // list of annotated lists
+	Sub  AnnotatedNestedContainer_S   // nested struct with annotated fields
+	Subs []AnnotatedNestedContainer_S `ssz-max:"3"`
+}
+
+type AnnotatedNestedContainer_S struct {
+	V1 uint16
+	L1 AnnotatedByteList // annotated field inside nested struct
+}
+
+var AnnotatedNestedContainer_Payload = AnnotatedNestedContainer{
+	F1: 1,
+	L1: AnnotatedList{10, 20},
+	Lst: []AnnotatedList{
+		{1, 2, 3},
+		{4, 5},
+	},
+	Sub: AnnotatedNestedContainer_S{
+		V1: 100,
+		L1: AnnotatedByteList{0x01, 0x02, 0x03},
+	},
+	Subs: []AnnotatedNestedContainer_S{
+		{V1: 200, L1: AnnotatedByteList{0x0a}},
+		{V1: 300, L1: AnnotatedByteList{0x0b, 0x0c}},
+	},
+}
+
+// InitAnnotatedList tests Annotate calls inside init() functions.
+type InitAnnotatedList []uint16
+
+func init() {
+	sszutils.Annotate[InitAnnotatedList](`ssz-max:"8"`)
+}
+
+// InterpretedAnnotatedList tests Annotate with an interpreted (double-quoted) string literal.
+type InterpretedAnnotatedList []uint32
+
+var _ = sszutils.Annotate[InterpretedAnnotatedList]("ssz-max:\"12\"")
