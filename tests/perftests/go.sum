@@ -1,3 +1,5 @@
+github.com/OffchainLabs/go-bitfield v0.0.0-20260316135939-ffb3947a62a5 h1:bnVIEd3m6fjBFOY0uIhUasNOkkhcPF25ZamzRRmL8w8=
+github.com/OffchainLabs/go-bitfield v0.0.0-20260316135939-ffb3947a62a5/go.mod h1:6TZI4FU6zT8x6ZfWa1J8YQ2NgW0wLV/W3fHRca8ISBo=
 github.com/casbin/govaluate v1.10.0 h1:ffGw51/hYH3w3rZcxO/KcaUIDOLP84w7nsidMVgaDG0=
 github.com/casbin/govaluate v1.10.0/go.mod h1:G/UnbIjZk/0uMNaLwZZmFQrR72tYRZWQkO70si/iR7A=
 github.com/google/go-cmp v0.6.0 h1:ofyhxvXcZhMsU5ulbFiLKl/XBFqE1GSq7atu8tAmTRI=
@@ -6,8 +8,6 @@ github.com/klauspost/cpuid/v2 v2.3.0 h1:S4CRMLnYUhGeDFDqkGriYKdfoFlDnMtqTiI/sFzh
 github.com/klauspost/cpuid/v2 v2.3.0/go.mod h1:hqwkgyIinND0mEev00jJYCxPNVRVXFQeu1XKlok6oO0=
 github.com/pk910/hashtree-bindings v0.1.0 h1:w7NyRWFi2OaYEFvo9ADcE/QU6PMuVLl3hBgx92KiH9c=
 github.com/pk910/hashtree-bindings v0.1.0/go.mod h1:zrWt88783JmhBfcgni6kkIMYRdXTZi/FL//OyI5T/l4=
-github.com/prysmaticlabs/go-bitfield v0.0.0-20240618144021-706c95b2dd15 h1:lC8kiphgdOBTcbTvo8MwkvpKjO0SlAgjv4xIK5FGJ94=
-github.com/prysmaticlabs/go-bitfield v0.0.0-20240618144021-706c95b2dd15/go.mod h1:8svFBIKKu31YriBG/pNizo9N0Jr9i5PQ+dFkxWg3x5k=
 golang.org/x/mod v0.23.0 h1:Zb7khfcRGKk+kqfxFaP5tZqCnDZMjC5VtUBs87Hr6QM=
 golang.org/x/mod v0.23.0/go.mod h1:6SkKJ3Xj0I0BrPOZoBy3bdMptDDU9oJrpohJ3eWZ1fY=
 golang.org/x/sync v0.11.0 h1:GGz8+XQP4FvTTrjZPzNKTMFtSXH80RAzG+5ghFPgK9w=

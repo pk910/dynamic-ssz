@@ -150,7 +150,7 @@ type Votes struct {
 
 #### Using go-bitfield
 ```go
-import bitfield "github.com/prysmaticlabs/go-bitfield"
+import bitfield "github.com/OffchainLabs/go-bitfield"
 
 type Attestation struct {
     AggregationBits bitfield.Bitlist `ssz-max:"2048"`  // Maximum 2048 bits
@@ -364,7 +364,7 @@ Many types are automatically detected:
 ```go
 import (
     "github.com/holiman/uint256"
-    bitfield "github.com/prysmaticlabs/go-bitfield"
+    bitfield "github.com/OffchainLabs/go-bitfield"
 )
 
 type AutoDetected struct {

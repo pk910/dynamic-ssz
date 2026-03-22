@@ -6,10 +6,10 @@ package perftests
 import (
 	"encoding/binary"
 
+	go_bitfield "github.com/OffchainLabs/go-bitfield"
 	dynssz "github.com/pk910/dynamic-ssz"
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
-	go_bitfield "github.com/prysmaticlabs/go-bitfield"
 )
 
 var _ = sszutils.ErrListTooBig
@@ -1401,7 +1401,7 @@ func (t *BeaconBlock) MarshalSSZEncoder(ds sszutils.DynamicSpecs, enc sszutils.E
 			} else if vlen > 0 {
 				offset := vlen * 4
 				enc.EncodeOffset(uint32(offset))
-				for i := range vlen-1 {
+				for i := range vlen - 1 {
 					offset += ctx.sizeFn10(ctx, t[i])
 					enc.EncodeOffset(uint32(offset))
 				}
@@ -1593,7 +1593,7 @@ func (t *BeaconBlock) MarshalSSZEncoder(ds sszutils.DynamicSpecs, enc sszutils.E
 			} else if vlen > 0 {
 				offset := vlen * 4
 				enc.EncodeOffset(uint32(offset))
-				for i := range vlen-1 {
+				for i := range vlen - 1 {
 					offset += ctx.sizeFn13(ctx, t[i])
 					enc.EncodeOffset(uint32(offset))
 				}
@@ -1863,7 +1863,7 @@ func (t *BeaconBlock) MarshalSSZEncoder(ds sszutils.DynamicSpecs, enc sszutils.E
 				} else if vlen > 0 {
 					offset := vlen * 4
 					enc.EncodeOffset(uint32(offset))
-					for i := range vlen-1 {
+					for i := range vlen - 1 {
 						offset += ctx.sizeFn18(ctx, t[i])
 						enc.EncodeOffset(uint32(offset))
 					}
@@ -2002,7 +2002,7 @@ func (t *BeaconBlock) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (err
 			val1 = new(BeaconBlockBody)
 		}
 		exproffset := 0
-		totalSize := size1+232
+		totalSize := size1 + 232
 		buflen := len(buf)
 		if buflen < totalSize {
 			return sszutils.ErrorWithPath(sszutils.NewSszErrorf(sszutils.ErrUnexpectedEOF, "not enough data for fixed fields (have %d, needed %d)", buflen, totalSize), "Body")
@@ -2072,7 +2072,7 @@ func (t *BeaconBlock) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (err
 				val3 = new(SyncAggregate)
 			}
 			exproffset := 0
-			totalSize := size2+96
+			totalSize := size2 + 96
 			buflen := len(buf)
 			if buflen < totalSize {
 				return sszutils.ErrorWithPath(sszutils.NewSszErrorf(sszutils.ErrUnexpectedEOF, "not enough data for fixed fields (have %d, needed %d)", buflen, totalSize), "Body.SyncAggregate")
@@ -2978,7 +2978,7 @@ func (t *BeaconBlock) UnmarshalSSZDecoder(ds sszutils.DynamicSpecs, dec sszutils
 		if val1 == nil {
 			val1 = new(BeaconBlockBody)
 		}
-		totalSize := size1+232
+		totalSize := size1 + 232
 		maxOffset := uint32(dec.GetLength())
 		startPos1 := dec.GetPosition()
 		if maxOffset < uint32(totalSize) {
@@ -3062,7 +3062,7 @@ func (t *BeaconBlock) UnmarshalSSZDecoder(ds sszutils.DynamicSpecs, dec sszutils
 			if val3 == nil {
 				val3 = new(SyncAggregate)
 			}
-			totalSize := size2+96
+			totalSize := size2 + 96
 			maxOffset := uint32(dec.GetLength())
 			if maxOffset < uint32(totalSize) {
 				return sszutils.ErrorWithPath(sszutils.NewSszErrorf(sszutils.ErrUnexpectedEOF, "not enough data for fixed fields (have %d, needed %d)", maxOffset, uint32(totalSize)), "Body.SyncAggregate")
@@ -3256,7 +3256,7 @@ func (t *BeaconBlock) UnmarshalSSZDecoder(ds sszutils.DynamicSpecs, dec sszutils
 			} else if itemCount > 1 {
 				offsetSlices[0] = sszutils.ExpandSlice(offsetSlices[0], itemCount-1)
 				offsets = offsetSlices[0]
-				for idx1 := range itemCount-1 {
+				for idx1 := range itemCount - 1 {
 					offset, err := dec.DecodeOffset()
 					if err != nil {
 						return sszutils.ErrorWithPathf(err, "Body.AttesterSlashings[%d:o]", idx1)
@@ -3582,7 +3582,7 @@ func (t *BeaconBlock) UnmarshalSSZDecoder(ds sszutils.DynamicSpecs, dec sszutils
 			} else if itemCount > 1 {
 				offsetSlices[0] = sszutils.ExpandSlice(offsetSlices[0], itemCount-1)
 				offsets = offsetSlices[0]
-				for idx1 := range itemCount-1 {
+				for idx1 := range itemCount - 1 {
 					offset, err := dec.DecodeOffset()
 					if err != nil {
 						return sszutils.ErrorWithPathf(err, "Body.Attestations[%d:o]", idx1)
@@ -4009,7 +4009,7 @@ func (t *BeaconBlock) UnmarshalSSZDecoder(ds sszutils.DynamicSpecs, dec sszutils
 				} else if itemCount > 1 {
 					offsetSlices[0] = sszutils.ExpandSlice(offsetSlices[0], itemCount-1)
 					offsets = offsetSlices[0]
-					for idx1 := range itemCount-1 {
+					for idx1 := range itemCount - 1 {
 						offset, err := dec.DecodeOffset()
 						if err != nil {
 							return sszutils.ErrorWithPathf(err, "Body.ExecutionPayload.Transactions[%d:o]", idx1)
@@ -6213,7 +6213,7 @@ func (t *BeaconState) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (err
 	size5 := 48 * int(expr3)
 	size4 := size5 + 48 // size expression for '*SyncCommittee'
 	exproffset := 0
-	totalSize := size1+size1+size2+size3+size4+size4+429
+	totalSize := size1 + size1 + size2 + size3 + size4 + size4 + 429
 	buflen := len(buf)
 	if buflen < totalSize {
 		return sszutils.NewSszErrorf(sszutils.ErrUnexpectedEOF, "not enough data for fixed fields (have %d, needed %d)", buflen, totalSize)
@@ -6463,7 +6463,7 @@ func (t *BeaconState) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (err
 			val11 = new(SyncCommittee)
 		}
 		exproffset := 0
-		totalSize := size5+48
+		totalSize := size5 + 48
 		buflen := len(buf)
 		if buflen < totalSize {
 			return sszutils.ErrorWithPath(sszutils.NewSszErrorf(sszutils.ErrUnexpectedEOF, "not enough data for fixed fields (have %d, needed %d)", buflen, totalSize), "CurrentSyncCommittee")
@@ -6493,7 +6493,7 @@ func (t *BeaconState) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (err
 			val13 = new(SyncCommittee)
 		}
 		exproffset := 0
-		totalSize := size5+48
+		totalSize := size5 + 48
 		buflen := len(buf)
 		if buflen < totalSize {
 			return sszutils.ErrorWithPath(sszutils.NewSszErrorf(sszutils.ErrUnexpectedEOF, "not enough data for fixed fields (have %d, needed %d)", buflen, totalSize), "NextSyncCommittee")
@@ -6811,7 +6811,7 @@ func (t *BeaconState) UnmarshalSSZDecoder(ds sszutils.DynamicSpecs, dec sszutils
 	size3 := 8 * int(expr2)
 	size5 := 48 * int(expr3)
 	size4 := size5 + 48 // size expression for '*SyncCommittee'
-	totalSize := size1+size1+size2+size3+size4+size4+429
+	totalSize := size1 + size1 + size2 + size3 + size4 + size4 + 429
 	maxOffset := uint32(dec.GetLength())
 	startPos0 := dec.GetPosition()
 	if maxOffset < uint32(totalSize) {
@@ -7103,7 +7103,7 @@ func (t *BeaconState) UnmarshalSSZDecoder(ds sszutils.DynamicSpecs, dec sszutils
 		if val11 == nil {
 			val11 = new(SyncCommittee)
 		}
-		totalSize := size5+48
+		totalSize := size5 + 48
 		maxOffset := uint32(dec.GetLength())
 		if maxOffset < uint32(totalSize) {
 			return sszutils.ErrorWithPath(sszutils.NewSszErrorf(sszutils.ErrUnexpectedEOF, "not enough data for fixed fields (have %d, needed %d)", maxOffset, uint32(totalSize)), "CurrentSyncCommittee")
@@ -7133,7 +7133,7 @@ func (t *BeaconState) UnmarshalSSZDecoder(ds sszutils.DynamicSpecs, dec sszutils
 		if val13 == nil {
 			val13 = new(SyncCommittee)
 		}
-		totalSize := size5+48
+		totalSize := size5 + 48
 		maxOffset := uint32(dec.GetLength())
 		if maxOffset < uint32(totalSize) {
 			return sszutils.ErrorWithPath(sszutils.NewSszErrorf(sszutils.ErrUnexpectedEOF, "not enough data for fixed fields (have %d, needed %d)", maxOffset, uint32(totalSize)), "NextSyncCommittee")
