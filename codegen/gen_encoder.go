@@ -53,6 +53,14 @@ type encoderContext struct {
 // Returns:
 //   - error: An error if code generation fails
 func generateEncoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
+	// Streaming code always uses dynamic expressions since the encoder interface
+	// requires DynamicSpecs. Override WithoutDynamicExpressions for this generator.
+	if options.WithoutDynamicExpressions {
+		optsCopy := *options
+		optsCopy.WithoutDynamicExpressions = false
+		options = &optsCopy
+	}
+
 	codeBuf := strings.Builder{}
 	ctx := &encoderContext{
 		appendCode: func(indent int, code string, args ...any) {
