@@ -123,6 +123,19 @@ func generateDecoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 	return nil
 }
 
+// getValueVar returns the variable name for the value of a type, dereferencing pointer types and converting to the target type if needed
+func (ctx *decoderContext) getValueVar(desc *ssztypes.TypeDescriptor, varName, targetType string) string {
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
+		varName = fmt.Sprintf("*%s", varName)
+	}
+
+	if targetType != "" && ctx.typePrinter.InnerTypeString(desc) != targetType {
+		varName = fmt.Sprintf("%s(%s)", targetType, varName)
+	}
+
+	return varName
+}
+
 // getValVar generates a unique variable name for temporary values.
 func (ctx *decoderContext) getValVar() string {
 	ctx.valVarCounter++
@@ -559,9 +572,23 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 		limitVar = fmt.Sprintf("%d", desc.Len)
 	}
 
+	valueVar := varName
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		targetType := ""
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
+			targetType = typeNameString
+		}
+		valueVar = ctx.getValueVar(desc, varName, targetType)
+	}
+
+	indexValueVar := valueVar
+	if strings.HasPrefix(valueVar, "*") {
+		indexValueVar = fmt.Sprintf("(%s)", valueVar)
+	}
+
 	// create slice if needed
 	if desc.Kind != reflect.Array && desc.GoTypeFlags&ssztypes.GoTypeFlagIsString == 0 {
-		ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, %s)\n", varName, varName, limitVar)
+		ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, %s)\n", valueVar, valueVar, limitVar)
 	}
 
 	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
@@ -575,17 +602,13 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 				ctx.appendCode(indent, "if buf, err := dec.DecodeBytesBuf(%s); err != nil {\n", limitVar)
 				ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith("err"))
 				ctx.appendCode(indent, "} else {\n")
-				ptrVarName := varName
-				if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
-					ptrVarName = fmt.Sprintf("*(%s)", varName)
-				}
-				ctx.appendCode(indent+1, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, "buf", ""))
+				ctx.appendCode(indent+1, "%s = %s\n", valueVar, ctx.getCastedValueVar(desc, "buf", ""))
 				ctx.appendCode(indent, "}\n")
 			} else {
-				ctx.appendCode(indent, "if _, err = dec.DecodeBytes(%s[:%s]); err != nil {\n\treturn err\n}\n", varName, limitVar)
+				ctx.appendCode(indent, "if _, err = dec.DecodeBytes(%s[:%s]); err != nil {\n\treturn err\n}\n", indexValueVar, limitVar)
 				if bitlimitVar != "" {
 					ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
-					ctx.appendCode(indent, "if %s[%s-1] & paddingMask != 0 {\n", varName, limitVar)
+					ctx.appendCode(indent, "if %s[%s-1] & paddingMask != 0 {\n", indexValueVar, limitVar)
 					errCode := errCodeBitvectorPadding
 					ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 					ctx.appendCode(indent, "}\n")
@@ -613,7 +636,7 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 
 		// bulk uint64 lists
 		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
-			ctx.appendCode(indent, "if err = sszutils.DecodeUint64Slice(dec, %s[:%s]); err != nil {\n\treturn %s\n}\n", varName, limitVar, typePath.getErrorWith("err"))
+			ctx.appendCode(indent, "if err = sszutils.DecodeUint64Slice(dec, %s[:%s]); err != nil {\n\treturn %s\n}\n", indexValueVar, limitVar, typePath.getErrorWith("err"))
 			return nil
 		}
 
@@ -626,11 +649,11 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 
 		ctx.appendCode(indent, "for %s := range %s {\n", indexVar, limitVar)
 
-		valVar := fmt.Sprintf("%s[%s]", varName, indexVar)
+		valVar := fmt.Sprintf("%s[%s]", indexValueVar, indexVar)
 		isInlinable := ctx.isInlinable(desc.ElemDesc)
 		if !isInlinable {
 			valVar = ctx.getValVar()
-			ctx.appendCode(indent, "\t%s := %s[%s]\n", valVar, varName, indexVar)
+			ctx.appendCode(indent, "\t%s := %s[%s]\n", valVar, indexValueVar, indexVar)
 		}
 		if desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
@@ -647,7 +670,7 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 		ctx.appendCode(indent+1, "}\n")
 
 		if !isInlinable {
-			ctx.appendCode(indent, "\t%s[%s] = %s\n", varName, indexVar, valVar)
+			ctx.appendCode(indent, "\t%s[%s] = %s\n", indexValueVar, indexVar, valVar)
 		}
 		ctx.appendCode(indent, "}\n")
 	} else {
@@ -715,7 +738,7 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 		ctx.appendCode(indent+1, "startOffset = endOffset\n")
 
 		valVar := ctx.getValVar()
-		ctx.appendCode(indent+1, "%s := %s[%s]\n", valVar, varName, indexVar)
+		ctx.appendCode(indent+1, "%s := %s[%s]\n", valVar, indexValueVar, indexVar)
 		if desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
 		}
@@ -727,7 +750,7 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 		errCode = errCodeTrailingData
 		ctx.appendCode(indent+1, "if diff := dec.PopLimit(); diff != 0 {\n\treturn %s\n}\n", fieldPath.getErrorWith(errCode))
 
-		ctx.appendCode(indent+1, "%s[%s] = %s\n", varName, indexVar, valVar)
+		ctx.appendCode(indent+1, "%s[%s] = %s\n", indexValueVar, indexVar, valVar)
 		ctx.appendCode(indent, "}\n")
 
 		ctx.offsetSliceCounter--
@@ -738,6 +761,20 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 
 // unmarshalList generates unmarshal code for SSZ list (variable-size array) types.
 func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
+	valueVar := varName
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		targetType := ""
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
+			targetType = typeNameString
+		}
+		valueVar = ctx.getValueVar(desc, varName, targetType)
+	}
+
+	indexValueVar := valueVar
+	if strings.HasPrefix(valueVar, "*") {
+		indexValueVar = fmt.Sprintf("(%s)", valueVar)
+	}
+
 	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 		// static byte arrays
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
@@ -745,18 +782,14 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 				ctx.appendCode(indent, "if buf, err := dec.DecodeBytesBuf(dec.GetLength()); err != nil {\n")
 				ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith("err"))
 				ctx.appendCode(indent, "} else {\n")
-				ptrVarName := varName
-				if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
-					ptrVarName = fmt.Sprintf("*(%s)", varName)
-				}
-				ctx.appendCode(indent+1, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, "buf", ""))
+				ctx.appendCode(indent+1, "%s = %s\n", valueVar, ctx.getCastedValueVar(desc, "buf", ""))
 				ctx.appendCode(indent, "}\n")
 			} else {
 				ctx.appendCode(indent, "listLen := dec.GetLength()\n")
 				if desc.Kind != reflect.Array {
-					ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, listLen)\n", varName, varName)
+					ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, listLen)\n", valueVar, valueVar)
 				}
-				ctx.appendCode(indent, "if _, err = dec.DecodeBytes(%s[:listLen]); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
+				ctx.appendCode(indent, "if _, err = dec.DecodeBytes(%s[:listLen]); err != nil {\n\treturn %s\n}\n", indexValueVar, typePath.getErrorWith("err"))
 			}
 			return nil
 		}
@@ -768,9 +801,9 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 			errCode := "sszutils.ErrListNotAlignedFn(sszLen, 8)"
 			ctx.appendCode(indent, "if sszLen%%8 != 0 {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
 			if desc.Kind != reflect.Array {
-				ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", varName, varName)
+				ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", valueVar, valueVar)
 			}
-			ctx.appendCode(indent, "if err = sszutils.DecodeUint64Slice(dec, %s); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
+			ctx.appendCode(indent, "if err = sszutils.DecodeUint64Slice(dec, %s); err != nil {\n\treturn %s\n}\n", valueVar, typePath.getErrorWith("err"))
 			return nil
 		}
 
@@ -795,7 +828,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 			ctx.appendCode(indent, "if sszLen%%%s != 0 {\n\treturn %s\n}\n", fieldSizeVar, typePath.getErrorWith(errCode))
 		}
 		if desc.Kind != reflect.Array {
-			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", varName, varName)
+			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", valueVar, valueVar)
 		}
 
 		startPosVar := fmt.Sprintf("startPos%d", ctx.startPosVarCounter)
@@ -807,11 +840,11 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 
 		ctx.appendCode(indent, "for %s := range itemCount {\n", indexVar)
 
-		valVar := fmt.Sprintf("%s[%s]", varName, indexVar)
+		valVar := fmt.Sprintf("%s[%s]", indexValueVar, indexVar)
 		isInlinable := ctx.isInlinable(desc.ElemDesc)
 		if !isInlinable {
 			valVar = ctx.getValVar()
-			ctx.appendCode(indent+1, "%s := %s[%s]\n", valVar, varName, indexVar)
+			ctx.appendCode(indent+1, "%s := %s[%s]\n", valVar, indexValueVar, indexVar)
 		}
 		if desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
@@ -828,7 +861,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent+1, "}\n")
 
 		if !isInlinable {
-			ctx.appendCode(indent+1, "%s[%s] = %s\n", varName, indexVar, valVar)
+			ctx.appendCode(indent+1, "%s[%s] = %s\n", indexValueVar, indexVar, valVar)
 		}
 		ctx.appendCode(indent, "}\n")
 	} else {
@@ -873,7 +906,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		errCode := "sszutils.ErrInvalidListStartOffsetFn(startOffset, sszLen)"
 		ctx.appendCode(indent, "if startOffset%%4 != 0 || uint32(sszLen) < startOffset {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
 		if desc.Kind != reflect.Array {
-			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", varName, varName)
+			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", valueVar, valueVar)
 		}
 
 		fieldPath := typePath.append("[%d]", indexVar)
@@ -899,7 +932,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent+1, "startOffset = endOffset\n")
 
 		valVar := ctx.getValVar()
-		ctx.appendCode(indent+1, "%s := %s[%s]\n", valVar, varName, indexVar)
+		ctx.appendCode(indent+1, "%s := %s[%s]\n", valVar, indexValueVar, indexVar)
 		if desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
 		}
@@ -908,7 +941,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		}
 		errCode = errCodeTrailingData
 		ctx.appendCode(indent+1, "if diff := dec.PopLimit(); diff != 0 {\n\treturn %s\n}\n", fieldPath.getErrorWith(errCode))
-		ctx.appendCode(indent+1, "%s[%s] = %s\n", varName, indexVar, valVar)
+		ctx.appendCode(indent+1, "%s[%s] = %s\n", indexValueVar, indexVar, valVar)
 		ctx.appendCode(indent, "}\n")
 
 		ctx.offsetSliceCounter--

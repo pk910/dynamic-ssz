@@ -9,6 +9,8 @@ import (
 	"crypto/sha256"
 	"strconv"
 	"testing"
+
+	"github.com/pk910/dynamic-ssz/hasher"
 )
 
 // Helper function to convert [32]byte to []byte
@@ -592,6 +594,44 @@ func TestVerifyMultiproofUnsortedIndices(t *testing.T) {
 	}
 }
 
+func TestVerifyMultiproofMixedDepthIndices(t *testing.T) {
+	// Build a tree with 8 leaves (generalized indices 8..15, depth 3).
+	// Verify a multiproof that covers two different depths simultaneously:
+	//   index 15 (leaf, depth 3) and index 4 (intermediate node, depth 2).
+	root, _, allNodes := buildMerkleTree(8)
+
+	indices := []int{15, 4}
+	leafData := [][]byte{allNodes[15], allNodes[4]}
+	proofHashes := [][]byte{
+		allNodes[14],
+		allNodes[6],
+		allNodes[5],
+	}
+
+	valid, err := VerifyMultiproof(root, proofHashes, leafData, indices)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !valid {
+		t.Fatal("expected valid proof for mixed-depth indices")
+	}
+}
+
+func TestVerifyMultiproofMixedDepthWithoutExplicitProof(t *testing.T) {
+	root, _, allNodes := buildMerkleTree(4)
+
+	indices := []int{4, 5, 3}
+	leafData := [][]byte{allNodes[4], allNodes[5], allNodes[3]}
+
+	valid, err := VerifyMultiproof(root, nil, leafData, indices)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !valid {
+		t.Fatal("expected valid proof with mixed-depth indices and no explicit proof")
+	}
+}
+
 func TestVerifyMultiproofMissingNodes(t *testing.T) {
 	// Build a tree with 4 leaves (indices 4..7)
 	root, leaves, allNodes := buildMerkleTree(4)
@@ -637,6 +677,47 @@ func TestGetRequiredIndicesUnsorted(t *testing.T) {
 	}
 }
 
+func TestGetRequiredIndicesMixedDepth(t *testing.T) {
+	tests := []struct {
+		name        string
+		leafIndices []int
+		expected    []int
+	}{
+		{
+			name:        "depth 3 + depth 2",
+			leafIndices: []int{15, 4},
+			expected:    []int{14, 6, 5},
+		},
+		{
+			name:        "depth 4 + depth 3",
+			leafIndices: []int{31, 8},
+			expected:    []int{30, 14, 9, 6, 5},
+		},
+		{
+			name:        "depth 3 pair + depth 2",
+			leafIndices: []int{14, 15, 4},
+			expected:    []int{6, 5},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := getRequiredIndices(tt.leafIndices)
+
+			if len(result) != len(tt.expected) {
+				t.Fatalf("expected %d required indices %v, got %d: %v",
+					len(tt.expected), tt.expected, len(result), result)
+			}
+
+			for i := range result {
+				if result[i] != tt.expected[i] {
+					t.Fatalf("expected required indices %v, got %v", tt.expected, result)
+				}
+			}
+		})
+	}
+}
+
 func TestDescendingIndicesUnsorted(t *testing.T) {
 	// Neither ascending nor descending: exercises the default sort branch
 	indices := []int{5, 3, 7, 1}
@@ -651,6 +732,47 @@ func TestDescendingIndicesUnsorted(t *testing.T) {
 		if result[i] != v {
 			t.Errorf("result[%d] = %d, want %d", i, result[i], v)
 		}
+	}
+}
+
+func TestNewDescendingIndexCursorEmpty(t *testing.T) {
+	cursor := newDescendingIndexCursor(nil)
+	if cursor.ok() {
+		t.Fatal("expected empty cursor to report not ok")
+	}
+	if cursor.pos != -1 {
+		t.Fatalf("expected empty cursor position -1, got %d", cursor.pos)
+	}
+}
+
+func TestAppendProofLeafNormalizesChunkWidth(t *testing.T) {
+	h := hasher.NewHasher()
+	zeroChunk := hasher.GetZeroHash(0)
+
+	oversized := make([]byte, 40)
+	for i := range oversized {
+		oversized[i] = byte(i + 1)
+	}
+	appendProofLeaf(h, zeroChunk, oversized)
+	if !bytes.Equal(h.Hash(), oversized[:32]) {
+		t.Fatalf("expected oversized leaf to be truncated to first 32 bytes, got %x", h.Hash())
+	}
+
+	h.Reset()
+
+	shortLeaf := []byte{0xAA, 0xBB, 0xCC}
+	appendProofLeaf(h, zeroChunk, shortLeaf)
+	expected := make([]byte, 32)
+	copy(expected, shortLeaf)
+	if !bytes.Equal(h.Hash(), expected) {
+		t.Fatalf("expected short leaf to be right-padded to 32 bytes, got %x", h.Hash())
+	}
+
+	h.Reset()
+
+	appendProofLeaf(h, zeroChunk, nil)
+	if !bytes.Equal(h.Hash(), zeroChunk) {
+		t.Fatalf("expected empty leaf to use zero chunk, got %x", h.Hash())
 	}
 }
 

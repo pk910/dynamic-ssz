@@ -572,13 +572,30 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 	}
 
 	valueVar := varName
-	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
-		valueVar = ctx.getValueVar(desc, varName, "string")
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		targetType := ""
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
+			targetType = typeNameString
+		}
+		valueVar = ctx.getValueVar(desc, varName, targetType)
+	}
+
+	getValueVar := func(bracketCtx bool, ptrPrefix string) string {
+		if bracketCtx {
+			return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
+		}
+		if strings.HasPrefix(valueVar, "*") {
+			if ptrPrefix == "&" {
+				return strings.TrimPrefix(valueVar, "*")
+			}
+			return fmt.Sprintf("(%s%s)", ptrPrefix, valueVar)
+		}
+		return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 	}
 
 	lenVar := ""
 	if desc.Kind != reflect.Array {
-		ctx.appendCode(indent, "vlen := len(%s)\n", valueVar)
+		ctx.appendCode(indent, "vlen := len(%s)\n", getValueVar(true, ""))
 		ctx.appendCode(indent, "if vlen > %s {\n", limitVar)
 		errCode := fmt.Sprintf("sszutils.ErrVectorLengthFn(%s, %s)", varNameVLen, limitVar)
 		ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
@@ -595,12 +612,9 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		valVar := ""
 		if desc.Kind != reflect.Array {
 			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
-				ctx.appendCode(indent, "val := []byte(%s)\n", valueVar)
+				ctx.appendCode(indent, "val := []byte(%s)\n", getValueVar(true, ""))
 			} else {
-				if strings.HasPrefix(valueVar, "*") {
-					valueVar = fmt.Sprintf("(%s)", valueVar)
-				}
-				ctx.appendCode(indent, "val := %s[:]\n", valueVar)
+				ctx.appendCode(indent, "val := %s[:]\n", getValueVar(false, ""))
 			}
 			valVar = "val"
 
@@ -609,7 +623,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 			ctx.appendCode(indent, "\tval = sszutils.AppendZeroPadding(val, (%s-%s)*%d)\n", limitVar, lenVar, desc.ElemDesc.Size)
 			ctx.appendCode(indent, "}\n")
 		} else {
-			valVar = varName
+			valVar = getValueVar(false, "")
 		}
 
 		if bitlimitVar != "" {
@@ -654,7 +668,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		ctx.appendCode(indent, "var %s%s %s%s\n", valVar, emptyVarAddin, valVarPtrPrefix, ctx.typePrinter.TypeString(desc.ElemDesc))
 		ctx.appendCode(indent, "for %s := range %s {\n", indexVar, limitVar)
 		ctx.appendCode(indent, "\tif %s < %s {\n", indexVar, lenVar)
-		ctx.appendCode(indent, "\t\t%s = %s%s[%s]\n", valVar, ctx.getPtrPrefix(desc.ElemDesc, "&"), varName, indexVar)
+		ctx.appendCode(indent, "\t\t%s = %s[%s]\n", valVar, getValueVar(false, ctx.getPtrPrefix(desc.ElemDesc, "&")), indexVar)
 		ctx.appendCode(indent, "\t} else if %s == %s {\n", indexVar, lenVar)
 		if isPtrType {
 			ctx.appendCode(indent, "\t\t%s = new(%s)\n", valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
@@ -706,8 +720,25 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 	}
 
 	valueVar := varName
-	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
-		valueVar = ctx.getValueVar(desc, varName, "string")
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		targetType := ""
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
+			targetType = typeNameString
+		}
+		valueVar = ctx.getValueVar(desc, varName, targetType)
+	}
+
+	getValueVar := func(bracketCtx bool, ptrPrefix string) string {
+		if bracketCtx {
+			return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
+		}
+		if strings.HasPrefix(valueVar, "*") {
+			if ptrPrefix == "&" {
+				return strings.TrimPrefix(valueVar, "*")
+			}
+			return fmt.Sprintf("(%s%s)", ptrPrefix, valueVar)
+		}
+		return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 	}
 
 	hasVlen := false
@@ -715,7 +746,7 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 		if hasVlen {
 			return
 		}
-		ctx.appendCode(indent, "vlen := uint64(len(%s))\n", valueVar)
+		ctx.appendCode(indent, "vlen := uint64(len(%s))\n", getValueVar(true, ""))
 		hasVlen = true
 	}
 
@@ -738,13 +769,10 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 	// Handle byte slices
 	switch {
 	case desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0:
-		ctx.appendCode(indent, "hh.AppendBytes32([]byte(%s))\n", valueVar)
+		ctx.appendCode(indent, "hh.AppendBytes32([]byte(%s))\n", getValueVar(true, ""))
 		itemSize = 1
 	case desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0:
-		if strings.HasPrefix(valueVar, "*") {
-			valueVar = fmt.Sprintf("(%s)", valueVar)
-		}
-		ctx.appendCode(indent, "hh.AppendBytes32(%s[:])\n", valueVar)
+		ctx.appendCode(indent, "hh.AppendBytes32(%s[:])\n", getValueVar(false, ""))
 		itemSize = 1
 	default:
 		if ctx.isPrimitive(desc.ElemDesc) {
@@ -755,7 +783,7 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 
 		// Bulk uint64 list hashing
 		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
-			ctx.appendCode(indent, "sszutils.HashUint64Slice(hh, %s)\n", varName)
+			ctx.appendCode(indent, "sszutils.HashUint64Slice(hh, %s)\n", getValueVar(true, ""))
 		} else {
 			// Hash all elements
 			addVlen()
@@ -766,9 +794,9 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 			ctx.appendCode(indent, "for %s := range int(vlen) {\n", indexVar)
 			valVar := "t"
 			if ctx.isInlineable(desc.ElemDesc) {
-				valVar = fmt.Sprintf("%s[%s]", varName, indexVar)
+				valVar = fmt.Sprintf("%s[%s]", getValueVar(false, ""), indexVar)
 			} else {
-				ctx.appendCode(indent, "\tt := %s%s[%s]\n", ctx.getPtrPrefix(desc.ElemDesc, "&"), varName, indexVar)
+				ctx.appendCode(indent, "\tt := %s[%s]\n", getValueVar(false, ctx.getPtrPrefix(desc.ElemDesc, "&")), indexVar)
 			}
 			if err := ctx.hashType(desc.ElemDesc, valVar, typePath.append("[%d]", indexVar), indent+1, false, true); err != nil {
 				return err

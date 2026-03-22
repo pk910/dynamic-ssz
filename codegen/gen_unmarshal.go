@@ -155,6 +155,19 @@ func (ctx *unmarshalContext) getCastedValueVar(desc *ssztypes.TypeDescriptor, va
 	return varName
 }
 
+// getValueVar returns the variable name for the value of a type, dereferencing pointer types and converting to the target type if needed
+func (ctx *unmarshalContext) getValueVar(desc *ssztypes.TypeDescriptor, varName, targetType string) string {
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
+		varName = fmt.Sprintf("*%s", varName)
+	}
+
+	if targetType != "" && ctx.typePrinter.InnerTypeString(desc) != targetType {
+		varName = fmt.Sprintf("%s(%s)", targetType, varName)
+	}
+
+	return varName
+}
+
 // getIndexVar returns a unique index variable name
 func (ctx *unmarshalContext) getIndexVar() (string, func()) {
 	ctx.indexCounter++
@@ -683,9 +696,24 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 		limitVar = fmt.Sprintf("%d", desc.Len)
 	}
 
+	valueVar := varName
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		targetType := ""
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
+			targetType = typeNameString
+		}
+		valueVar = ctx.getValueVar(desc, varName, targetType)
+	}
+
+	// indexValueVar wraps valueVar in parentheses when needed for indexing (e.g. (*t)[i])
+	indexValueVar := valueVar
+	if strings.HasPrefix(valueVar, "*") {
+		indexValueVar = fmt.Sprintf("(%s)", valueVar)
+	}
+
 	// create slice if needed
 	if desc.Kind != reflect.Array && desc.GoTypeFlags&ssztypes.GoTypeFlagIsString == 0 {
-		ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, %s)\n", varName, varName, limitVar)
+		ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, %s)\n", valueVar, valueVar, limitVar)
 	}
 
 	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
@@ -703,14 +731,10 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 				ctx.appendCode(indent, "}\n")
 			}
 			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
-				ptrVarName := varName
-				if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
-					ptrVarName = fmt.Sprintf("*(%s)", varName)
-				}
 				typename := ctx.typePrinter.InnerTypeString(desc)
-				ctx.appendCode(indent, "%s = %s(buf)\n", ptrVarName, typename)
+				ctx.appendCode(indent, "%s = %s(buf)\n", valueVar, typename)
 			} else {
-				ctx.appendCode(indent, "copy(%s[:], buf)\n", varName)
+				ctx.appendCode(indent, "copy(%s[:], buf)\n", indexValueVar)
 			}
 			return nil
 		}
@@ -736,7 +760,7 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 
 		// bulk uint64 lists
 		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
-			ctx.appendCode(indent, "sszutils.UnmarshalUint64Slice(%s[:%s], buf)\n", varName, limitVar)
+			ctx.appendCode(indent, "sszutils.UnmarshalUint64Slice(%s[:%s], buf)\n", indexValueVar, limitVar)
 			return nil
 		}
 
@@ -745,11 +769,11 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 
 		ctx.appendCode(indent, "for %s := range %s {\n", indexVar, limitVar)
 
-		valVar := fmt.Sprintf("%s[%s]", varName, indexVar)
+		valVar := fmt.Sprintf("%s[%s]", indexValueVar, indexVar)
 		isInlinable := ctx.isInlinable(desc.ElemDesc)
 		if !isInlinable {
 			valVar = ctx.getValVar()
-			ctx.appendCode(indent+1, "%s := %s[%s]\n", valVar, varName, indexVar)
+			ctx.appendCode(indent+1, "%s := %s[%s]\n", valVar, indexValueVar, indexVar)
 		}
 		if desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
@@ -761,7 +785,7 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 		}
 
 		if !isInlinable {
-			ctx.appendCode(indent, "\t%s[%s] = %s\n", varName, indexVar, valVar)
+			ctx.appendCode(indent, "\t%s[%s] = %s\n", indexValueVar, indexVar, valVar)
 		}
 		ctx.appendCode(indent, "}\n")
 	} else {
@@ -789,14 +813,14 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 		ctx.appendCode(indent, "\tstartOffset = endOffset\n")
 
 		valVar := ctx.getValVar()
-		ctx.appendCode(indent, "\t%s := %s[%s]\n", valVar, varName, indexVar)
+		ctx.appendCode(indent, "\t%s := %s[%s]\n", valVar, indexValueVar, indexVar)
 		if desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
 		}
 		if err := ctx.unmarshalType(desc.ElemDesc, valVar, typePath.append("[%d]", indexVar), indent+1, false, true); err != nil {
 			return err
 		}
-		ctx.appendCode(indent, "\t%s[%s] = %s\n", varName, indexVar, valVar)
+		ctx.appendCode(indent, "\t%s[%s] = %s\n", indexValueVar, indexVar, valVar)
 		ctx.appendCode(indent, "}\n")
 	}
 
@@ -805,21 +829,32 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 
 // unmarshalList generates unmarshal code for SSZ list (variable-size array) types.
 func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
+	valueVar := varName
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		targetType := ""
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
+			targetType = typeNameString
+		}
+		valueVar = ctx.getValueVar(desc, varName, targetType)
+	}
+
+	// indexValueVar wraps valueVar in parentheses when needed for indexing (e.g. (*t)[i])
+	indexValueVar := valueVar
+	if strings.HasPrefix(valueVar, "*") {
+		indexValueVar = fmt.Sprintf("(%s)", valueVar)
+	}
+
 	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 		// static byte arrays
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
 			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
-				ptrVarName := varName
-				if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
-					ptrVarName = fmt.Sprintf("*(%s)", varName)
-				}
 				typename := ctx.typePrinter.InnerTypeString(desc)
-				ctx.appendCode(indent, "%s = %s(buf)\n", ptrVarName, typename)
+				ctx.appendCode(indent, "%s = %s(buf)\n", valueVar, typename)
 			} else {
 				if desc.Kind != reflect.Array {
-					ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, len(buf))\n", varName, varName)
+					ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, len(buf))\n", valueVar, valueVar)
 				}
-				ctx.appendCode(indent, "copy(%s[:], buf)\n", varName)
+				ctx.appendCode(indent, "copy(%s[:], buf)\n", indexValueVar)
 			}
 			return nil
 		}
@@ -830,9 +865,9 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 			errCode := "sszutils.ErrListNotAlignedFn(len(buf), 8)"
 			ctx.appendCode(indent, "if len(buf)%%8 != 0 {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
 			if desc.Kind != reflect.Array {
-				ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", varName, varName)
+				ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", valueVar, valueVar)
 			}
-			ctx.appendCode(indent, "sszutils.UnmarshalUint64Slice(%s, buf)\n", varName)
+			ctx.appendCode(indent, "sszutils.UnmarshalUint64Slice(%s, buf)\n", valueVar)
 			return nil
 		}
 
@@ -856,7 +891,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 			ctx.appendCode(indent, "if len(buf)%%%s != 0 {\n\treturn %s\n}\n", fieldSizeVar, typePath.getErrorWith(errCode))
 		}
 		if desc.Kind != reflect.Array {
-			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", varName, varName)
+			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", valueVar, valueVar)
 		}
 
 		indexVar, indexDefer := ctx.getIndexVar()
@@ -864,11 +899,11 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 
 		ctx.appendCode(indent, "for %s := range itemCount {\n", indexVar)
 
-		valVar := fmt.Sprintf("%s[%s]", varName, indexVar)
+		valVar := fmt.Sprintf("%s[%s]", indexValueVar, indexVar)
 		isInlinable := ctx.isInlinable(desc.ElemDesc)
 		if !isInlinable {
 			valVar = ctx.getValVar()
-			ctx.appendCode(indent, "\t%s := %s[%s]\n", valVar, varName, indexVar)
+			ctx.appendCode(indent, "\t%s := %s[%s]\n", valVar, indexValueVar, indexVar)
 		}
 		if desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
@@ -880,7 +915,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 		}
 
 		if !isInlinable {
-			ctx.appendCode(indent, "\t%s[%s] = %s\n", varName, indexVar, valVar)
+			ctx.appendCode(indent, "\t%s[%s] = %s\n", indexValueVar, indexVar, valVar)
 		}
 		ctx.appendCode(indent, "}\n")
 	} else {
@@ -896,7 +931,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 		errCode = "sszutils.ErrInvalidListStartOffsetFn(startOffset, len(buf))"
 		ctx.appendCode(indent, "if startOffset%%4 != 0 || len(buf) < startOffset {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
 		if desc.Kind != reflect.Array {
-			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", varName, varName)
+			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", valueVar, valueVar)
 		}
 
 		indexVar, indexDefer := ctx.getIndexVar()
@@ -917,14 +952,14 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 		ctx.appendCode(indent, "\tbuf := buf[startOffset:endOffset]\n")
 		ctx.appendCode(indent, "\tstartOffset = endOffset\n")
 		valVar := ctx.getValVar()
-		ctx.appendCode(indent, "\t%s := %s[%s]\n", valVar, varName, indexVar)
+		ctx.appendCode(indent, "\t%s := %s[%s]\n", valVar, indexValueVar, indexVar)
 		if desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
 		}
 		if err := ctx.unmarshalType(desc.ElemDesc, valVar, childTypePath, indent+1, false, true); err != nil {
 			return err
 		}
-		ctx.appendCode(indent, "\t%s[%s] = %s\n", varName, indexVar, valVar)
+		ctx.appendCode(indent, "\t%s[%s] = %s\n", indexValueVar, indexVar, valVar)
 		ctx.appendCode(indent, "}\n")
 	}
 

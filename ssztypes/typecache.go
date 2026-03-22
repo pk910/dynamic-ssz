@@ -233,6 +233,45 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 	// Use schema type for determining the SSZ layout
 	t := schemaType
 
+	// Track whether hints were provided externally (from field tags) rather than
+	// from the annotation registry. External hints override the type's own annotation,
+	// so we must not delegate to generated methods that have the annotation baked in.
+	hasExternalHints := len(sizeHints) > 0 || len(maxSizeHints) > 0
+
+	// Check annotation registry for type-level metadata when no external hints provided
+	if len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) == 0 {
+		if tag, ok := sszutils.LookupAnnotation(t); ok {
+			var parseErr error
+
+			typeHints, sizeHints, maxSizeHints, parseErr = ParseTags(tag)
+			if parseErr != nil {
+				return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "failed to parse annotation for type %v: %v", t, parseErr)
+			}
+
+			// ParseTags can't resolve dynamic expressions (no DynamicSpecs).
+			// Resolve them now using tc.specs.
+			if tc.specs != nil {
+				for i := range sizeHints {
+					if sizeHints[i].Expr != "" {
+						if ok, val, err := tc.specs.ResolveSpecValue(sizeHints[i].Expr); err == nil && ok {
+							sizeHints[i].Size = uint32(val)
+							sizeHints[i].Custom = true
+						}
+					}
+				}
+
+				for i := range maxSizeHints {
+					if maxSizeHints[i].Expr != "" {
+						if ok, val, err := tc.specs.ResolveSpecValue(maxSizeHints[i].Expr); err == nil && ok {
+							maxSizeHints[i].Size = val
+							maxSizeHints[i].Custom = true
+						}
+					}
+				}
+			}
+		}
+	}
+
 	desc.Kind = t.Kind()
 
 	// check dynamic size and max size
@@ -619,6 +658,21 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 	}
 
 	desc.SszCompatFlags |= tc.getCompatFlag(runtimeType, schemaType)
+
+	// When field-level hints override the type's own annotation, don't delegate
+	// to the type's generated methods — they have the annotation's limits baked in.
+	// Process inline instead so the field-level hints are respected.
+	if hasExternalHints && desc.SszType != SszCustomType {
+		desc.SszCompatFlags &^= SszCompatFlagDynamicMarshaler |
+			SszCompatFlagDynamicUnmarshaler |
+			SszCompatFlagDynamicSizer |
+			SszCompatFlagDynamicHashRoot |
+			SszCompatFlagDynamicEncoder |
+			SszCompatFlagDynamicDecoder |
+			SszCompatFlagFastSSZMarshaler |
+			SszCompatFlagFastSSZHasher |
+			SszCompatFlagHashTreeRootWith
+	}
 
 	if desc.SszType == SszCustomType {
 		isCompatible := desc.SszCompatFlags&SszCompatFlagFastSSZMarshaler != 0 && desc.SszCompatFlags&SszCompatFlagFastSSZHasher != 0

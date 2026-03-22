@@ -412,10 +412,10 @@ func TestRun_TypeSpecificOutputFile(t *testing.T) {
 	}
 }
 
-// Comment annotation tests
+// Annotate tag parsing tests
 
-func TestParseCommentAnnotations_Empty(t *testing.T) {
-	opts, err := parseCommentAnnotations("")
+func TestParseAnnotateTag_Empty(t *testing.T) {
+	opts, err := parseAnnotateTag("")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -424,8 +424,8 @@ func TestParseCommentAnnotations_Empty(t *testing.T) {
 	}
 }
 
-func TestParseCommentAnnotations_SszMax(t *testing.T) {
-	opts, err := parseCommentAnnotations(`ssz-max:"4096"`)
+func TestParseAnnotateTag_SszMax(t *testing.T) {
+	opts, err := parseAnnotateTag(`ssz-max:"4096"`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -434,8 +434,8 @@ func TestParseCommentAnnotations_SszMax(t *testing.T) {
 	}
 }
 
-func TestParseCommentAnnotations_SszSize(t *testing.T) {
-	opts, err := parseCommentAnnotations(`ssz-size:"32"`)
+func TestParseAnnotateTag_SszSize(t *testing.T) {
+	opts, err := parseAnnotateTag(`ssz-size:"32"`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -444,8 +444,8 @@ func TestParseCommentAnnotations_SszSize(t *testing.T) {
 	}
 }
 
-func TestParseCommentAnnotations_SszType(t *testing.T) {
-	opts, err := parseCommentAnnotations(`ssz-type:"list"`)
+func TestParseAnnotateTag_SszType(t *testing.T) {
+	opts, err := parseAnnotateTag(`ssz-type:"list"`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -454,8 +454,8 @@ func TestParseCommentAnnotations_SszType(t *testing.T) {
 	}
 }
 
-func TestParseCommentAnnotations_Multiple(t *testing.T) {
-	opts, err := parseCommentAnnotations(`ssz-max:"4096" dynssz-max:"MAX_BLOBS"`)
+func TestParseAnnotateTag_Multiple(t *testing.T) {
+	opts, err := parseAnnotateTag(`ssz-max:"4096" dynssz-max:"MAX_BLOBS"`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -464,27 +464,9 @@ func TestParseCommentAnnotations_Multiple(t *testing.T) {
 	}
 }
 
-func TestParseCommentAnnotations_MultiLine(t *testing.T) {
-	opts, err := parseCommentAnnotations("ssz-max:\"20\"\nssz-type:\"list\"")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(opts) != 2 {
-		t.Fatalf("expected 2 options (max + type hints), got %d", len(opts))
-	}
-}
+// findAnnotateCall tests
 
-func TestParseCommentAnnotations_NoSszKeys(t *testing.T) {
-	opts, err := parseCommentAnnotations("This is a regular comment with no annotations")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(opts) != 0 {
-		t.Fatalf("expected no options for non-SSZ comment, got %d", len(opts))
-	}
-}
-
-func TestFindTypeComment_LineComment(t *testing.T) {
+func TestFindAnnotateCall_Found(t *testing.T) {
 	cfg := &packages.Config{
 		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName,
 	}
@@ -494,13 +476,13 @@ func TestFindTypeComment_LineComment(t *testing.T) {
 		t.Fatalf("failed to load package: %v", err)
 	}
 
-	comment := findTypeComment(pkgs[0], "CommentAnnotatedList")
-	if !strings.Contains(comment, `ssz-max:"20"`) {
-		t.Fatalf("expected line comment with ssz-max:\"20\", got: %q", comment)
+	tag := findAnnotateCall(pkgs[0], "AnnotatedList")
+	if tag != `ssz-max:"20"` {
+		t.Fatalf("expected tag ssz-max:\"20\", got: %q", tag)
 	}
 }
 
-func TestFindTypeComment_DocComment(t *testing.T) {
+func TestFindAnnotateCall_Found2(t *testing.T) {
 	cfg := &packages.Config{
 		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName,
 	}
@@ -510,13 +492,13 @@ func TestFindTypeComment_DocComment(t *testing.T) {
 		t.Fatalf("failed to load package: %v", err)
 	}
 
-	comment := findTypeComment(pkgs[0], "DocCommentAnnotatedList")
-	if !strings.Contains(comment, `ssz-max:"10"`) {
-		t.Fatalf("expected doc comment with ssz-max:\"10\", got: %q", comment)
+	tag := findAnnotateCall(pkgs[0], "AnnotatedList2")
+	if tag != `ssz-max:"10"` {
+		t.Fatalf("expected tag ssz-max:\"10\", got: %q", tag)
 	}
 }
 
-func TestFindTypeComment_NotFound(t *testing.T) {
+func TestFindAnnotateCall_NotFound(t *testing.T) {
 	cfg := &packages.Config{
 		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName,
 	}
@@ -526,19 +508,19 @@ func TestFindTypeComment_NotFound(t *testing.T) {
 		t.Fatalf("failed to load package: %v", err)
 	}
 
-	comment := findTypeComment(pkgs[0], "NonExistentType")
-	if comment != "" {
-		t.Fatalf("expected empty comment for non-existent type, got: %q", comment)
+	tag := findAnnotateCall(pkgs[0], "NonExistentType")
+	if tag != "" {
+		t.Fatalf("expected empty tag for non-existent type, got: %q", tag)
 	}
 }
 
-func TestRun_CommentAnnotatedType(t *testing.T) {
+func TestRun_AnnotatedType(t *testing.T) {
 	tmpDir := t.TempDir()
 	outFile := filepath.Join(tmpDir, "gen_output.go")
 
 	config := Config{
 		PackagePath: "github.com/pk910/dynamic-ssz/codegen/tests",
-		TypeNames:   "CommentAnnotatedList",
+		TypeNames:   "AnnotatedList",
 		OutputFile:  outFile,
 		PackageName: "tests",
 	}
@@ -555,10 +537,71 @@ func TestRun_CommentAnnotatedType(t *testing.T) {
 	}
 
 	content := string(data)
-	if !strings.Contains(content, "CommentAnnotatedList") {
-		t.Fatal("expected generated code to reference CommentAnnotatedList")
+	if !strings.Contains(content, "AnnotatedList") {
+		t.Fatal("expected generated code to reference AnnotatedList")
 	}
 	if !strings.Contains(content, "MarshalSSZDyn") {
 		t.Fatal("expected generated code to contain MarshalSSZDyn method")
+	}
+}
+
+func TestRun_AnnotatedTypeVerbose(t *testing.T) {
+	// Covers main.go:229-230 (verbose logging for annotated types)
+	tmpDir := t.TempDir()
+	outFile := filepath.Join(tmpDir, "gen_output.go")
+
+	config := Config{
+		PackagePath: "github.com/pk910/dynamic-ssz/codegen/tests",
+		TypeNames:   "AnnotatedList",
+		OutputFile:  outFile,
+		PackageName: "tests",
+		Verbose:     true,
+	}
+
+	err := run(config)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestFindAnnotateCall_InitFunction(t *testing.T) {
+	// Covers main.go:373-380 (init() function body scanning)
+	cfg := &packages.Config{
+		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName,
+	}
+
+	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
+	if err != nil {
+		t.Fatalf("failed to load package: %v", err)
+	}
+
+	tag := findAnnotateCall(pkgs[0], "InitAnnotatedList")
+	if tag != `ssz-max:"8"` {
+		t.Fatalf("expected tag from init(), got: %q", tag)
+	}
+}
+
+func TestFindAnnotateCall_InterpretedString(t *testing.T) {
+	// Covers main.go:432-437 (interpreted string literal path)
+	cfg := &packages.Config{
+		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName,
+	}
+
+	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
+	if err != nil {
+		t.Fatalf("failed to load package: %v", err)
+	}
+
+	tag := findAnnotateCall(pkgs[0], "InterpretedAnnotatedList")
+	if tag != `ssz-max:"12"` {
+		t.Fatalf("expected tag from interpreted string, got: %q", tag)
+	}
+}
+
+func TestParseAnnotateTag_InvalidTag(t *testing.T) {
+	// Covers main.go:443-444 (ParseTags error)
+	_, err := parseAnnotateTag(`ssz-size:"notanumber"`)
+	if err == nil {
+		t.Fatal("expected error for invalid tag")
 	}
 }

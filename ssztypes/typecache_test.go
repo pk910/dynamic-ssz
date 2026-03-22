@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"unsafe"
+
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 type dummyDynamicSpecs struct {
@@ -1976,5 +1978,54 @@ func TestListWithDynamicSizeAccepted(t *testing.T) {
 	}
 	if desc == nil {
 		t.Fatal("descriptor should not be nil")
+	}
+}
+
+func TestParseTags_DynMaxNumericOverride(t *testing.T) {
+	// Covers ssztags.go line 625-626: dynssz-max with a numeric value
+	// that differs from ssz-max, triggering the isExpr=false override path.
+	_, _, maxHints, err := ParseTags(`ssz-max:"10" dynssz-max:"20"`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(maxHints) != 1 {
+		t.Fatalf("expected 1 max hint, got %d", len(maxHints))
+	}
+
+	if maxHints[0].Size != 20 {
+		t.Fatalf("expected dynssz-max override to 20, got %d", maxHints[0].Size)
+	}
+}
+
+func TestTypeCache_AnnotationRegistryLookup(t *testing.T) {
+	type annotatedSlice []uint32
+
+	sszutils.Annotate[annotatedSlice](`ssz-max:"50"`)
+
+	cache := NewTypeCache(nil)
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(annotatedSlice{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if desc.SszTypeFlags&SszTypeFlagHasLimit == 0 {
+		t.Fatal("expected SszTypeFlagHasLimit to be set from annotation")
+	}
+
+	if desc.Limit != 50 {
+		t.Fatalf("expected limit 50, got %d", desc.Limit)
+	}
+}
+
+func TestTypeCache_AnnotationRegistryInvalidTag(t *testing.T) {
+	type badAnnotatedSlice []uint32
+
+	sszutils.Annotate[badAnnotatedSlice](`ssz-size:"notanumber"`)
+
+	cache := NewTypeCache(nil)
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(badAnnotatedSlice{}), nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for invalid annotation tag")
 	}
 }

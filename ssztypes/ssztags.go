@@ -5,6 +5,7 @@
 package ssztypes
 
 import (
+	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
@@ -436,4 +437,196 @@ func getTagPart(parts []string, index int) string {
 		return parts[index]
 	}
 	return "?"
+}
+
+// ParseTags parses SSZ annotations from a string in struct tag format.
+// This is used for extracting SSZ annotations from sources other than
+// struct fields, such as type-level annotations registered via
+// sszutils.Annotate[T]().
+func ParseTags(tag string) (typeHints []SszTypeHint, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, err error) {
+	if tag == "" {
+		return nil, nil, nil, nil
+	}
+
+	structTag := reflect.StructTag(tag)
+
+	// Parse type hints
+	if sszType, ok := structTag.Lookup("ssz-type"); ok {
+		for _, typeStr := range strings.Split(sszType, ",") {
+			typeStr = strings.TrimSpace(typeStr)
+			hint := SszTypeHint{}
+
+			hint.Type, err = ParseSszType(typeStr)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("error parsing ssz-type tag: %v", err)
+			}
+
+			typeHints = append(typeHints, hint)
+		}
+	}
+
+	// Parse size hints
+	var sszSizeParts, sszBitsizeParts []string
+
+	sszSizeLen := 0
+
+	if fieldSszSizeStr, fieldHasSszSize := structTag.Lookup("ssz-size"); fieldHasSszSize {
+		sszSizeParts = strings.Split(fieldSszSizeStr, ",")
+		sszSizeLen = len(sszSizeParts)
+	}
+
+	if fieldSszBitsizeStr, fieldHasSszBitsize := structTag.Lookup("ssz-bitsize"); fieldHasSszBitsize {
+		sszBitsizeParts = strings.Split(fieldSszBitsizeStr, ",")
+		if len(sszBitsizeParts) > sszSizeLen {
+			sszSizeLen = len(sszBitsizeParts)
+		}
+	}
+
+	if sszSizeLen > 0 {
+		for i := 0; i < sszSizeLen; i++ {
+			sszSizeStr := getTagPart(sszSizeParts, i)
+			sszBitsizeStr := getTagPart(sszBitsizeParts, i)
+
+			hint := SszSizeHint{}
+
+			switch {
+			case sszBitsizeStr != "?":
+				sizeInt, parseErr := strconv.ParseUint(strings.TrimSpace(sszBitsizeStr), 10, 32)
+				if parseErr != nil {
+					return nil, nil, nil, fmt.Errorf("error parsing ssz-size tag: %v", parseErr)
+				}
+
+				hint.Size = uint32(sizeInt)
+				hint.Bits = true
+			case sszSizeStr != "?":
+				sizeInt, parseErr := strconv.ParseUint(strings.TrimSpace(sszSizeStr), 10, 32)
+				if parseErr != nil {
+					return nil, nil, nil, fmt.Errorf("error parsing ssz-size tag: %v", parseErr)
+				}
+
+				hint.Size = uint32(sizeInt)
+			default:
+				hint.Dynamic = true
+			}
+
+			sizeHints = append(sizeHints, hint)
+		}
+	}
+
+	// Parse dynamic size hints
+	sszSizeParts, sszBitsizeParts = nil, nil
+	sszSizeLen = 0
+
+	if fieldDynSszSizeStr, fieldHasDynSszSize := structTag.Lookup("dynssz-size"); fieldHasDynSszSize {
+		sszSizeParts = strings.Split(fieldDynSszSizeStr, ",")
+		sszSizeLen = len(sszSizeParts)
+	}
+
+	if fieldDynSszBitsizeStr, fieldHasDynSszBitsize := structTag.Lookup("dynssz-bitsize"); fieldHasDynSszBitsize {
+		sszBitsizeParts = strings.Split(fieldDynSszBitsizeStr, ",")
+		if len(sszBitsizeParts) > sszSizeLen {
+			sszSizeLen = len(sszBitsizeParts)
+		}
+	}
+
+	if sszSizeLen > 0 {
+		for i := 0; i < sszSizeLen; i++ {
+			sszSizeStr := getTagPart(sszSizeParts, i)
+			sszBitsizeStr := getTagPart(sszBitsizeParts, i)
+
+			sszSize := SszSizeHint{}
+			isExpr := false
+			sizeExpr := "?"
+
+			if sszBitsizeStr != "?" {
+				sizeExpr = sszBitsizeStr
+				sszSize.Bits = true
+			} else if sszSizeStr != "?" {
+				sizeExpr = sszSizeStr
+			}
+
+			if sizeExpr == "?" {
+				sszSize.Dynamic = true
+			} else if sszSizeInt, parseErr := strconv.ParseUint(sizeExpr, 10, 32); parseErr == nil {
+				sszSize.Size = uint32(sszSizeInt)
+			} else {
+				isExpr = true
+				sszSize.Dynamic = true
+				sszSize.Custom = true
+
+				if i < len(sizeHints) {
+					sizeHints[i].Expr = sizeExpr
+
+					continue
+				}
+			}
+
+			if i >= len(sizeHints) {
+				sizeHints = append(sizeHints, sszSize)
+			} else if sizeHints[i].Size != sszSize.Size {
+				sizeHints[i] = sszSize
+			}
+
+			if isExpr {
+				sizeHints[i].Expr = sizeExpr
+			}
+		}
+	}
+
+	// Parse max size hints
+	if sszMax, ok := structTag.Lookup("ssz-max"); ok {
+		for _, maxStr := range strings.Split(sszMax, ",") {
+			maxStr = strings.TrimSpace(maxStr)
+			hint := SszMaxSizeHint{}
+
+			if maxStr == "?" {
+				hint.NoValue = true
+			} else {
+				maxInt, parseErr := strconv.ParseUint(maxStr, 10, 64)
+				if parseErr != nil {
+					return nil, nil, nil, fmt.Errorf("error parsing ssz-max tag: %v", parseErr)
+				}
+
+				hint.Size = maxInt
+			}
+
+			maxSizeHints = append(maxSizeHints, hint)
+		}
+	}
+
+	// Parse dynamic max size hints
+	fieldDynSszMaxStr, fieldHasDynSszMax := structTag.Lookup("dynssz-max")
+	if fieldHasDynSszMax {
+		for i, sszMaxSizeStr := range strings.Split(fieldDynSszMaxStr, ",") {
+			sszMaxSize := SszMaxSizeHint{}
+			isExpr := false
+
+			if sszMaxSizeStr == "?" {
+				sszMaxSize.NoValue = true
+			} else if sszSizeInt, parseErr := strconv.ParseUint(sszMaxSizeStr, 10, 64); parseErr == nil {
+				sszMaxSize.Size = sszSizeInt
+			} else {
+				isExpr = true
+				sszMaxSize.Custom = true
+
+				if i < len(maxSizeHints) {
+					maxSizeHints[i].Expr = sszMaxSizeStr
+				}
+
+				continue
+			}
+
+			if i >= len(maxSizeHints) {
+				maxSizeHints = append(maxSizeHints, sszMaxSize)
+			} else if maxSizeHints[i].Size != sszMaxSize.Size {
+				maxSizeHints[i] = sszMaxSize
+			}
+
+			if isExpr {
+				maxSizeHints[i].Expr = sszMaxSizeStr
+			}
+		}
+	}
+
+	return typeHints, sizeHints, maxSizeHints, nil
 }
