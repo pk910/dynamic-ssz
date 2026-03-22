@@ -31,14 +31,14 @@ jobs:
         go-version: ${{ matrix.go-version }}
 
     - name: Cache Go modules
-      uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+      uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
       with:
         path: ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ matrix.go-version }}-spectests-${{ hashFiles('spectests/go.sum') }}
+        key: ${{ runner.os }}-go-${{ matrix.go-version }}-spectests-${{ hashFiles('tests/spectests/go.sum') }}
 
     - name: Download dependencies (spectests)
       run: |
-        cd spectests
+        cd tests/spectests
         go mod download
 
     - name: Get spec tests version
@@ -59,20 +59,20 @@ jobs:
         echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
     - name: Cache consensus spec tests
-      uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+      uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
       with:
-        path: spectests/consensus-spec-tests
+        path: tests/spectests/consensus-spec-tests
         key: consensus-spec-tests-${{ matrix.preset }}-${{ steps.spec-version.outputs.version }}
 
     - name: Setup consensus spec test data
       run: |
-        cd spectests
+        cd tests/spectests
         ./setup_test_data.sh setup ${{ matrix.preset }}
         echo "CONSENSUS_SPEC_TESTS_DIR=$(./setup_test_data.sh export ${{ matrix.preset }})" >> $GITHUB_ENV
 
     - name: Run spec tests with coverage
       run: |
-        cd spectests
+        cd tests/spectests
         ./run_tests.sh ${{ matrix.preset }}
       env:
         CONSENSUS_SPEC_TESTS_DIR: ${{ env.CONSENSUS_SPEC_TESTS_DIR }}
@@ -82,7 +82,7 @@ jobs:
       uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
       with:
         name: coverage-spec-go1.25.8-${{ matrix.preset }}
-        path: spectests/spec-coverage.out
+        path: tests/spectests/spec-coverage.out
 
   # Run unit tests with coverage on Go 1.25.8 and upload to Codecov
   unit-tests-and-coverage:
@@ -100,13 +100,16 @@ jobs:
         go-version: '1.25.8'
 
     - name: Cache Go modules
-      uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+      uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
       with:
         path: ~/go/pkg/mod
         key: ${{ runner.os }}-go-1.25.8-${{ hashFiles('**/go.sum') }}
 
     - name: Download dependencies
       run: go mod download
+
+    - name: Unpack compat-tests archives
+      run: make unpack-compat-tests
 
     - name: Run codegen tests with coverage
       run: |
@@ -134,7 +137,7 @@ jobs:
         path: spec-coverage-artifacts
 
     - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5
+      uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad # v5
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
 
@@ -165,13 +168,16 @@ jobs:
         go-version: ${{ matrix.go-version }}
 
     - name: Cache Go modules
-      uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+      uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
       with:
         path: ~/go/pkg/mod
         key: ${{ runner.os }}-go-${{ matrix.go-version }}-${{ hashFiles('**/go.sum') }}
 
     - name: Download dependencies
       run: go mod download
+
+    - name: Unpack compat-tests archives
+      run: make unpack-compat-tests
 
     - name: Run unit tests
       run: go test -v -race ./...
@@ -215,7 +221,7 @@ jobs:
         go-version: '1.25.8'
 
     - name: Cache Go modules
-      uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+      uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
       with:
         path: ~/go/pkg/mod
         key: ${{ runner.os }}-go-1.25.8-fuzz-${{ hashFiles('**/go.sum') }}
@@ -235,11 +241,11 @@ jobs:
         # Generate a fresh corpus with a random seed
         SEED=$(od -A n -t u4 -N 4 /dev/urandom | tr -d ' ')
         echo "Generating corpus with seed=$SEED"
-        rm -f fuzz/corpus/*_gen.go
-        go run ./fuzz/cmd/generate -num-types 50 -seed "$SEED" -extended=true
+        rm -f tests/fuzz/corpus/*_gen.go
+        go run ./tests/fuzz/cmd/generate -num-types 50 -seed "$SEED" -extended=true
 
         # Run fuzzer for 30 seconds
-        go run ./fuzz/cmd/fuzz \
+        go run ./tests/fuzz/cmd/fuzz \
           -duration 30s \
           -report-dir "${REPORT_DIR}" \
           -workers 2

@@ -296,6 +296,93 @@ func TestVerifyMultiproof(t *testing.T) {
 	}
 }
 
+func TestVerifyMultiproofAllLeavesDescendingOrder(t *testing.T) {
+	root, leaves, _ := buildMerkleTree(4)
+
+	// This checks the full-tree fast path when the caller provides all leaves
+	// in descending generalized-index order.
+	valid, err := VerifyMultiproof(root, nil, [][]byte{
+		leaves[3],
+		leaves[2],
+		leaves[1],
+		leaves[0],
+	}, []int{7, 6, 5, 4})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !valid {
+		t.Fatal("expected descending full-tree proof to verify")
+	}
+}
+
+func TestVerifyFullTreeLeaves(t *testing.T) {
+	root, leaves, _ := buildMerkleTree(4)
+
+	t.Run("ascending order", func(t *testing.T) {
+		// This is the normal fast-path case: all leaves are present in ascending order.
+		ok, valid := verifyFullTreeLeaves(root, leaves, []int{4, 5, 6, 7})
+		if !ok {
+			t.Fatal("expected fast path to accept ascending full-tree leaves")
+		}
+		if !valid {
+			t.Fatal("expected ascending full-tree leaves to verify")
+		}
+	})
+
+	t.Run("descending order", func(t *testing.T) {
+		// This checks that the helper also accepts the same full tree in reverse order.
+		ok, valid := verifyFullTreeLeaves(root, [][]byte{
+			leaves[3],
+			leaves[2],
+			leaves[1],
+			leaves[0],
+		}, []int{7, 6, 5, 4})
+		if !ok {
+			t.Fatal("expected fast path to accept descending full-tree leaves")
+		}
+		if !valid {
+			t.Fatal("expected descending full-tree leaves to verify")
+		}
+	})
+
+	t.Run("rejects non power of two", func(t *testing.T) {
+		// A full binary tree must have a power-of-two leaf count for this shortcut.
+		ok, valid := verifyFullTreeLeaves(root, leaves[:3], []int{4, 5, 6})
+		if ok || valid {
+			t.Fatalf("expected helper to reject non-power-of-two leaf count, got ok=%v valid=%v", ok, valid)
+		}
+	})
+
+	t.Run("rejects malformed ascending indices", func(t *testing.T) {
+		// This makes sure the helper rejects leaves that look ascending but skip the expected order.
+		ok, valid := verifyFullTreeLeaves(root, leaves, []int{4, 5, 7, 6})
+		if ok || valid {
+			t.Fatalf("expected helper to reject malformed ascending indices, got ok=%v valid=%v", ok, valid)
+		}
+	})
+
+	t.Run("rejects malformed descending indices", func(t *testing.T) {
+		// This is the same guard as above, but for the descending-order shortcut.
+		ok, valid := verifyFullTreeLeaves(root, [][]byte{
+			leaves[3],
+			leaves[2],
+			leaves[1],
+			leaves[0],
+		}, []int{7, 6, 4, 5})
+		if ok || valid {
+			t.Fatalf("expected helper to reject malformed descending indices, got ok=%v valid=%v", ok, valid)
+		}
+	})
+
+	t.Run("rejects unsupported starting index", func(t *testing.T) {
+		// The fast path only supports exact full-tree ranges, so unrelated starting indices must fail.
+		ok, valid := verifyFullTreeLeaves(root, leaves, []int{5, 6, 7, 8})
+		if ok || valid {
+			t.Fatalf("expected helper to reject unsupported starting index, got ok=%v valid=%v", ok, valid)
+		}
+	})
+}
+
 func TestGetPosAtLevel(t *testing.T) {
 	tests := []struct {
 		index    int
@@ -480,6 +567,90 @@ func TestGetRequiredIndices(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestVerifyMultiproofUnsortedIndices(t *testing.T) {
+	// Build a tree with 8 leaves (indices 8..15)
+	root, _, allNodes := buildMerkleTree(8)
+
+	// Indices that are neither ascending nor descending exercise
+	// the sort fallback in both descendingIndices and getRequiredIndices.
+	indices := []int{10, 8, 13}
+	leafData := make([][]byte, len(indices))
+	for i, idx := range indices {
+		leafData[i] = allNodes[idx]
+	}
+	proofHashes := findProofHashes(indices, allNodes)
+
+	valid, err := VerifyMultiproof(root, proofHashes, leafData, indices)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !valid {
+		t.Fatal("expected valid proof with unsorted indices")
+	}
+}
+
+func TestVerifyMultiproofMissingNodes(t *testing.T) {
+	// Build a tree with 4 leaves (indices 4..7)
+	root, leaves, allNodes := buildMerkleTree(4)
+
+	// Prove leaf 4 with correct proof
+	indices := []int{4}
+	leafData := [][]byte{leaves[0]}
+	proofHashes := findProofHashes(indices, allNodes)
+
+	// Verify it works normally
+	valid, err := VerifyMultiproof(root, proofHashes, leafData, indices)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !valid {
+		t.Fatal("expected valid proof")
+	}
+
+	// Now corrupt a proof hash so verification fails but doesn't crash
+	corruptProof := make([][]byte, len(proofHashes))
+	for i := range proofHashes {
+		corruptProof[i] = make([]byte, 32)
+	}
+	valid, err = VerifyMultiproof(root, corruptProof, leafData, indices)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if valid {
+		t.Fatal("expected invalid proof with corrupted hashes")
+	}
+}
+
+func TestGetRequiredIndicesUnsorted(t *testing.T) {
+	// Provide unsorted indices to exercise the sort branch (lines 294-297)
+	result := getRequiredIndices([]int{7, 4, 6})
+
+	// Should still return valid required indices in descending order
+	for i := 1; i < len(result); i++ {
+		if result[i] >= result[i-1] {
+			t.Errorf("result not sorted in descending order: %v", result)
+			break
+		}
+	}
+}
+
+func TestDescendingIndicesUnsorted(t *testing.T) {
+	// Neither ascending nor descending: exercises the default sort branch
+	indices := []int{5, 3, 7, 1}
+	result := descendingIndices(indices)
+
+	// Should be sorted descending
+	expected := []int{7, 5, 3, 1}
+	if len(result) != len(expected) {
+		t.Fatalf("expected %d indices, got %d", len(expected), len(result))
+	}
+	for i, v := range expected {
+		if result[i] != v {
+			t.Errorf("result[%d] = %d, want %d", i, result[i], v)
+		}
 	}
 }
 

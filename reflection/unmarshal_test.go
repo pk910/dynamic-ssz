@@ -251,7 +251,7 @@ func TestUnmarshalExtendedTypesErrors(t *testing.T) {
 				Opt *int16 `ssz-type:"optional"`
 			}),
 			data:        fromHex("0x04000000"),
-			expectedErr: "optional requires at least 1 byte",
+			expectedErr: "need 1 byte for optional presence flag",
 		},
 		{
 			name: "optional_present_truncated",
@@ -418,7 +418,7 @@ func TestUnmarshalErrors(t *testing.T) {
 				Data [][]uint8 `ssz-size:"?,2" ssz-max:"10"`
 			}),
 			data:        fromHex("0x040000000500000001"),
-			expectedErr: "invalid list length, expected multiple of 2, got 5",
+			expectedErr: "is not a multiple of element size",
 		},
 		{
 			name: "list_item_size_mismatch",
@@ -451,7 +451,7 @@ func TestUnmarshalErrors(t *testing.T) {
 				B uint64
 			}]),
 			data:        []byte{},
-			expectedErr: "requires at least 1 byte for selector",
+			expectedErr: "need 1 byte for union selector",
 		},
 		{
 			name: "truncated_compatible_union",
@@ -522,7 +522,7 @@ func TestUnmarshalErrors(t *testing.T) {
 				} `ssz-max:"10"`
 			}),
 			data:        fromHex("0x010000000800000008000000ff000000"),
-			expectedErr: "incorrect offset: dynamic list item offset out of range",
+			expectedErr: "element offset",
 		},
 		{
 			name: "map_type",
@@ -571,7 +571,7 @@ func TestUnmarshalErrors(t *testing.T) {
 				Data []byte `ssz-type:"bitlist"`
 			}),
 			data:        fromHex("0x0400000000"),
-			expectedErr: "bitlist misses mandatory termination bit",
+			expectedErr: "bitlist missing termination bit",
 		},
 		{
 			name: "dynamic_field_offset_truncated",
@@ -598,7 +598,7 @@ func TestUnmarshalErrors(t *testing.T) {
 			}),
 			// Container offset (4) + wrong first vector offset (12 instead of 8) + second offset (16) + items
 			data:        fromHex("0x04000000" + "0c000000" + "10000000" + "04000000" + "04000000"),
-			expectedErr: "does not match expected offset",
+			expectedErr: "does not match expected",
 		},
 		{
 			name: "dynamic_vector_invalid_offset",
@@ -651,7 +651,7 @@ func TestUnmarshalErrors(t *testing.T) {
 			}),
 			// Container offset (4) + only partial offsets (not enough for 2 items)
 			data:        fromHex("0x04000000" + "08000000"),
-			expectedErr: "dynamic vector expects at least 8 bytes for offsets",
+			expectedErr: "not enough data for vector offsets",
 		},
 		{
 			name: "dynamic_list_truncated_first_offset",
@@ -662,7 +662,7 @@ func TestUnmarshalErrors(t *testing.T) {
 			}),
 			// Container offset (4) + only 2 bytes (not enough for first offset)
 			data:        fromHex("0x04000000" + "0800"),
-			expectedErr: "dynamic list expects at least 4 bytes for first offset",
+			expectedErr: "not enough data for list offsets",
 		},
 		{
 			name: "dynamic_list_truncated_offsets",
@@ -673,7 +673,7 @@ func TestUnmarshalErrors(t *testing.T) {
 			}),
 			// Container offset (4) + first offset claims 2 items (8) but only 5 bytes total
 			data:        fromHex("0x04000000" + "0800000004"),
-			expectedErr: "dynamic list expects at least 8 bytes for offsets",
+			expectedErr: "not enough data for list offsets",
 		},
 		{
 			name: "type_wrapper_invalid_descriptor",
@@ -735,7 +735,7 @@ func TestUnmarshalErrors(t *testing.T) {
 				Data Uint32WithInvalidSize
 			}),
 			data:        fromHex("0x0102030405060708"),
-			expectedErr: "container field did not consume expected ssz range",
+			expectedErr: "field consumed to position",
 		},
 		{
 			name: "internal_container_field_size_mismatch_mixed",
@@ -744,7 +744,7 @@ func TestUnmarshalErrors(t *testing.T) {
 				Dyn  []uint8 `ssz-max:"100"`
 			}),
 			data:        fromHex("0x0102030405060708" + "0c000000"),
-			expectedErr: "container field did not consume expected ssz range",
+			expectedErr: "field consumed to position",
 		},
 		{
 			name: "internal_container_static_field_error_mixed",
@@ -761,7 +761,7 @@ func TestUnmarshalErrors(t *testing.T) {
 				Data Uint32AsDynamicType
 			}),
 			data:        fromHex("0x04000000" + "0102030405"),
-			expectedErr: "struct field did not consume expected ssz range",
+			expectedErr: "bytes trailing data",
 		},
 		{
 			name: "internal_vector_item_size_mismatch",
@@ -769,7 +769,7 @@ func TestUnmarshalErrors(t *testing.T) {
 				Data [2]Uint32WithInvalidSize
 			}),
 			data:        fromHex("0x0102030405060708090a0b0c0d0e0f10"),
-			expectedErr: "vector item did not consume expected ssz range",
+			expectedErr: "element consumed to position",
 		},
 		{
 			name: "internal_vector_dynamic_item_size_mismatch",
@@ -777,7 +777,7 @@ func TestUnmarshalErrors(t *testing.T) {
 				Data [1]Uint32AsDynamicType
 			}),
 			data:        fromHex("0x04000000" + "04000000" + "0102030405"),
-			expectedErr: "dynamic vector item did not consume expected ssz range",
+			expectedErr: "bytes trailing data",
 		},
 		{
 			name: "internal_list_item_size_mismatch",
@@ -785,7 +785,7 @@ func TestUnmarshalErrors(t *testing.T) {
 				Data []Uint32WithInvalidSize
 			}),
 			data:        fromHex("0x04000000" + "0102030405060708"),
-			expectedErr: "list item did not consume expected ssz range",
+			expectedErr: "element consumed to position",
 		},
 		{
 			name: "internal_list_dynamic_item_size_mismatch",
@@ -793,7 +793,7 @@ func TestUnmarshalErrors(t *testing.T) {
 				Data []Uint32AsDynamicType
 			}),
 			data:        fromHex("0x04000000" + "04000000" + "0102030405"),
-			expectedErr: "dynamic list item did not consume expected ssz range",
+			expectedErr: "bytes trailing data",
 		},
 	}
 
@@ -1331,7 +1331,7 @@ func TestUnmarshalReaderErrors(t *testing.T) {
 				}
 			}),
 			data:        fromHex("0x04000000" + "08000000"),
-			expectedErr: "dynamic vector expects at least 8 bytes for offsets",
+			expectedErr: "not enough data for vector offsets",
 		},
 		{
 			name: "reader_dynamic_list_offset_error",
@@ -1341,7 +1341,7 @@ func TestUnmarshalReaderErrors(t *testing.T) {
 				} `ssz-max:"10"`
 			}),
 			data:        fromHex("0x04000000" + "0800000004"),
-			expectedErr: "dynamic list expects at least 8 bytes for offsets",
+			expectedErr: "not enough data for list offsets",
 		},
 		{
 			name: "reader_bitlist_zero_length",
@@ -1349,7 +1349,7 @@ func TestUnmarshalReaderErrors(t *testing.T) {
 				Data []byte `ssz-type:"bitlist"`
 			}),
 			data:        fromHex("0x04000000"),
-			expectedErr: "bitlist misses mandatory termination bit",
+			expectedErr: "bitlist missing termination bit",
 		},
 	}
 
@@ -1471,7 +1471,7 @@ func TestUnmarshalExtendedTypesReaderErrors(t *testing.T) {
 				Opt *int16 `ssz-type:"optional"`
 			}),
 			data:        fromHex("0x04000000"),
-			expectedErr: "optional requires at least 1 byte",
+			expectedErr: "need 1 byte for optional presence flag",
 		},
 	}
 

@@ -15,6 +15,16 @@ import (
 
 const varNameVLen = "vlen"
 
+// Generated error expression constants shared across codegen files.
+const (
+	errCodeBitvectorPadding       = "sszutils.ErrBitvectorPaddingFn()"
+	errCodeUnionTypeMismatch      = "sszutils.ErrUnionTypeMismatchFn()"
+	errCodeInvalidUnionVariant    = "sszutils.ErrInvalidUnionVariantFn()"
+	errCodeBitlistNotTerminated   = "sszutils.ErrBitlistNotTerminatedFn()"
+	errCodeCustomTypeNotSupported = "sszutils.ErrCustomTypeNotSupportedFn()"
+	errCodeTrailingData           = "sszutils.ErrTrailingDataFn(diff)"
+)
+
 type exprVarGenerator struct {
 	prefix      string
 	typePrinter *TypePrinter
@@ -195,4 +205,48 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 
 func (g *staticSizeVarGenerator) getCode() string {
 	return g.codeBuf.String()
+}
+
+type typePathList []typePathSegment
+
+type typePathSegment struct {
+	tpl  string
+	args []string
+}
+
+func (tp typePathList) append(tpl string, args ...string) typePathList {
+	segment := typePathSegment{
+		tpl:  tpl,
+		args: args,
+	}
+	return append(tp, segment)
+}
+
+func (tp typePathList) getErrorWithArgs() (string, int) {
+	pathFormat := strings.Builder{}
+	pathArgs := []string{}
+	for idx, segment := range tp {
+		if idx > 0 && !strings.HasPrefix(segment.tpl, "[") {
+			pathFormat.WriteString(".")
+		}
+		pathFormat.WriteString(segment.tpl)
+		pathArgs = append(pathArgs, segment.args...)
+	}
+
+	if len(pathArgs) == 0 {
+		return fmt.Sprintf("%q", pathFormat.String()), 0
+	}
+
+	return fmt.Sprintf("%q, %s", pathFormat.String(), strings.Join(pathArgs, ", ")), len(pathArgs)
+}
+
+func (tp typePathList) getErrorWith(err string) string {
+	errArgs, argCount := tp.getErrorWithArgs()
+	if len(errArgs) > 2 {
+		if argCount > 0 {
+			return fmt.Sprintf("sszutils.ErrorWithPathf(%s, %s)", err, errArgs)
+		}
+		return fmt.Sprintf("sszutils.ErrorWithPath(%s, %s)", err, errArgs)
+	}
+	return err
 }

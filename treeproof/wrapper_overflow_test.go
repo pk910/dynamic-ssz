@@ -28,29 +28,10 @@ func expectPanic(t *testing.T, substr string, fn func()) {
 	fn()
 }
 
-func TestCheckUint64FitsInt_NoOverflow(t *testing.T) {
-	// Should not panic for values within int range
-	checkUint64FitsInt(0, "test")
-	checkUint64FitsInt(42, "test")
-	checkUint64FitsInt(uint64(math.MaxInt), "test")
-}
-
-func TestCheckUint64FitsInt_Overflow(t *testing.T) {
-	expectPanic(t, "exceeds max int", func() {
-		checkUint64FitsInt(uint64(math.MaxInt)+1, "test context")
-	})
-}
-
-func TestCheckUint64FitsInt_MaxUint64(t *testing.T) {
-	expectPanic(t, "exceeds max int", func() {
-		checkUint64FitsInt(math.MaxUint64, "test context")
-	})
-}
-
 func TestMerkleizeWithMixinNumOverflow(t *testing.T) {
 	w := NewWrapper()
 	w.AppendUint64(1)
-	expectPanic(t, "MerkleizeWithMixin num", func() {
+	expectPanic(t, "MerkleizeWithMixin: num", func() {
 		w.MerkleizeWithMixin(0, math.MaxUint64, 1)
 	})
 }
@@ -58,7 +39,7 @@ func TestMerkleizeWithMixinNumOverflow(t *testing.T) {
 func TestMerkleizeWithMixinLimitOverflow(t *testing.T) {
 	w := NewWrapper()
 	w.AppendUint64(1)
-	expectPanic(t, "MerkleizeWithMixin limit", func() {
+	expectPanic(t, "MerkleizeWithMixin: limit", func() {
 		w.MerkleizeWithMixin(0, 1, math.MaxUint64)
 	})
 }
@@ -66,7 +47,7 @@ func TestMerkleizeWithMixinLimitOverflow(t *testing.T) {
 func TestMerkleizeProgressiveWithMixinNumOverflow(t *testing.T) {
 	w := NewWrapper()
 	w.AppendUint64(1)
-	expectPanic(t, "MerkleizeProgressiveWithMixin num", func() {
+	expectPanic(t, "MerkleizeProgressiveWithMixin: num", func() {
 		w.MerkleizeProgressiveWithMixin(0, math.MaxUint64)
 	})
 }
@@ -75,7 +56,7 @@ func TestPutBitlistSizeOverflow(t *testing.T) {
 	w := NewWrapper()
 	// Craft a bitlist that produces a valid parse, then use MerkleizeWithMixin
 	// overflow path. Since ParseBitlist's size is bounded by len(bb) which is int,
-	// we test the overflow guard via checkUint64FitsInt directly above.
+	// we test the overflow guard via the public method tests above.
 	// Here we verify PutBitlist works correctly for a normal small bitlist.
 	w.PutBitlist([]byte{0x07}, 256) // 2 bits set, sentinel at bit 2
 }
@@ -91,8 +72,41 @@ func TestPutBitlistLimitOverflow(t *testing.T) {
 	overflowMaxSize := uint64(math.MaxInt32+1) * 256
 
 	w := NewWrapper()
-	expectPanic(t, "PutBitlist limit", func() {
+	expectPanic(t, "PutBitlist: limit", func() {
 		w.PutBitlist([]byte{0x01}, overflowMaxSize) // sentinel only, size=0
+	})
+}
+
+func TestPutBitlistSizeOverflow32Bit(t *testing.T) {
+	if math.MaxInt > math.MaxInt32 {
+		t.Skip("size overflow only possible on 32-bit platforms")
+	}
+
+	// On 32-bit, math.MaxInt == MaxInt32 == 2147483647.
+	// ParseBitlist computes size = 8*(len(buf)-1) + msb.
+	// We need size > MaxInt32, so len(buf) must be > MaxInt32/8 + 1 = 268435457.
+	bufLen := math.MaxInt32/8 + 2 // 268435458
+	buf := make([]byte, bufLen)
+	buf[bufLen-1] = 0x80 // sentinel bit at position 7
+
+	w := NewWrapper()
+	expectPanic(t, "PutBitlist: size", func() {
+		w.PutBitlist(buf, math.MaxUint64)
+	})
+}
+
+func TestPutProgressiveBitlistSizeOverflow32Bit(t *testing.T) {
+	if math.MaxInt > math.MaxInt32 {
+		t.Skip("size overflow only possible on 32-bit platforms")
+	}
+
+	bufLen := math.MaxInt32/8 + 2
+	buf := make([]byte, bufLen)
+	buf[bufLen-1] = 0x80
+
+	w := NewWrapper()
+	expectPanic(t, "PutProgressiveBitlist: size", func() {
+		w.PutProgressiveBitlist(buf)
 	})
 }
 

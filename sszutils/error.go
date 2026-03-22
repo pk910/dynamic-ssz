@@ -180,3 +180,317 @@ func ErrorWithPath(err error, segment string) error {
 func ErrorWithPathf(err error, format string, args ...any) error {
 	return ErrorWithPath(err, fmt.Sprintf(format, args...))
 }
+
+// ---------------------------------------------------------------------------
+// Error constructor functions
+//
+// Each function creates a fresh sszError wrapping the appropriate sentinel.
+// Using dedicated constructors instead of inline NewSszError/NewSszErrorf
+// keeps error messages consistent across codegen and reflection, and
+// reduces boilerplate in generated code.
+// ---------------------------------------------------------------------------
+
+// --- ErrUnexpectedEOF constructors ---
+
+// ErrFixedFieldsEOFFn is returned when the buffer is too short for
+// the fixed-size portion of a container.
+func ErrFixedFieldsEOFFn(have, needed any) error {
+	return &sszError{
+		err:     ErrUnexpectedEOF,
+		message: fmt.Sprintf("not enough data for fixed fields (have %v, needed %v)", have, needed),
+	}
+}
+
+// ErrNeedBytesFn is returned when a primitive type cannot be decoded
+// because the buffer is too short (e.g. "need 4 bytes for uint32").
+func ErrNeedBytesFn(needed int, typeName string) error {
+	if needed == 1 {
+		return &sszError{
+			err:     ErrUnexpectedEOF,
+			message: fmt.Sprintf("need 1 byte for %s", typeName),
+		}
+	}
+	return &sszError{
+		err:     ErrUnexpectedEOF,
+		message: fmt.Sprintf("need %d bytes for %s", needed, typeName),
+	}
+}
+
+// ErrByteVectorEOFFn is returned when the buffer is too short for a
+// byte vector / byte array.
+func ErrByteVectorEOFFn(have, needed any) error {
+	return &sszError{
+		err:     ErrUnexpectedEOF,
+		message: fmt.Sprintf("not enough data for byte vector (have %v, needed %v)", have, needed),
+	}
+}
+
+// ErrVectorElementsEOFFn is returned when the buffer is too short for
+// static vector elements.
+func ErrVectorElementsEOFFn(have, needed any) error {
+	return &sszError{
+		err:     ErrUnexpectedEOF,
+		message: fmt.Sprintf("not enough data for vector elements (have %v, needed %v)", have, needed),
+	}
+}
+
+// ErrVectorOffsetsEOFFn is returned when the buffer is too short for
+// the vector offset table.
+func ErrVectorOffsetsEOFFn(have, needed any) error {
+	return &sszError{
+		err:     ErrUnexpectedEOF,
+		message: fmt.Sprintf("not enough data for vector offsets (have %v, needed %v)", have, needed),
+	}
+}
+
+// ErrListOffsetsEOFFn is returned when the buffer is too short for the
+// list offset table.
+func ErrListOffsetsEOFFn(have, needed any) error {
+	return &sszError{
+		err:     ErrUnexpectedEOF,
+		message: fmt.Sprintf("not enough data for list offsets (have %v, needed %v)", have, needed),
+	}
+}
+
+// ErrListNotAlignedFn is returned when a list's byte length is not an
+// exact multiple of the element size.
+func ErrListNotAlignedFn(length, elemSize any) error {
+	return &sszError{
+		err:     ErrUnexpectedEOF,
+		message: fmt.Sprintf("list length %v is not a multiple of element size %v", length, elemSize),
+	}
+}
+
+// ErrInvalidListStartOffsetFn is returned when the first offset in a
+// dynamic list is malformed (not a multiple of 4 or out of range).
+func ErrInvalidListStartOffsetFn(offset, bufLen any) error {
+	return &sszError{
+		err:     ErrUnexpectedEOF,
+		message: fmt.Sprintf("invalid list start offset %v (length %v)", offset, bufLen),
+	}
+}
+
+// ErrUnionSelectorEOFFn is returned when there is no byte available to
+// read the union selector.
+func ErrUnionSelectorEOFFn() error {
+	return &sszError{err: ErrUnexpectedEOF, message: "need 1 byte for union selector"}
+}
+
+// ErrUnionVariantEOFFn is returned when the buffer is too short for
+// a union variant value.
+func ErrUnionVariantEOFFn(have, needed any) error {
+	return &sszError{
+		err:     ErrUnexpectedEOF,
+		message: fmt.Sprintf("not enough data for union variant (have %v, needed %v)", have, needed),
+	}
+}
+
+// ErrOptionalFlagEOFFn is returned when there is no byte available to
+// read the optional presence flag.
+func ErrOptionalFlagEOFFn() error {
+	return &sszError{err: ErrUnexpectedEOF, message: "need 1 byte for optional presence flag"}
+}
+
+// ErrOptionalValueEOFFn is returned when the buffer is too short for
+// an optional value.
+func ErrOptionalValueEOFFn() error {
+	return &sszError{err: ErrUnexpectedEOF, message: "not enough data for optional value"}
+}
+
+// --- ErrOffset constructors ---
+
+// ErrFirstOffsetMismatchFn is returned when the first dynamic field's
+// offset does not equal the expected static-part length.
+func ErrFirstOffsetMismatchFn(offset, expected any) error {
+	return &sszError{
+		err:     ErrOffset,
+		message: fmt.Sprintf("first offset %v does not match expected %v", offset, expected),
+	}
+}
+
+// ErrOffsetOutOfRangeFn is returned when a field offset is not
+// monotonically increasing or exceeds the data bounds.
+func ErrOffsetOutOfRangeFn(offset, prev, limit any) error {
+	return &sszError{
+		err:     ErrOffset,
+		message: fmt.Sprintf("offset %v out of range (prev %v, max %v)", offset, prev, limit),
+	}
+}
+
+// ErrFieldNotConsumedFn is returned when a static-size field did not
+// advance the decoder position by exactly the expected amount.
+func ErrFieldNotConsumedFn(pos, expected any) error {
+	return &sszError{
+		err:     ErrOffset,
+		message: fmt.Sprintf("field consumed to position %v, expected %v", pos, expected),
+	}
+}
+
+// ErrTrailingDataFn is returned when a dynamic field or element has
+// unconsumed bytes after decoding.
+func ErrTrailingDataFn(trailing any) error {
+	return &sszError{
+		err:     ErrOffset,
+		message: fmt.Sprintf("%v bytes trailing data", trailing),
+	}
+}
+
+// ErrElementOffsetOutOfRangeFn is returned when a dynamic collection
+// element's offset is out of the valid data range.
+func ErrElementOffsetOutOfRangeFn(end, start, limit any) error {
+	return &sszError{
+		err:     ErrOffset,
+		message: fmt.Sprintf("element offset %v out of range (start %v, max %v)", end, start, limit),
+	}
+}
+
+// ErrStaticElementNotConsumedFn is returned when a static collection
+// element did not advance the decoder position by exactly the expected
+// amount.
+func ErrStaticElementNotConsumedFn(pos, expected any) error {
+	return &sszError{
+		err:     ErrOffset,
+		message: fmt.Sprintf("element consumed to position %v, expected %v", pos, expected),
+	}
+}
+
+// --- ErrVectorLength constructors ---
+
+// ErrVectorLengthFn is returned when a vector or fixed-size byte array
+// has more elements than the schema allows.
+func ErrVectorLengthFn(length, limit any) error {
+	return &sszError{
+		err:     ErrVectorLength,
+		message: fmt.Sprintf("vector length %v exceeds limit %v", length, limit),
+	}
+}
+
+// ErrVectorSizeExceedsArrayFn is returned when a dynamic size expression
+// yields a vector size larger than the backing Go array.
+func ErrVectorSizeExceedsArrayFn(dynamicSize, arrayLen any) error {
+	return &sszError{
+		err:     ErrVectorLength,
+		message: fmt.Sprintf("dynamic vector size %v exceeds array length %v", dynamicSize, arrayLen),
+	}
+}
+
+// --- ErrInvalidValueRange constructors ---
+
+// ErrBitvectorPaddingFn is returned when a bitvector's padding bits
+// (above the declared bit-size) are non-zero.
+func ErrBitvectorPaddingFn() error {
+	return &sszError{
+		err:     ErrInvalidValueRange,
+		message: "bitvector padding bits are not zero",
+	}
+}
+
+// ErrBitlistNotTerminatedFn is returned when a bitlist is missing its
+// mandatory termination bit.
+func ErrBitlistNotTerminatedFn() error {
+	return &sszError{
+		err:     ErrInvalidValueRange,
+		message: "bitlist missing termination bit",
+	}
+}
+
+// ErrInvalidBoolValueFn is returned when a bool byte is neither 0 nor 1.
+func ErrInvalidBoolValueFn() error {
+	return &sszError{
+		err:     ErrInvalidValueRange,
+		message: "bool value must be 0 or 1",
+	}
+}
+
+// ErrInvalidUnionVariantFn is returned when a union selector byte does
+// not match any declared variant.
+func ErrInvalidUnionVariantFn() error {
+	return &sszError{
+		err:     ErrInvalidValueRange,
+		message: "invalid union variant selector",
+	}
+}
+
+// ErrUnionTypeMismatchFn is returned when the concrete type stored in
+// a union's Data field does not match the expected variant type.
+func ErrUnionTypeMismatchFn() error {
+	return &sszError{
+		err:     ErrInvalidValueRange,
+		message: "union variant type mismatch",
+	}
+}
+
+// ErrTimeTypeExpectedFn is returned when a uint64-backed time field
+// does not hold a time.Time value.
+func ErrTimeTypeExpectedFn(got any) error {
+	return &sszError{
+		err:     ErrInvalidValueRange,
+		message: fmt.Sprintf("time.Time type expected, got %v", got),
+	}
+}
+
+// ErrBigIntTypeExpectedFn is returned when a BigInt SSZ field does not
+// hold a big.Int value.
+func ErrBigIntTypeExpectedFn(got any) error {
+	return &sszError{
+		err:     ErrInvalidValueRange,
+		message: fmt.Sprintf("big.Int type expected, got %v", got),
+	}
+}
+
+// ErrLargeUintLengthFn is returned when a uint128/uint256 backing
+// array has an unexpected byte length.
+func ErrLargeUintLengthFn(got, expected any) error {
+	return &sszError{
+		err:     ErrInvalidValueRange,
+		message: fmt.Sprintf("large uint type does not have expected data length (%v != %v)", got, expected),
+	}
+}
+
+// --- ErrListTooBig constructors ---
+
+// ErrListLengthFn is returned when a list's element count exceeds the
+// declared maximum.
+func ErrListLengthFn(length, limit any) error {
+	return &sszError{
+		err:     ErrListTooBig,
+		message: fmt.Sprintf("list length %v exceeds maximum %v", length, limit),
+	}
+}
+
+// ErrBitlistLengthFn is returned when a bitlist's bit count exceeds
+// the declared maximum.
+func ErrBitlistLengthFn(length, limit any) error {
+	return &sszError{
+		err:     ErrListTooBig,
+		message: fmt.Sprintf("bitlist length %v exceeds maximum %v", length, limit),
+	}
+}
+
+// --- ErrNotImplemented constructors ---
+
+// ErrUnknownTypeFn is returned when the type dispatcher encounters a
+// type it does not handle.
+func ErrUnknownTypeFn(typeName any) error {
+	return &sszError{
+		err:     ErrNotImplemented,
+		message: fmt.Sprintf("unknown type: %v", typeName),
+	}
+}
+
+// ErrCustomTypeNotSupportedFn is returned when codegen encounters a
+// custom type that cannot be handled by the code generator.
+func ErrCustomTypeNotSupportedFn() error {
+	return &sszError{err: ErrNotImplemented, message: "custom type not supported"}
+}
+
+// --- ErrPlatformOverflow constructors ---
+
+// ErrPlatformOverflowFn is returned when a SSZ size or count exceeds
+// the platform's integer range (e.g. >31 bits on 32-bit systems).
+func ErrPlatformOverflowFn(description string, value any) error {
+	return &sszError{
+		err:     ErrPlatformOverflow,
+		message: fmt.Sprintf("%s %v exceeds platform int max", description, value),
+	}
+}

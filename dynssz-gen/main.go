@@ -9,6 +9,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"go/ast"
+	"go/token"
 	"go/types"
 	"log"
 	"os"
@@ -397,6 +399,19 @@ func run(config Config) error {
 			// Build type-specific options
 			var typeSpecificOpts []codegen.CodeGeneratorOption
 
+			// Parse SSZ annotations from type definition comments
+			if comment := findTypeComment(pkg, spec.TypeName); comment != "" {
+				commentOpts, parseErr := parseCommentAnnotations(comment)
+				if parseErr != nil {
+					return fmt.Errorf("failed to parse SSZ annotations from comment on type %s: %v", spec.TypeName, parseErr)
+				}
+				typeSpecificOpts = append(typeSpecificOpts, commentOpts...)
+
+				if config.Verbose && len(commentOpts) > 0 {
+					log.Printf("Found SSZ annotations in comment for type %s", spec.TypeName)
+				}
+			}
+
 			// Add view types if specified
 			if len(spec.ViewTypes) > 0 {
 				viewTypes := make([]types.Type, 0, len(spec.ViewTypes))
@@ -471,4 +486,75 @@ func run(config Config) error {
 	}
 
 	return nil
+}
+
+// findTypeComment finds the SSZ annotation comment for a type declaration in the AST.
+// It checks the line comment first, then the doc comment on the TypeSpec,
+// then the doc comment on the GenDecl (for standalone type declarations).
+func findTypeComment(pkg *packages.Package, typeName string) string {
+	for _, file := range pkg.Syntax {
+		for _, decl := range file.Decls {
+			genDecl, ok := decl.(*ast.GenDecl)
+			if !ok || genDecl.Tok != token.TYPE {
+				continue
+			}
+
+			for _, spec := range genDecl.Specs {
+				typeSpec, ok := spec.(*ast.TypeSpec)
+				if !ok || typeSpec.Name.Name != typeName {
+					continue
+				}
+
+				// Prefer line comment (e.g., type Blobs []*Blob //ssz-max:"4096")
+				if typeSpec.Comment != nil {
+					return typeSpec.Comment.Text()
+				}
+
+				// Fall back to doc comment on the type spec
+				if typeSpec.Doc != nil {
+					return typeSpec.Doc.Text()
+				}
+
+				// Fall back to doc comment on the GenDecl (only for single-spec declarations)
+				if genDecl.Doc != nil && len(genDecl.Specs) == 1 {
+					return genDecl.Doc.Text()
+				}
+
+				return ""
+			}
+		}
+	}
+
+	return ""
+}
+
+// parseCommentAnnotations parses SSZ annotations from a comment string.
+// The comment text is treated as a struct tag string, allowing annotations like:
+//
+//	type Blobs []*Blob //ssz-max:"4096"
+//	type Blobs []*Blob //ssz-max:"4096" dynssz-max:"MAX_BLOB_COMMITMENTS_PER_BLOCK"
+func parseCommentAnnotations(comment string) ([]codegen.CodeGeneratorOption, error) {
+	// Replace newlines with spaces so multi-line doc comments parse as a single struct tag
+	tag := strings.ReplaceAll(strings.TrimSpace(comment), "\n", " ")
+	if tag == "" {
+		return nil, nil
+	}
+
+	typeHints, sizeHints, maxSizeHints, err := codegen.ParseTags(tag)
+	if err != nil {
+		return nil, err
+	}
+
+	var opts []codegen.CodeGeneratorOption
+	if len(typeHints) > 0 {
+		opts = append(opts, codegen.WithTypeHints(typeHints))
+	}
+	if len(sizeHints) > 0 {
+		opts = append(opts, codegen.WithSizeHints(sizeHints))
+	}
+	if len(maxSizeHints) > 0 {
+		opts = append(opts, codegen.WithMaxSizeHints(maxSizeHints))
+	}
+
+	return opts, nil
 }

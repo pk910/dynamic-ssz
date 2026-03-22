@@ -1,0 +1,100 @@
+name: Benchmarks
+
+on:
+  pull_request:
+    branches: [ master, main ]
+
+concurrency:
+  group: benchmark-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+    - name: Checkout PR
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        path: pr
+
+    - name: Checkout base
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        ref: ${{ github.event.pull_request.base.sha }}
+        path: base
+
+    - name: Set up Go
+      uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+      with:
+        go-version: '1.25.8'
+
+    - name: Install benchstat
+      run: go install golang.org/x/perf/cmd/benchstat@v0.0.0-20260312031701-16a31bc5fbd0
+
+    - name: Download test data
+      run: |
+        cd pr/tests/perftests
+        ./setup_testdata.sh
+        cp -r res ../../../base/tests/perftests/res 2>/dev/null || true
+
+    - name: Generate codegen (PR)
+      run: |
+        cd pr/tests/perftests
+        go generate ./...
+
+    - name: Generate codegen (base)
+      continue-on-error: true
+      run: |
+        cd base/tests/perftests
+        go generate ./...
+
+    - name: Cache Go modules
+      uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+      with:
+        path: ~/go/pkg/mod
+        key: ${{ runner.os }}-go-bench-${{ hashFiles('pr/tests/perftests/go.sum') }}
+
+    - name: Run library benchmarks (base)
+      continue-on-error: true
+      run: |
+        cd base
+        go test -run=^$ -bench=. -benchmem -count=5 -timeout=10m ./... > /tmp/base-lib.txt 2>&1
+
+    - name: Run library benchmarks (PR)
+      run: |
+        cd pr
+        go test -run=^$ -bench=. -benchmem -count=5 -timeout=10m ./... > /tmp/pr-lib.txt 2>&1
+
+    - name: Run perf benchmarks (base)
+      continue-on-error: true
+      run: |
+        cd base/tests/perftests
+        go test -run=^$ -bench=. -benchmem -count=5 -timeout=30m > /tmp/base-perf.txt 2>&1
+
+    - name: Run perf benchmarks (PR)
+      run: |
+        cd pr/tests/perftests
+        go test -run=^$ -bench=. -benchmem -count=5 -timeout=30m > /tmp/pr-perf.txt 2>&1
+
+    - name: Run benchstat comparisons
+      run: |
+        benchstat /tmp/base-lib.txt /tmp/pr-lib.txt > /tmp/lib-stat.txt 2>&1 || true
+        benchstat /tmp/base-perf.txt /tmp/pr-perf.txt > /tmp/perf-stat.txt 2>&1 || true
+
+    - name: Upload benchmark results
+      uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      with:
+        name: benchmark-results
+        path: |
+          /tmp/base-lib.txt
+          /tmp/pr-lib.txt
+          /tmp/base-perf.txt
+          /tmp/pr-perf.txt
+          /tmp/lib-stat.txt
+          /tmp/perf-stat.txt
+        if-no-files-found: ignore

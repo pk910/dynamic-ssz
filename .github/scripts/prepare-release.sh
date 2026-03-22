@@ -37,4 +37,31 @@ find . -name "go.mod" -not -path "./vendor/*" | while read -r go_mod_file; do
     fi
 done
 
+echo "Packaging codegen compat-tests for v$new_version"
+
+# Build dynssz-gen from current source
+go build -o dynssz-gen-release ./dynssz-gen/
+
+# Generate codegen test files using the built tool
+cd codegen/tests
+# Parse go:generate directives and run them with the local binary
+grep '//go:generate' generate.go | while IFS= read -r line; do
+    cmd="${line#//go:generate }"
+    cmd=$(echo "$cmd" | sed 's|go run -cover ../../dynssz-gen|../../dynssz-gen-release|')
+    cmd=$(echo "$cmd" | sed 's|go run ../../dynssz-gen|../../dynssz-gen-release|')
+    echo "Running: $cmd"
+    eval $cmd
+done
+cd ../..
+
+# Package into tar.gz (include all .go files from codegen/tests)
+mkdir -p codegen/compat-tests
+tar -czf "codegen/compat-tests/codegen_v${new_version}.tar.gz" -C codegen/tests \
+    $(cd codegen/tests && find . -maxdepth 1 -name '*.go' -printf '%f ')
+
+# Cleanup
+rm -f dynssz-gen-release
+rm -f codegen/tests/gen_*.go
+
+echo "Created codegen/compat-tests/codegen_v${new_version}.tar.gz"
 echo "Release preparation completed for version $new_version"

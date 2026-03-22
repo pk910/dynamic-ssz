@@ -1131,6 +1131,85 @@ func TestNodeGetters(t *testing.T) {
 	})
 }
 
+func TestTreeFromNodesWithMixinNonPowerOfTwoLimit(t *testing.T) {
+	nodes := []*Node{
+		NewNodeWithValue([]byte{1}),
+		NewNodeWithValue([]byte{2}),
+		NewNodeWithValue([]byte{3}),
+	}
+
+	// limit 3 is not a power of 2; TreeFromNodesWithMixin should normalize it
+	tree, err := TreeFromNodesWithMixin(nodes, 3, 3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tree.IsLeaf() {
+		t.Error("expected branch node")
+	}
+}
+
+func TestTreeFromNodesWithMixinZeroLimit(t *testing.T) {
+	nodes := []*Node{NewNodeWithValue([]byte{1})}
+
+	tree, err := TreeFromNodesWithMixin(nodes, 1, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tree == nil {
+		t.Fatal("expected non-nil tree")
+	}
+}
+
+func TestTreeFromNodesWithMixinEmpty(t *testing.T) {
+	tree, err := TreeFromNodesWithMixin(nil, 0, 4)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tree == nil {
+		t.Fatal("expected non-nil tree")
+	}
+}
+
+func TestTreeFromNodesProgressiveWithMixinEmpty(t *testing.T) {
+	tree, err := TreeFromNodesProgressiveWithMixin(nil, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tree == nil {
+		t.Fatal("expected non-nil tree")
+	}
+}
+
+func TestTreeFromNodesProgressiveWithActiveFieldsEmpty(t *testing.T) {
+	tree, err := TreeFromNodesProgressiveWithActiveFields(nil, []byte{0x07})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tree == nil {
+		t.Fatal("expected non-nil tree")
+	}
+}
+
+func TestTreeFromNodesProgressiveImplDeepRecursion(t *testing.T) {
+	// Create enough nodes to trigger multiple levels of progressive recursion
+	// depth 0: baseSize=1, depth 2: baseSize=4, depth 4: baseSize=16
+	nodes := make([]*Node, 22)
+	for i := range nodes {
+		nodes[i] = NewNodeWithValue([]byte{byte(i)})
+	}
+
+	tree, err := TreeFromNodesProgressive(nodes)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tree == nil {
+		t.Fatal("expected non-nil tree")
+	}
+	if tree.IsLeaf() {
+		t.Error("expected branch node for progressive tree with many nodes")
+	}
+}
+
 func TestHelperFunctions(t *testing.T) {
 	t.Run("isPowerOfTwo", func(t *testing.T) {
 		tests := []struct {

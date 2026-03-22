@@ -12,7 +12,6 @@ import (
 	"go/build"
 	"go/types"
 	"reflect"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -373,7 +372,9 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 			alias = ""
 		}
 
-		if regexp.MustCompile(`^[^/]+\.[a-zA-Z]+/.*$`).MatchString(path) {
+		// Split third-party imports from stdlib/local paths without paying the cost
+		// of compiling and running a regexp in this hot codegen path.
+		if isThirdPartyImport(path) {
 			pkgImports = append(pkgImports, TypeImport{
 				Alias: alias,
 				Path:  path,
@@ -707,4 +708,12 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 	}
 
 	return nil
+}
+
+func isThirdPartyImport(path string) bool {
+	before, _, ok := strings.Cut(path, "/")
+	if !ok {
+		return strings.Contains(path, ".")
+	}
+	return strings.Contains(before, ".")
 }

@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"math/bits"
 	"sort"
+
+	"github.com/pk910/dynamic-ssz/hasher"
 )
 
 // VerifyProof verifies a single merkle branch. It's more
@@ -24,20 +26,20 @@ func VerifyProof(root []byte, proof *Proof) (bool, error) {
 		return false, errors.New("invalid proof length")
 	}
 
-	node := proof.Leaf
 	var tmp [64]byte
+	node := bytesToChunk(proof.Leaf)
 	for i, h := range proof.Hashes {
 		if getPosAtLevel(proof.Index, i) {
 			copy(tmp[:32], h)
-			copy(tmp[32:], node)
+			copy(tmp[32:], node[:])
 		} else {
-			copy(tmp[:32], node)
+			copy(tmp[:32], node[:])
 			copy(tmp[32:], h)
 		}
-		node = hashFn(tmp[:])
+		node = sha256.Sum256(tmp[:])
 	}
 
-	return bytes.Equal(root, node), nil
+	return bytes.Equal(root, node[:]), nil
 }
 
 // VerifyMultiproof verifies a proof for multiple leaves against the given root.
@@ -68,33 +70,42 @@ func VerifyMultiproof(root []byte, proof, leaves [][]byte, indices []int) (bool,
 		return false, errors.New("number of leaves and indices mismatch")
 	}
 
+	if len(proof) == 0 {
+		if ok, valid := verifyFullTreeLeaves(root, leaves, indices); ok {
+			return valid, nil
+		}
+	}
+
 	reqIndices := getRequiredIndices(indices)
 	if len(reqIndices) != len(proof) {
 		return false, fmt.Errorf("number of proof hashes %d and required indices %d mismatch", len(proof), len(reqIndices))
 	}
 
 	// userGenIndices contains all generalised indices between leaves and proof hashes
-	// i.e., the indices retrieved from the user of this function
-	userGenIndices := make([]int, 0, len(indices)+len(reqIndices))
+	// in descending order so we can walk the tree bottom-up without an extra sort.
+	leafGenIndices := descendingIndices(indices)
 	// Create database of index -> value (hash) from inputs
-	db := make(map[int][]byte, len(indices)+len(reqIndices))
+	db := make(map[int][32]byte, len(indices)+len(reqIndices))
 
 	for i, leaf := range leaves {
-		db[indices[i]] = leaf
-		userGenIndices = append(userGenIndices, indices[i])
+		db[indices[i]] = bytesToChunk(leaf)
 	}
 	for i, h := range proof {
-		db[reqIndices[i]] = h
-		userGenIndices = append(userGenIndices, reqIndices[i])
+		db[reqIndices[i]] = bytesToChunk(h)
 	}
 
-	// Make sure keys are sorted in reverse order since we start from the leaves
-	sort.Sort(sort.Reverse(sort.IntSlice(userGenIndices)))
-
 	// The depth of the tree up to the greatest index
+	maxIndex := 0
+	if len(leafGenIndices) > 0 {
+		maxIndex = leafGenIndices[0]
+	}
+	if len(reqIndices) > 0 && reqIndices[0] > maxIndex {
+		maxIndex = reqIndices[0]
+	}
+
 	var capacity int
-	if len(userGenIndices) > 0 {
-		capacity = getPathLength(userGenIndices[0])
+	if maxIndex > 0 {
+		capacity = getPathLength(maxIndex)
 	}
 
 	// Allocate space for auxiliary keys created when computing intermediate hashes
@@ -103,7 +114,8 @@ func VerifyMultiproof(root []byte, proof, leaves [][]byte, indices []int) (bool,
 	auxGenIndices := make([]int, 0, capacity)
 
 	// To keep track the current position to inspect in both arrays
-	pos := 0
+	posLeaf := 0
+	posProof := 0
 	posAux := 0
 
 	var tmp [64]byte
@@ -113,29 +125,31 @@ func VerifyMultiproof(root []byte, proof, leaves [][]byte, indices []int) (bool,
 	// in the in-memory database, until the root is reached.
 	//
 	// EXIT CONDITION: no more indices to use in both arrays
-	for posAux < len(auxGenIndices) || pos < len(userGenIndices) {
+	for posAux < len(auxGenIndices) || posLeaf < len(leafGenIndices) || posProof < len(reqIndices) {
 		// We need to establish from which array we're going to take the next index
-		//
-		// 1. If we've no auxiliary indices yet, we're going to use the generalised ones
-		// 2. If we have no more client indices, we're going to use the auxiliary ones
-		// 3. If we both, then we're going to compare them and take the biggest one
-		switch {
-		case posAux >= len(auxGenIndices):
-			// Case 1: No more auxiliary indices
-			index = userGenIndices[pos]
-			pos++
-		case pos >= len(userGenIndices):
-			// Case 2: No more user/proof indices
+		// by taking the largest available generalized index.
+		index = 0
+		source := 0
+		if posAux < len(auxGenIndices) {
 			index = auxGenIndices[posAux]
+			source = 1
+		}
+		if posLeaf < len(leafGenIndices) && leafGenIndices[posLeaf] > index {
+			index = leafGenIndices[posLeaf]
+			source = 2
+		}
+		if posProof < len(reqIndices) && reqIndices[posProof] > index {
+			index = reqIndices[posProof]
+			source = 3
+		}
+
+		switch source {
+		case 1:
 			posAux++
-		case auxGenIndices[posAux] < userGenIndices[pos]:
-			// Case 3: Both exist, take the larger (user/proof index)
-			index = userGenIndices[pos]
-			pos++
-		default:
-			// Case 4: Both exist, take the larger (auxiliary index)
-			index = auxGenIndices[posAux]
-			posAux++
+		case 2:
+			posLeaf++
+		case 3:
+			posProof++
 		}
 
 		// Root has been reached
@@ -159,9 +173,9 @@ func VerifyMultiproof(root []byte, proof, leaves [][]byte, indices []int) (bool,
 			return false, fmt.Errorf("proof is missing required nodes, either %d or %d", leftIndex, rightIndex)
 		}
 
-		copy(tmp[:32], left)
-		copy(tmp[32:], right)
-		db[parentIndex] = hashFn(tmp[:])
+		copy(tmp[:32], left[:])
+		copy(tmp[32:], right[:])
+		db[parentIndex] = sha256.Sum256(tmp[:])
 
 		// An intermediate hash has been computed, as such we need to store its index
 		// to remember to examine it later
@@ -173,7 +187,76 @@ func VerifyMultiproof(root []byte, proof, leaves [][]byte, indices []int) (bool,
 		return false, fmt.Errorf("root was not computed during proof verification")
 	}
 
-	return bytes.Equal(res, root), nil
+	return res == bytesToChunk(root), nil
+}
+
+func descendingIndices(indices []int) []int {
+	switch {
+	case intsSortedDescending(indices):
+		return indices
+	case sort.IntsAreSorted(indices):
+		out := make([]int, len(indices))
+		for i := range indices {
+			out[i] = indices[len(indices)-1-i]
+		}
+		return out
+	default:
+		out := make([]int, len(indices))
+		copy(out, indices)
+		sort.Sort(sort.Reverse(sort.IntSlice(out)))
+		return out
+	}
+}
+
+func intsSortedDescending(indices []int) bool {
+	for i := 1; i < len(indices); i++ {
+		if indices[i-1] < indices[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func verifyFullTreeLeaves(root []byte, leaves [][]byte, indices []int) (bool, bool) {
+	count := len(indices)
+	if count == 0 || count != len(leaves) || count&(count-1) != 0 {
+		return false, false
+	}
+
+	reverse := false
+	switch indices[0] {
+	case count:
+		for i := 1; i < count; i++ {
+			if indices[i] != count+i {
+				return false, false
+			}
+		}
+	case (count * 2) - 1:
+		reverse = true
+		for i := 1; i < count; i++ {
+			if indices[i] != (count*2)-1-i {
+				return false, false
+			}
+		}
+	default:
+		return false, false
+	}
+
+	hh := hasher.FastHasherPool.Get()
+	defer hasher.FastHasherPool.Put(hh)
+
+	buf := make([]byte, count*32)
+	for i := range leaves {
+		idx := i
+		if reverse {
+			idx = count - 1 - i
+		}
+		copy(buf[idx*32:], leaves[i])
+	}
+	hh.Append(buf)
+	hh.Merkleize(0)
+
+	return true, bytes.Equal(root, hh.Hash())
 }
 
 // Returns the position (i.e. false for left, true for right)
@@ -207,21 +290,24 @@ func getRequiredIndices(leafIndices []int) []int {
 		return nil
 	}
 
-	// Make a local copy so we can sort if needed (callers often already sorted,
-	// but this keeps behavior identical even when they are not).
-	tmp := make([]int, len(leafIndices))
-	copy(tmp, leafIndices)
-	sort.Ints(tmp)
+	tmp := leafIndices
+	if !sort.IntsAreSorted(leafIndices) {
+		tmp = make([]int, len(leafIndices))
+		copy(tmp, leafIndices)
+		sort.Ints(tmp)
+	}
 
 	exists := struct{}{}
+	depth := getPathLength(tmp[len(tmp)-1])
 
 	leaves := make(map[int]struct{}, len(tmp))
 	for _, leaf := range tmp {
 		leaves[leaf] = exists
 	}
 
-	required := make(map[int]struct{}, len(tmp))
-	computed := make(map[int]struct{}, len(tmp))
+	requiredCap := len(tmp) * min(depth, 8)
+	required := make(map[int]struct{}, requiredCap)
+	computed := make(map[int]struct{}, requiredCap)
 
 	for _, leaf := range tmp {
 		cur := leaf
@@ -253,4 +339,10 @@ func getRequiredIndices(leafIndices []int) []int {
 func hashFn(data []byte) []byte {
 	res := sha256.Sum256(data)
 	return res[:]
+}
+
+func bytesToChunk(src []byte) [32]byte {
+	var chunk [32]byte
+	copy(chunk[:], src)
+	return chunk
 }

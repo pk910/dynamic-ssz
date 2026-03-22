@@ -6,13 +6,6 @@
 // Licensed under the MIT License
 // The code has been modified for dynamic-ssz needs.
 
-// Package hasher provides SSZ merkle tree hashing utilities.
-//
-// It implements the SSZ hash tree root computation including merkleization,
-// mixin with length, progressive merkleization, and bitlist handling.
-// The package provides pooled hashers for efficient reuse and supports
-// both the native Go sha256 implementation and the accelerated hashtree
-// library via cgo.
 package hasher
 
 import (
@@ -21,144 +14,53 @@ import (
 	"fmt"
 	"hash"
 	"math/bits"
-	"sync"
 
 	"github.com/pk910/dynamic-ssz/sszutils"
-	hashtree "github.com/pk910/hashtree-bindings"
 )
 
 // Compile-time check to ensure Hasher implements HashWalker interface
 var _ sszutils.HashWalker = (*Hasher)(nil)
 
-var debug = false
+// incrementalBatchSize is the number of same-depth chunks to accumulate before
+// collapsing them into the next depth level. Must be a power of 2.
+// 256 chunks = 128 pairs per hash call, fits in L1 cache, good cgo amortization.
+const incrementalBatchSize = 256
 
-// DefaultHasherPool is a default hasher pool
-var DefaultHasherPool HasherPool
+// maxTreeDepth is the maximum supported tree depth for incremental hashing.
+// 40 levels covers trees up to 2^40 ≈ 1 trillion leaves.
+const maxTreeDepth = 40
 
-// FastHasherPool is the fast hasher pool that uses the hashtree library if cgo is enabled
-var FastHasherPool HasherPool = HasherPool{
-	HashFn: hashtree.HashByteSlice,
-}
+// treeLayer tracks the state of one open SSZ object scope (container, list,
+// vector, etc.) during hash tree root computation.
+//
+// Buffer layout for a binary incremental layer (buf[bufIdx...]):
+//
+//	[depth-N roots] [depth-(N-1) roots] ... [depth-1 roots] [depth-0 leaves]
+//	 ← oldest/deepest                               newest/shallowest →
+//
+// Buffer layout for a progressive incremental layer (buf[bufIdx...]):
+//
+//	[prog_root_0] [prog_root_1] ... [prog_root_K] [binary subtree chunks...]
+//	 ← completed progressive roots →               ← active binary subtree →
+//
+// counts[d] tracks per-depth chunk counts for the active binary subtree.
+// When any depth reaches incrementalBatchSize, chunks are hashed in-place
+// to half as many at the next depth. This cascades without memory movement.
+type treeLayer struct {
+	bufIdx      int  // byte offset where this scope started
+	incremental bool // true if opened via StartTree(), supports collapse
+	collapsed   bool // true once at least one binary batch has been collapsed
+	progressive bool // true if using progressive tree shape
 
-var hasherInitialized bool
-var hasherInitMutex sync.Mutex
-var zeroHashes [65][32]byte
-var zeroHashLevels map[string]int
-var trueBytes, falseBytes, zeroBytes []byte
+	// Binary collapse state (active subtree)
+	counts   [maxTreeDepth]uint32
+	maxDepth int
 
-func initHasher() {
-	hasherInitMutex.Lock()
-	defer hasherInitMutex.Unlock()
-
-	if hasherInitialized {
-		return
-	}
-
-	hasherInitialized = true
-	falseBytes = make([]byte, 32)
-	trueBytes = make([]byte, 32)
-	zeroBytes = sszutils.ZeroBytes()
-	trueBytes[0] = 1
-	zeroHashLevels = make(map[string]int)
-	zeroHashLevels[string(falseBytes)] = 0
-
-	tmp := [64]byte{}
-	for i := 0; i < 64; i++ {
-		copy(tmp[:32], zeroHashes[i][:])
-		copy(tmp[32:], zeroHashes[i][:])
-		zeroHashes[i+1] = sha256.Sum256(tmp[:])
-		zeroHashLevels[string(zeroHashes[i+1][:])] = i + 1
-	}
-}
-
-// GetZeroHashLevel returns the merkle tree depth level for a known zero hash.
-// Returns the level and true if the hash is a recognized zero hash, or 0 and
-// false otherwise.
-func GetZeroHashLevel(hash string) (int, bool) {
-	level, ok := zeroHashLevels[hash]
-	return level, ok
-}
-
-// GetZeroHash returns the precomputed zero hash at the given merkle tree depth.
-func GetZeroHash(depth int) []byte {
-	if !hasherInitialized {
-		initHasher()
-	}
-	return zeroHashes[depth][:]
-}
-
-// GetZeroHashes returns the full array of precomputed zero hashes for all 65
-// merkle tree depth levels.
-func GetZeroHashes() [65][32]byte {
-	return zeroHashes
-}
-
-func logfn(format string, a ...any) {
-	fmt.Printf(format, a...)
-}
-
-// HashFn is a function that hashes pairs of 32-byte chunks from input into dst.
-// It processes the input as consecutive 64-byte pairs and writes each 32-byte
-// hash result into dst.
-type HashFn func(dst []byte, input []byte) error
-
-// NativeHashWrapper wraps a hash.Hash function into a HashFn
-func NativeHashWrapper(hashFn hash.Hash) HashFn {
-	return func(dst []byte, input []byte) error {
-		hash := func(dst []byte, src []byte) {
-			hashFn.Write(src[:32])
-			hashFn.Write(src[32:64])
-			hashFn.Sum(dst)
-			hashFn.Reset()
-		}
-
-		layerLen := len(input) / 32
-		if layerLen%2 == 1 {
-			layerLen++
-		}
-		for i := 0; i < layerLen; i += 2 {
-			hash(dst[(i/2)*32:][:0], input[i*32:])
-		}
-		return nil
-	}
-}
-
-// WithDefaultHasher acquires a Hasher from the FastHasherPool, passes it to
-// fn, and returns it to the pool when done. This is a convenience wrapper for
-// one-off hashing operations.
-func WithDefaultHasher(fn func(hh sszutils.HashWalker) error) error {
-	hh := FastHasherPool.Get()
-	defer func() {
-		FastHasherPool.Put(hh)
-	}()
-
-	return fn(hh)
-}
-
-// HasherPool may be used for pooling Hashers for similarly typed SSZs.
-type HasherPool struct {
-	HashFn HashFn
-	pool   sync.Pool
-}
-
-// Get acquires a Hasher from the pool.
-func (hh *HasherPool) Get() *Hasher {
-	h := hh.pool.Get()
-	if h == nil {
-		if hh.HashFn == nil {
-			return NewHasher()
-		} else {
-			return NewHasherWithHashFn(hh.HashFn)
-		}
-	}
-	hasher, _ := h.(*Hasher)
-	return hasher
-}
-
-// Put releases the Hasher to the pool.
-func (hh *HasherPool) Put(h *Hasher) {
-	h.Reset()
-	hh.pool.Put(h)
+	// Progressive state: completed binary subtree roots stored at the
+	// left side of the buffer. Each root has depth = progressiveLevel*2.
+	// Progressive base sizes: 1, 4, 16, 64, 256, 1024, ...  (1 << level*2)
+	progressiveCount int // number of completed progressive roots at buf left
+	progressiveLevel int // current level (determines base_size for active subtree)
 }
 
 // Hasher is a utility tool to hash SSZ structs
@@ -167,48 +69,61 @@ type Hasher struct {
 	buf []byte
 
 	// tmp array used for uint64 and bitlist processing
-	tmp []byte
+	tmp    []byte
+	tmpBuf [64]byte // inline backing to avoid heap allocation
 
 	// sha256 hash function
 	hash HashFn
+
+	// layers is the stack of open SSZ object scopes. StartTree() pushes,
+	// Merkleize*() pops. The slice only grows; layerCount tracks the
+	// current top (-1 = empty).
+	layers     []treeLayer
+	layerCount int           // index of the current top layer, -1 when empty
+	layerBuf   [16]treeLayer // inline backing to avoid heap allocation
 }
 
-// NewHasher creates a new Hasher object with sha256 hash
+// NewHasher creates a new Hasher with the default sha256 hash function.
 func NewHasher() *Hasher {
 	return NewHasherWithHash(sha256.New())
 }
 
-// NewHasherWithHash creates a new Hasher object with a custom hash.Hash function
+// NewHasherWithHash creates a new Hasher with a custom hash.Hash function.
 func NewHasherWithHash(hh hash.Hash) *Hasher {
 	return NewHasherWithHashFn(NativeHashWrapper(hh))
 }
 
-// NewHasherWithHashFn creates a new Hasher object with a custom HashFn function
+// NewHasherWithHashFn creates a new Hasher with a custom HashFn function.
 func NewHasherWithHashFn(hh HashFn) *Hasher {
 	if !hasherInitialized {
 		initHasher()
 	}
 
-	return &Hasher{
-		hash: hh,
-		tmp:  make([]byte, 64),
+	h := &Hasher{
+		hash:       hh,
+		buf:        make([]byte, 0, 32*1024), // 32KB default buffer size
+		layerCount: -1,
 	}
+	h.tmp = h.tmpBuf[:]
+	h.layers = h.layerBuf[:0]
+	return h
 }
 
-// WithTemp provides access to the hasher's temporary buffer for use in
-// callback fn. The callback receives the tmp buffer and must return a
-// (possibly reallocated) replacement.
+// WithTemp provides access to the hasher's temporary buffer via a callback.
+// The callback receives the tmp buffer and must return a (possibly reallocated)
+// replacement.
 func (h *Hasher) WithTemp(fn func(tmp []byte) []byte) {
 	h.tmp = fn(h.tmp)
 }
 
-// Reset resets the Hasher obj
+// Reset clears the buffer and layer stack for reuse.
 func (h *Hasher) Reset() {
 	h.buf = h.buf[:0]
+	h.layerCount = -1
 }
 
-// AppendBytes32 appends b to the hash buffer, right-padding with zeros to
-// align to a 32-byte boundary.
+// AppendBytes32 appends b to the buffer, right-padding with zeros to align
+// to 32 bytes.
 func (h *Hasher) AppendBytes32(b []byte) {
 	h.buf = append(h.buf, b...)
 	if rest := len(b) % 32; rest != 0 {
@@ -217,41 +132,19 @@ func (h *Hasher) AppendBytes32(b []byte) {
 	}
 }
 
-// PutUint64 appends a uint64 in 32 bytes
-func (h *Hasher) PutUint64(i uint64) {
-	binary.LittleEndian.PutUint64(h.tmp[:8], i)
-	h.AppendBytes32(h.tmp[:8])
-}
-
-// PutUint32 appends a uint32 in 32 bytes
-func (h *Hasher) PutUint32(i uint32) {
-	binary.LittleEndian.PutUint32(h.tmp[:4], i)
-	h.AppendBytes32(h.tmp[:4])
-}
-
-// PutUint16 appends a uint16 in 32 bytes
-func (h *Hasher) PutUint16(i uint16) {
-	binary.LittleEndian.PutUint16(h.tmp[:2], i)
-	h.AppendBytes32(h.tmp[:2])
-}
-
-// PutUint8 appends a uint8 in 32 bytes
-func (h *Hasher) PutUint8(i uint8) {
-	h.tmp[0] = i
-	h.AppendBytes32(h.tmp[:1])
-}
-
-// FillUpTo32 pads the hash buffer with zero bytes to align to a 32-byte
-// boundary.
+// FillUpTo32 pads the buffer with zero bytes to align to a 32-byte boundary.
 func (h *Hasher) FillUpTo32() {
-	// pad zero bytes to the left
 	if rest := len(h.buf) % 32; rest != 0 {
 		h.buf = append(h.buf, zeroBytes[:32-rest]...)
 	}
 }
 
-// AppendBool appends a single byte (0 or 1) representing the boolean value
-// to the hash buffer without 32-byte padding.
+// Append appends raw bytes to the buffer without padding.
+func (h *Hasher) Append(i []byte) {
+	h.buf = append(h.buf, i...)
+}
+
+// AppendBool appends a single byte (0 or 1) to the buffer without padding.
 func (h *Hasher) AppendBool(b bool) {
 	if b {
 		h.buf = append(h.buf, 1)
@@ -260,38 +153,119 @@ func (h *Hasher) AppendBool(b bool) {
 	}
 }
 
-// AppendUint8 appends a uint8 as a single byte to the hash buffer without
-// 32-byte padding.
+// AppendUint8 appends a uint8 to the buffer without padding.
 func (h *Hasher) AppendUint8(i uint8) {
 	h.buf = sszutils.MarshalUint8(h.buf, i)
 }
 
-// AppendUint16 appends a little-endian uint16 to the hash buffer without
-// 32-byte padding.
+// AppendUint16 appends a little-endian uint16 to the buffer without padding.
 func (h *Hasher) AppendUint16(i uint16) {
 	h.buf = sszutils.MarshalUint16(h.buf, i)
 }
 
-// AppendUint32 appends a little-endian uint32 to the hash buffer without
-// 32-byte padding.
+// AppendUint32 appends a little-endian uint32 to the buffer without padding.
 func (h *Hasher) AppendUint32(i uint32) {
 	h.buf = sszutils.MarshalUint32(h.buf, i)
 }
 
-// AppendUint64 appends a little-endian uint64 to the hash buffer without
-// 32-byte padding.
+// AppendUint64 appends a little-endian uint64 to the buffer without padding.
 func (h *Hasher) AppendUint64(i uint64) {
 	h.buf = sszutils.MarshalUint64(h.buf, i)
 }
 
-// Append appends raw bytes directly to the hash buffer without any padding.
-func (h *Hasher) Append(i []byte) {
-	h.buf = append(h.buf, i...)
+// PutBool appends a boolean as a 32-byte zero-padded chunk.
+func (h *Hasher) PutBool(b bool) {
+	n := len(h.buf)
+	h.buf = append(h.buf, zeroBytes[:32]...)
+	if b {
+		h.buf[n] = 1
+	}
 }
 
-// PutRootVector appends an array of roots
+// PutUint64 appends a little-endian uint64 as a 32-byte zero-padded chunk.
+func (h *Hasher) PutUint64(i uint64) {
+	n := len(h.buf)
+	h.buf = append(h.buf, zeroBytes[:32]...)
+	binary.LittleEndian.PutUint64(h.buf[n:], i)
+}
+
+// PutUint32 appends a little-endian uint32 as a 32-byte zero-padded chunk.
+func (h *Hasher) PutUint32(i uint32) {
+	n := len(h.buf)
+	h.buf = append(h.buf, zeroBytes[:32]...)
+	binary.LittleEndian.PutUint32(h.buf[n:], i)
+}
+
+// PutUint16 appends a little-endian uint16 as a 32-byte zero-padded chunk.
+func (h *Hasher) PutUint16(i uint16) {
+	n := len(h.buf)
+	h.buf = append(h.buf, zeroBytes[:32]...)
+	binary.LittleEndian.PutUint16(h.buf[n:], i)
+}
+
+// PutUint8 appends a uint8 as a 32-byte zero-padded chunk.
+func (h *Hasher) PutUint8(i uint8) {
+	n := len(h.buf)
+	h.buf = append(h.buf, zeroBytes[:32]...)
+	h.buf[n] = i
+}
+
+// PutBytes appends b as a 32-byte chunk. If b exceeds 32 bytes, the content
+// is merkleized in-place to a single root without interacting with the layer
+// stack.
+func (h *Hasher) PutBytes(b []byte) {
+	if blen := len(b); blen <= 32 {
+		if blen == 32 {
+			// Fast path: exactly 32 bytes, no padding needed
+			h.buf = append(h.buf, b...)
+			return
+		}
+		h.AppendBytes32(b)
+		return
+	}
+
+	// if the bytes are longer than 32 we have to
+	// merkleize the content — use merkleizeImpl directly to avoid
+	// interacting with the layer stack (PutBytes is an internal operation,
+	// not an SSZ object scope).
+	indx := len(h.buf)
+	h.AppendBytes32(b)
+	input := h.buf[indx:]
+	input = h.merkleizeImpl(input[:0], input, 0)
+	h.buf = append(h.buf[:indx], input...)
+}
+
+// internalMerkleize is like Merkleize but does NOT interact with the layer
+// stack. Used by Put* methods which are internal operations, not SSZ scopes.
+func (h *Hasher) internalMerkleize(indx int) {
+	if len(h.buf) == cap(h.buf) {
+		h.buf = append(h.buf, zeroBytes[:32]...)
+		h.buf = h.buf[:len(h.buf)-32]
+	}
+	input := h.buf[indx:]
+	input = h.merkleizeImpl(input[:0], input, 0)
+	h.buf = append(h.buf[:indx], input...)
+}
+
+// internalMerkleizeWithMixin is like MerkleizeWithMixin but does NOT interact
+// with the layer stack.
+func (h *Hasher) internalMerkleizeWithMixin(indx int, num, limit uint64) {
+	h.FillUpTo32()
+	input := h.buf[indx:]
+	input = h.merkleizeImpl(input[:0], input, limit)
+
+	n := len(input)
+	input = append(input, zeroBytes[:32]...)
+	binary.LittleEndian.PutUint64(input[n:], num)
+
+	_ = h.hash(input, input)
+	h.buf = append(h.buf[:indx], input[:32]...)
+}
+
+// PutRootVector appends an array of 32-byte roots and merkleizes them. If
+// maxCapacity is provided, the result includes a length mixin.
 func (h *Hasher) PutRootVector(b [][]byte, maxCapacity ...uint64) error {
-	indx := h.Index()
+	indx := len(h.buf)
 	for _, i := range b {
 		if len(i) != 32 {
 			return fmt.Errorf("bad root")
@@ -300,169 +274,540 @@ func (h *Hasher) PutRootVector(b [][]byte, maxCapacity ...uint64) error {
 	}
 
 	if len(maxCapacity) == 0 {
-		h.Merkleize(indx)
+		h.internalMerkleize(indx)
 	} else {
 		numItems := uint64(len(b))
 		limit := sszutils.CalculateLimit(maxCapacity[0], numItems, 32)
-
-		h.MerkleizeWithMixin(indx, numItems, limit)
+		h.internalMerkleizeWithMixin(indx, numItems, limit)
 	}
 	return nil
 }
 
-// PutUint64Array appends an array of uint64
+// PutUint64Array appends an array of uint64 values and merkleizes them. If
+// maxCapacity is provided, the result includes a length mixin.
 func (h *Hasher) PutUint64Array(b []uint64, maxCapacity ...uint64) {
-	indx := h.Index()
+	indx := len(h.buf)
 	for _, i := range b {
 		h.AppendUint64(i)
 	}
 
-	// pad zero bytes to the left
 	h.FillUpTo32()
 
 	if len(maxCapacity) == 0 {
-		// Array with fixed size
-		h.Merkleize(indx)
+		h.internalMerkleize(indx)
 	} else {
 		numItems := uint64(len(b))
 		limit := sszutils.CalculateLimit(maxCapacity[0], numItems, 8)
-
-		h.MerkleizeWithMixin(indx, numItems, limit)
+		h.internalMerkleizeWithMixin(indx, numItems, limit)
 	}
 }
 
-// ParseBitlist decodes an SSZ-encoded bitlist into its raw bit representation.
-//
-// SSZ bitlists include a mandatory termination bit: a single `1` bit appended
-// immediately after the final data bit, then padded to a full byte. The position
-// of this termination bit defines the logical length of the bitlist.
-//
-// This function performs the inverse transformation:
-//  1. Identify the termination bit in the final byte and compute the logical
-//     bitlist length (`size`).
-//  2. Clear the termination bit, leaving only the actual data bits.
-//  3. Trim any trailing zero bytes introduced by SSZ padding.
-//  4. Return the compact raw bitlist (no termination bit, no padding) together
-//     with its logical size.
-//
-// The returned `[]byte` contains the data bits packed little-endian in each byte,
-// and `size` is the exact number of meaningful bits in that raw bitlist.
-func ParseBitlist(dst, buf []byte) ([]byte, uint64) {
-	if len(buf) == 0 {
-		return dst, 0
-	}
-	msbLen := bits.Len8(buf[len(buf)-1])
-	if msbLen == 0 {
-		// No sentinel bit found in last byte — invalid bitlist, treat as empty
-		return dst, 0
-	}
-	msb := uint8(msbLen) - 1
-	size := uint64(8*(len(buf)-1) + int(msb))
-
-	dst = append(dst, buf...)
-	dst[len(dst)-1] &^= uint8(1 << msb)
-
-	newLen := len(dst)
-	for i := len(dst) - 1; i >= 0; i-- {
-		if dst[i] != 0x00 {
-			break
-		}
-		newLen = i
-	}
-	res := dst[:newLen]
-	return res, size
-}
-
-// ParseBitlistWithHasher decodes an SSZ-encoded bitlist using the hasher's
-// temporary buffer to avoid allocations. It returns the raw bit data and the
-// logical bit count, same as ParseBitlist.
-func ParseBitlistWithHasher(hw sszutils.HashWalker, buf []byte) ([]byte, uint64) {
-	if h, ok := hw.(*Hasher); ok {
-		var size uint64
-		h.tmp, size = ParseBitlist(h.tmp[:0], buf)
-		bitlist := h.tmp
-		// Restore h.tmp to full capacity so subsequent operations (PutUint8, etc.) don't panic
-		h.tmp = h.tmp[:cap(h.tmp)]
-		return bitlist, size
-	} else {
-		var size uint64
-		var bitlist []byte
-		hw.WithTemp(func(tmp []byte) []byte {
-			tmp, size = ParseBitlist(tmp[:0], buf)
-			bitlist = tmp
-			// Restore tmp to full capacity
-			return tmp[:cap(tmp)]
-		})
-		return bitlist, size
-	}
-}
-
-// PutBitlist appends a ssz bitlist
+// PutBitlist appends an SSZ-encoded bitlist, merkleizes its content, and
+// mixes in the bit count with the given maxSize limit.
 func (h *Hasher) PutBitlist(bb []byte, maxSize uint64) {
 	var size uint64
 	h.tmp, size = ParseBitlist(h.tmp[:0], bb)
 	bitlist := h.tmp
 	h.tmp = h.tmp[:cap(h.tmp)]
 
-	// merkleize the content with mix in length
-	indx := h.Index()
+	indx := len(h.buf)
 	h.AppendBytes32(bitlist)
-	h.MerkleizeWithMixin(indx, size, (maxSize+255)/256)
+	h.internalMerkleizeWithMixin(indx, size, (maxSize+255)/256)
 }
 
-// PutProgressiveBitlist appends an SSZ bitlist and merkleizes it using
-// progressive merkleization with a length mixin.
+// PutProgressiveBitlist appends an SSZ-encoded bitlist and merkleizes it
+// using the progressive algorithm with a length mixin.
 func (h *Hasher) PutProgressiveBitlist(bb []byte) {
 	var size uint64
 	h.tmp, size = ParseBitlist(h.tmp[:0], bb)
 	bitlist := h.tmp
 	h.tmp = h.tmp[:cap(h.tmp)]
 
-	// merkleize the content with mix in length
-	indx := h.Index()
+	// merkleize the content with mix in length using progressive algorithm
+	indx := len(h.buf)
 	h.AppendBytes32(bitlist)
-	h.MerkleizeProgressiveWithMixin(indx, size)
+	h.FillUpTo32()
+	input := h.buf[indx:]
+	input = h.merkleizeProgressiveImpl(input[:0], input, 0)
+
+	n := len(input)
+	input = append(input, zeroBytes[:32]...)
+	binary.LittleEndian.PutUint64(input[n:], size)
+	_ = h.hash(input, input)
+	h.buf = append(h.buf[:indx], input[:32]...)
 }
 
-// PutBool appends a boolean
-func (h *Hasher) PutBool(b bool) {
-	if b {
-		h.buf = append(h.buf, trueBytes...)
-	} else {
-		h.buf = append(h.buf, falseBytes...)
+// pushLayer grows the layer stack if needed and returns a pointer to the new
+// top layer with collapsed/progressive cleared. The caller must set the
+// remaining fields (bufIdx, incremental).
+func (h *Hasher) pushLayer() *treeLayer {
+	h.layerCount++
+	if h.layerCount >= len(h.layers) {
+		h.layers = append(h.layers, treeLayer{})
 	}
+	layer := &h.layers[h.layerCount]
+	layer.collapsed = false
+	layer.progressive = false
+	return layer
 }
 
-// PutBytes appends bytes
-func (h *Hasher) PutBytes(b []byte) {
-	if len(b) <= 32 {
-		h.AppendBytes32(b)
-		return
-	}
-
-	// if the bytes are longer than 32 we have to
-	// merkleize the content
-	indx := h.Index()
-	h.AppendBytes32(b)
-	h.Merkleize(indx)
+// StartTree opens a new SSZ object scope and returns the buffer index.
+// TreeTypeBinary/Progressive: pushes an incremental layer (supports Collapse).
+// TreeTypeNone: pushes a non-incremental layer (Collapse is a no-op on this scope).
+func (h *Hasher) StartTree(treeType sszutils.TreeType) int {
+	idx := len(h.buf)
+	layer := h.pushLayer()
+	layer.bufIdx = idx
+	layer.incremental = treeType != sszutils.TreeTypeNone
+	layer.progressive = treeType == sszutils.TreeTypeProgressive
+	return idx
 }
 
-// Index marks the current buffer index
+// Index returns the current buffer position and pushes a non-incremental
+// layer. This is for legacy/external code that doesn't use StartTree.
+// The non-incremental layer blocks Collapse on this scope but is properly
+// popped by Merkleize. Collapse on the parent layer is unaffected — it
+// only sees completed child roots after the child's Merkleize pops this layer.
 func (h *Hasher) Index() int {
+	idx := len(h.buf)
+	layer := h.pushLayer()
+	layer.bufIdx = idx
+	layer.incremental = false
+	return idx
+}
+
+// CurrentIndex returns the current buffer position without pushing a layer.
+func (h *Hasher) CurrentIndex() int {
 	return len(h.buf)
 }
 
-// Merkleize is used to merkleize the last group of the hasher
+// Collapse hints the hasher to collapse accumulated chunks in the current
+// layer if the batch threshold is reached. This is a no-op for
+// non-incremental layers or when no layer is active.
+func (h *Hasher) Collapse() {
+	if h.layerCount < 0 {
+		return
+	}
+
+	layer := &h.layers[h.layerCount]
+	if !layer.incremental {
+		return
+	}
+
+	if layer.progressive {
+		h.maybeCollapseProgressive(layer)
+	} else {
+		h.maybeCollapseBinary(layer)
+	}
+}
+
+// getMatchingLayer returns a pointer to the top layer if its bufIdx matches
+// indx, or nil otherwise. Does not modify the layer stack.
+func (h *Hasher) getMatchingLayer(indx int) *treeLayer {
+	if h.layerCount >= 0 && h.layers[h.layerCount].bufIdx == indx {
+		return &h.layers[h.layerCount]
+	}
+	return nil
+}
+
+// popTopLayer decrements layerCount to discard the top layer.
+func (h *Hasher) popTopLayer() {
+	if h.layerCount >= 0 {
+		h.layerCount--
+	}
+}
+
+// maybeCollapseBinary collapses depth-0 chunks into higher depths when the
+// batch threshold is reached. On first call (collapsed==false), initializes
+// the per-depth tracking state from the buffer contents.
+func (h *Hasher) maybeCollapseBinary(layer *treeLayer) {
+	regionStart := h.binaryRegionStart(layer)
+	totalChunks := (len(h.buf) - regionStart) / 32
+	if totalChunks < incrementalBatchSize {
+		return
+	}
+
+	if !layer.collapsed {
+		layer.collapsed = true
+		layer.maxDepth = 0
+		layer.counts = [maxTreeDepth]uint32{uint32(totalChunks)}
+	} else {
+		h.syncCollapseState(layer)
+	}
+
+	for d := 0; d < maxTreeDepth-1; d++ {
+		if layer.counts[d] < incrementalBatchSize {
+			break
+		}
+
+		count := int(layer.counts[d])
+		batchCount := (count / incrementalBatchSize) * incrementalBatchSize
+		batchBytes := batchCount * 32
+		produced := batchCount / 2
+
+		// Find start of depth-d group (after all higher-depth groups)
+		dStart := h.binaryRegionStart(layer)
+		for dd := layer.maxDepth; dd > d; dd-- {
+			dStart += int(layer.counts[dd]) * 32
+		}
+
+		// Hash leftmost batchCount entries in-place
+		_ = h.hash(h.buf[dStart:dStart+batchBytes/2], h.buf[dStart:dStart+batchBytes])
+
+		// Shift tail (remainder of depth-d + all lower depths) left
+		afterBatch := dStart + batchBytes
+		afterProduced := dStart + produced*32
+		tailLen := len(h.buf) - afterBatch
+		if tailLen > 0 && afterProduced != afterBatch {
+			copy(h.buf[afterProduced:], h.buf[afterBatch:afterBatch+tailLen])
+		}
+		h.buf = h.buf[:afterProduced+tailLen]
+
+		layer.counts[d] -= uint32(batchCount)
+		layer.counts[d+1] += uint32(produced)
+		if d+1 > layer.maxDepth {
+			layer.maxDepth = d + 1
+		}
+	}
+}
+
+// maybeCollapseProgressive finalizes complete progressive groups and falls
+// back to binary collapse for any remainder. On first call (collapsed==false),
+// clears stale state from a reused layer slot.
+func (h *Hasher) maybeCollapseProgressive(layer *treeLayer) {
+	// Sync collapse state so counts reflect all buffer data
+	if layer.collapsed {
+		h.syncCollapseState(layer)
+	} else {
+		// First progressive collapse — clear stale state from reused slot
+		layer.counts = [maxTreeDepth]uint32{}
+		layer.maxDepth = 0
+		layer.progressiveCount = 0
+		layer.progressiveLevel = 0
+
+		// Compute d0 count from buffer
+		regionStart := h.binaryRegionStart(layer)
+		chunks := (len(h.buf) - regionStart) / 32
+		if chunks > 0 {
+			layer.counts[0] = uint32(chunks)
+		}
+	}
+
+	readPos := h.activeSubtreeStart(layer)
+	writePos := readPos
+	finalized := false
+
+	// Step 1: finalize complete progressive groups
+	for {
+		// Compute leaf count from current counts
+		var leafCount uint64
+		for d := 0; d <= layer.maxDepth; d++ {
+			leafCount += uint64(layer.counts[d]) << uint(d)
+		}
+
+		baseSize := progressiveBaseSize(layer.progressiveLevel)
+		if leafCount < baseSize {
+			break
+		}
+		finalized = true
+
+		// Consume exactly baseSize leaves from buf[readPos:] left-to-right
+		// (greedy from highest depth). Track consumed counts for collapseAllDepths.
+		consumePos := readPos
+		consumed := uint64(0)
+		var consumedCounts [maxTreeDepth]uint32
+		consumedMaxDepth := 0
+		for d := layer.maxDepth; d >= 0; d-- {
+			for layer.counts[d] > 0 && consumed+uint64(1<<uint(d)) <= baseSize {
+				consumed += uint64(1 << uint(d))
+				layer.counts[d]--
+				consumedCounts[d]++
+				if d > consumedMaxDepth {
+					consumedMaxDepth = d
+				}
+				consumePos += 32
+			}
+			if consumed == baseSize {
+				break
+			}
+		}
+
+		if consumed == 0 {
+			break // safety
+		}
+
+		// Merkleize the consumed entries to a single root using collapseAllDepths.
+		// It works within buf[readPos:consumePos] only, leaving the unconsumed
+		// tail untouched. Root lands at buf[readPos].
+		tmpLayer := treeLayer{
+			bufIdx:    readPos,
+			collapsed: consumedMaxDepth > 0,
+			counts:    consumedCounts,
+			maxDepth:  consumedMaxDepth,
+		}
+		h.collapseAllDepths(&tmpLayer, readPos, consumePos, baseSize)
+		if writePos != readPos {
+			copy(h.buf[writePos:writePos+32], h.buf[readPos:readPos+32])
+		}
+		writePos += 32
+		readPos = consumePos
+
+		layer.progressiveCount++
+		layer.progressiveLevel++
+
+		// Update maxDepth (some depths may now be empty)
+		for layer.maxDepth > 0 && layer.counts[layer.maxDepth] == 0 {
+			layer.maxDepth--
+		}
+	}
+
+	if !finalized {
+		// No groups finalized — try binary collapse directly
+		h.maybeCollapseBinary(layer)
+		return
+	}
+
+	// Step 2: compact remainder from readPos to writePos with depth-aware hash-copy
+	// Remainder is buf[readPos:len(h.buf)] with layout [high-depth...low-depth]
+	var newCounts [maxTreeDepth]uint32
+	newMaxDepth := 0
+
+	for d := layer.maxDepth; d >= 0; d-- {
+		n := int(layer.counts[d])
+		if n == 0 {
+			continue
+		}
+
+		pairs := n / 2
+		odd := n % 2
+
+		if pairs > 0 {
+			_ = h.hash(h.buf[writePos:writePos+pairs*32], h.buf[readPos:readPos+pairs*2*32])
+			writePos += pairs * 32
+			readPos += pairs * 2 * 32
+			newCounts[d+1] += uint32(pairs)
+			if d+1 > newMaxDepth {
+				newMaxDepth = d + 1
+			}
+		}
+
+		if odd == 1 {
+			copy(h.buf[writePos:writePos+32], h.buf[readPos:readPos+32])
+			writePos += 32
+			readPos += 32
+			newCounts[d] = 1
+			if d > newMaxDepth {
+				newMaxDepth = d
+			}
+		}
+	}
+
+	h.buf = h.buf[:writePos]
+	layer.counts = newCounts
+	layer.maxDepth = newMaxDepth
+	layer.collapsed = true // compacted data has mixed depths
+
+	// Step 3: binary collapse on the compacted remainder
+	h.maybeCollapseBinary(layer)
+}
+
+// progressiveBaseSize returns the leaf count for a progressive level:
+// 1, 4, 16, 64, 256, 1024, ... (1 << level*2).
+func progressiveBaseSize(level int) uint64 {
+	return 1 << (uint(level) * 2)
+}
+
+// activeSubtreeStart returns the buffer offset where the active binary
+// subtree begins, after any completed progressive roots.
+func (h *Hasher) activeSubtreeStart(layer *treeLayer) int {
+	return layer.bufIdx + layer.progressiveCount*32
+}
+
+// binaryRegionStart returns the buffer offset where the binary collapse
+// region begins for the given layer.
+func (h *Hasher) binaryRegionStart(layer *treeLayer) int {
+	if layer.progressive {
+		return h.activeSubtreeStart(layer)
+	}
+	return layer.bufIdx
+}
+
+// syncCollapseState updates counts[0] to account for any new chunks appended
+// since the last collapse.
+func (h *Hasher) syncCollapseState(layer *treeLayer) {
+	h.syncCollapseStateWithEnd(layer, len(h.buf))
+}
+
+// syncCollapseStateWithEnd updates counts[0] to account for new chunks
+// appended up to bufEnd.
+func (h *Hasher) syncCollapseStateWithEnd(layer *treeLayer, bufEnd int) {
+	totalChunks := (bufEnd - h.binaryRegionStart(layer)) / 32
+	var accounted int
+	for d := 0; d <= layer.maxDepth; d++ {
+		accounted += int(layer.counts[d])
+	}
+	if diff := totalChunks - accounted; diff > 0 {
+		layer.counts[0] += uint32(diff)
+	}
+}
+
+// collapseAllDepths reduces all tracked depth levels within buf[indx:bufEnd]
+// to a single root. If limit > 0, the root is expanded to the target tree
+// depth using zero hashes.
+func (h *Hasher) collapseAllDepths(layer *treeLayer, indx, bufEnd int, limit uint64) {
+	// Ensure spare capacity for zero-hash padding and depth expansion.
+	// The loop below may write a 32-byte zero hash at buf[bufEnd] for odd
+	// counts, and the limit expansion needs a 64-byte workspace.
+	if needed := bufEnd + 64; needed > cap(h.buf) {
+		newBuf := make([]byte, len(h.buf), needed)
+		copy(newBuf, h.buf)
+		h.buf = newBuf
+	}
+
+	h.syncCollapseStateWithEnd(layer, bufEnd)
+
+	for {
+		lowestDepth := -1
+		for d := 0; d <= layer.maxDepth; d++ {
+			if layer.counts[d] > 0 {
+				lowestDepth = d
+				break
+			}
+		}
+		if lowestDepth < 0 {
+			break
+		}
+
+		count := int(layer.counts[lowestDepth])
+
+		if count == 1 {
+			done := true
+			for d := lowestDepth + 1; d <= layer.maxDepth; d++ {
+				if layer.counts[d] > 0 {
+					done = false
+					break
+				}
+			}
+			if done {
+				break
+			}
+		}
+
+		if count%2 == 1 {
+			// Need space for zero hash pad. Use the buffer at bufEnd
+			// (which is within our working region or just past it).
+			copy(h.buf[bufEnd:bufEnd+32], zeroHashes[lowestDepth][:])
+			count++
+			bufEnd += 32
+		}
+
+		chunkBytes := count * 32
+		batchStart := bufEnd - chunkBytes
+		_ = h.hash(h.buf[batchStart:batchStart+chunkBytes/2], h.buf[batchStart:batchStart+chunkBytes])
+		bufEnd = batchStart + chunkBytes/2
+
+		layer.counts[lowestDepth] = 0
+		layer.counts[lowestDepth+1] += uint32(count / 2)
+		if lowestDepth+1 > layer.maxDepth {
+			layer.maxDepth = lowestDepth + 1
+		}
+	}
+
+	// Expand to target depth if a limit is specified
+	if limit > 0 {
+		targetDepth := h.getDepth(limit)
+		currentDepth := uint8(0)
+		for d := 0; d <= layer.maxDepth; d++ {
+			if layer.counts[d] == 1 {
+				currentDepth = uint8(d)
+				break
+			}
+		}
+		// Expand using 64-byte workspace at bufEnd (safe — caller ensures space)
+		pos := bufEnd - 32
+		for currentDepth < targetDepth {
+			copy(h.buf[pos+32:pos+64], zeroHashes[currentDepth][:])
+			_ = h.hash(h.buf[pos:pos+32], h.buf[pos:pos+64])
+			currentDepth++
+		}
+		bufEnd = pos + 32
+	}
+
+	// Move final root to indx (within the working region, no tail corruption)
+	if bufEnd-32 != indx {
+		copy(h.buf[indx:indx+32], h.buf[bufEnd-32:bufEnd])
+	}
+	// Don't truncate h.buf — caller manages buffer length
+}
+
+// collapseProgressiveLayer finalizes all progressive groups and the partial
+// remainder, then folds the resulting roots right-to-left into a single root
+// at buf[indx].
+func (h *Hasher) collapseProgressiveLayer(layer *treeLayer, indx int) {
+	// 1. Finalize all complete progressive groups and compact remainder.
+	h.maybeCollapseProgressive(layer)
+
+	// 2. Handle the partial remainder (the last unfilled group).
+	subtreeStart := h.activeSubtreeStart(layer)
+	activeChunks := (len(h.buf) - subtreeStart) / 32
+
+	if activeChunks > 0 {
+		baseSize := progressiveBaseSize(layer.progressiveLevel)
+
+		// Sync collapse state if not yet tracked.
+		// When !collapsed, counts/maxDepth/progressiveCount/progressiveLevel
+		// were already cleared by maybeCollapseProgressive above.
+		if !layer.collapsed {
+			layer.counts[0] = uint32(activeChunks)
+		} else {
+			h.syncCollapseState(layer)
+		}
+		h.collapseAllDepths(layer, subtreeStart, len(h.buf), baseSize)
+		h.buf = h.buf[:subtreeStart+32]
+		layer.progressiveCount++
+	}
+
+	// 3. Fold progressive roots right-to-left.
+	nRoots := layer.progressiveCount
+	if nRoots == 0 {
+		h.buf = h.buf[:indx]
+		h.buf = append(h.buf, zeroBytes[:32]...)
+		return
+	}
+
+	// accumulator starts as zero_node(0)
+	copy(h.tmp[32:64], zeroHashes[0][:])
+	for i := nRoots - 1; i >= 0; i-- {
+		rootPos := indx + i*32
+		copy(h.tmp[:32], h.buf[rootPos:rootPos+32])
+		_ = h.hash(h.tmp[:32], h.tmp[:64])
+		copy(h.tmp[32:64], h.tmp[:32])
+	}
+
+	h.buf = h.buf[:indx]
+	h.buf = append(h.buf, h.tmp[:32]...)
+}
+
+// Merkleize computes the binary merkle root of the buffer from indx onwards
+// and replaces that region with the 32-byte root. Pops the matching layer
+// if one exists.
 func (h *Hasher) Merkleize(indx int) {
-	// merkleizeImpl will expand the `input` by 32 bytes if some hashing depth
-	// hits an odd chunk length. But if we're at the end of `h.buf` already,
-	// appending to `input` will allocate a new buffer, *not* expand `h.buf`,
-	// so the next invocation will realloc, over and over and over. We can pre-
-	// emptively cater for that by ensuring that an extra 32 bytes is always
-	// available.
+	layer := h.getMatchingLayer(indx)
+
+	if layer != nil && layer.collapsed {
+		h.collapseAllDepths(layer, indx, len(h.buf), 0)
+		h.buf = h.buf[:indx+32]
+		h.popTopLayer()
+		return
+	}
+	if layer != nil {
+		h.popTopLayer()
+	}
+
+	// Standard path
 	if len(h.buf) == cap(h.buf) {
 		h.buf = append(h.buf, zeroBytes[:32]...)
-		h.buf = h.buf[:len(h.buf)-len(zeroBytes[:32])]
+		h.buf = h.buf[:len(h.buf)-32]
 	}
 	input := h.buf[indx:]
 
@@ -470,7 +815,6 @@ func (h *Hasher) Merkleize(indx int) {
 		logfn("merkleize: %x ", input)
 	}
 
-	// merkleize the input
 	input = h.merkleizeImpl(input[:0], input, 0)
 	h.buf = append(h.buf[:indx], input...)
 
@@ -479,25 +823,38 @@ func (h *Hasher) Merkleize(indx int) {
 	}
 }
 
-// MerkleizeWithMixin is used to merkleize the last group of the hasher
+// MerkleizeWithMixin computes the binary merkle root from indx with the given
+// limit, then mixes in num as the list length. Pops the matching layer if one
+// exists.
 func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 	h.FillUpTo32()
-	input := h.buf[indx:]
 
-	// merkleize the input
-	input = h.merkleizeImpl(input[:0], input, limit)
+	layer := h.getMatchingLayer(indx)
 
-	// mixin with the size
-	output := h.tmp[:0]
-	output = sszutils.MarshalUint64(output, num)
-	input = append(input, output...)
-	input = append(input, zeroBytes[:24]...)
+	if layer != nil && layer.collapsed {
+		h.collapseAllDepths(layer, indx, len(h.buf), limit)
+		h.buf = h.buf[:indx+32]
+		h.popTopLayer()
+	} else {
+		if layer != nil {
+			h.popTopLayer()
+		}
+		// Standard merkleize
+		input := h.buf[indx:]
+		input = h.merkleizeImpl(input[:0], input, limit)
+		h.buf = append(h.buf[:indx], input...)
+	}
+
+	// Mixin with the size
+	input := h.buf[indx : indx+32]
+	n := len(input)
+	input = append(input, zeroBytes[:32]...)
+	binary.LittleEndian.PutUint64(input[n:], num)
 
 	if debug {
 		logfn("merkleize-mixin: %x (%d, %d) ", input, num, limit)
 	}
 
-	// input is of the form [<input><size>] of 64 bytes
 	_ = h.hash(input, input)
 	h.buf = append(h.buf[:indx], input[:32]...)
 
@@ -506,25 +863,127 @@ func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 	}
 }
 
-// Hash returns the last 32-byte hash from the buffer.
-func (h *Hasher) Hash() []byte {
-	start := 0
-	if len(h.buf) > 32 {
-		start = len(h.buf) - 32
-	}
-	return h.buf[start:]
-}
+// MerkleizeProgressive computes the progressive merkle root of the buffer
+// from indx onwards. If incremental progressive data was accumulated via
+// Collapse, it is finalized; otherwise the standard recursive algorithm is
+// used.
+func (h *Hasher) MerkleizeProgressive(indx int) {
+	layer := h.getMatchingLayer(indx)
 
-// HashRoot creates the hash final hash root
-func (h *Hasher) HashRoot() (res [32]byte, err error) {
-	if len(h.buf) != 32 {
-		err = fmt.Errorf("expected 32 byte size")
+	if layer != nil && layer.progressive {
+		h.collapseProgressiveLayer(layer, indx)
+		h.popTopLayer()
 		return
 	}
-	copy(res[:], h.buf)
-	return
+	if layer != nil {
+		h.popTopLayer()
+	}
+
+	// Standard path (no incremental progressive data)
+	h.buf = append(h.buf, zeroBytes...)
+	h.buf = h.buf[:len(h.buf)-len(zeroBytes)]
+	input := h.buf[indx:]
+
+	if debug {
+		logfn("merkleize-progressive: %x ", input)
+	}
+
+	input = h.merkleizeProgressiveImpl(input[:0], input, 0)
+	h.buf = append(h.buf[:indx], input...)
+
+	if debug {
+		logfn("-> %x\n", input)
+	}
 }
 
+// MerkleizeProgressiveWithMixin computes the progressive merkle root from
+// indx and mixes in num as the list length.
+func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
+	layer := h.getMatchingLayer(indx)
+
+	if layer != nil && layer.progressive && layer.progressiveCount > 0 {
+		h.FillUpTo32()
+		h.collapseProgressiveLayer(layer, indx)
+		h.popTopLayer()
+	} else {
+		if layer != nil {
+			h.popTopLayer()
+		}
+		h.FillUpTo32()
+		input := h.buf[indx:]
+		input = h.merkleizeProgressiveImpl(input[:0], input, 0)
+		h.buf = append(h.buf[:indx], input...)
+	}
+
+	// Now buf[indx:indx+32] has the progressive root. Mixin with size.
+	input := h.buf[indx : indx+32]
+
+	// mixin with the size (same as MerkleizeWithMixin)
+	output := h.tmp[:0]
+	output = sszutils.MarshalUint64(output, num)
+	input = append(input, output...)
+	input = append(input, zeroBytes[:24]...)
+
+	if debug {
+		logfn("merkleize-progressive-mixin: %x (%d) ", input, num)
+	}
+
+	// input is of the form [<progressive_root><size>] of 64 bytes
+	_ = h.hash(input, input)
+	h.buf = append(h.buf[:indx], input[:32]...)
+
+	if debug {
+		logfn("-> %x\n", input[:32])
+	}
+}
+
+// MerkleizeProgressiveWithActiveFields computes the progressive merkle root
+// from indx and mixes in the active fields bitvector.
+func (h *Hasher) MerkleizeProgressiveWithActiveFields(indx int, activeFields []byte) {
+	layer := h.getMatchingLayer(indx)
+
+	if layer != nil && layer.progressive && layer.progressiveCount > 0 {
+		h.FillUpTo32()
+		h.collapseProgressiveLayer(layer, indx)
+		h.popTopLayer()
+	} else {
+		if layer != nil {
+			h.popTopLayer()
+		}
+		h.FillUpTo32()
+		input := h.buf[indx:]
+		if debug {
+			logfn("merkleize-progressive-active-fields: %x ", input)
+		}
+		input = h.merkleizeProgressiveImpl(input[:0], input, 0)
+		h.buf = append(h.buf[:indx], input...)
+	}
+
+	// Now buf[indx:indx+32] has the progressive root.
+	input := h.buf[indx : indx+32]
+
+	if debug {
+		logfn("-> %x (%x)", input, activeFields)
+	}
+
+	// mixin with the active fields bitvector
+	input = append(input, activeFields...)
+	if rest := len(activeFields) % 32; rest != 0 {
+		// pad zero bytes to the left
+		input = append(input, zeroBytes[:32-rest]...)
+	}
+
+	// input is of the form [<progressive_root><active_fields>] of 64 bytes
+	_ = h.hash(input, input)
+	h.buf = append(h.buf[:indx], input[:32]...)
+
+	if debug {
+		logfn("-> %x\n", input[:32])
+	}
+}
+
+// getDepth returns the tree depth needed to hold d leaves
+// (ceil(log2(nextPow2(d)))).
 func (h *Hasher) getDepth(d uint64) uint8 {
 	if d <= 1 {
 		return 0
@@ -533,6 +992,8 @@ func (h *Hasher) getDepth(d uint64) uint8 {
 	return 64 - uint8(bits.LeadingZeros64(i)) - 1
 }
 
+// merkleizeImpl performs standard binary merkleization of input into dst. If
+// limit > 0, the tree is padded with zero hashes to that depth.
 func (h *Hasher) merkleizeImpl(dst, input []byte, limit uint64) []byte {
 	// count is the number of 32 byte chunks from the input, after right-padding
 	// with zeroes to the next multiple of 32 bytes when the input is not aligned
@@ -578,95 +1039,9 @@ func (h *Hasher) merkleizeImpl(dst, input []byte, limit uint64) []byte {
 	return append(dst, input...)
 }
 
-// MerkleizeProgressive performs progressive merkleization on the buffer
-// contents from indx onwards. Progressive merkleization uses the
-// subtree_fill_progressive algorithm from remerkleable, suitable for
-// progressive list types.
-func (h *Hasher) MerkleizeProgressive(indx int) {
-	// merkleizeImpl will expand the `input` by 32 bytes if some hashing depth
-	// hits an odd chunk length. But if we're at the end of `h.buf` already,
-	// appending to `input` will allocate a new buffer, *not* expand `h.buf`,
-	// so the next invocation will realloc, over and over and over. We can pre-
-	// emptively cater for that by ensuring that an extra 32 bytes is always
-	// available.
-	h.buf = append(h.buf, zeroBytes...)
-	h.buf = h.buf[:len(h.buf)-len(zeroBytes)]
-	input := h.buf[indx:]
-
-	if debug {
-		logfn("merkleize-progressive: %x ", input)
-	}
-
-	// merkleize the input
-	input = h.merkleizeProgressiveImpl(input[:0], input, 0)
-	h.buf = append(h.buf[:indx], input...)
-
-	if debug {
-		logfn("-> %x\n", input)
-	}
-}
-
-// MerkleizeProgressiveWithMixin is used to merkleize progressive lists with length mixin
-func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
-	h.FillUpTo32()
-	input := h.buf[indx:]
-
-	// progressive merkleize the input
-	input = h.merkleizeProgressiveImpl(input[:0], input, 0)
-
-	// mixin with the size (same as MerkleizeWithMixin)
-	output := h.tmp[:0]
-	output = sszutils.MarshalUint64(output, num)
-	input = append(input, output...)
-	input = append(input, zeroBytes[:24]...)
-
-	if debug {
-		logfn("merkleize-progressive-mixin: %x (%d) ", input, num)
-	}
-
-	// input is of the form [<progressive_root><size>] of 64 bytes
-	_ = h.hash(input, input)
-	h.buf = append(h.buf[:indx], input[:32]...)
-
-	if debug {
-		logfn("-> %x\n", input[:32])
-	}
-}
-
-// MerkleizeProgressiveWithActiveFields performs progressive merkleization on
-// the buffer from indx onwards, then mixes in the active fields bitvector.
-// This is used for progressive container types where only a subset of fields
-// may be active.
-func (h *Hasher) MerkleizeProgressiveWithActiveFields(indx int, activeFields []byte) {
-	h.FillUpTo32()
-	input := h.buf[indx:]
-
-	if debug {
-		logfn("merkleize-progressive-active-fields: %x ", input)
-	}
-	// progressive merkleize the input
-	input = h.merkleizeProgressiveImpl(input[:0], input, 0)
-
-	if debug {
-		logfn("-> %x (%x)", input, activeFields)
-	}
-
-	// mixin with the active fields bitvector
-	input = append(input, activeFields...)
-	if rest := len(activeFields) % 32; rest != 0 {
-		// pad zero bytes to the left
-		input = append(input, zeroBytes[:32-rest]...)
-	}
-
-	// input is of the form [<progressive_root><active_fields>] of 64 bytes
-	_ = h.hash(input, input)
-	h.buf = append(h.buf[:indx], input[:32]...)
-
-	if debug {
-		logfn("-> %x\n", input[:32])
-	}
-}
-
+// merkleizeProgressiveImpl performs recursive progressive merkleization
+// (subtree_fill_progressive). It splits chunks into exponentially growing
+// groups, binary-merkleizes each, and hashes the results together.
 func (h *Hasher) merkleizeProgressiveImpl(dst, chunks []byte, depth uint8) []byte {
 	count := uint64((len(chunks) + 31) / 32)
 
@@ -735,4 +1110,24 @@ func (h *Hasher) merkleizeProgressiveImpl(dst, chunks []byte, depth uint8) []byt
 	_ = h.hash(h.tmp[:32], h.tmp[0:64])
 
 	return append(dst, h.tmp[:32]...)
+}
+
+// Hash returns the last 32 bytes of the buffer.
+func (h *Hasher) Hash() []byte {
+	start := 0
+	if len(h.buf) > 32 {
+		start = len(h.buf) - 32
+	}
+	return h.buf[start:]
+}
+
+// HashRoot returns the final 32-byte hash root, or an error if the buffer
+// is not exactly 32 bytes.
+func (h *Hasher) HashRoot() (res [32]byte, err error) {
+	if len(h.buf) != 32 {
+		err = fmt.Errorf("expected 32 byte size")
+		return
+	}
+	copy(res[:], h.buf)
+	return
 }

@@ -61,6 +61,21 @@ func (w *Wrapper) Index() int {
 	return len(w.nodes)
 }
 
+// CurrentIndex returns the current buffer index (debug only)
+func (w *Wrapper) CurrentIndex() int {
+	return len(w.buf)
+}
+
+// StartTree opens a new SSZ object scope. For the tree proof wrapper,
+// this is identical to Index() since the wrapper does not support
+// incremental hashing.
+func (w *Wrapper) StartTree(_ sszutils.TreeType) int {
+	return len(w.nodes)
+}
+
+// Collapse is a no-op for the tree proof wrapper.
+func (w *Wrapper) Collapse() {}
+
 // Append appends raw bytes to the internal buffer. These bytes are converted
 // to leaf nodes when a Merkleize method is called.
 func (w *Wrapper) Append(i []byte) {
@@ -123,8 +138,12 @@ func (w *Wrapper) Merkleize(indx int) {
 // from nodes since indx, and mixes in the element count (num) as a right
 // sibling. This implements SSZ list merkleization: hash(merkle_root || length).
 func (w *Wrapper) MerkleizeWithMixin(indx int, num, limit uint64) {
-	checkUint64FitsInt(num, "MerkleizeWithMixin num")
-	checkUint64FitsInt(limit, "MerkleizeWithMixin limit")
+	if num > math.MaxInt {
+		panic(fmt.Sprintf("MerkleizeWithMixin: num %d exceeds max int", num))
+	}
+	if limit > math.MaxInt {
+		panic(fmt.Sprintf("MerkleizeWithMixin: limit %d exceeds max int", limit))
+	}
 	if len(w.buf) != 0 {
 		w.appendBytesAsNodes(w.buf)
 		w.buf = w.buf[:0]
@@ -147,7 +166,9 @@ func (w *Wrapper) MerkleizeProgressive(indx int) {
 // progressive Merkle tree from nodes since indx, and mixes in the element
 // count (num) as a right sibling.
 func (w *Wrapper) MerkleizeProgressiveWithMixin(indx int, num uint64) {
-	checkUint64FitsInt(num, "MerkleizeProgressiveWithMixin num")
+	if num > math.MaxInt {
+		panic(fmt.Sprintf("MerkleizeProgressiveWithMixin: num %d exceeds max int", num))
+	}
 	if len(w.buf) != 0 {
 		w.appendBytesAsNodes(w.buf)
 		w.buf = w.buf[:0]
@@ -166,14 +187,6 @@ func (w *Wrapper) MerkleizeProgressiveWithActiveFields(indx int, activeFields []
 	w.CommitProgressiveWithActiveFields(indx, activeFields)
 }
 
-// checkUint64FitsInt panics if v exceeds the platform's int range, preventing
-// silent truncation when converting uint64 to int on 32-bit systems.
-func checkUint64FitsInt(v uint64, context string) {
-	if v > math.MaxInt {
-		panic(fmt.Sprintf("%s: %d exceeds max int", context, v))
-	}
-}
-
 // PutBitlist parses a bitlist (with sentinel bit), creates leaf nodes from
 // the data, and merkleizes them with a length mixin. The maxSize parameter
 // determines the tree limit for proper padding.
@@ -185,8 +198,12 @@ func (w *Wrapper) PutBitlist(bb []byte, maxSize uint64) {
 	w.appendBytesAsNodes(b)
 
 	limit := (maxSize + 255) / 256
-	checkUint64FitsInt(size, "PutBitlist size")
-	checkUint64FitsInt(limit, "PutBitlist limit")
+	if size > math.MaxInt {
+		panic(fmt.Sprintf("PutBitlist: size %d exceeds max int", size))
+	}
+	if limit > math.MaxInt {
+		panic(fmt.Sprintf("PutBitlist: limit %d exceeds max int", limit))
+	}
 	w.CommitWithMixin(indx, int(size), int(limit))
 }
 
@@ -200,7 +217,9 @@ func (w *Wrapper) PutProgressiveBitlist(bb []byte) {
 	indx := w.Index()
 	w.appendBytesAsNodes(b)
 
-	checkUint64FitsInt(size, "PutProgressiveBitlist size")
+	if size > math.MaxInt {
+		panic(fmt.Sprintf("PutProgressiveBitlist: size %d exceeds max int", size))
+	}
 	w.CommitProgressiveWithMixin(indx, int(size))
 }
 

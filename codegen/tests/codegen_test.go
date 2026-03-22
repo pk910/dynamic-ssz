@@ -97,95 +97,118 @@ func TestCodegenExtendedTypes(t *testing.T) {
 
 	for _, tc := range payloads {
 		t.Run(tc.name, func(t *testing.T) {
-			// Reflection-only instance for reference
-			refDs := dynssz.NewDynSsz(nil,
-				dynssz.WithExtendedTypes(),
-				dynssz.WithNoFastSsz(),
-				dynssz.WithNoFastHash(),
-			)
-
-			// Default instance (uses generated code when available)
-			genDs := dynssz.NewDynSsz(nil,
-				dynssz.WithExtendedTypes(),
-			)
-
-			// Compare hash tree root: reflection vs generated
-			refHash, err := refDs.HashTreeRoot(tc.payload)
-			if err != nil {
-				t.Fatalf("reflection HashTreeRoot failed: %v", err)
-			}
-			genHash, err := genDs.HashTreeRoot(tc.payload)
-			if err != nil {
-				t.Fatalf("generated HashTreeRoot failed: %v", err)
-			}
-			if refHash != genHash {
-				t.Fatalf("HashTreeRoot mismatch: ref=%x gen=%x", refHash, genHash)
-			}
-
-			// Compare size: reflection vs generated
-			refSize, err := refDs.SizeSSZ(tc.payload)
-			if err != nil {
-				t.Fatalf("reflection SizeSSZ failed: %v", err)
-			}
-			genSize, err := genDs.SizeSSZ(tc.payload)
-			if err != nil {
-				t.Fatalf("generated SizeSSZ failed: %v", err)
-			}
-			if refSize != genSize {
-				t.Fatalf("SizeSSZ mismatch: ref=%d gen=%d", refSize, genSize)
-			}
-
-			// Compare marshal: reflection vs generated
-			refBytes, err := refDs.MarshalSSZ(tc.payload)
-			if err != nil {
-				t.Fatalf("reflection MarshalSSZ failed: %v", err)
-			}
-			genBytes, err := genDs.MarshalSSZ(tc.payload)
-			if err != nil {
-				t.Fatalf("generated MarshalSSZ failed: %v", err)
-			}
-			if !bytes.Equal(refBytes, genBytes) {
-				t.Fatalf("MarshalSSZ mismatch:\n  ref=%x\n  gen=%x", refBytes, genBytes)
-			}
-
-			// Unmarshal roundtrip
-			var unmarshaled ExtendedTypes1
-			err = genDs.UnmarshalSSZ(&unmarshaled, genBytes)
-			if err != nil {
-				t.Fatalf("generated UnmarshalSSZ failed: %v", err)
-			}
-			roundtripHash, err := genDs.HashTreeRoot(unmarshaled)
-			if err != nil {
-				t.Fatalf("roundtrip HashTreeRoot failed: %v", err)
-			}
-			if roundtripHash != genHash {
-				t.Fatalf("roundtrip hash mismatch: expected=%x got=%x", genHash, roundtripHash)
-			}
-
-			// Streaming marshal
-			var streamBuf bytes.Buffer
-			err = genDs.MarshalSSZWriter(tc.payload, &streamBuf)
-			if err != nil {
-				t.Fatalf("MarshalSSZWriter failed: %v", err)
-			}
-			if !bytes.Equal(streamBuf.Bytes(), genBytes) {
-				t.Fatalf("streaming marshal mismatch:\n  ref=%x\n  gen=%x", streamBuf.Bytes(), genBytes)
-			}
-
-			// Streaming unmarshal
-			var streamUnmarshaled ExtendedTypes1
-			err = genDs.UnmarshalSSZReader(&streamUnmarshaled, bytes.NewReader(genBytes), len(genBytes))
-			if err != nil {
-				t.Fatalf("UnmarshalSSZReader failed: %v", err)
-			}
-			streamHash, err := genDs.HashTreeRoot(streamUnmarshaled)
-			if err != nil {
-				t.Fatalf("stream roundtrip HashTreeRoot failed: %v", err)
-			}
-			if streamHash != genHash {
-				t.Fatalf("stream roundtrip hash mismatch: expected=%x got=%x", genHash, streamHash)
-			}
+			testCodegenPayloadByReflection(t, tc.payload, nil, dynssz.WithExtendedTypes())
 		})
+	}
+}
+
+func TestCodegenCoverageTypes1(t *testing.T) {
+	testCodegenPayloadByReflection(t, CoverageTypes1_Payload, SimpleTypesWithSpecs_Specs)
+}
+
+func TestCodegenCoverageTypes2(t *testing.T) {
+	payloads := []struct {
+		name    string
+		payload CoverageTypes2
+	}{
+		{"WithValues", CoverageTypes2_Payload1},
+		{"NilPointers", CoverageTypes2_Payload2},
+	}
+
+	for _, tc := range payloads {
+		t.Run(tc.name, func(t *testing.T) {
+			testCodegenPayloadByReflection(t, tc.payload, nil, dynssz.WithExtendedTypes())
+		})
+	}
+}
+
+// testCodegenPayloadByReflection compares generated code output against
+// reflection-based implementation. No pre-computed hash needed.
+func testCodegenPayloadByReflection(t *testing.T, payload any, specs map[string]any, opts ...dynssz.DynSszOption) {
+	t.Helper()
+
+	refOpts := append([]dynssz.DynSszOption{
+		dynssz.WithNoFastSsz(),
+		dynssz.WithNoFastHash(),
+	}, opts...)
+	refDs := dynssz.NewDynSsz(specs, refOpts...)
+	genDs := dynssz.NewDynSsz(specs, opts...)
+
+	// Compare hash tree root
+	refHash, err := refDs.HashTreeRoot(payload)
+	if err != nil {
+		t.Fatalf("reflection HashTreeRoot failed: %v", err)
+	}
+	genHash, err := genDs.HashTreeRoot(payload)
+	if err != nil {
+		t.Fatalf("generated HashTreeRoot failed: %v", err)
+	}
+	if refHash != genHash {
+		t.Fatalf("HashTreeRoot mismatch: ref=%x gen=%x", refHash, genHash)
+	}
+
+	// Compare size
+	refSize, err := refDs.SizeSSZ(payload)
+	if err != nil {
+		t.Fatalf("reflection SizeSSZ failed: %v", err)
+	}
+	genSize, err := genDs.SizeSSZ(payload)
+	if err != nil {
+		t.Fatalf("generated SizeSSZ failed: %v", err)
+	}
+	if refSize != genSize {
+		t.Fatalf("SizeSSZ mismatch: ref=%d gen=%d", refSize, genSize)
+	}
+
+	// Compare marshal
+	refBytes, err := refDs.MarshalSSZ(payload)
+	if err != nil {
+		t.Fatalf("reflection MarshalSSZ failed: %v", err)
+	}
+	genBytes, err := genDs.MarshalSSZ(payload)
+	if err != nil {
+		t.Fatalf("generated MarshalSSZ failed: %v", err)
+	}
+	if !bytes.Equal(refBytes, genBytes) {
+		t.Fatalf("MarshalSSZ mismatch:\n  ref=%x\n  gen=%x", refBytes, genBytes)
+	}
+
+	// Unmarshal roundtrip
+	unmarshaled := reflect.New(reflect.TypeOf(payload)).Interface()
+	err = genDs.UnmarshalSSZ(unmarshaled, genBytes)
+	if err != nil {
+		t.Fatalf("generated UnmarshalSSZ failed: %v", err)
+	}
+	roundtripHash, err := genDs.HashTreeRoot(unmarshaled)
+	if err != nil {
+		t.Fatalf("roundtrip HashTreeRoot failed: %v", err)
+	}
+	if roundtripHash != genHash {
+		t.Fatalf("roundtrip hash mismatch: expected=%x got=%x", genHash, roundtripHash)
+	}
+
+	// Streaming marshal
+	var streamBuf bytes.Buffer
+	err = genDs.MarshalSSZWriter(payload, &streamBuf)
+	if err != nil {
+		t.Fatalf("MarshalSSZWriter failed: %v", err)
+	}
+	if !bytes.Equal(streamBuf.Bytes(), genBytes) {
+		t.Fatalf("streaming marshal mismatch:\n  ref=%x\n  gen=%x", streamBuf.Bytes(), genBytes)
+	}
+
+	// Streaming unmarshal
+	streamUnmarshaled := reflect.New(reflect.TypeOf(payload)).Interface()
+	err = genDs.UnmarshalSSZReader(streamUnmarshaled, bytes.NewReader(genBytes), len(genBytes))
+	if err != nil {
+		t.Fatalf("UnmarshalSSZReader failed: %v", err)
+	}
+	streamHash, err := genDs.HashTreeRoot(streamUnmarshaled)
+	if err != nil {
+		t.Fatalf("stream roundtrip HashTreeRoot failed: %v", err)
+	}
+	if streamHash != genHash {
+		t.Fatalf("stream roundtrip hash mismatch: expected=%x got=%x", genHash, streamHash)
 	}
 }
 

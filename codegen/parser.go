@@ -1374,6 +1374,13 @@ func (p *Parser) buildBigIntDescriptor(desc *ssztypes.TypeDescriptor, _ types.Ty
 }
 
 func (p *Parser) parseFieldTags(tag string) (typeHints []ssztypes.SszTypeHint, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint, err error) {
+	return ParseTags(tag)
+}
+
+// ParseTags parses SSZ annotations from a string in struct tag format.
+// This is useful for extracting SSZ annotations from sources other than
+// struct fields, such as type definition comments.
+func ParseTags(tag string) (typeHints []ssztypes.SszTypeHint, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint, err error) {
 	if tag == "" {
 		return nil, nil, nil, nil
 	}
