@@ -95,6 +95,9 @@ func generateEncoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 	if viewName != "" {
 		fnName = fmt.Sprintf("marshalSSZEncoderView_%s", viewName)
 	}
+	if viewName == "" {
+		appendCode(codeBuilder, 0, "// MarshalSSZEncoder marshals the %s to the given SSZ encoder using dynamic specifications.\n", typeName)
+	}
 	appendCode(codeBuilder, 0, "func (t %s) %s(ds sszutils.DynamicSpecs, enc sszutils.Encoder) (err error) {\n", typeName, fnName)
 
 	if ctx.usedContext {

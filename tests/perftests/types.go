@@ -1,7 +1,7 @@
 package perftests
 
 import (
-	"github.com/prysmaticlabs/go-bitfield"
+	"github.com/OffchainLabs/go-bitfield"
 )
 
 // Basic types - using plain types to ensure compatibility with generated code

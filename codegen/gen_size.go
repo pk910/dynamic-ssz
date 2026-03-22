@@ -113,6 +113,7 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 
 	if genStaticFn {
 		if !ctx.usedDynSpecs {
+			appendCode(codeBuilder, 0, "// SizeSSZ returns the SSZ encoded size of the %s.\n", typeName)
 			appendCode(codeBuilder, 0, "func (t %s) SizeSSZ() (size int) {\n", typeName)
 			if rootTypeDesc.Size > 0 {
 				appendCode(codeBuilder, 1, "return %d\n", rootTypeDesc.Size)
@@ -124,6 +125,7 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 			appendCode(codeBuilder, 0, "}\n\n")
 		} else {
 			dynsszAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
+			appendCode(codeBuilder, 0, "// SizeSSZ returns the SSZ encoded size of the %s.\n", typeName)
 			appendCode(codeBuilder, 0, "func (t %s) SizeSSZ() (size int) {\n", typeName)
 			appendCode(codeBuilder, 1, "return t.SizeSSZDyn(%s.GetGlobalDynSsz())\n", dynsszAlias)
 			appendCode(codeBuilder, 0, "}\n\n")
@@ -136,12 +138,18 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 			fnName = fmt.Sprintf("sizeSSZView_%s", viewName)
 		}
 		if ctx.usedDynSpecs || viewName != "" {
+			if viewName == "" {
+				appendCode(codeBuilder, 0, "// SizeSSZDyn returns the SSZ encoded size of the %s using dynamic specifications.\n", typeName)
+			}
 			appendCode(codeBuilder, 0, "func (t %s) %s(ds sszutils.DynamicSpecs) (size int) {\n", typeName, fnName)
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 			appendCode(codeBuilder, 1, ctx.codeBuf.String())
 			appendCode(codeBuilder, 1, "return size\n")
 			appendCode(codeBuilder, 0, "}\n\n")
 		} else {
+			if viewName == "" {
+				appendCode(codeBuilder, 0, "// SizeSSZDyn returns the SSZ encoded size of the %s using dynamic specifications.\n", typeName)
+			}
 			appendCode(codeBuilder, 0, "func (t %s) %s(_ sszutils.DynamicSpecs) (size int) {\n", typeName, fnName)
 			appendCode(codeBuilder, 1, "return t.SizeSSZ()\n")
 			appendCode(codeBuilder, 0, "}\n\n")

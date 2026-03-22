@@ -90,6 +90,9 @@ func generateDecoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 	if viewName != "" {
 		fnName = fmt.Sprintf("unmarshalSSZDecoderView_%s", viewName)
 	}
+	if viewName == "" {
+		appendCode(codeBuilder, 0, "// UnmarshalSSZDecoder unmarshals the %s from the given SSZ decoder using dynamic specifications.\n", typeName)
+	}
 	if ctx.usedDynSpecs {
 		appendCode(codeBuilder, 0, "func (t %s) %s(ds sszutils.DynamicSpecs, dec sszutils.Decoder) (err error) {\n", typeName, fnName)
 	} else {

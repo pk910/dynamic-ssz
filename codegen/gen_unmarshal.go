@@ -96,6 +96,7 @@ func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strin
 
 	if genStaticFn {
 		if !ctx.usedDynSpecs {
+			appendCode(codeBuilder, 0, "// UnmarshalSSZ unmarshals the %s from SSZ-encoded bytes.\n", typeName)
 			appendCode(codeBuilder, 0, "func (t %s) UnmarshalSSZ(buf []byte) (err error) {\n", typeName)
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 			appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
@@ -104,6 +105,7 @@ func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strin
 			appendCode(codeBuilder, 0, "}\n\n")
 		} else {
 			dynsszAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
+			appendCode(codeBuilder, 0, "// UnmarshalSSZ unmarshals the %s from SSZ-encoded bytes.\n", typeName)
 			appendCode(codeBuilder, 0, "func (t %s) UnmarshalSSZ(buf []byte) (err error) {\n", typeName)
 			appendCode(codeBuilder, 1, "return t.UnmarshalSSZDyn(%s.GetGlobalDynSsz(), buf)\n", dynsszAlias)
 			appendCode(codeBuilder, 0, "}\n\n")
@@ -116,6 +118,9 @@ func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strin
 			fnName = fmt.Sprintf("unmarshalSSZView_%s", viewName)
 		}
 		if ctx.usedDynSpecs || viewName != "" {
+			if viewName == "" {
+				appendCode(codeBuilder, 0, "// UnmarshalSSZDyn unmarshals the %s from SSZ-encoded bytes using dynamic specifications.\n", typeName)
+			}
 			appendCode(codeBuilder, 0, "func (t %s) %s(ds sszutils.DynamicSpecs, buf []byte) (err error) {\n", typeName, fnName)
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 			appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
@@ -123,6 +128,9 @@ func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strin
 			appendCode(codeBuilder, 1, "return nil\n")
 			appendCode(codeBuilder, 0, "}\n\n")
 		} else {
+			if viewName == "" {
+				appendCode(codeBuilder, 0, "// UnmarshalSSZDyn unmarshals the %s from SSZ-encoded bytes using dynamic specifications.\n", typeName)
+			}
 			appendCode(codeBuilder, 0, "func (t %s) %s(_ sszutils.DynamicSpecs, buf []byte) (err error) {\n", typeName, fnName)
 			appendCode(codeBuilder, 1, "return t.UnmarshalSSZ(buf)\n")
 			appendCode(codeBuilder, 0, "}\n\n")

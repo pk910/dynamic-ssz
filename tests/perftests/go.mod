@@ -5,8 +5,8 @@ go 1.25.0
 tool github.com/pk910/dynamic-ssz/dynssz-gen
 
 require (
+	github.com/OffchainLabs/go-bitfield v0.0.0-20260316135939-ffb3947a62a5
 	github.com/pk910/dynamic-ssz v1.2.2
-	github.com/prysmaticlabs/go-bitfield v0.0.0-20240618144021-706c95b2dd15
 	gopkg.in/yaml.v2 v2.4.0
 )
 
