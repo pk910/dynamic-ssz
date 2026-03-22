@@ -196,28 +196,28 @@ func (ctx *unmarshalContext) isInlinable(desc *ssztypes.TypeDescriptor) bool {
 }
 
 // unmarshalType generates unmarshal code for any SSZ type, delegating to specific unmarshalers.
-func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, isRoot, noBufCheck bool) error {
-	// Handle types that have generated methods we can call
-	isView := desc.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
-	if !isRoot && isView {
-		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewUnmarshaler != 0 {
-			ctx.appendCode(indent, "if viewFn := %s.UnmarshalSSZDynView((%s)(nil)); viewFn != nil {\n", varName, ctx.typePrinter.ViewTypeString(desc, true))
-			ctx.appendCode(indent+1, "if err = viewFn(ds, buf); err != nil {\n\treturn err\n}\n")
-			ctx.appendCode(indent, "} else {\n\treturn sszutils.ErrNotImplemented\n}\n")
-			ctx.usedDynSpecs = true
-			return nil
-		}
-
-		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewDecoder != 0 {
-			ctx.appendCode(indent, "dec := sszutils.NewBufferDecoder(buf)\n")
-			ctx.appendCode(indent, "if viewFn := %s.UnmarshalSSZDecoderView((%s)(nil)); viewFn != nil {\n", varName, ctx.typePrinter.ViewTypeString(desc, true))
-			ctx.appendCode(indent+1, "if err = viewFn(ds, dec); err != nil {\n\treturn err\n}\n")
-			ctx.appendCode(indent, "} else {\n\treturn sszutils.ErrNotImplemented\n}\n")
-			ctx.usedDynSpecs = true
-			return nil
-		}
+func (ctx *unmarshalContext) unmarshalViewType(desc *ssztypes.TypeDescriptor, varName string, indent int) bool {
+	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewUnmarshaler != 0 {
+		ctx.appendCode(indent, "if viewFn := %s.UnmarshalSSZDynView((%s)(nil)); viewFn != nil {\n", varName, ctx.typePrinter.ViewTypeString(desc, true))
+		ctx.appendCode(indent+1, "if err = viewFn(ds, buf); err != nil {\n\treturn err\n}\n")
+		ctx.appendCode(indent, "} else {\n\treturn sszutils.ErrNotImplemented\n}\n")
+		ctx.usedDynSpecs = true
+		return true
 	}
 
+	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewDecoder != 0 {
+		ctx.appendCode(indent, "dec := sszutils.NewBufferDecoder(buf)\n")
+		ctx.appendCode(indent, "if viewFn := %s.UnmarshalSSZDecoderView((%s)(nil)); viewFn != nil {\n", varName, ctx.typePrinter.ViewTypeString(desc, true))
+		ctx.appendCode(indent+1, "if err = viewFn(ds, dec); err != nil {\n\treturn err\n}\n")
+		ctx.appendCode(indent, "} else {\n\treturn sszutils.ErrNotImplemented\n}\n")
+		ctx.usedDynSpecs = true
+		return true
+	}
+
+	return false
+}
+
+func (ctx *unmarshalContext) unmarshalCompatType(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) bool {
 	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
 	isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
 	useFastSsz := !ctx.options.NoFastSsz && isFastsszUnmarshaler && !hasDynamicSize
@@ -225,22 +225,40 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 		useFastSsz = true
 	}
 
-	if useFastSsz && !isRoot && !isView {
+	if useFastSsz {
 		ctx.appendCode(indent, "if err = %s.UnmarshalSSZ(buf); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
-		return nil
+		return true
 	}
 
-	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 && !isRoot && !isView {
+	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
 		ctx.appendCode(indent, "if err = %s.UnmarshalSSZDyn(ds, buf); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
 		ctx.usedDynSpecs = true
-		return nil
+		return true
 	}
 
-	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 && !isRoot && !isView {
+	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 {
 		ctx.appendCode(indent, "dec := sszutils.NewBufferDecoder(buf)\n")
 		ctx.appendCode(indent, "if err = %s.UnmarshalSSZDecoder(ds, dec); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
 		ctx.usedDynSpecs = true
-		return nil
+		return true
+	}
+
+	return false
+}
+
+func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, isRoot, noBufCheck bool) error {
+	// Handle types that have generated methods we can call
+	isView := desc.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
+	if !isRoot && isView {
+		if ctx.unmarshalViewType(desc, varName, indent) {
+			return nil
+		}
+	}
+
+	if !isRoot && !isView {
+		if handled := ctx.unmarshalCompatType(desc, varName, typePath, indent); handled {
+			return nil
+		}
 	}
 
 	switch desc.SszType {

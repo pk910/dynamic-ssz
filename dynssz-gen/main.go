@@ -211,66 +211,9 @@ func run(config Config) error {
 		log.Printf("Successfully loaded package: %s", pkg.Name)
 	}
 
-	// Parse type names with extended format:
-	// TypeName[:output=file.go][:views=View1;View2][:viewonly]
-	// All :xy args are optional and can be specified in any order.
-	// Output file can also be specified without prefix for backward compatibility.
-	requestedTypes := strings.Split(config.TypeNames, ",")
-	typeSpecs := make([]typeSpec, 0, len(requestedTypes))
-
-	for _, typeStr := range requestedTypes {
-		typeStr = strings.TrimSpace(typeStr)
-		if typeStr == "" {
-			continue
-		}
-
-		spec := typeSpec{}
-		parts := strings.Split(typeStr, ":")
-
-		// First part is always the type name
-		spec.TypeName = parts[0]
-
-		// Process remaining parts - all are optional and can be in any order
-		for i := 1; i < len(parts); i++ {
-			part := parts[i]
-
-			// Skip empty parts (from consecutive colons like TypeName::views=X)
-			if part == "" {
-				continue
-			}
-
-			switch {
-			case strings.HasPrefix(part, "views="):
-				// Parse view types: views=View1;View2
-				viewsStr := strings.TrimPrefix(part, "views=")
-				// Use semicolon as separator since comma is used for type list
-				spec.ViewTypes = strings.Split(viewsStr, ";")
-				for j := range spec.ViewTypes {
-					spec.ViewTypes[j] = strings.TrimSpace(spec.ViewTypes[j])
-				}
-			case strings.HasPrefix(part, "output="):
-				// Explicit output file with prefix
-				spec.OutputFile = strings.TrimPrefix(part, "output=")
-			case part == "viewonly":
-				spec.IsViewOnly = true
-			default:
-				// For backward compatibility: first unrecognized non-empty part
-				// is treated as output file (only if not already set)
-				if spec.OutputFile == "" {
-					spec.OutputFile = part
-				}
-			}
-		}
-
-		// Use default output file if not specified
-		if spec.OutputFile == "" {
-			if config.OutputFile == "" {
-				return errors.New("output file is required (-output)")
-			}
-			spec.OutputFile = config.OutputFile
-		}
-
-		typeSpecs = append(typeSpecs, spec)
+	typeSpecs, err := parseTypeSpecs(config.TypeNames, config.OutputFile)
+	if err != nil {
+		return err
 	}
 
 	// Find the requested types in the package
@@ -557,4 +500,68 @@ func parseCommentAnnotations(comment string) ([]codegen.CodeGeneratorOption, err
 	}
 
 	return opts, nil
+}
+
+// parseTypeSpecs parses the comma-separated type names string into typeSpec structs.
+// Each type can have colon-separated options: TypeName[:output=file.go][:views=View1;View2][:viewonly]
+func parseTypeSpecs(typeNames, defaultOutput string) ([]typeSpec, error) {
+	requestedTypes := strings.Split(typeNames, ",")
+	typeSpecs := make([]typeSpec, 0, len(requestedTypes))
+
+	for _, typeStr := range requestedTypes {
+		typeStr = strings.TrimSpace(typeStr)
+		if typeStr == "" {
+			continue
+		}
+
+		spec := typeSpec{}
+		parts := strings.Split(typeStr, ":")
+
+		// First part is always the type name
+		spec.TypeName = parts[0]
+
+		// Process remaining parts - all are optional and can be in any order
+		for i := 1; i < len(parts); i++ {
+			part := parts[i]
+
+			// Skip empty parts (from consecutive colons like TypeName::views=X)
+			if part == "" {
+				continue
+			}
+
+			switch {
+			case strings.HasPrefix(part, "views="):
+				// Parse view types: views=View1;View2
+				viewsStr := strings.TrimPrefix(part, "views=")
+				// Use semicolon as separator since comma is used for type list
+				spec.ViewTypes = strings.Split(viewsStr, ";")
+				for j := range spec.ViewTypes {
+					spec.ViewTypes[j] = strings.TrimSpace(spec.ViewTypes[j])
+				}
+			case strings.HasPrefix(part, "output="):
+				// Explicit output file with prefix
+				spec.OutputFile = strings.TrimPrefix(part, "output=")
+			case part == "viewonly":
+				spec.IsViewOnly = true
+			default:
+				// For backward compatibility: first unrecognized non-empty part
+				// is treated as output file (only if not already set)
+				if spec.OutputFile == "" {
+					spec.OutputFile = part
+				}
+			}
+		}
+
+		// Use default output file if not specified
+		if spec.OutputFile == "" {
+			if defaultOutput == "" {
+				return nil, errors.New("output file is required (-output)")
+			}
+			spec.OutputFile = defaultOutput
+		}
+
+		typeSpecs = append(typeSpecs, spec)
+	}
+
+	return typeSpecs, nil
 }
