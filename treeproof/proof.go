@@ -354,9 +354,17 @@ func getRequiredIndices(leafIndices []int) []int {
 		return nil
 	}
 
+	current := descendingUniqueIndices(leafIndices)
+	if !indicesShareDepth(current) {
+		return getRequiredIndicesMixedDepth(current)
+	}
+
+	return getRequiredIndicesSameDepth(current)
+}
+
+func getRequiredIndicesSameDepth(current []int) []int {
 	// Walk upward level by level. At each level, siblings that are not already
 	// part of the current frontier must come from the proof.
-	current := descendingUniqueIndices(leafIndices)
 	depth := getPathLength(current[0])
 	required := make([]int, 0, len(current)*min(depth, 8))
 	next := make([]int, 0, len(current))
@@ -391,6 +399,55 @@ func getRequiredIndices(leafIndices []int) []int {
 	}
 
 	return required
+}
+
+func getRequiredIndicesMixedDepth(indices []int) []int {
+	exists := struct{}{}
+	leaves := make(map[int]struct{}, len(indices))
+	for _, leaf := range indices {
+		leaves[leaf] = exists
+	}
+
+	requiredCap := len(indices) * min(getPathLength(indices[0]), 8)
+	required := make(map[int]struct{}, requiredCap)
+	computed := make(map[int]struct{}, requiredCap)
+
+	for _, leaf := range indices {
+		cur := leaf
+		for cur > 1 {
+			sibling := getSibling(cur)
+			parent := getParent(cur)
+
+			if _, isLeaf := leaves[sibling]; !isLeaf {
+				required[sibling] = exists
+			}
+			computed[parent] = exists
+			cur = parent
+		}
+	}
+
+	requiredList := make([]int, 0, len(required))
+	for r := range required {
+		if _, isComputed := computed[r]; !isComputed {
+			requiredList = append(requiredList, r)
+		}
+	}
+
+	sort.Sort(sort.Reverse(sort.IntSlice(requiredList)))
+	return requiredList
+}
+
+func indicesShareDepth(indices []int) bool {
+	if len(indices) < 2 {
+		return true
+	}
+	depth := getPathLength(indices[0])
+	for _, idx := range indices[1:] {
+		if getPathLength(idx) != depth {
+			return false
+		}
+	}
+	return true
 }
 
 // descendingUniqueIndices returns generalized indices in descending order with
