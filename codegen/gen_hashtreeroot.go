@@ -91,6 +91,7 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 	// Static hash tree root function
 	if genStaticFn {
 		hasherAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
+		appendCode(codeBuilder, 0, "// HashTreeRoot computes the SSZ hash tree root of the %s.\n", typeName)
 		appendCode(codeBuilder, 0, "func (t %s) HashTreeRoot() (root [32]byte, err error) {\n", typeName)
 		appendCode(codeBuilder, 1, "err = %s.WithDefaultHasher(func(hh sszutils.HashWalker) (err error) {\n", hasherAlias)
 		appendCode(codeBuilder, 2, "err = t.HashTreeRootWith(hh)\n")
@@ -105,6 +106,7 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 
 	if genStaticFn {
 		if !ctx.usedDynSpecs {
+			appendCode(codeBuilder, 0, "// HashTreeRootWith computes the SSZ hash tree root of the %s using the given hash walker.\n", typeName)
 			appendCode(codeBuilder, 0, fmt.Sprintf("func (t %s) HashTreeRootWith(hh sszutils.HashWalker) error {\n", typeName))
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 			appendCode(codeBuilder, 1, codeBuf.String())
@@ -112,6 +114,7 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 			appendCode(codeBuilder, 0, "}\n\n")
 		} else {
 			dynsszAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
+			appendCode(codeBuilder, 0, "// HashTreeRootWith computes the SSZ hash tree root of the %s using the given hash walker.\n", typeName)
 			appendCode(codeBuilder, 0, "func (t %s) HashTreeRootWith(hh sszutils.HashWalker) error {\n", typeName)
 			appendCode(codeBuilder, 1, "return t.HashTreeRootWithDyn(%s.GetGlobalDynSsz(), hh)\n", dynsszAlias)
 			appendCode(codeBuilder, 0, "}\n\n")
@@ -121,6 +124,7 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 	// Dynamic hash tree root function
 	if genDynamicFn {
 		hasherAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
+		appendCode(codeBuilder, 0, "// HashTreeRootDyn computes the SSZ hash tree root of the %s using dynamic specifications.\n", typeName)
 		appendCode(codeBuilder, 0, "func (t %s) HashTreeRootDyn(ds sszutils.DynamicSpecs) (root [32]byte, err error) {\n", typeName)
 		appendCode(codeBuilder, 1, "err = %s.WithDefaultHasher(func(hh sszutils.HashWalker) (err error) {\n", hasherAlias)
 		appendCode(codeBuilder, 2, "err = t.HashTreeRootWithDyn(ds, hh)\n")
@@ -135,12 +139,14 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 
 	if genDynamicFn {
 		if ctx.usedDynSpecs {
+			appendCode(codeBuilder, 0, "// HashTreeRootWithDyn computes the SSZ hash tree root of the %s using dynamic specifications and the given hash walker.\n", typeName)
 			appendCode(codeBuilder, 0, "func (t %s) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName)
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 			appendCode(codeBuilder, 1, codeBuf.String())
 			appendCode(codeBuilder, 1, "return nil\n")
 			appendCode(codeBuilder, 0, "}\n\n")
 		} else {
+			appendCode(codeBuilder, 0, "// HashTreeRootWithDyn computes the SSZ hash tree root of the %s using dynamic specifications and the given hash walker.\n", typeName)
 			appendCode(codeBuilder, 0, "func (t %s) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName)
 			appendCode(codeBuilder, 1, "return t.HashTreeRootWith(hh)\n")
 			appendCode(codeBuilder, 0, "}\n\n")

@@ -95,6 +95,7 @@ func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strin
 
 	if genStaticFn {
 		if !ctx.usedDynSpecs {
+			appendCode(codeBuilder, 0, "// UnmarshalSSZ unmarshals the %s from SSZ-encoded bytes.\n", typeName)
 			appendCode(codeBuilder, 0, "func (t %s) UnmarshalSSZ(buf []byte) (err error) {\n", typeName)
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 			appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
@@ -103,6 +104,7 @@ func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strin
 			appendCode(codeBuilder, 0, "}\n\n")
 		} else {
 			dynsszAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
+			appendCode(codeBuilder, 0, "// UnmarshalSSZ unmarshals the %s from SSZ-encoded bytes.\n", typeName)
 			appendCode(codeBuilder, 0, "func (t %s) UnmarshalSSZ(buf []byte) (err error) {\n", typeName)
 			appendCode(codeBuilder, 1, "return t.UnmarshalSSZDyn(%s.GetGlobalDynSsz(), buf)\n", dynsszAlias)
 			appendCode(codeBuilder, 0, "}\n\n")
@@ -111,6 +113,7 @@ func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strin
 
 	if genDynamicFn {
 		if ctx.usedDynSpecs {
+			appendCode(codeBuilder, 0, "// UnmarshalSSZDyn unmarshals the %s from SSZ-encoded bytes using dynamic specifications.\n", typeName)
 			appendCode(codeBuilder, 0, "func (t %s) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (err error) {\n", typeName)
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 			appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
@@ -118,6 +121,7 @@ func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strin
 			appendCode(codeBuilder, 1, "return nil\n")
 			appendCode(codeBuilder, 0, "}\n\n")
 		} else {
+			appendCode(codeBuilder, 0, "// UnmarshalSSZDyn unmarshals the %s from SSZ-encoded bytes using dynamic specifications.\n", typeName)
 			appendCode(codeBuilder, 0, "func (t %s) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) (err error) {\n", typeName)
 			appendCode(codeBuilder, 1, "return t.UnmarshalSSZ(buf)\n")
 			appendCode(codeBuilder, 0, "}\n\n")
