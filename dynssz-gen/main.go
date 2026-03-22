@@ -439,7 +439,7 @@ func matchAnnotateCall(expr ast.Expr, alias, typeName string) string {
 
 // parseAnnotateTag parses an SSZ tag string into codegen options.
 func parseAnnotateTag(tag string) ([]codegen.CodeGeneratorOption, error) {
-	typeHints, sizeHints, maxSizeHints, err := codegen.ParseTags(tag)
+	typeHints, sizeHints, maxSizeHints, err := ssztypes.ParseTags(tag)
 	if err != nil {
 		return nil, err
 	}

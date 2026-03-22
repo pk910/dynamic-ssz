@@ -357,14 +357,23 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 		sizeExpression = nil
 	}
 
+	valueVar := varName
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		targetType := ""
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
+			targetType = "string"
+		}
+		valueVar = ctx.getValueVar(desc, varName, targetType)
+	}
+
 	usedVar := false
 	useVar := func() {
 		if usedVar {
 			return
 		}
-		if len(varName) > 1 {
-			ctx.appendCode(indent, "t := %s%s\n", ctx.getPtrPrefix(desc), varName)
-			varName = "t"
+		if len(valueVar) > 1 {
+			ctx.appendCode(indent, "t := %s%s\n", ctx.getPtrPrefix(desc), valueVar)
+			valueVar = "t"
 		}
 		usedVar = true
 	}
@@ -395,8 +404,8 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 		switch {
 		case desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions:
 			useVar()
-			ctx.appendCode(indent, "if len(%s) > 0 {\n", varName)
-			innerVarName := fmt.Sprintf("%s[0]", varName)
+			ctx.appendCode(indent, "if len(%s) > 0 {\n", valueVar)
+			innerVarName := fmt.Sprintf("%s[0]", valueVar)
 			innerSizeVar := ctx.getSizeVar()
 			ctx.appendCode(indent, "\t%s := 0\n", innerSizeVar)
 			if err := ctx.sizeType(desc.ElemDesc, innerVarName, innerSizeVar, indent+1, false); err != nil {
@@ -418,20 +427,20 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 		if desc.Kind == reflect.Array {
 			indexVar := ctx.getIndexVar()
 			ctx.appendCode(indent, "for %s := range %s {\n", indexVar, limitVar)
-			itemVarName := fmt.Sprintf("%s[%s]", varName, indexVar)
+			itemVarName := fmt.Sprintf("%s[%s]", valueVar, indexVar)
 			if err := ctx.sizeType(desc.ElemDesc, itemVarName, sizeVar, indent+1, false); err != nil {
 				return err
 			}
 			ctx.appendCode(indent, "}\n")
 		} else {
 			useVar()
-			ctx.appendCode(indent, "vlen := len(%s)\n", varName)
+			ctx.appendCode(indent, "vlen := len(%s)\n", valueVar)
 			ctx.appendCode(indent, "if vlen > %s {\n", limitVar)
 			ctx.appendCode(indent, "\tvlen = %s\n", limitVar)
 			ctx.appendCode(indent, "}\n")
 			indexVar := ctx.getIndexVar()
 			ctx.appendCode(indent, "for %s := range vlen {\n", indexVar)
-			itemVarName := fmt.Sprintf("%s[%s]", varName, indexVar)
+			itemVarName := fmt.Sprintf("%s[%s]", valueVar, indexVar)
 			if err := ctx.sizeType(desc.ElemDesc, itemVarName, sizeVar, indent+1, false); err != nil {
 				return err
 			}
@@ -461,9 +470,17 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 
 // sizeList generates size calculation code for SSZ list (variable-size array) types.
 func (ctx *sizeContext) sizeList(desc *ssztypes.TypeDescriptor, varName, sizeVar string, indent int) error {
+	valueVar := varName
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		targetType := ""
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
+			targetType = "string"
+		}
+		valueVar = ctx.getValueVar(desc, varName, targetType)
+	}
+
 	// For byte slices, size is just the length
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
-		valueVar := ctx.getValueVar(desc, varName, "")
 		if desc.SszType == ssztypes.SszBitlistType || desc.SszType == ssztypes.SszProgressiveBitlistType {
 			// Bitlists always have at least 1 byte (sentinel byte for empty bitlists)
 			ctx.appendCode(indent, "if len(%s) == 0 {\n", valueVar)
@@ -482,9 +499,9 @@ func (ctx *sizeContext) sizeList(desc *ssztypes.TypeDescriptor, varName, sizeVar
 		if usedVar {
 			return
 		}
-		if len(varName) > 1 {
-			ctx.appendCode(indent, "t := %s%s\n", ctx.getPtrPrefix(desc), varName)
-			varName = "t"
+		if len(valueVar) > 1 {
+			ctx.appendCode(indent, "t := %s%s\n", ctx.getPtrPrefix(desc), valueVar)
+			valueVar = "t"
 		}
 		usedVar = true
 	}
@@ -492,7 +509,7 @@ func (ctx *sizeContext) sizeList(desc *ssztypes.TypeDescriptor, varName, sizeVar
 	// Handle lists with dynamic elements
 	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 		useVar()
-		ctx.appendCode(indent, "vlen := len(%s)\n", varName)
+		ctx.appendCode(indent, "vlen := len(%s)\n", valueVar)
 
 		// Add offset space
 		ctx.appendCode(indent, "%s += vlen * 4 // Offsets\n", sizeVar)
@@ -500,7 +517,7 @@ func (ctx *sizeContext) sizeList(desc *ssztypes.TypeDescriptor, varName, sizeVar
 		// Add size of each element
 		indexVar := ctx.getIndexVar()
 		ctx.appendCode(indent, "for %s := range vlen {\n", indexVar)
-		itemVarName := fmt.Sprintf("%s[%s]", varName, indexVar)
+		itemVarName := fmt.Sprintf("%s[%s]", valueVar, indexVar)
 		if err := ctx.sizeType(desc.ElemDesc, itemVarName, sizeVar, indent+1, false); err != nil {
 			return err
 		}
@@ -509,17 +526,17 @@ func (ctx *sizeContext) sizeList(desc *ssztypes.TypeDescriptor, varName, sizeVar
 		// Fixed size elements
 		if desc.ElemDesc.Size > 0 && (desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr == 0 || ctx.options.WithoutDynamicExpressions) {
 			if desc.ElemDesc.Size == 1 {
-				ctx.appendCode(indent, "%s += len(%s)\n", sizeVar, varName)
+				ctx.appendCode(indent, "%s += len(%s)\n", sizeVar, valueVar)
 			} else {
-				ctx.appendCode(indent, "%s += len(%s) * %d\n", sizeVar, varName, desc.ElemDesc.Size)
+				ctx.appendCode(indent, "%s += len(%s) * %d\n", sizeVar, valueVar, desc.ElemDesc.Size)
 			}
 		} else {
 			useVar()
-			ctx.appendCode(indent, "vlen := len(%s)\n", varName)
+			ctx.appendCode(indent, "vlen := len(%s)\n", valueVar)
 			ctx.appendCode(indent, "if vlen > 0 {\n")
 			innerSizeVar := ctx.getSizeVar()
 			ctx.appendCode(indent, "\t%s := 0\n", innerSizeVar)
-			itemVarName := fmt.Sprintf("%s[0]", varName)
+			itemVarName := fmt.Sprintf("%s[0]", valueVar)
 			if err := ctx.sizeType(desc.ElemDesc, itemVarName, innerSizeVar, indent+1, false); err != nil {
 				return err
 			}
