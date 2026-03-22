@@ -62,6 +62,35 @@ func TestAnnotate_PointerLookup(t *testing.T) {
 	}
 }
 
+func TestAnnotate_PointerType(t *testing.T) {
+	// Annotate with a pointer type parameter — should store the element type
+	type ptrTarget []uint32
+
+	Annotate[*ptrTarget](`ssz-max:"15"`)
+
+	tag, ok := LookupAnnotation(reflect.TypeFor[ptrTarget]())
+	if !ok {
+		t.Fatal("expected annotation to be found for pointer-registered type")
+	}
+
+	if tag != `ssz-max:"15"` {
+		t.Fatalf("expected tag %q, got %q", `ssz-max:"15"`, tag)
+	}
+}
+
+func TestLookupAnnotation_NonStringValue(t *testing.T) {
+	// Directly store a non-string value to cover the defensive type assertion
+	typeAnnotations.Store(reflect.TypeFor[int](), 42)
+
+	_, ok := LookupAnnotation(reflect.TypeFor[int]())
+	if ok {
+		t.Fatal("expected false for non-string value in registry")
+	}
+
+	// Clean up
+	typeAnnotations.Delete(reflect.TypeFor[int]())
+}
+
 func TestAnnotate_Overwrite(t *testing.T) {
 	type overwriteType []uint32
 

@@ -53,6 +53,30 @@ var testMatrix = []TestPayload{
 		Specs:   map[string]any{},
 		Hash:    "317f412cd2d042f367c4f2fb6447828ef9524396428eb2ed0837524bcc70433c",
 	},
+	{
+		Name:    "AnnotatedContainer",
+		Payload: AnnotatedContainer_Payload,
+		Specs:   map[string]any{},
+		Hash:    "683902f02e8035c2301b0eac540d4e311d24638abd660e4fd8f580db8e63a89d",
+	},
+	{
+		Name:    "AnnotatedOverrideContainer",
+		Payload: AnnotatedOverrideContainer_Payload,
+		Specs:   map[string]any{},
+		Hash:    "45aedf38b395a8e815bed8c5dadd89a0d853574e9d0d7b54ae9c2b62429ae4cd",
+	},
+	{
+		Name:    "AnnotatedSpecsContainer",
+		Payload: AnnotatedSpecsContainer_Payload,
+		Specs:   AnnotatedSpecs,
+		Hash:    "909350b0e5b120f7adc6261f9e953fba9fdb14e6b92867d5d5b00483228f2517",
+	},
+	{
+		Name:    "AnnotatedNestedContainer",
+		Payload: AnnotatedNestedContainer_Payload,
+		Specs:   map[string]any{},
+		Hash:    "984701b6584a109df60dc555cc22d000b724f85c3391c915ef362be9898b4b54",
+	},
 }
 
 func TestCodegenGeneration(t *testing.T) {

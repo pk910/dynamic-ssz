@@ -630,3 +630,15 @@ var AnnotatedNestedContainer_Payload = AnnotatedNestedContainer{
 		{V1: 300, L1: AnnotatedByteList{0x0b, 0x0c}},
 	},
 }
+
+// InitAnnotatedList tests Annotate calls inside init() functions.
+type InitAnnotatedList []uint16
+
+func init() {
+	sszutils.Annotate[InitAnnotatedList](`ssz-max:"8"`)
+}
+
+// InterpretedAnnotatedList tests Annotate with an interpreted (double-quoted) string literal.
+type InterpretedAnnotatedList []uint32
+
+var _ = sszutils.Annotate[InterpretedAnnotatedList]("ssz-max:\"12\"")

@@ -473,3 +473,64 @@ func TestRun_AnnotatedType(t *testing.T) {
 		t.Fatal("expected generated code to contain MarshalSSZDyn method")
 	}
 }
+
+func TestRun_AnnotatedTypeVerbose(t *testing.T) {
+	// Covers main.go:229-230 (verbose logging for annotated types)
+	tmpDir := t.TempDir()
+	outFile := filepath.Join(tmpDir, "gen_output.go")
+
+	config := Config{
+		PackagePath: "github.com/pk910/dynamic-ssz/codegen/tests",
+		TypeNames:   "AnnotatedList",
+		OutputFile:  outFile,
+		PackageName: "tests",
+		Verbose:     true,
+	}
+
+	err := run(config)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestFindAnnotateCall_InitFunction(t *testing.T) {
+	// Covers main.go:373-380 (init() function body scanning)
+	cfg := &packages.Config{
+		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName,
+	}
+
+	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
+	if err != nil {
+		t.Fatalf("failed to load package: %v", err)
+	}
+
+	tag := findAnnotateCall(pkgs[0], "InitAnnotatedList")
+	if tag != `ssz-max:"8"` {
+		t.Fatalf("expected tag from init(), got: %q", tag)
+	}
+}
+
+func TestFindAnnotateCall_InterpretedString(t *testing.T) {
+	// Covers main.go:432-437 (interpreted string literal path)
+	cfg := &packages.Config{
+		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName,
+	}
+
+	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
+	if err != nil {
+		t.Fatalf("failed to load package: %v", err)
+	}
+
+	tag := findAnnotateCall(pkgs[0], "InterpretedAnnotatedList")
+	if tag != `ssz-max:"12"` {
+		t.Fatalf("expected tag from interpreted string, got: %q", tag)
+	}
+}
+
+func TestParseAnnotateTag_InvalidTag(t *testing.T) {
+	// Covers main.go:443-444 (ParseTags error)
+	_, err := parseAnnotateTag(`ssz-size:"notanumber"`)
+	if err == nil {
+		t.Fatal("expected error for invalid tag")
+	}
+}
