@@ -83,6 +83,46 @@ func TestCodegenCoverageTypes1(t *testing.T) {
 	testCodegenPayloadByReflection(t, CoverageTypes1_Payload, SimpleTypesWithSpecs_Specs)
 }
 
+// TestCodegenAnnotatedTypes tests root-level annotated non-struct types
+// and containers that use annotated types as fields.
+func TestCodegenAnnotatedTypes(t *testing.T) {
+	// Root-level annotated lists
+	t.Run("AnnotatedList", func(t *testing.T) {
+		testCodegenPayloadByReflection(t, AnnotatedList{1, 2, 3, 4, 5}, nil)
+	})
+	t.Run("AnnotatedList2", func(t *testing.T) {
+		testCodegenPayloadByReflection(t, AnnotatedList2{100, 200, 300}, nil)
+	})
+	t.Run("AnnotatedByteList", func(t *testing.T) {
+		testCodegenPayloadByReflection(t, AnnotatedByteList{0xaa, 0xbb, 0xcc}, nil)
+	})
+
+	// Annotated type with dynamic specs as root
+	t.Run("AnnotatedWithSpecs", func(t *testing.T) {
+		testCodegenPayloadByReflection(t, AnnotatedWithSpecs{1, 2, 3}, AnnotatedSpecs)
+	})
+
+	// Container with annotated fields (no field tag overrides)
+	t.Run("AnnotatedContainer", func(t *testing.T) {
+		testCodegenPayloadByReflection(t, AnnotatedContainer_Payload, nil)
+	})
+
+	// Container where field tag overrides the type annotation
+	t.Run("AnnotatedOverrideContainer", func(t *testing.T) {
+		testCodegenPayloadByReflection(t, AnnotatedOverrideContainer_Payload, nil)
+	})
+
+	// Container with dynamic-spec annotated field
+	t.Run("AnnotatedSpecsContainer", func(t *testing.T) {
+		testCodegenPayloadByReflection(t, AnnotatedSpecsContainer_Payload, AnnotatedSpecs)
+	})
+
+	// Nested containers with annotated types at multiple levels
+	t.Run("AnnotatedNestedContainer", func(t *testing.T) {
+		testCodegenPayloadByReflection(t, AnnotatedNestedContainer_Payload, nil)
+	})
+}
+
 func TestCodegenCoverageTypes2(t *testing.T) {
 	payloads := []struct {
 		name    string

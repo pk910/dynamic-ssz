@@ -14,6 +14,7 @@ import (
 	"go/types"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/pk910/dynamic-ssz/codegen"
@@ -35,7 +36,7 @@ type Config struct {
 	WithExtendedTypes         bool
 }
 
-// typeEntry holds a type and its per-type codegen options parsed from comments.
+// typeEntry holds a type and its per-type codegen options.
 type typeEntry struct {
 	goType types.Type
 	opts   []codegen.CodeGeneratorOption
@@ -215,17 +216,18 @@ func run(config Config) error {
 			return fmt.Errorf("object %s is not a type in package %s", typeName, config.PackagePath)
 		}
 
-		// Parse SSZ annotations from type definition comments
+		// Parse SSZ annotations from sszutils.Annotate[T]() calls in source
 		var perTypeOpts []codegen.CodeGeneratorOption
-		if comment := findTypeComment(pkg, typeName); comment != "" {
-			commentOpts, parseErr := parseCommentAnnotations(comment)
+		if tag := findAnnotateCall(pkg, typeName); tag != "" {
+			annotateOpts, parseErr := parseAnnotateTag(tag)
 			if parseErr != nil {
-				return fmt.Errorf("failed to parse SSZ annotations from comment on type %s: %v", typeName, parseErr)
+				return fmt.Errorf("failed to parse Annotate tag for type %s: %v", typeName, parseErr)
 			}
-			perTypeOpts = commentOpts
 
-			if config.Verbose && len(commentOpts) > 0 {
-				log.Printf("Found SSZ annotations in comment for type %s", typeName)
+			perTypeOpts = annotateOpts
+
+			if config.Verbose && len(annotateOpts) > 0 {
+				log.Printf("Found Annotate call for type %s", typeName)
 			}
 		}
 
@@ -308,39 +310,33 @@ func run(config Config) error {
 	return nil
 }
 
-// findTypeComment finds the SSZ annotation comment for a type declaration in the AST.
-// It checks the line comment first, then the doc comment on the TypeSpec,
-// then the doc comment on the GenDecl (for standalone type declarations).
-func findTypeComment(pkg *packages.Package, typeName string) string {
+// findAnnotateCall scans package AST for sszutils.Annotate[typeName]("...")
+// calls and returns the tag string literal, or "" if not found.
+func findAnnotateCall(pkg *packages.Package, typeName string) string {
 	for _, file := range pkg.Syntax {
-		for _, decl := range file.Decls {
-			genDecl, ok := decl.(*ast.GenDecl)
-			if !ok || genDecl.Tok != token.TYPE {
-				continue
+		// Resolve which import alias (if any) maps to sszutils
+		sszutilsAlias := ""
+		for _, imp := range file.Imports {
+			path := strings.Trim(imp.Path.Value, `"`)
+			if path == "github.com/pk910/dynamic-ssz/sszutils" {
+				if imp.Name != nil {
+					sszutilsAlias = imp.Name.Name
+				} else {
+					sszutilsAlias = "sszutils"
+				}
+
+				break
 			}
+		}
 
-			for _, spec := range genDecl.Specs {
-				typeSpec, ok := spec.(*ast.TypeSpec)
-				if !ok || typeSpec.Name.Name != typeName {
-					continue
-				}
+		if sszutilsAlias == "" {
+			continue
+		}
 
-				// Prefer line comment (e.g., type Blobs []*Blob //ssz-max:"4096")
-				if typeSpec.Comment != nil {
-					return typeSpec.Comment.Text()
-				}
-
-				// Fall back to doc comment on the type spec
-				if typeSpec.Doc != nil {
-					return typeSpec.Doc.Text()
-				}
-
-				// Fall back to doc comment on the GenDecl (only for single-spec declarations)
-				if genDecl.Doc != nil && len(genDecl.Specs) == 1 {
-					return genDecl.Doc.Text()
-				}
-
-				return ""
+		for _, decl := range file.Decls {
+			tag := findAnnotateCallInDecl(decl, sszutilsAlias, typeName)
+			if tag != "" {
+				return tag
 			}
 		}
 	}
@@ -348,18 +344,101 @@ func findTypeComment(pkg *packages.Package, typeName string) string {
 	return ""
 }
 
-// parseCommentAnnotations parses SSZ annotations from a comment string.
-// The comment text is treated as a struct tag string, allowing annotations like:
-//
-//	type Blobs []*Blob //ssz-max:"4096"
-//	type Blobs []*Blob //ssz-max:"4096" dynssz-max:"MAX_BLOB_COMMITMENTS_PER_BLOCK"
-func parseCommentAnnotations(comment string) ([]codegen.CodeGeneratorOption, error) {
-	// Replace newlines with spaces so multi-line doc comments parse as a single struct tag
-	tag := strings.ReplaceAll(strings.TrimSpace(comment), "\n", " ")
-	if tag == "" {
-		return nil, nil
+// findAnnotateCallInDecl checks a single declaration for an Annotate call.
+func findAnnotateCallInDecl(decl ast.Decl, alias, typeName string) string {
+	switch d := decl.(type) {
+	case *ast.GenDecl:
+		if d.Tok != token.VAR {
+			return ""
+		}
+
+		for _, spec := range d.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+
+			for _, val := range vs.Values {
+				if tag := matchAnnotateCall(val, alias, typeName); tag != "" {
+					return tag
+				}
+			}
+		}
+	case *ast.FuncDecl:
+		// Check init() functions
+		if d.Name.Name != "init" || d.Body == nil {
+			return ""
+		}
+
+		for _, stmt := range d.Body.List {
+			exprStmt, ok := stmt.(*ast.ExprStmt)
+			if !ok {
+				continue
+			}
+
+			if tag := matchAnnotateCall(exprStmt.X, alias, typeName); tag != "" {
+				return tag
+			}
+		}
 	}
 
+	return ""
+}
+
+// matchAnnotateCall checks if an expression is sszutils.Annotate[typeName]("...tag...")
+// and returns the tag string, or "" if it doesn't match.
+func matchAnnotateCall(expr ast.Expr, alias, typeName string) string {
+	call, ok := expr.(*ast.CallExpr)
+	if !ok || len(call.Args) != 1 {
+		return ""
+	}
+
+	// The function expression should be an IndexExpr: sszutils.Annotate[TypeName]
+	indexExpr, ok := call.Fun.(*ast.IndexExpr)
+	if !ok {
+		return ""
+	}
+
+	// Check that the selector is <alias>.Annotate
+	sel, ok := indexExpr.X.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Annotate" {
+		return ""
+	}
+
+	ident, ok := sel.X.(*ast.Ident)
+	if !ok || ident.Name != alias {
+		return ""
+	}
+
+	// Check that the type argument matches
+	typeIdent, ok := indexExpr.Index.(*ast.Ident)
+	if !ok || typeIdent.Name != typeName {
+		return ""
+	}
+
+	// Extract the string literal argument
+	lit, ok := call.Args[0].(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return ""
+	}
+
+	// Unquote the string literal
+	if strings.HasPrefix(lit.Value, "`") {
+		// Raw string literal: just strip the backticks
+		return strings.TrimPrefix(strings.TrimSuffix(lit.Value, "`"), "`")
+	}
+
+	// Interpreted string literal: use strconv.Unquote
+	tag, unquoteErr := strconv.Unquote(lit.Value)
+	if unquoteErr != nil {
+		return ""
+	}
+
+	return tag
+}
+
+// parseAnnotateTag parses an SSZ tag string into codegen options.
+func parseAnnotateTag(tag string) ([]codegen.CodeGeneratorOption, error) {
 	typeHints, sizeHints, maxSizeHints, err := codegen.ParseTags(tag)
 	if err != nil {
 		return nil, err
@@ -369,9 +448,11 @@ func parseCommentAnnotations(comment string) ([]codegen.CodeGeneratorOption, err
 	if len(typeHints) > 0 {
 		opts = append(opts, codegen.WithTypeHints(typeHints))
 	}
+
 	if len(sizeHints) > 0 {
 		opts = append(opts, codegen.WithSizeHints(sizeHints))
 	}
+
 	if len(maxSizeHints) > 0 {
 		opts = append(opts, codegen.WithMaxSizeHints(maxSizeHints))
 	}

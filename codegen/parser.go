@@ -9,7 +9,6 @@ import (
 	"go/types"
 	"reflect"
 	"strconv"
-	"strings"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
 )
@@ -1141,193 +1140,10 @@ func (p *Parser) parseFieldTags(tag string) (typeHints []ssztypes.SszTypeHint, s
 }
 
 // ParseTags parses SSZ annotations from a string in struct tag format.
-// This is useful for extracting SSZ annotations from sources other than
-// struct fields, such as type definition comments.
-func ParseTags(tag string) (typeHints []ssztypes.SszTypeHint, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint, err error) {
-	if tag == "" {
-		return nil, nil, nil, nil
-	}
-
-	structTag := reflect.StructTag(tag)
-
-	// Parse type hints (matching getSszTypeTag logic)
-	if sszType, ok := structTag.Lookup("ssz-type"); ok {
-		for _, typeStr := range strings.Split(sszType, ",") {
-			typeStr = strings.TrimSpace(typeStr)
-			hint := ssztypes.SszTypeHint{}
-
-			hint.Type, err = ssztypes.ParseSszType(typeStr)
-			if err != nil {
-				return nil, nil, nil, fmt.Errorf("error parsing ssz-type tag: %v", err)
-			}
-
-			typeHints = append(typeHints, hint)
-		}
-	}
-
-	// Parse size hints (matching getSszSizeTag logic)
-	var sszSizeParts, sszBitsizeParts []string
-
-	sszSizeLen := 0
-
-	if fieldSszSizeStr, fieldHasSszSize := structTag.Lookup("ssz-size"); fieldHasSszSize {
-		sszSizeParts = strings.Split(fieldSszSizeStr, ",")
-		sszSizeLen = len(sszSizeParts)
-	}
-
-	if fieldSszBitsizeStr, fieldHasSszBitsize := structTag.Lookup("ssz-bitsize"); fieldHasSszBitsize {
-		sszBitsizeParts = strings.Split(fieldSszBitsizeStr, ",")
-		if len(sszBitsizeParts) > sszSizeLen {
-			sszSizeLen = len(sszBitsizeParts)
-		}
-	}
-
-	if sszSizeLen > 0 {
-		for i := 0; i < sszSizeLen; i++ {
-			sszSizeStr := getTagPart(sszSizeParts, i)
-			sszBitsizeStr := getTagPart(sszBitsizeParts, i)
-
-			hint := ssztypes.SszSizeHint{}
-
-			switch {
-			case sszBitsizeStr != "?":
-				sizeInt, err := strconv.ParseUint(strings.TrimSpace(sszBitsizeStr), 10, 32)
-				if err != nil {
-					return nil, nil, nil, fmt.Errorf("error parsing ssz-size tag: %v", err)
-				}
-				hint.Size = uint32(sizeInt)
-				hint.Bits = true
-			case sszSizeStr != "?":
-				sizeInt, err := strconv.ParseUint(strings.TrimSpace(sszSizeStr), 10, 32)
-				if err != nil {
-					return nil, nil, nil, fmt.Errorf("error parsing ssz-size tag: %v", err)
-				}
-				hint.Size = uint32(sizeInt)
-			default:
-				hint.Dynamic = true
-			}
-
-			sizeHints = append(sizeHints, hint)
-		}
-	}
-
-	// Parse dynamic size hints
-	sszSizeParts, sszBitsizeParts = nil, nil
-	sszSizeLen = 0
-
-	if fieldDynSszSizeStr, fieldHasDynSszSize := structTag.Lookup("dynssz-size"); fieldHasDynSszSize {
-		sszSizeParts = strings.Split(fieldDynSszSizeStr, ",")
-		sszSizeLen = len(sszSizeParts)
-	}
-
-	if fieldDynSszBitsizeStr, fieldHasDynSszBitsize := structTag.Lookup("dynssz-bitsize"); fieldHasDynSszBitsize {
-		sszBitsizeParts = strings.Split(fieldDynSszBitsizeStr, ",")
-		if len(sszBitsizeParts) > sszSizeLen {
-			sszSizeLen = len(sszBitsizeParts)
-		}
-	}
-
-	if sszSizeLen > 0 {
-		for i := 0; i < sszSizeLen; i++ {
-			sszSizeStr := getTagPart(sszSizeParts, i)
-			sszBitsizeStr := getTagPart(sszBitsizeParts, i)
-
-			sszSize := ssztypes.SszSizeHint{}
-			isExpr := false
-			sizeExpr := "?"
-
-			if sszBitsizeStr != "?" {
-				sizeExpr = sszBitsizeStr
-				sszSize.Bits = true
-			} else if sszSizeStr != "?" {
-				sizeExpr = sszSizeStr
-			}
-
-			if sizeExpr == "?" {
-				sszSize.Dynamic = true
-			} else if sszSizeInt, err := strconv.ParseUint(sizeExpr, 10, 32); err == nil {
-				sszSize.Size = uint32(sszSizeInt)
-			} else {
-				// For go/types parser, we can't resolve spec values at compile time
-				// So we treat all non-numeric values as expressions
-				isExpr = true
-				sszSize.Dynamic = true
-				sszSize.Custom = true
-				if i < len(sizeHints) {
-					sizeHints[i].Expr = sizeExpr
-					continue
-				}
-			}
-
-			if i >= len(sizeHints) {
-				sizeHints = append(sizeHints, sszSize)
-			} else if sizeHints[i].Size != sszSize.Size {
-				// update if resolved size differs from default
-				sizeHints[i] = sszSize
-			}
-
-			if isExpr {
-				sizeHints[i].Expr = sizeExpr
-			}
-		}
-	}
-
-	// Parse max size hints (matching getSszMaxSizeTag logic)
-	if sszMax, ok := structTag.Lookup("ssz-max"); ok {
-		for _, maxStr := range strings.Split(sszMax, ",") {
-			maxStr = strings.TrimSpace(maxStr)
-			hint := ssztypes.SszMaxSizeHint{}
-
-			if maxStr == "?" {
-				hint.NoValue = true
-			} else {
-				maxInt, err := strconv.ParseUint(maxStr, 10, 64)
-				if err != nil {
-					return nil, nil, nil, fmt.Errorf("error parsing ssz-max tag: %v", err)
-				}
-				hint.Size = maxInt
-			}
-
-			maxSizeHints = append(maxSizeHints, hint)
-		}
-	}
-
-	// Parse dynamic max size hints
-	fieldDynSszMaxStr, fieldHasDynSszMax := structTag.Lookup("dynssz-max")
-	if fieldHasDynSszMax {
-		for i, sszMaxSizeStr := range strings.Split(fieldDynSszMaxStr, ",") {
-			sszMaxSize := ssztypes.SszMaxSizeHint{}
-			isExpr := false
-
-			if sszMaxSizeStr == "?" {
-				sszMaxSize.NoValue = true
-			} else if sszSizeInt, err := strconv.ParseUint(sszMaxSizeStr, 10, 64); err == nil {
-				sszMaxSize.Size = sszSizeInt
-			} else {
-				// For go/types parser, we can't resolve spec values at compile time
-				// So we treat all non-numeric values as expressions
-				isExpr = true
-				sszMaxSize.Custom = true
-				if i < len(maxSizeHints) {
-					maxSizeHints[i].Expr = sszMaxSizeStr
-				}
-				continue
-			}
-
-			if i >= len(maxSizeHints) {
-				maxSizeHints = append(maxSizeHints, sszMaxSize)
-			} else if maxSizeHints[i].Size != sszMaxSize.Size {
-				// update if resolved max size differs from default
-				maxSizeHints[i] = sszMaxSize
-			}
-
-			if isExpr {
-				maxSizeHints[i].Expr = sszMaxSizeStr
-			}
-		}
-	}
-
-	return typeHints, sizeHints, maxSizeHints, nil
+// This is a convenience re-export of ssztypes.ParseTags for backward
+// compatibility with code that imports codegen.ParseTags.
+func ParseTags(tag string) ([]ssztypes.SszTypeHint, []ssztypes.SszSizeHint, []ssztypes.SszMaxSizeHint, error) {
+	return ssztypes.ParseTags(tag)
 }
 
 func (p *Parser) extractSszIndex(tag string) string {
@@ -1481,11 +1297,4 @@ func (p *Parser) typeMatches(typ types.Type, expectedTypeStr string) bool {
 		return true
 	}
 	return false
-}
-
-func getTagPart(parts []string, index int) string {
-	if index < len(parts) {
-		return parts[index]
-	}
-	return "?"
 }

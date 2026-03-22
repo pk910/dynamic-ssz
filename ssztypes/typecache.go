@@ -131,6 +131,18 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		t = t.Elem()
 	}
 
+	// Check annotation registry for type-level metadata when no external hints provided
+	if len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) == 0 {
+		if tag, ok := sszutils.LookupAnnotation(t); ok {
+			var parseErr error
+
+			typeHints, sizeHints, maxSizeHints, parseErr = ParseTags(tag)
+			if parseErr != nil {
+				return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "failed to parse annotation for type %v: %v", t, parseErr)
+			}
+		}
+	}
+
 	desc.Kind = t.Kind()
 
 	// check dynamic size and max size
