@@ -516,7 +516,7 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 		targetType := ""
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
-			targetType = "string"
+			targetType = typeNameString
 		}
 		valueVar = ctx.getValueVar(desc, varName, targetType)
 	}
@@ -705,7 +705,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 		targetType := ""
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
-			targetType = "string"
+			targetType = typeNameString
 		}
 		valueVar = ctx.getValueVar(desc, varName, targetType)
 	}

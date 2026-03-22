@@ -17,6 +17,7 @@ const (
 	typeNameError     = "error"
 	typeNameInt       = "int"
 	typeNameByteSlice = "[]byte"
+	typeNameString    = "string"
 )
 
 var (
@@ -1136,6 +1137,13 @@ func (p *Parser) buildBigIntDescriptor(desc *ssztypes.TypeDescriptor, _ types.Ty
 }
 
 func (p *Parser) parseFieldTags(tag string) (typeHints []ssztypes.SszTypeHint, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint, err error) {
+	return ssztypes.ParseTags(tag)
+}
+
+// ParseTags parses SSZ annotations from a string in struct tag format.
+// This is a convenience re-export of ssztypes.ParseTags for backward
+// compatibility with code that imports codegen.ParseTags.
+func ParseTags(tag string) ([]ssztypes.SszTypeHint, []ssztypes.SszSizeHint, []ssztypes.SszMaxSizeHint, error) {
 	return ssztypes.ParseTags(tag)
 }
 

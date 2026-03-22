@@ -361,7 +361,7 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 		targetType := ""
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
-			targetType = "string"
+			targetType = typeNameString
 		}
 		valueVar = ctx.getValueVar(desc, varName, targetType)
 	}
@@ -474,7 +474,7 @@ func (ctx *sizeContext) sizeList(desc *ssztypes.TypeDescriptor, varName, sizeVar
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 		targetType := ""
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
-			targetType = "string"
+			targetType = typeNameString
 		}
 		valueVar = ctx.getValueVar(desc, varName, targetType)
 	}

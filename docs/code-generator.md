@@ -381,44 +381,42 @@ The generator supports all Dynamic SSZ types and annotations:
 - Byte arrays: `[]byte`, `[N]byte`
 - Strings: `string`
 
-### Non-Struct Types with Comment Annotations
+### Non-Struct Types with `sszutils.Annotate[T]()`
 
-The code generator supports generating SSZ methods for non-struct types (named slices, arrays, etc.) by reading SSZ annotations from comments on the type definition. This solves the problem that Go does not allow struct tags on type definitions.
+The code generator supports generating SSZ methods for non-struct types (named slices, arrays, etc.) using `sszutils.Annotate[T]()` to register SSZ annotations. This solves the problem that Go does not allow struct tags on type definitions.
 
-**Line comment** (recommended):
 ```go
-type Blobs []*Blob          //ssz-max:"4096"
-type BlobKZGs [][48]byte    //ssz-max:"4096" dynssz-max:"MAX_BLOB_COMMITMENTS_PER_BLOCK"
-```
+import "github.com/pk910/dynamic-ssz/sszutils"
 
-**Doc comment**:
-```go
-// ssz-max:"4096" dynssz-max:"MAX_BLOB_COMMITMENTS_PER_BLOCK"
 type Blobs []*Blob
+var _ = sszutils.Annotate[Blobs](`ssz-max:"4096"`)
+
+type BlobKZGs [][48]byte
+var _ = sszutils.Annotate[BlobKZGs](`ssz-max:"4096" dynssz-max:"MAX_BLOB_COMMITMENTS_PER_BLOCK"`)
 ```
 
-The comment uses the same `key:"value"` syntax as struct tags. All SSZ annotations are supported (`ssz-size`, `ssz-max`, `ssz-type`, `dynssz-size`, `dynssz-max`, etc.).
+The tag string uses the same `key:"value"` syntax as struct tags. All SSZ annotations are supported (`ssz-size`, `ssz-max`, `ssz-type`, `dynssz-size`, `dynssz-max`, etc.).
 
 Generate code for these types the same way as struct types:
 ```bash
 dynssz-gen -package . -types Blobs -output blobs_ssz.go
 ```
 
-The generated code uses the annotations from the comment:
+The generated code uses the registered annotations:
 ```go
-func (t Blobs) MarshalSSZTo(buf []byte) (dst []byte, err error) {
+func (t *Blobs) MarshalSSZTo(buf []byte) (dst []byte, err error) {
     dst = buf
-    vlen := len(t)
+    vlen := len(*t)
     if vlen > 4096 {
-        return nil, sszutils.NewSszErrorf(sszutils.ErrListTooBig, "list length %d exceeds maximum %d", vlen, 4096)
+        return nil, sszutils.ErrListLengthFn(vlen, 4096)
     }
     // ...
 }
 ```
 
-**Note:** Comment annotations are only available in the code generator. For runtime reflection, use [Type Wrapper](type-wrapper.md) or pass hints via the programmatic API (`WithSizeHints`, `WithMaxSizeHints`, `WithTypeHints`).
+Unlike struct field tags, `Annotate[T]()` works with both the code generator and the runtime reflection path, ensuring consistent behavior across both paths.
 
-See [SSZ Annotations: Comment Annotations](ssz-annotations.md#comment-annotations-non-struct-types) for full syntax details.
+See [SSZ Annotations](ssz-annotations.md#type-annotations-with-sszutilsannotatet-non-struct-types) for full syntax details.
 
 ### Advanced Types
 - Large integers: byte arrays or uint64 arrays with `ssz-type:"uint256"`

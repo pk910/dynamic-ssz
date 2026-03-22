@@ -526,7 +526,7 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 		targetType := ""
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
-			targetType = "string"
+			targetType = typeNameString
 		}
 		valueVar = ctx.getValueVar(desc, varName, targetType)
 	}
@@ -714,7 +714,7 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 		targetType := ""
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
-			targetType = "string"
+			targetType = typeNameString
 		}
 		valueVar = ctx.getValueVar(desc, varName, targetType)
 	}
@@ -819,7 +819,6 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 	return nil
 }
 
-//nolint:dupl // intentionally similar to marshalContext.marshalBitlist
 func (ctx *encoderContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	maxExpression := desc.MaxExpression
 	if ctx.options.WithoutDynamicExpressions {
