@@ -90,6 +90,7 @@ func generateEncoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 		ctx.usedDynSpecs = true
 	}
 
+	appendCode(codeBuilder, 0, "// MarshalSSZEncoder marshals the %s to the given SSZ encoder using dynamic specifications.\n", typeName)
 	appendCode(codeBuilder, 0, "func (t %s) MarshalSSZEncoder(ds sszutils.DynamicSpecs, enc sszutils.Encoder) (err error) {\n", typeName)
 
 	if ctx.usedContext {

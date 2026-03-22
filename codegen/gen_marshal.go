@@ -91,13 +91,15 @@ func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 
 	if genLegacyFn {
 		dynsszAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
+		appendCode(codeBuilder, 0, "// MarshalSSZ marshals the %s to SSZ-encoded bytes.\n", typeName)
 		appendCode(codeBuilder, 0, "func (t %s) MarshalSSZ() ([]byte, error) {\n", typeName)
 		appendCode(codeBuilder, 1, "return %s.GetGlobalDynSsz().MarshalSSZ(t)\n", dynsszAlias)
-		appendCode(codeBuilder, 0, "}\n")
+		appendCode(codeBuilder, 0, "}\n\n")
 	}
 
 	if genStaticFn {
 		if !ctx.usedDynSpecs {
+			appendCode(codeBuilder, 0, "// MarshalSSZTo marshals the %s to SSZ-encoded bytes, appending to the provided buffer.\n", typeName)
 			appendCode(codeBuilder, 0, "func (t %s) MarshalSSZTo(buf []byte) (dst []byte, err error) {\n", typeName)
 			appendCode(codeBuilder, 1, "dst = buf\n")
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
@@ -109,6 +111,7 @@ func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 			appendCode(codeBuilder, 0, "}\n\n")
 		} else {
 			dynsszAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
+			appendCode(codeBuilder, 0, "// MarshalSSZTo marshals the %s to SSZ-encoded bytes, appending to the provided buffer.\n", typeName)
 			appendCode(codeBuilder, 0, "func (t %s) MarshalSSZTo(buf []byte) (dst []byte, err error) {\n", typeName)
 			appendCode(codeBuilder, 1, "return t.MarshalSSZDyn(%s.GetGlobalDynSsz(), buf)\n", dynsszAlias)
 			appendCode(codeBuilder, 0, "}\n\n")
@@ -117,6 +120,7 @@ func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 
 	if genDynamicFn {
 		if ctx.usedDynSpecs {
+			appendCode(codeBuilder, 0, "// MarshalSSZDyn marshals the %s to SSZ-encoded bytes using dynamic specifications.\n", typeName)
 			appendCode(codeBuilder, 0, "func (t %s) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {\n", typeName)
 			appendCode(codeBuilder, 1, "dst = buf\n")
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
@@ -127,6 +131,7 @@ func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 			appendCode(codeBuilder, 1, "return dst, nil\n")
 			appendCode(codeBuilder, 0, "}\n\n")
 		} else {
+			appendCode(codeBuilder, 0, "// MarshalSSZDyn marshals the %s to SSZ-encoded bytes using dynamic specifications.\n", typeName)
 			appendCode(codeBuilder, 0, "func (t %s) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {\n", typeName)
 			appendCode(codeBuilder, 1, "return t.MarshalSSZTo(buf)\n")
 			appendCode(codeBuilder, 0, "}\n\n")
