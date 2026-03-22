@@ -768,6 +768,21 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, struc *
 			return fmt.Errorf("failed to build field %v descriptor: %v", field.Name(), err)
 		}
 
+		// When field tags provide explicit size/max hints, don't delegate to the
+		// type's generated methods — they have the type's own annotation baked in.
+		// Generate inline code instead so the field-level hints are respected.
+		if (len(sizeHints) > 0 || len(maxSizeHints) > 0) && typeDesc.SszType != ssztypes.SszCustomType {
+			typeDesc.SszCompatFlags &^= ssztypes.SszCompatFlagDynamicMarshaler |
+				ssztypes.SszCompatFlagDynamicUnmarshaler |
+				ssztypes.SszCompatFlagDynamicSizer |
+				ssztypes.SszCompatFlagDynamicHashRoot |
+				ssztypes.SszCompatFlagDynamicEncoder |
+				ssztypes.SszCompatFlagDynamicDecoder |
+				ssztypes.SszCompatFlagFastSSZMarshaler |
+				ssztypes.SszCompatFlagFastSSZHasher |
+				ssztypes.SszCompatFlagHashTreeRootWith
+		}
+
 		fieldDesc := ssztypes.FieldDescriptor{
 			Name: field.Name(),
 			Type: typeDesc,

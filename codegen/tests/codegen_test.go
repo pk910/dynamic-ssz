@@ -63,7 +63,7 @@ var testMatrix = []TestPayload{
 		Name:    "AnnotatedOverrideContainer",
 		Payload: AnnotatedOverrideContainer_Payload,
 		Specs:   map[string]any{},
-		Hash:    "45aedf38b395a8e815bed8c5dadd89a0d853574e9d0d7b54ae9c2b62429ae4cd",
+		Hash:    "54c8f24f17a7e2d9e94b9e85fa70732fa91682e2c4b674343ae1df7bd0d17c56",
 	},
 	{
 		Name:    "AnnotatedSpecsContainer",
