@@ -681,8 +681,9 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 		return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "container ssz type can only be represented by struct types, got %v", desc.Kind)
 	}
 
+	fieldCount := t.NumField()
 	desc.ContainerDesc = &ContainerDescriptor{
-		Fields:    make([]FieldDescriptor, t.NumField()),
+		Fields:    make([]FieldDescriptor, fieldCount),
 		DynFields: make([]DynFieldDescriptor, 0),
 	}
 
@@ -691,10 +692,10 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 
 	// Check for progressive container detection
 	hasAnyIndexTag := false
-	fieldIndices := make(map[uint16]bool)
-	sszIndexes := make([]*uint16, t.NumField())
+	var fieldIndices map[uint16]struct{}
+	var sszIndexes []*uint16
 
-	for i := 0; i < t.NumField(); i++ {
+	for i := 0; i < fieldCount; i++ {
 		field := t.Field(i)
 		fieldDesc := FieldDescriptor{
 			Name: field.Name,
@@ -707,13 +708,17 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, t reflect.Ty
 		}
 
 		if sszIndex != nil {
+			if sszIndexes == nil {
+				sszIndexes = make([]*uint16, fieldCount)
+				fieldIndices = make(map[uint16]struct{}, fieldCount)
+			}
 			sszIndexes[i] = sszIndex
 			fieldDesc.SszIndex = *sszIndex
 			hasAnyIndexTag = true
-			if fieldIndices[*sszIndex] {
+			if _, exists := fieldIndices[*sszIndex]; exists {
 				return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "duplicate ssz-index %d found in field %s", *sszIndex, field.Name)
 			}
-			fieldIndices[*sszIndex] = true
+			fieldIndices[*sszIndex] = struct{}{}
 		}
 
 		// Get size hints from tags
