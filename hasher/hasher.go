@@ -287,9 +287,7 @@ func (h *Hasher) PutRootVector(b [][]byte, maxCapacity ...uint64) error {
 // maxCapacity is provided, the result includes a length mixin.
 func (h *Hasher) PutUint64Array(b []uint64, maxCapacity ...uint64) {
 	indx := len(h.buf)
-	for _, i := range b {
-		h.AppendUint64(i)
-	}
+	sszutils.HashUint64Slice(h, b)
 
 	h.FillUpTo32()
 
