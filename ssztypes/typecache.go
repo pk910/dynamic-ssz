@@ -291,7 +291,7 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 		case reflect.UnsafePointer:
 			return nil, sszutils.NewSszError(sszutils.ErrUnsupportedType, "unsafe pointers are not supported in SSZ")
 		default:
-			return nil, sszutils.NewSszErrorf(sszutils.ErrUnsupportedType, "unsupported type kind: %v", t.Kind())
+			break
 		}
 
 		// special case for bitlists
@@ -304,6 +304,8 @@ func (tc *TypeCache) buildTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint
 
 	// Check type compatibility and compute size
 	switch sszType {
+	case SszUnspecifiedType:
+		return nil, sszutils.NewSszErrorf(sszutils.ErrUnsupportedType, "unsupported type kind: %v", t.Kind())
 
 	// basic types
 	case SszBoolType:
