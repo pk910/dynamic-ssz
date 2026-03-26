@@ -7,6 +7,7 @@ package reflection
 import (
 	"math"
 	"math/big"
+	"math/bits"
 	"reflect"
 	"strings"
 	"time"
@@ -580,6 +581,11 @@ func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescript
 //   - Byte slices use optimized bulk append
 //   - Returns ErrListTooBig if slice exceeds maximum size from hints
 func (ctx *ReflectionCtx) marshalList(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, idt int) error {
+	sliceLen := sourceValue.Len()
+	if sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 && uint64(sliceLen) > sourceType.Limit {
+		return sszutils.ErrListLengthFn(sliceLen, sourceType.Limit)
+	}
+
 	switch {
 	case sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0:
 		stringBytes := []byte(sourceValue.String())
@@ -587,7 +593,6 @@ func (ctx *ReflectionCtx) marshalList(sourceType *ssztypes.TypeDescriptor, sourc
 	case sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0:
 		encoder.EncodeBytes(sourceValue.Bytes())
 	default:
-		sliceLen := sourceValue.Len()
 		fieldType := sourceType.ElemDesc
 		isPointer := fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0
 
@@ -627,6 +632,10 @@ func (ctx *ReflectionCtx) marshalList(sourceType *ssztypes.TypeDescriptor, sourc
 func (ctx *ReflectionCtx) marshalDynamicList(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, idt int) error {
 	fieldType := sourceType.ElemDesc
 	sliceLen := sourceValue.Len()
+
+	if sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 && uint64(sliceLen) > sourceType.Limit {
+		return sszutils.ErrListLengthFn(sliceLen, sourceType.Limit)
+	}
 
 	canSeek := encoder.Seekable()
 	startOffset := encoder.GetPosition()
@@ -686,7 +695,7 @@ func (ctx *ReflectionCtx) marshalDynamicList(sourceType *ssztypes.TypeDescriptor
 //
 // Returns:
 //   - error: An error if encoding fails or bitlist exceeds size constraints
-func (ctx *ReflectionCtx) marshalBitlist(_ *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, _ int) error {
+func (ctx *ReflectionCtx) marshalBitlist(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, _ int) error {
 	bytes := sourceValue.Bytes()
 
 	// check if last byte contains termination bit
@@ -696,6 +705,14 @@ func (ctx *ReflectionCtx) marshalBitlist(_ *ssztypes.TypeDescriptor, sourceValue
 		bytes = []byte{0x01}
 	} else if bytes[len(bytes)-1] == 0x00 {
 		return sszutils.ErrBitlistNotTerminatedFn()
+	}
+
+	if sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
+		msb := uint8(bits.Len8(bytes[len(bytes)-1])) - 1
+		bitCount := uint64(8*(len(bytes)-1)) + uint64(msb)
+		if bitCount > sourceType.Limit {
+			return sszutils.ErrBitlistLengthFn(bitCount, sourceType.Limit)
+		}
 	}
 
 	encoder.EncodeBytes(bytes)

@@ -54,6 +54,14 @@ type encoderContext struct {
 // Returns:
 //   - error: An error if code generation fails
 func generateEncoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, viewName string, options *CodeGeneratorOptions) error {
+	// Streaming code always uses dynamic expressions since the encoder interface
+	// requires DynamicSpecs. Override WithoutDynamicExpressions for this generator.
+	if options.WithoutDynamicExpressions {
+		optsCopy := *options
+		optsCopy.WithoutDynamicExpressions = false
+		options = &optsCopy
+	}
+
 	codeBuf := strings.Builder{}
 	ctx := &encoderContext{
 		appendCode: func(indent int, code string, args ...any) {
@@ -869,13 +877,6 @@ func (ctx *encoderContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName
 
 	ctx.appendCode(indent, "vlen := len(%s)\n", varName)
 
-	if hasMax {
-		ctx.appendCode(indent, "if vlen > %s {\n", maxVar)
-		errCode := fmt.Sprintf("sszutils.ErrBitlistLengthFn(vlen, %s)", maxVar)
-		ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
-		ctx.appendCode(indent, "}\n")
-	}
-
 	ctx.appendCode(indent, "bval := []byte(%s[:])\n", varName)
 	ctx.appendCode(indent, "if vlen == 0 {\n")
 	ctx.appendCode(indent, "\tbval = []byte{0x01}\n")
@@ -883,6 +884,15 @@ func (ctx *encoderContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName
 	errCode := errCodeBitlistNotTerminated
 	ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 	ctx.appendCode(indent, "}\n")
+
+	if hasMax {
+		bitsPkgName := ctx.typePrinter.AddImport("math/bits", "bits")
+		ctx.appendCode(indent, "if vlen > 0 {\n")
+		ctx.appendCode(indent+1, "bitCount := 8*(vlen-1) + %s.Len8(bval[vlen-1]) - 1\n", bitsPkgName)
+		errCode := fmt.Sprintf("sszutils.ErrBitlistLengthFn(bitCount, %s)", maxVar)
+		ctx.appendCode(indent+1, "if bitCount > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
+		ctx.appendCode(indent, "}\n")
+	}
 
 	ctx.appendCode(indent, "enc.EncodeBytes(bval)\n")
 

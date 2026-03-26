@@ -867,8 +867,9 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 		}
 	}
 
+	fieldCount := schemaType.NumField()
 	desc.ContainerDesc = &ContainerDescriptor{
-		Fields:    make([]FieldDescriptor, schemaType.NumField()),
+		Fields:    make([]FieldDescriptor, fieldCount),
 		DynFields: make([]DynFieldDescriptor, 0),
 	}
 
@@ -877,11 +878,11 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 
 	// Check for progressive container detection
 	hasAnyIndexTag := false
-	fieldIndices := make(map[uint16]bool)
-	sszIndexes := make([]*uint16, schemaType.NumField())
+	var fieldIndices map[uint16]struct{}
+	var sszIndexes []*uint16
 
 	// Iterate over schema fields - they define the SSZ layout
-	for i := 0; i < schemaType.NumField(); i++ {
+	for i := 0; i < fieldCount; i++ {
 		schemaField := schemaType.Field(i)
 		fieldDesc := FieldDescriptor{
 			Name: schemaField.Name,
@@ -913,13 +914,17 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 		}
 
 		if sszIndex != nil {
+			if sszIndexes == nil {
+				sszIndexes = make([]*uint16, fieldCount)
+				fieldIndices = make(map[uint16]struct{}, fieldCount)
+			}
 			sszIndexes[i] = sszIndex
 			fieldDesc.SszIndex = *sszIndex
 			hasAnyIndexTag = true
-			if fieldIndices[*sszIndex] {
+			if _, exists := fieldIndices[*sszIndex]; exists {
 				return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "duplicate ssz-index %d found in field %s", *sszIndex, schemaField.Name)
 			}
-			fieldIndices[*sszIndex] = true
+			fieldIndices[*sszIndex] = struct{}{}
 		}
 
 		// Get size hints from schema field tags (schema defines SSZ constraints)

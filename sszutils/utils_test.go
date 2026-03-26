@@ -409,6 +409,19 @@ func TestExpandSlice_SameSize(t *testing.T) {
 	}
 }
 
+func TestExpandSlice_GrowWithinCapacityZeroesTail(t *testing.T) {
+	src := []int{1, 2, 9, 8, 7}[:2]
+	result := ExpandSlice(src, 5)
+	if len(result) != 5 {
+		t.Fatalf("expected length 5, got %d", len(result))
+	}
+	for i, want := range []int{1, 2, 0, 0, 0} {
+		if result[i] != want {
+			t.Fatalf("index %d: expected %d, got %d", i, want, result[i])
+		}
+	}
+}
+
 // ============================================================================
 // ZeroBytes Tests
 // ============================================================================

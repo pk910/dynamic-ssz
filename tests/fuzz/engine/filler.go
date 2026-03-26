@@ -207,6 +207,17 @@ func (f *Filler) fillSlice(v reflect.Value, tags string) {
 		return // leave nil/empty for now, bitlists are complex
 	}
 
+	isBitlist := f.isByteBitlist(tags)
+
+	// For byte bitlists, ssz-max is in bits — convert to max byte length.
+	if isBitlist {
+		// maxLen data bits + 1 sentinel bit, rounded up to bytes.
+		maxLen = (maxLen + 8) / 8
+	}
+
+	// ~5% chance of deliberately exceeding the limit to exercise error paths.
+	exceedLimit := fixedLen == 0 && f.rng.Intn(20) == 0
+
 	// Determine actual length
 	var length int
 	switch {
@@ -221,6 +232,10 @@ func (f *Filler) fillSlice(v reflect.Value, tags string) {
 			capMax = f.maxListFill
 		}
 		length = f.rng.Intn(capMax + 1)
+		if exceedLimit && capMax > 0 {
+			// Overshoot by 1 to 2x the limit.
+			length = capMax + 1 + f.rng.Intn(capMax)
+		}
 	}
 
 	if length == 0 {
@@ -235,16 +250,27 @@ func (f *Filler) fillSlice(v reflect.Value, tags string) {
 		for i := range length {
 			slice.Index(i).SetUint(uint64(f.rng.Intn(256)))
 		}
-		// For bitlist []byte fields, ensure the sentinel bit is set in the last byte
-		if f.isByteBitlist(tags) && length > 0 {
-			lastByte := uint8(slice.Index(length - 1).Uint())
-			if lastByte == 0 {
-				// Set at least the sentinel bit
-				lastByte = 1
+		// For bitlist []byte fields, ensure the sentinel bit is set in the last byte.
+		// Usually clamp the bit count to the ssz-max limit; when exceeding,
+		// allow an unconstrained sentinel position.
+		if isBitlist && length > 0 {
+			maxSentinelPos := 7
+			if !exceedLimit {
+				maxBits := f.parseMaxFromTags(tags) // original bit limit
+				// Clamp so that bitCount = 8*(length-1) + sentinelPos <= maxBits.
+				if maxBits > 0 {
+					allowed := maxBits - 8*(length-1)
+					if allowed < maxSentinelPos+1 {
+						maxSentinelPos = allowed
+					}
+					if maxSentinelPos < 0 {
+						maxSentinelPos = 0
+					}
+				}
 			}
-			// Ensure the highest set bit is the sentinel
-			// Set a random bit position as sentinel, with all lower bits random
-			sentinelPos := f.rng.Intn(8)
+			sentinelPos := f.rng.Intn(maxSentinelPos + 1)
+			// Clear bits at and above sentinel, then set the sentinel bit.
+			lastByte := uint8(slice.Index(length-1).Uint()) & ((1 << sentinelPos) - 1)
 			lastByte |= 1 << sentinelPos
 			slice.Index(length - 1).SetUint(uint64(lastByte))
 		}
