@@ -796,13 +796,6 @@ func (ctx *marshalContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName
 
 	ctx.appendCode(indent, "vlen := len(%s)\n", getValueVar(true, ""))
 
-	if hasMax {
-		ctx.appendCode(indent, "if vlen > %s {\n", maxVar)
-		errCode := fmt.Sprintf("sszutils.ErrBitlistLengthFn(vlen, %s)", maxVar)
-		ctx.appendCode(indent, "\treturn nil, %s\n", typePath.getErrorWith(errCode))
-		ctx.appendCode(indent, "}\n")
-	}
-
 	ctx.appendCode(indent, "bval := []byte(%s[:])\n", getValueVar(false, ""))
 	ctx.appendCode(indent, "if vlen == 0 {\n")
 	ctx.appendCode(indent, "\tbval = []byte{0x01}\n")
@@ -810,6 +803,15 @@ func (ctx *marshalContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName
 	errCode := errCodeBitlistNotTerminated
 	ctx.appendCode(indent, "\treturn nil, %s\n", typePath.getErrorWith(errCode))
 	ctx.appendCode(indent, "}\n")
+
+	if hasMax {
+		bitsPkgName := ctx.typePrinter.AddImport("math/bits", "bits")
+		ctx.appendCode(indent, "if vlen > 0 {\n")
+		ctx.appendCode(indent+1, "bitCount := 8*(vlen-1) + %s.Len8(bval[vlen-1]) - 1\n", bitsPkgName)
+		errCode := fmt.Sprintf("sszutils.ErrBitlistLengthFn(bitCount, %s)", maxVar)
+		ctx.appendCode(indent+1, "if bitCount > %s {\n\treturn nil, %s\n}\n", maxVar, typePath.getErrorWith(errCode))
+		ctx.appendCode(indent, "}\n")
+	}
 
 	ctx.appendCode(indent, "dst = append(dst, bval...)\n")
 
