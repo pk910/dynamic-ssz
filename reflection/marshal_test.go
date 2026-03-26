@@ -559,6 +559,34 @@ func TestMarshalErrors(t *testing.T) {
 			},
 			expectedErr: "invalid union variant",
 		},
+		{
+			name: "list_length_limit_exceeded",
+			input: struct {
+				Data []uint16 `ssz-max:"3"`
+			}{[]uint16{1, 2, 3, 4, 5}},
+			expectedErr: "exceeds maximum",
+		},
+		{
+			name: "dynamic_list_length_limit_exceeded",
+			input: struct {
+				Data [][]uint8 `ssz-max:"2"`
+			}{[][]uint8{{1}, {2}, {3}}},
+			expectedErr: "exceeds maximum",
+		},
+		{
+			name: "byte_list_length_limit_exceeded",
+			input: struct {
+				Data []byte `ssz-max:"3"`
+			}{[]byte{1, 2, 3, 4, 5}},
+			expectedErr: "exceeds maximum",
+		},
+		{
+			name: "bitlist_length_limit_exceeded",
+			input: struct {
+				Data []byte `ssz-type:"bitlist" ssz-max:"4"`
+			}{[]byte{0xff}}, // 7 bits > max 4
+			expectedErr: "exceeds maximum",
+		},
 	}
 
 	for _, tc := range testCases {

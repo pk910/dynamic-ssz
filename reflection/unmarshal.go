@@ -7,6 +7,7 @@ package reflection
 import (
 	"math"
 	"math/big"
+	"math/bits"
 	"reflect"
 	"strings"
 	"time"
@@ -756,6 +757,10 @@ func (ctx *ReflectionCtx) unmarshalList(targetType *ssztypes.TypeDescriptor, tar
 		return sszutils.ErrListNotAlignedFn(sszLen, itemSize)
 	}
 
+	if targetType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 && uint64(sliceLen) > targetType.Limit {
+		return sszutils.ErrListLengthFn(sliceLen, targetType.Limit)
+	}
+
 	// slice with static size items
 	// fmt.Printf("new slice %v  %v\n", fieldType.Name(), sliceLen)
 
@@ -849,6 +854,10 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 	requiredOffsetBytes := sliceLen * 4
 	if sszLen < requiredOffsetBytes {
 		return sszutils.ErrListOffsetsEOFFn(sszLen, requiredOffsetBytes)
+	}
+
+	if targetType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 && uint64(sliceLen) > targetType.Limit {
+		return sszutils.ErrListLengthFn(sliceLen, targetType.Limit)
 	}
 
 	// read all item offsets
@@ -955,7 +964,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 //
 // Returns:
 //   - error: An error if decoding fails or bitlist is invalid
-func (ctx *ReflectionCtx) unmarshalBitlist(_ *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder) error {
+func (ctx *ReflectionCtx) unmarshalBitlist(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder) error {
 	sszLen := decoder.GetLength()
 
 	if sszLen == 0 {
@@ -971,6 +980,14 @@ func (ctx *ReflectionCtx) unmarshalBitlist(_ *ssztypes.TypeDescriptor, targetVal
 
 	if byteSlice[sszLen-1] == 0x00 {
 		return sszutils.ErrBitlistNotTerminatedFn()
+	}
+
+	if targetType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
+		msb := uint8(bits.Len8(byteSlice[sszLen-1])) - 1
+		bitCount := uint64(8*(sszLen-1)) + uint64(msb)
+		if bitCount > targetType.Limit {
+			return sszutils.ErrBitlistLengthFn(bitCount, targetType.Limit)
+		}
 	}
 
 	targetValue.Set(reflect.ValueOf(byteSlice))
