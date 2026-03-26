@@ -429,6 +429,48 @@ func TestUnmarshalErrors(t *testing.T) {
 			expectedErr: "did not consume full ssz range (diff: 4, ssz size: 8)",
 		},
 		{
+			name: "list_length_limit_exceeded",
+			target: new(struct {
+				Data []uint16 `ssz-max:"6"`
+			}),
+			data:        fromHex("0x040000000100020003000400050006000700080009000a00"),
+			expectedErr: "exceeds maximum",
+		},
+		{
+			name: "dynamic_list_length_limit_exceeded",
+			target: new(struct {
+				Data [][]uint8 `ssz-max:"2"`
+			}),
+			// 3 dynamic elements: offsets 0c000000 0d000000 0e000000, data: 0a 0b 0c
+			data:        fromHex("0x040000000c0000000d0000000e0000000a0b0c"),
+			expectedErr: "exceeds maximum",
+		},
+		{
+			name: "byte_list_length_limit_exceeded",
+			target: new(struct {
+				Data []byte `ssz-max:"4"`
+			}),
+			data:        fromHex("0x04000000010203040506"),
+			expectedErr: "exceeds maximum",
+		},
+		{
+			name: "string_list_length_limit_exceeded",
+			target: new(struct {
+				Data string `ssz-max:"3"`
+			}),
+			data:        fromHex("0x040000004142434445"),
+			expectedErr: "exceeds maximum",
+		},
+		{
+			name: "bitlist_length_limit_exceeded",
+			target: new(struct {
+				Data []byte `ssz-type:"bitlist" ssz-max:"4"`
+			}),
+			// 0xff = 8 data bits (7 bits + termination at bit 7), exceeds max 4
+			data:        fromHex("0x04000000ff"),
+			expectedErr: "exceeds maximum",
+		},
+		{
 			name: "dynamic_list_offset_bounds",
 			target: new(struct {
 				Data [][]uint8 `ssz-max:"10"`

@@ -709,6 +709,27 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 
 // unmarshalList generates unmarshal code for SSZ list (variable-size array) types.
 func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
+	maxExpression := desc.MaxExpression
+	if ctx.options.WithoutDynamicExpressions {
+		maxExpression = nil
+	}
+
+	hasMax := false
+	maxVar := ""
+
+	switch {
+	case maxExpression != nil:
+		exprVar := ctx.exprVars.getExprVar(*maxExpression, desc.Limit)
+
+		hasMax = true
+		maxVar = fmt.Sprintf("int(%s)", exprVar)
+	case desc.Limit > 0:
+		maxVar = fmt.Sprintf("%d", desc.Limit)
+		hasMax = true
+	default:
+		maxVar = "0"
+	}
+
 	valueVar := varName
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 		targetType := ""
@@ -726,6 +747,12 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 		// static byte arrays
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
+			if hasMax {
+				ctx.appendCode(indent, "if dec.GetLength() > %s {\n", maxVar)
+				errCode := fmt.Sprintf("sszutils.ErrListLengthFn(dec.GetLength(), %s)", maxVar)
+				ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith(errCode))
+				ctx.appendCode(indent, "}\n")
+			}
 			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
 				ctx.appendCode(indent, "if buf, err := dec.DecodeBytesBuf(dec.GetLength()); err != nil {\n")
 				ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith("err"))
@@ -748,6 +775,10 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 			ctx.appendCode(indent, "itemCount := sszLen / 8\n")
 			errCode := "sszutils.ErrListNotAlignedFn(sszLen, 8)"
 			ctx.appendCode(indent, "if sszLen%%8 != 0 {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
+			if hasMax {
+				errCode = fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", maxVar)
+				ctx.appendCode(indent, "if itemCount > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
+			}
 			if desc.Kind != reflect.Array {
 				ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", valueVar, valueVar)
 			}
@@ -774,6 +805,10 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 			ctx.appendCode(indent, "itemCount := sszLen / %s\n", fieldSizeVar)
 			errCode := fmt.Sprintf("sszutils.ErrListNotAlignedFn(sszLen, %s)", fieldSizeVar)
 			ctx.appendCode(indent, "if sszLen%%%s != 0 {\n\treturn %s\n}\n", fieldSizeVar, typePath.getErrorWith(errCode))
+		}
+		if hasMax {
+			errCode := fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", maxVar)
+			ctx.appendCode(indent, "if itemCount > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
 		}
 		if desc.Kind != reflect.Array {
 			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", valueVar, valueVar)
@@ -853,6 +888,10 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 
 		errCode := "sszutils.ErrInvalidListStartOffsetFn(startOffset, sszLen)"
 		ctx.appendCode(indent, "if startOffset%%4 != 0 || uint32(sszLen) < startOffset {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
+		if hasMax {
+			errCode = fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", maxVar)
+			ctx.appendCode(indent, "if itemCount > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
+		}
 		if desc.Kind != reflect.Array {
 			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", valueVar, valueVar)
 		}
@@ -900,6 +939,27 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 
 // unmarshalBitlist generates unmarshal code for SSZ bitlist types.
 func (ctx *decoderContext) unmarshalBitlist(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
+	maxExpression := desc.MaxExpression
+	if ctx.options.WithoutDynamicExpressions {
+		maxExpression = nil
+	}
+
+	hasMax := false
+	maxVar := ""
+
+	switch {
+	case maxExpression != nil:
+		exprVar := ctx.exprVars.getExprVar(*maxExpression, desc.Limit)
+
+		hasMax = true
+		maxVar = fmt.Sprintf("int(%s)", exprVar)
+	case desc.Limit > 0:
+		maxVar = fmt.Sprintf("%d", desc.Limit)
+		hasMax = true
+	default:
+		maxVar = "0"
+	}
+
 	ctx.appendCode(indent, "blen := dec.GetLength()\n")
 
 	if desc.Kind != reflect.Array {
@@ -910,6 +970,13 @@ func (ctx *decoderContext) unmarshalBitlist(desc *ssztypes.TypeDescriptor, varNa
 	errCode := errCodeBitlistNotTerminated
 	ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 	ctx.appendCode(indent, "}\n")
+
+	if hasMax {
+		bitsPkgName := ctx.typePrinter.AddImport("math/bits", "bits")
+		ctx.appendCode(indent, "bitCount := 8*(blen-1) + int(%s.Len8(%s[blen-1])) - 1\n", bitsPkgName, varName)
+		errCode := fmt.Sprintf("sszutils.ErrBitlistLengthFn(bitCount, %s)", maxVar)
+		ctx.appendCode(indent, "if bitCount > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
+	}
 
 	return nil
 }
