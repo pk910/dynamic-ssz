@@ -611,9 +611,9 @@ func ParseTags(tag string) (typeHints []SszTypeHint, sizeHints []SszSizeHint, ma
 
 				if i < len(maxSizeHints) {
 					maxSizeHints[i].Expr = sszMaxSizeStr
-				}
 
-				continue
+					continue
+				}
 			}
 
 			if i >= len(maxSizeHints) {

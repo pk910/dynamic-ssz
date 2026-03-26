@@ -208,13 +208,10 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 			return "", fmt.Errorf("type %s has no descriptor", t.TypeName)
 		}
 
-		hash, err := t.Descriptor.GetTypeHash()
-		if err != nil {
-			return "", fmt.Errorf("failed to get type hash for %s: %w", t.TypeName, err)
-		}
+		hash := t.Descriptor.GetTypeHash()
 		hashParts = append(hashParts, hash[:])
 
-		err = cg.generateCode(t.Descriptor, typePrinter, &codeBuilder, &t.Options)
+		err := cg.generateCode(t.Descriptor, typePrinter, &codeBuilder, &t.Options)
 		if err != nil {
 			return "", fmt.Errorf("failed to generate code for %s: %w", t.TypeName, err)
 		}
