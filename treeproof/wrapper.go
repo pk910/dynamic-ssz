@@ -355,7 +355,7 @@ func (w *Wrapper) Hash() []byte {
 // node list.
 func (w *Wrapper) Commit(i int) {
 	// create tree from nodes
-	res, err := TreeFromNodes(w.nodes[i:], w.getLimit(i))
+	res, err := treeFromNodesFn(w.nodes[i:], w.getLimit(i))
 	if err != nil {
 		panic(err)
 	}
