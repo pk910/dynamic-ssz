@@ -76,7 +76,7 @@ func VerifyMultiproof(root []byte, proof, leaves [][]byte, indices []int) (bool,
 		}
 	}
 
-	requiredProofIndices := getRequiredIndices(indices)
+	requiredProofIndices := getRequiredIndicesFn(indices)
 	if len(requiredProofIndices) != len(proof) {
 		return false, fmt.Errorf("number of proof hashes %d and required indices %d mismatch", len(proof), len(requiredProofIndices))
 	}
@@ -345,6 +345,10 @@ func getSibling(index int) int {
 func getParent(index int) int {
 	return index >> 1
 }
+
+// getRequiredIndicesFn is used by VerifyMultiproof and can be replaced in
+// tests to inject incomplete index sets for covering defensive error paths.
+var getRequiredIndicesFn = getRequiredIndices
 
 // Returns generalized indices for all nodes in the tree that are
 // required to prove the given leaf indices. The returned indices

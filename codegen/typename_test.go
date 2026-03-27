@@ -1456,6 +1456,84 @@ func TestDirectCodePathExecution(t *testing.T) {
 	})
 }
 
+// TestReflectQualifyExternalType tests reflectQualify with actual external package types.
+func TestReflectQualifyExternalType(t *testing.T) {
+	printer := NewTypePrinter("github.com/current/pkg")
+
+	// time.Time has PkgPath="time" which is different from CurrentPkg
+	timeType := reflect.TypeOf(time.Time{})
+
+	// trackImports=false => just return the name
+	result := printer.reflectQualify(timeType, false)
+	if result != "Time" {
+		t.Errorf("expected 'Time' with trackImports=false, got %s", result)
+	}
+
+	// trackImports=true => should register import and qualify
+	result = printer.reflectQualify(timeType, true)
+	if result != "time.Time" {
+		t.Errorf("expected 'time.Time', got %s", result)
+	}
+
+	// Call again - should reuse existing alias
+	result = printer.reflectQualify(timeType, true)
+	if result != "time.Time" {
+		t.Errorf("expected 'time.Time' on second call, got %s", result)
+	}
+
+	// Verify import was registered
+	imports := printer.Imports()
+	if imports["time"] != "time" {
+		t.Errorf("expected time import, got %v", imports)
+	}
+}
+
+// TestReflectQualifyAliasDedup tests the alias uniqueness loop in reflectQualify.
+func TestReflectQualifyAliasDedup(t *testing.T) {
+	printer := NewTypePrinter("github.com/current/pkg")
+
+	// Pre-populate with a conflicting alias
+	printer.imports["some/other/time"] = "time"
+
+	timeType := reflect.TypeOf(time.Time{})
+	result := printer.reflectQualify(timeType, true)
+	// The alias "time" is taken, so it should get "time1"
+	if result != "time1.Time" {
+		t.Errorf("expected 'time1.Time' for deduped alias, got %s", result)
+	}
+}
+
+// TestTypeStringWithoutTrackingReflect tests TypeStringWithoutTracking with reflect types.
+func TestTypeStringWithoutTrackingReflect(t *testing.T) {
+	printer := NewTypePrinter("github.com/pk910/dynamic-ssz/codegen")
+
+	// Descriptor with no CodegenInfo should use reflectTypeString
+	desc := &ssztypes.TypeDescriptor{
+		Type: reflect.TypeOf(time.Time{}),
+	}
+	result := printer.TypeStringWithoutTracking(desc)
+	if result != "Time" {
+		t.Errorf("expected 'Time', got %s", result)
+	}
+
+	// Verify no imports were registered (no tracking)
+	if len(printer.Imports()) != 0 {
+		t.Error("TypeStringWithoutTracking should not register imports")
+	}
+}
+
+// TestReflectTypeStringPointerStruct tests reflectTypeString with pointer-to-struct types.
+func TestReflectTypeStringPointerStruct(t *testing.T) {
+	printer := NewTypePrinter("github.com/pk910/dynamic-ssz/codegen")
+
+	// Use a simple struct type as pointer (non-generic) - just check it starts with *struct
+	structType := reflect.TypeOf((*struct{ F uint64 })(nil))
+	result := printer.reflectTypeString(structType, true)
+	if !strings.HasPrefix(result, "*struct") {
+		t.Errorf("expected result starting with '*struct', got %s", result)
+	}
+}
+
 func TestEdgeCases(t *testing.T) {
 	t.Run("EmptyPackagePath", func(t *testing.T) {
 		printer := NewTypePrinter("")
