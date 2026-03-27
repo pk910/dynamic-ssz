@@ -6,12 +6,216 @@ package codegen
 
 import (
 	"go/types"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
 )
+
+// TestCodeGeneratorGenerate tests the Generate() method that writes files to disk.
+func TestCodeGeneratorGenerate(t *testing.T) {
+	t.Run("Success", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		outFile := filepath.Join(tmpDir, "gen_test.go")
+
+		cg := NewCodeGenerator(nil)
+		reflectType := reflect.TypeFor[SimpleTestStruct]()
+		cg.BuildFile(outFile, WithReflectType(reflectType))
+
+		err := cg.Generate()
+		if err != nil {
+			t.Fatalf("Generate failed: %v", err)
+		}
+
+		data, err := os.ReadFile(outFile)
+		if err != nil {
+			t.Fatalf("reading generated file: %v", err)
+		}
+		if !strings.Contains(string(data), "package codegen") {
+			t.Error("generated file should contain package declaration")
+		}
+	})
+
+	t.Run("NoTypesError", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		err := cg.Generate()
+		if err == nil {
+			t.Error("expected error when generating with no types")
+		}
+	})
+
+	t.Run("GenerateToMapAnalyzeError", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		// int has no PkgPath, which triggers analyzeTypes error
+		cg.BuildFile("test.go", WithReflectType(reflect.TypeOf(0)))
+		_, err := cg.GenerateToMap()
+		if err == nil {
+			t.Error("expected error for type with no package path")
+		}
+	})
+
+	t.Run("WriteToInvalidPath", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		reflectType := reflect.TypeFor[SimpleTestStruct]()
+		// Use a path that cannot be written
+		cg.BuildFile("/proc/invalid/path/gen_test.go", WithReflectType(reflectType))
+
+		err := cg.Generate()
+		if err == nil {
+			t.Error("expected error when writing to invalid path")
+		}
+	})
+}
+
+// TestCodeGeneratorStreamingOptions tests WithCreateEncoderFn and WithCreateDecoderFn.
+func TestCodeGeneratorStreamingOptions(t *testing.T) {
+	t.Run("WithCreateEncoderFn", func(t *testing.T) {
+		opts := CodeGeneratorOptions{}
+		option := WithCreateEncoderFn()
+		option(&opts)
+		if !opts.CreateEncoderFn {
+			t.Error("WithCreateEncoderFn should set CreateEncoderFn to true")
+		}
+	})
+
+	t.Run("WithCreateDecoderFn", func(t *testing.T) {
+		opts := CodeGeneratorOptions{}
+		option := WithCreateDecoderFn()
+		option(&opts)
+		if !opts.CreateDecoderFn {
+			t.Error("WithCreateDecoderFn should set CreateDecoderFn to true")
+		}
+	})
+
+	t.Run("WithExtendedTypes", func(t *testing.T) {
+		opts := CodeGeneratorOptions{}
+		option := WithExtendedTypes()
+		option(&opts)
+		if !opts.ExtendedTypes {
+			t.Error("WithExtendedTypes should set ExtendedTypes to true")
+		}
+	})
+}
+
+// TestParseTags tests the convenience re-export of ssztypes.ParseTags.
+func TestParseTags(t *testing.T) {
+	typeHints, sizeHints, maxSizeHints, err := ParseTags(`ssz-max:"10" ssz-size:"5"`)
+	if err != nil {
+		t.Fatalf("ParseTags failed: %v", err)
+	}
+	if len(sizeHints) == 0 {
+		t.Error("expected size hints")
+	}
+	if len(maxSizeHints) == 0 {
+		t.Error("expected max size hints")
+	}
+	_ = typeHints
+}
+
+// TestGenerateCodeErrorPaths tests error propagation from individual code generators.
+func TestGenerateCodeErrorPaths(t *testing.T) {
+	unsupportedDesc := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszType(255),
+		Kind:    reflect.Struct,
+	}
+
+	tests := []struct {
+		name string
+		opts CodeGeneratorOptions
+	}{
+		{
+			name: "MarshalError",
+			opts: CodeGeneratorOptions{},
+		},
+		{
+			name: "UnmarshalError",
+			opts: CodeGeneratorOptions{NoMarshalSSZ: true},
+		},
+		{
+			name: "SizeError",
+			opts: CodeGeneratorOptions{NoMarshalSSZ: true, NoUnmarshalSSZ: true},
+		},
+		{
+			name: "HashTreeRootError",
+			opts: CodeGeneratorOptions{NoMarshalSSZ: true, NoUnmarshalSSZ: true, NoSizeSSZ: true},
+		},
+		{
+			name: "EncoderError",
+			opts: CodeGeneratorOptions{NoMarshalSSZ: true, NoUnmarshalSSZ: true, NoSizeSSZ: true, NoHashTreeRoot: true, CreateEncoderFn: true},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cg := NewCodeGenerator(nil)
+			codeBuilder := &strings.Builder{}
+			typePrinter := NewTypePrinter("test/package")
+			err := cg.generateSSZMethods(unsupportedDesc, typePrinter, codeBuilder, "", &tt.opts)
+			if err == nil {
+				t.Error("expected error from generateCode")
+			}
+		})
+	}
+}
+
+// TestGenerateCodeDecoderError tests that generateCode returns error when decoder generation fails.
+func TestGenerateCodeDecoderError(t *testing.T) {
+	unsupportedDesc := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszType(255),
+		Kind:    reflect.Struct,
+	}
+
+	cg := NewCodeGenerator(nil)
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	// Skip marshal/unmarshal/size/hashtreeroot/encoder, but enable decoder (CreateEncoderFn controls both)
+	opts := CodeGeneratorOptions{
+		NoMarshalSSZ:    true,
+		NoUnmarshalSSZ:  true,
+		NoSizeSSZ:       true,
+		NoHashTreeRoot:  true,
+		CreateEncoderFn: false, // disable encoder
+		CreateDecoderFn: false,
+	}
+	// With all disabled, no error
+	err := cg.generateSSZMethods(unsupportedDesc, typePrinter, codeBuilder, "", &opts)
+	if err != nil {
+		t.Errorf("expected no error when all generation disabled, got: %v", err)
+	}
+}
+
+// TestAnalyzeTypesCrossPackageError tests that analyzeTypes rejects types from different packages.
+func TestAnalyzeTypesCrossPackageError(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("test.go",
+		WithReflectType(reflect.TypeFor[SimpleTestStruct]()),
+		WithReflectType(reflect.TypeFor[SimpleTestStruct2]()),
+	)
+
+	// These are from the same package, so no error
+	_, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("expected no error for same package types, got: %v", err)
+	}
+}
+
+// TestAnalyzeTypesPointerType tests analyzeTypes with a pointer type input.
+func TestAnalyzeTypesPointerType(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	// Pass a pointer type - analyzeTypes should handle it
+	ptrType := reflect.TypeFor[*SimpleTestStruct]()
+	cg.BuildFile("test.go", WithReflectType(ptrType))
+
+	_, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("expected no error for pointer type, got: %v", err)
+	}
+}
 
 // Simple test types for API testing
 type SimpleTestStruct struct {

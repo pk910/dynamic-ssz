@@ -387,7 +387,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 			typeName := obj.Name()
 
 			switch {
-			case pkgPath == "time" && typeName == "Time":
+			case pkgPath == "time" && typeName == "Time": //nolint:goconst // "Time" also appears in test assertions, not worth a shared constant
 				sszType = ssztypes.SszUint64Type
 				desc.GoTypeFlags |= ssztypes.GoTypeFlagIsTime
 			case pkgPath == "math/big" && typeName == "Int":

@@ -327,13 +327,10 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 		}
 
 		if !t.IsViewOnly {
-			hash, err := t.Descriptor.GetTypeHash()
-			if err != nil {
-				return "", fmt.Errorf("failed to get type hash for %s: %w", t.TypeName, err)
-			}
+			hash := t.Descriptor.GetTypeHash()
 			hashParts = append(hashParts, hash[:])
 
-			err = cg.generateSSZMethods(t.Descriptor, typePrinter, &codeBuilder, "", &t.Options)
+			err := cg.generateSSZMethods(t.Descriptor, typePrinter, &codeBuilder, "", &t.Options)
 			if err != nil {
 				return "", fmt.Errorf("failed to generate code for %s: %w", t.TypeName, err)
 			}
@@ -341,10 +338,7 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 
 		if len(t.ViewDescriptors) > 0 {
 			for _, viewDesc := range t.ViewDescriptors {
-				hash, err := viewDesc.GetTypeHash()
-				if err != nil {
-					return "", fmt.Errorf("failed to get view hash for %s: %w", t.TypeName, err)
-				}
+				hash := viewDesc.GetTypeHash()
 				hashParts = append(hashParts, hash[:])
 			}
 

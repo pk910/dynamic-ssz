@@ -2324,6 +2324,203 @@ func TestBuildUint256DescriptorSlices(t *testing.T) {
 	})
 }
 
+// TestExtendedTypesDisabled tests that extended types (signed ints, floats,
+// optional, big.Int) are rejected when ExtendedTypes is false.
+func TestExtendedTypesDisabled(t *testing.T) {
+	parser := NewParser()
+	parser.ExtendedTypes = false
+
+	tests := []struct {
+		name    string
+		sszType ssztypes.SszType
+		goType  types.Type
+		errPart string
+	}{
+		{"Int8", ssztypes.SszInt8Type, types.Typ[types.Int8], "signed integers are not supported"},
+		{"Int16", ssztypes.SszInt16Type, types.Typ[types.Int16], "signed integers are not supported"},
+		{"Int32", ssztypes.SszInt32Type, types.Typ[types.Int32], "signed integers are not supported"},
+		{"Int64", ssztypes.SszInt64Type, types.Typ[types.Int64], "signed integers are not supported"},
+		{"Float32", ssztypes.SszFloat32Type, types.Typ[types.Float32], "floating-point numbers are not supported"},
+		{"Float64", ssztypes.SszFloat64Type, types.Typ[types.Float64], "floating-point numbers are not supported"},
+		{"Optional", ssztypes.SszOptionalType, types.NewPointer(types.Typ[types.Uint64]), "optional types are not supported"},
+		{"BigInt", ssztypes.SszBigIntType, types.Typ[types.Uint64], "big.Int is not supported"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			typeHint := []ssztypes.SszTypeHint{{Type: tt.sszType}}
+			_, err := parser.buildTypeDescriptor(tt.goType, tt.goType, typeHint, nil, nil)
+			if err == nil {
+				t.Errorf("expected error for %s with ExtendedTypes=false", tt.name)
+			}
+			if !strings.Contains(err.Error(), tt.errPart) {
+				t.Errorf("expected error containing %q, got: %v", tt.errPart, err)
+			}
+		})
+	}
+}
+
+// TestExtendedTypesKindMismatch tests that extended types reject wrong Go kinds.
+func TestExtendedTypesKindMismatch(t *testing.T) {
+	parser := NewParser()
+	parser.ExtendedTypes = true
+
+	tests := []struct {
+		name    string
+		sszType ssztypes.SszType
+		goType  types.Type
+		errPart string
+	}{
+		{"Int8_WrongKind", ssztypes.SszInt8Type, types.Typ[types.Uint8], "int8 ssz type can only be"},
+		{"Int16_WrongKind", ssztypes.SszInt16Type, types.Typ[types.Uint16], "int16 ssz type can only be"},
+		{"Int32_WrongKind", ssztypes.SszInt32Type, types.Typ[types.Uint32], "int32 ssz type can only be"},
+		{"Int64_WrongKind", ssztypes.SszInt64Type, types.Typ[types.Uint64], "int64 ssz type can only be"},
+		{"Float32_WrongKind", ssztypes.SszFloat32Type, types.Typ[types.Uint32], "float32 ssz type can only be"},
+		{"Float64_WrongKind", ssztypes.SszFloat64Type, types.Typ[types.Uint64], "float64 ssz type can only be"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			typeHint := []ssztypes.SszTypeHint{{Type: tt.sszType}}
+			_, err := parser.buildTypeDescriptor(tt.goType, tt.goType, typeHint, nil, nil)
+			if err == nil {
+				t.Errorf("expected error for %s", tt.name)
+			}
+			if !strings.Contains(err.Error(), tt.errPart) {
+				t.Errorf("expected error containing %q, got: %v", tt.errPart, err)
+			}
+		})
+	}
+}
+
+// TestOptionalNonPointer tests that optional SSZ type rejects non-pointer types.
+func TestOptionalNonPointer(t *testing.T) {
+	parser := NewParser()
+	parser.ExtendedTypes = true
+
+	typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszOptionalType}}
+	_, err := parser.buildTypeDescriptor(types.Typ[types.Uint64], types.Typ[types.Uint64], typeHint, nil, nil)
+	if err == nil {
+		t.Error("expected error for optional with non-pointer type")
+	}
+	if !strings.Contains(err.Error(), "optional ssz type can only be represented by pointer") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestBigIntDescriptorNonStruct tests that big.Int SSZ type rejects non-struct types.
+func TestBigIntDescriptorNonStruct(t *testing.T) {
+	parser := NewParser()
+	parser.ExtendedTypes = true
+
+	typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszBigIntType}}
+	_, err := parser.buildTypeDescriptor(types.Typ[types.Uint64], types.Typ[types.Uint64], typeHint, nil, nil)
+	if err == nil {
+		t.Error("expected error for big.Int with non-struct type")
+	}
+	if !strings.Contains(err.Error(), "bigint type can only be represented by struct") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestOptionalWithHints tests buildOptionalDescriptor with child size/max/type hints.
+func TestOptionalWithHints(t *testing.T) {
+	parser := NewParser()
+	parser.ExtendedTypes = true
+
+	// Optional with child hints passed down
+	typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszOptionalType}, {Type: ssztypes.SszUint64Type}}
+	sizeHint := []ssztypes.SszSizeHint{{}, {Size: 8}}
+	maxHint := []ssztypes.SszMaxSizeHint{{}, {Size: 100}}
+	ptrType := types.NewPointer(types.Typ[types.Uint64])
+
+	desc, err := parser.buildTypeDescriptor(ptrType, ptrType, typeHint, sizeHint, maxHint)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if desc.SszType != ssztypes.SszOptionalType {
+		t.Errorf("expected SszOptionalType, got %v", desc.SszType)
+	}
+	if desc.ElemDesc == nil {
+		t.Fatal("expected ElemDesc to be set")
+	}
+}
+
+// TestContainerNonStruct tests that container SSZ type rejects non-struct types.
+func TestContainerNonStruct(t *testing.T) {
+	parser := NewParser()
+
+	typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszContainerType}}
+	_, err := parser.buildTypeDescriptor(types.Typ[types.Uint64], types.Typ[types.Uint64], typeHint, nil, nil)
+	if err == nil {
+		t.Error("expected error for container with non-struct type")
+	}
+	if !strings.Contains(err.Error(), "container ssz type can only be represented by struct") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestCompatibleUnionNonNamed tests that CompatibleUnion rejects non-named types.
+func TestCompatibleUnionNonNamed(t *testing.T) {
+	parser := NewParser()
+
+	typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszCompatibleUnionType}}
+	structType := types.NewStruct(nil, nil)
+	_, err := parser.buildTypeDescriptor(structType, structType, typeHint, nil, nil)
+	if err == nil {
+		t.Error("expected error for CompatibleUnion with non-named type")
+	}
+	if !strings.Contains(err.Error(), "CompatibleUnion must be a named type") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestTypeWrapperNonNamed tests that TypeWrapper rejects non-named types.
+func TestTypeWrapperNonNamed(t *testing.T) {
+	parser := NewParser()
+
+	typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszTypeWrapperType}}
+	structType := types.NewStruct(nil, nil)
+	_, err := parser.buildTypeDescriptor(structType, structType, typeHint, nil, nil)
+	if err == nil {
+		t.Error("expected error for TypeWrapper with non-named type")
+	}
+	if !strings.Contains(err.Error(), "TypeWrapper must be a named type") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestGetTypeDescriptorError tests that GetTypeDescriptor propagates errors.
+func TestGetTypeDescriptorError(t *testing.T) {
+	parser := NewParser()
+
+	// Use a type that will fail (e.g., interface)
+	ifaceType := types.NewInterfaceType(nil, nil)
+	_, err := parser.GetTypeDescriptor(ifaceType, nil, nil, nil)
+	if err == nil {
+		t.Error("expected error for interface type")
+	}
+}
+
+// TestSizeHintWithCustomFlag tests the custom/dynamic size hint flag path.
+func TestSizeHintWithCustomFlag(t *testing.T) {
+	parser := NewParser()
+
+	sizeHint := []ssztypes.SszSizeHint{{Size: 4, Custom: true, Expr: "MY_EXPR"}}
+	sliceType := types.NewSlice(types.Typ[types.Uint16])
+
+	desc, err := parser.buildTypeDescriptor(sliceType, sliceType, nil, sizeHint, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize == 0 {
+		t.Error("expected HasDynamicSize flag")
+	}
+	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr == 0 {
+		t.Error("expected HasSizeExpr flag")
+	}
+}
+
 func TestParserListWithFixedSizeRejected(t *testing.T) {
 	parser := NewParser()
 

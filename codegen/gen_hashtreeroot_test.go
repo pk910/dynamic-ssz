@@ -242,6 +242,53 @@ func TestHashTreeRootUnionWithNestedUnsupportedType(t *testing.T) {
 	}
 }
 
+// TestHashTreeRootOptionalError tests that hashOptional propagates errors from inner types.
+func TestHashTreeRootOptionalError(t *testing.T) {
+	unsupportedDesc := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszType(255),
+		Kind:    reflect.Struct,
+	}
+
+	optionalDesc := &ssztypes.TypeDescriptor{
+		Type:         testDummyReflectType,
+		SszType:      ssztypes.SszOptionalType,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+		Kind:         reflect.Pointer,
+		ElemDesc:     unsupportedDesc,
+		GoTypeFlags:  ssztypes.GoTypeFlagIsPointer,
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{ExtendedTypes: true}
+
+	err := generateHashTreeRoot(optionalDesc, codeBuilder, typePrinter, "", options)
+	if err == nil {
+		t.Error("expected error for optional with unsupported inner type")
+	}
+}
+
+// TestHashTreeRootBigIntType tests that hashBigInt generates code.
+func TestHashTreeRootBigIntType(t *testing.T) {
+	bigIntDesc := &ssztypes.TypeDescriptor{
+		Type:         testDummyReflectType,
+		SszType:      ssztypes.SszBigIntType,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+		Kind:         reflect.Struct,
+		Size:         0,
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{ExtendedTypes: true}
+
+	err := generateHashTreeRoot(bigIntDesc, codeBuilder, typePrinter, "", options)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 // TestHashTreeRootTypeWrapperWithNestedUnsupportedType tests that hashType handles
 // TypeWrapper with nested unsupported types.
 func TestHashTreeRootTypeWrapperWithNestedUnsupportedType(t *testing.T) {

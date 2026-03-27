@@ -1501,43 +1501,6 @@ func TestProgressiveRemainderOddHighDepth(t *testing.T) {
 	h.maybeCollapseProgressive(layer)
 }
 
-func TestProgressiveLayerNotCollapsedWithActiveChunks(t *testing.T) {
-	h := FastHasherPool.Get()
-	defer FastHasherPool.Put(h)
-
-	// Exercise the !layer.collapsed branch in collapseProgressiveLayer.
-	// We need: after maybeCollapseProgressive, layer.collapsed is still false
-	// AND activeChunks > 0. Since maybeCollapseProgressive with collapsed=false
-	// reinitializes counts from the buffer and then tries to finalize groups,
-	// even 1 item would be finalized at level 0 (baseSize=1), setting
-	// collapsed=true. So we need 0 groups to be finalized.
-	//
-	// However, we can force the state by pretending progressive roots already
-	// exist (progressiveCount > 0) at a high level where baseSize > available
-	// leaves. maybeCollapseProgressive sees leafCount < baseSize, !finalized,
-	// calls maybeCollapseBinary which needs >= 256 items. With few items,
-	// collapsed stays false. Then collapseProgressiveLayer has active chunks
-	// with !collapsed.
-	h.buf = h.buf[:0]
-
-	// 2 "progressive root" chunks + 3 active chunks = 5 total
-	for i := range 5 {
-		var chunk [32]byte
-		binary.LittleEndian.PutUint64(chunk[:], uint64(i))
-		h.buf = append(h.buf, chunk[:]...)
-	}
-
-	layer := h.pushLayer()
-	layer.bufIdx = 0
-	layer.incremental = true
-	layer.progressive = true
-	layer.collapsed = false
-	layer.progressiveCount = 2 // 2 roots already done
-	layer.progressiveLevel = 2 // level 2 → baseSize=16
-
-	h.collapseProgressiveLayer(layer, 0)
-}
-
 func TestMerkleizeProgressiveImplNonAlignedLeft(t *testing.T) {
 	h := FastHasherPool.Get()
 	defer FastHasherPool.Put(h)

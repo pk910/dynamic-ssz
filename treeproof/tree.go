@@ -278,6 +278,10 @@ func TreeFromChunks(chunks [][]byte) (*Node, error) {
 	return TreeFromNodes(leaves, numLeaves)
 }
 
+// treeFromNodesFn is used by internal callers and can be replaced in tests
+// to inject errors into otherwise unreachable defensive error paths.
+var treeFromNodesFn = TreeFromNodes
+
 // TreeFromNodes constructs a tree from leaf nodes.
 // This is useful for merging subtrees.
 // The limit should be a power of 2.
@@ -400,7 +404,7 @@ func treeFromNodesProgressiveImpl(leaves []*Node, depth int) (*Node, error) {
 
 	// Left child: binary merkleization of first baseSize nodes
 	leftNodes := leaves[:splitPoint]
-	leftChild, err := TreeFromNodes(leftNodes, baseSize)
+	leftChild, err := treeFromNodesFn(leftNodes, baseSize)
 	if err != nil {
 		return nil, err
 	}
@@ -430,7 +434,7 @@ func TreeFromNodesWithMixin(leaves []*Node, num, limit int) (*Node, error) {
 		limit = int(sszutils.NextPowerOfTwo(uint64(limit)))
 	}
 
-	mainTree, err := TreeFromNodes(leaves, limit)
+	mainTree, err := treeFromNodesFn(leaves, limit)
 	if err != nil {
 		return nil, err
 	}

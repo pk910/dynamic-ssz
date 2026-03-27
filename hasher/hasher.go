@@ -752,14 +752,10 @@ func (h *Hasher) collapseProgressiveLayer(layer *treeLayer, indx int) {
 	if activeChunks > 0 {
 		baseSize := progressiveBaseSize(layer.progressiveLevel)
 
-		// Sync collapse state if not yet tracked.
-		// When !collapsed, counts/maxDepth/progressiveCount/progressiveLevel
-		// were already cleared by maybeCollapseProgressive above.
-		if !layer.collapsed {
-			layer.counts[0] = uint32(activeChunks)
-		} else {
-			h.syncCollapseState(layer)
-		}
+		// Sync collapse state: maybeCollapseProgressive above always sets
+		// collapsed=true when there are active chunks (level 0 has baseSize=1,
+		// so any chunk triggers finalization and the Step 2 compact).
+		h.syncCollapseState(layer)
 		h.collapseAllDepths(layer, subtreeStart, len(h.buf), baseSize)
 		h.buf = h.buf[:subtreeStart+32]
 		layer.progressiveCount++

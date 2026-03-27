@@ -227,6 +227,100 @@ func TestSizeTypeWrapperWithNestedUnsupportedType(t *testing.T) {
 	}
 }
 
+// TestSizeExtendedTypes tests that sizeType handles extended SSZ types correctly.
+func TestSizeExtendedTypes(t *testing.T) {
+	extendedTypes := []struct {
+		name    string
+		sszType ssztypes.SszType
+		size    uint32
+	}{
+		{"Int8", ssztypes.SszInt8Type, 1},
+		{"Int16", ssztypes.SszInt16Type, 2},
+		{"Int32", ssztypes.SszInt32Type, 4},
+		{"Int64", ssztypes.SszInt64Type, 8},
+		{"Float32", ssztypes.SszFloat32Type, 4},
+		{"Float64", ssztypes.SszFloat64Type, 8},
+		{"CustomType", ssztypes.SszCustomType, 0},
+	}
+
+	for _, et := range extendedTypes {
+		t.Run(et.name, func(t *testing.T) {
+			fieldDesc := &ssztypes.TypeDescriptor{
+				Type:    testDummyReflectType,
+				SszType: et.sszType,
+				Kind:    reflect.Struct,
+				Size:    et.size,
+			}
+
+			// Wrap in container so sizeType is invoked for the field
+			// Use Size=0 to force sizeContainer to go through sizeType path
+			containerDesc := &ssztypes.TypeDescriptor{
+				Type:    testDummyReflectType,
+				SszType: ssztypes.SszContainerType,
+				Kind:    reflect.Struct,
+				ContainerDesc: &ssztypes.ContainerDescriptor{
+					Fields: []ssztypes.FieldDescriptor{
+						{Name: "F1", Type: fieldDesc},
+					},
+				},
+			}
+
+			// Force the field to not take the static shortcut
+			// by setting SszTypeFlagHasSizeExpr and NOT setting WithoutDynamicExpressions
+			fieldDesc.SszTypeFlags |= ssztypes.SszTypeFlagHasSizeExpr
+			expr := "SOME_EXPR"
+			fieldDesc.SizeExpression = &expr
+
+			codeBuilder := &strings.Builder{}
+			typePrinter := NewTypePrinter("test/package")
+			options := &CodeGeneratorOptions{ExtendedTypes: true}
+
+			err := generateSize(containerDesc, codeBuilder, typePrinter, "", options)
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// TestSizeOptionalError tests that sizeOptional propagates errors.
+func TestSizeOptionalError(t *testing.T) {
+	unsupportedDesc := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszType(255),
+		Kind:    reflect.Struct,
+	}
+
+	optionalDesc := &ssztypes.TypeDescriptor{
+		Type:         testDummyReflectType,
+		SszType:      ssztypes.SszOptionalType,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+		Kind:         reflect.Ptr,
+		ElemDesc:     unsupportedDesc,
+		GoTypeFlags:  ssztypes.GoTypeFlagIsPointer,
+	}
+
+	containerDesc := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszContainerType,
+		Kind:    reflect.Struct,
+		ContainerDesc: &ssztypes.ContainerDescriptor{
+			Fields: []ssztypes.FieldDescriptor{
+				{Name: "Opt", Type: optionalDesc},
+			},
+		},
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{ExtendedTypes: true}
+
+	err := generateSize(containerDesc, codeBuilder, typePrinter, "", options)
+	if err == nil {
+		t.Error("expected error for optional with unsupported inner type")
+	}
+}
+
 // TestSizeProgressiveListError tests that progressive lists properly propagate errors.
 func TestSizeProgressiveListError(t *testing.T) {
 	unsupportedElemDesc := &ssztypes.TypeDescriptor{

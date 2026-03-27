@@ -329,22 +329,7 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 	// auto-detect ssz type if not specified
 	if sszType == SszUnspecifiedType {
 		// detect some well-known and widely used types
-		switch {
-		case t.PkgPath() == "time" && t.Name() == "Time":
-			sszType = SszUint64Type
-		case t.PkgPath() == "math/big" && t.Name() == "Int":
-			sszType = SszBigIntType
-		case t.PkgPath() == "github.com/holiman/uint256" && t.Name() == "Int":
-			sszType = SszUint256Type
-		case t.PkgPath() == "github.com/prysmaticlabs/go-bitfield" && t.Name() == "Bitlist":
-			sszType = SszBitlistType
-		case t.PkgPath() == "github.com/OffchainLabs/go-bitfield" && t.Name() == "Bitlist":
-			sszType = SszBitlistType
-		case t.PkgPath() == "github.com/pk910/dynamic-ssz" && strings.HasPrefix(t.Name(), "CompatibleUnion["):
-			sszType = SszCompatibleUnionType
-		case t.PkgPath() == "github.com/pk910/dynamic-ssz" && strings.HasPrefix(t.Name(), "TypeWrapper["):
-			sszType = SszTypeWrapperType
-		}
+		sszType = getWellKnownExternalType(t.PkgPath(), t.Name())
 	}
 	if sszType == SszUnspecifiedType {
 		switch desc.Kind {
@@ -408,7 +393,7 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 		case reflect.UnsafePointer:
 			return nil, sszutils.NewSszError(sszutils.ErrUnsupportedType, "unsafe pointers are not supported in SSZ")
 		default:
-			return nil, sszutils.NewSszErrorf(sszutils.ErrUnsupportedType, "unsupported type kind: %v", t.Kind())
+			break
 		}
 
 		// special case for bitlists
@@ -422,7 +407,7 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 	// Check type compatibility and compute size
 	switch sszType {
 	case SszUnspecifiedType:
-		return nil, sszutils.NewSszErrorf(sszutils.ErrUnsupportedType, "unspecified SSZ type for %v", t)
+		return nil, sszutils.NewSszErrorf(sszutils.ErrUnsupportedType, "unsupported type kind: %v", t.Kind())
 
 	// basic types
 	case SszBoolType:
@@ -484,7 +469,7 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 		if len(sizeHints) > 0 && sizeHints[0].Bits {
 			return nil, sszutils.NewSszError(sszutils.ErrInvalidConstraint, "uint128 ssz type cannot be limited by bits, use regular size tag instead")
 		}
-		err := tc.buildUint128Descriptor(desc, t) // handle as [16]uint8 or [2]uint64
+		err := tc.buildUintDescriptor(desc, t, 16, "uint128") // handle as [16]uint8 or [2]uint64
 		if err != nil {
 			return nil, err
 		}
@@ -492,7 +477,7 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 		if len(sizeHints) > 0 && sizeHints[0].Bits {
 			return nil, sszutils.NewSszError(sszutils.ErrInvalidConstraint, "uint256 ssz type cannot be limited by bits, use regular size tag instead")
 		}
-		err := tc.buildUint256Descriptor(desc, t) // handle as [32]uint8 or [4]uint64
+		err := tc.buildUintDescriptor(desc, t, 32, "uint256") // handle as [32]uint8 or [4]uint64
 		if err != nil {
 			return nil, err
 		}
@@ -764,17 +749,15 @@ func (tc *TypeCache) buildTypeWrapperDescriptor(desc *TypeDescriptor, runtimeTyp
 }
 
 // buildUint128Descriptor builds a descriptor for uint128 types
-//
-//nolint:dupl // intentionally similar to buildUint256Descriptor; differ only in size constant and error messages
-func (tc *TypeCache) buildUint128Descriptor(desc *TypeDescriptor, t reflect.Type) error {
+func (tc *TypeCache) buildUintDescriptor(desc *TypeDescriptor, t reflect.Type, byteLen uint32, typeName string) error {
 	if desc.Kind != reflect.Slice && desc.Kind != reflect.Array {
-		return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "uint128 ssz type can only be represented by slice or array types, got %v", desc.Kind)
+		return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "%s ssz type can only be represented by slice or array types, got %v", typeName, desc.Kind)
 	}
 
 	fieldType := t.Elem()
 	elemKind := fieldType.Kind()
 	if elemKind != reflect.Uint8 && elemKind != reflect.Uint64 {
-		return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "uint128 ssz type can only be represented by slices or arrays of uint8 or uint64, got %v", elemKind)
+		return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "%s ssz type can only be represented by slices or arrays of uint8 or uint64, got %v", typeName, elemKind)
 	} else if elemKind == reflect.Uint8 {
 		desc.GoTypeFlags |= GoTypeFlagIsByteArray
 	}
@@ -785,46 +768,13 @@ func (tc *TypeCache) buildUint128Descriptor(desc *TypeDescriptor, t reflect.Type
 	}
 
 	desc.ElemDesc = elemDesc
-	desc.Size = 16 // hardcoded size for uint128
+	desc.Size = byteLen
 	desc.Len = desc.Size / elemDesc.Size
 
 	if desc.Kind == reflect.Array {
 		dstLen := uint32(t.Len())
 		if dstLen < desc.Len {
-			return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "uint128 ssz type does not fit in array (%d < %d)", dstLen, desc.Len)
-		}
-	}
-
-	return nil
-}
-
-//nolint:dupl // intentionally similar to buildUint128Descriptor; differ only in size constant and error messages
-func (tc *TypeCache) buildUint256Descriptor(desc *TypeDescriptor, t reflect.Type) error {
-	if desc.Kind != reflect.Slice && desc.Kind != reflect.Array {
-		return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "uint256 ssz type can only be represented by slice or array types, got %v", desc.Kind)
-	}
-
-	fieldType := t.Elem()
-	elemKind := fieldType.Kind()
-	if elemKind != reflect.Uint8 && elemKind != reflect.Uint64 {
-		return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "uint256 ssz type can only be represented by slices or arrays of uint8 or uint64, got %v", elemKind)
-	} else if elemKind == reflect.Uint8 {
-		desc.GoTypeFlags |= GoTypeFlagIsByteArray
-	}
-
-	elemDesc, err := tc.getTypeDescriptor(fieldType, fieldType, nil, nil, nil)
-	if err != nil {
-		return err
-	}
-
-	desc.ElemDesc = elemDesc
-	desc.Size = 32 // hardcoded size for uint256
-	desc.Len = desc.Size / elemDesc.Size
-
-	if desc.Kind == reflect.Array {
-		dstLen := uint32(t.Len())
-		if dstLen < desc.Len {
-			return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "uint256 ssz type does not fit in array (%d < %d)", dstLen, desc.Len)
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "%s ssz type does not fit in array (%d < %d)", typeName, dstLen, desc.Len)
 		}
 	}
 
@@ -1432,12 +1382,8 @@ func (tc *TypeCache) extractGenericTypeParameter(unionType reflect.Type) (reflec
 // representation. This hash uniquely identifies the type's SSZ layout and is
 // used by the code generator to detect when a type's structure has changed and
 // regeneration is needed.
-func (td *TypeDescriptor) GetTypeHash() ([32]byte, error) {
-	jsonDesc, err := json.Marshal(td)
-	if err != nil {
-		return [32]byte{}, err
-	}
-
+func (td *TypeDescriptor) GetTypeHash() [32]byte {
+	jsonDesc, _ := json.Marshal(td)
 	hash := sha256.Sum256(jsonDesc)
-	return hash, nil
+	return hash
 }

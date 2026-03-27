@@ -303,6 +303,83 @@ func TestMarshalProgressiveContainerError(t *testing.T) {
 	}
 }
 
+// TestMarshalOptionalError tests that marshalOptional propagates errors from inner types.
+func TestMarshalOptionalError(t *testing.T) {
+	unsupportedDesc := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszType(255),
+		Kind:    reflect.Struct,
+	}
+
+	optionalDesc := &ssztypes.TypeDescriptor{
+		Type:         testDummyReflectType,
+		SszType:      ssztypes.SszOptionalType,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+		Kind:         reflect.Pointer,
+		ElemDesc:     unsupportedDesc,
+		GoTypeFlags:  ssztypes.GoTypeFlagIsPointer,
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{ExtendedTypes: true}
+
+	err := generateMarshal(optionalDesc, codeBuilder, typePrinter, "", options)
+	if err == nil {
+		t.Error("expected error for optional with unsupported inner type")
+	}
+}
+
+// TestMarshalBigIntType tests that marshalBigInt generates code.
+func TestMarshalBigIntType(t *testing.T) {
+	bigIntDesc := &ssztypes.TypeDescriptor{
+		Type:         testDummyReflectType,
+		SszType:      ssztypes.SszBigIntType,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+		Kind:         reflect.Struct,
+		Size:         0,
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{ExtendedTypes: true}
+
+	err := generateMarshal(bigIntDesc, codeBuilder, typePrinter, "", options)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestMarshalCustomType tests that marshalType handles custom types.
+func TestMarshalCustomType(t *testing.T) {
+	customDesc := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszCustomType,
+		Kind:    reflect.Struct,
+		Size:    8,
+	}
+
+	containerDesc := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszContainerType,
+		Kind:    reflect.Struct,
+		ContainerDesc: &ssztypes.ContainerDescriptor{
+			Fields: []ssztypes.FieldDescriptor{
+				{Name: "F1", Type: customDesc},
+			},
+		},
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{}
+
+	err := generateMarshal(containerDesc, codeBuilder, typePrinter, "", options)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 // TestMarshalProgressiveListError tests that progressive lists properly propagate errors.
 func TestMarshalProgressiveListError(t *testing.T) {
 	unsupportedElemDesc := &ssztypes.TypeDescriptor{

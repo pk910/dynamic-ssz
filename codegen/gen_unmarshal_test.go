@@ -249,6 +249,53 @@ func TestUnmarshalTypeWrapperWithNestedUnsupportedType(t *testing.T) {
 	}
 }
 
+// TestUnmarshalOptionalError tests that unmarshalOptional propagates errors from inner types.
+func TestUnmarshalOptionalError(t *testing.T) {
+	unsupportedDesc := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszType(255),
+		Kind:    reflect.Struct,
+	}
+
+	optionalDesc := &ssztypes.TypeDescriptor{
+		Type:         testDummyReflectType,
+		SszType:      ssztypes.SszOptionalType,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+		Kind:         reflect.Pointer,
+		ElemDesc:     unsupportedDesc,
+		GoTypeFlags:  ssztypes.GoTypeFlagIsPointer,
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{ExtendedTypes: true}
+
+	err := generateUnmarshal(optionalDesc, codeBuilder, typePrinter, "", options)
+	if err == nil {
+		t.Error("expected error for optional with unsupported inner type")
+	}
+}
+
+// TestUnmarshalBigIntType tests that unmarshalBigInt generates code.
+func TestUnmarshalBigIntType(t *testing.T) {
+	bigIntDesc := &ssztypes.TypeDescriptor{
+		Type:         testDummyReflectType,
+		SszType:      ssztypes.SszBigIntType,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+		Kind:         reflect.Struct,
+		Size:         0,
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{ExtendedTypes: true}
+
+	err := generateUnmarshal(bigIntDesc, codeBuilder, typePrinter, "", options)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 // TestUnmarshalProgressiveListError tests that progressive lists properly propagate errors.
 func TestUnmarshalProgressiveListError(t *testing.T) {
 	unsupportedElemDesc := &ssztypes.TypeDescriptor{

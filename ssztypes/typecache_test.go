@@ -602,15 +602,8 @@ func TestTypeDescriptor_GetTypeHash(t *testing.T) {
 		t.Fatalf("Failed to get type descriptor: %v", err)
 	}
 
-	hash1, err := desc.GetTypeHash()
-	if err != nil {
-		t.Errorf("Failed to get type hash: %v", err)
-	}
-
-	hash2, err := desc.GetTypeHash()
-	if err != nil {
-		t.Errorf("Failed to get type hash second time: %v", err)
-	}
+	hash1 := desc.GetTypeHash()
+	hash2 := desc.GetTypeHash()
 
 	if hash1 != hash2 {
 		t.Error("Type hash should be consistent")
@@ -622,10 +615,7 @@ func TestTypeDescriptor_GetTypeHash(t *testing.T) {
 		t.Fatalf("Failed to get second type descriptor: %v", err)
 	}
 
-	hash3, err := desc2.GetTypeHash()
-	if err != nil {
-		t.Errorf("Failed to get second type hash: %v", err)
-	}
+	hash3 := desc2.GetTypeHash()
 
 	if hash1 == hash3 {
 		t.Error("Different types should have different hashes")
@@ -1981,9 +1971,90 @@ func TestListWithDynamicSizeAccepted(t *testing.T) {
 	}
 }
 
+// Test numeric dynssz-size override to cover getSszSizeTag line 276 (err==nil branch)
+func TestTypeCache_NumericDynSszSizeOverride(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	cache := NewTypeCache(ds)
+
+	type TestStruct struct {
+		Data []byte `ssz-size:"32" dynssz-size:"64"`
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if desc.ContainerDesc == nil || len(desc.ContainerDesc.Fields) == 0 {
+		t.Fatal("expected container with fields")
+	}
+
+	field := desc.ContainerDesc.Fields[0]
+	if field.Type.Len != 64 {
+		t.Errorf("expected Len 64 from dynssz-size override, got %d", field.Type.Len)
+	}
+	if field.Type.SszType != SszVectorType {
+		t.Errorf("expected SszVectorType, got %v", field.Type.SszType)
+	}
+}
+
+// Test annotation with expression-based dynssz-size resolved by TypeCache specs
+// (covers typecache.go lines 152-156: annotation Expr resolution)
+func TestTypeCache_AnnotationSizeExprResolution(t *testing.T) {
+	type annotatedVec []byte
+	sszutils.Annotate[annotatedVec](`ssz-size:"32" dynssz-size:"TEST_ANN_SIZE"`)
+
+	ds := &dummyDynamicSpecs{
+		specValues: map[string]uint64{
+			"TEST_ANN_SIZE": 64,
+		},
+	}
+	cache := NewTypeCache(ds)
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(annotatedVec{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if desc.Len != 64 {
+		t.Errorf("expected Len 64 from annotation expr resolution, got %d", desc.Len)
+	}
+	if desc.SszTypeFlags&SszTypeFlagHasDynamicSize == 0 {
+		t.Error("expected SszTypeFlagHasDynamicSize to be set")
+	}
+	if desc.SszTypeFlags&SszTypeFlagHasSizeExpr == 0 {
+		t.Error("expected SszTypeFlagHasSizeExpr to be set")
+	}
+}
+
+// Test annotation with expression-based dynssz-max resolved by TypeCache specs
+// (covers typecache.go lines 161-166: annotation max Expr resolution)
+func TestTypeCache_AnnotationMaxExprResolution(t *testing.T) {
+	type annotatedMaxList []byte
+	sszutils.Annotate[annotatedMaxList](`ssz-max:"100" dynssz-max:"TEST_ANN_MAX"`)
+
+	ds := &dummyDynamicSpecs{
+		specValues: map[string]uint64{
+			"TEST_ANN_MAX": 200,
+		},
+	}
+	cache := NewTypeCache(ds)
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(annotatedMaxList{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if desc.Limit != 200 {
+		t.Errorf("expected Limit 200 from annotation max expr resolution, got %d", desc.Limit)
+	}
+	if desc.SszTypeFlags&SszTypeFlagHasDynamicMax == 0 {
+		t.Error("expected SszTypeFlagHasDynamicMax to be set")
+	}
+}
+
 func TestParseTags_DynMaxNumericOverride(t *testing.T) {
-	// Covers ssztags.go line 625-626: dynssz-max with a numeric value
-	// that differs from ssz-max, triggering the isExpr=false override path.
+	// dynssz-max with a numeric value that differs from ssz-max
 	_, _, maxHints, err := ParseTags(`ssz-max:"10" dynssz-max:"20"`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1995,6 +2066,26 @@ func TestParseTags_DynMaxNumericOverride(t *testing.T) {
 
 	if maxHints[0].Size != 20 {
 		t.Fatalf("expected dynssz-max override to 20, got %d", maxHints[0].Size)
+	}
+}
+
+// Test dynssz-max expression without corresponding ssz-max tag
+// (covers the fixed continue placement in ParseTags dynssz-max)
+func TestParseTags_DynMaxExprWithoutSszMax(t *testing.T) {
+	_, _, maxHints, err := ParseTags(`dynssz-max:"SOME_MAX_EXPR"`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(maxHints) != 1 {
+		t.Fatalf("expected 1 max hint, got %d", len(maxHints))
+	}
+
+	if maxHints[0].Expr != "SOME_MAX_EXPR" {
+		t.Errorf("expected Expr 'SOME_MAX_EXPR', got %q", maxHints[0].Expr)
+	}
+	if !maxHints[0].Custom {
+		t.Error("expected Custom to be set")
 	}
 }
 
@@ -2015,6 +2106,49 @@ func TestTypeCache_AnnotationRegistryLookup(t *testing.T) {
 
 	if desc.Limit != 50 {
 		t.Fatalf("expected limit 50, got %d", desc.Limit)
+	}
+}
+
+func TestGetWellKnownExternalType(t *testing.T) {
+	tests := []struct {
+		pkgPath  string
+		name     string
+		expected SszType
+	}{
+		{"time", "Time", SszUint64Type},
+		{"math/big", "Int", SszBigIntType},
+		{"github.com/holiman/uint256", "Int", SszUint256Type},
+		{"github.com/prysmaticlabs/go-bitfield", "Bitlist", SszBitlistType},
+		{"github.com/OffchainLabs/go-bitfield", "Bitlist", SszBitlistType},
+		{"github.com/pk910/dynamic-ssz", "CompatibleUnion[Foo]", SszCompatibleUnionType},
+		{"github.com/pk910/dynamic-ssz", "TypeWrapper[Bar]", SszTypeWrapperType},
+		{"unknown/pkg", "Unknown", SszUnspecifiedType},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.pkgPath+"."+tt.name, func(t *testing.T) {
+			got := getWellKnownExternalType(tt.pkgPath, tt.name)
+			if got != tt.expected {
+				t.Errorf("expected %v, got %v", tt.expected, got)
+			}
+		})
+	}
+}
+
+// Test that buildUintDescriptor propagates element descriptor errors
+// (covers the err != nil branch in getTypeDescriptor for elem type)
+func TestTypeCache_UintDescriptorElemError(t *testing.T) {
+	type badElemUint64 uint64
+	sszutils.Annotate[badElemUint64](`ssz-size:"notanumber"`)
+
+	cache := NewTypeCache(nil)
+
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf([2]badElemUint64{}), nil, nil, []SszTypeHint{{Type: SszUint128Type}})
+	if err == nil {
+		t.Fatal("expected error from bad element annotation")
+	}
+	if !strings.Contains(err.Error(), "notanumber") {
+		t.Errorf("expected error about bad annotation, got: %s", err.Error())
 	}
 }
 
