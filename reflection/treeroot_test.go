@@ -2012,3 +2012,27 @@ func TestBuildRootFromProgressiveContainerError(t *testing.T) {
 		t.Error("expected error for progressive container error")
 	}
 }
+
+// TestVectorCollapseEvery256 exercises the Collapse() call that fires every
+// 256th element during vector (fixed-size array) hash tree root computation.
+// This covers treeroot.go buildRootFromVector's `(i+1)%256 == 0` branch.
+func TestVectorCollapseEvery256(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type LargeVector struct {
+		Data [260]uint32
+	}
+
+	input := LargeVector{}
+	for i := range input.Data {
+		input.Data[i] = uint32(i)
+	}
+
+	hash, err := dynssz.HashTreeRoot(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hash == [32]byte{} {
+		t.Error("hash should not be zero")
+	}
+}
