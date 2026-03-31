@@ -642,3 +642,82 @@ func TestGenerateSSZViewMethodsErrorPaths(t *testing.T) {
 		})
 	}
 }
+
+// TestGenerateWithReflectViews tests code generation using the reflect-based
+// view type API (WithReflectType + WithReflectViewTypes). This exercises the
+// reflect type analysis path in analyzeTypes.
+func TestGenerateWithReflectViews(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	baseType := reflect.TypeOf((*SimpleTestStruct)(nil)).Elem()
+	viewType := reflect.TypeOf((*SimpleViewStruct)(nil)).Elem()
+
+	cg.BuildFile("test.go",
+		WithReflectType(baseType, WithReflectViewTypes(viewType)),
+	)
+
+	_, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("GenerateToMap failed: %v", err)
+	}
+}
+
+// TestGenerateWithViewOnly tests code generation using view-only mode
+// via the reflect API.
+func TestGenerateWithViewOnly(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	baseType := reflect.TypeOf((*SimpleTestStruct)(nil)).Elem()
+	viewType := reflect.TypeOf((*SimpleViewStruct)(nil)).Elem()
+
+	cg.BuildFile("test.go",
+		WithReflectType(baseType,
+			WithViewOnly(),
+			WithReflectViewTypes(viewType),
+		),
+	)
+
+	_, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("GenerateToMap failed: %v", err)
+	}
+}
+
+// TestGenerateFileNoTypes tests the generateFile error when no types are provided.
+func TestGenerateFileNoTypes(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	_, err := cg.generateFile("test/package", &CodeGeneratorFileOptions{})
+	if err == nil {
+		t.Error("expected error for empty types")
+	}
+}
+
+// TestGenerateFileNilDescriptor tests generateFile error when descriptor is nil.
+func TestGenerateFileNilDescriptor(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	opts := &CodeGeneratorFileOptions{
+		Types: []*CodeGeneratorTypeOptions{
+			{TypeName: "BadType"},
+		},
+	}
+	_, err := cg.generateFile("test/package", opts)
+	if err == nil {
+		t.Error("expected error for nil descriptor")
+	}
+}
+
+// TestGenerateViewTypeAnalysisError tests that analyzeTypes returns an error
+// when a view type is incompatible with the base type.
+func TestGenerateViewTypeAnalysisError(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	baseType := reflect.TypeOf((*SimpleTestStruct)(nil)).Elem()
+	// SimpleTestStruct2 has incompatible field types (uint32 vs uint64)
+	badViewType := reflect.TypeOf((*SimpleTestStruct2)(nil)).Elem()
+
+	cg.BuildFile("test.go",
+		WithReflectType(baseType, WithReflectViewTypes(badViewType)),
+	)
+
+	_, err := cg.GenerateToMap()
+	if err == nil {
+		t.Error("expected error for incompatible view type")
+	}
+}

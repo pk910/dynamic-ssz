@@ -705,6 +705,29 @@ var CoverageTypes7_Specs = map[string]any{
 	"SC_SIZE": 6,
 }
 
+// NoDynExprTypes mirrors common SSZ patterns but is generated with
+// -without-dynamic-expressions to exercise the expression-stripping
+// branches in every generator.
+type NoDynExprTypes struct {
+	Vec8   []uint8  `ssz-size:"4" dynssz-size:"VEC8_SIZE"`
+	Vec32  []uint32 `ssz-size:"4" dynssz-size:"VEC32_SIZE"`
+	BitVec []byte   `ssz-type:"bitvector" ssz-size:"8" dynssz-size:"BITVEC_SIZE"`
+	Lst8   []uint8  `ssz-max:"4" dynssz-max:"LST8_MAX"`
+	Lst32  []uint32 `ssz-max:"4" dynssz-max:"LST32_MAX"`
+	BitLst []byte   `ssz-max:"16" dynssz-max:"BITLST_MAX"`
+	Str1   string   `ssz-max:"8" dynssz-max:"STR_MAX"`
+}
+
+var NoDynExprTypes_Payload = NoDynExprTypes{
+	Vec8:   []uint8{1, 2, 3, 4},
+	Vec32:  []uint32{1, 2, 3, 4},
+	BitVec: []byte{1, 2, 3, 4, 5, 6, 7, 8},
+	Lst8:   []uint8{1, 2, 3, 4},
+	Lst32:  []uint32{1, 2, 3, 4},
+	BitLst: []byte{1, 2, 3, 4},
+	Str1:   "hello",
+}
+
 // InterpretedAnnotatedList tests Annotate with an interpreted (double-quoted) string literal.
 type InterpretedAnnotatedList []uint32
 
@@ -764,21 +787,27 @@ var ViewTypes3_Payload = ViewTypes3_Base{
 // CoverageTypes3 covers: uint256 type (both [32]byte and [4]uint64 forms),
 // pointer bitlist, and string vector with dynssz-size.
 type CoverageTypes3 struct {
-	U256_1  [32]byte  `ssz-type:"uint256"`
-	U256_2  [4]uint64 `ssz-type:"uint256"`
-	StrVec  string    `ssz-size:"10" dynssz-size:"STR_VEC_SIZE"`
-	PtrBool *bool
+	U256_1    [32]byte  `ssz-type:"uint256"`
+	U256_2    [4]uint64 `ssz-type:"uint256"`
+	StrVec    string    `ssz-size:"10" dynssz-size:"STR_VEC_SIZE"`
+	PtrBool   *bool
+	PtrStrVec *string `ssz-size:"8"`
+	PtrStrLst *string `ssz-max:"16"`
 }
 
 var (
 	covBool = true
+	covStr1 = "teststr1"
+	covStr2 = "hello"
 )
 
 var CoverageTypes3_Payload = CoverageTypes3{
-	U256_1:  [32]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32},
-	U256_2:  [4]uint64{1, 2, 3, 4},
-	StrVec:  "helloworld",
-	PtrBool: &covBool,
+	U256_1:    [32]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32},
+	U256_2:    [4]uint64{1, 2, 3, 4},
+	StrVec:    "helloworld",
+	PtrBool:   &covBool,
+	PtrStrVec: &covStr1,
+	PtrStrLst: &covStr2,
 }
 
 var CoverageTypes3_Specs = map[string]any{

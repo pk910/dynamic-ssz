@@ -4,3 +4,4 @@ package tests
 //go:generate go run -cover ../../dynssz-gen -package . -with-streaming -with-extended-types -types ExtendedTypes1,CoverageTypes2,CoverageTypes3,CoverageTypes4,CoverageTypes5,CoverageTypes6 -output gen_extended.go
 //go:generate go run -cover ../../dynssz-gen -package . -with-streaming -types AnnotatedList,AnnotatedList2,AnnotatedByteList,AnnotatedWithSpecs,AnnotatedContainer,AnnotatedOverrideContainer,AnnotatedSpecsContainer,AnnotatedNestedContainer:gen_annotated.go,AnnotatedNestedContainer_S:gen_annotated.go -output gen_annotated.go
 //go:generate go run -cover ../../dynssz-gen -package . -with-streaming -types ViewTypes4_Base:gen_viewtypes4.go:views=ViewTypes4_View1 -output gen_viewtypes4.go
+//go:generate go run -cover ../../dynssz-gen -package . -with-streaming -without-dynamic-expressions -types NoDynExprTypes -output gen_nodynexpr.go

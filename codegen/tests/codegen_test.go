@@ -206,6 +206,10 @@ func TestCodegenCoverageTypes7(t *testing.T) {
 	testCodegenPayloadByReflection(t, CoverageTypes7_Payload, CoverageTypes7_Specs)
 }
 
+func TestCodegenNoDynExprTypes(t *testing.T) {
+	testCodegenPayloadByReflection(t, NoDynExprTypes_Payload, nil)
+}
+
 // TestCodegenViewTypes2 tests nested view dispatch: a container whose child
 // has view dispatch methods. This exercises the isView code paths in all
 // generators (marshal, unmarshal, encoder, decoder, size, hash).

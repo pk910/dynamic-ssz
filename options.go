@@ -92,7 +92,11 @@ type callConfig struct {
 }
 
 // applyCallOptions applies all provided CallOptions to a callConfig and returns it.
+// Returns nil when no options are provided to avoid heap allocation in the common case.
 func applyCallOptions(opts []CallOption) *callConfig {
+	if len(opts) == 0 {
+		return nil
+	}
 	cfg := &callConfig{}
 	for _, opt := range opts {
 		opt(cfg)

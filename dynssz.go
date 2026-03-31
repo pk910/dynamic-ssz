@@ -212,7 +212,7 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 	cfg := applyCallOptions(opts)
 
 	// Skip view descriptor logic for types implementing DynamicMarshaler (they handle their own serialization)
-	if cfg.viewDescriptor == nil {
+	if cfg == nil || cfg.viewDescriptor == nil {
 		if marshaler, ok := source.(sszutils.DynamicMarshaler); ok {
 			var buf []byte
 			if sizer, ok := source.(sszutils.DynamicSizer); ok {
@@ -309,7 +309,7 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 	cfg := applyCallOptions(opts)
 
 	// Skip view descriptor logic for types implementing DynamicMarshaler
-	if cfg.viewDescriptor == nil {
+	if cfg == nil || cfg.viewDescriptor == nil {
 		if marshaler, ok := source.(sszutils.DynamicMarshaler); ok {
 			return marshaler.MarshalSSZDyn(d, buf)
 		}
@@ -400,7 +400,7 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 	encoder := sszutils.NewStreamEncoder(w, d.options.StreamWriterBufferSize)
 
 	// Skip view descriptor logic for types implementing DynamicEncoder
-	if cfg.viewDescriptor == nil {
+	if cfg == nil || cfg.viewDescriptor == nil {
 		if sszEncoder, ok := source.(sszutils.DynamicEncoder); ok {
 			err := sszEncoder.MarshalSSZEncoder(d, encoder)
 			if err != nil {
@@ -480,7 +480,7 @@ func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error) {
 	cfg := applyCallOptions(opts)
 
 	// Skip view descriptor logic for types implementing DynamicSizer
-	if cfg.viewDescriptor == nil {
+	if cfg == nil || cfg.viewDescriptor == nil {
 		if sizer, ok := source.(sszutils.DynamicSizer); ok {
 			return sizer.SizeSSZDyn(d), nil
 		}
@@ -551,7 +551,7 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 	cfg := applyCallOptions(opts)
 
 	// Skip view descriptor logic for types implementing DynamicUnmarshaler
-	if cfg.viewDescriptor == nil {
+	if cfg == nil || cfg.viewDescriptor == nil {
 		if unmarshaler, ok := target.(sszutils.DynamicUnmarshaler); ok {
 			return unmarshaler.UnmarshalSSZDyn(d, ssz)
 		}
@@ -666,7 +666,7 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 	decoder.PushLimit(size)
 
 	// Skip view descriptor logic for types implementing DynamicDecoder
-	if cfg.viewDescriptor == nil {
+	if cfg == nil || cfg.viewDescriptor == nil {
 		if sszDecoder, ok := target.(sszutils.DynamicDecoder); ok {
 			err := sszDecoder.UnmarshalSSZDecoder(d, decoder)
 			if err != nil {
@@ -827,7 +827,7 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...Ca
 	cfg := applyCallOptions(opts)
 
 	// Skip view descriptor logic for types implementing DynamicHashRoot
-	if cfg.viewDescriptor == nil {
+	if cfg == nil || cfg.viewDescriptor == nil {
 		if hasher, ok := source.(sszutils.DynamicHashRoot); ok {
 			err := hasher.HashTreeRootWithDyn(d, hh)
 			if err != nil {

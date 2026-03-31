@@ -599,9 +599,148 @@ func TestFindAnnotateCall_InterpretedString(t *testing.T) {
 }
 
 func TestParseAnnotateTag_InvalidTag(t *testing.T) {
-	// Covers main.go:443-444 (ParseTags error)
 	_, err := parseAnnotateTag(`ssz-size:"notanumber"`)
 	if err == nil {
 		t.Fatal("expected error for invalid tag")
+	}
+}
+
+func TestParseViewTypeRef(t *testing.T) {
+	tests := []struct {
+		input    string
+		wantPkg  string
+		wantType string
+	}{
+		{"LocalType", "", "LocalType"},
+		{"github.com/pkg.RemoteType", "github.com/pkg", "RemoteType"},
+		{"pkg/sub.Type", "pkg/sub", "Type"},
+	}
+	for _, tt := range tests {
+		ref := parseViewTypeRef(tt.input)
+		if ref.PackagePath != tt.wantPkg {
+			t.Errorf("parseViewTypeRef(%q).PackagePath = %q, want %q", tt.input, ref.PackagePath, tt.wantPkg)
+		}
+		if ref.TypeName != tt.wantType {
+			t.Errorf("parseViewTypeRef(%q).TypeName = %q, want %q", tt.input, ref.TypeName, tt.wantType)
+		}
+	}
+}
+
+func TestParseTypeSpecs(t *testing.T) {
+	t.Run("OutputPrefix", func(t *testing.T) {
+		specs, err := parseTypeSpecs("MyType:output=custom.go", "default.go")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if specs[0].OutputFile != "custom.go" {
+			t.Errorf("expected custom.go, got %s", specs[0].OutputFile)
+		}
+	})
+
+	t.Run("EmptyParts", func(t *testing.T) {
+		specs, err := parseTypeSpecs("MyType::viewonly", "out.go")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !specs[0].IsViewOnly {
+			t.Error("expected viewonly to be set")
+		}
+	})
+
+	t.Run("MissingOutput", func(t *testing.T) {
+		_, err := parseTypeSpecs("MyType", "")
+		if err == nil {
+			t.Fatal("expected error for missing output")
+		}
+	})
+
+	t.Run("EmptyInput", func(t *testing.T) {
+		specs, err := parseTypeSpecs(",  ,", "out.go")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(specs) != 0 {
+			t.Errorf("expected 0 specs, got %d", len(specs))
+		}
+	})
+}
+
+func TestRun_ViewTypeNotFound(t *testing.T) {
+	config := Config{
+		PackagePath: "github.com/pk910/dynamic-ssz/codegen/tests",
+		TypeNames:   "SimpleTypes1:output.go:views=NonExistentView",
+		OutputFile:  "output.go",
+		PackageName: "tests",
+	}
+
+	err := run(config)
+	if err == nil {
+		t.Fatal("expected error for non-existent view type")
+	}
+	if !strings.Contains(err.Error(), "view type") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRun_ExternalViewType(t *testing.T) {
+	tmpDir := t.TempDir()
+	outFile := filepath.Join(tmpDir, "gen_output.go")
+
+	config := Config{
+		PackagePath: "github.com/pk910/dynamic-ssz/codegen/tests",
+		TypeNames:   "ViewTypes1_Base:" + outFile + ":views=ViewTypes1_View1;github.com/pk910/dynamic-ssz/codegen/tests/views.ViewTypes1_View3",
+		PackageName: "tests",
+	}
+
+	err := run(config)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRun_ExternalViewTypeError(t *testing.T) {
+	config := Config{
+		PackagePath: "github.com/pk910/dynamic-ssz/codegen/tests",
+		TypeNames:   "SimpleTypes1:output.go:views=nonexistent/pkg.BadType",
+		OutputFile:  "output.go",
+		PackageName: "tests",
+	}
+
+	err := run(config)
+	if err == nil {
+		t.Fatal("expected error for bad external view type")
+	}
+}
+
+func TestRun_VerboseViewTypes(t *testing.T) {
+	tmpDir := t.TempDir()
+	outFile := filepath.Join(tmpDir, "gen_output.go")
+
+	config := Config{
+		PackagePath: "github.com/pk910/dynamic-ssz/codegen/tests",
+		TypeNames:   "ViewTypes1_Base:" + outFile + ":views=ViewTypes1_View1",
+		PackageName: "tests",
+		Verbose:     true,
+	}
+
+	err := run(config)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRun_ViewOnlyType(t *testing.T) {
+	tmpDir := t.TempDir()
+	outFile := filepath.Join(tmpDir, "gen_output.go")
+
+	config := Config{
+		PackagePath: "github.com/pk910/dynamic-ssz/codegen/tests",
+		TypeNames:   "ViewTypes3_Base:" + outFile + ":views=ViewTypes3_View1:viewonly",
+		PackageName: "tests",
+	}
+
+	err := run(config)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

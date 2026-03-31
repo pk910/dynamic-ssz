@@ -409,3 +409,314 @@ func TestMarshalProgressiveListError(t *testing.T) {
 		t.Errorf("expected error containing 'unsupported SSZ type', got: %v", err)
 	}
 }
+
+// TestMarshalOptionalWithUnsupportedInner tests error propagation from optional inner type.
+func TestMarshalOptionalWithUnsupportedInner(t *testing.T) {
+	unsupportedInner := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszType(255),
+		Kind:    reflect.Uint8,
+	}
+
+	optDesc := &ssztypes.TypeDescriptor{
+		Type:     testDummyReflectType,
+		SszType:  ssztypes.SszOptionalType,
+		Kind:     reflect.Pointer,
+		ElemDesc: unsupportedInner,
+	}
+
+	containerDesc := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszContainerType,
+		Kind:    reflect.Struct,
+		ContainerDesc: &ssztypes.ContainerDescriptor{
+			Fields: []ssztypes.FieldDescriptor{
+				{Name: "F", Type: optDesc},
+			},
+		},
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{ExtendedTypes: true}
+
+	err := generateMarshal(containerDesc, codeBuilder, typePrinter, "", options)
+	if err == nil {
+		t.Error("expected error for optional with unsupported inner type")
+	}
+}
+
+// TestMarshalBitlistError tests error propagation for bitlist generation.
+func TestMarshalBitlistError(t *testing.T) {
+	bitlistDesc := &ssztypes.TypeDescriptor{
+		Type:         testDummySliceReflectType,
+		SszType:      ssztypes.SszBitlistType,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+		Kind:         reflect.Slice,
+		Limit:        16,
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{}
+
+	err := generateMarshal(bitlistDesc, codeBuilder, typePrinter, "", options)
+	if err != nil {
+		t.Errorf("unexpected error for bitlist: %v", err)
+	}
+}
+
+// TestMarshalUnionWithUnsupportedVariant tests error propagation from union variant.
+func TestMarshalUnionWithUnsupportedVariant(t *testing.T) {
+	unsupportedVariant := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszType(255),
+		Kind:    reflect.Uint8,
+	}
+
+	unionDesc := &ssztypes.TypeDescriptor{
+		Type:         testDummyReflectType,
+		SszType:      ssztypes.SszCompatibleUnionType,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+		Kind:         reflect.Struct,
+		UnionVariants: map[uint8]*ssztypes.TypeDescriptor{
+			0: unsupportedVariant,
+		},
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{}
+
+	err := generateMarshal(unionDesc, codeBuilder, typePrinter, "", options)
+	if err == nil {
+		t.Error("expected error for union with unsupported variant type")
+	}
+}
+
+// TestMarshalTypeWrapperWithUnsupportedInner tests error propagation from wrapper inner type.
+func TestMarshalTypeWrapperWithUnsupportedInner(t *testing.T) {
+	unsupportedInner := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszType(255),
+		Kind:    reflect.Uint8,
+	}
+
+	wrapperDesc := &ssztypes.TypeDescriptor{
+		Type:     testDummyReflectType,
+		SszType:  ssztypes.SszTypeWrapperType,
+		Kind:     reflect.Struct,
+		ElemDesc: unsupportedInner,
+		Size:     8,
+	}
+
+	containerDesc := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszContainerType,
+		Kind:    reflect.Struct,
+		ContainerDesc: &ssztypes.ContainerDescriptor{
+			Fields: []ssztypes.FieldDescriptor{
+				{Name: "W", Type: wrapperDesc},
+			},
+		},
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{}
+
+	err := generateMarshal(containerDesc, codeBuilder, typePrinter, "", options)
+	if err == nil {
+		t.Error("expected error for wrapper with unsupported inner type")
+	}
+}
+
+// TestMarshalContainerDynamicFieldError tests error propagation from dynamic container field.
+func TestMarshalContainerDynamicFieldError(t *testing.T) {
+	unsupportedElemDesc := &ssztypes.TypeDescriptor{
+		Type:         testDummyReflectType,
+		SszType:      ssztypes.SszType(255),
+		Kind:         reflect.Uint8,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+	}
+
+	containerDesc := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszContainerType,
+		Kind:    reflect.Struct,
+		ContainerDesc: &ssztypes.ContainerDescriptor{
+			Fields: []ssztypes.FieldDescriptor{
+				{Name: "F", Type: unsupportedElemDesc},
+			},
+		},
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{}
+
+	err := generateMarshal(containerDesc, codeBuilder, typePrinter, "", options)
+	if err == nil {
+		t.Error("expected error for container with unsupported dynamic field")
+	}
+}
+
+// TestMarshalContainerWithVectorOfUnsupported tests error propagation when a
+// container has a vector field whose elements are unsupported.
+func TestMarshalContainerWithVectorOfUnsupported(t *testing.T) {
+	unsupportedElem := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszType(255),
+		Kind:    reflect.Uint8,
+	}
+
+	vectorField := &ssztypes.TypeDescriptor{
+		Type:     testDummyArrayReflectType,
+		SszType:  ssztypes.SszVectorType,
+		Kind:     reflect.Array,
+		ElemDesc: unsupportedElem,
+		Len:      4,
+		Size:     4,
+	}
+
+	containerDesc := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszContainerType,
+		Kind:    reflect.Struct,
+		ContainerDesc: &ssztypes.ContainerDescriptor{
+			Fields: []ssztypes.FieldDescriptor{
+				{Name: "V", Type: vectorField},
+			},
+		},
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{}
+
+	err := generateMarshal(containerDesc, codeBuilder, typePrinter, "", options)
+	if err == nil {
+		t.Error("expected error for container with vector of unsupported elements")
+	}
+}
+
+// TestMarshalContainerWithListOfUnsupported tests error propagation when a
+// container has a dynamic list field whose elements are unsupported.
+func TestMarshalContainerWithListOfUnsupported(t *testing.T) {
+	unsupportedElem := &ssztypes.TypeDescriptor{
+		Type:         testDummyReflectType,
+		SszType:      ssztypes.SszType(255),
+		Kind:         reflect.Uint8,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+	}
+
+	listField := &ssztypes.TypeDescriptor{
+		Type:         testDummySliceReflectType,
+		SszType:      ssztypes.SszListType,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+		Kind:         reflect.Slice,
+		ElemDesc:     unsupportedElem,
+		Limit:        10,
+	}
+
+	containerDesc := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszContainerType,
+		Kind:    reflect.Struct,
+		ContainerDesc: &ssztypes.ContainerDescriptor{
+			Fields: []ssztypes.FieldDescriptor{
+				{Name: "L", Type: listField},
+			},
+		},
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{}
+
+	err := generateMarshal(containerDesc, codeBuilder, typePrinter, "", options)
+	if err == nil {
+		t.Error("expected error for container with list of unsupported elements")
+	}
+}
+
+// TestMarshalNestedContainerUnsupportedField tests that a container with a nested
+// container whose field is unsupported propagates the error through two levels.
+func TestMarshalNestedContainerUnsupportedField(t *testing.T) {
+	unsupportedField := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszType(255),
+		Kind:    reflect.Uint8,
+	}
+
+	innerContainer := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszContainerType,
+		Kind:    reflect.Struct,
+		ContainerDesc: &ssztypes.ContainerDescriptor{
+			Fields: []ssztypes.FieldDescriptor{
+				{Name: "Bad", Type: unsupportedField},
+			},
+		},
+	}
+
+	outerContainer := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszContainerType,
+		Kind:    reflect.Struct,
+		ContainerDesc: &ssztypes.ContainerDescriptor{
+			Fields: []ssztypes.FieldDescriptor{
+				{Name: "Inner", Type: innerContainer},
+			},
+		},
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{}
+
+	err := generateMarshal(outerContainer, codeBuilder, typePrinter, "", options)
+	if err == nil {
+		t.Error("expected error for nested container with unsupported field")
+	}
+}
+
+// TestMarshalContainerStaticPlusDynamicError tests that a container with a
+// static uint32 field and a dynamic unsupported field propagates the error
+// from the dynamic field path.
+func TestMarshalContainerStaticPlusDynamicError(t *testing.T) {
+	staticField := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszUint32Type,
+		Kind:    reflect.Uint32,
+		Size:    4,
+	}
+
+	unsupportedDynField := &ssztypes.TypeDescriptor{
+		Type:         testDummyReflectType,
+		SszType:      ssztypes.SszType(255),
+		Kind:         reflect.Uint8,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+	}
+
+	desc := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszContainerType,
+		Kind:    reflect.Struct,
+		ContainerDesc: &ssztypes.ContainerDescriptor{
+			Fields: []ssztypes.FieldDescriptor{
+				{Name: "S", Type: staticField},
+				{Name: "D", Type: unsupportedDynField},
+			},
+		},
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{}
+
+	err := generateMarshal(desc, codeBuilder, typePrinter, "", options)
+	if err == nil {
+		t.Error("expected error for container with static + dynamic unsupported field")
+	}
+}

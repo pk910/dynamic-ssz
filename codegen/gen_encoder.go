@@ -298,7 +298,7 @@ func (ctx *encoderContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 		}
 	}
 
-	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
+	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0
 	isFastsszMarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
 	useFastSsz := !ctx.options.NoFastSsz && isFastsszMarshaler && !hasDynamicSize
 	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
@@ -438,7 +438,7 @@ func (ctx *encoderContext) marshalContainer(desc *ssztypes.TypeDescriptor, varNa
 		switch {
 		case field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0:
 			staticSize += 4
-		case hasDynamic && field.Type.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions:
+		case hasDynamic && field.Type.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0:
 			sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(field.Type)
 			if err != nil {
 				return err
@@ -514,9 +514,6 @@ func (ctx *encoderContext) marshalContainer(desc *ssztypes.TypeDescriptor, varNa
 // marshalVector generates marshal code for SSZ vector (fixed-size array) types.
 func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	sizeExpression := desc.SizeExpression
-	if ctx.options.WithoutDynamicExpressions {
-		sizeExpression = nil
-	}
 
 	limitVar := ""
 	bitlimitVar := ""
@@ -724,9 +721,6 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 // marshalList generates marshal code for SSZ list (variable-size array) types.
 func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	maxExpression := desc.MaxExpression
-	if ctx.options.WithoutDynamicExpressions {
-		maxExpression = nil
-	}
 
 	hasMax := false
 	maxVar := ""
@@ -855,9 +849,6 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 
 func (ctx *encoderContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	maxExpression := desc.MaxExpression
-	if ctx.options.WithoutDynamicExpressions {
-		maxExpression = nil
-	}
 
 	hasMax := false
 	maxVar := ""

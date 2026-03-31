@@ -181,7 +181,7 @@ func (ctx *decoderContext) isInlinable(desc *ssztypes.TypeDescriptor) bool {
 	}
 
 	// Inline types with fastssz unmarshaler
-	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
+	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0
 	isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
 	useFastSsz := !ctx.options.NoFastSsz && isFastsszUnmarshaler && !hasDynamicSize
 	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
@@ -232,7 +232,7 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 		}
 	}
 
-	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
+	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0
 	isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
 	useFastSsz := !ctx.options.NoFastSsz && isFastsszUnmarshaler && !hasDynamicSize
 	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
@@ -259,7 +259,7 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 	}
 
 	if !isRoot && !isView {
-		hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
+		hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0
 		isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
 		useFastSsz := !ctx.options.NoFastSsz && isFastsszUnmarshaler && !hasDynamicSize
 		if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
@@ -428,7 +428,7 @@ func (ctx *decoderContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, var
 			staticSize += 4
 			hasDynamicFields = true
 		} else {
-			if field.Type.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+			if field.Type.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 {
 				sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(field.Type)
 				if err != nil {
 					return err
@@ -542,9 +542,6 @@ func (ctx *decoderContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, var
 // unmarshalVector generates unmarshal code for SSZ vector (fixed-size array) types.
 func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, noBufCheck bool) error {
 	sizeExpression := desc.SizeExpression
-	if ctx.options.WithoutDynamicExpressions {
-		sizeExpression = nil
-	}
 
 	limitVar := ""
 	bitlimitVar := ""
@@ -628,7 +625,7 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 		// static elements
 		var fieldSizeVar string
 		var err error
-		if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+		if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 {
 			fieldSizeVar, err = ctx.staticSizeVars.getStaticSizeVar(desc.ElemDesc)
 			if err != nil {
 				return err
@@ -770,9 +767,6 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 // unmarshalList generates unmarshal code for SSZ list (variable-size array) types.
 func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	maxExpression := desc.MaxExpression
-	if ctx.options.WithoutDynamicExpressions {
-		maxExpression = nil
-	}
 
 	hasMax := false
 	maxVar := ""
@@ -849,7 +843,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		// static elements
 		var fieldSizeVar string
 		var err error
-		if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+		if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 {
 			fieldSizeVar, err = ctx.staticSizeVars.getStaticSizeVar(desc.ElemDesc)
 			if err != nil {
 				return err
@@ -1000,9 +994,6 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 // unmarshalBitlist generates unmarshal code for SSZ bitlist types.
 func (ctx *decoderContext) unmarshalBitlist(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	maxExpression := desc.MaxExpression
-	if ctx.options.WithoutDynamicExpressions {
-		maxExpression = nil
-	}
 
 	hasMax := false
 	maxVar := ""
