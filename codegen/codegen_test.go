@@ -228,6 +228,11 @@ type SimpleTestStruct2 struct {
 	Field2 uint16
 }
 
+// SimpleViewStruct is a view-compatible subset of SimpleTestStruct.
+type SimpleViewStruct struct {
+	Field1 uint64
+}
+
 func TestCodeGeneratorOptions(t *testing.T) {
 	t.Run("WithNoMarshalSSZ", func(t *testing.T) {
 		opts := CodeGeneratorOptions{}
@@ -550,4 +555,90 @@ func TestCodeGeneratorAPI(t *testing.T) {
 			t.Error("Generated code should use custom package name")
 		}
 	})
+}
+
+// TestWithReflectViewTypes tests the WithReflectViewTypes option.
+func TestWithReflectViewTypes(t *testing.T) {
+	opts := CodeGeneratorOptions{}
+	vt := reflect.TypeOf((*SimpleTestStruct2)(nil)).Elem()
+	option := WithReflectViewTypes(vt)
+	option(&opts)
+
+	if len(opts.ViewReflectTypes) != 1 {
+		t.Fatalf("expected 1 view type, got %d", len(opts.ViewReflectTypes))
+	}
+	if opts.ViewReflectTypes[0] != vt {
+		t.Error("view type not set correctly")
+	}
+}
+
+// TestWithViewOnly tests the WithViewOnly option.
+func TestWithViewOnly(t *testing.T) {
+	opts := CodeGeneratorOptions{}
+	option := WithViewOnly()
+	option(&opts)
+
+	if !opts.ViewOnly {
+		t.Error("WithViewOnly should set ViewOnly to true")
+	}
+}
+
+// TestGenerateSSZViewMethodsErrorPaths tests error propagation from view method generation.
+func TestGenerateSSZViewMethodsErrorPaths(t *testing.T) {
+	unsupportedDesc := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszType(255),
+		Kind:    reflect.Struct,
+	}
+
+	viewDesc := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszType(255),
+		Kind:    reflect.Struct,
+	}
+
+	tests := []struct {
+		name string
+		opts CodeGeneratorOptions
+	}{
+		{
+			name: "MarshalViewError",
+			opts: CodeGeneratorOptions{},
+		},
+		{
+			name: "EncoderViewError",
+			opts: CodeGeneratorOptions{NoMarshalSSZ: true, CreateEncoderFn: true},
+		},
+		{
+			name: "UnmarshalViewError",
+			opts: CodeGeneratorOptions{NoMarshalSSZ: true},
+		},
+		{
+			name: "DecoderViewError",
+			opts: CodeGeneratorOptions{NoMarshalSSZ: true, NoUnmarshalSSZ: true, CreateDecoderFn: true},
+		},
+		{
+			name: "SizeViewError",
+			opts: CodeGeneratorOptions{NoMarshalSSZ: true, NoUnmarshalSSZ: true},
+		},
+		{
+			name: "HashTreeRootViewError",
+			opts: CodeGeneratorOptions{NoMarshalSSZ: true, NoUnmarshalSSZ: true, NoSizeSSZ: true},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cg := NewCodeGenerator(nil)
+			codeBuilder := &strings.Builder{}
+			typePrinter := NewTypePrinter("test/package")
+			err := cg.generateSSZViewMethods(
+				unsupportedDesc, []*ssztypes.TypeDescriptor{viewDesc},
+				typePrinter, codeBuilder, &tt.opts,
+			)
+			if err == nil {
+				t.Error("expected error from generateSSZViewMethods")
+			}
+		})
+	}
 }

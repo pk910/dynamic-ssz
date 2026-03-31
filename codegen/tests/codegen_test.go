@@ -186,6 +186,111 @@ func TestCodegenCoverageTypes2(t *testing.T) {
 	}
 }
 
+func TestCodegenCoverageTypes3(t *testing.T) {
+	testCodegenPayloadByReflection(t, CoverageTypes3_Payload, CoverageTypes3_Specs, dynssz.WithExtendedTypes())
+}
+
+func TestCodegenCoverageTypes4(t *testing.T) {
+	testCodegenPayloadByReflection(t, CoverageTypes4_Payload, nil, dynssz.WithExtendedTypes())
+}
+
+func TestCodegenCoverageTypes5(t *testing.T) {
+	testCodegenPayloadByReflection(t, CoverageTypes5_Payload, nil, dynssz.WithExtendedTypes())
+}
+
+func TestCodegenCoverageTypes6(t *testing.T) {
+	testCodegenPayloadByReflection(t, CoverageTypes6_Payload, nil, dynssz.WithExtendedTypes())
+}
+
+func TestCodegenCoverageTypes7(t *testing.T) {
+	testCodegenPayloadByReflection(t, CoverageTypes7_Payload, CoverageTypes7_Specs)
+}
+
+// TestCodegenViewTypes2 tests nested view dispatch: a container whose child
+// has view dispatch methods. This exercises the isView code paths in all
+// generators (marshal, unmarshal, encoder, decoder, size, hash).
+func TestCodegenViewTypes2(t *testing.T) {
+	t.Run("View1", func(t *testing.T) {
+		testCodegenPayloadWithView(t, ViewTypes2_Payload, (*ViewTypes2_View1)(nil))
+	})
+	t.Run("View2", func(t *testing.T) {
+		testCodegenPayloadWithView(t, ViewTypes2_Payload, (*ViewTypes2_View2)(nil))
+	})
+}
+
+// TestCodegenViewTypes3 tests view-only generation: the type only has
+// view dispatch methods and no data methods.
+func TestCodegenViewTypes3(t *testing.T) {
+	testCodegenPayloadWithView(t, ViewTypes3_Payload, (*ViewTypes3_View1)(nil))
+}
+
+// TestCodegenViewTypes4 tests cross-command view detection, union views,
+// and type wrapper views.
+func TestCodegenViewTypes4(t *testing.T) {
+	testCodegenPayloadWithView(t, ViewTypes4_Payload, (*ViewTypes4_View1)(nil))
+}
+
+// testCodegenPayloadWithView tests a payload serialized through a view.
+// It marshals via the view, unmarshals, and verifies roundtrip hash consistency.
+func testCodegenPayloadWithView(t *testing.T, payload, view any) {
+	t.Helper()
+	ds := dynssz.NewDynSsz(nil)
+	opts := []dynssz.CallOption{dynssz.WithViewDescriptor(view)}
+
+	// Hash
+	hashRoot, err := ds.HashTreeRoot(payload, opts...)
+	if err != nil {
+		t.Fatalf("HashTreeRoot failed: %v", err)
+	}
+
+	// Marshal
+	sszBytes, err := ds.MarshalSSZ(payload, opts...)
+	if err != nil {
+		t.Fatalf("MarshalSSZ failed: %v", err)
+	}
+
+	// Unmarshal roundtrip
+	obj := &struct{ Data any }{}
+	reflect.ValueOf(obj).Elem().Field(0).Set(reflect.New(reflect.TypeOf(payload)))
+	err = ds.UnmarshalSSZ(obj.Data, sszBytes, opts...)
+	if err != nil {
+		t.Fatalf("UnmarshalSSZ failed: %v", err)
+	}
+
+	// Verify roundtrip hash
+	roundtripHash, err := ds.HashTreeRoot(obj.Data, opts...)
+	if err != nil {
+		t.Fatalf("roundtrip HashTreeRoot failed: %v", err)
+	}
+	if roundtripHash != hashRoot {
+		t.Fatalf("roundtrip hash mismatch: expected=%x got=%x", hashRoot, roundtripHash)
+	}
+
+	// Streaming marshal
+	var streamBuf bytes.Buffer
+	err = ds.MarshalSSZWriter(payload, &streamBuf, opts...)
+	if err != nil {
+		t.Fatalf("MarshalSSZWriter failed: %v", err)
+	}
+	if !bytes.Equal(streamBuf.Bytes(), sszBytes) {
+		t.Fatalf("streaming marshal mismatch:\n  buf=%x\n  stream=%x", sszBytes, streamBuf.Bytes())
+	}
+
+	// Streaming unmarshal
+	reflect.ValueOf(obj).Elem().Field(0).Set(reflect.New(reflect.TypeOf(payload)))
+	err = ds.UnmarshalSSZReader(obj.Data, bytes.NewReader(sszBytes), len(sszBytes), opts...)
+	if err != nil {
+		t.Fatalf("UnmarshalSSZReader failed: %v", err)
+	}
+	streamHash, err := ds.HashTreeRoot(obj.Data, opts...)
+	if err != nil {
+		t.Fatalf("stream roundtrip HashTreeRoot failed: %v", err)
+	}
+	if streamHash != hashRoot {
+		t.Fatalf("stream roundtrip hash mismatch: expected=%x got=%x", hashRoot, streamHash)
+	}
+}
+
 // testCodegenPayloadByReflection compares generated code output against
 // reflection-based implementation. No pre-computed hash needed.
 func testCodegenPayloadByReflection(t *testing.T, payload any, specs map[string]any, opts ...dynssz.DynSszOption) {

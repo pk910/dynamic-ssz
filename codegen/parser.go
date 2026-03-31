@@ -1492,9 +1492,9 @@ func (p *Parser) getDynamicSizerCompatibility(typ types.Type) bool {
 }
 
 func (p *Parser) getDynamicHashRootCompatibility(typ types.Type) bool {
-	// Check if type has HashTreeRootDyn method
+	// Check if type has HashTreeRootWithDyn method
 	methodSet := types.NewMethodSet(typ)
-	return p.hasMethodWithSignature(methodSet, "HashTreeRootDynWith", []string{"DynamicSpecs", "HashWalker"}, []string{"error"})
+	return p.hasMethodWithSignature(methodSet, "HashTreeRootWithDyn", []string{"DynamicSpecs", "HashWalker"}, []string{"error"})
 }
 
 // View interface compatibility checks for fork-dependent SSZ schemas.
