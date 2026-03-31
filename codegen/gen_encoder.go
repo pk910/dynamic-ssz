@@ -48,11 +48,12 @@ type encoderContext struct {
 //   - rootTypeDesc: Type descriptor containing complete SSZ encoding metadata
 //   - codeBuilder: String builder to append generated method code to
 //   - typePrinter: Type formatter for handling imports and type names
+//   - viewName: Name of the view type for function name postfix (empty string for data type)
 //   - options: Generation options controlling which methods to create
 //
 // Returns:
 //   - error: An error if code generation fails
-func generateEncoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, options *CodeGeneratorOptions) error {
+func generateEncoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, viewName string, options *CodeGeneratorOptions) error {
 	// Streaming code always uses dynamic expressions since the encoder interface
 	// requires DynamicSpecs. Override WithoutDynamicExpressions for this generator.
 	if options.WithoutDynamicExpressions {
@@ -98,8 +99,14 @@ func generateEncoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 		ctx.usedDynSpecs = true
 	}
 
-	appendCode(codeBuilder, 0, "// MarshalSSZEncoder marshals the %s to the given SSZ encoder using dynamic specifications.\n", typeName)
-	appendCode(codeBuilder, 0, "func (t %s) MarshalSSZEncoder(ds sszutils.DynamicSpecs, enc sszutils.Encoder) (err error) {\n", typeName)
+	fnName := "MarshalSSZEncoder"
+	if viewName != "" {
+		fnName = fmt.Sprintf("marshalSSZEncoderView_%s", viewName)
+	}
+	if viewName == "" {
+		appendCode(codeBuilder, 0, "// MarshalSSZEncoder marshals the %s to the given SSZ encoder using dynamic specifications.\n", typeName)
+	}
+	appendCode(codeBuilder, 0, "func (t %s) %s(ds sszutils.DynamicSpecs, enc sszutils.Encoder) (err error) {\n", typeName, fnName)
 
 	if ctx.usedContext {
 		appendCode(codeBuilder, 1, ctx.generateEncodeContext(0))
@@ -272,25 +279,44 @@ func (ctx *encoderContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 	}
 
 	// Handle types that have generated methods we can call
-	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
+	isView := desc.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
+	if !isRoot && isView {
+		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewEncoder != 0 {
+			ctx.appendCode(indent, "if viewFn := %s.MarshalSSZEncoderView((%s)(nil)); viewFn != nil {\n", varName, ctx.typePrinter.ViewTypeString(desc, true))
+			ctx.appendCode(indent+1, "if err = viewFn(ds, enc); err != nil {\n\treturn err\n}\n")
+			ctx.appendCode(indent, "} else {\n\treturn sszutils.ErrNotImplemented\n}\n")
+			ctx.usedDynSpecs = true
+			return nil
+		}
+
+		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewMarshaler != 0 {
+			ctx.appendCode(indent, "if viewFn := %s.MarshalSSZDynView((%s)(nil)); viewFn != nil {\n", varName, ctx.typePrinter.ViewTypeString(desc, true))
+			ctx.appendCode(indent+1, "if buf, err := viewFn(ds, enc.GetBuffer()); err != nil {\n\treturn err\n} else {\n\tenc.SetBuffer(buf)\n}\n")
+			ctx.appendCode(indent, "} else {\n\treturn sszutils.ErrNotImplemented\n}\n")
+			ctx.usedDynSpecs = true
+			return nil
+		}
+	}
+
+	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0
 	isFastsszMarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
 	useFastSsz := !ctx.options.NoFastSsz && isFastsszMarshaler && !hasDynamicSize
 	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
 		useFastSsz = true
 	}
 
-	if useFastSsz && !isRoot {
+	if useFastSsz && !isRoot && !isView {
 		ctx.appendCode(indent, "if buf, err := %s.MarshalSSZTo(enc.GetBuffer()); err != nil {\n\treturn %s\n} else {\n\tenc.SetBuffer(buf)\n}\n", varName, typePath.getErrorWith("err"))
 		return nil
 	}
 
-	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicEncoder != 0 && !isRoot {
+	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicEncoder != 0 && !isRoot && !isView {
 		ctx.appendCode(indent, "if err = %s.MarshalSSZEncoder(ds, enc); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
 		ctx.usedDynSpecs = true
 		return nil
 	}
 
-	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 && !isRoot {
+	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 && !isRoot && !isView {
 		ctx.appendCode(indent, "if buf, err := %s.MarshalSSZDyn(ds, enc.GetBuffer()); err != nil {\n\treturn %s\n} else {\n\tenc.SetBuffer(buf)\n}\n", varName, typePath.getErrorWith("err"))
 		ctx.usedDynSpecs = true
 		return nil
@@ -412,7 +438,7 @@ func (ctx *encoderContext) marshalContainer(desc *ssztypes.TypeDescriptor, varNa
 		switch {
 		case field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0:
 			staticSize += 4
-		case hasDynamic && field.Type.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions:
+		case hasDynamic && field.Type.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0:
 			sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(field.Type)
 			if err != nil {
 				return err
@@ -488,9 +514,6 @@ func (ctx *encoderContext) marshalContainer(desc *ssztypes.TypeDescriptor, varNa
 // marshalVector generates marshal code for SSZ vector (fixed-size array) types.
 func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	sizeExpression := desc.SizeExpression
-	if ctx.options.WithoutDynamicExpressions {
-		sizeExpression = nil
-	}
 
 	limitVar := ""
 	bitlimitVar := ""
@@ -698,9 +721,6 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 // marshalList generates marshal code for SSZ list (variable-size array) types.
 func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	maxExpression := desc.MaxExpression
-	if ctx.options.WithoutDynamicExpressions {
-		maxExpression = nil
-	}
 
 	hasMax := false
 	maxVar := ""
@@ -829,9 +849,6 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 
 func (ctx *encoderContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	maxExpression := desc.MaxExpression
-	if ctx.options.WithoutDynamicExpressions {
-		maxExpression = nil
-	}
 
 	hasMax := false
 	maxVar := ""

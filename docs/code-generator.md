@@ -1,6 +1,12 @@
 # Code Generator
 
-Dynamic SSZ includes a code generation tool (`dynssz-gen`) that generates optimized SSZ marshaling code for your types, eliminating reflection overhead and improving performance.
+Dynamic SSZ includes a code generation tool (`dynssz-gen`) that generates optimized SSZ methods for your types, eliminating reflection overhead and improving performance.
+
+## Important: How to Use Generated Code
+
+**Always use `ds.MarshalSSZ()`, `ds.UnmarshalSSZ()`, `ds.HashTreeRoot()`, etc. as your entry points** - even when code generation is active. The `DynSsz` runtime automatically detects and delegates to generated methods (like `MarshalSSZDyn`, `UnmarshalSSZDyn`) when they are present on the type.
+
+**Do not call generated methods directly** from your application code. This creates a circular dependency problem: if you delete the generated file to regenerate it, the direct references to generated methods break compilation, and the code generator cannot analyze your package. By routing everything through `DynSsz`, your code compiles with or without the generated file - the library simply falls back to reflection when generated methods are absent.
 
 ## Installation
 
@@ -28,7 +34,7 @@ dynssz-gen -package /path/to/package -types BeaconBlock,BeaconState -output gene
 | Flag | Description | Default |
 |------|-------------|---------|
 | `-package` | Go package path to analyze | Required |
-| `-types` | Comma-separated list of types to generate | Required |
+| `-types` | Comma-separated list of types to generate (see extended format below) | Required |
 | `-output` | Output file path | Required if types don't specify files |
 | `-v` | Verbose output | `false` |
 | `-legacy` | Generate legacy compatibility methods | `false` |
@@ -36,6 +42,46 @@ dynssz-gen -package /path/to/package -types BeaconBlock,BeaconState -output gene
 | `-without-fastssz` | Generate code without using fast ssz generated methods | `false` |
 | `-with-streaming` | Generate streaming encoder/decoder functions | `false` |
 | `-with-extended-types` | Enable support for non-standard extended types (signed ints, floats, big.Int, optionals) | `false` |
+
+### Extended Type Specification Format
+
+The `-types` flag supports an extended format for specifying output files and view types:
+
+```
+TypeName[:output.go][:views=View1;View2;...][:viewonly]
+```
+
+| Part | Description | Required |
+|------|-------------|----------|
+| `TypeName` | Name of the type to generate methods for | Yes |
+| `:output.go` | Output file for this specific type | No (uses `-output` flag) |
+| `:views=...` | Semicolon-separated list of view types for fork support | No |
+| `:viewonly` | Only generate view-aware methods, not standard methods | No |
+
+**View type references** can be:
+- Local types: `Phase0View`
+- External package types: `github.com/myproject/views.Phase0View`
+
+**Examples:**
+```bash
+# Simple type to default output
+-types "BeaconBlock"
+
+# Type to specific file
+-types "BeaconBlock:block_ssz.go"
+
+# Type with local view types
+-types "BeaconBlock:block_ssz.go:views=Phase0BlockView;AltairBlockView"
+
+# Type with external view types
+-types "BeaconBlock:block_ssz.go:views=github.com/views.Phase0View"
+
+# View-only mode (no standard methods)
+-types "BeaconBlock:block_ssz.go:views=Phase0View:viewonly"
+
+# Multiple types with mixed configurations
+-types "BeaconBlock:block_ssz.go:views=Phase0BlockView,BeaconState:state_ssz.go"
+```
 
 ### Examples
 
@@ -59,6 +105,29 @@ dynssz-gen -package . -types Block:block_ssz.go,Transaction:tx_ssz.go,Validator:
 # Some types to separate files, others to default output
 dynssz-gen -package . -types Block:block_ssz.go,Transaction:tx_ssz.go,Validator,ValidatorData -output validators_ssz.go
 ```
+
+#### Generate with View Support
+
+Generate SSZ methods that support multiple schemas (views) for fork handling:
+
+```bash
+# Data type with views - generates both standard and view-aware methods
+dynssz-gen -package . \
+    -types "BeaconBlockBody:body_ssz.go:views=Phase0BeaconBlockBodyView;AltairBeaconBlockBodyView" \
+    -output default.go
+
+# View-only mode - only generates view-aware methods (useful when standard methods already exist)
+dynssz-gen -package . \
+    -types "BeaconBlockBody:body_ssz.go:views=Phase0View;AltairView:viewonly" \
+    -output default.go
+
+# Views from external packages
+dynssz-gen -package . \
+    -types "BeaconState:state_ssz.go:views=github.com/myproject/views.Phase0StateView" \
+    -output default.go
+```
+
+See [SSZ Views](views.md) for detailed documentation on view support.
 
 #### Generate for External Package
 
@@ -192,6 +261,50 @@ codeGen.BuildFile("output.go",
     codegen.WithReflectType(reflect.TypeOf(MyType{})),
 )
 ```
+
+### View Support Options
+
+```go
+import "github.com/pk910/dynamic-ssz/codegen"
+
+codeGen := codegen.NewCodeGenerator(dynSsz)
+
+// Generate type with view support (data + views mode)
+codeGen.BuildFile("output.go",
+    codegen.WithReflectType(
+        reflect.TypeOf(BeaconBlockBody{}),
+        // Add view types using reflect.Type
+        codegen.WithReflectViewTypes(
+            reflect.TypeOf(Phase0BeaconBlockBodyView{}),
+            reflect.TypeOf(AltairBeaconBlockBodyView{}),
+            reflect.TypeOf(BellatrixBeaconBlockBodyView{}),
+        ),
+    ),
+)
+
+// Generate type in view-only mode (only view methods, no standard methods)
+codeGen.BuildFile("views_only.go",
+    codegen.WithReflectType(
+        reflect.TypeOf(BeaconBlockBody{}),
+        codegen.WithReflectViewTypes(
+            reflect.TypeOf(Phase0BeaconBlockBodyView{}),
+        ),
+        codegen.WithViewOnly(), // Only generate view-aware methods
+    ),
+)
+
+// Using go/types (for external packages)
+codeGen.BuildFile("output.go",
+    codegen.WithGoTypesType(
+        goTypesType,
+        codegen.WithGoTypesViewTypes(phase0ViewType, altairViewType),
+    ),
+)
+
+codeGen.Generate()
+```
+
+See [SSZ Views](views.md) for detailed documentation on view concepts and usage.
 
 ## Generated Methods
 
@@ -438,25 +551,7 @@ All SSZ annotations are supported:
 
 ## Performance Benefits
 
-### Benchmark Comparison
-
-```go
-// Reflection-based (Dynamic SSZ runtime)
-BenchmarkMarshalReflection-8       50000     30142 ns/op
-BenchmarkUnmarshalReflection-8     30000     45231 ns/op
-
-// Generated code
-BenchmarkMarshalGenerated-8       500000      2341 ns/op
-BenchmarkUnmarshalGenerated-8     300000      4126 ns/op
-```
-
-### Memory Efficiency
-
-Generated code:
-- Eliminates reflection overhead
-- Pre-calculates sizes
-- Optimizes buffer allocation
-- Reduces allocations
+Generated code eliminates reflection overhead, pre-calculates sizes, and reduces allocations. See the [benchmark repository](https://github.com/pk910/ssz-benchmark) for real performance comparisons across SSZ libraries.
 
 ## Advanced Features
 
@@ -574,6 +669,55 @@ dynssz-gen -without-dynamic-expressions -package . -types BeaconBlock -output bl
 Generates: Only `MarshalSSZ`, `UnmarshalSSZ`, `SizeSSZ`, `HashTreeRoot`, `MarshalSSZTo` (no `*Dyn` methods)
 
 **Key Point**: `-without-dynamic-expressions` is especially useful when you want to generate optimized code for the default preset and fall back to reflection-based Dynamic SSZ for other presets.
+
+### With Views: View-Aware Methods
+
+When using the `views=` type specification, view-aware methods are generated that allow the same runtime type to be serialized with different SSZ schemas:
+
+#### MarshalSSZDynView
+
+```go
+func (b *BeaconBlock) MarshalSSZDynView(view any) func(ds sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+    // Returns a marshal function for the specified view type, or nil if not supported
+    switch view.(type) {
+    case *Phase0BeaconBlockView:
+        return b.marshalSSZDynPhase0BeaconBlockView
+    case *AltairBeaconBlockView:
+        return b.marshalSSZDynAltairBeaconBlockView
+    }
+    return nil
+}
+```
+
+#### UnmarshalSSZDynView
+
+```go
+func (b *BeaconBlock) UnmarshalSSZDynView(view any) func(ds sszutils.DynamicSpecs, buf []byte) error {
+    // Returns an unmarshal function for the specified view type, or nil if not supported
+}
+```
+
+#### SizeSSZDynView
+
+```go
+func (b *BeaconBlock) SizeSSZDynView(view any) func(ds sszutils.DynamicSpecs) int {
+    // Returns a size function for the specified view type, or nil if not supported
+}
+```
+
+#### HashTreeRootWithDynView
+
+```go
+func (b *BeaconBlock) HashTreeRootWithDynView(view any) func(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+    // Returns a hash function for the specified view type, or nil if not supported
+}
+```
+
+These methods implement the `DynamicViewMarshaler`, `DynamicViewUnmarshaler`, `DynamicViewSizer`, and `DynamicViewHashRoot` interfaces from `sszutils`. The Dynamic SSZ runtime automatically uses these methods when a view descriptor is provided via `WithViewDescriptor()`.
+
+**Note:** View methods return `nil` if the view type is not recognized, causing Dynamic SSZ to fall back to reflection-based processing.
+
+See [SSZ Views](views.md) for detailed documentation on view usage.
 
 ### With `-with-streaming`: Streaming Encoder/Decoder Methods
 
@@ -798,6 +942,7 @@ To migrate from fastssz code generation:
 
 - [Getting Started](getting-started.md) - Basic usage
 - [API Reference](api-reference.md) - Generator API details
+- [SSZ Views](views.md) - Fork handling with view descriptors
 - [Streaming Support](streaming.md) - Streaming encoding/decoding
 - [SSZ Annotations](ssz-annotations.md) - Supported tags
 - [Supported Types](supported-types.md) - Type compatibility

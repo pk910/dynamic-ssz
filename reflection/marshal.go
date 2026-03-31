@@ -49,14 +49,20 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 	}
 
 	if ctx.verbose {
-		isFastsszMarshaler := sourceType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
-		hasDynamicSize := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
-		useFastSsz := !ctx.noFastSsz && isFastsszMarshaler && !hasDynamicSize
-		ctx.logCb("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, isFastsszMarshaler, hasDynamicSize)
+		ctx.logCb("%stype: %s\t kind: %v\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind)
 	}
 
-	// Fast path: skip compat interface checks for types that don't implement any
-	if sourceType.SszCompatFlags != 0 || sourceType.SszType == ssztypes.SszCustomType {
+	// Try DynamicView methods first - they take precedence over all other methods.
+	// This supports fork-dependent SSZ schemas where generated code handles
+	// different view types. If the method returns nil, fall through to
+	// other marshaling methods.
+	isView := sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
+	if isView {
+		if done, err := ctx.tryMarshalView(sourceType, sourceValue, encoder); err != nil || done {
+			return err
+		}
+	} else if sourceType.SszCompatFlags != 0 || sourceType.SszType == ssztypes.SszCustomType {
+		// Fast path: skip compat interface checks for types that don't implement any
 		hasDynamicSize := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
 		isFastsszMarshaler := sourceType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
 		useDynamicMarshal := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0
@@ -190,6 +196,37 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 	return nil
 }
 
+// tryMarshalView attempts to marshal using view-specific generated methods.
+// Returns (true, nil) if a view method handled it, (true, err) on error, or (false, nil) to fall through.
+func (ctx *ReflectionCtx) tryMarshalView(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder) (bool, error) {
+	useViewEncoder := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewEncoder != 0
+	useViewMarshaler := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewMarshaler != 0
+
+	// Prefer encoder for seekable encoders, marshaler otherwise
+	if useViewEncoder && encoder.Seekable() {
+		if enc, ok := getPtr(sourceValue).Interface().(sszutils.DynamicViewEncoder); ok {
+			if encodeFn := enc.MarshalSSZEncoderView(*sourceType.CodegenInfo); encodeFn != nil {
+				return true, encodeFn(ctx.ds, encoder)
+			}
+		}
+	}
+
+	if useViewMarshaler {
+		if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.DynamicViewMarshaler); ok {
+			if marshalFn := marshaller.MarshalSSZDynView(*sourceType.CodegenInfo); marshalFn != nil {
+				newBuf, err := marshalFn(ctx.ds, encoder.GetBuffer())
+				if err != nil {
+					return true, err
+				}
+				encoder.SetBuffer(newBuf)
+				return true, nil
+			}
+		}
+	}
+
+	return false, nil
+}
+
 // marshalTypeWrapper marshals a TypeWrapper by extracting its data field and marshaling it as the wrapped type.
 //
 // Parameters:
@@ -240,7 +277,7 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 	if len(sourceType.ContainerDesc.DynFields) == 0 {
 		for i := 0; i < fieldCount; i++ {
 			field := &fields[i]
-			fieldValue := sourceValue.Field(i)
+			fieldValue := sourceValue.Field(int(field.FieldIndex))
 			if err := ctx.marshalType(field.Type, fieldValue, encoder, idt+2); err != nil {
 				return sszutils.ErrorWithPath(err, field.Name)
 			}
@@ -259,7 +296,9 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 		if fieldSize > 0 {
 			// fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
 
-			fieldValue := sourceValue.Field(i)
+			// Use FieldIndex to access the runtime struct's field, which may differ
+			// from the schema field index when using view descriptors.
+			fieldValue := sourceValue.Field(int(field.FieldIndex))
 			err := ctx.marshalType(field.Type, fieldValue, encoder, idt+2)
 			if err != nil {
 				return sszutils.ErrorWithPath(err, field.Name)
@@ -271,7 +310,8 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 				encoder.EncodeOffset(0)
 			} else {
 				// we can't seek, so we need to calculate the object size now
-				size, err := ctx.getSszValueSize(field.Type, sourceValue.Field(i))
+				// Use FieldIndex to access the correct runtime field.
+				size, err := ctx.getSszValueSize(field.Type, sourceValue.Field(int(field.FieldIndex)))
 				if err != nil {
 					return sszutils.ErrorWithPathf(err, "%s:o", field.Name)
 				}
@@ -295,7 +335,9 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 		// fmt.Printf("%sfield %d:\t dynamic [%v:]\t %v\n", strings.Repeat(" ", idt+1), field.Index[0], offset, field.Name)
 
 		fieldDescriptor := field.Field
-		fieldValue := sourceValue.Field(int(field.Index))
+		// Use FieldIndex to access the runtime struct's field, which may differ
+		// from the schema field index when using view descriptors.
+		fieldValue := sourceValue.Field(int(fieldDescriptor.FieldIndex))
 		err := ctx.marshalType(fieldDescriptor.Type, fieldValue, encoder, idt+2)
 		if err != nil {
 			return sszutils.ErrorWithPath(err, fieldDescriptor.Name)

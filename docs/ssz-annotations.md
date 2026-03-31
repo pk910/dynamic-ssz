@@ -1,6 +1,6 @@
 # SSZ Annotations
 
-Dynamic SSZ uses struct tags to control serialization behavior. This guide provides comprehensive documentation for all available annotations.
+Dynamic SSZ uses struct tags to control SSZ encoding behavior. This guide covers all available annotations, how static and dynamic tags interact, and the expression language.
 
 ## Tag Overview
 
@@ -9,27 +9,60 @@ Dynamic SSZ uses struct tags to control serialization behavior. This guide provi
 | `ssz-size` | Fixed size for bytes/strings | `ssz-size:"32"` |
 | `ssz-max` | Maximum size for dynamic types | `ssz-max:"1024"` |
 | `ssz-type` | Explicit type specification | `ssz-type:"uint256"` |
-| `ssz-bitsize` | Fixed bit size for bitvectors | `ssz-bitsize:"12"` |
+| `ssz-bitsize` | Bit-level size for bitvectors | `ssz-bitsize:"12"` |
+| `ssz-index` | Field index for progressive containers | `ssz-index:"0"` |
 | `dynssz-size` | Dynamic size with expressions | `dynssz-size:"EPOCH_LENGTH*32"` |
 | `dynssz-max` | Dynamic maximum with expressions | `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"` |
 | `dynssz-bitsize` | Dynamic bit size for bitvectors | `dynssz-bitsize:"COMMITTEE_SIZE"` |
-| `ssz-index` | Field index for progressive containers | `ssz-index:"0"` |
 
-## Annotation Locations
+## Static and Dynamic Tags
 
-### Struct Field Tags (Standard)
+### How They Work Together
 
-The standard way to annotate SSZ types is through Go struct field tags:
+The `ssz-*` and `dynssz-*` tags are designed to be used in combination. The static tag provides a default value, and the dynamic tag overrides it when the referenced spec value can be resolved.
 
 ```go
-type BeaconState struct {
-    Validators []Validator `ssz-max:"1024" dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
+type State struct {
+    // ssz-max: static fallback (used when VALIDATOR_REGISTRY_LIMIT is not in specs)
+    // dynssz-max: resolved at runtime from spec values (overrides ssz-max when available)
+    Validators []Validator `ssz-max:"1099511627776" dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
 }
 ```
 
-### Type Annotations with `sszutils.Annotate[T]()` (Non-Struct Types)
+**Resolution order:**
+1. Parse the `ssz-*` tag to get the static default
+2. Parse the `dynssz-*` tag and attempt to resolve the expression
+3. If the expression resolves successfully, override the static value
+4. If the expression cannot be resolved (spec value not provided), keep the static default
 
-For top-level non-struct type definitions (e.g., named slices, arrays), Go does not allow struct tags. Use `sszutils.Annotate[T]()` to register SSZ annotations for these types:
+This design allows the same type definitions to work across different configurations. For example, Ethereum types can use mainnet defaults in `ssz-max` while allowing `dynssz-max` to adapt to minimal or custom presets.
+
+**Recommended usage**: Always provide both tags for fields that need dynamic sizing:
+
+```go
+type BeaconBlockBody struct {
+    Attestations []Attestation `ssz-max:"128" dynssz-max:"MAX_ATTESTATIONS"`
+    Deposits     []Deposit     `ssz-max:"16"  dynssz-max:"MAX_DEPOSITS"`
+}
+```
+
+If you only use `dynssz-max` without `ssz-max`, the field has no fallback when the spec value is unavailable.
+
+### Annotation Locations
+
+#### Struct Field Tags (Standard)
+
+The standard way to annotate SSZ fields is through Go struct tags:
+
+```go
+type BeaconState struct {
+    Validators []Validator `ssz-max:"1099511627776" dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
+}
+```
+
+#### Type Annotations with `sszutils.Annotate[T]()` (Non-Struct Types)
+
+For top-level non-struct type definitions (e.g., named slices, arrays), Go does not allow struct tags. Use `sszutils.Annotate[T]()` to register SSZ annotations:
 
 ```go
 import "github.com/pk910/dynamic-ssz/sszutils"
@@ -39,165 +72,88 @@ var _ = sszutils.Annotate[Blobs](`ssz-max:"4096"`)
 
 type BlobKZGs [][48]byte
 var _ = sszutils.Annotate[BlobKZGs](`ssz-max:"4096" dynssz-max:"MAX_BLOB_COMMITMENTS_PER_BLOCK"`)
-
-type FixedHash [32]byte
-var _ = sszutils.Annotate[FixedHash](`ssz-size:"32"`)
 ```
 
-The tag string uses the same `key:"value"` syntax as Go struct field tags. All standard SSZ tags are supported: `ssz-size`, `ssz-max`, `ssz-type`, `ssz-bitsize`, `dynssz-size`, `dynssz-max`, `dynssz-bitsize`.
+The tag string uses the same `key:"value"` syntax as Go struct field tags. All SSZ tags are supported.
 
 **How it works:**
-- `Annotate[T]()` registers the tag string in a global registry at package init time.
-- Both the **code generator** (`dynssz-gen`) and the **runtime reflection** path read from this registry, ensuring consistent behavior.
-- The code generator discovers `Annotate` calls by scanning the source AST.
-- The reflection path reads the registry when building type descriptors.
+- `Annotate[T]()` registers the tag string in a global registry at package init time
+- Both the code generator and the runtime reflection path read from this registry
+- The code generator discovers `Annotate` calls by scanning the source AST
 
-**Important notes:**
-- Call `Annotate[T]()` at package level (in a `var` block or `init()` function) so the annotation is registered before any SSZ operation.
-- The tag string must use the exact struct tag format with quoted values: `ssz-max:"4096"`, not `ssz-max:4096`.
-- Multiple annotations can be placed in the same tag string, separated by spaces.
-- When a struct field uses an annotated type but also has its own field tags, the field tags take precedence over the type-level annotation.
+**Important:**
+- Call `Annotate[T]()` at package level (in a `var` block or `init()` function) so the annotation is registered before any SSZ operation
+- The tag string must use the exact struct tag format with quoted values: `ssz-max:"4096"`, not `ssz-max:4096`
+- When a struct field uses an annotated type but also has its own field tags, the field tags take precedence
 
 ## Size Annotations
 
 ### Multi-dimensional Syntax
 
-All size and maximum annotations support multi-dimensional syntax for nested arrays:
+All size and maximum annotations support comma-separated values for nested arrays:
 
-**Syntax**: Comma-separated values for each dimension
-- Applied left-to-right: `"100,256"` means max 100 rows, max 256 columns per row
-- **Available for**: `ssz-size`, `ssz-max`, `dynssz-size`, `dynssz-max`
-
-**Examples**:
 ```go
 type MultiDimensional struct {
-    // Fixed 2D array: 8 rows, 16 bytes each
-    Grid [][]byte `ssz-size:"8,16"`
-    
-    // Dynamic 2D array: max 100 rows, max 256 elements per row
-    Matrix [][]uint32 `ssz-max:"100,256"`
-    
-    // Dynamic with expressions
-    Data [][]byte `dynssz-size:"ROWS,COLS"`
-    Shards [][]Transaction `dynssz-max:"SHARD_COUNT,MAX_TRANSACTIONS_PER_SHARD"`
+    Grid   [][]byte   `ssz-size:"8,16"`    // 8 rows, 16 bytes each
+    Matrix [][]uint32 `ssz-max:"100,256"`  // max 100 rows, max 256 per row
+    Data   [][]byte   `dynssz-size:"ROWS,COLS"`
 }
 ```
 
 ### ssz-size
 
-Specifies fixed size for variable-length types (strings, byte slices).
+Specifies a fixed size for variable-length types, turning them into SSZ vectors.
 
-**Syntax**: `ssz-size:"<number>"`
+**Applies to**: `[]byte`, `string`, and nested slices
 
-**Applies to**:
-- `string`
-- `[]byte`
-
-**Examples**:
 ```go
 type Data struct {
-    // Fixed 32-byte hash
-    Hash []byte `ssz-size:"32"`
-    
-    // Fixed-length string (padded with zeros)
-    Name string `ssz-size:"64"`
-    
-    // Multi-dimensional fixed size
-    Grid [][]byte `ssz-size:"8,16"`  // 8 rows, 16 bytes each
+    Hash []byte `ssz-size:"32"`    // fixed 32-byte vector
+    Name string `ssz-size:"64"`    // fixed 64-byte string (null-padded)
+    Grid [][]byte `ssz-size:"8,16"` // 8 rows, 16 bytes each
 }
 ```
 
-**Important notes**:
-- Strings are null-padded if shorter than specified size
-- Byte slices must be exactly the specified size
-- Cannot be used with `ssz-max` on same field
+Strings are null-padded if shorter than the specified size. Cannot be combined with `ssz-max` on the same field (a field is either fixed-size or variable-size).
 
 ### dynssz-size
 
-Dynamic size specification using runtime expressions.
+Dynamic size using runtime expressions. Used alongside `ssz-size`:
 
-**Syntax**: `dynssz-size:"<expression>"`
-
-**Applies to**: Same as `ssz-size`
-
-**Expression features**:
-- Arithmetic operators: `+`, `-`, `*`, `/`
-- Parentheses for grouping
-- Spec value references
-- Automatic rounding up for partial bytes
-
-**Examples**:
 ```go
 type Dynamic struct {
-    // Size based on spec value
-    Data []byte `dynssz-size:"CHUNK_SIZE"`
-    
-    // Expression with multiple values
-    Buffer []byte `dynssz-size:"SLOT_SIZE*EPOCH_LENGTH"`
-    
-    // Complex expression
-    Payload []byte `dynssz-size:"(BASE_SIZE+EXTENSION_SIZE)*8"`
-    
-    // Multi-dimensional
-    Matrix [][]byte `dynssz-size:"ROWS,COLS"`
+    Data   []byte `ssz-size:"32" dynssz-size:"CHUNK_SIZE"`
+    Buffer []byte `ssz-size:"256" dynssz-size:"SLOT_SIZE*EPOCH_LENGTH"`
+    Matrix [][]byte `ssz-size:"8,16" dynssz-size:"ROWS,COLS"`
 }
 ```
 
 ## Bit Size Annotations (Bitvectors)
 
-The `ssz-bitsize` and `dynssz-bitsize` annotations specify the size in **bits** rather than bytes. These are specifically designed for bitvectors where the exact bit count matters.
+The `ssz-bitsize` and `dynssz-bitsize` annotations specify size in **bits**. These are for bitvectors where the exact bit count matters for padding validation.
 
-**Why use bitsize?** When a bitvector's bit count is not a multiple of 8, the remaining bits in the last byte are padding bits. According to the SSZ specification, these padding bits must be zero. Using bitsize annotations enables validation of these padding bits during unmarshaling.
+When a bitvector's bit count is not a multiple of 8, the remaining bits in the last byte are padding. Per the SSZ spec, these padding bits must be zero. Using bitsize annotations enables this validation during unmarshaling.
 
 ### ssz-bitsize
 
-Specifies the exact bit size for bitvector types.
-
-**Syntax**: `ssz-bitsize:"<number>"`
-
-**Applies to**:
-- Bitvectors (byte arrays with `ssz-type:"bitvector"`)
-
-**Examples**:
 ```go
 type Attestation struct {
-    // 12-bit bitvector: uses 2 bytes, but only 12 bits are valid
-    // Padding bits (bits 12-15) are validated to be zero
+    // 12-bit bitvector in 2 bytes; bits 12-15 validated to be zero
     CommitteeBits [2]byte `ssz-type:"bitvector" ssz-bitsize:"12"`
 
-    // 64-bit bitvector: exact byte alignment, no padding validation needed
+    // 64-bit bitvector: byte-aligned, no padding validation needed
     Flags [8]byte `ssz-type:"bitvector" ssz-bitsize:"64"`
 }
 ```
 
-**Padding validation**: When `ssz-bitsize` is specified and the bit count is not a multiple of 8, unmarshaling will verify that the unused bits in the last byte are zero. This ensures strict SSZ specification compliance.
-
 ### dynssz-bitsize
 
-Dynamic bit size specification using runtime expressions.
+Dynamic bit size using runtime expressions:
 
-**Syntax**: `dynssz-bitsize:"<expression>"`
-
-**Applies to**: Same as `ssz-bitsize`
-
-**Examples**:
 ```go
 type DynamicAttestation struct {
-    // Bit size based on spec value
     CommitteeBits []byte `ssz-type:"bitvector" ssz-bitsize:"12" dynssz-bitsize:"COMMITTEE_SIZE"`
-
-    // Expression-based bit size
-    SyncBits []byte `ssz-type:"bitvector" ssz-bitsize:"512" dynssz-bitsize:"SYNC_COMMITTEE_SIZE"`
-}
-```
-
-**Combining with ssz-size**: You can use `ssz-bitsize` alongside `ssz-size` when you need both byte-level sizing for fastssz compatibility and bit-level validation:
-
-```go
-type ValidatorFlags struct {
-    // ssz-size provides byte count for serialization
-    // ssz-bitsize enables padding bit validation
-    Flags []byte `ssz-type:"bitvector" ssz-size:"2" ssz-bitsize:"12"`
+    SyncBits      []byte `ssz-type:"bitvector" ssz-bitsize:"512" dynssz-bitsize:"SYNC_COMMITTEE_SIZE"`
 }
 ```
 
@@ -205,56 +161,27 @@ type ValidatorFlags struct {
 
 ### ssz-max
 
-Specifies maximum size for dynamic arrays. Highly recommended for hash tree root computation (security implications without it).
+Specifies the maximum element count for dynamic lists. Required for secure hash tree root computation.
 
-**Syntax**: `ssz-max:"<number>"`
+**Note on bitlists**: For bitlist types, `ssz-max` specifies the maximum number of **bits**, not bytes. This is consistent with the SSZ specification.
 
-**Applies to**:
-- Slices (except byte slices with `ssz-size`)
-- Bitlists (boolean slices)
-
-**Note on bitlists**: For bitlist types, `ssz-max` specifies the maximum number of **bits**, not bytes. This is consistent with the SSZ specification where bitlist limits are defined in bits.
-
-**Examples**:
 ```go
 type Container struct {
-    // Maximum 1024 validators
-    Validators []Validator `ssz-max:"1024"`
-
-    // Maximum 2048 bits (not bytes!)
-    Participation []bool `ssz-max:"2048"`
-
-    // Bitlist with go-bitfield: max 2048 bits
-    AggregationBits bitfield.Bitlist `ssz-max:"2048"`
-
-    // Multi-dimensional arrays
-    Matrix [][]uint32 `ssz-max:"100,256"`
+    Validators    []Validator `ssz-max:"1024"`   // max 1024 validators
+    Participation []bool      `ssz-max:"2048"`   // max 2048 bits (bitlist)
+    Matrix        [][]uint32  `ssz-max:"100,256"` // max 100 rows, 256 per row
 }
 ```
 
-
 ### dynssz-max
 
-Dynamic maximum using runtime expressions.
+Dynamic maximum using runtime expressions. Used alongside `ssz-max`:
 
-**Syntax**: `dynssz-max:"<expression>"`
-
-**Applies to**: Same as `ssz-max`
-
-**Examples**:
 ```go
 type State struct {
-    // Dynamic validator limit
-    Validators []Validator `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
-    
-    // Expression-based maximum
-    Attestations []Attestation `dynssz-max:"MAX_ATTESTATIONS*SLOTS_PER_EPOCH"`
-    
-    // Multi-dimensional with expressions
-    Data [][]byte `dynssz-max:"SHARD_COUNT,MAX_SHARD_BLOCK_SIZE"`
-    
-    // Multi-dimensional with complex expressions
-    Matrix [][]uint32 `dynssz-max:"(ROWS*2),COLS+BUFFER"`
+    Validators   []Validator   `ssz-max:"1099511627776" dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
+    Attestations []Attestation `ssz-max:"128" dynssz-max:"MAX_ATTESTATIONS*SLOTS_PER_EPOCH"`
+    Data         [][]byte      `ssz-max:"64,1073741824" dynssz-max:"SHARD_COUNT,MAX_SHARD_BLOCK_SIZE"`
 }
 ```
 
@@ -262,133 +189,72 @@ type State struct {
 
 ### ssz-type
 
-Explicitly specifies the SSZ type for a field.
+Explicitly specifies the SSZ type for a field. When omitted, the type is auto-detected from the Go type.
 
-**Syntax**: `ssz-type:"<type>"`
+**Basic types**: `bool`, `uint8`, `uint16`, `uint32`, `uint64`, `uint128`, `uint256`
 
-**Available types**:
+**Collection types**: `container`, `list`, `vector`, `bitlist`, `bitvector`
 
-#### Basic Types
-- `bool` - Boolean value
-- `uint8`, `uint16`, `uint32`, `uint64` - Unsigned integers
-- `uint128`, `uint256` - Large integers (requires byte arrays, uint64 arrays, or uint256.Int)
+**Progressive types** (EIP-7916/7495): `progressive-list`, `progressive-bitlist`, `progressive-container`, `compatible-union` (or `union`)
 
-#### Container Types
-- `container` - Struct type
-- `list` - Dynamic array
-- `vector` - Fixed array
-- `bitlist` - Dynamic boolean array
-- `bitvector` - Fixed boolean array
+**Extended types** (non-standard, requires `WithExtendedTypes()`): `int8`, `int16`, `int32`, `int64`, `float32`, `float64`, `bigint`, `optional`
 
-#### Progressive Types (EIP-7916 & EIP-7495)
-- `progressive-list` - List with efficient merkleization
-- `progressive-bitlist` - Bitlist with efficient merkleization
-- `progressive-container` - Forward-compatible container
-- `compatible-union` or `union` - Variant type
+**Special values**: `custom` (type implements SSZ interfaces), `wrapper`/`type-wrapper` (TypeWrapper pattern), `?`/`auto` (auto-detect)
 
-#### Extended Types (Non-Standard, requires `WithExtendedTypes()`)
-- `int8`, `int16`, `int32`, `int64` - Signed integers
-- `float32`, `float64` - Floating-point numbers
-- `bigint` - Arbitrary-precision integer (`math/big.Int`)
-- `optional` - Optional value (pointer type)
-
-See [Extended Types](extended-types.md) for details. These types are not part of the SSZ spec and are incompatible with other SSZ libraries.
-
-#### Special Types
-- `custom` - Type implements custom SSZ interfaces
-- `wrapper` or `type-wrapper` - Uses TypeWrapper pattern
-- `?` or `auto` - Automatic type detection
-
-**Examples**:
 ```go
 type Advanced struct {
-    // Force uint256 for byte array
-    Balance [32]byte `ssz-type:"uint256"`
-    
-    // Progressive list for efficiency
-    Validators []Validator `ssz-type:"progressive-list"`
-    
-    // Union type
-    Operation CompatibleUnion[Operation] `ssz-type:"compatible-union"`
-    
-    // Let Dynamic SSZ detect type
-    Auto MyOtherType `ssz-type:"?"`
+    Balance    [32]byte    `ssz-type:"uint256"`
+    Validators []Validator `ssz-type:"progressive-list" ssz-max:"1099511627776"`
+    Operation  CompatibleUnion[Op] `ssz-type:"compatible-union"`
 }
 ```
-
-## Progressive Container Annotations
 
 ### ssz-index
 
-Specifies field index for progressive containers (EIP-7495).
+Specifies field index for progressive containers (EIP-7495), enabling forward/backward compatibility:
 
-**Syntax**: `ssz-index:"<number>"`
-
-**Purpose**: Enables forward/backward compatibility by explicit field ordering
-
-**Examples**:
 ```go
 type BeaconState struct {
-    // Core fields with low indices
-    GenesisTime uint64 `ssz-index:"0"`
-    Slot        uint64 `ssz-index:"1"`
-    
-    // Fields added in later forks
-    NewField1   *uint64 `ssz-index:"5"`
-    NewField2   *Data   `ssz-index:"6"`
+    GenesisTime uint64  `ssz-index:"0"`
+    Slot        uint64  `ssz-index:"1"`
+    NewField    *uint64 `ssz-index:"5"` // added in a later fork
 }
 ```
-
-**Best practices**:
-- Start with index 0 for core fields
-- Use pointer fields for indirection
 
 ## Expression Language
 
 Dynamic annotations (`dynssz-size`, `dynssz-max`, `dynssz-bitsize`) support expressions with spec values.
 
-### Syntax
-
-**Operators** (precedence order):
+**Operators** (standard precedence):
 1. Parentheses: `()`
 2. Multiplication/Division: `*`, `/`
 3. Addition/Subtraction: `+`, `-`
 
-**Features**:
-- Integer arithmetic only
-- Spec value substitution
-- Automatic rounding up for size calculations
-
-### Examples
+**Features**: Integer arithmetic only. Spec value substitution. Automatic rounding up for partial bytes.
 
 ```go
 // Simple reference
 `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
 
-// Basic arithmetic
+// Arithmetic
 `dynssz-size:"CHUNK_SIZE*4"`
 
 // Complex expression
 `dynssz-max:"(MAX_COMMITTEES_PER_SLOT*SLOTS_PER_EPOCH)+BUFFER"`
 
-// Multi-dimensional (works with all size/max tags)
-`ssz-size:"8,16"`
-`ssz-max:"100,256"`
-`dynssz-size:"ROWS,COLS"`
+// Multi-dimensional
 `dynssz-max:"SHARD_COUNT,MAX_SHARD_BLOCK_SIZE*2"`
 ```
 
-### Spec Value Resolution
-
-Spec values are resolved at runtime:
+Spec values are provided when creating the `DynSsz` instance:
 
 ```go
-specs := map[string]interface{}{
-    "CHUNK_SIZE": 32,
-    "SLOTS_PER_EPOCH": 32,
-    "MAX_COMMITTEES_PER_SLOT": 64,
+specs := map[string]any{
+    "CHUNK_SIZE":                 uint64(32),
+    "SLOTS_PER_EPOCH":           uint64(32),
+    "MAX_COMMITTEES_PER_SLOT":   uint64(64),
 }
-ssz := dynssz.NewDynSsz(specs)
+ds := dynssz.NewDynSsz(specs)
 ```
 
 ## Tag Combinations
@@ -397,20 +263,20 @@ ssz := dynssz.NewDynSsz(specs)
 
 ```go
 type Valid struct {
-    // Size + type for byte arrays
-    Hash []byte `ssz-size:"32" ssz-type:"vector"`
+    // Static size + dynamic override
+    Data []byte `ssz-size:"32" dynssz-size:"CHUNK_SIZE"`
 
-    // Max + type for lists
-    Items []uint64 `ssz-max:"1024" ssz-type:"list"`
-
-    // Progressive type with dynamic max
-    Validators []Validator `ssz-type:"progressive-list" dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
+    // Static max + dynamic override (recommended pattern)
+    Items []uint64 `ssz-max:"1024" dynssz-max:"MAX_LIST_SIZE"`
 
     // Bitvector with bitsize for padding validation
     Bits [2]byte `ssz-type:"bitvector" ssz-bitsize:"12"`
 
-    // Dynamic bitvector with both static and dynamic bitsize
+    // Dynamic bitvector with static fallback
     DynBits []byte `ssz-type:"bitvector" ssz-bitsize:"512" dynssz-bitsize:"COMMITTEE_SIZE"`
+
+    // Progressive type with dynamic max
+    Validators []Validator `ssz-type:"progressive-list" ssz-max:"1099511627776" dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
 }
 ```
 
@@ -418,11 +284,8 @@ type Valid struct {
 
 ```go
 type Invalid struct {
-    // Cannot use both size and max
-    Bad []byte `ssz-size:"32" ssz-max:"64"`  // Error!
-    
-    // Cannot use static and dynamic versions together
-    Wrong []uint64 `ssz-max:"100" dynssz-max:"MAX_SIZE"`  // Error!
+    // Cannot use both ssz-size and ssz-max (a field is either fixed or variable)
+    Bad []byte `ssz-size:"32" ssz-max:"64"`
 }
 ```
 
@@ -431,19 +294,11 @@ type Invalid struct {
 ### Ethereum Types
 
 ```go
-// Common Ethereum consensus types
 type EthereumTypes struct {
-    // 32-byte hash
-    BlockRoot []byte `ssz-size:"32"`
-    
-    // BLS signature
-    Signature []byte `ssz-size:"96"`
-    
-    // BLS public key
-    PublicKey []byte `ssz-size:"48"`
-    
-    // Dynamic validator set
-    Validators []Validator `dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
+    BlockRoot  []byte      `ssz-size:"32"`     // 32-byte hash
+    Signature  []byte      `ssz-size:"96"`     // BLS signature
+    PublicKey  []byte      `ssz-size:"48"`     // BLS public key
+    Validators []Validator `ssz-max:"1099511627776" dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
 }
 ```
 
@@ -451,20 +306,11 @@ type EthereumTypes struct {
 
 ```go
 type Bitfields struct {
-    // Fixed-size bitvector (byte-aligned, no padding validation needed)
-    Flags [32]byte `ssz-type:"bitvector"`
-
-    // Bitvector with bit-level size (enables padding bit validation)
-    CommitteeBits [2]byte `ssz-type:"bitvector" ssz-bitsize:"12"`
-
-    // Dynamic bitvector with spec-based bit size
-    SyncBits []byte `ssz-type:"bitvector" ssz-bitsize:"512" dynssz-bitsize:"SYNC_COMMITTEE_SIZE"`
-
-    // Variable-size bitlist
-    Votes []byte `ssz-max:"2048"`
-
-    // Using go-bitfield
-    Attestation bitfield.Bitlist `ssz-max:"2048"`
+    Flags         [32]byte         `ssz-type:"bitvector"`
+    CommitteeBits [2]byte          `ssz-type:"bitvector" ssz-bitsize:"12"`
+    SyncBits      []byte           `ssz-type:"bitvector" ssz-bitsize:"512" dynssz-bitsize:"SYNC_COMMITTEE_SIZE"`
+    Votes         []byte           `ssz-type:"bitlist" ssz-max:"2048"`
+    Attestation   bitfield.Bitlist `ssz-max:"2048"`
 }
 ```
 
@@ -472,14 +318,9 @@ type Bitfields struct {
 
 ```go
 type WithPointers struct {
-    // Regular field
-    Value uint64
-    
-    // Pointer field (initialized if nil)
-    Pointer *uint64
-    
-    // Pointer with progressive index
-    Feature *Feature `ssz-index:"100"`
+    Value   uint64
+    Pointer *uint64           // treated as regular field; initialized if nil on unmarshal
+    Feature *Feature `ssz-index:"100"` // progressive container field
 }
 ```
 
@@ -487,106 +328,48 @@ type WithPointers struct {
 
 ```go
 type Nested struct {
-    // 2D array with per-dimension limits
     Matrix [][]uint32 `ssz-max:"100,256"`
-    
-    // Array of fixed-size byte arrays
     Hashes [][32]byte `ssz-max:"1024"`
-    
-    // Dynamic with expressions
-    Data [][]byte `dynssz-max:"SHARD_COUNT,MAX_SHARD_BLOCK_SIZE"`
+    Data   [][]byte   `ssz-max:"64,1073741824" dynssz-max:"SHARD_COUNT,MAX_SHARD_BLOCK_SIZE"`
 }
 ```
-
-## Migration Guide
-
-### From fastssz
-
-Dynamic SSZ is largely compatible with fastssz tags:
-
-```go
-// fastssz style (still works)
-type FastSSZ struct {
-    Data []byte `ssz-size:"32"`
-    List []uint64 `ssz-max:"1024"`
-}
-
-// Dynamic SSZ additions
-type DynamicSSZ struct {
-    Data []byte `dynssz-size:"CHUNK_SIZE"`
-    List []uint64 `dynssz-max:"MAX_LIST_SIZE"`
-}
-```
-
-### Adding Progressive Types
-
-Upgrade existing types for better performance:
-
-```go
-// Before
-type State struct {
-    Validators []Validator `ssz-max:"1099511627776"`
-}
-
-// After - with progressive merkleization
-type State struct {
-    Validators []Validator `ssz-type:"progressive-list" dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
-}
-```
-
-## Best Practices
-
-1. **Always specify `ssz-max`** for dynamic arrays
-2. **Use `dynssz-*` tags** for runtime configuration
-3. **Add `ssz-index`** for forward-compatible types
-4. **Prefer progressive types** for large collections
-5. **Document spec values** used in expressions
 
 ## Troubleshooting
 
-### "Missing ssz-max" Warning
+### "Spec value not found" / expression not resolved
 
-Dynamic arrays without `ssz-max` have security implications:
+The `dynssz-*` expression references a spec value that was not provided. If an `ssz-*` fallback exists, it will be used. If not, the operation may fail.
+
 ```go
-// Discouraged: no maximum size limit
-type Risky struct {
-    Items []uint64  // Hash tree root calculation is vulnerable
+// Ensure all referenced values are provided
+specs := map[string]any{
+    "MISSING_VALUE": uint64(100),
 }
-
-// Recommended: specify maximum size
-type Safe struct {
-    Items []uint64 `ssz-max:"1000"`
-}
+ds := dynssz.NewDynSsz(specs)
 ```
-
-**Security Note**: Without `ssz-max`, hash tree root calculations have security implications. Always specify maximum sizes for production code.
 
 ### "Invalid expression" Error
 
 Check expression syntax:
 ```go
-// Valid expressions
+// Valid
 `dynssz-max:"VALUE"`
 `dynssz-max:"VALUE*2"`
 `dynssz-max:"(A+B)*C"`
 
-// Invalid expressions
-`dynssz-max:"VALUE^2"`      // No exponentiation
-`dynssz-max:"VALUE/2.5"`    // No floats
-`dynssz-max:"VALUE OR 100"` // No logical operators
+// Invalid
+`dynssz-max:"VALUE^2"`      // no exponentiation
+`dynssz-max:"VALUE/2.5"`    // no floats
+`dynssz-max:"VALUE OR 100"` // no logical operators
 ```
 
-### "Spec value not found" Error
+### Missing ssz-max for dynamic arrays
 
-Ensure all referenced values are provided:
-```go
-specs := map[string]interface{}{
-    "MISSING_VALUE": 100,  // Add missing spec value
-}
-```
+Dynamic arrays without `ssz-max` have security implications for hash tree root computation. Always specify a maximum size for production code.
 
 ## Related Documentation
 
 - [Supported Types](supported-types.md) - Complete type reference
+- [Getting Started](getting-started.md) - Basic usage
+- [Code Generator](code-generator.md) - Code generation
 - [API Reference](api-reference.md) - Runtime APIs
-- [Code Generator](code-generator.md) - Generating efficient code

@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 	"unsafe"
 
 	"github.com/pk910/dynamic-ssz/sszutils"
@@ -628,21 +629,21 @@ func TestTypeCache_GetCompatFlag(t *testing.T) {
 	cache := NewTypeCache(ds)
 
 	// Test with empty compat flags
-	flag := cache.getCompatFlag(reflect.TypeOf(uint32(0)))
+	flag := cache.getCompatFlag(reflect.TypeOf(uint32(0)), reflect.TypeOf(uint32(0)))
 	if flag != 0 {
 		t.Errorf("Expected 0 compat flag for uint32, got %d", flag)
 	}
 
 	// Test with pointer type
 	ptrType := reflect.TypeOf((*uint32)(nil))
-	flag = cache.getCompatFlag(ptrType)
+	flag = cache.getCompatFlag(ptrType, ptrType)
 	if flag != 0 {
 		t.Errorf("Expected 0 compat flag for pointer type, got %d", flag)
 	}
 
 	// Add a compat flag and test
 	cache.CompatFlags["uint32"] = SszCompatFlagFastSSZMarshaler
-	flag = cache.getCompatFlag(reflect.TypeOf(uint32(0)))
+	flag = cache.getCompatFlag(reflect.TypeOf(uint32(0)), reflect.TypeOf(uint32(0)))
 	if flag != SszCompatFlagFastSSZMarshaler {
 		t.Errorf("Expected SszCompatFlagFastSSZMarshaler, got %d", flag)
 	}
@@ -1316,6 +1317,403 @@ func TestTypeCache_InvalidHashTreeRootWith(t *testing.T) {
 	}
 }
 
+// Test types for view descriptor tests
+type runtimeContainer struct {
+	FieldA uint64
+	FieldB uint32
+	FieldC []byte
+}
+
+type schemaContainerV1 struct {
+	FieldA uint64
+	FieldB uint32
+}
+
+type schemaContainerV2 struct {
+	FieldB uint32
+	FieldA uint64
+}
+
+type schemaContainerMissingField struct {
+	FieldA uint64
+	FieldX uint32 // This field doesn't exist in runtimeContainer
+}
+
+// Nested view descriptor types
+type runtimeInner struct {
+	Value uint64
+	Data  []byte
+}
+
+type runtimeOuter struct {
+	ID    uint32
+	Inner runtimeInner
+}
+
+type schemaInnerV1 struct {
+	Value uint64
+}
+
+type schemaOuterV1 struct {
+	ID    uint32
+	Inner schemaInnerV1
+}
+
+// Test GetTypeDescriptorWithSchema basic functionality
+func TestTypeCache_GetTypeDescriptorWithSchema(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	cache := NewTypeCache(ds)
+
+	t.Run("SameRuntimeAndSchema", func(t *testing.T) {
+		runtimeType := reflect.TypeOf(runtimeContainer{})
+		schemaType := runtimeType
+
+		desc, err := cache.GetTypeDescriptorWithSchema(runtimeType, schemaType, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if desc.SszType != SszContainerType {
+			t.Errorf("expected SszContainerType, got %v", desc.SszType)
+		}
+
+		// When runtime == schema, FieldIndex should match field order
+		for i, field := range desc.ContainerDesc.Fields {
+			if int(field.FieldIndex) != i {
+				t.Errorf("field %s: expected FieldIndex %d, got %d", field.Name, i, field.FieldIndex)
+			}
+		}
+	})
+
+	t.Run("DifferentSchemaFieldOrder", func(t *testing.T) {
+		runtimeType := reflect.TypeOf(runtimeContainer{})
+		schemaType := reflect.TypeOf(schemaContainerV2{})
+
+		desc, err := cache.GetTypeDescriptorWithSchema(runtimeType, schemaType, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// Schema has FieldB first, then FieldA
+		// FieldB should map to runtime index 1, FieldA to runtime index 0
+		if len(desc.ContainerDesc.Fields) != 2 {
+			t.Fatalf("expected 2 fields, got %d", len(desc.ContainerDesc.Fields))
+		}
+
+		// First field in schema is FieldB -> runtime index 1
+		if desc.ContainerDesc.Fields[0].Name != "FieldB" {
+			t.Errorf("expected first field to be FieldB, got %s", desc.ContainerDesc.Fields[0].Name)
+		}
+		if desc.ContainerDesc.Fields[0].FieldIndex != 1 {
+			t.Errorf("FieldB: expected FieldIndex 1, got %d", desc.ContainerDesc.Fields[0].FieldIndex)
+		}
+
+		// Second field in schema is FieldA -> runtime index 0
+		if desc.ContainerDesc.Fields[1].Name != "FieldA" {
+			t.Errorf("expected second field to be FieldA, got %s", desc.ContainerDesc.Fields[1].Name)
+		}
+		if desc.ContainerDesc.Fields[1].FieldIndex != 0 {
+			t.Errorf("FieldA: expected FieldIndex 0, got %d", desc.ContainerDesc.Fields[1].FieldIndex)
+		}
+	})
+
+	t.Run("SchemaWithFewerFields", func(t *testing.T) {
+		runtimeType := reflect.TypeOf(runtimeContainer{})
+		schemaType := reflect.TypeOf(schemaContainerV1{})
+
+		desc, err := cache.GetTypeDescriptorWithSchema(runtimeType, schemaType, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// Schema only has 2 fields (FieldA and FieldB)
+		if len(desc.ContainerDesc.Fields) != 2 {
+			t.Fatalf("expected 2 fields, got %d", len(desc.ContainerDesc.Fields))
+		}
+
+		// Verify FieldIndex mapping
+		if desc.ContainerDesc.Fields[0].Name != "FieldA" || desc.ContainerDesc.Fields[0].FieldIndex != 0 {
+			t.Errorf("FieldA mapping incorrect: name=%s, index=%d", desc.ContainerDesc.Fields[0].Name, desc.ContainerDesc.Fields[0].FieldIndex)
+		}
+		if desc.ContainerDesc.Fields[1].Name != "FieldB" || desc.ContainerDesc.Fields[1].FieldIndex != 1 {
+			t.Errorf("FieldB mapping incorrect: name=%s, index=%d", desc.ContainerDesc.Fields[1].Name, desc.ContainerDesc.Fields[1].FieldIndex)
+		}
+	})
+}
+
+// Test view descriptor error cases
+func TestTypeCache_ViewDescriptorErrors(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	cache := NewTypeCache(ds)
+
+	t.Run("SchemaFieldNotFoundInRuntime", func(t *testing.T) {
+		runtimeType := reflect.TypeOf(runtimeContainer{})
+		schemaType := reflect.TypeOf(schemaContainerMissingField{})
+
+		_, err := cache.GetTypeDescriptorWithSchema(runtimeType, schemaType, nil, nil, nil)
+		if err == nil {
+			t.Error("expected error for schema field not found in runtime")
+			return
+		}
+		if !strings.Contains(err.Error(), "schema field \"FieldX\" not found in runtime type") {
+			t.Errorf("unexpected error: %s", err.Error())
+		}
+	})
+}
+
+// Test cache keying with (runtime, schema) pairs
+func TestTypeCache_CacheKeyWithSchema(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	cache := NewTypeCache(ds)
+
+	runtimeType := reflect.TypeOf(runtimeContainer{})
+	schemaV1 := reflect.TypeOf(schemaContainerV1{})
+	schemaV2 := reflect.TypeOf(schemaContainerV2{})
+
+	// Get descriptor with schema V1
+	descV1, err := cache.GetTypeDescriptorWithSchema(runtimeType, schemaV1, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error for V1: %v", err)
+	}
+
+	// Get descriptor with schema V2
+	descV2, err := cache.GetTypeDescriptorWithSchema(runtimeType, schemaV2, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error for V2: %v", err)
+	}
+
+	// Descriptors should be different (different field order)
+	if descV1 == descV2 {
+		t.Error("expected different descriptors for different schemas")
+	}
+
+	// V1 has FieldA first, V2 has FieldB first
+	if descV1.ContainerDesc.Fields[0].Name != "FieldA" {
+		t.Errorf("V1 first field should be FieldA, got %s", descV1.ContainerDesc.Fields[0].Name)
+	}
+	if descV2.ContainerDesc.Fields[0].Name != "FieldB" {
+		t.Errorf("V2 first field should be FieldB, got %s", descV2.ContainerDesc.Fields[0].Name)
+	}
+
+	// Getting the same (runtime, schema) pair again should return cached descriptor
+	descV1Again, err := cache.GetTypeDescriptorWithSchema(runtimeType, schemaV1, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error for V1 again: %v", err)
+	}
+	if descV1 != descV1Again {
+		t.Error("expected same descriptor for same (runtime, schema) pair")
+	}
+}
+
+// Test nested view descriptors
+func TestTypeCache_NestedViewDescriptors(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	cache := NewTypeCache(ds)
+
+	t.Run("NestedContainerWithViewDescriptor", func(t *testing.T) {
+		runtimeType := reflect.TypeOf(runtimeOuter{})
+		schemaType := reflect.TypeOf(schemaOuterV1{})
+
+		desc, err := cache.GetTypeDescriptorWithSchema(runtimeType, schemaType, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(desc.ContainerDesc.Fields) != 2 {
+			t.Fatalf("expected 2 fields, got %d", len(desc.ContainerDesc.Fields))
+		}
+
+		// Check the Inner field
+		innerField := desc.ContainerDesc.Fields[1]
+		if innerField.Name != "Inner" {
+			t.Errorf("expected second field to be Inner, got %s", innerField.Name)
+		}
+
+		// The inner container should have been built with the nested schema
+		innerDesc := innerField.Type
+		if innerDesc.SszType != SszContainerType {
+			t.Errorf("expected Inner to be SszContainerType, got %v", innerDesc.SszType)
+		}
+
+		// schemaInnerV1 only has Value field, not Data
+		if len(innerDesc.ContainerDesc.Fields) != 1 {
+			t.Errorf("expected inner container to have 1 field, got %d", len(innerDesc.ContainerDesc.Fields))
+		}
+
+		if innerDesc.ContainerDesc.Fields[0].Name != "Value" {
+			t.Errorf("expected inner field to be Value, got %s", innerDesc.ContainerDesc.Fields[0].Name)
+		}
+
+		// Verify FieldIndex points to correct runtime field (Value is at index 0 in runtimeInner)
+		if innerDesc.ContainerDesc.Fields[0].FieldIndex != 0 {
+			t.Errorf("expected Value FieldIndex 0, got %d", innerDesc.ContainerDesc.Fields[0].FieldIndex)
+		}
+	})
+}
+
+// Test view descriptor with dynamic fields
+func TestTypeCache_ViewDescriptorWithDynamicFields(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	cache := NewTypeCache(ds)
+
+	type runtimeWithDynamic struct {
+		StaticField  uint64
+		DynamicField []byte
+	}
+
+	type schemaWithDynamic struct {
+		DynamicField []byte `ssz-max:"100"`
+		StaticField  uint64
+	}
+
+	runtimeType := reflect.TypeOf(runtimeWithDynamic{})
+	schemaType := reflect.TypeOf(schemaWithDynamic{})
+
+	desc, err := cache.GetTypeDescriptorWithSchema(runtimeType, schemaType, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Schema has DynamicField first (index 0), StaticField second (index 1)
+	// Runtime has StaticField first (index 0), DynamicField second (index 1)
+	if len(desc.ContainerDesc.Fields) != 2 {
+		t.Fatalf("expected 2 fields, got %d", len(desc.ContainerDesc.Fields))
+	}
+
+	// First schema field is DynamicField -> runtime index 1
+	if desc.ContainerDesc.Fields[0].Name != "DynamicField" {
+		t.Errorf("expected first field to be DynamicField, got %s", desc.ContainerDesc.Fields[0].Name)
+	}
+	if desc.ContainerDesc.Fields[0].FieldIndex != 1 {
+		t.Errorf("DynamicField: expected FieldIndex 1, got %d", desc.ContainerDesc.Fields[0].FieldIndex)
+	}
+
+	// Second schema field is StaticField -> runtime index 0
+	if desc.ContainerDesc.Fields[1].Name != "StaticField" {
+		t.Errorf("expected second field to be StaticField, got %s", desc.ContainerDesc.Fields[1].Name)
+	}
+	if desc.ContainerDesc.Fields[1].FieldIndex != 0 {
+		t.Errorf("StaticField: expected FieldIndex 0, got %d", desc.ContainerDesc.Fields[1].FieldIndex)
+	}
+
+	// DynFields should reference correct runtime field index
+	if len(desc.ContainerDesc.DynFields) != 1 {
+		t.Fatalf("expected 1 dynamic field, got %d", len(desc.ContainerDesc.DynFields))
+	}
+
+	dynField := desc.ContainerDesc.DynFields[0]
+	if dynField.Field.Name != "DynamicField" {
+		t.Errorf("expected dynamic field to be DynamicField, got %s", dynField.Field.Name)
+	}
+	// DynField.Index should be runtime field index (1)
+	if dynField.Index != 1 {
+		t.Errorf("expected DynField.Index 1, got %d", dynField.Index)
+	}
+}
+
+// Test view descriptor with vector containing nested schema
+func TestTypeCache_ViewDescriptorWithVector(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	cache := NewTypeCache(ds)
+
+	type runtimeElem struct {
+		A uint64
+		B uint32
+	}
+
+	type schemaElem struct {
+		B uint32
+		A uint64
+	}
+
+	type runtimeWithVector struct {
+		Items []runtimeElem
+	}
+
+	type schemaWithVector struct {
+		Items []schemaElem `ssz-max:"10"`
+	}
+
+	runtimeType := reflect.TypeOf(runtimeWithVector{})
+	schemaType := reflect.TypeOf(schemaWithVector{})
+
+	desc, err := cache.GetTypeDescriptorWithSchema(runtimeType, schemaType, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(desc.ContainerDesc.Fields) != 1 {
+		t.Fatalf("expected 1 field, got %d", len(desc.ContainerDesc.Fields))
+	}
+
+	itemsField := desc.ContainerDesc.Fields[0]
+	if itemsField.Type.SszType != SszListType {
+		t.Errorf("expected SszListType, got %v", itemsField.Type.SszType)
+	}
+
+	// Element descriptor should reflect the schema's field order
+	elemDesc := itemsField.Type.ElemDesc
+	if elemDesc.SszType != SszContainerType {
+		t.Errorf("expected element to be SszContainerType, got %v", elemDesc.SszType)
+	}
+
+	// Schema has B first, A second
+	if len(elemDesc.ContainerDesc.Fields) != 2 {
+		t.Fatalf("expected 2 element fields, got %d", len(elemDesc.ContainerDesc.Fields))
+	}
+
+	if elemDesc.ContainerDesc.Fields[0].Name != "B" {
+		t.Errorf("expected first element field to be B, got %s", elemDesc.ContainerDesc.Fields[0].Name)
+	}
+	if elemDesc.ContainerDesc.Fields[1].Name != "A" {
+		t.Errorf("expected second element field to be A, got %s", elemDesc.ContainerDesc.Fields[1].Name)
+	}
+
+	// FieldIndex should map to runtime element fields
+	// runtimeElem has A at 0, B at 1
+	if elemDesc.ContainerDesc.Fields[0].FieldIndex != 1 { // B in schema -> index 1 in runtime
+		t.Errorf("B: expected FieldIndex 1, got %d", elemDesc.ContainerDesc.Fields[0].FieldIndex)
+	}
+	if elemDesc.ContainerDesc.Fields[1].FieldIndex != 0 { // A in schema -> index 0 in runtime
+		t.Errorf("A: expected FieldIndex 0, got %d", elemDesc.ContainerDesc.Fields[1].FieldIndex)
+	}
+}
+
+// Test concurrent access with view descriptors
+func TestTypeCache_ConcurrentAccessWithSchema(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	cache := NewTypeCache(ds)
+
+	runtimeType := reflect.TypeOf(runtimeContainer{})
+	schemaV1 := reflect.TypeOf(schemaContainerV1{})
+	schemaV2 := reflect.TypeOf(schemaContainerV2{})
+
+	done := make(chan bool, 20)
+
+	// Concurrent access with different schemas
+	for i := 0; i < 10; i++ {
+		go func() {
+			defer func() { done <- true }()
+			_, err := cache.GetTypeDescriptorWithSchema(runtimeType, schemaV1, nil, nil, nil)
+			if err != nil {
+				t.Errorf("concurrent GetTypeDescriptorWithSchema V1 failed: %v", err)
+			}
+		}()
+		go func() {
+			defer func() { done <- true }()
+			_, err := cache.GetTypeDescriptorWithSchema(runtimeType, schemaV2, nil, nil, nil)
+			if err != nil {
+				t.Errorf("concurrent GetTypeDescriptorWithSchema V2 failed: %v", err)
+			}
+		}()
+	}
+
+	// Wait for all goroutines
+	for i := 0; i < 20; i++ {
+		<-done
+	}
+}
+
 func TestListWithFixedSizeRejected(t *testing.T) {
 	// Bug fix: ssz-type:"list" combined with a fixed ssz-size is invalid.
 	// Lists use ssz-max, not ssz-size. This should return an error.
@@ -1766,3 +2164,1623 @@ func TestTypeCache_AnnotationRegistryInvalidTag(t *testing.T) {
 		t.Fatal("expected error for invalid annotation tag")
 	}
 }
+
+// --- ParseTags comprehensive tests ---
+
+func TestParseTags_Comprehensive(t *testing.T) {
+	t.Run("EmptyTag", func(t *testing.T) {
+		typeHints, sizeHints, maxHints, err := ParseTags("")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if typeHints != nil || sizeHints != nil || maxHints != nil {
+			t.Fatal("expected all nil for empty tag")
+		}
+	})
+
+	t.Run("SszTypeContainer", func(t *testing.T) {
+		typeHints, _, _, err := ParseTags(`ssz-type:"container"`)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(typeHints) != 1 || typeHints[0].Type != SszContainerType {
+			t.Fatalf("expected SszContainerType, got %v", typeHints)
+		}
+	})
+
+	t.Run("SszTypeParseError", func(t *testing.T) {
+		_, _, _, err := ParseTags(`ssz-type:"invalidtype"`)
+		if err == nil {
+			t.Fatal("expected error for invalid ssz-type")
+		}
+		if !strings.Contains(err.Error(), "error parsing ssz-type tag") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("SszBitsize", func(t *testing.T) {
+		_, sizeHints, _, err := ParseTags(`ssz-bitsize:"32"`)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(sizeHints) != 1 {
+			t.Fatalf("expected 1 size hint, got %d", len(sizeHints))
+		}
+		if !sizeHints[0].Bits {
+			t.Fatal("expected Bits=true")
+		}
+		if sizeHints[0].Size != 32 {
+			t.Fatalf("expected Size=32, got %d", sizeHints[0].Size)
+		}
+	})
+
+	t.Run("SszBitsizeLarger", func(t *testing.T) {
+		_, sizeHints, _, err := ParseTags(`ssz-bitsize:"128"`)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(sizeHints) != 1 || sizeHints[0].Size != 128 || !sizeHints[0].Bits {
+			t.Fatalf("unexpected size hints: %+v", sizeHints)
+		}
+	})
+
+	t.Run("SszBitsizeInvalid", func(t *testing.T) {
+		_, _, _, err := ParseTags(`ssz-bitsize:"abc"`)
+		if err == nil {
+			t.Fatal("expected error for invalid ssz-bitsize")
+		}
+		if !strings.Contains(err.Error(), "error parsing ssz-size tag") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("NoSizeNoBitsize_Dynamic", func(t *testing.T) {
+		// Both ssz-size and ssz-bitsize absent but at least one dimension requested
+		// through an ssz-size:"?" tag
+		_, sizeHints, _, err := ParseTags(`ssz-size:"?"`)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(sizeHints) != 1 || !sizeHints[0].Dynamic {
+			t.Fatalf("expected Dynamic=true, got %+v", sizeHints)
+		}
+	})
+
+	t.Run("DynSszBitsize", func(t *testing.T) {
+		_, sizeHints, _, err := ParseTags(`ssz-bitsize:"32" dynssz-bitsize:"64"`)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(sizeHints) != 1 {
+			t.Fatalf("expected 1 size hint, got %d", len(sizeHints))
+		}
+		// dynssz-bitsize:"64" overrides ssz-bitsize:"32"
+		if sizeHints[0].Size != 64 {
+			t.Fatalf("expected Size=64 from dynssz-bitsize override, got %d", sizeHints[0].Size)
+		}
+		if !sizeHints[0].Bits {
+			t.Fatal("expected Bits=true from dynssz-bitsize")
+		}
+	})
+
+	t.Run("DynSszBitsizeOverrideSszBitsize", func(t *testing.T) {
+		_, sizeHints, _, err := ParseTags(`ssz-bitsize:"64" dynssz-bitsize:"128"`)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(sizeHints) != 1 || sizeHints[0].Size != 128 || !sizeHints[0].Bits {
+			t.Fatalf("expected Size=128 Bits=true, got %+v", sizeHints[0])
+		}
+	})
+
+	t.Run("DynSszSizeDynamic", func(t *testing.T) {
+		_, sizeHints, _, err := ParseTags(`ssz-size:"32" dynssz-size:"?"`)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(sizeHints) != 1 {
+			t.Fatalf("expected 1 size hint, got %d", len(sizeHints))
+		}
+		if !sizeHints[0].Dynamic {
+			t.Fatal("expected Dynamic=true for dynssz-size:\"?\"")
+		}
+	})
+
+	t.Run("DynSszSizeNumericOverride", func(t *testing.T) {
+		_, sizeHints, _, err := ParseTags(`ssz-size:"32" dynssz-size:"64"`)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(sizeHints) != 1 || sizeHints[0].Size != 64 {
+			t.Fatalf("expected Size=64, got %+v", sizeHints)
+		}
+	})
+
+	t.Run("DynSszSizeExprWithExistingHint", func(t *testing.T) {
+		// Expression that can't be parsed as numeric, sets Expr on existing hint
+		_, sizeHints, _, err := ParseTags(`ssz-size:"32" dynssz-size:"SOME_EXPR"`)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(sizeHints) != 1 {
+			t.Fatalf("expected 1 size hint, got %d", len(sizeHints))
+		}
+		if sizeHints[0].Expr != "SOME_EXPR" {
+			t.Fatalf("expected Expr='SOME_EXPR', got %q", sizeHints[0].Expr)
+		}
+	})
+
+	t.Run("DynSszSizeExprWithoutExistingHint", func(t *testing.T) {
+		// Expression without ssz-size base - appends new hint
+		_, sizeHints, _, err := ParseTags(`dynssz-size:"SOME_EXPR"`)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(sizeHints) != 1 {
+			t.Fatalf("expected 1 size hint, got %d", len(sizeHints))
+		}
+		if !sizeHints[0].Dynamic {
+			t.Fatal("expected Dynamic=true")
+		}
+		if !sizeHints[0].Custom {
+			t.Fatal("expected Custom=true")
+		}
+	})
+
+	t.Run("SszMaxDynamic", func(t *testing.T) {
+		_, _, maxHints, err := ParseTags(`ssz-max:"?"`)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(maxHints) != 1 || !maxHints[0].NoValue {
+			t.Fatalf("expected NoValue=true, got %+v", maxHints)
+		}
+	})
+
+	t.Run("SszMaxParseError", func(t *testing.T) {
+		_, _, _, err := ParseTags(`ssz-max:"abc"`)
+		if err == nil {
+			t.Fatal("expected error for invalid ssz-max")
+		}
+		if !strings.Contains(err.Error(), "error parsing ssz-max tag") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("DynSszMaxDynamic", func(t *testing.T) {
+		_, _, maxHints, err := ParseTags(`ssz-max:"100" dynssz-max:"?"`)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(maxHints) != 1 || !maxHints[0].NoValue {
+			t.Fatalf("expected NoValue=true, got %+v", maxHints)
+		}
+	})
+
+	t.Run("DynSszSizeExprSetsExprOnExistingSizeHint", func(t *testing.T) {
+		// When i < len(sizeHints) and expr is not numeric, it sets Expr on existing
+		// hint and continues (lines 557-560 in ssztags.go ParseTags)
+		_, sizeHints, _, err := ParseTags(`ssz-size:"32" dynssz-size:"MY_EXPR"`)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(sizeHints) != 1 {
+			t.Fatalf("expected 1 size hint, got %d", len(sizeHints))
+		}
+		if sizeHints[0].Expr != "MY_EXPR" {
+			t.Fatalf("expected Expr='MY_EXPR', got %q", sizeHints[0].Expr)
+		}
+		// The size should remain from the original ssz-size since expr isn't resolved
+		if sizeHints[0].Size != 32 {
+			t.Fatalf("expected Size=32 (original), got %d", sizeHints[0].Size)
+		}
+	})
+
+	t.Run("DynSszSizeExprNewHint", func(t *testing.T) {
+		// When i >= len(sizeHints), it appends a new hint with Dynamic+Custom flags
+		// (lines 564-568 in ssztags.go ParseTags)
+		_, sizeHints, _, err := ParseTags(`dynssz-size:"MY_NEW_EXPR"`)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(sizeHints) != 1 {
+			t.Fatalf("expected 1 size hint, got %d", len(sizeHints))
+		}
+		if !sizeHints[0].Dynamic || !sizeHints[0].Custom {
+			t.Fatal("expected Dynamic=true and Custom=true for new expr hint")
+		}
+	})
+
+	t.Run("DynSszMaxExprWithExistingHint", func(t *testing.T) {
+		// Expression-based dynssz-max with existing ssz-max (lines 612-615)
+		_, _, maxHints, err := ParseTags(`ssz-max:"100" dynssz-max:"SOME_MAX_EXPR"`)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(maxHints) != 1 {
+			t.Fatalf("expected 1 max hint, got %d", len(maxHints))
+		}
+		if maxHints[0].Expr != "SOME_MAX_EXPR" {
+			t.Fatalf("expected Expr='SOME_MAX_EXPR', got %q", maxHints[0].Expr)
+		}
+	})
+
+	t.Run("SszSizeParseError", func(t *testing.T) {
+		_, _, _, err := ParseTags(`ssz-size:"notanumber"`)
+		if err == nil {
+			t.Fatal("expected error for invalid ssz-size")
+		}
+		if !strings.Contains(err.Error(), "error parsing ssz-size tag") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
+// --- View descriptor runtime/schema type mismatch tests ---
+
+func TestTypeCache_ViewDescriptorKindMismatch(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	cache := NewTypeCache(ds)
+
+	t.Run("RuntimeSchemaKindMismatch", func(t *testing.T) {
+		// runtime is struct, schema is uint32 => kind mismatch
+		runtimeType := reflect.TypeOf(struct{ A uint32 }{})
+		schemaType := reflect.TypeOf(uint32(0))
+
+		_, err := cache.GetTypeDescriptorWithSchema(runtimeType, schemaType, nil, nil, nil)
+		if err == nil {
+			t.Fatal("expected error for kind mismatch")
+		}
+		if !strings.Contains(err.Error(), "incompatible types") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("PointerKindMismatch", func(t *testing.T) {
+		// Both are pointers but underlying types have different kinds
+		runtimeType := reflect.TypeOf((*uint32)(nil))
+		schemaType := reflect.TypeOf((*uint64)(nil))
+
+		_, err := cache.GetTypeDescriptorWithSchema(runtimeType, schemaType, nil, nil, nil)
+		if err == nil {
+			t.Fatal("expected error for pointer kind mismatch")
+		}
+		if !strings.Contains(err.Error(), "incompatible pointer types") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
+// --- FastSSZ interface compatibility tests ---
+
+// testFastsszMarshaler implements fastssz marshaler + unmarshaler + hash root
+type testFastsszMarshaler struct {
+	Value uint32
+}
+
+func (t *testFastsszMarshaler) MarshalSSZTo(dst []byte) ([]byte, error) {
+	return append(dst, 0, 0, 0, 0), nil
+}
+func (t *testFastsszMarshaler) MarshalSSZ() ([]byte, error) {
+	return []byte{0, 0, 0, 0}, nil
+}
+func (t *testFastsszMarshaler) SizeSSZ() int { return 4 }
+func (t *testFastsszMarshaler) UnmarshalSSZ(buf []byte) error {
+	return nil
+}
+func (t *testFastsszMarshaler) HashTreeRoot() ([32]byte, error) {
+	return [32]byte{}, nil
+}
+
+// testHashTreeRootWith implements HashTreeRootWith(hasher) error
+type testHashTreeRootWith struct{}
+
+func (t *testHashTreeRootWith) HashTreeRootWith(hh interface{}) error {
+	return nil
+}
+
+func TestTypeCache_FastSSZInterfaceCompat(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	cache := NewTypeCache(ds)
+
+	t.Run("FastSSZMarshaler", func(t *testing.T) {
+		desc, err := cache.GetTypeDescriptor(
+			reflect.TypeOf(testFastsszMarshaler{}), nil, nil, nil,
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if desc.SszCompatFlags&SszCompatFlagFastSSZMarshaler == 0 {
+			t.Error("expected SszCompatFlagFastSSZMarshaler to be set")
+		}
+		if desc.SszCompatFlags&SszCompatFlagFastSSZHasher == 0 {
+			t.Error("expected SszCompatFlagFastSSZHasher to be set")
+		}
+	})
+
+	t.Run("HashTreeRootWithMethod", func(t *testing.T) {
+		desc, err := cache.GetTypeDescriptor(
+			reflect.TypeOf(testHashTreeRootWith{}), nil, nil, nil,
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if desc.SszCompatFlags&SszCompatFlagHashTreeRootWith == 0 {
+			t.Error("expected SszCompatFlagHashTreeRootWith to be set")
+		}
+		if desc.HashTreeRootWithMethod == nil {
+			t.Error("expected HashTreeRootWithMethod to be non-nil")
+		}
+	})
+}
+
+// --- Dynamic interface compatibility tests ---
+
+// testDynamicMarshaler implements DynamicMarshaler
+type testDynamicMarshaler struct{}
+
+func (t *testDynamicMarshaler) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+
+// testDynamicUnmarshaler implements DynamicUnmarshaler
+type testDynamicUnmarshaler struct{}
+
+func (t *testDynamicUnmarshaler) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) error {
+	return nil
+}
+
+// testDynamicEncoder implements DynamicEncoder
+type testDynamicEncoder struct{}
+
+func (t *testDynamicEncoder) MarshalSSZEncoder(ds sszutils.DynamicSpecs, encoder sszutils.Encoder) error {
+	return nil
+}
+
+// testDynamicDecoder implements DynamicDecoder
+type testDynamicDecoder struct{}
+
+func (t *testDynamicDecoder) UnmarshalSSZDecoder(ds sszutils.DynamicSpecs, decoder sszutils.Decoder) error {
+	return nil
+}
+
+// testDynamicSizer implements DynamicSizer
+type testDynamicSizer struct{}
+
+func (t *testDynamicSizer) SizeSSZDyn(ds sszutils.DynamicSpecs) int { return 0 }
+
+// testDynamicHashRoot implements DynamicHashRoot
+type testDynamicHashRoot struct{}
+
+func (t *testDynamicHashRoot) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	return nil
+}
+
+func TestTypeCache_DynamicInterfaceCompat(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	cache := NewTypeCache(ds)
+
+	t.Run("DynamicMarshaler", func(t *testing.T) {
+		desc, err := cache.GetTypeDescriptor(reflect.TypeOf(testDynamicMarshaler{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if desc.SszCompatFlags&SszCompatFlagDynamicMarshaler == 0 {
+			t.Error("expected SszCompatFlagDynamicMarshaler to be set")
+		}
+	})
+
+	t.Run("DynamicUnmarshaler", func(t *testing.T) {
+		desc, err := cache.GetTypeDescriptor(reflect.TypeOf(testDynamicUnmarshaler{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if desc.SszCompatFlags&SszCompatFlagDynamicUnmarshaler == 0 {
+			t.Error("expected SszCompatFlagDynamicUnmarshaler to be set")
+		}
+	})
+
+	t.Run("DynamicEncoder", func(t *testing.T) {
+		desc, err := cache.GetTypeDescriptor(reflect.TypeOf(testDynamicEncoder{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if desc.SszCompatFlags&SszCompatFlagDynamicEncoder == 0 {
+			t.Error("expected SszCompatFlagDynamicEncoder to be set")
+		}
+	})
+
+	t.Run("DynamicDecoder", func(t *testing.T) {
+		desc, err := cache.GetTypeDescriptor(reflect.TypeOf(testDynamicDecoder{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if desc.SszCompatFlags&SszCompatFlagDynamicDecoder == 0 {
+			t.Error("expected SszCompatFlagDynamicDecoder to be set")
+		}
+	})
+
+	t.Run("DynamicSizer", func(t *testing.T) {
+		desc, err := cache.GetTypeDescriptor(reflect.TypeOf(testDynamicSizer{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if desc.SszCompatFlags&SszCompatFlagDynamicSizer == 0 {
+			t.Error("expected SszCompatFlagDynamicSizer to be set")
+		}
+	})
+
+	t.Run("DynamicHashRoot", func(t *testing.T) {
+		desc, err := cache.GetTypeDescriptor(reflect.TypeOf(testDynamicHashRoot{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if desc.SszCompatFlags&SszCompatFlagDynamicHashRoot == 0 {
+			t.Error("expected SszCompatFlagDynamicHashRoot to be set")
+		}
+	})
+}
+
+// --- Dynamic View interface compatibility tests ---
+
+// testDynViewMarshaler implements DynamicViewMarshaler
+type testDynViewMarshaler struct{}
+
+func (t *testDynViewMarshaler) MarshalSSZDynView(view any) func(ds sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return nil
+}
+
+// testDynViewUnmarshaler implements DynamicViewUnmarshaler
+type testDynViewUnmarshaler struct{}
+
+func (t *testDynViewUnmarshaler) UnmarshalSSZDynView(view any) func(ds sszutils.DynamicSpecs, buf []byte) error {
+	return nil
+}
+
+// testDynViewEncoder implements DynamicViewEncoder
+type testDynViewEncoder struct{}
+
+func (t *testDynViewEncoder) MarshalSSZEncoderView(view any) func(ds sszutils.DynamicSpecs, encoder sszutils.Encoder) error {
+	return nil
+}
+
+// testDynViewDecoder implements DynamicViewDecoder
+type testDynViewDecoder struct{}
+
+func (t *testDynViewDecoder) UnmarshalSSZDecoderView(view any) func(ds sszutils.DynamicSpecs, decoder sszutils.Decoder) error {
+	return nil
+}
+
+// testDynViewSizer implements DynamicViewSizer
+type testDynViewSizer struct{}
+
+func (t *testDynViewSizer) SizeSSZDynView(view any) func(ds sszutils.DynamicSpecs) int {
+	return nil
+}
+
+// testDynViewHashRoot implements DynamicViewHashRoot
+type testDynViewHashRoot struct{}
+
+func (t *testDynViewHashRoot) HashTreeRootWithDynView(view any) func(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	return nil
+}
+
+func TestTypeCache_DynamicViewInterfaceCompat(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	cache := NewTypeCache(ds)
+
+	tests := []struct {
+		name     string
+		typ      reflect.Type
+		expected SszCompatFlag
+	}{
+		{"DynamicViewMarshaler", reflect.TypeOf(testDynViewMarshaler{}), SszCompatFlagDynamicViewMarshaler},
+		{"DynamicViewUnmarshaler", reflect.TypeOf(testDynViewUnmarshaler{}), SszCompatFlagDynamicViewUnmarshaler},
+		{"DynamicViewEncoder", reflect.TypeOf(testDynViewEncoder{}), SszCompatFlagDynamicViewEncoder},
+		{"DynamicViewDecoder", reflect.TypeOf(testDynViewDecoder{}), SszCompatFlagDynamicViewDecoder},
+		{"DynamicViewSizer", reflect.TypeOf(testDynViewSizer{}), SszCompatFlagDynamicViewSizer},
+		{"DynamicViewHashRoot", reflect.TypeOf(testDynViewHashRoot{}), SszCompatFlagDynamicViewHashRoot},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			desc, err := cache.GetTypeDescriptor(tt.typ, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if desc.SszCompatFlags&tt.expected == 0 {
+				t.Errorf("expected compat flag %d to be set", tt.expected)
+			}
+		})
+	}
+}
+
+// --- time.Time detection test ---
+
+func TestTypeCache_TimeTimeDetection(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	cache := NewTypeCache(ds)
+
+	type TestStructWithTime struct {
+		Timestamp time.Time
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStructWithTime{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if desc.ContainerDesc == nil || len(desc.ContainerDesc.Fields) == 0 {
+		t.Fatal("expected container with fields")
+	}
+
+	field := desc.ContainerDesc.Fields[0]
+	if field.Type.GoTypeFlags&GoTypeFlagIsTime == 0 {
+		t.Error("expected GoTypeFlagIsTime to be set for time.Time field")
+	}
+	if field.Type.SszType != SszUint64Type {
+		t.Errorf("expected SszUint64Type for time.Time, got %v", field.Type.SszType)
+	}
+}
+
+// --- Progressive container test ---
+
+func TestTypeCache_ProgressiveContainerSuccess(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	cache := NewTypeCache(ds)
+
+	type progressiveStruct struct {
+		A uint32 `ssz-index:"0"`
+		B uint64 `ssz-index:"1"`
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(progressiveStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if desc.SszType != SszProgressiveContainerType {
+		t.Errorf("expected SszProgressiveContainerType, got %v", desc.SszType)
+	}
+}
+
+// --- TypeWrapper descriptor tests ---
+
+// testWrapperDescriptor is a descriptor struct with one field for TypeWrapper
+type testWrapperDescriptor struct {
+	Data []byte `ssz-size:"32"`
+}
+
+// testTypeWrapper mimics dynssz.TypeWrapper[testWrapperDescriptor, []byte]
+type testTypeWrapper struct {
+	Data []byte
+}
+
+func (w *testTypeWrapper) GetDescriptorType() reflect.Type {
+	return reflect.TypeOf(testWrapperDescriptor{})
+}
+
+func TestTypeCache_TypeWrapperDescriptor(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	cache := NewTypeCache(ds)
+
+	t.Run("TypeWrapperSuccess", func(t *testing.T) {
+		desc, err := cache.GetTypeDescriptor(
+			reflect.TypeOf(testTypeWrapper{}),
+			nil, nil,
+			[]SszTypeHint{{Type: SszTypeWrapperType}},
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if desc.SszType != SszTypeWrapperType {
+			t.Errorf("expected SszTypeWrapperType, got %v", desc.SszType)
+		}
+		if desc.ElemDesc == nil {
+			t.Fatal("expected ElemDesc to be set")
+		}
+		if desc.ElemDesc.SszType != SszVectorType {
+			t.Errorf("expected wrapped type to be SszVectorType, got %v", desc.ElemDesc.SszType)
+		}
+		if desc.Size != 32 {
+			t.Errorf("expected Size 32, got %d", desc.Size)
+		}
+	})
+
+	t.Run("TypeWrapperWithDynamicWrapped", func(t *testing.T) {
+		desc, err := cache.GetTypeDescriptor(
+			reflect.TypeOf(testDynTypeWrapper{}),
+			nil, nil,
+			[]SszTypeHint{{Type: SszTypeWrapperType}},
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if desc.SszTypeFlags&SszTypeFlagIsDynamic == 0 {
+			t.Error("expected SszTypeFlagIsDynamic for dynamic wrapped type")
+		}
+	})
+}
+
+type testDynWrapperDescriptor struct {
+	Data []byte `ssz-max:"100"`
+}
+
+type testDynTypeWrapper struct {
+	Data []byte
+}
+
+func (w *testDynTypeWrapper) GetDescriptorType() reflect.Type {
+	return reflect.TypeOf(testDynWrapperDescriptor{})
+}
+
+// --- TypeWrapper view descriptor tests ---
+
+type testSchemaWrapperDescriptor struct {
+	Data []byte `ssz-size:"64"`
+}
+
+type testSchemaTypeWrapper struct {
+	Data []byte
+}
+
+func (w *testSchemaTypeWrapper) GetDescriptorType() reflect.Type {
+	return reflect.TypeOf(testSchemaWrapperDescriptor{})
+}
+
+func TestTypeCache_TypeWrapperViewDescriptor(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	cache := NewTypeCache(ds)
+
+	runtimeType := reflect.TypeOf(testTypeWrapper{})
+	schemaType := reflect.TypeOf(testSchemaTypeWrapper{})
+
+	desc, err := cache.GetTypeDescriptorWithSchema(
+		runtimeType, schemaType,
+		nil, nil,
+		[]SszTypeHint{{Type: SszTypeWrapperType}},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if desc.SszType != SszTypeWrapperType {
+		t.Errorf("expected SszTypeWrapperType, got %v", desc.SszType)
+	}
+	// Schema has ssz-size:"64", so the wrapper should report size 64
+	if desc.Size != 64 {
+		t.Errorf("expected Size 64 from schema wrapper, got %d", desc.Size)
+	}
+}
+
+// --- CompatibleUnion descriptor tests ---
+
+// testUnionDescriptor is the descriptor struct for a CompatibleUnion
+type testUnionDescriptor struct {
+	VariantA uint32
+	VariantB uint64
+}
+
+// testCompatibleUnion mimics dynssz.CompatibleUnion[testUnionDescriptor]
+type testCompatibleUnion struct {
+	Variant uint8
+	Data    interface{}
+}
+
+func (u *testCompatibleUnion) GetDescriptorType() reflect.Type {
+	return reflect.TypeOf(testUnionDescriptor{})
+}
+
+func TestTypeCache_CompatibleUnionDescriptor(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	cache := NewTypeCache(ds)
+
+	t.Run("CompatibleUnionSuccess", func(t *testing.T) {
+		desc, err := cache.GetTypeDescriptor(
+			reflect.TypeOf(testCompatibleUnion{}),
+			nil, nil,
+			[]SszTypeHint{{Type: SszCompatibleUnionType}},
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if desc.SszType != SszCompatibleUnionType {
+			t.Errorf("expected SszCompatibleUnionType, got %v", desc.SszType)
+		}
+		if desc.SszTypeFlags&SszTypeFlagIsDynamic == 0 {
+			t.Error("expected SszTypeFlagIsDynamic for union type")
+		}
+		if desc.UnionVariants == nil {
+			t.Fatal("expected UnionVariants to be set")
+		}
+		if len(desc.UnionVariants) != 2 {
+			t.Fatalf("expected 2 union variants, got %d", len(desc.UnionVariants))
+		}
+		// Variant 0 should be uint32
+		if desc.UnionVariants[0].SszType != SszUint32Type {
+			t.Errorf("variant 0: expected SszUint32Type, got %v", desc.UnionVariants[0].SszType)
+		}
+		// Variant 1 should be uint64
+		if desc.UnionVariants[1].SszType != SszUint64Type {
+			t.Errorf("variant 1: expected SszUint64Type, got %v", desc.UnionVariants[1].SszType)
+		}
+	})
+}
+
+// --- CompatibleUnion view descriptor tests ---
+
+type testSchemaUnionDescriptor struct {
+	VariantB uint64
+}
+
+type testSchemaCompatibleUnion struct {
+	Variant uint8
+	Data    interface{}
+}
+
+func (u *testSchemaCompatibleUnion) GetDescriptorType() reflect.Type {
+	return reflect.TypeOf(testSchemaUnionDescriptor{})
+}
+
+func TestTypeCache_CompatibleUnionViewDescriptor(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	cache := NewTypeCache(ds)
+
+	runtimeType := reflect.TypeOf(testCompatibleUnion{})
+	schemaType := reflect.TypeOf(testSchemaCompatibleUnion{})
+
+	desc, err := cache.GetTypeDescriptorWithSchema(
+		runtimeType, schemaType,
+		nil, nil,
+		[]SszTypeHint{{Type: SszCompatibleUnionType}},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if desc.SszType != SszCompatibleUnionType {
+		t.Errorf("expected SszCompatibleUnionType, got %v", desc.SszType)
+	}
+	// Schema only has VariantB (uint64)
+	if len(desc.UnionVariants) != 1 {
+		t.Fatalf("expected 1 union variant from schema, got %d", len(desc.UnionVariants))
+	}
+	if desc.UnionVariants[0].SszType != SszUint64Type {
+		t.Errorf("variant 0: expected SszUint64Type, got %v", desc.UnionVariants[0].SszType)
+	}
+}
+
+// --- CompatibleUnion missing variant in runtime ---
+
+type testRuntimeUnionMissingVariant struct {
+	Variant uint8
+	Data    interface{}
+}
+
+type testRuntimeUnionMissingDescriptor struct {
+	OnlyA uint32
+}
+
+func (u *testRuntimeUnionMissingVariant) GetDescriptorType() reflect.Type {
+	return reflect.TypeOf(testRuntimeUnionMissingDescriptor{})
+}
+
+func TestTypeCache_CompatibleUnionMissingVariant(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	cache := NewTypeCache(ds)
+
+	// Schema has VariantB but runtime only has OnlyA
+	runtimeType := reflect.TypeOf(testRuntimeUnionMissingVariant{})
+	schemaType := reflect.TypeOf(testCompatibleUnion{})
+
+	_, err := cache.GetTypeDescriptorWithSchema(
+		runtimeType, schemaType,
+		nil, nil,
+		[]SszTypeHint{{Type: SszCompatibleUnionType}},
+	)
+	if err == nil {
+		t.Fatal("expected error for missing runtime variant")
+	}
+	if !strings.Contains(err.Error(), "runtime union missing variant") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// --- extractGenericTypeParameter tests (tested indirectly) ---
+
+// testNoGetDescriptorType has no GetDescriptorType method
+type testNoGetDescriptorType struct{}
+
+func TestTypeCache_ExtractGenericTypeParameterNoMethod(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	_, err := cache.GetTypeDescriptor(
+		reflect.TypeOf(testNoGetDescriptorType{}),
+		nil, nil,
+		[]SszTypeHint{{Type: SszCompatibleUnionType}},
+	)
+	if err == nil {
+		t.Fatal("expected error for missing GetDescriptorType method")
+	}
+	if !strings.Contains(err.Error(), "GetDescriptorType method not found") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// --- Nested hint extraction tests ---
+
+func TestTypeCache_VectorWithNestedSizeHints(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	cache := NewTypeCache(ds)
+
+	// Vector with nested size hints: [][]byte with ssz-size:"3,32"
+	type TestStruct struct {
+		Field [][]byte `ssz-size:"3,32"`
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if desc.ContainerDesc == nil || len(desc.ContainerDesc.Fields) == 0 {
+		t.Fatal("expected container with fields")
+	}
+
+	field := desc.ContainerDesc.Fields[0]
+	if field.Type.SszType != SszVectorType {
+		t.Errorf("expected SszVectorType, got %v", field.Type.SszType)
+	}
+	if field.Type.Len != 3 {
+		t.Errorf("expected Len 3, got %d", field.Type.Len)
+	}
+	// Element should also be a vector with size 32
+	if field.Type.ElemDesc == nil {
+		t.Fatal("expected element descriptor")
+	}
+	if field.Type.ElemDesc.SszType != SszVectorType {
+		t.Errorf("expected element SszVectorType, got %v", field.Type.ElemDesc.SszType)
+	}
+	if field.Type.ElemDesc.Len != 32 {
+		t.Errorf("expected element Len 32, got %d", field.Type.ElemDesc.Len)
+	}
+}
+
+func TestTypeCache_ListWithNestedSizeHints(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	cache := NewTypeCache(ds)
+
+	// List with nested size hints: [][]byte with ssz-max:"10" ssz-size:"?,32"
+	type TestStruct struct {
+		Field [][]byte `ssz-max:"10" ssz-size:"?,32"`
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if desc.ContainerDesc == nil || len(desc.ContainerDesc.Fields) == 0 {
+		t.Fatal("expected container with fields")
+	}
+
+	field := desc.ContainerDesc.Fields[0]
+	if field.Type.SszType != SszListType {
+		t.Errorf("expected SszListType, got %v", field.Type.SszType)
+	}
+	// Element should be a vector with size 32
+	if field.Type.ElemDesc == nil {
+		t.Fatal("expected element descriptor")
+	}
+	if field.Type.ElemDesc.SszType != SszVectorType {
+		t.Errorf("expected element SszVectorType, got %v", field.Type.ElemDesc.SszType)
+	}
+	if field.Type.ElemDesc.Len != 32 {
+		t.Errorf("expected element Len 32, got %d", field.Type.ElemDesc.Len)
+	}
+}
+
+// --- Optional descriptor elem error test ---
+
+func TestTypeCache_OptionalElemError(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	cache := NewTypeCache(ds)
+	cache.ExtendedTypes = true
+
+	// Optional with bad element type hints should propagate error
+	_, err := cache.GetTypeDescriptor(
+		reflect.TypeOf((*uint16)(nil)),
+		[]SszSizeHint{{Size: 0}, {Size: 999}}, // child size hint 999 is wrong for uint16
+		nil,
+		[]SszTypeHint{{Type: SszOptionalType}},
+	)
+	if err == nil {
+		t.Fatal("expected error for optional with invalid elem hints")
+	}
+}
+
+// --- Vector elem descriptor error test ---
+
+func TestTypeCache_VectorElemError(t *testing.T) {
+	// Create a type whose elem descriptor will fail
+	type badElemVec uint32
+	sszutils.Annotate[badElemVec](`ssz-size:"notanumber"`)
+
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	type TestStruct struct {
+		Field []badElemVec `ssz-size:"3"`
+	}
+
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error from bad element annotation in vector")
+	}
+}
+
+// --- List elem descriptor error test ---
+
+func TestTypeCache_ListElemError(t *testing.T) {
+	type badElemList uint32
+	sszutils.Annotate[badElemList](`ssz-size:"notanumber"`)
+
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	type TestStruct struct {
+		Field []badElemList `ssz-max:"10"`
+	}
+
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error from bad element annotation in list")
+	}
+}
+
+// --- getSszSizeTag/getSszMaxSizeTag fallback path tests ---
+
+func TestGetSszSizeTagDynSszBitsize(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	// dynssz-bitsize:"64" as a numeric bitsize override
+	field := makeField("BitField", reflect.TypeOf([]byte{}), `ssz-bitsize:"32" dynssz-bitsize:"64"`)
+
+	sizes, err := getSszSizeTag(ds, field)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sizes) != 1 {
+		t.Fatalf("expected 1 size hint, got %d", len(sizes))
+	}
+	if sizes[0].Size != 64 {
+		t.Fatalf("expected Size 64 from dynssz-bitsize override, got %d", sizes[0].Size)
+	}
+	if !sizes[0].Bits {
+		t.Fatal("expected Bits=true")
+	}
+}
+
+func TestGetSszSizeTagUnknownSpecValue(t *testing.T) {
+	// DynamicSpecs that returns ok=false (unknown spec value) with no error
+	ds := &dummyDynamicSpecs{specValues: map[string]uint64{}} // empty - won't resolve anything
+
+	// dynssz-size with expression that resolves ok=false => fallback to fastssz defaults
+	field := makeField("UnknownSpec", reflect.TypeOf([]byte{}), `ssz-size:"32" dynssz-size:"UNKNOWN_SPEC"`)
+
+	sizes, err := getSszSizeTag(ds, field)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sizes) != 1 {
+		t.Fatalf("expected 1 size hint, got %d", len(sizes))
+	}
+	// Should fallback to original size and set Expr
+	if sizes[0].Size != 32 {
+		t.Fatalf("expected Size=32 (fallback), got %d", sizes[0].Size)
+	}
+	if sizes[0].Expr != "UNKNOWN_SPEC" {
+		t.Fatalf("expected Expr='UNKNOWN_SPEC', got %q", sizes[0].Expr)
+	}
+}
+
+func TestGetSszMaxSizeTagDynamic(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	// ssz-max:"?" should set NoValue=true
+	field := makeField("DynMax", reflect.TypeOf([]byte{}), `ssz-max:"?"`)
+
+	maxSizes, err := getSszMaxSizeTag(ds, field)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(maxSizes) != 1 {
+		t.Fatalf("expected 1 max size hint, got %d", len(maxSizes))
+	}
+	if !maxSizes[0].NoValue {
+		t.Fatal("expected NoValue=true for ssz-max:\"?\"")
+	}
+}
+
+func TestGetSszMaxSizeTagUnknownSpecValue(t *testing.T) {
+	ds := &dummyDynamicSpecs{specValues: map[string]uint64{}} // empty
+
+	// dynssz-max with expression that resolves ok=false => fallback
+	field := makeField("UnknownMax", reflect.TypeOf([]byte{}), `ssz-max:"100" dynssz-max:"UNKNOWN_MAX"`)
+
+	maxSizes, err := getSszMaxSizeTag(ds, field)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(maxSizes) != 1 {
+		t.Fatalf("expected 1 max size hint, got %d", len(maxSizes))
+	}
+	// Should fallback to original max size and set Expr
+	if maxSizes[0].Size != 100 {
+		t.Fatalf("expected Size=100 (fallback), got %d", maxSizes[0].Size)
+	}
+	if maxSizes[0].Expr != "UNKNOWN_MAX" {
+		t.Fatalf("expected Expr='UNKNOWN_MAX', got %q", maxSizes[0].Expr)
+	}
+}
+
+// --- List with nested max size hints ---
+
+func TestTypeCache_ListWithNestedMaxSizeHints(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	cache := NewTypeCache(ds)
+
+	type TestStruct struct {
+		Field [][]byte `ssz-max:"10,32"`
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if desc.ContainerDesc == nil || len(desc.ContainerDesc.Fields) == 0 {
+		t.Fatal("expected container with fields")
+	}
+
+	field := desc.ContainerDesc.Fields[0]
+	if field.Type.SszType != SszListType {
+		t.Errorf("expected SszListType, got %v", field.Type.SszType)
+	}
+	if field.Type.Limit != 10 {
+		t.Errorf("expected Limit 10, got %d", field.Type.Limit)
+	}
+}
+
+// --- BuildUintDescriptor success path ---
+
+func TestTypeCache_BuildUintDescriptorSuccess(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	cache := NewTypeCache(ds)
+
+	// uint128 with correct array size
+	desc, err := cache.GetTypeDescriptor(
+		reflect.TypeOf([16]uint8{}),
+		nil, nil,
+		[]SszTypeHint{{Type: SszUint128Type}},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if desc.Size != 16 {
+		t.Errorf("expected Size 16, got %d", desc.Size)
+	}
+
+	// uint128 with uint64 array elements
+	desc, err = cache.GetTypeDescriptor(
+		reflect.TypeOf([2]uint64{}),
+		nil, nil,
+		[]SszTypeHint{{Type: SszUint128Type}},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if desc.Size != 16 {
+		t.Errorf("expected Size 16, got %d", desc.Size)
+	}
+	if desc.GoTypeFlags&GoTypeFlagIsByteArray != 0 {
+		t.Error("expected GoTypeFlagIsByteArray to NOT be set for uint64 array")
+	}
+
+	// uint256 with correct array size
+	desc, err = cache.GetTypeDescriptor(
+		reflect.TypeOf([32]uint8{}),
+		nil, nil,
+		[]SszTypeHint{{Type: SszUint256Type}},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if desc.Size != 32 {
+		t.Errorf("expected Size 32, got %d", desc.Size)
+	}
+}
+
+// --- CustomType with size hint ---
+
+// testCustomWithSize implements fastssz marshaler + unmarshaler + hasher
+type testCustomWithSize struct{}
+
+func (t *testCustomWithSize) MarshalSSZTo(dst []byte) ([]byte, error) {
+	return append(dst, make([]byte, 8)...), nil
+}
+func (t *testCustomWithSize) MarshalSSZ() ([]byte, error) { return make([]byte, 8), nil }
+func (t *testCustomWithSize) SizeSSZ() int                { return 8 }
+func (t *testCustomWithSize) UnmarshalSSZ(buf []byte) error {
+	return nil
+}
+func (t *testCustomWithSize) HashTreeRoot() ([32]byte, error) {
+	return [32]byte{}, nil
+}
+
+func TestTypeCache_CustomTypeWithSizeHint(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	cache := NewTypeCache(ds)
+
+	// Custom type with size hint - covers line 512-513
+	desc, err := cache.GetTypeDescriptor(
+		reflect.TypeOf(testCustomWithSize{}),
+		[]SszSizeHint{{Size: 8}}, nil,
+		[]SszTypeHint{{Type: SszCustomType}},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if desc.Size != 8 {
+		t.Errorf("expected Size 8, got %d", desc.Size)
+	}
+}
+
+// --- TypeWrapper error paths in view descriptor mode ---
+
+// testWrapperNoMethod is a wrapper without GetDescriptorType
+type testWrapperNoMethod struct {
+	Data []byte
+}
+
+func TestTypeCache_TypeWrapperViewNoMethod(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	// Schema wrapper has no GetDescriptorType method
+	_, err := cache.GetTypeDescriptorWithSchema(
+		reflect.TypeOf(testTypeWrapper{}),
+		reflect.TypeOf(testWrapperNoMethod{}),
+		nil, nil,
+		[]SszTypeHint{{Type: SszTypeWrapperType}},
+	)
+	if err == nil {
+		t.Fatal("expected error for missing GetDescriptorType on schema")
+	}
+	if !strings.Contains(err.Error(), "GetDescriptorType method not found") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// testWrapperBadDescriptor returns a descriptor type that is not a struct
+type testWrapperBadDescriptor struct {
+	Data []byte
+}
+
+func (w *testWrapperBadDescriptor) GetDescriptorType() reflect.Type {
+	// Return a non-struct type -> extractWrapperDescriptorInfo will fail
+	return reflect.TypeOf(uint32(0))
+}
+
+func TestTypeCache_TypeWrapperSchemaDescriptorError(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	// Schema wrapper returns non-struct descriptor -> error in extractWrapperDescriptorInfo
+	_, err := cache.GetTypeDescriptor(
+		reflect.TypeOf(testWrapperBadDescriptor{}),
+		nil, nil,
+		[]SszTypeHint{{Type: SszTypeWrapperType}},
+	)
+	if err == nil {
+		t.Fatal("expected error for bad schema descriptor type")
+	}
+	if !strings.Contains(err.Error(), "wrapper descriptor must be a struct") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTypeCache_TypeWrapperViewRuntimeNoMethod(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	// Runtime wrapper has no GetDescriptorType, schema has it
+	_, err := cache.GetTypeDescriptorWithSchema(
+		reflect.TypeOf(testWrapperNoMethod{}),
+		reflect.TypeOf(testTypeWrapper{}),
+		nil, nil,
+		[]SszTypeHint{{Type: SszTypeWrapperType}},
+	)
+	if err == nil {
+		t.Fatal("expected error for missing GetDescriptorType on runtime")
+	}
+	if !strings.Contains(err.Error(), "GetDescriptorType method not found on runtime") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTypeCache_TypeWrapperViewRuntimeBadDescriptor(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	// Runtime wrapper returns a non-struct descriptor type
+	_, err := cache.GetTypeDescriptorWithSchema(
+		reflect.TypeOf(testWrapperBadDescriptor{}),
+		reflect.TypeOf(testTypeWrapper{}),
+		nil, nil,
+		[]SszTypeHint{{Type: SszTypeWrapperType}},
+	)
+	if err == nil {
+		t.Fatal("expected error for bad runtime descriptor type")
+	}
+	if !strings.Contains(err.Error(), "wrapper descriptor must be a struct") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// testWrapperBadWrappedType has a descriptor whose wrapped type will fail
+type testWrapperBadWrappedDescriptor struct {
+	Data []byte `ssz-size:"notanumber"`
+}
+
+type testWrapperWithBadWrapped struct {
+	Data []byte
+}
+
+func (w *testWrapperWithBadWrapped) GetDescriptorType() reflect.Type {
+	return reflect.TypeOf(testWrapperBadWrappedDescriptor{})
+}
+
+func TestTypeCache_TypeWrapperWrappedDescBuildError(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	// Wrapped type descriptor build will fail due to invalid ssz-size tag
+	_, err := cache.GetTypeDescriptor(
+		reflect.TypeOf(testWrapperWithBadWrapped{}),
+		nil, nil,
+		[]SszTypeHint{{Type: SszTypeWrapperType}},
+	)
+	if err == nil {
+		t.Fatal("expected error from bad wrapped type descriptor")
+	}
+	if !strings.Contains(err.Error(), "(wrapper)") {
+		t.Fatalf("expected error path to contain '(wrapper)', got: %v", err)
+	}
+}
+
+// --- TypeWrapper view: GetDescriptorType returns no results / wrong type ---
+
+type testWrapperNoReturnSchema struct{}
+
+func (t *testWrapperNoReturnSchema) GetDescriptorType() {}
+
+type testWrapperWrongReturnSchema struct{}
+
+func (t *testWrapperWrongReturnSchema) GetDescriptorType() string { return "bad" }
+
+func TestTypeCache_TypeWrapperSchemaNoResults(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	_, err := cache.GetTypeDescriptor(
+		reflect.TypeOf(testWrapperNoReturnSchema{}),
+		nil, nil,
+		[]SszTypeHint{{Type: SszTypeWrapperType}},
+	)
+	if err == nil {
+		t.Fatal("expected error for GetDescriptorType with no results")
+	}
+	if !strings.Contains(err.Error(), "GetDescriptorType returned no results") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTypeCache_TypeWrapperSchemaWrongReturnType(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	_, err := cache.GetTypeDescriptor(
+		reflect.TypeOf(testWrapperWrongReturnSchema{}),
+		nil, nil,
+		[]SszTypeHint{{Type: SszTypeWrapperType}},
+	)
+	if err == nil {
+		t.Fatal("expected error for GetDescriptorType returning wrong type")
+	}
+	if !strings.Contains(err.Error(), "GetDescriptorType did not return a reflect.Type") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// View wrapper runtime no results / wrong return type
+func TestTypeCache_TypeWrapperViewRuntimeNoResults(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	_, err := cache.GetTypeDescriptorWithSchema(
+		reflect.TypeOf(testWrapperNoReturnSchema{}),
+		reflect.TypeOf(testTypeWrapper{}),
+		nil, nil,
+		[]SszTypeHint{{Type: SszTypeWrapperType}},
+	)
+	if err == nil {
+		t.Fatal("expected error for runtime GetDescriptorType with no results")
+	}
+	if !strings.Contains(err.Error(), "GetDescriptorType returned no results for runtime") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTypeCache_TypeWrapperViewRuntimeWrongReturnType(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	_, err := cache.GetTypeDescriptorWithSchema(
+		reflect.TypeOf(testWrapperWrongReturnSchema{}),
+		reflect.TypeOf(testTypeWrapper{}),
+		nil, nil,
+		[]SszTypeHint{{Type: SszTypeWrapperType}},
+	)
+	if err == nil {
+		t.Fatal("expected error for runtime GetDescriptorType returning wrong type")
+	}
+	if !strings.Contains(err.Error(), "GetDescriptorType did not return a reflect.Type for runtime") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// Test view wrapper where the wrapped type descriptor build fails (line 737)
+// Schema wrapper describes a map type (unsupported), runtime wrapper describes []byte.
+type testSchemaWrapperBadWrappedDescriptor struct {
+	Data map[string]int
+}
+
+type testSchemaWrapperBadWrapped struct {
+	Data []byte
+}
+
+func (w *testSchemaWrapperBadWrapped) GetDescriptorType() reflect.Type {
+	return reflect.TypeOf(testSchemaWrapperBadWrappedDescriptor{})
+}
+
+func TestTypeCache_TypeWrapperViewWrappedBuildError(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	// Schema wrapper wraps a map type which will fail
+	_, err := cache.GetTypeDescriptorWithSchema(
+		reflect.TypeOf(testTypeWrapper{}),
+		reflect.TypeOf(testSchemaWrapperBadWrapped{}),
+		nil, nil,
+		[]SszTypeHint{{Type: SszTypeWrapperType}},
+	)
+	if err == nil {
+		t.Fatal("expected error from bad wrapped type in view descriptor")
+	}
+	if !strings.Contains(err.Error(), "(wrapper)") {
+		t.Fatalf("expected error path to contain '(wrapper)', got: %v", err)
+	}
+}
+
+// --- CompatibleUnion error paths ---
+
+func TestTypeCache_CompatibleUnionSchemaExtractError(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	// Schema union returns non-struct descriptor (will fail in extractUnionDescriptorInfo)
+	_, err := cache.GetTypeDescriptor(
+		reflect.TypeOf(testWrapperBadDescriptor{}), // returns uint32 from GetDescriptorType
+		nil, nil,
+		[]SszTypeHint{{Type: SszCompatibleUnionType}},
+	)
+	if err == nil {
+		t.Fatal("expected error for bad union schema descriptor")
+	}
+	if !strings.Contains(err.Error(), "union descriptor must be a struct") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// testUnionBadVariantDescriptor returns a descriptor where a variant has bad annotations
+// that will fail at extractUnionDescriptorInfo level
+type testUnionBadVariantDescriptor struct {
+	Bad []byte `ssz-size:"notanumber"`
+}
+
+type testUnionWithBadVariant struct {
+	Variant uint8
+	Data    interface{}
+}
+
+func (u *testUnionWithBadVariant) GetDescriptorType() reflect.Type {
+	return reflect.TypeOf(testUnionBadVariantDescriptor{})
+}
+
+func TestTypeCache_CompatibleUnionVariantAnnotationError(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	_, err := cache.GetTypeDescriptor(
+		reflect.TypeOf(testUnionWithBadVariant{}),
+		nil, nil,
+		[]SszTypeHint{{Type: SszCompatibleUnionType}},
+	)
+	if err == nil {
+		t.Fatal("expected error from bad union variant annotation")
+	}
+	if !strings.Contains(err.Error(), "(union)") {
+		t.Fatalf("expected error path to contain '(union)', got: %v", err)
+	}
+}
+
+// testUnionVariantBuildFailDescriptor has valid tags but the variant type itself
+// will fail during descriptor building (maps are unsupported SSZ types)
+type testUnionVariantBuildFailDescriptor struct {
+	Bad map[string]int
+}
+
+type testUnionWithBuildFailVariant struct {
+	Variant uint8
+	Data    interface{}
+}
+
+func (u *testUnionWithBuildFailVariant) GetDescriptorType() reflect.Type {
+	return reflect.TypeOf(testUnionVariantBuildFailDescriptor{})
+}
+
+func TestTypeCache_CompatibleUnionVariantBuildError(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	_, err := cache.GetTypeDescriptor(
+		reflect.TypeOf(testUnionWithBuildFailVariant{}),
+		nil, nil,
+		[]SszTypeHint{{Type: SszCompatibleUnionType}},
+	)
+	if err == nil {
+		t.Fatal("expected error from bad union variant type")
+	}
+	if !strings.Contains(err.Error(), "variant") {
+		t.Fatalf("expected error path to contain 'variant', got: %v", err)
+	}
+}
+
+// CompatibleUnion view descriptor: runtime extractGenericTypeParameter error
+func TestTypeCache_CompatibleUnionViewRuntimeExtractError(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	// Runtime has no GetDescriptorType, schema has it
+	_, err := cache.GetTypeDescriptorWithSchema(
+		reflect.TypeOf(testNoGetDescriptorType{}),
+		reflect.TypeOf(testCompatibleUnion{}),
+		nil, nil,
+		[]SszTypeHint{{Type: SszCompatibleUnionType}},
+	)
+	if err == nil {
+		t.Fatal("expected error for missing runtime GetDescriptorType")
+	}
+	if !strings.Contains(err.Error(), "GetDescriptorType method not found") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// CompatibleUnion view descriptor: runtime extractUnionDescriptorInfo error
+func TestTypeCache_CompatibleUnionViewRuntimeUnionInfoError(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	// Runtime returns non-struct from GetDescriptorType
+	_, err := cache.GetTypeDescriptorWithSchema(
+		reflect.TypeOf(testWrapperBadDescriptor{}), // returns uint32
+		reflect.TypeOf(testCompatibleUnion{}),
+		nil, nil,
+		[]SszTypeHint{{Type: SszCompatibleUnionType}},
+	)
+	if err == nil {
+		t.Fatal("expected error for bad runtime union descriptor info")
+	}
+	if !strings.Contains(err.Error(), "union descriptor must be a struct") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// --- extractGenericTypeParameter error paths ---
+
+func TestTypeCache_ExtractGenericTypeParameterNoResults(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	// Use testWrapperNoReturn (GetDescriptorType returns nothing)
+	_, err := cache.GetTypeDescriptor(
+		reflect.TypeOf(testWrapperNoReturn{}),
+		nil, nil,
+		[]SszTypeHint{{Type: SszCompatibleUnionType}},
+	)
+	if err == nil {
+		t.Fatal("expected error for GetDescriptorType returning no results")
+	}
+	if !strings.Contains(err.Error(), "GetDescriptorType returned no results") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTypeCache_ExtractGenericTypeParameterWrongType(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	// Use testWrapperWrongReturn (GetDescriptorType returns string)
+	_, err := cache.GetTypeDescriptor(
+		reflect.TypeOf(testWrapperWrongReturn{}),
+		nil, nil,
+		[]SszTypeHint{{Type: SszCompatibleUnionType}},
+	)
+	if err == nil {
+		t.Fatal("expected error for GetDescriptorType returning non-Type")
+	}
+	if !strings.Contains(err.Error(), "GetDescriptorType did not return a reflect.Type") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// --- Vector/List with multiple type/max hints (nested forwarding) ---
+
+func TestTypeCache_VectorWithNestedMaxAndTypeHints(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	cache := NewTypeCache(ds)
+
+	// Vector of vectors: [][]uint32 with ssz-size:"3" and
+	// nested maxSizeHints and typeHints forwarded to child
+	type TestStruct struct {
+		Field [][]uint32 `ssz-size:"3" ssz-max:"?,10" ssz-type:"?,list"`
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if desc.ContainerDesc == nil || len(desc.ContainerDesc.Fields) == 0 {
+		t.Fatal("expected container with fields")
+	}
+
+	field := desc.ContainerDesc.Fields[0]
+	if field.Type.SszType != SszVectorType {
+		t.Errorf("expected SszVectorType, got %v", field.Type.SszType)
+	}
+	// Element should be a list type
+	if field.Type.ElemDesc == nil {
+		t.Fatal("expected element descriptor")
+	}
+	if field.Type.ElemDesc.SszType != SszListType {
+		t.Errorf("expected element SszListType, got %v", field.Type.ElemDesc.SszType)
+	}
+}
+
+func TestTypeCache_ListWithNestedTypeHints(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+	cache := NewTypeCache(ds)
+
+	// List of vectors: [][]uint32 with ssz-max:"10" and nested type hints
+	type TestStruct struct {
+		Field [][]uint32 `ssz-max:"10" ssz-size:"?,5" ssz-type:"?,vector"`
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if desc.ContainerDesc == nil || len(desc.ContainerDesc.Fields) == 0 {
+		t.Fatal("expected container with fields")
+	}
+
+	field := desc.ContainerDesc.Fields[0]
+	if field.Type.SszType != SszListType {
+		t.Errorf("expected SszListType, got %v", field.Type.SszType)
+	}
+	// Element should be a vector type with size 5
+	if field.Type.ElemDesc == nil {
+		t.Fatal("expected element descriptor")
+	}
+	if field.Type.ElemDesc.SszType != SszVectorType {
+		t.Errorf("expected element SszVectorType, got %v", field.Type.ElemDesc.SszType)
+	}
+	if field.Type.ElemDesc.Len != 5 {
+		t.Errorf("expected element Len 5, got %d", field.Type.ElemDesc.Len)
+	}
+}
+
+// --- Suppress the unused import error for errors package ---
+var _ = errors.New

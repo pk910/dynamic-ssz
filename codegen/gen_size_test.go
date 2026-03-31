@@ -35,7 +35,7 @@ func TestGenerateSizeUnsupportedType(t *testing.T) {
 			typePrinter := NewTypePrinter("test/package")
 			options := &CodeGeneratorOptions{}
 
-			err := generateSize(desc, codeBuilder, typePrinter, options)
+			err := generateSize(desc, codeBuilder, typePrinter, "", options)
 			if err == nil {
 				t.Error("expected error for unsupported SSZ type, got nil")
 			}
@@ -74,7 +74,7 @@ func TestSizeContainerWithNestedUnsupportedType(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateSize(containerDesc, codeBuilder, typePrinter, options)
+	err := generateSize(containerDesc, codeBuilder, typePrinter, "", options)
 	if err == nil {
 		t.Error("expected error for nested unsupported type, got nil")
 	}
@@ -121,7 +121,7 @@ func TestSizeDynamicContainerFieldError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateSize(containerDesc, codeBuilder, typePrinter, options)
+	err := generateSize(containerDesc, codeBuilder, typePrinter, "", options)
 	if err == nil {
 		t.Error("expected error for dynamic field with nested unsupported type, got nil")
 	}
@@ -154,7 +154,7 @@ func TestSizeListWithNestedUnsupportedType(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateSize(listDesc, codeBuilder, typePrinter, options)
+	err := generateSize(listDesc, codeBuilder, typePrinter, "", options)
 	if err == nil {
 		t.Error("expected error for nested unsupported element type in list, got nil")
 	}
@@ -188,7 +188,7 @@ func TestSizeUnionWithNestedUnsupportedType(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateSize(unionDesc, codeBuilder, typePrinter, options)
+	err := generateSize(unionDesc, codeBuilder, typePrinter, "", options)
 	if err == nil {
 		t.Error("expected error for nested unsupported variant type in union, got nil")
 	}
@@ -218,7 +218,7 @@ func TestSizeTypeWrapperWithNestedUnsupportedType(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateSize(wrapperDesc, codeBuilder, typePrinter, options)
+	err := generateSize(wrapperDesc, codeBuilder, typePrinter, "", options)
 	if err == nil {
 		t.Error("expected error for nested unsupported type in TypeWrapper, got nil")
 	}
@@ -275,7 +275,7 @@ func TestSizeExtendedTypes(t *testing.T) {
 			typePrinter := NewTypePrinter("test/package")
 			options := &CodeGeneratorOptions{ExtendedTypes: true}
 
-			err := generateSize(containerDesc, codeBuilder, typePrinter, options)
+			err := generateSize(containerDesc, codeBuilder, typePrinter, "", options)
 			if err != nil {
 				t.Errorf("unexpected error: %v", err)
 			}
@@ -315,7 +315,7 @@ func TestSizeOptionalError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{ExtendedTypes: true}
 
-	err := generateSize(containerDesc, codeBuilder, typePrinter, options)
+	err := generateSize(containerDesc, codeBuilder, typePrinter, "", options)
 	if err == nil {
 		t.Error("expected error for optional with unsupported inner type")
 	}
@@ -344,11 +344,363 @@ func TestSizeProgressiveListError(t *testing.T) {
 	typePrinter := NewTypePrinter("test/package")
 	options := &CodeGeneratorOptions{}
 
-	err := generateSize(listDesc, codeBuilder, typePrinter, options)
+	err := generateSize(listDesc, codeBuilder, typePrinter, "", options)
 	if err == nil {
 		t.Error("expected error for progressive list with unsupported element type, got nil")
 	}
 	if !strings.Contains(err.Error(), "unsupported SSZ type") {
 		t.Errorf("expected error containing 'unsupported SSZ type', got: %v", err)
+	}
+}
+
+// TestSizeVectorWithUnsupportedElement tests error propagation from vector element generation.
+func TestSizeVectorWithUnsupportedElement(t *testing.T) {
+	unsupportedElemDesc := &ssztypes.TypeDescriptor{
+		Type:         testDummyReflectType,
+		SszType:      ssztypes.SszType(255),
+		Kind:         reflect.Uint8,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+	}
+
+	vectorDesc := &ssztypes.TypeDescriptor{
+		Type:         testDummySliceReflectType,
+		SszType:      ssztypes.SszVectorType,
+		Kind:         reflect.Slice,
+		ElemDesc:     unsupportedElemDesc,
+		Len:          10,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{}
+
+	err := generateSize(vectorDesc, codeBuilder, typePrinter, "", options)
+	if err == nil {
+		t.Error("expected error for vector with unsupported element type")
+	}
+}
+
+// TestSizeListWithUnsupportedElement tests error propagation from list element generation.
+func TestSizeListWithUnsupportedElement(t *testing.T) {
+	unsupportedElemDesc := &ssztypes.TypeDescriptor{
+		Type:         testDummyReflectType,
+		SszType:      ssztypes.SszType(255),
+		Kind:         reflect.Uint8,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+	}
+
+	listDesc := &ssztypes.TypeDescriptor{
+		Type:         testDummySliceReflectType,
+		SszType:      ssztypes.SszListType,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+		Kind:         reflect.Slice,
+		ElemDesc:     unsupportedElemDesc,
+		Limit:        100,
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{}
+
+	err := generateSize(listDesc, codeBuilder, typePrinter, "", options)
+	if err == nil {
+		t.Error("expected error for list with unsupported element type")
+	}
+}
+
+// TestSizeOptionalWithUnsupportedInner tests error propagation from optional inner type.
+func TestSizeOptionalWithUnsupportedInner(t *testing.T) {
+	unsupportedInner := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszType(255),
+		Kind:    reflect.Uint8,
+	}
+
+	optDesc := &ssztypes.TypeDescriptor{
+		Type:     testDummyReflectType,
+		SszType:  ssztypes.SszOptionalType,
+		Kind:     reflect.Pointer,
+		ElemDesc: unsupportedInner,
+	}
+
+	containerDesc := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszContainerType,
+		Kind:    reflect.Struct,
+		ContainerDesc: &ssztypes.ContainerDescriptor{
+			Fields: []ssztypes.FieldDescriptor{
+				{Name: "F", Type: optDesc},
+			},
+		},
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{ExtendedTypes: true}
+
+	err := generateSize(containerDesc, codeBuilder, typePrinter, "", options)
+	if err == nil {
+		t.Error("expected error for optional with unsupported inner type")
+	}
+}
+
+// TestSizeUnionWithUnsupportedVariant tests error propagation from union variant.
+func TestSizeUnionWithUnsupportedVariant(t *testing.T) {
+	unsupportedVariant := &ssztypes.TypeDescriptor{
+		Type:         testDummyReflectType,
+		SszType:      ssztypes.SszType(255),
+		Kind:         reflect.Uint8,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+	}
+
+	unionDesc := &ssztypes.TypeDescriptor{
+		Type:         testDummyReflectType,
+		SszType:      ssztypes.SszCompatibleUnionType,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+		Kind:         reflect.Struct,
+		UnionVariants: map[uint8]*ssztypes.TypeDescriptor{
+			0: unsupportedVariant,
+		},
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{}
+
+	err := generateSize(unionDesc, codeBuilder, typePrinter, "", options)
+	if err == nil {
+		t.Error("expected error for union with unsupported variant type")
+	}
+}
+
+// TestSizeTypeWrapperWithUnsupportedInner tests error propagation from wrapper inner type.
+func TestSizeTypeWrapperWithUnsupportedInner(t *testing.T) {
+	unsupportedInner := &ssztypes.TypeDescriptor{
+		Type:         testDummyReflectType,
+		SszType:      ssztypes.SszType(255),
+		Kind:         reflect.Uint8,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+	}
+
+	wrapperDesc := &ssztypes.TypeDescriptor{
+		Type:         testDummyReflectType,
+		SszType:      ssztypes.SszTypeWrapperType,
+		Kind:         reflect.Struct,
+		ElemDesc:     unsupportedInner,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+	}
+
+	containerDesc := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszContainerType,
+		Kind:    reflect.Struct,
+		ContainerDesc: &ssztypes.ContainerDescriptor{
+			Fields: []ssztypes.FieldDescriptor{
+				{Name: "W", Type: wrapperDesc},
+			},
+		},
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{}
+
+	err := generateSize(containerDesc, codeBuilder, typePrinter, "", options)
+	if err == nil {
+		t.Error("expected error for wrapper with unsupported inner type")
+	}
+}
+
+// TestSizeContainerWithVectorOfUnsupported tests error propagation when a
+// container has a dynamic vector field whose elements are unsupported.
+func TestSizeContainerWithVectorOfUnsupported(t *testing.T) {
+	unsupportedElem := &ssztypes.TypeDescriptor{
+		Type:         testDummyReflectType,
+		SszType:      ssztypes.SszType(255),
+		Kind:         reflect.Uint8,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+	}
+
+	vectorField := &ssztypes.TypeDescriptor{
+		Type:         testDummySliceReflectType,
+		SszType:      ssztypes.SszVectorType,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+		Kind:         reflect.Slice,
+		ElemDesc:     unsupportedElem,
+		Len:          4,
+	}
+
+	containerDesc := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszContainerType,
+		Kind:    reflect.Struct,
+		ContainerDesc: &ssztypes.ContainerDescriptor{
+			Fields: []ssztypes.FieldDescriptor{
+				{Name: "V", Type: vectorField},
+			},
+		},
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{}
+
+	err := generateSize(containerDesc, codeBuilder, typePrinter, "", options)
+	if err == nil {
+		t.Error("expected error for container with vector of unsupported elements")
+	}
+}
+
+// TestSizeContainerWithListOfUnsupported tests error propagation when a
+// container has a dynamic list field whose elements are unsupported.
+func TestSizeContainerWithListOfUnsupported(t *testing.T) {
+	unsupportedElem := &ssztypes.TypeDescriptor{
+		Type:         testDummyReflectType,
+		SszType:      ssztypes.SszType(255),
+		Kind:         reflect.Uint8,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+	}
+
+	listField := &ssztypes.TypeDescriptor{
+		Type:         testDummySliceReflectType,
+		SszType:      ssztypes.SszListType,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+		Kind:         reflect.Slice,
+		ElemDesc:     unsupportedElem,
+		Limit:        10,
+	}
+
+	containerDesc := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszContainerType,
+		Kind:    reflect.Struct,
+		ContainerDesc: &ssztypes.ContainerDescriptor{
+			Fields: []ssztypes.FieldDescriptor{
+				{Name: "L", Type: listField},
+			},
+		},
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{}
+
+	err := generateSize(containerDesc, codeBuilder, typePrinter, "", options)
+	if err == nil {
+		t.Error("expected error for container with list of unsupported elements")
+	}
+}
+
+// TestSizeProgressiveContainerError tests that progressive containers
+// properly propagate errors for size generation.
+func TestSizeProgressiveContainerError(t *testing.T) {
+	unsupportedField := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszType(255),
+		Kind:    reflect.Uint8,
+		Size:    0,
+	}
+
+	desc := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszProgressiveContainerType,
+		Kind:    reflect.Struct,
+		ContainerDesc: &ssztypes.ContainerDescriptor{
+			Fields: []ssztypes.FieldDescriptor{
+				{Name: "F", Type: unsupportedField},
+			},
+		},
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{}
+
+	err := generateSize(desc, codeBuilder, typePrinter, "", options)
+	if err == nil {
+		t.Error("expected error for progressive container with unsupported field")
+	}
+}
+
+// TestSizeNestedContainerUnsupportedField tests that a container with a nested
+// container whose field is unsupported propagates the error through two levels.
+func TestSizeNestedContainerUnsupportedField(t *testing.T) {
+	unsupportedField := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszType(255),
+		Kind:    reflect.Uint8,
+		Size:    0,
+	}
+
+	innerContainer := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszContainerType,
+		Kind:    reflect.Struct,
+		ContainerDesc: &ssztypes.ContainerDescriptor{
+			Fields: []ssztypes.FieldDescriptor{
+				{Name: "Bad", Type: unsupportedField},
+			},
+		},
+	}
+
+	outerContainer := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszContainerType,
+		Kind:    reflect.Struct,
+		ContainerDesc: &ssztypes.ContainerDescriptor{
+			Fields: []ssztypes.FieldDescriptor{
+				{Name: "Inner", Type: innerContainer},
+			},
+		},
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{}
+
+	err := generateSize(outerContainer, codeBuilder, typePrinter, "", options)
+	if err == nil {
+		t.Error("expected error for nested container with unsupported field")
+	}
+}
+
+// TestSizeContainerStaticPlusDynamicError tests that a container with a
+// static uint32 field and a dynamic unsupported field propagates the error
+// from the dynamic field path.
+func TestSizeContainerStaticPlusDynamicError(t *testing.T) {
+	staticField := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszUint32Type,
+		Kind:    reflect.Uint32,
+		Size:    4,
+	}
+
+	unsupportedDynField := &ssztypes.TypeDescriptor{
+		Type:         testDummyReflectType,
+		SszType:      ssztypes.SszType(255),
+		Kind:         reflect.Uint8,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+	}
+
+	desc := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszContainerType,
+		Kind:    reflect.Struct,
+		ContainerDesc: &ssztypes.ContainerDescriptor{
+			Fields: []ssztypes.FieldDescriptor{
+				{Name: "S", Type: staticField},
+				{Name: "D", Type: unsupportedDynField},
+			},
+		},
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{}
+
+	err := generateSize(desc, codeBuilder, typePrinter, "", options)
+	if err == nil {
+		t.Error("expected error for container with static + dynamic unsupported field")
 	}
 }

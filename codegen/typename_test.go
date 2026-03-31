@@ -846,7 +846,7 @@ func TestTypeDescriptorMethods(t *testing.T) {
 			Type:        reflect.TypeOf(int(0)),
 		}
 
-		result := freshPrinter.TypeStringWithoutTracking(desc)
+		result := freshPrinter.TypeStringWithoutTracking(desc, false)
 
 		if result != "ExternalType" {
 			t.Errorf("Expected 'ExternalType', got %s", result)
@@ -1511,7 +1511,7 @@ func TestTypeStringWithoutTrackingReflect(t *testing.T) {
 	desc := &ssztypes.TypeDescriptor{
 		Type: reflect.TypeOf(time.Time{}),
 	}
-	result := printer.TypeStringWithoutTracking(desc)
+	result := printer.TypeStringWithoutTracking(desc, false)
 	if result != "Time" {
 		t.Errorf("expected 'Time', got %s", result)
 	}

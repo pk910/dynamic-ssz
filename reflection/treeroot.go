@@ -57,8 +57,29 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 		ctx.logCb("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v/%v)\t index: %v\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, isFastsszHasher, hasDynamicSize, hasDynamicMax, hashIndex)
 	}
 
-	// Fast path: skip compat interface checks for types that don't implement any
-	if sourceType.SszCompatFlags != 0 || sourceType.SszType == ssztypes.SszCustomType {
+	// Try DynamicViewHashRoot first - it takes precedence over all other methods.
+	// This supports fork-dependent SSZ schemas where generated code handles
+	// different view types. If the method returns nil, fall through to
+	// other hashing methods.
+	isView := sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
+	if isView {
+		if sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewHashRoot != 0 {
+			if viewHasher, ok := getPtr(sourceValue).Interface().(sszutils.DynamicViewHashRoot); ok {
+				if hashFn := viewHasher.HashTreeRootWithDynView(*sourceType.CodegenInfo); hashFn != nil {
+					if err := hashFn(ctx.ds, hh); err != nil {
+						return err
+					}
+
+					if ctx.verbose {
+						ctx.logCb("%shash: 0x%x\n", strings.Repeat(" ", idt), hh.Hash())
+					}
+
+					return nil
+				}
+			}
+		}
+	} else if sourceType.SszCompatFlags != 0 || sourceType.SszType == ssztypes.SszCustomType {
+		// Fast path: skip compat interface checks for types that don't implement any
 		isFastsszHasher := sourceType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0
 		useDynamicHashRoot := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0
 		hasDynamicSize := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
@@ -345,7 +366,9 @@ func (ctx *ReflectionCtx) buildRootFromContainer(sourceType *ssztypes.TypeDescri
 	for i := 0; i < len(htrFields); i++ {
 		field := &htrFields[i]
 		fieldType := field.Type
-		fieldValue := sourceValue.Field(i)
+		// Use FieldIndex to access the runtime struct's field, which may differ
+		// from the schema field index when using view descriptors.
+		fieldValue := sourceValue.Field(int(field.FieldIndex))
 
 		if ctx.verbose {
 			ctx.logCb("%sfield %v\n", strings.Repeat(" ", idt), field.Name)
@@ -403,7 +426,9 @@ func (ctx *ReflectionCtx) buildRootFromProgressiveContainer(sourceType *ssztypes
 		lastActiveField = int(field.SszIndex)
 
 		fieldType := field.Type
-		fieldValue := sourceValue.Field(i)
+		// Use FieldIndex to access the runtime struct's field, which may differ
+		// from the schema field index when using view descriptors.
+		fieldValue := sourceValue.Field(int(field.FieldIndex))
 
 		if ctx.verbose {
 			ctx.logCb("%sfield %v\n", strings.Repeat(" ", idt), field.Name)

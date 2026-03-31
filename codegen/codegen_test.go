@@ -154,7 +154,7 @@ func TestGenerateCodeErrorPaths(t *testing.T) {
 			cg := NewCodeGenerator(nil)
 			codeBuilder := &strings.Builder{}
 			typePrinter := NewTypePrinter("test/package")
-			err := cg.generateCode(unsupportedDesc, typePrinter, codeBuilder, &tt.opts)
+			err := cg.generateSSZMethods(unsupportedDesc, typePrinter, codeBuilder, "", &tt.opts)
 			if err == nil {
 				t.Error("expected error from generateCode")
 			}
@@ -183,7 +183,7 @@ func TestGenerateCodeDecoderError(t *testing.T) {
 		CreateDecoderFn: false,
 	}
 	// With all disabled, no error
-	err := cg.generateCode(unsupportedDesc, typePrinter, codeBuilder, &opts)
+	err := cg.generateSSZMethods(unsupportedDesc, typePrinter, codeBuilder, "", &opts)
 	if err != nil {
 		t.Errorf("expected no error when all generation disabled, got: %v", err)
 	}
@@ -226,6 +226,11 @@ type SimpleTestStruct struct {
 type SimpleTestStruct2 struct {
 	Field1 uint32
 	Field2 uint16
+}
+
+// SimpleViewStruct is a view-compatible subset of SimpleTestStruct.
+type SimpleViewStruct struct {
+	Field1 uint64
 }
 
 func TestCodeGeneratorOptions(t *testing.T) {
@@ -550,4 +555,169 @@ func TestCodeGeneratorAPI(t *testing.T) {
 			t.Error("Generated code should use custom package name")
 		}
 	})
+}
+
+// TestWithReflectViewTypes tests the WithReflectViewTypes option.
+func TestWithReflectViewTypes(t *testing.T) {
+	opts := CodeGeneratorOptions{}
+	vt := reflect.TypeOf((*SimpleTestStruct2)(nil)).Elem()
+	option := WithReflectViewTypes(vt)
+	option(&opts)
+
+	if len(opts.ViewReflectTypes) != 1 {
+		t.Fatalf("expected 1 view type, got %d", len(opts.ViewReflectTypes))
+	}
+	if opts.ViewReflectTypes[0] != vt {
+		t.Error("view type not set correctly")
+	}
+}
+
+// TestWithViewOnly tests the WithViewOnly option.
+func TestWithViewOnly(t *testing.T) {
+	opts := CodeGeneratorOptions{}
+	option := WithViewOnly()
+	option(&opts)
+
+	if !opts.ViewOnly {
+		t.Error("WithViewOnly should set ViewOnly to true")
+	}
+}
+
+// TestGenerateSSZViewMethodsErrorPaths tests error propagation from view method generation.
+func TestGenerateSSZViewMethodsErrorPaths(t *testing.T) {
+	unsupportedDesc := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszType(255),
+		Kind:    reflect.Struct,
+	}
+
+	viewDesc := &ssztypes.TypeDescriptor{
+		Type:    testDummyReflectType,
+		SszType: ssztypes.SszType(255),
+		Kind:    reflect.Struct,
+	}
+
+	tests := []struct {
+		name string
+		opts CodeGeneratorOptions
+	}{
+		{
+			name: "MarshalViewError",
+			opts: CodeGeneratorOptions{},
+		},
+		{
+			name: "EncoderViewError",
+			opts: CodeGeneratorOptions{NoMarshalSSZ: true, CreateEncoderFn: true},
+		},
+		{
+			name: "UnmarshalViewError",
+			opts: CodeGeneratorOptions{NoMarshalSSZ: true},
+		},
+		{
+			name: "DecoderViewError",
+			opts: CodeGeneratorOptions{NoMarshalSSZ: true, NoUnmarshalSSZ: true, CreateDecoderFn: true},
+		},
+		{
+			name: "SizeViewError",
+			opts: CodeGeneratorOptions{NoMarshalSSZ: true, NoUnmarshalSSZ: true},
+		},
+		{
+			name: "HashTreeRootViewError",
+			opts: CodeGeneratorOptions{NoMarshalSSZ: true, NoUnmarshalSSZ: true, NoSizeSSZ: true},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cg := NewCodeGenerator(nil)
+			codeBuilder := &strings.Builder{}
+			typePrinter := NewTypePrinter("test/package")
+			err := cg.generateSSZViewMethods(
+				unsupportedDesc, []*ssztypes.TypeDescriptor{viewDesc},
+				typePrinter, codeBuilder, &tt.opts,
+			)
+			if err == nil {
+				t.Error("expected error from generateSSZViewMethods")
+			}
+		})
+	}
+}
+
+// TestGenerateWithReflectViews tests code generation using the reflect-based
+// view type API (WithReflectType + WithReflectViewTypes). This exercises the
+// reflect type analysis path in analyzeTypes.
+func TestGenerateWithReflectViews(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	baseType := reflect.TypeOf((*SimpleTestStruct)(nil)).Elem()
+	viewType := reflect.TypeOf((*SimpleViewStruct)(nil)).Elem()
+
+	cg.BuildFile("test.go",
+		WithReflectType(baseType, WithReflectViewTypes(viewType)),
+	)
+
+	_, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("GenerateToMap failed: %v", err)
+	}
+}
+
+// TestGenerateWithViewOnly tests code generation using view-only mode
+// via the reflect API.
+func TestGenerateWithViewOnly(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	baseType := reflect.TypeOf((*SimpleTestStruct)(nil)).Elem()
+	viewType := reflect.TypeOf((*SimpleViewStruct)(nil)).Elem()
+
+	cg.BuildFile("test.go",
+		WithReflectType(baseType,
+			WithViewOnly(),
+			WithReflectViewTypes(viewType),
+		),
+	)
+
+	_, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("GenerateToMap failed: %v", err)
+	}
+}
+
+// TestGenerateFileNoTypes tests the generateFile error when no types are provided.
+func TestGenerateFileNoTypes(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	_, err := cg.generateFile("test/package", &CodeGeneratorFileOptions{})
+	if err == nil {
+		t.Error("expected error for empty types")
+	}
+}
+
+// TestGenerateFileNilDescriptor tests generateFile error when descriptor is nil.
+func TestGenerateFileNilDescriptor(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	opts := &CodeGeneratorFileOptions{
+		Types: []*CodeGeneratorTypeOptions{
+			{TypeName: "BadType"},
+		},
+	}
+	_, err := cg.generateFile("test/package", opts)
+	if err == nil {
+		t.Error("expected error for nil descriptor")
+	}
+}
+
+// TestGenerateViewTypeAnalysisError tests that analyzeTypes returns an error
+// when a view type is incompatible with the base type.
+func TestGenerateViewTypeAnalysisError(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	baseType := reflect.TypeOf((*SimpleTestStruct)(nil)).Elem()
+	// SimpleTestStruct2 has incompatible field types (uint32 vs uint64)
+	badViewType := reflect.TypeOf((*SimpleTestStruct2)(nil)).Elem()
+
+	cg.BuildFile("test.go",
+		WithReflectType(baseType, WithReflectViewTypes(badViewType)),
+	)
+
+	_, err := cg.GenerateToMap()
+	if err == nil {
+		t.Error("expected error for incompatible view type")
+	}
 }

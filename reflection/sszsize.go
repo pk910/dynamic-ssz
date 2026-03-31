@@ -48,8 +48,21 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		}
 	}
 
-	// Fast path: skip compat interface checks for types that don't implement any
-	if targetType.SszCompatFlags != 0 || targetType.SszType == ssztypes.SszCustomType {
+	// Try DynamicViewSizer first - it takes precedence over all other methods.
+	// This supports fork-dependent SSZ schemas where generated code handles
+	// different view types. If the method returns nil, fall through to
+	// other sizing methods.
+	isView := targetType.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
+	if isView {
+		if targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewSizer != 0 {
+			if sizer, ok := getPtr(targetValue).Interface().(sszutils.DynamicViewSizer); ok {
+				if sizeFn := sizer.SizeSSZDynView(*targetType.CodegenInfo); sizeFn != nil {
+					return uint32(sizeFn(ctx.ds)), nil
+				}
+			}
+		}
+	} else if targetType.SszCompatFlags != 0 || targetType.SszType == ssztypes.SszCustomType {
+		// Fast path: skip compat interface checks for types that don't implement any
 		useFastSsz := !ctx.noFastSsz && targetType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
 		if !useFastSsz && targetType.SszType == ssztypes.SszCustomType {
 			useFastSsz = true
@@ -83,7 +96,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		sizeFields := targetType.ContainerDesc.Fields
 		for i := 0; i < len(sizeFields); i++ {
 			fieldType := &sizeFields[i]
-			fieldValue := targetValue.Field(i)
+			fieldValue := targetValue.Field(int(fieldType.FieldIndex))
 
 			if fieldType.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 				size, err := ctx.getSszValueSize(fieldType.Type, fieldValue)

@@ -21,6 +21,14 @@ var dynamicDecoderType = reflect.TypeOf((*sszutils.DynamicDecoder)(nil)).Elem()
 var dynamicSizerType = reflect.TypeOf((*sszutils.DynamicSizer)(nil)).Elem()
 var dynamicHashRootType = reflect.TypeOf((*sszutils.DynamicHashRoot)(nil)).Elem()
 
+// View-based dynamic interface types for fork-dependent SSZ schemas
+var dynamicViewMarshalerType = reflect.TypeOf((*sszutils.DynamicViewMarshaler)(nil)).Elem()
+var dynamicViewUnmarshalerType = reflect.TypeOf((*sszutils.DynamicViewUnmarshaler)(nil)).Elem()
+var dynamicViewEncoderType = reflect.TypeOf((*sszutils.DynamicViewEncoder)(nil)).Elem()
+var dynamicViewDecoderType = reflect.TypeOf((*sszutils.DynamicViewDecoder)(nil)).Elem()
+var dynamicViewSizerType = reflect.TypeOf((*sszutils.DynamicViewSizer)(nil)).Elem()
+var dynamicViewHashRootType = reflect.TypeOf((*sszutils.DynamicViewHashRoot)(nil)).Elem()
+
 // getFastsszCompatibility evaluates the compatibility of a given type with fastssz, determining whether the type and its nested
 // structures can be efficiently encoded/decoded using fastssz's static code generation approach.
 //
@@ -127,4 +135,40 @@ func getDynamicSizerCompatibility(targetType reflect.Type) bool {
 func getDynamicHashRootCompatibility(targetType reflect.Type) bool {
 	targetPtrType := reflect.New(targetType).Type()
 	return targetPtrType.Implements(dynamicHashRootType)
+}
+
+// getDynamicViewMarshalerCompatibility checks if a type implements the DynamicViewMarshaler interface
+func getDynamicViewMarshalerCompatibility(targetType reflect.Type) bool {
+	targetPtrType := reflect.New(targetType).Type()
+	return targetPtrType.Implements(dynamicViewMarshalerType)
+}
+
+// getDynamicViewUnmarshalerCompatibility checks if a type implements the DynamicViewUnmarshaler interface
+func getDynamicViewUnmarshalerCompatibility(targetType reflect.Type) bool {
+	targetPtrType := reflect.New(targetType).Type()
+	return targetPtrType.Implements(dynamicViewUnmarshalerType)
+}
+
+// getDynamicViewEncoderCompatibility checks if a type implements the DynamicViewEncoder interface
+func getDynamicViewEncoderCompatibility(targetType reflect.Type) bool {
+	targetPtrType := reflect.New(targetType).Type()
+	return targetPtrType.Implements(dynamicViewEncoderType)
+}
+
+// getDynamicViewDecoderCompatibility checks if a type implements the DynamicViewDecoder interface
+func getDynamicViewDecoderCompatibility(targetType reflect.Type) bool {
+	targetPtrType := reflect.New(targetType).Type()
+	return targetPtrType.Implements(dynamicViewDecoderType)
+}
+
+// getDynamicViewSizerCompatibility checks if a type implements the DynamicViewSizer interface
+func getDynamicViewSizerCompatibility(targetType reflect.Type) bool {
+	targetPtrType := reflect.New(targetType).Type()
+	return targetPtrType.Implements(dynamicViewSizerType)
+}
+
+// getDynamicViewHashRootCompatibility checks if a type implements the DynamicViewHashRoot interface
+func getDynamicViewHashRootCompatibility(targetType reflect.Type) bool {
+	targetPtrType := reflect.New(targetType).Type()
+	return targetPtrType.Implements(dynamicViewHashRootType)
 }

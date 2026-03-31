@@ -53,14 +53,43 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 	}
 
 	if ctx.verbose {
-		isFastsszUnmarshaler := targetType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
-		hasDynamicSize := targetType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
-		useFastSsz := !ctx.noFastSsz && isFastsszUnmarshaler && !hasDynamicSize
-		ctx.logCb("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v)\n", strings.Repeat(" ", idt), targetType.Type.Name(), targetType.Kind, useFastSsz, isFastsszUnmarshaler, hasDynamicSize)
+		ctx.logCb("%stype: %s\t kind: %v\n", strings.Repeat(" ", idt), targetType.Type.Name(), targetType.Kind)
 	}
 
-	// Fast path: skip compat interface checks for types that don't implement any
-	if targetType.SszCompatFlags != 0 || targetType.SszType == ssztypes.SszCustomType {
+	// Try DynamicView methods first - they take precedence over all other methods.
+	// This supports fork-dependent SSZ schemas where generated code handles
+	// different view types. If the method returns nil, fall through to
+	// other unmarshaling methods.
+	isView := targetType.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
+	if isView {
+		useViewDecoder := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewDecoder != 0
+		useViewUnmarshaler := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewUnmarshaler != 0
+
+		// Prefer decoder for stream-based decoders, unmarshaler for buffer-based
+		if useViewDecoder {
+			if !decoder.Seekable() || !useViewUnmarshaler {
+				if dec, ok := targetValue.Addr().Interface().(sszutils.DynamicViewDecoder); ok {
+					if decodeFn := dec.UnmarshalSSZDecoderView(*targetType.CodegenInfo); decodeFn != nil {
+						return decodeFn(ctx.ds, decoder)
+					}
+				}
+			}
+		}
+
+		if useViewUnmarshaler {
+			if unmarshaler, ok := targetValue.Addr().Interface().(sszutils.DynamicViewUnmarshaler); ok {
+				if unmarshalFn := unmarshaler.UnmarshalSSZDynView(*targetType.CodegenInfo); unmarshalFn != nil {
+					bufLen := decoder.GetLength()
+					buf, err := decoder.DecodeBytesBuf(bufLen)
+					if err != nil {
+						return err
+					}
+					return unmarshalFn(ctx.ds, buf)
+				}
+			}
+		}
+	} else if targetType.SszCompatFlags != 0 || targetType.SszType == ssztypes.SszCustomType {
+		// Fast path: skip compat interface checks for types that don't implement any
 		hasDynamicSize := targetType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
 		isFastsszUnmarshaler := targetType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
 		useDynamicUnmarshal := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0
@@ -325,7 +354,7 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 			fieldSize := int(field.Type.Size)
 			expectedPos := decoder.GetPosition() + fieldSize
 
-			fieldValue := targetValue.Field(i)
+			fieldValue := targetValue.Field(int(field.FieldIndex))
 			if err := ctx.unmarshalType(field.Type, fieldValue, decoder, idt+2); err != nil {
 				return sszutils.ErrorWithPath(err, field.Name)
 			}
@@ -364,7 +393,9 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 			// fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
 			expectedPos := decoder.GetPosition() + fieldSize
 
-			fieldValue := targetValue.Field(i)
+			// Use FieldIndex to access the runtime struct's field, which may differ
+			// from the schema field index when using view descriptors.
+			fieldValue := targetValue.Field(int(field.FieldIndex))
 			err := ctx.unmarshalType(field.Type, fieldValue, decoder, idt+2)
 			if err != nil {
 				return sszutils.ErrorWithPath(err, field.Name)
@@ -442,7 +473,9 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 			decoder.PushLimit(int(sszSize))
 
 			fieldDescriptor := field.Field
-			fieldValue := targetValue.Field(int(field.Index))
+			// Use FieldIndex to access the runtime struct's field, which may differ
+			// from the schema field index when using view descriptors.
+			fieldValue := targetValue.Field(int(fieldDescriptor.FieldIndex))
 			err := ctx.unmarshalType(fieldDescriptor.Type, fieldValue, decoder, idt+2)
 			if err != nil {
 				return sszutils.ErrorWithPath(err, fieldDescriptor.Name)
@@ -499,7 +532,13 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 	case reflect.Array:
 		newValue = targetValue
 	default:
-		newValue = reflect.New(targetType.Type).Elem()
+		// For pointer types (e.g., *string), unmarshalType already dereferenced
+		// targetValue, so create the underlying type instead.
+		t := targetType.Type
+		if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+			t = t.Elem()
+		}
+		newValue = reflect.New(t).Elem()
 	}
 
 	if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {

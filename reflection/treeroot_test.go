@@ -418,7 +418,7 @@ func TestHashTreeRootErrors(t *testing.T) {
 			input: struct {
 				TypeWrapper struct{} `ssz-type:"wrapper"`
 			}{},
-			expectedErr: "method not found on type",
+			expectedErr: "method not found on",
 		},
 		{
 			name: "bitlist_too_big",
@@ -701,7 +701,7 @@ func TestGetTreeErrors(t *testing.T) {
 			input: struct {
 				TypeWrapper struct{} `ssz-type:"wrapper"`
 			}{},
-			expectedErr: "method not found on type",
+			expectedErr: "method not found on",
 		},
 		{
 			name: "bitlist_too_big",
@@ -1581,6 +1581,95 @@ func TestPackedBoolInVector(t *testing.T) {
 	}
 }
 
+// TestViewHashRoot tests the DynamicViewHashRoot interface via HashTreeRoot.
+func TestViewHashRoot(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	// Expected hash for the test container with Field0=0x0807060504030201, Field1=0x0c0b0a09
+	// computed via reflection (container with two fields hashed and merkleized)
+	expectedHash := fromHex("0xfceef46b8a8d2490c9ea24cc3d8b784860e4c3091cfa52955041577e50d76653")
+
+	testCases := []struct {
+		name        string
+		view        any
+		expectError string
+	}{
+		{
+			name: "ViewHashRoot_Success",
+			view: (*TestViewType1)(nil),
+		},
+		{
+			name:        "ViewHashRoot_Error",
+			view:        (*TestViewType2)(nil),
+			expectError: "test view hash root error",
+		},
+		{
+			name: "ViewHashRoot_NoCodeForView_FallbackToReflection",
+			view: (*TestViewTypeUnknown)(nil),
+		},
+	}
+
+	container := TestContainerWithViewHashRoot{Field0: 0x0807060504030201, Field1: 0x0c0b0a09}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			hash, err := ds.HashTreeRoot(&container, WithViewDescriptor(tc.view))
+
+			if tc.expectError != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.expectError)
+				}
+				if !contains(err.Error(), tc.expectError) {
+					t.Fatalf("expected error containing %q, got %v", tc.expectError, err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if !bytes.Equal(hash[:], expectedHash) {
+				t.Fatalf("expected hash %x, got %x", expectedHash, hash)
+			}
+		})
+	}
+}
+
+// TestViewHashRootFlagsDetection verifies that the type cache correctly detects view hash root flags.
+func TestViewHashRootFlagsDetection(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	// Test that view hash root flags are detected on runtime type
+	typeDesc, err := ds.GetTypeCache().GetTypeDescriptor(
+		reflect.TypeOf(TestContainerWithViewHashRoot{}),
+		nil, nil, nil,
+	)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	// Check for DynamicViewHashRoot flag
+	if typeDesc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewHashRoot == 0 {
+		t.Error("Expected DynamicViewHashRoot flag to be set")
+	}
+
+	// Test that the flags are set based on runtime type when using view descriptor
+	viewTypeDesc, err := ds.GetTypeCache().GetTypeDescriptorWithSchema(
+		reflect.TypeOf(TestContainerWithViewHashRoot{}),
+		reflect.TypeOf(TestViewType1{}),
+		nil, nil, nil,
+	)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor with view: %v", err)
+	}
+
+	// Verify flag is set
+	if viewTypeDesc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewHashRoot == 0 {
+		t.Error("Expected DynamicViewHashRoot flag to be set with view descriptor")
+	}
+}
+
 func TestNestedDynamicHashRootError(t *testing.T) {
 	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
@@ -1921,5 +2010,29 @@ func TestBuildRootFromProgressiveContainerError(t *testing.T) {
 	_, err = dynssz.HashTreeRoot(Container{Field0: 123, Field1: Inner{Value: 42}})
 	if err == nil {
 		t.Error("expected error for progressive container error")
+	}
+}
+
+// TestVectorCollapseEvery256 exercises the Collapse() call that fires every
+// 256th element during vector (fixed-size array) hash tree root computation.
+// This covers treeroot.go buildRootFromVector's `(i+1)%256 == 0` branch.
+func TestVectorCollapseEvery256(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type LargeVector struct {
+		Data [260]uint32
+	}
+
+	input := LargeVector{}
+	for i := range input.Data {
+		input.Data[i] = uint32(i)
+	}
+
+	hash, err := dynssz.HashTreeRoot(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hash == [32]byte{} {
+		t.Error("hash should not be zero")
 	}
 }

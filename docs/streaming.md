@@ -205,7 +205,8 @@ dynssz-gen -package . -types BeaconBlock,BeaconState -output ssz_generated.go -w
 ### Programmatic API
 
 ```go
-codeGen := codegen.NewCodeGenerator(dynssz.NewDynSsz(nil))
+ds := dynssz.NewDynSsz(nil)
+codeGen := codegen.NewCodeGenerator(ds)
 
 codeGen.BuildFile("generated_ssz.go",
     codegen.WithReflectType(reflect.TypeOf(BeaconBlock{})),

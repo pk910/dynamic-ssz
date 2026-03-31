@@ -388,6 +388,48 @@ func (c *CustomType1) HashTreeRoot() ([32]byte, error) {
 	return [32]byte(buf), nil
 }
 
+type ViewTypes1_Base struct {
+	F1 uint64
+	F2 []uint64
+	F3 [2][]uint64
+	C1 *ViewTypes1_C1
+}
+
+type ViewTypes1_C1 struct {
+	F1 uint64
+	F2 []uint64
+}
+
+type ViewTypes1_View1 struct {
+	F1 uint64
+	F3 [2][]uint64 `ssz-size:"2,5"`
+	C1 *ViewTypes1_View1_C1
+}
+
+type ViewTypes1_View1_C1 struct {
+	F1 uint64
+}
+
+type ViewTypes1_View2 struct {
+	F1 uint64
+	F2 []uint64
+	C1 *ViewTypes1_View2_C1
+}
+
+type ViewTypes1_View2_C1 struct {
+	F2 []uint64
+}
+
+var ViewTypes1_Payload = ViewTypes1_Base{
+	F1: 12345,
+	F2: []uint64{12345, 67890},
+	F3: [2][]uint64{{12345, 67890}, {12345, 67890}},
+	C1: &ViewTypes1_C1{
+		F1: 12345,
+		F2: []uint64{12345, 67890},
+	},
+}
+
 type ExtendedTypes1 struct {
 	I8   int8
 	I16  int16
@@ -638,7 +680,332 @@ func init() {
 	sszutils.Annotate[InitAnnotatedList](`ssz-max:"8"`)
 }
 
+// CoverageTypes7 exercises getStaticSizeVar's container recursion path:
+// SC1 is a static container with a dynssz-size field, used before
+// a dynamic field L1, forcing offset computation via getStaticSizeVar.
+type CoverageTypes7 struct {
+	SC1 CoverageTypes7_SC
+	L1  []uint16 `ssz-max:"8"`
+}
+
+type CoverageTypes7_SC struct {
+	F1 []uint8 `ssz-size:"4" dynssz-size:"SC_SIZE"`
+	F2 uint32
+}
+
+var CoverageTypes7_Payload = CoverageTypes7{
+	SC1: CoverageTypes7_SC{
+		F1: []uint8{1, 2, 3, 4, 5, 6},
+		F2: 42,
+	},
+	L1: []uint16{100, 200, 300},
+}
+
+var CoverageTypes7_Specs = map[string]any{
+	"SC_SIZE": 6,
+}
+
+// NoDynExprTypes mirrors common SSZ patterns but is generated with
+// -without-dynamic-expressions to exercise the expression-stripping
+// branches in every generator.
+type NoDynExprTypes struct {
+	Vec8   []uint8  `ssz-size:"4" dynssz-size:"VEC8_SIZE"`
+	Vec32  []uint32 `ssz-size:"4" dynssz-size:"VEC32_SIZE"`
+	BitVec []byte   `ssz-type:"bitvector" ssz-size:"8" dynssz-size:"BITVEC_SIZE"`
+	Lst8   []uint8  `ssz-max:"4" dynssz-max:"LST8_MAX"`
+	Lst32  []uint32 `ssz-max:"4" dynssz-max:"LST32_MAX"`
+	BitLst []byte   `ssz-max:"16" dynssz-max:"BITLST_MAX"`
+	Str1   string   `ssz-max:"8" dynssz-max:"STR_MAX"`
+}
+
+var NoDynExprTypes_Payload = NoDynExprTypes{
+	Vec8:   []uint8{1, 2, 3, 4},
+	Vec32:  []uint32{1, 2, 3, 4},
+	BitVec: []byte{1, 2, 3, 4, 5, 6, 7, 8},
+	Lst8:   []uint8{1, 2, 3, 4},
+	Lst32:  []uint32{1, 2, 3, 4},
+	BitLst: []byte{1, 2, 3, 4},
+	Str1:   "hello",
+}
+
 // InterpretedAnnotatedList tests Annotate with an interpreted (double-quoted) string literal.
 type InterpretedAnnotatedList []uint32
 
 var _ = sszutils.Annotate[InterpretedAnnotatedList]("ssz-max:\"12\"")
+
+// ViewTypes2_Base tests nested view dispatch: its Child field has
+// view dispatch methods (from ViewTypes1_Base). When generating
+// ViewTypes2's views, the Child field triggers the isView code path
+// in all generators (marshal, unmarshal, encoder, decoder, size, hash).
+type ViewTypes2_Base struct {
+	F1    uint64
+	Child *ViewTypes1_Base
+}
+
+// ViewTypes2_View1 is a view where Child is viewed through ViewTypes1_View1.
+type ViewTypes2_View1 struct {
+	F1    uint64
+	Child *ViewTypes1_View1
+}
+
+// ViewTypes2_View2 is a view where Child is viewed through ViewTypes1_View2.
+type ViewTypes2_View2 struct {
+	F1    uint64
+	Child *ViewTypes1_View2
+}
+
+var ViewTypes2_Payload = ViewTypes2_Base{
+	F1: 42,
+	Child: &ViewTypes1_Base{
+		F1: 12345,
+		F2: []uint64{12345, 67890},
+		F3: [2][]uint64{{12345, 67890}, {12345, 67890}},
+		C1: &ViewTypes1_C1{
+			F1: 12345,
+			F2: []uint64{12345, 67890},
+		},
+	},
+}
+
+// ViewTypes3_Base tests the view-only generation mode.
+// It only generates view dispatch methods, no data methods.
+type ViewTypes3_Base struct {
+	F1 uint64
+	F2 []uint64
+}
+
+// ViewTypes3_View1 is a view for ViewTypes3_Base.
+type ViewTypes3_View1 struct {
+	F1 uint64
+}
+
+var ViewTypes3_Payload = ViewTypes3_Base{
+	F1: 42,
+	F2: []uint64{1, 2, 3},
+}
+
+// CoverageTypes3 covers: uint256 type (both [32]byte and [4]uint64 forms),
+// pointer bitlist, and string vector with dynssz-size.
+type CoverageTypes3 struct {
+	U256_1    [32]byte  `ssz-type:"uint256"`
+	U256_2    [4]uint64 `ssz-type:"uint256"`
+	StrVec    string    `ssz-size:"10" dynssz-size:"STR_VEC_SIZE"`
+	PtrBool   *bool
+	PtrStrVec *string `ssz-size:"8"`
+	PtrStrLst *string `ssz-max:"16"`
+}
+
+var (
+	covBool = true
+	covStr1 = "teststr1"
+	covStr2 = "hello"
+)
+
+var CoverageTypes3_Payload = CoverageTypes3{
+	U256_1:    [32]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32},
+	U256_2:    [4]uint64{1, 2, 3, 4},
+	StrVec:    "helloworld",
+	PtrBool:   &covBool,
+	PtrStrVec: &covStr1,
+	PtrStrLst: &covStr2,
+}
+
+var CoverageTypes3_Specs = map[string]any{
+	"STR_VEC_SIZE": 12,
+}
+
+// EncoderOnlyType implements only dynamic encoder/decoder/sizer/hashroot
+// interfaces (not FastSSZ or DynamicMarshaler/Unmarshaler). This exercises
+// the DynamicEncoder/DynamicDecoder dispatch branches in codegen.
+type EncoderOnlyType struct {
+	Val uint64
+}
+
+var _ sszutils.DynamicEncoder = (*EncoderOnlyType)(nil)
+var _ sszutils.DynamicDecoder = (*EncoderOnlyType)(nil)
+var _ sszutils.DynamicSizer = (*EncoderOnlyType)(nil)
+var _ sszutils.DynamicHashRoot = (*EncoderOnlyType)(nil)
+
+func (e *EncoderOnlyType) MarshalSSZEncoder(ds sszutils.DynamicSpecs, enc sszutils.Encoder) error {
+	enc.EncodeUint64(e.Val)
+	return nil
+}
+
+func (e *EncoderOnlyType) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, dec sszutils.Decoder) error {
+	var err error
+	e.Val, err = dec.DecodeUint64()
+	return err
+}
+
+func (e *EncoderOnlyType) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
+	return 8
+}
+
+func (e *EncoderOnlyType) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(e.Val)
+	return nil
+}
+
+// CoverageTypes5 wraps EncoderOnlyType as a field to trigger the
+// DynamicEncoder/DynamicDecoder dispatch branches in all generators.
+type CoverageTypes5 struct {
+	F1 uint64
+	E1 EncoderOnlyType
+}
+
+var CoverageTypes5_Payload = CoverageTypes5{
+	F1: 42,
+	E1: EncoderOnlyType{Val: 12345},
+}
+
+// MarshalerOnlyType implements only DynamicMarshaler/Unmarshaler (not FastSSZ).
+// This exercises the DynamicMarshaler/DynamicUnmarshaler dispatch branches.
+type MarshalerOnlyType struct {
+	Val uint64
+}
+
+var _ sszutils.DynamicMarshaler = (*MarshalerOnlyType)(nil)
+var _ sszutils.DynamicUnmarshaler = (*MarshalerOnlyType)(nil)
+var _ sszutils.DynamicSizer = (*MarshalerOnlyType)(nil)
+var _ sszutils.DynamicHashRoot = (*MarshalerOnlyType)(nil)
+
+func (m *MarshalerOnlyType) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return sszutils.MarshalUint64(buf, m.Val), nil
+}
+
+func (m *MarshalerOnlyType) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	m.Val = sszutils.UnmarshallUint64(buf)
+	return nil
+}
+
+func (m *MarshalerOnlyType) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
+	return 8
+}
+
+func (m *MarshalerOnlyType) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(m.Val)
+	return nil
+}
+
+// CoverageTypes6 wraps MarshalerOnlyType as a field to trigger the
+// DynamicMarshaler/DynamicUnmarshaler dispatch branches.
+type CoverageTypes6 struct {
+	F1 uint64
+	M1 MarshalerOnlyType
+}
+
+var CoverageTypes6_Payload = CoverageTypes6{
+	F1: 99,
+	M1: MarshalerOnlyType{Val: 67890},
+}
+
+// ViewTypes4_Base is generated in a SEPARATE go:generate command from
+// ViewTypes1_Base. This forces the parser to discover ViewTypes1_Base's
+// view methods via method set detection rather than the internal compat
+// flag map. It also includes CompatibleUnion and TypeWrapper fields with
+// view-dependent schemas to exercise the view descriptor paths in
+// buildCompatibleUnionDescriptor and buildTypeWrapperDescriptor.
+type ViewTypes4_Base struct {
+	F1    uint64
+	Child *ViewTypes1_Base
+	U1    dynssz.CompatibleUnion[struct {
+		F1 uint32
+		F2 uint64
+	}]
+	W1 dynssz.TypeWrapper[struct {
+		Data []byte `ssz-size:"32"`
+	}, []byte] `ssz-type:"wrapper"`
+}
+
+// ViewTypes4_View1 uses different union variants and wrapper sizes.
+type ViewTypes4_View1 struct {
+	F1    uint64
+	Child *ViewTypes1_View1
+	U1    dynssz.CompatibleUnion[struct {
+		F1 uint32
+	}]
+	W1 dynssz.TypeWrapper[struct {
+		Data []byte `ssz-size:"16"`
+	}, []byte] `ssz-type:"wrapper"`
+}
+
+var ViewTypes4_Payload = ViewTypes4_Base{
+	F1: 42,
+	Child: &ViewTypes1_Base{
+		F1: 12345,
+		F2: []uint64{12345, 67890},
+		F3: [2][]uint64{{12345, 67890}, {12345, 67890}},
+		C1: &ViewTypes1_C1{
+			F1: 12345,
+			F2: []uint64{12345, 67890},
+		},
+	},
+	U1: dynssz.CompatibleUnion[struct {
+		F1 uint32
+		F2 uint64
+	}]{
+		Variant: 0,
+		Data:    uint32(0x12345678),
+	},
+	W1: dynssz.TypeWrapper[struct {
+		Data []byte `ssz-size:"32"`
+	}, []byte]{
+		Data: []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+	},
+}
+
+// CoverageTypes4 covers: dynamic vector of extended types with size expressions,
+// union with multiple variants, additional optional type patterns.
+type CoverageTypes4 struct {
+	U1 dynssz.CompatibleUnion[struct {
+		F1 uint32
+		F2 uint64
+		F3 []uint16 `ssz-size:"4"`
+	}]
+	U1V1 dynssz.CompatibleUnion[struct {
+		F1 uint32
+		F2 uint64
+		F3 []uint16 `ssz-size:"4"`
+	}]
+	U1V2 dynssz.CompatibleUnion[struct {
+		F1 uint32
+		F2 uint64
+		F3 []uint16 `ssz-size:"4"`
+	}]
+	Opt3 *uint16 `ssz-type:"optional"`
+	Opt4 *bool   `ssz-type:"optional"`
+}
+
+var (
+	covU16 = uint16(42)
+	covB2  = true
+)
+
+var CoverageTypes4_Payload = CoverageTypes4{
+	U1: dynssz.CompatibleUnion[struct {
+		F1 uint32
+		F2 uint64
+		F3 []uint16 `ssz-size:"4"`
+	}]{
+		Variant: 0,
+		Data:    uint32(0x12345678),
+	},
+	U1V1: dynssz.CompatibleUnion[struct {
+		F1 uint32
+		F2 uint64
+		F3 []uint16 `ssz-size:"4"`
+	}]{
+		Variant: 1,
+		Data:    uint64(0xdeadbeef),
+	},
+	U1V2: dynssz.CompatibleUnion[struct {
+		F1 uint32
+		F2 uint64
+		F3 []uint16 `ssz-size:"4"`
+	}]{
+		Variant: 2,
+		Data:    []uint16{1, 2, 3, 4},
+	},
+	Opt3: &covU16,
+	Opt4: &covB2,
+}

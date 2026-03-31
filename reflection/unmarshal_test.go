@@ -6,12 +6,14 @@ package reflection_test
 
 import (
 	"bytes"
+	"fmt"
 	"math/big"
 	"reflect"
 	"testing"
 
 	. "github.com/pk910/dynamic-ssz"
 	"github.com/pk910/dynamic-ssz/ssztypes"
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 var unmarshalTestMatrix = append(commonTestMatrix, []struct {
@@ -484,7 +486,7 @@ func TestUnmarshalErrors(t *testing.T) {
 				TypeWrapper struct{} `ssz-type:"wrapper"`
 			}),
 			data:        fromHex("0x"),
-			expectedErr: "method not found on type",
+			expectedErr: "method not found on",
 		},
 		{
 			name: "compatible_union_missing_selector",
@@ -1001,6 +1003,73 @@ func TestMixedStringTypesUnmarshal(t *testing.T) {
 	}
 }
 
+// TestViewUnmarshaler tests the DynamicViewUnmarshaler interface via UnmarshalSSZ (buffer-based, seekable).
+func TestViewUnmarshaler(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	testCases := []struct {
+		name        string
+		view        any
+		expectValue TestContainerWithViewUnmarshaler
+		expectError string
+	}{
+		{
+			name:        "ViewUnmarshaler_Success",
+			view:        (*TestViewType1)(nil),
+			expectValue: TestContainerWithViewUnmarshaler{Field0: 0x0807060504030201, Field1: 0x0c0b0a09},
+		},
+		{
+			name:        "ViewUnmarshaler_Error",
+			view:        (*TestViewType2)(nil),
+			expectError: "test view unmarshaler error",
+		},
+		{
+			name:        "ViewUnmarshaler_NoCodeForView_FallbackToReflection",
+			view:        (*TestViewTypeUnknown)(nil),
+			expectValue: TestContainerWithViewUnmarshaler{Field0: 0x0807060504030201, Field1: 0x0c0b0a09},
+		},
+	}
+
+	sszData := fromHex("0x0102030405060708090a0b0c")
+
+	// Truncated reader with unmarshaler-only type triggers DecodeBytesBuf
+	// error in the view unmarshaler path. The type only implements
+	// DynamicViewUnmarshaler (not DynamicViewDecoder), so the buffer path
+	// is used even for streaming decoders.
+	t.Run("ViewUnmarshaler_TruncatedReader", func(t *testing.T) {
+		var container viewUnmarshalerOnlyContainer
+		err := ds.UnmarshalSSZReader(&container, bytes.NewReader(sszData[:4]), 12, WithViewDescriptor((*TestViewType1)(nil)))
+		if err == nil {
+			t.Fatal("expected error for truncated SSZ reader data")
+		}
+	})
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var container TestContainerWithViewUnmarshaler
+			err := ds.UnmarshalSSZ(&container, sszData, WithViewDescriptor(tc.view))
+
+			if tc.expectError != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.expectError)
+				}
+				if !contains(err.Error(), tc.expectError) {
+					t.Fatalf("expected error containing %q, got %v", tc.expectError, err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if container != tc.expectValue {
+				t.Fatalf("expected %+v, got %+v", tc.expectValue, container)
+			}
+		})
+	}
+}
+
 func TestUnmarshalDynamicDecoder(t *testing.T) {
 	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
@@ -1352,6 +1421,61 @@ func TestUnmarshalReaderErrors(t *testing.T) {
 	}
 }
 
+// TestViewDecoder tests the DynamicViewDecoder interface via UnmarshalSSZReader (stream-based, non-seekable).
+func TestViewDecoder(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	testCases := []struct {
+		name        string
+		view        any
+		expectValue TestContainerWithViewUnmarshaler
+		expectError string
+	}{
+		{
+			name:        "ViewDecoder_Success",
+			view:        (*TestViewType1)(nil),
+			expectValue: TestContainerWithViewUnmarshaler{Field0: 0x0807060504030201, Field1: 0x0c0b0a09},
+		},
+		{
+			name:        "ViewDecoder_Error",
+			view:        (*TestViewType2)(nil),
+			expectError: "test view decoder error",
+		},
+		{
+			name:        "ViewDecoder_NoCodeForView_FallbackToReflection",
+			view:        (*TestViewTypeUnknown)(nil),
+			expectValue: TestContainerWithViewUnmarshaler{Field0: 0x0807060504030201, Field1: 0x0c0b0a09},
+		},
+	}
+
+	sszData := fromHex("0x0102030405060708090a0b0c")
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var container TestContainerWithViewUnmarshaler
+			err := ds.UnmarshalSSZReader(&container, bytes.NewReader(sszData), len(sszData), WithViewDescriptor(tc.view))
+
+			if tc.expectError != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.expectError)
+				}
+				if !contains(err.Error(), tc.expectError) {
+					t.Fatalf("expected error containing %q, got %v", tc.expectError, err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if container != tc.expectValue {
+				t.Fatalf("expected %+v, got %+v", tc.expectValue, container)
+			}
+		})
+	}
+}
+
 func TestUnmarshalExtendedTypesReaderErrors(t *testing.T) {
 	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
 
@@ -1416,6 +1540,48 @@ func TestUnmarshalExtendedTypesReaderErrors(t *testing.T) {
 				t.Errorf("expected error containing '%s', but got: %v", tc.expectedErr, err)
 			}
 		})
+	}
+}
+
+// TestViewUnmarshalerFlagsDetection verifies that the type cache correctly detects view unmarshaler/decoder flags.
+func TestViewUnmarshalerFlagsDetection(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	// Test that view unmarshaler flags are detected on runtime type
+	typeDesc, err := ds.GetTypeCache().GetTypeDescriptor(
+		reflect.TypeOf(TestContainerWithViewUnmarshaler{}),
+		nil, nil, nil,
+	)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	// Check for DynamicViewUnmarshaler flag
+	if typeDesc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewUnmarshaler == 0 {
+		t.Error("Expected DynamicViewUnmarshaler flag to be set")
+	}
+
+	// Check for DynamicViewDecoder flag
+	if typeDesc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewDecoder == 0 {
+		t.Error("Expected DynamicViewDecoder flag to be set")
+	}
+
+	// Test that the flags are set based on runtime type when using view descriptor
+	viewTypeDesc, err := ds.GetTypeCache().GetTypeDescriptorWithSchema(
+		reflect.TypeOf(TestContainerWithViewUnmarshaler{}),
+		reflect.TypeOf(TestViewType1{}),
+		nil, nil, nil,
+	)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor with view: %v", err)
+	}
+
+	// Verify both flags are set
+	if viewTypeDesc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewUnmarshaler == 0 {
+		t.Error("Expected DynamicViewUnmarshaler flag to be set with view descriptor")
+	}
+	if viewTypeDesc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewDecoder == 0 {
+		t.Error("Expected DynamicViewDecoder flag to be set with view descriptor")
 	}
 }
 
@@ -1728,5 +1894,88 @@ func TestCustomFallbackUnmarshal(t *testing.T) {
 	err = dynssz.UnmarshalSSZ(&TestContainer{}, fromHex("0x01020304"))
 	if err == nil {
 		t.Fatalf("Expected error, got nil")
+	}
+}
+
+// TestUnmarshalPtrStringVector tests unmarshal of *string with ssz-size (vector).
+func TestUnmarshalPtrStringVector(t *testing.T) {
+	type PtrStrVecContainer struct {
+		S *string `ssz-size:"8"`
+	}
+
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoFastHash())
+
+	payload := PtrStrVecContainer{S: strPtr("testdata")}
+	sszBytes, err := ds.MarshalSSZ(payload)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+
+	var result PtrStrVecContainer
+	err = ds.UnmarshalSSZ(&result, sszBytes)
+	if err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if result.S == nil {
+		t.Fatal("expected non-nil string pointer")
+	}
+	if *result.S != "testdata" {
+		t.Fatalf("expected 'testdata', got %q", *result.S)
+	}
+}
+
+// TestUnmarshalPtrStringList tests unmarshal of *string with ssz-max (list).
+func TestUnmarshalPtrStringList(t *testing.T) {
+	type PtrStrLstContainer struct {
+		F1 uint32
+		S  *string `ssz-max:"16"`
+	}
+
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoFastHash())
+
+	payload := PtrStrLstContainer{F1: 42, S: strPtr("hello")}
+	sszBytes, err := ds.MarshalSSZ(payload)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+
+	var result PtrStrLstContainer
+	err = ds.UnmarshalSSZ(&result, sszBytes)
+	if err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if result.S == nil {
+		t.Fatal("expected non-nil string pointer")
+	}
+	if *result.S != "hello" {
+		t.Fatalf("expected 'hello', got %q", *result.S)
+	}
+}
+
+func strPtr(s string) *string { return &s }
+
+// viewUnmarshalerOnlyContainer implements only DynamicViewUnmarshaler
+// (not DynamicViewDecoder). This forces the buffer-based view unmarshaler
+// path even for streaming decoders.
+type viewUnmarshalerOnlyContainer struct {
+	Field0 uint64
+	Field1 uint32
+}
+
+var _ sszutils.DynamicViewUnmarshaler = (*viewUnmarshalerOnlyContainer)(nil)
+
+func (c *viewUnmarshalerOnlyContainer) UnmarshalSSZDynView(view any) func(sszutils.DynamicSpecs, []byte) error {
+	switch view.(type) {
+	case *TestViewType1:
+		return func(_ sszutils.DynamicSpecs, buf []byte) error {
+			if len(buf) < 12 {
+				return fmt.Errorf("buffer too short")
+			}
+			c.Field0 = sszutils.UnmarshallUint64(buf[:8])
+			c.Field1 = sszutils.UnmarshallUint32(buf[8:12])
+			return nil
+		}
+	default:
+		return nil
 	}
 }

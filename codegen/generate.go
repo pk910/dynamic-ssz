@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"go/build"
 	"go/types"
 	"reflect"
 	"sort"
@@ -49,62 +50,61 @@ import (
 func (cg *CodeGenerator) analyzeTypes() error {
 	var parser *Parser
 
-	getTypeName := func(t *CodeGeneratorTypeOptions) (string, string) {
-		var typeName, typePkgPath string
+	getTypeName := func(t *CodeGeneratorTypeOptions) (string, string, string) {
+		var typeName, typePkgPath, typePkgName string
 		if t.ReflectType != nil {
 			typeName = t.ReflectType.Name()
 			typePkgPath = t.ReflectType.PkgPath()
 			if typePkgPath == "" && t.ReflectType.Kind() == reflect.Ptr {
 				typePkgPath = t.ReflectType.Elem().PkgPath()
 			}
+			// Look up the actual package name from the import path
+			if typePkgPath != "" {
+				if pkg, err := build.Import(typePkgPath, "", build.FindOnly); err == nil {
+					typePkgName = pkg.Name
+				}
+			}
 		} else if t.GoTypesType != nil {
 			typeName = t.GoTypesType.String()
 			types.TypeString(t.GoTypesType, func(pkg *types.Package) string {
 				typePkgPath = pkg.Path()
+				typePkgName = pkg.Name()
 				return ""
 			})
 		}
-		return typeName, typePkgPath
+		return typeName, typePkgPath, typePkgName
+	}
+
+	getGoTypesTypeName := func(t types.Type) string {
+		return t.String()
+	}
+
+	getReflectTypeName := func(t reflect.Type) string {
+		return t.Name()
+	}
+
+	hasViews := func(t *CodeGeneratorTypeOptions) bool {
+		return len(t.ViewGoTypesTypes) > 0 || len(t.ViewReflectTypes) > 0
 	}
 
 	// add compat flags for generated types
 	for _, file := range cg.files {
 		for _, t := range file.Options.Types {
-			typeKey, _ := getTypeName(t)
-
-			var compatFlags ssztypes.SszCompatFlag
-
-			// set availability of dynamic methods (we will generate them in a bit and we want cross references)
-			if !t.Options.NoMarshalSSZ && !t.Options.WithoutDynamicExpressions {
-				compatFlags |= ssztypes.SszCompatFlagDynamicMarshaler
-			}
-			if !t.Options.NoUnmarshalSSZ && !t.Options.WithoutDynamicExpressions {
-				compatFlags |= ssztypes.SszCompatFlagDynamicUnmarshaler
-			}
-			if !t.Options.NoSizeSSZ && !t.Options.WithoutDynamicExpressions {
-				compatFlags |= ssztypes.SszCompatFlagDynamicSizer
-			}
-			if !t.Options.NoHashTreeRoot && !t.Options.WithoutDynamicExpressions {
-				compatFlags |= ssztypes.SszCompatFlagDynamicHashRoot
-			}
-			if t.Options.CreateEncoderFn {
-				compatFlags |= ssztypes.SszCompatFlagDynamicEncoder
-			}
-			if t.Options.CreateDecoderFn {
-				compatFlags |= ssztypes.SszCompatFlagDynamicDecoder
-			}
-
-			if !t.Options.NoMarshalSSZ && !t.Options.NoUnmarshalSSZ && !t.Options.NoSizeSSZ && (t.Options.CreateLegacyFn || t.Options.WithoutDynamicExpressions) {
-				compatFlags |= ssztypes.SszCompatFlagFastSSZMarshaler
-			}
-			if !t.Options.NoHashTreeRoot && (t.Options.CreateLegacyFn || t.Options.WithoutDynamicExpressions) {
-				if t.Options.CreateLegacyFn {
-					compatFlags |= ssztypes.SszCompatFlagFastSSZHasher
-				}
-				compatFlags |= ssztypes.SszCompatFlagHashTreeRootWith
-			}
+			typeKey, _, _ := getTypeName(t)
+			compatFlags := getCompatFlags(t)
 
 			cg.compatFlags[typeKey] = compatFlags
+
+			// Also set compat flags for view types (they will have view methods available)
+			for _, viewType := range t.ViewGoTypesTypes {
+				viewKey := fmt.Sprintf("%v|%v", typeKey, getGoTypesTypeName(viewType))
+				cg.compatFlags[viewKey] = compatFlags
+			}
+
+			for _, viewType := range t.ViewReflectTypes {
+				viewKey := fmt.Sprintf("%v|%v", typeKey, getReflectTypeName(viewType))
+				cg.compatFlags[viewKey] = compatFlags
+			}
 		}
 	}
 
@@ -113,15 +113,17 @@ func (cg *CodeGenerator) analyzeTypes() error {
 	// analyze all types to build complete dependency graph
 	for _, file := range cg.files {
 		pkgPath := ""
+		pkgName := ""
 		otherTypeName := ""
 		for _, t := range file.Options.Types {
-			typeName, typePkgPath := getTypeName(t)
+			typeName, typePkgPath, typePkgName := getTypeName(t)
 
 			if typePkgPath == "" {
 				return fmt.Errorf("type %s has no package path", typeName)
 			}
 			if pkgPath == "" {
 				pkgPath = typePkgPath
+				pkgName = typePkgName
 			} else if pkgPath != typePkgPath {
 				return fmt.Errorf("type %s has different package path than %s. cannot combine types from different packages in a single file", typeName, otherTypeName)
 			}
@@ -129,8 +131,10 @@ func (cg *CodeGenerator) analyzeTypes() error {
 			otherTypeName = typeName
 			t.TypeName = typeName
 
+			// create TypeDescriptor for the data type
 			var desc *ssztypes.TypeDescriptor
 			var err error
+
 			if t.ReflectType != nil {
 				// Always wrap in pointer so generated methods use pointer receivers
 				// (needed for unmarshal to write back modified values).
@@ -155,20 +159,134 @@ func (cg *CodeGenerator) analyzeTypes() error {
 			}
 
 			t.Descriptor = desc
+
+			// create TypeDescriptor for the view types
+			if hasViews(t) {
+				for _, viewType := range t.ViewReflectTypes {
+					if viewType.Kind() == reflect.Struct {
+						viewType = reflect.PointerTo(viewType)
+					}
+					viewDesc, err := cg.typeCache.GetTypeDescriptorWithSchema(t.ReflectType, viewType, t.Options.SizeHints, t.Options.MaxSizeHints, t.Options.TypeHints)
+					if err != nil {
+						return fmt.Errorf("failed to analyze view type %s: %w", viewType.String(), err)
+					}
+					t.ViewDescriptors = append(t.ViewDescriptors, viewDesc)
+				}
+				for _, viewType := range t.ViewGoTypesTypes {
+					if parser == nil {
+						parser = NewParser()
+						parser.CompatFlags = cg.compatFlags
+					}
+					baseType := viewType
+					if named, ok := baseType.(*types.Named); ok {
+						baseType = named.Underlying()
+					}
+					if _, ok := baseType.(*types.Struct); ok {
+						viewType = types.NewPointer(viewType)
+					}
+					viewDesc, err := parser.GetTypeDescriptorWithSchema(t.GoTypesType, viewType, t.Options.TypeHints, t.Options.SizeHints, t.Options.MaxSizeHints)
+					if err != nil {
+						return fmt.Errorf("failed to analyze view type %s: %w", viewType.String(), err)
+					}
+					t.ViewDescriptors = append(t.ViewDescriptors, viewDesc)
+				}
+			}
 		}
 
 		file.Options.Package = pkgPath
 
-		pkgName := pkgPath
 		if cg.packageName != "" {
 			pkgName = cg.packageName
-		} else if slashIdx := strings.LastIndex(pkgName, "/"); slashIdx != -1 {
-			pkgName = pkgName[slashIdx+1:]
+		} else if pkgName == "" {
+			// fallback: derive package name from path if not available from go/types
+			pkgName = pkgPath
+			if slashIdx := strings.LastIndex(pkgName, "/"); slashIdx != -1 {
+				pkgName = pkgName[slashIdx+1:]
+			}
 		}
 		file.Options.PackageName = pkgName
 	}
 
 	return nil
+}
+
+// getCompatFlags computes the SszCompatFlag set for a type based on its generation options.
+func getCompatFlags(t *CodeGeneratorTypeOptions) ssztypes.SszCompatFlag {
+	var compatFlags ssztypes.SszCompatFlag
+	hasViews := len(t.ViewGoTypesTypes) > 0 || len(t.ViewReflectTypes) > 0
+
+	// For view-only types, only set view compat flags
+	if t.IsViewOnly {
+		compatFlags |= viewCompatFlags(&t.Options)
+	} else {
+		// Data-only or data+views mode: set data compat flags
+		compatFlags |= dataCompatFlags(&t.Options)
+
+		// Data+views mode: also set view compat flags for the data type
+		if hasViews {
+			compatFlags |= viewCompatFlags(&t.Options)
+		}
+	}
+
+	return compatFlags
+}
+
+// viewCompatFlags returns the view compat flags based on options.
+func viewCompatFlags(opts *CodeGeneratorOptions) ssztypes.SszCompatFlag {
+	var flags ssztypes.SszCompatFlag
+	if !opts.NoMarshalSSZ && !opts.WithoutDynamicExpressions {
+		flags |= ssztypes.SszCompatFlagDynamicViewMarshaler
+	}
+	if !opts.NoUnmarshalSSZ && !opts.WithoutDynamicExpressions {
+		flags |= ssztypes.SszCompatFlagDynamicViewUnmarshaler
+	}
+	if !opts.NoSizeSSZ && !opts.WithoutDynamicExpressions {
+		flags |= ssztypes.SszCompatFlagDynamicViewSizer
+	}
+	if !opts.NoHashTreeRoot && !opts.WithoutDynamicExpressions {
+		flags |= ssztypes.SszCompatFlagDynamicViewHashRoot
+	}
+	if opts.CreateEncoderFn {
+		flags |= ssztypes.SszCompatFlagDynamicViewEncoder
+	}
+	if opts.CreateDecoderFn {
+		flags |= ssztypes.SszCompatFlagDynamicViewDecoder
+	}
+	return flags
+}
+
+// dataCompatFlags returns the data compat flags based on options.
+func dataCompatFlags(opts *CodeGeneratorOptions) ssztypes.SszCompatFlag {
+	var flags ssztypes.SszCompatFlag
+	if !opts.NoMarshalSSZ && !opts.WithoutDynamicExpressions {
+		flags |= ssztypes.SszCompatFlagDynamicMarshaler
+	}
+	if !opts.NoUnmarshalSSZ && !opts.WithoutDynamicExpressions {
+		flags |= ssztypes.SszCompatFlagDynamicUnmarshaler
+	}
+	if !opts.NoSizeSSZ && !opts.WithoutDynamicExpressions {
+		flags |= ssztypes.SszCompatFlagDynamicSizer
+	}
+	if !opts.NoHashTreeRoot && !opts.WithoutDynamicExpressions {
+		flags |= ssztypes.SszCompatFlagDynamicHashRoot
+	}
+	if opts.CreateEncoderFn {
+		flags |= ssztypes.SszCompatFlagDynamicEncoder
+	}
+	if opts.CreateDecoderFn {
+		flags |= ssztypes.SszCompatFlagDynamicDecoder
+	}
+
+	if !opts.NoMarshalSSZ && !opts.NoUnmarshalSSZ && !opts.NoSizeSSZ && (opts.CreateLegacyFn || opts.WithoutDynamicExpressions) {
+		flags |= ssztypes.SszCompatFlagFastSSZMarshaler
+	}
+	if !opts.NoHashTreeRoot && (opts.CreateLegacyFn || opts.WithoutDynamicExpressions) {
+		if opts.CreateLegacyFn {
+			flags |= ssztypes.SszCompatFlagFastSSZHasher
+		}
+		flags |= ssztypes.SszCompatFlagHashTreeRootWith
+	}
+	return flags
 }
 
 // generateFile creates the complete Go source code for a single file.
@@ -204,16 +322,30 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 	hashParts := [][]byte{}
 
 	for _, t := range opts.Types {
-		if t.Descriptor == nil {
-			return "", fmt.Errorf("type %s has no descriptor", t.TypeName)
+		if t.Descriptor == nil || (t.IsViewOnly && len(t.ViewDescriptors) == 0) {
+			return "", fmt.Errorf("type %s has no descriptor or view descriptors", t.TypeName)
 		}
 
-		hash := t.Descriptor.GetTypeHash()
-		hashParts = append(hashParts, hash[:])
+		if !t.IsViewOnly {
+			hash := t.Descriptor.GetTypeHash()
+			hashParts = append(hashParts, hash[:])
 
-		err := cg.generateCode(t.Descriptor, typePrinter, &codeBuilder, &t.Options)
-		if err != nil {
-			return "", fmt.Errorf("failed to generate code for %s: %w", t.TypeName, err)
+			err := cg.generateSSZMethods(t.Descriptor, typePrinter, &codeBuilder, "", &t.Options)
+			if err != nil {
+				return "", fmt.Errorf("failed to generate code for %s: %w", t.TypeName, err)
+			}
+		}
+
+		if len(t.ViewDescriptors) > 0 {
+			for _, viewDesc := range t.ViewDescriptors {
+				hash := viewDesc.GetTypeHash()
+				hashParts = append(hashParts, hash[:])
+			}
+
+			err := cg.generateSSZViewMethods(t.Descriptor, t.ViewDescriptors, typePrinter, &codeBuilder, &t.Options)
+			if err != nil {
+				return "", fmt.Errorf("failed to generate code for view types of %s: %w", t.TypeName, err)
+			}
 		}
 	}
 
@@ -302,7 +434,7 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 	return mainCodeBuilder.String(), nil
 }
 
-// generateCode generates all SSZ methods for a single type.
+// generateSSZMethods generates all SSZ methods for a single type (data or view).
 //
 // This internal method orchestrates the generation of all requested SSZ methods
 // for a specific type. It delegates to specialized generators for each method type
@@ -318,54 +450,252 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 //   - desc: Type descriptor containing all metadata for SSZ code generation
 //   - typePrinter: Type string formatter for import and alias management
 //   - codeBuilder: String builder to append generated code to
+//   - viewName: Name of the view type for function name postfix (empty string for data type)
 //   - options: Generation options controlling which methods to generate
 //
 // Returns:
 //   - bool: True if any generated code uses dynamic SSZ functionality
 //   - error: An error if any method generation fails
-func (cg *CodeGenerator) generateCode(desc *ssztypes.TypeDescriptor, typePrinter *TypePrinter, codeBuilder *strings.Builder, options *CodeGeneratorOptions) error {
+func (cg *CodeGenerator) generateSSZMethods(desc *ssztypes.TypeDescriptor, typePrinter *TypePrinter, codeBuilder *strings.Builder, viewName string, options *CodeGeneratorOptions) error {
 	// Generate the actual methods using flattened generators
 	var err error
 
 	if !options.NoMarshalSSZ {
-		err = generateMarshal(desc, codeBuilder, typePrinter, options)
+		err = generateMarshal(desc, codeBuilder, typePrinter, viewName, options)
 		if err != nil {
 			return fmt.Errorf("failed to generate marshal for %s: %w", desc.Type.Name(), err)
 		}
 	}
 
 	if options.CreateEncoderFn {
-		err = generateEncoder(desc, codeBuilder, typePrinter, options)
+		err = generateEncoder(desc, codeBuilder, typePrinter, viewName, options)
 		if err != nil {
 			return fmt.Errorf("failed to generate encoder for %s: %w", desc.Type.Name(), err)
 		}
 	}
 
 	if !options.NoUnmarshalSSZ {
-		err = generateUnmarshal(desc, codeBuilder, typePrinter, options)
+		err = generateUnmarshal(desc, codeBuilder, typePrinter, viewName, options)
 		if err != nil {
 			return fmt.Errorf("failed to generate unmarshal for %s: %w", desc.Type.Name(), err)
 		}
 	}
 
-	if options.CreateEncoderFn {
-		err = generateDecoder(desc, codeBuilder, typePrinter, options)
+	if options.CreateDecoderFn {
+		err = generateDecoder(desc, codeBuilder, typePrinter, viewName, options)
 		if err != nil {
 			return fmt.Errorf("failed to generate decoder for %s: %w", desc.Type.Name(), err)
 		}
 	}
 
 	if !options.NoSizeSSZ {
-		err = generateSize(desc, codeBuilder, typePrinter, options)
+		err = generateSize(desc, codeBuilder, typePrinter, viewName, options)
 		if err != nil {
 			return fmt.Errorf("failed to generate size for %s: %w", desc.Type.Name(), err)
 		}
 	}
 
 	if !options.NoHashTreeRoot {
-		err = generateHashTreeRoot(desc, codeBuilder, typePrinter, options)
+		err = generateHashTreeRoot(desc, codeBuilder, typePrinter, viewName, options)
 		if err != nil {
 			return fmt.Errorf("failed to generate hash tree root for %s: %w", desc.Type.Name(), err)
+		}
+	}
+
+	return nil
+}
+
+func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescriptor, views []*ssztypes.TypeDescriptor, typePrinter *TypePrinter, codeBuilder *strings.Builder, options *CodeGeneratorOptions) error {
+	// Generate the actual methods using flattened generators
+	var err error
+
+	viewFnNameMap := make(map[*ssztypes.TypeDescriptor]string)
+
+	getViewFnName := func(desc *ssztypes.TypeDescriptor) string {
+		if fnName, ok := viewFnNameMap[desc]; ok {
+			return fnName
+		}
+
+		typeName := typePrinter.TypeStringWithoutTracking(desc, true)
+		if idx := strings.Index(typeName, "."); idx != -1 {
+			typeName = typeName[idx+1:]
+		}
+		typeName = strings.ReplaceAll(typeName, "-", "_")
+		typeName = strings.ReplaceAll(typeName, "*", "")
+
+		fnName := typeName
+		counter := 0
+		for {
+			exists := false
+			for _, existingName := range viewFnNameMap {
+				if existingName == fnName {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				break
+			}
+			fnName = fmt.Sprintf("%s_%d", typeName, counter)
+			counter++
+		}
+
+		viewFnNameMap[desc] = fnName
+		return fnName
+	}
+
+	buildViewDispatcher := func(fnPrefix string, mainFn func() string) {
+		appendCode(codeBuilder, 1, "switch view.(type) {\n")
+
+		if !options.ViewOnly {
+			mainFnName := mainFn()
+			if mainFnName != "" {
+				appendCode(codeBuilder, 1, "case nil, %s:\n", typePrinter.TypeString(dataType))
+				appendCode(codeBuilder, 2, "return %s\n", mainFnName)
+			}
+		}
+
+		for _, view := range views {
+			typeName := typePrinter.ViewTypeString(view, true)
+			viewFnName := getViewFnName(view)
+			appendCode(codeBuilder, 1, "case %s:\n", typeName)
+			appendCode(codeBuilder, 2, "return t.%s_%s\n", fnPrefix, viewFnName)
+		}
+		appendCode(codeBuilder, 1, "}\n")
+	}
+
+	if !options.NoMarshalSSZ {
+		appendCode(codeBuilder, 0, "func (t %s) MarshalSSZDynView(view any) func(ds sszutils.DynamicSpecs, buf []byte) ([]byte, error) {\n", typePrinter.TypeString(dataType))
+		buildViewDispatcher("marshalSSZView", func() string {
+			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 {
+				return "t.MarshalSSZDyn"
+			}
+			if dataType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0 {
+				return "func(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {\n\treturn t.MarshalSSZTo(buf)\n\t}"
+			}
+			return ""
+		})
+		appendCode(codeBuilder, 1, "return nil\n")
+		appendCode(codeBuilder, 0, "}\n")
+
+		for _, desc := range views {
+			viewName := getViewFnName(desc)
+			err = generateMarshal(desc, codeBuilder, typePrinter, viewName, options)
+			if err != nil {
+				return fmt.Errorf("failed to generate marshal for %s: %w", desc.Type.Name(), err)
+			}
+		}
+	}
+
+	if options.CreateEncoderFn {
+		appendCode(codeBuilder, 0, "func (t %s) MarshalSSZEncoderView(view any) func(ds sszutils.DynamicSpecs, enc sszutils.Encoder) error {\n", typePrinter.TypeString(dataType))
+		buildViewDispatcher("marshalSSZEncoderView", func() string {
+			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicEncoder != 0 {
+				return "t.MarshalSSZEncoder"
+			}
+			return ""
+		})
+		appendCode(codeBuilder, 1, "return nil\n")
+		appendCode(codeBuilder, 0, "}\n")
+
+		for _, desc := range views {
+			viewName := getViewFnName(desc)
+			err = generateEncoder(desc, codeBuilder, typePrinter, viewName, options)
+			if err != nil {
+				return fmt.Errorf("failed to generate encoder for %s: %w", desc.Type.Name(), err)
+			}
+		}
+	}
+
+	if !options.NoUnmarshalSSZ {
+		appendCode(codeBuilder, 0, "func (t %s) UnmarshalSSZDynView(view any) func(ds sszutils.DynamicSpecs, buf []byte) error {\n", typePrinter.TypeString(dataType))
+		buildViewDispatcher("unmarshalSSZView", func() string {
+			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
+				return "t.UnmarshalSSZDyn"
+			}
+			if dataType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0 {
+				return "func(_ sszutils.DynamicSpecs, buf []byte) error {\n\treturn t.UnmarshalSSZ(buf)\n\t}"
+			}
+			return ""
+		})
+		appendCode(codeBuilder, 1, "return nil\n")
+		appendCode(codeBuilder, 0, "}\n")
+
+		for _, desc := range views {
+			viewName := getViewFnName(desc)
+			err = generateUnmarshal(desc, codeBuilder, typePrinter, viewName, options)
+			if err != nil {
+				return fmt.Errorf("failed to generate unmarshal for %s: %w", desc.Type.Name(), err)
+			}
+		}
+	}
+
+	if options.CreateDecoderFn {
+		appendCode(codeBuilder, 0, "func (t %s) UnmarshalSSZDecoderView(view any) func(ds sszutils.DynamicSpecs, dec sszutils.Decoder) error {\n", typePrinter.TypeString(dataType))
+		buildViewDispatcher("unmarshalSSZDecoderView", func() string {
+			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 {
+				return "t.UnmarshalSSZDecoder"
+			}
+			return ""
+		})
+		appendCode(codeBuilder, 1, "return nil\n")
+		appendCode(codeBuilder, 0, "}\n")
+
+		for _, desc := range views {
+			viewName := getViewFnName(desc)
+			err = generateDecoder(desc, codeBuilder, typePrinter, viewName, options)
+			if err != nil {
+				return fmt.Errorf("failed to generate decoder for %s: %w", desc.Type.Name(), err)
+			}
+		}
+	}
+
+	if !options.NoSizeSSZ {
+		appendCode(codeBuilder, 0, "func (t %s) SizeSSZDynView(view any) func(ds sszutils.DynamicSpecs) int {\n", typePrinter.TypeString(dataType))
+		buildViewDispatcher("sizeSSZView", func() string {
+			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 {
+				return "t.SizeSSZDyn"
+			}
+			if dataType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0 {
+				return "func(_ sszutils.DynamicSpecs) int {\n\treturn t.SizeSSZ()\n\t}"
+			}
+			return ""
+		})
+		appendCode(codeBuilder, 1, "return nil\n")
+		appendCode(codeBuilder, 0, "}\n")
+
+		for _, desc := range views {
+			viewName := getViewFnName(desc)
+			err = generateSize(desc, codeBuilder, typePrinter, viewName, options)
+			if err != nil {
+				return fmt.Errorf("failed to generate size for %s: %w", desc.Type.Name(), err)
+			}
+		}
+	}
+
+	if !options.NoHashTreeRoot {
+		appendCode(codeBuilder, 0, "func (t %s) HashTreeRootWithDynView(view any) func(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typePrinter.TypeString(dataType))
+		buildViewDispatcher("hashTreeRootView", func() string {
+			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0 {
+				return "t.HashTreeRootWithDyn"
+			}
+			if dataType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0 {
+				if dataType.SszCompatFlags&ssztypes.SszCompatFlagHashTreeRootWith != 0 {
+					return "func(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n\treturn t.HashTreeRootWith(hh)\n\t}"
+				}
+				return "func(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n\tif root, err := t.HashTreeRoot(); err != nil {\n\t\treturn err\n\t} else {\n\t\thh.AppendBytes32(root[:])\n\t}\n\treturn nil\n\t}"
+			}
+			return ""
+		})
+		appendCode(codeBuilder, 1, "return nil\n")
+		appendCode(codeBuilder, 0, "}\n")
+
+		for _, desc := range views {
+			viewName := getViewFnName(desc)
+			err = generateHashTreeRoot(desc, codeBuilder, typePrinter, viewName, options)
+			if err != nil {
+				return fmt.Errorf("failed to generate hash tree root for %s: %w", desc.Type.Name(), err)
+			}
 		}
 	}
 

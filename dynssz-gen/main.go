@@ -36,10 +36,37 @@ type Config struct {
 	WithExtendedTypes         bool
 }
 
-// typeEntry holds a type and its per-type codegen options.
-type typeEntry struct {
-	goType types.Type
-	opts   []codegen.CodeGeneratorOption
+// typeSpec holds parsed information about a type specification
+type typeSpec struct {
+	TypeName   string
+	OutputFile string
+	ViewTypes  []string // view types for data+views mode (can include package paths)
+	IsViewOnly bool     // whether this is a view-only type
+}
+
+// viewTypeRef holds a parsed view type reference
+type viewTypeRef struct {
+	PackagePath string // empty for local types
+	TypeName    string
+}
+
+// parseViewTypeRef parses a view type reference string.
+// Format: "TypeName" for local types, "pkgpath.TypeName" for external types.
+// The last dot separates the package path from the type name.
+func parseViewTypeRef(ref string) viewTypeRef {
+	// Find the last dot to split package path from type name
+	lastDot := strings.LastIndex(ref, ".")
+	if lastDot == -1 {
+		// No dot means local type
+		return viewTypeRef{TypeName: ref}
+	}
+
+	// Check if this looks like a package path (contains "/" or starts with known prefixes)
+	pkgPath := ref[:lastDot]
+	return viewTypeRef{
+		PackagePath: pkgPath,
+		TypeName:    ref[lastDot+1:],
+	}
 }
 
 // getVersionString returns the full version string with build metadata.
@@ -80,10 +107,15 @@ func main() {
 		_, _ = fmt.Fprintf(w, "  dynssz-gen -package <path> -types <types> [-output <file>] [flags]\n\n")
 		_, _ = fmt.Fprintf(w, "Types syntax:\n")
 		_, _ = fmt.Fprintf(w, "  Comma-separated list of type names from the target package.\n")
-		_, _ = fmt.Fprintf(w, "  Each type can optionally specify its output file with a colon:\n")
-		_, _ = fmt.Fprintf(w, "    TypeName              uses the -output file\n")
-		_, _ = fmt.Fprintf(w, "    TypeName:path/out.go  writes to a specific file\n\n")
-		_, _ = fmt.Fprintf(w, "  Example: -types \"BeaconState:state_gen.go,BeaconBlock:block_gen.go\"\n\n")
+		_, _ = fmt.Fprintf(w, "  Each type can have colon-separated options:\n")
+		_, _ = fmt.Fprintf(w, "    TypeName                              uses the -output file\n")
+		_, _ = fmt.Fprintf(w, "    TypeName:path/out.go                  writes to a specific file\n")
+		_, _ = fmt.Fprintf(w, "    TypeName:views=View1;View2            generates view-aware code\n")
+		_, _ = fmt.Fprintf(w, "    TypeName:out.go:views=View1:viewonly  combines options\n\n")
+		_, _ = fmt.Fprintf(w, "  View types can include package paths: views=pkg/path.ViewType\n")
+		_, _ = fmt.Fprintf(w, "  The 'viewonly' flag generates only view methods (no base methods).\n\n")
+		_, _ = fmt.Fprintf(w, "  Example: -types \"BeaconState:state_gen.go,BeaconBlock:block_gen.go\"\n")
+		_, _ = fmt.Fprintf(w, "  Example: -types \"Base:gen.go:views=ViewA;ViewB;pkg.ViewC\"\n\n")
 		_, _ = fmt.Fprintf(w, "Required flags:\n")
 		_, _ = fmt.Fprintf(w, "  -package string\n")
 		_, _ = fmt.Fprintf(w, "        Go package path to analyze\n")
@@ -180,65 +212,111 @@ func run(config Config) error {
 		log.Printf("Successfully loaded package: %s", pkg.Name)
 	}
 
-	// Parse type names
-	requestedTypes := strings.Split(config.TypeNames, ",")
-	for i, typeName := range requestedTypes {
-		requestedTypes[i] = strings.TrimSpace(typeName)
+	typeSpecs, err := parseTypeSpecs(config.TypeNames, config.OutputFile)
+	if err != nil {
+		return err
 	}
 
 	// Find the requested types in the package
-	generateFiles := make(map[string][]typeEntry)
-	scope := pkg.Types.Scope()
+	// Map from output file to list of type specs
+	generateFiles := make(map[string][]typeSpec)
+	mainScope := pkg.Types.Scope()
 	typeCount := 0
 
-	for _, typeName := range requestedTypes {
-		outFile := ""
-		outFileParts := strings.Split(typeName, ":")
-		if len(outFileParts) > 1 {
-			outFile = outFileParts[1]
-			typeName = outFileParts[0]
+	// Cache for loaded external packages
+	externalPackages := make(map[string]*packages.Package)
+
+	// Helper to load and cache an external package
+	loadExternalPackage := func(pkgPath string) (*packages.Package, error) {
+		if cached, ok := externalPackages[pkgPath]; ok {
+			return cached, nil
 		}
 
-		if outFile == "" {
-			if config.OutputFile == "" {
-				return errors.New("output file is required (-output)")
+		extPkgs, err2 := packages.Load(cfg, pkgPath)
+		if err2 != nil {
+			return nil, fmt.Errorf("failed to load external package %s: %w", pkgPath, err2)
+		}
+		if len(extPkgs) == 0 {
+			return nil, fmt.Errorf("external package %s not found", pkgPath)
+		}
+		if len(extPkgs[0].Errors) > 0 {
+			return nil, fmt.Errorf("external package %s has errors: %v", pkgPath, extPkgs[0].Errors[0])
+		}
+
+		externalPackages[pkgPath] = extPkgs[0]
+		if config.Verbose {
+			log.Printf("Loaded external package: %s", pkgPath)
+		}
+		return extPkgs[0], nil
+	}
+
+	// Helper to resolve a type reference (local or external)
+	resolveTypeRef := func(ref viewTypeRef) (types.Type, error) {
+		var scope *types.Scope
+		var pkgPath string
+
+		if ref.PackagePath == "" {
+			// Local type
+			scope = mainScope
+			pkgPath = config.PackagePath
+		} else {
+			// External type
+			extPkg, err2 := loadExternalPackage(ref.PackagePath)
+			if err2 != nil {
+				return nil, err2
 			}
-			outFile = config.OutputFile
+			scope = extPkg.Types.Scope()
+			pkgPath = ref.PackagePath
 		}
 
-		obj := scope.Lookup(typeName)
+		obj := scope.Lookup(ref.TypeName)
 		if obj == nil {
-			return fmt.Errorf("type %s not found in package %s", typeName, config.PackagePath)
+			return nil, fmt.Errorf("type %s not found in package %s", ref.TypeName, pkgPath)
 		}
 
 		typeObj, ok := obj.(*types.TypeName)
 		if !ok {
-			return fmt.Errorf("object %s is not a type in package %s", typeName, config.PackagePath)
+			return nil, fmt.Errorf("object %s is not a type in package %s", ref.TypeName, pkgPath)
 		}
 
-		// Parse SSZ annotations from sszutils.Annotate[T]() calls in source
-		var perTypeOpts []codegen.CodeGeneratorOption
-		if tag := findAnnotateCall(pkg, typeName); tag != "" {
-			annotateOpts, parseErr := parseAnnotateTag(tag)
-			if parseErr != nil {
-				return fmt.Errorf("failed to parse Annotate tag for type %s: %v", typeName, parseErr)
-			}
+		return typeObj.Type(), nil
+	}
 
-			perTypeOpts = annotateOpts
+	for _, spec := range typeSpecs {
+		// Validate that the main type exists
+		obj := mainScope.Lookup(spec.TypeName)
+		if obj == nil {
+			return fmt.Errorf("type %s not found in package %s", spec.TypeName, config.PackagePath)
+		}
 
-			if config.Verbose && len(annotateOpts) > 0 {
-				log.Printf("Found Annotate call for type %s", typeName)
+		typeObj, ok := obj.(*types.TypeName)
+		if !ok {
+			return fmt.Errorf("object %s is not a type in package %s", spec.TypeName, config.PackagePath)
+		}
+		_ = typeObj // validated above, used later in verbose logging
+
+		// Validate view types exist (can be local or external)
+		for _, viewTypeStr := range spec.ViewTypes {
+			ref := parseViewTypeRef(viewTypeStr)
+			if _, err2 := resolveTypeRef(ref); err2 != nil {
+				return fmt.Errorf("view type %s: %w", viewTypeStr, err2)
 			}
 		}
 
-		generateFiles[outFile] = append(generateFiles[outFile], typeEntry{
-			goType: typeObj.Type(),
-			opts:   perTypeOpts,
-		})
+		if _, ok := generateFiles[spec.OutputFile]; !ok {
+			generateFiles[spec.OutputFile] = make([]typeSpec, 0)
+		}
+		generateFiles[spec.OutputFile] = append(generateFiles[spec.OutputFile], spec)
 		typeCount++
 
 		if config.Verbose {
-			log.Printf("Found type: %s", typeName)
+			mode := "data-only"
+			if spec.IsViewOnly {
+				mode = "view-only"
+			} else if len(spec.ViewTypes) > 0 {
+				mode = fmt.Sprintf("data+views(%s)", strings.Join(spec.ViewTypes, ","))
+			}
+			log.Printf("Found type: %s [%s]", typeObj.Name(), mode)
 		}
 	}
 
@@ -251,10 +329,55 @@ func run(config Config) error {
 	}
 
 	// Build options for all types
-	for outFile, entries := range generateFiles {
+	for outFile, specs := range generateFiles {
 		var typeOptions []codegen.CodeGeneratorOption
-		for _, entry := range entries {
-			typeOptions = append(typeOptions, codegen.WithGoTypesType(entry.goType, entry.opts...))
+
+		for _, spec := range specs {
+			// Look up the main type (already validated in the loop above)
+			obj := mainScope.Lookup(spec.TypeName)
+			typeObj, ok := obj.(*types.TypeName)
+			if !ok {
+				return fmt.Errorf("object %s is not a type", spec.TypeName)
+			}
+			goType := typeObj.Type()
+
+			// Build type-specific options
+			var typeSpecificOpts []codegen.CodeGeneratorOption
+
+			// Parse SSZ annotations from sszutils.Annotate[T]() calls in source
+			if tag := findAnnotateCall(pkg, spec.TypeName); tag != "" {
+				annotateOpts, parseErr := parseAnnotateTag(tag)
+				if parseErr != nil {
+					return fmt.Errorf("failed to parse Annotate tag for type %s: %v", spec.TypeName, parseErr)
+				}
+				typeSpecificOpts = append(typeSpecificOpts, annotateOpts...)
+
+				if config.Verbose && len(annotateOpts) > 0 {
+					log.Printf("Found Annotate call for type %s", spec.TypeName)
+				}
+			}
+
+			// Add view types if specified
+			if len(spec.ViewTypes) > 0 {
+				viewTypes := make([]types.Type, 0, len(spec.ViewTypes))
+				for _, viewTypeStr := range spec.ViewTypes {
+					ref := parseViewTypeRef(viewTypeStr)
+					viewType, err2 := resolveTypeRef(ref)
+					if err2 != nil {
+						return fmt.Errorf("failed to resolve view type %s: %w", viewTypeStr, err2)
+					}
+					viewTypes = append(viewTypes, viewType)
+				}
+				typeSpecificOpts = append(typeSpecificOpts, codegen.WithGoTypesViewTypes(viewTypes...))
+			}
+
+			// Add view-only flag if specified
+			if spec.IsViewOnly {
+				typeSpecificOpts = append(typeSpecificOpts, codegen.WithViewOnly())
+			}
+
+			// Add the type with its options
+			typeOptions = append(typeOptions, codegen.WithGoTypesType(goType, typeSpecificOpts...))
 		}
 
 		if config.Legacy {
@@ -458,4 +581,68 @@ func parseAnnotateTag(tag string) ([]codegen.CodeGeneratorOption, error) {
 	}
 
 	return opts, nil
+}
+
+// parseTypeSpecs parses the comma-separated type names string into typeSpec structs.
+// Each type can have colon-separated options: TypeName[:output=file.go][:views=View1;View2][:viewonly]
+func parseTypeSpecs(typeNames, defaultOutput string) ([]typeSpec, error) {
+	requestedTypes := strings.Split(typeNames, ",")
+	typeSpecs := make([]typeSpec, 0, len(requestedTypes))
+
+	for _, typeStr := range requestedTypes {
+		typeStr = strings.TrimSpace(typeStr)
+		if typeStr == "" {
+			continue
+		}
+
+		spec := typeSpec{}
+		parts := strings.Split(typeStr, ":")
+
+		// First part is always the type name
+		spec.TypeName = parts[0]
+
+		// Process remaining parts - all are optional and can be in any order
+		for i := 1; i < len(parts); i++ {
+			part := parts[i]
+
+			// Skip empty parts (from consecutive colons like TypeName::views=X)
+			if part == "" {
+				continue
+			}
+
+			switch {
+			case strings.HasPrefix(part, "views="):
+				// Parse view types: views=View1;View2
+				viewsStr := strings.TrimPrefix(part, "views=")
+				// Use semicolon as separator since comma is used for type list
+				spec.ViewTypes = strings.Split(viewsStr, ";")
+				for j := range spec.ViewTypes {
+					spec.ViewTypes[j] = strings.TrimSpace(spec.ViewTypes[j])
+				}
+			case strings.HasPrefix(part, "output="):
+				// Explicit output file with prefix
+				spec.OutputFile = strings.TrimPrefix(part, "output=")
+			case part == "viewonly":
+				spec.IsViewOnly = true
+			default:
+				// For backward compatibility: first unrecognized non-empty part
+				// is treated as output file (only if not already set)
+				if spec.OutputFile == "" {
+					spec.OutputFile = part
+				}
+			}
+		}
+
+		// Use default output file if not specified
+		if spec.OutputFile == "" {
+			if defaultOutput == "" {
+				return nil, errors.New("output file is required (-output)")
+			}
+			spec.OutputFile = defaultOutput
+		}
+
+		typeSpecs = append(typeSpecs, spec)
+	}
+
+	return typeSpecs, nil
 }

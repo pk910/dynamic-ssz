@@ -16,6 +16,7 @@ Dynamic SSZ is a Go library for SSZ encoding/decoding with support for dynamic f
 - **🚀 CLI Tool** - Standalone `dynssz-gen` command for easy code generation from any Go package
 - **📡 Streaming Support** - Memory-efficient streaming to/from `io.Reader`/`io.Writer` for large data
 - **🔄 Hybrid Approach** - Seamlessly combines with fastssz for optimal efficiency
+- **👁️ SSZ Views** - Support for multiple SSZ schemas on the same runtime type (useful for Ethereum fork handling)
 - **📦 Minimal Dependencies** - Core library has minimal external dependencies
 - **✅ Spec Compliant** - Fully compliant with SSZ specification and Ethereum consensus tests
 - **🧩 Extended Types** - Optional support for signed integers, floats, big.Int, and optional types (non-standard)
@@ -36,11 +37,11 @@ go get github.com/pk910/dynamic-ssz
 ### Basic Usage
 
 ```go
-import "github.com/pk910/dynamic-ssz"
+import dynssz "github.com/pk910/dynamic-ssz"
 
 // Define your types with SSZ tags
 type MyStruct struct {
-    FixedArray [32]byte
+    FixedArray  [32]byte
     DynamicList []uint64 `ssz-max:"1000"`
     ConfigBased []byte   `ssz-max:"1024" dynssz-max:"MAX_SIZE"`
 }
@@ -61,6 +62,8 @@ err = ds.UnmarshalSSZ(&myObject, data)
 root, err := ds.HashTreeRoot(myObject)
 ```
 
+The `ssz-max` and `dynssz-max` tags work together: `ssz-max` provides a static fallback, while `dynssz-max` references a spec value resolved at runtime. If the spec value is available it overrides the static default; otherwise the static value is used. This lets the same types work across different network presets (mainnet, minimal, custom testnets).
+
 ### Using Code Generation (Recommended for Production)
 
 For maximum performance, use code generation with the `dynssz-gen` CLI tool:
@@ -78,7 +81,7 @@ dynssz-gen -package . -types "MyStruct,OtherType" -output generated.go
 dynssz-gen -package github.com/example/types -types "Block" -output block_ssz.go
 ```
 
-Generated code produces optimized SSZ methods that are faster than reflection-based encoding. See the [Code Generation Guide](docs/code-generator.md) for advanced usage including the programmatic API, cross-reference handling, and build system integration.
+Generated code produces optimized SSZ methods that eliminate reflection overhead. **Important**: Always use `ds.MarshalSSZ()`, `ds.UnmarshalSSZ()`, etc. as your entry points - the runtime automatically delegates to generated methods when available. Do not call generated methods (like `MarshalSSZDyn`) directly, as this creates a circular dependency that prevents regeneration. See the [Code Generation Guide](docs/code-generator.md) for details.
 
 ## Performance
 
@@ -107,13 +110,17 @@ The library includes comprehensive testing infrastructure:
 ## Documentation
 
 - [Getting Started Guide](docs/getting-started.md)
-- [API Reference](docs/api-reference.md)
 - [Supported Types](docs/supported-types.md)
-- [Code Generation Guide](docs/code-generator.md)
-- [Extended Types](docs/extended-types.md) (non-standard)
-- [Streaming Support](docs/streaming.md)
 - [Struct Tags & Annotations](docs/ssz-annotations.md)
+- [Code Generation Guide](docs/code-generator.md)
+- [SSZ Views](docs/views.md)
+- [Merkle Proofs](docs/merkle-proofs.md)
+- [Streaming Support](docs/streaming.md)
+- [Type Wrapper](docs/type-wrapper.md)
+- [Extended Types](docs/extended-types.md) (non-standard)
+- [API Reference](docs/api-reference.md)
 - [Performance Guide](docs/performance.md)
+- [Troubleshooting](docs/troubleshooting.md)
 - [Examples](examples/)
 
 ## Examples
