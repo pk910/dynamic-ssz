@@ -88,8 +88,9 @@ jobs:
 
     - name: Run benchstat comparisons
       run: |
-        benchstat "$GITHUB_WORKSPACE/bench-results/base-lib.txt" "$GITHUB_WORKSPACE/bench-results/pr-lib.txt" > "$GITHUB_WORKSPACE/bench-results/lib-stat.txt" 2>&1 || true
-        benchstat "$GITHUB_WORKSPACE/bench-results/base-perf.txt" "$GITHUB_WORKSPACE/bench-results/pr-perf.txt" > "$GITHUB_WORKSPACE/bench-results/perf-stat.txt" 2>&1 || true
+        cd "$GITHUB_WORKSPACE/bench-results"
+        benchstat base-lib.txt pr-lib.txt > lib-stat.txt 2>&1 || true
+        benchstat base-perf.txt pr-perf.txt > perf-stat.txt 2>&1 || true
 
     - name: Upload benchmark results
       uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
