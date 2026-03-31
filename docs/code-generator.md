@@ -1,6 +1,12 @@
 # Code Generator
 
-Dynamic SSZ includes a code generation tool (`dynssz-gen`) that generates optimized SSZ marshaling code for your types, eliminating reflection overhead and improving performance.
+Dynamic SSZ includes a code generation tool (`dynssz-gen`) that generates optimized SSZ methods for your types, eliminating reflection overhead and improving performance.
+
+## Important: How to Use Generated Code
+
+**Always use `ds.MarshalSSZ()`, `ds.UnmarshalSSZ()`, `ds.HashTreeRoot()`, etc. as your entry points** - even when code generation is active. The `DynSsz` runtime automatically detects and delegates to generated methods (like `MarshalSSZDyn`, `UnmarshalSSZDyn`) when they are present on the type.
+
+**Do not call generated methods directly** from your application code. This creates a circular dependency problem: if you delete the generated file to regenerate it, the direct references to generated methods break compilation, and the code generator cannot analyze your package. By routing everything through `DynSsz`, your code compiles with or without the generated file - the library simply falls back to reflection when generated methods are absent.
 
 ## Installation
 
@@ -545,25 +551,7 @@ All SSZ annotations are supported:
 
 ## Performance Benefits
 
-### Benchmark Comparison
-
-```go
-// Reflection-based (Dynamic SSZ runtime)
-BenchmarkMarshalReflection-8       50000     30142 ns/op
-BenchmarkUnmarshalReflection-8     30000     45231 ns/op
-
-// Generated code
-BenchmarkMarshalGenerated-8       500000      2341 ns/op
-BenchmarkUnmarshalGenerated-8     300000      4126 ns/op
-```
-
-### Memory Efficiency
-
-Generated code:
-- Eliminates reflection overhead
-- Pre-calculates sizes
-- Optimizes buffer allocation
-- Reduces allocations
+Generated code eliminates reflection overhead, pre-calculates sizes, and reduces allocations. See the [benchmark repository](https://github.com/pk910/ssz-benchmark) for real performance comparisons across SSZ libraries.
 
 ## Advanced Features
 

@@ -57,8 +57,8 @@ if err != nil {
     log.Printf("Size calculation error: %v", err)
 }
 
-// Enable verbose logging for debugging
-ds.Verbose = true
+// Enable verbose logging for debugging (set at construction time)
+// ds := dynssz.NewDynSsz(specs, dynssz.WithVerbose())
 data, err := ds.MarshalSSZ(myStruct)
 ```
 
@@ -91,7 +91,7 @@ fmt.Println(json) // Review size hints
 
 **Solutions:**
 ```go
-// 1. Reuse DynSsz instances
+// 1. Reuse DynSsz instances (creates type cache once)
 var globalDS *dynssz.DynSsz
 func init() {
     globalDS = dynssz.NewDynSsz(specs)
@@ -105,8 +105,9 @@ for _, item := range items {
     // Process data...
 }
 
-// 3. Check if fastssz is being used
-ds.NoFastSsz = false // Ensure fastssz is enabled
+// 3. Ensure fastssz is enabled (it is by default)
+// Only disable it if you need pure reflection behavior:
+// ds := dynssz.NewDynSsz(specs, dynssz.WithNoFastSsz())
 ```
 
 ### 5. Memory Issues
@@ -142,24 +143,27 @@ var bufferPool = sync.Pool{
 
 **Problem**: Trying to encode a type that's not supported by SSZ.
 
-**Supported types:**
+**Supported standard types:**
 - `bool`
 - `uint8`, `uint16`, `uint32`, `uint64`
 - Arrays and slices of supported types
 - Structs with supported field types
 - Pointers to supported types
 
-**Solutions:**
+**Non-standard types** (require `WithExtendedTypes()`): `int8`-`int64`, `float32`, `float64`, `big.Int`, optionals.
+
+**Never supported**: `map`, `chan`, `func`, `interface{}`, `int`/`uint` (architecture-dependent size), `complex64`/`complex128`.
+
 ```go
-// Convert unsupported types
 type MyStruct struct {
-    // ❌ Not supported
+    // Not supported without WithExtendedTypes()
     // FloatValue float64
+
+    // Never supported
     // StringMap  map[string]string
-    
-    // ✅ Supported alternatives
-    FloatAsUint64 uint64  // Store as fixed-point or scaled integer
-    StringList    [][]byte `ssz-size:"10,64"`
+
+    // Supported alternatives
+    FloatAsUint64 uint64  // store as fixed-point or scaled integer
 }
 ```
 
@@ -168,7 +172,7 @@ type MyStruct struct {
 ### 1. Enable Verbose Logging
 
 ```go
-ds.Verbose = true
+ds := dynssz.NewDynSsz(specs, dynssz.WithVerbose())
 data, err := ds.MarshalSSZ(myStruct)
 // Check console output for detailed processing information
 ```
@@ -341,7 +345,7 @@ data, err := ds.MarshalSSZTo(largeStruct, buf)
 ## Getting More Help
 
 1. **Check Examples**: Review the [examples](../examples/) directory for working code
-2. **Enable Debugging**: Use `ds.Verbose = true` for detailed operation logs
+2. **Enable Debugging**: Create your instance with `dynssz.WithVerbose()` for detailed operation logs
 3. **Profile Performance**: Use Go's built-in profiling tools for performance issues
 4. **Test Incrementally**: Start with simple types and gradually add complexity
 5. **Verify Specifications**: Ensure all referenced specifications are provided and consistent

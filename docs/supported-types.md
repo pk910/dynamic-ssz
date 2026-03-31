@@ -263,32 +263,28 @@ block := BeaconBlock{
 
 ## Type Wrapper
 
-For applying SSZ annotations to non-struct types using struct descriptor:
+For applying SSZ annotations to non-struct values using a descriptor struct with one tagged field:
 
 ```go
 import dynssz "github.com/pk910/dynamic-ssz"
 
-// Define descriptor struct with SSZ tags
-type EpochDescriptor struct {
-    Data uint64 `dynssz-max:"MAX_EPOCH"`
+// Descriptor struct: exactly one field with SSZ tags, same type as T
+type FixedBytesDescriptor struct {
+    Data []byte `ssz-size:"32"`
 }
 
-// Use wrapper
-type State struct {
-    CurrentEpoch dynssz.TypeWrapper[EpochDescriptor, uint64]
+// Use wrapper in a container
+type MyContainer struct {
+    Hash dynssz.TypeWrapper[FixedBytesDescriptor, []byte] `ssz-type:"wrapper"`
 }
 
 // Access wrapped value
-state := State{
-    CurrentEpoch: dynssz.TypeWrapper[EpochDescriptor, uint64]{
-        Data: 12345,
-    },
-}
-epoch := state.CurrentEpoch.Get()  // Returns uint64
-state.CurrentEpoch.Set(67890)      // Sets new value
+container := MyContainer{}
+container.Hash.Set([]byte{1, 2, 3})
+value := container.Hash.Get()
 ```
 
-See [Type Wrapper Documentation](type-wrapper.md) for detailed usage.
+See [Type Wrapper](type-wrapper.md) for detailed usage.
 
 ## Custom Types
 
@@ -337,7 +333,7 @@ func (d *DynamicType) MarshalSSZDyn(specs sszutils.DynamicSpecs, buf []byte) ([]
     return append(buf, make([]byte, size)...), nil
 }
 
-func (d *DynamicType) UnmarshalSSZDyn(specs sszutils.DynamicSpecs, data []byte) error {
+func (d *DynamicType) UnmarshalSSZDyn(specs sszutils.DynamicSpecs, buf []byte) error {
     found, size, err := specs.ResolveSpecValue("DYNAMIC_SIZE")
     if err != nil || !found {
         return err
@@ -417,17 +413,17 @@ type Matrix struct {
 
 ### Size Constraints
 
-Dynamic arrays require maximum size:
+Dynamic arrays should specify a maximum size for secure hash tree root computation:
 
 ```go
-// Valid
+// Recommended: maximum size specified
 type Good struct {
     Items []uint64 `ssz-max:"1000"`
 }
 
-// Invalid - will work, but hash tree root is insecure!
-type Bad struct {
-    Items []uint64  // Missing ssz-max
+// Discouraged: no maximum size (hash tree root has security implications)
+type Risky struct {
+    Items []uint64
 }
 ```
 
@@ -475,15 +471,15 @@ type BeaconState struct {
     GenesisTime           uint64
     GenesisValidatorsRoot [32]byte
     Slot                  uint64
-    
+
     // Progressive list for efficiency
-    Validators []Validator `ssz-type:"progressive-list"`
-    
+    Validators []Validator `ssz-type:"progressive-list" ssz-max:"1099511627776" dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
+
     // Bitlist for participation
     JustificationBits bitfield.Bitvector4
-    
-    // Dynamic with expression
-    Balances []uint64 `ssz-max:"500" dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
+
+    // Dynamic with expression (ssz-max is fallback when spec value is unavailable)
+    Balances []uint64 `ssz-max:"1099511627776" dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
 }
 ```
 

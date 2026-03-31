@@ -1,92 +1,95 @@
 # API Reference
 
-This reference documents all public interfaces and methods in Dynamic SSZ.
+This reference documents all public types, methods, and interfaces in Dynamic SSZ.
 
 ## Core Types
 
 ### DynSsz
 
-The main entry point for Dynamic SSZ operations.
-
-```go
-type DynSsz struct {
-    // Internal fields
-}
-```
+The main entry point for all SSZ operations.
 
 #### Constructor
 
 ```go
-func NewDynSsz(specs map[string]any) *DynSsz
+func NewDynSsz(specs map[string]any, options ...DynSszOption) *DynSsz
 ```
 
 Creates a new DynSsz instance.
 
 **Parameters**:
-- `specs` - Map of specification values for dynamic expressions (can be nil)
+- `specs` - Map of specification values for dynamic expressions (can be `nil`)
+- `options` - Optional functional options (see [Constructor Options](#constructor-options))
 
-**Example**:
 ```go
 // Basic usage
-ssz := dynssz.NewDynSsz(nil)
+ds := dynssz.NewDynSsz(nil)
 
 // With spec values
 specs := map[string]any{
-    "VALIDATOR_REGISTRY_LIMIT": 1099511627776,
-    "MAX_ATTESTATIONS": 128,
+    "VALIDATOR_REGISTRY_LIMIT": uint64(1099511627776),
+    "MAX_ATTESTATIONS":         uint64(128),
 }
-ssz := dynssz.NewDynSsz(specs)
+ds := dynssz.NewDynSsz(specs)
+
+// With options
+ds := dynssz.NewDynSsz(specs,
+    dynssz.WithExtendedTypes(),
+    dynssz.WithVerbose(),
+)
 ```
 
-## Call Options
+### Constructor Options
 
-### CallOption
+```go
+type DynSszOption func(*DynSszOptions)
+```
 
-Per-call configuration for SSZ operations.
+| Option | Description |
+|--------|-------------|
+| `WithNoFastSsz()` | Disable fastssz fallback, force all operations through reflection |
+| `WithNoFastHash()` | Disable accelerated hashtree hashing library |
+| `WithExtendedTypes()` | Enable non-standard types (signed ints, floats, big.Int, optionals) |
+| `WithVerbose()` | Enable verbose debug logging |
+| `WithLogCb(fn)` | Set a custom logging callback (`func(format string, args ...any)`) |
+| `WithStreamWriterBufferSize(n)` | Set stream encoder buffer size (default 2KB) |
+| `WithStreamReaderBufferSize(n)` | Set stream decoder buffer size (default 2KB) |
+
+### Global Instance
+
+For legacy compatibility methods generated with `-legacy`, a global `DynSsz` instance is used:
+
+```go
+// Get (or create) the global instance
+func GetGlobalDynSsz() *DynSsz
+
+// Replace the global instance with new specs
+func SetGlobalSpecs(specs map[string]any)
+```
+
+### Call Options
+
+Per-call configuration for SSZ operations:
 
 ```go
 type CallOption func(*callConfig)
 ```
 
-### WithViewDescriptor
+#### WithViewDescriptor
 
 ```go
 func WithViewDescriptor(view any) CallOption
 ```
 
-Specifies a view descriptor for fork-dependent SSZ schemas.
+Specifies a view descriptor for fork-dependent SSZ schemas. The view defines the SSZ layout while data is read from/written to the runtime object.
 
-The view descriptor defines the SSZ layout (field order, tags, sizes) while the actual data is read from/written to the runtime object. This enables a single runtime type to support multiple SSZ representations for different forks.
-
-**Parameters**:
-- `view` - A struct or pointer to struct defining the SSZ schema. Its fields are mapped to the runtime type's fields by name. The view's field values are not used; only its type information matters.
-
-**Example**:
 ```go
-// Define view types for different forks
-type Phase0BeaconBlockBodyView struct {
-    RANDAOReveal [96]byte `ssz-size:"96"`
-    // ... Phase0 fields only
-}
-
-type AltairBeaconBlockBodyView struct {
-    RANDAOReveal  [96]byte `ssz-size:"96"`
-    SyncAggregate *SyncAggregateView
-    // ... Altair fields
-}
-
-// Use views in SSZ operations
-data, err := ssz.MarshalSSZ(body, dynssz.WithViewDescriptor(&Phase0BeaconBlockBodyView{}))
-
-err = ssz.UnmarshalSSZ(&body, data, dynssz.WithViewDescriptor(&AltairBeaconBlockBodyView{}))
-
-root, err := ssz.HashTreeRoot(body, dynssz.WithViewDescriptor(&AltairBeaconBlockBodyView{}))
+data, err := ds.MarshalSSZ(body, dynssz.WithViewDescriptor(&Phase0BodyView{}))
 
 // Nil pointer works too (only type information is used)
-data, err = ssz.MarshalSSZ(body, dynssz.WithViewDescriptor((*Phase0BeaconBlockBodyView)(nil)))
+data, err = ds.MarshalSSZ(body, dynssz.WithViewDescriptor((*Phase0BodyView)(nil)))
 ```
 
-See [SSZ Views](views.md) for detailed view documentation.
+See [SSZ Views](views.md) for detailed documentation.
 
 ## Serialization Methods
 
@@ -96,26 +99,7 @@ See [SSZ Views](views.md) for detailed view documentation.
 func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error)
 ```
 
-Serializes an object to SSZ format.
-
-**Parameters**:
-- `source` - Object to serialize
-- `opts` - Optional call options (e.g., `WithViewDescriptor`)
-
-**Returns**:
-- Serialized bytes
-- Error if serialization fails
-
-**Example**:
-```go
-data, err := ssz.MarshalSSZ(myStruct)
-if err != nil {
-    return err
-}
-
-// With view descriptor
-data, err = ssz.MarshalSSZ(myStruct, dynssz.WithViewDescriptor(&MyView{}))
-```
+Serializes an object to SSZ format. Automatically delegates to generated methods when available.
 
 ### MarshalSSZTo
 
@@ -123,21 +107,11 @@ data, err = ssz.MarshalSSZ(myStruct, dynssz.WithViewDescriptor(&MyView{}))
 func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byte, error)
 ```
 
-Serializes to SSZ format using provided buffer.
+Serializes to SSZ format using a provided buffer for reduced allocations.
 
-**Parameters**:
-- `source` - Object to serialize
-- `buf` - Buffer to write to (can be nil)
-- `opts` - Optional call options (e.g., `WithViewDescriptor`)
-
-**Returns**:
-- Serialized bytes (may be same as buf if large enough)
-- Error if serialization fails
-
-**Example**:
 ```go
 buf := make([]byte, 0, 1024)
-data, err := ssz.MarshalSSZTo(myStruct, buf)
+data, err := ds.MarshalSSZTo(myStruct, buf)
 ```
 
 ### UnmarshalSSZ
@@ -146,23 +120,11 @@ data, err := ssz.MarshalSSZTo(myStruct, buf)
 func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error
 ```
 
-Deserializes from SSZ format.
+Deserializes from SSZ format. `target` must be a pointer.
 
-**Parameters**:
-- `target` - Pointer to object to deserialize into
-- `ssz` - SSZ encoded bytes
-- `opts` - Optional call options (e.g., `WithViewDescriptor`)
-
-**Returns**:
-- Error if deserialization fails
-
-**Example**:
 ```go
 var decoded MyStruct
-err := ssz.UnmarshalSSZ(&decoded, data)
-
-// With view descriptor
-err = ssz.UnmarshalSSZ(&decoded, data, dynssz.WithViewDescriptor(&Phase0View{}))
+err := ds.UnmarshalSSZ(&decoded, data)
 ```
 
 ## Streaming Methods
@@ -173,29 +135,7 @@ err = ssz.UnmarshalSSZ(&decoded, data, dynssz.WithViewDescriptor(&Phase0View{}))
 func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) error
 ```
 
-Serializes an object directly to an `io.Writer` for memory-efficient streaming.
-
-**Parameters**:
-- `source` - Object to serialize
-- `w` - Destination writer (file, network connection, etc.)
-- `opts` - Optional call options (e.g., `WithViewDescriptor`)
-
-**Returns**:
-- Error if serialization or writing fails
-
-**Example**:
-```go
-file, _ := os.Create("beacon_state.ssz")
-defer file.Close()
-
-err := ssz.MarshalSSZWriter(state, file)
-if err != nil {
-    return err
-}
-
-// With view descriptor
-err = ssz.MarshalSSZWriter(state, file, dynssz.WithViewDescriptor(&Phase0StateView{}))
-```
+Serializes directly to an `io.Writer` for memory-efficient streaming.
 
 ### UnmarshalSSZReader
 
@@ -203,31 +143,9 @@ err = ssz.MarshalSSZWriter(state, file, dynssz.WithViewDescriptor(&Phase0StateVi
 func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...CallOption) error
 ```
 
-Deserializes from an `io.Reader` for memory-efficient streaming.
+Deserializes from an `io.Reader`. The `size` parameter specifies the expected total SSZ data size in bytes.
 
-**Parameters**:
-- `target` - Pointer to object to deserialize into
-- `r` - Source reader
-- `size` - Expected total size of the SSZ data in bytes
-- `opts` - Optional call options (e.g., `WithViewDescriptor`)
-
-**Returns**:
-- Error if deserialization fails
-
-**Example**:
-```go
-file, _ := os.Open("beacon_state.ssz")
-defer file.Close()
-
-info, _ := file.Stat()
-var state BeaconState
-err := ssz.UnmarshalSSZReader(&state, file, int(info.Size()))
-
-// With view descriptor
-err = ssz.UnmarshalSSZReader(&state, file, int(info.Size()), dynssz.WithViewDescriptor(&AltairStateView{}))
-```
-
-See [Streaming Support](streaming.md) for detailed streaming documentation.
+See [Streaming Support](streaming.md) for details.
 
 ## Hash Tree Root
 
@@ -239,66 +157,28 @@ func (d *DynSsz) HashTreeRoot(source any, opts ...CallOption) ([32]byte, error)
 
 Computes the SSZ hash tree root.
 
-**Parameters**:
-- `source` - Object to hash
-- `opts` - Optional call options (e.g., `WithViewDescriptor`)
-
-**Returns**:
-- 32-byte hash root
-- Error if hashing fails
-
-**Example**:
-```go
-root, err := ssz.HashTreeRoot(myStruct)
-if err != nil {
-    return err
-}
-fmt.Printf("Root: %x\n", root)
-
-// With view descriptor for fork-specific hashing
-root, err = ssz.HashTreeRoot(myStruct, dynssz.WithViewDescriptor(&AltairView{}))
-```
-
 ### GetTree
 
 ```go
 func (d *DynSsz) GetTree(source any, opts ...CallOption) (*treeproof.Node, error)
 ```
 
-Builds and returns the complete Merkle tree for proof generation.
+Builds the complete Merkle tree for proof generation.
 
-**Parameters**:
-- `source` - Object to build tree for
-- `opts` - Optional call options (e.g., `WithViewDescriptor`)
-
-**Returns**:
-- `*treeproof.Node` - Root node of the complete Merkle tree
-- Error if tree construction fails
-
-**Example**:
 ```go
-tree, err := ssz.GetTree(myStruct)
-if err != nil {
-    return err
-}
+tree, err := ds.GetTree(myStruct)
 
 // Display tree structure
 tree.Show(3)
 
-// Generate proof for field at index 5
-proof, err := tree.Prove(5)
-if err != nil {
-    return err
-}
+// Generate proof for field at generalized index
+proof, err := tree.Prove(7)
 
 // Verify proof
 isValid, err := treeproof.VerifyProof(tree.Hash(), proof)
-
-// With view descriptor
-tree, err = ssz.GetTree(myStruct, dynssz.WithViewDescriptor(&AltairView{}))
 ```
 
-See [Merkle Proofs](merkle-proofs.md) for complete tree and proof generation documentation.
+See [Merkle Proofs](merkle-proofs.md) for complete documentation.
 
 ## Utility Methods
 
@@ -308,24 +188,7 @@ See [Merkle Proofs](merkle-proofs.md) for complete tree and proof generation doc
 func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error)
 ```
 
-Calculates serialized size without serializing.
-
-**Parameters**:
-- `source` - Object to calculate size for
-- `opts` - Optional call options (e.g., `WithViewDescriptor`)
-
-**Returns**:
-- Size in bytes
-- Error if calculation fails
-
-**Example**:
-```go
-size, err := ssz.SizeSSZ(myStruct)
-fmt.Printf("Size: %d bytes\n", size)
-
-// With view descriptor
-size, err = ssz.SizeSSZ(myStruct, dynssz.WithViewDescriptor(&Phase0View{}))
-```
+Calculates serialized size without encoding.
 
 ### ValidateType
 
@@ -333,42 +196,17 @@ size, err = ssz.SizeSSZ(myStruct, dynssz.WithViewDescriptor(&Phase0View{}))
 func (d *DynSsz) ValidateType(t reflect.Type, opts ...CallOption) error
 ```
 
-Validates that a type can be serialized. When a view descriptor is provided, also validates that the view type is compatible with the runtime type.
+Validates that a type can be SSZ-serialized. When a view descriptor is provided, also validates view compatibility.
 
-**Parameters**:
-- `t` - Type to validate
-- `opts` - Optional call options (e.g., `WithViewDescriptor` for view compatibility validation)
-
-**Returns**:
-- Error if type is invalid for SSZ or view is incompatible
-
-**Example**:
 ```go
-err := ssz.ValidateType(reflect.TypeOf(MyStruct{}))
-if err != nil {
-    fmt.Printf("Invalid type: %v\n", err)
-}
+err := ds.ValidateType(reflect.TypeOf(MyStruct{}))
 
-// Validate view compatibility
-err = ssz.ValidateType(
+// With view validation
+err = ds.ValidateType(
     reflect.TypeOf(BeaconState{}),
-    dynssz.WithViewDescriptor(&Phase0BeaconStateView{}),
+    dynssz.WithViewDescriptor(&Phase0StateView{}),
 )
-if err != nil {
-    fmt.Printf("View incompatible: %v\n", err)
-}
 ```
-
-### GetTypeCache
-
-```go
-func (d *DynSsz) GetTypeCache() TypeCache
-```
-
-Returns the internal type cache for debugging purposes. Do not modify or build on the internal fields of the TypeCache. These might change in future versions of the library.
-
-**Returns**:
-- TypeCache instance
 
 ### ResolveSpecValue
 
@@ -376,54 +214,45 @@ Returns the internal type cache for debugging purposes. Do not modify or build o
 func (d *DynSsz) ResolveSpecValue(name string) (bool, uint64, error)
 ```
 
-Resolves a specification value, including expressions.
+Resolves a specification value by name or expression. Results are cached.
 
-**Parameters**:
-- `name` - Spec name or expression (e.g., "SLOTS_PER_EPOCH*32")
+**Returns**: whether the value was found, the resolved value, and any parse error.
 
-**Returns**:
-- Whether the value was found
-- Resolved value
-- Error if resolution fails
+### GetTypeCache
 
-**Example**:
 ```go
-found, value, err := ssz.ResolveSpecValue("MAX_VALIDATORS_PER_COMMITTEE")
+func (d *DynSsz) GetTypeCache() *ssztypes.TypeCache
 ```
+
+Returns the internal type cache. Useful for debugging. Do not depend on the internal structure of TypeCache - it may change between versions.
 
 ## Custom Marshaling Interfaces
 
-Types can implement these interfaces for custom behavior.
+Types can implement these interfaces for custom SSZ behavior. The `DynSsz` runtime checks for these interfaces in order of specificity.
 
 ### Standard Interfaces (fastssz compatible)
 
 ```go
-// Custom marshaling
 type Marshaler interface {
     MarshalSSZ() ([]byte, error)
 }
 
-// Custom marshaling to buffer
 type MarshalerTo interface {
     MarshalSSZTo(buf []byte) ([]byte, error)
 }
 
-// Custom unmarshaling
 type Unmarshaler interface {
     UnmarshalSSZ(buf []byte) error
 }
 
-// Custom size calculation
 type Sizer interface {
     SizeSSZ() int
 }
 
-// Custom hash tree root
 type HashRoot interface {
     HashTreeRoot() ([32]byte, error)
 }
 
-// Custom hash tree root with hasher
 type HashRootWith interface {
     HashTreeRootWith(hh HashWalker) error
 }
@@ -431,28 +260,25 @@ type HashRootWith interface {
 
 ### Dynamic Interfaces (spec-aware)
 
+These are the primary interfaces used by generated code. They receive the `DynSsz` instance as a `DynamicSpecs` for resolving spec values:
+
 ```go
-// Dynamic marshaling with spec access
 type DynamicMarshaler interface {
     MarshalSSZDyn(specs DynamicSpecs, buf []byte) ([]byte, error)
 }
 
-// Dynamic unmarshaling with spec access
 type DynamicUnmarshaler interface {
     UnmarshalSSZDyn(specs DynamicSpecs, buf []byte) error
 }
 
-// Dynamic size calculation
 type DynamicSizer interface {
     SizeSSZDyn(specs DynamicSpecs) int
 }
 
-// Dynamic hash tree root (common entrypoint)
 type DynamicHashRoot interface {
     HashTreeRootDyn(specs DynamicSpecs) ([32]byte, error)
 }
 
-// Dynamic hash tree root with existing HashWalker
 type DynamicHashRootWith interface {
     HashTreeRootWithDyn(specs DynamicSpecs, hh HashWalker) error
 }
@@ -461,12 +287,10 @@ type DynamicHashRootWith interface {
 ### Streaming Interfaces
 
 ```go
-// Streaming encoder for memory-efficient marshaling
 type DynamicEncoder interface {
     MarshalSSZEncoder(specs DynamicSpecs, encoder Encoder) error
 }
 
-// Streaming decoder for memory-efficient unmarshaling
 type DynamicDecoder interface {
     UnmarshalSSZDecoder(specs DynamicSpecs, decoder Decoder) error
 }
@@ -474,54 +298,56 @@ type DynamicDecoder interface {
 
 ### View Interfaces
 
-These interfaces enable a single runtime type to support multiple SSZ schemas (views). Typically implemented via code generation.
+Enable a single runtime type to support multiple SSZ schemas. Typically implemented via code generation. Methods return `nil` if the view type is not recognized, causing fallback to reflection.
 
 ```go
-// View-aware marshaling - returns nil if view not supported
 type DynamicViewMarshaler interface {
     MarshalSSZDynView(view any) func(ds DynamicSpecs, buf []byte) ([]byte, error)
 }
 
-// View-aware unmarshaling - returns nil if view not supported
 type DynamicViewUnmarshaler interface {
     UnmarshalSSZDynView(view any) func(ds DynamicSpecs, buf []byte) error
 }
 
-// View-aware size calculation - returns nil if view not supported
 type DynamicViewSizer interface {
     SizeSSZDynView(view any) func(ds DynamicSpecs) int
 }
 
-// View-aware hash tree root - returns nil if view not supported
 type DynamicViewHashRoot interface {
     HashTreeRootWithDynView(view any) func(ds DynamicSpecs, hh HashWalker) error
 }
 
-// View-aware streaming encoder - returns nil if view not supported
 type DynamicViewEncoder interface {
     MarshalSSZEncoderView(view any) func(ds DynamicSpecs, encoder Encoder) error
 }
 
-// View-aware streaming decoder - returns nil if view not supported
 type DynamicViewDecoder interface {
     UnmarshalSSZDecoderView(view any) func(ds DynamicSpecs, decoder Decoder) error
 }
 ```
 
-**Note**: These methods return `nil` if the view type is not recognized, causing Dynamic SSZ to fall back to reflection-based processing.
+See [SSZ Views](views.md) for details.
 
-See [SSZ Views](views.md) for detailed view documentation.
+### DynamicSpecs Interface
 
-### Encoder Interface
+```go
+type DynamicSpecs interface {
+    ResolveSpecValue(name string) (bool, uint64, error)
+}
+```
 
-The `Encoder` interface abstracts buffer-based and stream-based encoding:
+Provides access to specification values during marshaling. The `DynSsz` type implements this interface.
+
+### Encoder / Decoder Interfaces
+
+These abstract over buffer-based and stream-based encoding:
 
 ```go
 type Encoder interface {
-    Seekable() bool                    // Returns false for stream encoder
-    GetPosition() int                 // Current write position
-    GetBuffer() []byte                // Get output buffer (temp buffer for streams)
-    SetBuffer(buffer []byte)          // Set/write buffer
+    Seekable() bool
+    GetPosition() int
+    GetBuffer() []byte
+    SetBuffer(buffer []byte)
     EncodeBool(v bool)
     EncodeUint8(v uint8)
     EncodeUint16(v uint16)
@@ -529,20 +355,14 @@ type Encoder interface {
     EncodeUint64(v uint64)
     EncodeBytes(v []byte)
     EncodeOffset(v uint32)
-    EncodeOffsetAt(pos int, v uint32) // Not supported for streams
+    EncodeOffsetAt(pos int, v uint32)  // not supported for streams
     EncodeZeroPadding(n int)
 }
-```
 
-### Decoder Interface
-
-The `Decoder` interface abstracts buffer-based and stream-based decoding:
-
-```go
 type Decoder interface {
-    Seekable() bool                        // Returns false for stream decoder
-    GetPosition() int                     // Current read position
-    GetLength() int                       // Remaining length
+    Seekable() bool
+    GetPosition() int
+    GetLength() int
     PushLimit(limit int)
     PopLimit() int
     DecodeBool() (bool, error)
@@ -553,28 +373,18 @@ type Decoder interface {
     DecodeBytes(buf []byte) ([]byte, error)
     DecodeBytesBuf(len int) ([]byte, error)
     DecodeOffset() (uint32, error)
-    DecodeOffsetAt(pos int) uint32        // Not supported for streams
-    SkipBytes(n int)                      // Not supported for streams
+    DecodeOffsetAt(pos int) uint32     // not supported for streams
+    SkipBytes(n int)                   // not supported for streams
 }
 ```
 
-See [Streaming Support](streaming.md) for detailed streaming documentation.
-
-### DynamicSpecs Interface
-
-```go
-type DynamicSpecs interface {
-    ResolveSpecValue(name string) (bool, uint64, error)
-}
-```
-
-Provides access to specification values during marshaling.
+See [Streaming Support](streaming.md) for details.
 
 ## Type Wrapper API
 
 ### TypeWrapper[D, T]
 
-Generic wrapper for applying SSZ annotations.
+Generic wrapper for applying SSZ annotations to non-struct values.
 
 ```go
 type TypeWrapper[D, T any] struct {
@@ -583,8 +393,8 @@ type TypeWrapper[D, T any] struct {
 ```
 
 **Type Parameters**:
-- `D` - Descriptor struct type containing SSZ annotations as struct tags
-- `T` - Wrapped value type
+- `D` - Descriptor struct with exactly one field carrying SSZ tags. The field type must match `T`.
+- `T` - Wrapped value type.
 
 **Methods**:
 ```go
@@ -593,7 +403,7 @@ func (w *TypeWrapper[D, T]) Set(value T)
 func (w *TypeWrapper[D, T]) GetDescriptorType() reflect.Type
 ```
 
-See [Type Wrapper](type-wrapper.md) for detailed usage.
+See [Type Wrapper](type-wrapper.md) for usage details.
 
 ## Compatible Union API
 
@@ -609,87 +419,39 @@ type CompatibleUnion[T any] struct {
 ```
 
 **Type Parameters**:
-- `T` - Descriptor struct type defining union variants as fields
+- `T` - Descriptor struct defining union variants as fields (field order = variant index)
 
 **Constructor**:
 ```go
 func NewCompatibleUnion[T any](variantIndex uint8, data interface{}) (*CompatibleUnion[T], error)
 ```
 
-**Methods**:
-```go
-func (u *CompatibleUnion[T]) GetDescriptorType() reflect.Type
-```
-
 **Usage**:
 ```go
-// Define union descriptor
-type PayloadUnion = CompatibleUnion[struct {
+type PayloadUnion = dynssz.CompatibleUnion[struct {
     ExecutionPayload
     ExecutionPayloadWithBlobs
 }]
 
-// Create union with variant 0
 payload := PayloadUnion{
     Variant: 0,
     Data: ExecutionPayload{...},
 }
 ```
 
-## Error Types
-
-Common errors returned by Dynamic SSZ:
-
-```go
-// From sszutils package
-var (
-    ErrListTooBig          = fmt.Errorf("list length is higher than max value")
-    ErrUnexpectedEOF       = fmt.Errorf("unexpected end of SSZ")
-    ErrOffset              = fmt.Errorf("incorrect offset")
-    ErrInvalidUnionVariant = fmt.Errorf("invalid union variant")
-    ErrVectorLength        = fmt.Errorf("incorrect vector length")
-    ErrNotImplemented      = fmt.Errorf("not implemented")
-)
-```
-
 ## Code Generator API
 
 ### CodeGenerator
 
-Programmatic code generation.
-
-```go
-type CodeGenerator struct {
-    // Internal fields
-}
-```
-
-#### NewCodeGenerator
-
 ```go
 func NewCodeGenerator(dynSsz *dynssz.DynSsz) *CodeGenerator
-```
 
-#### BuildFile
-
-```go
 func (cg *CodeGenerator) BuildFile(fileName string, opts ...CodeGeneratorOption)
-```
-
-#### Generate
-
-```go
 func (cg *CodeGenerator) Generate() error
 func (cg *CodeGenerator) GenerateToMap() (map[string]string, error)
 ```
 
 ### CodeGeneratorOption
-
-```go
-type CodeGeneratorOption func(*CodeGeneratorOptions)
-```
-
-Available options:
 
 ```go
 // Method generation control
@@ -700,160 +462,40 @@ func WithNoHashTreeRoot() CodeGeneratorOption
 func WithCreateLegacyFn() CodeGeneratorOption
 func WithoutDynamicExpressions() CodeGeneratorOption
 func WithNoFastSsz() CodeGeneratorOption
-func WithCreateEncoderFn() CodeGeneratorOption  // Generate streaming encoder
-func WithCreateDecoderFn() CodeGeneratorOption  // Generate streaming decoder
-
-// Hint options
-func WithSizeHints(hints []dynssz.SszSizeHint) CodeGeneratorOption
-func WithMaxSizeHints(hints []dynssz.SszMaxSizeHint) CodeGeneratorOption
-func WithTypeHints(hints []dynssz.SszTypeHint) CodeGeneratorOption
+func WithCreateEncoderFn() CodeGeneratorOption
+func WithCreateDecoderFn() CodeGeneratorOption
+func WithExtendedTypes() CodeGeneratorOption
 
 // Type specification
 func WithReflectType(t reflect.Type, typeOpts ...CodeGeneratorOption) CodeGeneratorOption
 func WithGoTypesType(t types.Type, typeOpts ...CodeGeneratorOption) CodeGeneratorOption
 
-// View support (used as nested options within WithReflectType/WithGoTypesType)
-func WithReflectViewTypes(views ...reflect.Type) CodeGeneratorOption  // Add view types using reflection
-func WithGoTypesViewTypes(views ...types.Type) CodeGeneratorOption    // Add view types using go/types
-func WithViewOnly() CodeGeneratorOption                               // Generate only view methods
+// View support (nested within WithReflectType/WithGoTypesType)
+func WithReflectViewTypes(views ...reflect.Type) CodeGeneratorOption
+func WithGoTypesViewTypes(views ...types.Type) CodeGeneratorOption
+func WithViewOnly() CodeGeneratorOption
+
+// Hint options
+func WithSizeHints(hints []dynssz.SszSizeHint) CodeGeneratorOption
+func WithMaxSizeHints(hints []dynssz.SszMaxSizeHint) CodeGeneratorOption
+func WithTypeHints(hints []dynssz.SszTypeHint) CodeGeneratorOption
 ```
 
 See [Code Generator](code-generator.md) for detailed usage.
 
-## Performance Utilities
+## Error Types
 
-### Buffer Pooling
-
-Dynamic SSZ uses internal buffer pooling for performance:
+Common errors from the `sszutils` package:
 
 ```go
-// Reuse buffers for marshaling
-buf := make([]byte, 0, 1024)
-data, err := ssz.MarshalSSZTo(obj, buf)
-
-// Buffers are pooled internally for hashing
-```
-
-### Type Caching
-
-Type descriptors are cached automatically:
-
-```go
-// First call analyzes type
-ssz.MarshalSSZ(obj1)
-
-// Subsequent calls use cache
-ssz.MarshalSSZ(obj2)  // Faster
-```
-
-## Examples
-
-### Basic Usage
-
-```go
-package main
-
-import (
-    dynssz "github.com/pk910/dynamic-ssz"
+var (
+    ErrListTooBig          = fmt.Errorf("list length is higher than max value")
+    ErrUnexpectedEOF       = fmt.Errorf("unexpected end of SSZ")
+    ErrOffset              = fmt.Errorf("incorrect offset")
+    ErrInvalidUnionVariant = fmt.Errorf("invalid union variant")
+    ErrVectorLength        = fmt.Errorf("incorrect vector length")
+    ErrNotImplemented      = fmt.Errorf("not implemented")
 )
-
-type Block struct {
-    Slot      uint64
-    StateRoot [32]byte
-    Body      BlockBody
-}
-
-type BlockBody struct {
-    Transactions []Transaction `ssz-max:"1048576"`
-}
-
-func main() {
-    // Create instance
-    ssz := dynssz.NewDynSsz(nil)
-    
-    // Create block
-    block := &Block{
-        Slot: 12345,
-        // ... fill fields
-    }
-    
-    // Serialize
-    data, err := ssz.MarshalSSZ(block)
-    if err != nil {
-        panic(err)
-    }
-    
-    // Compute root
-    root, err := ssz.HashTreeRoot(block)
-    if err != nil {
-        panic(err)
-    }
-    
-    // Deserialize
-    var decoded Block
-    err = ssz.UnmarshalSSZ(&decoded, data)
-    if err != nil {
-        panic(err)
-    }
-}
-```
-
-### With Spec Values
-
-```go
-// Define specs
-specs := map[string]interface{}{
-    "MAX_PROPOSER_SLASHINGS":     16,
-    "MAX_ATTESTER_SLASHINGS":     2,
-    "MAX_ATTESTATIONS":           128,
-    "MAX_DEPOSITS":               16,
-    "MAX_VOLUNTARY_EXITS":        16,
-}
-
-// Create instance
-ssz := dynssz.NewDynSsz(specs)
-
-// Use in types
-type BeaconBlockBody struct {
-    ProposerSlashings []ProposerSlashing `dynssz-max:"MAX_PROPOSER_SLASHINGS"`
-    AttesterSlashings []AttesterSlashing `dynssz-max:"MAX_ATTESTER_SLASHINGS"`
-    Attestations      []Attestation      `dynssz-max:"MAX_ATTESTATIONS"`
-    Deposits          []Deposit          `dynssz-max:"MAX_DEPOSITS"`
-    VoluntaryExits    []VoluntaryExit    `dynssz-max:"MAX_VOLUNTARY_EXITS"`
-}
-```
-
-### Custom Marshaling
-
-```go
-type CustomType struct {
-    data []byte
-}
-
-// Implement standard interface
-func (c *CustomType) MarshalSSZ() ([]byte, error) {
-    return c.data, nil
-}
-
-func (c *CustomType) UnmarshalSSZ(buf []byte) error {
-    c.data = make([]byte, len(buf))
-    copy(c.data, buf)
-    return nil
-}
-
-// Implement dynamic interface
-func (c *CustomType) MarshalSSZDyn(specs DynamicSpecs, buf []byte) ([]byte, error) {
-    size := specs.GetValue("CUSTOM_SIZE")
-    if len(c.data) != int(size) {
-        return nil, fmt.Errorf("invalid size")
-    }
-    if cap(buf) >= len(c.data) {
-        buf = buf[:len(c.data)]
-        copy(buf, c.data)
-        return buf, nil
-    }
-    return append(buf, c.data...), nil
-}
 ```
 
 ## Related Documentation

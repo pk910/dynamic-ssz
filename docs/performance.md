@@ -185,19 +185,19 @@ func process(ds *dynssz.DynSsz, largeData []byte) []byte {
 
 ## Configuration Tuning
 
-### 1. Disable Unnecessary Features
+### 1. Configure for Performance
+
+Options are set through the constructor. The defaults are already optimized for performance:
 
 ```go
+// Default: fastssz enabled, fast hashing enabled, verbose off
 ds := dynssz.NewDynSsz(specs)
 
-// For maximum performance, disable verbose logging
-ds.Verbose = false
+// Only disable fastssz if you need pure reflection behavior
+ds := dynssz.NewDynSsz(specs, dynssz.WithNoFastSsz())
 
-// Only disable fastssz if you need pure dynamic behavior
-// ds.NoFastSsz = true // Usually not recommended
-
-// Only disable fast hashing if you have specific requirements
-// ds.NoFastHash = true // Usually not recommended
+// Enable verbose logging only for debugging
+ds := dynssz.NewDynSsz(specs, dynssz.WithVerbose())
 ```
 
 ## Profiling and Monitoring
