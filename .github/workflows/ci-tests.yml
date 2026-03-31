@@ -84,11 +84,12 @@ jobs:
         name: coverage-spec-go1.25.8-${{ matrix.preset }}
         path: tests/spectests/spec-coverage.out
 
-  # Run unit tests with coverage on Go 1.25.8 and upload to Codecov
-  unit-tests-and-coverage:
+  # Run unit tests across all Go versions
+  unit-tests:
     runs-on: ubuntu-latest
-    needs: spec-tests
-    if: always()
+    strategy:
+      matrix:
+        go-version: ['1.22.x', '1.25.8', '1.26.x']
 
     steps:
     - name: Checkout code
@@ -97,13 +98,13 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
       with:
-        go-version: '1.25.8'
+        go-version: ${{ matrix.go-version }}
 
     - name: Cache Go modules
       uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
       with:
         path: ~/go/pkg/mod
-        key: ${{ runner.os }}-go-1.25.8-${{ hashFiles('**/go.sum') }}
+        key: ${{ runner.os }}-go-${{ matrix.go-version }}-${{ hashFiles('**/go.sum') }}
 
     - name: Download dependencies
       run: go mod download
@@ -130,11 +131,43 @@ jobs:
       run: |
         GOARCH=386 CGO_ENABLED=0 go test -v -coverprofile=coverage-unit-386.txt -coverpkg=./... ./...
 
+    - name: Upload unit test coverage artifacts
+      uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      with:
+        name: coverage-unit-go${{ matrix.go-version }}
+        path: |
+          coverage-codegen.txt
+          coverage-unit.txt
+          coverage-unit-nocgo.txt
+          coverage-unit-386.txt
+
+  # Collect and upload coverage after spec tests and unit tests complete
+  unit-tests-and-coverage:
+    runs-on: ubuntu-latest
+    needs: [spec-tests, unit-tests]
+    if: always()
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+    - name: Check dependency results
+      if: needs.spec-tests.result != 'success' || needs.unit-tests.result != 'success'
+      run: |
+        echo "spec-tests: ${{ needs.spec-tests.result }}"
+        echo "unit-tests: ${{ needs.unit-tests.result }}"
+        exit 1
+
     - name: Download spec test coverage artifacts
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
       with:
         pattern: coverage-spec-go1.25.8-*
         path: spec-coverage-artifacts
+
+    - name: Download unit test coverage artifacts
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: coverage-unit-go1.25.8
 
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v5
@@ -150,43 +183,7 @@ jobs:
           coverage-unit.txt
           coverage-unit-nocgo.txt
           coverage-unit-386.txt
-
-  # Run unit tests on additional Go versions (no coverage)
-  unit-tests-compat:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ['1.22.x', '1.26.x']
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-    - name: Set up Go
-      uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-      with:
-        go-version: ${{ matrix.go-version }}
-
-    - name: Cache Go modules
-      uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-      with:
-        path: ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ matrix.go-version }}-${{ hashFiles('**/go.sum') }}
-
-    - name: Download dependencies
-      run: go mod download
-
-    - name: Unpack compat-tests archives
-      run: make unpack-compat-tests
-
-    - name: Run unit tests
-      run: go test -v -race ./...
-
-    - name: Run unit tests (without cgo)
-      run: CGO_ENABLED=0 go test -v ./...
-
-    - name: Run unit tests (32-bit mode)
-      run: GOARCH=386 CGO_ENABLED=0 go test -v ./...
+          spec-coverage-artifacts/
 
   # Run govulncheck to detect known vulnerabilities in dependencies
   govulncheck:
