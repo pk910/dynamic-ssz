@@ -68,23 +68,23 @@ jobs:
       continue-on-error: true
       run: |
         cd base
-        go test -run=^$ -bench=. -benchmem -count=5 -timeout=10m ./... > "$GITHUB_WORKSPACE/bench-results/base-lib.txt" 2>&1
+        go test -run=^$ -bench=. -benchmem -count=5 -timeout=10m ./... > "$GITHUB_WORKSPACE/bench-results/base-lib.txt"
 
     - name: Run library benchmarks (PR)
       run: |
         cd pr
-        go test -run=^$ -bench=. -benchmem -count=5 -timeout=10m ./... > "$GITHUB_WORKSPACE/bench-results/pr-lib.txt" 2>&1
+        go test -run=^$ -bench=. -benchmem -count=5 -timeout=10m ./... > "$GITHUB_WORKSPACE/bench-results/pr-lib.txt"
 
     - name: Run perf benchmarks (base)
       continue-on-error: true
       run: |
         cd base/tests/perftests
-        go test -run=^$ -bench=. -benchmem -count=5 -timeout=30m > "$GITHUB_WORKSPACE/bench-results/base-perf.txt" 2>&1
+        go test -run=^$ -bench=. -benchmem -count=5 -timeout=30m > "$GITHUB_WORKSPACE/bench-results/base-perf.txt"
 
     - name: Run perf benchmarks (PR)
       run: |
         cd pr/tests/perftests
-        go test -run=^$ -bench=. -benchmem -count=5 -timeout=30m > "$GITHUB_WORKSPACE/bench-results/pr-perf.txt" 2>&1
+        go test -run=^$ -bench=. -benchmem -count=5 -timeout=30m > "$GITHUB_WORKSPACE/bench-results/pr-perf.txt"
 
     - name: Run benchstat comparisons
       run: |
