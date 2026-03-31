@@ -6,12 +6,14 @@ package reflection_test
 
 import (
 	"bytes"
+	"fmt"
 	"math/big"
 	"reflect"
 	"testing"
 
 	. "github.com/pk910/dynamic-ssz"
 	"github.com/pk910/dynamic-ssz/ssztypes"
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 var unmarshalTestMatrix = append(commonTestMatrix, []struct {
@@ -1030,6 +1032,18 @@ func TestViewUnmarshaler(t *testing.T) {
 
 	sszData := fromHex("0x0102030405060708090a0b0c")
 
+	// Truncated reader with unmarshaler-only type triggers DecodeBytesBuf
+	// error in the view unmarshaler path. The type only implements
+	// DynamicViewUnmarshaler (not DynamicViewDecoder), so the buffer path
+	// is used even for streaming decoders.
+	t.Run("ViewUnmarshaler_TruncatedReader", func(t *testing.T) {
+		var container viewUnmarshalerOnlyContainer
+		err := ds.UnmarshalSSZReader(&container, bytes.NewReader(sszData[:4]), 12, WithViewDescriptor((*TestViewType1)(nil)))
+		if err == nil {
+			t.Fatal("expected error for truncated SSZ reader data")
+		}
+	})
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			var container TestContainerWithViewUnmarshaler
@@ -1880,5 +1894,88 @@ func TestCustomFallbackUnmarshal(t *testing.T) {
 	err = dynssz.UnmarshalSSZ(&TestContainer{}, fromHex("0x01020304"))
 	if err == nil {
 		t.Fatalf("Expected error, got nil")
+	}
+}
+
+// TestUnmarshalPtrStringVector tests unmarshal of *string with ssz-size (vector).
+func TestUnmarshalPtrStringVector(t *testing.T) {
+	type PtrStrVecContainer struct {
+		S *string `ssz-size:"8"`
+	}
+
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoFastHash())
+
+	payload := PtrStrVecContainer{S: strPtr("testdata")}
+	sszBytes, err := ds.MarshalSSZ(payload)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+
+	var result PtrStrVecContainer
+	err = ds.UnmarshalSSZ(&result, sszBytes)
+	if err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if result.S == nil {
+		t.Fatal("expected non-nil string pointer")
+	}
+	if *result.S != "testdata" {
+		t.Fatalf("expected 'testdata', got %q", *result.S)
+	}
+}
+
+// TestUnmarshalPtrStringList tests unmarshal of *string with ssz-max (list).
+func TestUnmarshalPtrStringList(t *testing.T) {
+	type PtrStrLstContainer struct {
+		F1 uint32
+		S  *string `ssz-max:"16"`
+	}
+
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoFastHash())
+
+	payload := PtrStrLstContainer{F1: 42, S: strPtr("hello")}
+	sszBytes, err := ds.MarshalSSZ(payload)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+
+	var result PtrStrLstContainer
+	err = ds.UnmarshalSSZ(&result, sszBytes)
+	if err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if result.S == nil {
+		t.Fatal("expected non-nil string pointer")
+	}
+	if *result.S != "hello" {
+		t.Fatalf("expected 'hello', got %q", *result.S)
+	}
+}
+
+func strPtr(s string) *string { return &s }
+
+// viewUnmarshalerOnlyContainer implements only DynamicViewUnmarshaler
+// (not DynamicViewDecoder). This forces the buffer-based view unmarshaler
+// path even for streaming decoders.
+type viewUnmarshalerOnlyContainer struct {
+	Field0 uint64
+	Field1 uint32
+}
+
+var _ sszutils.DynamicViewUnmarshaler = (*viewUnmarshalerOnlyContainer)(nil)
+
+func (c *viewUnmarshalerOnlyContainer) UnmarshalSSZDynView(view any) func(sszutils.DynamicSpecs, []byte) error {
+	switch view.(type) {
+	case *TestViewType1:
+		return func(_ sszutils.DynamicSpecs, buf []byte) error {
+			if len(buf) < 12 {
+				return fmt.Errorf("buffer too short")
+			}
+			c.Field0 = sszutils.UnmarshallUint64(buf[:8])
+			c.Field1 = sszutils.UnmarshallUint32(buf[8:12])
+			return nil
+		}
+	default:
+		return nil
 	}
 }

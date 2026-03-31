@@ -532,7 +532,13 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 	case reflect.Array:
 		newValue = targetValue
 	default:
-		newValue = reflect.New(targetType.Type).Elem()
+		// For pointer types (e.g., *string), unmarshalType already dereferenced
+		// targetValue, so create the underlying type instead.
+		t := targetType.Type
+		if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+			t = t.Elem()
+		}
+		newValue = reflect.New(t).Elem()
 	}
 
 	if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
