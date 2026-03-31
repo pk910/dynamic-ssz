@@ -50,7 +50,7 @@ grep '//go:generate' generate.go | while IFS= read -r line; do
     cmd=$(echo "$cmd" | sed 's|go run -cover ../../dynssz-gen|../../dynssz-gen-release|')
     cmd=$(echo "$cmd" | sed 's|go run ../../dynssz-gen|../../dynssz-gen-release|')
     echo "Running: $cmd"
-    eval $cmd
+    $cmd
 done
 cd ../..
 
