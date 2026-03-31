@@ -36,6 +36,11 @@ jobs:
     - name: Install benchstat
       run: go install golang.org/x/perf/cmd/benchstat@v0.0.0-20260312031701-16a31bc5fbd0
 
+    - name: Prepare output directory
+      run: |
+        mkdir -p bench-results
+        echo "${{ github.event.pull_request.number }}" > bench-results/pr-number.txt
+
     - name: Download test data
       run: |
         cd pr/tests/perftests
@@ -63,38 +68,32 @@ jobs:
       continue-on-error: true
       run: |
         cd base
-        go test -run=^$ -bench=. -benchmem -count=5 -timeout=10m ./... > /tmp/base-lib.txt 2>&1
+        go test -run=^$ -bench=. -benchmem -count=5 -timeout=10m ./... > "$GITHUB_WORKSPACE/bench-results/base-lib.txt" 2>&1
 
     - name: Run library benchmarks (PR)
       run: |
         cd pr
-        go test -run=^$ -bench=. -benchmem -count=5 -timeout=10m ./... > /tmp/pr-lib.txt 2>&1
+        go test -run=^$ -bench=. -benchmem -count=5 -timeout=10m ./... > "$GITHUB_WORKSPACE/bench-results/pr-lib.txt" 2>&1
 
     - name: Run perf benchmarks (base)
       continue-on-error: true
       run: |
         cd base/tests/perftests
-        go test -run=^$ -bench=. -benchmem -count=5 -timeout=30m > /tmp/base-perf.txt 2>&1
+        go test -run=^$ -bench=. -benchmem -count=5 -timeout=30m > "$GITHUB_WORKSPACE/bench-results/base-perf.txt" 2>&1
 
     - name: Run perf benchmarks (PR)
       run: |
         cd pr/tests/perftests
-        go test -run=^$ -bench=. -benchmem -count=5 -timeout=30m > /tmp/pr-perf.txt 2>&1
+        go test -run=^$ -bench=. -benchmem -count=5 -timeout=30m > "$GITHUB_WORKSPACE/bench-results/pr-perf.txt" 2>&1
 
     - name: Run benchstat comparisons
       run: |
-        benchstat /tmp/base-lib.txt /tmp/pr-lib.txt > /tmp/lib-stat.txt 2>&1 || true
-        benchstat /tmp/base-perf.txt /tmp/pr-perf.txt > /tmp/perf-stat.txt 2>&1 || true
+        benchstat "$GITHUB_WORKSPACE/bench-results/base-lib.txt" "$GITHUB_WORKSPACE/bench-results/pr-lib.txt" > "$GITHUB_WORKSPACE/bench-results/lib-stat.txt" 2>&1 || true
+        benchstat "$GITHUB_WORKSPACE/bench-results/base-perf.txt" "$GITHUB_WORKSPACE/bench-results/pr-perf.txt" > "$GITHUB_WORKSPACE/bench-results/perf-stat.txt" 2>&1 || true
 
     - name: Upload benchmark results
       uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
       with:
         name: benchmark-results
-        path: |
-          /tmp/base-lib.txt
-          /tmp/pr-lib.txt
-          /tmp/base-perf.txt
-          /tmp/pr-perf.txt
-          /tmp/lib-stat.txt
-          /tmp/perf-stat.txt
+        path: bench-results/
         if-no-files-found: ignore
