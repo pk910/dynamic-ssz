@@ -3334,29 +3334,6 @@ func TestTypeCache_CustomTypeWithSizeHint(t *testing.T) {
 
 // --- TypeWrapper error paths in view descriptor mode ---
 
-// testWrapperNoMethod is a wrapper without GetDescriptorType
-type testWrapperNoMethod struct {
-	Data []byte
-}
-
-func TestTypeCache_TypeWrapperViewNoMethod(t *testing.T) {
-	cache := NewTypeCache(&dummyDynamicSpecs{})
-
-	// Schema wrapper has no GetDescriptorType method
-	_, err := cache.GetTypeDescriptorWithSchema(
-		reflect.TypeOf(testTypeWrapper{}),
-		reflect.TypeOf(testWrapperNoMethod{}),
-		nil, nil,
-		[]SszTypeHint{{Type: SszTypeWrapperType}},
-	)
-	if err == nil {
-		t.Fatal("expected error for missing GetDescriptorType on schema")
-	}
-	if !strings.Contains(err.Error(), "GetDescriptorType method not found") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
 // testWrapperBadDescriptor returns a descriptor type that is not a struct
 type testWrapperBadDescriptor struct {
 	Data []byte
@@ -3380,24 +3357,6 @@ func TestTypeCache_TypeWrapperSchemaDescriptorError(t *testing.T) {
 		t.Fatal("expected error for bad schema descriptor type")
 	}
 	if !strings.Contains(err.Error(), "wrapper descriptor must be a struct") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestTypeCache_TypeWrapperViewRuntimeNoMethod(t *testing.T) {
-	cache := NewTypeCache(&dummyDynamicSpecs{})
-
-	// Runtime wrapper has no GetDescriptorType, schema has it
-	_, err := cache.GetTypeDescriptorWithSchema(
-		reflect.TypeOf(testWrapperNoMethod{}),
-		reflect.TypeOf(testTypeWrapper{}),
-		nil, nil,
-		[]SszTypeHint{{Type: SszTypeWrapperType}},
-	)
-	if err == nil {
-		t.Fatal("expected error for missing GetDescriptorType on runtime")
-	}
-	if !strings.Contains(err.Error(), "GetDescriptorType method not found on runtime") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

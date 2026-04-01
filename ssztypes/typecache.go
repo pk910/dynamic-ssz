@@ -680,20 +680,26 @@ func (tc *TypeCache) buildTypeWrapperDescriptor(desc *TypeDescriptor, runtimeTyp
 	}
 
 	// Extract schema wrapper information (determines SSZ layout)
+	var schemaDescriptorType reflect.Type
+	var isTypeWrapper = false
+
 	schemaWrapperValue := reflect.New(schemaType)
 	schemaMethod := schemaWrapperValue.MethodByName("GetDescriptorType")
-	if !schemaMethod.IsValid() {
-		return sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "GetDescriptorType method not found on schema type %s", schemaType)
-	}
+	if schemaMethod.IsValid() {
+		schemaResults := schemaMethod.Call(nil)
+		if len(schemaResults) == 0 {
+			return sszutils.NewSszError(sszutils.ErrMissingInterface, "GetDescriptorType returned no results for schema type")
+		}
 
-	schemaResults := schemaMethod.Call(nil)
-	if len(schemaResults) == 0 {
-		return sszutils.NewSszError(sszutils.ErrMissingInterface, "GetDescriptorType returned no results for schema type")
-	}
+		var ok bool
+		schemaDescriptorType, ok = schemaResults[0].Interface().(reflect.Type)
+		if !ok {
+			return sszutils.NewSszError(sszutils.ErrMissingInterface, "GetDescriptorType did not return a reflect.Type for schema type")
+		}
 
-	schemaDescriptorType, ok := schemaResults[0].Interface().(reflect.Type)
-	if !ok {
-		return sszutils.NewSszError(sszutils.ErrMissingInterface, "GetDescriptorType did not return a reflect.Type for schema type")
+		isTypeWrapper = true
+	} else {
+		schemaDescriptorType = schemaType
 	}
 
 	// Extract wrapper information from schema descriptor (includes SSZ annotations)
@@ -706,20 +712,27 @@ func (tc *TypeCache) buildTypeWrapperDescriptor(desc *TypeDescriptor, runtimeTyp
 	var runtimeWrappedType reflect.Type
 	if runtimeType != schemaType {
 		// Extract runtime wrapper information for the wrapped type
-		runtimeWrapperValue := reflect.New(runtimeType)
-		runtimeMethod := runtimeWrapperValue.MethodByName("GetDescriptorType")
-		if !runtimeMethod.IsValid() {
-			return sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "GetDescriptorType method not found on runtime type %s", runtimeType)
-		}
+		var runtimeDescriptorType reflect.Type
 
-		runtimeResults := runtimeMethod.Call(nil)
-		if len(runtimeResults) == 0 {
-			return sszutils.NewSszError(sszutils.ErrMissingInterface, "GetDescriptorType returned no results for runtime type")
-		}
+		if isTypeWrapper {
+			runtimeWrapperValue := reflect.New(runtimeType)
+			runtimeMethod := runtimeWrapperValue.MethodByName("GetDescriptorType")
+			if !runtimeMethod.IsValid() {
+				return sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "GetDescriptorType method not found on runtime type %s", runtimeType)
+			}
 
-		runtimeDescriptorType, ok := runtimeResults[0].Interface().(reflect.Type)
-		if !ok {
-			return sszutils.NewSszError(sszutils.ErrMissingInterface, "GetDescriptorType did not return a reflect.Type for runtime type")
+			runtimeResults := runtimeMethod.Call(nil)
+			if len(runtimeResults) == 0 {
+				return sszutils.NewSszError(sszutils.ErrMissingInterface, "GetDescriptorType returned no results for runtime type")
+			}
+
+			var ok bool
+			runtimeDescriptorType, ok = runtimeResults[0].Interface().(reflect.Type)
+			if !ok {
+				return sszutils.NewSszError(sszutils.ErrMissingInterface, "GetDescriptorType did not return a reflect.Type for runtime type")
+			}
+		} else {
+			runtimeDescriptorType = runtimeType
 		}
 
 		// Get the wrapped type from runtime descriptor

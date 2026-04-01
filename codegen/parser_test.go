@@ -1606,27 +1606,6 @@ func TestBuildTypeWrapperDescriptor(t *testing.T) {
 		}
 	})
 
-	t.Run("WrapperWithNoTypeArgs", func(t *testing.T) {
-		pkg := types.NewPackage("github.com/pk910/dynamic-ssz", "dynssz")
-		wrapperObj := types.NewTypeName(token.NoPos, pkg, "TypeWrapper", nil)
-
-		dataField := types.NewVar(token.NoPos, nil, "Data", types.Typ[types.Uint64])
-		wrapperStruct := types.NewStruct([]*types.Var{dataField}, []string{""})
-
-		wrapperType := types.NewNamed(wrapperObj, wrapperStruct, nil)
-
-		desc := &ssztypes.TypeDescriptor{
-			SszType: ssztypes.SszTypeWrapperType,
-		}
-		err := parser.buildTypeWrapperDescriptor(desc, wrapperType, wrapperType, nil, nil, nil)
-		if err == nil {
-			t.Error("Expected error for no type args")
-		}
-		if !strings.Contains(err.Error(), "exactly 2 type arguments") {
-			t.Errorf("Expected 'exactly 2 type arguments' error, got: %v", err)
-		}
-	})
-
 	t.Run("WrapperWithNonStructDescriptor", func(t *testing.T) {
 		pkg := types.NewPackage("github.com/pk910/dynamic-ssz", "dynssz")
 		typeParamD := types.NewTypeParam(types.NewTypeName(token.NoPos, nil, "D", nil), types.NewInterfaceType(nil, nil))
