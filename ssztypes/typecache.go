@@ -1469,7 +1469,7 @@ func writeUint64Hash(h interface{ Write([]byte) (int, error) }, scratch *[8]byte
 
 func writeStringHash(h interface{ Write([]byte) (int, error) }, scratch *[8]byte, value string) {
 	writeUint64Hash(h, scratch, uint64(len(value)))
-	if len(value) == 0 {
+	if value == "" {
 		return
 	}
 	// Write the string bytes directly so we do not need a temporary []byte copy.
