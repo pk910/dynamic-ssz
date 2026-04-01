@@ -6,11 +6,13 @@ package ssztypes
 
 import (
 	"crypto/sha256"
-	"encoding/json"
+	"encoding/binary"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
+	"unsafe"
 
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
@@ -1378,12 +1380,108 @@ func (tc *TypeCache) extractGenericTypeParameter(unionType reflect.Type) (reflec
 	return descriptorType, nil
 }
 
-// GetTypeHash computes a SHA-256 hash of the TypeDescriptor's JSON
-// representation. This hash uniquely identifies the type's SSZ layout and is
-// used by the code generator to detect when a type's structure has changed and
-// regeneration is needed.
+// GetTypeHash computes a deterministic SHA-256 hash of the TypeDescriptor's
+// structural SSZ layout. This hash uniquely identifies the type's SSZ layout
+// and is used by the code generator to detect when a type's structure has
+// changed and regeneration is needed.
 func (td *TypeDescriptor) GetTypeHash() [32]byte {
-	jsonDesc, _ := json.Marshal(td)
-	hash := sha256.Sum256(jsonDesc)
-	return hash
+	h := sha256.New()
+	var scratch [8]byte
+	// Hash the descriptor structure directly instead of JSON-encoding it first.
+	// This keeps the hash deterministic while avoiding the cost of building a
+	// temporary serialized representation for every call.
+	writeTypeDescriptorHash(h, &scratch, td)
+
+	var out [32]byte
+	h.Sum(out[:0])
+	return out
+}
+
+func writeTypeDescriptorHash(h interface{ Write([]byte) (int, error) }, scratch *[8]byte, td *TypeDescriptor) {
+	// Write fields in a fixed order so equal SSZ layouts always produce the same
+	// hash even across runs.
+	writeUint64Hash(h, scratch, uint64(td.Kind))
+	writeUint64Hash(h, scratch, uint64(td.Size))
+	writeUint64Hash(h, scratch, uint64(td.Len))
+	writeUint64Hash(h, scratch, td.Limit)
+
+	if td.ContainerDesc == nil {
+		writeUint64Hash(h, scratch, 0)
+	} else {
+		writeUint64Hash(h, scratch, 1)
+		writeUint64Hash(h, scratch, uint64(len(td.ContainerDesc.Fields)))
+		for i := range td.ContainerDesc.Fields {
+			field := &td.ContainerDesc.Fields[i]
+			writeStringHash(h, scratch, field.Name)
+			writeTypeDescriptorHash(h, scratch, field.Type)
+			writeUint64Hash(h, scratch, uint64(field.SszIndex))
+			writeUint64Hash(h, scratch, uint64(field.FieldIndex))
+		}
+		writeUint64Hash(h, scratch, uint64(len(td.ContainerDesc.DynFields)))
+		for i := range td.ContainerDesc.DynFields {
+			field := &td.ContainerDesc.DynFields[i]
+			writeStringHash(h, scratch, field.Field.Name)
+			writeTypeDescriptorHash(h, scratch, field.Field.Type)
+			writeUint64Hash(h, scratch, uint64(field.Field.SszIndex))
+			writeUint64Hash(h, scratch, uint64(field.Field.FieldIndex))
+			writeUint64Hash(h, scratch, uint64(field.HeaderOffset))
+			writeUint64Hash(h, scratch, uint64(field.Index))
+		}
+	}
+
+	if len(td.UnionVariants) == 0 {
+		writeUint64Hash(h, scratch, 0)
+	} else {
+		// Maps do not have a stable iteration order, so sort variant keys before
+		// hashing to keep the result deterministic.
+		keys := make([]int, 0, len(td.UnionVariants))
+		for key := range td.UnionVariants {
+			keys = append(keys, int(key))
+		}
+		sort.Ints(keys)
+		writeUint64Hash(h, scratch, uint64(len(keys)))
+		for _, key := range keys {
+			writeUint64Hash(h, scratch, uint64(key))
+			writeTypeDescriptorHash(h, scratch, td.UnionVariants[uint8(key)])
+		}
+	}
+
+	if td.ElemDesc == nil {
+		writeUint64Hash(h, scratch, 0)
+	} else {
+		writeUint64Hash(h, scratch, 1)
+		writeTypeDescriptorHash(h, scratch, td.ElemDesc)
+	}
+
+	writeOptionalStringHash(h, scratch, td.SizeExpression)
+	writeOptionalStringHash(h, scratch, td.MaxExpression)
+	writeUint64Hash(h, scratch, uint64(td.BitSize))
+	writeUint64Hash(h, scratch, uint64(td.SszType))
+	writeUint64Hash(h, scratch, uint64(td.SszTypeFlags))
+	writeUint64Hash(h, scratch, uint64(td.SszCompatFlags))
+	writeUint64Hash(h, scratch, uint64(td.GoTypeFlags))
+}
+
+func writeUint64Hash(h interface{ Write([]byte) (int, error) }, scratch *[8]byte, value uint64) {
+	binary.LittleEndian.PutUint64(scratch[:], value)
+	_, _ = h.Write(scratch[:])
+}
+
+func writeStringHash(h interface{ Write([]byte) (int, error) }, scratch *[8]byte, value string) {
+	writeUint64Hash(h, scratch, uint64(len(value)))
+	if len(value) == 0 {
+		return
+	}
+	// Write the string bytes directly so we do not need a temporary []byte copy.
+	_, _ = h.Write(unsafe.Slice(unsafe.StringData(value), len(value)))
+}
+
+func writeOptionalStringHash(h interface{ Write([]byte) (int, error) }, scratch *[8]byte, value *string) {
+	if value == nil {
+		writeUint64Hash(h, scratch, 0)
+		return
+	}
+
+	writeUint64Hash(h, scratch, 1)
+	writeStringHash(h, scratch, *value)
 }
