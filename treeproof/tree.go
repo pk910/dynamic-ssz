@@ -329,6 +329,8 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 		totalBranches += activeCount
 	}
 
+	// Build all branch nodes inside one slice so we do not allocate a new Node
+	// for every parent we create.
 	branchNodes := make([]Node, totalBranches)
 	current := make([]*Node, firstLevelCount)
 	next := make([]*Node, firstLevelCount)
@@ -350,6 +352,8 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 		branchPos++
 	}
 
+	// Reuse the same two pointer slices for each level and just swap their roles
+	// as we move up the tree.
 	activeCount = firstLevelCount
 	for d := depth - 1; d > 0; d-- {
 		nextLevelCount := (activeCount + 1) / 2
