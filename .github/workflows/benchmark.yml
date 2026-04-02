@@ -14,7 +14,7 @@ permissions:
 jobs:
   benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
     - name: Checkout PR
@@ -64,33 +64,119 @@ jobs:
         path: ~/go/pkg/mod
         key: ${{ runner.os }}-go-bench-${{ hashFiles('pr/tests/perftests/go.sum') }}
 
-    - name: Run library benchmarks (base)
-      continue-on-error: true
+    - name: Run library benchmarks
       run: |
-        cd base
-        go test -run=^$ -bench=. -benchmem -count=5 -timeout=10m ./... > "$GITHUB_WORKSPACE/bench-results/base-lib.txt"
+        OUTDIR="$GITHUB_WORKSPACE/bench-results"
 
-    - name: Run library benchmarks (PR)
-      run: |
-        cd pr
-        go test -run=^$ -bench=. -benchmem -count=5 -timeout=10m ./... > "$GITHUB_WORKSPACE/bench-results/pr-lib.txt"
+        # Discover library benchmark names from PR (tests/ is a separate module)
+        BENCHMARKS=$(cd pr && go test -list '^Benchmark' -run '^$' ./... 2>/dev/null | grep '^Benchmark' | sort -u)
+        if [ -z "$BENCHMARKS" ]; then
+          echo "No library benchmarks found"
+          exit 0
+        fi
+        echo "Library benchmarks found:"
+        echo "$BENCHMARKS"
 
-    - name: Run perf benchmarks (base)
-      continue-on-error: true
-      run: |
-        cd base/tests/perftests
-        go test -run=^$ -bench=. -benchmem -count=5 -timeout=30m > "$GITHUB_WORKSPACE/bench-results/base-perf.txt"
+        # Phase 1: run each benchmark once, alternating base/PR
+        echo "--- Phase 1: single pass ---"
+        for bench in $BENCHMARKS; do
+          echo "  $bench"
+          (cd base && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m ./...) >> "$OUTDIR/base-lib.txt" 2>&1 || true
+          (cd pr   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m ./...) >> "$OUTDIR/pr-lib.txt" 2>&1
+        done
 
-    - name: Run perf benchmarks (PR)
+        # Find top-level benchmarks where any sub-benchmark differs by >5%
+        RERUN=$(awk '
+          FNR==NR && /^Benchmark.*ns\/op/ {
+            for(i=2;i<=NF;i++) if($i=="ns/op"){base[$1]=$(i-1)+0;break}; next
+          }
+          /^Benchmark.*ns\/op/ {
+            for(i=2;i<=NF;i++) if($i=="ns/op"){pr[$1]=$(i-1)+0;break}
+          }
+          END {
+            for(n in pr){
+              if(!(n in base)||base[n]==0) continue
+              d=(pr[n]-base[n])/base[n]*100; if(d<0)d=-d
+              if(d>5){t=n;s=index(t,"/");if(s>0)t=substr(t,1,s-1);else sub(/-[0-9]+$/,"",t);print t}
+            }
+          }
+        ' "$OUTDIR/base-lib.txt" "$OUTDIR/pr-lib.txt" | sort -u)
+
+        if [ -z "$RERUN" ]; then
+          echo "--- No significant diffs, skipping phase 2 ---"
+          exit 0
+        fi
+
+        # Phase 2: re-run interesting benchmarks 5 more times to confirm
+        echo "--- Phase 2: confirming diffs ---"
+        echo "$RERUN"
+        for bench in $RERUN; do
+          echo "  $bench (7 confirmation runs)"
+          for i in $(seq 1 7); do
+            (cd base && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m ./...) >> "$OUTDIR/base-lib.txt" 2>&1 || true
+            (cd pr   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m ./...) >> "$OUTDIR/pr-lib.txt" 2>&1
+          done
+        done
+
+    - name: Run perf benchmarks
       run: |
-        cd pr/tests/perftests
-        go test -run=^$ -bench=. -benchmem -count=5 -timeout=30m > "$GITHUB_WORKSPACE/bench-results/pr-perf.txt"
+        OUTDIR="$GITHUB_WORKSPACE/bench-results"
+
+        # Discover perf benchmark names from PR
+        BENCHMARKS=$(cd pr/tests/perftests && go test -list '^Benchmark' -run '^$' 2>/dev/null | grep '^Benchmark' | sort -u)
+        if [ -z "$BENCHMARKS" ]; then
+          echo "No perf benchmarks found"
+          exit 0
+        fi
+        echo "Perf benchmarks found:"
+        echo "$BENCHMARKS"
+
+        # Phase 1: run each benchmark once, alternating base/PR
+        echo "--- Phase 1: single pass ---"
+        for bench in $BENCHMARKS; do
+          echo "  $bench"
+          (cd base/tests/perftests && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m) >> "$OUTDIR/base-perf.txt" 2>&1 || true
+          (cd pr/tests/perftests   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m) >> "$OUTDIR/pr-perf.txt" 2>&1
+        done
+
+        # Find top-level benchmarks where any sub-benchmark differs by >5%
+        RERUN=$(awk '
+          FNR==NR && /^Benchmark.*ns\/op/ {
+            for(i=2;i<=NF;i++) if($i=="ns/op"){base[$1]=$(i-1)+0;break}; next
+          }
+          /^Benchmark.*ns\/op/ {
+            for(i=2;i<=NF;i++) if($i=="ns/op"){pr[$1]=$(i-1)+0;break}
+          }
+          END {
+            for(n in pr){
+              if(!(n in base)||base[n]==0) continue
+              d=(pr[n]-base[n])/base[n]*100; if(d<0)d=-d
+              if(d>5){t=n;s=index(t,"/");if(s>0)t=substr(t,1,s-1);else sub(/-[0-9]+$/,"",t);print t}
+            }
+          }
+        ' "$OUTDIR/base-perf.txt" "$OUTDIR/pr-perf.txt" | sort -u)
+
+        if [ -z "$RERUN" ]; then
+          echo "--- No significant diffs, skipping phase 2 ---"
+          exit 0
+        fi
+
+        # Phase 2: re-run interesting benchmarks 5 more times to confirm
+        echo "--- Phase 2: confirming diffs ---"
+        echo "$RERUN"
+        for bench in $RERUN; do
+          echo "  $bench (7 confirmation runs)"
+          for i in $(seq 1 7); do
+            (cd base/tests/perftests && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m) >> "$OUTDIR/base-perf.txt" 2>&1 || true
+            (cd pr/tests/perftests   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m) >> "$OUTDIR/pr-perf.txt" 2>&1
+          done
+        done
 
     - name: Run benchstat comparisons
       run: |
         cd "$GITHUB_WORKSPACE/bench-results"
-        benchstat base-lib.txt pr-lib.txt > lib-stat.txt 2>&1 || true
-        benchstat base-perf.txt pr-perf.txt > perf-stat.txt 2>&1 || true
+        benchstat -confidence 0.98 base-lib.txt pr-lib.txt > lib-stat.txt 2>&1 || true
+        benchstat -confidence 0.98 base-perf.txt pr-perf.txt > perf-stat.txt 2>&1 || true
 
     - name: Upload benchmark results
       uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
