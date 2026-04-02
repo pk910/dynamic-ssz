@@ -97,7 +97,6 @@ func VerifyMultiproof(root []byte, proof, leaves [][]byte, indices []int) (bool,
 // verifyMultiproofGeneral verifies proofs that include indices from different
 // tree depths by storing known node hashes in a map keyed by generalized index.
 func verifyMultiproofGeneral(root []byte, proof, leaves [][]byte, indices, requiredProofIndices []int) (bool, error) {
-
 	// Keep leaf indices in descending generalized-index order so verification can
 	// walk the tree bottom-up without building another sorted slice.
 	leafIndexCursor := newDescendingIndexCursor(indices)
