@@ -74,20 +74,45 @@ jobs:
             continue
           fi
 
-          rm -f "base/$dir"/*_test.go
+          mapfile -t pr_tests < <(
+            find "pr/$dir" -maxdepth 1 -type f -name '*_test.go' |
+              LC_ALL=C sort
+          )
+          mapfile -t base_tests < <(
+            find "base/$dir" -maxdepth 1 -type f -name '*_test.go' |
+              LC_ALL=C sort
+          )
 
-          copied=0
-          while IFS= read -r test_file; do
-            cp "pr/$test_file" "base/$test_file"
-            copied=$((copied + 1))
-          done < <(cd pr && git ls-files "$dir/*_test.go")
-
-          if [ "$copied" -eq 0 ]; then
+          if [ "${#pr_tests[@]}" -eq 0 ]; then
             continue
           fi
 
+          changed=0
+          if [ "${#pr_tests[@]}" -ne "${#base_tests[@]}" ]; then
+            changed=1
+          else
+            for i in "${!pr_tests[@]}"; do
+              pr_file="${pr_tests[$i]}"
+              base_file="${base_tests[$i]}"
+              if [ "${pr_file#pr/}" != "${base_file#base/}" ] || ! cmp -s "$pr_file" "$base_file"; then
+                changed=1
+                break
+              fi
+            done
+          fi
+
+          if [ "$changed" -eq 0 ]; then
+            continue
+          fi
+
+          rm -f "base/$dir"/*_test.go
+
+          for test_file in "${pr_tests[@]}"; do
+            cp "$test_file" "base/${test_file#pr/}"
+          done
+
           synced=$((synced + 1))
-          echo "Synced benchmark harness in $dir ($copied test files)"
+          echo "Synced benchmark harness in $dir (${#pr_tests[@]} test files)"
         done < <(
           cd pr
           git grep -l '^[[:space:]]*func Benchmark' -- '*_test.go' |
