@@ -25,11 +25,17 @@ jobs:
 
     - name: Get PR number
       id: pr
+      shell: bash
       run: |
+        set -euo pipefail
+
+        PR_NUMBER=''
+
         # Read PR number saved by the benchmark workflow
         if [ -f results/pr-number.txt ]; then
-          PR_NUMBER=$(cat results/pr-number.txt | tr -d '[:space:]')
+          PR_NUMBER=$(tr -d '[:space:]' < results/pr-number.txt)
         fi
+
         if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
           echo "Could not determine PR number, skipping comment"
           echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -41,29 +47,84 @@ jobs:
     - name: Build comment body
       if: steps.pr.outputs.skip != 'true'
       id: body
+      shell: bash
       run: |
-        # Filter benchstat output to only show metric sections with significant changes.
-        # Removes entries showing "~ (p=" (no change), keeps sections that have at least
-        # one entry with an actual percentage change.
+        set -euo pipefail
+
+        # Keep only metric sections with at least one significant benchmark row.
         filter_benchstat() {
           awk '
-          BEGIN { hdr=""; buf=""; geo=""; has=0; any=0 }
+          BEGIN { hdr=""; rows=""; geo=""; has=0; any=0 }
           /^(goos|goarch|pkg|cpu):/ { next }
           /^[[:space:]]*│/ { hdr = hdr $0 "\n"; next }
           /^[[:space:]]*$/ {
-            if (has) { printf "%s%s%s\n", hdr, buf, geo; any=1 }
-            hdr=""; buf=""; geo=""; has=0
+            if (has) {
+              printf "%s%s", hdr, rows
+              if (geo != "") {
+                printf "%s", geo
+              }
+              printf "\n"
+              any=1
+            }
+            hdr=""; rows=""; geo=""; has=0
             next
           }
           /^geomean/ { geo = $0 "\n"; next }
+          /^[[:space:]]*[[:digit:]¹²³]/ { next }
+          /^[[:space:]]*$/ { next }
           {
-            if ($0 !~ /~ \(p=/) { buf = buf $0 "\n"; has=1 }
+            if ($0 !~ /~ \(p=/) {
+              rows = rows $0 "\n"
+              has=1
+            }
           }
           END {
-            if (has) { printf "%s%s%s", hdr, buf, geo; any=1 }
-            if (!any) print "No significant performance changes detected."
+            if (has) {
+              printf "%s%s", hdr, rows
+              if (geo != "") {
+                printf "%s", geo
+              }
+              any=1
+            }
           }
           ' "$1"
+        }
+
+        render_benchstat_section() {
+          local title=$1
+          local stat_file=$2
+          local raw_file=$3
+
+          if [ -f "$stat_file" ] && [ -s "$stat_file" ]; then
+            local filtered
+            filtered=$(filter_benchstat "$stat_file")
+
+            if [ -n "$filtered" ]; then
+              echo "### $title"
+              echo ''
+              echo '```'
+              echo "$filtered"
+              echo '```'
+            else
+              echo "**$title:** No significant changes."
+              echo ''
+              echo "<details><summary>$title (full comparison)</summary>"
+              echo ''
+              echo '```'
+              cat "$stat_file"
+              echo '```'
+              echo ''
+              echo '</details>'
+            fi
+          elif [ -f "$raw_file" ]; then
+            echo "<details><summary>$title (no base to compare)</summary>"
+            echo ''
+            echo '```'
+            cat "$raw_file"
+            echo '```'
+            echo ''
+            echo '</details>'
+          fi
         }
 
         {
@@ -71,51 +132,11 @@ jobs:
           echo '## Benchmark Results'
           echo ''
 
-          # Library benchmarks
-          if [ -f results/lib-stat.txt ] && [ -s results/lib-stat.txt ]; then
-            LIB_FILTERED=$(filter_benchstat results/lib-stat.txt)
-            if echo "$LIB_FILTERED" | grep -q "No significant"; then
-              echo "**Library Benchmarks:** No significant changes."
-            else
-              echo '### Library Benchmarks'
-              echo ''
-              echo '```'
-              echo "$LIB_FILTERED"
-              echo '```'
-            fi
-          elif [ -f results/pr-lib.txt ]; then
-            echo '<details><summary>Library Benchmarks (no base to compare)</summary>'
-            echo ''
-            echo '```'
-            cat results/pr-lib.txt
-            echo '```'
-            echo ''
-            echo '</details>'
-          fi
+          render_benchstat_section "Library Benchmarks" results/lib-stat.txt results/pr-lib.txt
 
           echo ''
 
-          # Perf benchmarks
-          if [ -f results/perf-stat.txt ] && [ -s results/perf-stat.txt ]; then
-            PERF_FILTERED=$(filter_benchstat results/perf-stat.txt)
-            if echo "$PERF_FILTERED" | grep -q "No significant"; then
-              echo "**Performance Benchmarks:** No significant changes."
-            else
-              echo '### Performance Benchmarks'
-              echo ''
-              echo '```'
-              echo "$PERF_FILTERED"
-              echo '```'
-            fi
-          elif [ -f results/pr-perf.txt ]; then
-            echo '<details><summary>Performance Benchmarks (no base to compare)</summary>'
-            echo ''
-            echo '```'
-            cat results/pr-perf.txt
-            echo '```'
-            echo ''
-            echo '</details>'
-          fi
+          render_benchstat_section "Performance Benchmarks" results/perf-stat.txt results/pr-perf.txt
 
           echo 'EOF'
         } >> "$GITHUB_OUTPUT"
