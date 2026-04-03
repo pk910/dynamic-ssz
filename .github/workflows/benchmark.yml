@@ -64,6 +64,39 @@ jobs:
         path: ~/go/pkg/mod
         key: ${{ runner.os }}-go-bench-${{ hashFiles('pr/tests/perftests/go.sum') }}
 
+    - name: Sync benchmark harness to base
+      run: |
+        set -euo pipefail
+
+        synced=0
+        while IFS= read -r dir; do
+          if [ -z "$dir" ] || [ ! -d "base/$dir" ]; then
+            continue
+          fi
+
+          rm -f "base/$dir"/*_test.go
+
+          copied=0
+          while IFS= read -r test_file; do
+            cp "pr/$test_file" "base/$test_file"
+            copied=$((copied + 1))
+          done < <(cd pr && git ls-files "$dir/*_test.go")
+
+          if [ "$copied" -eq 0 ]; then
+            continue
+          fi
+
+          synced=$((synced + 1))
+          echo "Synced benchmark harness in $dir ($copied test files)"
+        done < <(
+          cd pr
+          git grep -l '^[[:space:]]*func Benchmark' -- '*_test.go' |
+            xargs -r -n1 dirname |
+            sort -u
+        )
+
+        echo "Synced benchmark harness for $synced packages from PR into base checkout"
+
     - name: Run library benchmarks (base)
       continue-on-error: true
       run: |
