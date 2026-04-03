@@ -164,6 +164,8 @@ type completeLevelCacheEntry struct {
 	ok        bool
 }
 
+// Benchmarks often hit the same full-level proof shapes repeatedly. Cache the
+// match result so hot proof paths can skip rescanning the same index set.
 var completeLevelCache struct {
 	mu      sync.RWMutex
 	next    int
@@ -624,6 +626,8 @@ func (n *Node) ProveMulti(indices []int) (*Multiproof, error) {
 	reqIndices := getRequiredIndices(indices)
 
 	if len(reqIndices) == 0 {
+		// A complete level already contains every node needed to rebuild the
+		// root, so no auxiliary proof hashes are required.
 		if collectedLeaves, ok, err := collectCompleteLevelValues(n, indices); ok {
 			if err != nil {
 				return nil, err
@@ -752,6 +756,8 @@ func matchCompleteLevelIndices(indices []int) (levelSize int, reverse bool, ok b
 	return levelSize, reverse, ok
 }
 
+// computeCompleteLevelIndices checks whether indices cover one full tree level
+// in ascending or descending generalized-index order.
 func computeCompleteLevelIndices(indices []int, levelSize int) (int, bool, bool) {
 	switch indices[0] {
 	case levelSize:
