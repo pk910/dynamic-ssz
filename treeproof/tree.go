@@ -716,7 +716,7 @@ func collectCompleteLevelValues(root *Node, indices []int) (values [][]byte, ok 
 // matchCompleteLevelIndices reports whether indices enumerate every
 // generalized index at one complete tree level in ascending or descending
 // order.
-func matchCompleteLevelIndices(indices []int) (levelSize int, reverse bool, ok bool) {
+func matchCompleteLevelIndices(indices []int) (levelSize int, reverse, ok bool) {
 	levelSize = len(indices)
 	if levelSize == 0 || levelSize&(levelSize-1) != 0 {
 		return 0, false, false
