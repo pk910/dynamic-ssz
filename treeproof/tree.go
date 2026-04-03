@@ -154,6 +154,22 @@ var (
 	emptyNodeCache [65]*Node
 )
 
+const completeLevelCacheSize = 16
+
+type completeLevelCacheEntry struct {
+	hash      uint64
+	indices   []int
+	levelSize int
+	reverse   bool
+	ok        bool
+}
+
+var completeLevelCache struct {
+	mu      sync.RWMutex
+	next    int
+	entries [completeLevelCacheSize]completeLevelCacheEntry
+}
+
 // Show displays the tree structure in a human-readable format for debugging.
 //
 // This method prints the complete tree hierarchy starting from this node,
@@ -566,7 +582,7 @@ func hashNode(n *Node) []byte {
 func (n *Node) Prove(index int) (*Proof, error) {
 	pathLen := getPathLength(index)
 	proof := &Proof{Index: index}
-	hashes := make([][]byte, 0, pathLen)
+	hashes := make([][]byte, pathLen)
 
 	cur := n
 	for i := pathLen - 1; i >= 0; i-- {
@@ -584,14 +600,10 @@ func (n *Node) Prove(index int) (*Proof, error) {
 			siblingHash = hashNode(cur.right)
 			cur = cur.left
 		}
-		hashes = append(hashes, siblingHash)
+		hashes[i] = siblingHash
 		if cur == nil {
 			return nil, errors.New("Node not found in tree")
 		}
-	}
-
-	for i, j := 0, len(hashes)-1; i < j; i, j = i+1, j-1 {
-		hashes[i], hashes[j] = hashes[j], hashes[i]
 	}
 
 	proof.Hashes = hashes
@@ -610,7 +622,25 @@ func (n *Node) Prove(index int) (*Proof, error) {
 // be found in the tree.
 func (n *Node) ProveMulti(indices []int) (*Multiproof, error) {
 	reqIndices := getRequiredIndices(indices)
-	proof := &Multiproof{Indices: indices, Leaves: make([][]byte, len(indices)), Hashes: make([][]byte, len(reqIndices))}
+
+	if len(reqIndices) == 0 {
+		if collectedLeaves, ok, err := collectCompleteLevelValues(n, indices); ok {
+			if err != nil {
+				return nil, err
+			}
+			return &Multiproof{
+				Indices: indices,
+				Leaves:  collectedLeaves,
+				Hashes:  make([][]byte, 0),
+			}, nil
+		}
+	}
+
+	proof := &Multiproof{
+		Indices: indices,
+		Leaves:  make([][]byte, len(indices)),
+		Hashes:  make([][]byte, len(reqIndices)),
+	}
 
 	for i, gi := range indices {
 		node, err := n.Get(gi)
@@ -629,6 +659,118 @@ func (n *Node) ProveMulti(indices []int) (*Multiproof, error) {
 	}
 
 	return proof, nil
+}
+
+// collectCompleteLevelValues returns the node values for a full tree level when
+// indices cover every generalized index at that depth in ascending or
+// descending order. It returns ok=false when the input does not match that
+// shape so callers can fall back to the general path.
+func collectCompleteLevelValues(root *Node, indices []int) (values [][]byte, ok bool, err error) {
+	levelSize, reverse, ok := matchCompleteLevelIndices(indices)
+	if !ok {
+		return nil, false, nil
+	}
+
+	values = make([][]byte, levelSize)
+	writePos := 0
+	targetDepth := getPathLength(levelSize)
+
+	var walkLevel func(node *Node, remainingDepth int) error
+	walkLevel = func(node *Node, remainingDepth int) error {
+		if node == nil {
+			return errors.New("Node not found in tree")
+		}
+		if remainingDepth == 0 {
+			if node.value == nil {
+				node.value = hashNode(node)
+			}
+			values[writePos] = node.value
+			writePos++
+			return nil
+		}
+
+		if reverse {
+			if err := walkLevel(node.right, remainingDepth-1); err != nil {
+				return err
+			}
+			return walkLevel(node.left, remainingDepth-1)
+		}
+
+		if err := walkLevel(node.left, remainingDepth-1); err != nil {
+			return err
+		}
+		return walkLevel(node.right, remainingDepth-1)
+	}
+
+	if err := walkLevel(root, targetDepth); err != nil {
+		return nil, true, err
+	}
+
+	return values, true, nil
+}
+
+// matchCompleteLevelIndices reports whether indices enumerate every
+// generalized index at one complete tree level in ascending or descending
+// order.
+func matchCompleteLevelIndices(indices []int) (levelSize int, reverse bool, ok bool) {
+	levelSize = len(indices)
+	if levelSize == 0 || levelSize&(levelSize-1) != 0 {
+		return 0, false, false
+	}
+
+	indicesKeyHash := hashIndices(indices)
+
+	completeLevelCache.mu.RLock()
+	for i := range completeLevelCache.entries {
+		cacheEntry := &completeLevelCache.entries[i]
+		if cacheEntry.hash != indicesKeyHash {
+			continue
+		}
+		if intsEqual(cacheEntry.indices, indices) {
+			levelSize = cacheEntry.levelSize
+			reverse = cacheEntry.reverse
+			ok = cacheEntry.ok
+			completeLevelCache.mu.RUnlock()
+			return levelSize, reverse, ok
+		}
+	}
+	completeLevelCache.mu.RUnlock()
+
+	levelSize, reverse, ok = computeCompleteLevelIndices(indices, levelSize)
+
+	completeLevelCache.mu.Lock()
+	completeLevelCache.entries[completeLevelCache.next] = completeLevelCacheEntry{
+		hash:      indicesKeyHash,
+		indices:   append([]int(nil), indices...),
+		levelSize: levelSize,
+		reverse:   reverse,
+		ok:        ok,
+	}
+	completeLevelCache.next = (completeLevelCache.next + 1) % completeLevelCacheSize
+	completeLevelCache.mu.Unlock()
+
+	return levelSize, reverse, ok
+}
+
+func computeCompleteLevelIndices(indices []int, levelSize int) (int, bool, bool) {
+	switch indices[0] {
+	case levelSize:
+		for i := 1; i < levelSize; i++ {
+			if indices[i] != levelSize+i {
+				return 0, false, false
+			}
+		}
+		return levelSize, false, true
+	case (levelSize * 2) - 1:
+		for i := 1; i < levelSize; i++ {
+			if indices[i] != (levelSize*2)-1-i {
+				return 0, false, false
+			}
+		}
+		return levelSize, true, true
+	default:
+		return 0, false, false
+	}
 }
 
 // LeafFromUint64 creates a 32-byte leaf node from a uint64 value, encoded as
