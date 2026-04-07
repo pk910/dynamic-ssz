@@ -10,13 +10,15 @@ type DynSszOption func(*DynSszOptions)
 
 // DynSszOptions holds the configuration options for a DynSsz instance.
 type DynSszOptions struct {
-	NoFastSsz              bool
-	NoFastHash             bool
-	ExtendedTypes          bool
-	Verbose                bool
-	LogCb                  func(format string, args ...any)
-	StreamWriterBufferSize int
-	StreamReaderBufferSize int
+	NoFastSsz                 bool
+	NoFastHash                bool
+	ExtendedTypes             bool
+	Verbose                   bool
+	LogCb                     func(format string, args ...any)
+	StreamWriterBufferSize    int
+	StreamWriterMaxBufferSize int
+	StreamReaderBufferSize    int
+	StreamReaderMaxBufferSize int
 }
 
 // WithNoFastSsz disables fastssz fallback for types that implement fastssz
@@ -68,11 +70,33 @@ func WithStreamWriterBufferSize(size int) DynSszOption {
 	}
 }
 
-// WithStreamReaderBufferSize sets the maximum internal buffer size for the
-// streaming SSZ decoder used by UnmarshalSSZReader. Defaults to 2KB if not set.
+// WithStreamWriterMaxBufferSize sets the maximum buffer size for delegating to
+// buffer-based marshal methods during streaming SSZ encoding. When a type's
+// serialized size exceeds this limit, the encoder falls through to
+// reflection-based field-by-field marshalling instead of buffering the entire
+// object. Defaults to 200KB if not set.
+func WithStreamWriterMaxBufferSize(size int) DynSszOption {
+	return func(opts *DynSszOptions) {
+		opts.StreamWriterMaxBufferSize = size
+	}
+}
+
+// WithStreamReaderBufferSize sets the internal buffer size for the streaming
+// SSZ decoder used by UnmarshalSSZReader. Defaults to 2KB if not set.
 func WithStreamReaderBufferSize(size int) DynSszOption {
 	return func(opts *DynSszOptions) {
 		opts.StreamReaderBufferSize = size
+	}
+}
+
+// WithStreamReaderMaxBufferSize sets the maximum buffer size for delegating to
+// buffer-based unmarshal methods during streaming SSZ decoding. When a type's
+// serialized size exceeds this limit, the decoder falls through to
+// reflection-based field-by-field unmarshalling instead of buffering the entire
+// object. Defaults to 200KB if not set.
+func WithStreamReaderMaxBufferSize(size int) DynSszOption {
+	return func(opts *DynSszOptions) {
+		opts.StreamReaderMaxBufferSize = size
 	}
 }
 

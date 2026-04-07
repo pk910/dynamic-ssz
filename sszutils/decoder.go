@@ -22,4 +22,5 @@ type Decoder interface {
 	DecodeOffset() (uint32, error)
 	DecodeOffsetAt(pos int) uint32
 	SkipBytes(n int)
+	MaxDecodeBufferSize() int // max size for efficient DecodeBytesBuf without excessive allocation
 }

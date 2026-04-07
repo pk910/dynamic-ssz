@@ -14,35 +14,53 @@ import (
 // StreamEncoder (2KB).
 const DefaultStreamEncoderBufSize = 2 * 1024
 
+// DefaultStreamEncoderMaxBufSize is the default maximum buffer size for
+// delegation to buffer-based marshal methods (200KB). Outputs exceeding this
+// threshold fall through to reflection-based field-by-field marshalling.
+const DefaultStreamEncoderMaxBufSize = 200 * 1024
+
 // StreamEncoder is a non-seekable Encoder implementation that writes SSZ data
 // to an io.Writer with internal buffering. It does not support EncodeOffsetAt.
 type StreamEncoder struct {
-	writer   io.Writer
-	position int
-	scratch  []byte // small scratch buffer for GetBuffer/SetBuffer
-	writeBuf []byte
-	bufPos   int
-	writeErr error
+	writer     io.Writer
+	position   int
+	scratch    []byte // small scratch buffer for GetBuffer/SetBuffer
+	writeBuf   []byte
+	bufPos     int
+	writeErr   error
+	maxBufSize int // Configured maximum buffer size for delegation
 }
 
 var _ Encoder = (*StreamEncoder)(nil)
 
 // NewStreamEncoder creates a new StreamEncoder that writes SSZ data to the
-// provided io.Writer. bufSize controls the internal write buffer size; if <= 0,
-// DefaultStreamEncoderBufSize is used.
-func NewStreamEncoder(writer io.Writer, bufSize int) *StreamEncoder {
+// provided io.Writer. bufSize controls the internal write buffer size (defaults
+// to 2KB if <= 0). maxBufSize controls the maximum buffer size for delegation
+// to buffer-based marshal methods (defaults to 200KB if <= 0).
+func NewStreamEncoder(writer io.Writer, bufSize, maxBufSize int) *StreamEncoder {
 	if bufSize <= 0 {
 		bufSize = DefaultStreamEncoderBufSize
 	}
+	if maxBufSize <= 0 {
+		maxBufSize = DefaultStreamEncoderMaxBufSize
+	}
 	return &StreamEncoder{
-		writer:   writer,
-		scratch:  make([]byte, 0, 32),
-		writeBuf: make([]byte, bufSize),
+		writer:     writer,
+		scratch:    make([]byte, 0, 32),
+		writeBuf:   make([]byte, bufSize),
+		maxBufSize: maxBufSize,
 	}
 }
 
 func (e *StreamEncoder) Seekable() bool {
 	return false
+}
+
+// MaxEncodeBufferSize returns the configured maximum buffer size. Callers
+// should avoid GetBuffer/SetBuffer delegation for outputs exceeding this size
+// to prevent large temporary allocations.
+func (e *StreamEncoder) MaxEncodeBufferSize() int {
+	return e.maxBufSize
 }
 
 func (e *StreamEncoder) GetPosition() int {

@@ -20,4 +20,5 @@ type Encoder interface {
 	EncodeOffset(v uint32)
 	EncodeOffsetAt(pos int, v uint32)
 	EncodeZeroPadding(n int)
+	MaxEncodeBufferSize() int // max size for efficient GetBuffer/SetBuffer delegation
 }

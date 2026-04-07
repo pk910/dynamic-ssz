@@ -80,11 +80,13 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 			if unmarshaler, ok := targetValue.Addr().Interface().(sszutils.DynamicViewUnmarshaler); ok {
 				if unmarshalFn := unmarshaler.UnmarshalSSZDynView(*targetType.CodegenInfo); unmarshalFn != nil {
 					bufLen := decoder.GetLength()
-					buf, err := decoder.DecodeBytesBuf(bufLen)
-					if err != nil {
-						return err
+					if bufLen <= decoder.MaxDecodeBufferSize() {
+						buf, err := decoder.DecodeBytesBuf(bufLen)
+						if err != nil {
+							return err
+						}
+						return unmarshalFn(ctx.ds, buf)
 					}
-					return unmarshalFn(ctx.ds, buf)
 				}
 			}
 		}
@@ -109,11 +111,13 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 					}
 					sszLen = int(typeSize)
 				}
-				sszBuf, err := decoder.DecodeBytesBuf(sszLen)
-				if err != nil {
-					return err
+				if sszLen <= decoder.MaxDecodeBufferSize() || targetType.SszType == ssztypes.SszCustomType {
+					sszBuf, err := decoder.DecodeBytesBuf(sszLen)
+					if err != nil {
+						return err
+					}
+					return unmarshaller.UnmarshalSSZ(sszBuf)
 				}
-				return unmarshaller.UnmarshalSSZ(sszBuf)
 			}
 		}
 
@@ -136,11 +140,13 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 					}
 					sszLen = int(typeSize)
 				}
-				sszBuf, err := decoder.DecodeBytesBuf(sszLen)
-				if err != nil {
-					return err
+				if sszLen <= decoder.MaxDecodeBufferSize() {
+					sszBuf, err := decoder.DecodeBytesBuf(sszLen)
+					if err != nil {
+						return err
+					}
+					return unmarshaller.UnmarshalSSZDyn(ctx.ds, sszBuf)
 				}
-				return unmarshaller.UnmarshalSSZDyn(ctx.ds, sszBuf)
 			}
 		}
 	}

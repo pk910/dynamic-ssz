@@ -397,7 +397,7 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 //	err = ds.MarshalSSZWriter(block, conn)
 func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) error {
 	cfg := applyCallOptions(opts)
-	encoder := sszutils.NewStreamEncoder(w, d.options.StreamWriterBufferSize)
+	encoder := sszutils.NewStreamEncoder(w, d.options.StreamWriterBufferSize, d.options.StreamWriterMaxBufferSize)
 
 	// Skip view descriptor logic for types implementing DynamicEncoder
 	if cfg == nil || cfg.viewDescriptor == nil {
@@ -662,7 +662,7 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 //	err = ds.UnmarshalSSZReader(&block, conn, -1)
 func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...CallOption) error {
 	cfg := applyCallOptions(opts)
-	decoder := sszutils.NewStreamDecoder(r, size, d.options.StreamReaderBufferSize)
+	decoder := sszutils.NewStreamDecoder(r, size, d.options.StreamReaderBufferSize, d.options.StreamReaderMaxBufferSize)
 	decoder.PushLimit(size)
 
 	// Skip view descriptor logic for types implementing DynamicDecoder

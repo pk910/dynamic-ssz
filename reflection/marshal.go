@@ -74,12 +74,14 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 
 		if useFastSsz {
 			if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.FastsszMarshaler); ok {
-				newBuf, err := marshaller.MarshalSSZTo(encoder.GetBuffer())
-				if err != nil {
-					return err
+				if int(sourceType.Size) <= encoder.MaxEncodeBufferSize() || sourceType.SszType == ssztypes.SszCustomType {
+					newBuf, err := marshaller.MarshalSSZTo(encoder.GetBuffer())
+					if err != nil {
+						return err
+					}
+					encoder.SetBuffer(newBuf)
+					return nil
 				}
-				encoder.SetBuffer(newBuf)
-				return nil
 			}
 		}
 
@@ -94,12 +96,14 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 
 		if useDynamicMarshal {
 			if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.DynamicMarshaler); ok {
-				newBuf, err := marshaller.MarshalSSZDyn(ctx.ds, encoder.GetBuffer())
-				if err != nil {
-					return err
+				if encoder.Seekable() || (sourceType.Size > 0 && int(sourceType.Size) <= encoder.MaxEncodeBufferSize()) {
+					newBuf, err := marshaller.MarshalSSZDyn(ctx.ds, encoder.GetBuffer())
+					if err != nil {
+						return err
+					}
+					encoder.SetBuffer(newBuf)
+					return nil
 				}
-				encoder.SetBuffer(newBuf)
-				return nil
 			}
 		}
 	}
@@ -214,12 +218,14 @@ func (ctx *ReflectionCtx) tryMarshalView(sourceType *ssztypes.TypeDescriptor, so
 	if useViewMarshaler {
 		if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.DynamicViewMarshaler); ok {
 			if marshalFn := marshaller.MarshalSSZDynView(*sourceType.CodegenInfo); marshalFn != nil {
-				newBuf, err := marshalFn(ctx.ds, encoder.GetBuffer())
-				if err != nil {
-					return true, err
+				if encoder.Seekable() || (sourceType.Size > 0 && int(sourceType.Size) <= encoder.MaxEncodeBufferSize()) {
+					newBuf, err := marshalFn(ctx.ds, encoder.GetBuffer())
+					if err != nil {
+						return true, err
+					}
+					encoder.SetBuffer(newBuf)
+					return true, nil
 				}
-				encoder.SetBuffer(newBuf)
-				return true, nil
 			}
 		}
 	}
