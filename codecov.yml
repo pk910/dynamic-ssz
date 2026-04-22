@@ -5,6 +5,7 @@ coverage:
 
 ignore:
   - "codegen/tests/**"
+  - "dynssz-gen/testpkg/**"
   - "tests/**"
 
 comment:
