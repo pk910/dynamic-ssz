@@ -7,7 +7,7 @@ require (
 	github.com/golang/snappy v1.0.0
 	github.com/holiman/uint256 v1.3.2
 	github.com/huandu/go-clone/generic v1.7.3
-	github.com/pk910/dynamic-ssz v1.3.0
+	github.com/pk910/dynamic-ssz v1.3.1
 	github.com/prysmaticlabs/go-bitfield v0.0.0-20240618144021-706c95b2dd15
 	github.com/stretchr/testify v1.11.1
 	gopkg.in/yaml.v2 v2.4.0

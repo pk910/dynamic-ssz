@@ -5,7 +5,7 @@
 package codegen
 
 // Version is the release version of the dynamic-ssz library.
-var Version = "1.3.0"
+var Version = "1.3.1"
 
 // BuildCommit is the git commit hash, set via ldflags at build time.
 var BuildCommit = ""
