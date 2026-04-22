@@ -142,7 +142,7 @@ func LoadConfig(path string) (*FileConfig, error) {
 func (fc *FileConfig) applyToConfig(cfg *Config, cliProvided map[string]bool, baseDir string) ([]typeSpec, error) {
 	// Scalars: CLI wins if provided, otherwise take the file value.
 	if !cliProvided["package"] && fc.Package != "" {
-		cfg.PackagePath = fc.Package
+		cfg.PackagePath = resolvePackagePath(fc.Package, baseDir)
 	}
 	if !cliProvided["package-name"] && fc.PackageName != "" {
 		cfg.PackageName = fc.PackageName
@@ -230,6 +230,33 @@ func resolvePath(path, baseDir string) string {
 		return path
 	}
 	return filepath.Join(baseDir, path)
+}
+
+// resolvePackagePath resolves a go/packages.Load pattern relative to the
+// config file's directory — but only when the pattern looks like a
+// filesystem path. Go package patterns split into three categories:
+//
+//  1. Import paths (e.g. "github.com/foo/bar") — left untouched, since
+//     joining them with a directory would turn a valid import path into a
+//     nonexistent on-disk path.
+//  2. Filesystem paths — anything starting with "./", "../", or equal to
+//     "." / ".." / absolute paths. These are the ones we normalize.
+//  3. "all"/"std" and similar meta-patterns — caught by the import-path
+//     branch (unchanged).
+//
+// The distinction matches the go tool's own rule (see `go help packages`):
+// "A pattern containing a filesystem path starts with './', '../', or '/'".
+// Recursive patterns such as "./..." work because filepath.Join preserves
+// the trailing "...".
+func resolvePackagePath(pkg, baseDir string) string {
+	if pkg == "" || baseDir == "" || filepath.IsAbs(pkg) {
+		return pkg
+	}
+	if pkg == "." || pkg == ".." ||
+		strings.HasPrefix(pkg, "./") || strings.HasPrefix(pkg, "../") {
+		return filepath.Join(baseDir, pkg)
+	}
+	return pkg
 }
 
 // codegenFlagOptions turns a set of effective codegen booleans into the

@@ -748,6 +748,7 @@ func TestRun_ViewOnlyType(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
 // -----------------------------------------------------------------------------
 // loadPackages swap — covers the top-level error branches in run() and
 // loadExternalPackage that the real go/packages.Load essentially never hits

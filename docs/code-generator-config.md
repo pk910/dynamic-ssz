@@ -107,13 +107,35 @@ Per-type boolean overrides can flip a flag in either direction (e.g. turn off
 
 ## Path resolution
 
-All relative `output` paths — both top-level and per-type — are resolved
-**relative to the config file's directory**, not the current working
-directory. Absolute paths are used as-is.
+Paths in the config file are resolved **relative to the config file's
+directory**, not the current working directory. Absolute paths are used
+as-is. This makes configs portable across invocation sites — you can run
+`dynssz-gen --config ./codegen/tests/gen.yaml` from the repo root, from
+`codegen/`, or from anywhere else and get the same result.
 
-This means `dynssz-gen --config ./codegen/tests/gen.yaml` works identically
-whether you run it from the repo root, from `codegen/`, or from anywhere
-else.
+Three config fields participate in this rule:
+
+- `output` (top-level)
+- `output` (per type entry)
+- `package`, but **only when it looks like a filesystem path**. The go
+  tooling distinguishes import paths (`github.com/foo/bar`) from
+  filesystem paths (starting with `./`, `../`, or `/`, or equal to `.` /
+  `..`). Import paths pass through unchanged; filesystem paths are joined
+  with the config file's directory.
+
+Examples (config at `/work/myproj/gen.yaml`):
+
+| `package:` value | Resolved to | Why |
+|---|---|---|
+| `github.com/me/proj/types` | `github.com/me/proj/types` | import path — untouched |
+| `.` | `/work/myproj` | filesystem path |
+| `./internal/types` | `/work/myproj/internal/types` | filesystem path |
+| `../shared/types` | `/work/shared/types` | filesystem path (Clean'd) |
+| `/abs/pkg` | `/abs/pkg` | absolute — untouched |
+| `./...` | `/work/myproj/...` | recursive pattern is preserved |
+
+The CLI `-package` flag is always interpreted by the shell/go tooling
+relative to CWD — only config-file values get rewritten.
 
 ## Combining with CLI flags
 

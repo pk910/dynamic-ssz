@@ -434,6 +434,68 @@ types:
 	}
 }
 
+func TestResolvePackagePath(t *testing.T) {
+	tests := []struct {
+		name    string
+		pkg     string
+		baseDir string
+		want    string
+	}{
+		{"empty pkg stays empty", "", "/base", ""},
+		{"empty base leaves as-is", "./foo", "", "./foo"},
+		{"absolute path preserved", "/abs/pkg", "/base", "/abs/pkg"},
+		{"import path left untouched", "github.com/foo/bar", "/base", "github.com/foo/bar"},
+		{"dot resolves to baseDir", ".", "/base", "/base"},
+		{"dotdot resolves to parent", "..", "/base/sub", "/base"},
+		{"./sub joined", "./sub", "/base", "/base/sub"},
+		{"../sibling joined", "../sibling", "/base/sub", "/base/sibling"},
+		{"recursive pattern preserved", "./...", "/base", "/base/..."},
+		{"single-segment non-path name untouched", "mypkg", "/base", "mypkg"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolvePackagePath(tt.pkg, tt.baseDir)
+			if got != tt.want {
+				t.Errorf("resolvePackagePath(%q, %q) = %q, want %q", tt.pkg, tt.baseDir, got, tt.want)
+			}
+		})
+	}
+}
+
+// End-to-end: a config with `package: ./sub` resolves against the config's
+// directory, not the caller's CWD. Uses the real codegen/tests package via
+// a relative ref from its parent directory so we can verify packages.Load
+// actually accepts the rewritten path.
+func TestApplyToConfig_RelativePackagePath(t *testing.T) {
+	repoTests, err := filepath.Abs("../codegen/tests")
+	if err != nil {
+		t.Fatalf("abs: %v", err)
+	}
+	baseDir := filepath.Dir(repoTests) // .../codegen
+
+	fc := &FileConfig{Package: "./tests"}
+	cfg := &Config{}
+	// applyToConfig will error on the missing types list; that's fine — the
+	// package path rewrite happens before the types check.
+	if _, err := fc.applyToConfig(cfg, map[string]bool{}, baseDir); err != nil &&
+		!strings.Contains(err.Error(), "at least one entry") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := filepath.Join(baseDir, "tests")
+	if cfg.PackagePath != want {
+		t.Errorf("PackagePath = %q, want %q", cfg.PackagePath, want)
+	}
+}
+
+func TestApplyToConfig_ImportPathPackageUntouched(t *testing.T) {
+	fc := &FileConfig{Package: "github.com/pk910/dynamic-ssz/codegen/tests"}
+	cfg := &Config{}
+	_, _ = fc.applyToConfig(cfg, map[string]bool{}, "/does/not/matter")
+	if cfg.PackagePath != "github.com/pk910/dynamic-ssz/codegen/tests" {
+		t.Errorf("import path should pass through untouched, got %q", cfg.PackagePath)
+	}
+}
+
 func TestResolvePath(t *testing.T) {
 	tests := []struct {
 		name    string
