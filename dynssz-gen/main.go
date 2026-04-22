@@ -14,6 +14,7 @@ import (
 	"go/types"
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -34,6 +35,10 @@ type Config struct {
 	WithoutFastSsz            bool
 	WithStreaming             bool
 	WithExtendedTypes         bool
+
+	// TypeSpecs, when non-nil, overrides TypeNames parsing. Populated by the
+	// config-file path so per-type override booleans carry through.
+	TypeSpecs []typeSpec
 }
 
 // typeSpec holds parsed information about a type specification
@@ -42,7 +47,32 @@ type typeSpec struct {
 	OutputFile string
 	ViewTypes  []string // view types for data+views mode (can include package paths)
 	IsViewOnly bool     // whether this is a view-only type
+
+	// Per-type effective codegen flags. When HasPerTypeOverrides is false
+	// these are unused and the global Config values apply. When true, each
+	// boolean is the resolved effective value (global default with optional
+	// override) and is applied at the per-type level only — never the file
+	// level — because codegen With* options can only set booleans to true.
+	HasPerTypeOverrides       bool
+	Legacy                    bool
+	WithoutDynamicExpressions bool
+	WithoutFastSsz            bool
+	WithStreaming             bool
+	WithExtendedTypes         bool
+
+	// Resolved during run()'s validation pass; reused when building codegen
+	// options so we don't look up or re-resolve the same symbols twice (and
+	// so the second pass doesn't need defensive error handling for cases the
+	// first pass already ruled out).
+	resolvedGoType    types.Type
+	resolvedViewTypes []types.Type
 }
+
+// loadPackages is the loader used by run() and its external-package helper.
+// It wraps packages.Load so tests can substitute a failing loader to
+// exercise the top-level error paths that packages.Load practically never
+// hits in production.
+var loadPackages = packages.Load
 
 // viewTypeRef holds a parsed view type reference
 type viewTypeRef struct {
@@ -86,6 +116,7 @@ func getVersionString() string {
 
 func main() {
 	var (
+		configPath                = flag.String("config", "", "Path to YAML config file")
 		packagePath               = flag.String("package", "", "Go package path to analyze")
 		packageName               = flag.String("package-name", "", "Package name for generated code")
 		typeNames                 = flag.String("types", "", "Comma-separated list of type names to generate code for")
@@ -104,7 +135,9 @@ func main() {
 		_, _ = fmt.Fprintf(w, "dynssz-gen %s\n\n", getVersionString())
 		_, _ = fmt.Fprintf(w, "Go code generator for dynamic SSZ marshaling, unmarshaling, and hash tree root.\n\n")
 		_, _ = fmt.Fprintf(w, "Usage:\n")
-		_, _ = fmt.Fprintf(w, "  dynssz-gen -package <path> -types <types> [-output <file>] [flags]\n\n")
+		_, _ = fmt.Fprintf(w, "  dynssz-gen -package <path> -types <types> [-output <file>] [flags]\n")
+		_, _ = fmt.Fprintf(w, "  dynssz-gen -config <file> [flags]\n\n")
+		_, _ = fmt.Fprintf(w, "See docs/code-generator-config.md for the config file format.\n\n")
 		_, _ = fmt.Fprintf(w, "Types syntax:\n")
 		_, _ = fmt.Fprintf(w, "  Comma-separated list of type names from the target package.\n")
 		_, _ = fmt.Fprintf(w, "  Each type can have colon-separated options:\n")
@@ -150,7 +183,7 @@ func main() {
 		return
 	}
 
-	if *packagePath == "" && *typeNames == "" {
+	if *configPath == "" && *packagePath == "" && *typeNames == "" {
 		flag.Usage()
 		return
 	}
@@ -168,22 +201,53 @@ func main() {
 		WithExtendedTypes:         *withExtendedTypes,
 	}
 
-	if err := run(config); err != nil {
+	if *configPath != "" {
+		cliProvided := providedFlagSet()
+		fc, err := LoadConfig(*configPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+		baseDir := filepath.Dir(*configPath)
+		specs, err := fc.applyToConfig(&config, cliProvided, baseDir)
+		if err != nil {
+			log.Fatal(err)
+		}
+		config.TypeSpecs = specs
+	}
+
+	if err := run(&config); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(config Config) error {
+// providedFlagSet returns the set of flags that the user explicitly passed on
+// the command line. The flag package otherwise exposes only the resolved
+// value, which makes it impossible to tell "user passed -legacy=false" from
+// "user did not pass -legacy at all" — we need that distinction for the
+// config-file precedence rules.
+func providedFlagSet() map[string]bool {
+	provided := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) {
+		provided[f.Name] = true
+	})
+	return provided
+}
+
+func run(config *Config) error {
 	if config.PackagePath == "" {
 		return errors.New("package path is required (-package)")
 	}
-	if config.TypeNames == "" {
+	if config.TypeNames == "" && len(config.TypeSpecs) == 0 {
 		return errors.New("type names are required (-types)")
 	}
 
 	if config.Verbose {
 		log.Printf("Analyzing package: %s", config.PackagePath)
-		log.Printf("Looking for types: %s", config.TypeNames)
+		if config.TypeNames != "" {
+			log.Printf("Looking for types: %s", config.TypeNames)
+		} else {
+			log.Printf("Looking for %d types (from config file)", len(config.TypeSpecs))
+		}
 	}
 
 	// Parse the Go package
@@ -191,7 +255,7 @@ func run(config Config) error {
 		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName,
 	}
 
-	pkgs, err := packages.Load(cfg, config.PackagePath)
+	pkgs, err := loadPackages(cfg, config.PackagePath)
 	if err != nil {
 		return fmt.Errorf("failed to load package %s: %v", config.PackagePath, err)
 	}
@@ -212,9 +276,14 @@ func run(config Config) error {
 		log.Printf("Successfully loaded package: %s", pkg.Name)
 	}
 
-	typeSpecs, err := parseTypeSpecs(config.TypeNames, config.OutputFile)
-	if err != nil {
-		return err
+	var typeSpecs []typeSpec
+	if len(config.TypeSpecs) > 0 {
+		typeSpecs = config.TypeSpecs
+	} else {
+		typeSpecs, err = parseTypeSpecs(config.TypeNames, config.OutputFile)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Find the requested types in the package
@@ -232,7 +301,7 @@ func run(config Config) error {
 			return cached, nil
 		}
 
-		extPkgs, err2 := packages.Load(cfg, pkgPath)
+		extPkgs, err2 := loadPackages(cfg, pkgPath)
 		if err2 != nil {
 			return nil, fmt.Errorf("failed to load external package %s: %w", pkgPath, err2)
 		}
@@ -282,7 +351,9 @@ func run(config Config) error {
 		return typeObj.Type(), nil
 	}
 
-	for _, spec := range typeSpecs {
+	for i := range typeSpecs {
+		spec := &typeSpecs[i]
+
 		// Validate that the main type exists
 		obj := mainScope.Lookup(spec.TypeName)
 		if obj == nil {
@@ -293,20 +364,27 @@ func run(config Config) error {
 		if !ok {
 			return fmt.Errorf("object %s is not a type in package %s", spec.TypeName, config.PackagePath)
 		}
-		_ = typeObj // validated above, used later in verbose logging
+		spec.resolvedGoType = typeObj.Type()
 
-		// Validate view types exist (can be local or external)
-		for _, viewTypeStr := range spec.ViewTypes {
-			ref := parseViewTypeRef(viewTypeStr)
-			if _, err2 := resolveTypeRef(ref); err2 != nil {
-				return fmt.Errorf("view type %s: %w", viewTypeStr, err2)
+		// Resolve view types exactly once; cache on the spec so the second
+		// pass doesn't need to repeat the lookup (or handle errors the first
+		// pass already rejected).
+		if len(spec.ViewTypes) > 0 {
+			spec.resolvedViewTypes = make([]types.Type, 0, len(spec.ViewTypes))
+			for _, viewTypeStr := range spec.ViewTypes {
+				ref := parseViewTypeRef(viewTypeStr)
+				viewType, err2 := resolveTypeRef(ref)
+				if err2 != nil {
+					return fmt.Errorf("view type %s: %w", viewTypeStr, err2)
+				}
+				spec.resolvedViewTypes = append(spec.resolvedViewTypes, viewType)
 			}
 		}
 
 		if _, ok := generateFiles[spec.OutputFile]; !ok {
 			generateFiles[spec.OutputFile] = make([]typeSpec, 0)
 		}
-		generateFiles[spec.OutputFile] = append(generateFiles[spec.OutputFile], spec)
+		generateFiles[spec.OutputFile] = append(generateFiles[spec.OutputFile], *spec)
 		typeCount++
 
 		if config.Verbose {
@@ -333,13 +411,10 @@ func run(config Config) error {
 		var typeOptions []codegen.CodeGeneratorOption
 
 		for _, spec := range specs {
-			// Look up the main type (already validated in the loop above)
-			obj := mainScope.Lookup(spec.TypeName)
-			typeObj, ok := obj.(*types.TypeName)
-			if !ok {
-				return fmt.Errorf("object %s is not a type", spec.TypeName)
-			}
-			goType := typeObj.Type()
+			// Type + view types were already resolved and cached on the spec
+			// during the first validation pass, so no lookup/error handling
+			// is needed here.
+			goType := spec.resolvedGoType
 
 			// Build type-specific options
 			var typeSpecificOpts []codegen.CodeGeneratorOption
@@ -357,18 +432,9 @@ func run(config Config) error {
 				}
 			}
 
-			// Add view types if specified
-			if len(spec.ViewTypes) > 0 {
-				viewTypes := make([]types.Type, 0, len(spec.ViewTypes))
-				for _, viewTypeStr := range spec.ViewTypes {
-					ref := parseViewTypeRef(viewTypeStr)
-					viewType, err2 := resolveTypeRef(ref)
-					if err2 != nil {
-						return fmt.Errorf("failed to resolve view type %s: %w", viewTypeStr, err2)
-					}
-					viewTypes = append(viewTypes, viewType)
-				}
-				typeSpecificOpts = append(typeSpecificOpts, codegen.WithGoTypesViewTypes(viewTypes...))
+			// Add view types if any were resolved.
+			if len(spec.resolvedViewTypes) > 0 {
+				typeSpecificOpts = append(typeSpecificOpts, codegen.WithGoTypesViewTypes(spec.resolvedViewTypes...))
 			}
 
 			// Add view-only flag if specified
@@ -376,24 +442,37 @@ func run(config Config) error {
 				typeSpecificOpts = append(typeSpecificOpts, codegen.WithViewOnly())
 			}
 
+			// When the config file populated per-type overrides, every codegen
+			// boolean is applied here at the per-type level. This is the only
+			// way for a specific type to opt *out* of a globally enabled flag:
+			// codegen's With* options can only set a boolean to true, so if
+			// we left the option on at the file level we could never turn it
+			// off for one type.
+			if spec.HasPerTypeOverrides {
+				typeSpecificOpts = append(typeSpecificOpts, codegenFlagOptions(
+					spec.Legacy,
+					spec.WithoutDynamicExpressions,
+					spec.WithoutFastSsz,
+					spec.WithStreaming,
+					spec.WithExtendedTypes,
+				)...)
+			}
+
 			// Add the type with its options
 			typeOptions = append(typeOptions, codegen.WithGoTypesType(goType, typeSpecificOpts...))
 		}
 
-		if config.Legacy {
-			typeOptions = append(typeOptions, codegen.WithCreateLegacyFn())
-		}
-		if config.WithoutDynamicExpressions {
-			typeOptions = append(typeOptions, codegen.WithoutDynamicExpressions())
-		}
-		if config.WithoutFastSsz {
-			typeOptions = append(typeOptions, codegen.WithNoFastSsz())
-		}
-		if config.WithStreaming {
-			typeOptions = append(typeOptions, codegen.WithCreateEncoderFn(), codegen.WithCreateDecoderFn())
-		}
-		if config.WithExtendedTypes {
-			typeOptions = append(typeOptions, codegen.WithExtendedTypes())
+		// File-level flags are only used when no per-type overrides are in
+		// play (i.e. the legacy CLI path). In the config-file path each type
+		// already carries its fully-resolved per-type options above.
+		if !anyHasOverrides(specs) {
+			typeOptions = append(typeOptions, codegenFlagOptions(
+				config.Legacy,
+				config.WithoutDynamicExpressions,
+				config.WithoutFastSsz,
+				config.WithStreaming,
+				config.WithExtendedTypes,
+			)...)
 		}
 
 		// Build the file with all types

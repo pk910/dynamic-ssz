@@ -1,0 +1,17 @@
+# Types that use sszutils.Annotate for non-struct SSZ annotations.
+package: github.com/pk910/dynamic-ssz/codegen/tests
+output: gen_annotated.go
+with-streaming: true
+
+types:
+  - AnnotatedList
+  - AnnotatedList2
+  - AnnotatedByteList
+  - AnnotatedWithSpecs
+  - AnnotatedContainer
+  - AnnotatedOverrideContainer
+  - AnnotatedSpecsContainer
+  - name: AnnotatedNestedContainer
+    output: gen_annotated.go
+  - name: AnnotatedNestedContainer_S
+    output: gen_annotated.go
