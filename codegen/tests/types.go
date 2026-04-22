@@ -172,6 +172,11 @@ type SimpleTypes3 struct {
 	Wrapper2 dynssz.TypeWrapper[struct {
 		Data []*uint16 `ssz-size:"2"`
 	}, []*uint16] `ssz-type:"wrapper"`
+	Wrapper3 *SimpleTypes3_Wrapper3 `ssz-type:"wrapper"`
+}
+
+type SimpleTypes3_Wrapper3 struct {
+	Test bool
 }
 
 var (
@@ -216,6 +221,9 @@ var SimpleTypes3_Payload = SimpleTypes3{
 		Data []*byte `ssz-size:"32"`
 	}, []*byte]{
 		Data: []*byte{&i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8, &i8},
+	},
+	Wrapper3: &SimpleTypes3_Wrapper3{
+		Test: true,
 	},
 }
 

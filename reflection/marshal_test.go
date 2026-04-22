@@ -305,7 +305,7 @@ func TestMarshalErrors(t *testing.T) {
 			input: struct {
 				TypeWrapper struct{} `ssz-type:"wrapper"`
 			}{},
-			expectedErr: "method not found on",
+			expectedErr: "wrapper descriptor must have exactly 1 field",
 		},
 
 		{

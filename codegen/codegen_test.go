@@ -147,6 +147,10 @@ func TestGenerateCodeErrorPaths(t *testing.T) {
 			name: "EncoderError",
 			opts: CodeGeneratorOptions{NoMarshalSSZ: true, NoUnmarshalSSZ: true, NoSizeSSZ: true, NoHashTreeRoot: true, CreateEncoderFn: true},
 		},
+		{
+			name: "DecoderError",
+			opts: CodeGeneratorOptions{NoMarshalSSZ: true, NoUnmarshalSSZ: true, NoSizeSSZ: true, NoHashTreeRoot: true, CreateDecoderFn: true},
+		},
 	}
 
 	for _, tt := range tests {

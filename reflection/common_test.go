@@ -710,6 +710,21 @@ var commonTestMatrix = []struct {
 		fromHex("0xcc36cd36ce36"),
 		fromHex("0xee1b490c066fd9628f79bae66126af845bd7d5bbe406b6344fc88d9e1fb25c41"),
 	},
+	{
+		"struct_wrapper_1",
+		func() any {
+			type WrappedUint16List = struct {
+				Data []uint16 `ssz-max:"30"`
+			}
+			sszutils.Annotate[WrappedUint16List](`ssz-type:"wrapper"`)
+
+			return WrappedUint16List{
+				Data: []uint16{14028, 14029, 14030},
+			}
+		}(),
+		fromHex("0xcc36cd36ce36"),
+		fromHex("0xee1b490c066fd9628f79bae66126af845bd7d5bbe406b6344fc88d9e1fb25c41"),
+	},
 
 	// types with fastssz methods
 	{

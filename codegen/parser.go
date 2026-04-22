@@ -1282,13 +1282,18 @@ func (p *Parser) buildCompatibleUnionDescriptor(desc *ssztypes.TypeDescriptor, d
 
 func (p *Parser) buildTypeWrapperDescriptor(desc *ssztypes.TypeDescriptor, dataNamed, schemaNamed *types.Named, _ []ssztypes.SszTypeHint, _ []ssztypes.SszSizeHint, _ []ssztypes.SszMaxSizeHint) error {
 	// Extract generic type arguments from TypeWrapper[D, T] for schema (determines SSZ layout)
-	schemaTypeArgs := schemaNamed.TypeArgs()
-	if schemaTypeArgs == nil || schemaTypeArgs.Len() != 2 {
-		return fmt.Errorf("TypeWrapper must have exactly 2 type arguments")
-	}
+	var schemaDescriptorType types.Type
+	var schemaWrappedType types.Type
+	var isTypeWrapper = false
 
-	schemaDescriptorType := schemaTypeArgs.At(0) // D - the schema descriptor struct
-	schemaWrappedType := schemaTypeArgs.At(1)    // T - the schema wrapped type
+	schemaTypeArgs := schemaNamed.TypeArgs()
+	if schemaTypeArgs != nil && schemaTypeArgs.Len() == 2 {
+		schemaDescriptorType = schemaTypeArgs.At(0) // D - the schema descriptor struct
+		schemaWrappedType = schemaTypeArgs.At(1)    // T - the schema wrapped type
+		isTypeWrapper = true
+	} else {
+		schemaDescriptorType = schemaNamed
+	}
 
 	// The descriptor must be a struct type
 	schemaDescriptorStruct, ok := schemaDescriptorType.Underlying().(*types.Struct)
@@ -1309,7 +1314,9 @@ func (p *Parser) buildTypeWrapperDescriptor(desc *ssztypes.TypeDescriptor, dataN
 	}
 
 	// Verify the schema field type matches the schema wrapped type
-	if !types.Identical(schemaField.Type(), schemaWrappedType) {
+	if !isTypeWrapper {
+		schemaWrappedType = schemaField.Type()
+	} else if !types.Identical(schemaField.Type(), schemaWrappedType) {
 		return fmt.Errorf("TypeWrapper descriptor field type %v does not match wrapped type %v", schemaField.Type(), schemaWrappedType)
 	}
 
@@ -1317,11 +1324,25 @@ func (p *Parser) buildTypeWrapperDescriptor(desc *ssztypes.TypeDescriptor, dataN
 	var dataWrappedType types.Type
 	if dataNamed != schemaNamed {
 		// Extract data wrapped type from data TypeWrapper
-		dataTypeArgs := dataNamed.TypeArgs()
-		if dataTypeArgs == nil || dataTypeArgs.Len() != 2 {
-			return fmt.Errorf("data TypeWrapper must have exactly 2 type arguments")
+		if isTypeWrapper {
+			dataTypeArgs := dataNamed.TypeArgs()
+			if dataTypeArgs == nil || dataTypeArgs.Len() != 2 {
+				return fmt.Errorf("data TypeWrapper must have exactly 2 type arguments")
+			}
+
+			dataWrappedType = dataTypeArgs.At(1) // T - the data wrapped type
+		} else {
+			dataStruct, ok := dataNamed.Underlying().(*types.Struct)
+			if !ok {
+				return fmt.Errorf("data TypeWrapper descriptor must be a struct, got %T", dataNamed.Underlying())
+			}
+			if dataStruct.NumFields() != 1 {
+				return fmt.Errorf("data TypeWrapper descriptor must have exactly 1 field, got %d", dataStruct.NumFields())
+			}
+
+			dataField := dataStruct.Field(0)
+			dataWrappedType = dataField.Type()
 		}
-		dataWrappedType = dataTypeArgs.At(1) // T - the data wrapped type
 	} else {
 		dataWrappedType = schemaWrappedType
 	}
