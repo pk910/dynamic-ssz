@@ -168,7 +168,7 @@ Creates a new stream encoder:
 ```go
 import "github.com/pk910/dynamic-ssz/sszutils"
 
-encoder := sszutils.NewStreamEncoder(writer, 0) // 0 = default 2KB buffer
+encoder := sszutils.NewStreamEncoder(writer, 0, 0) // 0 = default 2KB write buffer, 0 = default 200KB max delegation buffer
 ```
 
 The `StreamEncoder`:
@@ -182,7 +182,7 @@ The `StreamEncoder`:
 Creates a new stream decoder:
 
 ```go
-decoder := sszutils.NewStreamDecoder(reader, totalSize, 0) // 0 = default 2KB buffer
+decoder := sszutils.NewStreamDecoder(reader, totalSize, 0, 0) // 0 = default 2KB read buffer, 0 = default 200KB max delegation buffer
 ```
 
 The `StreamDecoder`:

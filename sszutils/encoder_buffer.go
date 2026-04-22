@@ -6,6 +6,7 @@ package sszutils
 
 import (
 	"encoding/binary"
+	"math"
 )
 
 // BufferEncoder is a seekable Encoder implementation backed by an in-memory
@@ -31,6 +32,12 @@ func NewBufferEncoder(buffer []byte) *BufferEncoder {
 // offset writes via EncodeOffsetAt.
 func (e *BufferEncoder) Seekable() bool {
 	return true
+}
+
+// MaxEncodeBufferSize returns math.MaxInt because the entire output is already
+// buffered in memory—no additional allocation overhead from delegation.
+func (e *BufferEncoder) MaxEncodeBufferSize() int {
+	return math.MaxInt
 }
 
 // GetPosition returns the current write position in the buffer.

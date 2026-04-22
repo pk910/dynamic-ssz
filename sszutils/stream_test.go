@@ -104,7 +104,7 @@ func (r *shortReader) Read(p []byte) (n int, err error) {
 
 func TestStreamEncoder_NewStreamEncoder(t *testing.T) {
 	var buf bytes.Buffer
-	enc := NewStreamEncoder(&buf, 0)
+	enc := NewStreamEncoder(&buf, 0, 0)
 
 	if enc == nil {
 		t.Fatal("expected non-nil encoder")
@@ -119,7 +119,7 @@ func TestStreamEncoder_NewStreamEncoder(t *testing.T) {
 
 func TestStreamEncoder_GetBuffer(t *testing.T) {
 	var buf bytes.Buffer
-	enc := NewStreamEncoder(&buf, 0)
+	enc := NewStreamEncoder(&buf, 0, 0)
 
 	buffer := enc.GetBuffer()
 	if buffer == nil {
@@ -132,7 +132,7 @@ func TestStreamEncoder_GetBuffer(t *testing.T) {
 
 func TestStreamEncoder_SetBuffer(t *testing.T) {
 	var buf bytes.Buffer
-	enc := NewStreamEncoder(&buf, 0)
+	enc := NewStreamEncoder(&buf, 0, 0)
 
 	testData := []byte{0x01, 0x02, 0x03}
 	enc.SetBuffer(testData)
@@ -152,7 +152,7 @@ func TestStreamEncoder_SetBuffer(t *testing.T) {
 func TestStreamEncoder_EncodeBool_WriteError(t *testing.T) {
 	testErr := errors.New("write error")
 	w := &errWriter{errAfter: 0, err: testErr}
-	enc := NewStreamEncoder(w, 0)
+	enc := NewStreamEncoder(w, 0, 0)
 
 	enc.EncodeBool(true)
 	enc.Flush()
@@ -164,7 +164,7 @@ func TestStreamEncoder_EncodeBool_WriteError(t *testing.T) {
 
 func TestStreamEncoder_EncodeBool_ShortWrite(t *testing.T) {
 	w := &shortWriter{maxWrite: 0}
-	enc := NewStreamEncoder(w, 0)
+	enc := NewStreamEncoder(w, 0, 0)
 
 	enc.EncodeBool(true)
 	enc.Flush()
@@ -180,7 +180,7 @@ func TestStreamEncoder_EncodeBool_ShortWrite(t *testing.T) {
 func TestStreamEncoder_EncodeUint8_WriteError(t *testing.T) {
 	testErr := errors.New("write error")
 	w := &errWriter{errAfter: 0, err: testErr}
-	enc := NewStreamEncoder(w, 0)
+	enc := NewStreamEncoder(w, 0, 0)
 
 	enc.EncodeUint8(42)
 	enc.Flush()
@@ -192,7 +192,7 @@ func TestStreamEncoder_EncodeUint8_WriteError(t *testing.T) {
 
 func TestStreamEncoder_EncodeUint8_ShortWrite(t *testing.T) {
 	w := &shortWriter{maxWrite: 0}
-	enc := NewStreamEncoder(w, 0)
+	enc := NewStreamEncoder(w, 0, 0)
 
 	enc.EncodeUint8(42)
 	enc.Flush()
@@ -208,7 +208,7 @@ func TestStreamEncoder_EncodeUint8_ShortWrite(t *testing.T) {
 func TestStreamEncoder_EncodeUint16_WriteError(t *testing.T) {
 	testErr := errors.New("write error")
 	w := &errWriter{errAfter: 0, err: testErr}
-	enc := NewStreamEncoder(w, 0)
+	enc := NewStreamEncoder(w, 0, 0)
 
 	enc.EncodeUint16(1000)
 	enc.Flush()
@@ -220,7 +220,7 @@ func TestStreamEncoder_EncodeUint16_WriteError(t *testing.T) {
 
 func TestStreamEncoder_EncodeUint16_ShortWrite(t *testing.T) {
 	w := &shortWriter{maxWrite: 1}
-	enc := NewStreamEncoder(w, 0)
+	enc := NewStreamEncoder(w, 0, 0)
 
 	enc.EncodeUint16(1000)
 	enc.Flush()
@@ -236,7 +236,7 @@ func TestStreamEncoder_EncodeUint16_ShortWrite(t *testing.T) {
 func TestStreamEncoder_EncodeUint32_WriteError(t *testing.T) {
 	testErr := errors.New("write error")
 	w := &errWriter{errAfter: 0, err: testErr}
-	enc := NewStreamEncoder(w, 0)
+	enc := NewStreamEncoder(w, 0, 0)
 
 	enc.EncodeUint32(100000)
 	enc.Flush()
@@ -248,7 +248,7 @@ func TestStreamEncoder_EncodeUint32_WriteError(t *testing.T) {
 
 func TestStreamEncoder_EncodeUint32_ShortWrite(t *testing.T) {
 	w := &shortWriter{maxWrite: 3}
-	enc := NewStreamEncoder(w, 0)
+	enc := NewStreamEncoder(w, 0, 0)
 
 	enc.EncodeUint32(100000)
 	enc.Flush()
@@ -264,7 +264,7 @@ func TestStreamEncoder_EncodeUint32_ShortWrite(t *testing.T) {
 func TestStreamEncoder_EncodeUint64_WriteError(t *testing.T) {
 	testErr := errors.New("write error")
 	w := &errWriter{errAfter: 0, err: testErr}
-	enc := NewStreamEncoder(w, 0)
+	enc := NewStreamEncoder(w, 0, 0)
 
 	enc.EncodeUint64(1000000000)
 	enc.Flush()
@@ -276,7 +276,7 @@ func TestStreamEncoder_EncodeUint64_WriteError(t *testing.T) {
 
 func TestStreamEncoder_EncodeUint64_ShortWrite(t *testing.T) {
 	w := &shortWriter{maxWrite: 7}
-	enc := NewStreamEncoder(w, 0)
+	enc := NewStreamEncoder(w, 0, 0)
 
 	enc.EncodeUint64(1000000000)
 	enc.Flush()
@@ -292,7 +292,7 @@ func TestStreamEncoder_EncodeUint64_ShortWrite(t *testing.T) {
 func TestStreamEncoder_EncodeBytes_WriteError(t *testing.T) {
 	testErr := errors.New("write error")
 	w := &errWriter{errAfter: 0, err: testErr}
-	enc := NewStreamEncoder(w, 0)
+	enc := NewStreamEncoder(w, 0, 0)
 
 	enc.EncodeBytes([]byte{0x01, 0x02, 0x03})
 	enc.Flush()
@@ -304,7 +304,7 @@ func TestStreamEncoder_EncodeBytes_WriteError(t *testing.T) {
 
 func TestStreamEncoder_EncodeBytes_ShortWrite(t *testing.T) {
 	w := &shortWriter{maxWrite: 2}
-	enc := NewStreamEncoder(w, 0)
+	enc := NewStreamEncoder(w, 0, 0)
 
 	enc.EncodeBytes([]byte{0x01, 0x02, 0x03})
 	enc.Flush()
@@ -320,7 +320,7 @@ func TestStreamEncoder_EncodeBytes_ShortWrite(t *testing.T) {
 func TestStreamEncoder_EncodeOffset_WriteError(t *testing.T) {
 	testErr := errors.New("write error")
 	w := &errWriter{errAfter: 0, err: testErr}
-	enc := NewStreamEncoder(w, 0)
+	enc := NewStreamEncoder(w, 0, 0)
 
 	enc.EncodeOffset(100)
 	enc.Flush()
@@ -332,7 +332,7 @@ func TestStreamEncoder_EncodeOffset_WriteError(t *testing.T) {
 
 func TestStreamEncoder_EncodeOffset_ShortWrite(t *testing.T) {
 	w := &shortWriter{maxWrite: 3}
-	enc := NewStreamEncoder(w, 0)
+	enc := NewStreamEncoder(w, 0, 0)
 
 	enc.EncodeOffset(100)
 	enc.Flush()
@@ -347,7 +347,7 @@ func TestStreamEncoder_EncodeOffset_ShortWrite(t *testing.T) {
 
 func TestStreamEncoder_EncodeOffsetAt_NotSupported(t *testing.T) {
 	var buf bytes.Buffer
-	enc := NewStreamEncoder(&buf, 0)
+	enc := NewStreamEncoder(&buf, 0, 0)
 
 	enc.EncodeOffsetAt(0, 100)
 
@@ -362,7 +362,7 @@ func TestStreamEncoder_EncodeOffsetAt_NotSupported(t *testing.T) {
 func TestStreamEncoder_EncodeZeroPadding_WriteError(t *testing.T) {
 	testErr := errors.New("write error")
 	w := &errWriter{errAfter: 0, err: testErr}
-	enc := NewStreamEncoder(w, 0)
+	enc := NewStreamEncoder(w, 0, 0)
 
 	// Write enough to trigger a flush (> buffer size)
 	enc.EncodeZeroPadding(DefaultStreamEncoderBufSize + 10)
@@ -374,7 +374,7 @@ func TestStreamEncoder_EncodeZeroPadding_WriteError(t *testing.T) {
 
 func TestStreamEncoder_EncodeZeroPadding_ShortWrite(t *testing.T) {
 	w := &shortWriter{maxWrite: 5}
-	enc := NewStreamEncoder(w, 0)
+	enc := NewStreamEncoder(w, 0, 0)
 
 	// Write enough to trigger a flush
 	enc.EncodeZeroPadding(DefaultStreamEncoderBufSize + 10)
@@ -389,7 +389,7 @@ func TestStreamEncoder_EncodeZeroPadding_ShortWrite(t *testing.T) {
 
 func TestStreamEncoder_EncodeZeroPadding_LargeBuffer(t *testing.T) {
 	var buf bytes.Buffer
-	enc := NewStreamEncoder(&buf, 0)
+	enc := NewStreamEncoder(&buf, 0, 0)
 
 	enc.EncodeZeroPadding(2048)
 	enc.Flush()
@@ -413,7 +413,7 @@ func TestStreamEncoder_EncodeZeroPadding_LargeBuffer(t *testing.T) {
 func TestStreamEncoder_EncodeZeroPadding_LargeBuffer_WriteError(t *testing.T) {
 	testErr := errors.New("write error")
 	w := &errWriter{errAfter: 1024, err: testErr}
-	enc := NewStreamEncoder(w, 0)
+	enc := NewStreamEncoder(w, 0, 0)
 
 	// Write enough to trigger multiple flushes
 	enc.EncodeZeroPadding(DefaultStreamEncoderBufSize + 1024)
@@ -436,7 +436,7 @@ func TestStreamEncoder_EncodeBool_Values(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			enc := NewStreamEncoder(&buf, 0)
+			enc := NewStreamEncoder(&buf, 0, 0)
 
 			enc.EncodeBool(tt.value)
 			enc.Flush()
@@ -463,7 +463,7 @@ func TestStreamEncoder_EncodeBool_Values(t *testing.T) {
 
 func TestStreamDecoder_NewStreamDecoder(t *testing.T) {
 	reader := bytes.NewReader([]byte{0x01})
-	dec := NewStreamDecoder(reader, 1, 0)
+	dec := NewStreamDecoder(reader, 1, 0, 0)
 
 	if dec == nil {
 		t.Fatal("expected non-nil decoder")
@@ -482,7 +482,7 @@ func TestStreamDecoder_NewStreamDecoder(t *testing.T) {
 func TestStreamDecoder_DecodeBool_ReadError(t *testing.T) {
 	testErr := errors.New("read error")
 	r := &errReader{data: []byte{0x01}, errAfter: 0, err: testErr}
-	dec := NewStreamDecoder(r, 1, 0)
+	dec := NewStreamDecoder(r, 1, 0, 0)
 
 	_, err := dec.DecodeBool()
 
@@ -493,7 +493,7 @@ func TestStreamDecoder_DecodeBool_ReadError(t *testing.T) {
 
 func TestStreamDecoder_DecodeBool_ShortRead(t *testing.T) {
 	r := &shortReader{data: []byte{0x01}, maxRead: 0}
-	dec := NewStreamDecoder(r, 1, 0)
+	dec := NewStreamDecoder(r, 1, 0, 0)
 
 	_, err := dec.DecodeBool()
 
@@ -504,7 +504,7 @@ func TestStreamDecoder_DecodeBool_ShortRead(t *testing.T) {
 
 func TestStreamDecoder_DecodeBool_InvalidValue(t *testing.T) {
 	reader := bytes.NewReader([]byte{0x02})
-	dec := NewStreamDecoder(reader, 1, 0)
+	dec := NewStreamDecoder(reader, 1, 0, 0)
 
 	_, err := dec.DecodeBool()
 
@@ -526,7 +526,7 @@ func TestStreamDecoder_DecodeBool_ValidValues(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			reader := bytes.NewReader([]byte{tt.input})
-			dec := NewStreamDecoder(reader, 1, 0)
+			dec := NewStreamDecoder(reader, 1, 0, 0)
 
 			result, err := dec.DecodeBool()
 
@@ -546,7 +546,7 @@ func TestStreamDecoder_DecodeBool_ValidValues(t *testing.T) {
 func TestStreamDecoder_DecodeUint8_ReadError(t *testing.T) {
 	testErr := errors.New("read error")
 	r := &errReader{data: []byte{0x01}, errAfter: 0, err: testErr}
-	dec := NewStreamDecoder(r, 1, 0)
+	dec := NewStreamDecoder(r, 1, 0, 0)
 
 	_, err := dec.DecodeUint8()
 
@@ -557,7 +557,7 @@ func TestStreamDecoder_DecodeUint8_ReadError(t *testing.T) {
 
 func TestStreamDecoder_DecodeUint8_ShortRead(t *testing.T) {
 	r := &shortReader{data: []byte{0x01}, maxRead: 0}
-	dec := NewStreamDecoder(r, 1, 0)
+	dec := NewStreamDecoder(r, 1, 0, 0)
 
 	_, err := dec.DecodeUint8()
 
@@ -569,7 +569,7 @@ func TestStreamDecoder_DecodeUint8_ShortRead(t *testing.T) {
 func TestStreamDecoder_DecodeUint16_ReadError(t *testing.T) {
 	testErr := errors.New("read error")
 	r := &errReader{data: []byte{0x01, 0x02}, errAfter: 0, err: testErr}
-	dec := NewStreamDecoder(r, 2, 0)
+	dec := NewStreamDecoder(r, 2, 0, 0)
 
 	_, err := dec.DecodeUint16()
 
@@ -581,7 +581,7 @@ func TestStreamDecoder_DecodeUint16_ReadError(t *testing.T) {
 func TestStreamDecoder_DecodeUint16_ShortRead(t *testing.T) {
 	// Reader has only 1 byte but we need 2
 	r := &shortReader{data: []byte{0x01}, maxRead: 1}
-	dec := NewStreamDecoder(r, 2, 0)
+	dec := NewStreamDecoder(r, 2, 0, 0)
 
 	_, err := dec.DecodeUint16()
 
@@ -593,7 +593,7 @@ func TestStreamDecoder_DecodeUint16_ShortRead(t *testing.T) {
 func TestStreamDecoder_DecodeUint32_ReadError(t *testing.T) {
 	testErr := errors.New("read error")
 	r := &errReader{data: []byte{0x01, 0x02, 0x03, 0x04}, errAfter: 0, err: testErr}
-	dec := NewStreamDecoder(r, 4, 0)
+	dec := NewStreamDecoder(r, 4, 0, 0)
 
 	_, err := dec.DecodeUint32()
 
@@ -605,7 +605,7 @@ func TestStreamDecoder_DecodeUint32_ReadError(t *testing.T) {
 func TestStreamDecoder_DecodeUint32_ShortRead(t *testing.T) {
 	// Reader has only 3 bytes but we need 4
 	r := &shortReader{data: []byte{0x01, 0x02, 0x03}, maxRead: 3}
-	dec := NewStreamDecoder(r, 4, 0)
+	dec := NewStreamDecoder(r, 4, 0, 0)
 
 	_, err := dec.DecodeUint32()
 
@@ -617,7 +617,7 @@ func TestStreamDecoder_DecodeUint32_ShortRead(t *testing.T) {
 func TestStreamDecoder_DecodeUint64_ReadError(t *testing.T) {
 	testErr := errors.New("read error")
 	r := &errReader{data: make([]byte, 8), errAfter: 0, err: testErr}
-	dec := NewStreamDecoder(r, 8, 0)
+	dec := NewStreamDecoder(r, 8, 0, 0)
 
 	_, err := dec.DecodeUint64()
 
@@ -629,7 +629,7 @@ func TestStreamDecoder_DecodeUint64_ReadError(t *testing.T) {
 func TestStreamDecoder_DecodeUint64_ShortRead(t *testing.T) {
 	// Reader has only 7 bytes but we need 8
 	r := &shortReader{data: make([]byte, 7), maxRead: 7}
-	dec := NewStreamDecoder(r, 8, 0)
+	dec := NewStreamDecoder(r, 8, 0, 0)
 
 	_, err := dec.DecodeUint64()
 
@@ -641,7 +641,7 @@ func TestStreamDecoder_DecodeUint64_ShortRead(t *testing.T) {
 func TestStreamDecoder_DecodeBytes_ReadError(t *testing.T) {
 	testErr := errors.New("read error")
 	r := &errReader{data: []byte{0x01, 0x02, 0x03}, errAfter: 0, err: testErr}
-	dec := NewStreamDecoder(r, 3, 0)
+	dec := NewStreamDecoder(r, 3, 0, 0)
 
 	buf := make([]byte, 3)
 	_, err := dec.DecodeBytes(buf)
@@ -654,7 +654,7 @@ func TestStreamDecoder_DecodeBytes_ReadError(t *testing.T) {
 func TestStreamDecoder_DecodeBytes_ShortRead(t *testing.T) {
 	// Reader has only 2 bytes but we need 3
 	r := &shortReader{data: []byte{0x01, 0x02}, maxRead: 2}
-	dec := NewStreamDecoder(r, 3, 0)
+	dec := NewStreamDecoder(r, 3, 0, 0)
 
 	buf := make([]byte, 3)
 	_, err := dec.DecodeBytes(buf)
@@ -666,7 +666,7 @@ func TestStreamDecoder_DecodeBytes_ShortRead(t *testing.T) {
 
 func TestStreamDecoder_DecodeBytesBuf_LengthExceedsLimit(t *testing.T) {
 	reader := bytes.NewReader([]byte{0x01, 0x02, 0x03})
-	dec := NewStreamDecoder(reader, 3, 0)
+	dec := NewStreamDecoder(reader, 3, 0, 0)
 
 	_, err := dec.DecodeBytesBuf(10)
 
@@ -677,7 +677,7 @@ func TestStreamDecoder_DecodeBytesBuf_LengthExceedsLimit(t *testing.T) {
 
 func TestStreamDecoder_DecodeBytesBuf_NegativeLength(t *testing.T) {
 	reader := bytes.NewReader([]byte{0x01, 0x02, 0x03})
-	dec := NewStreamDecoder(reader, 3, 0)
+	dec := NewStreamDecoder(reader, 3, 0, 0)
 
 	result, err := dec.DecodeBytesBuf(-1)
 
@@ -695,7 +695,7 @@ func TestStreamDecoder_DecodeBytesBuf_NegativeLength(t *testing.T) {
 func TestStreamDecoder_DecodeBytesBuf_ReadError(t *testing.T) {
 	testErr := errors.New("read error")
 	r := &errReader{data: []byte{0x01, 0x02, 0x03}, errAfter: 0, err: testErr}
-	dec := NewStreamDecoder(r, 3, 0)
+	dec := NewStreamDecoder(r, 3, 0, 0)
 
 	_, err := dec.DecodeBytesBuf(3)
 
@@ -707,7 +707,7 @@ func TestStreamDecoder_DecodeBytesBuf_ReadError(t *testing.T) {
 func TestStreamDecoder_DecodeBytesBuf_ShortRead(t *testing.T) {
 	// Reader has only 2 bytes but we need 3
 	r := &shortReader{data: []byte{0x01, 0x02}, maxRead: 2}
-	dec := NewStreamDecoder(r, 3, 0)
+	dec := NewStreamDecoder(r, 3, 0, 0)
 
 	_, err := dec.DecodeBytesBuf(3)
 
@@ -720,7 +720,7 @@ func TestStreamDecoder_DecodeBytesBuf_BufferReuse(t *testing.T) {
 	// First call with larger buffer
 	data := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06}
 	reader := bytes.NewReader(data)
-	dec := NewStreamDecoder(reader, 6, 0)
+	dec := NewStreamDecoder(reader, 6, 0, 0)
 
 	result1, err := dec.DecodeBytesBuf(4)
 	if err != nil {
@@ -746,7 +746,7 @@ func TestStreamDecoder_DecodeBytesBuf_BufferReuse(t *testing.T) {
 func TestStreamDecoder_DecodeOffset_ReadError(t *testing.T) {
 	testErr := errors.New("read error")
 	r := &errReader{data: []byte{0x01, 0x02, 0x03, 0x04}, errAfter: 0, err: testErr}
-	dec := NewStreamDecoder(r, 4, 0)
+	dec := NewStreamDecoder(r, 4, 0, 0)
 
 	_, err := dec.DecodeOffset()
 
@@ -758,7 +758,7 @@ func TestStreamDecoder_DecodeOffset_ReadError(t *testing.T) {
 func TestStreamDecoder_DecodeOffset_ShortRead(t *testing.T) {
 	// Reader has only 3 bytes but we need 4
 	r := &shortReader{data: []byte{0x01, 0x02, 0x03}, maxRead: 3}
-	dec := NewStreamDecoder(r, 4, 0)
+	dec := NewStreamDecoder(r, 4, 0, 0)
 
 	_, err := dec.DecodeOffset()
 
@@ -769,7 +769,7 @@ func TestStreamDecoder_DecodeOffset_ShortRead(t *testing.T) {
 
 func TestStreamDecoder_DecodeOffsetAt_NotSupported(t *testing.T) {
 	reader := bytes.NewReader([]byte{0x01, 0x02, 0x03, 0x04})
-	dec := NewStreamDecoder(reader, 4, 0)
+	dec := NewStreamDecoder(reader, 4, 0, 0)
 
 	result := dec.DecodeOffsetAt(0)
 
@@ -780,7 +780,7 @@ func TestStreamDecoder_DecodeOffsetAt_NotSupported(t *testing.T) {
 
 func TestStreamDecoder_SkipBytes_NotSupported(t *testing.T) {
 	reader := bytes.NewReader([]byte{0x01, 0x02, 0x03})
-	dec := NewStreamDecoder(reader, 3, 0)
+	dec := NewStreamDecoder(reader, 3, 0, 0)
 
 	// SkipBytes does nothing but should not panic
 	dec.SkipBytes(2)
@@ -793,7 +793,7 @@ func TestStreamDecoder_SkipBytes_NotSupported(t *testing.T) {
 
 func TestStreamDecoder_PushLimit_ClampToLastLimit(t *testing.T) {
 	reader := bytes.NewReader(make([]byte, 10))
-	dec := NewStreamDecoder(reader, 10, 0)
+	dec := NewStreamDecoder(reader, 10, 0, 0)
 
 	// Push a limit that exceeds the stream length
 	dec.PushLimit(20)
@@ -806,7 +806,7 @@ func TestStreamDecoder_PushLimit_ClampToLastLimit(t *testing.T) {
 
 func TestStreamDecoder_PopLimit_EmptyLimits(t *testing.T) {
 	reader := bytes.NewReader(make([]byte, 10))
-	dec := NewStreamDecoder(reader, 10, 0)
+	dec := NewStreamDecoder(reader, 10, 0, 0)
 
 	// Pop from empty limits
 	remaining := dec.PopLimit()
@@ -818,7 +818,7 @@ func TestStreamDecoder_PopLimit_EmptyLimits(t *testing.T) {
 
 func TestStreamDecoder_PopLimit_SingleLimit(t *testing.T) {
 	reader := bytes.NewReader(make([]byte, 10))
-	dec := NewStreamDecoder(reader, 10, 0)
+	dec := NewStreamDecoder(reader, 10, 0, 0)
 
 	dec.PushLimit(5)
 	if dec.GetLength() != 5 {
@@ -837,7 +837,7 @@ func TestStreamDecoder_PopLimit_SingleLimit(t *testing.T) {
 
 func TestStreamDecoder_PopLimit_MultipleLimits(t *testing.T) {
 	reader := bytes.NewReader(make([]byte, 10))
-	dec := NewStreamDecoder(reader, 10, 0)
+	dec := NewStreamDecoder(reader, 10, 0, 0)
 
 	dec.PushLimit(8) // limit at position 8
 	dec.PushLimit(3) // limit at position 3
@@ -868,7 +868,7 @@ func TestStreamDecoder_PopLimit_MultipleLimits(t *testing.T) {
 func TestStreamDecoder_Uint16_Success(t *testing.T) {
 	// Little endian: 0x0102 = 258
 	reader := bytes.NewReader([]byte{0x02, 0x01})
-	dec := NewStreamDecoder(reader, 2, 0)
+	dec := NewStreamDecoder(reader, 2, 0, 0)
 
 	result, err := dec.DecodeUint16()
 
@@ -886,7 +886,7 @@ func TestStreamDecoder_Uint16_Success(t *testing.T) {
 func TestStreamDecoder_Uint32_Success(t *testing.T) {
 	// Little endian: 0x01020304 = 16909060
 	reader := bytes.NewReader([]byte{0x04, 0x03, 0x02, 0x01})
-	dec := NewStreamDecoder(reader, 4, 0)
+	dec := NewStreamDecoder(reader, 4, 0, 0)
 
 	result, err := dec.DecodeUint32()
 
@@ -904,7 +904,7 @@ func TestStreamDecoder_Uint32_Success(t *testing.T) {
 func TestStreamDecoder_Uint64_Success(t *testing.T) {
 	// Little endian value
 	reader := bytes.NewReader([]byte{0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01})
-	dec := NewStreamDecoder(reader, 8, 0)
+	dec := NewStreamDecoder(reader, 8, 0, 0)
 
 	result, err := dec.DecodeUint64()
 
@@ -921,7 +921,7 @@ func TestStreamDecoder_Uint64_Success(t *testing.T) {
 
 func TestStreamDecoder_DecodeBytes_Success(t *testing.T) {
 	reader := bytes.NewReader([]byte{0x01, 0x02, 0x03})
-	dec := NewStreamDecoder(reader, 3, 0)
+	dec := NewStreamDecoder(reader, 3, 0, 0)
 
 	buf := make([]byte, 3)
 	result, err := dec.DecodeBytes(buf)
@@ -939,7 +939,7 @@ func TestStreamDecoder_DecodeBytes_Success(t *testing.T) {
 
 func TestStreamDecoder_DecodeOffset_Success(t *testing.T) {
 	reader := bytes.NewReader([]byte{0x04, 0x03, 0x02, 0x01})
-	dec := NewStreamDecoder(reader, 4, 0)
+	dec := NewStreamDecoder(reader, 4, 0, 0)
 
 	result, err := dec.DecodeOffset()
 
@@ -956,7 +956,7 @@ func TestStreamDecoder_DecodeOffset_Success(t *testing.T) {
 
 func TestStreamDecoder_DecodeUint8_Success(t *testing.T) {
 	reader := bytes.NewReader([]byte{0x42})
-	dec := NewStreamDecoder(reader, 1, 0)
+	dec := NewStreamDecoder(reader, 1, 0, 0)
 
 	result, err := dec.DecodeUint8()
 
@@ -973,7 +973,7 @@ func TestStreamDecoder_DecodeUint8_Success(t *testing.T) {
 
 func TestStreamEncoder_Position_Tracking(t *testing.T) {
 	var buf bytes.Buffer
-	enc := NewStreamEncoder(&buf, 0)
+	enc := NewStreamEncoder(&buf, 0, 0)
 
 	if enc.GetPosition() != 0 {
 		t.Errorf("expected position 0, got %d", enc.GetPosition())
@@ -1030,7 +1030,7 @@ func TestStreamEncoder_Position_Tracking(t *testing.T) {
 
 func TestStreamEncoder_EncodeZeroPadding_Zero(t *testing.T) {
 	var buf bytes.Buffer
-	enc := NewStreamEncoder(&buf, 0)
+	enc := NewStreamEncoder(&buf, 0, 0)
 
 	enc.EncodeZeroPadding(0)
 
@@ -1048,7 +1048,7 @@ func TestStreamEncoder_EncodeZeroPadding_Zero(t *testing.T) {
 func TestStreamEncoder_TinyBuffer_FlushOnEncodeBool(t *testing.T) {
 	var buf bytes.Buffer
 	// Buffer size 1: first EncodeBool fills it, second triggers flush
-	enc := NewStreamEncoder(&buf, 1)
+	enc := NewStreamEncoder(&buf, 1, 0)
 
 	enc.EncodeBool(true)
 	enc.EncodeBool(false)
@@ -1070,7 +1070,7 @@ func TestStreamEncoder_TinyBuffer_FlushOnEncodeBool(t *testing.T) {
 
 func TestStreamEncoder_TinyBuffer_FlushOnEncodeUint8(t *testing.T) {
 	var buf bytes.Buffer
-	enc := NewStreamEncoder(&buf, 1)
+	enc := NewStreamEncoder(&buf, 1, 0)
 
 	enc.EncodeUint8(0xAA)
 	enc.EncodeUint8(0xBB)
@@ -1087,7 +1087,7 @@ func TestStreamEncoder_TinyBuffer_FlushOnEncodeUint8(t *testing.T) {
 func TestStreamEncoder_TinyBuffer_FlushOnEncodeUint16(t *testing.T) {
 	var buf bytes.Buffer
 	// Buffer size 2: first uint16 fills it, second triggers flush
-	enc := NewStreamEncoder(&buf, 2)
+	enc := NewStreamEncoder(&buf, 2, 0)
 
 	enc.EncodeUint16(0x0102)
 	enc.EncodeUint16(0x0304)
@@ -1103,7 +1103,7 @@ func TestStreamEncoder_TinyBuffer_FlushOnEncodeUint16(t *testing.T) {
 
 func TestStreamEncoder_TinyBuffer_FlushOnEncodeUint32(t *testing.T) {
 	var buf bytes.Buffer
-	enc := NewStreamEncoder(&buf, 4)
+	enc := NewStreamEncoder(&buf, 4, 0)
 
 	enc.EncodeUint32(1)
 	enc.EncodeUint32(2)
@@ -1119,7 +1119,7 @@ func TestStreamEncoder_TinyBuffer_FlushOnEncodeUint32(t *testing.T) {
 
 func TestStreamEncoder_TinyBuffer_FlushOnEncodeUint64(t *testing.T) {
 	var buf bytes.Buffer
-	enc := NewStreamEncoder(&buf, 8)
+	enc := NewStreamEncoder(&buf, 8, 0)
 
 	enc.EncodeUint64(1)
 	enc.EncodeUint64(2)
@@ -1135,7 +1135,7 @@ func TestStreamEncoder_TinyBuffer_FlushOnEncodeUint64(t *testing.T) {
 
 func TestStreamEncoder_TinyBuffer_FlushOnEncodeOffset(t *testing.T) {
 	var buf bytes.Buffer
-	enc := NewStreamEncoder(&buf, 4)
+	enc := NewStreamEncoder(&buf, 4, 0)
 
 	enc.EncodeOffset(10)
 	enc.EncodeOffset(20)
@@ -1153,7 +1153,7 @@ func TestStreamEncoder_EncodeBytes_FlushError(t *testing.T) {
 	testErr := errors.New("write error")
 	// Buffer size 4: write 2 bytes, then write 4 bytes to trigger flush+early return
 	w := &errWriter{errAfter: 0, err: testErr}
-	enc := NewStreamEncoder(w, 4)
+	enc := NewStreamEncoder(w, 4, 0)
 
 	enc.EncodeBytes([]byte{0x01, 0x02})       // fits in buffer
 	enc.EncodeBytes([]byte{0x03, 0x04, 0x05}) // triggers flush, flush fails
@@ -1168,7 +1168,7 @@ func TestStreamEncoder_EncodeBytes_LargeDirectWriteError(t *testing.T) {
 	// errWriter succeeds on flush (errAfter > 4) but fails on direct write.
 	testErr := errors.New("disk full")
 	w := &errWriter{errAfter: 4, err: testErr}
-	enc := NewStreamEncoder(w, 4)
+	enc := NewStreamEncoder(w, 4, 0)
 
 	enc.EncodeBytes(make([]byte, 8))
 
@@ -1181,7 +1181,7 @@ func TestStreamEncoder_EncodeBytes_LargeDirectShortWrite(t *testing.T) {
 	// Buffer size 4: writing 8 bytes goes to direct write path.
 	// shortWriter writes fewer bytes than requested.
 	w := &shortWriter{maxWrite: 3}
-	enc := NewStreamEncoder(w, 4)
+	enc := NewStreamEncoder(w, 4, 0)
 
 	enc.EncodeBytes(make([]byte, 8))
 
@@ -1240,7 +1240,7 @@ func TestStreamDecoder_EnsureBuffered_BufferShift(t *testing.T) {
 		data[i] = byte(i % 256)
 	}
 	reader := bytes.NewReader(data)
-	dec := NewStreamDecoder(reader, totalLen, 0)
+	dec := NewStreamDecoder(reader, totalLen, 0, 0)
 
 	// Prime the buffer (ensureBuffered fills it to 2048 bytes)
 	_, err := dec.DecodeUint8()
@@ -1268,7 +1268,7 @@ func TestStreamDecoder_EnsureBuffered_BufferShift(t *testing.T) {
 func TestStreamDecoder_EnsureBuffered_StreamExhausted(t *testing.T) {
 	data := []byte{0x01, 0x02}
 	reader := bytes.NewReader(data)
-	dec := NewStreamDecoder(reader, 2, 0)
+	dec := NewStreamDecoder(reader, 2, 0, 0)
 
 	_, err := dec.DecodeUint32()
 	if !errors.Is(err, ErrUnexpectedEOF) {
@@ -1279,7 +1279,7 @@ func TestStreamDecoder_EnsureBuffered_StreamExhausted(t *testing.T) {
 func TestStreamDecoder_EnsureBuffered_EOFWithEnoughData(t *testing.T) {
 	data := []byte{0x04, 0x03, 0x02, 0x01}
 	reader := &partialThenEOFReader{data: data}
-	dec := NewStreamDecoder(reader, 4, 0)
+	dec := NewStreamDecoder(reader, 4, 0, 0)
 
 	val, err := dec.DecodeUint32()
 	if err != nil {
@@ -1293,7 +1293,7 @@ func TestStreamDecoder_EnsureBuffered_EOFWithEnoughData(t *testing.T) {
 func TestStreamDecoder_EnsureBuffered_EOFInsufficientData(t *testing.T) {
 	data := []byte{0x01, 0x02}
 	reader := &partialThenEOFReader{data: data}
-	dec := NewStreamDecoder(reader, 8, 0)
+	dec := NewStreamDecoder(reader, 8, 0, 0)
 
 	_, err := dec.DecodeUint64()
 	if !errors.Is(err, ErrUnexpectedEOF) {
@@ -1304,7 +1304,7 @@ func TestStreamDecoder_EnsureBuffered_EOFInsufficientData(t *testing.T) {
 func TestStreamDecoder_EnsureBuffered_ZeroReadReturnsEOF(t *testing.T) {
 	data := []byte{0x42}
 	reader := &zeroAfterNReader{data: data, stallAfter: 0}
-	dec := NewStreamDecoder(reader, 1, 0)
+	dec := NewStreamDecoder(reader, 1, 0, 0)
 
 	_, err := dec.DecodeUint8()
 	if !errors.Is(err, ErrUnexpectedEOF) {
@@ -1315,7 +1315,7 @@ func TestStreamDecoder_EnsureBuffered_ZeroReadReturnsEOF(t *testing.T) {
 func TestStreamDecoder_EnsureBuffered_NonEOFError(t *testing.T) {
 	testErr := errors.New("network error")
 	reader := &errReader{data: make([]byte, 8), errAfter: 0, err: testErr}
-	dec := NewStreamDecoder(reader, 8, 0)
+	dec := NewStreamDecoder(reader, 8, 0, 0)
 
 	_, err := dec.DecodeUint32()
 	if !errors.Is(err, testErr) {
@@ -1326,7 +1326,7 @@ func TestStreamDecoder_EnsureBuffered_NonEOFError(t *testing.T) {
 func TestStreamDecoder_ReadBytes_ExceedsStreamLength(t *testing.T) {
 	data := []byte{0x01, 0x02, 0x03}
 	reader := bytes.NewReader(data)
-	dec := NewStreamDecoder(reader, 3, 0)
+	dec := NewStreamDecoder(reader, 3, 0, 0)
 
 	_, err := dec.DecodeUint8()
 	if err != nil {
@@ -1346,7 +1346,7 @@ func TestStreamDecoder_ReadBytes_ZeroByteRead(t *testing.T) {
 		data[i] = byte(i)
 	}
 	stallReader := &zeroAfterNReader{data: data, stallAfter: 8}
-	dec := NewStreamDecoder(stallReader, 16, 0)
+	dec := NewStreamDecoder(stallReader, 16, 0, 0)
 
 	_, err := dec.DecodeUint64()
 	if err != nil {
@@ -1366,7 +1366,7 @@ func TestStreamDecoder_ReadBytes_DirectReadWithPartialReads(t *testing.T) {
 		data[i] = byte(i)
 	}
 	reader := &shortReader{data: data, maxRead: 3}
-	dec := NewStreamDecoder(reader, 30, 0)
+	dec := NewStreamDecoder(reader, 30, 0, 0)
 
 	_, err := dec.DecodeUint64()
 	if err != nil {
@@ -1388,7 +1388,7 @@ func TestStreamDecoder_ReadBytes_DirectReadWithPartialReads(t *testing.T) {
 func TestStreamDecoder_ReadBytes_EOFDuringDirectRead(t *testing.T) {
 	data := make([]byte, 12)
 	reader := &errReader{data: data, errAfter: 10, err: io.EOF}
-	dec := NewStreamDecoder(reader, 12, 0)
+	dec := NewStreamDecoder(reader, 12, 0, 0)
 
 	_, err := dec.DecodeUint64()
 	if err != nil {
@@ -1407,7 +1407,7 @@ func TestStreamDecoder_ReadBytes_NonEOFErrorDuringDirectRead(t *testing.T) {
 	data := make([]byte, totalLen)
 	testErr := errors.New("disk error")
 	reader := &errReader{data: data, errAfter: DefaultStreamDecoderBufSize + 100, err: testErr}
-	dec := NewStreamDecoder(reader, totalLen, 0)
+	dec := NewStreamDecoder(reader, totalLen, 0, 0)
 
 	buf := make([]byte, DefaultStreamDecoderBufSize)
 	_, err := dec.DecodeBytes(buf)
@@ -1429,7 +1429,7 @@ func TestStreamDecoder_DecodeBytesBuf_LargeBufferGrowth(t *testing.T) {
 		data[i] = byte(i % 256)
 	}
 	reader := bytes.NewReader(data)
-	dec := NewStreamDecoder(reader, size, 0)
+	dec := NewStreamDecoder(reader, size, 0, 0)
 
 	result, err := dec.DecodeBytesBuf(size)
 	if err != nil {
@@ -1449,7 +1449,7 @@ func TestStreamDecoder_DecodeBytesBuf_LargeGrowthDoubling(t *testing.T) {
 		data[i] = byte(i % 256)
 	}
 	reader := bytes.NewReader(data)
-	dec := NewStreamDecoder(reader, size, 0)
+	dec := NewStreamDecoder(reader, size, 0, 0)
 
 	result, err := dec.DecodeBytesBuf(size)
 	if err != nil {
@@ -1462,7 +1462,7 @@ func TestStreamDecoder_DecodeBytesBuf_LargeGrowthDoubling(t *testing.T) {
 
 func TestStreamDecoder_GetLength_WithLimits(t *testing.T) {
 	reader := bytes.NewReader(make([]byte, 100))
-	dec := NewStreamDecoder(reader, 100, 0)
+	dec := NewStreamDecoder(reader, 100, 0, 0)
 
 	if dec.GetLength() != 100 {
 		t.Errorf("expected length 100, got %d", dec.GetLength())
