@@ -588,7 +588,7 @@ func TestRun_ConfigPathVerbose(t *testing.T) {
 			Legacy:              true,
 		}},
 	}
-	if err := run(runCfg); err != nil {
+	if err := run(&runCfg); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if _, err := os.Stat(outFile); err != nil {
@@ -624,7 +624,7 @@ types:
 	}
 	runCfg.TypeSpecs = specs
 
-	if runErr := run(runCfg); runErr != nil {
+	if runErr := run(&runCfg); runErr != nil {
 		t.Fatalf("run: %v", runErr)
 	}
 

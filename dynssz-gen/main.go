@@ -59,7 +59,20 @@ type typeSpec struct {
 	WithoutFastSsz            bool
 	WithStreaming             bool
 	WithExtendedTypes         bool
+
+	// Resolved during run()'s validation pass; reused when building codegen
+	// options so we don't look up or re-resolve the same symbols twice (and
+	// so the second pass doesn't need defensive error handling for cases the
+	// first pass already ruled out).
+	resolvedGoType    types.Type
+	resolvedViewTypes []types.Type
 }
+
+// loadPackages is the loader used by run() and its external-package helper.
+// It wraps packages.Load so tests can substitute a failing loader to
+// exercise the top-level error paths that packages.Load practically never
+// hits in production.
+var loadPackages = packages.Load
 
 // viewTypeRef holds a parsed view type reference
 type viewTypeRef struct {
@@ -202,7 +215,7 @@ func main() {
 		config.TypeSpecs = specs
 	}
 
-	if err := run(config); err != nil {
+	if err := run(&config); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -220,7 +233,7 @@ func providedFlagSet() map[string]bool {
 	return provided
 }
 
-func run(config Config) error {
+func run(config *Config) error {
 	if config.PackagePath == "" {
 		return errors.New("package path is required (-package)")
 	}
@@ -242,7 +255,7 @@ func run(config Config) error {
 		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName,
 	}
 
-	pkgs, err := packages.Load(cfg, config.PackagePath)
+	pkgs, err := loadPackages(cfg, config.PackagePath)
 	if err != nil {
 		return fmt.Errorf("failed to load package %s: %v", config.PackagePath, err)
 	}
@@ -288,7 +301,7 @@ func run(config Config) error {
 			return cached, nil
 		}
 
-		extPkgs, err2 := packages.Load(cfg, pkgPath)
+		extPkgs, err2 := loadPackages(cfg, pkgPath)
 		if err2 != nil {
 			return nil, fmt.Errorf("failed to load external package %s: %w", pkgPath, err2)
 		}
@@ -338,7 +351,9 @@ func run(config Config) error {
 		return typeObj.Type(), nil
 	}
 
-	for _, spec := range typeSpecs {
+	for i := range typeSpecs {
+		spec := &typeSpecs[i]
+
 		// Validate that the main type exists
 		obj := mainScope.Lookup(spec.TypeName)
 		if obj == nil {
@@ -349,20 +364,27 @@ func run(config Config) error {
 		if !ok {
 			return fmt.Errorf("object %s is not a type in package %s", spec.TypeName, config.PackagePath)
 		}
-		_ = typeObj // validated above, used later in verbose logging
+		spec.resolvedGoType = typeObj.Type()
 
-		// Validate view types exist (can be local or external)
-		for _, viewTypeStr := range spec.ViewTypes {
-			ref := parseViewTypeRef(viewTypeStr)
-			if _, err2 := resolveTypeRef(ref); err2 != nil {
-				return fmt.Errorf("view type %s: %w", viewTypeStr, err2)
+		// Resolve view types exactly once; cache on the spec so the second
+		// pass doesn't need to repeat the lookup (or handle errors the first
+		// pass already rejected).
+		if len(spec.ViewTypes) > 0 {
+			spec.resolvedViewTypes = make([]types.Type, 0, len(spec.ViewTypes))
+			for _, viewTypeStr := range spec.ViewTypes {
+				ref := parseViewTypeRef(viewTypeStr)
+				viewType, err2 := resolveTypeRef(ref)
+				if err2 != nil {
+					return fmt.Errorf("view type %s: %w", viewTypeStr, err2)
+				}
+				spec.resolvedViewTypes = append(spec.resolvedViewTypes, viewType)
 			}
 		}
 
 		if _, ok := generateFiles[spec.OutputFile]; !ok {
 			generateFiles[spec.OutputFile] = make([]typeSpec, 0)
 		}
-		generateFiles[spec.OutputFile] = append(generateFiles[spec.OutputFile], spec)
+		generateFiles[spec.OutputFile] = append(generateFiles[spec.OutputFile], *spec)
 		typeCount++
 
 		if config.Verbose {
@@ -389,13 +411,10 @@ func run(config Config) error {
 		var typeOptions []codegen.CodeGeneratorOption
 
 		for _, spec := range specs {
-			// Look up the main type (already validated in the loop above)
-			obj := mainScope.Lookup(spec.TypeName)
-			typeObj, ok := obj.(*types.TypeName)
-			if !ok {
-				return fmt.Errorf("object %s is not a type", spec.TypeName)
-			}
-			goType := typeObj.Type()
+			// Type + view types were already resolved and cached on the spec
+			// during the first validation pass, so no lookup/error handling
+			// is needed here.
+			goType := spec.resolvedGoType
 
 			// Build type-specific options
 			var typeSpecificOpts []codegen.CodeGeneratorOption
@@ -413,18 +432,9 @@ func run(config Config) error {
 				}
 			}
 
-			// Add view types if specified
-			if len(spec.ViewTypes) > 0 {
-				viewTypes := make([]types.Type, 0, len(spec.ViewTypes))
-				for _, viewTypeStr := range spec.ViewTypes {
-					ref := parseViewTypeRef(viewTypeStr)
-					viewType, err2 := resolveTypeRef(ref)
-					if err2 != nil {
-						return fmt.Errorf("failed to resolve view type %s: %w", viewTypeStr, err2)
-					}
-					viewTypes = append(viewTypes, viewType)
-				}
-				typeSpecificOpts = append(typeSpecificOpts, codegen.WithGoTypesViewTypes(viewTypes...))
+			// Add view types if any were resolved.
+			if len(spec.resolvedViewTypes) > 0 {
+				typeSpecificOpts = append(typeSpecificOpts, codegen.WithGoTypesViewTypes(spec.resolvedViewTypes...))
 			}
 
 			// Add view-only flag if specified

@@ -177,7 +177,7 @@ func TestRun_ValidationErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := run(tt.config)
+			err := run(&tt.config)
 			if err == nil {
 				t.Errorf("Expected error, got nil")
 				return
@@ -298,7 +298,7 @@ func TestRun_TypeNotFound(t *testing.T) {
 		OutputFile:  "output.go",
 	}
 
-	err := run(config)
+	err := run(&config)
 	if err == nil {
 		t.Fatal("expected error for type not found")
 	}
@@ -315,7 +315,7 @@ func TestRun_ObjectNotAType(t *testing.T) {
 		OutputFile:  "output.go",
 	}
 
-	err := run(config)
+	err := run(&config)
 	if err == nil {
 		t.Fatal("expected error for non-type object")
 	}
@@ -341,7 +341,7 @@ func TestRun_VerboseWithValidType(t *testing.T) {
 		WithExtendedTypes:         true,
 	}
 
-	err := run(config)
+	err := run(&config)
 	// We expect an error from codegen since fmt.Stringer is not an SSZ type
 	if err == nil {
 		t.Fatal("expected error from codegen for non-SSZ type")
@@ -363,7 +363,7 @@ func TestRun_FullSuccessPath(t *testing.T) {
 		PackageName: "tests",
 	}
 
-	err := run(config)
+	err := run(&config)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -383,7 +383,7 @@ func TestRun_WriteFileError(t *testing.T) {
 		PackageName: "tests",
 	}
 
-	err := run(config)
+	err := run(&config)
 	if err == nil {
 		t.Fatal("expected error for bad output path")
 	}
@@ -402,7 +402,7 @@ func TestRun_TypeSpecificOutputFile(t *testing.T) {
 		PackageName: "tests",
 	}
 
-	err := run(config)
+	err := run(&config)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -525,7 +525,7 @@ func TestRun_AnnotatedType(t *testing.T) {
 		PackageName: "tests",
 	}
 
-	err := run(config)
+	err := run(&config)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -558,7 +558,7 @@ func TestRun_AnnotatedTypeVerbose(t *testing.T) {
 		Verbose:     true,
 	}
 
-	err := run(config)
+	err := run(&config)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -673,7 +673,7 @@ func TestRun_ViewTypeNotFound(t *testing.T) {
 		PackageName: "tests",
 	}
 
-	err := run(config)
+	err := run(&config)
 	if err == nil {
 		t.Fatal("expected error for non-existent view type")
 	}
@@ -692,7 +692,7 @@ func TestRun_ExternalViewType(t *testing.T) {
 		PackageName: "tests",
 	}
 
-	err := run(config)
+	err := run(&config)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -706,7 +706,7 @@ func TestRun_ExternalViewTypeError(t *testing.T) {
 		PackageName: "tests",
 	}
 
-	err := run(config)
+	err := run(&config)
 	if err == nil {
 		t.Fatal("expected error for bad external view type")
 	}
@@ -723,7 +723,7 @@ func TestRun_VerboseViewTypes(t *testing.T) {
 		Verbose:     true,
 	}
 
-	err := run(config)
+	err := run(&config)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -739,7 +739,7 @@ func TestRun_ViewOnlyType(t *testing.T) {
 		PackageName: "tests",
 	}
 
-	err := run(config)
+	err := run(&config)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
