@@ -52,39 +52,32 @@ jobs:
         set -euo pipefail
 
         # Keep only metric sections with at least one significant benchmark row.
+        # Data rows are identified by the "(p=" suffix benchstat emits; rows with
+        # "~ (p=" are insignificant and dropped. Geomean and footnote lines flow
+        # through as decoration but do not keep a section alive on their own.
         filter_benchstat() {
           awk '
-          BEGIN { hdr=""; rows=""; geo=""; has=0; any=0 }
+          BEGIN { hdr=""; rows=""; has=0 }
           /^(goos|goarch|pkg|cpu):/ { next }
           /^[[:space:]]*│/ { hdr = hdr $0 "\n"; next }
           /^[[:space:]]*$/ {
             if (has) {
-              printf "%s%s", hdr, rows
-              if (geo != "") {
-                printf "%s", geo
-              }
-              printf "\n"
-              any=1
+              printf "%s%s\n", hdr, rows
             }
-            hdr=""; rows=""; geo=""; has=0
+            hdr=""; rows=""; has=0
             next
           }
-          /^geomean/ { geo = $0 "\n"; next }
-          /^[[:space:]]*[[:digit:]¹²³]/ { next }
-          /^[[:space:]]*$/ { next }
-          {
+          /\(p=/ {
             if ($0 !~ /~ \(p=/) {
               rows = rows $0 "\n"
               has=1
             }
+            next
           }
+          { rows = rows $0 "\n" }
           END {
             if (has) {
               printf "%s%s", hdr, rows
-              if (geo != "") {
-                printf "%s", geo
-              }
-              any=1
             }
           }
           ' "$1"
