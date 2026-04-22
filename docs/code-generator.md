@@ -29,12 +29,23 @@ Generate SSZ methods for specific types:
 dynssz-gen -package /path/to/package -types BeaconBlock,BeaconState -output generated_ssz.go
 ```
 
+For larger configurations (many types, per-type options, per-type flag
+overrides), use a YAML config file instead of long CLI strings:
+
+```bash
+dynssz-gen --config gen.yaml
+```
+
+See [Code Generator Config File](code-generator-config.md) for the format
+reference.
+
 ### CLI Flags
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `-package` | Go package path to analyze | Required |
-| `-types` | Comma-separated list of types to generate (see extended format below) | Required |
+| `-config` | Path to a YAML config file (see [config reference](code-generator-config.md)) | — |
+| `-package` | Go package path to analyze | Required (unless supplied by config) |
+| `-types` | Comma-separated list of types to generate (see extended format below) | Required (unless supplied by config) |
 | `-output` | Output file path | Required if types don't specify files |
 | `-v` | Verbose output | `false` |
 | `-legacy` | Generate legacy compatibility methods | `false` |
@@ -42,6 +53,11 @@ dynssz-gen -package /path/to/package -types BeaconBlock,BeaconState -output gene
 | `-without-fastssz` | Generate code without using fast ssz generated methods | `false` |
 | `-with-streaming` | Generate streaming encoder/decoder functions | `false` |
 | `-with-extended-types` | Enable support for non-standard extended types (signed ints, floats, big.Int, optionals) | `false` |
+
+When both `--config` and CLI flags are provided, any CLI flag that is
+explicitly passed overrides the config file's value. See the
+[config file docs](code-generator-config.md#combining-with-cli-flags) for
+precedence details.
 
 ### Extended Type Specification Format
 
@@ -941,6 +957,7 @@ To migrate from fastssz code generation:
 ## Related Documentation
 
 - [Getting Started](getting-started.md) - Basic usage
+- [Code Generator Config File](code-generator-config.md) - YAML config file format
 - [API Reference](api-reference.md) - Generator API details
 - [SSZ Views](views.md) - Fork handling with view descriptors
 - [Streaming Support](streaming.md) - Streaming encoding/decoding

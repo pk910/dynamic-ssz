@@ -7,6 +7,7 @@ package treeproof
 import (
 	"bytes"
 	"crypto/sha256"
+	"sort"
 	"strconv"
 	"testing"
 
@@ -718,6 +719,26 @@ func TestGetRequiredIndicesMixedDepth(t *testing.T) {
 	}
 }
 
+func descendingIndices(indices []int) []int {
+	switch {
+	case len(indices) == 0:
+		return nil
+	case intsSortedDescending(indices):
+		return indices
+	case sort.IntsAreSorted(indices):
+		out := make([]int, len(indices))
+		for i := range indices {
+			out[i] = indices[len(indices)-1-i]
+		}
+		return out
+	default:
+		out := make([]int, len(indices))
+		copy(out, indices)
+		sort.Sort(sort.Reverse(sort.IntSlice(out)))
+		return out
+	}
+}
+
 func TestDescendingIndicesUnsorted(t *testing.T) {
 	// Neither ascending nor descending: exercises the default sort branch
 	indices := []int{5, 3, 7, 1}
@@ -774,6 +795,11 @@ func TestAppendProofLeafNormalizesChunkWidth(t *testing.T) {
 	if !bytes.Equal(h.Hash(), zeroChunk) {
 		t.Fatalf("expected empty leaf to use zero chunk, got %x", h.Hash())
 	}
+}
+
+func hashFn(data []byte) []byte {
+	res := sha256.Sum256(data)
+	return res[:]
 }
 
 func TestHashFn(t *testing.T) {

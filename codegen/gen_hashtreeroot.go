@@ -102,7 +102,7 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 		appendCode(codeBuilder, 2, "return\n")
 		appendCode(codeBuilder, 1, "})\n")
 		appendCode(codeBuilder, 1, "return\n")
-		appendCode(codeBuilder, 0, "}\n")
+		appendCode(codeBuilder, 0, "}\n\n")
 	}
 
 	if genStaticFn {
@@ -312,10 +312,14 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 	case ssztypes.SszTypeWrapperType:
 		ctx.appendCode(indent, "{\n")
 		valVar := "t"
+		fieldName := getTypeWrapperFieldName(desc)
+		if fieldName == "" {
+			return fmt.Errorf("could not determine data field name for wrapper descriptor")
+		}
 		if ctx.isInlineable(desc.ElemDesc) {
-			valVar = fmt.Sprintf("%s.Data", varName)
+			valVar = fmt.Sprintf("%s.%s", varName, fieldName)
 		} else {
-			ctx.appendCode(indent, "\tt := %s%s.Data\n", ctx.getPtrPrefix(desc.ElemDesc, "&"), varName)
+			ctx.appendCode(indent, "\tt := %s%s.%s\n", ctx.getPtrPrefix(desc.ElemDesc, "&"), varName, fieldName)
 		}
 		if err := ctx.hashType(desc.ElemDesc, valVar, typePath, indent+1, false, pack); err != nil {
 			return err

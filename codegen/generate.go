@@ -459,46 +459,47 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 func (cg *CodeGenerator) generateSSZMethods(desc *ssztypes.TypeDescriptor, typePrinter *TypePrinter, codeBuilder *strings.Builder, viewName string, options *CodeGeneratorOptions) error {
 	// Generate the actual methods using flattened generators
 	var err error
+	typeName := typePrinter.TypeStringWithoutTracking(desc, viewName != "")
 
 	if !options.NoMarshalSSZ {
 		err = generateMarshal(desc, codeBuilder, typePrinter, viewName, options)
 		if err != nil {
-			return fmt.Errorf("failed to generate marshal for %s: %w", desc.Type.Name(), err)
+			return fmt.Errorf("failed to generate marshal for %s: %w", typeName, err)
 		}
 	}
 
 	if options.CreateEncoderFn {
 		err = generateEncoder(desc, codeBuilder, typePrinter, viewName, options)
 		if err != nil {
-			return fmt.Errorf("failed to generate encoder for %s: %w", desc.Type.Name(), err)
+			return fmt.Errorf("failed to generate encoder for %s: %w", typeName, err)
 		}
 	}
 
 	if !options.NoUnmarshalSSZ {
 		err = generateUnmarshal(desc, codeBuilder, typePrinter, viewName, options)
 		if err != nil {
-			return fmt.Errorf("failed to generate unmarshal for %s: %w", desc.Type.Name(), err)
+			return fmt.Errorf("failed to generate unmarshal for %s: %w", typeName, err)
 		}
 	}
 
 	if options.CreateDecoderFn {
 		err = generateDecoder(desc, codeBuilder, typePrinter, viewName, options)
 		if err != nil {
-			return fmt.Errorf("failed to generate decoder for %s: %w", desc.Type.Name(), err)
+			return fmt.Errorf("failed to generate decoder for %s: %w", typeName, err)
 		}
 	}
 
 	if !options.NoSizeSSZ {
 		err = generateSize(desc, codeBuilder, typePrinter, viewName, options)
 		if err != nil {
-			return fmt.Errorf("failed to generate size for %s: %w", desc.Type.Name(), err)
+			return fmt.Errorf("failed to generate size for %s: %w", typeName, err)
 		}
 	}
 
 	if !options.NoHashTreeRoot {
 		err = generateHashTreeRoot(desc, codeBuilder, typePrinter, viewName, options)
 		if err != nil {
-			return fmt.Errorf("failed to generate hash tree root for %s: %w", desc.Type.Name(), err)
+			return fmt.Errorf("failed to generate hash tree root for %s: %w", typeName, err)
 		}
 	}
 

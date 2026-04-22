@@ -345,10 +345,14 @@ func (ctx *encoderContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 	case ssztypes.SszTypeWrapperType:
 		ctx.appendCode(indent, "{\n")
 		valVar := "t"
+		fieldName := getTypeWrapperFieldName(desc)
+		if fieldName == "" {
+			return fmt.Errorf("could not determine data field name for wrapper descriptor")
+		}
 		if ctx.isInlineable(desc.ElemDesc) {
-			valVar = fmt.Sprintf("%s.Data", varName)
+			valVar = fmt.Sprintf("%s.%s", varName, fieldName)
 		} else {
-			ctx.appendCode(indent, "\tt := %s%s.Data\n", ctx.getPtrPrefix(desc.ElemDesc), varName)
+			ctx.appendCode(indent, "\tt := %s%s.%s\n", ctx.getPtrPrefix(desc.ElemDesc), varName, fieldName)
 		}
 		if err := ctx.marshalType(desc.ElemDesc, valVar, typePath, indent+1, false); err != nil {
 			return err

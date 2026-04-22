@@ -418,7 +418,7 @@ func TestHashTreeRootErrors(t *testing.T) {
 			input: struct {
 				TypeWrapper struct{} `ssz-type:"wrapper"`
 			}{},
-			expectedErr: "method not found on",
+			expectedErr: "wrapper descriptor must have exactly 1 field",
 		},
 		{
 			name: "bitlist_too_big",
@@ -701,7 +701,7 @@ func TestGetTreeErrors(t *testing.T) {
 			input: struct {
 				TypeWrapper struct{} `ssz-type:"wrapper"`
 			}{},
-			expectedErr: "method not found on",
+			expectedErr: "wrapper descriptor must have exactly 1 field",
 		},
 		{
 			name: "bitlist_too_big",

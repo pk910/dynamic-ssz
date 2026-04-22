@@ -363,7 +363,11 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 		}
 
 	case ssztypes.SszTypeWrapperType:
-		if err := ctx.unmarshalType(desc.ElemDesc, fmt.Sprintf("%s.Data", varName), typePath, indent+1, false, noBufCheck); err != nil {
+		fieldName := getTypeWrapperFieldName(desc)
+		if fieldName == "" {
+			return fmt.Errorf("could not determine data field name for wrapper descriptor")
+		}
+		if err := ctx.unmarshalType(desc.ElemDesc, fmt.Sprintf("%s.%s", varName, fieldName), typePath, indent, false, noBufCheck); err != nil {
 			return err
 		}
 

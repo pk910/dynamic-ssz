@@ -6,8 +6,12 @@ package codegen
 
 import (
 	"fmt"
+	"go/types"
+	"reflect"
 	"strconv"
 	"strings"
+
+	"github.com/pk910/dynamic-ssz/ssztypes"
 )
 
 // appendCode appends a formatted code string to a strings.Builder with proper indentation.
@@ -122,4 +126,61 @@ func escapeBackticks(s string) string {
 		return quoted[1 : len(quoted)-1] // \"...\" sans outer quotes
 	}
 	return s
+}
+
+// getTypeWrapperFieldName returns the name of the data field in the wrapper descriptor.
+// If the descriptor is not a struct type, returns an empty string.
+//
+// Parameters:
+//   - desc: The TypeDescriptor to get the data field name from
+//
+// Returns:
+//   - string: The name of the data field in the wrapper descriptor
+func getTypeWrapperFieldName(desc *ssztypes.TypeDescriptor) string {
+	if desc.SszType != ssztypes.SszTypeWrapperType {
+		return ""
+	}
+
+	if desc.CodegenInfo != nil {
+		// get from go/types
+		if codegenInfo, ok := (*desc.CodegenInfo).(*CodegenInfo); ok && codegenInfo.Type != nil {
+			innerType := codegenInfo.Type.Underlying()
+			if ptr, ok := innerType.(*types.Pointer); ok {
+				innerType = ptr.Elem().Underlying()
+			}
+
+			structType, ok := innerType.(*types.Struct)
+			if !ok {
+				return ""
+			}
+
+			fieldCount := structType.NumFields()
+			if fieldCount != 1 {
+				return ""
+			}
+
+			return structType.Field(0).Name()
+		}
+	}
+
+	if desc.Type != nil {
+		// get from reflection
+		innerType := desc.Type
+		for innerType.Kind() == reflect.Ptr {
+			innerType = innerType.Elem()
+		}
+
+		if innerType.Kind() != reflect.Struct {
+			return ""
+		}
+
+		fieldCount := innerType.NumField()
+		if fieldCount != 1 {
+			return ""
+		}
+
+		return innerType.Field(0).Name
+	}
+
+	return ""
 }

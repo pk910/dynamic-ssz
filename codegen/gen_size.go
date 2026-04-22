@@ -269,7 +269,11 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 		ctx.appendCode(indent, "%s += 8\n", sizeVar)
 
 	case ssztypes.SszTypeWrapperType:
-		innerVarName := fmt.Sprintf("%s.Data", varName)
+		fieldName := getTypeWrapperFieldName(desc)
+		if fieldName == "" {
+			return fmt.Errorf("could not determine data field name for wrapper descriptor")
+		}
+		innerVarName := fmt.Sprintf("%s.%s", varName, fieldName)
 		if err := ctx.sizeType(desc.ElemDesc, innerVarName, sizeVar, indent, false); err != nil {
 			return err
 		}

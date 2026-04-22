@@ -5,7 +5,11 @@
 package main
 
 import (
+	"errors"
 	"flag"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -177,7 +181,7 @@ func TestRun_ValidationErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := run(tt.config)
+			err := run(&tt.config)
 			if err == nil {
 				t.Errorf("Expected error, got nil")
 				return
@@ -298,7 +302,7 @@ func TestRun_TypeNotFound(t *testing.T) {
 		OutputFile:  "output.go",
 	}
 
-	err := run(config)
+	err := run(&config)
 	if err == nil {
 		t.Fatal("expected error for type not found")
 	}
@@ -315,7 +319,7 @@ func TestRun_ObjectNotAType(t *testing.T) {
 		OutputFile:  "output.go",
 	}
 
-	err := run(config)
+	err := run(&config)
 	if err == nil {
 		t.Fatal("expected error for non-type object")
 	}
@@ -341,7 +345,7 @@ func TestRun_VerboseWithValidType(t *testing.T) {
 		WithExtendedTypes:         true,
 	}
 
-	err := run(config)
+	err := run(&config)
 	// We expect an error from codegen since fmt.Stringer is not an SSZ type
 	if err == nil {
 		t.Fatal("expected error from codegen for non-SSZ type")
@@ -363,7 +367,7 @@ func TestRun_FullSuccessPath(t *testing.T) {
 		PackageName: "tests",
 	}
 
-	err := run(config)
+	err := run(&config)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -383,7 +387,7 @@ func TestRun_WriteFileError(t *testing.T) {
 		PackageName: "tests",
 	}
 
-	err := run(config)
+	err := run(&config)
 	if err == nil {
 		t.Fatal("expected error for bad output path")
 	}
@@ -402,7 +406,7 @@ func TestRun_TypeSpecificOutputFile(t *testing.T) {
 		PackageName: "tests",
 	}
 
-	err := run(config)
+	err := run(&config)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -525,7 +529,7 @@ func TestRun_AnnotatedType(t *testing.T) {
 		PackageName: "tests",
 	}
 
-	err := run(config)
+	err := run(&config)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -558,7 +562,7 @@ func TestRun_AnnotatedTypeVerbose(t *testing.T) {
 		Verbose:     true,
 	}
 
-	err := run(config)
+	err := run(&config)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -673,7 +677,7 @@ func TestRun_ViewTypeNotFound(t *testing.T) {
 		PackageName: "tests",
 	}
 
-	err := run(config)
+	err := run(&config)
 	if err == nil {
 		t.Fatal("expected error for non-existent view type")
 	}
@@ -692,7 +696,7 @@ func TestRun_ExternalViewType(t *testing.T) {
 		PackageName: "tests",
 	}
 
-	err := run(config)
+	err := run(&config)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -706,7 +710,7 @@ func TestRun_ExternalViewTypeError(t *testing.T) {
 		PackageName: "tests",
 	}
 
-	err := run(config)
+	err := run(&config)
 	if err == nil {
 		t.Fatal("expected error for bad external view type")
 	}
@@ -723,7 +727,7 @@ func TestRun_VerboseViewTypes(t *testing.T) {
 		Verbose:     true,
 	}
 
-	err := run(config)
+	err := run(&config)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -739,8 +743,419 @@ func TestRun_ViewOnlyType(t *testing.T) {
 		PackageName: "tests",
 	}
 
-	err := run(config)
+	err := run(&config)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// loadPackages swap — covers the top-level error branches in run() and
+// loadExternalPackage that the real go/packages.Load essentially never hits
+// in production.
+// -----------------------------------------------------------------------------
+
+func withLoader(t *testing.T, stub func(*packages.Config, ...string) ([]*packages.Package, error)) {
+	t.Helper()
+	old := loadPackages
+	loadPackages = stub
+	t.Cleanup(func() { loadPackages = old })
+}
+
+func TestRun_LoadPackagesError(t *testing.T) {
+	withLoader(t, func(_ *packages.Config, _ ...string) ([]*packages.Package, error) {
+		return nil, errors.New("boom")
+	})
+
+	err := run(&Config{
+		PackagePath: "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg",
+		TypeNames:   "InvalidAnnotated",
+		OutputFile:  "out.go",
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "failed to load package") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRun_LoadPackagesEmpty(t *testing.T) {
+	withLoader(t, func(_ *packages.Config, _ ...string) ([]*packages.Package, error) {
+		return nil, nil
+	})
+
+	err := run(&Config{
+		PackagePath: "anything",
+		TypeNames:   "Foo",
+		OutputFile:  "out.go",
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "no packages found") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// loadExternalPackage error path: delegate to the real loader for the main
+// package, but return an error when asked to load the external one.
+func TestRun_LoadExternalPackagesError(t *testing.T) {
+	realLoader := loadPackages
+	withLoader(t, func(cfg *packages.Config, paths ...string) ([]*packages.Package, error) {
+		if len(paths) == 1 && paths[0] == "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg" {
+			return realLoader(cfg, paths...)
+		}
+		return nil, errors.New("external boom")
+	})
+
+	tmp := t.TempDir()
+	outFile := filepath.Join(tmp, "gen.go")
+	err := run(&Config{
+		PackagePath: "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg",
+		PackageName: "testpkg",
+		TypeNames:   "InvalidAnnotated:" + outFile + ":views=github.com/unreachable/pkg.Foo",
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "failed to load external package") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRun_LoadExternalPackagesEmpty(t *testing.T) {
+	realLoader := loadPackages
+	withLoader(t, func(cfg *packages.Config, paths ...string) ([]*packages.Package, error) {
+		if len(paths) == 1 && paths[0] == "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg" {
+			return realLoader(cfg, paths...)
+		}
+		return nil, nil // empty slice + nil error ⇒ "not found"
+	})
+
+	tmp := t.TempDir()
+	outFile := filepath.Join(tmp, "gen.go")
+	err := run(&Config{
+		PackagePath: "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg",
+		PackageName: "testpkg",
+		TypeNames:   "InvalidAnnotated:" + outFile + ":views=github.com/empty/pkg.Foo",
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "external package") || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// External package caching + verbose external load — covers the
+// already-cached early return and the verbose-logging branch in
+// loadExternalPackage.
+// -----------------------------------------------------------------------------
+
+func TestRun_ExternalPackageCachedAndVerbose(t *testing.T) {
+	tmp := t.TempDir()
+	outFile := filepath.Join(tmp, "gen.go")
+
+	// Two view types from the same external package. The second resolve
+	// hits the externalPackages cache, covering the cache-hit early return.
+	err := run(&Config{
+		PackagePath: "github.com/pk910/dynamic-ssz/codegen/tests",
+		PackageName: "tests",
+		TypeNames:   "ViewTypes1_Base:" + outFile + ":views=github.com/pk910/dynamic-ssz/codegen/tests/views.ViewTypes1_View3;github.com/pk910/dynamic-ssz/codegen/tests/views.ViewTypes1_View4",
+		Verbose:     true,
+	})
+	// We don't care about the final generation result here — the path we
+	// need covered runs during spec validation before codegen.
+	// But a missing external view type will return an error; use a type
+	// that actually exists and rely on two distinct references to the same
+	// external package.
+	if err != nil && !strings.Contains(err.Error(), "view type") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// resolveTypeRef's "object exists but isn't a type" branch for external
+// packages — hit by using fmt.Println (a *types.Func) as a view type.
+// -----------------------------------------------------------------------------
+
+func TestRun_ExternalViewNotAType(t *testing.T) {
+	tmp := t.TempDir()
+	outFile := filepath.Join(tmp, "gen.go")
+	err := run(&Config{
+		PackagePath: "github.com/pk910/dynamic-ssz/codegen/tests",
+		PackageName: "tests",
+		TypeNames:   "ViewTypes1_Base:" + outFile + ":views=fmt.Println",
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "not a type") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Verbose + view-only — covers the `mode = "view-only"` branch in the
+// per-type verbose log line.
+// -----------------------------------------------------------------------------
+
+func TestRun_VerboseViewOnly(t *testing.T) {
+	tmp := t.TempDir()
+	outFile := filepath.Join(tmp, "gen.go")
+	err := run(&Config{
+		PackagePath: "github.com/pk910/dynamic-ssz/codegen/tests",
+		PackageName: "tests",
+		TypeNames:   "ViewTypes3_Base:" + outFile + ":views=ViewTypes3_View1:viewonly",
+		Verbose:     true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Annotate-tag parse error — a testpkg type declares an Annotate tag whose
+// value can't be parsed numerically, forcing run() to return a wrapped
+// parseErr.
+// -----------------------------------------------------------------------------
+
+func TestRun_BadAnnotateTagInSource(t *testing.T) {
+	tmp := t.TempDir()
+	outFile := filepath.Join(tmp, "gen.go")
+	err := run(&Config{
+		PackagePath: "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg",
+		PackageName: "testpkg",
+		TypeNames:   "InvalidAnnotated",
+		OutputFile:  outFile,
+	})
+	if err == nil {
+		t.Fatal("expected error for bad annotate tag")
+	}
+	if !strings.Contains(err.Error(), "failed to parse Annotate tag") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// findAnnotateCall: aliased sszutils import. testpkg/aliased.go imports the
+// package as `szs`, so the scanner picks up the alias from imp.Name.
+// -----------------------------------------------------------------------------
+
+func TestFindAnnotateCall_AliasedImport(t *testing.T) {
+	cfg := &packages.Config{
+		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName,
+	}
+	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	tag := findAnnotateCall(pkgs[0], "AliasedAnnotated")
+	if tag != `ssz-max:"16"` {
+		t.Fatalf("expected aliased tag, got %q", tag)
+	}
+}
+
+// findAnnotateCall for a type whose Annotate lives inside an init() body
+// alongside an AssignStmt — covers the non-ExprStmt continue branch in
+// findAnnotateCallInDecl.
+func TestFindAnnotateCall_InitMixedStmts(t *testing.T) {
+	cfg := &packages.Config{
+		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName,
+	}
+	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	// This type's Annotate is registered via an AssignStmt in init() — the
+	// scanner only finds Annotate in ExprStmts, so it must NOT match.
+	// But the loop must still iterate past the assign stmt without crashing
+	// and past the unrelated-call ExprStmt.
+	tag := findAnnotateCall(pkgs[0], "NonExprInitMarker")
+	if tag != "" {
+		t.Fatalf("expected empty tag (Annotate was in AssignStmt not ExprStmt), got %q", tag)
+	}
+
+	// Meanwhile InvalidAnnotated still resolves correctly, proving the
+	// scanner didn't get confused by the mixed init() body.
+	tag = findAnnotateCall(pkgs[0], "InvalidAnnotated")
+	if tag == "" {
+		t.Fatal("expected InvalidAnnotated tag to still be found")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Synthetic AST tests for findAnnotateCallInDecl / matchAnnotateCall
+// defensive branches that are unreachable via valid Go source.
+// -----------------------------------------------------------------------------
+
+// astExprFromString parses a single expression string into an ast.Expr.
+func astExprFromString(t *testing.T, src string) ast.Expr {
+	t.Helper()
+	expr, err := parser.ParseExpr(src)
+	if err != nil {
+		t.Fatalf("parse %q: %v", src, err)
+	}
+	return expr
+}
+
+// astFileFromString parses a full source string into an *ast.File.
+func astFileFromString(t *testing.T, src string) *ast.File {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "test.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	return f
+}
+
+func TestMatchAnnotateCall_NotCall(t *testing.T) {
+	expr := astExprFromString(t, `42`)
+	if got := matchAnnotateCall(expr, "sszutils", "Foo"); got != "" {
+		t.Errorf("expected empty, got %q", got)
+	}
+}
+
+func TestMatchAnnotateCall_WrongArgCount(t *testing.T) {
+	expr := astExprFromString(t, `sszutils.Annotate[Foo]("a", "b")`)
+	if got := matchAnnotateCall(expr, "sszutils", "Foo"); got != "" {
+		t.Errorf("expected empty for 2-arg call, got %q", got)
+	}
+}
+
+func TestMatchAnnotateCall_NotIndexExpr(t *testing.T) {
+	// Plain call, no type-parameter index expression — takes the `!ok`
+	// branch on the IndexExpr type assertion.
+	expr := astExprFromString(t, `sszutils.Annotate("tag")`)
+	if got := matchAnnotateCall(expr, "sszutils", "Foo"); got != "" {
+		t.Errorf("expected empty for non-index call, got %q", got)
+	}
+}
+
+func TestMatchAnnotateCall_SelectorNameNotAnnotate(t *testing.T) {
+	expr := astExprFromString(t, `sszutils.Other[Foo]("tag")`)
+	if got := matchAnnotateCall(expr, "sszutils", "Foo"); got != "" {
+		t.Errorf("expected empty for non-Annotate selector, got %q", got)
+	}
+}
+
+func TestMatchAnnotateCall_SelectorXNotIdent(t *testing.T) {
+	// sel.X is pkg.sub (a SelectorExpr), not an Ident — takes the `!ok`
+	// branch on the X type assertion.
+	expr := astExprFromString(t, `pkg.sub.Annotate[Foo]("tag")`)
+	if got := matchAnnotateCall(expr, "sszutils", "Foo"); got != "" {
+		t.Errorf("expected empty for non-ident selector X, got %q", got)
+	}
+}
+
+func TestMatchAnnotateCall_AliasMismatch(t *testing.T) {
+	expr := astExprFromString(t, `other.Annotate[Foo]("tag")`)
+	if got := matchAnnotateCall(expr, "sszutils", "Foo"); got != "" {
+		t.Errorf("expected empty for wrong alias, got %q", got)
+	}
+}
+
+func TestMatchAnnotateCall_TypeArgNotIdent(t *testing.T) {
+	// Index is a non-identifier type expression (pointer).
+	expr := astExprFromString(t, `sszutils.Annotate[*Foo]("tag")`)
+	if got := matchAnnotateCall(expr, "sszutils", "Foo"); got != "" {
+		t.Errorf("expected empty for non-ident type arg, got %q", got)
+	}
+}
+
+func TestMatchAnnotateCall_TypeArgNameMismatch(t *testing.T) {
+	expr := astExprFromString(t, `sszutils.Annotate[Bar]("tag")`)
+	if got := matchAnnotateCall(expr, "sszutils", "Foo"); got != "" {
+		t.Errorf("expected empty for wrong type name, got %q", got)
+	}
+}
+
+func TestMatchAnnotateCall_ArgNotBasicLit(t *testing.T) {
+	expr := astExprFromString(t, `sszutils.Annotate[Foo](tagVar)`)
+	if got := matchAnnotateCall(expr, "sszutils", "Foo"); got != "" {
+		t.Errorf("expected empty for non-literal arg, got %q", got)
+	}
+}
+
+func TestMatchAnnotateCall_ArgNotStringLit(t *testing.T) {
+	// An integer BasicLit is not a string — covers lit.Kind != STRING.
+	expr := astExprFromString(t, `sszutils.Annotate[Foo](42)`)
+	if got := matchAnnotateCall(expr, "sszutils", "Foo"); got != "" {
+		t.Errorf("expected empty for non-string lit, got %q", got)
+	}
+}
+
+func TestMatchAnnotateCall_InterpretedStringUnquoteError(t *testing.T) {
+	// Hand-build a CallExpr whose string arg is syntactically invalid when
+	// unquoted. parser.ParseExpr won't produce this shape from real Go
+	// source (it would reject the literal), so we construct the AST nodes
+	// directly.
+	lit := &ast.BasicLit{
+		Kind:  token.STRING,
+		Value: `"unterminated`, // doesn't start with ` and has no closing quote
+	}
+	call := &ast.CallExpr{
+		Fun: &ast.IndexExpr{
+			X: &ast.SelectorExpr{
+				X:   &ast.Ident{Name: "sszutils"},
+				Sel: &ast.Ident{Name: "Annotate"},
+			},
+			Index: &ast.Ident{Name: "Foo"},
+		},
+		Args: []ast.Expr{lit},
+	}
+	if got := matchAnnotateCall(call, "sszutils", "Foo"); got != "" {
+		t.Errorf("expected empty when strconv.Unquote fails, got %q", got)
+	}
+}
+
+func TestMatchAnnotateCall_RawString(t *testing.T) {
+	// Happy-path raw-string branch for completeness (already covered
+	// indirectly, but nice to have explicit unit coverage here too).
+	expr := astExprFromString(t, "sszutils.Annotate[Foo](`tag-x`)")
+	if got := matchAnnotateCall(expr, "sszutils", "Foo"); got != "tag-x" {
+		t.Errorf("expected tag-x, got %q", got)
+	}
+}
+
+// findAnnotateCallInDecl has a `continue` for non-ValueSpec entries inside
+// a VAR GenDecl. Valid Go won't produce that, so we hand-craft a GenDecl
+// with mixed spec types.
+func TestFindAnnotateCallInDecl_NonValueSpec(t *testing.T) {
+	decl := &ast.GenDecl{
+		Tok: token.VAR,
+		Specs: []ast.Spec{
+			&ast.ImportSpec{}, // deliberately wrong spec type for a VAR decl
+		},
+	}
+	if got := findAnnotateCallInDecl(decl, "sszutils", "Foo"); got != "" {
+		t.Errorf("expected empty from GenDecl with non-ValueSpec, got %q", got)
+	}
+}
+
+func TestFindAnnotateCallInDecl_GenDeclNotVar(t *testing.T) {
+	// TYPE decls are ignored outright — exercises the early return at the
+	// top of findAnnotateCallInDecl.
+	src := `package p
+type T int
+`
+	f := astFileFromString(t, src)
+	for _, decl := range f.Decls {
+		if got := findAnnotateCallInDecl(decl, "sszutils", "T"); got != "" {
+			t.Errorf("expected empty, got %q", got)
+		}
+	}
+}
+
+func TestFindAnnotateCallInDecl_OtherDeclKind(t *testing.T) {
+	// A LabeledStmt is not *ast.GenDecl or *ast.FuncDecl — it's also not a
+	// top-level Decl, but we can still hand it as an untyped Decl to force
+	// the switch's default (no branch taken). We use a BadDecl for clarity.
+	var d ast.Decl = &ast.BadDecl{}
+	if got := findAnnotateCallInDecl(d, "sszutils", "Foo"); got != "" {
+		t.Errorf("expected empty from BadDecl, got %q", got)
 	}
 }

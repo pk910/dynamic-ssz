@@ -1,0 +1,68 @@
+# Config for the main batch of generated SSZ code.
+# Paths are resolved relative to this file's directory.
+#
+# The per-type `output` override groups related types into a single file so
+# cross-references between them (e.g. SimpleTypes1 ↔ SimpleTypes1_C1) are
+# emitted as method calls instead of inlined duplicates.
+
+package: github.com/pk910/dynamic-ssz/codegen/tests
+output: gen_ssz.go
+legacy: true
+with-streaming: true
+
+types:
+  - SimpleBool
+  - SimpleUint8
+  - SimpleUint16
+  - SimpleUint32
+  - SimpleUint64
+
+  - name: SimpleTypes1
+    output: gen_simple1.go
+  - name: SimpleTypes1_C1
+    output: gen_simple1.go
+
+  - name: SimpleTypes2
+    output: gen_simple2.go
+  - name: SimpleTypes3
+    output: gen_simple3.go
+
+  - name: SimpleTypesWithSpecs
+    output: gen_withspecs.go
+  - name: SimpleTypesWithSpecs_C1
+    output: gen_withspecs.go
+  - name: SimpleTypesWithSpecs_C2
+    output: gen_withspecs.go
+
+  - name: SimpleTypesWithSpecs2
+    output: gen_withspecs2.go
+  - name: SimpleTypesWithSpecs_C3
+    output: gen_withspecs2.go
+
+  - name: ProgressiveTypes
+    output: gen_progressive.go
+  - name: CustomTypes1
+    output: gen_custom.go
+  - name: CoverageTypes1
+    output: gen_coverage.go
+  - name: CoverageTypes7
+    output: gen_coverage7.go
+
+  - name: ViewTypes1_Base
+    output: gen_viewtypes1.go
+    views:
+      - ViewTypes1_View1
+      - ViewTypes1_View2
+      - github.com/pk910/dynamic-ssz/codegen/tests/views.ViewTypes1_View3
+
+  - name: ViewTypes2_Base
+    output: gen_viewtypes2.go
+    views:
+      - ViewTypes2_View1
+      - ViewTypes2_View2
+
+  - name: ViewTypes3_Base
+    output: gen_viewtypes3.go
+    view-only: true
+    views:
+      - ViewTypes3_View1

@@ -311,6 +311,46 @@ func TestDecoderUnionWithUnsupportedVariant(t *testing.T) {
 	}
 }
 
+// TestDecoderTypeWrapperSuccess exercises the decoder unmarshalType success
+// path for TypeWrapper: getTypeWrapperFieldName returns the data-field name
+// via reflection and unmarshalType recurses into the wrapped element.
+func TestDecoderTypeWrapperSuccess(t *testing.T) {
+	wrapperType := reflect.TypeFor[testWrapperListStruct]()
+	itemDesc := &ssztypes.TypeDescriptor{
+		Type:    reflect.TypeFor[uint32](),
+		SszType: ssztypes.SszUint32Type,
+		Kind:    reflect.Uint32,
+		Size:    4,
+	}
+	elemDesc := &ssztypes.TypeDescriptor{
+		Type:         wrapperType.Field(0).Type,
+		SszType:      ssztypes.SszListType,
+		Kind:         reflect.Slice,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+		ElemDesc:     itemDesc,
+		Limit:        8,
+	}
+
+	wrapperDesc := &ssztypes.TypeDescriptor{
+		Type:         wrapperType,
+		SszType:      ssztypes.SszTypeWrapperType,
+		Kind:         reflect.Struct,
+		ElemDesc:     elemDesc,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{CreateDecoderFn: true}
+
+	if err := generateDecoder(wrapperDesc, codeBuilder, typePrinter, "", options); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(codeBuilder.String(), "t.Payload") {
+		t.Errorf("expected generated decoder to reference t.Payload, got:\n%s", codeBuilder.String())
+	}
+}
+
 // TestDecoderTypeWrapperWithUnsupportedInner tests error propagation from wrapper inner type.
 func TestDecoderTypeWrapperWithUnsupportedInner(t *testing.T) {
 	unsupportedInner := &ssztypes.TypeDescriptor{

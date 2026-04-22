@@ -10,6 +10,7 @@
 - **[Supported Types](supported-types.md)** - Type system reference (basic, collection, progressive, extended)
 - **[SSZ Annotations](ssz-annotations.md)** - Struct tags, dynamic expressions, and tag combinations
 - **[Code Generator](code-generator.md)** - CLI tool and programmatic code generation
+- **[Code Generator Config File](code-generator-config.md)** - YAML config file format for `dynssz-gen --config`
 - **[SSZ Views](views.md)** - Multiple SSZ schemas for fork handling
 - **[Merkle Proofs](merkle-proofs.md)** - Tree construction and proof generation
 - **[Streaming Support](streaming.md)** - Memory-efficient encoding/decoding via `io.Reader`/`io.Writer`

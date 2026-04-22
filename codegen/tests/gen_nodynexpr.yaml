@@ -1,0 +1,8 @@
+# Types generated without dynamic expressions — exercises static-only code.
+package: github.com/pk910/dynamic-ssz/codegen/tests
+output: gen_nodynexpr.go
+with-streaming: true
+without-dynamic-expressions: true
+
+types:
+  - NoDynExprTypes

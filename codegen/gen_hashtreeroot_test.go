@@ -313,8 +313,8 @@ func TestHashTreeRootTypeWrapperWithNestedUnsupportedType(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for nested unsupported type in TypeWrapper, got nil")
 	}
-	if !strings.Contains(err.Error(), "unsupported SSZ type") {
-		t.Errorf("expected error containing 'unsupported SSZ type', got: %v", err)
+	if !strings.Contains(err.Error(), "could not determine data field name for wrapper descriptor") {
+		t.Errorf("expected error containing 'could not determine data field name for wrapper descriptor', got: %v", err)
 	}
 }
 
