@@ -2,6 +2,17 @@
 
 All notable changes to the `dynamic-ssz` library are documented here.
 
+## [v1.3.1] 2026-04-22
+
+### Added
+- Add support for custom struct types as type-wrapper with `ssz-type:"wrapper"`, removing the need for a descriptor struct and `GetDescriptorType` method
+- Add YAML config file support to `dynssz-gen` with `--config` flag for easier code generation management
+
+### Changed
+- Optimize treeproof multiproof verification with a faster path for indices on the same tree level, reducing allocations and improving performance
+
+---
+
 ## [v1.3.0] 2026-03-31
 
 ### Added
