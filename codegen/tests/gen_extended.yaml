@@ -1,0 +1,13 @@
+# Extended-types batch: types that exercise signed ints, floats, big.Int, etc.
+package: github.com/pk910/dynamic-ssz/codegen/tests
+output: gen_extended.go
+with-streaming: true
+with-extended-types: true
+
+types:
+  - ExtendedTypes1
+  - CoverageTypes2
+  - CoverageTypes3
+  - CoverageTypes4
+  - CoverageTypes5
+  - CoverageTypes6

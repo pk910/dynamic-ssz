@@ -14,6 +14,7 @@ import (
 	"go/types"
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -34,6 +35,10 @@ type Config struct {
 	WithoutFastSsz            bool
 	WithStreaming             bool
 	WithExtendedTypes         bool
+
+	// TypeSpecs, when non-nil, overrides TypeNames parsing. Populated by the
+	// config-file path so per-type override booleans carry through.
+	TypeSpecs []typeSpec
 }
 
 // typeSpec holds parsed information about a type specification
@@ -42,6 +47,18 @@ type typeSpec struct {
 	OutputFile string
 	ViewTypes  []string // view types for data+views mode (can include package paths)
 	IsViewOnly bool     // whether this is a view-only type
+
+	// Per-type effective codegen flags. When HasPerTypeOverrides is false
+	// these are unused and the global Config values apply. When true, each
+	// boolean is the resolved effective value (global default with optional
+	// override) and is applied at the per-type level only — never the file
+	// level — because codegen With* options can only set booleans to true.
+	HasPerTypeOverrides       bool
+	Legacy                    bool
+	WithoutDynamicExpressions bool
+	WithoutFastSsz            bool
+	WithStreaming             bool
+	WithExtendedTypes         bool
 }
 
 // viewTypeRef holds a parsed view type reference
@@ -86,6 +103,7 @@ func getVersionString() string {
 
 func main() {
 	var (
+		configPath                = flag.String("config", "", "Path to YAML config file")
 		packagePath               = flag.String("package", "", "Go package path to analyze")
 		packageName               = flag.String("package-name", "", "Package name for generated code")
 		typeNames                 = flag.String("types", "", "Comma-separated list of type names to generate code for")
@@ -104,7 +122,9 @@ func main() {
 		_, _ = fmt.Fprintf(w, "dynssz-gen %s\n\n", getVersionString())
 		_, _ = fmt.Fprintf(w, "Go code generator for dynamic SSZ marshaling, unmarshaling, and hash tree root.\n\n")
 		_, _ = fmt.Fprintf(w, "Usage:\n")
-		_, _ = fmt.Fprintf(w, "  dynssz-gen -package <path> -types <types> [-output <file>] [flags]\n\n")
+		_, _ = fmt.Fprintf(w, "  dynssz-gen -package <path> -types <types> [-output <file>] [flags]\n")
+		_, _ = fmt.Fprintf(w, "  dynssz-gen -config <file> [flags]\n\n")
+		_, _ = fmt.Fprintf(w, "See docs/code-generator-config.md for the config file format.\n\n")
 		_, _ = fmt.Fprintf(w, "Types syntax:\n")
 		_, _ = fmt.Fprintf(w, "  Comma-separated list of type names from the target package.\n")
 		_, _ = fmt.Fprintf(w, "  Each type can have colon-separated options:\n")
@@ -150,7 +170,7 @@ func main() {
 		return
 	}
 
-	if *packagePath == "" && *typeNames == "" {
+	if *configPath == "" && *packagePath == "" && *typeNames == "" {
 		flag.Usage()
 		return
 	}
@@ -168,22 +188,53 @@ func main() {
 		WithExtendedTypes:         *withExtendedTypes,
 	}
 
+	if *configPath != "" {
+		cliProvided := providedFlagSet()
+		fc, err := LoadConfig(*configPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+		baseDir := filepath.Dir(*configPath)
+		specs, err := fc.applyToConfig(&config, cliProvided, baseDir)
+		if err != nil {
+			log.Fatal(err)
+		}
+		config.TypeSpecs = specs
+	}
+
 	if err := run(config); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// providedFlagSet returns the set of flags that the user explicitly passed on
+// the command line. The flag package otherwise exposes only the resolved
+// value, which makes it impossible to tell "user passed -legacy=false" from
+// "user did not pass -legacy at all" — we need that distinction for the
+// config-file precedence rules.
+func providedFlagSet() map[string]bool {
+	provided := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) {
+		provided[f.Name] = true
+	})
+	return provided
 }
 
 func run(config Config) error {
 	if config.PackagePath == "" {
 		return errors.New("package path is required (-package)")
 	}
-	if config.TypeNames == "" {
+	if config.TypeNames == "" && len(config.TypeSpecs) == 0 {
 		return errors.New("type names are required (-types)")
 	}
 
 	if config.Verbose {
 		log.Printf("Analyzing package: %s", config.PackagePath)
-		log.Printf("Looking for types: %s", config.TypeNames)
+		if config.TypeNames != "" {
+			log.Printf("Looking for types: %s", config.TypeNames)
+		} else {
+			log.Printf("Looking for %d types (from config file)", len(config.TypeSpecs))
+		}
 	}
 
 	// Parse the Go package
@@ -212,9 +263,14 @@ func run(config Config) error {
 		log.Printf("Successfully loaded package: %s", pkg.Name)
 	}
 
-	typeSpecs, err := parseTypeSpecs(config.TypeNames, config.OutputFile)
-	if err != nil {
-		return err
+	var typeSpecs []typeSpec
+	if len(config.TypeSpecs) > 0 {
+		typeSpecs = config.TypeSpecs
+	} else {
+		typeSpecs, err = parseTypeSpecs(config.TypeNames, config.OutputFile)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Find the requested types in the package
@@ -376,24 +432,37 @@ func run(config Config) error {
 				typeSpecificOpts = append(typeSpecificOpts, codegen.WithViewOnly())
 			}
 
+			// When the config file populated per-type overrides, every codegen
+			// boolean is applied here at the per-type level. This is the only
+			// way for a specific type to opt *out* of a globally enabled flag:
+			// codegen's With* options can only set a boolean to true, so if
+			// we left the option on at the file level we could never turn it
+			// off for one type.
+			if spec.HasPerTypeOverrides {
+				typeSpecificOpts = append(typeSpecificOpts, codegenFlagOptions(
+					spec.Legacy,
+					spec.WithoutDynamicExpressions,
+					spec.WithoutFastSsz,
+					spec.WithStreaming,
+					spec.WithExtendedTypes,
+				)...)
+			}
+
 			// Add the type with its options
 			typeOptions = append(typeOptions, codegen.WithGoTypesType(goType, typeSpecificOpts...))
 		}
 
-		if config.Legacy {
-			typeOptions = append(typeOptions, codegen.WithCreateLegacyFn())
-		}
-		if config.WithoutDynamicExpressions {
-			typeOptions = append(typeOptions, codegen.WithoutDynamicExpressions())
-		}
-		if config.WithoutFastSsz {
-			typeOptions = append(typeOptions, codegen.WithNoFastSsz())
-		}
-		if config.WithStreaming {
-			typeOptions = append(typeOptions, codegen.WithCreateEncoderFn(), codegen.WithCreateDecoderFn())
-		}
-		if config.WithExtendedTypes {
-			typeOptions = append(typeOptions, codegen.WithExtendedTypes())
+		// File-level flags are only used when no per-type overrides are in
+		// play (i.e. the legacy CLI path). In the config-file path each type
+		// already carries its fully-resolved per-type options above.
+		if !anyHasOverrides(specs) {
+			typeOptions = append(typeOptions, codegenFlagOptions(
+				config.Legacy,
+				config.WithoutDynamicExpressions,
+				config.WithoutFastSsz,
+				config.WithStreaming,
+				config.WithExtendedTypes,
+			)...)
 		}
 
 		// Build the file with all types

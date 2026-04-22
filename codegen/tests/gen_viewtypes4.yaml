@@ -1,0 +1,10 @@
+# Isolated view-type batch (kept separate to exercise multi-batch generation).
+package: github.com/pk910/dynamic-ssz/codegen/tests
+output: gen_viewtypes4.go
+with-streaming: true
+
+types:
+  - name: ViewTypes4_Base
+    output: gen_viewtypes4.go
+    views:
+      - ViewTypes4_View1
