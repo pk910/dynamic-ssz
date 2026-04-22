@@ -56,7 +56,22 @@ jobs:
       continue-on-error: true
       run: |
         cd base/tests/perftests
+        # go mod tidy heals stale go.sum entries when the base commit predates
+        # a dynssz-gen dependency bump present in the PR. Without this, codegen
+        # fails silently and Codegen_* benchmarks fall back to reflection,
+        # producing spurious large diffs against PR's real generated code.
+        go mod tidy
         go generate ./...
+
+    - name: Check base codegen
+      id: base_codegen_check
+      run: |
+        if ls base/tests/perftests/gen_*.go >/dev/null 2>&1; then
+          echo "has_codegen=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "::warning::Base codegen produced no gen_*.go files. Codegen_* benchmarks will be skipped to avoid comparing reflection fallback against real generated code."
+          echo "has_codegen=false" >> "$GITHUB_OUTPUT"
+        fi
 
     - name: Cache Go modules
       uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
@@ -177,11 +192,19 @@ jobs:
         done
 
     - name: Run perf benchmarks
+      env:
+        HAS_BASE_CODEGEN: ${{ steps.base_codegen_check.outputs.has_codegen }}
       run: |
         OUTDIR="$GITHUB_WORKSPACE/bench-results"
 
         # Discover perf benchmark names from PR
         BENCHMARKS=$(cd pr/tests/perftests && go test -list '^Benchmark' -run '^$' 2>/dev/null | grep '^Benchmark' | sort -u)
+        if [ "$HAS_BASE_CODEGEN" != "true" ]; then
+          # Skip Codegen_* benchmarks: base has no generated code so DynSsz would
+          # transparently fall back to reflection, producing a meaningless
+          # reflection-vs-codegen comparison.
+          BENCHMARKS=$(echo "$BENCHMARKS" | grep -v '^BenchmarkCodegen_' || true)
+        fi
         if [ -z "$BENCHMARKS" ]; then
           echo "No perf benchmarks found"
           exit 0
