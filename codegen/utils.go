@@ -161,14 +161,25 @@ func getTypeWrapperFieldName(desc *ssztypes.TypeDescriptor) string {
 
 			return structType.Field(0).Name()
 		}
-	} else if desc.Type != nil && desc.Type.Kind() == reflect.Struct {
+	}
+
+	if desc.Type != nil {
 		// get from reflection
-		fieldCount := desc.Type.NumField()
+		innerType := desc.Type
+		for innerType.Kind() == reflect.Ptr {
+			innerType = innerType.Elem()
+		}
+
+		if innerType.Kind() != reflect.Struct {
+			return ""
+		}
+
+		fieldCount := innerType.NumField()
 		if fieldCount != 1 {
 			return ""
 		}
 
-		return desc.Type.Field(0).Name
+		return innerType.Field(0).Name
 	}
 
 	return ""

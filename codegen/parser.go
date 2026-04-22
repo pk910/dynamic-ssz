@@ -1336,6 +1336,9 @@ func (p *Parser) buildTypeWrapperDescriptor(desc *ssztypes.TypeDescriptor, dataN
 			if !ok {
 				return fmt.Errorf("data TypeWrapper descriptor must be a struct, got %T", dataNamed.Underlying())
 			}
+			if dataStruct.NumFields() != 1 {
+				return fmt.Errorf("data TypeWrapper descriptor must have exactly 1 field, got %d", dataStruct.NumFields())
+			}
 
 			dataField := dataStruct.Field(0)
 			dataWrappedType = dataField.Type()
