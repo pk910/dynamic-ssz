@@ -2537,3 +2537,90 @@ func TestParserListWithDynamicSizeAccepted(t *testing.T) {
 		t.Error("list should have dynamic flag set")
 	}
 }
+
+// TestBuildTypeWrapperArbitraryStruct covers the non-generic wrapper-struct
+// paths in buildTypeWrapperDescriptor where the schema (and optionally the
+// data) is a plain single-field struct rather than a generic TypeWrapper[D,T].
+func TestBuildTypeWrapperArbitraryStruct(t *testing.T) {
+	parser := NewParser()
+	pkg := types.NewPackage("example.com/pkg", "pkg")
+
+	makeNamedStruct := func(name string, fieldName string, fieldType types.Type, tag string) *types.Named {
+		field := types.NewField(token.NoPos, pkg, fieldName, fieldType, false)
+		st := types.NewStruct([]*types.Var{field}, []string{tag})
+		obj := types.NewTypeName(token.NoPos, pkg, name, nil)
+		return types.NewNamed(obj, st, nil)
+	}
+
+	t.Run("SchemaAndDataBothArbitraryStructs", func(t *testing.T) {
+		// Both schema and data are plain single-field structs — the arbitrary
+		// wrapper-struct form. dataNamed != schemaNamed drives the else branch
+		// in buildTypeWrapperDescriptor.
+		schemaNamed := makeNamedStruct("SchemaWrap", "Value", types.NewSlice(types.Typ[types.Uint8]), `ssz-max:"128"`)
+		dataNamed := makeNamedStruct("DataWrap", "Value", types.NewSlice(types.Typ[types.Uint8]), `ssz-max:"128"`)
+
+		desc := &ssztypes.TypeDescriptor{SszType: ssztypes.SszTypeWrapperType}
+		if err := parser.buildTypeWrapperDescriptor(desc, dataNamed, schemaNamed, nil, nil, nil); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if desc.ElemDesc == nil {
+			t.Fatal("expected ElemDesc to be set")
+		}
+		if desc.ElemDesc.SszType != ssztypes.SszListType {
+			t.Errorf("expected wrapped list type, got %v", desc.ElemDesc.SszType)
+		}
+	})
+
+	t.Run("SchemaArbitraryDataNonStructUnderlying", func(t *testing.T) {
+		// Schema is an arbitrary wrapper struct; data named type has a non-struct
+		// underlying (here an alias for uint64) — must error out.
+		schemaNamed := makeNamedStruct("SchemaWrap2", "Value", types.Typ[types.Uint64], "")
+		dataObj := types.NewTypeName(token.NoPos, pkg, "DataAlias", nil)
+		dataNamed := types.NewNamed(dataObj, types.Typ[types.Uint64], nil)
+
+		desc := &ssztypes.TypeDescriptor{SszType: ssztypes.SszTypeWrapperType}
+		err := parser.buildTypeWrapperDescriptor(desc, dataNamed, schemaNamed, nil, nil, nil)
+		if err == nil {
+			t.Fatal("expected error for non-struct data underlying")
+		}
+		if !strings.Contains(err.Error(), "must be a struct") {
+			t.Errorf("expected 'must be a struct' error, got %v", err)
+		}
+	})
+
+	t.Run("SchemaTypeWrapperDataArbitraryStruct", func(t *testing.T) {
+		// Schema is generic TypeWrapper[D,T] so isTypeWrapper=true, but data is
+		// a plain struct with no type arguments — dataTypeArgs is nil, hitting
+		// the "data TypeWrapper must have exactly 2 type arguments" error.
+		descStructField := types.NewVar(token.NoPos, pkg, "Value", types.NewSlice(types.Typ[types.Uint8]))
+		descStruct := types.NewStruct([]*types.Var{descStructField}, []string{`ssz-max:"64"`})
+
+		typeParamD := types.NewTypeParam(types.NewTypeName(token.NoPos, nil, "D", nil), types.NewInterfaceType(nil, nil))
+		typeParamT := types.NewTypeParam(types.NewTypeName(token.NoPos, nil, "T", nil), types.NewInterfaceType(nil, nil))
+		wrapperObj := types.NewTypeName(token.NoPos, pkg, "TypeWrapper", nil)
+		wrapperStruct := types.NewStruct([]*types.Var{
+			types.NewVar(token.NoPos, nil, "Data", typeParamT),
+		}, []string{""})
+		schemaNamedGeneric := types.NewNamed(wrapperObj, wrapperStruct, nil)
+		schemaNamedGeneric.SetTypeParams([]*types.TypeParam{typeParamD, typeParamT})
+		instantiated, err := types.Instantiate(nil, schemaNamedGeneric, []types.Type{descStruct, types.NewSlice(types.Typ[types.Uint8])}, false)
+		if err != nil {
+			t.Fatalf("failed to instantiate TypeWrapper: %v", err)
+		}
+		schemaNamed, ok := instantiated.(*types.Named)
+		if !ok {
+			t.Fatalf("expected *types.Named, got %T", instantiated)
+		}
+
+		dataNamed := makeNamedStruct("DataWrap3", "Data", types.NewSlice(types.Typ[types.Uint8]), "")
+
+		desc := &ssztypes.TypeDescriptor{SszType: ssztypes.SszTypeWrapperType}
+		err = parser.buildTypeWrapperDescriptor(desc, dataNamed, schemaNamed, nil, nil, nil)
+		if err == nil {
+			t.Fatal("expected error when data is not a TypeWrapper generic")
+		}
+		if !strings.Contains(err.Error(), "data TypeWrapper must have exactly 2 type arguments") {
+			t.Errorf("expected 'data TypeWrapper must have exactly 2 type arguments' error, got %v", err)
+		}
+	})
+}

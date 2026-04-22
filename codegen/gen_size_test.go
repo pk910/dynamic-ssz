@@ -474,6 +474,48 @@ func TestSizeUnionWithUnsupportedVariant(t *testing.T) {
 	}
 }
 
+// TestSizeTypeWrapperSuccess exercises the sizeType success path for
+// TypeWrapper descriptors: getTypeWrapperFieldName returns the data-field
+// name via reflection, and sizeType recurses into the wrapped element.
+func TestSizeTypeWrapperSuccess(t *testing.T) {
+	// Use a dynamic list element so the generated code has to reference
+	// the wrapped data field by name (t.Payload).
+	wrapperType := reflect.TypeFor[testWrapperListStruct]()
+	itemDesc := &ssztypes.TypeDescriptor{
+		Type:    reflect.TypeFor[uint32](),
+		SszType: ssztypes.SszUint32Type,
+		Kind:    reflect.Uint32,
+		Size:    4,
+	}
+	elemDesc := &ssztypes.TypeDescriptor{
+		Type:         wrapperType.Field(0).Type,
+		SszType:      ssztypes.SszListType,
+		Kind:         reflect.Slice,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+		ElemDesc:     itemDesc,
+		Limit:        8,
+	}
+
+	wrapperDesc := &ssztypes.TypeDescriptor{
+		Type:         wrapperType,
+		SszType:      ssztypes.SszTypeWrapperType,
+		Kind:         reflect.Struct,
+		ElemDesc:     elemDesc,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{}
+
+	if err := generateSize(wrapperDesc, codeBuilder, typePrinter, "", options); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(codeBuilder.String(), "t.Payload") {
+		t.Errorf("expected generated code to reference t.Payload, got:\n%s", codeBuilder.String())
+	}
+}
+
 // TestSizeTypeWrapperWithUnsupportedInner tests error propagation from wrapper inner type.
 func TestSizeTypeWrapperWithUnsupportedInner(t *testing.T) {
 	unsupportedInner := &ssztypes.TypeDescriptor{
