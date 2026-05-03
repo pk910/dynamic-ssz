@@ -306,7 +306,7 @@ func TestMarshalLargeVectorStreaming(t *testing.T) {
 	val := reflect.ValueOf(src)
 
 	// Use StreamEncoder writing to io.Discard so we don't buffer output.
-	enc := sszutils.NewStreamEncoder(io.Discard, 4096)
+	enc := sszutils.NewStreamEncoder(io.Discard, 4096, 0)
 
 	err := ctx.marshalType(td, val, enc, 0)
 	if err != nil {

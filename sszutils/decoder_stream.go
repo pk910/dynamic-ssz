@@ -9,9 +9,14 @@ import (
 	"io"
 )
 
-// DefaultStreamDecoderBufSize is the default maximum buffer size for
+// DefaultStreamDecoderBufSize is the default internal read buffer size for
 // StreamDecoder (2KB).
 const DefaultStreamDecoderBufSize = 2 * 1024
+
+// DefaultStreamDecoderMaxBufSize is the default maximum buffer size for
+// delegation to buffer-based unmarshal methods (200KB). Reads exceeding this
+// threshold fall through to reflection-based field-by-field unmarshalling.
+const DefaultStreamDecoderMaxBufSize = 200 * 1024
 
 // StreamDecoder is a non-seekable Decoder implementation that reads SSZ data
 // from an io.Reader. It uses an internal buffer for efficient sequential reads
@@ -24,23 +29,28 @@ type StreamDecoder struct {
 	position  int
 
 	// Internal buffer for reading from stream
-	buffer    []byte
-	bufferPos int // Current read position within buffer
-	bufferLen int // Amount of valid data in buffer
+	buffer     []byte
+	bufferPos  int // Current read position within buffer
+	bufferLen  int // Amount of valid data in buffer
+	maxBufSize int // Configured maximum buffer size
 }
 
 var _ Decoder = (*StreamDecoder)(nil)
 
 // NewStreamDecoder creates a new StreamDecoder that reads SSZ data from the
 // provided io.Reader. totalLen specifies the total expected byte length of the
-// SSZ payload. maxBufSize controls the maximum internal read buffer size; if
-// <= 0, DefaultStreamDecoderBufSize is used.
-func NewStreamDecoder(reader io.Reader, totalLen, maxBufSize int) *StreamDecoder {
+// SSZ payload. bufSize controls the internal read buffer size (defaults to 2KB
+// if <= 0). maxBufSize controls the maximum buffer size for delegation to
+// buffer-based unmarshal methods (defaults to 200KB if <= 0).
+func NewStreamDecoder(reader io.Reader, totalLen, bufSize, maxBufSize int) *StreamDecoder {
+	if bufSize <= 0 {
+		bufSize = DefaultStreamDecoderBufSize
+	}
 	if maxBufSize <= 0 {
-		maxBufSize = DefaultStreamDecoderBufSize
+		maxBufSize = DefaultStreamDecoderMaxBufSize
 	}
 	// Use smaller buffer for small streams
-	bufferSize := maxBufSize
+	bufferSize := bufSize
 	if totalLen < bufferSize {
 		bufferSize = totalLen
 	}
@@ -49,19 +59,27 @@ func NewStreamDecoder(reader io.Reader, totalLen, maxBufSize int) *StreamDecoder
 	}
 
 	return &StreamDecoder{
-		reader:    reader,
-		limits:    make([]int, 0, 16),
-		lastLimit: totalLen,
-		streamLen: totalLen,
-		position:  0,
-		buffer:    make([]byte, bufferSize),
-		bufferPos: 0,
-		bufferLen: 0,
+		reader:     reader,
+		limits:     make([]int, 0, 16),
+		lastLimit:  totalLen,
+		streamLen:  totalLen,
+		position:   0,
+		buffer:     make([]byte, bufferSize),
+		bufferPos:  0,
+		bufferLen:  0,
+		maxBufSize: maxBufSize,
 	}
 }
 
 func (e *StreamDecoder) Seekable() bool {
 	return false
+}
+
+// MaxDecodeBufferSize returns the configured maximum buffer size. Callers
+// should avoid DecodeBytesBuf calls that exceed this size to prevent the
+// stream decoder from allocating large temporary buffers.
+func (e *StreamDecoder) MaxDecodeBufferSize() int {
+	return e.maxBufSize
 }
 
 func (e *StreamDecoder) GetPosition() int {

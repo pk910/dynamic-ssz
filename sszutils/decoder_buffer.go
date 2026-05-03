@@ -6,6 +6,7 @@ package sszutils
 
 import (
 	"encoding/binary"
+	"math"
 )
 
 // BufferDecoder is a seekable Decoder implementation backed by an in-memory
@@ -37,6 +38,12 @@ func NewBufferDecoder(buffer []byte) *BufferDecoder {
 // offset reads via DecodeOffsetAt and byte skipping via SkipBytes.
 func (e *BufferDecoder) Seekable() bool {
 	return true
+}
+
+// MaxDecodeBufferSize returns math.MaxInt because the entire buffer is already
+// in memory and DecodeBytesBuf only returns a slice—no allocation needed.
+func (e *BufferDecoder) MaxDecodeBufferSize() int {
+	return math.MaxInt
 }
 
 // GetPosition returns the current read position in the buffer.
