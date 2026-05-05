@@ -250,9 +250,15 @@ func run(config *Config) error {
 		}
 	}
 
-	// Parse the Go package
+	// Parse the Go package. NeedImports + NeedDeps make the main package's
+	// transitively-loaded dependencies (e.g. "spec/phase0" reached via
+	// "spec/all") available with the same *types.Named instances the main
+	// package uses. We seed them into the external-package cache below so
+	// that view types pointing into those same packages share types,
+	// preventing the parser from misclassifying nested fields as views.
 	cfg := &packages.Config{
-		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName,
+		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName |
+			packages.NeedImports | packages.NeedDeps,
 	}
 
 	pkgs, err := loadPackages(cfg, config.PackagePath)
@@ -292,10 +298,38 @@ func run(config *Config) error {
 	mainScope := pkg.Types.Scope()
 	typeCount := 0
 
-	// Cache for loaded external packages
+	// Cache for loaded external packages. Pre-populate it from the main
+	// package's transitive imports so that any view type that lives in a
+	// package the main package already depends on resolves to the same
+	// *types.Named instance the main package uses. Without this, separate
+	// packages.Load calls produce distinct *types.Named pointers for the
+	// same logical type, which causes the parser's pointer-equality check
+	// (data != schema) to misclassify every nested struct as a view —
+	// preventing fastssz delegation to per-fork generated methods.
 	externalPackages := make(map[string]*packages.Package)
+	var seedTransitiveImports func(p *packages.Package)
+	seedTransitiveImports = func(p *packages.Package) {
+		for impPath, impPkg := range p.Imports {
+			if _, ok := externalPackages[impPath]; ok {
+				continue
+			}
+			if impPkg == nil || impPkg.Types == nil {
+				continue
+			}
+			externalPackages[impPath] = impPkg
+			seedTransitiveImports(impPkg)
+		}
+	}
+	seedTransitiveImports(pkg)
+	if config.Verbose {
+		log.Printf("Seeded %d transitive packages from main", len(externalPackages))
+	}
 
-	// Helper to load and cache an external package
+	// Helper to load and cache an external package. Lookups go through the
+	// transitively-seeded cache first; on a miss we do a fresh packages.Load
+	// and then re-check the cache by the canonical PkgPath so a relative
+	// pattern like "../phase0" still resolves to the main-package's already
+	// loaded copy of "github.com/.../phase0".
 	loadExternalPackage := func(pkgPath string) (*packages.Package, error) {
 		if cached, ok := externalPackages[pkgPath]; ok {
 			return cached, nil
@@ -312,7 +346,17 @@ func run(config *Config) error {
 			return nil, fmt.Errorf("external package %s has errors: %v", pkgPath, extPkgs[0].Errors[0])
 		}
 
+		// If the canonical import path is already in our seeded cache (because
+		// the main package transitively imports it), use that copy so types
+		// are pointer-identical to the ones the main package sees.
+		canonical := extPkgs[0].PkgPath
+		if seeded, ok := externalPackages[canonical]; ok {
+			externalPackages[pkgPath] = seeded
+			return seeded, nil
+		}
+
 		externalPackages[pkgPath] = extPkgs[0]
+		externalPackages[canonical] = extPkgs[0]
 		if config.Verbose {
 			log.Printf("Loaded external package: %s", pkgPath)
 		}
