@@ -315,6 +315,88 @@ func BenchmarkTreeFromNodes(b *testing.B) {
 	}
 }
 
+func buildBenchmarkChunks(numLeaves int) [][]byte {
+	chunks := make([][]byte, numLeaves)
+	var input [8]byte
+
+	for i := range numLeaves {
+		binary.LittleEndian.PutUint64(input[:], uint64(i))
+		hash := sha256.Sum256(input[:])
+		chunks[i] = hash[:]
+	}
+
+	return chunks
+}
+
+func BenchmarkNodeProveMulti(b *testing.B) {
+	// 2^16 = 65536 leaves. This matches the verification benchmark size so we
+	// can compare proof generation and proof verification under the same load.
+	const numLeaves = 1 << 16
+
+	tree, err := TreeFromChunks(buildBenchmarkChunks(numLeaves))
+	if err != nil {
+		b.Fatalf("failed to create benchmark tree: %v", err)
+	}
+
+	indicesAdjacent := []int{numLeaves, numLeaves + 1}
+	indicesScattered := make([]int, 16)
+	for i := range indicesScattered {
+		indicesScattered[i] = numLeaves + i*1000
+	}
+	indicesAll := make([]int, numLeaves)
+	for i := range indicesAll {
+		indicesAll[i] = numLeaves + i
+	}
+
+	benchmarks := []struct {
+		name    string
+		indices []int
+	}{
+		{name: "Prove_2_Adjacent_Leaves", indices: indicesAdjacent},
+		{name: "Prove_16_Scattered_Leaves", indices: indicesScattered},
+		{name: "Prove_All_Leaves", indices: indicesAll},
+	}
+
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				_, _ = tree.ProveMulti(bm.indices)
+			}
+		})
+	}
+}
+
+func BenchmarkNodeProve(b *testing.B) {
+	const numLeaves = 1 << 16
+
+	tree, err := TreeFromChunks(buildBenchmarkChunks(numLeaves))
+	if err != nil {
+		b.Fatalf("failed to create benchmark tree: %v", err)
+	}
+
+	benchmarks := []struct {
+		name  string
+		index int
+	}{
+		{name: "Leaf", index: numLeaves + 12345},
+		{name: "Intermediate", index: (numLeaves + 12345) >> 4},
+	}
+
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				_, _ = tree.Prove(bm.index)
+			}
+		})
+	}
+}
+
 func TestTreeFromNodesProgressive(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -708,6 +790,11 @@ func TestNodeProveMulti(t *testing.T) {
 		{
 			name:        "prove all leaves",
 			indices:     []int{8, 9, 10, 11, 12, 13, 14, 15},
+			expectError: false,
+		},
+		{
+			name:        "prove all leaves descending",
+			indices:     []int{15, 14, 13, 12, 11, 10, 9, 8},
 			expectError: false,
 		},
 		{
