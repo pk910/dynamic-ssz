@@ -1914,6 +1914,32 @@ func TestOptionalInnerBuildRootError(t *testing.T) {
 	}
 }
 
+// TestOptionalListInnerBuildRootError verifies buildRootFromOptionalList
+// propagates errors from the inner element's buildRootFromType call.
+func TestOptionalListInnerBuildRootError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type Inner struct {
+		Value uint32
+	}
+	type Container struct {
+		Opt *Inner `ssz-type:"optional-list"`
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+
+	optDesc := typeDesc.ContainerDesc.Fields[0].Type
+	optDesc.ElemDesc.SszType = ssztypes.SszType(255)
+	optDesc.ElemDesc.SszCompatFlags = 0
+
+	if _, err = dynssz.HashTreeRoot(Container{Opt: &Inner{Value: 42}}); err == nil {
+		t.Error("expected error for optional-list inner build root error")
+	}
+}
+
 func TestBuildRootFromTypeWrapperError(t *testing.T) {
 	dynssz := NewDynSsz(nil, WithNoFastSsz())
 

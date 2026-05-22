@@ -1432,6 +1432,50 @@ func TestOptionalListEquivalentToListMax(t *testing.T) {
 	}
 }
 
+// TestOptionalListMarshalVerbose exercises the verbose-logging branch in
+// marshalOptionalList.
+func TestOptionalListMarshalVerbose(t *testing.T) {
+	type Inner struct {
+		Data []byte `ssz-max:"32"`
+	}
+	type Container struct {
+		Opt *Inner `ssz-type:"optional-list"`
+	}
+
+	ds := NewDynSsz(nil, WithVerbose(), WithLogCb(func(string, ...any) {}), WithNoFastSsz())
+	if _, err := ds.MarshalSSZ(Container{Opt: &Inner{Data: []byte{1, 2, 3}}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := ds.MarshalSSZ(Container{Opt: nil}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestOptionalListInnerMarshalError verifies marshalOptionalList propagates
+// errors from marshaling the inner element.
+func TestOptionalListInnerMarshalError(t *testing.T) {
+	type Inner struct {
+		Value uint32
+	}
+	type Container struct {
+		Opt *Inner `ssz-type:"optional-list"`
+	}
+
+	ds := NewDynSsz(nil, WithNoFastSsz())
+	typeDesc, err := ds.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Force the inner descriptor to an unsupported SSZ type so marshalType returns an error.
+	optDesc := typeDesc.ContainerDesc.Fields[0].Type
+	optDesc.ElemDesc.SszType = ssztypes.SszType(255)
+	optDesc.ElemDesc.SszCompatFlags = 0
+
+	if _, err = ds.MarshalSSZ(Container{Opt: &Inner{Value: 42}}); err == nil {
+		t.Error("expected error for optional-list with unsupported inner type")
+	}
+}
+
 // TestOptionalListPointerRequired verifies that ssz-type:"optional-list"
 // on a non-pointer field is rejected by the type cache.
 func TestOptionalListPointerRequired(t *testing.T) {

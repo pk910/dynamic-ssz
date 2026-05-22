@@ -1226,6 +1226,94 @@ func TestTypeCache_ExtendedTypes(t *testing.T) {
 			t.Error("expected bigint to be dynamic")
 		}
 	})
+
+	// Optional-list (canonical List[T, 1]) works without ExtendedTypes since
+	// it has no custom shape.
+	t.Run("OptionalListDescriptor", func(t *testing.T) {
+		cache := NewTypeCache(ds)
+
+		desc, err := cache.GetTypeDescriptor(
+			reflect.TypeOf((*uint32)(nil)),
+			nil, nil,
+			[]SszTypeHint{{Type: SszOptionalListType}},
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if desc.SszType != SszOptionalListType {
+			t.Errorf("expected SszOptionalListType, got %v", desc.SszType)
+		}
+		if desc.Limit != 1 {
+			t.Errorf("expected Limit=1, got %d", desc.Limit)
+		}
+		if desc.SszTypeFlags&SszTypeFlagHasLimit == 0 {
+			t.Error("expected SszTypeFlagHasLimit to be set")
+		}
+		if desc.SszTypeFlags&SszTypeFlagIsDynamic == 0 {
+			t.Error("expected optional-list to be dynamic")
+		}
+		if desc.ElemDesc == nil {
+			t.Fatal("expected ElemDesc to be set")
+		}
+		if desc.ElemDesc.SszType != SszUint32Type {
+			t.Errorf("expected child SszUint32Type, got %v", desc.ElemDesc.SszType)
+		}
+	})
+
+	t.Run("OptionalListDescriptorWithChildHints", func(t *testing.T) {
+		cache := NewTypeCache(ds)
+
+		// Child size and max hints get forwarded to the element descriptor.
+		desc, err := cache.GetTypeDescriptor(
+			reflect.TypeOf((*[]byte)(nil)),
+			[]SszSizeHint{{}, {Size: 0, Dynamic: true}},
+			[]SszMaxSizeHint{{}, {Size: 32}},
+			[]SszTypeHint{{Type: SszOptionalListType}, {Type: SszListType}},
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if desc.SszType != SszOptionalListType {
+			t.Errorf("expected SszOptionalListType, got %v", desc.SszType)
+		}
+		if desc.ElemDesc == nil || desc.ElemDesc.SszType != SszListType {
+			t.Fatalf("expected child SszListType, got %v", desc.ElemDesc)
+		}
+		if desc.ElemDesc.Limit != 32 {
+			t.Errorf("expected child Limit=32, got %d", desc.ElemDesc.Limit)
+		}
+	})
+
+	t.Run("OptionalListNonPointer", func(t *testing.T) {
+		cache := NewTypeCache(ds)
+
+		_, err := cache.GetTypeDescriptor(
+			reflect.TypeOf(uint32(0)),
+			nil, nil,
+			[]SszTypeHint{{Type: SszOptionalListType}},
+		)
+		if err == nil {
+			t.Fatal("expected error for optional-list with non-pointer type")
+		}
+		if !strings.Contains(err.Error(), "optional-list ssz type can only be represented by pointer") {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	// Inner descriptor build error propagates from the child getTypeDescriptor call.
+	t.Run("OptionalListInnerBuildError", func(t *testing.T) {
+		cache := NewTypeCache(ds)
+
+		// chan is unsupported in SSZ; building the child descriptor fails.
+		_, err := cache.GetTypeDescriptor(
+			reflect.TypeOf((*chan int)(nil)),
+			nil, nil,
+			[]SszTypeHint{{Type: SszOptionalListType}},
+		)
+		if err == nil {
+			t.Fatal("expected error for optional-list with unsupported inner type")
+		}
+	})
 }
 
 // Test ParseSszType for all types
@@ -1271,6 +1359,9 @@ func TestParseSszType(t *testing.T) {
 		{"float64", SszFloat64Type},
 		{"bigint", SszBigIntType},
 		{"optional", SszOptionalType},
+
+		// canonical SSZ encodings expressed via Go conveniences
+		{"optional-list", SszOptionalListType},
 	}
 
 	for _, tt := range tests {
