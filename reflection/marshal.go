@@ -40,7 +40,7 @@ import (
 //   - Primitive type encoding (bool, uint8, uint16, uint32, uint64)
 //   - Delegation to specialized functions for composite types (structs, arrays, slices)
 func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, idt int) error {
-	if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && sourceType.SszType != ssztypes.SszOptionalType {
+	if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && sourceType.SszType != ssztypes.SszOptionalType && sourceType.SszType != ssztypes.SszOptionalListType {
 		if sourceValue.IsNil() {
 			sourceValue = reflect.New(sourceType.Type.Elem()).Elem()
 		} else {
@@ -181,6 +181,11 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 		encoder.EncodeUint64(math.Float64bits(sourceValue.Float()))
 	case ssztypes.SszOptionalType:
 		err = ctx.marshalOptional(sourceType, sourceValue, encoder, idt)
+		if err != nil {
+			return err
+		}
+	case ssztypes.SszOptionalListType:
+		err = ctx.marshalOptionalList(sourceType, sourceValue, encoder, idt)
 		if err != nil {
 			return err
 		}
@@ -784,6 +789,38 @@ func (ctx *ReflectionCtx) marshalOptional(sourceType *ssztypes.TypeDescriptor, s
 	encoder.EncodeBool(true)
 
 	// Marshal the wrapped value using its type descriptor
+	return ctx.marshalType(sourceType.ElemDesc, sourceValue.Elem(), encoder, idt+2)
+}
+
+// marshalOptionalList encodes a pointer as a canonical SSZ List[T, 1].
+//
+// Nil pointers encode as an empty list (no bytes).
+// Non-nil pointers encode as a single-element list:
+//   - Fixed-size element: just the element bytes
+//   - Dynamic-size element: a single 4-byte offset (=4) followed by the element bytes
+//
+// Parameters:
+//   - sourceType: The TypeDescriptor containing optional-list metadata
+//   - sourceValue: The reflect.Value of the pointer to encode
+//   - encoder: The encoder instance used to write SSZ-encoded data
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - error: An error if encoding fails
+func (ctx *ReflectionCtx) marshalOptionalList(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, idt int) error {
+	if ctx.verbose {
+		ctx.logCb("%smarshalOptionalList: %s\n", strings.Repeat(" ", idt), sourceType.Type.Name())
+	}
+
+	if sourceValue.IsNil() {
+		return nil
+	}
+
+	if sourceType.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+		// dynamic element: write a single offset pointing past the offset header
+		encoder.EncodeOffset(4)
+	}
+
 	return ctx.marshalType(sourceType.ElemDesc, sourceValue.Elem(), encoder, idt+2)
 }
 

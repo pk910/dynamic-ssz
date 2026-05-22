@@ -573,6 +573,12 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 		if err != nil {
 			return nil, err
 		}
+	case SszOptionalListType:
+		// optional-list expresses a pointer as a canonical List[T, 1]; allowed without ExtendedTypes
+		err := tc.buildOptionalListDescriptor(desc, t, sizeHints, maxSizeHints, typeHints)
+		if err != nil {
+			return nil, err
+		}
 	case SszBigIntType:
 		if !tc.ExtendedTypes {
 			return nil, sszutils.NewSszError(sszutils.ErrExtendedTypeDisabled, "big integers are not supported in SSZ (use extended types option to enable it)")
@@ -1071,6 +1077,49 @@ func (tc *TypeCache) buildOptionalDescriptor(desc *TypeDescriptor, t reflect.Typ
 
 	// The Optional inherits properties from the child type
 	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (SszTypeFlagIsDynamic | SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
+
+	return nil
+}
+
+// buildOptionalListDescriptor builds a descriptor for optional-list types.
+//
+// An optional-list expresses a Go pointer as a canonical SSZ List[T, 1]:
+//   - nil pointer encodes as an empty list (no bytes)
+//   - non-nil pointer encodes as a list with a single element
+//
+// Unlike SszOptionalType, this is a canonical SSZ encoding with no custom
+// presence flag and is allowed regardless of the ExtendedTypes setting.
+func (tc *TypeCache) buildOptionalListDescriptor(desc *TypeDescriptor, t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) error {
+	if desc.GoTypeFlags&GoTypeFlagIsPointer == 0 {
+		return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "optional-list ssz type can only be represented by pointer types, got %v", desc.Kind)
+	}
+
+	childSizeHints := []SszSizeHint{}
+	if len(sizeHints) > 1 {
+		childSizeHints = sizeHints[1:]
+	}
+
+	childMaxSizeHints := []SszMaxSizeHint{}
+	if len(maxSizeHints) > 1 {
+		childMaxSizeHints = maxSizeHints[1:]
+	}
+
+	childTypeHints := []SszTypeHint{}
+	if len(typeHints) > 1 {
+		childTypeHints = typeHints[1:]
+	}
+
+	elemDesc, err := tc.getTypeDescriptor(t, t, childSizeHints, childMaxSizeHints, childTypeHints)
+	if err != nil {
+		return err
+	}
+
+	desc.ElemDesc = elemDesc
+	// canonical List[T, 1]: always dynamic, limit fixed at 1 element
+	desc.Size = 0
+	desc.Limit = 1
+	desc.SszTypeFlags |= SszTypeFlagIsDynamic | SszTypeFlagHasLimit
+	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
 
 	return nil
 }

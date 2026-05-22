@@ -42,7 +42,7 @@ import (
 //   - Delegation to specialized functions for composite types (structs, arrays, slices)
 //   - Validation that consumed bytes match expected sizes
 func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error { //nolint:gocyclo // SSZ unmarshaling handles many type cases
-	if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && targetType.SszType != ssztypes.SszOptionalType {
+	if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && targetType.SszType != ssztypes.SszOptionalType && targetType.SszType != ssztypes.SszOptionalListType {
 		// target is a pointer type, resolve type & value to actual value type
 		if targetValue.IsNil() {
 			// create new instance of target type for null pointers
@@ -273,6 +273,11 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 			return err
 		}
 		targetValue.SetFloat(math.Float64frombits(f64Val))
+	case ssztypes.SszOptionalListType:
+		err = ctx.unmarshalOptionalList(targetType, targetValue, decoder, idt)
+		if err != nil {
+			return err
+		}
 	case ssztypes.SszOptionalType:
 		err = ctx.unmarshalOptional(targetType, targetValue, decoder, idt)
 		if err != nil {
@@ -1121,6 +1126,53 @@ func (ctx *ReflectionCtx) unmarshalOptional(targetType *ssztypes.TypeDescriptor,
 	}
 
 	return nil
+}
+
+// unmarshalOptionalList decodes a canonical SSZ List[T, 1] into a pointer.
+//
+// An empty buffer decodes to a nil pointer.
+// Otherwise the buffer contains a single element:
+//   - Fixed-size element: just the element bytes
+//   - Dynamic-size element: a 4-byte offset (=4) followed by the element bytes
+//
+// Parameters:
+//   - targetType: The TypeDescriptor containing optional-list metadata
+//   - targetValue: The reflect.Value of the pointer to populate
+//   - decoder: The decoder instance used to read SSZ-encoded data
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - error: An error if decoding fails
+func (ctx *ReflectionCtx) unmarshalOptionalList(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
+	sszLen := decoder.GetLength()
+	if sszLen == 0 {
+		targetValue.Set(reflect.Zero(targetType.Type))
+		return nil
+	}
+
+	elemDesc := targetType.ElemDesc
+	dynamicElem := elemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0
+
+	if dynamicElem {
+		if sszLen < 4 {
+			return sszutils.ErrListOffsetsEOFFn(sszLen, 4)
+		}
+
+		offset, err := decoder.DecodeOffset()
+		if err != nil {
+			return err
+		}
+		if offset != 4 || uint32(sszLen) < offset {
+			return sszutils.ErrElementOffsetOutOfRangeFn(offset, uint32(4), sszLen)
+		}
+	}
+
+	if targetValue.IsNil() {
+		newValue := reflect.New(targetType.Type.Elem())
+		targetValue.Set(newValue)
+	}
+
+	return ctx.unmarshalType(elemDesc, targetValue.Elem(), decoder, idt+2)
 }
 
 // unmarshalBigInt decodes a BigInt by unmarshalling its data field.

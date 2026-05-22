@@ -40,7 +40,7 @@ import (
 func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value) (uint32, error) {
 	staticSize := uint32(0)
 
-	if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && targetType.SszType != ssztypes.SszOptionalType {
+	if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && targetType.SszType != ssztypes.SszOptionalType && targetType.SszType != ssztypes.SszOptionalListType {
 		if targetValue.IsNil() {
 			targetValue = reflect.New(targetType.Type.Elem()).Elem()
 		} else {
@@ -240,6 +240,19 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 			}
 
 			staticSize = dataSize + 1 // data size + 1 byte availability
+		}
+	case ssztypes.SszOptionalListType:
+		// canonical List[T, 1]: empty for nil, one element otherwise
+		if !targetValue.IsNil() {
+			dataSize, err := ctx.getSszValueSize(targetType.ElemDesc, targetValue.Elem())
+			if err != nil {
+				return 0, err
+			}
+
+			staticSize = dataSize
+			if targetType.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+				staticSize += 4 // single offset header for dynamic element
+			}
 		}
 	case ssztypes.SszBigIntType:
 		bigInt, isBigInt := targetValue.Interface().(big.Int)
