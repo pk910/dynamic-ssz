@@ -37,7 +37,7 @@ import (
 //   - Nil pointers are sized as zero-valued instances
 //   - Dynamic slices include padding for size hint compliance
 //   - Struct fields are sized based on their static/dynamic nature
-func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value) (uint32, error) {
+func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value) (uint32, error) { //nolint:gocyclo // SSZ size computation handles many type cases
 	staticSize := uint32(0)
 
 	if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && targetType.SszType != ssztypes.SszOptionalType && targetType.SszType != ssztypes.SszOptionalListType {

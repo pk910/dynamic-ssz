@@ -189,6 +189,34 @@ type Block struct {
 }
 ```
 
+### Optional Lists (canonical `List[T, 1]`)
+
+Annotating a pointer field with `ssz-type:"optional-list"` encodes it as the canonical SSZ `List[T, 1]` — the encoding the Ethereum spec uses for canonical optional fields:
+
+- `nil` pointer → empty list (no bytes)
+- non-`nil` pointer → single-element list
+
+This is **standard SSZ** and works without `WithExtendedTypes()`. It is distinct from the extended `ssz-type:"optional"` annotation, which uses a non-canonical presence-byte format.
+
+```go
+type Block struct {
+    Slot uint64
+    // nil   → empty list
+    // &val  → List[T, 1] containing val
+    Sidecar *Sidecar `ssz-type:"optional-list"`
+}
+```
+
+Encoding:
+
+| Case                     | Bytes                                                 |
+|--------------------------|-------------------------------------------------------|
+| `nil`                    | (empty)                                               |
+| non-nil, fixed element   | `<element bytes>`                                     |
+| non-nil, dynamic element | `0x04 0x00 0x00 0x00 || <element bytes>` (offset = 4) |
+
+The hash tree root matches `List[T, 1]` exactly.
+
 ## Progressive Types (EIP-7916 & EIP-7495)
 
 ### Progressive Lists (M1)
