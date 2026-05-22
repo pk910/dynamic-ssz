@@ -228,7 +228,7 @@ func (ctx *hashTreeRootContext) getPtrPrefix(desc *ssztypes.TypeDescriptor, pref
 
 // hashType generates hash tree root code for any SSZ type, delegating to specific hashers.
 func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, isRoot, pack bool) error {
-	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.SszType != ssztypes.SszOptionalType {
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.SszType != ssztypes.SszOptionalType && desc.SszType != ssztypes.SszOptionalListType {
 		ctx.appendCode(indent, "if %s == nil {\n\t%s = new(%s)\n}\n", varName, varName, ctx.typePrinter.InnerTypeString(desc))
 	}
 
@@ -393,6 +393,8 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 		}
 	case ssztypes.SszOptionalType:
 		return ctx.hashOptional(desc, varName, typePath, indent)
+	case ssztypes.SszOptionalListType:
+		return ctx.hashOptionalList(desc, varName, typePath, indent)
 	case ssztypes.SszBigIntType:
 		return ctx.hashBigInt(desc, varName, indent)
 
@@ -412,6 +414,29 @@ func (ctx *hashTreeRootContext) hashOptional(desc *ssztypes.TypeDescriptor, varN
 	if err := ctx.hashType(desc.ElemDesc, innerVarName, typePath, indent+1, false, false); err != nil {
 		return err
 	}
+	ctx.appendCode(indent, "}\n")
+	return nil
+}
+
+// hashOptionalList generates hash tree root code for optional-list (canonical List[T, 1]).
+//
+// Builds a binary tree containing zero or one element chunk, then mixes in
+// the length (0 or 1). The merkleization limit is always 1 (one chunk for
+// basic elements ≤32 bytes, or one element for complex elements).
+func (ctx *hashTreeRootContext) hashOptionalList(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
+	// Wrap in braces so `idx` and `vlen` don't collide with any caller's locals.
+	ctx.appendCode(indent, "{\n")
+	ctx.appendCode(indent+1, "idx := hh.StartTree(sszutils.TreeTypeBinary)\n")
+	ctx.appendCode(indent+1, "vlen := uint64(0)\n")
+	ctx.appendCode(indent+1, "if %s != nil {\n", varName)
+	innerVarName := fmt.Sprintf("(*%s)", varName)
+	if err := ctx.hashType(desc.ElemDesc, innerVarName, typePath.append("[0]"), indent+2, false, true); err != nil {
+		return err
+	}
+	ctx.appendCode(indent+2, "vlen = 1\n")
+	ctx.appendCode(indent+1, "}\n")
+	ctx.appendCode(indent+1, "hh.FillUpTo32()\n")
+	ctx.appendCode(indent+1, "hh.MerkleizeWithMixin(idx, vlen, 1)\n")
 	ctx.appendCode(indent, "}\n")
 	return nil
 }

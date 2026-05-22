@@ -438,6 +438,44 @@ var ViewTypes1_Payload = ViewTypes1_Base{
 	},
 }
 
+// OptionalListTypes exercises ssz-type:"optional-list" — pointers encoded as
+// canonical List[T, 1]. Static and dynamic element pointers are covered, and
+// optional-list works without extended types.
+type OptionalListTypes struct {
+	StaticOpt  *uint32                  `ssz-type:"optional-list"`
+	DynamicOpt *OptionalListTypes_Inner `ssz-type:"optional-list"`
+}
+
+type OptionalListTypes_Inner struct {
+	Tag  uint16
+	Data []byte `ssz-max:"16"`
+}
+
+var optListInner = &OptionalListTypes_Inner{
+	Tag:  0xbeef,
+	Data: []byte{1, 2, 3, 4, 5},
+}
+
+var optListU32 = uint32(1337)
+
+// Both pointers populated.
+var OptionalListTypes_Payload1 = OptionalListTypes{
+	StaticOpt:  &optListU32,
+	DynamicOpt: optListInner,
+}
+
+// Both pointers nil.
+var OptionalListTypes_Payload2 = OptionalListTypes{
+	StaticOpt:  nil,
+	DynamicOpt: nil,
+}
+
+// Mixed: static populated, dynamic nil.
+var OptionalListTypes_Payload3 = OptionalListTypes{
+	StaticOpt:  &optListU32,
+	DynamicOpt: nil,
+}
+
 type ExtendedTypes1 struct {
 	I8   int8
 	I16  int16

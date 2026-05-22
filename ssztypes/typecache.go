@@ -665,6 +665,22 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 			SszCompatFlagHashTreeRootWith
 	}
 
+	// Optional and optional-list reshape the encoding around the inner type
+	// (presence byte / List[T,1] framing). The inner type's own SSZ methods
+	// must not be invoked at this level — they would skip the framing and
+	// emit the inner value as if it were the canonical encoding.
+	if desc.SszType == SszOptionalType || desc.SszType == SszOptionalListType {
+		desc.SszCompatFlags &^= SszCompatFlagDynamicMarshaler |
+			SszCompatFlagDynamicUnmarshaler |
+			SszCompatFlagDynamicSizer |
+			SszCompatFlagDynamicHashRoot |
+			SszCompatFlagDynamicEncoder |
+			SszCompatFlagDynamicDecoder |
+			SszCompatFlagFastSSZMarshaler |
+			SszCompatFlagFastSSZHasher |
+			SszCompatFlagHashTreeRootWith
+	}
+
 	if desc.SszType == SszCustomType {
 		isCompatible := desc.SszCompatFlags&SszCompatFlagFastSSZMarshaler != 0 && desc.SszCompatFlags&SszCompatFlagFastSSZHasher != 0
 		// isCompatible = isCompatible || (desc.SszCompatFlags&SszCompatFlagDynamicMarshaler != 0 && desc.SszCompatFlags&SszCompatFlagDynamicUnmarshaler != 0 && desc.SszCompatFlags&SszCompatFlagDynamicSizer != 0 && desc.SszCompatFlags&SszCompatFlagDynamicHashRoot != 0)

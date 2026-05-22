@@ -202,7 +202,7 @@ func (ctx *marshalContext) isInlineable(desc *ssztypes.TypeDescriptor) bool {
 
 // marshalType generates marshal code for any SSZ type, delegating to specific marshalers.
 func (ctx *marshalContext) marshalType(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, isRoot bool) error {
-	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.SszType != ssztypes.SszOptionalType {
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.SszType != ssztypes.SszOptionalType && desc.SszType != ssztypes.SszOptionalListType {
 		ctx.appendCode(indent, "if %s == nil {\n\t%s = new(%s)\n}\n", varName, varName, ctx.typePrinter.InnerTypeString(desc))
 	}
 
@@ -371,6 +371,8 @@ func (ctx *marshalContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 		)
 	case ssztypes.SszOptionalType:
 		return ctx.marshalOptional(desc, varName, typePath, indent)
+	case ssztypes.SszOptionalListType:
+		return ctx.marshalOptionalList(desc, varName, typePath, indent)
 	case ssztypes.SszBigIntType:
 		return ctx.marshalBigInt(desc, varName, indent)
 
@@ -387,6 +389,24 @@ func (ctx *marshalContext) marshalOptional(desc *ssztypes.TypeDescriptor, varNam
 	ctx.appendCode(indent+1, "dst = sszutils.MarshalBool(dst, false)\n")
 	ctx.appendCode(indent, "} else {\n")
 	ctx.appendCode(indent+1, "dst = sszutils.MarshalBool(dst, true)\n")
+	innerVarName := fmt.Sprintf("(*%s)", varName)
+	if err := ctx.marshalType(desc.ElemDesc, innerVarName, typePath, indent+1, false); err != nil {
+		return err
+	}
+	ctx.appendCode(indent, "}\n")
+	return nil
+}
+
+// marshalOptionalList generates marshal code for optional-list (canonical List[T, 1]).
+//
+// nil → empty list (no bytes); non-nil → single-element list. When the element
+// is dynamic, a 4-byte offset (=4) precedes the element bytes.
+func (ctx *marshalContext) marshalOptionalList(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
+	ctx.appendCode(indent, "if %s != nil {\n", varName)
+	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+		binaryPkg := ctx.typePrinter.AddImport("encoding/binary", "binary")
+		ctx.appendCode(indent+1, "dst = %s.LittleEndian.AppendUint32(dst, 4)\n", binaryPkg)
+	}
 	innerVarName := fmt.Sprintf("(*%s)", varName)
 	if err := ctx.marshalType(desc.ElemDesc, innerVarName, typePath, indent+1, false); err != nil {
 		return err

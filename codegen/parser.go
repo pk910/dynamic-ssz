@@ -681,7 +681,16 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		if ptrType == nil {
 			return nil, fmt.Errorf("optional ssz type can only be represented by pointer types, got %v", desc.Kind)
 		}
-		err := p.buildOptionalDescriptor(desc, dataType, sizeHints, maxSizeHints, typeHints)
+		err := p.buildOptionalDescriptor(desc, innerDataType, sizeHints, maxSizeHints, typeHints)
+		if err != nil {
+			return nil, err
+		}
+	case ssztypes.SszOptionalListType:
+		// optional-list expresses a pointer as a canonical List[T, 1]; allowed without ExtendedTypes
+		if ptrType == nil {
+			return nil, fmt.Errorf("optional-list ssz type can only be represented by pointer types, got %v", desc.Kind)
+		}
+		err := p.buildOptionalListDescriptor(desc, innerDataType, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
 			return nil, err
 		}
@@ -761,6 +770,22 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	}
 
 	desc.SszCompatFlags |= p.getCompatFlag(innerDataType, innerSchemaType)
+
+	// Optional and optional-list reshape the encoding around the inner type
+	// (presence byte / List[T,1] framing). The inner type's own SSZ methods
+	// must not be invoked at this level — they would skip the framing and
+	// emit the inner value as if it were the canonical encoding.
+	if desc.SszType == ssztypes.SszOptionalType || desc.SszType == ssztypes.SszOptionalListType {
+		desc.SszCompatFlags &^= ssztypes.SszCompatFlagDynamicMarshaler |
+			ssztypes.SszCompatFlagDynamicUnmarshaler |
+			ssztypes.SszCompatFlagDynamicSizer |
+			ssztypes.SszCompatFlagDynamicHashRoot |
+			ssztypes.SszCompatFlagDynamicEncoder |
+			ssztypes.SszCompatFlagDynamicDecoder |
+			ssztypes.SszCompatFlagFastSSZMarshaler |
+			ssztypes.SszCompatFlagFastSSZHasher |
+			ssztypes.SszCompatFlagHashTreeRootWith
+	}
 
 	if desc.SszType == ssztypes.SszCustomType {
 		isCompatible := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0 && desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0
@@ -1396,6 +1421,47 @@ func (p *Parser) buildOptionalDescriptor(desc *ssztypes.TypeDescriptor, typ type
 
 	// The Optional inherits properties from the child type
 	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (ssztypes.SszTypeFlagIsDynamic | ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr)
+
+	return nil
+}
+
+// buildOptionalListDescriptor builds a descriptor for optional-list types.
+//
+// An optional-list expresses a Go pointer as a canonical SSZ List[T, 1]:
+// nil encodes as an empty list (no bytes), non-nil encodes as a list with a
+// single element. Unlike SszOptionalType, this is a canonical SSZ encoding
+// with no custom presence flag and is allowed regardless of ExtendedTypes.
+func (p *Parser) buildOptionalListDescriptor(desc *ssztypes.TypeDescriptor, typ types.Type, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint, typeHints []ssztypes.SszTypeHint) error {
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer == 0 {
+		return fmt.Errorf("optional-list ssz type can only be represented by pointer types, got %v", desc.Kind)
+	}
+
+	childSizeHints := []ssztypes.SszSizeHint{}
+	if len(sizeHints) > 1 {
+		childSizeHints = sizeHints[1:]
+	}
+
+	childMaxSizeHints := []ssztypes.SszMaxSizeHint{}
+	if len(maxSizeHints) > 1 {
+		childMaxSizeHints = maxSizeHints[1:]
+	}
+
+	childTypeHints := []ssztypes.SszTypeHint{}
+	if len(typeHints) > 1 {
+		childTypeHints = typeHints[1:]
+	}
+
+	elemDesc, err := p.buildTypeDescriptor(typ, typ, childTypeHints, childSizeHints, childMaxSizeHints)
+	if err != nil {
+		return err
+	}
+
+	desc.ElemDesc = elemDesc
+	// canonical List[T, 1]: always dynamic, limit fixed at 1 element
+	desc.Size = 0
+	desc.Limit = 1
+	desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic | ssztypes.SszTypeFlagHasLimit
+	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr)
 
 	return nil
 }

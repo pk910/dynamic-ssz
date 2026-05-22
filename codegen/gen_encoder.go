@@ -274,7 +274,7 @@ func (ctx *encoderContext) generateEncodeContext(indent int) string {
 
 // marshalType generates marshal code for any SSZ type, delegating to specific marshalers.
 func (ctx *encoderContext) marshalType(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, isRoot bool) error {
-	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.SszType != ssztypes.SszOptionalType {
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.SszType != ssztypes.SszOptionalType && desc.SszType != ssztypes.SszOptionalListType {
 		ctx.appendCode(indent, "if %s == nil {\n\t%s = new(%s)\n}\n", varName, varName, ctx.typePrinter.InnerTypeString(desc))
 	}
 
@@ -395,6 +395,8 @@ func (ctx *encoderContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 		ctx.appendCode(indent, "enc.EncodeUint64(%s.Float64bits(%s))\n", mathImport, ctx.getValueVar(desc, varName, "float64"))
 	case ssztypes.SszOptionalType:
 		return ctx.marshalOptional(desc, varName, typePath, indent)
+	case ssztypes.SszOptionalListType:
+		return ctx.marshalOptionalList(desc, varName, typePath, indent)
 	case ssztypes.SszBigIntType:
 		return ctx.marshalBigInt(desc, varName, indent)
 
@@ -411,6 +413,23 @@ func (ctx *encoderContext) marshalOptional(desc *ssztypes.TypeDescriptor, varNam
 	ctx.appendCode(indent+1, "enc.EncodeBool(false)\n")
 	ctx.appendCode(indent, "} else {\n")
 	ctx.appendCode(indent+1, "enc.EncodeBool(true)\n")
+	innerVarName := fmt.Sprintf("(*%s)", varName)
+	if err := ctx.marshalType(desc.ElemDesc, innerVarName, typePath, indent+1, false); err != nil {
+		return err
+	}
+	ctx.appendCode(indent, "}\n")
+	return nil
+}
+
+// marshalOptionalList generates marshal code for optional-list (canonical List[T, 1]).
+//
+// nil → empty list (no bytes); non-nil → single-element list. When the element
+// is dynamic, a 4-byte offset (=4) precedes the element bytes.
+func (ctx *encoderContext) marshalOptionalList(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
+	ctx.appendCode(indent, "if %s != nil {\n", varName)
+	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+		ctx.appendCode(indent+1, "enc.EncodeOffset(4)\n")
+	}
 	innerVarName := fmt.Sprintf("(*%s)", varName)
 	if err := ctx.marshalType(desc.ElemDesc, innerVarName, typePath, indent+1, false); err != nil {
 		return err
