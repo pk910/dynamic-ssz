@@ -1454,26 +1454,19 @@ func TestOptionalListMarshalVerbose(t *testing.T) {
 // TestOptionalListInnerMarshalError verifies marshalOptionalList propagates
 // errors from marshaling the inner element and tags them with the "[0]" path
 // to match how list[T,1] reports element errors.
+//
+// The inner type's SizeSSZ succeeds (returning 8) so the precomputed-size
+// step in MarshalSSZ doesn't trip; MarshalSSZTo then fails, exercising both
+// the error-wrap inside marshalOptionalList and the dispatcher's case.
 func TestOptionalListInnerMarshalError(t *testing.T) {
-	type Inner struct {
-		Value uint32
-	}
 	type Container struct {
-		Opt *Inner `ssz-type:"optional-list"`
+		Opt *TestContainerWithMarshalError `ssz-type:"optional-list"`
 	}
 
-	ds := NewDynSsz(nil, WithNoFastSsz())
-	typeDesc, err := ds.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	optDesc := typeDesc.ContainerDesc.Fields[0].Type
-	optDesc.ElemDesc.SszType = ssztypes.SszType(255)
-	optDesc.ElemDesc.SszCompatFlags = 0
-
-	_, err = ds.MarshalSSZ(Container{Opt: &Inner{Value: 42}})
+	ds := NewDynSsz(nil)
+	_, err := ds.MarshalSSZ(Container{Opt: &TestContainerWithMarshalError{Field0: 42}})
 	if err == nil {
-		t.Fatal("expected error for optional-list with unsupported inner type")
+		t.Fatal("expected error from inner marshal failure")
 	}
 	if !contains(err.Error(), "[0]") {
 		t.Errorf("expected error path to contain '[0]', got: %v", err)

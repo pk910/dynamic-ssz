@@ -1709,6 +1709,12 @@ func TestUnmarshalTruncatedReaderErrors(t *testing.T) {
 	type BigIntContainer struct {
 		Value big.Int `ssz-max:"256"`
 	}
+	type OptionalListInner struct {
+		Data []byte `ssz-max:"32"`
+	}
+	type OptionalListContainer struct {
+		Opt *OptionalListInner `ssz-type:"optional-list"`
+	}
 
 	marshalValid := func(t *testing.T, d *DynSsz, v any) []byte {
 		t.Helper()
@@ -1889,6 +1895,18 @@ func TestUnmarshalTruncatedReaderErrors(t *testing.T) {
 				return marshalValid(t, dynssz_ext, &BigIntContainer{Value: *big.NewInt(42)})
 			},
 			truncateAt:  4,
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name:   "optional_list_decode_offset_error",
+			dynssz: dynssz,
+			target: func() any { return new(OptionalListContainer) },
+			fullData: func(t *testing.T) []byte {
+				t.Helper()
+				return marshalValid(t, dynssz, &OptionalListContainer{Opt: &OptionalListInner{Data: []byte{}}})
+			},
+			// Truncate mid-offset-header so unmarshalOptionalList's DecodeOffset call fails.
+			truncateAt:  6,
 			expectedErr: "unexpected end of SSZ",
 		},
 	}
