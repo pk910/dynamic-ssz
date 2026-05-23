@@ -1162,8 +1162,8 @@ func (ctx *ReflectionCtx) unmarshalOptionalList(targetType *ssztypes.TypeDescrip
 		if err != nil {
 			return err
 		}
-		if offset != 4 || uint32(sszLen) < offset {
-			return sszutils.ErrElementOffsetOutOfRangeFn(offset, uint32(4), sszLen)
+		if offset != 4 {
+			return sszutils.ErrFirstOffsetMismatchFn(offset, uint32(4))
 		}
 	}
 
@@ -1172,7 +1172,10 @@ func (ctx *ReflectionCtx) unmarshalOptionalList(targetType *ssztypes.TypeDescrip
 		targetValue.Set(newValue)
 	}
 
-	return ctx.unmarshalType(elemDesc, targetValue.Elem(), decoder, idt+2)
+	if err := ctx.unmarshalType(elemDesc, targetValue.Elem(), decoder, idt+2); err != nil {
+		return sszutils.ErrorWithPathf(err, "[0]")
+	}
+	return nil
 }
 
 // unmarshalBigInt decodes a BigInt by unmarshalling its data field.

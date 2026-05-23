@@ -821,7 +821,10 @@ func (ctx *ReflectionCtx) marshalOptionalList(sourceType *ssztypes.TypeDescripto
 		encoder.EncodeOffset(4)
 	}
 
-	return ctx.marshalType(sourceType.ElemDesc, sourceValue.Elem(), encoder, idt+2)
+	if err := ctx.marshalType(sourceType.ElemDesc, sourceValue.Elem(), encoder, idt+2); err != nil {
+		return sszutils.ErrorWithPathf(err, "[0]")
+	}
+	return nil
 }
 
 // marshalBigInt marshals a BigInt by marshaling its data field as the wrapped type.

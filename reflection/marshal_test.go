@@ -1452,7 +1452,8 @@ func TestOptionalListMarshalVerbose(t *testing.T) {
 }
 
 // TestOptionalListInnerMarshalError verifies marshalOptionalList propagates
-// errors from marshaling the inner element.
+// errors from marshaling the inner element and tags them with the "[0]" path
+// to match how list[T,1] reports element errors.
 func TestOptionalListInnerMarshalError(t *testing.T) {
 	type Inner struct {
 		Value uint32
@@ -1466,13 +1467,16 @@ func TestOptionalListInnerMarshalError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Force the inner descriptor to an unsupported SSZ type so marshalType returns an error.
 	optDesc := typeDesc.ContainerDesc.Fields[0].Type
 	optDesc.ElemDesc.SszType = ssztypes.SszType(255)
 	optDesc.ElemDesc.SszCompatFlags = 0
 
-	if _, err = ds.MarshalSSZ(Container{Opt: &Inner{Value: 42}}); err == nil {
-		t.Error("expected error for optional-list with unsupported inner type")
+	_, err = ds.MarshalSSZ(Container{Opt: &Inner{Value: 42}})
+	if err == nil {
+		t.Fatal("expected error for optional-list with unsupported inner type")
+	}
+	if !contains(err.Error(), "[0]") {
+		t.Errorf("expected error path to contain '[0]', got: %v", err)
 	}
 }
 

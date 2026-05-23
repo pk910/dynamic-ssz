@@ -681,7 +681,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		if ptrType == nil {
 			return nil, fmt.Errorf("optional ssz type can only be represented by pointer types, got %v", desc.Kind)
 		}
-		err := p.buildOptionalDescriptor(desc, innerDataType, sizeHints, maxSizeHints, typeHints)
+		err := p.buildOptionalDescriptor(desc, innerDataType, innerSchemaType, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
 			return nil, err
 		}
@@ -690,7 +690,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		if ptrType == nil {
 			return nil, fmt.Errorf("optional-list ssz type can only be represented by pointer types, got %v", desc.Kind)
 		}
-		err := p.buildOptionalListDescriptor(desc, innerDataType, sizeHints, maxSizeHints, typeHints)
+		err := p.buildOptionalListDescriptor(desc, innerDataType, innerSchemaType, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
 			return nil, err
 		}
@@ -1388,7 +1388,7 @@ func (p *Parser) buildTypeWrapperDescriptor(desc *ssztypes.TypeDescriptor, dataN
 	return nil
 }
 
-func (p *Parser) buildOptionalDescriptor(desc *ssztypes.TypeDescriptor, typ types.Type, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint, typeHints []ssztypes.SszTypeHint) error {
+func (p *Parser) buildOptionalDescriptor(desc *ssztypes.TypeDescriptor, dataType, schemaType types.Type, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint, typeHints []ssztypes.SszTypeHint) error {
 	// Optional is always dynamic size (1 byte for presence + variable data)
 	desc.Size = 0
 	desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
@@ -1412,7 +1412,7 @@ func (p *Parser) buildOptionalDescriptor(desc *ssztypes.TypeDescriptor, typ type
 		childTypeHints = typeHints[1:]
 	}
 
-	elemDesc, err := p.buildTypeDescriptor(typ, typ, childTypeHints, childSizeHints, childMaxSizeHints)
+	elemDesc, err := p.buildTypeDescriptor(dataType, schemaType, childTypeHints, childSizeHints, childMaxSizeHints)
 	if err != nil {
 		return err
 	}
@@ -1431,7 +1431,7 @@ func (p *Parser) buildOptionalDescriptor(desc *ssztypes.TypeDescriptor, typ type
 // nil encodes as an empty list (no bytes), non-nil encodes as a list with a
 // single element. Unlike SszOptionalType, this is a canonical SSZ encoding
 // with no custom presence flag and is allowed regardless of ExtendedTypes.
-func (p *Parser) buildOptionalListDescriptor(desc *ssztypes.TypeDescriptor, typ types.Type, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint, typeHints []ssztypes.SszTypeHint) error {
+func (p *Parser) buildOptionalListDescriptor(desc *ssztypes.TypeDescriptor, dataType, schemaType types.Type, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint, typeHints []ssztypes.SszTypeHint) error {
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer == 0 {
 		return fmt.Errorf("optional-list ssz type can only be represented by pointer types, got %v", desc.Kind)
 	}
@@ -1451,7 +1451,7 @@ func (p *Parser) buildOptionalListDescriptor(desc *ssztypes.TypeDescriptor, typ 
 		childTypeHints = typeHints[1:]
 	}
 
-	elemDesc, err := p.buildTypeDescriptor(typ, typ, childTypeHints, childSizeHints, childMaxSizeHints)
+	elemDesc, err := p.buildTypeDescriptor(dataType, schemaType, childTypeHints, childSizeHints, childMaxSizeHints)
 	if err != nil {
 		return err
 	}

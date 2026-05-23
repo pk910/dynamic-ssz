@@ -1314,6 +1314,69 @@ func TestTypeCache_ExtendedTypes(t *testing.T) {
 			t.Fatal("expected error for optional-list with unsupported inner type")
 		}
 	})
+
+	// Optional/optional-list must preserve the (runtime, schema) pairing for
+	// the inner element when used with a view descriptor.
+	t.Run("OptionalListViewPairing", func(t *testing.T) {
+		type runtimeInner struct {
+			A uint32
+			B uint64
+		}
+		type schemaInner struct {
+			A uint32
+			B uint64
+		}
+
+		cache := NewTypeCache(ds)
+		desc, err := cache.GetTypeDescriptorWithSchema(
+			reflect.TypeOf((*runtimeInner)(nil)),
+			reflect.TypeOf((*schemaInner)(nil)),
+			nil, nil,
+			[]SszTypeHint{{Type: SszOptionalListType}},
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if desc.ElemDesc == nil {
+			t.Fatal("expected ElemDesc to be set")
+		}
+		if desc.ElemDesc.Type != reflect.TypeOf(runtimeInner{}) {
+			t.Errorf("expected ElemDesc.Type to be runtimeInner, got %v", desc.ElemDesc.Type)
+		}
+		if desc.ElemDesc.SchemaType != reflect.TypeOf(schemaInner{}) {
+			t.Errorf("expected ElemDesc.SchemaType to be schemaInner, got %v", desc.ElemDesc.SchemaType)
+		}
+	})
+
+	t.Run("OptionalViewPairing", func(t *testing.T) {
+		type runtimeInner struct {
+			A uint32
+		}
+		type schemaInner struct {
+			A uint32
+		}
+
+		cache := NewTypeCache(ds)
+		cache.ExtendedTypes = true
+		desc, err := cache.GetTypeDescriptorWithSchema(
+			reflect.TypeOf((*runtimeInner)(nil)),
+			reflect.TypeOf((*schemaInner)(nil)),
+			nil, nil,
+			[]SszTypeHint{{Type: SszOptionalType}},
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if desc.ElemDesc == nil {
+			t.Fatal("expected ElemDesc to be set")
+		}
+		if desc.ElemDesc.Type != reflect.TypeOf(runtimeInner{}) {
+			t.Errorf("expected ElemDesc.Type to be runtimeInner, got %v", desc.ElemDesc.Type)
+		}
+		if desc.ElemDesc.SchemaType != reflect.TypeOf(schemaInner{}) {
+			t.Errorf("expected ElemDesc.SchemaType to be schemaInner, got %v", desc.ElemDesc.SchemaType)
+		}
+	})
 }
 
 // Test ParseSszType for all types

@@ -1118,7 +1118,7 @@ func (ctx *decoderContext) unmarshalOptionalList(desc *ssztypes.TypeDescriptor, 
 	}
 	valVar := ctx.getValVar()
 	ctx.appendCode(indent+1, "var %s %s\n", valVar, ctx.typePrinter.TypeString(desc.ElemDesc))
-	if err := ctx.unmarshalType(desc.ElemDesc, valVar, typePath, indent+1, false, true); err != nil {
+	if err := ctx.unmarshalType(desc.ElemDesc, valVar, typePath.append("[0]"), indent+1, false, true); err != nil {
 		return err
 	}
 	ctx.appendCode(indent+1, "%s = &%s\n", varName, valVar)

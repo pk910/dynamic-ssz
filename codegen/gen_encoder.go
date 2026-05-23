@@ -431,7 +431,7 @@ func (ctx *encoderContext) marshalOptionalList(desc *ssztypes.TypeDescriptor, va
 		ctx.appendCode(indent+1, "enc.EncodeOffset(4)\n")
 	}
 	innerVarName := fmt.Sprintf("(*%s)", varName)
-	if err := ctx.marshalType(desc.ElemDesc, innerVarName, typePath, indent+1, false); err != nil {
+	if err := ctx.marshalType(desc.ElemDesc, innerVarName, typePath.append("[0]"), indent+1, false); err != nil {
 		return err
 	}
 	ctx.appendCode(indent, "}\n")

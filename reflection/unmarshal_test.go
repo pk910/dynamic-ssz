@@ -1343,8 +1343,9 @@ func TestUnmarshalEmptyDynamicList(t *testing.T) {
 	}
 }
 
-// TestUnmarshalOptionalListInvalidOffset verifies that an out-of-range first
-// offset in the dynamic-element form of an optional-list is rejected.
+// TestUnmarshalOptionalListInvalidOffset verifies that a wrong first offset
+// in the dynamic-element form of an optional-list is rejected with the first
+// offset mismatch error (consistent with how list[T,1] reports the same).
 func TestUnmarshalOptionalListInvalidOffset(t *testing.T) {
 	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
@@ -1355,11 +1356,47 @@ func TestUnmarshalOptionalListInvalidOffset(t *testing.T) {
 		Opt *Inner `ssz-type:"optional-list"`
 	}
 
-	// container offset(=4) + payload offset(=99, out of range relative to payload size of 4)
+	// container offset(=4) + payload offset(=99, not 4)
 	bad := []byte{0x04, 0x00, 0x00, 0x00, 0x63, 0x00, 0x00, 0x00}
 	var out Container
-	if err := dynssz.UnmarshalSSZ(&out, bad); err == nil {
+	err := dynssz.UnmarshalSSZ(&out, bad)
+	if err == nil {
 		t.Fatal("expected error for invalid offset, got nil")
+	}
+	if !contains(err.Error(), "first offset") {
+		t.Errorf("expected first-offset-mismatch error, got: %v", err)
+	}
+}
+
+// TestUnmarshalOptionalListInnerError verifies unmarshalOptionalList tags
+// inner unmarshal errors with the "[0]" path.
+func TestUnmarshalOptionalListInnerError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type Inner struct {
+		Value uint32
+	}
+	type Container struct {
+		Opt *Inner `ssz-type:"optional-list"`
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	optDesc := typeDesc.ContainerDesc.Fields[0].Type
+	optDesc.ElemDesc.SszType = ssztypes.SszType(255)
+	optDesc.ElemDesc.SszCompatFlags = 0
+
+	// container offset(=4) + 4 bytes of element data
+	data := []byte{0x04, 0x00, 0x00, 0x00, 0x2a, 0x00, 0x00, 0x00}
+	var out Container
+	err = dynssz.UnmarshalSSZ(&out, data)
+	if err == nil {
+		t.Fatal("expected error for unsupported inner type")
+	}
+	if !contains(err.Error(), "[0]") {
+		t.Errorf("expected error path to contain '[0]', got: %v", err)
 	}
 }
 

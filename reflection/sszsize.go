@@ -246,7 +246,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		if !targetValue.IsNil() {
 			dataSize, err := ctx.getSszValueSize(targetType.ElemDesc, targetValue.Elem())
 			if err != nil {
-				return 0, err
+				return 0, sszutils.ErrorWithPathf(err, "[0]")
 			}
 
 			staticSize = dataSize

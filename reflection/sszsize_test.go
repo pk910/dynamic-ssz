@@ -469,6 +469,35 @@ func TestSizeSSZOptionalError(t *testing.T) {
 	}
 }
 
+// TestSizeSSZOptionalListError verifies getSszValueSize tags inner sizing
+// errors with the "[0]" path for optional-list fields.
+func TestSizeSSZOptionalListError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type Inner struct {
+		Value uint32
+	}
+	type Container struct {
+		Opt *Inner `ssz-type:"optional-list"`
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to get type descriptor: %v", err)
+	}
+	optDesc := typeDesc.ContainerDesc.Fields[0].Type
+	optDesc.ElemDesc.SszType = ssztypes.SszType(255)
+	optDesc.ElemDesc.SszCompatFlags = 0
+
+	_, err = dynssz.SizeSSZ(Container{Opt: &Inner{Value: 42}})
+	if err == nil {
+		t.Fatal("expected error for optional-list with unsupported inner type")
+	}
+	if !contains(err.Error(), "[0]") {
+		t.Errorf("expected error path to contain '[0]', got: %v", err)
+	}
+}
+
 func TestSizeSSZBigIntTypeAssertionFailure(t *testing.T) {
 	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
 

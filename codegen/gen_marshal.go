@@ -408,7 +408,7 @@ func (ctx *marshalContext) marshalOptionalList(desc *ssztypes.TypeDescriptor, va
 		ctx.appendCode(indent+1, "dst = %s.LittleEndian.AppendUint32(dst, 4)\n", binaryPkg)
 	}
 	innerVarName := fmt.Sprintf("(*%s)", varName)
-	if err := ctx.marshalType(desc.ElemDesc, innerVarName, typePath, indent+1, false); err != nil {
+	if err := ctx.marshalType(desc.ElemDesc, innerVarName, typePath.append("[0]"), indent+1, false); err != nil {
 		return err
 	}
 	ctx.appendCode(indent, "}\n")

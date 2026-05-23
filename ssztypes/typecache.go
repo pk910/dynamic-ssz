@@ -569,13 +569,13 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 		if !tc.ExtendedTypes {
 			return nil, sszutils.NewSszError(sszutils.ErrExtendedTypeDisabled, "optional types are not supported in SSZ (use extended types option to enable it)")
 		}
-		err := tc.buildOptionalDescriptor(desc, t, sizeHints, maxSizeHints, typeHints)
+		err := tc.buildOptionalDescriptor(desc, runtimeType, schemaType, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
 			return nil, err
 		}
 	case SszOptionalListType:
 		// optional-list expresses a pointer as a canonical List[T, 1]; allowed without ExtendedTypes
-		err := tc.buildOptionalListDescriptor(desc, t, sizeHints, maxSizeHints, typeHints)
+		err := tc.buildOptionalListDescriptor(desc, runtimeType, schemaType, sizeHints, maxSizeHints, typeHints)
 		if err != nil {
 			return nil, err
 		}
@@ -1060,7 +1060,7 @@ func (tc *TypeCache) buildCompatibleUnionDescriptor(desc *TypeDescriptor, runtim
 }
 
 // buildOptionalDescriptor builds a descriptor for optional types
-func (tc *TypeCache) buildOptionalDescriptor(desc *TypeDescriptor, t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) error {
+func (tc *TypeCache) buildOptionalDescriptor(desc *TypeDescriptor, runtimeType, schemaType reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) error {
 	// Optional is always dynamic size (1 byte for presence + variable data)
 	desc.Size = 0
 	desc.SszTypeFlags |= SszTypeFlagIsDynamic
@@ -1084,7 +1084,7 @@ func (tc *TypeCache) buildOptionalDescriptor(desc *TypeDescriptor, t reflect.Typ
 		childTypeHints = typeHints[1:]
 	}
 
-	elemDesc, err := tc.getTypeDescriptor(t, t, childSizeHints, childMaxSizeHints, childTypeHints)
+	elemDesc, err := tc.getTypeDescriptor(runtimeType, schemaType, childSizeHints, childMaxSizeHints, childTypeHints)
 	if err != nil {
 		return err
 	}
@@ -1105,7 +1105,7 @@ func (tc *TypeCache) buildOptionalDescriptor(desc *TypeDescriptor, t reflect.Typ
 //
 // Unlike SszOptionalType, this is a canonical SSZ encoding with no custom
 // presence flag and is allowed regardless of the ExtendedTypes setting.
-func (tc *TypeCache) buildOptionalListDescriptor(desc *TypeDescriptor, t reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) error {
+func (tc *TypeCache) buildOptionalListDescriptor(desc *TypeDescriptor, runtimeType, schemaType reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) error {
 	if desc.GoTypeFlags&GoTypeFlagIsPointer == 0 {
 		return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "optional-list ssz type can only be represented by pointer types, got %v", desc.Kind)
 	}
@@ -1125,7 +1125,7 @@ func (tc *TypeCache) buildOptionalListDescriptor(desc *TypeDescriptor, t reflect
 		childTypeHints = typeHints[1:]
 	}
 
-	elemDesc, err := tc.getTypeDescriptor(t, t, childSizeHints, childMaxSizeHints, childTypeHints)
+	elemDesc, err := tc.getTypeDescriptor(runtimeType, schemaType, childSizeHints, childMaxSizeHints, childTypeHints)
 	if err != nil {
 		return err
 	}

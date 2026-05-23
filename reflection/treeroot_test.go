@@ -1915,7 +1915,8 @@ func TestOptionalInnerBuildRootError(t *testing.T) {
 }
 
 // TestOptionalListInnerBuildRootError verifies buildRootFromOptionalList
-// propagates errors from the inner element's buildRootFromType call.
+// propagates errors from the inner element's buildRootFromType call and tags
+// them with the "[0]" path to match list[T,1] error reporting.
 func TestOptionalListInnerBuildRootError(t *testing.T) {
 	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
@@ -1935,8 +1936,12 @@ func TestOptionalListInnerBuildRootError(t *testing.T) {
 	optDesc.ElemDesc.SszType = ssztypes.SszType(255)
 	optDesc.ElemDesc.SszCompatFlags = 0
 
-	if _, err = dynssz.HashTreeRoot(Container{Opt: &Inner{Value: 42}}); err == nil {
-		t.Error("expected error for optional-list inner build root error")
+	_, err = dynssz.HashTreeRoot(Container{Opt: &Inner{Value: 42}})
+	if err == nil {
+		t.Fatal("expected error for optional-list inner build root error")
+	}
+	if !contains(err.Error(), "[0]") {
+		t.Errorf("expected error path to contain '[0]', got: %v", err)
 	}
 }
 
