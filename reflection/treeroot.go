@@ -40,7 +40,7 @@ import (
 //   - Primitive type hashing (bool, uint8, uint16, uint32, uint64)
 //   - Delegation to specialized functions for composite types (structs, arrays, slices)
 func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, pack bool, idt int) error { //nolint:gocyclo // SSZ hash tree root builder handles many type cases
-	if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && sourceType.SszType != ssztypes.SszOptionalType {
+	if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && sourceType.SszType != ssztypes.SszOptionalType && sourceType.SszType != ssztypes.SszOptionalListType {
 		if sourceValue.IsNil() {
 			sourceValue = reflect.New(sourceType.Type.Elem()).Elem()
 		} else {
@@ -247,6 +247,11 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 		}
 	case ssztypes.SszOptionalType:
 		err := ctx.buildRootFromOptional(sourceType, sourceValue, hh, idt)
+		if err != nil {
+			return err
+		}
+	case ssztypes.SszOptionalListType:
+		err := ctx.buildRootFromOptionalList(sourceType, sourceValue, hh, idt)
 		if err != nil {
 			return err
 		}
@@ -823,6 +828,40 @@ func (ctx *ReflectionCtx) buildRootFromOptional(sourceType *ssztypes.TypeDescrip
 	if err != nil {
 		return err
 	}
+
+	return nil
+}
+
+// buildRootFromOptionalList computes the hash tree root for a pointer encoded as List[T, 1].
+//
+// The hash matches the canonical SSZ list hashing:
+//   - Merkleize the (zero or one) element chunks
+//   - Mix in the length (0 for nil, 1 for non-nil)
+//   - Limit is always 1 chunk/element for List[T, 1]
+//
+// Parameters:
+//   - sourceType: The TypeDescriptor containing optional-list metadata
+//   - sourceValue: The reflect.Value of the pointer to hash
+//   - hh: The Hasher instance for hash computation
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - error: An error if hashing fails
+func (ctx *ReflectionCtx) buildRootFromOptionalList(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
+	hashIndex := hh.StartTree(sszutils.TreeTypeBinary)
+
+	var sliceLen uint64
+	if !sourceValue.IsNil() {
+		err := ctx.buildRootFromType(sourceType.ElemDesc, sourceValue.Elem(), hh, true, idt+2)
+		if err != nil {
+			return sszutils.ErrorWithPathf(err, "[0]")
+		}
+		sliceLen = 1
+	}
+
+	hh.FillUpTo32()
+	// List[T, 1] always has limit 1 (either 1 element or 1 packed chunk for basic types ≤32 bytes)
+	hh.MerkleizeWithMixin(hashIndex, sliceLen, 1)
 
 	return nil
 }

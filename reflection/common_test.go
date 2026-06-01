@@ -757,6 +757,47 @@ var commonTestMatrix = []struct {
 		fromHex("0x01000000000000000c000000010000000000000002000000010400050000000000000006000000010800"),
 		fromHex("0x80b99000797f72ef1a9deae3e42fc1447648feaf1d7cd8dc1a4e20c7c64350ed"),
 	},
+
+	// optional-list (canonical List[T, 1] for pointer types). Works without
+	// WithExtendedTypes() since the encoding has no custom shape.
+	{
+		"optional_list_uint32",
+		struct {
+			Opt *uint32 `ssz-type:"optional-list"`
+		}{Opt: func() *uint32 { v := uint32(1337); return &v }()},
+		fromHex("0x0400000039050000"),
+		fromHex("0x8246bdf6ebefc9975ce67afa054fa9b3a2df54e41173684f1a66edd8523b0cb9"),
+	},
+	{
+		"optional_list_uint32_nil",
+		struct {
+			Opt *uint32 `ssz-type:"optional-list"`
+		}{Opt: nil},
+		fromHex("0x04000000"),
+		fromHex("0xf5a5fd42d16a20302798ef6ed309979b43003d2320d9f0e8ea9831a92759fb4b"),
+	},
+	{
+		"optional_list_dynamic_inner",
+		struct {
+			Opt *struct {
+				Data []byte `ssz-max:"32"`
+			} `ssz-type:"optional-list"`
+		}{Opt: &struct {
+			Data []byte `ssz-max:"32"`
+		}{Data: []byte{1, 2, 3, 4, 5}}},
+		fromHex("0x0400000004000000040000000102030405"),
+		fromHex("0x0be8baeb911a0caeb38eb37bb068e2162ebc3b6ba1bf37236304e597a279dc87"),
+	},
+	{
+		"optional_list_dynamic_inner_nil",
+		struct {
+			Opt *struct {
+				Data []byte `ssz-max:"32"`
+			} `ssz-type:"optional-list"`
+		}{Opt: nil},
+		fromHex("0x04000000"),
+		fromHex("0xf5a5fd42d16a20302798ef6ed309979b43003d2320d9f0e8ea9831a92759fb4b"),
+	},
 }
 
 var opt1 = int16(1337)

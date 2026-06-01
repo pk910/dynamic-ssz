@@ -210,6 +210,25 @@ func TestCodegenNoDynExprTypes(t *testing.T) {
 	testCodegenPayloadByReflection(t, NoDynExprTypes_Payload, nil)
 }
 
+// TestCodegenOptionalListTypes verifies generated code for ssz-type:"optional-list"
+// matches the reflection implementation. Optional-list expresses a pointer as
+// a canonical SSZ List[T, 1] and works without extended types.
+func TestCodegenOptionalListTypes(t *testing.T) {
+	payloads := []struct {
+		name    string
+		payload OptionalListTypes
+	}{
+		{"BothSet", OptionalListTypes_Payload1},
+		{"BothNil", OptionalListTypes_Payload2},
+		{"StaticOnly", OptionalListTypes_Payload3},
+	}
+	for _, tc := range payloads {
+		t.Run(tc.name, func(t *testing.T) {
+			testCodegenPayloadByReflection(t, tc.payload, nil)
+		})
+	}
+}
+
 // TestCodegenViewTypes2 tests nested view dispatch: a container whose child
 // has view dispatch methods. This exercises the isView code paths in all
 // generators (marshal, unmarshal, encoder, decoder, size, hash).

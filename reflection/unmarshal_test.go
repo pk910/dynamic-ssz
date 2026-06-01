@@ -1343,6 +1343,83 @@ func TestUnmarshalEmptyDynamicList(t *testing.T) {
 	}
 }
 
+// TestUnmarshalOptionalListInvalidOffset verifies that a wrong first offset
+// in the dynamic-element form of an optional-list is rejected with the first
+// offset mismatch error (consistent with how list[T,1] reports the same).
+func TestUnmarshalOptionalListInvalidOffset(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type Inner struct {
+		Data []byte `ssz-max:"32"`
+	}
+	type Container struct {
+		Opt *Inner `ssz-type:"optional-list"`
+	}
+
+	// container offset(=4) + payload offset(=99, not 4)
+	bad := []byte{0x04, 0x00, 0x00, 0x00, 0x63, 0x00, 0x00, 0x00}
+	var out Container
+	err := dynssz.UnmarshalSSZ(&out, bad)
+	if err == nil {
+		t.Fatal("expected error for invalid offset, got nil")
+	}
+	if !contains(err.Error(), "first offset") {
+		t.Errorf("expected first-offset-mismatch error, got: %v", err)
+	}
+}
+
+// TestUnmarshalOptionalListInnerError verifies unmarshalOptionalList tags
+// inner unmarshal errors with the "[0]" path.
+func TestUnmarshalOptionalListInnerError(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type Inner struct {
+		Value uint32
+	}
+	type Container struct {
+		Opt *Inner `ssz-type:"optional-list"`
+	}
+
+	typeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	optDesc := typeDesc.ContainerDesc.Fields[0].Type
+	optDesc.ElemDesc.SszType = ssztypes.SszType(255)
+	optDesc.ElemDesc.SszCompatFlags = 0
+
+	// container offset(=4) + 4 bytes of element data
+	data := []byte{0x04, 0x00, 0x00, 0x00, 0x2a, 0x00, 0x00, 0x00}
+	var out Container
+	err = dynssz.UnmarshalSSZ(&out, data)
+	if err == nil {
+		t.Fatal("expected error for unsupported inner type")
+	}
+	if !contains(err.Error(), "[0]") {
+		t.Errorf("expected error path to contain '[0]', got: %v", err)
+	}
+}
+
+// TestUnmarshalOptionalListTruncatedOffset verifies that a payload shorter
+// than the 4-byte offset header (with a dynamic element) is rejected.
+func TestUnmarshalOptionalListTruncatedOffset(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type Inner struct {
+		Data []byte `ssz-max:"32"`
+	}
+	type Container struct {
+		Opt *Inner `ssz-type:"optional-list"`
+	}
+
+	// container offset(=4) + 2-byte payload (less than required 4-byte offset header)
+	bad := []byte{0x04, 0x00, 0x00, 0x00, 0xaa, 0xbb}
+	var out Container
+	if err := dynssz.UnmarshalSSZ(&out, bad); err == nil {
+		t.Fatal("expected error for truncated offset header, got nil")
+	}
+}
+
 func TestUnmarshalDynamicDecoderWithUnmarshal(t *testing.T) {
 	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
@@ -1632,6 +1709,12 @@ func TestUnmarshalTruncatedReaderErrors(t *testing.T) {
 	type BigIntContainer struct {
 		Value big.Int `ssz-max:"256"`
 	}
+	type OptionalListInner struct {
+		Data []byte `ssz-max:"32"`
+	}
+	type OptionalListContainer struct {
+		Opt *OptionalListInner `ssz-type:"optional-list"`
+	}
 
 	marshalValid := func(t *testing.T, d *DynSsz, v any) []byte {
 		t.Helper()
@@ -1812,6 +1895,18 @@ func TestUnmarshalTruncatedReaderErrors(t *testing.T) {
 				return marshalValid(t, dynssz_ext, &BigIntContainer{Value: *big.NewInt(42)})
 			},
 			truncateAt:  4,
+			expectedErr: "unexpected end of SSZ",
+		},
+		{
+			name:   "optional_list_decode_offset_error",
+			dynssz: dynssz,
+			target: func() any { return new(OptionalListContainer) },
+			fullData: func(t *testing.T) []byte {
+				t.Helper()
+				return marshalValid(t, dynssz, &OptionalListContainer{Opt: &OptionalListInner{Data: []byte{}}})
+			},
+			// Truncate mid-offset-header so unmarshalOptionalList's DecodeOffset call fails.
+			truncateAt:  6,
 			expectedErr: "unexpected end of SSZ",
 		},
 	}

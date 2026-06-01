@@ -412,6 +412,8 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent, "}\n")
 	case ssztypes.SszOptionalType:
 		return ctx.unmarshalOptional(desc, varName, typePath, indent)
+	case ssztypes.SszOptionalListType:
+		return ctx.unmarshalOptionalList(desc, varName, typePath, indent)
 	case ssztypes.SszBigIntType:
 		return ctx.unmarshalBigInt(desc, varName, typePath, indent)
 
@@ -491,7 +493,8 @@ func (ctx *decoderContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, var
 			} else {
 				ctx.appendCode(indent, "// Field #%d '%s' (static)\n", idx, field.Name)
 			}
-			if field.Type.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+			// Optional and optional-list manage their own pointer allocation: nil means absent.
+			if field.Type.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && field.Type.SszType != ssztypes.SszOptionalType && field.Type.SszType != ssztypes.SszOptionalListType {
 				ctx.appendCode(indent+inlineIndent, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(field.Type))
 			}
 
@@ -526,7 +529,8 @@ func (ctx *decoderContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, var
 		valVar := ctx.getValVar()
 		ctx.appendCode(indent+1, "%s := %s.%s\n", valVar, varName, field.Name)
 
-		if field.Type.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		// Optional and optional-list manage their own pointer allocation: nil means absent.
+		if field.Type.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && field.Type.SszType != ssztypes.SszOptionalType && field.Type.SszType != ssztypes.SszOptionalListType {
 			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(field.Type))
 		}
 
@@ -1075,18 +1079,49 @@ func (ctx *decoderContext) unmarshalOptional(desc *ssztypes.TypeDescriptor, varN
 	ctx.appendCode(indent, "if hasVal, err := dec.DecodeBool(); err != nil {\n")
 	ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith("err"))
 	ctx.appendCode(indent, "} else if hasVal {\n")
-	ptrVarName := varName
-	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
-		ptrVarName = fmt.Sprintf("*(%s)", varName)
-	}
 	valVar := ctx.getValVar()
-	ctx.appendCode(indent+1, "\tvar %s %s\n", valVar, ctx.typePrinter.TypeString(desc.ElemDesc))
+	ctx.appendCode(indent+1, "var %s %s\n", valVar, ctx.typePrinter.TypeString(desc.ElemDesc))
 	if err := ctx.unmarshalType(desc.ElemDesc, valVar, typePath, indent+1, false, true); err != nil {
 		return err
 	}
-	ctx.appendCode(indent+1, "\t%s = %s\n", ptrVarName, valVar)
+	// Assign a fresh pointer rather than dereferencing varName — varName may be
+	// nil here since optional manages its own allocation.
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		ctx.appendCode(indent+1, "%s = &%s\n", varName, valVar)
+	} else {
+		ctx.appendCode(indent+1, "%s = %s\n", varName, valVar)
+	}
 	ctx.appendCode(indent, "} else {\n")
-	ctx.appendCode(indent+1, "\t%s = nil\n", varName)
+	ctx.appendCode(indent+1, "%s = nil\n", varName)
+	ctx.appendCode(indent, "}\n")
+	return nil
+}
+
+// unmarshalOptionalList generates unmarshal code for optional-list (canonical List[T, 1]).
+//
+// Empty buffer → nil pointer. Otherwise: if the element is dynamic, read and
+// validate a 4-byte offset header (must equal 4); then unmarshal the single
+// element and assign a fresh pointer to it.
+func (ctx *decoderContext) unmarshalOptionalList(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
+	ctx.appendCode(indent, "if dec.GetLength() == 0 {\n")
+	ctx.appendCode(indent+1, "%s = nil\n", varName)
+	ctx.appendCode(indent, "} else {\n")
+	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+		errCodeEOF := "sszutils.ErrListOffsetsEOFFn(dec.GetLength(), 4)"
+		ctx.appendCode(indent+1, "if dec.GetLength() < 4 {\n\treturn %s\n}\n", typePath.getErrorWith(errCodeEOF))
+		ctx.appendCode(indent+1, "if firstOffset, err := dec.DecodeOffset(); err != nil {\n")
+		ctx.appendCode(indent+2, "return %s\n", typePath.getErrorWith("err"))
+		ctx.appendCode(indent+1, "} else if firstOffset != 4 {\n")
+		errCodeOffset := "sszutils.ErrFirstOffsetMismatchFn(firstOffset, uint32(4))"
+		ctx.appendCode(indent+2, "return %s\n", typePath.getErrorWith(errCodeOffset))
+		ctx.appendCode(indent+1, "}\n")
+	}
+	valVar := ctx.getValVar()
+	ctx.appendCode(indent+1, "var %s %s\n", valVar, ctx.typePrinter.TypeString(desc.ElemDesc))
+	if err := ctx.unmarshalType(desc.ElemDesc, valVar, typePath.append("[0]"), indent+1, false, true); err != nil {
+		return err
+	}
+	ctx.appendCode(indent+1, "%s = &%s\n", varName, valVar)
 	ctx.appendCode(indent, "}\n")
 	return nil
 }

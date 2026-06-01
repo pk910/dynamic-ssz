@@ -48,6 +48,11 @@ types:
   - name: CoverageTypes7
     output: gen_coverage7.go
 
+  - name: OptionalListTypes
+    output: gen_optionallist.go
+  - name: OptionalListTypes_Inner
+    output: gen_optionallist.go
+
   - name: ViewTypes1_Base
     output: gen_viewtypes1.go
     views:

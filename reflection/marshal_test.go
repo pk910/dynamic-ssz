@@ -1333,6 +1333,162 @@ func TestMarshalOptionalError(t *testing.T) {
 	}
 }
 
+// TestOptionalListEquivalentToListMax verifies that the optional-list SSZ
+// type produces the same encoding, size, and hash tree root as a canonical
+// List[T, 1] (i.e. []T with ssz-max:"1"). It also exercises round-trip
+// marshal/unmarshal for both nil and non-nil pointer states and ensures the
+// type works without WithExtendedTypes().
+func TestOptionalListEquivalentToListMax(t *testing.T) {
+	type optStatic struct {
+		Opt *uint32 `ssz-type:"optional-list"`
+	}
+	type listStatic struct {
+		Opt []uint32 `ssz-max:"1"`
+	}
+	type dynInner struct {
+		Data []byte `ssz-max:"32"`
+	}
+	type optDynamic struct {
+		Opt *dynInner `ssz-type:"optional-list"`
+	}
+	type listDynamic struct {
+		Opt []dynInner `ssz-max:"1"`
+	}
+
+	u32 := uint32(1337)
+	staticVal := &optStatic{Opt: &u32}
+	staticEquiv := &listStatic{Opt: []uint32{u32}}
+	staticNil := &optStatic{Opt: nil}
+	staticEmpty := &listStatic{Opt: nil}
+
+	dynVal := &optDynamic{Opt: &dynInner{Data: []byte{1, 2, 3, 4, 5}}}
+	dynEquiv := &listDynamic{Opt: []dynInner{{Data: []byte{1, 2, 3, 4, 5}}}}
+	dynNil := &optDynamic{Opt: nil}
+	dynEmpty := &listDynamic{Opt: nil}
+
+	cases := []struct {
+		name      string
+		optVal    any
+		listVal   any
+		decodeOpt func() any
+		expectNil bool
+	}{
+		{"static_value", staticVal, staticEquiv, func() any { return new(optStatic) }, false},
+		{"static_nil", staticNil, staticEmpty, func() any { return new(optStatic) }, true},
+		{"dynamic_value", dynVal, dynEquiv, func() any { return new(optDynamic) }, false},
+		{"dynamic_nil", dynNil, dynEmpty, func() any { return new(optDynamic) }, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Optional-list must work without extended types — it's canonical SSZ.
+			ds := NewDynSsz(nil)
+
+			optBuf, err := ds.MarshalSSZ(tc.optVal)
+			if err != nil {
+				t.Fatalf("MarshalSSZ(optional-list): %v", err)
+			}
+			listBuf, err := ds.MarshalSSZ(tc.listVal)
+			if err != nil {
+				t.Fatalf("MarshalSSZ(list ssz-max:1): %v", err)
+			}
+			if !bytes.Equal(optBuf, listBuf) {
+				t.Errorf("encoding mismatch:\n  optional-list: 0x%x\n  list[T,1]:     0x%x", optBuf, listBuf)
+			}
+
+			optSize, err := ds.SizeSSZ(tc.optVal)
+			if err != nil {
+				t.Fatalf("SizeSSZ(optional-list): %v", err)
+			}
+			if optSize != len(optBuf) {
+				t.Errorf("SizeSSZ %d != marshal length %d", optSize, len(optBuf))
+			}
+
+			optRoot, err := ds.HashTreeRoot(tc.optVal)
+			if err != nil {
+				t.Fatalf("HashTreeRoot(optional-list): %v", err)
+			}
+			listRoot, err := ds.HashTreeRoot(tc.listVal)
+			if err != nil {
+				t.Fatalf("HashTreeRoot(list ssz-max:1): %v", err)
+			}
+			if optRoot != listRoot {
+				t.Errorf("hash tree root mismatch:\n  optional-list: 0x%x\n  list[T,1]:     0x%x", optRoot, listRoot)
+			}
+
+			decoded := tc.decodeOpt()
+			if err := ds.UnmarshalSSZ(decoded, optBuf); err != nil {
+				t.Fatalf("UnmarshalSSZ: %v", err)
+			}
+			decodedField := reflect.ValueOf(decoded).Elem().Field(0)
+			if tc.expectNil {
+				if !decodedField.IsNil() {
+					t.Errorf("expected nil pointer after unmarshal of empty payload, got %#v", decodedField.Interface())
+				}
+			} else if !reflect.DeepEqual(reflect.ValueOf(tc.optVal).Elem().Interface(), reflect.ValueOf(decoded).Elem().Interface()) {
+				t.Errorf("round-trip mismatch:\n  original: %#v\n  decoded:  %#v", tc.optVal, decoded)
+			}
+		})
+	}
+}
+
+// TestOptionalListMarshalVerbose exercises the verbose-logging branch in
+// marshalOptionalList.
+func TestOptionalListMarshalVerbose(t *testing.T) {
+	type Inner struct {
+		Data []byte `ssz-max:"32"`
+	}
+	type Container struct {
+		Opt *Inner `ssz-type:"optional-list"`
+	}
+
+	ds := NewDynSsz(nil, WithVerbose(), WithLogCb(func(string, ...any) {}), WithNoFastSsz())
+	if _, err := ds.MarshalSSZ(Container{Opt: &Inner{Data: []byte{1, 2, 3}}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := ds.MarshalSSZ(Container{Opt: nil}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestOptionalListInnerMarshalError verifies marshalOptionalList propagates
+// errors from marshaling the inner element and tags them with the "[0]" path
+// to match how list[T,1] reports element errors.
+//
+// The inner type's SizeSSZ succeeds (returning 8) so the precomputed-size
+// step in MarshalSSZ doesn't trip; MarshalSSZTo then fails, exercising both
+// the error-wrap inside marshalOptionalList and the dispatcher's case.
+func TestOptionalListInnerMarshalError(t *testing.T) {
+	type Container struct {
+		Opt *TestContainerWithMarshalError `ssz-type:"optional-list"`
+	}
+
+	ds := NewDynSsz(nil)
+	_, err := ds.MarshalSSZ(Container{Opt: &TestContainerWithMarshalError{Field0: 42}})
+	if err == nil {
+		t.Fatal("expected error from inner marshal failure")
+	}
+	if !contains(err.Error(), "[0]") {
+		t.Errorf("expected error path to contain '[0]', got: %v", err)
+	}
+}
+
+// TestOptionalListPointerRequired verifies that ssz-type:"optional-list"
+// on a non-pointer field is rejected by the type cache.
+func TestOptionalListPointerRequired(t *testing.T) {
+	type bad struct {
+		Opt uint32 `ssz-type:"optional-list"`
+	}
+	ds := NewDynSsz(nil)
+	_, err := ds.MarshalSSZ(bad{Opt: 1})
+	if err == nil {
+		t.Fatal("expected error for non-pointer optional-list, got nil")
+	}
+	if !contains(err.Error(), "pointer types") {
+		t.Errorf("expected pointer-type error, got: %v", err)
+	}
+}
+
 func TestMarshalBigIntTypeAssertionFailure(t *testing.T) {
 	dynssz := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
 

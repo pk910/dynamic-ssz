@@ -53,6 +53,9 @@ const (
 	SszFloat32Type
 	SszFloat64Type
 	SszOptionalType
+
+	// canonical SSZ encodings expressed via Go conveniences
+	SszOptionalListType // pointer encoded as canonical List[T, 1]
 )
 
 // SszTypeHint holds a parsed SSZ type hint from an ssz-type struct tag.
@@ -126,6 +129,10 @@ func ParseSszType(typeStr string) (SszType, error) {
 		return SszFloat64Type, nil
 	case "optional":
 		return SszOptionalType, nil
+
+	// canonical SSZ encodings expressed via Go conveniences
+	case "optional-list":
+		return SszOptionalListType, nil
 
 	default:
 		return SszUnspecifiedType, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "invalid ssz-type tag '%v'", typeStr)

@@ -197,6 +197,8 @@ Explicitly specifies the SSZ type for a field. When omitted, the type is auto-de
 
 **Progressive types** (EIP-7916/7495): `progressive-list`, `progressive-bitlist`, `progressive-container`, `compatible-union` (or `union`)
 
+**Pointer encoding**: `optional-list` — encodes a pointer as canonical `List[T, 1]`
+
 **Extended types** (non-standard, requires `WithExtendedTypes()`): `int8`, `int16`, `int32`, `int64`, `float32`, `float64`, `bigint`, `optional`
 
 **Special values**: `custom` (type implements SSZ interfaces), `wrapper`/`type-wrapper` (TypeWrapper pattern), `?`/`auto` (auto-detect)

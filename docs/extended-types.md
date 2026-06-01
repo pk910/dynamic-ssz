@@ -138,6 +138,8 @@ Optional types use Go pointer types to represent values that may or may not be p
 
 > **Important**: Pointer types are **not** automatically treated as optional. You **must** annotate pointer fields with `ssz-type:"optional"` to enable optional encoding. Without this annotation, pointer fields follow standard SSZ behavior where a `nil` pointer is expanded to a zero-valued instance of the pointed-to type.
 
+> **Note**: `ssz-type:"optional"` is a **non-canonical** SSZ extension (1-byte presence flag) and requires extended types. For the canonical SSZ representation of optional pointer fields, use [`ssz-type:"optional-list"`](supported-types.md#optional-lists-canonical-listt-1) instead — it encodes the pointer as a canonical `List[T, 1]` and works without `WithExtendedTypes()`.
+
 **Encoding format**:
 - If `nil`: `0x00` (1 byte)
 - If present: `0x01` followed by the serialized value
