@@ -4,7 +4,7 @@ go 1.22.2
 
 require (
 	github.com/casbin/govaluate v1.10.0
-	github.com/pk910/hashtree-bindings v0.1.0
+	github.com/pk910/hashtree-bindings v0.2.0
 	golang.org/x/tools v0.30.0
 	gopkg.in/yaml.v3 v3.0.1
 )
