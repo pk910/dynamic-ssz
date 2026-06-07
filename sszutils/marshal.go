@@ -52,6 +52,17 @@ func MarshalUint64Slice[T ~uint64](dst []byte, s []T) []byte {
 	return append(dst, unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(s))), len(s)*8)...)
 }
 
+// MarshalFixedBytesSlice appends the raw contents of a slice whose elements are
+// fixed-size byte arrays (e.g. []Root where Root is [32]byte) to dst in a single
+// copy. Such elements are laid out contiguously without padding, so this avoids
+// the per-element append loop. The element size is taken from the element type.
+func MarshalFixedBytesSlice[T any](dst []byte, s []T) []byte {
+	if len(s) == 0 {
+		return dst
+	}
+	return append(dst, unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(s))), len(s)*int(unsafe.Sizeof(s[0])))...)
+}
+
 // EncodeUint64Slice encodes a uint64 slice to an Encoder using bulk memory copy.
 // On little-endian architectures (x86, ARM64) this avoids per-element EncodeUint64 overhead.
 func EncodeUint64Slice[T ~uint64](enc Encoder, s []T) {
