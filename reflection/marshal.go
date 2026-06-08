@@ -746,14 +746,20 @@ func (ctx *ReflectionCtx) marshalCompatibleUnion(sourceType *ssztypes.TypeDescri
 	variant := uint8(sourceValue.Field(0).Uint())
 	dataField := sourceValue.Field(1)
 
-	// Append variant byte
-	encoder.EncodeUint8(variant)
-
 	// Get the variant descriptor
 	variantDesc, ok := sourceType.UnionVariants[variant]
 	if !ok {
 		return sszutils.ErrInvalidUnionVariantFn()
 	}
+
+	// A zero-value union has a nil data interface; reject it instead of
+	// panicking on the zero reflect.Value (consistent with the HTR path).
+	if dataField.IsNil() {
+		return sszutils.ErrInvalidUnionVariantFn()
+	}
+
+	// Append variant byte
+	encoder.EncodeUint8(variant)
 
 	// Marshal the data using the variant's type descriptor
 	err := ctx.marshalType(variantDesc, dataField.Elem(), encoder, idt+2)

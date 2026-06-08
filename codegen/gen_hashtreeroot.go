@@ -873,6 +873,12 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varNa
 		maxVar = fmt.Sprintf("%d", desc.Limit)
 	}
 
+	// reject bitlists that are missing their termination bit, consistent with
+	// the marshal path and the reflection hash tree root implementation.
+	ctx.appendCode(indent, "if l := len(%s); l > 0 && %s[l-1] == 0x00 {\n", varName, varName)
+	ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith("sszutils.ErrBitlistNotTerminatedFn()"))
+	ctx.appendCode(indent, "}\n")
+
 	ctx.appendCode(indent, "idx := hh.StartTree(sszutils.TreeTypeNone)\n")
 	hasherAlias := ctx.typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
 	sizeVar := "_"

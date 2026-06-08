@@ -117,6 +117,35 @@ func TestStreamEncoder_NewStreamEncoder(t *testing.T) {
 	}
 }
 
+// TestStreamEncoder_MinBufferSize verifies that a buffer size smaller than the
+// largest atomic write (uint64, 8 bytes) does not cause primitive encodes to
+// write past the internal buffer and panic.
+func TestStreamEncoder_MinBufferSize(t *testing.T) {
+	for _, sz := range []int{1, 3, 4, 7} {
+		var buf bytes.Buffer
+		enc := NewStreamEncoder(&buf, sz)
+
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("buffer size %d caused a panic: %v", sz, r)
+				}
+			}()
+			enc.EncodeUint64(0x0102030405060708)
+			enc.EncodeUint32(0x0a0b0c0d)
+			enc.EncodeOffset(0x11223344)
+			enc.Flush()
+		}()
+
+		if enc.GetWriteError() != nil {
+			t.Fatalf("buffer size %d unexpected write error: %v", sz, enc.GetWriteError())
+		}
+		if buf.Len() != 16 {
+			t.Errorf("buffer size %d: expected 16 bytes, got %d", sz, buf.Len())
+		}
+	}
+}
+
 func TestStreamEncoder_GetBuffer(t *testing.T) {
 	var buf bytes.Buffer
 	enc := NewStreamEncoder(&buf, 0)
@@ -1151,12 +1180,12 @@ func TestStreamEncoder_TinyBuffer_FlushOnEncodeOffset(t *testing.T) {
 
 func TestStreamEncoder_EncodeBytes_FlushError(t *testing.T) {
 	testErr := errors.New("write error")
-	// Buffer size 4: write 2 bytes, then write 4 bytes to trigger flush+early return
+	// Buffer size 8 (the minimum): write 6 bytes, then 4 bytes to trigger flush+early return
 	w := &errWriter{errAfter: 0, err: testErr}
-	enc := NewStreamEncoder(w, 4)
+	enc := NewStreamEncoder(w, 8)
 
-	enc.EncodeBytes([]byte{0x01, 0x02})       // fits in buffer
-	enc.EncodeBytes([]byte{0x03, 0x04, 0x05}) // triggers flush, flush fails
+	enc.EncodeBytes(make([]byte, 6)) // fits in buffer
+	enc.EncodeBytes(make([]byte, 4)) // triggers flush, flush fails
 
 	if !errors.Is(enc.GetWriteError(), testErr) {
 		t.Errorf("expected error %v, got %v", testErr, enc.GetWriteError())
@@ -1164,13 +1193,13 @@ func TestStreamEncoder_EncodeBytes_FlushError(t *testing.T) {
 }
 
 func TestStreamEncoder_EncodeBytes_LargeDirectWriteError(t *testing.T) {
-	// Buffer size 4: writing 8 bytes goes to direct write path after flush.
-	// errWriter succeeds on flush (errAfter > 4) but fails on direct write.
+	// Buffer size 8 (the minimum): writing 12 bytes goes to the direct write path.
+	// errWriter writes the first 4 bytes then fails on the direct write.
 	testErr := errors.New("disk full")
 	w := &errWriter{errAfter: 4, err: testErr}
-	enc := NewStreamEncoder(w, 4)
+	enc := NewStreamEncoder(w, 8)
 
-	enc.EncodeBytes(make([]byte, 8))
+	enc.EncodeBytes(make([]byte, 12))
 
 	if !errors.Is(enc.GetWriteError(), testErr) {
 		t.Errorf("expected error %v, got %v", testErr, enc.GetWriteError())
@@ -1178,12 +1207,12 @@ func TestStreamEncoder_EncodeBytes_LargeDirectWriteError(t *testing.T) {
 }
 
 func TestStreamEncoder_EncodeBytes_LargeDirectShortWrite(t *testing.T) {
-	// Buffer size 4: writing 8 bytes goes to direct write path.
+	// Buffer size 8 (the minimum): writing 12 bytes goes to the direct write path.
 	// shortWriter writes fewer bytes than requested.
 	w := &shortWriter{maxWrite: 3}
-	enc := NewStreamEncoder(w, 4)
+	enc := NewStreamEncoder(w, 8)
 
-	enc.EncodeBytes(make([]byte, 8))
+	enc.EncodeBytes(make([]byte, 12))
 
 	if enc.GetWriteError() == nil {
 		t.Fatal("expected error, got nil")

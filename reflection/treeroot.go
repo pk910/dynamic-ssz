@@ -564,8 +564,8 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 		if appendZero > 0 {
 			zeroBytes := make([]byte, appendZero)
 			bytes = append(bytes, zeroBytes...)
-		} else if sourceType.BitSize > 0 && sourceType.BitSize < uint32(len(bytes))*8 {
-			// check padding bits
+		} else if sourceType.BitSize > 0 && sourceType.BitSize%8 != 0 {
+			// check padding bits (only bit-aligned bitvectors have padding bits)
 			paddingMask := uint8((uint16(0xff) << (sourceType.BitSize % 8)) & 0xff)
 			paddingBits := bytes[len(bytes)-1] & paddingMask
 			if paddingBits != 0 {
@@ -789,6 +789,12 @@ func (ctx *ReflectionCtx) getActiveFields(sourceType *ssztypes.TypeDescriptor) [
 func (ctx *ReflectionCtx) buildRootFromBitlist(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, _ int) error {
 	maxSize := uint64(0)
 	bytes := sourceValue.Bytes()
+
+	// reject bitlists that are missing their termination bit, consistent with
+	// marshalBitlist. Empty/nil bitlists are treated as a 0-bit bitlist.
+	if len(bytes) > 0 && bytes[len(bytes)-1] == 0x00 {
+		return sszutils.ErrBitlistNotTerminatedFn()
+	}
 
 	if sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
 		maxSize = sourceType.Limit

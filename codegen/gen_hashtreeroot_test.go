@@ -634,3 +634,42 @@ func TestHashTreeRootContainerStaticPlusDynamicError(t *testing.T) {
 		t.Error("expected error for container with static + dynamic unsupported field")
 	}
 }
+
+// TestGenerateHashTreeRootBitlistTerminatorCheck verifies that the generated
+// hash tree root code for bitlists emits a guard rejecting bitlists that are
+// missing their termination bit (regression guard for the codegen half of the
+// HTR-vs-marshal bitlist inconsistency).
+func TestGenerateHashTreeRootBitlistTerminatorCheck(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		sszType ssztypes.SszType
+	}{
+		{"bitlist", ssztypes.SszBitlistType},
+		{"progressive-bitlist", ssztypes.SszProgressiveBitlistType},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			desc := &ssztypes.TypeDescriptor{
+				Type:    reflect.TypeOf([]byte(nil)),
+				SszType: tt.sszType,
+				Kind:    reflect.Slice,
+				Limit:   32,
+			}
+
+			codeBuilder := &strings.Builder{}
+			typePrinter := NewTypePrinter("test/package")
+			options := &CodeGeneratorOptions{}
+
+			if err := generateHashTreeRoot(desc, codeBuilder, typePrinter, "", options); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			out := codeBuilder.String()
+			if !strings.Contains(out, "[l-1] == 0x00") {
+				t.Errorf("generated bitlist HTR is missing the terminator-bit check:\n%s", out)
+			}
+			if !strings.Contains(out, "ErrBitlistNotTerminatedFn") {
+				t.Errorf("generated bitlist HTR is missing the ErrBitlistNotTerminatedFn return:\n%s", out)
+			}
+		})
+	}
+}

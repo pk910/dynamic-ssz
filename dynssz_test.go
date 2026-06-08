@@ -1322,3 +1322,291 @@ func TestHashTreeRootWithReflectionError(t *testing.T) {
 		t.Fatal("expected error for corrupted type descriptor")
 	}
 }
+
+// --- Bitlist marshal/HTR fixes (empty, nested, missing terminator) ---
+
+func TestEmptyBitlistMarshalDoesNotPanic(t *testing.T) {
+	type T struct {
+		X []byte `ssz-type:"bitlist" ssz-max:"16"`
+	}
+
+	ds := NewDynSsz(nil)
+
+	cases := map[string][]byte{
+		"nil":         nil,
+		"emptyNonNil": {},
+	}
+
+	want := []byte{0x04, 0x00, 0x00, 0x00, 0x01}
+	for name, in := range cases {
+		t.Run(name, func(t *testing.T) {
+			enc, err := ds.MarshalSSZ(&T{X: in})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !bytes.Equal(enc, want) {
+				t.Fatalf("unexpected encoding: got %x want %x", enc, want)
+			}
+		})
+	}
+}
+
+func TestEmptyProgressiveBitlistMarshalDoesNotPanic(t *testing.T) {
+	type T struct {
+		X []byte `ssz-type:"progressive-bitlist" ssz-max:"16"`
+	}
+
+	ds := NewDynSsz(nil)
+	enc, err := ds.MarshalSSZ(&T{X: nil})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []byte{0x04, 0x00, 0x00, 0x00, 0x01}
+	if !bytes.Equal(enc, want) {
+		t.Fatalf("unexpected encoding: got %x want %x", enc, want)
+	}
+}
+
+func TestNilBitlistNestedInContainer(t *testing.T) {
+	type T struct {
+		Pre uint32
+		X   []byte `ssz-type:"bitlist" ssz-max:"16"`
+		Pst uint64
+	}
+
+	ds := NewDynSsz(nil)
+	enc, err := ds.MarshalSSZ(&T{Pre: 1, Pst: 2})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var dst T
+	if err := ds.UnmarshalSSZ(&dst, enc); err != nil {
+		t.Fatalf("roundtrip unmarshal failed: %v", err)
+	}
+	if dst.Pre != 1 || dst.Pst != 2 {
+		t.Fatalf("roundtrip mismatch: %+v", dst)
+	}
+}
+
+func TestNilBitlistInListOfStructs(t *testing.T) {
+	type Inner struct {
+		X []byte `ssz-type:"progressive-bitlist" ssz-max:"16"`
+	}
+	type Outer struct {
+		Inner []*Inner `ssz-max:"4"`
+	}
+
+	ds := NewDynSsz(nil)
+	enc, err := ds.MarshalSSZ(&Outer{Inner: []*Inner{{X: nil}, {X: nil}}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var dst Outer
+	if err := ds.UnmarshalSSZ(&dst, enc); err != nil {
+		t.Fatalf("roundtrip unmarshal failed: %v", err)
+	}
+	if len(dst.Inner) != 2 {
+		t.Fatalf("expected 2 inner items, got %d", len(dst.Inner))
+	}
+}
+
+func TestNilBitlistStreamMatchesBuffer(t *testing.T) {
+	type T struct {
+		X []byte `ssz-type:"bitlist" ssz-max:"16"`
+	}
+
+	ds := NewDynSsz(nil)
+	bufEnc, err := ds.MarshalSSZ(&T{X: nil})
+	if err != nil {
+		t.Fatalf("buffer marshal failed: %v", err)
+	}
+
+	var sb bytes.Buffer
+	if err := ds.MarshalSSZWriter(&T{X: nil}, &sb); err != nil {
+		t.Fatalf("stream marshal failed: %v", err)
+	}
+
+	if !bytes.Equal(bufEnc, sb.Bytes()) {
+		t.Fatalf("stream/buffer mismatch: buffer=%x stream=%x", bufEnc, sb.Bytes())
+	}
+}
+
+func TestNilBitlistHTRAndMarshalAgree(t *testing.T) {
+	type T struct {
+		X []byte `ssz-type:"bitlist" ssz-max:"16"`
+	}
+
+	ds := NewDynSsz(nil)
+
+	if _, err := ds.MarshalSSZ(&T{X: nil}); err != nil {
+		t.Fatalf("marshal of nil bitlist failed: %v", err)
+	}
+
+	r1, err := ds.HashTreeRoot(&T{X: nil})
+	if err != nil {
+		t.Fatalf("HTR of nil bitlist failed: %v", err)
+	}
+	r2, err := ds.HashTreeRoot(&T{X: []byte{0x01}})
+	if err != nil {
+		t.Fatalf("HTR of empty bitlist failed: %v", err)
+	}
+	if r1 != r2 {
+		t.Fatalf("nil and empty bitlist should hash equally: %x != %x", r1, r2)
+	}
+}
+
+func TestBitlistMissingTerminatorHTRRejected(t *testing.T) {
+	type T struct {
+		X []byte `ssz-type:"bitlist" ssz-max:"32"`
+	}
+
+	ds := NewDynSsz(nil)
+	src := &T{X: []byte{0xff, 0x00}} // last byte 0x00 => no terminator
+
+	if _, err := ds.MarshalSSZ(src); err == nil {
+		t.Fatalf("marshal should reject a non-terminated bitlist")
+	}
+
+	if _, err := ds.HashTreeRoot(src); err == nil {
+		t.Fatalf("HTR should reject a non-terminated bitlist")
+	} else if !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Fatalf("expected ErrInvalidValueRange, got %v", err)
+	}
+}
+
+// --- Byte-aligned bitvector followed by another field must round-trip ---
+
+func TestBitvectorByteAlignedRoundtrip(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	t.Run("bitsize8", func(t *testing.T) {
+		type T struct {
+			BV    []byte `ssz-type:"bitvector" ssz-bitsize:"8"`
+			After uint64
+		}
+		src := &T{BV: []byte{0xff}, After: 1}
+		enc, err := ds.MarshalSSZ(src)
+		if err != nil {
+			t.Fatalf("marshal failed: %v", err)
+		}
+		var dst T
+		if err := ds.UnmarshalSSZ(&dst, enc); err != nil {
+			t.Fatalf("unmarshal failed: %v", err)
+		}
+		if !bytes.Equal(dst.BV, src.BV) || dst.After != src.After {
+			t.Fatalf("roundtrip mismatch: %+v", dst)
+		}
+	})
+
+	t.Run("bitsize16", func(t *testing.T) {
+		type T struct {
+			BV    []byte `ssz-type:"bitvector" ssz-bitsize:"16"`
+			After uint64
+		}
+		src := &T{BV: []byte{0xff, 0xff}, After: 1}
+		enc, err := ds.MarshalSSZ(src)
+		if err != nil {
+			t.Fatalf("marshal failed: %v", err)
+		}
+		var dst T
+		if err := ds.UnmarshalSSZ(&dst, enc); err != nil {
+			t.Fatalf("unmarshal failed: %v", err)
+		}
+		if !bytes.Equal(dst.BV, src.BV) || dst.After != src.After {
+			t.Fatalf("roundtrip mismatch: %+v", dst)
+		}
+	})
+
+	t.Run("bitsize32", func(t *testing.T) {
+		type T struct {
+			BV    []byte `ssz-type:"bitvector" ssz-bitsize:"32"`
+			After uint64
+		}
+		src := &T{BV: []byte{0xff, 0xff, 0xff, 0xff}, After: 1}
+		enc, err := ds.MarshalSSZ(src)
+		if err != nil {
+			t.Fatalf("marshal failed: %v", err)
+		}
+		var dst T
+		if err := ds.UnmarshalSSZ(&dst, enc); err != nil {
+			t.Fatalf("unmarshal failed: %v", err)
+		}
+		if !bytes.Equal(dst.BV, src.BV) || dst.After != src.After {
+			t.Fatalf("roundtrip mismatch: %+v", dst)
+		}
+	})
+
+	t.Run("bitsize12_paddingStillChecked", func(t *testing.T) {
+		// 12 bits => 2 bytes; the top 4 bits of the 2nd byte are padding and must be 0.
+		type T struct {
+			BV    []byte `ssz-type:"bitvector" ssz-bitsize:"12"`
+			After uint64
+		}
+		good := []byte{0xff, 0x0f, 0, 0, 0, 0, 0, 0, 0, 0} // padding bits zero
+		var dst T
+		if err := ds.UnmarshalSSZ(&dst, good); err != nil {
+			t.Fatalf("valid 12-bit bitvector should decode: %v", err)
+		}
+		bad := []byte{0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0} // padding bits set
+		if err := ds.UnmarshalSSZ(&T{}, bad); err == nil {
+			t.Fatalf("expected padding error for non-zero padding bits")
+		}
+	})
+}
+
+// --- Recursive type definitions must error instead of stack overflowing ---
+
+type recursiveType struct {
+	Val      uint32
+	Children []*recursiveType `ssz-max:"4"`
+}
+
+func TestRecursiveTypeRejected(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	var err error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("recursive type caused a panic: %v", r)
+			}
+		}()
+		_, err = ds.MarshalSSZ(&recursiveType{})
+	}()
+
+	if err == nil {
+		t.Fatalf("expected an error for recursive type, got nil")
+	}
+	if !errors.Is(err, sszutils.ErrUnsupportedType) {
+		t.Fatalf("expected ErrUnsupportedType, got %v", err)
+	}
+}
+
+// --- Stream writer with a too-small buffer must not panic ---
+
+func TestStreamWriterBufferTooSmall(t *testing.T) {
+	for _, sz := range []int{1, 3, 4, 7} {
+		ds := NewDynSsz(nil, WithStreamWriterBufferSize(sz))
+		var sb bytes.Buffer
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("buffer size %d caused a panic: %v", sz, r)
+				}
+			}()
+			if err := ds.MarshalSSZWriter(&struct{ A uint64 }{A: 1}, &sb); err != nil {
+				t.Fatalf("buffer size %d marshal failed: %v", sz, err)
+			}
+		}()
+
+		ref, err := ds.MarshalSSZ(&struct{ A uint64 }{A: 1})
+		if err != nil {
+			t.Fatalf("reference marshal failed: %v", err)
+		}
+		if !bytes.Equal(sb.Bytes(), ref) {
+			t.Fatalf("buffer size %d output mismatch: got %x want %x", sz, sb.Bytes(), ref)
+		}
+	}
+}

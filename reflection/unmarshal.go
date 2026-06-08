@@ -565,14 +565,15 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 				buf = newValue.Bytes()
 			}
 
-			sszLen := decoder.GetLength()
 			_, err := decoder.DecodeBytes(buf)
 			if err != nil {
 				return err
 			}
 
-			if targetType.BitSize > 0 && targetType.BitSize < uint32(sszLen)*8 {
-				// check padding bits
+			// Only bit-aligned bitvectors (BitSize not a multiple of 8) have padding
+			// bits in the last byte that must be zero. Byte-aligned bitvectors have no
+			// padding bits, so the check is skipped to avoid misinterpreting data bits.
+			if targetType.BitSize > 0 && targetType.BitSize%8 != 0 {
 				paddingMask := uint8((uint16(0xff) << (targetType.BitSize % 8)) & 0xff)
 				paddingBits := buf[arrLen-1] & paddingMask
 				if paddingBits != 0 {

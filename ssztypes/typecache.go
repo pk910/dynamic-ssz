@@ -29,6 +29,7 @@ type TypeCache struct {
 	specs         sszutils.DynamicSpecs
 	mutex         sync.RWMutex
 	descriptors   map[typeKey]*TypeDescriptor
+	building      map[typeKey]bool
 	CompatFlags   map[string]SszCompatFlag
 	ExtendedTypes bool
 }
@@ -38,6 +39,7 @@ func NewTypeCache(specs sszutils.DynamicSpecs) *TypeCache {
 	return &TypeCache{
 		specs:         specs,
 		descriptors:   make(map[typeKey]*TypeDescriptor),
+		building:      make(map[typeKey]bool),
 		CompatFlags:   map[string]SszCompatFlag{},
 		ExtendedTypes: false,
 	}
@@ -142,6 +144,16 @@ func (tc *TypeCache) getTypeDescriptor(runtimeType, schemaType reflect.Type, siz
 	if desc, exists := tc.descriptors[key]; exists && cacheable {
 		return desc, nil
 	}
+
+	// Detect self-referential (recursive) types. The whole descriptor tree is
+	// built under the cache write lock, so the build stack is tracked with a
+	// simple map. Recursive SSZ types have no finite serialization, so reject
+	// them with a clear error instead of overflowing the stack.
+	if tc.building[key] {
+		return nil, sszutils.NewSszErrorf(sszutils.ErrUnsupportedType, "recursive type %v is not supported", runtimeType)
+	}
+	tc.building[key] = true
+	defer delete(tc.building, key)
 
 	desc, err := tc.buildTypeDescriptor(runtimeType, schemaType, sizeHints, maxSizeHints, typeHints)
 	if err != nil {

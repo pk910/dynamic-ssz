@@ -180,6 +180,10 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 			default:
 				staticSize = fieldType.Size * sliceLen
 			}
+		} else if targetType.SszType == ssztypes.SszBitlistType || targetType.SszType == ssztypes.SszProgressiveBitlistType {
+			// empty bitlists are marshaled as a single 0x01 termination byte
+			// (see marshalBitlist), so account for that extra byte here as well
+			staticSize = 1
 		}
 	case ssztypes.SszCompatibleUnionType:
 		// CompatibleUnion: 1 byte for selector + size of the data
@@ -189,6 +193,12 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		// Get the variant descriptor
 		variantDesc, ok := targetType.UnionVariants[variant]
 		if !ok {
+			return 0, sszutils.ErrInvalidUnionVariantFn()
+		}
+
+		// A zero-value union has a nil data interface; reject it instead of
+		// panicking on the zero reflect.Value (consistent with marshal/HTR).
+		if dataField.IsNil() {
 			return 0, sszutils.ErrInvalidUnionVariantFn()
 		}
 
