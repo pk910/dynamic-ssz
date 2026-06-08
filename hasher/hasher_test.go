@@ -1553,3 +1553,161 @@ func TestMerkleizeProgressiveImplTmpBelow32(t *testing.T) {
 		t.Fatalf("HashRoot failed: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Deferred cross-element batching correctness
+// ---------------------------------------------------------------------------
+
+// These tests validate the deferred cross-element batching in Merkleize against
+// an independent reference that pre-reduces each element to its root (so the
+// element merkleization never defers) and then merkleizes the roots. Both binary
+// and progressive list shapes are covered, since deferral applies under either
+// incremental parent.
+
+func newH() *Hasher { return NewHasherWithHashFn(FastHasherPool.HashFn) }
+
+// elemRoot computes the root of a fields-chunk container in isolation (top-level
+// scope → no incremental parent → no deferral).
+func elemRoot(fields, seed int) [32]byte {
+	h := newH()
+	idx := h.StartTree(sszutils.TreeTypeNone)
+	for f := 0; f < fields; f++ {
+		h.PutUint64(uint64(seed*1_000_003 + f))
+	}
+	h.Merkleize(idx)
+	r, err := h.HashRoot()
+	if err != nil {
+		panic(err)
+	}
+	return r
+}
+
+func putElem(h *Hasher, fields, seed int) {
+	idx := h.StartTree(sszutils.TreeTypeNone)
+	for f := 0; f < fields; f++ {
+		h.PutUint64(uint64(seed*1_000_003 + f))
+	}
+	h.Merkleize(idx) // defers when the parent scope is incremental
+}
+
+func TestDeferMatchesReference_Binary(t *testing.T) {
+	const limit = 1 << 40
+	for _, fields := range []int{2, 4, 8} { // power-of-two ⇒ deferred
+		for _, n := range []int{0, 1, 2, 3, 255, 256, 257, 600} {
+			// deferred path
+			h := newH()
+			idx := h.StartTree(sszutils.TreeTypeBinary)
+			for i := 0; i < n; i++ {
+				putElem(h, fields, i)
+				if (i+1)%256 == 0 {
+					h.Collapse()
+				}
+			}
+			h.MerkleizeWithMixin(idx, uint64(n), sszutils.CalculateLimit(limit, uint64(n), 32))
+			got, _ := h.HashRoot()
+
+			// reference: pre-reduced roots, no deferral
+			rh := newH()
+			ridx := rh.StartTree(sszutils.TreeTypeBinary)
+			for i := 0; i < n; i++ {
+				r := elemRoot(fields, i)
+				rh.AppendBytes32(r[:])
+			}
+			rh.MerkleizeWithMixin(ridx, uint64(n), sszutils.CalculateLimit(limit, uint64(n), 32))
+			want, _ := rh.HashRoot()
+
+			if got != want {
+				t.Errorf("binary fields=%d n=%d: got %x want %x", fields, n, got, want)
+			}
+		}
+	}
+}
+
+func TestDeferMatchesReference_Progressive(t *testing.T) {
+	for _, fields := range []int{2, 4, 8} {
+		for _, n := range []int{0, 1, 2, 3, 255, 256, 257, 600} {
+			// deferred path
+			h := newH()
+			idx := h.StartTree(sszutils.TreeTypeProgressive)
+			for i := 0; i < n; i++ {
+				putElem(h, fields, i)
+				if (i+1)%256 == 0 {
+					h.Collapse()
+				}
+			}
+			h.MerkleizeProgressiveWithMixin(idx, uint64(n))
+			got, _ := h.HashRoot()
+
+			// reference: pre-reduced roots, no deferral
+			rh := newH()
+			ridx := rh.StartTree(sszutils.TreeTypeProgressive)
+			for i := 0; i < n; i++ {
+				r := elemRoot(fields, i)
+				rh.AppendBytes32(r[:])
+			}
+			rh.MerkleizeProgressiveWithMixin(ridx, uint64(n))
+			want, _ := rh.HashRoot()
+
+			if got != want {
+				t.Errorf("progressive fields=%d n=%d: got %x want %x", fields, n, got, want)
+			}
+		}
+	}
+}
+
+// TestDeferInterleavedWideField covers an element whose first field is a
+// >32-byte value (exercises the PutBytes two-chunk fast path inside a deferred
+// element), validated against pre-reduced roots.
+func TestDeferWideFieldElement(t *testing.T) {
+	const limit = 1 << 40
+	const n = 300
+
+	mkRoot := func(seed int) [32]byte {
+		h := newH()
+		idx := h.StartTree(sszutils.TreeTypeNone)
+		pub := make([]byte, 48)
+		for j := range pub {
+			pub[j] = byte(seed + j)
+		}
+		h.PutBytes(pub)                                 // field 0: 48-byte (2-chunk) field
+		h.PutUint64(uint64(seed))                       // field 1
+		h.PutUint64(uint64(seed * 7))                   // field 2
+		h.PutBytes([]byte{byte(seed), byte(seed >> 8)}) // field 3 (<=32)
+		h.Merkleize(idx)
+		r, _ := h.HashRoot()
+		return r
+	}
+
+	h := newH()
+	idx := h.StartTree(sszutils.TreeTypeBinary)
+	for i := 0; i < n; i++ {
+		eidx := h.StartTree(sszutils.TreeTypeNone)
+		pub := make([]byte, 48)
+		for j := range pub {
+			pub[j] = byte(i + j)
+		}
+		h.PutBytes(pub)
+		h.PutUint64(uint64(i))
+		h.PutUint64(uint64(i * 7))
+		h.PutBytes([]byte{byte(i), byte(i >> 8)})
+		h.Merkleize(eidx)
+		if (i+1)%256 == 0 {
+			h.Collapse()
+		}
+	}
+	h.MerkleizeWithMixin(idx, uint64(n), sszutils.CalculateLimit(limit, uint64(n), 32))
+	got, _ := h.HashRoot()
+
+	rh := newH()
+	ridx := rh.StartTree(sszutils.TreeTypeBinary)
+	for i := 0; i < n; i++ {
+		r := mkRoot(i)
+		rh.AppendBytes32(r[:])
+	}
+	rh.MerkleizeWithMixin(ridx, uint64(n), sszutils.CalculateLimit(limit, uint64(n), 32))
+	want, _ := rh.HashRoot()
+
+	if got != want {
+		t.Errorf("wide-field: got %x want %x", got, want)
+	}
+}

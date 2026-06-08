@@ -61,6 +61,17 @@ type treeLayer struct {
 	// Progressive base sizes: 1, 4, 16, 64, 256, 1024, ...  (1 << level*2)
 	progressiveCount int // number of completed progressive roots at buf left
 	progressiveLevel int // current level (determines base_size for active subtree)
+
+	// Deferred child-subtree batching. When a child container scope is closed via
+	// Merkleize and this (parent) layer is incremental, the child's raw leaf
+	// chunks are left in the buffer instead of being reduced immediately, and
+	// pendCount is bumped. Sibling subtrees thus accumulate and are reduced
+	// together, level-by-level, in one wide SIMD pass (flushPending) — far fewer
+	// and far larger hash calls than reducing each child on its own. All pending
+	// subtrees in a layer are uniform (pendElemChunks chunks each, a power of
+	// two), which holds because list/vector elements share a single type.
+	pendCount      int // number of deferred child subtrees not yet reduced to roots
+	pendElemChunks int // chunk count of each deferred subtree (power of two)
 }
 
 // Hasher is a utility tool to hash SSZ structs
@@ -224,12 +235,21 @@ func (h *Hasher) PutBytes(b []byte) {
 		return
 	}
 
-	// if the bytes are longer than 32 we have to
-	// merkleize the content — use merkleizeImpl directly to avoid
-	// interacting with the layer stack (PutBytes is an internal operation,
-	// not an SSZ object scope).
 	indx := len(h.buf)
 	h.AppendBytes32(b)
+
+	// Fast path for two-chunk fields (33..64 bytes, e.g. a 48-byte BLS pubkey):
+	// a single hash, skipping merkleizeImpl's general depth loop. These dominate
+	// validator hashing, so the per-call saving adds up over large lists.
+	if len(b) <= 64 {
+		_ = h.hash(h.buf[indx:indx+32], h.buf[indx:indx+64])
+		h.buf = h.buf[:indx+32]
+		return
+	}
+
+	// Longer content: merkleize in place. Use merkleizeImpl directly to avoid
+	// interacting with the layer stack (PutBytes is an internal operation, not an
+	// SSZ object scope).
 	input := h.buf[indx:]
 	input = h.merkleizeImpl(input[:0], input, 0)
 	h.buf = append(h.buf[:indx], input...)
@@ -346,13 +366,67 @@ func (h *Hasher) pushLayer() *treeLayer {
 	layer := &h.layers[h.layerCount]
 	layer.collapsed = false
 	layer.progressive = false
+	// Reset the deferred-batching state. In the normal flow this is already 0
+	// (every incremental layer is flushed before it is popped), but clearing it
+	// here keeps a reused slot clean even if a prior hash was abandoned mid-way
+	// (e.g. an error returned before finalize, then Reset + pool reuse).
+	layer.pendCount = 0
+	layer.pendElemChunks = 0
 	return layer
+}
+
+// deferrableElemChunks reports whether a just-closed scope of scopeBytes bytes is
+// a uniform binary subtree eligible for deferred batched reduction: a whole,
+// power-of-two number of chunks in [2, incrementalBatchSize].
+func deferrableElemChunks(scopeBytes int) (int, bool) {
+	if scopeBytes < 64 || scopeBytes%32 != 0 {
+		return 0, false
+	}
+	c := scopeBytes / 32
+	if c > incrementalBatchSize || c&(c-1) != 0 {
+		return 0, false
+	}
+	return c, true
+}
+
+// flushPending reduces a layer's deferred child subtrees (pendCount subtrees of
+// pendElemChunks chunks each, sitting at the tail of the buffer) to pendCount
+// roots, hashing one whole level across all subtrees per call. This realises the
+// batching win: a few wide hash calls instead of one tiny merkleization per
+// element. The roots replace the raw chunks in place.
+func (h *Hasher) flushPending(layer *treeLayer) {
+	count := layer.pendCount
+	elem := layer.pendElemChunks
+	layer.pendCount = 0
+	layer.pendElemChunks = 0
+	if count == 0 {
+		return
+	}
+	width := count * elem
+	start := len(h.buf) - width*32
+	for width > count {
+		half := (width / 2) * 32
+		_ = h.hash(h.buf[start:start+half], h.buf[start:start+width*32])
+		width /= 2
+	}
+	h.buf = h.buf[:start+count*32]
 }
 
 // StartTree opens a new SSZ object scope and returns the buffer index.
 // TreeTypeBinary/Progressive: pushes an incremental layer (supports Collapse).
 // TreeTypeNone: pushes a non-incremental layer (Collapse is a no-op on this scope).
 func (h *Hasher) StartTree(treeType sszutils.TreeType) int {
+	// An incremental child is merkleized immediately (it never defers into this
+	// parent), so it would append a root after any deferred siblings and break
+	// the "pending chunks are a contiguous tail run" invariant. Flush first.
+	// This cannot happen for uniform list/vector elements (all defer or none),
+	// so batching is unaffected; it only guards interleaved API usage.
+	if treeType != sszutils.TreeTypeNone && h.layerCount >= 0 {
+		if top := &h.layers[h.layerCount]; top.pendCount > 0 {
+			h.flushPending(top)
+		}
+	}
+
 	idx := len(h.buf)
 	layer := h.pushLayer()
 	layer.bufIdx = idx
@@ -390,6 +464,10 @@ func (h *Hasher) Collapse() {
 	layer := &h.layers[h.layerCount]
 	if !layer.incremental {
 		return
+	}
+
+	if layer.pendCount > 0 {
+		h.flushPending(layer)
 	}
 
 	if layer.progressive {
@@ -788,13 +866,32 @@ func (h *Hasher) collapseProgressiveLayer(layer *treeLayer, indx int) {
 func (h *Hasher) Merkleize(indx int) {
 	layer := h.getMatchingLayer(indx)
 
-	if layer != nil && layer.collapsed {
-		h.collapseAllDepths(layer, indx, len(h.buf), 0)
-		h.buf = h.buf[:indx+32]
-		h.popTopLayer()
-		return
-	}
 	if layer != nil {
+		// Defer a container scope into its incremental parent so it batches with
+		// its siblings (single getMatchingLayer keeps the hot path cheap for the
+		// many small containers in a block).
+		if !layer.incremental && h.layerCount >= 1 {
+			parent := &h.layers[h.layerCount-1]
+			if parent.incremental {
+				if c, ok := deferrableElemChunks(len(h.buf) - indx); ok && (parent.pendCount == 0 || parent.pendElemChunks == c) {
+					parent.pendElemChunks = c
+					parent.pendCount++
+					h.popTopLayer()
+					return
+				}
+			}
+		}
+
+		if layer.pendCount > 0 {
+			h.flushPending(layer)
+		}
+
+		if layer.collapsed {
+			h.collapseAllDepths(layer, indx, len(h.buf), 0)
+			h.buf = h.buf[:indx+32]
+			h.popTopLayer()
+			return
+		}
 		h.popTopLayer()
 	}
 
@@ -824,6 +921,10 @@ func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 	h.FillUpTo32()
 
 	layer := h.getMatchingLayer(indx)
+
+	if layer != nil && layer.pendCount > 0 {
+		h.flushPending(layer)
+	}
 
 	if layer != nil && layer.collapsed {
 		h.collapseAllDepths(layer, indx, len(h.buf), limit)
@@ -864,6 +965,10 @@ func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 func (h *Hasher) MerkleizeProgressive(indx int) {
 	layer := h.getMatchingLayer(indx)
 
+	if layer != nil && layer.pendCount > 0 {
+		h.flushPending(layer)
+	}
+
 	if layer != nil && layer.progressive {
 		h.collapseProgressiveLayer(layer, indx)
 		h.popTopLayer()
@@ -894,6 +999,10 @@ func (h *Hasher) MerkleizeProgressive(indx int) {
 // indx and mixes in num as the list length.
 func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 	layer := h.getMatchingLayer(indx)
+
+	if layer != nil && layer.pendCount > 0 {
+		h.flushPending(layer)
+	}
 
 	if layer != nil && layer.progressive && layer.progressiveCount > 0 {
 		h.FillUpTo32()
@@ -935,6 +1044,10 @@ func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 // from indx and mixes in the active fields bitvector.
 func (h *Hasher) MerkleizeProgressiveWithActiveFields(indx int, activeFields []byte) {
 	layer := h.getMatchingLayer(indx)
+
+	if layer != nil && layer.pendCount > 0 {
+		h.flushPending(layer)
+	}
 
 	if layer != nil && layer.progressive && layer.progressiveCount > 0 {
 		h.FillUpTo32()
