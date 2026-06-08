@@ -704,13 +704,22 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 		}
 
 		if itemSize > 0 {
+			// Packed primitive elements: the limit is a chunk count and the
+			// elements are never deferred, so the written chunk count is exact.
 			limit = sszutils.CalculateLimit(sourceType.Limit, uint64(sliceLen), itemSize)
+			inputLen := hh.CurrentIndex() - hashIndex
+			if (uint64(inputLen)+31)/32 > limit {
+				return sszutils.ErrListLengthFn(inputLen, limit)
+			}
 		} else {
+			// Composite elements: the limit is an element count. Validate against
+			// the element count directly — the buffer may hold un-reduced child
+			// chunks (deferred cross-element batching), so a CurrentIndex-derived
+			// chunk count would over-count and falsely trip the limit.
 			limit = sourceType.Limit
-		}
-		inputLen := hh.CurrentIndex() - hashIndex
-		if (uint64(inputLen)+31)/32 > limit {
-			return sszutils.ErrListLengthFn(inputLen, limit)
+			if uint64(sliceLen) > limit {
+				return sszutils.ErrListLengthFn(sliceLen, limit)
+			}
 		}
 		hh.MerkleizeWithMixin(hashIndex, uint64(sliceLen), limit)
 	default:

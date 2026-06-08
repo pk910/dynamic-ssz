@@ -288,6 +288,53 @@ func TestStringVsByteContainerTreeRootEquivalence(t *testing.T) {
 	}
 }
 
+// TestListOfContainersDeferredBatchingLength guards against a regression where
+// the reflection list-length validation derived the element count from the
+// hasher buffer position (CurrentIndex). With deferred cross-element batching the
+// buffer holds each element's un-reduced child chunks (here 2 per element) until
+// the list is finalized, so a buffer-derived count over-counts and would falsely
+// trip the max-length check. Composite-list limits must be validated by element
+// count, not buffer chunks.
+func TestListOfContainersDeferredBatchingLength(t *testing.T) {
+	// Two uint64 fields => 2 chunks => power-of-two => the element container is
+	// deferred under the incremental list parent.
+	type Elem struct {
+		A uint64
+		B uint64
+	}
+	type Container struct {
+		Items []Elem `ssz-max:"16"`
+	}
+
+	dynssz := NewDynSsz(nil)
+
+	// All counts up to the max must hash without error. Counts in (max/2, max]
+	// (here 9..16) are the regression: 2*count chunks exceed the limit of 16.
+	roots := make(map[int][32]byte)
+	for n := 0; n <= 16; n++ {
+		items := make([]Elem, n)
+		for i := range items {
+			items[i] = Elem{A: uint64(i), B: uint64(i * 7)}
+		}
+		root, err := dynssz.HashTreeRoot(Container{Items: items})
+		if err != nil {
+			t.Fatalf("n=%d: unexpected error: %v", n, err)
+		}
+		roots[n] = root
+	}
+
+	// Sanity: distinct lengths produce distinct roots (mix_in_length differs).
+	if roots[10] == roots[11] {
+		t.Errorf("roots for n=10 and n=11 should differ")
+	}
+
+	// Genuinely oversized lists must still be rejected.
+	over := make([]Elem, 17)
+	if _, err := dynssz.HashTreeRoot(Container{Items: over}); err == nil {
+		t.Errorf("expected error for n=17 (exceeds max 16), got nil")
+	}
+}
+
 func TestFixedSizeStringVsByteArrayTreeRoot(t *testing.T) {
 	type WithFixedString struct {
 		Data string `ssz-size:"32"`

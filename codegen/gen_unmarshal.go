@@ -177,6 +177,17 @@ func (ctx *unmarshalContext) getIndexVar() (string, func()) {
 	}
 }
 
+// isBulkBytesElem reports whether elemDesc is a fixed-size byte array value type
+// (e.g. [32]byte) that can be marshaled/unmarshaled as part of a contiguous slice
+// via a single bulk memory copy. Pointer, string and dynamic element types are
+// excluded since they are not laid out as a contiguous padding-free byte region.
+func isBulkBytesElem(elemDesc *ssztypes.TypeDescriptor) bool {
+	return elemDesc.Kind == reflect.Array &&
+		elemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 &&
+		elemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsPointer|ssztypes.GoTypeFlagIsString) == 0 &&
+		elemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0
+}
+
 // isInlinable determines if a type can be unmarshaled inline without temporary variables.
 func (ctx *unmarshalContext) isInlinable(desc *ssztypes.TypeDescriptor) bool {
 	// Inline primitive types
@@ -350,7 +361,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 					"time.Time",
 				),
 			)
-			ctx.typePrinter.AddImport("time", "time")
+			ctx.typePrinter.AddImport(pkgPathTime, pkgPathTime)
 		} else {
 			ctx.appendCode(indent,
 				"%s = %s\n",
@@ -801,6 +812,14 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 			return nil
 		}
 
+		// bulk fixed byte-array elements (e.g. []Root where Root is [32]byte): the
+		// elements are contiguous with no padding, so the whole slice decodes with a
+		// single memory copy instead of a per-element copy loop.
+		if isBulkBytesElem(desc.ElemDesc) {
+			ctx.appendCode(indent, "sszutils.UnmarshalFixedBytesSlice(%s[:%s], buf)\n", indexValueVar, limitVar)
+			return nil
+		}
+
 		indexVar, indexDefer := ctx.getIndexVar()
 		defer indexDefer()
 
@@ -962,6 +981,14 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 		}
 		if desc.Kind != reflect.Array {
 			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", valueVar, valueVar)
+		}
+
+		// bulk fixed byte-array elements (e.g. []Root where Root is [32]byte): the
+		// elements are contiguous with no padding, so the whole list decodes with a
+		// single memory copy instead of a per-element copy loop.
+		if isBulkBytesElem(desc.ElemDesc) {
+			ctx.appendCode(indent, "sszutils.UnmarshalFixedBytesSlice(%s[:itemCount], buf)\n", indexValueVar)
+			return nil
 		}
 
 		indexVar, indexDefer := ctx.getIndexVar()

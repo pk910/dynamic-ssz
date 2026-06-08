@@ -628,6 +628,9 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			ctx.appendCode(indent, "dst = append(dst, %s[:%s]...)\n", getValueVar(false, ""), lenVar)
 		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0:
 			ctx.appendCode(indent, "dst = sszutils.MarshalUint64Slice(dst, %s[:%s])\n", getValueVar(false, ""), lenVar)
+		case isBulkBytesElem(desc.ElemDesc):
+			// fixed byte-array elements (e.g. []Root) are contiguous: append in one copy
+			ctx.appendCode(indent, "dst = sszutils.MarshalFixedBytesSlice(dst, %s[:%s])\n", getValueVar(false, ""), lenVar)
 		default:
 			indexVar, indexDefer := ctx.getIndexVar()
 			defer indexDefer()
@@ -764,6 +767,10 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0:
 			addVlen()
 			ctx.appendCode(indent, "dst = sszutils.MarshalUint64Slice(dst, %s[:vlen])\n", getValueVar(false, ""))
+		case isBulkBytesElem(desc.ElemDesc):
+			// fixed byte-array elements (e.g. []Root) are contiguous: append in one copy
+			addVlen()
+			ctx.appendCode(indent, "dst = sszutils.MarshalFixedBytesSlice(dst, %s[:vlen])\n", getValueVar(false, ""))
 		default:
 			addVlen()
 			indexVar, indexDefer := ctx.getIndexVar()

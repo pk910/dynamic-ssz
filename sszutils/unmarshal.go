@@ -45,6 +45,19 @@ func UnmarshalUint64Slice[T ~uint64](dst []T, buf []byte) {
 	copy(unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(dst))), len(dst)*8), buf)
 }
 
+// UnmarshalFixedBytesSlice bulk-copies a contiguous SSZ byte buffer into dst, a
+// slice whose elements are fixed-size byte arrays (e.g. []Root where Root is
+// [32]byte). dst must already have its final length. Because such elements are
+// laid out contiguously with no padding, the whole slice is decoded with a single
+// memory copy, avoiding the per-element copy loop. This is endian-neutral (raw
+// bytes). The element size is taken from the element type itself.
+func UnmarshalFixedBytesSlice[T any](dst []T, buf []byte) {
+	if len(dst) == 0 {
+		return
+	}
+	copy(unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(dst))), len(dst)*int(unsafe.Sizeof(dst[0]))), buf)
+}
+
 // DecodeUint64Slice decodes uint64 values from a Decoder directly into dst using bulk memory copy.
 // On little-endian architectures (x86, ARM64) this avoids per-element DecodeUint64 overhead.
 func DecodeUint64Slice[T ~uint64](dec Decoder, dst []T) error {
