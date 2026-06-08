@@ -353,7 +353,7 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 			ptrVarName = fmt.Sprintf("*(%s)", varName)
 		}
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsTime != 0 {
-			timeImport := ctx.typePrinter.AddImport("time", "time")
+			timeImport := ctx.typePrinter.AddImport(pkgPathTime, pkgPathTime)
 			ctx.appendCode(indent+1, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, fmt.Sprintf("%s.Unix(int64(val), 0).UTC()", timeImport), fmt.Sprintf("%s.Time", timeImport)))
 		} else {
 			ctx.appendCode(indent+1, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, "val", "uint64"))

@@ -361,7 +361,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 					"time.Time",
 				),
 			)
-			ctx.typePrinter.AddImport("time", "time")
+			ctx.typePrinter.AddImport(pkgPathTime, pkgPathTime)
 		} else {
 			ctx.appendCode(indent,
 				"%s = %s\n",
