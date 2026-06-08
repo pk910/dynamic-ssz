@@ -1711,3 +1711,81 @@ func TestDeferWideFieldElement(t *testing.T) {
 		t.Errorf("wide-field: got %x want %x", got, want)
 	}
 }
+
+// TestFlushPendingNoPending covers the defensive no-op path of flushPending: when
+// a layer has no deferred subtrees it must leave the buffer untouched. Callers
+// normally guard this with `pendCount > 0`, so this exercises it directly.
+func TestFlushPendingNoPending(t *testing.T) {
+	h := newH()
+	h.PutUint64(7)
+	h.PutUint64(8)
+	before := h.CurrentIndex()
+
+	var layer treeLayer // pendCount == 0
+	h.flushPending(&layer)
+
+	if h.CurrentIndex() != before {
+		t.Fatalf("flushPending with no pending changed the buffer: %d != %d", h.CurrentIndex(), before)
+	}
+}
+
+// TestDeferProgressiveNoMixin checks that deferred composite elements under a
+// progressive scope finalized via MerkleizeProgressive (no length mixin) reduce
+// to the same root as pre-reduced element roots — exercising the flushPending
+// path inside MerkleizeProgressive.
+func TestDeferProgressiveNoMixin(t *testing.T) {
+	for _, fields := range []int{2, 4} {
+		for _, n := range []int{1, 2, 3, 16} {
+			h := newH()
+			idx := h.StartTree(sszutils.TreeTypeProgressive)
+			for i := 0; i < n; i++ {
+				putElem(h, fields, i) // defers into the progressive parent
+			}
+			h.MerkleizeProgressive(idx)
+			got, _ := h.HashRoot()
+
+			rh := newH()
+			ridx := rh.StartTree(sszutils.TreeTypeProgressive)
+			for i := 0; i < n; i++ {
+				r := elemRoot(fields, i)
+				rh.AppendBytes32(r[:])
+			}
+			rh.MerkleizeProgressive(ridx)
+			want, _ := rh.HashRoot()
+
+			if got != want {
+				t.Errorf("progressive-no-mixin fields=%d n=%d: got %x want %x", fields, n, got, want)
+			}
+		}
+	}
+}
+
+// TestDeferProgressiveActiveFields is the analogue for
+// MerkleizeProgressiveWithActiveFields, exercising its flushPending path.
+func TestDeferProgressiveActiveFields(t *testing.T) {
+	activeFields := []byte{0x0f}
+	for _, fields := range []int{2, 4} {
+		for _, n := range []int{1, 2, 4} {
+			h := newH()
+			idx := h.StartTree(sszutils.TreeTypeProgressive)
+			for i := 0; i < n; i++ {
+				putElem(h, fields, i)
+			}
+			h.MerkleizeProgressiveWithActiveFields(idx, activeFields)
+			got, _ := h.HashRoot()
+
+			rh := newH()
+			ridx := rh.StartTree(sszutils.TreeTypeProgressive)
+			for i := 0; i < n; i++ {
+				r := elemRoot(fields, i)
+				rh.AppendBytes32(r[:])
+			}
+			rh.MerkleizeProgressiveWithActiveFields(ridx, activeFields)
+			want, _ := rh.HashRoot()
+
+			if got != want {
+				t.Errorf("progressive-active-fields fields=%d n=%d: got %x want %x", fields, n, got, want)
+			}
+		}
+	}
+}
