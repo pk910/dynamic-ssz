@@ -1159,3 +1159,20 @@ func TestFindAnnotateCallInDecl_OtherDeclKind(t *testing.T) {
 		t.Errorf("expected empty from BadDecl, got %q", got)
 	}
 }
+
+// TestRun_ExternalViewLoading exercises external view-type package loading in
+// run(): the first view ref (canonical path to a package the base does not
+// import) triggers a fresh load + verbose log; the second ref to the same
+// package by a relative spelling hits the canonical-path cache.
+func TestRun_ExternalViewLoading(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "out.go")
+	cfg := Config{
+		PackagePath: "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg/viewfix",
+		TypeNames:   "Base:views=github.com/pk910/dynamic-ssz/dynssz-gen/testpkg/viewfix/sub.View1;./testpkg/viewfix/sub.View2",
+		OutputFile:  out,
+		Verbose:     true,
+	}
+	if err := run(&cfg); err != nil {
+		t.Fatalf("run with external view types failed: %v", err)
+	}
+}

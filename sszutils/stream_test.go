@@ -1517,3 +1517,33 @@ func TestStreamDecoder_GetLength_WithLimits(t *testing.T) {
 		t.Errorf("expected length 100, got %d", dec.GetLength())
 	}
 }
+
+// TestStreamEncoderFlushOnSmallPrimitives covers the flush branch in EncodeUint8
+// and EncodeUint16 when the buffered data leaves too little room.
+func TestStreamEncoderFlushOnSmallPrimitives(t *testing.T) {
+	// EncodeUint8 flush: fill the 8-byte buffer exactly, then write one more byte.
+	var buf bytes.Buffer
+	enc := NewStreamEncoder(&buf, 8)
+	enc.EncodeBytes(make([]byte, 8)) // bufPos = 8
+	enc.EncodeUint8(0xaa)            // 8+1 > 8 -> flush
+	enc.Flush()
+	if enc.GetWriteError() != nil {
+		t.Fatalf("unexpected error: %v", enc.GetWriteError())
+	}
+	if buf.Len() != 9 {
+		t.Fatalf("expected 9 bytes, got %d", buf.Len())
+	}
+
+	// EncodeUint16 flush: leave 7 bytes buffered, then write 2 bytes.
+	var buf2 bytes.Buffer
+	enc2 := NewStreamEncoder(&buf2, 8)
+	enc2.EncodeBytes(make([]byte, 7)) // bufPos = 7
+	enc2.EncodeUint16(0xbbcc)         // 7+2 > 8 -> flush
+	enc2.Flush()
+	if enc2.GetWriteError() != nil {
+		t.Fatalf("unexpected error: %v", enc2.GetWriteError())
+	}
+	if buf2.Len() != 9 {
+		t.Fatalf("expected 9 bytes, got %d", buf2.Len())
+	}
+}

@@ -490,7 +490,8 @@ func TestCalculateLimitOverflow(t *testing.T) {
 		{"zeroCapItems", 0, 3, 8, 3},
 		{"noOverflow61", 1 << 61, 1, 8, 1 << 59}, // (2^61*8)/32 = 2^59, fits
 		{"overflowWraps", (1 << 61) + 1, 1, 8, (1 << 59) + 1},
-		{"hugeClamp", 1 << 62, 1, 64, 1 << 63}, // 2^62*64 = 2^68 -> /32 = 2^63
+		{"hugeClamp", 1 << 62, 1, 64, 1 << 63},            // 2^62*64 = 2^68 -> /32 = 2^63
+		{"overflowClamp", 1 << 60, 0, 1 << 10, 1<<64 - 1}, // 2^70 / 32 = 2^65 -> clamps to MaxUint64
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

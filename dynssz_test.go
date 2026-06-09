@@ -1894,3 +1894,172 @@ func TestResolveSpecValuePrecisionAbove2p53(t *testing.T) {
 		t.Fatalf("precision loss: got %d want %d", val, v)
 	}
 }
+
+// --- coverage: spec value type handling (specvals.go) ---
+
+func TestResolveSpecValueTypes(t *testing.T) {
+	cases := []struct {
+		name string
+		val  any
+		want uint64
+		ok   bool
+	}{
+		{"uint", uint(7), 7, true},
+		{"uint32", uint32(8), 8, true},
+		{"uint16", uint16(9), 9, true},
+		{"uint8", uint8(10), 10, true},
+		{"uintptr", uintptr(11), 11, true},
+		{"int32", int32(12), 12, true},
+		{"int16", int16(13), 13, true},
+		{"int8", int8(14), 14, true},
+		{"float32", float32(15), 15, true},
+		{"unsupportedString", "nope", 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := NewDynSsz(map[string]any{"X": tc.val})
+			ok, val, err := ds.ResolveSpecValue("X")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if ok != tc.ok {
+				t.Fatalf("resolved=%v, want %v", ok, tc.ok)
+			}
+			if tc.ok && val != tc.want {
+				t.Fatalf("value=%d, want %d", val, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveSpecValueExpressionDegenerate(t *testing.T) {
+	// An expression (not a direct lookup) that evaluates to a negative value must
+	// be rejected by specFloatToUint64.
+	ds := NewDynSsz(map[string]any{"A": float64(1), "B": float64(2)})
+	if _, _, err := ds.ResolveSpecValue("A - B"); err == nil {
+		t.Fatal("expected error for negative expression result")
+	}
+}
+
+// --- coverage: nil guards for HashTreeRootWith and GetTree (dynssz.go) ---
+
+func TestNilArgumentRejectedHashWithAndTree(t *testing.T) {
+	ds := NewDynSsz(nil)
+	noPanic := func(name string, fn func()) {
+		t.Helper()
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("%s panicked on nil: %v", name, r)
+			}
+		}()
+		fn()
+	}
+	noPanic("HashTreeRootWith", func() { _ = ds.HashTreeRootWith(nil, nil) })
+	noPanic("GetTree", func() { _, _ = ds.GetTree(nil) })
+
+	if err := ds.HashTreeRootWith(nil, nil); err == nil {
+		t.Error("HashTreeRootWith(nil) should error")
+	}
+	if _, err := ds.GetTree(nil); err == nil {
+		t.Error("GetTree(nil) should error")
+	}
+}
+
+// --- coverage: marshal/HTR error propagation paths (reflection) ---
+
+// non-terminated bitlist: a leaf whose marshal and HTR both fail.
+type covBadBitlist struct {
+	X []byte `ssz-type:"bitlist" ssz-max:"16"`
+}
+
+func covBadBitlistValue() covBadBitlist { return covBadBitlist{X: []byte{0xff, 0x00}} }
+
+func TestMarshalErrorPropagation(t *testing.T) {
+	ds := NewDynSsz(nil, WithExtendedTypes())
+
+	t.Run("typeWrapper", func(t *testing.T) {
+		type desc struct {
+			Data []byte `ssz-type:"bitlist" ssz-max:"16"`
+		}
+		w := &TypeWrapper[desc, []byte]{Data: []byte{0xff, 0x00}}
+		if _, err := ds.MarshalSSZ(w); err == nil {
+			t.Fatal("expected error from wrapped bitlist")
+		}
+	})
+
+	t.Run("optional", func(t *testing.T) {
+		type T struct {
+			O *covBadBitlist `ssz-type:"optional"`
+		}
+		v := covBadBitlistValue()
+		if _, err := ds.MarshalSSZ(&T{O: &v}); err == nil {
+			t.Fatal("expected error from optional inner bitlist")
+		}
+	})
+
+	t.Run("dynamicVector", func(t *testing.T) {
+		type T struct {
+			V [1]covBadBitlist
+		}
+		if _, err := ds.MarshalSSZ(&T{V: [1]covBadBitlist{covBadBitlistValue()}}); err == nil {
+			t.Fatal("expected error from vector element bitlist")
+		}
+	})
+
+	t.Run("dynamicList", func(t *testing.T) {
+		type T struct {
+			L []covBadBitlist `ssz-max:"4"`
+		}
+		if _, err := ds.MarshalSSZ(&T{L: []covBadBitlist{covBadBitlistValue()}}); err == nil {
+			t.Fatal("expected error from list element bitlist")
+		}
+	})
+}
+
+// union marshal error paths require reaching marshalCompatibleUnion without a
+// prior size pass, which only happens for a top-level union via MarshalSSZWriter.
+func TestUnionMarshalErrorPaths(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	t.Run("invalidVariant", func(t *testing.T) {
+		u := &CompatibleUnion[struct {
+			V0 uint32
+			V1 [16]byte
+		}]{Variant: 99, Data: uint32(1)}
+		var sb bytes.Buffer
+		if err := ds.MarshalSSZWriter(u, &sb); err == nil {
+			t.Fatal("expected error for invalid variant")
+		}
+	})
+
+	t.Run("typeMismatch", func(t *testing.T) {
+		u := &CompatibleUnion[struct {
+			V0 uint32
+			V1 [16]byte
+		}]{Variant: 0, Data: "wrong type"}
+		var sb bytes.Buffer
+		if err := ds.MarshalSSZWriter(u, &sb); err == nil {
+			t.Fatal("expected error for wrong-typed data")
+		}
+	})
+
+	t.Run("variantMarshalError", func(t *testing.T) {
+		u := &CompatibleUnion[struct {
+			V0 []byte `ssz-type:"bitlist" ssz-max:"16"`
+		}]{Variant: 0, Data: []byte{0xff, 0x00}}
+		var sb bytes.Buffer
+		if err := ds.MarshalSSZWriter(u, &sb); err == nil {
+			t.Fatal("expected error from union variant bitlist")
+		}
+	})
+}
+
+func TestUnionHTRVariantError(t *testing.T) {
+	ds := NewDynSsz(nil)
+	u := &CompatibleUnion[struct {
+		V0 []byte `ssz-type:"bitlist" ssz-max:"16"`
+	}]{Variant: 0, Data: []byte{0xff, 0x00}}
+	if _, err := ds.HashTreeRoot(u); err == nil {
+		t.Fatal("expected HTR error from union variant bitlist")
+	}
+}
