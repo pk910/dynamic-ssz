@@ -502,3 +502,53 @@ func testCodegenPayload(t *testing.T, payload TestPayload) {
 		t.Fatalf("Hash root mismatch 2: expected %s, got %s", payload.Hash, hashRootHex)
 	}
 }
+
+// TestCodegenProgressiveIndexOnly verifies that codegen auto-detects a
+// progressive container from ssz-index tags alone (no explicit
+// ssz-type:"progressive-container"), matching the reflection engine. The
+// generated method is invoked directly so the codegen path is actually exercised
+// (passing a value to ds.HashTreeRoot would fall back to reflection on both
+// sides and never compare codegen output).
+func TestCodegenProgressiveIndexOnly(t *testing.T) {
+	genRoot, err := ProgIndexOnly_Payload.HashTreeRoot()
+	if err != nil {
+		t.Fatalf("generated HashTreeRoot: %v", err)
+	}
+
+	// Identical struct without generated methods -> pure reflection.
+	type reflProg struct {
+		A uint8 `ssz-index:"0"`
+		B uint8 `ssz-index:"5"`
+		C uint8 `ssz-index:"7"`
+	}
+	ds := dynssz.NewDynSsz(nil)
+	reflRoot, err := ds.HashTreeRoot(reflProg{A: 1, B: 2, C: 3})
+	if err != nil {
+		t.Fatalf("reflection HashTreeRoot: %v", err)
+	}
+	if genRoot != reflRoot {
+		t.Fatalf("progressive container HTR mismatch: codegen=%x reflection=%x", genRoot, reflRoot)
+	}
+}
+
+// TestCodegenZeroMaxList verifies that ssz-max:"0" is treated as a "no limit"
+// placeholder: the generated method (which always allowed it) and the reflection
+// engine (fixed to stop rejecting it) produce the same root.
+func TestCodegenZeroMaxList(t *testing.T) {
+	genRoot, err := ZeroMaxList_Payload.HashTreeRoot()
+	if err != nil {
+		t.Fatalf("generated HashTreeRoot: %v", err)
+	}
+
+	type reflZeroMax struct {
+		X []uint64 `ssz-max:"0"`
+	}
+	ds := dynssz.NewDynSsz(nil)
+	reflRoot, err := ds.HashTreeRoot(reflZeroMax{X: []uint64{1, 2, 3}})
+	if err != nil {
+		t.Fatalf("reflection HashTreeRoot (ssz-max:0 should be no-limit): %v", err)
+	}
+	if genRoot != reflRoot {
+		t.Fatalf("ssz-max:0 HTR mismatch: codegen=%x reflection=%x", genRoot, reflRoot)
+	}
+}

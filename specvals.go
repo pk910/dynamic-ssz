@@ -90,6 +90,8 @@ func specValueToUint64(raw any) (value uint64, ok bool, err error) {
 		return uint64(v), true, nil
 	case uint8:
 		return uint64(v), true, nil
+	case uintptr:
+		return uint64(v), true, nil
 	case int:
 		return intSpecToUint64(int64(v))
 	case int64:

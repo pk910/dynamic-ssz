@@ -1747,3 +1747,150 @@ func TestResolveSpecValueUint64Precision(t *testing.T) {
 		t.Fatalf("expected full-precision MaxUint64, got ok=%v val=%d", ok, val)
 	}
 }
+
+// --- #22: CalculateLimit overflow must not collide ---
+
+func TestCalculateLimitOverflowNoCollision(t *testing.T) {
+	type ListMax1 struct {
+		V []uint64 `ssz-max:"1"`
+	}
+	type ListMaxOverflow struct {
+		V []uint64 `ssz-max:"2305843009213693953"` // 2^61+1; *8 overflows uint64
+	}
+	ds := NewDynSsz(nil)
+	a, err := ds.HashTreeRoot(&ListMax1{V: []uint64{42}})
+	if err != nil {
+		t.Fatalf("ListMax1: %v", err)
+	}
+	b, err := ds.HashTreeRoot(&ListMaxOverflow{V: []uint64{42}})
+	if err != nil {
+		t.Fatalf("ListMaxOverflow: %v", err)
+	}
+	if a == b {
+		t.Fatal("distinct list capacities must not share a hash tree root")
+	}
+}
+
+// --- #24: nil argument must error, not panic ---
+
+func TestNilArgumentRejected(t *testing.T) {
+	ds := NewDynSsz(nil)
+	noPanic := func(name string, fn func()) {
+		t.Helper()
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("%s panicked on nil: %v", name, r)
+			}
+		}()
+		fn()
+	}
+	noPanic("MarshalSSZ", func() { _, _ = ds.MarshalSSZ(nil) })
+	noPanic("MarshalSSZTo", func() { _, _ = ds.MarshalSSZTo(nil, nil) })
+	noPanic("MarshalSSZWriter", func() { _ = ds.MarshalSSZWriter(nil, &bytes.Buffer{}) })
+	noPanic("SizeSSZ", func() { _, _ = ds.SizeSSZ(nil) })
+	noPanic("UnmarshalSSZ", func() { _ = ds.UnmarshalSSZ(nil, make([]byte, 8)) })
+	noPanic("UnmarshalSSZReader", func() { _ = ds.UnmarshalSSZReader(nil, bytes.NewReader(nil), 0) })
+	noPanic("HashTreeRoot", func() { _, _ = ds.HashTreeRoot(nil) })
+
+	if _, err := ds.MarshalSSZ(nil); err == nil {
+		t.Error("MarshalSSZ(nil) should return an error")
+	}
+	if _, err := ds.HashTreeRoot(nil); err == nil {
+		t.Error("HashTreeRoot(nil) should return an error")
+	}
+	if err := ds.UnmarshalSSZ(nil, make([]byte, 8)); err == nil {
+		t.Error("UnmarshalSSZ(nil) should return an error")
+	}
+}
+
+// --- #25: MarshalSSZTo must handle short-cap and non-empty (append) buffers ---
+
+func TestMarshalSSZToBuffer(t *testing.T) {
+	ds := NewDynSsz(nil)
+	type T struct{ A uint64 }
+
+	// capacity smaller than the output
+	enc, err := ds.MarshalSSZTo(&T{A: 1}, make([]byte, 0, 4))
+	if err != nil {
+		t.Fatalf("short-cap buffer: %v", err)
+	}
+	if len(enc) != 8 {
+		t.Fatalf("expected 8 bytes, got %d", len(enc))
+	}
+
+	// non-empty buffer -> append after existing content
+	prefix := []byte{0xfe, 0xed}
+	out, err := ds.MarshalSSZTo(&T{A: 1}, prefix)
+	if err != nil {
+		t.Fatalf("append buffer: %v", err)
+	}
+	if len(out) != 2+8 {
+		t.Fatalf("expected 10 bytes, got %d", len(out))
+	}
+	if out[0] != 0xfe || out[1] != 0xed {
+		t.Fatalf("prefix was clobbered: %x", out)
+	}
+}
+
+// --- #27: HTR must enforce the element-count limit for primitive lists ---
+
+func TestHTRListLimitEnforced(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	t.Run("bytes", func(t *testing.T) {
+		type T struct {
+			X []byte `ssz-max:"4"`
+		}
+		if _, err := ds.HashTreeRoot(&T{X: make([]byte, 5)}); err == nil {
+			t.Error("[]byte over max-4 should fail HTR")
+		}
+		if _, err := ds.HashTreeRoot(&T{X: make([]byte, 4)}); err != nil {
+			t.Errorf("[]byte at max-4 should pass HTR: %v", err)
+		}
+	})
+	t.Run("uint16", func(t *testing.T) {
+		type T struct {
+			X []uint16 `ssz-max:"4"`
+		}
+		if _, err := ds.HashTreeRoot(&T{X: make([]uint16, 5)}); err == nil {
+			t.Error("[]uint16 over max-4 should fail HTR")
+		}
+	})
+	t.Run("uint32", func(t *testing.T) {
+		type T struct {
+			X []uint32 `ssz-max:"4"`
+		}
+		if _, err := ds.HashTreeRoot(&T{X: make([]uint32, 5)}); err == nil {
+			t.Error("[]uint32 over max-4 should fail HTR")
+		}
+	})
+}
+
+// --- #28: ssz-max:"0" is a no-limit placeholder, not a zero limit ---
+
+func TestZeroMaxTreatedAsNoLimit(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoFastHash())
+	type T struct {
+		X []uint64 `ssz-max:"0"`
+	}
+	if _, err := ds.MarshalSSZ(&T{X: []uint64{1, 2, 3}}); err != nil {
+		t.Fatalf("ssz-max:0 marshal should succeed (no limit): %v", err)
+	}
+	if _, err := ds.HashTreeRoot(&T{X: []uint64{1, 2, 3}}); err != nil {
+		t.Fatalf("ssz-max:0 HTR should succeed (no limit): %v", err)
+	}
+}
+
+// --- #26: spec values above 2^53 keep full uint64 precision ---
+
+func TestResolveSpecValuePrecisionAbove2p53(t *testing.T) {
+	v := uint64(9007199254740993) // 2^53 + 1, not representable as float64
+	ds := NewDynSsz(map[string]any{"X": v})
+	ok, val, err := ds.ResolveSpecValue("X")
+	if err != nil || !ok {
+		t.Fatalf("expected resolved, got ok=%v err=%v", ok, err)
+	}
+	if val != v {
+		t.Fatalf("precision loss: got %d want %d", val, v)
+	}
+}

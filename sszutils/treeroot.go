@@ -4,12 +4,27 @@
 
 package sszutils
 
-import "unsafe"
+import (
+	"math"
+	"math/bits"
+	"unsafe"
+)
 
 // CalculateLimit computes the merkle tree chunk limit for a list or vector
 // given its maximum capacity, current number of items, and per-item byte size.
+//
+// ceil(maxCapacity*size/32) is computed in 128-bit so a large ssz-max cannot
+// overflow uint64 and collapse to a small limit (which would make unrelated list
+// types share a merkleization depth and collide).
 func CalculateLimit(maxCapacity, numItems, size uint64) uint64 {
-	limit := (maxCapacity*size + 31) / 32
+	hi, lo := bits.Mul64(maxCapacity, size)
+	lo, carry := bits.Add64(lo, 31, 0)
+	hi += carry
+	if hi>>5 != 0 {
+		// (product+31)/32 exceeds uint64; clamp to the max representable limit.
+		return math.MaxUint64
+	}
+	limit := hi<<59 | lo>>5
 	if limit != 0 {
 		return limit
 	}

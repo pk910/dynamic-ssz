@@ -685,6 +685,13 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 	case sourceType.SszType == ssztypes.SszProgressiveListType:
 		hh.MerkleizeProgressiveWithMixin(hashIndex, uint64(sliceLen))
 	case sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0:
+		// Enforce the element-count limit (matches marshal). The chunk count
+		// derived from the buffer is not a valid proxy for packed primitives —
+		// several items pack into one chunk, so an over-limit list would pass.
+		if uint64(sliceLen) > sourceType.Limit {
+			return sszutils.ErrListLengthFn(sliceLen, sourceType.Limit)
+		}
+
 		var limit, itemSize uint64
 
 		switch sourceType.ElemDesc.SszType {
@@ -707,22 +714,9 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 		}
 
 		if itemSize > 0 {
-			// Packed primitive elements: the limit is a chunk count and the
-			// elements are never deferred, so the written chunk count is exact.
 			limit = sszutils.CalculateLimit(sourceType.Limit, uint64(sliceLen), itemSize)
-			inputLen := hh.CurrentIndex() - hashIndex
-			if (uint64(inputLen)+31)/32 > limit {
-				return sszutils.ErrListLengthFn(inputLen, limit)
-			}
 		} else {
-			// Composite elements: the limit is an element count. Validate against
-			// the element count directly — the buffer may hold un-reduced child
-			// chunks (deferred cross-element batching), so a CurrentIndex-derived
-			// chunk count would over-count and falsely trip the limit.
 			limit = sourceType.Limit
-			if uint64(sliceLen) > limit {
-				return sszutils.ErrListLengthFn(sliceLen, limit)
-			}
 		}
 		hh.MerkleizeWithMixin(hashIndex, uint64(sliceLen), limit)
 	default:

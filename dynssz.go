@@ -209,6 +209,9 @@ func (d *DynSsz) resolveSchemaType(runtimeType reflect.Type, cfg *callConfig) re
 //	}
 //	fmt.Printf("Encoded %d bytes\n", len(data))
 func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
+	if source == nil {
+		return nil, sszutils.NewSszError(sszutils.ErrInvalidValueRange, "source must not be nil")
+	}
 	cfg := applyCallOptions(opts)
 
 	// Skip view descriptor logic for types implementing DynamicMarshaler (they handle their own serialization)
@@ -306,6 +309,9 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 //	}
 //	fmt.Printf("Serialized %d blocks into %d bytes\n", len(blocks), len(buf))
 func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byte, error) {
+	if source == nil {
+		return nil, sszutils.NewSszError(sszutils.ErrInvalidValueRange, "source must not be nil")
+	}
 	cfg := applyCallOptions(opts)
 
 	// Skip view descriptor logic for types implementing DynamicMarshaler
@@ -331,6 +337,22 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 	}
 
 	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz)
+
+	// Grow buf so the serialized data can be appended without overrunning its
+	// capacity (BufferEncoder writes at len(buf) using cap(buf) directly).
+	size, err := ctx.SizeSSZ(sourceTypeDesc, sourceValue)
+	if err != nil {
+		return nil, err
+	}
+	if int64(size) > int64(math.MaxInt)-int64(len(buf)) {
+		return nil, fmt.Errorf("SSZ size %d exceeds platform int max", size)
+	}
+	needed := len(buf) + int(size)
+	if cap(buf) < needed {
+		grown := make([]byte, len(buf), needed)
+		copy(grown, buf)
+		buf = grown
+	}
 
 	encoder := sszutils.NewBufferEncoder(buf)
 	err = ctx.MarshalSSZ(sourceTypeDesc, sourceValue, encoder)
@@ -396,6 +418,9 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 //
 //	err = ds.MarshalSSZWriter(block, conn)
 func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) error {
+	if source == nil {
+		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "source must not be nil")
+	}
 	cfg := applyCallOptions(opts)
 	encoder := sszutils.NewStreamEncoder(w, d.options.StreamWriterBufferSize)
 
@@ -477,6 +502,9 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 //	buf := make([]byte, 0, size)
 //	buf, err = ds.MarshalSSZTo(state, buf)
 func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error) {
+	if source == nil {
+		return 0, sszutils.NewSszError(sszutils.ErrInvalidValueRange, "source must not be nil")
+	}
 	cfg := applyCallOptions(opts)
 
 	// Skip view descriptor logic for types implementing DynamicSizer
@@ -548,6 +576,9 @@ func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error) {
 //	}
 //	fmt.Printf("Decoded header for slot %d\n", header.Slot)
 func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error {
+	if target == nil {
+		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "target must not be nil")
+	}
 	cfg := applyCallOptions(opts)
 
 	// Skip view descriptor logic for types implementing DynamicUnmarshaler
@@ -661,6 +692,9 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 //	var block phase0.BeaconBlock
 //	err = ds.UnmarshalSSZReader(&block, conn, -1)
 func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...CallOption) error {
+	if target == nil {
+		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "target must not be nil")
+	}
 	cfg := applyCallOptions(opts)
 	decoder := sszutils.NewStreamDecoder(r, size, d.options.StreamReaderBufferSize)
 	decoder.PushLimit(size)
@@ -769,6 +803,9 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 //	}
 //	fmt.Printf("Block root: %x\n", root)
 func (d *DynSsz) HashTreeRoot(source any, opts ...CallOption) ([32]byte, error) {
+	if source == nil {
+		return [32]byte{}, sszutils.NewSszError(sszutils.ErrInvalidValueRange, "source must not be nil")
+	}
 	var pool *hasher.HasherPool
 	if d.options.NoFastHash {
 		pool = &hasher.DefaultHasherPool
@@ -824,6 +861,9 @@ func (d *DynSsz) HashTreeRoot(source any, opts ...CallOption) ([32]byte, error) 
 //	}
 //	fmt.Printf("Block root: %x\n", hh.HashRoot())
 func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...CallOption) error {
+	if source == nil {
+		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "source must not be nil")
+	}
 	cfg := applyCallOptions(opts)
 
 	// Skip view descriptor logic for types implementing DynamicHashRoot
@@ -916,6 +956,9 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...Ca
 // Note: For progressive containers (with ssz-index tags), the tree structure will be
 // progressive rather than binary, which affects the generalized indices of fields.
 func (d *DynSsz) GetTree(source any, opts ...CallOption) (*treeproof.Node, error) {
+	if source == nil {
+		return nil, sszutils.NewSszError(sszutils.ErrInvalidValueRange, "source must not be nil")
+	}
 	w := treeproof.NewWrapper()
 
 	if err := d.HashTreeRootWith(source, w, opts...); err != nil {

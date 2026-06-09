@@ -306,7 +306,10 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 	}
 
 	if len(maxSizeHints) > 0 {
-		if !maxSizeHints[0].NoValue {
+		// A resolved limit of 0 is a "no limit" placeholder (ssz-max:"0" with the
+		// real limit supplied dynamically via dynssz-max). Spec values are already
+		// resolved at this point, so only treat a positive limit as a constraint.
+		if !maxSizeHints[0].NoValue && maxSizeHints[0].Size > 0 {
 			desc.SszTypeFlags |= SszTypeFlagHasLimit
 			desc.Limit = maxSizeHints[0].Size
 		}

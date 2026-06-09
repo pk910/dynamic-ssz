@@ -901,6 +901,11 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 	size := uint32(0)
 	isDynamic := false
 
+	// Progressive-container detection: tracks whether any field carries an
+	// ssz-index tag, and (parallel to fields) which ones do.
+	hasAnyIndexTag := false
+	fieldHasIndex := []bool{}
+
 	// Check if we're using a view descriptor (data and schema types differ)
 	isViewDescriptor := dataStruct != schemaStruct
 
@@ -968,12 +973,15 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 		}
 
 		// Handle ssz-index for progressive containers - extract from original tag parsing
+		hasIndex := false
 		if indexStr := p.extractSszIndex(schemaStruct.Tag(i)); indexStr != "" {
 			idx, err := strconv.ParseUint(indexStr, 10, 16)
 			if err != nil {
 				return fmt.Errorf("invalid ssz-index: %v", indexStr)
 			}
 			fieldDesc.SszIndex = uint16(idx)
+			hasIndex = true
+			hasAnyIndexTag = true
 		}
 
 		if typeDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
@@ -992,6 +1000,7 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 
 		desc.SszTypeFlags |= fieldDesc.Type.SszTypeFlags & (ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr)
 		fields = append(fields, fieldDesc)
+		fieldHasIndex = append(fieldHasIndex, hasIndex)
 	}
 
 	containerDesc := &ssztypes.ContainerDescriptor{
@@ -999,6 +1008,23 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 		DynFields: dynFields,
 	}
 	desc.ContainerDesc = containerDesc
+
+	// A container with ssz-index tags is a progressive container. All fields must
+	// carry the tag and the indices must strictly increase.
+	if hasAnyIndexTag {
+		for i, has := range fieldHasIndex {
+			if !has {
+				return fmt.Errorf("progressive container field %s missing ssz-index tag", fields[i].Name)
+			}
+		}
+		for i := 1; i < len(fields); i++ {
+			if fields[i].SszIndex <= fields[i-1].SszIndex {
+				return fmt.Errorf("progressive container requires increasing ssz-index values (field %s has index %d, previous field has %d)",
+					fields[i].Name, fields[i].SszIndex, fields[i-1].SszIndex)
+			}
+		}
+		desc.SszType = ssztypes.SszProgressiveContainerType
+	}
 
 	desc.Len = size
 	if isDynamic {
