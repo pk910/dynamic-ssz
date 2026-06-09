@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"math/big"
 	"reflect"
 	"runtime"
 	"strings"
@@ -1320,5 +1321,745 @@ func TestHashTreeRootWithReflectionError(t *testing.T) {
 	_, err = ds.HashTreeRoot(container)
 	if err == nil {
 		t.Fatal("expected error for corrupted type descriptor")
+	}
+}
+
+// --- Bitlist marshal/HTR fixes (empty, nested, missing terminator) ---
+
+func TestEmptyBitlistMarshalDoesNotPanic(t *testing.T) {
+	type T struct {
+		X []byte `ssz-type:"bitlist" ssz-max:"16"`
+	}
+
+	ds := NewDynSsz(nil)
+
+	cases := map[string][]byte{
+		"nil":         nil,
+		"emptyNonNil": {},
+	}
+
+	want := []byte{0x04, 0x00, 0x00, 0x00, 0x01}
+	for name, in := range cases {
+		t.Run(name, func(t *testing.T) {
+			enc, err := ds.MarshalSSZ(&T{X: in})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !bytes.Equal(enc, want) {
+				t.Fatalf("unexpected encoding: got %x want %x", enc, want)
+			}
+		})
+	}
+}
+
+func TestEmptyProgressiveBitlistMarshalDoesNotPanic(t *testing.T) {
+	type T struct {
+		X []byte `ssz-type:"progressive-bitlist" ssz-max:"16"`
+	}
+
+	ds := NewDynSsz(nil)
+	enc, err := ds.MarshalSSZ(&T{X: nil})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []byte{0x04, 0x00, 0x00, 0x00, 0x01}
+	if !bytes.Equal(enc, want) {
+		t.Fatalf("unexpected encoding: got %x want %x", enc, want)
+	}
+}
+
+func TestNilBitlistNestedInContainer(t *testing.T) {
+	type T struct {
+		Pre uint32
+		X   []byte `ssz-type:"bitlist" ssz-max:"16"`
+		Pst uint64
+	}
+
+	ds := NewDynSsz(nil)
+	enc, err := ds.MarshalSSZ(&T{Pre: 1, Pst: 2})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var dst T
+	if err := ds.UnmarshalSSZ(&dst, enc); err != nil {
+		t.Fatalf("roundtrip unmarshal failed: %v", err)
+	}
+	if dst.Pre != 1 || dst.Pst != 2 {
+		t.Fatalf("roundtrip mismatch: %+v", dst)
+	}
+}
+
+func TestNilBitlistInListOfStructs(t *testing.T) {
+	type Inner struct {
+		X []byte `ssz-type:"progressive-bitlist" ssz-max:"16"`
+	}
+	type Outer struct {
+		Inner []*Inner `ssz-max:"4"`
+	}
+
+	ds := NewDynSsz(nil)
+	enc, err := ds.MarshalSSZ(&Outer{Inner: []*Inner{{X: nil}, {X: nil}}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var dst Outer
+	if err := ds.UnmarshalSSZ(&dst, enc); err != nil {
+		t.Fatalf("roundtrip unmarshal failed: %v", err)
+	}
+	if len(dst.Inner) != 2 {
+		t.Fatalf("expected 2 inner items, got %d", len(dst.Inner))
+	}
+}
+
+func TestNilBitlistStreamMatchesBuffer(t *testing.T) {
+	type T struct {
+		X []byte `ssz-type:"bitlist" ssz-max:"16"`
+	}
+
+	ds := NewDynSsz(nil)
+	bufEnc, err := ds.MarshalSSZ(&T{X: nil})
+	if err != nil {
+		t.Fatalf("buffer marshal failed: %v", err)
+	}
+
+	var sb bytes.Buffer
+	if err := ds.MarshalSSZWriter(&T{X: nil}, &sb); err != nil {
+		t.Fatalf("stream marshal failed: %v", err)
+	}
+
+	if !bytes.Equal(bufEnc, sb.Bytes()) {
+		t.Fatalf("stream/buffer mismatch: buffer=%x stream=%x", bufEnc, sb.Bytes())
+	}
+}
+
+func TestNilBitlistHTRAndMarshalAgree(t *testing.T) {
+	type T struct {
+		X []byte `ssz-type:"bitlist" ssz-max:"16"`
+	}
+
+	ds := NewDynSsz(nil)
+
+	if _, err := ds.MarshalSSZ(&T{X: nil}); err != nil {
+		t.Fatalf("marshal of nil bitlist failed: %v", err)
+	}
+
+	r1, err := ds.HashTreeRoot(&T{X: nil})
+	if err != nil {
+		t.Fatalf("HTR of nil bitlist failed: %v", err)
+	}
+	r2, err := ds.HashTreeRoot(&T{X: []byte{0x01}})
+	if err != nil {
+		t.Fatalf("HTR of empty bitlist failed: %v", err)
+	}
+	if r1 != r2 {
+		t.Fatalf("nil and empty bitlist should hash equally: %x != %x", r1, r2)
+	}
+}
+
+func TestBitlistMissingTerminatorHTRRejected(t *testing.T) {
+	type T struct {
+		X []byte `ssz-type:"bitlist" ssz-max:"32"`
+	}
+
+	ds := NewDynSsz(nil)
+	src := &T{X: []byte{0xff, 0x00}} // last byte 0x00 => no terminator
+
+	if _, err := ds.MarshalSSZ(src); err == nil {
+		t.Fatalf("marshal should reject a non-terminated bitlist")
+	}
+
+	if _, err := ds.HashTreeRoot(src); err == nil {
+		t.Fatalf("HTR should reject a non-terminated bitlist")
+	} else if !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Fatalf("expected ErrInvalidValueRange, got %v", err)
+	}
+}
+
+// --- Byte-aligned bitvector followed by another field must round-trip ---
+
+func TestBitvectorByteAlignedRoundtrip(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	t.Run("bitsize8", func(t *testing.T) {
+		type T struct {
+			BV    []byte `ssz-type:"bitvector" ssz-bitsize:"8"`
+			After uint64
+		}
+		src := &T{BV: []byte{0xff}, After: 1}
+		enc, err := ds.MarshalSSZ(src)
+		if err != nil {
+			t.Fatalf("marshal failed: %v", err)
+		}
+		var dst T
+		if err := ds.UnmarshalSSZ(&dst, enc); err != nil {
+			t.Fatalf("unmarshal failed: %v", err)
+		}
+		if !bytes.Equal(dst.BV, src.BV) || dst.After != src.After {
+			t.Fatalf("roundtrip mismatch: %+v", dst)
+		}
+	})
+
+	t.Run("bitsize16", func(t *testing.T) {
+		type T struct {
+			BV    []byte `ssz-type:"bitvector" ssz-bitsize:"16"`
+			After uint64
+		}
+		src := &T{BV: []byte{0xff, 0xff}, After: 1}
+		enc, err := ds.MarshalSSZ(src)
+		if err != nil {
+			t.Fatalf("marshal failed: %v", err)
+		}
+		var dst T
+		if err := ds.UnmarshalSSZ(&dst, enc); err != nil {
+			t.Fatalf("unmarshal failed: %v", err)
+		}
+		if !bytes.Equal(dst.BV, src.BV) || dst.After != src.After {
+			t.Fatalf("roundtrip mismatch: %+v", dst)
+		}
+	})
+
+	t.Run("bitsize32", func(t *testing.T) {
+		type T struct {
+			BV    []byte `ssz-type:"bitvector" ssz-bitsize:"32"`
+			After uint64
+		}
+		src := &T{BV: []byte{0xff, 0xff, 0xff, 0xff}, After: 1}
+		enc, err := ds.MarshalSSZ(src)
+		if err != nil {
+			t.Fatalf("marshal failed: %v", err)
+		}
+		var dst T
+		if err := ds.UnmarshalSSZ(&dst, enc); err != nil {
+			t.Fatalf("unmarshal failed: %v", err)
+		}
+		if !bytes.Equal(dst.BV, src.BV) || dst.After != src.After {
+			t.Fatalf("roundtrip mismatch: %+v", dst)
+		}
+	})
+
+	t.Run("bitsize12_paddingStillChecked", func(t *testing.T) {
+		// 12 bits => 2 bytes; the top 4 bits of the 2nd byte are padding and must be 0.
+		type T struct {
+			BV    []byte `ssz-type:"bitvector" ssz-bitsize:"12"`
+			After uint64
+		}
+		good := []byte{0xff, 0x0f, 0, 0, 0, 0, 0, 0, 0, 0} // padding bits zero
+		var dst T
+		if err := ds.UnmarshalSSZ(&dst, good); err != nil {
+			t.Fatalf("valid 12-bit bitvector should decode: %v", err)
+		}
+		bad := []byte{0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0} // padding bits set
+		if err := ds.UnmarshalSSZ(&T{}, bad); err == nil {
+			t.Fatalf("expected padding error for non-zero padding bits")
+		}
+	})
+}
+
+// --- Recursive type definitions must error instead of stack overflowing ---
+
+type recursiveType struct {
+	Val      uint32
+	Children []*recursiveType `ssz-max:"4"`
+}
+
+func TestRecursiveTypeRejected(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	var err error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("recursive type caused a panic: %v", r)
+			}
+		}()
+		_, err = ds.MarshalSSZ(&recursiveType{})
+	}()
+
+	if err == nil {
+		t.Fatalf("expected an error for recursive type, got nil")
+	}
+	if !errors.Is(err, sszutils.ErrUnsupportedType) {
+		t.Fatalf("expected ErrUnsupportedType, got %v", err)
+	}
+}
+
+// --- Stream writer with a too-small buffer must not panic ---
+
+func TestStreamWriterBufferTooSmall(t *testing.T) {
+	for _, sz := range []int{1, 3, 4, 7} {
+		ds := NewDynSsz(nil, WithStreamWriterBufferSize(sz))
+		var sb bytes.Buffer
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("buffer size %d caused a panic: %v", sz, r)
+				}
+			}()
+			if err := ds.MarshalSSZWriter(&struct{ A uint64 }{A: 1}, &sb); err != nil {
+				t.Fatalf("buffer size %d marshal failed: %v", sz, err)
+			}
+		}()
+
+		ref, err := ds.MarshalSSZ(&struct{ A uint64 }{A: 1})
+		if err != nil {
+			t.Fatalf("reference marshal failed: %v", err)
+		}
+		if !bytes.Equal(sb.Bytes(), ref) {
+			t.Fatalf("buffer size %d output mismatch: got %x want %x", sz, sb.Bytes(), ref)
+		}
+	}
+}
+
+// --- big.Int sign preservation (extended types) ---
+
+func TestBigIntSignRoundtrip(t *testing.T) {
+	type T struct{ N big.Int }
+	ds := NewDynSsz(nil, WithExtendedTypes())
+
+	for _, v := range []int64{-1000000, -100, -1, 0, 1, 100, 1 << 40} {
+		src := &T{N: *big.NewInt(v)}
+		enc, err := ds.MarshalSSZ(src)
+		if err != nil {
+			t.Fatalf("marshal %d: %v", v, err)
+		}
+		var dst T
+		if err := ds.UnmarshalSSZ(&dst, enc); err != nil {
+			t.Fatalf("unmarshal %d: %v", v, err)
+		}
+		if dst.N.Cmp(big.NewInt(v)) != 0 {
+			t.Fatalf("roundtrip %d -> %s", v, dst.N.String())
+		}
+	}
+}
+
+// TestBigIntSignEncodingGolden pins the sign-magnitude wire format so a change to
+// both engines at once is still caught (codegen tests are only differential).
+func TestBigIntSignEncodingGolden(t *testing.T) {
+	type T struct{ N big.Int }
+	ds := NewDynSsz(nil, WithExtendedTypes())
+
+	cases := map[int64][]byte{
+		0:    {0x04, 0, 0, 0, 0x00},       // offset, sign(+), no magnitude
+		100:  {0x04, 0, 0, 0, 0x00, 0x64}, // offset, sign(+), 0x64
+		-100: {0x04, 0, 0, 0, 0x01, 0x64}, // offset, sign(-), 0x64
+	}
+	for v, want := range cases {
+		enc, err := ds.MarshalSSZ(&T{N: *big.NewInt(v)})
+		if err != nil {
+			t.Fatalf("marshal %d: %v", v, err)
+		}
+		if !bytes.Equal(enc, want) {
+			t.Fatalf("marshal %d: got %x want %x", v, enc, want)
+		}
+	}
+}
+
+func TestBigIntSignHTRDistinct(t *testing.T) {
+	type T struct{ N big.Int }
+	ds := NewDynSsz(nil, WithExtendedTypes())
+
+	rPos, err := ds.HashTreeRoot(&T{N: *big.NewInt(100)})
+	if err != nil {
+		t.Fatalf("htr pos: %v", err)
+	}
+	rNeg, err := ds.HashTreeRoot(&T{N: *big.NewInt(-100)})
+	if err != nil {
+		t.Fatalf("htr neg: %v", err)
+	}
+	if rPos == rNeg {
+		t.Fatal("positive and negative big.Int must not hash equally")
+	}
+}
+
+func TestBigIntInvalidSignByteRejected(t *testing.T) {
+	type T struct{ N big.Int }
+	ds := NewDynSsz(nil, WithExtendedTypes())
+
+	// offset=4, sign byte 0x02 (invalid), magnitude 0x64
+	bad := []byte{0x04, 0, 0, 0, 0x02, 0x64}
+	var dst T
+	err := ds.UnmarshalSSZ(&dst, bad)
+	if err == nil {
+		t.Fatal("expected error for invalid big.Int sign byte")
+	}
+	if !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Fatalf("expected ErrInvalidValueRange, got %v", err)
+	}
+}
+
+// --- Optional availability byte must be canonical 0x00/0x01 ---
+
+func TestOptionalNonCanonicalAvailabilityRejected(t *testing.T) {
+	type T struct {
+		Pre uint32
+		Opt *uint32 `ssz-type:"optional"`
+	}
+	ds := NewDynSsz(nil, WithExtendedTypes())
+
+	// availability byte 0xff is non-canonical
+	malformed := []byte{0, 0, 0, 0, 8, 0, 0, 0, 0xff, 0x99, 0, 0, 0}
+	if err := ds.UnmarshalSSZ(&T{}, malformed); err == nil {
+		t.Fatal("expected error for non-canonical availability byte")
+	} else if !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Fatalf("expected ErrInvalidValueRange, got %v", err)
+	}
+
+	// canonical present (0x01) and absent (0x00) must decode
+	present := []byte{0, 0, 0, 0, 8, 0, 0, 0, 0x01, 0x99, 0, 0, 0}
+	var dst T
+	if err := ds.UnmarshalSSZ(&dst, present); err != nil {
+		t.Fatalf("availability=1 should decode: %v", err)
+	}
+	if dst.Opt == nil || *dst.Opt != 0x99 {
+		t.Fatalf("unexpected Opt: %v", dst.Opt)
+	}
+	absent := []byte{0, 0, 0, 0, 8, 0, 0, 0, 0x00}
+	var dst2 T
+	if err := ds.UnmarshalSSZ(&dst2, absent); err != nil {
+		t.Fatalf("availability=0 should decode: %v", err)
+	}
+	if dst2.Opt != nil {
+		t.Fatalf("expected nil Opt, got %v", *dst2.Opt)
+	}
+}
+
+// --- Spec value resolution validation ---
+
+func TestResolveSpecValueRejectsDegenerate(t *testing.T) {
+	for _, v := range []any{-1.0, math.NaN(), math.Inf(1), math.Inf(-1), float64(1e30), int(-5), int64(-1)} {
+		ds := NewDynSsz(map[string]any{"X": v})
+		ok, _, err := ds.ResolveSpecValue("X")
+		if err == nil && ok {
+			t.Errorf("spec value %v should be rejected, but resolved", v)
+		}
+	}
+}
+
+func TestResolveSpecValueUint64Precision(t *testing.T) {
+	ds := NewDynSsz(map[string]any{"X": uint64(math.MaxUint64)})
+	ok, val, err := ds.ResolveSpecValue("X")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok || val != math.MaxUint64 {
+		t.Fatalf("expected full-precision MaxUint64, got ok=%v val=%d", ok, val)
+	}
+}
+
+// --- #22: CalculateLimit overflow must not collide ---
+
+func TestCalculateLimitOverflowNoCollision(t *testing.T) {
+	type ListMax1 struct {
+		V []uint64 `ssz-max:"1"`
+	}
+	type ListMaxOverflow struct {
+		V []uint64 `ssz-max:"2305843009213693953"` // 2^61+1; *8 overflows uint64
+	}
+	ds := NewDynSsz(nil)
+	a, err := ds.HashTreeRoot(&ListMax1{V: []uint64{42}})
+	if err != nil {
+		t.Fatalf("ListMax1: %v", err)
+	}
+	b, err := ds.HashTreeRoot(&ListMaxOverflow{V: []uint64{42}})
+	if err != nil {
+		t.Fatalf("ListMaxOverflow: %v", err)
+	}
+	if a == b {
+		t.Fatal("distinct list capacities must not share a hash tree root")
+	}
+}
+
+// --- #24: nil argument must error, not panic ---
+
+func TestNilArgumentRejected(t *testing.T) {
+	ds := NewDynSsz(nil)
+	noPanic := func(name string, fn func()) {
+		t.Helper()
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("%s panicked on nil: %v", name, r)
+			}
+		}()
+		fn()
+	}
+	noPanic("MarshalSSZ", func() { _, _ = ds.MarshalSSZ(nil) })
+	noPanic("MarshalSSZTo", func() { _, _ = ds.MarshalSSZTo(nil, nil) })
+	noPanic("MarshalSSZWriter", func() { _ = ds.MarshalSSZWriter(nil, &bytes.Buffer{}) })
+	noPanic("SizeSSZ", func() { _, _ = ds.SizeSSZ(nil) })
+	noPanic("UnmarshalSSZ", func() { _ = ds.UnmarshalSSZ(nil, make([]byte, 8)) })
+	noPanic("UnmarshalSSZReader", func() { _ = ds.UnmarshalSSZReader(nil, bytes.NewReader(nil), 0) })
+	noPanic("HashTreeRoot", func() { _, _ = ds.HashTreeRoot(nil) })
+
+	if _, err := ds.MarshalSSZ(nil); err == nil {
+		t.Error("MarshalSSZ(nil) should return an error")
+	}
+	if _, err := ds.HashTreeRoot(nil); err == nil {
+		t.Error("HashTreeRoot(nil) should return an error")
+	}
+	if err := ds.UnmarshalSSZ(nil, make([]byte, 8)); err == nil {
+		t.Error("UnmarshalSSZ(nil) should return an error")
+	}
+}
+
+// --- #25: MarshalSSZTo must handle short-cap and non-empty (append) buffers ---
+
+func TestMarshalSSZToBuffer(t *testing.T) {
+	ds := NewDynSsz(nil)
+	type T struct{ A uint64 }
+
+	// capacity smaller than the output
+	enc, err := ds.MarshalSSZTo(&T{A: 1}, make([]byte, 0, 4))
+	if err != nil {
+		t.Fatalf("short-cap buffer: %v", err)
+	}
+	if len(enc) != 8 {
+		t.Fatalf("expected 8 bytes, got %d", len(enc))
+	}
+
+	// non-empty buffer -> append after existing content
+	prefix := []byte{0xfe, 0xed}
+	out, err := ds.MarshalSSZTo(&T{A: 1}, prefix)
+	if err != nil {
+		t.Fatalf("append buffer: %v", err)
+	}
+	if len(out) != 2+8 {
+		t.Fatalf("expected 10 bytes, got %d", len(out))
+	}
+	if out[0] != 0xfe || out[1] != 0xed {
+		t.Fatalf("prefix was clobbered: %x", out)
+	}
+}
+
+// --- #27: HTR must enforce the element-count limit for primitive lists ---
+
+func TestHTRListLimitEnforced(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	t.Run("bytes", func(t *testing.T) {
+		type T struct {
+			X []byte `ssz-max:"4"`
+		}
+		if _, err := ds.HashTreeRoot(&T{X: make([]byte, 5)}); err == nil {
+			t.Error("[]byte over max-4 should fail HTR")
+		}
+		if _, err := ds.HashTreeRoot(&T{X: make([]byte, 4)}); err != nil {
+			t.Errorf("[]byte at max-4 should pass HTR: %v", err)
+		}
+	})
+	t.Run("uint16", func(t *testing.T) {
+		type T struct {
+			X []uint16 `ssz-max:"4"`
+		}
+		if _, err := ds.HashTreeRoot(&T{X: make([]uint16, 5)}); err == nil {
+			t.Error("[]uint16 over max-4 should fail HTR")
+		}
+	})
+	t.Run("uint32", func(t *testing.T) {
+		type T struct {
+			X []uint32 `ssz-max:"4"`
+		}
+		if _, err := ds.HashTreeRoot(&T{X: make([]uint32, 5)}); err == nil {
+			t.Error("[]uint32 over max-4 should fail HTR")
+		}
+	})
+}
+
+// --- #28: ssz-max:"0" is a no-limit placeholder, not a zero limit ---
+
+func TestZeroMaxTreatedAsNoLimit(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoFastHash())
+	type T struct {
+		X []uint64 `ssz-max:"0"`
+	}
+	if _, err := ds.MarshalSSZ(&T{X: []uint64{1, 2, 3}}); err != nil {
+		t.Fatalf("ssz-max:0 marshal should succeed (no limit): %v", err)
+	}
+	if _, err := ds.HashTreeRoot(&T{X: []uint64{1, 2, 3}}); err != nil {
+		t.Fatalf("ssz-max:0 HTR should succeed (no limit): %v", err)
+	}
+}
+
+// --- #26: spec values above 2^53 keep full uint64 precision ---
+
+func TestResolveSpecValuePrecisionAbove2p53(t *testing.T) {
+	v := uint64(9007199254740993) // 2^53 + 1, not representable as float64
+	ds := NewDynSsz(map[string]any{"X": v})
+	ok, val, err := ds.ResolveSpecValue("X")
+	if err != nil || !ok {
+		t.Fatalf("expected resolved, got ok=%v err=%v", ok, err)
+	}
+	if val != v {
+		t.Fatalf("precision loss: got %d want %d", val, v)
+	}
+}
+
+// --- coverage: spec value type handling (specvals.go) ---
+
+func TestResolveSpecValueTypes(t *testing.T) {
+	cases := []struct {
+		name string
+		val  any
+		want uint64
+		ok   bool
+	}{
+		{"uint", uint(7), 7, true},
+		{"uint32", uint32(8), 8, true},
+		{"uint16", uint16(9), 9, true},
+		{"uint8", uint8(10), 10, true},
+		{"uintptr", uintptr(11), 11, true},
+		{"int32", int32(12), 12, true},
+		{"int16", int16(13), 13, true},
+		{"int8", int8(14), 14, true},
+		{"float32", float32(15), 15, true},
+		{"unsupportedString", "nope", 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := NewDynSsz(map[string]any{"X": tc.val})
+			ok, val, err := ds.ResolveSpecValue("X")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if ok != tc.ok {
+				t.Fatalf("resolved=%v, want %v", ok, tc.ok)
+			}
+			if tc.ok && val != tc.want {
+				t.Fatalf("value=%d, want %d", val, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveSpecValueExpressionDegenerate(t *testing.T) {
+	// An expression (not a direct lookup) that evaluates to a negative value must
+	// be rejected by specFloatToUint64.
+	ds := NewDynSsz(map[string]any{"A": float64(1), "B": float64(2)})
+	if _, _, err := ds.ResolveSpecValue("A - B"); err == nil {
+		t.Fatal("expected error for negative expression result")
+	}
+}
+
+// --- coverage: nil guards for HashTreeRootWith and GetTree (dynssz.go) ---
+
+func TestNilArgumentRejectedHashWithAndTree(t *testing.T) {
+	ds := NewDynSsz(nil)
+	noPanic := func(name string, fn func()) {
+		t.Helper()
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("%s panicked on nil: %v", name, r)
+			}
+		}()
+		fn()
+	}
+	noPanic("HashTreeRootWith", func() { _ = ds.HashTreeRootWith(nil, nil) })
+	noPanic("GetTree", func() { _, _ = ds.GetTree(nil) })
+
+	if err := ds.HashTreeRootWith(nil, nil); err == nil {
+		t.Error("HashTreeRootWith(nil) should error")
+	}
+	if _, err := ds.GetTree(nil); err == nil {
+		t.Error("GetTree(nil) should error")
+	}
+}
+
+// --- coverage: marshal/HTR error propagation paths (reflection) ---
+
+// non-terminated bitlist: a leaf whose marshal and HTR both fail.
+type covBadBitlist struct {
+	X []byte `ssz-type:"bitlist" ssz-max:"16"`
+}
+
+func covBadBitlistValue() covBadBitlist { return covBadBitlist{X: []byte{0xff, 0x00}} }
+
+func TestMarshalErrorPropagation(t *testing.T) {
+	ds := NewDynSsz(nil, WithExtendedTypes())
+
+	t.Run("typeWrapper", func(t *testing.T) {
+		type desc struct {
+			Data []byte `ssz-type:"bitlist" ssz-max:"16"`
+		}
+		w := &TypeWrapper[desc, []byte]{Data: []byte{0xff, 0x00}}
+		if _, err := ds.MarshalSSZ(w); err == nil {
+			t.Fatal("expected error from wrapped bitlist")
+		}
+	})
+
+	t.Run("optional", func(t *testing.T) {
+		type T struct {
+			O *covBadBitlist `ssz-type:"optional"`
+		}
+		v := covBadBitlistValue()
+		if _, err := ds.MarshalSSZ(&T{O: &v}); err == nil {
+			t.Fatal("expected error from optional inner bitlist")
+		}
+	})
+
+	t.Run("dynamicVector", func(t *testing.T) {
+		type T struct {
+			V [1]covBadBitlist
+		}
+		if _, err := ds.MarshalSSZ(&T{V: [1]covBadBitlist{covBadBitlistValue()}}); err == nil {
+			t.Fatal("expected error from vector element bitlist")
+		}
+	})
+
+	t.Run("dynamicList", func(t *testing.T) {
+		type T struct {
+			L []covBadBitlist `ssz-max:"4"`
+		}
+		if _, err := ds.MarshalSSZ(&T{L: []covBadBitlist{covBadBitlistValue()}}); err == nil {
+			t.Fatal("expected error from list element bitlist")
+		}
+	})
+}
+
+// union marshal error paths require reaching marshalCompatibleUnion without a
+// prior size pass, which only happens for a top-level union via MarshalSSZWriter.
+func TestUnionMarshalErrorPaths(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	t.Run("invalidVariant", func(t *testing.T) {
+		u := &CompatibleUnion[struct {
+			V0 uint32
+			V1 [16]byte
+		}]{Variant: 99, Data: uint32(1)}
+		var sb bytes.Buffer
+		if err := ds.MarshalSSZWriter(u, &sb); err == nil {
+			t.Fatal("expected error for invalid variant")
+		}
+	})
+
+	t.Run("typeMismatch", func(t *testing.T) {
+		u := &CompatibleUnion[struct {
+			V0 uint32
+			V1 [16]byte
+		}]{Variant: 0, Data: "wrong type"}
+		var sb bytes.Buffer
+		if err := ds.MarshalSSZWriter(u, &sb); err == nil {
+			t.Fatal("expected error for wrong-typed data")
+		}
+	})
+
+	t.Run("variantMarshalError", func(t *testing.T) {
+		u := &CompatibleUnion[struct {
+			V0 []byte `ssz-type:"bitlist" ssz-max:"16"`
+		}]{Variant: 0, Data: []byte{0xff, 0x00}}
+		var sb bytes.Buffer
+		if err := ds.MarshalSSZWriter(u, &sb); err == nil {
+			t.Fatal("expected error from union variant bitlist")
+		}
+	})
+}
+
+func TestUnionHTRVariantError(t *testing.T) {
+	ds := NewDynSsz(nil)
+	u := &CompatibleUnion[struct {
+		V0 []byte `ssz-type:"bitlist" ssz-max:"16"`
+	}]{Variant: 0, Data: []byte{0xff, 0x00}}
+	if _, err := ds.HashTreeRoot(u); err == nil {
+		t.Fatal("expected HTR error from union variant bitlist")
 	}
 }

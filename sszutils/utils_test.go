@@ -475,3 +475,34 @@ func TestAppendZeroPadding_Zero(t *testing.T) {
 		t.Errorf("expected 0, got %d", len(result))
 	}
 }
+
+// TestCalculateLimitOverflow verifies the 128-bit overflow-safe limit math so a
+// large ssz-max cannot wrap to a small limit (which would collide merkle depths).
+func TestCalculateLimitOverflow(t *testing.T) {
+	cases := []struct {
+		name                        string
+		maxCapacity, numItems, size uint64
+		want                        uint64
+	}{
+		{"small", 4, 1, 8, 1},
+		{"one", 1, 1, 8, 1},
+		{"zeroCapEmpty", 0, 0, 8, 1},
+		{"zeroCapItems", 0, 3, 8, 3},
+		{"noOverflow61", 1 << 61, 1, 8, 1 << 59}, // (2^61*8)/32 = 2^59, fits
+		{"overflowWraps", (1 << 61) + 1, 1, 8, (1 << 59) + 1},
+		{"hugeClamp", 1 << 62, 1, 64, 1 << 63},            // 2^62*64 = 2^68 -> /32 = 2^63
+		{"overflowClamp", 1 << 60, 0, 1 << 10, 1<<64 - 1}, // 2^70 / 32 = 2^65 -> clamps to MaxUint64
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CalculateLimit(tc.maxCapacity, tc.numItems, tc.size); got != tc.want {
+				t.Fatalf("CalculateLimit(%d,%d,%d) = %d, want %d", tc.maxCapacity, tc.numItems, tc.size, got, tc.want)
+			}
+		})
+	}
+
+	// distinct large capacities must yield distinct limits (no overflow collision)
+	if CalculateLimit(1, 1, 8) == CalculateLimit((1<<61)+1, 1, 8) {
+		t.Fatal("overflow collision: small and huge capacities share a limit")
+	}
+}

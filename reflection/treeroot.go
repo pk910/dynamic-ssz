@@ -484,6 +484,9 @@ func (ctx *ReflectionCtx) buildRootFromCompatibleUnion(sourceType *ssztypes.Type
 	if dataField.IsNil() {
 		return sszutils.ErrInvalidUnionVariantFn()
 	}
+	if dataField.Elem().Type() != variantDesc.Type {
+		return sszutils.ErrUnionTypeMismatchFn()
+	}
 	dataField = dataField.Elem()
 
 	hashIndex := hh.StartTree(sszutils.TreeTypeNone)
@@ -564,8 +567,8 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 		if appendZero > 0 {
 			zeroBytes := make([]byte, appendZero)
 			bytes = append(bytes, zeroBytes...)
-		} else if sourceType.BitSize > 0 && sourceType.BitSize < uint32(len(bytes))*8 {
-			// check padding bits
+		} else if sourceType.BitSize > 0 && sourceType.BitSize%8 != 0 {
+			// check padding bits (only bit-aligned bitvectors have padding bits)
 			paddingMask := uint8((uint16(0xff) << (sourceType.BitSize % 8)) & 0xff)
 			paddingBits := bytes[len(bytes)-1] & paddingMask
 			if paddingBits != 0 {
@@ -682,6 +685,13 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 	case sourceType.SszType == ssztypes.SszProgressiveListType:
 		hh.MerkleizeProgressiveWithMixin(hashIndex, uint64(sliceLen))
 	case sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0:
+		// Enforce the element-count limit (matches marshal). The chunk count
+		// derived from the buffer is not a valid proxy for packed primitives —
+		// several items pack into one chunk, so an over-limit list would pass.
+		if uint64(sliceLen) > sourceType.Limit {
+			return sszutils.ErrListLengthFn(sliceLen, sourceType.Limit)
+		}
+
 		var limit, itemSize uint64
 
 		switch sourceType.ElemDesc.SszType {
@@ -704,22 +714,9 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 		}
 
 		if itemSize > 0 {
-			// Packed primitive elements: the limit is a chunk count and the
-			// elements are never deferred, so the written chunk count is exact.
 			limit = sszutils.CalculateLimit(sourceType.Limit, uint64(sliceLen), itemSize)
-			inputLen := hh.CurrentIndex() - hashIndex
-			if (uint64(inputLen)+31)/32 > limit {
-				return sszutils.ErrListLengthFn(inputLen, limit)
-			}
 		} else {
-			// Composite elements: the limit is an element count. Validate against
-			// the element count directly — the buffer may hold un-reduced child
-			// chunks (deferred cross-element batching), so a CurrentIndex-derived
-			// chunk count would over-count and falsely trip the limit.
 			limit = sourceType.Limit
-			if uint64(sliceLen) > limit {
-				return sszutils.ErrListLengthFn(sliceLen, limit)
-			}
 		}
 		hh.MerkleizeWithMixin(hashIndex, uint64(sliceLen), limit)
 	default:
@@ -789,6 +786,12 @@ func (ctx *ReflectionCtx) getActiveFields(sourceType *ssztypes.TypeDescriptor) [
 func (ctx *ReflectionCtx) buildRootFromBitlist(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, _ int) error {
 	maxSize := uint64(0)
 	bytes := sourceValue.Bytes()
+
+	// reject bitlists that are missing their termination bit, consistent with
+	// marshalBitlist. Empty/nil bitlists are treated as a 0-bit bitlist.
+	if len(bytes) > 0 && bytes[len(bytes)-1] == 0x00 {
+		return sszutils.ErrBitlistNotTerminatedFn()
+	}
 
 	if sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
 		maxSize = sourceType.Limit
@@ -893,9 +896,11 @@ func (ctx *ReflectionCtx) buildRootFromBigInt(sourceType *ssztypes.TypeDescripto
 	if !isBigInt {
 		return sszutils.ErrBigIntTypeExpectedFn(sourceType.Type.Name())
 	}
-	bigIntBytes := bigInt.Bytes()
-	if len(bigIntBytes) == 0 {
-		bigIntBytes = make([]byte, 1)
+	// hash the sign byte followed by the big-endian magnitude so values of equal
+	// magnitude but opposite sign do not collide
+	bigIntBytes := append([]byte{0}, bigInt.Bytes()...)
+	if bigInt.Sign() < 0 {
+		bigIntBytes[0] = 1
 	}
 	hh.PutBytes(bigIntBytes)
 	return nil

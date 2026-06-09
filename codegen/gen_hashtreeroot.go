@@ -443,11 +443,11 @@ func (ctx *hashTreeRootContext) hashOptionalList(desc *ssztypes.TypeDescriptor, 
 
 // hashBigInt generates hash tree root code for SSZ big int types.
 func (ctx *hashTreeRootContext) hashBigInt(_ *ssztypes.TypeDescriptor, varName string, indent int) error {
+	// hash the sign byte followed by the big-endian magnitude so values of equal
+	// magnitude but opposite sign do not collide
 	ctx.appendCode(indent, "{\n")
-	ctx.appendCode(indent+1, "bigIntBytes := %s.Bytes()\n", varName)
-	ctx.appendCode(indent+1, "if len(bigIntBytes) == 0 {\n")
-	ctx.appendCode(indent+2, "bigIntBytes = make([]byte, 1)\n")
-	ctx.appendCode(indent+1, "}\n")
+	ctx.appendCode(indent+1, "bigIntBytes := append([]byte{0}, %s.Bytes()...)\n", varName)
+	ctx.appendCode(indent+1, "if %s.Sign() < 0 {\n\t\tbigIntBytes[0] = 1\n\t}\n", varName)
 	ctx.appendCode(indent+1, "hh.PutBytes(bigIntBytes)\n")
 	ctx.appendCode(indent, "}\n")
 	return nil
@@ -872,6 +872,12 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varNa
 	} else if desc.Limit > 0 {
 		maxVar = fmt.Sprintf("%d", desc.Limit)
 	}
+
+	// reject bitlists that are missing their termination bit, consistent with
+	// the marshal path and the reflection hash tree root implementation.
+	ctx.appendCode(indent, "if l := len(%s); l > 0 && %s[l-1] == 0x00 {\n", varName, varName)
+	ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith("sszutils.ErrBitlistNotTerminatedFn()"))
+	ctx.appendCode(indent, "}\n")
 
 	ctx.appendCode(indent, "idx := hh.StartTree(sszutils.TreeTypeNone)\n")
 	hasherAlias := ctx.typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")

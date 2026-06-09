@@ -440,6 +440,8 @@ func (ctx *encoderContext) marshalOptionalList(desc *ssztypes.TypeDescriptor, va
 
 // marshalBigInt generates marshal code for SSZ big int types.
 func (ctx *encoderContext) marshalBigInt(_ *ssztypes.TypeDescriptor, varName string, indent int) error {
+	// sign byte (0 = non-negative, 1 = negative) followed by the big-endian magnitude
+	ctx.appendCode(indent, "if %s.Sign() < 0 {\n\tenc.EncodeUint8(1)\n} else {\n\tenc.EncodeUint8(0)\n}\n", varName)
 	ctx.appendCode(indent, "enc.EncodeBytes(%s.Bytes())\n", varName)
 	return nil
 }

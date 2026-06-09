@@ -5,9 +5,13 @@
 package dynssz
 
 import (
+	"bytes"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 func TestNewCompatibleUnion(t *testing.T) {
@@ -339,4 +343,179 @@ func TestCompatibleUnionEdgeCases(t *testing.T) {
 			t.Error("GetDescriptorType should return same type for same union descriptor")
 		}
 	})
+}
+
+// TestZeroUnionMarshalDoesNotPanic verifies that a zero-value CompatibleUnion
+// (nil Data interface) returns a clean error across marshal, stream marshal and
+// HTR instead of panicking on the zero reflect.Value.
+func TestZeroUnionMarshalDoesNotPanic(t *testing.T) {
+	type T struct {
+		U CompatibleUnion[struct {
+			V0 uint32
+			V1 [16]byte
+		}]
+	}
+
+	ds := NewDynSsz(nil)
+
+	t.Run("buffer", func(t *testing.T) {
+		var err error
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("zero union marshal panicked: %v", r)
+				}
+			}()
+			_, err = ds.MarshalSSZ(&T{})
+		}()
+		if err == nil {
+			t.Fatalf("expected error for zero-value union marshal")
+		}
+		if !errors.Is(err, sszutils.ErrInvalidValueRange) {
+			t.Fatalf("expected ErrInvalidValueRange, got %v", err)
+		}
+	})
+
+	t.Run("stream", func(t *testing.T) {
+		var sb bytes.Buffer
+		var err error
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("zero union stream marshal panicked: %v", r)
+				}
+			}()
+			err = ds.MarshalSSZWriter(&T{}, &sb)
+		}()
+		if err == nil {
+			t.Fatalf("expected error for zero-value union stream marshal")
+		}
+		if !errors.Is(err, sszutils.ErrInvalidValueRange) {
+			t.Fatalf("expected ErrInvalidValueRange, got %v", err)
+		}
+	})
+
+	t.Run("htr", func(t *testing.T) {
+		_, err := ds.HashTreeRoot(&T{})
+		if err == nil {
+			t.Fatalf("expected error for zero-value union HTR")
+		}
+		if !errors.Is(err, sszutils.ErrInvalidValueRange) {
+			t.Fatalf("expected ErrInvalidValueRange, got %v", err)
+		}
+	})
+
+	// A zero-value union whose selected variant is a dynamic type would panic in
+	// the size path (getSszValueSize -> Len() on a zero reflect.Value) rather than
+	// the marshal path. This exercises the size-path nil guard independently.
+	t.Run("sizeDynamicVariant", func(t *testing.T) {
+		type D struct {
+			U CompatibleUnion[struct {
+				V0 []uint64 `ssz-max:"8"`
+				V1 uint32
+			}]
+		}
+
+		var err error
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("zero union with dynamic variant panicked during sizing: %v", r)
+				}
+			}()
+			_, err = ds.MarshalSSZ(&D{}) // Variant 0 (dynamic []uint64), Data nil
+		}()
+		if err == nil {
+			t.Fatalf("expected error for zero-value union with dynamic variant")
+		}
+		if !errors.Is(err, sszutils.ErrInvalidValueRange) {
+			t.Fatalf("expected ErrInvalidValueRange, got %v", err)
+		}
+	})
+
+	// A top-level union streamed via MarshalSSZWriter reaches marshalCompatibleUnion
+	// directly (no prior size/offset computation), exercising the marshal-path nil
+	// guard rather than the size-path guard hit by the nested cases above.
+	t.Run("streamTopLevel", func(t *testing.T) {
+		u := &CompatibleUnion[struct {
+			V0 uint32
+			V1 [16]byte
+		}]{} // Variant 0, Data nil
+
+		var sb bytes.Buffer
+		var err error
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("top-level zero union stream marshal panicked: %v", r)
+				}
+			}()
+			err = ds.MarshalSSZWriter(u, &sb)
+		}()
+		if err == nil {
+			t.Fatalf("expected error for top-level zero-value union stream marshal")
+		}
+		if !errors.Is(err, sszutils.ErrInvalidValueRange) {
+			t.Fatalf("expected ErrInvalidValueRange, got %v", err)
+		}
+	})
+}
+
+// TestUnionDataTypeMismatch verifies that a CompatibleUnion whose Data holds a
+// value of the wrong concrete type returns a clean error across marshal/HTR/size
+// instead of panicking inside the typed marshaler.
+func TestUnionDataTypeMismatch(t *testing.T) {
+	type T struct {
+		U CompatibleUnion[struct {
+			Variant0 uint32
+			Variant1 [16]byte
+		}]
+	}
+	ds := NewDynSsz(nil)
+
+	check := func(name string, fn func() error) {
+		t.Helper()
+		var err error
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("%s panicked: %v", name, r)
+				}
+			}()
+			err = fn()
+		}()
+		if err == nil {
+			t.Fatalf("%s: expected error", name)
+		}
+		if !errors.Is(err, sszutils.ErrInvalidValueRange) {
+			t.Fatalf("%s: expected ErrInvalidValueRange, got %v", name, err)
+		}
+	}
+
+	// variant 0 expects uint32, Data is a string
+	bad := &T{}
+	bad.U.Variant = 0
+	bad.U.Data = "not a uint32"
+	check("marshal", func() error { _, e := ds.MarshalSSZ(bad); return e })
+	check("htr", func() error { _, e := ds.HashTreeRoot(bad); return e })
+
+	// variant 1 expects [16]byte, Data is uint32
+	bad2 := &T{}
+	bad2.U.Variant = 1
+	bad2.U.Data = uint32(42)
+	check("marshal2", func() error { _, e := ds.MarshalSSZ(bad2); return e })
+	check("htr2", func() error { _, e := ds.HashTreeRoot(bad2); return e })
+
+	// A dynamic variant exercises the size-path guard: without it, sizing the
+	// wrong-typed value would call Len() on a non-slice and panic.
+	type D struct {
+		U CompatibleUnion[struct {
+			Variant0 []uint64 `ssz-max:"8"`
+			Variant1 uint32
+		}]
+	}
+	dynBad := &D{}
+	dynBad.U.Variant = 0 // expects []uint64
+	dynBad.U.Data = uint32(42)
+	check("size-dynvariant", func() error { _, e := ds.MarshalSSZ(dynBad); return e })
 }

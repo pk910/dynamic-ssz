@@ -318,6 +318,24 @@ var SimpleTypesWithSpecs_Specs = map[string]any{
 	"F2_MAX":       8,
 }
 
+// ProgIndexOnly is a progressive container detected purely from ssz-index tags
+// (no explicit ssz-type:"progressive-container"), exercising codegen auto-detection.
+type ProgIndexOnly struct {
+	A uint8 `ssz-index:"0"`
+	B uint8 `ssz-index:"5"`
+	C uint8 `ssz-index:"7"`
+}
+
+var ProgIndexOnly_Payload = ProgIndexOnly{A: 1, B: 2, C: 3}
+
+// ZeroMaxList exercises ssz-max:"0": the limit check must fire (codegen used to
+// treat a zero limit as "no limit").
+type ZeroMaxList struct {
+	X []uint64 `ssz-max:"0"`
+}
+
+var ZeroMaxList_Payload = ZeroMaxList{X: []uint64{1, 2, 3}}
+
 type ProgressiveTypes struct {
 	C1 struct {
 		F1 uint64      `ssz-index:"0"`

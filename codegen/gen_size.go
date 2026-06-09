@@ -311,7 +311,7 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 	case ssztypes.SszOptionalListType:
 		return ctx.sizeOptionalList(desc, varName, sizeVar, indent)
 	case ssztypes.SszBigIntType:
-		ctx.appendCode(indent, "%s += len(%s.Bytes())\n", sizeVar, varName)
+		ctx.appendCode(indent, "%s += 1 + len(%s.Bytes())\n", sizeVar, varName)
 
 	default:
 		return fmt.Errorf("unsupported SSZ type: %v", desc.SszType)

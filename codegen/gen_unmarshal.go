@@ -491,7 +491,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 	case ssztypes.SszOptionalListType:
 		return ctx.unmarshalOptionalList(desc, varName, typePath, indent)
 	case ssztypes.SszBigIntType:
-		return ctx.unmarshalBigInt(desc, varName, indent)
+		return ctx.unmarshalBigInt(desc, varName, typePath, indent)
 
 	default:
 		return fmt.Errorf("unsupported SSZ type: %v", desc.SszType)
@@ -503,7 +503,10 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 // unmarshalOptional generates unmarshal code for SSZ optional types.
 func (ctx *unmarshalContext) unmarshalOptional(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	ctx.appendCode(indent, "if len(buf) < 1 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.ErrOptionalFlagEOFFn()"))
-	ctx.appendCode(indent, "if buf[0] == 1 {\n")
+	ctx.appendCode(indent, "switch buf[0] {\n")
+	ctx.appendCode(indent, "case 0:\n")
+	ctx.appendCode(indent+1, "%s = nil\n", varName)
+	ctx.appendCode(indent, "case 1:\n")
 
 	// Check that buf has enough bytes for the presence flag plus the value
 	elemSize := desc.ElemDesc.Size
@@ -518,8 +521,9 @@ func (ctx *unmarshalContext) unmarshalOptional(desc *ssztypes.TypeDescriptor, va
 		return err
 	}
 	ctx.appendCode(indent+1, "%s = &%s\n", varName, valVar)
-	ctx.appendCode(indent, "} else {\n")
-	ctx.appendCode(indent+1, "%s = nil\n", varName)
+	ctx.appendCode(indent, "default:\n")
+	signErr := "sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, \"invalid optional availability byte\")"
+	ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith(signErr))
 	ctx.appendCode(indent, "}\n")
 	return nil
 }
@@ -554,17 +558,22 @@ func (ctx *unmarshalContext) unmarshalOptionalList(desc *ssztypes.TypeDescriptor
 }
 
 // unmarshalBigInt generates unmarshal code for SSZ big int types.
-func (ctx *unmarshalContext) unmarshalBigInt(desc *ssztypes.TypeDescriptor, varName string, indent int) error {
+func (ctx *unmarshalContext) unmarshalBigInt(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	bigImport := ctx.typePrinter.AddImport("math/big", "big")
 	ptrVarName := varName
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 		ptrVarName = fmt.Sprintf("*(%s)", varName)
 	}
-	ctx.appendCode(indent,
-		"%s = %s\n",
-		ptrVarName,
-		ctx.getCastedValueVar(desc, fmt.Sprintf("*(%s.NewInt(0).SetBytes(buf))", bigImport), "big.Int"),
-	)
+	valVar := ctx.getValVar()
+	signErr := "sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, \"invalid big.Int sign byte\")"
+	// sign byte (0 = non-negative, 1 = negative) followed by the big-endian magnitude
+	ctx.appendCode(indent, "%s := %s.NewInt(0)\n", valVar, bigImport)
+	ctx.appendCode(indent, "if len(buf) > 0 {\n")
+	ctx.appendCode(indent+1, "if buf[0] > 1 {\n\t\treturn %s\n\t}\n", typePath.getErrorWith(signErr))
+	ctx.appendCode(indent+1, "%s.SetBytes(buf[1:])\n", valVar)
+	ctx.appendCode(indent+1, "if buf[0] == 1 {\n\t\t%s.Neg(%s)\n\t}\n", valVar, valVar)
+	ctx.appendCode(indent, "}\n")
+	ctx.appendCode(indent, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, fmt.Sprintf("*%s", valVar), "big.Int"))
 	return nil
 }
 

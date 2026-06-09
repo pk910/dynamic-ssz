@@ -29,6 +29,7 @@ type TypeCache struct {
 	specs         sszutils.DynamicSpecs
 	mutex         sync.RWMutex
 	descriptors   map[typeKey]*TypeDescriptor
+	building      map[typeKey]bool
 	CompatFlags   map[string]SszCompatFlag
 	ExtendedTypes bool
 }
@@ -38,6 +39,7 @@ func NewTypeCache(specs sszutils.DynamicSpecs) *TypeCache {
 	return &TypeCache{
 		specs:         specs,
 		descriptors:   make(map[typeKey]*TypeDescriptor),
+		building:      make(map[typeKey]bool),
 		CompatFlags:   map[string]SszCompatFlag{},
 		ExtendedTypes: false,
 	}
@@ -142,6 +144,16 @@ func (tc *TypeCache) getTypeDescriptor(runtimeType, schemaType reflect.Type, siz
 	if desc, exists := tc.descriptors[key]; exists && cacheable {
 		return desc, nil
 	}
+
+	// Detect self-referential (recursive) types. The whole descriptor tree is
+	// built under the cache write lock, so the build stack is tracked with a
+	// simple map. Recursive SSZ types have no finite serialization, so reject
+	// them with a clear error instead of overflowing the stack.
+	if tc.building[key] {
+		return nil, sszutils.NewSszErrorf(sszutils.ErrUnsupportedType, "recursive type %v is not supported", runtimeType)
+	}
+	tc.building[key] = true
+	defer delete(tc.building, key)
 
 	desc, err := tc.buildTypeDescriptor(runtimeType, schemaType, sizeHints, maxSizeHints, typeHints)
 	if err != nil {
@@ -294,7 +306,10 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 	}
 
 	if len(maxSizeHints) > 0 {
-		if !maxSizeHints[0].NoValue {
+		// A resolved limit of 0 is a "no limit" placeholder (ssz-max:"0" with the
+		// real limit supplied dynamically via dynssz-max). Spec values are already
+		// resolved at this point, so only treat a positive limit as a constraint.
+		if !maxSizeHints[0].NoValue && maxSizeHints[0].Size > 0 {
 			desc.SszTypeFlags |= SszTypeFlagHasLimit
 			desc.Limit = maxSizeHints[0].Size
 		}

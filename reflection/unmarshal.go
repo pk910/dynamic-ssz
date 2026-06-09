@@ -565,14 +565,15 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 				buf = newValue.Bytes()
 			}
 
-			sszLen := decoder.GetLength()
 			_, err := decoder.DecodeBytes(buf)
 			if err != nil {
 				return err
 			}
 
-			if targetType.BitSize > 0 && targetType.BitSize < uint32(sszLen)*8 {
-				// check padding bits
+			// Only bit-aligned bitvectors (BitSize not a multiple of 8) have padding
+			// bits in the last byte that must be zero. Byte-aligned bitvectors have no
+			// padding bits, so the check is skipped to avoid misinterpreting data bits.
+			if targetType.BitSize > 0 && targetType.BitSize%8 != 0 {
 				paddingMask := uint8((uint16(0xff) << (targetType.BitSize % 8)) & 0xff)
 				paddingBits := buf[arrLen-1] & paddingMask
 				if paddingBits != 0 {
@@ -1103,15 +1104,20 @@ func (ctx *ReflectionCtx) unmarshalOptional(targetType *ssztypes.TypeDescriptor,
 		return sszutils.ErrOptionalFlagEOFFn()
 	}
 
-	// Read the availability byte
+	// Read the availability byte; only the canonical 0x00/0x01 values are valid
 	availability, err := decoder.DecodeUint8()
 	if err != nil {
 		return err
 	}
 
-	if availability == 0 {
+	switch availability {
+	case 0:
 		targetValue.Set(reflect.Zero(targetType.Type))
 		return nil
+	case 1:
+		// present, decoded below
+	default:
+		return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "invalid optional availability byte 0x%02x", availability)
 	}
 
 	if targetValue.IsNil() {
@@ -1198,7 +1204,14 @@ func (ctx *ReflectionCtx) unmarshalBigInt(_ *ssztypes.TypeDescriptor, targetValu
 			return err
 		}
 
-		bigInt.SetBytes(bigIntBytes)
+		// sign byte (0 = non-negative, 1 = negative) followed by the big-endian magnitude
+		if bigIntBytes[0] > 1 {
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "invalid big.Int sign byte 0x%02x", bigIntBytes[0])
+		}
+		bigInt.SetBytes(bigIntBytes[1:])
+		if bigIntBytes[0] == 1 {
+			bigInt.Neg(bigInt)
+		}
 	}
 
 	targetValue.Set(reflect.ValueOf(*bigInt))

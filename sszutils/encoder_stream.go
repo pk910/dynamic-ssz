@@ -29,10 +29,14 @@ var _ Encoder = (*StreamEncoder)(nil)
 
 // NewStreamEncoder creates a new StreamEncoder that writes SSZ data to the
 // provided io.Writer. bufSize controls the internal write buffer size; if <= 0,
-// DefaultStreamEncoderBufSize is used.
+// DefaultStreamEncoderBufSize is used. Values smaller than 8 (the largest atomic
+// write) are raised to 8 so that primitive encodes never overflow the buffer.
 func NewStreamEncoder(writer io.Writer, bufSize int) *StreamEncoder {
+	const minBufSize = 8 // largest atomic write is a uint64 (8 bytes)
 	if bufSize <= 0 {
 		bufSize = DefaultStreamEncoderBufSize
+	} else if bufSize < minBufSize {
+		bufSize = minBufSize
 	}
 	return &StreamEncoder{
 		writer:   writer,

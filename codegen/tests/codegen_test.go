@@ -56,6 +56,20 @@ var testMatrix = []TestPayload{
 		Hash:    "317f412cd2d042f367c4f2fb6447828ef9524396428eb2ed0837524bcc70433c",
 	},
 	{
+		// progressive container auto-detected from ssz-index tags alone
+		Name:    "ProgIndexOnly",
+		Payload: ProgIndexOnly_Payload,
+		Specs:   map[string]any{},
+		Hash:    "0c3b77007ca813db8a3d0ced4634530d9db15785e4b7a2b6c21db45c9ccd6409",
+	},
+	{
+		// ssz-max:"0" is a no-limit placeholder, not a zero limit
+		Name:    "ZeroMaxList",
+		Payload: ZeroMaxList_Payload,
+		Specs:   map[string]any{},
+		Hash:    "0100000000000000020000000000000003000000000000000000000000000000",
+	},
+	{
 		Name:    "ViewTypes_View1",
 		Payload: ViewTypes1_Payload,
 		View:    (*ViewTypes1_View1)(nil),
@@ -122,6 +136,35 @@ func TestCodegenExtendedTypes(t *testing.T) {
 	for _, tc := range payloads {
 		t.Run(tc.name, func(t *testing.T) {
 			testCodegenPayloadByReflection(t, tc.payload, nil, dynssz.WithExtendedTypes())
+		})
+	}
+}
+
+// TestCodegenBigIntGolden pins the generated big.Int hash tree root against
+// hardcoded golden values. The other codegen tests for extended types are purely
+// differential (codegen vs reflection), so a simultaneous change to both engines
+// would otherwise go unnoticed; these golden roots catch it. ExtendedTypes1 has a
+// value big.Int field, CoverageTypes2 a pointer *big.Int.
+func TestCodegenBigIntGolden(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload any
+		golden  string
+	}{
+		{"valueBigInt", ExtendedTypes1_Payload1, "5235f836b4e001a3984250744d2749e4ba9e79158c8fb36e6cde7acf1d62920c"},
+		{"pointerBigInt", CoverageTypes2_Payload1, "86b9299d76a4d3550dc10899d5508e1c4e1a0467a5c1b7dca4774c1f717b62ea"},
+	}
+
+	ds := dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes())
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root, err := ds.HashTreeRoot(tc.payload)
+			if err != nil {
+				t.Fatalf("HashTreeRoot: %v", err)
+			}
+			if got := hex.EncodeToString(root[:]); got != tc.golden {
+				t.Fatalf("codegen big.Int root changed: got %s want %s", got, tc.golden)
+			}
 		})
 	}
 }
