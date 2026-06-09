@@ -6,6 +6,7 @@ package dynssz
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/casbin/govaluate"
 )
@@ -30,6 +31,26 @@ func (d *DynSsz) ResolveSpecValue(name string) (bool, uint64, error) {
 	}
 
 	cachedValue = &cachedSpecValue{}
+
+	// Fast path: a spec value provided directly under this name keeps its exact
+	// type and full uint64 precision. govaluate evaluates everything as float64,
+	// which silently loses precision near uint64 max, so it is only used for
+	// actual expressions below.
+	if raw, ok := d.specValues[name]; ok {
+		value, resolved, err := specValueToUint64(raw)
+		if err != nil {
+			return false, 0, fmt.Errorf("invalid dynamic spec value %q: %w", name, err)
+		}
+		if resolved {
+			cachedValue.resolved = true
+			cachedValue.value = value
+			d.specCacheMutex.Lock()
+			d.specValueCache[name] = cachedValue
+			d.specCacheMutex.Unlock()
+			return true, value, nil
+		}
+	}
+
 	expression, err := govaluate.NewEvaluableExpression(name)
 	if err != nil {
 		return false, 0, fmt.Errorf("error parsing dynamic spec expression: %w", err)
@@ -37,21 +58,82 @@ func (d *DynSsz) ResolveSpecValue(name string) (bool, uint64, error) {
 
 	result, err := expression.Evaluate(d.specValues)
 	if err == nil {
-		value, ok := result.(float64)
-		if ok {
-			cachedValue.resolved = true
-			cachedValue.value = uint64(value)
-			if float64(cachedValue.value) < value {
-				// rounding issue - always round up to full bytes as we can't serialize parial bytes
-				cachedValue.value++
+		if value, ok := result.(float64); ok {
+			resolved, rerr := specFloatToUint64(value)
+			if rerr != nil {
+				return false, 0, fmt.Errorf("invalid dynamic spec expression %q: %w", name, rerr)
 			}
+			cachedValue.resolved = true
+			cachedValue.value = resolved
 		}
 	}
 
-	// fmt.Printf("spec lookup %v,  ok: %v, value: %v\n", name, cachedValue.resolved, cachedValue.value)
 	d.specCacheMutex.Lock()
 	d.specValueCache[name] = cachedValue
 	d.specCacheMutex.Unlock()
 
 	return cachedValue.resolved, cachedValue.value, nil
+}
+
+// specValueToUint64 converts a directly-provided spec value to uint64, preserving
+// full precision for integer types. ok is false (without error) for unsupported
+// types so the caller can fall back to expression evaluation / static limits.
+func specValueToUint64(raw any) (value uint64, ok bool, err error) {
+	switch v := raw.(type) {
+	case uint64:
+		return v, true, nil
+	case uint:
+		return uint64(v), true, nil
+	case uint32:
+		return uint64(v), true, nil
+	case uint16:
+		return uint64(v), true, nil
+	case uint8:
+		return uint64(v), true, nil
+	case int:
+		return intSpecToUint64(int64(v))
+	case int64:
+		return intSpecToUint64(v)
+	case int32:
+		return intSpecToUint64(int64(v))
+	case int16:
+		return intSpecToUint64(int64(v))
+	case int8:
+		return intSpecToUint64(int64(v))
+	case float64:
+		u, ferr := specFloatToUint64(v)
+		return u, ferr == nil, ferr
+	case float32:
+		u, ferr := specFloatToUint64(float64(v))
+		return u, ferr == nil, ferr
+	default:
+		return 0, false, nil
+	}
+}
+
+func intSpecToUint64(v int64) (uint64, bool, error) {
+	if v < 0 {
+		return 0, false, fmt.Errorf("negative value %d", v)
+	}
+	return uint64(v), true, nil
+}
+
+// specFloatToUint64 validates a float spec value and rounds it up to the next
+// whole unit (partial bytes/bits cannot be serialized).
+func specFloatToUint64(v float64) (uint64, error) {
+	switch {
+	case math.IsNaN(v):
+		return 0, fmt.Errorf("value is NaN")
+	case math.IsInf(v, 0):
+		return 0, fmt.Errorf("value is infinite")
+	case v < 0:
+		return 0, fmt.Errorf("negative value %v", v)
+	case v >= math.Ldexp(1, 64): // >= 2^64 overflows uint64
+		return 0, fmt.Errorf("value %v overflows uint64", v)
+	}
+	u := uint64(v)
+	if float64(u) < v {
+		u++
+	}
+	return u, nil
 }

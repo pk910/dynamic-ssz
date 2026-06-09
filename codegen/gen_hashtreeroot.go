@@ -443,11 +443,11 @@ func (ctx *hashTreeRootContext) hashOptionalList(desc *ssztypes.TypeDescriptor, 
 
 // hashBigInt generates hash tree root code for SSZ big int types.
 func (ctx *hashTreeRootContext) hashBigInt(_ *ssztypes.TypeDescriptor, varName string, indent int) error {
+	// hash the sign byte followed by the big-endian magnitude so values of equal
+	// magnitude but opposite sign do not collide
 	ctx.appendCode(indent, "{\n")
-	ctx.appendCode(indent+1, "bigIntBytes := %s.Bytes()\n", varName)
-	ctx.appendCode(indent+1, "if len(bigIntBytes) == 0 {\n")
-	ctx.appendCode(indent+2, "bigIntBytes = make([]byte, 1)\n")
-	ctx.appendCode(indent+1, "}\n")
+	ctx.appendCode(indent+1, "bigIntBytes := append([]byte{0}, %s.Bytes()...)\n", varName)
+	ctx.appendCode(indent+1, "if %s.Sign() < 0 {\n\t\tbigIntBytes[0] = 1\n\t}\n", varName)
 	ctx.appendCode(indent+1, "hh.PutBytes(bigIntBytes)\n")
 	ctx.appendCode(indent, "}\n")
 	return nil

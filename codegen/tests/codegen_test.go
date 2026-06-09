@@ -126,6 +126,35 @@ func TestCodegenExtendedTypes(t *testing.T) {
 	}
 }
 
+// TestCodegenBigIntGolden pins the generated big.Int hash tree root against
+// hardcoded golden values. The other codegen tests for extended types are purely
+// differential (codegen vs reflection), so a simultaneous change to both engines
+// would otherwise go unnoticed; these golden roots catch it. ExtendedTypes1 has a
+// value big.Int field, CoverageTypes2 a pointer *big.Int.
+func TestCodegenBigIntGolden(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload any
+		golden  string
+	}{
+		{"valueBigInt", ExtendedTypes1_Payload1, "5235f836b4e001a3984250744d2749e4ba9e79158c8fb36e6cde7acf1d62920c"},
+		{"pointerBigInt", CoverageTypes2_Payload1, "86b9299d76a4d3550dc10899d5508e1c4e1a0467a5c1b7dca4774c1f717b62ea"},
+	}
+
+	ds := dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes())
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root, err := ds.HashTreeRoot(tc.payload)
+			if err != nil {
+				t.Fatalf("HashTreeRoot: %v", err)
+			}
+			if got := hex.EncodeToString(root[:]); got != tc.golden {
+				t.Fatalf("codegen big.Int root changed: got %s want %s", got, tc.golden)
+			}
+		})
+	}
+}
+
 func TestCodegenCoverageTypes1(t *testing.T) {
 	testCodegenPayloadByReflection(t, CoverageTypes1_Payload, SimpleTypesWithSpecs_Specs)
 }

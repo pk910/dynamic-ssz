@@ -1128,15 +1128,25 @@ func (ctx *decoderContext) unmarshalOptionalList(desc *ssztypes.TypeDescriptor, 
 
 // unmarshalBigInt generates unmarshal code for SSZ big int types.
 func (ctx *decoderContext) unmarshalBigInt(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
-	ctx.appendCode(indent, "if buf, err := dec.DecodeBytesBuf(dec.GetLength()); err != nil {\n")
-	ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith("err"))
-	ctx.appendCode(indent, "} else {\n")
+	bigImport := ctx.typePrinter.AddImport("math/big", "big")
 	ptrVarName := varName
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 		ptrVarName = fmt.Sprintf("*(%s)", varName)
 	}
-	mathImport := ctx.typePrinter.AddImport("math/big", "big")
-	ctx.appendCode(indent+1, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, fmt.Sprintf("*(%s.NewInt(0).SetBytes(buf))", mathImport), "big.Int"))
+	valVar := ctx.getValVar()
+	signErr := "sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, \"invalid big.Int sign byte\")"
+	// sign byte (0 = non-negative, 1 = negative) followed by the big-endian magnitude
+	ctx.appendCode(indent, "if buf, err := dec.DecodeBytesBuf(dec.GetLength()); err != nil {\n")
+	ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith("err"))
+	ctx.appendCode(indent, "} else if len(buf) > 0 && buf[0] > 1 {\n")
+	ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith(signErr))
+	ctx.appendCode(indent, "} else {\n")
+	ctx.appendCode(indent+1, "%s := %s.NewInt(0)\n", valVar, bigImport)
+	ctx.appendCode(indent+1, "if len(buf) > 0 {\n")
+	ctx.appendCode(indent+2, "%s.SetBytes(buf[1:])\n", valVar)
+	ctx.appendCode(indent+2, "if buf[0] == 1 {\n\t\t\t%s.Neg(%s)\n\t\t}\n", valVar, valVar)
+	ctx.appendCode(indent+1, "}\n")
+	ctx.appendCode(indent+1, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, fmt.Sprintf("*%s", valVar), "big.Int"))
 	ctx.appendCode(indent, "}\n")
 	return nil
 }

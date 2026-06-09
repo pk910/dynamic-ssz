@@ -460,3 +460,62 @@ func TestZeroUnionMarshalDoesNotPanic(t *testing.T) {
 		}
 	})
 }
+
+// TestUnionDataTypeMismatch verifies that a CompatibleUnion whose Data holds a
+// value of the wrong concrete type returns a clean error across marshal/HTR/size
+// instead of panicking inside the typed marshaler.
+func TestUnionDataTypeMismatch(t *testing.T) {
+	type T struct {
+		U CompatibleUnion[struct {
+			Variant0 uint32
+			Variant1 [16]byte
+		}]
+	}
+	ds := NewDynSsz(nil)
+
+	check := func(name string, fn func() error) {
+		t.Helper()
+		var err error
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("%s panicked: %v", name, r)
+				}
+			}()
+			err = fn()
+		}()
+		if err == nil {
+			t.Fatalf("%s: expected error", name)
+		}
+		if !errors.Is(err, sszutils.ErrInvalidValueRange) {
+			t.Fatalf("%s: expected ErrInvalidValueRange, got %v", name, err)
+		}
+	}
+
+	// variant 0 expects uint32, Data is a string
+	bad := &T{}
+	bad.U.Variant = 0
+	bad.U.Data = "not a uint32"
+	check("marshal", func() error { _, e := ds.MarshalSSZ(bad); return e })
+	check("htr", func() error { _, e := ds.HashTreeRoot(bad); return e })
+
+	// variant 1 expects [16]byte, Data is uint32
+	bad2 := &T{}
+	bad2.U.Variant = 1
+	bad2.U.Data = uint32(42)
+	check("marshal2", func() error { _, e := ds.MarshalSSZ(bad2); return e })
+	check("htr2", func() error { _, e := ds.HashTreeRoot(bad2); return e })
+
+	// A dynamic variant exercises the size-path guard: without it, sizing the
+	// wrong-typed value would call Len() on a non-slice and panic.
+	type D struct {
+		U CompatibleUnion[struct {
+			Variant0 []uint64 `ssz-max:"8"`
+			Variant1 uint32
+		}]
+	}
+	dynBad := &D{}
+	dynBad.U.Variant = 0 // expects []uint64
+	dynBad.U.Data = uint32(42)
+	check("size-dynvariant", func() error { _, e := ds.MarshalSSZ(dynBad); return e })
+}

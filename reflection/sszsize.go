@@ -201,6 +201,9 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		if dataField.IsNil() {
 			return 0, sszutils.ErrInvalidUnionVariantFn()
 		}
+		if dataField.Elem().Type() != variantDesc.Type {
+			return 0, sszutils.ErrUnionTypeMismatchFn()
+		}
 
 		// Calculate size of the data
 		dataSize, err := ctx.getSszValueSize(variantDesc, dataField.Elem())
@@ -269,8 +272,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		if !isBigInt {
 			return 0, sszutils.ErrBigIntTypeExpectedFn(targetType.Type.Name())
 		}
-		bigIntBytes := bigInt.Bytes()
-		staticSize = uint32(len(bigIntBytes))
+		staticSize = uint32(1 + len(bigInt.Bytes()))
 
 	default:
 		return 0, sszutils.ErrUnknownTypeFn(targetType.Kind)

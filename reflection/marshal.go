@@ -758,6 +758,12 @@ func (ctx *ReflectionCtx) marshalCompatibleUnion(sourceType *ssztypes.TypeDescri
 		return sszutils.ErrInvalidUnionVariantFn()
 	}
 
+	// Reject data whose concrete type does not match the variant, instead of
+	// panicking inside the typed marshaler.
+	if dataField.Elem().Type() != variantDesc.Type {
+		return sszutils.ErrUnionTypeMismatchFn()
+	}
+
 	// Append variant byte
 	encoder.EncodeUint8(variant)
 
@@ -854,8 +860,13 @@ func (ctx *ReflectionCtx) marshalBigInt(sourceType *ssztypes.TypeDescriptor, sou
 	if !isBigInt {
 		return sszutils.ErrBigIntTypeExpectedFn(sourceType.Type.Name())
 	}
-	bigIntBytes := bigInt.Bytes()
-	encoder.EncodeBytes(bigIntBytes)
+	// sign byte (0 = non-negative, 1 = negative) followed by the big-endian magnitude
+	signByte := byte(0)
+	if bigInt.Sign() < 0 {
+		signByte = 1
+	}
+	encoder.EncodeUint8(signByte)
+	encoder.EncodeBytes(bigInt.Bytes())
 
 	return nil
 }

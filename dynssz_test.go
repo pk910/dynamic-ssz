@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"math/big"
 	"reflect"
 	"runtime"
 	"strings"
@@ -1608,5 +1609,141 @@ func TestStreamWriterBufferTooSmall(t *testing.T) {
 		if !bytes.Equal(sb.Bytes(), ref) {
 			t.Fatalf("buffer size %d output mismatch: got %x want %x", sz, sb.Bytes(), ref)
 		}
+	}
+}
+
+// --- big.Int sign preservation (extended types) ---
+
+func TestBigIntSignRoundtrip(t *testing.T) {
+	type T struct{ N big.Int }
+	ds := NewDynSsz(nil, WithExtendedTypes())
+
+	for _, v := range []int64{-1000000, -100, -1, 0, 1, 100, 1 << 40} {
+		src := &T{N: *big.NewInt(v)}
+		enc, err := ds.MarshalSSZ(src)
+		if err != nil {
+			t.Fatalf("marshal %d: %v", v, err)
+		}
+		var dst T
+		if err := ds.UnmarshalSSZ(&dst, enc); err != nil {
+			t.Fatalf("unmarshal %d: %v", v, err)
+		}
+		if dst.N.Cmp(big.NewInt(v)) != 0 {
+			t.Fatalf("roundtrip %d -> %s", v, dst.N.String())
+		}
+	}
+}
+
+// TestBigIntSignEncodingGolden pins the sign-magnitude wire format so a change to
+// both engines at once is still caught (codegen tests are only differential).
+func TestBigIntSignEncodingGolden(t *testing.T) {
+	type T struct{ N big.Int }
+	ds := NewDynSsz(nil, WithExtendedTypes())
+
+	cases := map[int64][]byte{
+		0:    {0x04, 0, 0, 0, 0x00},       // offset, sign(+), no magnitude
+		100:  {0x04, 0, 0, 0, 0x00, 0x64}, // offset, sign(+), 0x64
+		-100: {0x04, 0, 0, 0, 0x01, 0x64}, // offset, sign(-), 0x64
+	}
+	for v, want := range cases {
+		enc, err := ds.MarshalSSZ(&T{N: *big.NewInt(v)})
+		if err != nil {
+			t.Fatalf("marshal %d: %v", v, err)
+		}
+		if !bytes.Equal(enc, want) {
+			t.Fatalf("marshal %d: got %x want %x", v, enc, want)
+		}
+	}
+}
+
+func TestBigIntSignHTRDistinct(t *testing.T) {
+	type T struct{ N big.Int }
+	ds := NewDynSsz(nil, WithExtendedTypes())
+
+	rPos, err := ds.HashTreeRoot(&T{N: *big.NewInt(100)})
+	if err != nil {
+		t.Fatalf("htr pos: %v", err)
+	}
+	rNeg, err := ds.HashTreeRoot(&T{N: *big.NewInt(-100)})
+	if err != nil {
+		t.Fatalf("htr neg: %v", err)
+	}
+	if rPos == rNeg {
+		t.Fatal("positive and negative big.Int must not hash equally")
+	}
+}
+
+func TestBigIntInvalidSignByteRejected(t *testing.T) {
+	type T struct{ N big.Int }
+	ds := NewDynSsz(nil, WithExtendedTypes())
+
+	// offset=4, sign byte 0x02 (invalid), magnitude 0x64
+	bad := []byte{0x04, 0, 0, 0, 0x02, 0x64}
+	var dst T
+	err := ds.UnmarshalSSZ(&dst, bad)
+	if err == nil {
+		t.Fatal("expected error for invalid big.Int sign byte")
+	}
+	if !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Fatalf("expected ErrInvalidValueRange, got %v", err)
+	}
+}
+
+// --- Optional availability byte must be canonical 0x00/0x01 ---
+
+func TestOptionalNonCanonicalAvailabilityRejected(t *testing.T) {
+	type T struct {
+		Pre uint32
+		Opt *uint32 `ssz-type:"optional"`
+	}
+	ds := NewDynSsz(nil, WithExtendedTypes())
+
+	// availability byte 0xff is non-canonical
+	malformed := []byte{0, 0, 0, 0, 8, 0, 0, 0, 0xff, 0x99, 0, 0, 0}
+	if err := ds.UnmarshalSSZ(&T{}, malformed); err == nil {
+		t.Fatal("expected error for non-canonical availability byte")
+	} else if !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Fatalf("expected ErrInvalidValueRange, got %v", err)
+	}
+
+	// canonical present (0x01) and absent (0x00) must decode
+	present := []byte{0, 0, 0, 0, 8, 0, 0, 0, 0x01, 0x99, 0, 0, 0}
+	var dst T
+	if err := ds.UnmarshalSSZ(&dst, present); err != nil {
+		t.Fatalf("availability=1 should decode: %v", err)
+	}
+	if dst.Opt == nil || *dst.Opt != 0x99 {
+		t.Fatalf("unexpected Opt: %v", dst.Opt)
+	}
+	absent := []byte{0, 0, 0, 0, 8, 0, 0, 0, 0x00}
+	var dst2 T
+	if err := ds.UnmarshalSSZ(&dst2, absent); err != nil {
+		t.Fatalf("availability=0 should decode: %v", err)
+	}
+	if dst2.Opt != nil {
+		t.Fatalf("expected nil Opt, got %v", *dst2.Opt)
+	}
+}
+
+// --- Spec value resolution validation ---
+
+func TestResolveSpecValueRejectsDegenerate(t *testing.T) {
+	for _, v := range []any{-1.0, math.NaN(), math.Inf(1), math.Inf(-1), float64(1e30), int(-5), int64(-1)} {
+		ds := NewDynSsz(map[string]any{"X": v})
+		ok, _, err := ds.ResolveSpecValue("X")
+		if err == nil && ok {
+			t.Errorf("spec value %v should be rejected, but resolved", v)
+		}
+	}
+}
+
+func TestResolveSpecValueUint64Precision(t *testing.T) {
+	ds := NewDynSsz(map[string]any{"X": uint64(math.MaxUint64)})
+	ok, val, err := ds.ResolveSpecValue("X")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok || val != math.MaxUint64 {
+		t.Fatalf("expected full-precision MaxUint64, got ok=%v val=%d", ok, val)
 	}
 }

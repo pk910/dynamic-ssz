@@ -484,6 +484,9 @@ func (ctx *ReflectionCtx) buildRootFromCompatibleUnion(sourceType *ssztypes.Type
 	if dataField.IsNil() {
 		return sszutils.ErrInvalidUnionVariantFn()
 	}
+	if dataField.Elem().Type() != variantDesc.Type {
+		return sszutils.ErrUnionTypeMismatchFn()
+	}
 	dataField = dataField.Elem()
 
 	hashIndex := hh.StartTree(sszutils.TreeTypeNone)
@@ -899,9 +902,11 @@ func (ctx *ReflectionCtx) buildRootFromBigInt(sourceType *ssztypes.TypeDescripto
 	if !isBigInt {
 		return sszutils.ErrBigIntTypeExpectedFn(sourceType.Type.Name())
 	}
-	bigIntBytes := bigInt.Bytes()
-	if len(bigIntBytes) == 0 {
-		bigIntBytes = make([]byte, 1)
+	// hash the sign byte followed by the big-endian magnitude so values of equal
+	// magnitude but opposite sign do not collide
+	bigIntBytes := append([]byte{0}, bigInt.Bytes()...)
+	if bigInt.Sign() < 0 {
+		bigIntBytes[0] = 1
 	}
 	hh.PutBytes(bigIntBytes)
 	return nil

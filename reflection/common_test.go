@@ -908,14 +908,14 @@ var commonExtendedTypesTestMatrix = []struct {
 	{
 		"bigint_min",
 		*big.NewInt(0),
-		fromHex("0x"),
+		fromHex("0x00"),
 		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
 	},
 	{
 		"bigint_val1",
 		*big.NewInt(123456789),
-		fromHex("0x075bcd15"),
-		fromHex("0x075bcd1500000000000000000000000000000000000000000000000000000000"),
+		fromHex("0x00075bcd15"),
+		fromHex("0x00075bcd15000000000000000000000000000000000000000000000000000000"),
 	},
 	{
 		"optional_int16",
@@ -954,8 +954,8 @@ var commonExtendedTypesTestMatrix = []struct {
 			F3  float64
 			Big big.Int
 		}{42, &opt1, 3.14, *big.NewInt(999999)},
-		fromHex("0x2a000000140000001f85eb51b81e0940170000000139050f423f"),
-		fromHex("0x6a2b0143a450c236cbfee0c6c7d94288a5968c1e033ee60e91fd6604d1b1be9c"),
+		fromHex("0x2a000000140000001f85eb51b81e094017000000013905000f423f"),
+		fromHex("0xa94c18b7784f8548193c27cac4a1dd8686f6cd3be5bd1356cc2ccc979dacca3a"),
 	},
 }
 

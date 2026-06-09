@@ -1104,15 +1104,20 @@ func (ctx *ReflectionCtx) unmarshalOptional(targetType *ssztypes.TypeDescriptor,
 		return sszutils.ErrOptionalFlagEOFFn()
 	}
 
-	// Read the availability byte
+	// Read the availability byte; only the canonical 0x00/0x01 values are valid
 	availability, err := decoder.DecodeUint8()
 	if err != nil {
 		return err
 	}
 
-	if availability == 0 {
+	switch availability {
+	case 0:
 		targetValue.Set(reflect.Zero(targetType.Type))
 		return nil
+	case 1:
+		// present, decoded below
+	default:
+		return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "invalid optional availability byte 0x%02x", availability)
 	}
 
 	if targetValue.IsNil() {
@@ -1199,7 +1204,14 @@ func (ctx *ReflectionCtx) unmarshalBigInt(_ *ssztypes.TypeDescriptor, targetValu
 			return err
 		}
 
-		bigInt.SetBytes(bigIntBytes)
+		// sign byte (0 = non-negative, 1 = negative) followed by the big-endian magnitude
+		if bigIntBytes[0] > 1 {
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "invalid big.Int sign byte 0x%02x", bigIntBytes[0])
+		}
+		bigInt.SetBytes(bigIntBytes[1:])
+		if bigIntBytes[0] == 1 {
+			bigInt.Neg(bigInt)
+		}
 	}
 
 	targetValue.Set(reflect.ValueOf(*bigInt))
