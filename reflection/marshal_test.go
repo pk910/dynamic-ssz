@@ -1082,16 +1082,22 @@ func TestUnmarshalEmptyListIsNonNilSlice(t *testing.T) {
 		Value []uint8 `ssz-max:"10"` // variable-size element
 	}
 
-	// Container holding both a fixed-element list and a dynamic-element list,
-	// each populated with a non-nil empty slice before marshalling.
+	// Container holding fixed-element and dynamic-element lists, both as plain
+	// slices and as pointers-to-slice. The pointer variants exercise the
+	// GoTypeFlagIsPointer branch in unmarshalList/unmarshalDynamicList. Each is
+	// populated with a non-nil empty slice before marshalling.
 	type Container struct {
-		Static  []uint32         `ssz-max:"10"` // fixed-size elements
-		Dynamic []DynamicElement `ssz-max:"10"` // variable-size elements
+		Static     []uint32          `ssz-max:"10"` // fixed-size elements
+		Dynamic    []DynamicElement  `ssz-max:"10"` // variable-size elements
+		StaticPtr  *[]uint32         `ssz-max:"10"` // pointer to fixed-size element list
+		DynamicPtr *[]DynamicElement `ssz-max:"10"` // pointer to variable-size element list
 	}
 
 	input := Container{
-		Static:  []uint32{},
-		Dynamic: []DynamicElement{},
+		Static:     []uint32{},
+		Dynamic:    []DynamicElement{},
+		StaticPtr:  &[]uint32{},
+		DynamicPtr: &[]DynamicElement{},
 	}
 
 	buf, err := dynssz.MarshalSSZ(input)
@@ -1109,6 +1115,12 @@ func TestUnmarshalEmptyListIsNonNilSlice(t *testing.T) {
 	}
 	if decoded.Dynamic == nil {
 		t.Errorf("Dynamic (variable-size element list) decoded to nil, want non-nil empty slice")
+	}
+	if decoded.StaticPtr == nil || *decoded.StaticPtr == nil {
+		t.Errorf("StaticPtr (pointer to fixed-size element list) decoded to nil, want non-nil empty slice")
+	}
+	if decoded.DynamicPtr == nil || *decoded.DynamicPtr == nil {
+		t.Errorf("DynamicPtr (pointer to variable-size element list) decoded to nil, want non-nil empty slice")
 	}
 	if len(decoded.Static) != 0 || len(decoded.Dynamic) != 0 {
 		t.Errorf("expected empty slices, got Static=%v Dynamic=%v", decoded.Static, decoded.Dynamic)
