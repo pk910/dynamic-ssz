@@ -80,7 +80,13 @@ func ReadOffset(buf []byte) uint64 {
 // ExpandSlice expands a slice to a byte slice
 func ExpandSlice[T any](src []T, size int) []T {
 	if len(src) >= size {
-		return src[:size]
+		out := src[:size]
+		if out == nil {
+			// size == 0 and src == nil: return a non-nil empty slice so empty
+			// lists always decode to [] rather than nil.
+			out = make([]T, 0)
+		}
+		return out
 	}
 
 	if cap(src) < size {

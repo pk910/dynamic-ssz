@@ -1069,6 +1069,52 @@ func TestMarshalEmptyDynamicList(t *testing.T) {
 	}
 }
 
+// TestUnmarshalEmptyListIsNonNilSlice is a regression test for empty lists
+// decoding to nil slices. SSZ encodes a nil slice and an empty (non-nil) slice
+// identically, so unmarshal must always produce a non-nil empty slice. Lists of
+// variable-size elements previously decoded to nil (unmarshalDynamicList) while
+// lists of fixed-size elements decoded to an empty slice (unmarshalList), which
+// is inconsistent and breaks consumers like json.Marshal (nil -> "null").
+func TestUnmarshalEmptyListIsNonNilSlice(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type DynamicElement struct {
+		Value []uint8 `ssz-max:"10"` // variable-size element
+	}
+
+	// Container holding both a fixed-element list and a dynamic-element list,
+	// each populated with a non-nil empty slice before marshalling.
+	type Container struct {
+		Static  []uint32         `ssz-max:"10"` // fixed-size elements
+		Dynamic []DynamicElement `ssz-max:"10"` // variable-size elements
+	}
+
+	input := Container{
+		Static:  []uint32{},
+		Dynamic: []DynamicElement{},
+	}
+
+	buf, err := dynssz.MarshalSSZ(input)
+	if err != nil {
+		t.Fatalf("MarshalSSZ error: %v", err)
+	}
+
+	decoded := Container{}
+	if err := dynssz.UnmarshalSSZ(&decoded, buf); err != nil {
+		t.Fatalf("UnmarshalSSZ error: %v", err)
+	}
+
+	if decoded.Static == nil {
+		t.Errorf("Static (fixed-size element list) decoded to nil, want non-nil empty slice")
+	}
+	if decoded.Dynamic == nil {
+		t.Errorf("Dynamic (variable-size element list) decoded to nil, want non-nil empty slice")
+	}
+	if len(decoded.Static) != 0 || len(decoded.Dynamic) != 0 {
+		t.Errorf("expected empty slices, got Static=%v Dynamic=%v", decoded.Static, decoded.Dynamic)
+	}
+}
+
 func TestMarshalExtendedTypesDisabled(t *testing.T) {
 	dynssz := NewDynSsz(nil) // no WithExtendedTypes()
 
