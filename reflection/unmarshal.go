@@ -878,6 +878,16 @@ func (ctx *ReflectionCtx) unmarshalList(targetType *ssztypes.TypeDescriptor, tar
 func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
 	sszLen := decoder.GetLength()
 	if sszLen == 0 {
+		// Empty list: set a non-nil empty slice for consistency with
+		// unmarshalList (static-element lists), so empty dynamic-element
+		// lists round-trip as [] rather than nil.
+		if targetType.Kind == reflect.Slice {
+			fieldT := targetType.Type
+			if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+				fieldT = fieldT.Elem()
+			}
+			targetValue.Set(reflect.MakeSlice(fieldT, 0, 0))
+		}
 		return nil
 	}
 
