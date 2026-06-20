@@ -7,6 +7,7 @@ package ssztypes
 import (
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -707,6 +708,51 @@ func TestTypeCache_SizeHintExpressions(t *testing.T) {
 	// Should have dynamic size flag set
 	if field.Type.SszTypeFlags&SszTypeFlagHasDynamicSize == 0 {
 		t.Error("expected SszTypeFlagHasDynamicSize to be set")
+	}
+}
+
+// A dynssz-size field tag resolving to a value beyond the uint32 size range
+// must error rather than silently truncate during conversion.
+func TestTypeCache_SizeHintExpressionExceedsUint32(t *testing.T) {
+	ds := &dummyDynamicSpecs{
+		specValues: map[string]uint64{"HUGE_SIZE": uint64(math.MaxUint32) + 1},
+	}
+	cache := NewTypeCache(ds)
+
+	type TestStruct struct {
+		Data []byte `dynssz-size:"HUGE_SIZE"`
+	}
+
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for dynssz-size value exceeding uint32 range")
+	}
+	if !strings.Contains(err.Error(), "exceeds the uint32 size range") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// annotatedOverflowSize carries a registered annotation whose dynssz-size
+// expression resolves beyond uint32, exercising the annotation-registry
+// resolution path (distinct from struct field tags).
+type annotatedOverflowSize []byte
+
+var _ = sszutils.Annotate[annotatedOverflowSize](`dynssz-size:"HUGE_SIZE"`)
+
+// A registered annotation whose dynssz-size resolves beyond the uint32 size
+// range must error during the deferred spec resolution.
+func TestTypeCache_AnnotationSizeHintExceedsUint32(t *testing.T) {
+	ds := &dummyDynamicSpecs{
+		specValues: map[string]uint64{"HUGE_SIZE": uint64(math.MaxUint32) + 1},
+	}
+	cache := NewTypeCache(ds)
+
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(annotatedOverflowSize{}), nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for annotation dynssz-size value exceeding uint32 range")
+	}
+	if !strings.Contains(err.Error(), "exceeds the uint32 size range") {
+		t.Errorf("unexpected error: %v", err)
 	}
 }
 
