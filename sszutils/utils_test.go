@@ -174,6 +174,37 @@ func TestResolveSpecValueWithDefault_Found(t *testing.T) {
 	}
 }
 
+func TestResolveSpecValueWithDefault_ResolvedZeroFallsBack(t *testing.T) {
+	// A resolved value of 0 is an invalid size/limit and falls back to the
+	// positive static default.
+	ds := &mockDynamicSpecs{values: map[string]uint64{"foo": 0}}
+
+	val, err := ResolveSpecValueWithDefault(ds, "foo", 42)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if val != 42 {
+		t.Errorf("expected fallback to static 42, got %d", val)
+	}
+
+	// When the static fallback is itself 0, resolving to 0 is an error: there is
+	// no positive size/limit to use.
+	_, err = ResolveSpecValueWithDefault(ds, "foo", 0)
+	if err == nil || !errors.Is(err, ErrInvalidConstraint) {
+		t.Errorf("expected ErrInvalidConstraint for resolved 0 with no static fallback, got: %v", err)
+	}
+
+	// A name absent from the spec set keeps the static value unchanged, even 0.
+	dsEmpty := &mockDynamicSpecs{values: map[string]uint64{}}
+	val, err = ResolveSpecValueWithDefault(dsEmpty, "missing", 0)
+	if err != nil {
+		t.Fatalf("unexpected error for not-found: %v", err)
+	}
+	if val != 0 {
+		t.Errorf("expected 0 for not-found with 0 default, got %d", val)
+	}
+}
+
 // ============================================================================
 // TreeRoot Tests
 // ============================================================================

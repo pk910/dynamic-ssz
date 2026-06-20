@@ -2304,9 +2304,9 @@ func TestListOfZeroSizeElementRejected(t *testing.T) {
 	}
 }
 
-// A struct mixing a dynamic field with a zero-length array must marshal without
-// panicking, and the buffer and streaming encoders must agree.
-func TestZeroLengthArrayFieldRoundtrip(t *testing.T) {
+// A zero-length array maps to Vector[T, 0], which the SSZ spec declares illegal.
+// Such a type must be rejected with a clean error rather than panicking.
+func TestZeroLengthArrayFieldRejected(t *testing.T) {
 	type T struct {
 		A uint64
 		V []byte `ssz-max:"32"`
@@ -2315,34 +2315,26 @@ func TestZeroLengthArrayFieldRoundtrip(t *testing.T) {
 	ds := NewDynSsz(nil)
 	src := &T{A: 7, V: []byte{1, 2, 3}}
 
-	var enc []byte
+	var err error
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
-				t.Fatalf("buffer marshal panicked: %v", r)
+				t.Fatalf("buffer marshal panicked instead of erroring: %v", r)
 			}
 		}()
-		var err error
-		enc, err = ds.MarshalSSZ(src)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
+		_, err = ds.MarshalSSZ(src)
 	}()
+	if err == nil {
+		t.Fatal("expected error for zero-length array field")
+	}
+	if !strings.Contains(err.Error(), "zero length") {
+		t.Errorf("unexpected error: %v", err)
+	}
 
+	// The streaming encoder must reject it the same way.
 	var buf bytes.Buffer
-	if err := ds.MarshalSSZWriter(src, &buf); err != nil {
-		t.Fatalf("stream marshal: %v", err)
-	}
-	if !bytes.Equal(enc, buf.Bytes()) {
-		t.Errorf("buffer (%x) and stream (%x) marshal disagree", enc, buf.Bytes())
-	}
-
-	var dst T
-	if err := ds.UnmarshalSSZ(&dst, enc); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if dst.A != 7 || !bytes.Equal(dst.V, []byte{1, 2, 3}) {
-		t.Errorf("roundtrip mismatch: %+v", dst)
+	if err := ds.MarshalSSZWriter(src, &buf); err == nil {
+		t.Fatal("expected stream marshal to reject zero-length array field")
 	}
 }
 

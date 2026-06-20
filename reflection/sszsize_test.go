@@ -196,7 +196,9 @@ func TestSizeSSZExtendedTypesDisabled(t *testing.T) {
 func TestSizeSSZErrors(t *testing.T) {
 	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
-	type InvalidDynamicType struct{}
+	// These scaffolds only need a descriptor to mutate into an invalid custom
+	// type below; they carry a field so they are valid containers at build time.
+	type InvalidDynamicType struct{ X uint64 }
 	invalidTypeDesc, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(InvalidDynamicType{}), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to get type descriptor: %v", err)
@@ -205,7 +207,7 @@ func TestSizeSSZErrors(t *testing.T) {
 	invalidTypeDesc.Size = 0
 	invalidTypeDesc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
 
-	type InvalidStaticType struct{}
+	type InvalidStaticType struct{ X uint64 }
 	invalidTypeDesc2, err := dynssz.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(InvalidStaticType{}), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to get type descriptor: %v", err)

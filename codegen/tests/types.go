@@ -661,6 +661,13 @@ type AnnotatedWithSpecs []uint32
 
 var _ = sszutils.Annotate[AnnotatedWithSpecs](`ssz-max:"10" dynssz-max:"ANNOTATED_MAX"`)
 
+// AnnotatedZeroStaticMax has only a placeholder static ssz-max (0); its real
+// limit must come from the dynssz expression. When that expression resolves to 0
+// there is no positive fallback, so both engines must error.
+type AnnotatedZeroStaticMax []uint32
+
+var _ = sszutils.Annotate[AnnotatedZeroStaticMax](`ssz-max:"0" dynssz-max:"ZEROSTATIC_MAX"`)
+
 // AnnotatedContainer uses annotated types as fields WITHOUT field tags.
 // The reflection path must resolve limits from the annotation registry;
 // the codegen path delegates to each field's generated methods.

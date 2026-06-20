@@ -295,6 +295,16 @@ func getSszSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]SszS
 					if specVal > math.MaxUint32 {
 						return sszSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "dynssz-size value %d for field %q exceeds the uint32 size range", specVal, field.Name)
 					}
+					if specVal == 0 {
+						// A dynssz-size that resolves to 0 would form a zero-length
+						// vector, which the SSZ spec forbids. Fall back to a positive
+						// static ssz-size if one was given; otherwise there is no
+						// valid length for this dimension.
+						if i < len(sszSizes) && sszSizes[i].Size > 0 {
+							continue
+						}
+						return sszSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-size for field %q resolved to 0 with no positive static fallback", field.Name)
+					}
 					sszSize.Size = uint32(specVal)
 					sszSize.Custom = true
 				} else {
@@ -399,6 +409,15 @@ func getSszMaxSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]S
 				isExpr = true
 				if ok {
 					// dynamic value from spec
+					if specVal == 0 {
+						// A dynssz-max that resolves to 0 falls back to a positive
+						// static ssz-max if one was given; otherwise the list
+						// capacity would be 0, which we reject as invalid.
+						if i < len(sszMaxSizes) && sszMaxSizes[i].Size > 0 {
+							continue
+						}
+						return sszMaxSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-max for field %q resolved to 0 with no positive static fallback", field.Name)
+					}
 					sszMaxSize.Size = specVal
 					sszMaxSize.Custom = true
 				} else {

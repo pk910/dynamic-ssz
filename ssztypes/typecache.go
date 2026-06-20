@@ -284,8 +284,17 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 							if val > math.MaxUint32 {
 								return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "ssz-size value %d exceeds the uint32 size range", val)
 							}
-							sizeHints[i].Size = uint32(val)
-							sizeHints[i].Custom = true
+							if val == 0 {
+								// A resolved size of 0 would form a zero-length
+								// vector; fall back to a positive static ssz-size or
+								// reject if none was given.
+								if sizeHints[i].Size == 0 {
+									return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "ssz-size expression %q resolved to 0 with no positive static fallback", sizeHints[i].Expr)
+								}
+							} else {
+								sizeHints[i].Size = uint32(val)
+								sizeHints[i].Custom = true
+							}
 						}
 					}
 				}
@@ -293,8 +302,15 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 				for i := range maxSizeHints {
 					if maxSizeHints[i].Expr != "" {
 						if ok, val, err := tc.specs.ResolveSpecValue(maxSizeHints[i].Expr); err == nil && ok {
-							maxSizeHints[i].Size = val
-							maxSizeHints[i].Custom = true
+							if val == 0 {
+								// Fall back to a positive static ssz-max or reject.
+								if maxSizeHints[i].Size == 0 {
+									return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "ssz-max expression %q resolved to 0 with no positive static fallback", maxSizeHints[i].Expr)
+								}
+							} else {
+								maxSizeHints[i].Size = val
+								maxSizeHints[i].Custom = true
+							}
 						}
 					}
 				}
@@ -622,7 +638,7 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 		}
 	}
 
-	if desc.SszTypeFlags&SszTypeFlagHasBitSize != 0 && (desc.SszType != SszBitvectorType && desc.SszType != SszBitlistType) {
+	if desc.SszTypeFlags&SszTypeFlagHasBitSize != 0 && desc.SszType != SszBitvectorType && desc.SszType != SszBitlistType {
 		return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "bit size tag is only allowed for bitvector or bitlist types, got %v", desc.SszType)
 	}
 
@@ -712,6 +728,17 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 			SszCompatFlagFastSSZMarshaler |
 			SszCompatFlagFastSSZHasher |
 			SszCompatFlagHashTreeRootWith
+	}
+
+	// Per the SSZ spec, containers (including progressive containers) must have
+	// at least one field. Reject a struct that would be encoded field-by-field
+	// with no SSZ-encodable (exported) fields. Types that delegate to their own
+	// SSZ methods (any compat flag set) are exempt: they do not use the plain
+	// container layout, so a zero-field struct shell is legitimate for them.
+	if desc.SszType == SszContainerType || desc.SszType == SszProgressiveContainerType {
+		if desc.SszCompatFlags == 0 && desc.ContainerDesc != nil && len(desc.ContainerDesc.Fields) == 0 {
+			return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "container type %v has no SSZ fields, which is invalid per the SSZ spec", schemaType)
+		}
 	}
 
 	if desc.SszType == SszCustomType {
@@ -1283,6 +1310,15 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 		desc.Len = byteLen
 	default:
 		return sszutils.NewSszError(sszutils.ErrInvalidConstraint, "missing size hint for vector type")
+	}
+
+	// Per the SSZ spec, Vector[type, 0] and Bitvector[0] are illegal: a vector
+	// must have a length greater than zero. This also catches dimensions whose
+	// dynssz-size resolved to 0 with no positive static fallback. A bit size
+	// misused on a non-bitvector also yields length 0, but that has a more
+	// specific error reported after the descriptor is built, so don't mask it.
+	if desc.Len == 0 && (desc.SszTypeFlags&SszTypeFlagHasBitSize == 0 || desc.SszType == SszBitvectorType) {
+		return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "vector type %v has zero length, which is invalid per the SSZ spec", t)
 	}
 
 	childSizeHints := []SszSizeHint{}

@@ -253,6 +253,36 @@ func TestCodegenNoDynExprTypes(t *testing.T) {
 	testCodegenPayloadByReflection(t, NoDynExprTypes_Payload, nil)
 }
 
+// A dynssz expression that resolves to 0 must fall back to the static value in
+// both engines (round-11 #3). Previously the generated code applied the literal
+// 0 limit and rejected the value while reflection fell back, diverging.
+func TestCodegenResolvedZeroFallsBackToStatic(t *testing.T) {
+	// dynssz-max ANNOTATED_MAX resolves to 0 -> both fall back to ssz-max:"10".
+	testCodegenPayloadByReflection(t, AnnotatedWithSpecs{1, 2, 3}, map[string]any{"ANNOTATED_MAX": 0})
+}
+
+// When the dynssz expression resolves to 0 and the only static value is the
+// placeholder 0 (no positive fallback), both engines must error rather than
+// silently encode a zero-capacity list.
+func TestCodegenZeroStaticMaxResolvesToZeroErrors(t *testing.T) {
+	payload := AnnotatedZeroStaticMax{1, 2, 3}
+
+	// A positive resolved value works in both engines and they agree.
+	testCodegenPayloadByReflection(t, payload, map[string]any{"ZEROSTATIC_MAX": 8})
+
+	// Resolving to 0 leaves no positive fallback: the reflection descriptor build
+	// and the generated code must both error.
+	zeroSpecs := map[string]any{"ZEROSTATIC_MAX": 0}
+	refDs := dynssz.NewDynSsz(zeroSpecs, dynssz.WithNoFastSsz(), dynssz.WithNoFastHash())
+	if _, err := refDs.MarshalSSZ(payload); err == nil {
+		t.Error("reflection: expected error for max resolving to 0 with no positive static fallback")
+	}
+	genDs := dynssz.NewDynSsz(zeroSpecs)
+	if _, err := genDs.MarshalSSZ(&payload); err == nil {
+		t.Error("codegen: expected error for max resolving to 0 with no positive static fallback")
+	}
+}
+
 // TestCodegenOptionalListTypes verifies generated code for ssz-type:"optional-list"
 // matches the reflection implementation. Optional-list expresses a pointer as
 // a canonical SSZ List[T, 1] and works without extended types.
