@@ -506,3 +506,33 @@ func TestCalculateLimitOverflow(t *testing.T) {
 		t.Fatal("overflow collision: small and huge capacities share a limit")
 	}
 }
+
+// CalculateBitlistLimit must compute ceil(maxSize/256) and must not collapse to
+// a tiny value when maxSize is near math.MaxUint64.
+func TestCalculateBitlistLimit(t *testing.T) {
+	cases := []struct {
+		max  uint64
+		want uint64
+	}{
+		{0, 0},
+		{1, 1},
+		{255, 1},
+		{256, 1},
+		{257, 2},
+		{512, 2},
+		{513, 3},
+	}
+	for _, c := range cases {
+		if got := CalculateBitlistLimit(c.max); got != c.want {
+			t.Errorf("CalculateBitlistLimit(%d) = %d, want %d", c.max, got, c.want)
+		}
+	}
+
+	maxU := ^uint64(0)
+	if got := CalculateBitlistLimit(maxU); got != maxU/256+1 {
+		t.Errorf("CalculateBitlistLimit(MaxUint64) = %d, want %d", got, maxU/256+1)
+	}
+	if CalculateBitlistLimit(maxU) <= CalculateBitlistLimit(256) {
+		t.Error("a huge maxSize must not collapse to the same limit as a small one")
+	}
+}

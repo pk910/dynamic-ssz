@@ -197,7 +197,7 @@ func (w *Wrapper) PutBitlist(bb []byte, maxSize uint64) {
 	indx := w.Index()
 	w.appendBytesAsNodes(b)
 
-	limit := (maxSize + 255) / 256
+	limit := sszutils.CalculateBitlistLimit(maxSize)
 	if size > math.MaxInt {
 		panic(fmt.Sprintf("PutBitlist: size %d exceeds max int", size))
 	}

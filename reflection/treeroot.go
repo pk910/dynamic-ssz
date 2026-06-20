@@ -810,7 +810,7 @@ func (ctx *ReflectionCtx) buildRootFromBitlist(sourceType *ssztypes.TypeDescript
 	if sourceType.SszType == ssztypes.SszProgressiveBitlistType {
 		hh.MerkleizeProgressiveWithMixin(indx, size)
 	} else {
-		hh.MerkleizeWithMixin(indx, size, (maxSize+255)/256)
+		hh.MerkleizeWithMixin(indx, size, sszutils.CalculateBitlistLimit(maxSize))
 	}
 
 	return nil

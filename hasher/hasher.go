@@ -106,9 +106,7 @@ func NewHasherWithHash(hh hash.Hash) *Hasher {
 
 // NewHasherWithHashFn creates a new Hasher with a custom HashFn function.
 func NewHasherWithHashFn(hh HashFn) *Hasher {
-	if !hasherInitialized {
-		initHasher()
-	}
+	initHasher()
 
 	h := &Hasher{
 		hash:       hh,
@@ -285,6 +283,10 @@ func (h *Hasher) internalMerkleizeWithMixin(indx int, num, limit uint64) {
 // PutRootVector appends an array of 32-byte roots and merkleizes them. If
 // maxCapacity is provided, the result includes a length mixin.
 func (h *Hasher) PutRootVector(b [][]byte, maxCapacity ...uint64) error {
+	if len(maxCapacity) > 0 && uint64(len(b)) > maxCapacity[0] {
+		return sszutils.ErrListLengthFn(len(b), maxCapacity[0])
+	}
+
 	indx := len(h.buf)
 	for _, i := range b {
 		if len(i) != 32 {
@@ -330,7 +332,7 @@ func (h *Hasher) PutBitlist(bb []byte, maxSize uint64) {
 
 	indx := len(h.buf)
 	h.AppendBytes32(bitlist)
-	h.internalMerkleizeWithMixin(indx, size, (maxSize+255)/256)
+	h.internalMerkleizeWithMixin(indx, size, sszutils.CalculateBitlistLimit(maxSize))
 }
 
 // PutProgressiveBitlist appends an SSZ-encoded bitlist and merkleizes it
@@ -863,7 +865,20 @@ func (h *Hasher) collapseProgressiveLayer(layer *treeLayer, indx int) {
 // Merkleize computes the binary merkle root of the buffer from indx onwards
 // and replaces that region with the 32-byte root. Pops the matching layer
 // if one exists.
+// clampMerkleizeIndex bounds a caller-supplied scope index to the current
+// buffer so an out-of-range value cannot trigger a slice-bounds panic.
+func (h *Hasher) clampMerkleizeIndex(indx int) int {
+	if indx < 0 {
+		return 0
+	}
+	if indx > len(h.buf) {
+		return len(h.buf)
+	}
+	return indx
+}
+
 func (h *Hasher) Merkleize(indx int) {
+	indx = h.clampMerkleizeIndex(indx)
 	layer := h.getMatchingLayer(indx)
 
 	if layer != nil {
@@ -918,6 +933,7 @@ func (h *Hasher) Merkleize(indx int) {
 // limit, then mixes in num as the list length. Pops the matching layer if one
 // exists.
 func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
+	indx = h.clampMerkleizeIndex(indx)
 	h.FillUpTo32()
 
 	layer := h.getMatchingLayer(indx)
@@ -963,6 +979,7 @@ func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 // Collapse, it is finalized; otherwise the standard recursive algorithm is
 // used.
 func (h *Hasher) MerkleizeProgressive(indx int) {
+	indx = h.clampMerkleizeIndex(indx)
 	layer := h.getMatchingLayer(indx)
 
 	if layer != nil && layer.pendCount > 0 {
@@ -998,6 +1015,7 @@ func (h *Hasher) MerkleizeProgressive(indx int) {
 // MerkleizeProgressiveWithMixin computes the progressive merkle root from
 // indx and mixes in num as the list length.
 func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
+	indx = h.clampMerkleizeIndex(indx)
 	layer := h.getMatchingLayer(indx)
 
 	if layer != nil && layer.pendCount > 0 {
@@ -1043,6 +1061,7 @@ func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 // MerkleizeProgressiveWithActiveFields computes the progressive merkle root
 // from indx and mixes in the active fields bitvector.
 func (h *Hasher) MerkleizeProgressiveWithActiveFields(indx int, activeFields []byte) {
+	indx = h.clampMerkleizeIndex(indx)
 	layer := h.getMatchingLayer(indx)
 
 	if layer != nil && layer.pendCount > 0 {
@@ -1096,6 +1115,11 @@ func (h *Hasher) getDepth(d uint64) uint8 {
 		return 0
 	}
 	i := sszutils.NextPowerOfTwo(d)
+	if i == 0 {
+		// d exceeds 2^63, so the next power of two (2^64) does not fit in uint64
+		// and NextPowerOfTwo wraps to 0. The deepest representable tree is 64.
+		return 64
+	}
 	return 64 - uint8(bits.LeadingZeros64(i)) - 1
 }
 
@@ -1106,10 +1130,11 @@ func (h *Hasher) merkleizeImpl(dst, input []byte, limit uint64) []byte {
 	// with zeroes to the next multiple of 32 bytes when the input is not aligned
 	// to a multiple of 32 bytes.
 	count := uint64((len(input) + 31) / 32)
-	if limit == 0 {
+	if limit == 0 || count > limit {
+		// A limit below the actual chunk count cannot pad the tree; fall back to
+		// the chunk count so the result is well-defined instead of panicking on
+		// caller-supplied limits.
 		limit = count
-	} else if count > limit {
-		panic(fmt.Sprintf("BUG: count '%d' higher than limit '%d'", count, limit))
 	}
 
 	if limit == 0 {

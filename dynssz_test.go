@@ -2156,3 +2156,56 @@ func TestApplyCallOptionsNilOption(t *testing.T) {
 		t.Errorf("nil call option changed output: got %x want %x", got, want)
 	}
 }
+
+// A bitlist whose ssz-max is near math.MaxUint64 must not collide with a small
+// ssz-max bitlist, and HashTreeRoot must agree with the GetTree path.
+func TestBitlistMaxSizeOverflowNoCollision(t *testing.T) {
+	type Small struct {
+		X []byte `ssz-type:"bitlist" ssz-max:"256"`
+	}
+	type Huge struct {
+		X []byte `ssz-type:"bitlist" ssz-max:"18446744073709551615"`
+	}
+
+	ds := NewDynSsz(nil)
+	x := []byte{0x05}
+
+	hSmall, err := ds.HashTreeRoot(&Small{X: x})
+	if err != nil {
+		t.Fatalf("HashTreeRoot small: %v", err)
+	}
+	hHuge, err := ds.HashTreeRoot(&Huge{X: x})
+	if err != nil {
+		t.Fatalf("HashTreeRoot huge: %v", err)
+	}
+	if hSmall == hHuge {
+		t.Error("different ssz-max bitlists must not produce identical roots")
+	}
+
+	tree, err := ds.GetTree(&Huge{X: x})
+	if err != nil {
+		t.Fatalf("GetTree huge: %v", err)
+	}
+	if !bytes.Equal(hHuge[:], tree.Hash()) {
+		t.Errorf("HashTreeRoot and GetTree disagree: %x vs %x", hHuge, tree.Hash())
+	}
+}
+
+// HashTreeRoot must not panic when a list's ssz-max is large enough that the
+// chunk limit clamps to math.MaxUint64.
+func TestHashTreeRootSurvivesHugeMax(t *testing.T) {
+	type T struct {
+		V [][32]byte `ssz-max:"18446744073709551615"`
+	}
+
+	ds := NewDynSsz(nil)
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("HashTreeRoot panicked on huge ssz-max: %v", r)
+		}
+	}()
+
+	if _, err := ds.HashTreeRoot(&T{V: [][32]byte{{1}}}); err != nil {
+		t.Fatalf("HashTreeRoot: %v", err)
+	}
+}
