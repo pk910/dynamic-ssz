@@ -62,8 +62,9 @@ func TestPutBitlistSizeOverflow(t *testing.T) {
 }
 
 func TestPutBitlistLimitOverflow(t *testing.T) {
-	// On 64-bit, (maxSize+255)/256 can never exceed math.MaxInt64 because
-	// math.MaxInt64 * 256 overflows uint64. This test only triggers on 32-bit.
+	// The chunk limit can only exceed math.MaxInt on 32-bit platforms; on 64-bit
+	// the derived limit always fits. The wrapper clamps the limit instead of
+	// panicking so a degenerate ssz-max does not crash on 32-bit.
 	if math.MaxInt > math.MaxInt32 {
 		t.Skip("limit overflow only possible on 32-bit platforms")
 	}
@@ -72,9 +73,14 @@ func TestPutBitlistLimitOverflow(t *testing.T) {
 	overflowMaxSize := uint64(math.MaxInt32+1) * 256
 
 	w := NewWrapper()
-	expectPanic(t, "PutBitlist: limit", func() {
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("PutBitlist panicked on overflowing limit: %v", r)
+			}
+		}()
 		w.PutBitlist([]byte{0x01}, overflowMaxSize) // sentinel only, size=0
-	})
+	}()
 }
 
 func TestPutBitlistSizeOverflow32Bit(t *testing.T) {

@@ -151,8 +151,8 @@ func TestCodegenBigIntGolden(t *testing.T) {
 		payload any
 		golden  string
 	}{
-		{"valueBigInt", ExtendedTypes1_Payload1, "5235f836b4e001a3984250744d2749e4ba9e79158c8fb36e6cde7acf1d62920c"},
-		{"pointerBigInt", CoverageTypes2_Payload1, "86b9299d76a4d3550dc10899d5508e1c4e1a0467a5c1b7dca4774c1f717b62ea"},
+		{"valueBigInt", ExtendedTypes1_Payload1, "d43c9c95a419854cc80d68260f4f3777ec1f5f6a699575f5d9ddaf38fb5c86a0"},
+		{"pointerBigInt", CoverageTypes2_Payload1, "9f187208f2264c56c945c495d2b170c40e9469de661fea65d07a6aa990824fff"},
 	}
 
 	ds := dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes())

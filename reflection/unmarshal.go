@@ -682,10 +682,14 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 		newValue = reflect.MakeSlice(fieldT, vectorLen, vectorLen)
 	}
 
+	// Pointer elements (except optionals, which decode in place) get a fresh
+	// allocation per item; this is loop-invariant, so compute it once.
+	allocPointerElems := fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && fieldType.SszType != ssztypes.SszOptionalType
+
 	// decode slice items
 	for i := 0; i < vectorLen; i++ {
 		var itemVal reflect.Value
-		if fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && fieldType.SszType != ssztypes.SszOptionalType {
+		if allocPointerElems {
 			// fmt.Printf("new slice item %v\n", fieldType.Name())
 			itemVal = reflect.New(fieldType.Type.Elem())
 			newValue.Index(i).Set(itemVal)
@@ -957,10 +961,14 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 	if sliceLen > 0 {
 		offset := firstOffset
 
+		// Pointer elements (except optionals, which decode in place) get a fresh
+		// allocation per item; this is loop-invariant, so compute it once.
+		allocPointerElems := fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && fieldType.SszType != ssztypes.SszOptionalType
+
 		// decode slice items
 		for i := 0; i < sliceLen; i++ {
 			var itemVal reflect.Value
-			if fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && fieldType.SszType != ssztypes.SszOptionalType {
+			if allocPointerElems {
 				// fmt.Printf("new slice item %v\n", fieldType.Name())
 				itemVal = reflect.New(fieldType.Type.Elem())
 				newValue.Index(i).Set(itemVal)
