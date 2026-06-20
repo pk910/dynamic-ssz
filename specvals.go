@@ -7,6 +7,7 @@ package dynssz
 import (
 	"fmt"
 	"math"
+	"strconv"
 
 	"github.com/casbin/govaluate"
 )
@@ -76,8 +77,10 @@ func (d *DynSsz) ResolveSpecValue(name string) (bool, uint64, error) {
 }
 
 // specValueToUint64 converts a directly-provided spec value to uint64, preserving
-// full precision for integer types. ok is false (without error) for unsupported
-// types so the caller can fall back to expression evaluation / static limits.
+// full precision for integer types. A value stored directly under a referenced
+// spec key but carrying an unsupported type (or a non-numeric string) returns an
+// error so the misconfiguration surfaces instead of silently falling back to the
+// static limit.
 func specValueToUint64(raw any) (value uint64, ok bool, err error) {
 	switch v := raw.(type) {
 	case uint64:
@@ -108,8 +111,14 @@ func specValueToUint64(raw any) (value uint64, ok bool, err error) {
 	case float32:
 		u, ferr := specFloatToUint64(float64(v))
 		return u, ferr == nil, ferr
+	case string:
+		u, perr := strconv.ParseUint(v, 10, 64)
+		if perr != nil {
+			return 0, false, fmt.Errorf("string value %q is not a valid uint64", v)
+		}
+		return u, true, nil
 	default:
-		return 0, false, nil
+		return 0, false, fmt.Errorf("unsupported type %T", raw)
 	}
 }
 

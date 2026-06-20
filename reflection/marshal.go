@@ -298,7 +298,10 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 	for i := 0; i < fieldCount; i++ {
 		field := &fields[i]
 		fieldSize := field.Type.Size
-		if fieldSize > 0 {
+		// Branch on the dynamic flag rather than Size > 0 so a zero-size static
+		// field (e.g. an empty vector) is written inline instead of being mistaken
+		// for a dynamic field and emitting an unbacked offset slot.
+		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 			// fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
 
 			// Use FieldIndex to access the runtime struct's field, which may differ

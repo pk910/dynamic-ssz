@@ -3973,3 +3973,106 @@ func TestTypeCache_ListWithNestedTypeHints(t *testing.T) {
 
 // --- Suppress the unused import error for errors package ---
 var _ = errors.New
+
+// GetTypeDescriptor must reject nil types with a clean error instead of
+// dereferencing a nil reflect.Type.
+func TestGetTypeDescriptorNilType(t *testing.T) {
+	tc := NewTypeCache(nil)
+
+	if _, err := tc.GetTypeDescriptor(nil, nil, nil, nil); err == nil {
+		t.Error("expected error for nil runtime type")
+	}
+
+	runtime := reflect.TypeOf(uint64(0))
+	if _, err := tc.GetTypeDescriptorWithSchema(runtime, nil, nil, nil, nil); err == nil {
+		t.Error("expected error for nil schema type")
+	}
+}
+
+// NewTypeCache(nil) must use an empty spec provider so dynssz-* tags resolve to
+// their static fallback instead of dereferencing a nil interface.
+func TestNewTypeCacheNilSpecs(t *testing.T) {
+	type withDynTag struct {
+		V []byte `ssz-max:"32" dynssz-max:"MAX_BYTES"`
+	}
+
+	tc := NewTypeCache(nil)
+	if _, err := tc.GetTypeDescriptor(reflect.TypeOf(withDynTag{}), nil, nil, nil); err != nil {
+		t.Fatalf("building descriptor with nil specs failed: %v", err)
+	}
+}
+
+func TestWrapperTypeCompatible(t *testing.T) {
+	type myByte byte
+	type myUint64 uint64
+
+	cases := []struct {
+		name             string
+		actual, expected reflect.Type
+		want             bool
+	}{
+		{"identical", reflect.TypeOf([]byte(nil)), reflect.TypeOf([]byte(nil)), true},
+		{"namedScalar", reflect.TypeOf(myUint64(0)), reflect.TypeOf(uint64(0)), true},
+		{"scalarKindMismatch", reflect.TypeOf(int32(0)), reflect.TypeOf(uint64(0)), false},
+		{"sliceVsString", reflect.TypeOf(""), reflect.TypeOf([]byte(nil)), false},
+		{"sliceNamedElem", reflect.TypeOf([]myByte(nil)), reflect.TypeOf([]byte(nil)), true},
+		{"sliceElemMismatch", reflect.TypeOf([]uint32(nil)), reflect.TypeOf([]byte(nil)), false},
+		{"ptrVsValue", reflect.TypeOf((*uint64)(nil)), reflect.TypeOf(uint64(0)), false},
+		{"ptrNamedElem", reflect.TypeOf((*myUint64)(nil)), reflect.TypeOf((*uint64)(nil)), true},
+		{"arraySameLen", reflect.TypeOf([8]myByte{}), reflect.TypeOf([8]byte{}), true},
+		{"arrayLenMismatch", reflect.TypeOf([16]byte{}), reflect.TypeOf([8]byte{}), false},
+		{"arrayElemMismatch", reflect.TypeOf([8]uint16{}), reflect.TypeOf([8]byte{}), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := wrapperTypeCompatible(tc.actual, tc.expected); got != tc.want {
+				t.Errorf("wrapperTypeCompatible(%v, %v) = %v, want %v", tc.actual, tc.expected, got, tc.want)
+			}
+		})
+	}
+}
+
+type wrapDescBytes struct {
+	Data []byte `ssz-max:"32"`
+}
+
+type testWrapperMismatch struct {
+	Data string
+}
+
+func (t *testWrapperMismatch) GetDescriptorType() reflect.Type {
+	return reflect.TypeOf(wrapDescBytes{})
+}
+
+// A TypeWrapper whose value field type is incompatible with its descriptor field
+// type must be rejected at build time.
+func TestBuildTypeWrapperIncompatibleType(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	typeHints := []SszTypeHint{{Type: SszTypeWrapperType}}
+
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(testWrapperMismatch{}), nil, nil, typeHints)
+	if err == nil {
+		t.Fatal("expected error for incompatible TypeWrapper value type")
+	}
+	if !strings.Contains(err.Error(), "not compatible with descriptor type") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+type listOfZeroSize struct {
+	V []struct{} `ssz-max:"4"`
+}
+
+// A list of fixed zero-size elements must be rejected when its descriptor is
+// built.
+func TestBuildListZeroSizeElementRejected(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(listOfZeroSize{}), nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for zero-size list element")
+	}
+	if !strings.Contains(err.Error(), "has zero size") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

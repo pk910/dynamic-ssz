@@ -393,7 +393,11 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 		field := &fields[i]
 
 		fieldSize := int(field.Type.Size)
-		if fieldSize > 0 {
+		// Branch on the dynamic flag rather than Size > 0 so a zero-size static
+		// field (e.g. an empty vector) is read inline and not mistaken for a
+		// dynamic field with an offset, keeping the offset accounting aligned with
+		// DynFields.
+		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 			// static size field
 			// fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
 			expectedPos := decoder.GetPosition() + fieldSize
@@ -681,11 +685,13 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 	// decode slice items
 	for i := 0; i < vectorLen; i++ {
 		var itemVal reflect.Value
-		if fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		if fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && fieldType.SszType != ssztypes.SszOptionalType {
 			// fmt.Printf("new slice item %v\n", fieldType.Name())
 			itemVal = reflect.New(fieldType.Type.Elem())
 			newValue.Index(i).Set(itemVal)
 		} else {
+			// Non-pointer and optional-pointer elements decode in place via the
+			// addressable slot so an absent optional can be set back to nil.
 			itemVal = newValue.Index(i)
 		}
 
@@ -741,7 +747,9 @@ func (ctx *ReflectionCtx) unmarshalFixedElements(fieldType *ssztypes.TypeDescrip
 	}
 
 	itemSize := int(fieldSize)
-	isPointer := fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0
+	// Optional-pointer elements decode in place via the addressable slot so an
+	// absent optional can be set back to a nil pointer.
+	isPointer := fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && fieldType.SszType != ssztypes.SszOptionalType
 
 	for i := 0; i < count; i++ {
 		var itemVal reflect.Value
@@ -952,11 +960,13 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 		// decode slice items
 		for i := 0; i < sliceLen; i++ {
 			var itemVal reflect.Value
-			if fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+			if fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && fieldType.SszType != ssztypes.SszOptionalType {
 				// fmt.Printf("new slice item %v\n", fieldType.Name())
 				itemVal = reflect.New(fieldType.Type.Elem())
 				newValue.Index(i).Set(itemVal)
 			} else {
+				// Non-pointer and optional-pointer elements decode in place via the
+				// addressable slot so an absent optional can be set back to nil.
 				itemVal = newValue.Index(i)
 			}
 
