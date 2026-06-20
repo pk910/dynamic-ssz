@@ -2063,3 +2063,96 @@ func TestUnionHTRVariantError(t *testing.T) {
 		t.Fatal("expected HTR error from union variant bitlist")
 	}
 }
+
+// MarshalSSZWriter must reject a nil writer with a clean error instead of
+// panicking inside the stream encoder.
+func TestMarshalSSZWriterNilWriter(t *testing.T) {
+	type T struct{ A uint64 }
+	ds := NewDynSsz(nil)
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("MarshalSSZWriter panicked on nil writer: %v", r)
+		}
+	}()
+
+	if err := ds.MarshalSSZWriter(&T{A: 1}, nil); err == nil {
+		t.Fatal("expected error for nil writer, got nil")
+	}
+}
+
+// UnmarshalSSZReader must reject a nil reader with a clean error.
+func TestUnmarshalSSZReaderNilReader(t *testing.T) {
+	type T struct{ A uint64 }
+	ds := NewDynSsz(nil)
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("UnmarshalSSZReader panicked on nil reader: %v", r)
+		}
+	}()
+
+	if err := ds.UnmarshalSSZReader(&T{}, nil, 8); err == nil {
+		t.Fatal("expected error for nil reader, got nil")
+	}
+}
+
+// HashTreeRootWith must reject a nil hash walker with a clean error.
+func TestHashTreeRootWithNilWalker(t *testing.T) {
+	type T struct{ A uint64 }
+	ds := NewDynSsz(nil)
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("HashTreeRootWith panicked on nil walker: %v", r)
+		}
+	}()
+
+	if err := ds.HashTreeRootWith(&T{A: 1}, nil); err == nil {
+		t.Fatal("expected error for nil walker, got nil")
+	}
+}
+
+// NewDynSsz must skip nil options in the variadic list instead of panicking.
+func TestNewDynSszNilOption(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("NewDynSsz panicked on nil option: %v", r)
+		}
+	}()
+
+	var nilOpt DynSszOption
+	ds := NewDynSsz(nil, nilOpt, WithNoFastSsz())
+	if ds == nil {
+		t.Fatal("expected non-nil DynSsz instance")
+	}
+	if !ds.options.NoFastSsz {
+		t.Error("non-nil option after nil option was not applied")
+	}
+}
+
+// MarshalSSZ must skip nil CallOptions instead of panicking when applying them.
+func TestApplyCallOptionsNilOption(t *testing.T) {
+	type T struct{ A uint64 }
+	ds := NewDynSsz(nil)
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("MarshalSSZ panicked on nil call option: %v", r)
+		}
+	}()
+
+	var nilCall CallOption
+	got, err := ds.MarshalSSZ(&T{A: 1}, nilCall)
+	if err != nil {
+		t.Fatalf("MarshalSSZ with nil call option: %v", err)
+	}
+
+	want, err := ds.MarshalSSZ(&T{A: 1})
+	if err != nil {
+		t.Fatalf("MarshalSSZ reference: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("nil call option changed output: got %x want %x", got, want)
+	}
+}
