@@ -1789,3 +1789,33 @@ func TestDeferProgressiveActiveFields(t *testing.T) {
 		}
 	}
 }
+
+// GetZeroHash must clamp out-of-range depths to the nearest valid level instead
+// of panicking on an out-of-bounds array access.
+func TestGetZeroHashClampsOutOfRange(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("GetZeroHash panicked on out-of-range depth: %v", r)
+		}
+	}()
+
+	if got := GetZeroHash(0); len(got) != 32 {
+		t.Fatalf("GetZeroHash(0) length = %d, want 32", len(got))
+	}
+
+	zero := GetZeroHash(0)
+	if !bytes.Equal(GetZeroHash(-1), zero) {
+		t.Error("negative depth must clamp to level 0")
+	}
+	if !bytes.Equal(GetZeroHash(-1000), zero) {
+		t.Error("large negative depth must clamp to level 0")
+	}
+
+	maxLevel := GetZeroHash(64)
+	if !bytes.Equal(GetZeroHash(65), maxLevel) {
+		t.Error("depth above range must clamp to the deepest level")
+	}
+	if !bytes.Equal(GetZeroHash(1<<20), maxLevel) {
+		t.Error("very large depth must clamp to the deepest level")
+	}
+}

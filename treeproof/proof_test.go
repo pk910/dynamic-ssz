@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/pk910/dynamic-ssz/hasher"
 )
@@ -932,4 +933,57 @@ func BenchmarkVerifyMultiproof(b *testing.B) {
 			_, _ = VerifyMultiproof(root, proofAll, allLeaves, indicesAll)
 		}
 	})
+}
+
+// VerifyProof must reject a nil proof with a clean error instead of panicking.
+func TestVerifyProofNil(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("VerifyProof panicked on nil proof: %v", r)
+		}
+	}()
+
+	ok, err := VerifyProof(make([]byte, 32), nil)
+	if err == nil {
+		t.Fatal("expected error for nil proof")
+	}
+	if ok {
+		t.Fatal("nil proof must not verify")
+	}
+}
+
+// VerifyMultiproof must reject non-positive generalized indices with a clean
+// error and must never panic or hang on them.
+func TestVerifyMultiproofRejectsNonPositiveIndex(t *testing.T) {
+	root := make([]byte, 32)
+
+	for _, indices := range [][]int{{0}, {0, -1}, {4, 0}, {-1, 2}} {
+		leaves := make([][]byte, len(indices))
+		for i := range leaves {
+			leaves[i] = make([]byte, 32)
+		}
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("VerifyMultiproof panicked on %v: %v", indices, r)
+				}
+			}()
+			ok, err := VerifyMultiproof(root, nil, leaves, indices)
+			if err == nil {
+				t.Errorf("expected error for indices %v", indices)
+			}
+			if ok {
+				t.Errorf("indices %v must not verify", indices)
+			}
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("VerifyMultiproof hung on indices %v", indices)
+		}
+	}
 }

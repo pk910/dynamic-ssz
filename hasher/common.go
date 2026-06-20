@@ -82,9 +82,15 @@ func GetZeroHashLevelBytes(hash []byte) (int, bool) {
 }
 
 // GetZeroHash returns the precomputed zero hash at the given merkle tree depth.
+// Depths outside the supported range are clamped to the nearest valid level.
 func GetZeroHash(depth int) []byte {
 	if !hasherInitialized {
 		initHasher()
+	}
+	if depth < 0 {
+		depth = 0
+	} else if depth >= len(zeroHashes) {
+		depth = len(zeroHashes) - 1
 	}
 	return zeroHashes[depth][:]
 }

@@ -870,15 +870,46 @@ func TestCompressDecompressWithZeroHashes(t *testing.T) {
 }
 
 func TestLeafFromBytesLargeThan32(t *testing.T) {
-	// Test LeafFromBytes with data larger than 32 bytes (should panic)
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("LeafFromBytes with large data should panic")
-		}
+	// Oversized input is merkleized into a subtree instead of panicking, and the
+	// chunk structure is recorded as real child nodes.
+	largeData := bytes.Repeat([]byte{0xFF}, 50)
+
+	var node *Node
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("LeafFromBytes panicked on oversized input: %v", r)
+			}
+		}()
+		node = LeafFromBytes(largeData)
 	}()
 
-	largeData := bytes.Repeat([]byte{0xFF}, 50)
-	LeafFromBytes(largeData) // Should panic with "Unimplemented"
+	if node == nil {
+		t.Fatal("expected non-nil node")
+	}
+	if node.Left() == nil || node.Right() == nil {
+		t.Fatal("oversized input must be recorded as a branch node with children")
+	}
+
+	chunk0 := make([]byte, 32)
+	copy(chunk0, largeData[:32])
+	chunk1 := make([]byte, 32)
+	copy(chunk1, largeData[32:])
+
+	if !bytes.Equal(node.Left().Value(), chunk0) {
+		t.Errorf("left chunk mismatch: got %x want %x", node.Left().Value(), chunk0)
+	}
+	if !bytes.Equal(node.Right().Value(), chunk1) {
+		t.Errorf("right chunk mismatch: got %x want %x", node.Right().Value(), chunk1)
+	}
+
+	root := node.Hash()
+	if len(root) != 32 {
+		t.Fatalf("root must be 32 bytes, got %d", len(root))
+	}
+	if want := hashPair(chunk0, chunk1); !bytes.Equal(root, want) {
+		t.Errorf("merkle root mismatch: got %x want %x", root, want)
+	}
 }
 
 func TestTreeFromNodesProgressiveBoundaryConditions(t *testing.T) {
@@ -1489,4 +1520,152 @@ func TestNodeShow(t *testing.T) {
 		emptyNode := NewEmptyNode(sszutils.ZeroBytes()[:32])
 		emptyNode.Show(3)
 	})
+}
+
+// Get must reject non-positive generalized indices instead of returning the
+// root or producing an out-of-range access.
+func TestGetRejectsNonPositiveIndex(t *testing.T) {
+	node, err := TreeFromNodes([]*Node{LeafFromUint64(1), LeafFromUint64(2)}, 2)
+	if err != nil {
+		t.Fatalf("TreeFromNodes: %v", err)
+	}
+
+	for _, idx := range []int{0, -1, -100} {
+		got, err := node.Get(idx)
+		if err == nil {
+			t.Errorf("Get(%d): expected error", idx)
+		}
+		if got != nil {
+			t.Errorf("Get(%d): expected nil node", idx)
+		}
+	}
+}
+
+// Prove must reject non-positive generalized indices without panicking on a
+// negative make capacity.
+func TestProveRejectsNonPositiveIndex(t *testing.T) {
+	node, err := TreeFromNodes([]*Node{LeafFromUint64(1), LeafFromUint64(2)}, 2)
+	if err != nil {
+		t.Fatalf("TreeFromNodes: %v", err)
+	}
+
+	for _, idx := range []int{0, -1, -100} {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("Prove(%d) panicked: %v", idx, r)
+				}
+			}()
+			proof, err := node.Prove(idx)
+			if err == nil {
+				t.Errorf("Prove(%d): expected error", idx)
+			}
+			if proof != nil {
+				t.Errorf("Prove(%d): expected nil proof", idx)
+			}
+		}()
+	}
+}
+
+// ProveMulti must reject any non-positive generalized index, including when it
+// is mixed with valid indices.
+func TestProveMultiRejectsNonPositiveIndex(t *testing.T) {
+	node, err := TreeFromNodes([]*Node{LeafFromUint64(1), LeafFromUint64(2)}, 2)
+	if err != nil {
+		t.Fatalf("TreeFromNodes: %v", err)
+	}
+
+	for _, indices := range [][]int{{0}, {4, 0}, {-1}} {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("ProveMulti(%v) panicked: %v", indices, r)
+				}
+			}()
+			proof, err := node.ProveMulti(indices)
+			if err == nil {
+				t.Errorf("ProveMulti(%v): expected error", indices)
+			}
+			if proof != nil {
+				t.Errorf("ProveMulti(%v): expected nil proof", indices)
+			}
+		}()
+	}
+}
+
+// Hashing a branch node with a missing child must produce a clear panic rather
+// than a raw nil pointer dereference.
+func TestHashIncompleteBranchPanicsCleanly(t *testing.T) {
+	leaf := LeafFromUint64(1)
+
+	for _, n := range []*Node{NewNodeWithLR(leaf, nil), NewNodeWithLR(nil, leaf)} {
+		func() {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Error("expected panic for incomplete branch")
+					return
+				}
+				if msg, ok := r.(string); !ok || msg != "Tree incomplete" {
+					t.Errorf("expected 'Tree incomplete' panic, got %v", r)
+				}
+			}()
+			_ = n.Hash()
+		}()
+	}
+}
+
+// TreeFromNodes and TreeFromNodesProgressive must reject nil leaves at
+// construction time so a malformed tree is never returned.
+func TestTreeFromNodesRejectsNilLeaf(t *testing.T) {
+	leaf := LeafFromUint64(1)
+
+	n, err := TreeFromNodes([]*Node{nil, leaf}, 2)
+	if err == nil {
+		t.Error("TreeFromNodes: expected error for nil leaf")
+	}
+	if n != nil {
+		t.Error("TreeFromNodes: expected nil tree")
+	}
+
+	np, err := TreeFromNodesProgressive([]*Node{leaf, nil})
+	if err == nil {
+		t.Error("TreeFromNodesProgressive: expected error for nil leaf")
+	}
+	if np != nil {
+		t.Error("TreeFromNodesProgressive: expected nil tree")
+	}
+}
+
+// Decompress must not panic on malformed input: missing ZeroLevels entries fall
+// back to depth 0, and out-of-range levels are clamped.
+func TestDecompressHandlesMalformedInput(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Decompress panicked on malformed input: %v", r)
+		}
+	}()
+
+	missing := &CompressedMultiproof{
+		Indices:    []int{4},
+		Leaves:     [][]byte{make([]byte, 32)},
+		Hashes:     [][]byte{nil},
+		ZeroLevels: nil,
+	}
+	mp := missing.Decompress()
+	if mp == nil || len(mp.Hashes) != 1 {
+		t.Fatalf("unexpected decompressed result: %#v", mp)
+	}
+	if !bytes.Equal(mp.Hashes[0], hasher.GetZeroHash(0)) {
+		t.Errorf("missing ZeroLevels should fall back to depth 0")
+	}
+
+	huge := &CompressedMultiproof{
+		Hashes:     [][]byte{nil},
+		ZeroLevels: []int{1000},
+	}
+	mp2 := huge.Decompress()
+	if mp2 == nil || len(mp2.Hashes) != 1 || len(mp2.Hashes[0]) != 32 {
+		t.Fatalf("unexpected decompressed result for huge level: %#v", mp2)
+	}
 }
