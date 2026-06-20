@@ -4005,6 +4005,9 @@ func TestNewTypeCacheNilSpecs(t *testing.T) {
 func TestWrapperTypeCompatible(t *testing.T) {
 	type myByte byte
 	type myUint64 uint64
+	type myString string
+	type structA struct{ A uint64 }
+	type structB struct{ B uint32 }
 
 	cases := []struct {
 		name             string
@@ -4013,6 +4016,7 @@ func TestWrapperTypeCompatible(t *testing.T) {
 	}{
 		{"identical", reflect.TypeOf([]byte(nil)), reflect.TypeOf([]byte(nil)), true},
 		{"namedScalar", reflect.TypeOf(myUint64(0)), reflect.TypeOf(uint64(0)), true},
+		{"namedString", reflect.TypeOf(myString("")), reflect.TypeOf(""), true},
 		{"scalarKindMismatch", reflect.TypeOf(int32(0)), reflect.TypeOf(uint64(0)), false},
 		{"sliceVsString", reflect.TypeOf(""), reflect.TypeOf([]byte(nil)), false},
 		{"sliceNamedElem", reflect.TypeOf([]myByte(nil)), reflect.TypeOf([]byte(nil)), true},
@@ -4022,6 +4026,9 @@ func TestWrapperTypeCompatible(t *testing.T) {
 		{"arraySameLen", reflect.TypeOf([8]myByte{}), reflect.TypeOf([8]byte{}), true},
 		{"arrayLenMismatch", reflect.TypeOf([16]byte{}), reflect.TypeOf([8]byte{}), false},
 		{"arrayElemMismatch", reflect.TypeOf([8]uint16{}), reflect.TypeOf([8]byte{}), false},
+		// Composite kinds with matching Kind but different layout must not match.
+		{"structMismatch", reflect.TypeOf(structA{}), reflect.TypeOf(structB{}), false},
+		{"sameStruct", reflect.TypeOf(structA{}), reflect.TypeOf(structA{}), true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

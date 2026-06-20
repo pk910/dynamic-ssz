@@ -161,8 +161,6 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 			if !isTime {
 				return sszutils.ErrTimeTypeExpectedFn(sourceType.Type.Name())
 			}
-			// time.Time is encoded as whole seconds since the Unix epoch; any
-			// sub-second component is not represented in the SSZ encoding or root.
 			encoder.EncodeUint64(uint64(timeValue.Unix()))
 		} else {
 			encoder.EncodeUint64(sourceValue.Uint())

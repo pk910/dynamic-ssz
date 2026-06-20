@@ -841,12 +841,22 @@ func wrapperTypeCompatible(actual, expected reflect.Type) bool {
 		return false
 	}
 	switch actual.Kind() {
+	case reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+		reflect.Float32, reflect.Float64,
+		reflect.String:
+		// Named types over the same scalar/string kind are interchangeable.
+		return true
 	case reflect.Array:
 		return actual.Len() == expected.Len() && wrapperTypeCompatible(actual.Elem(), expected.Elem())
 	case reflect.Slice, reflect.Pointer:
 		return wrapperTypeCompatible(actual.Elem(), expected.Elem())
 	default:
-		return true
+		// Composite kinds (struct, map, interface, ...) with a matching kind but
+		// different element/field layout are not interchangeable; only the exact
+		// same type (handled above) is compatible.
+		return false
 	}
 }
 
