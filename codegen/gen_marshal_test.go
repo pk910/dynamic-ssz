@@ -350,6 +350,29 @@ func TestMarshalBigIntType(t *testing.T) {
 	}
 }
 
+// TestMarshalBigIntTypeWithMax tests that a static ssz-max emits a limit check.
+func TestMarshalBigIntTypeWithMax(t *testing.T) {
+	bigIntDesc := &ssztypes.TypeDescriptor{
+		Type:         testDummyReflectType,
+		SszType:      ssztypes.SszBigIntType,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic | ssztypes.SszTypeFlagHasLimit,
+		Kind:         reflect.Struct,
+		Size:         0,
+		Limit:        2,
+	}
+
+	codeBuilder := &strings.Builder{}
+	typePrinter := NewTypePrinter("test/package")
+	options := &CodeGeneratorOptions{ExtendedTypes: true}
+
+	if err := generateMarshal(bigIntDesc, codeBuilder, typePrinter, "", options); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(codeBuilder.String(), "exceeds maximum") {
+		t.Errorf("expected generated marshal to contain big.Int max check, got:\n%s", codeBuilder.String())
+	}
+}
+
 // TestMarshalCustomType tests that marshalType handles custom types.
 func TestMarshalCustomType(t *testing.T) {
 	customDesc := &ssztypes.TypeDescriptor{

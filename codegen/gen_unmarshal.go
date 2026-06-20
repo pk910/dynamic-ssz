@@ -566,13 +566,17 @@ func (ctx *unmarshalContext) unmarshalBigInt(desc *ssztypes.TypeDescriptor, varN
 	}
 	valVar := ctx.getValVar()
 	signErr := "sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, \"invalid big.Int sign byte\")"
-	// sign byte (0 = non-negative, 1 = negative) followed by the big-endian magnitude
+	emptyErr := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"big.Int payload must contain at least a sign byte\")"
+	leadZeroErr := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"non-canonical big.Int magnitude with leading zero\")"
+	negZeroErr := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"non-canonical negative zero big.Int\")"
+	// sign byte (0 = non-negative, 1 = negative) followed by the minimal big-endian magnitude
 	ctx.appendCode(indent, "%s := %s.NewInt(0)\n", valVar, bigImport)
-	ctx.appendCode(indent, "if len(buf) > 0 {\n")
-	ctx.appendCode(indent+1, "if buf[0] > 1 {\n\t\treturn %s\n\t}\n", typePath.getErrorWith(signErr))
-	ctx.appendCode(indent+1, "%s.SetBytes(buf[1:])\n", valVar)
-	ctx.appendCode(indent+1, "if buf[0] == 1 {\n\t\t%s.Neg(%s)\n\t}\n", valVar, valVar)
-	ctx.appendCode(indent, "}\n")
+	ctx.appendCode(indent, "if len(buf) == 0 {\n\t\treturn %s\n\t}\n", typePath.getErrorWith(emptyErr))
+	ctx.appendCode(indent, "if buf[0] > 1 {\n\t\treturn %s\n\t}\n", typePath.getErrorWith(signErr))
+	ctx.appendCode(indent, "if len(buf) > 1 && buf[1] == 0 {\n\t\treturn %s\n\t}\n", typePath.getErrorWith(leadZeroErr))
+	ctx.appendCode(indent, "if buf[0] == 1 && len(buf) == 1 {\n\t\treturn %s\n\t}\n", typePath.getErrorWith(negZeroErr))
+	ctx.appendCode(indent, "%s.SetBytes(buf[1:])\n", valVar)
+	ctx.appendCode(indent, "if buf[0] == 1 {\n\t\t%s.Neg(%s)\n\t}\n", valVar, valVar)
 	ctx.appendCode(indent, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, fmt.Sprintf("*%s", valVar), "big.Int"))
 	return nil
 }

@@ -2390,3 +2390,71 @@ func TestListOfOptionalsRoundtrip(t *testing.T) {
 		}
 	}
 }
+
+// big.Int hash tree roots must not collide for values that differ only by
+// trailing zeros (N vs N<<8), and the marshal round-trip must be preserved.
+func TestBigIntHTRNoCollisionAndRoundtrip(t *testing.T) {
+	type T struct{ N big.Int }
+	ds := NewDynSsz(nil, WithExtendedTypes())
+
+	for n := int64(1); n < 100; n++ {
+		a, err := ds.HashTreeRoot(&T{N: *big.NewInt(n)})
+		if err != nil {
+			t.Fatalf("HTR(%d): %v", n, err)
+		}
+		b, err := ds.HashTreeRoot(&T{N: *new(big.Int).Lsh(big.NewInt(n), 8)})
+		if err != nil {
+			t.Fatalf("HTR(%d<<8): %v", n, err)
+		}
+		if a == b {
+			t.Fatalf("HTR(%d) collides with HTR(%d<<8)", n, n)
+		}
+	}
+
+	for _, v := range []int64{0, 1, 255, 256, -7, 1 << 40} {
+		src := &T{N: *big.NewInt(v)}
+		enc, err := ds.MarshalSSZ(src)
+		if err != nil {
+			t.Fatalf("marshal %d: %v", v, err)
+		}
+		var dst T
+		if err := ds.UnmarshalSSZ(&dst, enc); err != nil {
+			t.Fatalf("unmarshal %d: %v", v, err)
+		}
+		if dst.N.Cmp(big.NewInt(v)) != 0 {
+			t.Fatalf("roundtrip %d got %s", v, dst.N.String())
+		}
+	}
+}
+
+// Non-canonical big.Int encodings must be rejected on decode.
+func TestBigIntCanonicalDecode(t *testing.T) {
+	type T struct{ N big.Int }
+	ds := NewDynSsz(nil, WithExtendedTypes())
+
+	for _, bad := range [][]byte{
+		{0x04, 0, 0, 0},          // empty payload (offset only)
+		{0x04, 0, 0, 0, 0x01},    // negative zero (sign 1, no magnitude)
+		{0x04, 0, 0, 0, 0, 0, 1}, // leading-zero magnitude
+	} {
+		var dst T
+		if err := ds.UnmarshalSSZ(&dst, bad); err == nil {
+			t.Errorf("expected error for non-canonical encoding %x", bad)
+		}
+	}
+}
+
+// A static ssz-max on a big.Int must be enforced at marshal time.
+func TestBigIntMaxEnforced(t *testing.T) {
+	type T struct {
+		N big.Int `ssz-max:"2"`
+	}
+	ds := NewDynSsz(nil, WithExtendedTypes())
+
+	if _, err := ds.MarshalSSZ(&T{N: *big.NewInt(0xff)}); err != nil {
+		t.Fatalf("value within max should marshal: %v", err)
+	}
+	if _, err := ds.MarshalSSZ(&T{N: *big.NewInt(0xfffff)}); err == nil {
+		t.Error("expected error for big.Int exceeding ssz-max")
+	}
+}

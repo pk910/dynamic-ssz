@@ -161,6 +161,8 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 			if !isTime {
 				return sszutils.ErrTimeTypeExpectedFn(sourceType.Type.Name())
 			}
+			// time.Time is encoded as whole seconds since the Unix epoch; any
+			// sub-second component is not represented in the SSZ encoding or root.
 			encoder.EncodeUint64(uint64(timeValue.Unix()))
 		} else {
 			encoder.EncodeUint64(sourceValue.Uint())
@@ -868,8 +870,19 @@ func (ctx *ReflectionCtx) marshalBigInt(sourceType *ssztypes.TypeDescriptor, sou
 	if bigInt.Sign() < 0 {
 		signByte = 1
 	}
+	mag := bigInt.Bytes()
+
+	// Enforce a static ssz-max (payload = sign byte + magnitude). Dynamic limits
+	// (dynssz-max expressions) are left unchecked here so reflection and codegen
+	// stay consistent.
+	if sourceType.MaxExpression == nil && sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
+		if payloadLen := uint64(1 + len(mag)); payloadLen > sourceType.Limit {
+			return sszutils.NewSszErrorf(sszutils.ErrListTooBig, "big.Int payload length %d exceeds maximum %d", payloadLen, sourceType.Limit)
+		}
+	}
+
 	encoder.EncodeUint8(signByte)
-	encoder.EncodeBytes(bigInt.Bytes())
+	encoder.EncodeBytes(mag)
 
 	return nil
 }

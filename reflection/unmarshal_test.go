@@ -2074,3 +2074,20 @@ func (c *viewUnmarshalerOnlyContainer) UnmarshalSSZDynView(view any) func(sszuti
 		return nil
 	}
 }
+
+// Non-canonical big.Int encodings must be rejected on decode.
+func TestUnmarshalBigIntNonCanonical(t *testing.T) {
+	ds := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+	type T struct{ N big.Int }
+
+	for _, bad := range [][]byte{
+		{0x04, 0, 0, 0},          // empty payload (offset only)
+		{0x04, 0, 0, 0, 0x01},    // negative zero (sign 1, no magnitude)
+		{0x04, 0, 0, 0, 0, 0, 1}, // leading-zero magnitude
+	} {
+		var dst T
+		if err := ds.UnmarshalSSZ(&dst, bad); err == nil {
+			t.Errorf("expected error for non-canonical encoding %x", bad)
+		}
+	}
+}

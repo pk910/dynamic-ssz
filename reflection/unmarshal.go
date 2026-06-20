@@ -1218,20 +1218,34 @@ func (ctx *ReflectionCtx) unmarshalBigInt(_ *ssztypes.TypeDescriptor, targetValu
 	dataLen := decoder.GetLength()
 	bigInt := new(big.Int)
 
-	if dataLen > 0 {
-		bigIntBytes, err := decoder.DecodeBytesBuf(dataLen)
-		if err != nil {
-			return err
-		}
+	// The canonical encoding is a single sign byte followed by the minimal
+	// big-endian magnitude, so the payload must contain at least the sign byte.
+	if dataLen == 0 {
+		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "big.Int payload must contain at least a sign byte")
+	}
 
-		// sign byte (0 = non-negative, 1 = negative) followed by the big-endian magnitude
-		if bigIntBytes[0] > 1 {
-			return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "invalid big.Int sign byte 0x%02x", bigIntBytes[0])
-		}
-		bigInt.SetBytes(bigIntBytes[1:])
-		if bigIntBytes[0] == 1 {
-			bigInt.Neg(bigInt)
-		}
+	bigIntBytes, err := decoder.DecodeBytesBuf(dataLen)
+	if err != nil {
+		return err
+	}
+
+	// sign byte (0 = non-negative, 1 = negative) followed by the big-endian magnitude
+	if bigIntBytes[0] > 1 {
+		return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "invalid big.Int sign byte 0x%02x", bigIntBytes[0])
+	}
+	magnitude := bigIntBytes[1:]
+	// Reject non-canonical encodings: a leading-zero magnitude byte is not
+	// minimal, and a negative sign with no magnitude is a non-canonical zero.
+	if len(magnitude) > 0 && magnitude[0] == 0 {
+		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "non-canonical big.Int magnitude with leading zero")
+	}
+	if bigIntBytes[0] == 1 && len(magnitude) == 0 {
+		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "non-canonical negative zero big.Int")
+	}
+
+	bigInt.SetBytes(magnitude)
+	if bigIntBytes[0] == 1 {
+		bigInt.Neg(bigInt)
 	}
 
 	targetValue.Set(reflect.ValueOf(*bigInt))

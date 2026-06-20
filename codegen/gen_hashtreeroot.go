@@ -443,12 +443,18 @@ func (ctx *hashTreeRootContext) hashOptionalList(desc *ssztypes.TypeDescriptor, 
 
 // hashBigInt generates hash tree root code for SSZ big int types.
 func (ctx *hashTreeRootContext) hashBigInt(_ *ssztypes.TypeDescriptor, varName string, indent int) error {
-	// hash the sign byte followed by the big-endian magnitude so values of equal
-	// magnitude but opposite sign do not collide
+	// Hash the payload byte length, then the sign byte and big-endian magnitude.
+	// Prepending the length keeps it ahead of the trailing-zero chunk padding so
+	// values whose encodings differ only by trailing zeros (e.g. N and N<<8) do
+	// not collide.
 	ctx.appendCode(indent, "{\n")
-	ctx.appendCode(indent+1, "bigIntBytes := append([]byte{0}, %s.Bytes()...)\n", varName)
-	ctx.appendCode(indent+1, "if %s.Sign() < 0 {\n\t\tbigIntBytes[0] = 1\n\t}\n", varName)
-	ctx.appendCode(indent+1, "hh.PutBytes(bigIntBytes)\n")
+	ctx.appendCode(indent+1, "bigIntSign := byte(0)\n")
+	ctx.appendCode(indent+1, "if %s.Sign() < 0 {\n\t\tbigIntSign = 1\n\t}\n", varName)
+	ctx.appendCode(indent+1, "bigIntMag := %s.Bytes()\n", varName)
+	ctx.appendCode(indent+1, "bigIntBuf := sszutils.MarshalUint64(make([]byte, 0, 9+len(bigIntMag)), uint64(1+len(bigIntMag)))\n")
+	ctx.appendCode(indent+1, "bigIntBuf = append(bigIntBuf, bigIntSign)\n")
+	ctx.appendCode(indent+1, "bigIntBuf = append(bigIntBuf, bigIntMag...)\n")
+	ctx.appendCode(indent+1, "hh.PutBytes(bigIntBuf)\n")
 	ctx.appendCode(indent, "}\n")
 	return nil
 }
@@ -899,7 +905,7 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varNa
 	case desc.SszType == ssztypes.SszProgressiveBitlistType:
 		ctx.appendCode(indent, "hh.MerkleizeProgressiveWithMixin(idx, size)\n")
 	case maxVar != "":
-		ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, size, (%s+255)/256)\n", maxVar)
+		ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, size, sszutils.CalculateBitlistLimit(%s))\n", maxVar)
 	default:
 		ctx.appendCode(indent, "hh.Merkleize(idx)\n")
 	}

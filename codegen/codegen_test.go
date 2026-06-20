@@ -725,3 +725,37 @@ func TestGenerateViewTypeAnalysisError(t *testing.T) {
 		t.Error("expected error for incompatible view type")
 	}
 }
+
+// Nil options and nil view types must be skipped instead of causing a panic.
+func TestCodeGeneratorNilOptions(t *testing.T) {
+	type Data struct{ A uint64 }
+	dataType := reflect.TypeOf(Data{})
+
+	t.Run("NilBuildFileOption", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.SetPackageName("test")
+		var nilOpt CodeGeneratorOption
+		cg.BuildFile("foo.go", WithReflectType(dataType), nilOpt)
+		if _, err := cg.GenerateToMap(); err != nil {
+			t.Fatalf("nil BuildFile option: %v", err)
+		}
+	})
+
+	t.Run("NilReflectViewType", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.SetPackageName("test")
+		cg.BuildFile("foo.go", WithReflectType(dataType, WithReflectViewTypes(nil)))
+		if _, err := cg.GenerateToMap(); err != nil {
+			t.Fatalf("nil reflect view type: %v", err)
+		}
+	})
+
+	t.Run("NilGoTypesViewType", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.SetPackageName("test")
+		cg.BuildFile("foo.go", WithReflectType(dataType, WithGoTypesViewTypes(nil)))
+		if _, err := cg.GenerateToMap(); err != nil {
+			t.Fatalf("nil go/types view type: %v", err)
+		}
+	})
+}
