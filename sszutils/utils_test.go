@@ -7,6 +7,7 @@ package sszutils
 import (
 	"bytes"
 	"errors"
+	"sync"
 	"testing"
 )
 
@@ -427,9 +428,6 @@ func TestExpandSlice_GrowWithinCapacityZeroesTail(t *testing.T) {
 // ============================================================================
 
 func TestZeroBytes(t *testing.T) {
-	// Reset global for test isolation
-	zeroBytes = nil
-
 	result := ZeroBytes()
 	if len(result) != 1024 {
 		t.Errorf("expected length 1024, got %d", len(result))
@@ -443,7 +441,6 @@ func TestZeroBytes(t *testing.T) {
 }
 
 func TestAppendZeroPadding_Small(t *testing.T) {
-	zeroBytes = nil
 	result := AppendZeroPadding(nil, 10)
 	if len(result) != 10 {
 		t.Errorf("expected 10, got %d", len(result))
@@ -456,7 +453,6 @@ func TestAppendZeroPadding_Small(t *testing.T) {
 }
 
 func TestAppendZeroPadding_LargerThanZeroBytes(t *testing.T) {
-	zeroBytes = nil
 	result := AppendZeroPadding(nil, 2000)
 	if len(result) != 2000 {
 		t.Errorf("expected 2000, got %d", len(result))
@@ -535,4 +531,125 @@ func TestCalculateBitlistLimit(t *testing.T) {
 	if CalculateBitlistLimit(maxU) <= CalculateBitlistLimit(256) {
 		t.Error("a huge maxSize must not collapse to the same limit as a small one")
 	}
+}
+
+// ExpandSlice must treat a negative size as empty instead of panicking on a
+// negative slice bound.
+func TestExpandSlice_NegativeSize(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("ExpandSlice panicked on negative size: %v", r)
+		}
+	}()
+
+	out := ExpandSlice([]byte{1, 2, 3}, -1)
+	if out == nil || len(out) != 0 {
+		t.Errorf("expected non-nil empty slice, got %#v", out)
+	}
+}
+
+// GetOffsetSlice must not panic on a negative size.
+func TestGetOffsetSlice_NegativeSize(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("GetOffsetSlice panicked on negative size: %v", r)
+		}
+	}()
+
+	out := GetOffsetSlice(-1)
+	if len(out) != 0 {
+		t.Errorf("expected empty slice, got len %d", len(out))
+	}
+}
+
+// The low-level unmarshal helpers must zero-pad short buffers instead of
+// panicking.
+func TestUnmarshallHelpers_ShortBuffer(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("unmarshal helper panicked on short buffer: %v", r)
+		}
+	}()
+
+	if v := UnmarshallUint64([]byte{1, 2, 3}); v != 0x030201 {
+		t.Errorf("UnmarshallUint64 short = %d, want %d", v, 0x030201)
+	}
+	if v := UnmarshallUint32([]byte{1}); v != 1 {
+		t.Errorf("UnmarshallUint32 short = %d, want 1", v)
+	}
+	if v := UnmarshallUint16([]byte{}); v != 0 {
+		t.Errorf("UnmarshallUint16 empty = %d, want 0", v)
+	}
+	if v := UnmarshallUint8(nil); v != 0 {
+		t.Errorf("UnmarshallUint8 nil = %d, want 0", v)
+	}
+	if UnmarshalBool(nil) {
+		t.Error("UnmarshalBool nil = true, want false")
+	}
+	if v := ReadOffset([]byte{1, 2}); v != 0x0201 {
+		t.Errorf("ReadOffset short = %d, want %d", v, 0x0201)
+	}
+
+	// Full-length buffers must decode normally.
+	if v := UnmarshallUint64([]byte{1, 0, 0, 0, 0, 0, 0, 0}); v != 1 {
+		t.Errorf("UnmarshallUint64 = %d, want 1", v)
+	}
+	if v := UnmarshallUint32([]byte{2, 0, 0, 0}); v != 2 {
+		t.Errorf("UnmarshallUint32 = %d, want 2", v)
+	}
+	if v := UnmarshallUint16([]byte{3, 0}); v != 3 {
+		t.Errorf("UnmarshallUint16 = %d, want 3", v)
+	}
+	if !UnmarshalBool([]byte{1}) {
+		t.Error("UnmarshalBool([1]) = false, want true")
+	}
+	if v := ReadOffset([]byte{4, 0, 0, 0}); v != 4 {
+		t.Errorf("ReadOffset = %d, want 4", v)
+	}
+}
+
+// A negative PushLimit followed by a read-all DecodeBytesBuf must not panic.
+func TestBufferDecoder_PushLimitNegative(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("decoder panicked on negative limit: %v", r)
+		}
+	}()
+
+	dec := NewBufferDecoder([]byte{1, 2, 3, 4, 5})
+	dec.PushLimit(-1)
+	if _, err := dec.DecodeBytesBuf(-1); err == nil {
+		// An empty remaining range is acceptable; the requirement is no panic.
+		t.Log("DecodeBytesBuf returned nil error on empty range")
+	}
+}
+
+// BufferEncoder back-patch and padding helpers must not panic on out-of-range
+// positions.
+func TestBufferEncoder_OutOfRange(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("encoder panicked on out-of-range position: %v", r)
+		}
+	}()
+
+	enc := NewBufferEncoder(make([]byte, 16))
+	enc.EncodeOffsetAt(-1, 42)
+	enc.EncodeOffsetAt(1<<30, 42)
+	enc.EncodeZeroPadding(-1)
+	enc.EncodeZeroPadding(1 << 30)
+}
+
+// ZeroBytes and AppendZeroPadding must be race-free under concurrent use.
+func TestZeroBytesConcurrent(t *testing.T) {
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = ZeroBytes()
+			_ = AppendZeroPadding(make([]byte, 0, 64), 40)
+		}()
+	}
+	wg.Wait()
 }

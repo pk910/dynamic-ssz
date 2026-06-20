@@ -126,10 +126,14 @@ func (e *sszError) Error() string {
 		b.WriteString(": ")
 	}
 
-	b.WriteString(e.err.Error())
+	if e.err != nil {
+		b.WriteString(e.err.Error())
+	}
 
 	if e.message != "" {
-		b.WriteString(": ")
+		if e.err != nil {
+			b.WriteString(": ")
+		}
 		b.WriteString(e.message)
 	}
 
@@ -167,8 +171,12 @@ func NewSszErrorf(base error, format string, args ...any) error {
 func ErrorWithPath(err error, segment string) error {
 	var se *sszError
 	if errors.As(err, &se) {
-		se.path = append(se.path, segment)
-		return se
+		// Build a fresh error with a copied path so wrapping never mutates the
+		// input error (which may be shared or wrapped concurrently).
+		newPath := make([]string, len(se.path)+1)
+		copy(newPath, se.path)
+		newPath[len(se.path)] = segment
+		return &sszError{err: se.err, message: se.message, path: newPath}
 	}
 
 	return &sszError{err: err, path: []string{segment}}

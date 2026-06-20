@@ -54,6 +54,9 @@ func (e *BufferDecoder) GetLength() int {
 // If the limit extends beyond the enclosing limit, it is clamped. Limits can be
 // nested and must be removed with PopLimit.
 func (e *BufferDecoder) PushLimit(limit int) {
+	if limit < 0 {
+		limit = 0
+	}
 	limitPos := e.position + limit
 	if limitPos > e.lastLimit {
 		limitPos = e.lastLimit
