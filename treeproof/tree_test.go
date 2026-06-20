@@ -1617,24 +1617,44 @@ func TestHashIncompleteBranchPanicsCleanly(t *testing.T) {
 
 // TreeFromNodes and TreeFromNodesProgressive must reject nil leaves at
 // construction time so a malformed tree is never returned.
-func TestTreeFromNodesRejectsNilLeaf(t *testing.T) {
+func TestTreeFromNodesNilLeafHashesCleanly(t *testing.T) {
 	leaf := LeafFromUint64(1)
 
-	n, err := TreeFromNodes([]*Node{nil, leaf}, 2)
-	if err == nil {
-		t.Error("TreeFromNodes: expected error for nil leaf")
-	}
-	if n != nil {
-		t.Error("TreeFromNodes: expected nil tree")
+	assertTreeIncompletePanic := func(n *Node) {
+		t.Helper()
+		defer func() {
+			r := recover()
+			if r == nil {
+				t.Error("expected panic when hashing a tree built with a nil leaf")
+				return
+			}
+			if msg, ok := r.(string); !ok || msg != "Tree incomplete" {
+				t.Errorf("expected 'Tree incomplete' panic, got %v", r)
+			}
+		}()
+		_ = n.Hash()
 	}
 
+	// Building with a nil leaf no longer errors, but hashing such a tree must
+	// produce a clear panic rather than a raw nil pointer dereference.
+	n, err := TreeFromNodes([]*Node{nil, leaf}, 2)
+	if err != nil {
+		t.Fatalf("TreeFromNodes: %v", err)
+	}
+	assertTreeIncompletePanic(n)
+
 	np, err := TreeFromNodesProgressive([]*Node{leaf, nil})
-	if err == nil {
-		t.Error("TreeFromNodesProgressive: expected error for nil leaf")
+	if err != nil {
+		t.Fatalf("TreeFromNodesProgressive: %v", err)
 	}
-	if np != nil {
-		t.Error("TreeFromNodesProgressive: expected nil tree")
+	assertTreeIncompletePanic(np)
+
+	// A single nil leaf is returned directly; hashing nil must also panic cleanly.
+	single, err := TreeFromNodes([]*Node{nil}, 1)
+	if err != nil {
+		t.Fatalf("TreeFromNodes single: %v", err)
 	}
+	assertTreeIncompletePanic(single)
 }
 
 // Decompress must not panic on malformed input: missing ZeroLevels entries fall

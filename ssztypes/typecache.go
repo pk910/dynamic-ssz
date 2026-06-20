@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 	"sync"
@@ -280,6 +281,9 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 				for i := range sizeHints {
 					if sizeHints[i].Expr != "" {
 						if ok, val, err := tc.specs.ResolveSpecValue(sizeHints[i].Expr); err == nil && ok {
+							if val > math.MaxUint32 {
+								return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "ssz-size value %d exceeds the uint32 size range", val)
+							}
 							sizeHints[i].Size = uint32(val)
 							sizeHints[i].Custom = true
 						}

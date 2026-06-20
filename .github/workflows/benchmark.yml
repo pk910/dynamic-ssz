@@ -21,11 +21,32 @@ jobs:
       uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       with:
         path: pr
+        # On pull_request events the default ref is the merge commit
+        # (refs/pull/N/merge). Fetch its parents so the exact base it was merged
+        # into can be derived below.
+        fetch-depth: 2
+
+    - name: Determine base commit
+      id: basecommit
+      run: |
+        set -euo pipefail
+        # The merge commit's first parent is the precise base-branch commit the
+        # PR is merged into, so base and PR differ only by the PR's changes.
+        # github.event.pull_request.base.sha can lag the real merge base, which
+        # would fold unrelated master commits into the comparison. Fall back to
+        # it only when HEAD is not a merge commit (e.g. unmergeable PRs).
+        if git -C pr rev-parse --verify -q HEAD^2 >/dev/null; then
+          BASE_SHA="$(git -C pr rev-parse HEAD^1)"
+        else
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+        fi
+        echo "Base commit for benchmark comparison: ${BASE_SHA}"
+        echo "sha=${BASE_SHA}" >> "$GITHUB_OUTPUT"
 
     - name: Checkout base
       uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       with:
-        ref: ${{ github.event.pull_request.base.sha }}
+        ref: ${{ steps.basecommit.outputs.sha }}
         path: base
 
     - name: Set up Go
@@ -186,8 +207,17 @@ jobs:
         for bench in $RERUN; do
           echo "  $bench (7 confirmation runs)"
           for i in $(seq 1 7); do
-            (cd base && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m ./...) >> "$OUTDIR/base-lib.txt" 2>&1 || true
-            (cd pr   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m ./...) >> "$OUTDIR/pr-lib.txt" 2>&1
+            # Alternate which side runs first. Running base and pr back-to-back
+            # under sustained load means the second run executes on an
+            # already-warmed (often frequency-throttled) CPU; always running the
+            # same side second creates a systematic bias. Alternating cancels it.
+            if [ $((i % 2)) -eq 1 ]; then
+              (cd base && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m ./...) >> "$OUTDIR/base-lib.txt" 2>&1 || true
+              (cd pr   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m ./...) >> "$OUTDIR/pr-lib.txt" 2>&1
+            else
+              (cd pr   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m ./...) >> "$OUTDIR/pr-lib.txt" 2>&1
+              (cd base && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m ./...) >> "$OUTDIR/base-lib.txt" 2>&1 || true
+            fi
           done
         done
 
@@ -248,8 +278,16 @@ jobs:
         for bench in $RERUN; do
           echo "  $bench (7 confirmation runs)"
           for i in $(seq 1 7); do
-            (cd base/tests/perftests && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m) >> "$OUTDIR/base-perf.txt" 2>&1 || true
-            (cd pr/tests/perftests   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m) >> "$OUTDIR/pr-perf.txt" 2>&1
+            # Alternate which side runs first so sustained-load CPU frequency
+            # throttling does not systematically penalize the side that always
+            # runs second (see the library benchmark step for details).
+            if [ $((i % 2)) -eq 1 ]; then
+              (cd base/tests/perftests && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m) >> "$OUTDIR/base-perf.txt" 2>&1 || true
+              (cd pr/tests/perftests   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m) >> "$OUTDIR/pr-perf.txt" 2>&1
+            else
+              (cd pr/tests/perftests   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m) >> "$OUTDIR/pr-perf.txt" 2>&1
+              (cd base/tests/perftests && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m) >> "$OUTDIR/base-perf.txt" 2>&1 || true
+            fi
           done
         done
 

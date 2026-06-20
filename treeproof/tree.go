@@ -303,12 +303,6 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 		return getEmptyNode(depth), nil
 	}
 
-	for i := range leaves {
-		if leaves[i] == nil {
-			return nil, fmt.Errorf("leaf at index %d is nil", i)
-		}
-	}
-
 	// now we know numLeaves are at least 1.
 	// if the max leaf limit is 1, return the one leaf we have
 	if limit == 1 {
@@ -324,7 +318,7 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 	// if the max leaf limit is 2
 	if limit == 2 {
 		// but we only have 1 leaf, add a zero order hash as the right node
-		if numLeaves == 1 {
+		if len(leaves) < 2 {
 			return NewNodeWithLR(leaves[0], getEmptyNode(0)), nil
 		}
 		// otherwise return the two nodes we have
@@ -396,12 +390,6 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 func TreeFromNodesProgressive(leaves []*Node) (*Node, error) {
 	if len(leaves) == 0 {
 		return getEmptyNode(0), nil
-	}
-
-	for i := range leaves {
-		if leaves[i] == nil {
-			return nil, fmt.Errorf("leaf at index %d is nil", i)
-		}
 	}
 
 	return treeFromNodesProgressiveImpl(leaves, 0)
@@ -556,6 +544,10 @@ func getEmptyNode(depth int) *Node {
 }
 
 func hashNode(n *Node) []byte {
+	if n == nil {
+		panic("Tree incomplete")
+	}
+
 	if n.left == nil && n.right == nil {
 		return n.value
 	}

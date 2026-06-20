@@ -6,6 +6,7 @@ package ssztypes
 
 import (
 	"fmt"
+	"math"
 	"reflect"
 	"strconv"
 	"strings"
@@ -291,6 +292,9 @@ func getSszSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]SszS
 				isExpr = true
 				if ok {
 					// dynamic value from spec
+					if specVal > math.MaxUint32 {
+						return sszSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "dynssz-size value %d for field %q exceeds the uint32 size range", specVal, field.Name)
+					}
 					sszSize.Size = uint32(specVal)
 					sszSize.Custom = true
 				} else {
