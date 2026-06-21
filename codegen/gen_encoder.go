@@ -681,20 +681,20 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent, "\tenc.EncodeZeroPadding(%s * 4)\n", limitVar)
 		ctx.appendCode(indent, "} else {\n")
 
+		// The offset header has one 4-byte entry per vector slot (limit entries),
+		// so the first element's data starts at limit*4. Emit an offset for each
+		// real element, then for each zero-padding slot when the vector is
+		// under-filled. (Byte-identical to a full vector; correct when shorter.)
 		sizeFnCall := ctx.getSizeFnCall(desc.ElemDesc, fmt.Sprintf("%s[i]", getValueVar(false, "")))
-		ctx.appendCode(indent, "\toffset := %s * 4\n", lenVar)
-		ctx.appendCode(indent, "\tenc.EncodeOffset(uint32(offset))\n")
-		ctx.appendCode(indent, "\tfor i := range %s-1 {\n", lenVar)
-		ctx.appendCode(indent, "\t\toffset += %s\n", sizeFnCall)
+		ctx.appendCode(indent, "\toffset := %s * 4\n", limitVar)
+		ctx.appendCode(indent, "\tfor i := range %s {\n", lenVar)
 		ctx.appendCode(indent, "\t\tenc.EncodeOffset(uint32(offset))\n")
+		ctx.appendCode(indent, "\t\toffset += %s\n", sizeFnCall)
 		ctx.appendCode(indent, "\t}\n")
 
 		if desc.Kind != reflect.Array {
 			// append zero padding if we have less items than the limit
 			ctx.appendCode(indent, "\tif %s < %s {\n", lenVar, limitVar)
-			sizeFnCall := ctx.getSizeFnCall(desc.ElemDesc, fmt.Sprintf("%s[%s]", getValueVar(false, ""), lenVar))
-			ctx.appendCode(indent, "\t\toffset += %s\n", sizeFnCall)
-			ctx.appendCode(indent, "\t\tenc.EncodeOffset(uint32(offset))\n")
 			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
 				ctx.appendCode(indent, "\t\tzeroItem := new(%s)\n", ctx.typePrinter.InnerTypeString(desc.ElemDesc))
 			} else {
@@ -703,9 +703,9 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 
 			zeroItemSizeFnCall := ctx.getSizeFnCall(desc.ElemDesc, "zeroItem")
 			ctx.appendCode(indent, "\t\tzeroSize := %s\n", zeroItemSizeFnCall)
-			ctx.appendCode(indent, "\t\tfor i := %s; i < %s-1; i++ {\n", lenVar, limitVar)
-			ctx.appendCode(indent, "\t\t\toffset += zeroSize\n")
+			ctx.appendCode(indent, "\t\tfor i := %s; i < %s; i++ {\n", lenVar, limitVar)
 			ctx.appendCode(indent, "\t\t\tenc.EncodeOffset(uint32(offset))\n")
+			ctx.appendCode(indent, "\t\t\toffset += zeroSize\n")
 			ctx.appendCode(indent, "\t\t}\n")
 			ctx.appendCode(indent, "\t}\n")
 		}

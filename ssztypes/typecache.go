@@ -265,6 +265,11 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 	// so we must not delegate to generated methods that have the annotation baked in.
 	hasExternalHints := len(sizeHints) > 0 || len(maxSizeHints) > 0
 
+	// staticAnnotation captures the type's own ssz-static:"true/false" declaration
+	// (true = fixed-size, false = variable-size). It gates the shallow-build path
+	// for fully-delegated types below.
+	var staticAnnotation *bool
+
 	// Check annotation registry for type-level metadata when no external hints provided
 	if len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) == 0 {
 		if tag, ok := sszutils.LookupAnnotation(t); ok {
@@ -273,6 +278,11 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 			typeHints, sizeHints, maxSizeHints, parseErr = ParseTags(tag)
 			if parseErr != nil {
 				return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "failed to parse annotation for type %v: %v", t, parseErr)
+			}
+
+			if staticStr, hasStatic := reflect.StructTag(tag).Lookup("ssz-static"); hasStatic {
+				isStatic := staticStr == "true"
+				staticAnnotation = &isStatic
 			}
 
 			// ParseTags can't resolve dynamic expressions (no DynamicSpecs).
@@ -452,6 +462,45 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 	}
 
 	desc.SszType = sszType
+
+	// Fully-delegated types handle every SSZ operation through their own generated
+	// code, so the descriptor subtree below them is never consulted. When such a
+	// type also declares whether it is static (fixed-size) or dynamic via its own
+	// ssz-static annotation, build a shallow descriptor and skip recursing into —
+	// and validating — the subtree. For a static type the fixed byte size is read
+	// straight from the type's own sizer (the authoritative, spec-correct source)
+	// applied to a zero value. Field-level hints (hasExternalHints) opt out, since
+	// they override the type's own annotation and require inline processing. View
+	// descriptors qualify when they delegate through the dynamic view interface set.
+	if staticAnnotation != nil && !hasExternalHints {
+		var fullyDelegated bool
+		if desc.GoTypeFlags&GoTypeFlagIsView != 0 {
+			fullyDelegated = fullyDelegatesSSZView(runtimeType)
+		} else {
+			fullyDelegated = fullyDelegatesSSZ(runtimeType)
+		}
+		if fullyDelegated {
+			if *staticAnnotation {
+				size, err := tc.delegatedStaticSize(desc, runtimeType)
+				if err != nil {
+					return nil, err
+				}
+				desc.Size = size
+			} else {
+				desc.SszTypeFlags |= SszTypeFlagIsDynamic
+			}
+			tc.detectCompatFlags(desc, runtimeType, schemaType)
+			// Without traversal the descriptor cannot know whether the type uses
+			// spec-dependent sizes, so it must not fall back to the type's fastssz
+			// methods (which bake spec-independent values). The shallow path is
+			// only taken for types that delegate through the spec-aware dynamic
+			// (or dynamic view) interfaces, so suppress the fastssz family and let
+			// those handle every operation correctly.
+			desc.SszCompatFlags &^= SszCompatFlagFastSSZMarshaler | SszCompatFlagFastSSZHasher | SszCompatFlagHashTreeRootWith
+			desc.HashTreeRootWithMethod = nil
+			return desc, nil
+		}
+	}
 
 	// Check type compatibility and compute size
 	switch sszType {
@@ -642,6 +691,66 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 		return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "bit size tag is only allowed for bitvector or bitlist types, got %v", desc.SszType)
 	}
 
+	tc.detectCompatFlags(desc, runtimeType, schemaType)
+
+	// When field-level hints override the type's own annotation, don't delegate
+	// to the type's generated methods — they have the annotation's limits baked in.
+	// Process inline instead so the field-level hints are respected.
+	if hasExternalHints && desc.SszType != SszCustomType {
+		desc.SszCompatFlags &^= SszCompatFlagDynamicMarshaler |
+			SszCompatFlagDynamicUnmarshaler |
+			SszCompatFlagDynamicSizer |
+			SszCompatFlagDynamicHashRoot |
+			SszCompatFlagDynamicEncoder |
+			SszCompatFlagDynamicDecoder |
+			SszCompatFlagFastSSZMarshaler |
+			SszCompatFlagFastSSZHasher |
+			SszCompatFlagHashTreeRootWith
+	}
+
+	// Optional and optional-list reshape the encoding around the inner type
+	// (presence byte / List[T,1] framing). The inner type's own SSZ methods
+	// must not be invoked at this level — they would skip the framing and
+	// emit the inner value as if it were the canonical encoding.
+	if desc.SszType == SszOptionalType || desc.SszType == SszOptionalListType {
+		desc.SszCompatFlags &^= SszCompatFlagDynamicMarshaler |
+			SszCompatFlagDynamicUnmarshaler |
+			SszCompatFlagDynamicSizer |
+			SszCompatFlagDynamicHashRoot |
+			SszCompatFlagDynamicEncoder |
+			SszCompatFlagDynamicDecoder |
+			SszCompatFlagFastSSZMarshaler |
+			SszCompatFlagFastSSZHasher |
+			SszCompatFlagHashTreeRootWith
+	}
+
+	// Per the SSZ spec, containers (including progressive containers) must have
+	// at least one field. Reject a struct that would be encoded field-by-field
+	// with no SSZ-encodable (exported) fields. Types that delegate to their own
+	// SSZ methods (any compat flag set) are exempt: they do not use the plain
+	// container layout, so a zero-field struct shell is legitimate for them.
+	if desc.SszType == SszContainerType || desc.SszType == SszProgressiveContainerType {
+		if desc.SszCompatFlags == 0 && desc.ContainerDesc != nil && len(desc.ContainerDesc.Fields) == 0 {
+			return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "container type %v has no SSZ fields, which is invalid per the SSZ spec", schemaType)
+		}
+	}
+
+	if desc.SszType == SszCustomType {
+		isCompatible := desc.SszCompatFlags&SszCompatFlagFastSSZMarshaler != 0 && desc.SszCompatFlags&SszCompatFlagFastSSZHasher != 0
+		// isCompatible = isCompatible || (desc.SszCompatFlags&SszCompatFlagDynamicMarshaler != 0 && desc.SszCompatFlags&SszCompatFlagDynamicUnmarshaler != 0 && desc.SszCompatFlags&SszCompatFlagDynamicSizer != 0 && desc.SszCompatFlags&SszCompatFlagDynamicHashRoot != 0)
+		if !isCompatible {
+			return nil, sszutils.NewSszError(sszutils.ErrMissingInterface, "custom ssz type requires fastssz marshaler, unmarshaler and hasher implementations")
+		}
+	}
+
+	return desc, nil
+}
+
+// detectCompatFlags records which SSZ delegation interfaces (fastssz, dynamic,
+// dynamic-view, and HashTreeRootWith) the type implements. The fastssz marshaler
+// and hasher are only flagged when the type does not carry a dynamic size/max,
+// since those use the static fastssz layout.
+func (tc *TypeCache) detectCompatFlags(desc *TypeDescriptor, runtimeType, schemaType reflect.Type) {
 	if desc.SszTypeFlags&SszTypeFlagHasDynamicSize == 0 && getFastsszConvertCompatibility(runtimeType) {
 		desc.SszCompatFlags |= SszCompatFlagFastSSZMarshaler
 	}
@@ -698,58 +807,68 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 	}
 
 	desc.SszCompatFlags |= tc.getCompatFlag(runtimeType, schemaType)
+}
 
-	// When field-level hints override the type's own annotation, don't delegate
-	// to the type's generated methods — they have the annotation's limits baked in.
-	// Process inline instead so the field-level hints are respected.
-	if hasExternalHints && desc.SszType != SszCustomType {
-		desc.SszCompatFlags &^= SszCompatFlagDynamicMarshaler |
-			SszCompatFlagDynamicUnmarshaler |
-			SszCompatFlagDynamicSizer |
-			SszCompatFlagDynamicHashRoot |
-			SszCompatFlagDynamicEncoder |
-			SszCompatFlagDynamicDecoder |
-			SszCompatFlagFastSSZMarshaler |
-			SszCompatFlagFastSSZHasher |
-			SszCompatFlagHashTreeRootWith
+// fullyDelegatesSSZ reports whether the type implements the complete set of
+// dynamic SSZ operation interfaces (marshal, unmarshal, size, hash-tree-root).
+// When it does, every SSZ operation is handled by the type's own generated code
+// and the descriptor subtree below it is never consulted, so it does not need to
+// be built or validated — provided the type also declares its size via an
+// annotation (see the shallow-build path in buildTypeDescriptor).
+func fullyDelegatesSSZ(runtimeType reflect.Type) bool {
+	return (getDynamicMarshalerCompatibility(runtimeType) || getDynamicEncoderCompatibility(runtimeType)) &&
+		(getDynamicUnmarshalerCompatibility(runtimeType) || getDynamicDecoderCompatibility(runtimeType)) &&
+		getDynamicSizerCompatibility(runtimeType) &&
+		getDynamicHashRootCompatibility(runtimeType)
+}
+
+// fullyDelegatesSSZView is the view-descriptor counterpart of fullyDelegatesSSZ:
+// it reports whether the type implements the complete set of dynamic view SSZ
+// operation interfaces, in which case a view descriptor also delegates every
+// operation to the type's own code and its subtree need not be built.
+func fullyDelegatesSSZView(runtimeType reflect.Type) bool {
+	return (getDynamicViewMarshalerCompatibility(runtimeType) || getDynamicViewEncoderCompatibility(runtimeType)) &&
+		(getDynamicViewUnmarshalerCompatibility(runtimeType) || getDynamicViewDecoderCompatibility(runtimeType)) &&
+		getDynamicViewSizerCompatibility(runtimeType) &&
+		getDynamicViewHashRootCompatibility(runtimeType)
+}
+
+// noopDynamicSpecs resolves no spec values. It is used as a non-nil fallback when
+// a type cache has no specs so a static type's sizer (which may resolve spec
+// values) can run at build time without a nil dereference; unknown values then
+// fall back to their static defaults.
+type noopDynamicSpecs struct{}
+
+func (noopDynamicSpecs) ResolveSpecValue(string) (bool, uint64, error) { return false, 0, nil }
+
+// delegatedStaticSize returns the fixed SSZ byte size of a fully-delegated static
+// type by invoking the type's own sizer on a zero value. A static type's sizer
+// derives its result from constants and spec values only — never from field data
+// — so a zero value yields the correct size, and spec-dependent fixed sizes are
+// resolved against the cache's specs. View descriptors use the view sizer.
+func (tc *TypeCache) delegatedStaticSize(desc *TypeDescriptor, runtimeType reflect.Type) (uint32, error) {
+	specs := tc.specs
+	if specs == nil {
+		specs = noopDynamicSpecs{}
 	}
+	zero := reflect.New(runtimeType).Interface()
 
-	// Optional and optional-list reshape the encoding around the inner type
-	// (presence byte / List[T,1] framing). The inner type's own SSZ methods
-	// must not be invoked at this level — they would skip the framing and
-	// emit the inner value as if it were the canonical encoding.
-	if desc.SszType == SszOptionalType || desc.SszType == SszOptionalListType {
-		desc.SszCompatFlags &^= SszCompatFlagDynamicMarshaler |
-			SszCompatFlagDynamicUnmarshaler |
-			SszCompatFlagDynamicSizer |
-			SszCompatFlagDynamicHashRoot |
-			SszCompatFlagDynamicEncoder |
-			SszCompatFlagDynamicDecoder |
-			SszCompatFlagFastSSZMarshaler |
-			SszCompatFlagFastSSZHasher |
-			SszCompatFlagHashTreeRootWith
-	}
-
-	// Per the SSZ spec, containers (including progressive containers) must have
-	// at least one field. Reject a struct that would be encoded field-by-field
-	// with no SSZ-encodable (exported) fields. Types that delegate to their own
-	// SSZ methods (any compat flag set) are exempt: they do not use the plain
-	// container layout, so a zero-field struct shell is legitimate for them.
-	if desc.SszType == SszContainerType || desc.SszType == SszProgressiveContainerType {
-		if desc.SszCompatFlags == 0 && desc.ContainerDesc != nil && len(desc.ContainerDesc.Fields) == 0 {
-			return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "container type %v has no SSZ fields, which is invalid per the SSZ spec", schemaType)
+	if desc.GoTypeFlags&GoTypeFlagIsView != 0 {
+		if sizer, ok := zero.(sszutils.DynamicViewSizer); ok && desc.CodegenInfo != nil {
+			if sizeFn := sizer.SizeSSZDynView(*desc.CodegenInfo); sizeFn != nil {
+				return uint32(sizeFn(specs)), nil
+			}
 		}
+		return 0, sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "static view type %v does not provide a usable view sizer", runtimeType)
 	}
 
-	if desc.SszType == SszCustomType {
-		isCompatible := desc.SszCompatFlags&SszCompatFlagFastSSZMarshaler != 0 && desc.SszCompatFlags&SszCompatFlagFastSSZHasher != 0
-		// isCompatible = isCompatible || (desc.SszCompatFlags&SszCompatFlagDynamicMarshaler != 0 && desc.SszCompatFlags&SszCompatFlagDynamicUnmarshaler != 0 && desc.SszCompatFlags&SszCompatFlagDynamicSizer != 0 && desc.SszCompatFlags&SszCompatFlagDynamicHashRoot != 0)
-		if !isCompatible {
-			return nil, sszutils.NewSszError(sszutils.ErrMissingInterface, "custom ssz type requires fastssz marshaler, unmarshaler and hasher implementations")
-		}
+	if sizer, ok := zero.(sszutils.DynamicSizer); ok {
+		return uint32(sizer.SizeSSZDyn(specs)), nil
 	}
-
-	return desc, nil
+	if marshaler, ok := zero.(sszutils.FastsszMarshaler); ok {
+		return uint32(marshaler.SizeSSZ()), nil
+	}
+	return 0, sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "static type %v does not implement a sizer", runtimeType)
 }
 
 // buildTypeWrapperDescriptor builds a descriptor for TypeWrapper types with runtime/schema pairing.

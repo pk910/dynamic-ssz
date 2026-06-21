@@ -559,6 +559,12 @@ func run(config *Config) error {
 // findAnnotateCall scans package AST for sszutils.Annotate[typeName]("...")
 // calls and returns the tag string literal, or "" if not found.
 func findAnnotateCall(pkg *packages.Package, typeName string) string {
+	// A type may be annotated from several places (a hand-written constraint plus
+	// a generated ssz-static declaration, possibly in different files), so collect
+	// every Annotate call for the type and merge them into one space-separated tag.
+	var tags []string
+	seen := map[string]struct{}{}
+
 	for _, file := range pkg.Syntax {
 		// Resolve which import alias (if any) maps to sszutils
 		sszutilsAlias := ""
@@ -582,12 +588,15 @@ func findAnnotateCall(pkg *packages.Package, typeName string) string {
 		for _, decl := range file.Decls {
 			tag := findAnnotateCallInDecl(decl, sszutilsAlias, typeName)
 			if tag != "" {
-				return tag
+				if _, ok := seen[tag]; !ok {
+					seen[tag] = struct{}{}
+					tags = append(tags, tag)
+				}
 			}
 		}
 	}
 
-	return ""
+	return strings.Join(tags, " ")
 }
 
 // findAnnotateCallInDecl checks a single declaration for an Annotate call.

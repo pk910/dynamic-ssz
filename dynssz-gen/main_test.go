@@ -480,9 +480,10 @@ func TestFindAnnotateCall_Found(t *testing.T) {
 		t.Fatalf("failed to load package: %v", err)
 	}
 
+	// The merged tag also carries the generated ssz-static declaration.
 	tag := findAnnotateCall(pkgs[0], "AnnotatedList")
-	if tag != `ssz-max:"20"` {
-		t.Fatalf("expected tag ssz-max:\"20\", got: %q", tag)
+	if !strings.Contains(tag, `ssz-max:"20"`) {
+		t.Fatalf("expected tag to contain ssz-max:\"20\", got: %q", tag)
 	}
 }
 
@@ -497,8 +498,8 @@ func TestFindAnnotateCall_Found2(t *testing.T) {
 	}
 
 	tag := findAnnotateCall(pkgs[0], "AnnotatedList2")
-	if tag != `ssz-max:"10"` {
-		t.Fatalf("expected tag ssz-max:\"10\", got: %q", tag)
+	if !strings.Contains(tag, `ssz-max:"10"`) {
+		t.Fatalf("expected tag to contain ssz-max:\"10\", got: %q", tag)
 	}
 }
 
