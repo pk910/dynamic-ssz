@@ -446,6 +446,17 @@ func run(config *Config) error {
 	typeCache := ssztypes.NewTypeCache(nil)
 	codeGen := codegen.NewCodeGenerator(typeCache)
 
+	// Let the parser read same-package types' annotations (incl. generated
+	// ssz-static declarations) so referenced fully-delegated types are
+	// shallow-built rather than traversed and validated.
+	codeGen.SetAnnotationResolver(func(t types.Type) string {
+		name := annotatedTypeName(t, pkg)
+		if name == "" {
+			return ""
+		}
+		return findAnnotateCall(pkg, name)
+	})
+
 	if config.PackageName != "" {
 		codeGen.SetPackageName(config.PackageName)
 	}
@@ -554,6 +565,24 @@ func run(config *Config) error {
 	}
 
 	return nil
+}
+
+// annotatedTypeName returns the bare name of a named type defined in pkg, or ""
+// if t is not a named type belonging to pkg. Pointers are unwrapped. Only
+// same-package types are resolved, since annotations are scanned within pkg.
+func annotatedTypeName(t types.Type, pkg *packages.Package) string {
+	if ptr, ok := t.(*types.Pointer); ok {
+		t = ptr.Elem()
+	}
+	named, ok := t.(*types.Named)
+	if !ok {
+		return ""
+	}
+	obj := named.Obj()
+	if obj.Pkg() == nil || obj.Pkg().Path() != pkg.PkgPath {
+		return ""
+	}
+	return obj.Name()
 }
 
 // findAnnotateCall scans package AST for sszutils.Annotate[typeName]("...")

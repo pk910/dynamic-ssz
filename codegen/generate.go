@@ -147,6 +147,7 @@ func (cg *CodeGenerator) analyzeTypes() error {
 					parser = NewParser()
 					parser.CompatFlags = cg.compatFlags
 					parser.ExtendedTypes = t.Options.ExtendedTypes
+					parser.AnnotationResolver = cg.annotationResolver
 				}
 				if _, ok := t.GoTypesType.(*types.Pointer); !ok {
 					t.GoTypesType = types.NewPointer(t.GoTypesType)
@@ -176,6 +177,7 @@ func (cg *CodeGenerator) analyzeTypes() error {
 					if parser == nil {
 						parser = NewParser()
 						parser.CompatFlags = cg.compatFlags
+						parser.AnnotationResolver = cg.annotationResolver
 					}
 					baseType := viewType
 					if named, ok := baseType.(*types.Named); ok {
