@@ -917,6 +917,16 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 	}
 	sliceLen := int(firstOffset / 4)
 
+	// A non-empty region must begin with an offset table, so the first offset
+	// is at least 4. A first offset of 0 (sliceLen == 0) means zero items, which
+	// is only valid for a zero-length region (handled above). Here the region is
+	// non-empty, so the bytes are unconsumable trailing data and the encoding is
+	// malformed. Reject it explicitly to match the codegen path and to avoid
+	// indexing the empty offset slice in the non-seekable branch below.
+	if sliceLen == 0 {
+		return sszutils.ErrInvalidListStartOffsetFn(firstOffset, sszLen)
+	}
+
 	// check if there's enough data for all offsets
 	requiredOffsetBytes := sliceLen * 4
 	if sszLen < requiredOffsetBytes {
