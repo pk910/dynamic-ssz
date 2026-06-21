@@ -449,13 +449,7 @@ func run(config *Config) error {
 	// Let the parser read same-package types' annotations (incl. generated
 	// ssz-static declarations) so referenced fully-delegated types are
 	// shallow-built rather than traversed and validated.
-	codeGen.SetAnnotationResolver(func(t types.Type) string {
-		name := annotatedTypeName(t, pkg)
-		if name == "" {
-			return ""
-		}
-		return findAnnotateCall(pkg, name)
-	})
+	codeGen.SetAnnotationResolver(annotationResolver(pkg))
 
 	if config.PackageName != "" {
 		codeGen.SetPackageName(config.PackageName)
@@ -565,6 +559,20 @@ func run(config *Config) error {
 	}
 
 	return nil
+}
+
+// annotationResolver returns a resolver that maps a go/types type to the merged
+// ssz annotation tag registered for it in pkg (or "" when the type is not a
+// named, same-package type). The code generator's parser uses it to read a
+// referenced type's ssz-static declaration.
+func annotationResolver(pkg *packages.Package) func(types.Type) string {
+	return func(t types.Type) string {
+		name := annotatedTypeName(t, pkg)
+		if name == "" {
+			return ""
+		}
+		return findAnnotateCall(pkg, name)
+	}
 }
 
 // annotatedTypeName returns the bare name of a named type defined in pkg, or ""

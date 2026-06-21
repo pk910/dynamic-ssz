@@ -116,6 +116,20 @@ func TestAnnotate_Merge(t *testing.T) {
 	}
 }
 
+func TestAnnotate_DuplicateKeyLastWins(t *testing.T) {
+	type dupType []uint32
+
+	// For a duplicated key the most recent registration must win (the new tag is
+	// prepended, and StructTag.Lookup returns the first occurrence).
+	Annotate[dupType](`ssz-max:"10"`)
+	Annotate[dupType](`ssz-max:"20"`)
+
+	tag, _ := LookupAnnotation(reflect.TypeFor[dupType]())
+	if v, _ := reflect.StructTag(tag).Lookup("ssz-max"); v != "20" {
+		t.Fatalf("expected last registration to win (20), got %q (full tag %q)", v, tag)
+	}
+}
+
 // LookupAnnotation must return ("", false) for a nil type instead of panicking.
 func TestLookupAnnotation_Nil(t *testing.T) {
 	defer func() {

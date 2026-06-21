@@ -985,12 +985,36 @@ type delegatedViewSchema struct {
 	Bad struct{}
 }
 
+// delegatedBadStatic carries an invalid ssz-static value; delegatedNegSize's
+// sizer returns an out-of-range size. Both must be rejected.
+type delegatedBadStatic struct{ delegationMethods }
+type delegatedNegSize struct{ delegationOps }
+
+func (delegatedNegSize) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return -1 }
+
+// viewNilSizerMethods fully delegates the view interfaces but its view sizer
+// yields no size function, so a static view descriptor cannot resolve its size.
+type viewNilSizerMethods struct{ viewDelegationMethods }
+
+func (viewNilSizerMethods) SizeSSZDynView(any) func(sszutils.DynamicSpecs) int { return nil }
+
+type delegatedViewNilRuntime struct {
+	viewNilSizerMethods
+	Bad struct{}
+}
+type delegatedViewNilSchema struct {
+	Bad struct{}
+}
+
 var (
 	_ = sszutils.Annotate[delegatedFixedSize](`ssz-static:"true"`)
 	_ = sszutils.Annotate[delegatedVarSize](`ssz-static:"false"`)
 	_ = sszutils.Annotate[delegatedSpecStatic](`ssz-static:"true"`)
 	_ = sszutils.Annotate[partiallyDelegated](`ssz-static:"true"`)
 	_ = sszutils.Annotate[delegatedViewSchema](`ssz-static:"true"`)
+	_ = sszutils.Annotate[delegatedViewNilSchema](`ssz-static:"true"`)
+	_ = sszutils.Annotate[delegatedBadStatic](`ssz-static:"maybe"`)
+	_ = sszutils.Annotate[delegatedNegSize](`ssz-static:"true"`)
 )
 
 // A fully-delegated type that declares ssz-static must build a shallow descriptor:
@@ -1069,6 +1093,20 @@ func TestTypeCache_DelegatedShallowBuild(t *testing.T) {
 		}
 	})
 
+	t.Run("InvalidStaticValueRejected", func(t *testing.T) {
+		_, err := cache.GetTypeDescriptor(reflect.TypeOf(delegatedBadStatic{}), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "invalid ssz-static value") {
+			t.Fatalf("expected invalid ssz-static rejection, got: %v", err)
+		}
+	})
+
+	t.Run("OutOfRangeSizerRejected", func(t *testing.T) {
+		_, err := cache.GetTypeDescriptor(reflect.TypeOf(delegatedNegSize{}), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "out-of-range size") {
+			t.Fatalf("expected out-of-range sizer rejection, got: %v", err)
+		}
+	})
+
 	t.Run("PartialDelegationRecurses", func(t *testing.T) {
 		// Only DynamicMarshaler is implemented, so the type is not fully delegated
 		// and the gate stays off despite the annotation.
@@ -1104,6 +1142,19 @@ func TestTypeCache_DelegatedShallowBuild(t *testing.T) {
 		}
 		if desc.SszCompatFlags&SszCompatFlagDynamicViewMarshaler == 0 {
 			t.Error("expected view delegation compat flags to be set")
+		}
+	})
+
+	t.Run("ViewSizerUnusable", func(t *testing.T) {
+		// A static view type whose view sizer yields no size function cannot have
+		// its size resolved, so the shallow build must fail.
+		_, err := cache.GetTypeDescriptorWithSchema(
+			reflect.TypeOf(delegatedViewNilRuntime{}),
+			reflect.TypeOf(delegatedViewNilSchema{}),
+			nil, nil, nil,
+		)
+		if err == nil || !strings.Contains(err.Error(), "does not provide a usable view sizer") {
+			t.Fatalf("expected unusable view sizer error, got: %v", err)
 		}
 	})
 }

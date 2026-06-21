@@ -12,7 +12,47 @@ import (
 	"testing"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
+	"golang.org/x/tools/go/packages"
 )
+
+// TestParserShallowGate exercises the parser's shallow-build gate for an external,
+// fully-delegated type. NestedDelegatedContainer (loaded with its generated
+// methods) fully delegates and is not registered in the parser's CompatFlags, so
+// the gate fires; the resolver supplies the ssz-static declaration. An invalid
+// value is rejected.
+func TestParserShallowGate(t *testing.T) {
+	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
+	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
+	if err != nil || len(pkgs) == 0 {
+		t.Fatalf("load tests package: %v", err)
+	}
+	container := pkgs[0].Types.Scope().Lookup("NestedDelegatedContainer")
+	if container == nil {
+		t.Fatal("NestedDelegatedContainer not found")
+	}
+	ptrType := types.NewPointer(container.Type())
+
+	t.Run("InvalidStaticValue", func(t *testing.T) {
+		p := NewParser()
+		p.AnnotationResolver = func(types.Type) string { return `ssz-static:"bogus"` }
+		_, err := p.GetTypeDescriptor(ptrType, nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "invalid ssz-static value") {
+			t.Fatalf("expected invalid ssz-static error, got %v", err)
+		}
+	})
+
+	t.Run("StaticTrueShallow", func(t *testing.T) {
+		p := NewParser()
+		p.AnnotationResolver = func(types.Type) string { return `ssz-static:"true"` }
+		desc, err := p.GetTypeDescriptor(ptrType, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if desc.ContainerDesc != nil {
+			t.Error("expected shallow descriptor (nil ContainerDesc) for delegated type")
+		}
+	})
+}
 
 func TestNewParser(t *testing.T) {
 	parser := NewParser()

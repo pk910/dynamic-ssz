@@ -1150,9 +1150,7 @@ func (n *nestedDelegatedInner) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte
 }
 
 func (n *nestedDelegatedInner) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
-	if len(buf) < 4 {
-		return sszutils.ErrUnexpectedEOF
-	}
+	// The caller (a fixed 4-byte static field) always slices exactly 4 bytes.
 	n.Value = binary.LittleEndian.Uint32(buf)
 	return nil
 }
@@ -1173,4 +1171,53 @@ type NestedDelegatedContainer struct {
 var NestedDelegatedContainer_Payload = NestedDelegatedContainer{
 	A: 7,
 	N: nestedDelegatedInner{Value: 0x11223344},
+}
+
+// nestedDelegatedDyn is the variable-size counterpart of nestedDelegatedInner: a
+// fully-delegated type declaring ssz-static:"false". It also carries an illegal
+// innard that the parser must not traverse.
+type nestedDelegatedDyn struct {
+	Bad   [0]uint64 // illegal Vector[uint64, 0] if ever traversed
+	Items []uint32
+}
+
+var _ = sszutils.Annotate[nestedDelegatedDyn](`ssz-static:"false"`)
+
+func (n *nestedDelegatedDyn) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return len(n.Items) * 4 }
+
+func (n *nestedDelegatedDyn) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	for _, v := range n.Items {
+		buf = binary.LittleEndian.AppendUint32(buf, v)
+	}
+	return buf, nil
+}
+
+func (n *nestedDelegatedDyn) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	n.Items = make([]uint32, len(buf)/4)
+	for i := range n.Items {
+		n.Items[i] = binary.LittleEndian.Uint32(buf[i*4:])
+	}
+	return nil
+}
+
+func (n *nestedDelegatedDyn) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	idx := hh.Index()
+	for _, v := range n.Items {
+		hh.AppendUint32(v)
+	}
+	hh.FillUpTo32()
+	hh.MerkleizeWithMixin(idx, uint64(len(n.Items)), 1024)
+	return nil
+}
+
+// NestedDelegatedDynContainer references the variable-size fully-delegated type
+// as a dynamic field, exercising the parser gate's ssz-static:"false" branch.
+type NestedDelegatedDynContainer struct {
+	A uint64
+	N nestedDelegatedDyn
+}
+
+var NestedDelegatedDynContainer_Payload = NestedDelegatedDynContainer{
+	A: 9,
+	N: nestedDelegatedDyn{Items: []uint32{1, 2, 3}},
 }

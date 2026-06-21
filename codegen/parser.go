@@ -375,13 +375,16 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	// are already handled inline by the caller (it strips delegation flags).
 	if p.AnnotationResolver != nil && len(typeHints) == 0 && len(sizeHints) == 0 && len(maxSizeHints) == 0 && p.getCompatFlag(innerDataType, innerSchemaType) == 0 && p.fullyDelegatesSSZ(originalType) {
 		if staticStr, ok := reflect.StructTag(p.AnnotationResolver(originalType)).Lookup("ssz-static"); ok {
-			if staticStr == "true" {
+			switch staticStr {
+			case "true":
 				// Static: the generated code resolves the exact size at runtime via
 				// the type's own sizer, so drive sizing/offsets at runtime rather
 				// than from a (here unknown) compile-time constant.
 				desc.SszTypeFlags |= ssztypes.SszTypeFlagHasSizeExpr
-			} else {
+			case "false":
 				desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
+			default:
+				return nil, fmt.Errorf("invalid ssz-static value %q for type %v (must be \"true\" or \"false\")", staticStr, originalType)
 			}
 			p.detectCompatFlags(desc, originalType, innerDataType, innerSchemaType)
 			// Delegate through the spec-aware dynamic methods, not the fastssz ones.

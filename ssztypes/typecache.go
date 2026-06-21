@@ -281,8 +281,16 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 			}
 
 			if staticStr, hasStatic := reflect.StructTag(tag).Lookup("ssz-static"); hasStatic {
-				isStatic := staticStr == "true"
-				staticAnnotation = &isStatic
+				switch staticStr {
+				case "true":
+					v := true
+					staticAnnotation = &v
+				case "false":
+					v := false
+					staticAnnotation = &v
+				default:
+					return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "invalid ssz-static value %q for type %v (must be \"true\" or \"false\")", staticStr, t)
+				}
 			}
 
 			// ParseTags can't resolve dynamic expressions (no DynamicSpecs).
@@ -833,42 +841,37 @@ func fullyDelegatesSSZView(runtimeType reflect.Type) bool {
 		getDynamicViewHashRootCompatibility(runtimeType)
 }
 
-// noopDynamicSpecs resolves no spec values. It is used as a non-nil fallback when
-// a type cache has no specs so a static type's sizer (which may resolve spec
-// values) can run at build time without a nil dereference; unknown values then
-// fall back to their static defaults.
-type noopDynamicSpecs struct{}
-
-func (noopDynamicSpecs) ResolveSpecValue(string) (bool, uint64, error) { return false, 0, nil }
-
 // delegatedStaticSize returns the fixed SSZ byte size of a fully-delegated static
 // type by invoking the type's own sizer on a zero value. A static type's sizer
 // derives its result from constants and spec values only — never from field data
 // — so a zero value yields the correct size, and spec-dependent fixed sizes are
 // resolved against the cache's specs. View descriptors use the view sizer.
 func (tc *TypeCache) delegatedStaticSize(desc *TypeDescriptor, runtimeType reflect.Type) (uint32, error) {
-	specs := tc.specs
-	if specs == nil {
-		specs = noopDynamicSpecs{}
-	}
+	specs := tc.specs // never nil: NewTypeCache substitutes emptySpecs{}
 	zero := reflect.New(runtimeType).Interface()
+
+	// A sizer returns int; a negative or >uint32 value would wrap on conversion
+	// and corrupt downstream sizing/offset math, so validate the range.
+	validate := func(n int) (uint32, error) {
+		if n < 0 || int64(n) > math.MaxUint32 {
+			return 0, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "sizer for static type %v returned out-of-range size %d", runtimeType, n)
+		}
+		return uint32(n), nil
+	}
 
 	if desc.GoTypeFlags&GoTypeFlagIsView != 0 {
 		if sizer, ok := zero.(sszutils.DynamicViewSizer); ok && desc.CodegenInfo != nil {
 			if sizeFn := sizer.SizeSSZDynView(*desc.CodegenInfo); sizeFn != nil {
-				return uint32(sizeFn(specs)), nil
+				return validate(sizeFn(specs))
 			}
 		}
 		return 0, sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "static view type %v does not provide a usable view sizer", runtimeType)
 	}
 
-	if sizer, ok := zero.(sszutils.DynamicSizer); ok {
-		return uint32(sizer.SizeSSZDyn(specs)), nil
-	}
-	if marshaler, ok := zero.(sszutils.FastsszMarshaler); ok {
-		return uint32(marshaler.SizeSSZ()), nil
-	}
-	return 0, sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "static type %v does not implement a sizer", runtimeType)
+	// Non-view: fullyDelegatesSSZ (checked by the caller before reaching here)
+	// guarantees the DynamicSizer interface, so the assertion always holds.
+	sizer, _ := zero.(sszutils.DynamicSizer)
+	return validate(sizer.SizeSSZDyn(specs))
 }
 
 // buildTypeWrapperDescriptor builds a descriptor for TypeWrapper types with runtime/schema pairing.
