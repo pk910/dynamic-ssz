@@ -715,9 +715,9 @@ func TestUnmarshalErrors(t *testing.T) {
 					Inner []uint8 `ssz-max:"10"`
 				} `ssz-max:"10"`
 			}),
-			// Container offset (4) + first offset claims 2 items (8) but only 5 bytes total
+			// Container offset (4) + first offset 8 points past the 5-byte region
 			data:        fromHex("0x04000000" + "0800000004"),
-			expectedErr: "not enough data for list offsets",
+			expectedErr: "invalid list start offset",
 		},
 		{
 			name: "type_wrapper_invalid_descriptor",
@@ -1383,31 +1383,55 @@ func TestUnmarshalDynamicListZeroFirstOffset(t *testing.T) {
 		X [][]byte `ssz-max:"4,8"`
 	}
 
-	// container offset(=4), then a 7-byte inner region whose first offset is 0
-	// (zero items) followed by stray bytes.
-	in := []byte{0x04, 0, 0, 0, 0, 0, 0, 0, 0x55, 0xff, 0x05}
+	cases := []struct {
+		name string
+		// in is the container encoding: a 4-byte offset (=4) to the inner
+		// [][]byte region, followed by that region.
+		in []byte
+	}{
+		{
+			// first offset 0 (zero items) over a non-empty region + stray bytes.
+			name: "zero",
+			in:   []byte{0x04, 0, 0, 0, 0, 0, 0, 0, 0x55, 0xff, 0x05},
+		},
+		{
+			// first offset 6 is not a multiple of 4: it would silently skip the
+			// 2-byte gap between the offset table and the element data.
+			name: "misaligned",
+			in:   []byte{0x04, 0, 0, 0, 0x06, 0, 0, 0, 0x55, 0xff, 0x05},
+		},
+		{
+			// first offset 8 points past the 7-byte inner region.
+			name: "out_of_range",
+			in:   []byte{0x04, 0, 0, 0, 0x08, 0, 0, 0, 0x55, 0xff, 0x05},
+		},
+	}
 
-	var buf Bytes2D
-	errBuf := dynssz.UnmarshalSSZ(&buf, in)
-	if errBuf == nil {
-		t.Fatal("buffer path accepted malformed nested-list encoding, want error")
-	}
-	if !contains(errBuf.Error(), "invalid list start offset") {
-		t.Errorf("buffer path: unexpected error: %v", errBuf)
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf Bytes2D
+			errBuf := dynssz.UnmarshalSSZ(&buf, tc.in)
+			if errBuf == nil {
+				t.Fatal("buffer path accepted malformed nested-list encoding, want error")
+			}
+			if !contains(errBuf.Error(), "invalid list start offset") {
+				t.Errorf("buffer path: unexpected error: %v", errBuf)
+			}
 
-	var stream Bytes2D
-	errStream := dynssz.UnmarshalSSZReader(&stream, bytes.NewReader(in), len(in))
-	if errStream == nil {
-		t.Fatal("stream path accepted malformed nested-list encoding, want error")
-	}
-	if !contains(errStream.Error(), "invalid list start offset") {
-		t.Errorf("stream path: unexpected error: %v", errStream)
-	}
+			var stream Bytes2D
+			errStream := dynssz.UnmarshalSSZReader(&stream, bytes.NewReader(tc.in), len(tc.in))
+			if errStream == nil {
+				t.Fatal("stream path accepted malformed nested-list encoding, want error")
+			}
+			if !contains(errStream.Error(), "invalid list start offset") {
+				t.Errorf("stream path: unexpected error: %v", errStream)
+			}
 
-	// Both paths must agree on the rejection reason.
-	if errBuf.Error() != errStream.Error() {
-		t.Errorf("buffer and stream errors differ:\n buffer: %v\n stream: %v", errBuf, errStream)
+			// Both paths must agree on the rejection reason.
+			if errBuf.Error() != errStream.Error() {
+				t.Errorf("buffer and stream errors differ:\n buffer: %v\n stream: %v", errBuf, errStream)
+			}
+		})
 	}
 }
 
@@ -1517,7 +1541,7 @@ func TestUnmarshalReaderErrors(t *testing.T) {
 				} `ssz-max:"10"`
 			}),
 			data:        fromHex("0x04000000" + "0800000004"),
-			expectedErr: "not enough data for list offsets",
+			expectedErr: "invalid list start offset",
 		},
 		{
 			name: "reader_bitlist_zero_length",
