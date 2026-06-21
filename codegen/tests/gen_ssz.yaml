@@ -49,6 +49,8 @@ types:
     output: gen_listoflist.go
   - name: Bytes2D
     output: gen_listoflist.go
+  - name: VecOfList
+    output: gen_listoflist.go
 
   - name: ProgressiveTypes
     output: gen_progressive.go

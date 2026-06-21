@@ -361,6 +361,14 @@ type Bytes2D struct {
 
 var Bytes2D_Payload = Bytes2D{B: [][]byte{{1, 2}, {3}}}
 
+// VecOfList is a fixed-size vector of variable-size elements, exercising the
+// inner offset-table validation distinct from a dynamic list.
+type VecOfList struct {
+	V [3][]uint16
+}
+
+var VecOfList_Payload = VecOfList{V: [3][]uint16{{1, 2}, {3}, {4, 5}}}
+
 // ProgIndexOnly is a progressive container detected purely from ssz-index tags
 // (no explicit ssz-type:"progressive-container"), exercising codegen auto-detection.
 type ProgIndexOnly struct {

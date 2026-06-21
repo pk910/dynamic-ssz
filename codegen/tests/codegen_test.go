@@ -335,6 +335,47 @@ func TestCodegenListOfListRoundtrip(t *testing.T) {
 	testCodegenPayloadByReflection(t, Bytes2D_Payload, nil)
 }
 
+// A nested list of variable-size elements whose inner list declares a first
+// offset of 0 over a non-empty region claims zero items and would silently drop
+// the remaining bytes. Both engines must reject the unconsumed trailing data.
+func TestCodegenNestedListTrailingRejected(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+	// Bytes2D = [][]byte: container offset 4, then a 7-byte inner region whose
+	// first offset is 0 (zero items) followed by 3 stray bytes.
+	in := []byte{0x04, 0, 0, 0, 0, 0, 0, 0, 0x55, 0xff, 0x05}
+
+	var a Bytes2D
+	if err := ds.UnmarshalSSZ(&a, in); err == nil {
+		t.Error("buffer UnmarshalSSZ accepted malformed nested-list encoding")
+	}
+	var b Bytes2D
+	if err := ds.UnmarshalSSZReader(&b, bytes.NewReader(in), len(in)); err == nil {
+		t.Error("stream UnmarshalSSZReader accepted malformed nested-list encoding")
+	}
+}
+
+// A fixed-size vector of variable-size elements must validate its inner offset
+// table the same way a dynamic list does: a first offset that does not point
+// past the table leaves bytes unconsumed and must be rejected by both engines.
+func TestCodegenVecOfListOffsetRejected(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+	// VecOfList = [3][]uint16: container offset 4, then a 3-entry inner offset
+	// table whose first offset is 0 instead of the required 12.
+	in, err := hex.DecodeString("04000000000000000c0000001800000072a4cf1b0000b61e15ac428d16b9ed914edd477c")
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	var a VecOfList
+	if err := ds.UnmarshalSSZ(&a, in); err == nil {
+		t.Error("buffer UnmarshalSSZ accepted malformed vector inner offset table")
+	}
+	var b VecOfList
+	if err := ds.UnmarshalSSZReader(&b, bytes.NewReader(in), len(in)); err == nil {
+		t.Error("stream UnmarshalSSZReader accepted malformed vector inner offset table")
+	}
+}
+
 // A variable-size container ending in an optional field must also reject
 // trailing data in both the buffer and streaming paths.
 func TestCodegenRejectsTrailingDataVariable(t *testing.T) {
