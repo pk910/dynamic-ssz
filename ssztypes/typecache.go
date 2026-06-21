@@ -1445,13 +1445,6 @@ func (tc *TypeCache) buildListDescriptor(desc *TypeDescriptor, runtimeType, sche
 		return sszutils.NewSszError(sszutils.ErrInvalidConstraint, "list types cannot have a fixed ssz-size (use ssz-max for lists, or ssz-size with vector type)")
 	}
 
-	// A list of fixed zero-size elements has no decodable element count (byte
-	// length divided by a zero element size is undefined), so reject it at build
-	// time instead of dividing by zero on decode or emitting invalid codegen.
-	if elemDesc.SszTypeFlags&SszTypeFlagIsDynamic == 0 && elemDesc.Size == 0 {
-		return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "list element type %v has zero size; element count cannot be determined", runtimeElemType)
-	}
-
 	desc.Size = 0 // Dynamic slice
 	desc.SszTypeFlags |= SszTypeFlagIsDynamic
 

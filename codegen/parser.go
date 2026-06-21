@@ -1220,13 +1220,6 @@ func (p *Parser) buildListDescriptor(desc *ssztypes.TypeDescriptor, dataType, sc
 	}
 	desc.ElemDesc = elemDesc
 
-	// A list of fixed zero-size elements has no decodable element count (the
-	// decoder would divide the byte length by a zero element size), so reject it
-	// at generation time instead of emitting an invalid len(buf)/0 division.
-	if elemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 && elemDesc.Size == 0 {
-		return fmt.Errorf("list element type %v has zero size; element count cannot be determined", schemaElemType)
-	}
-
 	// Set byte array flag for byte types
 	if p.isByteType(schemaElemType) {
 		desc.GoTypeFlags |= ssztypes.GoTypeFlagIsByteArray

@@ -1748,7 +1748,7 @@ func TestResolveSpecValueUint64Precision(t *testing.T) {
 	}
 }
 
-// --- #22: CalculateLimit overflow must not collide ---
+// --- CalculateLimit overflow must not collide ---
 
 func TestCalculateLimitOverflowNoCollision(t *testing.T) {
 	type ListMax1 struct {
@@ -1771,7 +1771,7 @@ func TestCalculateLimitOverflowNoCollision(t *testing.T) {
 	}
 }
 
-// --- #24: nil argument must error, not panic ---
+// --- nil argument must error, not panic ---
 
 func TestNilArgumentRejected(t *testing.T) {
 	ds := NewDynSsz(nil)
@@ -1803,7 +1803,7 @@ func TestNilArgumentRejected(t *testing.T) {
 	}
 }
 
-// --- #25: MarshalSSZTo must handle short-cap and non-empty (append) buffers ---
+// --- MarshalSSZTo must handle short-cap and non-empty (append) buffers ---
 
 func TestMarshalSSZToBuffer(t *testing.T) {
 	ds := NewDynSsz(nil)
@@ -1832,7 +1832,7 @@ func TestMarshalSSZToBuffer(t *testing.T) {
 	}
 }
 
-// --- #27: HTR must enforce the element-count limit for primitive lists ---
+// --- HTR must enforce the element-count limit for primitive lists ---
 
 func TestHTRListLimitEnforced(t *testing.T) {
 	ds := NewDynSsz(nil)
@@ -1866,7 +1866,7 @@ func TestHTRListLimitEnforced(t *testing.T) {
 	})
 }
 
-// --- #28: ssz-max:"0" is a no-limit placeholder, not a zero limit ---
+// --- ssz-max:"0" is a no-limit placeholder, not a zero limit ---
 
 func TestZeroMaxTreatedAsNoLimit(t *testing.T) {
 	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoFastHash())
@@ -1881,7 +1881,7 @@ func TestZeroMaxTreatedAsNoLimit(t *testing.T) {
 	}
 }
 
-// --- #26: spec values above 2^53 keep full uint64 precision ---
+// --- spec values above 2^53 keep full uint64 precision ---
 
 func TestResolveSpecValuePrecisionAbove2p53(t *testing.T) {
 	v := uint64(9007199254740993) // 2^53 + 1, not representable as float64

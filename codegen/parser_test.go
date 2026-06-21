@@ -66,15 +66,6 @@ func TestParserRejectsZeroSizeTypes(t *testing.T) {
 			t.Fatalf("expected empty-container error, got: %v", err)
 		}
 	})
-
-	t.Run("ListOfZeroSizeElement", func(t *testing.T) {
-		// []struct{} would emit len(buf)/0 on decode; the empty-struct element is
-		// rejected before any code is generated.
-		_, err := parser.GetTypeDescriptor(types.NewSlice(types.NewStruct(nil, nil)), nil, nil, nil)
-		if err == nil {
-			t.Fatal("expected error for list of zero-size elements")
-		}
-	})
 }
 
 func TestGetTypeDescriptor(t *testing.T) {

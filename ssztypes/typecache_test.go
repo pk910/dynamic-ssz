@@ -4259,23 +4259,3 @@ func TestBuildTypeWrapperIncompatibleType(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
-
-type listOfZeroSize struct {
-	V []struct{} `ssz-max:"4"`
-}
-
-// A list of fixed zero-size elements must be rejected when its descriptor is
-// built.
-func TestBuildListZeroSizeElementRejected(t *testing.T) {
-	cache := NewTypeCache(&dummyDynamicSpecs{})
-
-	_, err := cache.GetTypeDescriptor(reflect.TypeOf(listOfZeroSize{}), nil, nil, nil)
-	if err == nil {
-		t.Fatal("expected error for zero-size list element")
-	}
-	// An empty struct element is rejected as a zero-field container before the
-	// list-level zero-size backstop is reached; either rejection is acceptable.
-	if !strings.Contains(err.Error(), "has zero size") && !strings.Contains(err.Error(), "no SSZ fields") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}

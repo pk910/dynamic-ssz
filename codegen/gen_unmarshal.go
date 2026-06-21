@@ -505,13 +505,21 @@ func (ctx *unmarshalContext) unmarshalOptional(desc *ssztypes.TypeDescriptor, va
 	ctx.appendCode(indent, "if len(buf) < 1 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.ErrOptionalFlagEOFFn()"))
 	ctx.appendCode(indent, "switch buf[0] {\n")
 	ctx.appendCode(indent, "case 0:\n")
+	// An absent optional occupies exactly the single presence byte; any extra
+	// bytes in its region are trailing data and must be rejected.
+	absentTrailErr := "sszutils.ErrTrailingDataFn(len(buf) - 1)"
+	ctx.appendCode(indent+1, "if len(buf) != 1 {\n\treturn %s\n}\n", typePath.getErrorWith(absentTrailErr))
 	ctx.appendCode(indent+1, "%s = nil\n", varName)
 	ctx.appendCode(indent, "case 1:\n")
 
-	// Check that buf has enough bytes for the presence flag plus the value
+	// Check that buf has enough bytes for the presence flag plus the value. For
+	// a fixed-size value the region is exactly 1+elemSize bytes, so reject any
+	// trailing data too; a variable-size value consumes the remaining bytes.
 	elemSize := desc.ElemDesc.Size
 	if elemSize > 0 {
 		ctx.appendCode(indent+1, "if len(buf) < %d {\n\treturn %s\n}\n", 1+elemSize, typePath.getErrorWith("sszutils.ErrOptionalValueEOFFn()"))
+		presentTrailErr := fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - %d)", 1+elemSize)
+		ctx.appendCode(indent+1, "if len(buf) > %d {\n\treturn %s\n}\n", 1+elemSize, typePath.getErrorWith(presentTrailErr))
 	}
 
 	valVar := ctx.getValVar()

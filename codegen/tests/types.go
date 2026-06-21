@@ -337,6 +337,29 @@ var SpecMatrix_Specs = map[string]any{
 	"MATRIX_INNER": 16,
 }
 
+// OptU32 is a variable-size container ending in an optional field. Trailing
+// bytes after its encoding must be rejected by both engines.
+type OptU32 struct {
+	Pre uint32
+	Opt *uint32 `ssz-type:"optional"`
+}
+
+var OptU32_Payload = OptU32{Pre: 1, Opt: func() *uint32 { v := uint32(7); return &v }()}
+
+// ListOfList and Bytes2D are variable-size containers ending in a list of
+// variable-length elements, used to confirm trailing-data rejection.
+type ListOfList struct {
+	L [][]uint32 `ssz-max:"4,4"`
+}
+
+var ListOfList_Payload = ListOfList{L: [][]uint32{{1, 2}, {3}}}
+
+type Bytes2D struct {
+	B [][]byte `ssz-max:"4,8"`
+}
+
+var Bytes2D_Payload = Bytes2D{B: [][]byte{{1, 2}, {3}}}
+
 // ProgIndexOnly is a progressive container detected purely from ssz-index tags
 // (no explicit ssz-type:"progressive-container"), exercising codegen auto-detection.
 type ProgIndexOnly struct {
