@@ -917,11 +917,20 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 	}
 	sliceLen := int(firstOffset / 4)
 
-	// check if there's enough data for all offsets
-	requiredOffsetBytes := sliceLen * 4
-	if sszLen < requiredOffsetBytes {
-		return sszutils.ErrListOffsetsEOFFn(sszLen, requiredOffsetBytes)
+	// The first offset points to the start of the first element's data, so for a
+	// well-formed list it must be the size of the offset table: a non-zero
+	// multiple of 4 lying within the region. (sszLen is >= 4 here, so the region
+	// is always non-empty.) A zero, misaligned, or out-of-range first offset
+	// leaves a gap or unconsumable trailing bytes and is malformed; reject it to
+	// match the codegen path and to avoid indexing an empty offset slice in the
+	// non-seekable branch below (sliceLen == 0).
+	if firstOffset == 0 || firstOffset%4 != 0 || firstOffset > uint32(sszLen) {
+		return sszutils.ErrInvalidListStartOffsetFn(firstOffset, sszLen)
 	}
+
+	// firstOffset is a multiple of 4 within bounds, so it equals the offset table
+	// size and the full table is present.
+	requiredOffsetBytes := sliceLen * 4
 
 	if targetType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 && uint64(sliceLen) > targetType.Limit {
 		return sszutils.ErrListLengthFn(sliceLen, targetType.Limit)
