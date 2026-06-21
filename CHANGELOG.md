@@ -2,6 +2,25 @@
 
 All notable changes to the `dynamic-ssz` library are documented here.
 
+## [v1.3.2] 2026-06-21
+
+### Added
+- Add support for `ssz-type:"optional-list"` to encode Go pointer fields as canonical SSZ `List[T, 1]`
+
+### Changed
+- Performance improvements in codegen marshal/unmarshal and hash-tree-root operations
+- Bump `github.com/pk910/hashtree-bindings` dependency to 0.2.2 for optimized riscv support
+- Update CI actions including codeql-action, checkout, and codecov-action
+
+### Fixed
+- Fix hash-tree-root mismatch for progressive bitlists with all-zero top chunks
+- Fix streaming reflection unmarshal panic on malformed nested lists
+- Fix various marshal/HTR/stream inconsistencies found by differential fuzzing
+- Fix unmarshaling empty lists to an empty slice
+- Fix type tree traversal for fully delegated types
+
+---
+
 ## [v1.3.1] 2026-04-22
 
 ### Added
