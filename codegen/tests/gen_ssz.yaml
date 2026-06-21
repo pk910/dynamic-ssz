@@ -55,6 +55,8 @@ types:
     output: gen_progressive.go
   - name: ZeroMaxList
     output: gen_progressive.go
+  - name: ProgBitlistZeroTop
+    output: gen_progressive.go
   - name: CustomTypes1
     output: gen_custom.go
   - name: CoverageTypes1

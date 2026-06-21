@@ -70,6 +70,17 @@ var testMatrix = []TestPayload{
 		Hash:    "0100000000000000020000000000000003000000000000000000000000000000",
 	},
 	{
+		// EIP-7916 progressive-bitlist with an all-zero top 256-bit chunk. The
+		// golden root is cross-checked against ethereum/remerkleable and an
+		// independent raw-SHA256 implementation. Reflection and codegen share the
+		// hasher, so this golden (not the differential check) is what guards the
+		// chunk-count regression. See ProgBitlistZeroTop in types.go.
+		Name:    "ProgBitlistZeroTop",
+		Payload: ProgBitlistZeroTop_Payload,
+		Specs:   map[string]any{},
+		Hash:    "b039aa14167fdfd184839eb032e714ef89e0b42478e2db1ed1353759c200dda5",
+	},
+	{
 		Name:    "ViewTypes_View1",
 		Payload: ViewTypes1_Payload,
 		View:    (*ViewTypes1_View1)(nil),
