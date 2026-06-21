@@ -25,13 +25,14 @@ import (
 //   - options: Code generation options controlling output behavior
 //   - usedDynSpecs: Flag tracking whether generated code uses dynamic SSZ functionality
 type marshalContext struct {
-	appendCode    func(indent int, code string, args ...any)
-	typePrinter   *TypePrinter
-	options       *CodeGeneratorOptions
-	usedDynSpecs  bool
-	usedZeroBytes bool
-	indexCounter  int
-	exprVars      *exprVarGenerator
+	appendCode     func(indent int, code string, args ...any)
+	typePrinter    *TypePrinter
+	options        *CodeGeneratorOptions
+	usedDynSpecs   bool
+	usedZeroBytes  bool
+	indexCounter   int
+	exprVars       *exprVarGenerator
+	staticSizeVars *staticSizeVarGenerator
 }
 
 // generateMarshal generates marshal methods for a specific type.
@@ -67,6 +68,7 @@ func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 		options:     options,
 		exprVars:    newExprVarGenerator("expr", typePrinter, options),
 	}
+	ctx.staticSizeVars = newStaticSizeVarGenerator("size", typePrinter, options, ctx.exprVars)
 
 	ctx.exprVars.retVars = "dst, err"
 
@@ -104,6 +106,7 @@ func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 			appendCode(codeBuilder, 0, "func (t %s) MarshalSSZTo(buf []byte) (dst []byte, err error) {\n", typeName)
 			appendCode(codeBuilder, 1, "dst = buf\n")
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
+			appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
 			if ctx.usedZeroBytes {
 				appendCode(codeBuilder, 1, "zeroBytes := sszutils.ZeroBytes()\n")
 			}
@@ -131,6 +134,7 @@ func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 			appendCode(codeBuilder, 0, "func (t %s) %s(ds sszutils.DynamicSpecs, buf []byte) (dst []byte, err error) {\n", typeName, fnName)
 			appendCode(codeBuilder, 1, "dst = buf\n")
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
+			appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
 			if ctx.usedZeroBytes {
 				appendCode(codeBuilder, 1, "zeroBytes := sszutils.ZeroBytes()\n")
 			}
@@ -658,9 +662,20 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		}
 
 		if desc.Kind != reflect.Array {
-			// append zero padding if we have less items than the limit
+			// append zero padding if we have less items than the limit. The
+			// per-element byte size must be the runtime-resolved size when the
+			// element itself is dynssz-sized (e.g. a multi-dimensional fixed
+			// vector), not the static fallback baked at generation time.
+			elemSizeStr := fmt.Sprintf("%d", desc.ElemDesc.Size)
+			if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+				sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(desc.ElemDesc)
+				if err != nil {
+					return err
+				}
+				elemSizeStr = sizeVar
+			}
 			ctx.appendCode(indent, "if %s < %s {\n", lenVar, limitVar)
-			ctx.appendCode(indent, "\tdst = sszutils.AppendZeroPadding(dst, (%s-%s)*%d)\n", limitVar, lenVar, desc.ElemDesc.Size)
+			ctx.appendCode(indent, "\tdst = sszutils.AppendZeroPadding(dst, (%s-%s)*%s)\n", limitVar, lenVar, elemSizeStr)
 			ctx.appendCode(indent, "}\n")
 		}
 	} else {

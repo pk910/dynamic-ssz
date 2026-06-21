@@ -283,6 +283,41 @@ func TestCodegenZeroStaticMaxResolvesToZeroErrors(t *testing.T) {
 	}
 }
 
+// A multi-dimensional fixed vector whose inner size is dynssz-resolved must pad
+// missing outer rows with the resolved inner byte size, not the static fallback
+// (round-11 #2). Previously codegen padded with the baked static inner size,
+// producing a shorter encoding than reflection.
+func TestCodegenMultiDimVectorPadding(t *testing.T) {
+	testCodegenPayloadByReflection(t, SpecMatrix_Payload, SpecMatrix_Specs)
+}
+
+// The generated buffer unmarshal must reject trailing data after a fixed-size
+// container, matching the streaming decoder and reflection paths (round-11 #1).
+func TestCodegenRejectsTrailingData(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+	valid, err := ds.MarshalSSZ(&ProgIndexOnly_Payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	trailing := append(append([]byte{}, valid...), 0xde, 0xad)
+
+	// Buffer path must reject the trailing bytes (previously accepted them).
+	var a ProgIndexOnly
+	if err := ds.UnmarshalSSZ(&a, trailing); err == nil {
+		t.Error("UnmarshalSSZ accepted trailing data after a fixed container")
+	}
+	// Streaming path must reject them too, consistently.
+	var b ProgIndexOnly
+	if err := ds.UnmarshalSSZReader(&b, bytes.NewReader(trailing), len(trailing)); err == nil {
+		t.Error("UnmarshalSSZReader accepted trailing data after a fixed container")
+	}
+	// The exact-length buffer must still decode.
+	var c ProgIndexOnly
+	if err := ds.UnmarshalSSZ(&c, valid); err != nil {
+		t.Errorf("UnmarshalSSZ rejected the valid buffer: %v", err)
+	}
+}
+
 // TestCodegenOptionalListTypes verifies generated code for ssz-type:"optional-list"
 // matches the reflection implementation. Optional-list expresses a pointer as
 // a canonical SSZ List[T, 1] and works without extended types.

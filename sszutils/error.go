@@ -17,6 +17,10 @@ var (
 	// type requires (e.g. not enough bytes to decode a uint64).
 	ErrUnexpectedEOF = fmt.Errorf("unexpected end of SSZ")
 
+	// ErrNegativeRead is returned when an io.Reader violates the io.Reader
+	// contract by reporting a negative byte count.
+	ErrNegativeRead = fmt.Errorf("reader returned negative byte count")
+
 	// ErrOffset is returned when an SSZ offset is out of range, does not
 	// monotonically increase, or a field does not consume exactly the
 	// byte range its offset pair implied.

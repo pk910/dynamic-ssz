@@ -585,9 +585,11 @@ func (ctx *unmarshalContext) unmarshalBigInt(desc *ssztypes.TypeDescriptor, varN
 func (ctx *unmarshalContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	staticSize := 0
 	staticSizeVars := []string{}
+	hasDynamicFields := false
 	for _, field := range desc.ContainerDesc.Fields {
 		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 			staticSize += 4
+			hasDynamicFields = true
 		} else {
 			if field.Type.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
 				sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(field.Type)
@@ -615,6 +617,14 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, v
 	ctx.appendCode(indent, "buflen := len(buf)\n")
 	errCode := fmt.Sprintf("sszutils.ErrFixedFieldsEOFFn(buflen, %s)", totalStaticSizeExpr)
 	ctx.appendCode(indent, "if buflen < %s {\n\treturn %s\n}\n", totalStaticSizeExpr, typePath.getErrorWith(errCode))
+	if !hasDynamicFields {
+		// A fully fixed container occupies exactly its size, so any extra bytes
+		// are trailing data and must be rejected (matching the reflection and
+		// streaming-decoder paths). Nested fixed containers always receive an
+		// exactly-sized slice, so this only ever fires at the top-level entry.
+		trailErr := fmt.Sprintf("sszutils.ErrTrailingDataFn(buflen - %s)", totalStaticSizeExpr)
+		ctx.appendCode(indent, "if buflen > %s {\n\treturn %s\n}\n", totalStaticSizeExpr, typePath.getErrorWith(trailErr))
+	}
 	dynamicFields := make([]int, 0)
 
 	for idx, field := range desc.ContainerDesc.Fields {

@@ -303,6 +303,14 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 		return getEmptyNode(depth), nil
 	}
 
+	// A nil leaf cannot be hashed and would panic later in Hash(); reject it at
+	// construction so the tree is always complete.
+	for i := range leaves {
+		if leaves[i] == nil {
+			return nil, fmt.Errorf("leaf at index %d is nil", i)
+		}
+	}
+
 	// now we know numLeaves are at least 1.
 	// if the max leaf limit is 1, return the one leaf we have
 	if limit == 1 {
@@ -390,6 +398,14 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 func TreeFromNodesProgressive(leaves []*Node) (*Node, error) {
 	if len(leaves) == 0 {
 		return getEmptyNode(0), nil
+	}
+
+	// A nil leaf cannot be hashed and would panic later in Hash(); reject it at
+	// construction so the tree is always complete.
+	for i := range leaves {
+		if leaves[i] == nil {
+			return nil, fmt.Errorf("leaf at index %d is nil", i)
+		}
 	}
 
 	return treeFromNodesProgressiveImpl(leaves, 0)

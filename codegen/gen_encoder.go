@@ -655,9 +655,20 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		}
 
 		if desc.Kind != reflect.Array {
-			// append zero padding if we have less items than the limit
+			// append zero padding if we have less items than the limit. The
+			// per-element byte size must be the runtime-resolved size when the
+			// element itself is dynssz-sized (e.g. a multi-dimensional fixed
+			// vector), not the static fallback baked at generation time.
+			elemSizeStr := fmt.Sprintf("%d", desc.ElemDesc.Size)
+			if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+				sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(desc.ElemDesc)
+				if err != nil {
+					return err
+				}
+				elemSizeStr = sizeVar
+			}
 			ctx.appendCode(indent, "if %s < %s {\n", lenVar, limitVar)
-			ctx.appendCode(indent, "\tenc.EncodeZeroPadding((%s - %s) * %d)\n", limitVar, lenVar, desc.ElemDesc.Size)
+			ctx.appendCode(indent, "\tenc.EncodeZeroPadding((%s - %s) * %s)\n", limitVar, lenVar, elemSizeStr)
 			ctx.appendCode(indent, "}\n")
 		}
 	} else {

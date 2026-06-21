@@ -134,6 +134,9 @@ func (e *StreamDecoder) ensureBuffered(n int) error {
 	totalRead := 0
 	for totalRead < toRead {
 		nr, err := e.reader.Read(readBuf[totalRead:])
+		if nr < 0 {
+			return ErrNegativeRead
+		}
 		totalRead += nr
 		e.bufferLen += nr
 
@@ -206,6 +209,9 @@ func (e *StreamDecoder) readBytes(buf []byte) error {
 		toRead := remaining - totalRead
 
 		nr, err := e.reader.Read(buf[available+totalRead : available+totalRead+toRead])
+		if nr < 0 {
+			return ErrNegativeRead
+		}
 		totalRead += nr
 		e.position += nr
 

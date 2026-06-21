@@ -318,6 +318,25 @@ var SimpleTypesWithSpecs_Specs = map[string]any{
 	"F2_MAX":       8,
 }
 
+// SpecMatrix is a multi-dimensional fixed vector whose inner dimension size is
+// itself dynssz-resolved. It exercises the outer-row zero-padding, which must
+// pad each missing row with the runtime-resolved inner byte size, not the
+// static fallback.
+type SpecMatrix struct {
+	M [][]byte `ssz-size:"2,4" dynssz-size:"MATRIX_OUTER,MATRIX_INNER"`
+}
+
+var SpecMatrix_Payload = SpecMatrix{
+	// Under-filled on both dimensions: 3 of MATRIX_OUTER rows, each shorter than
+	// MATRIX_INNER, so both per-row and missing-row padding are exercised.
+	M: [][]byte{{1, 2, 3}, {4, 5}, {6}},
+}
+
+var SpecMatrix_Specs = map[string]any{
+	"MATRIX_OUTER": 8,
+	"MATRIX_INNER": 16,
+}
+
 // ProgIndexOnly is a progressive container detected purely from ssz-index tags
 // (no explicit ssz-type:"progressive-container"), exercising codegen auto-detection.
 type ProgIndexOnly struct {

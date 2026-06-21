@@ -39,6 +39,9 @@ types:
   - name: SimpleTypesWithSpecs_C3
     output: gen_withspecs2.go
 
+  - name: SpecMatrix
+    output: gen_specmatrix.go
+
   - name: ProgressiveTypes
     output: gen_progressive.go
   - name: ProgIndexOnly
