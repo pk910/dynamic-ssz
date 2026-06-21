@@ -44,6 +44,12 @@ func TestParserShallowGate(t *testing.T) {
 	t.Run("StaticTrueShallow", func(t *testing.T) {
 		p := NewParser()
 		p.AnnotationResolver = func(types.Type) string { return `ssz-static:"true"` }
+		// The shallow gate only fires for a fully-delegated type. When the
+		// generated methods are absent (gen_*.go not produced by go generate),
+		// NestedDelegatedContainer does not delegate and the gate never fires.
+		if !p.fullyDelegatesSSZ(ptrType) {
+			t.Skip("generated code not present; NestedDelegatedContainer does not fully delegate")
+		}
 		desc, err := p.GetTypeDescriptor(ptrType, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
