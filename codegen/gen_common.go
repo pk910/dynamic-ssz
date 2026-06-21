@@ -130,6 +130,17 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 	g.varCounter++
 	sizeVar := fmt.Sprintf("%s%d", g.prefix, g.varCounter)
 
+	// A shallow-built, fully-delegated type (parser gate) has no traversed subtree
+	// to sum: it computes its own (possibly spec-dependent) fixed size, so query
+	// the type's sizer on a zero value at runtime. The gate only admits types that
+	// implement DynamicSizer (fullyDelegatesSSZ requires it), so that is the only
+	// case to handle here.
+	if desc.SszType == ssztypes.SszUnspecifiedType && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 {
+		appendCode(g.codeBuf, 0, "%s := new(%s).SizeSSZDyn(ds)\n", sizeVar, g.typePrinter.InnerTypeString(desc))
+		g.varMap[descHash] = sizeVar
+		return sizeVar, nil
+	}
+
 	// recursive resolve static size with size expressions
 	switch desc.SszType {
 	case ssztypes.SszTypeWrapperType:

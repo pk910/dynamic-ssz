@@ -904,6 +904,261 @@ func TestTypeCache_ZeroFieldContainerRejected(t *testing.T) {
 	}
 }
 
+// delegationMethods implements the full dynamic SSZ operation set; embedding it
+// makes a type fully delegated. The bodies are inert — only the method set matters.
+// delegationOps implements the dynamic marshal/unmarshal/hash-root operations.
+type delegationOps struct{}
+
+func (delegationOps) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+func (delegationOps) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+func (delegationOps) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+// delegationMethods adds a constant-size sizer, making a type fully delegated.
+type delegationMethods struct{ delegationOps }
+
+func (delegationMethods) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 32 }
+
+// Each fixture carries a structurally-invalid innard (an empty struct field) that
+// would be rejected if the typecache recursed into it.
+type delegatedFixedSize struct {
+	delegationMethods
+	Bad struct{}
+}
+type delegatedVarSize struct {
+	delegationMethods
+	Bad struct{}
+}
+type delegatedNoAnnotation struct {
+	delegationMethods
+	Value uint64
+}
+
+// delegatedSpecStatic is a static type whose fixed size depends on a spec value,
+// proving the size is taken from the sizer (resolved against the cache specs),
+// not from the annotation.
+type delegatedSpecStatic struct {
+	delegationOps
+	Bad struct{}
+}
+
+func (delegatedSpecStatic) SizeSSZDyn(ds sszutils.DynamicSpecs) int {
+	n, _ := sszutils.ResolveSpecValueWithDefault(ds, "STATIC_SIZE", 16)
+	return int(n)
+}
+
+type partiallyDelegated struct {
+	Value uint64
+}
+
+func (p *partiallyDelegated) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+
+// viewDelegationMethods implements the full dynamic view SSZ operation set; the
+// view sizer returns a constant so a static view's size can be read at build time.
+type viewDelegationMethods struct{}
+
+func (viewDelegationMethods) MarshalSSZDynView(any) func(sszutils.DynamicSpecs, []byte) ([]byte, error) {
+	return nil
+}
+func (viewDelegationMethods) UnmarshalSSZDynView(any) func(sszutils.DynamicSpecs, []byte) error {
+	return nil
+}
+func (viewDelegationMethods) SizeSSZDynView(any) func(sszutils.DynamicSpecs) int {
+	return func(sszutils.DynamicSpecs) int { return 32 }
+}
+func (viewDelegationMethods) HashTreeRootWithDynView(any) func(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	return nil
+}
+
+// delegatedViewRuntime carries the view methods; delegatedViewSchema carries the
+// annotation (the schema type defines the SSZ layout for a view descriptor).
+type delegatedViewRuntime struct {
+	viewDelegationMethods
+	Bad struct{}
+}
+type delegatedViewSchema struct {
+	Bad struct{}
+}
+
+// delegatedBadStatic carries an invalid ssz-static value; delegatedNegSize's
+// sizer returns an out-of-range size. Both must be rejected.
+type delegatedBadStatic struct{ delegationMethods }
+type delegatedNegSize struct{ delegationOps }
+
+func (delegatedNegSize) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return -1 }
+
+// viewNilSizerMethods fully delegates the view interfaces but its view sizer
+// yields no size function, so a static view descriptor cannot resolve its size.
+type viewNilSizerMethods struct{ viewDelegationMethods }
+
+func (viewNilSizerMethods) SizeSSZDynView(any) func(sszutils.DynamicSpecs) int { return nil }
+
+type delegatedViewNilRuntime struct {
+	viewNilSizerMethods
+	Bad struct{}
+}
+type delegatedViewNilSchema struct {
+	Bad struct{}
+}
+
+var (
+	_ = sszutils.Annotate[delegatedFixedSize](`ssz-static:"true"`)
+	_ = sszutils.Annotate[delegatedVarSize](`ssz-static:"false"`)
+	_ = sszutils.Annotate[delegatedSpecStatic](`ssz-static:"true"`)
+	_ = sszutils.Annotate[partiallyDelegated](`ssz-static:"true"`)
+	_ = sszutils.Annotate[delegatedViewSchema](`ssz-static:"true"`)
+	_ = sszutils.Annotate[delegatedViewNilSchema](`ssz-static:"true"`)
+	_ = sszutils.Annotate[delegatedBadStatic](`ssz-static:"maybe"`)
+	_ = sszutils.Annotate[delegatedNegSize](`ssz-static:"true"`)
+)
+
+// A fully-delegated type that declares ssz-static must build a shallow descriptor:
+// no subtree recursion (so a structurally-invalid innard is never reached) and
+// size-ness from the annotation, with the fixed size read from the type's sizer.
+func TestTypeCache_DelegatedShallowBuild(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	t.Run("StaticSizeFromSizer", func(t *testing.T) {
+		desc, err := cache.GetTypeDescriptor(reflect.TypeOf(delegatedFixedSize{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("expected shallow build, got error: %v", err)
+		}
+		if desc.ContainerDesc != nil {
+			t.Error("expected shallow descriptor (nil ContainerDesc), subtree was built")
+		}
+		// 32 comes from delegationMethods.SizeSSZDyn, called on a zero value.
+		if desc.Size != 32 || desc.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
+			t.Errorf("expected fixed Size 32 from sizer, got Size=%d dynamic=%v", desc.Size, desc.SszTypeFlags&SszTypeFlagIsDynamic != 0)
+		}
+		if desc.SszCompatFlags&SszCompatFlagDynamicMarshaler == 0 {
+			t.Error("expected delegation compat flags to be set on the shallow descriptor")
+		}
+	})
+
+	t.Run("SpecDependentStaticSize", func(t *testing.T) {
+		// The static size depends on a spec value resolved by the sizer.
+		specCache := NewTypeCache(&dummyDynamicSpecs{specValues: map[string]uint64{"STATIC_SIZE": 40}})
+		desc, err := specCache.GetTypeDescriptor(reflect.TypeOf(delegatedSpecStatic{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("expected shallow build, got error: %v", err)
+		}
+		if desc.ContainerDesc != nil {
+			t.Error("expected shallow descriptor")
+		}
+		if desc.Size != 40 {
+			t.Errorf("expected spec-resolved Size 40, got %d", desc.Size)
+		}
+	})
+
+	t.Run("StaticSizeNilSpecsFallsBack", func(t *testing.T) {
+		// With no specs the sizer must still run (non-nil fallback) and return the
+		// static default rather than panicking.
+		nilCache := NewTypeCache(nil)
+		desc, err := nilCache.GetTypeDescriptor(reflect.TypeOf(delegatedSpecStatic{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("expected shallow build with nil specs, got error: %v", err)
+		}
+		if desc.Size != 16 {
+			t.Errorf("expected default Size 16 with nil specs, got %d", desc.Size)
+		}
+	})
+
+	t.Run("VariableSize", func(t *testing.T) {
+		desc, err := cache.GetTypeDescriptor(reflect.TypeOf(delegatedVarSize{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("expected shallow build, got error: %v", err)
+		}
+		if desc.ContainerDesc != nil {
+			t.Error("expected shallow descriptor, subtree was built")
+		}
+		if desc.SszTypeFlags&SszTypeFlagIsDynamic == 0 {
+			t.Error(`expected IsDynamic for ssz-static:"false"`)
+		}
+	})
+
+	t.Run("NoAnnotationRecurses", func(t *testing.T) {
+		// Without a size annotation the gate is off: a fully-delegated type still
+		// recurses (opt-in), so a valid innard yields a full descriptor.
+		desc, err := cache.GetTypeDescriptor(reflect.TypeOf(delegatedNoAnnotation{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if desc.ContainerDesc == nil {
+			t.Error("expected full descriptor (recursion) when no size annotation is present")
+		}
+	})
+
+	t.Run("InvalidStaticValueRejected", func(t *testing.T) {
+		_, err := cache.GetTypeDescriptor(reflect.TypeOf(delegatedBadStatic{}), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "invalid ssz-static value") {
+			t.Fatalf("expected invalid ssz-static rejection, got: %v", err)
+		}
+	})
+
+	t.Run("OutOfRangeSizerRejected", func(t *testing.T) {
+		_, err := cache.GetTypeDescriptor(reflect.TypeOf(delegatedNegSize{}), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "out-of-range size") {
+			t.Fatalf("expected out-of-range sizer rejection, got: %v", err)
+		}
+	})
+
+	t.Run("PartialDelegationRecurses", func(t *testing.T) {
+		// Only DynamicMarshaler is implemented, so the type is not fully delegated
+		// and the gate stays off despite the annotation.
+		desc, err := cache.GetTypeDescriptor(reflect.TypeOf(partiallyDelegated{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if desc.ContainerDesc == nil {
+			t.Error("expected full descriptor (recursion) for a partially-delegated type")
+		}
+	})
+
+	t.Run("ViewFullyDelegated", func(t *testing.T) {
+		// A view descriptor (runtime != schema) that delegates through the full
+		// dynamic view interface set, with a size annotation on the schema type,
+		// must also build shallow.
+		desc, err := cache.GetTypeDescriptorWithSchema(
+			reflect.TypeOf(delegatedViewRuntime{}),
+			reflect.TypeOf(delegatedViewSchema{}),
+			nil, nil, nil,
+		)
+		if err != nil {
+			t.Fatalf("expected shallow view build, got error: %v", err)
+		}
+		if desc.ContainerDesc != nil {
+			t.Error("expected shallow view descriptor (nil ContainerDesc)")
+		}
+		if desc.GoTypeFlags&GoTypeFlagIsView == 0 {
+			t.Error("expected view flag to be set")
+		}
+		if desc.Size != 32 {
+			t.Errorf("expected fixed Size 32, got %d", desc.Size)
+		}
+		if desc.SszCompatFlags&SszCompatFlagDynamicViewMarshaler == 0 {
+			t.Error("expected view delegation compat flags to be set")
+		}
+	})
+
+	t.Run("ViewSizerUnusable", func(t *testing.T) {
+		// A static view type whose view sizer yields no size function cannot have
+		// its size resolved, so the shallow build must fail.
+		_, err := cache.GetTypeDescriptorWithSchema(
+			reflect.TypeOf(delegatedViewNilRuntime{}),
+			reflect.TypeOf(delegatedViewNilSchema{}),
+			nil, nil, nil,
+		)
+		if err == nil || !strings.Contains(err.Error(), "does not provide a usable view sizer") {
+			t.Fatalf("expected unusable view sizer error, got: %v", err)
+		}
+	})
+}
+
 // Test max hint expressions using dynssz-max tag
 func TestTypeCache_MaxHintExpressions(t *testing.T) {
 	// Create DynSsz with spec value resolver

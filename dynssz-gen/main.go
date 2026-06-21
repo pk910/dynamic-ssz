@@ -446,6 +446,11 @@ func run(config *Config) error {
 	typeCache := ssztypes.NewTypeCache(nil)
 	codeGen := codegen.NewCodeGenerator(typeCache)
 
+	// Let the parser read same-package types' annotations (incl. generated
+	// ssz-static declarations) so referenced fully-delegated types are
+	// shallow-built rather than traversed and validated.
+	codeGen.SetAnnotationResolver(annotationResolver(pkg))
+
 	if config.PackageName != "" {
 		codeGen.SetPackageName(config.PackageName)
 	}
@@ -556,9 +561,47 @@ func run(config *Config) error {
 	return nil
 }
 
+// annotationResolver returns a resolver that maps a go/types type to the merged
+// ssz annotation tag registered for it in pkg (or "" when the type is not a
+// named, same-package type). The code generator's parser uses it to read a
+// referenced type's ssz-static declaration.
+func annotationResolver(pkg *packages.Package) func(types.Type) string {
+	return func(t types.Type) string {
+		name := annotatedTypeName(t, pkg)
+		if name == "" {
+			return ""
+		}
+		return findAnnotateCall(pkg, name)
+	}
+}
+
+// annotatedTypeName returns the bare name of a named type defined in pkg, or ""
+// if t is not a named type belonging to pkg. Pointers are unwrapped. Only
+// same-package types are resolved, since annotations are scanned within pkg.
+func annotatedTypeName(t types.Type, pkg *packages.Package) string {
+	if ptr, ok := t.(*types.Pointer); ok {
+		t = ptr.Elem()
+	}
+	named, ok := t.(*types.Named)
+	if !ok {
+		return ""
+	}
+	obj := named.Obj()
+	if obj.Pkg() == nil || obj.Pkg().Path() != pkg.PkgPath {
+		return ""
+	}
+	return obj.Name()
+}
+
 // findAnnotateCall scans package AST for sszutils.Annotate[typeName]("...")
 // calls and returns the tag string literal, or "" if not found.
 func findAnnotateCall(pkg *packages.Package, typeName string) string {
+	// A type may be annotated from several places (a hand-written constraint plus
+	// a generated ssz-static declaration, possibly in different files), so collect
+	// every Annotate call for the type and merge them into one space-separated tag.
+	var tags []string
+	seen := map[string]struct{}{}
+
 	for _, file := range pkg.Syntax {
 		// Resolve which import alias (if any) maps to sszutils
 		sszutilsAlias := ""
@@ -582,12 +625,15 @@ func findAnnotateCall(pkg *packages.Package, typeName string) string {
 		for _, decl := range file.Decls {
 			tag := findAnnotateCallInDecl(decl, sszutilsAlias, typeName)
 			if tag != "" {
-				return tag
+				if _, ok := seen[tag]; !ok {
+					seen[tag] = struct{}{}
+					tags = append(tags, tag)
+				}
 			}
 		}
 	}
 
-	return ""
+	return strings.Join(tags, " ")
 }
 
 // findAnnotateCallInDecl checks a single declaration for an Annotate call.

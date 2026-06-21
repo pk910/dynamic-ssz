@@ -10,6 +10,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -416,6 +417,90 @@ func TestRun_TypeSpecificOutputFile(t *testing.T) {
 	}
 }
 
+// TestAnnotationResolver covers annotatedTypeName / annotationResolver including
+// the edge cases the generator's gate inputs do not normally produce: a non-named
+// type and a named type from a different package both resolve to no annotation.
+func TestAnnotationResolver(t *testing.T) {
+	cfg := &packages.Config{Mode: packages.NeedName | packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedImports}
+	pkgs, err := packages.Load(cfg,
+		"github.com/pk910/dynamic-ssz/codegen/tests",
+		"github.com/pk910/dynamic-ssz/sszutils")
+	if err != nil {
+		t.Fatalf("load packages: %v", err)
+	}
+	var testsPkg, otherPkg *packages.Package
+	for _, p := range pkgs {
+		switch p.PkgPath {
+		case "github.com/pk910/dynamic-ssz/codegen/tests":
+			testsPkg = p
+		case "github.com/pk910/dynamic-ssz/sszutils":
+			otherPkg = p
+		}
+	}
+	if testsPkg == nil || otherPkg == nil {
+		t.Fatal("expected both packages to load")
+	}
+
+	resolve := annotationResolver(testsPkg)
+
+	// Named, same-package, annotated type → its tag (also via a pointer).
+	inner := testsPkg.Types.Scope().Lookup("nestedDelegatedInner")
+	if inner == nil {
+		t.Fatal("nestedDelegatedInner not found in tests package")
+	}
+	if got := resolve(inner.Type()); !strings.Contains(got, "ssz-static") {
+		t.Errorf("same-package type: expected ssz-static tag, got %q", got)
+	}
+	if got := resolve(types.NewPointer(inner.Type())); !strings.Contains(got, "ssz-static") {
+		t.Errorf("pointer to type: expected ssz-static tag, got %q", got)
+	}
+
+	// Non-named type → no annotation.
+	if got := resolve(types.Typ[types.Uint64]); got != "" {
+		t.Errorf("non-named type: expected empty, got %q", got)
+	}
+
+	// Named type from another package → no annotation (resolved only within pkg).
+	other := otherPkg.Types.Scope().Lookup("HashWalker")
+	if other == nil {
+		t.Fatal("HashWalker not found in sszutils package")
+	}
+	if got := resolve(other.Type()); got != "" {
+		t.Errorf("cross-package type: expected empty, got %q", got)
+	}
+}
+
+// TestRun_ShallowBuildGate generates types that reference external, fully-delegated
+// types, exercising end-to-end: the annotation resolver (annotatedTypeName +
+// findAnnotateCall), the parser's shallow-build gate for both ssz-static:"true"
+// (static, runtime delegated size) and ssz-static:"false" (dynamic), and the
+// streaming offset header for an under-filled fixed vector of dynamic elements.
+func TestRun_ShallowBuildGate(t *testing.T) {
+	cases := []struct{ name, typeName string }{
+		{"StaticDelegated", "NestedDelegatedContainer"},
+		{"DynamicDelegated", "NestedDelegatedDynContainer"},
+		{"StreamingVector", "SimpleTypes2"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			outFile := filepath.Join(t.TempDir(), "gen_output.go")
+			config := Config{
+				PackagePath:   "github.com/pk910/dynamic-ssz/codegen/tests",
+				TypeNames:     tc.typeName,
+				OutputFile:    outFile,
+				PackageName:   "tests",
+				WithStreaming: true,
+			}
+			if err := run(&config); err != nil {
+				t.Fatalf("run(%s): %v", tc.typeName, err)
+			}
+			if _, err := os.Stat(outFile); os.IsNotExist(err) {
+				t.Fatalf("expected output file for %s", tc.typeName)
+			}
+		})
+	}
+}
+
 // Annotate tag parsing tests
 
 func TestParseAnnotateTag_Empty(t *testing.T) {
@@ -480,9 +565,10 @@ func TestFindAnnotateCall_Found(t *testing.T) {
 		t.Fatalf("failed to load package: %v", err)
 	}
 
+	// The merged tag also carries the generated ssz-static declaration.
 	tag := findAnnotateCall(pkgs[0], "AnnotatedList")
-	if tag != `ssz-max:"20"` {
-		t.Fatalf("expected tag ssz-max:\"20\", got: %q", tag)
+	if !strings.Contains(tag, `ssz-max:"20"`) {
+		t.Fatalf("expected tag to contain ssz-max:\"20\", got: %q", tag)
 	}
 }
 
@@ -497,8 +583,8 @@ func TestFindAnnotateCall_Found2(t *testing.T) {
 	}
 
 	tag := findAnnotateCall(pkgs[0], "AnnotatedList2")
-	if tag != `ssz-max:"10"` {
-		t.Fatalf("expected tag ssz-max:\"10\", got: %q", tag)
+	if !strings.Contains(tag, `ssz-max:"10"`) {
+		t.Fatalf("expected tag to contain ssz-max:\"10\", got: %q", tag)
 	}
 }
 

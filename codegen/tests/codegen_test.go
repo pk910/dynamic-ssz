@@ -184,6 +184,21 @@ func TestCodegenCoverageTypes1(t *testing.T) {
 	testCodegenPayloadByReflection(t, CoverageTypes1_Payload, SimpleTypesWithSpecs_Specs)
 }
 
+// TestCodegenNestedDelegated exercises the shallow-build gate. The containers
+// reference fully-delegated types carrying a structurally illegal innard
+// ([0]uint64). They only generate (parser gate) and round-trip (reflection
+// typecache gate) because both shallow-build the nested type via its ssz-static
+// annotation instead of traversing — and rejecting — that innard. The Static case
+// uses ssz-static:"true" (fixed, runtime delegated size); Dynamic uses "false".
+func TestCodegenNestedDelegated(t *testing.T) {
+	t.Run("Static", func(t *testing.T) {
+		testCodegenPayloadByReflection(t, NestedDelegatedContainer_Payload, nil)
+	})
+	t.Run("Dynamic", func(t *testing.T) {
+		testCodegenPayloadByReflection(t, NestedDelegatedDynContainer_Payload, nil)
+	})
+}
+
 // TestCodegenAnnotatedTypes tests root-level annotated non-struct types
 // and containers that use annotated types as fields.
 func TestCodegenAnnotatedTypes(t *testing.T) {

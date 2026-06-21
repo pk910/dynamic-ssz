@@ -67,6 +67,11 @@ type Parser struct {
 	cache         map[string]*ssztypes.TypeDescriptor
 	CompatFlags   map[string]ssztypes.SszCompatFlag
 	ExtendedTypes bool
+
+	// AnnotationResolver returns the merged ssz annotation tag for a type (or "").
+	// It lets the parser read a referenced, fully-delegated type's ssz-static
+	// declaration so its subtree need not be traversed or validated.
+	AnnotationResolver func(types.Type) string
 }
 
 // NewParser creates a new compile-time type parser for code generation.
@@ -166,6 +171,91 @@ func (p *Parser) getCompatFlag(dataType, schemaType types.Type) ssztypes.SszComp
 		typeName = fmt.Sprintf("%v|%v", dataType.String(), schemaType.String())
 	}
 	return p.CompatFlags[typeName]
+}
+
+// detectCompatFlags records which SSZ delegation interfaces the type implements,
+// checking both the value and pointer forms. The fastssz family is only flagged
+// when the descriptor does not carry a dynamic size/max (those use the static
+// fastssz layout). Mirrors the reflection typecache's detection.
+func (p *Parser) detectCompatFlags(desc *ssztypes.TypeDescriptor, originalType, innerDataType, innerSchemaType types.Type) {
+	otherType := originalType
+	if ptr, ok := otherType.(*types.Pointer); ok {
+		otherType = ptr.Elem()
+	} else {
+		otherType = types.NewPointer(otherType)
+	}
+
+	if (desc.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize == 0 || desc.SszType == ssztypes.SszCustomType) && (p.getFastsszConvertCompatibility(originalType) || p.getFastsszConvertCompatibility(otherType)) {
+		desc.SszCompatFlags |= ssztypes.SszCompatFlagFastSSZMarshaler
+	}
+	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicMax == 0 || desc.SszType == ssztypes.SszCustomType {
+		if p.getFastsszHashCompatibility(originalType) || p.getFastsszHashCompatibility(otherType) {
+			desc.SszCompatFlags |= ssztypes.SszCompatFlagFastSSZHasher
+		}
+		if p.getHashTreeRootWithCompatibility(originalType) || p.getHashTreeRootWithCompatibility(otherType) {
+			desc.SszCompatFlags |= ssztypes.SszCompatFlagHashTreeRootWith
+		}
+	}
+
+	// Check for dynamic interface implementations
+	if p.getDynamicMarshalerCompatibility(originalType) || p.getDynamicMarshalerCompatibility(otherType) {
+		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicMarshaler
+	}
+	if p.getDynamicUnmarshalerCompatibility(originalType) || p.getDynamicUnmarshalerCompatibility(otherType) {
+		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicUnmarshaler
+	}
+	if p.getDynamicEncoderCompatibility(originalType) || p.getDynamicEncoderCompatibility(otherType) {
+		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicEncoder
+	}
+	if p.getDynamicDecoderCompatibility(originalType) || p.getDynamicDecoderCompatibility(otherType) {
+		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicDecoder
+	}
+	if p.getDynamicSizerCompatibility(originalType) || p.getDynamicSizerCompatibility(otherType) {
+		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicSizer
+	}
+	if p.getDynamicHashRootCompatibility(originalType) || p.getDynamicHashRootCompatibility(otherType) {
+		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicHashRoot
+	}
+
+	// Check for dynamic view interface implementations (for fork-dependent SSZ schemas)
+	if p.getDynamicViewMarshalerCompatibility(originalType) || p.getDynamicViewMarshalerCompatibility(otherType) {
+		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicViewMarshaler
+	}
+	if p.getDynamicViewUnmarshalerCompatibility(originalType) || p.getDynamicViewUnmarshalerCompatibility(otherType) {
+		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicViewUnmarshaler
+	}
+	if p.getDynamicViewEncoderCompatibility(originalType) || p.getDynamicViewEncoderCompatibility(otherType) {
+		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicViewEncoder
+	}
+	if p.getDynamicViewDecoderCompatibility(originalType) || p.getDynamicViewDecoderCompatibility(otherType) {
+		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicViewDecoder
+	}
+	if p.getDynamicViewSizerCompatibility(originalType) || p.getDynamicViewSizerCompatibility(otherType) {
+		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicViewSizer
+	}
+	if p.getDynamicViewHashRootCompatibility(originalType) || p.getDynamicViewHashRootCompatibility(otherType) {
+		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicViewHashRoot
+	}
+
+	desc.SszCompatFlags |= p.getCompatFlag(innerDataType, innerSchemaType)
+}
+
+// fullyDelegatesSSZ reports whether the type implements the complete set of
+// dynamic SSZ operation interfaces (marshal, unmarshal, size, hash-tree-root),
+// checking both value and pointer forms. Such a type handles every operation in
+// its own generated code, so a reference to it need not be traversed.
+func (p *Parser) fullyDelegatesSSZ(t types.Type) bool {
+	other := t
+	if ptr, ok := other.(*types.Pointer); ok {
+		other = ptr.Elem()
+	} else {
+		other = types.NewPointer(other)
+	}
+	any2 := func(f func(types.Type) bool) bool { return f(t) || f(other) }
+	return (any2(p.getDynamicMarshalerCompatibility) || any2(p.getDynamicEncoderCompatibility)) &&
+		(any2(p.getDynamicUnmarshalerCompatibility) || any2(p.getDynamicDecoderCompatibility)) &&
+		any2(p.getDynamicSizerCompatibility) &&
+		any2(p.getDynamicHashRootCompatibility)
 }
 
 //nolint:gocyclo // SSZ type descriptor builder is inherently complex
@@ -272,6 +362,41 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		}
 		desc.GoTypeFlags |= ssztypes.GoTypeFlagIsView
 	}
+
+	// A fully-delegated, already-implemented type handles every SSZ operation in
+	// its own code, so the descriptor subtree below it is never consulted. When
+	// such a type declares ssz-static, build a shallow descriptor from that
+	// declaration and skip traversing — and validating — its subtree.
+	//
+	// This only applies to EXTERNAL types (getCompatFlag == 0): a type that is
+	// itself being generated in this run is registered in CompatFlags and must be
+	// traversed so its own code can be emitted, regardless of whether it appears
+	// at the top level or as a field of another generated type. Field-level hints
+	// are already handled inline by the caller (it strips delegation flags).
+	if p.AnnotationResolver != nil && len(typeHints) == 0 && len(sizeHints) == 0 && len(maxSizeHints) == 0 && p.getCompatFlag(innerDataType, innerSchemaType) == 0 && p.fullyDelegatesSSZ(originalType) {
+		if staticStr, ok := reflect.StructTag(p.AnnotationResolver(originalType)).Lookup("ssz-static"); ok {
+			switch staticStr {
+			case "true":
+				// Static: the generated code resolves the exact size at runtime via
+				// the type's own sizer, so drive sizing/offsets at runtime rather
+				// than from a (here unknown) compile-time constant.
+				desc.SszTypeFlags |= ssztypes.SszTypeFlagHasSizeExpr
+			case "false":
+				desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
+			default:
+				return nil, fmt.Errorf("invalid ssz-static value %q for type %v (must be \"true\" or \"false\")", staticStr, originalType)
+			}
+			p.detectCompatFlags(desc, originalType, innerDataType, innerSchemaType)
+			// Delegate through the spec-aware dynamic methods, not the fastssz ones.
+			desc.SszCompatFlags &^= ssztypes.SszCompatFlagFastSSZMarshaler | ssztypes.SszCompatFlagFastSSZHasher | ssztypes.SszCompatFlagHashTreeRootWith
+			// A shallow descriptor must not be cached as the type's full descriptor.
+			if cacheable {
+				delete(p.cache, typeKey)
+			}
+			return desc, nil
+		}
+	}
+
 	// Set kind based on underlying type
 	switch t := schemaType.(type) {
 	case *types.Basic:
@@ -711,67 +836,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		return nil, fmt.Errorf("bit size tag is only allowed for bitvector or bitlist types, got %v", desc.SszType)
 	}
 
-	// Check interface compatibility (like reflection-based code)
-	otherType := originalType
-	if ptr, ok := otherType.(*types.Pointer); ok {
-		otherType = ptr.Elem()
-	} else {
-		otherType = types.NewPointer(otherType)
-	}
-
-	if (desc.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize == 0 || desc.SszType == ssztypes.SszCustomType) && (p.getFastsszConvertCompatibility(originalType) || p.getFastsszConvertCompatibility(otherType)) {
-		desc.SszCompatFlags |= ssztypes.SszCompatFlagFastSSZMarshaler
-	}
-	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicMax == 0 || desc.SszType == ssztypes.SszCustomType {
-		if p.getFastsszHashCompatibility(originalType) || p.getFastsszHashCompatibility(otherType) {
-			desc.SszCompatFlags |= ssztypes.SszCompatFlagFastSSZHasher
-		}
-		if p.getHashTreeRootWithCompatibility(originalType) || p.getHashTreeRootWithCompatibility(otherType) {
-			desc.SszCompatFlags |= ssztypes.SszCompatFlagHashTreeRootWith
-		}
-	}
-
-	// Check for dynamic interface implementations
-	if p.getDynamicMarshalerCompatibility(originalType) || p.getDynamicMarshalerCompatibility(otherType) {
-		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicMarshaler
-	}
-	if p.getDynamicUnmarshalerCompatibility(originalType) || p.getDynamicUnmarshalerCompatibility(otherType) {
-		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicUnmarshaler
-	}
-	if p.getDynamicEncoderCompatibility(originalType) || p.getDynamicEncoderCompatibility(otherType) {
-		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicEncoder
-	}
-	if p.getDynamicDecoderCompatibility(originalType) || p.getDynamicDecoderCompatibility(otherType) {
-		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicDecoder
-	}
-	if p.getDynamicSizerCompatibility(originalType) || p.getDynamicSizerCompatibility(otherType) {
-		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicSizer
-	}
-	if p.getDynamicHashRootCompatibility(originalType) || p.getDynamicHashRootCompatibility(otherType) {
-		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicHashRoot
-	}
-
-	// Check for dynamic view interface implementations (for fork-dependent SSZ schemas)
-	if p.getDynamicViewMarshalerCompatibility(originalType) || p.getDynamicViewMarshalerCompatibility(otherType) {
-		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicViewMarshaler
-	}
-	if p.getDynamicViewUnmarshalerCompatibility(originalType) || p.getDynamicViewUnmarshalerCompatibility(otherType) {
-		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicViewUnmarshaler
-	}
-	if p.getDynamicViewEncoderCompatibility(originalType) || p.getDynamicViewEncoderCompatibility(otherType) {
-		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicViewEncoder
-	}
-	if p.getDynamicViewDecoderCompatibility(originalType) || p.getDynamicViewDecoderCompatibility(otherType) {
-		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicViewDecoder
-	}
-	if p.getDynamicViewSizerCompatibility(originalType) || p.getDynamicViewSizerCompatibility(otherType) {
-		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicViewSizer
-	}
-	if p.getDynamicViewHashRootCompatibility(originalType) || p.getDynamicViewHashRootCompatibility(otherType) {
-		desc.SszCompatFlags |= ssztypes.SszCompatFlagDynamicViewHashRoot
-	}
-
-	desc.SszCompatFlags |= p.getCompatFlag(innerDataType, innerSchemaType)
+	p.detectCompatFlags(desc, originalType, innerDataType, innerSchemaType)
 
 	// Optional and optional-list reshape the encoding around the inner type
 	// (presence byte / List[T,1] framing). The inner type's own SSZ methods

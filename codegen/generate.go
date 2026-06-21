@@ -147,6 +147,7 @@ func (cg *CodeGenerator) analyzeTypes() error {
 					parser = NewParser()
 					parser.CompatFlags = cg.compatFlags
 					parser.ExtendedTypes = t.Options.ExtendedTypes
+					parser.AnnotationResolver = cg.annotationResolver
 				}
 				if _, ok := t.GoTypesType.(*types.Pointer); !ok {
 					t.GoTypesType = types.NewPointer(t.GoTypesType)
@@ -176,6 +177,7 @@ func (cg *CodeGenerator) analyzeTypes() error {
 					if parser == nil {
 						parser = NewParser()
 						parser.CompatFlags = cg.compatFlags
+						parser.AnnotationResolver = cg.annotationResolver
 					}
 					baseType := viewType
 					if named, ok := baseType.(*types.Named); ok {
@@ -311,6 +313,19 @@ func dataCompatFlags(opts *CodeGeneratorOptions) ssztypes.SszCompatFlag {
 //   - Organized import statements
 //   - Variable declarations for error handling
 //   - Generated SSZ methods for all specified types
+//
+// staticAnnotationFor returns the ssz-static annotation declaring whether a
+// generated type is fixed-size (static) or variable-size (dynamic). The
+// reflection typecache uses it to shallow-build the fully-delegated type without
+// descending into its subtree; for static types it reads the fixed size from the
+// type's own sizer.
+func staticAnnotationFor(desc *ssztypes.TypeDescriptor) string {
+	if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
+		return `ssz-static:"false"`
+	}
+	return `ssz-static:"true"`
+}
+
 func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFileOptions) (string, error) {
 	if len(opts.Types) == 0 {
 		return "", fmt.Errorf("no types requested for generation")
@@ -319,6 +334,7 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 	typePrinter := NewTypePrinter(packagePath)
 	typePrinter.AddAlias("github.com/pk910/dynamic-ssz", "dynssz")
 	codeBuilder := strings.Builder{}
+	annotationsBuilder := strings.Builder{}
 	hashParts := [][]byte{}
 
 	for _, t := range opts.Types {
@@ -334,6 +350,10 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 			if err != nil {
 				return "", fmt.Errorf("failed to generate code for %s: %w", t.TypeName, err)
 			}
+
+			// Declare static/dynamic so the reflection typecache can shallow-build
+			// this fully-delegated type without descending into its subtree.
+			fmt.Fprintf(&annotationsBuilder, "var _ = sszutils.Annotate[%s](`%s`)\n", typePrinter.InnerTypeString(t.Descriptor), staticAnnotationFor(t.Descriptor))
 		}
 
 		if len(t.ViewDescriptors) > 0 {
@@ -345,6 +365,12 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 			err := cg.generateSSZViewMethods(t.Descriptor, t.ViewDescriptors, typePrinter, &codeBuilder, &t.Options)
 			if err != nil {
 				return "", fmt.Errorf("failed to generate code for view types of %s: %w", t.TypeName, err)
+			}
+
+			// Each view schema type may have its own static/dynamic shape, so the
+			// annotation is emitted per view schema type (not the base type).
+			for _, viewDesc := range t.ViewDescriptors {
+				fmt.Fprintf(&annotationsBuilder, "var _ = sszutils.Annotate[%s](`%s`)\n", typePrinter.ViewTypeString(viewDesc, false), staticAnnotationFor(viewDesc))
 			}
 		}
 	}
@@ -423,6 +449,13 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 
 	// Variable declarations
 	mainCodeBuilder.WriteString("var _ = sszutils.ErrListTooBig\n\n")
+
+	// Type annotations (ssz-static declarations) up front so the reflection
+	// typecache can shallow-build these fully-delegated types.
+	if annotationsBuilder.Len() > 0 {
+		mainCodeBuilder.WriteString(annotationsBuilder.String())
+		mainCodeBuilder.WriteString("\n")
+	}
 
 	// Generated code
 	generatedCode := codeBuilder.String()

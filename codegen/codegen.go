@@ -644,6 +644,21 @@ type CodeGenerator struct {
 	typeCache   *ssztypes.TypeCache
 	packageName string
 	compatFlags map[string]ssztypes.SszCompatFlag
+
+	// annotationResolver returns the merged ssz annotation tag for a go/types
+	// type (or ""), letting the parser read a referenced, fully-delegated type's
+	// ssz-static declaration without traversing its subtree. Set via
+	// WithAnnotationResolver; nil disables the parser's shallow-build gate.
+	annotationResolver func(types.Type) string
+}
+
+// SetAnnotationResolver registers a resolver that returns the merged ssz
+// annotation tag for a go/types type (or ""). The code generator passes it to
+// the parser so referenced, fully-delegated types declaring ssz-static are
+// shallow-built instead of traversed. Typically backed by the source scan that
+// also feeds per-type Annotate options.
+func (cg *CodeGenerator) SetAnnotationResolver(resolver func(types.Type) string) {
+	cg.annotationResolver = resolver
 }
 
 // NewCodeGenerator creates a new code generator instance with the specified DynSsz configuration.

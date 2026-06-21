@@ -32,6 +32,19 @@ func Annotate[T any](tag string) bool {
 		t = t.Elem()
 	}
 
+	// Multiple Annotate calls for the same type (e.g. a hand-written constraint
+	// annotation plus a generated ssz-static declaration) are merged into a
+	// single space-separated tag rather than overwriting one another. The new tag
+	// is prepended so that for a duplicated key the most recent registration wins
+	// (reflect.StructTag.Lookup returns the first occurrence), preserving the
+	// previous last-write-wins behavior. Calls run at package-init time, so the
+	// load-then-store is not racy in practice.
+	if existing, ok := typeAnnotations.Load(t); ok {
+		if existingTag, _ := existing.(string); existingTag != "" && existingTag != tag {
+			tag = tag + " " + existingTag
+		}
+	}
+
 	typeAnnotations.Store(t, tag)
 
 	return true // allows use in var _ = Annotate[T](...)

@@ -6,6 +6,7 @@ package sszutils
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -91,19 +92,41 @@ func TestLookupAnnotation_NonStringValue(t *testing.T) {
 	typeAnnotations.Delete(reflect.TypeFor[int]())
 }
 
-func TestAnnotate_Overwrite(t *testing.T) {
-	type overwriteType []uint32
+func TestAnnotate_Merge(t *testing.T) {
+	type mergeType []uint32
 
-	Annotate[overwriteType](`ssz-max:"10"`)
-	Annotate[overwriteType](`ssz-max:"20"`)
+	// Annotations from different places (e.g. a hand-written constraint and a
+	// generated ssz-static declaration) are merged rather than overwriting.
+	Annotate[mergeType](`ssz-max:"20"`)
+	Annotate[mergeType](`ssz-static:"false"`)
 
-	tag, ok := LookupAnnotation(reflect.TypeFor[overwriteType]())
+	tag, ok := LookupAnnotation(reflect.TypeFor[mergeType]())
 	if !ok {
 		t.Fatal("expected annotation to be found")
 	}
+	if !strings.Contains(tag, `ssz-max:"20"`) || !strings.Contains(tag, `ssz-static:"false"`) {
+		t.Fatalf("expected merged tag to contain both annotations, got %q", tag)
+	}
 
-	if tag != `ssz-max:"20"` {
-		t.Fatalf("expected overwritten tag %q, got %q", `ssz-max:"20"`, tag)
+	// Re-registering an identical full tag must not change the annotation.
+	Annotate[mergeType](tag)
+	tag2, _ := LookupAnnotation(reflect.TypeFor[mergeType]())
+	if tag2 != tag {
+		t.Fatalf("re-registering the identical tag changed it: %q -> %q", tag, tag2)
+	}
+}
+
+func TestAnnotate_DuplicateKeyLastWins(t *testing.T) {
+	type dupType []uint32
+
+	// For a duplicated key the most recent registration must win (the new tag is
+	// prepended, and StructTag.Lookup returns the first occurrence).
+	Annotate[dupType](`ssz-max:"10"`)
+	Annotate[dupType](`ssz-max:"20"`)
+
+	tag, _ := LookupAnnotation(reflect.TypeFor[dupType]())
+	if v, _ := reflect.StructTag(tag).Lookup("ssz-max"); v != "20" {
+		t.Fatalf("expected last registration to win (20), got %q (full tag %q)", v, tag)
 	}
 }
 

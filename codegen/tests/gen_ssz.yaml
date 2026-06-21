@@ -22,6 +22,11 @@ types:
   - name: SimpleTypes1_C1
     output: gen_simple1.go
 
+  - name: NestedDelegatedContainer
+    output: gen_nesteddelegated.go
+  - name: NestedDelegatedDynContainer
+    output: gen_nesteddelegated.go
+
   - name: SimpleTypes2
     output: gen_simple2.go
   - name: SimpleTypes3
@@ -62,7 +67,7 @@ types:
   - name: CoverageTypes1
     output: gen_coverage.go
   - name: CoverageTypes7
-    output: gen_coverage7.go
+    output: gen_coverage.go
 
   - name: OptionalListTypes
     output: gen_optionallist.go
