@@ -546,10 +546,9 @@ func (e *Engine) testRoundTrip(entry corpus.TypeEntry, ds *dynssz.DynSsz, target
 }
 
 // unmarshalReflection performs unmarshal using only the reflection engine,
-// bypassing any codegen-generated methods.
-// Note: we intentionally skip the "full consumption" check here because the
-// codegen UnmarshalSSZDyn also does not verify trailing bytes. This makes
-// the comparison fair. Round-trip tests catch real data corruption.
+// bypassing any codegen-generated methods. It enforces the same full-consumption
+// (no trailing data) check that DynSsz.UnmarshalSSZ performs, so the comparison
+// against the codegen path holds both engines to the canonical behavior.
 func (e *Engine) unmarshalReflection(ds *dynssz.DynSsz, target any, data []byte) error {
 	targetType := reflect.TypeOf(target)
 	targetValue := reflect.ValueOf(target)
@@ -568,7 +567,9 @@ func (e *Engine) unmarshalReflection(ds *dynssz.DynSsz, target any, data []byte)
 		return err
 	}
 
-	decoder.PopLimit()
+	if diff := decoder.PopLimit(); diff != 0 {
+		return fmt.Errorf("did not consume full ssz range (diff: %d, ssz size: %d)", diff, len(data))
+	}
 
 	return nil
 }

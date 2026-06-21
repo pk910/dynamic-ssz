@@ -100,9 +100,9 @@ type staticSizeVarGenerator struct {
 	varCounter       int
 }
 
-func newStaticSizeVarGenerator(prefix string, typePrinter *TypePrinter, options *CodeGeneratorOptions, exprVarGenerator *exprVarGenerator) *staticSizeVarGenerator {
+func newStaticSizeVarGenerator(typePrinter *TypePrinter, options *CodeGeneratorOptions, exprVarGenerator *exprVarGenerator) *staticSizeVarGenerator {
 	return &staticSizeVarGenerator{
-		prefix:           prefix,
+		prefix:           "size",
 		typePrinter:      typePrinter,
 		options:          options,
 		exprVarGenerator: exprVarGenerator,

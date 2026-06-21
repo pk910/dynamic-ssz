@@ -78,7 +78,7 @@ func generateEncoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 
 	ctx.exprVars = newExprVarGenerator("ctx.exprs", typePrinter, options)
 	ctx.exprVars.isSlice = true
-	ctx.staticSizeVars = newStaticSizeVarGenerator("size", typePrinter, options, ctx.exprVars)
+	ctx.staticSizeVars = newStaticSizeVarGenerator(typePrinter, options, ctx.exprVars)
 
 	// Generate main function signature
 	typeName := typePrinter.TypeString(rootTypeDesc)

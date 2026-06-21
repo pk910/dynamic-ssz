@@ -68,7 +68,7 @@ func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 		options:     options,
 		exprVars:    newExprVarGenerator("expr", typePrinter, options),
 	}
-	ctx.staticSizeVars = newStaticSizeVarGenerator("size", typePrinter, options, ctx.exprVars)
+	ctx.staticSizeVars = newStaticSizeVarGenerator(typePrinter, options, ctx.exprVars)
 
 	ctx.exprVars.retVars = "dst, err"
 

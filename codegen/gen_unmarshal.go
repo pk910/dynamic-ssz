@@ -73,7 +73,7 @@ func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strin
 	}
 
 	ctx.exprVars = newExprVarGenerator("expr", typePrinter, options)
-	ctx.staticSizeVars = newStaticSizeVarGenerator("size", typePrinter, options, ctx.exprVars)
+	ctx.staticSizeVars = newStaticSizeVarGenerator(typePrinter, options, ctx.exprVars)
 
 	// Generate main function signature
 	typeName := typePrinter.TypeString(rootTypeDesc)
