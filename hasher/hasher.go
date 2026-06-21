@@ -339,7 +339,9 @@ func (h *Hasher) PutBitlist(bb []byte, maxSize uint64) {
 // using the progressive algorithm with a length mixin.
 func (h *Hasher) PutProgressiveBitlist(bb []byte) {
 	var size uint64
-	h.tmp, size = ParseBitlist(h.tmp[:0], bb)
+	// Use the progressive parse so the content keeps all-zero top chunks: the
+	// chunk count defines the progressive tree shape. See ParseProgressiveBitlist.
+	h.tmp, size = ParseProgressiveBitlist(h.tmp[:0], bb)
 	bitlist := h.tmp
 	h.tmp = h.tmp[:cap(h.tmp)]
 

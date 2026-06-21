@@ -217,7 +217,9 @@ func (w *Wrapper) PutBitlist(bb []byte, maxSize uint64) {
 // nodes from the data, and merkleizes them using the progressive tree algorithm
 // with a length mixin.
 func (w *Wrapper) PutProgressiveBitlist(bb []byte) {
-	b, size := hasher.ParseBitlist(w.tmp[:0], bb)
+	// Use the progressive parse so all-zero top chunks are preserved: the chunk
+	// count defines the progressive tree shape. See hasher.ParseProgressiveBitlist.
+	b, size := hasher.ParseProgressiveBitlist(w.tmp[:0], bb)
 	w.tmp = b
 
 	indx := w.Index()

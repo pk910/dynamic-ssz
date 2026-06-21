@@ -231,3 +231,60 @@ func ParseBitlistWithHasher(hw sszutils.HashWalker, buf []byte) ([]byte, uint64)
 		return bitlist, size
 	}
 }
+
+// ParseProgressiveBitlist decodes an SSZ-encoded bitlist for progressive
+// merkleization.
+//
+// It behaves like ParseBitlist (strips the termination bit and returns the
+// logical bit count), but instead of trimming trailing zero bytes it zero-pads
+// the content to exactly ceil(size/256) 256-bit chunks (ceil(size/256)*32
+// bytes).
+//
+// This distinction is essential: progressive merkleization derives the tree
+// structure from the chunk count (subtree_fill_progressive recurses by chunk
+// index), so an all-zero top chunk must be preserved. ParseBitlist's trimming is
+// harmless for regular bitlists because they pad to a fixed chunk limit, but it
+// would silently drop top chunks here and produce a wrong root.
+func ParseProgressiveBitlist(dst, buf []byte) ([]byte, uint64) {
+	dstStart := len(dst)
+	dst, size := ParseBitlist(dst, buf)
+
+	// Re-expand to the full chunk count. The content is always <= chunkBytes
+	// because ceil(size/256)*32 >= ceil(size/8).
+	chunkBytes := int((size+255)/256) * 32
+	if pad := chunkBytes - (len(dst) - dstStart); pad > 0 {
+		dst = sszutils.AppendZeroPadding(dst, pad)
+	}
+	return dst, size
+}
+
+// ParseProgressiveBitlistWithHasher decodes an SSZ-encoded bitlist for
+// progressive merkleization using the hasher's internal buffer to avoid
+// allocations. It returns the chunk-aligned, untrimmed bit data and the logical
+// bit count, same as ParseProgressiveBitlist.
+//
+// IMPORTANT: The returned bitlist slice references the hasher's internal buffer
+// spare capacity. It must be consumed (e.g. passed to AppendBytes32) before any
+// operation that may grow the buffer, as a reallocation would invalidate it.
+func ParseProgressiveBitlistWithHasher(hw sszutils.HashWalker, buf []byte) ([]byte, uint64) {
+	if h, ok := hw.(*Hasher); ok {
+		var size uint64
+		buflen := len(h.buf)
+		h.buf, size = ParseProgressiveBitlist(h.buf, buf)
+		bitlist := h.buf[buflen:]
+		// Restore h.buf to its pre-parse length so subsequent operations append
+		// after the original content (the returned slice still aliases the spare).
+		h.buf = h.buf[:buflen]
+		return bitlist, size
+	} else {
+		var size uint64
+		var bitlist []byte
+		hw.WithTemp(func(tmp []byte) []byte {
+			tmp, size = ParseProgressiveBitlist(tmp[:0], buf)
+			bitlist = tmp
+			// Restore tmp to full capacity
+			return tmp[:cap(tmp)]
+		})
+		return bitlist, size
+	}
+}
