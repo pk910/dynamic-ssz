@@ -881,6 +881,11 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 		errCode := fmt.Sprintf("sszutils.ErrVectorOffsetsEOFFn(len(buf), %s*4)", limitVar)
 		ctx.appendCode(indent, "if %s*4 > len(buf) {\n\treturn %s\n}\n", limitVar, typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "startOffset := int(%s.LittleEndian.Uint32(buf[0:4]))\n", binaryPkgName)
+		// The first offset must point past the fixed-size offset table (limit*4
+		// bytes); any other value leaves bytes between the table and the first
+		// element unconsumed, which the reflection path rejects.
+		firstOffErr := fmt.Sprintf("sszutils.ErrFirstOffsetMismatchFn(startOffset, %s*4)", limitVar)
+		ctx.appendCode(indent, "if startOffset != %s*4 {\n\treturn %s\n}\n", limitVar, typePath.getErrorWith(firstOffErr))
 
 		indexVar, indexDefer := ctx.getIndexVar()
 		defer indexDefer()
@@ -1057,7 +1062,11 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 		ctx.appendCode(indent, "}\n")
 		ctx.appendCode(indent, "itemCount := startOffset / 4\n")
 		errCode = "sszutils.ErrInvalidListStartOffsetFn(startOffset, len(buf))"
-		ctx.appendCode(indent, "if startOffset%%4 != 0 || len(buf) < startOffset {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
+		// A non-empty region must begin with an offset table, so the first offset
+		// is at least 4. A first offset of 0 means zero items and is only valid
+		// for a zero-length region; otherwise the remaining bytes are unconsumed
+		// trailing data that the reflection path rejects.
+		ctx.appendCode(indent, "if startOffset%%4 != 0 || len(buf) < startOffset || (len(buf) != 0 && startOffset == 0) {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
 		if hasMax {
 			errCode = fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", maxVar)
 			ctx.appendCode(indent, "if itemCount > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
