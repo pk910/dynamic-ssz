@@ -387,6 +387,29 @@ type ZeroMaxList struct {
 
 var ZeroMaxList_Payload = ZeroMaxList{X: []uint64{1, 2, 3}}
 
+// ProgBitlistZeroTop reproduces the EIP-7916 progressive-bitlist HTR bug: a
+// bitlist whose highest data bits are zero leaves the top 256-bit chunk all-zero.
+// The progressive tree shape is defined by the chunk count (ceil(size/256)), so
+// the all-zero top chunk must NOT be dropped. The golden root in
+// TestCodegenProgressiveBitlistGolden is cross-checked against
+// ethereum/remerkleable and an independent raw-SHA256 implementation; the
+// reflection and codegen paths share the hasher, so only a golden (not a
+// differential) test catches a regression here.
+type ProgBitlistZeroTop struct {
+	X []byte `ssz-type:"progressive-bitlist" ssz-max:"2000"`
+}
+
+// progBitlistZeroTopBits builds a 257-bit bitlist with only bit 0 set, so bit 256
+// (the single data bit of the 2nd chunk) is zero and the top chunk is all-zero.
+func progBitlistZeroTopBits() []byte {
+	b := make([]byte, 257/8+1) // 33 bytes
+	b[0] = 0x01                // bit 0 set
+	b[257/8] |= 1 << (257 % 8) // termination bit at position 257
+	return b
+}
+
+var ProgBitlistZeroTop_Payload = ProgBitlistZeroTop{X: progBitlistZeroTopBits()}
+
 type ProgressiveTypes struct {
 	C1 struct {
 		F1 uint64      `ssz-index:"0"`

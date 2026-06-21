@@ -891,7 +891,13 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varNa
 	if maxVar != "" || desc.SszType == ssztypes.SszProgressiveBitlistType {
 		sizeVar = "size"
 	}
-	ctx.appendCode(indent, "bitlist, %s := %s.ParseBitlistWithHasher(hh, %s[:])\n", sizeVar, hasherAlias, varName)
+	// Progressive bitlists must keep all-zero top chunks (the chunk count defines
+	// the progressive tree shape), so parse without trailing-zero trimming.
+	parseFn := "ParseBitlistWithHasher"
+	if desc.SszType == ssztypes.SszProgressiveBitlistType {
+		parseFn = "ParseProgressiveBitlistWithHasher"
+	}
+	ctx.appendCode(indent, "bitlist, %s := %s.%s(hh, %s[:])\n", sizeVar, hasherAlias, parseFn, varName)
 
 	if maxVar != "" {
 		ctx.appendCode(indent, "if size > %s {\n", maxVar)

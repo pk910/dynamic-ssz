@@ -799,7 +799,17 @@ func (ctx *ReflectionCtx) buildRootFromBitlist(sourceType *ssztypes.TypeDescript
 		maxSize = uint64(len(bytes) * 8)
 	}
 
-	bitlist, size := hasher.ParseBitlistWithHasher(hh, bytes)
+	isProgressive := sourceType.SszType == ssztypes.SszProgressiveBitlistType
+
+	// Progressive bitlists must keep all-zero top chunks (the chunk count defines
+	// the progressive tree shape), so parse without trailing-zero trimming.
+	var bitlist []byte
+	var size uint64
+	if isProgressive {
+		bitlist, size = hasher.ParseProgressiveBitlistWithHasher(hh, bytes)
+	} else {
+		bitlist, size = hasher.ParseBitlistWithHasher(hh, bytes)
+	}
 	if size > maxSize {
 		return sszutils.ErrBitlistLengthFn(size, maxSize)
 	}
@@ -807,7 +817,7 @@ func (ctx *ReflectionCtx) buildRootFromBitlist(sourceType *ssztypes.TypeDescript
 	// merkleize the content with mix in length
 	indx := hh.StartTree(sszutils.TreeTypeNone)
 	hh.AppendBytes32(bitlist)
-	if sourceType.SszType == ssztypes.SszProgressiveBitlistType {
+	if isProgressive {
 		hh.MerkleizeProgressiveWithMixin(indx, size)
 	} else {
 		hh.MerkleizeWithMixin(indx, size, sszutils.CalculateBitlistLimit(maxSize))
