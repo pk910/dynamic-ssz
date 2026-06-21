@@ -11,28 +11,54 @@ import (
 
 // ---- Unmarshal functions ----
 
-// UnmarshallUint64 unmarshals a little endian uint64 from the src input
+// UnmarshallUint64 unmarshals a little endian uint64 from the src input. A short
+// buffer is treated as zero-padded rather than panicking.
 func UnmarshallUint64(src []byte) uint64 {
+	if len(src) < 8 {
+		var b [8]byte
+		copy(b[:], src)
+		return binary.LittleEndian.Uint64(b[:])
+	}
 	return binary.LittleEndian.Uint64(src)
 }
 
-// UnmarshallUint32 unmarshals a little endian uint32 from the src input
+// UnmarshallUint32 unmarshals a little endian uint32 from the src input. A short
+// buffer is treated as zero-padded rather than panicking.
 func UnmarshallUint32(src []byte) uint32 {
+	if len(src) < 4 {
+		var b [4]byte
+		copy(b[:], src)
+		return binary.LittleEndian.Uint32(b[:])
+	}
 	return binary.LittleEndian.Uint32(src[:4])
 }
 
-// UnmarshallUint16 unmarshals a little endian uint16 from the src input
+// UnmarshallUint16 unmarshals a little endian uint16 from the src input. A short
+// buffer is treated as zero-padded rather than panicking.
 func UnmarshallUint16(src []byte) uint16 {
+	if len(src) < 2 {
+		var b [2]byte
+		copy(b[:], src)
+		return binary.LittleEndian.Uint16(b[:])
+	}
 	return binary.LittleEndian.Uint16(src[:2])
 }
 
-// UnmarshallUint8 unmarshals a little endian uint8 from the src input
+// UnmarshallUint8 unmarshals a little endian uint8 from the src input. An empty
+// buffer decodes to zero rather than panicking.
 func UnmarshallUint8(src []byte) uint8 {
+	if len(src) < 1 {
+		return 0
+	}
 	return src[0]
 }
 
-// UnmarshalBool unmarshals a boolean from the src input
+// UnmarshalBool unmarshals a boolean from the src input. An empty buffer decodes
+// to false rather than panicking.
 func UnmarshalBool(src []byte) bool {
+	if len(src) < 1 {
+		return false
+	}
 	return src[0] == 1
 }
 
@@ -70,8 +96,14 @@ func DecodeUint64Slice[T ~uint64](dec Decoder, dst []T) error {
 
 // ---- offset functions ----
 
-// ReadOffset reads an offset from buf
+// ReadOffset reads an offset from buf. A short buffer is treated as zero-padded
+// rather than panicking.
 func ReadOffset(buf []byte) uint64 {
+	if len(buf) < 4 {
+		var b [4]byte
+		copy(b[:], buf)
+		return uint64(binary.LittleEndian.Uint32(b[:]))
+	}
 	return uint64(binary.LittleEndian.Uint32(buf))
 }
 
@@ -80,6 +112,11 @@ func ReadOffset(buf []byte) uint64 {
 // ExpandSlice grows or shrinks src to length size, zeroing any newly added elements.
 // For size == 0 it returns a non-nil empty slice.
 func ExpandSlice[T any](src []T, size int) []T {
+	if size < 0 {
+		// Negative sizes are invalid input; return a non-nil empty slice so the
+		// slice bounds below cannot underflow.
+		return make([]T, 0)
+	}
 	if len(src) >= size {
 		out := src[:size]
 		if out == nil {

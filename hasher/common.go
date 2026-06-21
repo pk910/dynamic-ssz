@@ -29,36 +29,29 @@ var FastHasherPool HasherPool = HasherPool{
 	HashFn: hashtree.HashByteSlice,
 }
 
-var hasherInitialized bool
-var hasherInitMutex sync.Mutex
+var hasherInitOnce sync.Once
 var zeroHashes [65][32]byte
 var zeroHashLevels map[string]int
 var zeroHashLevelsBytes map[[32]byte]int
 var zeroBytes []byte
 
 func initHasher() {
-	hasherInitMutex.Lock()
-	defer hasherInitMutex.Unlock()
+	hasherInitOnce.Do(func() {
+		zeroBytes = sszutils.ZeroBytes()
+		zeroHashLevels = make(map[string]int)
+		zeroHashLevelsBytes = make(map[[32]byte]int)
+		zeroHashLevels[string(zeroBytes[:32])] = 0
+		zeroHashLevelsBytes[[32]byte{}] = 0
 
-	if hasherInitialized {
-		return
-	}
-
-	hasherInitialized = true
-	zeroBytes = sszutils.ZeroBytes()
-	zeroHashLevels = make(map[string]int)
-	zeroHashLevelsBytes = make(map[[32]byte]int)
-	zeroHashLevels[string(zeroBytes[:32])] = 0
-	zeroHashLevelsBytes[[32]byte{}] = 0
-
-	tmp := [64]byte{}
-	for i := range 64 {
-		copy(tmp[:32], zeroHashes[i][:])
-		copy(tmp[32:], zeroHashes[i][:])
-		zeroHashes[i+1] = sha256.Sum256(tmp[:])
-		zeroHashLevels[string(zeroHashes[i+1][:])] = i + 1
-		zeroHashLevelsBytes[zeroHashes[i+1]] = i + 1
-	}
+		tmp := [64]byte{}
+		for i := range 64 {
+			copy(tmp[:32], zeroHashes[i][:])
+			copy(tmp[32:], zeroHashes[i][:])
+			zeroHashes[i+1] = sha256.Sum256(tmp[:])
+			zeroHashLevels[string(zeroHashes[i+1][:])] = i + 1
+			zeroHashLevelsBytes[zeroHashes[i+1]] = i + 1
+		}
+	})
 }
 
 // GetZeroHashLevel returns the merkle tree depth level for a known zero hash.
@@ -82,9 +75,13 @@ func GetZeroHashLevelBytes(hash []byte) (int, bool) {
 }
 
 // GetZeroHash returns the precomputed zero hash at the given merkle tree depth.
+// Depths outside the supported range are clamped to the nearest valid level.
 func GetZeroHash(depth int) []byte {
-	if !hasherInitialized {
-		initHasher()
+	initHasher()
+	if depth < 0 {
+		depth = 0
+	} else if depth >= len(zeroHashes) {
+		depth = len(zeroHashes) - 1
 	}
 	return zeroHashes[depth][:]
 }

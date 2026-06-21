@@ -40,6 +40,9 @@ func Annotate[T any](tag string) bool {
 // LookupAnnotation returns the raw SSZ tag string registered for the
 // given reflect.Type via Annotate[T](), or ("", false) if none was registered.
 func LookupAnnotation(t reflect.Type) (string, bool) {
+	if t == nil {
+		return "", false
+	}
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}

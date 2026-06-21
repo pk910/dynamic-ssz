@@ -34,6 +34,18 @@ func CalculateLimit(maxCapacity, numItems, size uint64) uint64 {
 	return numItems
 }
 
+// CalculateBitlistLimit computes the merkle tree chunk limit for a bitlist with
+// the given maximum bit capacity as ceil(maxSize/256). The computation avoids the
+// uint64 overflow that a naive (maxSize+255)/256 hits near math.MaxUint64, which
+// would otherwise collapse a huge limit to a tiny one and make unrelated bitlist
+// types share a merkleization depth and collide.
+func CalculateBitlistLimit(maxSize uint64) uint64 {
+	if maxSize > math.MaxUint64-255 {
+		return maxSize/256 + 1
+	}
+	return (maxSize + 255) / 256
+}
+
 // NextPowerOfTwo returns the smallest power of two greater than or equal to v.
 func NextPowerOfTwo(v uint64) uint64 {
 	v--

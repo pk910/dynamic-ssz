@@ -98,6 +98,41 @@ func (r *shortReader) Read(p []byte) (n int, err error) {
 	return toRead, nil
 }
 
+// negativeReader violates the io.Reader contract by reporting a negative count.
+type negativeReader struct{}
+
+func (negativeReader) Read(_ []byte) (int, error) { return -1, nil }
+
+// A reader returning a negative byte count must not drive the decode loops into
+// a negative slice index; the decoder must report ErrNegativeRead instead.
+func TestStreamDecoder_NegativeReadNoPanic(t *testing.T) {
+	// Buffered read path (small read).
+	t.Run("buffered", func(t *testing.T) {
+		dec := NewStreamDecoder(negativeReader{}, 8, 1024)
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("negative read panicked instead of erroring: %v", r)
+			}
+		}()
+		if _, err := dec.DecodeUint64(); !errors.Is(err, ErrNegativeRead) {
+			t.Errorf("expected ErrNegativeRead, got: %v", err)
+		}
+	})
+
+	// Direct read path (read larger than the buffer).
+	t.Run("direct", func(t *testing.T) {
+		dec := NewStreamDecoder(negativeReader{}, 4096, 64)
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("negative read panicked instead of erroring: %v", r)
+			}
+		}()
+		if _, err := dec.DecodeBytes(make([]byte, 4096)); !errors.Is(err, ErrNegativeRead) {
+			t.Errorf("expected ErrNegativeRead, got: %v", err)
+		}
+	})
+}
+
 // ============================================================================
 // StreamEncoder Tests
 // ============================================================================

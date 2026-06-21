@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 	"sync"
@@ -35,7 +36,17 @@ type TypeCache struct {
 }
 
 // NewTypeCache creates a new type cache
+// emptySpecs is a no-op DynamicSpecs used when a TypeCache is created without a
+// spec provider, so dynssz-* tags resolve to their static fallback instead of
+// dereferencing a nil interface.
+type emptySpecs struct{}
+
+func (emptySpecs) ResolveSpecValue(string) (bool, uint64, error) { return false, 0, nil }
+
 func NewTypeCache(specs sszutils.DynamicSpecs) *TypeCache {
+	if specs == nil {
+		specs = emptySpecs{}
+	}
 	return &TypeCache{
 		specs:         specs,
 		descriptors:   make(map[typeKey]*TypeDescriptor),
@@ -115,6 +126,10 @@ func (tc *TypeCache) GetTypeDescriptor(t reflect.Type, sizeHints []SszSizeHint, 
 //	    nil, nil, nil,
 //	)
 func (tc *TypeCache) GetTypeDescriptorWithSchema(runtimeType, schemaType reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) (*TypeDescriptor, error) {
+	if runtimeType == nil || schemaType == nil {
+		return nil, sszutils.NewSszError(sszutils.ErrUnsupportedType, "type must not be nil")
+	}
+
 	key := typeKey{runtime: runtimeType, schema: schemaType}
 
 	// Check cache first (read lock)
@@ -266,8 +281,20 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 				for i := range sizeHints {
 					if sizeHints[i].Expr != "" {
 						if ok, val, err := tc.specs.ResolveSpecValue(sizeHints[i].Expr); err == nil && ok {
-							sizeHints[i].Size = uint32(val)
-							sizeHints[i].Custom = true
+							if val > math.MaxUint32 {
+								return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "ssz-size value %d exceeds the uint32 size range", val)
+							}
+							if val == 0 {
+								// A resolved size of 0 would form a zero-length
+								// vector; fall back to a positive static ssz-size or
+								// reject if none was given.
+								if sizeHints[i].Size == 0 {
+									return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "ssz-size expression %q resolved to 0 with no positive static fallback", sizeHints[i].Expr)
+								}
+							} else {
+								sizeHints[i].Size = uint32(val)
+								sizeHints[i].Custom = true
+							}
 						}
 					}
 				}
@@ -275,8 +302,15 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 				for i := range maxSizeHints {
 					if maxSizeHints[i].Expr != "" {
 						if ok, val, err := tc.specs.ResolveSpecValue(maxSizeHints[i].Expr); err == nil && ok {
-							maxSizeHints[i].Size = val
-							maxSizeHints[i].Custom = true
+							if val == 0 {
+								// Fall back to a positive static ssz-max or reject.
+								if maxSizeHints[i].Size == 0 {
+									return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "ssz-max expression %q resolved to 0 with no positive static fallback", maxSizeHints[i].Expr)
+								}
+							} else {
+								maxSizeHints[i].Size = val
+								maxSizeHints[i].Custom = true
+							}
 						}
 					}
 				}
@@ -604,7 +638,7 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 		}
 	}
 
-	if desc.SszTypeFlags&SszTypeFlagHasBitSize != 0 && (desc.SszType != SszBitvectorType && desc.SszType != SszBitlistType) {
+	if desc.SszTypeFlags&SszTypeFlagHasBitSize != 0 && desc.SszType != SszBitvectorType && desc.SszType != SszBitlistType {
 		return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "bit size tag is only allowed for bitvector or bitlist types, got %v", desc.SszType)
 	}
 
@@ -696,6 +730,17 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 			SszCompatFlagHashTreeRootWith
 	}
 
+	// Per the SSZ spec, containers (including progressive containers) must have
+	// at least one field. Reject a struct that would be encoded field-by-field
+	// with no SSZ-encodable (exported) fields. Types that delegate to their own
+	// SSZ methods (any compat flag set) are exempt: they do not use the plain
+	// container layout, so a zero-field struct shell is legitimate for them.
+	if desc.SszType == SszContainerType || desc.SszType == SszProgressiveContainerType {
+		if desc.SszCompatFlags == 0 && desc.ContainerDesc != nil && len(desc.ContainerDesc.Fields) == 0 {
+			return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "container type %v has no SSZ fields, which is invalid per the SSZ spec", schemaType)
+		}
+	}
+
 	if desc.SszType == SszCustomType {
 		isCompatible := desc.SszCompatFlags&SszCompatFlagFastSSZMarshaler != 0 && desc.SszCompatFlags&SszCompatFlagFastSSZHasher != 0
 		// isCompatible = isCompatible || (desc.SszCompatFlags&SszCompatFlagDynamicMarshaler != 0 && desc.SszCompatFlags&SszCompatFlagDynamicUnmarshaler != 0 && desc.SszCompatFlags&SszCompatFlagDynamicSizer != 0 && desc.SszCompatFlags&SszCompatFlagDynamicHashRoot != 0)
@@ -782,6 +827,18 @@ func (tc *TypeCache) buildTypeWrapperDescriptor(desc *TypeDescriptor, runtimeTyp
 		runtimeWrappedType = schemaWrapperInfo.Type
 	}
 
+	// The wrapper's actual value field must be shape-compatible with the type the
+	// descriptor expects. Otherwise the reflection-driven encode/decode would call
+	// type-specific operations (Bytes, Uint, Len, ...) on an incompatible value
+	// and panic deep in the reflect package.
+	if runtimeType.NumField() > 0 {
+		valueType := runtimeType.Field(0).Type
+		if !wrapperTypeCompatible(valueType, runtimeWrappedType) {
+			return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch,
+				"TypeWrapper value type %v is not compatible with descriptor type %v", valueType, runtimeWrappedType)
+		}
+	}
+
 	// Build type descriptor for the wrapped type traversing both type trees
 	wrappedDesc, err := tc.getTypeDescriptor(runtimeWrappedType, schemaWrapperInfo.Type, schemaWrapperInfo.SizeHints, schemaWrapperInfo.MaxSizeHints, schemaWrapperInfo.TypeHints)
 	if err != nil {
@@ -796,6 +853,38 @@ func (tc *TypeCache) buildTypeWrapperDescriptor(desc *TypeDescriptor, runtimeTyp
 	desc.SszTypeFlags |= wrappedDesc.SszTypeFlags & (SszTypeFlagIsDynamic | SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
 
 	return nil
+}
+
+// wrapperTypeCompatible reports whether a TypeWrapper's actual value type can be
+// driven by a descriptor built for expected. Named types over the same
+// underlying kind are accepted; differing kinds, element types, or array lengths
+// are rejected so an incompatible wrapper fails with a clean error instead of a
+// reflect panic.
+func wrapperTypeCompatible(actual, expected reflect.Type) bool {
+	if actual == expected {
+		return true
+	}
+	if actual.Kind() != expected.Kind() {
+		return false
+	}
+	switch actual.Kind() {
+	case reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+		reflect.Float32, reflect.Float64,
+		reflect.String:
+		// Named types over the same scalar/string kind are interchangeable.
+		return true
+	case reflect.Array:
+		return actual.Len() == expected.Len() && wrapperTypeCompatible(actual.Elem(), expected.Elem())
+	case reflect.Slice, reflect.Pointer:
+		return wrapperTypeCompatible(actual.Elem(), expected.Elem())
+	default:
+		// Composite kinds (struct, map, interface, ...) with a matching kind but
+		// different element/field layout are not interchangeable; only the exact
+		// same type (handled above) is compatible.
+		return false
+	}
 }
 
 // buildUint128Descriptor builds a descriptor for uint128 types
@@ -867,9 +956,21 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 		}
 	}
 
-	fieldCount := schemaType.NumField()
+	schemaFieldCount := schemaType.NumField()
+
+	// Unexported fields are skipped entirely (Go convention, matching
+	// encoding/json and gob): they cannot be assigned via reflection on decode
+	// and have no place in the SSZ layout. The descriptor only tracks exported
+	// fields, while FieldIndex keeps the real reflect index for data access.
+	exportedFieldCount := 0
+	for i := 0; i < schemaFieldCount; i++ {
+		if schemaType.Field(i).IsExported() {
+			exportedFieldCount++
+		}
+	}
+
 	desc.ContainerDesc = &ContainerDescriptor{
-		Fields:    make([]FieldDescriptor, fieldCount),
+		Fields:    make([]FieldDescriptor, exportedFieldCount),
 		DynFields: make([]DynFieldDescriptor, 0),
 	}
 
@@ -881,9 +982,14 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 	var fieldIndices map[uint16]struct{}
 	var sszIndexes []*uint16
 
-	// Iterate over schema fields - they define the SSZ layout
-	for i := 0; i < fieldCount; i++ {
+	// Iterate over schema fields - they define the SSZ layout. fi is the
+	// compacted position within the descriptor's exported-only field slices.
+	fi := 0
+	for i := 0; i < schemaFieldCount; i++ {
 		schemaField := schemaType.Field(i)
+		if !schemaField.IsExported() {
+			continue
+		}
 		fieldDesc := FieldDescriptor{
 			Name: schemaField.Name,
 		}
@@ -915,10 +1021,10 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 
 		if sszIndex != nil {
 			if sszIndexes == nil {
-				sszIndexes = make([]*uint16, fieldCount)
-				fieldIndices = make(map[uint16]struct{}, fieldCount)
+				sszIndexes = make([]*uint16, exportedFieldCount)
+				fieldIndices = make(map[uint16]struct{}, exportedFieldCount)
 			}
-			sszIndexes[i] = sszIndex
+			sszIndexes[fi] = sszIndex
 			fieldDesc.SszIndex = *sszIndex
 			hasAnyIndexTag = true
 			if _, exists := fieldIndices[*sszIndex]; exists {
@@ -958,7 +1064,7 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 			sszSize = 4 // Offset size for dynamic fields
 
 			desc.ContainerDesc.DynFields = append(desc.ContainerDesc.DynFields, DynFieldDescriptor{
-				Field:        &desc.ContainerDesc.Fields[i],
+				Field:        &desc.ContainerDesc.Fields[fi],
 				HeaderOffset: totalSize,
 				Index:        int16(runtimeFieldIndex), // Use runtime field index for data access
 			})
@@ -966,7 +1072,8 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 
 		desc.SszTypeFlags |= fieldDesc.Type.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
 		totalSize += sszSize
-		desc.ContainerDesc.Fields[i] = fieldDesc
+		desc.ContainerDesc.Fields[fi] = fieldDesc
+		fi++
 	}
 
 	// Determine if this is a progressive container
@@ -1203,6 +1310,15 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 		desc.Len = byteLen
 	default:
 		return sszutils.NewSszError(sszutils.ErrInvalidConstraint, "missing size hint for vector type")
+	}
+
+	// Per the SSZ spec, Vector[type, 0] and Bitvector[0] are illegal: a vector
+	// must have a length greater than zero. This also catches dimensions whose
+	// dynssz-size resolved to 0 with no positive static fallback. A bit size
+	// misused on a non-bitvector also yields length 0, but that has a more
+	// specific error reported after the descriptor is built, so don't mask it.
+	if desc.Len == 0 && (desc.SszTypeFlags&SszTypeFlagHasBitSize == 0 || desc.SszType == SszBitvectorType) {
+		return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "vector type %v has zero length, which is invalid per the SSZ spec", t)
 	}
 
 	childSizeHints := []SszSizeHint{}

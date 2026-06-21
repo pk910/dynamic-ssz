@@ -318,6 +318,56 @@ var SimpleTypesWithSpecs_Specs = map[string]any{
 	"F2_MAX":       8,
 }
 
+// SpecMatrix is a multi-dimensional fixed vector whose inner dimension size is
+// itself dynssz-resolved. It exercises the outer-row zero-padding, which must
+// pad each missing row with the runtime-resolved inner byte size, not the
+// static fallback.
+type SpecMatrix struct {
+	M [][]byte `ssz-size:"2,4" dynssz-size:"MATRIX_OUTER,MATRIX_INNER"`
+}
+
+var SpecMatrix_Payload = SpecMatrix{
+	// Under-filled on both dimensions: 3 of MATRIX_OUTER rows, each shorter than
+	// MATRIX_INNER, so both per-row and missing-row padding are exercised.
+	M: [][]byte{{1, 2, 3}, {4, 5}, {6}},
+}
+
+var SpecMatrix_Specs = map[string]any{
+	"MATRIX_OUTER": 8,
+	"MATRIX_INNER": 16,
+}
+
+// OptU32 is a variable-size container ending in an optional field. Trailing
+// bytes after its encoding must be rejected by both engines.
+type OptU32 struct {
+	Pre uint32
+	Opt *uint32 `ssz-type:"optional"`
+}
+
+var OptU32_Payload = OptU32{Pre: 1, Opt: func() *uint32 { v := uint32(7); return &v }()}
+
+// ListOfList and Bytes2D are variable-size containers ending in a list of
+// variable-length elements, used to confirm trailing-data rejection.
+type ListOfList struct {
+	L [][]uint32 `ssz-max:"4,4"`
+}
+
+var ListOfList_Payload = ListOfList{L: [][]uint32{{1, 2}, {3}}}
+
+type Bytes2D struct {
+	B [][]byte `ssz-max:"4,8"`
+}
+
+var Bytes2D_Payload = Bytes2D{B: [][]byte{{1, 2}, {3}}}
+
+// VecOfList is a fixed-size vector of variable-size elements, exercising the
+// inner offset-table validation distinct from a dynamic list.
+type VecOfList struct {
+	V [3][]uint16
+}
+
+var VecOfList_Payload = VecOfList{V: [3][]uint16{{1, 2}, {3}, {4, 5}}}
+
 // ProgIndexOnly is a progressive container detected purely from ssz-index tags
 // (no explicit ssz-type:"progressive-container"), exercising codegen auto-detection.
 type ProgIndexOnly struct {
@@ -660,6 +710,13 @@ var _ = sszutils.Annotate[AnnotatedByteList](`ssz-max:"32"`)
 type AnnotatedWithSpecs []uint32
 
 var _ = sszutils.Annotate[AnnotatedWithSpecs](`ssz-max:"10" dynssz-max:"ANNOTATED_MAX"`)
+
+// AnnotatedZeroStaticMax has only a placeholder static ssz-max (0); its real
+// limit must come from the dynssz expression. When that expression resolves to 0
+// there is no positive fallback, so both engines must error.
+type AnnotatedZeroStaticMax []uint32
+
+var _ = sszutils.Annotate[AnnotatedZeroStaticMax](`ssz-max:"0" dynssz-max:"ZEROSTATIC_MAX"`)
 
 // AnnotatedContainer uses annotated types as fields WITHOUT field tags.
 // The reflection path must resolve limits from the annotation registry;

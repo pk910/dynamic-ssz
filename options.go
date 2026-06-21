@@ -99,6 +99,9 @@ func applyCallOptions(opts []CallOption) *callConfig {
 	}
 	cfg := &callConfig{}
 	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
 		opt(cfg)
 	}
 	return cfg

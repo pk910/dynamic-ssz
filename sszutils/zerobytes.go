@@ -4,22 +4,19 @@
 
 package sszutils
 
-var zeroBytes []byte
+// zeroBytes is a shared 1024-byte slice of zeros, initialized once at package
+// load. Eager initialization keeps reads lock-free and race-free on the hot
+// padding path. The slice must not be modified by callers.
+var zeroBytes = make([]byte, 1024)
 
-// ZeroBytes returns a shared 1024-byte slice of zeros, initializing it on
-// first call. The returned slice must not be modified by callers.
+// ZeroBytes returns the shared zero-filled slice. The returned slice must not be
+// modified by callers.
 func ZeroBytes() []byte {
-	if len(zeroBytes) == 0 {
-		zeroBytes = make([]byte, 1024)
-	}
 	return zeroBytes
 }
 
 // AppendZeroPadding appends the specified number of zero bytes to buf
 func AppendZeroPadding(buf []byte, count int) []byte {
-	if len(zeroBytes) == 0 {
-		zeroBytes = ZeroBytes()
-	}
 	for count > 0 {
 		toCopy := count
 		if toCopy > len(zeroBytes) {

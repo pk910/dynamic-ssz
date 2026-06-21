@@ -116,7 +116,11 @@ func (c *CompressedMultiproof) Decompress() *Multiproof {
 	zc := 0
 	for i, h := range c.Hashes {
 		if h == nil {
-			p.Hashes[i] = hasher.GetZeroHash(c.ZeroLevels[zc])
+			level := 0
+			if zc < len(c.ZeroLevels) {
+				level = c.ZeroLevels[zc]
+			}
+			p.Hashes[i] = hasher.GetZeroHash(level)
 			zc++
 		} else {
 			p.Hashes[i] = c.Hashes[i]
@@ -299,6 +303,14 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 		return getEmptyNode(depth), nil
 	}
 
+	// A nil leaf cannot be hashed and would panic later in Hash(); reject it at
+	// construction so the tree is always complete.
+	for i := range leaves {
+		if leaves[i] == nil {
+			return nil, fmt.Errorf("leaf at index %d is nil", i)
+		}
+	}
+
 	// now we know numLeaves are at least 1.
 	// if the max leaf limit is 1, return the one leaf we have
 	if limit == 1 {
@@ -314,7 +326,7 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 	// if the max leaf limit is 2
 	if limit == 2 {
 		// but we only have 1 leaf, add a zero order hash as the right node
-		if numLeaves == 1 {
+		if len(leaves) < 2 {
 			return NewNodeWithLR(leaves[0], getEmptyNode(0)), nil
 		}
 		// otherwise return the two nodes we have
@@ -386,6 +398,14 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 func TreeFromNodesProgressive(leaves []*Node) (*Node, error) {
 	if len(leaves) == 0 {
 		return getEmptyNode(0), nil
+	}
+
+	// A nil leaf cannot be hashed and would panic later in Hash(); reject it at
+	// construction so the tree is always complete.
+	for i := range leaves {
+		if leaves[i] == nil {
+			return nil, fmt.Errorf("leaf at index %d is nil", i)
+		}
 	}
 
 	return treeFromNodesProgressiveImpl(leaves, 0)
@@ -479,6 +499,9 @@ func TreeFromNodesProgressiveWithActiveFields(leaves []*Node, activeFields []byt
 
 // Get fetches a node with the given general index.
 func (n *Node) Get(index int) (*Node, error) {
+	if index < 1 {
+		return nil, errors.New("Node not found in tree")
+	}
 	pathLen := getPathLength(index)
 	cur := n
 	for i := pathLen - 1; i >= 0; i-- {
@@ -537,6 +560,10 @@ func getEmptyNode(depth int) *Node {
 }
 
 func hashNode(n *Node) []byte {
+	if n == nil {
+		panic("Tree incomplete")
+	}
+
 	if n.left == nil && n.right == nil {
 		return n.value
 	}
@@ -548,6 +575,10 @@ func hashNode(n *Node) []byte {
 	if n.value != nil {
 		// This value has already been hashed, don't do the work again.
 		return n.value
+	}
+
+	if n.right == nil {
+		panic("Tree incomplete")
 	}
 
 	if n.right.isEmpty {
@@ -564,6 +595,9 @@ func hashNode(n *Node) []byte {
 // Prove returns a list of sibling values and hashes needed
 // to compute the root hash for a given general index.
 func (n *Node) Prove(index int) (*Proof, error) {
+	if index < 1 {
+		return nil, fmt.Errorf("invalid generalized index %d (must be >= 1)", index)
+	}
 	pathLen := getPathLength(index)
 	proof := &Proof{Index: index}
 	hashes := make([][]byte, 0, pathLen)
@@ -609,6 +643,11 @@ func (n *Node) Prove(index int) (*Proof, error) {
 // hashes needed to reconstruct the root. Returns an error if any index cannot
 // be found in the tree.
 func (n *Node) ProveMulti(indices []int) (*Multiproof, error) {
+	for _, gi := range indices {
+		if gi < 1 {
+			return nil, fmt.Errorf("invalid generalized index %d (must be >= 1)", gi)
+		}
+	}
 	reqIndices := getRequiredIndices(indices)
 	proof := &Multiproof{Indices: indices, Leaves: make([][]byte, len(indices)), Hashes: make([][]byte, len(reqIndices))}
 
@@ -673,21 +712,35 @@ func LeafFromBool(b bool) *Node {
 	return NewNodeWithValue(buf)
 }
 
-// LeafFromBytes creates a 32-byte leaf node from a byte slice. If the slice is
-// shorter than 32 bytes, it is right-padded with zeros. Panics if the slice
-// exceeds 32 bytes.
+// LeafFromBytes creates a tree node from a byte slice. A slice of 32 bytes
+// becomes a single leaf, a shorter slice is right-padded with zeros, and a
+// longer slice is split into 32-byte chunks that are merkleized into a subtree
+// so the node still hashes to a single 32-byte root.
 func LeafFromBytes(b []byte) *Node {
 	l := len(b)
-	if l > 32 {
-		panic("Unimplemented")
-	}
-
 	if l == 32 {
 		return NewNodeWithValue(b)
 	}
+	if l < 32 {
+		return NewNodeWithValue(append(b, sszutils.ZeroBytes()[:32-l]...))
+	}
 
-	// < 32
-	return NewNodeWithValue(append(b, sszutils.ZeroBytes()[:32-l]...))
+	numChunks := (l + 31) / 32
+	leaves := make([]*Node, numChunks)
+	for i := range leaves {
+		start := i * 32
+		if end := start + 32; end <= l {
+			leaves[i] = NewNodeWithValue(b[start:end])
+		} else {
+			chunk := make([]byte, 32)
+			copy(chunk, b[start:])
+			leaves[i] = NewNodeWithValue(chunk)
+		}
+	}
+
+	// limit is a power of two, so TreeFromNodes never returns an error here.
+	node, _ := TreeFromNodes(leaves, int(sszutils.NextPowerOfTwo(uint64(numChunks))))
+	return node
 }
 
 // EmptyLeaf creates a leaf node containing 32 zero bytes, representing an

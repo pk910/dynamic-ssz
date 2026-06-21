@@ -17,6 +17,10 @@ var (
 	// type requires (e.g. not enough bytes to decode a uint64).
 	ErrUnexpectedEOF = fmt.Errorf("unexpected end of SSZ")
 
+	// ErrNegativeRead is returned when an io.Reader violates the io.Reader
+	// contract by reporting a negative byte count.
+	ErrNegativeRead = fmt.Errorf("reader returned negative byte count")
+
 	// ErrOffset is returned when an SSZ offset is out of range, does not
 	// monotonically increase, or a field does not consume exactly the
 	// byte range its offset pair implied.
@@ -126,10 +130,14 @@ func (e *sszError) Error() string {
 		b.WriteString(": ")
 	}
 
-	b.WriteString(e.err.Error())
+	if e.err != nil {
+		b.WriteString(e.err.Error())
+	}
 
 	if e.message != "" {
-		b.WriteString(": ")
+		if e.err != nil {
+			b.WriteString(": ")
+		}
 		b.WriteString(e.message)
 	}
 
@@ -167,8 +175,12 @@ func NewSszErrorf(base error, format string, args ...any) error {
 func ErrorWithPath(err error, segment string) error {
 	var se *sszError
 	if errors.As(err, &se) {
-		se.path = append(se.path, segment)
-		return se
+		// Build a fresh error with a copied path so wrapping never mutates the
+		// input error (which may be shared or wrapped concurrently).
+		newPath := make([]string, len(se.path)+1)
+		copy(newPath, se.path)
+		newPath[len(se.path)] = segment
+		return &sszError{err: se.err, message: se.message, path: newPath}
 	}
 
 	return &sszError{err: err, path: []string{segment}}

@@ -151,8 +151,8 @@ func TestCodegenBigIntGolden(t *testing.T) {
 		payload any
 		golden  string
 	}{
-		{"valueBigInt", ExtendedTypes1_Payload1, "5235f836b4e001a3984250744d2749e4ba9e79158c8fb36e6cde7acf1d62920c"},
-		{"pointerBigInt", CoverageTypes2_Payload1, "86b9299d76a4d3550dc10899d5508e1c4e1a0467a5c1b7dca4774c1f717b62ea"},
+		{"valueBigInt", ExtendedTypes1_Payload1, "d43c9c95a419854cc80d68260f4f3777ec1f5f6a699575f5d9ddaf38fb5c86a0"},
+		{"pointerBigInt", CoverageTypes2_Payload1, "9f187208f2264c56c945c495d2b170c40e9469de661fea65d07a6aa990824fff"},
 	}
 
 	ds := dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes())
@@ -251,6 +251,149 @@ func TestCodegenCoverageTypes7(t *testing.T) {
 
 func TestCodegenNoDynExprTypes(t *testing.T) {
 	testCodegenPayloadByReflection(t, NoDynExprTypes_Payload, nil)
+}
+
+// A dynssz expression that resolves to 0 must fall back to the static value in
+// both engines. Previously the generated code applied the literal
+// 0 limit and rejected the value while reflection fell back, diverging.
+func TestCodegenResolvedZeroFallsBackToStatic(t *testing.T) {
+	// dynssz-max ANNOTATED_MAX resolves to 0 -> both fall back to ssz-max:"10".
+	testCodegenPayloadByReflection(t, AnnotatedWithSpecs{1, 2, 3}, map[string]any{"ANNOTATED_MAX": 0})
+}
+
+// When the dynssz expression resolves to 0 and the only static value is the
+// placeholder 0 (no positive fallback), both engines must error rather than
+// silently encode a zero-capacity list.
+func TestCodegenZeroStaticMaxResolvesToZeroErrors(t *testing.T) {
+	payload := AnnotatedZeroStaticMax{1, 2, 3}
+
+	// A positive resolved value works in both engines and they agree.
+	testCodegenPayloadByReflection(t, payload, map[string]any{"ZEROSTATIC_MAX": 8})
+
+	// Resolving to 0 leaves no positive fallback: the reflection descriptor build
+	// and the generated code must both error.
+	zeroSpecs := map[string]any{"ZEROSTATIC_MAX": 0}
+	refDs := dynssz.NewDynSsz(zeroSpecs, dynssz.WithNoFastSsz(), dynssz.WithNoFastHash())
+	if _, err := refDs.MarshalSSZ(payload); err == nil {
+		t.Error("reflection: expected error for max resolving to 0 with no positive static fallback")
+	}
+	genDs := dynssz.NewDynSsz(zeroSpecs)
+	if _, err := genDs.MarshalSSZ(&payload); err == nil {
+		t.Error("codegen: expected error for max resolving to 0 with no positive static fallback")
+	}
+}
+
+// A multi-dimensional fixed vector whose inner size is dynssz-resolved must pad
+// missing outer rows with the resolved inner byte size, not the static fallback
+// . Previously codegen padded with the baked static inner size,
+// producing a shorter encoding than reflection.
+func TestCodegenMultiDimVectorPadding(t *testing.T) {
+	testCodegenPayloadByReflection(t, SpecMatrix_Payload, SpecMatrix_Specs)
+}
+
+// The generated buffer unmarshal must reject trailing data after a fixed-size
+// container, matching the streaming decoder and reflection paths.
+func TestCodegenRejectsTrailingData(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+	valid, err := ds.MarshalSSZ(&ProgIndexOnly_Payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	trailing := append(append([]byte{}, valid...), 0xde, 0xad)
+
+	// Buffer path must reject the trailing bytes (previously accepted them).
+	var a ProgIndexOnly
+	if err := ds.UnmarshalSSZ(&a, trailing); err == nil {
+		t.Error("UnmarshalSSZ accepted trailing data after a fixed container")
+	}
+	// Streaming path must reject them too, consistently.
+	var b ProgIndexOnly
+	if err := ds.UnmarshalSSZReader(&b, bytes.NewReader(trailing), len(trailing)); err == nil {
+		t.Error("UnmarshalSSZReader accepted trailing data after a fixed container")
+	}
+	// The exact-length buffer must still decode.
+	var c ProgIndexOnly
+	if err := ds.UnmarshalSSZ(&c, valid); err != nil {
+		t.Errorf("UnmarshalSSZ rejected the valid buffer: %v", err)
+	}
+}
+
+// Lists of variable-length elements absorb extra bytes as additional valid
+// elements rather than rejecting them as trailing; codegen and reflection must
+// agree on this.
+func TestCodegenListOfListRoundtrip(t *testing.T) {
+	testCodegenPayloadByReflection(t, ListOfList_Payload, nil)
+	testCodegenPayloadByReflection(t, Bytes2D_Payload, nil)
+}
+
+// A nested list of variable-size elements whose inner list declares a first
+// offset of 0 over a non-empty region claims zero items and would silently drop
+// the remaining bytes. Both engines must reject the unconsumed trailing data.
+func TestCodegenNestedListTrailingRejected(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+	// Bytes2D = [][]byte: container offset 4, then a 7-byte inner region whose
+	// first offset is 0 (zero items) followed by 3 stray bytes.
+	in := []byte{0x04, 0, 0, 0, 0, 0, 0, 0, 0x55, 0xff, 0x05}
+
+	var a Bytes2D
+	if err := ds.UnmarshalSSZ(&a, in); err == nil {
+		t.Error("buffer UnmarshalSSZ accepted malformed nested-list encoding")
+	}
+	var b Bytes2D
+	if err := ds.UnmarshalSSZReader(&b, bytes.NewReader(in), len(in)); err == nil {
+		t.Error("stream UnmarshalSSZReader accepted malformed nested-list encoding")
+	}
+}
+
+// A fixed-size vector of variable-size elements must validate its inner offset
+// table the same way a dynamic list does: a first offset that does not point
+// past the table leaves bytes unconsumed and must be rejected by both engines.
+func TestCodegenVecOfListOffsetRejected(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+	// VecOfList = [3][]uint16: container offset 4, then a 3-entry inner offset
+	// table whose first offset is 0 instead of the required 12.
+	in, err := hex.DecodeString("04000000000000000c0000001800000072a4cf1b0000b61e15ac428d16b9ed914edd477c")
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	var a VecOfList
+	if err := ds.UnmarshalSSZ(&a, in); err == nil {
+		t.Error("buffer UnmarshalSSZ accepted malformed vector inner offset table")
+	}
+	var b VecOfList
+	if err := ds.UnmarshalSSZReader(&b, bytes.NewReader(in), len(in)); err == nil {
+		t.Error("stream UnmarshalSSZReader accepted malformed vector inner offset table")
+	}
+}
+
+// A variable-size container ending in an optional field must also reject
+// trailing data in both the buffer and streaming paths.
+func TestCodegenRejectsTrailingDataVariable(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes())
+
+	// Round-trip consistency for the present and absent optional cases.
+	testCodegenPayloadByReflection(t, OptU32_Payload, nil, dynssz.WithExtendedTypes())
+	testCodegenPayloadByReflection(t, OptU32{Pre: 9}, nil, dynssz.WithExtendedTypes())
+
+	valid, err := ds.MarshalSSZ(&OptU32_Payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	trailing := append(append([]byte{}, valid...), 0xde, 0xad)
+
+	var a OptU32
+	if err := ds.UnmarshalSSZ(&a, trailing); err == nil {
+		t.Error("UnmarshalSSZ accepted trailing data after a variable container")
+	}
+	var b OptU32
+	if err := ds.UnmarshalSSZReader(&b, bytes.NewReader(trailing), len(trailing)); err == nil {
+		t.Error("UnmarshalSSZReader accepted trailing data after a variable container")
+	}
+	var c OptU32
+	if err := ds.UnmarshalSSZ(&c, valid); err != nil {
+		t.Errorf("UnmarshalSSZ rejected the valid buffer: %v", err)
+	}
 }
 
 // TestCodegenOptionalListTypes verifies generated code for ssz-type:"optional-list"

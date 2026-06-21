@@ -789,6 +789,17 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 			ssztypes.SszCompatFlagHashTreeRootWith
 	}
 
+	// Per the SSZ spec, containers (including progressive containers) must have
+	// at least one field. Reject a struct that would be encoded field-by-field
+	// with no SSZ-encodable (exported) fields. Types that delegate to their own
+	// SSZ methods (any compat flag set) are exempt: they do not use the plain
+	// container layout.
+	if desc.SszType == ssztypes.SszContainerType || desc.SszType == ssztypes.SszProgressiveContainerType {
+		if desc.SszCompatFlags == 0 && desc.ContainerDesc != nil && len(desc.ContainerDesc.Fields) == 0 {
+			return nil, fmt.Errorf("container type has no SSZ fields, which is invalid per the SSZ spec")
+		}
+	}
+
 	if desc.SszType == ssztypes.SszCustomType {
 		isCompatible := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0 && desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0
 		// isCompatible = isCompatible || (desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0)
@@ -1123,6 +1134,12 @@ func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, dataType, 
 	}
 	desc.ElemDesc = elemDesc
 	desc.Len = length
+
+	// Per the SSZ spec, Vector[type, 0] and Bitvector[0] are illegal: a vector
+	// must have a length greater than zero (e.g. a [0]T array).
+	if desc.Len == 0 {
+		return fmt.Errorf("vector type %v has zero length, which is invalid per the SSZ spec", schemaType)
+	}
 
 	// Set byte array flag for byte types
 	if p.isByteType(schemaElemType) {

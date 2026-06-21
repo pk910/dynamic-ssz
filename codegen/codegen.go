@@ -537,7 +537,12 @@ func WithGoTypesType(t types.Type, typeOpts ...CodeGeneratorOption) CodeGenerato
 //	)
 func WithGoTypesViewTypes(viewTypes ...types.Type) CodeGeneratorOption {
 	return func(opts *CodeGeneratorOptions) {
-		opts.ViewGoTypesTypes = append(opts.ViewGoTypesTypes, viewTypes...)
+		for _, vt := range viewTypes {
+			if vt == nil {
+				continue
+			}
+			opts.ViewGoTypesTypes = append(opts.ViewGoTypesTypes, vt)
+		}
 	}
 }
 
@@ -560,7 +565,12 @@ func WithGoTypesViewTypes(viewTypes ...types.Type) CodeGeneratorOption {
 //	)
 func WithReflectViewTypes(viewTypes ...reflect.Type) CodeGeneratorOption {
 	return func(opts *CodeGeneratorOptions) {
-		opts.ViewReflectTypes = append(opts.ViewReflectTypes, viewTypes...)
+		for _, vt := range viewTypes {
+			if vt == nil {
+				continue
+			}
+			opts.ViewReflectTypes = append(opts.ViewReflectTypes, vt)
+		}
 	}
 }
 
@@ -719,6 +729,9 @@ func (cg *CodeGenerator) SetPackageName(packageName string) {
 func (cg *CodeGenerator) BuildFile(fileName string, opts ...CodeGeneratorOption) {
 	baseCodeOpts := CodeGeneratorOptions{}
 	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
 		opt(&baseCodeOpts)
 	}
 
@@ -730,6 +743,9 @@ func (cg *CodeGenerator) BuildFile(fileName string, opts ...CodeGeneratorOption)
 	for _, t := range types {
 		codeOpts := baseCodeOpts
 		for _, opt := range t.Opts {
+			if opt == nil {
+				continue
+			}
 			opt(&codeOpts)
 		}
 

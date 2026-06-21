@@ -104,6 +104,9 @@ func NewDynSsz(specs map[string]any, options ...DynSszOption) *DynSsz {
 	}
 
 	for _, option := range options {
+		if option == nil {
+			continue
+		}
 		option(opts)
 	}
 
@@ -421,6 +424,9 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 	if source == nil {
 		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "source must not be nil")
 	}
+	if w == nil {
+		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "writer must not be nil")
+	}
 	cfg := applyCallOptions(opts)
 	encoder := sszutils.NewStreamEncoder(w, d.options.StreamWriterBufferSize)
 
@@ -695,6 +701,9 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 	if target == nil {
 		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "target must not be nil")
 	}
+	if r == nil {
+		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "reader must not be nil")
+	}
 	cfg := applyCallOptions(opts)
 	decoder := sszutils.NewStreamDecoder(r, size, d.options.StreamReaderBufferSize)
 	decoder.PushLimit(size)
@@ -863,6 +872,9 @@ func (d *DynSsz) HashTreeRoot(source any, opts ...CallOption) ([32]byte, error) 
 func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...CallOption) error {
 	if source == nil {
 		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "source must not be nil")
+	}
+	if hh == nil {
+		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "hash walker must not be nil")
 	}
 	cfg := applyCallOptions(opts)
 

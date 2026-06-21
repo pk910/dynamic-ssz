@@ -73,7 +73,7 @@ func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strin
 	}
 
 	ctx.exprVars = newExprVarGenerator("expr", typePrinter, options)
-	ctx.staticSizeVars = newStaticSizeVarGenerator("size", typePrinter, options, ctx.exprVars)
+	ctx.staticSizeVars = newStaticSizeVarGenerator(typePrinter, options, ctx.exprVars)
 
 	// Generate main function signature
 	typeName := typePrinter.TypeString(rootTypeDesc)
@@ -505,13 +505,21 @@ func (ctx *unmarshalContext) unmarshalOptional(desc *ssztypes.TypeDescriptor, va
 	ctx.appendCode(indent, "if len(buf) < 1 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.ErrOptionalFlagEOFFn()"))
 	ctx.appendCode(indent, "switch buf[0] {\n")
 	ctx.appendCode(indent, "case 0:\n")
+	// An absent optional occupies exactly the single presence byte; any extra
+	// bytes in its region are trailing data and must be rejected.
+	absentTrailErr := "sszutils.ErrTrailingDataFn(len(buf) - 1)"
+	ctx.appendCode(indent+1, "if len(buf) != 1 {\n\treturn %s\n}\n", typePath.getErrorWith(absentTrailErr))
 	ctx.appendCode(indent+1, "%s = nil\n", varName)
 	ctx.appendCode(indent, "case 1:\n")
 
-	// Check that buf has enough bytes for the presence flag plus the value
+	// Check that buf has enough bytes for the presence flag plus the value. For
+	// a fixed-size value the region is exactly 1+elemSize bytes, so reject any
+	// trailing data too; a variable-size value consumes the remaining bytes.
 	elemSize := desc.ElemDesc.Size
 	if elemSize > 0 {
 		ctx.appendCode(indent+1, "if len(buf) < %d {\n\treturn %s\n}\n", 1+elemSize, typePath.getErrorWith("sszutils.ErrOptionalValueEOFFn()"))
+		presentTrailErr := fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - %d)", 1+elemSize)
+		ctx.appendCode(indent+1, "if len(buf) > %d {\n\treturn %s\n}\n", 1+elemSize, typePath.getErrorWith(presentTrailErr))
 	}
 
 	valVar := ctx.getValVar()
@@ -566,13 +574,17 @@ func (ctx *unmarshalContext) unmarshalBigInt(desc *ssztypes.TypeDescriptor, varN
 	}
 	valVar := ctx.getValVar()
 	signErr := "sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, \"invalid big.Int sign byte\")"
-	// sign byte (0 = non-negative, 1 = negative) followed by the big-endian magnitude
+	emptyErr := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"big.Int payload must contain at least a sign byte\")"
+	leadZeroErr := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"non-canonical big.Int magnitude with leading zero\")"
+	negZeroErr := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"non-canonical negative zero big.Int\")"
+	// sign byte (0 = non-negative, 1 = negative) followed by the minimal big-endian magnitude
 	ctx.appendCode(indent, "%s := %s.NewInt(0)\n", valVar, bigImport)
-	ctx.appendCode(indent, "if len(buf) > 0 {\n")
-	ctx.appendCode(indent+1, "if buf[0] > 1 {\n\t\treturn %s\n\t}\n", typePath.getErrorWith(signErr))
-	ctx.appendCode(indent+1, "%s.SetBytes(buf[1:])\n", valVar)
-	ctx.appendCode(indent+1, "if buf[0] == 1 {\n\t\t%s.Neg(%s)\n\t}\n", valVar, valVar)
-	ctx.appendCode(indent, "}\n")
+	ctx.appendCode(indent, "if len(buf) == 0 {\n\t\treturn %s\n\t}\n", typePath.getErrorWith(emptyErr))
+	ctx.appendCode(indent, "if buf[0] > 1 {\n\t\treturn %s\n\t}\n", typePath.getErrorWith(signErr))
+	ctx.appendCode(indent, "if len(buf) > 1 && buf[1] == 0 {\n\t\treturn %s\n\t}\n", typePath.getErrorWith(leadZeroErr))
+	ctx.appendCode(indent, "if buf[0] == 1 && len(buf) == 1 {\n\t\treturn %s\n\t}\n", typePath.getErrorWith(negZeroErr))
+	ctx.appendCode(indent, "%s.SetBytes(buf[1:])\n", valVar)
+	ctx.appendCode(indent, "if buf[0] == 1 {\n\t\t%s.Neg(%s)\n\t}\n", valVar, valVar)
 	ctx.appendCode(indent, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, fmt.Sprintf("*%s", valVar), "big.Int"))
 	return nil
 }
@@ -581,9 +593,11 @@ func (ctx *unmarshalContext) unmarshalBigInt(desc *ssztypes.TypeDescriptor, varN
 func (ctx *unmarshalContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	staticSize := 0
 	staticSizeVars := []string{}
+	hasDynamicFields := false
 	for _, field := range desc.ContainerDesc.Fields {
 		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 			staticSize += 4
+			hasDynamicFields = true
 		} else {
 			if field.Type.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
 				sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(field.Type)
@@ -611,6 +625,14 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, v
 	ctx.appendCode(indent, "buflen := len(buf)\n")
 	errCode := fmt.Sprintf("sszutils.ErrFixedFieldsEOFFn(buflen, %s)", totalStaticSizeExpr)
 	ctx.appendCode(indent, "if buflen < %s {\n\treturn %s\n}\n", totalStaticSizeExpr, typePath.getErrorWith(errCode))
+	if !hasDynamicFields {
+		// A fully fixed container occupies exactly its size, so any extra bytes
+		// are trailing data and must be rejected (matching the reflection and
+		// streaming-decoder paths). Nested fixed containers always receive an
+		// exactly-sized slice, so this only ever fires at the top-level entry.
+		trailErr := fmt.Sprintf("sszutils.ErrTrailingDataFn(buflen - %s)", totalStaticSizeExpr)
+		ctx.appendCode(indent, "if buflen > %s {\n\treturn %s\n}\n", totalStaticSizeExpr, typePath.getErrorWith(trailErr))
+	}
 	dynamicFields := make([]int, 0)
 
 	for idx, field := range desc.ContainerDesc.Fields {
@@ -859,6 +881,11 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 		errCode := fmt.Sprintf("sszutils.ErrVectorOffsetsEOFFn(len(buf), %s*4)", limitVar)
 		ctx.appendCode(indent, "if %s*4 > len(buf) {\n\treturn %s\n}\n", limitVar, typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "startOffset := int(%s.LittleEndian.Uint32(buf[0:4]))\n", binaryPkgName)
+		// The first offset must point past the fixed-size offset table (limit*4
+		// bytes); any other value leaves bytes between the table and the first
+		// element unconsumed, which the reflection path rejects.
+		firstOffErr := fmt.Sprintf("sszutils.ErrFirstOffsetMismatchFn(startOffset, %s*4)", limitVar)
+		ctx.appendCode(indent, "if startOffset != %s*4 {\n\treturn %s\n}\n", limitVar, typePath.getErrorWith(firstOffErr))
 
 		indexVar, indexDefer := ctx.getIndexVar()
 		defer indexDefer()
@@ -1035,7 +1062,11 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 		ctx.appendCode(indent, "}\n")
 		ctx.appendCode(indent, "itemCount := startOffset / 4\n")
 		errCode = "sszutils.ErrInvalidListStartOffsetFn(startOffset, len(buf))"
-		ctx.appendCode(indent, "if startOffset%%4 != 0 || len(buf) < startOffset {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
+		// A non-empty region must begin with an offset table, so the first offset
+		// is at least 4. A first offset of 0 means zero items and is only valid
+		// for a zero-length region; otherwise the remaining bytes are unconsumed
+		// trailing data that the reflection path rejects.
+		ctx.appendCode(indent, "if startOffset%%4 != 0 || len(buf) < startOffset || (len(buf) != 0 && startOffset == 0) {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
 		if hasMax {
 			errCode = fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", maxVar)
 			ctx.appendCode(indent, "if itemCount > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))

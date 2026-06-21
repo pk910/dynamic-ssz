@@ -64,23 +64,44 @@ func getPtr(v reflect.Value) reflect.Value {
 // SizeSSZ computes the SSZ-encoded byte size of targetValue using its type
 // descriptor.
 func (ctx *ReflectionCtx) SizeSSZ(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value) (uint32, error) {
+	if targetType == nil {
+		return 0, sszutils.NewSszError(sszutils.ErrInvalidValueRange, "target type must not be nil")
+	}
 	return ctx.getSszValueSize(targetType, targetValue)
 }
 
 // MarshalSSZ encodes targetValue into SSZ format using the provided encoder
 // and type descriptor.
 func (ctx *ReflectionCtx) MarshalSSZ(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, encoder sszutils.Encoder) error {
+	if targetType == nil {
+		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "target type must not be nil")
+	}
+	if encoder == nil {
+		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "encoder must not be nil")
+	}
 	return ctx.marshalType(targetType, targetValue, encoder, 0)
 }
 
 // UnmarshalSSZ decodes SSZ data from the provided decoder into targetValue
 // using the type descriptor.
 func (ctx *ReflectionCtx) UnmarshalSSZ(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder) error {
+	if targetType == nil {
+		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "target type must not be nil")
+	}
+	if decoder == nil {
+		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "decoder must not be nil")
+	}
 	return ctx.unmarshalType(targetType, targetValue, decoder, 0)
 }
 
 // HashTreeRoot computes the SSZ hash tree root of targetValue using the
 // provided HashWalker and type descriptor.
 func (ctx *ReflectionCtx) HashTreeRoot(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, hh sszutils.HashWalker) error {
+	if targetType == nil {
+		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "target type must not be nil")
+	}
+	if hh == nil {
+		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "hash walker must not be nil")
+	}
 	return ctx.buildRootFromType(targetType, targetValue, hh, false, 0)
 }

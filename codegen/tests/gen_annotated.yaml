@@ -8,6 +8,7 @@ types:
   - AnnotatedList2
   - AnnotatedByteList
   - AnnotatedWithSpecs
+  - AnnotatedZeroStaticMax
   - AnnotatedContainer
   - AnnotatedOverrideContainer
   - AnnotatedSpecsContainer

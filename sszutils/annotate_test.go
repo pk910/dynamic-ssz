@@ -106,3 +106,17 @@ func TestAnnotate_Overwrite(t *testing.T) {
 		t.Fatalf("expected overwritten tag %q, got %q", `ssz-max:"20"`, tag)
 	}
 }
+
+// LookupAnnotation must return ("", false) for a nil type instead of panicking.
+func TestLookupAnnotation_Nil(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("LookupAnnotation panicked on nil type: %v", r)
+		}
+	}()
+
+	tag, ok := LookupAnnotation(nil)
+	if ok || tag != "" {
+		t.Errorf("LookupAnnotation(nil) = (%q, %v), want (\"\", false)", tag, ok)
+	}
+}

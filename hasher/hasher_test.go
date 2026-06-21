@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -16,14 +17,7 @@ import (
 )
 
 func TestInitHasher(t *testing.T) {
-	// Reset initialization state for testing
-	hasherInitialized = false
-
 	initHasher()
-
-	if !hasherInitialized {
-		t.Error("hasher should be initialized")
-	}
 
 	// Test that zeroBytes comes from sszutils
 	if !bytes.Equal(zeroBytes, sszutils.ZeroBytes()) {
@@ -42,20 +36,14 @@ func TestInitHasher(t *testing.T) {
 
 	// Test calling initHasher multiple times (should be safe)
 	initHasher()
-	if !hasherInitialized {
+	if len(zeroHashLevels) == 0 {
 		t.Error("multiple calls to initHasher should be safe")
 	}
 }
 
 func TestGetZeroHash(t *testing.T) {
-	// Reset for clean test
-	hasherInitialized = false
-
-	// Test that GetZeroHash initializes hasher if needed
+	// GetZeroHash initializes the hasher state on demand.
 	hash0 := GetZeroHash(0)
-	if !hasherInitialized {
-		t.Error("GetZeroHash should initialize hasher if needed")
-	}
 
 	// Test that level 0 is zero bytes
 	if !bytes.Equal(hash0, make([]byte, 32)) {
@@ -263,16 +251,13 @@ func TestNewHasherWithHashFn(t *testing.T) {
 		t.Error("hasher should have hash function")
 	}
 
-	// Test initialization when hasher is not initialized
-	hasherInitialized = false
+	// NewHasherWithHashFn initializes the hasher state on demand.
 	h2 := NewHasherWithHashFn(customHashFn)
 	if h2 == nil {
-		t.Fatal("NewHasherWithHashFn should not return nil even when re-initializing")
+		t.Fatal("NewHasherWithHashFn should not return nil")
 	}
-
-	// Should have initialized the hasher
-	if !hasherInitialized {
-		t.Error("NewHasherWithHashFn should initialize hasher if needed")
+	if len(zeroHashLevels) == 0 {
+		t.Error("NewHasherWithHashFn should initialize hasher state")
 	}
 }
 
@@ -882,14 +867,16 @@ func TestHasherMerkleizeImpl(t *testing.T) {
 		t.Errorf("expected 32 bytes for four chunks, got %d", len(result))
 	}
 
-	// Test with limit exceeded (should panic)
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for count > limit")
-		}
-	}()
-
-	h.merkleizeImpl(dst[:0], make([]byte, 64), 1) // 2 chunks with limit 1
+	// A limit below the actual chunk count is clamped to the chunk count
+	// instead of panicking.
+	clamped := h.merkleizeImpl(dst[:0], make([]byte, 64), 1) // 2 chunks, limit 1
+	if len(clamped) != 32 {
+		t.Errorf("expected 32 bytes when limit is below count, got %d", len(clamped))
+	}
+	expected := h.merkleizeImpl(make([]byte, 0, 32), make([]byte, 64), 2)
+	if !bytes.Equal(clamped, expected) {
+		t.Error("clamped limit should match merkleization with limit == count")
+	}
 }
 
 func TestHasherMerkleizeProgressive(t *testing.T) {
@@ -1788,4 +1775,165 @@ func TestDeferProgressiveActiveFields(t *testing.T) {
 			}
 		}
 	}
+}
+
+// GetZeroHash must clamp out-of-range depths to the nearest valid level instead
+// of panicking on an out-of-bounds array access.
+func TestGetZeroHashClampsOutOfRange(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("GetZeroHash panicked on out-of-range depth: %v", r)
+		}
+	}()
+
+	if got := GetZeroHash(0); len(got) != 32 {
+		t.Fatalf("GetZeroHash(0) length = %d, want 32", len(got))
+	}
+
+	zero := GetZeroHash(0)
+	if !bytes.Equal(GetZeroHash(-1), zero) {
+		t.Error("negative depth must clamp to level 0")
+	}
+	if !bytes.Equal(GetZeroHash(-1000), zero) {
+		t.Error("large negative depth must clamp to level 0")
+	}
+
+	maxLevel := GetZeroHash(64)
+	if !bytes.Equal(GetZeroHash(65), maxLevel) {
+		t.Error("depth above range must clamp to the deepest level")
+	}
+	if !bytes.Equal(GetZeroHash(1<<20), maxLevel) {
+		t.Error("very large depth must clamp to the deepest level")
+	}
+}
+
+// getDepth must not underflow for chunk limits beyond 2^63, where NextPowerOfTwo
+// wraps to zero. The deepest representable tree is 64.
+func TestGetDepthOverflow(t *testing.T) {
+	h := NewHasher()
+	maxU := ^uint64(0)
+
+	if got := h.getDepth(1 << 63); got != 63 {
+		t.Errorf("getDepth(2^63) = %d, want 63", got)
+	}
+
+	for _, d := range []uint64{(1 << 63) + 1, (1 << 63) + (1 << 62), maxU - 100, maxU} {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("getDepth(%d) panicked: %v", d, r)
+				}
+			}()
+			if got := h.getDepth(d); got != 64 {
+				t.Errorf("getDepth(%d) = %d, want 64", d, got)
+			}
+		}()
+	}
+
+	// A MaxUint64 limit must not index past the zeroHashes array.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("merkleizeImpl panicked on MaxUint64 limit: %v", r)
+		}
+	}()
+	if res := h.merkleizeImpl(make([]byte, 0, 32), make([]byte, 32), maxU); len(res) != 32 {
+		t.Errorf("merkleizeImpl returned %d bytes, want 32", len(res))
+	}
+}
+
+// Void merkleization entry points have no error channel, so a too-small limit
+// must clamp instead of panicking with an internal assertion.
+func TestMerkleizeWithMixinClampsLowLimit(t *testing.T) {
+	checks := []struct {
+		name string
+		fn   func(h *Hasher)
+	}{
+		{"MerkleizeWithMixin", func(h *Hasher) {
+			indx := h.Index()
+			for i := 0; i < 100; i++ {
+				h.PutUint8(uint8(i))
+			}
+			h.MerkleizeWithMixin(indx, 100, 1)
+		}},
+		{"PutUint64Array", func(h *Hasher) {
+			h.PutUint64Array([]uint64{1, 2, 3, 4, 5}, 2)
+		}},
+	}
+
+	for _, c := range checks {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("%s panicked on undersized limit: %v", c.name, r)
+				}
+			}()
+			h := DefaultHasherPool.Get()
+			defer DefaultHasherPool.Put(h)
+			c.fn(h)
+		}()
+	}
+}
+
+// PutRootVector has an error channel, so an over-capacity vector must be
+// rejected with a list-length error rather than clamped.
+func TestPutRootVectorRejectsOverCapacity(t *testing.T) {
+	h := DefaultHasherPool.Get()
+	defer DefaultHasherPool.Put(h)
+
+	err := h.PutRootVector([][]byte{make([]byte, 32), make([]byte, 32)}, 1)
+	if err == nil {
+		t.Fatal("expected error when vector exceeds max capacity")
+	}
+	if !errors.Is(err, sszutils.ErrListTooBig) {
+		t.Errorf("expected ErrListTooBig, got %v", err)
+	}
+}
+
+// Every Merkleize variant must clamp out-of-range scope indices instead of
+// panicking on a slice-bounds access.
+func TestMerkleizeClampsOutOfRangeIndex(t *testing.T) {
+	variants := []struct {
+		name string
+		call func(h *Hasher, idx int)
+	}{
+		{"Merkleize", func(h *Hasher, idx int) { h.Merkleize(idx) }},
+		{"MerkleizeWithMixin", func(h *Hasher, idx int) { h.MerkleizeWithMixin(idx, 1, 1) }},
+		{"MerkleizeProgressive", func(h *Hasher, idx int) { h.MerkleizeProgressive(idx) }},
+		{"MerkleizeProgressiveWithMixin", func(h *Hasher, idx int) { h.MerkleizeProgressiveWithMixin(idx, 1) }},
+		{"MerkleizeProgressiveWithActiveFields", func(h *Hasher, idx int) {
+			h.MerkleizeProgressiveWithActiveFields(idx, []byte{0x01})
+		}},
+	}
+
+	for _, v := range variants {
+		for _, idx := range []int{-1, -100, 1000, 1 << 30} {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Errorf("%s(%d) panicked: %v", v.name, idx, r)
+					}
+				}()
+				h := DefaultHasherPool.Get()
+				defer DefaultHasherPool.Put(h)
+				h.PutUint64(42)
+				v.call(h, idx)
+			}()
+		}
+	}
+}
+
+// Concurrent hasher use must not race on lazy initialization. Run with -race.
+func TestHasherInitConcurrent(t *testing.T) {
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			h := DefaultHasherPool.Get()
+			defer DefaultHasherPool.Put(h)
+			h.PutUint64(1)
+			_ = GetZeroHash(3)
+		}()
+	}
+	wg.Wait()
 }

@@ -810,7 +810,7 @@ func (ctx *ReflectionCtx) buildRootFromBitlist(sourceType *ssztypes.TypeDescript
 	if sourceType.SszType == ssztypes.SszProgressiveBitlistType {
 		hh.MerkleizeProgressiveWithMixin(indx, size)
 	} else {
-		hh.MerkleizeWithMixin(indx, size, (maxSize+255)/256)
+		hh.MerkleizeWithMixin(indx, size, sszutils.CalculateBitlistLimit(maxSize))
 	}
 
 	return nil
@@ -896,12 +896,19 @@ func (ctx *ReflectionCtx) buildRootFromBigInt(sourceType *ssztypes.TypeDescripto
 	if !isBigInt {
 		return sszutils.ErrBigIntTypeExpectedFn(sourceType.Type.Name())
 	}
-	// hash the sign byte followed by the big-endian magnitude so values of equal
-	// magnitude but opposite sign do not collide
-	bigIntBytes := append([]byte{0}, bigInt.Bytes()...)
+	// Hash the payload byte length, then the sign byte and big-endian magnitude.
+	// Prepending the length keeps it ahead of the trailing-zero chunk padding, so
+	// values whose encodings differ only by trailing zeros (e.g. N and N<<8) no
+	// longer collide.
+	sign := byte(0)
 	if bigInt.Sign() < 0 {
-		bigIntBytes[0] = 1
+		sign = 1
 	}
-	hh.PutBytes(bigIntBytes)
+	mag := bigInt.Bytes()
+
+	buf := sszutils.MarshalUint64(make([]byte, 0, 9+len(mag)), uint64(1+len(mag)))
+	buf = append(buf, sign)
+	buf = append(buf, mag...)
+	hh.PutBytes(buf)
 	return nil
 }

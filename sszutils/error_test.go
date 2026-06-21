@@ -6,6 +6,7 @@ package sszutils
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -308,5 +309,44 @@ func TestErrorConstructorFunctions(t *testing.T) {
 				t.Errorf("got %q, want %q", got, tt.sentinel.Error()+": "+tt.wantContains)
 			}
 		})
+	}
+}
+
+// Stringifying an sszError built with a nil base error must not panic.
+func TestSszError_NilBaseError(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Error() panicked with nil base: %v", r)
+		}
+	}()
+
+	if got := NewSszError(nil, "boom").Error(); got != "boom" {
+		t.Errorf("Error() = %q, want %q", got, "boom")
+	}
+	_ = NewSszErrorf(nil, "x=%d", 1).Error()
+	_ = ErrorWithPath(nil, "field").Error()
+}
+
+// ErrorWithPath must not mutate its input error, so a shared base stays stable
+// and independent wraps do not entangle their paths.
+func TestErrorWithPath_NoMutation(t *testing.T) {
+	base := NewSszError(ErrInvalidValueRange, "msg")
+	want := base.Error()
+
+	wrapped := ErrorWithPath(base, "level1")
+	if got := base.Error(); got != want {
+		t.Errorf("base mutated by ErrorWithPath: got %q, want %q", got, want)
+	}
+	if w := wrapped.Error(); w == want {
+		t.Error("wrapped error should include the added path segment")
+	}
+
+	a := ErrorWithPath(base, "FieldA")
+	b := ErrorWithPath(base, "FieldB")
+	if strings.Contains(a.Error(), "FieldB") {
+		t.Errorf("wrap A leaked FieldB: %q", a.Error())
+	}
+	if strings.Contains(b.Error(), "FieldA") {
+		t.Errorf("wrap B leaked FieldA: %q", b.Error())
 	}
 }

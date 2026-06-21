@@ -197,12 +197,18 @@ func (w *Wrapper) PutBitlist(bb []byte, maxSize uint64) {
 	indx := w.Index()
 	w.appendBytesAsNodes(b)
 
-	limit := (maxSize + 255) / 256
 	if size > math.MaxInt {
+		// Only reachable on 32-bit with a multi-hundred-MB bitlist; the bit count
+		// genuinely cannot be represented as an int on such platforms.
 		panic(fmt.Sprintf("PutBitlist: size %d exceeds max int", size))
 	}
-	if limit > math.MaxInt {
-		panic(fmt.Sprintf("PutBitlist: limit %d exceeds max int", limit))
+	// The chunk limit derives from ssz-max, so a degenerate ssz-max can exceed
+	// math.MaxInt on 32-bit platforms even for a tiny bitlist. Clamp it instead of
+	// panicking; the limit only affects padding depth, which cannot be represented
+	// exactly there anyway.
+	limit := sszutils.CalculateBitlistLimit(maxSize)
+	if limit > uint64(math.MaxInt) {
+		limit = uint64(math.MaxInt)
 	}
 	w.CommitWithMixin(indx, int(size), int(limit))
 }

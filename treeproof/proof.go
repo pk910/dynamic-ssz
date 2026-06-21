@@ -23,6 +23,9 @@ import (
 // VerifyProof verifies a single merkle branch. It's more
 // efficient than VerifyMultiproof for proving one leaf.
 func VerifyProof(root []byte, proof *Proof) (bool, error) {
+	if proof == nil {
+		return false, errors.New("proof must not be nil")
+	}
 	if len(proof.Hashes) != getPathLength(proof.Index) {
 		return false, errors.New("invalid proof length")
 	}
@@ -69,6 +72,15 @@ func VerifyMultiproof(root []byte, proof, leaves [][]byte, indices []int) (bool,
 
 	if len(leaves) != len(indices) {
 		return false, errors.New("number of leaves and indices mismatch")
+	}
+
+	// Generalized indices start at 1 (the root). Reject anything below before
+	// the verification math runs so degenerate indices cannot underflow buffer
+	// sizes or loop forever.
+	for _, idx := range indices {
+		if idx < 1 {
+			return false, fmt.Errorf("invalid generalized index %d", idx)
+		}
 	}
 
 	if len(proof) == 0 {

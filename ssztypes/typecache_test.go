@@ -7,6 +7,7 @@ package ssztypes
 import (
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -710,6 +711,199 @@ func TestTypeCache_SizeHintExpressions(t *testing.T) {
 	}
 }
 
+// A dynssz-size field tag resolving to a value beyond the uint32 size range
+// must error rather than silently truncate during conversion.
+func TestTypeCache_SizeHintExpressionExceedsUint32(t *testing.T) {
+	ds := &dummyDynamicSpecs{
+		specValues: map[string]uint64{"HUGE_SIZE": uint64(math.MaxUint32) + 1},
+	}
+	cache := NewTypeCache(ds)
+
+	type TestStruct struct {
+		Data []byte `dynssz-size:"HUGE_SIZE"`
+	}
+
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for dynssz-size value exceeding uint32 range")
+	}
+	if !strings.Contains(err.Error(), "exceeds the uint32 size range") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// annotatedOverflowSize carries a registered annotation whose dynssz-size
+// expression resolves beyond uint32, exercising the annotation-registry
+// resolution path (distinct from struct field tags).
+type annotatedOverflowSize []byte
+
+var _ = sszutils.Annotate[annotatedOverflowSize](`dynssz-size:"HUGE_SIZE"`)
+
+// A registered annotation whose dynssz-size resolves beyond the uint32 size
+// range must error during the deferred spec resolution.
+func TestTypeCache_AnnotationSizeHintExceedsUint32(t *testing.T) {
+	ds := &dummyDynamicSpecs{
+		specValues: map[string]uint64{"HUGE_SIZE": uint64(math.MaxUint32) + 1},
+	}
+	cache := NewTypeCache(ds)
+
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(annotatedOverflowSize{}), nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for annotation dynssz-size value exceeding uint32 range")
+	}
+	if !strings.Contains(err.Error(), "exceeds the uint32 size range") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// Annotation fixtures whose dynssz expressions resolve to 0 at runtime.
+type annotatedZeroSizeFallback []byte
+type annotatedZeroSizeNoFallback []byte
+type annotatedZeroMaxFallback []uint64
+type annotatedZeroMaxNoFallback []uint64
+
+var (
+	_ = sszutils.Annotate[annotatedZeroSizeFallback](`ssz-size:"4" dynssz-size:"ZERO"`)
+	_ = sszutils.Annotate[annotatedZeroSizeNoFallback](`dynssz-size:"ZERO"`)
+	_ = sszutils.Annotate[annotatedZeroMaxFallback](`ssz-max:"4" dynssz-max:"ZERO"`)
+	_ = sszutils.Annotate[annotatedZeroMaxNoFallback](`dynssz-max:"ZERO"`)
+)
+
+// A dynssz-size that resolves to 0 is invalid (zero-length vector). It must fall
+// back to a positive static ssz-size, or error when there is no static fallback.
+func TestTypeCache_DynamicSizeResolvesToZero(t *testing.T) {
+	ds := &dummyDynamicSpecs{specValues: map[string]uint64{"ZERO": 0}}
+
+	t.Run("FallbackToStatic", func(t *testing.T) {
+		cache := NewTypeCache(ds)
+		type T struct {
+			Data []byte `ssz-size:"4" dynssz-size:"ZERO"`
+		}
+		desc, err := cache.GetTypeDescriptor(reflect.TypeOf(T{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("expected fallback to static size, got error: %v", err)
+		}
+		if got := desc.ContainerDesc.Fields[0].Type.Len; got != 4 {
+			t.Errorf("expected fallback Len 4, got %d", got)
+		}
+	})
+
+	t.Run("NoFallbackErrors", func(t *testing.T) {
+		cache := NewTypeCache(ds)
+		type T struct {
+			Data []byte `dynssz-size:"ZERO"`
+		}
+		_, err := cache.GetTypeDescriptor(reflect.TypeOf(T{}), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "resolved to 0 with no positive static fallback") {
+			t.Fatalf("expected no-fallback error, got: %v", err)
+		}
+	})
+}
+
+// A dynssz-max that resolves to 0 falls back to a positive static ssz-max, or
+// errors when there is no static fallback.
+func TestTypeCache_DynamicMaxResolvesToZero(t *testing.T) {
+	ds := &dummyDynamicSpecs{specValues: map[string]uint64{"ZERO": 0}}
+
+	t.Run("FallbackToStatic", func(t *testing.T) {
+		cache := NewTypeCache(ds)
+		type T struct {
+			Data []uint64 `ssz-max:"4" dynssz-max:"ZERO"`
+		}
+		desc, err := cache.GetTypeDescriptor(reflect.TypeOf(T{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("expected fallback to static max, got error: %v", err)
+		}
+		if got := desc.ContainerDesc.Fields[0].Type.Limit; got != 4 {
+			t.Errorf("expected fallback Limit 4, got %d", got)
+		}
+	})
+
+	t.Run("NoFallbackErrors", func(t *testing.T) {
+		cache := NewTypeCache(ds)
+		type T struct {
+			Data []uint64 `dynssz-max:"ZERO"`
+		}
+		_, err := cache.GetTypeDescriptor(reflect.TypeOf(T{}), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "resolved to 0 with no positive static fallback") {
+			t.Fatalf("expected no-fallback error, got: %v", err)
+		}
+	})
+}
+
+// The same 0-resolution fallback/error logic applies to type-level annotations.
+func TestTypeCache_AnnotationResolvesToZero(t *testing.T) {
+	ds := &dummyDynamicSpecs{specValues: map[string]uint64{"ZERO": 0}}
+
+	t.Run("SizeFallback", func(t *testing.T) {
+		desc, err := NewTypeCache(ds).GetTypeDescriptor(reflect.TypeOf(annotatedZeroSizeFallback{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("expected size fallback, got error: %v", err)
+		}
+		if desc.Len != 4 {
+			t.Errorf("expected fallback Len 4, got %d", desc.Len)
+		}
+	})
+
+	t.Run("SizeNoFallbackErrors", func(t *testing.T) {
+		_, err := NewTypeCache(ds).GetTypeDescriptor(reflect.TypeOf(annotatedZeroSizeNoFallback{}), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "resolved to 0 with no positive static fallback") {
+			t.Fatalf("expected size no-fallback error, got: %v", err)
+		}
+	})
+
+	t.Run("MaxFallback", func(t *testing.T) {
+		desc, err := NewTypeCache(ds).GetTypeDescriptor(reflect.TypeOf(annotatedZeroMaxFallback{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("expected max fallback, got error: %v", err)
+		}
+		if desc.Limit != 4 {
+			t.Errorf("expected fallback Limit 4, got %d", desc.Limit)
+		}
+	})
+
+	t.Run("MaxNoFallbackErrors", func(t *testing.T) {
+		_, err := NewTypeCache(ds).GetTypeDescriptor(reflect.TypeOf(annotatedZeroMaxNoFallback{}), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "resolved to 0 with no positive static fallback") {
+			t.Fatalf("expected max no-fallback error, got: %v", err)
+		}
+	})
+}
+
+// Per the SSZ spec, Vector[type, 0] / Bitvector[0] are illegal.
+func TestTypeCache_ZeroLengthVectorRejected(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	if _, err := cache.GetTypeDescriptor(reflect.TypeOf([0]uint64{}), nil, nil, nil); err == nil || !strings.Contains(err.Error(), "zero length") {
+		t.Fatalf("expected zero-length array rejection, got: %v", err)
+	}
+
+	// A bitvector with zero bits is likewise illegal.
+	type bitvec0 struct {
+		Flags [1]byte `ssz-type:"bitvector" ssz-bitsize:"0"`
+	}
+	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(bitvec0{}), nil, nil, nil); err == nil || !strings.Contains(err.Error(), "zero length") {
+		t.Fatalf("expected zero-length bitvector rejection, got: %v", err)
+	}
+}
+
+// Per the SSZ spec, containers must have at least one field.
+func TestTypeCache_ZeroFieldContainerRejected(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(struct{}{}), nil, nil, nil); err == nil || !strings.Contains(err.Error(), "no SSZ fields") {
+		t.Fatalf("expected empty-container rejection, got: %v", err)
+	}
+
+	// A struct with only unexported fields has no SSZ-encodable fields.
+	type onlyUnexported struct {
+		hidden uint64 //nolint:unused // intentionally unexported for the test
+	}
+	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(onlyUnexported{}), nil, nil, nil); err == nil || !strings.Contains(err.Error(), "no SSZ fields") {
+		t.Fatalf("expected unexported-only container rejection, got: %v", err)
+	}
+}
+
 // Test max hint expressions using dynssz-max tag
 func TestTypeCache_MaxHintExpressions(t *testing.T) {
 	// Create DynSsz with spec value resolver
@@ -963,13 +1157,13 @@ func TestTypeCache_VectorWithNestedDynamic(t *testing.T) {
 	}
 }
 
-type TestTypeWithInvalidHashTreeRootWith1 struct{}
+type TestTypeWithInvalidHashTreeRootWith1 struct{ Value uint64 }
 
 func (t *TestTypeWithInvalidHashTreeRootWith1) HashTreeRootWith() error {
 	return errors.New("test HashTreeRootWith error")
 }
 
-type TestTypeWithInvalidHashTreeRootWith2 struct{}
+type TestTypeWithInvalidHashTreeRootWith2 struct{ Value uint64 }
 
 func (t *TestTypeWithInvalidHashTreeRootWith2) HashTreeRootWith(in1 uint64) uint64 {
 	return in1
@@ -3973,3 +4167,95 @@ func TestTypeCache_ListWithNestedTypeHints(t *testing.T) {
 
 // --- Suppress the unused import error for errors package ---
 var _ = errors.New
+
+// GetTypeDescriptor must reject nil types with a clean error instead of
+// dereferencing a nil reflect.Type.
+func TestGetTypeDescriptorNilType(t *testing.T) {
+	tc := NewTypeCache(nil)
+
+	if _, err := tc.GetTypeDescriptor(nil, nil, nil, nil); err == nil {
+		t.Error("expected error for nil runtime type")
+	}
+
+	runtime := reflect.TypeOf(uint64(0))
+	if _, err := tc.GetTypeDescriptorWithSchema(runtime, nil, nil, nil, nil); err == nil {
+		t.Error("expected error for nil schema type")
+	}
+}
+
+// NewTypeCache(nil) must use an empty spec provider so dynssz-* tags resolve to
+// their static fallback instead of dereferencing a nil interface.
+func TestNewTypeCacheNilSpecs(t *testing.T) {
+	type withDynTag struct {
+		V []byte `ssz-max:"32" dynssz-max:"MAX_BYTES"`
+	}
+
+	tc := NewTypeCache(nil)
+	if _, err := tc.GetTypeDescriptor(reflect.TypeOf(withDynTag{}), nil, nil, nil); err != nil {
+		t.Fatalf("building descriptor with nil specs failed: %v", err)
+	}
+}
+
+func TestWrapperTypeCompatible(t *testing.T) {
+	type myByte byte
+	type myUint64 uint64
+	type myString string
+	type structA struct{ A uint64 }
+	type structB struct{ B uint32 }
+
+	cases := []struct {
+		name             string
+		actual, expected reflect.Type
+		want             bool
+	}{
+		{"identical", reflect.TypeOf([]byte(nil)), reflect.TypeOf([]byte(nil)), true},
+		{"namedScalar", reflect.TypeOf(myUint64(0)), reflect.TypeOf(uint64(0)), true},
+		{"namedString", reflect.TypeOf(myString("")), reflect.TypeOf(""), true},
+		{"scalarKindMismatch", reflect.TypeOf(int32(0)), reflect.TypeOf(uint64(0)), false},
+		{"sliceVsString", reflect.TypeOf(""), reflect.TypeOf([]byte(nil)), false},
+		{"sliceNamedElem", reflect.TypeOf([]myByte(nil)), reflect.TypeOf([]byte(nil)), true},
+		{"sliceElemMismatch", reflect.TypeOf([]uint32(nil)), reflect.TypeOf([]byte(nil)), false},
+		{"ptrVsValue", reflect.TypeOf((*uint64)(nil)), reflect.TypeOf(uint64(0)), false},
+		{"ptrNamedElem", reflect.TypeOf((*myUint64)(nil)), reflect.TypeOf((*uint64)(nil)), true},
+		{"arraySameLen", reflect.TypeOf([8]myByte{}), reflect.TypeOf([8]byte{}), true},
+		{"arrayLenMismatch", reflect.TypeOf([16]byte{}), reflect.TypeOf([8]byte{}), false},
+		{"arrayElemMismatch", reflect.TypeOf([8]uint16{}), reflect.TypeOf([8]byte{}), false},
+		// Composite kinds with matching Kind but different layout must not match.
+		{"structMismatch", reflect.TypeOf(structA{}), reflect.TypeOf(structB{}), false},
+		{"sameStruct", reflect.TypeOf(structA{}), reflect.TypeOf(structA{}), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := wrapperTypeCompatible(tc.actual, tc.expected); got != tc.want {
+				t.Errorf("wrapperTypeCompatible(%v, %v) = %v, want %v", tc.actual, tc.expected, got, tc.want)
+			}
+		})
+	}
+}
+
+type wrapDescBytes struct {
+	Data []byte `ssz-max:"32"`
+}
+
+type testWrapperMismatch struct {
+	Data string
+}
+
+func (t *testWrapperMismatch) GetDescriptorType() reflect.Type {
+	return reflect.TypeOf(wrapDescBytes{})
+}
+
+// A TypeWrapper whose value field type is incompatible with its descriptor field
+// type must be rejected at build time.
+func TestBuildTypeWrapperIncompatibleType(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	typeHints := []SszTypeHint{{Type: SszTypeWrapperType}}
+
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(testWrapperMismatch{}), nil, nil, typeHints)
+	if err == nil {
+		t.Fatal("expected error for incompatible TypeWrapper value type")
+	}
+	if !strings.Contains(err.Error(), "not compatible with descriptor type") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

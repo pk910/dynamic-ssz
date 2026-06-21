@@ -393,7 +393,11 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 		field := &fields[i]
 
 		fieldSize := int(field.Type.Size)
-		if fieldSize > 0 {
+		// Branch on the dynamic flag rather than Size > 0 so a zero-size static
+		// field (e.g. an empty vector) is read inline and not mistaken for a
+		// dynamic field with an offset, keeping the offset accounting aligned with
+		// DynFields.
+		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 			// static size field
 			// fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", idt+1), i, offset, offset+fieldSize, fieldSize, field.Name)
 			expectedPos := decoder.GetPosition() + fieldSize
@@ -678,14 +682,20 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 		newValue = reflect.MakeSlice(fieldT, vectorLen, vectorLen)
 	}
 
+	// Pointer elements (except optionals, which decode in place) get a fresh
+	// allocation per item; this is loop-invariant, so compute it once.
+	allocPointerElems := fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && fieldType.SszType != ssztypes.SszOptionalType
+
 	// decode slice items
 	for i := 0; i < vectorLen; i++ {
 		var itemVal reflect.Value
-		if fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		if allocPointerElems {
 			// fmt.Printf("new slice item %v\n", fieldType.Name())
 			itemVal = reflect.New(fieldType.Type.Elem())
 			newValue.Index(i).Set(itemVal)
 		} else {
+			// Non-pointer and optional-pointer elements decode in place via the
+			// addressable slot so an absent optional can be set back to nil.
 			itemVal = newValue.Index(i)
 		}
 
@@ -741,7 +751,9 @@ func (ctx *ReflectionCtx) unmarshalFixedElements(fieldType *ssztypes.TypeDescrip
 	}
 
 	itemSize := int(fieldSize)
-	isPointer := fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0
+	// Optional-pointer elements decode in place via the addressable slot so an
+	// absent optional can be set back to a nil pointer.
+	isPointer := fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && fieldType.SszType != ssztypes.SszOptionalType
 
 	for i := 0; i < count; i++ {
 		var itemVal reflect.Value
@@ -949,14 +961,20 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 	if sliceLen > 0 {
 		offset := firstOffset
 
+		// Pointer elements (except optionals, which decode in place) get a fresh
+		// allocation per item; this is loop-invariant, so compute it once.
+		allocPointerElems := fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && fieldType.SszType != ssztypes.SszOptionalType
+
 		// decode slice items
 		for i := 0; i < sliceLen; i++ {
 			var itemVal reflect.Value
-			if fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+			if allocPointerElems {
 				// fmt.Printf("new slice item %v\n", fieldType.Name())
 				itemVal = reflect.New(fieldType.Type.Elem())
 				newValue.Index(i).Set(itemVal)
 			} else {
+				// Non-pointer and optional-pointer elements decode in place via the
+				// addressable slot so an absent optional can be set back to nil.
 				itemVal = newValue.Index(i)
 			}
 
@@ -1208,20 +1226,34 @@ func (ctx *ReflectionCtx) unmarshalBigInt(_ *ssztypes.TypeDescriptor, targetValu
 	dataLen := decoder.GetLength()
 	bigInt := new(big.Int)
 
-	if dataLen > 0 {
-		bigIntBytes, err := decoder.DecodeBytesBuf(dataLen)
-		if err != nil {
-			return err
-		}
+	// The canonical encoding is a single sign byte followed by the minimal
+	// big-endian magnitude, so the payload must contain at least the sign byte.
+	if dataLen == 0 {
+		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "big.Int payload must contain at least a sign byte")
+	}
 
-		// sign byte (0 = non-negative, 1 = negative) followed by the big-endian magnitude
-		if bigIntBytes[0] > 1 {
-			return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "invalid big.Int sign byte 0x%02x", bigIntBytes[0])
-		}
-		bigInt.SetBytes(bigIntBytes[1:])
-		if bigIntBytes[0] == 1 {
-			bigInt.Neg(bigInt)
-		}
+	bigIntBytes, err := decoder.DecodeBytesBuf(dataLen)
+	if err != nil {
+		return err
+	}
+
+	// sign byte (0 = non-negative, 1 = negative) followed by the big-endian magnitude
+	if bigIntBytes[0] > 1 {
+		return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "invalid big.Int sign byte 0x%02x", bigIntBytes[0])
+	}
+	magnitude := bigIntBytes[1:]
+	// Reject non-canonical encodings: a leading-zero magnitude byte is not
+	// minimal, and a negative sign with no magnitude is a non-canonical zero.
+	if len(magnitude) > 0 && magnitude[0] == 0 {
+		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "non-canonical big.Int magnitude with leading zero")
+	}
+	if bigIntBytes[0] == 1 && len(magnitude) == 0 {
+		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "non-canonical negative zero big.Int")
+	}
+
+	bigInt.SetBytes(magnitude)
+	if bigIntBytes[0] == 1 {
+		bigInt.Neg(bigInt)
 	}
 
 	targetValue.Set(reflect.ValueOf(*bigInt))

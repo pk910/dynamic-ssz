@@ -48,6 +48,26 @@ func TestGetCompatFlag(t *testing.T) {
 	})
 }
 
+func TestParserRejectsZeroSizeTypes(t *testing.T) {
+	parser := NewParser()
+
+	t.Run("ZeroLengthArray", func(t *testing.T) {
+		// [0]uint64 is Vector[uint64, 0], which is illegal per the SSZ spec.
+		_, err := parser.GetTypeDescriptor(types.NewArray(types.Typ[types.Uint64], 0), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "zero length") {
+			t.Fatalf("expected zero-length vector error, got: %v", err)
+		}
+	})
+
+	t.Run("EmptyContainer", func(t *testing.T) {
+		// An empty struct is a container with no fields, which is illegal.
+		_, err := parser.GetTypeDescriptor(types.NewStruct(nil, nil), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "no SSZ fields") {
+			t.Fatalf("expected empty-container error, got: %v", err)
+		}
+	})
+}
+
 func TestGetTypeDescriptor(t *testing.T) {
 	parser := NewParser()
 

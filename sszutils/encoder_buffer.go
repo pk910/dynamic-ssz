@@ -106,12 +106,18 @@ func (e *BufferEncoder) EncodeOffset(v uint32) {
 // position without advancing the current write position. This is used for
 // back-patching offsets after dynamic-length fields have been written.
 func (e *BufferEncoder) EncodeOffsetAt(pos int, v uint32) {
+	if pos < 0 || pos+4 > len(e.buffer) {
+		return
+	}
 	binary.LittleEndian.PutUint32(e.buffer[pos:], v)
 }
 
 // EncodeZeroPadding writes n zero bytes at the current position and advances
 // by n bytes. Uses clear for efficient zeroing.
 func (e *BufferEncoder) EncodeZeroPadding(n int) {
+	if n < 0 || e.pos+n > len(e.buffer) {
+		return
+	}
 	// Use clear for efficient zeroing (Go 1.21+)
 	clear(e.buffer[e.pos : e.pos+n])
 	e.pos += n

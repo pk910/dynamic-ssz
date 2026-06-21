@@ -6,6 +6,7 @@ package reflection_test
 
 import (
 	"bytes"
+	"math/big"
 	"reflect"
 	"testing"
 
@@ -1891,5 +1892,20 @@ func TestViewEncoder(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A static ssz-max on a big.Int must be enforced at marshal time.
+func TestMarshalBigIntMax(t *testing.T) {
+	ds := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+	type T struct {
+		N big.Int `ssz-max:"2"`
+	}
+
+	if _, err := ds.MarshalSSZ(&T{N: *big.NewInt(0xff)}); err != nil {
+		t.Fatalf("value within max should marshal: %v", err)
+	}
+	if _, err := ds.MarshalSSZ(&T{N: *big.NewInt(0xfffff)}); err == nil {
+		t.Error("expected error for big.Int exceeding ssz-max")
 	}
 }

@@ -6,6 +6,7 @@ with-extended-types: true
 
 types:
   - ExtendedTypes1
+  - OptU32
   - CoverageTypes2
   - CoverageTypes3
   - CoverageTypes4
