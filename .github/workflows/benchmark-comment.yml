@@ -83,37 +83,66 @@ jobs:
           ' "$1"
         }
 
-        render_benchstat_section() {
+        # Primary section: normalized (ratio) comparison. Each row is a
+        # benchmark's cost in units of the fixed BenchmarkReference workload, so
+        # shared-runner CPU steal / frequency noise cancels. Only statistically
+        # significant rows are shown; insignificant ones are within the noise floor.
+        render_norm_section() {
           local title=$1
           local stat_file=$2
-          local raw_file=$3
 
-          if [ -f "$stat_file" ] && [ -s "$stat_file" ]; then
-            local filtered
-            filtered=$(filter_benchstat "$stat_file")
+          if [ ! -f "$stat_file" ] || [ ! -s "$stat_file" ]; then
+            return
+          fi
 
-            if [ -n "$filtered" ]; then
-              echo "### $title"
-              echo ''
-              echo '```'
-              echo "$filtered"
-              echo '```'
-            else
-              echo "**$title:** No significant changes."
-              echo ''
-              echo "<details><summary>$title (full comparison)</summary>"
-              echo ''
-              echo '```'
-              cat "$stat_file"
-              echo '```'
-              echo ''
-              echo '</details>'
-            fi
-          elif [ -f "$raw_file" ]; then
-            echo "<details><summary>$title (no base to compare)</summary>"
+          local filtered
+          filtered=$(filter_benchstat "$stat_file")
+
+          if [ -n "$filtered" ]; then
+            echo "### $title — normalized time (CPU-steal robust)"
+            echo ''
+            echo 'Cost relative to a fixed reference workload; only significant changes shown.'
             echo ''
             echo '```'
-            cat "$raw_file"
+            echo "$filtered"
+            echo '```'
+          else
+            echo "### $title — normalized time (CPU-steal robust)"
+            echo ''
+            echo 'No significant time changes (all within the machine noise floor).'
+            echo ''
+            echo "<details><summary>full normalized comparison</summary>"
+            echo ''
+            echo '```'
+            cat "$stat_file"
+            echo '```'
+            echo ''
+            echo '</details>'
+          fi
+        }
+
+        # Secondary section: raw benchstat (absolute ns/op plus the noise-free
+        # B/op and allocs/op columns, and the BenchmarkReference noise-floor row).
+        # Shown unfiltered in a collapsed block — wall-clock ns/op here is noisy on
+        # shared runners; trust the normalized section above for timing verdicts.
+        render_raw_details() {
+          local title=$1
+          local stat_file=$2
+          local raw_fallback=$3
+
+          if [ -f "$stat_file" ] && [ -s "$stat_file" ]; then
+            echo "<details><summary>$title — raw ns/op · B/op · allocs/op</summary>"
+            echo ''
+            echo '```'
+            cat "$stat_file"
+            echo '```'
+            echo ''
+            echo '</details>'
+          elif [ -f "$raw_fallback" ]; then
+            echo "<details><summary>$title — raw results (no base to compare)</summary>"
+            echo ''
+            echo '```'
+            cat "$raw_fallback"
             echo '```'
             echo ''
             echo '</details>'
@@ -124,12 +153,20 @@ jobs:
           echo 'COMMENT<<EOF'
           echo '## Benchmark Results'
           echo ''
-
-          render_benchstat_section "Library Benchmarks" results/lib-stat.txt results/pr-lib.txt
-
+          echo 'Timings are pinned to one CPU (`GOMAXPROCS=1`, ASLR off), interleaved'
+          echo 'base/PR, and normalized against a fixed reference workload to suppress'
+          echo 'shared-runner CPU-steal noise. The `Reference` row in the raw view shows'
+          echo 'the measured machine noise floor.'
           echo ''
 
-          render_benchstat_section "Performance Benchmarks" results/perf-stat.txt results/pr-perf.txt
+          render_norm_section "Performance Benchmarks" results/perf-norm-stat.txt
+          echo ''
+          render_raw_details "Performance Benchmarks" results/perf-raw-stat.txt results/pr-perf-raw.txt
+          echo ''
+
+          render_norm_section "Library Benchmarks" results/lib-norm-stat.txt
+          echo ''
+          render_raw_details "Library Benchmarks" results/lib-raw-stat.txt results/pr-lib-raw.txt
 
           echo 'EOF'
         } >> "$GITHUB_OUTPUT"

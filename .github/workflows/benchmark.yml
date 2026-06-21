@@ -11,6 +11,13 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # Samples per side and per-sample benchtime. base and PR are interleaved at this
+  # granularity, so total samples per benchmark = BENCH_COUNT per side. >=10 keeps
+  # benchstat's 0.98-confidence interval meaningful.
+  BENCH_COUNT: '10'
+  BENCH_TIME: 1s
+
 jobs:
   benchmark:
     runs-on: ubuntu-latest
@@ -158,77 +165,31 @@ jobs:
 
         echo "Synced benchmark harness for $synced packages from PR into base checkout"
 
+    # Benchmarks run pinned to a single CPU with ASLR disabled and GOMAXPROCS=1,
+    # interleaving base/PR per sample, and normalize every timing against a fixed
+    # BenchmarkReference workload to cancel shared-runner CPU steal / frequency
+    # noise. See .github/scripts/run-benchmarks.sh for the full rationale. The PR's
+    # copy of the script is always used, so the technique applies even to old bases.
     - name: Run library benchmarks
       run: |
-        OUTDIR="$GITHUB_WORKSPACE/bench-results"
-
-        # Discover library benchmark names from PR (tests/ is a separate module)
-        BENCHMARKS=$(cd pr && go test -list '^Benchmark' -run '^$' ./... 2>/dev/null | grep '^Benchmark' | sort -u)
+        set -uo pipefail
+        BENCHMARKS=$(cd pr && go test -list '^Benchmark' -run '^$' ./... 2>/dev/null \
+          | grep '^Benchmark' | grep -v '^BenchmarkReference$' | sort -u)
         if [ -z "$BENCHMARKS" ]; then
           echo "No library benchmarks found"
           exit 0
         fi
         echo "Library benchmarks found:"
         echo "$BENCHMARKS"
-
-        # Phase 1: run each benchmark once, alternating base/PR
-        echo "--- Phase 1: single pass ---"
-        for bench in $BENCHMARKS; do
-          echo "  $bench"
-          (cd base && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m ./...) >> "$OUTDIR/base-lib.txt" 2>&1 || true
-          (cd pr   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m ./...) >> "$OUTDIR/pr-lib.txt" 2>&1
-        done
-
-        # Find top-level benchmarks where any sub-benchmark differs by >5%
-        RERUN=$(awk '
-          FNR==NR && /^Benchmark.*ns\/op/ {
-            for(i=2;i<=NF;i++) if($i=="ns/op"){base[$1]=$(i-1)+0;break}; next
-          }
-          /^Benchmark.*ns\/op/ {
-            for(i=2;i<=NF;i++) if($i=="ns/op"){pr[$1]=$(i-1)+0;break}
-          }
-          END {
-            for(n in pr){
-              if(!(n in base)||base[n]==0) continue
-              d=(pr[n]-base[n])/base[n]*100; if(d<0)d=-d
-              if(d>5){t=n;s=index(t,"/");if(s>0)t=substr(t,1,s-1);else sub(/-[0-9]+$/,"",t);print t}
-            }
-          }
-        ' "$OUTDIR/base-lib.txt" "$OUTDIR/pr-lib.txt" | sort -u)
-
-        if [ -z "$RERUN" ]; then
-          echo "--- No significant diffs, skipping phase 2 ---"
-          exit 0
-        fi
-
-        # Phase 2: re-run interesting benchmarks 5 more times to confirm
-        echo "--- Phase 2: confirming diffs ---"
-        echo "$RERUN"
-        for bench in $RERUN; do
-          echo "  $bench (7 confirmation runs)"
-          for i in $(seq 1 7); do
-            # Alternate which side runs first. Running base and pr back-to-back
-            # under sustained load means the second run executes on an
-            # already-warmed (often frequency-throttled) CPU; always running the
-            # same side second creates a systematic bias. Alternating cancels it.
-            if [ $((i % 2)) -eq 1 ]; then
-              (cd base && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m ./...) >> "$OUTDIR/base-lib.txt" 2>&1 || true
-              (cd pr   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m ./...) >> "$OUTDIR/pr-lib.txt" 2>&1
-            else
-              (cd pr   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m ./...) >> "$OUTDIR/pr-lib.txt" 2>&1
-              (cd base && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m ./...) >> "$OUTDIR/base-lib.txt" 2>&1 || true
-            fi
-          done
-        done
+        bash pr/.github/scripts/run-benchmarks.sh base pr ./... lib $BENCHMARKS
 
     - name: Run perf benchmarks
       env:
         HAS_BASE_CODEGEN: ${{ steps.base_codegen_check.outputs.has_codegen }}
       run: |
-        OUTDIR="$GITHUB_WORKSPACE/bench-results"
-
-        # Discover perf benchmark names from PR
-        BENCHMARKS=$(cd pr/tests/perftests && go test -list '^Benchmark' -run '^$' 2>/dev/null | grep '^Benchmark' | sort -u)
+        set -uo pipefail
+        BENCHMARKS=$(cd pr/tests/perftests && go test -list '^Benchmark' -run '^$' 2>/dev/null \
+          | grep '^Benchmark' | grep -v '^BenchmarkReference$' | sort -u)
         if [ "$HAS_BASE_CODEGEN" != "true" ]; then
           # Skip Codegen_* benchmarks: base has no generated code so DynSsz would
           # transparently fall back to reflection, producing a meaningless
@@ -241,61 +202,26 @@ jobs:
         fi
         echo "Perf benchmarks found:"
         echo "$BENCHMARKS"
-
-        # Phase 1: run each benchmark once, alternating base/PR
-        echo "--- Phase 1: single pass ---"
-        for bench in $BENCHMARKS; do
-          echo "  $bench"
-          (cd base/tests/perftests && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m) >> "$OUTDIR/base-perf.txt" 2>&1 || true
-          (cd pr/tests/perftests   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m) >> "$OUTDIR/pr-perf.txt" 2>&1
-        done
-
-        # Find top-level benchmarks where any sub-benchmark differs by >5%
-        RERUN=$(awk '
-          FNR==NR && /^Benchmark.*ns\/op/ {
-            for(i=2;i<=NF;i++) if($i=="ns/op"){base[$1]=$(i-1)+0;break}; next
-          }
-          /^Benchmark.*ns\/op/ {
-            for(i=2;i<=NF;i++) if($i=="ns/op"){pr[$1]=$(i-1)+0;break}
-          }
-          END {
-            for(n in pr){
-              if(!(n in base)||base[n]==0) continue
-              d=(pr[n]-base[n])/base[n]*100; if(d<0)d=-d
-              if(d>5){t=n;s=index(t,"/");if(s>0)t=substr(t,1,s-1);else sub(/-[0-9]+$/,"",t);print t}
-            }
-          }
-        ' "$OUTDIR/base-perf.txt" "$OUTDIR/pr-perf.txt" | sort -u)
-
-        if [ -z "$RERUN" ]; then
-          echo "--- No significant diffs, skipping phase 2 ---"
-          exit 0
-        fi
-
-        # Phase 2: re-run interesting benchmarks 5 more times to confirm
-        echo "--- Phase 2: confirming diffs ---"
-        echo "$RERUN"
-        for bench in $RERUN; do
-          echo "  $bench (7 confirmation runs)"
-          for i in $(seq 1 7); do
-            # Alternate which side runs first so sustained-load CPU frequency
-            # throttling does not systematically penalize the side that always
-            # runs second (see the library benchmark step for details).
-            if [ $((i % 2)) -eq 1 ]; then
-              (cd base/tests/perftests && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m) >> "$OUTDIR/base-perf.txt" 2>&1 || true
-              (cd pr/tests/perftests   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m) >> "$OUTDIR/pr-perf.txt" 2>&1
-            else
-              (cd pr/tests/perftests   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m) >> "$OUTDIR/pr-perf.txt" 2>&1
-              (cd base/tests/perftests && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m) >> "$OUTDIR/base-perf.txt" 2>&1 || true
-            fi
-          done
-        done
+        bash pr/.github/scripts/run-benchmarks.sh base/tests/perftests pr/tests/perftests . perf $BENCHMARKS
 
     - name: Run benchstat comparisons
       run: |
+        set -uo pipefail
         cd "$GITHUB_WORKSPACE/bench-results"
-        benchstat -confidence 0.98 base-lib.txt pr-lib.txt > lib-stat.txt 2>&1 || true
-        benchstat -confidence 0.98 base-perf.txt pr-perf.txt > perf-stat.txt 2>&1 || true
+        # Normalized (ratio) is the primary, steal-robust time signal; raw carries
+        # absolute ns/op plus the noise-free B/op and allocs/op columns and the
+        # BenchmarkReference row that exposes the machine's measured noise floor.
+        for grp in perf lib; do
+          for kind in norm raw; do
+            b="base-${grp}-${kind}.txt"
+            p="pr-${grp}-${kind}.txt"
+            if [ -s "$b" ] && [ -s "$p" ]; then
+              benchstat -confidence 0.98 "$b" "$p" > "${grp}-${kind}-stat.txt" 2>&1 || true
+            fi
+          done
+        done
+        echo "Generated stat files:"
+        ls -1 ./*-stat.txt 2>/dev/null || echo "(none)"
 
     - name: Upload benchmark results
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

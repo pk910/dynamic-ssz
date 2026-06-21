@@ -1674,3 +1674,27 @@ func TestDecompressHandlesMalformedInput(t *testing.T) {
 		t.Fatalf("unexpected decompressed result for huge level: %#v", mp2)
 	}
 }
+
+// BenchmarkReference is a fixed, never-changing workload used by the CI benchmark
+// job to normalize wall-clock timings against machine-wide multiplicative noise
+// (CPU steal, frequency scaling) on shared runners. The CI divides each real
+// benchmark's ns/op by this reference's ns/op measured in the same process, so a
+// host running N% slower scales both numbers equally and the ratio stays stable.
+//
+// It MUST depend only on the standard library and MUST NOT change so it compiles
+// and behaves identically against any base or PR revision. The b.N form is used
+// (rather than b.Loop) to stay within this module's go 1.22 language version;
+// normalization is per-process, so it need not match the perftests reference.
+func BenchmarkReference(b *testing.B) {
+	buf := make([]byte, 4096)
+	for i := range buf {
+		buf[i] = byte(i)
+	}
+	var h [32]byte
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		h = sha256.Sum256(buf)
+		buf[0] = h[0] // data dependency prevents the compiler hoisting the call out of the loop
+	}
+	_ = h
+}

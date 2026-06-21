@@ -2,6 +2,7 @@ package perftests
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"os"
@@ -308,6 +309,29 @@ func verifyStateHTR(b *testing.B, ds *ssz.DynSsz, state *BeaconState, expected [
 	if htr != expected {
 		b.Fatalf("HTR mismatch: got %x, want %x", htr, expected)
 	}
+}
+
+// BenchmarkReference is a fixed, never-changing workload used by the CI
+// benchmark job to normalize wall-clock timings against machine-wide
+// multiplicative noise (CPU steal, frequency scaling) on shared runners. The CI
+// divides each real benchmark's ns/op by this reference's ns/op measured in the
+// same process, so a host running N% slower scales both numbers equally and the
+// ratio stays stable.
+//
+// It MUST depend only on the standard library and MUST NOT change so it compiles
+// and behaves identically against any base or PR revision. SHA-256 is chosen
+// because it exercises the same hashing hardware path the real workloads lean on.
+func BenchmarkReference(b *testing.B) {
+	buf := make([]byte, 4096)
+	for i := range buf {
+		buf[i] = byte(i)
+	}
+	var h [32]byte
+	for b.Loop() {
+		h = sha256.Sum256(buf)
+		buf[0] = h[0] // data dependency prevents the compiler hoisting the call out of the loop
+	}
+	_ = h
 }
 
 // ========================= CODEGEN BENCHMARKS =========================
