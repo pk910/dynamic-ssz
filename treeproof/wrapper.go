@@ -56,8 +56,10 @@ func (w *Wrapper) WithTemp(fn func(tmp []byte) []byte) {
 
 // Index returns the current number of nodes in the wrapper's node list. This
 // value is used as a checkpoint for subsequent Merkleize calls to identify
-// which nodes should be combined into a subtree.
+// which nodes should be combined into a subtree. Pending Append* bytes are
+// flushed first so the checkpoint separates them from the new scope.
 func (w *Wrapper) Index() int {
+	w.flushBuffer()
 	return len(w.nodes)
 }
 
@@ -68,8 +70,10 @@ func (w *Wrapper) CurrentIndex() int {
 
 // StartTree opens a new SSZ object scope. For the tree proof wrapper,
 // this is identical to Index() since the wrapper does not support
-// incremental hashing.
+// incremental hashing. Pending Append* bytes are flushed first so they
+// become leaves of the enclosing scope, not of the new child scope.
 func (w *Wrapper) StartTree(_ sszutils.TreeType) int {
+	w.flushBuffer()
 	return len(w.nodes)
 }
 
@@ -127,10 +131,7 @@ func (w *Wrapper) FillUpTo32() {
 // Merkle tree from all nodes added since the checkpoint index indx. The
 // resulting subtree replaces those nodes as a single tree node.
 func (w *Wrapper) Merkleize(indx int) {
-	if len(w.buf) != 0 {
-		w.appendBytesAsNodes(w.buf)
-		w.buf = w.buf[:0]
-	}
+	w.flushBuffer()
 	w.Commit(indx)
 }
 
@@ -144,10 +145,7 @@ func (w *Wrapper) MerkleizeWithMixin(indx int, num, limit uint64) {
 	if limit > math.MaxInt {
 		panic(fmt.Sprintf("MerkleizeWithMixin: limit %d exceeds max int", limit))
 	}
-	if len(w.buf) != 0 {
-		w.appendBytesAsNodes(w.buf)
-		w.buf = w.buf[:0]
-	}
+	w.flushBuffer()
 	w.CommitWithMixin(indx, int(num), int(limit))
 }
 
@@ -155,10 +153,7 @@ func (w *Wrapper) MerkleizeWithMixin(indx int, num, limit uint64) {
 // Merkle tree from nodes since indx using the progressive split pattern
 // (base sizes 1, 4, 16, 64...) instead of even binary splits.
 func (w *Wrapper) MerkleizeProgressive(indx int) {
-	if len(w.buf) != 0 {
-		w.appendBytesAsNodes(w.buf)
-		w.buf = w.buf[:0]
-	}
+	w.flushBuffer()
 	w.CommitProgressive(indx)
 }
 
@@ -169,10 +164,7 @@ func (w *Wrapper) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 	if num > math.MaxInt {
 		panic(fmt.Sprintf("MerkleizeProgressiveWithMixin: num %d exceeds max int", num))
 	}
-	if len(w.buf) != 0 {
-		w.appendBytesAsNodes(w.buf)
-		w.buf = w.buf[:0]
-	}
+	w.flushBuffer()
 	w.CommitProgressiveWithMixin(indx, int(num))
 }
 
@@ -180,10 +172,7 @@ func (w *Wrapper) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 // progressive Merkle tree from nodes since indx, and mixes in the active fields
 // bitvector as a right sibling. This is used for stable/progressive containers.
 func (w *Wrapper) MerkleizeProgressiveWithActiveFields(indx int, activeFields []byte) {
-	if len(w.buf) != 0 {
-		w.appendBytesAsNodes(w.buf)
-		w.buf = w.buf[:0]
-	}
+	w.flushBuffer()
 	w.CommitProgressiveWithActiveFields(indx, activeFields)
 }
 
@@ -229,6 +218,18 @@ func (w *Wrapper) PutProgressiveBitlist(bb []byte) {
 		panic(fmt.Sprintf("PutProgressiveBitlist: size %d exceeds max int", size))
 	}
 	w.CommitProgressiveWithMixin(indx, int(size))
+}
+
+// flushBuffer converts any bytes buffered by Append* calls into leaf nodes.
+// It must run before a node is added directly (Put*/Add*) and before a
+// checkpoint is captured (Index/StartTree), so buffered fields keep their
+// position in the leaf order — mirroring the single ordered byte buffer of
+// hasher.Hasher.
+func (w *Wrapper) flushBuffer() {
+	if len(w.buf) != 0 {
+		w.appendBytesAsNodes(w.buf)
+		w.buf = w.buf[:0]
+	}
 }
 
 func (w *Wrapper) appendBytesAsNodes(b []byte) {
@@ -336,10 +337,15 @@ func (w *Wrapper) AddUint8(i uint8) {
 }
 
 // AddNode appends a pre-constructed tree node to the wrapper's node list.
+// Bytes buffered by Append* calls are flushed to leaf nodes first so they
+// keep their position before this node.
 func (w *Wrapper) AddNode(n *Node) {
+	w.flushBuffer()
+
 	if w.nodes == nil {
 		w.nodes = []*Node{}
 	}
+
 	w.nodes = append(w.nodes, n)
 }
 
