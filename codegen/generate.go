@@ -464,7 +464,14 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 	}
 	mainCodeBuilder.WriteString(generatedCode)
 
-	return mainCodeBuilder.String(), nil
+	// Normalize the assembled file to canonical gofmt formatting so template
+	// spacing does not have to replicate gofmt's context-dependent rules.
+	formattedCode, err := formatGoSource(mainCodeBuilder.String())
+	if err != nil {
+		return "", fmt.Errorf("failed to format generated code for package %s: %w", opts.PackageName, err)
+	}
+
+	return formattedCode, nil
 }
 
 // generateSSZMethods generates all SSZ methods for a single type (data or view).

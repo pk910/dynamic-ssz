@@ -3,6 +3,7 @@ package typegen
 
 import (
 	"fmt"
+	"go/format"
 	"math/rand"
 	"strings"
 )
@@ -121,7 +122,19 @@ func (g *Generator) WriteGoSource(packageName string) string {
 		sb.WriteString("}\n\n")
 	}
 
-	return sb.String()
+	return formatSource(sb.String())
+}
+
+// formatSource normalizes generated source to canonical gofmt formatting
+// (e.g. struct tag column alignment). Falls back to the unformatted source
+// if it does not parse, so a generator bug still produces a debuggable file.
+func formatSource(src string) string {
+	formatted, err := format.Source([]byte(src))
+	if err != nil {
+		return src
+	}
+
+	return string(formatted)
 }
 
 // WriteRegistry generates a registry_gen.go that populates corpus.Registry.
@@ -146,7 +159,7 @@ func (g *Generator) WriteRegistry(packageName string) string {
 	sb.WriteString("\t}\n")
 	sb.WriteString("}\n")
 
-	return sb.String()
+	return formatSource(sb.String())
 }
 
 func (g *Generator) generateType(depth int) TypeDef {
