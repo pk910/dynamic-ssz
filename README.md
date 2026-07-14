@@ -1,30 +1,48 @@
 # Dynamic SSZ
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/pk910/dynamic-ssz.svg)](https://pkg.go.dev/github.com/pk910/dynamic-ssz)
-[![Go Report Card](https://goreportcard.com/badge/github.com/pk910/dynamic-ssz)](https://goreportcard.com/report/github.com/pk910/dynamic-ssz)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/pk910/dynamic-ssz/badge)](https://securityscorecards.dev/viewer/?uri=github.com/pk910/dynamic-ssz)
+[![Fuzzing](https://github.com/pk910/dynamic-ssz/actions/workflows/fuzz.yml/badge.svg)](https://github.com/pk910/dynamic-ssz/actions/workflows/fuzz.yml)
 [![codecov](https://codecov.io/gh/pk910/dynamic-ssz/branch/master/graph/badge.svg)](https://codecov.io/gh/pk910/dynamic-ssz)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/pk910/dynamic-ssz/badge)](https://securityscorecards.dev/viewer/?uri=github.com/pk910/dynamic-ssz)
+[![Latest Release](https://img.shields.io/github/v/release/pk910/dynamic-ssz)](https://github.com/pk910/dynamic-ssz/releases)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/pk910/dynamic-ssz)](go.mod)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-Dynamic SSZ is a Go library for SSZ encoding/decoding with support for dynamic field sizes and code generation. It provides runtime flexibility while maintaining high performance through optional static code generation.
+Dynamic SSZ is a production-ready Go library for [SSZ](https://github.com/ethereum/consensus-specs/blob/dev/ssz/simple-serialize.md) serialization, hashing, and Merkle proofs. Its distinguishing feature is support for **runtime-determined field sizes**: the same Go types work across different network presets (mainnet, minimal, custom testnets) by resolving size limits from a spec configuration at runtime. It combines instant reflection-based processing for flexibility with optional static code generation for maximum performance.
 
 ## Features
 
-- **🔧 Dynamic Field Sizes** - Support for runtime-determined field sizes based on configuration
-- **⚡ Reflection-Based Processing** - Works instantly with any SSZ-compatible types - no code generation required for prototyping
-- **🏗️ Code Generation** - Optional static code generation for maximum performance (2-3x faster than dynamic processing)
-- **🚀 CLI Tool** - Standalone `dynssz-gen` command for easy code generation from any Go package
-- **📡 Streaming Support** - Memory-efficient streaming to/from `io.Reader`/`io.Writer` for large data
-- **🔄 Hybrid Approach** - Seamlessly combines with fastssz for optimal efficiency
-- **👁️ SSZ Views** - Support for multiple SSZ schemas on the same runtime type (useful for Ethereum fork handling)
-- **📦 Minimal Dependencies** - Core library has minimal external dependencies
-- **✅ Spec Compliant** - Fully compliant with SSZ specification and Ethereum consensus tests
-- **🧩 Extended Types** - Optional support for signed integers, floats, big.Int, and optional types (non-standard)
+### Encoding, Decoding & Hashing
+
+- **🔧 Dynamic Field Sizes** — `dynssz-size`/`dynssz-max` tags resolve limits from runtime spec values, with full math expression support (e.g. `(EPOCHS_PER_HISTORICAL_VECTOR*SLOTS_PER_EPOCH)/8`)
+- **⚡ Reflection-Based Processing** — works instantly with any SSZ-compatible type, no code generation required
+- **🏗️ Code Generation** — static SSZ methods via the `dynssz-gen` CLI or programmatic API (2-3x faster than reflection), configurable through flags or YAML config files
+- **📡 Streaming Support** — memory-efficient encoding/decoding directly to/from `io.Reader`/`io.Writer` for large objects
+- **🌲 Accelerated Hashing** — SIMD-accelerated hash tree roots via [hashtree](https://github.com/prysmaticlabs/hashtree) bindings, with a pure-Go fallback (`nohashtree` build tag)
+- **🔄 fastssz Hybrid** — automatically delegates to existing fastssz methods where types have no dynamic sizing, for optimal efficiency
+
+### Beyond Serialization
+
+- **🌳 Merkle Proofs** — build full Merkle trees from any type (`GetTree`), generate single proofs and compressed multiproofs by generalized index, and verify them with the `treeproof` package
+- **👁️ SSZ Views** — apply multiple SSZ schemas to the same runtime type without duplicating structs (ideal for Ethereum fork handling)
+- **🎁 Type Wrapper** — attach SSZ annotations to non-struct top-level types like `TypeWrapper[Descriptor, []uint64]`
+
+### Type System
+
+- **📚 Complete SSZ Type Support** — vectors, lists, containers, bitvectors/bitlists (`ssz-bitsize`), `uint128`/`uint256`, multi-dimensional arrays with per-dimension limits, `time.Time`, and auto-detection of common types (`holiman/uint256`, `go-bitfield`)
+- **🚀 Progressive Types** — progressive lists & bitlists ([EIP-7916](https://eips.ethereum.org/EIPS/eip-7916)) and progressive containers with `ssz-index` ([EIP-7495](https://eips.ethereum.org/EIPS/eip-7495))
+- **🧬 Compatible Unions** — type-safe SSZ unions via the generic `CompatibleUnion[T]` type
+- **🧩 Extended Types** — opt-in support for signed integers, floats, `big.Int`, and optional types (non-standard, disabled by default)
+
+### Quality
+
+- **✅ Spec Compliant** — validated against the official Ethereum consensus spec tests
+- **🧪 Differential Fuzzing** — continuous fuzzing compares reflection and generated code across marshal, unmarshal, hash tree root, and streaming paths
+- **📦 Minimal Dependencies** — small dependency footprint, Go 1.22+
 
 ## Production Readiness
 
-- **✅ Reflection-based dynamic marshaling/unmarshaling/HTR**: Production ready - battle-tested in various toolings and stable
-- **✅ Code generator**: Production ready - feature complete and functionally verified through extensive fuzz testing, though less battle-tested in production environments compared to the reflection code paths
+Both processing paths are production ready. The reflection-based code is battle-tested across various Ethereum tooling, and the code generator is feature complete and continuously verified through differential fuzzing against the reflection implementation and the consensus spec tests.
 
 ## Quick Start
 
@@ -60,6 +78,10 @@ err = ds.UnmarshalSSZ(&myObject, data)
 
 // Hash Tree Root
 root, err := ds.HashTreeRoot(myObject)
+
+// Merkle tree & proofs
+tree, err := ds.GetTree(myObject)
+proof, err := tree.Prove(generalizedIndex)
 ```
 
 The `ssz-max` and `dynssz-max` tags work together: `ssz-max` provides a static fallback, while `dynssz-max` references a spec value resolved at runtime. If the spec value is available it overrides the static default; otherwise the static value is used. This lets the same types work across different network presets (mainnet, minimal, custom testnets).
@@ -79,6 +101,9 @@ dynssz-gen -package . -types "MyStruct,OtherType" -output generated.go
 
 # Generate for types in external package
 dynssz-gen -package github.com/example/types -types "Block" -output block_ssz.go
+
+# Or drive everything from a YAML config file
+dynssz-gen -config dynssz.yaml
 ```
 
 Generated code produces optimized SSZ methods that eliminate reflection overhead. **Important**: Always use `ds.MarshalSSZ()`, `ds.UnmarshalSSZ()`, etc. as your entry points - the runtime automatically delegates to generated methods when available. Do not call generated methods (like `MarshalSSZDyn`) directly, as this creates a circular dependency that prevents regeneration. See the [Code Generation Guide](docs/code-generator.md) for details.
@@ -106,6 +131,7 @@ The library includes comprehensive testing infrastructure:
 - **Fuzz Testing**: Continuous fuzzing via CI that generates random SSZ type structures and verifies correctness by comparing reflection and codegen implementations across marshal, unmarshal, hash tree root, and streaming operations
 - **Examples**: Working examples that are automatically tested
 - **Performance Tests**: Benchmarking and regression testing
+- **Static Analysis**: golangci-lint and CodeQL scanning on every change
 
 ## Documentation
 
@@ -113,11 +139,13 @@ The library includes comprehensive testing infrastructure:
 - [Supported Types](docs/supported-types.md)
 - [Struct Tags & Annotations](docs/ssz-annotations.md)
 - [Code Generation Guide](docs/code-generator.md)
+- [Code Generator Config Files](docs/code-generator-config.md)
 - [SSZ Views](docs/views.md)
 - [Merkle Proofs](docs/merkle-proofs.md)
 - [Streaming Support](docs/streaming.md)
 - [Type Wrapper](docs/type-wrapper.md)
 - [Extended Types](docs/extended-types.md) (non-standard)
+- [go-eth2-client Integration](docs/go-eth2-client-integration.md)
 - [API Reference](docs/api-reference.md)
 - [Performance Guide](docs/performance.md)
 - [Troubleshooting](docs/troubleshooting.md)
@@ -125,12 +153,13 @@ The library includes comprehensive testing infrastructure:
 
 ## Examples
 
-Check out the [examples](examples/) directory for:
-- Basic encoding/decoding
-- Code generation setup
-- Ethereum types integration
-- Custom specifications
-- Multi-dimensional arrays
+Check out the [examples](examples/) directory for standalone, CI-tested example projects:
+
+- [basic](examples/basic/) — simple encoding/decoding with Ethereum consensus types
+- [codegen](examples/codegen/) — code generation setup with a programmatic generator
+- [custom-types](examples/custom-types/) — custom specifications and dynamic expressions
+- [progressive-merkleization](examples/progressive-merkleization/) — progressive lists, bitlists, and containers (EIP-7916/EIP-7495)
+- [versioned-blocks](examples/versioned-blocks/) — handling Ethereum fork-versioned block structures
 
 ## Contributing
 
