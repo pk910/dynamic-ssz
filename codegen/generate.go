@@ -423,8 +423,10 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 	}
 	header := strings.ReplaceAll(headerTemplate, "{hash}", hex.EncodeToString(typesHash[:]))
 	header = strings.ReplaceAll(header, "{version}", Version)
-	mainCodeBuilder.WriteString(strings.TrimRight(header, "\n"))
-	mainCodeBuilder.WriteString("\n")
+	mainCodeBuilder.WriteString(header)
+	if !strings.HasSuffix(header, "\n") {
+		mainCodeBuilder.WriteString("\n")
+	}
 	fmt.Fprintf(&mainCodeBuilder, "package %s\n\n", opts.PackageName)
 
 	// Imports

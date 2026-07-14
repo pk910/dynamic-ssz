@@ -756,6 +756,7 @@ func (cg *CodeGenerator) SetHeaderTemplate(template string) error {
 	cg.headerTemplate = template
 
 	firstLine, _, _ := strings.Cut(template, "\n")
+	firstLine = strings.TrimSuffix(firstLine, "\r")
 	if !generatedHeaderPattern.MatchString(firstLine) {
 		return fmt.Errorf("header template's first line does not match `^// Code generated .* DO NOT EDIT\\.$`; tooling will not recognize the files as generated")
 	}
