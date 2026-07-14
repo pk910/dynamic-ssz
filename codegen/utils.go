@@ -6,6 +6,7 @@ package codegen
 
 import (
 	"fmt"
+	"go/format"
 	"go/types"
 	"reflect"
 	"strconv"
@@ -96,6 +97,34 @@ func writeIndented(codeBuf *strings.Builder, s string, spaces int) {
 		codeBuf.WriteString(prefix)
 		codeBuf.WriteString(s[lineStart:])
 	}
+}
+
+// formatGoSource normalizes a generated Go source file to canonical gofmt formatting.
+//
+// The code generator composes statements from dynamic fragments (size variables,
+// offset prefixes, literals), which makes it impossible to hard-code gofmt-compliant
+// spacing in the code templates: gofmt decides operator spacing from the nesting
+// depth and precedence mix of the whole expression (e.g. `size5 + 48` at statement
+// level, but `sszutils.ErrTrailingDataFn(buflen-totalSize)` nested inside another
+// call, and `buf[exproffset+0 : exproffset+32]` vs `buf[0:32]` for slice bounds).
+// Instead of chasing these context-dependent rules per template, the fully
+// assembled file is run through go/format once, so the output is gofmt-stable by
+// construction.
+//
+// Parameters:
+//   - code: The complete generated Go source file content
+//
+// Returns:
+//   - string: The gofmt-formatted source code
+//   - error: An error if the code is not syntactically valid Go; this always
+//     indicates a bug in the code generator itself
+func formatGoSource(code string) (string, error) {
+	formatted, err := format.Source([]byte(code))
+	if err != nil {
+		return "", fmt.Errorf("generated code is not valid Go: %w", err)
+	}
+
+	return string(formatted), nil
 }
 
 // escapeBackticks properly escapes backtick characters for use in generated Go string literals.

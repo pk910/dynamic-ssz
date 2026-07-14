@@ -74,6 +74,64 @@ func TestEscapeBackticks(t *testing.T) {
 	}
 }
 
+// TestFormatGoSource tests that formatGoSource normalizes generated code to
+// canonical gofmt formatting, covering the context-dependent operator spacing
+// rules that hand-written code templates kept getting wrong.
+func TestFormatGoSource(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "statement level binary expr gets spaces",
+			input: "package p\n\nfunc f() {\n\ttotalSize := size5+48\n\t_ = totalSize\n}\n",
+			want:  "package p\n\nfunc f() {\n\ttotalSize := size5 + 48\n\t_ = totalSize\n}\n",
+		},
+		{
+			name:  "nested call arg binary expr gets compacted",
+			input: "package p\n\nfunc f() error {\n\treturn sszutils.ErrorWithPath(sszutils.ErrTrailingDataFn(buflen - totalSize), \"CurrentSyncCommittee\")\n}\n",
+			want:  "package p\n\nfunc f() error {\n\treturn sszutils.ErrorWithPath(sszutils.ErrTrailingDataFn(buflen-totalSize), \"CurrentSyncCommittee\")\n}\n",
+		},
+		{
+			name:  "slice bounds spacing depends on bound complexity",
+			input: "package p\n\nfunc f() {\n\tbuf = buf[exproffset+0:exproffset+32]\n\tbuf = buf[0 : 32]\n}\n",
+			want:  "package p\n\nfunc f() {\n\tbuf = buf[exproffset+0 : exproffset+32]\n\tbuf = buf[0:32]\n}\n",
+		},
+		{
+			name:  "range clause binary expr gets spaces",
+			input: "package p\n\nfunc f() {\n\tfor i := range vlen-1 {\n\t\t_ = i\n\t}\n}\n",
+			want:  "package p\n\nfunc f() {\n\tfor i := range vlen - 1 {\n\t\t_ = i\n\t}\n}\n",
+		},
+		{
+			name:  "already formatted code is unchanged",
+			input: "package p\n\nfunc f() {\n\ttotalSize := size5 + 48\n\t_ = totalSize\n}\n",
+			want:  "package p\n\nfunc f() {\n\ttotalSize := size5 + 48\n\t_ = totalSize\n}\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := formatGoSource(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("expected %q, got %q", tt.want, got)
+			}
+		})
+	}
+}
+
+// TestFormatGoSourceInvalid tests that formatGoSource reports syntactically
+// invalid generated code as an error instead of writing a broken file.
+func TestFormatGoSourceInvalid(t *testing.T) {
+	_, err := formatGoSource("package p\n\nfunc f() {\n\ttotalSize := \n}\n")
+	if err == nil {
+		t.Errorf("expected error for invalid source, got nil")
+	}
+}
+
 // TestIndentStr tests indentStr with various inputs.
 func TestIndentStr(t *testing.T) {
 	// Zero indent
