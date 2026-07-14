@@ -25,6 +25,7 @@ type FileConfig struct {
 	Package     string `yaml:"package"`
 	PackageName string `yaml:"package-name"`
 	Output      string `yaml:"output"`
+	Header      string `yaml:"header"`
 	Verbose     *bool  `yaml:"verbose"`
 
 	Legacy                    *bool `yaml:"legacy"`
@@ -149,6 +150,9 @@ func (fc *FileConfig) applyToConfig(cfg *Config, cliProvided map[string]bool, ba
 	}
 	if !cliProvided["output"] && fc.Output != "" {
 		cfg.OutputFile = resolvePath(fc.Output, baseDir)
+	}
+	if !cliProvided["header"] && fc.Header != "" {
+		cfg.HeaderTemplate = fc.Header
 	}
 
 	// Booleans: CLI wins if provided, otherwise take file value (if set).
