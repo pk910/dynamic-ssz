@@ -32,8 +32,8 @@ func endianTestReference() []byte {
 	return ref
 }
 
-// TestHostLittleEndianDetection cross-checks the binary.NativeEndian based
-// hostLittleEndian detection against an independent unsafe pointer probe of
+// TestHostLittleEndianDetection cross-checks the hostLittleEndian declaration
+// selected by the build tags against an independent unsafe pointer probe of
 // the host byte order.
 func TestHostLittleEndianDetection(t *testing.T) {
 	x := uint16(1)
@@ -44,9 +44,11 @@ func TestHostLittleEndianDetection(t *testing.T) {
 	}
 }
 
-// TestMarshalUint64SliceEncoding verifies the bulk marshal helper produces
-// canonical little-endian SSZ bytes regardless of host byte order.
-func TestMarshalUint64SliceEncoding(t *testing.T) {
+// checkMarshalUint64Slice verifies the bulk marshal helper produces canonical
+// little-endian SSZ bytes.
+func checkMarshalUint64Slice(t *testing.T) {
+	t.Helper()
+
 	got := MarshalUint64Slice([]byte{0xaa}, endianTestValues)
 	want := append([]byte{0xaa}, endianTestReference()...)
 	if !bytes.Equal(got, want) {
@@ -58,9 +60,15 @@ func TestMarshalUint64SliceEncoding(t *testing.T) {
 	}
 }
 
-// TestUnmarshalUint64SliceDecoding verifies the bulk unmarshal helper decodes
-// canonical little-endian SSZ bytes regardless of host byte order.
-func TestUnmarshalUint64SliceDecoding(t *testing.T) {
+func TestMarshalUint64SliceEncoding(t *testing.T) {
+	checkMarshalUint64Slice(t)
+}
+
+// checkUnmarshalUint64Slice verifies the bulk unmarshal helper decodes
+// canonical little-endian SSZ bytes, including short-buffer semantics.
+func checkUnmarshalUint64Slice(t *testing.T) {
+	t.Helper()
+
 	dst := make([]uint64, len(endianTestValues))
 	UnmarshalUint64Slice(dst, endianTestReference())
 	for i, v := range endianTestValues {
@@ -90,11 +98,20 @@ func TestUnmarshalUint64SliceDecoding(t *testing.T) {
 			}
 		}
 	}
+
+	// Empty destinations must be a no-op regardless of the buffer.
+	UnmarshalUint64Slice([]uint64{}, endianTestReference())
 }
 
-// TestEncodeUint64SliceEncoding verifies the encoder-based bulk helper against
-// both Encoder implementations.
-func TestEncodeUint64SliceEncoding(t *testing.T) {
+func TestUnmarshalUint64SliceDecoding(t *testing.T) {
+	checkUnmarshalUint64Slice(t)
+}
+
+// checkEncodeUint64Slice verifies the encoder-based bulk helper against both
+// Encoder implementations.
+func checkEncodeUint64Slice(t *testing.T) {
+	t.Helper()
+
 	want := endianTestReference()
 
 	enc := NewBufferEncoder(make([]byte, 0, len(want)))
@@ -115,9 +132,15 @@ func TestEncodeUint64SliceEncoding(t *testing.T) {
 	}
 }
 
-// TestDecodeUint64SliceDecoding verifies the decoder-based bulk helper against
-// both Decoder implementations.
-func TestDecodeUint64SliceDecoding(t *testing.T) {
+func TestEncodeUint64SliceEncoding(t *testing.T) {
+	checkEncodeUint64Slice(t)
+}
+
+// checkDecodeUint64Slice verifies the decoder-based bulk helper against both
+// Decoder implementations.
+func checkDecodeUint64Slice(t *testing.T) {
+	t.Helper()
+
 	ref := endianTestReference()
 
 	for _, tc := range []struct {
@@ -137,6 +160,16 @@ func TestDecodeUint64SliceDecoding(t *testing.T) {
 			}
 		}
 	}
+
+	// A truncated stream must surface the decoder error.
+	sdec := NewStreamDecoder(bytes.NewReader(ref[:12]), 12, 0)
+	if err := DecodeUint64Slice(sdec, make([]uint64, len(endianTestValues))); err == nil {
+		t.Fatal("DecodeUint64Slice with truncated stream: expected error, got nil")
+	}
+}
+
+func TestDecodeUint64SliceDecoding(t *testing.T) {
+	checkDecodeUint64Slice(t)
 }
 
 // hashAppendRecorder captures Append/AppendUint64 calls of the HashWalker
@@ -155,12 +188,18 @@ func (r *hashAppendRecorder) AppendUint64(i uint64) {
 	r.buf = MarshalUint64(r.buf, i)
 }
 
-// TestHashUint64SliceEncoding verifies the hash helper feeds canonical
-// little-endian bytes into the hash walker regardless of host byte order.
-func TestHashUint64SliceEncoding(t *testing.T) {
+// checkHashUint64Slice verifies the hash helper feeds canonical little-endian
+// bytes into the hash walker.
+func checkHashUint64Slice(t *testing.T) {
+	t.Helper()
+
 	rec := &hashAppendRecorder{}
 	HashUint64Slice(rec, endianTestValues)
 	if want := endianTestReference(); !bytes.Equal(rec.buf, want) {
 		t.Fatalf("HashUint64Slice mismatch:\ngot  %x\nwant %x", rec.buf, want)
 	}
+}
+
+func TestHashUint64SliceEncoding(t *testing.T) {
+	checkHashUint64Slice(t)
 }

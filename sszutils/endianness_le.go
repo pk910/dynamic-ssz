@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // This file is part of the dynamic-ssz library.
 
-//go:build 386 || amd64 || amd64p32 || arm || arm64 || loong64 || mipsle || mips64le || mips64p32le || ppc64le || riscv64 || wasm
+//go:build (386 || amd64 || amd64p32 || arm || arm64 || loong64 || mipsle || mips64le || mips64p32le || ppc64le || riscv64 || wasm) && !dynssz_endian_generic
 
 package sszutils
 
@@ -13,5 +13,7 @@ package sszutils
 // architectures get a const false (see endianness_be.go); anything in neither
 // list detects the byte order at package init (see endianness_generic.go), so
 // these lists are a pure optimization: an architecture missing here stays
-// correct and only loses the branch elimination.
+// correct and only loses the branch elimination. Building with the
+// dynssz_endian_generic tag forces the runtime-detected variant instead, which
+// tests use to exercise the fallback paths on any host.
 const hostLittleEndian = true

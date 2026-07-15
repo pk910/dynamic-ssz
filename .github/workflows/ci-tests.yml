@@ -127,6 +127,13 @@ jobs:
       run: |
         CGO_ENABLED=0 go test -v -coverprofile=coverage-unit-nocgo.txt -coverpkg=./... ./...
 
+    - name: Run endianness fallback tests with coverage
+      # The dynssz_endian_generic tag swaps the compile-time hostLittleEndian
+      # constant for the runtime-detected var, letting the tests force the
+      # big-endian fallback paths of the bulk uint64 slice helpers on any host.
+      run: |
+        go test -v -race -tags dynssz_endian_generic -coverprofile=coverage-unit-endianness.txt -coverpkg=./... ./sszutils/
+
     - name: Run 32-bit tests with coverage
       run: |
         GOARCH=386 CGO_ENABLED=0 go test -v -coverprofile=coverage-unit-386.txt -coverpkg=./... ./...
@@ -140,6 +147,7 @@ jobs:
           coverage-unit.txt
           coverage-unit-nocgo.txt
           coverage-unit-386.txt
+          coverage-unit-endianness.txt
 
   # Collect and upload coverage after spec tests and unit tests complete
   unit-tests-and-coverage:
@@ -183,6 +191,7 @@ jobs:
           coverage-unit.txt
           coverage-unit-nocgo.txt
           coverage-unit-386.txt
+          coverage-unit-endianness.txt
           spec-coverage-artifacts/
 
   # Run unit tests on a big-endian architecture (s390x via QEMU user emulation)
