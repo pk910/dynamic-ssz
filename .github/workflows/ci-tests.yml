@@ -185,6 +185,42 @@ jobs:
           coverage-unit-386.txt
           spec-coverage-artifacts/
 
+  # Run unit tests on a big-endian architecture (s390x via QEMU user emulation)
+  # to catch endianness bugs in the unsafe bulk encoding helpers, which would
+  # otherwise produce silently wrong SSZ on big-endian platforms.
+  big-endian-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+    - name: Set up Go
+      uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+      with:
+        go-version: '1.25.11'
+
+    - name: Cache Go modules
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/go/pkg/mod
+        key: ${{ runner.os }}-go-1.25.11-s390x-${{ hashFiles('**/go.sum') }}
+
+    - name: Install QEMU user emulation
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y qemu-user-static
+
+    - name: Download dependencies
+      run: go mod download
+
+    - name: Unpack compat-tests archives
+      run: make unpack-compat-tests
+
+    - name: Run unit tests on s390x
+      run: GOARCH=s390x CGO_ENABLED=0 go test -exec qemu-s390x-static ./...
+
   # Run govulncheck to detect known vulnerabilities in dependencies
   govulncheck:
     runs-on: ubuntu-latest

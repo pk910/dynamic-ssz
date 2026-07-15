@@ -62,8 +62,16 @@ func NextPowerOfTwo(v uint64) uint64 {
 // HashUint64Slice appends the little-endian encoding of a uint64 slice directly
 // to a HashWalker's buffer. On little-endian architectures (x86, ARM64) this is
 // a single bulk memory copy, avoiding per-element AppendUint64 overhead.
+// Big-endian architectures append each element individually to keep the hashed
+// representation little-endian.
 func HashUint64Slice[T ~uint64](hh HashWalker, s []T) {
 	if len(s) == 0 {
+		return
+	}
+	if !hostLittleEndian {
+		for _, v := range s {
+			hh.AppendUint64(uint64(v))
+		}
 		return
 	}
 	hh.Append(unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(s))), len(s)*8))
