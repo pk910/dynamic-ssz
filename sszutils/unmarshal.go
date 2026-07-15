@@ -64,9 +64,10 @@ func UnmarshalBool(src []byte) bool {
 
 // UnmarshalUint64Slice decodes little-endian encoded uint64 values from buf into dst.
 // On little-endian architectures (x86, ARM64) this is a single bulk memory copy.
-// Big-endian architectures decode each element individually. Like the bulk copy,
-// the fallback tolerates a short buf by decoding only the fully covered elements;
-// callers are expected to have validated the buffer length already.
+// Big-endian architectures decode each element individually. Both paths tolerate
+// a short buf by decoding only the fully covered elements, leaving a trailing
+// partially covered element untouched; callers are expected to have validated
+// the buffer length already.
 func UnmarshalUint64Slice[T ~uint64](dst []T, buf []byte) {
 	if len(dst) == 0 {
 		return
@@ -78,7 +79,7 @@ func UnmarshalUint64Slice[T ~uint64](dst []T, buf []byte) {
 		}
 		return
 	}
-	copy(unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(dst))), len(dst)*8), buf)
+	copy(unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(dst))), len(dst)*8), buf[:len(buf)-len(buf)%8])
 }
 
 // UnmarshalFixedBytesSlice bulk-copies a contiguous SSZ byte buffer into dst, a

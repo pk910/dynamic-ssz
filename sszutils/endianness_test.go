@@ -69,15 +69,25 @@ func TestUnmarshalUint64SliceDecoding(t *testing.T) {
 		}
 	}
 
-	// A short buffer must only decode the fully covered elements.
-	short := make([]uint64, len(endianTestValues))
-	UnmarshalUint64Slice(short, endianTestReference()[:8])
-	if short[0] != endianTestValues[0] {
-		t.Fatalf("UnmarshalUint64Slice short buf[0] = %#x, want %#x", short[0], endianTestValues[0])
-	}
-	for i := 1; i < len(short); i++ {
-		if short[i] != 0 {
-			t.Fatalf("UnmarshalUint64Slice short buf[%d] = %#x, want 0", i, short[i])
+	// A short buffer must only decode the fully covered elements. The 12-byte
+	// case ends in the middle of the second element, which must stay untouched
+	// rather than being partially overwritten.
+	const sentinel = 0xfefefefefefefefe
+	for _, bufLen := range []int{8, 12} {
+		short := make([]uint64, len(endianTestValues))
+		for i := range short {
+			short[i] = sentinel
+		}
+		UnmarshalUint64Slice(short, endianTestReference()[:bufLen])
+		if short[0] != endianTestValues[0] {
+			t.Fatalf("UnmarshalUint64Slice short buf (len %d) [0] = %#x, want %#x",
+				bufLen, short[0], endianTestValues[0])
+		}
+		for i := 1; i < len(short); i++ {
+			if short[i] != sentinel {
+				t.Fatalf("UnmarshalUint64Slice short buf (len %d) [%d] = %#x, want untouched sentinel",
+					bufLen, i, short[i])
+			}
 		}
 	}
 }

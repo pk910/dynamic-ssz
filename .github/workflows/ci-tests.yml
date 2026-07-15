@@ -219,7 +219,15 @@ jobs:
       run: make unpack-compat-tests
 
     - name: Run unit tests on s390x
-      run: GOARCH=s390x CGO_ENABLED=0 go test -exec qemu-s390x-static ./...
+      # hasher and dynssz-gen take several minutes under emulation; skip them.
+      # The endianness-critical helpers they use are covered by the sszutils
+      # reference-vector tests, and the hasher known-answer tests (hardcoded
+      # roots, run separately below) still verify the full hash pipeline.
+      run: |
+        GOARCH=s390x CGO_ENABLED=0 go test -exec qemu-s390x-static \
+          $(go list ./... | grep -v -e '/hasher$' -e '/dynssz-gen$')
+        GOARCH=s390x CGO_ENABLED=0 go test -exec qemu-s390x-static \
+          -run 'TestKnownAnswer' ./hasher/
 
   # Run govulncheck to detect known vulnerabilities in dependencies
   govulncheck:
