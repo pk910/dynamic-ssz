@@ -47,6 +47,7 @@ reference.
 | `-package` | Go package path to analyze | Required (unless supplied by config) |
 | `-types` | Comma-separated list of types to generate (see extended format below) | Required (unless supplied by config) |
 | `-output` | Output file path | Required if types don't specify files |
+| `-header` | Custom header comment template for generated files. `{hash}` and `{version}` placeholders are substituted. The first line should match `^// Code generated .* DO NOT EDIT\.$` — a warning is printed otherwise, since tooling relies on that convention to recognize generated files. | dynamic-ssz default header |
 | `-v` | Verbose output | `false` |
 | `-legacy` | Generate legacy compatibility methods | `false` |
 | `-without-dynamic-expressions` | Generate only legacy methods, disable dynamic methods | `false` |

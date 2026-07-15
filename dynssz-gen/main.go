@@ -29,6 +29,7 @@ type Config struct {
 	PackageName               string
 	TypeNames                 string
 	OutputFile                string
+	HeaderTemplate            string
 	Verbose                   bool
 	Legacy                    bool
 	WithoutDynamicExpressions bool
@@ -121,6 +122,7 @@ func main() {
 		packageName               = flag.String("package-name", "", "Package name for generated code")
 		typeNames                 = flag.String("types", "", "Comma-separated list of type names to generate code for")
 		outputFile                = flag.String("output", "", "Output file path for generated code")
+		headerTemplate            = flag.String("header", "", "Custom header comment template for generated files ({hash} and {version} placeholders are substituted)")
 		verbose                   = flag.Bool("v", false, "Verbose output")
 		legacy                    = flag.Bool("legacy", false, "Generate legacy methods")
 		withoutDynamicExpressions = flag.Bool("without-dynamic-expressions", false, "Generate code without dynamic expressions")
@@ -158,7 +160,12 @@ func main() {
 		_, _ = fmt.Fprintf(w, "  -output string\n")
 		_, _ = fmt.Fprintf(w, "        Default output file path (used for types without a ':path' suffix)\n")
 		_, _ = fmt.Fprintf(w, "  -package-name string\n")
-		_, _ = fmt.Fprintf(w, "        Package name for generated code (default: same as source package)\n\n")
+		_, _ = fmt.Fprintf(w, "        Package name for generated code (default: same as source package)\n")
+		_, _ = fmt.Fprintf(w, "  -header string\n")
+		_, _ = fmt.Fprintf(w, "        Custom header comment template for generated files.\n")
+		_, _ = fmt.Fprintf(w, "        {hash} and {version} placeholders are substituted. The first line\n")
+		_, _ = fmt.Fprintf(w, "        should match `^// Code generated .* DO NOT EDIT\\.$` so tooling\n")
+		_, _ = fmt.Fprintf(w, "        recognizes the files as generated.\n\n")
 		_, _ = fmt.Fprintf(w, "Code generation flags:\n")
 		_, _ = fmt.Fprintf(w, "  -legacy\n")
 		_, _ = fmt.Fprintf(w, "        Generate legacy MarshalSSZ/UnmarshalSSZ/HashTreeRoot methods\n")
@@ -193,6 +200,7 @@ func main() {
 		PackageName:               *packageName,
 		TypeNames:                 *typeNames,
 		OutputFile:                *outputFile,
+		HeaderTemplate:            *headerTemplate,
 		Verbose:                   *verbose,
 		Legacy:                    *legacy,
 		WithoutDynamicExpressions: *withoutDynamicExpressions,
@@ -453,6 +461,12 @@ func run(config *Config) error {
 
 	if config.PackageName != "" {
 		codeGen.SetPackageName(config.PackageName)
+	}
+
+	if config.HeaderTemplate != "" {
+		if warn := codeGen.SetHeaderTemplate(config.HeaderTemplate); warn != nil {
+			log.Printf("Warning: %v", warn)
+		}
 	}
 
 	// Build options for all types
