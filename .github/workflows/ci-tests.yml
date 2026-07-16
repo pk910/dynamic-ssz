@@ -127,6 +127,13 @@ jobs:
       run: |
         CGO_ENABLED=0 go test -v -coverprofile=coverage-unit-nocgo.txt -coverpkg=./... ./...
 
+    - name: Run endianness fallback tests with coverage
+      # The dynssz_endian_generic tag swaps the compile-time hostLittleEndian
+      # constant for the runtime-detected var, letting the tests force the
+      # big-endian fallback paths of the bulk uint64 slice helpers on any host.
+      run: |
+        go test -v -race -tags dynssz_endian_generic -coverprofile=coverage-unit-endianness.txt -coverpkg=./... ./sszutils/
+
     - name: Run 32-bit tests with coverage
       run: |
         GOARCH=386 CGO_ENABLED=0 go test -v -coverprofile=coverage-unit-386.txt -coverpkg=./... ./...
@@ -140,6 +147,7 @@ jobs:
           coverage-unit.txt
           coverage-unit-nocgo.txt
           coverage-unit-386.txt
+          coverage-unit-endianness.txt
 
   # Collect and upload coverage after spec tests and unit tests complete
   unit-tests-and-coverage:
@@ -183,7 +191,52 @@ jobs:
           coverage-unit.txt
           coverage-unit-nocgo.txt
           coverage-unit-386.txt
+          coverage-unit-endianness.txt
           spec-coverage-artifacts/
+
+  # Run unit tests on a big-endian architecture (s390x via QEMU user emulation)
+  # to catch endianness bugs in the unsafe bulk encoding helpers, which would
+  # otherwise produce silently wrong SSZ on big-endian platforms.
+  big-endian-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+    - name: Set up Go
+      uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+      with:
+        go-version: '1.25.11'
+
+    - name: Cache Go modules
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/go/pkg/mod
+        key: ${{ runner.os }}-go-1.25.11-s390x-${{ hashFiles('**/go.sum') }}
+
+    - name: Install QEMU user emulation
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y qemu-user-static
+
+    - name: Download dependencies
+      run: go mod download
+
+    - name: Unpack compat-tests archives
+      run: make unpack-compat-tests
+
+    - name: Run unit tests on s390x
+      # hasher and dynssz-gen take several minutes under emulation; skip them.
+      # The endianness-critical helpers they use are covered by the sszutils
+      # reference-vector tests, and the hasher known-answer tests (hardcoded
+      # roots, run separately below) still verify the full hash pipeline.
+      run: |
+        GOARCH=s390x CGO_ENABLED=0 go test -exec qemu-s390x-static \
+          $(go list ./... | grep -v -e '/hasher$' -e '/dynssz-gen$')
+        GOARCH=s390x CGO_ENABLED=0 go test -exec qemu-s390x-static \
+          -run 'TestKnownAnswer' ./hasher/
 
   # Run govulncheck to detect known vulnerabilities in dependencies
   govulncheck:

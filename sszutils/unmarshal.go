@@ -64,11 +64,22 @@ func UnmarshalBool(src []byte) bool {
 
 // UnmarshalUint64Slice decodes little-endian encoded uint64 values from buf into dst.
 // On little-endian architectures (x86, ARM64) this is a single bulk memory copy.
+// Big-endian architectures decode each element individually. Both paths tolerate
+// a short buf by decoding only the fully covered elements, leaving a trailing
+// partially covered element untouched; callers are expected to have validated
+// the buffer length already.
 func UnmarshalUint64Slice[T ~uint64](dst []T, buf []byte) {
 	if len(dst) == 0 {
 		return
 	}
-	copy(unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(dst))), len(dst)*8), buf)
+	if !hostLittleEndian {
+		n := min(len(dst), len(buf)/8)
+		for i := range n {
+			dst[i] = T(binary.LittleEndian.Uint64(buf[i*8:]))
+		}
+		return
+	}
+	copy(unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(dst))), len(dst)*8), buf[:len(buf)-len(buf)%8])
 }
 
 // UnmarshalFixedBytesSlice bulk-copies a contiguous SSZ byte buffer into dst, a
@@ -85,9 +96,20 @@ func UnmarshalFixedBytesSlice[T any](dst []T, buf []byte) {
 }
 
 // DecodeUint64Slice decodes uint64 values from a Decoder directly into dst using bulk memory copy.
-// On little-endian architectures (x86, ARM64) this avoids per-element DecodeUint64 overhead.
+// On little-endian architectures (x86, ARM64) this avoids per-element DecodeUint64
+// overhead. Big-endian architectures decode each element individually.
 func DecodeUint64Slice[T ~uint64](dec Decoder, dst []T) error {
 	if len(dst) == 0 {
+		return nil
+	}
+	if !hostLittleEndian {
+		for i := range dst {
+			v, err := dec.DecodeUint64()
+			if err != nil {
+				return err
+			}
+			dst[i] = T(v)
+		}
 		return nil
 	}
 	_, err := dec.DecodeBytes(unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(dst))), len(dst)*8))

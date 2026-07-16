@@ -44,9 +44,16 @@ func MarshalBool(dst []byte, b bool) []byte {
 
 // MarshalUint64Slice appends the little-endian encoding of a uint64 slice to dst.
 // On little-endian architectures (x86, ARM64) this is a single bulk memory copy,
-// avoiding per-element encoding overhead.
+// avoiding per-element encoding overhead. Big-endian architectures encode each
+// element individually to keep the SSZ output little-endian.
 func MarshalUint64Slice[T ~uint64](dst []byte, s []T) []byte {
 	if len(s) == 0 {
+		return dst
+	}
+	if !hostLittleEndian {
+		for _, v := range s {
+			dst = binary.LittleEndian.AppendUint64(dst, uint64(v))
+		}
 		return dst
 	}
 	return append(dst, unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(s))), len(s)*8)...)
@@ -64,9 +71,17 @@ func MarshalFixedBytesSlice[T any](dst []byte, s []T) []byte {
 }
 
 // EncodeUint64Slice encodes a uint64 slice to an Encoder using bulk memory copy.
-// On little-endian architectures (x86, ARM64) this avoids per-element EncodeUint64 overhead.
+// On little-endian architectures (x86, ARM64) this avoids per-element EncodeUint64
+// overhead. Big-endian architectures encode each element individually to keep the
+// SSZ output little-endian.
 func EncodeUint64Slice[T ~uint64](enc Encoder, s []T) {
 	if len(s) == 0 {
+		return
+	}
+	if !hostLittleEndian {
+		for _, v := range s {
+			enc.EncodeUint64(uint64(v))
+		}
 		return
 	}
 	enc.EncodeBytes(unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(s))), len(s)*8))

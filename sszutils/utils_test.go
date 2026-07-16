@@ -236,24 +236,30 @@ type mockHashWalker struct {
 	appendData   []byte
 }
 
-func (m *mockHashWalker) Hash() []byte                                         { return nil }
-func (m *mockHashWalker) AppendBool(_ bool)                                    {}
-func (m *mockHashWalker) AppendUint8(_ uint8)                                  {}
-func (m *mockHashWalker) AppendUint16(_ uint16)                                {}
-func (m *mockHashWalker) AppendUint32(_ uint32)                                {}
-func (m *mockHashWalker) AppendUint64(_ uint64)                                {}
-func (m *mockHashWalker) AppendBytes32(_ []byte)                               {}
-func (m *mockHashWalker) PutUint64Array(_ []uint64, _ ...uint64)               {}
-func (m *mockHashWalker) PutUint64(_ uint64)                                   {}
-func (m *mockHashWalker) PutUint32(_ uint32)                                   {}
-func (m *mockHashWalker) PutUint16(_ uint16)                                   {}
-func (m *mockHashWalker) PutUint8(_ uint8)                                     {}
-func (m *mockHashWalker) PutBitlist(_ []byte, _ uint64)                        {}
-func (m *mockHashWalker) PutProgressiveBitlist(_ []byte)                       {}
-func (m *mockHashWalker) PutBool(_ bool)                                       {}
-func (m *mockHashWalker) PutBytes(_ []byte)                                    {}
-func (m *mockHashWalker) FillUpTo32()                                          {}
-func (m *mockHashWalker) Append(i []byte)                                      { m.appendCalled = true; m.appendData = i }
+func (m *mockHashWalker) Hash() []byte          { return nil }
+func (m *mockHashWalker) AppendBool(_ bool)     {}
+func (m *mockHashWalker) AppendUint8(_ uint8)   {}
+func (m *mockHashWalker) AppendUint16(_ uint16) {}
+func (m *mockHashWalker) AppendUint32(_ uint32) {}
+func (m *mockHashWalker) AppendUint64(i uint64) {
+	m.appendCalled = true
+	m.appendData = MarshalUint64(m.appendData, i)
+}
+func (m *mockHashWalker) AppendBytes32(_ []byte)                 {}
+func (m *mockHashWalker) PutUint64Array(_ []uint64, _ ...uint64) {}
+func (m *mockHashWalker) PutUint64(_ uint64)                     {}
+func (m *mockHashWalker) PutUint32(_ uint32)                     {}
+func (m *mockHashWalker) PutUint16(_ uint16)                     {}
+func (m *mockHashWalker) PutUint8(_ uint8)                       {}
+func (m *mockHashWalker) PutBitlist(_ []byte, _ uint64)          {}
+func (m *mockHashWalker) PutProgressiveBitlist(_ []byte)         {}
+func (m *mockHashWalker) PutBool(_ bool)                         {}
+func (m *mockHashWalker) PutBytes(_ []byte)                      {}
+func (m *mockHashWalker) FillUpTo32()                            {}
+func (m *mockHashWalker) Append(i []byte) {
+	m.appendCalled = true
+	m.appendData = append(m.appendData, i...)
+}
 func (m *mockHashWalker) Index() int                                           { return 0 }
 func (m *mockHashWalker) CurrentIndex() int                                    { return 0 }
 func (m *mockHashWalker) StartTree(_ TreeType) int                             { return 0 }
