@@ -1035,3 +1035,48 @@ func TestCodegenUnionTaggedSelectors(t *testing.T) {
 		t.Error("stream UnmarshalSSZReader accepted unassigned selector 0")
 	}
 }
+
+// Top-level standalone named composite types: every generated method receives
+// the pointer receiver directly and must dereference it correctly on all
+// paths (marshal/unmarshal/size/hash, buffer and stream).
+func TestCodegenTopLevelCompositeTypes(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+
+	roundtrip := func(name string, val any, mkEmpty func() any) {
+		t.Run(name, func(t *testing.T) {
+			testCodegenPayloadByReflection(t, reflect.ValueOf(val).Elem().Interface(), nil)
+
+			enc, err := ds.MarshalSSZ(val)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			back := mkEmpty()
+			if err := ds.UnmarshalSSZ(back, enc); err != nil {
+				t.Fatalf("buffer unmarshal: %v", err)
+			}
+			if !reflect.DeepEqual(back, val) {
+				t.Fatalf("buffer roundtrip mismatch: %v != %v", back, val)
+			}
+			back2 := mkEmpty()
+			if err := ds.UnmarshalSSZReader(back2, bytes.NewReader(enc), len(enc)); err != nil {
+				t.Fatalf("stream unmarshal: %v", err)
+			}
+			if !reflect.DeepEqual(back2, val) {
+				t.Fatalf("stream roundtrip mismatch: %v != %v", back2, val)
+			}
+		})
+	}
+
+	str := TopLevelString("hello world")
+	wrap := TopLevelWrapVarList{}
+	wrap.V.Data = []OptionalListTypes_Inner{{Tag: 1, Data: []byte{9, 8}}}
+
+	roundtrip("Bitlist", &TopLevelBitlist{0xff, 0x03}, func() any { return &TopLevelBitlist{} })
+	roundtrip("ProgBitlist", &TopLevelProgBitlist{0xff, 0x03}, func() any { return &TopLevelProgBitlist{} })
+	roundtrip("String", &str, func() any { return new(TopLevelString) })
+	roundtrip("CtrList", &TopLevelCtrList{{F1: 1}, {F1: 2}}, func() any { return &TopLevelCtrList{} })
+	roundtrip("CtrVec", &TopLevelCtrVec{{F1: 1}, {F1: 2}, {F1: 3}, {F1: 4}}, func() any { return &TopLevelCtrVec{} })
+	roundtrip("VarList", &TopLevelVarList{{Tag: 1, Data: []byte{1, 2}}, {Tag: 2, Data: []byte{}}}, func() any { return &TopLevelVarList{} })
+	roundtrip("ListOfList", &TopLevelListOfList{{1, 2, 3}, {}, {4}}, func() any { return &TopLevelListOfList{} })
+	roundtrip("WrapVarList", &wrap, func() any { return &TopLevelWrapVarList{} })
+}

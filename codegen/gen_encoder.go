@@ -597,10 +597,9 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 		}
 		if strings.HasPrefix(valueVar, "*") {
-			if ptrPrefix == "&" {
-				return strings.TrimPrefix(valueVar, "*")
-			}
-			return fmt.Sprintf("(%s%s)", ptrPrefix, valueVar)
+			// The result may be used as an indexing base (e.g. &(*t)[i]), so
+			// the &* cancellation shortcut would bind to the wrong expression.
+			return fmt.Sprintf("%s(%s)", ptrPrefix, valueVar)
 		}
 		return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 	}
@@ -812,10 +811,9 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 			return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 		}
 		if strings.HasPrefix(valueVar, "*") {
-			if ptrPrefix == "&" {
-				return strings.TrimPrefix(valueVar, "*")
-			}
-			return fmt.Sprintf("(%s%s)", ptrPrefix, valueVar)
+			// The result may be used as an indexing base (e.g. &(*t)[i]), so
+			// the &* cancellation shortcut would bind to the wrong expression.
+			return fmt.Sprintf("%s(%s)", ptrPrefix, valueVar)
 		}
 		return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 	}
@@ -871,6 +869,7 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 	} else {
 		// dynamic elements
 		// reserve space for offsets
+		ctx.usedSeekable = true
 		ctx.appendCode(indent, "dstlen := enc.GetPosition()\n")
 		addVlen()
 		ctx.appendCode(indent, "if canSeek {\n")
@@ -926,9 +925,14 @@ func (ctx *encoderContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName
 		maxVar = "0"
 	}
 
-	ctx.appendCode(indent, "vlen := len(%s)\n", varName)
+	valueVar := varName
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		valueVar = fmt.Sprintf("(*%s)", varName)
+	}
 
-	ctx.appendCode(indent, "bval := []byte(%s[:])\n", varName)
+	ctx.appendCode(indent, "vlen := len(%s)\n", valueVar)
+
+	ctx.appendCode(indent, "bval := []byte(%s[:])\n", valueVar)
 	ctx.appendCode(indent, "if vlen == 0 {\n")
 	ctx.appendCode(indent, "\tbval = []byte{0x01}\n")
 	ctx.appendCode(indent, "} else if bval[vlen-1] == 0x00 {\n")

@@ -601,10 +601,9 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 		}
 		if strings.HasPrefix(valueVar, "*") {
-			if ptrPrefix == "&" {
-				return strings.TrimPrefix(valueVar, "*")
-			}
-			return fmt.Sprintf("(%s%s)", ptrPrefix, valueVar)
+			// The result may be used as an indexing base (e.g. &(*t)[i]), so
+			// the &* cancellation shortcut would bind to the wrong expression.
+			return fmt.Sprintf("%s(%s)", ptrPrefix, valueVar)
 		}
 		return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 	}
@@ -777,10 +776,9 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 			return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 		}
 		if strings.HasPrefix(valueVar, "*") {
-			if ptrPrefix == "&" {
-				return strings.TrimPrefix(valueVar, "*")
-			}
-			return fmt.Sprintf("(%s%s)", ptrPrefix, valueVar)
+			// The result may be used as an indexing base (e.g. &(*t)[i]), so
+			// the &* cancellation shortcut would bind to the wrong expression.
+			return fmt.Sprintf("%s(%s)", ptrPrefix, valueVar)
 		}
 		return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 	}
@@ -890,10 +888,9 @@ func (ctx *marshalContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName
 			return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 		}
 		if strings.HasPrefix(valueVar, "*") {
-			if ptrPrefix == "&" {
-				return strings.TrimPrefix(valueVar, "*")
-			}
-			return fmt.Sprintf("(%s%s)", ptrPrefix, valueVar)
+			// The result may be used as an indexing base (e.g. &(*t)[i]), so
+			// the &* cancellation shortcut would bind to the wrong expression.
+			return fmt.Sprintf("%s(%s)", ptrPrefix, valueVar)
 		}
 		return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 	}

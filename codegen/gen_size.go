@@ -422,8 +422,17 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 			return
 		}
 		if len(valueVar) > 1 {
-			ctx.appendCode(indent, "t := %s%s\n", ctx.getPtrPrefix(desc), valueVar)
-			valueVar = "t"
+			// Deeper emissions sit inside their own blocks where `t := ...`
+			// legally shadows the outer value. Only the top scope of the
+			// generated method/closure already declares t (receiver or closure
+			// parameter), so a same-scope re-declaration needs another name.
+			// That can happen at most once per generated function body.
+			localVar := "t"
+			if indent == 0 {
+				localVar = "t2"
+			}
+			ctx.appendCode(indent, "%s := %s%s\n", localVar, ctx.getPtrPrefix(desc), valueVar)
+			valueVar = localVar
 		}
 		usedVar = true
 	}
@@ -549,8 +558,17 @@ func (ctx *sizeContext) sizeList(desc *ssztypes.TypeDescriptor, varName, sizeVar
 			return
 		}
 		if len(valueVar) > 1 {
-			ctx.appendCode(indent, "t := %s%s\n", ctx.getPtrPrefix(desc), valueVar)
-			valueVar = "t"
+			// Deeper emissions sit inside their own blocks where `t := ...`
+			// legally shadows the outer value. Only the top scope of the
+			// generated method/closure already declares t (receiver or closure
+			// parameter), so a same-scope re-declaration needs another name.
+			// That can happen at most once per generated function body.
+			localVar := "t"
+			if indent == 0 {
+				localVar = "t2"
+			}
+			ctx.appendCode(indent, "%s := %s%s\n", localVar, ctx.getPtrPrefix(desc), valueVar)
+			valueVar = localVar
 		}
 		usedVar = true
 	}

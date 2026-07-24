@@ -625,7 +625,13 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 				ctx.appendCode(indent, "if buf, err := dec.DecodeBytesBuf(%s); err != nil {\n", limitVar)
 				ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith("err"))
 				ctx.appendCode(indent, "} else {\n")
-				ctx.appendCode(indent+1, "%s = %s\n", valueVar, ctx.getCastedValueVar(desc, "buf", ""))
+				// Assign through the plain (dereferenced) lvalue: valueVar may
+				// carry a string(...) cast which is not assignable.
+				assignVar := varName
+				if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+					assignVar = fmt.Sprintf("*%s", varName)
+				}
+				ctx.appendCode(indent+1, "%s = %s\n", assignVar, ctx.getCastedValueVar(desc, "buf", ""))
 				ctx.appendCode(indent, "}\n")
 			} else {
 				ctx.appendCode(indent, "if _, err = dec.DecodeBytes(%s[:%s]); err != nil {\n\treturn err\n}\n", indexValueVar, limitVar)
@@ -840,7 +846,13 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 				ctx.appendCode(indent, "if buf, err := dec.DecodeBytesBuf(dec.GetLength()); err != nil {\n")
 				ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith("err"))
 				ctx.appendCode(indent, "} else {\n")
-				ctx.appendCode(indent+1, "%s = %s\n", valueVar, ctx.getCastedValueVar(desc, "buf", ""))
+				// Assign through the plain (dereferenced) lvalue: valueVar may
+				// carry a string(...) cast which is not assignable.
+				assignVar := varName
+				if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+					assignVar = fmt.Sprintf("*%s", varName)
+				}
+				ctx.appendCode(indent+1, "%s = %s\n", assignVar, ctx.getCastedValueVar(desc, "buf", ""))
 				ctx.appendCode(indent, "}\n")
 			} else {
 				ctx.appendCode(indent, "listLen := dec.GetLength()\n")
@@ -1044,18 +1056,22 @@ func (ctx *decoderContext) unmarshalBitlist(desc *ssztypes.TypeDescriptor, varNa
 
 	ctx.appendCode(indent, "blen := dec.GetLength()\n")
 
-	if desc.Kind != reflect.Array {
-		ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, blen)\n", varName, varName)
+	valueVar := varName
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		valueVar = fmt.Sprintf("(*%s)", varName)
 	}
-	ctx.appendCode(indent, "if _, err = dec.DecodeBytes(%s[:blen]); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
-	ctx.appendCode(indent, "if blen == 0 || %s[blen-1] == 0x00 {\n", varName)
+	if desc.Kind != reflect.Array {
+		ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, blen)\n", valueVar, valueVar)
+	}
+	ctx.appendCode(indent, "if _, err = dec.DecodeBytes(%s[:blen]); err != nil {\n\treturn %s\n}\n", valueVar, typePath.getErrorWith("err"))
+	ctx.appendCode(indent, "if blen == 0 || %s[blen-1] == 0x00 {\n", valueVar)
 	errCode := errCodeBitlistNotTerminated
 	ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 	ctx.appendCode(indent, "}\n")
 
 	if hasMax {
 		bitsPkgName := ctx.typePrinter.AddImport("math/bits", "bits")
-		ctx.appendCode(indent, "bitCount := 8*(blen-1) + int(%s.Len8(%s[blen-1])) - 1\n", bitsPkgName, varName)
+		ctx.appendCode(indent, "bitCount := 8*(blen-1) + int(%s.Len8(%s[blen-1])) - 1\n", bitsPkgName, valueVar)
 		errCode := fmt.Sprintf("sszutils.ErrBitlistLengthFn(bitCount, %s)", maxVar)
 		ctx.appendCode(indent, "if bitCount > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
 	}

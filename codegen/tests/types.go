@@ -1381,3 +1381,43 @@ var UnionTaggedSelectors_Payload = UnionTaggedSelectors{
 		F2 []byte `ssz-max:"16" ssz-index:"2"`
 	}]{Variant: 1, Data: uint32(7)},
 }
+
+// Top-level standalone named composite types generated as -types entries.
+// Their generated methods receive the pointer receiver directly, so every
+// generator path must dereference it correctly.
+
+type TopLevelBitlist []byte
+
+var _ = sszutils.Annotate[TopLevelBitlist](`ssz-type:"bitlist" ssz-max:"128"`)
+
+type TopLevelProgBitlist []byte
+
+var _ = sszutils.Annotate[TopLevelProgBitlist](`ssz-type:"progressive-bitlist"`)
+
+type TopLevelString string
+
+var _ = sszutils.Annotate[TopLevelString](`ssz-max:"64"`)
+
+type TopLevelCtrList []SimpleTypes1_C1
+
+var _ = sszutils.Annotate[TopLevelCtrList](`ssz-max:"16"`)
+
+type TopLevelCtrVec []SimpleTypes1_C1
+
+var _ = sszutils.Annotate[TopLevelCtrVec](`ssz-size:"4"`)
+
+type TopLevelVarList []OptionalListTypes_Inner
+
+var _ = sszutils.Annotate[TopLevelVarList](`ssz-max:"16"`)
+
+type TopLevelListOfList [][]byte
+
+var _ = sszutils.Annotate[TopLevelListOfList](`ssz-max:"8,32"`)
+
+// TopLevelWrapVarList wraps a variable-element list in a TypeWrapper; the
+// streaming size closure must not collide with the wrapper unwrap local.
+type TopLevelWrapVarList struct {
+	V dynssz.TypeWrapper[struct {
+		X []OptionalListTypes_Inner `ssz-max:"8"`
+	}, []OptionalListTypes_Inner] `ssz-type:"wrapper"`
+}

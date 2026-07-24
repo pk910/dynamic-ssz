@@ -109,3 +109,19 @@ types:
     output: gen_divergence.go
   - name: UnionTaggedSelectors
     output: gen_divergence.go
+  - name: TopLevelBitlist
+    output: gen_toplevel.go
+  - name: TopLevelProgBitlist
+    output: gen_toplevel.go
+  - name: TopLevelString
+    output: gen_toplevel.go
+  - name: TopLevelCtrList
+    output: gen_toplevel.go
+  - name: TopLevelCtrVec
+    output: gen_toplevel.go
+  - name: TopLevelVarList
+    output: gen_toplevel.go
+  - name: TopLevelListOfList
+    output: gen_toplevel.go
+  - name: TopLevelWrapVarList
+    output: gen_toplevel.go

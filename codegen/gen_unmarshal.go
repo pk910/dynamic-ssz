@@ -847,7 +847,13 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 			}
 			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
 				typename := ctx.typePrinter.InnerTypeString(desc)
-				ctx.appendCode(indent, "%s = %s(buf)\n", valueVar, typename)
+				// Assign through the plain (dereferenced) lvalue: valueVar may
+				// carry a string(...) cast which is not assignable.
+				assignVar := varName
+				if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+					assignVar = fmt.Sprintf("*%s", varName)
+				}
+				ctx.appendCode(indent, "%s = %s(buf)\n", assignVar, typename)
 			} else {
 				ctx.appendCode(indent, "copy(%s[:], buf)\n", indexValueVar)
 			}
@@ -1010,7 +1016,13 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 			}
 			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
 				typename := ctx.typePrinter.InnerTypeString(desc)
-				ctx.appendCode(indent, "%s = %s(buf)\n", valueVar, typename)
+				// Assign through the plain (dereferenced) lvalue: valueVar may
+				// carry a string(...) cast which is not assignable.
+				assignVar := varName
+				if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+					assignVar = fmt.Sprintf("*%s", varName)
+				}
+				ctx.appendCode(indent, "%s = %s(buf)\n", assignVar, typename)
 			} else {
 				if desc.Kind != reflect.Array {
 					ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, len(buf))\n", valueVar, valueVar)
@@ -1187,10 +1199,14 @@ func (ctx *unmarshalContext) unmarshalBitlist(desc *ssztypes.TypeDescriptor, var
 		ctx.appendCode(indent, "if bitCount > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
 	}
 
-	if desc.Kind != reflect.Array {
-		ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, blen)\n", varName, varName)
+	valueVar := varName
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		valueVar = fmt.Sprintf("(*%s)", varName)
 	}
-	ctx.appendCode(indent, "copy(%s[:], buf)\n", varName)
+	if desc.Kind != reflect.Array {
+		ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, blen)\n", valueVar, valueVar)
+	}
+	ctx.appendCode(indent, "copy(%s[:], buf)\n", valueVar)
 
 	return nil
 }
