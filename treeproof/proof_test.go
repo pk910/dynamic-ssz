@@ -987,3 +987,126 @@ func TestVerifyMultiproofRejectsNonPositiveIndex(t *testing.T) {
 		}
 	}
 }
+
+func TestVerifyMultiproofAncestorDescendantTamper(t *testing.T) {
+	root, _, allNodes := buildMerkleTree(8)
+
+	// Index set containing an intermediate node (2) together with one of its
+	// descendant leaves (8).
+	indices := []int{8, 2}
+	proofHashes := findProofHashes(indices, allNodes)
+
+	valid, err := VerifyMultiproof(root, proofHashes, [][]byte{allNodes[8], allNodes[2]}, indices)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !valid {
+		t.Fatal("expected valid proof for consistent ancestor+descendant index set")
+	}
+
+	// Tampering only the descendant leaf must invalidate the proof even though
+	// the supplied ancestor hash is still consistent with the root.
+	tampered := append([]byte{}, allNodes[8]...)
+	tampered[0] ^= 0xff
+	valid, err = VerifyMultiproof(root, proofHashes, [][]byte{tampered, allNodes[2]}, indices)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if valid {
+		t.Fatal("expected tampered descendant leaf to be rejected")
+	}
+}
+
+func TestVerifyMultiproofRootInSetTamper(t *testing.T) {
+	root, _, allNodes := buildMerkleTree(8)
+
+	// Index set containing the root itself (generalized index 1) plus a leaf.
+	indices := []int{1, 8}
+	proofHashes := findProofHashes(indices, allNodes)
+
+	valid, err := VerifyMultiproof(root, proofHashes, [][]byte{allNodes[1], allNodes[8]}, indices)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !valid {
+		t.Fatal("expected valid proof with root in index set")
+	}
+
+	// The supplied root hash must not short-circuit verification of the other
+	// leaves: a tampered leaf has to be rejected.
+	tampered := append([]byte{}, allNodes[8]...)
+	tampered[0] ^= 0xff
+	valid, err = VerifyMultiproof(root, proofHashes, [][]byte{allNodes[1], tampered}, indices)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if valid {
+		t.Fatal("expected tampered leaf to be rejected when root is in the index set")
+	}
+}
+
+func TestVerifyMultiproofDuplicateIndexConflict(t *testing.T) {
+	root, _, allNodes := buildMerkleTree(8)
+
+	proofHashes := findProofHashes([]int{8}, allNodes)
+	good := allNodes[8]
+	bad := append([]byte{}, good...)
+	bad[0] ^= 0xff
+
+	// Conflicting values for the same generalized index must be rejected
+	// regardless of their order in the leaf list.
+	for _, leaves := range [][][]byte{{bad, good}, {good, bad}} {
+		valid, err := VerifyMultiproof(root, proofHashes, leaves, []int{8, 8})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if valid {
+			t.Fatal("expected conflicting duplicate leaves to be rejected")
+		}
+	}
+
+	// Consistent duplicates stay verifiable.
+	valid, err := VerifyMultiproof(root, proofHashes, [][]byte{good, good}, []int{8, 8})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !valid {
+		t.Fatal("expected consistent duplicate leaves to verify")
+	}
+}
+
+func TestVerifyProofRejectsOversizedLeaf(t *testing.T) {
+	root, leaves, allNodes := buildMerkleTree(4)
+
+	proof := &Proof{
+		Index:  4,
+		Leaf:   append(append([]byte{}, leaves[0]...), 0xde, 0xad),
+		Hashes: [][]byte{allNodes[5], allNodes[3]},
+	}
+
+	// Anything beyond 32 bytes would be silently truncated and verify against
+	// a value the caller never proved.
+	valid, err := VerifyProof(root, proof)
+	if err == nil {
+		t.Fatal("expected error for oversized leaf")
+	}
+	if valid {
+		t.Fatal("oversized leaf must not verify")
+	}
+}
+
+func TestVerifyMultiproofRejectsOversizedLeaf(t *testing.T) {
+	root, _, allNodes := buildMerkleTree(4)
+
+	indices := []int{4}
+	proofHashes := findProofHashes(indices, allNodes)
+	oversized := append(append([]byte{}, allNodes[4]...), 0x00)
+
+	valid, err := VerifyMultiproof(root, proofHashes, [][]byte{oversized}, indices)
+	if err == nil {
+		t.Fatal("expected error for oversized leaf")
+	}
+	if valid {
+		t.Fatal("oversized leaf must not verify")
+	}
+}

@@ -293,6 +293,12 @@ var treeFromNodesFn = TreeFromNodes
 func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 	numLeaves := len(leaves)
 
+	// Excess leaves would be dropped silently below, producing a valid-looking
+	// root for a different tree.
+	if numLeaves > limit {
+		return nil, fmt.Errorf("number of leaves %d exceeds limit %d", numLeaves, limit)
+	}
+
 	if limit <= 0 {
 		return getEmptyNode(0), nil
 	}

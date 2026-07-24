@@ -1182,12 +1182,11 @@ func TestTreeFromNodesWithMixinNonPowerOfTwoLimit(t *testing.T) {
 func TestTreeFromNodesWithMixinZeroLimit(t *testing.T) {
 	nodes := []*Node{NewNodeWithValue([]byte{1})}
 
-	tree, err := TreeFromNodesWithMixin(nodes, 1, 0)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if tree == nil {
-		t.Fatal("expected non-nil tree")
+	// A zero limit cannot hold any leaf; accepting it would silently drop the
+	// leaf and produce a mixin over an empty tree.
+	_, err := TreeFromNodesWithMixin(nodes, 1, 0)
+	if err == nil {
+		t.Fatal("expected error for leaves exceeding zero limit")
 	}
 }
 
@@ -1672,5 +1671,34 @@ func TestDecompressHandlesMalformedInput(t *testing.T) {
 	mp2 := huge.Decompress()
 	if mp2 == nil || len(mp2.Hashes) != 1 || len(mp2.Hashes[0]) != 32 {
 		t.Fatalf("unexpected decompressed result for huge level: %#v", mp2)
+	}
+}
+
+func TestTreeFromNodesRejectsExcessLeaves(t *testing.T) {
+	nodes := []*Node{
+		NewNodeWithValue([]byte{1}),
+		NewNodeWithValue([]byte{2}),
+		NewNodeWithValue([]byte{3}),
+	}
+
+	// More leaves than the limit allows would be dropped silently, producing a
+	// valid-looking root for a different tree.
+	if _, err := TreeFromNodes(nodes, 2); err == nil {
+		t.Fatal("expected error for 3 leaves with limit 2")
+	}
+	if _, err := TreeFromNodes(nodes, 1); err == nil {
+		t.Fatal("expected error for 3 leaves with limit 1")
+	}
+	if _, err := TreeFromNodes(nodes, 0); err == nil {
+		t.Fatal("expected error for 3 leaves with limit 0")
+	}
+
+	// The boundary case still works.
+	tree, err := TreeFromNodes(nodes[:2], 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tree == nil {
+		t.Fatal("expected non-nil tree")
 	}
 }
