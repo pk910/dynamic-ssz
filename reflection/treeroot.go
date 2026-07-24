@@ -691,6 +691,12 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 
 	switch {
 	case sourceType.SszType == ssztypes.SszProgressiveListType:
+		// A progressive list is unbounded by default, but an explicit ssz-max
+		// limit is still enforced here, matching marshal, unmarshal and the
+		// generated code.
+		if sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 && uint64(sliceLen) > sourceType.Limit {
+			return sszutils.ErrListLengthFn(sliceLen, sourceType.Limit)
+		}
 		hh.MerkleizeProgressiveWithMixin(hashIndex, uint64(sliceLen))
 	case sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0:
 		// Enforce the element-count limit (matches marshal). The chunk count

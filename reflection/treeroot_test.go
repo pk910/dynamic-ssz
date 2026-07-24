@@ -7,12 +7,14 @@ package reflection_test
 import (
 	"bytes"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"reflect"
 	"testing"
 
 	. "github.com/pk910/dynamic-ssz"
 	"github.com/pk910/dynamic-ssz/ssztypes"
+	"github.com/pk910/dynamic-ssz/sszutils"
 	"github.com/pk910/dynamic-ssz/treeproof"
 )
 
@@ -995,6 +997,36 @@ func TestBinaryVsProgressiveTrees(t *testing.T) {
 				t.Logf("Binary and progressive trees have different root hashes (expected for different merkleization methods)")
 			}
 		})
+	}
+}
+
+// TestProgressiveListLimitEnforcedInHashing verifies that an ssz-max on a
+// progressive list is enforced while hashing, matching marshal, unmarshal and
+// the generated code. Progressive lists are unbounded by default, so the limit
+// only applies when set.
+func TestProgressiveListLimitEnforcedInHashing(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type holder struct {
+		L []uint16 `ssz-type:"progressive-list" ssz-max:"4"`
+	}
+
+	// At the limit: both hashing paths accept the value.
+	within := &holder{L: []uint16{1, 2, 3, 4}}
+	if _, err := dynssz.HashTreeRoot(within); err != nil {
+		t.Fatalf("HashTreeRoot rejected a within-limit progressive list: %v", err)
+	}
+	if _, err := dynssz.GetTree(within); err != nil {
+		t.Fatalf("GetTree rejected a within-limit progressive list: %v", err)
+	}
+
+	// Above the limit: both must reject it rather than silently hashing.
+	over := &holder{L: []uint16{1, 2, 3, 4, 5}}
+	if _, err := dynssz.HashTreeRoot(over); !errors.Is(err, sszutils.ErrListTooBig) {
+		t.Fatalf("HashTreeRoot of an over-limit progressive list = %v, want ErrListTooBig", err)
+	}
+	if _, err := dynssz.GetTree(over); !errors.Is(err, sszutils.ErrListTooBig) {
+		t.Fatalf("GetTree of an over-limit progressive list = %v, want ErrListTooBig", err)
 	}
 }
 
