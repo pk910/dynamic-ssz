@@ -159,6 +159,15 @@ func (cg *CodeGenerator) analyzeTypes() error {
 				return fmt.Errorf("failed to analyze type %s: %w", typeName, err)
 			}
 
+			// A fully-delegated type (existing Dynamic* methods + ssz-static
+			// annotation, e.g. from a previous generation run) is built as a
+			// shallow descriptor without a traversed subtree; generating code
+			// from it would dereference nil descriptors. Fail with a clear
+			// message instead of panicking.
+			if isShallowDelegatedDescriptor(desc) {
+				return fmt.Errorf("type %s already implements the generated dynamic SSZ methods; its descriptor cannot be traversed for regeneration - remove the previously generated code (and its ssz-static annotation) first", typeName)
+			}
+
 			t.Descriptor = desc
 
 			// create TypeDescriptor for the view types
@@ -213,6 +222,28 @@ func (cg *CodeGenerator) analyzeTypes() error {
 }
 
 // getCompatFlags computes the SszCompatFlag set for a type based on its generation options.
+// isShallowDelegatedDescriptor reports whether a descriptor was shallow-built
+// for a fully-delegated type (ssz-static annotation + existing Dynamic*
+// methods): such descriptors carry no traversed subtree and cannot drive code
+// generation.
+func isShallowDelegatedDescriptor(desc *ssztypes.TypeDescriptor) bool {
+	switch desc.SszType {
+	case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
+		return desc.ContainerDesc == nil
+	case ssztypes.SszVectorType, ssztypes.SszListType, ssztypes.SszBitvectorType,
+		ssztypes.SszBitlistType, ssztypes.SszProgressiveListType, ssztypes.SszProgressiveBitlistType:
+		return desc.ElemDesc == nil
+	case ssztypes.SszCompatibleUnionType:
+		return desc.UnionVariants == nil
+	case ssztypes.SszUnspecifiedType:
+		// The go/types parser gate returns shallow descriptors before type
+		// classification, so a delegating unspecified descriptor is shallow.
+		return desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicMarshaler|ssztypes.SszCompatFlagDynamicEncoder) != 0
+	default:
+		return false
+	}
+}
+
 func getCompatFlags(t *CodeGeneratorTypeOptions) ssztypes.SszCompatFlag {
 	var compatFlags ssztypes.SszCompatFlag
 	hasViews := len(t.ViewGoTypesTypes) > 0 || len(t.ViewReflectTypes) > 0

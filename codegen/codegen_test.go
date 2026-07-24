@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 // TestCodeGeneratorGenerate tests the Generate() method that writes files to disk.
@@ -844,4 +845,40 @@ func TestCodeGeneratorNilOptions(t *testing.T) {
 			t.Fatalf("nil go/types view type: %v", err)
 		}
 	})
+}
+
+// regenDelegated mimics a type from an already-generated package: it fully
+// delegates SSZ through existing methods and carries the generated ssz-static
+// annotation, so the type cache shallow-builds its descriptor.
+type regenDelegated struct{ V [8]byte }
+
+var _ = sszutils.Annotate[regenDelegated](`ssz-static:"true"`)
+
+func (n *regenDelegated) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 8 }
+func (n *regenDelegated) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return append(buf, n.V[:]...), nil
+}
+func (n *regenDelegated) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	copy(n.V[:], buf)
+	return nil
+}
+func (n *regenDelegated) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutBytes(n.V[:])
+	return nil
+}
+
+// Regenerating over a type that already implements the generated methods must
+// produce a descriptive error instead of dereferencing the shallow
+// descriptor's missing subtree (previously a nil-pointer panic).
+func TestGenerateOverAlreadyGeneratedType(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("regen_test.go", WithReflectType(reflect.TypeFor[regenDelegated]()))
+
+	_, err := cg.GenerateToMap()
+	if err == nil {
+		t.Fatal("expected error for regeneration over a delegated type")
+	}
+	if !strings.Contains(err.Error(), "already implements the generated dynamic SSZ methods") {
+		t.Errorf("unexpected error: %v", err)
+	}
 }
