@@ -294,8 +294,10 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 	numLeaves := len(leaves)
 
 	// Excess leaves would be dropped silently below, producing a valid-looking
-	// root for a different tree.
-	if numLeaves > limit {
+	// root for a different tree. A negative limit is an int-overflow artifact
+	// (a chunk limit above the platform int max, only possible on 32-bit) and
+	// is handled by the limit <= 0 fallback below, not treated as excess.
+	if limit >= 0 && numLeaves > limit {
 		return nil, fmt.Errorf("number of leaves %d exceeds limit %d", numLeaves, limit)
 	}
 
