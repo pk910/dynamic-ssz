@@ -4514,3 +4514,84 @@ func TestBuildTypeWrapperIncompatibleType(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+// A multi-dimensional dynssz-size tag with an unresolvable dimension must
+// still resolve the remaining dimensions independently instead of dropping
+// them (the unresolved dimension keeps its static fallback).
+func TestTypeCache_MultiDimPartialSpecResolution(t *testing.T) {
+	ds := &dummyDynamicSpecs{specValues: map[string]uint64{"SPEC_B": 16}}
+	cache := NewTypeCache(ds)
+
+	type TestStruct struct {
+		M [][]byte `ssz-size:"4,8" dynssz-size:"SPEC_A,SPEC_B"`
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	field := desc.ContainerDesc.Fields[0]
+	if field.Type.Len != 4 {
+		t.Errorf("expected outer length 4 (static fallback), got %d", field.Type.Len)
+	}
+	if field.Type.ElemDesc.Len != 16 {
+		t.Errorf("expected inner length 16 (resolved from SPEC_B), got %d", field.Type.ElemDesc.Len)
+	}
+	if field.Type.Size != 64 {
+		t.Errorf("expected field size 64, got %d", field.Type.Size)
+	}
+}
+
+// A dynssz-bitsize expression without a dynssz-size counterpart must record
+// the bitsize expression, not the "?" placeholder of the missing size part.
+func TestTypeCache_BitsizeOnlyExpression(t *testing.T) {
+	ds := &dummyDynamicSpecs{specValues: map[string]uint64{"BIT_SPEC": 24}}
+	cache := NewTypeCache(ds)
+
+	type TestStruct struct {
+		BV []byte `ssz-type:"bitvector" ssz-bitsize:"16" dynssz-bitsize:"BIT_SPEC"`
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	field := desc.ContainerDesc.Fields[0]
+	if field.Type.SizeExpression == nil {
+		t.Fatal("expected a size expression")
+	}
+	if *field.Type.SizeExpression != "BIT_SPEC" {
+		t.Errorf("expected size expression %q, got %q", "BIT_SPEC", *field.Type.SizeExpression)
+	}
+}
+
+// annotatedJoinBitlist carries both a type and a max annotation; field tags
+// join with it per key rather than replacing it wholesale.
+type annotatedJoinBitlist []byte
+
+var _ = sszutils.Annotate[annotatedJoinBitlist](`ssz-type:"bitlist" ssz-max:"64"`)
+
+// A field-level tag overrides the type annotation per key while annotation
+// keys the field does not provide still apply.
+func TestTypeCache_FieldTagAnnotationJoin(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	type TestStruct struct {
+		B annotatedJoinBitlist `ssz-max:"16"`
+	}
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	field := desc.ContainerDesc.Fields[0]
+	if field.Type.SszType != SszBitlistType {
+		t.Errorf("expected bitlist type from annotation, got %v", field.Type.SszType)
+	}
+	if field.Type.Limit != 16 {
+		t.Errorf("expected field-level limit 16 to override annotation, got %d", field.Type.Limit)
+	}
+}

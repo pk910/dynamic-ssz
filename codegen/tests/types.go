@@ -748,6 +748,24 @@ type AnnotatedZeroStaticMax []uint32
 
 var _ = sszutils.Annotate[AnnotatedZeroStaticMax](`ssz-max:"0" dynssz-max:"ZEROSTATIC_MAX"`)
 
+// AnnotatedFixedVec is an annotated FIXED-size byte vector. As a container
+// field it is a static type and must be embedded inline without an offset.
+type AnnotatedFixedVec []byte
+
+var _ = sszutils.Annotate[AnnotatedFixedVec](`ssz-size:"8"`)
+
+// AnnotatedFixedContainer embeds an annotated fixed-size type; wire layout
+// must match the reflection descriptor (B inline, no offset).
+type AnnotatedFixedContainer struct {
+	A uint32
+	B AnnotatedFixedVec
+}
+
+var AnnotatedFixedContainer_Payload = AnnotatedFixedContainer{
+	A: 1,
+	B: AnnotatedFixedVec{1, 2, 3, 4, 5, 6, 7, 8},
+}
+
 // AnnotatedContainer uses annotated types as fields WITHOUT field tags.
 // The reflection path must resolve limits from the annotation registry;
 // the codegen path delegates to each field's generated methods.
@@ -1249,4 +1267,38 @@ type NestedDelegatedDynContainer struct {
 var NestedDelegatedDynContainer_Payload = NestedDelegatedDynContainer{
 	A: 9,
 	N: nestedDelegatedDyn{Items: []uint32{1, 2, 3}},
+}
+
+// Types below exercise codegen-vs-reflection layout/root agreement for
+// tricky descriptor shapes (multi-dim spec sizes, bitlists without limits,
+// name-detected bitlists, bitvector edge cases).
+
+// MultiDimSpecVec has a fixed-size multi-dim vector with spec expressions;
+// SizeSSZ must equal len(MarshalSSZ) even for a fully-empty value (the
+// missing rows are zero-padded on the wire).
+type MultiDimSpecVec struct {
+	M [][]byte `ssz-size:"2,4" dynssz-size:"SPEC_OUTER,SPEC_INNER"`
+}
+
+// NoMaxBitlist is a bitlist without any ssz-max limit; codegen and
+// reflection must produce the same hash tree root.
+type NoMaxBitlist struct {
+	B1 []byte `ssz-type:"bitlist"`
+}
+
+// NamedBitlistT must be detected as a bitlist by its type name, matching
+// the reflection typecache heuristic.
+type NamedBitlistT []byte
+
+// NamedBitlistContainer references the name-detected bitlist with a limit.
+type NamedBitlistContainer struct {
+	B NamedBitlistT `ssz-max:"100"`
+}
+
+// BitvecEdge covers bitvector edge cases: empty values, byte-aligned
+// dynamic bit sizes, and short values for a bit-aligned size.
+type BitvecEdge struct {
+	BV1 []byte `ssz-type:"bitvector" ssz-bitsize:"16"`
+	BV2 []byte `ssz-type:"bitvector" ssz-bitsize:"16" dynssz-bitsize:"BIT_SPEC"`
+	BV3 []byte `ssz-type:"bitvector" ssz-bitsize:"12"`
 }

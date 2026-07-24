@@ -39,6 +39,12 @@ func WithNoFastHash() DynSszOption {
 //
 // When this option is enabled, dynssz will support nun-specified types like signed integers, floating point numbers, big integers and more.
 // Generated SSZ code is incompatible with other SSZ libraries like fastssz.
+//
+// Note: this gate only applies to reflection-based processing. Generated code
+// opts into extended types at generation time (dynssz-gen's with-extended-types
+// flag / the codegen WithExtendedTypes option) and is not re-gated at runtime:
+// a type whose generated methods use extended types will marshal/unmarshal them
+// regardless of this option on the consuming DynSsz instance.
 func WithExtendedTypes() DynSszOption {
 	return func(opts *DynSszOptions) {
 		opts.ExtendedTypes = true

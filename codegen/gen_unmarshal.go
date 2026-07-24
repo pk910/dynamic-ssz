@@ -828,11 +828,22 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 				ctx.appendCode(indent, "if %s < len(buf) {\n\treturn %s\n}\n", limitVar, typePath.getErrorWith(trailErr))
 			}
 			if bitlimitVar != "" {
-				ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
-				ctx.appendCode(indent, "if buf[%s-1] & paddingMask != 0 {\n", limitVar)
+				// Only bit-aligned bitvectors (bit size not a multiple of 8) have
+				// padding bits. For runtime-resolved bit sizes the alignment is
+				// only known at runtime, so guard the check accordingly.
+				checkIndent := indent
+				if sizeExpression != nil {
+					ctx.appendCode(indent, "if %s %% 8 != 0 {\n", bitlimitVar)
+					checkIndent++
+				}
+				ctx.appendCode(checkIndent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
+				ctx.appendCode(checkIndent, "if buf[%s-1] & paddingMask != 0 {\n", limitVar)
 				errCode := errCodeBitvectorPadding
-				ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
-				ctx.appendCode(indent, "}\n")
+				ctx.appendCode(checkIndent, "\treturn %s\n", typePath.getErrorWith(errCode))
+				ctx.appendCode(checkIndent, "}\n")
+				if sizeExpression != nil {
+					ctx.appendCode(indent, "}\n")
+				}
 			}
 			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
 				typename := ctx.typePrinter.InnerTypeString(desc)

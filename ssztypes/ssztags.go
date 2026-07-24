@@ -308,11 +308,18 @@ func getSszSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]SszS
 					sszSize.Size = uint32(specVal)
 					sszSize.Custom = true
 				} else {
-					// unknown spec value? fallback to fastssz defaults
+					// Unknown spec value: keep the fastssz default for this dimension
+					// (or record it as dynamic when there is none), but keep resolving
+					// the remaining dimensions independently (matching the dynssz-max
+					// loop and codegen).
 					if i < len(sszSizes) {
 						sszSizes[i].Expr = sizeExpr
+					} else {
+						sszSize.Dynamic = true
+						sszSize.Expr = sizeExpr
+						sszSizes = append(sszSizes, sszSize)
 					}
-					break
+					continue
 				}
 			}
 
@@ -324,7 +331,7 @@ func getSszSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]SszS
 			}
 
 			if isExpr {
-				sszSizes[i].Expr = sszSizeStr
+				sszSizes[i].Expr = sizeExpr
 			}
 		}
 	}
@@ -467,6 +474,21 @@ func getTagPart(parts []string, index int) string {
 		return parts[index]
 	}
 	return "?"
+}
+
+// JoinFieldAnnotationTag returns the effective SSZ tag for a struct field whose
+// type carries a registered annotation: the field tag is joined in front of the
+// annotation tag, so a key present in both resolves to the field's value
+// (reflect.StructTag.Lookup returns the first occurrence) while annotation-only
+// keys still apply.
+func JoinFieldAnnotationTag(fieldTag reflect.StructTag, annotationTag string) reflect.StructTag {
+	if annotationTag == "" {
+		return fieldTag
+	}
+	if fieldTag == "" {
+		return reflect.StructTag(annotationTag)
+	}
+	return reflect.StructTag(string(fieldTag) + " " + annotationTag)
 }
 
 // ParseTags parses SSZ annotations from a string in struct tag format.

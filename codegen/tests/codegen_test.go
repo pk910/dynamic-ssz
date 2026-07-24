@@ -799,3 +799,100 @@ func testCodegenPayload(t *testing.T, payload TestPayload) {
 		t.Fatalf("Hash root mismatch 2: expected %s, got %s", payload.Hash, hashRootHex)
 	}
 }
+
+// An annotated FIXED-size type used as a container field must be embedded
+// inline (static, no offset), matching the reflection layout.
+func TestCodegenAnnotatedFixedContainer(t *testing.T) {
+	testCodegenPayloadByReflection(t, AnnotatedFixedContainer_Payload, nil)
+
+	ds := dynssz.NewDynSsz(nil)
+	enc, err := ds.MarshalSSZ(&AnnotatedFixedContainer_Payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// 4-byte uint32 + 8-byte inline vector, no offset table
+	if len(enc) != 12 {
+		t.Errorf("expected 12-byte inline encoding, got %d bytes: %x", len(enc), enc)
+	}
+}
+
+// SizeSSZ must match the marshaled length for a multi-dim vector with spec
+// expressions even when the value is fully empty (missing rows are padded).
+func TestCodegenMultiDimSpecVec(t *testing.T) {
+	for _, specs := range []map[string]any{nil, {"SPEC_OUTER": uint64(2), "SPEC_INNER": uint64(4)}} {
+		testCodegenPayloadByReflection(t, MultiDimSpecVec{M: [][]byte{}}, specs)
+		testCodegenPayloadByReflection(t, MultiDimSpecVec{M: [][]byte{{1, 2, 3, 4}}}, specs)
+		testCodegenPayloadByReflection(t, MultiDimSpecVec{M: [][]byte{{1, 2, 3, 4}, {5, 6, 7, 8}}}, specs)
+	}
+}
+
+// A bitlist without ssz-max must produce the same root in both engines
+// (length mixin with a limit derived from the serialized bit length).
+func TestCodegenNoMaxBitlist(t *testing.T) {
+	testCodegenPayloadByReflection(t, NoMaxBitlist{B1: []byte{0x01}}, nil)
+	testCodegenPayloadByReflection(t, NoMaxBitlist{B1: []byte{0xff, 0x03}}, nil)
+}
+
+// Named *Bitlist* types must be classified as bitlists by the codegen parser
+// like the reflection typecache heuristic does.
+func TestCodegenNamedBitlist(t *testing.T) {
+	testCodegenPayloadByReflection(t, NamedBitlistContainer{B: NamedBitlistT{0xff, 0x03}}, nil)
+
+	ds := dynssz.NewDynSsz(nil)
+
+	// missing termination bit
+	var a NamedBitlistContainer
+	if err := ds.UnmarshalSSZ(&a, []byte{0x04, 0, 0, 0, 0x00}); err == nil {
+		t.Error("accepted bitlist without termination bit")
+	}
+
+	// 399 bits exceeds the 100-bit limit
+	big := make([]byte, 50)
+	big[49] = 0x80
+	var b NamedBitlistContainer
+	if err := ds.UnmarshalSSZ(&b, append([]byte{0x04, 0, 0, 0}, big...)); err == nil {
+		t.Error("accepted bitlist exceeding its bit limit")
+	}
+}
+
+// Bitvector edge cases: empty and short values marshal zero-padded without
+// panicking, and byte-aligned runtime bit sizes accept fully-populated
+// last bytes. Invalid padding bits must still be rejected.
+func TestCodegenBitvectorEdgeCases(t *testing.T) {
+	specs := map[string]any{"BIT_SPEC": uint64(16)}
+	payloads := []BitvecEdge{
+		{BV1: []byte{}, BV2: []byte{}, BV3: []byte{}},
+		{BV1: []byte{0xff}, BV2: []byte{0xff}, BV3: []byte{0xff}},
+		{BV1: []byte{0xff, 0xff}, BV2: []byte{0xff, 0xff}, BV3: []byte{0xff, 0x0f}},
+	}
+	for _, p := range payloads {
+		testCodegenPayloadByReflection(t, p, nil)
+		testCodegenPayloadByReflection(t, p, specs)
+	}
+
+	// round-trip through the generated buffer and stream decoders
+	ds := dynssz.NewDynSsz(specs)
+	full := BitvecEdge{BV1: []byte{0xff, 0xff}, BV2: []byte{0xff, 0xff}, BV3: []byte{0xff, 0x0f}}
+	enc, err := ds.MarshalSSZ(&full)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back BitvecEdge
+	if err := ds.UnmarshalSSZ(&back, enc); err != nil {
+		t.Errorf("buffer unmarshal rejected a valid encoding: %v", err)
+	}
+	var back2 BitvecEdge
+	if err := ds.UnmarshalSSZReader(&back2, bytes.NewReader(enc), len(enc)); err != nil {
+		t.Errorf("stream unmarshal rejected a valid encoding: %v", err)
+	}
+
+	// non-zero padding bits in the 12-bit vector must be rejected by both engines
+	invalid := BitvecEdge{BV1: []byte{0xff, 0xff}, BV2: []byte{0xff, 0xff}, BV3: []byte{0xff, 0xff}}
+	if _, err := ds.MarshalSSZ(&invalid); err == nil {
+		t.Error("generated marshal accepted non-zero padding bits")
+	}
+	refDs := dynssz.NewDynSsz(specs, dynssz.WithNoFastSsz(), dynssz.WithNoFastHash())
+	if _, err := refDs.MarshalSSZ(invalid); err == nil {
+		t.Error("reflection marshal accepted non-zero padding bits")
+	}
+}

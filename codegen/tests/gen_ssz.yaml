@@ -94,3 +94,12 @@ types:
     view-only: true
     views:
       - ViewTypes3_View1
+
+  - name: MultiDimSpecVec
+    output: gen_divergence.go
+  - name: NoMaxBitlist
+    output: gen_divergence.go
+  - name: NamedBitlistContainer
+    output: gen_divergence.go
+  - name: BitvecEdge
+    output: gen_divergence.go

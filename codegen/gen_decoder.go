@@ -620,11 +620,22 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 			} else {
 				ctx.appendCode(indent, "if _, err = dec.DecodeBytes(%s[:%s]); err != nil {\n\treturn err\n}\n", indexValueVar, limitVar)
 				if bitlimitVar != "" {
-					ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
-					ctx.appendCode(indent, "if %s[%s-1] & paddingMask != 0 {\n", indexValueVar, limitVar)
+					// Only bit-aligned bitvectors (bit size not a multiple of 8)
+					// have padding bits. For runtime-resolved bit sizes the
+					// alignment is only known at runtime, so guard accordingly.
+					checkIndent := indent
+					if sizeExpression != nil {
+						ctx.appendCode(indent, "if %s %% 8 != 0 {\n", bitlimitVar)
+						checkIndent++
+					}
+					ctx.appendCode(checkIndent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
+					ctx.appendCode(checkIndent, "if %s[%s-1] & paddingMask != 0 {\n", indexValueVar, limitVar)
 					errCode := errCodeBitvectorPadding
-					ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
-					ctx.appendCode(indent, "}\n")
+					ctx.appendCode(checkIndent, "\treturn %s\n", typePath.getErrorWith(errCode))
+					ctx.appendCode(checkIndent, "}\n")
+					if sizeExpression != nil {
+						ctx.appendCode(indent, "}\n")
+					}
 				}
 			}
 			return nil

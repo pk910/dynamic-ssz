@@ -662,12 +662,22 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		}
 
 		if bitlimitVar != "" {
-			// check padding bits
-			ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
-			ctx.appendCode(indent, "if %s[%s-1] & paddingMask != 0 {\n", valVar, limitVar)
+			// Only bit-aligned bitvectors (bit size not a multiple of 8) have
+			// padding bits. For runtime-resolved bit sizes the alignment is
+			// only known at runtime, so guard the check accordingly.
+			checkIndent := indent
+			if sizeExpression != nil {
+				ctx.appendCode(indent, "if %s %% 8 != 0 {\n", bitlimitVar)
+				checkIndent++
+			}
+			ctx.appendCode(checkIndent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
+			ctx.appendCode(checkIndent, "if %s[%s-1] & paddingMask != 0 {\n", valVar, limitVar)
 			errCode := errCodeBitvectorPadding
-			ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
-			ctx.appendCode(indent, "}\n")
+			ctx.appendCode(checkIndent, "\treturn %s\n", typePath.getErrorWith(errCode))
+			ctx.appendCode(checkIndent, "}\n")
+			if sizeExpression != nil {
+				ctx.appendCode(indent, "}\n")
+			}
 		}
 
 		if pack {
@@ -887,10 +897,7 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varNa
 
 	ctx.appendCode(indent, "idx := hh.StartTree(sszutils.TreeTypeNone)\n")
 	hasherAlias := ctx.typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
-	sizeVar := "_"
-	if maxVar != "" || desc.SszType == ssztypes.SszProgressiveBitlistType {
-		sizeVar = "size"
-	}
+	sizeVar := "size"
 	// Progressive bitlists must keep all-zero top chunks (the chunk count defines
 	// the progressive tree shape), so parse without trailing-zero trimming.
 	parseFn := "ParseBitlistWithHasher"
@@ -913,7 +920,9 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varNa
 	case maxVar != "":
 		ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, size, sszutils.CalculateBitlistLimit(%s))\n", maxVar)
 	default:
-		ctx.appendCode(indent, "hh.Merkleize(idx)\n")
+		// No explicit limit: derive it from the serialized bit length and mix
+		// in the length, matching the reflection path (buildRootFromBitlist).
+		ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, size, sszutils.CalculateBitlistLimit(uint64(len(%s)*8)))\n", varName)
 	}
 
 	return nil

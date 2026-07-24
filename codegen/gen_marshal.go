@@ -632,11 +632,30 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		switch {
 		case desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 || desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0:
 			if bitlimitVar != "" {
-				ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
-				ctx.appendCode(indent, "if %s[%s-1] & paddingMask != 0 {\n", getValueVar(false, ""), lenVar)
+				// Padding bits only exist when the bit size is not byte-aligned
+				// (runtime-checked for expression sizes) and the value occupies
+				// the full byte length — shorter values are zero-padded, so
+				// their last byte is a data byte, not the boundary byte.
+				conds := []string{}
+				if lenVar == varNameVLen {
+					conds = append(conds, fmt.Sprintf("%s == %s", lenVar, limitVar))
+				}
+				if sizeExpression != nil {
+					conds = append(conds, fmt.Sprintf("%s %% 8 != 0", bitlimitVar))
+				}
+				checkIndent := indent
+				if len(conds) > 0 {
+					ctx.appendCode(indent, "if %s {\n", strings.Join(conds, " && "))
+					checkIndent++
+				}
+				ctx.appendCode(checkIndent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
+				ctx.appendCode(checkIndent, "if %s[%s-1] & paddingMask != 0 {\n", getValueVar(false, ""), lenVar)
 				errCode := errCodeBitvectorPadding
-				ctx.appendCode(indent, "\treturn nil, %s\n", typePath.getErrorWith(errCode))
-				ctx.appendCode(indent, "}\n")
+				ctx.appendCode(checkIndent, "\treturn nil, %s\n", typePath.getErrorWith(errCode))
+				ctx.appendCode(checkIndent, "}\n")
+				if len(conds) > 0 {
+					ctx.appendCode(indent, "}\n")
+				}
 			}
 			ctx.appendCode(indent, "dst = append(dst, %s[:%s]...)\n", getValueVar(false, ""), lenVar)
 		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0:

@@ -30,6 +30,7 @@ type sizeContext struct {
 	typePrinter     *TypePrinter
 	options         *CodeGeneratorOptions
 	exprVars        *exprVarGenerator
+	staticSizeVars  *staticSizeVarGenerator
 	usedDynSpecs    bool
 	indexVarCounter int
 	sizeVarCounter  int
@@ -52,6 +53,7 @@ func newSizeContext(typePrinter *TypePrinter, options *CodeGeneratorOptions) *si
 		useTypeFnMap: make(map[*ssztypes.TypeDescriptor]*sizeFnPtr),
 	}
 	ctx.exprVars.retVars = "0"
+	ctx.staticSizeVars = newStaticSizeVarGenerator(typePrinter, options, ctx.exprVars)
 	return ctx
 }
 
@@ -100,7 +102,7 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 		return err
 	}
 
-	if ctx.exprVars.varCounter > 0 {
+	if ctx.exprVars.varCounter > 0 || ctx.staticSizeVars.varCounter > 0 {
 		ctx.usedDynSpecs = true
 	}
 
@@ -119,6 +121,7 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 				appendCode(codeBuilder, 1, "return %d\n", rootTypeDesc.Size)
 			} else {
 				appendCode(codeBuilder, 1, ctx.exprVars.getCode())
+				appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
 				appendCode(codeBuilder, 1, ctx.codeBuf.String())
 				appendCode(codeBuilder, 1, "return size\n")
 			}
@@ -143,6 +146,7 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 			}
 			appendCode(codeBuilder, 0, "func (t %s) %s(ds sszutils.DynamicSpecs) (size int) {\n", typeName, fnName)
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
+			appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
 			appendCode(codeBuilder, 1, ctx.codeBuf.String())
 			appendCode(codeBuilder, 1, "return size\n")
 			appendCode(codeBuilder, 0, "}\n\n")
@@ -449,16 +453,15 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 		switch {
 		case desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions:
-			useVar()
-			ctx.appendCode(indent, "if len(%s) > 0 {\n", valueVar)
-			innerVarName := fmt.Sprintf("%s[0]", valueVar)
-			innerSizeVar := ctx.getSizeVar()
-			ctx.appendCode(indent, "\t%s := 0\n", innerSizeVar)
-			if err := ctx.sizeType(desc.ElemDesc, innerVarName, innerSizeVar, indent+1, false); err != nil {
+			// The element size follows from its size expression, not from the
+			// values present: missing rows are zero-padded on the wire, so the
+			// size must not depend on how many elements are set (SizeSSZ has to
+			// equal len(MarshalSSZ) even for a fully-empty value).
+			innerSizeVar, err := ctx.staticSizeVars.getStaticSizeVar(desc.ElemDesc)
+			if err != nil {
 				return err
 			}
-			ctx.appendCode(indent, "\t%s += %s * %s\n", sizeVar, innerSizeVar, limitVar)
-			ctx.appendCode(indent, "}\n")
+			ctx.appendCode(indent, "%s += int(%s) * %s\n", sizeVar, innerSizeVar, limitVar)
 		case desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 || desc.ElemDesc.Size == 1:
 			// For byte arrays, size is just the vector length
 			ctx.appendCode(indent, "%s += %s\n", sizeVar, limitVar)

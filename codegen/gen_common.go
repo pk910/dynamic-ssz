@@ -193,7 +193,14 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 			}
 
 			if sizeExpression != nil {
-				exprVar := g.exprVarGenerator.getExprVar(*sizeExpression, uint64(desc.Len))
+				// Bit-size expressions resolve to a bit count, so their default
+				// must be the bit size (matching the marshal/unmarshal paths),
+				// not the byte length.
+				defaultValue := uint64(desc.Len)
+				if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 && desc.BitSize > 0 {
+					defaultValue = uint64(desc.BitSize)
+				}
+				exprVar := g.exprVarGenerator.getExprVar(*sizeExpression, defaultValue)
 
 				if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
 					exprVar = fmt.Sprintf("(%s+7)/8", exprVar)

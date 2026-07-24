@@ -206,13 +206,17 @@ func (ctx *encoderContext) generateSizeFnCode(indent int) (string, error) {
 		return nameA - nameB
 	})
 
-	resetRetVars := ctx.exprVars.withRetVars("0")
+	// Expression-resolve code created while generating size closures is emitted
+	// into the surrounding encoder method (which returns err), not into the
+	// closures themselves, so the error-return style must stay "err".
+	resetRetVars := ctx.exprVars.withRetVars("err")
 	defer resetRetVars()
 
 	for _, desc := range fnTypeList {
 		fnName := fmt.Sprintf("sizeFn%d", ctx.sizeFnNameMap[desc])
 		sizeCtx := newSizeContext(ctx.typePrinter, ctx.options)
 		sizeCtx.exprVars = ctx.exprVars
+		sizeCtx.staticSizeVars = newStaticSizeVarGenerator(ctx.typePrinter, ctx.options, ctx.exprVars)
 
 		sizeFnMap := make(map[*ssztypes.TypeDescriptor]*sizeFnPtr)
 		for desc2, idx := range ctx.sizeFnNameMap {
@@ -234,6 +238,7 @@ func (ctx *encoderContext) generateSizeFnCode(indent int) (string, error) {
 		if err := sizeCtx.sizeType(desc, "t", "size", 0, false); err != nil {
 			return "", err
 		}
+		appendCode(&codeBuf, indent+1, "%s", sizeCtx.staticSizeVars.getCode())
 		appendCode(&codeBuf, indent+1, "%s", sizeCtx.codeBuf.String())
 		appendCode(&codeBuf, indent+1, "return size\n")
 		appendCode(&codeBuf, indent, "}\n")
@@ -628,11 +633,30 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 				valueVar = fmt.Sprintf("(%s)", valueVar)
 			}
 			if bitlimitVar != "" {
-				ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
-				ctx.appendCode(indent, "if %s[%s-1] & paddingMask != 0 {\n", getValueVar(false, ""), lenVar)
+				// Padding bits only exist when the bit size is not byte-aligned
+				// (runtime-checked for expression sizes) and the value occupies
+				// the full byte length — shorter values are zero-padded, so
+				// their last byte is a data byte, not the boundary byte.
+				conds := []string{}
+				if lenVar == varNameVLen {
+					conds = append(conds, fmt.Sprintf("%s == %s", lenVar, limitVar))
+				}
+				if sizeExpression != nil {
+					conds = append(conds, fmt.Sprintf("%s %% 8 != 0", bitlimitVar))
+				}
+				checkIndent := indent
+				if len(conds) > 0 {
+					ctx.appendCode(indent, "if %s {\n", strings.Join(conds, " && "))
+					checkIndent++
+				}
+				ctx.appendCode(checkIndent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
+				ctx.appendCode(checkIndent, "if %s[%s-1] & paddingMask != 0 {\n", getValueVar(false, ""), lenVar)
 				errCode := errCodeBitvectorPadding
-				ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
-				ctx.appendCode(indent, "}\n")
+				ctx.appendCode(checkIndent, "\treturn %s\n", typePath.getErrorWith(errCode))
+				ctx.appendCode(checkIndent, "}\n")
+				if len(conds) > 0 {
+					ctx.appendCode(indent, "}\n")
+				}
 			}
 			ctx.appendCode(indent, "enc.EncodeBytes(%s[:%s])\n", getValueVar(false, ""), lenVar)
 		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0:

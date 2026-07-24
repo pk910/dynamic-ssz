@@ -1155,6 +1155,13 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 			fieldIndices[*sszIndex] = struct{}{}
 		}
 
+		// Field-level tags override the type's registered annotation per key:
+		// join the two (field tag first — Lookup returns the first occurrence)
+		// so annotation keys the field does not override still apply.
+		if annTag, ok := sszutils.LookupAnnotation(schemaField.Type); ok {
+			schemaField.Tag = JoinFieldAnnotationTag(schemaField.Tag, annTag)
+		}
+
 		// Get size hints from schema field tags (schema defines SSZ constraints)
 		sizeHints, err := getSszSizeTag(tc.specs, &schemaField)
 		if err != nil {

@@ -9,6 +9,7 @@ import (
 	"go/types"
 	"reflect"
 	"strconv"
+	"strings"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
 )
@@ -397,6 +398,26 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		}
 	}
 
+	// Named types can carry SSZ annotations registered via sszutils.Annotate.
+	// When the reference itself provides no hints, apply the annotation's hints
+	// so the layout classification matches the reflection typecache (e.g. an
+	// ssz-size annotated type is a fixed-size vector and must be embedded
+	// inline in containers). References with explicit field-level hints keep
+	// those (they override the annotation).
+	if p.AnnotationResolver != nil && len(typeHints) == 0 && len(sizeHints) == 0 && len(maxSizeHints) == 0 {
+		annotationType := originalType
+		if ptr, ok := annotationType.(*types.Pointer); ok {
+			annotationType = ptr.Elem()
+		}
+		if tag := p.AnnotationResolver(annotationType); tag != "" {
+			annTypeHints, annSizeHints, annMaxSizeHints, err := ssztypes.ParseTags(tag)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse ssz annotation for type %v: %v", annotationType, err)
+			}
+			typeHints, sizeHints, maxSizeHints = annTypeHints, annSizeHints, annMaxSizeHints
+		}
+	}
+
 	// Set kind based on underlying type
 	switch t := schemaType.(type) {
 	case *types.Basic:
@@ -610,6 +631,14 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 			default:
 				return nil, fmt.Errorf("unsupported type kind: %v", desc.Kind)
 			}
+		}
+
+		// Special case for bitlists: named list types whose name contains
+		// "Bitlist" are treated as bitlists, matching the reflection typecache
+		// heuristic (ssztypes/typecache.go).
+		if sszType == ssztypes.SszListType && schemaNamedType != nil &&
+			strings.Contains(schemaNamedType.Obj().Name(), "Bitlist") {
+			sszType = ssztypes.SszBitlistType
 		}
 	}
 
@@ -1003,13 +1032,27 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 			continue
 		}
 
-		typeHints, sizeHints, maxSizeHints, err := p.parseFieldTags(schemaStruct.Tag(i))
+		// Determine data and schema field types
+		schemaFieldType := schemaField.Type()
+
+		// Field-level tags override the type's registered annotation per key:
+		// join the two (field tag first — Lookup returns the first occurrence)
+		// so annotation keys the field does not override still apply.
+		fieldTag := schemaStruct.Tag(i)
+		if p.AnnotationResolver != nil {
+			annotationType := schemaFieldType
+			if ptr, ok := annotationType.(*types.Pointer); ok {
+				annotationType = ptr.Elem()
+			}
+			if annTag := p.AnnotationResolver(annotationType); annTag != "" {
+				fieldTag = string(ssztypes.JoinFieldAnnotationTag(reflect.StructTag(fieldTag), annTag))
+			}
+		}
+
+		typeHints, sizeHints, maxSizeHints, err := p.parseFieldTags(fieldTag)
 		if err != nil {
 			return fmt.Errorf("failed to parse tags for field %v: %v", schemaField.Name(), err)
 		}
-
-		// Determine data and schema field types
-		schemaFieldType := schemaField.Type()
 		var dataFieldType types.Type
 		if isViewDescriptor {
 			// Look up corresponding data field by name
