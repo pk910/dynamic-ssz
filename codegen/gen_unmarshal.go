@@ -528,9 +528,9 @@ func (ctx *unmarshalContext) unmarshalOptional(desc *ssztypes.TypeDescriptor, va
 	// trailing data too; a variable-size value consumes the remaining bytes.
 	elemSize := desc.ElemDesc.Size
 	if elemSize > 0 {
-		ctx.appendCode(indent+1, "if len(buf) < %d {\n\treturn %s\n}\n", 1+elemSize, typePath.getErrorWith("sszutils.ErrOptionalValueEOFFn()"))
-		presentTrailErr := fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - %d)", 1+elemSize)
-		ctx.appendCode(indent+1, "if len(buf) > %d {\n\treturn %s\n}\n", 1+elemSize, typePath.getErrorWith(presentTrailErr))
+		eofErr := typePath.getErrorWith("sszutils.ErrOptionalValueEOFFn()")
+		trailErr := typePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - %d)", 1+elemSize))
+		ctx.appendExactLenCheck(indent+1, fmt.Sprintf("%d", 1+elemSize), "len(buf)", eofErr, trailErr)
 	}
 
 	valVar := ctx.getValVar()
@@ -580,10 +580,9 @@ func (ctx *unmarshalContext) unmarshalOptionalList(desc *ssztypes.TypeDescriptor
 		} else {
 			sizeVar = fmt.Sprintf("%d", desc.ElemDesc.Size)
 		}
-		errEOF := "sszutils.ErrOptionalValueEOFFn()"
-		ctx.appendCode(indent+1, "if len(buf) < int(%s) {\n\treturn %s\n}\n", sizeVar, typePath.getErrorWith(errEOF))
-		trailErr := fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - int(%s))", sizeVar)
-		ctx.appendCode(indent+1, "if len(buf) > int(%s) {\n\treturn %s\n}\n", sizeVar, typePath.getErrorWith(trailErr))
+		eofErr := typePath.getErrorWith("sszutils.ErrOptionalValueEOFFn()")
+		trailErr := typePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - int(%s))", sizeVar))
+		ctx.appendExactLenCheck(indent+1, fmt.Sprintf("int(%s)", sizeVar), "len(buf)", eofErr, trailErr)
 	}
 	valVar := ctx.getValVar()
 	ctx.appendCode(indent+1, "var %s %s\n", valVar, ctx.typePrinter.TypeString(desc.ElemDesc))
@@ -1260,10 +1259,9 @@ func (ctx *unmarshalContext) unmarshalUnion(desc *ssztypes.TypeDescriptor, varNa
 		// (matching the reflection and streaming-decoder paths).
 		elemSize := variantDesc.Size
 		if elemSize > 0 {
-			errCode = fmt.Sprintf("sszutils.ErrUnionVariantEOFFn(len(buf), %d)", 1+elemSize)
-			ctx.appendCode(indent+1, "if len(buf) < %d {\n\treturn %s\n}\n", 1+elemSize, childTypePath.getErrorWith(errCode))
-			trailErr := fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - %d)", 1+elemSize)
-			ctx.appendCode(indent+1, "if len(buf) > %d {\n\treturn %s\n}\n", 1+elemSize, childTypePath.getErrorWith(trailErr))
+			eofErr := childTypePath.getErrorWith(fmt.Sprintf("sszutils.ErrUnionVariantEOFFn(len(buf), %d)", 1+elemSize))
+			trailErr := childTypePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - %d)", 1+elemSize))
+			ctx.appendExactLenCheck(indent+1, fmt.Sprintf("%d", 1+elemSize), "len(buf)", eofErr, trailErr)
 		}
 
 		valVar := ctx.getValVar()
