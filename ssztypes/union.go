@@ -26,11 +26,34 @@ func extractUnionDescriptorInfo(descriptorType reflect.Type, ds sszutils.Dynamic
 		return nil, sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "union descriptor must be a struct, got %v", descriptorType.Kind())
 	}
 
+	// An ssz-index tag assigns an explicit selector value, e.g. 1-based
+	// selectors for EIP-7495 conformant unions. Mixing tagged and untagged
+	// variants would silently renumber the untagged ones, so require
+	// all-or-none up front.
+	indexTagCount := 0
+	for i := 0; i < descriptorType.NumField(); i++ {
+		field := descriptorType.Field(i)
+		if _, ok := field.Tag.Lookup("ssz-index"); ok {
+			indexTagCount++
+		}
+	}
+	if indexTagCount > 0 && indexTagCount != descriptorType.NumField() {
+		return nil, sszutils.NewSszError(sszutils.ErrInvalidConstraint, "union descriptor mixes fields with and without ssz-index tags (all variants must carry one when any does)")
+	}
+
 	variantInfo := make(map[uint8]unionVariantInfo)
 
 	for i := 0; i < descriptorType.NumField(); i++ {
 		field := descriptorType.Field(i)
-		variantIndex := uint8(i) // Field order determines variant index
+		variantIndex := uint8(i) // Field order determines the default variant selector
+
+		sszIndex, err := getSszIndexTag(&field)
+		if err != nil {
+			return nil, err
+		}
+		if sszIndex != nil {
+			variantIndex = uint8(*sszIndex)
+		}
 
 		// Extract SSZ annotations using existing DynSsz methods
 		sizeHints, err := getSszSizeTag(ds, &field)
@@ -46,6 +69,10 @@ func extractUnionDescriptorInfo(descriptorType reflect.Type, ds sszutils.Dynamic
 		typeHints, err := getSszTypeTag(&field)
 		if err != nil {
 			return nil, err
+		}
+
+		if _, exists := variantInfo[variantIndex]; exists {
+			return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "duplicate union selector %d (field %s)", variantIndex, field.Name)
 		}
 
 		variantInfo[variantIndex] = unionVariantInfo{

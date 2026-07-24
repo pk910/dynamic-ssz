@@ -1007,3 +1007,31 @@ func TestCodegenStreamUnionDynVariantTruncated(t *testing.T) {
 		t.Error("stream UnmarshalSSZReader accepted an empty union region")
 	}
 }
+
+// Explicit selector values assigned via ssz-index tags on union variant
+// fields must be honored identically by codegen and reflection.
+func TestCodegenUnionTaggedSelectors(t *testing.T) {
+	testCodegenPayloadByReflection(t, UnionTaggedSelectors_Payload, nil)
+
+	ds := dynssz.NewDynSsz(nil)
+	enc, err := ds.MarshalSSZ(&UnionTaggedSelectors_Payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// offset (4) + selector byte 1 + uint32 payload
+	if len(enc) != 9 || enc[4] != 1 {
+		t.Fatalf("unexpected encoding: %x", enc)
+	}
+
+	// selector 0 is not assigned and must be rejected by both paths
+	bad := append([]byte{}, enc...)
+	bad[4] = 0
+	var a UnionTaggedSelectors
+	if err := ds.UnmarshalSSZ(&a, bad); err == nil {
+		t.Error("buffer UnmarshalSSZ accepted unassigned selector 0")
+	}
+	var b UnionTaggedSelectors
+	if err := ds.UnmarshalSSZReader(&b, bytes.NewReader(bad), len(bad)); err == nil {
+		t.Error("stream UnmarshalSSZReader accepted unassigned selector 0")
+	}
+}

@@ -1098,6 +1098,12 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 			if err != nil {
 				return fmt.Errorf("invalid ssz-index: %v", indexStr)
 			}
+			// EIP-7495 progressive containers support at most 256 active fields
+			// (a larger bitvector also has no stable single-chunk mixin), and
+			// union selectors are a single byte.
+			if idx > 255 {
+				return fmt.Errorf("ssz-index %d for field %q exceeds the supported maximum of 255", idx, schemaField.Name())
+			}
 			fieldDesc.SszIndex = uint16(idx)
 			hasIndex = true
 			hasAnyIndexTag = true
@@ -1412,12 +1418,38 @@ func (p *Parser) buildCompatibleUnionDescriptor(desc *ssztypes.TypeDescriptor, d
 		}
 	}
 
+	// An ssz-index tag assigns an explicit selector value, e.g. 1-based
+	// selectors for EIP-7495 conformant unions. Mixing tagged and untagged
+	// variants would silently renumber the untagged ones, so require
+	// all-or-none up front.
+	indexTagCount := 0
+	for i := 0; i < schemaDescriptorStruct.NumFields(); i++ {
+		if p.extractSszIndex(schemaDescriptorStruct.Tag(i)) != "" {
+			indexTagCount++
+		}
+	}
+	if indexTagCount > 0 && indexTagCount != schemaDescriptorStruct.NumFields() {
+		return fmt.Errorf("union descriptor mixes fields with and without ssz-index tags (all variants must carry one when any does)")
+	}
+
 	// Build union variants iterating over schema (determines SSZ layout)
 	variantInfo := make(map[uint8]*ssztypes.TypeDescriptor)
 
 	for i := 0; i < schemaDescriptorStruct.NumFields(); i++ {
 		schemaField := schemaDescriptorStruct.Field(i)
-		variantIndex := uint8(i) // Field order determines variant index
+		variantIndex := uint8(i) // Field order determines the default variant selector
+
+		if indexStr := p.extractSszIndex(schemaDescriptorStruct.Tag(i)); indexStr != "" {
+			idx, err := strconv.ParseUint(indexStr, 10, 8)
+			if err != nil {
+				return fmt.Errorf("invalid ssz-index for union variant %s: %v", schemaField.Name(), indexStr)
+			}
+			variantIndex = uint8(idx)
+		}
+
+		if _, exists := variantInfo[variantIndex]; exists {
+			return fmt.Errorf("duplicate union selector %d (field %s)", variantIndex, schemaField.Name())
+		}
 
 		// Extract SSZ annotations from the schema field
 		typeHints, sizeHints, maxSizeHints, err := p.parseFieldTags(schemaDescriptorStruct.Tag(i))

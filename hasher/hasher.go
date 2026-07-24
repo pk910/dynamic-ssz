@@ -72,6 +72,7 @@ type treeLayer struct {
 	// two), which holds because list/vector elements share a single type.
 	pendCount      int // number of deferred child subtrees not yet reduced to roots
 	pendElemChunks int // chunk count of each deferred subtree (power of two)
+	pendStart      int // byte offset of the first deferred subtree in the buffer
 }
 
 // Hasher is a utility tool to hash SSZ structs
@@ -376,6 +377,7 @@ func (h *Hasher) pushLayer() *treeLayer {
 	// (e.g. an error returned before finalize, then Reset + pool reuse).
 	layer.pendCount = 0
 	layer.pendElemChunks = 0
+	layer.pendStart = 0
 	return layer
 }
 
@@ -394,26 +396,38 @@ func deferrableElemChunks(scopeBytes int) (int, bool) {
 }
 
 // flushPending reduces a layer's deferred child subtrees (pendCount subtrees of
-// pendElemChunks chunks each, sitting at the tail of the buffer) to pendCount
-// roots, hashing one whole level across all subtrees per call. This realises the
+// pendElemChunks chunks each, starting at pendStart) to pendCount roots,
+// hashing one whole level across all subtrees per call. This realises the
 // batching win: a few wide hash calls instead of one tiny merkleization per
-// element. The roots replace the raw chunks in place.
+// element. The roots replace the raw chunks in place; any bytes appended after
+// the pending run (e.g. raw chunks of later siblings) are moved down to stay
+// adjacent to the reduced roots.
 func (h *Hasher) flushPending(layer *treeLayer) {
 	count := layer.pendCount
 	elem := layer.pendElemChunks
+	start := layer.pendStart
 	layer.pendCount = 0
 	layer.pendElemChunks = 0
+	layer.pendStart = 0
 	if count == 0 {
 		return
 	}
 	width := count * elem
-	start := len(h.buf) - width*32
 	for width > count {
 		half := (width / 2) * 32
 		_ = h.hash(h.buf[start:start+half], h.buf[start:start+width*32])
 		width /= 2
 	}
-	h.buf = h.buf[:start+count*32]
+	// Move anything that was appended after the pending run down so the buffer
+	// stays contiguous after the run shrank to count roots.
+	runEnd := start + count*elem*32
+	rootsEnd := start + count*32
+	if tail := len(h.buf) - runEnd; tail > 0 {
+		copy(h.buf[rootsEnd:], h.buf[runEnd:])
+		h.buf = h.buf[:rootsEnd+tail]
+	} else {
+		h.buf = h.buf[:rootsEnd]
+	}
 }
 
 // StartTree opens a new SSZ object scope and returns the buffer index.
@@ -890,7 +904,21 @@ func (h *Hasher) Merkleize(indx int) {
 		if !layer.incremental && h.layerCount >= 1 {
 			parent := &h.layers[h.layerCount-1]
 			if parent.incremental {
-				if c, ok := deferrableElemChunks(len(h.buf) - indx); ok && (parent.pendCount == 0 || parent.pendElemChunks == c) {
+				if c, ok := deferrableElemChunks(len(h.buf) - indx); ok {
+					// The pending run must stay one contiguous region of uniform
+					// subtrees. If this scope does not extend the current run
+					// (different chunk count, or raw chunks were appended in
+					// between), flush the old run first — that shifts this
+					// scope's chunks down, so adjust indx accordingly.
+					if parent.pendCount > 0 &&
+						(parent.pendElemChunks != c || parent.pendStart+parent.pendCount*c*32 != indx) {
+						shift := parent.pendCount * (parent.pendElemChunks - 1) * 32
+						h.flushPending(parent)
+						indx -= shift
+					}
+					if parent.pendCount == 0 {
+						parent.pendStart = indx
+					}
 					parent.pendElemChunks = c
 					parent.pendCount++
 					h.popTopLayer()
@@ -1094,14 +1122,30 @@ func (h *Hasher) MerkleizeProgressiveWithActiveFields(indx int, activeFields []b
 		logfn("-> %x (%x)", input, activeFields)
 	}
 
-	// mixin with the active fields bitvector
-	input = append(input, activeFields...)
-	if rest := len(activeFields) % 32; rest != 0 {
-		// pad zero bytes to the left
-		input = append(input, zeroBytes[:32-rest]...)
+	// Mixin with the active fields bitvector. Up to 256 bits fit a single
+	// chunk; a larger bitvector is merkleized to its root first so the mixin
+	// input is always exactly 64 bytes (hashing an oversized block in one call
+	// is backend-dependent and would yield different roots per hash backend).
+	if len(activeFields) > 32 {
+		afIdx := len(h.buf)
+		h.buf = append(h.buf, activeFields...)
+		if rest := len(activeFields) % 32; rest != 0 {
+			h.buf = append(h.buf, zeroBytes[:32-rest]...)
+		}
+		afChunks := h.buf[afIdx:]
+		afChunks = h.merkleizeImpl(afChunks[:0], afChunks, 0)
+		h.buf = append(h.buf[:afIdx], afChunks...)
+		input = h.buf[indx : indx+32]
+		input = append(input, h.buf[afIdx:afIdx+32]...)
+	} else {
+		input = append(input, activeFields...)
+		if rest := len(activeFields) % 32; rest != 0 {
+			// pad zero bytes to the left
+			input = append(input, zeroBytes[:32-rest]...)
+		}
 	}
 
-	// input is of the form [<progressive_root><active_fields>] of 64 bytes
+	// input is of the form [<progressive_root><active_fields_root>] of 64 bytes
 	_ = h.hash(input, input)
 	h.buf = append(h.buf[:indx], input[:32]...)
 
@@ -1180,7 +1224,9 @@ func (h *Hasher) merkleizeProgressiveImpl(dst, chunks []byte, depth uint8) []byt
 	count := uint64((len(chunks) + 31) / 32)
 
 	if count == 0 {
-		return append(dst, zeroBytes...)
+		// zero_node(0): exactly one 32-byte zero chunk (zeroBytes is a shared
+		// 1KB scratch slice, so it must be sliced down).
+		return append(dst, zeroBytes[:32]...)
 	}
 
 	// This implements subtree_fill_progressive from remerkleable

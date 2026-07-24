@@ -461,6 +461,12 @@ func getSszIndexTag(field *reflect.StructField) (*uint16, error) {
 		if err != nil {
 			return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "error parsing ssz-index tag for '%v' field: %v", field.Name, err)
 		}
+		// EIP-7495 progressive containers support at most 256 active fields
+		// (a larger bitvector also has no stable single-chunk mixin), and
+		// union selectors are a single byte.
+		if sszSizeInt > 255 {
+			return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "ssz-index %d for field %q exceeds the supported maximum of 255", sszSizeInt, field.Name)
+		}
 
 		index := uint16(sszSizeInt)
 		sszIndex = &index

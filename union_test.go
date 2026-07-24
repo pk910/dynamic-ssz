@@ -519,3 +519,70 @@ func TestUnionDataTypeMismatch(t *testing.T) {
 	dynBad.U.Data = uint32(42)
 	check("size-dynvariant", func() error { _, e := ds.MarshalSSZ(dynBad); return e })
 }
+
+// Union variant fields may carry ssz-index tags to assign explicit selector
+// values (e.g. 1-based selectors for EIP-7495 conformance).
+func TestCompatibleUnionExplicitSelectors(t *testing.T) {
+	type tagged struct {
+		U CompatibleUnion[struct {
+			F1 uint32 `ssz-index:"1"`
+			F2 uint64 `ssz-index:"2"`
+		}]
+	}
+
+	ds := NewDynSsz(nil)
+
+	v := tagged{}
+	v.U.Variant = 1
+	v.U.Data = uint32(7)
+
+	enc, err := ds.MarshalSSZ(&v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// offset (4) + selector byte 1 + uint32 payload
+	if len(enc) != 9 || enc[4] != 1 {
+		t.Fatalf("unexpected encoding: %x", enc)
+	}
+
+	var back tagged
+	if err := ds.UnmarshalSSZ(&back, enc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back.U.Variant != 1 || back.U.Data != uint32(7) {
+		t.Fatalf("unexpected roundtrip result: %+v", back.U)
+	}
+
+	// selector 0 is not assigned in this union and must be rejected
+	bad := append([]byte{}, enc...)
+	bad[4] = 0
+	var b2 tagged
+	if err := ds.UnmarshalSSZ(&b2, bad); err == nil {
+		t.Fatal("expected error for unassigned selector 0")
+	}
+}
+
+// Duplicate selectors and partially tagged unions must be rejected.
+func TestCompatibleUnionSelectorValidation(t *testing.T) {
+	type dupe struct {
+		U CompatibleUnion[struct {
+			F1 uint32 `ssz-index:"1"`
+			F2 uint64 `ssz-index:"1"`
+		}]
+	}
+	ds := NewDynSsz(nil)
+	if _, err := ds.MarshalSSZ(&dupe{}); err == nil || !strings.Contains(err.Error(), "duplicate union selector") {
+		t.Errorf("expected duplicate selector error, got: %v", err)
+	}
+
+	type mixed struct {
+		U CompatibleUnion[struct {
+			F1 uint32 `ssz-index:"1"`
+			F2 uint64
+		}]
+	}
+	ds2 := NewDynSsz(nil)
+	if _, err := ds2.MarshalSSZ(&mixed{}); err == nil || !strings.Contains(err.Error(), "ssz-index") {
+		t.Errorf("expected mixed ssz-index error, got: %v", err)
+	}
+}

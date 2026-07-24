@@ -6,6 +6,8 @@ package dynssz
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -2492,5 +2494,65 @@ func TestBigIntMaxEnforced(t *testing.T) {
 	}
 	if _, err := ds.MarshalSSZ(&T{N: *big.NewInt(0xfffff)}); err == nil {
 		t.Error("expected error for big.Int exceeding ssz-max")
+	}
+}
+
+// A list of optionals interleaves deferred child subtrees (present elements)
+// with raw zero chunks (nil elements) in the incremental hasher; the roots
+// must match an independent manual merkleization for every ordering.
+func TestHashTreeRootOptionalListOrdering(t *testing.T) {
+	type optInner struct {
+		A uint64
+		B uint64
+	}
+	type optList struct {
+		L []*optInner `ssz-max:"16" ssz-type:"?,optional"`
+	}
+
+	hashPair := func(a, b [32]byte) [32]byte {
+		var buf [64]byte
+		copy(buf[:32], a[:])
+		copy(buf[32:], b[:])
+		return sha256.Sum256(buf[:])
+	}
+	chunkU64 := func(v uint64) [32]byte {
+		var c [32]byte
+		binary.LittleEndian.PutUint64(c[:8], v)
+		return c
+	}
+	manualRoot := func(elems []*optInner) [32]byte {
+		leaves := make([][32]byte, 16)
+		for i, e := range elems {
+			if e != nil {
+				leaves[i] = hashPair(chunkU64(e.A), chunkU64(e.B))
+			}
+		}
+		level := leaves
+		for len(level) > 1 {
+			next := make([][32]byte, len(level)/2)
+			for i := range next {
+				next[i] = hashPair(level[2*i], level[2*i+1])
+			}
+			level = next
+		}
+		return hashPair(level[0], chunkU64(uint64(len(elems))))
+	}
+
+	ds := NewDynSsz(nil, WithExtendedTypes())
+	cases := [][]*optInner{
+		{{A: 1, B: 2}, nil},
+		{nil, {A: 1, B: 2}},
+		{{A: 1, B: 2}, nil, {A: 3, B: 4}},
+		{{A: 1, B: 2}, {A: 3, B: 4}},
+		{nil, nil},
+	}
+	for _, c := range cases {
+		got, err := ds.HashTreeRoot(&optList{L: c})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if want := manualRoot(c); got != want {
+			t.Errorf("case %v: got %x want %x", c, got[:8], want[:8])
+		}
 	}
 }

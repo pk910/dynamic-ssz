@@ -1365,3 +1365,19 @@ var UnionDynVariant_Payload = UnionDynVariant{
 	}]{Variant: 1, Data: []byte{1, 2, 3}},
 	L: []byte{1, 4, 5},
 }
+
+// UnionTaggedSelectors assigns explicit 1-based selector values via ssz-index
+// tags on the union variant fields (EIP-7495 conformant numbering).
+type UnionTaggedSelectors struct {
+	U dynssz.CompatibleUnion[struct {
+		F1 uint32 `ssz-index:"1"`
+		F2 []byte `ssz-max:"16" ssz-index:"2"`
+	}]
+}
+
+var UnionTaggedSelectors_Payload = UnionTaggedSelectors{
+	U: dynssz.CompatibleUnion[struct {
+		F1 uint32 `ssz-index:"1"`
+		F2 []byte `ssz-max:"16" ssz-index:"2"`
+	}]{Variant: 1, Data: uint32(7)},
+}

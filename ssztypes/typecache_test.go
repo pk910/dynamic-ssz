@@ -4595,3 +4595,27 @@ func TestTypeCache_FieldTagAnnotationJoin(t *testing.T) {
 		t.Errorf("expected field-level limit 16 to override annotation, got %d", field.Type.Limit)
 	}
 }
+
+// EIP-7495 progressive containers support at most 256 active fields; larger
+// ssz-index values previously built oversized active-fields bitvectors whose
+// roots differed between hash backends.
+func TestTypeCache_ProgressiveIndexBound(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	type TooLarge struct {
+		A uint64 `ssz-index:"0"`
+		B uint64 `ssz-index:"256"`
+	}
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(TooLarge{}), nil, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "exceeds the supported maximum of 255") {
+		t.Errorf("expected ssz-index bound error, got: %v", err)
+	}
+
+	type MaxValid struct {
+		A uint64 `ssz-index:"0"`
+		B uint64 `ssz-index:"255"`
+	}
+	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(MaxValid{}), nil, nil, nil); err != nil {
+		t.Errorf("unexpected error for ssz-index 255: %v", err)
+	}
+}
