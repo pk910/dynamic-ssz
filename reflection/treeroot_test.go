@@ -2174,3 +2174,49 @@ func TestVectorCollapseEvery256(t *testing.T) {
 		t.Error("hash should not be zero")
 	}
 }
+
+
+// reflCustom is a custom SSZ type providing the dynssz method set; hashing it
+// through a container exercises the custom-type hasher preference.
+type reflCustom struct{ V uint64 }
+
+var _ = sszutils.Annotate[reflCustom](`ssz-type:"custom"`)
+
+func (c *reflCustom) SizeSSZDyn(sszutils.DynamicSpecs) int { return 8 }
+func (c *reflCustom) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	return append(b, make([]byte, 8)...), nil
+}
+func (c *reflCustom) UnmarshalSSZDyn(sszutils.DynamicSpecs, []byte) error { return nil }
+func (c *reflCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(c.V)
+	return nil
+}
+
+type reflCustomHolder struct{ C reflCustom }
+
+type reflPtrVec struct {
+	F *[]uint16 `ssz-size:"2"`
+}
+
+func TestReflectionCustomHashAndPointerVector(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	// Custom type hashed through a container prefers its dynssz hasher.
+	if _, err := ds.HashTreeRoot(&reflCustomHolder{C: reflCustom{V: 5}}); err != nil {
+		t.Fatalf("custom container HashTreeRoot: %v", err)
+	}
+
+	// A pointer to a fixed vector round-trips through the reflection vector path.
+	v := []uint16{7, 8}
+	enc, err := ds.MarshalSSZ(&reflPtrVec{F: &v})
+	if err != nil {
+		t.Fatalf("marshal ptrVec: %v", err)
+	}
+	var back reflPtrVec
+	if err := ds.UnmarshalSSZ(&back, enc); err != nil {
+		t.Fatalf("unmarshal ptrVec: %v", err)
+	}
+	if back.F == nil || len(*back.F) != 2 || (*back.F)[0] != 7 {
+		t.Fatalf("ptrVec round-trip lost data: %+v", back.F)
+	}
+}

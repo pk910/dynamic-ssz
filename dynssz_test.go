@@ -2845,3 +2845,43 @@ func TestFloat32SignalingNaNPreserved(t *testing.T) {
 		t.Fatalf("unmarshal normalized the NaN: got %08x, want %08x", got, sigBits)
 	}
 }
+
+// TestReflectionCoverageEdges exercises the custom-type hashing preference, the
+// pointer-to-fixed-vector reflection path, and the unknown-size streaming
+// unmarshal entry point.
+func TestReflectionCoverageEdges(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	// A custom type hashed through a container prefers its dynssz hasher.
+	if _, err := ds.HashTreeRoot(&customBothHolder{}); err != nil {
+		t.Fatalf("custom container HashTreeRoot: %v", err)
+	}
+
+	// A pointer to a fixed vector round-trips through the reflection vector path.
+	type ptrVec struct {
+		F *[]uint16 `ssz-size:"2"`
+	}
+	v := []uint16{7, 8}
+	enc, err := ds.MarshalSSZ(&ptrVec{F: &v})
+	if err != nil {
+		t.Fatalf("marshal ptrVec: %v", err)
+	}
+	var back ptrVec
+	if err := ds.UnmarshalSSZ(&back, enc); err != nil {
+		t.Fatalf("unmarshal ptrVec: %v", err)
+	}
+	if back.F == nil || len(*back.F) != 2 || (*back.F)[0] != 7 || (*back.F)[1] != 8 {
+		t.Fatalf("ptrVec round-trip lost data: %+v", back.F)
+	}
+
+	// Unknown-size streaming unmarshal (size < 0) reads the whole stream and
+	// decodes through the buffer path.
+	var back2 ptrVec
+	if err := ds.UnmarshalSSZReader(&back2, bytes.NewReader(enc), -1); err != nil {
+		t.Fatalf("UnmarshalSSZReader(size=-1): %v", err)
+	}
+	if back2.F == nil || len(*back2.F) != 2 {
+		t.Fatalf("unknown-size reader lost data: %+v", back2.F)
+	}
+}
+

@@ -4684,3 +4684,176 @@ func TestTypeCache_ExcludedField(t *testing.T) {
 		t.Errorf("expected field B to keep runtime index 2, got %d", desc.ContainerDesc.Fields[1].FieldIndex)
 	}
 }
+
+
+func TestJoinFieldAnnotationTag(t *testing.T) {
+	if got := JoinFieldAnnotationTag(`ssz-max:"8"`, ""); got != `ssz-max:"8"` {
+		t.Errorf("empty annotation: got %q", got)
+	}
+	if got := JoinFieldAnnotationTag("", `ssz-type:"custom"`); got != `ssz-type:"custom"` {
+		t.Errorf("empty field tag: got %q", got)
+	}
+	if got := JoinFieldAnnotationTag(`ssz-max:"8"`, `ssz-type:"custom"`); got != `ssz-max:"8" ssz-type:"custom"` {
+		t.Errorf("both tags: got %q", got)
+	}
+}
+
+// staticDynSizer sizes itself through the dynssz sizer.
+type staticDynSizer struct{}
+
+func (staticDynSizer) SizeSSZDyn(sszutils.DynamicSpecs) int { return 8 }
+
+// staticFastSizer sizes itself through the fastssz sizer only.
+type staticFastSizer struct{}
+
+func (staticFastSizer) SizeSSZ() int                          { return 16 }
+func (staticFastSizer) MarshalSSZ() ([]byte, error)           { return nil, nil }
+func (staticFastSizer) MarshalSSZTo(b []byte) ([]byte, error) { return b, nil }
+
+// staticNoSizer provides no usable sizer at all.
+type staticNoSizer struct{}
+
+func TestDelegatedStaticSize(t *testing.T) {
+	tc := NewTypeCache(nil)
+
+	sz, err := tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticDynSizer{}))
+	if err != nil || sz != 8 {
+		t.Errorf("dynssz sizer: size=%d err=%v; want 8", sz, err)
+	}
+
+	sz, err = tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticFastSizer{}))
+	if err != nil || sz != 16 {
+		t.Errorf("fastssz sizer: size=%d err=%v; want 16", sz, err)
+	}
+
+	if _, err = tc.delegatedStaticSize(&TypeDescriptor{}, reflect.TypeOf(staticNoSizer{})); err == nil {
+		t.Error("no sizer: expected error")
+	}
+}
+
+// unionIdxDesc has explicit ssz-index selectors on every variant.
+type unionIdxDesc struct {
+	A uint32 `ssz-index:"1"`
+	B uint64 `ssz-index:"2"`
+}
+
+func TestExtractUnionDescriptorInfoSszIndex(t *testing.T) {
+	info, err := extractUnionDescriptorInfo(reflect.TypeOf(unionIdxDesc{}), nil)
+	if err != nil {
+		t.Fatalf("extractUnionDescriptorInfo: %v", err)
+	}
+	if _, ok := info[1]; !ok {
+		t.Errorf("expected variant selector 1 from ssz-index")
+	}
+	if _, ok := info[2]; !ok {
+		t.Errorf("expected variant selector 2 from ssz-index")
+	}
+}
+
+// customDynAll implements the full dynssz method set (a valid custom type).
+type customDynAll struct{}
+
+func (customDynAll) SizeSSZDyn(sszutils.DynamicSpecs) int                            { return 8 }
+func (customDynAll) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error) { return b, nil }
+func (customDynAll) UnmarshalSSZDyn(sszutils.DynamicSpecs, []byte) error             { return nil }
+func (customDynAll) HashTreeRootWithDyn(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	return nil
+}
+
+// customStaticAll is the same but declares itself static.
+type customStaticAll struct{}
+
+func (customStaticAll) SizeSSZDyn(sszutils.DynamicSpecs) int { return 8 }
+func (customStaticAll) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	return b, nil
+}
+func (customStaticAll) UnmarshalSSZDyn(sszutils.DynamicSpecs, []byte) error { return nil }
+func (customStaticAll) HashTreeRootWithDyn(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	return nil
+}
+
+var _ = sszutils.Annotate[customStaticAll](`ssz-type:"custom" ssz-static:"true"`)
+
+func TestCustomTypeDescriptorSizing(t *testing.T) {
+	// Dynamic by default.
+	tc := NewTypeCache(nil)
+	desc, err := tc.GetTypeDescriptor(reflect.TypeOf(customDynAll{}), nil, nil, []SszTypeHint{{Type: SszCustomType}})
+	if err != nil {
+		t.Fatalf("dynamic custom: %v", err)
+	}
+	if desc.SszTypeFlags&SszTypeFlagIsDynamic == 0 {
+		t.Error("custom type without size/static annotation should be dynamic")
+	}
+
+	// A positive ssz-size hint fixes the size.
+	tc = NewTypeCache(nil)
+	desc, err = tc.GetTypeDescriptor(reflect.TypeOf(customDynAll{}), []SszSizeHint{{Size: 16}}, nil, []SszTypeHint{{Type: SszCustomType}})
+	if err != nil {
+		t.Fatalf("sized custom: %v", err)
+	}
+	if desc.Size != 16 {
+		t.Errorf("sized custom Size=%d; want 16", desc.Size)
+	}
+
+	// ssz-static:"true" reads the fixed size from the delegated sizer. NoDelegation
+	// forces the full-traversal switch rather than the shallow-delegation path.
+	tc = NewTypeCache(nil)
+	tc.NoDelegation = true
+	desc, err = tc.GetTypeDescriptor(reflect.TypeOf(customStaticAll{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("static custom: %v", err)
+	}
+	if desc.Size != 8 {
+		t.Errorf("static custom Size=%d; want 8", desc.Size)
+	}
+}
+
+// staticNoSizerCustom is a static custom type with no sizer at all; sizing it
+// must surface delegatedStaticSize's error.
+type staticNoSizerCustom struct{}
+
+var _ = sszutils.Annotate[staticNoSizerCustom](`ssz-type:"custom" ssz-static:"true"`)
+
+func TestCustomStaticWithoutSizerErrors(t *testing.T) {
+	tc := NewTypeCache(nil)
+	if _, err := tc.GetTypeDescriptor(reflect.TypeOf(staticNoSizerCustom{}), nil, nil, nil); err == nil {
+		t.Error("static custom without a usable sizer should error")
+	}
+}
+
+// unionBadIdx carries a non-numeric ssz-index selector.
+type unionBadIdx struct {
+	A uint32 `ssz-index:"abc"`
+}
+
+func TestExtractUnionDescriptorInfoBadIndex(t *testing.T) {
+	if _, err := extractUnionDescriptorInfo(reflect.TypeOf(unionBadIdx{}), nil); err == nil {
+		t.Error("invalid ssz-index should error")
+	}
+}
+
+// multiDimUnknown has a multi-dimensional dynssz-size referencing undefined
+// specs, so each dimension records its expression and keeps its static fallback.
+type multiDimUnknown struct {
+	F [][]uint16 `ssz-size:"2,4" dynssz-size:"UNK_A,UNK_B"`
+}
+
+func TestMultiDimUnknownDynSize(t *testing.T) {
+	tc := NewTypeCache(nil)
+	if _, err := tc.GetTypeDescriptor(reflect.TypeOf(multiDimUnknown{}), nil, nil, nil); err != nil {
+		t.Fatalf("multi-dim unknown dynssz-size: %v", err)
+	}
+}
+
+// dynOnlyUnknown has a dynssz-size dimension with no static ssz-size fallback,
+// so an undefined spec records a fresh dynamic dimension.
+type dynOnlyUnknown struct {
+	F []uint16 `ssz-max:"8" dynssz-size:"UNK_X"`
+}
+
+func TestDynOnlyUnknownDynSize(t *testing.T) {
+	tc := NewTypeCache(nil)
+	if _, err := tc.GetTypeDescriptor(reflect.TypeOf(dynOnlyUnknown{}), nil, nil, nil); err != nil {
+		t.Fatalf("dyn-only unknown dynssz-size: %v", err)
+	}
+}

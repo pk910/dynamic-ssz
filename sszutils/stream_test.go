@@ -1714,3 +1714,56 @@ func TestStreamDecoder_ZeroNilReadRetried(t *testing.T) {
 		t.Fatalf("DecodeUint64 aborted on a (0,nil) read: %v", err)
 	}
 }
+
+// zeroForeverReader always returns (0, nil), simulating a reader that never
+// delivers data.
+type zeroForeverReader struct{}
+
+func (zeroForeverReader) Read(p []byte) (int, error) { return 0, nil }
+
+// TestStreamDecoderInsufficientStream covers the stream-underflow guards: a
+// buffer fill and a bulk read that exceed the declared stream length, and a
+// reader stalled on (0, nil) that gives up after the retry bound.
+func TestStreamDecoderInsufficientStream(t *testing.T) {
+	dec := NewStreamDecoder(bytes.NewReader(make([]byte, 4)), 4, 1024)
+	if err := dec.ensureBuffered(10); err != ErrUnexpectedEOF {
+		t.Errorf("ensureBuffered past stream: err=%v, want ErrUnexpectedEOF", err)
+	}
+
+	dec = NewStreamDecoder(bytes.NewReader(make([]byte, 4)), 4, 1024)
+	if err := dec.readBytes(make([]byte, 8)); err != ErrUnexpectedEOF {
+		t.Errorf("readBytes past stream: err=%v, want ErrUnexpectedEOF", err)
+	}
+
+	dec = NewStreamDecoder(zeroForeverReader{}, 8, 1024)
+	if err := dec.readBytes(make([]byte, 8)); err != ErrUnexpectedEOF {
+		t.Errorf("readBytes on stalled reader: err=%v, want ErrUnexpectedEOF", err)
+	}
+}
+
+// dripReader delivers one byte per Read, forcing readBytes to loop with partial
+// (non-empty) reads.
+type dripReader struct {
+	data []byte
+	pos  int
+}
+
+func (r *dripReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	n := copy(p[:1], r.data[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+func TestStreamDecoderPartialReads(t *testing.T) {
+	dec := NewStreamDecoder(&dripReader{data: []byte{1, 2, 3, 4}}, 4, 1024)
+	buf := make([]byte, 4)
+	if err := dec.readBytes(buf); err != nil {
+		t.Fatalf("readBytes with drip reader: %v", err)
+	}
+	if !bytes.Equal(buf, []byte{1, 2, 3, 4}) {
+		t.Fatalf("drip read = %v, want [1 2 3 4]", buf)
+	}
+}

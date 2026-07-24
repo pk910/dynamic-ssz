@@ -2105,3 +2105,15 @@ func TestHasherEmptyActiveFieldsDeterministic(t *testing.T) {
 		t.Errorf("empty active fields root not deterministic: fresh=%x dirty=%x", fresh[:8], got[:8])
 	}
 }
+
+// TestNativeHashWrapperOddLayer calls the native hash function directly with an
+// odd chunk count (extra capacity avoids reading past the final padded pair),
+// exercising the layerLen%2 rounding that the pre-padding hasher never reaches.
+func TestNativeHashWrapperOddLayer(t *testing.T) {
+	fn := NativeHashWrapper(sha256.New())
+	input := make([]byte, 96, 128) // 3 chunks (odd)
+	dst := make([]byte, 64)
+	if err := fn(dst, input); err != nil {
+		t.Fatalf("NativeHashWrapper odd layer: %v", err)
+	}
+}
