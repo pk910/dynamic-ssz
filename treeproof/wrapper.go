@@ -233,11 +233,10 @@ func (w *Wrapper) flushBuffer() {
 }
 
 func (w *Wrapper) appendBytesAsNodes(b []byte) {
-	// if byte list is empty, fill with zeros
-	if len(b) == 0 {
-		b = sszutils.AppendZeroPadding(b, 32)
-	}
-	// if byte list isn't filled with 32-bytes padded, pad
+	// Empty input contributes no leaf (matching hasher.Hasher.AppendBytes32); a
+	// phantom zero leaf would shift sibling positions and give progressive
+	// bitlists a spec-incorrect root.
+	// pad the final chunk to 32 bytes if the input is not chunk-aligned
 	if rest := len(b) % 32; rest != 0 {
 		b = sszutils.AppendZeroPadding(b, 32-rest)
 	}
@@ -307,6 +306,10 @@ func (w *Wrapper) PutUint64Array(b []uint64, maxCapacity ...uint64) {
 // AddBytes adds a byte slice as a leaf node (<=32 bytes) or as a merkleized
 // subtree of 32-byte chunks (>32 bytes).
 func (w *Wrapper) AddBytes(b []byte) {
+	if len(b) == 0 {
+		// Empty input contributes no leaf, matching hasher.Hasher.
+		return
+	}
 	if len(b) <= 32 {
 		w.AddNode(LeafFromBytes(b))
 	} else {
@@ -364,10 +367,24 @@ func (w *Wrapper) Hash() []byte {
 	return w.nodes[len(w.nodes)-1].Hash()
 }
 
+// clampIndex bounds a caller-supplied scope index to the node list so an
+// out-of-range value cannot trigger a slice-bounds panic (matching
+// hasher.Hasher, which the Wrapper is interchangeable with).
+func (w *Wrapper) clampIndex(i int) int {
+	if i < 0 {
+		return 0
+	}
+	if i > len(w.nodes) {
+		return len(w.nodes)
+	}
+	return i
+}
+
 // Commit constructs a binary Merkle tree from all nodes added since index i,
 // replaces those nodes with the resulting subtree root, and adds it back to the
 // node list.
 func (w *Wrapper) Commit(i int) {
+	i = w.clampIndex(i)
 	// create tree from nodes
 	res, err := treeFromNodesFn(w.nodes[i:], w.getLimit(i))
 	if err != nil {
@@ -382,6 +399,7 @@ func (w *Wrapper) Commit(i int) {
 // CommitWithMixin constructs a binary Merkle tree from nodes since index i
 // with a length mixin, used for SSZ list merkleization.
 func (w *Wrapper) CommitWithMixin(i, num, limit int) {
+	i = w.clampIndex(i)
 	// create tree from nodes
 	res, err := TreeFromNodesWithMixin(w.nodes[i:], num, limit)
 	if err != nil {
@@ -396,6 +414,7 @@ func (w *Wrapper) CommitWithMixin(i, num, limit int) {
 
 // CommitProgressive creates a progressive tree from nodes
 func (w *Wrapper) CommitProgressive(i int) {
+	i = w.clampIndex(i)
 	// create progressive tree from nodes
 	res, err := TreeFromNodesProgressive(w.nodes[i:])
 	if err != nil {
@@ -409,6 +428,7 @@ func (w *Wrapper) CommitProgressive(i int) {
 
 // CommitProgressiveWithMixin creates a progressive tree with length mixin
 func (w *Wrapper) CommitProgressiveWithMixin(i, num int) {
+	i = w.clampIndex(i)
 	// create progressive tree from nodes
 	res, err := TreeFromNodesProgressiveWithMixin(w.nodes[i:], num)
 	if err != nil {
@@ -422,6 +442,7 @@ func (w *Wrapper) CommitProgressiveWithMixin(i, num int) {
 
 // CommitProgressiveWithActiveFields creates a progressive tree with active fields bitvector
 func (w *Wrapper) CommitProgressiveWithActiveFields(i int, activeFields []byte) {
+	i = w.clampIndex(i)
 	// create progressive tree from nodes
 	res, err := TreeFromNodesProgressiveWithActiveFields(w.nodes[i:], activeFields)
 	if err != nil {

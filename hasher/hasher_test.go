@@ -2077,3 +2077,31 @@ func TestHasherMerkleizeSubChunkCleanPadding(t *testing.T) {
 		t.Errorf("sub-chunk merkleize read stale buffer: fresh=%x dirty=%x", fresh, got)
 	}
 }
+
+// MerkleizeProgressiveWithActiveFields with an empty activeFields bitvector
+// must produce a deterministic root, not one that depends on stale bytes left
+// in a pooled hasher's buffer.
+func TestHasherEmptyActiveFieldsDeterministic(t *testing.T) {
+	run := func(h *Hasher) [32]byte {
+		t.Helper()
+		idx := h.StartTree(sszutils.TreeTypeNone)
+		h.AppendUint64(1)
+		h.FillUpTo32()
+		h.MerkleizeProgressiveWithActiveFields(idx, []byte{})
+		root, err := h.HashRoot()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return root
+	}
+
+	fresh := run(NewHasher())
+
+	// Dirty the buffer's spare capacity, then reuse the hasher.
+	dirty := NewHasher()
+	dirty.Append(bytes.Repeat([]byte{0xff}, 256))
+	dirty.Reset()
+	if got := run(dirty); got != fresh {
+		t.Errorf("empty active fields root not deterministic: fresh=%x dirty=%x", fresh[:8], got[:8])
+	}
+}

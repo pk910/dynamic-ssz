@@ -10,6 +10,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"testing/iotest"
 )
 
 // errWriter is a writer that returns an error after writing a specified number of bytes.
@@ -1654,5 +1655,62 @@ func TestStreamEncoder_NoPanicAfterWriteError(t *testing.T) {
 
 	if enc.GetWriteError() == nil {
 		t.Error("expected the write error to be recorded")
+	}
+}
+
+// zeroInterleaveReader returns (0, nil) before every real read, exercising the
+// io.Reader "0 and nil is a no-op, not EOF" contract.
+type zeroInterleaveReader struct {
+	r       io.Reader
+	pending bool
+}
+
+func (z *zeroInterleaveReader) Read(p []byte) (int, error) {
+	if !z.pending {
+		z.pending = true
+		return 0, nil
+	}
+	z.pending = false
+	return z.r.Read(p)
+}
+
+// A reader that returns its final bytes together with io.EOF (permitted by the
+// io.Reader contract) must not cause a spurious decode failure.
+func TestStreamDecoder_ReadBytesDataWithEOF(t *testing.T) {
+	data := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+	// Small buffer forces the direct-read path in readBytes.
+	dec := NewStreamDecoder(iotest.DataErrReader(bytes.NewReader(data)), len(data), 8)
+	dec.PushLimit(len(data))
+
+	buf := make([]byte, len(data))
+	if _, err := dec.DecodeBytes(buf); err != nil {
+		t.Fatalf("DecodeBytes rejected a data+EOF reader: %v", err)
+	}
+	if !bytes.Equal(buf, data) {
+		t.Fatalf("got %x, want %x", buf, data)
+	}
+}
+
+// A (0, nil) no-op read must be retried, not treated as EOF, on both the
+// buffered (ensureBuffered) and direct (readBytes) paths.
+func TestStreamDecoder_ZeroNilReadRetried(t *testing.T) {
+	data := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+
+	// readBytes path (DecodeBytes, small buffer).
+	dec := NewStreamDecoder(&zeroInterleaveReader{r: bytes.NewReader(data)}, len(data), 8)
+	dec.PushLimit(len(data))
+	buf := make([]byte, len(data))
+	if _, err := dec.DecodeBytes(buf); err != nil {
+		t.Fatalf("DecodeBytes aborted on a (0,nil) read: %v", err)
+	}
+	if !bytes.Equal(buf, data) {
+		t.Fatalf("got %x, want %x", buf, data)
+	}
+
+	// ensureBuffered path (DecodeUint64).
+	dec2 := NewStreamDecoder(&zeroInterleaveReader{r: bytes.NewReader(data)}, len(data), 8)
+	dec2.PushLimit(len(data))
+	if _, err := dec2.DecodeUint64(); err != nil {
+		t.Fatalf("DecodeUint64 aborted on a (0,nil) read: %v", err)
 	}
 }

@@ -1110,3 +1110,25 @@ func TestVerifyMultiproofRejectsOversizedLeaf(t *testing.T) {
 		t.Fatal("oversized leaf must not verify")
 	}
 }
+
+// VerifyProof / VerifyMultiproof reject leaves longer than 32 bytes; they must
+// reject oversized proof hashes for the same reason (silent truncation would
+// verify against a value the caller never supplied).
+func TestVerifyRejectsOversizedProofHashes(t *testing.T) {
+	root, _, allNodes := buildMerkleTree(4)
+
+	over := append(append([]byte{}, allNodes[5]...), 0xde, 0xad) // 34 bytes
+
+	proof := &Proof{
+		Index:  4,
+		Leaf:   allNodes[4],
+		Hashes: [][]byte{over, allNodes[3]},
+	}
+	if ok, err := VerifyProof(root, proof); ok || err == nil {
+		t.Errorf("VerifyProof accepted an oversized proof hash: ok=%v err=%v", ok, err)
+	}
+
+	if ok, err := VerifyMultiproof(root, [][]byte{over, allNodes[3]}, [][]byte{allNodes[4]}, []int{4}); ok || err == nil {
+		t.Errorf("VerifyMultiproof accepted an oversized proof hash: ok=%v err=%v", ok, err)
+	}
+}

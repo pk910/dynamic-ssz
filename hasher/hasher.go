@@ -1140,9 +1140,11 @@ func (h *Hasher) MerkleizeProgressiveWithActiveFields(indx int, activeFields []b
 		input = append(input, h.buf[afIdx:afIdx+32]...)
 	} else {
 		input = append(input, activeFields...)
-		if rest := len(activeFields) % 32; rest != 0 {
-			// pad zero bytes to the left
-			input = append(input, zeroBytes[:32-rest]...)
+		// Right-pad the active-fields chunk to a full 32 bytes so the mixin
+		// input is exactly 64 bytes. An empty (or short) bitvector otherwise
+		// leaves the hash reading uninitialized bytes past the input.
+		if len(activeFields) < 32 {
+			input = append(input, zeroBytes[:32-len(activeFields)]...)
 		}
 	}
 

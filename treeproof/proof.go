@@ -30,9 +30,14 @@ func VerifyProof(root []byte, proof *Proof) (bool, error) {
 		return false, errors.New("invalid proof length")
 	}
 	// Chunks are at most 32 bytes; anything longer would be silently truncated
-	// below and verify against a leaf value the caller never proved.
+	// below and verify against a value the caller never proved.
 	if len(proof.Leaf) > 32 {
 		return false, fmt.Errorf("leaf length %d exceeds chunk size 32", len(proof.Leaf))
+	}
+	for i, h := range proof.Hashes {
+		if len(h) > 32 {
+			return false, fmt.Errorf("proof hash %d length %d exceeds chunk size 32", i, len(h))
+		}
 	}
 
 	var tmp [64]byte
@@ -93,6 +98,11 @@ func VerifyMultiproof(root []byte, proof, leaves [][]byte, indices []int) (bool,
 	for i, leaf := range leaves {
 		if len(leaf) > 32 {
 			return false, fmt.Errorf("leaf %d length %d exceeds chunk size 32", i, len(leaf))
+		}
+	}
+	for i, h := range proof {
+		if len(h) > 32 {
+			return false, fmt.Errorf("proof hash %d length %d exceeds chunk size 32", i, len(h))
 		}
 	}
 

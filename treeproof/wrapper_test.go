@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"testing"
 
+	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
@@ -740,13 +741,9 @@ func TestWrapperAppendBytesAsNodes(t *testing.T) {
 		initialLen := len(w.nodes)
 		w.appendBytesAsNodes([]byte{})
 
-		// Should add one zero-filled node
-		if len(w.nodes) != initialLen+1 {
-			t.Error("empty bytes should add one zero node")
-		}
-
-		if !bytes.Equal(w.nodes[initialLen].value, sszutils.ZeroBytes()[:32]) {
-			t.Error("empty bytes should create zero node")
+		// Empty input contributes no leaf, matching hasher.Hasher.
+		if len(w.nodes) != initialLen {
+			t.Error("empty bytes should add no node")
 		}
 	})
 
@@ -941,5 +938,94 @@ func TestMin(t *testing.T) {
 		if result != tt.expected {
 			t.Errorf("min(%d, %d) = %d, want %d", tt.i, tt.j, result, tt.expected)
 		}
+	}
+}
+
+// Wrapper and Hasher must agree for empty PutBytes/PutProgressiveBitlist input:
+// a phantom zero leaf would shift siblings and give a spec-incorrect root.
+func TestWrapperEmptyInputMatchesHasher(t *testing.T) {
+	// PutBytes([]) followed by a sibling.
+	w := NewWrapper()
+	idx := w.StartTree(sszutils.TreeTypeNone)
+	w.PutBytes([]byte{})
+	w.PutUint64(42)
+	w.Merkleize(idx)
+	wRoot := w.Hash()
+
+	hh := hasher.NewHasher()
+	hidx := hh.StartTree(sszutils.TreeTypeNone)
+	hh.PutBytes([]byte{})
+	hh.PutUint64(42)
+	hh.Merkleize(hidx)
+	hRoot, err := hh.HashRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(wRoot, hRoot[:]) {
+		t.Errorf("PutBytes empty: wrapper=%x hasher=%x", wRoot[:8], hRoot[:8])
+	}
+
+	// Empty progressive bitlist.
+	w2 := NewWrapper()
+	w2.PutProgressiveBitlist([]byte{0x01})
+	hh2 := hasher.NewHasher()
+	hh2.PutProgressiveBitlist([]byte{0x01})
+	h2Root, err := hh2.HashRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(w2.Hash(), h2Root[:]) {
+		t.Errorf("empty progressive bitlist: wrapper=%x hasher=%x", w2.Hash()[:8], h2Root[:8])
+	}
+}
+
+// Wrapper.PutBitlist with maxSize 0 must behave like Hasher.PutBitlist (a
+// root, not a panic) for a degenerate but legal input.
+func TestWrapperPutBitlistZeroMaxMatchesHasher(t *testing.T) {
+	var wRoot []byte
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("Wrapper.PutBitlist(_, 0) panicked: %v", r)
+			}
+		}()
+		w := NewWrapper()
+		w.PutBitlist([]byte{0x01}, 0)
+		wRoot = w.Hash()
+	}()
+
+	hh := hasher.NewHasher()
+	hh.PutBitlist([]byte{0x01}, 0)
+	hRoot, err := hh.HashRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(wRoot, hRoot[:]) {
+		t.Errorf("PutBitlist zero max: wrapper=%x hasher=%x", wRoot[:8], hRoot[:8])
+	}
+}
+
+// Wrapper.Merkleize* must clamp an out-of-range scope index like Hasher does,
+// instead of panicking with a raw slice-bounds error.
+func TestWrapperMerkleizeIndexClamped(t *testing.T) {
+	cases := []func(w *Wrapper){
+		func(w *Wrapper) { w.Merkleize(999) },
+		func(w *Wrapper) { w.Merkleize(-1) },
+		func(w *Wrapper) { w.MerkleizeWithMixin(-1, 1, 4) },
+		func(w *Wrapper) { w.MerkleizeProgressive(999) },
+		func(w *Wrapper) { w.MerkleizeProgressiveWithMixin(-1, 1) },
+	}
+	for i, fn := range cases {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("case %d panicked on out-of-range index: %v", i, r)
+				}
+			}()
+			w := NewWrapper()
+			w.AppendUint64(1)
+			w.FillUpTo32()
+			fn(w)
+		}()
 	}
 }

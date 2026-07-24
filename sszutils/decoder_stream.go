@@ -13,6 +13,12 @@ import (
 // StreamDecoder (2KB).
 const DefaultStreamDecoderBufSize = 2 * 1024
 
+// maxConsecutiveEmptyReads bounds retries of a (0, nil) read. Such a read is a
+// valid no-op per the io.Reader contract and must be retried rather than
+// treated as EOF, but a reader that only ever returns (0, nil) must not hang
+// the decode. Progress resets the counter.
+const maxConsecutiveEmptyReads = 100
+
 // StreamDecoder is a non-seekable Decoder implementation that reads SSZ data
 // from an io.Reader. It uses an internal buffer for efficient sequential reads
 // but does not support DecodeOffsetAt or SkipBytes.
@@ -132,6 +138,7 @@ func (e *StreamDecoder) ensureBuffered(n int) error {
 	// Read from stream using a loop that handles partial reads
 	readBuf := e.buffer[e.bufferLen : e.bufferLen+toRead]
 	totalRead := 0
+	emptyReads := 0
 	for totalRead < toRead {
 		nr, err := e.reader.Read(readBuf[totalRead:])
 		if nr < 0 {
@@ -150,14 +157,20 @@ func (e *StreamDecoder) ensureBuffered(n int) error {
 			return err
 		}
 
-		// If reader returned 0 bytes without error, it's an unusual case
-		// Check if we have enough data, otherwise return EOF
+		// (0, nil) is a valid no-op read: return if the request is already
+		// satisfied, otherwise retry up to the bound rather than treating it as
+		// EOF (a reader stuck on (0, nil) must not hang the decode).
 		if nr == 0 {
 			if e.bufferLen-e.bufferPos >= n {
 				return nil
 			}
-			return ErrUnexpectedEOF
+			emptyReads++
+			if emptyReads >= maxConsecutiveEmptyReads {
+				return ErrUnexpectedEOF
+			}
+			continue
 		}
+		emptyReads = 0
 	}
 
 	return nil
@@ -217,6 +230,7 @@ func (e *StreamDecoder) readBytes(buf []byte) error {
 	// Read remainder directly from stream
 	remaining := n - available
 	totalRead := 0
+	emptyReads := 0
 	for totalRead < remaining {
 		toRead := remaining - totalRead
 
@@ -227,17 +241,27 @@ func (e *StreamDecoder) readBytes(buf []byte) error {
 		totalRead += nr
 		e.position += nr
 
+		// A reader may return the final bytes together with io.EOF; once the
+		// request is satisfied the read succeeded regardless of that error.
+		if totalRead >= remaining {
+			return nil
+		}
 		if err != nil {
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				return ErrUnexpectedEOF
 			}
 			return err
 		}
-
-		// If reader returned 0 bytes without error, return EOF
+		// (0, nil) is a valid no-op read: retry up to the bound rather than
+		// treating it as EOF (a reader stuck on (0, nil) must not hang).
 		if nr == 0 {
-			return ErrUnexpectedEOF
+			emptyReads++
+			if emptyReads >= maxConsecutiveEmptyReads {
+				return ErrUnexpectedEOF
+			}
+			continue
 		}
+		emptyReads = 0
 	}
 
 	return nil
