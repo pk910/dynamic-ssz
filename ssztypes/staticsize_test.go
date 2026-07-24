@@ -31,8 +31,8 @@ func (staticDynSizer) SizeSSZDyn(sszutils.DynamicSpecs) int { return 8 }
 // staticFastSizer sizes itself through the fastssz sizer only.
 type staticFastSizer struct{}
 
-func (staticFastSizer) SizeSSZ() int                       { return 16 }
-func (staticFastSizer) MarshalSSZ() ([]byte, error)        { return nil, nil }
+func (staticFastSizer) SizeSSZ() int                          { return 16 }
+func (staticFastSizer) MarshalSSZ() ([]byte, error)           { return nil, nil }
 func (staticFastSizer) MarshalSSZTo(b []byte) ([]byte, error) { return b, nil }
 
 // staticNoSizer provides no usable sizer at all.
