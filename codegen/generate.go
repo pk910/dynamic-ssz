@@ -168,6 +168,10 @@ func (cg *CodeGenerator) analyzeTypes() error {
 				return fmt.Errorf("type %s already implements the generated dynamic SSZ methods; its descriptor cannot be traversed for regeneration - remove the previously generated code (and its ssz-static annotation) first", typeName)
 			}
 
+			if err := validateTopLevelType(t, desc, typeName); err != nil {
+				return err
+			}
+
 			t.Descriptor = desc
 
 			// create TypeDescriptor for the view types
@@ -221,7 +225,38 @@ func (cg *CodeGenerator) analyzeTypes() error {
 	return nil
 }
 
-// getCompatFlags computes the SszCompatFlag set for a type based on its generation options.
+// validateTopLevelType rejects top-level types that cannot receive generated
+// methods. Both work fine as struct fields, but not as standalone -types
+// entries:
+//   - a CompatibleUnion / TypeWrapper: these are generic library types nameable
+//     only via a transparent alias, so a method receiver would resolve to the
+//     foreign generic type rather than a local named type.
+//   - a named pointer type (type T *U): methods cannot be declared on a type
+//     whose underlying type is a pointer.
+func validateTopLevelType(t *CodeGeneratorTypeOptions, desc *ssztypes.TypeDescriptor, typeName string) error {
+	if desc.SszType == ssztypes.SszCompatibleUnionType || desc.SszType == ssztypes.SszTypeWrapperType {
+		return fmt.Errorf("cannot generate SSZ methods for top-level %s: a CompatibleUnion/TypeWrapper is nameable only via a type alias and cannot receive methods; use it as a struct field instead", typeName)
+	}
+
+	if t.ReflectType != nil {
+		if t.ReflectType.Kind() == reflect.Pointer && t.ReflectType.Name() != "" {
+			return fmt.Errorf("cannot generate SSZ methods for named pointer type %s: methods cannot be declared on a pointer type", typeName)
+		}
+		return nil
+	}
+
+	base := t.GoTypesType
+	if ptr, ok := base.(*types.Pointer); ok {
+		base = ptr.Elem()
+	}
+	if named, ok := base.(*types.Named); ok {
+		if _, isPtr := named.Underlying().(*types.Pointer); isPtr {
+			return fmt.Errorf("cannot generate SSZ methods for named pointer type %s: methods cannot be declared on a pointer type", typeName)
+		}
+	}
+	return nil
+}
+
 // isShallowDelegatedDescriptor reports whether a descriptor was shallow-built
 // for a fully-delegated type (ssz-static annotation + existing Dynamic*
 // methods): such descriptors carry no traversed subtree and cannot drive code
@@ -244,6 +279,7 @@ func isShallowDelegatedDescriptor(desc *ssztypes.TypeDescriptor) bool {
 	}
 }
 
+// getCompatFlags computes the SszCompatFlag set for a type based on its generation options.
 func getCompatFlags(t *CodeGeneratorTypeOptions) ssztypes.SszCompatFlag {
 	var compatFlags ssztypes.SszCompatFlag
 	hasViews := len(t.ViewGoTypesTypes) > 0 || len(t.ViewReflectTypes) > 0

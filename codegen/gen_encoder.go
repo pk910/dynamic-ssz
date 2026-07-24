@@ -658,7 +658,7 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 				}
 			}
 			ctx.appendCode(indent, "enc.EncodeBytes(%s[:%s])\n", getValueVar(false, ""), lenVar)
-		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0:
+		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0:
 			ctx.appendCode(indent, "sszutils.EncodeUint64Slice(enc, %s[:%s])\n", getValueVar(false, ""), lenVar)
 		default:
 			indexVar, indexDefer := ctx.getIndexVar()
@@ -716,13 +716,11 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent, "\t}\n")
 
 		if desc.Kind != reflect.Array {
-			// append zero padding if we have less items than the limit
+			// append zero padding if we have less items than the limit. The
+			// padding item is a zero value of the element's own Go type (a nil
+			// pointer for pointer elements, which the element encoder handles).
 			ctx.appendCode(indent, "\tif %s < %s {\n", lenVar, limitVar)
-			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
-				ctx.appendCode(indent, "\t\tzeroItem := new(%s)\n", ctx.typePrinter.InnerTypeString(desc.ElemDesc))
-			} else {
-				ctx.appendCode(indent, "\t\tvar zeroItem %s\n", ctx.typePrinter.TypeString(desc.ElemDesc))
-			}
+			ctx.appendCode(indent, "\t\tvar zeroItem %s\n", ctx.typePrinter.TypeString(desc.ElemDesc))
 
 			zeroItemSizeFnCall := ctx.getSizeFnCall(desc.ElemDesc, "zeroItem")
 			ctx.appendCode(indent, "\t\tzeroSize := %s\n", zeroItemSizeFnCall)
@@ -846,7 +844,7 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 				valueVar = fmt.Sprintf("(%s)", valueVar)
 			}
 			ctx.appendCode(indent, "enc.EncodeBytes(%s[:])\n", getValueVar(false, ""))
-		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0:
+		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0:
 			addVlen()
 			ctx.appendCode(indent, "sszutils.EncodeUint64Slice(enc, %s[:vlen])\n", getValueVar(false, ""))
 		default:

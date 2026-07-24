@@ -422,17 +422,8 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 			return
 		}
 		if len(valueVar) > 1 {
-			// Deeper emissions sit inside their own blocks where `t := ...`
-			// legally shadows the outer value. Only the top scope of the
-			// generated method/closure already declares t (receiver or closure
-			// parameter), so a same-scope re-declaration needs another name.
-			// That can happen at most once per generated function body.
-			localVar := "t"
-			if indent == 0 {
-				localVar = "t2"
-			}
-			ctx.appendCode(indent, "%s := %s%s\n", localVar, ctx.getPtrPrefix(desc), valueVar)
-			valueVar = localVar
+			ctx.appendCode(indent, "%s := %s%s\n", localizedVarName(varName, indent), ctx.getPtrPrefix(desc), valueVar)
+			valueVar = localizedVarName(varName, indent)
 		}
 		usedVar = true
 	}
@@ -485,7 +476,9 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 		if desc.Kind == reflect.Array {
 			indexVar := ctx.getIndexVar()
 			ctx.appendCode(indent, "for %s := range %s {\n", indexVar, limitVar)
-			itemVarName := fmt.Sprintf("%s[%s]", valueVar, indexVar)
+			// A deref'd pointer receiver (e.g. *[N]E -> "*t") must be
+			// parenthesized before indexing: (*t)[i], not *t[i].
+			itemVarName := fmt.Sprintf("%s[%s]", indexBase(valueVar), indexVar)
 			if err := ctx.sizeType(desc.ElemDesc, itemVarName, sizeVar, indent+1, false); err != nil {
 				return err
 			}
@@ -504,15 +497,12 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 			}
 			ctx.appendCode(indent, "}\n")
 
-			// Add size for zero-padding
+			// Add size for zero-padding. The padding item is a zero value of the
+			// element's own Go type (a nil pointer for pointer elements, which
+			// the element sizer handles); a composite literal would be invalid
+			// for non-composite pointees such as *string.
 			ctx.appendCode(indent, "if vlen < %s {\n", limitVar)
-			if desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
-				typeName := ctx.typePrinter.InnerTypeString(desc.ElemDesc)
-				ctx.appendCode(indent, "\tzeroItem := &%s{}\n", typeName)
-			} else {
-				typeName := ctx.typePrinter.TypeString(desc.ElemDesc)
-				ctx.appendCode(indent, "\tvar zeroItem %s\n", typeName)
-			}
+			ctx.appendCode(indent, "\tvar zeroItem %s\n", ctx.typePrinter.TypeString(desc.ElemDesc))
 			innerSizeVar := ctx.getSizeVar()
 			ctx.appendCode(indent, "\t%s := 0\n", innerSizeVar)
 			if err := ctx.sizeType(desc.ElemDesc, "zeroItem", innerSizeVar, indent+1, false); err != nil {
@@ -558,17 +548,8 @@ func (ctx *sizeContext) sizeList(desc *ssztypes.TypeDescriptor, varName, sizeVar
 			return
 		}
 		if len(valueVar) > 1 {
-			// Deeper emissions sit inside their own blocks where `t := ...`
-			// legally shadows the outer value. Only the top scope of the
-			// generated method/closure already declares t (receiver or closure
-			// parameter), so a same-scope re-declaration needs another name.
-			// That can happen at most once per generated function body.
-			localVar := "t"
-			if indent == 0 {
-				localVar = "t2"
-			}
-			ctx.appendCode(indent, "%s := %s%s\n", localVar, ctx.getPtrPrefix(desc), valueVar)
-			valueVar = localVar
+			ctx.appendCode(indent, "%s := %s%s\n", localizedVarName(varName, indent), ctx.getPtrPrefix(desc), valueVar)
+			valueVar = localizedVarName(varName, indent)
 		}
 		usedVar = true
 	}
@@ -618,8 +599,9 @@ func (ctx *sizeContext) sizeList(desc *ssztypes.TypeDescriptor, varName, sizeVar
 // sizeUnion generates size calculation code for SSZ union types.
 func (ctx *sizeContext) sizeUnion(desc *ssztypes.TypeDescriptor, varName, sizeVar string, indent int) error {
 	if len(varName) > 1 {
-		ctx.appendCode(indent, "t := %s\n", varName)
-		varName = "t"
+		localVar := localizedVarName(varName, indent)
+		ctx.appendCode(indent, "%s := %s\n", localVar, varName)
+		varName = localVar
 	}
 
 	ctx.appendCode(indent, "%s += 1 // Union selector\n", sizeVar)

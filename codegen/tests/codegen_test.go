@@ -6,9 +6,11 @@ import (
 	"encoding/hex"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 
 	dynssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/codegen"
 	"github.com/pk910/dynamic-ssz/codegen/tests/views"
 )
 
@@ -1136,5 +1138,96 @@ func TestCodegenPointerUnionVariantAndWrapper(t *testing.T) {
 	}
 	if strm.W.Data == nil || *strm.W.Data != ptrUnionVal {
 		t.Fatalf("stream roundtrip mismatch: %+v", strm)
+	}
+}
+
+// Codegen compile-correctness shapes: each must generate compilable code that
+// round-trips and matches the reflection engine (buffer + stream). These
+// exercise pointer-receiver dereferencing, localized value naming, the
+// pointer-element bulk fast-path guard, and zero-padding item typing.
+func TestCodegenPointerAndPaddingShapes(t *testing.T) {
+	u1, u2 := uint64(1), uint64(2)
+	s := "ab"
+	l := []uint16{7, 8}
+	bl := [][]byte{{0x03}, {0x05}}
+
+	uv := UnionSamePkgVariant{}
+	uv.U.Variant = 1
+	uv.U.Data = SimpleTypes1_C1{F1: 9}
+
+	wu := WrapUnionField{}
+	wu.W.Data.Variant = 0
+	wu.W.Data.Data = uint32(42)
+
+	cases := []struct {
+		name string
+		val  any
+	}{
+		{"TopVecOfVar", &TopVecOfVar{{1, 2}, {3}, {}}},
+		{"TopVecOfVar-underfill", &TopVecOfVar{{1, 2}}},
+		{"UnionSamePkgVariant", &uv},
+		{"PtrPrimitiveList", &PtrPrimitiveList{F: []*uint64{&u1, &u2}}},
+		{"FixedVecPtrStr", &FixedVecPtrStr{F: []*string{&s, &s}}},
+		{"FixedVecPtrStr-underfill", &FixedVecPtrStr{F: []*string{&s}}},
+		{"FixedVecPtrList", &FixedVecPtrList{F: []*[]uint16{&l, &l}}},
+		{"FixedVecStr-underfill", &FixedVecStr{F: []string{"a"}}},
+		{"PtrDynCollectionField", &PtrDynCollectionField{F: &bl}},
+		{"WrapUnionField", &wu},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			testCodegenPayloadByReflection(t, reflect.ValueOf(tc.val).Elem().Interface(), nil)
+		})
+	}
+}
+
+// namedPtrType is a defined type whose underlying type is a pointer; methods
+// cannot be declared on it, so top-level generation must error cleanly.
+type namedPtrType *uint64
+
+// Top-level CompatibleUnion / TypeWrapper and named pointer types cannot
+// receive generated methods; the generator must reject them with a clear
+// error instead of emitting uncompilable code.
+func TestCodegenRejectsUngeneratableTopLevelTypes(t *testing.T) {
+	cases := []struct {
+		name string
+		typ  reflect.Type
+		want string
+	}{
+		{
+			name: "named pointer type",
+			typ:  reflect.TypeFor[namedPtrType](),
+			want: "named pointer type",
+		},
+		{
+			name: "top-level union",
+			typ:  reflect.TypeFor[dynssz.CompatibleUnion[struct {
+				A uint32
+				B []byte `ssz-max:"8"`
+			}]](),
+			want: "CompatibleUnion/TypeWrapper",
+		},
+		{
+			name: "top-level wrapper",
+			typ: reflect.TypeFor[dynssz.TypeWrapper[struct {
+				Data []uint16 `ssz-max:"6"`
+			}, []uint16]](),
+			want: "CompatibleUnion/TypeWrapper",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cg := codegen.NewCodeGenerator(nil)
+			cg.BuildFile("reject_test.go", codegen.WithReflectType(tc.typ))
+			_, err := cg.GenerateToMap()
+			if err == nil {
+				t.Fatalf("expected a rejection error for %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
 	}
 }

@@ -127,3 +127,19 @@ types:
     output: gen_toplevel.go
   - name: TopLevelWrapVarList
     output: gen_toplevel.go
+  - name: TopVecOfVar
+    output: gen_compilecorrectness.go
+  - name: UnionSamePkgVariant
+    output: gen_compilecorrectness.go
+  - name: PtrPrimitiveList
+    output: gen_compilecorrectness.go
+  - name: FixedVecPtrStr
+    output: gen_compilecorrectness.go
+  - name: FixedVecPtrList
+    output: gen_compilecorrectness.go
+  - name: FixedVecStr
+    output: gen_compilecorrectness.go
+  - name: PtrDynCollectionField
+    output: gen_compilecorrectness.go
+  - name: WrapUnionField
+    output: gen_compilecorrectness.go

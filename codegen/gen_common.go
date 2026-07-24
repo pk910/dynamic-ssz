@@ -273,3 +273,26 @@ func (tp typePathList) getErrorWith(err string) string {
 	}
 	return err
 }
+
+// indexBase parenthesizes a value expression so it can be used as an indexing
+// or slicing base. A dereferenced pointer receiver (e.g. "*t") must become
+// "(*t)" before "[i]" so it binds as (*t)[i] rather than *(t[i]).
+func indexBase(valueVar string) string {
+	if strings.HasPrefix(valueVar, "*") {
+		return "(" + valueVar + ")"
+	}
+	return valueVar
+}
+
+// localizedVarName returns the name to bind a localized value to. The generated
+// method/closure already declares "t" (its receiver or parameter), and a
+// pointer nil-check localizes to "t" as well, so a same-scope re-declaration
+// would collide. In those cases ("t" is already bound: top scope, or the
+// incoming var is the localized "t") a distinct "t2" is used; otherwise "t"
+// legally shadows the outer value inside its own block.
+func localizedVarName(varName string, indent int) string {
+	if indent == 0 || varName == "t" {
+		return "t2"
+	}
+	return "t"
+}

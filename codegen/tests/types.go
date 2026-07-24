@@ -1442,3 +1442,58 @@ var PtrUnionVariant_Payload = func() PtrUnionVariant {
 	p.W.Data = &ptrUnionVal
 	return p
 }()
+
+// --- codegen compile-correctness shapes (pointer-receiver deref, localized
+// value naming, pointer-element fast-path guard, zero-padding item typing) ---
+
+// TopVecOfVar is a top-level named vector of variable-size elements; its
+// pointer receiver must be parenthesized before indexing in SizeSSZ.
+type TopVecOfVar [3][]uint16
+
+var _ = sszutils.Annotate[TopVecOfVar](`ssz-size:"3" ssz-max:"?,8"`)
+
+// UnionSamePkgVariant uses a same-package named type as a union variant.
+type UnionSamePkgVariant struct {
+	U dynssz.CompatibleUnion[struct {
+		V1 uint64
+		V2 SimpleTypes1_C1
+	}]
+}
+
+// PtrPrimitiveList is a list of pointer-to-primitive; the bulk uint64
+// fast-path must not fire for pointer elements.
+type PtrPrimitiveList struct {
+	F []*uint64 `ssz-max:"3"`
+}
+
+// FixedVecPtrStr / FixedVecPtrList / FixedVecStr exercise the under-fill
+// zero-padding item for pointer, string and list elements.
+type FixedVecPtrStr struct {
+	F []*string `ssz-size:"2" ssz-max:"?,8"`
+}
+type FixedVecPtrList struct {
+	F []*[]uint16 `ssz-size:"2" ssz-max:"?,4"`
+}
+type FixedVecStr struct {
+	F []string `ssz-size:"2" ssz-max:"?,8"`
+}
+
+// PtrDynCollectionField is a pointer to a dynamic collection; its SizeSSZ
+// must not double-declare the localized value.
+type PtrDynCollectionField struct {
+	F *[][]byte `ssz-max:"3" ssz-type:"?,bitlist" ssz-bitmax:"?,10"`
+}
+
+// WrapUnionField wraps a CompatibleUnion; the streaming size closure must
+// not collide with its parameter name.
+type WrapUnionField struct {
+	W dynssz.TypeWrapper[struct {
+		Data dynssz.CompatibleUnion[struct {
+			A uint32
+			B []byte `ssz-max:"4"`
+		}]
+	}, dynssz.CompatibleUnion[struct {
+		A uint32
+		B []byte `ssz-max:"4"`
+	}]] `ssz-type:"wrapper"`
+}
