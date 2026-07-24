@@ -2556,3 +2556,57 @@ func TestHashTreeRootOptionalListOrdering(t *testing.T) {
 		}
 	}
 }
+
+// Spec expressions restricted to the arithmetic subset evaluate with exact
+// uint64 arithmetic (full precision beyond 2^53); division rounds up (ceil),
+// since partial bytes/bits cannot be serialized.
+func TestResolveSpecValueIntegerExpressions(t *testing.T) {
+	big := uint64(1) << 53
+	ds := NewDynSsz(map[string]any{
+		"BIG": big,
+		"A":   uint64(10),
+		"B":   uint64(3),
+	})
+
+	cases := []struct {
+		expr     string
+		resolved bool
+		value    uint64
+	}{
+		{"BIG + 1", true, big + 1},
+		{"BIG * 2 + 1", true, big*2 + 1},
+		{"(A + B) * 2", true, 26},
+		{"A / B", true, 4},  // ceil division
+		{"12 / B", true, 4}, // exact division stays exact
+		{"A % B", true, 1},
+		{"A - B", true, 7},
+		{"UNDEFINED + 1", false, 0}, // unknown identifier -> static fallback
+	}
+	for _, tc := range cases {
+		ok, val, err := ds.ResolveSpecValue(tc.expr)
+		if err != nil {
+			t.Errorf("%q: unexpected error: %v", tc.expr, err)
+			continue
+		}
+		if ok != tc.resolved || (ok && val != tc.value) {
+			t.Errorf("%q: got ok=%v val=%d, want ok=%v val=%d", tc.expr, ok, val, tc.resolved, tc.value)
+		}
+	}
+
+	// genuine evaluation errors
+	for _, expr := range []string{"A / 0", "A % 0", "B - A", "BIG * BIG * BIG"} {
+		if _, _, err := ds.ResolveSpecValue(expr); err == nil {
+			t.Errorf("%q: expected error", expr)
+		}
+	}
+
+	// expressions beyond the subset fall back to float64 evaluation: fine
+	// below 2^53, rejected at or beyond it
+	ok, val, err := ds.ResolveSpecValue("A > B ? A : B")
+	if err != nil || !ok || val != 10 {
+		t.Errorf("ternary fallback: got ok=%v val=%d err=%v", ok, val, err)
+	}
+	if _, _, err := ds.ResolveSpecValue("BIG > 0 ? BIG : 0"); err == nil {
+		t.Error("expected precision error for float fallback result at 2^53")
+	}
+}

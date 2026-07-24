@@ -580,12 +580,16 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		case reflect.Slice:
 			if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
 				sszType = ssztypes.SszVectorType
+			} else if err := rejectZeroSizeHint(sizeHints); err != nil {
+				return nil, err
 			} else {
 				sszType = ssztypes.SszListType
 			}
 		case reflect.String:
 			if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
 				sszType = ssztypes.SszVectorType
+			} else if err := rejectZeroSizeHint(sizeHints); err != nil {
+				return nil, err
 			} else {
 				sszType = ssztypes.SszListType
 			}
@@ -1669,6 +1673,18 @@ func (p *Parser) parseFieldTags(tag string) (typeHints []ssztypes.SszTypeHint, s
 // compatibility with code that imports codegen.ParseTags.
 func ParseTags(tag string) ([]ssztypes.SszTypeHint, []ssztypes.SszSizeHint, []ssztypes.SszMaxSizeHint, error) {
 	return ssztypes.ParseTags(tag)
+}
+
+// rejectZeroSizeHint rejects an explicit literal ssz-size:"0" on a slice or
+// string: a zero-length vector is not valid SSZ, and silently degrading to an
+// unbounded list would drop the intended constraint entirely. Dynamic ("?")
+// and expression-based dimensions are unaffected. Mirrors the reflection
+// typecache check.
+func rejectZeroSizeHint(sizeHints []ssztypes.SszSizeHint) error {
+	if len(sizeHints) > 0 && !sizeHints[0].Dynamic && sizeHints[0].Expr == "" && sizeHints[0].Size == 0 {
+		return fmt.Errorf("ssz-size 0 is not a valid vector size (zero-length vectors are illegal in SSZ)")
+	}
+	return nil
 }
 
 func (p *Parser) extractSszIndex(tag string) string {

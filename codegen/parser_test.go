@@ -2690,3 +2690,23 @@ func TestBuildTypeWrapperArbitraryStruct(t *testing.T) {
 		}
 	})
 }
+
+// An explicit ssz-size:"0" on a slice must be rejected instead of silently
+// degrading to an unbounded list (zero-length vectors are illegal in SSZ).
+func TestZeroSizeSliceRejected(t *testing.T) {
+	parser := NewParser()
+	byteSlice := types.NewSlice(types.Typ[types.Uint8])
+
+	_, err := parser.buildTypeDescriptor(byteSlice, byteSlice, nil, []ssztypes.SszSizeHint{{Size: 0}}, nil)
+	if err == nil {
+		t.Fatal("expected error for ssz-size 0 on a slice")
+	}
+
+	// dynamic ("?") and expression-based dimensions stay valid
+	if _, err := parser.buildTypeDescriptor(byteSlice, byteSlice, nil, []ssztypes.SszSizeHint{{Dynamic: true}}, nil); err != nil {
+		t.Errorf("unexpected error for dynamic size hint: %v", err)
+	}
+	if _, err := parser.buildTypeDescriptor(byteSlice, byteSlice, nil, []ssztypes.SszSizeHint{{Size: 0, Expr: "SPEC_X"}}, nil); err != nil {
+		t.Errorf("unexpected error for expression size hint: %v", err)
+	}
+}

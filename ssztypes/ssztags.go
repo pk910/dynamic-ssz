@@ -482,6 +482,17 @@ func getTagPart(parts []string, index int) string {
 	return "?"
 }
 
+// rejectZeroSizeHint rejects an explicit literal ssz-size:"0" on a slice or
+// string: a zero-length vector is not valid SSZ, and silently degrading to an
+// unbounded list would drop the intended constraint entirely. Dynamic ("?")
+// and expression-based dimensions are unaffected.
+func rejectZeroSizeHint(sizeHints []SszSizeHint) error {
+	if len(sizeHints) > 0 && !sizeHints[0].Dynamic && sizeHints[0].Expr == "" && sizeHints[0].Size == 0 {
+		return sszutils.NewSszError(sszutils.ErrInvalidConstraint, "ssz-size 0 is not a valid vector size (zero-length vectors are illegal in SSZ)")
+	}
+	return nil
+}
+
 // JoinFieldAnnotationTag returns the effective SSZ tag for a struct field whose
 // type carries a registered annotation: the field tag is joined in front of the
 // annotation tag, so a key present in both resolves to the field's value

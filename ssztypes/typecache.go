@@ -420,12 +420,16 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 		case reflect.Slice:
 			if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
 				sszType = SszVectorType
+			} else if err := rejectZeroSizeHint(sizeHints); err != nil {
+				return nil, err
 			} else {
 				sszType = SszListType
 			}
 		case reflect.String:
 			if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
 				sszType = SszVectorType
+			} else if err := rejectZeroSizeHint(sizeHints); err != nil {
+				return nil, err
 			} else {
 				sszType = SszListType
 			}

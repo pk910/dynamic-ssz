@@ -4619,3 +4619,40 @@ func TestTypeCache_ProgressiveIndexBound(t *testing.T) {
 		t.Errorf("unexpected error for ssz-index 255: %v", err)
 	}
 }
+
+// An explicit ssz-size:"0" on a slice or string must be rejected instead of
+// silently degrading to an unbounded list (zero-length vectors are illegal
+// in SSZ).
+func TestTypeCache_ZeroSizeSliceRejected(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	type zeroSlice struct {
+		V []byte `ssz-size:"0"`
+	}
+	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(zeroSlice{}), nil, nil, nil); err == nil {
+		t.Error("expected error for ssz-size 0 on a slice")
+	}
+
+	type zeroString struct {
+		S string `ssz-size:"0"`
+	}
+	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(zeroString{}), nil, nil, nil); err == nil {
+		t.Error("expected error for ssz-size 0 on a string")
+	}
+
+	// multi-dim: a zero inner dimension is rejected too
+	type zeroInner struct {
+		M [][]byte `ssz-size:"2,0"`
+	}
+	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(zeroInner{}), nil, nil, nil); err == nil {
+		t.Error("expected error for zero inner ssz-size dimension")
+	}
+
+	// dynamic dimensions stay valid
+	type dynDim struct {
+		M [][]byte `ssz-size:"2,?" ssz-max:"?,16"`
+	}
+	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(dynDim{}), nil, nil, nil); err != nil {
+		t.Errorf("unexpected error for dynamic dimension: %v", err)
+	}
+}
