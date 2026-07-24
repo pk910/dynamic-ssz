@@ -165,6 +165,11 @@ func (e *StreamDecoder) ensureBuffered(n int) error {
 
 // readByte reads a single byte from the buffer
 func (e *StreamDecoder) readByte() (byte, error) {
+	// Never read across the current region limit; a malformed region must
+	// fail cleanly instead of consuming bytes of subsequent regions.
+	if e.position+1 > e.lastLimit {
+		return 0, ErrUnexpectedEOF
+	}
 	if err := e.ensureBuffered(1); err != nil {
 		return 0, err
 	}
@@ -179,6 +184,13 @@ func (e *StreamDecoder) readByte() (byte, error) {
 // from the stream to avoid unnecessary buffering overhead.
 func (e *StreamDecoder) readBytes(buf []byte) error {
 	n := len(buf)
+
+	// Never read across the current region limit; a malformed region must
+	// fail cleanly instead of consuming bytes of subsequent regions.
+	if e.position+n > e.lastLimit {
+		return ErrUnexpectedEOF
+	}
+
 	available := e.bufferLen - e.bufferPos
 
 	// If we have enough buffered data, use it directly
@@ -234,6 +246,11 @@ func (e *StreamDecoder) readBytes(buf []byte) error {
 // readBytesRef returns a slice reference to n bytes in the buffer.
 // The returned slice is only valid until the next read operation.
 func (e *StreamDecoder) readBytesRef(n int) ([]byte, error) {
+	// Never read across the current region limit; a malformed region must
+	// fail cleanly instead of consuming bytes of subsequent regions.
+	if e.position+n > e.lastLimit {
+		return nil, ErrUnexpectedEOF
+	}
 	if err := e.ensureBuffered(n); err != nil {
 		return nil, err
 	}

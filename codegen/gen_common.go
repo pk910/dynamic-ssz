@@ -121,6 +121,11 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 	if err != nil {
 		return "", err
 	}
+	// The JSON alone cannot distinguish shallow-built delegated descriptors
+	// (they carry no kind/size/subtree), so include the Go type identity in
+	// the dedup key; otherwise two different delegated types would share one
+	// size variable.
+	descJson = append(descJson, g.typePrinter.TypeStringWithoutTracking(desc, false)...)
 	descHash := sha256.Sum256(descJson)
 
 	if sizeVar, ok := g.varMap[descHash]; ok {

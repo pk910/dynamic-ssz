@@ -1582,3 +1582,51 @@ func TestStreamEncoderFlushOnSmallPrimitives(t *testing.T) {
 		t.Fatalf("expected 9 bytes, got %d", buf2.Len())
 	}
 }
+
+// Reads must never cross the current region limit: a malformed region has to
+// fail with a clean EOF error instead of consuming bytes of the following
+// regions (which would make GetLength go negative downstream).
+func TestStreamDecoder_ReadsRespectRegionLimit(t *testing.T) {
+	data := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+
+	newDec := func(regionLen int) *StreamDecoder {
+		dec := NewStreamDecoder(bytes.NewReader(data), len(data), 0)
+		dec.PushLimit(len(data))
+		dec.PushLimit(regionLen)
+		return dec
+	}
+
+	// readByte path
+	dec := newDec(0)
+	if _, err := dec.DecodeUint8(); err == nil {
+		t.Error("DecodeUint8 crossed an exhausted region limit")
+	}
+	if dec.GetLength() < 0 {
+		t.Errorf("GetLength went negative: %d", dec.GetLength())
+	}
+
+	// readBytesRef path
+	dec = newDec(2)
+	if _, err := dec.DecodeUint32(); err == nil {
+		t.Error("DecodeUint32 crossed a 2-byte region limit")
+	}
+
+	// readBytes path
+	dec = newDec(3)
+	buf := make([]byte, 4)
+	if _, err := dec.DecodeBytes(buf); err == nil {
+		t.Error("DecodeBytes crossed a 3-byte region limit")
+	}
+
+	// reads within the region still work and stop exactly at the boundary
+	dec = newDec(4)
+	if v, err := dec.DecodeUint32(); err != nil || v != 0x04030201 {
+		t.Errorf("DecodeUint32 within region failed: v=%x err=%v", v, err)
+	}
+	if _, err := dec.DecodeUint8(); err == nil {
+		t.Error("DecodeUint8 crossed the region boundary after full consumption")
+	}
+	if diff := dec.PopLimit(); diff != 0 {
+		t.Errorf("expected fully consumed region, diff=%d", diff)
+	}
+}

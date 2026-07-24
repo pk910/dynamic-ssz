@@ -289,6 +289,16 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 			sizeStr := "dec.GetLength()"
 			if desc.Size > 0 {
 				sizeStr = fmt.Sprintf("%d", desc.Size)
+			} else if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 &&
+				desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+				// A delegated STATIC type without a compile-time size (shallow
+				// descriptor) occupies exactly its own runtime size; reading the
+				// whole remaining region would swallow subsequent fields.
+				sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(desc)
+				if err != nil {
+					return err
+				}
+				sizeStr = fmt.Sprintf("int(%s)", sizeVar)
 			}
 			ctx.appendCode(indent, "if buf, err := dec.DecodeBytesBuf(%s); err != nil {\n", sizeStr)
 			ctx.appendCode(indent+1, "return err\n")
@@ -960,7 +970,9 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		}
 
 		errCode := "sszutils.ErrInvalidListStartOffsetFn(startOffset, sszLen)"
-		ctx.appendCode(indent, "if startOffset%%4 != 0 || uint32(sszLen) < startOffset {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
+		// Reject a zero first offset for a non-empty region to match the buffer
+		// and reflection paths; it would silently decode as an empty list.
+		ctx.appendCode(indent, "if startOffset%%4 != 0 || uint32(sszLen) < startOffset || (sszLen != 0 && startOffset == 0) {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
 		if hasMax {
 			errCode = fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", maxVar)
 			ctx.appendCode(indent, "if itemCount > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))

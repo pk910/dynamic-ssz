@@ -896,3 +896,114 @@ func TestCodegenBitvectorEdgeCases(t *testing.T) {
 		t.Error("reflection marshal accepted non-zero padding bits")
 	}
 }
+
+// A non-empty list-of-dynamic region whose first offset is 0 must be rejected
+// by the streaming decoder just like the buffer decoder and reflection.
+func TestCodegenStreamZeroFirstOffsetRejected(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+
+	// Bytes2D: container offset table (4) + inner region with first offset 0.
+	in := []byte{0x04, 0, 0, 0, 0x00, 0x00, 0x00, 0x00}
+
+	var a Bytes2D
+	if err := ds.UnmarshalSSZ(&a, in); err == nil {
+		t.Error("buffer UnmarshalSSZ accepted a zero first offset in a non-empty region")
+	}
+	var b Bytes2D
+	if err := ds.UnmarshalSSZReader(&b, bytes.NewReader(in), len(in)); err == nil {
+		t.Error("stream UnmarshalSSZReader accepted a zero first offset in a non-empty region")
+	}
+}
+
+// A truncated union region must produce a clean error on the streaming path:
+// the decoder must never read across the region limit (which previously led
+// to bogus negative-trailing errors or out-of-range panics).
+func TestCodegenStreamTruncatedUnionRegion(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes())
+
+	val := CoverageTypes4_Payload
+	valid, err := ds.MarshalSSZ(&val)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	// 5 dynamic fields, offsets at 0,4,8,12,16. Truncate U1's region to k
+	// bytes and shift the later offsets accordingly.
+	off := make([]int, 5)
+	for i := range off {
+		off[i] = int(binary.LittleEndian.Uint32(valid[i*4 : i*4+4]))
+	}
+	u1len := off[1] - off[0]
+
+	for k := 0; k < u1len; k++ {
+		in := make([]byte, 0, len(valid))
+		in = append(in, valid[:off[0]+k]...)
+		in = append(in, valid[off[1]:]...)
+		for i := 1; i < 5; i++ {
+			binary.LittleEndian.PutUint32(in[i*4:i*4+4], uint32(off[i]-(u1len-k)))
+		}
+
+		var a CoverageTypes4
+		if err := ds.UnmarshalSSZ(&a, in); err == nil {
+			t.Errorf("buffer UnmarshalSSZ accepted a %d-byte union region", k)
+		}
+		var b CoverageTypes4
+		if err := ds.UnmarshalSSZReader(&b, bytes.NewReader(in), len(in)); err == nil {
+			t.Errorf("stream UnmarshalSSZReader accepted a %d-byte union region", k)
+		}
+	}
+}
+
+// Delegated static fields around a dynamic field must each be sized from
+// their own type; two shallow delegated descriptors previously shared one
+// size variable, making the decoder reject its own marshal output.
+func TestCodegenMixedDelegatedContainer(t *testing.T) {
+	testCodegenPayloadByReflection(t, MixedDelegatedContainer_Payload, nil)
+
+	ds := dynssz.NewDynSsz(nil)
+	enc, err := ds.MarshalSSZ(&MixedDelegatedContainer_Payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back MixedDelegatedContainer
+	if err := ds.UnmarshalSSZ(&back, enc); err != nil {
+		t.Errorf("generated decoder rejected its own marshal output: %v", err)
+	}
+	if back.D.Value != 8 || back.B[2].Value != 4 {
+		t.Errorf("unexpected decoded values: %+v", back)
+	}
+}
+
+// A truncated union region followed by another dynamic field: the stream
+// decoder must not read the selector from the next region (previously the
+// overrun produced a negative remaining length and an out-of-range panic
+// for variable-size variants).
+func TestCodegenStreamUnionDynVariantTruncated(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+
+	testCodegenPayloadByReflection(t, UnionDynVariant_Payload, nil)
+
+	valid, err := ds.MarshalSSZ(&UnionDynVariant_Payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	// 2 dynamic fields, offsets at 0 and 4. Shrink U's region to 0 bytes; the
+	// next region starts with 0x01, which would select the variable-size
+	// variant if the selector were read across the region boundary.
+	off0 := int(binary.LittleEndian.Uint32(valid[0:4]))
+	off1 := int(binary.LittleEndian.Uint32(valid[4:8]))
+	in := make([]byte, 0, len(valid))
+	in = append(in, valid[:off0]...)
+	in = append(in, valid[off1:]...)
+	binary.LittleEndian.PutUint32(in[4:8], uint32(off0))
+
+	var a UnionDynVariant
+	if err := ds.UnmarshalSSZ(&a, in); err == nil {
+		t.Error("buffer UnmarshalSSZ accepted an empty union region")
+	}
+	var b UnionDynVariant
+	if err := ds.UnmarshalSSZReader(&b, bytes.NewReader(in), len(in)); err == nil {
+		t.Error("stream UnmarshalSSZReader accepted an empty union region")
+	}
+}

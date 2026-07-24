@@ -28,6 +28,8 @@ types:
     output: gen_nesteddelegated.go
   - name: NestedDelegatedDynContainer
     output: gen_nesteddelegated.go
+  - name: MixedDelegatedContainer
+    output: gen_nesteddelegated.go
 
   - name: SimpleTypes2
     output: gen_simple2.go
@@ -102,4 +104,6 @@ types:
   - name: NamedBitlistContainer
     output: gen_divergence.go
   - name: BitvecEdge
+    output: gen_divergence.go
+  - name: UnionDynVariant
     output: gen_divergence.go

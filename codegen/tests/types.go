@@ -1302,3 +1302,66 @@ type BitvecEdge struct {
 	BV2 []byte `ssz-type:"bitvector" ssz-bitsize:"16" dynssz-bitsize:"BIT_SPEC"`
 	BV3 []byte `ssz-type:"bitvector" ssz-bitsize:"12"`
 }
+
+// nestedDelegatedInner8 is a second fully-delegated static type with a
+// DIFFERENT size (8 bytes) than nestedDelegatedInner (4 bytes). Two shallow
+// delegated descriptors must never share a size variable in generated code.
+type nestedDelegatedInner8 struct {
+	Bad   [0]uint64 // illegal Vector[uint64, 0] if ever traversed
+	Value uint64
+}
+
+var _ = sszutils.Annotate[nestedDelegatedInner8](`ssz-static:"true"`)
+
+func (n *nestedDelegatedInner8) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 8 }
+
+func (n *nestedDelegatedInner8) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint64(buf, n.Value), nil
+}
+
+func (n *nestedDelegatedInner8) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	n.Value = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+
+func (n *nestedDelegatedInner8) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(n.Value)
+	return nil
+}
+
+// MixedDelegatedContainer places delegated static fields around a dynamic
+// field; each delegated field's region must be sized from its OWN type.
+type MixedDelegatedContainer struct {
+	A uint64
+	B [3]nestedDelegatedInner
+	C []uint16 `ssz-max:"8"`
+	D nestedDelegatedInner8
+	E []byte `ssz-max:"8"`
+}
+
+var MixedDelegatedContainer_Payload = MixedDelegatedContainer{
+	A: 1,
+	B: [3]nestedDelegatedInner{{Value: 2}, {Value: 3}, {Value: 4}},
+	C: []uint16{5, 6, 7},
+	D: nestedDelegatedInner8{Value: 8},
+	E: []byte{9, 10},
+}
+
+// UnionDynVariant has a union with a variable-size variant followed by
+// another dynamic field; a truncated union region must fail cleanly on the
+// stream path (the selector read must not cross into the next region).
+type UnionDynVariant struct {
+	U dynssz.CompatibleUnion[struct {
+		F1 uint32
+		F2 []byte `ssz-max:"16"`
+	}]
+	L []byte `ssz-max:"16"`
+}
+
+var UnionDynVariant_Payload = UnionDynVariant{
+	U: dynssz.CompatibleUnion[struct {
+		F1 uint32
+		F2 []byte `ssz-max:"16"`
+	}]{Variant: 1, Data: []byte{1, 2, 3}},
+	L: []byte{1, 4, 5},
+}
