@@ -74,7 +74,8 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 			}
 		}
 
-		if targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 {
+		if targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 &&
+			(!ctx.noDelegation || targetType.SszType == ssztypes.SszCustomType) {
 			if sizer, ok := getPtr(targetValue).Interface().(sszutils.DynamicSizer); ok {
 				return uint32(sizer.SizeSSZDyn(ctx.ds)), nil
 			}

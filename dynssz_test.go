@@ -2639,3 +2639,86 @@ func TestSizeAboveMaxInt32(t *testing.T) {
 		t.Fatalf("MarshalSSZWriter of a >MaxInt32 vector failed: %v", err)
 	}
 }
+
+// delegationProbe is an ordinary container (one uint64 field) that also
+// implements the generated Dynamic* SSZ methods with a deliberately
+// non-canonical encoding. This lets a test tell which engine ran: delegation
+// yields the sentinel output, while the reflection walk yields the canonical
+// little-endian encoding of V.
+type delegationProbe struct {
+	V uint64
+}
+
+// delegationSentinel is the fixed output the delegated methods produce. Its
+// length differs from the 8-byte reflection encoding so both size and content
+// distinguish the two paths.
+var delegationSentinel = []byte{0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB}
+
+func (p *delegationProbe) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return len(delegationSentinel) }
+
+func (p *delegationProbe) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return append(buf, delegationSentinel...), nil
+}
+
+// UnmarshalSSZDyn ignores the input and stores a marker, so a decode that ran
+// through delegation is distinguishable from a reflection decode of the input.
+func (p *delegationProbe) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error {
+	p.V = 0xDECABE
+	return nil
+}
+
+func (p *delegationProbe) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(0xDEAD)
+	return nil
+}
+
+// TestNoDelegationForcesReflection verifies that WithNoDelegation bypasses a
+// type's own generated Dynamic* methods and drives every operation through the
+// reflection engine.
+func TestNoDelegationForcesReflection(t *testing.T) {
+	const v = uint64(0x0102030405060708)
+	canonical := binary.LittleEndian.AppendUint64(nil, v)
+
+	dsDelegate := NewDynSsz(nil)
+	dsReflect := NewDynSsz(nil, WithNoDelegation())
+
+	// Marshal + Size: delegation yields the sentinel, reflection the canonical
+	// little-endian field encoding.
+	if got, err := dsDelegate.MarshalSSZ(&delegationProbe{V: v}); err != nil || !bytes.Equal(got, delegationSentinel) {
+		t.Fatalf("delegating MarshalSSZ = %x, err %v; want sentinel", got, err)
+	}
+	if got, err := dsReflect.MarshalSSZ(&delegationProbe{V: v}); err != nil || !bytes.Equal(got, canonical) {
+		t.Fatalf("WithNoDelegation MarshalSSZ = %x, err %v; want %x (reflection)", got, err, canonical)
+	}
+	if got, _ := dsDelegate.SizeSSZ(&delegationProbe{V: v}); got != len(delegationSentinel) {
+		t.Fatalf("delegating SizeSSZ = %d; want %d", got, len(delegationSentinel))
+	}
+	if got, _ := dsReflect.SizeSSZ(&delegationProbe{V: v}); got != len(canonical) {
+		t.Fatalf("WithNoDelegation SizeSSZ = %d; want %d (reflection)", got, len(canonical))
+	}
+
+	// Unmarshal: delegation stores the marker, reflection decodes the input.
+	var pDelegate, pReflect delegationProbe
+	if err := dsDelegate.UnmarshalSSZ(&pDelegate, canonical); err != nil || pDelegate.V != 0xDECABE {
+		t.Fatalf("delegating UnmarshalSSZ V = %#x, err %v; want marker", pDelegate.V, err)
+	}
+	if err := dsReflect.UnmarshalSSZ(&pReflect, canonical); err != nil || pReflect.V != v {
+		t.Fatalf("WithNoDelegation UnmarshalSSZ V = %#x, err %v; want %#x (reflection)", pReflect.V, err, v)
+	}
+
+	// HashTreeRoot: the two paths produce different roots.
+	rootDelegate, err := dsDelegate.HashTreeRoot(&delegationProbe{V: v})
+	if err != nil {
+		t.Fatalf("delegating HashTreeRoot: %v", err)
+	}
+	rootReflect, err := dsReflect.HashTreeRoot(&delegationProbe{V: v})
+	if err != nil {
+		t.Fatalf("WithNoDelegation HashTreeRoot: %v", err)
+	}
+	if rootDelegate == rootReflect {
+		t.Fatalf("HashTreeRoot did not switch engines: both roots %x", rootDelegate)
+	}
+	if !bytes.Equal(rootReflect[:8], canonical) {
+		t.Fatalf("WithNoDelegation HashTreeRoot = %x; want field %x in the first chunk", rootReflect, canonical)
+	}
+}

@@ -117,6 +117,7 @@ func NewDynSsz(specs map[string]any, options ...DynSszOption) *DynSsz {
 	}
 	dynssz.typeCache = ssztypes.NewTypeCache(dynssz)
 	dynssz.typeCache.ExtendedTypes = opts.ExtendedTypes
+	dynssz.typeCache.NoDelegation = opts.NoDelegation
 
 	return dynssz
 }
@@ -219,7 +220,7 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 
 	// Skip view descriptor logic for types implementing DynamicMarshaler (they handle their own serialization)
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if marshaler, ok := source.(sszutils.DynamicMarshaler); ok {
+		if marshaler, ok := source.(sszutils.DynamicMarshaler); ok && !d.options.NoDelegation {
 			var buf []byte
 			if sizer, ok := source.(sszutils.DynamicSizer); ok {
 				size := sizer.SizeSSZDyn(d)
@@ -258,7 +259,7 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 		return nil, err
 	}
 
-	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
 
 	size, err := ctx.SizeSSZ(sourceTypeDesc, sourceValue)
 	if err != nil {
@@ -322,7 +323,7 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 
 	// Skip view descriptor logic for types implementing DynamicMarshaler
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if marshaler, ok := source.(sszutils.DynamicMarshaler); ok {
+		if marshaler, ok := source.(sszutils.DynamicMarshaler); ok && !d.options.NoDelegation {
 			return marshaler.MarshalSSZDyn(d, buf)
 		}
 	} else if viewMarshaler, ok := source.(sszutils.DynamicViewMarshaler); ok {
@@ -342,7 +343,7 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 		return nil, err
 	}
 
-	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
 
 	// Grow buf so the serialized data can be appended without overrunning its
 	// capacity (BufferEncoder writes at len(buf) using cap(buf) directly).
@@ -438,7 +439,7 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 
 	// Skip view descriptor logic for types implementing DynamicEncoder
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if sszEncoder, ok := source.(sszutils.DynamicEncoder); ok {
+		if sszEncoder, ok := source.(sszutils.DynamicEncoder); ok && !d.options.NoDelegation {
 			err := sszEncoder.MarshalSSZEncoder(d, encoder)
 			if err != nil {
 				return err
@@ -470,7 +471,7 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 		return err
 	}
 
-	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
 
 	err = ctx.MarshalSSZ(sourceTypeDesc, sourceValue, encoder)
 	if err != nil {
@@ -521,7 +522,7 @@ func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error) {
 
 	// Skip view descriptor logic for types implementing DynamicSizer
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if sizer, ok := source.(sszutils.DynamicSizer); ok {
+		if sizer, ok := source.(sszutils.DynamicSizer); ok && !d.options.NoDelegation {
 			return sizer.SizeSSZDyn(d), nil
 		}
 	} else if viewSizer, ok := source.(sszutils.DynamicViewSizer); ok {
@@ -542,7 +543,7 @@ func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error) {
 		return 0, err
 	}
 
-	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
 
 	size, err := ctx.SizeSSZ(sourceTypeDesc, sourceValue)
 	if err != nil {
@@ -598,7 +599,7 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 
 	// Skip view descriptor logic for types implementing DynamicUnmarshaler
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if unmarshaler, ok := target.(sszutils.DynamicUnmarshaler); ok {
+		if unmarshaler, ok := target.(sszutils.DynamicUnmarshaler); ok && !d.options.NoDelegation {
 			return unmarshaler.UnmarshalSSZDyn(d, ssz)
 		}
 	} else if viewUnmarshaler, ok := target.(sszutils.DynamicViewUnmarshaler); ok {
@@ -626,7 +627,7 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 		return fmt.Errorf("target pointer must not be nil")
 	}
 
-	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
 
 	decoder := sszutils.NewBufferDecoder(ssz)
 	decoder.PushLimit(len(ssz))
@@ -732,7 +733,7 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 
 	// Skip view descriptor logic for types implementing DynamicDecoder
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if sszDecoder, ok := target.(sszutils.DynamicDecoder); ok {
+		if sszDecoder, ok := target.(sszutils.DynamicDecoder); ok && !d.options.NoDelegation {
 			err := sszDecoder.UnmarshalSSZDecoder(d, decoder)
 			if err != nil {
 				return err
@@ -780,7 +781,7 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 		return fmt.Errorf("target pointer must not be nil")
 	}
 
-	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
 
 	err = ctx.UnmarshalSSZ(targetTypeDesc, targetValue, decoder)
 	if err != nil {
@@ -902,7 +903,7 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...Ca
 
 	// Skip view descriptor logic for types implementing DynamicHashRoot
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if hasher, ok := source.(sszutils.DynamicHashRoot); ok {
+		if hasher, ok := source.(sszutils.DynamicHashRoot); ok && !d.options.NoDelegation {
 			err := hasher.HashTreeRootWithDyn(d, hh)
 			if err != nil {
 				return err
@@ -930,7 +931,7 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...Ca
 		return err
 	}
 
-	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
 
 	err = ctx.HashTreeRoot(sourceTypeDesc, sourceValue, hh)
 	if err != nil {

@@ -33,6 +33,7 @@ type TypeCache struct {
 	building      map[typeKey]bool
 	CompatFlags   map[string]SszCompatFlag
 	ExtendedTypes bool
+	NoDelegation  bool
 }
 
 // NewTypeCache creates a new type cache
@@ -484,7 +485,7 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 	// applied to a zero value. Field-level hints (hasExternalHints) opt out, since
 	// they override the type's own annotation and require inline processing. View
 	// descriptors qualify when they delegate through the dynamic view interface set.
-	if staticAnnotation != nil && !hasExternalHints {
+	if staticAnnotation != nil && !hasExternalHints && !tc.NoDelegation {
 		var fullyDelegated bool
 		if desc.GoTypeFlags&GoTypeFlagIsView != 0 {
 			fullyDelegated = fullyDelegatesSSZView(runtimeType)

@@ -188,18 +188,56 @@ func TestCodegenCoverageTypes1(t *testing.T) {
 	testCodegenPayloadByReflection(t, CoverageTypes1_Payload, SimpleTypesWithSpecs_Specs)
 }
 
+// assertRequiresDelegation verifies a payload that is only expressible through
+// its generated Dynamic* methods — it carries a structurally illegal innard
+// ([0]uint64) guarded by an ssz-static annotation, so the type must be
+// shallow-built and delegated rather than traversed. The delegating engine must
+// handle it end to end, while disabling delegation (WithNoDelegation) must make
+// the reflection engine reject it: forcing a full traversal reaches the illegal
+// innard, proving the type genuinely depends on delegation and is never silently
+// walked.
+func assertRequiresDelegation(t *testing.T, payload any) {
+	t.Helper()
+
+	genDs := dynssz.NewDynSsz(nil)
+	enc, err := genDs.MarshalSSZ(payload)
+	if err != nil {
+		t.Fatalf("delegating MarshalSSZ failed: %v", err)
+	}
+	root, err := genDs.HashTreeRoot(payload)
+	if err != nil {
+		t.Fatalf("delegating HashTreeRoot failed: %v", err)
+	}
+	roundtrip := reflect.New(reflect.TypeOf(payload)).Interface()
+	if err = genDs.UnmarshalSSZ(roundtrip, enc); err != nil {
+		t.Fatalf("delegating UnmarshalSSZ failed: %v", err)
+	}
+	rtRoot, err := genDs.HashTreeRoot(roundtrip)
+	if err != nil {
+		t.Fatalf("delegating HashTreeRoot (roundtrip) failed: %v", err)
+	}
+	if root != rtRoot {
+		t.Fatalf("round-trip changed the hash tree root: %x != %x", root, rtRoot)
+	}
+
+	refDs := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation())
+	if _, err := refDs.MarshalSSZ(payload); err == nil {
+		t.Fatal("WithNoDelegation MarshalSSZ unexpectedly succeeded; the type must be un-reflectable and require delegation")
+	}
+}
+
 // TestCodegenNestedDelegated exercises the shallow-build gate. The containers
 // reference fully-delegated types carrying a structurally illegal innard
-// ([0]uint64). They only generate (parser gate) and round-trip (reflection
+// ([0]uint64). They only generate (parser gate) and delegate (reflection
 // typecache gate) because both shallow-build the nested type via its ssz-static
 // annotation instead of traversing — and rejecting — that innard. The Static case
 // uses ssz-static:"true" (fixed, runtime delegated size); Dynamic uses "false".
 func TestCodegenNestedDelegated(t *testing.T) {
 	t.Run("Static", func(t *testing.T) {
-		testCodegenPayloadByReflection(t, NestedDelegatedContainer_Payload, nil)
+		assertRequiresDelegation(t, NestedDelegatedContainer_Payload)
 	})
 	t.Run("Dynamic", func(t *testing.T) {
-		testCodegenPayloadByReflection(t, NestedDelegatedDynContainer_Payload, nil)
+		assertRequiresDelegation(t, NestedDelegatedDynContainer_Payload)
 	})
 }
 
@@ -648,9 +686,14 @@ func testCodegenPayloadWithView(t *testing.T, payload, view any) {
 func testCodegenPayloadByReflection(t *testing.T, payload any, specs map[string]any, opts ...dynssz.DynSszOption) {
 	t.Helper()
 
+	// WithNoDelegation forces refDs through the reflection engine even for types
+	// that implement the generated Dynamic* methods. Without it a fully-delegating
+	// type would run its own generated code on both sides, turning this into a
+	// codegen-vs-codegen comparison instead of reflection-vs-codegen.
 	refOpts := append([]dynssz.DynSszOption{
 		dynssz.WithNoFastSsz(),
 		dynssz.WithNoFastHash(),
+		dynssz.WithNoDelegation(),
 	}, opts...)
 	refDs := dynssz.NewDynSsz(specs, refOpts...)
 	genDs := dynssz.NewDynSsz(specs, opts...)
@@ -961,7 +1004,7 @@ func TestCodegenStreamTruncatedUnionRegion(t *testing.T) {
 // their own type; two shallow delegated descriptors previously shared one
 // size variable, making the decoder reject its own marshal output.
 func TestCodegenMixedDelegatedContainer(t *testing.T) {
-	testCodegenPayloadByReflection(t, MixedDelegatedContainer_Payload, nil)
+	assertRequiresDelegation(t, MixedDelegatedContainer_Payload)
 
 	ds := dynssz.NewDynSsz(nil)
 	enc, err := ds.MarshalSSZ(&MixedDelegatedContainer_Payload)
@@ -1202,7 +1245,7 @@ func TestCodegenRejectsUngeneratableTopLevelTypes(t *testing.T) {
 		},
 		{
 			name: "top-level union",
-			typ:  reflect.TypeFor[dynssz.CompatibleUnion[struct {
+			typ: reflect.TypeFor[dynssz.CompatibleUnion[struct {
 				A uint32
 				B []byte `ssz-max:"8"`
 			}]](),

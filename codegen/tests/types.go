@@ -1503,7 +1503,7 @@ type WrapUnionField struct {
 // non-SSZ types.
 type ExcludedFields struct {
 	A     uint32
-	Cache [32]byte       `ssz-type:"-"`
+	Cache [32]byte `ssz-type:"-"`
 	B     uint64
 	Meta  map[string]int `ssz-type:"-"`
 	L     []uint16       `ssz-max:"8"`

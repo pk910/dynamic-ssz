@@ -558,7 +558,7 @@ func (e *Engine) unmarshalReflection(ds *dynssz.DynSsz, target any, data []byte)
 		return fmt.Errorf("get type descriptor: %w", err)
 	}
 
-	ctx := reflection.NewReflectionCtx(ds, nil, false, true)
+	ctx := reflection.NewReflectionCtx(ds, nil, false, true, true)
 
 	decoder := sszutils.NewBufferDecoder(data)
 	decoder.PushLimit(len(data))
@@ -592,7 +592,7 @@ func (e *Engine) marshalReflection(ds *dynssz.DynSsz, source any) ([]byte, error
 		return nil, fmt.Errorf("get type descriptor: %w", err)
 	}
 
-	ctx := reflection.NewReflectionCtx(ds, nil, false, true)
+	ctx := reflection.NewReflectionCtx(ds, nil, false, true, true)
 
 	size, err := ctx.SizeSSZ(typeDesc, sourceValue)
 	if err != nil {
@@ -628,7 +628,7 @@ func (e *Engine) htrReflection(ds *dynssz.DynSsz, source any) ([32]byte, error) 
 		return [32]byte{}, fmt.Errorf("get type descriptor: %w", err)
 	}
 
-	ctx := reflection.NewReflectionCtx(ds, nil, false, true)
+	ctx := reflection.NewReflectionCtx(ds, nil, false, true, true)
 
 	hh := hasher.FastHasherPool.Get()
 	defer hasher.FastHasherPool.Put(hh)

@@ -98,6 +98,10 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 		if !useFastSsz && targetType.SszType == ssztypes.SszCustomType {
 			useFastSsz = true
 		}
+		if ctx.noDelegation && targetType.SszType != ssztypes.SszCustomType {
+			useDynamicUnmarshal = false
+			useDynamicDecoder = false
+		}
 
 		if useFastSsz {
 			if unmarshaller, ok := getPtr(targetValue).Interface().(sszutils.FastsszUnmarshaler); ok {

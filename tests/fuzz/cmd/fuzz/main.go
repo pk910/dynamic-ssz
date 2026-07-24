@@ -57,8 +57,14 @@ func main() {
 
 	// Create shared DynSsz instances (TypeCache is thread-safe via RWMutex).
 	// Sharing avoids duplicating large type caches across workers.
-	ds := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz())
-	dsExt := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithExtendedTypes())
+	//
+	// WithNoDelegation forces the type cache to fully describe every corpus type
+	// even though each implements the generated Dynamic* methods. Without it the
+	// cache stores a shallow descriptor for fully-delegating types, and the
+	// reflection engine (which the fuzzer runs to compare against codegen) has no
+	// reflection metadata to walk.
+	ds := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation())
+	dsExt := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation(), dynssz.WithExtendedTypes())
 
 	// Warm up type caches by doing one marshal per type.
 	// This populates the cache before workers start, avoiding write contention.

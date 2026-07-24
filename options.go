@@ -11,6 +11,7 @@ type DynSszOption func(*DynSszOptions)
 // DynSszOptions holds the configuration options for a DynSsz instance.
 type DynSszOptions struct {
 	NoFastSsz              bool
+	NoDelegation           bool
 	NoFastHash             bool
 	ExtendedTypes          bool
 	Verbose                bool
@@ -24,6 +25,25 @@ type DynSszOptions struct {
 func WithNoFastSsz() DynSszOption {
 	return func(opts *DynSszOptions) {
 		opts.NoFastSsz = true
+	}
+}
+
+// WithNoDelegation disables delegation to a type's own generated Dynamic* SSZ
+// methods (MarshalSSZDyn, UnmarshalSSZDyn, HashTreeRootWith and friends),
+// forcing every operation through the generic reflection engine.
+//
+// This differs from WithNoFastSsz, which only disables the legacy fastssz
+// fallback: WithNoFastSsz leaves generated dynamic methods in charge, whereas
+// WithNoDelegation bypasses them as well. Combine both to run entirely on
+// reflection, which is primarily useful for differential testing a type's
+// generated code against the reflection implementation.
+//
+// Custom types (ssz-type:"custom" and types with no reflection representation)
+// always delegate to their own methods regardless of this option, since the
+// reflection engine cannot serialize them.
+func WithNoDelegation() DynSszOption {
+	return func(opts *DynSszOptions) {
+		opts.NoDelegation = true
 	}
 }
 

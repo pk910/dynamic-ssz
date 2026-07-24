@@ -88,6 +88,9 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 		if !useFastSsz && sourceType.SszType == ssztypes.SszCustomType {
 			useFastSsz = true
 		}
+		if ctx.noDelegation && sourceType.SszType != ssztypes.SszCustomType {
+			useDynamicHashRoot = false
+		}
 
 		if useFastSsz {
 			sourceValuePtr := getPtr(sourceValue)

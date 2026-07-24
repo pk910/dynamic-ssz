@@ -71,6 +71,10 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 		if !useFastSsz && sourceType.SszType == ssztypes.SszCustomType {
 			useFastSsz = true
 		}
+		if ctx.noDelegation && sourceType.SszType != ssztypes.SszCustomType {
+			useDynamicMarshal = false
+			useDynamicEncoder = false
+		}
 
 		if useFastSsz {
 			if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.FastsszMarshaler); ok {

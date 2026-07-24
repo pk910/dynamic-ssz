@@ -23,10 +23,11 @@ import (
 // It wraps a DynamicSpecs provider for resolving dynamic field sizes, along
 // with options controlling fastssz fallback behavior and logging.
 type ReflectionCtx struct {
-	ds        sszutils.DynamicSpecs
-	logCb     func(format string, args ...any)
-	verbose   bool
-	noFastSsz bool
+	ds           sszutils.DynamicSpecs
+	logCb        func(format string, args ...any)
+	verbose      bool
+	noFastSsz    bool
+	noDelegation bool
 }
 
 // NewReflectionCtx creates a new ReflectionCtx with the given configuration.
@@ -37,12 +38,16 @@ type ReflectionCtx struct {
 //   - verbose: enables verbose logging output
 //   - noFastSsz: when true, disables fastssz fallback for types that implement
 //     fastssz interfaces, forcing all operations through reflection
-func NewReflectionCtx(ds sszutils.DynamicSpecs, logCb func(format string, args ...any), verbose, noFastSsz bool) *ReflectionCtx {
+//   - noDelegation: when true, disables delegation to a type's own generated
+//     Dynamic* SSZ methods, forcing the generic reflection walk. Custom types
+//     (which have no reflection representation) always delegate regardless.
+func NewReflectionCtx(ds sszutils.DynamicSpecs, logCb func(format string, args ...any), verbose, noFastSsz, noDelegation bool) *ReflectionCtx {
 	return &ReflectionCtx{
-		ds:        ds,
-		logCb:     logCb,
-		verbose:   verbose,
-		noFastSsz: noFastSsz,
+		ds:           ds,
+		logCb:        logCb,
+		verbose:      verbose,
+		noFastSsz:    noFastSsz,
+		noDelegation: noDelegation,
 	}
 }
 

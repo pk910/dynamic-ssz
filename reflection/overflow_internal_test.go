@@ -19,7 +19,7 @@ import (
 const overflowLen = math.MaxInt32 + 1 // triggers > math.MaxInt checks on 32-bit platforms
 
 func newCtx() *ReflectionCtx {
-	return NewReflectionCtx(nil, nil, false, true)
+	return NewReflectionCtx(nil, nil, false, true, false)
 }
 
 // stubFastsszUnmarshaler implements sszutils.FastsszUnmarshaler for testing.
@@ -117,7 +117,7 @@ func TestMarshalDynamicVectorLenOverflow(t *testing.T) {
 
 func TestUnmarshalTypeFastsszSizeOverflow(t *testing.T) {
 	skipUnless32Bit(t)
-	ctx := NewReflectionCtx(nil, nil, false, false) // noFastSsz=false to enter fastssz path
+	ctx := NewReflectionCtx(nil, nil, false, false, false) // noFastSsz=false to enter fastssz path
 	td := &ssztypes.TypeDescriptor{
 		SszType:        ssztypes.SszCustomType,
 		Kind:           reflect.Struct,
