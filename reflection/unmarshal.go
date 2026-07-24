@@ -531,12 +531,18 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 	var newValue reflect.Value
 	switch targetType.Kind {
 	case reflect.Slice:
+		// For pointer types (e.g. a *NamedSlice root), unmarshalType already
+		// dereferenced targetValue, so create the underlying slice type.
+		sliceT := targetType.Type
+		if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+			sliceT = sliceT.Elem()
+		}
 		// Optimization: avoid reflect.MakeSlice for common byte slice types
 		if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 && targetType.ElemDesc.Type.Kind() == reflect.Uint8 {
 			byteSlice := make([]byte, arrLen)
 			newValue = reflect.ValueOf(byteSlice)
 		} else {
-			newValue = reflect.MakeSlice(targetType.Type, arrLen, arrLen)
+			newValue = reflect.MakeSlice(sliceT, arrLen, arrLen)
 		}
 	case reflect.Array:
 		newValue = targetValue
