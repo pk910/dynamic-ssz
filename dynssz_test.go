@@ -2884,4 +2884,3 @@ func TestReflectionCoverageEdges(t *testing.T) {
 		t.Fatalf("unknown-size reader lost data: %+v", back2.F)
 	}
 }
-

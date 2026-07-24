@@ -4685,7 +4685,6 @@ func TestTypeCache_ExcludedField(t *testing.T) {
 	}
 }
 
-
 func TestJoinFieldAnnotationTag(t *testing.T) {
 	if got := JoinFieldAnnotationTag(`ssz-max:"8"`, ""); got != `ssz-max:"8"` {
 		t.Errorf("empty annotation: got %q", got)

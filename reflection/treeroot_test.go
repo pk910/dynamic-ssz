@@ -2175,7 +2175,6 @@ func TestVectorCollapseEvery256(t *testing.T) {
 	}
 }
 
-
 // reflCustom is a custom SSZ type providing the dynssz method set; hashing it
 // through a container exercises the custom-type hasher preference.
 type reflCustom struct{ V uint64 }
