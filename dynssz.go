@@ -660,7 +660,9 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 //   - net.Conn for network reception
 //   - bytes.Reader for in-memory data
 //   - Any custom io.Reader implementation
-//   - size: The expected total size of the SSZ data in bytes.
+//   - size: The expected total size of the SSZ data in bytes. A negative size enables
+//     "unknown size" mode: the entire stream is read until EOF into memory and decoded
+//     through the buffer path, so the memory savings of streaming do not apply.
 //
 // Returns:
 //   - error: An error if decoding fails due to:
@@ -693,7 +695,7 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 //	    log.Fatal("Failed to read state:", err)
 //	}
 //
-//	// Read from network with unknown size
+//	// Read from network with unknown size (reads until EOF, buffers in memory)
 //	conn, _ := net.Dial("tcp", "localhost:8080")
 //	var block phase0.BeaconBlock
 //	err = ds.UnmarshalSSZReader(&block, conn, -1)
@@ -704,6 +706,17 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 	if r == nil {
 		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "reader must not be nil")
 	}
+
+	// Unknown size: SSZ needs the total length to resolve trailing dynamic
+	// regions, so read the whole stream and decode through the buffer path.
+	if size < 0 {
+		data, err := io.ReadAll(r)
+		if err != nil {
+			return fmt.Errorf("failed to read ssz stream: %w", err)
+		}
+		return d.UnmarshalSSZ(target, data, opts...)
+	}
+
 	cfg := applyCallOptions(opts)
 	decoder := sszutils.NewStreamDecoder(r, size, d.options.StreamReaderBufferSize)
 	decoder.PushLimit(size)

@@ -252,6 +252,46 @@ func TestUnmarshalSSZReaderReflectionSuccess(t *testing.T) {
 	}
 }
 
+func TestUnmarshalSSZReaderUnknownSize(t *testing.T) {
+	type dynContainer struct {
+		Value uint32
+		List  []uint16 `ssz-max:"16"`
+	}
+
+	ds := NewDynSsz(nil, WithNoFastSsz())
+
+	// A negative size reads the stream until EOF, so both fixed and dynamic
+	// types must decode without a caller-supplied length.
+	container := &testSimpleContainer{}
+	err := ds.UnmarshalSSZReader(container, bytes.NewReader([]byte{0x2a, 0, 0, 0}), -1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if container.Value != 42 {
+		t.Fatalf("expected 42, got %d", container.Value)
+	}
+
+	src := &dynContainer{Value: 7, List: []uint16{1, 2, 3}}
+	data, err := ds.MarshalSSZ(src)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	decoded := &dynContainer{}
+	err = ds.UnmarshalSSZReader(decoded, bytes.NewReader(data), -1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if decoded.Value != 7 || len(decoded.List) != 3 || decoded.List[2] != 3 {
+		t.Fatalf("unexpected decode result: %+v", decoded)
+	}
+
+	// Trailing garbage still has to be rejected in unknown-size mode.
+	err = ds.UnmarshalSSZReader(&testSimpleContainer{}, bytes.NewReader([]byte{0x2a, 0, 0, 0, 0xff}), -1)
+	if err == nil {
+		t.Fatal("expected error for trailing bytes in unknown-size mode")
+	}
+}
+
 // ValidateType tests
 
 func TestValidateTypeSuccess(t *testing.T) {
