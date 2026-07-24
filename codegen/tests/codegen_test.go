@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"reflect"
+	"runtime"
 	"testing"
 
 	dynssz "github.com/pk910/dynamic-ssz"
@@ -1079,4 +1080,61 @@ func TestCodegenTopLevelCompositeTypes(t *testing.T) {
 	roundtrip("VarList", &TopLevelVarList{{Tag: 1, Data: []byte{1, 2}}, {Tag: 2, Data: []byte{}}}, func() any { return &TopLevelVarList{} })
 	roundtrip("ListOfList", &TopLevelListOfList{{1, 2, 3}, {}, {4}}, func() any { return &TopLevelListOfList{} })
 	roundtrip("WrapVarList", &wrap, func() any { return &TopLevelWrapVarList{} })
+}
+
+// The generated stream decoder must validate a list's first offset before
+// allocating the offset table sized from it, so a tiny payload with a huge
+// first offset is rejected with bounded allocation rather than allocating an
+// offset table for the attacker-supplied item count.
+func TestCodegenStreamListOffsetNoOverAlloc(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+
+	// Bytes2D: outer container offset (4) to field B, then B's inner list whose
+	// first offset is 0x02000000 (itemCount ~= 8.4M) — but the region is tiny.
+	in := []byte{0x04, 0, 0, 0, 0x00, 0x00, 0x00, 0x02}
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+
+	var v Bytes2D
+	err := ds.UnmarshalSSZReader(&v, bytes.NewReader(in), len(in))
+	if err == nil {
+		t.Fatal("expected the malicious first offset to be rejected")
+	}
+
+	runtime.ReadMemStats(&after)
+	if delta := after.TotalAlloc - before.TotalAlloc; delta > 1<<20 {
+		t.Errorf("stream decode allocated %d bytes for an 8-byte input (offset not validated before allocation)", delta)
+	}
+}
+
+// A generated decoder must allocate a pointer union variant / wrapper-of-pointer
+// before writing through it; decoding valid bytes must round-trip rather than
+// nil-deref.
+func TestCodegenPointerUnionVariantAndWrapper(t *testing.T) {
+	testCodegenPayloadByReflection(t, PtrUnionVariant_Payload, nil)
+
+	ds := dynssz.NewDynSsz(nil)
+	enc, err := ds.MarshalSSZ(&PtrUnionVariant_Payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var buf PtrUnionVariant
+	if err := ds.UnmarshalSSZ(&buf, enc); err != nil {
+		t.Fatalf("buffer unmarshal: %v", err)
+	}
+	uv, ok := buf.U.Data.(*uint64)
+	if !ok || uv == nil || *uv != ptrUnionVal || buf.W.Data == nil || *buf.W.Data != ptrUnionVal {
+		t.Fatalf("buffer roundtrip mismatch: %+v", buf)
+	}
+
+	var strm PtrUnionVariant
+	if err := ds.UnmarshalSSZReader(&strm, bytes.NewReader(enc), len(enc)); err != nil {
+		t.Fatalf("stream unmarshal: %v", err)
+	}
+	if strm.W.Data == nil || *strm.W.Data != ptrUnionVal {
+		t.Fatalf("stream roundtrip mismatch: %+v", strm)
+	}
 }

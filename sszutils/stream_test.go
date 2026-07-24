@@ -1630,3 +1630,29 @@ func TestStreamDecoder_ReadsRespectRegionLimit(t *testing.T) {
 		t.Errorf("expected fully consumed region, diff=%d", diff)
 	}
 }
+
+// After a write error, continued fixed-width encoding must not panic: flush()
+// resets bufPos so subsequent Encode* land in-bounds and the error surfaces
+// via GetWriteError instead of an index-out-of-range panic.
+func TestStreamEncoder_NoPanicAfterWriteError(t *testing.T) {
+	w := &errWriter{errAfter: 0, err: errors.New("write failed")}
+	enc := NewStreamEncoder(w, 8)
+
+	// Encode well past a full buffer's worth of fixed-width values; the first
+	// flush fails, and every subsequent flush must keep bufPos in range.
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("encoding panicked after write error: %v", r)
+			}
+		}()
+		for i := 0; i < 100; i++ {
+			enc.EncodeUint64(uint64(i))
+		}
+		enc.Flush()
+	}()
+
+	if enc.GetWriteError() == nil {
+		t.Error("expected the write error to be recorded")
+	}
+}

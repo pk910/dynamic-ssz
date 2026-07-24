@@ -940,11 +940,12 @@ func (h *Hasher) Merkleize(indx int) {
 		h.popTopLayer()
 	}
 
-	// Standard path
-	if len(h.buf) == cap(h.buf) {
-		h.buf = append(h.buf, zeroBytes[:32]...)
-		h.buf = h.buf[:len(h.buf)-32]
-	}
+	// merkleizeImpl treats the region as whole 32-byte chunks (a single chunk
+	// is returned via input[:32]), so the region must be zero-padded to a chunk
+	// boundary first — otherwise a sub-32-byte region reads into the buffer's
+	// uninitialized spare capacity.
+	h.FillUpTo32()
+
 	input := h.buf[indx:]
 
 	if debug {

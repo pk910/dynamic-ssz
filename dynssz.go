@@ -265,7 +265,10 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 		return nil, err
 	}
 
-	if int64(size) > int64(math.MaxInt) {
+	// SSZ sizes are uint32; reject only what cannot be represented as an int on
+	// this platform (never trips on 64-bit, guards make() on 32-bit). SizeSSZ
+	// applies the same ceiling so the two paths agree.
+	if uint64(size) > uint64(math.MaxInt) {
 		return nil, fmt.Errorf("SSZ size %d exceeds platform int max", size)
 	}
 
@@ -347,7 +350,10 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 	if err != nil {
 		return nil, err
 	}
-	if int64(size) > int64(math.MaxInt)-int64(len(buf)) {
+	// SSZ sizes are uint32; reject only what cannot be represented as an int on
+	// this platform, accounting for the existing buffer length so len(buf)+size
+	// cannot overflow int. SizeSSZ applies the same ceiling so the paths agree.
+	if uint64(size) > uint64(math.MaxInt)-uint64(len(buf)) {
 		return nil, fmt.Errorf("SSZ size %d exceeds platform int max", size)
 	}
 	needed := len(buf) + int(size)
@@ -543,8 +549,11 @@ func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error) {
 		return 0, err
 	}
 
-	if size > math.MaxInt32 {
-		return 0, fmt.Errorf("SSZ size %d exceeds maximum int32", size)
+	// SSZ sizes are uint32; only reject what cannot be represented as an int on
+	// this platform. On 64-bit the full uint32 range is valid; on 32-bit a size
+	// above the int max cannot be returned safely.
+	if uint64(size) > uint64(math.MaxInt) {
+		return 0, fmt.Errorf("SSZ size %d exceeds platform int max", size)
 	}
 
 	return int(size), nil

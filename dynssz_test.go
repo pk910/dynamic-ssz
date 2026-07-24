@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"math/big"
@@ -434,15 +435,8 @@ type testLargeContainer struct {
 	Data []byte `ssz-size:"2147483648"` // MaxInt32 + 1
 }
 
-func TestSizeSSZExceedsMaxInt32(t *testing.T) {
-	ds := NewDynSsz(nil, WithNoFastSsz())
-	container := &testLargeContainer{}
-
-	_, err := ds.SizeSSZ(container)
-	if err == nil || !strings.Contains(err.Error(), "exceeds maximum int32") {
-		t.Fatalf("expected 'exceeds maximum int32' error, got: %v", err)
-	}
-}
+// SizeSSZ platform behavior for >MaxInt32 sizes is covered by
+// TestSizeAboveMaxInt32 (accepted on 64-bit, rejected on 32-bit).
 
 // skipUnless32Bit skips the test on platforms where int is wider than 32 bits.
 func skipUnless32Bit(t *testing.T) {
@@ -2605,5 +2599,43 @@ func TestResolveSpecValueIntegerExpressions(t *testing.T) {
 		if _, _, err := ds.ResolveSpecValue(expr); err == nil {
 			t.Errorf("%q: expected unsupported-expression error", expr)
 		}
+	}
+}
+
+// MarshalSSZ / MarshalSSZTo must enforce the same size ceiling SizeSSZ does,
+// so a tiny input with a large ssz-size cannot force a giant allocation that
+// SizeSSZ would reject.
+// SSZ sizes are uint32 (offsets are 4 bytes), so a size above MaxInt32 is
+// valid on 64-bit and must be accepted by SizeSSZ and the encode paths; only
+// 32-bit platforms (where int cannot hold it) reject it.
+func TestSizeAboveMaxInt32(t *testing.T) {
+	type bigVec struct {
+		V []byte `ssz-size:"2147483648"` // 2^31, just over MaxInt32
+	}
+	ds := NewDynSsz(nil)
+	v := &bigVec{V: []byte{1, 2}}
+
+	size, err := ds.SizeSSZ(v)
+	if math.MaxInt == math.MaxInt32 {
+		if err == nil {
+			t.Fatal("expected SizeSSZ to reject a >MaxInt32 size on a 32-bit platform")
+		}
+		return
+	}
+
+	// 64-bit: the size is representable and must be reported exactly. Compare
+	// via int64 so the literal does not overflow int at compile time on 32-bit
+	// (this branch is unreachable there).
+	if err != nil {
+		t.Fatalf("SizeSSZ rejected a valid >MaxInt32 size on 64-bit: %v", err)
+	}
+	if int64(size) != int64(2147483648) {
+		t.Fatalf("expected size 2147483648, got %d", size)
+	}
+
+	// Streaming marshal must produce the full padded output without a giant
+	// buffer allocation; the trailing zero-padding is discarded to io.Discard.
+	if err := ds.MarshalSSZWriter(v, io.Discard); err != nil {
+		t.Fatalf("MarshalSSZWriter of a >MaxInt32 vector failed: %v", err)
 	}
 }

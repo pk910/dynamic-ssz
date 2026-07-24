@@ -378,7 +378,13 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 		if fieldName == "" {
 			return fmt.Errorf("could not determine data field name for wrapper descriptor")
 		}
-		if err := ctx.unmarshalType(desc.ElemDesc, fmt.Sprintf("%s.%s", varName, fieldName), typePath, indent, false, noBufCheck); err != nil {
+		dataVar := fmt.Sprintf("%s.%s", varName, fieldName)
+		// A pointer Data field is written through by the element codec, so it
+		// must be allocated first (optionals manage their own allocation).
+		if desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.ElemDesc.SszType != ssztypes.SszOptionalType && desc.ElemDesc.SszType != ssztypes.SszOptionalListType {
+			ctx.appendCode(indent, "if %s == nil {\n\t%s = new(%s)\n}\n", dataVar, dataVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
+		}
+		if err := ctx.unmarshalType(desc.ElemDesc, dataVar, typePath, indent, false, noBufCheck); err != nil {
 			return err
 		}
 
@@ -1247,6 +1253,11 @@ func (ctx *unmarshalContext) unmarshalUnion(desc *ssztypes.TypeDescriptor, varNa
 
 		valVar := ctx.getValVar()
 		ctx.appendCode(indent, "\tvar %s %s\n", valVar, variantType)
+		// A pointer variant is written through by the element codec, so it must
+		// be allocated first (optionals manage their own allocation).
+		if variantDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && variantDesc.SszType != ssztypes.SszOptionalType && variantDesc.SszType != ssztypes.SszOptionalListType {
+			ctx.appendCode(indent+1, "%s = new(%s)\n", valVar, ctx.typePrinter.InnerTypeString(variantDesc))
+		}
 		ctx.appendCode(indent, "\tbuf := buf[1:]\n")
 		if err := ctx.unmarshalType(variantDesc, valVar, childTypePath, indent+1, false, true); err != nil {
 			return err

@@ -2045,3 +2045,35 @@ func TestHasherDeferredPendingNotTail(t *testing.T) {
 		})
 	}
 }
+
+// Merkleize of a single sub-32-byte chunk (e.g. a packed vector of two
+// uint64s) must zero-pad the region cleanly instead of reading stale bytes
+// from the buffer's spare capacity, which on a pooled/reused hasher would
+// otherwise yield a wrong, nondeterministic root.
+func TestHasherMerkleizeSubChunkCleanPadding(t *testing.T) {
+	small := func(h *Hasher) [32]byte {
+		t.Helper()
+		idx := h.StartTree(sszutils.TreeTypeBinary)
+		h.AppendUint64(3)
+		h.AppendUint64(3)
+		h.Merkleize(idx)
+		root, err := h.HashRoot()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return root
+	}
+
+	fresh := small(NewHasher())
+
+	// Dirty the backing array's spare capacity with non-zero bytes, then Reset
+	// (which keeps the capacity) and hash the same small scope.
+	dirty := NewHasher()
+	dirty.Append(bytes.Repeat([]byte{0xff}, 256))
+	dirty.Reset()
+	got := small(dirty)
+
+	if got != fresh {
+		t.Errorf("sub-chunk merkleize read stale buffer: fresh=%x dirty=%x", fresh, got)
+	}
+}

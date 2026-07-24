@@ -1421,3 +1421,24 @@ type TopLevelWrapVarList struct {
 		X []OptionalListTypes_Inner `ssz-max:"8"`
 	}, []OptionalListTypes_Inner] `ssz-type:"wrapper"`
 }
+
+// PtrUnionVariant covers a CompatibleUnion with a pointer variant, and a
+// TypeWrapper whose Data is a pointer — the generated decoder must allocate
+// the pointer before writing through it.
+type PtrUnionVariant struct {
+	U dynssz.CompatibleUnion[struct {
+		V1 uint64
+		V2 *uint64
+	}]
+	W dynssz.TypeWrapper[struct{ Data *uint64 }, *uint64] `ssz-type:"wrapper"`
+}
+
+var ptrUnionVal = uint64(0xdeadbeef)
+
+var PtrUnionVariant_Payload = func() PtrUnionVariant {
+	p := PtrUnionVariant{}
+	p.U.Variant = 1
+	p.U.Data = &ptrUnionVal
+	p.W.Data = &ptrUnionVal
+	return p
+}()

@@ -371,11 +371,7 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent, "}\n")
 
 	case ssztypes.SszTypeWrapperType:
-		fieldName := getTypeWrapperFieldName(desc)
-		if fieldName == "" {
-			return fmt.Errorf("could not determine data field name for wrapper descriptor")
-		}
-		if err := ctx.unmarshalType(desc.ElemDesc, fmt.Sprintf("%s.%s", varName, fieldName), typePath, indent, false, noBufCheck); err != nil {
+		if err := ctx.unmarshalTypeWrapper(desc, varName, typePath, indent, noBufCheck); err != nil {
 			return err
 		}
 
@@ -432,6 +428,22 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 	}
 
 	return nil
+}
+
+// unmarshalTypeWrapper generates decode code for a TypeWrapper, decoding into
+// its Data field.
+func (ctx *decoderContext) unmarshalTypeWrapper(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, noBufCheck bool) error {
+	fieldName := getTypeWrapperFieldName(desc)
+	if fieldName == "" {
+		return fmt.Errorf("could not determine data field name for wrapper descriptor")
+	}
+	dataVar := fmt.Sprintf("%s.%s", varName, fieldName)
+	// A pointer Data field is written through by the element codec, so it must
+	// be allocated first (optionals manage their own allocation).
+	if desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.ElemDesc.SszType != ssztypes.SszOptionalType && desc.ElemDesc.SszType != ssztypes.SszOptionalListType {
+		ctx.appendCode(indent, "if %s == nil {\n\t%s = new(%s)\n}\n", dataVar, dataVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
+	}
+	return ctx.unmarshalType(desc.ElemDesc, dataVar, typePath, indent, false, noBufCheck)
 }
 
 // unmarshalContainer generates unmarshal code for SSZ container (struct) types.
@@ -957,6 +969,19 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent, "}\n")
 		ctx.appendCode(indent, "itemCount := int(startOffset / 4)\n")
 
+		// itemCount is derived from the untrusted first offset, so the range
+		// check must gate the offset-table allocation below; validating here
+		// (before the allocation) bounds it to the actual region length, as the
+		// reflection path does.
+		errCode := "sszutils.ErrInvalidListStartOffsetFn(startOffset, sszLen)"
+		// A zero first offset in a non-empty region is rejected (it would
+		// otherwise decode as an empty list), matching the buffer path.
+		ctx.appendCode(indent, "if startOffset%%4 != 0 || uint32(sszLen) < startOffset || (sszLen != 0 && startOffset == 0) {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
+		if hasMax {
+			errCode = fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", maxVar)
+			ctx.appendCode(indent, "if itemCount > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
+		}
+
 		// read offsets
 		indexVar, indexDefer := ctx.getIndexVar()
 		defer indexDefer()
@@ -981,14 +1006,6 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 			ctx.offsetSliceLimit = ctx.offsetSliceCounter
 		}
 
-		errCode := "sszutils.ErrInvalidListStartOffsetFn(startOffset, sszLen)"
-		// Reject a zero first offset for a non-empty region to match the buffer
-		// and reflection paths; it would silently decode as an empty list.
-		ctx.appendCode(indent, "if startOffset%%4 != 0 || uint32(sszLen) < startOffset || (sszLen != 0 && startOffset == 0) {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
-		if hasMax {
-			errCode = fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", maxVar)
-			ctx.appendCode(indent, "if itemCount > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
-		}
 		if desc.Kind != reflect.Array {
 			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", valueVar, valueVar)
 		}
@@ -1099,6 +1116,11 @@ func (ctx *decoderContext) unmarshalUnion(desc *ssztypes.TypeDescriptor, varName
 		ctx.appendCode(indent, "case %d:\n", variant)
 		valVar := ctx.getValVar()
 		ctx.appendCode(indent, "\tvar %s %s\n", valVar, variantType)
+		// A pointer variant is written through by the element codec, so it must
+		// be allocated first (optionals manage their own allocation).
+		if variantDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && variantDesc.SszType != ssztypes.SszOptionalType && variantDesc.SszType != ssztypes.SszOptionalListType {
+			ctx.appendCode(indent+1, "%s = new(%s)\n", valVar, ctx.typePrinter.InnerTypeString(variantDesc))
+		}
 		if err := ctx.unmarshalType(variantDesc, valVar, typePath.append(fmt.Sprintf("[v:%d]", variant)), indent+1, false, true); err != nil {
 			return err
 		}

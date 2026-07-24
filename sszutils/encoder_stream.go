@@ -64,7 +64,14 @@ func (e *StreamEncoder) SetBuffer(buffer []byte) {
 
 // flush writes the internal buffer to the underlying io.Writer.
 func (e *StreamEncoder) flush() {
-	if e.bufPos == 0 || e.writeErr != nil {
+	// After a recorded write error no further data is written, but bufPos is
+	// still reset so subsequent fixed-width Encode* stay within writeBuf and
+	// the error is reported via GetWriteError rather than an out-of-range panic.
+	if e.writeErr != nil {
+		e.bufPos = 0
+		return
+	}
+	if e.bufPos == 0 {
 		return
 	}
 	written, err := e.writer.Write(e.writeBuf[:e.bufPos])

@@ -109,6 +109,8 @@ types:
     output: gen_divergence.go
   - name: UnionTaggedSelectors
     output: gen_divergence.go
+  - name: PtrUnionVariant
+    output: gen_divergence.go
   - name: TopLevelBitlist
     output: gen_toplevel.go
   - name: TopLevelProgBitlist
