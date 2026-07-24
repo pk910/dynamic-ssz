@@ -619,6 +619,18 @@ func (ctx *unmarshalContext) unmarshalBigInt(desc *ssztypes.TypeDescriptor, varN
 	return nil
 }
 
+// appendExactLenCheck emits a length guard for a region that must be exactly
+// sizeExpr bytes long. The common (matching) case costs a single comparison;
+// only a length mismatch pays for the second comparison that distinguishes a
+// shortfall (eofErr) from trailing data (trailErr). Both error operands are
+// expected to already be wrapped for the field path.
+func (ctx *unmarshalContext) appendExactLenCheck(indent int, sizeExpr, lenExpr, eofErr, trailErr string) {
+	ctx.appendCode(indent, "if %s != %s {\n", sizeExpr, lenExpr)
+	ctx.appendCode(indent+1, "if %s > %s {\n\treturn %s\n}\n", sizeExpr, lenExpr, eofErr)
+	ctx.appendCode(indent+1, "return %s\n", trailErr)
+	ctx.appendCode(indent, "}\n")
+}
+
 // unmarshalContainer generates unmarshal code for SSZ container (struct) types.
 func (ctx *unmarshalContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	staticSize := 0
@@ -654,14 +666,17 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, v
 	offsetPrefix := ""
 	ctx.appendCode(indent, "buflen := len(buf)\n")
 	errCode := fmt.Sprintf("sszutils.ErrFixedFieldsEOFFn(buflen, %s)", totalStaticSizeExpr)
-	ctx.appendCode(indent, "if buflen < %s {\n\treturn %s\n}\n", totalStaticSizeExpr, typePath.getErrorWith(errCode))
-	if !hasDynamicFields {
+	if hasDynamicFields {
+		// Variable-length container: only a shortfall in the fixed prefix is an
+		// error; trailing bytes belong to the dynamic fields.
+		ctx.appendCode(indent, "if buflen < %s {\n\treturn %s\n}\n", totalStaticSizeExpr, typePath.getErrorWith(errCode))
+	} else {
 		// A fully fixed container occupies exactly its size, so any extra bytes
 		// are trailing data and must be rejected (matching the reflection and
 		// streaming-decoder paths). Nested fixed containers always receive an
 		// exactly-sized slice, so this only ever fires at the top-level entry.
 		trailErr := fmt.Sprintf("sszutils.ErrTrailingDataFn(buflen - %s)", totalStaticSizeExpr)
-		ctx.appendCode(indent, "if buflen > %s {\n\treturn %s\n}\n", totalStaticSizeExpr, typePath.getErrorWith(trailErr))
+		ctx.appendExactLenCheck(indent, totalStaticSizeExpr, "buflen", typePath.getErrorWith(errCode), typePath.getErrorWith(trailErr))
 	}
 	dynamicFields := make([]int, 0)
 
@@ -829,14 +844,13 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 		// static byte arrays
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
 			if !noBufCheck {
-				errCode := fmt.Sprintf("sszutils.ErrByteVectorEOFFn(len(buf), %s)", limitVar)
-				ctx.appendCode(indent, "if %s > len(buf) {\n\treturn %s\n}\n", limitVar, typePath.getErrorWith(errCode))
 				// A fixed-size vector occupies exactly its size, so extra bytes are
 				// trailing data and must be rejected (matching the reflection path).
 				// Nested vectors always receive an exactly-sized slice, so this only
 				// ever fires at the top-level entry.
+				eofErr := fmt.Sprintf("sszutils.ErrByteVectorEOFFn(len(buf), %s)", limitVar)
 				trailErr := fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - %s)", limitVar)
-				ctx.appendCode(indent, "if %s < len(buf) {\n\treturn %s\n}\n", limitVar, typePath.getErrorWith(trailErr))
+				ctx.appendExactLenCheck(indent, limitVar, "len(buf)", typePath.getErrorWith(eofErr), typePath.getErrorWith(trailErr))
 			}
 			if bitlimitVar != "" {
 				// Only bit-aligned bitvectors (bit size not a multiple of 8) have
@@ -884,18 +898,14 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 		}
 
 		if !noBufCheck {
-			ctx.appendCode(indent, "if %s*%s > len(buf) {\n", limitVar, fieldSizeVar)
-			errCode := fmt.Sprintf("sszutils.ErrVectorElementsEOFFn(len(buf), %s*%s)", limitVar, fieldSizeVar)
-			ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith(errCode))
-			ctx.appendCode(indent, "}\n")
 			// A fixed-size vector occupies exactly its size, so extra bytes are
 			// trailing data and must be rejected (matching the reflection path).
 			// Nested vectors always receive an exactly-sized slice, so this only
 			// ever fires at the top-level entry.
-			ctx.appendCode(indent, "if %s*%s < len(buf) {\n", limitVar, fieldSizeVar)
-			trailErr := fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - %s*%s)", limitVar, fieldSizeVar)
-			ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith(trailErr))
-			ctx.appendCode(indent, "}\n")
+			sizeExpr := fmt.Sprintf("%s*%s", limitVar, fieldSizeVar)
+			eofErr := fmt.Sprintf("sszutils.ErrVectorElementsEOFFn(len(buf), %s)", sizeExpr)
+			trailErr := fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - %s)", sizeExpr)
+			ctx.appendExactLenCheck(indent, sizeExpr, "len(buf)", typePath.getErrorWith(eofErr), typePath.getErrorWith(trailErr))
 		}
 
 		// bulk uint64 lists
