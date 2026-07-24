@@ -2816,3 +2816,32 @@ func TestCustomTypeFastsszOrDynssz(t *testing.T) {
 		t.Fatalf("custom UnmarshalSSZ used marker %#x, want dynssz marker 0xD9", back.C.V)
 	}
 }
+
+// TestFloat32SignalingNaNPreserved verifies the reflection engine preserves a
+// float32's exact bit pattern across marshal/unmarshal/hash instead of
+// normalizing a signaling NaN's payload through a float64 round-trip (which
+// diverged from the generated code).
+func TestFloat32SignalingNaNPreserved(t *testing.T) {
+	ds := NewDynSsz(nil, WithExtendedTypes())
+
+	type holder struct {
+		F float32
+	}
+	const sigBits = uint32(0xffa045d0) // signaling NaN: exponent all-ones, quiet bit clear
+
+	enc, err := ds.MarshalSSZ(&holder{F: math.Float32frombits(sigBits)})
+	if err != nil {
+		t.Fatalf("MarshalSSZ: %v", err)
+	}
+	if got := binary.LittleEndian.Uint32(enc); got != sigBits {
+		t.Fatalf("marshal normalized the NaN: got %08x, want %08x", got, sigBits)
+	}
+
+	var back holder
+	if err := ds.UnmarshalSSZ(&back, enc); err != nil {
+		t.Fatalf("UnmarshalSSZ: %v", err)
+	}
+	if got := math.Float32bits(back.F); got != sigBits {
+		t.Fatalf("unmarshal normalized the NaN: got %08x, want %08x", got, sigBits)
+	}
+}

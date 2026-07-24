@@ -758,13 +758,12 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent, "}\n")
 
 		if desc.Kind != reflect.Array {
-			// append zero padding if we have less items than the limit
+			// append zero padding if we have less items than the limit. The
+			// padding item is a zero value of the element's own Go type (a nil
+			// pointer for pointer elements, which the element encoder handles); the
+			// vector's own pointer-ness is irrelevant to the element type here.
 			ctx.appendCode(indent, "if %s < %s {\n", lenVar, limitVar)
-			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
-				ctx.appendCode(indent, "\tzeroItem := new(%s)\n", ctx.typePrinter.InnerTypeString(desc.ElemDesc))
-			} else {
-				ctx.appendCode(indent, "\tvar zeroItem %s\n", ctx.typePrinter.TypeString(desc.ElemDesc))
-			}
+			ctx.appendCode(indent, "\tvar zeroItem %s\n", ctx.typePrinter.TypeString(desc.ElemDesc))
 			ctx.appendCode(indent, "\tfor %s := %s; %s < %s; %s++ {\n", indexVar, lenVar, indexVar, limitVar, indexVar)
 			ctx.appendCode(indent, "\t\tif canSeek {\n")
 			ctx.appendCode(indent, "\t\t\tenc.EncodeOffsetAt(dstlen+(%s*4), uint32(enc.GetPosition()-dstlen))\n", indexVar)

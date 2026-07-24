@@ -274,7 +274,9 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 		if err != nil {
 			return err
 		}
-		targetValue.SetFloat(float64(math.Float32frombits(f32Val)))
+		// Set the float32 bits directly; SetFloat(float64(...)) would normalize a
+		// signaling NaN's payload. Convert preserves the exact bits, matching codegen.
+		targetValue.Set(reflect.ValueOf(math.Float32frombits(f32Val)).Convert(targetValue.Type()))
 	case ssztypes.SszFloat64Type:
 		var f64Val uint64
 		f64Val, err = decoder.DecodeUint64()

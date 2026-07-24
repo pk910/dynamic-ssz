@@ -250,8 +250,11 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 	// create temporary instance for nil pointers
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.SszType != ssztypes.SszOptionalType && desc.SszType != ssztypes.SszOptionalListType {
 		if len(varName) > 1 {
-			ctx.appendCode(indent, "t := %s\n", varName)
-			varName = "t"
+			// Localize into a fresh name; a literal "t" would collide with a size
+			// closure's own "t" parameter (e.g. a wrapper of a pointer type).
+			local := localizedVarName(varName, indent)
+			ctx.appendCode(indent, "%s := %s\n", local, varName)
+			varName = local
 		}
 		ctx.appendCode(indent, "if %s == nil {\n\t%s = new(%s)\n}\n", varName, varName, ctx.typePrinter.InnerTypeString(desc))
 	}

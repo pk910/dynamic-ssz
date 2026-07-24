@@ -19,6 +19,12 @@ import (
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
+// float32Type is the plain float32 reflect.Type, used to read/write a float32
+// field's raw bits without the float64 round-trip that reflect.Value.Float and
+// SetFloat perform (that widening normalizes a signaling NaN's payload, diverging
+// from the generated code which assigns the float32 directly).
+var float32Type = reflect.TypeOf(float32(0))
+
 // ReflectionCtx holds the configuration for reflection-based SSZ operations.
 // It wraps a DynamicSpecs provider for resolving dynamic field sizes, along
 // with options controlling fastssz fallback behavior and logging.

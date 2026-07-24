@@ -242,10 +242,13 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 			hh.PutUint64(uint64(sourceValue.Int()))
 		}
 	case ssztypes.SszFloat32Type:
+		// Convert (not Float(), which widens to float64 and normalizes a signaling
+		// NaN's payload) preserves the exact bits, matching the generated code.
+		f32, _ := sourceValue.Convert(float32Type).Interface().(float32)
 		if pack {
-			hh.AppendUint32(math.Float32bits(float32(sourceValue.Float())))
+			hh.AppendUint32(math.Float32bits(f32))
 		} else {
-			hh.PutUint32(math.Float32bits(float32(sourceValue.Float())))
+			hh.PutUint32(math.Float32bits(f32))
 		}
 	case ssztypes.SszFloat64Type:
 		if pack {
