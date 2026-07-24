@@ -98,6 +98,11 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 		if !useFastSsz && targetType.SszType == ssztypes.SszCustomType {
 			useFastSsz = true
 		}
+		// Custom types prefer their spec-aware dynssz methods over fastssz whenever
+		// a dynssz implementation exists, since fastssz bakes in preset values.
+		if targetType.SszType == ssztypes.SszCustomType && (useDynamicUnmarshal || useDynamicDecoder) {
+			useFastSsz = false
+		}
 		if ctx.noDelegation && targetType.SszType != ssztypes.SszCustomType {
 			useDynamicUnmarshal = false
 			useDynamicDecoder = false

@@ -265,6 +265,11 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 		if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
 			useFastSsz = true
 		}
+		// Custom types prefer their spec-aware dynssz methods over fastssz.
+		if desc.SszType == ssztypes.SszCustomType &&
+			desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicUnmarshaler|ssztypes.SszCompatFlagDynamicDecoder) != 0 {
+			useFastSsz = false
+		}
 
 		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 {
 			ctx.appendCode(indent, "if err = %s.UnmarshalSSZDecoder(ds, dec); err != nil {\n\treturn err\n}\n", varName)

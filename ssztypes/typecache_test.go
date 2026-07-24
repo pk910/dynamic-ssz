@@ -422,7 +422,7 @@ func TestTypeCache_ErrorCases(t *testing.T) {
 			t.Error("Expected error for custom type without interfaces")
 			return
 		}
-		if !strings.Contains(err.Error(), "custom ssz type requires fastssz marshaler") {
+		if !strings.Contains(err.Error(), "is missing a fastssz or dynssz") {
 			t.Errorf("Unexpected error: %s", err.Error())
 		}
 	})

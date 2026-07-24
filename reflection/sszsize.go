@@ -67,6 +67,10 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		if !useFastSsz && targetType.SszType == ssztypes.SszCustomType {
 			useFastSsz = true
 		}
+		// Custom types prefer their spec-aware dynssz sizer over fastssz.
+		if targetType.SszType == ssztypes.SszCustomType && targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 {
+			useFastSsz = false
+		}
 
 		if useFastSsz {
 			if marshaller, ok := getPtr(targetValue).Interface().(sszutils.FastsszMarshaler); ok {

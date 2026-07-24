@@ -2722,3 +2722,97 @@ func TestNoDelegationForcesReflection(t *testing.T) {
 		t.Fatalf("WithNoDelegation HashTreeRoot = %x; want field %x in the first chunk", rootReflect, canonical)
 	}
 }
+
+var (
+	customFastMarker = []byte{0xFA, 0xFA, 0xFA, 0xFA}
+	customDynMarker  = []byte{0xD9, 0xD9, 0xD9, 0xD9, 0xD9, 0xD9, 0xD9, 0xD9}
+)
+
+// customBoth is a custom SSZ type implementing both the fastssz and the dynssz
+// method sets with distinct outputs, so a test can tell which one an engine
+// chose.
+type customBoth struct{ V uint64 }
+
+var _ = sszutils.Annotate[customBoth](`ssz-type:"custom"`)
+
+func (c *customBoth) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return append(buf, customFastMarker...), nil
+}
+func (c *customBoth) MarshalSSZ() ([]byte, error) {
+	return append([]byte(nil), customFastMarker...), nil
+}
+func (c *customBoth) SizeSSZ() int                    { return len(customFastMarker) }
+func (c *customBoth) UnmarshalSSZ(_ []byte) error     { c.V = 0xFA; return nil }
+func (c *customBoth) HashTreeRoot() ([32]byte, error) { var r [32]byte; r[0] = 0xFA; return r, nil }
+
+func (c *customBoth) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return len(customDynMarker) }
+func (c *customBoth) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return append(buf, customDynMarker...), nil
+}
+func (c *customBoth) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { c.V = 0xD9; return nil }
+func (c *customBoth) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(0xD9)
+	return nil
+}
+
+// customDynOnly is a custom SSZ type that provides only the dynssz method set —
+// no fastssz methods at all — which the type cache must accept.
+type customDynOnly struct{ V uint64 }
+
+var _ = sszutils.Annotate[customDynOnly](`ssz-type:"custom"`)
+
+func (c *customDynOnly) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return len(customDynMarker) }
+func (c *customDynOnly) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return append(buf, customDynMarker...), nil
+}
+func (c *customDynOnly) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error {
+	c.V = 0xD9
+	return nil
+}
+func (c *customDynOnly) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(0xD9)
+	return nil
+}
+
+// Holders embed the custom types as a field so the operation runs through the
+// reflection walk's custom-type path (a top-level custom value would instead be
+// dispatched directly to its own method, bypassing both the type-cache
+// validation and the fastssz/dynssz selection under test).
+type (
+	customBothHolder    struct{ C customBoth }
+	customDynOnlyHolder struct{ C customDynOnly }
+)
+
+// TestCustomTypeFastsszOrDynssz covers the custom-type contract: a custom type
+// may implement either the fastssz or the dynssz methods per operation (at least
+// one each), and when both are present the spec-aware dynssz methods win.
+func TestCustomTypeFastsszOrDynssz(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	// A custom type providing only dynssz methods is accepted and usable.
+	dynEnc, err := ds.MarshalSSZ(&customDynOnlyHolder{})
+	if err != nil {
+		t.Fatalf("dynssz-only custom rejected: %v", err)
+	}
+	if !bytes.Contains(dynEnc, customDynMarker) {
+		t.Fatalf("dynssz-only custom marshal = %x, want it to contain %x", dynEnc, customDynMarker)
+	}
+
+	// A custom type implementing both prefers its dynssz methods across marshal,
+	// size and unmarshal.
+	enc, err := ds.MarshalSSZ(&customBothHolder{})
+	if err != nil {
+		t.Fatalf("custom MarshalSSZ failed: %v", err)
+	}
+	if !bytes.Contains(enc, customDynMarker) || bytes.Contains(enc, customFastMarker) {
+		t.Fatalf("custom marshal = %x, want dynssz output %x (not fastssz %x)", enc, customDynMarker, customFastMarker)
+	}
+
+	var back customBothHolder
+	if err := ds.UnmarshalSSZ(&back, enc); err != nil {
+		t.Fatalf("custom UnmarshalSSZ failed: %v", err)
+	}
+	if back.C.V != 0xD9 {
+		t.Fatalf("custom UnmarshalSSZ used marker %#x, want dynssz marker 0xD9", back.C.V)
+	}
+}

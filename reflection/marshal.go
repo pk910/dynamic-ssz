@@ -71,6 +71,11 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 		if !useFastSsz && sourceType.SszType == ssztypes.SszCustomType {
 			useFastSsz = true
 		}
+		// Custom types prefer their spec-aware dynssz methods over fastssz whenever
+		// a dynssz implementation exists, since fastssz bakes in preset values.
+		if sourceType.SszType == ssztypes.SszCustomType && (useDynamicMarshal || useDynamicEncoder) {
+			useFastSsz = false
+		}
 		if ctx.noDelegation && sourceType.SszType != ssztypes.SszCustomType {
 			useDynamicMarshal = false
 			useDynamicEncoder = false

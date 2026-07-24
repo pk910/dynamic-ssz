@@ -620,9 +620,21 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 			return nil, err
 		}
 	case SszCustomType:
-		if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
+		// A custom type serializes entirely through its own methods, so its Go
+		// structure is never traversed and no child descriptors are built. It is
+		// variable-size by default; an explicit ssz-size hint or an
+		// ssz-static:"true" annotation pins a fixed size (read from the type's own
+		// sizer), while ssz-static:"false" keeps it dynamic.
+		switch {
+		case len(sizeHints) > 0 && sizeHints[0].Size > 0:
 			desc.Size = sizeHints[0].Size
-		} else {
+		case staticAnnotation != nil && *staticAnnotation:
+			size, err := tc.delegatedStaticSize(desc, runtimeType)
+			if err != nil {
+				return nil, err
+			}
+			desc.Size = size
+		default:
 			desc.Size = 0
 			desc.SszTypeFlags |= SszTypeFlagIsDynamic
 		}
@@ -749,10 +761,27 @@ func (tc *TypeCache) buildTypeDescriptor(runtimeType, schemaType reflect.Type, s
 	}
 
 	if desc.SszType == SszCustomType {
-		isCompatible := desc.SszCompatFlags&SszCompatFlagFastSSZMarshaler != 0 && desc.SszCompatFlags&SszCompatFlagFastSSZHasher != 0
-		// isCompatible = isCompatible || (desc.SszCompatFlags&SszCompatFlagDynamicMarshaler != 0 && desc.SszCompatFlags&SszCompatFlagDynamicUnmarshaler != 0 && desc.SszCompatFlags&SszCompatFlagDynamicSizer != 0 && desc.SszCompatFlags&SszCompatFlagDynamicHashRoot != 0)
-		if !isCompatible {
-			return nil, sszutils.NewSszError(sszutils.ErrMissingInterface, "custom ssz type requires fastssz marshaler, unmarshaler and hasher implementations")
+		// A custom type delegates every SSZ operation to its own methods. Each
+		// operation may be served by either the fastssz method or the dynssz
+		// (Dynamic*) equivalent, but at least one implementation per operation is
+		// required. The fastssz marshaler interface bundles marshal, unmarshal and
+		// size; the fastssz hasher covers the hash tree root.
+		f := desc.SszCompatFlags
+		var missing []string
+		if f&(SszCompatFlagFastSSZMarshaler|SszCompatFlagDynamicMarshaler|SszCompatFlagDynamicEncoder) == 0 {
+			missing = append(missing, "marshaler")
+		}
+		if f&(SszCompatFlagFastSSZMarshaler|SszCompatFlagDynamicUnmarshaler|SszCompatFlagDynamicDecoder) == 0 {
+			missing = append(missing, "unmarshaler")
+		}
+		if f&(SszCompatFlagFastSSZMarshaler|SszCompatFlagDynamicSizer) == 0 {
+			missing = append(missing, "sizer")
+		}
+		if f&(SszCompatFlagFastSSZHasher|SszCompatFlagHashTreeRootWith|SszCompatFlagDynamicHashRoot) == 0 {
+			missing = append(missing, "hasher")
+		}
+		if len(missing) > 0 {
+			return nil, sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "custom ssz type %v is missing a fastssz or dynssz %s implementation", schemaType, strings.Join(missing, ", "))
 		}
 	}
 
@@ -873,10 +902,16 @@ func (tc *TypeCache) delegatedStaticSize(desc *TypeDescriptor, runtimeType refle
 		return 0, sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "static view type %v does not provide a usable view sizer", runtimeType)
 	}
 
-	// Non-view: fullyDelegatesSSZ (checked by the caller before reaching here)
-	// guarantees the DynamicSizer interface, so the assertion always holds.
-	sizer, _ := zero.(sszutils.DynamicSizer)
-	return validate(sizer.SizeSSZDyn(specs))
+	// Non-view static types may size themselves through either the dynssz sizer
+	// (spec-aware) or the fastssz sizer. Fully-delegated callers always provide
+	// the DynamicSizer; a static custom type may instead provide only fastssz.
+	if sizer, ok := zero.(sszutils.DynamicSizer); ok {
+		return validate(sizer.SizeSSZDyn(specs))
+	}
+	if marshaler, ok := zero.(sszutils.FastsszMarshaler); ok {
+		return validate(marshaler.SizeSSZ())
+	}
+	return 0, sszutils.NewSszErrorf(sszutils.ErrMissingInterface, "static type %v provides no usable sizer", runtimeType)
 }
 
 // buildTypeWrapperDescriptor builds a descriptor for TypeWrapper types with runtime/schema pairing.

@@ -88,6 +88,11 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 		if !useFastSsz && sourceType.SszType == ssztypes.SszCustomType {
 			useFastSsz = true
 		}
+		// Custom types prefer their spec-aware dynssz hasher over fastssz (and the
+		// fastssz HashTreeRootWith), since fastssz bakes in preset values.
+		if sourceType.SszType == ssztypes.SszCustomType && useDynamicHashRoot {
+			useFastSsz = false
+		}
 		if ctx.noDelegation && sourceType.SszType != ssztypes.SszCustomType {
 			useDynamicHashRoot = false
 		}
