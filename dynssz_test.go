@@ -401,7 +401,7 @@ func TestResolveSpecValueInvalidExpression(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid expression")
 	}
-	if !strings.Contains(err.Error(), "error parsing dynamic spec expression") {
+	if !strings.Contains(err.Error(), "unsupported dynamic spec expression") {
 		t.Fatalf("expected parsing error, got: %v", err)
 	}
 }
@@ -2600,13 +2600,10 @@ func TestResolveSpecValueIntegerExpressions(t *testing.T) {
 		}
 	}
 
-	// expressions beyond the subset fall back to float64 evaluation: fine
-	// below 2^53, rejected at or beyond it
-	ok, val, err := ds.ResolveSpecValue("A > B ? A : B")
-	if err != nil || !ok || val != 10 {
-		t.Errorf("ternary fallback: got ok=%v val=%d err=%v", ok, val, err)
-	}
-	if _, _, err := ds.ResolveSpecValue("BIG > 0 ? BIG : 0"); err == nil {
-		t.Error("expected precision error for float fallback result at 2^53")
+	// expressions beyond the integer arithmetic subset are rejected
+	for _, expr := range []string{"A > B ? A : B", "A == B", "A << 2"} {
+		if _, _, err := ds.ResolveSpecValue(expr); err == nil {
+			t.Errorf("%q: expected unsupported-expression error", expr)
+		}
 	}
 }

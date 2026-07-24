@@ -10,8 +10,6 @@ import (
 	"math"
 	"math/bits"
 	"strconv"
-
-	"github.com/casbin/govaluate"
 )
 
 type cachedSpecValue struct {
@@ -20,15 +18,14 @@ type cachedSpecValue struct {
 }
 
 // ResolveSpecValue resolves a dynamic specification value by name. The name can
-// be a simple identifier (e.g., "MAX_VALIDATORS_PER_COMMITTEE") or a mathematical
-// expression referencing spec values. Results are cached for subsequent lookups.
+// be a simple identifier (e.g., "MAX_VALIDATORS_PER_COMMITTEE") or an integer
+// arithmetic expression referencing spec values. Results are cached for
+// subsequent lookups.
 //
-// Expressions restricted to the arithmetic subset (+ - * / % and parentheses
-// over unsigned integer literals and spec identifiers) evaluate with exact
-// uint64 arithmetic; division rounds up (ceil), since partial bytes/bits
-// cannot be serialized. More complex expressions are evaluated via govaluate
-// in float64 arithmetic and are rejected when the result reaches 2^53, where
-// float64 can no longer represent every integer exactly.
+// Expressions support + - * / % and parentheses over unsigned integer literals
+// and spec identifiers, evaluated with exact uint64 arithmetic across the full
+// value range. Division rounds up (ceil), since partial bytes/bits cannot be
+// serialized. Anything beyond this subset is rejected with an error.
 //
 // Returns whether the value was resolved, the uint64 value, and any parse error.
 // If the name references undefined spec values, resolved will be false with no error.
@@ -43,9 +40,7 @@ func (d *DynSsz) ResolveSpecValue(name string) (bool, uint64, error) {
 	cachedValue = &cachedSpecValue{}
 
 	// Fast path: a spec value provided directly under this name keeps its exact
-	// type and full uint64 precision. govaluate evaluates everything as float64,
-	// which silently loses precision near uint64 max, so it is only used for
-	// actual expressions below.
+	// type and full uint64 precision without going through expression parsing.
 	if raw, ok := d.specValues[name]; ok {
 		value, resolved, err := specValueToUint64(raw)
 		if err != nil {
@@ -61,43 +56,17 @@ func (d *DynSsz) ResolveSpecValue(name string) (bool, uint64, error) {
 		}
 	}
 
-	// Expressions within the arithmetic subset evaluate with exact uint64
-	// arithmetic, keeping full precision for results beyond 2^53.
-	if handled, resolved, value, ierr := evalIntSpecExpression(name, d.specValues); handled {
-		if ierr != nil {
-			return false, 0, fmt.Errorf("invalid dynamic spec expression %q: %w", name, ierr)
-		}
-		cachedValue.resolved = resolved
-		cachedValue.value = value
-
-		d.specCacheMutex.Lock()
-		d.specValueCache[name] = cachedValue
-		d.specCacheMutex.Unlock()
-
-		return cachedValue.resolved, cachedValue.value, nil
+	// Expressions evaluate with exact uint64 arithmetic, keeping full
+	// precision across the whole value range.
+	handled, resolved, value, ierr := evalIntSpecExpression(name, d.specValues)
+	if !handled {
+		return false, 0, fmt.Errorf("unsupported dynamic spec expression %q: only integer arithmetic is supported (+ - * / %%, parentheses, unsigned literals and spec identifiers)", name)
 	}
-
-	expression, err := govaluate.NewEvaluableExpression(name)
-	if err != nil {
-		return false, 0, fmt.Errorf("error parsing dynamic spec expression: %w", err)
+	if ierr != nil {
+		return false, 0, fmt.Errorf("invalid dynamic spec expression %q: %w", name, ierr)
 	}
-
-	result, err := expression.Evaluate(d.specValues)
-	if err == nil {
-		if value, ok := result.(float64); ok {
-			// float64 represents every integer exactly only below 2^53; a
-			// result at or beyond that bound may silently have lost low bits.
-			if value >= math.Ldexp(1, 53) {
-				return false, 0, fmt.Errorf("dynamic spec expression %q evaluates to %v, beyond the float64 integer precision range (use the integer arithmetic subset + - * / %%)", name, value)
-			}
-			resolved, rerr := specFloatToUint64(value)
-			if rerr != nil {
-				return false, 0, fmt.Errorf("invalid dynamic spec expression %q: %w", name, rerr)
-			}
-			cachedValue.resolved = true
-			cachedValue.value = resolved
-		}
-	}
+	cachedValue.resolved = resolved
+	cachedValue.value = value
 
 	d.specCacheMutex.Lock()
 	d.specValueCache[name] = cachedValue
@@ -182,27 +151,25 @@ func specFloatToUint64(v float64) (uint64, error) {
 // intSpecExprParser evaluates the arithmetic subset of spec expressions
 // (+ - * / % and parentheses over unsigned integer literals and spec
 // identifiers) with exact uint64 arithmetic. Anything outside the subset
-// makes the parse fail so the caller can fall back to govaluate.
+// makes the parse fail with a descriptive error.
 type intSpecExprParser struct {
 	input string
 	pos   int
 	specs map[string]any
 
 	// unresolved is set when an identifier has no spec value; the expression
-	// then resolves to "unknown" (static fallback) without an error, matching
-	// the govaluate path's behavior for undefined references.
+	// then resolves to "unknown" (static fallback) without an error.
 	unresolved bool
 }
 
 // evalIntSpecExpression evaluates expr with exact integer arithmetic.
-// handled reports whether the expression is within the supported subset;
-// when false, the caller must fall back to the govaluate evaluator.
+// handled reports whether the expression is within the supported subset.
 // Division rounds up (ceil), since partial bytes/bits cannot be serialized.
 func evalIntSpecExpression(expr string, specs map[string]any) (handled, resolved bool, value uint64, err error) {
 	// Any character outside the subset alphabet means the expression uses
-	// constructs (comparisons, ternaries, floats, ...) with different
-	// semantics; leave those entirely to the govaluate fallback so a partial
-	// arithmetic parse cannot misreport them as evaluation errors.
+	// unsupported constructs (comparisons, ternaries, floats, ...); reject
+	// them as a whole so a partial arithmetic parse cannot misreport them
+	// as evaluation errors.
 	for i := 0; i < len(expr); i++ {
 		if !isIntExprChar(expr[i]) {
 			return false, false, 0, nil
@@ -242,8 +209,8 @@ func isIntExprChar(c byte) bool {
 }
 
 // errIntExprUnsupported marks constructs outside the integer arithmetic
-// subset (triggering the govaluate fallback) as opposed to genuine
-// evaluation errors like overflow or division by zero.
+// subset, as opposed to genuine evaluation errors like overflow or
+// division by zero.
 var errIntExprUnsupported = errors.New("unsupported expression construct")
 
 func (p *intSpecExprParser) skipSpaces() {
