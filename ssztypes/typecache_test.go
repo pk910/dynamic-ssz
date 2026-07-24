@@ -4656,3 +4656,31 @@ func TestTypeCache_ZeroSizeSliceRejected(t *testing.T) {
 		t.Errorf("unexpected error for dynamic dimension: %v", err)
 	}
 }
+
+// A field tagged ssz-type:"-" is omitted from the container descriptor
+// entirely, and its type need not be SSZ-compatible.
+func TestTypeCache_ExcludedField(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	type withExcluded struct {
+		A     uint32
+		Cache chan int `ssz-type:"-"` // non-SSZ type, must be allowed
+		B     uint64
+	}
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(withExcluded{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if desc.ContainerDesc == nil || len(desc.ContainerDesc.Fields) != 2 {
+		t.Fatalf("expected 2 layout fields (A, B), got %d", len(desc.ContainerDesc.Fields))
+	}
+	for _, f := range desc.ContainerDesc.Fields {
+		if f.Name == "Cache" {
+			t.Error("excluded field Cache must not appear in the container descriptor")
+		}
+	}
+	// A is at runtime index 0, B at runtime index 2 (Cache skipped).
+	if desc.ContainerDesc.Fields[1].FieldIndex != 2 {
+		t.Errorf("expected field B to keep runtime index 2, got %d", desc.ContainerDesc.Fields[1].FieldIndex)
+	}
+}

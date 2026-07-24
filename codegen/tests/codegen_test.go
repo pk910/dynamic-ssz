@@ -1231,3 +1231,43 @@ func TestCodegenRejectsUngeneratableTopLevelTypes(t *testing.T) {
 		})
 	}
 }
+
+// A field tagged ssz-type:"-" is excluded from the SSZ layout: the encoding,
+// size and root match the same struct without that field, and it round-trips
+// without being restored. Non-SSZ types (maps) are allowed on excluded fields.
+func TestCodegenExcludedFields(t *testing.T) {
+	// The generated code and reflection must agree on the excluded layout.
+	testCodegenPayloadByReflection(t, ExcludedFields_Payload, nil)
+
+	ds := dynssz.NewDynSsz(nil)
+	enc, err := ds.MarshalSSZ(&ExcludedFields_Payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	// Encoding must equal a struct with only the included fields.
+	type included struct {
+		A uint32
+		B uint64
+		L []uint16 `ssz-max:"8"`
+	}
+	ref, err := ds.MarshalSSZ(&included{A: 1, B: 2, L: []uint16{3, 4}})
+	if err != nil {
+		t.Fatalf("ref marshal: %v", err)
+	}
+	if !bytes.Equal(enc, ref) {
+		t.Fatalf("excluded encoding mismatch:\n got=%x\n want=%x", enc, ref)
+	}
+
+	// Round-trip must not restore the excluded fields.
+	var back ExcludedFields
+	if err := ds.UnmarshalSSZ(&back, enc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back.Cache != [32]byte{} || back.Meta != nil {
+		t.Errorf("excluded fields were populated on decode: %+v", back)
+	}
+	if back.A != 1 || back.B != 2 || len(back.L) != 2 {
+		t.Errorf("included fields wrong after roundtrip: %+v", back)
+	}
+}

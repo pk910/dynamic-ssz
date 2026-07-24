@@ -140,6 +140,15 @@ func ParseSszType(typeStr string) (SszType, error) {
 	}
 }
 
+// IsSszExcluded reports whether a struct field is excluded from SSZ processing
+// via `ssz-type:"-"`. Such a field is omitted from the SSZ layout entirely (not
+// encoded, decoded, sized or hashed) while remaining an ordinary Go field, so
+// its type need not be SSZ-compatible.
+func IsSszExcluded(tag reflect.StructTag) bool {
+	v, ok := tag.Lookup("ssz-type")
+	return ok && strings.TrimSpace(v) == "-"
+}
+
 func getSszTypeTag(field *reflect.StructField) ([]SszTypeHint, error) {
 	// parse `ssz-type`
 	sszTypeHints := []SszTypeHint{}

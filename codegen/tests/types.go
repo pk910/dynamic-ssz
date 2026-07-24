@@ -1497,3 +1497,22 @@ type WrapUnionField struct {
 		B []byte `ssz-max:"4"`
 	}]] `ssz-type:"wrapper"`
 }
+
+// ExcludedFields exercises ssz-type:"-": excluded fields are omitted from the
+// SSZ layout entirely (not encoded, decoded, sized or hashed) and may hold
+// non-SSZ types.
+type ExcludedFields struct {
+	A     uint32
+	Cache [32]byte       `ssz-type:"-"`
+	B     uint64
+	Meta  map[string]int `ssz-type:"-"`
+	L     []uint16       `ssz-max:"8"`
+}
+
+var ExcludedFields_Payload = ExcludedFields{
+	A:     1,
+	Cache: [32]byte{9, 9, 9},
+	B:     2,
+	Meta:  map[string]int{"x": 1},
+	L:     []uint16{3, 4},
+}

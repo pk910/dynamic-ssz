@@ -143,3 +143,5 @@ types:
     output: gen_compilecorrectness.go
   - name: WrapUnionField
     output: gen_compilecorrectness.go
+  - name: ExcludedFields
+    output: gen_compilecorrectness.go

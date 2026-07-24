@@ -1032,7 +1032,7 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 	for i := 0; i < schemaStruct.NumFields(); i++ {
 		schemaField := schemaStruct.Field(i)
 		fieldName := schemaField.Name()
-		if !schemaField.Exported() || fieldName == "_" {
+		if !schemaField.Exported() || fieldName == "_" || ssztypes.IsSszExcluded(reflect.StructTag(schemaStruct.Tag(i))) {
 			continue
 		}
 

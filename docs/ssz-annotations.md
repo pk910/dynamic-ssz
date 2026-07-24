@@ -201,7 +201,7 @@ Explicitly specifies the SSZ type for a field. When omitted, the type is auto-de
 
 **Extended types** (non-standard, requires `WithExtendedTypes()`): `int8`, `int16`, `int32`, `int64`, `float32`, `float64`, `bigint`, `optional`
 
-**Special values**: `custom` (type implements SSZ interfaces), `wrapper`/`type-wrapper` (TypeWrapper pattern), `?`/`auto` (auto-detect)
+**Special values**: `custom` (type implements SSZ interfaces), `wrapper`/`type-wrapper` (TypeWrapper pattern), `?`/`auto` (auto-detect), `-` (exclude the field)
 
 ```go
 type Advanced struct {
@@ -210,6 +210,27 @@ type Advanced struct {
     Operation  CompatibleUnion[Op] `ssz-type:"compatible-union"`
 }
 ```
+
+#### Excluding a field
+
+`ssz-type:"-"` removes a field from the SSZ layout entirely: it is not
+encoded, decoded, sized or hashed, and its Go type does not need to be
+SSZ-compatible. This is useful for caches, computed values, or metadata kept
+alongside the SSZ data. On decode the field is left at its zero value.
+
+```go
+type Block struct {
+    Slot uint64
+    Body BlockBody
+    root [32]byte        `ssz-type:"-"` // cached root, not serialized
+    seen map[string]bool `ssz-type:"-"` // non-SSZ type, ignored
+}
+```
+
+The struct above encodes identically to one containing only `Slot` and `Body`.
+Both the reflection and code-generation engines honor the exclusion. (This is
+the dynamic-ssz spelling of fastssz's `ssz:"-"`; dynamic-ssz does not read the
+plain `ssz` struct tag.)
 
 ### ssz-index
 

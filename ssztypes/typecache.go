@@ -1090,7 +1090,8 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 	// fields, while FieldIndex keeps the real reflect index for data access.
 	exportedFieldCount := 0
 	for i := 0; i < schemaFieldCount; i++ {
-		if schemaType.Field(i).IsExported() {
+		f := schemaType.Field(i)
+		if f.IsExported() && !IsSszExcluded(f.Tag) {
 			exportedFieldCount++
 		}
 	}
@@ -1113,7 +1114,7 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 	fi := 0
 	for i := 0; i < schemaFieldCount; i++ {
 		schemaField := schemaType.Field(i)
-		if !schemaField.IsExported() {
+		if !schemaField.IsExported() || IsSszExcluded(schemaField.Tag) {
 			continue
 		}
 		fieldDesc := FieldDescriptor{
