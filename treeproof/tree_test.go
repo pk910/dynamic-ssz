@@ -1786,3 +1786,69 @@ func TestTreeFromNodesProgressiveWithActiveFieldsInjectedError(t *testing.T) {
 		t.Fatalf("expected injected error, got: %v", err)
 	}
 }
+
+// TestTreeFromNodes64EdgeCases covers the zero-capacity, excess-leaf, non-pow2
+// and depth-boundary branches of the uint64 tree builders and their int
+// forwards.
+func TestTreeFromNodes64EdgeCases(t *testing.T) {
+	leaf := LeafFromUint64(1)
+
+	// Zero capacity with a leaf is rejected; with no leaves it yields an empty node.
+	if _, err := TreeFromNodes64([]*Node{leaf}, 0); err == nil {
+		t.Error("TreeFromNodes64(leaf, 0) should error")
+	}
+	if n, err := TreeFromNodes64(nil, 0); err != nil || n == nil {
+		t.Errorf("TreeFromNodes64(nil, 0) = %v, %v", n, err)
+	}
+	// Leaves exceeding the limit, and a non-power-of-two limit, are rejected.
+	if _, err := TreeFromNodes64([]*Node{leaf, leaf, leaf}, 2); err == nil {
+		t.Error("TreeFromNodes64 exceeding limit should error")
+	}
+	if _, err := TreeFromNodes64([]*Node{leaf}, 3); err == nil {
+		t.Error("TreeFromNodes64 non-power-of-two limit should error")
+	}
+	// limit 1 (depth 0) with a single leaf returns that leaf.
+	if n, err := TreeFromNodes64([]*Node{leaf}, 1); err != nil || n != leaf {
+		t.Errorf("TreeFromNodes64(leaf, 1) = %v, %v; want the leaf", n, err)
+	}
+	// treeFromNodesToDepth clamps a negative depth to an empty node.
+	if n, err := treeFromNodesToDepth(nil, -1); err != nil || n == nil {
+		t.Errorf("treeFromNodesToDepth(nil, -1) = %v, %v", n, err)
+	}
+	// Int forwards clamp negative limit/num to zero.
+	if _, err := TreeFromNodesWithMixin(nil, -1, -1); err != nil {
+		t.Errorf("TreeFromNodesWithMixin(nil, -1, -1): %v", err)
+	}
+	// The mixin builder rejects a zero capacity holding a leaf.
+	if _, err := TreeFromNodesWithMixin64([]*Node{leaf}, 1, 0); err == nil {
+		t.Error("TreeFromNodesWithMixin64(leaf, 1, 0) should error")
+	}
+}
+
+// TestTreeBuilderDefensiveBranches covers the remaining defensive branches:
+// treeFromNodesToDepth's own excess check (reached only when a caller does not
+// pre-validate), the progressive mixin's negative-count clamp, and hashNode's
+// nil guard.
+func TestTreeBuilderDefensiveBranches(t *testing.T) {
+	leaf := LeafFromUint64(1)
+
+	// treeFromNodesToDepth rejects more leaves than 2^depth can hold.
+	if _, err := treeFromNodesToDepth([]*Node{leaf, leaf, leaf}, 1); err == nil {
+		t.Error("treeFromNodesToDepth with excess leaves should error")
+	}
+
+	// The progressive mixin clamps a negative count to zero.
+	if _, err := TreeFromNodesProgressiveWithMixin([]*Node{leaf}, -1); err != nil {
+		t.Errorf("TreeFromNodesProgressiveWithMixin(leaf, -1): %v", err)
+	}
+
+	// hashNode panics on a nil node (an incomplete tree).
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("hashNode(nil) should panic")
+			}
+		}()
+		hashNode(nil)
+	}()
+}

@@ -40,7 +40,10 @@ func (d *DynSsz) ResolveSpecValue(name string) (bool, uint64, error) {
 	cachedValue = &cachedSpecValue{}
 
 	// Fast path: a spec value provided directly under this name keeps its exact
-	// type and full uint64 precision without going through expression parsing.
+	// type and full uint64 precision without going through expression parsing. A
+	// value that is present but unconvertible (negative, non-numeric, unsupported
+	// type) is a misconfiguration and surfaces as an error rather than silently
+	// falling back to the static limit.
 	if raw, ok := d.specValues[name]; ok {
 		value, resolved, err := specValueToUint64(raw)
 		if err != nil {
@@ -56,8 +59,10 @@ func (d *DynSsz) ResolveSpecValue(name string) (bool, uint64, error) {
 		}
 	}
 
-	// Expressions evaluate with exact uint64 arithmetic, keeping full
-	// precision across the whole value range.
+	// Expressions evaluate with exact uint64 arithmetic, keeping full precision
+	// across the whole value range. An undefined identifier leaves the expression
+	// unresolved (the static default applies); unsupported syntax or an invalid
+	// evaluation (overflow, division by zero, a present-but-invalid value) errors.
 	handled, resolved, value, ierr := evalIntSpecExpression(name, d.specValues)
 	if !handled {
 		return false, 0, fmt.Errorf("unsupported dynamic spec expression %q: only integer arithmetic is supported (+ - * / %%, parentheses, unsigned literals and spec identifiers)", name)
@@ -343,13 +348,11 @@ func (p *intSpecExprParser) parseFactor() (uint64, error) {
 			p.unresolved = true
 			return 0, nil
 		}
-		value, ok, err := specValueToUint64(raw)
+		// specValueToUint64 reports failure through err (ok is false only when err
+		// is non-nil), so the error check alone covers every unresolvable value.
+		value, _, err := specValueToUint64(raw)
 		if err != nil {
 			return 0, fmt.Errorf("invalid spec value %q: %w", name, err)
-		}
-		if !ok {
-			p.unresolved = true
-			return 0, nil
 		}
 		return value, nil
 
