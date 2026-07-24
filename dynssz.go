@@ -552,12 +552,14 @@ func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error) {
 
 	// SSZ sizes are uint32; only reject what cannot be represented as an int on
 	// this platform. On 64-bit the full uint32 range is valid; on 32-bit a size
-	// above the int max cannot be returned safely.
-	if uint64(size) > uint64(math.MaxInt) {
+	// above the int max cannot be returned safely. int64 holds every uint32, so
+	// the bound check and conversion operate on the same value.
+	sz := int64(size)
+	if sz > math.MaxInt {
 		return 0, fmt.Errorf("SSZ size %d exceeds platform int max", size)
 	}
 
-	return int(size), nil
+	return int(sz), nil
 }
 
 // UnmarshalSSZ decodes the given SSZ-encoded data into the target object.

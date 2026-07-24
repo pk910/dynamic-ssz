@@ -214,11 +214,8 @@ func (e *StreamDecoder) readBytes(buf []byte) error {
 		return nil
 	}
 
-	// Check if request exceeds stream length
-	streamRemaining := e.streamLen - e.position
-	if n > streamRemaining {
-		return ErrUnexpectedEOF
-	}
+	// The region-limit check above (position+n > lastLimit) already rejects a
+	// request that runs past the stream, since lastLimit never exceeds streamLen.
 
 	// Copy whatever is available from buffer
 	if available > 0 {
@@ -244,7 +241,7 @@ func (e *StreamDecoder) readBytes(buf []byte) error {
 		// A reader may return the final bytes together with io.EOF; once the
 		// request is satisfied the read succeeded regardless of that error.
 		if totalRead >= remaining {
-			return nil
+			break
 		}
 		if err != nil {
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
