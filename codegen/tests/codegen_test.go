@@ -2,6 +2,7 @@ package tests
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"reflect"
 	"testing"
@@ -419,6 +420,119 @@ func TestCodegenRejectsTrailingDataVariable(t *testing.T) {
 	var c OptU32
 	if err := ds.UnmarshalSSZ(&c, valid); err != nil {
 		t.Errorf("UnmarshalSSZ rejected the valid buffer: %v", err)
+	}
+}
+
+// A bare top-level fixed-size vector receives the raw outer buffer, so its
+// generated decoder must reject trailing bytes itself (the reflection path
+// rejects them via its full-consumption check).
+func TestCodegenTopLevelVectorTrailingRejected(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+
+	oversized := make([]byte, 40)
+	for i := range oversized {
+		oversized[i] = byte(i + 1)
+	}
+
+	var v SimpleByteVec32
+	if err := ds.UnmarshalSSZ(&v, oversized); err == nil {
+		t.Error("byte vector accepted trailing data")
+	}
+	if err := ds.UnmarshalSSZ(&v, oversized[:30]); err == nil {
+		t.Error("byte vector accepted a truncated buffer")
+	}
+	if err := ds.UnmarshalSSZ(&v, oversized[:32]); err != nil {
+		t.Errorf("byte vector rejected the valid buffer: %v", err)
+	}
+
+	var u SimpleUint64Vec4
+	if err := ds.UnmarshalSSZ(&u, oversized); err == nil {
+		t.Error("uint64 vector accepted trailing data")
+	}
+	if err := ds.UnmarshalSSZ(&u, oversized[:30]); err == nil {
+		t.Error("uint64 vector accepted a truncated buffer")
+	}
+	if err := ds.UnmarshalSSZ(&u, oversized[:32]); err != nil {
+		t.Errorf("uint64 vector rejected the valid buffer: %v", err)
+	}
+}
+
+// A fixed-size union variant occupies exactly 1+elemSize bytes of the union
+// region; extra bytes in the region are trailing data and must be rejected
+// like the reflection and streaming paths do.
+func TestCodegenUnionVariantTrailingRejected(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes())
+
+	val := CoverageTypes4_Payload
+	valid, err := ds.MarshalSSZ(&val)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	// CoverageTypes4 has 5 dynamic fields (offsets at 0,4,8,12,16). Insert a
+	// stray byte at the end of U1's region (variant 0 = uint32, fixed-size)
+	// and shift the later offsets accordingly.
+	off := make([]int, 5)
+	for i := range off {
+		off[i] = int(binary.LittleEndian.Uint32(valid[i*4 : i*4+4]))
+	}
+	tampered := make([]byte, 0, len(valid)+1)
+	tampered = append(tampered, valid[:off[1]]...)
+	tampered = append(tampered, 0xaa)
+	tampered = append(tampered, valid[off[1]:]...)
+	for i := 1; i < 5; i++ {
+		binary.LittleEndian.PutUint32(tampered[i*4:i*4+4], uint32(off[i]+1))
+	}
+
+	var a CoverageTypes4
+	if err := ds.UnmarshalSSZ(&a, tampered); err == nil {
+		t.Error("UnmarshalSSZ accepted trailing data in a fixed-size union variant region")
+	}
+	var c CoverageTypes4
+	if err := ds.UnmarshalSSZ(&c, valid); err != nil {
+		t.Errorf("UnmarshalSSZ rejected the valid buffer: %v", err)
+	}
+}
+
+// A present optional-list value of fixed size occupies exactly the inner
+// type's size. Truncated regions previously decoded zero-padded garbage or
+// panicked with an out-of-range index; oversized regions silently dropped the
+// extra bytes.
+func TestCodegenOptionalListRegionSize(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+
+	// OptionalListTypes: 2 dynamic fields -> 8-byte offset table. StaticOpt is
+	// *uint32, so a present region must be exactly 4 bytes.
+	short := []byte{
+		0x08, 0, 0, 0, // offset StaticOpt = 8
+		0x0b, 0, 0, 0, // offset DynamicOpt = 11 (region = 3 bytes)
+		0x01, 0x02, 0x03,
+	}
+	var a OptionalListTypes
+	if err := ds.UnmarshalSSZ(&a, short); err == nil {
+		t.Error("UnmarshalSSZ accepted a truncated optional-list region")
+	}
+
+	long := []byte{
+		0x08, 0, 0, 0,
+		0x0d, 0, 0, 0, // region = 5 bytes
+		0x01, 0x02, 0x03, 0x04, 0xaa,
+	}
+	var b OptionalListTypes
+	if err := ds.UnmarshalSSZ(&b, long); err == nil {
+		t.Error("UnmarshalSSZ accepted trailing data in an optional-list region")
+	}
+
+	valid := []byte{
+		0x08, 0, 0, 0,
+		0x0c, 0, 0, 0, // region = 4 bytes
+		0x01, 0x02, 0x03, 0x04,
+	}
+	var c OptionalListTypes
+	if err := ds.UnmarshalSSZ(&c, valid); err != nil {
+		t.Errorf("UnmarshalSSZ rejected the valid buffer: %v", err)
+	} else if c.StaticOpt == nil || *c.StaticOpt != 0x04030201 {
+		t.Errorf("unexpected decoded value: %v", c.StaticOpt)
 	}
 }
 

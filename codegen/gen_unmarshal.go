@@ -554,6 +554,25 @@ func (ctx *unmarshalContext) unmarshalOptionalList(desc *ssztypes.TypeDescriptor
 		errOffset := "sszutils.ErrFirstOffsetMismatchFn(firstOffset, uint32(4))"
 		ctx.appendCode(indent+1, "if firstOffset != 4 {\n\treturn %s\n}\n", typePath.getErrorWith(errOffset))
 		ctx.appendCode(indent+1, "buf := buf[4:]\n")
+	} else {
+		// A present fixed-size value occupies exactly the inner type's size;
+		// reject truncated regions (which would decode zero-padded garbage or
+		// index out of range) and oversized regions (trailing data), matching
+		// the reflection and streaming-decoder paths.
+		var sizeVar string
+		if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+			var err error
+			sizeVar, err = ctx.staticSizeVars.getStaticSizeVar(desc.ElemDesc)
+			if err != nil {
+				return err
+			}
+		} else {
+			sizeVar = fmt.Sprintf("%d", desc.ElemDesc.Size)
+		}
+		errEOF := "sszutils.ErrOptionalValueEOFFn()"
+		ctx.appendCode(indent+1, "if len(buf) < int(%s) {\n\treturn %s\n}\n", sizeVar, typePath.getErrorWith(errEOF))
+		trailErr := fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - int(%s))", sizeVar)
+		ctx.appendCode(indent+1, "if len(buf) > int(%s) {\n\treturn %s\n}\n", sizeVar, typePath.getErrorWith(trailErr))
 	}
 	valVar := ctx.getValVar()
 	ctx.appendCode(indent+1, "var %s %s\n", valVar, ctx.typePrinter.TypeString(desc.ElemDesc))
@@ -801,6 +820,12 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 			if !noBufCheck {
 				errCode := fmt.Sprintf("sszutils.ErrByteVectorEOFFn(len(buf), %s)", limitVar)
 				ctx.appendCode(indent, "if %s > len(buf) {\n\treturn %s\n}\n", limitVar, typePath.getErrorWith(errCode))
+				// A fixed-size vector occupies exactly its size, so extra bytes are
+				// trailing data and must be rejected (matching the reflection path).
+				// Nested vectors always receive an exactly-sized slice, so this only
+				// ever fires at the top-level entry.
+				trailErr := fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - %s)", limitVar)
+				ctx.appendCode(indent, "if %s < len(buf) {\n\treturn %s\n}\n", limitVar, typePath.getErrorWith(trailErr))
 			}
 			if bitlimitVar != "" {
 				ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
@@ -834,6 +859,14 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 			ctx.appendCode(indent, "if %s*%s > len(buf) {\n", limitVar, fieldSizeVar)
 			errCode := fmt.Sprintf("sszutils.ErrVectorElementsEOFFn(len(buf), %s*%s)", limitVar, fieldSizeVar)
 			ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith(errCode))
+			ctx.appendCode(indent, "}\n")
+			// A fixed-size vector occupies exactly its size, so extra bytes are
+			// trailing data and must be rejected (matching the reflection path).
+			// Nested vectors always receive an exactly-sized slice, so this only
+			// ever fires at the top-level entry.
+			ctx.appendCode(indent, "if %s*%s < len(buf) {\n", limitVar, fieldSizeVar)
+			trailErr := fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - %s*%s)", limitVar, fieldSizeVar)
+			ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith(trailErr))
 			ctx.appendCode(indent, "}\n")
 		}
 
@@ -1173,11 +1206,16 @@ func (ctx *unmarshalContext) unmarshalUnion(desc *ssztypes.TypeDescriptor, varNa
 
 		childTypePath := typePath.append(fmt.Sprintf("[v:%d]", variant))
 
-		// Check that buf has enough bytes for the selector plus the variant value
+		// Check that buf has enough bytes for the selector plus the variant value.
+		// A fixed-size variant occupies exactly 1+elemSize bytes of the union
+		// region, so any extra bytes are trailing data and must be rejected
+		// (matching the reflection and streaming-decoder paths).
 		elemSize := variantDesc.Size
 		if elemSize > 0 {
 			errCode = fmt.Sprintf("sszutils.ErrUnionVariantEOFFn(len(buf), %d)", 1+elemSize)
 			ctx.appendCode(indent+1, "if len(buf) < %d {\n\treturn %s\n}\n", 1+elemSize, childTypePath.getErrorWith(errCode))
+			trailErr := fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - %d)", 1+elemSize)
+			ctx.appendCode(indent+1, "if len(buf) > %d {\n\treturn %s\n}\n", 1+elemSize, childTypePath.getErrorWith(trailErr))
 		}
 
 		valVar := ctx.getValVar()

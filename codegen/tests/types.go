@@ -15,6 +15,12 @@ type SimpleUint16 uint16
 type SimpleUint32 uint32
 type SimpleUint64 uint64
 
+// Standalone fixed-size vector types generated as top-level -types entries;
+// their generated decoders receive the raw outer buffer and must enforce
+// exact consumption themselves.
+type SimpleByteVec32 [32]byte
+type SimpleUint64Vec4 [4]uint64
+
 type SimpleTypes1 struct {
 	B1       bool
 	I8       uint8

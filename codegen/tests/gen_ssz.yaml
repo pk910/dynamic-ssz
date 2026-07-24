@@ -16,6 +16,8 @@ types:
   - SimpleUint16
   - SimpleUint32
   - SimpleUint64
+  - SimpleByteVec32
+  - SimpleUint64Vec4
 
   - name: SimpleTypes1
     output: gen_simple1.go
