@@ -145,3 +145,7 @@ types:
     output: gen_compilecorrectness.go
   - name: ExcludedFields
     output: gen_compilecorrectness.go
+  - name: PtrSvecOfList
+    output: gen_compilecorrectness.go
+  - name: WrapPtrList
+    output: gen_compilecorrectness.go

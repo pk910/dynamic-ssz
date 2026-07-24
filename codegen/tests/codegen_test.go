@@ -1216,6 +1216,8 @@ func TestCodegenPointerAndPaddingShapes(t *testing.T) {
 		{"FixedVecStr-underfill", &FixedVecStr{F: []string{"a"}}},
 		{"PtrDynCollectionField", &PtrDynCollectionField{F: &bl}},
 		{"WrapUnionField", &wu},
+		{"PtrSvecOfList", &PtrSvecOfList{F: &[][]uint16{{1, 2}}}},
+		{"WrapPtrList", func() any { w := WrapPtrList{}; d := []uint16{5, 6}; w.W.Data = &d; return &w }()},
 	}
 
 	for _, tc := range cases {

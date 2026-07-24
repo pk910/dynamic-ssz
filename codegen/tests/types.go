@@ -1516,3 +1516,19 @@ var ExcludedFields_Payload = ExcludedFields{
 	Meta:  map[string]int{"x": 1},
 	L:     []uint16{3, 4},
 }
+
+// PtrSvecOfList is a pointer to a fixed vector of variable-size elements; the
+// streaming encoder's under-fill zero-padding item must be the element type,
+// not new(element) (which would be a pointer to it).
+type PtrSvecOfList struct {
+	F *[][]uint16 `ssz-size:"2" ssz-max:"?,4"`
+}
+
+// WrapPtrList wraps a pointer type; the size closure's nil-pointer guard must
+// localize into a fresh variable instead of shadowing the closure's own
+// parameter.
+type WrapPtrList struct {
+	W dynssz.TypeWrapper[struct {
+		Data *[]uint16 `ssz-max:"8"`
+	}, *[]uint16] `ssz-type:"wrapper"`
+}
