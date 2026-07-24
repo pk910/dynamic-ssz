@@ -168,7 +168,7 @@ Specifies the maximum element count for dynamic lists. Required for secure hash 
 ```go
 type Container struct {
     Validators    []Validator `ssz-max:"1024"`   // max 1024 validators
-    Participation []bool      `ssz-max:"2048"`   // max 2048 bits (bitlist)
+    Participation []byte      `ssz-type:"bitlist" ssz-max:"2048"` // bitlist, max 2048 bits
     Matrix        [][]uint32  `ssz-max:"100,256"` // max 100 rows, 256 per row
 }
 ```
