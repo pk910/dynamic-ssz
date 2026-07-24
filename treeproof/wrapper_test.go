@@ -7,6 +7,8 @@ package treeproof
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
+	"math"
 	"testing"
 
 	"github.com/pk910/dynamic-ssz/hasher"
@@ -519,7 +521,7 @@ func TestWrapperAddMethods(t *testing.T) {
 
 	t.Run("AddEmpty", func(t *testing.T) {
 		w := NewWrapper()
-		w.AddEmpty()
+		w.addEmpty()
 
 		if len(w.nodes) != 1 {
 			t.Error("AddEmpty should add one node")
@@ -641,7 +643,7 @@ func TestWrapperCommit(t *testing.T) {
 	w.AddNode(NewNodeWithValue([]byte{4}))
 
 	// Commit from index 0
-	w.Commit(0)
+	w.commit(0)
 
 	// Should have one merkleized node
 	if len(w.nodes) != 1 {
@@ -656,7 +658,7 @@ func TestWrapperCommit(t *testing.T) {
 	w2.AddNode(NewNodeWithValue([]byte{4}))
 
 	// Commit only last 2 nodes
-	w2.Commit(2)
+	w2.commit(2)
 
 	// Should have 3 nodes: first 2 original + 1 merkleized
 	if len(w2.nodes) != 3 {
@@ -672,7 +674,7 @@ func TestWrapperCommitWithMixin(t *testing.T) {
 		w.AddNode(LeafFromUint64(uint64(i)))
 	}
 
-	w.CommitWithMixin(0, 4, 4)
+	w.commitWithMixin(0, 4, 4)
 
 	// Should have one node with mixin
 	if len(w.nodes) != 1 {
@@ -693,7 +695,7 @@ func TestWrapperCommitProgressive(t *testing.T) {
 		w.AddNode(LeafFromUint64(uint64(i)))
 	}
 
-	w.CommitProgressive(0)
+	w.commitProgressive(0)
 
 	// Should have one progressive tree node
 	if len(w.nodes) != 1 {
@@ -709,7 +711,7 @@ func TestWrapperCommitProgressiveWithMixin(t *testing.T) {
 		w.AddNode(LeafFromUint64(uint64(i)))
 	}
 
-	w.CommitProgressiveWithMixin(0, 5)
+	w.commitProgressiveWithMixin(0, 5)
 
 	// Should have one node with mixin
 	if len(w.nodes) != 1 {
@@ -726,7 +728,7 @@ func TestWrapperCommitProgressiveWithActiveFields(t *testing.T) {
 	}
 
 	activeFields := []byte{0b00000111} // First 3 fields active
-	w.CommitProgressiveWithActiveFields(0, activeFields)
+	w.commitProgressiveWithActiveFields(0, activeFields)
 
 	// Should have one node with active fields mixin
 	if len(w.nodes) != 1 {
@@ -772,29 +774,26 @@ func TestWrapperAppendBytesAsNodes(t *testing.T) {
 	})
 }
 
-func TestWrapperGetLimit(t *testing.T) {
-	w := NewWrapper()
-
-	// Add some nodes
-	for i := 0; i < 5; i++ {
-		w.AddNode(NewNodeWithValue([]byte{byte(i)}))
+func TestChunkLimitDepth(t *testing.T) {
+	cases := []struct {
+		limit uint64
+		depth int
+	}{
+		{0, 0}, {1, 0}, {2, 1}, {3, 2}, {4, 2}, {5, 3}, {8, 3}, {9, 4},
+		{1 << 32, 32},
+		{1 << 62, 62},
+		{(1 << 63) - 1, 63},
+		{1 << 63, 63},
+		// Above 2^63 the next power of two (2^64) is unrepresentable; the deepest
+		// tree is depth 64. This is the range that previously overflowed to a
+		// negative int and crashed GetTree.
+		{(1 << 63) + 1, 64},
+		{^uint64(0), 64},
 	}
-
-	// getLimit should return next power of 2
-	limit := w.getLimit(0)
-	if limit != 8 { // Next power of 2 after 5
-		t.Errorf("expected limit 8 for 5 nodes, got %d", limit)
-	}
-
-	// Test with exact power of 2
-	w2 := NewWrapper()
-	for i := 0; i < 4; i++ {
-		w2.AddNode(NewNodeWithValue([]byte{byte(i)}))
-	}
-
-	limit2 := w2.getLimit(0)
-	if limit2 != 4 {
-		t.Errorf("expected limit 4 for 4 nodes, got %d", limit2)
+	for _, c := range cases {
+		if got := chunkLimitDepth(c.limit); got != c.depth {
+			t.Errorf("chunkLimitDepth(%d) = %d, want %d", c.limit, got, c.depth)
+		}
 	}
 }
 
@@ -863,7 +862,7 @@ func TestWrapperCommitErrorHandling(t *testing.T) {
 
 		// Commit from an index that has nodes after it
 		initialCount := len(w.nodes)
-		w.Commit(1) // Should merkleize the nodes from index 1 onwards
+		w.commit(1) // Should merkleize the nodes from index 1 onwards
 
 		// Should have fewer or equal nodes after commit
 		if len(w.nodes) > initialCount {
@@ -876,7 +875,7 @@ func TestWrapperCommitErrorHandling(t *testing.T) {
 		w.AddNode(NewNodeWithValue([]byte{1}))
 
 		// Commit from index 0 with only one node
-		w.Commit(0)
+		w.commit(0)
 
 		// Should still have 1 node
 		if len(w.nodes) != 1 {
@@ -1027,5 +1026,288 @@ func TestWrapperMerkleizeIndexClamped(t *testing.T) {
 			w.FillUpTo32()
 			fn(w)
 		}()
+	}
+}
+
+// --- moved from errpath_test.go ---
+// expectPanicWithError recovers from a panic and checks that the recovered
+// value matches the expected error.
+func expectPanicWithError(t *testing.T, expected error, fn func()) {
+	t.Helper()
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic")
+		}
+		err, ok := r.(error)
+		if !ok {
+			t.Fatalf("expected error panic, got: %T %v", r, r)
+		}
+		if !errors.Is(err, expected) {
+			t.Fatalf("expected panic with %q, got: %q", expected, err)
+		}
+	}()
+	fn()
+}
+
+// --- Wrapper.Collapse: no-op coverage ---
+
+func TestWrapperCollapseNoop(t *testing.T) {
+	w := NewWrapper()
+	w.AddNode(LeafFromUint64(1))
+	w.Collapse()
+	if len(w.nodes) != 1 {
+		t.Fatal("Collapse should not modify the wrapper")
+	}
+}
+
+// --- Wrapper.Commit: panic on tree build error ---
+
+func TestWrapperCommitPanicInjected(t *testing.T) {
+	injected := errors.New("injected commit error")
+	treeFromNodesToDepthFn = func([]*Node, int) (*Node, error) {
+		return nil, injected
+	}
+	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
+
+	expectPanicWithError(t, injected, func() {
+		w := NewWrapper()
+		w.AddNode(LeafFromUint64(1))
+		w.commit(0)
+	})
+}
+
+// --- Wrapper.CommitWithMixin: panic on tree build error ---
+
+func TestWrapperCommitWithMixinPanicInjected(t *testing.T) {
+	injected := errors.New("injected commit error")
+	treeFromNodesToDepthFn = func([]*Node, int) (*Node, error) {
+		return nil, injected
+	}
+	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
+
+	expectPanicWithError(t, injected, func() {
+		w := NewWrapper()
+		w.AddNode(LeafFromUint64(1))
+		w.commitWithMixin(0, 1, 1)
+	})
+}
+
+// --- Wrapper.CommitProgressive: panic on tree build error ---
+
+func TestWrapperCommitProgressivePanicInjected(t *testing.T) {
+	injected := errors.New("injected commit error")
+	treeFromNodesToDepthFn = func([]*Node, int) (*Node, error) {
+		return nil, injected
+	}
+	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
+
+	expectPanicWithError(t, injected, func() {
+		w := NewWrapper()
+		w.AddNode(LeafFromUint64(1))
+		w.commitProgressive(0)
+	})
+}
+
+// --- Wrapper.CommitProgressiveWithMixin: panic on tree build error ---
+
+func TestWrapperCommitProgressiveWithMixinPanicInjected(t *testing.T) {
+	injected := errors.New("injected commit error")
+	treeFromNodesToDepthFn = func([]*Node, int) (*Node, error) {
+		return nil, injected
+	}
+	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
+
+	expectPanicWithError(t, injected, func() {
+		w := NewWrapper()
+		w.AddNode(LeafFromUint64(1))
+		w.commitProgressiveWithMixin(0, 1)
+	})
+}
+
+// --- Wrapper.CommitProgressiveWithActiveFields: panic on tree build error ---
+
+func TestWrapperCommitProgressiveWithActiveFieldsPanicInjected(t *testing.T) {
+	injected := errors.New("injected commit error")
+	treeFromNodesToDepthFn = func([]*Node, int) (*Node, error) {
+		return nil, injected
+	}
+	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
+
+	expectPanicWithError(t, injected, func() {
+		w := NewWrapper()
+		w.AddNode(LeafFromUint64(1))
+		w.commitProgressiveWithActiveFields(0, []byte{0x01})
+	})
+}
+
+// --- moved from wrapper_overflow_test.go ---
+
+// A list capacity (limit) and element count (num) are uint64. A capacity only
+// determines the merkle tree depth (at most 64), so values above the platform
+// int range — e.g. the practically-unbounded ssz-max:"18446744073709551615" —
+// must produce a valid root rather than crash, matching the streaming hasher.
+
+func TestMerkleizeWithMixinHugeNum(t *testing.T) {
+	w := NewWrapper()
+	w.AppendUint64(1)
+	w.MerkleizeWithMixin(0, math.MaxUint64, 1)
+	if _, err := w.HashRoot(); err != nil {
+		t.Fatalf("HashRoot: %v", err)
+	}
+}
+
+func TestMerkleizeWithMixinHugeLimit(t *testing.T) {
+	w := NewWrapper()
+	w.AppendUint64(1)
+	w.MerkleizeWithMixin(0, 1, math.MaxUint64)
+	if _, err := w.HashRoot(); err != nil {
+		t.Fatalf("HashRoot: %v", err)
+	}
+}
+
+func TestMerkleizeProgressiveWithMixinHugeNum(t *testing.T) {
+	w := NewWrapper()
+	w.AppendUint64(1)
+	w.MerkleizeProgressiveWithMixin(0, math.MaxUint64)
+	if _, err := w.HashRoot(); err != nil {
+		t.Fatalf("HashRoot: %v", err)
+	}
+}
+
+func TestPutBitlistNormal(t *testing.T) {
+	w := NewWrapper()
+	w.PutBitlist([]byte{0x07}, 256) // 2 bits set, sentinel at bit 2
+}
+
+func TestPutBitlistHugeMaxSize(t *testing.T) {
+	// A degenerate ssz-max can push the derived chunk limit above the platform
+	// int range; it only affects the padding depth and must not panic.
+	w := NewWrapper()
+	w.PutBitlist([]byte{0x01}, math.MaxUint64) // sentinel only, size=0
+	if _, err := w.HashRoot(); err != nil {
+		t.Fatalf("HashRoot: %v", err)
+	}
+}
+
+func TestPutProgressiveBitlistNormal(t *testing.T) {
+	w := NewWrapper()
+	w.PutProgressiveBitlist([]byte{0x07}) // 2 bits, sentinel at bit 2
+}
+
+// --- moved from wrapper_interleave_test.go ---
+
+// TestWrapperInterleavedAppendPut is a regression test for
+// https://github.com/pk910/dynamic-ssz/issues/191: the Wrapper must produce
+// the same root as hasher.Hasher when a container interleaves Append*-buffered
+// fields with Put* fields or child scopes. The Wrapper used to flush buffered
+// bytes only at Merkleize, reordering leaves relative to directly-added nodes.
+func TestWrapperInterleavedAppendPut(t *testing.T) {
+	fieldA := [32]byte{0x11}
+	fieldB := [32]byte{0x22}
+
+	tests := []struct {
+		name string
+		walk func(hh sszutils.HashWalker)
+	}{
+		{
+			// e.g. a uint256 root emitted via AppendBytes32 followed by a
+			// bytes32 field emitted via PutBytes (deneb.ExecutionPayloadHeader
+			// BaseFeePerGas -> BlockHash layout)
+			name: "append then put",
+			walk: func(hh sszutils.HashWalker) {
+				idx := hh.StartTree(sszutils.TreeTypeNone)
+				hh.AppendBytes32(fieldA[:])
+				hh.PutBytes(fieldB[:])
+				hh.Merkleize(idx)
+			},
+		},
+		{
+			name: "append then put uint64",
+			walk: func(hh sszutils.HashWalker) {
+				idx := hh.StartTree(sszutils.TreeTypeNone)
+				hh.AppendBytes32(fieldA[:])
+				hh.PutUint64(42)
+				hh.Merkleize(idx)
+			},
+		},
+		{
+			// an Append*-buffered field followed by a child scope: the buffered
+			// bytes must become leaves of the parent, not of the child list
+			name: "append then child scope",
+			walk: func(hh sszutils.HashWalker) {
+				idx := hh.StartTree(sszutils.TreeTypeNone)
+				hh.AppendBytes32(fieldA[:])
+				cidx := hh.StartTree(sszutils.TreeTypeNone)
+				hh.AppendUint64(42)
+				hh.AppendUint64(43)
+				hh.FillUpTo32()
+				hh.MerkleizeWithMixin(cidx, 2, 4)
+				hh.Merkleize(idx)
+			},
+		},
+		{
+			// deneb.ExecutionPayloadHeader-like tail: dynamic list scope,
+			// buffered uint256 root, then direct bytes32/uint64 fields
+			name: "payload header field tail",
+			walk: func(hh sszutils.HashWalker) {
+				idx := hh.StartTree(sszutils.TreeTypeNone)
+				hh.PutBytes(fieldA[:])                      // PrevRandao
+				hh.PutUint64(1)                             // BlockNumber
+				hh.PutUint64(2)                             // GasLimit
+				cidx := hh.StartTree(sszutils.TreeTypeNone) // ExtraData
+				hh.Append([]byte{0xff, 0xee})
+				hh.FillUpTo32()
+				hh.MerkleizeWithMixin(cidx, 2, 1)
+				hh.AppendBytes32(fieldB[:]) // BaseFeePerGas root
+				hh.PutBytes(fieldA[:])      // BlockHash
+				hh.PutUint64(3)             // BlobGasUsed
+				hh.Merkleize(idx)
+			},
+		},
+		{
+			name: "append then bitlist",
+			walk: func(hh sszutils.HashWalker) {
+				idx := hh.StartTree(sszutils.TreeTypeNone)
+				hh.AppendBytes32(fieldA[:])
+				hh.PutBitlist([]byte{0xff, 0x01}, 64)
+				hh.Merkleize(idx)
+			},
+		},
+		{
+			name: "append then large put bytes",
+			walk: func(hh sszutils.HashWalker) {
+				idx := hh.StartTree(sszutils.TreeTypeNone)
+				hh.AppendBytes32(fieldA[:])
+				large := make([]byte, 96)
+				large[0] = 0x33
+				hh.PutBytes(large)
+				hh.Merkleize(idx)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := hasher.FastHasherPool.Get()
+			defer hasher.FastHasherPool.Put(h)
+
+			tt.walk(h)
+			expected, err := h.HashRoot()
+			if err != nil {
+				t.Fatalf("hasher HashRoot failed: %v", err)
+			}
+
+			w := NewWrapper()
+			tt.walk(w)
+			actual, err := w.HashRoot()
+			if err != nil {
+				t.Fatalf("wrapper HashRoot failed: %v", err)
+			}
+
+			if expected != actual {
+				t.Errorf("wrapper root %x does not match hasher root %x", actual, expected)
+			}
+		})
 	}
 }

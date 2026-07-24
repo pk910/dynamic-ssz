@@ -1030,6 +1030,34 @@ func TestProgressiveListLimitEnforcedInHashing(t *testing.T) {
 	}
 }
 
+// TestGetTreeHugeSszMaxMatchesHashTreeRoot guards against GetTree panicking on a
+// list whose ssz-max is the practically-unbounded 2^64-1. Each 32-byte element
+// is one chunk, so the merkle limit is 2^64-1 — above the platform int range.
+// GetTree must build the same root HashTreeRoot computes instead of crashing
+// while narrowing the limit to int.
+func TestGetTreeHugeSszMaxMatchesHashTreeRoot(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	payload := struct {
+		Data [][32]byte `ssz-max:"18446744073709551615"`
+	}{
+		Data: [][32]byte{{1}, {2}, {3}},
+	}
+
+	root, err := dynssz.HashTreeRoot(payload)
+	if err != nil {
+		t.Fatalf("HashTreeRoot: %v", err)
+	}
+
+	tree, err := dynssz.GetTree(payload)
+	if err != nil {
+		t.Fatalf("GetTree: %v", err)
+	}
+	if !bytes.Equal(tree.Hash(), root[:]) {
+		t.Fatalf("GetTree root %x != HashTreeRoot %x", tree.Hash(), root)
+	}
+}
+
 func TestCompatibleUnionHashErrors(t *testing.T) {
 	dynssz := NewDynSsz(nil, WithNoFastSsz())
 

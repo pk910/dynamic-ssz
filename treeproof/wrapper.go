@@ -10,7 +10,6 @@ package treeproof
 
 import (
 	"fmt"
-	"math"
 
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
@@ -132,21 +131,15 @@ func (w *Wrapper) FillUpTo32() {
 // resulting subtree replaces those nodes as a single tree node.
 func (w *Wrapper) Merkleize(indx int) {
 	w.flushBuffer()
-	w.Commit(indx)
+	w.commit(indx)
 }
 
 // MerkleizeWithMixin flushes buffered bytes, constructs a binary Merkle tree
 // from nodes since indx, and mixes in the element count (num) as a right
 // sibling. This implements SSZ list merkleization: hash(merkle_root || length).
 func (w *Wrapper) MerkleizeWithMixin(indx int, num, limit uint64) {
-	if num > math.MaxInt {
-		panic(fmt.Sprintf("MerkleizeWithMixin: num %d exceeds max int", num))
-	}
-	if limit > math.MaxInt {
-		panic(fmt.Sprintf("MerkleizeWithMixin: limit %d exceeds max int", limit))
-	}
 	w.flushBuffer()
-	w.CommitWithMixin(indx, int(num), int(limit))
+	w.commitWithMixin(indx, num, limit)
 }
 
 // MerkleizeProgressive flushes buffered bytes, then constructs a progressive
@@ -154,18 +147,15 @@ func (w *Wrapper) MerkleizeWithMixin(indx int, num, limit uint64) {
 // (base sizes 1, 4, 16, 64...) instead of even binary splits.
 func (w *Wrapper) MerkleizeProgressive(indx int) {
 	w.flushBuffer()
-	w.CommitProgressive(indx)
+	w.commitProgressive(indx)
 }
 
 // MerkleizeProgressiveWithMixin flushes buffered bytes, constructs a
 // progressive Merkle tree from nodes since indx, and mixes in the element
 // count (num) as a right sibling.
 func (w *Wrapper) MerkleizeProgressiveWithMixin(indx int, num uint64) {
-	if num > math.MaxInt {
-		panic(fmt.Sprintf("MerkleizeProgressiveWithMixin: num %d exceeds max int", num))
-	}
 	w.flushBuffer()
-	w.CommitProgressiveWithMixin(indx, int(num))
+	w.commitProgressiveWithMixin(indx, num)
 }
 
 // MerkleizeProgressiveWithActiveFields flushes buffered bytes, constructs a
@@ -173,7 +163,7 @@ func (w *Wrapper) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 // bitvector as a right sibling. This is used for stable/progressive containers.
 func (w *Wrapper) MerkleizeProgressiveWithActiveFields(indx int, activeFields []byte) {
 	w.flushBuffer()
-	w.CommitProgressiveWithActiveFields(indx, activeFields)
+	w.commitProgressiveWithActiveFields(indx, activeFields)
 }
 
 // PutBitlist parses a bitlist (with sentinel bit), creates leaf nodes from
@@ -186,20 +176,8 @@ func (w *Wrapper) PutBitlist(bb []byte, maxSize uint64) {
 	indx := w.Index()
 	w.appendBytesAsNodes(b)
 
-	if size > math.MaxInt {
-		// Only reachable on 32-bit with a multi-hundred-MB bitlist; the bit count
-		// genuinely cannot be represented as an int on such platforms.
-		panic(fmt.Sprintf("PutBitlist: size %d exceeds max int", size))
-	}
-	// The chunk limit derives from ssz-max, so a degenerate ssz-max can exceed
-	// math.MaxInt on 32-bit platforms even for a tiny bitlist. Clamp it instead of
-	// panicking; the limit only affects padding depth, which cannot be represented
-	// exactly there anyway.
 	limit := sszutils.CalculateBitlistLimit(maxSize)
-	if limit > uint64(math.MaxInt) {
-		limit = uint64(math.MaxInt)
-	}
-	w.CommitWithMixin(indx, int(size), int(limit))
+	w.commitWithMixin(indx, size, limit)
 }
 
 // PutProgressiveBitlist parses a bitlist (with sentinel bit), creates leaf
@@ -214,10 +192,7 @@ func (w *Wrapper) PutProgressiveBitlist(bb []byte) {
 	indx := w.Index()
 	w.appendBytesAsNodes(b)
 
-	if size > math.MaxInt {
-		panic(fmt.Sprintf("PutProgressiveBitlist: size %d exceeds max int", size))
-	}
-	w.CommitProgressiveWithMixin(indx, int(size))
+	w.commitProgressiveWithMixin(indx, size)
 }
 
 // flushBuffer converts any bytes buffered by Append* calls into leaf nodes.
@@ -315,7 +290,7 @@ func (w *Wrapper) AddBytes(b []byte) {
 	} else {
 		indx := w.Index()
 		w.appendBytesAsNodes(b)
-		w.Commit(indx)
+		w.commit(indx)
 	}
 }
 
@@ -383,10 +358,10 @@ func (w *Wrapper) clampIndex(i int) int {
 // Commit constructs a binary Merkle tree from all nodes added since index i,
 // replaces those nodes with the resulting subtree root, and adds it back to the
 // node list.
-func (w *Wrapper) Commit(i int) {
+func (w *Wrapper) commit(i int) {
 	i = w.clampIndex(i)
-	// create tree from nodes
-	res, err := treeFromNodesFn(w.nodes[i:], w.getLimit(i))
+	// A bare scope pads to the next power of two of the node count.
+	res, err := treeFromNodesToDepthFn(w.nodes[i:], chunkLimitDepth(uint64(len(w.nodes[i:]))))
 	if err != nil {
 		panic(err)
 	}
@@ -396,12 +371,14 @@ func (w *Wrapper) Commit(i int) {
 	w.AddNode(res)
 }
 
-// CommitWithMixin constructs a binary Merkle tree from nodes since index i
-// with a length mixin, used for SSZ list merkleization.
-func (w *Wrapper) CommitWithMixin(i, num, limit int) {
+// commitWithMixin constructs a binary Merkle tree from nodes since index i with
+// a length mixin, used for SSZ list merkleization. num and limit are uint64 so a
+// list capacity above the platform int range (e.g. a practically-unbounded
+// ssz-max) hashes correctly instead of panicking.
+func (w *Wrapper) commitWithMixin(i int, num, limit uint64) {
 	i = w.clampIndex(i)
 	// create tree from nodes
-	res, err := TreeFromNodesWithMixin(w.nodes[i:], num, limit)
+	res, err := TreeFromNodesWithMixin64(w.nodes[i:], num, limit)
 	if err != nil {
 		panic(err)
 	}
@@ -412,8 +389,8 @@ func (w *Wrapper) CommitWithMixin(i, num, limit int) {
 	w.AddNode(res)
 }
 
-// CommitProgressive creates a progressive tree from nodes
-func (w *Wrapper) CommitProgressive(i int) {
+// commitProgressive creates a progressive tree from nodes
+func (w *Wrapper) commitProgressive(i int) {
 	i = w.clampIndex(i)
 	// create progressive tree from nodes
 	res, err := TreeFromNodesProgressive(w.nodes[i:])
@@ -426,11 +403,11 @@ func (w *Wrapper) CommitProgressive(i int) {
 	w.AddNode(res)
 }
 
-// CommitProgressiveWithMixin creates a progressive tree with length mixin
-func (w *Wrapper) CommitProgressiveWithMixin(i, num int) {
+// commitProgressiveWithMixin creates a progressive tree with length mixin
+func (w *Wrapper) commitProgressiveWithMixin(i int, num uint64) {
 	i = w.clampIndex(i)
 	// create progressive tree from nodes
-	res, err := TreeFromNodesProgressiveWithMixin(w.nodes[i:], num)
+	res, err := TreeFromNodesProgressiveWithMixin64(w.nodes[i:], num)
 	if err != nil {
 		panic(err)
 	}
@@ -440,8 +417,8 @@ func (w *Wrapper) CommitProgressiveWithMixin(i, num int) {
 	w.AddNode(res)
 }
 
-// CommitProgressiveWithActiveFields creates a progressive tree with active fields bitvector
-func (w *Wrapper) CommitProgressiveWithActiveFields(i int, activeFields []byte) {
+// commitProgressiveWithActiveFields creates a progressive tree with active fields bitvector
+func (w *Wrapper) commitProgressiveWithActiveFields(i int, activeFields []byte) {
 	i = w.clampIndex(i)
 	// create progressive tree from nodes
 	res, err := TreeFromNodesProgressiveWithActiveFields(w.nodes[i:], activeFields)
@@ -454,14 +431,9 @@ func (w *Wrapper) CommitProgressiveWithActiveFields(i int, activeFields []byte) 
 	w.AddNode(res)
 }
 
-// AddEmpty adds an empty (all-zeros) leaf node to the wrapper's node list.
-func (w *Wrapper) AddEmpty() {
+// addEmpty adds an empty (all-zeros) leaf node to the wrapper's node list.
+func (w *Wrapper) addEmpty() {
 	w.AddNode(EmptyLeaf())
-}
-
-func (w *Wrapper) getLimit(i int) int {
-	size := len(w.nodes[i:])
-	return int(sszutils.NextPowerOfTwo(uint64(size)))
 }
 
 // HashRoot returns the 32-byte hash tree root of the constructed tree. This

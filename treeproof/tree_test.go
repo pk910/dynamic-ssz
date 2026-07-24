@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"testing"
 
 	"github.com/pk910/dynamic-ssz/hasher"
@@ -1700,5 +1701,88 @@ func TestTreeFromNodesRejectsExcessLeaves(t *testing.T) {
 	}
 	if tree == nil {
 		t.Fatal("expected non-nil tree")
+	}
+}
+
+// --- tree construction error paths (moved from errpath_test.go) ---
+// --- treeFromNodesProgressiveImpl: left child build error ---
+
+func TestTreeFromNodesProgressiveLeftError(t *testing.T) {
+	injected := errors.New("injected")
+	treeFromNodesToDepthFn = func([]*Node, int) (*Node, error) {
+		return nil, injected
+	}
+	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
+
+	_, err := TreeFromNodesProgressive([]*Node{LeafFromUint64(1)})
+	if !errors.Is(err, injected) {
+		t.Fatalf("expected injected error, got: %v", err)
+	}
+}
+
+// --- treeFromNodesProgressiveImpl: recursive right child error ---
+
+func TestTreeFromNodesProgressiveRecursiveError(t *testing.T) {
+	injected := errors.New("injected")
+	calls := 0
+	treeFromNodesToDepthFn = func(leaves []*Node, depth int) (*Node, error) {
+		calls++
+		if calls == 2 {
+			return nil, injected
+		}
+		return treeFromNodesToDepth(leaves, depth)
+	}
+	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
+
+	// Two leaves: first call builds left child (succeeds), recursive call
+	// builds the right subtree's left child (fails on second call).
+	_, err := TreeFromNodesProgressive([]*Node{LeafFromUint64(1), LeafFromUint64(2)})
+	if !errors.Is(err, injected) {
+		t.Fatalf("expected injected error, got: %v", err)
+	}
+}
+
+// --- TreeFromNodesWithMixin: tree build error ---
+
+func TestTreeFromNodesWithMixinInjectedError(t *testing.T) {
+	injected := errors.New("injected")
+	treeFromNodesToDepthFn = func([]*Node, int) (*Node, error) {
+		return nil, injected
+	}
+	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
+
+	_, err := TreeFromNodesWithMixin([]*Node{LeafFromUint64(1)}, 1, 1)
+	if !errors.Is(err, injected) {
+		t.Fatalf("expected injected error, got: %v", err)
+	}
+}
+
+// --- TreeFromNodesProgressiveWithMixin: progressive build error ---
+
+func TestTreeFromNodesProgressiveWithMixinInjectedError(t *testing.T) {
+	injected := errors.New("injected")
+	treeFromNodesToDepthFn = func([]*Node, int) (*Node, error) {
+		return nil, injected
+	}
+	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
+
+	_, err := TreeFromNodesProgressiveWithMixin([]*Node{LeafFromUint64(1)}, 1)
+	if !errors.Is(err, injected) {
+		t.Fatalf("expected injected error, got: %v", err)
+	}
+}
+
+// --- TreeFromNodesProgressiveWithActiveFields: progressive build error ---
+
+func TestTreeFromNodesProgressiveWithActiveFieldsInjectedError(t *testing.T) {
+	injected := errors.New("injected")
+	treeFromNodesToDepthFn = func([]*Node, int) (*Node, error) {
+		return nil, injected
+	}
+	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
+
+	_, err := TreeFromNodesProgressiveWithActiveFields([]*Node{LeafFromUint64(1)}, []byte{0x01})
+	if !errors.Is(err, injected) {
+		t.Fatalf("expected injected error, got: %v", err)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -1130,5 +1131,31 @@ func TestVerifyRejectsOversizedProofHashes(t *testing.T) {
 
 	if ok, err := VerifyMultiproof(root, [][]byte{over, allNodes[3]}, [][]byte{allNodes[4]}, []int{4}); ok || err == nil {
 		t.Errorf("VerifyMultiproof accepted an oversized proof hash: ok=%v err=%v", ok, err)
+	}
+}
+
+// --- moved from errpath_test.go ---
+// --- VerifyMultiproof: missing required nodes error path ---
+
+func TestVerifyMultiproofMissingNodeInjected(t *testing.T) {
+	root, leaves, allNodes := buildMerkleTree(4)
+	indices := []int{4}
+	leafData := [][]byte{leaves[0]}
+
+	// Real required indices would be [5, 3]. Return only [3] so that
+	// sibling 5 is never populated, triggering the missing-node error.
+	getRequiredIndicesFn = func([]int) []int {
+		return []int{3}
+	}
+	defer func() { getRequiredIndicesFn = getRequiredIndices }()
+
+	proofHashes := [][]byte{allNodes[3]}
+
+	_, err := VerifyMultiproof(root, proofHashes, leafData, indices)
+	if err == nil {
+		t.Fatal("expected missing-node error")
+	}
+	if !strings.Contains(err.Error(), "proof is missing required nodes") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
