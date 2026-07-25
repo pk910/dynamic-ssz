@@ -5,6 +5,7 @@
 package ssztypes
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -39,11 +40,11 @@ func TestExtractUnionDescriptorInfo(t *testing.T) {
 				}
 
 				// Check that both variants exist
-				if _, ok := info[0]; !ok {
-					t.Error("variant 0 not found")
-				}
 				if _, ok := info[1]; !ok {
 					t.Error("variant 1 not found")
+				}
+				if _, ok := info[2]; !ok {
+					t.Error("variant 2 not found")
 				}
 			},
 		},
@@ -58,8 +59,8 @@ func TestExtractUnionDescriptorInfo(t *testing.T) {
 			validateInfo: func(t *testing.T, info map[uint8]unionVariantInfo) {
 				t.Helper()
 
-				if _, ok := info[0]; !ok {
-					t.Error("variant 0 not found")
+				if _, ok := info[1]; !ok {
+					t.Error("variant 1 not found")
 				}
 			},
 		},
@@ -144,10 +145,10 @@ func TestCompatibleUnionVariantIndexing(t *testing.T) {
 		t.Fatalf("failed to extract union info: %v", err)
 	}
 
-	// Verify that indices 0-3 are present
-	for i := uint8(0); i < 4; i++ {
+	// Verify that selectors 1-4 are present
+	for i := uint8(1); i <= 4; i++ {
 		if _, ok := info[i]; !ok {
-			t.Errorf("expected variant at index %d", i)
+			t.Errorf("expected variant at selector %d", i)
 		}
 	}
 
@@ -160,7 +161,7 @@ func TestCompatibleUnionVariantIndexing(t *testing.T) {
 	}
 
 	for i, expectedKind := range expectedKinds {
-		variant := info[uint8(i)]
+		variant := info[uint8(i)+1]
 		if variant.Type.Kind() != reflect.Struct {
 			t.Errorf("variant %d should be struct", i)
 			continue
@@ -210,4 +211,21 @@ func TestUnionEdgeCases(t *testing.T) {
 			}
 		}
 	})
+}
+
+// A union descriptor cannot hold more than 127 variants: default numbering
+// would run past the EIP-8016 selector range.
+func TestExtractUnionDescriptorTooManyVariants(t *testing.T) {
+	fields := make([]reflect.StructField, 128)
+	for i := range fields {
+		fields[i] = reflect.StructField{
+			Name: fmt.Sprintf("V%d", i),
+			Type: reflect.TypeOf(uint32(0)),
+		}
+	}
+	descriptorType := reflect.StructOf(fields)
+
+	if _, err := extractUnionDescriptorInfo(descriptorType, &dummyDynamicSpecs{}); err == nil {
+		t.Fatal("descriptor with 128 variants should be rejected")
+	}
 }

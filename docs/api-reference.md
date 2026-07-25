@@ -414,7 +414,7 @@ See [Type Wrapper](type-wrapper.md) for usage details.
 
 ### CompatibleUnion[T]
 
-Generic union type for variant values (EIP-7495).
+Generic union type for variant values (EIP-8016).
 
 ```go
 type CompatibleUnion[T any] struct {
@@ -424,7 +424,7 @@ type CompatibleUnion[T any] struct {
 ```
 
 **Type Parameters**:
-- `T` - Descriptor struct defining union variants as fields (field order = variant index)
+- `T` - Descriptor struct defining union variants as fields. Selectors follow field order starting at 1 (EIP-8016 allows 1..127); `ssz-index` tags assign them explicitly.
 
 **Constructor**:
 ```go
@@ -439,7 +439,7 @@ type PayloadUnion = dynssz.CompatibleUnion[struct {
 }]
 
 payload := PayloadUnion{
-    Variant: 0,
+    Variant: 1,
     Data: ExecutionPayload{...},
 }
 ```

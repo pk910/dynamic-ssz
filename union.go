@@ -31,7 +31,7 @@ import (
 //	block := BlockWithPayload{
 //	    Slot: 123,
 //	    ExecutionData: UnionExecutionPayload{
-//	        Variant: 0,
+//	        Variant: 1,
 //	        Data: ExecutionPayload{
 //	            ...
 //	        },
@@ -42,8 +42,9 @@ type CompatibleUnion[T any] struct {
 	Data    interface{}
 }
 
-// NewCompatibleUnion creates a new CompatibleUnion with the specified variant type and data.
-// The variantIndex corresponds to the field index in the descriptor struct T.
+// NewCompatibleUnion creates a new CompatibleUnion with the specified variant selector and data.
+// Selectors follow the descriptor struct's field order starting at 1, or the
+// fields' ssz-index tags when present (valid range 1..127 per EIP-8016).
 func NewCompatibleUnion[T any](variantIndex uint8, data interface{}) (*CompatibleUnion[T], error) {
 	return &CompatibleUnion[T]{
 		Variant: variantIndex,

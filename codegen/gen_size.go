@@ -635,6 +635,12 @@ func (ctx *sizeContext) sizeUnion(desc *ssztypes.TypeDescriptor, varName, sizeVa
 		}
 	}
 
+	// An unknown selector cannot be sized; report 0 like the mismatched-data
+	// branches above instead of returning a plausible-looking partial size for
+	// a value the marshalers reject.
+	ctx.appendCode(indent, "default:\n")
+	ctx.appendCode(indent, "\treturn 0\n")
+
 	ctx.appendCode(indent, "}\n")
 
 	return nil

@@ -57,7 +57,7 @@ var testMatrix = []TestPayload{
 		Name:    "ProgressiveTypes",
 		Payload: ProgressiveTypes_Payload,
 		Specs:   map[string]any{},
-		Hash:    "317f412cd2d042f367c4f2fb6447828ef9524396428eb2ed0837524bcc70433c",
+		Hash:    "38a69cbd79a59c60505dac63c0330a57737f891a352cda1acd879cd778ca8cff",
 	},
 	{
 		// progressive container auto-detected from ssz-index tags alone
@@ -1211,11 +1211,11 @@ func TestCodegenPointerAndPaddingShapes(t *testing.T) {
 	bl := [][]byte{{0x03}, {0x05}}
 
 	uv := UnionSamePkgVariant{}
-	uv.U.Variant = 1
+	uv.U.Variant = 2
 	uv.U.Data = SimpleTypes1_C1{F1: 9}
 
 	wu := WrapUnionField{}
-	wu.W.Data.Variant = 0
+	wu.W.Data.Variant = 1
 	wu.W.Data.Data = uint32(42)
 
 	cases := []struct {
@@ -1330,5 +1330,30 @@ func TestCodegenExcludedFields(t *testing.T) {
 	}
 	if back.A != 1 || back.B != 2 || len(back.L) != 2 {
 		t.Errorf("included fields wrong after roundtrip: %+v", back)
+	}
+}
+
+// The generated sizer cannot return an error, so an unknown selector reports
+// size 0 (matching its mismatched-data convention) instead of a
+// plausible-looking partial size; the marshalers reject the value outright.
+func TestCodegenUnionInvalidSelectorSize(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+
+	v := UnionDynVariant{}
+	v.U.Variant = 99
+	v.U.Data = uint32(1)
+
+	size, err := ds.SizeSSZ(&v)
+	if err != nil {
+		t.Fatalf("size: %v", err)
+	}
+	// The whole value reports size 0: an un-sizable union aborts the sizer,
+	// matching the mismatched-data convention.
+	if size != 0 {
+		t.Errorf("expected size 0 for an un-sizable union, got %d", size)
+	}
+
+	if _, err := ds.MarshalSSZ(&v); err == nil {
+		t.Fatal("marshal should reject the invalid selector")
 	}
 }

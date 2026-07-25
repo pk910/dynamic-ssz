@@ -1301,7 +1301,7 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 	// field keeps its (strictly increasing) index; an untagged field takes the
 	// previous field's index + 1. With no tags this yields the default 0, 1, 2, ...
 	// sequence, so a progressive container never falls back to all-zero indices
-	// (a 1-bit active_fields bitvector for N field roots is illegal per EIP-7495).
+	// (a 1-bit active_fields bitvector for N field roots is illegal per EIP-8016).
 	if hasAnyIndexTag || desc.SszType == ssztypes.SszProgressiveContainerType {
 		nextIndex := uint16(0)
 		for i := range fields {
@@ -1592,7 +1592,7 @@ func (p *Parser) buildCompatibleUnionDescriptor(desc *ssztypes.TypeDescriptor, d
 	}
 
 	// An ssz-index tag assigns an explicit selector value, e.g. 1-based
-	// selectors for EIP-7495 conformant unions. Mixing tagged and untagged
+	// selectors for EIP-8016 conformant unions. Mixing tagged and untagged
 	// variants would silently renumber the untagged ones, so require
 	// all-or-none up front.
 	indexTagCount := 0
@@ -1605,17 +1605,27 @@ func (p *Parser) buildCompatibleUnionDescriptor(desc *ssztypes.TypeDescriptor, d
 		return fmt.Errorf("union descriptor mixes fields with and without ssz-index tags (all variants must carry one when any does)")
 	}
 
+	// EIP-8016 restricts union selectors to 1..127: 0 and the range above 127
+	// are reserved. Default numbering follows field order starting at 1, so the
+	// descriptor can hold at most 127 variants.
+	if schemaDescriptorStruct.NumFields() > 127 {
+		return fmt.Errorf("union descriptor has %d variants, but selectors are limited to 1..127", schemaDescriptorStruct.NumFields())
+	}
+
 	// Build union variants iterating over schema (determines SSZ layout)
 	variantInfo := make(map[uint8]*ssztypes.TypeDescriptor)
 
 	for i := 0; i < schemaDescriptorStruct.NumFields(); i++ {
 		schemaField := schemaDescriptorStruct.Field(i)
-		variantIndex := uint8(i) // Field order determines the default variant selector
+		variantIndex := uint8(i) + 1 // Field order determines the default variant selector, starting at 1
 
 		if indexStr := p.extractSszIndex(schemaDescriptorStruct.Tag(i)); indexStr != "" {
 			idx, err := strconv.ParseUint(indexStr, 10, 8)
 			if err != nil {
 				return fmt.Errorf("invalid ssz-index for union variant %s: %v", schemaField.Name(), indexStr)
+			}
+			if idx < 1 || idx > 127 {
+				return fmt.Errorf("union selector %d for field %s is outside the valid range 1..127", idx, schemaField.Name())
 			}
 			variantIndex = uint8(idx)
 		}

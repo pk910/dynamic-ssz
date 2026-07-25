@@ -451,7 +451,7 @@ var ProgressiveTypes_Payload = ProgressiveTypes{
 		F2 [2][]uint8 `ssz-size:"2,5"`
 		F3 [4]*SimpleTypesWithSpecs_C1
 	}]{
-		Variant: 0,
+		Variant: 1,
 		Data:    uint32(0x12345678),
 	},
 }
@@ -1113,7 +1113,7 @@ var ViewTypes4_Payload = ViewTypes4_Base{
 		F1 uint32
 		F2 uint64
 	}]{
-		Variant: 0,
+		Variant: 1,
 		Data:    uint32(0x12345678),
 	},
 	W1: dynssz.TypeWrapper[struct {
@@ -1156,7 +1156,7 @@ var CoverageTypes4_Payload = CoverageTypes4{
 		F2 uint64
 		F3 []uint16 `ssz-size:"4"`
 	}]{
-		Variant: 0,
+		Variant: 1,
 		Data:    uint32(0x12345678),
 	},
 	U1V1: dynssz.CompatibleUnion[struct {
@@ -1164,7 +1164,7 @@ var CoverageTypes4_Payload = CoverageTypes4{
 		F2 uint64
 		F3 []uint16 `ssz-size:"4"`
 	}]{
-		Variant: 1,
+		Variant: 2,
 		Data:    uint64(0xdeadbeef),
 	},
 	U1V2: dynssz.CompatibleUnion[struct {
@@ -1172,7 +1172,7 @@ var CoverageTypes4_Payload = CoverageTypes4{
 		F2 uint64
 		F3 []uint16 `ssz-size:"4"`
 	}]{
-		Variant: 2,
+		Variant: 3,
 		Data:    []uint16{1, 2, 3, 4},
 	},
 	Opt3: &covU16,
@@ -1362,12 +1362,12 @@ var UnionDynVariant_Payload = UnionDynVariant{
 	U: dynssz.CompatibleUnion[struct {
 		F1 uint32
 		F2 []byte `ssz-max:"16"`
-	}]{Variant: 1, Data: []byte{1, 2, 3}},
+	}]{Variant: 2, Data: []byte{1, 2, 3}},
 	L: []byte{1, 4, 5},
 }
 
 // UnionTaggedSelectors assigns explicit 1-based selector values via ssz-index
-// tags on the union variant fields (EIP-7495 conformant numbering).
+// tags on the union variant fields (EIP-8016 conformant numbering).
 type UnionTaggedSelectors struct {
 	U dynssz.CompatibleUnion[struct {
 		F1 uint32 `ssz-index:"1"`
@@ -1437,7 +1437,7 @@ var ptrUnionVal = uint64(0xdeadbeef)
 
 var PtrUnionVariant_Payload = func() PtrUnionVariant {
 	p := PtrUnionVariant{}
-	p.U.Variant = 1
+	p.U.Variant = 2
 	p.U.Data = &ptrUnionVal
 	p.W.Data = &ptrUnionVal
 	return p

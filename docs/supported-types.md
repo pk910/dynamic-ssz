@@ -284,10 +284,11 @@ Type-safe variant types using struct descriptor:
 ```go
 import dynssz "github.com/pk910/dynamic-ssz"
 
-// Define union using struct descriptor (field order = variant index)
+// Define union using a struct descriptor. Selectors follow field order
+// starting at 1 (EIP-8016 allows 1..127); ssz-index tags assign them explicitly.
 type PayloadUnion = dynssz.CompatibleUnion[struct {
-    ExecutionPayload            // Variant 0
-    ExecutionPayloadWithBlobs   // Variant 1
+    ExecutionPayload            // Variant 1
+    ExecutionPayloadWithBlobs   // Variant 2
 }]
 
 // Use in container
@@ -300,7 +301,7 @@ type BeaconBlock struct {
 block := BeaconBlock{
     Slot: 123,
     Payload: PayloadUnion{
-        Variant: 0,  // Use ExecutionPayload
+        Variant: 1,  // Use ExecutionPayload
         Data: ExecutionPayload{...},
     },
 }

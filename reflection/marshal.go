@@ -761,10 +761,9 @@ func (ctx *ReflectionCtx) marshalBitlist(sourceType *ssztypes.TypeDescriptor, so
 
 // marshalCompatibleUnion encodes CompatibleUnion values into SSZ-encoded data.
 //
-// According to the spec:
-//   - The encoding is: selector.to_bytes(1, "little") + serialize(value.data)
-//   - The selector index is based at 0 if a ProgressiveContainer type option is present
-//   - Otherwise, it is based at 1
+// The encoding is: selector.to_bytes(1, "little") + serialize(value.data).
+// Selectors are in 1..127 (EIP-8016): field order assigns them starting at 1,
+// or ssz-index tags assign them explicitly.
 //
 // Parameters:
 //   - sourceType: The TypeDescriptor containing union metadata and variant descriptors

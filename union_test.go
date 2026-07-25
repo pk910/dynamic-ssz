@@ -41,7 +41,7 @@ func TestNewCompatibleUnion(t *testing.T) {
 	}{
 		{
 			name:         "create union with first variant",
-			variantIndex: 0,
+			variantIndex: 1,
 			data: ExecutionPayload{
 				BlockHash: []byte{1, 2, 3},
 				StateRoot: []byte{4, 5, 6},
@@ -50,7 +50,7 @@ func TestNewCompatibleUnion(t *testing.T) {
 		},
 		{
 			name:         "create union with second variant",
-			variantIndex: 1,
+			variantIndex: 2,
 			data: ExecutionPayloadWithBlobs{
 				BlockHash: []byte{1, 2, 3},
 				StateRoot: []byte{4, 5, 6},
@@ -60,7 +60,7 @@ func TestNewCompatibleUnion(t *testing.T) {
 		},
 		{
 			name:         "create union with nil data",
-			variantIndex: 0,
+			variantIndex: 1,
 			data:         nil,
 			expectError:  false,
 		},
@@ -179,7 +179,7 @@ func TestCompatibleUnionGetDescriptorType(t *testing.T) {
 	}
 
 	union := &CompatibleUnion[TestUnionDescriptor]{
-		Variant: 0,
+		Variant: 1,
 		Data:    TestVariantA{FieldA: 42},
 	}
 
@@ -226,12 +226,12 @@ func TestCompatibleUnionWithComplexTypes(t *testing.T) {
 			BaseFee:   []byte{1, 2, 3},
 		}
 
-		union, err := NewCompatibleUnion[PayloadUnion](0, baseData)
+		union, err := NewCompatibleUnion[PayloadUnion](1, baseData)
 		if err != nil {
 			t.Fatalf("failed to create union: %v", err)
 		}
 
-		if union.Variant != 0 {
+		if union.Variant != 1 {
 			t.Error("variant mismatch")
 		}
 
@@ -256,9 +256,9 @@ func TestCompatibleUnionWithComplexTypes(t *testing.T) {
 			index uint8
 			data  interface{}
 		}{
-			{0, []byte{1, 2, 3, 4, 5}},
-			{1, []uint64{10, 20, 30}},
-			{2, []string{"hello", "world"}},
+			{1, []byte{1, 2, 3, 4, 5}},
+			{2, []uint64{10, 20, 30}},
+			{3, []string{"hello", "world"}},
 		}
 
 		for _, v := range variants {
@@ -287,13 +287,13 @@ func TestCompatibleUnionEdgeCases(t *testing.T) {
 			}
 		}
 
-		union, err := NewCompatibleUnion[SingleVariantUnion](0, struct{ Data string }{Data: "test"})
+		union, err := NewCompatibleUnion[SingleVariantUnion](1, struct{ Data string }{Data: "test"})
 		if err != nil {
 			t.Fatalf("failed to create union: %v", err)
 		}
 
-		if union.Variant != 0 {
-			t.Error("variant should be 0 for single variant union")
+		if union.Variant != 1 {
+			t.Error("variant should be 1 for single variant union")
 		}
 	})
 
@@ -304,17 +304,17 @@ func TestCompatibleUnionEdgeCases(t *testing.T) {
 		}
 
 		// Start with TypeA
-		union, err := NewCompatibleUnion[SwitchableUnion](0, struct{ A int }{A: 42})
+		union, err := NewCompatibleUnion[SwitchableUnion](1, struct{ A int }{A: 42})
 		if err != nil {
 			t.Fatalf("failed to create union: %v", err)
 		}
 
 		// Switch to TypeB
-		union.Variant = 1
+		union.Variant = 2
 		union.Data = struct{ B string }{B: "switched"}
 
-		if union.Variant != 1 {
-			t.Error("variant should be updated to 1")
+		if union.Variant != 2 {
+			t.Error("variant should be updated to 2")
 		}
 
 		if data, ok := union.Data.(struct{ B string }); ok {
@@ -332,8 +332,8 @@ func TestCompatibleUnionEdgeCases(t *testing.T) {
 			B struct{ Field string }
 		}
 
-		union1 := &CompatibleUnion[CachedUnion]{Variant: 0}
-		union2 := &CompatibleUnion[CachedUnion]{Variant: 1}
+		union1 := &CompatibleUnion[CachedUnion]{Variant: 1}
+		union2 := &CompatibleUnion[CachedUnion]{Variant: 2}
 
 		type1 := union1.GetDescriptorType()
 		type2 := union2.GetDescriptorType()
@@ -492,16 +492,16 @@ func TestUnionDataTypeMismatch(t *testing.T) {
 		}
 	}
 
-	// variant 0 expects uint32, Data is a string
+	// the first variant expects uint32, Data is a string
 	bad := &T{}
-	bad.U.Variant = 0
+	bad.U.Variant = 1
 	bad.U.Data = "not a uint32"
 	check("marshal", func() error { _, e := ds.MarshalSSZ(bad); return e })
 	check("htr", func() error { _, e := ds.HashTreeRoot(bad); return e })
 
-	// variant 1 expects [16]byte, Data is uint32
+	// the second variant expects [16]byte, Data is uint32
 	bad2 := &T{}
-	bad2.U.Variant = 1
+	bad2.U.Variant = 2
 	bad2.U.Data = uint32(42)
 	check("marshal2", func() error { _, e := ds.MarshalSSZ(bad2); return e })
 	check("htr2", func() error { _, e := ds.HashTreeRoot(bad2); return e })
@@ -515,13 +515,13 @@ func TestUnionDataTypeMismatch(t *testing.T) {
 		}]
 	}
 	dynBad := &D{}
-	dynBad.U.Variant = 0 // expects []uint64
+	dynBad.U.Variant = 1 // expects []uint64
 	dynBad.U.Data = uint32(42)
 	check("size-dynvariant", func() error { _, e := ds.MarshalSSZ(dynBad); return e })
 }
 
 // Union variant fields may carry ssz-index tags to assign explicit selector
-// values (e.g. 1-based selectors for EIP-7495 conformance).
+// values (e.g. 1-based selectors for EIP-8016 conformance).
 func TestCompatibleUnionExplicitSelectors(t *testing.T) {
 	type tagged struct {
 		U CompatibleUnion[struct {
@@ -585,4 +585,75 @@ func TestCompatibleUnionSelectorValidation(t *testing.T) {
 	if _, err := ds2.MarshalSSZ(&mixed{}); err == nil || !strings.Contains(err.Error(), "ssz-index") {
 		t.Errorf("expected mixed ssz-index error, got: %v", err)
 	}
+}
+
+// Default selectors follow field order starting at 1 per EIP-8016: the first
+// variant serializes with selector byte 0x01, never the reserved 0x00.
+func TestCompatibleUnionDefaultSelectorsStartAtOne(t *testing.T) {
+	type T struct {
+		U CompatibleUnion[struct {
+			F1 uint32
+			F2 uint64
+		}]
+	}
+	ds := NewDynSsz(nil)
+
+	v := T{}
+	v.U.Variant = 1
+	v.U.Data = uint32(7)
+
+	enc, err := ds.MarshalSSZ(&v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// offset (4) + selector byte + uint32 payload
+	if len(enc) != 9 || enc[4] != 1 {
+		t.Fatalf("first variant should serialize with selector 1, got: %x", enc)
+	}
+
+	// The reserved selector 0 is not a valid variant.
+	v.U.Variant = 0
+	if _, err := ds.MarshalSSZ(&v); err == nil {
+		t.Fatal("selector 0 should be invalid")
+	}
+
+	// Decoding a reserved selector fails.
+	bad := append([]byte{4, 0, 0, 0, 0}, 7, 0, 0, 0)
+	var dst T
+	if err := ds.UnmarshalSSZ(&dst, bad); err == nil {
+		t.Fatal("decoding selector 0 should fail")
+	}
+}
+
+// Explicit ssz-index selectors outside 1..127 are rejected at descriptor build.
+func TestCompatibleUnionSelectorRangeEnforced(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	t.Run("zero", func(t *testing.T) {
+		type T struct {
+			U CompatibleUnion[struct {
+				F1 uint32 `ssz-index:"0"`
+			}]
+		}
+		v := T{}
+		v.U.Variant = 0
+		v.U.Data = uint32(1)
+		if _, err := ds.MarshalSSZ(&v); err == nil {
+			t.Fatal("ssz-index 0 should be rejected")
+		}
+	})
+
+	t.Run("above127", func(t *testing.T) {
+		type T struct {
+			U CompatibleUnion[struct {
+				F1 uint32 `ssz-index:"128"`
+			}]
+		}
+		v := T{}
+		v.U.Variant = 128
+		v.U.Data = uint32(1)
+		if _, err := ds.MarshalSSZ(&v); err == nil {
+			t.Fatal("ssz-index 128 should be rejected")
+		}
+	})
 }

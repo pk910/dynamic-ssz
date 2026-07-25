@@ -27,7 +27,7 @@ func extractUnionDescriptorInfo(descriptorType reflect.Type, ds sszutils.Dynamic
 	}
 
 	// An ssz-index tag assigns an explicit selector value, e.g. 1-based
-	// selectors for EIP-7495 conformant unions. Mixing tagged and untagged
+	// selectors for EIP-8016 conformant unions. Mixing tagged and untagged
 	// variants would silently renumber the untagged ones, so require
 	// all-or-none up front.
 	indexTagCount := 0
@@ -41,17 +41,27 @@ func extractUnionDescriptorInfo(descriptorType reflect.Type, ds sszutils.Dynamic
 		return nil, sszutils.NewSszError(sszutils.ErrInvalidConstraint, "union descriptor mixes fields with and without ssz-index tags (all variants must carry one when any does)")
 	}
 
+	// EIP-8016 restricts union selectors to 1..127: 0 and the range above 127
+	// are reserved. Default numbering follows field order starting at 1, so the
+	// descriptor can hold at most 127 variants.
+	if descriptorType.NumField() > 127 {
+		return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "union descriptor has %d variants, but selectors are limited to 1..127", descriptorType.NumField())
+	}
+
 	variantInfo := make(map[uint8]unionVariantInfo)
 
 	for i := 0; i < descriptorType.NumField(); i++ {
 		field := descriptorType.Field(i)
-		variantIndex := uint8(i) // Field order determines the default variant selector
+		variantIndex := uint8(i) + 1 // Field order determines the default variant selector, starting at 1
 
 		sszIndex, err := getSszIndexTag(&field)
 		if err != nil {
 			return nil, err
 		}
 		if sszIndex != nil {
+			if *sszIndex < 1 || *sszIndex > 127 {
+				return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "union selector %d for field %s is outside the valid range 1..127", *sszIndex, field.Name)
+			}
 			variantIndex = uint8(*sszIndex)
 		}
 

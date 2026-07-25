@@ -2059,12 +2059,12 @@ func TestRecursiveTypeWithUnion(t *testing.T) {
 		U: CompatibleUnion[struct {
 			V1 uint32
 			V2 uint64
-		}]{Variant: 1, Data: uint64(7)},
+		}]{Variant: 2, Data: uint64(7)},
 		Children: []*recUnionNode{
 			{U: CompatibleUnion[struct {
 				V1 uint32
 				V2 uint64
-			}]{Variant: 0, Data: uint32(3)}},
+			}]{Variant: 1, Data: uint32(3)}},
 		},
 	}
 
@@ -2637,7 +2637,7 @@ func TestUnionMarshalErrorPaths(t *testing.T) {
 		u := &CompatibleUnion[struct {
 			V0 uint32
 			V1 [16]byte
-		}]{Variant: 0, Data: "wrong type"}
+		}]{Variant: 1, Data: "wrong type"}
 		var sb bytes.Buffer
 		if err := ds.MarshalSSZWriter(u, &sb); err == nil {
 			t.Fatal("expected error for wrong-typed data")
@@ -2647,7 +2647,7 @@ func TestUnionMarshalErrorPaths(t *testing.T) {
 	t.Run("variantMarshalError", func(t *testing.T) {
 		u := &CompatibleUnion[struct {
 			V0 []byte `ssz-type:"bitlist" ssz-max:"16"`
-		}]{Variant: 0, Data: []byte{0xff, 0x00}}
+		}]{Variant: 1, Data: []byte{0xff, 0x00}}
 		var sb bytes.Buffer
 		if err := ds.MarshalSSZWriter(u, &sb); err == nil {
 			t.Fatal("expected error from union variant bitlist")
@@ -2659,7 +2659,7 @@ func TestUnionHTRVariantError(t *testing.T) {
 	ds := NewDynSsz(nil)
 	u := &CompatibleUnion[struct {
 		V0 []byte `ssz-type:"bitlist" ssz-max:"16"`
-	}]{Variant: 0, Data: []byte{0xff, 0x00}}
+	}]{Variant: 1, Data: []byte{0xff, 0x00}}
 	if _, err := ds.HashTreeRoot(u); err == nil {
 		t.Fatal("expected HTR error from union variant bitlist")
 	}

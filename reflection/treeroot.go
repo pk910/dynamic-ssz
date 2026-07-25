@@ -471,9 +471,8 @@ func (ctx *ReflectionCtx) buildRootFromProgressiveContainer(sourceType *ssztypes
 
 // buildRootFromCompatibleUnion computes the hash tree root for CompatibleUnion values.
 //
-// According to the spec:
-// - hash_tree_root(value.data) if value is of compatible union type
-// - The selector is only used for serialization, it is not mixed in when Merkleizing
+// The root is mix_in_selector(hash_tree_root(value.data), selector): the
+// variant's data root merkleized with the selector value.
 //
 // Parameters:
 //   - sourceType: The TypeDescriptor containing union metadata and variant descriptors

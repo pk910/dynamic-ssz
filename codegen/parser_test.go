@@ -1773,8 +1773,8 @@ func TestBuildCompatibleUnionDescriptor(t *testing.T) {
 			t.Errorf("Expected 1 union variant, got %d", len(desc.UnionVariants))
 		}
 		// Variant should be a list type
-		if desc.UnionVariants[0].SszType != ssztypes.SszListType {
-			t.Errorf("Expected SszListType for variant 0, got %v", desc.UnionVariants[0].SszType)
+		if desc.UnionVariants[1].SszType != ssztypes.SszListType {
+			t.Errorf("Expected SszListType for variant 1, got %v", desc.UnionVariants[1].SszType)
 		}
 	})
 }
@@ -2862,5 +2862,42 @@ func TestZeroSizeSliceRejected(t *testing.T) {
 	}
 	if _, err := parser.buildTypeDescriptor(byteSlice, byteSlice, nil, []ssztypes.SszSizeHint{{Size: 0, Expr: "SPEC_X"}}, nil); err != nil {
 		t.Errorf("unexpected error for expression size hint: %v", err)
+	}
+}
+
+// Union selectors assigned via ssz-index must stay inside 1..127; the parser
+// rejects tags outside that range like the reflection type cache does.
+func TestParserUnionSelectorRangeEnforced(t *testing.T) {
+	newUnion := func(tag string) *types.Named {
+		pkg := types.NewPackage("github.com/pk910/dynamic-ssz", "dynssz")
+		typeParam := types.NewTypeParam(types.NewTypeName(token.NoPos, nil, "T", nil), types.NewInterfaceType(nil, nil))
+		unionObj := types.NewTypeName(token.NoPos, pkg, "CompatibleUnion", nil)
+		unionStruct := types.NewStruct([]*types.Var{
+			types.NewField(token.NoPos, nil, "Variant", types.Typ[types.Uint8], false),
+			types.NewField(token.NoPos, nil, "Data", types.NewInterfaceType(nil, nil), false),
+		}, []string{"", ""})
+		unionType := types.NewNamed(unionObj, unionStruct, nil)
+		unionType.SetTypeParams([]*types.TypeParam{typeParam})
+
+		descriptor := types.NewStruct([]*types.Var{
+			types.NewField(token.NoPos, nil, "F1", types.Typ[types.Uint32], false),
+		}, []string{tag})
+		inst, err := types.Instantiate(nil, unionType, []types.Type{descriptor}, false)
+		if err != nil {
+			t.Fatalf("instantiate: %v", err)
+		}
+		named, ok := inst.(*types.Named)
+		if !ok {
+			t.Fatalf("expected *types.Named, got %T", inst)
+		}
+		return named
+	}
+
+	for _, tag := range []string{`ssz-index:"0"`, `ssz-index:"128"`} {
+		named := newUnion(tag)
+		desc := &ssztypes.TypeDescriptor{SszType: ssztypes.SszCompatibleUnionType}
+		if err := NewParser().buildCompatibleUnionDescriptor(desc, named, named); err == nil {
+			t.Errorf("selector tag %s should be rejected", tag)
+		}
 	}
 }
