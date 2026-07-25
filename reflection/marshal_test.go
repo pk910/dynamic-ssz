@@ -1909,3 +1909,123 @@ func TestMarshalBigIntMax(t *testing.T) {
 		t.Error("expected error for big.Int exceeding ssz-max")
 	}
 }
+
+// The marshal-side validation checks must hold on their own: the public entry
+// points compute the size first (which enforces the same rules), but direct
+// engine calls and the non-seekable container path reach the marshalers
+// without a prior size pass.
+func TestMarshalDirectValidationErrors(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithExtendedTypes())
+	ctx := reflection.NewReflectionCtx(ds, nil, false, true, false)
+
+	fieldDesc := func(v any) *ssztypes.TypeDescriptor {
+		t.Helper()
+		desc, err := ds.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(v), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("descriptor: %v", err)
+		}
+		return desc.ContainerDesc.Fields[0].Type
+	}
+
+	t.Run("ListOverLimit", func(t *testing.T) {
+		type C struct {
+			L []uint64 `ssz-max:"2"`
+		}
+		enc := sszutils.NewBufferEncoder(make([]byte, 0, 64))
+		err := ctx.MarshalSSZ(fieldDesc(C{}), reflect.ValueOf([]uint64{1, 2, 3}), enc)
+		if err == nil {
+			t.Fatal("expected list length error")
+		}
+	})
+
+	t.Run("DynamicListOverLimit", func(t *testing.T) {
+		type E struct {
+			B []byte `ssz-max:"8"`
+		}
+		type C struct {
+			L []E `ssz-max:"2"`
+		}
+		enc := sszutils.NewBufferEncoder(make([]byte, 0, 64))
+		err := ctx.MarshalSSZ(fieldDesc(C{}), reflect.ValueOf([]E{{}, {}, {}}), enc)
+		if err == nil {
+			t.Fatal("expected dynamic list length error")
+		}
+	})
+
+	t.Run("StreamContainerOffsetSizeError", func(t *testing.T) {
+		// Non-seekable encoders compute each dynamic field's size up front for
+		// the offset; an over-limit list surfaces there.
+		type C struct {
+			A uint64
+			L []uint64 `ssz-max:"2"`
+		}
+		desc, err := ds.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(C{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("descriptor: %v", err)
+		}
+		enc := sszutils.NewStreamEncoder(bytes.NewBuffer(nil), 0)
+		err = ctx.MarshalSSZ(desc, reflect.ValueOf(C{A: 1, L: []uint64{1, 2, 3}}), enc)
+		if err == nil {
+			t.Fatal("expected offset size error")
+		}
+		if !contains(err.Error(), "L:o") {
+			t.Errorf("expected offset error path, got: %v", err)
+		}
+	})
+
+	t.Run("UnionInvalidVariant", func(t *testing.T) {
+		type U = CompatibleUnion[struct {
+			V1 uint32
+			V2 uint64
+		}]
+		type C struct {
+			U U
+		}
+		enc := sszutils.NewBufferEncoder(make([]byte, 0, 64))
+		err := ctx.MarshalSSZ(fieldDesc(C{}), reflect.ValueOf(U{Variant: 99, Data: uint32(1)}), enc)
+		if err == nil {
+			t.Fatal("expected invalid variant error")
+		}
+	})
+
+	t.Run("UnionNilData", func(t *testing.T) {
+		type U = CompatibleUnion[struct {
+			V1 uint32
+			V2 uint64
+		}]
+		type C struct {
+			U U
+		}
+		enc := sszutils.NewBufferEncoder(make([]byte, 0, 64))
+		err := ctx.MarshalSSZ(fieldDesc(C{}), reflect.ValueOf(U{Variant: 0, Data: nil}), enc)
+		if err == nil {
+			t.Fatal("expected nil data error")
+		}
+	})
+
+	t.Run("UnionTypeMismatch", func(t *testing.T) {
+		type U = CompatibleUnion[struct {
+			V1 uint32
+			V2 uint64
+		}]
+		type C struct {
+			U U
+		}
+		enc := sszutils.NewBufferEncoder(make([]byte, 0, 64))
+		err := ctx.MarshalSSZ(fieldDesc(C{}), reflect.ValueOf(U{Variant: 0, Data: "wrong"}), enc)
+		if err == nil {
+			t.Fatal("expected type mismatch error")
+		}
+	})
+
+	t.Run("BigIntOverLimit", func(t *testing.T) {
+		type C struct {
+			N big.Int `ssz-max:"2"`
+		}
+		enc := sszutils.NewBufferEncoder(make([]byte, 0, 64))
+		err := ctx.MarshalSSZ(fieldDesc(C{}), reflect.ValueOf(*big.NewInt(0xfffff)), enc)
+		if err == nil {
+			t.Fatal("expected big.Int limit error")
+		}
+	})
+}

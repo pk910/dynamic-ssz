@@ -36,6 +36,7 @@ type TypePrinter struct {
 	CurrentPkg string
 	imports    map[string]string
 	aliases    map[string]string
+	reserved   map[string]struct{}
 
 	UseRune bool
 }
@@ -61,7 +62,29 @@ func NewTypePrinter(currentPkg string) *TypePrinter {
 		CurrentPkg: currentPkg,
 		imports:    make(map[string]string),
 		aliases:    make(map[string]string),
+		reserved:   make(map[string]struct{}),
 	}
+}
+
+// ReserveNames records identifiers already declared in the target package's
+// top-level scope. Import aliases are kept clear of these so generated code
+// cannot collide with a package-level name like "sszutils" or "hasher"
+// (which would otherwise fail to compile).
+func (p *TypePrinter) ReserveNames(names []string) {
+	for _, n := range names {
+		p.reserved[n] = struct{}{}
+	}
+}
+
+// aliasTaken reports whether an alias cannot be used because it already names
+// another import or collides with an identifier declared in the target
+// package's top-level scope.
+func (p *TypePrinter) aliasTaken(alias string) bool {
+	if containsValue(p.imports, alias) {
+		return true
+	}
+	_, reserved := p.reserved[alias]
+	return reserved
 }
 
 // Imports returns the map of import paths to their assigned aliases.
@@ -96,7 +119,7 @@ func (p *TypePrinter) AddImport(path, alias string) string {
 		// ensure alias uniqueness
 		base := alias
 		i := 1
-		for containsValue(p.imports, alias) {
+		for p.aliasTaken(alias) {
 			alias = fmt.Sprintf("%s%d", base, i)
 			i++
 		}
@@ -159,7 +182,7 @@ func (p *TypePrinter) reflectQualify(t reflect.Type, trackImports bool) string {
 		// ensure alias uniqueness
 		base := alias
 		i := 1
-		for containsValue(p.imports, alias) {
+		for p.aliasTaken(alias) {
 			alias = fmt.Sprintf("%s%d", base, i)
 			i++
 		}
@@ -192,7 +215,7 @@ func (p *TypePrinter) packageQualify(t types.Type, trackImports bool) string {
 		alias := normalizeAlias(p.defaultAlias(path))
 		base := alias
 		i := 1
-		for containsValue(p.imports, alias) || (p.aliases != nil && p.aliases[alias] != "" && p.aliases[alias] != path) {
+		for p.aliasTaken(alias) || (p.aliases != nil && p.aliases[alias] != "" && p.aliases[alias] != path) {
 			alias = fmt.Sprintf("%s%d", base, i)
 			i++
 		}
@@ -534,7 +557,7 @@ func (p *TypePrinter) extractAndRegisterImports(typeStr string) {
 				// ensure alias uniqueness
 				base := alias
 				i := 1
-				for containsValue(p.imports, alias) {
+				for p.aliasTaken(alias) {
 					alias = fmt.Sprintf("%s%d", base, i)
 					i++
 				}

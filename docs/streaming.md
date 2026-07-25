@@ -62,7 +62,15 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int) error
 **Parameters**:
 - `target` - Pointer to object to deserialize into
 - `r` - Source reader
-- `size` - Expected total size of the SSZ data in bytes
+- `size` - Expected total size of the SSZ data in bytes. A negative size selects
+  "unknown size" mode, reading the reader to EOF and decoding through the buffer
+  path.
+
+> **Warning:** unknown-size mode (`size < 0`) reads the stream to EOF with no
+> upper bound. Do not use it on untrusted streams — a peer sending unbounded data
+> or holding the connection open can exhaust memory. For untrusted input, pass
+> the exact size, or wrap the reader in an `io.LimitReader` and pass that limit
+> as `size`.
 
 **Example**:
 ```go

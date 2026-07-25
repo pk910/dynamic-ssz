@@ -327,18 +327,37 @@ func (w *Wrapper) AddNode(n *Node) {
 	w.nodes = append(w.nodes, n)
 }
 
-// Node returns the single root node of the constructed Merkle tree. Panics if
-// the wrapper does not contain exactly one node, which indicates incomplete
+// Node returns the single root node of the constructed Merkle tree. Bytes still
+// buffered by Append* calls (e.g. a top-level packed uint256/uint128 that is
+// never merkleized into a container) are flushed to a leaf first. Panics if the
+// wrapper does not then hold exactly one node, which indicates incomplete
 // merkleization.
 func (w *Wrapper) Node() *Node {
+	w.flushBuffer()
 	if len(w.nodes) != 1 {
-		panic("BAD")
+		panic(fmt.Sprintf("incomplete merkleization: wrapper holds %d nodes, want 1", len(w.nodes)))
 	}
 	return w.nodes[0]
 }
 
-// Hash returns the 32-byte hash of the last node in the wrapper's node list.
+// Hash returns the most recent data of the wrapper's state without mutating
+// it: the trailing bytes of the pending Append* buffer when present (up to 32
+// bytes — fewer when the buffer is not chunk-aligned, like
+// hasher.Hasher.Hash()), otherwise the last committed node's hash. An entirely
+// empty wrapper yields a 32-byte zero chunk. Used for verbose/debug logging
+// between subvalues, so it tolerates both an unflushed buffer and an empty
+// node list.
 func (w *Wrapper) Hash() []byte {
+	if n := len(w.buf); n > 0 {
+		start := 0
+		if n > 32 {
+			start = n - 32
+		}
+		return w.buf[start:]
+	}
+	if len(w.nodes) == 0 {
+		return make([]byte, 32)
+	}
 	return w.nodes[len(w.nodes)-1].Hash()
 }
 
@@ -436,11 +455,59 @@ func (w *Wrapper) addEmpty() {
 	w.AddNode(EmptyLeaf())
 }
 
+// The methods below preserve the exported v1.x Wrapper API (Commit*/AddEmpty)
+// as thin aliases over the current Merkleize* methods, so consumers built
+// against earlier v1 releases keep compiling. New code should use Merkleize*.
+
+// Commit merkleizes the nodes added since index i into a binary subtree.
+//
+// Deprecated: use Merkleize.
+func (w *Wrapper) Commit(i int) { w.Merkleize(i) }
+
+// CommitWithMixin merkleizes nodes since index i with a length mixin.
+//
+// Deprecated: use MerkleizeWithMixin.
+func (w *Wrapper) CommitWithMixin(i, num, limit int) {
+	w.MerkleizeWithMixin(i, uint64(num), uint64(limit))
+}
+
+// CommitProgressive merkleizes nodes since index i into a progressive subtree.
+//
+// Deprecated: use MerkleizeProgressive.
+func (w *Wrapper) CommitProgressive(i int) { w.MerkleizeProgressive(i) }
+
+// CommitProgressiveWithMixin merkleizes nodes since index i as a progressive
+// subtree with a length mixin.
+//
+// Deprecated: use MerkleizeProgressiveWithMixin.
+func (w *Wrapper) CommitProgressiveWithMixin(i, num int) {
+	w.MerkleizeProgressiveWithMixin(i, uint64(num))
+}
+
+// CommitProgressiveWithActiveFields merkleizes nodes since index i as a
+// progressive subtree with an active-fields bitvector mixin.
+//
+// Deprecated: use MerkleizeProgressiveWithActiveFields.
+func (w *Wrapper) CommitProgressiveWithActiveFields(i int, activeFields []byte) {
+	w.MerkleizeProgressiveWithActiveFields(i, activeFields)
+}
+
+// AddEmpty adds an empty (all-zeros) leaf node to the wrapper's node list.
+//
+// Deprecated: retained for v1 API compatibility.
+func (w *Wrapper) AddEmpty() { w.addEmpty() }
+
 // HashRoot returns the 32-byte hash tree root of the constructed tree. This
 // implements the HashWalker interface's final step, producing the same root
 // hash that a regular Hasher would compute.
 func (w *Wrapper) HashRoot() ([32]byte, error) {
-	root := w.Hash()
+	// Flush any buffered bytes so a top-level packed value (never merkleized into
+	// a container) still yields its single-leaf root instead of an empty tree.
+	w.flushBuffer()
+	if len(w.nodes) == 0 {
+		return [32]byte{}, fmt.Errorf("expected 32 byte size")
+	}
+	root := w.nodes[len(w.nodes)-1].Hash()
 	if len(root) != 32 {
 		return [32]byte{}, fmt.Errorf("expected 32 byte size")
 	}

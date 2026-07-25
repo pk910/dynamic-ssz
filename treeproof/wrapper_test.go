@@ -643,6 +643,104 @@ func TestWrapperHashRootError(t *testing.T) {
 	}
 }
 
+// The v1 exported Commit*/AddEmpty API is retained as thin aliases over the
+// Merkleize* methods; each must produce the same root as its counterpart.
+func TestWrapperCommitAliases(t *testing.T) {
+	build := func(fn func(w *Wrapper)) []byte {
+		w := NewWrapper()
+		w.PutUint64(1)
+		w.PutUint64(2)
+		w.PutUint64(3)
+		fn(w)
+		return w.Node().Hash()
+	}
+
+	if !bytes.Equal(build(func(w *Wrapper) { w.Commit(0) }),
+		build(func(w *Wrapper) { w.Merkleize(0) })) {
+		t.Error("Commit should match Merkleize")
+	}
+	if !bytes.Equal(build(func(w *Wrapper) { w.CommitWithMixin(0, 3, 8) }),
+		build(func(w *Wrapper) { w.MerkleizeWithMixin(0, 3, 8) })) {
+		t.Error("CommitWithMixin should match MerkleizeWithMixin")
+	}
+	if !bytes.Equal(build(func(w *Wrapper) { w.CommitProgressive(0) }),
+		build(func(w *Wrapper) { w.MerkleizeProgressive(0) })) {
+		t.Error("CommitProgressive should match MerkleizeProgressive")
+	}
+	if !bytes.Equal(build(func(w *Wrapper) { w.CommitProgressiveWithMixin(0, 3) }),
+		build(func(w *Wrapper) { w.MerkleizeProgressiveWithMixin(0, 3) })) {
+		t.Error("CommitProgressiveWithMixin should match MerkleizeProgressiveWithMixin")
+	}
+	activeFields := []byte{0x07}
+	if !bytes.Equal(build(func(w *Wrapper) { w.CommitProgressiveWithActiveFields(0, activeFields) }),
+		build(func(w *Wrapper) { w.MerkleizeProgressiveWithActiveFields(0, activeFields) })) {
+		t.Error("CommitProgressiveWithActiveFields should match MerkleizeProgressiveWithActiveFields")
+	}
+
+	// AddEmpty adds a zero leaf like the internal addEmpty.
+	w := NewWrapper()
+	w.AddEmpty()
+	if len(w.nodes) != 1 || !isZeroLeafValue(w.nodes[0].value) {
+		t.Error("AddEmpty should append a single zero leaf")
+	}
+}
+
+// A top-level packed value (e.g. a uint256/uint128 via TypeWrapper) is appended
+// to the buffer and never merkleized into a container, so the walk ends with
+// buffered bytes and no nodes. Node()/HashRoot() must flush that buffer into a
+// single leaf instead of panicking or reporting an empty tree.
+func TestWrapperNodeFlushesTopLevelBuffer(t *testing.T) {
+	var v [32]byte
+	v[0], v[31] = 0x11, 0x22
+
+	w := NewWrapper()
+	w.AppendBytes32(v[:])
+	node := w.Node()
+	if !bytes.Equal(node.Value(), v[:]) {
+		t.Fatalf("node value = %x; want %x", node.Value(), v[:])
+	}
+
+	w2 := NewWrapper()
+	w2.AppendBytes32(v[:])
+	root, err := w2.HashRoot()
+	if err != nil {
+		t.Fatalf("HashRoot error: %v", err)
+	}
+	if !bytes.Equal(root[:], v[:]) {
+		t.Fatalf("root = %x; want %x", root, v[:])
+	}
+}
+
+// Hash() is called for verbose logging between subvalues, when the first packed
+// element sits in the buffer and no nodes exist yet. It must peek that buffer
+// (and tolerate a wholly empty wrapper) rather than indexing nodes[-1].
+func TestWrapperHashToleratesUnflushedBuffer(t *testing.T) {
+	var v [32]byte
+	v[0] = 0x33
+
+	w := NewWrapper()
+	w.AppendBytes32(v[:]) // buffer holds 32 bytes, node list still empty
+	got := w.Hash()
+	if !bytes.Equal(got, v[:]) {
+		t.Fatalf("Hash() = %x; want %x", got, v[:])
+	}
+
+	// With more than 32 buffered bytes, Hash() peeks the most recent chunk.
+	var v2 [32]byte
+	v2[0] = 0x44
+	w.AppendBytes32(v2[:])
+	got = w.Hash()
+	if !bytes.Equal(got, v2[:]) {
+		t.Fatalf("Hash() after second chunk = %x; want %x", got, v2[:])
+	}
+
+	empty := NewWrapper()
+	z := empty.Hash()
+	if len(z) != 32 || !isZeroLeafValue(z) {
+		t.Fatalf("empty Hash() = %x; want 32-byte zero chunk", z)
+	}
+}
+
 func TestWrapperCommit(t *testing.T) {
 	w := NewWrapper()
 

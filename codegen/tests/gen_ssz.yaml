@@ -149,3 +149,12 @@ types:
     output: gen_compilecorrectness.go
   - name: WrapPtrList
     output: gen_compilecorrectness.go
+
+  # Recursive shapes: generated in one file so the recursive references are
+  # emitted as method calls between the members.
+  - name: RecursiveNode
+    output: gen_recursive.go
+  - name: RecursiveTree
+    output: gen_recursive.go
+  - name: RecursiveTreeBranch
+    output: gen_recursive.go

@@ -114,6 +114,160 @@ func TestParserRejectsZeroSizeTypes(t *testing.T) {
 	})
 }
 
+// Reflection only dereferences a single pointer level, so codegen must reject a
+// multi-level pointer (**T) rather than flattening it and emitting accessors
+// against a pointer type that fail to compile.
+func TestParserRejectsMultiLevelPointer(t *testing.T) {
+	inner := types.NewStruct([]*types.Var{
+		types.NewField(token.NoPos, nil, "V", types.Typ[types.Uint64], false),
+	}, nil)
+	named := types.NewNamed(types.NewTypeName(token.NoPos, nil, "ptrPtrInner", nil), inner, nil)
+	doublePtr := types.NewPointer(types.NewPointer(named))
+
+	_, err := NewParser().GetTypeDescriptor(doublePtr, nil, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "multi-level pointer") {
+		t.Fatalf("expected multi-level pointer rejection, got: %v", err)
+	}
+}
+
+// newRecursiveNamed builds a named struct type that references itself. The
+// self-referencing field is described by fieldType(self) and carries fieldTag,
+// letting a single helper produce both the static (pointer) and bounded (list)
+// recursion shapes.
+func newRecursiveNamed(name, fieldName, fieldTag string, fieldType func(self types.Type) types.Type) *types.Named {
+	obj := types.NewTypeName(token.NoPos, nil, name, nil)
+	named := types.NewNamed(obj, nil, nil)
+	fields := []*types.Var{
+		types.NewField(token.NoPos, nil, "V", types.Typ[types.Uint64], false),
+		types.NewField(token.NoPos, nil, fieldName, fieldType(named), false),
+	}
+	named.SetUnderlying(types.NewStruct(fields, []string{"", fieldTag}))
+	return named
+}
+
+// A container recursive through a transparent pointer has infinite static size
+// and is not a valid SSZ type. Codegen must reject it (like reflection) instead
+// of emitting infinitely recursive code that overflows the stack at runtime.
+func TestParserRejectsStaticPointerRecursion(t *testing.T) {
+	parser := NewParser()
+
+	node := newRecursiveNamed("recStaticNode", "Next", "", func(self types.Type) types.Type {
+		return types.NewPointer(self)
+	})
+
+	_, err := parser.GetTypeDescriptor(node, nil, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "recursive type") {
+		t.Fatalf("expected recursive-type rejection, got: %v", err)
+	}
+}
+
+// Recursion through a bounded list is a legal SSZ type (the list is
+// offset-encoded, giving finite static size). Codegen supports it, so the parser
+// must accept it rather than rejecting it as recursive.
+func TestParserAcceptsListBoundedRecursion(t *testing.T) {
+	parser := NewParser()
+
+	node := newRecursiveNamed("recListNode", "Children", `ssz-max:"4"`, func(self types.Type) types.Type {
+		return types.NewSlice(self)
+	})
+
+	desc, err := parser.GetTypeDescriptor(node, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("list-bounded recursion should be accepted, got: %v", err)
+	}
+	if desc == nil {
+		t.Fatal("expected a descriptor for the recursive list type")
+	}
+}
+
+// Hint-carrying references are cached per exact hint combination: the same
+// (type, hints) pair resolves to one shared descriptor across all reference
+// sites, while different hints keep distinct descriptors.
+func TestParserHintedDescriptorSharing(t *testing.T) {
+	newContainer := func(name, tag string) *types.Named {
+		named := types.NewNamed(types.NewTypeName(token.NoPos, nil, name, nil), nil, nil)
+		named.SetUnderlying(types.NewStruct(
+			[]*types.Var{types.NewField(token.NoPos, nil, "F", types.NewSlice(types.Typ[types.Uint16]), false)},
+			[]string{tag},
+		))
+		return named
+	}
+
+	parser := NewParser()
+	da, err := parser.GetTypeDescriptor(newContainer("shareParentA", `ssz-max:"16"`), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("descriptor A: %v", err)
+	}
+	db, err := parser.GetTypeDescriptor(newContainer("shareParentB", `ssz-max:"16"`), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("descriptor B: %v", err)
+	}
+	dc, err := parser.GetTypeDescriptor(newContainer("shareParentC", `ssz-max:"32"`), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("descriptor C: %v", err)
+	}
+
+	if da.ContainerDesc.Fields[0].Type != db.ContainerDesc.Fields[0].Type {
+		t.Error("field descriptors with identical hints should be shared")
+	}
+	if da.ContainerDesc.Fields[0].Type == dc.ContainerDesc.Fields[0].Type {
+		t.Error("descriptors with different hints must stay distinct")
+	}
+	if la, lc := da.ContainerDesc.Fields[0].Type.Limit, dc.ContainerDesc.Fields[0].Type.Limit; la != 16 || lc != 32 {
+		t.Errorf("distinct-hint descriptors carry wrong limits: %d/%d", la, lc)
+	}
+}
+
+// A cycle that closes through a container field, with a spec expression inside
+// the cycle. The member that completes before the cycle head must still end up
+// with the expression flag from its subtree and a dynamic (offset) layout for
+// the closing pointer field.
+func TestParserContainerClosedRecursionFlags(t *testing.T) {
+	newNamed := func(name string) *types.Named {
+		return types.NewNamed(types.NewTypeName(token.NoPos, nil, name, nil), nil, nil)
+	}
+	field := func(name string, typ types.Type) *types.Var {
+		return types.NewField(token.NoPos, nil, name, typ, false)
+	}
+
+	nodeA := newNamed("cycNodeA")
+	nodeB := newNamed("cycNodeB")
+	nodeC := newNamed("cycNodeC")
+
+	nodeA.SetUnderlying(types.NewStruct(
+		[]*types.Var{field("F1", types.NewSlice(nodeB))},
+		[]string{`ssz-max:"4"`},
+	))
+	nodeB.SetUnderlying(types.NewStruct(
+		[]*types.Var{field("F2", types.NewSlice(nodeC))},
+		[]string{`ssz-max:"4" dynssz-max:"CYC_LIMIT"`},
+	))
+	nodeC.SetUnderlying(types.NewStruct(
+		[]*types.Var{field("F3", types.NewPointer(nodeA))},
+		[]string{""},
+	))
+
+	parser := NewParser()
+	descA, err := parser.GetTypeDescriptor(types.NewPointer(nodeA), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("container-closed recursion should be accepted, got: %v", err)
+	}
+
+	// Navigate A → F1 list → B → F2 list → C.
+	descB := descA.ContainerDesc.Fields[0].Type.ElemDesc
+	descC := descB.ContainerDesc.Fields[0].Type.ElemDesc
+
+	if descC.SszTypeFlags&ssztypes.SszTypeFlagHasMaxExpr == 0 {
+		t.Error("cycle member is missing the max-expression flag from its subtree")
+	}
+	if descC.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
+		t.Error("cycle member should be dynamic (contains a dynamic pointer field)")
+	}
+	if descC.ContainerDesc == nil || len(descC.ContainerDesc.DynFields) != 1 {
+		t.Errorf("cycle member should have exactly 1 dynamic field, got %+v", descC.ContainerDesc)
+	}
+}
+
 func TestGetTypeDescriptor(t *testing.T) {
 	parser := NewParser()
 

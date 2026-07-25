@@ -241,6 +241,22 @@ func TestCodegenNestedDelegated(t *testing.T) {
 	})
 }
 
+// TestCodegenRecursiveTypes compares the generated code against the reflection
+// engine for recursive shapes: self-recursion through a bounded list, and a
+// cycle closed through a container field with a spec-dependent limit inside
+// the cycle.
+func TestCodegenRecursiveTypes(t *testing.T) {
+	t.Run("SelfRecursion", func(t *testing.T) {
+		testCodegenPayloadByReflection(t, RecursiveNode_Payload, nil)
+	})
+	t.Run("ContainerClosedCycle", func(t *testing.T) {
+		testCodegenPayloadByReflection(t, RecursiveTree_Payload, RecursiveTree_Specs)
+	})
+	t.Run("ContainerClosedCycleDefaultSpecs", func(t *testing.T) {
+		testCodegenPayloadByReflection(t, RecursiveTree_Payload, nil)
+	})
+}
+
 // TestCodegenAnnotatedTypes tests root-level annotated non-struct types
 // and containers that use annotated types as fields.
 func TestCodegenAnnotatedTypes(t *testing.T) {

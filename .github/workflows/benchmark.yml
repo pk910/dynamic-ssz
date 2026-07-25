@@ -14,7 +14,7 @@ permissions:
 jobs:
   benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
     - name: Checkout PR
@@ -171,12 +171,27 @@ jobs:
         echo "Library benchmarks found:"
         echo "$BENCHMARKS"
 
-        # Phase 1: run each benchmark once, alternating base/PR
+        # Phase 1: run each benchmark once. The base/PR order alternates per
+        # benchmark so neither side systematically runs on a warmer CPU, and
+        # every compilation pins function alignment (-funcalign=64): the two
+        # binaries place functions at different addresses even where the
+        # measured code is identical, and a function whose cache-line phase
+        # differs between the builds can swing tight benchmarks by 10%+ on
+        # some CPUs. Aligning every function to a cache line gives both
+        # binaries the same deterministic layout phase, so wall-clock results
+        # stay comparable without adding measurement noise.
         echo "--- Phase 1: single pass ---"
+        idx=0
         for bench in $BENCHMARKS; do
           echo "  $bench"
-          (cd base && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m ./...) >> "$OUTDIR/base-lib.txt" 2>&1 || true
-          (cd pr   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m ./...) >> "$OUTDIR/pr-lib.txt" 2>&1
+          if [ $((idx % 2)) -eq 0 ]; then
+            (cd base && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m -ldflags=-funcalign=64 ./...) >> "$OUTDIR/base-lib.txt" 2>&1 || true
+            (cd pr   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m -ldflags=-funcalign=64 ./...) >> "$OUTDIR/pr-lib.txt" 2>&1
+          else
+            (cd pr   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m -ldflags=-funcalign=64 ./...) >> "$OUTDIR/pr-lib.txt" 2>&1
+            (cd base && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m -ldflags=-funcalign=64 ./...) >> "$OUTDIR/base-lib.txt" 2>&1 || true
+          fi
+          idx=$((idx + 1))
         done
 
         # Find top-level benchmarks where any sub-benchmark differs by >5%
@@ -212,11 +227,11 @@ jobs:
             # already-warmed (often frequency-throttled) CPU; always running the
             # same side second creates a systematic bias. Alternating cancels it.
             if [ $((i % 2)) -eq 1 ]; then
-              (cd base && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m ./...) >> "$OUTDIR/base-lib.txt" 2>&1 || true
-              (cd pr   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m ./...) >> "$OUTDIR/pr-lib.txt" 2>&1
+              (cd base && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m -ldflags=-funcalign=64 ./...) >> "$OUTDIR/base-lib.txt" 2>&1 || true
+              (cd pr   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m -ldflags=-funcalign=64 ./...) >> "$OUTDIR/pr-lib.txt" 2>&1
             else
-              (cd pr   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m ./...) >> "$OUTDIR/pr-lib.txt" 2>&1
-              (cd base && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m ./...) >> "$OUTDIR/base-lib.txt" 2>&1 || true
+              (cd pr   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m -ldflags=-funcalign=64 ./...) >> "$OUTDIR/pr-lib.txt" 2>&1
+              (cd base && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m -ldflags=-funcalign=64 ./...) >> "$OUTDIR/base-lib.txt" 2>&1 || true
             fi
           done
         done
@@ -242,12 +257,21 @@ jobs:
         echo "Perf benchmarks found:"
         echo "$BENCHMARKS"
 
-        # Phase 1: run each benchmark once, alternating base/PR
+        # Phase 1: run each benchmark once. Order alternates per benchmark and
+        # every compilation pins function alignment; see the library benchmark
+        # step for the rationale.
         echo "--- Phase 1: single pass ---"
+        idx=0
         for bench in $BENCHMARKS; do
           echo "  $bench"
-          (cd base/tests/perftests && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m) >> "$OUTDIR/base-perf.txt" 2>&1 || true
-          (cd pr/tests/perftests   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m) >> "$OUTDIR/pr-perf.txt" 2>&1
+          if [ $((idx % 2)) -eq 0 ]; then
+            (cd base/tests/perftests && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m -ldflags=-funcalign=64) >> "$OUTDIR/base-perf.txt" 2>&1 || true
+            (cd pr/tests/perftests   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m -ldflags=-funcalign=64) >> "$OUTDIR/pr-perf.txt" 2>&1
+          else
+            (cd pr/tests/perftests   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m -ldflags=-funcalign=64) >> "$OUTDIR/pr-perf.txt" 2>&1
+            (cd base/tests/perftests && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m -ldflags=-funcalign=64) >> "$OUTDIR/base-perf.txt" 2>&1 || true
+          fi
+          idx=$((idx + 1))
         done
 
         # Find top-level benchmarks where any sub-benchmark differs by >5%
@@ -282,11 +306,11 @@ jobs:
             # throttling does not systematically penalize the side that always
             # runs second (see the library benchmark step for details).
             if [ $((i % 2)) -eq 1 ]; then
-              (cd base/tests/perftests && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m) >> "$OUTDIR/base-perf.txt" 2>&1 || true
-              (cd pr/tests/perftests   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m) >> "$OUTDIR/pr-perf.txt" 2>&1
+              (cd base/tests/perftests && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m -ldflags=-funcalign=64) >> "$OUTDIR/base-perf.txt" 2>&1 || true
+              (cd pr/tests/perftests   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m -ldflags=-funcalign=64) >> "$OUTDIR/pr-perf.txt" 2>&1
             else
-              (cd pr/tests/perftests   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m) >> "$OUTDIR/pr-perf.txt" 2>&1
-              (cd base/tests/perftests && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m) >> "$OUTDIR/base-perf.txt" 2>&1 || true
+              (cd pr/tests/perftests   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m -ldflags=-funcalign=64) >> "$OUTDIR/pr-perf.txt" 2>&1
+              (cd base/tests/perftests && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m -ldflags=-funcalign=64) >> "$OUTDIR/base-perf.txt" 2>&1 || true
             fi
           done
         done

@@ -16,6 +16,53 @@ import (
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
+// zeroFieldContainer is an SSZ-invalid container with no encodable fields (only
+// an unexported field, which is skipped), used to verify the generator rejects
+// it instead of emitting 0-byte methods.
+type zeroFieldContainer struct {
+	hidden uint64 //nolint:unused // deliberately unexported: leaves zero encodable fields
+}
+
+// inlineCycleMember recurses through a bounded list; legal as a type, but its
+// cycle can only be emitted when the member's own methods can be called.
+type inlineCycleMember struct {
+	V     uint64
+	Peers []inlineCycleMember `ssz-max:"4"`
+}
+
+// inlineCycleRoot references the self-recursive member without being part of
+// the cycle itself.
+type inlineCycleRoot struct {
+	Items []inlineCycleMember `ssz-max:"4"`
+}
+
+// A recursive cycle is only emittable when it can be broken by a delegated
+// method call. Generating the root without the cycle member must produce a
+// clear error (inline emission would recurse forever); including the member in
+// the generation set makes the cycle delegate and generation succeed.
+func TestGenerateRecursiveCycleValidation(t *testing.T) {
+	t.Run("MemberMissing", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_test.go", WithReflectType(reflect.TypeFor[inlineCycleRoot]()))
+
+		_, err := cg.GenerateToMap()
+		if err == nil || !strings.Contains(err.Error(), "referenced inline") {
+			t.Fatalf("expected inline-cycle error, got %v", err)
+		}
+	})
+
+	t.Run("MemberIncluded", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_test.go",
+			WithReflectType(reflect.TypeFor[inlineCycleRoot]()),
+			WithReflectType(reflect.TypeFor[inlineCycleMember]()))
+
+		if _, err := cg.GenerateToMap(); err != nil {
+			t.Fatalf("generation with the cycle member included should succeed: %v", err)
+		}
+	})
+}
+
 // TestCodeGeneratorGenerate tests the Generate() method that writes files to disk.
 func TestCodeGeneratorGenerate(t *testing.T) {
 	t.Run("Success", func(t *testing.T) {
@@ -45,6 +92,35 @@ func TestCodeGeneratorGenerate(t *testing.T) {
 		err := cg.Generate()
 		if err == nil {
 			t.Error("expected error when generating with no types")
+		}
+	})
+
+	t.Run("ZeroFieldContainer", func(t *testing.T) {
+		// Generating a zero-field container must error, not emit 0-byte methods.
+		// The type carries generated-method compat flags during its own run, so
+		// this exercises the unconditional reject in the container builder rather
+		// than the delegated-shell-exempt post-build check.
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_test.go", WithReflectType(reflect.TypeFor[zeroFieldContainer]()))
+
+		_, err := cg.GenerateToMap()
+		if err == nil || !strings.Contains(err.Error(), "no SSZ fields") {
+			t.Fatalf("expected no-SSZ-fields error, got %v", err)
+		}
+	})
+
+	t.Run("DuplicateTypeEntry", func(t *testing.T) {
+		// Listing the same type twice for one output would emit its method set
+		// twice and fail to compile; the generator must reject it with a clear
+		// error instead of reporting success.
+		cg := NewCodeGenerator(nil)
+		rt := reflect.TypeFor[SimpleTestStruct]()
+		dupOpts := []CodeGeneratorOption{WithReflectType(rt), WithReflectType(rt)}
+		cg.BuildFile("gen_test.go", dupOpts...)
+
+		_, err := cg.GenerateToMap()
+		if err == nil || !strings.Contains(err.Error(), "listed more than once") {
+			t.Fatalf("expected duplicate-type error, got %v", err)
 		}
 	})
 

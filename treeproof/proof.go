@@ -26,6 +26,12 @@ func VerifyProof(root []byte, proof *Proof) (bool, error) {
 	if proof == nil {
 		return false, errors.New("proof must not be nil")
 	}
+	// Generalized indices start at 1 (the root). Reject anything below before the
+	// path-length math runs, mirroring VerifyMultiproof, so a degenerate index
+	// (e.g. -1, whose path length is 63) cannot be processed as a valid proof.
+	if proof.Index < 1 {
+		return false, fmt.Errorf("invalid generalized index %d", proof.Index)
+	}
 	if len(proof.Hashes) != getPathLength(proof.Index) {
 		return false, errors.New("invalid proof length")
 	}
@@ -43,12 +49,16 @@ func VerifyProof(root []byte, proof *Proof) (bool, error) {
 	var tmp [64]byte
 	node := bytesToChunk(proof.Leaf)
 	for i, h := range proof.Hashes {
+		// Pad each sibling into a fresh 32-byte chunk (like VerifyMultiproof).
+		// Copying a short hash straight into the reused tmp buffer would leave
+		// stale bytes from the previous iteration above its length.
+		sibling := bytesToChunk(h)
 		if getPosAtLevel(proof.Index, i) {
-			copy(tmp[:32], h)
+			copy(tmp[:32], sibling[:])
 			copy(tmp[32:], node[:])
 		} else {
 			copy(tmp[:32], node[:])
-			copy(tmp[32:], h)
+			copy(tmp[32:], sibling[:])
 		}
 		node = sha256.Sum256(tmp[:])
 	}

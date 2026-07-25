@@ -25,6 +25,7 @@
 package treeproof
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -292,15 +293,20 @@ var treeFromNodesToDepthFn = treeFromNodesToDepth
 // The limit should be a power of 2.
 // Adjacent sibling nodes will be filled with zero order hashes that have been precomputed based on the tree depth.
 func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
-	// Excess leaves would be dropped silently, producing a valid-looking root for
-	// a different tree. A negative limit is an int-overflow artifact (a chunk
-	// limit above the platform int max, only possible on 32-bit) handled as an
-	// empty capacity, not treated as excess.
-	if limit >= 0 && len(leaves) > limit {
-		return nil, fmt.Errorf("number of leaves %d exceeds limit %d", len(leaves), limit)
-	}
+	// A non-positive limit is either a true zero capacity or the int-overflow
+	// artifact of a chunk limit above the platform int max (only reachable on
+	// 32-bit). Either way an int cannot represent a usable capacity, so any
+	// leaves present would be silently dropped, producing a valid-looking root
+	// for a different tree. Reject that; callers with such capacities use the
+	// uint64 TreeFromNodes64 form directly.
 	if limit <= 0 {
+		if len(leaves) > 0 {
+			return nil, fmt.Errorf("number of leaves %d exceeds limit %d", len(leaves), limit)
+		}
 		return getEmptyNode(0), nil
+	}
+	if len(leaves) > limit {
+		return nil, fmt.Errorf("number of leaves %d exceeds limit %d", len(leaves), limit)
 	}
 	return TreeFromNodes64(leaves, uint64(limit))
 }
@@ -614,9 +620,12 @@ func (n *Node) IsEmpty() bool {
 	return n.isEmpty
 }
 
-// Value returns the raw 32-byte value stored in this node.
+// Value returns a copy of the 32-byte value stored in this node. A copy is
+// returned because empty (zero-padding) nodes alias the process-wide zero-hash
+// table and cached empty nodes are shared across trees; handing out the raw
+// slice would let a caller's mutation corrupt every other tree and root.
 func (n *Node) Value() []byte {
-	return n.value
+	return bytes.Clone(n.value)
 }
 
 func getEmptyNode(depth int) *Node {
@@ -663,6 +672,12 @@ func hashNode(n *Node) []byte {
 
 // Prove returns a list of sibling values and hashes needed
 // to compute the root hash for a given general index.
+//
+// Thread-safety: Prove lazily computes and caches intermediate node hashes on
+// first use, so it is not safe to call concurrently on a freshly built,
+// unfinalized tree. Finalize the tree once by calling Hash() before sharing it
+// across goroutines; afterwards concurrent Prove/ProveMulti calls only read the
+// cached hashes.
 func (n *Node) Prove(index int) (*Proof, error) {
 	if index < 1 {
 		return nil, fmt.Errorf("invalid generalized index %d (must be >= 1)", index)
@@ -687,7 +702,9 @@ func (n *Node) Prove(index int) (*Proof, error) {
 			siblingHash = hashNode(cur.right)
 			cur = cur.left
 		}
-		hashes = append(hashes, siblingHash)
+		// Copy the sibling hash: empty siblings alias the shared zero-hash table,
+		// and the caller must be free to mutate the returned proof.
+		hashes = append(hashes, bytes.Clone(siblingHash))
 		if cur == nil {
 			return nil, errors.New("Node not found in tree")
 		}
@@ -702,7 +719,7 @@ func (n *Node) Prove(index int) (*Proof, error) {
 		// This is an intermediate node without a value; add the hash to it so that we're providing a suitable leaf value.
 		cur.value = hashNode(cur)
 	}
-	proof.Leaf = cur.value
+	proof.Leaf = bytes.Clone(cur.value)
 
 	return proof, nil
 }
@@ -711,6 +728,9 @@ func (n *Node) Prove(index int) (*Proof, error) {
 // It collects the leaf values at each index and the minimal set of auxiliary
 // hashes needed to reconstruct the root. Returns an error if any index cannot
 // be found in the tree.
+//
+// Thread-safety: like Prove, this lazily caches node hashes, so finalize the tree
+// with Hash() before sharing it across goroutines (see Prove).
 func (n *Node) ProveMulti(indices []int) (*Multiproof, error) {
 	for _, gi := range indices {
 		if gi < 1 {
@@ -720,12 +740,15 @@ func (n *Node) ProveMulti(indices []int) (*Multiproof, error) {
 	reqIndices := getRequiredIndices(indices)
 	proof := &Multiproof{Indices: indices, Leaves: make([][]byte, len(indices)), Hashes: make([][]byte, len(reqIndices))}
 
+	// Copy leaf and hash values: empty nodes alias the shared zero-hash table and
+	// cached empty nodes are shared across trees, so the returned proof must own
+	// its bytes to stay mutation-safe.
 	for i, gi := range indices {
 		node, err := n.Get(gi)
 		if err != nil {
 			return nil, err
 		}
-		proof.Leaves[i] = node.value
+		proof.Leaves[i] = bytes.Clone(node.value)
 	}
 
 	for i, gi := range reqIndices {
@@ -733,7 +756,7 @@ func (n *Node) ProveMulti(indices []int) (*Multiproof, error) {
 		if err != nil {
 			return nil, err
 		}
-		proof.Hashes[i] = hashNode(cur)
+		proof.Hashes[i] = bytes.Clone(hashNode(cur))
 	}
 
 	return proof, nil

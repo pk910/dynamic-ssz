@@ -14,6 +14,7 @@ var byteType = reflect.TypeOf(byte(0))
 var sszMarshalerType = reflect.TypeOf((*sszutils.FastsszMarshaler)(nil)).Elem()
 var sszUnmarshalerType = reflect.TypeOf((*sszutils.FastsszUnmarshaler)(nil)).Elem()
 var sszHashRootType = reflect.TypeOf((*sszutils.FastsszHashRoot)(nil)).Elem()
+var hashWalkerType = reflect.TypeOf((*sszutils.HashWalker)(nil)).Elem()
 var dynamicMarshalerType = reflect.TypeOf((*sszutils.DynamicMarshaler)(nil)).Elem()
 var dynamicUnmarshalerType = reflect.TypeOf((*sszutils.DynamicUnmarshaler)(nil)).Elem()
 var dynamicEncoderType = reflect.TypeOf((*sszutils.DynamicEncoder)(nil)).Elem()
@@ -95,9 +96,18 @@ func getHashTreeRootWithCompatibility(targetType reflect.Type) *reflect.Method {
 		return nil
 	}
 
-	// The method exists with the right signature pattern
-	// We don't check the exact parameter type since it could be
-	// ssz.HashWalker, *ssz.Hasher, or interface{}
+	// The method must accept a hasher we can actually supply. At hash time dynssz
+	// always passes its own hasher (as a sszutils.HashWalker). A method whose
+	// parameter is an interface that our HashWalker satisfies (e.g. ssz.HashWalker)
+	// is callable; the standard fastssz sszgen output declares
+	// HashTreeRootWith(*ssz.Hasher) with a concrete foreign hasher type, which
+	// would panic in reflect.Call. Reject the latter so the type-safe
+	// HashTreeRoot() fallback is used instead.
+	paramType := methodType.In(1)
+	if paramType.Kind() != reflect.Interface || !hashWalkerType.Implements(paramType) {
+		return nil
+	}
+
 	return &method
 }
 

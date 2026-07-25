@@ -145,15 +145,35 @@ func ParseSszType(typeStr string) (SszType, error) {
 // encoded, decoded, sized or hashed) while remaining an ordinary Go field, so
 // its type need not be SSZ-compatible.
 func IsSszExcluded(tag reflect.StructTag) bool {
-	v, ok := tag.Lookup("ssz-type")
-	return ok && strings.TrimSpace(v) == "-"
+	if v, ok := tag.Lookup("ssz-type"); ok {
+		return strings.TrimSpace(v) == "-"
+	}
+	// Honor the fastssz `ssz:"-"` exclude tag when no ssz-type is given.
+	if v, ok := tag.Lookup("ssz"); ok {
+		return strings.TrimSpace(v) == "-"
+	}
+	return false
 }
 
 func getSszTypeTag(field *reflect.StructField) ([]SszTypeHint, error) {
 	// parse `ssz-type`
 	sszTypeHints := []SszTypeHint{}
 
-	if fieldSszTypeStr, fieldHasSszType := field.Tag.Lookup("ssz-type"); fieldHasSszType {
+	fieldSszTypeStr, fieldHasSszType := field.Tag.Lookup("ssz-type")
+	fieldSszStr, fieldHasSsz := field.Tag.Lookup("ssz")
+
+	// Honor the plain fastssz `ssz` tag as an ssz-type when no ssz-type is given,
+	// so the reflection engine agrees with fastssz delegation and generated code
+	// instead of silently ignoring it (e.g. `ssz:"bitlist"`). Setting both is
+	// ambiguous — reject it.
+	switch {
+	case fieldHasSszType && fieldHasSsz:
+		return sszTypeHints, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "field %q sets both 'ssz' and 'ssz-type' tags; use only one", field.Name)
+	case !fieldHasSszType && fieldHasSsz:
+		fieldSszTypeStr, fieldHasSszType = fieldSszStr, true
+	}
+
+	if fieldHasSszType {
 		for _, sszTypeStr := range strings.Split(fieldSszTypeStr, ",") {
 			sszType, err := ParseSszType(sszTypeStr)
 			if err != nil {
@@ -286,6 +306,15 @@ func getSszSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]SszS
 				sszSize.Bits = true
 			} else if sszSizeStr != "?" {
 				sizeExpr = sszSizeStr
+			}
+
+			// ssz-size marks this dimension `?` (a variable-length list) while
+			// dynssz-size assigns it a fixed size — the two engines would encode the
+			// field differently (list vs vector). Reject the contradiction. The
+			// reverse (a fixed ssz-size relaxed to dynamic via dynssz-size:"?") is
+			// allowed and stays a list.
+			if sizeExpr != "?" && i < len(sszSizes) && sszSizes[i].Dynamic {
+				return sszSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "conflicting size tags for field %q dimension %d: ssz-size marks it dynamic (?) but dynssz-size sets a fixed size", field.Name, i)
 			}
 
 			if sizeExpr == "?" {
@@ -621,6 +650,15 @@ func ParseTags(tag string) (typeHints []SszTypeHint, sizeHints []SszSizeHint, ma
 				sszSize.Bits = true
 			} else if sszSizeStr != "?" {
 				sizeExpr = sszSizeStr
+			}
+
+			// ssz-size marks this dimension `?` (a variable-length list) while
+			// dynssz-size assigns it a fixed size — the two engines would encode the
+			// field differently (list vs vector). Reject the contradiction. The
+			// reverse (a fixed ssz-size relaxed to dynamic via dynssz-size:"?") is
+			// allowed and stays a list.
+			if sizeExpr != "?" && i < len(sizeHints) && sizeHints[i].Dynamic {
+				return nil, nil, nil, fmt.Errorf("conflicting size tags for dimension %d: ssz-size marks it dynamic (?) but dynssz-size sets a fixed size", i)
 			}
 
 			if sizeExpr == "?" {

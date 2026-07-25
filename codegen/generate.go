@@ -87,6 +87,18 @@ func (cg *CodeGenerator) analyzeTypes() error {
 		return len(t.ViewGoTypesTypes) > 0 || len(t.ViewReflectTypes) > 0
 	}
 
+	// qualifiedReflectName returns the package-qualified name the reflection
+	// type cache uses for compat flag lookups ("" when unavailable).
+	qualifiedReflectName := func(t reflect.Type) string {
+		if t.Kind() == reflect.Pointer {
+			t = t.Elem()
+		}
+		if t.PkgPath() == "" || t.Name() == "" {
+			return ""
+		}
+		return t.PkgPath() + "." + t.Name()
+	}
+
 	// add compat flags for generated types
 	for _, file := range cg.files {
 		for _, t := range file.Options.Types {
@@ -94,6 +106,16 @@ func (cg *CodeGenerator) analyzeTypes() error {
 			compatFlags := getCompatFlags(t)
 
 			cg.compatFlags[typeKey] = compatFlags
+
+			// Reflection-driven generation resolves compat flags through the type
+			// cache, which keys by package-qualified names; register that key as
+			// well so cross-references between generated types delegate.
+			qualifiedKey := ""
+			if t.ReflectType != nil {
+				if qualifiedKey = qualifiedReflectName(t.ReflectType); qualifiedKey != "" {
+					cg.compatFlags[qualifiedKey] = compatFlags
+				}
+			}
 
 			// Also set compat flags for view types (they will have view methods available)
 			for _, viewType := range t.ViewGoTypesTypes {
@@ -104,6 +126,12 @@ func (cg *CodeGenerator) analyzeTypes() error {
 			for _, viewType := range t.ViewReflectTypes {
 				viewKey := fmt.Sprintf("%v|%v", typeKey, getReflectTypeName(viewType))
 				cg.compatFlags[viewKey] = compatFlags
+
+				if qualifiedKey != "" {
+					if qualifiedView := qualifiedReflectName(viewType); qualifiedView != "" {
+						cg.compatFlags[fmt.Sprintf("%v|%v", qualifiedKey, qualifiedView)] = compatFlags
+					}
+				}
 			}
 		}
 	}
@@ -393,6 +421,25 @@ func staticAnnotationFor(desc *ssztypes.TypeDescriptor) string {
 	return `ssz-static:"true"`
 }
 
+// packageScopeNames returns the top-level identifier names declared in the
+// package that owns t (pointers and aliases unwrapped). Returns nil when the
+// package cannot be determined (e.g. reflection-driven types with no go/types
+// information), in which case no names are reserved.
+func packageScopeNames(t types.Type) []string {
+	if t == nil {
+		return nil
+	}
+	t = types.Unalias(t)
+	if ptr, ok := t.(*types.Pointer); ok {
+		t = types.Unalias(ptr.Elem())
+	}
+	named, ok := t.(*types.Named)
+	if !ok || named.Obj() == nil || named.Obj().Pkg() == nil {
+		return nil
+	}
+	return named.Obj().Pkg().Scope().Names()
+}
+
 func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFileOptions) (string, error) {
 	if len(opts.Types) == 0 {
 		return "", fmt.Errorf("no types requested for generation")
@@ -400,13 +447,43 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 
 	typePrinter := NewTypePrinter(packagePath)
 	typePrinter.AddAlias("github.com/pk910/dynamic-ssz", "dynssz")
+	// Reserve the target package's top-level identifiers so a generated import
+	// alias (e.g. sszutils, hasher, binary, dynssz) never collides with one.
+	for _, t := range opts.Types {
+		if names := packageScopeNames(t.GoTypesType); names != nil {
+			typePrinter.ReserveNames(names)
+			break
+		}
+	}
 	codeBuilder := strings.Builder{}
 	annotationsBuilder := strings.Builder{}
 	hashParts := [][]byte{}
 
+	// A type listed twice for the same output would emit its method set twice and
+	// fail to compile ("method already declared"). Reject the duplicate with a
+	// clear error instead of producing broken code that reports success.
+	seenTypes := make(map[string]struct{}, len(opts.Types))
+
 	for _, t := range opts.Types {
+		if _, dup := seenTypes[t.TypeName]; dup {
+			return "", fmt.Errorf("type %s is listed more than once for the same output; remove the duplicate entry", t.TypeName)
+		}
+		seenTypes[t.TypeName] = struct{}{}
+
 		if t.Descriptor == nil || (t.IsViewOnly && len(t.ViewDescriptors) == 0) {
 			return "", fmt.Errorf("type %s has no descriptor or view descriptors", t.TypeName)
+		}
+
+		// A recursive descriptor graph is only emittable when every cycle can be
+		// broken by a delegated method call; verify before emission so an
+		// unsupported shape produces a clear error instead of unbounded recursion.
+		if err := validateEmittableGraph(t.Descriptor); err != nil {
+			return "", fmt.Errorf("cannot generate code for %s: %w", t.TypeName, err)
+		}
+		for _, viewDesc := range t.ViewDescriptors {
+			if err := validateEmittableGraph(viewDesc); err != nil {
+				return "", fmt.Errorf("cannot generate code for view of %s: %w", t.TypeName, err)
+			}
 		}
 
 		if !t.IsViewOnly {
@@ -697,7 +774,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 			viewName := getViewFnName(desc)
 			err = generateMarshal(desc, codeBuilder, typePrinter, viewName, options)
 			if err != nil {
-				return fmt.Errorf("failed to generate marshal for %s: %w", desc.Type.Name(), err)
+				return fmt.Errorf("failed to generate marshal for %s: %w", viewName, err)
 			}
 		}
 	}
@@ -717,7 +794,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 			viewName := getViewFnName(desc)
 			err = generateEncoder(desc, codeBuilder, typePrinter, viewName, options)
 			if err != nil {
-				return fmt.Errorf("failed to generate encoder for %s: %w", desc.Type.Name(), err)
+				return fmt.Errorf("failed to generate encoder for %s: %w", viewName, err)
 			}
 		}
 	}
@@ -740,7 +817,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 			viewName := getViewFnName(desc)
 			err = generateUnmarshal(desc, codeBuilder, typePrinter, viewName, options)
 			if err != nil {
-				return fmt.Errorf("failed to generate unmarshal for %s: %w", desc.Type.Name(), err)
+				return fmt.Errorf("failed to generate unmarshal for %s: %w", viewName, err)
 			}
 		}
 	}
@@ -760,7 +837,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 			viewName := getViewFnName(desc)
 			err = generateDecoder(desc, codeBuilder, typePrinter, viewName, options)
 			if err != nil {
-				return fmt.Errorf("failed to generate decoder for %s: %w", desc.Type.Name(), err)
+				return fmt.Errorf("failed to generate decoder for %s: %w", viewName, err)
 			}
 		}
 	}
@@ -783,7 +860,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 			viewName := getViewFnName(desc)
 			err = generateSize(desc, codeBuilder, typePrinter, viewName, options)
 			if err != nil {
-				return fmt.Errorf("failed to generate size for %s: %w", desc.Type.Name(), err)
+				return fmt.Errorf("failed to generate size for %s: %w", viewName, err)
 			}
 		}
 	}
@@ -809,7 +886,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 			viewName := getViewFnName(desc)
 			err = generateHashTreeRoot(desc, codeBuilder, typePrinter, viewName, options)
 			if err != nil {
-				return fmt.Errorf("failed to generate hash tree root for %s: %w", desc.Type.Name(), err)
+				return fmt.Errorf("failed to generate hash tree root for %s: %w", viewName, err)
 			}
 		}
 	}

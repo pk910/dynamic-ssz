@@ -484,20 +484,43 @@ func TestTypeCache_ProgressiveContainerErrors(t *testing.T) {
 		}
 	})
 
-	t.Run("MissingIndexTag", func(t *testing.T) {
+	t.Run("UntaggedFieldAutoIndexed", func(t *testing.T) {
 		type TestStruct struct {
 			Field1 uint32 `ssz-index:"0"`
-			Field2 uint32 // mising index tag
+			Field2 uint32 // untagged: auto-indexed to previous + 1
 		}
 
-		// This should work fine (no index tags)
-		_, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
-		if err == nil {
-			t.Error("Expected error for missing ssz-index")
-			return
+		// An untagged field takes the previous field's index + 1.
+		desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
 		}
-		if !strings.Contains(err.Error(), "progressive container field Field2 missing ssz-index tag") {
-			t.Errorf("Unexpected error: %s", err.Error())
+		if desc.SszType != SszProgressiveContainerType {
+			t.Fatalf("expected progressive container, got %v", desc.SszType)
+		}
+		if got := desc.ContainerDesc.Fields[1].SszIndex; got != 1 {
+			t.Errorf("Field2 auto-index = %d; want 1", got)
+		}
+	})
+
+	t.Run("HintDeclaredNoTagsAutoIndexed", func(t *testing.T) {
+		// A progressive container declared via the ssz-type hint with no ssz-index
+		// tags must get sequential indices 0,1,2 (not all-zero, which would emit a
+		// 1-bit active_fields bitvector for 3 field roots).
+		type TestStruct struct {
+			A uint32
+			B uint32
+			C uint32
+		}
+		desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil,
+			[]SszTypeHint{{Type: SszProgressiveContainerType}})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		for i, want := range []uint16{0, 1, 2} {
+			if got := desc.ContainerDesc.Fields[i].SszIndex; got != want {
+				t.Errorf("field %d auto-index = %d; want %d", i, got, want)
+			}
 		}
 	})
 
@@ -2654,6 +2677,21 @@ func TestTypeCache_AnnotationMaxExprResolution(t *testing.T) {
 	}
 	if desc.SszTypeFlags&SszTypeFlagHasDynamicMax == 0 {
 		t.Error("expected SszTypeFlagHasDynamicMax to be set")
+	}
+}
+
+// A dimension marked dynamic (`?`) in ssz-size but fixed in dynssz-size is
+// contradictory (list vs vector) and must be rejected, so codegen and reflection
+// agree instead of encoding the field differently. The reverse (fixed ssz-size
+// relaxed to dynamic via dynssz-size:"?") stays valid.
+func TestParseTags_DynamicStaticSizeConflict(t *testing.T) {
+	if _, _, _, err := ParseTags(`ssz-size:"?,32" dynssz-size:"SOME_SPEC,32"`); err == nil ||
+		!strings.Contains(err.Error(), "conflicting size tags") {
+		t.Fatalf("expected conflicting size tags error, got %v", err)
+	}
+
+	if _, _, _, err := ParseTags(`ssz-size:"32" dynssz-size:"?"`); err != nil {
+		t.Fatalf("fixed ssz-size relaxed to dynamic should be allowed, got %v", err)
 	}
 }
 
@@ -4854,5 +4892,92 @@ func TestDynOnlyUnknownDynSize(t *testing.T) {
 	tc := NewTypeCache(nil)
 	if _, err := tc.GetTypeDescriptor(reflect.TypeOf(dynOnlyUnknown{}), nil, nil, nil); err != nil {
 		t.Fatalf("dyn-only unknown dynssz-size: %v", err)
+	}
+}
+
+// Recursive descriptors form a cyclic graph that plain JSON marshalling cannot
+// serialize; GetTypeHash must still produce distinct, stable hashes for
+// distinct recursive layouts instead of hashing an empty representation.
+func TestGetTypeHashRecursive(t *testing.T) {
+	type hashNodeA struct {
+		V        uint64
+		Children []*hashNodeA `ssz-max:"4"`
+	}
+	type hashNodeB struct {
+		W        uint32
+		Children []*hashNodeB `ssz-max:"8"`
+	}
+
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	descA, err := cache.GetTypeDescriptor(reflect.TypeOf(hashNodeA{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("descriptor A: %v", err)
+	}
+	descB, err := cache.GetTypeDescriptor(reflect.TypeOf(hashNodeB{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("descriptor B: %v", err)
+	}
+
+	emptyHash := [32]byte{
+		0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f, 0xb9, 0x24,
+		0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55,
+	} // sha256 of empty input
+
+	hashA := descA.GetTypeHash()
+	hashB := descB.GetTypeHash()
+	if hashA == emptyHash || hashB == emptyHash {
+		t.Fatal("recursive descriptor hashed to the empty-input hash")
+	}
+	if hashA == hashB {
+		t.Fatal("distinct recursive layouts must hash to distinct values")
+	}
+	if hashA != descA.GetTypeHash() {
+		t.Fatal("recursive descriptor hash is not stable")
+	}
+}
+
+// purgeFailA/purgeFailC form a legal recursive cycle with a later invalid
+// sibling, so the top-level build fails after cycle members were cached. The
+// two differently-hinted references to the same list type leave two hinted
+// variants under one cache key, so the purge walks both branches.
+type purgeFailA struct {
+	F1  []purgeFailC `ssz-max:"4"`
+	F2  []purgeFailC `ssz-max:"8"`
+	Bad map[string]int
+}
+
+type purgeFailC struct {
+	F3 *purgeFailA
+}
+
+// A failed recursive build must leave neither plain descriptors nor hinted
+// variants behind: everything cached during the build was built against an
+// abandoned graph.
+func TestFailedRecursiveBuildPurgesCaches(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(&purgeFailA{}), nil, nil, nil); err == nil {
+		t.Fatal("expected error for map field")
+	}
+	if n := len(cache.descriptors); n != 0 {
+		t.Errorf("plain cache should be empty after failed recursive build, has %d entries", n)
+	}
+	if n := len(cache.hintedDescriptors); n != 0 {
+		t.Errorf("hinted cache should be empty after failed recursive build, has %d entries", n)
+	}
+}
+
+// A nil child in the descriptor graph must serialize as an explicit missing
+// reference rather than panicking or aliasing index 0.
+func TestMarshalCyclicDescriptorNilChild(t *testing.T) {
+	desc := &TypeDescriptor{
+		SszType: SszContainerType,
+		ContainerDesc: &ContainerDescriptor{
+			Fields: []FieldDescriptor{{Name: "X", Type: nil}},
+		},
+	}
+	out := string(marshalCyclicDescriptor(desc))
+	if !strings.Contains(out, "=-1") {
+		t.Fatalf("nil child should serialize as -1 reference, got: %s", out)
 	}
 }
