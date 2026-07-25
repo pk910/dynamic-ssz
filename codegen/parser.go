@@ -332,6 +332,12 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 
 		// Resolve pointers - must match on both sides
 		if ptr, ok := schemaType.(*types.Pointer); ok {
+			// Reject multi-level pointers (**T). Reflection only dereferences a
+			// single level; flattening the extra indirection here would emit
+			// accessors against a pointer type that do not compile.
+			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+				return nil, fmt.Errorf("unsupported multi-level pointer type %v", originalType)
+			}
 			ptrType = ptr
 			schemaType = ptr.Elem()
 			desc.GoTypeFlags |= ssztypes.GoTypeFlagIsPointer
@@ -1155,6 +1161,14 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 		desc.SszTypeFlags |= fieldDesc.Type.SszTypeFlags & (ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr)
 		fields = append(fields, fieldDesc)
 		fieldHasIndex = append(fieldHasIndex, hasIndex)
+	}
+
+	// A container must have at least one SSZ-encodable (exported, non-excluded)
+	// field. A zero-field container serializes to 0 bytes with an ambiguous root,
+	// which the SSZ spec forbids; reflection rejects it too. Reject it here so the
+	// generator cannot emit methods that bypass that validation.
+	if len(fields) == 0 {
+		return fmt.Errorf("container type has no SSZ fields, which is invalid per the SSZ spec")
 	}
 
 	containerDesc := &ssztypes.ContainerDescriptor{

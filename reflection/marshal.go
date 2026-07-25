@@ -885,6 +885,20 @@ func (ctx *ReflectionCtx) marshalOptionalList(sourceType *ssztypes.TypeDescripto
 //   - error: An error if any field encoding fails
 //
 // The function validates that the Data field is present and marshals the wrapped value using its type descriptor.
+// checkBigIntLimit enforces a static ssz-max on a big.Int payload (1 sign byte +
+// magnitude), matching marshalBigInt. Dynamic (dynssz-max expression) limits are
+// left unchecked so the reflection and codegen engines stay consistent, and so
+// SizeSSZ, HashTreeRoot and GetTree agree with MarshalSSZ on which values are
+// serializable instead of committing to a value no decoder can produce.
+func checkBigIntLimit(t *ssztypes.TypeDescriptor, magLen int) error {
+	if t.MaxExpression == nil && t.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
+		if payloadLen := uint64(1 + magLen); payloadLen > t.Limit {
+			return sszutils.NewSszErrorf(sszutils.ErrListTooBig, "big.Int payload length %d exceeds maximum %d", payloadLen, t.Limit)
+		}
+	}
+	return nil
+}
+
 func (ctx *ReflectionCtx) marshalBigInt(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, idt int) error {
 	if ctx.verbose {
 		ctx.logCb("%smarshalBigInt: %s\n", strings.Repeat(" ", idt), sourceType.Type.Name())
@@ -901,13 +915,8 @@ func (ctx *ReflectionCtx) marshalBigInt(sourceType *ssztypes.TypeDescriptor, sou
 	}
 	mag := bigInt.Bytes()
 
-	// Enforce a static ssz-max (payload = sign byte + magnitude). Dynamic limits
-	// (dynssz-max expressions) are left unchecked here so reflection and codegen
-	// stay consistent.
-	if sourceType.MaxExpression == nil && sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
-		if payloadLen := uint64(1 + len(mag)); payloadLen > sourceType.Limit {
-			return sszutils.NewSszErrorf(sszutils.ErrListTooBig, "big.Int payload length %d exceeds maximum %d", payloadLen, sourceType.Limit)
-		}
+	if err := checkBigIntLimit(sourceType, len(mag)); err != nil {
+		return err
 	}
 
 	encoder.EncodeUint8(signByte)

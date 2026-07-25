@@ -2531,18 +2531,57 @@ func TestBigIntCanonicalDecode(t *testing.T) {
 	}
 }
 
-// A static ssz-max on a big.Int must be enforced at marshal time.
+// A static ssz-max on a big.Int must be enforced consistently by MarshalSSZ,
+// SizeSSZ and HashTreeRoot (which also drives GetTree), so none of them commits
+// to a value no decoder can produce.
 func TestBigIntMaxEnforced(t *testing.T) {
 	type T struct {
 		N big.Int `ssz-max:"2"`
 	}
 	ds := NewDynSsz(nil, WithExtendedTypes())
 
-	if _, err := ds.MarshalSSZ(&T{N: *big.NewInt(0xff)}); err != nil {
+	within := &T{N: *big.NewInt(0xff)}
+	if _, err := ds.MarshalSSZ(within); err != nil {
 		t.Fatalf("value within max should marshal: %v", err)
 	}
-	if _, err := ds.MarshalSSZ(&T{N: *big.NewInt(0xfffff)}); err == nil {
-		t.Error("expected error for big.Int exceeding ssz-max")
+	if _, err := ds.SizeSSZ(within); err != nil {
+		t.Errorf("value within max should size: %v", err)
+	}
+	if _, err := ds.HashTreeRoot(within); err != nil {
+		t.Errorf("value within max should hash: %v", err)
+	}
+
+	over := &T{N: *big.NewInt(0xfffff)}
+	if _, err := ds.MarshalSSZ(over); err == nil {
+		t.Error("MarshalSSZ: expected error for big.Int exceeding ssz-max")
+	}
+	if _, err := ds.SizeSSZ(over); err == nil {
+		t.Error("SizeSSZ: expected error for big.Int exceeding ssz-max, matching MarshalSSZ")
+	}
+	if _, err := ds.HashTreeRoot(over); err == nil {
+		t.Error("HashTreeRoot: expected error for big.Int exceeding ssz-max, matching MarshalSSZ")
+	}
+}
+
+// SizeSSZ must enforce a list's ssz-max like MarshalSSZ, so it never reports a
+// size for a value that cannot be serialized.
+func TestSizeSSZEnforcesListLimit(t *testing.T) {
+	type T struct {
+		L []uint64 `ssz-max:"2"`
+	}
+	ds := NewDynSsz(nil, WithNoFastSsz())
+
+	within := &T{L: []uint64{1, 2}}
+	if _, err := ds.SizeSSZ(within); err != nil {
+		t.Errorf("list within max should size: %v", err)
+	}
+
+	over := &T{L: []uint64{1, 2, 3}}
+	if _, err := ds.MarshalSSZ(over); err == nil {
+		t.Fatal("MarshalSSZ should reject an over-limit list")
+	}
+	if _, err := ds.SizeSSZ(over); err == nil {
+		t.Error("SizeSSZ should reject an over-limit list, matching MarshalSSZ")
 	}
 }
 

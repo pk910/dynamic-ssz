@@ -114,6 +114,22 @@ func TestParserRejectsZeroSizeTypes(t *testing.T) {
 	})
 }
 
+// Reflection only dereferences a single pointer level, so codegen must reject a
+// multi-level pointer (**T) rather than flattening it and emitting accessors
+// against a pointer type that fail to compile.
+func TestParserRejectsMultiLevelPointer(t *testing.T) {
+	inner := types.NewStruct([]*types.Var{
+		types.NewField(token.NoPos, nil, "V", types.Typ[types.Uint64], false),
+	}, nil)
+	named := types.NewNamed(types.NewTypeName(token.NoPos, nil, "ptrPtrInner", nil), inner, nil)
+	doublePtr := types.NewPointer(types.NewPointer(named))
+
+	_, err := NewParser().GetTypeDescriptor(doublePtr, nil, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "multi-level pointer") {
+		t.Fatalf("expected multi-level pointer rejection, got: %v", err)
+	}
+}
+
 // newRecursiveNamed builds a named struct type that references itself. The
 // self-referencing field is described by fieldType(self) and carries fieldTag,
 // letting a single helper produce both the static (pointer) and bounded (list)

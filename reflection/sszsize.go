@@ -171,6 +171,15 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		fieldType := targetType.ElemDesc
 		sliceLen := uint32(targetValue.Len())
 
+		// Enforce ssz-max like marshalList: a list longer than its limit cannot be
+		// serialized, so return the same error instead of a size for an
+		// un-encodable value. Bitlists count bits, not elements, and are limited on
+		// their own encode path, so they are excluded here.
+		if (targetType.SszType == ssztypes.SszListType || targetType.SszType == ssztypes.SszProgressiveListType) &&
+			targetType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 && uint64(sliceLen) > targetType.Limit {
+			return 0, sszutils.ErrListLengthFn(int(sliceLen), targetType.Limit)
+		}
+
 		if sliceLen > 0 {
 			switch {
 			case fieldType.Kind == reflect.Uint8:
@@ -280,7 +289,11 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		if !isBigInt {
 			return 0, sszutils.ErrBigIntTypeExpectedFn(targetType.Type.Name())
 		}
-		staticSize = uint32(1 + len(bigInt.Bytes()))
+		mag := bigInt.Bytes()
+		if err := checkBigIntLimit(targetType, len(mag)); err != nil {
+			return 0, err
+		}
+		staticSize = uint32(1 + len(mag))
 
 	default:
 		return 0, sszutils.ErrUnknownTypeFn(targetType.Kind)

@@ -16,6 +16,13 @@ import (
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
+// zeroFieldContainer is an SSZ-invalid container with no encodable fields (only
+// an unexported field, which is skipped), used to verify the generator rejects
+// it instead of emitting 0-byte methods.
+type zeroFieldContainer struct {
+	hidden uint64 //nolint:unused // deliberately unexported: leaves zero encodable fields
+}
+
 // TestCodeGeneratorGenerate tests the Generate() method that writes files to disk.
 func TestCodeGeneratorGenerate(t *testing.T) {
 	t.Run("Success", func(t *testing.T) {
@@ -45,6 +52,20 @@ func TestCodeGeneratorGenerate(t *testing.T) {
 		err := cg.Generate()
 		if err == nil {
 			t.Error("expected error when generating with no types")
+		}
+	})
+
+	t.Run("ZeroFieldContainer", func(t *testing.T) {
+		// Generating a zero-field container must error, not emit 0-byte methods.
+		// The type carries generated-method compat flags during its own run, so
+		// this exercises the unconditional reject in the container builder rather
+		// than the delegated-shell-exempt post-build check.
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_test.go", WithReflectType(reflect.TypeFor[zeroFieldContainer]()))
+
+		_, err := cg.GenerateToMap()
+		if err == nil || !strings.Contains(err.Error(), "no SSZ fields") {
+			t.Fatalf("expected no-SSZ-fields error, got %v", err)
 		}
 	})
 

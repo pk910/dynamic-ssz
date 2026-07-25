@@ -937,6 +937,10 @@ func (ctx *ReflectionCtx) buildRootFromBigInt(sourceType *ssztypes.TypeDescripto
 	}
 	mag := bigInt.Bytes()
 
+	if err := checkBigIntLimit(sourceType, len(mag)); err != nil {
+		return err
+	}
+
 	buf := sszutils.MarshalUint64(make([]byte, 0, 9+len(mag)), uint64(1+len(mag)))
 	buf = append(buf, sign)
 	buf = append(buf, mag...)
