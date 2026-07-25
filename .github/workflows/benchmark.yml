@@ -173,23 +173,23 @@ jobs:
 
         # Phase 1: run each benchmark once. The base/PR order alternates per
         # benchmark so neither side systematically runs on a warmer CPU, and
-        # every compilation randomizes its text layout (-randlayout): the two
-        # binaries place functions differently even where the measured code is
-        # identical, and hot-loop cache-line alignment can swing tight
-        # benchmarks by 10%+ on some CPUs. Random placement per run turns that
-        # from a fixed per-binary bias into noise that benchstat's confidence
-        # intervals cover.
+        # every compilation pins function alignment (-funcalign=64): the two
+        # binaries place functions at different addresses even where the
+        # measured code is identical, and a function whose cache-line phase
+        # differs between the builds can swing tight benchmarks by 10%+ on
+        # some CPUs. Aligning every function to a cache line gives both
+        # binaries the same deterministic layout phase, so wall-clock results
+        # stay comparable without adding measurement noise.
         echo "--- Phase 1: single pass ---"
         idx=0
         for bench in $BENCHMARKS; do
           echo "  $bench"
-          SEED=$((1000 + idx))
           if [ $((idx % 2)) -eq 0 ]; then
-            (cd base && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m -ldflags="-randlayout=$SEED" ./...) >> "$OUTDIR/base-lib.txt" 2>&1 || true
-            (cd pr   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m -ldflags="-randlayout=$SEED" ./...) >> "$OUTDIR/pr-lib.txt" 2>&1
+            (cd base && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m -ldflags=-funcalign=64 ./...) >> "$OUTDIR/base-lib.txt" 2>&1 || true
+            (cd pr   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m -ldflags=-funcalign=64 ./...) >> "$OUTDIR/pr-lib.txt" 2>&1
           else
-            (cd pr   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m -ldflags="-randlayout=$SEED" ./...) >> "$OUTDIR/pr-lib.txt" 2>&1
-            (cd base && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m -ldflags="-randlayout=$SEED" ./...) >> "$OUTDIR/base-lib.txt" 2>&1 || true
+            (cd pr   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m -ldflags=-funcalign=64 ./...) >> "$OUTDIR/pr-lib.txt" 2>&1
+            (cd base && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m -ldflags=-funcalign=64 ./...) >> "$OUTDIR/base-lib.txt" 2>&1 || true
           fi
           idx=$((idx + 1))
         done
@@ -226,15 +226,12 @@ jobs:
             # under sustained load means the second run executes on an
             # already-warmed (often frequency-throttled) CPU; always running the
             # same side second creates a systematic bias. Alternating cancels it.
-            # Each iteration links with a fresh -randlayout seed (same seed for
-            # both sides) so text-layout luck is sampled across the runs.
-            SEED=$((2000 + i))
             if [ $((i % 2)) -eq 1 ]; then
-              (cd base && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m -ldflags="-randlayout=$SEED" ./...) >> "$OUTDIR/base-lib.txt" 2>&1 || true
-              (cd pr   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m -ldflags="-randlayout=$SEED" ./...) >> "$OUTDIR/pr-lib.txt" 2>&1
+              (cd base && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m -ldflags=-funcalign=64 ./...) >> "$OUTDIR/base-lib.txt" 2>&1 || true
+              (cd pr   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m -ldflags=-funcalign=64 ./...) >> "$OUTDIR/pr-lib.txt" 2>&1
             else
-              (cd pr   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m -ldflags="-randlayout=$SEED" ./...) >> "$OUTDIR/pr-lib.txt" 2>&1
-              (cd base && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m -ldflags="-randlayout=$SEED" ./...) >> "$OUTDIR/base-lib.txt" 2>&1 || true
+              (cd pr   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m -ldflags=-funcalign=64 ./...) >> "$OUTDIR/pr-lib.txt" 2>&1
+              (cd base && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=5m -ldflags=-funcalign=64 ./...) >> "$OUTDIR/base-lib.txt" 2>&1 || true
             fi
           done
         done
@@ -261,19 +258,18 @@ jobs:
         echo "$BENCHMARKS"
 
         # Phase 1: run each benchmark once. Order alternates per benchmark and
-        # every compilation randomizes its text layout; see the library
-        # benchmark step for the rationale.
+        # every compilation pins function alignment; see the library benchmark
+        # step for the rationale.
         echo "--- Phase 1: single pass ---"
         idx=0
         for bench in $BENCHMARKS; do
           echo "  $bench"
-          SEED=$((3000 + idx))
           if [ $((idx % 2)) -eq 0 ]; then
-            (cd base/tests/perftests && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m -ldflags="-randlayout=$SEED") >> "$OUTDIR/base-perf.txt" 2>&1 || true
-            (cd pr/tests/perftests   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m -ldflags="-randlayout=$SEED") >> "$OUTDIR/pr-perf.txt" 2>&1
+            (cd base/tests/perftests && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m -ldflags=-funcalign=64) >> "$OUTDIR/base-perf.txt" 2>&1 || true
+            (cd pr/tests/perftests   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m -ldflags=-funcalign=64) >> "$OUTDIR/pr-perf.txt" 2>&1
           else
-            (cd pr/tests/perftests   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m -ldflags="-randlayout=$SEED") >> "$OUTDIR/pr-perf.txt" 2>&1
-            (cd base/tests/perftests && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m -ldflags="-randlayout=$SEED") >> "$OUTDIR/base-perf.txt" 2>&1 || true
+            (cd pr/tests/perftests   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m -ldflags=-funcalign=64) >> "$OUTDIR/pr-perf.txt" 2>&1
+            (cd base/tests/perftests && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m -ldflags=-funcalign=64) >> "$OUTDIR/base-perf.txt" 2>&1 || true
           fi
           idx=$((idx + 1))
         done
@@ -308,16 +304,13 @@ jobs:
           for i in $(seq 1 7); do
             # Alternate which side runs first so sustained-load CPU frequency
             # throttling does not systematically penalize the side that always
-            # runs second, and link each iteration with a fresh -randlayout
-            # seed so text-layout luck is sampled across the runs (see the
-            # library benchmark step for details).
-            SEED=$((4000 + i))
+            # runs second (see the library benchmark step for details).
             if [ $((i % 2)) -eq 1 ]; then
-              (cd base/tests/perftests && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m -ldflags="-randlayout=$SEED") >> "$OUTDIR/base-perf.txt" 2>&1 || true
-              (cd pr/tests/perftests   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m -ldflags="-randlayout=$SEED") >> "$OUTDIR/pr-perf.txt" 2>&1
+              (cd base/tests/perftests && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m -ldflags=-funcalign=64) >> "$OUTDIR/base-perf.txt" 2>&1 || true
+              (cd pr/tests/perftests   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m -ldflags=-funcalign=64) >> "$OUTDIR/pr-perf.txt" 2>&1
             else
-              (cd pr/tests/perftests   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m -ldflags="-randlayout=$SEED") >> "$OUTDIR/pr-perf.txt" 2>&1
-              (cd base/tests/perftests && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m -ldflags="-randlayout=$SEED") >> "$OUTDIR/base-perf.txt" 2>&1 || true
+              (cd pr/tests/perftests   && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m -ldflags=-funcalign=64) >> "$OUTDIR/pr-perf.txt" 2>&1
+              (cd base/tests/perftests && go test -run='^$' -bench="^${bench}\$" -benchmem -count=1 -benchtime=2s -timeout=10m -ldflags=-funcalign=64) >> "$OUTDIR/base-perf.txt" 2>&1 || true
             fi
           done
         done
