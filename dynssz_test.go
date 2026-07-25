@@ -19,6 +19,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
@@ -1648,31 +1649,421 @@ func TestBitvectorByteAlignedRoundtrip(t *testing.T) {
 	})
 }
 
-// --- Recursive type definitions must error instead of stack overflowing ---
+// --- Recursion: bounded (through a list) is legal; static is rejected ---
 
 type recursiveType struct {
 	Val      uint32
 	Children []*recursiveType `ssz-max:"4"`
 }
 
-func TestRecursiveTypeRejected(t *testing.T) {
-	ds := NewDynSsz(nil)
+// Mutually recursive types where spec-dependence (dynssz-size) lives only on one
+// side. The Has* flags must still propagate correctly around the cycle so both
+// types size and hash correctly.
+type mutRecA struct {
+	Bs []*mutRecB `ssz-max:"4"`
+}
 
-	var err error
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				t.Fatalf("recursive type caused a panic: %v", r)
-			}
-		}()
-		_, err = ds.MarshalSSZ(&recursiveType{})
-	}()
+type mutRecB struct {
+	Tag []byte     `ssz-size:"2" dynssz-size:"TAGLEN"`
+	As  []*mutRecA `ssz-max:"4"`
+}
 
-	if err == nil {
-		t.Fatalf("expected an error for recursive type, got nil")
+func TestMutualListRecursionRoundTrips(t *testing.T) {
+	ds := NewDynSsz(map[string]any{"TAGLEN": uint64(3)}, WithNoFastSsz())
+
+	src := &mutRecA{
+		Bs: []*mutRecB{
+			{Tag: []byte{1, 2, 3}},
+			{Tag: []byte{4, 5, 6}, As: []*mutRecA{{Bs: []*mutRecB{{Tag: []byte{7, 8, 9}}}}}},
+		},
 	}
-	if !errors.Is(err, sszutils.ErrUnsupportedType) {
-		t.Fatalf("expected ErrUnsupportedType, got %v", err)
+
+	buf, err := ds.MarshalSSZ(src)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var dst mutRecA
+	if err = ds.UnmarshalSSZ(&dst, buf); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	buf2, err := ds.MarshalSSZ(&dst)
+	if err != nil {
+		t.Fatalf("re-marshal: %v", err)
+	}
+	if !bytes.Equal(buf, buf2) {
+		t.Fatalf("round-trip mismatch:\n first=%x\n second=%x", buf, buf2)
+	}
+	if _, err := ds.HashTreeRoot(src); err != nil {
+		t.Fatalf("hash tree root: %v", err)
+	}
+}
+
+// A container recursive through a bounded list is a legal, finite SSZ type: the
+// list is offset-encoded and terminates at runtime, so it must marshal,
+// unmarshal and hash round-trip under reflection.
+func TestListRecursiveTypeRoundTrips(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz())
+
+	src := &recursiveType{
+		Val: 1,
+		Children: []*recursiveType{
+			{Val: 2},
+			{Val: 3, Children: []*recursiveType{{Val: 4}}},
+		},
+	}
+
+	buf, err := ds.MarshalSSZ(src)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var dst recursiveType
+	if err = ds.UnmarshalSSZ(&dst, buf); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// Byte-identical re-marshal proves the tree decoded correctly (avoids a
+	// nil-vs-empty-slice DeepEqual mismatch on leaf nodes).
+	buf2, err := ds.MarshalSSZ(&dst)
+	if err != nil {
+		t.Fatalf("re-marshal: %v", err)
+	}
+	if !bytes.Equal(buf, buf2) {
+		t.Fatalf("round-trip mismatch:\n first=%x\n second=%x", buf, buf2)
+	}
+
+	if _, err := ds.HashTreeRoot(src); err != nil {
+		t.Fatalf("hash tree root: %v", err)
+	}
+}
+
+// Recursion that does not cross a variable-length collection has infinite static
+// size and cannot be instantiated, so it must stay rejected.
+func TestStaticRecursiveTypeRejected(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz())
+
+	t.Run("pointer", func(t *testing.T) {
+		type ptrRecursive struct {
+			V    uint64
+			Next *ptrRecursive
+		}
+		_, err := ds.MarshalSSZ(&ptrRecursive{})
+		if err == nil || !errors.Is(err, sszutils.ErrUnsupportedType) {
+			t.Fatalf("expected ErrUnsupportedType, got %v", err)
+		}
+	})
+
+	t.Run("vector", func(t *testing.T) {
+		type vecRecursive struct {
+			V   uint64
+			Vec [2]*vecRecursive
+		}
+		_, err := ds.MarshalSSZ(&vecRecursive{})
+		if err == nil || !errors.Is(err, sszutils.ErrUnsupportedType) {
+			t.Fatalf("expected ErrUnsupportedType, got %v", err)
+		}
+	})
+}
+
+// A recursive type carrying a spec-dependent field must still round-trip when
+// that field is declared AFTER the recursive list — the order where the
+// in-progress element descriptor is most incomplete when the list build reads
+// it. Correctness holds because the container uses a 4-byte offset for the
+// dynamic list (never the element's static size) and drives element encoding
+// from the fully back-patched element descriptor at runtime.
+func TestSpecDependentListRecursionRoundTrips(t *testing.T) {
+	type node struct {
+		Children []*node `ssz-max:"4"`
+		Tag      []byte  `ssz-size:"2" dynssz-size:"TAGLEN"` // spec-sized vector after the list
+	}
+	ds := NewDynSsz(map[string]any{"TAGLEN": uint64(3)}, WithNoFastSsz())
+
+	src := &node{
+		Tag: []byte{1, 2, 3},
+		Children: []*node{
+			{Tag: []byte{4, 5, 6}},
+			{Tag: []byte{7, 8, 9}, Children: []*node{{Tag: []byte{10, 11, 12}}}},
+		},
+	}
+
+	buf, err := ds.MarshalSSZ(src)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var dst node
+	if err = ds.UnmarshalSSZ(&dst, buf); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	buf2, err := ds.MarshalSSZ(&dst)
+	if err != nil {
+		t.Fatalf("re-marshal: %v", err)
+	}
+	if !bytes.Equal(buf, buf2) {
+		t.Fatalf("round-trip mismatch:\n first=%x\n second=%x", buf, buf2)
+	}
+	if _, err := ds.HashTreeRoot(src); err != nil {
+		t.Fatalf("hash tree root: %v", err)
+	}
+}
+
+// Cycle types where the loop closes through a container field (F3 *cycleA)
+// rather than a list element. The container reading the in-progress cycle head
+// must lay F3 out as a dynamic (offset) field, and the spec-dependent max on
+// B.F2 must propagate to every cycle member including C, which completes its
+// build before the head does.
+type cycleA struct {
+	F1 []cycleB `ssz-max:"4"`
+}
+
+type cycleB struct {
+	F2 []cycleC `ssz-max:"4" dynssz-max:"CYCLE_MAX"`
+}
+
+type cycleC struct {
+	F3 *cycleA
+}
+
+func TestContainerClosedRecursionRoundTrips(t *testing.T) {
+	ds := NewDynSsz(map[string]any{"CYCLE_MAX": uint64(8)}, WithNoFastSsz())
+
+	src := &cycleA{
+		F1: []cycleB{
+			{F2: []cycleC{
+				{F3: nil},
+				{F3: &cycleA{F1: []cycleB{{F2: []cycleC{{F3: nil}}}}}},
+			}},
+		},
+	}
+
+	buf, err := ds.MarshalSSZ(src)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var dst cycleA
+	if err = ds.UnmarshalSSZ(&dst, buf); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	buf2, err := ds.MarshalSSZ(&dst)
+	if err != nil {
+		t.Fatalf("re-marshal: %v", err)
+	}
+	if !bytes.Equal(buf, buf2) {
+		t.Fatalf("round-trip mismatch:\n first=%x\n second=%x", buf, buf2)
+	}
+	if _, err = ds.HashTreeRoot(src); err != nil {
+		t.Fatalf("hash tree root: %v", err)
+	}
+
+	// The C descriptor completed before the cycle head; its layout and flags
+	// must nonetheless reflect the finished graph.
+	descC, err := ds.typeCache.GetTypeDescriptor(reflect.TypeOf(cycleC{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("descriptor: %v", err)
+	}
+	if descC.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicMax == 0 {
+		t.Error("cycleC descriptor is missing the dynamic-max flag from its subtree")
+	}
+	if descC.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
+		t.Error("cycleC descriptor should be dynamic (contains a dynamic pointer field)")
+	}
+	if descC.ContainerDesc == nil || len(descC.ContainerDesc.DynFields) != 1 {
+		t.Errorf("cycleC should have exactly 1 dynamic field, got %+v", descC.ContainerDesc)
+	}
+}
+
+// The descriptor graph must come out identical no matter which type of the
+// cycle is built first: entering through the value type makes the list key the
+// cycle head, entering through the pointer makes the container the head.
+func TestRecursionEntryOrderIndependence(t *testing.T) {
+	src := &recursiveType{
+		Val: 1,
+		Children: []*recursiveType{
+			{Val: 2},
+			{Val: 3, Children: []*recursiveType{{Val: 4}}},
+		},
+	}
+
+	// Pointer-entry reference bytes.
+	dsPtr := NewDynSsz(nil, WithNoFastSsz())
+	want, err := dsPtr.MarshalSSZ(src)
+	if err != nil {
+		t.Fatalf("pointer-entry marshal: %v", err)
+	}
+
+	// Value-entry: prime the cache through the value type first.
+	dsVal := NewDynSsz(nil, WithNoFastSsz())
+	if _, err = dsVal.typeCache.GetTypeDescriptor(reflect.TypeOf(recursiveType{}), nil, nil, nil); err != nil {
+		t.Fatalf("value-entry descriptor: %v", err)
+	}
+	got, err := dsVal.MarshalSSZ(src)
+	if err != nil {
+		t.Fatalf("value-entry marshal: %v", err)
+	}
+	if !bytes.Equal(want, got) {
+		t.Fatalf("entry-order dependent encoding:\n pointer=%x\n value  =%x", want, got)
+	}
+
+	var dst recursiveType
+	if err = dsVal.UnmarshalSSZ(&dst, got); err != nil {
+		t.Fatalf("value-entry unmarshal: %v", err)
+	}
+	rootPtr, err := dsPtr.HashTreeRoot(src)
+	if err != nil {
+		t.Fatalf("pointer-entry root: %v", err)
+	}
+	rootVal, err := dsVal.HashTreeRoot(src)
+	if err != nil {
+		t.Fatalf("value-entry root: %v", err)
+	}
+	if rootPtr != rootVal {
+		t.Fatalf("entry-order dependent root: %x != %x", rootPtr, rootVal)
+	}
+}
+
+// Cycle types where a member implements the fastssz hasher interface. Its
+// subtree carries a spec-dependent max, so delegation to the (preset-baking)
+// fastssz method must be suppressed once the graph is complete.
+type fhCycleA struct {
+	F1 []fhCycleB `ssz-max:"4"`
+}
+
+type fhCycleB struct {
+	F2 []fhCycleC `ssz-max:"4" dynssz-max:"FH_MAX"`
+}
+
+type fhCycleC struct {
+	F3 *fhCycleA
+}
+
+// HashTreeRoot returns a sentinel root; it must never be used for this type
+// because its subtree depends on a runtime spec value.
+func (c *fhCycleC) HashTreeRoot() ([32]byte, error) {
+	return [32]byte{0xde, 0xad, 0xbe, 0xef}, nil
+}
+
+func TestRecursionSuppressesFastsszDelegation(t *testing.T) {
+	specs := map[string]any{"FH_MAX": uint64(8)}
+	src := &fhCycleA{F1: []fhCycleB{{F2: []fhCycleC{{F3: nil}}}}}
+
+	dsDefault := NewDynSsz(specs)
+	rootDefault, err := dsDefault.HashTreeRoot(src)
+	if err != nil {
+		t.Fatalf("default root: %v", err)
+	}
+
+	dsRefl := NewDynSsz(specs, WithNoFastSsz())
+	rootRefl, err := dsRefl.HashTreeRoot(src)
+	if err != nil {
+		t.Fatalf("reflection root: %v", err)
+	}
+
+	if rootDefault != rootRefl {
+		t.Fatalf("fastssz delegation not suppressed: default=%x reflection=%x", rootDefault, rootRefl)
+	}
+
+	descC, err := dsDefault.typeCache.GetTypeDescriptor(reflect.TypeOf(fhCycleC{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("descriptor: %v", err)
+	}
+	if descC.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0 {
+		t.Error("fastssz hasher flag should be suppressed for a spec-dependent subtree")
+	}
+}
+
+// A spec-dependent size (rather than max) inside the cycle must reach the
+// early-completing member as well, gating the fastssz marshal path.
+func TestRecursionPropagatesSpecSizeFlags(t *testing.T) {
+	ds := NewDynSsz(map[string]any{"DS_TAG": uint64(3)}, WithNoFastSsz())
+
+	src := &specSizeCycleA{
+		F1: []specSizeCycleB{
+			{Tag: []byte{1, 2, 3}, F2: []specSizeCycleC{{F3: nil}, {F3: &specSizeCycleA{}}}},
+		},
+	}
+	buf, err := ds.MarshalSSZ(src)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var dst specSizeCycleA
+	if err = ds.UnmarshalSSZ(&dst, buf); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	descC, err := ds.typeCache.GetTypeDescriptor(reflect.TypeOf(specSizeCycleC{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("descriptor: %v", err)
+	}
+	if descC.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize == 0 {
+		t.Error("cycle member is missing the dynamic-size flag from its subtree")
+	}
+}
+
+type specSizeCycleA struct {
+	F1 []specSizeCycleB `ssz-max:"4"`
+}
+
+type specSizeCycleB struct {
+	Tag []byte           `ssz-size:"2" dynssz-size:"DS_TAG"`
+	F2  []specSizeCycleC `ssz-max:"4"`
+}
+
+type specSizeCycleC struct {
+	F3 *specSizeCycleA
+}
+
+// Recursion through an optional field is presence-gated and therefore legal.
+func TestOptionalRecursionRoundTrips(t *testing.T) {
+	type optNode struct {
+		V    uint64
+		Next *optNode `ssz-type:"optional"`
+	}
+	ds := NewDynSsz(nil, WithExtendedTypes(), WithNoFastSsz())
+
+	src := &optNode{V: 1, Next: &optNode{V: 2, Next: &optNode{V: 3}}}
+	buf, err := ds.MarshalSSZ(src)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var dst optNode
+	if err = ds.UnmarshalSSZ(&dst, buf); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	buf2, err := ds.MarshalSSZ(&dst)
+	if err != nil {
+		t.Fatalf("re-marshal: %v", err)
+	}
+	if !bytes.Equal(buf, buf2) {
+		t.Fatalf("round-trip mismatch:\n first=%x\n second=%x", buf, buf2)
+	}
+}
+
+// Cycle types where a sibling after the recursive branch is not SSZ-encodable.
+// Members that finished before the failure were built against an abandoned
+// graph, so the failed build must not leave them cached.
+type failCycleA struct {
+	F1  []failCycleC `ssz-max:"4"`
+	Bad map[string]int
+}
+
+type failCycleC struct {
+	F3 *failCycleA
+}
+
+func TestFailedRecursiveBuildNotCached(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz())
+
+	if _, err := ds.MarshalSSZ(&failCycleA{}); err == nil {
+		t.Fatal("expected error for map field")
+	}
+
+	// The member must not be served from a poisoned cache: building it fresh
+	// reaches the map field again and must fail.
+	if _, err := ds.typeCache.GetTypeDescriptor(reflect.TypeOf(failCycleC{}), nil, nil, nil); err == nil {
+		t.Fatal("expected error when building the cycle member standalone")
 	}
 }
 
