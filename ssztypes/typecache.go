@@ -26,6 +26,19 @@ type typeKey struct {
 	schema  reflect.Type // The type that defines SSZ layout (may differ for views)
 }
 
+// hintSet identifies a descriptor build variant by the external hints it was
+// built with. A descriptor is a pure function of (type pair, hints, cache
+// configuration), so identical hints always yield an identical descriptor.
+type hintSet struct {
+	sizeHints    []SszSizeHint
+	maxSizeHints []SszMaxSizeHint
+	typeHints    []SszTypeHint
+}
+
+func (h *hintSet) matchesHints(sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) bool {
+	return slices.Equal(h.sizeHints, sizeHints) && slices.Equal(h.maxSizeHints, maxSizeHints) && slices.Equal(h.typeHints, typeHints)
+}
+
 // buildEntry tracks a descriptor currently under construction, for cycle
 // detection. depth is the variable-length nesting depth at which the build
 // started; a cycle re-entered at a strictly greater depth crossed a
@@ -35,29 +48,43 @@ type typeKey struct {
 // optional-hinted reference to it), and only a re-entry with identical hints is
 // a genuine cycle — anything else is a differently-shaped sibling descriptor.
 type buildEntry struct {
-	desc         *TypeDescriptor
-	depth        int
-	sizeHints    []SszSizeHint
-	maxSizeHints []SszMaxSizeHint
-	typeHints    []SszTypeHint
+	desc  *TypeDescriptor
+	depth int
+	hintSet
 }
 
-func (e *buildEntry) matchesHints(sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) bool {
-	return slices.Equal(e.sizeHints, sizeHints) && slices.Equal(e.maxSizeHints, maxSizeHints) && slices.Equal(e.typeHints, typeHints)
+// hintedVariant is a cached descriptor for a (type pair, hints) combination.
+// Hint-carrying references (field tags, size/max/type annotations) are common —
+// most Ethereum container fields carry ssz-size/ssz-max — and the same
+// combination recurs across every container referencing the type, so these are
+// cached alongside the hint-free descriptors instead of being rebuilt per
+// reference site.
+type hintedVariant struct {
+	desc *TypeDescriptor
+	hintSet
+}
+
+// pendingKey records a cache insertion of the current top-level build so a
+// failed build can purge it (entries cached during a failed recursive build
+// were built against an abandoned graph).
+type pendingKey struct {
+	key    typeKey
+	hinted bool
 }
 
 // TypeCache manages cached type descriptors
 type TypeCache struct {
-	specs         sszutils.DynamicSpecs
-	mutex         sync.RWMutex
-	descriptors   map[typeKey]*TypeDescriptor
-	building      map[typeKey][]*buildEntry
-	dynDepth      int
-	recursion     bool
-	pendingKeys   []typeKey
-	CompatFlags   map[string]SszCompatFlag
-	ExtendedTypes bool
-	NoDelegation  bool
+	specs             sszutils.DynamicSpecs
+	mutex             sync.RWMutex
+	descriptors       map[typeKey]*TypeDescriptor
+	hintedDescriptors map[typeKey][]*hintedVariant
+	building          map[typeKey][]*buildEntry
+	dynDepth          int
+	recursion         bool
+	pendingKeys       []pendingKey
+	CompatFlags       map[string]SszCompatFlag
+	ExtendedTypes     bool
+	NoDelegation      bool
 }
 
 // NewTypeCache creates a new type cache
@@ -73,11 +100,12 @@ func NewTypeCache(specs sszutils.DynamicSpecs) *TypeCache {
 		specs = emptySpecs{}
 	}
 	return &TypeCache{
-		specs:         specs,
-		descriptors:   make(map[typeKey]*TypeDescriptor),
-		building:      make(map[typeKey][]*buildEntry),
-		CompatFlags:   map[string]SszCompatFlag{},
-		ExtendedTypes: false,
+		specs:             specs,
+		descriptors:       make(map[typeKey]*TypeDescriptor),
+		hintedDescriptors: make(map[typeKey][]*hintedVariant),
+		building:          make(map[typeKey][]*buildEntry),
+		CompatFlags:       map[string]SszCompatFlag{},
+		ExtendedTypes:     false,
 	}
 }
 
@@ -181,8 +209,20 @@ func (tc *TypeCache) getTypeDescriptor(runtimeType, schemaType reflect.Type, siz
 	key := typeKey{runtime: runtimeType, schema: schemaType}
 	cacheable := len(sizeHints) == 0 && len(maxSizeHints) == 0 && len(typeHints) == 0
 
-	if desc, exists := tc.descriptors[key]; exists && cacheable {
-		return desc, nil
+	if cacheable {
+		if desc, exists := tc.descriptors[key]; exists {
+			return desc, nil
+		}
+	} else {
+		// Hint-carrying builds are cached per exact hint combination: the same
+		// (type, hints) pair recurs across every container referencing the type,
+		// and the descriptor depends only on the type pair, the hints and the
+		// cache configuration.
+		for _, variant := range tc.hintedDescriptors[key] {
+			if variant.matchesHints(sizeHints, maxSizeHints, typeHints) {
+				return variant.desc, nil
+			}
+		}
 	}
 
 	// Detect self-referential (recursive) types. The whole descriptor tree is
@@ -228,7 +268,7 @@ func (tc *TypeCache) getTypeDescriptor(runtimeType, schemaType reflect.Type, siz
 	// Allocate the descriptor before building its subtree so a recursive
 	// reference through a variable-length collection can back-patch to it.
 	desc := &TypeDescriptor{Type: runtimeType, SchemaType: schemaType}
-	tc.building[key] = append(tc.building[key], &buildEntry{desc: desc, depth: tc.dynDepth, sizeHints: sizeHints, maxSizeHints: maxSizeHints, typeHints: typeHints})
+	tc.building[key] = append(tc.building[key], &buildEntry{desc: desc, depth: tc.dynDepth, hintSet: hintSet{sizeHints: sizeHints, maxSizeHints: maxSizeHints, typeHints: typeHints}})
 	defer func() {
 		// Builds nest strictly, so this build's entry is the last one pushed.
 		entries := tc.building[key]
@@ -243,19 +283,40 @@ func (tc *TypeCache) getTypeDescriptor(runtimeType, schemaType reflect.Type, siz
 		// A cycle member completes and is cached before the cycle head finishes.
 		// If the head's build fails afterwards, those members were built against
 		// an abandoned graph and never flag-fixed; purge them so a later build
-		// cannot read a poisoned cache entry.
+		// cannot read a poisoned cache entry. Entries appended to a hinted
+		// variant list during this build sit at its tail, so reverse order pops
+		// them correctly even with multiple appends per key.
 		if topLevel && tc.recursion {
-			for _, k := range tc.pendingKeys {
-				delete(tc.descriptors, k)
+			for i := len(tc.pendingKeys) - 1; i >= 0; i-- {
+				pending := tc.pendingKeys[i]
+				if !pending.hinted {
+					delete(tc.descriptors, pending.key)
+					continue
+				}
+				variants := tc.hintedDescriptors[pending.key]
+				if len(variants) <= 1 {
+					delete(tc.hintedDescriptors, pending.key)
+				} else {
+					tc.hintedDescriptors[pending.key] = variants[:len(variants)-1]
+				}
 			}
 		}
 		return nil, err
 	}
 
-	// Cache only if no size hints (cacheable)
 	if cacheable {
 		tc.descriptors[key] = desc
-		tc.pendingKeys = append(tc.pendingKeys, key)
+		tc.pendingKeys = append(tc.pendingKeys, pendingKey{key: key})
+	} else {
+		// Clone the hint slices: they may alias a caller-owned parse result or a
+		// sub-slice of a parent's hints, while the cached variant must own its key.
+		variant := &hintedVariant{desc: desc, hintSet: hintSet{
+			sizeHints:    slices.Clone(sizeHints),
+			maxSizeHints: slices.Clone(maxSizeHints),
+			typeHints:    slices.Clone(typeHints),
+		}}
+		tc.hintedDescriptors[key] = append(tc.hintedDescriptors[key], variant)
+		tc.pendingKeys = append(tc.pendingKeys, pendingKey{key: key, hinted: true})
 	}
 
 	// A build that involved a recursive cycle has descriptors that read

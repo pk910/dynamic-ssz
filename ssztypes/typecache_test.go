@@ -4935,3 +4935,32 @@ func TestGetTypeHashRecursive(t *testing.T) {
 		t.Fatal("recursive descriptor hash is not stable")
 	}
 }
+
+// purgeFailA/purgeFailC form a legal recursive cycle with a later invalid
+// sibling, so the top-level build fails after cycle members (including a
+// hint-carrying list variant) were cached.
+type purgeFailA struct {
+	F1  []purgeFailC `ssz-max:"4"`
+	Bad map[string]int
+}
+
+type purgeFailC struct {
+	F3 *purgeFailA
+}
+
+// A failed recursive build must leave neither plain descriptors nor hinted
+// variants behind: everything cached during the build was built against an
+// abandoned graph.
+func TestFailedRecursiveBuildPurgesCaches(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(&purgeFailA{}), nil, nil, nil); err == nil {
+		t.Fatal("expected error for map field")
+	}
+	if n := len(cache.descriptors); n != 0 {
+		t.Errorf("plain cache should be empty after failed recursive build, has %d entries", n)
+	}
+	if n := len(cache.hintedDescriptors); n != 0 {
+		t.Errorf("hinted cache should be empty after failed recursive build, has %d entries", n)
+	}
+}

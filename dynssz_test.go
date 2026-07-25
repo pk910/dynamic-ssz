@@ -2041,6 +2041,53 @@ func TestOptionalRecursionRoundTrips(t *testing.T) {
 	}
 }
 
+// hintedShareList carries a size annotation, so references to it resolve with
+// external hints derived from the annotation.
+type hintedShareList []uint16
+
+var _ = sszutils.Annotate[hintedShareList](`ssz-max:"8"`)
+
+type hintedShareParentA struct {
+	L hintedShareList
+	T []uint64 `ssz-max:"16"`
+	U []uint64 `ssz-max:"32"`
+}
+
+type hintedShareParentB struct {
+	L hintedShareList
+	T []uint64 `ssz-max:"16"`
+	U []uint64 `ssz-max:"64"`
+}
+
+// Hint-carrying references are cached per exact hint combination: the same
+// (type, hints) pair resolves to one shared descriptor across all reference
+// sites, while different hints keep distinct descriptors.
+func TestHintedDescriptorSharing(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	da, err := ds.typeCache.GetTypeDescriptor(reflect.TypeOf(hintedShareParentA{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("descriptor A: %v", err)
+	}
+	db, err := ds.typeCache.GetTypeDescriptor(reflect.TypeOf(hintedShareParentB{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("descriptor B: %v", err)
+	}
+
+	if da.ContainerDesc.Fields[0].Type != db.ContainerDesc.Fields[0].Type {
+		t.Error("annotation-derived field descriptors with identical hints should be shared")
+	}
+	if da.ContainerDesc.Fields[1].Type != db.ContainerDesc.Fields[1].Type {
+		t.Error("field-tagged descriptors with identical hints should be shared")
+	}
+	if da.ContainerDesc.Fields[2].Type == db.ContainerDesc.Fields[2].Type {
+		t.Error("descriptors with different hints must stay distinct")
+	}
+	if la, lb := da.ContainerDesc.Fields[2].Type.Limit, db.ContainerDesc.Fields[2].Type.Limit; la != 32 || lb != 64 {
+		t.Errorf("distinct-hint descriptors carry wrong limits: %d/%d", la, lb)
+	}
+}
+
 // Cycle types where a sibling after the recursive branch is not SSZ-encodable.
 // Members that finished before the failure were built against an abandoned
 // graph, so the failed build must not leave them cached.

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"go/types"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -64,6 +65,28 @@ type CodegenInfo struct {
 //
 // Fields:
 //   - cache: Type descriptor cache to avoid recomputing analysis for the same types
+//
+// parserHintedVariant is a cached descriptor for a (type pair, hints)
+// combination; the descriptor is a pure function of both plus the parser
+// configuration, so identical hints always yield an identical descriptor.
+type parserHintedVariant struct {
+	desc         *ssztypes.TypeDescriptor
+	typeHints    []ssztypes.SszTypeHint
+	sizeHints    []ssztypes.SszSizeHint
+	maxSizeHints []ssztypes.SszMaxSizeHint
+}
+
+func (v *parserHintedVariant) matchesHints(typeHints []ssztypes.SszTypeHint, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint) bool {
+	return slices.Equal(v.typeHints, typeHints) && slices.Equal(v.sizeHints, sizeHints) && slices.Equal(v.maxSizeHints, maxSizeHints)
+}
+
+// parserPendingKey records a cache insertion of the current top-level build so
+// a failed build can purge it.
+type parserPendingKey struct {
+	key    string
+	hinted bool
+}
+
 type Parser struct {
 	cache         map[string]*ssztypes.TypeDescriptor
 	CompatFlags   map[string]ssztypes.SszCompatFlag
@@ -80,14 +103,19 @@ type Parser struct {
 	building map[string]int
 	dynDepth int
 
+	// hintedCache caches builds with external hints, matched by exact hint
+	// equality: the same (type pair, hints) combination recurs across every
+	// container referencing the type.
+	hintedCache map[string][]*parserHintedVariant
+
 	// recursion is set when a build hands out an in-progress descriptor to close
 	// a legal cycle; the top-level entry then re-derives the child-propagated
-	// flags over the completed graph. pendingKeys records the cache keys added
-	// during the current top-level build so a failed build can purge them — the
-	// cache is populated before a descriptor is built, so entries from a failed
-	// build are incomplete and must not be served later.
+	// flags over the completed graph. pendingKeys records the cache insertions
+	// of the current top-level build so a failed build can purge them — the
+	// plain cache is populated before a descriptor is built, so entries from a
+	// failed build are incomplete and must not be served later.
 	recursion   bool
-	pendingKeys []string
+	pendingKeys []parserPendingKey
 
 	// AnnotationResolver returns the merged ssz annotation tag for a type (or "").
 	// It lets the parser read a referenced, fully-delegated type's ssz-static
@@ -116,6 +144,7 @@ func NewParser() *Parser {
 		cache:       make(map[string]*ssztypes.TypeDescriptor),
 		CompatFlags: map[string]ssztypes.SszCompatFlag{},
 		building:    make(map[string]int),
+		hintedCache: make(map[string][]*parserHintedVariant),
 	}
 }
 
@@ -186,10 +215,22 @@ func (p *Parser) GetTypeDescriptorWithSchema(dataType, schemaType types.Type, ty
 
 	desc, err := p.buildTypeDescriptor(dataType, schemaType, typeHints, sizeHints, maxSizeHints)
 	if err != nil {
-		// The cache is populated before a descriptor is built, so a failed build
-		// leaves incomplete entries behind; purge everything cached on the way.
-		for _, key := range p.pendingKeys {
-			delete(p.cache, key)
+		// The plain cache is populated before a descriptor is built, so a failed
+		// build leaves incomplete entries behind; purge everything cached on the
+		// way. Hinted variants appended during this build sit at their list's
+		// tail, so reverse order pops them correctly.
+		for i := len(p.pendingKeys) - 1; i >= 0; i-- {
+			pending := p.pendingKeys[i]
+			if !pending.hinted {
+				delete(p.cache, pending.key)
+				continue
+			}
+			variants := p.hintedCache[pending.key]
+			if len(variants) <= 1 {
+				delete(p.hintedCache, pending.key)
+			} else {
+				p.hintedCache[pending.key] = variants[:len(variants)-1]
+			}
 		}
 		return nil, err
 	}
@@ -299,7 +340,8 @@ func (p *Parser) fullyDelegatesSSZ(t types.Type) bool {
 
 //nolint:gocyclo // SSZ type descriptor builder is inherently complex
 func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints []ssztypes.SszTypeHint, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint) (*ssztypes.TypeDescriptor, error) {
-	// Only cache when types match and no hints provided
+	// Only cache in the plain descriptor cache when types match and no hints
+	// are provided; hint-carrying builds are cached per exact hint combination.
 	cacheable := dataType == schemaType && len(typeHints) == 0 && len(sizeHints) == 0 && len(maxSizeHints) == 0
 	typeKey := fmt.Sprintf("%v|%v", dataType.String(), schemaType.String())
 	if cacheable && p.cache[typeKey] != nil {
@@ -326,6 +368,22 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		}
 		return p.cache[typeKey], nil
 	}
+	if !cacheable {
+		// The same (type pair, hints) combination recurs across every reference
+		// site (most container fields carry ssz-size/ssz-max tags), and the
+		// descriptor depends only on the type pair, the hints and the parser
+		// configuration — reuse instead of re-analyzing per reference.
+		for _, variant := range p.hintedCache[typeKey] {
+			if variant.matchesHints(typeHints, sizeHints, maxSizeHints) {
+				return variant.desc, nil
+			}
+		}
+	}
+
+	// The hint parameters may be reassigned below when a type-level annotation
+	// supplies them; the cache variant must be keyed by the hints the CALLER
+	// passed, so capture them before any reassignment.
+	callerTypeHints, callerSizeHints, callerMaxSizeHints := typeHints, sizeHints, maxSizeHints
 
 	// Create descriptor with both data and schema types
 	codegenInfo := &CodegenInfo{Type: dataType, SchemaType: schemaType}
@@ -336,7 +394,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 
 	if cacheable {
 		p.cache[typeKey] = desc
-		p.pendingKeys = append(p.pendingKeys, typeKey)
+		p.pendingKeys = append(p.pendingKeys, parserPendingKey{key: typeKey})
 		p.building[typeKey] = p.dynDepth
 		defer delete(p.building, typeKey)
 	}
@@ -947,6 +1005,23 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 
 	p.detectCompatFlags(desc, originalType, innerDataType, innerSchemaType)
 
+	// When caller-level hints override the type's own annotation, don't delegate
+	// to the type's generated methods — they have the annotation's limits baked
+	// in. Process inline instead so the hints are respected. Gated on the hints
+	// the caller passed (annotation-derived hints assigned above do not count),
+	// mirroring the reflection typecache.
+	if (len(callerSizeHints) > 0 || len(callerMaxSizeHints) > 0) && desc.SszType != ssztypes.SszCustomType {
+		desc.SszCompatFlags &^= ssztypes.SszCompatFlagDynamicMarshaler |
+			ssztypes.SszCompatFlagDynamicUnmarshaler |
+			ssztypes.SszCompatFlagDynamicSizer |
+			ssztypes.SszCompatFlagDynamicHashRoot |
+			ssztypes.SszCompatFlagDynamicEncoder |
+			ssztypes.SszCompatFlagDynamicDecoder |
+			ssztypes.SszCompatFlagFastSSZMarshaler |
+			ssztypes.SszCompatFlagFastSSZHasher |
+			ssztypes.SszCompatFlagHashTreeRootWith
+	}
+
 	// Optional and optional-list reshape the encoding around the inner type
 	// (presence byte / List[T,1] framing). The inner type's own SSZ methods
 	// must not be invoked at this level — they would skip the framing and
@@ -981,6 +1056,20 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		if !isCompatible {
 			return nil, fmt.Errorf("custom ssz type requires fastssz marshaler, unmarshaler and hasher implementations")
 		}
+	}
+
+	if !cacheable {
+		// Cache the hinted build under the caller's hints. Clone the slices: they
+		// may alias a caller-owned parse result, while the cached variant must
+		// own its key.
+		variant := &parserHintedVariant{
+			desc:         desc,
+			typeHints:    slices.Clone(callerTypeHints),
+			sizeHints:    slices.Clone(callerSizeHints),
+			maxSizeHints: slices.Clone(callerMaxSizeHints),
+		}
+		p.hintedCache[typeKey] = append(p.hintedCache[typeKey], variant)
+		p.pendingKeys = append(p.pendingKeys, parserPendingKey{key: typeKey, hinted: true})
 	}
 
 	return desc, nil
@@ -1149,21 +1238,6 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 		typeDesc, err := p.buildTypeDescriptor(dataFieldType, schemaFieldType, typeHints, sizeHints, maxSizeHints)
 		if err != nil {
 			return fmt.Errorf("failed to build field %v descriptor: %v", schemaField.Name(), err)
-		}
-
-		// When field tags provide explicit size/max hints, don't delegate to the
-		// type's generated methods — they have the type's own annotation baked in.
-		// Generate inline code instead so the field-level hints are respected.
-		if (len(sizeHints) > 0 || len(maxSizeHints) > 0) && typeDesc.SszType != ssztypes.SszCustomType {
-			typeDesc.SszCompatFlags &^= ssztypes.SszCompatFlagDynamicMarshaler |
-				ssztypes.SszCompatFlagDynamicUnmarshaler |
-				ssztypes.SszCompatFlagDynamicSizer |
-				ssztypes.SszCompatFlagDynamicHashRoot |
-				ssztypes.SszCompatFlagDynamicEncoder |
-				ssztypes.SszCompatFlagDynamicDecoder |
-				ssztypes.SszCompatFlagFastSSZMarshaler |
-				ssztypes.SszCompatFlagFastSSZHasher |
-				ssztypes.SszCompatFlagHashTreeRootWith
 		}
 
 		fieldDesc := ssztypes.FieldDescriptor{

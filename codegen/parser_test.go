@@ -180,6 +180,44 @@ func TestParserAcceptsListBoundedRecursion(t *testing.T) {
 	}
 }
 
+// Hint-carrying references are cached per exact hint combination: the same
+// (type, hints) pair resolves to one shared descriptor across all reference
+// sites, while different hints keep distinct descriptors.
+func TestParserHintedDescriptorSharing(t *testing.T) {
+	newContainer := func(name, tag string) *types.Named {
+		named := types.NewNamed(types.NewTypeName(token.NoPos, nil, name, nil), nil, nil)
+		named.SetUnderlying(types.NewStruct(
+			[]*types.Var{types.NewField(token.NoPos, nil, "F", types.NewSlice(types.Typ[types.Uint16]), false)},
+			[]string{tag},
+		))
+		return named
+	}
+
+	parser := NewParser()
+	da, err := parser.GetTypeDescriptor(newContainer("shareParentA", `ssz-max:"16"`), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("descriptor A: %v", err)
+	}
+	db, err := parser.GetTypeDescriptor(newContainer("shareParentB", `ssz-max:"16"`), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("descriptor B: %v", err)
+	}
+	dc, err := parser.GetTypeDescriptor(newContainer("shareParentC", `ssz-max:"32"`), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("descriptor C: %v", err)
+	}
+
+	if da.ContainerDesc.Fields[0].Type != db.ContainerDesc.Fields[0].Type {
+		t.Error("field descriptors with identical hints should be shared")
+	}
+	if da.ContainerDesc.Fields[0].Type == dc.ContainerDesc.Fields[0].Type {
+		t.Error("descriptors with different hints must stay distinct")
+	}
+	if la, lc := da.ContainerDesc.Fields[0].Type.Limit, dc.ContainerDesc.Fields[0].Type.Limit; la != 16 || lc != 32 {
+		t.Errorf("distinct-hint descriptors carry wrong limits: %d/%d", la, lc)
+	}
+}
+
 // A cycle that closes through a container field, with a spec expression inside
 // the cycle. The member that completes before the cycle head must still end up
 // with the expression flag from its subtree and a dynamic (offset) layout for
