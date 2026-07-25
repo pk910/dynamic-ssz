@@ -4937,10 +4937,12 @@ func TestGetTypeHashRecursive(t *testing.T) {
 }
 
 // purgeFailA/purgeFailC form a legal recursive cycle with a later invalid
-// sibling, so the top-level build fails after cycle members (including a
-// hint-carrying list variant) were cached.
+// sibling, so the top-level build fails after cycle members were cached. The
+// two differently-hinted references to the same list type leave two hinted
+// variants under one cache key, so the purge walks both branches.
 type purgeFailA struct {
 	F1  []purgeFailC `ssz-max:"4"`
+	F2  []purgeFailC `ssz-max:"8"`
 	Bad map[string]int
 }
 
@@ -4962,5 +4964,20 @@ func TestFailedRecursiveBuildPurgesCaches(t *testing.T) {
 	}
 	if n := len(cache.hintedDescriptors); n != 0 {
 		t.Errorf("hinted cache should be empty after failed recursive build, has %d entries", n)
+	}
+}
+
+// A nil child in the descriptor graph must serialize as an explicit missing
+// reference rather than panicking or aliasing index 0.
+func TestMarshalCyclicDescriptorNilChild(t *testing.T) {
+	desc := &TypeDescriptor{
+		SszType: SszContainerType,
+		ContainerDesc: &ContainerDescriptor{
+			Fields: []FieldDescriptor{{Name: "X", Type: nil}},
+		},
+	}
+	out := string(marshalCyclicDescriptor(desc))
+	if !strings.Contains(out, "=-1") {
+		t.Fatalf("nil child should serialize as -1 reference, got: %s", out)
 	}
 }

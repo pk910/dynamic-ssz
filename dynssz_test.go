@@ -2041,6 +2041,65 @@ func TestOptionalRecursionRoundTrips(t *testing.T) {
 	}
 }
 
+// recUnionNode is a recursive type carrying a union member, so the recursion
+// flag fixup and the cyclic type-hash serialization both traverse union
+// variants.
+type recUnionNode struct {
+	U CompatibleUnion[struct {
+		V1 uint32
+		V2 uint64
+	}]
+	Children []*recUnionNode `ssz-max:"4"`
+}
+
+func TestRecursiveTypeWithUnion(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz())
+
+	src := &recUnionNode{
+		U: CompatibleUnion[struct {
+			V1 uint32
+			V2 uint64
+		}]{Variant: 1, Data: uint64(7)},
+		Children: []*recUnionNode{
+			{U: CompatibleUnion[struct {
+				V1 uint32
+				V2 uint64
+			}]{Variant: 0, Data: uint32(3)}},
+		},
+	}
+
+	buf, err := ds.MarshalSSZ(src)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var dst recUnionNode
+	if err = ds.UnmarshalSSZ(&dst, buf); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	buf2, err := ds.MarshalSSZ(&dst)
+	if err != nil {
+		t.Fatalf("re-marshal: %v", err)
+	}
+	if !bytes.Equal(buf, buf2) {
+		t.Fatalf("round-trip mismatch:\n first=%x\n second=%x", buf, buf2)
+	}
+
+	// The cyclic descriptor graph containing a union must hash deterministically
+	// and not collapse to the empty-input hash.
+	desc, err := ds.typeCache.GetTypeDescriptor(reflect.TypeOf(recUnionNode{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("descriptor: %v", err)
+	}
+	hash := desc.GetTypeHash()
+	if hash == ([32]byte{}) || hash != desc.GetTypeHash() {
+		t.Fatal("cyclic union descriptor hash should be non-trivial and stable")
+	}
+	empty := sha256.Sum256(nil)
+	if hash == empty {
+		t.Fatal("cyclic union descriptor hashed to the empty-input hash")
+	}
+}
+
 // hintedShareList carries a size annotation, so references to it resolve with
 // external hints derived from the annotation.
 type hintedShareList []uint16

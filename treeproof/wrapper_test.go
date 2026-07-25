@@ -671,6 +671,11 @@ func TestWrapperCommitAliases(t *testing.T) {
 		build(func(w *Wrapper) { w.MerkleizeProgressiveWithMixin(0, 3) })) {
 		t.Error("CommitProgressiveWithMixin should match MerkleizeProgressiveWithMixin")
 	}
+	activeFields := []byte{0x07}
+	if !bytes.Equal(build(func(w *Wrapper) { w.CommitProgressiveWithActiveFields(0, activeFields) }),
+		build(func(w *Wrapper) { w.MerkleizeProgressiveWithActiveFields(0, activeFields) })) {
+		t.Error("CommitProgressiveWithActiveFields should match MerkleizeProgressiveWithActiveFields")
+	}
 
 	// AddEmpty adds a zero leaf like the internal addEmpty.
 	w := NewWrapper()
@@ -718,6 +723,15 @@ func TestWrapperHashToleratesUnflushedBuffer(t *testing.T) {
 	got := w.Hash()
 	if !bytes.Equal(got, v[:]) {
 		t.Fatalf("Hash() = %x; want %x", got, v[:])
+	}
+
+	// With more than 32 buffered bytes, Hash() peeks the most recent chunk.
+	var v2 [32]byte
+	v2[0] = 0x44
+	w.AppendBytes32(v2[:])
+	got = w.Hash()
+	if !bytes.Equal(got, v2[:]) {
+		t.Fatalf("Hash() after second chunk = %x; want %x", got, v2[:])
 	}
 
 	empty := NewWrapper()

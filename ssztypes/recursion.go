@@ -104,12 +104,11 @@ func FixupRecursiveFlags(root *TypeDescriptor) {
 				continue
 			}
 
+			// Custom types can never reach this point: they derive nothing in the
+			// switch above, so their compat flags are preserved unconditionally.
 			desc.SszTypeFlags |= raised
 			changed = true
 
-			if desc.SszType == SszCustomType {
-				continue
-			}
 			if raised&SszTypeFlagHasDynamicSize != 0 {
 				desc.SszCompatFlags &^= SszCompatFlagFastSSZMarshaler
 			}
