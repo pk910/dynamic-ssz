@@ -340,11 +340,13 @@ func (w *Wrapper) Node() *Node {
 	return w.nodes[0]
 }
 
-// Hash returns the most recent 32-byte chunk of the wrapper's state without
-// mutating it, mirroring hasher.Hasher.Hash(). It peeks the pending Append*
-// buffer when present (the latest data not yet merkleized), otherwise the last
-// committed node. Used for verbose/debug logging between subvalues, so it
-// tolerates both an unflushed buffer and an empty node list.
+// Hash returns the most recent data of the wrapper's state without mutating
+// it: the trailing bytes of the pending Append* buffer when present (up to 32
+// bytes — fewer when the buffer is not chunk-aligned, like
+// hasher.Hasher.Hash()), otherwise the last committed node's hash. An entirely
+// empty wrapper yields a 32-byte zero chunk. Used for verbose/debug logging
+// between subvalues, so it tolerates both an unflushed buffer and an empty
+// node list.
 func (w *Wrapper) Hash() []byte {
 	if n := len(w.buf); n > 0 {
 		start := 0
