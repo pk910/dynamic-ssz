@@ -216,7 +216,9 @@ type Advanced struct {
 `ssz-type:"-"` removes a field from the SSZ layout entirely: it is not
 encoded, decoded, sized or hashed, and its Go type does not need to be
 SSZ-compatible. This is useful for caches, computed values, or metadata kept
-alongside the SSZ data. On decode the field is left at its zero value.
+alongside the SSZ data. On decode the field is left **unchanged** — it is
+skipped, not reset, so when decoding into a reused object it keeps its previous
+value. Clear or reinitialize such fields yourself if you need them zeroed.
 
 ```go
 type Block struct {

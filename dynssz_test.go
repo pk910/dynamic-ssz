@@ -2636,6 +2636,47 @@ func TestFastsszSszTagHonored(t *testing.T) {
 	})
 }
 
+// inconsistentSizeCustom is a custom SSZ type whose reported size (8 bytes) disagrees
+// with the 4 bytes it actually encodes. As a variable-size custom field its
+// offset is computed from the lying size, so the marshaled length ends up
+// shorter than the precomputed total.
+type inconsistentSizeCustom struct{ X uint64 }
+
+func (b *inconsistentSizeCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 8 }
+
+func (b *inconsistentSizeCustom) MarshalSSZEncoder(_ sszutils.DynamicSpecs, e sszutils.Encoder) error {
+	e.EncodeUint32(uint32(b.X)) // writes only 4 bytes, contradicting SizeSSZDyn
+	return nil
+}
+
+func (b *inconsistentSizeCustom) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, _ sszutils.Decoder) error {
+	return nil
+}
+
+func (b *inconsistentSizeCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+// The streaming marshal path enforces the same length==SizeSSZ guard the buffer
+// path has, so an inconsistent nested marshaler is rejected on both paths rather
+// than streaming malformed SSZ from the writer path alone.
+func TestMarshalSSZWriterLengthGuard(t *testing.T) {
+	type outer struct {
+		Inner inconsistentSizeCustom `ssz-type:"custom"`
+	}
+	ds := NewDynSsz(nil, WithExtendedTypes())
+	v := &outer{Inner: inconsistentSizeCustom{X: 1}}
+
+	if _, err := ds.MarshalSSZ(v); err == nil {
+		t.Fatal("MarshalSSZ (buffer) should reject a size/length mismatch")
+	}
+
+	var buf bytes.Buffer
+	if err := ds.MarshalSSZWriter(v, &buf); err == nil {
+		t.Fatal("MarshalSSZWriter (stream) should reject a size/length mismatch")
+	}
+}
+
 // The reflection field-tag parser rejects a dimension that is dynamic (`?`) in
 // ssz-size but fixed via dynssz-size, so it never silently turns a list into a
 // vector (which diverges from the generated code).

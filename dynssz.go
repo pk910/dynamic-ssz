@@ -473,13 +473,28 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 
 	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
 
+	size, err := ctx.SizeSSZ(sourceTypeDesc, sourceValue)
+	if err != nil {
+		return err
+	}
+
 	err = ctx.MarshalSSZ(sourceTypeDesc, sourceValue, encoder)
 	if err != nil {
 		return err
 	}
 
 	encoder.Flush()
-	return encoder.GetWriteError()
+	if werr := encoder.GetWriteError(); werr != nil {
+		return werr
+	}
+
+	// Parity with the buffer path: reject output whose length disagrees with the
+	// precomputed size (e.g. a nested delegated marshaler whose SizeSSZ contradicts
+	// the bytes it writes), which would otherwise stream malformed SSZ silently.
+	if uint32(encoder.GetPosition()) != size {
+		return fmt.Errorf("ssz length does not match expected length (expected: %v, got: %v)", size, encoder.GetPosition())
+	}
+	return nil
 }
 
 // SizeSSZ calculates the size of the given source object when serialized using SSZ encoding.
@@ -998,6 +1013,10 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...Ca
 //
 // Note: For progressive containers (with ssz-index tags), the tree structure will be
 // progressive rather than binary, which affects the generalized indices of fields.
+//
+// The returned tree lazily caches node hashes on first proof, so it is not safe
+// to share across goroutines before it is finalized. Call tree.Hash() once before
+// handing it to concurrent Prove/ProveMulti callers.
 func (d *DynSsz) GetTree(source any, opts ...CallOption) (*treeproof.Node, error) {
 	if source == nil {
 		return nil, sszutils.NewSszError(sszutils.ErrInvalidValueRange, "source must not be nil")

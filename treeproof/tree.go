@@ -672,6 +672,12 @@ func hashNode(n *Node) []byte {
 
 // Prove returns a list of sibling values and hashes needed
 // to compute the root hash for a given general index.
+//
+// Thread-safety: Prove lazily computes and caches intermediate node hashes on
+// first use, so it is not safe to call concurrently on a freshly built,
+// unfinalized tree. Finalize the tree once by calling Hash() before sharing it
+// across goroutines; afterwards concurrent Prove/ProveMulti calls only read the
+// cached hashes.
 func (n *Node) Prove(index int) (*Proof, error) {
 	if index < 1 {
 		return nil, fmt.Errorf("invalid generalized index %d (must be >= 1)", index)
@@ -722,6 +728,9 @@ func (n *Node) Prove(index int) (*Proof, error) {
 // It collects the leaf values at each index and the minimal set of auxiliary
 // hashes needed to reconstruct the root. Returns an error if any index cannot
 // be found in the tree.
+//
+// Thread-safety: like Prove, this lazily caches node hashes, so finalize the tree
+// with Hash() before sharing it across goroutines (see Prove).
 func (n *Node) ProveMulti(indices []int) (*Multiproof, error) {
 	for _, gi := range indices {
 		if gi < 1 {

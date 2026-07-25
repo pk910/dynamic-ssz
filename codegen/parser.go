@@ -400,12 +400,16 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	// such a type declares ssz-static, build a shallow descriptor from that
 	// declaration and skip traversing — and validating — its subtree.
 	//
-	// This only applies to EXTERNAL types (getCompatFlag == 0): a type that is
-	// itself being generated in this run is registered in CompatFlags and must be
-	// traversed so its own code can be emitted, regardless of whether it appears
-	// at the top level or as a field of another generated type. Field-level hints
-	// are already handled inline by the caller (it strips delegation flags).
-	if p.AnnotationResolver != nil && len(typeHints) == 0 && len(sizeHints) == 0 && len(maxSizeHints) == 0 && p.getCompatFlag(innerDataType, innerSchemaType) == 0 && p.fullyDelegatesSSZ(originalType) {
+	// This only applies to EXTERNAL types: a type that is itself being generated
+	// in this run is registered in CompatFlags and must be traversed so its own
+	// code can be emitted, regardless of whether it appears at the top level or as
+	// a field of another generated type. A generated type registers both its plain
+	// data key and any data|view pairings, so it is recognized when reached through
+	// either a plain or a view reference; external fully-delegated types are
+	// registered under neither. Field-level hints are already handled inline by the
+	// caller (it strips delegation flags).
+	beingGenerated := p.getCompatFlag(innerDataType, innerSchemaType) != 0 || p.getCompatFlag(innerDataType, innerDataType) != 0
+	if p.AnnotationResolver != nil && len(typeHints) == 0 && len(sizeHints) == 0 && len(maxSizeHints) == 0 && !beingGenerated && p.fullyDelegatesSSZ(originalType) {
 		if staticStr, ok := reflect.StructTag(p.AnnotationResolver(originalType)).Lookup("ssz-static"); ok {
 			switch staticStr {
 			case "true":

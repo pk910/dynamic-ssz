@@ -734,7 +734,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 			viewName := getViewFnName(desc)
 			err = generateMarshal(desc, codeBuilder, typePrinter, viewName, options)
 			if err != nil {
-				return fmt.Errorf("failed to generate marshal for %s: %w", desc.Type.Name(), err)
+				return fmt.Errorf("failed to generate marshal for %s: %w", viewName, err)
 			}
 		}
 	}
@@ -754,7 +754,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 			viewName := getViewFnName(desc)
 			err = generateEncoder(desc, codeBuilder, typePrinter, viewName, options)
 			if err != nil {
-				return fmt.Errorf("failed to generate encoder for %s: %w", desc.Type.Name(), err)
+				return fmt.Errorf("failed to generate encoder for %s: %w", viewName, err)
 			}
 		}
 	}
@@ -777,7 +777,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 			viewName := getViewFnName(desc)
 			err = generateUnmarshal(desc, codeBuilder, typePrinter, viewName, options)
 			if err != nil {
-				return fmt.Errorf("failed to generate unmarshal for %s: %w", desc.Type.Name(), err)
+				return fmt.Errorf("failed to generate unmarshal for %s: %w", viewName, err)
 			}
 		}
 	}
@@ -797,7 +797,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 			viewName := getViewFnName(desc)
 			err = generateDecoder(desc, codeBuilder, typePrinter, viewName, options)
 			if err != nil {
-				return fmt.Errorf("failed to generate decoder for %s: %w", desc.Type.Name(), err)
+				return fmt.Errorf("failed to generate decoder for %s: %w", viewName, err)
 			}
 		}
 	}
@@ -820,7 +820,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 			viewName := getViewFnName(desc)
 			err = generateSize(desc, codeBuilder, typePrinter, viewName, options)
 			if err != nil {
-				return fmt.Errorf("failed to generate size for %s: %w", desc.Type.Name(), err)
+				return fmt.Errorf("failed to generate size for %s: %w", viewName, err)
 			}
 		}
 	}
@@ -846,7 +846,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 			viewName := getViewFnName(desc)
 			err = generateHashTreeRoot(desc, codeBuilder, typePrinter, viewName, options)
 			if err != nil {
-				return fmt.Errorf("failed to generate hash tree root for %s: %w", desc.Type.Name(), err)
+				return fmt.Errorf("failed to generate hash tree root for %s: %w", viewName, err)
 			}
 		}
 	}
