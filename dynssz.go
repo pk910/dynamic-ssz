@@ -676,6 +676,12 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 //     "unknown size" mode: the entire stream is read until EOF into memory and decoded
 //     through the buffer path, so the memory savings of streaming do not apply.
 //
+// Known limitation: unknown-size mode (size < 0) reads the reader to EOF with no
+// upper bound, so it must not be used on untrusted streams — a peer that streams
+// unbounded data (or never closes the connection) can exhaust memory. For
+// untrusted input, pass the exact size, or wrap the reader in an io.LimitReader
+// and supply that limit as size.
+//
 // Returns:
 //   - error: An error if decoding fails due to:
 //   - I/O read failures

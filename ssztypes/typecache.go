@@ -1246,25 +1246,27 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 		fi++
 	}
 
-	// Determine if this is a progressive container
-	// A container is progressive if it has ssz-index annotations on fields
-	// If it's progressive, all fields must have increasing ssz-index tags
-	if hasAnyIndexTag {
-		// For progressive containers, ensure all ssz-index values are properly set
-		// and validate they are in increasing order
+	// A container is progressive if it carries ssz-index annotations on fields or
+	// was declared progressive via the ssz-type hint. Assign the active-field
+	// indices: a tagged field keeps its (strictly increasing) index; an untagged
+	// field takes the previous field's index + 1. With no tags at all this yields
+	// the default 0, 1, 2, ... sequence, so a progressive container never falls
+	// back to all-zero indices (which would emit a 1-bit active_fields bitvector
+	// for N field roots — illegal per EIP-7495).
+	if hasAnyIndexTag || desc.SszType == SszProgressiveContainerType {
+		nextIndex := uint16(0)
 		for i := 0; i < len(desc.ContainerDesc.Fields); i++ {
 			field := &desc.ContainerDesc.Fields[i]
-			if sszIndex := sszIndexes[i]; sszIndex == nil {
-				return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "progressive container field %s missing ssz-index tag", field.Name)
+			if i < len(sszIndexes) && sszIndexes[i] != nil {
+				if *sszIndexes[i] < nextIndex {
+					return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "progressive container requires increasing ssz-index values (field %s has index %d, expected >= %d)",
+						field.Name, *sszIndexes[i], nextIndex)
+				}
+				field.SszIndex = *sszIndexes[i]
+			} else {
+				field.SszIndex = nextIndex
 			}
-		}
-
-		// Verify indices are increasing
-		for i := 1; i < len(desc.ContainerDesc.Fields); i++ {
-			if desc.ContainerDesc.Fields[i].SszIndex <= desc.ContainerDesc.Fields[i-1].SszIndex {
-				return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "progressive container requires increasing ssz-index values (field %s has index %d, previous field has %d)",
-					desc.ContainerDesc.Fields[i].Name, desc.ContainerDesc.Fields[i].SszIndex, desc.ContainerDesc.Fields[i-1].SszIndex)
-			}
+			nextIndex = field.SszIndex + 1
 		}
 
 		desc.SszType = SszProgressiveContainerType

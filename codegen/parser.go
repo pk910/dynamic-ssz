@@ -1177,19 +1177,24 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 	}
 	desc.ContainerDesc = containerDesc
 
-	// A container with ssz-index tags is a progressive container. All fields must
-	// carry the tag and the indices must strictly increase.
-	if hasAnyIndexTag {
-		for i, has := range fieldHasIndex {
-			if !has {
-				return fmt.Errorf("progressive container field %s missing ssz-index tag", fields[i].Name)
+	// A container is progressive if it carries ssz-index tags or was declared
+	// progressive via the ssz-type hint. Assign active-field indices: a tagged
+	// field keeps its (strictly increasing) index; an untagged field takes the
+	// previous field's index + 1. With no tags this yields the default 0, 1, 2, ...
+	// sequence, so a progressive container never falls back to all-zero indices
+	// (a 1-bit active_fields bitvector for N field roots is illegal per EIP-7495).
+	if hasAnyIndexTag || desc.SszType == ssztypes.SszProgressiveContainerType {
+		nextIndex := uint16(0)
+		for i := range fields {
+			if i < len(fieldHasIndex) && fieldHasIndex[i] {
+				if fields[i].SszIndex < nextIndex {
+					return fmt.Errorf("progressive container requires increasing ssz-index values (field %s has index %d, expected >= %d)",
+						fields[i].Name, fields[i].SszIndex, nextIndex)
+				}
+			} else {
+				fields[i].SszIndex = nextIndex
 			}
-		}
-		for i := 1; i < len(fields); i++ {
-			if fields[i].SszIndex <= fields[i-1].SszIndex {
-				return fmt.Errorf("progressive container requires increasing ssz-index values (field %s has index %d, previous field has %d)",
-					fields[i].Name, fields[i].SszIndex, fields[i-1].SszIndex)
-			}
+			nextIndex = fields[i].SszIndex + 1
 		}
 		desc.SszType = ssztypes.SszProgressiveContainerType
 	}

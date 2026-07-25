@@ -484,20 +484,43 @@ func TestTypeCache_ProgressiveContainerErrors(t *testing.T) {
 		}
 	})
 
-	t.Run("MissingIndexTag", func(t *testing.T) {
+	t.Run("UntaggedFieldAutoIndexed", func(t *testing.T) {
 		type TestStruct struct {
 			Field1 uint32 `ssz-index:"0"`
-			Field2 uint32 // mising index tag
+			Field2 uint32 // untagged: auto-indexed to previous + 1
 		}
 
-		// This should work fine (no index tags)
-		_, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
-		if err == nil {
-			t.Error("Expected error for missing ssz-index")
-			return
+		// An untagged field takes the previous field's index + 1.
+		desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
 		}
-		if !strings.Contains(err.Error(), "progressive container field Field2 missing ssz-index tag") {
-			t.Errorf("Unexpected error: %s", err.Error())
+		if desc.SszType != SszProgressiveContainerType {
+			t.Fatalf("expected progressive container, got %v", desc.SszType)
+		}
+		if got := desc.ContainerDesc.Fields[1].SszIndex; got != 1 {
+			t.Errorf("Field2 auto-index = %d; want 1", got)
+		}
+	})
+
+	t.Run("HintDeclaredNoTagsAutoIndexed", func(t *testing.T) {
+		// A progressive container declared via the ssz-type hint with no ssz-index
+		// tags must get sequential indices 0,1,2 (not all-zero, which would emit a
+		// 1-bit active_fields bitvector for 3 field roots).
+		type TestStruct struct {
+			A uint32
+			B uint32
+			C uint32
+		}
+		desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil,
+			[]SszTypeHint{{Type: SszProgressiveContainerType}})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		for i, want := range []uint16{0, 1, 2} {
+			if got := desc.ContainerDesc.Fields[i].SszIndex; got != want {
+				t.Errorf("field %d auto-index = %d; want %d", i, got, want)
+			}
 		}
 	})
 
@@ -2654,6 +2677,21 @@ func TestTypeCache_AnnotationMaxExprResolution(t *testing.T) {
 	}
 	if desc.SszTypeFlags&SszTypeFlagHasDynamicMax == 0 {
 		t.Error("expected SszTypeFlagHasDynamicMax to be set")
+	}
+}
+
+// A dimension marked dynamic (`?`) in ssz-size but fixed in dynssz-size is
+// contradictory (list vs vector) and must be rejected, so codegen and reflection
+// agree instead of encoding the field differently. The reverse (fixed ssz-size
+// relaxed to dynamic via dynssz-size:"?") stays valid.
+func TestParseTags_DynamicStaticSizeConflict(t *testing.T) {
+	if _, _, _, err := ParseTags(`ssz-size:"?,32" dynssz-size:"SOME_SPEC,32"`); err == nil ||
+		!strings.Contains(err.Error(), "conflicting size tags") {
+		t.Fatalf("expected conflicting size tags error, got %v", err)
+	}
+
+	if _, _, _, err := ParseTags(`ssz-size:"32" dynssz-size:"?"`); err != nil {
+		t.Fatalf("fixed ssz-size relaxed to dynamic should be allowed, got %v", err)
 	}
 }
 

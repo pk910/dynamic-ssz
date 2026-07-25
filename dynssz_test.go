@@ -2585,6 +2585,72 @@ func TestSizeSSZEnforcesListLimit(t *testing.T) {
 	}
 }
 
+// The reflection engine honors the plain fastssz `ssz` tag as an ssz-type when
+// no ssz-type is set, so it agrees with fastssz delegation instead of silently
+// diverging. `ssz:"-"` excludes the field; setting both tags is rejected.
+func TestFastsszSszTagHonored(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz())
+
+	t.Run("BitlistTreatedAsType", func(t *testing.T) {
+		type viaSsz struct {
+			B []byte `ssz:"bitlist" ssz-max:"16"`
+		}
+		type viaSszType struct {
+			B []byte `ssz-type:"bitlist" ssz-max:"16"`
+		}
+		bl := []byte{0x0f, 0x01} // valid bitlist with terminator bit
+		r1, err := ds.HashTreeRoot(&viaSsz{B: bl})
+		if err != nil {
+			t.Fatalf(`ssz:"bitlist": %v`, err)
+		}
+		r2, err := ds.HashTreeRoot(&viaSszType{B: bl})
+		if err != nil {
+			t.Fatalf(`ssz-type:"bitlist": %v`, err)
+		}
+		if r1 != r2 {
+			t.Fatalf(`ssz:"bitlist" root %x != ssz-type:"bitlist" root %x`, r1, r2)
+		}
+	})
+
+	t.Run("DashExcludesField", func(t *testing.T) {
+		type excl struct {
+			A     uint64
+			Cache uint64 `ssz:"-"`
+		}
+		buf, err := ds.MarshalSSZ(&excl{A: 7, Cache: 99})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if len(buf) != 8 {
+			t.Fatalf("excluded field should not be encoded; got %d bytes, want 8", len(buf))
+		}
+	})
+
+	t.Run("BothTagsRejected", func(t *testing.T) {
+		type both struct {
+			B []byte `ssz:"bitlist" ssz-type:"bitlist" ssz-max:"16"`
+		}
+		if _, err := ds.HashTreeRoot(&both{B: []byte{0x01}}); err == nil {
+			t.Fatal("setting both 'ssz' and 'ssz-type' should be rejected")
+		}
+	})
+}
+
+// The reflection field-tag parser rejects a dimension that is dynamic (`?`) in
+// ssz-size but fixed via dynssz-size, so it never silently turns a list into a
+// vector (which diverges from the generated code).
+func TestReflectionRejectsDynamicStaticSizeConflict(t *testing.T) {
+	type T struct {
+		M [][32]byte `ssz-size:"?,32" dynssz-size:"COMMITTEE,32"`
+	}
+	ds := NewDynSsz(map[string]any{"COMMITTEE": uint64(4)}, WithNoFastSsz())
+
+	v := &T{M: [][32]byte{{}, {}, {}, {}}}
+	if _, err := ds.HashTreeRoot(v); err == nil {
+		t.Fatal("expected conflicting size tags error")
+	}
+}
+
 // A list of optionals interleaves deferred child subtrees (present elements)
 // with raw zero chunks (nil elements) in the incremental hasher; the roots
 // must match an independent manual merkleization for every ordering.
