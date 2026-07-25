@@ -117,6 +117,7 @@ func NewDynSsz(specs map[string]any, options ...DynSszOption) *DynSsz {
 	}
 	dynssz.typeCache = ssztypes.NewTypeCache(dynssz)
 	dynssz.typeCache.ExtendedTypes = opts.ExtendedTypes
+	dynssz.typeCache.NoDelegation = opts.NoDelegation
 
 	return dynssz
 }
@@ -219,7 +220,7 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 
 	// Skip view descriptor logic for types implementing DynamicMarshaler (they handle their own serialization)
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if marshaler, ok := source.(sszutils.DynamicMarshaler); ok {
+		if marshaler, ok := source.(sszutils.DynamicMarshaler); ok && !d.options.NoDelegation {
 			var buf []byte
 			if sizer, ok := source.(sszutils.DynamicSizer); ok {
 				size := sizer.SizeSSZDyn(d)
@@ -229,7 +230,7 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 			}
 			return marshaler.MarshalSSZDyn(d, buf)
 		}
-	} else if viewMarshaler, ok := source.(sszutils.DynamicViewMarshaler); ok {
+	} else if viewMarshaler, ok := source.(sszutils.DynamicViewMarshaler); ok && !d.options.NoDelegation {
 		if marshalFn := viewMarshaler.MarshalSSZDynView(cfg.viewDescriptor); marshalFn != nil {
 			var buf []byte
 			if sizer, ok := source.(sszutils.DynamicViewSizer); ok {
@@ -258,14 +259,17 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 		return nil, err
 	}
 
-	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
 
 	size, err := ctx.SizeSSZ(sourceTypeDesc, sourceValue)
 	if err != nil {
 		return nil, err
 	}
 
-	if int64(size) > int64(math.MaxInt) {
+	// SSZ sizes are uint32; reject only what cannot be represented as an int on
+	// this platform (never trips on 64-bit, guards make() on 32-bit). SizeSSZ
+	// applies the same ceiling so the two paths agree.
+	if uint64(size) > uint64(math.MaxInt) {
 		return nil, fmt.Errorf("SSZ size %d exceeds platform int max", size)
 	}
 
@@ -319,10 +323,10 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 
 	// Skip view descriptor logic for types implementing DynamicMarshaler
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if marshaler, ok := source.(sszutils.DynamicMarshaler); ok {
+		if marshaler, ok := source.(sszutils.DynamicMarshaler); ok && !d.options.NoDelegation {
 			return marshaler.MarshalSSZDyn(d, buf)
 		}
-	} else if viewMarshaler, ok := source.(sszutils.DynamicViewMarshaler); ok {
+	} else if viewMarshaler, ok := source.(sszutils.DynamicViewMarshaler); ok && !d.options.NoDelegation {
 		if marshalFn := viewMarshaler.MarshalSSZDynView(cfg.viewDescriptor); marshalFn != nil {
 			return marshalFn(d, buf)
 		}
@@ -339,7 +343,7 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 		return nil, err
 	}
 
-	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
 
 	// Grow buf so the serialized data can be appended without overrunning its
 	// capacity (BufferEncoder writes at len(buf) using cap(buf) directly).
@@ -347,7 +351,10 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 	if err != nil {
 		return nil, err
 	}
-	if int64(size) > int64(math.MaxInt)-int64(len(buf)) {
+	// SSZ sizes are uint32; reject only what cannot be represented as an int on
+	// this platform, accounting for the existing buffer length so len(buf)+size
+	// cannot overflow int. SizeSSZ applies the same ceiling so the paths agree.
+	if uint64(size) > uint64(math.MaxInt)-uint64(len(buf)) {
 		return nil, fmt.Errorf("SSZ size %d exceeds platform int max", size)
 	}
 	needed := len(buf) + int(size)
@@ -432,7 +439,7 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 
 	// Skip view descriptor logic for types implementing DynamicEncoder
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if sszEncoder, ok := source.(sszutils.DynamicEncoder); ok {
+		if sszEncoder, ok := source.(sszutils.DynamicEncoder); ok && !d.options.NoDelegation {
 			err := sszEncoder.MarshalSSZEncoder(d, encoder)
 			if err != nil {
 				return err
@@ -441,7 +448,7 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 			encoder.Flush()
 			return encoder.GetWriteError()
 		}
-	} else if viewEncoder, ok := source.(sszutils.DynamicViewEncoder); ok {
+	} else if viewEncoder, ok := source.(sszutils.DynamicViewEncoder); ok && !d.options.NoDelegation {
 		if marshalFn := viewEncoder.MarshalSSZEncoderView(cfg.viewDescriptor); marshalFn != nil {
 			err := marshalFn(d, encoder)
 			if err != nil {
@@ -464,7 +471,7 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 		return err
 	}
 
-	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
 
 	err = ctx.MarshalSSZ(sourceTypeDesc, sourceValue, encoder)
 	if err != nil {
@@ -515,10 +522,10 @@ func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error) {
 
 	// Skip view descriptor logic for types implementing DynamicSizer
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if sizer, ok := source.(sszutils.DynamicSizer); ok {
+		if sizer, ok := source.(sszutils.DynamicSizer); ok && !d.options.NoDelegation {
 			return sizer.SizeSSZDyn(d), nil
 		}
-	} else if viewSizer, ok := source.(sszutils.DynamicViewSizer); ok {
+	} else if viewSizer, ok := source.(sszutils.DynamicViewSizer); ok && !d.options.NoDelegation {
 		sizeFn := viewSizer.SizeSSZDynView(cfg.viewDescriptor)
 		if sizeFn != nil {
 			return sizeFn(d), nil
@@ -536,18 +543,23 @@ func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error) {
 		return 0, err
 	}
 
-	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
 
 	size, err := ctx.SizeSSZ(sourceTypeDesc, sourceValue)
 	if err != nil {
 		return 0, err
 	}
 
-	if size > math.MaxInt32 {
-		return 0, fmt.Errorf("SSZ size %d exceeds maximum int32", size)
+	// SSZ sizes are uint32; only reject what cannot be represented as an int on
+	// this platform. On 64-bit the full uint32 range is valid; on 32-bit a size
+	// above the int max cannot be returned safely. int64 holds every uint32, so
+	// the bound check and conversion operate on the same value.
+	sz := int64(size)
+	if sz > math.MaxInt {
+		return 0, fmt.Errorf("SSZ size %d exceeds platform int max", size)
 	}
 
-	return int(size), nil
+	return int(sz), nil
 }
 
 // UnmarshalSSZ decodes the given SSZ-encoded data into the target object.
@@ -589,10 +601,10 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 
 	// Skip view descriptor logic for types implementing DynamicUnmarshaler
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if unmarshaler, ok := target.(sszutils.DynamicUnmarshaler); ok {
+		if unmarshaler, ok := target.(sszutils.DynamicUnmarshaler); ok && !d.options.NoDelegation {
 			return unmarshaler.UnmarshalSSZDyn(d, ssz)
 		}
-	} else if viewUnmarshaler, ok := target.(sszutils.DynamicViewUnmarshaler); ok {
+	} else if viewUnmarshaler, ok := target.(sszutils.DynamicViewUnmarshaler); ok && !d.options.NoDelegation {
 		if unmarshalFn := viewUnmarshaler.UnmarshalSSZDynView(cfg.viewDescriptor); unmarshalFn != nil {
 			return unmarshalFn(d, ssz)
 		}
@@ -617,7 +629,7 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 		return fmt.Errorf("target pointer must not be nil")
 	}
 
-	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
 
 	decoder := sszutils.NewBufferDecoder(ssz)
 	decoder.PushLimit(len(ssz))
@@ -660,7 +672,9 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 //   - net.Conn for network reception
 //   - bytes.Reader for in-memory data
 //   - Any custom io.Reader implementation
-//   - size: The expected total size of the SSZ data in bytes.
+//   - size: The expected total size of the SSZ data in bytes. A negative size enables
+//     "unknown size" mode: the entire stream is read until EOF into memory and decoded
+//     through the buffer path, so the memory savings of streaming do not apply.
 //
 // Returns:
 //   - error: An error if decoding fails due to:
@@ -693,7 +707,7 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 //	    log.Fatal("Failed to read state:", err)
 //	}
 //
-//	// Read from network with unknown size
+//	// Read from network with unknown size (reads until EOF, buffers in memory)
 //	conn, _ := net.Dial("tcp", "localhost:8080")
 //	var block phase0.BeaconBlock
 //	err = ds.UnmarshalSSZReader(&block, conn, -1)
@@ -704,13 +718,24 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 	if r == nil {
 		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "reader must not be nil")
 	}
+
+	// Unknown size: SSZ needs the total length to resolve trailing dynamic
+	// regions, so read the whole stream and decode through the buffer path.
+	if size < 0 {
+		data, err := io.ReadAll(r)
+		if err != nil {
+			return fmt.Errorf("failed to read ssz stream: %w", err)
+		}
+		return d.UnmarshalSSZ(target, data, opts...)
+	}
+
 	cfg := applyCallOptions(opts)
 	decoder := sszutils.NewStreamDecoder(r, size, d.options.StreamReaderBufferSize)
 	decoder.PushLimit(size)
 
 	// Skip view descriptor logic for types implementing DynamicDecoder
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if sszDecoder, ok := target.(sszutils.DynamicDecoder); ok {
+		if sszDecoder, ok := target.(sszutils.DynamicDecoder); ok && !d.options.NoDelegation {
 			err := sszDecoder.UnmarshalSSZDecoder(d, decoder)
 			if err != nil {
 				return err
@@ -723,7 +748,7 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 
 			return nil
 		}
-	} else if viewDecoder, ok := target.(sszutils.DynamicViewDecoder); ok {
+	} else if viewDecoder, ok := target.(sszutils.DynamicViewDecoder); ok && !d.options.NoDelegation {
 		if unmarshalFn := viewDecoder.UnmarshalSSZDecoderView(cfg.viewDescriptor); unmarshalFn != nil {
 			err := unmarshalFn(d, decoder)
 			if err != nil {
@@ -758,7 +783,7 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 		return fmt.Errorf("target pointer must not be nil")
 	}
 
-	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
 
 	err = ctx.UnmarshalSSZ(targetTypeDesc, targetValue, decoder)
 	if err != nil {
@@ -880,14 +905,14 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...Ca
 
 	// Skip view descriptor logic for types implementing DynamicHashRoot
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if hasher, ok := source.(sszutils.DynamicHashRoot); ok {
+		if hasher, ok := source.(sszutils.DynamicHashRoot); ok && !d.options.NoDelegation {
 			err := hasher.HashTreeRootWithDyn(d, hh)
 			if err != nil {
 				return err
 			}
 			return nil
 		}
-	} else if viewHasher, ok := source.(sszutils.DynamicViewHashRoot); ok {
+	} else if viewHasher, ok := source.(sszutils.DynamicViewHashRoot); ok && !d.options.NoDelegation {
 		if hashFn := viewHasher.HashTreeRootWithDynView(cfg.viewDescriptor); hashFn != nil {
 			err := hashFn(d, hh)
 			if err != nil {
@@ -908,7 +933,7 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...Ca
 		return err
 	}
 
-	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
 
 	err = ctx.HashTreeRoot(sourceTypeDesc, sourceValue, hh)
 	if err != nil {

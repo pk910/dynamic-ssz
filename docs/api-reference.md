@@ -216,6 +216,11 @@ func (d *DynSsz) ResolveSpecValue(name string) (bool, uint64, error)
 
 Resolves a specification value by name or expression. Results are cached.
 
+Expressions support integer arithmetic only: `+ - * / %` and parentheses over
+unsigned integer literals and spec identifiers, evaluated with exact uint64
+precision across the full value range. Division rounds up (ceil), since
+partial bytes/bits cannot be serialized.
+
 **Returns**: whether the value was found, the resolved value, and any parse error.
 
 ### GetTypeCache

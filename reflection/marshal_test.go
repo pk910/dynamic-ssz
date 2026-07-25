@@ -1718,7 +1718,7 @@ func TestMarshalDynamicListNonSeekableSizeError(t *testing.T) {
 	elemDescCopy.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
 	listDesc.ElemDesc = &elemDescCopy
 
-	ctx := reflection.NewReflectionCtx(nil, nil, false, true)
+	ctx := reflection.NewReflectionCtx(nil, nil, false, true, false)
 	encoder := sszutils.NewStreamEncoder(bytes.NewBuffer(nil), 0)
 	data := []DynElem{{Value: 1}, {Value: 2}}
 	err = ctx.MarshalSSZ(listDesc, reflect.ValueOf(data), encoder)

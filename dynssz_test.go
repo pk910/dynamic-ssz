@@ -6,8 +6,11 @@ package dynssz
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"math/big"
@@ -252,6 +255,57 @@ func TestUnmarshalSSZReaderReflectionSuccess(t *testing.T) {
 	}
 }
 
+func TestUnmarshalSSZReaderUnknownSize(t *testing.T) {
+	type dynContainer struct {
+		Value uint32
+		List  []uint16 `ssz-max:"16"`
+	}
+
+	ds := NewDynSsz(nil, WithNoFastSsz())
+
+	// A negative size reads the stream until EOF, so both fixed and dynamic
+	// types must decode without a caller-supplied length.
+	container := &testSimpleContainer{}
+	err := ds.UnmarshalSSZReader(container, bytes.NewReader([]byte{0x2a, 0, 0, 0}), -1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if container.Value != 42 {
+		t.Fatalf("expected 42, got %d", container.Value)
+	}
+
+	src := &dynContainer{Value: 7, List: []uint16{1, 2, 3}}
+	data, err := ds.MarshalSSZ(src)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	decoded := &dynContainer{}
+	err = ds.UnmarshalSSZReader(decoded, bytes.NewReader(data), -1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if decoded.Value != 7 || len(decoded.List) != 3 || decoded.List[2] != 3 {
+		t.Fatalf("unexpected decode result: %+v", decoded)
+	}
+
+	// Trailing garbage still has to be rejected in unknown-size mode.
+	err = ds.UnmarshalSSZReader(&testSimpleContainer{}, bytes.NewReader([]byte{0x2a, 0, 0, 0, 0xff}), -1)
+	if err == nil {
+		t.Fatal("expected error for trailing bytes in unknown-size mode")
+	}
+
+	// A read failure while draining the stream must surface as an error.
+	err = ds.UnmarshalSSZReader(&testSimpleContainer{}, errorReader{errors.New("read boom")}, -1)
+	if err == nil {
+		t.Fatal("expected error when the reader fails in unknown-size mode")
+	}
+}
+
+// errorReader always fails, exercising the io.ReadAll error path.
+type errorReader struct{ err error }
+
+func (r errorReader) Read([]byte) (int, error) { return 0, r.err }
+
 // ValidateType tests
 
 func TestValidateTypeSuccess(t *testing.T) {
@@ -359,7 +413,7 @@ func TestResolveSpecValueInvalidExpression(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid expression")
 	}
-	if !strings.Contains(err.Error(), "error parsing dynamic spec expression") {
+	if !strings.Contains(err.Error(), "unsupported dynamic spec expression") {
 		t.Fatalf("expected parsing error, got: %v", err)
 	}
 }
@@ -392,15 +446,8 @@ type testLargeContainer struct {
 	Data []byte `ssz-size:"2147483648"` // MaxInt32 + 1
 }
 
-func TestSizeSSZExceedsMaxInt32(t *testing.T) {
-	ds := NewDynSsz(nil, WithNoFastSsz())
-	container := &testLargeContainer{}
-
-	_, err := ds.SizeSSZ(container)
-	if err == nil || !strings.Contains(err.Error(), "exceeds maximum int32") {
-		t.Fatalf("expected 'exceeds maximum int32' error, got: %v", err)
-	}
-}
+// SizeSSZ platform behavior for >MaxInt32 sizes is covered by
+// TestSizeAboveMaxInt32 (accepted on 64-bit, rejected on 32-bit).
 
 // skipUnless32Bit skips the test on platforms where int is wider than 32 bits.
 func skipUnless32Bit(t *testing.T) {
@@ -2452,5 +2499,524 @@ func TestBigIntMaxEnforced(t *testing.T) {
 	}
 	if _, err := ds.MarshalSSZ(&T{N: *big.NewInt(0xfffff)}); err == nil {
 		t.Error("expected error for big.Int exceeding ssz-max")
+	}
+}
+
+// A list of optionals interleaves deferred child subtrees (present elements)
+// with raw zero chunks (nil elements) in the incremental hasher; the roots
+// must match an independent manual merkleization for every ordering.
+func TestHashTreeRootOptionalListOrdering(t *testing.T) {
+	type optInner struct {
+		A uint64
+		B uint64
+	}
+	type optList struct {
+		L []*optInner `ssz-max:"16" ssz-type:"?,optional"`
+	}
+
+	hashPair := func(a, b [32]byte) [32]byte {
+		var buf [64]byte
+		copy(buf[:32], a[:])
+		copy(buf[32:], b[:])
+		return sha256.Sum256(buf[:])
+	}
+	chunkU64 := func(v uint64) [32]byte {
+		var c [32]byte
+		binary.LittleEndian.PutUint64(c[:8], v)
+		return c
+	}
+	manualRoot := func(elems []*optInner) [32]byte {
+		leaves := make([][32]byte, 16)
+		for i, e := range elems {
+			if e != nil {
+				leaves[i] = hashPair(chunkU64(e.A), chunkU64(e.B))
+			}
+		}
+		level := leaves
+		for len(level) > 1 {
+			next := make([][32]byte, len(level)/2)
+			for i := range next {
+				next[i] = hashPair(level[2*i], level[2*i+1])
+			}
+			level = next
+		}
+		return hashPair(level[0], chunkU64(uint64(len(elems))))
+	}
+
+	ds := NewDynSsz(nil, WithExtendedTypes())
+	cases := [][]*optInner{
+		{{A: 1, B: 2}, nil},
+		{nil, {A: 1, B: 2}},
+		{{A: 1, B: 2}, nil, {A: 3, B: 4}},
+		{{A: 1, B: 2}, {A: 3, B: 4}},
+		{nil, nil},
+	}
+	for _, c := range cases {
+		got, err := ds.HashTreeRoot(&optList{L: c})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if want := manualRoot(c); got != want {
+			t.Errorf("case %v: got %x want %x", c, got[:8], want[:8])
+		}
+	}
+}
+
+// Spec expressions restricted to the arithmetic subset evaluate with exact
+// uint64 arithmetic (full precision beyond 2^53); division rounds up (ceil),
+// since partial bytes/bits cannot be serialized.
+func TestResolveSpecValueIntegerExpressions(t *testing.T) {
+	big := uint64(1) << 53
+	ds := NewDynSsz(map[string]any{
+		"BIG": big,
+		"A":   uint64(10),
+		"B":   uint64(3),
+	})
+
+	cases := []struct {
+		expr     string
+		resolved bool
+		value    uint64
+	}{
+		{"BIG + 1", true, big + 1},
+		{"BIG * 2 + 1", true, big*2 + 1},
+		{"(A + B) * 2", true, 26},
+		{"A / B", true, 4},  // ceil division
+		{"12 / B", true, 4}, // exact division stays exact
+		{"A % B", true, 1},
+		{"A - B", true, 7},
+		{"UNDEFINED + 1", false, 0}, // unknown identifier -> static fallback
+	}
+	for _, tc := range cases {
+		ok, val, err := ds.ResolveSpecValue(tc.expr)
+		if err != nil {
+			t.Errorf("%q: unexpected error: %v", tc.expr, err)
+			continue
+		}
+		if ok != tc.resolved || (ok && val != tc.value) {
+			t.Errorf("%q: got ok=%v val=%d, want ok=%v val=%d", tc.expr, ok, val, tc.resolved, tc.value)
+		}
+	}
+
+	// genuine evaluation errors
+	for _, expr := range []string{"A / 0", "A % 0", "B - A", "BIG * BIG * BIG"} {
+		if _, _, err := ds.ResolveSpecValue(expr); err == nil {
+			t.Errorf("%q: expected error", expr)
+		}
+	}
+
+	// expressions beyond the integer arithmetic subset are rejected
+	for _, expr := range []string{"A > B ? A : B", "A == B", "A << 2"} {
+		if _, _, err := ds.ResolveSpecValue(expr); err == nil {
+			t.Errorf("%q: expected unsupported-expression error", expr)
+		}
+	}
+}
+
+// MarshalSSZ / MarshalSSZTo must enforce the same size ceiling SizeSSZ does,
+// so a tiny input with a large ssz-size cannot force a giant allocation that
+// SizeSSZ would reject.
+// SSZ sizes are uint32 (offsets are 4 bytes), so a size above MaxInt32 is
+// valid on 64-bit and must be accepted by SizeSSZ and the encode paths; only
+// 32-bit platforms (where int cannot hold it) reject it.
+func TestSizeAboveMaxInt32(t *testing.T) {
+	type bigVec struct {
+		V []byte `ssz-size:"2147483648"` // 2^31, just over MaxInt32
+	}
+	ds := NewDynSsz(nil)
+	v := &bigVec{V: []byte{1, 2}}
+
+	size, err := ds.SizeSSZ(v)
+	if math.MaxInt == math.MaxInt32 {
+		if err == nil {
+			t.Fatal("expected SizeSSZ to reject a >MaxInt32 size on a 32-bit platform")
+		}
+		return
+	}
+
+	// 64-bit: the size is representable and must be reported exactly. Compare
+	// via int64 so the literal does not overflow int at compile time on 32-bit
+	// (this branch is unreachable there).
+	if err != nil {
+		t.Fatalf("SizeSSZ rejected a valid >MaxInt32 size on 64-bit: %v", err)
+	}
+	if int64(size) != int64(2147483648) {
+		t.Fatalf("expected size 2147483648, got %d", size)
+	}
+
+	// Streaming marshal must produce the full padded output without a giant
+	// buffer allocation; the trailing zero-padding is discarded to io.Discard.
+	if err := ds.MarshalSSZWriter(v, io.Discard); err != nil {
+		t.Fatalf("MarshalSSZWriter of a >MaxInt32 vector failed: %v", err)
+	}
+}
+
+// delegationProbe is an ordinary container (one uint64 field) that also
+// implements the generated Dynamic* SSZ methods with a deliberately
+// non-canonical encoding. This lets a test tell which engine ran: delegation
+// yields the sentinel output, while the reflection walk yields the canonical
+// little-endian encoding of V.
+type delegationProbe struct {
+	V uint64
+}
+
+// delegationSentinel is the fixed output the delegated methods produce. Its
+// length differs from the 8-byte reflection encoding so both size and content
+// distinguish the two paths.
+var delegationSentinel = []byte{0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB}
+
+func (p *delegationProbe) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return len(delegationSentinel) }
+
+func (p *delegationProbe) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return append(buf, delegationSentinel...), nil
+}
+
+// UnmarshalSSZDyn ignores the input and stores a marker, so a decode that ran
+// through delegation is distinguishable from a reflection decode of the input.
+func (p *delegationProbe) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error {
+	p.V = 0xDECABE
+	return nil
+}
+
+func (p *delegationProbe) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(0xDEAD)
+	return nil
+}
+
+// TestNoDelegationForcesReflection verifies that WithNoDelegation bypasses a
+// type's own generated Dynamic* methods and drives every operation through the
+// reflection engine.
+func TestNoDelegationForcesReflection(t *testing.T) {
+	const v = uint64(0x0102030405060708)
+	canonical := binary.LittleEndian.AppendUint64(nil, v)
+
+	dsDelegate := NewDynSsz(nil)
+	dsReflect := NewDynSsz(nil, WithNoDelegation())
+
+	// Marshal + Size: delegation yields the sentinel, reflection the canonical
+	// little-endian field encoding.
+	if got, err := dsDelegate.MarshalSSZ(&delegationProbe{V: v}); err != nil || !bytes.Equal(got, delegationSentinel) {
+		t.Fatalf("delegating MarshalSSZ = %x, err %v; want sentinel", got, err)
+	}
+	if got, err := dsReflect.MarshalSSZ(&delegationProbe{V: v}); err != nil || !bytes.Equal(got, canonical) {
+		t.Fatalf("WithNoDelegation MarshalSSZ = %x, err %v; want %x (reflection)", got, err, canonical)
+	}
+	if got, _ := dsDelegate.SizeSSZ(&delegationProbe{V: v}); got != len(delegationSentinel) {
+		t.Fatalf("delegating SizeSSZ = %d; want %d", got, len(delegationSentinel))
+	}
+	if got, _ := dsReflect.SizeSSZ(&delegationProbe{V: v}); got != len(canonical) {
+		t.Fatalf("WithNoDelegation SizeSSZ = %d; want %d (reflection)", got, len(canonical))
+	}
+
+	// Unmarshal: delegation stores the marker, reflection decodes the input.
+	var pDelegate, pReflect delegationProbe
+	if err := dsDelegate.UnmarshalSSZ(&pDelegate, canonical); err != nil || pDelegate.V != 0xDECABE {
+		t.Fatalf("delegating UnmarshalSSZ V = %#x, err %v; want marker", pDelegate.V, err)
+	}
+	if err := dsReflect.UnmarshalSSZ(&pReflect, canonical); err != nil || pReflect.V != v {
+		t.Fatalf("WithNoDelegation UnmarshalSSZ V = %#x, err %v; want %#x (reflection)", pReflect.V, err, v)
+	}
+
+	// HashTreeRoot: the two paths produce different roots.
+	rootDelegate, err := dsDelegate.HashTreeRoot(&delegationProbe{V: v})
+	if err != nil {
+		t.Fatalf("delegating HashTreeRoot: %v", err)
+	}
+	rootReflect, err := dsReflect.HashTreeRoot(&delegationProbe{V: v})
+	if err != nil {
+		t.Fatalf("WithNoDelegation HashTreeRoot: %v", err)
+	}
+	if rootDelegate == rootReflect {
+		t.Fatalf("HashTreeRoot did not switch engines: both roots %x", rootDelegate)
+	}
+	if !bytes.Equal(rootReflect[:8], canonical) {
+		t.Fatalf("WithNoDelegation HashTreeRoot = %x; want field %x in the first chunk", rootReflect, canonical)
+	}
+}
+
+var (
+	customFastMarker = []byte{0xFA, 0xFA, 0xFA, 0xFA}
+	customDynMarker  = []byte{0xD9, 0xD9, 0xD9, 0xD9, 0xD9, 0xD9, 0xD9, 0xD9}
+)
+
+// customBoth is a custom SSZ type implementing both the fastssz and the dynssz
+// method sets with distinct outputs, so a test can tell which one an engine
+// chose.
+type customBoth struct{ V uint64 }
+
+var _ = sszutils.Annotate[customBoth](`ssz-type:"custom"`)
+
+func (c *customBoth) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return append(buf, customFastMarker...), nil
+}
+func (c *customBoth) MarshalSSZ() ([]byte, error) {
+	return append([]byte(nil), customFastMarker...), nil
+}
+func (c *customBoth) SizeSSZ() int                    { return len(customFastMarker) }
+func (c *customBoth) UnmarshalSSZ(_ []byte) error     { c.V = 0xFA; return nil }
+func (c *customBoth) HashTreeRoot() ([32]byte, error) { var r [32]byte; r[0] = 0xFA; return r, nil }
+
+func (c *customBoth) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return len(customDynMarker) }
+func (c *customBoth) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return append(buf, customDynMarker...), nil
+}
+func (c *customBoth) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { c.V = 0xD9; return nil }
+func (c *customBoth) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(0xD9)
+	return nil
+}
+
+// customDynOnly is a custom SSZ type that provides only the dynssz method set —
+// no fastssz methods at all — which the type cache must accept.
+type customDynOnly struct{ V uint64 }
+
+var _ = sszutils.Annotate[customDynOnly](`ssz-type:"custom"`)
+
+func (c *customDynOnly) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return len(customDynMarker) }
+func (c *customDynOnly) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return append(buf, customDynMarker...), nil
+}
+func (c *customDynOnly) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error {
+	c.V = 0xD9
+	return nil
+}
+func (c *customDynOnly) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(0xD9)
+	return nil
+}
+
+// Holders embed the custom types as a field so the operation runs through the
+// reflection walk's custom-type path (a top-level custom value would instead be
+// dispatched directly to its own method, bypassing both the type-cache
+// validation and the fastssz/dynssz selection under test).
+type (
+	customBothHolder    struct{ C customBoth }
+	customDynOnlyHolder struct{ C customDynOnly }
+)
+
+// TestCustomTypeFastsszOrDynssz covers the custom-type contract: a custom type
+// may implement either the fastssz or the dynssz methods per operation (at least
+// one each), and when both are present the spec-aware dynssz methods win.
+func TestCustomTypeFastsszOrDynssz(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	// A custom type providing only dynssz methods is accepted and usable.
+	dynEnc, err := ds.MarshalSSZ(&customDynOnlyHolder{})
+	if err != nil {
+		t.Fatalf("dynssz-only custom rejected: %v", err)
+	}
+	if !bytes.Contains(dynEnc, customDynMarker) {
+		t.Fatalf("dynssz-only custom marshal = %x, want it to contain %x", dynEnc, customDynMarker)
+	}
+
+	// A custom type implementing both prefers its dynssz methods across marshal,
+	// size and unmarshal.
+	enc, err := ds.MarshalSSZ(&customBothHolder{})
+	if err != nil {
+		t.Fatalf("custom MarshalSSZ failed: %v", err)
+	}
+	if !bytes.Contains(enc, customDynMarker) || bytes.Contains(enc, customFastMarker) {
+		t.Fatalf("custom marshal = %x, want dynssz output %x (not fastssz %x)", enc, customDynMarker, customFastMarker)
+	}
+
+	var back customBothHolder
+	if err := ds.UnmarshalSSZ(&back, enc); err != nil {
+		t.Fatalf("custom UnmarshalSSZ failed: %v", err)
+	}
+	if back.C.V != 0xD9 {
+		t.Fatalf("custom UnmarshalSSZ used marker %#x, want dynssz marker 0xD9", back.C.V)
+	}
+}
+
+// TestFloat32SignalingNaNPreserved verifies the reflection engine preserves a
+// float32's exact bit pattern across marshal/unmarshal/hash instead of
+// normalizing a signaling NaN's payload through a float64 round-trip (which
+// diverged from the generated code).
+func TestFloat32SignalingNaNPreserved(t *testing.T) {
+	ds := NewDynSsz(nil, WithExtendedTypes())
+
+	type holder struct {
+		F float32
+	}
+	const sigBits = uint32(0xffa045d0) // signaling NaN: exponent all-ones, quiet bit clear
+
+	enc, err := ds.MarshalSSZ(&holder{F: math.Float32frombits(sigBits)})
+	if err != nil {
+		t.Fatalf("MarshalSSZ: %v", err)
+	}
+	if got := binary.LittleEndian.Uint32(enc); got != sigBits {
+		t.Fatalf("marshal normalized the NaN: got %08x, want %08x", got, sigBits)
+	}
+
+	var back holder
+	if err := ds.UnmarshalSSZ(&back, enc); err != nil {
+		t.Fatalf("UnmarshalSSZ: %v", err)
+	}
+	if got := math.Float32bits(back.F); got != sigBits {
+		t.Fatalf("unmarshal normalized the NaN: got %08x, want %08x", got, sigBits)
+	}
+}
+
+// TestReflectionCoverageEdges exercises the custom-type hashing preference, the
+// pointer-to-fixed-vector reflection path, and the unknown-size streaming
+// unmarshal entry point.
+func TestReflectionCoverageEdges(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	// A custom type hashed through a container prefers its dynssz hasher.
+	if _, err := ds.HashTreeRoot(&customBothHolder{}); err != nil {
+		t.Fatalf("custom container HashTreeRoot: %v", err)
+	}
+
+	// A pointer to a fixed vector round-trips through the reflection vector path.
+	type ptrVec struct {
+		F *[]uint16 `ssz-size:"2"`
+	}
+	v := []uint16{7, 8}
+	enc, err := ds.MarshalSSZ(&ptrVec{F: &v})
+	if err != nil {
+		t.Fatalf("marshal ptrVec: %v", err)
+	}
+	var back ptrVec
+	if err := ds.UnmarshalSSZ(&back, enc); err != nil {
+		t.Fatalf("unmarshal ptrVec: %v", err)
+	}
+	if back.F == nil || len(*back.F) != 2 || (*back.F)[0] != 7 || (*back.F)[1] != 8 {
+		t.Fatalf("ptrVec round-trip lost data: %+v", back.F)
+	}
+
+	// Unknown-size streaming unmarshal (size < 0) reads the whole stream and
+	// decodes through the buffer path.
+	var back2 ptrVec
+	if err := ds.UnmarshalSSZReader(&back2, bytes.NewReader(enc), -1); err != nil {
+		t.Fatalf("UnmarshalSSZReader(size=-1): %v", err)
+	}
+	if back2.F == nil || len(*back2.F) != 2 {
+		t.Fatalf("unknown-size reader lost data: %+v", back2.F)
+	}
+}
+
+// topViewSentinel is a valid reflection container whose top-level DynamicView*
+// methods emit sentinels the reflection walk never produces, so a
+// WithNoDelegation DynSsz must ignore them and encode/size/hash the fields by
+// reflection instead.
+type topViewSentinel struct {
+	A uint32
+	B uint16
+}
+
+func (v *topViewSentinel) MarshalSSZDynView(any) func(sszutils.DynamicSpecs, []byte) ([]byte, error) {
+	return func(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+		return append(buf, 0xDE, 0xAD), nil
+	}
+}
+
+func (v *topViewSentinel) MarshalSSZEncoderView(any) func(sszutils.DynamicSpecs, sszutils.Encoder) error {
+	return func(_ sszutils.DynamicSpecs, enc sszutils.Encoder) error {
+		enc.EncodeBytes([]byte{0xDE, 0xAD})
+		return nil
+	}
+}
+
+func (v *topViewSentinel) SizeSSZDynView(any) func(sszutils.DynamicSpecs) int {
+	return func(_ sszutils.DynamicSpecs) int { return 2 }
+}
+
+func (v *topViewSentinel) UnmarshalSSZDynView(any) func(sszutils.DynamicSpecs, []byte) error {
+	return func(_ sszutils.DynamicSpecs, _ []byte) error {
+		return errors.New("sentinel view unmarshaler")
+	}
+}
+
+func (v *topViewSentinel) UnmarshalSSZDecoderView(any) func(sszutils.DynamicSpecs, sszutils.Decoder) error {
+	return func(_ sszutils.DynamicSpecs, _ sszutils.Decoder) error {
+		return errors.New("sentinel view decoder")
+	}
+}
+
+func (v *topViewSentinel) HashTreeRootWithDynView(any) func(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	return func(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+		hh.PutUint8(0xEE)
+		return nil
+	}
+}
+
+// WithNoDelegation must also apply to the top-level view-descriptor dispatch,
+// not only to plain (non-view) delegation, so generated view code can be
+// validated against the reflection engine.
+func TestNoDelegationBypassesTopLevelViewMethods(t *testing.T) {
+	src := &topViewSentinel{A: 0x11223344, B: 0x5566}
+	view := &topViewSentinel{}
+	del := NewDynSsz(nil)
+	nodel := NewDynSsz(nil, WithNoDelegation())
+
+	want := []byte{0x44, 0x33, 0x22, 0x11, 0x66, 0x55}
+
+	// Delegating dispatch hits the sentinel view methods.
+	if got, err := del.MarshalSSZ(src, WithViewDescriptor(view)); err != nil || !bytes.Equal(got, []byte{0xDE, 0xAD}) {
+		t.Fatalf("delegating marshal = %x, %v; want sentinel", got, err)
+	}
+	if got, err := del.MarshalSSZTo(src, nil, WithViewDescriptor(view)); err != nil || !bytes.Equal(got, []byte{0xDE, 0xAD}) {
+		t.Fatalf("delegating marshalTo = %x, %v; want sentinel", got, err)
+	}
+	if sz, err := del.SizeSSZ(src, WithViewDescriptor(view)); err != nil || sz != 2 {
+		t.Fatalf("delegating size = %d, %v; want 2", sz, err)
+	}
+
+	// No delegation: reflection encodes/sizes the actual fields.
+	if got, err := nodel.MarshalSSZ(src, WithViewDescriptor(view)); err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("no-delegation marshal = %x, %v; want %x", got, err, want)
+	}
+	if got, err := nodel.MarshalSSZTo(src, nil, WithViewDescriptor(view)); err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("no-delegation marshalTo = %x, %v; want %x", got, err, want)
+	}
+	if sz, err := nodel.SizeSSZ(src, WithViewDescriptor(view)); err != nil || sz != len(want) {
+		t.Fatalf("no-delegation size = %d, %v; want %d", sz, err, len(want))
+	}
+
+	// Stream marshal (top-level DynamicViewEncoder branch).
+	var delBuf, nodelBuf bytes.Buffer
+	if err := del.MarshalSSZWriter(src, &delBuf, WithViewDescriptor(view)); err != nil || !bytes.Equal(delBuf.Bytes(), []byte{0xDE, 0xAD}) {
+		t.Fatalf("delegating stream marshal = %x, %v; want sentinel", delBuf.Bytes(), err)
+	}
+	if err := nodel.MarshalSSZWriter(src, &nodelBuf, WithViewDescriptor(view)); err != nil || !bytes.Equal(nodelBuf.Bytes(), want) {
+		t.Fatalf("no-delegation stream marshal = %x, %v; want %x", nodelBuf.Bytes(), err, want)
+	}
+
+	// Unmarshal, buffer and reader paths: delegation surfaces the sentinel view
+	// errors; no-delegation decodes the fields by reflection.
+	var d1, n1, d2, n2 topViewSentinel
+	if err := del.UnmarshalSSZ(&d1, want, WithViewDescriptor(view)); err == nil {
+		t.Fatal("delegating unmarshal should surface the sentinel view unmarshaler error")
+	}
+	if err := nodel.UnmarshalSSZ(&n1, want, WithViewDescriptor(view)); err != nil || n1.A != 0x11223344 || n1.B != 0x5566 {
+		t.Fatalf("no-delegation unmarshal = %+v, %v", n1, err)
+	}
+	if err := del.UnmarshalSSZReader(&d2, bytes.NewReader(want), len(want), WithViewDescriptor(view)); err == nil {
+		t.Fatal("delegating reader unmarshal should surface the sentinel view decoder error")
+	}
+	if err := nodel.UnmarshalSSZReader(&n2, bytes.NewReader(want), len(want), WithViewDescriptor(view)); err != nil || n2.A != 0x11223344 || n2.B != 0x5566 {
+		t.Fatalf("no-delegation reader unmarshal = %+v, %v", n2, err)
+	}
+
+	// Hash tree root: the sentinel and reflection roots differ, and the
+	// no-delegation view root matches the plain reflection root of the fields.
+	delRoot, err := del.HashTreeRoot(src, WithViewDescriptor(view))
+	if err != nil {
+		t.Fatalf("delegating htr: %v", err)
+	}
+	nodelRoot, err := nodel.HashTreeRoot(src, WithViewDescriptor(view))
+	if err != nil {
+		t.Fatalf("no-delegation htr: %v", err)
+	}
+	if delRoot == nodelRoot {
+		t.Fatal("no-delegation htr must differ from the sentinel view root")
+	}
+	plainRoot, err := nodel.HashTreeRoot(src)
+	if err != nil {
+		t.Fatalf("plain htr: %v", err)
+	}
+	if nodelRoot != plainRoot {
+		t.Fatalf("no-delegation view htr %x != plain reflection htr %x", nodelRoot, plainRoot)
 	}
 }

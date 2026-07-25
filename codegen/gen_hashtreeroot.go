@@ -620,10 +620,9 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 			return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 		}
 		if strings.HasPrefix(valueVar, "*") {
-			if ptrPrefix == "&" {
-				return strings.TrimPrefix(valueVar, "*")
-			}
-			return fmt.Sprintf("(%s%s)", ptrPrefix, valueVar)
+			// The result may be used as an indexing base (e.g. &(*t)[i]), so
+			// the &* cancellation shortcut would bind to the wrong expression.
+			return fmt.Sprintf("%s(%s)", ptrPrefix, valueVar)
 		}
 		return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 	}
@@ -662,12 +661,22 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		}
 
 		if bitlimitVar != "" {
-			// check padding bits
-			ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
-			ctx.appendCode(indent, "if %s[%s-1] & paddingMask != 0 {\n", valVar, limitVar)
+			// Only bit-aligned bitvectors (bit size not a multiple of 8) have
+			// padding bits. For runtime-resolved bit sizes the alignment is
+			// only known at runtime, so guard the check accordingly.
+			checkIndent := indent
+			if sizeExpression != nil {
+				ctx.appendCode(indent, "if %s %% 8 != 0 {\n", bitlimitVar)
+				checkIndent++
+			}
+			ctx.appendCode(checkIndent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
+			ctx.appendCode(checkIndent, "if %s[%s-1] & paddingMask != 0 {\n", valVar, limitVar)
 			errCode := errCodeBitvectorPadding
-			ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
-			ctx.appendCode(indent, "}\n")
+			ctx.appendCode(checkIndent, "\treturn %s\n", typePath.getErrorWith(errCode))
+			ctx.appendCode(checkIndent, "}\n")
+			if sizeExpression != nil {
+				ctx.appendCode(indent, "}\n")
+			}
 		}
 
 		if pack {
@@ -768,10 +777,9 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 			return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 		}
 		if strings.HasPrefix(valueVar, "*") {
-			if ptrPrefix == "&" {
-				return strings.TrimPrefix(valueVar, "*")
-			}
-			return fmt.Sprintf("(%s%s)", ptrPrefix, valueVar)
+			// The result may be used as an indexing base (e.g. &(*t)[i]), so
+			// the &* cancellation shortcut would bind to the wrong expression.
+			return fmt.Sprintf("%s(%s)", ptrPrefix, valueVar)
 		}
 		return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 	}
@@ -817,7 +825,7 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 		}
 
 		// Bulk uint64 list hashing
-		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
+		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0 {
 			ctx.appendCode(indent, "sszutils.HashUint64Slice(hh, %s)\n", getValueVar(true, ""))
 		} else {
 			// Hash all elements
@@ -879,25 +887,27 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varNa
 		maxVar = fmt.Sprintf("%d", desc.Limit)
 	}
 
+	valueVar := varName
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		valueVar = fmt.Sprintf("(*%s)", varName)
+	}
+
 	// reject bitlists that are missing their termination bit, consistent with
 	// the marshal path and the reflection hash tree root implementation.
-	ctx.appendCode(indent, "if l := len(%s); l > 0 && %s[l-1] == 0x00 {\n", varName, varName)
+	ctx.appendCode(indent, "if l := len(%s); l > 0 && %s[l-1] == 0x00 {\n", valueVar, valueVar)
 	ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith("sszutils.ErrBitlistNotTerminatedFn()"))
 	ctx.appendCode(indent, "}\n")
 
 	ctx.appendCode(indent, "idx := hh.StartTree(sszutils.TreeTypeNone)\n")
 	hasherAlias := ctx.typePrinter.AddImport("github.com/pk910/dynamic-ssz/hasher", "hasher")
-	sizeVar := "_"
-	if maxVar != "" || desc.SszType == ssztypes.SszProgressiveBitlistType {
-		sizeVar = "size"
-	}
+	sizeVar := "size"
 	// Progressive bitlists must keep all-zero top chunks (the chunk count defines
 	// the progressive tree shape), so parse without trailing-zero trimming.
 	parseFn := "ParseBitlistWithHasher"
 	if desc.SszType == ssztypes.SszProgressiveBitlistType {
 		parseFn = "ParseProgressiveBitlistWithHasher"
 	}
-	ctx.appendCode(indent, "bitlist, %s := %s.%s(hh, %s[:])\n", sizeVar, hasherAlias, parseFn, varName)
+	ctx.appendCode(indent, "bitlist, %s := %s.%s(hh, %s[:])\n", sizeVar, hasherAlias, parseFn, valueVar)
 
 	if maxVar != "" {
 		ctx.appendCode(indent, "if size > %s {\n", maxVar)
@@ -913,7 +923,9 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varNa
 	case maxVar != "":
 		ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, size, sszutils.CalculateBitlistLimit(%s))\n", maxVar)
 	default:
-		ctx.appendCode(indent, "hh.Merkleize(idx)\n")
+		// No explicit limit: derive it from the serialized bit length and mix
+		// in the length, matching the reflection path (buildRootFromBitlist).
+		ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, size, sszutils.CalculateBitlistLimit(uint64(len(%s)*8)))\n", valueVar)
 	}
 
 	return nil

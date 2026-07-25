@@ -11,6 +11,7 @@ type DynSszOption func(*DynSszOptions)
 // DynSszOptions holds the configuration options for a DynSsz instance.
 type DynSszOptions struct {
 	NoFastSsz              bool
+	NoDelegation           bool
 	NoFastHash             bool
 	ExtendedTypes          bool
 	Verbose                bool
@@ -27,6 +28,26 @@ func WithNoFastSsz() DynSszOption {
 	}
 }
 
+// WithNoDelegation disables delegation to a type's own generated Dynamic* SSZ
+// methods (MarshalSSZDyn, UnmarshalSSZDyn, HashTreeRootWith and friends,
+// including their DynamicView* variants), forcing every operation — plain and
+// view-descriptor — through the generic reflection engine.
+//
+// This differs from WithNoFastSsz, which only disables the legacy fastssz
+// fallback: WithNoFastSsz leaves generated dynamic methods in charge, whereas
+// WithNoDelegation bypasses them as well. Combine both to run entirely on
+// reflection, which is primarily useful for differential testing a type's
+// generated code against the reflection implementation.
+//
+// Custom types (ssz-type:"custom" and types with no reflection representation)
+// always delegate to their own methods regardless of this option, since the
+// reflection engine cannot serialize them.
+func WithNoDelegation() DynSszOption {
+	return func(opts *DynSszOptions) {
+		opts.NoDelegation = true
+	}
+}
+
 // WithNoFastHash disables the accelerated hashtree hashing library, falling
 // back to the native Go sha256 implementation.
 func WithNoFastHash() DynSszOption {
@@ -39,6 +60,12 @@ func WithNoFastHash() DynSszOption {
 //
 // When this option is enabled, dynssz will support nun-specified types like signed integers, floating point numbers, big integers and more.
 // Generated SSZ code is incompatible with other SSZ libraries like fastssz.
+//
+// Note: this gate only applies to reflection-based processing. Generated code
+// opts into extended types at generation time (dynssz-gen's with-extended-types
+// flag / the codegen WithExtendedTypes option) and is not re-gated at runtime:
+// a type whose generated methods use extended types will marshal/unmarshal them
+// regardless of this option on the consuming DynSsz instance.
 func WithExtendedTypes() DynSszOption {
 	return func(opts *DynSszOptions) {
 		opts.ExtendedTypes = true

@@ -7,12 +7,14 @@ package reflection_test
 import (
 	"bytes"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"reflect"
 	"testing"
 
 	. "github.com/pk910/dynamic-ssz"
 	"github.com/pk910/dynamic-ssz/ssztypes"
+	"github.com/pk910/dynamic-ssz/sszutils"
 	"github.com/pk910/dynamic-ssz/treeproof"
 )
 
@@ -995,6 +997,64 @@ func TestBinaryVsProgressiveTrees(t *testing.T) {
 				t.Logf("Binary and progressive trees have different root hashes (expected for different merkleization methods)")
 			}
 		})
+	}
+}
+
+// TestProgressiveListLimitEnforcedInHashing verifies that an ssz-max on a
+// progressive list is enforced while hashing, matching marshal, unmarshal and
+// the generated code. Progressive lists are unbounded by default, so the limit
+// only applies when set.
+func TestProgressiveListLimitEnforcedInHashing(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	type holder struct {
+		L []uint16 `ssz-type:"progressive-list" ssz-max:"4"`
+	}
+
+	// At the limit: both hashing paths accept the value.
+	within := &holder{L: []uint16{1, 2, 3, 4}}
+	if _, err := dynssz.HashTreeRoot(within); err != nil {
+		t.Fatalf("HashTreeRoot rejected a within-limit progressive list: %v", err)
+	}
+	if _, err := dynssz.GetTree(within); err != nil {
+		t.Fatalf("GetTree rejected a within-limit progressive list: %v", err)
+	}
+
+	// Above the limit: both must reject it rather than silently hashing.
+	over := &holder{L: []uint16{1, 2, 3, 4, 5}}
+	if _, err := dynssz.HashTreeRoot(over); !errors.Is(err, sszutils.ErrListTooBig) {
+		t.Fatalf("HashTreeRoot of an over-limit progressive list = %v, want ErrListTooBig", err)
+	}
+	if _, err := dynssz.GetTree(over); !errors.Is(err, sszutils.ErrListTooBig) {
+		t.Fatalf("GetTree of an over-limit progressive list = %v, want ErrListTooBig", err)
+	}
+}
+
+// TestGetTreeHugeSszMaxMatchesHashTreeRoot guards against GetTree panicking on a
+// list whose ssz-max is the practically-unbounded 2^64-1. Each 32-byte element
+// is one chunk, so the merkle limit is 2^64-1 — above the platform int range.
+// GetTree must build the same root HashTreeRoot computes instead of crashing
+// while narrowing the limit to int.
+func TestGetTreeHugeSszMaxMatchesHashTreeRoot(t *testing.T) {
+	dynssz := NewDynSsz(nil, WithNoFastSsz())
+
+	payload := struct {
+		Data [][32]byte `ssz-max:"18446744073709551615"`
+	}{
+		Data: [][32]byte{{1}, {2}, {3}},
+	}
+
+	root, err := dynssz.HashTreeRoot(payload)
+	if err != nil {
+		t.Fatalf("HashTreeRoot: %v", err)
+	}
+
+	tree, err := dynssz.GetTree(payload)
+	if err != nil {
+		t.Fatalf("GetTree: %v", err)
+	}
+	if !bytes.Equal(tree.Hash(), root[:]) {
+		t.Fatalf("GetTree root %x != HashTreeRoot %x", tree.Hash(), root)
 	}
 }
 
@@ -2112,5 +2172,50 @@ func TestVectorCollapseEvery256(t *testing.T) {
 	}
 	if hash == [32]byte{} {
 		t.Error("hash should not be zero")
+	}
+}
+
+// reflCustom is a custom SSZ type providing the dynssz method set; hashing it
+// through a container exercises the custom-type hasher preference.
+type reflCustom struct{ V uint64 }
+
+var _ = sszutils.Annotate[reflCustom](`ssz-type:"custom"`)
+
+func (c *reflCustom) SizeSSZDyn(sszutils.DynamicSpecs) int { return 8 }
+func (c *reflCustom) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	return append(b, make([]byte, 8)...), nil
+}
+func (c *reflCustom) UnmarshalSSZDyn(sszutils.DynamicSpecs, []byte) error { return nil }
+func (c *reflCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(c.V)
+	return nil
+}
+
+type reflCustomHolder struct{ C reflCustom }
+
+type reflPtrVec struct {
+	F *[]uint16 `ssz-size:"2"`
+}
+
+func TestReflectionCustomHashAndPointerVector(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	// Custom type hashed through a container prefers its dynssz hasher.
+	if _, err := ds.HashTreeRoot(&reflCustomHolder{C: reflCustom{V: 5}}); err != nil {
+		t.Fatalf("custom container HashTreeRoot: %v", err)
+	}
+
+	// A pointer to a fixed vector round-trips through the reflection vector path.
+	v := []uint16{7, 8}
+	enc, err := ds.MarshalSSZ(&reflPtrVec{F: &v})
+	if err != nil {
+		t.Fatalf("marshal ptrVec: %v", err)
+	}
+	var back reflPtrVec
+	if err := ds.UnmarshalSSZ(&back, enc); err != nil {
+		t.Fatalf("unmarshal ptrVec: %v", err)
+	}
+	if back.F == nil || len(*back.F) != 2 || (*back.F)[0] != 7 {
+		t.Fatalf("ptrVec round-trip lost data: %+v", back.F)
 	}
 }

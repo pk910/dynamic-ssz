@@ -63,7 +63,11 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 	// other hashing methods.
 	isView := sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
 	if isView {
-		if sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewHashRoot != 0 {
+		// Under no-delegation the view schema is hashed by reflection instead of
+		// the type's own generated view method; skip the delegation but stay in
+		// the isView branch so the reflection walk (not the plain compat methods)
+		// takes over.
+		if !ctx.noDelegation && sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewHashRoot != 0 {
 			if viewHasher, ok := getPtr(sourceValue).Interface().(sszutils.DynamicViewHashRoot); ok {
 				if hashFn := viewHasher.HashTreeRootWithDynView(*sourceType.CodegenInfo); hashFn != nil {
 					if err := hashFn(ctx.ds, hh); err != nil {
@@ -87,6 +91,14 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 		useFastSsz := !ctx.noFastSsz && isFastsszHasher && !hasDynamicSize && !hasDynamicMax
 		if !useFastSsz && sourceType.SszType == ssztypes.SszCustomType {
 			useFastSsz = true
+		}
+		// Custom types prefer their spec-aware dynssz hasher over fastssz (and the
+		// fastssz HashTreeRootWith), since fastssz bakes in preset values.
+		if sourceType.SszType == ssztypes.SszCustomType && useDynamicHashRoot {
+			useFastSsz = false
+		}
+		if ctx.noDelegation && sourceType.SszType != ssztypes.SszCustomType {
+			useDynamicHashRoot = false
 		}
 
 		if useFastSsz {
@@ -234,10 +246,13 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 			hh.PutUint64(uint64(sourceValue.Int()))
 		}
 	case ssztypes.SszFloat32Type:
+		// Convert (not Float(), which widens to float64 and normalizes a signaling
+		// NaN's payload) preserves the exact bits, matching the generated code.
+		f32, _ := sourceValue.Convert(float32Type).Interface().(float32)
 		if pack {
-			hh.AppendUint32(math.Float32bits(float32(sourceValue.Float())))
+			hh.AppendUint32(math.Float32bits(f32))
 		} else {
-			hh.PutUint32(math.Float32bits(float32(sourceValue.Float())))
+			hh.PutUint32(math.Float32bits(f32))
 		}
 	case ssztypes.SszFloat64Type:
 		if pack {
@@ -683,6 +698,12 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 
 	switch {
 	case sourceType.SszType == ssztypes.SszProgressiveListType:
+		// A progressive list is unbounded by default, but an explicit ssz-max
+		// limit is still enforced here, matching marshal, unmarshal and the
+		// generated code.
+		if sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 && uint64(sliceLen) > sourceType.Limit {
+			return sszutils.ErrListLengthFn(sliceLen, sourceType.Limit)
+		}
 		hh.MerkleizeProgressiveWithMixin(hashIndex, uint64(sliceLen))
 	case sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0:
 		// Enforce the element-count limit (matches marshal). The chunk count

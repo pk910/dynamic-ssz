@@ -14,7 +14,6 @@ require (
 )
 
 require (
-	github.com/casbin/govaluate v1.10.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/emicklei/dot v1.6.4 // indirect
 	github.com/fatih/color v1.10.0 // indirect

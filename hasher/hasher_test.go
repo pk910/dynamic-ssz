@@ -931,13 +931,13 @@ func TestHasherMerkleizeProgressiveWithActiveFields(t *testing.T) {
 func TestHasherMerkleizeProgressiveImpl(t *testing.T) {
 	h := NewHasher()
 
-	// Test with empty input - returns zeroBytes (1024 bytes as per implementation)
+	// Empty input yields zero_node(0): exactly one 32-byte zero chunk, so a
+	// parent scope sees a single root chunk instead of 32 bogus zero chunks.
 	dst := make([]byte, 0)
 	result := h.merkleizeProgressiveImpl(dst, []byte{}, 0)
 
-	// The implementation returns zeroBytes... which is 1024 bytes
-	if len(result) != 1024 {
-		t.Errorf("expected 1024 bytes for empty input (zeroBytes), got %d", len(result))
+	if len(result) != 32 {
+		t.Errorf("expected a single 32-byte zero chunk for empty input, got %d bytes", len(result))
 	}
 
 	// Verify it's all zeros
@@ -1936,4 +1936,184 @@ func TestHasherInitConcurrent(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// MerkleizeProgressive on an empty scope must produce a single 32-byte zero
+// chunk, not the whole shared zero-byte scratch buffer.
+func TestHasherMerkleizeProgressiveEmptyScope(t *testing.T) {
+	h := NewHasher()
+	idx := h.Index()
+	h.MerkleizeProgressive(idx)
+	root, err := h.HashRoot()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if root != [32]byte{} {
+		t.Errorf("expected zero root for empty progressive scope, got %x", root)
+	}
+}
+
+// Multi-chunk active-fields bitvectors must produce identical roots on every
+// hash backend: hashing one oversized block in a single call is
+// backend-dependent, so the bitvector has to be merkleized first.
+func TestHasherProgressiveActiveFieldsBackendParity(t *testing.T) {
+	for _, afLen := range []int{33, 64, 96} {
+		af := make([]byte, afLen)
+		af[0] = 0xff
+		af[afLen-1] = 0x01
+
+		run := func(h *Hasher) [32]byte {
+			t.Helper()
+			idx := h.Index()
+			h.AppendUint64(1)
+			h.FillUpTo32()
+			h.MerkleizeProgressiveWithActiveFields(idx, af)
+			root, err := h.HashRoot()
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			return root
+		}
+
+		native := run(NewHasher())
+		fast := run(FastHasherPool.Get())
+		if native != fast {
+			t.Errorf("active fields len %d: backend divergence native=%x fast=%x", afLen, native[:8], fast[:8])
+		}
+	}
+}
+
+// Deferred child subtrees must reduce the correct buffer window even when the
+// pending run is no longer the buffer tail: raw chunks appended after (or
+// between) deferred scopes and differently-sized siblings previously made
+// flushPending hash the wrong bytes.
+func TestHasherDeferredPendingNotTail(t *testing.T) {
+	child := func(h *Hasher, vals ...uint64) {
+		idx := h.Index()
+		for _, v := range vals {
+			h.AppendUint64(v)
+			h.FillUpTo32()
+		}
+		h.Merkleize(idx)
+	}
+
+	scenarios := []struct {
+		name  string
+		build func(h *Hasher, idx int)
+	}{
+		{"raw chunk after deferred scope", func(h *Hasher, idx int) {
+			child(h, 1, 2)
+			h.AppendBytes32(make([]byte, 32))
+			h.MerkleizeWithMixin(idx, 2, 16)
+		}},
+		{"raw chunk between deferred scopes", func(h *Hasher, idx int) {
+			child(h, 1, 2)
+			h.AppendBytes32(make([]byte, 32))
+			child(h, 3, 4)
+			h.MerkleizeWithMixin(idx, 3, 16)
+		}},
+		{"differently sized deferred siblings", func(h *Hasher, idx int) {
+			child(h, 1, 2)
+			child(h, 3, 4, 5, 6)
+			h.MerkleizeWithMixin(idx, 2, 16)
+		}},
+	}
+
+	for _, sc := range scenarios {
+		t.Run(sc.name, func(t *testing.T) {
+			// incremental parent: deferral active
+			h := NewHasher()
+			idx := h.StartTree(sszutils.TreeTypeBinary)
+			sc.build(h, idx)
+			got, err := h.HashRoot()
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			// non-incremental reference: children merkleize immediately
+			h2 := NewHasher()
+			idx2 := h2.Index()
+			sc.build(h2, idx2)
+			want, err := h2.HashRoot()
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if got != want {
+				t.Errorf("incremental root %x != reference root %x", got[:8], want[:8])
+			}
+		})
+	}
+}
+
+// Merkleize of a single sub-32-byte chunk (e.g. a packed vector of two
+// uint64s) must zero-pad the region cleanly instead of reading stale bytes
+// from the buffer's spare capacity, which on a pooled/reused hasher would
+// otherwise yield a wrong, nondeterministic root.
+func TestHasherMerkleizeSubChunkCleanPadding(t *testing.T) {
+	small := func(h *Hasher) [32]byte {
+		t.Helper()
+		idx := h.StartTree(sszutils.TreeTypeBinary)
+		h.AppendUint64(3)
+		h.AppendUint64(3)
+		h.Merkleize(idx)
+		root, err := h.HashRoot()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return root
+	}
+
+	fresh := small(NewHasher())
+
+	// Dirty the backing array's spare capacity with non-zero bytes, then Reset
+	// (which keeps the capacity) and hash the same small scope.
+	dirty := NewHasher()
+	dirty.Append(bytes.Repeat([]byte{0xff}, 256))
+	dirty.Reset()
+	got := small(dirty)
+
+	if got != fresh {
+		t.Errorf("sub-chunk merkleize read stale buffer: fresh=%x dirty=%x", fresh, got)
+	}
+}
+
+// MerkleizeProgressiveWithActiveFields with an empty activeFields bitvector
+// must produce a deterministic root, not one that depends on stale bytes left
+// in a pooled hasher's buffer.
+func TestHasherEmptyActiveFieldsDeterministic(t *testing.T) {
+	run := func(h *Hasher) [32]byte {
+		t.Helper()
+		idx := h.StartTree(sszutils.TreeTypeNone)
+		h.AppendUint64(1)
+		h.FillUpTo32()
+		h.MerkleizeProgressiveWithActiveFields(idx, []byte{})
+		root, err := h.HashRoot()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return root
+	}
+
+	fresh := run(NewHasher())
+
+	// Dirty the buffer's spare capacity, then reuse the hasher.
+	dirty := NewHasher()
+	dirty.Append(bytes.Repeat([]byte{0xff}, 256))
+	dirty.Reset()
+	if got := run(dirty); got != fresh {
+		t.Errorf("empty active fields root not deterministic: fresh=%x dirty=%x", fresh[:8], got[:8])
+	}
+}
+
+// TestNativeHashWrapperOddLayer calls the native hash function directly with an
+// odd chunk count (extra capacity avoids reading past the final padded pair),
+// exercising the layerLen%2 rounding that the pre-padding hasher never reaches.
+func TestNativeHashWrapperOddLayer(t *testing.T) {
+	fn := NativeHashWrapper(sha256.New())
+	input := make([]byte, 96, 128) // 3 chunks (odd)
+	dst := make([]byte, 64)
+	if err := fn(dst, input); err != nil {
+		t.Fatalf("NativeHashWrapper odd layer: %v", err)
+	}
 }

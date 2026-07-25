@@ -10,6 +10,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"testing/iotest"
 )
 
 // errWriter is a writer that returns an error after writing a specified number of bytes.
@@ -1580,5 +1581,189 @@ func TestStreamEncoderFlushOnSmallPrimitives(t *testing.T) {
 	}
 	if buf2.Len() != 9 {
 		t.Fatalf("expected 9 bytes, got %d", buf2.Len())
+	}
+}
+
+// Reads must never cross the current region limit: a malformed region has to
+// fail with a clean EOF error instead of consuming bytes of the following
+// regions (which would make GetLength go negative downstream).
+func TestStreamDecoder_ReadsRespectRegionLimit(t *testing.T) {
+	data := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+
+	newDec := func(regionLen int) *StreamDecoder {
+		dec := NewStreamDecoder(bytes.NewReader(data), len(data), 0)
+		dec.PushLimit(len(data))
+		dec.PushLimit(regionLen)
+		return dec
+	}
+
+	// readByte path
+	dec := newDec(0)
+	if _, err := dec.DecodeUint8(); err == nil {
+		t.Error("DecodeUint8 crossed an exhausted region limit")
+	}
+	if dec.GetLength() < 0 {
+		t.Errorf("GetLength went negative: %d", dec.GetLength())
+	}
+
+	// readBytesRef path
+	dec = newDec(2)
+	if _, err := dec.DecodeUint32(); err == nil {
+		t.Error("DecodeUint32 crossed a 2-byte region limit")
+	}
+
+	// readBytes path
+	dec = newDec(3)
+	buf := make([]byte, 4)
+	if _, err := dec.DecodeBytes(buf); err == nil {
+		t.Error("DecodeBytes crossed a 3-byte region limit")
+	}
+
+	// reads within the region still work and stop exactly at the boundary
+	dec = newDec(4)
+	if v, err := dec.DecodeUint32(); err != nil || v != 0x04030201 {
+		t.Errorf("DecodeUint32 within region failed: v=%x err=%v", v, err)
+	}
+	if _, err := dec.DecodeUint8(); err == nil {
+		t.Error("DecodeUint8 crossed the region boundary after full consumption")
+	}
+	if diff := dec.PopLimit(); diff != 0 {
+		t.Errorf("expected fully consumed region, diff=%d", diff)
+	}
+}
+
+// After a write error, continued fixed-width encoding must not panic: flush()
+// resets bufPos so subsequent Encode* land in-bounds and the error surfaces
+// via GetWriteError instead of an index-out-of-range panic.
+func TestStreamEncoder_NoPanicAfterWriteError(t *testing.T) {
+	w := &errWriter{errAfter: 0, err: errors.New("write failed")}
+	enc := NewStreamEncoder(w, 8)
+
+	// Encode well past a full buffer's worth of fixed-width values; the first
+	// flush fails, and every subsequent flush must keep bufPos in range.
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("encoding panicked after write error: %v", r)
+			}
+		}()
+		for i := 0; i < 100; i++ {
+			enc.EncodeUint64(uint64(i))
+		}
+		enc.Flush()
+	}()
+
+	if enc.GetWriteError() == nil {
+		t.Error("expected the write error to be recorded")
+	}
+}
+
+// zeroInterleaveReader returns (0, nil) before every real read, exercising the
+// io.Reader "0 and nil is a no-op, not EOF" contract.
+type zeroInterleaveReader struct {
+	r       io.Reader
+	pending bool
+}
+
+func (z *zeroInterleaveReader) Read(p []byte) (int, error) {
+	if !z.pending {
+		z.pending = true
+		return 0, nil
+	}
+	z.pending = false
+	return z.r.Read(p)
+}
+
+// A reader that returns its final bytes together with io.EOF (permitted by the
+// io.Reader contract) must not cause a spurious decode failure.
+func TestStreamDecoder_ReadBytesDataWithEOF(t *testing.T) {
+	data := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+	// Small buffer forces the direct-read path in readBytes.
+	dec := NewStreamDecoder(iotest.DataErrReader(bytes.NewReader(data)), len(data), 8)
+	dec.PushLimit(len(data))
+
+	buf := make([]byte, len(data))
+	if _, err := dec.DecodeBytes(buf); err != nil {
+		t.Fatalf("DecodeBytes rejected a data+EOF reader: %v", err)
+	}
+	if !bytes.Equal(buf, data) {
+		t.Fatalf("got %x, want %x", buf, data)
+	}
+}
+
+// A (0, nil) no-op read must be retried, not treated as EOF, on both the
+// buffered (ensureBuffered) and direct (readBytes) paths.
+func TestStreamDecoder_ZeroNilReadRetried(t *testing.T) {
+	data := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+
+	// readBytes path (DecodeBytes, small buffer).
+	dec := NewStreamDecoder(&zeroInterleaveReader{r: bytes.NewReader(data)}, len(data), 8)
+	dec.PushLimit(len(data))
+	buf := make([]byte, len(data))
+	if _, err := dec.DecodeBytes(buf); err != nil {
+		t.Fatalf("DecodeBytes aborted on a (0,nil) read: %v", err)
+	}
+	if !bytes.Equal(buf, data) {
+		t.Fatalf("got %x, want %x", buf, data)
+	}
+
+	// ensureBuffered path (DecodeUint64).
+	dec2 := NewStreamDecoder(&zeroInterleaveReader{r: bytes.NewReader(data)}, len(data), 8)
+	dec2.PushLimit(len(data))
+	if _, err := dec2.DecodeUint64(); err != nil {
+		t.Fatalf("DecodeUint64 aborted on a (0,nil) read: %v", err)
+	}
+}
+
+// zeroForeverReader always returns (0, nil), simulating a reader that never
+// delivers data.
+type zeroForeverReader struct{}
+
+func (zeroForeverReader) Read(p []byte) (int, error) { return 0, nil }
+
+// TestStreamDecoderInsufficientStream covers the stream-underflow guards: a
+// buffer fill and a bulk read that exceed the declared stream length, and a
+// reader stalled on (0, nil) that gives up after the retry bound.
+func TestStreamDecoderInsufficientStream(t *testing.T) {
+	dec := NewStreamDecoder(bytes.NewReader(make([]byte, 4)), 4, 1024)
+	if err := dec.ensureBuffered(10); err != ErrUnexpectedEOF {
+		t.Errorf("ensureBuffered past stream: err=%v, want ErrUnexpectedEOF", err)
+	}
+
+	dec = NewStreamDecoder(bytes.NewReader(make([]byte, 4)), 4, 1024)
+	if err := dec.readBytes(make([]byte, 8)); err != ErrUnexpectedEOF {
+		t.Errorf("readBytes past stream: err=%v, want ErrUnexpectedEOF", err)
+	}
+
+	dec = NewStreamDecoder(zeroForeverReader{}, 8, 1024)
+	if err := dec.readBytes(make([]byte, 8)); err != ErrUnexpectedEOF {
+		t.Errorf("readBytes on stalled reader: err=%v, want ErrUnexpectedEOF", err)
+	}
+}
+
+// dripReader delivers one byte per Read, forcing readBytes to loop with partial
+// (non-empty) reads.
+type dripReader struct {
+	data []byte
+	pos  int
+}
+
+func (r *dripReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	n := copy(p[:1], r.data[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+func TestStreamDecoderPartialReads(t *testing.T) {
+	dec := NewStreamDecoder(&dripReader{data: []byte{1, 2, 3, 4}}, 4, 1024)
+	buf := make([]byte, 4)
+	if err := dec.readBytes(buf); err != nil {
+		t.Fatalf("readBytes with drip reader: %v", err)
+	}
+	if !bytes.Equal(buf, []byte{1, 2, 3, 4}) {
+		t.Fatalf("drip read = %v, want [1 2 3 4]", buf)
 	}
 }

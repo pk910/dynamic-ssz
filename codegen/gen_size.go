@@ -30,6 +30,7 @@ type sizeContext struct {
 	typePrinter     *TypePrinter
 	options         *CodeGeneratorOptions
 	exprVars        *exprVarGenerator
+	staticSizeVars  *staticSizeVarGenerator
 	usedDynSpecs    bool
 	indexVarCounter int
 	sizeVarCounter  int
@@ -52,6 +53,7 @@ func newSizeContext(typePrinter *TypePrinter, options *CodeGeneratorOptions) *si
 		useTypeFnMap: make(map[*ssztypes.TypeDescriptor]*sizeFnPtr),
 	}
 	ctx.exprVars.retVars = "0"
+	ctx.staticSizeVars = newStaticSizeVarGenerator(typePrinter, options, ctx.exprVars)
 	return ctx
 }
 
@@ -100,7 +102,7 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 		return err
 	}
 
-	if ctx.exprVars.varCounter > 0 {
+	if ctx.exprVars.varCounter > 0 || ctx.staticSizeVars.varCounter > 0 {
 		ctx.usedDynSpecs = true
 	}
 
@@ -119,6 +121,7 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 				appendCode(codeBuilder, 1, "return %d\n", rootTypeDesc.Size)
 			} else {
 				appendCode(codeBuilder, 1, ctx.exprVars.getCode())
+				appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
 				appendCode(codeBuilder, 1, ctx.codeBuf.String())
 				appendCode(codeBuilder, 1, "return size\n")
 			}
@@ -143,6 +146,7 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 			}
 			appendCode(codeBuilder, 0, "func (t %s) %s(ds sszutils.DynamicSpecs) (size int) {\n", typeName, fnName)
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
+			appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
 			appendCode(codeBuilder, 1, ctx.codeBuf.String())
 			appendCode(codeBuilder, 1, "return size\n")
 			appendCode(codeBuilder, 0, "}\n\n")
@@ -246,8 +250,11 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 	// create temporary instance for nil pointers
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.SszType != ssztypes.SszOptionalType && desc.SszType != ssztypes.SszOptionalListType {
 		if len(varName) > 1 {
-			ctx.appendCode(indent, "t := %s\n", varName)
-			varName = "t"
+			// Localize into a fresh name; a literal "t" would collide with a size
+			// closure's own "t" parameter (e.g. a wrapper of a pointer type).
+			local := localizedVarName(varName, indent)
+			ctx.appendCode(indent, "%s := %s\n", local, varName)
+			varName = local
 		}
 		ctx.appendCode(indent, "if %s == nil {\n\t%s = new(%s)\n}\n", varName, varName, ctx.typePrinter.InnerTypeString(desc))
 	}
@@ -418,8 +425,8 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 			return
 		}
 		if len(valueVar) > 1 {
-			ctx.appendCode(indent, "t := %s%s\n", ctx.getPtrPrefix(desc), valueVar)
-			valueVar = "t"
+			ctx.appendCode(indent, "%s := %s%s\n", localizedVarName(varName, indent), ctx.getPtrPrefix(desc), valueVar)
+			valueVar = localizedVarName(varName, indent)
 		}
 		usedVar = true
 	}
@@ -449,16 +456,15 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 		switch {
 		case desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions:
-			useVar()
-			ctx.appendCode(indent, "if len(%s) > 0 {\n", valueVar)
-			innerVarName := fmt.Sprintf("%s[0]", valueVar)
-			innerSizeVar := ctx.getSizeVar()
-			ctx.appendCode(indent, "\t%s := 0\n", innerSizeVar)
-			if err := ctx.sizeType(desc.ElemDesc, innerVarName, innerSizeVar, indent+1, false); err != nil {
+			// The element size follows from its size expression, not from the
+			// values present: missing rows are zero-padded on the wire, so the
+			// size must not depend on how many elements are set (SizeSSZ has to
+			// equal len(MarshalSSZ) even for a fully-empty value).
+			innerSizeVar, err := ctx.staticSizeVars.getStaticSizeVar(desc.ElemDesc)
+			if err != nil {
 				return err
 			}
-			ctx.appendCode(indent, "\t%s += %s * %s\n", sizeVar, innerSizeVar, limitVar)
-			ctx.appendCode(indent, "}\n")
+			ctx.appendCode(indent, "%s += int(%s) * %s\n", sizeVar, innerSizeVar, limitVar)
 		case desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 || desc.ElemDesc.Size == 1:
 			// For byte arrays, size is just the vector length
 			ctx.appendCode(indent, "%s += %s\n", sizeVar, limitVar)
@@ -473,7 +479,9 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 		if desc.Kind == reflect.Array {
 			indexVar := ctx.getIndexVar()
 			ctx.appendCode(indent, "for %s := range %s {\n", indexVar, limitVar)
-			itemVarName := fmt.Sprintf("%s[%s]", valueVar, indexVar)
+			// A deref'd pointer receiver (e.g. *[N]E -> "*t") must be
+			// parenthesized before indexing: (*t)[i], not *t[i].
+			itemVarName := fmt.Sprintf("%s[%s]", indexBase(valueVar), indexVar)
 			if err := ctx.sizeType(desc.ElemDesc, itemVarName, sizeVar, indent+1, false); err != nil {
 				return err
 			}
@@ -492,15 +500,12 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 			}
 			ctx.appendCode(indent, "}\n")
 
-			// Add size for zero-padding
+			// Add size for zero-padding. The padding item is a zero value of the
+			// element's own Go type (a nil pointer for pointer elements, which
+			// the element sizer handles); a composite literal would be invalid
+			// for non-composite pointees such as *string.
 			ctx.appendCode(indent, "if vlen < %s {\n", limitVar)
-			if desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
-				typeName := ctx.typePrinter.InnerTypeString(desc.ElemDesc)
-				ctx.appendCode(indent, "\tzeroItem := &%s{}\n", typeName)
-			} else {
-				typeName := ctx.typePrinter.TypeString(desc.ElemDesc)
-				ctx.appendCode(indent, "\tvar zeroItem %s\n", typeName)
-			}
+			ctx.appendCode(indent, "\tvar zeroItem %s\n", ctx.typePrinter.TypeString(desc.ElemDesc))
 			innerSizeVar := ctx.getSizeVar()
 			ctx.appendCode(indent, "\t%s := 0\n", innerSizeVar)
 			if err := ctx.sizeType(desc.ElemDesc, "zeroItem", innerSizeVar, indent+1, false); err != nil {
@@ -546,8 +551,8 @@ func (ctx *sizeContext) sizeList(desc *ssztypes.TypeDescriptor, varName, sizeVar
 			return
 		}
 		if len(valueVar) > 1 {
-			ctx.appendCode(indent, "t := %s%s\n", ctx.getPtrPrefix(desc), valueVar)
-			valueVar = "t"
+			ctx.appendCode(indent, "%s := %s%s\n", localizedVarName(varName, indent), ctx.getPtrPrefix(desc), valueVar)
+			valueVar = localizedVarName(varName, indent)
 		}
 		usedVar = true
 	}
@@ -597,8 +602,9 @@ func (ctx *sizeContext) sizeList(desc *ssztypes.TypeDescriptor, varName, sizeVar
 // sizeUnion generates size calculation code for SSZ union types.
 func (ctx *sizeContext) sizeUnion(desc *ssztypes.TypeDescriptor, varName, sizeVar string, indent int) error {
 	if len(varName) > 1 {
-		ctx.appendCode(indent, "t := %s\n", varName)
-		varName = "t"
+		localVar := localizedVarName(varName, indent)
+		ctx.appendCode(indent, "%s := %s\n", localVar, varName)
+		varName = localVar
 	}
 
 	ctx.appendCode(indent, "%s += 1 // Union selector\n", sizeVar)

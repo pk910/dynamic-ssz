@@ -119,13 +119,38 @@ jobs:
         go generate ./...
         go tool covdata textfmt -i=coverage -o=coverage-codegen.txt
 
-    - name: Run unit tests with coverage
+    - name: Run unit tests with coverage (default, no-cgo and 32-bit in parallel)
+      # These three variants are independent and each build their own cache, so
+      # they run concurrently to overlap compile/link/idle gaps. The full -v
+      # output is tee'd to a per-variant log (uploaded as an artifact); only a
+      # concise view — package results, failures and panics, dropping the
+      # per-test RUN/PASS spam — is streamed to the step log, prefixed so the
+      # interleaved streams stay attributable. The step fails if any variant
+      # fails (PIPESTATUS captures the go test exit regardless of the filter).
       run: |
-        go test -v -race -coverprofile=coverage-unit.txt -coverpkg=./... ./...
+        run_variant() {
+          local name="$1" prefix="$2"; shift 2
+          set +e
+          "$@" 2>&1 | tee "unit-${name}.log" \
+            | grep --line-buffered -vE '^[[:space:]]*(=== (RUN|PAUSE|CONT)|--- (PASS|SKIP))' \
+            | sed -u "s/^/${prefix} /"
+          echo "${PIPESTATUS[0]}" > "test-${name}.status"
+        }
+        run_variant default '[NORMAL]' env go test -v -race -coverprofile=coverage-unit.txt -coverpkg=./... ./... &
+        run_variant nocgo '[NOCGO]' env CGO_ENABLED=0 go test -v -coverprofile=coverage-unit-nocgo.txt -coverpkg=./... ./... &
+        run_variant 386 '[32BIT]' env GOARCH=386 CGO_ENABLED=0 go test -v -coverprofile=coverage-unit-386.txt -coverpkg=./... ./... &
+        wait
 
-    - name: Run unit tests with coverage (without cgo)
-      run: |
-        CGO_ENABLED=0 go test -v -coverprofile=coverage-unit-nocgo.txt -coverpkg=./... ./...
+        rc=0
+        for name in default nocgo 386; do
+          if [ "$(cat "test-${name}.status")" = 0 ]; then
+            echo "[${name}] PASSED"
+          else
+            echo "[${name}] FAILED"
+            rc=1
+          fi
+        done
+        exit "${rc}"
 
     - name: Run endianness fallback tests with coverage
       # The dynssz_endian_generic tag swaps the compile-time hostLittleEndian
@@ -134,9 +159,17 @@ jobs:
       run: |
         go test -v -race -tags dynssz_endian_generic -coverprofile=coverage-unit-endianness.txt -coverpkg=./... ./sszutils/
 
-    - name: Run 32-bit tests with coverage
-      run: |
-        GOARCH=386 CGO_ENABLED=0 go test -v -coverprofile=coverage-unit-386.txt -coverpkg=./... ./...
+    - name: Upload verbose unit test logs
+      # Persist the full -v output that the step log intentionally elides, so
+      # the per-test detail stays available on demand (especially on failure).
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: unit-test-logs-go${{ matrix.go-version }}
+        path: |
+          unit-default.log
+          unit-nocgo.log
+          unit-386.log
 
     - name: Upload unit test coverage artifacts
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

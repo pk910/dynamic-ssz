@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"testing"
 
 	"github.com/pk910/dynamic-ssz/hasher"
@@ -1182,12 +1183,11 @@ func TestTreeFromNodesWithMixinNonPowerOfTwoLimit(t *testing.T) {
 func TestTreeFromNodesWithMixinZeroLimit(t *testing.T) {
 	nodes := []*Node{NewNodeWithValue([]byte{1})}
 
-	tree, err := TreeFromNodesWithMixin(nodes, 1, 0)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if tree == nil {
-		t.Fatal("expected non-nil tree")
+	// A zero limit cannot hold any leaf; accepting it would silently drop the
+	// leaf and produce a mixin over an empty tree.
+	_, err := TreeFromNodesWithMixin(nodes, 1, 0)
+	if err == nil {
+		t.Fatal("expected error for leaves exceeding zero limit")
 	}
 }
 
@@ -1673,4 +1673,182 @@ func TestDecompressHandlesMalformedInput(t *testing.T) {
 	if mp2 == nil || len(mp2.Hashes) != 1 || len(mp2.Hashes[0]) != 32 {
 		t.Fatalf("unexpected decompressed result for huge level: %#v", mp2)
 	}
+}
+
+func TestTreeFromNodesRejectsExcessLeaves(t *testing.T) {
+	nodes := []*Node{
+		NewNodeWithValue([]byte{1}),
+		NewNodeWithValue([]byte{2}),
+		NewNodeWithValue([]byte{3}),
+	}
+
+	// More leaves than the limit allows would be dropped silently, producing a
+	// valid-looking root for a different tree.
+	if _, err := TreeFromNodes(nodes, 2); err == nil {
+		t.Fatal("expected error for 3 leaves with limit 2")
+	}
+	if _, err := TreeFromNodes(nodes, 1); err == nil {
+		t.Fatal("expected error for 3 leaves with limit 1")
+	}
+	if _, err := TreeFromNodes(nodes, 0); err == nil {
+		t.Fatal("expected error for 3 leaves with limit 0")
+	}
+
+	// The boundary case still works.
+	tree, err := TreeFromNodes(nodes[:2], 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tree == nil {
+		t.Fatal("expected non-nil tree")
+	}
+}
+
+// --- tree construction error paths (moved from errpath_test.go) ---
+// --- treeFromNodesProgressiveImpl: left child build error ---
+
+func TestTreeFromNodesProgressiveLeftError(t *testing.T) {
+	injected := errors.New("injected")
+	treeFromNodesToDepthFn = func([]*Node, int) (*Node, error) {
+		return nil, injected
+	}
+	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
+
+	_, err := TreeFromNodesProgressive([]*Node{LeafFromUint64(1)})
+	if !errors.Is(err, injected) {
+		t.Fatalf("expected injected error, got: %v", err)
+	}
+}
+
+// --- treeFromNodesProgressiveImpl: recursive right child error ---
+
+func TestTreeFromNodesProgressiveRecursiveError(t *testing.T) {
+	injected := errors.New("injected")
+	calls := 0
+	treeFromNodesToDepthFn = func(leaves []*Node, depth int) (*Node, error) {
+		calls++
+		if calls == 2 {
+			return nil, injected
+		}
+		return treeFromNodesToDepth(leaves, depth)
+	}
+	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
+
+	// Two leaves: first call builds left child (succeeds), recursive call
+	// builds the right subtree's left child (fails on second call).
+	_, err := TreeFromNodesProgressive([]*Node{LeafFromUint64(1), LeafFromUint64(2)})
+	if !errors.Is(err, injected) {
+		t.Fatalf("expected injected error, got: %v", err)
+	}
+}
+
+// --- TreeFromNodesWithMixin: tree build error ---
+
+func TestTreeFromNodesWithMixinInjectedError(t *testing.T) {
+	injected := errors.New("injected")
+	treeFromNodesToDepthFn = func([]*Node, int) (*Node, error) {
+		return nil, injected
+	}
+	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
+
+	_, err := TreeFromNodesWithMixin([]*Node{LeafFromUint64(1)}, 1, 1)
+	if !errors.Is(err, injected) {
+		t.Fatalf("expected injected error, got: %v", err)
+	}
+}
+
+// --- TreeFromNodesProgressiveWithMixin: progressive build error ---
+
+func TestTreeFromNodesProgressiveWithMixinInjectedError(t *testing.T) {
+	injected := errors.New("injected")
+	treeFromNodesToDepthFn = func([]*Node, int) (*Node, error) {
+		return nil, injected
+	}
+	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
+
+	_, err := TreeFromNodesProgressiveWithMixin([]*Node{LeafFromUint64(1)}, 1)
+	if !errors.Is(err, injected) {
+		t.Fatalf("expected injected error, got: %v", err)
+	}
+}
+
+// --- TreeFromNodesProgressiveWithActiveFields: progressive build error ---
+
+func TestTreeFromNodesProgressiveWithActiveFieldsInjectedError(t *testing.T) {
+	injected := errors.New("injected")
+	treeFromNodesToDepthFn = func([]*Node, int) (*Node, error) {
+		return nil, injected
+	}
+	defer func() { treeFromNodesToDepthFn = treeFromNodesToDepth }()
+
+	_, err := TreeFromNodesProgressiveWithActiveFields([]*Node{LeafFromUint64(1)}, []byte{0x01})
+	if !errors.Is(err, injected) {
+		t.Fatalf("expected injected error, got: %v", err)
+	}
+}
+
+// TestTreeFromNodes64EdgeCases covers the zero-capacity, excess-leaf, non-pow2
+// and depth-boundary branches of the uint64 tree builders and their int
+// forwards.
+func TestTreeFromNodes64EdgeCases(t *testing.T) {
+	leaf := LeafFromUint64(1)
+
+	// Zero capacity with a leaf is rejected; with no leaves it yields an empty node.
+	if _, err := TreeFromNodes64([]*Node{leaf}, 0); err == nil {
+		t.Error("TreeFromNodes64(leaf, 0) should error")
+	}
+	if n, err := TreeFromNodes64(nil, 0); err != nil || n == nil {
+		t.Errorf("TreeFromNodes64(nil, 0) = %v, %v", n, err)
+	}
+	// Leaves exceeding the limit, and a non-power-of-two limit, are rejected.
+	if _, err := TreeFromNodes64([]*Node{leaf, leaf, leaf}, 2); err == nil {
+		t.Error("TreeFromNodes64 exceeding limit should error")
+	}
+	if _, err := TreeFromNodes64([]*Node{leaf}, 3); err == nil {
+		t.Error("TreeFromNodes64 non-power-of-two limit should error")
+	}
+	// limit 1 (depth 0) with a single leaf returns that leaf.
+	if n, err := TreeFromNodes64([]*Node{leaf}, 1); err != nil || n != leaf {
+		t.Errorf("TreeFromNodes64(leaf, 1) = %v, %v; want the leaf", n, err)
+	}
+	// treeFromNodesToDepth clamps a negative depth to an empty node.
+	if n, err := treeFromNodesToDepth(nil, -1); err != nil || n == nil {
+		t.Errorf("treeFromNodesToDepth(nil, -1) = %v, %v", n, err)
+	}
+	// Int forwards clamp negative limit/num to zero.
+	if _, err := TreeFromNodesWithMixin(nil, -1, -1); err != nil {
+		t.Errorf("TreeFromNodesWithMixin(nil, -1, -1): %v", err)
+	}
+	// The mixin builder rejects a zero capacity holding a leaf.
+	if _, err := TreeFromNodesWithMixin64([]*Node{leaf}, 1, 0); err == nil {
+		t.Error("TreeFromNodesWithMixin64(leaf, 1, 0) should error")
+	}
+}
+
+// TestTreeBuilderDefensiveBranches covers the remaining defensive branches:
+// treeFromNodesToDepth's own excess check (reached only when a caller does not
+// pre-validate), the progressive mixin's negative-count clamp, and hashNode's
+// nil guard.
+func TestTreeBuilderDefensiveBranches(t *testing.T) {
+	leaf := LeafFromUint64(1)
+
+	// treeFromNodesToDepth rejects more leaves than 2^depth can hold.
+	if _, err := treeFromNodesToDepth([]*Node{leaf, leaf, leaf}, 1); err == nil {
+		t.Error("treeFromNodesToDepth with excess leaves should error")
+	}
+
+	// The progressive mixin clamps a negative count to zero.
+	if _, err := TreeFromNodesProgressiveWithMixin([]*Node{leaf}, -1); err != nil {
+		t.Errorf("TreeFromNodesProgressiveWithMixin(leaf, -1): %v", err)
+	}
+
+	// hashNode panics on a nil node (an incomplete tree).
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("hashNode(nil) should panic")
+			}
+		}()
+		hashNode(nil)
+	}()
 }

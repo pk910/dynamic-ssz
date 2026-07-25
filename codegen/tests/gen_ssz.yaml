@@ -16,6 +16,8 @@ types:
   - SimpleUint16
   - SimpleUint32
   - SimpleUint64
+  - SimpleByteVec32
+  - SimpleUint64Vec4
 
   - name: SimpleTypes1
     output: gen_simple1.go
@@ -25,6 +27,8 @@ types:
   - name: NestedDelegatedContainer
     output: gen_nesteddelegated.go
   - name: NestedDelegatedDynContainer
+    output: gen_nesteddelegated.go
+  - name: MixedDelegatedContainer
     output: gen_nesteddelegated.go
 
   - name: SimpleTypes2
@@ -92,3 +96,56 @@ types:
     view-only: true
     views:
       - ViewTypes3_View1
+
+  - name: MultiDimSpecVec
+    output: gen_divergence.go
+  - name: NoMaxBitlist
+    output: gen_divergence.go
+  - name: NamedBitlistContainer
+    output: gen_divergence.go
+  - name: BitvecEdge
+    output: gen_divergence.go
+  - name: UnionDynVariant
+    output: gen_divergence.go
+  - name: UnionTaggedSelectors
+    output: gen_divergence.go
+  - name: PtrUnionVariant
+    output: gen_divergence.go
+  - name: TopLevelBitlist
+    output: gen_toplevel.go
+  - name: TopLevelProgBitlist
+    output: gen_toplevel.go
+  - name: TopLevelString
+    output: gen_toplevel.go
+  - name: TopLevelCtrList
+    output: gen_toplevel.go
+  - name: TopLevelCtrVec
+    output: gen_toplevel.go
+  - name: TopLevelVarList
+    output: gen_toplevel.go
+  - name: TopLevelListOfList
+    output: gen_toplevel.go
+  - name: TopLevelWrapVarList
+    output: gen_toplevel.go
+  - name: TopVecOfVar
+    output: gen_compilecorrectness.go
+  - name: UnionSamePkgVariant
+    output: gen_compilecorrectness.go
+  - name: PtrPrimitiveList
+    output: gen_compilecorrectness.go
+  - name: FixedVecPtrStr
+    output: gen_compilecorrectness.go
+  - name: FixedVecPtrList
+    output: gen_compilecorrectness.go
+  - name: FixedVecStr
+    output: gen_compilecorrectness.go
+  - name: PtrDynCollectionField
+    output: gen_compilecorrectness.go
+  - name: WrapUnionField
+    output: gen_compilecorrectness.go
+  - name: ExcludedFields
+    output: gen_compilecorrectness.go
+  - name: PtrSvecOfList
+    output: gen_compilecorrectness.go
+  - name: WrapPtrList
+    output: gen_compilecorrectness.go

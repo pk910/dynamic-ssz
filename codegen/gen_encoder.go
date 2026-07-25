@@ -206,13 +206,17 @@ func (ctx *encoderContext) generateSizeFnCode(indent int) (string, error) {
 		return nameA - nameB
 	})
 
-	resetRetVars := ctx.exprVars.withRetVars("0")
+	// Expression-resolve code created while generating size closures is emitted
+	// into the surrounding encoder method (which returns err), not into the
+	// closures themselves, so the error-return style must stay "err".
+	resetRetVars := ctx.exprVars.withRetVars("err")
 	defer resetRetVars()
 
 	for _, desc := range fnTypeList {
 		fnName := fmt.Sprintf("sizeFn%d", ctx.sizeFnNameMap[desc])
 		sizeCtx := newSizeContext(ctx.typePrinter, ctx.options)
 		sizeCtx.exprVars = ctx.exprVars
+		sizeCtx.staticSizeVars = newStaticSizeVarGenerator(ctx.typePrinter, ctx.options, ctx.exprVars)
 
 		sizeFnMap := make(map[*ssztypes.TypeDescriptor]*sizeFnPtr)
 		for desc2, idx := range ctx.sizeFnNameMap {
@@ -234,6 +238,7 @@ func (ctx *encoderContext) generateSizeFnCode(indent int) (string, error) {
 		if err := sizeCtx.sizeType(desc, "t", "size", 0, false); err != nil {
 			return "", err
 		}
+		appendCode(&codeBuf, indent+1, "%s", sizeCtx.staticSizeVars.getCode())
 		appendCode(&codeBuf, indent+1, "%s", sizeCtx.codeBuf.String())
 		appendCode(&codeBuf, indent+1, "return size\n")
 		appendCode(&codeBuf, indent, "}\n")
@@ -303,6 +308,11 @@ func (ctx *encoderContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 	useFastSsz := !ctx.options.NoFastSsz && isFastsszMarshaler && !hasDynamicSize
 	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
 		useFastSsz = true
+	}
+	// Custom types prefer their spec-aware dynssz methods over fastssz.
+	if desc.SszType == ssztypes.SszCustomType &&
+		desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicMarshaler|ssztypes.SszCompatFlagDynamicEncoder) != 0 {
+		useFastSsz = false
 	}
 
 	if useFastSsz && !isRoot && !isView {
@@ -592,10 +602,9 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 		}
 		if strings.HasPrefix(valueVar, "*") {
-			if ptrPrefix == "&" {
-				return strings.TrimPrefix(valueVar, "*")
-			}
-			return fmt.Sprintf("(%s%s)", ptrPrefix, valueVar)
+			// The result may be used as an indexing base (e.g. &(*t)[i]), so
+			// the &* cancellation shortcut would bind to the wrong expression.
+			return fmt.Sprintf("%s(%s)", ptrPrefix, valueVar)
 		}
 		return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 	}
@@ -628,14 +637,33 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 				valueVar = fmt.Sprintf("(%s)", valueVar)
 			}
 			if bitlimitVar != "" {
-				ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
-				ctx.appendCode(indent, "if %s[%s-1] & paddingMask != 0 {\n", getValueVar(false, ""), lenVar)
+				// Padding bits only exist when the bit size is not byte-aligned
+				// (runtime-checked for expression sizes) and the value occupies
+				// the full byte length — shorter values are zero-padded, so
+				// their last byte is a data byte, not the boundary byte.
+				conds := []string{}
+				if lenVar == varNameVLen {
+					conds = append(conds, fmt.Sprintf("%s == %s", lenVar, limitVar))
+				}
+				if sizeExpression != nil {
+					conds = append(conds, fmt.Sprintf("%s %% 8 != 0", bitlimitVar))
+				}
+				checkIndent := indent
+				if len(conds) > 0 {
+					ctx.appendCode(indent, "if %s {\n", strings.Join(conds, " && "))
+					checkIndent++
+				}
+				ctx.appendCode(checkIndent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
+				ctx.appendCode(checkIndent, "if %s[%s-1] & paddingMask != 0 {\n", getValueVar(false, ""), lenVar)
 				errCode := errCodeBitvectorPadding
-				ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
-				ctx.appendCode(indent, "}\n")
+				ctx.appendCode(checkIndent, "\treturn %s\n", typePath.getErrorWith(errCode))
+				ctx.appendCode(checkIndent, "}\n")
+				if len(conds) > 0 {
+					ctx.appendCode(indent, "}\n")
+				}
 			}
 			ctx.appendCode(indent, "enc.EncodeBytes(%s[:%s])\n", getValueVar(false, ""), lenVar)
-		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0:
+		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0:
 			ctx.appendCode(indent, "sszutils.EncodeUint64Slice(enc, %s[:%s])\n", getValueVar(false, ""), lenVar)
 		default:
 			indexVar, indexDefer := ctx.getIndexVar()
@@ -693,13 +721,11 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent, "\t}\n")
 
 		if desc.Kind != reflect.Array {
-			// append zero padding if we have less items than the limit
+			// append zero padding if we have less items than the limit. The
+			// padding item is a zero value of the element's own Go type (a nil
+			// pointer for pointer elements, which the element encoder handles).
 			ctx.appendCode(indent, "\tif %s < %s {\n", lenVar, limitVar)
-			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
-				ctx.appendCode(indent, "\t\tzeroItem := new(%s)\n", ctx.typePrinter.InnerTypeString(desc.ElemDesc))
-			} else {
-				ctx.appendCode(indent, "\t\tvar zeroItem %s\n", ctx.typePrinter.TypeString(desc.ElemDesc))
-			}
+			ctx.appendCode(indent, "\t\tvar zeroItem %s\n", ctx.typePrinter.TypeString(desc.ElemDesc))
 
 			zeroItemSizeFnCall := ctx.getSizeFnCall(desc.ElemDesc, "zeroItem")
 			ctx.appendCode(indent, "\t\tzeroSize := %s\n", zeroItemSizeFnCall)
@@ -732,13 +758,12 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent, "}\n")
 
 		if desc.Kind != reflect.Array {
-			// append zero padding if we have less items than the limit
+			// append zero padding if we have less items than the limit. The
+			// padding item is a zero value of the element's own Go type (a nil
+			// pointer for pointer elements, which the element encoder handles); the
+			// vector's own pointer-ness is irrelevant to the element type here.
 			ctx.appendCode(indent, "if %s < %s {\n", lenVar, limitVar)
-			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
-				ctx.appendCode(indent, "\tzeroItem := new(%s)\n", ctx.typePrinter.InnerTypeString(desc.ElemDesc))
-			} else {
-				ctx.appendCode(indent, "\tvar zeroItem %s\n", ctx.typePrinter.TypeString(desc.ElemDesc))
-			}
+			ctx.appendCode(indent, "\tvar zeroItem %s\n", ctx.typePrinter.TypeString(desc.ElemDesc))
 			ctx.appendCode(indent, "\tfor %s := %s; %s < %s; %s++ {\n", indexVar, lenVar, indexVar, limitVar, indexVar)
 			ctx.appendCode(indent, "\t\tif canSeek {\n")
 			ctx.appendCode(indent, "\t\t\tenc.EncodeOffsetAt(dstlen+(%s*4), uint32(enc.GetPosition()-dstlen))\n", indexVar)
@@ -788,10 +813,9 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 			return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 		}
 		if strings.HasPrefix(valueVar, "*") {
-			if ptrPrefix == "&" {
-				return strings.TrimPrefix(valueVar, "*")
-			}
-			return fmt.Sprintf("(%s%s)", ptrPrefix, valueVar)
+			// The result may be used as an indexing base (e.g. &(*t)[i]), so
+			// the &* cancellation shortcut would bind to the wrong expression.
+			return fmt.Sprintf("%s(%s)", ptrPrefix, valueVar)
 		}
 		return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 	}
@@ -824,7 +848,7 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 				valueVar = fmt.Sprintf("(%s)", valueVar)
 			}
 			ctx.appendCode(indent, "enc.EncodeBytes(%s[:])\n", getValueVar(false, ""))
-		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0:
+		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0:
 			addVlen()
 			ctx.appendCode(indent, "sszutils.EncodeUint64Slice(enc, %s[:vlen])\n", getValueVar(false, ""))
 		default:
@@ -847,6 +871,7 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 	} else {
 		// dynamic elements
 		// reserve space for offsets
+		ctx.usedSeekable = true
 		ctx.appendCode(indent, "dstlen := enc.GetPosition()\n")
 		addVlen()
 		ctx.appendCode(indent, "if canSeek {\n")
@@ -902,9 +927,14 @@ func (ctx *encoderContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName
 		maxVar = "0"
 	}
 
-	ctx.appendCode(indent, "vlen := len(%s)\n", varName)
+	valueVar := varName
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		valueVar = fmt.Sprintf("(*%s)", varName)
+	}
 
-	ctx.appendCode(indent, "bval := []byte(%s[:])\n", varName)
+	ctx.appendCode(indent, "vlen := len(%s)\n", valueVar)
+
+	ctx.appendCode(indent, "bval := []byte(%s[:])\n", valueVar)
 	ctx.appendCode(indent, "if vlen == 0 {\n")
 	ctx.appendCode(indent, "\tbval = []byte{0x01}\n")
 	ctx.appendCode(indent, "} else if bval[vlen-1] == 0x00 {\n")

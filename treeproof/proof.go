@@ -29,6 +29,16 @@ func VerifyProof(root []byte, proof *Proof) (bool, error) {
 	if len(proof.Hashes) != getPathLength(proof.Index) {
 		return false, errors.New("invalid proof length")
 	}
+	// Chunks are at most 32 bytes; anything longer would be silently truncated
+	// below and verify against a value the caller never proved.
+	if len(proof.Leaf) > 32 {
+		return false, fmt.Errorf("leaf length %d exceeds chunk size 32", len(proof.Leaf))
+	}
+	for i, h := range proof.Hashes {
+		if len(h) > 32 {
+			return false, fmt.Errorf("proof hash %d length %d exceeds chunk size 32", i, len(h))
+		}
+	}
 
 	var tmp [64]byte
 	node := bytesToChunk(proof.Leaf)
@@ -83,6 +93,19 @@ func VerifyMultiproof(root []byte, proof, leaves [][]byte, indices []int) (bool,
 		}
 	}
 
+	// Chunks are at most 32 bytes; anything longer would be silently truncated
+	// during verification and verify against a value the caller never proved.
+	for i, leaf := range leaves {
+		if len(leaf) > 32 {
+			return false, fmt.Errorf("leaf %d length %d exceeds chunk size 32", i, len(leaf))
+		}
+	}
+	for i, h := range proof {
+		if len(h) > 32 {
+			return false, fmt.Errorf("proof hash %d length %d exceeds chunk size 32", i, len(h))
+		}
+	}
+
 	if len(proof) == 0 {
 		if ok, valid := verifyFullTreeLeaves(root, leaves, indices); ok {
 			return valid, nil
@@ -122,11 +145,25 @@ func verifyMultiproofGeneral(root []byte, proof, leaves [][]byte, indices, requi
 	}
 	hashesByIndex := make(map[int][32]byte, hashesByIndexCapacity)
 
+	// Track which entries were supplied by the caller (leaves and proof
+	// hashes). When a parent hash recomputed from children collides with a
+	// supplied entry, the two must be reconciled instead of trusting the
+	// supplied value blindly (ancestor+descendant or root-in-set proofs).
+	suppliedIndices := make(map[int]struct{}, len(indices)+len(requiredProofIndices))
+
 	for i, leaf := range leaves {
-		hashesByIndex[indices[i]] = bytesToChunk(leaf)
+		chunk := bytesToChunk(leaf)
+		if existing, isDuplicate := hashesByIndex[indices[i]]; isDuplicate && existing != chunk {
+			// Conflicting values for the same generalized index can never both
+			// be part of one consistent tree.
+			return false, nil
+		}
+		hashesByIndex[indices[i]] = chunk
+		suppliedIndices[indices[i]] = struct{}{}
 	}
 	for i, h := range proof {
 		hashesByIndex[requiredProofIndices[i]] = bytesToChunk(h)
+		suppliedIndices[requiredProofIndices[i]] = struct{}{}
 	}
 
 	// The depth of the tree up to the greatest index
@@ -195,9 +232,14 @@ func verifyMultiproofGeneral(root []byte, proof, leaves [][]byte, indices, requi
 
 		parentIndex := getParent(currentIndex)
 
-		// If another child already computed this parent, skip the duplicate work.
-		if _, hasParent := hashesByIndex[parentIndex]; hasParent {
-			continue
+		existingParent, hasParent := hashesByIndex[parentIndex]
+		if hasParent {
+			// If another child already computed this parent, skip the duplicate
+			// work. A parent that was supplied by the caller still has to be
+			// reconciled against the hash recomputed from its children below.
+			if _, isSupplied := suppliedIndices[parentIndex]; !isSupplied {
+				continue
+			}
 		}
 
 		leftIndex := (currentIndex | 1) ^ 1
@@ -211,7 +253,21 @@ func verifyMultiproofGeneral(root []byte, proof, leaves [][]byte, indices, requi
 
 		copy(tmp[:32], left[:])
 		copy(tmp[32:], right[:])
-		hashesByIndex[parentIndex] = sha256.Sum256(tmp[:])
+		parentHash := sha256.Sum256(tmp[:])
+
+		if hasParent {
+			// The caller supplied this parent directly (an ancestor leaf, the
+			// root, or a proof hash); reject the proof when it disagrees with
+			// the hash derived from its own children.
+			if parentHash != existingParent {
+				return false, nil
+			}
+			// Reconciled once; later siblings can take the cheap skip above.
+			delete(suppliedIndices, parentIndex)
+			continue
+		}
+
+		hashesByIndex[parentIndex] = parentHash
 
 		// Queue the new parent because it may itself need to be paired higher up.
 		pendingParentQueue = append(pendingParentQueue, parentIndex)

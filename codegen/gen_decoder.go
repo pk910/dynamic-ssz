@@ -265,6 +265,11 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 		if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
 			useFastSsz = true
 		}
+		// Custom types prefer their spec-aware dynssz methods over fastssz.
+		if desc.SszType == ssztypes.SszCustomType &&
+			desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicUnmarshaler|ssztypes.SszCompatFlagDynamicDecoder) != 0 {
+			useFastSsz = false
+		}
 
 		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 {
 			ctx.appendCode(indent, "if err = %s.UnmarshalSSZDecoder(ds, dec); err != nil {\n\treturn err\n}\n", varName)
@@ -289,6 +294,16 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 			sizeStr := "dec.GetLength()"
 			if desc.Size > 0 {
 				sizeStr = fmt.Sprintf("%d", desc.Size)
+			} else if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 &&
+				desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+				// A delegated STATIC type without a compile-time size (shallow
+				// descriptor) occupies exactly its own runtime size; reading the
+				// whole remaining region would swallow subsequent fields.
+				sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(desc)
+				if err != nil {
+					return err
+				}
+				sizeStr = fmt.Sprintf("int(%s)", sizeVar)
 			}
 			ctx.appendCode(indent, "if buf, err := dec.DecodeBytesBuf(%s); err != nil {\n", sizeStr)
 			ctx.appendCode(indent+1, "return err\n")
@@ -361,11 +376,7 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent, "}\n")
 
 	case ssztypes.SszTypeWrapperType:
-		fieldName := getTypeWrapperFieldName(desc)
-		if fieldName == "" {
-			return fmt.Errorf("could not determine data field name for wrapper descriptor")
-		}
-		if err := ctx.unmarshalType(desc.ElemDesc, fmt.Sprintf("%s.%s", varName, fieldName), typePath, indent, false, noBufCheck); err != nil {
+		if err := ctx.unmarshalTypeWrapper(desc, varName, typePath, indent, noBufCheck); err != nil {
 			return err
 		}
 
@@ -422,6 +433,22 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 	}
 
 	return nil
+}
+
+// unmarshalTypeWrapper generates decode code for a TypeWrapper, decoding into
+// its Data field.
+func (ctx *decoderContext) unmarshalTypeWrapper(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, noBufCheck bool) error {
+	fieldName := getTypeWrapperFieldName(desc)
+	if fieldName == "" {
+		return fmt.Errorf("could not determine data field name for wrapper descriptor")
+	}
+	dataVar := fmt.Sprintf("%s.%s", varName, fieldName)
+	// A pointer Data field is written through by the element codec, so it must
+	// be allocated first (optionals manage their own allocation).
+	if desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.ElemDesc.SszType != ssztypes.SszOptionalType && desc.ElemDesc.SszType != ssztypes.SszOptionalListType {
+		ctx.appendCode(indent, "if %s == nil {\n\t%s = new(%s)\n}\n", dataVar, dataVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
+	}
+	return ctx.unmarshalType(desc.ElemDesc, dataVar, typePath, indent, false, noBufCheck)
 }
 
 // unmarshalContainer generates unmarshal code for SSZ container (struct) types.
@@ -615,16 +642,33 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 				ctx.appendCode(indent, "if buf, err := dec.DecodeBytesBuf(%s); err != nil {\n", limitVar)
 				ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith("err"))
 				ctx.appendCode(indent, "} else {\n")
-				ctx.appendCode(indent+1, "%s = %s\n", valueVar, ctx.getCastedValueVar(desc, "buf", ""))
+				// Assign through the plain (dereferenced) lvalue: valueVar may
+				// carry a string(...) cast which is not assignable.
+				assignVar := varName
+				if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+					assignVar = fmt.Sprintf("*%s", varName)
+				}
+				ctx.appendCode(indent+1, "%s = %s\n", assignVar, ctx.getCastedValueVar(desc, "buf", ""))
 				ctx.appendCode(indent, "}\n")
 			} else {
 				ctx.appendCode(indent, "if _, err = dec.DecodeBytes(%s[:%s]); err != nil {\n\treturn err\n}\n", indexValueVar, limitVar)
 				if bitlimitVar != "" {
-					ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
-					ctx.appendCode(indent, "if %s[%s-1] & paddingMask != 0 {\n", indexValueVar, limitVar)
+					// Only bit-aligned bitvectors (bit size not a multiple of 8)
+					// have padding bits. For runtime-resolved bit sizes the
+					// alignment is only known at runtime, so guard accordingly.
+					checkIndent := indent
+					if sizeExpression != nil {
+						ctx.appendCode(indent, "if %s %% 8 != 0 {\n", bitlimitVar)
+						checkIndent++
+					}
+					ctx.appendCode(checkIndent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
+					ctx.appendCode(checkIndent, "if %s[%s-1] & paddingMask != 0 {\n", indexValueVar, limitVar)
 					errCode := errCodeBitvectorPadding
-					ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
-					ctx.appendCode(indent, "}\n")
+					ctx.appendCode(checkIndent, "\treturn %s\n", typePath.getErrorWith(errCode))
+					ctx.appendCode(checkIndent, "}\n")
+					if sizeExpression != nil {
+						ctx.appendCode(indent, "}\n")
+					}
 				}
 			}
 			return nil
@@ -648,7 +692,7 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 		}
 
 		// bulk uint64 lists
-		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
+		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0 {
 			ctx.appendCode(indent, "if err = sszutils.DecodeUint64Slice(dec, %s[:%s]); err != nil {\n\treturn %s\n}\n", indexValueVar, limitVar, typePath.getErrorWith("err"))
 			return nil
 		}
@@ -819,7 +863,13 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 				ctx.appendCode(indent, "if buf, err := dec.DecodeBytesBuf(dec.GetLength()); err != nil {\n")
 				ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith("err"))
 				ctx.appendCode(indent, "} else {\n")
-				ctx.appendCode(indent+1, "%s = %s\n", valueVar, ctx.getCastedValueVar(desc, "buf", ""))
+				// Assign through the plain (dereferenced) lvalue: valueVar may
+				// carry a string(...) cast which is not assignable.
+				assignVar := varName
+				if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+					assignVar = fmt.Sprintf("*%s", varName)
+				}
+				ctx.appendCode(indent+1, "%s = %s\n", assignVar, ctx.getCastedValueVar(desc, "buf", ""))
 				ctx.appendCode(indent, "}\n")
 			} else {
 				ctx.appendCode(indent, "listLen := dec.GetLength()\n")
@@ -832,7 +882,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		}
 
 		// bulk uint64 lists
-		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
+		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0 {
 			ctx.appendCode(indent, "sszLen := dec.GetLength()\n")
 			ctx.appendCode(indent, "itemCount := sszLen / 8\n")
 			errCode := "sszutils.ErrListNotAlignedFn(sszLen, 8)"
@@ -924,6 +974,19 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent, "}\n")
 		ctx.appendCode(indent, "itemCount := int(startOffset / 4)\n")
 
+		// itemCount is derived from the untrusted first offset, so the range
+		// check must gate the offset-table allocation below; validating here
+		// (before the allocation) bounds it to the actual region length, as the
+		// reflection path does.
+		errCode := "sszutils.ErrInvalidListStartOffsetFn(startOffset, sszLen)"
+		// A zero first offset in a non-empty region is rejected (it would
+		// otherwise decode as an empty list), matching the buffer path.
+		ctx.appendCode(indent, "if startOffset%%4 != 0 || uint32(sszLen) < startOffset || (sszLen != 0 && startOffset == 0) {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
+		if hasMax {
+			errCode = fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", maxVar)
+			ctx.appendCode(indent, "if itemCount > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
+		}
+
 		// read offsets
 		indexVar, indexDefer := ctx.getIndexVar()
 		defer indexDefer()
@@ -948,12 +1011,6 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 			ctx.offsetSliceLimit = ctx.offsetSliceCounter
 		}
 
-		errCode := "sszutils.ErrInvalidListStartOffsetFn(startOffset, sszLen)"
-		ctx.appendCode(indent, "if startOffset%%4 != 0 || uint32(sszLen) < startOffset {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
-		if hasMax {
-			errCode = fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", maxVar)
-			ctx.appendCode(indent, "if itemCount > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
-		}
 		if desc.Kind != reflect.Array {
 			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", valueVar, valueVar)
 		}
@@ -1021,18 +1078,22 @@ func (ctx *decoderContext) unmarshalBitlist(desc *ssztypes.TypeDescriptor, varNa
 
 	ctx.appendCode(indent, "blen := dec.GetLength()\n")
 
-	if desc.Kind != reflect.Array {
-		ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, blen)\n", varName, varName)
+	valueVar := varName
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		valueVar = fmt.Sprintf("(*%s)", varName)
 	}
-	ctx.appendCode(indent, "if _, err = dec.DecodeBytes(%s[:blen]); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
-	ctx.appendCode(indent, "if blen == 0 || %s[blen-1] == 0x00 {\n", varName)
+	if desc.Kind != reflect.Array {
+		ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, blen)\n", valueVar, valueVar)
+	}
+	ctx.appendCode(indent, "if _, err = dec.DecodeBytes(%s[:blen]); err != nil {\n\treturn %s\n}\n", valueVar, typePath.getErrorWith("err"))
+	ctx.appendCode(indent, "if blen == 0 || %s[blen-1] == 0x00 {\n", valueVar)
 	errCode := errCodeBitlistNotTerminated
 	ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 	ctx.appendCode(indent, "}\n")
 
 	if hasMax {
 		bitsPkgName := ctx.typePrinter.AddImport("math/bits", "bits")
-		ctx.appendCode(indent, "bitCount := 8*(blen-1) + int(%s.Len8(%s[blen-1])) - 1\n", bitsPkgName, varName)
+		ctx.appendCode(indent, "bitCount := 8*(blen-1) + int(%s.Len8(%s[blen-1])) - 1\n", bitsPkgName, valueVar)
 		errCode := fmt.Sprintf("sszutils.ErrBitlistLengthFn(bitCount, %s)", maxVar)
 		ctx.appendCode(indent, "if bitCount > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
 	}
@@ -1060,6 +1121,11 @@ func (ctx *decoderContext) unmarshalUnion(desc *ssztypes.TypeDescriptor, varName
 		ctx.appendCode(indent, "case %d:\n", variant)
 		valVar := ctx.getValVar()
 		ctx.appendCode(indent, "\tvar %s %s\n", valVar, variantType)
+		// A pointer variant is written through by the element codec, so it must
+		// be allocated first (optionals manage their own allocation).
+		if variantDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && variantDesc.SszType != ssztypes.SszOptionalType && variantDesc.SszType != ssztypes.SszOptionalListType {
+			ctx.appendCode(indent+1, "%s = new(%s)\n", valVar, ctx.typePrinter.InnerTypeString(variantDesc))
+		}
 		if err := ctx.unmarshalType(variantDesc, valVar, typePath.append(fmt.Sprintf("[v:%d]", variant)), indent+1, false, true); err != nil {
 			return err
 		}

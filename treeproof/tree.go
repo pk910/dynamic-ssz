@@ -282,55 +282,83 @@ func TreeFromChunks(chunks [][]byte) (*Node, error) {
 	return TreeFromNodes(leaves, numLeaves)
 }
 
-// treeFromNodesFn is used by internal callers and can be replaced in tests
-// to inject errors into otherwise unreachable defensive error paths.
-var treeFromNodesFn = TreeFromNodes
+// treeFromNodesToDepthFn is the injectable core tree builder. Internal callers
+// route binary-tree construction through it so tests can replace it to exercise
+// otherwise-unreachable defensive error paths.
+var treeFromNodesToDepthFn = treeFromNodesToDepth
 
 // TreeFromNodes constructs a tree from leaf nodes.
 // This is useful for merging subtrees.
 // The limit should be a power of 2.
 // Adjacent sibling nodes will be filled with zero order hashes that have been precomputed based on the tree depth.
 func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
-	numLeaves := len(leaves)
-
+	// Excess leaves would be dropped silently, producing a valid-looking root for
+	// a different tree. A negative limit is an int-overflow artifact (a chunk
+	// limit above the platform int max, only possible on 32-bit) handled as an
+	// empty capacity, not treated as excess.
+	if limit >= 0 && len(leaves) > limit {
+		return nil, fmt.Errorf("number of leaves %d exceeds limit %d", len(leaves), limit)
+	}
 	if limit <= 0 {
 		return getEmptyNode(0), nil
+	}
+	return TreeFromNodes64(leaves, uint64(limit))
+}
+
+// TreeFromNodes64 is the uint64 form of TreeFromNodes and carries the canonical
+// logic. limit is the leaf capacity (0/1 or a power of two); capacities up to
+// 2^63 are representable. The tree is built from its depth (log2(limit)), so
+// construction is O(depth·leaves) regardless of how large the capacity is.
+func TreeFromNodes64(leaves []*Node, limit uint64) (*Node, error) {
+	if limit == 0 {
+		// A zero capacity cannot hold any leaf; accepting one would silently drop
+		// it and produce a valid-looking root for a different tree.
+		if len(leaves) > 0 {
+			return nil, fmt.Errorf("number of leaves %d exceeds limit %d", len(leaves), 0)
+		}
+		return getEmptyNode(0), nil
+	}
+	if uint64(len(leaves)) > limit {
+		return nil, fmt.Errorf("number of leaves %d exceeds limit %d", len(leaves), limit)
+	}
+	if limit > 1 && limit&(limit-1) != 0 {
+		return nil, errors.New("number of leaves should be a power of 2")
+	}
+	return treeFromNodesToDepthFn(leaves, chunkLimitDepth(limit))
+}
+
+// treeFromNodesToDepth builds a binary Merkle tree from leaves padded with
+// zero-order-hash subtrees to a capacity of 2^depth leaves. depth ranges over
+// [0, 64]; driving construction by the depth (rather than a 2^depth leaf count)
+// keeps it overflow-free for capacities beyond the platform int range.
+func treeFromNodesToDepth(leaves []*Node, depth int) (*Node, error) {
+	numLeaves := len(leaves)
+
+	// Reject excess leaves (silently dropped otherwise) when 2^depth is
+	// representable; for depth >= 63 the capacity dwarfs any real leaf count.
+	if depth >= 0 && depth < 63 && numLeaves > (1<<uint(depth)) {
+		return nil, fmt.Errorf("number of leaves %d exceeds limit %d", numLeaves, 1<<uint(depth))
 	}
 
 	// there are no leaves, return a zero order hash node
 	if numLeaves == 0 {
-		depth := floorLog2(limit)
+		if depth < 0 {
+			depth = 0
+		}
 		return getEmptyNode(depth), nil
 	}
 
 	// A nil leaf cannot be hashed and would panic later in Hash(); reject it at
-	// construction so the tree is always complete.
+	// construction (before any leaf is returned) so the tree is always complete.
 	for i := range leaves {
 		if leaves[i] == nil {
 			return nil, fmt.Errorf("leaf at index %d is nil", i)
 		}
 	}
 
-	// now we know numLeaves are at least 1.
-	// if the max leaf limit is 1, return the one leaf we have
-	if limit == 1 {
+	// depth 0 is a single-leaf capacity: return the sole leaf.
+	if depth <= 0 {
 		return leaves[0], nil
-	}
-
-	if !isPowerOfTwo(limit) {
-		return nil, errors.New("number of leaves should be a power of 2")
-	}
-
-	depth := floorLog2(limit)
-
-	// if the max leaf limit is 2
-	if limit == 2 {
-		// but we only have 1 leaf, add a zero order hash as the right node
-		if len(leaves) < 2 {
-			return NewNodeWithLR(leaves[0], getEmptyNode(0)), nil
-		}
-		// otherwise return the two nodes we have
-		return NewNodeWithLR(leaves[0], leaves[1]), nil
 	}
 
 	firstLevelCount := (numLeaves + 1) / 2
@@ -391,6 +419,22 @@ func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
 	return current[0], nil
 }
 
+// chunkLimitDepth returns ceil(log2(limit)) clamped to [0, 64] — the depth of a
+// binary Merkle tree padded to `limit` chunks. It mirrors hasher.getDepth so the
+// tree wrapper and the streaming hasher agree on tree shape (and therefore root)
+// for every limit, including capacities above the platform int range.
+func chunkLimitDepth(limit uint64) int {
+	if limit <= 1 {
+		return 0
+	}
+	p := sszutils.NextPowerOfTwo(limit)
+	if p == 0 {
+		// limit exceeds 2^63, so the next power of two (2^64) overflows uint64.
+		return 64
+	}
+	return bits.TrailingZeros64(p)
+}
+
 // TreeFromNodesProgressive constructs a progressive tree from leaf nodes.
 // This implements the progressive merkleization algorithm where chunks are split
 // using base_size pattern (1, 4, 16, 64...) rather than even binary splits.
@@ -426,9 +470,10 @@ func treeFromNodesProgressiveImpl(leaves []*Node, depth int) (*Node, error) {
 		splitPoint = len(leaves)
 	}
 
-	// Left child: binary merkleization of first baseSize nodes
+	// Left child: binary merkleization of first baseSize nodes. baseSize is
+	// 1<<depth, so the binary subtree has exactly this depth.
 	leftNodes := leaves[:splitPoint]
-	leftChild, err := treeFromNodesFn(leftNodes, baseSize)
+	leftChild, err := treeFromNodesToDepthFn(leftNodes, depth)
 	if err != nil {
 		return nil, err
 	}
@@ -454,17 +499,32 @@ func treeFromNodesProgressiveImpl(leaves []*Node, depth int) (*Node, error) {
 // merkleization for lists, where the tree root is hash(merkle_root || length).
 // The limit is rounded up to the next power of two if not already one.
 func TreeFromNodesWithMixin(leaves []*Node, num, limit int) (*Node, error) {
-	if !isPowerOfTwo(limit) {
-		limit = int(sszutils.NextPowerOfTwo(uint64(limit)))
+	if limit < 0 {
+		// int-overflow artifact (32-bit): treat as an empty capacity.
+		limit = 0
 	}
+	if num < 0 {
+		num = 0
+	}
+	return TreeFromNodesWithMixin64(leaves, uint64(num), uint64(limit))
+}
 
-	mainTree, err := treeFromNodesFn(leaves, limit)
+// TreeFromNodesWithMixin64 is the uint64 form of TreeFromNodesWithMixin and
+// carries the canonical logic: it builds the list tree padded to `limit` chunks
+// (rounded up to a power of two via the tree depth) and mixes in the element
+// count as the right sibling of the root.
+func TreeFromNodesWithMixin64(leaves []*Node, num, limit uint64) (*Node, error) {
+	if limit == 0 && len(leaves) > 0 {
+		// A zero capacity cannot hold any leaf (see TreeFromNodes64).
+		return nil, fmt.Errorf("number of leaves %d exceeds limit %d", len(leaves), 0)
+	}
+	mainTree, err := treeFromNodesToDepthFn(leaves, chunkLimitDepth(limit))
 	if err != nil {
 		return nil, err
 	}
 
 	// Mixin len
-	countLeaf := LeafFromUint64(uint64(num))
+	countLeaf := LeafFromUint64(num)
 	node := NewNodeWithLR(mainTree, countLeaf)
 	return node, nil
 }
@@ -472,13 +532,22 @@ func TreeFromNodesWithMixin(leaves []*Node, num, limit int) (*Node, error) {
 // TreeFromNodesProgressiveWithMixin constructs a progressive tree with length mixin.
 // The progressive tree is created first, then mixed with the length value.
 func TreeFromNodesProgressiveWithMixin(leaves []*Node, num int) (*Node, error) {
+	if num < 0 {
+		num = 0
+	}
+	return TreeFromNodesProgressiveWithMixin64(leaves, uint64(num))
+}
+
+// TreeFromNodesProgressiveWithMixin64 is the uint64 form of
+// TreeFromNodesProgressiveWithMixin.
+func TreeFromNodesProgressiveWithMixin64(leaves []*Node, num uint64) (*Node, error) {
 	mainTree, err := TreeFromNodesProgressive(leaves)
 	if err != nil {
 		return nil, err
 	}
 
 	// Mixin length (same as binary version)
-	countLeaf := LeafFromUint64(uint64(num))
+	countLeaf := LeafFromUint64(num)
 	node := NewNodeWithLR(mainTree, countLeaf)
 	return node, nil
 }

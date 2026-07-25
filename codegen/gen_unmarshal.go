@@ -248,6 +248,11 @@ func (ctx *unmarshalContext) unmarshalCompatType(desc *ssztypes.TypeDescriptor, 
 	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
 		useFastSsz = true
 	}
+	// Custom types prefer their spec-aware dynssz methods over fastssz.
+	if desc.SszType == ssztypes.SszCustomType &&
+		desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicUnmarshaler|ssztypes.SszCompatFlagDynamicDecoder) != 0 {
+		useFastSsz = false
+	}
 
 	if useFastSsz {
 		ctx.appendCode(indent, "if err = %s.UnmarshalSSZ(buf); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
@@ -378,7 +383,13 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 		if fieldName == "" {
 			return fmt.Errorf("could not determine data field name for wrapper descriptor")
 		}
-		if err := ctx.unmarshalType(desc.ElemDesc, fmt.Sprintf("%s.%s", varName, fieldName), typePath, indent, false, noBufCheck); err != nil {
+		dataVar := fmt.Sprintf("%s.%s", varName, fieldName)
+		// A pointer Data field is written through by the element codec, so it
+		// must be allocated first (optionals manage their own allocation).
+		if desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.ElemDesc.SszType != ssztypes.SszOptionalType && desc.ElemDesc.SszType != ssztypes.SszOptionalListType {
+			ctx.appendCode(indent, "if %s == nil {\n\t%s = new(%s)\n}\n", dataVar, dataVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
+		}
+		if err := ctx.unmarshalType(desc.ElemDesc, dataVar, typePath, indent, false, noBufCheck); err != nil {
 			return err
 		}
 
@@ -517,9 +528,9 @@ func (ctx *unmarshalContext) unmarshalOptional(desc *ssztypes.TypeDescriptor, va
 	// trailing data too; a variable-size value consumes the remaining bytes.
 	elemSize := desc.ElemDesc.Size
 	if elemSize > 0 {
-		ctx.appendCode(indent+1, "if len(buf) < %d {\n\treturn %s\n}\n", 1+elemSize, typePath.getErrorWith("sszutils.ErrOptionalValueEOFFn()"))
-		presentTrailErr := fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - %d)", 1+elemSize)
-		ctx.appendCode(indent+1, "if len(buf) > %d {\n\treturn %s\n}\n", 1+elemSize, typePath.getErrorWith(presentTrailErr))
+		eofErr := typePath.getErrorWith("sszutils.ErrOptionalValueEOFFn()")
+		trailErr := typePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - %d)", 1+elemSize))
+		ctx.appendExactLenCheck(indent+1, fmt.Sprintf("%d", 1+elemSize), "len(buf)", eofErr, trailErr)
 	}
 
 	valVar := ctx.getValVar()
@@ -554,6 +565,24 @@ func (ctx *unmarshalContext) unmarshalOptionalList(desc *ssztypes.TypeDescriptor
 		errOffset := "sszutils.ErrFirstOffsetMismatchFn(firstOffset, uint32(4))"
 		ctx.appendCode(indent+1, "if firstOffset != 4 {\n\treturn %s\n}\n", typePath.getErrorWith(errOffset))
 		ctx.appendCode(indent+1, "buf := buf[4:]\n")
+	} else {
+		// A present fixed-size value occupies exactly the inner type's size;
+		// reject truncated regions (which would decode zero-padded garbage or
+		// index out of range) and oversized regions (trailing data), matching
+		// the reflection and streaming-decoder paths.
+		var sizeVar string
+		if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+			var err error
+			sizeVar, err = ctx.staticSizeVars.getStaticSizeVar(desc.ElemDesc)
+			if err != nil {
+				return err
+			}
+		} else {
+			sizeVar = fmt.Sprintf("%d", desc.ElemDesc.Size)
+		}
+		eofErr := typePath.getErrorWith("sszutils.ErrOptionalValueEOFFn()")
+		trailErr := typePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - int(%s))", sizeVar))
+		ctx.appendExactLenCheck(indent+1, fmt.Sprintf("int(%s)", sizeVar), "len(buf)", eofErr, trailErr)
 	}
 	valVar := ctx.getValVar()
 	ctx.appendCode(indent+1, "var %s %s\n", valVar, ctx.typePrinter.TypeString(desc.ElemDesc))
@@ -587,6 +616,18 @@ func (ctx *unmarshalContext) unmarshalBigInt(desc *ssztypes.TypeDescriptor, varN
 	ctx.appendCode(indent, "if buf[0] == 1 {\n\t\t%s.Neg(%s)\n\t}\n", valVar, valVar)
 	ctx.appendCode(indent, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, fmt.Sprintf("*%s", valVar), "big.Int"))
 	return nil
+}
+
+// appendExactLenCheck emits a length guard for a region that must be exactly
+// sizeExpr bytes long. The common (matching) case costs a single comparison;
+// only a length mismatch pays for the second comparison that distinguishes a
+// shortfall (eofErr) from trailing data (trailErr). Both error operands are
+// expected to already be wrapped for the field path.
+func (ctx *unmarshalContext) appendExactLenCheck(indent int, sizeExpr, lenExpr, eofErr, trailErr string) {
+	ctx.appendCode(indent, "if %s != %s {\n", sizeExpr, lenExpr)
+	ctx.appendCode(indent+1, "if %s > %s {\n\treturn %s\n}\n", sizeExpr, lenExpr, eofErr)
+	ctx.appendCode(indent+1, "return %s\n", trailErr)
+	ctx.appendCode(indent, "}\n")
 }
 
 // unmarshalContainer generates unmarshal code for SSZ container (struct) types.
@@ -624,14 +665,17 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, v
 	offsetPrefix := ""
 	ctx.appendCode(indent, "buflen := len(buf)\n")
 	errCode := fmt.Sprintf("sszutils.ErrFixedFieldsEOFFn(buflen, %s)", totalStaticSizeExpr)
-	ctx.appendCode(indent, "if buflen < %s {\n\treturn %s\n}\n", totalStaticSizeExpr, typePath.getErrorWith(errCode))
-	if !hasDynamicFields {
+	if hasDynamicFields {
+		// Variable-length container: only a shortfall in the fixed prefix is an
+		// error; trailing bytes belong to the dynamic fields.
+		ctx.appendCode(indent, "if buflen < %s {\n\treturn %s\n}\n", totalStaticSizeExpr, typePath.getErrorWith(errCode))
+	} else {
 		// A fully fixed container occupies exactly its size, so any extra bytes
 		// are trailing data and must be rejected (matching the reflection and
 		// streaming-decoder paths). Nested fixed containers always receive an
 		// exactly-sized slice, so this only ever fires at the top-level entry.
 		trailErr := fmt.Sprintf("sszutils.ErrTrailingDataFn(buflen - %s)", totalStaticSizeExpr)
-		ctx.appendCode(indent, "if buflen > %s {\n\treturn %s\n}\n", totalStaticSizeExpr, typePath.getErrorWith(trailErr))
+		ctx.appendExactLenCheck(indent, totalStaticSizeExpr, "buflen", typePath.getErrorWith(errCode), typePath.getErrorWith(trailErr))
 	}
 	dynamicFields := make([]int, 0)
 
@@ -799,19 +843,41 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 		// static byte arrays
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
 			if !noBufCheck {
-				errCode := fmt.Sprintf("sszutils.ErrByteVectorEOFFn(len(buf), %s)", limitVar)
-				ctx.appendCode(indent, "if %s > len(buf) {\n\treturn %s\n}\n", limitVar, typePath.getErrorWith(errCode))
+				// A fixed-size vector occupies exactly its size, so extra bytes are
+				// trailing data and must be rejected (matching the reflection path).
+				// Nested vectors always receive an exactly-sized slice, so this only
+				// ever fires at the top-level entry.
+				eofErr := fmt.Sprintf("sszutils.ErrByteVectorEOFFn(len(buf), %s)", limitVar)
+				trailErr := fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - %s)", limitVar)
+				ctx.appendExactLenCheck(indent, limitVar, "len(buf)", typePath.getErrorWith(eofErr), typePath.getErrorWith(trailErr))
 			}
 			if bitlimitVar != "" {
-				ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
-				ctx.appendCode(indent, "if buf[%s-1] & paddingMask != 0 {\n", limitVar)
+				// Only bit-aligned bitvectors (bit size not a multiple of 8) have
+				// padding bits. For runtime-resolved bit sizes the alignment is
+				// only known at runtime, so guard the check accordingly.
+				checkIndent := indent
+				if sizeExpression != nil {
+					ctx.appendCode(indent, "if %s %% 8 != 0 {\n", bitlimitVar)
+					checkIndent++
+				}
+				ctx.appendCode(checkIndent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
+				ctx.appendCode(checkIndent, "if buf[%s-1] & paddingMask != 0 {\n", limitVar)
 				errCode := errCodeBitvectorPadding
-				ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
-				ctx.appendCode(indent, "}\n")
+				ctx.appendCode(checkIndent, "\treturn %s\n", typePath.getErrorWith(errCode))
+				ctx.appendCode(checkIndent, "}\n")
+				if sizeExpression != nil {
+					ctx.appendCode(indent, "}\n")
+				}
 			}
 			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
 				typename := ctx.typePrinter.InnerTypeString(desc)
-				ctx.appendCode(indent, "%s = %s(buf)\n", valueVar, typename)
+				// Assign through the plain (dereferenced) lvalue: valueVar may
+				// carry a string(...) cast which is not assignable.
+				assignVar := varName
+				if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+					assignVar = fmt.Sprintf("*%s", varName)
+				}
+				ctx.appendCode(indent, "%s = %s(buf)\n", assignVar, typename)
 			} else {
 				ctx.appendCode(indent, "copy(%s[:], buf)\n", indexValueVar)
 			}
@@ -831,14 +897,18 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 		}
 
 		if !noBufCheck {
-			ctx.appendCode(indent, "if %s*%s > len(buf) {\n", limitVar, fieldSizeVar)
-			errCode := fmt.Sprintf("sszutils.ErrVectorElementsEOFFn(len(buf), %s*%s)", limitVar, fieldSizeVar)
-			ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith(errCode))
-			ctx.appendCode(indent, "}\n")
+			// A fixed-size vector occupies exactly its size, so extra bytes are
+			// trailing data and must be rejected (matching the reflection path).
+			// Nested vectors always receive an exactly-sized slice, so this only
+			// ever fires at the top-level entry.
+			sizeExpr := fmt.Sprintf("%s*%s", limitVar, fieldSizeVar)
+			eofErr := fmt.Sprintf("sszutils.ErrVectorElementsEOFFn(len(buf), %s)", sizeExpr)
+			trailErr := fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - %s)", sizeExpr)
+			ctx.appendExactLenCheck(indent, sizeExpr, "len(buf)", typePath.getErrorWith(eofErr), typePath.getErrorWith(trailErr))
 		}
 
 		// bulk uint64 lists
-		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
+		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0 {
 			ctx.appendCode(indent, "sszutils.UnmarshalUint64Slice(%s[:%s], buf)\n", indexValueVar, limitVar)
 			return nil
 		}
@@ -966,7 +1036,13 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 			}
 			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
 				typename := ctx.typePrinter.InnerTypeString(desc)
-				ctx.appendCode(indent, "%s = %s(buf)\n", valueVar, typename)
+				// Assign through the plain (dereferenced) lvalue: valueVar may
+				// carry a string(...) cast which is not assignable.
+				assignVar := varName
+				if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+					assignVar = fmt.Sprintf("*%s", varName)
+				}
+				ctx.appendCode(indent, "%s = %s(buf)\n", assignVar, typename)
 			} else {
 				if desc.Kind != reflect.Array {
 					ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, len(buf))\n", valueVar, valueVar)
@@ -977,7 +1053,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 		}
 
 		// bulk uint64 lists
-		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0 {
+		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0 {
 			ctx.appendCode(indent, "itemCount := len(buf) / 8\n")
 			errCode := "sszutils.ErrListNotAlignedFn(len(buf), 8)"
 			ctx.appendCode(indent, "if len(buf)%%8 != 0 {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
@@ -1143,10 +1219,14 @@ func (ctx *unmarshalContext) unmarshalBitlist(desc *ssztypes.TypeDescriptor, var
 		ctx.appendCode(indent, "if bitCount > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
 	}
 
-	if desc.Kind != reflect.Array {
-		ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, blen)\n", varName, varName)
+	valueVar := varName
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		valueVar = fmt.Sprintf("(*%s)", varName)
 	}
-	ctx.appendCode(indent, "copy(%s[:], buf)\n", varName)
+	if desc.Kind != reflect.Array {
+		ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, blen)\n", valueVar, valueVar)
+	}
+	ctx.appendCode(indent, "copy(%s[:], buf)\n", valueVar)
 
 	return nil
 }
@@ -1173,15 +1253,24 @@ func (ctx *unmarshalContext) unmarshalUnion(desc *ssztypes.TypeDescriptor, varNa
 
 		childTypePath := typePath.append(fmt.Sprintf("[v:%d]", variant))
 
-		// Check that buf has enough bytes for the selector plus the variant value
+		// Check that buf has enough bytes for the selector plus the variant value.
+		// A fixed-size variant occupies exactly 1+elemSize bytes of the union
+		// region, so any extra bytes are trailing data and must be rejected
+		// (matching the reflection and streaming-decoder paths).
 		elemSize := variantDesc.Size
 		if elemSize > 0 {
-			errCode = fmt.Sprintf("sszutils.ErrUnionVariantEOFFn(len(buf), %d)", 1+elemSize)
-			ctx.appendCode(indent+1, "if len(buf) < %d {\n\treturn %s\n}\n", 1+elemSize, childTypePath.getErrorWith(errCode))
+			eofErr := childTypePath.getErrorWith(fmt.Sprintf("sszutils.ErrUnionVariantEOFFn(len(buf), %d)", 1+elemSize))
+			trailErr := childTypePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - %d)", 1+elemSize))
+			ctx.appendExactLenCheck(indent+1, fmt.Sprintf("%d", 1+elemSize), "len(buf)", eofErr, trailErr)
 		}
 
 		valVar := ctx.getValVar()
 		ctx.appendCode(indent, "\tvar %s %s\n", valVar, variantType)
+		// A pointer variant is written through by the element codec, so it must
+		// be allocated first (optionals manage their own allocation).
+		if variantDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && variantDesc.SszType != ssztypes.SszOptionalType && variantDesc.SszType != ssztypes.SszOptionalListType {
+			ctx.appendCode(indent+1, "%s = new(%s)\n", valVar, ctx.typePrinter.InnerTypeString(variantDesc))
+		}
 		ctx.appendCode(indent, "\tbuf := buf[1:]\n")
 		if err := ctx.unmarshalType(variantDesc, valVar, childTypePath, indent+1, false, true); err != nil {
 			return err

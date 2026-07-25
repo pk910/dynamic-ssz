@@ -121,6 +121,11 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 	if err != nil {
 		return "", err
 	}
+	// The JSON alone cannot distinguish shallow-built delegated descriptors
+	// (they carry no kind/size/subtree), so include the Go type identity in
+	// the dedup key; otherwise two different delegated types would share one
+	// size variable.
+	descJson = append(descJson, g.typePrinter.TypeStringWithoutTracking(desc, false)...)
 	descHash := sha256.Sum256(descJson)
 
 	if sizeVar, ok := g.varMap[descHash]; ok {
@@ -193,7 +198,14 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 			}
 
 			if sizeExpression != nil {
-				exprVar := g.exprVarGenerator.getExprVar(*sizeExpression, uint64(desc.Len))
+				// Bit-size expressions resolve to a bit count, so their default
+				// must be the bit size (matching the marshal/unmarshal paths),
+				// not the byte length.
+				defaultValue := uint64(desc.Len)
+				if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 && desc.BitSize > 0 {
+					defaultValue = uint64(desc.BitSize)
+				}
+				exprVar := g.exprVarGenerator.getExprVar(*sizeExpression, defaultValue)
 
 				if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
 					exprVar = fmt.Sprintf("(%s+7)/8", exprVar)
@@ -260,4 +272,27 @@ func (tp typePathList) getErrorWith(err string) string {
 		return fmt.Sprintf("sszutils.ErrorWithPath(%s, %s)", err, errArgs)
 	}
 	return err
+}
+
+// indexBase parenthesizes a value expression so it can be used as an indexing
+// or slicing base. A dereferenced pointer receiver (e.g. "*t") must become
+// "(*t)" before "[i]" so it binds as (*t)[i] rather than *(t[i]).
+func indexBase(valueVar string) string {
+	if strings.HasPrefix(valueVar, "*") {
+		return "(" + valueVar + ")"
+	}
+	return valueVar
+}
+
+// localizedVarName returns the name to bind a localized value to. The generated
+// method/closure already declares "t" (its receiver or parameter), and a
+// pointer nil-check localizes to "t" as well, so a same-scope re-declaration
+// would collide. In those cases ("t" is already bound: top scope, or the
+// incoming var is the localized "t") a distinct "t2" is used; otherwise "t"
+// legally shadows the outer value inside its own block.
+func localizedVarName(varName string, indent int) string {
+	if indent == 0 || varName == "t" {
+		return "t2"
+	}
+	return "t"
 }

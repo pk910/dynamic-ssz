@@ -115,12 +115,21 @@ type Name struct {
 
 ### Bitvectors and Bitlists
 
-#### Bitvector (fixed-size boolean array)
+#### Bitvector (fixed-size bit array)
+
+A bitvector is a bit-packed fixed-size boolean array. Model it with a
+byte-backed field annotated `ssz-type:"bitvector"`:
+
 ```go
 type Permissions struct {
-    Flags [256]bool  // Fixed-size bitvector
+    Flags [32]byte `ssz-type:"bitvector"`  // 256-bit bitvector (32 bytes)
 }
 ```
+
+> **Note**: A Go `[N]bool` array is **not** a bitvector — it auto-detects as
+> `Vector[boolean, N]`, one byte per element (`[256]bool` serializes to 256
+> bytes, not 32). Use a byte-backed field with `ssz-type:"bitvector"` for
+> bit packing.
 
 #### Bitvector with bit-level sizing
 When a bitvector's bit count is not a multiple of 8, the remaining bits in the last byte are padding bits. Use `ssz-bitsize` to specify the exact bit count and enable padding validation:
@@ -138,15 +147,23 @@ type CommitteeFlags struct {
 
 **Padding bit validation**: According to the SSZ specification, unused bits in the last byte of a bitvector must be zero. When `ssz-bitsize` or `dynssz-bitsize` is specified, Dynamic SSZ validates these padding bits during unmarshaling and returns an error if any are non-zero.
 
-#### Bitlist (variable-size boolean array)
+#### Bitlist (variable-size bit array)
 
-**Note**: For bitlists, `ssz-max` specifies the maximum number of **bits**, not bytes. This is consistent with the SSZ specification.
+A bitlist is a bit-packed variable-size boolean array. Model it with a
+byte-backed field annotated `ssz-type:"bitlist"` (or use `bitfield.Bitlist`,
+below). For bitlists, `ssz-max` specifies the maximum number of **bits**, not
+bytes, consistent with the SSZ specification.
 
 ```go
 type Votes struct {
-    Participants []bool `ssz-max:"2048"`  // Maximum 2048 bits
+    Participants []byte `ssz-type:"bitlist" ssz-max:"2048"`  // Maximum 2048 bits
 }
 ```
+
+> **Note**: A Go `[]bool` slice is **not** a bitlist — it auto-detects as
+> `List[boolean, N]`, one byte per element, with `ssz-max` counted in elements
+> rather than bits. Use a byte-backed field with `ssz-type:"bitlist"` for a
+> bit-packed bitlist.
 
 #### Using go-bitfield
 ```go

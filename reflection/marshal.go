@@ -62,45 +62,8 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 			return err
 		}
 	} else if sourceType.SszCompatFlags != 0 || sourceType.SszType == ssztypes.SszCustomType {
-		// Fast path: skip compat interface checks for types that don't implement any
-		hasDynamicSize := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
-		isFastsszMarshaler := sourceType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
-		useDynamicMarshal := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0
-		useDynamicEncoder := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicEncoder != 0
-		useFastSsz := !ctx.noFastSsz && isFastsszMarshaler && !hasDynamicSize
-		if !useFastSsz && sourceType.SszType == ssztypes.SszCustomType {
-			useFastSsz = true
-		}
-
-		if useFastSsz {
-			if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.FastsszMarshaler); ok {
-				newBuf, err := marshaller.MarshalSSZTo(encoder.GetBuffer())
-				if err != nil {
-					return err
-				}
-				encoder.SetBuffer(newBuf)
-				return nil
-			}
-		}
-
-		if useDynamicEncoder {
-			if !encoder.Seekable() || !useDynamicMarshal {
-				// prefer dynamic marshaller for seekable encoders (buffer based)
-				if sszEncoder, ok := getPtr(sourceValue).Interface().(sszutils.DynamicEncoder); ok {
-					return sszEncoder.MarshalSSZEncoder(ctx.ds, encoder)
-				}
-			}
-		}
-
-		if useDynamicMarshal {
-			if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.DynamicMarshaler); ok {
-				newBuf, err := marshaller.MarshalSSZDyn(ctx.ds, encoder.GetBuffer())
-				if err != nil {
-					return err
-				}
-				encoder.SetBuffer(newBuf)
-				return nil
-			}
+		if done, err := ctx.tryMarshalCompat(sourceType, sourceValue, encoder); err != nil || done {
+			return err
 		}
 	}
 
@@ -176,7 +139,11 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 	case ssztypes.SszInt64Type:
 		encoder.EncodeUint64(uint64(sourceValue.Int()))
 	case ssztypes.SszFloat32Type:
-		encoder.EncodeUint32(math.Float32bits(float32(sourceValue.Float())))
+		// Read the raw float32 bits without a float64 round-trip (Float() widens
+		// to float64, normalizing a signaling NaN's payload); Convert preserves
+		// the bit pattern, matching the generated code.
+		f32, _ := sourceValue.Convert(float32Type).Interface().(float32)
+		encoder.EncodeUint32(math.Float32bits(f32))
 	case ssztypes.SszFloat64Type:
 		encoder.EncodeUint64(math.Float64bits(sourceValue.Float()))
 	case ssztypes.SszOptionalType:
@@ -201,9 +168,73 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 	return nil
 }
 
+// tryMarshalCompat dispatches to a type's own SSZ methods (fastssz or the
+// generated dynssz methods) when it implements them. It returns done=true when
+// it handled the marshal (err carries the outcome), or done=false to fall
+// through to the reflection walk. Custom types always delegate; other types
+// delegate unless ctx.noDelegation is set.
+func (ctx *ReflectionCtx) tryMarshalCompat(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder) (bool, error) {
+	hasDynamicSize := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
+	isFastsszMarshaler := sourceType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+	useDynamicMarshal := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0
+	useDynamicEncoder := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicEncoder != 0
+	useFastSsz := !ctx.noFastSsz && isFastsszMarshaler && !hasDynamicSize
+	if !useFastSsz && sourceType.SszType == ssztypes.SszCustomType {
+		useFastSsz = true
+	}
+	// Custom types prefer their spec-aware dynssz methods over fastssz whenever
+	// a dynssz implementation exists, since fastssz bakes in preset values.
+	if sourceType.SszType == ssztypes.SszCustomType && (useDynamicMarshal || useDynamicEncoder) {
+		useFastSsz = false
+	}
+	if ctx.noDelegation && sourceType.SszType != ssztypes.SszCustomType {
+		useDynamicMarshal = false
+		useDynamicEncoder = false
+	}
+
+	if useFastSsz {
+		if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.FastsszMarshaler); ok {
+			newBuf, err := marshaller.MarshalSSZTo(encoder.GetBuffer())
+			if err != nil {
+				return true, err
+			}
+			encoder.SetBuffer(newBuf)
+			return true, nil
+		}
+	}
+
+	if useDynamicEncoder {
+		if !encoder.Seekable() || !useDynamicMarshal {
+			// prefer dynamic marshaller for seekable encoders (buffer based)
+			if sszEncoder, ok := getPtr(sourceValue).Interface().(sszutils.DynamicEncoder); ok {
+				return true, sszEncoder.MarshalSSZEncoder(ctx.ds, encoder)
+			}
+		}
+	}
+
+	if useDynamicMarshal {
+		if marshaller, ok := getPtr(sourceValue).Interface().(sszutils.DynamicMarshaler); ok {
+			newBuf, err := marshaller.MarshalSSZDyn(ctx.ds, encoder.GetBuffer())
+			if err != nil {
+				return true, err
+			}
+			encoder.SetBuffer(newBuf)
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
 // tryMarshalView attempts to marshal using view-specific generated methods.
 // Returns (true, nil) if a view method handled it, (true, err) on error, or (false, nil) to fall through.
 func (ctx *ReflectionCtx) tryMarshalView(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder) (bool, error) {
+	// Under no-delegation the view schema is walked by reflection instead of the
+	// type's own generated view methods, so the differential harness validates
+	// generated view code against the reflection engine.
+	if ctx.noDelegation {
+		return false, nil
+	}
 	useViewEncoder := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewEncoder != 0
 	useViewMarshaler := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewMarshaler != 0
 

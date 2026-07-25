@@ -2,11 +2,15 @@ package tests
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"reflect"
+	"runtime"
+	"strings"
 	"testing"
 
 	dynssz "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/codegen"
 	"github.com/pk910/dynamic-ssz/codegen/tests/views"
 )
 
@@ -184,18 +188,56 @@ func TestCodegenCoverageTypes1(t *testing.T) {
 	testCodegenPayloadByReflection(t, CoverageTypes1_Payload, SimpleTypesWithSpecs_Specs)
 }
 
+// assertRequiresDelegation verifies a payload that is only expressible through
+// its generated Dynamic* methods — it carries a structurally illegal innard
+// ([0]uint64) guarded by an ssz-static annotation, so the type must be
+// shallow-built and delegated rather than traversed. The delegating engine must
+// handle it end to end, while disabling delegation (WithNoDelegation) must make
+// the reflection engine reject it: forcing a full traversal reaches the illegal
+// innard, proving the type genuinely depends on delegation and is never silently
+// walked.
+func assertRequiresDelegation(t *testing.T, payload any) {
+	t.Helper()
+
+	genDs := dynssz.NewDynSsz(nil)
+	enc, err := genDs.MarshalSSZ(payload)
+	if err != nil {
+		t.Fatalf("delegating MarshalSSZ failed: %v", err)
+	}
+	root, err := genDs.HashTreeRoot(payload)
+	if err != nil {
+		t.Fatalf("delegating HashTreeRoot failed: %v", err)
+	}
+	roundtrip := reflect.New(reflect.TypeOf(payload)).Interface()
+	if err = genDs.UnmarshalSSZ(roundtrip, enc); err != nil {
+		t.Fatalf("delegating UnmarshalSSZ failed: %v", err)
+	}
+	rtRoot, err := genDs.HashTreeRoot(roundtrip)
+	if err != nil {
+		t.Fatalf("delegating HashTreeRoot (roundtrip) failed: %v", err)
+	}
+	if root != rtRoot {
+		t.Fatalf("round-trip changed the hash tree root: %x != %x", root, rtRoot)
+	}
+
+	refDs := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation())
+	if _, err := refDs.MarshalSSZ(payload); err == nil {
+		t.Fatal("WithNoDelegation MarshalSSZ unexpectedly succeeded; the type must be un-reflectable and require delegation")
+	}
+}
+
 // TestCodegenNestedDelegated exercises the shallow-build gate. The containers
 // reference fully-delegated types carrying a structurally illegal innard
-// ([0]uint64). They only generate (parser gate) and round-trip (reflection
+// ([0]uint64). They only generate (parser gate) and delegate (reflection
 // typecache gate) because both shallow-build the nested type via its ssz-static
 // annotation instead of traversing — and rejecting — that innard. The Static case
 // uses ssz-static:"true" (fixed, runtime delegated size); Dynamic uses "false".
 func TestCodegenNestedDelegated(t *testing.T) {
 	t.Run("Static", func(t *testing.T) {
-		testCodegenPayloadByReflection(t, NestedDelegatedContainer_Payload, nil)
+		assertRequiresDelegation(t, NestedDelegatedContainer_Payload)
 	})
 	t.Run("Dynamic", func(t *testing.T) {
-		testCodegenPayloadByReflection(t, NestedDelegatedDynContainer_Payload, nil)
+		assertRequiresDelegation(t, NestedDelegatedDynContainer_Payload)
 	})
 }
 
@@ -422,6 +464,119 @@ func TestCodegenRejectsTrailingDataVariable(t *testing.T) {
 	}
 }
 
+// A bare top-level fixed-size vector receives the raw outer buffer, so its
+// generated decoder must reject trailing bytes itself (the reflection path
+// rejects them via its full-consumption check).
+func TestCodegenTopLevelVectorTrailingRejected(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+
+	oversized := make([]byte, 40)
+	for i := range oversized {
+		oversized[i] = byte(i + 1)
+	}
+
+	var v SimpleByteVec32
+	if err := ds.UnmarshalSSZ(&v, oversized); err == nil {
+		t.Error("byte vector accepted trailing data")
+	}
+	if err := ds.UnmarshalSSZ(&v, oversized[:30]); err == nil {
+		t.Error("byte vector accepted a truncated buffer")
+	}
+	if err := ds.UnmarshalSSZ(&v, oversized[:32]); err != nil {
+		t.Errorf("byte vector rejected the valid buffer: %v", err)
+	}
+
+	var u SimpleUint64Vec4
+	if err := ds.UnmarshalSSZ(&u, oversized); err == nil {
+		t.Error("uint64 vector accepted trailing data")
+	}
+	if err := ds.UnmarshalSSZ(&u, oversized[:30]); err == nil {
+		t.Error("uint64 vector accepted a truncated buffer")
+	}
+	if err := ds.UnmarshalSSZ(&u, oversized[:32]); err != nil {
+		t.Errorf("uint64 vector rejected the valid buffer: %v", err)
+	}
+}
+
+// A fixed-size union variant occupies exactly 1+elemSize bytes of the union
+// region; extra bytes in the region are trailing data and must be rejected
+// like the reflection and streaming paths do.
+func TestCodegenUnionVariantTrailingRejected(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes())
+
+	val := CoverageTypes4_Payload
+	valid, err := ds.MarshalSSZ(&val)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	// CoverageTypes4 has 5 dynamic fields (offsets at 0,4,8,12,16). Insert a
+	// stray byte at the end of U1's region (variant 0 = uint32, fixed-size)
+	// and shift the later offsets accordingly.
+	off := make([]int, 5)
+	for i := range off {
+		off[i] = int(binary.LittleEndian.Uint32(valid[i*4 : i*4+4]))
+	}
+	tampered := make([]byte, 0, len(valid)+1)
+	tampered = append(tampered, valid[:off[1]]...)
+	tampered = append(tampered, 0xaa)
+	tampered = append(tampered, valid[off[1]:]...)
+	for i := 1; i < 5; i++ {
+		binary.LittleEndian.PutUint32(tampered[i*4:i*4+4], uint32(off[i]+1))
+	}
+
+	var a CoverageTypes4
+	if err := ds.UnmarshalSSZ(&a, tampered); err == nil {
+		t.Error("UnmarshalSSZ accepted trailing data in a fixed-size union variant region")
+	}
+	var c CoverageTypes4
+	if err := ds.UnmarshalSSZ(&c, valid); err != nil {
+		t.Errorf("UnmarshalSSZ rejected the valid buffer: %v", err)
+	}
+}
+
+// A present optional-list value of fixed size occupies exactly the inner
+// type's size. Truncated regions previously decoded zero-padded garbage or
+// panicked with an out-of-range index; oversized regions silently dropped the
+// extra bytes.
+func TestCodegenOptionalListRegionSize(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+
+	// OptionalListTypes: 2 dynamic fields -> 8-byte offset table. StaticOpt is
+	// *uint32, so a present region must be exactly 4 bytes.
+	short := []byte{
+		0x08, 0, 0, 0, // offset StaticOpt = 8
+		0x0b, 0, 0, 0, // offset DynamicOpt = 11 (region = 3 bytes)
+		0x01, 0x02, 0x03,
+	}
+	var a OptionalListTypes
+	if err := ds.UnmarshalSSZ(&a, short); err == nil {
+		t.Error("UnmarshalSSZ accepted a truncated optional-list region")
+	}
+
+	long := []byte{
+		0x08, 0, 0, 0,
+		0x0d, 0, 0, 0, // region = 5 bytes
+		0x01, 0x02, 0x03, 0x04, 0xaa,
+	}
+	var b OptionalListTypes
+	if err := ds.UnmarshalSSZ(&b, long); err == nil {
+		t.Error("UnmarshalSSZ accepted trailing data in an optional-list region")
+	}
+
+	valid := []byte{
+		0x08, 0, 0, 0,
+		0x0c, 0, 0, 0, // region = 4 bytes
+		0x01, 0x02, 0x03, 0x04,
+	}
+	var c OptionalListTypes
+	if err := ds.UnmarshalSSZ(&c, valid); err != nil {
+		t.Errorf("UnmarshalSSZ rejected the valid buffer: %v", err)
+	} else if c.StaticOpt == nil || *c.StaticOpt != 0x04030201 {
+		t.Errorf("unexpected decoded value: %v", c.StaticOpt)
+	}
+}
+
 // TestCodegenOptionalListTypes verifies generated code for ssz-type:"optional-list"
 // matches the reflection implementation. Optional-list expresses a pointer as
 // a canonical SSZ List[T, 1] and works without extended types.
@@ -531,9 +686,14 @@ func testCodegenPayloadWithView(t *testing.T, payload, view any) {
 func testCodegenPayloadByReflection(t *testing.T, payload any, specs map[string]any, opts ...dynssz.DynSszOption) {
 	t.Helper()
 
+	// WithNoDelegation forces refDs through the reflection engine even for types
+	// that implement the generated Dynamic* methods. Without it a fully-delegating
+	// type would run its own generated code on both sides, turning this into a
+	// codegen-vs-codegen comparison instead of reflection-vs-codegen.
 	refOpts := append([]dynssz.DynSszOption{
 		dynssz.WithNoFastSsz(),
 		dynssz.WithNoFastHash(),
+		dynssz.WithNoDelegation(),
 	}, opts...)
 	refDs := dynssz.NewDynSsz(specs, refOpts...)
 	genDs := dynssz.NewDynSsz(specs, opts...)
@@ -683,5 +843,476 @@ func testCodegenPayload(t *testing.T, payload TestPayload) {
 	hashRootHex = hex.EncodeToString(hashRoot[:])
 	if hashRootHex != payload.Hash {
 		t.Fatalf("Hash root mismatch 2: expected %s, got %s", payload.Hash, hashRootHex)
+	}
+}
+
+// An annotated FIXED-size type used as a container field must be embedded
+// inline (static, no offset), matching the reflection layout.
+func TestCodegenAnnotatedFixedContainer(t *testing.T) {
+	testCodegenPayloadByReflection(t, AnnotatedFixedContainer_Payload, nil)
+
+	ds := dynssz.NewDynSsz(nil)
+	enc, err := ds.MarshalSSZ(&AnnotatedFixedContainer_Payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// 4-byte uint32 + 8-byte inline vector, no offset table
+	if len(enc) != 12 {
+		t.Errorf("expected 12-byte inline encoding, got %d bytes: %x", len(enc), enc)
+	}
+}
+
+// SizeSSZ must match the marshaled length for a multi-dim vector with spec
+// expressions even when the value is fully empty (missing rows are padded).
+func TestCodegenMultiDimSpecVec(t *testing.T) {
+	for _, specs := range []map[string]any{nil, {"SPEC_OUTER": uint64(2), "SPEC_INNER": uint64(4)}} {
+		testCodegenPayloadByReflection(t, MultiDimSpecVec{M: [][]byte{}}, specs)
+		testCodegenPayloadByReflection(t, MultiDimSpecVec{M: [][]byte{{1, 2, 3, 4}}}, specs)
+		testCodegenPayloadByReflection(t, MultiDimSpecVec{M: [][]byte{{1, 2, 3, 4}, {5, 6, 7, 8}}}, specs)
+	}
+}
+
+// A bitlist without ssz-max must produce the same root in both engines
+// (length mixin with a limit derived from the serialized bit length).
+func TestCodegenNoMaxBitlist(t *testing.T) {
+	testCodegenPayloadByReflection(t, NoMaxBitlist{B1: []byte{0x01}}, nil)
+	testCodegenPayloadByReflection(t, NoMaxBitlist{B1: []byte{0xff, 0x03}}, nil)
+}
+
+// Named *Bitlist* types must be classified as bitlists by the codegen parser
+// like the reflection typecache heuristic does.
+func TestCodegenNamedBitlist(t *testing.T) {
+	testCodegenPayloadByReflection(t, NamedBitlistContainer{B: NamedBitlistT{0xff, 0x03}}, nil)
+
+	ds := dynssz.NewDynSsz(nil)
+
+	// missing termination bit
+	var a NamedBitlistContainer
+	if err := ds.UnmarshalSSZ(&a, []byte{0x04, 0, 0, 0, 0x00}); err == nil {
+		t.Error("accepted bitlist without termination bit")
+	}
+
+	// 399 bits exceeds the 100-bit limit
+	big := make([]byte, 50)
+	big[49] = 0x80
+	var b NamedBitlistContainer
+	if err := ds.UnmarshalSSZ(&b, append([]byte{0x04, 0, 0, 0}, big...)); err == nil {
+		t.Error("accepted bitlist exceeding its bit limit")
+	}
+}
+
+// Bitvector edge cases: empty and short values marshal zero-padded without
+// panicking, and byte-aligned runtime bit sizes accept fully-populated
+// last bytes. Invalid padding bits must still be rejected.
+func TestCodegenBitvectorEdgeCases(t *testing.T) {
+	specs := map[string]any{"BIT_SPEC": uint64(16)}
+	payloads := []BitvecEdge{
+		{BV1: []byte{}, BV2: []byte{}, BV3: []byte{}},
+		{BV1: []byte{0xff}, BV2: []byte{0xff}, BV3: []byte{0xff}},
+		{BV1: []byte{0xff, 0xff}, BV2: []byte{0xff, 0xff}, BV3: []byte{0xff, 0x0f}},
+	}
+	for _, p := range payloads {
+		testCodegenPayloadByReflection(t, p, nil)
+		testCodegenPayloadByReflection(t, p, specs)
+	}
+
+	// round-trip through the generated buffer and stream decoders
+	ds := dynssz.NewDynSsz(specs)
+	full := BitvecEdge{BV1: []byte{0xff, 0xff}, BV2: []byte{0xff, 0xff}, BV3: []byte{0xff, 0x0f}}
+	enc, err := ds.MarshalSSZ(&full)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back BitvecEdge
+	if err := ds.UnmarshalSSZ(&back, enc); err != nil {
+		t.Errorf("buffer unmarshal rejected a valid encoding: %v", err)
+	}
+	var back2 BitvecEdge
+	if err := ds.UnmarshalSSZReader(&back2, bytes.NewReader(enc), len(enc)); err != nil {
+		t.Errorf("stream unmarshal rejected a valid encoding: %v", err)
+	}
+
+	// non-zero padding bits in the 12-bit vector must be rejected by both engines
+	invalid := BitvecEdge{BV1: []byte{0xff, 0xff}, BV2: []byte{0xff, 0xff}, BV3: []byte{0xff, 0xff}}
+	if _, err := ds.MarshalSSZ(&invalid); err == nil {
+		t.Error("generated marshal accepted non-zero padding bits")
+	}
+	refDs := dynssz.NewDynSsz(specs, dynssz.WithNoFastSsz(), dynssz.WithNoFastHash())
+	if _, err := refDs.MarshalSSZ(invalid); err == nil {
+		t.Error("reflection marshal accepted non-zero padding bits")
+	}
+}
+
+// A non-empty list-of-dynamic region whose first offset is 0 must be rejected
+// by the streaming decoder just like the buffer decoder and reflection.
+func TestCodegenStreamZeroFirstOffsetRejected(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+
+	// Bytes2D: container offset table (4) + inner region with first offset 0.
+	in := []byte{0x04, 0, 0, 0, 0x00, 0x00, 0x00, 0x00}
+
+	var a Bytes2D
+	if err := ds.UnmarshalSSZ(&a, in); err == nil {
+		t.Error("buffer UnmarshalSSZ accepted a zero first offset in a non-empty region")
+	}
+	var b Bytes2D
+	if err := ds.UnmarshalSSZReader(&b, bytes.NewReader(in), len(in)); err == nil {
+		t.Error("stream UnmarshalSSZReader accepted a zero first offset in a non-empty region")
+	}
+}
+
+// A truncated union region must produce a clean error on the streaming path:
+// the decoder must never read across the region limit (which previously led
+// to bogus negative-trailing errors or out-of-range panics).
+func TestCodegenStreamTruncatedUnionRegion(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes())
+
+	val := CoverageTypes4_Payload
+	valid, err := ds.MarshalSSZ(&val)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	// 5 dynamic fields, offsets at 0,4,8,12,16. Truncate U1's region to k
+	// bytes and shift the later offsets accordingly.
+	off := make([]int, 5)
+	for i := range off {
+		off[i] = int(binary.LittleEndian.Uint32(valid[i*4 : i*4+4]))
+	}
+	u1len := off[1] - off[0]
+
+	for k := 0; k < u1len; k++ {
+		in := make([]byte, 0, len(valid))
+		in = append(in, valid[:off[0]+k]...)
+		in = append(in, valid[off[1]:]...)
+		for i := 1; i < 5; i++ {
+			binary.LittleEndian.PutUint32(in[i*4:i*4+4], uint32(off[i]-(u1len-k)))
+		}
+
+		var a CoverageTypes4
+		if err := ds.UnmarshalSSZ(&a, in); err == nil {
+			t.Errorf("buffer UnmarshalSSZ accepted a %d-byte union region", k)
+		}
+		var b CoverageTypes4
+		if err := ds.UnmarshalSSZReader(&b, bytes.NewReader(in), len(in)); err == nil {
+			t.Errorf("stream UnmarshalSSZReader accepted a %d-byte union region", k)
+		}
+	}
+}
+
+// Delegated static fields around a dynamic field must each be sized from
+// their own type; two shallow delegated descriptors previously shared one
+// size variable, making the decoder reject its own marshal output.
+func TestCodegenMixedDelegatedContainer(t *testing.T) {
+	assertRequiresDelegation(t, MixedDelegatedContainer_Payload)
+
+	ds := dynssz.NewDynSsz(nil)
+	enc, err := ds.MarshalSSZ(&MixedDelegatedContainer_Payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back MixedDelegatedContainer
+	if err := ds.UnmarshalSSZ(&back, enc); err != nil {
+		t.Errorf("generated decoder rejected its own marshal output: %v", err)
+	}
+	if back.D.Value != 8 || back.B[2].Value != 4 {
+		t.Errorf("unexpected decoded values: %+v", back)
+	}
+}
+
+// A truncated union region followed by another dynamic field: the stream
+// decoder must not read the selector from the next region (previously the
+// overrun produced a negative remaining length and an out-of-range panic
+// for variable-size variants).
+func TestCodegenStreamUnionDynVariantTruncated(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+
+	testCodegenPayloadByReflection(t, UnionDynVariant_Payload, nil)
+
+	valid, err := ds.MarshalSSZ(&UnionDynVariant_Payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	// 2 dynamic fields, offsets at 0 and 4. Shrink U's region to 0 bytes; the
+	// next region starts with 0x01, which would select the variable-size
+	// variant if the selector were read across the region boundary.
+	off0 := int(binary.LittleEndian.Uint32(valid[0:4]))
+	off1 := int(binary.LittleEndian.Uint32(valid[4:8]))
+	in := make([]byte, 0, len(valid))
+	in = append(in, valid[:off0]...)
+	in = append(in, valid[off1:]...)
+	binary.LittleEndian.PutUint32(in[4:8], uint32(off0))
+
+	var a UnionDynVariant
+	if err := ds.UnmarshalSSZ(&a, in); err == nil {
+		t.Error("buffer UnmarshalSSZ accepted an empty union region")
+	}
+	var b UnionDynVariant
+	if err := ds.UnmarshalSSZReader(&b, bytes.NewReader(in), len(in)); err == nil {
+		t.Error("stream UnmarshalSSZReader accepted an empty union region")
+	}
+}
+
+// Explicit selector values assigned via ssz-index tags on union variant
+// fields must be honored identically by codegen and reflection.
+func TestCodegenUnionTaggedSelectors(t *testing.T) {
+	testCodegenPayloadByReflection(t, UnionTaggedSelectors_Payload, nil)
+
+	ds := dynssz.NewDynSsz(nil)
+	enc, err := ds.MarshalSSZ(&UnionTaggedSelectors_Payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// offset (4) + selector byte 1 + uint32 payload
+	if len(enc) != 9 || enc[4] != 1 {
+		t.Fatalf("unexpected encoding: %x", enc)
+	}
+
+	// selector 0 is not assigned and must be rejected by both paths
+	bad := append([]byte{}, enc...)
+	bad[4] = 0
+	var a UnionTaggedSelectors
+	if err := ds.UnmarshalSSZ(&a, bad); err == nil {
+		t.Error("buffer UnmarshalSSZ accepted unassigned selector 0")
+	}
+	var b UnionTaggedSelectors
+	if err := ds.UnmarshalSSZReader(&b, bytes.NewReader(bad), len(bad)); err == nil {
+		t.Error("stream UnmarshalSSZReader accepted unassigned selector 0")
+	}
+}
+
+// Top-level standalone named composite types: every generated method receives
+// the pointer receiver directly and must dereference it correctly on all
+// paths (marshal/unmarshal/size/hash, buffer and stream).
+func TestCodegenTopLevelCompositeTypes(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+
+	roundtrip := func(name string, val any, mkEmpty func() any) {
+		t.Run(name, func(t *testing.T) {
+			testCodegenPayloadByReflection(t, reflect.ValueOf(val).Elem().Interface(), nil)
+
+			enc, err := ds.MarshalSSZ(val)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			back := mkEmpty()
+			if err := ds.UnmarshalSSZ(back, enc); err != nil {
+				t.Fatalf("buffer unmarshal: %v", err)
+			}
+			if !reflect.DeepEqual(back, val) {
+				t.Fatalf("buffer roundtrip mismatch: %v != %v", back, val)
+			}
+			back2 := mkEmpty()
+			if err := ds.UnmarshalSSZReader(back2, bytes.NewReader(enc), len(enc)); err != nil {
+				t.Fatalf("stream unmarshal: %v", err)
+			}
+			if !reflect.DeepEqual(back2, val) {
+				t.Fatalf("stream roundtrip mismatch: %v != %v", back2, val)
+			}
+		})
+	}
+
+	str := TopLevelString("hello world")
+	wrap := TopLevelWrapVarList{}
+	wrap.V.Data = []OptionalListTypes_Inner{{Tag: 1, Data: []byte{9, 8}}}
+
+	roundtrip("Bitlist", &TopLevelBitlist{0xff, 0x03}, func() any { return &TopLevelBitlist{} })
+	roundtrip("ProgBitlist", &TopLevelProgBitlist{0xff, 0x03}, func() any { return &TopLevelProgBitlist{} })
+	roundtrip("String", &str, func() any { return new(TopLevelString) })
+	roundtrip("CtrList", &TopLevelCtrList{{F1: 1}, {F1: 2}}, func() any { return &TopLevelCtrList{} })
+	roundtrip("CtrVec", &TopLevelCtrVec{{F1: 1}, {F1: 2}, {F1: 3}, {F1: 4}}, func() any { return &TopLevelCtrVec{} })
+	roundtrip("VarList", &TopLevelVarList{{Tag: 1, Data: []byte{1, 2}}, {Tag: 2, Data: []byte{}}}, func() any { return &TopLevelVarList{} })
+	roundtrip("ListOfList", &TopLevelListOfList{{1, 2, 3}, {}, {4}}, func() any { return &TopLevelListOfList{} })
+	roundtrip("WrapVarList", &wrap, func() any { return &TopLevelWrapVarList{} })
+}
+
+// The generated stream decoder must validate a list's first offset before
+// allocating the offset table sized from it, so a tiny payload with a huge
+// first offset is rejected with bounded allocation rather than allocating an
+// offset table for the attacker-supplied item count.
+func TestCodegenStreamListOffsetNoOverAlloc(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+
+	// Bytes2D: outer container offset (4) to field B, then B's inner list whose
+	// first offset is 0x02000000 (itemCount ~= 8.4M) — but the region is tiny.
+	in := []byte{0x04, 0, 0, 0, 0x00, 0x00, 0x00, 0x02}
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+
+	var v Bytes2D
+	err := ds.UnmarshalSSZReader(&v, bytes.NewReader(in), len(in))
+	if err == nil {
+		t.Fatal("expected the malicious first offset to be rejected")
+	}
+
+	runtime.ReadMemStats(&after)
+	if delta := after.TotalAlloc - before.TotalAlloc; delta > 1<<20 {
+		t.Errorf("stream decode allocated %d bytes for an 8-byte input (offset not validated before allocation)", delta)
+	}
+}
+
+// A generated decoder must allocate a pointer union variant / wrapper-of-pointer
+// before writing through it; decoding valid bytes must round-trip rather than
+// nil-deref.
+func TestCodegenPointerUnionVariantAndWrapper(t *testing.T) {
+	testCodegenPayloadByReflection(t, PtrUnionVariant_Payload, nil)
+
+	ds := dynssz.NewDynSsz(nil)
+	enc, err := ds.MarshalSSZ(&PtrUnionVariant_Payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var buf PtrUnionVariant
+	if err := ds.UnmarshalSSZ(&buf, enc); err != nil {
+		t.Fatalf("buffer unmarshal: %v", err)
+	}
+	uv, ok := buf.U.Data.(*uint64)
+	if !ok || uv == nil || *uv != ptrUnionVal || buf.W.Data == nil || *buf.W.Data != ptrUnionVal {
+		t.Fatalf("buffer roundtrip mismatch: %+v", buf)
+	}
+
+	var strm PtrUnionVariant
+	if err := ds.UnmarshalSSZReader(&strm, bytes.NewReader(enc), len(enc)); err != nil {
+		t.Fatalf("stream unmarshal: %v", err)
+	}
+	if strm.W.Data == nil || *strm.W.Data != ptrUnionVal {
+		t.Fatalf("stream roundtrip mismatch: %+v", strm)
+	}
+}
+
+// Codegen compile-correctness shapes: each must generate compilable code that
+// round-trips and matches the reflection engine (buffer + stream). These
+// exercise pointer-receiver dereferencing, localized value naming, the
+// pointer-element bulk fast-path guard, and zero-padding item typing.
+func TestCodegenPointerAndPaddingShapes(t *testing.T) {
+	u1, u2 := uint64(1), uint64(2)
+	s := "ab"
+	l := []uint16{7, 8}
+	bl := [][]byte{{0x03}, {0x05}}
+
+	uv := UnionSamePkgVariant{}
+	uv.U.Variant = 1
+	uv.U.Data = SimpleTypes1_C1{F1: 9}
+
+	wu := WrapUnionField{}
+	wu.W.Data.Variant = 0
+	wu.W.Data.Data = uint32(42)
+
+	cases := []struct {
+		name string
+		val  any
+	}{
+		{"TopVecOfVar", &TopVecOfVar{{1, 2}, {3}, {}}},
+		{"TopVecOfVar-underfill", &TopVecOfVar{{1, 2}}},
+		{"UnionSamePkgVariant", &uv},
+		{"PtrPrimitiveList", &PtrPrimitiveList{F: []*uint64{&u1, &u2}}},
+		{"FixedVecPtrStr", &FixedVecPtrStr{F: []*string{&s, &s}}},
+		{"FixedVecPtrStr-underfill", &FixedVecPtrStr{F: []*string{&s}}},
+		{"FixedVecPtrList", &FixedVecPtrList{F: []*[]uint16{&l, &l}}},
+		{"FixedVecStr-underfill", &FixedVecStr{F: []string{"a"}}},
+		{"PtrDynCollectionField", &PtrDynCollectionField{F: &bl}},
+		{"WrapUnionField", &wu},
+		{"PtrSvecOfList", &PtrSvecOfList{F: &[][]uint16{{1, 2}}}},
+		{"WrapPtrList", func() any { w := WrapPtrList{}; d := []uint16{5, 6}; w.W.Data = &d; return &w }()},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			testCodegenPayloadByReflection(t, reflect.ValueOf(tc.val).Elem().Interface(), nil)
+		})
+	}
+}
+
+// namedPtrType is a defined type whose underlying type is a pointer; methods
+// cannot be declared on it, so top-level generation must error cleanly.
+type namedPtrType *uint64
+
+// Top-level CompatibleUnion / TypeWrapper and named pointer types cannot
+// receive generated methods; the generator must reject them with a clear
+// error instead of emitting uncompilable code.
+func TestCodegenRejectsUngeneratableTopLevelTypes(t *testing.T) {
+	cases := []struct {
+		name string
+		typ  reflect.Type
+		want string
+	}{
+		{
+			name: "named pointer type",
+			typ:  reflect.TypeFor[namedPtrType](),
+			want: "named pointer type",
+		},
+		{
+			name: "top-level union",
+			typ: reflect.TypeFor[dynssz.CompatibleUnion[struct {
+				A uint32
+				B []byte `ssz-max:"8"`
+			}]](),
+			want: "CompatibleUnion/TypeWrapper",
+		},
+		{
+			name: "top-level wrapper",
+			typ: reflect.TypeFor[dynssz.TypeWrapper[struct {
+				Data []uint16 `ssz-max:"6"`
+			}, []uint16]](),
+			want: "CompatibleUnion/TypeWrapper",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cg := codegen.NewCodeGenerator(nil)
+			cg.BuildFile("reject_test.go", codegen.WithReflectType(tc.typ))
+			_, err := cg.GenerateToMap()
+			if err == nil {
+				t.Fatalf("expected a rejection error for %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// A field tagged ssz-type:"-" is excluded from the SSZ layout: the encoding,
+// size and root match the same struct without that field, and it round-trips
+// without being restored. Non-SSZ types (maps) are allowed on excluded fields.
+func TestCodegenExcludedFields(t *testing.T) {
+	// The generated code and reflection must agree on the excluded layout.
+	testCodegenPayloadByReflection(t, ExcludedFields_Payload, nil)
+
+	ds := dynssz.NewDynSsz(nil)
+	enc, err := ds.MarshalSSZ(&ExcludedFields_Payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	// Encoding must equal a struct with only the included fields.
+	type included struct {
+		A uint32
+		B uint64
+		L []uint16 `ssz-max:"8"`
+	}
+	ref, err := ds.MarshalSSZ(&included{A: 1, B: 2, L: []uint16{3, 4}})
+	if err != nil {
+		t.Fatalf("ref marshal: %v", err)
+	}
+	if !bytes.Equal(enc, ref) {
+		t.Fatalf("excluded encoding mismatch:\n got=%x\n want=%x", enc, ref)
+	}
+
+	// Round-trip must not restore the excluded fields.
+	var back ExcludedFields
+	if err := ds.UnmarshalSSZ(&back, enc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back.Cache != [32]byte{} || back.Meta != nil {
+		t.Errorf("excluded fields were populated on decode: %+v", back)
+	}
+	if back.A != 1 || back.B != 2 || len(back.L) != 2 {
+		t.Errorf("included fields wrong after roundtrip: %+v", back)
 	}
 }

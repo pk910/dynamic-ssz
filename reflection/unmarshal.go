@@ -62,8 +62,11 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 	// other unmarshaling methods.
 	isView := targetType.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
 	if isView {
-		useViewDecoder := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewDecoder != 0
-		useViewUnmarshaler := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewUnmarshaler != 0
+		// Under no-delegation the view schema is decoded by reflection instead of
+		// the type's own generated view methods; skip the delegation but stay in
+		// the isView branch so the reflection walk takes over.
+		useViewDecoder := !ctx.noDelegation && targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewDecoder != 0
+		useViewUnmarshaler := !ctx.noDelegation && targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewUnmarshaler != 0
 
 		// Prefer decoder for stream-based decoders, unmarshaler for buffer-based
 		if useViewDecoder {
@@ -97,6 +100,15 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 		useFastSsz := !ctx.noFastSsz && isFastsszUnmarshaler && !hasDynamicSize
 		if !useFastSsz && targetType.SszType == ssztypes.SszCustomType {
 			useFastSsz = true
+		}
+		// Custom types prefer their spec-aware dynssz methods over fastssz whenever
+		// a dynssz implementation exists, since fastssz bakes in preset values.
+		if targetType.SszType == ssztypes.SszCustomType && (useDynamicUnmarshal || useDynamicDecoder) {
+			useFastSsz = false
+		}
+		if ctx.noDelegation && targetType.SszType != ssztypes.SszCustomType {
+			useDynamicUnmarshal = false
+			useDynamicDecoder = false
 		}
 
 		if useFastSsz {
@@ -265,7 +277,9 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 		if err != nil {
 			return err
 		}
-		targetValue.SetFloat(float64(math.Float32frombits(f32Val)))
+		// Set the float32 bits directly; SetFloat(float64(...)) would normalize a
+		// signaling NaN's payload. Convert preserves the exact bits, matching codegen.
+		targetValue.Set(reflect.ValueOf(math.Float32frombits(f32Val)).Convert(targetValue.Type()))
 	case ssztypes.SszFloat64Type:
 		var f64Val uint64
 		f64Val, err = decoder.DecodeUint64()
@@ -531,12 +545,18 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 	var newValue reflect.Value
 	switch targetType.Kind {
 	case reflect.Slice:
+		// For pointer types (e.g. a *NamedSlice root), unmarshalType already
+		// dereferenced targetValue, so create the underlying slice type.
+		sliceT := targetType.Type
+		if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+			sliceT = sliceT.Elem()
+		}
 		// Optimization: avoid reflect.MakeSlice for common byte slice types
 		if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 && targetType.ElemDesc.Type.Kind() == reflect.Uint8 {
 			byteSlice := make([]byte, arrLen)
 			newValue = reflect.ValueOf(byteSlice)
 		} else {
-			newValue = reflect.MakeSlice(targetType.Type, arrLen, arrLen)
+			newValue = reflect.MakeSlice(sliceT, arrLen, arrLen)
 		}
 	case reflect.Array:
 		newValue = targetValue

@@ -9,6 +9,7 @@ import (
 	"go/types"
 	"reflect"
 	"strconv"
+	"strings"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
 )
@@ -397,6 +398,26 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		}
 	}
 
+	// Named types can carry SSZ annotations registered via sszutils.Annotate.
+	// When the reference itself provides no hints, apply the annotation's hints
+	// so the layout classification matches the reflection typecache (e.g. an
+	// ssz-size annotated type is a fixed-size vector and must be embedded
+	// inline in containers). References with explicit field-level hints keep
+	// those (they override the annotation).
+	if p.AnnotationResolver != nil && len(typeHints) == 0 && len(sizeHints) == 0 && len(maxSizeHints) == 0 {
+		annotationType := originalType
+		if ptr, ok := annotationType.(*types.Pointer); ok {
+			annotationType = ptr.Elem()
+		}
+		if tag := p.AnnotationResolver(annotationType); tag != "" {
+			annTypeHints, annSizeHints, annMaxSizeHints, err := ssztypes.ParseTags(tag)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse ssz annotation for type %v: %v", annotationType, err)
+			}
+			typeHints, sizeHints, maxSizeHints = annTypeHints, annSizeHints, annMaxSizeHints
+		}
+	}
+
 	// Set kind based on underlying type
 	switch t := schemaType.(type) {
 	case *types.Basic:
@@ -559,12 +580,16 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		case reflect.Slice:
 			if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
 				sszType = ssztypes.SszVectorType
+			} else if err := rejectZeroSizeHint(sizeHints); err != nil {
+				return nil, err
 			} else {
 				sszType = ssztypes.SszListType
 			}
 		case reflect.String:
 			if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
 				sszType = ssztypes.SszVectorType
+			} else if err := rejectZeroSizeHint(sizeHints); err != nil {
+				return nil, err
 			} else {
 				sszType = ssztypes.SszListType
 			}
@@ -610,6 +635,14 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 			default:
 				return nil, fmt.Errorf("unsupported type kind: %v", desc.Kind)
 			}
+		}
+
+		// Special case for bitlists: named list types whose name contains
+		// "Bitlist" are treated as bitlists, matching the reflection typecache
+		// heuristic (ssztypes/typecache.go).
+		if sszType == ssztypes.SszListType && schemaNamedType != nil &&
+			strings.Contains(schemaNamedType.Obj().Name(), "Bitlist") {
+			sszType = ssztypes.SszBitlistType
 		}
 	}
 
@@ -999,17 +1032,31 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 	for i := 0; i < schemaStruct.NumFields(); i++ {
 		schemaField := schemaStruct.Field(i)
 		fieldName := schemaField.Name()
-		if !schemaField.Exported() || fieldName == "_" {
+		if !schemaField.Exported() || fieldName == "_" || ssztypes.IsSszExcluded(reflect.StructTag(schemaStruct.Tag(i))) {
 			continue
-		}
-
-		typeHints, sizeHints, maxSizeHints, err := p.parseFieldTags(schemaStruct.Tag(i))
-		if err != nil {
-			return fmt.Errorf("failed to parse tags for field %v: %v", schemaField.Name(), err)
 		}
 
 		// Determine data and schema field types
 		schemaFieldType := schemaField.Type()
+
+		// Field-level tags override the type's registered annotation per key:
+		// join the two (field tag first — Lookup returns the first occurrence)
+		// so annotation keys the field does not override still apply.
+		fieldTag := schemaStruct.Tag(i)
+		if p.AnnotationResolver != nil {
+			annotationType := schemaFieldType
+			if ptr, ok := annotationType.(*types.Pointer); ok {
+				annotationType = ptr.Elem()
+			}
+			if annTag := p.AnnotationResolver(annotationType); annTag != "" {
+				fieldTag = string(ssztypes.JoinFieldAnnotationTag(reflect.StructTag(fieldTag), annTag))
+			}
+		}
+
+		typeHints, sizeHints, maxSizeHints, err := p.parseFieldTags(fieldTag)
+		if err != nil {
+			return fmt.Errorf("failed to parse tags for field %v: %v", schemaField.Name(), err)
+		}
 		var dataFieldType types.Type
 		if isViewDescriptor {
 			// Look up corresponding data field by name
@@ -1054,6 +1101,12 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 			idx, err := strconv.ParseUint(indexStr, 10, 16)
 			if err != nil {
 				return fmt.Errorf("invalid ssz-index: %v", indexStr)
+			}
+			// EIP-7495 progressive containers support at most 256 active fields
+			// (a larger bitvector also has no stable single-chunk mixin), and
+			// union selectors are a single byte.
+			if idx > 255 {
+				return fmt.Errorf("ssz-index %d for field %q exceeds the supported maximum of 255", idx, schemaField.Name())
 			}
 			fieldDesc.SszIndex = uint16(idx)
 			hasIndex = true
@@ -1369,12 +1422,38 @@ func (p *Parser) buildCompatibleUnionDescriptor(desc *ssztypes.TypeDescriptor, d
 		}
 	}
 
+	// An ssz-index tag assigns an explicit selector value, e.g. 1-based
+	// selectors for EIP-7495 conformant unions. Mixing tagged and untagged
+	// variants would silently renumber the untagged ones, so require
+	// all-or-none up front.
+	indexTagCount := 0
+	for i := 0; i < schemaDescriptorStruct.NumFields(); i++ {
+		if p.extractSszIndex(schemaDescriptorStruct.Tag(i)) != "" {
+			indexTagCount++
+		}
+	}
+	if indexTagCount > 0 && indexTagCount != schemaDescriptorStruct.NumFields() {
+		return fmt.Errorf("union descriptor mixes fields with and without ssz-index tags (all variants must carry one when any does)")
+	}
+
 	// Build union variants iterating over schema (determines SSZ layout)
 	variantInfo := make(map[uint8]*ssztypes.TypeDescriptor)
 
 	for i := 0; i < schemaDescriptorStruct.NumFields(); i++ {
 		schemaField := schemaDescriptorStruct.Field(i)
-		variantIndex := uint8(i) // Field order determines variant index
+		variantIndex := uint8(i) // Field order determines the default variant selector
+
+		if indexStr := p.extractSszIndex(schemaDescriptorStruct.Tag(i)); indexStr != "" {
+			idx, err := strconv.ParseUint(indexStr, 10, 8)
+			if err != nil {
+				return fmt.Errorf("invalid ssz-index for union variant %s: %v", schemaField.Name(), indexStr)
+			}
+			variantIndex = uint8(idx)
+		}
+
+		if _, exists := variantInfo[variantIndex]; exists {
+			return fmt.Errorf("duplicate union selector %d (field %s)", variantIndex, schemaField.Name())
+		}
 
 		// Extract SSZ annotations from the schema field
 		typeHints, sizeHints, maxSizeHints, err := p.parseFieldTags(schemaDescriptorStruct.Tag(i))
@@ -1594,6 +1673,18 @@ func (p *Parser) parseFieldTags(tag string) (typeHints []ssztypes.SszTypeHint, s
 // compatibility with code that imports codegen.ParseTags.
 func ParseTags(tag string) ([]ssztypes.SszTypeHint, []ssztypes.SszSizeHint, []ssztypes.SszMaxSizeHint, error) {
 	return ssztypes.ParseTags(tag)
+}
+
+// rejectZeroSizeHint rejects an explicit literal ssz-size:"0" on a slice or
+// string: a zero-length vector is not valid SSZ, and silently degrading to an
+// unbounded list would drop the intended constraint entirely. Dynamic ("?")
+// and expression-based dimensions are unaffected. Mirrors the reflection
+// typecache check.
+func rejectZeroSizeHint(sizeHints []ssztypes.SszSizeHint) error {
+	if len(sizeHints) > 0 && !sizeHints[0].Dynamic && sizeHints[0].Expr == "" && sizeHints[0].Size == 0 {
+		return fmt.Errorf("ssz-size 0 is not a valid vector size (zero-length vectors are illegal in SSZ)")
+	}
+	return nil
 }
 
 func (p *Parser) extractSszIndex(tag string) string {

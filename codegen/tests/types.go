@@ -15,6 +15,12 @@ type SimpleUint16 uint16
 type SimpleUint32 uint32
 type SimpleUint64 uint64
 
+// Standalone fixed-size vector types generated as top-level -types entries;
+// their generated decoders receive the raw outer buffer and must enforce
+// exact consumption themselves.
+type SimpleByteVec32 [32]byte
+type SimpleUint64Vec4 [4]uint64
+
 type SimpleTypes1 struct {
 	B1       bool
 	I8       uint8
@@ -742,6 +748,24 @@ type AnnotatedZeroStaticMax []uint32
 
 var _ = sszutils.Annotate[AnnotatedZeroStaticMax](`ssz-max:"0" dynssz-max:"ZEROSTATIC_MAX"`)
 
+// AnnotatedFixedVec is an annotated FIXED-size byte vector. As a container
+// field it is a static type and must be embedded inline without an offset.
+type AnnotatedFixedVec []byte
+
+var _ = sszutils.Annotate[AnnotatedFixedVec](`ssz-size:"8"`)
+
+// AnnotatedFixedContainer embeds an annotated fixed-size type; wire layout
+// must match the reflection descriptor (B inline, no offset).
+type AnnotatedFixedContainer struct {
+	A uint32
+	B AnnotatedFixedVec
+}
+
+var AnnotatedFixedContainer_Payload = AnnotatedFixedContainer{
+	A: 1,
+	B: AnnotatedFixedVec{1, 2, 3, 4, 5, 6, 7, 8},
+}
+
 // AnnotatedContainer uses annotated types as fields WITHOUT field tags.
 // The reflection path must resolve limits from the annotation registry;
 // the codegen path delegates to each field's generated methods.
@@ -1243,4 +1267,268 @@ type NestedDelegatedDynContainer struct {
 var NestedDelegatedDynContainer_Payload = NestedDelegatedDynContainer{
 	A: 9,
 	N: nestedDelegatedDyn{Items: []uint32{1, 2, 3}},
+}
+
+// Types below exercise codegen-vs-reflection layout/root agreement for
+// tricky descriptor shapes (multi-dim spec sizes, bitlists without limits,
+// name-detected bitlists, bitvector edge cases).
+
+// MultiDimSpecVec has a fixed-size multi-dim vector with spec expressions;
+// SizeSSZ must equal len(MarshalSSZ) even for a fully-empty value (the
+// missing rows are zero-padded on the wire).
+type MultiDimSpecVec struct {
+	M [][]byte `ssz-size:"2,4" dynssz-size:"SPEC_OUTER,SPEC_INNER"`
+}
+
+// NoMaxBitlist is a bitlist without any ssz-max limit; codegen and
+// reflection must produce the same hash tree root.
+type NoMaxBitlist struct {
+	B1 []byte `ssz-type:"bitlist"`
+}
+
+// NamedBitlistT must be detected as a bitlist by its type name, matching
+// the reflection typecache heuristic.
+type NamedBitlistT []byte
+
+// NamedBitlistContainer references the name-detected bitlist with a limit.
+type NamedBitlistContainer struct {
+	B NamedBitlistT `ssz-max:"100"`
+}
+
+// BitvecEdge covers bitvector edge cases: empty values, byte-aligned
+// dynamic bit sizes, and short values for a bit-aligned size.
+type BitvecEdge struct {
+	BV1 []byte `ssz-type:"bitvector" ssz-bitsize:"16"`
+	BV2 []byte `ssz-type:"bitvector" ssz-bitsize:"16" dynssz-bitsize:"BIT_SPEC"`
+	BV3 []byte `ssz-type:"bitvector" ssz-bitsize:"12"`
+}
+
+// nestedDelegatedInner8 is a second fully-delegated static type with a
+// DIFFERENT size (8 bytes) than nestedDelegatedInner (4 bytes). Two shallow
+// delegated descriptors must never share a size variable in generated code.
+type nestedDelegatedInner8 struct {
+	Bad   [0]uint64 // illegal Vector[uint64, 0] if ever traversed
+	Value uint64
+}
+
+var _ = sszutils.Annotate[nestedDelegatedInner8](`ssz-static:"true"`)
+
+func (n *nestedDelegatedInner8) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 8 }
+
+func (n *nestedDelegatedInner8) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint64(buf, n.Value), nil
+}
+
+func (n *nestedDelegatedInner8) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	n.Value = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+
+func (n *nestedDelegatedInner8) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(n.Value)
+	return nil
+}
+
+// MixedDelegatedContainer places delegated static fields around a dynamic
+// field; each delegated field's region must be sized from its OWN type.
+type MixedDelegatedContainer struct {
+	A uint64
+	B [3]nestedDelegatedInner
+	C []uint16 `ssz-max:"8"`
+	D nestedDelegatedInner8
+	E []byte `ssz-max:"8"`
+}
+
+var MixedDelegatedContainer_Payload = MixedDelegatedContainer{
+	A: 1,
+	B: [3]nestedDelegatedInner{{Value: 2}, {Value: 3}, {Value: 4}},
+	C: []uint16{5, 6, 7},
+	D: nestedDelegatedInner8{Value: 8},
+	E: []byte{9, 10},
+}
+
+// UnionDynVariant has a union with a variable-size variant followed by
+// another dynamic field; a truncated union region must fail cleanly on the
+// stream path (the selector read must not cross into the next region).
+type UnionDynVariant struct {
+	U dynssz.CompatibleUnion[struct {
+		F1 uint32
+		F2 []byte `ssz-max:"16"`
+	}]
+	L []byte `ssz-max:"16"`
+}
+
+var UnionDynVariant_Payload = UnionDynVariant{
+	U: dynssz.CompatibleUnion[struct {
+		F1 uint32
+		F2 []byte `ssz-max:"16"`
+	}]{Variant: 1, Data: []byte{1, 2, 3}},
+	L: []byte{1, 4, 5},
+}
+
+// UnionTaggedSelectors assigns explicit 1-based selector values via ssz-index
+// tags on the union variant fields (EIP-7495 conformant numbering).
+type UnionTaggedSelectors struct {
+	U dynssz.CompatibleUnion[struct {
+		F1 uint32 `ssz-index:"1"`
+		F2 []byte `ssz-max:"16" ssz-index:"2"`
+	}]
+}
+
+var UnionTaggedSelectors_Payload = UnionTaggedSelectors{
+	U: dynssz.CompatibleUnion[struct {
+		F1 uint32 `ssz-index:"1"`
+		F2 []byte `ssz-max:"16" ssz-index:"2"`
+	}]{Variant: 1, Data: uint32(7)},
+}
+
+// Top-level standalone named composite types generated as -types entries.
+// Their generated methods receive the pointer receiver directly, so every
+// generator path must dereference it correctly.
+
+type TopLevelBitlist []byte
+
+var _ = sszutils.Annotate[TopLevelBitlist](`ssz-type:"bitlist" ssz-max:"128"`)
+
+type TopLevelProgBitlist []byte
+
+var _ = sszutils.Annotate[TopLevelProgBitlist](`ssz-type:"progressive-bitlist"`)
+
+type TopLevelString string
+
+var _ = sszutils.Annotate[TopLevelString](`ssz-max:"64"`)
+
+type TopLevelCtrList []SimpleTypes1_C1
+
+var _ = sszutils.Annotate[TopLevelCtrList](`ssz-max:"16"`)
+
+type TopLevelCtrVec []SimpleTypes1_C1
+
+var _ = sszutils.Annotate[TopLevelCtrVec](`ssz-size:"4"`)
+
+type TopLevelVarList []OptionalListTypes_Inner
+
+var _ = sszutils.Annotate[TopLevelVarList](`ssz-max:"16"`)
+
+type TopLevelListOfList [][]byte
+
+var _ = sszutils.Annotate[TopLevelListOfList](`ssz-max:"8,32"`)
+
+// TopLevelWrapVarList wraps a variable-element list in a TypeWrapper; the
+// streaming size closure must not collide with the wrapper unwrap local.
+type TopLevelWrapVarList struct {
+	V dynssz.TypeWrapper[struct {
+		X []OptionalListTypes_Inner `ssz-max:"8"`
+	}, []OptionalListTypes_Inner] `ssz-type:"wrapper"`
+}
+
+// PtrUnionVariant covers a CompatibleUnion with a pointer variant, and a
+// TypeWrapper whose Data is a pointer — the generated decoder must allocate
+// the pointer before writing through it.
+type PtrUnionVariant struct {
+	U dynssz.CompatibleUnion[struct {
+		V1 uint64
+		V2 *uint64
+	}]
+	W dynssz.TypeWrapper[struct{ Data *uint64 }, *uint64] `ssz-type:"wrapper"`
+}
+
+var ptrUnionVal = uint64(0xdeadbeef)
+
+var PtrUnionVariant_Payload = func() PtrUnionVariant {
+	p := PtrUnionVariant{}
+	p.U.Variant = 1
+	p.U.Data = &ptrUnionVal
+	p.W.Data = &ptrUnionVal
+	return p
+}()
+
+// --- codegen compile-correctness shapes (pointer-receiver deref, localized
+// value naming, pointer-element fast-path guard, zero-padding item typing) ---
+
+// TopVecOfVar is a top-level named vector of variable-size elements; its
+// pointer receiver must be parenthesized before indexing in SizeSSZ.
+type TopVecOfVar [3][]uint16
+
+var _ = sszutils.Annotate[TopVecOfVar](`ssz-size:"3" ssz-max:"?,8"`)
+
+// UnionSamePkgVariant uses a same-package named type as a union variant.
+type UnionSamePkgVariant struct {
+	U dynssz.CompatibleUnion[struct {
+		V1 uint64
+		V2 SimpleTypes1_C1
+	}]
+}
+
+// PtrPrimitiveList is a list of pointer-to-primitive; the bulk uint64
+// fast-path must not fire for pointer elements.
+type PtrPrimitiveList struct {
+	F []*uint64 `ssz-max:"3"`
+}
+
+// FixedVecPtrStr / FixedVecPtrList / FixedVecStr exercise the under-fill
+// zero-padding item for pointer, string and list elements.
+type FixedVecPtrStr struct {
+	F []*string `ssz-size:"2" ssz-max:"?,8"`
+}
+type FixedVecPtrList struct {
+	F []*[]uint16 `ssz-size:"2" ssz-max:"?,4"`
+}
+type FixedVecStr struct {
+	F []string `ssz-size:"2" ssz-max:"?,8"`
+}
+
+// PtrDynCollectionField is a pointer to a dynamic collection; its SizeSSZ
+// must not double-declare the localized value.
+type PtrDynCollectionField struct {
+	F *[][]byte `ssz-max:"3" ssz-type:"?,bitlist" ssz-bitmax:"?,10"`
+}
+
+// WrapUnionField wraps a CompatibleUnion; the streaming size closure must
+// not collide with its parameter name.
+type WrapUnionField struct {
+	W dynssz.TypeWrapper[struct {
+		Data dynssz.CompatibleUnion[struct {
+			A uint32
+			B []byte `ssz-max:"4"`
+		}]
+	}, dynssz.CompatibleUnion[struct {
+		A uint32
+		B []byte `ssz-max:"4"`
+	}]] `ssz-type:"wrapper"`
+}
+
+// ExcludedFields exercises ssz-type:"-": excluded fields are omitted from the
+// SSZ layout entirely (not encoded, decoded, sized or hashed) and may hold
+// non-SSZ types.
+type ExcludedFields struct {
+	A     uint32
+	Cache [32]byte `ssz-type:"-"`
+	B     uint64
+	Meta  map[string]int `ssz-type:"-"`
+	L     []uint16       `ssz-max:"8"`
+}
+
+var ExcludedFields_Payload = ExcludedFields{
+	A:     1,
+	Cache: [32]byte{9, 9, 9},
+	B:     2,
+	Meta:  map[string]int{"x": 1},
+	L:     []uint16{3, 4},
+}
+
+// PtrSvecOfList is a pointer to a fixed vector of variable-size elements; the
+// streaming encoder's under-fill zero-padding item must be the element type,
+// not new(element) (which would be a pointer to it).
+type PtrSvecOfList struct {
+	F *[][]uint16 `ssz-size:"2" ssz-max:"?,4"`
+}
+
+// WrapPtrList wraps a pointer type; the size closure's nil-pointer guard must
+// localize into a fresh variable instead of shadowing the closure's own
+// parameter.
+type WrapPtrList struct {
+	W dynssz.TypeWrapper[struct {
+		Data *[]uint16 `ssz-max:"8"`
+	}, *[]uint16] `ssz-type:"wrapper"`
 }

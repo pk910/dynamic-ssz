@@ -217,6 +217,11 @@ func (ctx *marshalContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
 		useFastSsz = true
 	}
+	// Custom types prefer their spec-aware dynssz methods over fastssz.
+	if desc.SszType == ssztypes.SszCustomType &&
+		desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicMarshaler|ssztypes.SszCompatFlagDynamicEncoder) != 0 {
+		useFastSsz = false
+	}
 
 	isView := desc.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
 	if !isRoot && isView {
@@ -601,10 +606,9 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 		}
 		if strings.HasPrefix(valueVar, "*") {
-			if ptrPrefix == "&" {
-				return strings.TrimPrefix(valueVar, "*")
-			}
-			return fmt.Sprintf("(%s%s)", ptrPrefix, valueVar)
+			// The result may be used as an indexing base (e.g. &(*t)[i]), so
+			// the &* cancellation shortcut would bind to the wrong expression.
+			return fmt.Sprintf("%s(%s)", ptrPrefix, valueVar)
 		}
 		return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 	}
@@ -632,14 +636,33 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		switch {
 		case desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 || desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0:
 			if bitlimitVar != "" {
-				ctx.appendCode(indent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
-				ctx.appendCode(indent, "if %s[%s-1] & paddingMask != 0 {\n", getValueVar(false, ""), lenVar)
+				// Padding bits only exist when the bit size is not byte-aligned
+				// (runtime-checked for expression sizes) and the value occupies
+				// the full byte length — shorter values are zero-padded, so
+				// their last byte is a data byte, not the boundary byte.
+				conds := []string{}
+				if lenVar == varNameVLen {
+					conds = append(conds, fmt.Sprintf("%s == %s", lenVar, limitVar))
+				}
+				if sizeExpression != nil {
+					conds = append(conds, fmt.Sprintf("%s %% 8 != 0", bitlimitVar))
+				}
+				checkIndent := indent
+				if len(conds) > 0 {
+					ctx.appendCode(indent, "if %s {\n", strings.Join(conds, " && "))
+					checkIndent++
+				}
+				ctx.appendCode(checkIndent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
+				ctx.appendCode(checkIndent, "if %s[%s-1] & paddingMask != 0 {\n", getValueVar(false, ""), lenVar)
 				errCode := errCodeBitvectorPadding
-				ctx.appendCode(indent, "\treturn nil, %s\n", typePath.getErrorWith(errCode))
-				ctx.appendCode(indent, "}\n")
+				ctx.appendCode(checkIndent, "\treturn nil, %s\n", typePath.getErrorWith(errCode))
+				ctx.appendCode(checkIndent, "}\n")
+				if len(conds) > 0 {
+					ctx.appendCode(indent, "}\n")
+				}
 			}
 			ctx.appendCode(indent, "dst = append(dst, %s[:%s]...)\n", getValueVar(false, ""), lenVar)
-		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0:
+		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0:
 			ctx.appendCode(indent, "dst = sszutils.MarshalUint64Slice(dst, %s[:%s])\n", getValueVar(false, ""), lenVar)
 		case isBulkBytesElem(desc.ElemDesc):
 			// fixed byte-array elements (e.g. []Root) are contiguous: append in one copy
@@ -701,13 +724,11 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent, "}\n")
 
 		if desc.Kind != reflect.Array {
-			// append zero padding if we have less items than the limit
+			// append zero padding if we have less items than the limit. The
+			// padding item is a zero value of the element's own Go type (a nil
+			// pointer for pointer elements, which the element marshaler handles).
 			ctx.appendCode(indent, "if %s < %s {\n", lenVar, limitVar)
-			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
-				ctx.appendCode(indent, "\tzeroItem := new(%s)\n", ctx.typePrinter.InnerTypeString(desc.ElemDesc))
-			} else {
-				ctx.appendCode(indent, "\tvar zeroItem %s\n", ctx.typePrinter.TypeString(desc.ElemDesc))
-			}
+			ctx.appendCode(indent, "\tvar zeroItem %s\n", ctx.typePrinter.TypeString(desc.ElemDesc))
 			ctx.appendCode(indent, "\tfor %s := %s; %s < %s; %s++ {\n", indexVar, lenVar, indexVar, limitVar, indexVar)
 			ctx.appendCode(indent, "\t\t%s.LittleEndian.PutUint32(dst[dstlen+(%s*4):], uint32(len(dst)-dstlen))\n", binaryPkgName, indexVar)
 			if err := ctx.marshalType(desc.ElemDesc, "zeroItem", typePath.append("[+%d]", indexVar), indent+1, false); err != nil {
@@ -758,10 +779,9 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 			return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 		}
 		if strings.HasPrefix(valueVar, "*") {
-			if ptrPrefix == "&" {
-				return strings.TrimPrefix(valueVar, "*")
-			}
-			return fmt.Sprintf("(%s%s)", ptrPrefix, valueVar)
+			// The result may be used as an indexing base (e.g. &(*t)[i]), so
+			// the &* cancellation shortcut would bind to the wrong expression.
+			return fmt.Sprintf("%s(%s)", ptrPrefix, valueVar)
 		}
 		return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 	}
@@ -788,7 +808,7 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 		switch {
 		case desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0:
 			ctx.appendCode(indent, "dst = append(dst, %s[:]...)\n", getValueVar(false, ""))
-		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsTime == 0:
+		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0:
 			addVlen()
 			ctx.appendCode(indent, "dst = sszutils.MarshalUint64Slice(dst, %s[:vlen])\n", getValueVar(false, ""))
 		case isBulkBytesElem(desc.ElemDesc):
@@ -871,10 +891,9 @@ func (ctx *marshalContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName
 			return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 		}
 		if strings.HasPrefix(valueVar, "*") {
-			if ptrPrefix == "&" {
-				return strings.TrimPrefix(valueVar, "*")
-			}
-			return fmt.Sprintf("(%s%s)", ptrPrefix, valueVar)
+			// The result may be used as an indexing base (e.g. &(*t)[i]), so
+			// the &* cancellation shortcut would bind to the wrong expression.
+			return fmt.Sprintf("%s(%s)", ptrPrefix, valueVar)
 		}
 		return fmt.Sprintf("%s%s", ptrPrefix, valueVar)
 	}
