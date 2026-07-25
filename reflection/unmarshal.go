@@ -62,8 +62,11 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 	// other unmarshaling methods.
 	isView := targetType.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
 	if isView {
-		useViewDecoder := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewDecoder != 0
-		useViewUnmarshaler := targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewUnmarshaler != 0
+		// Under no-delegation the view schema is decoded by reflection instead of
+		// the type's own generated view methods; skip the delegation but stay in
+		// the isView branch so the reflection walk takes over.
+		useViewDecoder := !ctx.noDelegation && targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewDecoder != 0
+		useViewUnmarshaler := !ctx.noDelegation && targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewUnmarshaler != 0
 
 		// Prefer decoder for stream-based decoders, unmarshaler for buffer-based
 		if useViewDecoder {

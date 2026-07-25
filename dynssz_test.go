@@ -2895,3 +2895,128 @@ func TestReflectionCoverageEdges(t *testing.T) {
 		t.Fatalf("unknown-size reader lost data: %+v", back2.F)
 	}
 }
+
+// topViewSentinel is a valid reflection container whose top-level DynamicView*
+// methods emit sentinels the reflection walk never produces, so a
+// WithNoDelegation DynSsz must ignore them and encode/size/hash the fields by
+// reflection instead.
+type topViewSentinel struct {
+	A uint32
+	B uint16
+}
+
+func (v *topViewSentinel) MarshalSSZDynView(any) func(sszutils.DynamicSpecs, []byte) ([]byte, error) {
+	return func(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+		return append(buf, 0xDE, 0xAD), nil
+	}
+}
+
+func (v *topViewSentinel) MarshalSSZEncoderView(any) func(sszutils.DynamicSpecs, sszutils.Encoder) error {
+	return func(_ sszutils.DynamicSpecs, enc sszutils.Encoder) error {
+		enc.EncodeBytes([]byte{0xDE, 0xAD})
+		return nil
+	}
+}
+
+func (v *topViewSentinel) SizeSSZDynView(any) func(sszutils.DynamicSpecs) int {
+	return func(_ sszutils.DynamicSpecs) int { return 2 }
+}
+
+func (v *topViewSentinel) UnmarshalSSZDynView(any) func(sszutils.DynamicSpecs, []byte) error {
+	return func(_ sszutils.DynamicSpecs, _ []byte) error {
+		return errors.New("sentinel view unmarshaler")
+	}
+}
+
+func (v *topViewSentinel) UnmarshalSSZDecoderView(any) func(sszutils.DynamicSpecs, sszutils.Decoder) error {
+	return func(_ sszutils.DynamicSpecs, _ sszutils.Decoder) error {
+		return errors.New("sentinel view decoder")
+	}
+}
+
+func (v *topViewSentinel) HashTreeRootWithDynView(any) func(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	return func(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+		hh.PutUint8(0xEE)
+		return nil
+	}
+}
+
+// WithNoDelegation must also apply to the top-level view-descriptor dispatch,
+// not only to plain (non-view) delegation, so generated view code can be
+// validated against the reflection engine.
+func TestNoDelegationBypassesTopLevelViewMethods(t *testing.T) {
+	src := &topViewSentinel{A: 0x11223344, B: 0x5566}
+	view := &topViewSentinel{}
+	del := NewDynSsz(nil)
+	nodel := NewDynSsz(nil, WithNoDelegation())
+
+	want := []byte{0x44, 0x33, 0x22, 0x11, 0x66, 0x55}
+
+	// Delegating dispatch hits the sentinel view methods.
+	if got, err := del.MarshalSSZ(src, WithViewDescriptor(view)); err != nil || !bytes.Equal(got, []byte{0xDE, 0xAD}) {
+		t.Fatalf("delegating marshal = %x, %v; want sentinel", got, err)
+	}
+	if got, err := del.MarshalSSZTo(src, nil, WithViewDescriptor(view)); err != nil || !bytes.Equal(got, []byte{0xDE, 0xAD}) {
+		t.Fatalf("delegating marshalTo = %x, %v; want sentinel", got, err)
+	}
+	if sz, err := del.SizeSSZ(src, WithViewDescriptor(view)); err != nil || sz != 2 {
+		t.Fatalf("delegating size = %d, %v; want 2", sz, err)
+	}
+
+	// No delegation: reflection encodes/sizes the actual fields.
+	if got, err := nodel.MarshalSSZ(src, WithViewDescriptor(view)); err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("no-delegation marshal = %x, %v; want %x", got, err, want)
+	}
+	if got, err := nodel.MarshalSSZTo(src, nil, WithViewDescriptor(view)); err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("no-delegation marshalTo = %x, %v; want %x", got, err, want)
+	}
+	if sz, err := nodel.SizeSSZ(src, WithViewDescriptor(view)); err != nil || sz != len(want) {
+		t.Fatalf("no-delegation size = %d, %v; want %d", sz, err, len(want))
+	}
+
+	// Stream marshal (top-level DynamicViewEncoder branch).
+	var delBuf, nodelBuf bytes.Buffer
+	if err := del.MarshalSSZWriter(src, &delBuf, WithViewDescriptor(view)); err != nil || !bytes.Equal(delBuf.Bytes(), []byte{0xDE, 0xAD}) {
+		t.Fatalf("delegating stream marshal = %x, %v; want sentinel", delBuf.Bytes(), err)
+	}
+	if err := nodel.MarshalSSZWriter(src, &nodelBuf, WithViewDescriptor(view)); err != nil || !bytes.Equal(nodelBuf.Bytes(), want) {
+		t.Fatalf("no-delegation stream marshal = %x, %v; want %x", nodelBuf.Bytes(), err, want)
+	}
+
+	// Unmarshal, buffer and reader paths: delegation surfaces the sentinel view
+	// errors; no-delegation decodes the fields by reflection.
+	var d1, n1, d2, n2 topViewSentinel
+	if err := del.UnmarshalSSZ(&d1, want, WithViewDescriptor(view)); err == nil {
+		t.Fatal("delegating unmarshal should surface the sentinel view unmarshaler error")
+	}
+	if err := nodel.UnmarshalSSZ(&n1, want, WithViewDescriptor(view)); err != nil || n1.A != 0x11223344 || n1.B != 0x5566 {
+		t.Fatalf("no-delegation unmarshal = %+v, %v", n1, err)
+	}
+	if err := del.UnmarshalSSZReader(&d2, bytes.NewReader(want), len(want), WithViewDescriptor(view)); err == nil {
+		t.Fatal("delegating reader unmarshal should surface the sentinel view decoder error")
+	}
+	if err := nodel.UnmarshalSSZReader(&n2, bytes.NewReader(want), len(want), WithViewDescriptor(view)); err != nil || n2.A != 0x11223344 || n2.B != 0x5566 {
+		t.Fatalf("no-delegation reader unmarshal = %+v, %v", n2, err)
+	}
+
+	// Hash tree root: the sentinel and reflection roots differ, and the
+	// no-delegation view root matches the plain reflection root of the fields.
+	delRoot, err := del.HashTreeRoot(src, WithViewDescriptor(view))
+	if err != nil {
+		t.Fatalf("delegating htr: %v", err)
+	}
+	nodelRoot, err := nodel.HashTreeRoot(src, WithViewDescriptor(view))
+	if err != nil {
+		t.Fatalf("no-delegation htr: %v", err)
+	}
+	if delRoot == nodelRoot {
+		t.Fatal("no-delegation htr must differ from the sentinel view root")
+	}
+	plainRoot, err := nodel.HashTreeRoot(src)
+	if err != nil {
+		t.Fatalf("plain htr: %v", err)
+	}
+	if nodelRoot != plainRoot {
+		t.Fatalf("no-delegation view htr %x != plain reflection htr %x", nodelRoot, plainRoot)
+	}
+}

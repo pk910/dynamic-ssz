@@ -164,6 +164,65 @@ func TestViewMarshalReflectionMarshaler(t *testing.T) {
 	}
 }
 
+// TestViewNoDelegationUsesReflection verifies that WithNoDelegation makes the
+// reflection engine ignore a nested type's generated view methods and drive
+// every view operation through reflection over the view schema. TestViewType2's
+// view methods return errors, so a delegating DynSsz surfaces them while a
+// no-delegation DynSsz walks the (identical-layout) TestViewType2 schema and
+// succeeds — proving the option actually validates generated view code.
+func TestViewNoDelegationUsesReflection(t *testing.T) {
+	wrapper := viewMarshalWrapper{
+		Prefix: 42,
+		Inner:  TestContainerWithAllViewInterfaces{Field0: 123, Field1: 456},
+	}
+	view := (*viewMarshalWrapperViewType2)(nil)
+	expectedSSZ := fromHex("0x2a0000007b00000000000000c8010000")
+
+	del := NewDynSsz(nil)
+	nodel := NewDynSsz(nil, WithNoDelegation())
+
+	// Marshal: delegation surfaces the view marshaler error; no-delegation
+	// encodes the schema by reflection.
+	if _, err := del.MarshalSSZ(&wrapper, WithViewDescriptor(view)); err == nil {
+		t.Fatal("delegating marshal should surface the view marshaler error")
+	}
+	got, err := nodel.MarshalSSZ(&wrapper, WithViewDescriptor(view))
+	if err != nil {
+		t.Fatalf("no-delegation marshal: %v", err)
+	}
+	if !bytes.Equal(got, expectedSSZ) {
+		t.Fatalf("no-delegation marshal = %x, want %x", got, expectedSSZ)
+	}
+
+	// Size: delegation would use the view sizer (0); no-delegation sizes the
+	// schema by reflection (16 bytes).
+	if sz, err := nodel.SizeSSZ(&wrapper, WithViewDescriptor(view)); err != nil || sz != len(expectedSSZ) {
+		t.Fatalf("no-delegation size = %d, %v; want %d", sz, err, len(expectedSSZ))
+	}
+
+	// Hash tree root: delegation surfaces the view hash error; no-delegation
+	// hashes the schema by reflection.
+	if _, err := del.HashTreeRoot(&wrapper, WithViewDescriptor(view)); err == nil {
+		t.Fatal("delegating HashTreeRoot should surface the view hash error")
+	}
+	if _, err := nodel.HashTreeRoot(&wrapper, WithViewDescriptor(view)); err != nil {
+		t.Fatalf("no-delegation HashTreeRoot: %v", err)
+	}
+
+	// Unmarshal: delegation surfaces the view unmarshaler error; no-delegation
+	// decodes the schema by reflection and round-trips the data.
+	var back viewMarshalWrapper
+	if err := del.UnmarshalSSZ(&back, expectedSSZ, WithViewDescriptor(view)); err == nil {
+		t.Fatal("delegating unmarshal should surface the view unmarshaler error")
+	}
+	if err := nodel.UnmarshalSSZ(&back, expectedSSZ, WithViewDescriptor(view)); err != nil {
+		t.Fatalf("no-delegation unmarshal: %v", err)
+	}
+	if back.Prefix != 42 || back.Inner.Field0 != 123 || back.Inner.Field1 != 456 {
+		t.Fatalf("no-delegation unmarshal lost data: %+v", back)
+	}
+}
+
 // TestViewUnmarshalReflectionUnmarshaler exercises the UnmarshalSSZDynView
 // path in reflection/unmarshal.go via a seekable (buffer) decoder.
 func TestViewUnmarshalReflectionUnmarshaler(t *testing.T) {

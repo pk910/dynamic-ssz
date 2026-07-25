@@ -229,6 +229,12 @@ func (ctx *ReflectionCtx) tryMarshalCompat(sourceType *ssztypes.TypeDescriptor, 
 // tryMarshalView attempts to marshal using view-specific generated methods.
 // Returns (true, nil) if a view method handled it, (true, err) on error, or (false, nil) to fall through.
 func (ctx *ReflectionCtx) tryMarshalView(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder) (bool, error) {
+	// Under no-delegation the view schema is walked by reflection instead of the
+	// type's own generated view methods, so the differential harness validates
+	// generated view code against the reflection engine.
+	if ctx.noDelegation {
+		return false, nil
+	}
 	useViewEncoder := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewEncoder != 0
 	useViewMarshaler := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewMarshaler != 0
 

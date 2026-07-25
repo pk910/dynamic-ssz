@@ -63,7 +63,11 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 	// other hashing methods.
 	isView := sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
 	if isView {
-		if sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewHashRoot != 0 {
+		// Under no-delegation the view schema is hashed by reflection instead of
+		// the type's own generated view method; skip the delegation but stay in
+		// the isView branch so the reflection walk (not the plain compat methods)
+		// takes over.
+		if !ctx.noDelegation && sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewHashRoot != 0 {
 			if viewHasher, ok := getPtr(sourceValue).Interface().(sszutils.DynamicViewHashRoot); ok {
 				if hashFn := viewHasher.HashTreeRootWithDynView(*sourceType.CodegenInfo); hashFn != nil {
 					if err := hashFn(ctx.ds, hh); err != nil {

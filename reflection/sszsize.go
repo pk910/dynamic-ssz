@@ -54,7 +54,10 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 	// other sizing methods.
 	isView := targetType.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
 	if isView {
-		if targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewSizer != 0 {
+		// Under no-delegation the view schema is sized by reflection instead of
+		// the type's own generated view method; skip the delegation but stay in
+		// the isView branch so the reflection walk takes over.
+		if !ctx.noDelegation && targetType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewSizer != 0 {
 			if sizer, ok := getPtr(targetValue).Interface().(sszutils.DynamicViewSizer); ok {
 				if sizeFn := sizer.SizeSSZDynView(*targetType.CodegenInfo); sizeFn != nil {
 					return uint32(sizeFn(ctx.ds)), nil
