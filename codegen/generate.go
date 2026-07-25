@@ -87,6 +87,18 @@ func (cg *CodeGenerator) analyzeTypes() error {
 		return len(t.ViewGoTypesTypes) > 0 || len(t.ViewReflectTypes) > 0
 	}
 
+	// qualifiedReflectName returns the package-qualified name the reflection
+	// type cache uses for compat flag lookups ("" when unavailable).
+	qualifiedReflectName := func(t reflect.Type) string {
+		if t.Kind() == reflect.Pointer {
+			t = t.Elem()
+		}
+		if t.PkgPath() == "" || t.Name() == "" {
+			return ""
+		}
+		return t.PkgPath() + "." + t.Name()
+	}
+
 	// add compat flags for generated types
 	for _, file := range cg.files {
 		for _, t := range file.Options.Types {
@@ -94,6 +106,16 @@ func (cg *CodeGenerator) analyzeTypes() error {
 			compatFlags := getCompatFlags(t)
 
 			cg.compatFlags[typeKey] = compatFlags
+
+			// Reflection-driven generation resolves compat flags through the type
+			// cache, which keys by package-qualified names; register that key as
+			// well so cross-references between generated types delegate.
+			qualifiedKey := ""
+			if t.ReflectType != nil {
+				if qualifiedKey = qualifiedReflectName(t.ReflectType); qualifiedKey != "" {
+					cg.compatFlags[qualifiedKey] = compatFlags
+				}
+			}
 
 			// Also set compat flags for view types (they will have view methods available)
 			for _, viewType := range t.ViewGoTypesTypes {
@@ -104,6 +126,12 @@ func (cg *CodeGenerator) analyzeTypes() error {
 			for _, viewType := range t.ViewReflectTypes {
 				viewKey := fmt.Sprintf("%v|%v", typeKey, getReflectTypeName(viewType))
 				cg.compatFlags[viewKey] = compatFlags
+
+				if qualifiedKey != "" {
+					if qualifiedView := qualifiedReflectName(viewType); qualifiedView != "" {
+						cg.compatFlags[fmt.Sprintf("%v|%v", qualifiedKey, qualifiedView)] = compatFlags
+					}
+				}
 			}
 		}
 	}
@@ -444,6 +472,18 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 
 		if t.Descriptor == nil || (t.IsViewOnly && len(t.ViewDescriptors) == 0) {
 			return "", fmt.Errorf("type %s has no descriptor or view descriptors", t.TypeName)
+		}
+
+		// A recursive descriptor graph is only emittable when every cycle can be
+		// broken by a delegated method call; verify before emission so an
+		// unsupported shape produces a clear error instead of unbounded recursion.
+		if err := validateEmittableGraph(t.Descriptor); err != nil {
+			return "", fmt.Errorf("cannot generate code for %s: %w", t.TypeName, err)
+		}
+		for _, viewDesc := range t.ViewDescriptors {
+			if err := validateEmittableGraph(viewDesc); err != nil {
+				return "", fmt.Errorf("cannot generate code for view of %s: %w", t.TypeName, err)
+			}
 		}
 
 		if !t.IsViewOnly {

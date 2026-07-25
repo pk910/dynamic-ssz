@@ -180,6 +180,56 @@ func TestParserAcceptsListBoundedRecursion(t *testing.T) {
 	}
 }
 
+// A cycle that closes through a container field, with a spec expression inside
+// the cycle. The member that completes before the cycle head must still end up
+// with the expression flag from its subtree and a dynamic (offset) layout for
+// the closing pointer field.
+func TestParserContainerClosedRecursionFlags(t *testing.T) {
+	newNamed := func(name string) *types.Named {
+		return types.NewNamed(types.NewTypeName(token.NoPos, nil, name, nil), nil, nil)
+	}
+	field := func(name string, typ types.Type) *types.Var {
+		return types.NewField(token.NoPos, nil, name, typ, false)
+	}
+
+	nodeA := newNamed("cycNodeA")
+	nodeB := newNamed("cycNodeB")
+	nodeC := newNamed("cycNodeC")
+
+	nodeA.SetUnderlying(types.NewStruct(
+		[]*types.Var{field("F1", types.NewSlice(nodeB))},
+		[]string{`ssz-max:"4"`},
+	))
+	nodeB.SetUnderlying(types.NewStruct(
+		[]*types.Var{field("F2", types.NewSlice(nodeC))},
+		[]string{`ssz-max:"4" dynssz-max:"CYC_LIMIT"`},
+	))
+	nodeC.SetUnderlying(types.NewStruct(
+		[]*types.Var{field("F3", types.NewPointer(nodeA))},
+		[]string{""},
+	))
+
+	parser := NewParser()
+	descA, err := parser.GetTypeDescriptor(types.NewPointer(nodeA), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("container-closed recursion should be accepted, got: %v", err)
+	}
+
+	// Navigate A → F1 list → B → F2 list → C.
+	descB := descA.ContainerDesc.Fields[0].Type.ElemDesc
+	descC := descB.ContainerDesc.Fields[0].Type.ElemDesc
+
+	if descC.SszTypeFlags&ssztypes.SszTypeFlagHasMaxExpr == 0 {
+		t.Error("cycle member is missing the max-expression flag from its subtree")
+	}
+	if descC.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
+		t.Error("cycle member should be dynamic (contains a dynamic pointer field)")
+	}
+	if descC.ContainerDesc == nil || len(descC.ContainerDesc.DynFields) != 1 {
+		t.Errorf("cycle member should have exactly 1 dynamic field, got %+v", descC.ContainerDesc)
+	}
+}
+
 func TestGetTypeDescriptor(t *testing.T) {
 	parser := NewParser()
 

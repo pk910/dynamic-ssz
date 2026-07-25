@@ -211,7 +211,7 @@ func (tc *TypeCache) getTypeDescriptor(runtimeType, schemaType reflect.Type, siz
 		//    container or vector reading it mid-build lay the field out as a
 		//    dynamic (offset) field, which matches its final state.
 		//  - The remaining child-derived flags are re-derived to a fixpoint by
-		//    fixupRecursiveFlags once the whole graph is complete.
+		//    FixupRecursiveFlags once the whole graph is complete.
 		entry.desc.SszTypeFlags |= SszTypeFlagIsDynamic
 		tc.recursion = true
 		return entry.desc, nil
@@ -262,7 +262,7 @@ func (tc *TypeCache) getTypeDescriptor(runtimeType, schemaType reflect.Type, siz
 	// in-progress children; re-derive the child-propagated flags now that the
 	// graph is complete. Non-recursive builds are already exact.
 	if topLevel && tc.recursion {
-		fixupRecursiveFlags(desc)
+		FixupRecursiveFlags(desc)
 	}
 
 	return desc, nil
@@ -1862,8 +1862,17 @@ func (tc *TypeCache) extractGenericTypeParameter(unionType reflect.Type) (reflec
 // representation. This hash uniquely identifies the type's SSZ layout and is
 // used by the code generator to detect when a type's structure has changed and
 // regeneration is needed.
+//
+// Recursive types form a cyclic descriptor graph that standard JSON
+// marshalling cannot represent; those fall back to a deterministic
+// reference-based serialization so distinct recursive layouts hash to
+// distinct values. Acyclic descriptors keep the plain JSON form and their
+// historical hash values.
 func (td *TypeDescriptor) GetTypeHash() [32]byte {
-	jsonDesc, _ := json.Marshal(td)
+	jsonDesc, err := json.Marshal(td)
+	if err != nil {
+		jsonDesc = marshalCyclicDescriptor(td)
+	}
 	hash := sha256.Sum256(jsonDesc)
 	return hash
 }

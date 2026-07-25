@@ -4894,3 +4894,44 @@ func TestDynOnlyUnknownDynSize(t *testing.T) {
 		t.Fatalf("dyn-only unknown dynssz-size: %v", err)
 	}
 }
+
+// Recursive descriptors form a cyclic graph that plain JSON marshalling cannot
+// serialize; GetTypeHash must still produce distinct, stable hashes for
+// distinct recursive layouts instead of hashing an empty representation.
+func TestGetTypeHashRecursive(t *testing.T) {
+	type hashNodeA struct {
+		V        uint64
+		Children []*hashNodeA `ssz-max:"4"`
+	}
+	type hashNodeB struct {
+		W        uint32
+		Children []*hashNodeB `ssz-max:"8"`
+	}
+
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	descA, err := cache.GetTypeDescriptor(reflect.TypeOf(hashNodeA{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("descriptor A: %v", err)
+	}
+	descB, err := cache.GetTypeDescriptor(reflect.TypeOf(hashNodeB{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("descriptor B: %v", err)
+	}
+
+	emptyHash := [32]byte{
+		0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f, 0xb9, 0x24,
+		0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55,
+	} // sha256 of empty input
+
+	hashA := descA.GetTypeHash()
+	hashB := descB.GetTypeHash()
+	if hashA == emptyHash || hashB == emptyHash {
+		t.Fatal("recursive descriptor hashed to the empty-input hash")
+	}
+	if hashA == hashB {
+		t.Fatal("distinct recursive layouts must hash to distinct values")
+	}
+	if hashA != descA.GetTypeHash() {
+		t.Fatal("recursive descriptor hash is not stable")
+	}
+}

@@ -1532,3 +1532,48 @@ type WrapPtrList struct {
 		Data *[]uint16 `ssz-max:"8"`
 	}, *[]uint16] `ssz-type:"wrapper"`
 }
+
+// RecursiveNode is a self-referential container: recursion through a bounded
+// list is a legal, finite SSZ shape. The generated code must call the type's
+// own methods for the recursive reference so emission and encoding terminate.
+type RecursiveNode struct {
+	Val      uint64
+	Children []*RecursiveNode `ssz-max:"4"`
+}
+
+var RecursiveNode_Payload = RecursiveNode{
+	Val: 1,
+	Children: []*RecursiveNode{
+		{Val: 2},
+		{Val: 3, Children: []*RecursiveNode{{Val: 4}}},
+	},
+}
+
+// RecursiveTree and RecursiveTreeBranch form a cycle that closes through a
+// container field (Branch.Leaf) rather than a list element, with a
+// spec-dependent limit inside the cycle. Both members generate methods, so the
+// recursive references delegate; the spec-dependence must reach every cycle
+// member so neither engine falls back to preset-baking fastssz paths.
+type RecursiveTree struct {
+	Depth    uint64
+	Branches []RecursiveTreeBranch `ssz-max:"4" dynssz-max:"RECURSIVE_BRANCH_LIMIT"`
+}
+
+type RecursiveTreeBranch struct {
+	Leaf *RecursiveTree
+}
+
+var RecursiveTree_Specs = map[string]any{
+	"RECURSIVE_BRANCH_LIMIT": uint64(8),
+}
+
+var RecursiveTree_Payload = RecursiveTree{
+	Depth: 1,
+	Branches: []RecursiveTreeBranch{
+		{Leaf: nil},
+		{Leaf: &RecursiveTree{
+			Depth:    2,
+			Branches: []RecursiveTreeBranch{{Leaf: nil}},
+		}},
+	},
+}

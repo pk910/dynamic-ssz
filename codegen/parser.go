@@ -80,6 +80,15 @@ type Parser struct {
 	building map[string]int
 	dynDepth int
 
+	// recursion is set when a build hands out an in-progress descriptor to close
+	// a legal cycle; the top-level entry then re-derives the child-propagated
+	// flags over the completed graph. pendingKeys records the cache keys added
+	// during the current top-level build so a failed build can purge them — the
+	// cache is populated before a descriptor is built, so entries from a failed
+	// build are incomplete and must not be served later.
+	recursion   bool
+	pendingKeys []string
+
 	// AnnotationResolver returns the merged ssz annotation tag for a type (or "").
 	// It lets the parser read a referenced, fully-delegated type's ssz-static
 	// declaration so its subtree need not be traversed or validated.
@@ -170,9 +179,26 @@ func (p *Parser) GetTypeDescriptor(typ types.Type, typeHints []ssztypes.SszTypeH
 //   - *ssztypes.TypeDescriptor: Complete type descriptor for code generation
 //   - error: An error if the type is incompatible with SSZ or analysis fails
 func (p *Parser) GetTypeDescriptorWithSchema(dataType, schemaType types.Type, typeHints []ssztypes.SszTypeHint, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint) (*ssztypes.TypeDescriptor, error) {
+	// This is the top-level entry of a descriptor build (nested builds recurse
+	// through buildTypeDescriptor directly); recursion bookkeeping is scoped here.
+	p.recursion = false
+	p.pendingKeys = p.pendingKeys[:0]
+
 	desc, err := p.buildTypeDescriptor(dataType, schemaType, typeHints, sizeHints, maxSizeHints)
 	if err != nil {
+		// The cache is populated before a descriptor is built, so a failed build
+		// leaves incomplete entries behind; purge everything cached on the way.
+		for _, key := range p.pendingKeys {
+			delete(p.cache, key)
+		}
 		return nil, err
+	}
+
+	// A build that involved a recursive cycle has descriptors that read
+	// in-progress children; re-derive the child-propagated flags now that the
+	// graph is complete. Non-recursive builds are already exact.
+	if p.recursion {
+		ssztypes.FixupRecursiveFlags(desc)
 	}
 
 	return desc, nil
@@ -277,12 +303,26 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	cacheable := dataType == schemaType && len(typeHints) == 0 && len(sizeHints) == 0 && len(maxSizeHints) == 0
 	typeKey := fmt.Sprintf("%v|%v", dataType.String(), schemaType.String())
 	if cacheable && p.cache[typeKey] != nil {
-		if startDepth, inProgress := p.building[typeKey]; inProgress && p.dynDepth <= startDepth {
-			// Re-entering a type still under construction without crossing a
-			// variable-length collection means it contributes to its own static
-			// size — an infinite, non-serializable SSZ type. Reject it like the
-			// reflection engine does instead of emitting infinitely recursive code.
-			return nil, fmt.Errorf("recursive type %v is not supported", dataType.String())
+		if startDepth, inProgress := p.building[typeKey]; inProgress {
+			if p.dynDepth <= startDepth {
+				// Re-entering a type still under construction without crossing a
+				// variable-length collection means it contributes to its own static
+				// size — an infinite, non-serializable SSZ type. Reject it like the
+				// reflection engine does instead of emitting infinitely recursive code.
+				return nil, fmt.Errorf("recursive type %v is not supported", dataType.String())
+			}
+			// Legal cycle: hand back the descriptor still under construction. Its
+			// child-derived fields are incomplete at this point; two measures keep
+			// the final graph correct:
+			//  - Crossing a variable-length collection to legalize the cycle means
+			//    every cycle member has a variable-size field on the cycle path, so
+			//    the descriptor is provably dynamic. Setting IsDynamic here lets a
+			//    container or vector reading it mid-build lay the field out as a
+			//    dynamic (offset) field, which matches its final state.
+			//  - The remaining child-derived flags are re-derived to a fixpoint by
+			//    ssztypes.FixupRecursiveFlags once the whole graph is complete.
+			p.cache[typeKey].SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
+			p.recursion = true
 		}
 		return p.cache[typeKey], nil
 	}
@@ -296,6 +336,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 
 	if cacheable {
 		p.cache[typeKey] = desc
+		p.pendingKeys = append(p.pendingKeys, typeKey)
 		p.building[typeKey] = p.dynDepth
 		defer delete(p.building, typeKey)
 	}
@@ -1379,6 +1420,12 @@ func (p *Parser) buildListDescriptor(desc *ssztypes.TypeDescriptor, dataType, sc
 		return fmt.Errorf("list types cannot have a fixed ssz-size (use ssz-max for lists, or ssz-size with vector type)")
 	}
 
+	// A list is always dynamic (offset-encoded). Mark it before descending into
+	// the element so a recursive back-edge landing on this descriptor already
+	// sees its final layout classification.
+	desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
+	desc.Size = 0
+
 	// Build element descriptor traversing both type trees. A list is offset-encoded
 	// (variable-length), so descending into its element is a legal recursion
 	// boundary — bump the dynamic-nesting depth for cycle detection.
@@ -1396,10 +1443,6 @@ func (p *Parser) buildListDescriptor(desc *ssztypes.TypeDescriptor, dataType, sc
 	}
 
 	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr)
-
-	// Lists are always dynamic
-	desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
-	desc.Size = 0
 
 	return nil
 }
@@ -1695,6 +1738,13 @@ func (p *Parser) buildOptionalListDescriptor(desc *ssztypes.TypeDescriptor, data
 		childTypeHints = typeHints[1:]
 	}
 
+	// canonical List[T, 1]: always dynamic, limit fixed at 1 element. Mark it
+	// before descending into the element so a recursive back-edge landing on this
+	// descriptor already sees its final layout classification.
+	desc.Size = 0
+	desc.Limit = 1
+	desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic | ssztypes.SszTypeFlagHasLimit
+
 	// Optional-list is a canonical List[T, 1] (variable-length), a legal boundary.
 	p.dynDepth++
 	elemDesc, err := p.buildTypeDescriptor(dataType, schemaType, childTypeHints, childSizeHints, childMaxSizeHints)
@@ -1704,10 +1754,6 @@ func (p *Parser) buildOptionalListDescriptor(desc *ssztypes.TypeDescriptor, data
 	}
 
 	desc.ElemDesc = elemDesc
-	// canonical List[T, 1]: always dynamic, limit fixed at 1 element
-	desc.Size = 0
-	desc.Limit = 1
-	desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic | ssztypes.SszTypeFlagHasLimit
 	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr)
 
 	return nil
