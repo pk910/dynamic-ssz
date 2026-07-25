@@ -1852,3 +1852,21 @@ func TestTreeBuilderDefensiveBranches(t *testing.T) {
 		hashNode(nil)
 	}()
 }
+
+// A non-positive limit cannot represent a usable capacity, so TreeFromNodes must
+// error when leaves are present instead of silently dropping them and returning
+// a valid-looking empty-tree root. A negative limit is the int-overflow artifact
+// of a huge capacity on 32-bit builds.
+func TestTreeFromNodesRejectsNonPositiveLimitWithLeaves(t *testing.T) {
+	leaves := []*Node{LeafFromUint64(1)}
+	for _, limit := range []int{0, -1, -1024} {
+		if _, err := TreeFromNodes(leaves, limit); err == nil {
+			t.Fatalf("TreeFromNodes(1 leaf, limit=%d) should error, got nil", limit)
+		}
+	}
+
+	// No leaves with a non-positive limit is a valid empty tree.
+	if _, err := TreeFromNodes(nil, 0); err != nil {
+		t.Fatalf("TreeFromNodes(no leaves, limit=0) unexpected error: %v", err)
+	}
+}

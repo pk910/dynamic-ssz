@@ -2117,3 +2117,34 @@ func TestNativeHashWrapperOddLayer(t *testing.T) {
 		t.Fatalf("NativeHashWrapper odd layer: %v", err)
 	}
 }
+
+// The zero-hash accessors must build the lazy state themselves when they are the
+// first hasher API touched, rather than reading an uninitialized (all-zero)
+// table and silently returning wrong data.
+func TestZeroHashAccessorsSelfInitialize(t *testing.T) {
+	// Simulate a fresh process where no hasher has run yet.
+	hasherInitOnce = sync.Once{}
+	zeroHashes = [65][32]byte{}
+	zeroHashLevels = nil
+	zeroHashLevelsBytes = nil
+	zeroBytes = nil
+
+	// GetZeroHashes as the first call must return the built table, not zeros.
+	hashes := GetZeroHashes()
+	if hashes[1] == ([32]byte{}) {
+		t.Fatal("GetZeroHashes returned an uninitialized (all-zero) table")
+	}
+
+	// The level lookups must likewise self-initialize and recognize real zeros.
+	hasherInitOnce = sync.Once{}
+	zeroHashes = [65][32]byte{}
+	zeroHashLevels = nil
+	zeroHashLevelsBytes = nil
+	zeroBytes = nil
+	if lvl, ok := GetZeroHashLevelBytes(hashes[1][:]); !ok || lvl != 1 {
+		t.Fatalf("GetZeroHashLevelBytes = (%d, %v); want (1, true)", lvl, ok)
+	}
+	if lvl, ok := GetZeroHashLevel(string(hashes[2][:])); !ok || lvl != 2 {
+		t.Fatalf("GetZeroHashLevel = (%d, %v); want (2, true)", lvl, ok)
+	}
+}

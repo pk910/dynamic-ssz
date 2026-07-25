@@ -178,6 +178,21 @@ func TestAddImport(t *testing.T) {
 		}
 	})
 
+	t.Run("ReservedPackageIdentifierConflict", func(t *testing.T) {
+		// A top-level identifier named "sszutils" in the target package must not be
+		// shadowed by the generated import alias, or the code won't compile.
+		printer := NewTypePrinter("test")
+		printer.ReserveNames([]string{"sszutils"})
+		alias := printer.AddImport("github.com/pk910/dynamic-ssz/sszutils", "sszutils")
+
+		if alias == "sszutils" {
+			t.Fatal("alias collided with a reserved package-level identifier")
+		}
+		if alias != "sszutils1" {
+			t.Errorf("expected suffixed alias 'sszutils1', got %s", alias)
+		}
+	})
+
 	t.Run("EmptyPath", func(t *testing.T) {
 		printer := NewTypePrinter("test")
 		alias := printer.AddImport("", "alias")

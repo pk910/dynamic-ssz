@@ -1287,3 +1287,16 @@ func TestProveDoesNotAliasZeroHashTable(t *testing.T) {
 		t.Fatalf("Value() mutation corrupted the shared zero-hash table: %x", hasher.GetZeroHash(0))
 	}
 }
+
+// VerifyProof must reject a non-positive generalized index, mirroring
+// VerifyMultiproof. Otherwise Index=-1 (whose path length is 63) would be
+// processed as a valid 63-deep proof.
+func TestVerifyProofRejectsNonPositiveIndex(t *testing.T) {
+	for _, idx := range []int{0, -1} {
+		proof := &Proof{Index: idx, Leaf: make([]byte, 32)}
+		ok, err := VerifyProof(make([]byte, 32), proof)
+		if err == nil || ok {
+			t.Fatalf("VerifyProof(Index=%d) = (%v, %v); want (false, error)", idx, ok, err)
+		}
+	}
+}

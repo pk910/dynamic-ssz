@@ -345,14 +345,18 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 			continue
 		}
 
-		// Resolve aliases - allow independent unwrapping
+		// Resolve aliases - allow independent unwrapping. Unalias (not Underlying)
+		// so an alias to a generic instantiation like `type W = TypeWrapper[X]`
+		// resolves to the *types.Named instantiation the next iteration records,
+		// instead of skipping straight to the raw struct and losing the wrapper /
+		// union identity and any type-level annotations.
 		schemaIsAlias := false
 		if alias, ok := schemaType.(*types.Alias); ok {
-			schemaType = alias.Underlying()
+			schemaType = types.Unalias(alias)
 			schemaIsAlias = true
 		}
 		if alias, ok := dataType.(*types.Alias); ok {
-			dataType = alias.Underlying()
+			dataType = types.Unalias(alias)
 		} else if schemaIsAlias {
 			// Schema was alias but data wasn't - this is an error
 			return nil, fmt.Errorf("incompatible types: data kind %v != schema kind %v", dataType.String(), schemaType.String())
@@ -368,7 +372,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 			continue
 		}
 		if alias, ok := dataType.(*types.Alias); ok {
-			dataType = alias.Underlying()
+			dataType = types.Unalias(alias)
 			continue
 		}
 

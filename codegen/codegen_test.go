@@ -48,6 +48,21 @@ func TestCodeGeneratorGenerate(t *testing.T) {
 		}
 	})
 
+	t.Run("DuplicateTypeEntry", func(t *testing.T) {
+		// Listing the same type twice for one output would emit its method set
+		// twice and fail to compile; the generator must reject it with a clear
+		// error instead of reporting success.
+		cg := NewCodeGenerator(nil)
+		rt := reflect.TypeFor[SimpleTestStruct]()
+		dupOpts := []CodeGeneratorOption{WithReflectType(rt), WithReflectType(rt)}
+		cg.BuildFile("gen_test.go", dupOpts...)
+
+		_, err := cg.GenerateToMap()
+		if err == nil || !strings.Contains(err.Error(), "listed more than once") {
+			t.Fatalf("expected duplicate-type error, got %v", err)
+		}
+	})
+
 	t.Run("GenerateToMapAnalyzeError", func(t *testing.T) {
 		cg := NewCodeGenerator(nil)
 		// int has no PkgPath, which triggers analyzeTypes error

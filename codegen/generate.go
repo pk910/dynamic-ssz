@@ -393,6 +393,25 @@ func staticAnnotationFor(desc *ssztypes.TypeDescriptor) string {
 	return `ssz-static:"true"`
 }
 
+// packageScopeNames returns the top-level identifier names declared in the
+// package that owns t (pointers and aliases unwrapped). Returns nil when the
+// package cannot be determined (e.g. reflection-driven types with no go/types
+// information), in which case no names are reserved.
+func packageScopeNames(t types.Type) []string {
+	if t == nil {
+		return nil
+	}
+	t = types.Unalias(t)
+	if ptr, ok := t.(*types.Pointer); ok {
+		t = types.Unalias(ptr.Elem())
+	}
+	named, ok := t.(*types.Named)
+	if !ok || named.Obj() == nil || named.Obj().Pkg() == nil {
+		return nil
+	}
+	return named.Obj().Pkg().Scope().Names()
+}
+
 func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFileOptions) (string, error) {
 	if len(opts.Types) == 0 {
 		return "", fmt.Errorf("no types requested for generation")
@@ -400,11 +419,29 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 
 	typePrinter := NewTypePrinter(packagePath)
 	typePrinter.AddAlias("github.com/pk910/dynamic-ssz", "dynssz")
+	// Reserve the target package's top-level identifiers so a generated import
+	// alias (e.g. sszutils, hasher, binary, dynssz) never collides with one.
+	for _, t := range opts.Types {
+		if names := packageScopeNames(t.GoTypesType); names != nil {
+			typePrinter.ReserveNames(names)
+			break
+		}
+	}
 	codeBuilder := strings.Builder{}
 	annotationsBuilder := strings.Builder{}
 	hashParts := [][]byte{}
 
+	// A type listed twice for the same output would emit its method set twice and
+	// fail to compile ("method already declared"). Reject the duplicate with a
+	// clear error instead of producing broken code that reports success.
+	seenTypes := make(map[string]struct{}, len(opts.Types))
+
 	for _, t := range opts.Types {
+		if _, dup := seenTypes[t.TypeName]; dup {
+			return "", fmt.Errorf("type %s is listed more than once for the same output; remove the duplicate entry", t.TypeName)
+		}
+		seenTypes[t.TypeName] = struct{}{}
+
 		if t.Descriptor == nil || (t.IsViewOnly && len(t.ViewDescriptors) == 0) {
 			return "", fmt.Errorf("type %s has no descriptor or view descriptors", t.TypeName)
 		}

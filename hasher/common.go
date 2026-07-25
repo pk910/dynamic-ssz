@@ -58,6 +58,7 @@ func initHasher() {
 // Returns the level and true if the hash is a recognized zero hash, or 0 and
 // false otherwise.
 func GetZeroHashLevel(hash string) (int, bool) {
+	initHasher()
 	level, ok := zeroHashLevels[hash]
 	return level, ok
 }
@@ -65,6 +66,7 @@ func GetZeroHashLevel(hash string) (int, bool) {
 // GetZeroHashLevelBytes returns the merkle tree depth level for a known zero hash.
 // Returns the level and true if the hash is a recognized zero hash, or 0 and false otherwise.
 func GetZeroHashLevelBytes(hash []byte) (int, bool) {
+	initHasher()
 	if len(hash) != 32 {
 		return 0, false
 	}
@@ -89,6 +91,7 @@ func GetZeroHash(depth int) []byte {
 // GetZeroHashes returns the full array of precomputed zero hashes for all 65
 // merkle tree depth levels.
 func GetZeroHashes() [65][32]byte {
+	initHasher()
 	return zeroHashes
 }
 

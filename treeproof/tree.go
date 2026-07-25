@@ -293,15 +293,20 @@ var treeFromNodesToDepthFn = treeFromNodesToDepth
 // The limit should be a power of 2.
 // Adjacent sibling nodes will be filled with zero order hashes that have been precomputed based on the tree depth.
 func TreeFromNodes(leaves []*Node, limit int) (*Node, error) {
-	// Excess leaves would be dropped silently, producing a valid-looking root for
-	// a different tree. A negative limit is an int-overflow artifact (a chunk
-	// limit above the platform int max, only possible on 32-bit) handled as an
-	// empty capacity, not treated as excess.
-	if limit >= 0 && len(leaves) > limit {
-		return nil, fmt.Errorf("number of leaves %d exceeds limit %d", len(leaves), limit)
-	}
+	// A non-positive limit is either a true zero capacity or the int-overflow
+	// artifact of a chunk limit above the platform int max (only reachable on
+	// 32-bit). Either way an int cannot represent a usable capacity, so any
+	// leaves present would be silently dropped, producing a valid-looking root
+	// for a different tree. Reject that; callers with such capacities use the
+	// uint64 TreeFromNodes64 form directly.
 	if limit <= 0 {
+		if len(leaves) > 0 {
+			return nil, fmt.Errorf("number of leaves %d exceeds limit %d", len(leaves), limit)
+		}
 		return getEmptyNode(0), nil
+	}
+	if len(leaves) > limit {
+		return nil, fmt.Errorf("number of leaves %d exceeds limit %d", len(leaves), limit)
 	}
 	return TreeFromNodes64(leaves, uint64(limit))
 }
