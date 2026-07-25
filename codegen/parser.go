@@ -69,6 +69,17 @@ type Parser struct {
 	CompatFlags   map[string]ssztypes.SszCompatFlag
 	ExtendedTypes bool
 
+	// building tracks descriptors currently under construction, keyed like the
+	// cache and mapped to the variable-length nesting depth at which each build
+	// started. dynDepth is the current such depth: it only increases while
+	// descending into the element of a variable-length collection (list,
+	// progressive list, optional, optional-list), which forms a legal recursion
+	// boundary. A cycle re-entered without crossing one of these is an infinite
+	// (non-serializable) static type and is rejected. Parsing is single-threaded,
+	// so plain fields are safe.
+	building map[string]int
+	dynDepth int
+
 	// AnnotationResolver returns the merged ssz annotation tag for a type (or "").
 	// It lets the parser read a referenced, fully-delegated type's ssz-static
 	// declaration so its subtree need not be traversed or validated.
@@ -95,6 +106,7 @@ func NewParser() *Parser {
 	return &Parser{
 		cache:       make(map[string]*ssztypes.TypeDescriptor),
 		CompatFlags: map[string]ssztypes.SszCompatFlag{},
+		building:    make(map[string]int),
 	}
 }
 
@@ -265,6 +277,13 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	cacheable := dataType == schemaType && len(typeHints) == 0 && len(sizeHints) == 0 && len(maxSizeHints) == 0
 	typeKey := fmt.Sprintf("%v|%v", dataType.String(), schemaType.String())
 	if cacheable && p.cache[typeKey] != nil {
+		if startDepth, inProgress := p.building[typeKey]; inProgress && p.dynDepth <= startDepth {
+			// Re-entering a type still under construction without crossing a
+			// variable-length collection means it contributes to its own static
+			// size — an infinite, non-serializable SSZ type. Reject it like the
+			// reflection engine does instead of emitting infinitely recursive code.
+			return nil, fmt.Errorf("recursive type %v is not supported", dataType.String())
+		}
 		return p.cache[typeKey], nil
 	}
 
@@ -277,6 +296,8 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 
 	if cacheable {
 		p.cache[typeKey] = desc
+		p.building[typeKey] = p.dynDepth
+		defer delete(p.building, typeKey)
 	}
 
 	// Use schemaType for SSZ layout analysis, dataType for interface checks
@@ -1331,8 +1352,12 @@ func (p *Parser) buildListDescriptor(desc *ssztypes.TypeDescriptor, dataType, sc
 		return fmt.Errorf("list types cannot have a fixed ssz-size (use ssz-max for lists, or ssz-size with vector type)")
 	}
 
-	// Build element descriptor traversing both type trees
+	// Build element descriptor traversing both type trees. A list is offset-encoded
+	// (variable-length), so descending into its element is a legal recursion
+	// boundary — bump the dynamic-nesting depth for cycle detection.
+	p.dynDepth++
 	elemDesc, err := p.buildTypeDescriptor(dataElemType, schemaElemType, childTypeHints, childSizeHints, childMaxSizeHints)
+	p.dynDepth--
 	if err != nil {
 		return fmt.Errorf("failed to build list element descriptor: %v", err)
 	}
@@ -1601,7 +1626,10 @@ func (p *Parser) buildOptionalDescriptor(desc *ssztypes.TypeDescriptor, dataType
 		childTypeHints = typeHints[1:]
 	}
 
+	// Optional is dynamic-size (presence-gated), a legal recursion boundary.
+	p.dynDepth++
 	elemDesc, err := p.buildTypeDescriptor(dataType, schemaType, childTypeHints, childSizeHints, childMaxSizeHints)
+	p.dynDepth--
 	if err != nil {
 		return err
 	}
@@ -1640,7 +1668,10 @@ func (p *Parser) buildOptionalListDescriptor(desc *ssztypes.TypeDescriptor, data
 		childTypeHints = typeHints[1:]
 	}
 
+	// Optional-list is a canonical List[T, 1] (variable-length), a legal boundary.
+	p.dynDepth++
 	elemDesc, err := p.buildTypeDescriptor(dataType, schemaType, childTypeHints, childSizeHints, childMaxSizeHints)
+	p.dynDepth--
 	if err != nil {
 		return err
 	}

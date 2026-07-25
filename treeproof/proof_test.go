@@ -1242,3 +1242,48 @@ func TestProofIndexHelperEdgeCases(t *testing.T) {
 		t.Fatal("intsEqual: differing element must be unequal")
 	}
 }
+
+// A generated proof must not alias the process-wide zero-hash table. Empty
+// siblings and zero-padding leaves hold the shared GetZeroHash slice, so handing
+// the raw bytes to a caller would let a proof mutation corrupt every subsequent
+// root computation in the process.
+func TestProveDoesNotAliasZeroHashTable(t *testing.T) {
+	leaves := []*Node{
+		LeafFromUint64(1),
+		LeafFromUint64(2),
+		LeafFromUint64(3),
+	}
+	tree, err := TreeFromNodes(leaves, 4)
+	if err != nil {
+		t.Fatalf("TreeFromNodes: %v", err)
+	}
+
+	// gindex 6 is the third leaf; its sibling (gindex 7) is zero-padding, so the
+	// proof carries the depth-0 zero hash.
+	proof, err := tree.Prove(6)
+	if err != nil {
+		t.Fatalf("Prove: %v", err)
+	}
+
+	zero := append([]byte(nil), hasher.GetZeroHash(0)...)
+	mutated := false
+	for _, h := range proof.Hashes {
+		if bytes.Equal(h, zero) {
+			h[0] ^= 0xFF
+			mutated = true
+		}
+	}
+	if !mutated {
+		t.Fatal("expected a zero-hash sibling in the proof")
+	}
+	if !bytes.Equal(hasher.GetZeroHash(0), zero) {
+		t.Fatalf("proof mutation corrupted the shared zero-hash table: %x", hasher.GetZeroHash(0))
+	}
+
+	// Node.Value() returns a copy for the same reason.
+	v := getEmptyNode(0).Value()
+	v[0] ^= 0xFF
+	if !bytes.Equal(hasher.GetZeroHash(0), zero) {
+		t.Fatalf("Value() mutation corrupted the shared zero-hash table: %x", hasher.GetZeroHash(0))
+	}
+}

@@ -643,6 +643,53 @@ func TestWrapperHashRootError(t *testing.T) {
 	}
 }
 
+// A top-level packed value (e.g. a uint256/uint128 via TypeWrapper) is appended
+// to the buffer and never merkleized into a container, so the walk ends with
+// buffered bytes and no nodes. Node()/HashRoot() must flush that buffer into a
+// single leaf instead of panicking or reporting an empty tree.
+func TestWrapperNodeFlushesTopLevelBuffer(t *testing.T) {
+	var v [32]byte
+	v[0], v[31] = 0x11, 0x22
+
+	w := NewWrapper()
+	w.AppendBytes32(v[:])
+	node := w.Node()
+	if !bytes.Equal(node.Value(), v[:]) {
+		t.Fatalf("node value = %x; want %x", node.Value(), v[:])
+	}
+
+	w2 := NewWrapper()
+	w2.AppendBytes32(v[:])
+	root, err := w2.HashRoot()
+	if err != nil {
+		t.Fatalf("HashRoot error: %v", err)
+	}
+	if !bytes.Equal(root[:], v[:]) {
+		t.Fatalf("root = %x; want %x", root, v[:])
+	}
+}
+
+// Hash() is called for verbose logging between subvalues, when the first packed
+// element sits in the buffer and no nodes exist yet. It must peek that buffer
+// (and tolerate a wholly empty wrapper) rather than indexing nodes[-1].
+func TestWrapperHashToleratesUnflushedBuffer(t *testing.T) {
+	var v [32]byte
+	v[0] = 0x33
+
+	w := NewWrapper()
+	w.AppendBytes32(v[:]) // buffer holds 32 bytes, node list still empty
+	got := w.Hash()
+	if !bytes.Equal(got, v[:]) {
+		t.Fatalf("Hash() = %x; want %x", got, v[:])
+	}
+
+	empty := NewWrapper()
+	z := empty.Hash()
+	if len(z) != 32 || !isZeroLeafValue(z) {
+		t.Fatalf("empty Hash() = %x; want 32-byte zero chunk", z)
+	}
+}
+
 func TestWrapperCommit(t *testing.T) {
 	w := NewWrapper()
 

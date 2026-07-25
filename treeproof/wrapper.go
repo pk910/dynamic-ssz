@@ -327,18 +327,35 @@ func (w *Wrapper) AddNode(n *Node) {
 	w.nodes = append(w.nodes, n)
 }
 
-// Node returns the single root node of the constructed Merkle tree. Panics if
-// the wrapper does not contain exactly one node, which indicates incomplete
+// Node returns the single root node of the constructed Merkle tree. Bytes still
+// buffered by Append* calls (e.g. a top-level packed uint256/uint128 that is
+// never merkleized into a container) are flushed to a leaf first. Panics if the
+// wrapper does not then hold exactly one node, which indicates incomplete
 // merkleization.
 func (w *Wrapper) Node() *Node {
+	w.flushBuffer()
 	if len(w.nodes) != 1 {
-		panic("BAD")
+		panic(fmt.Sprintf("incomplete merkleization: wrapper holds %d nodes, want 1", len(w.nodes)))
 	}
 	return w.nodes[0]
 }
 
-// Hash returns the 32-byte hash of the last node in the wrapper's node list.
+// Hash returns the most recent 32-byte chunk of the wrapper's state without
+// mutating it, mirroring hasher.Hasher.Hash(). It peeks the pending Append*
+// buffer when present (the latest data not yet merkleized), otherwise the last
+// committed node. Used for verbose/debug logging between subvalues, so it
+// tolerates both an unflushed buffer and an empty node list.
 func (w *Wrapper) Hash() []byte {
+	if n := len(w.buf); n > 0 {
+		start := 0
+		if n > 32 {
+			start = n - 32
+		}
+		return w.buf[start:]
+	}
+	if len(w.nodes) == 0 {
+		return make([]byte, 32)
+	}
 	return w.nodes[len(w.nodes)-1].Hash()
 }
 
@@ -440,7 +457,13 @@ func (w *Wrapper) addEmpty() {
 // implements the HashWalker interface's final step, producing the same root
 // hash that a regular Hasher would compute.
 func (w *Wrapper) HashRoot() ([32]byte, error) {
-	root := w.Hash()
+	// Flush any buffered bytes so a top-level packed value (never merkleized into
+	// a container) still yields its single-leaf root instead of an empty tree.
+	w.flushBuffer()
+	if len(w.nodes) == 0 {
+		return [32]byte{}, fmt.Errorf("expected 32 byte size")
+	}
+	root := w.nodes[len(w.nodes)-1].Hash()
 	if len(root) != 32 {
 		return [32]byte{}, fmt.Errorf("expected 32 byte size")
 	}

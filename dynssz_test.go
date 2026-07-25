@@ -1371,6 +1371,50 @@ func TestHashTreeRootWithReflectionError(t *testing.T) {
 	}
 }
 
+// foreignHasher stands in for a foreign concrete hasher (e.g. fastssz's
+// *ssz.Hasher) that dynssz cannot supply to a HashTreeRootWith method.
+type foreignHasher struct{}
+
+// foreignHasherLeaf mimics standard fastssz sszgen output: it implements the type-safe
+// HashTreeRoot() plus a HashTreeRootWith(hh *ConcreteForeignHasher) error whose
+// parameter is a concrete foreign hasher type.
+type foreignHasherLeaf struct {
+	V uint64
+}
+
+func (l *foreignHasherLeaf) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	root[0] = 0xAB
+	root[31] = 0xCD
+	return root, nil
+}
+
+func (l *foreignHasherLeaf) HashTreeRootWith(_ *foreignHasher) error { return nil }
+
+type foreignHasherContainer struct {
+	Leaf foreignHasherLeaf
+}
+
+// HashTreeRoot must not panic for a nested type whose HashTreeRootWith takes a
+// concrete foreign hasher; it falls back to the type-safe HashTreeRoot().
+func TestHashTreeRootForeignHasherParamFallback(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	root, err := ds.HashTreeRoot(&foreignHasherContainer{Leaf: foreignHasherLeaf{V: 42}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The single-field container root equals the leaf's own HashTreeRoot(),
+	// proving the type-safe fallback was used instead of the foreign method.
+	var want [32]byte
+	want[0] = 0xAB
+	want[31] = 0xCD
+	if root != want {
+		t.Fatalf("root = %x; want %x (fastssz HashTreeRoot fallback)", root, want)
+	}
+}
+
 // --- Bitlist marshal/HTR fixes (empty, nested, missing terminator) ---
 
 func TestEmptyBitlistMarshalDoesNotPanic(t *testing.T) {
