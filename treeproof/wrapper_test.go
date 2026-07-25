@@ -643,6 +643,43 @@ func TestWrapperHashRootError(t *testing.T) {
 	}
 }
 
+// The v1 exported Commit*/AddEmpty API is retained as thin aliases over the
+// Merkleize* methods; each must produce the same root as its counterpart.
+func TestWrapperCommitAliases(t *testing.T) {
+	build := func(fn func(w *Wrapper)) []byte {
+		w := NewWrapper()
+		w.PutUint64(1)
+		w.PutUint64(2)
+		w.PutUint64(3)
+		fn(w)
+		return w.Node().Hash()
+	}
+
+	if !bytes.Equal(build(func(w *Wrapper) { w.Commit(0) }),
+		build(func(w *Wrapper) { w.Merkleize(0) })) {
+		t.Error("Commit should match Merkleize")
+	}
+	if !bytes.Equal(build(func(w *Wrapper) { w.CommitWithMixin(0, 3, 8) }),
+		build(func(w *Wrapper) { w.MerkleizeWithMixin(0, 3, 8) })) {
+		t.Error("CommitWithMixin should match MerkleizeWithMixin")
+	}
+	if !bytes.Equal(build(func(w *Wrapper) { w.CommitProgressive(0) }),
+		build(func(w *Wrapper) { w.MerkleizeProgressive(0) })) {
+		t.Error("CommitProgressive should match MerkleizeProgressive")
+	}
+	if !bytes.Equal(build(func(w *Wrapper) { w.CommitProgressiveWithMixin(0, 3) }),
+		build(func(w *Wrapper) { w.MerkleizeProgressiveWithMixin(0, 3) })) {
+		t.Error("CommitProgressiveWithMixin should match MerkleizeProgressiveWithMixin")
+	}
+
+	// AddEmpty adds a zero leaf like the internal addEmpty.
+	w := NewWrapper()
+	w.AddEmpty()
+	if len(w.nodes) != 1 || !isZeroLeafValue(w.nodes[0].value) {
+		t.Error("AddEmpty should append a single zero leaf")
+	}
+}
+
 // A top-level packed value (e.g. a uint256/uint128 via TypeWrapper) is appended
 // to the buffer and never merkleized into a container, so the walk ends with
 // buffered bytes and no nodes. Node()/HashRoot() must flush that buffer into a

@@ -453,6 +453,48 @@ func (w *Wrapper) addEmpty() {
 	w.AddNode(EmptyLeaf())
 }
 
+// The methods below preserve the exported v1.x Wrapper API (Commit*/AddEmpty)
+// as thin aliases over the current Merkleize* methods, so consumers built
+// against earlier v1 releases keep compiling. New code should use Merkleize*.
+
+// Commit merkleizes the nodes added since index i into a binary subtree.
+//
+// Deprecated: use Merkleize.
+func (w *Wrapper) Commit(i int) { w.Merkleize(i) }
+
+// CommitWithMixin merkleizes nodes since index i with a length mixin.
+//
+// Deprecated: use MerkleizeWithMixin.
+func (w *Wrapper) CommitWithMixin(i, num, limit int) {
+	w.MerkleizeWithMixin(i, uint64(num), uint64(limit))
+}
+
+// CommitProgressive merkleizes nodes since index i into a progressive subtree.
+//
+// Deprecated: use MerkleizeProgressive.
+func (w *Wrapper) CommitProgressive(i int) { w.MerkleizeProgressive(i) }
+
+// CommitProgressiveWithMixin merkleizes nodes since index i as a progressive
+// subtree with a length mixin.
+//
+// Deprecated: use MerkleizeProgressiveWithMixin.
+func (w *Wrapper) CommitProgressiveWithMixin(i, num int) {
+	w.MerkleizeProgressiveWithMixin(i, uint64(num))
+}
+
+// CommitProgressiveWithActiveFields merkleizes nodes since index i as a
+// progressive subtree with an active-fields bitvector mixin.
+//
+// Deprecated: use MerkleizeProgressiveWithActiveFields.
+func (w *Wrapper) CommitProgressiveWithActiveFields(i int, activeFields []byte) {
+	w.MerkleizeProgressiveWithActiveFields(i, activeFields)
+}
+
+// AddEmpty adds an empty (all-zeros) leaf node to the wrapper's node list.
+//
+// Deprecated: retained for v1 API compatibility.
+func (w *Wrapper) AddEmpty() { w.addEmpty() }
+
 // HashRoot returns the 32-byte hash tree root of the constructed tree. This
 // implements the HashWalker interface's final step, producing the same root
 // hash that a regular Hasher would compute.
