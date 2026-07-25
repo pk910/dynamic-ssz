@@ -74,6 +74,16 @@ func TestWrapperIndex(t *testing.T) {
 	if w.Index() != 2 {
 		t.Errorf("index after adding second node should be 2, got %d", w.Index())
 	}
+
+	// CurrentIndex reflects the pending (unflushed) buffer length rather than the
+	// node count.
+	if w.CurrentIndex() != 0 {
+		t.Errorf("current index should be 0 with no buffered bytes, got %d", w.CurrentIndex())
+	}
+	w.Append([]byte{1, 2, 3})
+	if w.CurrentIndex() != 3 {
+		t.Errorf("current index should track buffered bytes, got %d", w.CurrentIndex())
+	}
 }
 
 func TestWrapperAppendMethods(t *testing.T) {

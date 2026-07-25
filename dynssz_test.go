@@ -293,7 +293,18 @@ func TestUnmarshalSSZReaderUnknownSize(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for trailing bytes in unknown-size mode")
 	}
+
+	// A read failure while draining the stream must surface as an error.
+	err = ds.UnmarshalSSZReader(&testSimpleContainer{}, errorReader{errors.New("read boom")}, -1)
+	if err == nil {
+		t.Fatal("expected error when the reader fails in unknown-size mode")
+	}
 }
+
+// errorReader always fails, exercising the io.ReadAll error path.
+type errorReader struct{ err error }
+
+func (r errorReader) Read([]byte) (int, error) { return 0, r.err }
 
 // ValidateType tests
 

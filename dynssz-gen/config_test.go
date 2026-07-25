@@ -695,6 +695,33 @@ func TestRun_ConfigPathVerbose(t *testing.T) {
 	}
 }
 
+// A header template whose first line does not match the generated-code marker
+// is still applied; run() only logs a warning rather than failing.
+func TestRun_HeaderTemplateWarning(t *testing.T) {
+	tmpDir := t.TempDir()
+	outFile := filepath.Join(tmpDir, "gen.go")
+	runCfg := Config{
+		PackagePath:    "github.com/pk910/dynamic-ssz/codegen/tests",
+		PackageName:    "tests",
+		HeaderTemplate: "// Custom header line\n",
+		TypeSpecs: []typeSpec{{
+			TypeName:   "SimpleTypes1",
+			OutputFile: outFile,
+			Legacy:     true,
+		}},
+	}
+	if err := run(&runCfg); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if !strings.HasPrefix(string(data), "// Custom header line") {
+		t.Errorf("expected custom header applied despite marker mismatch, got:\n%s", string(data))
+	}
+}
+
 // End-to-end: per-type override flips a global flag off for a specific type.
 func TestRun_ConfigWithPerTypeOverrides(t *testing.T) {
 	tmpDir := t.TempDir()

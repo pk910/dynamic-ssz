@@ -1159,3 +1159,86 @@ func TestVerifyMultiproofMissingNodeInjected(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+// A same-depth proof whose required-node list is shorter than the frontier
+// leaves the verifier without a sibling it needs; it must report the gap
+// rather than reading past the proof slice.
+func TestVerifyMultiproofSameDepthProofExhausted(t *testing.T) {
+	root, leaves, _ := buildMerkleTree(4)
+
+	getRequiredIndicesFn = func([]int) []int { return nil }
+	defer func() { getRequiredIndicesFn = getRequiredIndices }()
+
+	_, err := VerifyMultiproof(root, nil, [][]byte{leaves[0]}, []int{4})
+	if err == nil || !strings.Contains(err.Error(), "proof is missing required nodes") {
+		t.Fatalf("expected missing-node error, got %v", err)
+	}
+}
+
+// More than inlineIndexedChunkCapacity same-depth leaves forces the same-depth
+// verifier onto its heap-backed scratch slices instead of the inline arrays.
+func TestVerifyMultiproofManySameDepthLeaves(t *testing.T) {
+	const numLeaves = 128
+	root, _, allNodes := buildMerkleTree(numLeaves)
+
+	const proven = inlineIndexedChunkCapacity + 1
+	indices := make([]int, proven)
+	leaves := make([][]byte, proven)
+	for i := range indices {
+		idx := numLeaves + i
+		indices[i] = idx
+		leaves[i] = allNodes[idx]
+	}
+	proof := findProofHashes(indices, allNodes)
+
+	valid, err := VerifyMultiproof(root, proof, leaves, indices)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !valid {
+		t.Fatal("expected a same-depth multiproof of 65 leaves to verify")
+	}
+}
+
+// Both verifiers keep a defensive backstop for the impossible case where the
+// upward walk never reconstructs the root. Empty inputs drive that guard
+// directly, since the public entry point cannot produce this shape.
+func TestVerifyMultiproofRootNeverComputed(t *testing.T) {
+	root := make([]byte, 32)
+
+	handled, valid, err := verifyMultiproofSameDepth(root, nil, nil, nil, nil)
+	if !handled || valid || err == nil {
+		t.Fatalf("same-depth backstop: handled=%v valid=%v err=%v", handled, valid, err)
+	}
+
+	valid, err = verifyMultiproofGeneral(root, nil, nil, nil, nil)
+	if valid || err == nil {
+		t.Fatalf("general backstop: valid=%v err=%v", valid, err)
+	}
+}
+
+// Exercises the short-circuit and mismatch branches of the internal index
+// helpers that the cached happy paths never reach.
+func TestProofIndexHelperEdgeCases(t *testing.T) {
+	if got := computeRequiredIndices(nil); got != nil {
+		t.Fatalf("computeRequiredIndices(nil) = %v, want nil", got)
+	}
+	if got := descendingUniqueIndices(nil); got != nil {
+		t.Fatalf("descendingUniqueIndices(nil) = %v, want nil", got)
+	}
+
+	// Ascending input with a duplicate must be rejected during population.
+	dst := make([]indexedChunk, 3)
+	leaves := [][]byte{{1}, {2}, {3}}
+	if populateDescendingIndexedChunks(dst, []int{4, 5, 5}, leaves) {
+		t.Fatal("expected ascending duplicate indices to be rejected")
+	}
+
+	// intsEqual separates differing lengths from differing elements.
+	if intsEqual([]int{1, 2}, []int{1, 2, 3}) {
+		t.Fatal("intsEqual: differing lengths must be unequal")
+	}
+	if intsEqual([]int{1, 2, 3}, []int{1, 9, 3}) {
+		t.Fatal("intsEqual: differing element must be unequal")
+	}
+}
