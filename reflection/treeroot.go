@@ -494,7 +494,7 @@ func (ctx *ReflectionCtx) buildRootFromCompatibleUnion(sourceType *ssztypes.Type
 		return sszutils.ErrInvalidUnionVariantFn()
 	}
 
-	// Hash only the data, not the selector
+	// Hash the data root first; the selector is merkleized in below.
 	if dataField.IsNil() {
 		return sszutils.ErrInvalidUnionVariantFn()
 	}

@@ -53,11 +53,17 @@ func (cg *CodeGenerator) analyzeTypes() error {
 	getTypeName := func(t *CodeGeneratorTypeOptions) (string, string, string) {
 		var typeName, typePkgPath, typePkgName string
 		if t.ReflectType != nil {
-			typeName = t.ReflectType.Name()
-			typePkgPath = t.ReflectType.PkgPath()
-			if typePkgPath == "" && t.ReflectType.Kind() == reflect.Ptr {
-				typePkgPath = t.ReflectType.Elem().PkgPath()
+			// An unnamed pointer type carries no name of its own; the named type is
+			// the element. Without the dereference every pointer-passed type would
+			// share the empty name, colliding in name-keyed bookkeeping (e.g. the
+			// duplicate-entry check) and producing nameless error messages. Named
+			// pointer types keep their own identity.
+			namedType := t.ReflectType
+			if namedType.Name() == "" && namedType.Kind() == reflect.Pointer {
+				namedType = namedType.Elem()
 			}
+			typeName = namedType.Name()
+			typePkgPath = namedType.PkgPath()
 			// Look up the actual package name from the import path
 			if typePkgPath != "" {
 				if pkg, err := build.Import(typePkgPath, "", build.FindOnly); err == nil {
