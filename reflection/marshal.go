@@ -947,6 +947,19 @@ func checkBigIntLimit(t *ssztypes.TypeDescriptor, magLen int) error {
 	return nil
 }
 
+// bigIntLimitBytes reports the maximum encoded payload length (sign byte plus
+// magnitude) enforced by checkBigIntLimit, so a decoder can apply it as a read
+// cap instead of validating after the fact.
+func bigIntLimitBytes(t *ssztypes.TypeDescriptor) (int, bool) {
+	if t.MaxExpression != nil || t.SszTypeFlags&ssztypes.SszTypeFlagHasLimit == 0 {
+		return 0, false
+	}
+	if t.Limit > math.MaxInt {
+		return 0, false
+	}
+	return int(t.Limit), true
+}
+
 func (ctx *ReflectionCtx) marshalBigInt(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, idt int) error {
 	if ctx.verbose {
 		ctx.logCb("%smarshalBigInt: %s\n", strings.Repeat(" ", idt), sourceType.Type.Name())

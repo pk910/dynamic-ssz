@@ -754,19 +754,38 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "reader must not be nil")
 	}
 
-	// Unknown size: SSZ needs the total length to resolve trailing dynamic
-	// regions, so read the whole stream and decode through the buffer path.
-	if size < 0 {
-		data, err := io.ReadAll(r)
-		if err != nil {
-			return fmt.Errorf("failed to read ssz stream: %w", err)
+	cfg := applyCallOptions(opts)
+
+	// A negative size selects unknown-length mode: the payload is consumed to
+	// EOF without being materialised. SSZ is self-delimiting for every region
+	// except the trailing one, so the missing length only ever affects the last
+	// dynamic child at each nesting level.
+	knownSize := size >= 0
+	var decoder *sszutils.StreamDecoder
+	if knownSize {
+		decoder = sszutils.NewStreamDecoder(r, size, d.options.StreamReaderBufferSize)
+		decoder.PushLimit(size)
+	} else {
+		decoder = sszutils.NewUnknownStreamDecoder(r, d.options.StreamReaderBufferSize, d.options.MaxStreamSize)
+		// Fill the read buffer once up front. If the whole payload fits, EOF is
+		// observed immediately and the length becomes exact, so the decode runs
+		// on the known-length path with all of its fail-fast validation intact.
+		if err := decoder.Prefill(); err != nil {
+			return err
 		}
-		return d.UnmarshalSSZ(target, data, opts...)
+		decoder.PushOpenLimit()
 	}
 
-	cfg := applyCallOptions(opts)
-	decoder := sszutils.NewStreamDecoder(r, size, d.options.StreamReaderBufferSize)
-	decoder.PushLimit(size)
+	// finish closes the root region, asserting the input was fully consumed.
+	finish := func() error {
+		if !knownSize {
+			return sszutils.FinishRegion(decoder)
+		}
+		if consumedDiff := decoder.PopLimit(); consumedDiff != 0 {
+			return fmt.Errorf("did not consume full ssz range (diff: %v, ssz size: %v)", consumedDiff, size)
+		}
+		return nil
+	}
 
 	// Skip view descriptor logic for types implementing DynamicDecoder
 	if cfg == nil || cfg.viewDescriptor == nil {
@@ -776,12 +795,7 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 				return err
 			}
 
-			consumedDiff := decoder.PopLimit()
-			if consumedDiff != 0 {
-				return fmt.Errorf("did not consume full ssz range (diff: %v, ssz size: %v)", consumedDiff, size)
-			}
-
-			return nil
+			return finish()
 		}
 	} else if viewDecoder, ok := target.(sszutils.DynamicViewDecoder); ok && !d.options.NoDelegation {
 		if unmarshalFn := viewDecoder.UnmarshalSSZDecoderView(cfg.viewDescriptor); unmarshalFn != nil {
@@ -790,12 +804,7 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 				return err
 			}
 
-			consumedDiff := decoder.PopLimit()
-			if consumedDiff != 0 {
-				return fmt.Errorf("did not consume full ssz range (diff: %v, ssz size: %v)", consumedDiff, size)
-			}
-
-			return nil
+			return finish()
 		}
 	}
 
@@ -825,12 +834,7 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 		return err
 	}
 
-	consumedDiff := decoder.PopLimit()
-	if consumedDiff != 0 {
-		return fmt.Errorf("did not consume full ssz range (diff: %v, ssz size: %v)", consumedDiff, size)
-	}
-
-	return nil
+	return finish()
 }
 
 // HashTreeRoot computes the hash tree root of the given source object according to SSZ specifications.

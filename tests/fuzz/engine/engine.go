@@ -38,20 +38,25 @@ type Stats struct {
 type Engine struct {
 	ds         *dynssz.DynSsz
 	dsExtended *dynssz.DynSsz
-	reporter   *Reporter
-	stats      *Stats
-	rng        *rand.Rand
-	filler     *Filler
-	maxDataLen int
+	// Unknown-length counterparts, configured with a tiny read buffer so that
+	// decoding with size < 0 exercises real open regions rather than collapsing
+	// to a known length during the decoder's initial fill.
+	dsUnknown         *dynssz.DynSsz
+	dsUnknownExtended *dynssz.DynSsz
+	reporter          *Reporter
+	stats             *Stats
+	rng               *rand.Rand
+	filler            *Filler
+	maxDataLen        int
 }
 
 // NewEngine creates a new fuzz engine with its own RNG but shared DynSsz
 // instances. The DynSsz TypeCache is thread-safe (uses sync.RWMutex),
 // so sharing avoids duplicating large type caches across workers.
-func NewEngine(reporter *Reporter, stats *Stats, ds, dsExtended *dynssz.DynSsz, seed int64, maxDataLen int) *Engine {
+func NewEngine(reporter *Reporter, stats *Stats, ds, dsExtended *dynssz.DynSsz, seed int64, maxDataLen int, dsUnknown ...*dynssz.DynSsz) *Engine {
 	rng := rand.New(rand.NewSource(seed))
 
-	return &Engine{
+	e := &Engine{
 		ds:         ds,
 		dsExtended: dsExtended,
 		reporter:   reporter,
@@ -60,6 +65,13 @@ func NewEngine(reporter *Reporter, stats *Stats, ds, dsExtended *dynssz.DynSsz, 
 		filler:     NewFiller(rng),
 		maxDataLen: maxDataLen,
 	}
+	if len(dsUnknown) > 0 {
+		e.dsUnknown = dsUnknown[0]
+	}
+	if len(dsUnknown) > 1 {
+		e.dsUnknownExtended = dsUnknown[1]
+	}
+	return e
 }
 
 // FuzzEntry runs one fuzz iteration on a given type entry.
@@ -495,6 +507,149 @@ func (e *Engine) compareStreaming(entry corpus.TypeEntry, ds *dynssz.DynSsz, tar
 				"stream round-trip mismatch: original=%d bytes, after stream=%d bytes",
 				len(bufBytes), len(streamRemarshal),
 			),
+		})
+		return
+	}
+
+	unknownDs := e.dsUnknown
+	if entry.Extended {
+		unknownDs = e.dsUnknownExtended
+	}
+	e.compareUnknownSizeStreaming(entry, unknownDs, bufBytes, origData)
+}
+
+// compareUnknownSizeStreaming decodes the same payload with size < 0, so the
+// decoder has to discover the length at EOF, and requires it to produce exactly
+// what the known-length paths produced.
+//
+// The instances handed in use a deliberately tiny read buffer so that every
+// payload larger than a few bytes produces genuine open regions, where the
+// trailing dynamic element's extent is only discovered at EOF. The opposite
+// regime — a buffer large enough that the initial fill sees EOF and collapses
+// the stream to a known length — is covered by the unit tests.
+func (e *Engine) compareUnknownSizeStreaming(entry corpus.TypeEntry, ds *dynssz.DynSsz, bufBytes, origData []byte) {
+	if ds == nil {
+		return
+	}
+
+	unknownTarget := entry.New()
+	unknownErr := e.catchPanic(fmt.Sprintf("unknown-stream-unmarshal[%s]", entry.Name), entry, origData, func() error {
+		return ds.UnmarshalSSZReader(unknownTarget, bytes.NewReader(bufBytes), -1)
+	})
+
+	if isPanicError(unknownErr) {
+		return
+	}
+	if unknownErr != nil {
+		e.stats.StreamMismatches.Add(1)
+		e.reporter.Report(&Issue{
+			Type:     IssueStreamMismatch,
+			TypeName: entry.Name,
+			Data:     origData,
+			Details:  fmt.Sprintf("known-size stream unmarshal succeeded but unknown-size failed: %v", unknownErr),
+		})
+		return
+	}
+
+	var remarshal []byte
+	remarshalErr := e.catchPanic(fmt.Sprintf("unknown-stream-remarshal[%s]", entry.Name), entry, origData, func() error {
+		var err error
+		remarshal, err = ds.MarshalSSZ(unknownTarget)
+		return err
+	})
+	if isPanicError(remarshalErr) || remarshalErr != nil {
+		return
+	}
+
+	if !bytes.Equal(bufBytes, remarshal) {
+		e.stats.StreamMismatches.Add(1)
+		e.reporter.Report(&Issue{
+			Type:     IssueStreamMismatch,
+			TypeName: entry.Name,
+			Data:     origData,
+			Details: fmt.Sprintf(
+				"unknown-size stream round-trip mismatch: original=%d bytes, after stream=%d bytes",
+				len(bufBytes), len(remarshal),
+			),
+			ReflectionOutput: bufBytes,
+			CodegenOutput:    remarshal,
+		})
+		return
+	}
+
+	// Perturbed inputs must be judged identically by both paths.
+	//
+	// Note that "extra bytes must be rejected" is *not* the invariant. When the
+	// trailing region is a variable-length list, an extra byte is simply one
+	// more element, and the buffer path accepts it too. What must hold is that
+	// discovering the length at EOF reaches the same verdict as being told the
+	// length up front — for well-formed and malformed input alike.
+	for _, variant := range [][]byte{
+		append(append([]byte{}, bufBytes...), 0xff), // one byte too many
+		bufBytes[:max(0, len(bufBytes)-1)],          // one byte short
+	} {
+		e.compareUnknownSizeVerdict(entry, ds, variant, origData)
+	}
+}
+
+// compareUnknownSizeVerdict requires the unknown-length path to accept or reject
+// a payload exactly as the buffer path does, and to decode it to the same value.
+func (e *Engine) compareUnknownSizeVerdict(entry corpus.TypeEntry, ds *dynssz.DynSsz, data, origData []byte) {
+	bufTarget := entry.New()
+	bufErr := e.catchPanic(fmt.Sprintf("unknown-verdict-buffer[%s]", entry.Name), entry, origData, func() error {
+		return ds.UnmarshalSSZ(bufTarget, data)
+	})
+	if isPanicError(bufErr) {
+		return
+	}
+
+	streamTarget := entry.New()
+	streamErr := e.catchPanic(fmt.Sprintf("unknown-verdict-stream[%s]", entry.Name), entry, origData, func() error {
+		return ds.UnmarshalSSZReader(streamTarget, bytes.NewReader(data), -1)
+	})
+	if isPanicError(streamErr) {
+		return
+	}
+
+	if (bufErr == nil) != (streamErr == nil) {
+		e.stats.StreamMismatches.Add(1)
+		e.reporter.Report(&Issue{
+			Type:     IssueStreamMismatch,
+			TypeName: entry.Name,
+			Data:     data,
+			Details: fmt.Sprintf(
+				"unknown-size verdict differs from buffer path: buffer err=%v, unknown-size err=%v",
+				bufErr, streamErr,
+			),
+		})
+		return
+	}
+	if bufErr != nil {
+		return // both rejected
+	}
+
+	var bufRe, streamRe []byte
+	reErr := e.catchPanic(fmt.Sprintf("unknown-verdict-remarshal[%s]", entry.Name), entry, origData, func() error {
+		var err error
+		if bufRe, err = ds.MarshalSSZ(bufTarget); err != nil {
+			return err
+		}
+		streamRe, err = ds.MarshalSSZ(streamTarget)
+		return err
+	})
+	if isPanicError(reErr) || reErr != nil {
+		return
+	}
+
+	if !bytes.Equal(bufRe, streamRe) {
+		e.stats.StreamMismatches.Add(1)
+		e.reporter.Report(&Issue{
+			Type:             IssueStreamMismatch,
+			TypeName:         entry.Name,
+			Data:             data,
+			Details:          "unknown-size stream decoded a different value than the buffer path",
+			ReflectionOutput: bufRe,
+			CodegenOutput:    streamRe,
 		})
 	}
 }

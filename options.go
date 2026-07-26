@@ -18,6 +18,7 @@ type DynSszOptions struct {
 	LogCb                  func(format string, args ...any)
 	StreamWriterBufferSize int
 	StreamReaderBufferSize int
+	MaxStreamSize          int
 }
 
 // WithNoFastSsz disables fastssz fallback for types that implement fastssz
@@ -100,6 +101,21 @@ func WithStreamWriterBufferSize(size int) DynSszOption {
 func WithStreamReaderBufferSize(size int) DynSszOption {
 	return func(opts *DynSszOptions) {
 		opts.StreamReaderBufferSize = size
+	}
+}
+
+// WithMaxStreamSize sets the upper bound on the total size of an SSZ payload
+// decoded by UnmarshalSSZReader without a known length (size < 0). Defaults to
+// sszutils.DefaultMaxStreamSize (512 MiB) if not set or set to a non-positive
+// value.
+//
+// Unknown-length decoding is always bounded, and deliberately so: the bound is
+// what keeps a peer that never closes the connection from exhausting memory,
+// and it doubles as the remaining-length estimate reported to decode paths that
+// have not been taught about regions of unknown extent. It cannot be disabled.
+func WithMaxStreamSize(size int) DynSszOption {
+	return func(opts *DynSszOptions) {
+		opts.MaxStreamSize = size
 	}
 }
 

@@ -66,6 +66,12 @@ func main() {
 	ds := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation())
 	dsExt := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation(), dynssz.WithExtendedTypes())
 
+	// Unknown-length counterparts. The tiny read buffer keeps the decoder from
+	// observing EOF during its initial fill, so decoding with size < 0 goes
+	// through genuine open regions instead of collapsing to a known length.
+	dsUnknown := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation(), dynssz.WithStreamReaderBufferSize(8))
+	dsUnknownExt := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation(), dynssz.WithExtendedTypes(), dynssz.WithStreamReaderBufferSize(8))
+
 	// Warm up type caches by doing one marshal per type.
 	// This populates the cache before workers start, avoiding write contention.
 	log.Println("Warming up type caches...")
@@ -104,7 +110,7 @@ func main() {
 		workerSeed := *seed + int64(i)*6364136223846793005
 		go func() {
 			defer wg.Done()
-			eng := engine.NewEngine(reporter, stats, ds, dsExt, workerSeed, *maxData)
+			eng := engine.NewEngine(reporter, stats, ds, dsExt, workerSeed, *maxData, dsUnknown, dsUnknownExt)
 			typeIdx := i // stagger starting positions
 			for {
 				select {
