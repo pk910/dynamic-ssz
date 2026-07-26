@@ -85,6 +85,10 @@ type TypeCache struct {
 	CompatFlags       map[string]SszCompatFlag
 	ExtendedTypes     bool
 	NoDelegation      bool
+
+	// promotedDelegation memoizes InheritsPromotedDelegation (reflect.Type ->
+	// bool); the detection sits on the per-call delegation hot path.
+	promotedDelegation sync.Map
 }
 
 // NewTypeCache creates a new type cache
@@ -874,7 +878,7 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 	// delegates correctly as one of the walked fields. Custom types are exempt
 	// (they are opaque and have no walkable layout).
 	if (desc.SszType == SszContainerType || desc.SszType == SszProgressiveContainerType) &&
-		StructInheritsPromotedDelegation(runtimeType) {
+		tc.InheritsPromotedDelegation(runtimeType) {
 		desc.SszCompatFlags &^= SszCompatFlagDynamicMarshaler |
 			SszCompatFlagDynamicUnmarshaler |
 			SszCompatFlagDynamicSizer |

@@ -181,7 +181,7 @@ func (d *DynSsz) resolveSchemaType(runtimeType reflect.Type, cfg *callConfig) re
 // that field and would silently drop v's other fields, so v must be walked as
 // a container instead (the embedded field still delegates during the walk).
 func (d *DynSsz) delegable(v any) bool {
-	return !ssztypes.StructInheritsPromotedDelegation(reflect.TypeOf(v))
+	return !d.typeCache.InheritsPromotedDelegation(reflect.TypeOf(v))
 }
 
 // MarshalSSZ serializes the given source into its SSZ (Simple Serialize) representation.
