@@ -175,6 +175,14 @@ func (cg *CodeGenerator) analyzeTypes() error {
 				if t.ReflectType.Kind() != reflect.Pointer {
 					t.ReflectType = reflect.PointerTo(t.ReflectType)
 				}
+				// The reflect path builds descriptors through the shared TypeCache,
+				// which carries its own extended-types switch; propagate the option
+				// so it is honored on this path like it is on the go/types path.
+				// The cache flag is never lowered: it may have been enabled by the
+				// DynSsz instance the cache was taken from.
+				if t.Options.ExtendedTypes {
+					cg.typeCache.ExtendedTypes = true
+				}
 				desc, err = cg.typeCache.GetTypeDescriptor(t.ReflectType, t.Options.SizeHints, t.Options.MaxSizeHints, t.Options.TypeHints)
 			} else {
 				if parser == nil {

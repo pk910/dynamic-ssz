@@ -655,6 +655,14 @@ var ExtendedTypes1_Payload2 = ExtendedTypes1{
 	Big1: *big.NewInt(0),
 }
 
+// ExtendedBigIntMax carries a limit-bearing big.Int, exercising the ssz-max
+// enforcement on the encode and decode paths of both engines.
+type ExtendedBigIntMax struct {
+	B big.Int `ssz-max:"5"`
+}
+
+var ExtendedBigIntMax_Payload = ExtendedBigIntMax{B: *big.NewInt(0x11223344)}
+
 // CoverageTypes1 covers: regular bitlists, bitlists with spec max,
 // dynamic vectors/lists (slice-based with zero-padding), bool vectors.
 type CoverageTypes1 struct {

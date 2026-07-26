@@ -6,6 +6,7 @@ package sszutils
 
 import (
 	"encoding/binary"
+	"slices"
 )
 
 // BufferEncoder is a seekable Encoder implementation backed by an in-memory
@@ -18,12 +19,24 @@ type BufferEncoder struct {
 var _ Encoder = (*BufferEncoder)(nil)
 
 // NewBufferEncoder creates a new BufferEncoder using the provided buffer.
-// The buffer should have sufficient capacity for the expected output.
+// Pre-sizing the buffer to the expected output keeps encoding allocation-free;
+// like append, an under-sized buffer grows on demand.
 func NewBufferEncoder(buffer []byte) *BufferEncoder {
 	// Use the full capacity for direct indexing
 	return &BufferEncoder{
 		buffer: buffer[:cap(buffer)],
 		pos:    len(buffer),
+	}
+}
+
+// ensure makes room for n more bytes at the write position. The pre-sized
+// fast path is a single comparison; an under-sized buffer grows with append's
+// amortized strategy. Writing into the buffer without growing it first is a
+// bug — every write helper goes through here.
+func (e *BufferEncoder) ensure(n int) {
+	if need := e.pos + n; need > len(e.buffer) {
+		grown := slices.Grow(e.buffer[:e.pos], need-e.pos)
+		e.buffer = grown[:cap(grown)]
 	}
 }
 
@@ -53,6 +66,7 @@ func (e *BufferEncoder) SetBuffer(buffer []byte) {
 // EncodeBool writes a single-byte boolean value (0x00 or 0x01) at the current
 // position and advances by 1 byte.
 func (e *BufferEncoder) EncodeBool(v bool) {
+	e.ensure(1)
 	if v {
 		e.buffer[e.pos] = 0x01
 	} else {
@@ -63,6 +77,7 @@ func (e *BufferEncoder) EncodeBool(v bool) {
 
 // EncodeUint8 writes a single byte at the current position and advances by 1 byte.
 func (e *BufferEncoder) EncodeUint8(v uint8) {
+	e.ensure(1)
 	e.buffer[e.pos] = v
 	e.pos++
 }
@@ -70,6 +85,7 @@ func (e *BufferEncoder) EncodeUint8(v uint8) {
 // EncodeUint16 writes a little-endian uint16 at the current position and
 // advances by 2 bytes.
 func (e *BufferEncoder) EncodeUint16(v uint16) {
+	e.ensure(2)
 	binary.LittleEndian.PutUint16(e.buffer[e.pos:], v)
 	e.pos += 2
 }
@@ -77,6 +93,7 @@ func (e *BufferEncoder) EncodeUint16(v uint16) {
 // EncodeUint32 writes a little-endian uint32 at the current position and
 // advances by 4 bytes.
 func (e *BufferEncoder) EncodeUint32(v uint32) {
+	e.ensure(4)
 	binary.LittleEndian.PutUint32(e.buffer[e.pos:], v)
 	e.pos += 4
 }
@@ -84,6 +101,7 @@ func (e *BufferEncoder) EncodeUint32(v uint32) {
 // EncodeUint64 writes a little-endian uint64 at the current position and
 // advances by 8 bytes.
 func (e *BufferEncoder) EncodeUint64(v uint64) {
+	e.ensure(8)
 	binary.LittleEndian.PutUint64(e.buffer[e.pos:], v)
 	e.pos += 8
 }
@@ -91,6 +109,7 @@ func (e *BufferEncoder) EncodeUint64(v uint64) {
 // EncodeBytes copies the given byte slice into the buffer at the current
 // position and advances by len(v) bytes.
 func (e *BufferEncoder) EncodeBytes(v []byte) {
+	e.ensure(len(v))
 	copy(e.buffer[e.pos:], v)
 	e.pos += len(v)
 }
@@ -98,6 +117,7 @@ func (e *BufferEncoder) EncodeBytes(v []byte) {
 // EncodeOffset writes a 4-byte little-endian SSZ offset at the current position
 // and advances by 4 bytes.
 func (e *BufferEncoder) EncodeOffset(v uint32) {
+	e.ensure(4)
 	binary.LittleEndian.PutUint32(e.buffer[e.pos:], v)
 	e.pos += 4
 }
@@ -115,9 +135,10 @@ func (e *BufferEncoder) EncodeOffsetAt(pos int, v uint32) {
 // EncodeZeroPadding writes n zero bytes at the current position and advances
 // by n bytes. Uses clear for efficient zeroing.
 func (e *BufferEncoder) EncodeZeroPadding(n int) {
-	if n < 0 || e.pos+n > len(e.buffer) {
+	if n < 0 {
 		return
 	}
+	e.ensure(n)
 	// Use clear for efficient zeroing (Go 1.21+)
 	clear(e.buffer[e.pos : e.pos+n])
 	e.pos += n

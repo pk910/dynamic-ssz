@@ -992,17 +992,19 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		defer indexDefer()
 
 		ctx.appendCode(indent, "var offsets []uint32\n")
-		ctx.appendCode(indent, "if canSeek {\n")
-		ctx.appendCode(indent+1, "dec.SkipBytes((itemCount - 1) * 4)\n")
-		ctx.appendCode(indent, "} else if itemCount > 1 {\n")
-		ctx.appendCode(indent+1, "offsetSlices[%d] = sszutils.ExpandSlice(offsetSlices[%d], itemCount-1)\n", ctx.offsetSliceCounter, ctx.offsetSliceCounter)
-		ctx.appendCode(indent+1, "offsets = offsetSlices[%d]\n", ctx.offsetSliceCounter)
-		ctx.appendCode(indent+1, "for %s := range itemCount-1 {\n", indexVar)
-		ctx.appendCode(indent+2, "offset, err := dec.DecodeOffset()\n")
-		ctx.appendCode(indent+2, "if err != nil {\n")
-		ctx.appendCode(indent+3, "return %s\n", typePath.append("[%d:o]", indexVar).getErrorWith("err"))
+		ctx.appendCode(indent, "if itemCount > 1 {\n")
+		ctx.appendCode(indent+1, "if canSeek {\n")
+		ctx.appendCode(indent+2, "dec.SkipBytes((itemCount - 1) * 4)\n")
+		ctx.appendCode(indent+1, "} else {\n")
+		ctx.appendCode(indent+2, "offsetSlices[%d] = sszutils.ExpandSlice(offsetSlices[%d], itemCount-1)\n", ctx.offsetSliceCounter, ctx.offsetSliceCounter)
+		ctx.appendCode(indent+2, "offsets = offsetSlices[%d]\n", ctx.offsetSliceCounter)
+		ctx.appendCode(indent+2, "for %s := range itemCount-1 {\n", indexVar)
+		ctx.appendCode(indent+3, "offset, err := dec.DecodeOffset()\n")
+		ctx.appendCode(indent+3, "if err != nil {\n")
+		ctx.appendCode(indent+4, "return %s\n", typePath.append("[%d:o]", indexVar).getErrorWith("err"))
+		ctx.appendCode(indent+3, "}\n")
+		ctx.appendCode(indent+3, "offsets[%s] = offset\n", indexVar)
 		ctx.appendCode(indent+2, "}\n")
-		ctx.appendCode(indent+2, "offsets[%s] = offset\n", indexVar)
 		ctx.appendCode(indent+1, "}\n")
 		ctx.appendCode(indent, "}\n")
 		ctx.useSeekable = true
@@ -1208,17 +1210,31 @@ func (ctx *decoderContext) unmarshalBigInt(desc *ssztypes.TypeDescriptor, varNam
 	}
 	valVar := ctx.getValVar()
 	signErr := "sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, \"invalid big.Int sign byte\")"
-	// sign byte (0 = non-negative, 1 = negative) followed by the big-endian magnitude
+	emptyErr := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"big.Int payload must contain at least a sign byte\")"
+	leadZeroErr := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"non-canonical big.Int magnitude with leading zero\")"
+	negZeroErr := "sszutils.NewSszError(sszutils.ErrInvalidValueRange, \"non-canonical negative zero big.Int\")"
+	// Enforce a static ssz-max before reading the region, symmetrically with
+	// the buffer path; dynamic limits (dynssz-max expressions) stay unchecked.
+	if desc.MaxExpression == nil && desc.Limit > 0 {
+		limitErr := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", dec.GetLength(), %d)", desc.Limit)
+		ctx.appendCode(indent, "if uint64(dec.GetLength()) > %d {\n\treturn %s\n}\n", desc.Limit, typePath.getErrorWith(limitErr))
+	}
+	// sign byte (0 = non-negative, 1 = negative) followed by the minimal
+	// big-endian magnitude; the same canonicality checks as the buffer path.
 	ctx.appendCode(indent, "if buf, err := dec.DecodeBytesBuf(dec.GetLength()); err != nil {\n")
 	ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith("err"))
-	ctx.appendCode(indent, "} else if len(buf) > 0 && buf[0] > 1 {\n")
+	ctx.appendCode(indent, "} else if len(buf) == 0 {\n")
+	ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith(emptyErr))
+	ctx.appendCode(indent, "} else if buf[0] > 1 {\n")
 	ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith(signErr))
+	ctx.appendCode(indent, "} else if len(buf) > 1 && buf[1] == 0 {\n")
+	ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith(leadZeroErr))
+	ctx.appendCode(indent, "} else if buf[0] == 1 && len(buf) == 1 {\n")
+	ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith(negZeroErr))
 	ctx.appendCode(indent, "} else {\n")
 	ctx.appendCode(indent+1, "%s := %s.NewInt(0)\n", valVar, bigImport)
-	ctx.appendCode(indent+1, "if len(buf) > 0 {\n")
-	ctx.appendCode(indent+2, "%s.SetBytes(buf[1:])\n", valVar)
-	ctx.appendCode(indent+2, "if buf[0] == 1 {\n\t\t\t%s.Neg(%s)\n\t\t}\n", valVar, valVar)
-	ctx.appendCode(indent+1, "}\n")
+	ctx.appendCode(indent+1, "%s.SetBytes(buf[1:])\n", valVar)
+	ctx.appendCode(indent+1, "if buf[0] == 1 {\n\t\t%s.Neg(%s)\n\t}\n", valVar, valVar)
 	ctx.appendCode(indent+1, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, fmt.Sprintf("*%s", valVar), "big.Int"))
 	ctx.appendCode(indent, "}\n")
 	return nil

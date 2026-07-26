@@ -6,12 +6,14 @@ package codegen
 
 import (
 	"go/types"
+	"math/big"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	dynssz "github.com/pk910/dynamic-ssz"
 	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
@@ -956,5 +958,169 @@ func TestGenerateOverAlreadyGeneratedType(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "already implements the generated dynamic SSZ methods") {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// SamePkgUnionLeaf is a sibling type referenced as a generic type argument
+// from the same package the code is generated for. Exported deliberately:
+// the generic-type import extraction only considers exported names.
+type SamePkgUnionLeaf struct {
+	F1 uint32
+}
+
+type SamePkgUnionHolder struct {
+	U dynssz.CompatibleUnion[struct {
+		A uint32
+		B SamePkgUnionLeaf
+	}]
+}
+
+// A generic type argument from the package being generated must be emitted
+// unqualified; qualifying it would make the generated file import its own
+// package, which does not compile.
+func TestGenerateGenericSamePackageTypeArg(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_samepkg_union.go",
+		WithReflectType(reflect.TypeFor[SamePkgUnionHolder](), WithCreateEncoderFn(), WithCreateDecoderFn()),
+		WithReflectType(reflect.TypeFor[SamePkgUnionLeaf](), WithCreateEncoderFn(), WithCreateDecoderFn()),
+	)
+
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	code := files["gen_samepkg_union.go"]
+	if code == "" {
+		t.Fatal("no code generated")
+	}
+	if strings.Contains(code, "\"github.com/pk910/dynamic-ssz/codegen\"") {
+		t.Error("generated file imports its own package")
+	}
+	if strings.Contains(code, "codegen.SamePkgUnionLeaf") {
+		t.Error("same-package type argument emitted qualified")
+	}
+}
+
+// encOnlyInner/encOnlyOuter model a field type that exposes only the
+// encoder/decoder interfaces (no buffer marshaler), so the outer marshaler
+// must delegate through a BufferEncoder.
+type encOnlyInner struct {
+	A uint64
+	B uint64
+}
+
+type encOnlyOuter struct {
+	X uint32
+	I encOnlyInner
+}
+
+// The encoder-delegation site wraps dst in a BufferEncoder; the encoder grows
+// an under-reserved buffer on demand (see sszutils), so the emitted code needs
+// no size reservation of its own. This pins the delegation shape.
+func TestGenerateEncoderDelegation(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_enconly_inner.go",
+		WithReflectType(reflect.TypeFor[encOnlyInner](), WithNoMarshalSSZ(), WithNoUnmarshalSSZ(), WithCreateEncoderFn(), WithCreateDecoderFn()),
+	)
+	cg.BuildFile("gen_enconly_outer.go",
+		WithReflectType(reflect.TypeFor[encOnlyOuter]()),
+	)
+
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	outer := files["gen_enconly_outer.go"]
+	if !strings.Contains(outer, "NewBufferEncoder") {
+		t.Fatalf("outer type does not delegate through a BufferEncoder:\n%s", outer)
+	}
+	if !strings.Contains(outer, "MarshalSSZEncoder") {
+		t.Errorf("outer type does not call the inner encoder:\n%s", outer)
+	}
+}
+
+// extendedReflectHolder carries an extended type, so generating it requires
+// the extended-types switch to reach the descriptor builder.
+type extendedReflectHolder struct {
+	B big.Int
+}
+
+// WithExtendedTypes must take effect on the reflect path (which builds
+// descriptors through the shared TypeCache), not only on the go/types parser.
+func TestWithExtendedTypesReflectPath(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_extended_reflect.go",
+		WithReflectType(reflect.TypeFor[extendedReflectHolder](), WithExtendedTypes()),
+	)
+	if _, err := cg.GenerateToMap(); err != nil {
+		t.Errorf("generate with WithExtendedTypes: %v", err)
+	}
+
+	// Without the option the extended type is rejected.
+	cg2 := NewCodeGenerator(nil)
+	cg2.BuildFile("gen_extended_reflect.go",
+		WithReflectType(reflect.TypeFor[extendedReflectHolder]()),
+	)
+	if _, err := cg2.GenerateToMap(); err == nil {
+		t.Error("expected error generating an extended type without WithExtendedTypes")
+	}
+}
+
+// Top-level scalar aliases: one per scalar arm of the unmarshal emitter.
+type (
+	genTopBool bool
+	genTopU8   uint8
+	genTopU16  uint16
+	genTopU32  uint32
+	genTopU64  uint64
+	genTopI8   int8
+	genTopI16  int16
+	genTopI32  int32
+	genTopI64  int64
+	genTopF32  float32
+	genTopF64  float64
+)
+
+// genBigIntMaxHolder carries a limit-bearing big.Int for the decode-side
+// limit emission.
+type genBigIntMaxHolder struct {
+	B big.Int `ssz-max:"5"`
+}
+
+// Scalar roots emit an exact-length check (a scalar root consumes the whole
+// buffer), and a limited big.Int emits the decode-side ssz-max check.
+func TestGenerateScalarRootLenChecks(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_scalar_roots.go",
+		WithExtendedTypes(),
+		WithReflectType(reflect.TypeFor[genTopBool]()),
+		WithReflectType(reflect.TypeFor[genTopU8]()),
+		WithReflectType(reflect.TypeFor[genTopU16]()),
+		WithReflectType(reflect.TypeFor[genTopU32]()),
+		WithReflectType(reflect.TypeFor[genTopU64]()),
+		WithReflectType(reflect.TypeFor[genTopI8]()),
+		WithReflectType(reflect.TypeFor[genTopI16]()),
+		WithReflectType(reflect.TypeFor[genTopI32]()),
+		WithReflectType(reflect.TypeFor[genTopI64]()),
+		WithReflectType(reflect.TypeFor[genTopF32]()),
+		WithReflectType(reflect.TypeFor[genTopF64]()),
+		WithReflectType(reflect.TypeFor[genBigIntMaxHolder]()),
+	)
+
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	code := files["gen_scalar_roots.go"]
+	if code == "" {
+		t.Fatal("no code generated")
+	}
+	// Each scalar root rejects trailing bytes; 11 scalar types plus the
+	// big.Int holder's container check emit the trailing error at least once.
+	if got := strings.Count(code, "ErrTrailingDataFn"); got < 11 {
+		t.Errorf("expected a trailing-data check per scalar root, found %d", got)
+	}
+	if !strings.Contains(code, "exceeds maximum") {
+		t.Error("limited big.Int does not emit the decode-side ssz-max check")
 	}
 }
