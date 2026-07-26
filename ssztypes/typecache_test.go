@@ -1883,7 +1883,7 @@ func TestParseSszType(t *testing.T) {
 		{"progressive-bitlist", SszProgressiveBitlistType},
 		{"progressive-container", SszProgressiveContainerType},
 		{"compatible-union", SszCompatibleUnionType},
-		{"union", SszCompatibleUnionType},
+		{"union", SszUnionType},
 
 		// extended types
 		{"int8", SszInt8Type},
@@ -3538,12 +3538,12 @@ func TestTypeCache_CompatibleUnionDescriptor(t *testing.T) {
 			t.Fatalf("expected 2 union variants, got %d", len(desc.UnionVariants))
 		}
 		// Variant 0 should be uint32
-		if desc.UnionVariants[0].SszType != SszUint32Type {
-			t.Errorf("variant 0: expected SszUint32Type, got %v", desc.UnionVariants[0].SszType)
+		if desc.UnionVariants[1].SszType != SszUint32Type {
+			t.Errorf("variant 1: expected SszUint32Type, got %v", desc.UnionVariants[1].SszType)
 		}
 		// Variant 1 should be uint64
-		if desc.UnionVariants[1].SszType != SszUint64Type {
-			t.Errorf("variant 1: expected SszUint64Type, got %v", desc.UnionVariants[1].SszType)
+		if desc.UnionVariants[2].SszType != SszUint64Type {
+			t.Errorf("variant 2: expected SszUint64Type, got %v", desc.UnionVariants[2].SszType)
 		}
 	})
 }
@@ -3586,8 +3586,8 @@ func TestTypeCache_CompatibleUnionViewDescriptor(t *testing.T) {
 	if len(desc.UnionVariants) != 1 {
 		t.Fatalf("expected 1 union variant from schema, got %d", len(desc.UnionVariants))
 	}
-	if desc.UnionVariants[0].SszType != SszUint64Type {
-		t.Errorf("variant 0: expected SszUint64Type, got %v", desc.UnionVariants[0].SszType)
+	if desc.UnionVariants[1].SszType != SszUint64Type {
+		t.Errorf("variant 1: expected SszUint64Type, got %v", desc.UnionVariants[1].SszType)
 	}
 }
 

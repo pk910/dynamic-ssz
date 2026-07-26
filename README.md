@@ -31,7 +31,7 @@ Dynamic SSZ is a production-ready Go library for [SSZ](https://github.com/ethere
 
 - **📚 Complete SSZ Type Support** — vectors, lists, containers, bitvectors/bitlists (`ssz-bitsize`), `uint128`/`uint256`, multi-dimensional arrays with per-dimension limits, `time.Time`, and auto-detection of common types (`holiman/uint256`, `go-bitfield`)
 - **🚀 Progressive Types** — progressive lists & bitlists ([EIP-7916](https://eips.ethereum.org/EIPS/eip-7916)) and progressive containers with `ssz-index` ([EIP-7495](https://eips.ethereum.org/EIPS/eip-7495))
-- **🧬 Compatible Unions** — type-safe SSZ unions via the generic `CompatibleUnion[T]` type
+- **🧬 Unions** — type-safe SSZ unions via the generic `Union[T]` (classic spec, incl. the `None` option) and `CompatibleUnion[T]` ([EIP-8016](https://eips.ethereum.org/EIPS/eip-8016)) types
 - **🧩 Extended Types** — opt-in support for signed integers, floats, `big.Int`, and optional types (non-standard, disabled by default)
 
 ### Quality

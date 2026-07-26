@@ -195,7 +195,9 @@ Explicitly specifies the SSZ type for a field. When omitted, the type is auto-de
 
 **Collection types**: `container`, `list`, `vector`, `bitlist`, `bitvector`
 
-**Progressive types** (EIP-7916/7495): `progressive-list`, `progressive-bitlist`, `progressive-container`, `compatible-union` (or `union`)
+**Union types**: `union` (classic spec union via `dynssz.Union[T]`, 0-based positional selectors)
+
+**Progressive types** (EIP-7916/7495): `progressive-list`, `progressive-bitlist`, `progressive-container`, `compatible-union` (EIP-8016 via `dynssz.CompatibleUnion[T]`)
 
 **Pointer encoding**: `optional-list` — encodes a pointer as canonical `List[T, 1]`
 

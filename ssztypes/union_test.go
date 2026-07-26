@@ -5,6 +5,7 @@
 package ssztypes
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -39,11 +40,11 @@ func TestExtractUnionDescriptorInfo(t *testing.T) {
 				}
 
 				// Check that both variants exist
-				if _, ok := info[0]; !ok {
-					t.Error("variant 0 not found")
-				}
 				if _, ok := info[1]; !ok {
 					t.Error("variant 1 not found")
+				}
+				if _, ok := info[2]; !ok {
+					t.Error("variant 2 not found")
 				}
 			},
 		},
@@ -58,8 +59,8 @@ func TestExtractUnionDescriptorInfo(t *testing.T) {
 			validateInfo: func(t *testing.T, info map[uint8]unionVariantInfo) {
 				t.Helper()
 
-				if _, ok := info[0]; !ok {
-					t.Error("variant 0 not found")
+				if _, ok := info[1]; !ok {
+					t.Error("variant 1 not found")
 				}
 			},
 		},
@@ -144,10 +145,10 @@ func TestCompatibleUnionVariantIndexing(t *testing.T) {
 		t.Fatalf("failed to extract union info: %v", err)
 	}
 
-	// Verify that indices 0-3 are present
-	for i := uint8(0); i < 4; i++ {
+	// Verify that selectors 1-4 are present
+	for i := uint8(1); i <= 4; i++ {
 		if _, ok := info[i]; !ok {
-			t.Errorf("expected variant at index %d", i)
+			t.Errorf("expected variant at selector %d", i)
 		}
 	}
 
@@ -160,7 +161,7 @@ func TestCompatibleUnionVariantIndexing(t *testing.T) {
 	}
 
 	for i, expectedKind := range expectedKinds {
-		variant := info[uint8(i)]
+		variant := info[uint8(i)+1]
 		if variant.Type.Kind() != reflect.Struct {
 			t.Errorf("variant %d should be struct", i)
 			continue
@@ -208,6 +209,71 @@ func TestUnionEdgeCases(t *testing.T) {
 					t.Errorf("variant %d should be struct", i)
 				}
 			}
+		}
+	})
+}
+
+// A union descriptor cannot hold more than 127 variants: default numbering
+// would run past the EIP-8016 selector range.
+func TestExtractUnionDescriptorTooManyVariants(t *testing.T) {
+	fields := make([]reflect.StructField, 128)
+	for i := range fields {
+		fields[i] = reflect.StructField{
+			Name: fmt.Sprintf("V%d", i),
+			Type: reflect.TypeOf(uint32(0)),
+		}
+	}
+	descriptorType := reflect.StructOf(fields)
+
+	if _, err := extractUnionDescriptorInfo(descriptorType, &dummyDynamicSpecs{}); err == nil {
+		t.Fatal("descriptor with 128 variants should be rejected")
+	}
+}
+
+// Classic union descriptor edge cases not reachable through the public API
+// golden tests: the variant count cap and per-field tag parse failures.
+func TestExtractClassicUnionDescriptorInfo(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+
+	t.Run("tooManyVariants", func(t *testing.T) {
+		// 129 fields: even with a leading None marker the remaining positions
+		// would exceed selector 127
+		fields := make([]reflect.StructField, 129)
+		for i := range fields {
+			fields[i] = reflect.StructField{
+				Name: fmt.Sprintf("V%d", i),
+				Type: reflect.TypeOf(uint32(0)),
+			}
+		}
+		if _, _, err := extractClassicUnionDescriptorInfo(reflect.StructOf(fields), ds); err == nil {
+			t.Fatal("descriptor with 129 variants should be rejected")
+		}
+	})
+
+	t.Run("invalidSszSize", func(t *testing.T) {
+		descriptorType := reflect.TypeOf(struct {
+			Data []uint8 `ssz-size:"invalid"`
+		}{})
+		if _, _, err := extractClassicUnionDescriptorInfo(descriptorType, ds); err == nil || !strings.Contains(err.Error(), "ssz-size") {
+			t.Fatalf("expected ssz-size parse error, got: %v", err)
+		}
+	})
+
+	t.Run("invalidSszMax", func(t *testing.T) {
+		descriptorType := reflect.TypeOf(struct {
+			Data []uint8 `ssz-max:"invalid"`
+		}{})
+		if _, _, err := extractClassicUnionDescriptorInfo(descriptorType, ds); err == nil || !strings.Contains(err.Error(), "ssz-max") {
+			t.Fatalf("expected ssz-max parse error, got: %v", err)
+		}
+	})
+
+	t.Run("invalidSszType", func(t *testing.T) {
+		descriptorType := reflect.TypeOf(struct {
+			Data []uint8 `ssz-type:"invalid"`
+		}{})
+		if _, _, err := extractClassicUnionDescriptorInfo(descriptorType, ds); err == nil || !strings.Contains(err.Error(), "ssz-type") {
+			t.Fatalf("expected ssz-type parse error, got: %v", err)
 		}
 	})
 }

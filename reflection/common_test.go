@@ -351,9 +351,9 @@ var commonTestMatrix = []struct {
 		}{0x1337, dynssz.CompatibleUnion[struct {
 			Field1 uint32
 			Field2 [2]uint8
-		}]{Variant: 0, Data: uint32(0x12345678)}, 0x4242},
-		fromHex("0x37130800000042420078563412"),
-		fromHex("0x631276fc281634b5224241dd547762be15e2f54e361c6bdc8f921a4d5125e954"),
+		}]{Variant: 1, Data: uint32(0x12345678)}, 0x4242},
+		fromHex("0x37130800000042420178563412"),
+		fromHex("0x545fedc025d1b21b79e65cfec615bb165a559fa5e4ff762e2de5e731e2a242c3"),
 	},
 	{
 		"compatible_union_2",
@@ -367,9 +367,9 @@ var commonTestMatrix = []struct {
 		}{0x1337, dynssz.CompatibleUnion[struct {
 			Field1 []uint32
 			Field2 [2]uint8
-		}]{Variant: 1, Data: [2]uint8{0x78, 0x56}}, 0x4242},
-		fromHex("0x3713080000004242017856"),
-		fromHex("0xa667d80855a0a42d447357c8dc753ce188ed7d30daceee9bb7ecc592d729bbeb"),
+		}]{Variant: 2, Data: [2]uint8{0x78, 0x56}}, 0x4242},
+		fromHex("0x3713080000004242027856"),
+		fromHex("0xdfabf548c6c052a47da50414d016d89fb1247a7d31f9cb0586f13c5572a8a21e"),
 	},
 	{
 		"complex_struct15",

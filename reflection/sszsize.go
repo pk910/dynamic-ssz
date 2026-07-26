@@ -202,6 +202,38 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 			// (see marshalBitlist), so account for that extra byte here as well
 			staticSize = 1
 		}
+	case ssztypes.SszUnionType:
+		// Union: 1 byte for selector + size of the data; the None option is the
+		// bare selector byte.
+		variant := uint8(targetValue.Field(0).Uint())
+		dataField := targetValue.Field(1)
+
+		if variant == 0 && targetType.SszTypeFlags&ssztypes.SszTypeFlagHasNoneVariant != 0 {
+			if !dataField.IsNil() {
+				return 0, sszutils.ErrUnionTypeMismatchFn()
+			}
+			staticSize = 1
+			break
+		}
+
+		variantDesc, ok := targetType.UnionVariants[variant]
+		if !ok {
+			return 0, sszutils.ErrInvalidUnionVariantFn()
+		}
+		if dataField.IsNil() {
+			return 0, sszutils.ErrInvalidUnionVariantFn()
+		}
+		if dataField.Elem().Type() != variantDesc.Type {
+			return 0, sszutils.ErrUnionTypeMismatchFn()
+		}
+
+		dataSize, err := ctx.getSszValueSize(variantDesc, dataField.Elem())
+		if err != nil {
+			return 0, sszutils.ErrorWithPathf(err, "[v:%d]", variant)
+		}
+
+		staticSize = 1 + dataSize
+
 	case ssztypes.SszCompatibleUnionType:
 		// CompatibleUnion: 1 byte for selector + size of the data
 		variant := uint8(targetValue.Field(0).Uint())

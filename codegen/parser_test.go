@@ -1773,8 +1773,128 @@ func TestBuildCompatibleUnionDescriptor(t *testing.T) {
 			t.Errorf("Expected 1 union variant, got %d", len(desc.UnionVariants))
 		}
 		// Variant should be a list type
-		if desc.UnionVariants[0].SszType != ssztypes.SszListType {
-			t.Errorf("Expected SszListType for variant 0, got %v", desc.UnionVariants[0].SszType)
+		if desc.UnionVariants[1].SszType != ssztypes.SszListType {
+			t.Errorf("Expected SszListType for variant 1, got %v", desc.UnionVariants[1].SszType)
+		}
+	})
+}
+
+func TestBuildUnionDescriptor(t *testing.T) {
+	parser := NewParser()
+
+	pkg := types.NewPackage("github.com/pk910/dynamic-ssz", "dynssz")
+
+	// The dynssz.None marker as a go/types named empty struct.
+	noneObj := types.NewTypeName(token.NoPos, pkg, "None", nil)
+	noneType := types.NewNamed(noneObj, types.NewStruct(nil, nil), nil)
+
+	// instantiateUnion builds dynssz.Union[descriptorStruct] as a go/types value.
+	instantiateUnion := func(t *testing.T, descriptorType types.Type) *types.Named {
+		t.Helper()
+		typeParam := types.NewTypeParam(types.NewTypeName(token.NoPos, nil, "T", nil), types.NewInterfaceType(nil, nil))
+		unionObj := types.NewTypeName(token.NoPos, pkg, "Union", nil)
+		variantField := types.NewVar(token.NoPos, nil, "Variant", types.Typ[types.Uint8])
+		dataField := types.NewVar(token.NoPos, nil, "Data", types.NewInterfaceType(nil, nil))
+		unionStruct := types.NewStruct([]*types.Var{variantField, dataField}, []string{"", ""})
+		unionType := types.NewNamed(unionObj, unionStruct, nil)
+		unionType.SetTypeParams([]*types.TypeParam{typeParam})
+		instantiated, err := types.Instantiate(nil, unionType, []types.Type{descriptorType}, false)
+		if err != nil {
+			t.Fatalf("Failed to instantiate Union: %v", err)
+		}
+		namedInst, ok := instantiated.(*types.Named)
+		if !ok {
+			t.Fatalf("Expected *types.Named, got %T", instantiated)
+		}
+		return namedInst
+	}
+
+	buildDesc := func(t *testing.T, fields []*types.Var, tags []string) (*ssztypes.TypeDescriptor, error) {
+		t.Helper()
+		namedInst := instantiateUnion(t, types.NewStruct(fields, tags))
+		desc := &ssztypes.TypeDescriptor{
+			SszType: ssztypes.SszUnionType,
+		}
+		return desc, parser.buildUnionDescriptor(desc, namedInst, namedInst)
+	}
+
+	t.Run("NoneFirstDeclaresEmptyOption", func(t *testing.T) {
+		desc, err := buildDesc(t, []*types.Var{
+			types.NewVar(token.NoPos, nil, "N", noneType),
+			types.NewVar(token.NoPos, nil, "F1", types.Typ[types.Uint32]),
+			types.NewVar(token.NoPos, nil, "F2", types.Typ[types.Uint64]),
+		}, []string{"", "", ""})
+		if err != nil {
+			t.Fatalf("Failed to build Union descriptor: %v", err)
+		}
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasNoneVariant == 0 {
+			t.Error("Expected HasNoneVariant flag to be set")
+		}
+		if len(desc.UnionVariants) != 2 {
+			t.Errorf("Expected 2 union variants, got %d", len(desc.UnionVariants))
+		}
+		if _, ok := desc.UnionVariants[0]; ok {
+			t.Error("The None selector must not carry a variant descriptor")
+		}
+		if desc.UnionVariants[1].SszType != ssztypes.SszUint32Type {
+			t.Errorf("Expected SszUint32Type for variant 1, got %v", desc.UnionVariants[1].SszType)
+		}
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
+			t.Error("Expected dynamic flag to be set")
+		}
+	})
+
+	t.Run("PositionalSelectorsWithoutNone", func(t *testing.T) {
+		desc, err := buildDesc(t, []*types.Var{
+			types.NewVar(token.NoPos, nil, "F1", types.Typ[types.Uint32]),
+			types.NewVar(token.NoPos, nil, "F2", types.Typ[types.Uint64]),
+		}, []string{"", ""})
+		if err != nil {
+			t.Fatalf("Failed to build Union descriptor: %v", err)
+		}
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasNoneVariant != 0 {
+			t.Error("HasNoneVariant must not be set without a None marker")
+		}
+		if len(desc.UnionVariants) != 2 {
+			t.Errorf("Expected 2 union variants, got %d", len(desc.UnionVariants))
+		}
+		if desc.UnionVariants[0].SszType != ssztypes.SszUint32Type {
+			t.Errorf("Expected SszUint32Type for variant 0, got %v", desc.UnionVariants[0].SszType)
+		}
+	})
+
+	t.Run("NoneNotFirstRejected", func(t *testing.T) {
+		_, err := buildDesc(t, []*types.Var{
+			types.NewVar(token.NoPos, nil, "F1", types.Typ[types.Uint32]),
+			types.NewVar(token.NoPos, nil, "N", noneType),
+		}, []string{"", ""})
+		if err == nil || !strings.Contains(err.Error(), "None") {
+			t.Errorf("Expected None placement error, got: %v", err)
+		}
+	})
+
+	t.Run("LoneNoneRejected", func(t *testing.T) {
+		_, err := buildDesc(t, []*types.Var{
+			types.NewVar(token.NoPos, nil, "N", noneType),
+		}, []string{""})
+		if err == nil || !strings.Contains(err.Error(), "None") {
+			t.Errorf("Expected lone-None error, got: %v", err)
+		}
+	})
+
+	t.Run("SszIndexTagRejected", func(t *testing.T) {
+		_, err := buildDesc(t, []*types.Var{
+			types.NewVar(token.NoPos, nil, "F1", types.Typ[types.Uint32]),
+		}, []string{`ssz-index:"1"`})
+		if err == nil || !strings.Contains(err.Error(), "ssz-index") {
+			t.Errorf("Expected ssz-index rejection, got: %v", err)
+		}
+	})
+
+	t.Run("EmptyDescriptorRejected", func(t *testing.T) {
+		_, err := buildDesc(t, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "no fields") {
+			t.Errorf("Expected 'no fields' error, got: %v", err)
 		}
 	})
 }
@@ -2862,5 +2982,42 @@ func TestZeroSizeSliceRejected(t *testing.T) {
 	}
 	if _, err := parser.buildTypeDescriptor(byteSlice, byteSlice, nil, []ssztypes.SszSizeHint{{Size: 0, Expr: "SPEC_X"}}, nil); err != nil {
 		t.Errorf("unexpected error for expression size hint: %v", err)
+	}
+}
+
+// Union selectors assigned via ssz-index must stay inside 1..127; the parser
+// rejects tags outside that range like the reflection type cache does.
+func TestParserUnionSelectorRangeEnforced(t *testing.T) {
+	newUnion := func(tag string) *types.Named {
+		pkg := types.NewPackage("github.com/pk910/dynamic-ssz", "dynssz")
+		typeParam := types.NewTypeParam(types.NewTypeName(token.NoPos, nil, "T", nil), types.NewInterfaceType(nil, nil))
+		unionObj := types.NewTypeName(token.NoPos, pkg, "CompatibleUnion", nil)
+		unionStruct := types.NewStruct([]*types.Var{
+			types.NewField(token.NoPos, nil, "Variant", types.Typ[types.Uint8], false),
+			types.NewField(token.NoPos, nil, "Data", types.NewInterfaceType(nil, nil), false),
+		}, []string{"", ""})
+		unionType := types.NewNamed(unionObj, unionStruct, nil)
+		unionType.SetTypeParams([]*types.TypeParam{typeParam})
+
+		descriptor := types.NewStruct([]*types.Var{
+			types.NewField(token.NoPos, nil, "F1", types.Typ[types.Uint32], false),
+		}, []string{tag})
+		inst, err := types.Instantiate(nil, unionType, []types.Type{descriptor}, false)
+		if err != nil {
+			t.Fatalf("instantiate: %v", err)
+		}
+		named, ok := inst.(*types.Named)
+		if !ok {
+			t.Fatalf("expected *types.Named, got %T", inst)
+		}
+		return named
+	}
+
+	for _, tag := range []string{`ssz-index:"0"`, `ssz-index:"128"`} {
+		named := newUnion(tag)
+		desc := &ssztypes.TypeDescriptor{SszType: ssztypes.SszCompatibleUnionType}
+		if err := NewParser().buildCompatibleUnionDescriptor(desc, named, named); err == nil {
+			t.Errorf("selector tag %s should be rejected", tag)
+		}
 	}
 }

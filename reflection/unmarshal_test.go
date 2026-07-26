@@ -503,7 +503,7 @@ func TestUnmarshalErrors(t *testing.T) {
 				A uint32
 				B uint64
 			}]),
-			data:        []byte{0x00},
+			data:        []byte{0x01},
 			expectedErr: "unexpected end of SSZ",
 		},
 		{

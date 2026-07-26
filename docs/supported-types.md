@@ -234,6 +234,48 @@ Encoding:
 
 The hash tree root matches `List[T, 1]` exactly.
 
+## Union Types
+
+Classic SSZ unions (`Union[type_0, type_1, ...]` from the SSZ specification) are expressed with the generic `dynssz.Union[T]` helper. The descriptor struct `T` lists the variants in order; selectors are the 0-based field positions:
+
+```go
+import dynssz "github.com/pk910/dynamic-ssz"
+
+// Selector = descriptor field position (0-based).
+type PayloadUnion = dynssz.Union[struct {
+    Legacy ExecutionPayload    // selector 0
+    Full   FullPayload         // selector 1
+}]
+
+type Block struct {
+    Slot    uint64
+    Payload PayloadUnion
+}
+```
+
+Declaring `dynssz.None` as the **first** descriptor field makes selector 0 the empty option (`Union[None, type_1, ...]`):
+
+```go
+type MaybePayload = dynssz.Union[struct {
+    None dynssz.None         // selector 0: no value
+    Full ExecutionPayload    // selector 1
+}]
+
+// The zero value {Variant: 0, Data: nil} is the None option.
+// It serializes as the single byte 0x00 and hashes as
+// mix_in_selector(Bytes32(), 0).
+```
+
+Spec rules enforced at descriptor build:
+
+- Selectors are positional; `ssz-index` tags are not allowed
+- `None` is only legal as the first field, and a union declaring it must offer at least one further variant
+- At most 128 variants (selectors above 127 are reserved)
+
+Serialization is `selector byte || serialize(value)`; the hash tree root is `mix_in_selector(hash_tree_root(value), selector)`. Variant fields may carry the usual `ssz-size`/`ssz-max`/`ssz-type` tags.
+
+For the EIP-8016 `CompatibleUnion` flavor (1-based selectors, no None, compatible merkleization), see [Compatible Unions](#compatible-unions-m4).
+
 ## Progressive Types (EIP-7916 & EIP-7495)
 
 ### Progressive Lists (M1)
@@ -284,10 +326,11 @@ Type-safe variant types using struct descriptor:
 ```go
 import dynssz "github.com/pk910/dynamic-ssz"
 
-// Define union using struct descriptor (field order = variant index)
+// Define union using a struct descriptor. Selectors follow field order
+// starting at 1 (EIP-8016 allows 1..127); ssz-index tags assign them explicitly.
 type PayloadUnion = dynssz.CompatibleUnion[struct {
-    ExecutionPayload            // Variant 0
-    ExecutionPayloadWithBlobs   // Variant 1
+    ExecutionPayload            // Variant 1
+    ExecutionPayloadWithBlobs   // Variant 2
 }]
 
 // Use in container
@@ -300,7 +343,7 @@ type BeaconBlock struct {
 block := BeaconBlock{
     Slot: 123,
     Payload: PayloadUnion{
-        Variant: 0,  // Use ExecutionPayload
+        Variant: 1,  // Use ExecutionPayload
         Data: ExecutionPayload{...},
     },
 }

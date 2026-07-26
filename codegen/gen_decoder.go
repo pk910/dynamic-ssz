@@ -392,7 +392,7 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 	case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType:
 		return ctx.unmarshalBitlist(desc, varName, typePath, indent)
 
-	case ssztypes.SszCompatibleUnionType:
+	case ssztypes.SszUnionType, ssztypes.SszCompatibleUnionType:
 		return ctx.unmarshalUnion(desc, varName, typePath, indent)
 
 	case ssztypes.SszCustomType:
@@ -1108,6 +1108,13 @@ func (ctx *decoderContext) unmarshalUnion(desc *ssztypes.TypeDescriptor, varName
 	ctx.appendCode(indent, "if err != nil {\n\treturn %s\n}\n", typePath.getErrorWith("err"))
 	ctx.appendCode(indent, "%s.Variant = selector\n", varName)
 	ctx.appendCode(indent, "switch selector {\n")
+
+	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasNoneVariant != 0 {
+		// The None option carries no value, so its region is the bare selector
+		// byte (trailing bytes surface through the surrounding region checks).
+		ctx.appendCode(indent, "case 0:\n")
+		ctx.appendCode(indent, "\t%s.Data = nil\n", varName)
+	}
 
 	variants := make([]int, 0, len(desc.UnionVariants))
 	for variant := range desc.UnionVariants {

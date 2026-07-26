@@ -7,7 +7,7 @@
 // - M1: ProgressiveList (EIP-7916)
 // - M2: ProgressiveBitlist (EIP-7916)
 // - M3: ProgressiveContainer (EIP-7495)
-// - M4: CompatibleUnion (EIP-7495)
+// - M4: CompatibleUnion (EIP-8016)
 
 package main
 
@@ -153,14 +153,14 @@ func main() {
 		Timestamp     uint64       `ssz-index:"55"`
 	}
 
-	// Create execution payload without blobs (variant 0)
+	// Create execution payload without blobs (variant 1)
 	basicPayload := ExecutionPayload{
 		ParentHash:   [32]byte{11, 12, 13, 14, 15},
 		FeeRecipient: [20]byte{21, 22, 23, 24, 25},
 		GasLimit:     15000000,
 	}
 
-	// Create execution payload with blobs (variant 1)
+	// Create execution payload with blobs (variant 2)
 	blobPayload := ExecutionPayloadWithBlobs{
 		ParentHash:   [32]byte{31, 32, 33, 34, 35},
 		FeeRecipient: [20]byte{41, 42, 43, 44, 45},
@@ -177,7 +177,7 @@ func main() {
 		ProposerIndex: 11111,
 		ParentRoot:    [32]byte{51, 52, 53, 54, 55},
 		StateRoot:     [32]byte{61, 62, 63, 64, 65},
-		ExecutionData: PayloadUnion{Variant: 0, Data: basicPayload},
+		ExecutionData: PayloadUnion{Variant: 1, Data: basicPayload},
 		Timestamp:     1234567890,
 	}
 
@@ -186,7 +186,7 @@ func main() {
 		ProposerIndex: 22222,
 		ParentRoot:    [32]byte{71, 72, 73, 74, 75},
 		StateRoot:     [32]byte{81, 82, 83, 84, 85},
-		ExecutionData: PayloadUnion{Variant: 1, Data: blobPayload},
+		ExecutionData: PayloadUnion{Variant: 2, Data: blobPayload},
 		Timestamp:     1234567891,
 	}
 
@@ -212,14 +212,14 @@ func main() {
 		log.Fatal("Failed to compute blob block root:", err)
 	}
 
-	fmt.Printf("   - Block with Basic Payload (variant 0): %d bytes, root: %x\n", len(basicBlockEncoded), basicBlockRoot)
-	fmt.Printf("   - Block with Blob Payload (variant 1): %d bytes, root: %x\n", len(blobBlockEncoded), blobBlockRoot)
+	fmt.Printf("   - Block with Basic Payload (variant 1): %d bytes, root: %x\n", len(basicBlockEncoded), basicBlockRoot)
+	fmt.Printf("   - Block with Blob Payload (variant 2): %d bytes, root: %x\n", len(blobBlockEncoded), blobBlockRoot)
 	fmt.Printf("   - Union embedded in progressive container with ssz-index:\"28\"\n")
 	fmt.Printf("   - Type-safe variants with automatic selector assignment\n")
 
 	// Demonstrate union serialization details
-	union1 := PayloadUnion{Variant: 0, Data: basicPayload}
-	union2 := PayloadUnion{Variant: 1, Data: blobPayload}
+	union1 := PayloadUnion{Variant: 1, Data: basicPayload}
+	union2 := PayloadUnion{Variant: 2, Data: blobPayload}
 
 	unionData1, _ := ds.MarshalSSZ(&union1)
 	unionData2, _ := ds.MarshalSSZ(&union2)

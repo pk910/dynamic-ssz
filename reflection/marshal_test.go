@@ -960,7 +960,7 @@ func TestSizeSSZCompatibleUnion(t *testing.T) {
 	input := struct {
 		Field TestUnion
 	}{
-		TestUnion{Variant: 0, Data: uint32(42)},
+		TestUnion{Variant: 1, Data: uint32(42)},
 	}
 
 	size, err := dynssz.SizeSSZ(input)
@@ -1746,13 +1746,13 @@ func TestMarshalUnionMarshalTypeError(t *testing.T) {
 	}
 
 	unionDesc := typeDesc.ContainerDesc.Fields[1].Type
-	variantDesc := unionDesc.UnionVariants[0]
+	variantDesc := unionDesc.UnionVariants[1]
 	variantDesc.SszType = ssztypes.SszCustomType
 	variantDesc.SszCompatFlags = 0
 
 	input := Container{
 		Field0: 0x1234,
-		Field1: TestUnion{Variant: 0, Data: UnionVariant{Field1: 42}},
+		Field1: TestUnion{Variant: 1, Data: UnionVariant{Field1: 42}},
 	}
 	_, err = dynssz.MarshalSSZTo(input, make([]byte, 0, 100))
 	if err == nil {
@@ -1997,7 +1997,7 @@ func TestMarshalDirectValidationErrors(t *testing.T) {
 			U U
 		}
 		enc := sszutils.NewBufferEncoder(make([]byte, 0, 64))
-		err := ctx.MarshalSSZ(fieldDesc(C{}), reflect.ValueOf(U{Variant: 0, Data: nil}), enc)
+		err := ctx.MarshalSSZ(fieldDesc(C{}), reflect.ValueOf(U{Variant: 1, Data: nil}), enc)
 		if err == nil {
 			t.Fatal("expected nil data error")
 		}
@@ -2012,7 +2012,7 @@ func TestMarshalDirectValidationErrors(t *testing.T) {
 			U U
 		}
 		enc := sszutils.NewBufferEncoder(make([]byte, 0, 64))
-		err := ctx.MarshalSSZ(fieldDesc(C{}), reflect.ValueOf(U{Variant: 0, Data: "wrong"}), enc)
+		err := ctx.MarshalSSZ(fieldDesc(C{}), reflect.ValueOf(U{Variant: 1, Data: "wrong"}), enc)
 		if err == nil {
 			t.Fatal("expected type mismatch error")
 		}

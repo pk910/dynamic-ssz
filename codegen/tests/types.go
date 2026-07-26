@@ -451,8 +451,48 @@ var ProgressiveTypes_Payload = ProgressiveTypes{
 		F2 [2][]uint8 `ssz-size:"2,5"`
 		F3 [4]*SimpleTypesWithSpecs_C1
 	}]{
-		Variant: 0,
+		Variant: 1,
 		Data:    uint32(0x12345678),
+	},
+}
+
+// ClassicUnionTypes exercises classic spec unions (dynssz.Union) through the
+// generated code: a None-declaring union with the empty option selected (U1),
+// the same union type with its dynamic variant selected (U2), and a union
+// without None whose selector 0 carries a value (U3).
+type ClassicUnionTypes struct {
+	U1 dynssz.Union[struct {
+		N  dynssz.None
+		F1 uint32
+		F2 []uint8 `ssz-max:"16"`
+	}]
+	U2 dynssz.Union[struct {
+		N  dynssz.None
+		F1 uint32
+		F2 []uint8 `ssz-max:"16"`
+	}]
+	U3 dynssz.Union[struct {
+		F1 uint64
+		F2 [2][]uint16 `ssz-size:"2,5"`
+	}]
+}
+
+var ClassicUnionTypes_Payload = ClassicUnionTypes{
+	// U1 stays zero-valued: Variant 0 with nil Data is the None option.
+	U2: dynssz.Union[struct {
+		N  dynssz.None
+		F1 uint32
+		F2 []uint8 `ssz-max:"16"`
+	}]{
+		Variant: 2,
+		Data:    []uint8{1, 2, 3},
+	},
+	U3: dynssz.Union[struct {
+		F1 uint64
+		F2 [2][]uint16 `ssz-size:"2,5"`
+	}]{
+		Variant: 0,
+		Data:    uint64(0x1122334455667788),
 	},
 }
 
@@ -1113,7 +1153,7 @@ var ViewTypes4_Payload = ViewTypes4_Base{
 		F1 uint32
 		F2 uint64
 	}]{
-		Variant: 0,
+		Variant: 1,
 		Data:    uint32(0x12345678),
 	},
 	W1: dynssz.TypeWrapper[struct {
@@ -1156,7 +1196,7 @@ var CoverageTypes4_Payload = CoverageTypes4{
 		F2 uint64
 		F3 []uint16 `ssz-size:"4"`
 	}]{
-		Variant: 0,
+		Variant: 1,
 		Data:    uint32(0x12345678),
 	},
 	U1V1: dynssz.CompatibleUnion[struct {
@@ -1164,7 +1204,7 @@ var CoverageTypes4_Payload = CoverageTypes4{
 		F2 uint64
 		F3 []uint16 `ssz-size:"4"`
 	}]{
-		Variant: 1,
+		Variant: 2,
 		Data:    uint64(0xdeadbeef),
 	},
 	U1V2: dynssz.CompatibleUnion[struct {
@@ -1172,7 +1212,7 @@ var CoverageTypes4_Payload = CoverageTypes4{
 		F2 uint64
 		F3 []uint16 `ssz-size:"4"`
 	}]{
-		Variant: 2,
+		Variant: 3,
 		Data:    []uint16{1, 2, 3, 4},
 	},
 	Opt3: &covU16,
@@ -1362,12 +1402,50 @@ var UnionDynVariant_Payload = UnionDynVariant{
 	U: dynssz.CompatibleUnion[struct {
 		F1 uint32
 		F2 []byte `ssz-max:"16"`
-	}]{Variant: 1, Data: []byte{1, 2, 3}},
+	}]{Variant: 2, Data: []byte{1, 2, 3}},
 	L: []byte{1, 4, 5},
 }
 
+// ClassicUnionDynVariant has a classic union (None declared first) with a
+// variable-size variant followed by another dynamic field: the None region
+// must be exactly the bare selector byte, and a truncated union region must
+// fail cleanly on the stream path.
+type ClassicUnionDynVariant struct {
+	U dynssz.Union[struct {
+		N  dynssz.None
+		F1 uint32
+		F2 []byte `ssz-max:"16"`
+	}]
+	L []byte `ssz-max:"16"`
+}
+
+var ClassicUnionDynVariant_Payload = ClassicUnionDynVariant{
+	U: dynssz.Union[struct {
+		N  dynssz.None
+		F1 uint32
+		F2 []byte `ssz-max:"16"`
+	}]{Variant: 2, Data: []byte{1, 2, 3}},
+	L: []byte{1, 4, 5},
+}
+
+// ClassicUnionPtrVariant covers a classic union with a pointer variant — the
+// generated decoder must allocate the pointer before writing through it.
+type ClassicUnionPtrVariant struct {
+	U dynssz.Union[struct {
+		V1 uint64
+		V2 *uint64
+	}]
+}
+
+var ClassicUnionPtrVariant_Payload = func() ClassicUnionPtrVariant {
+	p := ClassicUnionPtrVariant{}
+	p.U.Variant = 1
+	p.U.Data = &ptrUnionVal
+	return p
+}()
+
 // UnionTaggedSelectors assigns explicit 1-based selector values via ssz-index
-// tags on the union variant fields (EIP-7495 conformant numbering).
+// tags on the union variant fields (EIP-8016 conformant numbering).
 type UnionTaggedSelectors struct {
 	U dynssz.CompatibleUnion[struct {
 		F1 uint32 `ssz-index:"1"`
@@ -1437,7 +1515,7 @@ var ptrUnionVal = uint64(0xdeadbeef)
 
 var PtrUnionVariant_Payload = func() PtrUnionVariant {
 	p := PtrUnionVariant{}
-	p.U.Variant = 1
+	p.U.Variant = 2
 	p.U.Data = &ptrUnionVal
 	p.W.Data = &ptrUnionVal
 	return p
@@ -1455,6 +1533,15 @@ var _ = sszutils.Annotate[TopVecOfVar](`ssz-size:"3" ssz-max:"?,8"`)
 // UnionSamePkgVariant uses a same-package named type as a union variant.
 type UnionSamePkgVariant struct {
 	U dynssz.CompatibleUnion[struct {
+		V1 uint64
+		V2 SimpleTypes1_C1
+	}]
+}
+
+// ClassicUnionSamePkgVariant uses a same-package named type as a classic
+// union variant.
+type ClassicUnionSamePkgVariant struct {
+	U dynssz.Union[struct {
 		V1 uint64
 		V2 SimpleTypes1_C1
 	}]
@@ -1495,6 +1582,20 @@ type WrapUnionField struct {
 	}, dynssz.CompatibleUnion[struct {
 		A uint32
 		B []byte `ssz-max:"4"`
+	}]] `ssz-type:"wrapper"`
+}
+
+// WrapClassicUnionField wraps a classic Union; the streaming size closure
+// must not collide with its parameter name.
+type WrapClassicUnionField struct {
+	W dynssz.TypeWrapper[struct {
+		Data dynssz.Union[struct {
+			N dynssz.None
+			A uint32
+		}]
+	}, dynssz.Union[struct {
+		N dynssz.None
+		A uint32
 	}]] `ssz-type:"wrapper"`
 }
 

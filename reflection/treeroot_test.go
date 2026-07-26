@@ -1089,7 +1089,7 @@ func TestCompatibleUnionHashErrors(t *testing.T) {
 			Field1 TestUnion
 		}{
 			0x1234,
-			TestUnion{Variant: 0, Data: nil}, // Data is nil
+			TestUnion{Variant: 1, Data: nil}, // Data is nil
 		}
 		_, err := dynssz.HashTreeRoot(input)
 		if err == nil {
@@ -1107,7 +1107,7 @@ func TestCompatibleUnionHashErrors(t *testing.T) {
 			Field1 TestUnion
 		}{
 			0x1234,
-			TestUnion{Variant: 0, Data: complex64(1 + 2i)},
+			TestUnion{Variant: 1, Data: complex64(1 + 2i)},
 		}
 		_, err := dynssz.HashTreeRoot(input)
 		if err == nil {
@@ -1868,13 +1868,13 @@ func TestCompatibleUnionBuildRootError(t *testing.T) {
 	}
 
 	unionDesc := typeDesc.ContainerDesc.Fields[1].Type
-	variantDesc := unionDesc.UnionVariants[0]
+	variantDesc := unionDesc.UnionVariants[1]
 	variantDesc.SszType = ssztypes.SszCustomType
 	variantDesc.SszCompatFlags = 0
 
 	input := Container{
 		Field0: 0x1234,
-		Field1: TestUnion{Variant: 0, Data: UnionVariant{Field1: 42}},
+		Field1: TestUnion{Variant: 1, Data: UnionVariant{Field1: 42}},
 	}
 	_, err = dynssz.HashTreeRoot(input)
 	if err == nil {

@@ -112,6 +112,12 @@ jobs:
     - name: Unpack compat-tests archives
       run: make unpack-compat-tests
 
+    - name: Run codegen test suite without generated code
+      # The gen_*.go files are gitignored, so before go generate runs the
+      # suite exercises the pure reflection engine — the state fresh checkouts
+      # and the big-endian job see. It must pass in both modes.
+      run: go test ./codegen/tests/...
+
     - name: Run codegen tests with coverage
       run: |
         mkdir coverage

@@ -332,7 +332,7 @@ func (ctx *marshalContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 	case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType:
 		return ctx.marshalBitlist(desc, varName, typePath, indent)
 
-	case ssztypes.SszCompatibleUnionType:
+	case ssztypes.SszUnionType, ssztypes.SszCompatibleUnionType:
 		return ctx.marshalUnion(desc, varName, typePath, indent)
 
 	case ssztypes.SszCustomType:
@@ -926,6 +926,14 @@ func (ctx *marshalContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName
 func (ctx *marshalContext) marshalUnion(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	ctx.appendCode(indent, "dst = append(dst, %s.Variant)\n", varName)
 	ctx.appendCode(indent, "switch %s.Variant {\n", varName)
+
+	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasNoneVariant != 0 {
+		// The None option carries no value and serializes as the bare selector.
+		ctx.appendCode(indent, "case 0:\n")
+		ctx.appendCode(indent, "\tif %s.Data != nil {\n", varName)
+		ctx.appendCode(indent, "\t\treturn nil, %s\n", typePath.getErrorWith(errCodeUnionTypeMismatch))
+		ctx.appendCode(indent, "\t}\n")
+	}
 
 	variants := make([]int, 0, len(desc.UnionVariants))
 	for variant := range desc.UnionVariants {

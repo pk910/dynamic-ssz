@@ -763,6 +763,11 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		if err != nil {
 			return nil, err
 		}
+	case SszUnionType:
+		err := tc.buildUnionDescriptor(desc, runtimeType, schemaType)
+		if err != nil {
+			return nil, err
+		}
 	case SszCustomType:
 		// A custom type serializes entirely through its own methods, so its Go
 		// structure is never traversed and no child descriptors are built. It is
@@ -1474,6 +1479,70 @@ func (tc *TypeCache) buildCompatibleUnionDescriptor(desc *TypeDescriptor, runtim
 	}
 
 	// Build type descriptors for each variant using schema for layout, runtime for data
+	for variantIndex, schemaInfo := range schemaVariantInfo {
+		var runtimeVariantType reflect.Type
+		if isViewDescriptor {
+			var ok bool
+			runtimeVariantType, ok = runtimeVariantMap[schemaInfo.Name]
+			if !ok {
+				return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "runtime union missing variant %q defined in schema", schemaInfo.Name)
+			}
+		} else {
+			runtimeVariantType = schemaInfo.Type
+		}
+
+		variantDesc, err := tc.getTypeDescriptor(runtimeVariantType, schemaInfo.Type, schemaInfo.SizeHints, schemaInfo.MaxSizeHints, schemaInfo.TypeHints)
+		if err != nil {
+			return sszutils.ErrorWithPathf(err, "(variant:%d)", variantIndex)
+		}
+
+		desc.UnionVariants[variantIndex] = variantDesc
+	}
+
+	return nil
+}
+
+// buildUnionDescriptor builds a descriptor for classic spec unions with
+// runtime/schema pairing. Selectors are the descriptor struct's 0-based field
+// positions; a None marker declared first makes selector 0 the empty option
+// (recorded via SszTypeFlagHasNoneVariant, with no variant entry).
+func (tc *TypeCache) buildUnionDescriptor(desc *TypeDescriptor, runtimeType, schemaType reflect.Type) error {
+	// A union is always dynamic size (1 selector byte + variable data).
+	desc.Size = 0
+	desc.SszTypeFlags |= SszTypeFlagIsDynamic
+
+	schemaDescriptorType, err := tc.extractGenericTypeParameter(schemaType)
+	if err != nil {
+		return err
+	}
+
+	schemaVariantInfo, hasNone, err := extractClassicUnionDescriptorInfo(schemaDescriptorType, tc.specs)
+	if err != nil {
+		return sszutils.ErrorWithPath(err, "(union)")
+	}
+	if hasNone {
+		desc.SszTypeFlags |= SszTypeFlagHasNoneVariant
+	}
+
+	isViewDescriptor := runtimeType != schemaType
+
+	var runtimeVariantMap map[string]reflect.Type
+	if isViewDescriptor {
+		runtimeDescriptorType, err := tc.extractGenericTypeParameter(runtimeType)
+		if err != nil {
+			return sszutils.ErrorWithPath(err, "(union)")
+		}
+		runtimeVariantInfo, _, err := extractClassicUnionDescriptorInfo(runtimeDescriptorType, tc.specs)
+		if err != nil {
+			return sszutils.ErrorWithPath(err, "(union)")
+		}
+		runtimeVariantMap = make(map[string]reflect.Type, len(runtimeVariantInfo))
+		for _, info := range runtimeVariantInfo {
+			runtimeVariantMap[info.Name] = info.Type
+		}
+	}
+
+	desc.UnionVariants = make(map[uint8]*TypeDescriptor, len(schemaVariantInfo))
 	for variantIndex, schemaInfo := range schemaVariantInfo {
 		var runtimeVariantType reflect.Type
 		if isViewDescriptor {

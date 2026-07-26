@@ -410,11 +410,60 @@ func (w *TypeWrapper[D, T]) GetDescriptorType() reflect.Type
 
 See [Type Wrapper](type-wrapper.md) for usage details.
 
+## Union API
+
+### Union[T]
+
+Generic classic SSZ union type (`Union[type_0, type_1, ...]` from the SSZ specification).
+
+```go
+type Union[T any] struct {
+    Variant uint8
+    Data    interface{}
+}
+```
+
+**Type Parameters**:
+- `T` - Descriptor struct defining union variants as fields. Selectors are the 0-based field positions; `ssz-index` tags are not allowed and selectors above 127 are reserved.
+
+**Constructor**:
+```go
+func NewUnion[T any](variantIndex uint8, data interface{}) (*Union[T], error)
+```
+
+**Usage**:
+```go
+type PayloadUnion = dynssz.Union[struct {
+    Legacy ExecutionPayload // selector 0
+    Full   FullPayload      // selector 1
+}]
+
+payload := PayloadUnion{
+    Variant: 1,
+    Data: FullPayload{...},
+}
+```
+
+### None
+
+Marker type declaring the empty option of a classic union. Declared as the first descriptor field, it makes selector 0 the None variant (`{Variant: 0, Data: nil}`, serialized as the single byte `0x00`):
+
+```go
+type None struct{}
+```
+
+```go
+type MaybePayload = dynssz.Union[struct {
+    None dynssz.None      // selector 0: no value
+    Full ExecutionPayload // selector 1
+}]
+```
+
 ## Compatible Union API
 
 ### CompatibleUnion[T]
 
-Generic union type for variant values (EIP-7495).
+Generic union type for variant values (EIP-8016).
 
 ```go
 type CompatibleUnion[T any] struct {
@@ -424,7 +473,7 @@ type CompatibleUnion[T any] struct {
 ```
 
 **Type Parameters**:
-- `T` - Descriptor struct defining union variants as fields (field order = variant index)
+- `T` - Descriptor struct defining union variants as fields. Selectors follow field order starting at 1 (EIP-8016 allows 1..127); `ssz-index` tags assign them explicitly.
 
 **Constructor**:
 ```go
@@ -439,7 +488,7 @@ type PayloadUnion = dynssz.CompatibleUnion[struct {
 }]
 
 payload := PayloadUnion{
-    Variant: 0,
+    Variant: 1,
     Data: ExecutionPayload{...},
 }
 ```

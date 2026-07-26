@@ -321,7 +321,7 @@ func TestSizeSSZErrors(t *testing.T) {
 			name: "invalid_dynamic_type_in_union",
 			input: CompatibleUnion[struct {
 				V1 InvalidDynamicType
-			}]{Variant: 0, Data: InvalidDynamicType{}},
+			}]{Variant: 1, Data: InvalidDynamicType{}},
 			expectedErr: "unknown type",
 		},
 		{

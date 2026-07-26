@@ -27,6 +27,7 @@ const (
 	SszTypeFlagHasSizeExpr                            // Whether this type or any of its nested types uses a dynamic expression to calculate the size or max size
 	SszTypeFlagHasMaxExpr                             // Whether this type or any of its nested types uses a dynamic expression to calculate the max size
 	SszTypeFlagHasBitSize                             // Whether the type has a bit size tag
+	SszTypeFlagHasNoneVariant                         // Whether a classic union declares the None option at selector 0
 )
 
 // SszCompatFlag is a flag indicating whether a type implements a specific SSZ compatibility interface

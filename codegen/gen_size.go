@@ -294,7 +294,7 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 	case ssztypes.SszListType, ssztypes.SszBitlistType, ssztypes.SszProgressiveListType, ssztypes.SszProgressiveBitlistType:
 		return ctx.sizeList(desc, varName, sizeVar, indent)
 
-	case ssztypes.SszCompatibleUnionType:
+	case ssztypes.SszUnionType, ssztypes.SszCompatibleUnionType:
 		return ctx.sizeUnion(desc, varName, sizeVar, indent)
 
 	case ssztypes.SszCustomType:
@@ -610,6 +610,11 @@ func (ctx *sizeContext) sizeUnion(desc *ssztypes.TypeDescriptor, varName, sizeVa
 	ctx.appendCode(indent, "%s += 1 // Union selector\n", sizeVar)
 	ctx.appendCode(indent, "switch %s.Variant {\n", varName)
 
+	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasNoneVariant != 0 {
+		// The None option carries no value beyond the selector byte.
+		ctx.appendCode(indent, "case 0:\n")
+	}
+
 	variants := make([]int, 0, len(desc.UnionVariants))
 	for variant := range desc.UnionVariants {
 		variants = append(variants, int(variant))
@@ -634,6 +639,12 @@ func (ctx *sizeContext) sizeUnion(desc *ssztypes.TypeDescriptor, varName, sizeVa
 			ctx.appendCode(indent, "\t%s += %d\n", sizeVar, variantDesc.Size)
 		}
 	}
+
+	// An unknown selector cannot be sized; report 0 like the mismatched-data
+	// branches above instead of returning a plausible-looking partial size for
+	// a value the marshalers reject.
+	ctx.appendCode(indent, "default:\n")
+	ctx.appendCode(indent, "\treturn 0\n")
 
 	ctx.appendCode(indent, "}\n")
 

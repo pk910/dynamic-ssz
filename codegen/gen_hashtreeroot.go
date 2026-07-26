@@ -344,7 +344,7 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 	case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType:
 		return ctx.hashBitlist(desc, varName, typePath, indent)
 
-	case ssztypes.SszCompatibleUnionType:
+	case ssztypes.SszUnionType, ssztypes.SszCompatibleUnionType:
 		return ctx.hashUnion(desc, varName, typePath, indent)
 
 	case ssztypes.SszCustomType:
@@ -935,6 +935,16 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varNa
 func (ctx *hashTreeRootContext) hashUnion(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	ctx.appendCode(indent, "idx := hh.StartTree(sszutils.TreeTypeNone)\n")
 	ctx.appendCode(indent, "switch %s.Variant {\n", varName)
+
+	if desc.SszTypeFlags&ssztypes.SszTypeFlagHasNoneVariant != 0 {
+		// The None option contributes a zero chunk as its data root:
+		// mix_in_selector(Bytes32(), 0).
+		ctx.appendCode(indent, "case 0:\n")
+		ctx.appendCode(indent, "\tif %s.Data != nil {\n", varName)
+		ctx.appendCode(indent, "\t\treturn %s\n", typePath.getErrorWith(errCodeUnionTypeMismatch))
+		ctx.appendCode(indent, "\t}\n")
+		ctx.appendCode(indent, "\thh.PutBytes(sszutils.ZeroBytes()[:32])\n")
+	}
 
 	variants := make([]int, 0, len(desc.UnionVariants))
 	for variant := range desc.UnionVariants {
