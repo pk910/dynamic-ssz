@@ -1406,6 +1406,44 @@ var UnionDynVariant_Payload = UnionDynVariant{
 	L: []byte{1, 4, 5},
 }
 
+// ClassicUnionDynVariant has a classic union (None declared first) with a
+// variable-size variant followed by another dynamic field: the None region
+// must be exactly the bare selector byte, and a truncated union region must
+// fail cleanly on the stream path.
+type ClassicUnionDynVariant struct {
+	U dynssz.Union[struct {
+		N  dynssz.None
+		F1 uint32
+		F2 []byte `ssz-max:"16"`
+	}]
+	L []byte `ssz-max:"16"`
+}
+
+var ClassicUnionDynVariant_Payload = ClassicUnionDynVariant{
+	U: dynssz.Union[struct {
+		N  dynssz.None
+		F1 uint32
+		F2 []byte `ssz-max:"16"`
+	}]{Variant: 2, Data: []byte{1, 2, 3}},
+	L: []byte{1, 4, 5},
+}
+
+// ClassicUnionPtrVariant covers a classic union with a pointer variant — the
+// generated decoder must allocate the pointer before writing through it.
+type ClassicUnionPtrVariant struct {
+	U dynssz.Union[struct {
+		V1 uint64
+		V2 *uint64
+	}]
+}
+
+var ClassicUnionPtrVariant_Payload = func() ClassicUnionPtrVariant {
+	p := ClassicUnionPtrVariant{}
+	p.U.Variant = 1
+	p.U.Data = &ptrUnionVal
+	return p
+}()
+
 // UnionTaggedSelectors assigns explicit 1-based selector values via ssz-index
 // tags on the union variant fields (EIP-8016 conformant numbering).
 type UnionTaggedSelectors struct {
@@ -1500,6 +1538,15 @@ type UnionSamePkgVariant struct {
 	}]
 }
 
+// ClassicUnionSamePkgVariant uses a same-package named type as a classic
+// union variant.
+type ClassicUnionSamePkgVariant struct {
+	U dynssz.Union[struct {
+		V1 uint64
+		V2 SimpleTypes1_C1
+	}]
+}
+
 // PtrPrimitiveList is a list of pointer-to-primitive; the bulk uint64
 // fast-path must not fire for pointer elements.
 type PtrPrimitiveList struct {
@@ -1535,6 +1582,20 @@ type WrapUnionField struct {
 	}, dynssz.CompatibleUnion[struct {
 		A uint32
 		B []byte `ssz-max:"4"`
+	}]] `ssz-type:"wrapper"`
+}
+
+// WrapClassicUnionField wraps a classic Union; the streaming size closure
+// must not collide with its parameter name.
+type WrapClassicUnionField struct {
+	W dynssz.TypeWrapper[struct {
+		Data dynssz.Union[struct {
+			N dynssz.None
+			A uint32
+		}]
+	}, dynssz.Union[struct {
+		N dynssz.None
+		A uint32
 	}]] `ssz-type:"wrapper"`
 }
 

@@ -519,6 +519,14 @@ func TestUnionDataTypeMismatch(t *testing.T) {
 	dynBad.U.Variant = 1 // expects []uint64
 	dynBad.U.Data = uint32(42)
 	check("size-dynvariant", func() error { _, e := ds.MarshalSSZ(dynBad); return e })
+
+	// A valid selector with nil data exercises the size- and HTR-path nil
+	// guards directly (the zero value stops earlier at the unassigned
+	// selector 0).
+	nilData := &T{}
+	nilData.U.Variant = 1
+	check("size-nildata", func() error { _, e := ds.MarshalSSZ(nilData); return e })
+	check("htr-nildata", func() error { _, e := ds.HashTreeRoot(nilData); return e })
 }
 
 // Union variant fields may carry ssz-index tags to assign explicit selector

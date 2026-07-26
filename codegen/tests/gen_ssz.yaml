@@ -113,6 +113,10 @@ types:
     output: gen_divergence.go
   - name: PtrUnionVariant
     output: gen_divergence.go
+  - name: ClassicUnionDynVariant
+    output: gen_divergence.go
+  - name: ClassicUnionPtrVariant
+    output: gen_divergence.go
   - name: TopLevelBitlist
     output: gen_toplevel.go
   - name: TopLevelProgBitlist
@@ -133,6 +137,8 @@ types:
     output: gen_compilecorrectness.go
   - name: UnionSamePkgVariant
     output: gen_compilecorrectness.go
+  - name: ClassicUnionSamePkgVariant
+    output: gen_compilecorrectness.go
   - name: PtrPrimitiveList
     output: gen_compilecorrectness.go
   - name: FixedVecPtrStr
@@ -144,6 +150,8 @@ types:
   - name: PtrDynCollectionField
     output: gen_compilecorrectness.go
   - name: WrapUnionField
+    output: gen_compilecorrectness.go
+  - name: WrapClassicUnionField
     output: gen_compilecorrectness.go
   - name: ExcludedFields
     output: gen_compilecorrectness.go

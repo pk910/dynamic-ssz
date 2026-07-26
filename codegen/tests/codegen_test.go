@@ -1108,6 +1108,94 @@ func TestCodegenUnionTaggedSelectors(t *testing.T) {
 	}
 }
 
+// Classic union wire semantics through the generated code: the None option
+// round-trips as the bare selector byte, trailing bytes after it and
+// out-of-range selectors are rejected, and a truncated union region fails
+// cleanly on both decode paths.
+func TestCodegenClassicUnionWireFormat(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+
+	testCodegenPayloadByReflection(t, ClassicUnionDynVariant_Payload, nil)
+
+	// The zero-valued union is the None option: its region is the bare
+	// selector byte 0. Layout: offsets (8) + U region + L region.
+	none := ClassicUnionDynVariant{L: []byte{7}}
+	enc, err := ds.MarshalSSZ(&none)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Equal(enc, []byte{8, 0, 0, 0, 9, 0, 0, 0, 0, 7}) {
+		t.Fatalf("unexpected None encoding: %x", enc)
+	}
+
+	var back ClassicUnionDynVariant
+	if err := ds.UnmarshalSSZ(&back, enc); err != nil {
+		t.Fatalf("buffer unmarshal: %v", err)
+	}
+	if back.U.Variant != 0 || back.U.Data != nil || !bytes.Equal(back.L, []byte{7}) {
+		t.Fatalf("buffer None roundtrip mismatch: %+v", back)
+	}
+	var back2 ClassicUnionDynVariant
+	if err := ds.UnmarshalSSZReader(&back2, bytes.NewReader(enc), len(enc)); err != nil {
+		t.Fatalf("stream unmarshal: %v", err)
+	}
+	if back2.U.Variant != 0 || back2.U.Data != nil {
+		t.Fatalf("stream None roundtrip mismatch: %+v", back2)
+	}
+
+	reject := func(name string, in []byte) {
+		t.Run(name, func(t *testing.T) {
+			var a ClassicUnionDynVariant
+			if err := ds.UnmarshalSSZ(&a, in); err == nil {
+				t.Errorf("buffer UnmarshalSSZ accepted %x", in)
+			}
+			var b ClassicUnionDynVariant
+			if err := ds.UnmarshalSSZReader(&b, bytes.NewReader(in), len(in)); err == nil {
+				t.Errorf("stream UnmarshalSSZReader accepted %x", in)
+			}
+		})
+	}
+
+	// The None region must be exactly the selector byte.
+	reject("trailingAfterNone", []byte{8, 0, 0, 0, 10, 0, 0, 0, 0, 99, 7})
+	// A selector without a declared variant is rejected.
+	reject("outOfRangeSelector", []byte{8, 0, 0, 0, 9, 0, 0, 0, 9, 7})
+	// An empty union region has no selector byte; the stream decoder must not
+	// read it from the next region.
+	reject("emptyUnionRegion", []byte{8, 0, 0, 0, 8, 0, 0, 0, 7})
+}
+
+// A generated decoder must allocate a classic union's pointer variant before
+// writing through it; decoding valid bytes must round-trip rather than
+// nil-deref.
+func TestCodegenClassicUnionPtrVariant(t *testing.T) {
+	testCodegenPayloadByReflection(t, ClassicUnionPtrVariant_Payload, nil)
+
+	ds := dynssz.NewDynSsz(nil)
+	enc, err := ds.MarshalSSZ(&ClassicUnionPtrVariant_Payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var buf ClassicUnionPtrVariant
+	if err := ds.UnmarshalSSZ(&buf, enc); err != nil {
+		t.Fatalf("buffer unmarshal: %v", err)
+	}
+	uv, ok := buf.U.Data.(*uint64)
+	if !ok || uv == nil || *uv != ptrUnionVal {
+		t.Fatalf("buffer roundtrip mismatch: %+v", buf)
+	}
+
+	var strm ClassicUnionPtrVariant
+	if err := ds.UnmarshalSSZReader(&strm, bytes.NewReader(enc), len(enc)); err != nil {
+		t.Fatalf("stream unmarshal: %v", err)
+	}
+	sv, ok := strm.U.Data.(*uint64)
+	if !ok || sv == nil || *sv != ptrUnionVal {
+		t.Fatalf("stream roundtrip mismatch: %+v", strm)
+	}
+}
+
 // Top-level standalone named composite types: every generated method receives
 // the pointer receiver directly and must dereference it correctly on all
 // paths (marshal/unmarshal/size/hash, buffer and stream).
@@ -1224,9 +1312,17 @@ func TestCodegenPointerAndPaddingShapes(t *testing.T) {
 	uv.U.Variant = 2
 	uv.U.Data = SimpleTypes1_C1{F1: 9}
 
+	cuv := ClassicUnionSamePkgVariant{}
+	cuv.U.Variant = 1
+	cuv.U.Data = SimpleTypes1_C1{F1: 9}
+
 	wu := WrapUnionField{}
 	wu.W.Data.Variant = 1
 	wu.W.Data.Data = uint32(42)
+
+	wcu := WrapClassicUnionField{}
+	wcu.W.Data.Variant = 1
+	wcu.W.Data.Data = uint32(42)
 
 	cases := []struct {
 		name string
@@ -1235,6 +1331,7 @@ func TestCodegenPointerAndPaddingShapes(t *testing.T) {
 		{"TopVecOfVar", &TopVecOfVar{{1, 2}, {3}, {}}},
 		{"TopVecOfVar-underfill", &TopVecOfVar{{1, 2}}},
 		{"UnionSamePkgVariant", &uv},
+		{"ClassicUnionSamePkgVariant", &cuv},
 		{"PtrPrimitiveList", &PtrPrimitiveList{F: []*uint64{&u1, &u2}}},
 		{"FixedVecPtrStr", &FixedVecPtrStr{F: []*string{&s, &s}}},
 		{"FixedVecPtrStr-underfill", &FixedVecPtrStr{F: []*string{&s}}},
@@ -1242,6 +1339,7 @@ func TestCodegenPointerAndPaddingShapes(t *testing.T) {
 		{"FixedVecStr-underfill", &FixedVecStr{F: []string{"a"}}},
 		{"PtrDynCollectionField", &PtrDynCollectionField{F: &bl}},
 		{"WrapUnionField", &wu},
+		{"WrapClassicUnionField", &wcu},
 		{"PtrSvecOfList", &PtrSvecOfList{F: &[][]uint16{{1, 2}}}},
 		{"WrapPtrList", func() any { w := WrapPtrList{}; d := []uint16{5, 6}; w.W.Data = &d; return &w }()},
 	}
@@ -1278,6 +1376,14 @@ func TestCodegenRejectsUngeneratableTopLevelTypes(t *testing.T) {
 				B []byte `ssz-max:"8"`
 			}]](),
 			want: "CompatibleUnion/TypeWrapper",
+		},
+		{
+			name: "top-level classic union",
+			typ: reflect.TypeFor[dynssz.Union[struct {
+				A uint32
+				B []byte `ssz-max:"8"`
+			}]](),
+			want: "Union/CompatibleUnion/TypeWrapper",
 		},
 		{
 			name: "top-level wrapper",
