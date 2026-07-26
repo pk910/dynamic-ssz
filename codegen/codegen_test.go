@@ -1271,3 +1271,48 @@ func TestGoTypesViewAndGenericGuards(t *testing.T) {
 		}
 	})
 }
+
+// The go/types parser must count only declared methods as SSZ delegation. A
+// type that satisfies the interfaces solely through methods promoted from an
+// embedded field is walked as a container (so its sibling fields survive), not
+// treated as fully delegating.
+func TestGoTypesPromotedMethodsNotDelegation(t *testing.T) {
+	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
+	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
+	if err != nil || len(pkgs) == 0 {
+		t.Fatalf("load tests package: %v", err)
+	}
+	scope := pkgs[0].Types.Scope()
+	inner := scope.Lookup("PromotedDelegInner")
+	outer := scope.Lookup("PromotedDelegOuter")
+	if inner == nil || outer == nil {
+		t.Fatal("fixture types not found")
+	}
+
+	p := NewParser()
+	innerPtr := types.NewPointer(inner.Type())
+	outerPtr := types.NewPointer(outer.Type())
+
+	// The declaring type fully delegates; the embedder (promotion only) does not.
+	if !p.fullyDelegatesSSZ(innerPtr) {
+		t.Error("PromotedDelegInner should fully delegate (it declares the methods)")
+	}
+	if p.fullyDelegatesSSZ(outerPtr) {
+		t.Error("PromotedDelegOuter must NOT delegate through promoted methods")
+	}
+	if p.getDynamicMarshalerCompatibility(outerPtr) {
+		t.Error("promoted MarshalSSZDyn must not count as a declared marshaler")
+	}
+
+	// End to end: generating the embedder must emit a full walk that encodes the
+	// sibling Label field, not a delegation that drops it.
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_promoted_gt.go", WithGoTypesType(outer.Type()))
+	files, genErr := cg.GenerateToMap()
+	if genErr != nil {
+		t.Fatalf("generate: %v", genErr)
+	}
+	if !strings.Contains(files["gen_promoted_gt.go"], "Label") {
+		t.Error("generated code does not handle the sibling Label field")
+	}
+}

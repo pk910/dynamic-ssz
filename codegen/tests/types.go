@@ -1455,6 +1455,36 @@ var ClassicUnionPtrVariant_Payload = func() ClassicUnionPtrVariant {
 // AliasedVecPair holds two short-paddable byte vectors; hashing must pad into
 // library-owned buffers so the root stays independent of whether the two
 // fields alias one backing array.
+// PromotedDelegInner declares a full set of dynamic SSZ methods. A type that
+// embeds it inherits those methods by promotion; the codegen parser must treat
+// only declared methods as delegation, so PromotedDelegOuter is walked as a
+// container (encoding Label) rather than delegating to the promoted methods
+// (which would drop Label).
+type PromotedDelegInner struct{ Seconds uint16 }
+
+func (p *PromotedDelegInner) SizeSSZDyn(sszutils.DynamicSpecs) int { return 2 }
+
+func (p *PromotedDelegInner) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return append(buf, byte(p.Seconds), byte(p.Seconds>>8)), nil
+}
+
+func (p *PromotedDelegInner) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) error {
+	if len(b) >= 2 {
+		p.Seconds = uint16(b[0]) | uint16(b[1])<<8
+	}
+	return nil
+}
+
+func (p *PromotedDelegInner) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint16(p.Seconds)
+	return nil
+}
+
+type PromotedDelegOuter struct {
+	PromotedDelegInner
+	Label uint64
+}
+
 // GenericBoxFixture is a generic struct used only as a codegen test fixture
 // (not listed in any gen_*.yaml, so never generated): an instantiation of it
 // must be rejected as a top-level generation target.

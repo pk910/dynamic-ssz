@@ -867,6 +867,26 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 
 	tc.detectCompatFlags(desc, runtimeType, schemaType)
 
+	// A plain container that only satisfies the delegation interfaces through a
+	// method promoted from an embedded field must not delegate: the promoted
+	// method serializes just the embedded field and drops the container's other
+	// fields. Walk it as a container instead — the embedded field still
+	// delegates correctly as one of the walked fields. Custom types are exempt
+	// (they are opaque and have no walkable layout).
+	if (desc.SszType == SszContainerType || desc.SszType == SszProgressiveContainerType) &&
+		StructInheritsPromotedDelegation(runtimeType) {
+		desc.SszCompatFlags &^= SszCompatFlagDynamicMarshaler |
+			SszCompatFlagDynamicUnmarshaler |
+			SszCompatFlagDynamicSizer |
+			SszCompatFlagDynamicHashRoot |
+			SszCompatFlagDynamicEncoder |
+			SszCompatFlagDynamicDecoder |
+			SszCompatFlagFastSSZMarshaler |
+			SszCompatFlagFastSSZHasher |
+			SszCompatFlagHashTreeRootWith
+		desc.HashTreeRootWithMethod = nil
+	}
+
 	// When field-level hints override the type's own annotation, don't delegate
 	// to the type's generated methods — they have the annotation's limits baked in.
 	// Process inline instead so the field-level hints are respected.

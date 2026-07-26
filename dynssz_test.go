@@ -4113,3 +4113,127 @@ func TestSizeSSZRejectsOverLengthVector(t *testing.T) {
 		t.Errorf("array truncation changed: size=%d err=%v", sz, err)
 	}
 }
+
+// PromotedInner has its own dynamic SSZ methods and encodes its Seconds field
+// big-endian — a layout only its own method produces, so its bytes reveal
+// whether the method was used.
+type PromotedInner struct{ Seconds uint16 }
+
+func (p *PromotedInner) SizeSSZDyn(sszutils.DynamicSpecs) int { return 2 }
+func (p *PromotedInner) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return binary.BigEndian.AppendUint16(buf, p.Seconds), nil
+}
+func (p *PromotedInner) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) error {
+	if len(b) < 2 {
+		return fmt.Errorf("short PromotedInner")
+	}
+	p.Seconds = binary.BigEndian.Uint16(b)
+	return nil
+}
+func (p *PromotedInner) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint16(p.Seconds)
+	return nil
+}
+
+// PromotedOuter embeds PromotedInner, so Go promotes its SSZ methods. dynssz
+// must NOT delegate to the promoted method (which would serialize only the
+// embedded Seconds and drop Label); it must walk the struct, delegating to the
+// embedded field's own method and encoding Label alongside.
+type PromotedOuter struct {
+	PromotedInner
+	Label uint64
+}
+
+func TestEmbeddedPromotionNoFalseDelegation(t *testing.T) {
+	ds := NewDynSsz(nil)
+	v := &PromotedOuter{PromotedInner: PromotedInner{Seconds: 0x0102}, Label: 0x33}
+
+	size, err := ds.SizeSSZ(v)
+	if err != nil || size != 10 {
+		t.Fatalf("SizeSSZ = %d, %v; want 10 (2 embedded + 8 label)", size, err)
+	}
+
+	enc, err := ds.MarshalSSZ(v)
+	if err != nil {
+		t.Fatalf("MarshalSSZ: %v", err)
+	}
+	if len(enc) != 10 {
+		t.Fatalf("encoded %d bytes (%x); want 10 — Label must not be dropped", len(enc), enc)
+	}
+	// Embedded field encoded via its own (big-endian) method, then Label.
+	if enc[0] != 0x01 || enc[1] != 0x02 {
+		t.Errorf("embedded field not encoded by its own method: %x", enc[:2])
+	}
+	if binary.LittleEndian.Uint64(enc[2:]) != 0x33 {
+		t.Errorf("Label not encoded: %x", enc[2:])
+	}
+
+	var back PromotedOuter
+	if err = ds.UnmarshalSSZ(&back, enc); err != nil {
+		t.Fatalf("UnmarshalSSZ: %v", err)
+	}
+	if back != *v {
+		t.Errorf("round-trip mismatch: got %+v want %+v", back, *v)
+	}
+
+	// HashTreeRoot must succeed and be stable across a round-trip.
+	r1, err := ds.HashTreeRoot(v)
+	if err != nil {
+		t.Fatalf("HashTreeRoot: %v", err)
+	}
+	r2, err := ds.HashTreeRoot(&back)
+	if err != nil || r1 != r2 {
+		t.Errorf("HashTreeRoot unstable across round-trip: %x vs %x (%v)", r1, r2, err)
+	}
+}
+
+// shadowInner is a delegating inner type.
+type shadowInner struct{ S uint16 }
+
+func (s *shadowInner) SizeSSZDyn(sszutils.DynamicSpecs) int { return 2 }
+func (s *shadowInner) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	return append(b, byte(s.S), byte(s.S>>8)), nil
+}
+func (s *shadowInner) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) error {
+	if len(b) >= 2 {
+		s.S = uint16(b[0]) | uint16(b[1])<<8
+	}
+	return nil
+}
+func (s *shadowInner) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint16(s.S)
+	return nil
+}
+
+// shadowOuter embeds shadowInner but declares its OWN full delegation set
+// (writing a 3-byte sentinel) and carries no ssz-static annotation. Because its
+// methods are real declarations — not promotion wrappers — dynssz must use them
+// (the promoted-wrapper detection distinguishes a shadowing declaration from an
+// inherited method).
+type shadowOuter struct {
+	shadowInner
+	Label uint64
+}
+
+func (o *shadowOuter) SizeSSZDyn(sszutils.DynamicSpecs) int { return 3 }
+func (o *shadowOuter) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	return append(b, 0xDE, 0xAD, 0xBE), nil
+}
+func (o *shadowOuter) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) error { return nil }
+func (o *shadowOuter) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutBytes([]byte{0xDE, 0xAD, 0xBE})
+	return nil
+}
+
+func TestEmbeddedShadowDeclarationDelegates(t *testing.T) {
+	ds := NewDynSsz(nil)
+	enc, err := ds.MarshalSSZ(&shadowOuter{shadowInner: shadowInner{S: 1}, Label: 2})
+	if err != nil {
+		t.Fatalf("MarshalSSZ: %v", err)
+	}
+	// The outer declares its own method (real source), so it is used even though
+	// it also embeds a delegating type and has no ssz-static annotation.
+	if len(enc) != 3 || enc[0] != 0xDE || enc[1] != 0xAD || enc[2] != 0xBE {
+		t.Fatalf("shadow declaration not used: got %x, want deadbe", enc)
+	}
+}
