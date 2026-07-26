@@ -1500,3 +1500,48 @@ func TestWrapperInterleavedAppendPut(t *testing.T) {
 		})
 	}
 }
+
+// Wrapper.PutBytes must not write zero padding into the caller's backing
+// array (input memory is never mutated), and must produce the same root as
+// Hasher.PutBytes, which copies before padding.
+func TestWrapperPutBytesDoesNotMutateCallerMemory(t *testing.T) {
+	backing := make([]byte, 64)
+	for i := range backing {
+		backing[i] = 0xEE
+	}
+	before := append([]byte(nil), backing...)
+
+	w := NewWrapper()
+	w.PutBytes(backing[:10:64])
+	wRoot := w.Hash()
+
+	if !bytes.Equal(backing, before) {
+		t.Fatalf("Wrapper.PutBytes mutated caller memory:\n before: %x\n after:  %x", before, backing)
+	}
+
+	hh := hasher.NewHasher()
+	hh.PutBytes(before[:10:64])
+	hRoot, err := hh.HashRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(wRoot, hRoot[:]) {
+		t.Errorf("PutBytes short input: wrapper=%x hasher=%x", wRoot[:8], hRoot[:8])
+	}
+
+	// Multi-chunk unaligned input takes the appendBytesAsNodes padding path.
+	w2 := NewWrapper()
+	w2.PutBytes(backing[:40:64])
+	if !bytes.Equal(backing, before) {
+		t.Fatalf("Wrapper.PutBytes (multi-chunk) mutated caller memory")
+	}
+
+	// LeafFromBytes pads short inputs without touching the source array.
+	leaf := LeafFromBytes(backing[:5:64])
+	if !bytes.Equal(backing, before) {
+		t.Fatalf("LeafFromBytes mutated caller memory")
+	}
+	if !bytes.Equal(leaf.Value()[:5], before[:5]) {
+		t.Errorf("LeafFromBytes value mismatch")
+	}
+}

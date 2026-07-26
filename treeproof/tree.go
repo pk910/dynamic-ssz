@@ -819,7 +819,9 @@ func LeafFromBytes(b []byte) *Node {
 		return NewNodeWithValue(b)
 	}
 	if l < 32 {
-		return NewNodeWithValue(append(b, sszutils.ZeroBytes()[:32-l]...))
+		// The three-index cap keeps the zero padding out of the caller's
+		// backing array; input memory must never be mutated.
+		return NewNodeWithValue(append(b[:l:l], sszutils.ZeroBytes()[:32-l]...))
 	}
 
 	numChunks := (l + 31) / 32

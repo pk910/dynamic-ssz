@@ -648,7 +648,10 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
 				ctx.appendCode(indent, "val := []byte(%s)\n", getValueVar(true, ""))
 			} else {
-				ctx.appendCode(indent, "val := %s[:]\n", getValueVar(false, ""))
+				// The three-index cap keeps the zero padding below out of the
+				// caller's backing array; input memory must never be mutated.
+				fieldExpr := getValueVar(false, "")
+				ctx.appendCode(indent, "val := %s[:len(%s):len(%s)]\n", fieldExpr, fieldExpr, fieldExpr)
 			}
 			valVar = "val"
 

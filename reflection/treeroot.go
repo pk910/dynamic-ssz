@@ -636,8 +636,13 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 		}
 
 		if appendZero > 0 {
-			zeroBytes := make([]byte, appendZero)
-			bytes = append(bytes, zeroBytes...)
+			// Pad into a library-owned buffer: an append onto the caller's
+			// slice would write the zero bytes into the caller's backing
+			// array (and corrupt a sibling field aliasing the same array
+			// before it is hashed).
+			padded := make([]byte, sliceLen+appendZero)
+			copy(padded, bytes)
+			bytes = padded
 		} else if sourceType.BitSize > 0 && sourceType.BitSize%8 != 0 {
 			// check padding bits (only bit-aligned bitvectors have padding bits)
 			paddingMask := uint8((uint16(0xff) << (sourceType.BitSize % 8)) & 0xff)
