@@ -58,7 +58,7 @@ func BenchmarkUnmarshalReader(b *testing.B) {
 		b.Run(fmt.Sprintf("records=%d/buffer", records), func(b *testing.B) {
 			b.SetBytes(int64(len(data)))
 			b.ReportAllocs()
-			for b.Loop() {
+			for i := 0; i < b.N; i++ {
 				var out benchState
 				if err := ds.UnmarshalSSZ(&out, data); err != nil {
 					b.Fatal(err)
@@ -69,7 +69,7 @@ func BenchmarkUnmarshalReader(b *testing.B) {
 		b.Run(fmt.Sprintf("records=%d/stream-known", records), func(b *testing.B) {
 			b.SetBytes(int64(len(data)))
 			b.ReportAllocs()
-			for b.Loop() {
+			for i := 0; i < b.N; i++ {
 				var out benchState
 				if err := dsStream.UnmarshalSSZReader(&out, bytes.NewReader(data), len(data)); err != nil {
 					b.Fatal(err)
@@ -80,7 +80,7 @@ func BenchmarkUnmarshalReader(b *testing.B) {
 		b.Run(fmt.Sprintf("records=%d/stream-unknown", records), func(b *testing.B) {
 			b.SetBytes(int64(len(data)))
 			b.ReportAllocs()
-			for b.Loop() {
+			for i := 0; i < b.N; i++ {
 				var out benchState
 				if err := dsStream.UnmarshalSSZReader(&out, bytes.NewReader(data), -1); err != nil {
 					b.Fatal(err)
@@ -92,7 +92,7 @@ func BenchmarkUnmarshalReader(b *testing.B) {
 		b.Run(fmt.Sprintf("records=%d/readall-then-buffer", records), func(b *testing.B) {
 			b.SetBytes(int64(len(data)))
 			b.ReportAllocs()
-			for b.Loop() {
+			for i := 0; i < b.N; i++ {
 				var out benchState
 				buf := new(bytes.Buffer)
 				if _, err := buf.ReadFrom(bytes.NewReader(data)); err != nil {

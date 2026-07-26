@@ -130,9 +130,10 @@ func run() error {
 
 	fmt.Printf("  hash tree roots match: %v\n", originalRoot == decodedRoot)
 
-	// 3. The download fallback pattern: stream when the size is known
-	// (HTTP Content-Length), buffer when it is not (chunked encoding).
-	fmt.Println("\n3. Size-known / size-unknown fallback (HTTP download pattern):")
+	// 3. The download pattern: a chunked HTTP response has no Content-Length,
+	// so the size is not known up front. Passing a negative size streams to
+	// EOF rather than buffering the payload first.
+	fmt.Println("\n3. Unknown size (HTTP chunked download pattern):")
 
 	chunked, err := os.Open(file.Name())
 	if err != nil {
@@ -144,7 +145,7 @@ func run() error {
 		return fmt.Errorf("failed to decode without size: %w", err)
 	}
 
-	fmt.Printf("  chunked response (unknown size) decoded via buffered fallback: %d validators\n",
+	fmt.Printf("  chunked response (unknown size) streamed to EOF: %d validators\n",
 		len(fromChunked.Validators))
 
 	// 4. Network-style streaming: encoder and decoder connected by a pipe.
@@ -208,10 +209,13 @@ func run() error {
 	return nil
 }
 
-// decodeSSZ is a fallback helper for beacon API downloads: stream directly
-// when the payload size is known, buffer when it is not (SSZ offsets cannot
-// be interpreted without the total size). For untrusted streams, wrap the
-// reader in an io.LimitReader instead of using the unbounded buffered path.
+// decodeSSZ streams a beacon API download either way: with the payload size
+// when it is known (Content-Length), and to EOF when it is not (chunked
+// encoding). Neither path buffers the payload.
+//
+// Prefer passing the size when you have it: knowing where the payload ends
+// keeps the fail-fast validation and avoids growing the trailing collection.
+// An unknown-size decode is always bounded by WithMaxStreamSize.
 func decodeSSZ(ds *dynssz.DynSsz, target any, data io.ReadCloser, size int64) error {
 	defer func() { _ = data.Close() }()
 
@@ -219,12 +223,7 @@ func decodeSSZ(ds *dynssz.DynSsz, target any, data io.ReadCloser, size int64) er
 		return ds.UnmarshalSSZReader(target, data, int(size))
 	}
 
-	dataBytes, err := io.ReadAll(data)
-	if err != nil {
-		return fmt.Errorf("failed to read payload: %w", err)
-	}
-
-	return ds.UnmarshalSSZ(target, dataBytes)
+	return ds.UnmarshalSSZReader(target, data, -1)
 }
 
 func measureAllocs(work func() error) (uint64, error) {
