@@ -283,8 +283,11 @@ func (e *StreamDecoder) readMore() error {
 			toRead = remaining
 		}
 	} else {
-		// Unknown length: the allowance is the only bound.
-		remaining := e.maxSize - e.position - (e.bufferLen - e.bufferPos)
+		// Unknown length: the allowance is the only bound. Read one byte past
+		// it, since a payload of exactly maxSize still needs a read that comes
+		// back empty before EOF can be established. Running out of room here
+		// therefore means the payload genuinely exceeds the allowance.
+		remaining := e.maxSize + 1 - e.position - (e.bufferLen - e.bufferPos)
 		if remaining <= 0 {
 			return ErrStreamTooLargeFn(e.maxSize)
 		}

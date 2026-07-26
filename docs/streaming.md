@@ -63,14 +63,9 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int) error
 - `target` - Pointer to object to deserialize into
 - `r` - Source reader
 - `size` - Expected total size of the SSZ data in bytes. A negative size selects
-  "unknown size" mode, reading the reader to EOF and decoding through the buffer
-  path.
-
-> **Warning:** unknown-size mode (`size < 0`) reads the stream to EOF with no
-> upper bound. Do not use it on untrusted streams — a peer sending unbounded data
-> or holding the connection open can exhaust memory. For untrusted input, pass
-> the exact size, or wrap the reader in an `io.LimitReader` and pass that limit
-> as `size`.
+  **unknown-size mode**: the payload is consumed to EOF without being buffered,
+  so the memory savings of streaming still apply. See
+  [Unknown-size decoding](#unknown-size-decoding).
 
 **Example**:
 ```go
@@ -149,7 +144,11 @@ The `Decoder` interface abstracts over buffer-based and stream-based decoding:
 type Decoder interface {
     Seekable() bool                        // Returns false for stream decoder
     GetPosition() int                     // Current read position
-    GetLength() int                       // Remaining length
+    GetLength() int                       // Remaining length (allowance in an open region)
+    LengthKnown() bool                    // False inside an open region
+    More() (bool, error)                  // Region holds at least one more byte
+    DecodeRemaining(max int) ([]byte, error) // Consume to region end / EOF
+    PushOpenLimit()                       // Push a region that ends at EOF
     PushLimit(limit int)
     PopLimit() int
     DecodeBool() (bool, error)
@@ -164,6 +163,78 @@ type Decoder interface {
     SkipBytes(n int)                      // Not supported for streams
 }
 ```
+
+## Unknown-size decoding
+
+Passing `size < 0` decodes a payload whose length is not known in advance —
+a network stream, a pipe, an object whose framing does not carry a length.
+
+### Why this is possible at all
+
+SSZ is not self-delimiting, but the missing length is only needed in one place
+per nesting level: the **trailing** region. Everything else is bounded by the
+next offset or by a fixed size. So "unknown length" propagates down a single
+chain — the last dynamic child at each level:
+
+| Type | Where the length is needed |
+|---|---|
+| Container with dynamic fields | end of the **last** dynamic field |
+| Vector of dynamic elements | end of the **last** element (count comes from the type) |
+| List of dynamic elements | end of the **last** element (count comes from the first offset) |
+| List of fixed-size elements | the whole region — consumed until the input runs out |
+| Bitlist, byte list, `big.Int` | the whole region — the payload has no internal framing |
+| Union, optional, type wrapper | the payload after the selector or flag |
+
+At most one such region is open at any moment, and it is always the current
+suffix of the stream.
+
+### Buffer size matters
+
+If the payload fits in the decoder's read buffer, the initial fill observes EOF,
+the length becomes exact, and the decode runs entirely on the ordinary
+known-length path — including all of its fail-fast validation. Sizing the buffer
+to your typical payload is therefore worth doing:
+
+```go
+ds := dynssz.NewDynSsz(specs, dynssz.WithStreamReaderBufferSize(64*1024))
+```
+
+### Memory bound
+
+Unknown-size decoding is **always bounded** and the bound cannot be disabled:
+
+```go
+ds := dynssz.NewDynSsz(specs, dynssz.WithMaxStreamSize(16*1024*1024))
+```
+
+The default is 512 MiB. The bound is what stops a peer that never closes the
+connection from exhausting memory, and it doubles as the remaining-length
+estimate reported to code that predates unknown-size decoding (see
+[Regenerating](#regenerating-generated-code)). `ssz-max` limits are enforced
+incrementally while reading, so an over-long list is rejected before it is
+allocated.
+
+### Less precise errors
+
+Checks that a known length catches up front — a truncated fixed section, an
+offset past the end, a misaligned list — instead surface as `ErrUnexpectedEOF`
+when the read runs out. **The accept/reject decision is unchanged**; only the
+diagnostic differs. Everything that does not depend on the region length is
+still checked exactly: first-offset agreement, offset monotonicity, per-element
+consumption, bitlist termination, `big.Int` canonicality, and that the input was
+consumed in full.
+
+Note that "extra bytes are rejected" is not a property of either mode: if the
+trailing region is a variable-length list, an extra element-sized chunk is simply
+another element, and a known-size decode accepts it too.
+
+### Regenerating generated code
+
+Types whose SSZ methods were produced by **dynamic-ssz v1.3.2 or earlier must be
+regenerated** to be decoded with `size < 0`. Older generated decoders size the
+trailing region from the remaining-length estimate, so they fail cleanly with
+`ErrUnexpectedEOF` rather than decoding. Passing an explicit size keeps working
+with them unchanged.
 
 ## Stream Encoder and Decoder
 
@@ -191,6 +262,9 @@ Creates a new stream decoder:
 
 ```go
 decoder := sszutils.NewStreamDecoder(reader, totalSize, 0) // 0 = default 2KB buffer
+
+// ... or without a known length, reading to EOF:
+decoder := sszutils.NewUnknownStreamDecoder(reader, 0, 0) // 0, 0 = default buffer and max size
 ```
 
 The `StreamDecoder`:

@@ -702,14 +702,24 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 //   - bytes.Reader for in-memory data
 //   - Any custom io.Reader implementation
 //   - size: The expected total size of the SSZ data in bytes. A negative size enables
-//     "unknown size" mode: the entire stream is read until EOF into memory and decoded
-//     through the buffer path, so the memory savings of streaming do not apply.
+//     "unknown size" mode: the payload is consumed to EOF without being materialised,
+//     so the memory savings of streaming still apply.
 //
-// Known limitation: unknown-size mode (size < 0) reads the reader to EOF with no
-// upper bound, so it must not be used on untrusted streams — a peer that streams
-// unbounded data (or never closes the connection) can exhaust memory. For
-// untrusted input, pass the exact size, or wrap the reader in an io.LimitReader
-// and supply that limit as size.
+// Unknown-size mode is possible because SSZ is self-delimiting for every region
+// except the trailing one, so the missing length only ever affects the last
+// dynamic child at each nesting level. It is always bounded by WithMaxStreamSize
+// (512 MiB by default) — the bound cannot be disabled, since it is what keeps a
+// peer that never closes the connection from exhausting memory.
+//
+// Two caveats apply to unknown-size mode:
+//   - Errors are less precise. Checks that a known length would catch up front —
+//     a truncated fixed section, an offset past the end, a misaligned list —
+//     instead surface as ErrUnexpectedEOF when the read runs out. The accept/reject
+//     decision is unchanged; only the diagnostic differs.
+//   - Types whose SSZ methods were produced by dynamic-ssz v1.3.2 or earlier must be
+//     regenerated. Older generated decoders size the trailing region from the
+//     remaining-length estimate, so they fail with ErrUnexpectedEOF rather than
+//     decoding. Passing an explicit size keeps working with them.
 //
 // Returns:
 //   - error: An error if decoding fails due to:
@@ -742,7 +752,7 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 //	    log.Fatal("Failed to read state:", err)
 //	}
 //
-//	// Read from network with unknown size (reads until EOF, buffers in memory)
+//	// Read from network with unknown size (streams until EOF)
 //	conn, _ := net.Dial("tcp", "localhost:8080")
 //	var block phase0.BeaconBlock
 //	err = ds.UnmarshalSSZReader(&block, conn, -1)
