@@ -650,8 +650,8 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 			} else {
 				// The three-index cap keeps the zero padding below out of the
 				// caller's backing array; input memory must never be mutated.
-				fieldExpr := getValueVar(false, "")
-				ctx.appendCode(indent, "val := %s[:len(%s):len(%s)]\n", fieldExpr, fieldExpr, fieldExpr)
+				// lenVar (vlen) already holds this slice's length (emitted above).
+				ctx.appendCode(indent, "val := %s[:%s:%s]\n", getValueVar(false, ""), lenVar, lenVar)
 			}
 			valVar = "val"
 

@@ -1133,7 +1133,7 @@ func TestGenerateScalarRootLenChecks(t *testing.T) {
 	}
 	// The hashing path caps the slice before zero-padding so the padding
 	// cannot land in the caller's backing array.
-	if !strings.Contains(code, "val := t.V[:len(t.V):len(t.V)]") {
+	if !strings.Contains(code, "val := t.V[:vlen:vlen]") {
 		t.Error("short-vector hashing does not cap the slice before padding")
 	}
 }
