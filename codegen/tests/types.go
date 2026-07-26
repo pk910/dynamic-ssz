@@ -1452,9 +1452,6 @@ var ClassicUnionPtrVariant_Payload = func() ClassicUnionPtrVariant {
 	return p
 }()
 
-// AliasedVecPair holds two short-paddable byte vectors; hashing must pad into
-// library-owned buffers so the root stays independent of whether the two
-// fields alias one backing array.
 // PromotedDelegInner declares a full set of dynamic SSZ methods. A type that
 // embeds it inherits those methods by promotion; the codegen parser must treat
 // only declared methods as delegation, so PromotedDelegOuter is walked as a
@@ -1492,6 +1489,9 @@ type GenericBoxFixture[T any] struct {
 	V T
 }
 
+// AliasedVecPair holds two short-paddable byte vectors; hashing must pad into
+// library-owned buffers so the root stays independent of whether the two
+// fields alias one backing array.
 type AliasedVecPair struct {
 	V []byte `ssz-size:"8"`
 	W []byte `ssz-size:"8"`

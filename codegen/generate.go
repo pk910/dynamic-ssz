@@ -222,16 +222,17 @@ func (cg *CodeGenerator) analyzeTypes() error {
 				// twice, producing non-compiling output.
 				seenViews := make(map[string]bool, len(t.ViewReflectTypes)+len(t.ViewGoTypesTypes))
 				for _, viewType := range t.ViewReflectTypes {
+					// Pointer-wrap the view like the base type, regardless of
+					// kind, so runtime and schema kinds stay aligned in the
+					// descriptor build (named-slice views included). Normalize
+					// before the dedup key so T and *T collide as one entry.
+					if viewType.Kind() != reflect.Pointer {
+						viewType = reflect.PointerTo(viewType)
+					}
 					if seenViews[viewType.String()] {
 						return fmt.Errorf("view type %s is listed more than once for %s; remove the duplicate entry", viewType.String(), typeName)
 					}
 					seenViews[viewType.String()] = true
-					// Pointer-wrap the view like the base type, regardless of
-					// kind, so runtime and schema kinds stay aligned in the
-					// descriptor build (named-slice views included).
-					if viewType.Kind() != reflect.Pointer {
-						viewType = reflect.PointerTo(viewType)
-					}
 					viewDesc, err := cg.typeCache.GetTypeDescriptorWithSchema(t.ReflectType, viewType, t.Options.SizeHints, t.Options.MaxSizeHints, t.Options.TypeHints)
 					if err != nil {
 						return fmt.Errorf("failed to analyze view type %s: %w", viewType.String(), err)
@@ -244,13 +245,13 @@ func (cg *CodeGenerator) analyzeTypes() error {
 						parser.CompatFlags = cg.compatFlags
 						parser.AnnotationResolver = cg.annotationResolver
 					}
+					if _, ok := viewType.(*types.Pointer); !ok {
+						viewType = types.NewPointer(viewType)
+					}
 					if seenViews[viewType.String()] {
 						return fmt.Errorf("view type %s is listed more than once for %s; remove the duplicate entry", viewType.String(), typeName)
 					}
 					seenViews[viewType.String()] = true
-					if _, ok := viewType.(*types.Pointer); !ok {
-						viewType = types.NewPointer(viewType)
-					}
 					viewDesc, err := parser.GetTypeDescriptorWithSchema(t.GoTypesType, viewType, t.Options.TypeHints, t.Options.SizeHints, t.Options.MaxSizeHints)
 					if err != nil {
 						return fmt.Errorf("failed to analyze view type %s: %w", viewType.String(), err)

@@ -1261,6 +1261,20 @@ func TestGoTypesViewAndGenericGuards(t *testing.T) {
 		}
 	})
 
+	t.Run("DuplicateViewMixedPointerForm", func(t *testing.T) {
+		// The same view given once as T and once as *T normalizes to one type,
+		// so it must still be rejected as a duplicate (dedup keys on the
+		// pointer-normalized type).
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_dupview_mixed_gt.go",
+			WithGoTypesType(baseObj.Type(), WithGoTypesViewTypes(viewObj.Type(), types.NewPointer(viewObj.Type()))),
+		)
+		_, err := cg.GenerateToMap()
+		if err == nil || !strings.Contains(err.Error(), "listed more than once") {
+			t.Fatalf("expected duplicate-view error for mixed T/*T forms, got %v", err)
+		}
+	})
+
 	t.Run("ViewWrapped", func(t *testing.T) {
 		cg := NewCodeGenerator(nil)
 		cg.BuildFile("gen_view_gt.go",
