@@ -474,12 +474,28 @@ func (e *StreamDecoder) readBytesRef(n int) ([]byte, error) {
 // known-length code path, with all of its fail-fast validation intact.
 //
 // It is a no-op once the length is known or EOF has been seen.
+//
+// Prefill reads until the internal buffer is full or the reader reports EOF,
+// so it can block on a slow reader. That is not a new constraint: an
+// unknown-length decode consumes the input to EOF regardless, so the producer
+// has to close the stream for the decode to complete at all.
 func (e *StreamDecoder) Prefill() error {
 	if e.eofSeen || e.streamLen >= 0 {
 		return nil
 	}
 	e.compact()
-	return e.readMore()
+	for !e.eofSeen && e.bufferLen < len(e.buffer) {
+		before := e.bufferLen
+		if err := e.readMore(); err != nil {
+			return err
+		}
+		if e.bufferLen == before && !e.eofSeen {
+			// readMore made no progress and did not hit EOF (buffer full or
+			// allowance reached); stop rather than spin.
+			break
+		}
+	}
+	return nil
 }
 
 // More reports whether the current region holds at least one more byte. For a
