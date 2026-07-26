@@ -903,7 +903,11 @@ func (d *DynSsz) HashTreeRoot(source any, opts ...CallOption) ([32]byte, error) 
 //
 // Parameters:
 //   - source: Any Go value for which to compute the hash tree root
-//   - hh: The HashWalker instance to use for hashing
+//   - hh: The HashWalker instance to use for hashing. It must be in a clean
+//     state on entry. On a non-nil error the walker is left in an indeterminate
+//     state (unbalanced scopes / partial buffer); the caller must reset or
+//     discard it before reusing it, otherwise a subsequent root is corrupted.
+//     (The pooled HashTreeRoot entry point handles this automatically.)
 //
 // Returns:
 //   - error: An error if the computation fails due to unsupported types or hashing errors
