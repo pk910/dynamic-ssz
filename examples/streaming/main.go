@@ -154,6 +154,7 @@ func run() error {
 	fmt.Println("\n4. io.Pipe — sender and receiver with no intermediate buffer:")
 
 	pipeReader, pipeWriter := io.Pipe()
+	defer pipeReader.Close()
 
 	go func() {
 		pipeWriter.CloseWithError(ds.MarshalSSZWriter(registry, pipeWriter))
