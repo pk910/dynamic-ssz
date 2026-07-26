@@ -574,6 +574,18 @@ func TreeFromNodesProgressiveWithActiveFields(leaves []*Node, activeFields []byt
 	return node, nil
 }
 
+// emptyChild returns the zero-padding child one level below an empty node.
+// Both children of an empty node are the same zero subtree, so direction does
+// not matter. It reports false when the node is already the depth-0 zero leaf
+// (a gindex descending past it lies outside the tree's depth).
+func emptyChild(n *Node) (*Node, bool) {
+	depth, ok := hasher.GetZeroHashLevelBytes(n.value)
+	if !ok || depth < 1 {
+		return nil, false
+	}
+	return getEmptyNode(depth - 1), true
+}
+
 // Get fetches a node with the given general index.
 func (n *Node) Get(index int) (*Node, error) {
 	if index < 1 {
@@ -582,6 +594,17 @@ func (n *Node) Get(index int) (*Node, error) {
 	pathLen := getPathLength(index)
 	cur := n
 	for i := pathLen - 1; i >= 0; i-- {
+		if cur.isEmpty {
+			// Descending into a zero-padding subtree: synthesize the zero
+			// subtree one level down so spec-valid gindices under the padding
+			// (proof-of-emptiness) resolve instead of failing.
+			child, ok := emptyChild(cur)
+			if !ok {
+				return nil, errors.New("Node not found in tree")
+			}
+			cur = child
+			continue
+		}
 		if isRight := getPosAtLevel(index, i); isRight {
 			cur = cur.right
 		} else {
@@ -694,13 +717,24 @@ func (n *Node) Prove(index int) (*Proof, error) {
 	cur := n
 	for i := pathLen - 1; i >= 0; i-- {
 		var siblingHash []byte
-		if isRight := getPosAtLevel(index, i); isRight {
+		switch {
+		case cur.isEmpty:
+			// Zero-padding subtree: both children are the same zero subtree, so
+			// the sibling hash is the zero hash at that level. Synthesizing it
+			// lets spec-valid gindices under the padding be proven.
+			child, ok := emptyChild(cur)
+			if !ok {
+				return nil, errors.New("Node not found in tree")
+			}
+			siblingHash = child.value
+			cur = child
+		case getPosAtLevel(index, i):
 			if cur.left == nil {
 				return nil, errors.New("Node not found in tree")
 			}
 			siblingHash = hashNode(cur.left)
 			cur = cur.right
-		} else {
+		default:
 			if cur.right == nil {
 				return nil, errors.New("Node not found in tree")
 			}

@@ -1929,3 +1929,46 @@ func TestTreeFromNodesRejectsNonPositiveLimitWithLeaves(t *testing.T) {
 		t.Fatalf("TreeFromNodes(no leaves, limit=0) unexpected error: %v", err)
 	}
 }
+
+// A gindex that lands inside a zero-padding subtree is spec-valid (needed for
+// proof-of-emptiness) and must be fetchable and provable, not rejected as "not
+// found". The proof verifies against the same root.
+func TestProvePaddingGindex(t *testing.T) {
+	leaves := make([]*Node, 5)
+	for i := range leaves {
+		leaves[i] = NewNodeWithValue(sum256ToBytes([]byte{byte(i)}))
+	}
+	tree, err := TreeFromNodes(leaves, 8)
+	if err != nil {
+		t.Fatalf("TreeFromNodes: %v", err)
+	}
+	root := tree.Hash()
+
+	// gindices 13,14,15 are the zero-padding leaves of the 8-leaf tree.
+	for _, gi := range []int{13, 14, 15} {
+		node, err := tree.Get(gi)
+		if err != nil {
+			t.Errorf("Get(%d): %v", gi, err)
+		} else if !node.IsEmpty() {
+			t.Errorf("Get(%d): expected empty padding node", gi)
+		}
+
+		proof, err := tree.Prove(gi)
+		if err != nil {
+			t.Errorf("Prove(%d): %v", gi, err)
+			continue
+		}
+		ok, err := VerifyProof(root, proof)
+		if err != nil || !ok {
+			t.Errorf("VerifyProof(padding gindex %d) = %v, %v; want true, nil", gi, ok, err)
+		}
+	}
+
+	// A gindex below the tree depth (past the zero leaves) is still rejected.
+	if _, err := tree.Get(30); err == nil {
+		t.Error("Get(30) below tree depth should fail")
+	}
+	if _, err := tree.Prove(30); err == nil {
+		t.Error("Prove(30) below tree depth should fail")
+	}
+}
