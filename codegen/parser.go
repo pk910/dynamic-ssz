@@ -22,6 +22,7 @@ const (
 	typeNameString    = "string"
 	typeNameTime      = "Time"
 	pkgPathTime       = "time"
+	pkgPathDynssz     = "github.com/pk910/dynamic-ssz"
 )
 
 var (
@@ -684,11 +685,11 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 				sszType = ssztypes.SszBitlistType
 			case pkgPath == "github.com/OffchainLabs/go-bitfield" && typeName == "Bitlist":
 				sszType = ssztypes.SszBitlistType
-			case pkgPath == "github.com/pk910/dynamic-ssz" && typeName == "CompatibleUnion":
+			case pkgPath == pkgPathDynssz && typeName == "CompatibleUnion":
 				sszType = ssztypes.SszCompatibleUnionType
-			case pkgPath == "github.com/pk910/dynamic-ssz" && typeName == "Union":
+			case pkgPath == pkgPathDynssz && typeName == "Union":
 				sszType = ssztypes.SszUnionType
-			case pkgPath == "github.com/pk910/dynamic-ssz" && typeName == "TypeWrapper":
+			case pkgPath == pkgPathDynssz && typeName == "TypeWrapper":
 				sszType = ssztypes.SszTypeWrapperType
 			}
 		}
@@ -1690,7 +1691,7 @@ func (p *Parser) isNoneMarkerType(typ types.Type) bool {
 	if !ok || named.Obj() == nil || named.Obj().Pkg() == nil {
 		return false
 	}
-	return named.Obj().Name() == "None" && named.Obj().Pkg().Path() == "github.com/pk910/dynamic-ssz"
+	return named.Obj().Name() == "None" && named.Obj().Pkg().Path() == pkgPathDynssz
 }
 
 // buildUnionDescriptor builds a descriptor for classic spec unions. Selectors
