@@ -160,9 +160,13 @@ The library includes comprehensive testing infrastructure:
 Check out the [examples](examples/) directory for standalone, CI-tested example projects:
 
 - [basic](examples/basic/) — simple encoding/decoding with Ethereum consensus types
+- [chain-specs](examples/chain-specs/) — preset-aware serialization: load a chain config and serialize the same types under mainnet, minimal, or custom devnet presets
 - [codegen](examples/codegen/) — code generation setup with a programmatic generator
 - [custom-types](examples/custom-types/) — custom specifications and dynamic expressions
+- [fork-views](examples/fork-views/) — one fork-agnostic type with per-fork SSZ schemas via views, plus view-only code generation
+- [merkle-proofs](examples/merkle-proofs/) — Merkle tree construction, generalized-index proofs into nested lists, multiproofs and standalone verification
 - [progressive-merkleization](examples/progressive-merkleization/) — progressive lists, bitlists, and containers (EIP-7916/EIP-7495)
+- [streaming](examples/streaming/) — stream SSZ to/from files and network connections without buffering the full payload
 - [versioned-blocks](examples/versioned-blocks/) — handling Ethereum fork-versioned block structures
 
 ## Contributing

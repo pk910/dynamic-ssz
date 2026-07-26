@@ -1,0 +1,21 @@
+# Optional: generate static view codecs instead of using runtime reflection.
+#
+#   go run github.com/pk910/dynamic-ssz/dynssz-gen@latest -config generate.yaml
+#
+# (or add `tool github.com/pk910/dynamic-ssz/dynssz-gen` to go.mod and run
+# `go tool dynssz-gen -config generate.yaml`)
+#
+# view-only mode emits per-view codecs plus MarshalSSZDynView /
+# UnmarshalSSZDynView / SizeSSZDynView / HashTreeRootWithDynView dispatchers
+# on the data type — no base (view-less) methods. The runtime instance picks
+# the generated code up automatically; ds.MarshalSSZ(bid, WithViewDescriptor(...))
+# keeps working unchanged, just faster.
+package: .
+types:
+  - name: BuilderBid
+    output: builderbid_ssz.go
+    view-only: true
+    views:
+      - BuilderBidBellatrixView
+      - BuilderBidCapellaView
+      - BuilderBidDenebView
