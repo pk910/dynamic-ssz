@@ -1031,3 +1031,58 @@ func TestMerkleizeProgressiveNonIncremental(t *testing.T) {
 		t.Fatalf("HashRoot failed: %v", err)
 	}
 }
+
+// A mid-stream Collapse on a progressive layer whose buffer holds a partial
+// chunk must not change the root: the compaction carries the unaligned tail
+// like the binary collapse does instead of truncating it away.
+func TestIncrementalProgressiveCollapseUnaligned(t *testing.T) {
+	run := func(collapseMid bool) [32]byte {
+		h := NewHasher()
+		idx := h.StartTree(sszutils.TreeTypeProgressive)
+		for _, v := range []uint64{1, 2, 3, 4, 5, 6} {
+			h.AppendUint64(v)
+		}
+		if collapseMid {
+			h.Collapse()
+		}
+		h.FillUpTo32()
+		h.MerkleizeProgressiveWithMixin(idx, 6)
+		var r [32]byte
+		copy(r[:], h.Hash())
+		return r
+	}
+
+	with := run(true)
+	without := run(false)
+	if with != without {
+		t.Fatalf("Collapse on an unaligned buffer changed the root: %x != %x", with, without)
+	}
+}
+
+// MerkleizeProgressive pads an unaligned buffer before collapsing, so the
+// incremental branch (StartTree) and the standard branch (Index) agree on the
+// root for identical unaligned content.
+func TestMerkleizeProgressiveUnalignedBranchParity(t *testing.T) {
+	content := make([]byte, 40)
+	for i := range content {
+		content[i] = byte(i + 1)
+	}
+
+	h := NewHasher()
+	idx := h.Index()
+	h.Append(content)
+	h.MerkleizeProgressive(idx)
+	var std [32]byte
+	copy(std[:], h.Hash())
+
+	h.Reset()
+	idx = h.StartTree(sszutils.TreeTypeProgressive)
+	h.Append(content)
+	h.MerkleizeProgressive(idx)
+	var inc [32]byte
+	copy(inc[:], h.Hash())
+
+	if std != inc {
+		t.Fatalf("incremental root diverges from standard root for unaligned content: %x != %x", inc, std)
+	}
+}

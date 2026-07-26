@@ -696,6 +696,14 @@ func (h *Hasher) maybeCollapseProgressive(layer *treeLayer) {
 		}
 	}
 
+	// Carry any partial-chunk tail: the counts only cover complete chunks, so
+	// unaligned bytes sit past the counted region and would be dropped by the
+	// truncation below (the binary collapse preserves its tail the same way).
+	if tailLen := len(h.buf) - readPos; tailLen > 0 {
+		copy(h.buf[writePos:writePos+tailLen], h.buf[readPos:])
+		writePos += tailLen
+	}
+
 	h.buf = h.buf[:writePos]
 	layer.counts = newCounts
 	layer.maxDepth = newMaxDepth
@@ -1018,6 +1026,10 @@ func (h *Hasher) MerkleizeProgressive(indx int) {
 	}
 
 	if layer != nil && layer.progressive {
+		// Pad an unaligned partial chunk before collapsing, like the mixin
+		// variants do; the collapse floor-counts complete chunks and would
+		// silently drop the tail otherwise.
+		h.FillUpTo32()
 		h.collapseProgressiveLayer(layer, indx)
 		h.popTopLayer()
 		return
@@ -1027,6 +1039,7 @@ func (h *Hasher) MerkleizeProgressive(indx int) {
 	}
 
 	// Standard path (no incremental progressive data)
+	h.FillUpTo32()
 	h.buf = append(h.buf, zeroBytes...)
 	h.buf = h.buf[:len(h.buf)-len(zeroBytes)]
 	input := h.buf[indx:]
