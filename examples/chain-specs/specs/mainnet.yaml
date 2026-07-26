@@ -1,0 +1,12 @@
+# Subset of the Ethereum mainnet preset / config values used by this example.
+# Real tools load the full config from the beacon node's /eth/v1/config/spec
+# endpoint or a devnet config.yaml.
+PRESET_BASE: mainnet
+SLOTS_PER_EPOCH: 32
+SLOTS_PER_HISTORICAL_ROOT: 8192
+EPOCHS_PER_HISTORICAL_VECTOR: 65536
+EPOCHS_PER_ETH1_VOTING_PERIOD: 64
+VALIDATOR_REGISTRY_LIMIT: 1099511627776
+SYNC_COMMITTEE_SIZE: 512
+MIN_SEED_LOOKAHEAD: 1
+GENESIS_FORK_VERSION: 0x00000000
