@@ -1,0 +1,12 @@
+# Subset of the Ethereum minimal preset values used by this example.
+# The minimal preset is what many devnets and the spec tests run on — the
+# same Go types must serialize with completely different layouts here.
+PRESET_BASE: minimal
+SLOTS_PER_EPOCH: 8
+SLOTS_PER_HISTORICAL_ROOT: 64
+EPOCHS_PER_HISTORICAL_VECTOR: 64
+EPOCHS_PER_ETH1_VOTING_PERIOD: 4
+VALIDATOR_REGISTRY_LIMIT: 1099511627776
+SYNC_COMMITTEE_SIZE: 32
+MIN_SEED_LOOKAHEAD: 1
+GENESIS_FORK_VERSION: 0x00000001
