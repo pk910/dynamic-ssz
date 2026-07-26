@@ -69,8 +69,11 @@ func main() {
 	// Unknown-length counterparts. The tiny read buffer keeps the decoder from
 	// observing EOF during its initial fill, so decoding with size < 0 goes
 	// through genuine open regions instead of collapsing to a known length.
-	dsUnknown := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation(), dynssz.WithStreamReaderBufferSize(8))
-	dsUnknownExt := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation(), dynssz.WithExtendedTypes(), dynssz.WithStreamReaderBufferSize(8))
+	// Note these deliberately do NOT set WithNoDelegation: the corpus types all
+	// implement the generated Dynamic* methods, so leaving delegation on is what
+	// exercises the generated decoders against open regions.
+	dsUnknown := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithStreamReaderBufferSize(8))
+	dsUnknownExt := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithExtendedTypes(), dynssz.WithStreamReaderBufferSize(8))
 
 	// Warm up type caches by doing one marshal per type.
 	// This populates the cache before workers start, avoiding write contention.

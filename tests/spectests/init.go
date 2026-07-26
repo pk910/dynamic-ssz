@@ -17,7 +17,17 @@ var (
 	dynsszHybridMainnet *ssz.DynSsz
 	dynSszOnlyMinimal   *ssz.DynSsz
 	dynsszHybridMinimal *ssz.DynSsz
+
+	// Instances with a deliberately tiny stream reader buffer. The buffer never
+	// spans more than a single uint64, so an unknown-length decode can never
+	// observe EOF while filling the first buffer and has to decode genuine open
+	// regions, discovering the extent of the trailing dynamic element at EOF.
+	dynSszTinyBufMainnet *ssz.DynSsz
+	dynSszTinyBufMinimal *ssz.DynSsz
 )
+
+// tinyStreamReaderBufferSize is the smallest buffer the stream decoder accepts.
+const tinyStreamReaderBufferSize = 8
 
 //go:embed presets/mainnet-preset.yaml
 var mainnetPresetData []byte
@@ -54,6 +64,9 @@ func initializeDynSszInstances() {
 	dynsszHybridMainnet = ssz.NewDynSsz(mainnetSpecs, ssz.WithNoFastSsz())
 	dynSszOnlyMinimal = ssz.NewDynSsz(minimalSpecs, ssz.WithNoFastSsz())
 	dynsszHybridMinimal = ssz.NewDynSsz(minimalSpecs, ssz.WithNoFastSsz())
+
+	dynSszTinyBufMainnet = ssz.NewDynSsz(mainnetSpecs, ssz.WithNoFastSsz(), ssz.WithStreamReaderBufferSize(tinyStreamReaderBufferSize))
+	dynSszTinyBufMinimal = ssz.NewDynSsz(minimalSpecs, ssz.WithNoFastSsz(), ssz.WithStreamReaderBufferSize(tinyStreamReaderBufferSize))
 }
 
 func init() {
