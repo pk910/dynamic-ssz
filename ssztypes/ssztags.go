@@ -352,8 +352,13 @@ func getSszSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]SszS
 					// Unknown spec value: keep the fastssz default for this dimension
 					// (or record it as dynamic when there is none), but keep resolving
 					// the remaining dimensions independently (matching the dynssz-max
-					// loop and codegen).
+					// loop and codegen). The static fallback and the expression share
+					// one hint (and one unit), so a unit mismatch between the two tag
+					// families is unrepresentable and must be rejected.
 					if i < len(sszSizes) {
+						if sszSizes[i].Bits != sszSize.Bits {
+							return sszSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "conflicting size units for field %q dimension %d: the static and dynamic size tags use different units (bits vs bytes)", field.Name, i)
+						}
 						sszSizes[i].Expr = sizeExpr
 					} else {
 						sszSize.Dynamic = true
@@ -366,8 +371,11 @@ func getSszSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]SszS
 
 			if i >= len(sszSizes) {
 				sszSizes = append(sszSizes, sszSize)
-			} else if sszSizes[i].Size != sszSize.Size {
-				// update if resolved size differs from default
+			} else {
+				// The dynamic tag overrides the static hint entirely, including
+				// its unit. Replacing only on a differing number made the
+				// dimension's unit depend on whether the resolved value happened
+				// to equal the static fallback.
 				sszSizes[i] = sszSize
 			}
 
@@ -674,6 +682,12 @@ func ParseTags(tag string) (typeHints []SszTypeHint, sizeHints []SszSizeHint, ma
 				sszSize.Custom = true
 
 				if i < len(sizeHints) {
+					// The static fallback and the expression share one hint (and
+					// one unit); a unit mismatch between the two tag families is
+					// unrepresentable and must be rejected.
+					if sizeHints[i].Bits != sszSize.Bits {
+						return nil, nil, nil, fmt.Errorf("conflicting size units for dimension %d: the static and dynamic size tags use different units (bits vs bytes)", i)
+					}
 					sizeHints[i].Expr = sizeExpr
 
 					continue
@@ -682,7 +696,9 @@ func ParseTags(tag string) (typeHints []SszTypeHint, sizeHints []SszSizeHint, ma
 
 			if i >= len(sizeHints) {
 				sizeHints = append(sizeHints, sszSize)
-			} else if sizeHints[i].Size != sszSize.Size {
+			} else {
+				// The dynamic tag overrides the static hint entirely, including
+				// its unit (see the reflection merge above).
 				sizeHints[i] = sszSize
 			}
 
