@@ -1000,11 +1000,15 @@ func (ctx *ReflectionCtx) unmarshalListUntilEOF(targetType *ssztypes.TypeDescrip
 		return ctx.unmarshalList(targetType, targetValue, bufDec, idt)
 	}
 
-	initialCap := 8
-	if maxItems >= 0 && maxItems < initialCap {
-		initialCap = maxItems
+	// The slice is kept at full length and grown geometrically, so elements
+	// decode in place through newValue.Index(count). Appending a freshly
+	// allocated element instead would cost an allocation per item, which for a
+	// large trailing list is worse than the buffering this path exists to avoid.
+	initialLen := 8
+	if maxItems >= 0 && maxItems < initialLen {
+		initialLen = maxItems
 	}
-	newValue := reflect.MakeSlice(fieldT, 0, initialCap)
+	newValue := reflect.MakeSlice(fieldT, initialLen, initialLen)
 
 	count := 0
 	for {
@@ -1019,9 +1023,30 @@ func (ctx *ReflectionCtx) unmarshalListUntilEOF(targetType *ssztypes.TypeDescrip
 			return sszutils.ErrListLengthFn(count+1, targetType.Limit)
 		}
 
-		// A fresh addressable slot of the element type: unmarshalType allocates
-		// through it for pointer elements and writes in place otherwise.
-		itemVal := reflect.New(fieldType.Type).Elem()
+		if count == newValue.Len() {
+			newLen := newValue.Len() * 2
+			if newLen < 8 {
+				newLen = 8
+			}
+			// More() may have reached EOF, which makes the region length exact.
+			// Once that happens the remaining element count is known, so the
+			// slice can be sized to fit rather than doubled past it.
+			if decoder.LengthKnown() {
+				if exact := count + decoder.GetLength()/itemSize; exact >= count+1 {
+					newLen = exact
+				}
+			}
+			if maxItems >= 0 && newLen > maxItems {
+				newLen = maxItems
+			}
+			grown := reflect.MakeSlice(fieldT, newLen, newLen)
+			reflect.Copy(grown, newValue)
+			newValue = grown
+		}
+
+		// Addressable slot of the element type: unmarshalType allocates through
+		// it for pointer elements and writes in place otherwise.
+		itemVal := newValue.Index(count)
 
 		expectedPos := decoder.GetPosition() + itemSize
 		if err := ctx.unmarshalType(fieldType, itemVal, decoder, idt+2); err != nil {
@@ -1034,11 +1059,10 @@ func (ctx *ReflectionCtx) unmarshalListUntilEOF(targetType *ssztypes.TypeDescrip
 			)
 		}
 
-		newValue = reflect.Append(newValue, itemVal)
 		count++
 	}
 
-	targetValue.Set(newValue)
+	targetValue.Set(newValue.Slice(0, count))
 	return nil
 }
 

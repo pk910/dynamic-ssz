@@ -214,6 +214,29 @@ estimate reported to code that predates unknown-size decoding (see
 incrementally while reading, so an over-long list is rejected before it is
 allocated.
 
+### What it costs and what it saves
+
+Peak heap while decoding a 24.4 MB payload (a container whose trailing region is
+a large list of fixed-size records):
+
+| Path | Peak heap |
+|---|---|
+| Buffer, data already in hand | 24.4 MB |
+| `io.ReadAll` + buffer | 76.6 MB |
+| Stream, known size | 24.5 MB |
+| **Stream, unknown size** | **56.1 MB** |
+
+Unknown-size decoding roughly halves the peak of reading the stream into memory
+first, but does not match a known-size decode. The reason is structural: a list
+whose element count is not known has to grow, and a growing contiguous slice
+holds both the old and the new backing array at the moment it grows — about
+twice the result size, whatever the implementation. Pass the size when you know
+it.
+
+The saving is largest when the trailing region is *not* one huge list of
+fixed-size elements. A list of **dynamic** elements takes its count from the
+first offset, so it is sized exactly and never grows.
+
 ### Less precise errors
 
 Checks that a known length catches up front — a truncated fixed section, an
