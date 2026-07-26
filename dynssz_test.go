@@ -4237,3 +4237,48 @@ func TestEmbeddedShadowDeclarationDelegates(t *testing.T) {
 		t.Fatalf("shadow declaration not used: got %x, want deadbe", enc)
 	}
 }
+
+// A large-uint (uint128/uint256) whose Go slice is shorter than its declared
+// width is zero-padded on hash tree root, matching the marshal paths and the
+// generated HTR, instead of being rejected. Over-length slices are still
+// rejected.
+func TestLargeUintHTRPadsShort(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation())
+
+	t.Run("uint128 bytes", func(t *testing.T) {
+		type U struct {
+			V []byte `ssz-type:"uint128" ssz-size:"16"`
+		}
+		short, err := ds.HashTreeRoot(&U{V: []byte{1, 2, 3}})
+		if err != nil {
+			t.Fatalf("short uint128 should pad, got error: %v", err)
+		}
+		padded, err := ds.HashTreeRoot(&U{V: append([]byte{1, 2, 3}, make([]byte, 13)...)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if short != padded {
+			t.Errorf("short root %x != padded root %x", short, padded)
+		}
+		if _, err := ds.HashTreeRoot(&U{V: make([]byte, 17)}); err == nil {
+			t.Error("over-length uint128 should still be rejected")
+		}
+	})
+
+	t.Run("uint256 uint64 words", func(t *testing.T) {
+		type U struct {
+			V []uint64 `ssz-type:"uint256" ssz-size:"4"`
+		}
+		short, err := ds.HashTreeRoot(&U{V: []uint64{7}})
+		if err != nil {
+			t.Fatalf("short uint256 should pad, got error: %v", err)
+		}
+		padded, err := ds.HashTreeRoot(&U{V: []uint64{7, 0, 0, 0}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if short != padded {
+			t.Errorf("short root %x != padded root %x", short, padded)
+		}
+	})
+}

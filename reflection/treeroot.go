@@ -344,17 +344,30 @@ func (ctx *ReflectionCtx) buildRootFromLargeUint(sourceType *ssztypes.TypeDescri
 	}
 
 	sourceLen := uint32(sourceValue.Len())
-	if sourceLen != sourceType.Size/sourceType.ElemDesc.Size {
-		return sszutils.ErrLargeUintLengthFn(sourceLen, sourceType.Size/sourceType.ElemDesc.Size)
+	expectedLen := sourceType.Size / sourceType.ElemDesc.Size
+	if sourceLen > expectedLen {
+		return sszutils.ErrLargeUintLengthFn(sourceLen, expectedLen)
 	}
+	// A short slice is zero-padded to the full large-uint width, matching the
+	// marshal paths and the generated hash tree root (which all pad rather than
+	// reject). Padding to Size keeps the packed layout correct even when pack
+	// is set (no trailing FillUpTo32 to absorb a short value).
 
 	isUint64 := sourceType.ElemDesc.Kind == reflect.Uint64
 	if isUint64 {
 		for i := 0; i < int(sourceType.Size/8); i++ {
-			hh.AppendUint64(sourceValue.Index(i).Uint())
+			if uint32(i) < sourceLen {
+				hh.AppendUint64(sourceValue.Index(i).Uint())
+			} else {
+				hh.AppendUint64(0)
+			}
 		}
 	} else {
-		hh.Append(sourceValue.Bytes())
+		b := sourceValue.Bytes()
+		hh.Append(b)
+		if pad := int(sourceType.Size) - len(b); pad > 0 {
+			hh.Append(sszutils.ZeroBytes()[:pad])
+		}
 	}
 	if !pack {
 		hh.FillUpTo32()

@@ -1340,6 +1340,8 @@ func TestCodegenPointerAndPaddingShapes(t *testing.T) {
 		{"PtrDynCollectionField", &PtrDynCollectionField{F: &bl}},
 		{"WrapUnionField", &wu},
 		{"WrapClassicUnionField", &wcu},
+		{"ShortLargeUintVec", &ShortLargeUintVec{A: []byte{1, 2, 3}, B: []uint64{7}}},
+		{"ShortLargeUintVec-full", &ShortLargeUintVec{A: make([]byte, 16), B: []uint64{1, 2, 3, 4}}},
 		{"PtrSvecOfList", &PtrSvecOfList{F: &[][]uint16{{1, 2}}}},
 		{"WrapPtrList", func() any { w := WrapPtrList{}; d := []uint16{5, 6}; w.W.Data = &d; return &w }()},
 	}

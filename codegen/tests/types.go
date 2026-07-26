@@ -1497,6 +1497,14 @@ type AliasedVecPair struct {
 	W []byte `ssz-size:"8"`
 }
 
+// ShortLargeUintVec uses slice-typed large-uints so the Go value can be
+// shorter than the declared width, exercising the zero-padding parity between
+// the generated and reflection hash tree roots.
+type ShortLargeUintVec struct {
+	A []byte   `ssz-type:"uint128" ssz-size:"16"`
+	B []uint64 `ssz-type:"uint256" ssz-size:"4"`
+}
+
 // UnionTaggedSelectors assigns explicit 1-based selector values via ssz-index
 // tags on the union variant fields (EIP-8016 conformant numbering).
 type UnionTaggedSelectors struct {

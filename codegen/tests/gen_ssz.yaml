@@ -149,6 +149,8 @@ types:
     output: gen_compilecorrectness.go
   - name: FixedVecStr
     output: gen_compilecorrectness.go
+  - name: ShortLargeUintVec
+    output: gen_compilecorrectness.go
   - name: PtrDynCollectionField
     output: gen_compilecorrectness.go
   - name: WrapUnionField
