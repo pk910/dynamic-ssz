@@ -43,6 +43,11 @@ var (
 	// type or feature it does not support.
 	ErrNotImplemented = fmt.Errorf("not implemented")
 
+	// ErrStreamTooLarge is returned when decoding a stream of unknown length
+	// would consume more bytes than the decoder's configured maximum. Unknown-
+	// length decoding is always bounded; see WithMaxStreamSize.
+	ErrStreamTooLarge = fmt.Errorf("ssz stream exceeds maximum size")
+
 	// ErrPlatformOverflow is returned when a SSZ length or count exceeds
 	// the platform's integer range (>31-bit sizes on 32-bit platforms).
 	ErrPlatformOverflow = fmt.Errorf("value exceeds platform integer range")
@@ -494,6 +499,26 @@ func ErrUnknownTypeFn(typeName any) error {
 // custom type that cannot be handled by the code generator.
 func ErrCustomTypeNotSupportedFn() error {
 	return &sszError{err: ErrNotImplemented, message: "custom type not supported"}
+}
+
+// --- ErrStreamTooLarge constructors ---
+
+// ErrPayloadTooLargeFn is returned when a region consumed to its end (or to
+// EOF) is larger than the caller-supplied maximum.
+func ErrPayloadTooLargeFn(length, max any) error {
+	return &sszError{
+		err:     ErrStreamTooLarge,
+		message: fmt.Sprintf("payload length %v exceeds maximum %v", length, max),
+	}
+}
+
+// ErrStreamTooLargeFn is returned when a stream of unknown length exceeds the
+// decoder's configured maximum stream size.
+func ErrStreamTooLargeFn(max any) error {
+	return &sszError{
+		err:     ErrStreamTooLarge,
+		message: fmt.Sprintf("unknown-length ssz stream exceeds maximum size %v", max),
+	}
 }
 
 // --- ErrPlatformOverflow constructors ---

@@ -50,6 +50,42 @@ func (e *BufferDecoder) GetLength() int {
 	return e.lastLimit - e.position
 }
 
+// LengthKnown always returns true: a buffer-backed decoder always knows how
+// many bytes remain in the current region.
+func (e *BufferDecoder) LengthKnown() bool {
+	return true
+}
+
+// More reports whether the current region holds at least one more byte.
+// It never fails for a buffer-backed decoder.
+func (e *BufferDecoder) More() (bool, error) {
+	return e.lastLimit-e.position > 0, nil
+}
+
+// DecodeRemaining consumes the rest of the current region and returns it in a
+// newly allocated slice. If max is non-negative and the region is larger, the
+// call fails without allocating.
+func (e *BufferDecoder) DecodeRemaining(max int) ([]byte, error) {
+	length := e.lastLimit - e.position
+	if length < 0 {
+		length = 0
+	}
+	if max >= 0 && length > max {
+		return nil, ErrPayloadTooLargeFn(length, max)
+	}
+	out := make([]byte, length)
+	copy(out, e.buffer[e.position:e.position+length])
+	e.position += length
+	return out, nil
+}
+
+// PushOpenLimit pushes a region covering the rest of the current region. A
+// buffer-backed decoder always knows its length, so there is nothing open
+// about it; this keeps the call sites uniform across decoder implementations.
+func (e *BufferDecoder) PushOpenLimit() {
+	e.PushLimit(e.lastLimit - e.position)
+}
+
 // PushLimit restricts reading to the next limit bytes from the current position.
 // If the limit extends beyond the enclosing limit, it is clamped. Limits can be
 // nested and must be removed with PopLimit.
