@@ -241,7 +241,10 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 		}
 
 		if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsTime != 0 {
-			timeVal := time.Unix(int64(u64Val), 0)
+			// UTC keeps decoded values comparable across engines: the generated
+			// decoders also normalize to UTC, and time.Time equality includes
+			// the Location.
+			timeVal := time.Unix(int64(u64Val), 0).UTC()
 			targetValue.Set(reflect.ValueOf(timeVal))
 		} else {
 			targetValue.SetUint(u64Val)
@@ -505,11 +508,13 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 			// from the schema field index when using view descriptors.
 			fieldValue := targetValue.Field(int(fieldDescriptor.FieldIndex))
 			err := ctx.unmarshalType(fieldDescriptor.Type, fieldValue, decoder, idt+2)
+			// Pop the limit before checking the error so a failed field cannot
+			// leave the decoder clamped to its stale region (observable when a
+			// caller reuses the decoder via UnmarshalSSZDecoder).
+			consumedDiff := decoder.PopLimit()
 			if err != nil {
 				return sszutils.ErrorWithPath(err, fieldDescriptor.Name)
 			}
-
-			consumedDiff := decoder.PopLimit()
 			if consumedDiff != 0 {
 				return sszutils.ErrTrailingDataFn(consumedDiff)
 			}
@@ -749,11 +754,13 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 		itemSize := endOffset - startOffset
 		decoder.PushLimit(int(itemSize))
 		err := ctx.unmarshalType(fieldType, itemVal, decoder, idt+2)
+		// Pop before the error check so a failed element cannot leave the
+		// decoder clamped to its stale region on reuse.
+		consumedDiff := decoder.PopLimit()
 		if err != nil {
 			return sszutils.ErrorWithPathf(err, "[%d]", i)
 		}
 
-		consumedDiff := decoder.PopLimit()
 		if consumedDiff != 0 {
 			return sszutils.ErrorWithPathf(
 				sszutils.ErrTrailingDataFn(consumedDiff),
@@ -1036,11 +1043,13 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 
 			decoder.PushLimit(int(itemSize))
 			err := ctx.unmarshalType(fieldType, itemVal, decoder, idt+2)
+			// Pop before the error check so a failed element cannot leave the
+			// decoder clamped to its stale region on reuse.
+			consumedDiff := decoder.PopLimit()
 			if err != nil {
 				return sszutils.ErrorWithPathf(err, "[%d]", i)
 			}
 
-			consumedDiff := decoder.PopLimit()
 			if consumedDiff != 0 {
 				return sszutils.ErrorWithPathf(
 					sszutils.ErrTrailingDataFn(consumedDiff),
@@ -1076,6 +1085,15 @@ func (ctx *ReflectionCtx) unmarshalBitlist(targetType *ssztypes.TypeDescriptor, 
 
 	if sszLen == 0 {
 		return sszutils.ErrBitlistNotTerminatedFn()
+	}
+
+	// Reject a region that cannot hold a valid bitlist before allocating it:
+	// a bitlist of Limit bits encodes to at most Limit/8+1 bytes (including
+	// the termination bit). On the stream path sszLen comes from the caller-
+	// declared size, so allocating first would let an untrusted framing
+	// length force an arbitrarily large allocation.
+	if targetType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 && uint64(sszLen) > targetType.Limit/8+1 {
+		return sszutils.ErrBitlistLengthFn(uint64(sszLen-1)*8, targetType.Limit)
 	}
 
 	// Bitlists can only be []byte (validated by typecache)
@@ -1305,7 +1323,7 @@ func (ctx *ReflectionCtx) unmarshalOptionalList(targetType *ssztypes.TypeDescrip
 //
 // Returns:
 //   - error: An error if decoding fails
-func (ctx *ReflectionCtx) unmarshalBigInt(_ *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, _ int) error {
+func (ctx *ReflectionCtx) unmarshalBigInt(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, _ int) error {
 	dataLen := decoder.GetLength()
 	bigInt := new(big.Int)
 
@@ -1313,6 +1331,13 @@ func (ctx *ReflectionCtx) unmarshalBigInt(_ *ssztypes.TypeDescriptor, targetValu
 	// big-endian magnitude, so the payload must contain at least the sign byte.
 	if dataLen == 0 {
 		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "big.Int payload must contain at least a sign byte")
+	}
+
+	// Enforce ssz-max symmetrically with the encoder: accepting an over-limit
+	// payload would produce a value that can be neither re-encoded nor hashed.
+	// Checked before reading so the payload is not allocated either.
+	if err := checkBigIntLimit(targetType, dataLen-1); err != nil {
+		return err
 	}
 
 	bigIntBytes, err := decoder.DecodeBytesBuf(dataLen)

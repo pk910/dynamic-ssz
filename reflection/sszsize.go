@@ -139,7 +139,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 
 			if uint32(dataLen) < targetType.Len {
 				appendZero := targetType.Len - uint32(dataLen)
-				zeroVal := reflect.New(fieldType.Type).Elem()
+				zeroVal := newZeroElem(fieldType)
 				size, err := ctx.getSszValueSize(fieldType, zeroVal)
 				if err != nil {
 					return 0, sszutils.ErrorWithPathf(err, "[+%d:%d]", dataLen, uint32(dataLen)+appendZero-1)
@@ -158,7 +158,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 
 				staticSize = size * targetType.Len
 			} else {
-				zeroVal := reflect.New(fieldType.Type).Elem()
+				zeroVal := newZeroElem(fieldType)
 				size, err := ctx.getSszValueSize(fieldType, zeroVal)
 				if err != nil {
 					return 0, sszutils.ErrorWithPathf(err, "[+0:%d]", targetType.Len-1)

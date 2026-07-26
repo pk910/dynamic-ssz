@@ -370,7 +370,12 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 		return nil, err
 	}
 
-	return encoder.GetBuffer(), nil
+	newBuf := encoder.GetBuffer()
+	if uint32(len(newBuf)-len(buf)) != size {
+		return nil, fmt.Errorf("ssz length does not match expected length (expected: %v, got: %v)", size, len(newBuf)-len(buf))
+	}
+
+	return newBuf, nil
 }
 
 // MarshalSSZWriter serializes the given source into its SSZ representation and writes it directly to an io.Writer.

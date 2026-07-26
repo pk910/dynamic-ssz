@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
@@ -3060,6 +3061,32 @@ func TestBigIntMaxEnforced(t *testing.T) {
 	}
 }
 
+// The decoder enforces the same static ssz-max as the encoder; without the
+// check it would accept a payload whose decoded value can be neither
+// re-encoded nor hashed.
+func TestBigIntMaxEnforcedOnDecode(t *testing.T) {
+	type T struct {
+		N big.Int `ssz-max:"5"`
+	}
+	ds := NewDynSsz(nil, WithExtendedTypes())
+
+	// offset + sign byte + 8 magnitude bytes: 9-byte payload > max 5.
+	over := []byte{0x04, 0, 0, 0, 0x00, 1, 2, 3, 4, 5, 6, 7, 8}
+	var dst T
+	if err := ds.UnmarshalSSZ(&dst, over); err == nil {
+		t.Error("UnmarshalSSZ: expected error for big.Int payload exceeding ssz-max")
+	}
+	if err := ds.UnmarshalSSZReader(&dst, bytes.NewReader(over), len(over)); err == nil {
+		t.Error("UnmarshalSSZReader: expected error for big.Int payload exceeding ssz-max")
+	}
+
+	// sign byte + 4 magnitude bytes: exactly at the limit.
+	within := []byte{0x04, 0, 0, 0, 0x00, 1, 2, 3, 4}
+	if err := ds.UnmarshalSSZ(&dst, within); err != nil {
+		t.Errorf("payload within max should decode: %v", err)
+	}
+}
+
 // SizeSSZ must enforce a list's ssz-max like MarshalSSZ, so it never reports a
 // size for a value that cannot be serialized.
 func TestSizeSSZEnforcesListLimit(t *testing.T) {
@@ -3154,9 +3181,30 @@ func (b *inconsistentSizeCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ 
 	return nil
 }
 
-// The streaming marshal path enforces the same length==SizeSSZ guard the buffer
-// path has, so an inconsistent nested marshaler is rejected on both paths rather
-// than streaming malformed SSZ from the writer path alone.
+// zeroSizeCustom is a custom static type whose sizer reports zero bytes. As a
+// list element this makes the element count underivable from the wire format,
+// which the descriptor build rejects.
+type zeroSizeCustom struct{}
+
+var _ = sszutils.Annotate[zeroSizeCustom](`ssz-type:"custom" ssz-static:"true"`)
+
+func (z *zeroSizeCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 0 }
+
+func (z *zeroSizeCustom) MarshalSSZEncoder(_ sszutils.DynamicSpecs, _ sszutils.Encoder) error {
+	return nil
+}
+
+func (z *zeroSizeCustom) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, _ sszutils.Decoder) error {
+	return nil
+}
+
+func (z *zeroSizeCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+// All three marshal entry points enforce the same length==SizeSSZ guard, so an
+// inconsistent nested marshaler is rejected everywhere rather than silently
+// returning malformed SSZ from one of them.
 func TestMarshalSSZWriterLengthGuard(t *testing.T) {
 	type outer struct {
 		Inner inconsistentSizeCustom `ssz-type:"custom"`
@@ -3171,6 +3219,38 @@ func TestMarshalSSZWriterLengthGuard(t *testing.T) {
 	var buf bytes.Buffer
 	if err := ds.MarshalSSZWriter(v, &buf); err == nil {
 		t.Fatal("MarshalSSZWriter (stream) should reject a size/length mismatch")
+	}
+
+	if _, err := ds.MarshalSSZTo(v, nil); err == nil {
+		t.Fatal("MarshalSSZTo (nil buffer) should reject a size/length mismatch")
+	}
+
+	// With spare capacity the encoder does not overflow, so only the length
+	// guard catches the mismatch here.
+	if _, err := ds.MarshalSSZTo(v, make([]byte, 0, 8192)); err == nil {
+		t.Fatal("MarshalSSZTo (spare capacity) should reject a size/length mismatch")
+	}
+}
+
+// MarshalSSZTo appends after any existing content, so its length guard is
+// relative to the incoming buffer length.
+func TestMarshalSSZToAppendsAfterPrefix(t *testing.T) {
+	type simple struct {
+		A uint64
+		B uint32
+	}
+	ds := NewDynSsz(nil, WithNoFastSsz())
+
+	prefix := []byte{0xAA, 0xBB, 0xCC}
+	out, err := ds.MarshalSSZTo(&simple{A: 1, B: 2}, bytes.Clone(prefix))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !bytes.Equal(out[:3], prefix) {
+		t.Errorf("prefix not preserved: %x", out[:3])
+	}
+	if len(out) != len(prefix)+12 {
+		t.Errorf("unexpected output length %d, want %d", len(out), len(prefix)+12)
 	}
 }
 
@@ -3705,5 +3785,175 @@ func TestNoDelegationBypassesTopLevelViewMethods(t *testing.T) {
 	}
 	if nodelRoot != plainRoot {
 		t.Fatalf("no-delegation view htr %x != plain reflection htr %x", nodelRoot, plainRoot)
+	}
+}
+
+// A vector whose Go slice is shorter than its declared length is zero-padded;
+// for pointer (optional) elements the padding must be sized as a present zero
+// element on every pass so SizeSSZ, the buffer marshalers, and the stream
+// writer agree on the byte layout.
+func TestOptionalVectorPaddingSizeAgreement(t *testing.T) {
+	type T struct {
+		V    []*uint64 `ssz-size:"4" ssz-type:"vector,optional"`
+		Tail []byte    `ssz-max:"64"`
+	}
+	ds := NewDynSsz(nil, WithExtendedTypes())
+
+	val := uint64(7)
+	cases := []struct {
+		name string
+		v    *T
+	}{
+		{"empty", &T{Tail: []byte{0xAA}}},
+		{"partial", &T{V: []*uint64{&val}, Tail: []byte{0xAA, 0xBB}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			size, err := ds.SizeSSZ(tc.v)
+			if err != nil {
+				t.Fatalf("SizeSSZ: %v", err)
+			}
+			enc, err := ds.MarshalSSZ(tc.v)
+			if err != nil {
+				t.Fatalf("MarshalSSZ: %v", err)
+			}
+			if len(enc) != size {
+				t.Errorf("MarshalSSZ produced %d bytes, SizeSSZ said %d", len(enc), size)
+			}
+
+			to, err := ds.MarshalSSZTo(tc.v, make([]byte, 0, 8192))
+			if err != nil {
+				t.Fatalf("MarshalSSZTo: %v", err)
+			}
+			if !bytes.Equal(to, enc) {
+				t.Errorf("MarshalSSZTo diverges from MarshalSSZ:\n  to:  %x\n  ssz: %x", to, enc)
+			}
+
+			var w bytes.Buffer
+			if err := ds.MarshalSSZWriter(tc.v, &w); err != nil {
+				t.Fatalf("MarshalSSZWriter: %v", err)
+			}
+			if !bytes.Equal(w.Bytes(), enc) {
+				t.Errorf("MarshalSSZWriter diverges from MarshalSSZ:\n  wr:  %x\n  ssz: %x", w.Bytes(), enc)
+			}
+
+			var dst T
+			if err := ds.UnmarshalSSZ(&dst, enc); err != nil {
+				t.Errorf("roundtrip decode: %v", err)
+			}
+		})
+	}
+}
+
+// Descriptor byte sizes are uint32; products and sums that wrap must be
+// rejected at descriptor build instead of feeding wrapped sizes into length
+// checks and allocations.
+func TestDescriptorSizeOverflowRejected(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	t.Run("vector product wraps", func(t *testing.T) {
+		// 8 (uint64) * 536870912 == 2^32
+		type T struct {
+			L [][]uint64 `ssz-max:"10" ssz-size:"?,536870912"`
+		}
+		var v T
+		err := ds.UnmarshalSSZ(&v, []byte{4, 0, 0, 0, 0, 0, 0, 0})
+		if err == nil {
+			t.Fatal("expected descriptor error for wrapped vector size")
+		}
+	})
+
+	t.Run("vector in container", func(t *testing.T) {
+		type T struct {
+			A uint64
+			V []uint64 `ssz-size:"536870912"`
+			B uint64
+		}
+		var v T
+		err := ds.UnmarshalSSZ(&v, make([]byte, 16))
+		if err == nil {
+			t.Fatal("expected descriptor error for wrapped vector size")
+		}
+	})
+
+	t.Run("container sum wraps", func(t *testing.T) {
+		// Each field fits in uint32, the sum does not.
+		type T struct {
+			A []byte `ssz-size:"3000000000"`
+			B []byte `ssz-size:"3000000000"`
+		}
+		var v T
+		err := ds.UnmarshalSSZ(&v, make([]byte, 16))
+		if err == nil {
+			t.Fatal("expected descriptor error for wrapped container size")
+		}
+	})
+
+	t.Run("zero-size list element", func(t *testing.T) {
+		// A custom static type whose sizer reports 0 bytes is the only shape
+		// that can reach a static zero-size element descriptor; a list of it
+		// is undecodable (element count = region / 0) and must be rejected at
+		// descriptor build.
+		type T struct {
+			L []zeroSizeCustom `ssz-max:"4"`
+		}
+		var v T
+		err := ds.UnmarshalSSZ(&v, []byte{4, 0, 0, 0, 1, 2})
+		if err == nil {
+			t.Fatal("expected error for zero-size list element instead of a divide-by-zero panic")
+		}
+	})
+}
+
+// A bitlist region that cannot hold a valid encoding for the declared limit is
+// rejected before it is allocated; on the reader path the region length comes
+// from the caller-declared size, so allocating first would let an untrusted
+// framing length force an arbitrarily large allocation.
+func TestBitlistRegionExceedingLimitRejected(t *testing.T) {
+	type T struct {
+		B []byte `ssz-type:"bitlist" ssz-max:"64"` // at most 64/8+1 = 9 wire bytes
+	}
+	ds := NewDynSsz(nil)
+
+	// Buffer path: a 20-byte region can never be a valid Bitlist[64].
+	buf := append([]byte{4, 0, 0, 0}, make([]byte, 20)...)
+	buf[len(buf)-1] = 0x01
+	var dst T
+	if err := ds.UnmarshalSSZ(&dst, buf); err == nil {
+		t.Error("UnmarshalSSZ: expected error for bitlist region exceeding the limit")
+	}
+
+	// Reader path: 4 real bytes with a 400 MiB declared size.
+	err := ds.UnmarshalSSZReader(&dst, bytes.NewReader([]byte{4, 0, 0, 0}), 400<<20)
+	if err == nil {
+		t.Error("UnmarshalSSZReader: expected error for bitlist region exceeding the limit")
+	}
+}
+
+// Decoded time.Time values normalize to UTC in both engines; time.Time
+// equality includes the Location, so a Local-zone reflection result would
+// compare unequal to the generated decoders' UTC result for the same instant.
+func TestTimeDecodeLocationUTC(t *testing.T) {
+	type T struct {
+		T time.Time
+		X uint32
+	}
+	ds := NewDynSsz(nil, WithNoFastSsz())
+
+	src := &T{T: time.Unix(1234567890, 0).UTC(), X: 7}
+	enc, err := ds.MarshalSSZ(src)
+	if err != nil {
+		t.Fatalf("MarshalSSZ: %v", err)
+	}
+
+	var dst T
+	if err := ds.UnmarshalSSZ(&dst, enc); err != nil {
+		t.Fatalf("UnmarshalSSZ: %v", err)
+	}
+	if dst.T.Location() != time.UTC {
+		t.Errorf("decoded location = %v, want UTC", dst.T.Location())
+	}
+	if dst.T != src.T {
+		t.Errorf("decoded time %v != source %v", dst.T, src.T)
 	}
 }

@@ -663,12 +663,7 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 		}
 
 		if appendZero > 0 {
-			var zeroVal reflect.Value
-			if sourceType.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
-				zeroVal = reflect.New(sourceType.ElemDesc.Type.Elem())
-			} else {
-				zeroVal = reflect.New(sourceType.ElemDesc.Type).Elem()
-			}
+			zeroVal := newZeroElem(sourceType.ElemDesc)
 
 			for i := 0; i < appendZero; i++ {
 				err := ctx.buildRootFromType(sourceType.ElemDesc, zeroVal, hh, true, idt+2)
