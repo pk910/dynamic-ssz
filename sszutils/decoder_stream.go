@@ -492,9 +492,9 @@ func (e *StreamDecoder) Prefill() error {
 		if err := e.readMore(); err != nil {
 			return err
 		}
-		if e.bufferLen == before && !e.eofSeen {
-			// readMore made no progress and did not hit EOF (buffer full or
-			// allowance reached); stop rather than spin.
+		if e.bufferLen == before {
+			// No progress: EOF with nothing buffered, or readMore declining to
+			// read further. Stop rather than spin.
 			break
 		}
 	}
@@ -511,9 +511,9 @@ func (e *StreamDecoder) More() (bool, error) {
 	if e.bufferLen-e.bufferPos > 0 {
 		return true, nil
 	}
-	if e.eofSeen {
-		return false, nil
-	}
+	// No separate eofSeen check: readMore returns immediately once EOF is
+	// sticky, and after EOF an open region has already collapsed to a bounded
+	// one, so this path is only reached with the reader still live.
 	e.compact()
 	if err := e.readMore(); err != nil {
 		return false, err
@@ -544,36 +544,34 @@ func (e *StreamDecoder) DecodeRemaining(max int) ([]byte, error) {
 	}
 
 	// Open region: grow incrementally rather than trusting any declared size.
-	var out []byte
+	//
+	// The loop refills directly instead of asking More(), so every iteration
+	// either consumes at least one byte or breaks. Routing this through More()
+	// would make progress depend on its "reported data implies buffered data"
+	// invariant, which is exactly the kind of coupling that turns into a spin.
+	out := []byte{}
 	for {
-		more, err := e.More()
-		if err != nil {
-			return nil, err
-		}
-		if !more {
-			break
+		available := e.bufferLen - e.bufferPos
+		if e.lastLimit >= 0 {
+			// EOF collapsed this region to a bounded one mid-read; never
+			// consume past the limit.
+			available = min(available, e.lastLimit-e.position)
 		}
 
-		available := e.bufferLen - e.bufferPos
-		if available == 0 {
-			// More() answered from the region limit without touching the
-			// reader (possible once EOF collapsed the region to a bounded
-			// one), so refill explicitly instead of spinning.
+		if available <= 0 {
+			if e.eofSeen {
+				break
+			}
 			e.compact()
 			if err := e.readMore(); err != nil {
 				return nil, err
 			}
-			available = e.bufferLen - e.bufferPos
-			if available == 0 {
-				break
+			if e.bufferLen-e.bufferPos == 0 {
+				break // EOF with nothing left
 			}
+			continue
 		}
-		if e.lastLimit >= 0 && e.lastLimit-e.position < available {
-			available = e.lastLimit - e.position
-			if available <= 0 {
-				break
-			}
-		}
+
 		if max >= 0 && len(out)+available > max {
 			return nil, ErrPayloadTooLargeFn(len(out)+available, max)
 		}
@@ -581,9 +579,6 @@ func (e *StreamDecoder) DecodeRemaining(max int) ([]byte, error) {
 		out = append(out, e.buffer[e.bufferPos:e.bufferPos+available]...)
 		e.bufferPos += available
 		e.position += available
-	}
-	if out == nil {
-		out = []byte{}
 	}
 	return out, nil
 }

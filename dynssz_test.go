@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
@@ -4281,4 +4282,937 @@ func TestLargeUintHTRPadsShort(t *testing.T) {
 			t.Errorf("short root %x != padded root %x", short, padded)
 		}
 	})
+}
+
+// Unknown-size decoding reads a payload to EOF, so it is sensitive to two things
+// the rest of the suite never varies: how the reader chops up the data, and how
+// big the decoder's read buffer is relative to the payload. Every other
+// UnmarshalSSZReader test uses a bytes.Reader (which hands over everything in one
+// call) with the default buffer, which only ever exercises the path where the
+// initial fill observes EOF and the stream collapses to a known length.
+
+// chunkReader delivers at most n bytes per Read, without ever returning io.EOF
+// alongside data.
+type chunkReader struct {
+	data []byte
+	pos  int
+	n    int
+}
+
+func (r *chunkReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	n := min(min(len(p), r.n), len(r.data)-r.pos)
+	copy(p, r.data[r.pos:r.pos+n])
+	r.pos += n
+	return n, nil
+}
+
+// stallReader interleaves a (0, nil) no-op read before every real read. Such a
+// read is legal per the io.Reader contract and must not be mistaken for EOF.
+type stallReader struct {
+	r       io.Reader
+	pending bool
+}
+
+func (r *stallReader) Read(p []byte) (int, error) {
+	if !r.pending {
+		r.pending = true
+		return 0, nil
+	}
+	r.pending = false
+	return r.r.Read(p)
+}
+
+func unknownSizeReaders(data []byte) map[string]func() io.Reader {
+	return map[string]func() io.Reader{
+		"whole":       func() io.Reader { return bytes.NewReader(data) },
+		"oneByte":     func() io.Reader { return iotest.OneByteReader(bytes.NewReader(data)) },
+		"chunk3":      func() io.Reader { return &chunkReader{data: data, n: 3} },
+		"chunk7":      func() io.Reader { return &chunkReader{data: data, n: 7} },
+		"dataWithEOF": func() io.Reader { return iotest.DataErrReader(bytes.NewReader(data)) },
+		"stalling":    func() io.Reader { return &stallReader{r: bytes.NewReader(data)} },
+	}
+}
+
+// Buffer sizes straddling the payload: the small ones force genuine open
+// regions, the large one lets the initial fill observe EOF.
+var unknownSizeBufSizes = []int{8, 16, 61, 4096}
+
+type usInner struct {
+	A uint32
+	B []byte `ssz-max:"32"`
+}
+
+type usCases struct {
+	Fixed        uint64
+	FixedVec     [3]uint16
+	ListFixed    []uint32 `ssz-max:"16"`
+	ListUint64   []uint64 `ssz-max:"16"`
+	Bits         []byte   `ssz-type:"bitlist" ssz-max:"64"`
+	Nested       *usInner
+	ListDynamic  []*usInner `ssz-max:"8"`
+	Big          big.Int    `ssz-max:"33"`
+	TrailingList []byte     `ssz-max:"128"`
+}
+
+// A fixed-size root: nothing is dynamic, so the decode must still terminate
+// exactly at EOF.
+type usFixed struct {
+	A uint64
+	B [4]byte
+}
+
+// A root whose trailing region is a list of dynamic elements — the deepest
+// open-region chain: root -> last element -> that element's last field.
+type usDeepTail struct {
+	Head uint32
+	Tail []*usInner `ssz-max:"8"`
+}
+
+func usSamples(t *testing.T) map[string]any {
+	t.Helper()
+	return map[string]any{
+		"fixed": &usFixed{A: 0x0102030405060708, B: [4]byte{1, 2, 3, 4}},
+		"empty-tail": &usCases{
+			Fixed: 1, Bits: []byte{0x01}, Nested: &usInner{A: 1},
+			Big: *big.NewInt(0),
+		},
+		"full": &usCases{
+			Fixed:        0xdeadbeefcafe,
+			FixedVec:     [3]uint16{7, 8, 9},
+			ListFixed:    []uint32{1, 2, 3, 4, 5},
+			ListUint64:   []uint64{11, 22, 33},
+			Bits:         []byte{0xff, 0x03},
+			Nested:       &usInner{A: 42, B: []byte("nested payload")},
+			ListDynamic:  []*usInner{{A: 1, B: []byte("a")}, {A: 2, B: []byte("bb")}},
+			Big:          *big.NewInt(-1234567890),
+			TrailingList: []byte("this trailing list is comfortably longer than the small read buffers"),
+		},
+		"deep-tail": &usDeepTail{
+			Head: 9,
+			Tail: []*usInner{{A: 1, B: []byte("xx")}, {A: 2}, {A: 3, B: []byte("longer trailing element payload")}},
+		},
+		"deep-tail-single": &usDeepTail{Head: 1, Tail: []*usInner{{A: 5, B: []byte("only")}}},
+		"deep-tail-empty":  &usDeepTail{Head: 2, Tail: []*usInner{}},
+	}
+}
+
+// Decoding with size < 0 must produce exactly what the buffer path produces, for
+// every reader chunking behaviour and every buffer size.
+func TestUnknownSizeMatchesBufferPath(t *testing.T) {
+	for name, sample := range usSamples(t) {
+		t.Run(name, func(t *testing.T) {
+			ds := NewDynSsz(nil, WithNoFastSsz(), WithExtendedTypes())
+			want, err := ds.MarshalSSZ(sample)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+
+			for rname, mkReader := range unknownSizeReaders(want) {
+				for _, bufSize := range unknownSizeBufSizes {
+					t.Run(fmt.Sprintf("%s/buf%d", rname, bufSize), func(t *testing.T) {
+						dsr := NewDynSsz(nil, WithNoFastSsz(), WithExtendedTypes(), WithStreamReaderBufferSize(bufSize))
+
+						target := reflect.New(reflect.TypeOf(sample).Elem()).Interface()
+						if err := dsr.UnmarshalSSZReader(target, mkReader(), -1); err != nil {
+							t.Fatalf("unknown-size decode: %v", err)
+						}
+
+						got, err := dsr.MarshalSSZ(target)
+						if err != nil {
+							t.Fatalf("re-marshal: %v", err)
+						}
+						if !bytes.Equal(want, got) {
+							t.Fatalf("round-trip mismatch:\n want %x\n  got %x", want, got)
+						}
+					})
+				}
+			}
+		})
+	}
+}
+
+// Truncation must be rejected at every prefix, in every buffer regime. This is
+// the property most at risk from a read-until-EOF decoder: a short read must not
+// be mistaken for a well-formed end of input.
+func TestUnknownSizeRejectsTruncation(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithExtendedTypes())
+	sample := usSamples(t)["full"]
+	full, err := ds.MarshalSSZ(sample)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	for _, bufSize := range unknownSizeBufSizes {
+		dsr := NewDynSsz(nil, WithNoFastSsz(), WithExtendedTypes(), WithStreamReaderBufferSize(bufSize))
+		for cut := 0; cut < len(full); cut++ {
+			target := &usCases{}
+			streamErr := dsr.UnmarshalSSZReader(target, bytes.NewReader(full[:cut]), -1)
+
+			// The buffer path is the oracle: unknown-size decoding may report a
+			// different error, but never a different verdict.
+			bufErr := dsr.UnmarshalSSZ(&usCases{}, full[:cut])
+			if (bufErr == nil) != (streamErr == nil) {
+				t.Fatalf("buf=%d cut=%d: verdict differs: buffer=%v stream=%v", bufSize, cut, bufErr, streamErr)
+			}
+		}
+	}
+}
+
+// A reader that fails mid-payload must surface that error, not a decode error
+// that hides it.
+func TestUnknownSizeSurfacesReadError(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithExtendedTypes())
+	full, err := ds.MarshalSSZ(usSamples(t)["full"])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	boom := errors.New("read boom")
+	dsr := NewDynSsz(nil, WithNoFastSsz(), WithExtendedTypes(), WithStreamReaderBufferSize(8))
+	target := &usCases{}
+	err = dsr.UnmarshalSSZReader(target, iotest.TimeoutReader(&chunkReader{data: full, n: 4}), -1)
+	if err == nil {
+		t.Fatal("expected an error from a failing reader")
+	}
+
+	err = dsr.UnmarshalSSZReader(&usCases{}, errorReader{boom}, -1)
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want %v", err, boom)
+	}
+}
+
+// The maximum stream size bounds an unknown-size decode and cannot be disabled.
+func TestUnknownSizeMaxStreamSize(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithExtendedTypes())
+	full, err := ds.MarshalSSZ(usSamples(t)["full"])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	// A cap below the payload size must reject rather than truncate.
+	dsr := NewDynSsz(nil, WithNoFastSsz(), WithExtendedTypes(), WithStreamReaderBufferSize(8), WithMaxStreamSize(len(full)-1))
+	if err := dsr.UnmarshalSSZReader(&usCases{}, bytes.NewReader(full), -1); err == nil {
+		t.Fatal("expected an error when the payload exceeds the maximum stream size")
+	}
+
+	// A cap at exactly the payload size still decodes.
+	dsr = NewDynSsz(nil, WithNoFastSsz(), WithExtendedTypes(), WithStreamReaderBufferSize(8), WithMaxStreamSize(len(full)))
+	target := &usCases{}
+	if err := dsr.UnmarshalSSZReader(target, bytes.NewReader(full), -1); err != nil {
+		t.Fatalf("decode at exact cap: %v", err)
+	}
+
+	// A non-positive maximum falls back to the default rather than meaning
+	// "unlimited" — the bound is load-bearing and cannot be switched off.
+	dsr = NewDynSsz(nil, WithNoFastSsz(), WithExtendedTypes(), WithMaxStreamSize(0))
+	if err := dsr.UnmarshalSSZReader(&usCases{}, bytes.NewReader(full), -1); err != nil {
+		t.Fatalf("decode with default cap: %v", err)
+	}
+}
+
+// ssz-max must be enforced while reading, so an over-long list is rejected
+// before it is allocated rather than after.
+func TestUnknownSizeEnforcesListLimit(t *testing.T) {
+	type small struct {
+		L []uint32 `ssz-max:"2"`
+	}
+	type big struct {
+		L []uint32 `ssz-max:"64"`
+	}
+
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithExtendedTypes())
+	over, err := ds.MarshalSSZ(&big{L: []uint32{1, 2, 3, 4, 5}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	for _, bufSize := range unknownSizeBufSizes {
+		dsr := NewDynSsz(nil, WithNoFastSsz(), WithExtendedTypes(), WithStreamReaderBufferSize(bufSize))
+		err := dsr.UnmarshalSSZReader(&small{}, bytes.NewReader(over), -1)
+		if !errors.Is(err, sszutils.ErrListTooBig) {
+			t.Fatalf("buf=%d: err = %v, want ErrListTooBig", bufSize, err)
+		}
+	}
+}
+
+// A bitlist's terminator lives in the last byte of its region, so an unknown
+// length must not lose it.
+func TestUnknownSizeBitlistTermination(t *testing.T) {
+	type bl struct {
+		B []byte `ssz-type:"bitlist" ssz-max:"64"`
+	}
+
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithExtendedTypes())
+	for _, bufSize := range unknownSizeBufSizes {
+		dsr := NewDynSsz(nil, WithNoFastSsz(), WithExtendedTypes(), WithStreamReaderBufferSize(bufSize))
+
+		valid, err := ds.MarshalSSZ(&bl{B: []byte{0xff, 0x01}})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		target := &bl{}
+		if err := dsr.UnmarshalSSZReader(target, bytes.NewReader(valid), -1); err != nil {
+			t.Fatalf("buf=%d: valid bitlist: %v", bufSize, err)
+		}
+		if !bytes.Equal(target.B, []byte{0xff, 0x01}) {
+			t.Fatalf("buf=%d: got %x", bufSize, target.B)
+		}
+
+		// A zero last byte carries no terminator and must be rejected.
+		unterminated := append(append([]byte{}, valid[:4]...), 0xff, 0x00)
+		if err := dsr.UnmarshalSSZReader(&bl{}, bytes.NewReader(unterminated), -1); err == nil {
+			t.Fatalf("buf=%d: expected an error for an unterminated bitlist", bufSize)
+		}
+	}
+}
+
+// benchState stands in for a large beacon-state-shaped payload: a big trailing
+// list of fixed-size records preceded by some dynamic fields. The trailing list
+// is what an unknown-size decode has to consume without knowing where it ends.
+type benchRecord struct {
+	Index   uint64
+	Balance uint64
+	Key     [48]byte
+}
+
+type benchState struct {
+	Slot    uint64
+	Roots   [][32]byte    `ssz-max:"8192"`
+	Records []benchRecord `ssz-max:"1048576"`
+}
+
+func benchStatePayload(tb testing.TB, records int) ([]byte, *DynSsz) {
+	tb.Helper()
+	ds := NewDynSsz(nil, WithNoFastSsz())
+
+	st := &benchState{Slot: 12345}
+	for i := range 64 {
+		var r [32]byte
+		r[0] = byte(i)
+		st.Roots = append(st.Roots, r)
+	}
+	st.Records = make([]benchRecord, records)
+	for i := range st.Records {
+		st.Records[i] = benchRecord{Index: uint64(i), Balance: uint64(i) * 32}
+	}
+
+	data, err := ds.MarshalSSZ(st)
+	if err != nil {
+		tb.Fatalf("marshal: %v", err)
+	}
+	return data, ds
+}
+
+// BenchmarkUnmarshalReader compares the three decode paths on the same payload.
+// The interesting column is B/op: the buffer path and the old unknown-size
+// behaviour both have to hold the whole payload, while streaming does not.
+func BenchmarkUnmarshalReader(b *testing.B) {
+	for _, records := range []int{1000, 20000} {
+		data, ds := benchStatePayload(b, records)
+		dsStream := NewDynSsz(nil, WithNoFastSsz(), WithStreamReaderBufferSize(4096))
+
+		b.Run(fmt.Sprintf("records=%d/buffer", records), func(b *testing.B) {
+			b.SetBytes(int64(len(data)))
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				var out benchState
+				if err := ds.UnmarshalSSZ(&out, data); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+
+		b.Run(fmt.Sprintf("records=%d/stream-known", records), func(b *testing.B) {
+			b.SetBytes(int64(len(data)))
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				var out benchState
+				if err := dsStream.UnmarshalSSZReader(&out, bytes.NewReader(data), len(data)); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+
+		b.Run(fmt.Sprintf("records=%d/stream-unknown", records), func(b *testing.B) {
+			b.SetBytes(int64(len(data)))
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				var out benchState
+				if err := dsStream.UnmarshalSSZReader(&out, bytes.NewReader(data), -1); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+
+		// The behaviour unknown-size mode replaces: read it all, then decode.
+		b.Run(fmt.Sprintf("records=%d/readall-then-buffer", records), func(b *testing.B) {
+			b.SetBytes(int64(len(data)))
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				var out benchState
+				buf := new(bytes.Buffer)
+				if _, err := buf.ReadFrom(bytes.NewReader(data)); err != nil {
+					b.Fatal(err)
+				}
+				if err := ds.UnmarshalSSZ(&out, buf.Bytes()); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// The trailing region is the only one whose extent is unknown, so a construct
+// is only decoded by the read-to-EOF path when it sits last. These types put
+// each such construct in that position; the sample types above all end in a
+// byte list or a dynamic list, which take other paths.
+
+type usTailElems struct {
+	Head uint32
+	Tail []uint32 `ssz-max:"16"` // list of fixed non-byte elements
+}
+
+type usTailStructs struct {
+	Head uint32
+	Tail []usFixed `ssz-max:"8"` // list of fixed-size structs
+}
+
+type usTailPtrs struct {
+	Head uint32
+	Tail []*usFixed `ssz-max:"8"` // pointer elements are allocated per item
+}
+
+type usTailUnlimited struct {
+	Head uint32
+	Tail []uint32 // no ssz-max: bounded only by the stream size
+}
+
+type usTailString struct {
+	Head uint32
+	Tail string `ssz-max:"64"`
+}
+
+type usTailBitlist struct {
+	Head uint32
+	Tail []byte `ssz-type:"bitlist" ssz-max:"64"`
+}
+
+type usTailBigInt struct {
+	Head uint32
+	Tail big.Int `ssz-max:"33"`
+}
+
+type usTailOptional struct {
+	Head uint32
+	Tail *usFixed `ssz-type:"optional-list"`
+}
+
+// Each trailing construct must decode identically to the buffer path, across
+// buffer sizes that both force and avoid an open region.
+func TestUnknownSizeTrailingConstructs(t *testing.T) {
+	samples := map[string]any{
+		"list-of-uint32":       &usTailElems{Head: 1, Tail: []uint32{1, 2, 3, 4, 5, 6, 7}},
+		"list-of-uint32-empty": &usTailElems{Head: 2, Tail: []uint32{}},
+		"list-of-structs":      &usTailStructs{Head: 3, Tail: []usFixed{{A: 1, B: [4]byte{1}}, {A: 2}}},
+		"list-of-pointers":     &usTailPtrs{Head: 4, Tail: []*usFixed{{A: 9, B: [4]byte{9}}, {A: 8}}},
+		"list-unlimited":       &usTailUnlimited{Head: 5, Tail: []uint32{10, 20, 30, 40, 50, 60}},
+		"string":               &usTailString{Head: 6, Tail: "a trailing string longer than the small read buffers"},
+		"string-empty":         &usTailString{Head: 7, Tail: ""},
+		"bitlist":              &usTailBitlist{Head: 8, Tail: []byte{0xff, 0x03}},
+		"bigint":               &usTailBigInt{Head: 9, Tail: *big.NewInt(-987654321)},
+		"optional-present":     &usTailOptional{Head: 10, Tail: &usFixed{A: 5, B: [4]byte{5}}},
+		"optional-absent":      &usTailOptional{Head: 11, Tail: nil},
+	}
+
+	for name, sample := range samples {
+		t.Run(name, func(t *testing.T) {
+			ds := NewDynSsz(nil, WithNoFastSsz(), WithExtendedTypes())
+			want, err := ds.MarshalSSZ(sample)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+
+			for _, bufSize := range unknownSizeBufSizes {
+				dsr := NewDynSsz(nil, WithNoFastSsz(), WithExtendedTypes(), WithStreamReaderBufferSize(bufSize))
+				target := reflect.New(reflect.TypeOf(sample).Elem()).Interface()
+				if err := dsr.UnmarshalSSZReader(target, bytes.NewReader(want), -1); err != nil {
+					t.Fatalf("buf=%d: %v", bufSize, err)
+				}
+				got, err := dsr.MarshalSSZ(target)
+				if err != nil {
+					t.Fatalf("buf=%d re-marshal: %v", bufSize, err)
+				}
+				if !bytes.Equal(want, got) {
+					t.Fatalf("buf=%d: want %x, got %x", bufSize, want, got)
+				}
+
+				// Every truncation must reach the same verdict as the buffer path.
+				for cut := 0; cut < len(want); cut++ {
+					tt := reflect.New(reflect.TypeOf(sample).Elem()).Interface()
+					se := dsr.UnmarshalSSZReader(tt, bytes.NewReader(want[:cut]), -1)
+					be := dsr.UnmarshalSSZ(reflect.New(reflect.TypeOf(sample).Elem()).Interface(), want[:cut])
+					if (se == nil) != (be == nil) {
+						t.Fatalf("buf=%d cut=%d: verdict differs: stream=%v buffer=%v", bufSize, cut, se, be)
+					}
+				}
+			}
+		})
+	}
+}
+
+// ssz-max on a trailing list of fixed elements is enforced per element while
+// reading, so an over-long list is rejected before it is allocated.
+func TestUnknownSizeTrailingListLimit(t *testing.T) {
+	type wide struct {
+		Head uint32
+		Tail []uint32 `ssz-max:"64"`
+	}
+	ds := NewDynSsz(nil, WithNoFastSsz())
+	over, err := ds.MarshalSSZ(&wide{Head: 1, Tail: []uint32{1, 2, 3, 4, 5}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	for _, bufSize := range unknownSizeBufSizes {
+		dsr := NewDynSsz(nil, WithNoFastSsz(), WithStreamReaderBufferSize(bufSize))
+		if err := dsr.UnmarshalSSZReader(&usTailElems{}, bytes.NewReader(over), -1); err != nil {
+			t.Fatalf("buf=%d: within limit should decode: %v", bufSize, err)
+		}
+
+		type narrow struct {
+			Head uint32
+			Tail []uint32 `ssz-max:"2"`
+		}
+		err := dsr.UnmarshalSSZReader(&narrow{}, bytes.NewReader(over), -1)
+		if !errors.Is(err, sszutils.ErrListTooBig) {
+			t.Fatalf("buf=%d: err = %v, want ErrListTooBig", bufSize, err)
+		}
+	}
+}
+
+// A trailing list whose elements do not divide the remaining bytes evenly must
+// be rejected: the partial element runs into EOF.
+func TestUnknownSizeTrailingListMisaligned(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz())
+	valid, err := ds.MarshalSSZ(&usTailElems{Head: 1, Tail: []uint32{1, 2}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	misaligned := append(append([]byte{}, valid...), 0xff, 0xff)
+
+	for _, bufSize := range unknownSizeBufSizes {
+		dsr := NewDynSsz(nil, WithNoFastSsz(), WithStreamReaderBufferSize(bufSize))
+		streamErr := dsr.UnmarshalSSZReader(&usTailElems{}, bytes.NewReader(misaligned), -1)
+		bufErr := dsr.UnmarshalSSZ(&usTailElems{}, misaligned)
+		if (streamErr == nil) != (bufErr == nil) {
+			t.Fatalf("buf=%d: verdict differs: stream=%v buffer=%v", bufSize, streamErr, bufErr)
+		}
+		if streamErr == nil {
+			t.Fatalf("buf=%d: a misaligned trailing list was accepted", bufSize)
+		}
+	}
+}
+
+// A trailing big.Int or bitlist over its ssz-max must be rejected while
+// reading, and report the type's own limit error rather than a stream-size one.
+func TestUnknownSizeTrailingPayloadLimits(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithExtendedTypes())
+
+	t.Run("bigint", func(t *testing.T) {
+		type wide struct {
+			Head uint32
+			Tail big.Int `ssz-max:"64"`
+		}
+		big64 := new(big.Int).Lsh(big.NewInt(1), 8*40)
+		over, err := ds.MarshalSSZ(&wide{Head: 1, Tail: *big64})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		for _, bufSize := range unknownSizeBufSizes {
+			dsr := NewDynSsz(nil, WithNoFastSsz(), WithExtendedTypes(), WithStreamReaderBufferSize(bufSize))
+			err := dsr.UnmarshalSSZReader(&usTailBigInt{}, bytes.NewReader(over), -1)
+			if !errors.Is(err, sszutils.ErrListTooBig) {
+				t.Fatalf("buf=%d: err = %v, want ErrListTooBig", bufSize, err)
+			}
+		}
+	})
+
+	t.Run("bitlist", func(t *testing.T) {
+		type wide struct {
+			Head uint32
+			Tail []byte `ssz-type:"bitlist" ssz-max:"512"`
+		}
+		bits := make([]byte, 40)
+		bits[39] = 0x01
+		over, err := ds.MarshalSSZ(&wide{Head: 1, Tail: bits})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		for _, bufSize := range unknownSizeBufSizes {
+			dsr := NewDynSsz(nil, WithNoFastSsz(), WithExtendedTypes(), WithStreamReaderBufferSize(bufSize))
+			err := dsr.UnmarshalSSZReader(&usTailBitlist{}, bytes.NewReader(over), -1)
+			if err == nil {
+				t.Fatalf("buf=%d: an over-limit trailing bitlist was accepted", bufSize)
+			}
+		}
+	})
+}
+
+// A trailing list long enough to outgrow the initial allocation exercises the
+// geometric growth path, including the point where EOF makes the remaining
+// element count exact and the slice is sized to fit instead of doubled.
+type usTailLong struct {
+	Head uint32
+	Tail []uint32 `ssz-max:"1024"`
+}
+
+// A pointer-to-slice trailing list, an array-backed one, and a list whose
+// ssz-max is below the initial allocation.
+type usTailPtrSlice struct {
+	Head uint32
+	Tail *[]uint32 `ssz-max:"16"`
+}
+
+type usTailTinyMax struct {
+	Head uint32
+	Tail []uint32 `ssz-max:"3"`
+}
+
+func TestUnknownSizeTrailingListGrowth(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz())
+
+	// A dense sweep: whether the slice is grown by doubling or sized exactly
+	// depends on where EOF lands relative to the growth boundaries, which is a
+	// function of both the element count and the read buffer size.
+	growthBufSizes := []int{8, 12, 16, 24, 32, 48, 64, 96, 128}
+	for n := 1; n <= 40; n++ {
+		tail := make([]uint32, n)
+		for i := range tail {
+			tail[i] = uint32(i * 7)
+		}
+		want, err := ds.MarshalSSZ(&usTailLong{Head: 1, Tail: tail})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+
+		// Both reader shapes matter here. A plain reader signals EOF only on a
+		// separate zero-byte read, so the length becomes known just after the
+		// last element; DataErrReader returns the final bytes together with
+		// io.EOF, so the length can become known *at* a growth boundary, which
+		// is what lets the slice be sized exactly instead of doubled.
+		readers := map[string]func() io.Reader{
+			"plain":   func() io.Reader { return bytes.NewReader(want) },
+			"dataEOF": func() io.Reader { return iotest.DataErrReader(bytes.NewReader(want)) },
+		}
+		for rname, mkReader := range readers {
+			for _, bufSize := range growthBufSizes {
+				dsr := NewDynSsz(nil, WithNoFastSsz(), WithStreamReaderBufferSize(bufSize))
+				got := &usTailLong{}
+				if err := dsr.UnmarshalSSZReader(got, mkReader(), -1); err != nil {
+					t.Fatalf("n=%d %s buf=%d: %v", n, rname, bufSize, err)
+				}
+				if len(got.Tail) != n {
+					t.Fatalf("n=%d %s buf=%d: decoded %d elements", n, rname, bufSize, len(got.Tail))
+				}
+				for i := range tail {
+					if got.Tail[i] != tail[i] {
+						t.Fatalf("n=%d %s buf=%d: element %d = %d, want %d", n, rname, bufSize, i, got.Tail[i], tail[i])
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestUnknownSizeTrailingListShapes(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz())
+	slice := []uint32{1, 2, 3, 4, 5}
+
+	t.Run("pointer to slice", func(t *testing.T) {
+		want, err := ds.MarshalSSZ(&usTailPtrSlice{Head: 1, Tail: &slice})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		for _, bufSize := range unknownSizeBufSizes {
+			dsr := NewDynSsz(nil, WithNoFastSsz(), WithStreamReaderBufferSize(bufSize))
+			got := &usTailPtrSlice{}
+			if err := dsr.UnmarshalSSZReader(got, bytes.NewReader(want), -1); err != nil {
+				t.Fatalf("buf=%d: %v", bufSize, err)
+			}
+			if got.Tail == nil || len(*got.Tail) != len(slice) {
+				t.Fatalf("buf=%d: got %v", bufSize, got.Tail)
+			}
+		}
+	})
+
+	// An ssz-max below the initial allocation must clamp it rather than
+	// over-allocating and then failing.
+	t.Run("ssz-max below the initial allocation", func(t *testing.T) {
+		want, err := ds.MarshalSSZ(&usTailTinyMax{Head: 1, Tail: []uint32{1, 2, 3}})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		for _, bufSize := range unknownSizeBufSizes {
+			dsr := NewDynSsz(nil, WithNoFastSsz(), WithStreamReaderBufferSize(bufSize))
+			got := &usTailTinyMax{}
+			if err := dsr.UnmarshalSSZReader(got, bytes.NewReader(want), -1); err != nil {
+				t.Fatalf("buf=%d: %v", bufSize, err)
+			}
+			if len(got.Tail) != 3 {
+				t.Fatalf("buf=%d: got %v", bufSize, got.Tail)
+			}
+		}
+	})
+
+	// A trailing string over its ssz-max is rejected while reading.
+	t.Run("string over ssz-max", func(t *testing.T) {
+		type wide struct {
+			Head uint32
+			Tail string `ssz-max:"512"`
+		}
+		over, err := ds.MarshalSSZ(&wide{Head: 1, Tail: string(make([]byte, 200))})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		for _, bufSize := range unknownSizeBufSizes {
+			dsr := NewDynSsz(nil, WithNoFastSsz(), WithStreamReaderBufferSize(bufSize))
+			err := dsr.UnmarshalSSZReader(&usTailString{}, bytes.NewReader(over), -1)
+			if !errors.Is(err, sszutils.ErrListTooBig) {
+				t.Fatalf("buf=%d: err = %v, want ErrListTooBig", bufSize, err)
+			}
+		}
+	})
+}
+
+// Growth must clamp to ssz-max rather than overshooting it, and an array-backed
+// trailing list (which cannot grow) falls back to materialising the region.
+func TestUnknownSizeTrailingListClampAndArray(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz())
+
+	t.Run("growth clamped to ssz-max", func(t *testing.T) {
+		type clamped struct {
+			Head uint32
+			Tail []uint32 `ssz-max:"12"`
+		}
+		tail := make([]uint32, 12)
+		for i := range tail {
+			tail[i] = uint32(i)
+		}
+		want, err := ds.MarshalSSZ(&clamped{Head: 1, Tail: tail})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		for _, bufSize := range []int{8, 16, 24, 32} {
+			dsr := NewDynSsz(nil, WithNoFastSsz(), WithStreamReaderBufferSize(bufSize))
+			got := &clamped{}
+			if err := dsr.UnmarshalSSZReader(got, bytes.NewReader(want), -1); err != nil {
+				t.Fatalf("buf=%d: %v", bufSize, err)
+			}
+			if len(got.Tail) != 12 {
+				t.Fatalf("buf=%d: decoded %d elements", bufSize, len(got.Tail))
+			}
+		}
+	})
+
+	// A reader that fails partway through a trailing byte list must surface the
+	// read error rather than a decode error.
+	t.Run("read error in a trailing byte list", func(t *testing.T) {
+		want := errors.New("boom")
+		payload, err := ds.MarshalSSZ(&usTailString{Head: 1, Tail: "some trailing text"})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		dsr := NewDynSsz(nil, WithNoFastSsz(), WithStreamReaderBufferSize(8))
+		err = dsr.UnmarshalSSZReader(&usTailString{}, &failAfterReader{data: payload, after: 10, err: want}, -1)
+		if !errors.Is(err, want) {
+			t.Fatalf("err = %v, want %v", err, want)
+		}
+	})
+
+	// The same for a trailing list of fixed elements, which reads element by
+	// element rather than in bulk.
+	t.Run("read error in a trailing element list", func(t *testing.T) {
+		want := errors.New("boom")
+		payload, err := ds.MarshalSSZ(&usTailElems{Head: 1, Tail: []uint32{1, 2, 3, 4, 5, 6}})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		dsr := NewDynSsz(nil, WithNoFastSsz(), WithStreamReaderBufferSize(8))
+		err = dsr.UnmarshalSSZReader(&usTailElems{}, &failAfterReader{data: payload, after: 12, err: want}, -1)
+		if !errors.Is(err, want) {
+			t.Fatalf("err = %v, want %v", err, want)
+		}
+	})
+}
+
+// failAfterReader serves data up to a point, then fails.
+type failAfterReader struct {
+	data  []byte
+	pos   int
+	after int
+	err   error
+}
+
+func (r *failAfterReader) Read(p []byte) (int, error) {
+	if r.pos >= r.after {
+		return 0, r.err
+	}
+	n := min(len(p), r.after-r.pos)
+	n = min(n, len(r.data)-r.pos)
+	copy(p, r.data[r.pos:r.pos+n])
+	r.pos += n
+	return n, nil
+}
+
+// A delegate takes a []byte, so it cannot consume an open region incrementally:
+// as a trailing field it forces the region to be materialised first.
+type usDynDelegate struct {
+	Data []byte `ssz-max:"64"`
+}
+
+func (d *usDynDelegate) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return append(buf, d.Data...), nil
+}
+
+func (d *usDynDelegate) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	d.Data = append([]byte(nil), buf...)
+	return nil
+}
+
+func (d *usDynDelegate) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return len(d.Data) }
+
+type usTailDelegate struct {
+	Head uint32
+	Tail *usDynDelegate
+}
+
+func TestUnknownSizeTrailingDelegate(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz())
+	src := &usTailDelegate{Head: 7, Tail: &usDynDelegate{Data: []byte("a delegated trailing payload")}}
+	want, err := ds.MarshalSSZ(src)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	for _, bufSize := range unknownSizeBufSizes {
+		dsr := NewDynSsz(nil, WithNoFastSsz(), WithStreamReaderBufferSize(bufSize))
+		got := &usTailDelegate{}
+		if err := dsr.UnmarshalSSZReader(got, bytes.NewReader(want), -1); err != nil {
+			t.Fatalf("buf=%d: %v", bufSize, err)
+		}
+		if got.Tail == nil || !bytes.Equal(got.Tail.Data, src.Tail.Data) {
+			t.Fatalf("buf=%d: got %q", bufSize, got.Tail)
+		}
+	}
+}
+
+// A fixed-length vector of dynamic elements as the trailing region: the vector
+// length comes from the type, but the last element still runs to EOF.
+type usTailDynVector struct {
+	Head uint32
+	Tail [3]*usInner
+}
+
+func TestUnknownSizeTrailingDynamicVector(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz())
+	src := &usTailDynVector{Head: 4, Tail: [3]*usInner{
+		{A: 1, B: []byte("one")},
+		{A: 2, B: nil},
+		{A: 3, B: []byte("a longer trailing payload")},
+	}}
+	want, err := ds.MarshalSSZ(src)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	for _, bufSize := range unknownSizeBufSizes {
+		dsr := NewDynSsz(nil, WithNoFastSsz(), WithStreamReaderBufferSize(bufSize))
+		got := &usTailDynVector{}
+		if err := dsr.UnmarshalSSZReader(got, bytes.NewReader(want), -1); err != nil {
+			t.Fatalf("buf=%d: %v", bufSize, err)
+		}
+		re, err := dsr.MarshalSSZ(got)
+		if err != nil {
+			t.Fatalf("buf=%d re-marshal: %v", bufSize, err)
+		}
+		if !bytes.Equal(want, re) {
+			t.Fatalf("buf=%d: want %x got %x", bufSize, want, re)
+		}
+
+		// Every truncation must reach the same verdict as the buffer path.
+		for cut := 0; cut < len(want); cut++ {
+			se := dsr.UnmarshalSSZReader(&usTailDynVector{}, bytes.NewReader(want[:cut]), -1)
+			be := dsr.UnmarshalSSZ(&usTailDynVector{}, want[:cut])
+			if (se == nil) != (be == nil) {
+				t.Fatalf("buf=%d cut=%d: verdict differs: stream=%v buffer=%v", bufSize, cut, se, be)
+			}
+		}
+	}
+}
+
+// A trailing region that its type does not fully consume must be rejected. An
+// optional-list with a fixed-size element reads exactly one element, so any
+// bytes after it are trailing data that the end-of-input assertion has to catch.
+func TestUnknownSizeTrailingUnderConsumption(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz())
+	want, err := ds.MarshalSSZ(&usTailOptional{Head: 1, Tail: &usFixed{A: 9, B: [4]byte{1, 2, 3, 4}}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	over := append(append([]byte{}, want...), 0xff)
+
+	for _, bufSize := range unknownSizeBufSizes {
+		dsr := NewDynSsz(nil, WithNoFastSsz(), WithStreamReaderBufferSize(bufSize))
+		streamErr := dsr.UnmarshalSSZReader(&usTailOptional{}, bytes.NewReader(over), -1)
+		bufErr := dsr.UnmarshalSSZ(&usTailOptional{}, over)
+		if (streamErr == nil) != (bufErr == nil) {
+			t.Fatalf("buf=%d: verdict differs: stream=%v buffer=%v", bufSize, streamErr, bufErr)
+		}
+		if streamErr == nil {
+			t.Fatalf("buf=%d: an under-consumed trailing region was accepted", bufSize)
+		}
+	}
+}
+
+// A reader that fails while the decoder is probing the trailing region must
+// surface that error. The probe happens at several points: the emptiness test
+// for dynamic and optional lists, and the end-of-input assertion that closes an
+// open region. Sweeping the failure point covers all of them.
+func TestUnknownSizeTrailingProbeReadErrors(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz())
+	boom := errors.New("boom")
+
+	samples := map[string]any{
+		"dynamic-list":   &usDeepTail{Head: 1, Tail: []*usInner{{A: 1, B: []byte("xx")}, {A: 2, B: []byte("yy")}}},
+		"dynamic-vector": &usTailDynVector{Head: 2, Tail: [3]*usInner{{A: 1}, {A: 2}, {A: 3, B: []byte("zz")}}},
+		"optional-list":  &usTailOptional{Head: 3, Tail: &usFixed{A: 9}},
+		"element-list":   &usTailElems{Head: 4, Tail: []uint32{1, 2, 3, 4}},
+	}
+
+	for name, sample := range samples {
+		t.Run(name, func(t *testing.T) {
+			payload, err := ds.MarshalSSZ(sample)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			for _, bufSize := range []int{8, 16} {
+				for after := 1; after <= len(payload); after++ {
+					dsr := NewDynSsz(nil, WithNoFastSsz(), WithStreamReaderBufferSize(bufSize))
+					target := reflect.New(reflect.TypeOf(sample).Elem()).Interface()
+					err := dsr.UnmarshalSSZReader(target, &failAfterReader{data: payload, after: after, err: boom}, -1)
+					if err == nil {
+						t.Fatalf("buf=%d after=%d: a truncated-by-error stream decoded cleanly", bufSize, after)
+					}
+					// The reader's error must not be swallowed by a decode error
+					// when it happens before the payload is exhausted.
+					if after < len(payload) && !errors.Is(err, boom) && !errors.Is(err, sszutils.ErrUnexpectedEOF) {
+						t.Fatalf("buf=%d after=%d: unexpected err %v", bufSize, after, err)
+					}
+				}
+			}
+		})
+	}
 }

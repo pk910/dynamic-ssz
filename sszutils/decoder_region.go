@@ -20,18 +20,18 @@ func FinishRegion(dec Decoder) error {
 		return err
 	}
 	diff := dec.PopLimit()
-	if more {
-		if diff <= 0 {
-			// Open region: the leftover count is unknown, but its presence is
-			// established.
-			diff = 1
-		}
-		return ErrTrailingDataFn(diff)
+	if !more {
+		// No data left in the region, so nothing was left unconsumed: for a
+		// bounded region More() and PopLimit() read the same limit, and for an
+		// open region PopLimit() reports 0 by definition.
+		return nil
 	}
-	if diff != 0 {
-		return ErrTrailingDataFn(diff)
+	if diff <= 0 {
+		// Open region: the leftover count is unknown, but its presence is
+		// established.
+		diff = 1
 	}
-	return nil
+	return ErrTrailingDataFn(diff)
 }
 
 // FinishStream asserts that a decoder has consumed its entire input. It is the

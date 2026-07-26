@@ -974,12 +974,14 @@ func (ctx *ReflectionCtx) unmarshalListUntilEOF(targetType *ssztypes.TypeDescrip
 	isByteList := targetType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 && fieldType.Type.Kind() == reflect.Uint8
 	isString := targetType.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0
 	if isByteList || isString {
+		// maxItems is passed as the read cap, so an over-long payload fails
+		// inside DecodeRemaining before it is allocated; no post-check needed.
 		buf, err := decoder.DecodeRemaining(maxItems)
 		if err != nil {
+			if errors.Is(err, sszutils.ErrStreamTooLarge) {
+				return sszutils.ErrListLengthFn(maxItems+1, targetType.Limit)
+			}
 			return err
-		}
-		if maxItems >= 0 && len(buf) > maxItems {
-			return sszutils.ErrListLengthFn(len(buf), targetType.Limit)
 		}
 		if isString {
 			targetValue.SetString(string(buf))
@@ -990,8 +992,10 @@ func (ctx *ReflectionCtx) unmarshalListUntilEOF(targetType *ssztypes.TypeDescrip
 	}
 
 	if targetType.Kind != reflect.Slice {
-		// Non-slice backing (e.g. an array-typed list) cannot grow, so fall back
-		// to materialising the region and decoding it as a bounded one.
+		// Defensive: the type cache rejects a list that is not slice-backed (a
+		// string list is handled above), so this is unreachable today. Should
+		// such a type ever be admitted it cannot grow, so materialise the region
+		// and decode it as a bounded one rather than panicking in MakeSlice.
 		buf, err := decoder.DecodeRemaining(-1)
 		if err != nil {
 			return err
@@ -1024,10 +1028,10 @@ func (ctx *ReflectionCtx) unmarshalListUntilEOF(targetType *ssztypes.TypeDescrip
 		}
 
 		if count == newValue.Len() {
-			newLen := newValue.Len() * 2
-			if newLen < 8 {
-				newLen = 8
-			}
+			// max() rather than a floor: it keeps the growth strictly ahead of
+			// count, so the loop always has room for the element it is about to
+			// decode no matter how small the slice started.
+			newLen := max(newValue.Len()*2, count+1)
 			// More() may have reached EOF, which makes the region length exact.
 			// Once that happens the remaining element count is known, so the
 			// slice can be sized to fit rather than doubled past it.
