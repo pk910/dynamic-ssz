@@ -12,6 +12,7 @@ import (
 	dynssz "github.com/pk910/dynamic-ssz"
 	"github.com/pk910/dynamic-ssz/codegen"
 	"github.com/pk910/dynamic-ssz/codegen/tests/views"
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 type TestPayload struct {
@@ -1345,6 +1346,9 @@ func TestCodegenExcludedFields(t *testing.T) {
 // The generated sizer cannot return an error, so an unknown selector reports
 // size 0 (matching its mismatched-data convention) instead of a
 // plausible-looking partial size; the marshalers reject the value outright.
+// Without generated code (this suite also runs before go generate), the
+// reflection sizer serves the call and reports the invalid selector as an
+// error instead.
 func TestCodegenUnionInvalidSelectorSize(t *testing.T) {
 	ds := dynssz.NewDynSsz(nil)
 
@@ -1353,13 +1357,17 @@ func TestCodegenUnionInvalidSelectorSize(t *testing.T) {
 	v.U.Data = uint32(1)
 
 	size, err := ds.SizeSSZ(&v)
-	if err != nil {
-		t.Fatalf("size: %v", err)
-	}
-	// The whole value reports size 0: an un-sizable union aborts the sizer,
-	// matching the mismatched-data convention.
-	if size != 0 {
-		t.Errorf("expected size 0 for an un-sizable union, got %d", size)
+	if _, hasGeneratedCode := any(&v).(sszutils.DynamicSizer); hasGeneratedCode {
+		if err != nil {
+			t.Fatalf("size: %v", err)
+		}
+		// The whole value reports size 0: an un-sizable union aborts the
+		// sizer, matching the mismatched-data convention.
+		if size != 0 {
+			t.Errorf("expected size 0 for an un-sizable union, got %d", size)
+		}
+	} else if err == nil {
+		t.Fatal("reflection sizing should reject the invalid selector")
 	}
 
 	if _, err := ds.MarshalSSZ(&v); err == nil {
