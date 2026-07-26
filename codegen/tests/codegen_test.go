@@ -1596,3 +1596,85 @@ func TestCodegenBigIntDecodeValidation(t *testing.T) {
 		})
 	}
 }
+
+// Generated HashTreeRoot must pad short vectors into library-owned buffers:
+// the caller's backing array stays untouched and the root is independent of
+// whether the fields alias one array. Checked against reflection.
+func TestCodegenAliasedVectorHashing(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+	refDs := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+
+	shared := make([]byte, 32)
+	for i := range shared {
+		shared[i] = 0xAB
+	}
+	before := bytes.Clone(shared)
+
+	aliased := &AliasedVecPair{V: shared[0:2:32], W: shared[4:12:32]}
+	unaliased := &AliasedVecPair{V: []byte{0xAB, 0xAB}, W: bytes.Repeat([]byte{0xAB}, 8)}
+
+	rootAliased, err := ds.HashTreeRoot(aliased)
+	if err != nil {
+		t.Fatalf("HashTreeRoot aliased: %v", err)
+	}
+	if !bytes.Equal(shared, before) {
+		t.Fatalf("generated HashTreeRoot mutated caller memory:\n before: %x\n after:  %x", before, shared)
+	}
+
+	rootUnaliased, err := ds.HashTreeRoot(unaliased)
+	if err != nil {
+		t.Fatalf("HashTreeRoot unaliased: %v", err)
+	}
+	if rootAliased != rootUnaliased {
+		t.Errorf("aliasing changed the generated root: %x != %x", rootAliased, rootUnaliased)
+	}
+
+	refRoot, err := refDs.HashTreeRoot(&AliasedVecPair{V: shared[0:2:32], W: shared[4:12:32]})
+	if err != nil {
+		t.Fatalf("reflection HashTreeRoot: %v", err)
+	}
+	if refRoot != rootUnaliased {
+		t.Errorf("generated root diverges from reflection: %x != %x", rootUnaliased, refRoot)
+	}
+	if !bytes.Equal(shared, before) {
+		t.Fatalf("reflection HashTreeRoot mutated caller memory")
+	}
+}
+
+// Generated SizeSSZ cannot return errors, so invalid union values size as the
+// 0 sentinel — including a fixed-size variant holding mismatched data, which
+// previously fabricated the declared fixed size. Reflection errors instead.
+func TestCodegenUnionFixedVariantSizeValidation(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+
+	var v ClassicUnionPtrVariant
+	v.U.Variant = 0 // V1 uint64: a fixed-size variant
+	v.U.Data = "wrong"
+
+	if sizer, generated := any(&v).(sszutils.DynamicSizer); generated {
+		if got := sizer.SizeSSZDyn(ds); got != 0 {
+			t.Errorf("generated SizeSSZ = %d for mismatched fixed-variant data, want 0", got)
+		}
+	}
+
+	refDs := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+	if _, err := refDs.SizeSSZ(&v); err == nil {
+		t.Error("reflection should reject mismatched fixed-variant data")
+	}
+
+	// A matching value sizes identically on both engines.
+	var ok ClassicUnionPtrVariant
+	ok.U.Variant = 0
+	ok.U.Data = uint64(7)
+	genSize, err := ds.SizeSSZ(&ok)
+	if err != nil {
+		t.Fatalf("generated SizeSSZ: %v", err)
+	}
+	refSize, err := refDs.SizeSSZ(&ok)
+	if err != nil {
+		t.Fatalf("reflection SizeSSZ: %v", err)
+	}
+	if genSize != refSize {
+		t.Errorf("size mismatch for valid value: generated=%d reflection=%d", genSize, refSize)
+	}
+}

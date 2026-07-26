@@ -3889,6 +3889,30 @@ func TestDescriptorSizeOverflowRejected(t *testing.T) {
 		}
 	})
 
+	t.Run("multi-dim product wraps", func(t *testing.T) {
+		// 8 * 65536 * 65536 wraps; each nesting level guards its own product,
+		// and ValidateType shares the guarded build path.
+		type T struct {
+			V [][]uint64 `ssz-size:"65536,65536"`
+		}
+		if err := ds.ValidateType(reflect.TypeOf(T{})); err == nil {
+			t.Fatal("ValidateType should reject the wrapped multi-dim size")
+		}
+		var v T
+		if err := ds.UnmarshalSSZ(&v, make([]byte, 8)); err == nil {
+			t.Fatal("expected descriptor error for wrapped multi-dim size")
+		}
+	})
+
+	t.Run("three-dim product wraps", func(t *testing.T) {
+		type T struct {
+			V [][][]uint32 `ssz-size:"4096,4096,4096"`
+		}
+		if err := ds.ValidateType(reflect.TypeOf(T{})); err == nil {
+			t.Fatal("ValidateType should reject the wrapped three-dim size")
+		}
+	})
+
 	t.Run("zero-size list element", func(t *testing.T) {
 		// A custom static type whose sizer reports 0 bytes is the only shape
 		// that can reach a static zero-size element descriptor; a list of it
@@ -3955,5 +3979,137 @@ func TestTimeDecodeLocationUTC(t *testing.T) {
 	}
 	if dst.T != src.T {
 		t.Errorf("decoded time %v != source %v", dst.T, src.T)
+	}
+}
+
+// HashTreeRoot must never write into the caller's memory: zero padding for a
+// short vector goes into a library-owned buffer, and the root of a value must
+// not depend on whether its fields alias a shared backing array.
+func TestHashTreeRootDoesNotMutateCallerMemory(t *testing.T) {
+	type VecHolder struct {
+		Data []byte `ssz-size:"32"`
+	}
+	ds := NewDynSsz(nil)
+
+	backing := make([]byte, 64)
+	for i := range backing {
+		backing[i] = 0xAA
+	}
+	before := bytes.Clone(backing)
+
+	if _, err := ds.HashTreeRoot(&VecHolder{Data: backing[:10:64]}); err != nil {
+		t.Fatalf("HashTreeRoot: %v", err)
+	}
+	if !bytes.Equal(backing, before) {
+		t.Fatalf("HashTreeRoot mutated caller memory:\n before: %x\n after:  %x", before, backing)
+	}
+
+	type TwoShortVecs struct {
+		V []byte `ssz-size:"8"`
+		W []byte `ssz-size:"8"`
+	}
+	shared := make([]byte, 32)
+	for i := range shared {
+		shared[i] = 0xAB
+	}
+	aliased := &TwoShortVecs{V: shared[0:2:32], W: shared[4:12:32]}
+	unaliased := &TwoShortVecs{V: []byte{0xAB, 0xAB}, W: bytes.Repeat([]byte{0xAB}, 8)}
+
+	rootA, err := ds.HashTreeRoot(aliased)
+	if err != nil {
+		t.Fatalf("HashTreeRoot aliased: %v", err)
+	}
+	rootU, err := ds.HashTreeRoot(unaliased)
+	if err != nil {
+		t.Fatalf("HashTreeRoot unaliased: %v", err)
+	}
+	if rootA != rootU {
+		t.Errorf("aliasing changed the root of logically identical values: %x != %x", rootA, rootU)
+	}
+}
+
+// The unit of a size dimension comes from the tag that produced the resolved
+// value; it must not flip depending on whether the number happens to equal
+// the static fallback.
+func TestSizeTagUnitMerge(t *testing.T) {
+	type T struct {
+		V []byte `ssz-bitsize:"64" dynssz-size:"S"`
+	}
+	// dynssz-size names bytes: every resolved value yields a byte vector of
+	// that many bytes, including S=64 (== the static bit count).
+	for _, s := range []uint64{63, 64, 65} {
+		ds := NewDynSsz(map[string]any{"S": s})
+		sz, err := ds.SizeSSZ(&T{})
+		if err != nil {
+			t.Errorf("S=%d: %v", s, err)
+			continue
+		}
+		if sz != int(s) {
+			t.Errorf("S=%d: size %d, want %d bytes", s, sz, s)
+		}
+	}
+
+	// An unresolvable expression shares the static hint (and its unit), so a
+	// unit mismatch between the tag families is rejected.
+	type U struct {
+		V []byte `ssz-size:"8" dynssz-bitsize:"UNKNOWN_SPEC"`
+	}
+	ds := NewDynSsz(nil)
+	if _, err := ds.SizeSSZ(&U{}); err == nil {
+		t.Error("expected error for conflicting size units")
+	}
+}
+
+// Value sizing accumulates in uint64 and rejects totals beyond the uint32 SSZ
+// size range instead of wrapping; the wrap here involves a runtime slice
+// length, so descriptor-build guards cannot catch it.
+func TestSizeSSZValueOverflowRejected(t *testing.T) {
+	type InnerHuge struct {
+		Data []byte `ssz-size:"268435456"`
+	}
+	type OuterList struct {
+		Items []InnerHuge `ssz-max:"64"`
+	}
+	ds := NewDynSsz(nil)
+
+	sz, err := ds.SizeSSZ(&OuterList{Items: make([]InnerHuge, 1)})
+	if err != nil || sz != 4+268435456 {
+		t.Fatalf("n=1: size=%d err=%v", sz, err)
+	}
+	if _, err := ds.SizeSSZ(&OuterList{Items: make([]InnerHuge, 17)}); err == nil {
+		t.Error("expected error for a value size exceeding the uint32 range")
+	}
+}
+
+// SizeSSZ enforces the declared vector length like MarshalSSZ and
+// HashTreeRoot do (arrays truncate instead, matching the other passes).
+func TestSizeSSZRejectsOverLengthVector(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	type DynElem struct {
+		D []byte `ssz-max:"8"`
+	}
+	type OverVecDyn struct {
+		V []DynElem `ssz-size:"2"`
+	}
+	if _, err := ds.SizeSSZ(&OverVecDyn{V: make([]DynElem, 5)}); err == nil {
+		t.Error("SizeSSZ should reject an over-length dynamic-element vector")
+	}
+
+	// A fully static field is sized from the descriptor without walking the
+	// value, so the over-length slice surfaces at marshal (whose output-length
+	// guard also protects the buffer), not in SizeSSZ.
+	type OverVecFixed struct {
+		V []uint64 `ssz-size:"2"`
+	}
+	if _, err := ds.MarshalSSZ(&OverVecFixed{V: []uint64{1, 2, 3}}); err == nil {
+		t.Error("MarshalSSZ should reject an over-length fixed-element vector")
+	}
+
+	type ArrVec struct {
+		F [10]uint8 `ssz-size:"5"`
+	}
+	if sz, err := ds.SizeSSZ(&ArrVec{}); err != nil || sz != 5 {
+		t.Errorf("array truncation changed: size=%d err=%v", sz, err)
 	}
 }

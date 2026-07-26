@@ -16,6 +16,7 @@ import (
 	dynssz "github.com/pk910/dynamic-ssz"
 	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
+	"golang.org/x/tools/go/packages"
 )
 
 // zeroFieldContainer is an SSZ-invalid container with no encodable fields (only
@@ -1087,6 +1088,12 @@ type genBigIntMaxHolder struct {
 	B big.Int `ssz-max:"5"`
 }
 
+// genShortVecHolder carries a slice byte vector whose generated hashing pads
+// short values.
+type genShortVecHolder struct {
+	V []byte `ssz-size:"8"`
+}
+
 // Scalar roots emit an exact-length check (a scalar root consumes the whole
 // buffer), and a limited big.Int emits the decode-side ssz-max check.
 func TestGenerateScalarRootLenChecks(t *testing.T) {
@@ -1105,6 +1112,7 @@ func TestGenerateScalarRootLenChecks(t *testing.T) {
 		WithReflectType(reflect.TypeFor[genTopF32]()),
 		WithReflectType(reflect.TypeFor[genTopF64]()),
 		WithReflectType(reflect.TypeFor[genBigIntMaxHolder]()),
+		WithReflectType(reflect.TypeFor[genShortVecHolder]()),
 	)
 
 	files, err := cg.GenerateToMap()
@@ -1123,4 +1131,143 @@ func TestGenerateScalarRootLenChecks(t *testing.T) {
 	if !strings.Contains(code, "exceeds maximum") {
 		t.Error("limited big.Int does not emit the decode-side ssz-max check")
 	}
+	// The hashing path caps the slice before zero-padding so the padding
+	// cannot land in the caller's backing array.
+	if !strings.Contains(code, "val := t.V[:len(t.V):len(t.V)]") {
+		t.Error("short-vector hashing does not cap the slice before padding")
+	}
+}
+
+// genBox is a generic type; its instantiations cannot receive generated
+// methods (the emitted receiver would declare a type parameter shadowing the
+// argument).
+type genBox[T any] struct {
+	V T
+}
+
+// genSliceBase/genSliceView model a named-slice base type with a named-slice
+// view; both sides are pointer-wrapped alike during analysis.
+type genSliceBase []uint64
+
+type genSliceView []uint64
+
+func TestGenerateViewEdgeCases(t *testing.T) {
+	baseType := reflect.TypeFor[SimpleTestStruct]()
+	viewType := reflect.TypeFor[SimpleViewStruct]()
+
+	t.Run("GenericInstantiationRejected", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_box.go", WithReflectType(reflect.TypeFor[genBox[uint64]]()))
+		_, err := cg.GenerateToMap()
+		if err == nil || !strings.Contains(err.Error(), "generic type instantiation") {
+			t.Fatalf("expected generic-instantiation error, got %v", err)
+		}
+	})
+
+	t.Run("DuplicateViewRejected", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_dupviews.go",
+			WithReflectType(baseType, WithReflectViewTypes(viewType, viewType)),
+		)
+		_, err := cg.GenerateToMap()
+		if err == nil || !strings.Contains(err.Error(), "listed more than once") {
+			t.Fatalf("expected duplicate-view error, got %v", err)
+		}
+	})
+
+	t.Run("NamedSliceView", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_sliceview.go",
+			WithReflectType(reflect.TypeFor[genSliceBase](), WithReflectViewTypes(reflect.TypeFor[genSliceView]())),
+		)
+		if _, err := cg.GenerateToMap(); err != nil {
+			t.Fatalf("named-slice view should generate: %v", err)
+		}
+	})
+
+	t.Run("ViewMethodsSkippedWithoutDynExpressions", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_views_nodyn.go",
+			WithReflectType(baseType, WithoutDynamicExpressions(), WithReflectViewTypes(viewType)),
+		)
+		files, err := cg.GenerateToMap()
+		if err != nil {
+			t.Fatalf("generate: %v", err)
+		}
+		code := files["gen_views_nodyn.go"]
+		if strings.Contains(code, "DynView") {
+			t.Error("view methods emitted despite WithoutDynamicExpressions; they would bake default spec sizes")
+		}
+	})
+}
+
+// The codegen ParseTags path drops into the same shared-hint merge; a unit
+// mismatch between the static and dynamic size tags is rejected there too.
+func TestParseTagsConflictingUnits(t *testing.T) {
+	_, sizeHints, _, err := ParseTags(`ssz-size:"8" dynssz-bitsize:"UNKNOWN_SPEC"`)
+	_ = sizeHints
+	if err == nil || !strings.Contains(err.Error(), "conflicting size units") {
+		t.Fatalf("expected conflicting-units error, got %v", err)
+	}
+}
+
+// The go/types generation path mirrors the reflect path's view/generic guards:
+// a generic instantiation is rejected, duplicate views are rejected, and a
+// view type is pointer-wrapped like the base.
+func TestGoTypesViewAndGenericGuards(t *testing.T) {
+	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
+
+	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
+	if err != nil || len(pkgs) == 0 {
+		t.Fatalf("load tests package: %v", err)
+	}
+	scope := pkgs[0].Types.Scope()
+
+	genBoxObj := scope.Lookup("GenericBoxFixture")
+	if genBoxObj == nil {
+		t.Fatal("GenericBoxFixture not found")
+	}
+	genBoxNamed, ok := genBoxObj.Type().(*types.Named)
+	if !ok {
+		t.Fatalf("GenericBoxFixture is %T, want *types.Named", genBoxObj.Type())
+	}
+	instantiated, err := types.Instantiate(nil, genBoxNamed, []types.Type{types.Typ[types.Uint64]}, false)
+	if err != nil {
+		t.Fatalf("instantiate GenericBoxFixture: %v", err)
+	}
+
+	t.Run("GenericInstantiationRejected", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_box_gt.go", WithGoTypesType(instantiated))
+		if _, genErr := cg.GenerateToMap(); genErr == nil || !strings.Contains(genErr.Error(), "generic type instantiation") {
+			t.Fatalf("expected generic-instantiation error, got %v", genErr)
+		}
+	})
+
+	baseObj := scope.Lookup("ViewTypes1_Base")
+	viewObj := scope.Lookup("ViewTypes1_View1")
+	if baseObj == nil || viewObj == nil {
+		t.Fatal("view types not found")
+	}
+
+	t.Run("DuplicateViewRejected", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_dupview_gt.go",
+			WithGoTypesType(baseObj.Type(), WithGoTypesViewTypes(viewObj.Type(), viewObj.Type())),
+		)
+		_, err := cg.GenerateToMap()
+		if err == nil || !strings.Contains(err.Error(), "listed more than once") {
+			t.Fatalf("expected duplicate-view error, got %v", err)
+		}
+	})
+
+	t.Run("ViewWrapped", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_view_gt.go",
+			WithGoTypesType(baseObj.Type(), WithGoTypesViewTypes(viewObj.Type())),
+		)
+		if _, err := cg.GenerateToMap(); err != nil {
+			t.Fatalf("go/types view generation should succeed: %v", err)
+		}
+	})
 }

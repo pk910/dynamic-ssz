@@ -1452,6 +1452,21 @@ var ClassicUnionPtrVariant_Payload = func() ClassicUnionPtrVariant {
 	return p
 }()
 
+// AliasedVecPair holds two short-paddable byte vectors; hashing must pad into
+// library-owned buffers so the root stays independent of whether the two
+// fields alias one backing array.
+// GenericBoxFixture is a generic struct used only as a codegen test fixture
+// (not listed in any gen_*.yaml, so never generated): an instantiation of it
+// must be rejected as a top-level generation target.
+type GenericBoxFixture[T any] struct {
+	V T
+}
+
+type AliasedVecPair struct {
+	V []byte `ssz-size:"8"`
+	W []byte `ssz-size:"8"`
+}
+
 // UnionTaggedSelectors assigns explicit 1-based selector values via ssz-index
 // tags on the union variant fields (EIP-8016 conformant numbering).
 type UnionTaggedSelectors struct {
