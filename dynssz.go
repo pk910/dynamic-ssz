@@ -175,6 +175,15 @@ func (d *DynSsz) resolveSchemaType(runtimeType reflect.Type, cfg *callConfig) re
 	return runtimeType
 }
 
+// delegable reports whether v may be serialized through its own SSZ methods.
+// It is false when v is a struct that satisfies the SSZ interfaces only via a
+// method promoted from an embedded field: the promoted method serializes just
+// that field and would silently drop v's other fields, so v must be walked as
+// a container instead (the embedded field still delegates during the walk).
+func (d *DynSsz) delegable(v any) bool {
+	return !d.typeCache.InheritsPromotedDelegation(reflect.TypeOf(v))
+}
+
 // MarshalSSZ serializes the given source into its SSZ (Simple Serialize) representation.
 //
 // This method dynamically handles the serialization of Go types to SSZ format, supporting both
@@ -220,7 +229,7 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 
 	// Skip view descriptor logic for types implementing DynamicMarshaler (they handle their own serialization)
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if marshaler, ok := source.(sszutils.DynamicMarshaler); ok && !d.options.NoDelegation {
+		if marshaler, ok := source.(sszutils.DynamicMarshaler); ok && !d.options.NoDelegation && d.delegable(source) {
 			var buf []byte
 			if sizer, ok := source.(sszutils.DynamicSizer); ok {
 				size := sizer.SizeSSZDyn(d)
@@ -323,7 +332,7 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 
 	// Skip view descriptor logic for types implementing DynamicMarshaler
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if marshaler, ok := source.(sszutils.DynamicMarshaler); ok && !d.options.NoDelegation {
+		if marshaler, ok := source.(sszutils.DynamicMarshaler); ok && !d.options.NoDelegation && d.delegable(source) {
 			return marshaler.MarshalSSZDyn(d, buf)
 		}
 	} else if viewMarshaler, ok := source.(sszutils.DynamicViewMarshaler); ok && !d.options.NoDelegation {
@@ -370,7 +379,12 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 		return nil, err
 	}
 
-	return encoder.GetBuffer(), nil
+	newBuf := encoder.GetBuffer()
+	if uint32(len(newBuf)-len(buf)) != size {
+		return nil, fmt.Errorf("ssz length does not match expected length (expected: %v, got: %v)", size, len(newBuf)-len(buf))
+	}
+
+	return newBuf, nil
 }
 
 // MarshalSSZWriter serializes the given source into its SSZ representation and writes it directly to an io.Writer.
@@ -439,7 +453,7 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 
 	// Skip view descriptor logic for types implementing DynamicEncoder
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if sszEncoder, ok := source.(sszutils.DynamicEncoder); ok && !d.options.NoDelegation {
+		if sszEncoder, ok := source.(sszutils.DynamicEncoder); ok && !d.options.NoDelegation && d.delegable(source) {
 			err := sszEncoder.MarshalSSZEncoder(d, encoder)
 			if err != nil {
 				return err
@@ -537,7 +551,7 @@ func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error) {
 
 	// Skip view descriptor logic for types implementing DynamicSizer
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if sizer, ok := source.(sszutils.DynamicSizer); ok && !d.options.NoDelegation {
+		if sizer, ok := source.(sszutils.DynamicSizer); ok && !d.options.NoDelegation && d.delegable(source) {
 			return sizer.SizeSSZDyn(d), nil
 		}
 	} else if viewSizer, ok := source.(sszutils.DynamicViewSizer); ok && !d.options.NoDelegation {
@@ -616,7 +630,7 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 
 	// Skip view descriptor logic for types implementing DynamicUnmarshaler
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if unmarshaler, ok := target.(sszutils.DynamicUnmarshaler); ok && !d.options.NoDelegation {
+		if unmarshaler, ok := target.(sszutils.DynamicUnmarshaler); ok && !d.options.NoDelegation && d.delegable(target) {
 			return unmarshaler.UnmarshalSSZDyn(d, ssz)
 		}
 	} else if viewUnmarshaler, ok := target.(sszutils.DynamicViewUnmarshaler); ok && !d.options.NoDelegation {
@@ -756,7 +770,7 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 
 	// Skip view descriptor logic for types implementing DynamicDecoder
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if sszDecoder, ok := target.(sszutils.DynamicDecoder); ok && !d.options.NoDelegation {
+		if sszDecoder, ok := target.(sszutils.DynamicDecoder); ok && !d.options.NoDelegation && d.delegable(target) {
 			err := sszDecoder.UnmarshalSSZDecoder(d, decoder)
 			if err != nil {
 				return err
@@ -889,7 +903,11 @@ func (d *DynSsz) HashTreeRoot(source any, opts ...CallOption) ([32]byte, error) 
 //
 // Parameters:
 //   - source: Any Go value for which to compute the hash tree root
-//   - hh: The HashWalker instance to use for hashing
+//   - hh: The HashWalker instance to use for hashing. It must be in a clean
+//     state on entry. On a non-nil error the walker is left in an indeterminate
+//     state (unbalanced scopes / partial buffer); the caller must reset or
+//     discard it before reusing it, otherwise a subsequent root is corrupted.
+//     (The pooled HashTreeRoot entry point handles this automatically.)
 //
 // Returns:
 //   - error: An error if the computation fails due to unsupported types or hashing errors
@@ -926,7 +944,7 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...Ca
 
 	// Skip view descriptor logic for types implementing DynamicHashRoot
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if hasher, ok := source.(sszutils.DynamicHashRoot); ok && !d.options.NoDelegation {
+		if hasher, ok := source.(sszutils.DynamicHashRoot); ok && !d.options.NoDelegation && d.delegable(source) {
 			err := hasher.HashTreeRootWithDyn(d, hh)
 			if err != nil {
 				return err

@@ -648,7 +648,10 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
 				ctx.appendCode(indent, "val := []byte(%s)\n", getValueVar(true, ""))
 			} else {
-				ctx.appendCode(indent, "val := %s[:]\n", getValueVar(false, ""))
+				// The three-index cap keeps the zero padding below out of the
+				// caller's backing array; input memory must never be mutated.
+				// lenVar (vlen) already holds this slice's length (emitted above).
+				ctx.appendCode(indent, "val := %s[:%s:%s]\n", getValueVar(false, ""), lenVar, lenVar)
 			}
 			valVar = "val"
 

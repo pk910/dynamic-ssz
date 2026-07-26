@@ -175,6 +175,14 @@ func (cg *CodeGenerator) analyzeTypes() error {
 				if t.ReflectType.Kind() != reflect.Pointer {
 					t.ReflectType = reflect.PointerTo(t.ReflectType)
 				}
+				// The reflect path builds descriptors through the shared TypeCache,
+				// which carries its own extended-types switch; propagate the option
+				// so it is honored on this path like it is on the go/types path.
+				// The cache flag is never lowered: it may have been enabled by the
+				// DynSsz instance the cache was taken from.
+				if t.Options.ExtendedTypes {
+					cg.typeCache.ExtendedTypes = true
+				}
 				desc, err = cg.typeCache.GetTypeDescriptor(t.ReflectType, t.Options.SizeHints, t.Options.MaxSizeHints, t.Options.TypeHints)
 			} else {
 				if parser == nil {
@@ -210,10 +218,21 @@ func (cg *CodeGenerator) analyzeTypes() error {
 
 			// create TypeDescriptor for the view types
 			if hasViews(t) {
+				// A duplicate view would emit its methods and dispatcher case
+				// twice, producing non-compiling output.
+				seenViews := make(map[string]bool, len(t.ViewReflectTypes)+len(t.ViewGoTypesTypes))
 				for _, viewType := range t.ViewReflectTypes {
-					if viewType.Kind() == reflect.Struct {
+					// Pointer-wrap the view like the base type, regardless of
+					// kind, so runtime and schema kinds stay aligned in the
+					// descriptor build (named-slice views included). Normalize
+					// before the dedup key so T and *T collide as one entry.
+					if viewType.Kind() != reflect.Pointer {
 						viewType = reflect.PointerTo(viewType)
 					}
+					if seenViews[viewType.String()] {
+						return fmt.Errorf("view type %s is listed more than once for %s; remove the duplicate entry", viewType.String(), typeName)
+					}
+					seenViews[viewType.String()] = true
 					viewDesc, err := cg.typeCache.GetTypeDescriptorWithSchema(t.ReflectType, viewType, t.Options.SizeHints, t.Options.MaxSizeHints, t.Options.TypeHints)
 					if err != nil {
 						return fmt.Errorf("failed to analyze view type %s: %w", viewType.String(), err)
@@ -226,13 +245,13 @@ func (cg *CodeGenerator) analyzeTypes() error {
 						parser.CompatFlags = cg.compatFlags
 						parser.AnnotationResolver = cg.annotationResolver
 					}
-					baseType := viewType
-					if named, ok := baseType.(*types.Named); ok {
-						baseType = named.Underlying()
-					}
-					if _, ok := baseType.(*types.Struct); ok {
+					if _, ok := viewType.(*types.Pointer); !ok {
 						viewType = types.NewPointer(viewType)
 					}
+					if seenViews[viewType.String()] {
+						return fmt.Errorf("view type %s is listed more than once for %s; remove the duplicate entry", viewType.String(), typeName)
+					}
+					seenViews[viewType.String()] = true
 					viewDesc, err := parser.GetTypeDescriptorWithSchema(t.GoTypesType, viewType, t.Options.TypeHints, t.Options.SizeHints, t.Options.MaxSizeHints)
 					if err != nil {
 						return fmt.Errorf("failed to analyze view type %s: %w", viewType.String(), err)
@@ -272,7 +291,22 @@ func validateTopLevelType(t *CodeGeneratorTypeOptions, desc *ssztypes.TypeDescri
 		return fmt.Errorf("cannot generate SSZ methods for top-level %s: a Union/CompatibleUnion/TypeWrapper is nameable only via a type alias and cannot receive methods; use it as a struct field instead", typeName)
 	}
 
+	// An instantiated generic cannot receive the generated methods: the
+	// emitted receiver (e.g. `func (t *Box[uint64])`) would declare a type
+	// parameter shadowing the argument and does not compile. Generic fields
+	// inside generated containers are fine.
+	genericErr := func() error {
+		return fmt.Errorf("cannot generate SSZ methods for generic type instantiation %s: methods cannot be declared on an instantiated generic type; wrap it in a named struct instead", typeName)
+	}
+
 	if t.ReflectType != nil {
+		rt := t.ReflectType
+		if rt.Kind() == reflect.Pointer {
+			rt = rt.Elem()
+		}
+		if strings.Contains(rt.Name(), "[") {
+			return genericErr()
+		}
 		if t.ReflectType.Kind() == reflect.Pointer && t.ReflectType.Name() != "" {
 			return fmt.Errorf("cannot generate SSZ methods for named pointer type %s: methods cannot be declared on a pointer type", typeName)
 		}
@@ -284,6 +318,9 @@ func validateTopLevelType(t *CodeGeneratorTypeOptions, desc *ssztypes.TypeDescri
 		base = ptr.Elem()
 	}
 	if named, ok := base.(*types.Named); ok {
+		if named.TypeArgs().Len() > 0 {
+			return genericErr()
+		}
 		if _, isPtr := named.Underlying().(*types.Pointer); isPtr {
 			return fmt.Errorf("cannot generate SSZ methods for named pointer type %s: methods cannot be declared on a pointer type", typeName)
 		}
@@ -506,7 +543,11 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 			fmt.Fprintf(&annotationsBuilder, "var _ = sszutils.Annotate[%s](`%s`)\n", typePrinter.InnerTypeString(t.Descriptor), staticAnnotationFor(t.Descriptor))
 		}
 
-		if len(t.ViewDescriptors) > 0 {
+		// View methods bake spec expressions into their bodies; without dynamic
+		// expressions they would serve the default spec sizes to any spec-laden
+		// DynSsz (which delegates by interface assertion). Skipping them keeps
+		// the runtime on the reflection path, which sizes views correctly.
+		if len(t.ViewDescriptors) > 0 && !t.Options.WithoutDynamicExpressions {
 			for _, viewDesc := range t.ViewDescriptors {
 				hash := viewDesc.GetTypeHash()
 				hashParts = append(hashParts, hash[:])

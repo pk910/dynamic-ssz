@@ -662,7 +662,8 @@ func TestBufferDecoder_PushLimitNegative(t *testing.T) {
 }
 
 // BufferEncoder back-patch and padding helpers must not panic on out-of-range
-// positions.
+// positions; padding beyond the current capacity grows the buffer like any
+// other write.
 func TestBufferEncoder_OutOfRange(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -674,7 +675,39 @@ func TestBufferEncoder_OutOfRange(t *testing.T) {
 	enc.EncodeOffsetAt(-1, 42)
 	enc.EncodeOffsetAt(1<<30, 42)
 	enc.EncodeZeroPadding(-1)
-	enc.EncodeZeroPadding(1 << 30)
+	enc.EncodeZeroPadding(64)
+	if got := len(enc.GetBuffer()); got != 16+64 {
+		t.Errorf("buffer length after padding = %d, want %d", got, 16+64)
+	}
+}
+
+// Writing into the un-grown area is a bug: an under-sized buffer grows with
+// append semantics, so every write helper produces the same output as with a
+// pre-sized buffer and back-patched offsets stay valid across the growth.
+func TestBufferEncoder_GrowsOnDemand(t *testing.T) {
+	small := NewBufferEncoder(make([]byte, 0, 2))
+	presized := NewBufferEncoder(make([]byte, 0, 1024))
+
+	for _, enc := range []*BufferEncoder{small, presized} {
+		enc.EncodeUint64(0x1122334455667788)
+		enc.EncodeBool(true)
+		enc.EncodeUint8(7)
+		enc.EncodeUint16(0xAABB)
+		enc.EncodeUint32(0xDDCCBBAA)
+		enc.EncodeOffset(20)
+		enc.EncodeBytes([]byte{1, 2, 3, 4, 5})
+		enc.EncodeZeroPadding(3)
+		enc.EncodeOffsetAt(0, 99)
+	}
+
+	want := presized.GetBuffer()
+	got := small.GetBuffer()
+	if len(got) != 8+1+1+2+4+4+5+3 {
+		t.Errorf("unexpected output length %d", len(got))
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("grown output diverges from pre-sized output:\n  got:  %x\n  want: %x", got, want)
+	}
 }
 
 // ZeroBytes and AppendZeroPadding must be race-free under concurrent use.

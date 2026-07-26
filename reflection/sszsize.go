@@ -5,6 +5,7 @@
 package reflection
 
 import (
+	"math"
 	"math/big"
 	"reflect"
 
@@ -38,7 +39,10 @@ import (
 //   - Dynamic slices include padding for size hint compliance
 //   - Struct fields are sized based on their static/dynamic nature
 func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value) (uint32, error) { //nolint:gocyclo // SSZ size computation handles many type cases
-	staticSize := uint32(0)
+	// Accumulated in uint64: the descriptor-build guards bound static sizes,
+	// but products and sums with runtime lengths can still exceed the uint32
+	// SSZ size range and must be rejected instead of wrapping.
+	staticSize := uint64(0)
 
 	if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && targetType.SszType != ssztypes.SszOptionalType && targetType.SszType != ssztypes.SszOptionalListType {
 		if targetValue.IsNil() {
@@ -99,7 +103,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		if err != nil {
 			return 0, err
 		}
-		staticSize = size
+		staticSize = uint64(size)
 	case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
 		sizeFields := targetType.ContainerDesc.Fields
 		for i := 0; i < len(sizeFields); i++ {
@@ -113,17 +117,24 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 				}
 
 				// dynamic field, add 4 bytes for offset
-				staticSize += size + 4
+				staticSize += uint64(size) + 4
 			} else {
 				// static field
-				staticSize += fieldType.Type.Size
+				staticSize += uint64(fieldType.Type.Size)
 			}
 		}
 	case ssztypes.SszVectorType, ssztypes.SszBitvectorType:
+		// Over-length slices cannot be serialized (arrays are truncated to the
+		// declared length instead, matching marshal/HTR), so reject them like
+		// marshal does rather than returning a size it will never produce.
+		if targetType.Kind != reflect.Array && uint32(targetValue.Len()) > targetType.Len {
+			return 0, sszutils.ErrVectorLengthFn(targetValue.Len(), targetType.Len)
+		}
+
 		fieldType := targetType.ElemDesc
 		switch {
 		case fieldType.Kind == reflect.Uint8:
-			staticSize = targetType.Len
+			staticSize = uint64(targetType.Len)
 		case fieldType.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0:
 			// vector with dynamic size items, so we have to go through each item
 			dataLen := targetValue.Len()
@@ -134,18 +145,18 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 					return 0, sszutils.ErrorWithPathf(err, "[%d]", i)
 				}
 				// add 4 bytes for offset in dynamic array
-				staticSize += size + 4
+				staticSize += uint64(size) + 4
 			}
 
 			if uint32(dataLen) < targetType.Len {
 				appendZero := targetType.Len - uint32(dataLen)
-				zeroVal := reflect.New(fieldType.Type).Elem()
+				zeroVal := newZeroElem(fieldType)
 				size, err := ctx.getSszValueSize(fieldType, zeroVal)
 				if err != nil {
 					return 0, sszutils.ErrorWithPathf(err, "[+%d:%d]", dataLen, uint32(dataLen)+appendZero-1)
 				}
 
-				staticSize += (size + 4) * appendZero
+				staticSize += (uint64(size) + 4) * uint64(appendZero)
 			}
 		default:
 			dataLen := targetValue.Len()
@@ -156,15 +167,15 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 					return 0, sszutils.ErrorWithPathf(err, "[0:%d]", dataLen-1)
 				}
 
-				staticSize = size * targetType.Len
+				staticSize = uint64(size) * uint64(targetType.Len)
 			} else {
-				zeroVal := reflect.New(fieldType.Type).Elem()
+				zeroVal := newZeroElem(fieldType)
 				size, err := ctx.getSszValueSize(fieldType, zeroVal)
 				if err != nil {
 					return 0, sszutils.ErrorWithPathf(err, "[+0:%d]", targetType.Len-1)
 				}
 
-				staticSize += size * targetType.Len
+				staticSize += uint64(size) * uint64(targetType.Len)
 			}
 		}
 	case ssztypes.SszListType, ssztypes.SszBitlistType, ssztypes.SszProgressiveListType, ssztypes.SszProgressiveBitlistType:
@@ -183,7 +194,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		if sliceLen > 0 {
 			switch {
 			case fieldType.Kind == reflect.Uint8:
-				staticSize = sliceLen
+				staticSize = uint64(sliceLen)
 			case fieldType.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0:
 				// slice with dynamic size items, so we have to go through each item
 				for i := 0; i < int(sliceLen); i++ {
@@ -192,10 +203,10 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 						return 0, sszutils.ErrorWithPathf(err, "[%d]", i)
 					}
 					// add 4 bytes for offset in dynamic slice
-					staticSize += size + 4
+					staticSize += uint64(size) + 4
 				}
 			default:
-				staticSize = fieldType.Size * sliceLen
+				staticSize = uint64(fieldType.Size) * uint64(sliceLen)
 			}
 		} else if targetType.SszType == ssztypes.SszBitlistType || targetType.SszType == ssztypes.SszProgressiveBitlistType {
 			// empty bitlists are marshaled as a single 0x01 termination byte
@@ -232,7 +243,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 			return 0, sszutils.ErrorWithPathf(err, "[v:%d]", variant)
 		}
 
-		staticSize = 1 + dataSize
+		staticSize = 1 + uint64(dataSize)
 
 	case ssztypes.SszCompatibleUnionType:
 		// CompatibleUnion: 1 byte for selector + size of the data
@@ -260,7 +271,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 			return 0, sszutils.ErrorWithPathf(err, "[v:%d]", variant)
 		}
 
-		staticSize = 1 + dataSize // 1 byte selector + data size
+		staticSize = 1 + uint64(dataSize) // 1 byte selector + data size
 
 	// primitive types
 	case ssztypes.SszBoolType:
@@ -301,7 +312,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 				return 0, err
 			}
 
-			staticSize = dataSize + 1 // data size + 1 byte availability
+			staticSize = uint64(dataSize) + 1 // data size + 1 byte availability
 		}
 	case ssztypes.SszOptionalListType:
 		// canonical List[T, 1]: empty for nil, one element otherwise
@@ -311,7 +322,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 				return 0, sszutils.ErrorWithPathf(err, "[0]")
 			}
 
-			staticSize = dataSize
+			staticSize = uint64(dataSize)
 			if targetType.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 				staticSize += 4 // single offset header for dynamic element
 			}
@@ -325,11 +336,15 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		if err := checkBigIntLimit(targetType, len(mag)); err != nil {
 			return 0, err
 		}
-		staticSize = uint32(1 + len(mag))
+		staticSize = uint64(1 + len(mag))
 
 	default:
 		return 0, sszutils.ErrUnknownTypeFn(targetType.Kind)
 	}
 
-	return staticSize, nil
+	if staticSize > math.MaxUint32 {
+		return 0, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "SSZ size %d exceeds the uint32 size range", staticSize)
+	}
+
+	return uint32(staticSize), nil
 }

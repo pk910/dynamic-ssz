@@ -551,6 +551,11 @@ func (p *TypePrinter) extractAndRegisterImports(typeStr string) {
 	for _, match := range matches {
 		if len(match) >= 2 {
 			pkgPath := match[1]
+			// The package being generated must never import itself; its types
+			// stay unqualified (handled in cleanGenericTypeName).
+			if pkgPath == p.CurrentPkg {
+				continue
+			}
 			// Register this import
 			if p.imports[pkgPath] == "" {
 				alias := normalizeAlias(p.defaultAlias(pkgPath))
@@ -579,6 +584,11 @@ func (p *TypePrinter) cleanGenericTypeName(genericStr string) string {
 		if len(submatches) >= 3 {
 			pkgPath := submatches[1]
 			typeName := submatches[2]
+			// Same-package types are referenced unqualified; qualifying them
+			// would require the generated file to import its own package.
+			if pkgPath == p.CurrentPkg {
+				return typeName
+			}
 			if alias, ok := p.imports[pkgPath]; ok {
 				return alias + "." + typeName
 			}

@@ -655,6 +655,14 @@ var ExtendedTypes1_Payload2 = ExtendedTypes1{
 	Big1: *big.NewInt(0),
 }
 
+// ExtendedBigIntMax carries a limit-bearing big.Int, exercising the ssz-max
+// enforcement on the encode and decode paths of both engines.
+type ExtendedBigIntMax struct {
+	B big.Int `ssz-max:"5"`
+}
+
+var ExtendedBigIntMax_Payload = ExtendedBigIntMax{B: *big.NewInt(0x11223344)}
+
 // CoverageTypes1 covers: regular bitlists, bitlists with spec max,
 // dynamic vectors/lists (slice-based with zero-padding), bool vectors.
 type CoverageTypes1 struct {
@@ -1443,6 +1451,59 @@ var ClassicUnionPtrVariant_Payload = func() ClassicUnionPtrVariant {
 	p.U.Data = &ptrUnionVal
 	return p
 }()
+
+// PromotedDelegInner declares a full set of dynamic SSZ methods. A type that
+// embeds it inherits those methods by promotion; the codegen parser must treat
+// only declared methods as delegation, so PromotedDelegOuter is walked as a
+// container (encoding Label) rather than delegating to the promoted methods
+// (which would drop Label).
+type PromotedDelegInner struct{ Seconds uint16 }
+
+func (p *PromotedDelegInner) SizeSSZDyn(sszutils.DynamicSpecs) int { return 2 }
+
+func (p *PromotedDelegInner) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return append(buf, byte(p.Seconds), byte(p.Seconds>>8)), nil
+}
+
+func (p *PromotedDelegInner) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) error {
+	if len(b) >= 2 {
+		p.Seconds = uint16(b[0]) | uint16(b[1])<<8
+	}
+	return nil
+}
+
+func (p *PromotedDelegInner) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint16(p.Seconds)
+	return nil
+}
+
+type PromotedDelegOuter struct {
+	PromotedDelegInner
+	Label uint64
+}
+
+// GenericBoxFixture is a generic struct used only as a codegen test fixture
+// (not listed in any gen_*.yaml, so never generated): an instantiation of it
+// must be rejected as a top-level generation target.
+type GenericBoxFixture[T any] struct {
+	V T
+}
+
+// AliasedVecPair holds two short-paddable byte vectors; hashing must pad into
+// library-owned buffers so the root stays independent of whether the two
+// fields alias one backing array.
+type AliasedVecPair struct {
+	V []byte `ssz-size:"8"`
+	W []byte `ssz-size:"8"`
+}
+
+// ShortLargeUintVec uses slice-typed large-uints so the Go value can be
+// shorter than the declared width, exercising the zero-padding parity between
+// the generated and reflection hash tree roots.
+type ShortLargeUintVec struct {
+	A []byte   `ssz-type:"uint128" ssz-size:"16"`
+	B []uint64 `ssz-type:"uint256" ssz-size:"4"`
+}
 
 // UnionTaggedSelectors assigns explicit 1-based selector values via ssz-index
 // tags on the union variant fields (EIP-8016 conformant numbering).

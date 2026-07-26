@@ -132,14 +132,14 @@ func (h *Hasher) Reset() {
 	h.layerCount = -1
 }
 
-// AppendBytes32 appends b to the buffer, right-padding with zeros to align
-// to 32 bytes.
+// AppendBytes32 appends b to the buffer, right-padding with zeros until the
+// whole buffer is aligned to 32 bytes. Padding by buffer alignment (rather
+// than len(b)%32) keeps the result identical to treeproof.Wrapper even when
+// the buffer was not chunk-aligned before the call; for the chunk-aligned
+// call sequences the hashing engines emit, the two are equivalent.
 func (h *Hasher) AppendBytes32(b []byte) {
 	h.buf = append(h.buf, b...)
-	if rest := len(b) % 32; rest != 0 {
-		// pad zero bytes to the left
-		h.buf = append(h.buf, zeroBytes[:32-rest]...)
-	}
+	h.FillUpTo32()
 }
 
 // FillUpTo32 pads the buffer with zero bytes to align to a 32-byte boundary.
@@ -696,6 +696,14 @@ func (h *Hasher) maybeCollapseProgressive(layer *treeLayer) {
 		}
 	}
 
+	// Carry any partial-chunk tail: the counts only cover complete chunks, so
+	// unaligned bytes sit past the counted region and would be dropped by the
+	// truncation below (the binary collapse preserves its tail the same way).
+	if tailLen := len(h.buf) - readPos; tailLen > 0 {
+		copy(h.buf[writePos:writePos+tailLen], h.buf[readPos:])
+		writePos += tailLen
+	}
+
 	h.buf = h.buf[:writePos]
 	layer.counts = newCounts
 	layer.maxDepth = newMaxDepth
@@ -1018,6 +1026,10 @@ func (h *Hasher) MerkleizeProgressive(indx int) {
 	}
 
 	if layer != nil && layer.progressive {
+		// Pad an unaligned partial chunk before collapsing, like the mixin
+		// variants do; the collapse floor-counts complete chunks and would
+		// silently drop the tail otherwise.
+		h.FillUpTo32()
 		h.collapseProgressiveLayer(layer, indx)
 		h.popTopLayer()
 		return
@@ -1027,6 +1039,7 @@ func (h *Hasher) MerkleizeProgressive(indx int) {
 	}
 
 	// Standard path (no incremental progressive data)
+	h.FillUpTo32()
 	h.buf = append(h.buf, zeroBytes...)
 	h.buf = h.buf[:len(h.buf)-len(zeroBytes)]
 	input := h.buf[indx:]

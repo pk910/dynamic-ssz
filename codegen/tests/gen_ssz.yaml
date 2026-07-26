@@ -117,6 +117,8 @@ types:
     output: gen_divergence.go
   - name: ClassicUnionPtrVariant
     output: gen_divergence.go
+  - name: AliasedVecPair
+    output: gen_divergence.go
   - name: TopLevelBitlist
     output: gen_toplevel.go
   - name: TopLevelProgBitlist
@@ -146,6 +148,8 @@ types:
   - name: FixedVecPtrList
     output: gen_compilecorrectness.go
   - name: FixedVecStr
+    output: gen_compilecorrectness.go
+  - name: ShortLargeUintVec
     output: gen_compilecorrectness.go
   - name: PtrDynCollectionField
     output: gen_compilecorrectness.go

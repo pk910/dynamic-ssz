@@ -6,14 +6,17 @@ package codegen
 
 import (
 	"go/types"
+	"math/big"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	dynssz "github.com/pk910/dynamic-ssz"
 	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
+	"golang.org/x/tools/go/packages"
 )
 
 // zeroFieldContainer is an SSZ-invalid container with no encodable fields (only
@@ -956,5 +959,374 @@ func TestGenerateOverAlreadyGeneratedType(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "already implements the generated dynamic SSZ methods") {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// SamePkgUnionLeaf is a sibling type referenced as a generic type argument
+// from the same package the code is generated for. Exported deliberately:
+// the generic-type import extraction only considers exported names.
+type SamePkgUnionLeaf struct {
+	F1 uint32
+}
+
+type SamePkgUnionHolder struct {
+	U dynssz.CompatibleUnion[struct {
+		A uint32
+		B SamePkgUnionLeaf
+	}]
+}
+
+// A generic type argument from the package being generated must be emitted
+// unqualified; qualifying it would make the generated file import its own
+// package, which does not compile.
+func TestGenerateGenericSamePackageTypeArg(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_samepkg_union.go",
+		WithReflectType(reflect.TypeFor[SamePkgUnionHolder](), WithCreateEncoderFn(), WithCreateDecoderFn()),
+		WithReflectType(reflect.TypeFor[SamePkgUnionLeaf](), WithCreateEncoderFn(), WithCreateDecoderFn()),
+	)
+
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	code := files["gen_samepkg_union.go"]
+	if code == "" {
+		t.Fatal("no code generated")
+	}
+	if strings.Contains(code, "\"github.com/pk910/dynamic-ssz/codegen\"") {
+		t.Error("generated file imports its own package")
+	}
+	if strings.Contains(code, "codegen.SamePkgUnionLeaf") {
+		t.Error("same-package type argument emitted qualified")
+	}
+}
+
+// encOnlyInner/encOnlyOuter model a field type that exposes only the
+// encoder/decoder interfaces (no buffer marshaler), so the outer marshaler
+// must delegate through a BufferEncoder.
+type encOnlyInner struct {
+	A uint64
+	B uint64
+}
+
+type encOnlyOuter struct {
+	X uint32
+	I encOnlyInner
+}
+
+// The encoder-delegation site wraps dst in a BufferEncoder; the encoder grows
+// an under-reserved buffer on demand (see sszutils), so the emitted code needs
+// no size reservation of its own. This pins the delegation shape.
+func TestGenerateEncoderDelegation(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_enconly_inner.go",
+		WithReflectType(reflect.TypeFor[encOnlyInner](), WithNoMarshalSSZ(), WithNoUnmarshalSSZ(), WithCreateEncoderFn(), WithCreateDecoderFn()),
+	)
+	cg.BuildFile("gen_enconly_outer.go",
+		WithReflectType(reflect.TypeFor[encOnlyOuter]()),
+	)
+
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	outer := files["gen_enconly_outer.go"]
+	if !strings.Contains(outer, "NewBufferEncoder") {
+		t.Fatalf("outer type does not delegate through a BufferEncoder:\n%s", outer)
+	}
+	if !strings.Contains(outer, "MarshalSSZEncoder") {
+		t.Errorf("outer type does not call the inner encoder:\n%s", outer)
+	}
+}
+
+// extendedReflectHolder carries an extended type, so generating it requires
+// the extended-types switch to reach the descriptor builder.
+type extendedReflectHolder struct {
+	B big.Int
+}
+
+// WithExtendedTypes must take effect on the reflect path (which builds
+// descriptors through the shared TypeCache), not only on the go/types parser.
+func TestWithExtendedTypesReflectPath(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_extended_reflect.go",
+		WithReflectType(reflect.TypeFor[extendedReflectHolder](), WithExtendedTypes()),
+	)
+	if _, err := cg.GenerateToMap(); err != nil {
+		t.Errorf("generate with WithExtendedTypes: %v", err)
+	}
+
+	// Without the option the extended type is rejected.
+	cg2 := NewCodeGenerator(nil)
+	cg2.BuildFile("gen_extended_reflect.go",
+		WithReflectType(reflect.TypeFor[extendedReflectHolder]()),
+	)
+	if _, err := cg2.GenerateToMap(); err == nil {
+		t.Error("expected error generating an extended type without WithExtendedTypes")
+	}
+}
+
+// Top-level scalar aliases: one per scalar arm of the unmarshal emitter.
+type (
+	genTopBool bool
+	genTopU8   uint8
+	genTopU16  uint16
+	genTopU32  uint32
+	genTopU64  uint64
+	genTopI8   int8
+	genTopI16  int16
+	genTopI32  int32
+	genTopI64  int64
+	genTopF32  float32
+	genTopF64  float64
+)
+
+// genBigIntMaxHolder carries a limit-bearing big.Int for the decode-side
+// limit emission.
+type genBigIntMaxHolder struct {
+	B big.Int `ssz-max:"5"`
+}
+
+// genShortVecHolder carries a slice byte vector whose generated hashing pads
+// short values.
+type genShortVecHolder struct {
+	V []byte `ssz-size:"8"`
+}
+
+// Scalar roots emit an exact-length check (a scalar root consumes the whole
+// buffer), and a limited big.Int emits the decode-side ssz-max check.
+func TestGenerateScalarRootLenChecks(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_scalar_roots.go",
+		WithExtendedTypes(),
+		WithReflectType(reflect.TypeFor[genTopBool]()),
+		WithReflectType(reflect.TypeFor[genTopU8]()),
+		WithReflectType(reflect.TypeFor[genTopU16]()),
+		WithReflectType(reflect.TypeFor[genTopU32]()),
+		WithReflectType(reflect.TypeFor[genTopU64]()),
+		WithReflectType(reflect.TypeFor[genTopI8]()),
+		WithReflectType(reflect.TypeFor[genTopI16]()),
+		WithReflectType(reflect.TypeFor[genTopI32]()),
+		WithReflectType(reflect.TypeFor[genTopI64]()),
+		WithReflectType(reflect.TypeFor[genTopF32]()),
+		WithReflectType(reflect.TypeFor[genTopF64]()),
+		WithReflectType(reflect.TypeFor[genBigIntMaxHolder]()),
+		WithReflectType(reflect.TypeFor[genShortVecHolder]()),
+	)
+
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	code := files["gen_scalar_roots.go"]
+	if code == "" {
+		t.Fatal("no code generated")
+	}
+	// Each scalar root rejects trailing bytes; 11 scalar types plus the
+	// big.Int holder's container check emit the trailing error at least once.
+	if got := strings.Count(code, "ErrTrailingDataFn"); got < 11 {
+		t.Errorf("expected a trailing-data check per scalar root, found %d", got)
+	}
+	if !strings.Contains(code, "exceeds maximum") {
+		t.Error("limited big.Int does not emit the decode-side ssz-max check")
+	}
+	// The hashing path caps the slice before zero-padding so the padding
+	// cannot land in the caller's backing array.
+	if !strings.Contains(code, "val := t.V[:vlen:vlen]") {
+		t.Error("short-vector hashing does not cap the slice before padding")
+	}
+}
+
+// genBox is a generic type; its instantiations cannot receive generated
+// methods (the emitted receiver would declare a type parameter shadowing the
+// argument).
+type genBox[T any] struct {
+	V T
+}
+
+// genSliceBase/genSliceView model a named-slice base type with a named-slice
+// view; both sides are pointer-wrapped alike during analysis.
+type genSliceBase []uint64
+
+type genSliceView []uint64
+
+func TestGenerateViewEdgeCases(t *testing.T) {
+	baseType := reflect.TypeFor[SimpleTestStruct]()
+	viewType := reflect.TypeFor[SimpleViewStruct]()
+
+	t.Run("GenericInstantiationRejected", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_box.go", WithReflectType(reflect.TypeFor[genBox[uint64]]()))
+		_, err := cg.GenerateToMap()
+		if err == nil || !strings.Contains(err.Error(), "generic type instantiation") {
+			t.Fatalf("expected generic-instantiation error, got %v", err)
+		}
+	})
+
+	t.Run("DuplicateViewRejected", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_dupviews.go",
+			WithReflectType(baseType, WithReflectViewTypes(viewType, viewType)),
+		)
+		_, err := cg.GenerateToMap()
+		if err == nil || !strings.Contains(err.Error(), "listed more than once") {
+			t.Fatalf("expected duplicate-view error, got %v", err)
+		}
+	})
+
+	t.Run("NamedSliceView", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_sliceview.go",
+			WithReflectType(reflect.TypeFor[genSliceBase](), WithReflectViewTypes(reflect.TypeFor[genSliceView]())),
+		)
+		if _, err := cg.GenerateToMap(); err != nil {
+			t.Fatalf("named-slice view should generate: %v", err)
+		}
+	})
+
+	t.Run("ViewMethodsSkippedWithoutDynExpressions", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_views_nodyn.go",
+			WithReflectType(baseType, WithoutDynamicExpressions(), WithReflectViewTypes(viewType)),
+		)
+		files, err := cg.GenerateToMap()
+		if err != nil {
+			t.Fatalf("generate: %v", err)
+		}
+		code := files["gen_views_nodyn.go"]
+		if strings.Contains(code, "DynView") {
+			t.Error("view methods emitted despite WithoutDynamicExpressions; they would bake default spec sizes")
+		}
+	})
+}
+
+// The codegen ParseTags path drops into the same shared-hint merge; a unit
+// mismatch between the static and dynamic size tags is rejected there too.
+func TestParseTagsConflictingUnits(t *testing.T) {
+	_, sizeHints, _, err := ParseTags(`ssz-size:"8" dynssz-bitsize:"UNKNOWN_SPEC"`)
+	_ = sizeHints
+	if err == nil || !strings.Contains(err.Error(), "conflicting size units") {
+		t.Fatalf("expected conflicting-units error, got %v", err)
+	}
+}
+
+// The go/types generation path mirrors the reflect path's view/generic guards:
+// a generic instantiation is rejected, duplicate views are rejected, and a
+// view type is pointer-wrapped like the base.
+func TestGoTypesViewAndGenericGuards(t *testing.T) {
+	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
+
+	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
+	if err != nil || len(pkgs) == 0 {
+		t.Fatalf("load tests package: %v", err)
+	}
+	scope := pkgs[0].Types.Scope()
+
+	genBoxObj := scope.Lookup("GenericBoxFixture")
+	if genBoxObj == nil {
+		t.Fatal("GenericBoxFixture not found")
+	}
+	genBoxNamed, ok := genBoxObj.Type().(*types.Named)
+	if !ok {
+		t.Fatalf("GenericBoxFixture is %T, want *types.Named", genBoxObj.Type())
+	}
+	instantiated, err := types.Instantiate(nil, genBoxNamed, []types.Type{types.Typ[types.Uint64]}, false)
+	if err != nil {
+		t.Fatalf("instantiate GenericBoxFixture: %v", err)
+	}
+
+	t.Run("GenericInstantiationRejected", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_box_gt.go", WithGoTypesType(instantiated))
+		if _, genErr := cg.GenerateToMap(); genErr == nil || !strings.Contains(genErr.Error(), "generic type instantiation") {
+			t.Fatalf("expected generic-instantiation error, got %v", genErr)
+		}
+	})
+
+	baseObj := scope.Lookup("ViewTypes1_Base")
+	viewObj := scope.Lookup("ViewTypes1_View1")
+	if baseObj == nil || viewObj == nil {
+		t.Fatal("view types not found")
+	}
+
+	t.Run("DuplicateViewRejected", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_dupview_gt.go",
+			WithGoTypesType(baseObj.Type(), WithGoTypesViewTypes(viewObj.Type(), viewObj.Type())),
+		)
+		_, err := cg.GenerateToMap()
+		if err == nil || !strings.Contains(err.Error(), "listed more than once") {
+			t.Fatalf("expected duplicate-view error, got %v", err)
+		}
+	})
+
+	t.Run("DuplicateViewMixedPointerForm", func(t *testing.T) {
+		// The same view given once as T and once as *T normalizes to one type,
+		// so it must still be rejected as a duplicate (dedup keys on the
+		// pointer-normalized type).
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_dupview_mixed_gt.go",
+			WithGoTypesType(baseObj.Type(), WithGoTypesViewTypes(viewObj.Type(), types.NewPointer(viewObj.Type()))),
+		)
+		_, err := cg.GenerateToMap()
+		if err == nil || !strings.Contains(err.Error(), "listed more than once") {
+			t.Fatalf("expected duplicate-view error for mixed T/*T forms, got %v", err)
+		}
+	})
+
+	t.Run("ViewWrapped", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_view_gt.go",
+			WithGoTypesType(baseObj.Type(), WithGoTypesViewTypes(viewObj.Type())),
+		)
+		if _, err := cg.GenerateToMap(); err != nil {
+			t.Fatalf("go/types view generation should succeed: %v", err)
+		}
+	})
+}
+
+// The go/types parser must count only declared methods as SSZ delegation. A
+// type that satisfies the interfaces solely through methods promoted from an
+// embedded field is walked as a container (so its sibling fields survive), not
+// treated as fully delegating.
+func TestGoTypesPromotedMethodsNotDelegation(t *testing.T) {
+	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
+	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
+	if err != nil || len(pkgs) == 0 {
+		t.Fatalf("load tests package: %v", err)
+	}
+	scope := pkgs[0].Types.Scope()
+	inner := scope.Lookup("PromotedDelegInner")
+	outer := scope.Lookup("PromotedDelegOuter")
+	if inner == nil || outer == nil {
+		t.Fatal("fixture types not found")
+	}
+
+	p := NewParser()
+	innerPtr := types.NewPointer(inner.Type())
+	outerPtr := types.NewPointer(outer.Type())
+
+	// The declaring type fully delegates; the embedder (promotion only) does not.
+	if !p.fullyDelegatesSSZ(innerPtr) {
+		t.Error("PromotedDelegInner should fully delegate (it declares the methods)")
+	}
+	if p.fullyDelegatesSSZ(outerPtr) {
+		t.Error("PromotedDelegOuter must NOT delegate through promoted methods")
+	}
+	if p.getDynamicMarshalerCompatibility(outerPtr) {
+		t.Error("promoted MarshalSSZDyn must not count as a declared marshaler")
+	}
+
+	// End to end: generating the embedder must emit a full walk that encodes the
+	// sibling Label field, not a delegation that drops it.
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_promoted_gt.go", WithGoTypesType(outer.Type()))
+	files, genErr := cg.GenerateToMap()
+	if genErr != nil {
+		t.Fatalf("generate: %v", genErr)
+	}
+	if !strings.Contains(files["gen_promoted_gt.go"], "Label") {
+		t.Error("generated code does not handle the sibling Label field")
 	}
 }

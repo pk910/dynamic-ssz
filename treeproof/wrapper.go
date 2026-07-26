@@ -211,9 +211,12 @@ func (w *Wrapper) appendBytesAsNodes(b []byte) {
 	// Empty input contributes no leaf (matching hasher.Hasher.AppendBytes32); a
 	// phantom zero leaf would shift sibling positions and give progressive
 	// bitlists a spec-incorrect root.
-	// pad the final chunk to 32 bytes if the input is not chunk-aligned
+	// Pad the final chunk to 32 bytes if the input is not chunk-aligned. The
+	// three-index cap keeps the zero bytes out of the caller's backing array
+	// (input memory must never be mutated), matching hasher.Hasher.PutBytes
+	// which copies before padding.
 	if rest := len(b) % 32; rest != 0 {
-		b = sszutils.AppendZeroPadding(b, 32-rest)
+		b = sszutils.AppendZeroPadding(b[:len(b):len(b)], 32-rest)
 	}
 	for i := 0; i < len(b); i += 32 {
 		val := append([]byte{}, b[i:min(len(b), i+32)]...)

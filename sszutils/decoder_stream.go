@@ -79,6 +79,13 @@ func (e *StreamDecoder) GetLength() int {
 }
 
 func (e *StreamDecoder) PushLimit(limit int) {
+	// Clamp a negative limit to zero like BufferDecoder does; a limit below
+	// the current position would make GetLength() negative and poison
+	// downstream reads.
+	if limit < 0 {
+		limit = 0
+	}
+
 	limitPos := e.position + limit
 	if limitPos > e.lastLimit {
 		limitPos = e.lastLimit

@@ -2140,6 +2140,14 @@ func (p *Parser) hasMethodWithSignature(methodSet *types.MethodSet, methodName s
 			continue
 		}
 
+		// Only a method declared directly on the type counts as delegation. A
+		// promoted method (Index length > 1) comes from an embedded field and
+		// would serialize just that field, silently dropping the type's other
+		// fields, so the type must be walked as a container instead.
+		if len(method.Index()) != 1 {
+			continue
+		}
+
 		// Check method signature
 		sig, ok := method.Type().(*types.Signature)
 		if !ok {

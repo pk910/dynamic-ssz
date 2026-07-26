@@ -536,11 +536,7 @@ func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescript
 
 	var zeroVal reflect.Value
 	if appendZero > 0 {
-		if fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
-			zeroVal = reflect.New(fieldType.Type.Elem())
-		} else {
-			zeroVal = reflect.New(fieldType.Type).Elem()
-		}
+		zeroVal = newZeroElem(fieldType)
 	}
 
 	if canSeek {

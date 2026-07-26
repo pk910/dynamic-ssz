@@ -520,9 +520,11 @@ func TreeFromNodesWithMixin(leaves []*Node, num, limit int) (*Node, error) {
 // (rounded up to a power of two via the tree depth) and mixes in the element
 // count as the right sibling of the root.
 func TreeFromNodesWithMixin64(leaves []*Node, num, limit uint64) (*Node, error) {
-	if limit == 0 && len(leaves) > 0 {
-		// A zero capacity cannot hold any leaf (see TreeFromNodes64).
-		return nil, fmt.Errorf("number of leaves %d exceeds limit %d", len(leaves), 0)
+	// The Hasher clamps an under-sized (or zero) mixin limit up to the actual
+	// chunk count instead of failing; mirror that so the Wrapper stays a
+	// drop-in HashWalker producing the same root for the same call sequence.
+	if count := uint64(len(leaves)); limit < count {
+		limit = count
 	}
 	mainTree, err := treeFromNodesToDepthFn(leaves, chunkLimitDepth(limit))
 	if err != nil {
@@ -572,6 +574,18 @@ func TreeFromNodesProgressiveWithActiveFields(leaves []*Node, activeFields []byt
 	return node, nil
 }
 
+// emptyChild returns the zero-padding child one level below an empty node.
+// Both children of an empty node are the same zero subtree, so direction does
+// not matter. It reports false when the node is already the depth-0 zero leaf
+// (a gindex descending past it lies outside the tree's depth).
+func emptyChild(n *Node) (*Node, bool) {
+	depth, ok := hasher.GetZeroHashLevelBytes(n.value)
+	if !ok || depth < 1 {
+		return nil, false
+	}
+	return getEmptyNode(depth - 1), true
+}
+
 // Get fetches a node with the given general index.
 func (n *Node) Get(index int) (*Node, error) {
 	if index < 1 {
@@ -580,6 +594,17 @@ func (n *Node) Get(index int) (*Node, error) {
 	pathLen := getPathLength(index)
 	cur := n
 	for i := pathLen - 1; i >= 0; i-- {
+		if cur.isEmpty {
+			// Descending into a zero-padding subtree: synthesize the zero
+			// subtree one level down so spec-valid gindices under the padding
+			// (proof-of-emptiness) resolve instead of failing.
+			child, ok := emptyChild(cur)
+			if !ok {
+				return nil, errors.New("Node not found in tree")
+			}
+			cur = child
+			continue
+		}
 		if isRight := getPosAtLevel(index, i); isRight {
 			cur = cur.right
 		} else {
@@ -595,9 +620,12 @@ func (n *Node) Get(index int) (*Node, error) {
 
 // Hash returns the hash of the subtree with the given Node as its root.
 // If root has no children, it returns root's value (not its hash).
+// A copy is returned for the same reason as in Value: empty (zero-padding)
+// nodes alias the process-wide zero-hash table and cached empty nodes are
+// shared across trees, so the raw slice must not escape to callers.
 func (n *Node) Hash() []byte {
 	// TODO: handle special cases: empty root, one non-empty node
-	return hashNode(n)
+	return bytes.Clone(hashNode(n))
 }
 
 // Left returns the left child node, or nil if this is a leaf.
@@ -689,13 +717,24 @@ func (n *Node) Prove(index int) (*Proof, error) {
 	cur := n
 	for i := pathLen - 1; i >= 0; i-- {
 		var siblingHash []byte
-		if isRight := getPosAtLevel(index, i); isRight {
+		switch {
+		case cur.isEmpty:
+			// Zero-padding subtree: both children are the same zero subtree, so
+			// the sibling hash is the zero hash at that level. Synthesizing it
+			// lets spec-valid gindices under the padding be proven.
+			child, ok := emptyChild(cur)
+			if !ok {
+				return nil, errors.New("Node not found in tree")
+			}
+			siblingHash = child.value
+			cur = child
+		case getPosAtLevel(index, i):
 			if cur.left == nil {
 				return nil, errors.New("Node not found in tree")
 			}
 			siblingHash = hashNode(cur.left)
 			cur = cur.right
-		} else {
+		default:
 			if cur.right == nil {
 				return nil, errors.New("Node not found in tree")
 			}
@@ -814,7 +853,9 @@ func LeafFromBytes(b []byte) *Node {
 		return NewNodeWithValue(b)
 	}
 	if l < 32 {
-		return NewNodeWithValue(append(b, sszutils.ZeroBytes()[:32-l]...))
+		// The three-index cap keeps the zero padding out of the caller's
+		// backing array; input memory must never be mutated.
+		return NewNodeWithValue(append(b[:l:l], sszutils.ZeroBytes()[:32-l]...))
 	}
 
 	numChunks := (l + 31) / 32

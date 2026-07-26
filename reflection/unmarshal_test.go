@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	. "github.com/pk910/dynamic-ssz"
+	"github.com/pk910/dynamic-ssz/reflection"
 	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
@@ -2156,5 +2157,36 @@ func TestUnmarshalBigIntNonCanonical(t *testing.T) {
 		if err := ds.UnmarshalSSZ(&dst, bad); err == nil {
 			t.Errorf("expected error for non-canonical encoding %x", bad)
 		}
+	}
+}
+
+// A failed dynamic field must not leave the decoder clamped to the failed
+// field's region: the pushed limit is popped on the error path too, so a
+// caller reusing the decoder afterwards sees the outer region again.
+func TestUnmarshalErrorPopsDecoderLimit(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz())
+
+	type Container struct {
+		A []byte `ssz-type:"bitlist" ssz-max:"8"`
+		B []byte `ssz-type:"bitlist" ssz-max:"8"`
+	}
+
+	typeDesc, err := ds.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(Container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ctx := reflection.NewReflectionCtx(ds, nil, false, true, false)
+
+	// Offsets A=[8,11), B=[11,12). A's 3-byte region exceeds the 2-byte cap of
+	// Bitlist[8], so its decode fails before consuming the region.
+	data := []byte{8, 0, 0, 0, 11, 0, 0, 0, 0, 0, 0, 0x01}
+	dec := sszutils.NewBufferDecoder(data)
+
+	var out Container
+	if err := ctx.UnmarshalSSZ(typeDesc, reflect.ValueOf(&out).Elem(), dec); err == nil {
+		t.Fatal("expected bitlist error")
+	}
+	if got, want := dec.GetLength(), len(data)-dec.GetPosition(); got != want {
+		t.Errorf("decoder left clamped to a stale limit after error: remaining %d, want %d", got, want)
 	}
 }

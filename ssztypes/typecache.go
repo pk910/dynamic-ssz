@@ -85,6 +85,10 @@ type TypeCache struct {
 	CompatFlags       map[string]SszCompatFlag
 	ExtendedTypes     bool
 	NoDelegation      bool
+
+	// promotedDelegation memoizes InheritsPromotedDelegation (reflect.Type ->
+	// bool); the detection sits on the per-call delegation hot path.
+	promotedDelegation sync.Map
 }
 
 // NewTypeCache creates a new type cache
@@ -867,6 +871,26 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 
 	tc.detectCompatFlags(desc, runtimeType, schemaType)
 
+	// A plain container that only satisfies the delegation interfaces through a
+	// method promoted from an embedded field must not delegate: the promoted
+	// method serializes just the embedded field and drops the container's other
+	// fields. Walk it as a container instead — the embedded field still
+	// delegates correctly as one of the walked fields. Custom types are exempt
+	// (they are opaque and have no walkable layout).
+	if (desc.SszType == SszContainerType || desc.SszType == SszProgressiveContainerType) &&
+		tc.InheritsPromotedDelegation(runtimeType) {
+		desc.SszCompatFlags &^= SszCompatFlagDynamicMarshaler |
+			SszCompatFlagDynamicUnmarshaler |
+			SszCompatFlagDynamicSizer |
+			SszCompatFlagDynamicHashRoot |
+			SszCompatFlagDynamicEncoder |
+			SszCompatFlagDynamicDecoder |
+			SszCompatFlagFastSSZMarshaler |
+			SszCompatFlagFastSSZHasher |
+			SszCompatFlagHashTreeRootWith
+		desc.HashTreeRootWithMethod = nil
+	}
+
 	// When field-level hints override the type's own annotation, don't delegate
 	// to the type's generated methods — they have the annotation's limits baked in.
 	// Process inline instead so the field-level hints are respected.
@@ -1390,6 +1414,11 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 		}
 
 		desc.SszTypeFlags |= fieldDesc.Type.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
+		// SSZ sizes are uint32; a wrapped sum would defeat the fixed-section
+		// length checks that are derived from it.
+		if totalSize > math.MaxUint32-sszSize {
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "container byte size exceeds the uint32 SSZ size range")
+		}
 		totalSize += sszSize
 		desc.ContainerDesc.Fields[fi] = fieldDesc
 		fi++
@@ -1764,7 +1793,14 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 		desc.Size = 0
 		desc.SszTypeFlags |= SszTypeFlagIsDynamic
 	} else {
-		desc.Size = elemDesc.Size * desc.Len
+		// SSZ sizes are uint32; an unchecked product would wrap silently and
+		// downstream length checks would then divide by or allocate from a
+		// bogus size.
+		totalSize := uint64(elemDesc.Size) * uint64(desc.Len)
+		if totalSize > math.MaxUint32 {
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "vector byte size %d exceeds the uint32 SSZ size range", totalSize)
+		}
+		desc.Size = uint32(totalSize)
 	}
 
 	return nil
@@ -1833,6 +1869,14 @@ func (tc *TypeCache) buildListDescriptor(desc *TypeDescriptor, runtimeType, sche
 
 	desc.ElemDesc = elemDesc
 	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
+
+	// A static element of zero size makes the element count underivable from
+	// the wire format (region length / element size), so such a list can never
+	// be decoded. Only reachable through custom types whose sizer reports 0;
+	// every other zero-size shape is already rejected on its own.
+	if elemDesc.SszTypeFlags&(SszTypeFlagIsDynamic|SszTypeFlagHasSizeExpr) == 0 && elemDesc.Size == 0 {
+		return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "list element type %v has a static SSZ size of 0", schemaElemType)
+	}
 
 	if desc.SszType == SszBitlistType || desc.SszType == SszProgressiveBitlistType {
 		if desc.Kind != reflect.Slice {

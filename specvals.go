@@ -8,7 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"math/bits"
+	"math/big"
 	"strconv"
 )
 
@@ -23,9 +23,11 @@ type cachedSpecValue struct {
 // subsequent lookups.
 //
 // Expressions support + - * / % and parentheses over unsigned integer literals
-// and spec identifiers, evaluated with exact uint64 arithmetic across the full
-// value range. Division rounds up (ceil), since partial bytes/bits cannot be
-// serialized. Anything beyond this subset is rejected with an error.
+// and spec identifiers. They are evaluated as exact rationals (full precision
+// across the whole uint64 range, independent of evaluation order) and rounded
+// up to the next whole unit once at the end, since partial bytes/bits cannot be
+// serialized. Modulo requires integer operands. A negative or out-of-range
+// result, division/modulo by zero, or anything beyond this subset is an error.
 //
 // Returns whether the value was resolved, the uint64 value, and any parse error.
 // If the name references undefined spec values, resolved will be false with no error.
@@ -155,8 +157,8 @@ func specFloatToUint64(v float64) (uint64, error) {
 
 // intSpecExprParser evaluates the arithmetic subset of spec expressions
 // (+ - * / % and parentheses over unsigned integer literals and spec
-// identifiers) with exact uint64 arithmetic. Anything outside the subset
-// makes the parse fail with a descriptive error.
+// identifiers) as exact rationals; the caller rounds the result up once.
+// Anything outside the subset makes the parse fail with a descriptive error.
 type intSpecExprParser struct {
 	input string
 	pos   int
@@ -167,9 +169,9 @@ type intSpecExprParser struct {
 	unresolved bool
 }
 
-// evalIntSpecExpression evaluates expr with exact integer arithmetic.
-// handled reports whether the expression is within the supported subset.
-// Division rounds up (ceil), since partial bytes/bits cannot be serialized.
+// evalIntSpecExpression evaluates expr as an exact rational, then rounds the
+// result up once. handled reports whether the expression is within the
+// supported subset.
 func evalIntSpecExpression(expr string, specs map[string]any) (handled, resolved bool, value uint64, err error) {
 	// Any character outside the subset alphabet means the expression uses
 	// unsupported constructs (comparisons, ternaries, floats, ...); reject
@@ -183,7 +185,7 @@ func evalIntSpecExpression(expr string, specs map[string]any) (handled, resolved
 
 	p := &intSpecExprParser{input: expr, specs: specs}
 
-	value, err = p.parseExpr()
+	rat, err := p.parseExpr()
 	if err != nil {
 		if errors.Is(err, errIntExprUnsupported) {
 			return false, false, 0, nil
@@ -202,6 +204,12 @@ func evalIntSpecExpression(expr string, specs map[string]any) (handled, resolved
 	}
 	if p.unresolved {
 		return true, false, 0, nil
+	}
+	// The whole expression was evaluated exactly as a rational; round up once
+	// to the next whole unit here.
+	value, err = ratCeilToUint64(rat)
+	if err != nil {
+		return true, false, 0, err
 	}
 	return true, true, value, nil
 }
@@ -224,10 +232,10 @@ func (p *intSpecExprParser) skipSpaces() {
 	}
 }
 
-func (p *intSpecExprParser) parseExpr() (uint64, error) {
+func (p *intSpecExprParser) parseExpr() (*big.Rat, error) {
 	left, err := p.parseTerm()
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	for {
 		p.skipSpaces()
@@ -241,28 +249,23 @@ func (p *intSpecExprParser) parseExpr() (uint64, error) {
 		p.pos++
 		right, err := p.parseTerm()
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
 		switch op {
 		case '+':
-			sum, carry := bits.Add64(left, right, 0)
-			if carry != 0 {
-				return 0, fmt.Errorf("value %d + %d overflows uint64", left, right)
-			}
-			left = sum
+			left = new(big.Rat).Add(left, right)
 		case '-':
-			if right > left {
-				return 0, fmt.Errorf("negative value %d - %d", left, right)
-			}
-			left -= right
+			// A negative intermediate is allowed; only the final result is
+			// range-checked (a later term may bring it back non-negative).
+			left = new(big.Rat).Sub(left, right)
 		}
 	}
 }
 
-func (p *intSpecExprParser) parseTerm() (uint64, error) {
+func (p *intSpecExprParser) parseTerm() (*big.Rat, error) {
 	left, err := p.parseFactor()
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	for {
 		p.skipSpaces()
@@ -276,35 +279,37 @@ func (p *intSpecExprParser) parseTerm() (uint64, error) {
 		p.pos++
 		right, err := p.parseFactor()
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
 		switch op {
 		case '*':
-			hi, lo := bits.Mul64(left, right)
-			if hi != 0 {
-				return 0, fmt.Errorf("value %d * %d overflows uint64", left, right)
-			}
-			left = lo
+			left = new(big.Rat).Mul(left, right)
 		case '/':
-			if right == 0 {
-				return 0, fmt.Errorf("division by zero")
+			// Division stays exact (no rounding); the whole expression is
+			// rounded up once at the end. This keeps full precision across the
+			// uint64 range and makes the result independent of evaluation order.
+			if right.Sign() == 0 {
+				return nil, fmt.Errorf("division by zero")
 			}
-			// Round up: partial bytes/bits cannot be serialized, and this
-			// matches the historical float-based evaluation behavior.
-			left = left/right + boolToUint64(left%right != 0)
+			left = new(big.Rat).Quo(left, right)
 		case '%':
-			if right == 0 {
-				return 0, fmt.Errorf("modulo by zero")
+			// Modulo is only defined on integers; a non-integral operand would
+			// be ambiguous, so reject it rather than guess.
+			if right.Sign() == 0 {
+				return nil, fmt.Errorf("modulo by zero")
 			}
-			left %= right
+			if !left.IsInt() || !right.IsInt() {
+				return nil, fmt.Errorf("modulo requires integer operands")
+			}
+			left = new(big.Rat).SetInt(new(big.Int).Mod(left.Num(), right.Num()))
 		}
 	}
 }
 
-func (p *intSpecExprParser) parseFactor() (uint64, error) {
+func (p *intSpecExprParser) parseFactor() (*big.Rat, error) {
 	p.skipSpaces()
 	if p.pos >= len(p.input) {
-		return 0, errIntExprUnsupported
+		return nil, errIntExprUnsupported
 	}
 
 	c := p.input[p.pos]
@@ -313,11 +318,11 @@ func (p *intSpecExprParser) parseFactor() (uint64, error) {
 		p.pos++
 		value, err := p.parseExpr()
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
 		p.skipSpaces()
 		if p.pos >= len(p.input) || p.input[p.pos] != ')' {
-			return 0, errIntExprUnsupported
+			return nil, errIntExprUnsupported
 		}
 		p.pos++
 		return value, nil
@@ -329,13 +334,13 @@ func (p *intSpecExprParser) parseFactor() (uint64, error) {
 		}
 		// hex/underscore/float literals are outside the subset
 		if p.pos < len(p.input) && (isIdentChar(p.input[p.pos]) || p.input[p.pos] == '.') {
-			return 0, errIntExprUnsupported
+			return nil, errIntExprUnsupported
 		}
 		value, err := strconv.ParseUint(p.input[start:p.pos], 10, 64)
 		if err != nil {
-			return 0, fmt.Errorf("invalid integer literal %q", p.input[start:p.pos])
+			return nil, fmt.Errorf("invalid integer literal %q", p.input[start:p.pos])
 		}
-		return value, nil
+		return new(big.Rat).SetUint64(value), nil
 
 	case c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'):
 		start := p.pos
@@ -346,28 +351,40 @@ func (p *intSpecExprParser) parseFactor() (uint64, error) {
 		raw, ok := p.specs[name]
 		if !ok {
 			p.unresolved = true
-			return 0, nil
+			return new(big.Rat), nil
 		}
 		// specValueToUint64 reports failure through err (ok is false only when err
 		// is non-nil), so the error check alone covers every unresolvable value.
 		value, _, err := specValueToUint64(raw)
 		if err != nil {
-			return 0, fmt.Errorf("invalid spec value %q: %w", name, err)
+			return nil, fmt.Errorf("invalid spec value %q: %w", name, err)
 		}
-		return value, nil
+		return new(big.Rat).SetUint64(value), nil
 
 	default:
-		return 0, errIntExprUnsupported
+		return nil, errIntExprUnsupported
 	}
+}
+
+// ratCeilToUint64 rounds a non-negative rational up to the next whole unit
+// (partial bytes/bits cannot be serialized) and reports it as a uint64. A
+// negative value, or one beyond the uint64 range, is an error.
+func ratCeilToUint64(r *big.Rat) (uint64, error) {
+	if r.Sign() < 0 {
+		return 0, fmt.Errorf("expression evaluates to a negative value %s", r.RatString())
+	}
+	q := new(big.Int)
+	m := new(big.Int)
+	q.DivMod(r.Num(), r.Denom(), m) // r >= 0, so q = floor, 0 <= m < denom
+	if m.Sign() != 0 {
+		q.Add(q, big.NewInt(1))
+	}
+	if !q.IsUint64() {
+		return 0, fmt.Errorf("expression value %s exceeds the uint64 range", q.String())
+	}
+	return q.Uint64(), nil
 }
 
 func isIdentChar(c byte) bool {
 	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
-}
-
-func boolToUint64(b bool) uint64 {
-	if b {
-		return 1
-	}
-	return 0
 }

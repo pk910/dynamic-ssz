@@ -6,9 +6,10 @@ package dynssz
 
 import "testing"
 
-// TestEvalIntSpecExpression exercises the exact-integer spec-expression
-// evaluator across every operator, the overflow/underflow/division guards, the
-// literal and identifier factors, and the unsupported/unresolved outcomes.
+// TestEvalIntSpecExpression exercises the rational spec-expression evaluator
+// across every operator, the overflow/underflow/division guards, the literal
+// and identifier factors, the evaluate-then-ceil-once semantics, and the
+// unsupported/unresolved outcomes.
 func TestEvalIntSpecExpression(t *testing.T) {
 	specs := map[string]any{
 		"A":   uint64(10),
@@ -33,6 +34,17 @@ func TestEvalIntSpecExpression(t *testing.T) {
 		{"div_ceil", "A / B", true, true, 4, false},
 		{"mod", "A % B", true, true, 1, false},
 		{"paren", "(A + B) * B", true, true, 39, false},
+		// Evaluate-then-ceil-once: an intermediate division is kept exact and
+		// the whole expression is rounded up once (per-division ceil would give
+		// 12 and 4 respectively).
+		{"div_mul_evaluate_once", "9 / 4 * 4", true, true, 9, false},
+		{"div_mul_half", "3 / 2 * 2", true, true, 3, false},
+		// A chained division agrees with per-division ceil (10/3/2 -> ceil 2).
+		{"chained_div", "A / B / 2", true, true, 2, false},
+		// The exact value is negative -> rejected (a size cannot be negative).
+		{"div_sub_negative", "1 / 2 - 1", true, false, 0, true},
+		// Modulo needs integer operands; 10/3 is not integral.
+		{"mod_non_integer", "A / B % 2", true, false, 0, true},
 		{"literal", "42", true, true, 42, false},
 		{"ident", "A", true, true, 10, false},
 		{"float_ceil", "F", true, true, 4, false},

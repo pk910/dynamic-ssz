@@ -1340,6 +1340,8 @@ func TestCodegenPointerAndPaddingShapes(t *testing.T) {
 		{"PtrDynCollectionField", &PtrDynCollectionField{F: &bl}},
 		{"WrapUnionField", &wu},
 		{"WrapClassicUnionField", &wcu},
+		{"ShortLargeUintVec", &ShortLargeUintVec{A: []byte{1, 2, 3}, B: []uint64{7}}},
+		{"ShortLargeUintVec-full", &ShortLargeUintVec{A: make([]byte, 16), B: []uint64{1, 2, 3, 4}}},
 		{"PtrSvecOfList", &PtrSvecOfList{F: &[][]uint16{{1, 2}}}},
 		{"WrapPtrList", func() any { w := WrapPtrList{}; d := []uint16{5, 6}; w.W.Data = &d; return &w }()},
 	}
@@ -1478,5 +1480,203 @@ func TestCodegenUnionInvalidSelectorSize(t *testing.T) {
 
 	if _, err := ds.MarshalSSZ(&v); err == nil {
 		t.Fatal("marshal should reject the invalid selector")
+	}
+}
+
+// Scalar top-level types occupy exactly their fixed size; the generated
+// unmarshal must reject trailing bytes like the reflection engine does.
+func TestCodegenScalarRootTrailingRejected(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+	refDs := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+
+	cases := []struct {
+		name  string
+		fresh func() any
+		valid []byte
+	}{
+		{"bool", func() any { return new(SimpleBool) }, []byte{1}},
+		{"uint8", func() any { return new(SimpleUint8) }, []byte{7}},
+		{"uint64", func() any { return new(SimpleUint64) }, []byte{1, 0, 0, 0, 0, 0, 0, 0}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			trailing := append(bytes.Clone(tc.valid), 0xAA, 0xBB)
+
+			if err := ds.UnmarshalSSZ(tc.fresh(), trailing); err == nil {
+				t.Error("generated UnmarshalSSZ accepted trailing data after a scalar root")
+			}
+			if err := ds.UnmarshalSSZReader(tc.fresh(), bytes.NewReader(trailing), len(trailing)); err == nil {
+				t.Error("generated UnmarshalSSZReader accepted trailing data after a scalar root")
+			}
+			if err := refDs.UnmarshalSSZ(tc.fresh(), trailing); err == nil {
+				t.Error("reflection accepted trailing data after a scalar root")
+			}
+
+			if err := ds.UnmarshalSSZ(tc.fresh(), tc.valid); err != nil {
+				t.Errorf("valid buffer rejected: %v", err)
+			}
+			if err := ds.UnmarshalSSZ(tc.fresh(), tc.valid[:len(tc.valid)-1]); err == nil {
+				t.Error("generated UnmarshalSSZ accepted a short buffer")
+			}
+		})
+	}
+}
+
+// A legal empty list of variable-size elements decodes through the generated
+// streaming decoder on a seekable source; skipping the (empty) offset table
+// must not move the read position backwards.
+func TestCodegenDecoderEmptyDynListSeekable(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+
+	enc, err := ds.MarshalSSZ(&ListOfList{L: [][]uint32{}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var dst ListOfList
+	decoder, generated := any(&dst).(sszutils.DynamicDecoder)
+	if !generated {
+		// Without generated code there is no streaming decoder to exercise;
+		// the reflection path reads offsets directly instead of skipping.
+		t.Skip("no generated code present")
+	}
+	dec := sszutils.NewBufferDecoder(enc)
+	dec.PushLimit(len(enc))
+	if err := decoder.UnmarshalSSZDecoder(ds, dec); err != nil {
+		t.Fatalf("generated decoder rejected a valid empty dynamic list: %v", err)
+	}
+	if diff := dec.PopLimit(); diff != 0 {
+		t.Errorf("decoder left %d bytes unconsumed", diff)
+	}
+	if len(dst.L) != 0 {
+		t.Errorf("expected empty list, got %d elements", len(dst.L))
+	}
+}
+
+// The generated decoders enforce the big.Int ssz-max and canonicality rules on
+// both the buffer and stream paths, matching the reflection engine.
+func TestCodegenBigIntDecodeValidation(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes())
+	refDs := dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes(), dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+
+	valid, err := ds.MarshalSSZ(&ExtendedBigIntMax_Payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var rt ExtendedBigIntMax
+	if err := ds.UnmarshalSSZ(&rt, valid); err != nil {
+		t.Fatalf("generated buffer decode of valid payload: %v", err)
+	}
+	if err := ds.UnmarshalSSZReader(&rt, bytes.NewReader(valid), len(valid)); err != nil {
+		t.Fatalf("generated stream decode of valid payload: %v", err)
+	}
+	if rt.B.Cmp(&ExtendedBigIntMax_Payload.B) != 0 {
+		t.Errorf("roundtrip value mismatch: %s", rt.B.String())
+	}
+
+	cases := []struct {
+		name string
+		enc  []byte
+	}{
+		{"overLimit", []byte{4, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8}},
+		{"emptyPayload", []byte{4, 0, 0, 0}},
+		{"negativeZero", []byte{4, 0, 0, 0, 1}},
+		{"leadingZero", []byte{4, 0, 0, 0, 0, 0, 1}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var a, b, c ExtendedBigIntMax
+			if err := ds.UnmarshalSSZ(&a, tc.enc); err == nil {
+				t.Error("generated buffer decoder accepted the payload")
+			}
+			if err := ds.UnmarshalSSZReader(&b, bytes.NewReader(tc.enc), len(tc.enc)); err == nil {
+				t.Error("generated stream decoder accepted the payload")
+			}
+			if err := refDs.UnmarshalSSZ(&c, tc.enc); err == nil {
+				t.Error("reflection accepted the payload")
+			}
+		})
+	}
+}
+
+// Generated HashTreeRoot must pad short vectors into library-owned buffers:
+// the caller's backing array stays untouched and the root is independent of
+// whether the fields alias one array. Checked against reflection.
+func TestCodegenAliasedVectorHashing(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+	refDs := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+
+	shared := make([]byte, 32)
+	for i := range shared {
+		shared[i] = 0xAB
+	}
+	before := bytes.Clone(shared)
+
+	aliased := &AliasedVecPair{V: shared[0:2:32], W: shared[4:12:32]}
+	unaliased := &AliasedVecPair{V: []byte{0xAB, 0xAB}, W: bytes.Repeat([]byte{0xAB}, 8)}
+
+	rootAliased, err := ds.HashTreeRoot(aliased)
+	if err != nil {
+		t.Fatalf("HashTreeRoot aliased: %v", err)
+	}
+	if !bytes.Equal(shared, before) {
+		t.Fatalf("generated HashTreeRoot mutated caller memory:\n before: %x\n after:  %x", before, shared)
+	}
+
+	rootUnaliased, err := ds.HashTreeRoot(unaliased)
+	if err != nil {
+		t.Fatalf("HashTreeRoot unaliased: %v", err)
+	}
+	if rootAliased != rootUnaliased {
+		t.Errorf("aliasing changed the generated root: %x != %x", rootAliased, rootUnaliased)
+	}
+
+	refRoot, err := refDs.HashTreeRoot(&AliasedVecPair{V: shared[0:2:32], W: shared[4:12:32]})
+	if err != nil {
+		t.Fatalf("reflection HashTreeRoot: %v", err)
+	}
+	if refRoot != rootUnaliased {
+		t.Errorf("generated root diverges from reflection: %x != %x", rootUnaliased, refRoot)
+	}
+	if !bytes.Equal(shared, before) {
+		t.Fatalf("reflection HashTreeRoot mutated caller memory")
+	}
+}
+
+// Generated SizeSSZ cannot return errors, so invalid union values size as the
+// 0 sentinel — including a fixed-size variant holding mismatched data, which
+// previously fabricated the declared fixed size. Reflection errors instead.
+func TestCodegenUnionFixedVariantSizeValidation(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+
+	var v ClassicUnionPtrVariant
+	v.U.Variant = 0 // V1 uint64: a fixed-size variant
+	v.U.Data = "wrong"
+
+	if sizer, generated := any(&v).(sszutils.DynamicSizer); generated {
+		if got := sizer.SizeSSZDyn(ds); got != 0 {
+			t.Errorf("generated SizeSSZ = %d for mismatched fixed-variant data, want 0", got)
+		}
+	}
+
+	refDs := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+	if _, err := refDs.SizeSSZ(&v); err == nil {
+		t.Error("reflection should reject mismatched fixed-variant data")
+	}
+
+	// A matching value sizes identically on both engines.
+	var ok ClassicUnionPtrVariant
+	ok.U.Variant = 0
+	ok.U.Data = uint64(7)
+	genSize, err := ds.SizeSSZ(&ok)
+	if err != nil {
+		t.Fatalf("generated SizeSSZ: %v", err)
+	}
+	refSize, err := refDs.SizeSSZ(&ok)
+	if err != nil {
+		t.Fatalf("reflection SizeSSZ: %v", err)
+	}
+	if genSize != refSize {
+		t.Errorf("size mismatch for valid value: generated=%d reflection=%d", genSize, refSize)
 	}
 }

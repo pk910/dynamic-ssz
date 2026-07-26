@@ -636,6 +636,12 @@ func (ctx *sizeContext) sizeUnion(desc *ssztypes.TypeDescriptor, varName, sizeVa
 				return err
 			}
 		} else {
+			// A fixed-size variant still validates the data type: sizing
+			// mismatched data as the declared fixed size would fabricate a
+			// plausible-looking size for a value the marshalers reject.
+			ctx.appendCode(indent, "\tif _, ok := %s.Data.(%s); !ok {\n", varName, variantType)
+			ctx.appendCode(indent, "\t\treturn 0\n")
+			ctx.appendCode(indent, "\t}\n")
 			ctx.appendCode(indent, "\t%s += %d\n", sizeVar, variantDesc.Size)
 		}
 	}

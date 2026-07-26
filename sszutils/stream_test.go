@@ -869,6 +869,24 @@ func TestStreamDecoder_PushLimit_ClampToLastLimit(t *testing.T) {
 	}
 }
 
+func TestStreamDecoder_PushLimit_NegativeClamped(t *testing.T) {
+	reader := bytes.NewReader(make([]byte, 10))
+	dec := NewStreamDecoder(reader, 10, 0)
+
+	// A negative limit clamps to zero (like BufferDecoder); without the clamp
+	// GetLength() would go negative and poison downstream reads.
+	dec.PushLimit(-5)
+
+	if dec.GetLength() != 0 {
+		t.Errorf("expected length 0, got %d", dec.GetLength())
+	}
+
+	dec.PopLimit()
+	if dec.GetLength() != 10 {
+		t.Errorf("expected length 10 after pop, got %d", dec.GetLength())
+	}
+}
+
 func TestStreamDecoder_PopLimit_EmptyLimits(t *testing.T) {
 	reader := bytes.NewReader(make([]byte, 10))
 	dec := NewStreamDecoder(reader, 10, 0)

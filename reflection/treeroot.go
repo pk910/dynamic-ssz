@@ -344,17 +344,33 @@ func (ctx *ReflectionCtx) buildRootFromLargeUint(sourceType *ssztypes.TypeDescri
 	}
 
 	sourceLen := uint32(sourceValue.Len())
-	if sourceLen != sourceType.Size/sourceType.ElemDesc.Size {
-		return sszutils.ErrLargeUintLengthFn(sourceLen, sourceType.Size/sourceType.ElemDesc.Size)
+	expectedLen := sourceType.Size / sourceType.ElemDesc.Size
+	if sourceLen > expectedLen {
+		return sszutils.ErrLargeUintLengthFn(sourceLen, expectedLen)
 	}
+	// A short slice is zero-padded to the full large-uint width, matching the
+	// marshal paths and the generated hash tree root (which all pad rather than
+	// reject). Padding to Size keeps the packed layout correct even when pack
+	// is set (no trailing FillUpTo32 to absorb a short value).
 
 	isUint64 := sourceType.ElemDesc.Kind == reflect.Uint64
 	if isUint64 {
 		for i := 0; i < int(sourceType.Size/8); i++ {
-			hh.AppendUint64(sourceValue.Index(i).Uint())
+			if uint32(i) < sourceLen {
+				hh.AppendUint64(sourceValue.Index(i).Uint())
+			} else {
+				hh.AppendUint64(0)
+			}
 		}
 	} else {
-		hh.Append(sourceValue.Bytes())
+		b := sourceValue.Bytes()
+		hh.Append(b)
+		// int64 keeps the widening conversion from the uint32 size safe on every
+		// platform (a large-uint width is only ever 16 or 32, but the size is a
+		// spec-derived uint32 the compiler cannot bound).
+		if pad := int64(sourceType.Size) - int64(len(b)); pad > 0 {
+			hh.Append(sszutils.ZeroBytes()[:pad])
+		}
 	}
 	if !pack {
 		hh.FillUpTo32()
@@ -636,8 +652,13 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 		}
 
 		if appendZero > 0 {
-			zeroBytes := make([]byte, appendZero)
-			bytes = append(bytes, zeroBytes...)
+			// Pad into a library-owned buffer: an append onto the caller's
+			// slice would write the zero bytes into the caller's backing
+			// array (and corrupt a sibling field aliasing the same array
+			// before it is hashed).
+			padded := make([]byte, sliceLen+appendZero)
+			copy(padded, bytes)
+			bytes = padded
 		} else if sourceType.BitSize > 0 && sourceType.BitSize%8 != 0 {
 			// check padding bits (only bit-aligned bitvectors have padding bits)
 			paddingMask := uint8((uint16(0xff) << (sourceType.BitSize % 8)) & 0xff)
@@ -663,12 +684,7 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 		}
 
 		if appendZero > 0 {
-			var zeroVal reflect.Value
-			if sourceType.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
-				zeroVal = reflect.New(sourceType.ElemDesc.Type.Elem())
-			} else {
-				zeroVal = reflect.New(sourceType.ElemDesc.Type).Elem()
-			}
+			zeroVal := newZeroElem(sourceType.ElemDesc)
 
 			for i := 0; i < appendZero; i++ {
 				err := ctx.buildRootFromType(sourceType.ElemDesc, zeroVal, hh, true, idt+2)

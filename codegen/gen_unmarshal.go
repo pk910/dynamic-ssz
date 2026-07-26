@@ -293,7 +293,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 	switch desc.SszType {
 	case ssztypes.SszBoolType:
 		if !noBufCheck {
-			ctx.appendCode(indent, "if len(buf) < 1 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.ErrNeedBytesFn(1, \"bool\")"))
+			ctx.appendScalarLenCheck(indent, 1, "bool", typePath)
 		}
 		ctx.appendCode(indent, "if buf[0] != 1 && buf[0] != 0 {\n\treturn sszutils.ErrInvalidBoolValueFn()\n}\n")
 		ptrVarName := varName
@@ -303,7 +303,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 		ctx.appendCode(indent, "%s = buf[0] == 1\n", ptrVarName)
 	case ssztypes.SszUint8Type:
 		if !noBufCheck {
-			ctx.appendCode(indent, "if len(buf) < 1 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.ErrNeedBytesFn(1, \"uint8\")"))
+			ctx.appendScalarLenCheck(indent, 1, "uint8", typePath)
 		}
 		ptrVarName := varName
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
@@ -317,7 +317,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 
 	case ssztypes.SszUint16Type:
 		if !noBufCheck {
-			ctx.appendCode(indent, "if len(buf) < 2 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.ErrNeedBytesFn(2, \"uint16\")"))
+			ctx.appendScalarLenCheck(indent, 2, "uint16", typePath)
 		}
 		ptrVarName := varName
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
@@ -334,7 +334,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 
 	case ssztypes.SszUint32Type:
 		if !noBufCheck {
-			ctx.appendCode(indent, "if len(buf) < 4 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.ErrNeedBytesFn(4, \"uint32\")"))
+			ctx.appendScalarLenCheck(indent, 4, "uint32", typePath)
 		}
 		ptrVarName := varName
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
@@ -351,7 +351,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 
 	case ssztypes.SszUint64Type:
 		if !noBufCheck {
-			ctx.appendCode(indent, "if len(buf) < 8 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.ErrNeedBytesFn(8, \"uint64\")"))
+			ctx.appendScalarLenCheck(indent, 8, "uint64", typePath)
 		}
 		ptrVarName := varName
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
@@ -414,7 +414,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 	// extended types
 	case ssztypes.SszInt8Type:
 		if !noBufCheck {
-			ctx.appendCode(indent, "if len(buf) < 1 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.ErrNeedBytesFn(1, \"int8\")"))
+			ctx.appendScalarLenCheck(indent, 1, "int8", typePath)
 		}
 		ptrVarName := varName
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
@@ -427,7 +427,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 		)
 	case ssztypes.SszInt16Type:
 		if !noBufCheck {
-			ctx.appendCode(indent, "if len(buf) < 2 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.ErrNeedBytesFn(2, \"int16\")"))
+			ctx.appendScalarLenCheck(indent, 2, "int16", typePath)
 		}
 		ptrVarName := varName
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
@@ -441,7 +441,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 		)
 	case ssztypes.SszInt32Type:
 		if !noBufCheck {
-			ctx.appendCode(indent, "if len(buf) < 4 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.ErrNeedBytesFn(4, \"int32\")"))
+			ctx.appendScalarLenCheck(indent, 4, "int32", typePath)
 		}
 		ptrVarName := varName
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
@@ -455,7 +455,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 		)
 	case ssztypes.SszInt64Type:
 		if !noBufCheck {
-			ctx.appendCode(indent, "if len(buf) < 8 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.ErrNeedBytesFn(8, \"int64\")"))
+			ctx.appendScalarLenCheck(indent, 8, "int64", typePath)
 		}
 		ptrVarName := varName
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
@@ -469,7 +469,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 		)
 	case ssztypes.SszFloat32Type:
 		if !noBufCheck {
-			ctx.appendCode(indent, "if len(buf) < 4 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.ErrNeedBytesFn(4, \"float32\")"))
+			ctx.appendScalarLenCheck(indent, 4, "float32", typePath)
 		}
 		ptrVarName := varName
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
@@ -484,7 +484,7 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 		)
 	case ssztypes.SszFloat64Type:
 		if !noBufCheck {
-			ctx.appendCode(indent, "if len(buf) < 8 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.ErrNeedBytesFn(8, \"float64\")"))
+			ctx.appendScalarLenCheck(indent, 8, "float64", typePath)
 		}
 		ptrVarName := varName
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
@@ -609,6 +609,14 @@ func (ctx *unmarshalContext) unmarshalBigInt(desc *ssztypes.TypeDescriptor, varN
 	// sign byte (0 = non-negative, 1 = negative) followed by the minimal big-endian magnitude
 	ctx.appendCode(indent, "%s := %s.NewInt(0)\n", valVar, bigImport)
 	ctx.appendCode(indent, "if len(buf) == 0 {\n\t\treturn %s\n\t}\n", typePath.getErrorWith(emptyErr))
+	// Enforce a static ssz-max symmetrically with the marshaler: an over-limit
+	// payload would decode into a value that can be neither re-encoded nor
+	// hashed. Dynamic limits (dynssz-max expressions) stay unchecked like on
+	// the marshal side.
+	if desc.MaxExpression == nil && desc.Limit > 0 {
+		limitErr := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", len(buf), %d)", desc.Limit)
+		ctx.appendCode(indent, "if uint64(len(buf)) > %d {\n\t\treturn %s\n\t}\n", desc.Limit, typePath.getErrorWith(limitErr))
+	}
 	ctx.appendCode(indent, "if buf[0] > 1 {\n\t\treturn %s\n\t}\n", typePath.getErrorWith(signErr))
 	ctx.appendCode(indent, "if len(buf) > 1 && buf[1] == 0 {\n\t\treturn %s\n\t}\n", typePath.getErrorWith(leadZeroErr))
 	ctx.appendCode(indent, "if buf[0] == 1 && len(buf) == 1 {\n\t\treturn %s\n\t}\n", typePath.getErrorWith(negZeroErr))
@@ -616,6 +624,16 @@ func (ctx *unmarshalContext) unmarshalBigInt(desc *ssztypes.TypeDescriptor, varN
 	ctx.appendCode(indent, "if buf[0] == 1 {\n\t\t%s.Neg(%s)\n\t}\n", valVar, valVar)
 	ctx.appendCode(indent, "%s = %s\n", ptrVarName, ctx.getCastedValueVar(desc, fmt.Sprintf("*%s", valVar), "big.Int"))
 	return nil
+}
+
+// appendScalarLenCheck emits the root-level length guard for a fixed-size
+// scalar. A scalar root consumes the whole buffer, so it must be exactly size
+// bytes; accepting trailing bytes would let unboundedly many byte strings
+// decode to the same value.
+func (ctx *unmarshalContext) appendScalarLenCheck(indent, size int, typeName string, typePath typePathList) {
+	eofErr := typePath.getErrorWith(fmt.Sprintf("sszutils.ErrNeedBytesFn(%d, %q)", size, typeName))
+	trailErr := typePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - %d)", size))
+	ctx.appendExactLenCheck(indent, fmt.Sprintf("%d", size), "len(buf)", eofErr, trailErr)
 }
 
 // appendExactLenCheck emits a length guard for a region that must be exactly

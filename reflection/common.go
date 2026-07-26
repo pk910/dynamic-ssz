@@ -57,6 +57,19 @@ func NewReflectionCtx(ds sszutils.DynamicSpecs, logCb func(format string, args .
 	}
 }
 
+// newZeroElem constructs the zero element used when a vector's Go value is
+// shorter than its declared length. Pointer elements need an allocated
+// (non-nil) value so the padding element is sized, serialized, and hashed as
+// a present zero element by every engine pass; a nil pointer would be treated
+// as an absent optional and give the passes different byte layouts.
+func newZeroElem(fieldType *ssztypes.TypeDescriptor) reflect.Value {
+	if fieldType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		return reflect.New(fieldType.Type.Elem())
+	}
+
+	return reflect.New(fieldType.Type).Elem()
+}
+
 func getPtr(v reflect.Value) reflect.Value {
 	if v.Kind() == reflect.Ptr {
 		return v
