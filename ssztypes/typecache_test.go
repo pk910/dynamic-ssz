@@ -1883,7 +1883,7 @@ func TestParseSszType(t *testing.T) {
 		{"progressive-bitlist", SszProgressiveBitlistType},
 		{"progressive-container", SszProgressiveContainerType},
 		{"compatible-union", SszCompatibleUnionType},
-		{"union", SszCompatibleUnionType},
+		{"union", SszUnionType},
 
 		// extended types
 		{"int8", SszInt8Type},

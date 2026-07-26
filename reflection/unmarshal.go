@@ -198,6 +198,11 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 		if err != nil {
 			return err
 		}
+	case ssztypes.SszUnionType:
+		err = ctx.unmarshalUnion(targetType, targetValue, decoder, idt)
+		if err != nil {
+			return err
+		}
 
 	// primitive types
 	case ssztypes.SszBoolType:
@@ -1139,6 +1144,56 @@ func (ctx *ReflectionCtx) unmarshalCompatibleUnion(targetType *ssztypes.TypeDesc
 
 	// We know CompatibleUnion has exactly 2 fields: Variant (uint8) and Data (interface{})
 	// Field 0 is Variant, Field 1 is Data
+	targetValue.Field(0).SetUint(uint64(variant))
+	targetValue.Field(1).Set(variantValue)
+
+	return nil
+}
+
+// unmarshalUnion decodes SSZ-encoded data into a classic spec union.
+//
+// The encoding is: selector.to_bytes(1, "little") + serialize(value.data).
+// Selectors are the 0-based descriptor field positions. Selector 0 of a union
+// declaring the None option carries no value, so its region is the bare
+// selector byte (trailing bytes surface through the surrounding
+// exact-consumption checks).
+//
+// Parameters:
+//   - targetType: The TypeDescriptor containing union metadata and variant descriptors
+//   - targetValue: The reflect.Value of the Union to populate
+//   - decoder: The decoder instance used to read SSZ-encoded data
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - error: An error if decoding fails
+func (ctx *ReflectionCtx) unmarshalUnion(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
+	if decoder.GetLength() < 1 {
+		return sszutils.ErrUnionSelectorEOFFn()
+	}
+
+	variant, err := decoder.DecodeUint8()
+	if err != nil {
+		return err
+	}
+
+	if variant == 0 && targetType.SszTypeFlags&ssztypes.SszTypeFlagHasNoneVariant != 0 {
+		targetValue.Field(0).SetUint(0)
+		targetValue.Field(1).Set(reflect.Zero(targetValue.Field(1).Type()))
+		return nil
+	}
+
+	variantDesc, ok := targetType.UnionVariants[variant]
+	if !ok {
+		return sszutils.ErrInvalidUnionVariantFn()
+	}
+
+	variantValue := reflect.New(variantDesc.Type).Elem()
+
+	err = ctx.unmarshalType(variantDesc, variantValue, decoder, idt+2)
+	if err != nil {
+		return sszutils.ErrorWithPathf(err, "[v:%d]", variant)
+	}
+
 	targetValue.Field(0).SetUint(uint64(variant))
 	targetValue.Field(1).Set(variantValue)
 

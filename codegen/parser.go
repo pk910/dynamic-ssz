@@ -686,6 +686,8 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 				sszType = ssztypes.SszBitlistType
 			case pkgPath == "github.com/pk910/dynamic-ssz" && typeName == "CompatibleUnion":
 				sszType = ssztypes.SszCompatibleUnionType
+			case pkgPath == "github.com/pk910/dynamic-ssz" && typeName == "Union":
+				sszType = ssztypes.SszUnionType
 			case pkgPath == "github.com/pk910/dynamic-ssz" && typeName == "TypeWrapper":
 				sszType = ssztypes.SszTypeWrapperType
 			}
@@ -904,6 +906,14 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 			return nil, fmt.Errorf("data CompatibleUnion must be a named type")
 		}
 		err := p.buildCompatibleUnionDescriptor(desc, dataNamedType, schemaNamedType)
+		if err != nil {
+			return nil, err
+		}
+	case ssztypes.SszUnionType:
+		if dataNamedType == nil {
+			return nil, fmt.Errorf("data Union must be a named type")
+		}
+		err := p.buildUnionDescriptor(desc, dataNamedType, schemaNamedType)
 		if err != nil {
 			return nil, err
 		}
@@ -1664,6 +1674,113 @@ func (p *Parser) buildCompatibleUnionDescriptor(desc *ssztypes.TypeDescriptor, d
 
 	if len(variantInfo) == 0 {
 		return fmt.Errorf("union descriptor struct has no fields")
+	}
+
+	desc.UnionVariants = variantInfo
+	desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
+	desc.Size = 0
+
+	return nil
+}
+
+// isNoneMarkerType reports whether a descriptor field type is the classic
+// union None marker (dynssz.None).
+func (p *Parser) isNoneMarkerType(typ types.Type) bool {
+	named, ok := types.Unalias(typ).(*types.Named)
+	if !ok || named.Obj() == nil || named.Obj().Pkg() == nil {
+		return false
+	}
+	return named.Obj().Name() == "None" && named.Obj().Pkg().Path() == "github.com/pk910/dynamic-ssz"
+}
+
+// buildUnionDescriptor builds a descriptor for classic spec unions. Selectors
+// are the descriptor struct's 0-based field positions per the SSZ spec: the
+// None marker is only legal as the first field (making selector 0 the empty
+// option, with at least one further variant), selectors above 127 are
+// reserved, and positional numbering leaves no room for ssz-index tags.
+func (p *Parser) buildUnionDescriptor(desc *ssztypes.TypeDescriptor, dataNamed, schemaNamed *types.Named) error {
+	schemaTypeArgs := schemaNamed.TypeArgs()
+	if schemaTypeArgs == nil || schemaTypeArgs.Len() != 1 {
+		return fmt.Errorf("union must have exactly 1 type argument")
+	}
+
+	schemaDescriptorType := schemaTypeArgs.At(0)
+	schemaDescriptorStruct, ok := schemaDescriptorType.Underlying().(*types.Struct)
+	if !ok {
+		return fmt.Errorf("union descriptor must be a struct, got %T", schemaDescriptorType.Underlying())
+	}
+
+	isViewDescriptor := dataNamed != schemaNamed
+
+	var dataVariantMap map[string]types.Type
+	if isViewDescriptor {
+		dataTypeArgs := dataNamed.TypeArgs()
+		if dataTypeArgs == nil || dataTypeArgs.Len() != 1 {
+			return fmt.Errorf("data Union must have exactly 1 type argument")
+		}
+		dataDescriptorStruct, ok := dataTypeArgs.At(0).Underlying().(*types.Struct)
+		if !ok {
+			return fmt.Errorf("data Union descriptor must be a struct, got %T", dataTypeArgs.At(0).Underlying())
+		}
+		dataVariantMap = make(map[string]types.Type, dataDescriptorStruct.NumFields())
+		for i := 0; i < dataDescriptorStruct.NumFields(); i++ {
+			field := dataDescriptorStruct.Field(i)
+			dataVariantMap[field.Name()] = field.Type()
+		}
+	}
+
+	numFields := schemaDescriptorStruct.NumFields()
+	if numFields == 0 {
+		return fmt.Errorf("union descriptor struct has no fields")
+	}
+	// Selectors above 127 are reserved, so positions 0..127 bound the count.
+	if numFields > 128 {
+		return fmt.Errorf("union descriptor has %d variants, but selectors are limited to 0..127", numFields)
+	}
+
+	variantInfo := make(map[uint8]*ssztypes.TypeDescriptor, numFields)
+
+	for i := 0; i < numFields; i++ {
+		schemaField := schemaDescriptorStruct.Field(i)
+
+		if p.extractSszIndex(schemaDescriptorStruct.Tag(i)) != "" {
+			return fmt.Errorf("union selectors are positional; ssz-index tag on field %s is not allowed", schemaField.Name())
+		}
+
+		if p.isNoneMarkerType(schemaField.Type()) {
+			if i != 0 {
+				return fmt.Errorf("the None option is only legal as the first union variant (field %s is at position %d)", schemaField.Name(), i)
+			}
+			if numFields < 2 {
+				return fmt.Errorf("a union declaring None must offer at least one further variant")
+			}
+			desc.SszTypeFlags |= ssztypes.SszTypeFlagHasNoneVariant
+			continue
+		}
+
+		typeHints, sizeHints, maxSizeHints, err := p.parseFieldTags(schemaDescriptorStruct.Tag(i))
+		if err != nil {
+			return fmt.Errorf("failed to parse union variant field %s tags: %v", schemaField.Name(), err)
+		}
+
+		schemaVariantType := schemaField.Type()
+		var dataVariantType types.Type
+		if isViewDescriptor {
+			var ok bool
+			dataVariantType, ok = dataVariantMap[schemaField.Name()]
+			if !ok {
+				return fmt.Errorf("data union missing variant %q defined in schema", schemaField.Name())
+			}
+		} else {
+			dataVariantType = schemaVariantType
+		}
+
+		variantDesc, err := p.buildTypeDescriptor(dataVariantType, schemaVariantType, typeHints, sizeHints, maxSizeHints)
+		if err != nil {
+			return fmt.Errorf("failed to build union variant %d descriptor: %v", i, err)
+		}
+
+		variantInfo[uint8(i)] = variantDesc
 	}
 
 	desc.UnionVariants = variantInfo

@@ -100,3 +100,77 @@ func extractUnionDescriptorInfo(descriptorType reflect.Type, ds sszutils.Dynamic
 
 	return variantInfo, nil
 }
+
+// isNoneMarkerType reports whether a descriptor field type is the classic
+// union None marker (dynssz.None), detected by identity like the well-known
+// generic types.
+func isNoneMarkerType(t reflect.Type) bool {
+	return t.Kind() == reflect.Struct && t.NumField() == 0 &&
+		t.Name() == "None" && t.PkgPath() == dynsszPkgPath
+}
+
+// extractClassicUnionDescriptorInfo extracts variant information from a
+// classic union descriptor type. Selectors are the 0-based field positions per
+// the SSZ spec: the None marker is only legal as the first field (making
+// selector 0 the empty option, with at least one further variant), selectors
+// above 127 are reserved, and positional numbering leaves no room for
+// ssz-index tags. The returned map holds no entry for the None selector.
+func extractClassicUnionDescriptorInfo(descriptorType reflect.Type, ds sszutils.DynamicSpecs) (map[uint8]unionVariantInfo, bool, error) {
+	if descriptorType.Kind() != reflect.Struct {
+		return nil, false, sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "union descriptor must be a struct, got %v", descriptorType.Kind())
+	}
+
+	numFields := descriptorType.NumField()
+	if numFields == 0 {
+		return nil, false, sszutils.NewSszError(sszutils.ErrInvalidConstraint, "union descriptor struct has no fields")
+	}
+	// Selectors above 127 are reserved, so positions 0..127 bound the count.
+	if numFields > 128 {
+		return nil, false, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "union descriptor has %d variants, but selectors are limited to 0..127", numFields)
+	}
+
+	hasNone := false
+	variantInfo := make(map[uint8]unionVariantInfo, numFields)
+
+	for i := 0; i < numFields; i++ {
+		field := descriptorType.Field(i)
+
+		if _, tagged := field.Tag.Lookup("ssz-index"); tagged {
+			return nil, false, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "union selectors are positional; ssz-index tag on field %s is not allowed", field.Name)
+		}
+
+		if isNoneMarkerType(field.Type) {
+			if i != 0 {
+				return nil, false, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "the None option is only legal as the first union variant (field %s is at position %d)", field.Name, i)
+			}
+			if numFields < 2 {
+				return nil, false, sszutils.NewSszError(sszutils.ErrInvalidConstraint, "a union declaring None must offer at least one further variant")
+			}
+			hasNone = true
+			continue
+		}
+
+		sizeHints, err := getSszSizeTag(ds, &field)
+		if err != nil {
+			return nil, false, err
+		}
+		maxSizeHints, err := getSszMaxSizeTag(ds, &field)
+		if err != nil {
+			return nil, false, err
+		}
+		typeHints, err := getSszTypeTag(&field)
+		if err != nil {
+			return nil, false, err
+		}
+
+		variantInfo[uint8(i)] = unionVariantInfo{
+			Name:         field.Name,
+			Type:         field.Type,
+			SizeHints:    sizeHints,
+			MaxSizeHints: maxSizeHints,
+			TypeHints:    typeHints,
+		}
+	}
+
+	return variantInfo, hasNone, nil
+}

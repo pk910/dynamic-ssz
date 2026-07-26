@@ -6,6 +6,10 @@ package ssztypes
 
 import "strings"
 
+// dynsszPkgPath is the import path of the root dynamic-ssz package, home of
+// the generic helper types (Union, CompatibleUnion, TypeWrapper, None).
+const dynsszPkgPath = "github.com/pk910/dynamic-ssz"
+
 // wellKnownExternalTypes is a map of external types that are known to be supported by SSZ
 var wellKnownExternalTypes = map[string]SszType{
 	"time.Time":                      SszUint64Type,
@@ -21,9 +25,12 @@ func getWellKnownExternalType(pkgPath, name string) SszType {
 		return t
 	}
 
-	if pkgPath == "github.com/pk910/dynamic-ssz" {
+	if pkgPath == dynsszPkgPath {
 		if strings.HasPrefix(name, "CompatibleUnion[") {
 			return SszCompatibleUnionType
+		}
+		if strings.HasPrefix(name, "Union[") {
+			return SszUnionType
 		}
 		if strings.HasPrefix(name, "TypeWrapper[") {
 			return SszTypeWrapperType

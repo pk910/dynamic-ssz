@@ -5,11 +5,62 @@
 package reflection
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
+
+// The public marshal entry points size a value before encoding it, so
+// marshalUnion's own validation errors are shadowed by the equivalent checks in
+// the sizing pass. These tests drive marshalUnion directly to pin its guards.
+func TestMarshalUnionValidationErrors(t *testing.T) {
+	type unionValue struct {
+		Variant uint8
+		Data    interface{}
+	}
+
+	ctx := newCtx()
+	td := &ssztypes.TypeDescriptor{
+		SszType:      ssztypes.SszUnionType,
+		Kind:         reflect.Struct,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic | ssztypes.SszTypeFlagHasNoneVariant,
+		UnionVariants: map[uint8]*ssztypes.TypeDescriptor{
+			1: {
+				SszType: ssztypes.SszUint32Type,
+				Kind:    reflect.Uint32,
+				Type:    reflect.TypeOf(uint32(0)),
+				Size:    4,
+			},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		value   unionValue
+		wantErr error
+	}{
+		{"noneWithData", unionValue{Variant: 0, Data: uint32(1)}, sszutils.ErrInvalidValueRange},
+		{"invalidVariant", unionValue{Variant: 9, Data: uint32(1)}, sszutils.ErrInvalidValueRange},
+		{"nilData", unionValue{Variant: 1, Data: nil}, sszutils.ErrInvalidValueRange},
+		{"typeMismatch", unionValue{Variant: 1, Data: "not a uint32"}, sszutils.ErrInvalidValueRange},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			enc := sszutils.NewBufferEncoder(nil)
+			err := ctx.marshalUnion(td, reflect.ValueOf(tt.value), enc, 0)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("expected %v, got %v", tt.wantErr, err)
+			}
+		})
+	}
+}
 
 func TestGetPtrWithPointerValue(t *testing.T) {
 	x := 42

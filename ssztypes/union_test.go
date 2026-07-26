@@ -229,3 +229,51 @@ func TestExtractUnionDescriptorTooManyVariants(t *testing.T) {
 		t.Fatal("descriptor with 128 variants should be rejected")
 	}
 }
+
+// Classic union descriptor edge cases not reachable through the public API
+// golden tests: the variant count cap and per-field tag parse failures.
+func TestExtractClassicUnionDescriptorInfo(t *testing.T) {
+	ds := &dummyDynamicSpecs{}
+
+	t.Run("tooManyVariants", func(t *testing.T) {
+		// 129 fields: even with a leading None marker the remaining positions
+		// would exceed selector 127
+		fields := make([]reflect.StructField, 129)
+		for i := range fields {
+			fields[i] = reflect.StructField{
+				Name: fmt.Sprintf("V%d", i),
+				Type: reflect.TypeOf(uint32(0)),
+			}
+		}
+		if _, _, err := extractClassicUnionDescriptorInfo(reflect.StructOf(fields), ds); err == nil {
+			t.Fatal("descriptor with 129 variants should be rejected")
+		}
+	})
+
+	t.Run("invalidSszSize", func(t *testing.T) {
+		descriptorType := reflect.TypeOf(struct {
+			Data []uint8 `ssz-size:"invalid"`
+		}{})
+		if _, _, err := extractClassicUnionDescriptorInfo(descriptorType, ds); err == nil || !strings.Contains(err.Error(), "ssz-size") {
+			t.Fatalf("expected ssz-size parse error, got: %v", err)
+		}
+	})
+
+	t.Run("invalidSszMax", func(t *testing.T) {
+		descriptorType := reflect.TypeOf(struct {
+			Data []uint8 `ssz-max:"invalid"`
+		}{})
+		if _, _, err := extractClassicUnionDescriptorInfo(descriptorType, ds); err == nil || !strings.Contains(err.Error(), "ssz-max") {
+			t.Fatalf("expected ssz-max parse error, got: %v", err)
+		}
+	})
+
+	t.Run("invalidSszType", func(t *testing.T) {
+		descriptorType := reflect.TypeOf(struct {
+			Data []uint8 `ssz-type:"invalid"`
+		}{})
+		if _, _, err := extractClassicUnionDescriptorInfo(descriptorType, ds); err == nil || !strings.Contains(err.Error(), "ssz-type") {
+			t.Fatalf("expected ssz-type parse error, got: %v", err)
+		}
+	})
+}

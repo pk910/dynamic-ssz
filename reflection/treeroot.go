@@ -173,6 +173,11 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 		if err != nil {
 			return err
 		}
+	case ssztypes.SszUnionType:
+		err := ctx.buildRootFromUnion(sourceType, sourceValue, hh, idt)
+		if err != nil {
+			return err
+		}
 
 	case ssztypes.SszBoolType:
 		if pack {
@@ -514,6 +519,58 @@ func (ctx *ReflectionCtx) buildRootFromCompatibleUnion(sourceType *ssztypes.Type
 	hh.PutUint8(variant)
 
 	// merkleize
+	hh.Merkleize(hashIndex)
+
+	return nil
+}
+
+// buildRootFromUnion computes the hash tree root for classic spec unions.
+//
+// The root is mix_in_selector(hash_tree_root(value.data), selector) with
+// 0-based positional selectors; the None option contributes a zero chunk as
+// its data root: mix_in_selector(Bytes32(), 0).
+//
+// Parameters:
+//   - sourceType: The TypeDescriptor containing union metadata and variant descriptors
+//   - sourceValue: The reflect.Value of the Union to hash
+//   - hh: The Hasher instance for hash computation
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - error: An error if hashing fails
+func (ctx *ReflectionCtx) buildRootFromUnion(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
+	variant := uint8(sourceValue.Field(0).Uint())
+	dataField := sourceValue.Field(1)
+
+	hashIndex := hh.StartTree(sszutils.TreeTypeNone)
+
+	if variant == 0 && sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasNoneVariant != 0 {
+		if !dataField.IsNil() {
+			return sszutils.ErrUnionTypeMismatchFn()
+		}
+		hh.PutBytes(sszutils.ZeroBytes()[:32])
+		hh.PutUint8(0)
+		hh.Merkleize(hashIndex)
+		return nil
+	}
+
+	variantDesc, ok := sourceType.UnionVariants[variant]
+	if !ok {
+		return sszutils.ErrInvalidUnionVariantFn()
+	}
+	if dataField.IsNil() {
+		return sszutils.ErrInvalidUnionVariantFn()
+	}
+	if dataField.Elem().Type() != variantDesc.Type {
+		return sszutils.ErrUnionTypeMismatchFn()
+	}
+
+	err := ctx.buildRootFromType(variantDesc, dataField.Elem(), hh, false, idt+2)
+	if err != nil {
+		return sszutils.ErrorWithPathf(err, "[v:%d]", variant)
+	}
+
+	hh.PutUint8(variant)
 	hh.Merkleize(hashIndex)
 
 	return nil

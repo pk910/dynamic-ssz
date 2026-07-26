@@ -262,14 +262,14 @@ func (cg *CodeGenerator) analyzeTypes() error {
 // validateTopLevelType rejects top-level types that cannot receive generated
 // methods. Both work fine as struct fields, but not as standalone -types
 // entries:
-//   - a CompatibleUnion / TypeWrapper: these are generic library types nameable
-//     only via a transparent alias, so a method receiver would resolve to the
-//     foreign generic type rather than a local named type.
+//   - a Union / CompatibleUnion / TypeWrapper: these are generic library types
+//     nameable only via a transparent alias, so a method receiver would resolve
+//     to the foreign generic type rather than a local named type.
 //   - a named pointer type (type T *U): methods cannot be declared on a type
 //     whose underlying type is a pointer.
 func validateTopLevelType(t *CodeGeneratorTypeOptions, desc *ssztypes.TypeDescriptor, typeName string) error {
-	if desc.SszType == ssztypes.SszCompatibleUnionType || desc.SszType == ssztypes.SszTypeWrapperType {
-		return fmt.Errorf("cannot generate SSZ methods for top-level %s: a CompatibleUnion/TypeWrapper is nameable only via a type alias and cannot receive methods; use it as a struct field instead", typeName)
+	if desc.SszType == ssztypes.SszUnionType || desc.SszType == ssztypes.SszCompatibleUnionType || desc.SszType == ssztypes.SszTypeWrapperType {
+		return fmt.Errorf("cannot generate SSZ methods for top-level %s: a Union/CompatibleUnion/TypeWrapper is nameable only via a type alias and cannot receive methods; use it as a struct field instead", typeName)
 	}
 
 	if t.ReflectType != nil {
@@ -302,7 +302,7 @@ func isShallowDelegatedDescriptor(desc *ssztypes.TypeDescriptor) bool {
 	case ssztypes.SszVectorType, ssztypes.SszListType, ssztypes.SszBitvectorType,
 		ssztypes.SszBitlistType, ssztypes.SszProgressiveListType, ssztypes.SszProgressiveBitlistType:
 		return desc.ElemDesc == nil
-	case ssztypes.SszCompatibleUnionType:
+	case ssztypes.SszUnionType, ssztypes.SszCompatibleUnionType:
 		return desc.UnionVariants == nil
 	case ssztypes.SszUnspecifiedType:
 		// The go/types parser gate returns shallow descriptors before type

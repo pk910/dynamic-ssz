@@ -60,6 +60,15 @@ var testMatrix = []TestPayload{
 		Hash:    "38a69cbd79a59c60505dac63c0330a57737f891a352cda1acd879cd778ca8cff",
 	},
 	{
+		// classic spec unions: None selected (U1), a dynamic variant (U2) and
+		// a value-carrying selector 0 (U3). The mix_in_selector construction
+		// itself is pinned independently in TestUnionHashTreeRoot (root pkg).
+		Name:    "ClassicUnionTypes",
+		Payload: ClassicUnionTypes_Payload,
+		Specs:   map[string]any{},
+		Hash:    "87141e56fc9d1fa6b2cc3cfdd0283bcc77b744cf7d9b9bbbb5b309d0d5a67bef",
+	},
+	{
 		// progressive container auto-detected from ssz-index tags alone
 		Name:    "ProgIndexOnly",
 		Payload: ProgIndexOnly_Payload,

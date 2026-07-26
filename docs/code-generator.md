@@ -552,7 +552,7 @@ See [SSZ Annotations](ssz-annotations.md#type-annotations-with-sszutilsannotatet
 - Large integers: byte arrays or uint64 arrays with `ssz-type:"uint256"`
 - Bitfields
 - Progressive types
-- Unions: `CompatibleUnion[T]`
+- Unions: `Union[T]` (classic spec) and `CompatibleUnion[T]` (EIP-8016)
 - Type wrappers: `TypeWrapper[D, T]`
 
 ### Annotations

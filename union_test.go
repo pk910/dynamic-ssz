@@ -6,6 +6,7 @@ package dynssz
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"reflect"
 	"strings"
@@ -623,6 +624,477 @@ func TestCompatibleUnionDefaultSelectorsStartAtOne(t *testing.T) {
 	if err := ds.UnmarshalSSZ(&dst, bad); err == nil {
 		t.Fatal("decoding selector 0 should fail")
 	}
+}
+
+// Classic spec unions use 0-based positional selectors; a None marker declared
+// first makes selector 0 the empty option serializing as the single byte 0x00.
+func TestUnionNoneWireFormat(t *testing.T) {
+	type T struct {
+		U Union[struct {
+			N  None
+			F1 uint32
+		}]
+	}
+	ds := NewDynSsz(nil)
+
+	v := T{} // zero value: Variant 0, Data nil = None
+	enc, err := ds.MarshalSSZ(&v)
+	if err != nil {
+		t.Fatalf("marshal None: %v", err)
+	}
+	// offset (4) + bare selector byte 0
+	if !bytes.Equal(enc, []byte{4, 0, 0, 0, 0}) {
+		t.Fatalf("None must serialize as the bare selector byte, got: %x", enc)
+	}
+
+	var back T
+	if err = ds.UnmarshalSSZ(&back, enc); err != nil {
+		t.Fatalf("unmarshal None: %v", err)
+	}
+	if back.U.Variant != 0 || back.U.Data != nil {
+		t.Fatalf("None roundtrip mismatch: %+v", back.U)
+	}
+
+	// A concrete variant encodes as selector + serialized value.
+	v.U.Variant = 1
+	v.U.Data = uint32(7)
+	enc, err = ds.MarshalSSZ(&v)
+	if err != nil {
+		t.Fatalf("marshal variant: %v", err)
+	}
+	if !bytes.Equal(enc, []byte{4, 0, 0, 0, 1, 7, 0, 0, 0}) {
+		t.Fatalf("unexpected variant encoding: %x", enc)
+	}
+	back = T{}
+	if err = ds.UnmarshalSSZ(&back, enc); err != nil {
+		t.Fatalf("unmarshal variant: %v", err)
+	}
+	if back.U.Variant != 1 || back.U.Data != uint32(7) {
+		t.Fatalf("variant roundtrip mismatch: %+v", back.U)
+	}
+
+	// None with attached data is a type mismatch.
+	v.U.Variant = 0
+	v.U.Data = uint32(7)
+	if _, err := ds.MarshalSSZ(&v); err == nil {
+		t.Fatal("None with non-nil data should be rejected")
+	}
+
+	// Bytes trailing the bare None selector are rejected.
+	var b2 T
+	if err := ds.UnmarshalSSZ(&b2, []byte{4, 0, 0, 0, 0, 99}); err == nil {
+		t.Fatal("trailing bytes after None selector should be rejected")
+	}
+
+	// A selector without a declared variant is rejected.
+	if err := ds.UnmarshalSSZ(&b2, []byte{4, 0, 0, 0, 9}); err == nil {
+		t.Fatal("out-of-range selector should be rejected")
+	}
+
+	// An empty union region has no selector byte.
+	if err := ds.UnmarshalSSZ(&b2, []byte{4, 0, 0, 0}); err == nil {
+		t.Fatal("empty union region should be rejected")
+	}
+}
+
+// Without a None marker the first descriptor field is selector 0 and carries
+// a value like any other variant.
+func TestUnionWithoutNone(t *testing.T) {
+	type T struct {
+		U Union[struct {
+			F1 uint32
+			F2 []uint8 `ssz-max:"16"`
+		}]
+	}
+	ds := NewDynSsz(nil)
+
+	v := T{}
+	v.U.Variant = 0
+	v.U.Data = uint32(7)
+	enc, err := ds.MarshalSSZ(&v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Equal(enc, []byte{4, 0, 0, 0, 0, 7, 0, 0, 0}) {
+		t.Fatalf("unexpected encoding: %x", enc)
+	}
+	var back T
+	if err = ds.UnmarshalSSZ(&back, enc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back.U.Variant != 0 || back.U.Data != uint32(7) {
+		t.Fatalf("roundtrip mismatch: %+v", back.U)
+	}
+
+	// A dynamic variant roundtrips through the offset machinery.
+	v.U.Variant = 1
+	v.U.Data = []uint8{1, 2, 3}
+	enc, err = ds.MarshalSSZ(&v)
+	if err != nil {
+		t.Fatalf("marshal dynamic variant: %v", err)
+	}
+	if !bytes.Equal(enc, []byte{4, 0, 0, 0, 1, 1, 2, 3}) {
+		t.Fatalf("unexpected dynamic variant encoding: %x", enc)
+	}
+	back = T{}
+	if err = ds.UnmarshalSSZ(&back, enc); err != nil {
+		t.Fatalf("unmarshal dynamic variant: %v", err)
+	}
+	if back.U.Variant != 1 || !reflect.DeepEqual(back.U.Data, []uint8{1, 2, 3}) {
+		t.Fatalf("dynamic variant roundtrip mismatch: %+v", back.U)
+	}
+
+	// Selector 0 holds a real variant here, so nil data is invalid.
+	v.U.Variant = 0
+	v.U.Data = nil
+	if _, err := ds.MarshalSSZ(&v); err == nil {
+		t.Fatal("nil data for a value-carrying selector should be rejected")
+	}
+}
+
+// The union root is mix_in_selector(hash_tree_root(value), selector); the None
+// option contributes a zero chunk as its data root.
+func TestUnionHashTreeRoot(t *testing.T) {
+	type T = Union[struct {
+		N  None
+		F1 uint32
+	}]
+	ds := NewDynSsz(nil)
+
+	mixin := func(dataRoot [32]byte, selector uint8) [32]byte {
+		var buf [64]byte
+		copy(buf[:32], dataRoot[:])
+		buf[32] = selector
+		return sha256.Sum256(buf[:])
+	}
+
+	// None: mix_in_selector(Bytes32(), 0)
+	root, err := ds.HashTreeRoot(&T{})
+	if err != nil {
+		t.Fatalf("HTR None: %v", err)
+	}
+	if want := mixin([32]byte{}, 0); root != want {
+		t.Fatalf("None root mismatch: got %x, want %x", root, want)
+	}
+
+	// uint32 variant: mix_in_selector(chunk(7), 1)
+	root, err = ds.HashTreeRoot(&T{Variant: 1, Data: uint32(7)})
+	if err != nil {
+		t.Fatalf("HTR variant: %v", err)
+	}
+	var dataChunk [32]byte
+	dataChunk[0] = 7
+	if want := mixin(dataChunk, 1); root != want {
+		t.Fatalf("variant root mismatch: got %x, want %x", root, want)
+	}
+}
+
+func TestNewUnion(t *testing.T) {
+	type D = struct {
+		N  None
+		F1 uint32
+	}
+
+	u, err := NewUnion[D](1, uint32(7))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if u.Variant != 1 || u.Data != uint32(7) {
+		t.Fatalf("unexpected union value: %+v", u)
+	}
+}
+
+// Classic union marshal error paths require reaching marshalUnion without a
+// prior size pass, which happens via MarshalSSZTo with a preallocated buffer.
+func TestUnionStreamMarshalErrorPaths(t *testing.T) {
+	type D = struct {
+		N  None
+		F1 uint32
+		F2 []byte `ssz-type:"bitlist" ssz-max:"16"`
+	}
+	ds := NewDynSsz(nil)
+
+	expectErr := func(t *testing.T, u *Union[D]) {
+		t.Helper()
+		if _, err := ds.MarshalSSZTo(u, make([]byte, 0, 100)); err == nil {
+			t.Fatal("expected error")
+		}
+	}
+
+	t.Run("noneWithData", func(t *testing.T) {
+		expectErr(t, &Union[D]{Variant: 0, Data: uint32(1)})
+	})
+	t.Run("invalidVariant", func(t *testing.T) {
+		expectErr(t, &Union[D]{Variant: 9, Data: uint32(1)})
+	})
+	t.Run("nilData", func(t *testing.T) {
+		expectErr(t, &Union[D]{Variant: 1, Data: nil})
+	})
+	t.Run("typeMismatch", func(t *testing.T) {
+		expectErr(t, &Union[D]{Variant: 1, Data: "not a uint32"})
+	})
+	t.Run("variantMarshalError", func(t *testing.T) {
+		// the bitlist variant is missing its termination bit
+		expectErr(t, &Union[D]{Variant: 2, Data: []byte{0xff, 0x00}})
+	})
+
+	t.Run("streamRoundtrip", func(t *testing.T) {
+		var sb bytes.Buffer
+		if err := ds.MarshalSSZWriter(&Union[D]{Variant: 1, Data: uint32(7)}, &sb); err != nil {
+			t.Fatalf("stream marshal: %v", err)
+		}
+		if !bytes.Equal(sb.Bytes(), []byte{1, 7, 0, 0, 0}) {
+			t.Fatalf("unexpected stream encoding: %x", sb.Bytes())
+		}
+	})
+}
+
+// Classic union hash tree root error paths.
+func TestUnionHTRErrorPaths(t *testing.T) {
+	type D = struct {
+		N  None
+		F1 uint32
+		F2 []byte `ssz-type:"bitlist" ssz-max:"16"`
+	}
+	ds := NewDynSsz(nil)
+
+	expectErr := func(t *testing.T, u *Union[D]) {
+		t.Helper()
+		if _, err := ds.HashTreeRoot(u); err == nil {
+			t.Fatal("expected error")
+		}
+	}
+
+	t.Run("noneWithData", func(t *testing.T) {
+		expectErr(t, &Union[D]{Variant: 0, Data: uint32(1)})
+	})
+	t.Run("invalidVariant", func(t *testing.T) {
+		expectErr(t, &Union[D]{Variant: 9, Data: uint32(1)})
+	})
+	t.Run("nilData", func(t *testing.T) {
+		expectErr(t, &Union[D]{Variant: 1, Data: nil})
+	})
+	t.Run("typeMismatch", func(t *testing.T) {
+		expectErr(t, &Union[D]{Variant: 1, Data: "not a uint32"})
+	})
+	t.Run("variantHTRError", func(t *testing.T) {
+		// the bitlist variant is missing its termination bit
+		expectErr(t, &Union[D]{Variant: 2, Data: []byte{0xff, 0x00}})
+	})
+}
+
+// Classic union size path errors: a buffer marshal of a nested union sizes the
+// value first, so these surface from the sizing pass.
+func TestUnionSizeErrorPaths(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	t.Run("invalidVariant", func(t *testing.T) {
+		type T struct {
+			U Union[struct {
+				F1 uint32
+			}]
+		}
+		v := T{}
+		v.U.Variant = 9
+		v.U.Data = uint32(1)
+		if _, err := ds.MarshalSSZ(&v); err == nil {
+			t.Fatal("expected error for invalid variant")
+		}
+	})
+
+	t.Run("typeMismatch", func(t *testing.T) {
+		type T struct {
+			U Union[struct {
+				F1 uint32
+			}]
+		}
+		v := T{}
+		v.U.Variant = 0
+		v.U.Data = "not a uint32"
+		if _, err := ds.MarshalSSZ(&v); err == nil {
+			t.Fatal("expected error for wrong-typed data")
+		}
+	})
+
+	t.Run("variantSizeError", func(t *testing.T) {
+		// the selected variant is a zero-valued CompatibleUnion, which cannot
+		// be sized (selector 0 is unassigned there)
+		type T struct {
+			U Union[struct {
+				F1 CompatibleUnion[struct {
+					A uint32
+				}]
+			}]
+		}
+		v := T{}
+		v.U.Variant = 0
+		v.U.Data = CompatibleUnion[struct {
+			A uint32
+		}]{}
+		if _, err := ds.MarshalSSZ(&v); err == nil {
+			t.Fatal("expected error from variant sizing")
+		}
+	})
+}
+
+// Classic union unmarshal error paths beyond the wire-format golden tests.
+func TestUnionUnmarshalErrorPaths(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	type T struct {
+		U Union[struct {
+			N  None
+			F1 uint32
+		}]
+	}
+
+	t.Run("selectorReadError", func(t *testing.T) {
+		// The declared size promises a union region, but the stream ends before
+		// the selector byte can be read.
+		var dst T
+		if err := ds.UnmarshalSSZReader(&dst, bytes.NewReader([]byte{4, 0, 0, 0}), 5); err == nil {
+			t.Fatal("expected error for truncated selector stream")
+		}
+	})
+
+	t.Run("variantDataError", func(t *testing.T) {
+		// selector 1 expects 4 bytes of uint32 data, only 2 are present
+		var dst T
+		if err := ds.UnmarshalSSZ(&dst, []byte{4, 0, 0, 0, 1, 7, 0}); err == nil {
+			t.Fatal("expected error for truncated variant data")
+		}
+	})
+}
+
+// Classic unions support view descriptors: the schema union defines the SSZ
+// layout while the runtime union holds the data, matched by variant name.
+func TestUnionViewDescriptor(t *testing.T) {
+	ds := NewDynSsz(nil)
+	tc := ds.GetTypeCache()
+
+	type runtimeDesc = struct {
+		N  None
+		F1 uint32
+		F2 uint64
+	}
+	type viewDesc = struct {
+		N  None
+		F1 uint32
+	}
+
+	t.Run("viewSubset", func(t *testing.T) {
+		desc, err := tc.GetTypeDescriptorWithSchema(
+			reflect.TypeOf(Union[runtimeDesc]{}),
+			reflect.TypeOf(Union[viewDesc]{}),
+			nil, nil, nil,
+		)
+		if err != nil {
+			t.Fatalf("view descriptor build failed: %v", err)
+		}
+		if len(desc.UnionVariants) != 1 {
+			t.Fatalf("expected 1 variant in view, got %d", len(desc.UnionVariants))
+		}
+	})
+
+	t.Run("missingRuntimeVariant", func(t *testing.T) {
+		type otherDesc = struct {
+			N  None
+			F9 uint16
+		}
+		_, err := tc.GetTypeDescriptorWithSchema(
+			reflect.TypeOf(Union[runtimeDesc]{}),
+			reflect.TypeOf(Union[otherDesc]{}),
+			nil, nil, nil,
+		)
+		if err == nil || !strings.Contains(err.Error(), "missing variant") {
+			t.Fatalf("expected missing-variant error, got: %v", err)
+		}
+	})
+
+	t.Run("nonGenericRuntime", func(t *testing.T) {
+		_, err := tc.GetTypeDescriptorWithSchema(
+			reflect.TypeOf(struct{ Variant uint8 }{}),
+			reflect.TypeOf(Union[viewDesc]{}),
+			nil, nil, nil,
+		)
+		if err == nil {
+			t.Fatal("expected error for non-generic runtime type")
+		}
+	})
+
+	t.Run("nonStructRuntimeDescriptor", func(t *testing.T) {
+		_, err := tc.GetTypeDescriptorWithSchema(
+			reflect.TypeOf(Union[uint64]{}),
+			reflect.TypeOf(Union[viewDesc]{}),
+			nil, nil, nil,
+		)
+		if err == nil {
+			t.Fatal("expected error for non-struct runtime descriptor")
+		}
+	})
+}
+
+// The None marker is only legal as the first descriptor field, needs at least
+// one further variant, and positional selectors leave no room for ssz-index.
+func TestUnionDescriptorValidation(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	t.Run("noneNotFirst", func(t *testing.T) {
+		type T struct {
+			U Union[struct {
+				F1 uint32
+				N  None
+			}]
+		}
+		if _, err := ds.MarshalSSZ(&T{}); err == nil || !strings.Contains(err.Error(), "None") {
+			t.Errorf("expected None placement error, got: %v", err)
+		}
+	})
+
+	t.Run("onlyNone", func(t *testing.T) {
+		type T struct {
+			U Union[struct {
+				N None
+			}]
+		}
+		if _, err := ds.MarshalSSZ(&T{}); err == nil || !strings.Contains(err.Error(), "None") {
+			t.Errorf("expected lone-None error, got: %v", err)
+		}
+	})
+
+	t.Run("sszIndexTag", func(t *testing.T) {
+		type T struct {
+			U Union[struct {
+				F1 uint32 `ssz-index:"1"`
+			}]
+		}
+		v := T{}
+		v.U.Variant = 1
+		v.U.Data = uint32(1)
+		if _, err := ds.MarshalSSZ(&v); err == nil || !strings.Contains(err.Error(), "ssz-index") {
+			t.Errorf("expected ssz-index rejection, got: %v", err)
+		}
+	})
+
+	t.Run("emptyDescriptor", func(t *testing.T) {
+		type T struct {
+			U Union[struct{}]
+		}
+		if _, err := ds.MarshalSSZ(&T{}); err == nil {
+			t.Error("expected error for descriptor without fields")
+		}
+	})
+
+	t.Run("unsupportedVariantType", func(t *testing.T) {
+		type T struct {
+			U Union[struct {
+				F1 chan int
+			}]
+		}
+		if _, err := ds.MarshalSSZ(&T{}); err == nil {
+			t.Error("expected error for unsupported variant type")
+		}
+	})
 }
 
 // Explicit ssz-index selectors outside 1..127 are rejected at descriptor build.

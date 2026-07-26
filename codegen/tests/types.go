@@ -456,6 +456,46 @@ var ProgressiveTypes_Payload = ProgressiveTypes{
 	},
 }
 
+// ClassicUnionTypes exercises classic spec unions (dynssz.Union) through the
+// generated code: a None-declaring union with the empty option selected (U1),
+// the same union type with its dynamic variant selected (U2), and a union
+// without None whose selector 0 carries a value (U3).
+type ClassicUnionTypes struct {
+	U1 dynssz.Union[struct {
+		N  dynssz.None
+		F1 uint32
+		F2 []uint8 `ssz-max:"16"`
+	}]
+	U2 dynssz.Union[struct {
+		N  dynssz.None
+		F1 uint32
+		F2 []uint8 `ssz-max:"16"`
+	}]
+	U3 dynssz.Union[struct {
+		F1 uint64
+		F2 [2][]uint16 `ssz-size:"2,5"`
+	}]
+}
+
+var ClassicUnionTypes_Payload = ClassicUnionTypes{
+	// U1 stays zero-valued: Variant 0 with nil Data is the None option.
+	U2: dynssz.Union[struct {
+		N  dynssz.None
+		F1 uint32
+		F2 []uint8 `ssz-max:"16"`
+	}]{
+		Variant: 2,
+		Data:    []uint8{1, 2, 3},
+	},
+	U3: dynssz.Union[struct {
+		F1 uint64
+		F2 [2][]uint16 `ssz-size:"2,5"`
+	}]{
+		Variant: 0,
+		Data:    uint64(0x1122334455667788),
+	},
+}
+
 type CustomTypes1 struct {
 	F1 CustomType1 `ssz-type:"custom"`
 }

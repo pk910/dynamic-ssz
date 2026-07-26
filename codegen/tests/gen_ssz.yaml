@@ -58,6 +58,8 @@ types:
   - name: VecOfList
     output: gen_listoflist.go
 
+  - name: ClassicUnionTypes
+    output: gen_progressive.go
   - name: ProgressiveTypes
     output: gen_progressive.go
   - name: ProgIndexOnly

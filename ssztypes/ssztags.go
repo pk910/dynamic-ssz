@@ -40,6 +40,7 @@ const (
 	SszVectorType
 	SszBitlistType
 	SszBitvectorType
+	SszUnionType
 	SszProgressiveListType
 	SszProgressiveBitlistType
 	SszProgressiveContainerType
@@ -110,8 +111,10 @@ func ParseSszType(typeStr string) (SszType, error) {
 		return SszProgressiveBitlistType, nil
 	case "progressive-container":
 		return SszProgressiveContainerType, nil
-	case "compatible-union", "union":
+	case "compatible-union":
 		return SszCompatibleUnionType, nil
+	case "union":
+		return SszUnionType, nil
 
 	// extended types (not supported by SSZ spec)
 	case "int8":

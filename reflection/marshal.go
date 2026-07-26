@@ -108,6 +108,11 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 		if err != nil {
 			return err
 		}
+	case ssztypes.SszUnionType:
+		err = ctx.marshalUnion(sourceType, sourceValue, encoder, idt)
+		if err != nil {
+			return err
+		}
 
 	// primitive types
 	case ssztypes.SszBoolType:
@@ -801,6 +806,54 @@ func (ctx *ReflectionCtx) marshalCompatibleUnion(sourceType *ssztypes.TypeDescri
 	encoder.EncodeUint8(variant)
 
 	// Marshal the data using the variant's type descriptor
+	err := ctx.marshalType(variantDesc, dataField.Elem(), encoder, idt+2)
+	if err != nil {
+		return sszutils.ErrorWithPathf(err, "[v:%d]", variant)
+	}
+
+	return nil
+}
+
+// marshalUnion encodes classic spec unions into SSZ-encoded data.
+//
+// The encoding is: selector.to_bytes(1, "little") + serialize(value.data).
+// Selectors are the 0-based descriptor field positions; a union declaring the
+// None option serializes it as the single selector byte 0.
+//
+// Parameters:
+//   - sourceType: The TypeDescriptor containing union metadata and variant descriptors
+//   - sourceValue: The reflect.Value of the Union to encode
+//   - encoder: The encoder instance used to write SSZ-encoded data
+//   - idt: Indentation level for verbose logging
+//
+// Returns:
+//   - error: An error if encoding fails
+func (ctx *ReflectionCtx) marshalUnion(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, idt int) error {
+	variant := uint8(sourceValue.Field(0).Uint())
+	dataField := sourceValue.Field(1)
+
+	if variant == 0 && sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasNoneVariant != 0 {
+		// The None option carries no value and serializes as the bare selector.
+		if !dataField.IsNil() {
+			return sszutils.ErrUnionTypeMismatchFn()
+		}
+		encoder.EncodeUint8(0)
+		return nil
+	}
+
+	variantDesc, ok := sourceType.UnionVariants[variant]
+	if !ok {
+		return sszutils.ErrInvalidUnionVariantFn()
+	}
+	if dataField.IsNil() {
+		return sszutils.ErrInvalidUnionVariantFn()
+	}
+	if dataField.Elem().Type() != variantDesc.Type {
+		return sszutils.ErrUnionTypeMismatchFn()
+	}
+
+	encoder.EncodeUint8(variant)
+
 	err := ctx.marshalType(variantDesc, dataField.Elem(), encoder, idt+2)
 	if err != nil {
 		return sszutils.ErrorWithPathf(err, "[v:%d]", variant)
