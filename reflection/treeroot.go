@@ -365,7 +365,10 @@ func (ctx *ReflectionCtx) buildRootFromLargeUint(sourceType *ssztypes.TypeDescri
 	} else {
 		b := sourceValue.Bytes()
 		hh.Append(b)
-		if pad := int(sourceType.Size) - len(b); pad > 0 {
+		// int64 keeps the widening conversion from the uint32 size safe on every
+		// platform (a large-uint width is only ever 16 or 32, but the size is a
+		// spec-derived uint32 the compiler cannot bound).
+		if pad := int64(sourceType.Size) - int64(len(b)); pad > 0 {
 			hh.Append(sszutils.ZeroBytes()[:pad])
 		}
 	}
