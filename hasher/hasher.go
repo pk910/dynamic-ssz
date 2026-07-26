@@ -132,14 +132,14 @@ func (h *Hasher) Reset() {
 	h.layerCount = -1
 }
 
-// AppendBytes32 appends b to the buffer, right-padding with zeros to align
-// to 32 bytes.
+// AppendBytes32 appends b to the buffer, right-padding with zeros until the
+// whole buffer is aligned to 32 bytes. Padding by buffer alignment (rather
+// than len(b)%32) keeps the result identical to treeproof.Wrapper even when
+// the buffer was not chunk-aligned before the call; for the chunk-aligned
+// call sequences the hashing engines emit, the two are equivalent.
 func (h *Hasher) AppendBytes32(b []byte) {
 	h.buf = append(h.buf, b...)
-	if rest := len(b) % 32; rest != 0 {
-		// pad zero bytes to the left
-		h.buf = append(h.buf, zeroBytes[:32-rest]...)
-	}
+	h.FillUpTo32()
 }
 
 // FillUpTo32 pads the buffer with zero bytes to align to a 32-byte boundary.

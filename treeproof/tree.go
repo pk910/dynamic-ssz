@@ -520,9 +520,11 @@ func TreeFromNodesWithMixin(leaves []*Node, num, limit int) (*Node, error) {
 // (rounded up to a power of two via the tree depth) and mixes in the element
 // count as the right sibling of the root.
 func TreeFromNodesWithMixin64(leaves []*Node, num, limit uint64) (*Node, error) {
-	if limit == 0 && len(leaves) > 0 {
-		// A zero capacity cannot hold any leaf (see TreeFromNodes64).
-		return nil, fmt.Errorf("number of leaves %d exceeds limit %d", len(leaves), 0)
+	// The Hasher clamps an under-sized (or zero) mixin limit up to the actual
+	// chunk count instead of failing; mirror that so the Wrapper stays a
+	// drop-in HashWalker producing the same root for the same call sequence.
+	if count := uint64(len(leaves)); limit < count {
+		limit = count
 	}
 	mainTree, err := treeFromNodesToDepthFn(leaves, chunkLimitDepth(limit))
 	if err != nil {
@@ -595,9 +597,12 @@ func (n *Node) Get(index int) (*Node, error) {
 
 // Hash returns the hash of the subtree with the given Node as its root.
 // If root has no children, it returns root's value (not its hash).
+// A copy is returned for the same reason as in Value: empty (zero-padding)
+// nodes alias the process-wide zero-hash table and cached empty nodes are
+// shared across trees, so the raw slice must not escape to callers.
 func (n *Node) Hash() []byte {
 	// TODO: handle special cases: empty root, one non-empty node
-	return hashNode(n)
+	return bytes.Clone(hashNode(n))
 }
 
 // Left returns the left child node, or nil if this is a leaf.

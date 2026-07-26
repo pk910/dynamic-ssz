@@ -333,6 +333,21 @@ func TestHasherAppendBytes32(t *testing.T) {
 	if !bytes.Equal(padding, expectedPadding) {
 		t.Error("padding should be zeros")
 	}
+
+	// A buffer that is not chunk-aligned before the call is padded to whole-
+	// buffer alignment, not by len(b)%32.
+	h.Reset()
+	h.Append([]byte{1, 2, 3})
+	h.AppendBytes32([]byte{4, 5})
+	if len(h.buf) != 32 {
+		t.Errorf("buffer should be aligned to 32 bytes, got %d", len(h.buf))
+	}
+	if !bytes.Equal(h.buf[:5], []byte{1, 2, 3, 4, 5}) {
+		t.Error("data should be at the beginning of buffer")
+	}
+	if !bytes.Equal(h.buf[5:], make([]byte, 27)) {
+		t.Error("padding should be zeros")
+	}
 }
 
 func TestHasherPutUint64(t *testing.T) {

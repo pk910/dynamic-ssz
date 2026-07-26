@@ -585,6 +585,36 @@ func TestNodeHash(t *testing.T) {
 	}
 }
 
+func TestNodeHashReturnsCopy(t *testing.T) {
+	// Empty nodes alias the process-wide zero-hash table; Hash must hand out
+	// a copy so a caller's mutation cannot corrupt it (and with it the roots
+	// of every other tree sharing the cached empty nodes).
+	const depth = 3
+	empty := getEmptyNode(depth)
+	zeroBefore := bytes.Clone(hasher.GetZeroHash(depth))
+
+	h := empty.Hash()
+	if !bytes.Equal(h, zeroBefore) {
+		t.Fatalf("empty node hash mismatch: %x != %x", h, zeroBefore)
+	}
+
+	h[0] ^= 0xff
+	if !bytes.Equal(hasher.GetZeroHash(depth), zeroBefore) {
+		t.Fatal("mutating Hash() result corrupted the global zero-hash table")
+	}
+	if !bytes.Equal(empty.Hash(), zeroBefore) {
+		t.Fatal("mutating Hash() result changed the node's stored hash")
+	}
+
+	// The same guarantee holds for regular leaf and cached branch values.
+	leaf := NewNodeWithValue(bytes.Repeat([]byte{7}, 32))
+	leafHash := leaf.Hash()
+	leafHash[0] ^= 0xff
+	if !bytes.Equal(leaf.Hash(), bytes.Repeat([]byte{7}, 32)) {
+		t.Fatal("mutating Hash() result changed the leaf value")
+	}
+}
+
 func TestNodeProve(t *testing.T) {
 	// Create a simple tree with 4 leaves
 	chunks := [][]byte{
@@ -1183,11 +1213,40 @@ func TestTreeFromNodesWithMixinNonPowerOfTwoLimit(t *testing.T) {
 func TestTreeFromNodesWithMixinZeroLimit(t *testing.T) {
 	nodes := []*Node{NewNodeWithValue([]byte{1})}
 
-	// A zero limit cannot hold any leaf; accepting it would silently drop the
-	// leaf and produce a mixin over an empty tree.
-	_, err := TreeFromNodesWithMixin(nodes, 1, 0)
-	if err == nil {
-		t.Fatal("expected error for leaves exceeding zero limit")
+	// The mixin path clamps an under-sized limit up to the chunk count, the
+	// same fallback the Hasher applies, so no leaf is silently dropped.
+	tree, err := TreeFromNodesWithMixin(nodes, 1, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	reference, err := TreeFromNodesWithMixin(nodes, 1, 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !bytes.Equal(tree.Hash(), reference.Hash()) {
+		t.Errorf("clamped limit root mismatch: %x != %x", tree.Hash(), reference.Hash())
+	}
+}
+
+func TestTreeFromNodesWithMixinLimitBelowCount(t *testing.T) {
+	nodes := make([]*Node, 8)
+	for i := range nodes {
+		nodes[i] = NewNodeWithValue([]byte{byte(i + 1)})
+	}
+
+	// limit 2 < 8 chunks: clamped up to the chunk count like the Hasher does.
+	tree, err := TreeFromNodesWithMixin(nodes, 8, 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	reference, err := TreeFromNodesWithMixin(nodes, 8, 8)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !bytes.Equal(tree.Hash(), reference.Hash()) {
+		t.Errorf("clamped limit root mismatch: %x != %x", tree.Hash(), reference.Hash())
 	}
 }
 
@@ -1819,9 +1878,9 @@ func TestTreeFromNodes64EdgeCases(t *testing.T) {
 	if _, err := TreeFromNodesWithMixin(nil, -1, -1); err != nil {
 		t.Errorf("TreeFromNodesWithMixin(nil, -1, -1): %v", err)
 	}
-	// The mixin builder rejects a zero capacity holding a leaf.
-	if _, err := TreeFromNodesWithMixin64([]*Node{leaf}, 1, 0); err == nil {
-		t.Error("TreeFromNodesWithMixin64(leaf, 1, 0) should error")
+	// The mixin builder clamps an under-sized capacity up to the chunk count.
+	if _, err := TreeFromNodesWithMixin64([]*Node{leaf}, 1, 0); err != nil {
+		t.Errorf("TreeFromNodesWithMixin64(leaf, 1, 0): %v", err)
 	}
 }
 

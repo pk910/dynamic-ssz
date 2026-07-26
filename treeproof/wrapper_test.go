@@ -1112,6 +1112,87 @@ func TestWrapperPutBitlistZeroMaxMatchesHasher(t *testing.T) {
 	}
 }
 
+// Wrapper.MerkleizeWithMixin with a limit below the chunk count must clamp
+// the limit up to the count like Hasher does (a root, not a panic).
+func TestWrapperMixinLimitBelowChunksMatchesHasher(t *testing.T) {
+	var wRoot []byte
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("Wrapper.MerkleizeWithMixin(limit < count) panicked: %v", r)
+			}
+		}()
+		w := NewWrapper()
+		idx := w.StartTree(sszutils.TreeTypeBinary)
+		for i := range 8 {
+			w.PutUint64(uint64(i))
+		}
+		w.MerkleizeWithMixin(idx, 8, 2)
+		wRoot = w.Hash()
+	}()
+
+	hh := hasher.NewHasher()
+	hidx := hh.StartTree(sszutils.TreeTypeBinary)
+	for i := range 8 {
+		hh.PutUint64(uint64(i))
+	}
+	hh.MerkleizeWithMixin(hidx, 8, 2)
+	hRoot, err := hh.HashRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(wRoot, hRoot[:]) {
+		t.Errorf("mixin limit below chunks: wrapper=%x hasher=%x", wRoot[:8], hRoot[:8])
+	}
+
+	// The same sequence through the public convenience API.
+	var w2Root []byte
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("Wrapper.PutUint64Array(cap < len) panicked: %v", r)
+			}
+		}()
+		w2 := NewWrapper()
+		w2.PutUint64Array(make([]uint64, 100), 8)
+		w2Root = w2.Hash()
+	}()
+
+	hh2 := hasher.NewHasher()
+	hh2.PutUint64Array(make([]uint64, 100), 8)
+	h2Root, err := hh2.HashRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(w2Root, h2Root[:]) {
+		t.Errorf("PutUint64Array cap overflow: wrapper=%x hasher=%x", w2Root[:8], h2Root[:8])
+	}
+}
+
+// AppendBytes32 on a buffer that is not chunk-aligned must pad identically in
+// both walkers (whole-buffer alignment) so they produce the same root.
+func TestWrapperAppendBytes32UnalignedMatchesHasher(t *testing.T) {
+	w := NewWrapper()
+	idx := w.StartTree(sszutils.TreeTypeNone)
+	w.Append([]byte{1, 2, 3})
+	w.AppendBytes32([]byte{4, 5})
+	w.Merkleize(idx)
+	wRoot := w.Hash()
+
+	hh := hasher.NewHasher()
+	hidx := hh.StartTree(sszutils.TreeTypeNone)
+	hh.Append([]byte{1, 2, 3})
+	hh.AppendBytes32([]byte{4, 5})
+	hh.Merkleize(hidx)
+	hRoot, err := hh.HashRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(wRoot, hRoot[:]) {
+		t.Errorf("AppendBytes32 unaligned: wrapper=%x hasher=%x", wRoot[:8], hRoot[:8])
+	}
+}
+
 // Wrapper.Merkleize* must clamp an out-of-range scope index like Hasher does,
 // instead of panicking with a raw slice-bounds error.
 func TestWrapperMerkleizeIndexClamped(t *testing.T) {
