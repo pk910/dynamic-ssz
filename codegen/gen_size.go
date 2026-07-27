@@ -230,20 +230,40 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 
 	if !isRoot && !isView {
 		hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
-		useFastSsz := !ctx.options.NoFastSsz && desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0 && !hasDynamicSize
+		// Under WithoutDynamicExpressions the generated code must be fully static
+		// and must never call a *Dyn method. A child exposing a static SizeSSZ
+		// (every dynssz-generated child in this mode, plus external fastssz types)
+		// is reached through it even when fastssz delegation is otherwise disabled.
+		useFastSsz := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0 && !hasDynamicSize &&
+			(!ctx.options.NoFastSsz || ctx.options.WithoutDynamicExpressions)
 		if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
 			useFastSsz = true
 		}
 
-		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 {
-			ctx.appendCode(indent, "%s += %s.SizeSSZDyn(ds)\n", sizeVar, varName)
-			ctx.usedDynSpecs = true
-			return nil
-		}
+		if ctx.options.WithoutDynamicExpressions {
+			if useFastSsz {
+				ctx.appendCode(indent, "%s += %s.SizeSSZ()\n", sizeVar, varName)
+				return nil
+			}
+			// Never call a *Dyn method. A dynamic-only type is inlined by falling
+			// through to the structural switch below; only types with no
+			// traversable structure (custom or shallow-delegated externals) are
+			// rejected.
+			if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 &&
+				(desc.SszType == ssztypes.SszCustomType || isShallowDelegatedDescriptor(desc)) {
+				return fmt.Errorf("cannot generate static sizer for %s under without-dynamic-expressions: it provides only dynamic (spec-aware) SSZ methods and has no static SizeSSZ or inlinable structure; add it to the generation set or provide a static sizer", ctx.typePrinter.TypeString(desc))
+			}
+		} else {
+			if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 {
+				ctx.appendCode(indent, "%s += %s.SizeSSZDyn(ds)\n", sizeVar, varName)
+				ctx.usedDynSpecs = true
+				return nil
+			}
 
-		if useFastSsz {
-			ctx.appendCode(indent, "%s += %s.SizeSSZ()\n", sizeVar, varName)
-			return nil
+			if useFastSsz {
+				ctx.appendCode(indent, "%s += %s.SizeSSZ()\n", sizeVar, varName)
+				return nil
+			}
 		}
 	}
 

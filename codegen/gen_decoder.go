@@ -191,12 +191,15 @@ func (ctx *decoderContext) isInlinable(desc *ssztypes.TypeDescriptor) bool {
 		return true
 	}
 
-	// Inline types with generated unmarshal methods
-	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
+	// Inline types with generated unmarshal methods. Under WithoutDynamicExpressions
+	// the *Dyn buffer method is never called (the type is structurally inlined
+	// instead), so its presence must not shortcut temp-var creation here.
+	if !ctx.options.WithoutDynamicExpressions && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
 		return true
 	}
 
-	// Inline types with generated decoder methods
+	// Inline types with generated decoder methods (streaming; still used under
+	// WithoutDynamicExpressions).
 	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 {
 		return true
 	}
@@ -290,7 +293,19 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 			return nil
 		}
 
-		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
+		// The streaming decoder may take ds, but it must still never reference a
+		// *Dyn buffer method under WithoutDynamicExpressions. A generated child is
+		// reached via its static UnmarshalSSZ or its streaming UnmarshalSSZDecoder
+		// above; a remaining dynamic-only type is inlined by falling through to the
+		// structural switch below, unless it has no traversable structure (custom
+		// or shallow-delegated externals), which cannot be inlined.
+		if ctx.options.WithoutDynamicExpressions &&
+			desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
+			if desc.SszType == ssztypes.SszCustomType || isShallowDelegatedDescriptor(desc) {
+				return fmt.Errorf("cannot generate static decoder for %s under without-dynamic-expressions: it provides only a dynamic (spec-aware) UnmarshalSSZDyn and has no static UnmarshalSSZ, streaming UnmarshalSSZDecoder, or inlinable structure; add it to the generation set or provide a static unmarshaler", ctx.typePrinter.TypeString(desc))
+			}
+			// fall through: inline the type's structure via the switch below
+		} else if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
 			sizeStr := "-1"
 			if desc.Size > 0 {
 				sizeStr = fmt.Sprintf("%d", desc.Size)

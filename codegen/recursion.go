@@ -17,7 +17,20 @@ import (
 // or delegated methods (a type in the generation set always qualifies). A
 // cycle consisting only of inline-emitted descriptors would recurse forever,
 // so it is rejected with a pointer to the type that must be generated.
-func validateEmittableGraph(root *ssztypes.TypeDescriptor) error {
+//
+// A generation-set type delegates through its own generated methods either via
+// the Dynamic* interface (default mode) or via the fastssz-style MarshalSSZTo /
+// HashTreeRootWith methods (with-legacy or without-dynamic-expressions mode).
+// A reference only terminates the recursion when the emitter actually delegates
+// to a method rather than inlining the child:
+//   - dynamicDelegation (!WithoutDynamicExpressions): the emitter calls the
+//     Dynamic* methods. Under WithoutDynamicExpressions the emitter never calls a
+//     *Dyn method — a dynamic-only child is inlined instead — so DynamicMarshaler
+//     no longer terminates the cycle.
+//   - staticDelegation (!NoFastSsz || WithoutDynamicExpressions): the emitter
+//     calls the fastssz-style static methods (WithoutDynamicExpressions forces
+//     the static path regardless of NoFastSsz).
+func validateEmittableGraph(root *ssztypes.TypeDescriptor, staticDelegation, dynamicDelegation bool) error {
 	const done = 2
 	const onStack = 1
 	state := map[*ssztypes.TypeDescriptor]int{}
@@ -36,9 +49,18 @@ func validateEmittableGraph(root *ssztypes.TypeDescriptor) error {
 			return fmt.Errorf("container type has no SSZ fields, which is invalid per the SSZ spec")
 		}
 		// Emission delegates non-root references with generated/delegated
-		// methods instead of inlining them, which terminates the recursion.
-		if !isRoot && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 {
-			return nil
+		// methods instead of inlining them, which terminates the recursion. A
+		// method only terminates the cycle when the emitter actually calls it:
+		// Dynamic* methods when dynamicDelegation is set (never under
+		// WithoutDynamicExpressions, where dynamic-only children are inlined),
+		// fastssz-style methods when staticDelegation is set.
+		if !isRoot {
+			if dynamicDelegation && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 {
+				return nil
+			}
+			if staticDelegation && desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0 {
+				return nil
+			}
 		}
 		if state[desc] == onStack {
 			return fmt.Errorf("recursive type %s is only referenced inline; include it in the code generation set so its methods can be called instead", describeDescriptor(desc))

@@ -326,7 +326,19 @@ func (ctx *encoderContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 		return nil
 	}
 
-	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 && !isRoot && !isView {
+	// The streaming encoder may take ds, but it must still never reference a *Dyn
+	// buffer method under WithoutDynamicExpressions. A generated child is reached
+	// via its static MarshalSSZTo or its streaming MarshalSSZEncoder above; a
+	// remaining dynamic-only type is inlined by falling through to the structural
+	// switch below, unless it has no traversable structure (custom or
+	// shallow-delegated externals), which cannot be inlined.
+	if ctx.options.WithoutDynamicExpressions && !isRoot && !isView &&
+		desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 {
+		if desc.SszType == ssztypes.SszCustomType || isShallowDelegatedDescriptor(desc) {
+			return fmt.Errorf("cannot generate static encoder for %s under without-dynamic-expressions: it provides only a dynamic (spec-aware) MarshalSSZDyn and has no static MarshalSSZTo, streaming MarshalSSZEncoder, or inlinable structure; add it to the generation set or provide a static marshaler", ctx.typePrinter.TypeString(desc))
+		}
+		// fall through: inline the type's structure via the switch below
+	} else if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 && !isRoot && !isView {
 		ctx.appendCode(indent, "if buf, err := %s.MarshalSSZDyn(ds, enc.GetBuffer()); err != nil {\n\treturn %s\n} else {\n\tenc.SetBuffer(buf)\n}\n", varName, typePath.getErrorWith("err"))
 		ctx.usedDynSpecs = true
 		return nil

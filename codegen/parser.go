@@ -122,6 +122,13 @@ type Parser struct {
 	// It lets the parser read a referenced, fully-delegated type's ssz-static
 	// declaration so its subtree need not be traversed or validated.
 	AnnotationResolver func(types.Type) string
+
+	// NoDelegation disables the shallow-build shortcut for fully-delegated
+	// ssz-static types, forcing their subtree to be traversed. Code generated
+	// without dynamic expressions must never call a delegated *Dyn method, so
+	// such a type is inlined from its structure instead — which requires the
+	// traversed descriptor.
+	NoDelegation bool
 }
 
 // NewParser creates a new compile-time type parser for code generation.
@@ -509,7 +516,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	// registered under neither. Field-level hints are already handled inline by the
 	// caller (it strips delegation flags).
 	beingGenerated := p.getCompatFlag(innerDataType, innerSchemaType) != 0 || p.getCompatFlag(innerDataType, innerDataType) != 0
-	if p.AnnotationResolver != nil && len(typeHints) == 0 && len(sizeHints) == 0 && len(maxSizeHints) == 0 && !beingGenerated && p.fullyDelegatesSSZ(originalType) {
+	if p.AnnotationResolver != nil && !p.NoDelegation && len(typeHints) == 0 && len(sizeHints) == 0 && len(maxSizeHints) == 0 && !beingGenerated && p.fullyDelegatesSSZ(originalType) {
 		if staticStr, ok := reflect.StructTag(p.AnnotationResolver(originalType)).Lookup("ssz-static"); ok {
 			switch staticStr {
 			case "true":

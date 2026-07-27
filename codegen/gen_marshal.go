@@ -213,7 +213,12 @@ func (ctx *marshalContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 	// Handle types that have generated methods we can call
 	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
 	isFastsszMarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
-	useFastSsz := !ctx.options.NoFastSsz && isFastsszMarshaler && !hasDynamicSize
+	// Under WithoutDynamicExpressions the generated buffer code must be fully
+	// static and must never call a *Dyn method. A child exposing a static
+	// MarshalSSZTo (every dynssz-generated child in this mode, plus external
+	// fastssz types) is reached through that static method even when fastssz
+	// delegation is otherwise disabled, because the dynamic path is forbidden.
+	useFastSsz := isFastsszMarshaler && !hasDynamicSize && (!ctx.options.NoFastSsz || ctx.options.WithoutDynamicExpressions)
 	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
 		useFastSsz = true
 	}
@@ -251,15 +256,24 @@ func (ctx *marshalContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 		return nil
 	}
 
-	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 && !isRoot && !isView {
+	// Under WithoutDynamicExpressions the static buffer path must never call a
+	// *Dyn method. Instead of delegating, the type is inlined by falling through
+	// to the structural switch below (its layout is walked directly). Types that
+	// have no traversable structure — custom types and shallow-delegated external
+	// types — cannot be inlined, so they are rejected with a clear error.
+	if ctx.options.WithoutDynamicExpressions && !isRoot && !isView &&
+		desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicMarshaler|ssztypes.SszCompatFlagDynamicEncoder) != 0 {
+		if desc.SszType == ssztypes.SszCustomType || isShallowDelegatedDescriptor(desc) {
+			return fmt.Errorf("cannot generate static marshaler for %s under without-dynamic-expressions: it provides only dynamic (spec-aware) SSZ methods and has no static MarshalSSZTo or inlinable structure; add it to the generation set or provide a static marshaler", ctx.typePrinter.TypeString(desc))
+		}
+		// fall through: inline the type's structure via the switch below
+	} else if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 && !isRoot && !isView {
 		ctx.appendCode(indent, "if dst, err = %s.MarshalSSZDyn(ds, dst); err != nil {\n", varName)
 		ctx.appendCode(indent+1, "return nil, %s\n", typePath.getErrorWith("err"))
 		ctx.appendCode(indent, "}\n")
 		ctx.usedDynSpecs = true
 		return nil
-	}
-
-	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicEncoder != 0 && !isRoot && !isView {
+	} else if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicEncoder != 0 && !isRoot && !isView {
 		ctx.appendCode(indent, "enc := sszutils.NewBufferEncoder(dst)\n")
 		ctx.appendCode(indent, "if err = %s.MarshalSSZEncoder(ds, enc); err != nil {\n", varName)
 		ctx.appendCode(indent+1, "return nil, %s\n", typePath.getErrorWith("err"))

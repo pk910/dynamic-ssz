@@ -244,20 +244,35 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 		}
 	}
 
-	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0 && !isRoot && !isView {
-		ctx.appendCode(indent, "if err := %s.HashTreeRootWithDyn(ds, hh); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
-		ctx.usedDynSpecs = true
-		return nil
-	}
-
 	isFastsszHasher := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0
 	isFastsszHashWith := desc.SszCompatFlags&ssztypes.SszCompatFlagHashTreeRootWith != 0
 	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
 	hasDynamicMax := desc.SszTypeFlags&ssztypes.SszTypeFlagHasMaxExpr != 0 && !ctx.options.WithoutDynamicExpressions
 
-	useFastSsz := !isRoot && !ctx.options.NoFastSsz && !hasDynamicSize && !hasDynamicMax && (isFastsszHasher || isFastsszHashWith)
+	// Under WithoutDynamicExpressions the generated code must be fully static and
+	// must never call HashTreeRootWithDyn. A child exposing a static
+	// HashTreeRootWith (every dynssz-generated child in this mode, plus external
+	// fastssz types) is reached through it even when fastssz delegation is
+	// otherwise disabled, because the dynamic path is forbidden.
+	useFastSsz := !isRoot && !hasDynamicSize && !hasDynamicMax && (isFastsszHasher || isFastsszHashWith) &&
+		(!ctx.options.NoFastSsz || ctx.options.WithoutDynamicExpressions)
 	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
 		useFastSsz = true
+	}
+
+	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0 && !isRoot && !isView {
+		if !ctx.options.WithoutDynamicExpressions {
+			ctx.appendCode(indent, "if err := %s.HashTreeRootWithDyn(ds, hh); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
+			ctx.usedDynSpecs = true
+			return nil
+		}
+		// The static hash path must never call HashTreeRootWithDyn. If no static
+		// HashTreeRootWith is available, the type is inlined by falling through to
+		// the structural switch below — unless it has no traversable structure
+		// (custom or shallow-delegated externals), which cannot be inlined.
+		if !useFastSsz && (desc.SszType == ssztypes.SszCustomType || isShallowDelegatedDescriptor(desc)) {
+			return fmt.Errorf("cannot generate static hash tree root for %s under without-dynamic-expressions: it provides only dynamic (spec-aware) SSZ methods and has no static HashTreeRootWith or inlinable structure; add it to the generation set or provide a static hasher", ctx.typePrinter.TypeString(desc))
+		}
 	}
 
 	if useFastSsz && !isView {

@@ -169,6 +169,16 @@ func (cg *CodeGenerator) analyzeTypes() error {
 			var desc *ssztypes.TypeDescriptor
 			var err error
 
+			// Without dynamic expressions the generated code must never call a
+			// delegated *Dyn method, so a fully-delegated ssz-static type cannot be
+			// reached through its dynamic methods and must instead be inlined from
+			// its traversed structure. Disable the shallow-build shortcut so the
+			// subtree is available. The flag is never lowered (mirroring
+			// ExtendedTypes): a shared cache/parser stays in the stricter mode.
+			if t.Options.WithoutDynamicExpressions {
+				cg.typeCache.NoDelegation = true
+			}
+
 			if t.ReflectType != nil {
 				// Always wrap in pointer so generated methods use pointer receivers
 				// (needed for unmarshal to write back modified values).
@@ -190,6 +200,9 @@ func (cg *CodeGenerator) analyzeTypes() error {
 					parser.CompatFlags = cg.compatFlags
 					parser.ExtendedTypes = t.Options.ExtendedTypes
 					parser.AnnotationResolver = cg.annotationResolver
+				}
+				if t.Options.WithoutDynamicExpressions {
+					parser.NoDelegation = true
 				}
 				if _, ok := t.GoTypesType.(*types.Pointer); !ok {
 					t.GoTypesType = types.NewPointer(t.GoTypesType)
@@ -537,11 +550,19 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 		// A recursive descriptor graph is only emittable when every cycle can be
 		// broken by a delegated method call; verify before emission so an
 		// unsupported shape produces a clear error instead of unbounded recursion.
-		if err := validateEmittableGraph(t.Descriptor); err != nil {
+		// A generated child is reached through its static MarshalSSZTo either when
+		// fastssz delegation is enabled, or when WithoutDynamicExpressions forces
+		// the static path regardless of NoFastSsz. Dynamic* delegation only
+		// terminates a cycle when the emitter actually calls those methods, which
+		// it never does under WithoutDynamicExpressions (dynamic-only children are
+		// inlined there).
+		staticDelegation := !t.Options.NoFastSsz || t.Options.WithoutDynamicExpressions
+		dynamicDelegation := !t.Options.WithoutDynamicExpressions
+		if err := validateEmittableGraph(t.Descriptor, staticDelegation, dynamicDelegation); err != nil {
 			return "", fmt.Errorf("cannot generate code for %s: %w", t.TypeName, err)
 		}
 		for _, viewDesc := range t.ViewDescriptors {
-			if err := validateEmittableGraph(viewDesc); err != nil {
+			if err := validateEmittableGraph(viewDesc, staticDelegation, dynamicDelegation); err != nil {
 				return "", fmt.Errorf("cannot generate code for view of %s: %w", t.TypeName, err)
 			}
 		}
