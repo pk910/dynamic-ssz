@@ -5315,3 +5315,58 @@ func TestUnknownSizeDerivedLimitIsNotKnownLength(t *testing.T) {
 		t.Fatalf("DecodeRemaining: %v", err)
 	}
 }
+
+// A dynamic list takes its element count from the first offset, so the count is
+// declared by the input rather than witnessed by it. Sizing the offset table
+// from that declaration let a peer turn a few delivered bytes into a large
+// allocation, independently of the region-length vector above: with a realistic
+// ssz-max (BeaconState.Validators is 2^40) the limit check does not constrain it.
+func TestUnknownSizeDoesNotAllocateFromDeclaredElementCount(t *testing.T) {
+	type inner struct {
+		Data []byte `ssz-max:"1024"`
+	}
+	type outer struct {
+		Items []*inner `ssz-max:"1099511627776"`
+	}
+
+	// offset(Items)=4, first element offset 400 MB => 100 million declared
+	// elements from eight crafted bytes.
+	payload := make([]byte, 8+4096)
+	binary.LittleEndian.PutUint32(payload[0:4], 4)
+	binary.LittleEndian.PutUint32(payload[4:8], 400_000_000)
+
+	ds := NewDynSsz(nil, WithNoFastSsz())
+
+	runtime.GC()
+	var base runtime.MemStats
+	runtime.ReadMemStats(&base)
+
+	var peak uint64
+	stop, sampled := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(sampled)
+		var m runtime.MemStats
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				runtime.ReadMemStats(&m)
+				if m.HeapAlloc > peak {
+					peak = m.HeapAlloc
+				}
+			}
+		}
+	}()
+
+	_ = ds.UnmarshalSSZReader(&outer{}, &blockingReader{data: payload}, -1)
+
+	close(stop)
+	<-sampled
+
+	const limit = 64 << 20
+	if peak > base.HeapAlloc+limit {
+		t.Fatalf("a declared element count drove a %d byte peak heap from a %d byte payload",
+			peak-base.HeapAlloc, len(payload))
+	}
+}

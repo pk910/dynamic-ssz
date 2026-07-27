@@ -953,8 +953,14 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		// the loop below consumes elements until the input runs out, applying
 		// ssz-max per element instead of once up front.
 		isArray := desc.Kind == reflect.Array
+		// A region only lacks a declared element count when it is open, which
+		// happens for the trailing dynamic child alone. Everything else has the
+		// count from its region length, so the alignment and ssz-max checks
+		// still apply -- they cost nothing and reject a malformed declaration
+		// immediately. Only the allocation has to distrust the count, since a
+		// declared extent is not evidence the bytes arrived.
 		ctx.appendCode(indent, "itemCount := -1\n")
-		ctx.appendCode(indent, "if dec.LengthKnown() {\n")
+		ctx.appendCode(indent, "if !dec.RegionOpen() {\n")
 		if fieldSizeVar == "1" {
 			ctx.appendCode(indent+1, "itemCount = dec.GetLength()\n")
 		} else {
@@ -968,7 +974,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 			ctx.appendCode(indent+1, "if itemCount > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
 		}
 		if !isArray {
-			ctx.appendCode(indent+1, "%s = sszutils.ExpandSlice(%s, itemCount)\n", valueVar, valueVar)
+			ctx.appendCode(indent+1, "%s = sszutils.SizeListSlice(dec, %s, itemCount, %s)\n", valueVar, valueVar, fieldSizeVar)
 			ctx.appendCode(indent, "} else {\n")
 			ctx.appendCode(indent+1, "%s = sszutils.GrowSlice(%s, 0)\n", valueVar, valueVar)
 		}
@@ -1003,6 +1009,14 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 			ctx.appendCode(indent+2, "%s = sszutils.GrowSlice(%s, %s+1)\n", valueVar, valueVar, indexVar)
 		}
 		ctx.appendCode(indent+1, "}\n")
+		if !isArray {
+			// The count was declared rather than witnessed, so the slice was
+			// seeded from delivered bytes; extend it as the rest arrives. When
+			// the extent was known this is already full length and never taken.
+			ctx.appendCode(indent+1, "if %s >= len(%s) {\n", indexVar, indexValueVar)
+			ctx.appendCode(indent+2, "%s = sszutils.GrowSlice(%s, %s+1)\n", valueVar, valueVar, indexVar)
+			ctx.appendCode(indent+1, "}\n")
+		}
 
 		valVar := fmt.Sprintf("%s[%s]", indexValueVar, indexVar)
 		isInlinable := ctx.isInlinable(desc.ElemDesc)
@@ -1071,15 +1085,20 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent+1, "if canSeek {\n")
 		ctx.appendCode(indent+2, "dec.SkipBytes((itemCount - 1) * 4)\n")
 		ctx.appendCode(indent+1, "} else {\n")
-		ctx.appendCode(indent+2, "offsetSlices[%d] = sszutils.ExpandSlice(offsetSlices[%d], itemCount-1)\n", ctx.offsetSliceCounter, ctx.offsetSliceCounter)
+		// itemCount is derived from the first offset, so it is declared by the
+		// input rather than witnessed by it. Seed the table from the bytes that
+		// have arrived and grow as the offsets are read -- each costs four bytes.
+		ctx.appendCode(indent+2, "offsetSlices[%d] = sszutils.ExpandSlice(offsetSlices[%d], sszutils.CredibleCount(dec, itemCount-1, 4))\n", ctx.offsetSliceCounter, ctx.offsetSliceCounter)
 		ctx.appendCode(indent+2, "offsets = offsetSlices[%d]\n", ctx.offsetSliceCounter)
 		ctx.appendCode(indent+2, "for %s := range itemCount-1 {\n", indexVar)
 		ctx.appendCode(indent+3, "offset, err := dec.DecodeOffset()\n")
 		ctx.appendCode(indent+3, "if err != nil {\n")
 		ctx.appendCode(indent+4, "return %s\n", typePath.append("[%d:o]", indexVar).getErrorWith("err"))
 		ctx.appendCode(indent+3, "}\n")
+		ctx.appendCode(indent+3, "offsets = sszutils.GrowSlice(offsets, %s+1)\n", indexVar)
 		ctx.appendCode(indent+3, "offsets[%s] = offset\n", indexVar)
 		ctx.appendCode(indent+2, "}\n")
+		ctx.appendCode(indent+2, "offsetSlices[%d] = offsets\n", ctx.offsetSliceCounter)
 		ctx.appendCode(indent+1, "}\n")
 		ctx.appendCode(indent, "}\n")
 		ctx.useSeekable = true

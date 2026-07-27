@@ -170,22 +170,44 @@ func (e *StreamDecoder) GetLength() int {
 	return remaining
 }
 
-// LengthKnown reports whether GetLength returns a remaining length that is
-// backed by input known to exist.
+// RegionOpen reports whether the current region runs to EOF rather than to a
+// declared end.
+func (e *StreamDecoder) RegionOpen() bool {
+	return e.lastOpen
+}
+
+// LengthKnown reports whether GetLength is backed by input known to exist.
 //
-// A limit alone is not enough. Inside an open region an offset is validated
-// against the allowance rather than against bytes that have been delivered, so
-// PushLimit can derive a bounded region far larger than the input — a peer can
-// declare a 500 MB field in a 12-byte payload. Treating that as a known length
-// would let callers size an allocation from it before reading a single byte of
-// the payload. The extent is only trustworthy once the total stream length is
-// established, which happens when the reader reports EOF or when the caller
-// supplied the size up front.
+// A declared extent is not enough. Inside an open region an offset is validated
+// against the allowance rather than against delivered bytes, so PushLimit can
+// derive a bounded region far larger than the input -- a peer can declare a
+// 500 MB field in a 12-byte payload. Sizing an allocation from that is a memory
+// amplification attack.
 //
-// Until then callers must consume incrementally; the region limit still bounds
-// them, it just cannot be trusted as an allocation size.
+// The extent is trustworthy in two cases: the total stream length is
+// established (at EOF, or supplied by the caller), or the region already fits
+// in bytes that have been read, which a peer cannot fake without sending them.
 func (e *StreamDecoder) LengthKnown() bool {
-	return !e.lastOpen && e.streamLen >= 0
+	if e.lastOpen {
+		return false
+	}
+	if e.streamLen >= 0 {
+		return true
+	}
+	// The whole region is already in the read buffer, so its bytes exist.
+	return e.lastLimit-e.position <= e.bufferLen-e.bufferPos
+}
+
+// Available reports how many bytes of the current region are already buffered.
+func (e *StreamDecoder) Available() int {
+	avail := e.bufferLen - e.bufferPos
+	if room := e.lastLimit - e.position; room < avail {
+		avail = room
+	}
+	if avail < 0 {
+		return 0
+	}
+	return avail
 }
 
 // rootLimit returns the bound that applies when no region is pushed, and

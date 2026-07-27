@@ -970,6 +970,25 @@ func (ctx *ReflectionCtx) unmarshalListUntilEOF(targetType *ssztypes.TypeDescrip
 		fieldT = fieldT.Elem()
 	}
 
+	// Only an open region lacks a declared element count. A bounded region has
+	// one from its length, so the alignment and ssz-max checks still apply --
+	// they allocate nothing and reject a malformed declaration immediately.
+	// The count still cannot be trusted as an allocation size, since a declared
+	// extent is not evidence that the bytes arrived.
+	declared := -1
+	if !decoder.RegionOpen() {
+		sszLen := decoder.GetLength()
+		if itemSize > 0 && sszLen%itemSize != 0 {
+			return sszutils.ErrListNotAlignedFn(sszLen, itemSize)
+		}
+		if itemSize > 0 {
+			declared = sszLen / itemSize
+			if maxItems >= 0 && declared > maxItems {
+				return sszutils.ErrListLengthFn(declared, targetType.Limit)
+			}
+		}
+	}
+
 	// Byte lists and strings are a single bulk read to EOF, capped by ssz-max.
 	isByteList := targetType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 && fieldType.Type.Kind() == reflect.Uint8
 	isString := targetType.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0
@@ -1008,7 +1027,11 @@ func (ctx *ReflectionCtx) unmarshalListUntilEOF(targetType *ssztypes.TypeDescrip
 	// decode in place through newValue.Index(count). Appending a freshly
 	// allocated element instead would cost an allocation per item, which for a
 	// large trailing list is worse than the buffering this path exists to avoid.
+	// Seed from the bytes that have arrived rather than from the declaration.
 	initialLen := 8
+	if declared >= 0 {
+		initialLen = sszutils.CredibleCount(decoder, declared, itemSize)
+	}
 	if maxItems >= 0 && maxItems < initialLen {
 		initialLen = maxItems
 	}
@@ -1164,15 +1187,22 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 		startPos = decoder.GetPosition() - 4
 		decoder.SkipBytes(requiredOffsetBytes - 4)
 	} else {
-		sliceOffsets = sszutils.GetOffsetSlice(sliceLen)
-		defer sszutils.PutOffsetSlice(sliceOffsets)
+		// sliceLen is derived from the first offset, so it is declared by the
+		// input rather than witnessed by it. Allocating the whole table up front
+		// would let a peer turn a handful of bytes into an arbitrary allocation,
+		// so seed from what has actually arrived and grow as the offsets are
+		// read -- each one costs the peer four bytes.
+		sliceOffsets = sszutils.GetOffsetSlice(sszutils.CredibleCount(decoder, sliceLen, 4))
+		defer func() { sszutils.PutOffsetSlice(sliceOffsets) }()
 
+		sliceOffsets = sszutils.GrowSlice(sliceOffsets, 1)
 		sliceOffsets[0] = firstOffset
 		for i := 1; i < sliceLen; i++ {
 			offset, err := decoder.DecodeOffset()
 			if err != nil {
 				return sszutils.ErrorWithPathf(err, "[%d:o]", i)
 			}
+			sliceOffsets = sszutils.GrowSlice(sliceOffsets, i+1)
 			sliceOffsets[i] = offset
 		}
 	}

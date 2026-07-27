@@ -50,10 +50,22 @@ func (e *BufferDecoder) GetLength() int {
 	return e.lastLimit - e.position
 }
 
+// RegionOpen always returns false: a buffer-backed decoder knows where every
+// region ends.
+func (e *BufferDecoder) RegionOpen() bool {
+	return false
+}
+
 // LengthKnown always returns true: a buffer-backed decoder always knows how
-// many bytes remain in the current region.
+// many bytes remain in the current region, and holds them.
 func (e *BufferDecoder) LengthKnown() bool {
 	return true
+}
+
+// Available returns the whole remaining region: for a buffer-backed decoder
+// every byte of it is already in memory.
+func (e *BufferDecoder) Available() int {
+	return e.lastLimit - e.position
 }
 
 // More reports whether the current region holds at least one more byte.

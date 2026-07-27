@@ -39,10 +39,26 @@ type Decoder interface {
 	GetPosition() int // return current position
 	GetLength() int   // return remaining length (allowance inside an open region)
 
-	// LengthKnown reports whether GetLength returns the exact number of bytes
-	// remaining in the current region. It is false only inside an open region
-	// of a stream decoder whose total length is not yet known.
+	// RegionOpen reports whether the current region has no declared end and so
+	// runs to EOF. Only the trailing dynamic child at each nesting level can be
+	// open, and only while decoding input of unknown length.
+	RegionOpen() bool
+
+	// LengthKnown reports whether GetLength is backed by input known to exist,
+	// and so may be used to size an allocation.
+	//
+	// A declared extent is not enough. Inside input of unknown length an offset
+	// is validated against the allowance rather than against delivered bytes,
+	// so a peer can declare a 500 MB field in a 12-byte payload. The extent is
+	// trustworthy once the total length is established -- at EOF, or because the
+	// caller supplied it -- or once the region fits in bytes already read, which
+	// a peer cannot fake without sending them.
 	LengthKnown() bool
+
+	// Available reports how many bytes of the current region are already in
+	// memory. It is a lower bound on what the region really contains, so an
+	// allocation sized from it is backed by input that demonstrably arrived.
+	Available() int
 
 	// More reports whether the current region holds at least one more byte.
 	// Inside an open region it probes the underlying reader, so it may fail.

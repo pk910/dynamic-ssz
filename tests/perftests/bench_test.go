@@ -137,6 +137,23 @@ func runBlockBenchmarks(b *testing.B, ds *ssz.DynSsz, data []byte, expectedHTR [
 		verifyBlockHTR(b, ds, block, expectedHTR)
 	})
 
+	// Unknown size: the length is discovered at EOF, so the trailing dynamic
+	// chain decodes as open regions and every declared extent is treated as
+	// unwitnessed until the bytes arrive.
+	b.Run("UnmarshalReaderUnknownSize", func(b *testing.B) {
+		var block *SignedBeaconBlock
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			block = new(SignedBeaconBlock)
+			reader := bytes.NewReader(data)
+			if err := ds.UnmarshalSSZReader(block, reader, -1); err != nil {
+				b.Fatal(err)
+			}
+		}
+		b.StopTimer()
+		verifyBlockHTR(b, ds, block, expectedHTR)
+	})
+
 	b.Run("Marshal", func(b *testing.B) {
 		block := new(SignedBeaconBlock)
 		if err := ds.UnmarshalSSZ(block, data); err != nil {
@@ -221,6 +238,21 @@ func runStateBenchmarks(b *testing.B, ds *ssz.DynSsz, data []byte, expectedHTR [
 			state = new(BeaconState)
 			reader := bytes.NewReader(data)
 			if err := ds.UnmarshalSSZReader(state, reader, len(data)); err != nil {
+				b.Fatal(err)
+			}
+		}
+		b.StopTimer()
+		verifyStateHTR(b, ds, state, expectedHTR)
+	})
+
+	// Unknown size: see the block benchmark above.
+	b.Run("UnmarshalReaderUnknownSize", func(b *testing.B) {
+		var state *BeaconState
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			state = new(BeaconState)
+			reader := bytes.NewReader(data)
+			if err := ds.UnmarshalSSZReader(state, reader, -1); err != nil {
 				b.Fatal(err)
 			}
 		}

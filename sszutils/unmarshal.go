@@ -160,6 +160,45 @@ func ExpandSlice[T any](src []T, size int) []T {
 	return src
 }
 
+// CredibleCount clamps a count declared by the input to what the bytes already
+// read can account for, at elemSize bytes per element.
+//
+// A count taken from an offset or a region length is only a claim until the
+// bytes behind it arrive. Sizing an allocation from the claim lets a peer turn a
+// few delivered bytes into an arbitrary one; sizing it from what has arrived
+// costs the peer the bytes. When the extent is already backed by known input the
+// count is returned unchanged.
+func CredibleCount(dec Decoder, count, elemSize int) int {
+	if count <= 0 {
+		return 0
+	}
+	if dec.LengthKnown() {
+		return count
+	}
+	if elemSize <= 0 {
+		return count
+	}
+	if delivered := dec.Available() / elemSize; delivered < count {
+		return delivered
+	}
+	return count
+}
+
+// SizeListSlice sizes dst for a list of count elements of elemSize bytes.
+//
+// When the region's extent is backed by input known to exist, the slice is
+// allocated exactly -- the common case, and what every buffer or known-length
+// decode does. Otherwise the count is merely declared by the input, so
+// allocating it outright would let a peer turn a few delivered bytes into an
+// arbitrary allocation; the slice is instead seeded from the bytes that have
+// actually arrived and grows as the rest does.
+func SizeListSlice[T any](dec Decoder, dst []T, count, elemSize int) []T {
+	if dec.LengthKnown() {
+		return ExpandSlice(dst, count)
+	}
+	return GrowSlice(dst, CredibleCount(dec, count, elemSize))
+}
+
 // GrowSlice returns src resized to size, growing capacity geometrically.
 //
 // ExpandSlice allocates exactly the requested size, which is right when the
