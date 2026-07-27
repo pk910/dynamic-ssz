@@ -57,6 +57,10 @@ func TestEvalIntSpecExpression(t *testing.T) {
 		{"spec_error", "NEG", true, false, 0, true},
 		{"unresolved", "UNDEF", true, false, 0, false},
 		{"unresolved_in_expr", "UNDEF - A", true, false, 0, false},
+		// An undefined identifier evaluates as 0 and can fabricate an evaluation
+		// error (here division by zero); the expression is simply unresolved,
+		// not an error.
+		{"unresolved_eval_error", "A / UNDEF", true, false, 0, false},
 		{"unclosed_paren", "(A", false, false, 0, false},
 		{"trailing_add_operand", "A +", false, false, 0, false},
 		{"trailing_mul_operand", "A *", false, false, 0, false},
