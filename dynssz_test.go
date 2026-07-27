@@ -5449,3 +5449,25 @@ func TestUnknownSizeStaleRegionDoesNotSizeAllocation(t *testing.T) {
 			peak-base.HeapAlloc, len(payload))
 	}
 }
+
+// A big.Int with no static ssz-max has no read cap, so an over-long stream
+// surfaces as the decoder's own limit error. It must not be mapped through the
+// ssz-max check, which has nothing to report and would return nil.
+func TestUnknownSizeBigIntWithoutLimitSurfacesStreamLimit(t *testing.T) {
+	type T struct{ N big.Int }
+
+	payload := make([]byte, 4+200)
+	binary.LittleEndian.PutUint32(payload[0:4], 4)
+	for i := 5; i < len(payload); i++ {
+		payload[i] = 0x01
+	}
+
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithExtendedTypes(),
+		WithStreamReaderBufferSize(16), WithMaxStreamSize(64))
+
+	var out T
+	err := ds.UnmarshalSSZReader(&out, &eofWithDataReader{data: payload}, -1)
+	if !errors.Is(err, sszutils.ErrStreamTooLarge) {
+		t.Fatalf("UnmarshalSSZReader = %v, want ErrStreamTooLarge", err)
+	}
+}
