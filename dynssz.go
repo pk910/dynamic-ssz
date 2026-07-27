@@ -702,14 +702,31 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 //   - bytes.Reader for in-memory data
 //   - Any custom io.Reader implementation
 //   - size: The expected total size of the SSZ data in bytes. A negative size enables
-//     "unknown size" mode: the entire stream is read until EOF into memory and decoded
-//     through the buffer path, so the memory savings of streaming do not apply.
+//     "unknown size" mode: the payload is consumed to EOF without being materialised,
+//     so the memory savings of streaming still apply.
 //
-// Known limitation: unknown-size mode (size < 0) reads the reader to EOF with no
-// upper bound, so it must not be used on untrusted streams — a peer that streams
-// unbounded data (or never closes the connection) can exhaust memory. For
-// untrusted input, pass the exact size, or wrap the reader in an io.LimitReader
-// and supply that limit as size.
+// A non-negative size is treated as trusted: it is the extent every region is
+// measured against, so allocations are sized from it before the bytes arrive. It
+// must come from a source you control — a stat() result, or a Content-Length you
+// are willing to believe — not from untrusted framing. If it comes off the wire,
+// either cap it yourself first or pass a negative size and let WithMaxStreamSize
+// bound the decode.
+//
+// Unknown-size mode is possible because SSZ is self-delimiting for every region
+// except the trailing one, so the missing length only ever affects the last
+// dynamic child at each nesting level. It is always bounded by WithMaxStreamSize
+// (512 MiB by default) — the bound cannot be disabled, since it is what keeps a
+// peer that never closes the connection from exhausting memory.
+//
+// Two caveats apply to unknown-size mode:
+//   - Errors are less precise. Checks that a known length would catch up front —
+//     a truncated fixed section, an offset past the end, a misaligned list —
+//     instead surface as ErrUnexpectedEOF when the read runs out. The accept/reject
+//     decision is unchanged; only the diagnostic differs.
+//   - Types whose SSZ methods were produced by dynamic-ssz v1.3.2 or earlier must be
+//     regenerated. Older generated decoders size the trailing region from the
+//     remaining-length estimate, so they fail with ErrUnexpectedEOF rather than
+//     decoding. Passing an explicit size keeps working with them.
 //
 // Returns:
 //   - error: An error if decoding fails due to:
@@ -742,7 +759,7 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 //	    log.Fatal("Failed to read state:", err)
 //	}
 //
-//	// Read from network with unknown size (reads until EOF, buffers in memory)
+//	// Read from network with unknown size (streams until EOF)
 //	conn, _ := net.Dial("tcp", "localhost:8080")
 //	var block phase0.BeaconBlock
 //	err = ds.UnmarshalSSZReader(&block, conn, -1)
@@ -754,19 +771,38 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "reader must not be nil")
 	}
 
-	// Unknown size: SSZ needs the total length to resolve trailing dynamic
-	// regions, so read the whole stream and decode through the buffer path.
-	if size < 0 {
-		data, err := io.ReadAll(r)
-		if err != nil {
-			return fmt.Errorf("failed to read ssz stream: %w", err)
+	cfg := applyCallOptions(opts)
+
+	// A negative size selects unknown-length mode: the payload is consumed to
+	// EOF without being materialised. SSZ is self-delimiting for every region
+	// except the trailing one, so the missing length only ever affects the last
+	// dynamic child at each nesting level.
+	knownSize := size >= 0
+	var decoder *sszutils.StreamDecoder
+	if knownSize {
+		decoder = sszutils.NewStreamDecoder(r, size, d.options.StreamReaderBufferSize)
+		decoder.PushLimit(size)
+	} else {
+		decoder = sszutils.NewUnknownStreamDecoder(r, d.options.StreamReaderBufferSize, d.options.MaxStreamSize)
+		// Fill the read buffer once up front. If the whole payload fits, EOF is
+		// observed immediately and the length becomes exact, so the decode runs
+		// on the known-length path with all of its fail-fast validation intact.
+		if err := decoder.Prefill(); err != nil {
+			return err
 		}
-		return d.UnmarshalSSZ(target, data, opts...)
+		decoder.PushOpenLimit()
 	}
 
-	cfg := applyCallOptions(opts)
-	decoder := sszutils.NewStreamDecoder(r, size, d.options.StreamReaderBufferSize)
-	decoder.PushLimit(size)
+	// finish closes the root region, asserting the input was fully consumed.
+	finish := func() error {
+		if !knownSize {
+			return decoder.FinishRegion()
+		}
+		if consumedDiff := decoder.PopLimit(); consumedDiff != 0 {
+			return fmt.Errorf("did not consume full ssz range (diff: %v, ssz size: %v)", consumedDiff, size)
+		}
+		return nil
+	}
 
 	// Skip view descriptor logic for types implementing DynamicDecoder
 	if cfg == nil || cfg.viewDescriptor == nil {
@@ -776,12 +812,7 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 				return err
 			}
 
-			consumedDiff := decoder.PopLimit()
-			if consumedDiff != 0 {
-				return fmt.Errorf("did not consume full ssz range (diff: %v, ssz size: %v)", consumedDiff, size)
-			}
-
-			return nil
+			return finish()
 		}
 	} else if viewDecoder, ok := target.(sszutils.DynamicViewDecoder); ok && !d.options.NoDelegation {
 		if unmarshalFn := viewDecoder.UnmarshalSSZDecoderView(cfg.viewDescriptor); unmarshalFn != nil {
@@ -790,12 +821,7 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 				return err
 			}
 
-			consumedDiff := decoder.PopLimit()
-			if consumedDiff != 0 {
-				return fmt.Errorf("did not consume full ssz range (diff: %v, ssz size: %v)", consumedDiff, size)
-			}
-
-			return nil
+			return finish()
 		}
 	}
 
@@ -825,12 +851,7 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 		return err
 	}
 
-	consumedDiff := decoder.PopLimit()
-	if consumedDiff != 0 {
-		return fmt.Errorf("did not consume full ssz range (diff: %v, ssz size: %v)", consumedDiff, size)
-	}
-
-	return nil
+	return finish()
 }
 
 // HashTreeRoot computes the hash tree root of the given source object according to SSZ specifications.

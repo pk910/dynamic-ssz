@@ -50,6 +50,63 @@ func (e *BufferDecoder) GetLength() int {
 	return e.lastLimit - e.position
 }
 
+// RegionOpen always returns false: a buffer-backed decoder knows where every
+// region ends.
+func (e *BufferDecoder) RegionOpen() bool {
+	return false
+}
+
+// LengthKnown always returns true: a buffer-backed decoder always knows how
+// many bytes remain in the current region, and holds them.
+func (e *BufferDecoder) LengthKnown() bool {
+	return true
+}
+
+// Available returns the whole remaining region: for a buffer-backed decoder
+// every byte of it is already in memory.
+func (e *BufferDecoder) Available() int {
+	return e.lastLimit - e.position
+}
+
+// More reports whether the current region holds at least one more byte.
+// It never fails for a buffer-backed decoder.
+func (e *BufferDecoder) More() (bool, error) {
+	return e.lastLimit-e.position > 0, nil
+}
+
+// DecodeRemaining consumes the rest of the current region and returns it in a
+// newly allocated slice. If maxLen is non-negative and the region is larger, the
+// call fails without allocating.
+func (e *BufferDecoder) DecodeRemaining(maxLen int) ([]byte, error) {
+	length := e.lastLimit - e.position
+	if length < 0 {
+		length = 0
+	}
+	if maxLen >= 0 && length > maxLen {
+		return nil, ErrPayloadTooLargeFn(length, maxLen)
+	}
+	out := make([]byte, length)
+	copy(out, e.buffer[e.position:e.position+length])
+	e.position += length
+	return out, nil
+}
+
+// PushOpenLimit pushes a region covering the rest of the current region. A
+// buffer-backed decoder always knows its length, so there is nothing open
+// about it; this keeps the call sites uniform across decoder implementations.
+func (e *BufferDecoder) PushOpenLimit() {
+	e.PushLimit(e.lastLimit - e.position)
+}
+
+// FinishRegion pops the current region, asserting it was fully consumed. A
+// buffer-backed decoder always knows its length, so no probing is needed.
+func (e *BufferDecoder) FinishRegion() error {
+	if diff := e.PopLimit(); diff != 0 {
+		return ErrTrailingDataFn(diff)
+	}
+	return nil
+}
+
 // PushLimit restricts reading to the next limit bytes from the current position.
 // If the limit extends beyond the enclosing limit, it is clamped. Limits can be
 // nested and must be removed with PopLimit.

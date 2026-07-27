@@ -5,6 +5,7 @@
 package reflection
 
 import (
+	"errors"
 	"math"
 	"math/big"
 	"math/bits"
@@ -82,8 +83,7 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 		if useViewUnmarshaler {
 			if unmarshaler, ok := targetValue.Addr().Interface().(sszutils.DynamicViewUnmarshaler); ok {
 				if unmarshalFn := unmarshaler.UnmarshalSSZDynView(*targetType.CodegenInfo); unmarshalFn != nil {
-					bufLen := decoder.GetLength()
-					buf, err := decoder.DecodeBytesBuf(bufLen)
+					buf, err := delegationBuffer(targetType, decoder)
 					if err != nil {
 						return err
 					}
@@ -113,15 +113,7 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 
 		if useFastSsz {
 			if unmarshaller, ok := getPtr(targetValue).Interface().(sszutils.FastsszUnmarshaler); ok {
-				sszLen := decoder.GetLength()
-				if targetType.Size > 0 {
-					typeSize := int64(targetType.Size)
-					if typeSize > math.MaxInt {
-						return sszutils.ErrPlatformOverflowFn("type size", targetType.Size)
-					}
-					sszLen = int(typeSize)
-				}
-				sszBuf, err := decoder.DecodeBytesBuf(sszLen)
+				sszBuf, err := delegationBuffer(targetType, decoder)
 				if err != nil {
 					return err
 				}
@@ -140,15 +132,7 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 
 		if useDynamicUnmarshal {
 			if unmarshaller, ok := getPtr(targetValue).Interface().(sszutils.DynamicUnmarshaler); ok {
-				sszLen := decoder.GetLength()
-				if targetType.Size > 0 {
-					typeSize := int64(targetType.Size)
-					if typeSize > math.MaxInt {
-						return sszutils.ErrPlatformOverflowFn("type size", targetType.Size)
-					}
-					sszLen = int(typeSize)
-				}
-				sszBuf, err := decoder.DecodeBytesBuf(sszLen)
+				sszBuf, err := delegationBuffer(targetType, decoder)
 				if err != nil {
 					return err
 				}
@@ -317,6 +301,28 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 	return nil
 }
 
+// delegationBuffer materialises the region a buffer-based delegate needs.
+//
+// Delegates (fastssz, DynamicUnmarshaler, view unmarshalers) take a []byte, so
+// unlike the streaming interfaces they cannot consume an open region
+// incrementally. A fixed-size type is read at its exact size; otherwise the
+// region is consumed to its end, which for an open region means reading to EOF.
+// That gives up streaming for this subtree only — the enclosing decode stays
+// incremental — and is bounded by the decoder's maximum stream size.
+func delegationBuffer(targetType *ssztypes.TypeDescriptor, decoder sszutils.Decoder) ([]byte, error) {
+	if targetType.Size > 0 {
+		typeSize := int64(targetType.Size)
+		if typeSize > math.MaxInt {
+			return nil, sszutils.ErrPlatformOverflowFn("type size", targetType.Size)
+		}
+		return decoder.DecodeBytesBuf(int(typeSize))
+	}
+	if !decoder.LengthKnown() {
+		return decoder.DecodeRemaining(-1)
+	}
+	return decoder.DecodeBytesBuf(decoder.GetLength())
+}
+
 // unmarshalTypeWrapper unmarshals a TypeWrapper by extracting the wrapped data and unmarshaling it as the wrapped type.
 //
 // Parameters:
@@ -404,8 +410,13 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 		dynamicOffsets = sszutils.GetOffsetSlice(len(targetType.ContainerDesc.DynFields))
 		defer sszutils.PutOffsetSlice(dynamicOffsets)
 	}
+	// In an open region the container's end is only discovered at EOF, so the
+	// trailing dynamic field inherits the open region and the fail-fast size
+	// check is skipped; a short input surfaces as ErrUnexpectedEOF when the
+	// fixed section is read.
+	lengthKnown := decoder.LengthKnown()
 	sszSize := uint32(decoder.GetLength())
-	if sszSize < targetType.Len {
+	if lengthKnown && sszSize < targetType.Len {
 		return sszutils.ErrFixedFieldsEOFFn(sszSize, targetType.Len)
 	}
 
@@ -477,8 +488,13 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 		for i, field := range targetType.ContainerDesc.DynFields {
 			startOffset := dynOffset
 
+			// The trailing dynamic field runs to the end of the container, so in
+			// an open region it is the one field whose extent is unknown.
+			isTrailing := i == dynamicFieldCount-1
+			openField := isTrailing && !lengthKnown
+
 			var endOffset uint32
-			if i < dynamicFieldCount-1 {
+			if !isTrailing {
 				if canSeek {
 					dynOffset = decoder.DecodeOffsetAt(startPos + int(targetType.ContainerDesc.DynFields[i+1].HeaderOffset))
 				} else {
@@ -491,6 +507,8 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 			}
 
 			// check offset integrity (not before previous field offset & not after range end)
+			// In an open region sszSize is the remaining allowance, so this still
+			// bounds an absurd offset, just less tightly than a known length would.
 			if endOffset > sszSize || endOffset < startOffset {
 				return sszutils.ErrorWithPathf(
 					sszutils.ErrElementOffsetOutOfRangeFn(endOffset, startOffset, sszSize),
@@ -500,22 +518,31 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 
 			// fmt.Printf("%sfield %d:\t dynamic [%v:%v]\t %v\n", strings.Repeat(" ", idt+1), field.Index[0], startOffset, endOffset, field.Name)
 
-			sszSize := endOffset - startOffset
-			decoder.PushLimit(int(sszSize))
+			if openField {
+				decoder.PushOpenLimit()
+			} else {
+				sszSize := endOffset - startOffset
+				decoder.PushLimit(int(sszSize))
+			}
 
 			fieldDescriptor := field.Field
 			// Use FieldIndex to access the runtime struct's field, which may differ
 			// from the schema field index when using view descriptors.
 			fieldValue := targetValue.Field(int(fieldDescriptor.FieldIndex))
 			err := ctx.unmarshalType(fieldDescriptor.Type, fieldValue, decoder, idt+2)
-			// Pop the limit before checking the error so a failed field cannot
-			// leave the decoder clamped to its stale region (observable when a
-			// caller reuses the decoder via UnmarshalSSZDecoder).
-			consumedDiff := decoder.PopLimit()
 			if err != nil {
+				// Pop the limit before returning so a failed field cannot leave
+				// the decoder clamped to its stale region (observable when a
+				// caller reuses the decoder via UnmarshalSSZDecoder).
+				decoder.PopLimit()
 				return sszutils.ErrorWithPath(err, fieldDescriptor.Name)
 			}
-			if consumedDiff != 0 {
+			if openField {
+				// The end is only knowable by probing the reader.
+				if err := decoder.FinishRegion(); err != nil {
+					return sszutils.ErrorWithPath(err, fieldDescriptor.Name)
+				}
+			} else if consumedDiff := decoder.PopLimit(); consumedDiff != 0 {
 				return sszutils.ErrTrailingDataFn(consumedDiff)
 			}
 		}
@@ -658,8 +685,9 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 	canSeek := decoder.Seekable()
 
 	// check if there's enough data for all offsets
+	lengthKnown := decoder.LengthKnown()
 	sszLen := decoder.GetLength()
-	if sszLen < requiredOffsetBytes {
+	if lengthKnown && sszLen < requiredOffsetBytes {
 		return sszutils.ErrVectorOffsetsEOFFn(sszLen, requiredOffsetBytes)
 	}
 
@@ -731,8 +759,13 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 
 		startOffset := offset
 
+		// The trailing element runs to the end of the vector, so in an open
+		// region it is the one element whose extent is unknown.
+		isTrailing := i == vectorLen-1
+		openElem := isTrailing && !lengthKnown
+
 		var endOffset uint32
-		if i < vectorLen-1 {
+		if !isTrailing {
 			if canSeek {
 				endOffset = decoder.DecodeOffsetAt(startPos + (i+1)*4)
 			} else {
@@ -751,17 +784,24 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 			)
 		}
 
-		itemSize := endOffset - startOffset
-		decoder.PushLimit(int(itemSize))
+		if openElem {
+			decoder.PushOpenLimit()
+		} else {
+			decoder.PushLimit(int(endOffset - startOffset))
+		}
 		err := ctx.unmarshalType(fieldType, itemVal, decoder, idt+2)
-		// Pop before the error check so a failed element cannot leave the
-		// decoder clamped to its stale region on reuse.
-		consumedDiff := decoder.PopLimit()
 		if err != nil {
+			// Pop before returning so a failed element cannot leave the
+			// decoder clamped to its stale region on reuse.
+			decoder.PopLimit()
 			return sszutils.ErrorWithPathf(err, "[%d]", i)
 		}
 
-		if consumedDiff != 0 {
+		if openElem {
+			if err := decoder.FinishRegion(); err != nil {
+				return sszutils.ErrorWithPathf(err, "[%d]", i)
+			}
+		} else if consumedDiff := decoder.PopLimit(); consumedDiff != 0 {
 			return sszutils.ErrorWithPathf(
 				sszutils.ErrTrailingDataFn(consumedDiff),
 				"[%d]", i,
@@ -832,15 +872,22 @@ func (ctx *ReflectionCtx) unmarshalFixedElements(fieldType *ssztypes.TypeDescrip
 //   - Validates that each element consumes exactly the expected bytes
 func (ctx *ReflectionCtx) unmarshalList(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
 	fieldType := targetType.ElemDesc
-	sszLen := decoder.GetLength()
 
 	elemSize := int64(fieldType.Size)
 	if elemSize > math.MaxInt {
 		return sszutils.ErrPlatformOverflowFn("field size", fieldType.Size)
 	}
+	itemSize := int(elemSize)
+
+	// A list of fixed-size elements derives its length from the region length,
+	// so an open region has to be consumed element by element until EOF.
+	if !decoder.LengthKnown() {
+		return ctx.unmarshalListUntilEOF(targetType, targetValue, decoder, itemSize, idt)
+	}
+
+	sszLen := decoder.GetLength()
 
 	// Calculate slice length once
-	itemSize := int(elemSize)
 	sliceLen := sszLen / itemSize
 	if sszLen%itemSize != 0 {
 		return sszutils.ErrListNotAlignedFn(sszLen, itemSize)
@@ -898,6 +945,142 @@ func (ctx *ReflectionCtx) unmarshalList(targetType *ssztypes.TypeDescriptor, tar
 	return nil
 }
 
+// unmarshalListUntilEOF decodes a list of fixed-size elements whose count is not
+// derivable up front because the enclosing region is open.
+//
+// The bounded path computes the element count as regionLength/itemSize. Here the
+// region ends at EOF, so elements are consumed one at a time until the input is
+// exhausted. itemSize is guaranteed positive by the caller, without which the
+// loop could never make progress. The ssz-max limit is enforced per element rather than once up
+// front, which also means a hostile input cannot drive an allocation larger than
+// the data actually delivered. A trailing partial element surfaces as
+// ErrUnexpectedEOF instead of ErrListNotAligned.
+func (ctx *ReflectionCtx) unmarshalListUntilEOF(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, itemSize, idt int) error {
+	fieldType := targetType.ElemDesc
+
+	maxItems := -1
+	if targetType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
+		if targetType.Limit > math.MaxInt {
+			return sszutils.ErrPlatformOverflowFn("list limit", targetType.Limit)
+		}
+		maxItems = int(targetType.Limit)
+	}
+
+	fieldT := targetType.Type
+	if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		fieldT = fieldT.Elem()
+	}
+
+	// Only an open region lacks a declared element count. A bounded region has
+	// one from its length, so the alignment and ssz-max checks still apply --
+	// they allocate nothing and reject a malformed declaration immediately.
+	// The count still cannot be trusted as an allocation size, since a declared
+	// extent is not evidence that the bytes arrived.
+	declared := -1
+	if !decoder.RegionOpen() {
+		sszLen := decoder.GetLength()
+		if sszLen%itemSize != 0 {
+			return sszutils.ErrListNotAlignedFn(sszLen, itemSize)
+		}
+		declared = sszLen / itemSize
+		if maxItems >= 0 && declared > maxItems {
+			return sszutils.ErrListLengthFn(declared, targetType.Limit)
+		}
+	}
+
+	// Byte lists and strings are a single bulk read to EOF, capped by ssz-max.
+	isByteList := targetType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 && fieldType.Type.Kind() == reflect.Uint8
+	isString := targetType.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0
+	if isByteList || isString {
+		// maxItems is passed as the read cap, so an over-long payload fails
+		// inside DecodeRemaining before it is allocated; no post-check needed.
+		buf, err := decoder.DecodeRemaining(maxItems)
+		if err != nil {
+			// Only the read cap maps to an ssz-max violation; with no limit the
+			// error came from the stream allowance and stands on its own.
+			if maxItems >= 0 && errors.Is(err, sszutils.ErrStreamTooLarge) {
+				return sszutils.ErrListLengthFn(maxItems+1, targetType.Limit)
+			}
+			return err
+		}
+		if isString {
+			targetValue.SetString(string(buf))
+		} else {
+			targetValue.Set(reflect.ValueOf(buf).Convert(fieldT))
+		}
+		return nil
+	}
+
+	// The slice is kept at full length and grown geometrically, so elements
+	// decode in place through newValue.Index(count). Appending a freshly
+	// allocated element instead would cost an allocation per item, which for a
+	// large trailing list is worse than the buffering this path exists to avoid.
+	// Seed from the bytes that have arrived rather than from the declaration.
+	initialLen := 8
+	if declared >= 0 {
+		initialLen = sszutils.CredibleCount(decoder, declared, itemSize)
+	}
+	if maxItems >= 0 && maxItems < initialLen {
+		initialLen = maxItems
+	}
+	newValue := reflect.MakeSlice(fieldT, initialLen, initialLen)
+
+	count := 0
+	for {
+		more, err := decoder.More()
+		if err != nil {
+			return err
+		}
+		if !more {
+			break
+		}
+		if maxItems >= 0 && count >= maxItems {
+			return sszutils.ErrListLengthFn(count+1, targetType.Limit)
+		}
+
+		if count == newValue.Len() {
+			// max() rather than a floor: it keeps the growth strictly ahead of
+			// count, so the loop always has room for the element it is about to
+			// decode no matter how small the slice started.
+			newLen := max(newValue.Len()*2, count+1)
+			// More() may have reached EOF, which makes the region length exact.
+			// Once that happens the remaining element count is known, so the
+			// slice can be sized to fit rather than doubled past it.
+			if decoder.LengthKnown() {
+				if exact := count + decoder.GetLength()/itemSize; exact >= count+1 {
+					newLen = exact
+				}
+			}
+			if maxItems >= 0 && newLen > maxItems {
+				newLen = maxItems
+			}
+			grown := reflect.MakeSlice(fieldT, newLen, newLen)
+			reflect.Copy(grown, newValue)
+			newValue = grown
+		}
+
+		// Addressable slot of the element type: unmarshalType allocates through
+		// it for pointer elements and writes in place otherwise.
+		itemVal := newValue.Index(count)
+
+		expectedPos := decoder.GetPosition() + itemSize
+		if err := ctx.unmarshalType(fieldType, itemVal, decoder, idt+2); err != nil {
+			return sszutils.ErrorWithPathf(err, "[%d]", count)
+		}
+		if decoder.GetPosition() != expectedPos {
+			return sszutils.ErrorWithPathf(
+				sszutils.ErrStaticElementNotConsumedFn(decoder.GetPosition(), expectedPos),
+				"[%d]", count,
+			)
+		}
+
+		count++
+	}
+
+	targetValue.Set(newValue.Slice(0, count))
+	return nil
+}
+
 // unmarshalDynamicList decodes lists with variable-size elements from SSZ format.
 //
 // For lists with variable-size elements, SSZ uses an offset-based encoding:
@@ -920,8 +1103,24 @@ func (ctx *ReflectionCtx) unmarshalList(targetType *ssztypes.TypeDescriptor, tar
 //   - No offset points outside the data bounds
 //   - Each element consumes exactly the expected bytes
 func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
+	// Emptiness is a semantic discriminator here, not just validation, so in an
+	// open region it has to be answered by probing the reader rather than by
+	// comparing against a region length.
+	lengthKnown := decoder.LengthKnown()
 	sszLen := decoder.GetLength()
-	if sszLen == 0 {
+	isEmpty := sszLen == 0
+	if !lengthKnown {
+		more, err := decoder.More()
+		if err != nil {
+			return err
+		}
+		isEmpty = !more
+		// More() may have discovered EOF, which collapses the region to a known
+		// length; re-read so the offset bounds below use the exact value.
+		lengthKnown = decoder.LengthKnown()
+		sszLen = decoder.GetLength()
+	}
+	if isEmpty {
 		// Empty list: set a non-nil empty slice for consistency with
 		// unmarshalList (static-element lists), so empty dynamic-element
 		// lists round-trip as [] rather than nil.
@@ -936,7 +1135,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 	}
 
 	// need at least 4 bytes to read the first offset
-	if sszLen < 4 {
+	if lengthKnown && sszLen < 4 {
 		return sszutils.ErrListOffsetsEOFFn(sszLen, 4)
 	}
 
@@ -976,15 +1175,22 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 		startPos = decoder.GetPosition() - 4
 		decoder.SkipBytes(requiredOffsetBytes - 4)
 	} else {
-		sliceOffsets = sszutils.GetOffsetSlice(sliceLen)
-		defer sszutils.PutOffsetSlice(sliceOffsets)
+		// sliceLen is derived from the first offset, so it is declared by the
+		// input rather than witnessed by it. Allocating the whole table up front
+		// would let a peer turn a handful of bytes into an arbitrary allocation,
+		// so seed from what has actually arrived and grow as the offsets are
+		// read -- each one costs the peer four bytes.
+		sliceOffsets = sszutils.GetOffsetSlice(sszutils.CredibleCount(decoder, sliceLen, 4))
+		defer func() { sszutils.PutOffsetSlice(sliceOffsets) }()
 
+		sliceOffsets = sszutils.GrowSlice(sliceOffsets, 1)
 		sliceOffsets[0] = firstOffset
 		for i := 1; i < sliceLen; i++ {
 			offset, err := decoder.DecodeOffset()
 			if err != nil {
 				return sszutils.ErrorWithPathf(err, "[%d:o]", i)
 			}
+			sliceOffsets = sszutils.GrowSlice(sliceOffsets, i+1)
 			sliceOffsets[i] = offset
 		}
 	}
@@ -1022,7 +1228,12 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 			startOffset := offset
 			var endOffset uint32
 
-			if i == sliceLen-1 {
+			// The trailing element runs to the end of the list, so in an open
+			// region it is the one element whose extent is unknown.
+			isTrailing := i == sliceLen-1
+			openElem := isTrailing && !lengthKnown
+
+			if isTrailing {
 				endOffset = uint32(sszLen)
 			} else {
 				if canSeek {
@@ -1039,25 +1250,34 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 				)
 			}
 
-			itemSize := endOffset - startOffset
-
-			decoder.PushLimit(int(itemSize))
+			if openElem {
+				decoder.PushOpenLimit()
+			} else {
+				decoder.PushLimit(int(endOffset - startOffset))
+			}
 			err := ctx.unmarshalType(fieldType, itemVal, decoder, idt+2)
-			// Pop before the error check so a failed element cannot leave the
-			// decoder clamped to its stale region on reuse.
-			consumedDiff := decoder.PopLimit()
 			if err != nil {
+				// Pop before returning so a failed element cannot leave the
+				// decoder clamped to its stale region on reuse.
+				decoder.PopLimit()
 				return sszutils.ErrorWithPathf(err, "[%d]", i)
 			}
 
-			if consumedDiff != 0 {
+			if openElem {
+				if err := decoder.FinishRegion(); err != nil {
+					return sszutils.ErrorWithPathf(err, "[%d]", i)
+				}
+				continue
+			}
+
+			if consumedDiff := decoder.PopLimit(); consumedDiff != 0 {
 				return sszutils.ErrorWithPathf(
 					sszutils.ErrTrailingDataFn(consumedDiff),
 					"[%d]", i,
 				)
 			}
 
-			offset += itemSize
+			offset = endOffset
 		}
 	}
 
@@ -1081,26 +1301,45 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 // Returns:
 //   - error: An error if decoding fails or bitlist is invalid
 func (ctx *ReflectionCtx) unmarshalBitlist(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder) error {
-	sszLen := decoder.GetLength()
-
-	if sszLen == 0 {
-		return sszutils.ErrBitlistNotTerminatedFn()
+	// A bitlist has no internal framing: its terminator sits in the last byte of
+	// the region, so the payload always runs to the region end. The ssz-max
+	// bound is a byte count either way — a bitlist of Limit bits encodes to at
+	// most Limit/8+1 bytes including the termination bit — so it can be applied
+	// as a read cap whether or not the length is known up front. Capping before
+	// the read is what stops an untrusted framing length (or an unbounded
+	// stream) from forcing an arbitrarily large allocation.
+	maxBytes := -1
+	if targetType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
+		limitBytes := targetType.Limit/8 + 1
+		if limitBytes > math.MaxInt {
+			return sszutils.ErrPlatformOverflowFn("bitlist limit", targetType.Limit)
+		}
+		maxBytes = int(limitBytes)
 	}
 
-	// Reject a region that cannot hold a valid bitlist before allocating it:
-	// a bitlist of Limit bits encodes to at most Limit/8+1 bytes (including
-	// the termination bit). On the stream path sszLen comes from the caller-
-	// declared size, so allocating first would let an untrusted framing
-	// length force an arbitrarily large allocation.
-	if targetType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 && uint64(sszLen) > targetType.Limit/8+1 {
-		return sszutils.ErrBitlistLengthFn(uint64(sszLen-1)*8, targetType.Limit)
+	if decoder.LengthKnown() {
+		sszLen := decoder.GetLength()
+		if sszLen == 0 {
+			return sszutils.ErrBitlistNotTerminatedFn()
+		}
+		if maxBytes >= 0 && sszLen > maxBytes {
+			return sszutils.ErrBitlistLengthFn(uint64(sszLen-1)*8, targetType.Limit)
+		}
 	}
 
 	// Bitlists can only be []byte (validated by typecache)
-	byteSlice := make([]byte, sszLen)
-	_, err := decoder.DecodeBytes(byteSlice)
+	byteSlice, err := decoder.DecodeRemaining(maxBytes)
 	if err != nil {
+		// Only the read cap maps to an ssz-max violation; with no limit the
+		// error came from the stream allowance and stands on its own.
+		if maxBytes >= 0 && errors.Is(err, sszutils.ErrStreamTooLarge) {
+			return sszutils.ErrBitlistLengthFn(uint64(maxBytes)*8, targetType.Limit)
+		}
 		return err
+	}
+	sszLen := len(byteSlice)
+	if sszLen == 0 {
+		return sszutils.ErrBitlistNotTerminatedFn()
 	}
 
 	if byteSlice[sszLen-1] == 0x00 {
@@ -1279,8 +1518,21 @@ func (ctx *ReflectionCtx) unmarshalOptional(targetType *ssztypes.TypeDescriptor,
 // Returns:
 //   - error: An error if decoding fails
 func (ctx *ReflectionCtx) unmarshalOptionalList(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, idt int) error {
+	// An empty region means "absent", so emptiness is a semantic discriminator
+	// and must be answered by probing the reader when the length is unknown.
+	lengthKnown := decoder.LengthKnown()
 	sszLen := decoder.GetLength()
-	if sszLen == 0 {
+	isEmpty := sszLen == 0
+	if !lengthKnown {
+		more, err := decoder.More()
+		if err != nil {
+			return err
+		}
+		isEmpty = !more
+		lengthKnown = decoder.LengthKnown()
+		sszLen = decoder.GetLength()
+	}
+	if isEmpty {
 		targetValue.Set(reflect.Zero(targetType.Type))
 		return nil
 	}
@@ -1289,7 +1541,7 @@ func (ctx *ReflectionCtx) unmarshalOptionalList(targetType *ssztypes.TypeDescrip
 	dynamicElem := elemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0
 
 	if dynamicElem {
-		if sszLen < 4 {
+		if lengthKnown && sszLen < 4 {
 			return sszutils.ErrListOffsetsEOFFn(sszLen, 4)
 		}
 
@@ -1324,25 +1576,45 @@ func (ctx *ReflectionCtx) unmarshalOptionalList(targetType *ssztypes.TypeDescrip
 // Returns:
 //   - error: An error if decoding fails
 func (ctx *ReflectionCtx) unmarshalBigInt(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, _ int) error {
-	dataLen := decoder.GetLength()
 	bigInt := new(big.Int)
 
-	// The canonical encoding is a single sign byte followed by the minimal
-	// big-endian magnitude, so the payload must contain at least the sign byte.
-	if dataLen == 0 {
-		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "big.Int payload must contain at least a sign byte")
+	// The magnitude has no internal framing, so the payload runs to the region
+	// end. Enforce ssz-max symmetrically with the encoder — accepting an
+	// over-limit payload would produce a value that can be neither re-encoded
+	// nor hashed — and enforce it as a read cap so the payload is never
+	// allocated, whether or not the region length is known up front.
+	maxBytes := -1
+	if limit, ok := bigIntLimitBytes(targetType); ok {
+		maxBytes = limit
 	}
 
-	// Enforce ssz-max symmetrically with the encoder: accepting an over-limit
-	// payload would produce a value that can be neither re-encoded nor hashed.
-	// Checked before reading so the payload is not allocated either.
-	if err := checkBigIntLimit(targetType, dataLen-1); err != nil {
-		return err
+	if decoder.LengthKnown() {
+		dataLen := decoder.GetLength()
+		// The canonical encoding is a single sign byte followed by the minimal
+		// big-endian magnitude, so the payload must contain at least the sign byte.
+		if dataLen == 0 {
+			return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "big.Int payload must contain at least a sign byte")
+		}
+		if err := checkBigIntLimit(targetType, dataLen-1); err != nil {
+			return err
+		}
 	}
 
-	bigIntBytes, err := decoder.DecodeBytesBuf(dataLen)
+	bigIntBytes, err := decoder.DecodeRemaining(maxBytes)
 	if err != nil {
+		// The read cap fired: report it as the ssz-max violation it is. With no
+		// static limit there is nothing to report, so the decoder's own error
+		// (the stream allowance) stands -- checkBigIntLimit would return nil
+		// there and swallow the failure.
+		if errors.Is(err, sszutils.ErrStreamTooLarge) && maxBytes >= 0 {
+			if limitErr := checkBigIntLimit(targetType, maxBytes); limitErr != nil {
+				return limitErr
+			}
+		}
 		return err
+	}
+	if len(bigIntBytes) == 0 {
+		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "big.Int payload must contain at least a sign byte")
 	}
 
 	// sign byte (0 = non-negative, 1 = negative) followed by the big-endian magnitude

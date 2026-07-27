@@ -323,3 +323,87 @@ func TestMarshalLargeVectorStreaming(t *testing.T) {
 		t.Fatalf("expected position %d, got %d", expectedPos, enc.GetPosition())
 	}
 }
+
+// --- unknown-length decode overflow tests ---
+//
+// These guards live on the read-to-EOF path, which derives allocations from
+// ssz-max rather than from a region length. Like the others here they are only
+// active on 32-bit platforms, where a uint64 limit can exceed math.MaxInt.
+
+func TestUnmarshalListUntilEOFLimitOverflow(t *testing.T) {
+	skipUnless32Bit(t)
+	ctx := newCtx()
+	elemDesc := &ssztypes.TypeDescriptor{
+		Size:    4,
+		Kind:    reflect.Uint32,
+		SszType: ssztypes.SszUint32Type,
+		Type:    reflect.TypeOf(uint32(0)),
+	}
+	td := &ssztypes.TypeDescriptor{
+		SszType:      ssztypes.SszListType,
+		SszTypeFlags: ssztypes.SszTypeFlagHasLimit,
+		Limit:        math.MaxUint64,
+		Kind:         reflect.Slice,
+		Type:         reflect.TypeOf([]uint32{}),
+		ElemDesc:     elemDesc,
+	}
+	// An open region selects the read-to-EOF path, where the limit is the cap.
+	dec := sszutils.NewUnknownStreamDecoder(strings.NewReader("12345678"), 8, 0)
+	dec.PushOpenLimit()
+	val := reflect.New(td.Type).Elem()
+
+	err := ctx.unmarshalType(td, val, dec, 0)
+	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
+		t.Fatalf("expected overflow error for list limit, got: %v", err)
+	}
+}
+
+func TestUnmarshalBitlistLimitOverflow(t *testing.T) {
+	skipUnless32Bit(t)
+	ctx := newCtx()
+	td := &ssztypes.TypeDescriptor{
+		SszType:      ssztypes.SszBitlistType,
+		SszTypeFlags: ssztypes.SszTypeFlagHasLimit,
+		Limit:        math.MaxUint64,
+		Kind:         reflect.Slice,
+		Type:         reflect.TypeOf([]byte{}),
+	}
+	dec := sszutils.NewBufferDecoder([]byte{0x01})
+	val := reflect.New(td.Type).Elem()
+
+	err := ctx.unmarshalType(td, val, dec, 0)
+	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
+		t.Fatalf("expected overflow error for bitlist limit, got: %v", err)
+	}
+}
+
+// delegationBuffer sizes a delegate's buffer from the type's own size.
+func TestDelegationBufferSizeOverflow(t *testing.T) {
+	skipUnless32Bit(t)
+	td := &ssztypes.TypeDescriptor{
+		Size:    overflowLen,
+		SszType: ssztypes.SszContainerType,
+		Kind:    reflect.Struct,
+		Type:    reflect.TypeOf(struct{}{}),
+	}
+	dec := sszutils.NewBufferDecoder(make([]byte, 8))
+
+	_, err := delegationBuffer(td, dec)
+	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
+		t.Fatalf("expected overflow error for delegate size, got: %v", err)
+	}
+}
+
+// bigIntLimitBytes reports "no cap" rather than overflowing when the declared
+// ssz-max cannot be represented as an int.
+func TestBigIntLimitBytesOverflow(t *testing.T) {
+	skipUnless32Bit(t)
+	td := &ssztypes.TypeDescriptor{
+		SszType:      ssztypes.SszBigIntType,
+		SszTypeFlags: ssztypes.SszTypeFlagHasLimit,
+		Limit:        math.MaxUint64,
+	}
+	if _, ok := bigIntLimitBytes(td); ok {
+		t.Fatal("expected no representable byte cap for an out-of-range limit")
+	}
+}
