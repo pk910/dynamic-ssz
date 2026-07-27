@@ -632,8 +632,16 @@ func (ctx *sizeContext) sizeUnion(desc *ssztypes.TypeDescriptor, varName, sizeVa
 			ctx.appendCode(indent, "\tif !ok {\n")
 			ctx.appendCode(indent, "\t\treturn 0\n")
 			ctx.appendCode(indent, "\t}\n")
+			sizeStart := ctx.codeBuf.Len()
 			if err := ctx.sizeType(variantDesc, "v", sizeVar, indent+1, false); err != nil {
 				return err
+			}
+			// A variant whose size is fully determined by a size expression (e.g.
+			// a static container with a dynssz-size field) never reads the asserted
+			// value, which would leave `v` declared-and-unused. Reference it
+			// explicitly so the generated code compiles.
+			if !codeReferencesIdent(ctx.codeBuf.String()[sizeStart:], "v") {
+				ctx.appendCode(indent, "\t_ = v\n")
 			}
 		} else {
 			// A fixed-size variant still validates the data type: sizing
@@ -655,4 +663,42 @@ func (ctx *sizeContext) sizeUnion(desc *ssztypes.TypeDescriptor, varName, sizeVa
 	ctx.appendCode(indent, "}\n")
 
 	return nil
+}
+
+// codeReferencesIdent reports whether the generated code snippet uses ident as a
+// standalone token, ignoring // line comments. It lets the union-variant sizing
+// code decide whether the asserted value var is actually read; a variant whose
+// size is a pure expression never reads it, which would otherwise leave the
+// variable declared-and-unused.
+func codeReferencesIdent(code, ident string) bool {
+	isIdentByte := func(b byte) bool {
+		return b == '_' ||
+			(b >= 'a' && b <= 'z') ||
+			(b >= 'A' && b <= 'Z') ||
+			(b >= '0' && b <= '9')
+	}
+	for _, line := range strings.Split(code, "\n") {
+		if i := strings.Index(line, "//"); i >= 0 {
+			line = line[:i]
+		}
+		for start := 0; start < len(line); {
+			j := strings.Index(line[start:], ident)
+			if j < 0 {
+				break
+			}
+			pos := start + j
+			var before, after byte = ' ', ' '
+			if pos > 0 {
+				before = line[pos-1]
+			}
+			if pos+len(ident) < len(line) {
+				after = line[pos+len(ident)]
+			}
+			if !isIdentByte(before) && !isIdentByte(after) {
+				return true
+			}
+			start = pos + len(ident)
+		}
+	}
+	return false
 }

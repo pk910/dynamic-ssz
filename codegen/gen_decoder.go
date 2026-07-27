@@ -751,7 +751,11 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 		ctx.appendCode(indent, "startOffset, err := dec.DecodeOffset()\n")
 		ctx.appendCode(indent, "if err != nil {\n\treturn %s\n}\n", typePath.getErrorWith("err"))
 		errCode = fmt.Sprintf("sszutils.ErrFirstOffsetMismatchFn(startOffset, %s*4)", limitVar)
-		ctx.appendCode(indent, "if startOffset != %s*4 {\n\treturn %s\n}\n", limitVar, typePath.getErrorWith(errCode))
+		// startOffset is a uint32 (from DecodeOffset); limitVar may be a typed
+		// int expression (e.g. int(expr0)) when the vector length is dynamic, so
+		// the comparison RHS must be converted to uint32 to keep the types
+		// compatible. A bare int literal limitVar stays an untyped constant.
+		ctx.appendCode(indent, "if startOffset != uint32(%s*4) {\n\treturn %s\n}\n", limitVar, typePath.getErrorWith(errCode))
 
 		// read offsets
 		ctx.appendCode(indent, "var offsets []uint32\n")

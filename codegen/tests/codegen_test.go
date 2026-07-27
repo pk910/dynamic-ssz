@@ -898,6 +898,26 @@ func TestCodegenMultiDimSpecVec(t *testing.T) {
 	}
 }
 
+// A fixed-size vector of variable-size elements whose length is a dynssz
+// expression must generate compiling streaming decoder code (the first-offset
+// check compares a uint32 offset against limit*4, where limit is int(expr)).
+// The package building at all is the compile regression guard; the differential
+// confirms the value round-trips identically in both engines.
+func TestCodegenStreamVecDynSize(t *testing.T) {
+	for _, specs := range []map[string]any{nil, StreamVecDynSize_Specs} {
+		testCodegenPayloadByReflection(t, StreamVecDynSize_Payload, specs)
+		testCodegenPayloadByReflection(t, StreamVecDynSize{V: []StreamVecElem{}}, specs)
+	}
+}
+
+// A compatible-union whose variant is an inline container sized purely by a size
+// expression must still generate compiling SizeSSZ code: the asserted variant
+// value would otherwise be declared-and-unused. The package compiling is the
+// regression guard; the differential confirms sizing agreement.
+func TestCodegenSizeUnionExprVariant(t *testing.T) {
+	testCodegenPayloadByReflection(t, SizeUnionExprVariant_Payload, SizeUnionExprVariant_Specs)
+}
+
 // A bitlist without ssz-max must produce the same root in both engines
 // (length mixin with a limit derived from the serialized bit length).
 func TestCodegenNoMaxBitlist(t *testing.T) {

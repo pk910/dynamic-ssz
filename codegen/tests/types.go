@@ -1739,3 +1739,59 @@ var RecursiveTree_Payload = RecursiveTree{
 		}},
 	},
 }
+
+// StreamVecDynSize is a fixed-size vector (slice with ssz-size + dynssz-size) of
+// variable-size elements. With -with-streaming the decoder emits a first-offset
+// check `startOffset != <limit>*4`; when the limit is a dynssz expression the
+// limit renders as a typed int(expr), so the comparison against the uint32
+// startOffset must be uint32-converted or the generated code fails to compile.
+type StreamVecDynSize struct {
+	V []StreamVecElem `ssz-size:"2" dynssz-size:"STREAMVEC_LEN"`
+}
+
+type StreamVecElem struct {
+	X []byte `ssz-max:"8"`
+}
+
+var StreamVecDynSize_Specs = map[string]any{
+	"STREAMVEC_LEN": uint64(2),
+}
+
+var StreamVecDynSize_Payload = StreamVecDynSize{
+	V: []StreamVecElem{
+		{X: []byte{1, 2, 3}},
+		{X: []byte{4, 5}},
+	},
+}
+
+// SizeUnionExprVariant has a compatible-union whose second variant is an inline
+// container sized entirely by a size expression (a fixed-size string with a
+// dynssz-size). The SizeSSZ generator asserts the variant value but the
+// expression-only size never reads it, which must not leave the asserted
+// variable declared-and-unused in the generated code.
+type SizeUnionExprVariant struct {
+	U dynssz.CompatibleUnion[struct {
+		A uint32
+		B struct {
+			S string `ssz-size:"8" dynssz-size:"SUEV_LEN"`
+		}
+	}]
+}
+
+var SizeUnionExprVariant_Specs = map[string]any{
+	"SUEV_LEN": uint64(8),
+}
+
+var SizeUnionExprVariant_Payload = SizeUnionExprVariant{
+	U: dynssz.CompatibleUnion[struct {
+		A uint32
+		B struct {
+			S string `ssz-size:"8" dynssz-size:"SUEV_LEN"`
+		}
+	}]{
+		Variant: 2,
+		Data: struct {
+			S string `ssz-size:"8" dynssz-size:"SUEV_LEN"`
+		}{S: "abcdefgh"},
+	},
+}
