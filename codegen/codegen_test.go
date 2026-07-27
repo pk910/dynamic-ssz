@@ -831,6 +831,27 @@ func TestGenerateWithReflectViews(t *testing.T) {
 	}
 }
 
+// TestGenerateViewSameAsDataType verifies that listing the data type itself as
+// a view is rejected. Emitting it would produce a `case *T` alongside the
+// dispatcher's own `case nil, *T`, a duplicate type-switch case that does not
+// compile — yet generation used to report success.
+func TestGenerateViewSameAsDataType(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	baseType := reflect.TypeOf((*SimpleTestStruct)(nil)).Elem()
+
+	cg.BuildFile("test.go",
+		WithReflectType(baseType, WithReflectViewTypes(baseType)),
+	)
+
+	_, err := cg.GenerateToMap()
+	if err == nil {
+		t.Fatal("expected error when the data type is listed as its own view")
+	}
+	if !strings.Contains(err.Error(), "same as the data type") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 // TestGenerateWithViewOnly tests code generation using view-only mode
 // via the reflect API.
 func TestGenerateWithViewOnly(t *testing.T) {

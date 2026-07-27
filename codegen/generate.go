@@ -221,6 +221,17 @@ func (cg *CodeGenerator) analyzeTypes() error {
 				// A duplicate view would emit its methods and dispatcher case
 				// twice, producing non-compiling output.
 				seenViews := make(map[string]bool, len(t.ViewReflectTypes)+len(t.ViewGoTypesTypes))
+				// A view identical to the data type would emit a `case *T`
+				// alongside the dispatcher's own `case nil, *T`, producing a
+				// duplicate type-switch case that does not compile. The base
+				// type was already pointer-wrapped above, so its String() key
+				// matches a normalized view key. Reserve it up front.
+				baseViewKey := ""
+				if t.ReflectType != nil {
+					baseViewKey = t.ReflectType.String()
+				} else if t.GoTypesType != nil {
+					baseViewKey = t.GoTypesType.String()
+				}
 				for _, viewType := range t.ViewReflectTypes {
 					// Pointer-wrap the view like the base type, regardless of
 					// kind, so runtime and schema kinds stay aligned in the
@@ -228,6 +239,9 @@ func (cg *CodeGenerator) analyzeTypes() error {
 					// before the dedup key so T and *T collide as one entry.
 					if viewType.Kind() != reflect.Pointer {
 						viewType = reflect.PointerTo(viewType)
+					}
+					if viewType.String() == baseViewKey {
+						return fmt.Errorf("view type %s is the same as the data type %s; a data type cannot list itself as a view", viewType.String(), typeName)
 					}
 					if seenViews[viewType.String()] {
 						return fmt.Errorf("view type %s is listed more than once for %s; remove the duplicate entry", viewType.String(), typeName)
@@ -247,6 +261,9 @@ func (cg *CodeGenerator) analyzeTypes() error {
 					}
 					if _, ok := viewType.(*types.Pointer); !ok {
 						viewType = types.NewPointer(viewType)
+					}
+					if viewType.String() == baseViewKey {
+						return fmt.Errorf("view type %s is the same as the data type %s; a data type cannot list itself as a view", viewType.String(), typeName)
 					}
 					if seenViews[viewType.String()] {
 						return fmt.Errorf("view type %s is listed more than once for %s; remove the duplicate entry", viewType.String(), typeName)
