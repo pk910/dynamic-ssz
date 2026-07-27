@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"os"
 	"reflect"
 	"runtime"
 	"strings"
@@ -345,6 +346,29 @@ func TestCodegenCoverageTypes7(t *testing.T) {
 
 func TestCodegenNoDynExprTypes(t *testing.T) {
 	testCodegenPayloadByReflection(t, NoDynExprTypes_Payload, nil)
+}
+
+// TestCodegenNoDynNest enforces the without-dynamic-expressions invariant on a
+// set of parents nesting a generated child, generated with -with-streaming
+// -without-fastssz -without-dynamic-expressions (gen_nodynnest.yaml). The
+// generated file (compiled as part of this package) must contain no *Dyn buffer
+// function and must round-trip against reflection for every parent shape.
+func TestCodegenNoDynNest(t *testing.T) {
+	code, err := os.ReadFile("gen_nodynnest.go")
+	if err != nil {
+		t.Fatalf("read generated file: %v", err)
+	}
+	for _, tok := range []string{"MarshalSSZDyn", "UnmarshalSSZDyn", "SizeSSZDyn", "HashTreeRootWithDyn"} {
+		if strings.Contains(string(code), tok) {
+			t.Errorf("generated file references forbidden %s under without-dynamic-expressions", tok)
+		}
+	}
+
+	testCodegenPayloadByReflection(t, NoDynNestProg_Payload, nil)
+	testCodegenPayloadByReflection(t, NoDynNestList_Payload, nil)
+	testCodegenPayloadByReflection(t, NoDynNestVec_Payload, nil)
+	testCodegenPayloadByReflection(t, NoDynNestField_Payload, nil)
+	testCodegenPayloadByReflection(t, NoDynNestChild{A: []byte{1, 2}, B: 9}, nil)
 }
 
 // A dynssz expression that resolves to 0 must fall back to the static value in

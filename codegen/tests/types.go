@@ -1021,6 +1021,58 @@ var NoDynExprTypes_Payload = NoDynExprTypes{
 	Str1:   "hello",
 }
 
+// NoDynNestChild is a variable-size container nested by the NoDynNest* parents.
+// Generated with -with-streaming -without-fastssz -without-dynamic-expressions,
+// its parents must reach it through its static MarshalSSZTo/UnmarshalSSZ/SizeSSZ/
+// HashTreeRootWith methods — never the *Dyn buffer variants and never by wrapping
+// the streaming encoder into the static buffer path.
+type NoDynNestChild struct {
+	A []byte `ssz-max:"8"`
+	B uint8
+}
+
+// NoDynNestProg nests the child as a progressive-list.
+type NoDynNestProg struct {
+	L []NoDynNestChild `ssz-type:"progressive-list" ssz-max:"100"`
+}
+
+// NoDynNestList nests the child as a bounded list.
+type NoDynNestList struct {
+	L []NoDynNestChild `ssz-max:"100"`
+}
+
+// NoDynNestVec nests the child as a fixed vector.
+type NoDynNestVec struct {
+	V [3]NoDynNestChild
+}
+
+// NoDynNestField nests the child as a plain container field.
+type NoDynNestField struct {
+	C NoDynNestChild
+	N uint16
+}
+
+var (
+	NoDynNestProg_Payload = NoDynNestProg{L: []NoDynNestChild{
+		{A: []byte{1, 2, 3}, B: 7},
+		{A: nil, B: 0},
+		{A: []byte{9}, B: 255},
+	}}
+	NoDynNestList_Payload = NoDynNestList{L: []NoDynNestChild{
+		{A: []byte{4, 5}, B: 1},
+		{A: []byte{6, 7, 8}, B: 2},
+	}}
+	NoDynNestVec_Payload = NoDynNestVec{V: [3]NoDynNestChild{
+		{A: []byte{1}, B: 10},
+		{A: []byte{2, 2}, B: 20},
+		{A: nil, B: 30},
+	}}
+	NoDynNestField_Payload = NoDynNestField{
+		C: NoDynNestChild{A: []byte{3, 3, 3}, B: 42},
+		N: 1234,
+	}
+)
+
 // InterpretedAnnotatedList tests Annotate with an interpreted (double-quoted) string literal.
 type InterpretedAnnotatedList []uint32
 
