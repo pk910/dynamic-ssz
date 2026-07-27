@@ -86,6 +86,15 @@ func (e *BufferDecoder) PushOpenLimit() {
 	e.PushLimit(e.lastLimit - e.position)
 }
 
+// FinishRegion pops the current region, asserting it was fully consumed. A
+// buffer-backed decoder always knows its length, so no probing is needed.
+func (e *BufferDecoder) FinishRegion() error {
+	if diff := e.PopLimit(); diff != 0 {
+		return ErrTrailingDataFn(diff)
+	}
+	return nil
+}
+
 // PushLimit restricts reading to the next limit bytes from the current position.
 // If the limit extends beyond the enclosing limit, it is clamped. Limits can be
 // nested and must be removed with PopLimit.

@@ -1899,11 +1899,11 @@ func TestRegion_OpenDecodeRemaining(t *testing.T) {
 				if !bytes.Equal(got, data) {
 					t.Fatalf("buf=%d got %q, want %q", bufSize, got, data)
 				}
-				if err := FinishRegion(dec); err != nil {
+				if err := dec.FinishRegion(); err != nil {
 					t.Fatalf("buf=%d FinishRegion: %v", bufSize, err)
 				}
-				if err := FinishStream(dec); err != nil {
-					t.Fatalf("buf=%d FinishStream: %v", bufSize, err)
+				if more, err := dec.More(); err != nil || more {
+					t.Fatalf("buf=%d input not fully consumed: more=%v err=%v", bufSize, more, err)
 				}
 			})
 		}
@@ -2001,7 +2001,7 @@ func TestRegion_OpenNesting(t *testing.T) {
 	if !bytes.Equal(got, data[:10]) {
 		t.Fatalf("got %v, want %v", got, data[:10])
 	}
-	if err := FinishRegion(dec); err != nil {
+	if err := dec.FinishRegion(); err != nil {
 		t.Fatalf("FinishRegion: %v", err)
 	}
 	if diff := dec.PopLimit(); diff != 0 {
@@ -2020,28 +2020,31 @@ func TestRegion_UnderConsumptionCaught(t *testing.T) {
 		t.Fatalf("DecodeBytesBuf: %v", err)
 	}
 	// The region was left half-consumed.
-	if err := FinishRegion(dec); !errors.Is(err, ErrOffset) {
+	if err := dec.FinishRegion(); !errors.Is(err, ErrOffset) {
 		t.Fatalf("FinishRegion err = %v, want ErrOffset (trailing data)", err)
 	}
 }
 
-func TestRegion_FinishStreamDetectsTrailing(t *testing.T) {
+// Closing the root region must report input the decode did not consume.
+func TestRegion_RootRegionDetectsTrailing(t *testing.T) {
 	data := []byte{1, 2, 3, 4, 5, 6, 7, 8}
 
 	dec := NewUnknownStreamDecoder(bytes.NewReader(data), 4, 0)
+	dec.PushOpenLimit()
 	if _, err := dec.DecodeUint32(); err != nil {
 		t.Fatalf("DecodeUint32: %v", err)
 	}
-	if err := FinishStream(dec); !errors.Is(err, ErrOffset) {
-		t.Fatalf("FinishStream err = %v, want ErrOffset (trailing data)", err)
+	if err := dec.FinishRegion(); !errors.Is(err, ErrOffset) {
+		t.Fatalf("FinishRegion err = %v, want ErrOffset (trailing data)", err)
 	}
 
 	dec = NewUnknownStreamDecoder(bytes.NewReader(data), 4, 0)
+	dec.PushOpenLimit()
 	if _, err := dec.DecodeUint64(); err != nil {
 		t.Fatalf("DecodeUint64: %v", err)
 	}
-	if err := FinishStream(dec); err != nil {
-		t.Fatalf("FinishStream at EOF: %v", err)
+	if err := dec.FinishRegion(); err != nil {
+		t.Fatalf("FinishRegion at EOF: %v", err)
 	}
 }
 
@@ -2142,7 +2145,7 @@ func TestRegion_PrimitivesUnknownLength(t *testing.T) {
 				if err != nil || u64 != 0x0f0e0d0c0b0a0908 {
 					t.Fatalf("buf=%d uint64: %#x %v", bufSize, u64, err)
 				}
-				if err := FinishRegion(dec); err != nil {
+				if err := dec.FinishRegion(); err != nil {
 					t.Fatalf("buf=%d FinishRegion: %v", bufSize, err)
 				}
 			})
@@ -2376,14 +2379,14 @@ func TestRegion_DecodeBytesBufWholeRegion(t *testing.T) {
 	}
 }
 
-// FinishRegion and FinishStream must propagate a probe failure rather than
-// masking it as a trailing-data error.
+// FinishRegion must propagate a probe failure rather than masking it as a
+// trailing-data error.
 func TestRegion_FinishPropagatesReadErrors(t *testing.T) {
 	want := errors.New("boom")
 
 	dec := NewUnknownStreamDecoder(&errReader{data: nil, errAfter: 0, err: want}, 8, 0)
 	dec.PushOpenLimit()
-	if err := FinishRegion(dec); !errors.Is(err, want) {
+	if err := dec.FinishRegion(); !errors.Is(err, want) {
 		t.Fatalf("FinishRegion err = %v, want %v", err, want)
 	}
 	if len(dec.limits) != 0 {
@@ -2391,8 +2394,9 @@ func TestRegion_FinishPropagatesReadErrors(t *testing.T) {
 	}
 
 	dec2 := NewUnknownStreamDecoder(&errReader{data: nil, errAfter: 0, err: want}, 8, 0)
-	if err := FinishStream(dec2); !errors.Is(err, want) {
-		t.Fatalf("FinishStream err = %v, want %v", err, want)
+	dec2.PushOpenLimit()
+	if err := dec2.FinishRegion(); !errors.Is(err, want) {
+		t.Fatalf("FinishRegion err = %v, want %v", err, want)
 	}
 }
 
@@ -2403,7 +2407,7 @@ func TestRegion_FinishRegionBoundedTrailing(t *testing.T) {
 	if _, err := dec.DecodeUint32(); err != nil {
 		t.Fatal(err)
 	}
-	err := FinishRegion(dec)
+	err := dec.FinishRegion()
 	if !errors.Is(err, ErrOffset) {
 		t.Fatalf("err = %v, want a trailing-data error", err)
 	}

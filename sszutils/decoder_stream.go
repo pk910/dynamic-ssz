@@ -550,6 +550,36 @@ func (e *StreamDecoder) Prefill() error {
 	return nil
 }
 
+// FinishRegion pops the current region, asserting it was fully consumed.
+//
+// A bounded region is answered from the limit alone, with no I/O -- that covers
+// every known-length decode, and every region of an unknown-length decode once
+// EOF has closed it. Only a genuinely open region has to probe the reader.
+func (e *StreamDecoder) FinishRegion() error {
+	if !e.lastOpen {
+		if diff := e.PopLimit(); diff != 0 {
+			return ErrTrailingDataFn(diff)
+		}
+		return nil
+	}
+
+	more, err := e.More()
+	if err != nil {
+		e.PopLimit()
+		return err
+	}
+	diff := e.PopLimit()
+	if more {
+		if diff <= 0 {
+			// Open region: the leftover count is unknown, but its presence is
+			// established.
+			diff = 1
+		}
+		return ErrTrailingDataFn(diff)
+	}
+	return nil
+}
+
 // More reports whether the current region holds at least one more byte. For a
 // bounded region the answer comes from the limit; for an open region the reader
 // is probed, which is what turns "no more data" into a discovered EOF.

@@ -539,7 +539,7 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 			}
 			if openField {
 				// The end is only knowable by probing the reader.
-				if err := sszutils.FinishRegion(decoder); err != nil {
+				if err := decoder.FinishRegion(); err != nil {
 					return sszutils.ErrorWithPath(err, fieldDescriptor.Name)
 				}
 			} else if consumedDiff := decoder.PopLimit(); consumedDiff != 0 {
@@ -798,7 +798,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 		}
 
 		if openElem {
-			if err := sszutils.FinishRegion(decoder); err != nil {
+			if err := decoder.FinishRegion(); err != nil {
 				return sszutils.ErrorWithPathf(err, "[%d]", i)
 			}
 		} else if consumedDiff := decoder.PopLimit(); consumedDiff != 0 {
@@ -1246,7 +1246,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 			}
 
 			if openElem {
-				if err := sszutils.FinishRegion(decoder); err != nil {
+				if err := decoder.FinishRegion(); err != nil {
 					return sszutils.ErrorWithPathf(err, "[%d]", i)
 				}
 				continue

@@ -570,7 +570,7 @@ func (ctx *decoderContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, var
 		if isTrailing {
 			// An open region's end can only be established by probing for more
 			// input, so the trailing field closes with an explicit assertion.
-			ctx.appendCode(indent+1, "if err := sszutils.FinishRegion(dec); err != nil {\n\treturn %s\n}\n", fieldPath.getErrorWith("err"))
+			ctx.appendCode(indent+1, "if err := dec.FinishRegion(); err != nil {\n\treturn %s\n}\n", fieldPath.getErrorWith("err"))
 		} else {
 			errCode = errCodeTrailingData
 			ctx.appendCode(indent+1, "if diff := dec.PopLimit(); diff != 0 {\n\treturn %s\n}\n", fieldPath.getErrorWith(errCode))
@@ -821,7 +821,7 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 		ctx.appendCode(indent+1, "if %s < %s-1 {\n", indexVar, limitVar)
 		errCode = errCodeTrailingData
 		ctx.appendCode(indent+2, "if diff := dec.PopLimit(); diff != 0 {\n\treturn %s\n}\n", fieldPath.getErrorWith(errCode))
-		ctx.appendCode(indent+1, "} else if err := sszutils.FinishRegion(dec); err != nil {\n")
+		ctx.appendCode(indent+1, "} else if err := dec.FinishRegion(); err != nil {\n")
 		ctx.appendCode(indent+2, "return %s\n", fieldPath.getErrorWith("err"))
 		ctx.appendCode(indent+1, "}\n")
 
@@ -1138,7 +1138,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent+1, "if %s < %s {\n", indexVar, lastIdxVar)
 		errCode = errCodeTrailingData
 		ctx.appendCode(indent+2, "if diff := dec.PopLimit(); diff != 0 {\n\treturn %s\n}\n", fieldPath.getErrorWith(errCode))
-		ctx.appendCode(indent+1, "} else if err := sszutils.FinishRegion(dec); err != nil {\n")
+		ctx.appendCode(indent+1, "} else if err := dec.FinishRegion(); err != nil {\n")
 		ctx.appendCode(indent+2, "return %s\n", fieldPath.getErrorWith("err"))
 		ctx.appendCode(indent+1, "}\n")
 		ctx.appendCode(indent+1, "%s[%s] = %s\n", indexValueVar, indexVar, valVar)

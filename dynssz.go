@@ -789,7 +789,7 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 	// finish closes the root region, asserting the input was fully consumed.
 	finish := func() error {
 		if !knownSize {
-			return sszutils.FinishRegion(decoder)
+			return decoder.FinishRegion()
 		}
 		if consumedDiff := decoder.PopLimit(); consumedDiff != 0 {
 			return fmt.Errorf("did not consume full ssz range (diff: %v, ssz size: %v)", consumedDiff, size)

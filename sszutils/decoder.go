@@ -59,6 +59,15 @@ type Decoder interface {
 	// bounded one, this is equivalent to PushLimit(GetLength()).
 	PushOpenLimit()
 
+	// FinishRegion pops the current region, asserting it was fully consumed.
+	//
+	// For a bounded region this is PopLimit() == 0. An open region has no
+	// known end, so it is established by probing for further input -- which
+	// matters because a variable-size type can still stop short: a union
+	// selecting a fixed-size variant, an absent optional, or an optional-list
+	// with a fixed element all consume less than the region they were given.
+	FinishRegion() error
+
 	PushLimit(limit int)
 	PopLimit() int
 	DecodeBool() (bool, error)
