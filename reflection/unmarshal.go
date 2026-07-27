@@ -950,7 +950,8 @@ func (ctx *ReflectionCtx) unmarshalList(targetType *ssztypes.TypeDescriptor, tar
 //
 // The bounded path computes the element count as regionLength/itemSize. Here the
 // region ends at EOF, so elements are consumed one at a time until the input is
-// exhausted. The ssz-max limit is enforced per element rather than once up
+// exhausted. itemSize is guaranteed positive by the caller, without which the
+// loop could never make progress. The ssz-max limit is enforced per element rather than once up
 // front, which also means a hostile input cannot drive an allocation larger than
 // the data actually delivered. A trailing partial element surfaces as
 // ErrUnexpectedEOF instead of ErrListNotAligned.
@@ -978,14 +979,12 @@ func (ctx *ReflectionCtx) unmarshalListUntilEOF(targetType *ssztypes.TypeDescrip
 	declared := -1
 	if !decoder.RegionOpen() {
 		sszLen := decoder.GetLength()
-		if itemSize > 0 && sszLen%itemSize != 0 {
+		if sszLen%itemSize != 0 {
 			return sszutils.ErrListNotAlignedFn(sszLen, itemSize)
 		}
-		if itemSize > 0 {
-			declared = sszLen / itemSize
-			if maxItems >= 0 && declared > maxItems {
-				return sszutils.ErrListLengthFn(declared, targetType.Limit)
-			}
+		declared = sszLen / itemSize
+		if maxItems >= 0 && declared > maxItems {
+			return sszutils.ErrListLengthFn(declared, targetType.Limit)
 		}
 	}
 
@@ -1010,19 +1009,6 @@ func (ctx *ReflectionCtx) unmarshalListUntilEOF(targetType *ssztypes.TypeDescrip
 			targetValue.Set(reflect.ValueOf(buf).Convert(fieldT))
 		}
 		return nil
-	}
-
-	if targetType.Kind != reflect.Slice {
-		// Defensive: the type cache rejects a list that is not slice-backed (a
-		// string list is handled above), so this is unreachable today. Should
-		// such a type ever be admitted it cannot grow, so materialise the region
-		// and decode it as a bounded one rather than panicking in MakeSlice.
-		buf, err := decoder.DecodeRemaining(-1)
-		if err != nil {
-			return err
-		}
-		bufDec := sszutils.NewBufferDecoder(buf)
-		return ctx.unmarshalList(targetType, targetValue, bufDec, idt)
 	}
 
 	// The slice is kept at full length and grown geometrically, so elements

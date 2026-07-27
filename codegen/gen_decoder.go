@@ -880,8 +880,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 			if hasMax {
 				maxArg = maxVar
 			}
-			switch {
-			case desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0:
+			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
 				ctx.appendCode(indent, "if buf, err := sszutils.DecodeByteListInto(dec, nil, %s); err != nil {\n", maxArg)
 				ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith("err"))
 				ctx.appendCode(indent, "} else {\n")
@@ -893,37 +892,19 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 				}
 				ctx.appendCode(indent+1, "%s = %s\n", assignVar, ctx.getCastedValueVar(desc, "buf", ""))
 				ctx.appendCode(indent, "}\n")
-			case desc.Kind == reflect.Array:
-				// A fixed backing array cannot grow, so the payload must still
-				// match its length exactly.
-				ctx.appendCode(indent, "listLen := dec.GetLength()\n")
-				ctx.appendCode(indent, "if _, err = dec.DecodeBytes(%s[:listLen]); err != nil {\n\treturn %s\n}\n", indexValueVar, typePath.getErrorWith("err"))
-			default:
-				ctx.appendCode(indent, "if buf, err := sszutils.DecodeByteListInto(dec, %s, %s); err != nil {\n", indexValueVar, maxArg)
-				ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith("err"))
-				ctx.appendCode(indent, "} else {\n")
-				ctx.appendCode(indent+1, "%s = %s\n", valueVar, ctx.getCastedValueVar(desc, "buf", ""))
-				ctx.appendCode(indent, "}\n")
+				return nil
 			}
+
+			ctx.appendCode(indent, "if buf, err := sszutils.DecodeByteListInto(dec, %s, %s); err != nil {\n", indexValueVar, maxArg)
+			ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith("err"))
+			ctx.appendCode(indent, "} else {\n")
+			ctx.appendCode(indent+1, "%s = %s\n", valueVar, ctx.getCastedValueVar(desc, "buf", ""))
+			ctx.appendCode(indent, "}\n")
 			return nil
 		}
 
 		// bulk uint64 lists
 		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0 {
-			if desc.Kind == reflect.Array {
-				// A fixed backing array cannot grow, so the element count still
-				// comes from the region length.
-				ctx.appendCode(indent, "sszLen := dec.GetLength()\n")
-				ctx.appendCode(indent, "itemCount := sszLen / 8\n")
-				errCode := "sszutils.ErrListNotAlignedFn(sszLen, 8)"
-				ctx.appendCode(indent, "if sszLen%%8 != 0 {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
-				if hasMax {
-					errCode = fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", maxVar)
-					ctx.appendCode(indent, "if itemCount > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
-				}
-				ctx.appendCode(indent, "if err = sszutils.DecodeUint64Slice(dec, %s); err != nil {\n\treturn %s\n}\n", valueVar, typePath.getErrorWith("err"))
-				return nil
-			}
 			maxArg := "-1"
 			if hasMax {
 				maxArg = maxVar
@@ -948,11 +929,17 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 			fieldSizeVar = fmt.Sprintf("%d", desc.ElemDesc.Size)
 		}
 
+		// fieldSizeVar is non-zero, literal or resolved: the type cache rejects
+		// every shape that would give a static list element a size of 0, and a
+		// dynssz-size resolving to 0 is rejected unless a positive static
+		// fallback takes over. So the division below cannot trap and the
+		// until-EOF loop always makes progress.
+
 		// The element count comes from the region length, which is not knowable
 		// up front when the region is open. In that case itemCount stays -1 and
 		// the loop below consumes elements until the input runs out, applying
 		// ssz-max per element instead of once up front.
-		isArray := desc.Kind == reflect.Array
+		//
 		// A region only lacks a declared element count when it is open, which
 		// happens for the trailing dynamic child alone. Everything else has the
 		// count from its region length, so the alignment and ssz-max checks
@@ -973,11 +960,9 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 			errCode := fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", maxVar)
 			ctx.appendCode(indent+1, "if itemCount > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
 		}
-		if !isArray {
-			ctx.appendCode(indent+1, "%s = sszutils.SizeListSlice(dec, %s, itemCount, %s)\n", valueVar, valueVar, fieldSizeVar)
-			ctx.appendCode(indent, "} else {\n")
-			ctx.appendCode(indent+1, "%s = sszutils.GrowSlice(%s, 0)\n", valueVar, valueVar)
-		}
+		ctx.appendCode(indent+1, "%s = sszutils.SizeListSlice(dec, %s, itemCount, %s)\n", valueVar, valueVar, fieldSizeVar)
+		ctx.appendCode(indent, "} else {\n")
+		ctx.appendCode(indent+1, "%s = sszutils.GrowSlice(%s, 0)\n", valueVar, valueVar)
 		ctx.appendCode(indent, "}\n")
 
 		startPosVar := fmt.Sprintf("startPos%d", ctx.startPosVarCounter)
@@ -995,28 +980,19 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent+2, "} else if !more {\n")
 		ctx.appendCode(indent+3, "break\n")
 		ctx.appendCode(indent+2, "}\n")
-		// ssz-max bounds the list; a backing array additionally cannot grow past
-		// its own length, so both bounds are checked when both apply.
+		// ssz-max bounds the list while its extent is still unknown.
 		if hasMax {
 			errCode := fmt.Sprintf("sszutils.ErrListLengthFn(%s+1, %s)", indexVar, maxVar)
 			ctx.appendCode(indent+2, "if %s >= %s {\n\treturn %s\n}\n", indexVar, maxVar, typePath.getErrorWith(errCode))
 		}
-		if isArray {
-			errCode := fmt.Sprintf("sszutils.ErrListLengthFn(%s+1, %d)", indexVar, desc.Len)
-			ctx.appendCode(indent+2, "if %s >= %d {\n\treturn %s\n}\n", indexVar, desc.Len, typePath.getErrorWith(errCode))
-		}
-		if !isArray {
-			ctx.appendCode(indent+2, "%s = sszutils.GrowSlice(%s, %s+1)\n", valueVar, valueVar, indexVar)
-		}
+		ctx.appendCode(indent+2, "%s = sszutils.GrowSlice(%s, %s+1)\n", valueVar, valueVar, indexVar)
 		ctx.appendCode(indent+1, "}\n")
-		if !isArray {
-			// The count was declared rather than witnessed, so the slice was
-			// seeded from delivered bytes; extend it as the rest arrives. When
-			// the extent was known this is already full length and never taken.
-			ctx.appendCode(indent+1, "if %s >= len(%s) {\n", indexVar, indexValueVar)
-			ctx.appendCode(indent+2, "%s = sszutils.GrowSlice(%s, %s+1)\n", valueVar, valueVar, indexVar)
-			ctx.appendCode(indent+1, "}\n")
-		}
+		// The count was declared rather than witnessed, so the slice was seeded
+		// from delivered bytes; extend it as the rest arrives. When the extent
+		// was known this is already full length and never taken.
+		ctx.appendCode(indent+1, "if %s >= len(%s) {\n", indexVar, indexValueVar)
+		ctx.appendCode(indent+2, "%s = sszutils.GrowSlice(%s, %s+1)\n", valueVar, valueVar, indexVar)
+		ctx.appendCode(indent+1, "}\n")
 
 		valVar := fmt.Sprintf("%s[%s]", indexValueVar, indexVar)
 		isInlinable := ctx.isInlinable(desc.ElemDesc)
@@ -1107,9 +1083,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 			ctx.offsetSliceLimit = ctx.offsetSliceCounter
 		}
 
-		if desc.Kind != reflect.Array {
-			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", valueVar, valueVar)
-		}
+		ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", valueVar, valueVar)
 
 		fieldPath := typePath.append("[%d]", indexVar)
 		// Bind the last index to a uniquely named variable before the loop. A
@@ -1203,17 +1177,12 @@ func (ctx *decoderContext) unmarshalBitlist(desc *ssztypes.TypeDescriptor, varNa
 		ctx.appendCode(indent, "bitlistMaxBytes := (%s / 8) + 1\n", maxVar)
 		bitlistMaxArg = "bitlistMaxBytes"
 	}
-	if desc.Kind == reflect.Array {
-		ctx.appendCode(indent, "blen := dec.GetLength()\n")
-		ctx.appendCode(indent, "if _, err = dec.DecodeBytes(%s[:blen]); err != nil {\n\treturn %s\n}\n", valueVar, typePath.getErrorWith("err"))
-	} else {
-		ctx.appendCode(indent, "if buf, err := sszutils.DecodeByteListInto(dec, %s, %s); err != nil {\n", valueVar, bitlistMaxArg)
-		ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith("err"))
-		ctx.appendCode(indent, "} else {\n")
-		ctx.appendCode(indent+1, "%s = %s\n", valueVar, ctx.getCastedValueVar(desc, "buf", ""))
-		ctx.appendCode(indent, "}\n")
-		ctx.appendCode(indent, "blen := len(%s)\n", valueVar)
-	}
+	ctx.appendCode(indent, "if buf, err := sszutils.DecodeByteListInto(dec, %s, %s); err != nil {\n", valueVar, bitlistMaxArg)
+	ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith("err"))
+	ctx.appendCode(indent, "} else {\n")
+	ctx.appendCode(indent+1, "%s = %s\n", valueVar, ctx.getCastedValueVar(desc, "buf", ""))
+	ctx.appendCode(indent, "}\n")
+	ctx.appendCode(indent, "blen := len(%s)\n", valueVar)
 	ctx.appendCode(indent, "if blen == 0 || %s[blen-1] == 0x00 {\n", valueVar)
 	errCode := errCodeBitlistNotTerminated
 	ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
