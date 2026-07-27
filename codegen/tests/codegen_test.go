@@ -689,6 +689,43 @@ func TestCodegenUnionExprVariantSize(t *testing.T) {
 	testCodegenPayloadByReflection(t, UnionExprVariantSize_Payload, UnionExprVariantSize_Specs, dynssz.WithExtendedTypes())
 }
 
+// TestCodegenUnionExprVariantSizeCrossPreset is a regression test for the
+// generated buffer decoder of a union whose fixed-size variant length comes
+// from a dynssz-size expression. The decoder baked the variant's byte length to
+// the static ssz-size fallback (here 4 uint16 = 8 bytes) instead of the runtime
+// resolved size, so any preset whose resolved size differed from the static
+// value made the generated UnmarshalSSZ reject valid encodings with an
+// "incorrect offset: N bytes trailing data" (resolved > static) or an
+// unexpected-EOF (resolved < static). The static-equal case (matching the
+// existing UnionExprVariantSize test) accidentally masked it. Both engines must
+// round-trip identically for resolved sizes above and below the static one.
+func TestCodegenUnionExprVariantSizeCrossPreset(t *testing.T) {
+	mk := func(n int) UnionExprVariantSize {
+		data := make([]uint16, n)
+		for i := range data {
+			data[i] = uint16(i + 1)
+		}
+		return UnionExprVariantSize{
+			U: dynssz.CompatibleUnion[struct {
+				F0 []uint16 `ssz-size:"4" dynssz-size:"UNION_VEC_SIZE"`
+			}]{Variant: 1, Data: data},
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		size uint64
+	}{
+		{"resolved_gt_static", 6},
+		{"resolved_lt_static", 2},
+		{"resolved_eq_static", 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testCodegenPayloadByReflection(t, mk(int(tc.size)),
+				map[string]any{"UNION_VEC_SIZE": tc.size}, dynssz.WithExtendedTypes())
+		})
+	}
+}
+
 // TestCodegenVecDynElemExprSize is a regression test for the generated stream
 // decoder of a vector of dynamic-size elements whose length is a dynssz-size
 // expression. The first-offset check compared a uint32 offset against a typed

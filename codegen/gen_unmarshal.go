@@ -1280,14 +1280,29 @@ func (ctx *unmarshalContext) unmarshalUnion(desc *ssztypes.TypeDescriptor, varNa
 		childTypePath := typePath.append(fmt.Sprintf("[v:%d]", variant))
 
 		// Check that buf has enough bytes for the selector plus the variant value.
-		// A fixed-size variant occupies exactly 1+elemSize bytes of the union
+		// A fixed-size variant occupies exactly 1+variantSize bytes of the union
 		// region, so any extra bytes are trailing data and must be rejected
 		// (matching the reflection and streaming-decoder paths).
 		elemSize := variantDesc.Size
 		if elemSize > 0 {
-			eofErr := childTypePath.getErrorWith(fmt.Sprintf("sszutils.ErrUnionVariantEOFFn(len(buf), %d)", 1+elemSize))
-			trailErr := childTypePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - %d)", 1+elemSize))
-			ctx.appendExactLenCheck(indent+1, fmt.Sprintf("%d", 1+elemSize), "len(buf)", eofErr, trailErr)
+			// When the variant's serialized size comes from a spec expression, its
+			// byte length is resolved at runtime and must not be baked to the
+			// static default: doing so under-/over-reads the union region for any
+			// preset whose resolved size differs from the static fallback. Compute
+			// the runtime size the same way the size/marshal paths do.
+			var sizeExpr string
+			if variantDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+				sizeVar, serr := ctx.staticSizeVars.getStaticSizeVar(variantDesc)
+				if serr != nil {
+					return serr
+				}
+				sizeExpr = fmt.Sprintf("1 + %s", sizeVar)
+			} else {
+				sizeExpr = fmt.Sprintf("%d", 1+elemSize)
+			}
+			eofErr := childTypePath.getErrorWith(fmt.Sprintf("sszutils.ErrUnionVariantEOFFn(len(buf), %s)", sizeExpr))
+			trailErr := childTypePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - (%s))", sizeExpr))
+			ctx.appendExactLenCheck(indent+1, sizeExpr, "len(buf)", eofErr, trailErr)
 		}
 
 		valVar := ctx.getValVar()
