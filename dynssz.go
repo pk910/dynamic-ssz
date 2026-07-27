@@ -705,6 +705,13 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 //     "unknown size" mode: the payload is consumed to EOF without being materialised,
 //     so the memory savings of streaming still apply.
 //
+// A non-negative size is treated as trusted: it is the extent every region is
+// measured against, so allocations are sized from it before the bytes arrive. It
+// must come from a source you control — a stat() result, or a Content-Length you
+// are willing to believe — not from untrusted framing. If it comes off the wire,
+// either cap it yourself first or pass a negative size and let WithMaxStreamSize
+// bound the decode.
+//
 // Unknown-size mode is possible because SSZ is self-delimiting for every region
 // except the trailing one, so the missing length only ever affects the last
 // dynamic child at each nesting level. It is always bounded by WithMaxStreamSize
