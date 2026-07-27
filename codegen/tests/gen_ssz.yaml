@@ -79,6 +79,14 @@ types:
     output: gen_optionallist.go
   - name: OptionalListTypes_Inner
     output: gen_optionallist.go
+  - name: OptionalListSliceVector
+    output: gen_optionallist.go
+  - name: UnionExprVariantSize
+    output: gen_optionallist.go
+  - name: VecDynElemExprSize
+    output: gen_optionallist.go
+  - name: VecDynElemExprSize_Inner
+    output: gen_optionallist.go
 
   - name: ViewTypes1_Base
     output: gen_viewtypes1.go

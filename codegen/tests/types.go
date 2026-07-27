@@ -602,6 +602,82 @@ var OptionalListTypes_Payload1 = OptionalListTypes{
 	DynamicOpt: optListInner,
 }
 
+// OptionalListSliceVector exercises ssz-type:"optional-list" over a pointer to a
+// SLICE whose fixed length comes from ssz-size (a vector), plus the byte-vector
+// form. These are spec-identical to an optional-list over a Go array
+// (*[2]uint16 / *[4]byte): the optional-list frames the pointer as List[T, 1]
+// where T is the fixed-size inner vector. The slice spelling only stays correct
+// if the element's ssz-size survives into the element descriptor — otherwise the
+// inner vector degrades to a variable list (wrong marshal + wrong root).
+type OptionalListSliceVector struct {
+	VecU16  *[]uint16 `ssz-size:"2" ssz-type:"optional-list"`
+	VecByte *[]byte   `ssz-size:"4" ssz-type:"optional-list"`
+}
+
+var (
+	optSliceVecU16  = []uint16{0x1234, 0x5678}
+	optSliceVecByte = []byte{0xaa, 0xbb, 0xcc, 0xdd}
+)
+
+// Both optional vectors present.
+var OptionalListSliceVector_Payload1 = OptionalListSliceVector{
+	VecU16:  &optSliceVecU16,
+	VecByte: &optSliceVecByte,
+}
+
+// Both nil.
+var OptionalListSliceVector_Payload2 = OptionalListSliceVector{}
+
+// Only the uint16 vector present.
+var OptionalListSliceVector_Payload3 = OptionalListSliceVector{
+	VecU16: &optSliceVecU16,
+}
+
+// UnionExprVariantSize is a regression type for the generated union size code.
+// The union variant is a vector whose length comes from a dynssz-size
+// expression, so its size is computed purely from that expression and never
+// reads the type-asserted variant value. Without an explicit `_ = v`, the
+// generated size code left `v` declared-and-unused and failed to compile.
+type UnionExprVariantSize struct {
+	U dynssz.CompatibleUnion[struct {
+		F0 []uint16 `ssz-size:"4" dynssz-size:"UNION_VEC_SIZE"`
+	}]
+}
+
+var UnionExprVariantSize_Specs = map[string]any{
+	"UNION_VEC_SIZE": uint64(4),
+}
+
+var UnionExprVariantSize_Payload = UnionExprVariantSize{
+	U: dynssz.CompatibleUnion[struct {
+		F0 []uint16 `ssz-size:"4" dynssz-size:"UNION_VEC_SIZE"`
+	}]{Variant: 1, Data: []uint16{1, 2, 3, 4}},
+}
+
+// VecDynElemExprSize is a regression type for the generated stream decoder: a
+// vector of dynamic-size elements whose length comes from a dynssz-size
+// expression. The decoder's first-offset check compares the uint32 offset
+// against `<len-expr>*4`; when the length is a typed int expression the RHS must
+// be cast to uint32, otherwise the generated code failed to compile.
+type VecDynElemExprSize_Inner struct {
+	D []byte `ssz-max:"8"`
+}
+
+type VecDynElemExprSize struct {
+	V []VecDynElemExprSize_Inner `ssz-size:"2" dynssz-size:"VDE_SIZE"`
+}
+
+var VecDynElemExprSize_Specs = map[string]any{
+	"VDE_SIZE": uint64(2),
+}
+
+var VecDynElemExprSize_Payload = VecDynElemExprSize{
+	V: []VecDynElemExprSize_Inner{
+		{D: []byte{1, 2, 3}},
+		{D: []byte{4, 5}},
+	},
+}
+
 // Both pointers nil.
 var OptionalListTypes_Payload2 = OptionalListTypes{
 	StaticOpt:  nil,

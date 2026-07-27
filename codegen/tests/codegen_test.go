@@ -622,6 +622,83 @@ func TestCodegenOptionalListTypes(t *testing.T) {
 	}
 }
 
+// TestCodegenOptionalListSliceVector is a regression test for two independent
+// bugs in ssz-type:"optional-list" over a pointer to a slice made fixed-length
+// via ssz-size (i.e. an inner vector, e.g. *[]uint16 ssz-size:"2"):
+//
+//  1. buildOptionalListDescriptor peeled the leading ssz-size/ssz-max dimension
+//     before descending into the element (sizeHints[1:] / maxSizeHints[1:]),
+//     dropping the element's size constraint so the inner vector degraded to a
+//     variable list. That produced a wrong (12-byte) serialization and a wrong
+//     root on BOTH engines — the golden checks below guard it, since a
+//     reflection-vs-codegen comparison alone would not (both engines share the
+//     descriptor and would agree on the wrong encoding).
+//  2. the generated optional-list HTR reused the `vlen` local for its mixin
+//     length, which the fixed-vector element's own `vlen := len(...)` shadowed,
+//     so a present element mixed in a length of 0 — a codegen-only wrong root
+//     caught by the reflection-vs-codegen comparison.
+//
+// Golden roots and serializations are cross-checked against remerkleable
+// (List[Vector[T,N], 1]).
+func TestCodegenOptionalListSliceVector(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload OptionalListSliceVector
+		root    string
+		ser     string
+	}{
+		{"BothSet", OptionalListSliceVector_Payload1, "7e7694aa13e4558ea4e91c3aaef6319a0409a80ad8ea79df3f6a2fd03d8dee92", "080000000c00000034127856aabbccdd"},
+		{"BothNil", OptionalListSliceVector_Payload2, "db56114e00fdd4c1f85c892bf35ac9a89289aaecb1ebd0a96cde606a748b5d71", "0800000008000000"},
+		{"U16Only", OptionalListSliceVector_Payload3, "53f263191c776497f3a21a93ec0d767753533479ce3a7e5847496c63c7baa905", "080000000c00000034127856"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Reflection-vs-codegen agreement (marshal, size, HTR, roundtrip,
+			// streaming) — catches the codegen-only HTR shadowing bug once the
+			// generated methods exist.
+			testCodegenPayloadByReflection(t, tc.payload, nil)
+
+			// Absolute golden values — catch a descriptor regression that would
+			// make both engines agree on the wrong (variable-list) encoding.
+			ds := dynssz.NewDynSsz(nil)
+			root, err := ds.HashTreeRoot(tc.payload)
+			if err != nil {
+				t.Fatalf("HashTreeRoot: %v", err)
+			}
+			if got := hex.EncodeToString(root[:]); got != tc.root {
+				t.Fatalf("optional-list slice-vector root changed: got %s want %s", got, tc.root)
+			}
+			ser, err := ds.MarshalSSZ(tc.payload)
+			if err != nil {
+				t.Fatalf("MarshalSSZ: %v", err)
+			}
+			if got := hex.EncodeToString(ser); got != tc.ser {
+				t.Fatalf("optional-list slice-vector serialization changed: got %s want %s", got, tc.ser)
+			}
+		})
+	}
+}
+
+// TestCodegenUnionExprVariantSize is a regression test for the generated union
+// size code: a union variant whose size is fully determined by a dynssz-size
+// expression never reads the type-asserted variant value, which previously left
+// `v` declared-and-unused so the generated size method failed to compile. This
+// test only exercises the compile fix once the generated methods exist (via
+// go generate); the reflection comparison still validates the sizing itself.
+func TestCodegenUnionExprVariantSize(t *testing.T) {
+	testCodegenPayloadByReflection(t, UnionExprVariantSize_Payload, UnionExprVariantSize_Specs, dynssz.WithExtendedTypes())
+}
+
+// TestCodegenVecDynElemExprSize is a regression test for the generated stream
+// decoder of a vector of dynamic-size elements whose length is a dynssz-size
+// expression. The first-offset check compared a uint32 offset against a typed
+// int length expression, which failed to compile without a uint32 cast. Only
+// meaningful once the generated methods exist (via go generate); the reflection
+// comparison still validates the decoding.
+func TestCodegenVecDynElemExprSize(t *testing.T) {
+	testCodegenPayloadByReflection(t, VecDynElemExprSize_Payload, VecDynElemExprSize_Specs)
+}
+
 // TestCodegenViewTypes2 tests nested view dispatch: a container whose child
 // has view dispatch methods. This exercises the isView code paths in all
 // generators (marshal, unmarshal, encoder, decoder, size, hash).
