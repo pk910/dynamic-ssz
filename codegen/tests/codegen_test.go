@@ -355,6 +355,12 @@ func TestCodegenNoDynExprTypes(t *testing.T) {
 // function and must round-trip against reflection for every parent shape.
 func TestCodegenNoDynNest(t *testing.T) {
 	code, err := os.ReadFile("gen_nodynnest.go")
+	if os.IsNotExist(err) {
+		// The gen_*.go files are gitignored; without go generate this job
+		// exercises only the reflection engine and there is no generated file
+		// to enforce the no-*Dyn invariant against.
+		t.Skip("no generated code present")
+	}
 	if err != nil {
 		t.Fatalf("read generated file: %v", err)
 	}
