@@ -1923,3 +1923,38 @@ var SizeUnionExprVariant_Payload = SizeUnionExprVariant{
 		}{S: "abcdefgh"},
 	},
 }
+
+// DynSizeVectorNoStatic covers slices whose length is fixed purely by a
+// dynssz-size expression, with no static ssz-size fallback. The reflection
+// typecache resolves the expression to a concrete size and classifies the slice
+// as a Vector; the codegen parser has no spec values at generation time and must
+// reach the same classification from the presence of the expression alone.
+// Previously the generator saw a static size of 0 and mis-encoded the field as a
+// variable List (a 4-byte offset plus contents), diverging from reflection and
+// the SSZ spec on size, serialization and hash tree root. AV additionally nests
+// the dynssz-only inner vector under a fixed outer array whose dimension is the
+// '?' placeholder.
+type DynSizeVectorNoStatic struct {
+	V  []uint16    `dynssz-size:"DSV_LEN"`
+	AV [2][]uint16 `dynssz-size:"?,DSV_LEN"`
+}
+
+var DynSizeVectorNoStatic_Specs = map[string]any{
+	"DSV_LEN": uint64(3),
+}
+
+func DynSizeVectorNoStaticPayload(n int) DynSizeVectorNoStatic {
+	v := make([]uint16, n)
+	for i := range v {
+		v[i] = uint16(i + 1)
+	}
+	var av [2][]uint16
+	for r := range av {
+		row := make([]uint16, n)
+		for i := range row {
+			row[i] = uint16(r*100 + i + 1)
+		}
+		av[r] = row
+	}
+	return DynSizeVectorNoStatic{V: v, AV: av}
+}

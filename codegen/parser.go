@@ -722,7 +722,12 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		case reflect.Array:
 			sszType = ssztypes.SszVectorType
 		case reflect.Slice:
-			if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
+			// A size expression (dynssz-size) with no static ssz-size fallback
+			// still fixes the length at runtime, so the slice is a Vector — the
+			// reflection typecache reaches the same result after resolving the
+			// expression to a concrete size before this decision. Codegen has no
+			// specs at generation time, so it keys off the expression itself.
+			if len(sizeHints) > 0 && (sizeHints[0].Size > 0 || sizeHints[0].Expr != "") {
 				sszType = ssztypes.SszVectorType
 			} else if err := rejectZeroSizeHint(sizeHints); err != nil {
 				return nil, err
@@ -730,7 +735,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 				sszType = ssztypes.SszListType
 			}
 		case reflect.String:
-			if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
+			if len(sizeHints) > 0 && (sizeHints[0].Size > 0 || sizeHints[0].Expr != "") {
 				sszType = ssztypes.SszVectorType
 			} else if err := rejectZeroSizeHint(sizeHints); err != nil {
 				return nil, err
@@ -1369,25 +1374,36 @@ func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, dataType, 
 		}
 	case *types.Slice:
 		schemaElemType = t.Elem()
-		if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
+		switch {
+		case len(sizeHints) > 0 && sizeHints[0].Size > 0:
 			length = sizeHints[0].Size
 			if sizeHints[0].Bits {
 				length = (length + 7) / 8 // ceil up to the next multiple of 8
 			}
-		} else {
+		case len(sizeHints) > 0 && sizeHints[0].Expr != "":
+			// Length comes purely from a runtime dynssz-size expression with no
+			// static ssz-size fallback. Leave the static length at 0; the
+			// generated code resolves desc.SizeExpression at runtime.
+			length = 0
+		default:
 			return fmt.Errorf("vector slice type requires explicit size hint")
 		}
 	case *types.Basic:
 		if t.Kind() == types.String {
 			// String as vector
-			if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
+			switch {
+			case len(sizeHints) > 0 && sizeHints[0].Size > 0:
 				length = sizeHints[0].Size
 				if sizeHints[0].Bits {
 					length = (length + 7) / 8 // ceil up to the next multiple of 8
 				}
 				desc.GoTypeFlags |= ssztypes.GoTypeFlagIsByteArray
 				schemaElemType = byteType
-			} else {
+			case len(sizeHints) > 0 && sizeHints[0].Expr != "":
+				length = 0
+				desc.GoTypeFlags |= ssztypes.GoTypeFlagIsByteArray
+				schemaElemType = byteType
+			default:
 				return fmt.Errorf("string vector type requires explicit size hint")
 			}
 		} else {
@@ -1435,8 +1451,11 @@ func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, dataType, 
 	desc.Len = length
 
 	// Per the SSZ spec, Vector[type, 0] and Bitvector[0] are illegal: a vector
-	// must have a length greater than zero (e.g. a [0]T array).
-	if desc.Len == 0 {
+	// must have a length greater than zero (e.g. a [0]T array). A vector whose
+	// length is supplied purely by a runtime dynssz-size expression legitimately
+	// carries a static length of 0 here (the expression resolves at runtime), so
+	// only reject a genuine static zero length.
+	if desc.Len == 0 && desc.SizeExpression == nil {
 		return fmt.Errorf("vector type %v has zero length, which is invalid per the SSZ spec", schemaType)
 	}
 

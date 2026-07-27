@@ -186,3 +186,6 @@ types:
     output: gen_recursive.go
   - name: RecursiveTreeBranch
     output: gen_recursive.go
+
+  - name: DynSizeVectorNoStatic
+    output: gen_dynsizevec.go
