@@ -37,7 +37,10 @@ const lengthUnknown = -1
 // larger). Capping here keeps that conversion lossless and keeps the
 // "read one byte past the allowance to establish EOF" arithmetic from
 // overflowing int.
-const maxAllowance = math.MaxUint32
+//
+// On a 32-bit platform math.MaxUint32 does not fit in an int, so the cap is
+// whichever bound binds first.
+const maxAllowance = min(math.MaxUint32, math.MaxInt-1)
 
 // StreamDecoder is a non-seekable Decoder implementation that reads SSZ data
 // from an io.Reader. It uses an internal buffer for efficient sequential reads
