@@ -379,6 +379,7 @@ func (e *StreamDecoder) readMore() error {
 		}
 	}
 
+	knownLen := e.streamLen >= 0
 	emptyReads := 0
 	for {
 		nr, err := e.reader.Read(e.buffer[e.bufferLen : e.bufferLen+toRead])
@@ -386,6 +387,14 @@ func (e *StreamDecoder) readMore() error {
 			return ErrNegativeRead
 		}
 		e.bufferLen += nr
+
+		// The allowance is read one byte past to establish EOF, and a reader may
+		// hand that probe byte back together with data or with io.EOF. Re-test
+		// the cap after every read rather than only when the next read finds no
+		// room, so the maximum stays a hard bound.
+		if !knownLen && e.position+(e.bufferLen-e.bufferPos) > e.maxSize {
+			return ErrStreamTooLargeFn(e.maxSize)
+		}
 
 		if err != nil {
 			if err == io.EOF || err == io.ErrUnexpectedEOF {

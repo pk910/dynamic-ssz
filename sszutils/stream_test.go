@@ -2538,3 +2538,35 @@ func TestRegion_DecodeRemainingRejectsShortDeclaredRegion(t *testing.T) {
 		t.Fatalf("DecodeRemaining = %v, want ErrUnexpectedEOF", err)
 	}
 }
+
+// The maximum stream size is a hard bound. The decoder reads one byte past the
+// allowance to establish EOF, and a reader may return that probe byte together
+// with io.EOF -- which must not turn into an accepted max+1 byte payload.
+func TestRegion_MaxStreamSizeIsHardBound(t *testing.T) {
+	const maxSize = 32
+
+	t.Run("exact fits", func(t *testing.T) {
+		dec := NewUnknownStreamDecoder(&partialThenEOFReader{data: make([]byte, maxSize)}, 64, maxSize)
+		dec.PushOpenLimit()
+		got, err := dec.DecodeRemaining(-1)
+		if err != nil || len(got) != maxSize {
+			t.Fatalf("a payload of exactly the maximum must decode: len %d, err %v", len(got), err)
+		}
+	})
+
+	t.Run("one over, EOF with data", func(t *testing.T) {
+		dec := NewUnknownStreamDecoder(&partialThenEOFReader{data: make([]byte, maxSize+1)}, 64, maxSize)
+		dec.PushOpenLimit()
+		if _, err := dec.DecodeRemaining(-1); !errors.Is(err, ErrStreamTooLarge) {
+			t.Fatalf("DecodeRemaining = %v, want ErrStreamTooLarge", err)
+		}
+	})
+
+	t.Run("one over, EOF separate", func(t *testing.T) {
+		dec := NewUnknownStreamDecoder(bytes.NewReader(make([]byte, maxSize+1)), 64, maxSize)
+		dec.PushOpenLimit()
+		if _, err := dec.DecodeRemaining(-1); !errors.Is(err, ErrStreamTooLarge) {
+			t.Fatalf("DecodeRemaining = %v, want ErrStreamTooLarge", err)
+		}
+	})
+}
