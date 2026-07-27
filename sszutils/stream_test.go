@@ -2502,3 +2502,39 @@ func TestRegion_StreamSeekOpsAreInert(t *testing.T) {
 		t.Fatalf("got %v, err %v", got, err)
 	}
 }
+
+// EOF makes the stream length exact but leaves any region derived earlier from
+// an offset in place. Such a region can end far past the real input, so it must
+// not start reporting a known length just because EOF was seen.
+func TestRegion_DerivedLimitStaysUnknownAfterEOF(t *testing.T) {
+	dec := NewUnknownStreamDecoder(&partialThenEOFReader{data: make([]byte, 16)}, 8, 0)
+	dec.PushOpenLimit()
+	dec.PushLimit(500_000_000) // declared by a hostile offset, clamped to the allowance
+
+	// Consume the whole real payload; the final read establishes EOF while the
+	// declared region still claims ~500 MB.
+	for i := range 2 {
+		if _, err := dec.DecodeUint64(); err != nil {
+			t.Fatalf("read %d: %v", i, err)
+		}
+	}
+	if got := dec.GetLength(); got < 400_000_000 {
+		t.Fatalf("premise: the declared region should still claim ~500 MB, got %d", got)
+	}
+	if dec.LengthKnown() {
+		t.Fatalf("LengthKnown = true with GetLength = %d, but only 16 bytes were ever delivered", dec.GetLength())
+	}
+}
+
+// A region that was declared bounded must be consumed to its limit. Running out
+// of input first is truncated input, not a short result -- the preallocating
+// branch of DecodeRemaining already reports it that way.
+func TestRegion_DecodeRemainingRejectsShortDeclaredRegion(t *testing.T) {
+	dec := NewUnknownStreamDecoder(&partialThenEOFReader{data: make([]byte, 16)}, 8, 0)
+	dec.PushOpenLimit()
+	dec.PushLimit(1024)
+
+	if _, err := dec.DecodeRemaining(-1); !errors.Is(err, ErrUnexpectedEOF) {
+		t.Fatalf("DecodeRemaining = %v, want ErrUnexpectedEOF", err)
+	}
+}

@@ -50,9 +50,11 @@ type Decoder interface {
 	// A declared extent is not enough. Inside input of unknown length an offset
 	// is validated against the allowance rather than against delivered bytes,
 	// so a peer can declare a 500 MB field in a 12-byte payload. The extent is
-	// trustworthy once the total length is established -- at EOF, or because the
-	// caller supplied it -- or once the region fits in bytes already read, which
-	// a peer cannot fake without sending them.
+	// trustworthy once the region fits inside an established total length --
+	// supplied by the caller, or discovered at EOF -- or once it fits in bytes
+	// already read, which a peer cannot fake without sending them. Reaching EOF
+	// alone is not enough: it makes the length exact but leaves a region derived
+	// from an earlier offset still claiming bytes that never arrived.
 	LengthKnown() bool
 
 	// Available reports how many bytes of the current region are already in
@@ -67,7 +69,8 @@ type Decoder interface {
 	// DecodeRemaining consumes the rest of the current region (to the region
 	// limit, or to EOF for an open region) and returns it in a newly allocated
 	// slice the caller may retain. If maxLen is non-negative and the payload
-	// exceeds it, decoding fails instead of allocating.
+	// exceeds it, decoding fails instead of allocating. A bounded region the
+	// input cannot fill fails with ErrUnexpectedEOF.
 	DecodeRemaining(maxLen int) ([]byte, error)
 
 	// PushOpenLimit pushes a region that extends to the end of the input.

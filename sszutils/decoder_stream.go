@@ -184,15 +184,23 @@ func (e *StreamDecoder) RegionOpen() bool {
 // 500 MB field in a 12-byte payload. Sizing an allocation from that is a memory
 // amplification attack.
 //
-// The extent is trustworthy in two cases: the total stream length is
-// established (at EOF, or supplied by the caller), or the region already fits
-// in bytes that have been read, which a peer cannot fake without sending them.
+// The extent is trustworthy in two cases: the region fits inside a total stream
+// length that is established (supplied by the caller, or discovered at EOF), or
+// it already fits in bytes that have been read -- which a peer cannot fake
+// without sending them. Reaching EOF is not on its own enough: it makes the
+// length exact but leaves any region derived from an earlier offset in place,
+// still claiming bytes that never arrived.
 func (e *StreamDecoder) LengthKnown() bool {
 	if e.lastOpen {
 		return false
 	}
 	if e.streamLen >= 0 {
-		return true
+		// A region derived from an offset before EOF can still end past the
+		// stream: EOF makes streamLen exact but leaves that stale limit in
+		// place. Only a region that fits inside the established length is
+		// backed by input. (With a caller-supplied length every limit is
+		// clamped to it, so this always holds.)
+		return e.lastLimit <= e.streamLen
 	}
 	// The whole region is already in the read buffer, so its bytes exist.
 	return e.lastLimit-e.position <= e.bufferLen-e.bufferPos
@@ -626,6 +634,9 @@ func (e *StreamDecoder) More() (bool, error) {
 // or to EOF for an open region — and returns it in a newly allocated slice the
 // caller may retain. If maxLen is non-negative and the payload exceeds it, the call
 // fails without having allocated the full payload.
+//
+// A bounded region that the input cannot fill fails with ErrUnexpectedEOF; only
+// an open region legitimately ends where the input does.
 func (e *StreamDecoder) DecodeRemaining(maxLen int) ([]byte, error) {
 	// Only preallocate when the extent is backed by input known to exist; a
 	// limit derived from an unverified offset must be consumed incrementally.
@@ -652,6 +663,14 @@ func (e *StreamDecoder) DecodeRemaining(maxLen int) ([]byte, error) {
 	// either consumes at least one byte or breaks. Routing this through More()
 	// would make progress depend on its "reported data implies buffered data"
 	// invariant, which is exactly the kind of coupling that turns into a spin.
+
+	// A region reaching this path that is not open is bounded but unverified:
+	// its end was derived from an offset validated against the allowance, so it
+	// may lie past the real end of input. Such a region must be consumed in
+	// full -- running out of input first is ErrUnexpectedEOF, not a short
+	// result, matching what the preallocating branch above reports. Capture the
+	// state up front, since EOF collapses an open region to a bounded one.
+	openRegion := e.lastOpen
 	out := []byte{}
 	for {
 		available := e.bufferLen - e.bufferPos
@@ -684,6 +703,9 @@ func (e *StreamDecoder) DecodeRemaining(maxLen int) ([]byte, error) {
 
 		if available <= 0 {
 			if e.eofSeen {
+				if !openRegion {
+					return nil, ErrUnexpectedEOF
+				}
 				break
 			}
 			e.compact()
@@ -691,6 +713,9 @@ func (e *StreamDecoder) DecodeRemaining(maxLen int) ([]byte, error) {
 				return nil, err
 			}
 			if e.bufferLen-e.bufferPos == 0 {
+				if !openRegion {
+					return nil, ErrUnexpectedEOF
+				}
 				break // EOF with nothing left
 			}
 			continue

@@ -5309,10 +5309,11 @@ func TestUnknownSizeDerivedLimitIsNotKnownLength(t *testing.T) {
 	if got := dec.GetLength(); got != 500_000_000 {
 		t.Fatalf("GetLength = %d, want the declared limit for offset arithmetic", got)
 	}
-	// Consuming it must stop at the real end of input rather than at the
-	// declared limit, and must not preallocate.
-	if _, err := dec.DecodeRemaining(-1); err != nil {
-		t.Fatalf("DecodeRemaining: %v", err)
+	// Consuming it must not preallocate from the declaration, and must fail at
+	// the real end of input: the region was declared bounded, so stopping short
+	// of its limit is truncated input rather than a short result.
+	if _, err := dec.DecodeRemaining(-1); !errors.Is(err, sszutils.ErrUnexpectedEOF) {
+		t.Fatalf("DecodeRemaining = %v, want ErrUnexpectedEOF", err)
 	}
 }
 
@@ -5367,6 +5368,84 @@ func TestUnknownSizeDoesNotAllocateFromDeclaredElementCount(t *testing.T) {
 	const limit = 64 << 20
 	if peak > base.HeapAlloc+limit {
 		t.Fatalf("a declared element count drove a %d byte peak heap from a %d byte payload",
+			peak-base.HeapAlloc, len(payload))
+	}
+}
+
+// eofWithDataReader delivers its final bytes together with io.EOF, which the
+// io.Reader contract permits. That makes the decoder observe EOF while data is
+// still buffered, so the stream length becomes exact while a region derived
+// from an earlier offset still claims far more.
+type eofWithDataReader struct {
+	data []byte
+	pos  int
+}
+
+func (r *eofWithDataReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data[r.pos:])
+	r.pos += n
+	if r.pos >= len(r.data) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+// Discovering EOF must not retroactively make a region declared by a hostile
+// offset trustworthy. The list decoder sizes its slice exactly once the length
+// is known, so a region still claiming 400 MB after a 264 byte stream ended
+// would drive the allocation the incremental growth exists to prevent.
+func TestUnknownSizeStaleRegionDoesNotSizeAllocation(t *testing.T) {
+	type twoDyn struct {
+		A []uint32 `ssz-max:"1099511627776"`
+		B []byte   `ssz-max:"1024"`
+	}
+
+	// offset(A)=8, offset(B)=400 MB: A's region is declared as ~400 MB while
+	// the payload holds 64 elements. A tiny read buffer keeps the decode in an
+	// open region, and the reader hands its last bytes back with io.EOF.
+	const items = 64
+	payload := make([]byte, 8+items*4)
+	binary.LittleEndian.PutUint32(payload[0:4], 8)
+	binary.LittleEndian.PutUint32(payload[4:8], 400_000_000)
+
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithStreamReaderBufferSize(16))
+
+	runtime.GC()
+	var base runtime.MemStats
+	runtime.ReadMemStats(&base)
+
+	var peak uint64
+	stop, sampled := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(sampled)
+		var m runtime.MemStats
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				runtime.ReadMemStats(&m)
+				if m.HeapAlloc > peak {
+					peak = m.HeapAlloc
+				}
+			}
+		}
+	}()
+
+	err := ds.UnmarshalSSZReader(&twoDyn{}, &eofWithDataReader{data: payload}, -1)
+
+	close(stop)
+	<-sampled
+
+	if err == nil {
+		t.Fatal("a region declared past the end of the stream must not decode")
+	}
+	const limit = 64 << 20
+	if peak > base.HeapAlloc+limit {
+		t.Fatalf("a stale declared region drove a %d byte peak heap from a %d byte payload",
 			peak-base.HeapAlloc, len(payload))
 	}
 }
