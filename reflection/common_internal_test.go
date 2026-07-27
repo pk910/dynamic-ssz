@@ -111,3 +111,29 @@ func TestReflectionCtxNilArgs(t *testing.T) {
 		t.Error("HashTreeRoot: expected error for nil walker")
 	}
 }
+
+// A dynamic-element vector longer than its declared length is rejected by
+// marshalDynamicVector. The public marshal path sizes the value first (which
+// now also rejects over-length vectors), so this guard is only reachable — and
+// pinned — by driving the marshal directly.
+func TestMarshalDynamicVectorOverLength(t *testing.T) {
+	type dynElem struct {
+		D []byte `ssz-max:"8"`
+	}
+	type container struct {
+		V []dynElem `ssz-size:"2"`
+	}
+	tc := ssztypes.NewTypeCache(nil)
+	desc, err := tc.GetTypeDescriptor(reflect.TypeOf(container{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("descriptor: %v", err)
+	}
+	vecDesc := desc.ContainerDesc.Fields[0].Type
+
+	ctx := newCtx()
+	enc := sszutils.NewBufferEncoder(nil)
+	over := reflect.ValueOf([]dynElem{{}, {}, {}}) // 3 > declared length 2
+	if err := ctx.marshalDynamicVector(vecDesc, over, enc, 0); !errors.Is(err, sszutils.ErrVectorLength) {
+		t.Fatalf("expected ErrVectorLength, got %v", err)
+	}
+}
