@@ -5,6 +5,7 @@
 package reflection
 
 import (
+	"bytes"
 	"io"
 	"math"
 	"reflect"
@@ -405,5 +406,127 @@ func TestBigIntLimitBytesOverflow(t *testing.T) {
 	}
 	if _, ok := bigIntLimitBytes(td); ok {
 		t.Fatal("expected no representable byte cap for an out-of-range limit")
+	}
+}
+
+// --- open-region streaming decode error branches ---
+//
+// These reach the read-to-EOF and offset-region error paths that only the
+// unknown-length stream decoder exercises. Unlike the overflow guards above they
+// are not platform-gated.
+
+func uint32ElemDesc() *ssztypes.TypeDescriptor {
+	return &ssztypes.TypeDescriptor{
+		Size:    4,
+		Kind:    reflect.Uint32,
+		SszType: ssztypes.SszUint32Type,
+		Type:    reflect.TypeOf(uint32(0)),
+	}
+}
+
+// A bounded but not-yet-buffered region reports LengthKnown()==false, so the
+// read-to-EOF list path runs, yet RegionOpen()==false keeps the alignment and
+// ssz-max checks active. A 5-byte region is not a multiple of the 4-byte element.
+func TestUnmarshalListUntilEOFNotAligned(t *testing.T) {
+	ctx := newCtx()
+	td := &ssztypes.TypeDescriptor{
+		SszType:  ssztypes.SszListType,
+		Kind:     reflect.Slice,
+		Type:     reflect.TypeOf([]uint32{}),
+		ElemDesc: uint32ElemDesc(),
+	}
+	dec := sszutils.NewUnknownStreamDecoder(strings.NewReader("12345"), 8, 0)
+	dec.PushLimit(5)
+	val := reflect.New(td.Type).Elem()
+	err := ctx.unmarshalType(td, val, dec, 0)
+	if err == nil || !strings.Contains(err.Error(), "not a multiple of element size") {
+		t.Fatalf("expected list-not-aligned error, got: %v", err)
+	}
+}
+
+// An 8-byte bounded region declares two 4-byte elements, but the list max is 1.
+func TestUnmarshalListUntilEOFTooLong(t *testing.T) {
+	ctx := newCtx()
+	td := &ssztypes.TypeDescriptor{
+		SszType:      ssztypes.SszListType,
+		SszTypeFlags: ssztypes.SszTypeFlagHasLimit,
+		Limit:        1,
+		Kind:         reflect.Slice,
+		Type:         reflect.TypeOf([]uint32{}),
+		ElemDesc:     uint32ElemDesc(),
+	}
+	dec := sszutils.NewUnknownStreamDecoder(strings.NewReader("12345678"), 8, 0)
+	dec.PushLimit(8)
+	val := reflect.New(td.Type).Elem()
+	err := ctx.unmarshalType(td, val, dec, 0)
+	if err == nil || !strings.Contains(err.Error(), "exceeds maximum") {
+		t.Fatalf("expected list-too-long error, got: %v", err)
+	}
+}
+
+// An element that claims an 8-byte size but decodes as a 4-byte uint32 under-
+// consumes its slot and trips the static-element consumption check.
+func TestUnmarshalListUntilEOFStaticElementNotConsumed(t *testing.T) {
+	ctx := newCtx()
+	elemDesc := &ssztypes.TypeDescriptor{
+		Size:    8,
+		Kind:    reflect.Uint32,
+		SszType: ssztypes.SszUint32Type,
+		Type:    reflect.TypeOf(uint32(0)),
+	}
+	td := &ssztypes.TypeDescriptor{
+		SszType:  ssztypes.SszListType,
+		Kind:     reflect.Slice,
+		Type:     reflect.TypeOf([]uint32{}),
+		ElemDesc: elemDesc,
+	}
+	dec := sszutils.NewUnknownStreamDecoder(strings.NewReader("12345678"), 8, 0)
+	dec.PushOpenLimit()
+	val := reflect.New(td.Type).Elem()
+	err := ctx.unmarshalType(td, val, dec, 0)
+	if err == nil || !strings.Contains(err.Error(), "element consumed to position") {
+		t.Fatalf("expected static-element-not-consumed error, got: %v", err)
+	}
+}
+
+// The trailing element of an open-region dynamic vector runs to EOF, so surplus
+// bytes after the element surface as trailing data when its region is finished.
+func TestUnmarshalDynamicVectorOpenTrailing(t *testing.T) {
+	ctx := newCtx()
+	td := &ssztypes.TypeDescriptor{
+		SszType:  ssztypes.SszVectorType,
+		Kind:     reflect.Slice,
+		Len:      1,
+		Type:     reflect.TypeOf([]uint32{}),
+		ElemDesc: uint32ElemDesc(),
+	}
+	// one offset (=4) + a 4-byte element + 2 trailing bytes.
+	data := []byte{4, 0, 0, 0, 1, 0, 0, 0, 0xFF, 0xFF}
+	dec := sszutils.NewUnknownStreamDecoder(bytes.NewReader(data), 64, 0)
+	dec.PushOpenLimit()
+	val := reflect.New(td.Type).Elem()
+	err := ctx.unmarshalDynamicVector(td, val, dec, 0)
+	if err == nil || !strings.Contains(err.Error(), "trailing data") {
+		t.Fatalf("expected trailing-data error, got: %v", err)
+	}
+}
+
+// Same trailing-data path for a dynamic list: firstOffset=4 selects one element,
+// followed by a 4-byte element and 2 trailing bytes.
+func TestUnmarshalDynamicListOpenTrailing(t *testing.T) {
+	ctx := newCtx()
+	td := &ssztypes.TypeDescriptor{
+		SszType:  ssztypes.SszListType,
+		Kind:     reflect.Slice,
+		Type:     reflect.TypeOf([]uint32{}),
+		ElemDesc: uint32ElemDesc(),
+	}
+	data := []byte{4, 0, 0, 0, 1, 0, 0, 0, 0xFF, 0xFF}
+	dec := sszutils.NewUnknownStreamDecoder(bytes.NewReader(data), 64, 0)
+	dec.PushOpenLimit()
+	val := reflect.New(td.Type).Elem()
+	err := ctx.unmarshalDynamicList(td, val, dec, 0)
+	if err == nil || !strings.Contains(err.Error(), "trailing data") {
+		t.Fatalf("expected trailing-data error, got: %v", err)
 	}
 }
