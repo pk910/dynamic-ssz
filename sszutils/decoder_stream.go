@@ -27,9 +27,11 @@ const DefaultMaxStreamSize = 512 * 1024 * 1024
 // the decode. Progress resets the counter.
 const maxConsecutiveEmptyReads = 100
 
-// lengthUnknown marks a stream length that has not been discovered yet, and a
-// region limit that extends to the end of such a stream.
+// lengthUnknown marks a stream length that has not been discovered yet.
 const lengthUnknown = -1
+
+// openLimitMarker marks a region-stack entry whose end is not yet known.
+const openLimitMarker = -1
 
 // maxAllowance caps the maximum stream size. Inside an open region the
 // allowance is what GetLength reports, and callers routinely narrow a region
@@ -50,9 +52,17 @@ const maxAllowance = min(math.MaxUint32, math.MaxInt-1)
 // NewUnknownStreamDecoder — discover the length at EOF. See the Decoder
 // documentation for how open regions behave in the latter mode.
 type StreamDecoder struct {
-	reader    io.Reader
-	limits    []int
+	reader io.Reader
+	// limits is the region stack. A negative entry marks an open region.
+	limits []int
+	// lastLimit is the absolute end of the current region and is ALWAYS a
+	// usable bound: for an open region it is the allowance. Keeping it
+	// non-negative is what lets every read check it with a single comparison,
+	// which is the decoder's hottest instruction.
 	lastLimit int
+	// lastOpen records whether the current region is open, since lastLimit can
+	// no longer express that.
+	lastOpen  bool
 	streamLen int
 	position  int
 
@@ -117,10 +127,16 @@ func newStreamDecoder(reader io.Reader, totalLen, maxBufSize, maxStreamSize int)
 		bufferSize = 8 // Minimum size to hold a uint64
 	}
 
+	rootLimit, rootOpen := totalLen, false
+	if totalLen < 0 {
+		rootLimit, rootOpen = maxStreamSize, true
+	}
+
 	return &StreamDecoder{
 		reader:    reader,
 		limits:    make([]int, 0, 16),
-		lastLimit: totalLen,
+		lastLimit: rootLimit,
+		lastOpen:  rootOpen,
 		streamLen: totalLen,
 		maxSize:   maxStreamSize,
 		position:  0,
@@ -147,10 +163,7 @@ func (e *StreamDecoder) GetPosition() int {
 // with ErrUnexpectedEOF at the real end of input. Use LengthKnown to tell the
 // two cases apart.
 func (e *StreamDecoder) GetLength() int {
-	if e.lastLimit >= 0 {
-		return e.lastLimit - e.position
-	}
-	remaining := e.maxSize - e.position
+	remaining := e.lastLimit - e.position
 	if remaining < 0 {
 		return 0
 	}
@@ -172,12 +185,16 @@ func (e *StreamDecoder) GetLength() int {
 // Until then callers must consume incrementally; the region limit still bounds
 // them, it just cannot be trusted as an allocation size.
 func (e *StreamDecoder) LengthKnown() bool {
-	return e.lastLimit >= 0 && e.streamLen >= 0
+	return !e.lastOpen && e.streamLen >= 0
 }
 
-// rootLimit returns the limit that applies when no region is pushed.
-func (e *StreamDecoder) rootLimit() int {
-	return e.streamLen
+// rootLimit returns the bound that applies when no region is pushed, and
+// whether that region is open.
+func (e *StreamDecoder) rootLimit() (int, bool) {
+	if e.streamLen >= 0 {
+		return e.streamLen, false
+	}
+	return e.maxSize, true
 }
 
 func (e *StreamDecoder) PushLimit(limit int) {
@@ -191,28 +208,30 @@ func (e *StreamDecoder) PushLimit(limit int) {
 	limitPos := e.position + limit
 	if limitPos < e.position {
 		// integer overflow on a hostile limit
-		limitPos = e.maxSize
+		limitPos = e.lastLimit
 	}
-	if e.lastLimit >= 0 {
-		if limitPos > e.lastLimit {
-			limitPos = e.lastLimit
-		}
-	} else if limitPos > e.maxSize {
-		// Inside an open region there is no enclosing bound to clamp against,
-		// so the allowance is the only backstop.
-		limitPos = e.maxSize
+	// lastLimit is always a real bound -- the allowance when the region is
+	// open -- so one clamp covers both cases.
+	if limitPos > e.lastLimit {
+		limitPos = e.lastLimit
 	}
 
 	e.limits = append(e.limits, limitPos)
 	e.lastLimit = limitPos
+	e.lastOpen = false
 }
 
 // PushOpenLimit pushes a region that extends to the end of the input. If the
 // enclosing region is bounded, the pushed region simply spans the rest of it.
 func (e *StreamDecoder) PushOpenLimit() {
-	e.limits = append(e.limits, e.lastLimit)
-	// lastLimit is unchanged: an open child of an open parent stays open, and
-	// an open child of a bounded parent inherits the parent's bound.
+	// An open child of an open parent stays open; an open child of a bounded
+	// parent simply spans the rest of it. Either way the effective bound is
+	// unchanged, so only the stack entry differs.
+	if e.lastOpen {
+		e.limits = append(e.limits, openLimitMarker)
+	} else {
+		e.limits = append(e.limits, e.lastLimit)
+	}
 }
 
 func (e *StreamDecoder) PopLimit() int {
@@ -222,9 +241,11 @@ func (e *StreamDecoder) PopLimit() int {
 	}
 	limit := e.limits[limitsLen-1]
 	if limitsLen <= 1 {
-		e.lastLimit = e.rootLimit()
+		e.lastLimit, e.lastOpen = e.rootLimit()
+	} else if parent := e.limits[limitsLen-2]; parent < 0 {
+		e.lastLimit, e.lastOpen = e.rootLimit()
 	} else {
-		e.lastLimit = e.limits[limitsLen-2]
+		e.lastLimit, e.lastOpen = parent, false
 	}
 	e.limits = e.limits[:limitsLen-1]
 	if limit < 0 {
@@ -251,8 +272,9 @@ func (e *StreamDecoder) onEOF() {
 		return
 	}
 	e.streamLen = e.position + (e.bufferLen - e.bufferPos)
-	if e.lastLimit < 0 {
+	if e.lastOpen {
 		e.lastLimit = e.streamLen
+		e.lastOpen = false
 	}
 	for i := range e.limits {
 		if e.limits[i] < 0 {
@@ -378,28 +400,24 @@ func (e *StreamDecoder) ensureBuffered(n int) error {
 	return nil
 }
 
-// checkRegion verifies that n more bytes may be read from the current region.
-// Inside an open region there is no limit to check against, so the request is
-// only bounded by the allowance; a short input surfaces as EOF during the read.
-func (e *StreamDecoder) checkRegion(n int) error {
-	if e.lastLimit >= 0 {
-		if e.position+n > e.lastLimit {
-			return ErrUnexpectedEOF
-		}
-		return nil
-	}
-	if e.position+n > e.maxSize {
+// regionOverrun reports the right error for a read that ran past the current
+// region. It is only called once the bound test has already failed, so it stays
+// off the hot path and out of the inlining budget of the read helpers.
+func (e *StreamDecoder) regionOverrun() error {
+	if e.lastOpen {
+		// The bound was the allowance, so the payload is over the maximum
+		// rather than merely past a region.
 		return ErrStreamTooLargeFn(e.maxSize)
 	}
-	return nil
+	return ErrUnexpectedEOF
 }
 
 // readByte reads a single byte from the buffer
 func (e *StreamDecoder) readByte() (byte, error) {
 	// Never read across the current region limit; a malformed region must
 	// fail cleanly instead of consuming bytes of subsequent regions.
-	if err := e.checkRegion(1); err != nil {
-		return 0, err
+	if e.position+1 > e.lastLimit {
+		return 0, e.regionOverrun()
 	}
 	if err := e.ensureBuffered(1); err != nil {
 		return 0, err
@@ -418,8 +436,8 @@ func (e *StreamDecoder) readBytes(buf []byte) error {
 
 	// Never read across the current region limit; a malformed region must
 	// fail cleanly instead of consuming bytes of subsequent regions.
-	if err := e.checkRegion(n); err != nil {
-		return err
+	if e.position+n > e.lastLimit {
+		return e.regionOverrun()
 	}
 
 	available := e.bufferLen - e.bufferPos
@@ -489,8 +507,8 @@ func (e *StreamDecoder) readBytes(buf []byte) error {
 func (e *StreamDecoder) readBytesRef(n int) ([]byte, error) {
 	// Never read across the current region limit; a malformed region must
 	// fail cleanly instead of consuming bytes of subsequent regions.
-	if err := e.checkRegion(n); err != nil {
-		return nil, err
+	if e.position+n > e.lastLimit {
+		return nil, e.regionOverrun()
 	}
 	if err := e.ensureBuffered(n); err != nil {
 		return nil, err
@@ -536,7 +554,7 @@ func (e *StreamDecoder) Prefill() error {
 // bounded region the answer comes from the limit; for an open region the reader
 // is probed, which is what turns "no more data" into a discovered EOF.
 func (e *StreamDecoder) More() (bool, error) {
-	if e.lastLimit >= 0 {
+	if !e.lastOpen {
 		return e.lastLimit-e.position > 0, nil
 	}
 	if e.bufferLen-e.bufferPos > 0 {
@@ -585,13 +603,28 @@ func (e *StreamDecoder) DecodeRemaining(maxLen int) ([]byte, error) {
 	out := []byte{}
 	for {
 		available := e.bufferLen - e.bufferPos
-		if e.lastLimit >= 0 {
-			// The region is bounded, either because EOF collapsed it or because
-			// a limit was pushed inside an open region. Stop at the limit: the
-			// reader may well have more data, but it belongs to whatever comes
-			// after this region, and refilling for it would never make progress.
+		{
+			// Stop at the region limit: past it the reader's data belongs to
+			// whatever comes next, and refilling for it would never make
+			// progress. For an open region the limit is the allowance, and
+			// reaching it means the payload is over the maximum rather than
+			// finished -- EOF would have closed the region first.
 			room := e.lastLimit - e.position
 			if room <= 0 {
+				if !e.lastOpen {
+					break
+				}
+				// The allowance is reached. That is only an overrun if input
+				// actually remains, so probe: a payload of exactly the maximum
+				// must still decode, and the probe is what discovers the EOF
+				// that closes the region.
+				more, err := e.More()
+				if err != nil {
+					return nil, err
+				}
+				if more {
+					return nil, ErrStreamTooLargeFn(e.maxSize)
+				}
 				break
 			}
 			available = min(available, room)
@@ -673,12 +706,12 @@ func (e *StreamDecoder) DecodeBytesBuf(l int) ([]byte, error) {
 		// "All remaining" in the current region. For an open region the extent
 		// is only known at EOF, so fall back to the growing path and hand back
 		// the freshly allocated slice.
-		if e.lastLimit < 0 {
+		if e.lastOpen {
 			return e.DecodeRemaining(-1)
 		}
 		l = e.lastLimit - e.position
-	} else if err := e.checkRegion(l); err != nil {
-		return nil, err
+	} else if e.position+l > e.lastLimit {
+		return nil, e.regionOverrun()
 	}
 
 	// For large reads that exceed the buffer capacity, we need to grow the buffer
