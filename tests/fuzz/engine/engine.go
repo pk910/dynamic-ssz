@@ -4,7 +4,9 @@ package engine
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
+	"math"
 	"math/rand"
 	"reflect"
 	"runtime"
@@ -175,6 +177,19 @@ func (e *Engine) fuzzMutatedValid(entry corpus.TypeEntry, ds *dynssz.DynSsz) {
 
 	// Fuzz with the mutated data
 	e.fuzzUnmarshalCompare(entry, ds, mutated)
+
+	// Malformed input is where the unknown-length path differs most from the
+	// buffer path: it has no total length to validate offsets against, so it
+	// reaches its verdict by running out of input instead. Mutated payloads --
+	// especially offset-smashed ones -- only exercise that if they are routed
+	// here; the valid-data path alone never produces a hostile offset.
+	unknownDs := e.dsUnknown
+	if entry.Extended {
+		unknownDs = e.dsUnknownExtended
+	}
+	if unknownDs != nil {
+		e.compareUnknownSizeVerdict(entry, unknownDs, mutated, validData)
+	}
 }
 
 // fuzzRandomBytes generates random bytes and tests unmarshal comparison.
@@ -252,6 +267,9 @@ func (e *Engine) mutateData(data []byte) []byte {
 				idx := e.rng.Intn(len(mutated))
 				mutated = append(mutated[:idx], mutated[idx+1:]...)
 			}
+		case roll < 95:
+			// Overwrite an offset with a hostile value.
+			e.smashOffset(mutated)
 		default:
 			// Swap two random bytes
 			if len(mutated) > 1 {
@@ -263,6 +281,38 @@ func (e *Engine) mutateData(data []byte) []byte {
 	}
 
 	return mutated
+}
+
+// smashOffset overwrites a 4-byte-aligned word near the start of the payload --
+// where SSZ keeps its offset tables -- with a value chosen to stress offset
+// handling rather than a value a bit flip would plausibly produce.
+//
+// Byte-level mutation is very unlikely to turn a small offset into a large one:
+// flipping a bit in a two-digit offset almost always lands out of range and is
+// rejected by the first bounds check. The interesting cases are the ones that
+// stay *within* bounds while declaring far more than was delivered, since those
+// are what a decoder can be tricked into sizing work from.
+func (e *Engine) smashOffset(data []byte) {
+	if len(data) < 4 {
+		return
+	}
+
+	// Offsets live in the fixed section, which is at the front. Without parsing
+	// the type, the leading words are the best available proxy.
+	window := min(len(data), 64)
+	pos := e.rng.Intn(window/4) * 4
+
+	candidates := []uint32{
+		0, 4, 8,
+		uint32(len(data)),
+		uint32(len(data)) + 1,
+		uint32(len(data)) - 1,
+		1 << 16, 1 << 20,
+		400_000_000, // in range for the default 512 MiB allowance
+		math.MaxUint32,
+		e.rng.Uint32(),
+	}
+	binary.LittleEndian.PutUint32(data[pos:], candidates[e.rng.Intn(len(candidates))])
 }
 
 func (e *Engine) fuzzUnmarshalCompare(entry corpus.TypeEntry, ds *dynssz.DynSsz, data []byte) {
