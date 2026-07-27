@@ -7,6 +7,7 @@ package sszutils
 import (
 	"encoding/binary"
 	"io"
+	"math"
 )
 
 // DefaultStreamDecoderBufSize is the default maximum buffer size for
@@ -29,6 +30,14 @@ const maxConsecutiveEmptyReads = 100
 // lengthUnknown marks a stream length that has not been discovered yet, and a
 // region limit that extends to the end of such a stream.
 const lengthUnknown = -1
+
+// maxAllowance caps the maximum stream size. Inside an open region the
+// allowance is what GetLength reports, and callers routinely narrow a region
+// length to uint32 (SSZ offsets are uint32, so a region cannot legitimately be
+// larger). Capping here keeps that conversion lossless and keeps the
+// "read one byte past the allowance to establish EOF" arithmetic from
+// overflowing int.
+const maxAllowance = math.MaxUint32
 
 // StreamDecoder is a non-seekable Decoder implementation that reads SSZ data
 // from an io.Reader. It uses an internal buffer for efficient sequential reads
@@ -81,6 +90,13 @@ func NewStreamDecoder(reader io.Reader, totalLen, maxBufSize int) *StreamDecoder
 func NewUnknownStreamDecoder(reader io.Reader, maxBufSize, maxStreamSize int) *StreamDecoder {
 	if maxStreamSize <= 0 {
 		maxStreamSize = DefaultMaxStreamSize
+	}
+	// The allowance is reported as a remaining length and is read one byte past
+	// to establish EOF, so it has to stay clear of both an int overflow and the
+	// uint32 conversions that callers apply to a region length. An SSZ offset is
+	// a uint32, so no single region can legitimately exceed this anyway.
+	if maxStreamSize > maxAllowance {
+		maxStreamSize = maxAllowance
 	}
 	return newStreamDecoder(reader, lengthUnknown, maxBufSize, maxStreamSize)
 }
@@ -138,10 +154,22 @@ func (e *StreamDecoder) GetLength() int {
 	return remaining
 }
 
-// LengthKnown reports whether GetLength returns the exact remaining length of
-// the current region.
+// LengthKnown reports whether GetLength returns a remaining length that is
+// backed by input known to exist.
+//
+// A limit alone is not enough. Inside an open region an offset is validated
+// against the allowance rather than against bytes that have been delivered, so
+// PushLimit can derive a bounded region far larger than the input — a peer can
+// declare a 500 MB field in a 12-byte payload. Treating that as a known length
+// would let callers size an allocation from it before reading a single byte of
+// the payload. The extent is only trustworthy once the total stream length is
+// established, which happens when the reader reports EOF or when the caller
+// supplied the size up front.
+//
+// Until then callers must consume incrementally; the region limit still bounds
+// them, it just cannot be trusted as an allocation size.
 func (e *StreamDecoder) LengthKnown() bool {
-	return e.lastLimit >= 0
+	return e.lastLimit >= 0 && e.streamLen >= 0
 }
 
 // rootLimit returns the limit that applies when no region is pushed.
@@ -523,16 +551,18 @@ func (e *StreamDecoder) More() (bool, error) {
 
 // DecodeRemaining consumes the rest of the current region — to the region limit,
 // or to EOF for an open region — and returns it in a newly allocated slice the
-// caller may retain. If max is non-negative and the payload exceeds it, the call
+// caller may retain. If maxLen is non-negative and the payload exceeds it, the call
 // fails without having allocated the full payload.
-func (e *StreamDecoder) DecodeRemaining(max int) ([]byte, error) {
-	if e.lastLimit >= 0 {
+func (e *StreamDecoder) DecodeRemaining(maxLen int) ([]byte, error) {
+	// Only preallocate when the extent is backed by input known to exist; a
+	// limit derived from an unverified offset must be consumed incrementally.
+	if e.LengthKnown() {
 		length := e.lastLimit - e.position
 		if length < 0 {
 			length = 0
 		}
-		if max >= 0 && length > max {
-			return nil, ErrPayloadTooLargeFn(length, max)
+		if maxLen >= 0 && length > maxLen {
+			return nil, ErrPayloadTooLargeFn(length, maxLen)
 		}
 		out := make([]byte, length)
 		if length > 0 {
@@ -553,9 +583,15 @@ func (e *StreamDecoder) DecodeRemaining(max int) ([]byte, error) {
 	for {
 		available := e.bufferLen - e.bufferPos
 		if e.lastLimit >= 0 {
-			// EOF collapsed this region to a bounded one mid-read; never
-			// consume past the limit.
-			available = min(available, e.lastLimit-e.position)
+			// The region is bounded, either because EOF collapsed it or because
+			// a limit was pushed inside an open region. Stop at the limit: the
+			// reader may well have more data, but it belongs to whatever comes
+			// after this region, and refilling for it would never make progress.
+			room := e.lastLimit - e.position
+			if room <= 0 {
+				break
+			}
+			available = min(available, room)
 		}
 
 		if available <= 0 {
@@ -572,8 +608,8 @@ func (e *StreamDecoder) DecodeRemaining(max int) ([]byte, error) {
 			continue
 		}
 
-		if max >= 0 && len(out)+available > max {
-			return nil, ErrPayloadTooLargeFn(len(out)+available, max)
+		if maxLen >= 0 && len(out)+available > maxLen {
+			return nil, ErrPayloadTooLargeFn(len(out)+available, maxLen)
 		}
 
 		out = append(out, e.buffer[e.bufferPos:e.bufferPos+available]...)

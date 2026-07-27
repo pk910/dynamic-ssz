@@ -16,6 +16,16 @@ package sszutils
 // each nesting level. Such a region is called an *open* region and is entered
 // with PushOpenLimit.
 //
+// # Decoder state after an error
+//
+// A decoder must not be reused once a decode has failed. Generated decoders
+// return from inside a pushed region without popping it, so the limit stack is
+// left unbalanced and every subsequent read is clamped to a stale region. This
+// predates open regions — the leaked entry used to be a bounded limit and is
+// now the open marker — and the reflection walk does pop before returning, so
+// the two paths differ in what they leave behind. Discard the decoder and build
+// a new one; the library's own entry points already do.
+//
 // Inside an open region GetLength cannot report the true remaining length.
 // It deliberately does not return a sentinel: it reports the remaining
 // *allowance* (a finite, plausible upper bound derived from the decoder's
@@ -40,9 +50,9 @@ type Decoder interface {
 
 	// DecodeRemaining consumes the rest of the current region (to the region
 	// limit, or to EOF for an open region) and returns it in a newly allocated
-	// slice the caller may retain. If max is non-negative and the payload
+	// slice the caller may retain. If maxLen is non-negative and the payload
 	// exceeds it, decoding fails instead of allocating.
-	DecodeRemaining(max int) ([]byte, error)
+	DecodeRemaining(maxLen int) ([]byte, error)
 
 	// PushOpenLimit pushes a region that extends to the end of the input.
 	// For decoders with a known length, and for open regions nested inside a

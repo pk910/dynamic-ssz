@@ -63,15 +63,15 @@ func (e *BufferDecoder) More() (bool, error) {
 }
 
 // DecodeRemaining consumes the rest of the current region and returns it in a
-// newly allocated slice. If max is non-negative and the region is larger, the
+// newly allocated slice. If maxLen is non-negative and the region is larger, the
 // call fails without allocating.
-func (e *BufferDecoder) DecodeRemaining(max int) ([]byte, error) {
+func (e *BufferDecoder) DecodeRemaining(maxLen int) ([]byte, error) {
 	length := e.lastLimit - e.position
 	if length < 0 {
 		length = 0
 	}
-	if max >= 0 && length > max {
-		return nil, ErrPayloadTooLargeFn(length, max)
+	if maxLen >= 0 && length > maxLen {
+		return nil, ErrPayloadTooLargeFn(length, maxLen)
 	}
 	out := make([]byte, length)
 	copy(out, e.buffer[e.position:e.position+length])

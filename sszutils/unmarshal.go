@@ -6,6 +6,7 @@ package sszutils
 
 import (
 	"encoding/binary"
+	"errors"
 	"unsafe"
 )
 
@@ -157,4 +158,195 @@ func ExpandSlice[T any](src []T, size int) []T {
 	src = src[:size]
 	clear(src[prevLen:])
 	return src
+}
+
+// FinishRegion closes the region most recently pushed with PushOpenLimit,
+// asserting that it was fully consumed.
+//
+// For a bounded region this is equivalent to checking PopLimit() == 0. For an
+// open region the end is only discoverable by probing the reader, so the check
+// is an explicit "no more data" test. The test matters because a variable-size
+// type can still stop short of the end — a union selecting a fixed-size
+// variant, an absent optional, or an optional-list with a fixed element all
+// consume less than the region they were given.
+func FinishRegion(dec Decoder) error {
+	more, err := dec.More()
+	if err != nil {
+		dec.PopLimit()
+		return err
+	}
+	diff := dec.PopLimit()
+	if !more {
+		// No data left in the region, so nothing was left unconsumed: for a
+		// bounded region More() and PopLimit() read the same limit, and for an
+		// open region PopLimit() reports 0 by definition.
+		return nil
+	}
+	if diff <= 0 {
+		// Open region: the leftover count is unknown, but its presence is
+		// established.
+		diff = 1
+	}
+	return ErrTrailingDataFn(diff)
+}
+
+// FinishStream asserts that a decoder has consumed its entire input. It is the
+// top-level counterpart to FinishRegion and is what ultimately catches
+// under-consumption in unknown-length mode: an open region is always the suffix
+// of the stream, so any bytes an inner region left behind are still pending
+// here.
+func FinishStream(dec Decoder) error {
+	more, err := dec.More()
+	if err != nil {
+		return err
+	}
+	if more {
+		remaining := dec.GetLength()
+		if !dec.LengthKnown() || remaining <= 0 {
+			remaining = 1
+		}
+		return ErrTrailingDataFn(remaining)
+	}
+	return nil
+}
+
+// Helpers shared by generated decoders. They keep the emitted code compact by
+// absorbing the difference between a region of known extent and an open region
+// whose end is only discovered at EOF.
+
+// GrowSlice returns src resized to size, growing capacity geometrically.
+//
+// ExpandSlice allocates exactly the requested size, which is right when the
+// element count is known up front. Decoding a list whose count is only
+// discovered at EOF resizes once per element, so it needs amortised growth
+// instead.
+func GrowSlice[T any](src []T, size int) []T {
+	if size < 0 {
+		return make([]T, 0)
+	}
+	if size <= cap(src) {
+		prevLen := len(src)
+		src = src[:size]
+		if src == nil {
+			// size == 0 and src == nil: return a non-nil empty slice so an
+			// empty list decodes to [] rather than nil, matching ExpandSlice
+			// and therefore the buffer and known-length paths.
+			return make([]T, 0)
+		}
+		if prevLen < size {
+			clear(src[prevLen:])
+		}
+		return src
+	}
+
+	newCap := cap(src) * 2
+	if newCap < size {
+		newCap = size
+	}
+	if newCap < 8 {
+		newCap = 8
+	}
+	out := make([]T, size, newCap)
+	copy(out, src)
+	return out
+}
+
+// DecodeByteListInto consumes a byte list that runs to the end of the current
+// region. When the length is known the destination slice is reused; otherwise
+// the payload is read to EOF. maxLen caps the result (-1 for no cap) and is
+// applied before the payload is allocated.
+func DecodeByteListInto(dec Decoder, dst []byte, maxLen int) ([]byte, error) {
+	if dec.LengthKnown() {
+		n := dec.GetLength()
+		if maxLen >= 0 && n > maxLen {
+			return nil, ErrListLengthFn(n, maxLen)
+		}
+		dst = ExpandSlice(dst, n)
+		if n > 0 {
+			if _, err := dec.DecodeBytes(dst); err != nil {
+				return nil, err
+			}
+		}
+		return dst, nil
+	}
+
+	buf, err := dec.DecodeRemaining(maxLen)
+	if err != nil {
+		if maxLen >= 0 && isStreamTooLarge(err) {
+			return nil, ErrListLengthFn(maxLen+1, maxLen)
+		}
+		return nil, err
+	}
+	return buf, nil
+}
+
+// DecodeUint64ListInto consumes a uint64 list that runs to the end of the
+// current region, reusing dst when the length is known and growing to EOF
+// otherwise. maxLen caps the element count (-1 for no cap).
+func DecodeUint64ListInto[T ~uint64](dec Decoder, dst []T, maxLen int) ([]T, error) {
+	if dec.LengthKnown() {
+		sszLen := dec.GetLength()
+		if sszLen%8 != 0 {
+			return nil, ErrListNotAlignedFn(sszLen, 8)
+		}
+		count := sszLen / 8
+		if maxLen >= 0 && count > maxLen {
+			return nil, ErrListLengthFn(count, maxLen)
+		}
+		dst = ExpandSlice(dst, count)
+		if err := DecodeUint64Slice(dec, dst); err != nil {
+			return nil, err
+		}
+		return dst, nil
+	}
+
+	dst = GrowSlice(dst, 0)
+	for count := 0; ; count++ {
+		more, err := dec.More()
+		if err != nil {
+			return nil, err
+		}
+		if !more {
+			return dst, nil
+		}
+		if maxLen >= 0 && count >= maxLen {
+			return nil, ErrListLengthFn(count+1, maxLen)
+		}
+		v, err := dec.DecodeUint64()
+		if err != nil {
+			return nil, err
+		}
+		dst = GrowSlice(dst, count+1)
+		dst[count] = T(v)
+	}
+}
+
+// DecodeDelegateBuffer materialises the region a buffer-based delegate needs.
+// A delegate takes a []byte and so cannot consume an open region incrementally.
+// size < 0 means "the whole region", which for an open region means reading to
+// EOF.
+func DecodeDelegateBuffer(dec Decoder, size int) ([]byte, error) {
+	if size >= 0 {
+		return dec.DecodeBytesBuf(size)
+	}
+	if !dec.LengthKnown() {
+		return dec.DecodeRemaining(-1)
+	}
+	return dec.DecodeBytesBuf(dec.GetLength())
+}
+
+// RegionEmpty reports whether the current region holds no data. Generated code
+// uses it where emptiness is a semantic discriminator (an absent optional, an
+// empty dynamic list) rather than a validation check, since those cannot be
+// answered from a region length that is not yet known.
+func RegionEmpty(dec Decoder) (bool, error) {
+	more, err := dec.More()
+	if err != nil {
+		return false, err
+	}
+	return !more, nil
+}
+
+func isStreamTooLarge(err error) bool {
+	return errors.Is(err, ErrStreamTooLarge)
 }

@@ -5216,3 +5216,102 @@ func TestUnknownSizeTrailingProbeReadErrors(t *testing.T) {
 		})
 	}
 }
+
+// A peer that declares a huge field in a tiny payload must not be able to make
+// the decoder allocate from that declaration.
+//
+// Inside an open region an offset is validated against the allowance rather than
+// against bytes that exist, and pushing a limit for a non-trailing dynamic field
+// turns the open region into a bounded one. If that bounded extent were treated
+// as known, the field's own decode would size an allocation from it before
+// reading any payload: 12 crafted bytes pinned ~500 MB of heap while the peer
+// simply kept the connection open.
+func TestUnknownSizeDoesNotAllocateFromDeclaredOffsets(t *testing.T) {
+	type twoDyn struct {
+		A []byte `ssz-max:"1073741824"` // 1 GiB, as ExecutionPayload transactions are
+		B []byte `ssz-max:"1073741824"`
+	}
+
+	// offset(A)=8, offset(B)=500 MB: A's region is declared as ~500 MB. The
+	// tail pads past the initial buffer fill so the decode starts in an open
+	// region rather than collapsing to a known length.
+	padded := make([]byte, 12+4096)
+	binary.LittleEndian.PutUint32(padded[0:4], 8)
+	binary.LittleEndian.PutUint32(padded[4:8], 500_000_000)
+
+	ds := NewDynSsz(nil, WithNoFastSsz())
+
+	// The bad allocation is freed as soon as the decode fails, so measuring
+	// afterwards sees nothing. What matters is the peak while the decode is
+	// running — that is the memory an idle peer can pin by staying connected.
+	runtime.GC()
+	var base runtime.MemStats
+	runtime.ReadMemStats(&base)
+
+	var peak uint64
+	stop := make(chan struct{})
+	sampled := make(chan struct{})
+	go func() {
+		defer close(sampled)
+		var m runtime.MemStats
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				runtime.ReadMemStats(&m)
+				if m.HeapAlloc > peak {
+					peak = m.HeapAlloc
+				}
+			}
+		}
+	}()
+
+	_ = ds.UnmarshalSSZReader(&twoDyn{}, &blockingReader{data: padded}, -1)
+
+	close(stop)
+	<-sampled
+
+	const limit = 64 << 20 // generous: the honest cost here is kilobytes
+	if peak > base.HeapAlloc+limit {
+		t.Fatalf("declared offsets drove a %d byte peak heap from a %d byte payload",
+			peak-base.HeapAlloc, len(padded))
+	}
+}
+
+// blockingReader serves its data and then reports a read failure, standing in
+// for a peer that delivers a little data and then goes quiet. It fails rather
+// than blocking so the test terminates — by then any allocation driven by the
+// declared offsets has already happened.
+type blockingReader struct {
+	data []byte
+	pos  int
+}
+
+func (r *blockingReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.ErrUnexpectedEOF
+	}
+	n := copy(p, r.data[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+// A limit derived inside an open region bounds reads but is not a verified
+// extent, so it must not be reported as a known length.
+func TestUnknownSizeDerivedLimitIsNotKnownLength(t *testing.T) {
+	dec := sszutils.NewUnknownStreamDecoder(bytes.NewReader(make([]byte, 16)), 8, 0)
+	dec.PushOpenLimit()
+	dec.PushLimit(500_000_000)
+	if dec.LengthKnown() {
+		t.Fatal("a limit derived from an unverified offset must not report a known length")
+	}
+	if got := dec.GetLength(); got != 500_000_000 {
+		t.Fatalf("GetLength = %d, want the declared limit for offset arithmetic", got)
+	}
+	// Consuming it must stop at the real end of input rather than at the
+	// declared limit, and must not preallocate.
+	if _, err := dec.DecodeRemaining(-1); err != nil {
+		t.Fatalf("DecodeRemaining: %v", err)
+	}
+}

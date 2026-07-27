@@ -954,7 +954,7 @@ func (ctx *ReflectionCtx) unmarshalList(targetType *ssztypes.TypeDescriptor, tar
 // front, which also means a hostile input cannot drive an allocation larger than
 // the data actually delivered. A trailing partial element surfaces as
 // ErrUnexpectedEOF instead of ErrListNotAligned.
-func (ctx *ReflectionCtx) unmarshalListUntilEOF(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, itemSize int, idt int) error {
+func (ctx *ReflectionCtx) unmarshalListUntilEOF(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, itemSize, idt int) error {
 	fieldType := targetType.ElemDesc
 
 	maxItems := -1

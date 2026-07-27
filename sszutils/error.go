@@ -505,19 +505,19 @@ func ErrCustomTypeNotSupportedFn() error {
 
 // ErrPayloadTooLargeFn is returned when a region consumed to its end (or to
 // EOF) is larger than the caller-supplied maximum.
-func ErrPayloadTooLargeFn(length, max any) error {
+func ErrPayloadTooLargeFn(length, maxLen any) error {
 	return &sszError{
 		err:     ErrStreamTooLarge,
-		message: fmt.Sprintf("payload length %v exceeds maximum %v", length, max),
+		message: fmt.Sprintf("payload length %v exceeds maximum %v", length, maxLen),
 	}
 }
 
 // ErrStreamTooLargeFn is returned when a stream of unknown length exceeds the
 // decoder's configured maximum stream size.
-func ErrStreamTooLargeFn(max any) error {
+func ErrStreamTooLargeFn(maxSize any) error {
 	return &sszError{
 		err:     ErrStreamTooLarge,
-		message: fmt.Sprintf("unknown-length ssz stream exceeds maximum size %v", max),
+		message: fmt.Sprintf("unknown-length ssz stream exceeds maximum size %v", maxSize),
 	}
 }
 

@@ -218,7 +218,7 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 		}
 
 		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewUnmarshaler != 0 {
-			sizeStr := "-1" //nolint:goconst // generated code template string
+			sizeStr := "-1"
 			if desc.Size > 0 {
 				sizeStr = fmt.Sprintf("%d", desc.Size)
 			}
@@ -880,7 +880,8 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 			if hasMax {
 				maxArg = maxVar
 			}
-			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
+			switch {
+			case desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0:
 				ctx.appendCode(indent, "if buf, err := sszutils.DecodeByteListInto(dec, nil, %s); err != nil {\n", maxArg)
 				ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith("err"))
 				ctx.appendCode(indent, "} else {\n")
@@ -892,12 +893,12 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 				}
 				ctx.appendCode(indent+1, "%s = %s\n", assignVar, ctx.getCastedValueVar(desc, "buf", ""))
 				ctx.appendCode(indent, "}\n")
-			} else if desc.Kind == reflect.Array {
+			case desc.Kind == reflect.Array:
 				// A fixed backing array cannot grow, so the payload must still
 				// match its length exactly.
 				ctx.appendCode(indent, "listLen := dec.GetLength()\n")
 				ctx.appendCode(indent, "if _, err = dec.DecodeBytes(%s[:listLen]); err != nil {\n\treturn %s\n}\n", indexValueVar, typePath.getErrorWith("err"))
-			} else {
+			default:
 				ctx.appendCode(indent, "if buf, err := sszutils.DecodeByteListInto(dec, %s, %s); err != nil {\n", indexValueVar, maxArg)
 				ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith("err"))
 				ctx.appendCode(indent, "} else {\n")
@@ -1092,10 +1093,17 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		}
 
 		fieldPath := typePath.append("[%d]", indexVar)
+		// Bind the last index to a uniquely named variable before the loop. A
+		// nested list declares its own itemCount inside this loop body, between
+		// the push and the pop, so reading "itemCount" at both points would
+		// silently compare against two different lists.
+		lastIdxVar := fmt.Sprintf("lastIdx%d", ctx.startPosVarCounter)
+		ctx.startPosVarCounter++
+		ctx.appendCode(indent, "%s := itemCount - 1\n", lastIdxVar)
 		ctx.appendCode(indent, "for %s := range itemCount {\n", indexVar)
 
 		ctx.appendCode(indent+1, "var endOffset uint32\n")
-		ctx.appendCode(indent+1, "if %s < itemCount-1 {\n", indexVar)
+		ctx.appendCode(indent+1, "if %s < %s {\n", indexVar, lastIdxVar)
 		ctx.appendCode(indent+2, "if canSeek {\n")
 		ctx.appendCode(indent+3, "endOffset = dec.DecodeOffsetAt(%s + int((%s+1)*4))\n", startPosVar, indexVar)
 		ctx.appendCode(indent+2, "} else {\n")
@@ -1112,7 +1120,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		// The trailing element runs to the end of the list, so it takes an open
 		// region: the whole remainder of the enclosing region, whether or not
 		// that region's extent is known yet.
-		ctx.appendCode(indent+1, "if %s < itemCount-1 {\n", indexVar)
+		ctx.appendCode(indent+1, "if %s < %s {\n", indexVar, lastIdxVar)
 		ctx.appendCode(indent+2, "dec.PushLimit(int(endOffset - startOffset))\n")
 		ctx.appendCode(indent+1, "} else {\n")
 		ctx.appendCode(indent+2, "dec.PushOpenLimit()\n")
@@ -1127,7 +1135,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		if err := ctx.unmarshalType(desc.ElemDesc, valVar, fieldPath, indent+1, false, true); err != nil {
 			return err
 		}
-		ctx.appendCode(indent+1, "if %s < itemCount-1 {\n", indexVar)
+		ctx.appendCode(indent+1, "if %s < %s {\n", indexVar, lastIdxVar)
 		errCode = errCodeTrailingData
 		ctx.appendCode(indent+2, "if diff := dec.PopLimit(); diff != 0 {\n\treturn %s\n}\n", fieldPath.getErrorWith(errCode))
 		ctx.appendCode(indent+1, "} else if err := sszutils.FinishRegion(dec); err != nil {\n")
