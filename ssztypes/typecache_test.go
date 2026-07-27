@@ -251,6 +251,12 @@ func TestTypeCache_ErrorCases(t *testing.T) {
 				hints:    []SszTypeHint{{Type: SszUint128Type}},
 				expected: "uint128 ssz type does not fit in array",
 			},
+			{
+				name:     "uint128 array too large",
+				typ:      reflect.TypeOf([32]uint8{}),
+				hints:    []SszTypeHint{{Type: SszUint128Type}},
+				expected: "uint128 ssz type does not fill the array",
+			},
 		}
 
 		for _, tt := range tests {
@@ -291,6 +297,18 @@ func TestTypeCache_ErrorCases(t *testing.T) {
 				typ:      reflect.TypeOf([4]uint8{}),
 				hints:    []SszTypeHint{{Type: SszUint256Type}},
 				expected: "uint256 ssz type does not fit in array",
+			},
+			{
+				name:     "uint256 byte array too large",
+				typ:      reflect.TypeOf([64]uint8{}),
+				hints:    []SszTypeHint{{Type: SszUint256Type}},
+				expected: "uint256 ssz type does not fill the array",
+			},
+			{
+				name:     "uint256 uint64 array too large",
+				typ:      reflect.TypeOf([5]uint64{}),
+				hints:    []SszTypeHint{{Type: SszUint256Type}},
+				expected: "uint256 ssz type does not fill the array",
 			},
 		}
 
@@ -1202,6 +1220,33 @@ func TestTypeCache_DelegatedShallowBuild(t *testing.T) {
 		)
 		if err == nil || !strings.Contains(err.Error(), "does not provide a usable view sizer") {
 			t.Fatalf("expected unusable view sizer error, got: %v", err)
+		}
+	})
+
+	t.Run("ViewArrayLargerThanBacking", func(t *testing.T) {
+		// A view/schema fixed-array field must not declare more elements than the
+		// runtime backing array holds: there is no storage for the extra elements,
+		// so it is rejected. A smaller schema stays valid (the Go array is sized for
+		// the largest preset and a view may use only a prefix of it).
+		type viewArrBacking struct{ H [32]byte }
+		type viewArrLarger struct{ H [48]byte }
+		type viewArrSmaller struct{ H [20]byte }
+
+		_, err := cache.GetTypeDescriptorWithSchema(
+			reflect.TypeOf(viewArrBacking{}),
+			reflect.TypeOf(viewArrLarger{}),
+			nil, nil, nil,
+		)
+		if err == nil || !strings.Contains(err.Error(), "exceeds the backing array length") {
+			t.Fatalf("expected view schema array-length error, got: %v", err)
+		}
+
+		if _, err := cache.GetTypeDescriptorWithSchema(
+			reflect.TypeOf(viewArrBacking{}),
+			reflect.TypeOf(viewArrSmaller{}),
+			nil, nil, nil,
+		); err != nil {
+			t.Fatalf("a smaller view array should be allowed, got: %v", err)
 		}
 	})
 }
