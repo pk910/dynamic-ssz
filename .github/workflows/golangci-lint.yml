@@ -50,3 +50,12 @@ jobs:
 
       - name: Run go vet
         run: go vet ./...
+
+      # Some of the hottest helpers sit within a few cost units of the compiler's
+      # inlining budget, and the shape of the code is what keeps them there. An
+      # innocuous refactor can silently turn an inlined comparison into a call on
+      # a path that runs per field -- that regressed streaming decode by ~15% once
+      # before benchmarking caught it. Functions marked //ssz:mustinline are
+      # checked here so it fails loudly instead.
+      - name: Check that hot helpers still inline
+        run: .github/scripts/check-inlining.sh ./...

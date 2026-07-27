@@ -46,6 +46,8 @@ func (e *BufferDecoder) GetPosition() int {
 
 // GetLength returns the number of remaining bytes available for reading,
 // taking into account the current limit.
+//
+//ssz:mustinline
 func (e *BufferDecoder) GetLength() int {
 	return e.lastLimit - e.position
 }

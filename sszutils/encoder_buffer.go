@@ -33,6 +33,8 @@ func NewBufferEncoder(buffer []byte) *BufferEncoder {
 // fast path is a single comparison; an under-sized buffer grows with append's
 // amortized strategy. Writing into the buffer without growing it first is a
 // bug — every write helper goes through here.
+//
+//ssz:mustinline
 func (e *BufferEncoder) ensure(n int) {
 	if need := e.pos + n; need > len(e.buffer) {
 		grown := slices.Grow(e.buffer[:e.pos], need-e.pos)

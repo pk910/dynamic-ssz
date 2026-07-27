@@ -134,6 +134,8 @@ func ReadOffset(buf []byte) uint64 {
 
 // ExpandSlice grows or shrinks src to length size, zeroing any newly added elements.
 // For size == 0 it returns a non-nil empty slice.
+//
+//ssz:mustinline
 func ExpandSlice[T any](src []T, size int) []T {
 	if size < 0 {
 		// Negative sizes are invalid input; return a non-nil empty slice so the
