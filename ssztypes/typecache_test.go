@@ -910,6 +910,30 @@ func TestTypeCache_ZeroLengthVectorRejected(t *testing.T) {
 	}
 }
 
+// A fixed Go array whose outer dynssz-size dimension is the "?" placeholder must
+// keep its intrinsic length. The placeholder yields a dynamic size hint with
+// Size 0; a Go array cannot be relaxed to a variable-length list, so the array
+// length must survive (regression for the multi-dim empty-outer-dim bug where
+// the zero-size placeholder wrongly zeroed the array length).
+func TestTypeCache_ArrayOuterDynSizeQuestionKeepsLength(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{specValues: map[string]uint64{"MAX_ATTESTATIONS": 5}})
+
+	type multiDim struct {
+		F [2][]byte `ssz-size:"2,6" dynssz-size:"?,MAX_ATTESTATIONS"`
+	}
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(multiDim{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	f := desc.ContainerDesc.Fields[0].Type
+	if f.Len != 2 {
+		t.Fatalf("outer array length: expected 2, got %d", f.Len)
+	}
+	if f.ElemDesc == nil || f.ElemDesc.Len != 5 {
+		t.Fatalf("inner vector length: expected 5, got %+v", f.ElemDesc)
+	}
+}
+
 // Per the SSZ spec, containers must have at least one field.
 func TestTypeCache_ZeroFieldContainerRejected(t *testing.T) {
 	cache := NewTypeCache(&dummyDynamicSpecs{})

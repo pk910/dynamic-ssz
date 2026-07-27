@@ -1715,7 +1715,14 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 	switch {
 	case desc.Kind == reflect.Array:
 		desc.Len = uint32(t.Len())
-		if len(sizeHints) > 0 {
+		// A dynamic placeholder hint — e.g. dynssz-size:"?" on an outer dimension
+		// whose Go type is a fixed array — carries Size 0 (and no Bits) and must
+		// not zero the array's intrinsic length: a Go array cannot be relaxed to
+		// a variable-length list, so it keeps its intrinsic length (matching the
+		// codegen path). A concrete hint (Size > 0) or an explicit bit-size hint
+		// (Bits set, incl. ssz-bitsize:"0", which must still be rejected as a
+		// zero-length bitvector) is applied.
+		if len(sizeHints) > 0 && (sizeHints[0].Size > 0 || sizeHints[0].Bits) {
 			byteLen := sizeHints[0].Size
 			if sizeHints[0].Bits {
 				desc.BitSize = sizeHints[0].Size
