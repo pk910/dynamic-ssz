@@ -116,7 +116,7 @@ func (e *StreamEncoder) EncodeUint16(v uint16) {
 	if e.bufPos+2 > len(e.writeBuf) {
 		e.flush()
 	}
-	binary.LittleEndian.PutUint16(e.writeBuf[e.bufPos:], v)
+	binary.LittleEndian.PutUint16(e.writeBuf[e.bufPos:e.bufPos+2], v)
 	e.bufPos += 2
 	e.position += 2
 }
@@ -125,7 +125,7 @@ func (e *StreamEncoder) EncodeUint32(v uint32) {
 	if e.bufPos+4 > len(e.writeBuf) {
 		e.flush()
 	}
-	binary.LittleEndian.PutUint32(e.writeBuf[e.bufPos:], v)
+	binary.LittleEndian.PutUint32(e.writeBuf[e.bufPos:e.bufPos+4], v)
 	e.bufPos += 4
 	e.position += 4
 }
@@ -134,7 +134,7 @@ func (e *StreamEncoder) EncodeUint64(v uint64) {
 	if e.bufPos+8 > len(e.writeBuf) {
 		e.flush()
 	}
-	binary.LittleEndian.PutUint64(e.writeBuf[e.bufPos:], v)
+	binary.LittleEndian.PutUint64(e.writeBuf[e.bufPos:e.bufPos+8], v)
 	e.bufPos += 8
 	e.position += 8
 }
@@ -177,7 +177,7 @@ func (e *StreamEncoder) EncodeOffset(v uint32) {
 	if e.bufPos+4 > len(e.writeBuf) {
 		e.flush()
 	}
-	binary.LittleEndian.PutUint32(e.writeBuf[e.bufPos:], v)
+	binary.LittleEndian.PutUint32(e.writeBuf[e.bufPos:e.bufPos+4], v)
 	e.bufPos += 4
 	e.position += 4
 }
