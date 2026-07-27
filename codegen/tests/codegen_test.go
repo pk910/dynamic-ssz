@@ -388,6 +388,12 @@ func TestCodegenNoDynNest(t *testing.T) {
 // produces.
 func TestCodegenAtkNest(t *testing.T) {
 	code, err := os.ReadFile("gen_atknest.go")
+	if os.IsNotExist(err) {
+		// The gen_*.go files are gitignored; the "without generated code" CI job
+		// runs before go generate, so there is no generated file to enforce the
+		// no-*Dyn invariant against here.
+		t.Skip("no generated code present")
+	}
 	if err != nil {
 		t.Fatalf("read generated file: %v", err)
 	}
