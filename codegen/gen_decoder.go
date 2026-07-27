@@ -270,18 +270,27 @@ func (ctx *decoderContext) unmarshalDelegatedMethod(desc *ssztypes.TypeDescripto
 		// fall through: inline the type's structure via the switch below
 	} else if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
 		sizeStr := "-1"
-		if desc.Size > 0 {
-			sizeStr = fmt.Sprintf("%d", desc.Size)
-		} else if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 &&
-			desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
-			// A delegated STATIC type without a compile-time size (shallow
-			// descriptor) occupies exactly its own runtime size; reading the
-			// whole remaining region would swallow subsequent fields.
+		switch {
+		case desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 &&
+			desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions:
+			// A delegated fixed-size type carrying a size expression occupies its
+			// RUNTIME-resolved size, which is what the (always runtime-resolving)
+			// streaming encoder used to write it. Frame the delegated region with
+			// that runtime size, NOT the baked static desc.Size: preferring the
+			// static size here makes the streaming decoder under-/over-read the
+			// region whenever the runtime specs differ from the static default,
+			// so it cannot decode its own valid output (ws14-01). This branch is
+			// checked before the static one precisely because such a type has both
+			// a concrete desc.Size and a size expression. A shallow delegated type
+			// (desc.Size == 0) also lands here — reading the whole remaining region
+			// would otherwise swallow subsequent fields.
 			sizeVar, verr := ctx.staticSizeVars.getStaticSizeVar(desc)
 			if verr != nil {
 				return false, verr
 			}
 			sizeStr = fmt.Sprintf("int(%s)", sizeVar)
+		case desc.Size > 0:
+			sizeStr = fmt.Sprintf("%d", desc.Size)
 		}
 		ctx.appendCode(indent, "if buf, err := sszutils.DecodeDelegateBuffer(dec, %s); err != nil {\n", sizeStr)
 		ctx.appendCode(indent+1, "return err\n")
