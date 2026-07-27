@@ -41,8 +41,8 @@ func TestMultiDimArrayOuterDynSizeQuestion(t *testing.T) {
 
 	// Round-trip.
 	var out multiDim
-	if err := ds.UnmarshalSSZ(&out, got); err != nil {
-		t.Fatalf("UnmarshalSSZ: %v", err)
+	if uerr := ds.UnmarshalSSZ(&out, got); uerr != nil {
+		t.Fatalf("UnmarshalSSZ: %v", uerr)
 	}
 	re, err := ds.MarshalSSZ(&out)
 	if err != nil {

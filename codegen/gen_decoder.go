@@ -207,6 +207,81 @@ func (ctx *decoderContext) isInlinable(desc *ssztypes.TypeDescriptor) bool {
 	return false
 }
 
+// unmarshalDelegatedMethod emits a delegation to a nested type's generated
+// decoder/unmarshaler when one is available and returns handled=true; it returns
+// handled=false to signal the caller should inline the type's structure via the
+// structural switch. It must only be called for non-root, non-view types.
+func (ctx *decoderContext) unmarshalDelegatedMethod(desc *ssztypes.TypeDescriptor, varName string, indent int) (handled bool, err error) {
+	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0
+	isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+	useFastSsz := !ctx.options.NoFastSsz && isFastsszUnmarshaler && !hasDynamicSize
+	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
+		useFastSsz = true
+	}
+	// Custom types prefer their spec-aware dynssz methods over fastssz.
+	if desc.SszType == ssztypes.SszCustomType &&
+		desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicUnmarshaler|ssztypes.SszCompatFlagDynamicDecoder) != 0 {
+		useFastSsz = false
+	}
+
+	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 {
+		ctx.appendCode(indent, "if err = %s.UnmarshalSSZDecoder(ds, dec); err != nil {\n\treturn err\n}\n", varName)
+		ctx.usedDynSpecs = true
+		return true, nil
+	}
+
+	if useFastSsz {
+		sizeStr := "-1"
+		if desc.Size > 0 {
+			sizeStr = fmt.Sprintf("%d", desc.Size)
+		}
+		ctx.appendCode(indent, "if buf, err := sszutils.DecodeDelegateBuffer(dec, %s); err != nil {\n", sizeStr)
+		ctx.appendCode(indent+1, "return err\n")
+		ctx.appendCode(indent, "} else if err = %s.UnmarshalSSZ(buf); err != nil {\n", varName)
+		ctx.appendCode(indent+1, "return err\n")
+		ctx.appendCode(indent, "}\n")
+		return true, nil
+	}
+
+	// The streaming decoder may take ds, but it must still never reference a
+	// *Dyn buffer method under WithoutDynamicExpressions. A generated child is
+	// reached via its static UnmarshalSSZ or its streaming UnmarshalSSZDecoder
+	// above; a remaining dynamic-only type is inlined by falling through to the
+	// structural switch below, unless it has no traversable structure (custom
+	// or shallow-delegated externals), which cannot be inlined.
+	if ctx.options.WithoutDynamicExpressions &&
+		desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
+		if desc.SszType == ssztypes.SszCustomType || isShallowDelegatedDescriptor(desc) {
+			return false, fmt.Errorf("cannot generate static decoder for %s under without-dynamic-expressions: it provides only a dynamic (spec-aware) UnmarshalSSZDyn and has no static UnmarshalSSZ, streaming UnmarshalSSZDecoder, or inlinable structure; add it to the generation set or provide a static unmarshaler", ctx.typePrinter.TypeString(desc))
+		}
+		// fall through: inline the type's structure via the switch below
+	} else if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
+		sizeStr := "-1"
+		if desc.Size > 0 {
+			sizeStr = fmt.Sprintf("%d", desc.Size)
+		} else if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 &&
+			desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+			// A delegated STATIC type without a compile-time size (shallow
+			// descriptor) occupies exactly its own runtime size; reading the
+			// whole remaining region would swallow subsequent fields.
+			sizeVar, verr := ctx.staticSizeVars.getStaticSizeVar(desc)
+			if verr != nil {
+				return false, verr
+			}
+			sizeStr = fmt.Sprintf("int(%s)", sizeVar)
+		}
+		ctx.appendCode(indent, "if buf, err := sszutils.DecodeDelegateBuffer(dec, %s); err != nil {\n", sizeStr)
+		ctx.appendCode(indent+1, "return err\n")
+		ctx.appendCode(indent, "} else if err = %s.UnmarshalSSZDyn(ds, buf); err != nil {\n", varName)
+		ctx.appendCode(indent+1, "return err\n")
+		ctx.appendCode(indent, "}\n")
+		ctx.usedDynSpecs = true
+		return true, nil
+	}
+
+	return false, nil
+}
+
 // unmarshalType generates unmarshal code for any SSZ type, delegating to specific unmarshalers.
 func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, isRoot, noBufCheck bool) error {
 	// Handle types that have generated methods we can call
@@ -262,70 +337,11 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 	}
 
 	if !isRoot && !isView {
-		hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0
-		isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
-		useFastSsz := !ctx.options.NoFastSsz && isFastsszUnmarshaler && !hasDynamicSize
-		if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
-			useFastSsz = true
+		handled, err := ctx.unmarshalDelegatedMethod(desc, varName, indent)
+		if err != nil {
+			return err
 		}
-		// Custom types prefer their spec-aware dynssz methods over fastssz.
-		if desc.SszType == ssztypes.SszCustomType &&
-			desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicUnmarshaler|ssztypes.SszCompatFlagDynamicDecoder) != 0 {
-			useFastSsz = false
-		}
-
-		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 {
-			ctx.appendCode(indent, "if err = %s.UnmarshalSSZDecoder(ds, dec); err != nil {\n\treturn err\n}\n", varName)
-			ctx.usedDynSpecs = true
-			return nil
-		}
-
-		if useFastSsz {
-			sizeStr := "-1"
-			if desc.Size > 0 {
-				sizeStr = fmt.Sprintf("%d", desc.Size)
-			}
-			ctx.appendCode(indent, "if buf, err := sszutils.DecodeDelegateBuffer(dec, %s); err != nil {\n", sizeStr)
-			ctx.appendCode(indent+1, "return err\n")
-			ctx.appendCode(indent, "} else if err = %s.UnmarshalSSZ(buf); err != nil {\n", varName)
-			ctx.appendCode(indent+1, "return err\n")
-			ctx.appendCode(indent, "}\n")
-			return nil
-		}
-
-		// The streaming decoder may take ds, but it must still never reference a
-		// *Dyn buffer method under WithoutDynamicExpressions. A generated child is
-		// reached via its static UnmarshalSSZ or its streaming UnmarshalSSZDecoder
-		// above; a remaining dynamic-only type is inlined by falling through to the
-		// structural switch below, unless it has no traversable structure (custom
-		// or shallow-delegated externals), which cannot be inlined.
-		if ctx.options.WithoutDynamicExpressions &&
-			desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
-			if desc.SszType == ssztypes.SszCustomType || isShallowDelegatedDescriptor(desc) {
-				return fmt.Errorf("cannot generate static decoder for %s under without-dynamic-expressions: it provides only a dynamic (spec-aware) UnmarshalSSZDyn and has no static UnmarshalSSZ, streaming UnmarshalSSZDecoder, or inlinable structure; add it to the generation set or provide a static unmarshaler", ctx.typePrinter.TypeString(desc))
-			}
-			// fall through: inline the type's structure via the switch below
-		} else if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
-			sizeStr := "-1"
-			if desc.Size > 0 {
-				sizeStr = fmt.Sprintf("%d", desc.Size)
-			} else if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 &&
-				desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
-				// A delegated STATIC type without a compile-time size (shallow
-				// descriptor) occupies exactly its own runtime size; reading the
-				// whole remaining region would swallow subsequent fields.
-				sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(desc)
-				if err != nil {
-					return err
-				}
-				sizeStr = fmt.Sprintf("int(%s)", sizeVar)
-			}
-			ctx.appendCode(indent, "if buf, err := sszutils.DecodeDelegateBuffer(dec, %s); err != nil {\n", sizeStr)
-			ctx.appendCode(indent+1, "return err\n")
-			ctx.appendCode(indent, "} else if err = %s.UnmarshalSSZDyn(ds, buf); err != nil {\n", varName)
-			ctx.appendCode(indent+1, "return err\n")
-			ctx.appendCode(indent, "}\n")
-			ctx.usedDynSpecs = true
+		if handled {
 			return nil
 		}
 	}
