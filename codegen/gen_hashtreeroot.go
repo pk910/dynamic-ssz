@@ -424,19 +424,25 @@ func (ctx *hashTreeRootContext) hashOptional(desc *ssztypes.TypeDescriptor, varN
 // the length (0 or 1). The merkleization limit is always 1 (one chunk for
 // basic elements ≤32 bytes, or one element for complex elements).
 func (ctx *hashTreeRootContext) hashOptionalList(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
-	// Wrap in braces so `idx` and `vlen` don't collide with any caller's locals.
+	// Wrap in braces so `idx` and the length var don't collide with any caller's
+	// locals. The length var uses a dedicated name (not `vlen`): the element is
+	// hashed inline in the same `if` block and a fixed-size vector/list element
+	// declares its own `vlen := len(...)` there. Reusing `vlen` here would let
+	// that inner declaration shadow ours, so the mixin length assignment would
+	// target the element's local and leave the outer length at 0 — mixing in a
+	// length of 0 for a present element and producing the wrong root.
 	ctx.appendCode(indent, "{\n")
 	ctx.appendCode(indent+1, "idx := hh.StartTree(sszutils.TreeTypeBinary)\n")
-	ctx.appendCode(indent+1, "vlen := uint64(0)\n")
+	ctx.appendCode(indent+1, "optListLen := uint64(0)\n")
 	ctx.appendCode(indent+1, "if %s != nil {\n", varName)
+	ctx.appendCode(indent+2, "optListLen = 1\n")
 	innerVarName := fmt.Sprintf("(*%s)", varName)
 	if err := ctx.hashType(desc.ElemDesc, innerVarName, typePath.append("[0]"), indent+2, false, true); err != nil {
 		return err
 	}
-	ctx.appendCode(indent+2, "vlen = 1\n")
 	ctx.appendCode(indent+1, "}\n")
 	ctx.appendCode(indent+1, "hh.FillUpTo32()\n")
-	ctx.appendCode(indent+1, "hh.MerkleizeWithMixin(idx, vlen, 1)\n")
+	ctx.appendCode(indent+1, "hh.MerkleizeWithMixin(idx, optListLen, 1)\n")
 	ctx.appendCode(indent, "}\n")
 	return nil
 }

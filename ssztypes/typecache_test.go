@@ -1735,11 +1735,15 @@ func TestTypeCache_ExtendedTypes(t *testing.T) {
 	t.Run("OptionalListDescriptorWithChildHints", func(t *testing.T) {
 		cache := NewTypeCache(ds)
 
-		// Child size and max hints get forwarded to the element descriptor.
+		// Child size and max hints get forwarded to the element descriptor. The
+		// optional-list framing consumes only the leading ssz-type dimension (its
+		// own "optional-list" hint); the size/max hints all describe the element T
+		// and are forwarded in full, so the element list's ssz-max:"32" lands on
+		// the inner []byte and gives it Limit 32.
 		desc, err := cache.GetTypeDescriptor(
 			reflect.TypeOf((*[]byte)(nil)),
-			[]SszSizeHint{{}, {Size: 0, Dynamic: true}},
-			[]SszMaxSizeHint{{}, {Size: 32}},
+			nil,
+			[]SszMaxSizeHint{{Size: 32}},
 			[]SszTypeHint{{Type: SszOptionalListType}, {Type: SszListType}},
 		)
 		if err != nil {

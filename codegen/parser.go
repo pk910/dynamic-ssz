@@ -1925,15 +1925,17 @@ func (p *Parser) buildOptionalListDescriptor(desc *ssztypes.TypeDescriptor, data
 		return fmt.Errorf("optional-list ssz type can only be represented by pointer types, got %v", desc.Kind)
 	}
 
-	childSizeHints := []ssztypes.SszSizeHint{}
-	if len(sizeHints) > 1 {
-		childSizeHints = sizeHints[1:]
-	}
+	// The optional-list frames the Go pointer as List[T, 1]. That framing consumes
+	// the leading ssz-type dimension (the "optional-list" hint itself), but it has
+	// no size or max of its own — the list limit is fixed at 1 — so it consumes no
+	// ssz-size / ssz-max dimension. The remaining size/max hints belong to the
+	// pointed-to element T and must be forwarded in full, exactly as a plain
+	// pointer forwards them (e.g. `*[]uint16 ssz-size:"2"` -> Vector[uint16,2]).
+	// Peeling them here dropped the element's constraint and mis-classified a
+	// fixed inner vector as a variable list.
+	childSizeHints := sizeHints
 
-	childMaxSizeHints := []ssztypes.SszMaxSizeHint{}
-	if len(maxSizeHints) > 1 {
-		childMaxSizeHints = maxSizeHints[1:]
-	}
+	childMaxSizeHints := maxSizeHints
 
 	childTypeHints := []ssztypes.SszTypeHint{}
 	if len(typeHints) > 1 {
