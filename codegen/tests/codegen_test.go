@@ -377,6 +377,59 @@ func TestCodegenNoDynNest(t *testing.T) {
 	testCodegenPayloadByReflection(t, NoDynNestChild{A: []byte{1, 2}, B: 9}, nil)
 }
 
+// TestCodegenAtkNest hammers the without-dynamic-expressions static/inlining
+// path on richer shapes (gen_atknest.yaml, generated with -with-streaming
+// -without-fastssz -without-dynamic-expressions -with-extended-types): deep
+// containers-of-containers, union/wrapper/optional nesting of generated children,
+// and an external well-behaved delegated type inlined from its structure. The
+// generated file must contain no *Dyn buffer call (the buffer AND streaming
+// paths), must round-trip byte/size/root-identical to reflection for every shape,
+// and the inlined delegated region must equal what the delegated Dynamic* method
+// produces.
+func TestCodegenAtkNest(t *testing.T) {
+	code, err := os.ReadFile("gen_atknest.go")
+	if err != nil {
+		t.Fatalf("read generated file: %v", err)
+	}
+	for _, tok := range []string{"MarshalSSZDyn", "UnmarshalSSZDyn", "SizeSSZDyn", "HashTreeRootWithDyn"} {
+		if strings.Contains(string(code), tok) {
+			t.Errorf("generated file references forbidden %s under without-dynamic-expressions", tok)
+		}
+	}
+
+	ext := dynssz.WithExtendedTypes()
+	testCodegenPayloadByReflection(t, AtkNestD1_Payload, nil, ext)
+	testCodegenPayloadByReflection(t, AtkNestUnion_Payload, nil, ext)
+	testCodegenPayloadByReflection(t, AtkNestWrapper_Payload, nil, ext)
+	testCodegenPayloadByReflection(t, AtkNestOpt_Payload, nil, ext)
+	testCodegenPayloadByReflection(t, AtkNestOptList_Payload, nil, ext)
+	testCodegenPayloadByReflection(t, AtkWellHolder_Payload, nil, ext)
+
+	// The inlined static encoding of the external delegated child must be
+	// byte-identical to what its own Dynamic* method produces. AtkWellHolder is
+	// A(uint64) N(child) V([2]child); marshal it and check each 8-byte child
+	// region equals child.MarshalSSZDyn.
+	genDs := dynssz.NewDynSsz(nil, ext)
+	got, err := genDs.MarshalSSZ(AtkWellHolder_Payload)
+	if err != nil {
+		t.Fatalf("marshal AtkWellHolder: %v", err)
+	}
+	if len(got) != 32 {
+		t.Fatalf("AtkWellHolder expected 32 bytes, got %d", len(got))
+	}
+	children := []atkWellDelegated{AtkWellHolder_Payload.N, AtkWellHolder_Payload.V[0], AtkWellHolder_Payload.V[1]}
+	for i, child := range children {
+		want, err := child.MarshalSSZDyn(nil, nil)
+		if err != nil {
+			t.Fatalf("child.MarshalSSZDyn: %v", err)
+		}
+		region := got[8+i*8 : 8+i*8+8]
+		if !bytes.Equal(region, want) {
+			t.Errorf("inlined child region %d = %x, delegated method = %x", i, region, want)
+		}
+	}
+}
+
 // A dynssz expression that resolves to 0 must fall back to the static value in
 // both engines. Previously the generated code applied the literal
 // 0 limit and rejected the value while reflection fell back, diverging.

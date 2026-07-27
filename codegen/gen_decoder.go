@@ -42,6 +42,12 @@ type decoderContext struct {
 	offsetSliceCounter int
 	offsetSliceLimit   int
 	indexCounter       int
+	// noDynBufferCalls preserves the original WithoutDynamicExpressions setting.
+	// The streaming decoder clears options.WithoutDynamicExpressions so it can use
+	// ds-driven size expressions, but the no-*Dyn-buffer-call invariant must still
+	// hold: a dynamic-only child must be inlined (or rejected), never reached via
+	// UnmarshalSSZDyn. That decision keys off this field, not options.
+	noDynBufferCalls bool
 }
 
 // generateDecoder generates decoder methods for a specific type.
@@ -61,6 +67,10 @@ type decoderContext struct {
 func generateDecoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, viewName string, options *CodeGeneratorOptions) error {
 	// Streaming code always uses dynamic expressions since the decoder interface
 	// requires DynamicSpecs. Override WithoutDynamicExpressions for this generator.
+	// The no-*Dyn-buffer-call invariant is preserved separately via
+	// ctx.noDynBufferCalls so a dynamic-only child is still inlined or rejected
+	// rather than reached through UnmarshalSSZDyn.
+	noDynBufferCalls := options.WithoutDynamicExpressions
 	if options.WithoutDynamicExpressions {
 		optsCopy := *options
 		optsCopy.WithoutDynamicExpressions = false
@@ -75,8 +85,9 @@ func generateDecoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 			}
 			codeBuf.WriteString(indentStr(code, indent))
 		},
-		typePrinter: typePrinter,
-		options:     options,
+		typePrinter:      typePrinter,
+		options:          options,
+		noDynBufferCalls: noDynBufferCalls,
 	}
 
 	ctx.exprVars = newExprVarGenerator("expr", typePrinter, options)
@@ -193,8 +204,9 @@ func (ctx *decoderContext) isInlinable(desc *ssztypes.TypeDescriptor) bool {
 
 	// Inline types with generated unmarshal methods. Under WithoutDynamicExpressions
 	// the *Dyn buffer method is never called (the type is structurally inlined
-	// instead), so its presence must not shortcut temp-var creation here.
-	if !ctx.options.WithoutDynamicExpressions && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
+	// instead), so its presence must not shortcut temp-var creation here. Keyed off
+	// noDynBufferCalls because the streaming decoder clears options.WithoutDynamicExpressions.
+	if !ctx.noDynBufferCalls && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
 		return true
 	}
 
@@ -248,8 +260,9 @@ func (ctx *decoderContext) unmarshalDelegatedMethod(desc *ssztypes.TypeDescripto
 	// reached via its static UnmarshalSSZ or its streaming UnmarshalSSZDecoder
 	// above; a remaining dynamic-only type is inlined by falling through to the
 	// structural switch below, unless it has no traversable structure (custom
-	// or shallow-delegated externals), which cannot be inlined.
-	if ctx.options.WithoutDynamicExpressions &&
+	// or shallow-delegated externals), which cannot be inlined. Keyed off
+	// noDynBufferCalls because the streaming decoder clears WithoutDynamicExpressions.
+	if ctx.noDynBufferCalls &&
 		desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
 		if desc.SszType == ssztypes.SszCustomType || isShallowDelegatedDescriptor(desc) {
 			return false, fmt.Errorf("cannot generate static decoder for %s under without-dynamic-expressions: it provides only a dynamic (spec-aware) UnmarshalSSZDyn and has no static UnmarshalSSZ, streaming UnmarshalSSZDecoder, or inlinable structure; add it to the generation set or provide a static unmarshaler", ctx.typePrinter.TypeString(desc))

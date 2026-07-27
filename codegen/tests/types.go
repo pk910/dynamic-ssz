@@ -1958,3 +1958,119 @@ func DynSizeVectorNoStaticPayload(n int) DynSizeVectorNoStatic {
 	}
 	return DynSizeVectorNoStatic{V: v, AV: av}
 }
+
+// ---------------------------------------------------------------------------
+// Attack shapes for the without-dynamic-expressions static/inlining path.
+// All generated with -with-streaming -without-fastssz -without-dynamic-expressions
+// -with-extended-types (gen_atknest.yaml). Every parent must reach nested
+// generated children through their static methods (never a *Dyn buffer call)
+// and must round-trip byte/size/root-identical to reflection.
+// ---------------------------------------------------------------------------
+
+// AtkNestLeaf is a variable-size leaf container nested at several depths.
+type AtkNestLeaf struct {
+	A []byte `ssz-max:"8"`
+	B uint8
+}
+
+// AtkNestD3/D2/D1 build a depth-4 chain of variable-size containers-of-containers
+// mixing list, vector, and progressive-list nesting.
+type AtkNestD3 struct {
+	L AtkNestLeaf
+	V [2]AtkNestLeaf
+	X uint16
+}
+type AtkNestD2 struct {
+	N AtkNestD3
+	L []AtkNestD3 `ssz-max:"4"`
+}
+type AtkNestD1 struct {
+	N AtkNestD2
+	P []AtkNestD2 `ssz-type:"progressive-list" ssz-max:"8"`
+	Z uint64
+}
+
+// AtkNestUnion nests generated containers as union variants.
+type AtkNestUnion struct {
+	U dynssz.CompatibleUnion[struct {
+		F1 AtkNestLeaf
+		F2 AtkNestD2
+	}]
+}
+
+// AtkNestWrapper wraps a nested generated container in a TypeWrapper.
+type AtkNestWrapper struct {
+	W dynssz.TypeWrapper[struct {
+		Data AtkNestD2 `ssz-size:"?"`
+	}, AtkNestD2]
+}
+
+// AtkNestOpt / AtkNestOptList nest a generated container behind an optional and
+// an optional-list pointer.
+type AtkNestOpt struct {
+	Opt *AtkNestD2 `ssz-type:"optional"`
+	N   uint16
+}
+type AtkNestOptList struct {
+	Opt *AtkNestD2 `ssz-type:"optional-list"`
+}
+
+var (
+	atkNestLeafA = AtkNestLeaf{A: []byte{1, 2, 3}, B: 7}
+	atkNestLeafB = AtkNestLeaf{A: nil, B: 0}
+	atkNestD3v   = AtkNestD3{L: atkNestLeafA, V: [2]AtkNestLeaf{atkNestLeafA, atkNestLeafB}, X: 9}
+	atkNestD2v   = AtkNestD2{N: atkNestD3v, L: []AtkNestD3{atkNestD3v, atkNestD3v}}
+
+	AtkNestD1_Payload = AtkNestD1{
+		N: atkNestD2v,
+		P: []AtkNestD2{atkNestD2v, atkNestD2v},
+		Z: 0xdeadbeef,
+	}
+	AtkNestUnion_Payload = AtkNestUnion{U: dynssz.CompatibleUnion[struct {
+		F1 AtkNestLeaf
+		F2 AtkNestD2
+	}]{Variant: 1, Data: atkNestLeafA}}
+	AtkNestWrapper_Payload = AtkNestWrapper{W: dynssz.TypeWrapper[struct {
+		Data AtkNestD2 `ssz-size:"?"`
+	}, AtkNestD2]{Data: atkNestD2v}}
+	AtkNestOpt_Payload     = AtkNestOpt{Opt: &atkNestD2v, N: 4321}
+	AtkNestOptList_Payload = AtkNestOptList{Opt: &atkNestD2v}
+)
+
+// atkWellDelegated is an external fully-delegated type whose Go struct layout
+// matches its wire form exactly (a single uint64 field). Under
+// without-dynamic-expressions the parser (NoDelegation) traverses it and the
+// static generators inline its structure. The inlined static encoding must be
+// byte/root-identical to what its own Dynamic* methods produce.
+type atkWellDelegated struct {
+	V uint64
+}
+
+var _ = sszutils.Annotate[atkWellDelegated](`ssz-static:"true"`)
+
+func (n *atkWellDelegated) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 8 }
+func (n *atkWellDelegated) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint64(buf, n.V), nil
+}
+func (n *atkWellDelegated) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	n.V = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+func (n *atkWellDelegated) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(n.V)
+	return nil
+}
+
+// AtkWellHolder nests the well-behaved delegated type as a static field and a
+// vector; generated statically it inlines the delegated type's structure.
+type AtkWellHolder struct {
+	A uint64
+	N atkWellDelegated
+	V [2]atkWellDelegated
+}
+
+var AtkWellHolder_Payload = AtkWellHolder{
+	A: 0x1122334455667788,
+	N: atkWellDelegated{V: 0x99},
+	V: [2]atkWellDelegated{{V: 0xaa}, {V: 0xbb}},
+}

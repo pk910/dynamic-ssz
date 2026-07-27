@@ -37,6 +37,12 @@ type encoderContext struct {
 	sizeFnSignature   map[string]string
 	sizeFnNameCounter int
 	indexCounter      int
+	// noDynBufferCalls preserves the original WithoutDynamicExpressions setting.
+	// The streaming encoder clears options.WithoutDynamicExpressions so it can use
+	// ds-driven size expressions, but the no-*Dyn-buffer-call invariant must still
+	// hold: a dynamic-only child must be inlined (or rejected), never reached via
+	// MarshalSSZDyn. That decision keys off this field, not options.
+	noDynBufferCalls bool
 }
 
 // generateEncoder generates encoder methods for a specific type.
@@ -56,6 +62,10 @@ type encoderContext struct {
 func generateEncoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, viewName string, options *CodeGeneratorOptions) error {
 	// Streaming code always uses dynamic expressions since the encoder interface
 	// requires DynamicSpecs. Override WithoutDynamicExpressions for this generator.
+	// The no-*Dyn-buffer-call invariant is preserved separately via
+	// ctx.noDynBufferCalls so a dynamic-only child is still inlined or rejected
+	// rather than reached through MarshalSSZDyn.
+	noDynBufferCalls := options.WithoutDynamicExpressions
 	if options.WithoutDynamicExpressions {
 		optsCopy := *options
 		optsCopy.WithoutDynamicExpressions = false
@@ -70,10 +80,11 @@ func generateEncoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 			}
 			codeBuf.WriteString(indentStr(code, indent))
 		},
-		typePrinter:     typePrinter,
-		options:         options,
-		sizeFnNameMap:   make(map[*ssztypes.TypeDescriptor]int),
-		sizeFnSignature: make(map[string]string),
+		typePrinter:      typePrinter,
+		options:          options,
+		sizeFnNameMap:    make(map[*ssztypes.TypeDescriptor]int),
+		sizeFnSignature:  make(map[string]string),
+		noDynBufferCalls: noDynBufferCalls,
 	}
 
 	ctx.exprVars = newExprVarGenerator("ctx.exprs", typePrinter, options)
@@ -332,7 +343,7 @@ func (ctx *encoderContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 	// remaining dynamic-only type is inlined by falling through to the structural
 	// switch below, unless it has no traversable structure (custom or
 	// shallow-delegated externals), which cannot be inlined.
-	if ctx.options.WithoutDynamicExpressions && !isRoot && !isView &&
+	if ctx.noDynBufferCalls && !isRoot && !isView &&
 		desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 {
 		if desc.SszType == ssztypes.SszCustomType || isShallowDelegatedDescriptor(desc) {
 			return fmt.Errorf("cannot generate static encoder for %s under without-dynamic-expressions: it provides only a dynamic (spec-aware) MarshalSSZDyn and has no static MarshalSSZTo, streaming MarshalSSZEncoder, or inlinable structure; add it to the generation set or provide a static marshaler", ctx.typePrinter.TypeString(desc))

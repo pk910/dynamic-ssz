@@ -1,0 +1,25 @@
+# Richer nested/inlining attack shapes for the without-dynamic-expressions
+# static path, generated with the hardest static combination:
+# -with-streaming -without-fastssz -without-dynamic-expressions -with-extended-types.
+# Deep containers-of-containers, union/wrapper/optional nesting of generated
+# children, and an external well-behaved delegated type that must be inlined
+# byte/root-identically to its Dynamic* methods. The generated file compiling as
+# part of this package is the invariant guard; the differential test confirms the
+# static code round-trips against reflection and matches the delegated encoding.
+package: github.com/pk910/dynamic-ssz/codegen/tests
+output: gen_atknest.go
+with-streaming: true
+without-fastssz: true
+without-dynamic-expressions: true
+with-extended-types: true
+
+types:
+  - AtkNestLeaf
+  - AtkNestD3
+  - AtkNestD2
+  - AtkNestD1
+  - AtkNestUnion
+  - AtkNestWrapper
+  - AtkNestOpt
+  - AtkNestOptList
+  - AtkWellHolder
