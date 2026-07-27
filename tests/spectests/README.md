@@ -58,7 +58,9 @@ tests/spectests/
 ./setup_test_data.sh setup minimal
 
 # 2. Export test directory
-export CONSENSUS_SPEC_TESTS_DIR=$(./setup_test_data.sh export mainnet)
+#    Note: no preset here. The tests append the preset themselves, so pointing
+#    this at .../tests/mainnet makes every fork lookup miss.
+export CONSENSUS_SPEC_TESTS_DIR=$(./setup_test_data.sh export)
 
 # 3. Run tests
 go test -v -timeout=30m ./...
@@ -115,9 +117,13 @@ For each test case, the framework:
 The test was skipped because spec test data wasn't available. Run:
 ```bash
 ./setup_test_data.sh setup mainnet
-export CONSENSUS_SPEC_TESTS_DIR=$(./setup_test_data.sh export mainnet)
+export CONSENSUS_SPEC_TESTS_DIR=$(./setup_test_data.sh export)
 go test ./...
 ```
+
+Note that `export` takes no preset: the tests append it themselves. Pointing the
+variable at a preset directory makes every fork lookup miss; the tests now fail
+with an explanatory message rather than skipping silently.
 
 ### "Failed to download test data"
 

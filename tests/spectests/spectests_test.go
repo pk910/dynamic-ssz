@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/golang/snappy"
@@ -30,6 +31,38 @@ type SpecTestStruct struct {
 type unknownSizeVariant struct {
 	name   string
 	dynssz *ssz.DynSsz
+}
+
+// specTestsDirCheck memoises the one-time validation of CONSENSUS_SPEC_TESTS_DIR.
+var specTestsDirCheck struct {
+	once sync.Once
+	err  error
+}
+
+// checkSpecTestsDir reports whether CONSENSUS_SPEC_TESTS_DIR points at a
+// spec-tests root.
+//
+// This exists because the failure mode is otherwise invisible: a wrong path
+// makes every fork's directory lookup miss, each fork test calls t.Skipf, and a
+// package whose tests all skip reports "ok". A misconfigured run then looks
+// exactly like a passing one while verifying nothing. The usual mistake is
+// including the preset in the path -- the variable must point at
+// ".../consensus-spec-tests/tests", not ".../consensus-spec-tests/tests/mainnet",
+// because the preset is appended by the tests themselves.
+func checkSpecTestsDir(dir string) error {
+	specTestsDirCheck.once.Do(func() {
+		for _, preset := range []string{"mainnet", "minimal"} {
+			matches, _ := filepath.Glob(filepath.Join(dir, preset, "*", "ssz_static"))
+			if len(matches) > 0 {
+				return
+			}
+		}
+		specTestsDirCheck.err = fmt.Errorf(
+			"CONSENSUS_SPEC_TESTS_DIR=%q contains no <preset>/<fork>/ssz_static directories; "+
+				"it must point at the spec-tests root (.../consensus-spec-tests/tests), not at a "+
+				"preset inside it, since the preset is appended by the tests", dir)
+	})
+	return specTestsDirCheck.err
 }
 
 func runForkConsensusSpecTest(t *testing.T, fork string, preset string, tests []SpecTestStruct) bool {
@@ -57,6 +90,9 @@ func runForkConsensusSpecTest(t *testing.T, fork string, preset string, tests []
 	specTestsDir := os.Getenv("CONSENSUS_SPEC_TESTS_DIR")
 	if specTestsDir == "" {
 		t.Skip("CONSENSUS_SPEC_TESTS_DIR not set")
+	}
+	if err := checkSpecTestsDir(specTestsDir); err != nil {
+		t.Fatal(err)
 	}
 
 	baseDir := filepath.Join(specTestsDir, preset, fork, "ssz_static")

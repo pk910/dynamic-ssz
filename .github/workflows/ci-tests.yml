@@ -68,7 +68,9 @@ jobs:
       run: |
         cd tests/spectests
         ./setup_test_data.sh setup ${{ matrix.preset }}
-        echo "CONSENSUS_SPEC_TESTS_DIR=$(./setup_test_data.sh export ${{ matrix.preset }})" >> $GITHUB_ENV
+        # No preset argument: the tests append it themselves, so exporting a
+        # preset directory here would make every fork lookup miss.
+        echo "CONSENSUS_SPEC_TESTS_DIR=$(./setup_test_data.sh export)" >> $GITHUB_ENV
 
     - name: Run spec tests with coverage
       run: |
