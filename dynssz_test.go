@@ -5217,6 +5217,61 @@ func TestUnknownSizeTrailingProbeReadErrors(t *testing.T) {
 	}
 }
 
+type terminalDataErrorReader struct {
+	data []byte
+	pos  int
+	err  error
+}
+
+func (r *terminalDataErrorReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data[r.pos:])
+	r.pos += n
+	if r.pos == len(r.data) {
+		return n, r.err
+	}
+	return n, nil
+}
+
+// A reader may return data and an error together. io.EOF means those bytes are
+// the clean end of input, but every other error is part of the reader's result:
+// accepting the SSZ value would discard an integrity or decompression verdict.
+func TestUnmarshalSSZReaderPreservesTerminalDataErrors(t *testing.T) {
+	type fixed struct {
+		Data [16]byte
+	}
+
+	payload := make([]byte, 16)
+	for i := range payload {
+		payload[i] = byte(i + 1)
+	}
+
+	for name, want := range map[string]error{
+		"integrity":      errors.New("checksum failed"),
+		"unexpected EOF": io.ErrUnexpectedEOF,
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, size := range []int{len(payload), -1} {
+				mode := "known"
+				if size < 0 {
+					mode = "unknown"
+				}
+				t.Run(mode, func(t *testing.T) {
+					reader := &terminalDataErrorReader{data: payload, err: want}
+					ds := NewDynSsz(nil, WithNoFastSsz(), WithStreamReaderBufferSize(8))
+					var out fixed
+					err := ds.UnmarshalSSZReader(&out, reader, size)
+					if !errors.Is(err, want) {
+						t.Fatalf("UnmarshalSSZReader error = %v, want %v", err, want)
+					}
+				})
+			}
+		})
+	}
+}
+
 // A peer that declares a huge field in a tiny payload must not be able to make
 // the decoder allocate from that declaration.
 //
@@ -5369,6 +5424,81 @@ func TestUnknownSizeDoesNotAllocateFromDeclaredElementCount(t *testing.T) {
 	if peak > base.HeapAlloc+limit {
 		t.Fatalf("a declared element count drove a %d byte peak heap from a %d byte payload",
 			peak-base.HeapAlloc, len(payload))
+	}
+}
+
+// In an unknown-size region, a dynamic-list offset table proves the element
+// count but it does not prove that even the first element body exists. The
+// reflection stream decoder must reserve only a small prefix of a wide []T
+// before attempting that body, rather than materialising the schema's entire
+// maximum result.
+func TestUnknownSizeDynamicListWideValueAllocationIsIncremental(t *testing.T) {
+	type wideDynamicElement struct {
+		Fixed [64 << 10]byte
+		Tail  []byte `ssz-max:"1"`
+	}
+	type wideDynamicList struct {
+		Items []wideDynamicElement `ssz-max:"512"`
+	}
+
+	const itemCount = 512
+	offsetTable := make([]byte, itemCount*4)
+	for pos := 0; pos < len(offsetTable); pos += 4 {
+		binary.LittleEndian.PutUint32(offsetTable[pos:pos+4], uint32(len(offsetTable)))
+	}
+	payload := make([]byte, 4+len(offsetTable))
+	binary.LittleEndian.PutUint32(payload[:4], 4)
+	copy(payload[4:], offsetTable)
+
+	ds := NewDynSsz(
+		nil,
+		WithNoFastSsz(),
+		WithStreamReaderBufferSize(8),
+		WithMaxStreamSize(128<<20),
+	)
+	if _, err := ds.SizeSSZ(&wideDynamicList{}); err != nil {
+		t.Fatalf("warm type cache: %v", err)
+	}
+
+	valid := wideDynamicList{Items: make([]wideDynamicElement, 2)}
+	valid.Items[0].Fixed[0] = 1
+	valid.Items[0].Tail = []byte{2}
+	valid.Items[1].Fixed[0] = 3
+	validPayload, err := ds.MarshalSSZ(&valid)
+	if err != nil {
+		t.Fatalf("marshal valid list: %v", err)
+	}
+	var roundTrip wideDynamicList
+	if err := ds.UnmarshalSSZReader(&roundTrip, bytes.NewReader(validPayload), -1); err != nil {
+		t.Fatalf("incrementally decode valid list: %v", err)
+	}
+	if len(roundTrip.Items) != 2 ||
+		cap(roundTrip.Items) != 2 ||
+		roundTrip.Items[0].Fixed[0] != 1 ||
+		!bytes.Equal(roundTrip.Items[0].Tail, []byte{2}) ||
+		roundTrip.Items[1].Fixed[0] != 3 {
+		t.Fatal("incrementally grown list did not round-trip")
+	}
+
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+
+	var out wideDynamicList
+	if err := ds.UnmarshalSSZReader(&out, bytes.NewReader(payload), -1); err == nil {
+		t.Fatal("offset table without element bodies decoded successfully")
+	}
+
+	runtime.ReadMemStats(&after)
+	allocated := after.TotalAlloc - before.TotalAlloc
+	const allocationLimit = 4 << 20
+	if allocated > allocationLimit {
+		t.Fatalf(
+			"%d bytes of malformed input allocated %d bytes, want at most %d",
+			len(payload),
+			allocated,
+			allocationLimit,
+		)
 	}
 }
 

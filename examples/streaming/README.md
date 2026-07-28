@@ -38,7 +38,11 @@ go run .
 
 - **Untrusted input**: an unknown-size decode is always bounded by
   `WithMaxStreamSize` (512 MiB by default), and `ssz-max` limits are enforced
-  while reading. Lower the bound for untrusted peers.
+  while reading. Lower the bound to the smallest value your protocol permits.
+  This caps wire bytes, not decoded-object memory or read time.
+- **EOF and cancellation**: EOF is the message boundary in unknown-size mode.
+  Use request contexts/client timeouts for HTTP and read deadlines for raw
+  connections. Canceling must close or otherwise unblock the `io.Reader`.
 - **CPU trade-off**: streaming costs ~1.3x (encode) to ~2x (decode) CPU
   because stream encoders can't seek back to patch offsets. Use it for large
   payloads, not small messages.

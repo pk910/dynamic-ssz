@@ -137,3 +137,43 @@ func TestMarshalDynamicVectorOverLength(t *testing.T) {
 		t.Fatalf("expected ErrVectorLength, got %v", err)
 	}
 }
+
+// dynamicListPreallocation's degenerate inputs are unreachable through a decode:
+// unmarshalDynamicList rejects a zero first offset before deriving the element
+// count, so the count is always positive, and no SSZ-dynamic element has a
+// zero-size Go representation. Both guards still matter — a negative count would
+// panic reflect.MakeSlice — and the policy must stay identical to
+// sszutils.decodeSlicePreallocation, which the generated decoders use for the
+// same lists, so drive it directly.
+func TestDynamicListPreallocation(t *testing.T) {
+	const budgetBytes = 64 << 10
+
+	tests := []struct {
+		name     string
+		count    int
+		elemSize uint64
+		want     int
+	}{
+		{name: "negative count", count: -1, elemSize: 8, want: 0},
+		{name: "empty", count: 0, elemSize: 8, want: 0},
+		{name: "zero sized element", count: 100_000, elemSize: 0, want: 100_000},
+		{name: "within budget", count: 32, elemSize: 8, want: 32},
+		{name: "clamped to byte budget", count: 10_000, elemSize: 8, want: budgetBytes / 8},
+		{name: "one element exceeds budget", count: 100, elemSize: budgetBytes + 1, want: 1},
+		{name: "large size cannot overflow", count: 100, elemSize: ^uint64(0), want: 1},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := dynamicListPreallocation(test.count, test.elemSize); got != test.want {
+				t.Fatalf(
+					"dynamicListPreallocation(%d, %d) = %d, want %d",
+					test.count,
+					test.elemSize,
+					got,
+					test.want,
+				)
+			}
+		})
+	}
+}

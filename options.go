@@ -109,10 +109,14 @@ func WithStreamReaderBufferSize(size int) DynSszOption {
 // sszutils.DefaultMaxStreamSize (512 MiB) if not set or set to a non-positive
 // value.
 //
-// Unknown-length decoding is always bounded, and deliberately so: the bound is
-// what keeps a peer that never closes the connection from exhausting memory,
-// and it doubles as the remaining-length estimate reported to decode paths that
-// have not been taught about regions of unknown extent. It cannot be disabled.
+// Unknown-length decoding is always byte-bounded, and deliberately so: the
+// allowance prevents an endless input from driving unbounded wire buffering and
+// doubles as the remaining-length estimate reported to decode paths that have
+// not been taught about regions of unknown extent. It cannot be disabled.
+//
+// This is not a deadline, cancellation mechanism, or decoded-object heap limit.
+// Network callers must impose their own lifetime bound, and should choose the
+// smallest maximum their protocol and schema permit.
 func WithMaxStreamSize(size int) DynSszOption {
 	return func(opts *DynSszOptions) {
 		opts.MaxStreamSize = size

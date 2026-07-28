@@ -199,7 +199,7 @@ to your typical payload is therefore worth doing:
 ds := dynssz.NewDynSsz(specs, dynssz.WithStreamReaderBufferSize(64*1024))
 ```
 
-### Memory bound
+### Wire-size bound
 
 Unknown-size decoding is **always bounded** and the bound cannot be disabled:
 
@@ -207,12 +207,60 @@ Unknown-size decoding is **always bounded** and the bound cannot be disabled:
 ds := dynssz.NewDynSsz(specs, dynssz.WithMaxStreamSize(16*1024*1024))
 ```
 
-The default is 512 MiB. The bound is what stops a peer that never closes the
-connection from exhausting memory, and it doubles as the remaining-length
-estimate reported to code that predates unknown-size decoding (see
-[Regenerating](#regenerating-generated-code)). `ssz-max` limits are enforced
-incrementally while reading, so an over-long list is rejected before it is
-allocated.
+The default is 512 MiB. This bounds bytes consumed from the wire and doubles as
+the remaining-length estimate reported to code that predates unknown-size
+decoding (see [Regenerating](#regenerating-generated-code)). `ssz-max` limits
+are enforced while reading. Set the smallest value your application protocol
+and schema permit; the default is deliberately general and is usually too
+generous for peer-to-peer messages.
+
+`WithMaxStreamSize` is not:
+
+- a read deadline or cancellation mechanism;
+- a bound on the lifetime of a connection or goroutine;
+- a bound on decoded-object heap. A compact offset table can describe many Go
+  values, and value elements with large inline arrays can occupy much more
+  memory than their table does.
+
+Schema `ssz-max` values and application-level concurrency/memory budgets still
+matter.
+
+### EOF framing, deadlines, and cancellation
+
+In unknown-size mode, **EOF is the message boundary**. Use it only when EOF
+unambiguously ends one SSZ payload, such as a file, a closed pipe, an HTTP
+response body, or a connection dedicated to a single payload. Do not use it
+directly on a long-lived connection carrying multiple messages; use the
+protocol's trusted-and-capped length framing and pass that length instead.
+
+A peer can send fewer than `WithMaxStreamSize` bytes and then withhold EOF
+forever. Network callers must therefore set a deadline or arrange cancellation.
+`io.Reader` has no context-aware read method, so cancellation normally closes
+the response body, pipe, or connection:
+
+```go
+conn, err := net.Dial("tcp", address)
+if err != nil {
+    return err
+}
+defer conn.Close()
+
+if err := conn.SetReadDeadline(time.Now().Add(15 * time.Second)); err != nil {
+    return err
+}
+
+ds := dynssz.NewDynSsz(
+    specs,
+    dynssz.WithMaxStreamSize(4*1024*1024), // protocol-specific maximum
+)
+var message Message
+if err := ds.UnmarshalSSZReader(&message, conn, -1); err != nil {
+    return err
+}
+```
+
+For HTTP, configure the request context and transport/client timeouts. Canceling
+the request closes the response body and unblocks the decoder.
 
 ### What it costs and what it saves
 
@@ -235,7 +283,12 @@ it.
 
 The saving is largest when the trailing region is *not* one huge list of
 fixed-size elements. A list of **dynamic** elements takes its count from the
-first offset, so it is sized exactly and never grows.
+first offset. In an unknown-size region, the decoder reserves at most 64 KiB of
+destination elements from that count, then grows the slice geometrically as it
+reaches further element bodies. Known-size streams and buffer decoding retain
+their exact allocation. Unusually wide Go value elements therefore no longer
+materialize the schema's entire maximum before the first body arrives. Keep
+list limits realistic: they remain the final result-size bound.
 
 ### Less precise errors
 

@@ -910,6 +910,10 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 	default:
 		maxVar = "0"
 	}
+	growthLimit := "-1"
+	if hasMax {
+		growthLimit = maxVar
+	}
 
 	valueVar := varName
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
@@ -1019,7 +1023,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		}
 		ctx.appendCode(indent+1, "%s = sszutils.SizeListSlice(dec, %s, itemCount, %s)\n", valueVar, valueVar, fieldSizeVar)
 		ctx.appendCode(indent, "} else {\n")
-		ctx.appendCode(indent+1, "%s = sszutils.GrowSlice(%s, 0)\n", valueVar, valueVar)
+		ctx.appendCode(indent+1, "%s = sszutils.GrowSlice(%s, 0, %s)\n", valueVar, valueVar, growthLimit)
 		ctx.appendCode(indent, "}\n")
 
 		startPosVar := fmt.Sprintf("startPos%d", ctx.startPosVarCounter)
@@ -1042,13 +1046,13 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 			errCode := fmt.Sprintf("sszutils.ErrListLengthFn(%s+1, %s)", indexVar, maxVar)
 			ctx.appendCode(indent+2, "if %s >= %s {\n\treturn %s\n}\n", indexVar, maxVar, typePath.getErrorWith(errCode))
 		}
-		ctx.appendCode(indent+2, "%s = sszutils.GrowSlice(%s, %s+1)\n", valueVar, valueVar, indexVar)
+		ctx.appendCode(indent+2, "%s = sszutils.GrowSlice(%s, %s+1, %s)\n", valueVar, valueVar, indexVar, growthLimit)
 		ctx.appendCode(indent+1, "}\n")
 		// The count was declared rather than witnessed, so the slice was seeded
 		// from delivered bytes; extend it as the rest arrives. When the extent
 		// was known this is already full length and never taken.
 		ctx.appendCode(indent+1, "if %s >= len(%s) {\n", indexVar, indexValueVar)
-		ctx.appendCode(indent+2, "%s = sszutils.GrowSlice(%s, %s+1)\n", valueVar, valueVar, indexVar)
+		ctx.appendCode(indent+2, "%s = sszutils.GrowSlice(%s, %s+1, %s)\n", valueVar, valueVar, indexVar, growthLimit)
 		ctx.appendCode(indent+1, "}\n")
 
 		valVar := fmt.Sprintf("%s[%s]", indexValueVar, indexVar)
@@ -1083,6 +1087,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		startPosVar := fmt.Sprintf("startPos%d", ctx.startPosVarCounter)
 		ctx.startPosVarCounter++
 		ctx.appendCode(indent, "%s := dec.GetPosition()\n", startPosVar)
+		ctx.appendCode(indent, "lengthKnown := dec.LengthKnown()\n")
 		// An empty region means "empty list", so emptiness is a semantic
 		// discriminator and has to be answered by probing the reader when the
 		// region's extent is not yet known. The probe may discover EOF, which
@@ -1128,7 +1133,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent+3, "if err != nil {\n")
 		ctx.appendCode(indent+4, "return %s\n", typePath.append("[%d:o]", indexVar).getErrorWith("err"))
 		ctx.appendCode(indent+3, "}\n")
-		ctx.appendCode(indent+3, "offsets = sszutils.GrowSlice(offsets, %s+1)\n", indexVar)
+		ctx.appendCode(indent+3, "offsets = sszutils.GrowSlice(offsets, %s+1, itemCount-1)\n", indexVar)
 		ctx.appendCode(indent+3, "offsets[%s] = offset\n", indexVar)
 		ctx.appendCode(indent+2, "}\n")
 		ctx.appendCode(indent+2, "offsetSlices[%d] = offsets\n", ctx.offsetSliceCounter)
@@ -1140,7 +1145,11 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 			ctx.offsetSliceLimit = ctx.offsetSliceCounter
 		}
 
-		ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", valueVar, valueVar)
+		ctx.appendCode(indent, "if lengthKnown {\n")
+		ctx.appendCode(indent+1, "%s = sszutils.ExpandSlice(%s, itemCount)\n", valueVar, valueVar)
+		ctx.appendCode(indent, "} else {\n")
+		ctx.appendCode(indent+1, "%s = sszutils.PreallocateDecodeSlice(%s, itemCount)\n", valueVar, valueVar)
+		ctx.appendCode(indent, "}\n")
 
 		fieldPath := typePath.append("[%d]", indexVar)
 		// Bind the last index to a uniquely named variable before the loop. A
@@ -1165,6 +1174,13 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent+1, "if endOffset < startOffset || endOffset > uint32(sszLen) {\n")
 		errCode = "sszutils.ErrElementOffsetOutOfRangeFn(endOffset, startOffset, sszLen)"
 		ctx.appendCode(indent+2, "return %s\n", fieldPath.getErrorWith(errCode))
+		ctx.appendCode(indent+1, "}\n")
+		ctx.appendCode(indent+1, "if %s >= len(%s) {\n", indexVar, indexValueVar)
+		ctx.appendCode(indent+2, "chunkLen := cap(%s)\n", indexValueVar)
+		ctx.appendCode(indent+2, "if chunkLen == len(%s) {\n", indexValueVar)
+		ctx.appendCode(indent+3, "chunkLen = max(%s+1, 8, len(%s)*2)\n", indexVar, indexValueVar)
+		ctx.appendCode(indent+2, "}\n")
+		ctx.appendCode(indent+2, "%s = sszutils.GrowSlice(%s, min(itemCount, chunkLen), itemCount)\n", valueVar, valueVar)
 		ctx.appendCode(indent+1, "}\n")
 
 		// The trailing element runs to the end of the list, so it takes an open

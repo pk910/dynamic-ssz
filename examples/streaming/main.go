@@ -215,7 +215,9 @@ func run() error {
 //
 // Prefer passing the size when you have it: knowing where the payload ends
 // keeps the fail-fast validation and avoids growing the trailing collection.
-// An unknown-size decode is always bounded by WithMaxStreamSize.
+// An unknown-size decode is byte-bounded by WithMaxStreamSize, but the HTTP
+// caller must still configure a request context/client timeout: the bound does
+// not stop a server from withholding EOF while staying below it.
 func decodeSSZ(ds *dynssz.DynSsz, target any, data io.ReadCloser, size int64) error {
 	defer func() { _ = data.Close() }()
 

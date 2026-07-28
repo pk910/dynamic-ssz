@@ -160,6 +160,51 @@ func ExpandSlice[T any](src []T, size int) []T {
 	return src
 }
 
+// maxDecodeSlicePreallocationBytes bounds the destination memory reserved from
+// a dynamic-list offset table before any element body has decoded successfully.
+// The decoder must allocate at least one element in order to decode it, so an
+// individual Go element larger than this bound is still allocated on its own.
+const maxDecodeSlicePreallocationBytes = 64 << 10
+
+// decodeSlicePreallocation returns the number of elements that may be reserved
+// before their bodies have been decoded. A dynamic-list offset table proves the
+// element count but not that any of those bodies exist, and a compact table can
+// otherwise materialize a very large []T when T contains wide inline storage.
+//
+// The multiplication is expressed as a division so hostile counts and large Go
+// element sizes cannot overflow. Zero-sized elements consume no backing-store
+// bytes and may be sized exactly.
+func decodeSlicePreallocation(count int, elemSize uint64) int {
+	if count <= 0 {
+		return 0
+	}
+	if elemSize == 0 {
+		return count
+	}
+
+	maxCount := uint64(maxDecodeSlicePreallocationBytes) / elemSize
+	if maxCount == 0 {
+		return 1 // decoding one element necessarily costs at least elemSize
+	}
+	if uint64(count) > maxCount {
+		return int(maxCount)
+	}
+	return count
+}
+
+// PreallocateDecodeSlice reserves a byte-bounded prefix of a declared dynamic
+// list. Callers extend the result geometrically with GrowSlice as later chunks
+// are reached.
+//
+// ExpandSlice is intentional here: GrowSlice's small-slice capacity floor is a
+// throughput win during incremental growth, but reserving eight wide elements
+// would defeat the byte bound this helper provides.
+func PreallocateDecodeSlice[T any](src []T, count int) []T {
+	var zero T
+	initialCount := decodeSlicePreallocation(count, uint64(unsafe.Sizeof(zero)))
+	return ExpandSlice(src, initialCount)
+}
+
 // CredibleCount clamps a count declared by the input to what the bytes already
 // read can account for, at elemSize bytes per element.
 //
@@ -196,18 +241,25 @@ func SizeListSlice[T any](dec Decoder, dst []T, count, elemSize int) []T {
 	if dec.LengthKnown() {
 		return ExpandSlice(dst, count)
 	}
-	return GrowSlice(dst, CredibleCount(dec, count, elemSize))
+	return GrowSlice(dst, CredibleCount(dec, count, elemSize), count)
 }
 
-// GrowSlice returns src resized to size, growing capacity geometrically.
+// GrowSlice returns src resized to size, growing capacity geometrically. When a
+// new backing array is needed, a non-negative allocationLimit bounds its
+// capacity; a smaller limit is treated as size, and a negative limit permits
+// unbounded growth. Existing caller-owned capacity is reused as-is because
+// hiding it would not release memory and could force a later reallocation.
 //
 // ExpandSlice allocates exactly the requested size, which is right when the
 // element count is known up front. Decoding a list whose count is only
 // discovered at EOF resizes once per element, so it needs amortised growth
 // instead.
-func GrowSlice[T any](src []T, size int) []T {
+func GrowSlice[T any](src []T, size, allocationLimit int) []T {
 	if size < 0 {
 		return make([]T, 0)
+	}
+	if allocationLimit >= 0 && allocationLimit < size {
+		allocationLimit = size
 	}
 	if size <= cap(src) {
 		prevLen := len(src)
@@ -230,6 +282,9 @@ func GrowSlice[T any](src []T, size int) []T {
 	}
 	if newCap < 8 {
 		newCap = 8
+	}
+	if allocationLimit >= 0 && newCap > allocationLimit {
+		newCap = allocationLimit
 	}
 	out := make([]T, size, newCap)
 	copy(out, src)
@@ -285,7 +340,7 @@ func DecodeUint64ListInto[T ~uint64](dec Decoder, dst []T, maxLen int) ([]T, err
 		return dst, nil
 	}
 
-	dst = GrowSlice(dst, 0)
+	dst = GrowSlice(dst, 0, maxLen)
 	for count := 0; ; count++ {
 		more, err := dec.More()
 		if err != nil {
@@ -301,7 +356,7 @@ func DecodeUint64ListInto[T ~uint64](dec Decoder, dst []T, maxLen int) ([]T, err
 		if err != nil {
 			return nil, err
 		}
-		dst = GrowSlice(dst, count+1)
+		dst = GrowSlice(dst, count+1, maxLen)
 		dst[count] = T(v)
 	}
 }

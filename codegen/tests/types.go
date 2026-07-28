@@ -1823,6 +1823,19 @@ type WrapPtrList struct {
 	}, *[]uint16] `ssz-type:"wrapper"`
 }
 
+// WideDynamicElement makes eager allocation from an offset-table count visible:
+// its SSZ body is dynamic, while every Go value contains substantial inline
+// storage. WideDynamicList is used to pin byte-bounded preallocation in the
+// generated streaming decoder.
+type WideDynamicElement struct {
+	Fixed [64 << 10]byte
+	Tail  []byte `ssz-max:"1"`
+}
+
+type WideDynamicList struct {
+	Items []WideDynamicElement `ssz-max:"512"`
+}
+
 // RecursiveNode is a self-referential container: recursion through a bounded
 // list is a legal, finite SSZ shape. The generated code must call the type's
 // own methods for the recursive reference so emission and encoding terminate.
