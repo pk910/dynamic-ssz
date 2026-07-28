@@ -110,7 +110,7 @@ func (f *Filler) fillPointer(v reflect.Value, tags string) {
 func (f *Filler) fillStructFields(v reflect.Value) {
 	t := v.Type()
 
-	// Detect CompatibleUnion: has Variant (uint8) + Data (interface{})
+	// Detect a union (CompatibleUnion or Union): Variant (uint8) + Data (interface{})
 	if t.NumField() == 2 {
 		variantField, hasVariant := t.FieldByName("Variant")
 		_, hasData := t.FieldByName("Data")
@@ -160,9 +160,21 @@ func (f *Filler) fillUnion(v reflect.Value) {
 	variantVal := reflect.New(variantType).Elem()
 	f.fillValue(variantVal, "")
 
-	// Set Variant and Data
-	v.FieldByName("Variant").SetUint(uint64(variantIdx))
+	// Set Variant and Data. The selector must address the same descriptor field
+	// the data was built from, or the union rejects the value as a type mismatch.
+	v.FieldByName("Variant").SetUint(unionSelectorBase(v.Type()) + uint64(variantIdx))
 	v.FieldByName("Data").Set(variantVal)
+}
+
+// unionSelectorBase returns the selector of the descriptor's first variant.
+// CompatibleUnion numbers its variants from 1 per EIP-8016, while a classic
+// Union addresses them by their 0-based descriptor field positions.
+func unionSelectorBase(unionType reflect.Type) uint64 {
+	if strings.HasPrefix(unionType.Name(), "CompatibleUnion[") {
+		return 1
+	}
+
+	return 0
 }
 
 func (f *Filler) fillArray(v reflect.Value) {

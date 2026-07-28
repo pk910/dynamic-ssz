@@ -532,7 +532,6 @@ func TestPreallocateDecodeSlice(t *testing.T) {
 	if len(small) != 16 || cap(small) != 16 {
 		t.Fatalf("small preallocation len/cap = %d/%d, want 16/16", len(small), cap(small))
 	}
-
 }
 
 // ============================================================================
