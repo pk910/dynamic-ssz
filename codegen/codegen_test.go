@@ -831,6 +831,27 @@ func TestGenerateWithReflectViews(t *testing.T) {
 	}
 }
 
+// TestGenerateViewSameAsDataType verifies that listing the data type itself as
+// a view is rejected. Emitting it would produce a `case *T` alongside the
+// dispatcher's own `case nil, *T`, a duplicate type-switch case that does not
+// compile — yet generation used to report success.
+func TestGenerateViewSameAsDataType(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	baseType := reflect.TypeOf((*SimpleTestStruct)(nil)).Elem()
+
+	cg.BuildFile("test.go",
+		WithReflectType(baseType, WithReflectViewTypes(baseType)),
+	)
+
+	_, err := cg.GenerateToMap()
+	if err == nil {
+		t.Fatal("expected error when the data type is listed as its own view")
+	}
+	if !strings.Contains(err.Error(), "same as the data type") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 // TestGenerateWithViewOnly tests code generation using view-only mode
 // via the reflect API.
 func TestGenerateWithViewOnly(t *testing.T) {
@@ -1328,5 +1349,128 @@ func TestGoTypesPromotedMethodsNotDelegation(t *testing.T) {
 	}
 	if !strings.Contains(files["gen_promoted_gt.go"], "Label") {
 		t.Error("generated code does not handle the sibling Label field")
+	}
+}
+
+// nodynChild is a container reached as a nested field/element by the parents
+// below. Its dynamic []byte field makes it a variable-size type, so parents
+// delegate to it rather than treating it as a fixed blob.
+type nodynChild struct {
+	A []byte `ssz-max:"8"`
+	B uint8
+}
+
+type nodynParentProg struct {
+	L []nodynChild `ssz-type:"progressive-list" ssz-max:"100"`
+}
+type nodynParentList struct {
+	L []nodynChild `ssz-max:"100"`
+}
+type nodynParentVec struct {
+	V [3]nodynChild
+}
+type nodynParentField struct {
+	C nodynChild
+	N uint16
+}
+
+// The invariant (maintainer, non-negotiable): with WithoutDynamicExpressions the
+// generated code must NEVER reference a *Dyn buffer function. A parent nesting a
+// generated child must reach it through the child's static MarshalSSZTo /
+// UnmarshalSSZ / SizeSSZ / HashTreeRootWith methods — never MarshalSSZDyn etc.,
+// and never by wrapping the streaming Encoder/Decoder into the static buffer
+// path. This holds across every combination of -without-fastssz and
+// -with-streaming.
+func TestGenerateWithoutDynExprNeverEmitsDynBuffer(t *testing.T) {
+	dynTokens := []string{"MarshalSSZDyn", "UnmarshalSSZDyn", "SizeSSZDyn", "HashTreeRootWithDyn"}
+
+	combos := []struct {
+		name string
+		opts []CodeGeneratorOption
+	}{
+		{"plain", nil},
+		{"nofast", []CodeGeneratorOption{WithNoFastSsz()}},
+		{"streaming", []CodeGeneratorOption{WithCreateEncoderFn(), WithCreateDecoderFn()}},
+		{"nofast+streaming", []CodeGeneratorOption{WithNoFastSsz(), WithCreateEncoderFn(), WithCreateDecoderFn()}},
+	}
+
+	for _, combo := range combos {
+		t.Run(combo.name, func(t *testing.T) {
+			typeOpts := append([]CodeGeneratorOption{WithoutDynamicExpressions()}, combo.opts...)
+			cg := NewCodeGenerator(nil)
+			cg.BuildFile("gen_nodyn.go",
+				WithReflectType(reflect.TypeFor[nodynParentProg](), typeOpts...),
+				WithReflectType(reflect.TypeFor[nodynParentList](), typeOpts...),
+				WithReflectType(reflect.TypeFor[nodynParentVec](), typeOpts...),
+				WithReflectType(reflect.TypeFor[nodynParentField](), typeOpts...),
+				WithReflectType(reflect.TypeFor[nodynChild](), typeOpts...),
+			)
+			files, err := cg.GenerateToMap()
+			if err != nil {
+				t.Fatalf("generate: %v", err)
+			}
+			code := files["gen_nodyn.go"]
+			if code == "" {
+				t.Fatal("no code generated")
+			}
+			for _, tok := range dynTokens {
+				if strings.Contains(code, tok) {
+					t.Errorf("generated code references forbidden %s under without-dynamic-expressions:\n%s", tok, code)
+				}
+			}
+			// The parents must actually reach the child via its static methods.
+			for _, want := range []string{".MarshalSSZTo(", ".UnmarshalSSZ(", ".SizeSSZ()", ".HashTreeRootWith("} {
+				if !strings.Contains(code, want) {
+					t.Errorf("expected the parent to call the child's static %s, not found:\n%s", want, code)
+				}
+			}
+		})
+	}
+}
+
+// nodynExtInlineHolder nests regenDelegated, an EXTERNAL fully-delegated type
+// that implements only the Dynamic* methods and carries ssz-static:"true".
+// Under WithoutDynamicExpressions its dynamic methods cannot be called, so it is
+// inlined from its traversed structure instead of forwarded to *Dyn or errored.
+type nodynExtInlineHolder struct {
+	A uint64
+	N regenDelegated
+}
+
+func TestGenerateWithoutDynExprInlinesExternalDynOnly(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_nodyn_inline.go",
+		WithReflectType(reflect.TypeFor[nodynExtInlineHolder](), WithoutDynamicExpressions()))
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	code := files["gen_nodyn_inline.go"]
+	for _, tok := range []string{"MarshalSSZDyn", "UnmarshalSSZDyn", "SizeSSZDyn", "HashTreeRootWithDyn"} {
+		if strings.Contains(code, tok) {
+			t.Errorf("external dynamic-only type must be inlined, not forwarded to %s:\n%s", tok, code)
+		}
+	}
+	// The inlined structure must appear (the delegated type's V [8]byte field).
+	if !strings.Contains(code, ".V[") {
+		t.Errorf("expected the external type's structure to be inlined (field V), got:\n%s", code)
+	}
+}
+
+// A cyclic type generated with WithoutDynamicExpressions terminates the cycle
+// through the member's static MarshalSSZTo (generation-set members carry the
+// fastssz-style flag in this mode) even with -without-fastssz, since the static
+// path is mandatory there.
+func TestGenerateWithoutDynExprRecursiveCycle(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_rec_nodyn.go",
+		WithReflectType(reflect.TypeFor[inlineCycleRoot](), WithoutDynamicExpressions(), WithNoFastSsz()),
+		WithReflectType(reflect.TypeFor[inlineCycleMember](), WithoutDynamicExpressions(), WithNoFastSsz()))
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("recursive cycle should generate statically under without-dynamic-expressions: %v", err)
+	}
+	if strings.Contains(files["gen_rec_nodyn.go"], "Dyn(") {
+		t.Errorf("static recursive output must contain no *Dyn call:\n%s", files["gen_rec_nodyn.go"])
 	}
 }

@@ -230,20 +230,40 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 
 	if !isRoot && !isView {
 		hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
-		useFastSsz := !ctx.options.NoFastSsz && desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0 && !hasDynamicSize
+		// Under WithoutDynamicExpressions the generated code must be fully static
+		// and must never call a *Dyn method. A child exposing a static SizeSSZ
+		// (every dynssz-generated child in this mode, plus external fastssz types)
+		// is reached through it even when fastssz delegation is otherwise disabled.
+		useFastSsz := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0 && !hasDynamicSize &&
+			(!ctx.options.NoFastSsz || ctx.options.WithoutDynamicExpressions)
 		if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
 			useFastSsz = true
 		}
 
-		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 {
-			ctx.appendCode(indent, "%s += %s.SizeSSZDyn(ds)\n", sizeVar, varName)
-			ctx.usedDynSpecs = true
-			return nil
-		}
+		if ctx.options.WithoutDynamicExpressions {
+			if useFastSsz {
+				ctx.appendCode(indent, "%s += %s.SizeSSZ()\n", sizeVar, varName)
+				return nil
+			}
+			// Never call a *Dyn method. A dynamic-only type is inlined by falling
+			// through to the structural switch below; only types with no
+			// traversable structure (custom or shallow-delegated externals) are
+			// rejected.
+			if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 &&
+				(desc.SszType == ssztypes.SszCustomType || isShallowDelegatedDescriptor(desc)) {
+				return fmt.Errorf("cannot generate static sizer for %s under without-dynamic-expressions: it provides only dynamic (spec-aware) SSZ methods and has no static SizeSSZ or inlinable structure; add it to the generation set or provide a static sizer", ctx.typePrinter.TypeString(desc))
+			}
+		} else {
+			if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 {
+				ctx.appendCode(indent, "%s += %s.SizeSSZDyn(ds)\n", sizeVar, varName)
+				ctx.usedDynSpecs = true
+				return nil
+			}
 
-		if useFastSsz {
-			ctx.appendCode(indent, "%s += %s.SizeSSZ()\n", sizeVar, varName)
-			return nil
+			if useFastSsz {
+				ctx.appendCode(indent, "%s += %s.SizeSSZ()\n", sizeVar, varName)
+				return nil
+			}
 		}
 	}
 
@@ -318,6 +338,12 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 	case ssztypes.SszOptionalListType:
 		return ctx.sizeOptionalList(desc, varName, sizeVar, indent)
 	case ssztypes.SszBigIntType:
+		// A static ssz-max is enforced by the marshal/HTR paths (which return an
+		// error); the size path has no error channel, so an over-max value yields
+		// size 0 to signal it is not serializable rather than a misleading size.
+		if desc.MaxExpression == nil && desc.Limit > 0 {
+			ctx.appendCode(indent, "if uint64(1+len(%s.Bytes())) > %d {\n\treturn 0\n}\n", varName, desc.Limit)
+		}
 		ctx.appendCode(indent, "%s += 1 + len(%s.Bytes())\n", sizeVar, varName)
 
 	default:
@@ -632,8 +658,16 @@ func (ctx *sizeContext) sizeUnion(desc *ssztypes.TypeDescriptor, varName, sizeVa
 			ctx.appendCode(indent, "\tif !ok {\n")
 			ctx.appendCode(indent, "\t\treturn 0\n")
 			ctx.appendCode(indent, "\t}\n")
+			sizeStart := ctx.codeBuf.Len()
 			if err := ctx.sizeType(variantDesc, "v", sizeVar, indent+1, false); err != nil {
 				return err
+			}
+			// A variant whose size is fully determined by a size expression (e.g.
+			// a static container with a dynssz-size field) never reads the asserted
+			// value, which would leave `v` declared-and-unused. Reference it
+			// explicitly so the generated code compiles.
+			if !codeReferencesIdent(ctx.codeBuf.String()[sizeStart:], "v") {
+				ctx.appendCode(indent, "\t_ = v\n")
 			}
 		} else {
 			// A fixed-size variant still validates the data type: sizing
@@ -655,4 +689,42 @@ func (ctx *sizeContext) sizeUnion(desc *ssztypes.TypeDescriptor, varName, sizeVa
 	ctx.appendCode(indent, "}\n")
 
 	return nil
+}
+
+// codeReferencesIdent reports whether the generated code snippet uses ident as a
+// standalone token, ignoring // line comments. It lets the union-variant sizing
+// code decide whether the asserted value var is actually read; a variant whose
+// size is a pure expression never reads it, which would otherwise leave the
+// variable declared-and-unused.
+func codeReferencesIdent(code, ident string) bool {
+	isIdentByte := func(b byte) bool {
+		return b == '_' ||
+			(b >= 'a' && b <= 'z') ||
+			(b >= 'A' && b <= 'Z') ||
+			(b >= '0' && b <= '9')
+	}
+	for _, line := range strings.Split(code, "\n") {
+		if i := strings.Index(line, "//"); i >= 0 {
+			line = line[:i]
+		}
+		for start := 0; start < len(line); {
+			j := strings.Index(line[start:], ident)
+			if j < 0 {
+				break
+			}
+			pos := start + j
+			var before, after byte = ' ', ' '
+			if pos > 0 {
+				before = line[pos-1]
+			}
+			if pos+len(ident) < len(line) {
+				after = line[pos+len(ident)]
+			}
+			if !isIdentByte(before) && !isIdentByte(after) {
+				return true
+			}
+			start = pos + len(ident)
+		}
+	}
+	return false
 }

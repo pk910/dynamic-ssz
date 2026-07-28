@@ -1024,3 +1024,44 @@ func TestIsStreamTooLarge(t *testing.T) {
 		t.Fatal("nil misrecognised")
 	}
 }
+
+// TestBufferDecoder_Available covers Available() on a buffer-backed decoder,
+// which reports the whole remaining region.
+func TestBufferDecoder_Available(t *testing.T) {
+	dec := NewBufferDecoder([]byte{1, 2, 3, 4, 5, 6, 7, 8})
+	if got := dec.Available(); got != 8 {
+		t.Fatalf("Available() = %d, want 8", got)
+	}
+	if _, err := dec.DecodeUint32(); err != nil {
+		t.Fatalf("DecodeUint32: %v", err)
+	}
+	if got := dec.Available(); got != 4 {
+		t.Fatalf("Available() after consuming 4 bytes = %d, want 4", got)
+	}
+}
+
+// TestCredibleCount_Guards covers the two early-return guards in CredibleCount:
+// a non-positive count, and a non-positive element size on an unknown-length
+// decoder (where the count cannot be bounded from delivered bytes).
+func TestCredibleCount_Guards(t *testing.T) {
+	// count <= 0 short-circuits to 0.
+	if got := CredibleCount(NewBufferDecoder(nil), 0, 4); got != 0 {
+		t.Fatalf("CredibleCount(_, 0, 4) = %d, want 0", got)
+	}
+	if got := CredibleCount(NewBufferDecoder(nil), -3, 4); got != 0 {
+		t.Fatalf("CredibleCount(_, -3, 4) = %d, want 0", got)
+	}
+	// A known-length decoder trusts the count unchanged.
+	if got := CredibleCount(NewBufferDecoder(make([]byte, 4)), 7, 4); got != 7 {
+		t.Fatalf("CredibleCount(buffer, 7, 4) = %d, want 7", got)
+	}
+	// An unknown-length decoder with a non-positive element size cannot bound the
+	// count from delivered bytes, so it is returned unchanged.
+	unk := NewUnknownStreamDecoder(bytes.NewReader(nil), 8, 0)
+	if unk.LengthKnown() {
+		t.Fatal("precondition: fresh unknown decoder must report LengthKnown()==false")
+	}
+	if got := CredibleCount(unk, 5, 0); got != 5 {
+		t.Fatalf("CredibleCount(unknown, 5, 0) = %d, want 5", got)
+	}
+}

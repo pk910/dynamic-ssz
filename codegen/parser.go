@@ -122,6 +122,13 @@ type Parser struct {
 	// It lets the parser read a referenced, fully-delegated type's ssz-static
 	// declaration so its subtree need not be traversed or validated.
 	AnnotationResolver func(types.Type) string
+
+	// NoDelegation disables the shallow-build shortcut for fully-delegated
+	// ssz-static types, forcing their subtree to be traversed. Code generated
+	// without dynamic expressions must never call a delegated *Dyn method, so
+	// such a type is inlined from its structure instead — which requires the
+	// traversed descriptor.
+	NoDelegation bool
 }
 
 // NewParser creates a new compile-time type parser for code generation.
@@ -509,7 +516,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	// registered under neither. Field-level hints are already handled inline by the
 	// caller (it strips delegation flags).
 	beingGenerated := p.getCompatFlag(innerDataType, innerSchemaType) != 0 || p.getCompatFlag(innerDataType, innerDataType) != 0
-	if p.AnnotationResolver != nil && len(typeHints) == 0 && len(sizeHints) == 0 && len(maxSizeHints) == 0 && !beingGenerated && p.fullyDelegatesSSZ(originalType) {
+	if p.AnnotationResolver != nil && !p.NoDelegation && len(typeHints) == 0 && len(sizeHints) == 0 && len(maxSizeHints) == 0 && !beingGenerated && p.fullyDelegatesSSZ(originalType) {
 		if staticStr, ok := reflect.StructTag(p.AnnotationResolver(originalType)).Lookup("ssz-static"); ok {
 			switch staticStr {
 			case "true":
@@ -715,7 +722,12 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		case reflect.Array:
 			sszType = ssztypes.SszVectorType
 		case reflect.Slice:
-			if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
+			// A size expression (dynssz-size) with no static ssz-size fallback
+			// still fixes the length at runtime, so the slice is a Vector — the
+			// reflection typecache reaches the same result after resolving the
+			// expression to a concrete size before this decision. Codegen has no
+			// specs at generation time, so it keys off the expression itself.
+			if len(sizeHints) > 0 && (sizeHints[0].Size > 0 || sizeHints[0].Expr != "") {
 				sszType = ssztypes.SszVectorType
 			} else if err := rejectZeroSizeHint(sizeHints); err != nil {
 				return nil, err
@@ -723,7 +735,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 				sszType = ssztypes.SszListType
 			}
 		case reflect.String:
-			if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
+			if len(sizeHints) > 0 && (sizeHints[0].Size > 0 || sizeHints[0].Expr != "") {
 				sszType = ssztypes.SszVectorType
 			} else if err := rejectZeroSizeHint(sizeHints); err != nil {
 				return nil, err
@@ -1362,25 +1374,36 @@ func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, dataType, 
 		}
 	case *types.Slice:
 		schemaElemType = t.Elem()
-		if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
+		switch {
+		case len(sizeHints) > 0 && sizeHints[0].Size > 0:
 			length = sizeHints[0].Size
 			if sizeHints[0].Bits {
 				length = (length + 7) / 8 // ceil up to the next multiple of 8
 			}
-		} else {
+		case len(sizeHints) > 0 && sizeHints[0].Expr != "":
+			// Length comes purely from a runtime dynssz-size expression with no
+			// static ssz-size fallback. Leave the static length at 0; the
+			// generated code resolves desc.SizeExpression at runtime.
+			length = 0
+		default:
 			return fmt.Errorf("vector slice type requires explicit size hint")
 		}
 	case *types.Basic:
 		if t.Kind() == types.String {
 			// String as vector
-			if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
+			switch {
+			case len(sizeHints) > 0 && sizeHints[0].Size > 0:
 				length = sizeHints[0].Size
 				if sizeHints[0].Bits {
 					length = (length + 7) / 8 // ceil up to the next multiple of 8
 				}
 				desc.GoTypeFlags |= ssztypes.GoTypeFlagIsByteArray
 				schemaElemType = byteType
-			} else {
+			case len(sizeHints) > 0 && sizeHints[0].Expr != "":
+				length = 0
+				desc.GoTypeFlags |= ssztypes.GoTypeFlagIsByteArray
+				schemaElemType = byteType
+			default:
 				return fmt.Errorf("string vector type requires explicit size hint")
 			}
 		} else {
@@ -1428,8 +1451,11 @@ func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, dataType, 
 	desc.Len = length
 
 	// Per the SSZ spec, Vector[type, 0] and Bitvector[0] are illegal: a vector
-	// must have a length greater than zero (e.g. a [0]T array).
-	if desc.Len == 0 {
+	// must have a length greater than zero (e.g. a [0]T array). A vector whose
+	// length is supplied purely by a runtime dynssz-size expression legitimately
+	// carries a static length of 0 here (the expression resolves at runtime), so
+	// only reject a genuine static zero length.
+	if desc.Len == 0 && desc.SizeExpression == nil {
 		return fmt.Errorf("vector type %v has zero length, which is invalid per the SSZ spec", schemaType)
 	}
 
@@ -1925,15 +1951,17 @@ func (p *Parser) buildOptionalListDescriptor(desc *ssztypes.TypeDescriptor, data
 		return fmt.Errorf("optional-list ssz type can only be represented by pointer types, got %v", desc.Kind)
 	}
 
-	childSizeHints := []ssztypes.SszSizeHint{}
-	if len(sizeHints) > 1 {
-		childSizeHints = sizeHints[1:]
-	}
+	// The optional-list frames the Go pointer as List[T, 1]. That framing consumes
+	// the leading ssz-type dimension (the "optional-list" hint itself), but it has
+	// no size or max of its own — the list limit is fixed at 1 — so it consumes no
+	// ssz-size / ssz-max dimension. The remaining size/max hints belong to the
+	// pointed-to element T and must be forwarded in full, exactly as a plain
+	// pointer forwards them (e.g. `*[]uint16 ssz-size:"2"` -> Vector[uint16,2]).
+	// Peeling them here dropped the element's constraint and mis-classified a
+	// fixed inner vector as a variable list.
+	childSizeHints := sizeHints
 
-	childMaxSizeHints := []ssztypes.SszMaxSizeHint{}
-	if len(maxSizeHints) > 1 {
-		childMaxSizeHints = maxSizeHints[1:]
-	}
+	childMaxSizeHints := maxSizeHints
 
 	childTypeHints := []ssztypes.SszTypeHint{}
 	if len(typeHints) > 1 {

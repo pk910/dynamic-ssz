@@ -79,6 +79,14 @@ types:
     output: gen_optionallist.go
   - name: OptionalListTypes_Inner
     output: gen_optionallist.go
+  - name: OptionalListSliceVector
+    output: gen_optionallist.go
+  - name: UnionExprVariantSize
+    output: gen_optionallist.go
+  - name: VecDynElemExprSize
+    output: gen_optionallist.go
+  - name: VecDynElemExprSize_Inner
+    output: gen_optionallist.go
 
   - name: ViewTypes1_Base
     output: gen_viewtypes1.go
@@ -99,6 +107,12 @@ types:
     views:
       - ViewTypes3_View1
 
+  - name: StreamVecDynSize
+    output: gen_divergence.go
+  - name: StreamVecElem
+    output: gen_divergence.go
+  - name: SizeUnionExprVariant
+    output: gen_divergence.go
   - name: MultiDimSpecVec
     output: gen_divergence.go
   - name: NoMaxBitlist
@@ -172,3 +186,6 @@ types:
     output: gen_recursive.go
   - name: RecursiveTreeBranch
     output: gen_recursive.go
+
+  - name: DynSizeVectorNoStatic
+    output: gen_dynsizevec.go

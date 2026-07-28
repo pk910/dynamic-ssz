@@ -86,7 +86,7 @@ func (e *BufferEncoder) EncodeUint8(v uint8) {
 // advances by 2 bytes.
 func (e *BufferEncoder) EncodeUint16(v uint16) {
 	e.ensure(2)
-	binary.LittleEndian.PutUint16(e.buffer[e.pos:], v)
+	binary.LittleEndian.PutUint16(e.buffer[e.pos:e.pos+2], v)
 	e.pos += 2
 }
 
@@ -94,7 +94,7 @@ func (e *BufferEncoder) EncodeUint16(v uint16) {
 // advances by 4 bytes.
 func (e *BufferEncoder) EncodeUint32(v uint32) {
 	e.ensure(4)
-	binary.LittleEndian.PutUint32(e.buffer[e.pos:], v)
+	binary.LittleEndian.PutUint32(e.buffer[e.pos:e.pos+4], v)
 	e.pos += 4
 }
 
@@ -102,7 +102,7 @@ func (e *BufferEncoder) EncodeUint32(v uint32) {
 // advances by 8 bytes.
 func (e *BufferEncoder) EncodeUint64(v uint64) {
 	e.ensure(8)
-	binary.LittleEndian.PutUint64(e.buffer[e.pos:], v)
+	binary.LittleEndian.PutUint64(e.buffer[e.pos:e.pos+8], v)
 	e.pos += 8
 }
 
@@ -118,7 +118,7 @@ func (e *BufferEncoder) EncodeBytes(v []byte) {
 // and advances by 4 bytes.
 func (e *BufferEncoder) EncodeOffset(v uint32) {
 	e.ensure(4)
-	binary.LittleEndian.PutUint32(e.buffer[e.pos:], v)
+	binary.LittleEndian.PutUint32(e.buffer[e.pos:e.pos+4], v)
 	e.pos += 4
 }
 
@@ -129,7 +129,7 @@ func (e *BufferEncoder) EncodeOffsetAt(pos int, v uint32) {
 	if pos < 0 || pos+4 > len(e.buffer) {
 		return
 	}
-	binary.LittleEndian.PutUint32(e.buffer[pos:], v)
+	binary.LittleEndian.PutUint32(e.buffer[pos:pos+4], v)
 }
 
 // EncodeZeroPadding writes n zero bytes at the current position and advances

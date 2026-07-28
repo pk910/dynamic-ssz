@@ -602,6 +602,82 @@ var OptionalListTypes_Payload1 = OptionalListTypes{
 	DynamicOpt: optListInner,
 }
 
+// OptionalListSliceVector exercises ssz-type:"optional-list" over a pointer to a
+// SLICE whose fixed length comes from ssz-size (a vector), plus the byte-vector
+// form. These are spec-identical to an optional-list over a Go array
+// (*[2]uint16 / *[4]byte): the optional-list frames the pointer as List[T, 1]
+// where T is the fixed-size inner vector. The slice spelling only stays correct
+// if the element's ssz-size survives into the element descriptor — otherwise the
+// inner vector degrades to a variable list (wrong marshal + wrong root).
+type OptionalListSliceVector struct {
+	VecU16  *[]uint16 `ssz-size:"2" ssz-type:"optional-list"`
+	VecByte *[]byte   `ssz-size:"4" ssz-type:"optional-list"`
+}
+
+var (
+	optSliceVecU16  = []uint16{0x1234, 0x5678}
+	optSliceVecByte = []byte{0xaa, 0xbb, 0xcc, 0xdd}
+)
+
+// Both optional vectors present.
+var OptionalListSliceVector_Payload1 = OptionalListSliceVector{
+	VecU16:  &optSliceVecU16,
+	VecByte: &optSliceVecByte,
+}
+
+// Both nil.
+var OptionalListSliceVector_Payload2 = OptionalListSliceVector{}
+
+// Only the uint16 vector present.
+var OptionalListSliceVector_Payload3 = OptionalListSliceVector{
+	VecU16: &optSliceVecU16,
+}
+
+// UnionExprVariantSize is a regression type for the generated union size code.
+// The union variant is a vector whose length comes from a dynssz-size
+// expression, so its size is computed purely from that expression and never
+// reads the type-asserted variant value. Without an explicit `_ = v`, the
+// generated size code left `v` declared-and-unused and failed to compile.
+type UnionExprVariantSize struct {
+	U dynssz.CompatibleUnion[struct {
+		F0 []uint16 `ssz-size:"4" dynssz-size:"UNION_VEC_SIZE"`
+	}]
+}
+
+var UnionExprVariantSize_Specs = map[string]any{
+	"UNION_VEC_SIZE": uint64(4),
+}
+
+var UnionExprVariantSize_Payload = UnionExprVariantSize{
+	U: dynssz.CompatibleUnion[struct {
+		F0 []uint16 `ssz-size:"4" dynssz-size:"UNION_VEC_SIZE"`
+	}]{Variant: 1, Data: []uint16{1, 2, 3, 4}},
+}
+
+// VecDynElemExprSize is a regression type for the generated stream decoder: a
+// vector of dynamic-size elements whose length comes from a dynssz-size
+// expression. The decoder's first-offset check compares the uint32 offset
+// against `<len-expr>*4`; when the length is a typed int expression the RHS must
+// be cast to uint32, otherwise the generated code failed to compile.
+type VecDynElemExprSize_Inner struct {
+	D []byte `ssz-max:"8"`
+}
+
+type VecDynElemExprSize struct {
+	V []VecDynElemExprSize_Inner `ssz-size:"2" dynssz-size:"VDE_SIZE"`
+}
+
+var VecDynElemExprSize_Specs = map[string]any{
+	"VDE_SIZE": uint64(2),
+}
+
+var VecDynElemExprSize_Payload = VecDynElemExprSize{
+	V: []VecDynElemExprSize_Inner{
+		{D: []byte{1, 2, 3}},
+		{D: []byte{4, 5}},
+	},
+}
+
 // Both pointers nil.
 var OptionalListTypes_Payload2 = OptionalListTypes{
 	StaticOpt:  nil,
@@ -944,6 +1020,58 @@ var NoDynExprTypes_Payload = NoDynExprTypes{
 	BitLst: []byte{1, 2, 3, 4},
 	Str1:   "hello",
 }
+
+// NoDynNestChild is a variable-size container nested by the NoDynNest* parents.
+// Generated with -with-streaming -without-fastssz -without-dynamic-expressions,
+// its parents must reach it through its static MarshalSSZTo/UnmarshalSSZ/SizeSSZ/
+// HashTreeRootWith methods — never the *Dyn buffer variants and never by wrapping
+// the streaming encoder into the static buffer path.
+type NoDynNestChild struct {
+	A []byte `ssz-max:"8"`
+	B uint8
+}
+
+// NoDynNestProg nests the child as a progressive-list.
+type NoDynNestProg struct {
+	L []NoDynNestChild `ssz-type:"progressive-list" ssz-max:"100"`
+}
+
+// NoDynNestList nests the child as a bounded list.
+type NoDynNestList struct {
+	L []NoDynNestChild `ssz-max:"100"`
+}
+
+// NoDynNestVec nests the child as a fixed vector.
+type NoDynNestVec struct {
+	V [3]NoDynNestChild
+}
+
+// NoDynNestField nests the child as a plain container field.
+type NoDynNestField struct {
+	C NoDynNestChild
+	N uint16
+}
+
+var (
+	NoDynNestProg_Payload = NoDynNestProg{L: []NoDynNestChild{
+		{A: []byte{1, 2, 3}, B: 7},
+		{A: nil, B: 0},
+		{A: []byte{9}, B: 255},
+	}}
+	NoDynNestList_Payload = NoDynNestList{L: []NoDynNestChild{
+		{A: []byte{4, 5}, B: 1},
+		{A: []byte{6, 7, 8}, B: 2},
+	}}
+	NoDynNestVec_Payload = NoDynNestVec{V: [3]NoDynNestChild{
+		{A: []byte{1}, B: 10},
+		{A: []byte{2, 2}, B: 20},
+		{A: nil, B: 30},
+	}}
+	NoDynNestField_Payload = NoDynNestField{
+		C: NoDynNestChild{A: []byte{3, 3, 3}, B: 42},
+		N: 1234,
+	}
+)
 
 // InterpretedAnnotatedList tests Annotate with an interpreted (double-quoted) string literal.
 type InterpretedAnnotatedList []uint32
@@ -1738,4 +1866,211 @@ var RecursiveTree_Payload = RecursiveTree{
 			Branches: []RecursiveTreeBranch{{Leaf: nil}},
 		}},
 	},
+}
+
+// StreamVecDynSize is a fixed-size vector (slice with ssz-size + dynssz-size) of
+// variable-size elements. With -with-streaming the decoder emits a first-offset
+// check `startOffset != <limit>*4`; when the limit is a dynssz expression the
+// limit renders as a typed int(expr), so the comparison against the uint32
+// startOffset must be uint32-converted or the generated code fails to compile.
+type StreamVecDynSize struct {
+	V []StreamVecElem `ssz-size:"2" dynssz-size:"STREAMVEC_LEN"`
+}
+
+type StreamVecElem struct {
+	X []byte `ssz-max:"8"`
+}
+
+var StreamVecDynSize_Specs = map[string]any{
+	"STREAMVEC_LEN": uint64(2),
+}
+
+var StreamVecDynSize_Payload = StreamVecDynSize{
+	V: []StreamVecElem{
+		{X: []byte{1, 2, 3}},
+		{X: []byte{4, 5}},
+	},
+}
+
+// SizeUnionExprVariant has a compatible-union whose second variant is an inline
+// container sized entirely by a size expression (a fixed-size string with a
+// dynssz-size). The SizeSSZ generator asserts the variant value but the
+// expression-only size never reads it, which must not leave the asserted
+// variable declared-and-unused in the generated code.
+type SizeUnionExprVariant struct {
+	U dynssz.CompatibleUnion[struct {
+		A uint32
+		B struct {
+			S string `ssz-size:"8" dynssz-size:"SUEV_LEN"`
+		}
+	}]
+}
+
+var SizeUnionExprVariant_Specs = map[string]any{
+	"SUEV_LEN": uint64(8),
+}
+
+var SizeUnionExprVariant_Payload = SizeUnionExprVariant{
+	U: dynssz.CompatibleUnion[struct {
+		A uint32
+		B struct {
+			S string `ssz-size:"8" dynssz-size:"SUEV_LEN"`
+		}
+	}]{
+		Variant: 2,
+		Data: struct {
+			S string `ssz-size:"8" dynssz-size:"SUEV_LEN"`
+		}{S: "abcdefgh"},
+	},
+}
+
+// DynSizeVectorNoStatic covers slices whose length is fixed purely by a
+// dynssz-size expression, with no static ssz-size fallback. The reflection
+// typecache resolves the expression to a concrete size and classifies the slice
+// as a Vector; the codegen parser has no spec values at generation time and must
+// reach the same classification from the presence of the expression alone.
+// Previously the generator saw a static size of 0 and mis-encoded the field as a
+// variable List (a 4-byte offset plus contents), diverging from reflection and
+// the SSZ spec on size, serialization and hash tree root. AV additionally nests
+// the dynssz-only inner vector under a fixed outer array whose dimension is the
+// '?' placeholder.
+type DynSizeVectorNoStatic struct {
+	V  []uint16    `dynssz-size:"DSV_LEN"`
+	AV [2][]uint16 `dynssz-size:"?,DSV_LEN"`
+}
+
+var DynSizeVectorNoStatic_Specs = map[string]any{
+	"DSV_LEN": uint64(3),
+}
+
+func DynSizeVectorNoStaticPayload(n int) DynSizeVectorNoStatic {
+	v := make([]uint16, n)
+	for i := range v {
+		v[i] = uint16(i + 1)
+	}
+	var av [2][]uint16
+	for r := range av {
+		row := make([]uint16, n)
+		for i := range row {
+			row[i] = uint16(r*100 + i + 1)
+		}
+		av[r] = row
+	}
+	return DynSizeVectorNoStatic{V: v, AV: av}
+}
+
+// ---------------------------------------------------------------------------
+// Attack shapes for the without-dynamic-expressions static/inlining path.
+// All generated with -with-streaming -without-fastssz -without-dynamic-expressions
+// -with-extended-types (gen_atknest.yaml). Every parent must reach nested
+// generated children through their static methods (never a *Dyn buffer call)
+// and must round-trip byte/size/root-identical to reflection.
+// ---------------------------------------------------------------------------
+
+// AtkNestLeaf is a variable-size leaf container nested at several depths.
+type AtkNestLeaf struct {
+	A []byte `ssz-max:"8"`
+	B uint8
+}
+
+// AtkNestD3/D2/D1 build a depth-4 chain of variable-size containers-of-containers
+// mixing list, vector, and progressive-list nesting.
+type AtkNestD3 struct {
+	L AtkNestLeaf
+	V [2]AtkNestLeaf
+	X uint16
+}
+type AtkNestD2 struct {
+	N AtkNestD3
+	L []AtkNestD3 `ssz-max:"4"`
+}
+type AtkNestD1 struct {
+	N AtkNestD2
+	P []AtkNestD2 `ssz-type:"progressive-list" ssz-max:"8"`
+	Z uint64
+}
+
+// AtkNestUnion nests generated containers as union variants.
+type AtkNestUnion struct {
+	U dynssz.CompatibleUnion[struct {
+		F1 AtkNestLeaf
+		F2 AtkNestD2
+	}]
+}
+
+// AtkNestWrapper wraps a nested generated container in a TypeWrapper.
+type AtkNestWrapper struct {
+	W dynssz.TypeWrapper[struct {
+		Data AtkNestD2 `ssz-size:"?"`
+	}, AtkNestD2]
+}
+
+// AtkNestOpt / AtkNestOptList nest a generated container behind an optional and
+// an optional-list pointer.
+type AtkNestOpt struct {
+	Opt *AtkNestD2 `ssz-type:"optional"`
+	N   uint16
+}
+type AtkNestOptList struct {
+	Opt *AtkNestD2 `ssz-type:"optional-list"`
+}
+
+var (
+	atkNestLeafA = AtkNestLeaf{A: []byte{1, 2, 3}, B: 7}
+	atkNestLeafB = AtkNestLeaf{A: nil, B: 0}
+	atkNestD3v   = AtkNestD3{L: atkNestLeafA, V: [2]AtkNestLeaf{atkNestLeafA, atkNestLeafB}, X: 9}
+	atkNestD2v   = AtkNestD2{N: atkNestD3v, L: []AtkNestD3{atkNestD3v, atkNestD3v}}
+
+	AtkNestD1_Payload = AtkNestD1{
+		N: atkNestD2v,
+		P: []AtkNestD2{atkNestD2v, atkNestD2v},
+		Z: 0xdeadbeef,
+	}
+	AtkNestUnion_Payload = AtkNestUnion{U: dynssz.CompatibleUnion[struct {
+		F1 AtkNestLeaf
+		F2 AtkNestD2
+	}]{Variant: 1, Data: atkNestLeafA}}
+	AtkNestWrapper_Payload = AtkNestWrapper{W: dynssz.TypeWrapper[struct {
+		Data AtkNestD2 `ssz-size:"?"`
+	}, AtkNestD2]{Data: atkNestD2v}}
+	AtkNestOpt_Payload     = AtkNestOpt{Opt: &atkNestD2v, N: 4321}
+	AtkNestOptList_Payload = AtkNestOptList{Opt: &atkNestD2v}
+)
+
+// atkWellDelegated is an external fully-delegated type whose Go struct layout
+// matches its wire form exactly (a single uint64 field). Under
+// without-dynamic-expressions the parser (NoDelegation) traverses it and the
+// static generators inline its structure. The inlined static encoding must be
+// byte/root-identical to what its own Dynamic* methods produce.
+type atkWellDelegated struct {
+	V uint64
+}
+
+var _ = sszutils.Annotate[atkWellDelegated](`ssz-static:"true"`)
+
+func (n *atkWellDelegated) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 8 }
+func (n *atkWellDelegated) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint64(buf, n.V), nil
+}
+func (n *atkWellDelegated) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	n.V = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+func (n *atkWellDelegated) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(n.V)
+	return nil
+}
+
+// AtkWellHolder nests the well-behaved delegated type as a static field and a
+// vector; generated statically it inlines the delegated type's structure.
+type AtkWellHolder struct {
+	A uint64
+	N atkWellDelegated
+	V [2]atkWellDelegated
+}
+
+var AtkWellHolder_Payload = AtkWellHolder{
+	A: 0x1122334455667788,
+	N: atkWellDelegated{V: 0x99},
+	V: [2]atkWellDelegated{{V: 0xaa}, {V: 0xbb}},
 }

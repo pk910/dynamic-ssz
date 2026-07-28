@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"os"
 	"reflect"
 	"runtime"
 	"strings"
@@ -347,6 +348,94 @@ func TestCodegenNoDynExprTypes(t *testing.T) {
 	testCodegenPayloadByReflection(t, NoDynExprTypes_Payload, nil)
 }
 
+// TestCodegenNoDynNest enforces the without-dynamic-expressions invariant on a
+// set of parents nesting a generated child, generated with -with-streaming
+// -without-fastssz -without-dynamic-expressions (gen_nodynnest.yaml). The
+// generated file (compiled as part of this package) must contain no *Dyn buffer
+// function and must round-trip against reflection for every parent shape.
+func TestCodegenNoDynNest(t *testing.T) {
+	code, err := os.ReadFile("gen_nodynnest.go")
+	if os.IsNotExist(err) {
+		// The gen_*.go files are gitignored; without go generate this job
+		// exercises only the reflection engine and there is no generated file
+		// to enforce the no-*Dyn invariant against.
+		t.Skip("no generated code present")
+	}
+	if err != nil {
+		t.Fatalf("read generated file: %v", err)
+	}
+	for _, tok := range []string{"MarshalSSZDyn", "UnmarshalSSZDyn", "SizeSSZDyn", "HashTreeRootWithDyn"} {
+		if strings.Contains(string(code), tok) {
+			t.Errorf("generated file references forbidden %s under without-dynamic-expressions", tok)
+		}
+	}
+
+	testCodegenPayloadByReflection(t, NoDynNestProg_Payload, nil)
+	testCodegenPayloadByReflection(t, NoDynNestList_Payload, nil)
+	testCodegenPayloadByReflection(t, NoDynNestVec_Payload, nil)
+	testCodegenPayloadByReflection(t, NoDynNestField_Payload, nil)
+	testCodegenPayloadByReflection(t, NoDynNestChild{A: []byte{1, 2}, B: 9}, nil)
+}
+
+// TestCodegenAtkNest hammers the without-dynamic-expressions static/inlining
+// path on richer shapes (gen_atknest.yaml, generated with -with-streaming
+// -without-fastssz -without-dynamic-expressions -with-extended-types): deep
+// containers-of-containers, union/wrapper/optional nesting of generated children,
+// and an external well-behaved delegated type inlined from its structure. The
+// generated file must contain no *Dyn buffer call (the buffer AND streaming
+// paths), must round-trip byte/size/root-identical to reflection for every shape,
+// and the inlined delegated region must equal what the delegated Dynamic* method
+// produces.
+func TestCodegenAtkNest(t *testing.T) {
+	code, err := os.ReadFile("gen_atknest.go")
+	if os.IsNotExist(err) {
+		// The gen_*.go files are gitignored; the "without generated code" CI job
+		// runs before go generate, so there is no generated file to enforce the
+		// no-*Dyn invariant against here.
+		t.Skip("no generated code present")
+	}
+	if err != nil {
+		t.Fatalf("read generated file: %v", err)
+	}
+	for _, tok := range []string{"MarshalSSZDyn", "UnmarshalSSZDyn", "SizeSSZDyn", "HashTreeRootWithDyn"} {
+		if strings.Contains(string(code), tok) {
+			t.Errorf("generated file references forbidden %s under without-dynamic-expressions", tok)
+		}
+	}
+
+	ext := dynssz.WithExtendedTypes()
+	testCodegenPayloadByReflection(t, AtkNestD1_Payload, nil, ext)
+	testCodegenPayloadByReflection(t, AtkNestUnion_Payload, nil, ext)
+	testCodegenPayloadByReflection(t, AtkNestWrapper_Payload, nil, ext)
+	testCodegenPayloadByReflection(t, AtkNestOpt_Payload, nil, ext)
+	testCodegenPayloadByReflection(t, AtkNestOptList_Payload, nil, ext)
+	testCodegenPayloadByReflection(t, AtkWellHolder_Payload, nil, ext)
+
+	// The inlined static encoding of the external delegated child must be
+	// byte-identical to what its own Dynamic* method produces. AtkWellHolder is
+	// A(uint64) N(child) V([2]child); marshal it and check each 8-byte child
+	// region equals child.MarshalSSZDyn.
+	genDs := dynssz.NewDynSsz(nil, ext)
+	got, err := genDs.MarshalSSZ(AtkWellHolder_Payload)
+	if err != nil {
+		t.Fatalf("marshal AtkWellHolder: %v", err)
+	}
+	if len(got) != 32 {
+		t.Fatalf("AtkWellHolder expected 32 bytes, got %d", len(got))
+	}
+	children := []atkWellDelegated{AtkWellHolder_Payload.N, AtkWellHolder_Payload.V[0], AtkWellHolder_Payload.V[1]}
+	for i, child := range children {
+		want, err := child.MarshalSSZDyn(nil, nil)
+		if err != nil {
+			t.Fatalf("child.MarshalSSZDyn: %v", err)
+		}
+		region := got[8+i*8 : 8+i*8+8]
+		if !bytes.Equal(region, want) {
+			t.Errorf("inlined child region %d = %x, delegated method = %x", i, region, want)
+		}
+	}
+}
+
 // A dynssz expression that resolves to 0 must fall back to the static value in
 // both engines. Previously the generated code applied the literal
 // 0 limit and rejected the value while reflection fell back, diverging.
@@ -620,6 +709,120 @@ func TestCodegenOptionalListTypes(t *testing.T) {
 			testCodegenPayloadByReflection(t, tc.payload, nil)
 		})
 	}
+}
+
+// TestCodegenOptionalListSliceVector is a regression test for two independent
+// bugs in ssz-type:"optional-list" over a pointer to a slice made fixed-length
+// via ssz-size (i.e. an inner vector, e.g. *[]uint16 ssz-size:"2"):
+//
+//  1. buildOptionalListDescriptor peeled the leading ssz-size/ssz-max dimension
+//     before descending into the element (sizeHints[1:] / maxSizeHints[1:]),
+//     dropping the element's size constraint so the inner vector degraded to a
+//     variable list. That produced a wrong (12-byte) serialization and a wrong
+//     root on BOTH engines — the golden checks below guard it, since a
+//     reflection-vs-codegen comparison alone would not (both engines share the
+//     descriptor and would agree on the wrong encoding).
+//  2. the generated optional-list HTR reused the `vlen` local for its mixin
+//     length, which the fixed-vector element's own `vlen := len(...)` shadowed,
+//     so a present element mixed in a length of 0 — a codegen-only wrong root
+//     caught by the reflection-vs-codegen comparison.
+//
+// Golden roots and serializations are cross-checked against remerkleable
+// (List[Vector[T,N], 1]).
+func TestCodegenOptionalListSliceVector(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload OptionalListSliceVector
+		root    string
+		ser     string
+	}{
+		{"BothSet", OptionalListSliceVector_Payload1, "7e7694aa13e4558ea4e91c3aaef6319a0409a80ad8ea79df3f6a2fd03d8dee92", "080000000c00000034127856aabbccdd"},
+		{"BothNil", OptionalListSliceVector_Payload2, "db56114e00fdd4c1f85c892bf35ac9a89289aaecb1ebd0a96cde606a748b5d71", "0800000008000000"},
+		{"U16Only", OptionalListSliceVector_Payload3, "53f263191c776497f3a21a93ec0d767753533479ce3a7e5847496c63c7baa905", "080000000c00000034127856"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Reflection-vs-codegen agreement (marshal, size, HTR, roundtrip,
+			// streaming) — catches the codegen-only HTR shadowing bug once the
+			// generated methods exist.
+			testCodegenPayloadByReflection(t, tc.payload, nil)
+
+			// Absolute golden values — catch a descriptor regression that would
+			// make both engines agree on the wrong (variable-list) encoding.
+			ds := dynssz.NewDynSsz(nil)
+			root, err := ds.HashTreeRoot(tc.payload)
+			if err != nil {
+				t.Fatalf("HashTreeRoot: %v", err)
+			}
+			if got := hex.EncodeToString(root[:]); got != tc.root {
+				t.Fatalf("optional-list slice-vector root changed: got %s want %s", got, tc.root)
+			}
+			ser, err := ds.MarshalSSZ(tc.payload)
+			if err != nil {
+				t.Fatalf("MarshalSSZ: %v", err)
+			}
+			if got := hex.EncodeToString(ser); got != tc.ser {
+				t.Fatalf("optional-list slice-vector serialization changed: got %s want %s", got, tc.ser)
+			}
+		})
+	}
+}
+
+// TestCodegenUnionExprVariantSize is a regression test for the generated union
+// size code: a union variant whose size is fully determined by a dynssz-size
+// expression never reads the type-asserted variant value, which previously left
+// `v` declared-and-unused so the generated size method failed to compile. This
+// test only exercises the compile fix once the generated methods exist (via
+// go generate); the reflection comparison still validates the sizing itself.
+func TestCodegenUnionExprVariantSize(t *testing.T) {
+	testCodegenPayloadByReflection(t, UnionExprVariantSize_Payload, UnionExprVariantSize_Specs, dynssz.WithExtendedTypes())
+}
+
+// TestCodegenUnionExprVariantSizeCrossPreset is a regression test for the
+// generated buffer decoder of a union whose fixed-size variant length comes
+// from a dynssz-size expression. The decoder baked the variant's byte length to
+// the static ssz-size fallback (here 4 uint16 = 8 bytes) instead of the runtime
+// resolved size, so any preset whose resolved size differed from the static
+// value made the generated UnmarshalSSZ reject valid encodings with an
+// "incorrect offset: N bytes trailing data" (resolved > static) or an
+// unexpected-EOF (resolved < static). The static-equal case (matching the
+// existing UnionExprVariantSize test) accidentally masked it. Both engines must
+// round-trip identically for resolved sizes above and below the static one.
+func TestCodegenUnionExprVariantSizeCrossPreset(t *testing.T) {
+	mk := func(n int) UnionExprVariantSize {
+		data := make([]uint16, n)
+		for i := range data {
+			data[i] = uint16(i + 1)
+		}
+		return UnionExprVariantSize{
+			U: dynssz.CompatibleUnion[struct {
+				F0 []uint16 `ssz-size:"4" dynssz-size:"UNION_VEC_SIZE"`
+			}]{Variant: 1, Data: data},
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		size uint64
+	}{
+		{"resolved_gt_static", 6},
+		{"resolved_lt_static", 2},
+		{"resolved_eq_static", 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testCodegenPayloadByReflection(t, mk(int(tc.size)),
+				map[string]any{"UNION_VEC_SIZE": tc.size}, dynssz.WithExtendedTypes())
+		})
+	}
+}
+
+// TestCodegenVecDynElemExprSize is a regression test for the generated stream
+// decoder of a vector of dynamic-size elements whose length is a dynssz-size
+// expression. The first-offset check compared a uint32 offset against a typed
+// int length expression, which failed to compile without a uint32 cast. Only
+// meaningful once the generated methods exist (via go generate); the reflection
+// comparison still validates the decoding.
+func TestCodegenVecDynElemExprSize(t *testing.T) {
+	testCodegenPayloadByReflection(t, VecDynElemExprSize_Payload, VecDynElemExprSize_Specs)
 }
 
 // TestCodegenViewTypes2 tests nested view dispatch: a container whose child
@@ -896,6 +1099,26 @@ func TestCodegenMultiDimSpecVec(t *testing.T) {
 		testCodegenPayloadByReflection(t, MultiDimSpecVec{M: [][]byte{{1, 2, 3, 4}}}, specs)
 		testCodegenPayloadByReflection(t, MultiDimSpecVec{M: [][]byte{{1, 2, 3, 4}, {5, 6, 7, 8}}}, specs)
 	}
+}
+
+// A fixed-size vector of variable-size elements whose length is a dynssz
+// expression must generate compiling streaming decoder code (the first-offset
+// check compares a uint32 offset against limit*4, where limit is int(expr)).
+// The package building at all is the compile regression guard; the differential
+// confirms the value round-trips identically in both engines.
+func TestCodegenStreamVecDynSize(t *testing.T) {
+	for _, specs := range []map[string]any{nil, StreamVecDynSize_Specs} {
+		testCodegenPayloadByReflection(t, StreamVecDynSize_Payload, specs)
+		testCodegenPayloadByReflection(t, StreamVecDynSize{V: []StreamVecElem{}}, specs)
+	}
+}
+
+// A compatible-union whose variant is an inline container sized purely by a size
+// expression must still generate compiling SizeSSZ code: the asserted variant
+// value would otherwise be declared-and-unused. The package compiling is the
+// regression guard; the differential confirms sizing agreement.
+func TestCodegenSizeUnionExprVariant(t *testing.T) {
+	testCodegenPayloadByReflection(t, SizeUnionExprVariant_Payload, SizeUnionExprVariant_Specs)
 }
 
 // A bitlist without ssz-max must produce the same root in both engines

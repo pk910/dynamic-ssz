@@ -251,6 +251,12 @@ func TestTypeCache_ErrorCases(t *testing.T) {
 				hints:    []SszTypeHint{{Type: SszUint128Type}},
 				expected: "uint128 ssz type does not fit in array",
 			},
+			{
+				name:     "uint128 array too large",
+				typ:      reflect.TypeOf([32]uint8{}),
+				hints:    []SszTypeHint{{Type: SszUint128Type}},
+				expected: "uint128 ssz type does not fill the array",
+			},
 		}
 
 		for _, tt := range tests {
@@ -291,6 +297,18 @@ func TestTypeCache_ErrorCases(t *testing.T) {
 				typ:      reflect.TypeOf([4]uint8{}),
 				hints:    []SszTypeHint{{Type: SszUint256Type}},
 				expected: "uint256 ssz type does not fit in array",
+			},
+			{
+				name:     "uint256 byte array too large",
+				typ:      reflect.TypeOf([64]uint8{}),
+				hints:    []SszTypeHint{{Type: SszUint256Type}},
+				expected: "uint256 ssz type does not fill the array",
+			},
+			{
+				name:     "uint256 uint64 array too large",
+				typ:      reflect.TypeOf([5]uint64{}),
+				hints:    []SszTypeHint{{Type: SszUint256Type}},
+				expected: "uint256 ssz type does not fill the array",
 			},
 		}
 
@@ -910,6 +928,30 @@ func TestTypeCache_ZeroLengthVectorRejected(t *testing.T) {
 	}
 }
 
+// A fixed Go array whose outer dynssz-size dimension is the "?" placeholder must
+// keep its intrinsic length. The placeholder yields a dynamic size hint with
+// Size 0; a Go array cannot be relaxed to a variable-length list, so the array
+// length must survive (regression for the multi-dim empty-outer-dim bug where
+// the zero-size placeholder wrongly zeroed the array length).
+func TestTypeCache_ArrayOuterDynSizeQuestionKeepsLength(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{specValues: map[string]uint64{"MAX_ATTESTATIONS": 5}})
+
+	type multiDim struct {
+		F [2][]byte `ssz-size:"2,6" dynssz-size:"?,MAX_ATTESTATIONS"`
+	}
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(multiDim{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	f := desc.ContainerDesc.Fields[0].Type
+	if f.Len != 2 {
+		t.Fatalf("outer array length: expected 2, got %d", f.Len)
+	}
+	if f.ElemDesc == nil || f.ElemDesc.Len != 5 {
+		t.Fatalf("inner vector length: expected 5, got %+v", f.ElemDesc)
+	}
+}
+
 // Per the SSZ spec, containers must have at least one field.
 func TestTypeCache_ZeroFieldContainerRejected(t *testing.T) {
 	cache := NewTypeCache(&dummyDynamicSpecs{})
@@ -1178,6 +1220,33 @@ func TestTypeCache_DelegatedShallowBuild(t *testing.T) {
 		)
 		if err == nil || !strings.Contains(err.Error(), "does not provide a usable view sizer") {
 			t.Fatalf("expected unusable view sizer error, got: %v", err)
+		}
+	})
+
+	t.Run("ViewArrayLargerThanBacking", func(t *testing.T) {
+		// A view/schema fixed-array field must not declare more elements than the
+		// runtime backing array holds: there is no storage for the extra elements,
+		// so it is rejected. A smaller schema stays valid (the Go array is sized for
+		// the largest preset and a view may use only a prefix of it).
+		type viewArrBacking struct{ H [32]byte }
+		type viewArrLarger struct{ H [48]byte }
+		type viewArrSmaller struct{ H [20]byte }
+
+		_, err := cache.GetTypeDescriptorWithSchema(
+			reflect.TypeOf(viewArrBacking{}),
+			reflect.TypeOf(viewArrLarger{}),
+			nil, nil, nil,
+		)
+		if err == nil || !strings.Contains(err.Error(), "exceeds the backing array length") {
+			t.Fatalf("expected view schema array-length error, got: %v", err)
+		}
+
+		if _, err := cache.GetTypeDescriptorWithSchema(
+			reflect.TypeOf(viewArrBacking{}),
+			reflect.TypeOf(viewArrSmaller{}),
+			nil, nil, nil,
+		); err != nil {
+			t.Fatalf("a smaller view array should be allowed, got: %v", err)
 		}
 	})
 }
@@ -1735,11 +1804,15 @@ func TestTypeCache_ExtendedTypes(t *testing.T) {
 	t.Run("OptionalListDescriptorWithChildHints", func(t *testing.T) {
 		cache := NewTypeCache(ds)
 
-		// Child size and max hints get forwarded to the element descriptor.
+		// Child size and max hints get forwarded to the element descriptor. The
+		// optional-list framing consumes only the leading ssz-type dimension (its
+		// own "optional-list" hint); the size/max hints all describe the element T
+		// and are forwarded in full, so the element list's ssz-max:"32" lands on
+		// the inner []byte and gives it Limit 32.
 		desc, err := cache.GetTypeDescriptor(
 			reflect.TypeOf((*[]byte)(nil)),
-			[]SszSizeHint{{}, {Size: 0, Dynamic: true}},
-			[]SszMaxSizeHint{{}, {Size: 32}},
+			nil,
+			[]SszMaxSizeHint{{Size: 32}},
 			[]SszTypeHint{{Type: SszOptionalListType}, {Type: SszListType}},
 		)
 		if err != nil {

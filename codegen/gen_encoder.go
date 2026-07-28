@@ -37,6 +37,12 @@ type encoderContext struct {
 	sizeFnSignature   map[string]string
 	sizeFnNameCounter int
 	indexCounter      int
+	// noDynBufferCalls preserves the original WithoutDynamicExpressions setting.
+	// The streaming encoder clears options.WithoutDynamicExpressions so it can use
+	// ds-driven size expressions, but the no-*Dyn-buffer-call invariant must still
+	// hold: a dynamic-only child must be inlined (or rejected), never reached via
+	// MarshalSSZDyn. That decision keys off this field, not options.
+	noDynBufferCalls bool
 }
 
 // generateEncoder generates encoder methods for a specific type.
@@ -56,6 +62,10 @@ type encoderContext struct {
 func generateEncoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, viewName string, options *CodeGeneratorOptions) error {
 	// Streaming code always uses dynamic expressions since the encoder interface
 	// requires DynamicSpecs. Override WithoutDynamicExpressions for this generator.
+	// The no-*Dyn-buffer-call invariant is preserved separately via
+	// ctx.noDynBufferCalls so a dynamic-only child is still inlined or rejected
+	// rather than reached through MarshalSSZDyn.
+	noDynBufferCalls := options.WithoutDynamicExpressions
 	if options.WithoutDynamicExpressions {
 		optsCopy := *options
 		optsCopy.WithoutDynamicExpressions = false
@@ -70,10 +80,11 @@ func generateEncoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 			}
 			codeBuf.WriteString(indentStr(code, indent))
 		},
-		typePrinter:     typePrinter,
-		options:         options,
-		sizeFnNameMap:   make(map[*ssztypes.TypeDescriptor]int),
-		sizeFnSignature: make(map[string]string),
+		typePrinter:      typePrinter,
+		options:          options,
+		sizeFnNameMap:    make(map[*ssztypes.TypeDescriptor]int),
+		sizeFnSignature:  make(map[string]string),
+		noDynBufferCalls: noDynBufferCalls,
 	}
 
 	ctx.exprVars = newExprVarGenerator("ctx.exprs", typePrinter, options)
@@ -326,7 +337,19 @@ func (ctx *encoderContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 		return nil
 	}
 
-	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 && !isRoot && !isView {
+	// The streaming encoder may take ds, but it must still never reference a *Dyn
+	// buffer method under WithoutDynamicExpressions. A generated child is reached
+	// via its static MarshalSSZTo or its streaming MarshalSSZEncoder above; a
+	// remaining dynamic-only type is inlined by falling through to the structural
+	// switch below, unless it has no traversable structure (custom or
+	// shallow-delegated externals), which cannot be inlined.
+	if ctx.noDynBufferCalls && !isRoot && !isView &&
+		desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 {
+		if desc.SszType == ssztypes.SszCustomType || isShallowDelegatedDescriptor(desc) {
+			return fmt.Errorf("cannot generate static encoder for %s under without-dynamic-expressions: it provides only a dynamic (spec-aware) MarshalSSZDyn and has no static MarshalSSZTo, streaming MarshalSSZEncoder, or inlinable structure; add it to the generation set or provide a static marshaler", ctx.typePrinter.TypeString(desc))
+		}
+		// fall through: inline the type's structure via the switch below
+	} else if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 && !isRoot && !isView {
 		ctx.appendCode(indent, "if buf, err := %s.MarshalSSZDyn(ds, enc.GetBuffer()); err != nil {\n\treturn %s\n} else {\n\tenc.SetBuffer(buf)\n}\n", varName, typePath.getErrorWith("err"))
 		ctx.usedDynSpecs = true
 		return nil
@@ -408,7 +431,7 @@ func (ctx *encoderContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 	case ssztypes.SszOptionalListType:
 		return ctx.marshalOptionalList(desc, varName, typePath, indent)
 	case ssztypes.SszBigIntType:
-		return ctx.marshalBigInt(desc, varName, indent)
+		return ctx.marshalBigInt(desc, varName, typePath, indent)
 
 	default:
 		return fmt.Errorf("unsupported SSZ type: %v", desc.SszType)
@@ -449,7 +472,15 @@ func (ctx *encoderContext) marshalOptionalList(desc *ssztypes.TypeDescriptor, va
 }
 
 // marshalBigInt generates marshal code for SSZ big int types.
-func (ctx *encoderContext) marshalBigInt(_ *ssztypes.TypeDescriptor, varName string, indent int) error {
+func (ctx *encoderContext) marshalBigInt(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
+	// Enforce a static ssz-max (payload = sign byte + magnitude), matching the
+	// buffer marshaller so the streaming path rejects an over-max value instead
+	// of serializing it. Dynamic (dynssz-max expression) limits stay unchecked to
+	// keep generated code consistent with the reflection engine.
+	if desc.MaxExpression == nil && desc.Limit > 0 {
+		errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", uint64(1+len(%s.Bytes())), %d)", varName, desc.Limit)
+		ctx.appendCode(indent, "if uint64(1+len(%s.Bytes())) > %d {\n\treturn %s\n}\n", varName, desc.Limit, typePath.getErrorWith(errCode))
+	}
 	// sign byte (0 = non-negative, 1 = negative) followed by the big-endian magnitude
 	ctx.appendCode(indent, "if %s.Sign() < 0 {\n\tenc.EncodeUint8(1)\n} else {\n\tenc.EncodeUint8(0)\n}\n", varName)
 	ctx.appendCode(indent, "enc.EncodeBytes(%s.Bytes())\n", varName)

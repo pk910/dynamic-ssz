@@ -545,7 +545,10 @@ func (p *TypePrinter) reflectGenericTypeName(t reflect.Type, trackImports bool) 
 // extractAndRegisterImports finds package paths in the type string and registers them as imports
 func (p *TypePrinter) extractAndRegisterImports(typeStr string) {
 	// Match package paths like github.com/attestantio/go-eth2-client/spec/phase0
-	pkgPattern := regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z][a-zA-Z0-9_]*)*(?:/[a-zA-Z][a-zA-Z0-9_.-]*)+)\.([A-Z][a-zA-Z0-9_]*)`)
+	// The trailing type name may be unexported (lowercase-initial): a generic type
+	// argument can reference an unexported same-package type, whose full import
+	// path must still be rewritten to an unqualified identifier.
+	pkgPattern := regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z][a-zA-Z0-9_]*)*(?:/[a-zA-Z][a-zA-Z0-9_.-]*)+)\.([A-Za-z_][a-zA-Z0-9_]*)`)
 	matches := pkgPattern.FindAllStringSubmatch(typeStr, -1)
 
 	for _, match := range matches {
@@ -576,8 +579,10 @@ func (p *TypePrinter) extractAndRegisterImports(typeStr string) {
 func (p *TypePrinter) cleanGenericTypeName(genericStr string) string {
 	result := genericStr
 
-	// Replace full package paths with alias.Type format
-	pkgPattern := regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z][a-zA-Z0-9_]*)*(?:/[a-zA-Z][a-zA-Z0-9_.-]*)+)\.([A-Z][a-zA-Z0-9_]*)`)
+	// Replace full package paths with alias.Type format. The trailing type name
+	// may be unexported (lowercase-initial): a generic type argument can reference
+	// an unexported same-package type whose full import path must be rewritten.
+	pkgPattern := regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z][a-zA-Z0-9_]*)*(?:/[a-zA-Z][a-zA-Z0-9_.-]*)+)\.([A-Za-z_][a-zA-Z0-9_]*)`)
 
 	result = pkgPattern.ReplaceAllStringFunc(result, func(match string) string {
 		submatches := pkgPattern.FindStringSubmatch(match)

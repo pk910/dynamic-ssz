@@ -757,6 +757,15 @@ func (e *StreamDecoder) DecodeUint8() (uint8, error) {
 }
 
 func (e *StreamDecoder) DecodeUint16() (uint16, error) {
+	// Fast path: the 2 bytes are within the region limit and already buffered,
+	// so read them inline without the readBytesRef/ensureBuffered calls. This is
+	// exactly readBytesRef's buffered case; anything else defers to it.
+	if e.position+2 <= e.lastLimit && e.bufferLen-e.bufferPos >= 2 {
+		v := binary.LittleEndian.Uint16(e.buffer[e.bufferPos : e.bufferPos+2])
+		e.bufferPos += 2
+		e.position += 2
+		return v, nil
+	}
 	buf, err := e.readBytesRef(2)
 	if err != nil {
 		return 0, err
@@ -765,6 +774,15 @@ func (e *StreamDecoder) DecodeUint16() (uint16, error) {
 }
 
 func (e *StreamDecoder) DecodeUint32() (uint32, error) {
+	// Fast path: the 4 bytes are within the region limit and already buffered,
+	// so read them inline without the readBytesRef/ensureBuffered calls. This is
+	// exactly readBytesRef's buffered case; anything else defers to it.
+	if e.position+4 <= e.lastLimit && e.bufferLen-e.bufferPos >= 4 {
+		v := binary.LittleEndian.Uint32(e.buffer[e.bufferPos : e.bufferPos+4])
+		e.bufferPos += 4
+		e.position += 4
+		return v, nil
+	}
 	buf, err := e.readBytesRef(4)
 	if err != nil {
 		return 0, err
@@ -773,6 +791,15 @@ func (e *StreamDecoder) DecodeUint32() (uint32, error) {
 }
 
 func (e *StreamDecoder) DecodeUint64() (uint64, error) {
+	// Fast path: the 8 bytes are within the region limit and already buffered,
+	// so read them inline without the readBytesRef/ensureBuffered calls. This is
+	// exactly readBytesRef's buffered case; anything else defers to it.
+	if e.position+8 <= e.lastLimit && e.bufferLen-e.bufferPos >= 8 {
+		v := binary.LittleEndian.Uint64(e.buffer[e.bufferPos : e.bufferPos+8])
+		e.bufferPos += 8
+		e.position += 8
+		return v, nil
+	}
 	buf, err := e.readBytesRef(8)
 	if err != nil {
 		return 0, err
@@ -781,6 +808,16 @@ func (e *StreamDecoder) DecodeUint64() (uint64, error) {
 }
 
 func (e *StreamDecoder) DecodeBytes(buf []byte) ([]byte, error) {
+	// Fast path: within the region limit and already buffered - copy inline
+	// instead of calling readBytes (which the inliner cannot take). This mirrors
+	// readBytes' buffered case exactly; anything else defers to it.
+	n := len(buf)
+	if e.position+n <= e.lastLimit && e.bufferLen-e.bufferPos >= n {
+		copy(buf, e.buffer[e.bufferPos:e.bufferPos+n])
+		e.bufferPos += n
+		e.position += n
+		return buf, nil
+	}
 	if err := e.readBytes(buf); err != nil {
 		return nil, err
 	}

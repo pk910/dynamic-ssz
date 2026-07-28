@@ -1,0 +1,18 @@
+# Nested generated containers generated with the hardest static combination:
+# -with-streaming -without-fastssz -without-dynamic-expressions. Every parent
+# must reach the nested child through its static methods, never a *Dyn buffer
+# function and never by wrapping the streaming encoder into the static path.
+# The generated file compiling as part of this package is the invariant guard;
+# the differential test confirms the static code round-trips against reflection.
+package: github.com/pk910/dynamic-ssz/codegen/tests
+output: gen_nodynnest.go
+with-streaming: true
+without-fastssz: true
+without-dynamic-expressions: true
+
+types:
+  - NoDynNestProg
+  - NoDynNestList
+  - NoDynNestVec
+  - NoDynNestField
+  - NoDynNestChild

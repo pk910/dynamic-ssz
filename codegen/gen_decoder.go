@@ -42,6 +42,12 @@ type decoderContext struct {
 	offsetSliceCounter int
 	offsetSliceLimit   int
 	indexCounter       int
+	// noDynBufferCalls preserves the original WithoutDynamicExpressions setting.
+	// The streaming decoder clears options.WithoutDynamicExpressions so it can use
+	// ds-driven size expressions, but the no-*Dyn-buffer-call invariant must still
+	// hold: a dynamic-only child must be inlined (or rejected), never reached via
+	// UnmarshalSSZDyn. That decision keys off this field, not options.
+	noDynBufferCalls bool
 }
 
 // generateDecoder generates decoder methods for a specific type.
@@ -61,6 +67,10 @@ type decoderContext struct {
 func generateDecoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, viewName string, options *CodeGeneratorOptions) error {
 	// Streaming code always uses dynamic expressions since the decoder interface
 	// requires DynamicSpecs. Override WithoutDynamicExpressions for this generator.
+	// The no-*Dyn-buffer-call invariant is preserved separately via
+	// ctx.noDynBufferCalls so a dynamic-only child is still inlined or rejected
+	// rather than reached through UnmarshalSSZDyn.
+	noDynBufferCalls := options.WithoutDynamicExpressions
 	if options.WithoutDynamicExpressions {
 		optsCopy := *options
 		optsCopy.WithoutDynamicExpressions = false
@@ -75,8 +85,9 @@ func generateDecoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 			}
 			codeBuf.WriteString(indentStr(code, indent))
 		},
-		typePrinter: typePrinter,
-		options:     options,
+		typePrinter:      typePrinter,
+		options:          options,
+		noDynBufferCalls: noDynBufferCalls,
 	}
 
 	ctx.exprVars = newExprVarGenerator("expr", typePrinter, options)
@@ -191,17 +202,106 @@ func (ctx *decoderContext) isInlinable(desc *ssztypes.TypeDescriptor) bool {
 		return true
 	}
 
-	// Inline types with generated unmarshal methods
-	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
+	// Inline types with generated unmarshal methods. Under WithoutDynamicExpressions
+	// the *Dyn buffer method is never called (the type is structurally inlined
+	// instead), so its presence must not shortcut temp-var creation here. Keyed off
+	// noDynBufferCalls because the streaming decoder clears options.WithoutDynamicExpressions.
+	if !ctx.noDynBufferCalls && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
 		return true
 	}
 
-	// Inline types with generated decoder methods
+	// Inline types with generated decoder methods (streaming; still used under
+	// WithoutDynamicExpressions).
 	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 {
 		return true
 	}
 
 	return false
+}
+
+// unmarshalDelegatedMethod emits a delegation to a nested type's generated
+// decoder/unmarshaler when one is available and returns handled=true; it returns
+// handled=false to signal the caller should inline the type's structure via the
+// structural switch. It must only be called for non-root, non-view types.
+func (ctx *decoderContext) unmarshalDelegatedMethod(desc *ssztypes.TypeDescriptor, varName string, indent int) (handled bool, err error) {
+	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0
+	isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
+	useFastSsz := !ctx.options.NoFastSsz && isFastsszUnmarshaler && !hasDynamicSize
+	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
+		useFastSsz = true
+	}
+	// Custom types prefer their spec-aware dynssz methods over fastssz.
+	if desc.SszType == ssztypes.SszCustomType &&
+		desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicUnmarshaler|ssztypes.SszCompatFlagDynamicDecoder) != 0 {
+		useFastSsz = false
+	}
+
+	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 {
+		ctx.appendCode(indent, "if err = %s.UnmarshalSSZDecoder(ds, dec); err != nil {\n\treturn err\n}\n", varName)
+		ctx.usedDynSpecs = true
+		return true, nil
+	}
+
+	if useFastSsz {
+		sizeStr := "-1"
+		if desc.Size > 0 {
+			sizeStr = fmt.Sprintf("%d", desc.Size)
+		}
+		ctx.appendCode(indent, "if buf, err := sszutils.DecodeDelegateBuffer(dec, %s); err != nil {\n", sizeStr)
+		ctx.appendCode(indent+1, "return err\n")
+		ctx.appendCode(indent, "} else if err = %s.UnmarshalSSZ(buf); err != nil {\n", varName)
+		ctx.appendCode(indent+1, "return err\n")
+		ctx.appendCode(indent, "}\n")
+		return true, nil
+	}
+
+	// The streaming decoder may take ds, but it must still never reference a
+	// *Dyn buffer method under WithoutDynamicExpressions. A generated child is
+	// reached via its static UnmarshalSSZ or its streaming UnmarshalSSZDecoder
+	// above; a remaining dynamic-only type is inlined by falling through to the
+	// structural switch below, unless it has no traversable structure (custom
+	// or shallow-delegated externals), which cannot be inlined. Keyed off
+	// noDynBufferCalls because the streaming decoder clears WithoutDynamicExpressions.
+	if ctx.noDynBufferCalls &&
+		desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
+		if desc.SszType == ssztypes.SszCustomType || isShallowDelegatedDescriptor(desc) {
+			return false, fmt.Errorf("cannot generate static decoder for %s under without-dynamic-expressions: it provides only a dynamic (spec-aware) UnmarshalSSZDyn and has no static UnmarshalSSZ, streaming UnmarshalSSZDecoder, or inlinable structure; add it to the generation set or provide a static unmarshaler", ctx.typePrinter.TypeString(desc))
+		}
+		// fall through: inline the type's structure via the switch below
+	} else if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
+		sizeStr := "-1"
+		switch {
+		case desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 &&
+			desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions:
+			// A delegated fixed-size type carrying a size expression occupies its
+			// RUNTIME-resolved size, which is what the (always runtime-resolving)
+			// streaming encoder used to write it. Frame the delegated region with
+			// that runtime size, NOT the baked static desc.Size: preferring the
+			// static size here makes the streaming decoder under-/over-read the
+			// region whenever the runtime specs differ from the static default,
+			// so it cannot decode its own valid output (ws14-01). This branch is
+			// checked before the static one precisely because such a type has both
+			// a concrete desc.Size and a size expression. A shallow delegated type
+			// (desc.Size == 0) also lands here — reading the whole remaining region
+			// would otherwise swallow subsequent fields.
+			sizeVar, verr := ctx.staticSizeVars.getStaticSizeVar(desc)
+			if verr != nil {
+				return false, verr
+			}
+			sizeStr = fmt.Sprintf("int(%s)", sizeVar)
+		case desc.Size > 0:
+			sizeStr = fmt.Sprintf("%d", desc.Size)
+		}
+		ctx.appendCode(indent, "if buf, err := sszutils.DecodeDelegateBuffer(dec, %s); err != nil {\n", sizeStr)
+		ctx.appendCode(indent+1, "return err\n")
+		ctx.appendCode(indent, "} else if err = %s.UnmarshalSSZDyn(ds, buf); err != nil {\n", varName)
+		ctx.appendCode(indent+1, "return err\n")
+		ctx.appendCode(indent, "}\n")
+		ctx.usedDynSpecs = true
+		return true, nil
+	}
+
+	return false, nil
 }
 
 // unmarshalType generates unmarshal code for any SSZ type, delegating to specific unmarshalers.
@@ -259,58 +359,11 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 	}
 
 	if !isRoot && !isView {
-		hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0
-		isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
-		useFastSsz := !ctx.options.NoFastSsz && isFastsszUnmarshaler && !hasDynamicSize
-		if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
-			useFastSsz = true
+		handled, err := ctx.unmarshalDelegatedMethod(desc, varName, indent)
+		if err != nil {
+			return err
 		}
-		// Custom types prefer their spec-aware dynssz methods over fastssz.
-		if desc.SszType == ssztypes.SszCustomType &&
-			desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicUnmarshaler|ssztypes.SszCompatFlagDynamicDecoder) != 0 {
-			useFastSsz = false
-		}
-
-		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 {
-			ctx.appendCode(indent, "if err = %s.UnmarshalSSZDecoder(ds, dec); err != nil {\n\treturn err\n}\n", varName)
-			ctx.usedDynSpecs = true
-			return nil
-		}
-
-		if useFastSsz {
-			sizeStr := "-1"
-			if desc.Size > 0 {
-				sizeStr = fmt.Sprintf("%d", desc.Size)
-			}
-			ctx.appendCode(indent, "if buf, err := sszutils.DecodeDelegateBuffer(dec, %s); err != nil {\n", sizeStr)
-			ctx.appendCode(indent+1, "return err\n")
-			ctx.appendCode(indent, "} else if err = %s.UnmarshalSSZ(buf); err != nil {\n", varName)
-			ctx.appendCode(indent+1, "return err\n")
-			ctx.appendCode(indent, "}\n")
-			return nil
-		}
-
-		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
-			sizeStr := "-1"
-			if desc.Size > 0 {
-				sizeStr = fmt.Sprintf("%d", desc.Size)
-			} else if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 &&
-				desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
-				// A delegated STATIC type without a compile-time size (shallow
-				// descriptor) occupies exactly its own runtime size; reading the
-				// whole remaining region would swallow subsequent fields.
-				sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(desc)
-				if err != nil {
-					return err
-				}
-				sizeStr = fmt.Sprintf("int(%s)", sizeVar)
-			}
-			ctx.appendCode(indent, "if buf, err := sszutils.DecodeDelegateBuffer(dec, %s); err != nil {\n", sizeStr)
-			ctx.appendCode(indent+1, "return err\n")
-			ctx.appendCode(indent, "} else if err = %s.UnmarshalSSZDyn(ds, buf); err != nil {\n", varName)
-			ctx.appendCode(indent+1, "return err\n")
-			ctx.appendCode(indent, "}\n")
-			ctx.usedDynSpecs = true
+		if handled {
 			return nil
 		}
 	}
@@ -751,7 +804,11 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 		ctx.appendCode(indent, "startOffset, err := dec.DecodeOffset()\n")
 		ctx.appendCode(indent, "if err != nil {\n\treturn %s\n}\n", typePath.getErrorWith("err"))
 		errCode = fmt.Sprintf("sszutils.ErrFirstOffsetMismatchFn(startOffset, %s*4)", limitVar)
-		ctx.appendCode(indent, "if startOffset != %s*4 {\n\treturn %s\n}\n", limitVar, typePath.getErrorWith(errCode))
+		// startOffset is a uint32 (from DecodeOffset); limitVar may be a typed
+		// int expression (e.g. int(expr0)) when the vector length is dynamic, so
+		// the comparison RHS must be converted to uint32 to keep the types
+		// compatible. A bare int literal limitVar stays an untyped constant.
+		ctx.appendCode(indent, "if startOffset != uint32(%s*4) {\n\treturn %s\n}\n", limitVar, typePath.getErrorWith(errCode))
 
 		// read offsets
 		ctx.appendCode(indent, "var offsets []uint32\n")

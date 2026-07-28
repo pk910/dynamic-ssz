@@ -2570,3 +2570,107 @@ func TestRegion_MaxStreamSizeIsHardBound(t *testing.T) {
 		}
 	})
 }
+
+// --- region / allowance edge branches ---
+
+// TestStreamDecoder_UnknownMaxStreamSizeClamped covers the clamp of an oversized
+// maxStreamSize down to maxAllowance in NewUnknownStreamDecoder.
+func TestStreamDecoder_UnknownMaxStreamSizeClamped(t *testing.T) {
+	dec := NewUnknownStreamDecoder(bytes.NewReader(nil), 64, math.MaxInt)
+	if dec.maxSize != maxAllowance {
+		t.Fatalf("maxSize = %d, want clamp to maxAllowance %d", dec.maxSize, maxAllowance)
+	}
+}
+
+// TestStreamDecoder_AvailableClampedToRegion covers Available() returning the
+// remaining region length when fewer region bytes remain than are buffered.
+func TestStreamDecoder_AvailableClampedToRegion(t *testing.T) {
+	dec := NewStreamDecoder(bytes.NewReader([]byte{1, 2, 3, 4, 5, 6, 7, 8}), 8, 64)
+	if err := dec.ensureBuffered(8); err != nil {
+		t.Fatalf("ensureBuffered: %v", err)
+	}
+	dec.PushLimit(2) // region shorter than the 8 buffered bytes
+	if got := dec.Available(); got != 2 {
+		t.Fatalf("Available() = %d, want 2 (clamped to region limit)", got)
+	}
+}
+
+// TestStreamDecoder_AvailableNegativeReturnsZero covers the avail < 0 guard in
+// Available() when the position has run past the region limit.
+func TestStreamDecoder_AvailableNegativeReturnsZero(t *testing.T) {
+	dec := NewStreamDecoder(bytes.NewReader([]byte{1, 2}), 2, 64)
+	dec.lastLimit = 0
+	dec.position = 5 // room = lastLimit - position = -5
+	if got := dec.Available(); got != 0 {
+		t.Fatalf("Available() = %d, want 0 for a negative remaining region", got)
+	}
+}
+
+// TestStreamDecoder_ReadMoreBeyondAllowance covers the pre-loop allowance guard
+// in readMore for an unknown-length stream (remaining <= 0).
+func TestStreamDecoder_ReadMoreBeyondAllowance(t *testing.T) {
+	dec := NewUnknownStreamDecoder(bytes.NewReader([]byte{1, 2, 3, 4}), 64, 4)
+	dec.position = dec.maxSize + 1 // whole allowance already consumed
+	if err := dec.readMore(); !errors.Is(err, ErrStreamTooLarge) {
+		t.Fatalf("readMore() = %v, want ErrStreamTooLarge", err)
+	}
+}
+
+// TestStreamDecoder_DecodeRemainingOpenMoreAtAllowance covers the DecodeRemaining
+// branch where an open region reaches its allowance with bytes still buffered:
+// More() reports more and the payload is rejected as too large.
+func TestStreamDecoder_DecodeRemainingOpenMoreAtAllowance(t *testing.T) {
+	dec := NewUnknownStreamDecoder(bytes.NewReader(nil), 64, 100)
+	dec.PushOpenLimit()
+	// Open region, region limit already reached (room == 0), but bytes still
+	// buffered so More() returns (true, nil) without touching the reader.
+	dec.lastOpen = true
+	dec.lastLimit = 0
+	dec.position = 0
+	dec.buffer = []byte{9, 9}
+	dec.bufferLen = 2
+	dec.bufferPos = 0
+	if _, err := dec.DecodeRemaining(-1); !errors.Is(err, ErrStreamTooLarge) {
+		t.Fatalf("DecodeRemaining() = %v, want ErrStreamTooLarge", err)
+	}
+}
+
+// TestStreamDecoder_DecodeRemainingOpenEOFWithData covers the open-region break
+// when EOF arrives together with the final data bytes: the buffered remainder is
+// returned and the loop stops on the sticky-EOF path.
+func TestStreamDecoder_DecodeRemainingOpenEOFWithData(t *testing.T) {
+	data := []byte{1, 2, 3, 4, 5}
+	dec := NewUnknownStreamDecoder(&partialThenEOFReader{data: data}, 64, 1024)
+	dec.PushOpenLimit()
+	got, err := dec.DecodeRemaining(-1)
+	if err != nil {
+		t.Fatalf("DecodeRemaining: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatalf("DecodeRemaining = %x, want %x", got, data)
+	}
+}
+
+// TestStreamDecoder_DecodeRemainingOpenEOFSeenBreak covers the defensive
+// sticky-EOF break inside DecodeRemaining's open-region loop: it fires only when
+// EOF has been seen (eofSeen) while the region is still marked open with the
+// position short of the limit and nothing buffered. onEOF normally collapses an
+// open region to a bounded one, so this state is not reachable through the
+// public API; the state is constructed directly to exercise the guard.
+func TestStreamDecoder_DecodeRemainingOpenEOFSeenBreak(t *testing.T) {
+	dec := NewUnknownStreamDecoder(bytes.NewReader(nil), 64, 1024)
+	dec.PushOpenLimit()
+	dec.lastOpen = true // open region => loop-captured openRegion == true
+	dec.lastLimit = 10  // room = lastLimit - position = 10 > 0
+	dec.position = 0
+	dec.eofSeen = true // EOF already observed
+	dec.bufferLen = 0  // available == 0
+	dec.bufferPos = 0
+	got, err := dec.DecodeRemaining(-1)
+	if err != nil {
+		t.Fatalf("DecodeRemaining: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("DecodeRemaining = %x, want empty", got)
+	}
+}

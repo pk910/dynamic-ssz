@@ -1247,8 +1247,18 @@ func (tc *TypeCache) buildUintDescriptor(desc *TypeDescriptor, t reflect.Type, b
 
 	if desc.Kind == reflect.Array {
 		dstLen := uint32(t.Len())
+		// A fixed-width uint (uint128/uint256) occupies exactly desc.Len array
+		// elements. A smaller array cannot hold it; a larger array carries trailing
+		// elements that marshal silently drops (truncating to desc.Len) while
+		// HashTreeRoot rejects the length mismatch — an inconsistency the codegen
+		// parser already refuses. Reject both here so the reflection path agrees.
+		// Unlike a Vector/Bitvector (where an oversized backing array is a valid
+		// preset pattern), a uint width is intrinsic and never preset-dependent.
 		if dstLen < desc.Len {
 			return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "%s ssz type does not fit in array (%d < %d)", typeName, dstLen, desc.Len)
+		}
+		if dstLen > desc.Len {
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "%s ssz type does not fill the array (%d > %d): trailing elements would be dropped", typeName, dstLen, desc.Len)
 		}
 	}
 
@@ -1649,15 +1659,17 @@ func (tc *TypeCache) buildOptionalListDescriptor(desc *TypeDescriptor, runtimeTy
 		return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "optional-list ssz type can only be represented by pointer types, got %v", desc.Kind)
 	}
 
-	childSizeHints := []SszSizeHint{}
-	if len(sizeHints) > 1 {
-		childSizeHints = sizeHints[1:]
-	}
+	// The optional-list frames the Go pointer as List[T, 1]. That framing consumes
+	// the leading ssz-type dimension (the "optional-list" hint itself), but it has
+	// no size or max of its own — the list limit is fixed at 1 — so it consumes no
+	// ssz-size / ssz-max dimension. The remaining size/max hints belong to the
+	// pointed-to element T and must be forwarded in full, exactly as a plain
+	// pointer forwards them (e.g. `*[]uint16 ssz-size:"2"` -> Vector[uint16,2]).
+	// Peeling them here dropped the element's constraint and mis-classified a
+	// fixed inner vector as a variable list.
+	childSizeHints := sizeHints
 
-	childMaxSizeHints := []SszMaxSizeHint{}
-	if len(maxSizeHints) > 1 {
-		childMaxSizeHints = maxSizeHints[1:]
-	}
+	childMaxSizeHints := maxSizeHints
 
 	childTypeHints := []SszTypeHint{}
 	if len(typeHints) > 1 {
@@ -1712,8 +1724,26 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 
 	switch {
 	case desc.Kind == reflect.Array:
+		// With a view descriptor the schema (view) type defines the SSZ layout while
+		// the runtime type provides the backing storage. A schema array must not
+		// declare MORE elements than the backing array holds: there is no storage for
+		// the extra elements, so the reflection path would marshal/hash nonexistent
+		// zero-padding and the codegen path would emit an out-of-bounds slice that
+		// fails to compile. A SMALLER schema stays allowed — the Go array is sized for
+		// the largest preset and a view may use only a prefix of it. (When no view is
+		// used, runtimeType == schemaType, so this is a no-op.)
+		if runtimeType.Kind() == reflect.Array && runtimeType.Len() < t.Len() {
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "view schema array length (%d) exceeds the backing array length (%d)", t.Len(), runtimeType.Len())
+		}
 		desc.Len = uint32(t.Len())
-		if len(sizeHints) > 0 {
+		// A dynamic placeholder hint — e.g. dynssz-size:"?" on an outer dimension
+		// whose Go type is a fixed array — carries Size 0 (and no Bits) and must
+		// not zero the array's intrinsic length: a Go array cannot be relaxed to
+		// a variable-length list, so it keeps its intrinsic length (matching the
+		// codegen path). A concrete hint (Size > 0) or an explicit bit-size hint
+		// (Bits set, incl. ssz-bitsize:"0", which must still be rejected as a
+		// zero-length bitvector) is applied.
+		if len(sizeHints) > 0 && (sizeHints[0].Size > 0 || sizeHints[0].Bits) {
 			byteLen := sizeHints[0].Size
 			if sizeHints[0].Bits {
 				desc.BitSize = sizeHints[0].Size

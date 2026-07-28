@@ -169,6 +169,16 @@ func (cg *CodeGenerator) analyzeTypes() error {
 			var desc *ssztypes.TypeDescriptor
 			var err error
 
+			// Without dynamic expressions the generated code must never call a
+			// delegated *Dyn method, so a fully-delegated ssz-static type cannot be
+			// reached through its dynamic methods and must instead be inlined from
+			// its traversed structure. Disable the shallow-build shortcut so the
+			// subtree is available. The flag is never lowered (mirroring
+			// ExtendedTypes): a shared cache/parser stays in the stricter mode.
+			if t.Options.WithoutDynamicExpressions {
+				cg.typeCache.NoDelegation = true
+			}
+
 			if t.ReflectType != nil {
 				// Always wrap in pointer so generated methods use pointer receivers
 				// (needed for unmarshal to write back modified values).
@@ -190,6 +200,9 @@ func (cg *CodeGenerator) analyzeTypes() error {
 					parser.CompatFlags = cg.compatFlags
 					parser.ExtendedTypes = t.Options.ExtendedTypes
 					parser.AnnotationResolver = cg.annotationResolver
+				}
+				if t.Options.WithoutDynamicExpressions {
+					parser.NoDelegation = true
 				}
 				if _, ok := t.GoTypesType.(*types.Pointer); !ok {
 					t.GoTypesType = types.NewPointer(t.GoTypesType)
@@ -221,6 +234,17 @@ func (cg *CodeGenerator) analyzeTypes() error {
 				// A duplicate view would emit its methods and dispatcher case
 				// twice, producing non-compiling output.
 				seenViews := make(map[string]bool, len(t.ViewReflectTypes)+len(t.ViewGoTypesTypes))
+				// A view identical to the data type would emit a `case *T`
+				// alongside the dispatcher's own `case nil, *T`, producing a
+				// duplicate type-switch case that does not compile. The base
+				// type was already pointer-wrapped above, so its String() key
+				// matches a normalized view key. Reserve it up front.
+				baseViewKey := ""
+				if t.ReflectType != nil {
+					baseViewKey = t.ReflectType.String()
+				} else if t.GoTypesType != nil {
+					baseViewKey = t.GoTypesType.String()
+				}
 				for _, viewType := range t.ViewReflectTypes {
 					// Pointer-wrap the view like the base type, regardless of
 					// kind, so runtime and schema kinds stay aligned in the
@@ -228,6 +252,9 @@ func (cg *CodeGenerator) analyzeTypes() error {
 					// before the dedup key so T and *T collide as one entry.
 					if viewType.Kind() != reflect.Pointer {
 						viewType = reflect.PointerTo(viewType)
+					}
+					if viewType.String() == baseViewKey {
+						return fmt.Errorf("view type %s is the same as the data type %s; a data type cannot list itself as a view", viewType.String(), typeName)
 					}
 					if seenViews[viewType.String()] {
 						return fmt.Errorf("view type %s is listed more than once for %s; remove the duplicate entry", viewType.String(), typeName)
@@ -247,6 +274,9 @@ func (cg *CodeGenerator) analyzeTypes() error {
 					}
 					if _, ok := viewType.(*types.Pointer); !ok {
 						viewType = types.NewPointer(viewType)
+					}
+					if viewType.String() == baseViewKey {
+						return fmt.Errorf("view type %s is the same as the data type %s; a data type cannot list itself as a view", viewType.String(), typeName)
 					}
 					if seenViews[viewType.String()] {
 						return fmt.Errorf("view type %s is listed more than once for %s; remove the duplicate entry", viewType.String(), typeName)
@@ -520,11 +550,19 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 		// A recursive descriptor graph is only emittable when every cycle can be
 		// broken by a delegated method call; verify before emission so an
 		// unsupported shape produces a clear error instead of unbounded recursion.
-		if err := validateEmittableGraph(t.Descriptor); err != nil {
+		// A generated child is reached through its static MarshalSSZTo either when
+		// fastssz delegation is enabled, or when WithoutDynamicExpressions forces
+		// the static path regardless of NoFastSsz. Dynamic* delegation only
+		// terminates a cycle when the emitter actually calls those methods, which
+		// it never does under WithoutDynamicExpressions (dynamic-only children are
+		// inlined there).
+		staticDelegation := !t.Options.NoFastSsz || t.Options.WithoutDynamicExpressions
+		dynamicDelegation := !t.Options.WithoutDynamicExpressions
+		if err := validateEmittableGraph(t.Descriptor, staticDelegation, dynamicDelegation); err != nil {
 			return "", fmt.Errorf("cannot generate code for %s: %w", t.TypeName, err)
 		}
 		for _, viewDesc := range t.ViewDescriptors {
-			if err := validateEmittableGraph(viewDesc); err != nil {
+			if err := validateEmittableGraph(viewDesc, staticDelegation, dynamicDelegation); err != nil {
 				return "", fmt.Errorf("cannot generate code for view of %s: %w", t.TypeName, err)
 			}
 		}

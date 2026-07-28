@@ -226,6 +226,45 @@ func (ctx *hashTreeRootContext) getPtrPrefix(desc *ssztypes.TypeDescriptor, pref
 	return ""
 }
 
+// hashUsesFastSsz reports whether a nested type is hashed through its static
+// fastssz-style method (HashTreeRootWith / HashTreeRoot) rather than being
+// inlined. Under WithoutDynamicExpressions the static method is used even when
+// fastssz delegation is otherwise disabled, because the dynamic path is forbidden.
+func (ctx *hashTreeRootContext) hashUsesFastSsz(desc *ssztypes.TypeDescriptor, isRoot bool) bool {
+	isFastsszHasher := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0
+	isFastsszHashWith := desc.SszCompatFlags&ssztypes.SszCompatFlagHashTreeRootWith != 0
+	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
+	hasDynamicMax := desc.SszTypeFlags&ssztypes.SszTypeFlagHasMaxExpr != 0 && !ctx.options.WithoutDynamicExpressions
+
+	useFastSsz := !isRoot && !hasDynamicSize && !hasDynamicMax && (isFastsszHasher || isFastsszHashWith) &&
+		(!ctx.options.NoFastSsz || ctx.options.WithoutDynamicExpressions)
+	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
+		useFastSsz = true
+	}
+	return useFastSsz
+}
+
+// hashDynamicRoot emits a delegation to a nested type's dynamic hash root method
+// when dynamic expressions are allowed. Under WithoutDynamicExpressions it never
+// calls HashTreeRootWithDyn: it either rejects a type with no inlinable structure
+// or signals (done=false) that the caller should inline the type structurally.
+// It must only be called for non-root, non-view types carrying DynamicHashRoot.
+func (ctx *hashTreeRootContext) hashDynamicRoot(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, useFastSsz bool) (done bool, err error) {
+	if !ctx.options.WithoutDynamicExpressions {
+		ctx.appendCode(indent, "if err := %s.HashTreeRootWithDyn(ds, hh); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
+		ctx.usedDynSpecs = true
+		return true, nil
+	}
+	// The static hash path must never call HashTreeRootWithDyn. If no static
+	// HashTreeRootWith is available, the type is inlined by falling through to
+	// the structural switch below — unless it has no traversable structure
+	// (custom or shallow-delegated externals), which cannot be inlined.
+	if !useFastSsz && (desc.SszType == ssztypes.SszCustomType || isShallowDelegatedDescriptor(desc)) {
+		return true, fmt.Errorf("cannot generate static hash tree root for %s under without-dynamic-expressions: it provides only dynamic (spec-aware) SSZ methods and has no static HashTreeRootWith or inlinable structure; add it to the generation set or provide a static hasher", ctx.typePrinter.TypeString(desc))
+	}
+	return false, nil
+}
+
 // hashType generates hash tree root code for any SSZ type, delegating to specific hashers.
 func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, isRoot, pack bool) error {
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.SszType != ssztypes.SszOptionalType && desc.SszType != ssztypes.SszOptionalListType {
@@ -244,20 +283,13 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 		}
 	}
 
-	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0 && !isRoot && !isView {
-		ctx.appendCode(indent, "if err := %s.HashTreeRootWithDyn(ds, hh); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
-		ctx.usedDynSpecs = true
-		return nil
-	}
-
-	isFastsszHasher := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0
 	isFastsszHashWith := desc.SszCompatFlags&ssztypes.SszCompatFlagHashTreeRootWith != 0
-	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
-	hasDynamicMax := desc.SszTypeFlags&ssztypes.SszTypeFlagHasMaxExpr != 0 && !ctx.options.WithoutDynamicExpressions
+	useFastSsz := ctx.hashUsesFastSsz(desc, isRoot)
 
-	useFastSsz := !isRoot && !ctx.options.NoFastSsz && !hasDynamicSize && !hasDynamicMax && (isFastsszHasher || isFastsszHashWith)
-	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
-		useFastSsz = true
+	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0 && !isRoot && !isView {
+		if done, err := ctx.hashDynamicRoot(desc, varName, typePath, indent, useFastSsz); done {
+			return err
+		}
 	}
 
 	if useFastSsz && !isView {
@@ -396,7 +428,7 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 	case ssztypes.SszOptionalListType:
 		return ctx.hashOptionalList(desc, varName, typePath, indent)
 	case ssztypes.SszBigIntType:
-		return ctx.hashBigInt(desc, varName, indent)
+		return ctx.hashBigInt(desc, varName, typePath, indent)
 
 	default:
 		return fmt.Errorf("unsupported SSZ type: %v", desc.SszType)
@@ -424,25 +456,39 @@ func (ctx *hashTreeRootContext) hashOptional(desc *ssztypes.TypeDescriptor, varN
 // the length (0 or 1). The merkleization limit is always 1 (one chunk for
 // basic elements ≤32 bytes, or one element for complex elements).
 func (ctx *hashTreeRootContext) hashOptionalList(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
-	// Wrap in braces so `idx` and `vlen` don't collide with any caller's locals.
+	// Wrap in braces so `idx` and the length var don't collide with any caller's
+	// locals. The length var uses a dedicated name (not `vlen`): the element is
+	// hashed inline in the same `if` block and a fixed-size vector/list element
+	// declares its own `vlen := len(...)` there. Reusing `vlen` here would let
+	// that inner declaration shadow ours, so the mixin length assignment would
+	// target the element's local and leave the outer length at 0 — mixing in a
+	// length of 0 for a present element and producing the wrong root.
 	ctx.appendCode(indent, "{\n")
 	ctx.appendCode(indent+1, "idx := hh.StartTree(sszutils.TreeTypeBinary)\n")
-	ctx.appendCode(indent+1, "vlen := uint64(0)\n")
+	ctx.appendCode(indent+1, "optListLen := uint64(0)\n")
 	ctx.appendCode(indent+1, "if %s != nil {\n", varName)
+	ctx.appendCode(indent+2, "optListLen = 1\n")
 	innerVarName := fmt.Sprintf("(*%s)", varName)
 	if err := ctx.hashType(desc.ElemDesc, innerVarName, typePath.append("[0]"), indent+2, false, true); err != nil {
 		return err
 	}
-	ctx.appendCode(indent+2, "vlen = 1\n")
 	ctx.appendCode(indent+1, "}\n")
 	ctx.appendCode(indent+1, "hh.FillUpTo32()\n")
-	ctx.appendCode(indent+1, "hh.MerkleizeWithMixin(idx, vlen, 1)\n")
+	ctx.appendCode(indent+1, "hh.MerkleizeWithMixin(idx, optListLen, 1)\n")
 	ctx.appendCode(indent, "}\n")
 	return nil
 }
 
 // hashBigInt generates hash tree root code for SSZ big int types.
-func (ctx *hashTreeRootContext) hashBigInt(_ *ssztypes.TypeDescriptor, varName string, indent int) error {
+func (ctx *hashTreeRootContext) hashBigInt(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
+	// Enforce a static ssz-max (payload = sign byte + magnitude), matching the
+	// buffer marshaller so HashTreeRoot does not produce a root for a value that
+	// cannot be serialized. Dynamic (dynssz-max expression) limits stay unchecked
+	// to keep generated code consistent with the reflection engine.
+	if desc.MaxExpression == nil && desc.Limit > 0 {
+		errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", uint64(1+len(%s.Bytes())), %d)", varName, desc.Limit)
+		ctx.appendCode(indent, "if uint64(1+len(%s.Bytes())) > %d {\n\treturn %s\n}\n", varName, desc.Limit, typePath.getErrorWith(errCode))
+	}
 	// Hash the payload byte length, then the sign byte and big-endian magnitude.
 	// Prepending the length keeps it ahead of the trailing-zero chunk padding so
 	// values whose encodings differ only by trailing zeros (e.g. N and N<<8) do

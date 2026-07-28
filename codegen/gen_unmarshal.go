@@ -200,10 +200,11 @@ func (ctx *unmarshalContext) isInlinable(desc *ssztypes.TypeDescriptor) bool {
 		return true
 	}
 
-	// Inline types with fastssz unmarshaler
+	// Inline types with fastssz unmarshaler (or, under WithoutDynamicExpressions,
+	// any type exposing a static UnmarshalSSZ — matching unmarshalCompatType).
 	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
 	isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
-	useFastSsz := !ctx.options.NoFastSsz && isFastsszUnmarshaler && !hasDynamicSize
+	useFastSsz := isFastsszUnmarshaler && !hasDynamicSize && (!ctx.options.NoFastSsz || ctx.options.WithoutDynamicExpressions)
 	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
 		useFastSsz = true
 	}
@@ -211,8 +212,10 @@ func (ctx *unmarshalContext) isInlinable(desc *ssztypes.TypeDescriptor) bool {
 		return true
 	}
 
-	// Inline types with generated unmarshal methods
-	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
+	// Inline types with generated unmarshal methods. Under WithoutDynamicExpressions
+	// the *Dyn method is never called (the type is structurally inlined instead),
+	// so its presence must not shortcut temp-var creation here.
+	if !ctx.options.WithoutDynamicExpressions && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
 		return true
 	}
 
@@ -241,10 +244,14 @@ func (ctx *unmarshalContext) unmarshalViewType(desc *ssztypes.TypeDescriptor, va
 	return false
 }
 
-func (ctx *unmarshalContext) unmarshalCompatType(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) bool {
+func (ctx *unmarshalContext) unmarshalCompatType(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) (bool, error) {
 	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
 	isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
-	useFastSsz := !ctx.options.NoFastSsz && isFastsszUnmarshaler && !hasDynamicSize
+	// Under WithoutDynamicExpressions the generated code must be fully static and
+	// must never call a *Dyn method. A child exposing a static UnmarshalSSZ
+	// (every dynssz-generated child in this mode, plus external fastssz types) is
+	// reached through it even when fastssz delegation is otherwise disabled.
+	useFastSsz := isFastsszUnmarshaler && !hasDynamicSize && (!ctx.options.NoFastSsz || ctx.options.WithoutDynamicExpressions)
 	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
 		useFastSsz = true
 	}
@@ -256,23 +263,36 @@ func (ctx *unmarshalContext) unmarshalCompatType(desc *ssztypes.TypeDescriptor, 
 
 	if useFastSsz {
 		ctx.appendCode(indent, "if err = %s.UnmarshalSSZ(buf); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
-		return true
+		return true, nil
+	}
+
+	// Under WithoutDynamicExpressions the static buffer path must never call a
+	// *Dyn method. Instead of delegating, a dynamic-only type is inlined by
+	// returning "not handled" so the caller walks its structure. Types with no
+	// traversable structure (custom or shallow-delegated externals) cannot be
+	// inlined, so they are rejected with a clear error.
+	if ctx.options.WithoutDynamicExpressions {
+		if desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicUnmarshaler|ssztypes.SszCompatFlagDynamicDecoder) != 0 &&
+			(desc.SszType == ssztypes.SszCustomType || isShallowDelegatedDescriptor(desc)) {
+			return false, fmt.Errorf("cannot generate static unmarshaler for %s under without-dynamic-expressions: it provides only dynamic (spec-aware) SSZ methods and has no static UnmarshalSSZ or inlinable structure; add it to the generation set or provide a static unmarshaler", ctx.typePrinter.TypeString(desc))
+		}
+		return false, nil
 	}
 
 	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
 		ctx.appendCode(indent, "if err = %s.UnmarshalSSZDyn(ds, buf); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
 		ctx.usedDynSpecs = true
-		return true
+		return true, nil
 	}
 
 	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 {
 		ctx.appendCode(indent, "dec := sszutils.NewBufferDecoder(buf)\n")
 		ctx.appendCode(indent, "if err = %s.UnmarshalSSZDecoder(ds, dec); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
 		ctx.usedDynSpecs = true
-		return true
+		return true, nil
 	}
 
-	return false
+	return false, nil
 }
 
 func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, isRoot, noBufCheck bool) error {
@@ -285,7 +305,9 @@ func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varNam
 	}
 
 	if !isRoot && !isView {
-		if handled := ctx.unmarshalCompatType(desc, varName, typePath, indent); handled {
+		if handled, err := ctx.unmarshalCompatType(desc, varName, typePath, indent); err != nil {
+			return err
+		} else if handled {
 			return nil
 		}
 	}
@@ -1280,14 +1302,29 @@ func (ctx *unmarshalContext) unmarshalUnion(desc *ssztypes.TypeDescriptor, varNa
 		childTypePath := typePath.append(fmt.Sprintf("[v:%d]", variant))
 
 		// Check that buf has enough bytes for the selector plus the variant value.
-		// A fixed-size variant occupies exactly 1+elemSize bytes of the union
+		// A fixed-size variant occupies exactly 1+variantSize bytes of the union
 		// region, so any extra bytes are trailing data and must be rejected
 		// (matching the reflection and streaming-decoder paths).
 		elemSize := variantDesc.Size
 		if elemSize > 0 {
-			eofErr := childTypePath.getErrorWith(fmt.Sprintf("sszutils.ErrUnionVariantEOFFn(len(buf), %d)", 1+elemSize))
-			trailErr := childTypePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - %d)", 1+elemSize))
-			ctx.appendExactLenCheck(indent+1, fmt.Sprintf("%d", 1+elemSize), "len(buf)", eofErr, trailErr)
+			// When the variant's serialized size comes from a spec expression, its
+			// byte length is resolved at runtime and must not be baked to the
+			// static default: doing so under-/over-reads the union region for any
+			// preset whose resolved size differs from the static fallback. Compute
+			// the runtime size the same way the size/marshal paths do.
+			var sizeExpr string
+			if variantDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+				sizeVar, serr := ctx.staticSizeVars.getStaticSizeVar(variantDesc)
+				if serr != nil {
+					return serr
+				}
+				sizeExpr = fmt.Sprintf("1 + %s", sizeVar)
+			} else {
+				sizeExpr = fmt.Sprintf("%d", 1+elemSize)
+			}
+			eofErr := childTypePath.getErrorWith(fmt.Sprintf("sszutils.ErrUnionVariantEOFFn(len(buf), %s)", sizeExpr))
+			trailErr := childTypePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - (%s))", sizeExpr))
+			ctx.appendExactLenCheck(indent+1, sizeExpr, "len(buf)", eofErr, trailErr)
 		}
 
 		valVar := ctx.getValVar()
