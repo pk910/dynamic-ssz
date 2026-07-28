@@ -859,6 +859,14 @@ func TestGrowSlice(t *testing.T) {
 	if len(reused) != 100 || cap(reused) != 160 || &reused[0] != &storage[0] {
 		t.Fatalf("reuse len/cap = %d/%d, want 100/160 over the existing backing array", len(reused), cap(reused))
 	}
+
+	// A limit below the requested size cannot be honoured: the result must still
+	// hold size elements, so the limit is raised to size rather than producing a
+	// capacity smaller than the length, which make would reject outright.
+	underLimit := GrowSlice([]int(nil), 4, 2)
+	if len(underLimit) != 4 || cap(underLimit) != 4 {
+		t.Fatalf("under-limit growth len/cap = %d/%d, want 4/4", len(underLimit), cap(underLimit))
+	}
 }
 
 func TestDecodeByteListInto(t *testing.T) {
