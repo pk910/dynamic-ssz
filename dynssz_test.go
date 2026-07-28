@@ -5427,16 +5427,12 @@ func TestUnknownSizeDoesNotAllocateFromDeclaredElementCount(t *testing.T) {
 	}
 }
 
-// A dynamic-list offset table proves only the number of offsets delivered; it
-// does not prove that any element body exists. Wide value elements make that
-// distinction important because allocating the destination slice materialises
-// every element's fixed Go storage before the first body is decoded.
-//
-// The decoder currently allocates that destination eagerly, but the allocation
-// must remain bounded by the schema's maximum result size rather than by an
-// unchecked count from the wire. This accounts for the worst supported shape
-// without using a fragile instantaneous HeapAlloc sample.
-func TestUnknownSizeWideDynamicValueAllocationIsSchemaBounded(t *testing.T) {
+// In an unknown-size region, a dynamic-list offset table proves the element
+// count but it does not prove that even the first element body exists. The
+// reflection stream decoder must reserve only a small prefix of a wide []T
+// before attempting that body, rather than materialising the schema's entire
+// maximum result.
+func TestUnknownSizeDynamicListWideValueAllocationIsIncremental(t *testing.T) {
 	type wideDynamicElement struct {
 		Fixed [64 << 10]byte
 		Tail  []byte `ssz-max:"1"`
@@ -5454,27 +5450,54 @@ func TestUnknownSizeWideDynamicValueAllocationIsSchemaBounded(t *testing.T) {
 	binary.LittleEndian.PutUint32(payload[:4], 4)
 	copy(payload[4:], offsetTable)
 
+	ds := NewDynSsz(
+		nil,
+		WithNoFastSsz(),
+		WithStreamReaderBufferSize(8),
+		WithMaxStreamSize(128<<20),
+	)
+	if _, err := ds.SizeSSZ(&wideDynamicList{}); err != nil {
+		t.Fatalf("warm type cache: %v", err)
+	}
+
+	valid := wideDynamicList{Items: make([]wideDynamicElement, 2)}
+	valid.Items[0].Fixed[0] = 1
+	valid.Items[0].Tail = []byte{2}
+	valid.Items[1].Fixed[0] = 3
+	validPayload, err := ds.MarshalSSZ(&valid)
+	if err != nil {
+		t.Fatalf("marshal valid list: %v", err)
+	}
+	var roundTrip wideDynamicList
+	if err := ds.UnmarshalSSZReader(&roundTrip, bytes.NewReader(validPayload), -1); err != nil {
+		t.Fatalf("incrementally decode valid list: %v", err)
+	}
+	if len(roundTrip.Items) != 2 ||
+		cap(roundTrip.Items) != 2 ||
+		roundTrip.Items[0].Fixed[0] != 1 ||
+		!bytes.Equal(roundTrip.Items[0].Tail, []byte{2}) ||
+		roundTrip.Items[1].Fixed[0] != 3 {
+		t.Fatal("incrementally grown list did not round-trip")
+	}
+
 	runtime.GC()
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
 
-	ds := NewDynSsz(nil, WithNoFastSsz(), WithStreamReaderBufferSize(8), WithMaxStreamSize(128<<20))
 	var out wideDynamicList
-	err := ds.UnmarshalSSZReader(&out, bytes.NewReader(payload), -1)
-	if err == nil {
+	if err := ds.UnmarshalSSZReader(&out, bytes.NewReader(payload), -1); err == nil {
 		t.Fatal("offset table without element bodies decoded successfully")
 	}
 
 	runtime.ReadMemStats(&after)
 	allocated := after.TotalAlloc - before.TotalAlloc
-	schemaResultBytes := uint64(itemCount) * uint64(reflect.TypeFor[wideDynamicElement]().Size())
-	const accountingSlack = 16 << 20
-	if allocated > schemaResultBytes+accountingSlack {
+	const allocationLimit = 4 << 20
+	if allocated > allocationLimit {
 		t.Fatalf(
-			"%d bytes of malformed input allocated %d bytes; schema result bound plus slack is %d",
+			"%d bytes of malformed input allocated %d bytes, want at most %d",
 			len(payload),
 			allocated,
-			schemaResultBytes+accountingSlack,
+			allocationLimit,
 		)
 	}
 }

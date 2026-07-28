@@ -461,6 +461,80 @@ func TestExpandSlice_GrowWithinCapacityZeroesTail(t *testing.T) {
 	}
 }
 
+func TestDecodeSlicePreallocation(t *testing.T) {
+	tests := []struct {
+		name     string
+		count    int
+		elemSize uint64
+		want     int
+	}{
+		{name: "negative count", count: -1, elemSize: 8, want: 0},
+		{name: "empty", count: 0, elemSize: 8, want: 0},
+		{name: "zero sized element", count: 100_000, elemSize: 0, want: 100_000},
+		{name: "within budget", count: 32, elemSize: 8, want: 32},
+		{
+			name:     "clamped to byte budget",
+			count:    10_000,
+			elemSize: 8,
+			want:     maxDecodeSlicePreallocationBytes / 8,
+		},
+		{
+			name:     "one element exceeds budget",
+			count:    100,
+			elemSize: maxDecodeSlicePreallocationBytes + 1,
+			want:     1,
+		},
+		{
+			name:     "large size cannot overflow",
+			count:    100,
+			elemSize: ^uint64(0),
+			want:     1,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := decodeSlicePreallocation(test.count, test.elemSize); got != test.want {
+				t.Fatalf(
+					"decodeSlicePreallocation(%d, %d) = %d, want %d",
+					test.count,
+					test.elemSize,
+					got,
+					test.want,
+				)
+			}
+		})
+	}
+}
+
+func TestPreallocateDecodeSlice(t *testing.T) {
+	type wideElement [maxDecodeSlicePreallocationBytes]byte
+
+	got := PreallocateDecodeSlice([]wideElement(nil), 512)
+	if len(got) != 1 || cap(got) != 1 {
+		t.Fatalf("wide preallocation len/cap = %d/%d, want 1/1", len(got), cap(got))
+	}
+
+	got[0][0] = 42
+	chunkLen := cap(got)
+	if chunkLen == len(got) {
+		chunkLen = max(2, 8, len(got)*2)
+	}
+	got = GrowSlice(got, min(512, chunkLen), 512)
+	if got[0][0] != 42 {
+		t.Fatal("incremental growth lost the preallocated element")
+	}
+	if len(got) != 8 || cap(got) != 8 {
+		t.Fatalf("grown len/cap = %d/%d, want the 8-element geometric chunk", len(got), cap(got))
+	}
+
+	small := PreallocateDecodeSlice([]uint64(nil), 16)
+	if len(small) != 16 || cap(small) != 16 {
+		t.Fatalf("small preallocation len/cap = %d/%d, want 16/16", len(small), cap(small))
+	}
+
+}
+
 // ============================================================================
 // ZeroBytes Tests
 // ============================================================================
@@ -731,13 +805,13 @@ func TestZeroBytesConcurrent(t *testing.T) {
 
 func TestGrowSlice(t *testing.T) {
 	// A negative size yields an empty, non-nil slice rather than panicking.
-	if got := GrowSlice([]int(nil), -1); got == nil || len(got) != 0 {
-		t.Fatalf("GrowSlice(nil, -1) = %v, want empty non-nil", got)
+	if got := GrowSlice([]int(nil), -1, -1); got == nil || len(got) != 0 {
+		t.Fatalf("GrowSlice(nil, -1, -1) = %v, want empty non-nil", got)
 	}
 
 	// Growth is geometric, so repeated single-element growth must not
 	// reallocate every time.
-	s := GrowSlice([]int(nil), 1)
+	s := GrowSlice([]int(nil), 1, -1)
 	if len(s) != 1 {
 		t.Fatalf("len = %d, want 1", len(s))
 	}
@@ -746,13 +820,13 @@ func TestGrowSlice(t *testing.T) {
 	}
 	firstCap := cap(s)
 	for i := 2; i <= firstCap; i++ {
-		s = GrowSlice(s, i)
+		s = GrowSlice(s, i, -1)
 	}
 	if cap(s) != firstCap {
 		t.Fatalf("cap changed to %d while growing within capacity", cap(s))
 	}
 	s[0] = 42
-	s = GrowSlice(s, firstCap+1)
+	s = GrowSlice(s, firstCap+1, -1)
 	if cap(s) < 2*firstCap {
 		t.Fatalf("cap = %d, want at least %d (geometric growth)", cap(s), 2*firstCap)
 	}
@@ -762,14 +836,29 @@ func TestGrowSlice(t *testing.T) {
 
 	// Shrinking re-slices in place; re-growing must zero the reused tail so a
 	// short decode cannot expose the previous contents.
-	s = GrowSlice(s, 4)
+	s = GrowSlice(s, 4, -1)
 	for i := range s {
 		s[i] = 7
 	}
-	s = GrowSlice(s, 2)
-	s = GrowSlice(s, 4)
+	s = GrowSlice(s, 2, -1)
+	s = GrowSlice(s, 4, -1)
 	if s[2] != 0 || s[3] != 0 {
 		t.Fatalf("regrown tail = %v, want zeroed", s[2:4])
+	}
+
+	// An allocation limit clamps newly allocated capacity.
+	bounded := GrowSlice(make([]int, 80), 100, 100)
+	if len(bounded) != 100 || cap(bounded) != 100 {
+		t.Fatalf("bounded growth len/cap = %d/%d, want 100/100", len(bounded), cap(bounded))
+	}
+	floored := GrowSlice(make([]int, 1), 2, 2)
+	if len(floored) != 2 || cap(floored) != 2 {
+		t.Fatalf("bounded floor growth len/cap = %d/%d, want 2/2", len(floored), cap(floored))
+	}
+	storage := make([]int, 1, 160)
+	reused := GrowSlice(storage, 100, 100)
+	if len(reused) != 100 || cap(reused) != 160 || &reused[0] != &storage[0] {
+		t.Fatalf("reuse len/cap = %d/%d, want 100/160 over the existing backing array", len(reused), cap(reused))
 	}
 }
 

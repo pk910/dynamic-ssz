@@ -1776,6 +1776,74 @@ func TestCodegenDecoderEmptyDynListSeekable(t *testing.T) {
 	}
 }
 
+// An unknown-size dynamic-list offset table proves its item count before it
+// proves that any item body exists. A generated stream decoder must not turn a
+// small, body-less table into the full backing array for a very wide Go value.
+func TestCodegenUnknownSizeDynamicListWideValueAllocationIsIncremental(t *testing.T) {
+	if _, generated := any(&WideDynamicList{}).(sszutils.DynamicDecoder); !generated {
+		t.Skip("no generated code present")
+	}
+
+	const itemCount = 512
+	offsetTable := make([]byte, itemCount*4)
+	for pos := 0; pos < len(offsetTable); pos += 4 {
+		binary.LittleEndian.PutUint32(offsetTable[pos:pos+4], uint32(len(offsetTable)))
+	}
+	payload := make([]byte, 4+len(offsetTable))
+	binary.LittleEndian.PutUint32(payload[:4], 4)
+	copy(payload[4:], offsetTable)
+
+	ds := dynssz.NewDynSsz(
+		nil,
+		dynssz.WithStreamReaderBufferSize(8),
+		dynssz.WithMaxStreamSize(128<<20),
+	)
+	if _, err := ds.SizeSSZ(&WideDynamicList{}); err != nil {
+		t.Fatalf("warm generated methods: %v", err)
+	}
+
+	valid := WideDynamicList{Items: make([]WideDynamicElement, 2)}
+	valid.Items[0].Fixed[0] = 1
+	valid.Items[0].Tail = []byte{2}
+	valid.Items[1].Fixed[0] = 3
+	validPayload, err := ds.MarshalSSZ(&valid)
+	if err != nil {
+		t.Fatalf("marshal valid list: %v", err)
+	}
+	var roundTrip WideDynamicList
+	if err := ds.UnmarshalSSZReader(&roundTrip, bytes.NewReader(validPayload), -1); err != nil {
+		t.Fatalf("incrementally decode valid list: %v", err)
+	}
+	if len(roundTrip.Items) != 2 ||
+		cap(roundTrip.Items) != 2 ||
+		roundTrip.Items[0].Fixed[0] != 1 ||
+		!bytes.Equal(roundTrip.Items[0].Tail, []byte{2}) ||
+		roundTrip.Items[1].Fixed[0] != 3 {
+		t.Fatal("incrementally grown list did not round-trip")
+	}
+
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+
+	var out WideDynamicList
+	if err := ds.UnmarshalSSZReader(&out, bytes.NewReader(payload), -1); err == nil {
+		t.Fatal("offset table without element bodies decoded successfully")
+	}
+
+	runtime.ReadMemStats(&after)
+	allocated := after.TotalAlloc - before.TotalAlloc
+	const allocationLimit = 4 << 20
+	if allocated > allocationLimit {
+		t.Fatalf(
+			"%d bytes of malformed input allocated %d bytes, want at most %d",
+			len(payload),
+			allocated,
+			allocationLimit,
+		)
+	}
+}
+
 // The generated decoders enforce the big.Int ssz-max and canonicality rules on
 // both the buffer and stream paths, matching the reflection engine.
 func TestCodegenBigIntDecodeValidation(t *testing.T) {

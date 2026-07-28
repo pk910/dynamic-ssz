@@ -1081,6 +1081,21 @@ func (ctx *ReflectionCtx) unmarshalListUntilEOF(targetType *ssztypes.TypeDescrip
 	return nil
 }
 
+// dynamicListPreallocation mirrors the 64 KiB policy used by
+// sszutils.PreallocateDecodeSlice. It is local because reflection has only a
+// runtime element size, while the generated-code helper obtains sizeof(T)
+// through its generic type parameter.
+func dynamicListPreallocation(count int, elemSize uint64) int {
+	if count <= 0 {
+		return 0
+	}
+	if elemSize == 0 {
+		return count
+	}
+	maxCount := uint64(64<<10) / elemSize
+	return min(count, max(1, int(maxCount)))
+}
+
 // unmarshalDynamicList decodes lists with variable-size elements from SSZ format.
 //
 // For lists with variable-size elements, SSZ uses an offset-based encoding:
@@ -1183,14 +1198,14 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 		sliceOffsets = sszutils.GetOffsetSlice(sszutils.CredibleCount(decoder, sliceLen, 4))
 		defer func() { sszutils.PutOffsetSlice(sliceOffsets) }()
 
-		sliceOffsets = sszutils.GrowSlice(sliceOffsets, 1)
+		sliceOffsets = sszutils.GrowSlice(sliceOffsets, 1, sliceLen)
 		sliceOffsets[0] = firstOffset
 		for i := 1; i < sliceLen; i++ {
 			offset, err := decoder.DecodeOffset()
 			if err != nil {
 				return sszutils.ErrorWithPathf(err, "[%d:o]", i)
 			}
-			sliceOffsets = sszutils.GrowSlice(sliceOffsets, i+1)
+			sliceOffsets = sszutils.GrowSlice(sliceOffsets, i+1, sliceLen)
 			sliceOffsets[i] = offset
 		}
 	}
@@ -1203,7 +1218,15 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 		fieldT = fieldT.Elem()
 	}
 
-	newValue := reflect.MakeSlice(fieldT, sliceLen, sliceLen)
+	// A known region is already backed by the caller's complete input and keeps
+	// the existing exact-allocation path. For an open stream region, the offset
+	// table proves the element count but not that any element body exists, so
+	// reserve only a byte-bounded prefix and grow as bodies are reached.
+	initialLen := sliceLen
+	if !lengthKnown {
+		initialLen = dynamicListPreallocation(sliceLen, uint64(fieldT.Elem().Size()))
+	}
+	newValue := reflect.MakeSlice(fieldT, initialLen, initialLen)
 
 	if sliceLen > 0 {
 		offset := firstOffset
@@ -1214,17 +1237,6 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 
 		// decode slice items
 		for i := 0; i < sliceLen; i++ {
-			var itemVal reflect.Value
-			if allocPointerElems {
-				// fmt.Printf("new slice item %v\n", fieldType.Name())
-				itemVal = reflect.New(fieldType.Type.Elem())
-				newValue.Index(i).Set(itemVal)
-			} else {
-				// Non-pointer and optional-pointer elements decode in place via the
-				// addressable slot so an absent optional can be set back to nil.
-				itemVal = newValue.Index(i)
-			}
-
 			startOffset := offset
 			var endOffset uint32
 
@@ -1248,6 +1260,28 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 					sszutils.ErrElementOffsetOutOfRangeFn(endOffset, startOffset, sszLen),
 					"[%d:o]", i,
 				)
+			}
+
+			if i >= newValue.Len() {
+				// Make the whole geometric chunk addressable so this branch is
+				// taken only at chunk boundaries. Slots after i remain private
+				// zero values until later loop iterations fill them; the slice is
+				// not committed to targetValue until every declared item decodes.
+				chunkLen := min(sliceLen, max(i+1, newValue.Len()*2))
+				grown := reflect.MakeSlice(fieldT, chunkLen, chunkLen)
+				reflect.Copy(grown, newValue)
+				newValue = grown
+			}
+
+			var itemVal reflect.Value
+			if allocPointerElems {
+				// fmt.Printf("new slice item %v\n", fieldType.Name())
+				itemVal = reflect.New(fieldType.Type.Elem())
+				newValue.Index(i).Set(itemVal)
+			} else {
+				// Non-pointer and optional-pointer elements decode in place via the
+				// addressable slot so an absent optional can be set back to nil.
+				itemVal = newValue.Index(i)
 			}
 
 			if openElem {
@@ -1281,7 +1315,10 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 		}
 	}
 
-	targetValue.Set(newValue)
+	// Every index below sliceLen has decoded successfully at this point. Slice
+	// explicitly to the wire-declared count so the commit invariant remains
+	// obvious even if the chunking policy changes later.
+	targetValue.Set(newValue.Slice(0, sliceLen))
 
 	return nil
 }

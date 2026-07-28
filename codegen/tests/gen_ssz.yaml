@@ -177,6 +177,10 @@ types:
     output: gen_compilecorrectness.go
   - name: WrapPtrList
     output: gen_compilecorrectness.go
+  - name: WideDynamicElement
+    output: gen_compilecorrectness.go
+  - name: WideDynamicList
+    output: gen_compilecorrectness.go
 
   # Recursive shapes: generated in one file so the recursive references are
   # emitted as method calls between the members.

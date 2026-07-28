@@ -283,9 +283,12 @@ it.
 
 The saving is largest when the trailing region is *not* one huge list of
 fixed-size elements. A list of **dynamic** elements takes its count from the
-first offset, so it is sized exactly and never grows. That count can still
-materialize the result slice before element bodies are decoded; keep list limits
-realistic when elements contain large inline Go values.
+first offset. In an unknown-size region, the decoder reserves at most 64 KiB of
+destination elements from that count, then grows the slice geometrically as it
+reaches further element bodies. Known-size streams and buffer decoding retain
+their exact allocation. Unusually wide Go value elements therefore no longer
+materialize the schema's entire maximum before the first body arrives. Keep
+list limits realistic: they remain the final result-size bound.
 
 ### Less precise errors
 
