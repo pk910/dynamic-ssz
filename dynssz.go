@@ -715,8 +715,16 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 // Unknown-size mode is possible because SSZ is self-delimiting for every region
 // except the trailing one, so the missing length only ever affects the last
 // dynamic child at each nesting level. It is always bounded by WithMaxStreamSize
-// (512 MiB by default) — the bound cannot be disabled, since it is what keeps a
-// peer that never closes the connection from exhausting memory.
+// (512 MiB by default). That is a wire-byte allowance, not a deadline,
+// cancellation mechanism, or decoded-object heap limit. Use the smallest
+// application-specific cap your schema permits.
+//
+// EOF is the message boundary in unknown-size mode. A raw connection is safe
+// only when it carries one SSZ payload and EOF unambiguously ends that payload.
+// Long-lived network readers need protocol framing instead; every network
+// reader also needs a deadline or cancellation mechanism, since a peer can stay
+// below the byte allowance while withholding EOF forever. io.Reader itself has
+// no context support, so cancellation usually closes the reader/connection.
 //
 // Two caveats apply to unknown-size mode:
 //   - Errors are less precise. Checks that a known length would catch up front —
@@ -759,8 +767,11 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 //	    log.Fatal("Failed to read state:", err)
 //	}
 //
-//	// Read from network with unknown size (streams until EOF)
+//	// Read one EOF-framed payload from a connection. A deadline is required:
+//	// WithMaxStreamSize limits bytes, not how long the peer may withhold EOF.
 //	conn, _ := net.Dial("tcp", "localhost:8080")
+//	defer conn.Close()
+//	_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
 //	var block phase0.BeaconBlock
 //	err = ds.UnmarshalSSZReader(&block, conn, -1)
 func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...CallOption) error {

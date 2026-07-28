@@ -71,8 +71,8 @@ func init() {
 
 	dynSszCodegenMainnet = ssz.NewDynSsz(nil)
 	dynSszCodegenMinimal = ssz.NewDynSsz(minimalSpecs)
-	dynSszReflMainnet = ssz.NewDynSsz(nil, ssz.WithNoFastSsz())
-	dynSszReflMinimal = ssz.NewDynSsz(minimalSpecs, ssz.WithNoFastSsz())
+	dynSszReflMainnet = ssz.NewDynSsz(nil, ssz.WithNoFastSsz(), ssz.WithNoDelegation())
+	dynSszReflMinimal = ssz.NewDynSsz(minimalSpecs, ssz.WithNoFastSsz(), ssz.WithNoDelegation())
 }
 
 func loadHTR(path string) [32]byte {

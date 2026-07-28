@@ -1710,6 +1710,50 @@ func TestStreamDecoder_ReadBytesDataWithEOF(t *testing.T) {
 	}
 }
 
+// EOF is the only error that may be consumed after a reader has supplied all
+// requested bytes. Other terminal errors can be integrity verdicts from a
+// checksumming, decompressing, or authenticated reader and must survive both
+// the direct-read and buffered-fill paths.
+func TestStreamDecoder_PreservesTerminalDataErrors(t *testing.T) {
+	data := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+
+	for name, want := range map[string]error{
+		"integrity":      errors.New("checksum failed"),
+		"unexpected EOF": io.ErrUnexpectedEOF,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Run("direct read", func(t *testing.T) {
+				dec := NewStreamDecoder(
+					&errReader{data: data, errAfter: len(data), err: want},
+					len(data),
+					8,
+				)
+				dec.PushLimit(len(data))
+
+				got := make([]byte, len(data))
+				_, err := dec.DecodeBytes(got)
+				if !errors.Is(err, want) {
+					t.Fatalf("DecodeBytes error = %v, want %v", err, want)
+				}
+				if !bytes.Equal(got, data) {
+					t.Fatalf("reader data was not processed before its error: got %x, want %x", got, data)
+				}
+			})
+
+			t.Run("buffer fill", func(t *testing.T) {
+				dec := NewUnknownStreamDecoder(
+					&errReader{data: data, errAfter: len(data), err: want},
+					64,
+					64,
+				)
+				if err := dec.Prefill(); !errors.Is(err, want) {
+					t.Fatalf("Prefill error = %v, want %v", err, want)
+				}
+			})
+		})
+	}
+}
+
 // A (0, nil) no-op read must be retried, not treated as EOF, on both the
 // buffered (ensureBuffered) and direct (readBytes) paths.
 func TestStreamDecoder_ZeroNilReadRetried(t *testing.T) {

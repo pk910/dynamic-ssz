@@ -16,9 +16,9 @@ const DefaultStreamDecoderBufSize = 2 * 1024
 
 // DefaultMaxStreamSize is the default upper bound on the total size of an SSZ
 // payload decoded without a known length. Unknown-length decoding is always
-// bounded: the bound is what keeps a peer that never closes the connection —
-// and any decode site that has not been taught about open regions — from
-// driving an unbounded allocation.
+// byte-bounded: the allowance keeps an endless input — and any decode site that
+// has not been taught about open regions — from driving an unbounded wire
+// allocation. It does not bound read time or decoded-object memory.
 const DefaultMaxStreamSize = 512 * 1024 * 1024
 
 // maxConsecutiveEmptyReads bounds retries of a (0, nil) read. Such a read is a
@@ -397,7 +397,11 @@ func (e *StreamDecoder) readMore() error {
 		}
 
 		if err != nil {
-			if err == io.EOF || err == io.ErrUnexpectedEOF {
+			// Only io.EOF is a clean end-of-stream signal. In particular,
+			// io.ErrUnexpectedEOF is an integrity/truncation failure from the
+			// reader and must not turn an open SSZ region into a valid short
+			// payload merely because the reader returned data with it.
+			if err == io.EOF {
 				e.onEOF()
 				return nil
 			}
@@ -514,9 +518,18 @@ func (e *StreamDecoder) readBytes(buf []byte) error {
 		totalRead += nr
 		e.position += nr
 
-		// A reader may return the final bytes together with io.EOF; once the
-		// request is satisfied the read succeeded regardless of that error.
+		// A reader may return the final bytes together with io.EOF; that is a
+		// successful exact read. Any other terminal error still matters even
+		// when it accompanies enough data: integrity-checking, decompressing,
+		// and authenticated readers commonly report their verdict that way.
 		if totalRead >= remaining {
+			if err != nil {
+				if err == io.EOF {
+					e.onEOF()
+				} else {
+					return err
+				}
+			}
 			break
 		}
 		if err != nil {
