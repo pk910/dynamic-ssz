@@ -37,6 +37,11 @@ type sizeContext struct {
 	limitVarCounter int
 
 	useTypeFnMap map[*ssztypes.TypeDescriptor]*sizeFnPtr
+	recursion    *recursionBound
+	// depthAware is set while emitting a type that lies on a recursive cycle,
+	// where the body runs inside a depth-carrying method and can pass the depth
+	// on to a cyclic child.
+	depthAware bool
 }
 
 func newSizeContext(typePrinter *TypePrinter, options *CodeGeneratorOptions) *sizeContext {
@@ -54,6 +59,7 @@ func newSizeContext(typePrinter *TypePrinter, options *CodeGeneratorOptions) *si
 	}
 	ctx.exprVars.retVars = "0"
 	ctx.staticSizeVars = newStaticSizeVarGenerator(typePrinter, options, ctx.exprVars)
+
 	return ctx
 }
 
@@ -93,6 +99,8 @@ func (s *sizeFnPtr) getFnCall(varName string) string {
 //   - error: An error if code generation fails
 func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, viewName string, options *CodeGeneratorOptions) error {
 	ctx := newSizeContext(typePrinter, options)
+	ctx.recursion = newRecursionBound(rootTypeDesc, options)
+	ctx.depthAware = ctx.recursion.applies(rootTypeDesc)
 
 	// Generate main function signature
 	typeName := typePrinter.TypeString(rootTypeDesc)
@@ -116,7 +124,7 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 	if genStaticFn {
 		if !ctx.usedDynSpecs {
 			appendCode(codeBuilder, 0, "// SizeSSZ returns the SSZ encoded size of the %s.\n", typeName)
-			appendCode(codeBuilder, 0, "func (t %s) SizeSSZ() (size int) {\n", typeName)
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "SizeSSZ", "", "", "size int", "0")
 			if rootTypeDesc.Size > 0 {
 				appendCode(codeBuilder, 1, "return %d\n", rootTypeDesc.Size)
 			} else {
@@ -129,8 +137,8 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 		} else {
 			dynsszAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
 			appendCode(codeBuilder, 0, "// SizeSSZ returns the SSZ encoded size of the %s.\n", typeName)
-			appendCode(codeBuilder, 0, "func (t %s) SizeSSZ() (size int) {\n", typeName)
-			appendCode(codeBuilder, 1, "return t.SizeSSZDyn(%s.GetGlobalDynSsz())\n", dynsszAlias)
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "SizeSSZ", "", "", "size int", "0")
+			appendCode(codeBuilder, 1, "return t.%s(%s.GetGlobalDynSsz()%s)\n", depthForwardName("SizeSSZDyn", ctx.depthAware), dynsszAlias, depthForwardArg(ctx.depthAware))
 			appendCode(codeBuilder, 0, "}\n\n")
 		}
 	}
@@ -144,7 +152,7 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 			if viewName == "" {
 				appendCode(codeBuilder, 0, "// SizeSSZDyn returns the SSZ encoded size of the %s using dynamic specifications.\n", typeName)
 			}
-			appendCode(codeBuilder, 0, "func (t %s) %s(ds sszutils.DynamicSpecs) (size int) {\n", typeName, fnName)
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs", "ds", "size int", "0")
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 			appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
 			appendCode(codeBuilder, 1, ctx.codeBuf.String())
@@ -154,8 +162,9 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 			if viewName == "" {
 				appendCode(codeBuilder, 0, "// SizeSSZDyn returns the SSZ encoded size of the %s using dynamic specifications.\n", typeName)
 			}
-			appendCode(codeBuilder, 0, "func (t %s) %s(_ sszutils.DynamicSpecs) (size int) {\n", typeName, fnName)
-			appendCode(codeBuilder, 1, "return t.SizeSSZ()\n")
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs", "ds", "size int", "0")
+			appendCode(codeBuilder, 1, "_ = ds\n")
+			appendCode(codeBuilder, 1, "return t.%s(%s)\n", depthForwardName("SizeSSZ", ctx.depthAware), depthForwardArgBare(ctx.depthAware))
 			appendCode(codeBuilder, 0, "}\n\n")
 		}
 	}
@@ -220,7 +229,8 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 	isView := desc.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
 	if !isRoot && isView {
 		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewSizer != 0 {
-			ctx.appendCode(indent, "if viewFn := %s.SizeSSZDynView((%s)(nil)); viewFn != nil {\n", varName, ctx.typePrinter.ViewTypeString(desc, true))
+			viewFn, viewArg := descendCall(ctx.depthAware, ctx.recursion, desc, "SizeSSZDynView")
+			ctx.appendCode(indent, "if viewFn := %s.%s((%s)(nil)%s); viewFn != nil {\n", varName, viewFn, ctx.typePrinter.ViewTypeString(desc, true), viewArg)
 			ctx.appendCode(indent+1, "%s += viewFn(ds)\n", sizeVar)
 			ctx.appendCode(indent, "}\n")
 			ctx.usedDynSpecs = true
@@ -242,7 +252,8 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 
 		if ctx.options.WithoutDynamicExpressions {
 			if useFastSsz {
-				ctx.appendCode(indent, "%s += %s.SizeSSZ()\n", sizeVar, varName)
+				fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "SizeSSZ")
+				ctx.appendCode(indent, "%s += %s.%s(%s)\n", sizeVar, varName, fn, strings.TrimPrefix(arg, ", "))
 				return nil
 			}
 			// Never call a *Dyn method. A dynamic-only type is inlined by falling
@@ -255,13 +266,15 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 			}
 		} else {
 			if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 {
-				ctx.appendCode(indent, "%s += %s.SizeSSZDyn(ds)\n", sizeVar, varName)
+				fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "SizeSSZDyn")
+				ctx.appendCode(indent, "%s += %s.%s(ds%s)\n", sizeVar, varName, fn, arg)
 				ctx.usedDynSpecs = true
 				return nil
 			}
 
 			if useFastSsz {
-				ctx.appendCode(indent, "%s += %s.SizeSSZ()\n", sizeVar, varName)
+				fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "SizeSSZ")
+				ctx.appendCode(indent, "%s += %s.%s(%s)\n", sizeVar, varName, fn, strings.TrimPrefix(arg, ", "))
 				return nil
 			}
 		}

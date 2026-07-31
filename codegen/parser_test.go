@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"go/token"
 	"go/types"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -3057,4 +3058,93 @@ func TestParserUnionSelectorRangeEnforced(t *testing.T) {
 			t.Errorf("selector tag %s should be rejected", tag)
 		}
 	}
+}
+
+// TestRecursionCycleTypes pins which types are reported as lying on a
+// recursive cycle. Every member has to be reported, not just the one the walk
+// happens to close on: the generated methods thread a nesting depth between
+// them, and a call through an unreported member would restart the count and
+// defeat the bound.
+func TestRecursionCycleTypes(t *testing.T) {
+	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
+	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
+	if err != nil || len(pkgs) == 0 {
+		t.Fatalf("load tests package: %v", err)
+	}
+	scope := pkgs[0].Types.Scope()
+
+	inCycle := func(typeName string) bool {
+		obj := scope.Lookup(typeName)
+		if obj == nil {
+			t.Fatalf("%s not found", typeName)
+		}
+		parser := NewParser()
+		desc, err := parser.GetTypeDescriptor(obj.Type(), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("analyze %s: %v", typeName, err)
+		}
+		_, cyclic := recursionCycleTypes(desc)[recursionTypeKey(desc)]
+
+		return cyclic
+	}
+
+	tests := []struct {
+		typeName string
+		want     bool
+	}{
+		// Self-referential through a bounded list: the cycle is this type alone.
+		{"RecursiveNode", true},
+		// A two-type cycle: both members must be marked.
+		{"RecursiveTree", true},
+		{"RecursiveTreeBranch", true},
+		// Ordinary types are not on any cycle and must stay unmarked, so they
+		// keep their plain method set.
+		{"SimpleTypes1", false},
+		{"CoverageTypes1", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.typeName, func(t *testing.T) {
+			if got := inCycle(tt.typeName); got != tt.want {
+				t.Fatalf("on a recursion cycle = %v, want %v", got, tt.want)
+			}
+		})
+	}
+
+	// Descriptors built from reflect types come from the shared type cache and
+	// carry no codegen state, so membership has to be read off the graph rather
+	// than recorded while the go/types parser builds it. Both generation entry
+	// points must reach the same verdict.
+	t.Run("reflectBuiltDescriptors", func(t *testing.T) {
+		cache := ssztypes.NewTypeCache(nil)
+
+		reflectInCycle := func(rt reflect.Type) bool {
+			desc, err := cache.GetTypeDescriptor(rt, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("analyze %v: %v", rt, err)
+			}
+			_, cyclic := recursionCycleTypes(desc)[recursionTypeKey(desc)]
+
+			return cyclic
+		}
+
+		if !reflectInCycle(reflect.TypeFor[reflectRecursionNode]()) {
+			t.Error("a reflect-built recursive type must be reported as cyclic")
+		}
+		if reflectInCycle(reflect.TypeFor[reflectPlainNode]()) {
+			t.Error("a reflect-built non-recursive type must not be reported as cyclic")
+		}
+	})
+}
+
+// reflectRecursionNode closes a cycle through a bounded list, the shape the
+// type cache accepts as finite.
+type reflectRecursionNode struct {
+	Val      uint64
+	Children []*reflectRecursionNode `ssz-max:"4"`
+}
+
+type reflectPlainNode struct {
+	Val  uint64
+	Tail []byte `ssz-max:"4"`
 }

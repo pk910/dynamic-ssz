@@ -192,6 +192,10 @@ types:
     output: gen_recursive.go
   - name: RecursiveTreeBranch
     output: gen_recursive.go
+  - name: RecursiveViewNode
+    output: gen_recursive.go
+    views:
+      - RecursiveViewNode_View1
 
   - name: DynSizeVectorNoStatic
     output: gen_dynsizevec.go

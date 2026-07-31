@@ -19,6 +19,7 @@ type DynSszOptions struct {
 	StreamWriterBufferSize int
 	StreamReaderBufferSize int
 	MaxStreamSize          int
+	MaxNestingDepth        int
 }
 
 // WithNoFastSsz disables fastssz fallback for types that implement fastssz
@@ -120,6 +121,31 @@ func WithStreamReaderBufferSize(size int) DynSszOption {
 func WithMaxStreamSize(size int) DynSszOption {
 	return func(opts *DynSszOptions) {
 		opts.MaxStreamSize = size
+	}
+}
+
+// WithMaxNestingDepth bounds how deeply a value may nest while being encoded,
+// decoded or hashed. Defaults to sszutils.DefaultMaxNestingDepth (1024) if not
+// set or set to a non-positive value.
+//
+// The bound exists because stack exhaustion is fatal in Go: the runtime aborts
+// the process and recover() cannot contain it, so a server could not isolate
+// the failure to the request that caused it. Exceeding the bound returns
+// sszutils.ErrMaxDepthExceeded instead.
+//
+// Only a recursive type -- one whose cycle closes through a variable-length
+// field -- can nest to a depth the input controls, so the counter is armed only
+// for type graphs that contain such a cycle. Every other type bottoms out at a
+// depth fixed by its own structure and is unaffected, as is the cost of
+// encoding it.
+//
+// This bounds the reflection engine, where it counts the whole walk. Generated
+// code carries its own bound, fixed at generation time and counting only
+// descents through a recursive cycle; see the code generator's
+// WithRecursionDepth option.
+func WithMaxNestingDepth(depth int) DynSszOption {
+	return func(opts *DynSszOptions) {
+		opts.MaxNestingDepth = depth
 	}
 }
 

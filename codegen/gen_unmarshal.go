@@ -38,6 +38,11 @@ type unmarshalContext struct {
 	usedDynSpecs   bool
 	valVarCounter  int
 	indexCounter   int
+	recursion      *recursionBound
+	// depthAware is set while emitting a type that lies on a recursive cycle,
+	// where the body runs inside a depth-carrying method and can pass the depth
+	// on to a cyclic child.
+	depthAware bool
 }
 
 // generateUnmarshal generates unmarshal methods for a specific type.
@@ -71,6 +76,8 @@ func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strin
 		typePrinter: typePrinter,
 		options:     options,
 	}
+	ctx.recursion = newRecursionBound(rootTypeDesc, options)
+	ctx.depthAware = ctx.recursion.applies(rootTypeDesc)
 
 	ctx.exprVars = newExprVarGenerator("expr", typePrinter, options)
 	ctx.staticSizeVars = newStaticSizeVarGenerator(typePrinter, options, ctx.exprVars)
@@ -97,7 +104,7 @@ func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strin
 	if genStaticFn {
 		if !ctx.usedDynSpecs {
 			appendCode(codeBuilder, 0, "// UnmarshalSSZ unmarshals the %s from SSZ-encoded bytes.\n", typeName)
-			appendCode(codeBuilder, 0, "func (t %s) UnmarshalSSZ(buf []byte) (err error) {\n", typeName)
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "UnmarshalSSZ", "buf []byte", "buf", "err error", depthFailErr(ctx.recursion))
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 			appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
 			appendCode(codeBuilder, 1, codeBuf.String())
@@ -106,8 +113,8 @@ func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strin
 		} else {
 			dynsszAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
 			appendCode(codeBuilder, 0, "// UnmarshalSSZ unmarshals the %s from SSZ-encoded bytes.\n", typeName)
-			appendCode(codeBuilder, 0, "func (t %s) UnmarshalSSZ(buf []byte) (err error) {\n", typeName)
-			appendCode(codeBuilder, 1, "return t.UnmarshalSSZDyn(%s.GetGlobalDynSsz(), buf)\n", dynsszAlias)
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "UnmarshalSSZ", "buf []byte", "buf", "err error", depthFailErr(ctx.recursion))
+			appendCode(codeBuilder, 1, "return t.%s(%s.GetGlobalDynSsz(), buf%s)\n", depthForwardName("UnmarshalSSZDyn", ctx.depthAware), dynsszAlias, depthForwardArg(ctx.depthAware))
 			appendCode(codeBuilder, 0, "}\n\n")
 		}
 	}
@@ -121,7 +128,7 @@ func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strin
 			if viewName == "" {
 				appendCode(codeBuilder, 0, "// UnmarshalSSZDyn unmarshals the %s from SSZ-encoded bytes using dynamic specifications.\n", typeName)
 			}
-			appendCode(codeBuilder, 0, "func (t %s) %s(ds sszutils.DynamicSpecs, buf []byte) (err error) {\n", typeName, fnName)
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, buf []byte", "ds, buf", "err error", depthFailErr(ctx.recursion))
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 			appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
 			appendCode(codeBuilder, 1, codeBuf.String())
@@ -131,8 +138,9 @@ func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strin
 			if viewName == "" {
 				appendCode(codeBuilder, 0, "// UnmarshalSSZDyn unmarshals the %s from SSZ-encoded bytes using dynamic specifications.\n", typeName)
 			}
-			appendCode(codeBuilder, 0, "func (t %s) %s(_ sszutils.DynamicSpecs, buf []byte) (err error) {\n", typeName, fnName)
-			appendCode(codeBuilder, 1, "return t.UnmarshalSSZ(buf)\n")
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, buf []byte", "ds, buf", "err error", depthFailErr(ctx.recursion))
+			appendCode(codeBuilder, 1, "_ = ds\n")
+			appendCode(codeBuilder, 1, "return t.%s(buf%s)\n", depthForwardName("UnmarshalSSZ", ctx.depthAware), depthForwardArg(ctx.depthAware))
 			appendCode(codeBuilder, 0, "}\n\n")
 		}
 	}
@@ -225,7 +233,8 @@ func (ctx *unmarshalContext) isInlinable(desc *ssztypes.TypeDescriptor) bool {
 // unmarshalType generates unmarshal code for any SSZ type, delegating to specific unmarshalers.
 func (ctx *unmarshalContext) unmarshalViewType(desc *ssztypes.TypeDescriptor, varName string, indent int) bool {
 	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewUnmarshaler != 0 {
-		ctx.appendCode(indent, "if viewFn := %s.UnmarshalSSZDynView((%s)(nil)); viewFn != nil {\n", varName, ctx.typePrinter.ViewTypeString(desc, true))
+		viewFn, viewArg := descendCall(ctx.depthAware, ctx.recursion, desc, "UnmarshalSSZDynView")
+		ctx.appendCode(indent, "if viewFn := %s.%s((%s)(nil)%s); viewFn != nil {\n", varName, viewFn, ctx.typePrinter.ViewTypeString(desc, true), viewArg)
 		ctx.appendCode(indent+1, "if err = viewFn(ds, buf); err != nil {\n\treturn err\n}\n")
 		ctx.appendCode(indent, "} else {\n\treturn sszutils.ErrNotImplemented\n}\n")
 		ctx.usedDynSpecs = true
@@ -234,7 +243,8 @@ func (ctx *unmarshalContext) unmarshalViewType(desc *ssztypes.TypeDescriptor, va
 
 	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewDecoder != 0 {
 		ctx.appendCode(indent, "dec := sszutils.NewBufferDecoder(buf)\n")
-		ctx.appendCode(indent, "if viewFn := %s.UnmarshalSSZDecoderView((%s)(nil)); viewFn != nil {\n", varName, ctx.typePrinter.ViewTypeString(desc, true))
+		viewFn, viewArg := descendCall(ctx.depthAware, ctx.recursion, desc, "UnmarshalSSZDecoderView")
+		ctx.appendCode(indent, "if viewFn := %s.%s((%s)(nil)%s); viewFn != nil {\n", varName, viewFn, ctx.typePrinter.ViewTypeString(desc, true), viewArg)
 		ctx.appendCode(indent+1, "if err = viewFn(ds, dec); err != nil {\n\treturn err\n}\n")
 		ctx.appendCode(indent, "} else {\n\treturn sszutils.ErrNotImplemented\n}\n")
 		ctx.usedDynSpecs = true
@@ -262,7 +272,8 @@ func (ctx *unmarshalContext) unmarshalCompatType(desc *ssztypes.TypeDescriptor, 
 	}
 
 	if useFastSsz {
-		ctx.appendCode(indent, "if err = %s.UnmarshalSSZ(buf); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
+		fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "UnmarshalSSZ")
+		ctx.appendCode(indent, "if err = %s.%s(buf%s); err != nil {\n\treturn %s\n}\n", varName, fn, arg, typePath.getErrorWith("err"))
 		return true, nil
 	}
 
@@ -280,14 +291,16 @@ func (ctx *unmarshalContext) unmarshalCompatType(desc *ssztypes.TypeDescriptor, 
 	}
 
 	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
-		ctx.appendCode(indent, "if err = %s.UnmarshalSSZDyn(ds, buf); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
+		fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "UnmarshalSSZDyn")
+		ctx.appendCode(indent, "if err = %s.%s(ds, buf%s); err != nil {\n\treturn %s\n}\n", varName, fn, arg, typePath.getErrorWith("err"))
 		ctx.usedDynSpecs = true
 		return true, nil
 	}
 
 	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 {
 		ctx.appendCode(indent, "dec := sszutils.NewBufferDecoder(buf)\n")
-		ctx.appendCode(indent, "if err = %s.UnmarshalSSZDecoder(ds, dec); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
+		fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "UnmarshalSSZDecoder")
+		ctx.appendCode(indent, "if err = %s.%s(ds, dec%s); err != nil {\n\treturn %s\n}\n", varName, fn, arg, typePath.getErrorWith("err"))
 		ctx.usedDynSpecs = true
 		return true, nil
 	}

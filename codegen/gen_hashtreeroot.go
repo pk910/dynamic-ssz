@@ -33,6 +33,11 @@ type hashTreeRootContext struct {
 	usedDynSpecs  bool
 	valVarCounter int
 	indexCounter  int
+	recursion     *recursionBound
+	// depthAware is set while emitting a type that lies on a recursive cycle,
+	// where the body runs inside a depth-carrying method and can pass the depth
+	// on to a cyclic child.
+	depthAware bool
 }
 
 // generateHashTreeRoot generates hash tree root methods for a specific type.
@@ -69,6 +74,8 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 		options:     options,
 		exprVars:    newExprVarGenerator("expr", typePrinter, options),
 	}
+	ctx.recursion = newRecursionBound(rootTypeDesc, options)
+	ctx.depthAware = ctx.recursion.applies(rootTypeDesc)
 
 	// Generate main function signature
 	typeName := typePrinter.TypeString(rootTypeDesc)
@@ -116,7 +123,7 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 		} else {
 			dynsszAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
 			appendCode(codeBuilder, 0, "// HashTreeRootWith computes the SSZ hash tree root of the %s using the given hash walker.\n", typeName)
-			appendCode(codeBuilder, 0, "func (t %s) HashTreeRootWith(hh sszutils.HashWalker) error {\n", typeName)
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "HashTreeRootWith", "hh sszutils.HashWalker", "hh", "error", depthFailErr(ctx.recursion))
 			appendCode(codeBuilder, 1, "return t.HashTreeRootWithDyn(%s.GetGlobalDynSsz(), hh)\n", dynsszAlias)
 			appendCode(codeBuilder, 0, "}\n\n")
 		}
@@ -147,7 +154,7 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 			if viewName == "" {
 				appendCode(codeBuilder, 0, "// HashTreeRootWithDyn computes the SSZ hash tree root of the %s using dynamic specifications and the given hash walker.\n", typeName)
 			}
-			appendCode(codeBuilder, 0, "func (t %s) %s(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName, fnName)
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, hh sszutils.HashWalker", "ds, hh", "error", depthFailErr(ctx.recursion))
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 			appendCode(codeBuilder, 1, codeBuf.String())
 			appendCode(codeBuilder, 1, "return nil\n")
@@ -156,8 +163,9 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 			if viewName == "" {
 				appendCode(codeBuilder, 0, "// HashTreeRootWithDyn computes the SSZ hash tree root of the %s using dynamic specifications and the given hash walker.\n", typeName)
 			}
-			appendCode(codeBuilder, 0, "func (t %s) %s(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName, fnName)
-			appendCode(codeBuilder, 1, "return t.HashTreeRootWith(hh)\n")
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, hh sszutils.HashWalker", "ds, hh", "error", depthFailErr(ctx.recursion))
+			appendCode(codeBuilder, 1, "_ = ds\n")
+			appendCode(codeBuilder, 1, "return t.%s(hh%s)\n", depthForwardName("HashTreeRootWith", ctx.depthAware), depthForwardArg(ctx.depthAware))
 			appendCode(codeBuilder, 0, "}\n\n")
 		}
 	}
@@ -251,7 +259,8 @@ func (ctx *hashTreeRootContext) hashUsesFastSsz(desc *ssztypes.TypeDescriptor, i
 // It must only be called for non-root, non-view types carrying DynamicHashRoot.
 func (ctx *hashTreeRootContext) hashDynamicRoot(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, useFastSsz bool) (done bool, err error) {
 	if !ctx.options.WithoutDynamicExpressions {
-		ctx.appendCode(indent, "if err := %s.HashTreeRootWithDyn(ds, hh); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
+		fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "HashTreeRootWithDyn")
+		ctx.appendCode(indent, "if err := %s.%s(ds, hh%s); err != nil {\n\treturn %s\n}\n", varName, fn, arg, typePath.getErrorWith("err"))
 		ctx.usedDynSpecs = true
 		return true, nil
 	}
@@ -275,7 +284,8 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 	isView := desc.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
 	if !isRoot && isView {
 		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewHashRoot != 0 {
-			ctx.appendCode(indent, "if viewFn := %s.HashTreeRootWithDynView((%s)(nil)); viewFn != nil {\n", varName, ctx.typePrinter.ViewTypeString(desc, true))
+			viewFn, viewArg := descendCall(ctx.depthAware, ctx.recursion, desc, "HashTreeRootWithDynView")
+			ctx.appendCode(indent, "if viewFn := %s.%s((%s)(nil)%s); viewFn != nil {\n", varName, viewFn, ctx.typePrinter.ViewTypeString(desc, true), viewArg)
 			ctx.appendCode(indent+1, "if err := viewFn(ds, hh); err != nil {\n\treturn err\n}\n")
 			ctx.appendCode(indent, "} else {\n\treturn sszutils.ErrNotImplemented\n}\n")
 			ctx.usedDynSpecs = true
@@ -294,7 +304,8 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 
 	if useFastSsz && !isView {
 		if isFastsszHashWith {
-			ctx.appendCode(indent, "if err := %s.HashTreeRootWith(hh); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
+			fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "HashTreeRootWith")
+			ctx.appendCode(indent, "if err := %s.%s(hh%s); err != nil {\n\treturn %s\n}\n", varName, fn, arg, typePath.getErrorWith("err"))
 		} else {
 			ctx.appendCode(indent, "if root, err := %s.HashTreeRoot(); err != nil {\n\treturn %s\n} else {\n\thh.AppendBytes32(root[:])\n}\n", varName, typePath.getErrorWith("err"))
 		}

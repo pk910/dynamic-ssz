@@ -95,6 +95,7 @@ type CodeGeneratorOptions struct {
 	WithoutDynamicExpressions bool
 	NoFastSsz                 bool
 	ExtendedTypes             bool
+	RecursionDepth            int
 	SizeHints                 []ssztypes.SszSizeHint
 	MaxSizeHints              []ssztypes.SszMaxSizeHint
 	TypeHints                 []ssztypes.SszTypeHint
@@ -425,6 +426,37 @@ func WithoutDynamicExpressions() CodeGeneratorOption {
 func WithNoFastSsz() CodeGeneratorOption {
 	return func(opts *CodeGeneratorOptions) {
 		opts.NoFastSsz = true
+	}
+}
+
+// WithRecursionDepth sets how deep a recursive type may nest before the
+// generated methods fail with sszutils.ErrMaxDepthExceeded. A non-positive
+// value selects defaultRecursionDepth.
+//
+// The bound exists because stack exhaustion is fatal in Go: the runtime aborts
+// the process and recover() cannot contain it, so a server could not isolate
+// the failure to the request that caused it. Each level of a recursive type
+// costs only a handful of wire bytes, so a small payload can otherwise declare
+// nesting deep enough to exhaust the stack.
+//
+// It applies to recursive cycles only. Methods are emitted with a depth
+// argument just for types that lie on a cycle, and the count advances only for
+// descents that go round one, so a type is bounded by how many times it
+// re-enters itself rather than by its total nesting. Every other generated type
+// is unaffected, as is the code emitted for it.
+//
+// The value is baked into the generated code, so changing it requires
+// regeneration. The reflection engine carries its own bound; see
+// dynssz.WithMaxNestingDepth.
+//
+// A recursive type reached through a view costs two stack frames per level
+// rather than one: a view dispatcher returns a closure, which has nowhere to
+// take a depth argument, so the closure supplies it and becomes a frame of its
+// own. The bound still counts nesting levels, so the reachable depth is the
+// same -- only the stack used getting there differs.
+func WithRecursionDepth(depth int) CodeGeneratorOption {
+	return func(opts *CodeGeneratorOptions) {
+		opts.RecursionDepth = depth
 	}
 }
 

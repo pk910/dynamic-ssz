@@ -28,7 +28,7 @@ import (
 //   - sourceValue: The reflect.Value holding the data to be hashed
 //   - hh: The Hasher instance managing the hash computation state
 //   - pack: Whether to pack the value into a single tree leaf
-//   - idt: Indentation level for verbose logging (when enabled)
+//   - depth: Indentation level for verbose logging (when enabled)
 //
 // Returns:
 //   - error: An error if hashing fails
@@ -39,7 +39,7 @@ import (
 //   - Special handling for Bitlist types
 //   - Primitive type hashing (bool, uint8, uint16, uint32, uint64)
 //   - Delegation to specialized functions for composite types (structs, arrays, slices)
-func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, pack bool, idt int) error { //nolint:gocyclo // SSZ hash tree root builder handles many type cases
+func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, pack bool, depth int) error { //nolint:gocyclo // SSZ hash tree root builder handles many type cases
 	if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && sourceType.SszType != ssztypes.SszOptionalType && sourceType.SszType != ssztypes.SszOptionalListType {
 		if sourceValue.IsNil() {
 			sourceValue = reflect.New(sourceType.Type.Elem()).Elem()
@@ -54,7 +54,7 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 		hasDynamicMax := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicMax != 0
 		useFastSsz := !ctx.noFastSsz && isFastsszHasher && !hasDynamicSize && !hasDynamicMax
 		hashIndex := hh.CurrentIndex()
-		ctx.logCb("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v/%v)\t index: %v\n", strings.Repeat(" ", idt), sourceType.Type.Name(), sourceType.Kind, useFastSsz, isFastsszHasher, hasDynamicSize, hasDynamicMax, hashIndex)
+		ctx.logCb("%stype: %s\t kind: %v\t fastssz: %v (compat: %v/ dynamic: %v/%v)\t index: %v\n", strings.Repeat(" ", depth*2), sourceType.Type.Name(), sourceType.Kind, useFastSsz, isFastsszHasher, hasDynamicSize, hasDynamicMax, hashIndex)
 	}
 
 	// Try DynamicViewHashRoot first - it takes precedence over all other methods.
@@ -75,7 +75,7 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 					}
 
 					if ctx.verbose {
-						ctx.logCb("%shash: 0x%x\n", strings.Repeat(" ", idt), hh.Hash())
+						ctx.logCb("%shash: 0x%x\n", strings.Repeat(" ", depth*2), hh.Hash())
 					}
 
 					return nil
@@ -139,42 +139,42 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 	// Route to appropriate handler based on type
 	switch sourceType.SszType {
 	case ssztypes.SszTypeWrapperType:
-		err := ctx.buildRootFromTypeWrapper(sourceType, sourceValue, hh, pack, idt)
+		err := ctx.buildRootFromTypeWrapper(sourceType, sourceValue, hh, pack, depth)
 		if err != nil {
 			return err
 		}
 	case ssztypes.SszContainerType:
-		err := ctx.buildRootFromContainer(sourceType, sourceValue, hh, idt)
+		err := ctx.buildRootFromContainer(sourceType, sourceValue, hh, depth)
 		if err != nil {
 			return err
 		}
 	case ssztypes.SszProgressiveContainerType:
-		err := ctx.buildRootFromProgressiveContainer(sourceType, sourceValue, hh, idt)
+		err := ctx.buildRootFromProgressiveContainer(sourceType, sourceValue, hh, depth)
 		if err != nil {
 			return err
 		}
 	case ssztypes.SszVectorType, ssztypes.SszBitvectorType:
-		err := ctx.buildRootFromVector(sourceType, sourceValue, hh, idt)
+		err := ctx.buildRootFromVector(sourceType, sourceValue, hh, depth)
 		if err != nil {
 			return err
 		}
 	case ssztypes.SszListType, ssztypes.SszProgressiveListType:
-		err := ctx.buildRootFromList(sourceType, sourceValue, hh, idt)
+		err := ctx.buildRootFromList(sourceType, sourceValue, hh, depth)
 		if err != nil {
 			return err
 		}
 	case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType:
-		err := ctx.buildRootFromBitlist(sourceType, sourceValue, hh, idt)
+		err := ctx.buildRootFromBitlist(sourceType, sourceValue, hh, depth)
 		if err != nil {
 			return err
 		}
 	case ssztypes.SszCompatibleUnionType:
-		err := ctx.buildRootFromCompatibleUnion(sourceType, sourceValue, hh, idt)
+		err := ctx.buildRootFromCompatibleUnion(sourceType, sourceValue, hh, depth)
 		if err != nil {
 			return err
 		}
 	case ssztypes.SszUnionType:
-		err := ctx.buildRootFromUnion(sourceType, sourceValue, hh, idt)
+		err := ctx.buildRootFromUnion(sourceType, sourceValue, hh, depth)
 		if err != nil {
 			return err
 		}
@@ -220,7 +220,7 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 			hh.PutUint64(uintVal)
 		}
 	case ssztypes.SszUint128Type, ssztypes.SszUint256Type:
-		err := ctx.buildRootFromLargeUint(sourceType, sourceValue, hh, pack, idt)
+		err := ctx.buildRootFromLargeUint(sourceType, sourceValue, hh, pack, depth)
 		if err != nil {
 			return err
 		}
@@ -266,17 +266,17 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 			hh.PutUint64(math.Float64bits(sourceValue.Float()))
 		}
 	case ssztypes.SszOptionalType:
-		err := ctx.buildRootFromOptional(sourceType, sourceValue, hh, idt)
+		err := ctx.buildRootFromOptional(sourceType, sourceValue, hh, depth)
 		if err != nil {
 			return err
 		}
 	case ssztypes.SszOptionalListType:
-		err := ctx.buildRootFromOptionalList(sourceType, sourceValue, hh, idt)
+		err := ctx.buildRootFromOptionalList(sourceType, sourceValue, hh, depth)
 		if err != nil {
 			return err
 		}
 	case ssztypes.SszBigIntType:
-		err := ctx.buildRootFromBigInt(sourceType, sourceValue, hh, idt)
+		err := ctx.buildRootFromBigInt(sourceType, sourceValue, hh, depth)
 		if err != nil {
 			return err
 		}
@@ -285,7 +285,7 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 	}
 
 	if ctx.verbose {
-		ctx.logCb("%shash: 0x%x\n", strings.Repeat(" ", idt), hh.Hash())
+		ctx.logCb("%shash: 0x%x\n", strings.Repeat(" ", depth*2), hh.Hash())
 	}
 
 	return nil
@@ -298,22 +298,22 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 //   - sourceValue: The reflect.Value of the wrapper to hash
 //   - hh: The Hasher instance for hash computation
 //   - pack: Whether to pack the value into a single tree leaf
-//   - idt: Indentation level for verbose logging
+//   - depth: Indentation level for verbose logging
 //
 // Returns:
 //   - error: An error if hashing fails
 //
 // The function extracts the Data field from the TypeWrapper and builds the hash tree root for the wrapped value using its type descriptor.
-func (ctx *ReflectionCtx) buildRootFromTypeWrapper(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, pack bool, idt int) error {
+func (ctx *ReflectionCtx) buildRootFromTypeWrapper(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, pack bool, depth int) error {
 	if ctx.verbose {
-		ctx.logCb("%sbuildRootFromTypeWrapper: %s\n", strings.Repeat(" ", idt), sourceType.Type.Name())
+		ctx.logCb("%sbuildRootFromTypeWrapper: %s\n", strings.Repeat(" ", depth*2), sourceType.Type.Name())
 	}
 
 	// Extract the Data field from the TypeWrapper
 	dataField := sourceValue.Field(0)
 
 	// Build hash tree root for the wrapped value using its type descriptor
-	return ctx.buildRootFromType(sourceType.ElemDesc, dataField, hh, pack, idt+2)
+	return ctx.buildRootFromType(sourceType.ElemDesc, dataField, hh, pack, depth+1)
 }
 
 // buildRootFromLargeUint handles hashing of large uint types.
@@ -330,7 +330,7 @@ func (ctx *ReflectionCtx) buildRootFromTypeWrapper(sourceType *ssztypes.TypeDesc
 //   - sourceValue: The reflect.Value of the array to hash
 //   - hh: The Hasher instance for hash computation
 //   - pack: Whether to pack the value into a single tree leaf
-//   - idt: Indentation level for verbose logging
+//   - depth: Indentation level for verbose logging
 //
 // Returns:
 //   - error: An error if hashing fails
@@ -393,14 +393,14 @@ func (ctx *ReflectionCtx) buildRootFromLargeUint(sourceType *ssztypes.TypeDescri
 //   - sourceType: The TypeDescriptor containing container field metadata
 //   - sourceValue: The reflect.Value of the container to hash
 //   - hh: The Hasher instance for hash computation
-//   - idt: Indentation level for verbose logging
+//   - depth: Indentation level for verbose logging
 //
 // Returns:
 //   - error: An error if any field hashing fails
 //
 // The Merkleize call at the end combines all field hashes into the final root
 // using binary tree hashing with zero-padding to the next power of two.
-func (ctx *ReflectionCtx) buildRootFromContainer(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
+func (ctx *ReflectionCtx) buildRootFromContainer(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, depth int) error {
 	hashIndex := hh.StartTree(sszutils.TreeTypeNone)
 
 	htrFields := sourceType.ContainerDesc.Fields
@@ -412,10 +412,10 @@ func (ctx *ReflectionCtx) buildRootFromContainer(sourceType *ssztypes.TypeDescri
 		fieldValue := sourceValue.Field(int(field.FieldIndex))
 
 		if ctx.verbose {
-			ctx.logCb("%sfield %v\n", strings.Repeat(" ", idt), field.Name)
+			ctx.logCb("%sfield %v\n", strings.Repeat(" ", depth*2), field.Name)
 		}
 
-		err := ctx.buildRootFromType(fieldType, fieldValue, hh, false, idt+2)
+		err := ctx.buildRootFromType(fieldType, fieldValue, hh, false, depth+1)
 		if err != nil {
 			return sszutils.ErrorWithPathf(err, "[%d]", i)
 		}
@@ -442,14 +442,14 @@ func (ctx *ReflectionCtx) buildRootFromContainer(sourceType *ssztypes.TypeDescri
 //   - sourceType: The TypeDescriptor containing container field metadata
 //   - sourceValue: The reflect.Value of the container to hash
 //   - hh: The Hasher instance for hash computation
-//   - idt: Indentation level for verbose logging
+//   - depth: Indentation level for verbose logging
 //
 // Returns:
 //   - error: An error if any field hashing fails
 //
 // The Merkleize call at the end combines all field hashes into the final root
 // using binary tree hashing with zero-padding to the next power of two.
-func (ctx *ReflectionCtx) buildRootFromProgressiveContainer(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
+func (ctx *ReflectionCtx) buildRootFromProgressiveContainer(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, depth int) error {
 	hashIndex := hh.StartTree(sszutils.TreeTypeNone)
 	lastActiveField := -1
 
@@ -472,10 +472,10 @@ func (ctx *ReflectionCtx) buildRootFromProgressiveContainer(sourceType *ssztypes
 		fieldValue := sourceValue.Field(int(field.FieldIndex))
 
 		if ctx.verbose {
-			ctx.logCb("%sfield %v\n", strings.Repeat(" ", idt), field.Name)
+			ctx.logCb("%sfield %v\n", strings.Repeat(" ", depth*2), field.Name)
 		}
 
-		err := ctx.buildRootFromType(fieldType, fieldValue, hh, false, idt+2)
+		err := ctx.buildRootFromType(fieldType, fieldValue, hh, false, depth+1)
 		if err != nil {
 			return sszutils.ErrorWithPathf(err, "[%d]", i)
 		}
@@ -499,11 +499,11 @@ func (ctx *ReflectionCtx) buildRootFromProgressiveContainer(sourceType *ssztypes
 //   - sourceType: The TypeDescriptor containing union metadata and variant descriptors
 //   - sourceValue: The reflect.Value of the CompatibleUnion to hash
 //   - hh: The Hasher instance for hash computation
-//   - idt: Indentation level for verbose logging
+//   - depth: Indentation level for verbose logging
 //
 // Returns:
 //   - error: An error if hashing fails
-func (ctx *ReflectionCtx) buildRootFromCompatibleUnion(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
+func (ctx *ReflectionCtx) buildRootFromCompatibleUnion(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, depth int) error {
 	// We know CompatibleUnion has exactly 2 fields: Variant (uint8) and Data (interface{})
 	// Field 0 is Variant, Field 1 is Data
 	variant := uint8(sourceValue.Field(0).Uint())
@@ -526,7 +526,7 @@ func (ctx *ReflectionCtx) buildRootFromCompatibleUnion(sourceType *ssztypes.Type
 
 	hashIndex := hh.StartTree(sszutils.TreeTypeNone)
 
-	err := ctx.buildRootFromType(variantDesc, dataField, hh, false, idt+2)
+	err := ctx.buildRootFromType(variantDesc, dataField, hh, false, depth+1)
 	if err != nil {
 		return sszutils.ErrorWithPathf(err, "[v:%d]", variant)
 	}
@@ -550,11 +550,11 @@ func (ctx *ReflectionCtx) buildRootFromCompatibleUnion(sourceType *ssztypes.Type
 //   - sourceType: The TypeDescriptor containing union metadata and variant descriptors
 //   - sourceValue: The reflect.Value of the Union to hash
 //   - hh: The Hasher instance for hash computation
-//   - idt: Indentation level for verbose logging
+//   - depth: Indentation level for verbose logging
 //
 // Returns:
 //   - error: An error if hashing fails
-func (ctx *ReflectionCtx) buildRootFromUnion(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
+func (ctx *ReflectionCtx) buildRootFromUnion(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, depth int) error {
 	variant := uint8(sourceValue.Field(0).Uint())
 	dataField := sourceValue.Field(1)
 
@@ -581,7 +581,7 @@ func (ctx *ReflectionCtx) buildRootFromUnion(sourceType *ssztypes.TypeDescriptor
 		return sszutils.ErrUnionTypeMismatchFn()
 	}
 
-	err := ctx.buildRootFromType(variantDesc, dataField.Elem(), hh, false, idt+2)
+	err := ctx.buildRootFromType(variantDesc, dataField.Elem(), hh, false, depth+1)
 	if err != nil {
 		return sszutils.ErrorWithPathf(err, "[v:%d]", variant)
 	}
@@ -605,7 +605,7 @@ func (ctx *ReflectionCtx) buildRootFromUnion(sourceType *ssztypes.TypeDescriptor
 //   - sourceType: The TypeDescriptor containing array metadata
 //   - sourceValue: The reflect.Value of the array to hash
 //   - hh: The Hasher instance for hash computation
-//   - idt: Indentation level for verbose logging
+//   - depth: Indentation level for verbose logging
 //
 // Returns:
 //   - error: An error if element hashing fails
@@ -613,7 +613,7 @@ func (ctx *ReflectionCtx) buildRootFromUnion(sourceType *ssztypes.TypeDescriptor
 // Special handling:
 //   - Byte arrays use PutBytes for efficient chunk-based hashing
 //   - Arrays with max size hints include length mixing for proper limits
-func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
+func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, depth int) error {
 	vecLen := int64(sourceType.Len)
 	if vecLen > math.MaxInt {
 		return sszutils.ErrPlatformOverflowFn("vector length", sourceType.Len)
@@ -674,7 +674,7 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 		for i := 0; i < sliceLen; i++ {
 			fieldValue := sourceValue.Index(i)
 
-			err := ctx.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, true, idt+2)
+			err := ctx.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, true, depth+1)
 			if err != nil {
 				return sszutils.ErrorWithPathf(err, "[%d]", i)
 			}
@@ -687,7 +687,7 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 			zeroVal := newZeroElem(sourceType.ElemDesc)
 
 			for i := 0; i < appendZero; i++ {
-				err := ctx.buildRootFromType(sourceType.ElemDesc, zeroVal, hh, true, idt+2)
+				err := ctx.buildRootFromType(sourceType.ElemDesc, zeroVal, hh, true, depth+1)
 				if err != nil {
 					return sszutils.ErrorWithPathf(err, "[+%d]", sliceLen+i)
 				}
@@ -717,14 +717,24 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 //   - sourceType: The TypeDescriptor containing slice metadata and limits
 //   - sourceValue: The reflect.Value of the slice to hash
 //   - hh: The Hasher instance for hash computation
-//   - idt: Indentation level for verbose logging
+//   - depth: Indentation level for verbose logging
 //
 // Returns:
 //   - error: An error if element hashing fails
 //
 // For slices with max size hints, MerkleizeWithMixin ensures the length is
 // properly mixed into the root, implementing the SSZ list hashing algorithm.
-func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
+func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, depth int) error {
+	// Only a list, an optional or an optional-list can legalize a recursive
+	// cycle -- they are the boundaries the type cache counts when deciding
+	// whether a cycle is finite, so every trip round a cycle crosses one of
+	// them. Bounding them therefore bounds the recursion, and nothing else pays
+	// for it. Without the bound a deeply nested value exhausts the goroutine
+	// stack, which Go turns into an unrecoverable process abort.
+	if depth > ctx.maxDepth {
+		return sszutils.ErrMaxDepthExceededFn(ctx.maxDepth)
+	}
+
 	treeType := sszutils.TreeTypeBinary
 	if sourceType.SszType == ssztypes.SszProgressiveListType {
 		treeType = sszutils.TreeTypeProgressive
@@ -756,7 +766,7 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 		for i := 0; i < arrayLen; i++ {
 			fieldValue := sourceValue.Index(i)
 
-			err := ctx.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, true, idt+2)
+			err := ctx.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, true, depth+1)
 			if err != nil {
 				return sszutils.ErrorWithPathf(err, "[%d]", i)
 			}
@@ -872,7 +882,7 @@ func (ctx *ReflectionCtx) getActiveFields(sourceType *ssztypes.TypeDescriptor) [
 //   - sourceType: The TypeDescriptor containing bitlist metadata and limits
 //   - sourceValue: The reflect.Value of the bitlist to hash
 //   - hh: The Hasher instance for hash computation
-//   - idt: Indentation level for verbose logging
+//   - depth: Indentation level for verbose logging
 //
 // Returns:
 //   - error: An error if bitlist hashing fails
@@ -929,17 +939,27 @@ func (ctx *ReflectionCtx) buildRootFromBitlist(sourceType *ssztypes.TypeDescript
 //   - sourceType: The TypeDescriptor containing optional metadata
 //   - sourceValue: The reflect.Value of the optional to hash
 //   - hh: The Hasher instance for hash computation
-//   - idt: Indentation level for verbose logging
+//   - depth: Indentation level for verbose logging
 //
 // Returns:
 //   - error: An error if hashing fails
-func (ctx *ReflectionCtx) buildRootFromOptional(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
+func (ctx *ReflectionCtx) buildRootFromOptional(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, depth int) error {
+	// Only a list, an optional or an optional-list can legalize a recursive
+	// cycle -- they are the boundaries the type cache counts when deciding
+	// whether a cycle is finite, so every trip round a cycle crosses one of
+	// them. Bounding them therefore bounds the recursion, and nothing else pays
+	// for it. Without the bound a deeply nested value exhausts the goroutine
+	// stack, which Go turns into an unrecoverable process abort.
+	if depth > ctx.maxDepth {
+		return sszutils.ErrMaxDepthExceededFn(ctx.maxDepth)
+	}
+
 	if sourceValue.IsNil() {
 		hh.PutUint8(0)
 		return nil
 	}
 
-	err := ctx.buildRootFromType(sourceType.ElemDesc, sourceValue.Elem(), hh, false, idt+2)
+	err := ctx.buildRootFromType(sourceType.ElemDesc, sourceValue.Elem(), hh, false, depth+1)
 	if err != nil {
 		return err
 	}
@@ -958,16 +978,26 @@ func (ctx *ReflectionCtx) buildRootFromOptional(sourceType *ssztypes.TypeDescrip
 //   - sourceType: The TypeDescriptor containing optional-list metadata
 //   - sourceValue: The reflect.Value of the pointer to hash
 //   - hh: The Hasher instance for hash computation
-//   - idt: Indentation level for verbose logging
+//   - depth: Indentation level for verbose logging
 //
 // Returns:
 //   - error: An error if hashing fails
-func (ctx *ReflectionCtx) buildRootFromOptionalList(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, idt int) error {
+func (ctx *ReflectionCtx) buildRootFromOptionalList(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, depth int) error {
+	// Only a list, an optional or an optional-list can legalize a recursive
+	// cycle -- they are the boundaries the type cache counts when deciding
+	// whether a cycle is finite, so every trip round a cycle crosses one of
+	// them. Bounding them therefore bounds the recursion, and nothing else pays
+	// for it. Without the bound a deeply nested value exhausts the goroutine
+	// stack, which Go turns into an unrecoverable process abort.
+	if depth > ctx.maxDepth {
+		return sszutils.ErrMaxDepthExceededFn(ctx.maxDepth)
+	}
+
 	hashIndex := hh.StartTree(sszutils.TreeTypeBinary)
 
 	var sliceLen uint64
 	if !sourceValue.IsNil() {
-		err := ctx.buildRootFromType(sourceType.ElemDesc, sourceValue.Elem(), hh, true, idt+2)
+		err := ctx.buildRootFromType(sourceType.ElemDesc, sourceValue.Elem(), hh, true, depth+1)
 		if err != nil {
 			return sszutils.ErrorWithPathf(err, "[0]")
 		}
@@ -990,7 +1020,7 @@ func (ctx *ReflectionCtx) buildRootFromOptionalList(sourceType *ssztypes.TypeDes
 //   - sourceType: The TypeDescriptor containing big int metadata
 //   - sourceValue: The reflect.Value of the big int to hash
 //   - hh: The Hasher instance for hash computation
-//   - idt: Indentation level for verbose logging
+//   - depth: Indentation level for verbose logging
 //
 // Returns:
 //   - error: An error if hashing fails

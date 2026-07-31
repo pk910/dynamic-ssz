@@ -137,6 +137,39 @@ var bufferPool = sync.Pool{
 // 3. Limit concurrent operations
 ```
 
+#### "fatal error: stack overflow"
+
+**Problem**: The process aborts while encoding, decoding or hashing. This is a
+runtime abort, not a panic, so `recover()` cannot contain it.
+
+**Cause**: The value graph nests too deeply. Both engines bound the nesting
+depth and report `sszutils.ErrMaxDepthExceeded` rather than aborting, so seeing
+the abort itself means either the bound is set too high for the available stack,
+or the generated code predates the bound and needs regenerating. Only two shapes
+can nest deeply enough to matter:
+
+1. **A recursive type** (a type whose cycle closes through a variable-length
+   field). Each level costs only a handful of wire bytes, so a small piece of
+   untrusted input can declare nesting far deeper than the value it occupies.
+2. **A cyclic value** — pointers that form a loop, such as a parent/child
+   back-reference. The type is legal and `ValidateType` accepts it, but the
+   value has no finite encoding.
+
+**Solutions:**
+```go
+// 1. Lower the bound if your stack budget is tighter than the default 1024.
+//    dynssz.NewDynSsz(specs, dynssz.WithMaxNestingDepth(64))
+//    codegen.WithRecursionDepth(64)   // baked in; regenerate to apply
+
+// 2. Regenerate. Code generated before the bound existed has no depth check.
+
+// 3. Do not build pointer cycles in values you intend to serialize.
+//    n.Children = []*Node{n} has no finite encoding.
+```
+
+See [Recursive Types](supported-types.md#recursive-types) for the full
+constraints.
+
 ### 6. Type Compatibility Issues
 
 #### "unhandled reflection kind"

@@ -43,6 +43,11 @@ type encoderContext struct {
 	// hold: a dynamic-only child must be inlined (or rejected), never reached via
 	// MarshalSSZDyn. That decision keys off this field, not options.
 	noDynBufferCalls bool
+	recursion        *recursionBound
+	// depthAware is set while emitting a type that lies on a recursive cycle,
+	// where the body runs inside a depth-carrying method and can pass the depth
+	// on to a cyclic child.
+	depthAware bool
 }
 
 // generateEncoder generates encoder methods for a specific type.
@@ -86,6 +91,8 @@ func generateEncoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 		sizeFnSignature:  make(map[string]string),
 		noDynBufferCalls: noDynBufferCalls,
 	}
+	ctx.recursion = newRecursionBound(rootTypeDesc, options)
+	ctx.depthAware = ctx.recursion.applies(rootTypeDesc)
 
 	ctx.exprVars = newExprVarGenerator("ctx.exprs", typePrinter, options)
 	ctx.exprVars.isSlice = true
@@ -117,7 +124,7 @@ func generateEncoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 	if viewName == "" {
 		appendCode(codeBuilder, 0, "// MarshalSSZEncoder marshals the %s to the given SSZ encoder using dynamic specifications.\n", typeName)
 	}
-	appendCode(codeBuilder, 0, "func (t %s) %s(ds sszutils.DynamicSpecs, enc sszutils.Encoder) (err error) {\n", typeName, fnName)
+	emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, enc sszutils.Encoder", "ds, enc", "err error", depthFailErr(ctx.recursion))
 
 	if ctx.usedContext {
 		appendCode(codeBuilder, 1, ctx.generateEncodeContext(0))
@@ -298,7 +305,8 @@ func (ctx *encoderContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 	isView := desc.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
 	if !isRoot && isView {
 		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewEncoder != 0 {
-			ctx.appendCode(indent, "if viewFn := %s.MarshalSSZEncoderView((%s)(nil)); viewFn != nil {\n", varName, ctx.typePrinter.ViewTypeString(desc, true))
+			viewFn, viewArg := descendCall(ctx.depthAware, ctx.recursion, desc, "MarshalSSZEncoderView")
+			ctx.appendCode(indent, "if viewFn := %s.%s((%s)(nil)%s); viewFn != nil {\n", varName, viewFn, ctx.typePrinter.ViewTypeString(desc, true), viewArg)
 			ctx.appendCode(indent+1, "if err = viewFn(ds, enc); err != nil {\n\treturn err\n}\n")
 			ctx.appendCode(indent, "} else {\n\treturn sszutils.ErrNotImplemented\n}\n")
 			ctx.usedDynSpecs = true
@@ -306,7 +314,8 @@ func (ctx *encoderContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 		}
 
 		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewMarshaler != 0 {
-			ctx.appendCode(indent, "if viewFn := %s.MarshalSSZDynView((%s)(nil)); viewFn != nil {\n", varName, ctx.typePrinter.ViewTypeString(desc, true))
+			viewFn, viewArg := descendCall(ctx.depthAware, ctx.recursion, desc, "MarshalSSZDynView")
+			ctx.appendCode(indent, "if viewFn := %s.%s((%s)(nil)%s); viewFn != nil {\n", varName, viewFn, ctx.typePrinter.ViewTypeString(desc, true), viewArg)
 			ctx.appendCode(indent+1, "if buf, err := viewFn(ds, enc.GetBuffer()); err != nil {\n\treturn err\n} else {\n\tenc.SetBuffer(buf)\n}\n")
 			ctx.appendCode(indent, "} else {\n\treturn sszutils.ErrNotImplemented\n}\n")
 			ctx.usedDynSpecs = true
@@ -327,12 +336,14 @@ func (ctx *encoderContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 	}
 
 	if useFastSsz && !isRoot && !isView {
-		ctx.appendCode(indent, "if buf, err := %s.MarshalSSZTo(enc.GetBuffer()); err != nil {\n\treturn %s\n} else {\n\tenc.SetBuffer(buf)\n}\n", varName, typePath.getErrorWith("err"))
+		fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "MarshalSSZTo")
+		ctx.appendCode(indent, "if buf, err := %s.%s(enc.GetBuffer()%s); err != nil {\n\treturn %s\n} else {\n\tenc.SetBuffer(buf)\n}\n", varName, fn, arg, typePath.getErrorWith("err"))
 		return nil
 	}
 
 	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicEncoder != 0 && !isRoot && !isView {
-		ctx.appendCode(indent, "if err = %s.MarshalSSZEncoder(ds, enc); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
+		fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "MarshalSSZEncoder")
+		ctx.appendCode(indent, "if err = %s.%s(ds, enc%s); err != nil {\n\treturn %s\n}\n", varName, fn, arg, typePath.getErrorWith("err"))
 		ctx.usedDynSpecs = true
 		return nil
 	}
@@ -350,7 +361,8 @@ func (ctx *encoderContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 		}
 		// fall through: inline the type's structure via the switch below
 	} else if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 && !isRoot && !isView {
-		ctx.appendCode(indent, "if buf, err := %s.MarshalSSZDyn(ds, enc.GetBuffer()); err != nil {\n\treturn %s\n} else {\n\tenc.SetBuffer(buf)\n}\n", varName, typePath.getErrorWith("err"))
+		fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "MarshalSSZDyn")
+		ctx.appendCode(indent, "if buf, err := %s.%s(ds, enc.GetBuffer()%s); err != nil {\n\treturn %s\n} else {\n\tenc.SetBuffer(buf)\n}\n", varName, fn, arg, typePath.getErrorWith("err"))
 		ctx.usedDynSpecs = true
 		return nil
 	}

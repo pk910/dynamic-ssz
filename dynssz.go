@@ -268,7 +268,7 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 		return nil, err
 	}
 
-	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation, d.options.MaxNestingDepth)
 
 	size, err := ctx.SizeSSZ(sourceTypeDesc, sourceValue)
 	if err != nil {
@@ -352,7 +352,7 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 		return nil, err
 	}
 
-	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation, d.options.MaxNestingDepth)
 
 	// Grow buf so the serialized data can be appended without overrunning its
 	// capacity (BufferEncoder writes at len(buf) using cap(buf) directly).
@@ -485,7 +485,7 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 		return err
 	}
 
-	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation, d.options.MaxNestingDepth)
 
 	size, err := ctx.SizeSSZ(sourceTypeDesc, sourceValue)
 	if err != nil {
@@ -572,7 +572,7 @@ func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error) {
 		return 0, err
 	}
 
-	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation, d.options.MaxNestingDepth)
 
 	size, err := ctx.SizeSSZ(sourceTypeDesc, sourceValue)
 	if err != nil {
@@ -658,7 +658,7 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 		return fmt.Errorf("target pointer must not be nil")
 	}
 
-	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation, d.options.MaxNestingDepth)
 
 	decoder := sszutils.NewBufferDecoder(ssz)
 	decoder.PushLimit(len(ssz))
@@ -855,7 +855,7 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 		return fmt.Errorf("target pointer must not be nil")
 	}
 
-	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation, d.options.MaxNestingDepth)
 
 	err = ctx.UnmarshalSSZ(targetTypeDesc, targetValue, decoder)
 	if err != nil {
@@ -1004,7 +1004,7 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...Ca
 		return err
 	}
 
-	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation, d.options.MaxNestingDepth)
 
 	err = ctx.HashTreeRoot(sourceTypeDesc, sourceValue, hh)
 	if err != nil {

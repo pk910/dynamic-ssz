@@ -34,7 +34,22 @@ type ReflectionCtx struct {
 	verbose      bool
 	noFastSsz    bool
 	noDelegation bool
+
+	// maxDepth bounds how deeply a walk may nest.
+	maxDepth int
 }
+
+// defaultMaxNestingDepth bounds how deeply a value may nest while being
+// encoded, decoded or hashed.
+//
+// Only a recursive type can nest to a depth the input controls, and each level
+// costs a handful of wire bytes, so without a bound a small payload can exhaust
+// the goroutine stack. Go aborts the process on stack exhaustion and recover()
+// cannot catch it, so the bound turns that abort into an ordinary error.
+//
+// 1024 is far deeper than any practical schema nests (Ethereum consensus types
+// stay under 20) while costing well under a megabyte of stack.
+const defaultMaxNestingDepth = 1024
 
 // NewReflectionCtx creates a new ReflectionCtx with the given configuration.
 //
@@ -47,13 +62,21 @@ type ReflectionCtx struct {
 //   - noDelegation: when true, disables delegation to a type's own generated
 //     Dynamic* SSZ methods, forcing the generic reflection walk. Custom types
 //     (which have no reflection representation) always delegate regardless.
-func NewReflectionCtx(ds sszutils.DynamicSpecs, logCb func(format string, args ...any), verbose, noFastSsz, noDelegation bool) *ReflectionCtx {
+//   - maxDepth: bounds how deeply a value may nest before the walk fails with
+//     sszutils.ErrMaxDepthExceeded. A non-positive value selects
+//     defaultMaxNestingDepth. In practice only a recursive type can reach it.
+func NewReflectionCtx(ds sszutils.DynamicSpecs, logCb func(format string, args ...any), verbose, noFastSsz, noDelegation bool, maxDepth int) *ReflectionCtx {
+	if maxDepth <= 0 {
+		maxDepth = defaultMaxNestingDepth
+	}
+
 	return &ReflectionCtx{
 		ds:           ds,
 		logCb:        logCb,
 		verbose:      verbose,
 		noFastSsz:    noFastSsz,
 		noDelegation: noDelegation,
+		maxDepth:     maxDepth,
 	}
 }
 
@@ -91,7 +114,7 @@ func (ctx *ReflectionCtx) SizeSSZ(targetType *ssztypes.TypeDescriptor, targetVal
 	if targetType == nil {
 		return 0, sszutils.NewSszError(sszutils.ErrInvalidValueRange, "target type must not be nil")
 	}
-	return ctx.getSszValueSize(targetType, targetValue)
+	return ctx.getSszValueSize(targetType, targetValue, 0)
 }
 
 // MarshalSSZ encodes targetValue into SSZ format using the provided encoder

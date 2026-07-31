@@ -60,6 +60,12 @@ var (
 	// the platform's integer range (>31-bit sizes on 32-bit platforms).
 	ErrPlatformOverflow = fmt.Errorf("value exceeds platform integer range")
 
+	// ErrMaxDepthExceeded is returned when a value nests deeper than the
+	// configured maximum. Only recursive types can reach an input-controlled
+	// depth; the bound turns what would be an unrecoverable stack overflow into
+	// an error the caller can handle. See WithMaxNestingDepth.
+	ErrMaxDepthExceeded = fmt.Errorf("maximum nesting depth exceeded")
+
 	// ErrBitlistNotTerminated is an alias for ErrInvalidValueRange,
 	// retained for backward compatibility. New code should use
 	// ErrInvalidValueRange with a descriptive message instead.
@@ -539,6 +545,17 @@ func ErrStreamTooLargeFn(maxSize any) error {
 	return &sszError{
 		err:     ErrStreamTooLarge,
 		message: fmt.Sprintf("unknown-length ssz stream exceeds maximum size %v", maxSize),
+	}
+}
+
+// --- ErrMaxDepthExceeded constructors ---
+
+// ErrMaxDepthExceededFn is returned when a value nests deeper than the
+// configured maximum.
+func ErrMaxDepthExceededFn(maxDepth any) error {
+	return &sszError{
+		err:     ErrMaxDepthExceeded,
+		message: fmt.Sprintf("value nests deeper than the maximum of %v", maxDepth),
 	}
 }
 

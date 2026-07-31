@@ -2197,7 +2197,7 @@ func TestUnmarshalErrorPopsDecoderLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	ctx := reflection.NewReflectionCtx(ds, nil, false, true, false)
+	ctx := reflection.NewReflectionCtx(ds, nil, false, true, false, 0)
 
 	// Offsets A=[8,11), B=[11,12). A's 3-byte region exceeds the 2-byte cap of
 	// Bitlist[8], so its decode fails before consuming the region.
@@ -2436,6 +2436,172 @@ func TestDynamicListRejectsUnbackedElementCount(t *testing.T) {
 		}
 		if len(out.L) != n {
 			t.Fatalf("decoded %d elements, want %d", len(out.L), n)
+		}
+	})
+}
+
+// Recursive shapes for the nesting-depth bound. These are exactly the cycles
+// the type cache accepts: a cycle is only finite if it crosses a list, an
+// optional or an optional-list, so those are the boundaries the walkers bound.
+// A cycle through a vector or a union variant is rejected at analysis time and
+// therefore cannot reach a walker at all.
+type depthCycleList struct {
+	V uint8
+	L []depthCycleList `ssz-max:"2"`
+}
+
+// A named list closes a cycle with no container on it at all, so the bound
+// cannot rely on containers being present.
+type depthCycleNamedList []depthCycleNamedList
+
+var _ = sszutils.Annotate[depthCycleNamedList](`ssz-max:"2"`)
+
+type depthCycleOptional struct {
+	V    uint8
+	Next *depthCycleOptional `ssz-type:"optional"`
+}
+
+type depthCycleOptionalList struct {
+	V    uint8
+	Next *depthCycleOptionalList `ssz-type:"optional-list"`
+}
+
+// TestNestingDepthBound pins that a value nesting past the bound fails with an
+// ordinary error rather than exhausting the goroutine stack.
+//
+// Stack exhaustion is fatal in Go: the runtime aborts the process and recover()
+// cannot contain it, so a server could not isolate the failure to the request
+// that caused it. Only a recursive type can nest to a depth the input chooses,
+// and each level costs a handful of wire bytes.
+func TestNestingDepthBound(t *testing.T) {
+	// Deeper than the 1024 default, but far too shallow to overflow a real
+	// stack -- the test must prove the bound fires, not that the process dies.
+	const tooDeep = 1200
+
+	build := func(name string) any {
+		switch name {
+		case "list":
+			cur := depthCycleList{V: 1}
+			for range tooDeep {
+				cur = depthCycleList{V: 1, L: []depthCycleList{cur}}
+			}
+			return cur
+		case "named-list":
+			cur := depthCycleNamedList{}
+			for range tooDeep {
+				cur = depthCycleNamedList{cur}
+			}
+			return cur
+		case "optional":
+			cur := &depthCycleOptional{V: 1}
+			for range tooDeep {
+				cur = &depthCycleOptional{V: 1, Next: cur}
+			}
+			return cur
+		case "optional-list":
+			cur := &depthCycleOptionalList{V: 1}
+			for range tooDeep {
+				cur = &depthCycleOptionalList{V: 1, Next: cur}
+			}
+			return cur
+		}
+		return nil
+	}
+
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation(), WithExtendedTypes())
+
+	for _, shape := range []string{"list", "named-list", "optional", "optional-list"} {
+		value := build(shape)
+
+		ops := map[string]func() error{
+			"SizeSSZ":      func() error { _, err := ds.SizeSSZ(value); return err },
+			"MarshalSSZ":   func() error { _, err := ds.MarshalSSZ(value); return err },
+			"HashTreeRoot": func() error { _, err := ds.HashTreeRoot(value); return err },
+		}
+		for op, fn := range ops {
+			t.Run(shape+"/"+op, func(t *testing.T) {
+				err := fn()
+				if err == nil {
+					t.Fatal("expected the nesting bound to reject the value")
+				}
+				if !errors.Is(err, sszutils.ErrMaxDepthExceeded) {
+					t.Fatalf("err = %v, want ErrMaxDepthExceeded", err)
+				}
+			})
+		}
+	}
+
+	t.Run("decode", func(t *testing.T) {
+		// ~9 wire bytes per level: the input that drives an unbounded decode is
+		// tiny compared with the nesting it declares.
+		payload := make([]byte, 0, tooDeep*9+5)
+		for range tooDeep {
+			payload = append(payload, 1, 5, 0, 0, 0, 4, 0, 0, 0)
+		}
+		payload = append(payload, 2, 5, 0, 0, 0)
+
+		err := ds.UnmarshalSSZ(new(depthCycleList), payload)
+		if err == nil {
+			t.Fatal("expected the nesting bound to reject the payload")
+		}
+		if !errors.Is(err, sszutils.ErrMaxDepthExceeded) {
+			t.Fatalf("err = %v, want ErrMaxDepthExceeded", err)
+		}
+	})
+
+	t.Run("cyclic_value", func(t *testing.T) {
+		// A cyclic value has no finite encoding at all. ValidateType accepts the
+		// type -- the type graph is legal -- so only the walk can catch it.
+		type node struct {
+			V uint8
+			L []*node `ssz-max:"4"`
+		}
+		n := &node{V: 1}
+		n.L = []*node{n}
+
+		if _, err := ds.SizeSSZ(n); !errors.Is(err, sszutils.ErrMaxDepthExceeded) {
+			t.Fatalf("SizeSSZ err = %v, want ErrMaxDepthExceeded", err)
+		}
+		if _, err := ds.MarshalSSZ(n); !errors.Is(err, sszutils.ErrMaxDepthExceeded) {
+			t.Fatalf("MarshalSSZ err = %v, want ErrMaxDepthExceeded", err)
+		}
+		if _, err := ds.HashTreeRoot(n); !errors.Is(err, sszutils.ErrMaxDepthExceeded) {
+			t.Fatalf("HashTreeRoot err = %v, want ErrMaxDepthExceeded", err)
+		}
+	})
+
+	t.Run("configurable", func(t *testing.T) {
+		shallow := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation(), WithMaxNestingDepth(4))
+
+		deep := depthCycleList{V: 1}
+		for range 8 {
+			deep = depthCycleList{V: 1, L: []depthCycleList{deep}}
+		}
+		if _, err := shallow.MarshalSSZ(deep); !errors.Is(err, sszutils.ErrMaxDepthExceeded) {
+			t.Fatalf("err = %v, want the lowered bound to reject the value", err)
+		}
+
+		// A value inside the lowered bound still encodes, so the bound is a
+		// limit rather than a blanket rejection of recursive types.
+		shallowValue := depthCycleList{V: 1, L: []depthCycleList{{V: 2}}}
+		if _, err := shallow.MarshalSSZ(shallowValue); err != nil {
+			t.Fatalf("a value within the bound must encode: %v", err)
+		}
+	})
+
+	t.Run("non_recursive_types_unaffected", func(t *testing.T) {
+		// The default bound must be far above anything a real schema reaches.
+		tight := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation(), WithMaxNestingDepth(4))
+		type inner struct {
+			A []uint64 `ssz-max:"4"`
+		}
+		type outer struct {
+			X inner
+			Y []inner `ssz-max:"4"`
+		}
+		v := outer{X: inner{A: []uint64{1}}, Y: []inner{{A: []uint64{2}}}}
+		if _, err := tight.MarshalSSZ(v); err != nil {
+			t.Fatalf("a shallow non-recursive value must encode: %v", err)
 		}
 	})
 }

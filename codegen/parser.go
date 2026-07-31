@@ -81,6 +81,26 @@ func (v *parserHintedVariant) matchesHints(typeHints []ssztypes.SszTypeHint, siz
 	return slices.Equal(v.typeHints, typeHints) && slices.Equal(v.sizeHints, sizeHints) && slices.Equal(v.maxSizeHints, maxSizeHints)
 }
 
+// parserBuildEntry records a descriptor whose subtree is still being built, so
+// a reference that returns to it can be recognised as a recursive cycle.
+//
+// Entries are matched on hints for the same reason the hinted cache is: one
+// type pair can be under construction as several descriptors at once (a view
+// builds the data type against a schema type, and hinted references build their
+// own variants), and only the entry a reference actually returns to closes a
+// cycle.
+type parserBuildEntry struct {
+	desc         *ssztypes.TypeDescriptor
+	depth        int
+	typeHints    []ssztypes.SszTypeHint
+	sizeHints    []ssztypes.SszSizeHint
+	maxSizeHints []ssztypes.SszMaxSizeHint
+}
+
+func (e *parserBuildEntry) matchesHints(typeHints []ssztypes.SszTypeHint, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint) bool {
+	return slices.Equal(e.typeHints, typeHints) && slices.Equal(e.sizeHints, sizeHints) && slices.Equal(e.maxSizeHints, maxSizeHints)
+}
+
 // parserPendingKey records a cache insertion of the current top-level build so
 // a failed build can purge it.
 type parserPendingKey struct {
@@ -101,7 +121,7 @@ type Parser struct {
 	// boundary. A cycle re-entered without crossing one of these is an infinite
 	// (non-serializable) static type and is rejected. Parsing is single-threaded,
 	// so plain fields are safe.
-	building map[string]int
+	building map[string][]*parserBuildEntry
 	dynDepth int
 
 	// hintedCache caches builds with external hints, matched by exact hint
@@ -151,7 +171,7 @@ func NewParser() *Parser {
 	return &Parser{
 		cache:       make(map[string]*ssztypes.TypeDescriptor),
 		CompatFlags: map[string]ssztypes.SszCompatFlag{},
-		building:    make(map[string]int),
+		building:    make(map[string][]*parserBuildEntry),
 		hintedCache: make(map[string][]*parserHintedVariant),
 	}
 }
@@ -352,28 +372,40 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	// are provided; hint-carrying builds are cached per exact hint combination.
 	cacheable := dataType == schemaType && len(typeHints) == 0 && len(sizeHints) == 0 && len(maxSizeHints) == 0
 	typeKey := fmt.Sprintf("%v|%v", dataType.String(), schemaType.String())
-	if cacheable && p.cache[typeKey] != nil {
-		if startDepth, inProgress := p.building[typeKey]; inProgress {
-			if p.dynDepth <= startDepth {
-				// Re-entering a type still under construction without crossing a
-				// variable-length collection means it contributes to its own static
-				// size — an infinite, non-serializable SSZ type. Reject it like the
-				// reflection engine does instead of emitting infinitely recursive code.
-				return nil, fmt.Errorf("recursive type %v is not supported", dataType.String())
-			}
-			// Legal cycle: hand back the descriptor still under construction. Its
-			// child-derived fields are incomplete at this point; two measures keep
-			// the final graph correct:
-			//  - Crossing a variable-length collection to legalize the cycle means
-			//    every cycle member has a variable-size field on the cycle path, so
-			//    the descriptor is provably dynamic. Setting IsDynamic here lets a
-			//    container or vector reading it mid-build lay the field out as a
-			//    dynamic (offset) field, which matches its final state.
-			//  - The remaining child-derived flags are re-derived to a fixpoint by
-			//    ssztypes.FixupRecursiveFlags once the whole graph is complete.
-			p.cache[typeKey].SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
-			p.recursion = true
+	// Returning to a build still in progress closes a cycle. This is checked
+	// before either cache because it applies to every build, not just the
+	// cacheable ones: a view builds the data type against a schema type, and a
+	// hinted reference builds its own variant, so neither reaches the plain
+	// cache — and without this check a recursive view or hinted type would
+	// build forever.
+	for _, entry := range p.building[typeKey] {
+		if !entry.matchesHints(typeHints, sizeHints, maxSizeHints) {
+			continue
 		}
+		if p.dynDepth <= entry.depth {
+			// Re-entering a type still under construction without crossing a
+			// variable-length collection means it contributes to its own static
+			// size — an infinite, non-serializable SSZ type. Reject it like the
+			// reflection engine does instead of emitting infinitely recursive code.
+			return nil, fmt.Errorf("recursive type %v is not supported", dataType.String())
+		}
+		// Legal cycle: hand back the descriptor still under construction. Its
+		// child-derived fields are incomplete at this point; two measures keep
+		// the final graph correct:
+		//  - Crossing a variable-length collection to legalize the cycle means
+		//    every cycle member has a variable-size field on the cycle path, so
+		//    the descriptor is provably dynamic. Setting IsDynamic here lets a
+		//    container or vector reading it mid-build lay the field out as a
+		//    dynamic (offset) field, which matches its final state.
+		//  - The remaining child-derived flags are re-derived to a fixpoint by
+		//    ssztypes.FixupRecursiveFlags once the whole graph is complete.
+		entry.desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
+		p.recursion = true
+
+		return entry.desc, nil
+	}
+
+	if cacheable && p.cache[typeKey] != nil {
 		return p.cache[typeKey], nil
 	}
 	if !cacheable {
@@ -403,9 +435,25 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	if cacheable {
 		p.cache[typeKey] = desc
 		p.pendingKeys = append(p.pendingKeys, parserPendingKey{key: typeKey})
-		p.building[typeKey] = p.dynDepth
-		defer delete(p.building, typeKey)
 	}
+
+	// Every build is tracked, cacheable or not, so a reference returning to any
+	// of them is recognised as a cycle rather than restarting the build.
+	p.building[typeKey] = append(p.building[typeKey], &parserBuildEntry{
+		desc:         desc,
+		depth:        p.dynDepth,
+		typeHints:    callerTypeHints,
+		sizeHints:    callerSizeHints,
+		maxSizeHints: callerMaxSizeHints,
+	})
+	defer func() {
+		entries := p.building[typeKey]
+		if len(entries) <= 1 {
+			delete(p.building, typeKey)
+		} else {
+			p.building[typeKey] = entries[:len(entries)-1]
+		}
+	}()
 
 	// Use schemaType for SSZ layout analysis, dataType for interface checks
 

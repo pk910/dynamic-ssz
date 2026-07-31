@@ -225,6 +225,84 @@ type Block struct {
 }
 ```
 
+### Recursive Types
+
+A type may refer to itself, as long as every cycle passes through a
+variable-length field. The length of that field is what makes the encoding
+finite — a list of zero elements terminates the recursion:
+
+```go
+type Node struct {
+    Value    uint64
+    Children []*Node `ssz-max:"4"`  // cycle closes through a list
+}
+```
+
+A cycle that crosses only fixed-size fields has no finite encoding and is
+rejected when the type is analyzed:
+
+```go
+type Bad struct {
+    Value uint64
+    Next  *Bad  // rejected: recursive type *Bad is not supported
+}
+```
+
+#### Nesting depth is bounded
+
+Encoding, decoding and hashing all walk the value recursively, so a deeply
+nested value would otherwise exhaust the goroutine stack — and Go aborts the
+process on stack exhaustion with `fatal error: stack overflow`, which
+`recover()` cannot catch. Each level of a recursive type costs only a handful of
+wire bytes, so a small piece of untrusted input can declare very deep nesting.
+
+Both engines therefore bound the depth and return `sszutils.ErrMaxDepthExceeded`
+instead. The default is 1024, far deeper than any practical schema (Ethereum
+consensus types stay under 20). The two bounds count differently:
+
+| | Counts | Configure with | Applies from |
+|---|---|---|---|
+| Reflection | every level of the whole walk | `dynssz.WithMaxNestingDepth(n)` | immediately |
+| Generated code | descents through a recursive cycle | `codegen.WithRecursionDepth(n)` | after regeneration |
+
+The generated bound counts cycles rather than levels because the generator
+inlines children that have no methods of their own: inlined code runs in the
+same function and adds no stack frame, so only a delegated call — which is what
+a cycle must cross — advances the count. The value is baked into the generated
+code, so changing it requires regenerating.
+
+Non-recursive types are unaffected by either bound, and the code generated for
+them is unchanged: only types that lie on a cycle carry a depth.
+
+> **Cyclic values are unencodable.** `ValidateType` accepts the type above
+> because the type graph is legal, but a *value* whose pointers form a cycle
+> (`n.Children = []*Node{n}`) has no finite encoding. `SizeSSZ`, `MarshalSSZ`
+> and `HashTreeRoot` follow the cycle until the depth bound stops them, so do
+> not build parent/child back-references in values you intend to serialize.
+
+#### Recursive types with views
+
+A recursive type can be generated with views, and the depth bound is carried
+across the view boundary. It costs more stack than the plain case, though.
+
+A view dispatcher hands back a closure rather than being called directly, so it
+has nowhere to take a depth argument. For a type on a cycle the dispatcher
+therefore returns a closure that supplies the depth itself — zero from the
+public `MarshalSSZDynView`, and the caller's depth from the unexported twin the
+generated code uses when it descends. That closure is a real function, so each
+level of a recursive *view* costs two stack frames where the plain path costs
+one:
+
+| | Stack frames per level | Nesting reached at the default 1024 |
+|---|---|---|
+| Plain recursive type | 1 | 1024 |
+| Recursive type through a view | 2 | 1024 |
+
+The bound counts nesting levels either way, so both stop at the same depth — the
+view path simply uses about twice the stack getting there. If you are sizing
+`WithRecursionDepth` against a stack budget rather than against your schema,
+halve it for types you decode through views.
+
 ### Optional Lists (canonical `List[T, 1]`)
 
 Annotating a pointer field with `ssz-type:"optional-list"` encodes it as the canonical SSZ `List[T, 1]` — the encoding the Ethereum spec uses for canonical optional fields:

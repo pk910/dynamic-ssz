@@ -1897,6 +1897,33 @@ var RecursiveTree_Specs = map[string]any{
 	"RECURSIVE_BRANCH_LIMIT": uint64(8),
 }
 
+// RecursiveViewNode is a recursive type generated with a view. A view builds
+// the data type against a schema type, which is not a cacheable build, so it
+// exercises the cycle detection on the hinted build path -- without it the
+// generator recursed until the stack was gone.
+//
+// The view methods have to carry the nesting depth like the base ones: a view
+// of a cyclic type is still cyclic, and a view method entering at depth zero
+// would restart the count halfway round the cycle.
+type RecursiveViewNode struct {
+	Val      uint64
+	Children []*RecursiveViewNode `ssz-max:"4"`
+}
+
+// RecursiveViewNode_View1 views the same shape with a tighter child limit, so
+// the view has its own descriptor graph and its own cycle.
+type RecursiveViewNode_View1 struct {
+	Val      uint64
+	Children []*RecursiveViewNode_View1 `ssz-max:"2"`
+}
+
+var RecursiveViewNode_Payload = RecursiveViewNode{
+	Val: 1,
+	Children: []*RecursiveViewNode{
+		{Val: 2, Children: []*RecursiveViewNode{{Val: 3}}},
+	},
+}
+
 var RecursiveTree_Payload = RecursiveTree{
 	Depth: 1,
 	Branches: []RecursiveTreeBranch{

@@ -5223,3 +5223,84 @@ func TestMarshalCyclicDescriptorNilChild(t *testing.T) {
 		t.Fatalf("nil child should serialize as -1 reference, got: %s", out)
 	}
 }
+
+// TestRecursiveTypeAcceptance pins which self-referential shapes the type cache
+// accepts, which docs/supported-types.md documents. The codegen parser has the
+// equivalent guards (TestParserRejectsStaticPointerRecursion,
+// TestParserAcceptsListBoundedRecursion); the engines must agree on which
+// shapes exist at all.
+func TestRecursiveTypeAcceptance(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	tests := []struct {
+		name    string
+		typ     reflect.Type
+		wantErr string
+	}{
+		{
+			// A cycle closing through a list is finite: a zero-length list
+			// terminates the recursion.
+			name: "cycle_through_list",
+			typ:  reflect.TypeOf(recCycleThroughList{}),
+		},
+		{
+			name: "cycle_through_pointer_list",
+			typ:  reflect.TypeOf(recCycleThroughPtrList{}),
+		},
+		{
+			// A cycle crossing only fixed-size fields has no finite encoding:
+			// every level would add a constant number of bytes forever.
+			name:    "cycle_through_fixed_field",
+			typ:     reflect.TypeOf(recCycleThroughFixed{}),
+			wantErr: "recursive type",
+		},
+		{
+			name:    "mutual_cycle_through_fixed_fields",
+			typ:     reflect.TypeOf(recMutualFixedA{}),
+			wantErr: "recursive type",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := cache.GetTypeDescriptor(tt.typ, nil, nil, nil)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("a list-bounded cycle is a legal SSZ shape: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected the unbounded cycle to be rejected")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want it to mention %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+type recCycleThroughList struct {
+	Value uint64
+	Items []recCycleThroughList `ssz-max:"4"`
+}
+
+type recCycleThroughPtrList struct {
+	Value uint64
+	Items []*recCycleThroughPtrList `ssz-max:"4"`
+}
+
+type recCycleThroughFixed struct {
+	Value uint64
+	Next  *recCycleThroughFixed
+}
+
+type recMutualFixedA struct {
+	Value uint64
+	B     *recMutualFixedB
+}
+
+type recMutualFixedB struct {
+	Value uint64
+	A     *recMutualFixedA
+}

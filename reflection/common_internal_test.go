@@ -80,7 +80,7 @@ func TestGetPtrWithPointerValue(t *testing.T) {
 // The exported ReflectionCtx methods must reject nil descriptors and nil
 // encoders/decoders/walkers with a clean error instead of panicking.
 func TestReflectionCtxNilArgs(t *testing.T) {
-	ctx := NewReflectionCtx(nil, nil, false, false, false)
+	ctx := NewReflectionCtx(nil, nil, false, false, false, 0)
 
 	if _, err := ctx.SizeSSZ(nil, reflect.Value{}); err == nil {
 		t.Error("SizeSSZ: expected error for nil target type")

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"os"
 	"reflect"
 	"runtime"
@@ -2168,4 +2169,233 @@ func TestCodegenTopLevelStructWrapper(t *testing.T) {
 	if !reflect.DeepEqual(decoded["reflection"], decoded["codegen"]) {
 		t.Fatal("engines decoded the same bytes to different values")
 	}
+}
+
+// Generated methods for a type on a recursive cycle carry a nesting depth and
+// refuse to descend past the configured bound.
+//
+// The bound exists because stack exhaustion is fatal in Go: the runtime aborts
+// the process and recover() cannot contain it, so a server could not isolate
+// the failure to the request that caused it. Each level costs only a handful of
+// wire bytes, so a small payload can otherwise declare nesting deep enough to
+// exhaust the stack.
+//
+// Depth counts trips round the cycle, not nesting levels: it advances where the
+// emitter delegates to a child's own methods, which is the only place the
+// generated code grows the stack. Inlined children are emitted into the same
+// function and add no frame, and a cycle can never be inline-only -- that is
+// rejected at generation time.
+func TestCodegenRecursionDepthBound(t *testing.T) {
+	if _, generated := any(&RecursiveNode{}).(sszutils.DynamicUnmarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+
+	// RecursiveNode is Val uint64 + a Children offset, so each level costs
+	// 12 bytes of fixed section plus the 4-byte offset of a one-element list.
+	deepPayload := func(levels int) []byte {
+		buf := make([]byte, 12)
+		binary.LittleEndian.PutUint32(buf[8:12], 12)
+		for range levels {
+			next := make([]byte, 0, len(buf)+16)
+			next = binary.LittleEndian.AppendUint64(next, 1)
+			next = binary.LittleEndian.AppendUint32(next, 12)
+			next = binary.LittleEndian.AppendUint32(next, 4)
+			next = append(next, buf...)
+			buf = next
+		}
+		return buf
+	}
+
+	deepValue := func(levels int) *RecursiveNode {
+		node := &RecursiveNode{Val: 1}
+		for range levels {
+			node = &RecursiveNode{Val: 1, Children: []*RecursiveNode{node}}
+		}
+		return node
+	}
+
+	// Past the 1024 default, but far too shallow to exhaust a real stack: the
+	// test must show the bound firing, not the process dying.
+	const tooDeep = 1200
+
+	ds := dynssz.NewDynSsz(nil)
+
+	t.Run("decode", func(t *testing.T) {
+		payload := deepPayload(tooDeep)
+
+		t.Run("buffer", func(t *testing.T) {
+			err := ds.UnmarshalSSZ(new(RecursiveNode), payload)
+			if !errors.Is(err, sszutils.ErrMaxDepthExceeded) {
+				t.Fatalf("err = %v, want ErrMaxDepthExceeded", err)
+			}
+		})
+
+		t.Run("stream", func(t *testing.T) {
+			err := ds.UnmarshalSSZReader(new(RecursiveNode), bytes.NewReader(payload), len(payload))
+			if !errors.Is(err, sszutils.ErrMaxDepthExceeded) {
+				t.Fatalf("err = %v, want ErrMaxDepthExceeded", err)
+			}
+		})
+	})
+
+	t.Run("encode", func(t *testing.T) {
+		value := deepValue(tooDeep)
+
+		if _, err := ds.MarshalSSZ(value); !errors.Is(err, sszutils.ErrMaxDepthExceeded) {
+			t.Errorf("MarshalSSZ err = %v, want ErrMaxDepthExceeded", err)
+		}
+		if _, err := ds.HashTreeRoot(value); !errors.Is(err, sszutils.ErrMaxDepthExceeded) {
+			t.Errorf("HashTreeRoot err = %v, want ErrMaxDepthExceeded", err)
+		}
+
+		var buf bytes.Buffer
+		if err := ds.MarshalSSZWriter(value, &buf); !errors.Is(err, sszutils.ErrMaxDepthExceeded) {
+			t.Errorf("MarshalSSZWriter err = %v, want ErrMaxDepthExceeded", err)
+		}
+	})
+
+	t.Run("mutual_cycle", func(t *testing.T) {
+		// Both members of a two-type cycle carry the depth; if either were
+		// left out, a call through it would restart the count.
+		specs := RecursiveTree_Specs
+		treeDs := dynssz.NewDynSsz(specs)
+
+		tree := &RecursiveTree{Depth: 1}
+		for range tooDeep {
+			tree = &RecursiveTree{Depth: 1, Branches: []RecursiveTreeBranch{{Leaf: tree}}}
+		}
+		if _, err := treeDs.MarshalSSZ(tree); !errors.Is(err, sszutils.ErrMaxDepthExceeded) {
+			t.Fatalf("err = %v, want ErrMaxDepthExceeded", err)
+		}
+	})
+
+	t.Run("within_bound_still_works", func(t *testing.T) {
+		// The bound is a limit, not a rejection of recursive types: a value
+		// inside it must round-trip, and match the reflection engine.
+		value := deepValue(8)
+
+		encoded, err := ds.MarshalSSZ(value)
+		if err != nil {
+			t.Fatalf("marshal a value within the bound: %v", err)
+		}
+
+		decoded := new(RecursiveNode)
+		if decodeErr := ds.UnmarshalSSZ(decoded, encoded); decodeErr != nil {
+			t.Fatalf("decode a value within the bound: %v", decodeErr)
+		}
+		reencoded, err := ds.MarshalSSZ(decoded)
+		if err != nil {
+			t.Fatalf("re-marshal: %v", err)
+		}
+		if !bytes.Equal(encoded, reencoded) {
+			t.Fatal("a value within the bound did not round-trip")
+		}
+
+		refl := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation())
+		reflEncoded, err := refl.MarshalSSZ(value)
+		if err != nil {
+			t.Fatalf("reflection marshal: %v", err)
+		}
+		if !bytes.Equal(encoded, reflEncoded) {
+			t.Fatal("generated and reflection encodings differ")
+		}
+
+		cgRoot, err := ds.HashTreeRoot(value)
+		if err != nil {
+			t.Fatalf("generated root: %v", err)
+		}
+		reflRoot, err := refl.HashTreeRoot(value)
+		if err != nil {
+			t.Fatalf("reflection root: %v", err)
+		}
+		if cgRoot != reflRoot {
+			t.Fatalf("root mismatch: generated %x, reflection %x", cgRoot, reflRoot)
+		}
+	})
+
+	t.Run("only_cyclic_types_carry_a_depth", func(t *testing.T) {
+		// A type that is not on a cycle keeps its plain method set, so ordinary
+		// schemas pay nothing for the bound.
+		source, err := os.ReadFile("gen_recursive.go")
+		if err != nil {
+			t.Fatalf("read generated recursive file: %v", err)
+		}
+		if !strings.Contains(string(source), "unmarshalSSZAtDepth") {
+			t.Error("a cyclic type must carry depth-bearing methods")
+		}
+
+		plain, err := os.ReadFile("gen_simple1.go")
+		if err != nil {
+			t.Fatalf("read generated non-recursive file: %v", err)
+		}
+		if strings.Contains(string(plain), "AtDepth") {
+			t.Error("a non-recursive type must not carry depth-bearing methods")
+		}
+	})
+}
+
+// A recursive type generated with a view analyzes and carries the depth bound
+// through its view methods.
+//
+// Building a view means building the data type against a schema type, which is
+// not a cacheable build, so the parser's cycle detection has to cover the
+// hinted build path as well. Without that it never recognised the cycle and the
+// generator itself died with a stack overflow.
+func TestCodegenRecursiveViewDepthBound(t *testing.T) {
+	if _, generated := any(&RecursiveViewNode{}).(sszutils.DynamicUnmarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+
+	source, err := os.ReadFile("gen_recursive.go")
+	if err != nil {
+		t.Fatalf("read generated file: %v", err)
+	}
+	code := string(source)
+
+	// The view method set has to carry the depth too; a view method entering at
+	// zero would restart the count halfway round the cycle.
+	for _, fn := range []string{
+		"marshalSSZView_RecursiveViewNode_View1AtDepth",
+		"unmarshalSSZView_RecursiveViewNode_View1AtDepth",
+		"sizeSSZView_RecursiveViewNode_View1AtDepth",
+		"hashTreeRootView_RecursiveViewNode_View1AtDepth",
+	} {
+		if !strings.Contains(code, fn) {
+			t.Errorf("view method %s does not carry a nesting depth", fn)
+		}
+	}
+
+	ds := dynssz.NewDynSsz(nil)
+
+	t.Run("view_round_trips", func(t *testing.T) {
+		payload := RecursiveViewNode_Payload
+
+		encoded, err := ds.MarshalSSZ(&payload, dynssz.WithViewDescriptor((*RecursiveViewNode_View1)(nil)))
+		if err != nil {
+			t.Fatalf("marshal through the view: %v", err)
+		}
+
+		decoded := new(RecursiveViewNode)
+		if err := ds.UnmarshalSSZ(decoded, encoded, dynssz.WithViewDescriptor((*RecursiveViewNode_View1)(nil))); err != nil {
+			t.Fatalf("decode through the view: %v", err)
+		}
+		if decoded.Val != payload.Val || len(decoded.Children) != len(payload.Children) {
+			t.Fatalf("view round-trip changed the value: %+v", decoded)
+		}
+	})
+
+	t.Run("view_bounds_depth", func(t *testing.T) {
+		// The view caps children at 2, so a chain of single children is a legal
+		// value for it; nesting past the bound must error rather than abort.
+		const tooDeep = 1200
+		node := &RecursiveViewNode{Val: 1}
+		for range tooDeep {
+			node = &RecursiveViewNode{Val: 1, Children: []*RecursiveViewNode{node}}
+		}
+
+		_, err := ds.MarshalSSZ(node, dynssz.WithViewDescriptor((*RecursiveViewNode_View1)(nil)))
+		if !errors.Is(err, sszutils.ErrMaxDepthExceeded) {
+			t.Fatalf("err = %v, want ErrMaxDepthExceeded", err)
+		}
+	})
 }

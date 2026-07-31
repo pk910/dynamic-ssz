@@ -1790,7 +1790,7 @@ func TestMarshalDynamicListNonSeekableSizeError(t *testing.T) {
 	elemDescCopy.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
 	listDesc.ElemDesc = &elemDescCopy
 
-	ctx := reflection.NewReflectionCtx(nil, nil, false, true, false)
+	ctx := reflection.NewReflectionCtx(nil, nil, false, true, false, 0)
 	encoder := sszutils.NewStreamEncoder(bytes.NewBuffer(nil), 0)
 	data := []DynElem{{Value: 1}, {Value: 2}}
 	err = ctx.MarshalSSZ(listDesc, reflect.ValueOf(data), encoder)
@@ -1988,7 +1988,7 @@ func TestMarshalBigIntMax(t *testing.T) {
 // without a prior size pass.
 func TestMarshalDirectValidationErrors(t *testing.T) {
 	ds := NewDynSsz(nil, WithNoFastSsz(), WithExtendedTypes())
-	ctx := reflection.NewReflectionCtx(ds, nil, false, true, false)
+	ctx := reflection.NewReflectionCtx(ds, nil, false, true, false, 0)
 
 	fieldDesc := func(v any) *ssztypes.TypeDescriptor {
 		t.Helper()
