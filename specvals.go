@@ -128,6 +128,49 @@ func specValueToUint64(raw any) (value uint64, ok bool, err error) {
 	}
 }
 
+// specValueToRat converts a directly-provided spec value to an exact rational
+// for use as an expression operand. Integers convert losslessly; a float keeps
+// its fractional part instead of being rounded here, so a compound expression
+// rounds up exactly once at the end (see ratCeilToUint64) rather than once per
+// operand. Specs loaded from JSON decode as float64, so this is the common case
+// for fractional values.
+func specValueToRat(raw any) (*big.Rat, error) {
+	switch v := raw.(type) {
+	case float64:
+		return floatSpecToRat(v)
+	case float32:
+		return floatSpecToRat(float64(v))
+	default:
+		// specValueToUint64 reports failure through err (ok is false only when
+		// err is non-nil), so the error check alone covers every unresolvable
+		// value.
+		value, _, err := specValueToUint64(raw)
+		if err != nil {
+			return nil, err
+		}
+		return new(big.Rat).SetUint64(value), nil
+	}
+}
+
+// floatSpecToRat converts a finite non-negative float to the exact rational it
+// represents. NaN, infinity and negative values are rejected here for the same
+// reasons specFloatToUint64 rejects them; the uint64 range is not checked
+// because an intermediate operand may legitimately leave it (the final rounded
+// result is range-checked instead).
+func floatSpecToRat(v float64) (*big.Rat, error) {
+	switch {
+	case math.IsNaN(v):
+		return nil, fmt.Errorf("value is NaN")
+	case math.IsInf(v, 0):
+		return nil, fmt.Errorf("value is infinite")
+	case v < 0:
+		return nil, fmt.Errorf("negative value %v", v)
+	}
+
+	// SetFloat64 only fails for NaN and infinity, both rejected above.
+	return new(big.Rat).SetFloat64(v), nil
+}
+
 func intSpecToUint64(v int64) (uint64, bool, error) {
 	if v < 0 {
 		return 0, false, fmt.Errorf("negative value %d", v)
@@ -353,13 +396,11 @@ func (p *intSpecExprParser) parseFactor() (*big.Rat, error) {
 			p.unresolved = true
 			return new(big.Rat), nil
 		}
-		// specValueToUint64 reports failure through err (ok is false only when err
-		// is non-nil), so the error check alone covers every unresolvable value.
-		value, _, err := specValueToUint64(raw)
+		value, err := specValueToRat(raw)
 		if err != nil {
 			return nil, fmt.Errorf("invalid spec value %q: %w", name, err)
 		}
-		return new(big.Rat).SetUint64(value), nil
+		return value, nil
 
 	default:
 		return nil, errIntExprUnsupported

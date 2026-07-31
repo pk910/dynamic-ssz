@@ -65,6 +65,25 @@ type Account struct {
 }
 ```
 
+### Timestamps
+
+- Go type: `time.Time`
+- SSZ type: `uint64`
+- Encoding: Unix seconds, little-endian
+
+`time.Time` is detected automatically and encoded as `uint64(t.Unix())`. It is
+**lossy**: sub-second precision is dropped, the monotonic clock reading is not
+carried, and the decoded value is normalized to UTC. A round-trip therefore does
+not satisfy `orig.Equal(decoded)` unless the original was already a whole second
+in UTC. Encode the raw nanoseconds yourself if you need them preserved.
+
+```go
+type Event struct {
+    // 2023-11-14T22:13:20.123456789Z encodes as 2023-11-14T22:13:20Z
+    Observed time.Time
+}
+```
+
 ## Collection Types
 
 ### Fixed Arrays

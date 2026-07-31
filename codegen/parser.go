@@ -1334,6 +1334,13 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 						fields[i].Name, fields[i].SszIndex, nextIndex)
 				}
 			} else {
+				// The auto-increment must respect the same 255 ceiling explicit
+				// tags are checked against above; a higher index needs an
+				// active-fields bitvector wider than the 32 bytes the hashers
+				// support.
+				if nextIndex > 255 {
+					return fmt.Errorf("ssz-index %d assigned to field %q exceeds the supported maximum of 255", nextIndex, fields[i].Name)
+				}
 				fields[i].SszIndex = nextIndex
 			}
 			nextIndex = fields[i].SszIndex + 1

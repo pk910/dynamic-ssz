@@ -1452,6 +1452,13 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 				}
 				field.SszIndex = *sszIndexes[i]
 			} else {
+				// The auto-increment must respect the same 255 ceiling
+				// getSszIndexTag enforces for explicit tags: a higher index needs
+				// an active-fields bitvector wider than the 32 bytes
+				// getActiveFields supports.
+				if nextIndex > 255 {
+					return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "ssz-index %d assigned to field %q exceeds the supported maximum of 255", nextIndex, field.Name)
+				}
 				field.SszIndex = nextIndex
 			}
 			nextIndex = field.SszIndex + 1
@@ -1918,8 +1925,14 @@ func (tc *TypeCache) buildListDescriptor(desc *TypeDescriptor, runtimeType, sche
 	}
 
 	if len(sizeHints) > 0 && sizeHints[0].Size > 0 && !sizeHints[0].Dynamic {
-		// Lists cannot have a fixed ssz-size; that's a vector.
+		// Lists cannot have a fixed size; that's a vector.
 		// Lists use ssz-max to specify the maximum length.
+		// Name the tag the user actually wrote: a bit-unit hint came from
+		// ssz-bitsize/dynssz-bitsize, and reporting it as ssz-size sends the
+		// reader looking for a tag that is not there.
+		if sizeHints[0].Bits {
+			return sszutils.NewSszError(sszutils.ErrInvalidConstraint, "list types cannot have a fixed ssz-bitsize (use ssz-max for lists, or ssz-bitsize with bitvector type)")
+		}
 		return sszutils.NewSszError(sszutils.ErrInvalidConstraint, "list types cannot have a fixed ssz-size (use ssz-max for lists, or ssz-size with vector type)")
 	}
 

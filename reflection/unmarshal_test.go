@@ -6,6 +6,7 @@ package reflection_test
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"math/big"
 	"reflect"
@@ -2190,3 +2191,81 @@ func TestUnmarshalErrorPopsDecoderLimit(t *testing.T) {
 		t.Errorf("decoder left clamped to a stale limit after error: remaining %d, want %d", got, want)
 	}
 }
+
+// TestStreamAllowanceNotReportedAsListLimit pins that an unknown-size decode
+// stopped by WithMaxStreamSize is diagnosed as a stream-allowance violation,
+// not as an ssz-max violation. DecodeRemaining reports both causes under
+// ErrStreamTooLarge, and the decoders used to attribute every one of them to
+// the schema limit — fabricating a list length the payload never declared, and
+// only when an (unviolated) ssz-max happened to be present.
+func TestStreamAllowanceNotReportedAsListLimit(t *testing.T) {
+	// The payload has to outrun the reader buffer so the open region never
+	// collapses to a known length; otherwise the bounded path handles it.
+	const payloadLen = 100000
+	const allowance = 50000
+
+	payload := bytes.Repeat([]byte{7}, payloadLen)
+	payload[payloadLen-1] = 0x81 // bitlist termination bit
+
+	tests := []struct {
+		name   string
+		target any
+	}{
+		{"byte_list_with_max", new(streamAllowanceList)},
+		{"byte_list_without_max", new(streamAllowanceListNoMax)},
+		{"bitlist_with_max", new(streamAllowanceBitlist)},
+		{"bigint_with_max", new(streamAllowanceBigInt)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation(), WithExtendedTypes(), WithMaxStreamSize(allowance))
+
+			err := ds.UnmarshalSSZReader(tt.target, bytes.NewReader(payload), -1)
+			if err == nil {
+				t.Fatal("expected the stream allowance to reject the payload")
+			}
+			if !errors.Is(err, sszutils.ErrStreamTooLarge) {
+				t.Fatalf("err = %v, want ErrStreamTooLarge", err)
+			}
+			if errors.Is(err, sszutils.ErrListTooBig) {
+				t.Fatalf("stream-allowance overrun reported as a limit violation: %v", err)
+			}
+		})
+	}
+
+	// The read cap still maps to a genuine ssz-max violation when the payload
+	// really does exceed the declared limit.
+	t.Run("payload_over_ssz_max", func(t *testing.T) {
+		ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation(), WithMaxStreamSize(1<<20))
+		over := bytes.Repeat([]byte{7}, 100)
+
+		err := ds.UnmarshalSSZReader(new(streamAllowanceSmallList), bytes.NewReader(over), -1)
+		if err == nil {
+			t.Fatal("expected the ssz-max limit to reject the payload")
+		}
+		if !errors.Is(err, sszutils.ErrListTooBig) {
+			t.Fatalf("err = %v, want ErrListTooBig", err)
+		}
+	})
+}
+
+// The limit sits above the payload, so only the stream allowance is violated.
+type streamAllowanceList []byte
+
+var _ = sszutils.Annotate[streamAllowanceList](`ssz-max:"1000000"`)
+
+// The limit sits below the payload, so the read cap is what fires.
+type streamAllowanceSmallList []byte
+
+var _ = sszutils.Annotate[streamAllowanceSmallList](`ssz-max:"64"`)
+
+type streamAllowanceListNoMax []byte
+
+type streamAllowanceBitlist []byte
+
+var _ = sszutils.Annotate[streamAllowanceBitlist](`ssz-type:"bitlist" ssz-max:"8000000"`)
+
+type streamAllowanceBigInt big.Int
+
+var _ = sszutils.Annotate[streamAllowanceBigInt](`ssz-type:"bigint" ssz-max:"8000000"`)

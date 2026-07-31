@@ -462,8 +462,10 @@ func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sou
 
 		if appendZero > 0 {
 			encoder.EncodeZeroPadding(appendZero)
-		} else if sourceType.BitSize > 0 && sourceType.BitSize < uint32(len(bytes))*8 {
-			// check padding bits
+		} else if sourceType.BitSize > 0 && sourceType.BitSize%8 != 0 {
+			// check padding bits (only unaligned bitvectors have padding bits, and
+			// they live in the last encoded byte -- len(bytes) is the Go backing
+			// array, which may be larger than the SSZ length)
 			paddingMask := uint8((uint16(0xff) << (sourceType.BitSize % 8)) & 0xff)
 			paddingBits := bytes[dataLen-1] & paddingMask
 			if paddingBits != 0 {

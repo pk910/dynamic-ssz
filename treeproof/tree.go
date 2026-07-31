@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"math"
 	"math/bits"
+	"slices"
 	"strconv"
 	"sync"
 
@@ -243,8 +244,17 @@ func (n *Node) show(depth, maxDepth, index int) {
 	}
 }
 
-// NewNodeWithValue initializes a leaf node.
+// NewNodeWithValue initializes a leaf node holding a copy of value. Copying is
+// what makes the node independent of the caller's buffer: retaining the slice
+// would let a later mutation of a reused scratch buffer silently change every
+// tree and root built from it.
 func NewNodeWithValue(value []byte) *Node {
+	return newOwnedLeaf(bytes.Clone(value))
+}
+
+// newOwnedLeaf initializes a leaf node over a buffer the library owns and never
+// hands back, so no defensive copy is needed.
+func newOwnedLeaf(value []byte) *Node {
 	return &Node{
 		left:    nil,
 		right:   nil,
@@ -266,7 +276,11 @@ func NewNodeWithLR(left, right *Node) *Node {
 }
 
 // TreeFromChunks constructs a tree from leaf values.
-// The number of leaves should be a power of 2.
+// The number of leaves should be a power of 2, and every chunk must be exactly
+// 32 bytes: hashPair copies each side into a fixed 64-byte block, so a shorter
+// chunk would be zero-extended and a longer one truncated. Either way distinct
+// inputs would collide, and a single short chunk would make Node.Hash() return
+// fewer than the 32 bytes it documents.
 func TreeFromChunks(chunks [][]byte) (*Node, error) {
 	numLeaves := len(chunks)
 	if numLeaves == 0 {
@@ -278,6 +292,9 @@ func TreeFromChunks(chunks [][]byte) (*Node, error) {
 
 	leaves := make([]*Node, numLeaves)
 	for i, c := range chunks {
+		if len(c) != 32 {
+			return nil, fmt.Errorf("chunk %d has length %d, want 32", i, len(c))
+		}
 		leaves[i] = NewNodeWithValue(c)
 	}
 	return TreeFromNodes(leaves, numLeaves)
@@ -777,7 +794,10 @@ func (n *Node) ProveMulti(indices []int) (*Multiproof, error) {
 		}
 	}
 	reqIndices := getRequiredIndices(indices)
-	proof := &Multiproof{Indices: indices, Leaves: make([][]byte, len(indices)), Hashes: make([][]byte, len(reqIndices))}
+	// Indices is cloned like Leaves and Hashes: storing the caller's slice by
+	// reference lets a later reorder or reuse of it silently invalidate a proof
+	// that already verified.
+	proof := &Multiproof{Indices: slices.Clone(indices), Leaves: make([][]byte, len(indices)), Hashes: make([][]byte, len(reqIndices))}
 
 	// Copy leaf and hash values: empty nodes alias the shared zero-hash table and
 	// cached empty nodes are shared across trees, so the returned proof must own
@@ -787,7 +807,10 @@ func (n *Node) ProveMulti(indices []int) (*Multiproof, error) {
 		if err != nil {
 			return nil, err
 		}
-		proof.Leaves[i] = bytes.Clone(node.value)
+		// hashNode, not node.value: a branch node that has not been hashed yet
+		// carries a nil value, which would silently produce an empty leaf. Prove
+		// already resolves it this way.
+		proof.Leaves[i] = bytes.Clone(hashNode(node))
 	}
 
 	for i, gi := range reqIndices {
@@ -806,7 +829,7 @@ func (n *Node) ProveMulti(indices []int) (*Multiproof, error) {
 func LeafFromUint64(i uint64) *Node {
 	buf := make([]byte, 32)
 	binary.LittleEndian.PutUint64(buf[:8], i)
-	return NewNodeWithValue(buf)
+	return newOwnedLeaf(buf)
 }
 
 // LeafFromUint32 creates a 32-byte leaf node from a uint32 value, encoded as
@@ -814,7 +837,7 @@ func LeafFromUint64(i uint64) *Node {
 func LeafFromUint32(i uint32) *Node {
 	buf := make([]byte, 32)
 	binary.LittleEndian.PutUint32(buf[:4], i)
-	return NewNodeWithValue(buf)
+	return newOwnedLeaf(buf)
 }
 
 // LeafFromUint16 creates a 32-byte leaf node from a uint16 value, encoded as
@@ -822,7 +845,7 @@ func LeafFromUint32(i uint32) *Node {
 func LeafFromUint16(i uint16) *Node {
 	buf := make([]byte, 32)
 	binary.LittleEndian.PutUint16(buf[:2], i)
-	return NewNodeWithValue(buf)
+	return newOwnedLeaf(buf)
 }
 
 // LeafFromUint8 creates a 32-byte leaf node from a uint8 value, stored in the
@@ -830,7 +853,7 @@ func LeafFromUint16(i uint16) *Node {
 func LeafFromUint8(i uint8) *Node {
 	buf := make([]byte, 32)
 	buf[0] = i
-	return NewNodeWithValue(buf)
+	return newOwnedLeaf(buf)
 }
 
 // LeafFromBool creates a 32-byte leaf node from a boolean value, encoded as
@@ -840,7 +863,7 @@ func LeafFromBool(b bool) *Node {
 	if b {
 		buf[0] = 1
 	}
-	return NewNodeWithValue(buf)
+	return newOwnedLeaf(buf)
 }
 
 // LeafFromBytes creates a tree node from a byte slice. A slice of 32 bytes
@@ -855,7 +878,7 @@ func LeafFromBytes(b []byte) *Node {
 	if l < 32 {
 		// The three-index cap keeps the zero padding out of the caller's
 		// backing array; input memory must never be mutated.
-		return NewNodeWithValue(append(b[:l:l], sszutils.ZeroBytes()[:32-l]...))
+		return newOwnedLeaf(append(b[:l:l], sszutils.ZeroBytes()[:32-l]...))
 	}
 
 	numChunks := (l + 31) / 32
@@ -867,7 +890,7 @@ func LeafFromBytes(b []byte) *Node {
 		} else {
 			chunk := make([]byte, 32)
 			copy(chunk, b[start:])
-			leaves[i] = NewNodeWithValue(chunk)
+			leaves[i] = newOwnedLeaf(chunk)
 		}
 	}
 
@@ -879,7 +902,7 @@ func LeafFromBytes(b []byte) *Node {
 // EmptyLeaf creates a leaf node containing 32 zero bytes, representing an
 // empty or unset value in the Merkle tree.
 func EmptyLeaf() *Node {
-	return NewNodeWithValue(sszutils.ZeroBytes()[:32])
+	return newOwnedLeaf(sszutils.ZeroBytes()[:32])
 }
 
 // LeavesFromUint64 packs a slice of uint64 values into leaf nodes, with 4
@@ -899,7 +922,7 @@ func LeavesFromUint64(items []uint64) []*Node {
 	leaves := make([]*Node, numLeaves)
 	for i := 0; i < numLeaves; i++ {
 		v := buf[i*32 : (i+1)*32]
-		leaves[i] = NewNodeWithValue(v)
+		leaves[i] = newOwnedLeaf(v)
 	}
 
 	return leaves

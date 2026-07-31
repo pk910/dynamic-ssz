@@ -48,6 +48,14 @@ var (
 	// length decoding is always bounded; see WithMaxStreamSize.
 	ErrStreamTooLarge = fmt.Errorf("ssz stream exceeds maximum size")
 
+	// ErrPayloadTooLarge narrows ErrStreamTooLarge to the case where a
+	// caller-supplied read cap was exceeded, as opposed to the decoder's global
+	// stream allowance. Both causes are "too large", so this wraps
+	// ErrStreamTooLarge and carries its message unchanged; decoders match on it
+	// to tell an ssz-max violation apart from a stream-allowance violation
+	// instead of attributing every overrun to the schema limit.
+	ErrPayloadTooLarge = fmt.Errorf("%w", ErrStreamTooLarge)
+
 	// ErrPlatformOverflow is returned when a SSZ length or count exceeds
 	// the platform's integer range (>31-bit sizes on 32-bit platforms).
 	ErrPlatformOverflow = fmt.Errorf("value exceeds platform integer range")
@@ -507,7 +515,7 @@ func ErrCustomTypeNotSupportedFn() error {
 // EOF) is larger than the caller-supplied maximum.
 func ErrPayloadTooLargeFn(length, maxLen any) error {
 	return &sszError{
-		err:     ErrStreamTooLarge,
+		err:     ErrPayloadTooLarge,
 		message: fmt.Sprintf("payload length %v exceeds maximum %v", length, maxLen),
 	}
 }

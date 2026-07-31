@@ -996,9 +996,11 @@ func (ctx *ReflectionCtx) unmarshalListUntilEOF(targetType *ssztypes.TypeDescrip
 		// inside DecodeRemaining before it is allocated; no post-check needed.
 		buf, err := decoder.DecodeRemaining(maxItems)
 		if err != nil {
-			// Only the read cap maps to an ssz-max violation; with no limit the
-			// error came from the stream allowance and stands on its own.
-			if maxItems >= 0 && errors.Is(err, sszutils.ErrStreamTooLarge) {
+			// Only the read cap maps to an ssz-max violation. The stream
+			// allowance can fire on the same call for a payload well inside the
+			// list limit, and reporting that as a list-length violation names a
+			// length the input never declared.
+			if maxItems >= 0 && errors.Is(err, sszutils.ErrPayloadTooLarge) {
 				return sszutils.ErrListLengthFn(maxItems+1, targetType.Limit)
 			}
 			return err
@@ -1367,9 +1369,9 @@ func (ctx *ReflectionCtx) unmarshalBitlist(targetType *ssztypes.TypeDescriptor, 
 	// Bitlists can only be []byte (validated by typecache)
 	byteSlice, err := decoder.DecodeRemaining(maxBytes)
 	if err != nil {
-		// Only the read cap maps to an ssz-max violation; with no limit the
-		// error came from the stream allowance and stands on its own.
-		if maxBytes >= 0 && errors.Is(err, sszutils.ErrStreamTooLarge) {
+		// Only the read cap maps to an ssz-max violation; a stream-allowance
+		// overrun is a different cause and must keep its own diagnosis.
+		if maxBytes >= 0 && errors.Is(err, sszutils.ErrPayloadTooLarge) {
 			return sszutils.ErrBitlistLengthFn(uint64(maxBytes)*8, targetType.Limit)
 		}
 		return err
@@ -1643,7 +1645,7 @@ func (ctx *ReflectionCtx) unmarshalBigInt(targetType *ssztypes.TypeDescriptor, t
 		// static limit there is nothing to report, so the decoder's own error
 		// (the stream allowance) stands -- checkBigIntLimit would return nil
 		// there and swallow the failure.
-		if errors.Is(err, sszutils.ErrStreamTooLarge) && maxBytes >= 0 {
+		if errors.Is(err, sszutils.ErrPayloadTooLarge) && maxBytes >= 0 {
 			if limitErr := checkBigIntLimit(targetType, maxBytes); limitErr != nil {
 				return limitErr
 			}

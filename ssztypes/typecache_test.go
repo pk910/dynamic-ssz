@@ -542,6 +542,57 @@ func TestTypeCache_ProgressiveContainerErrors(t *testing.T) {
 		}
 	})
 
+	t.Run("AutoIndexPastMaximum", func(t *testing.T) {
+		// getSszIndexTag caps an explicit ssz-index at 255, but the auto-increment
+		// used to run past it: an untagged field after ssz-index:"255" landed on
+		// 256 and built a 33-byte active-fields bitvector, above the 32-byte
+		// maximum the hashers support.
+		type TestStruct struct {
+			Field1 uint32 `ssz-index:"255"`
+			Field2 uint32 // untagged: auto-indexed to 256
+		}
+
+		_, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+		if err == nil {
+			t.Fatal("expected error for auto-index above the supported maximum")
+		}
+		if !strings.Contains(err.Error(), "ssz-index 256 assigned to field \"Field2\" exceeds the supported maximum of 255") {
+			t.Errorf("Unexpected error: %s", err.Error())
+		}
+	})
+
+	t.Run("AutoIndexAtMaximum", func(t *testing.T) {
+		// 255 itself is still allowed, so the bound is off-by-one safe.
+		type TestStruct struct {
+			Field1 uint32 `ssz-index:"254"`
+			Field2 uint32 // untagged: auto-indexed to 255
+		}
+
+		desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := desc.ContainerDesc.Fields[1].SszIndex; got != 255 {
+			t.Errorf("Field2 auto-index = %d; want 255", got)
+		}
+	})
+
+	t.Run("IndexTagWithWhitespace", func(t *testing.T) {
+		// Tag values are trimmed, matching the size/max tag parsers.
+		type TestStruct struct {
+			Field1 uint32 `ssz-index:" 0 "`
+			Field2 uint32 `ssz-index:"1"`
+		}
+
+		desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := desc.ContainerDesc.Fields[0].SszIndex; got != 0 {
+			t.Errorf("Field1 index = %d; want 0", got)
+		}
+	})
+
 	t.Run("DecreasingIndexTag", func(t *testing.T) {
 		type TestStruct struct {
 			Field1 uint32 `ssz-index:"3"`
@@ -2458,6 +2509,124 @@ func TestGetSszSizeTagBitsizeParseError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "error parsing ssz-bitsize tag") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestTagValuesTolerateWhitespace pins whitespace handling in the struct-field
+// tag parsers. `ssz-size:"8, 16"` used to fail with a raw strconv error on
+// " 16" while the identical string through Annotate[T] and through a dynssz-*
+// expression was accepted — three parsers, three rules.
+func TestTagValuesTolerateWhitespace(t *testing.T) {
+	ds := &dummyDynamicSpecs{specValues: map[string]uint64{"X": 100}}
+
+	t.Run("SszSize", func(t *testing.T) {
+		field := makeField("X", reflect.TypeOf([][]byte{}), `ssz-size:"8, 16"`)
+		sizes, err := getSszSizeTag(ds, field)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(sizes) != 2 || sizes[0].Size != 8 || sizes[1].Size != 16 {
+			t.Fatalf("sizes = %+v; want sizes 8 and 16", sizes)
+		}
+	})
+
+	t.Run("SszBitsize", func(t *testing.T) {
+		field := makeField("X", reflect.TypeOf([]byte{}), `ssz-bitsize:" 12 "`)
+		sizes, err := getSszSizeTag(ds, field)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(sizes) != 1 || sizes[0].Size != 12 || !sizes[0].Bits {
+			t.Fatalf("sizes = %+v; want a 12-bit hint", sizes)
+		}
+	})
+
+	t.Run("DynSszSize", func(t *testing.T) {
+		field := makeField("X", reflect.TypeOf([]byte{}), `dynssz-size:" X "`)
+		sizes, err := getSszSizeTag(ds, field)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(sizes) != 1 || sizes[0].Size != 100 {
+			t.Fatalf("sizes = %+v; want size 100", sizes)
+		}
+	})
+
+	t.Run("SszMax", func(t *testing.T) {
+		field := makeField("X", reflect.TypeOf([][]byte{}), `ssz-max:"8, 16"`)
+		maxes, err := getSszMaxSizeTag(ds, field)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(maxes) != 2 || maxes[0].Size != 8 || maxes[1].Size != 16 {
+			t.Fatalf("maxes = %+v; want maxes 8 and 16", maxes)
+		}
+	})
+
+	t.Run("DynSszMax", func(t *testing.T) {
+		field := makeField("X", reflect.TypeOf([]byte{}), `ssz-max:"8" dynssz-max:" X "`)
+		maxes, err := getSszMaxSizeTag(ds, field)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(maxes) != 1 || maxes[0].Size != 100 {
+			t.Fatalf("maxes = %+v; want max 100", maxes)
+		}
+	})
+
+	t.Run("SszType", func(t *testing.T) {
+		field := makeField("X", reflect.TypeOf([][]uint32{}), `ssz-type:"list, list"`)
+		hints, err := getSszTypeTag(field)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(hints) != 2 || hints[0].Type != SszListType || hints[1].Type != SszListType {
+			t.Fatalf("hints = %+v; want two list hints", hints)
+		}
+	})
+
+	t.Run("ParseTagsAgrees", func(t *testing.T) {
+		// The Annotate/codegen-side parser must reach the same hints for the
+		// same string; the two rules diverging is what the fix removed.
+		_, _, maxes, err := ParseTags(`ssz-max:"8" dynssz-max:" X "`)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(maxes) != 1 || maxes[0].Expr != "X" {
+			t.Fatalf("maxes = %+v; want the trimmed expression X", maxes)
+		}
+	})
+}
+
+// TestBitlistRejectsFixedBitsizeNamesTheTag checks the diagnostic for
+// ssz-bitsize on a bitlist. The rejection is correct — a bitlist has no fixed
+// size — but it used to name ssz-size, a tag the user never wrote.
+func TestBitlistRejectsFixedBitsizeNamesTheTag(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	type BitlistWithBitsize struct {
+		X []byte `ssz-type:"bitlist" ssz-bitsize:"12" ssz-max:"64"`
+	}
+
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(BitlistWithBitsize{}), nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for a bitlist with a fixed bit size")
+	}
+	if !strings.Contains(err.Error(), "list types cannot have a fixed ssz-bitsize") {
+		t.Fatalf("error should name ssz-bitsize, got: %v", err)
+	}
+
+	// A byte-unit size tag still reports ssz-size.
+	type ListWithSize struct {
+		X []byte `ssz-type:"list" ssz-size:"12" ssz-max:"64"`
+	}
+
+	_, err = cache.GetTypeDescriptor(reflect.TypeOf(ListWithSize{}), nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for a list with a fixed size")
+	}
+	if !strings.Contains(err.Error(), "list types cannot have a fixed ssz-size") {
+		t.Fatalf("error should name ssz-size, got: %v", err)
 	}
 }
 

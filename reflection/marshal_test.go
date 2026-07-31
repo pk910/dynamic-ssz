@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"math/big"
 	"reflect"
+	"strings"
 	"testing"
 
 	. "github.com/pk910/dynamic-ssz"
@@ -664,6 +665,77 @@ func TestMarshalEmptyBitlist(t *testing.T) {
 	// Should add termination bit 0x01 after the offset
 	if len(buf) < 5 || buf[4] != 0x01 {
 		t.Errorf("expected empty bitlist to have termination bit, got %x", buf)
+	}
+}
+
+// TestMarshalBitvectorPaddingMatchesHashTreeRoot pins the padding-bit check to
+// the SSZ bit size rather than the Go backing array. The check used to fire
+// whenever BitSize was below len(backingArray)*8, so a byte-aligned bitvector
+// stored in an oversized array was rejected as having non-zero padding — even
+// though a bit size that is a multiple of 8 has no padding bits at all — while
+// HashTreeRoot happily rooted the same value.
+func TestMarshalBitvectorPaddingMatchesHashTreeRoot(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation())
+
+	tests := []struct {
+		name    string
+		input   any
+		wantErr string
+	}{
+		{
+			name: "aligned_exact_array",
+			input: &struct {
+				V [1]byte `ssz-type:"bitvector" ssz-bitsize:"8"`
+			}{V: [1]byte{0xaa}},
+		},
+		{
+			name: "aligned_oversized_array",
+			input: &struct {
+				V [4]byte `ssz-type:"bitvector" ssz-bitsize:"8"`
+			}{V: [4]byte{0xaa, 0, 0, 0}},
+		},
+		{
+			// Slack beyond the encoded byte is not padding and must not be
+			// inspected: only the last encoded byte carries padding bits.
+			name: "aligned_oversized_array_dirty_slack",
+			input: &struct {
+				V [4]byte `ssz-type:"bitvector" ssz-bitsize:"8"`
+			}{V: [4]byte{0xaa, 0xff, 0xff, 0xff}},
+		},
+		{
+			name: "unaligned_clean_padding",
+			input: &struct {
+				V [2]byte `ssz-type:"bitvector" ssz-bitsize:"12"`
+			}{V: [2]byte{0xff, 0x0f}},
+		},
+		{
+			name: "unaligned_dirty_padding",
+			input: &struct {
+				V [2]byte `ssz-type:"bitvector" ssz-bitsize:"12"`
+			}{V: [2]byte{0xff, 0x1f}},
+			wantErr: "bitvector padding bits are not zero",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, marshalErr := ds.MarshalSSZ(tt.input)
+			_, htrErr := ds.HashTreeRoot(tt.input)
+
+			if tt.wantErr != "" {
+				if marshalErr == nil || !strings.Contains(marshalErr.Error(), tt.wantErr) {
+					t.Fatalf("MarshalSSZ error = %v, want %q", marshalErr, tt.wantErr)
+				}
+			} else if marshalErr != nil {
+				t.Fatalf("MarshalSSZ: unexpected error: %v", marshalErr)
+			}
+
+			// The two paths must agree on which values are encodable; a root for
+			// a value Marshal refuses to emit is internally inconsistent.
+			if (marshalErr == nil) != (htrErr == nil) {
+				t.Fatalf("marshal/HTR disagree: marshal err = %v, htr err = %v", marshalErr, htrErr)
+			}
+		})
 	}
 }
 

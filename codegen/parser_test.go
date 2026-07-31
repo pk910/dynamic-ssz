@@ -919,6 +919,43 @@ func TestBuildContainerDescriptor(t *testing.T) {
 			t.Error("Expected error for invalid ssz-index")
 		}
 	})
+
+	t.Run("AutoIndexPastMaximum", func(t *testing.T) {
+		// An explicit ssz-index above 255 is rejected, but the auto-increment for
+		// an untagged following field used to run past it and emit a 33-byte
+		// active-fields bitvector — above the 32-byte maximum the hashers support.
+		// The reflection typecache enforces the same bound.
+		fields := []*types.Var{
+			types.NewVar(token.NoPos, nil, "Field1", types.Typ[types.Uint64]),
+			types.NewVar(token.NoPos, nil, "Field2", types.Typ[types.Uint64]),
+		}
+		structType := types.NewStruct(fields, []string{`ssz-index:"255"`, ``})
+
+		_, err := parser.buildTypeDescriptor(structType, structType, nil, nil, nil)
+		if err == nil {
+			t.Fatal("Expected error for auto-index above the supported maximum")
+		}
+		if !strings.Contains(err.Error(), "ssz-index 256 assigned to field \"Field2\" exceeds the supported maximum of 255") {
+			t.Errorf("Unexpected error: %v", err)
+		}
+	})
+
+	t.Run("AutoIndexAtMaximum", func(t *testing.T) {
+		// 255 itself stays valid, so the bound is off-by-one safe.
+		fields := []*types.Var{
+			types.NewVar(token.NoPos, nil, "Field1", types.Typ[types.Uint64]),
+			types.NewVar(token.NoPos, nil, "Field2", types.Typ[types.Uint64]),
+		}
+		structType := types.NewStruct(fields, []string{`ssz-index:"254"`, ``})
+
+		desc, err := parser.buildTypeDescriptor(structType, structType, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := desc.ContainerDesc.Fields[1].SszIndex; got != 255 {
+			t.Errorf("Field2 auto-index = %d; want 255", got)
+		}
+	})
 }
 
 func TestBuildVectorDescriptor(t *testing.T) {

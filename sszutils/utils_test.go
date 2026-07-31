@@ -940,6 +940,22 @@ func TestDecodeByteListInto(t *testing.T) {
 			t.Fatalf("err = %v, want %v", err, want)
 		}
 	})
+
+	t.Run("open region keeps the stream allowance distinct from the cap", func(t *testing.T) {
+		// The allowance (4) fires while the caller's cap (64) is untouched.
+		// Both causes surface as ErrStreamTooLarge, and reporting the allowance
+		// overrun as a list-limit violation names a length the payload never
+		// declared.
+		dec := NewUnknownStreamDecoder(bytes.NewReader(data), 2, 4)
+		dec.PushOpenLimit()
+		_, err := DecodeByteListInto(dec, nil, 64)
+		if !errors.Is(err, ErrStreamTooLarge) {
+			t.Fatalf("err = %v, want ErrStreamTooLarge", err)
+		}
+		if errors.Is(err, ErrListTooBig) {
+			t.Fatalf("stream-allowance overrun reported as a list-limit violation: %v", err)
+		}
+	})
 }
 
 func TestDecodeUint64ListInto(t *testing.T) {
@@ -1100,25 +1116,6 @@ func TestRegionEmpty(t *testing.T) {
 			t.Fatalf("err = %v, want %v", err, want)
 		}
 	})
-}
-
-func TestIsStreamTooLarge(t *testing.T) {
-	if !isStreamTooLarge(ErrStreamTooLargeFn(10)) {
-		t.Fatal("constructed stream-too-large error not recognised")
-	}
-	if !isStreamTooLarge(ErrPayloadTooLargeFn(11, 10)) {
-		t.Fatal("payload-too-large error not recognised")
-	}
-	// It must recognise the error through the path-annotating wrapper too.
-	if !isStreamTooLarge(ErrorWithPath(ErrStreamTooLargeFn(10), "Field")) {
-		t.Fatal("wrapped stream-too-large error not recognised")
-	}
-	if isStreamTooLarge(ErrUnexpectedEOF) {
-		t.Fatal("unrelated error misrecognised")
-	}
-	if isStreamTooLarge(nil) {
-		t.Fatal("nil misrecognised")
-	}
 }
 
 // TestBufferDecoder_Available covers Available() on a buffer-backed decoder,

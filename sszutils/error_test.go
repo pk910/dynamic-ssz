@@ -290,6 +290,13 @@ func TestErrorConstructorFunctions(t *testing.T) {
 		{"ErrListLengthFn", ErrListLengthFn(100, 50), ErrListTooBig, "list length 100 exceeds maximum 50"},
 		{"ErrBitlistLengthFn", ErrBitlistLengthFn(256, 128), ErrListTooBig, "bitlist length 256 exceeds maximum 128"},
 
+		// ErrStreamTooLarge constructors. ErrPayloadTooLargeFn carries the
+		// narrower ErrPayloadTooLarge sentinel so a read-cap overrun can be told
+		// apart from a stream-allowance overrun; both still match
+		// ErrStreamTooLarge (asserted separately below).
+		{"ErrPayloadTooLargeFn", ErrPayloadTooLargeFn(100, 50), ErrPayloadTooLarge, "payload length 100 exceeds maximum 50"},
+		{"ErrStreamTooLargeFn", ErrStreamTooLargeFn(50), ErrStreamTooLarge, "unknown-length ssz stream exceeds maximum size 50"},
+
 		// ErrNotImplemented constructors
 		{"ErrUnknownTypeFn", ErrUnknownTypeFn("mysteryType"), ErrNotImplemented, "unknown type: mysteryType"},
 		{"ErrCustomTypeNotSupportedFn", ErrCustomTypeNotSupportedFn(), ErrNotImplemented, "custom type not supported"},

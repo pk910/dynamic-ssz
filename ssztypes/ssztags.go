@@ -178,7 +178,7 @@ func getSszTypeTag(field *reflect.StructField) ([]SszTypeHint, error) {
 
 	if fieldHasSszType {
 		for _, sszTypeStr := range strings.Split(fieldSszTypeStr, ",") {
-			sszType, err := ParseSszType(sszTypeStr)
+			sszType, err := ParseSszType(strings.TrimSpace(sszTypeStr))
 			if err != nil {
 				return sszTypeHints, sszutils.ErrorWithPath(err, field.Name)
 			}
@@ -430,6 +430,7 @@ func getSszMaxSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]S
 	// parse `ssz-max` first, these are the default values used by fastssz
 	if fieldSszMaxStr, fieldHasSszMax := field.Tag.Lookup("ssz-max"); fieldHasSszMax {
 		for _, sszSizeStr := range strings.Split(fieldSszMaxStr, ",") {
+			sszSizeStr = strings.TrimSpace(sszSizeStr)
 			sszMaxSize := SszMaxSizeHint{}
 
 			if sszSizeStr == "?" {
@@ -449,6 +450,7 @@ func getSszMaxSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]S
 	fieldDynSszMaxStr, fieldHasDynSszMax := field.Tag.Lookup("dynssz-max")
 	if fieldHasDynSszMax {
 		for i, sszMaxSizeStr := range strings.Split(fieldDynSszMaxStr, ",") {
+			sszMaxSizeStr = strings.TrimSpace(sszMaxSizeStr)
 			sszMaxSize := SszMaxSizeHint{}
 			isExpr := false
 
@@ -506,7 +508,7 @@ func getSszIndexTag(field *reflect.StructField) (*uint16, error) {
 
 	// parse `ssz-index` first, these are the default values used by fastssz
 	if fieldSszIndexStr, fieldHasSszIndex := field.Tag.Lookup("ssz-index"); fieldHasSszIndex {
-		sszSizeInt, err := strconv.ParseUint(fieldSszIndexStr, 10, 16)
+		sszSizeInt, err := strconv.ParseUint(strings.TrimSpace(fieldSszIndexStr), 10, 16)
 		if err != nil {
 			return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "error parsing ssz-index tag for '%v' field: %v", field.Name, err)
 		}
@@ -524,9 +526,13 @@ func getSszIndexTag(field *reflect.StructField) (*uint16, error) {
 	return sszIndex, nil
 }
 
+// getTagPart returns the index-th comma-separated dimension of a size tag, or
+// "?" when the tag declares fewer dimensions. Surrounding whitespace is trimmed
+// so `ssz-size:"8, 16"` parses like `ssz-size:"8,16"`, matching ParseTags and
+// the spec-expression evaluator.
 func getTagPart(parts []string, index int) string {
 	if index < len(parts) {
-		return parts[index]
+		return strings.TrimSpace(parts[index])
 	}
 	return "?"
 }
@@ -733,6 +739,7 @@ func ParseTags(tag string) (typeHints []SszTypeHint, sizeHints []SszSizeHint, ma
 	fieldDynSszMaxStr, fieldHasDynSszMax := structTag.Lookup("dynssz-max")
 	if fieldHasDynSszMax {
 		for i, sszMaxSizeStr := range strings.Split(fieldDynSszMaxStr, ",") {
+			sszMaxSizeStr = strings.TrimSpace(sszMaxSizeStr)
 			sszMaxSize := SszMaxSizeHint{}
 			isExpr := false
 

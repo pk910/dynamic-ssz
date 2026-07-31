@@ -4,7 +4,10 @@
 
 package dynssz
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 // TestEvalIntSpecExpression exercises the rational spec-expression evaluator
 // across every operator, the overflow/underflow/division guards, the literal
@@ -18,6 +21,13 @@ func TestEvalIntSpecExpression(t *testing.T) {
 		"MAX": ^uint64(0),
 		"NEG": int(-5),
 		"F":   3.5, // float rounds up to 4
+		// Fractional operands stay exact until the single final rounding; JSON
+		// spec files decode every number as float64, so this is the common shape.
+		"HALF": 0.5,
+		"F32":  float32(1.5),
+		"NAN":  math.NaN(),
+		"INF":  math.Inf(1),
+		"NEGF": -1.5,
 	}
 
 	cases := []struct {
@@ -48,6 +58,20 @@ func TestEvalIntSpecExpression(t *testing.T) {
 		{"literal", "42", true, true, 42, false},
 		{"ident", "A", true, true, 10, false},
 		{"float_ceil", "F", true, true, 4, false},
+		// A float operand must enter the arithmetic as the exact rational it is.
+		// Rounding it up first turned 0.5 into 1, so these produced 4, 2 and 8.
+		{"float_operand_mul", "HALF * 4", true, true, 2, false},
+		{"float_operand_mul_small", "HALF * 2", true, true, 1, false},
+		{"float_operand_mul_fraction", "F * 2", true, true, 7, false},
+		// Two halves make a whole rather than two ceilings.
+		{"float_operand_add", "HALF + HALF", true, true, 1, false},
+		{"float_operand_div", "HALF / 2 * 8", true, true, 2, false},
+		{"float32_operand", "F32 * 2", true, true, 3, false},
+		// A lone fractional operand still rounds up, as before.
+		{"float_operand_alone", "HALF", true, true, 1, false},
+		{"float_nan", "NAN + 1", true, false, 0, true},
+		{"float_inf", "INF + 1", true, false, 0, true},
+		{"float_negative", "NEGF + 1", true, false, 0, true},
 		{"add_overflow", "MAX + A", true, false, 0, true},
 		{"sub_negative", "B - A", true, false, 0, true},
 		{"mul_overflow", "BIG * BIG", true, false, 0, true},

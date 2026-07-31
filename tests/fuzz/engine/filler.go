@@ -9,6 +9,13 @@ import (
 	"time"
 )
 
+// maxFillDepth bounds how far Fill descends into a value graph. A recursive
+// type (a pointer or list whose element reaches the type again) has no natural
+// bottom, so without a budget the walk recurses until the goroutine stack
+// overflows -- a fatal error that kills the fuzz worker instead of testing the
+// corpus entry.
+const maxFillDepth = 24
+
 // Filler populates Go struct instances with random valid values using reflection.
 // It reads SSZ struct tags to determine valid sizes for slices, bitlists, etc.
 type Filler struct {
@@ -16,6 +23,7 @@ type Filler struct {
 	nilChance   float64 // probability of leaving an optional/struct pointer nil
 	emptyChance float64 // probability of empty slices
 	maxListFill int     // cap on list elements (may be less than ssz-max)
+	depth       int     // current nesting depth, bounded by maxFillDepth
 }
 
 // NewFiller creates a new random value filler.
@@ -50,6 +58,19 @@ func (f *Filler) fillValue(v reflect.Value, tags string) {
 	if !v.CanSet() {
 		return
 	}
+
+	// Stop descending at the budget. Pointers are deliberately not stopped here:
+	// fillPointer still allocates one, so a non-optional pointer field never
+	// comes back nil, and the recursion terminates one level down instead.
+	if f.depth >= maxFillDepth {
+		switch v.Kind() { //nolint:exhaustive // only the recursing kinds need to stop
+		case reflect.Struct, reflect.Array, reflect.Slice:
+			return
+		}
+	}
+
+	f.depth++
+	defer func() { f.depth-- }()
 
 	switch v.Kind() { //nolint:exhaustive // intentionally handles only SSZ-relevant kinds
 	case reflect.Ptr:
