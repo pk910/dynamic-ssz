@@ -311,13 +311,21 @@ func (cg *CodeGenerator) analyzeTypes() error {
 // validateTopLevelType rejects top-level types that cannot receive generated
 // methods. Both work fine as struct fields, but not as standalone -types
 // entries:
-//   - a Union / CompatibleUnion / TypeWrapper: these are generic library types
+//   - the library's generic Union / CompatibleUnion / TypeWrapper: these are
 //     nameable only via a transparent alias, so a method receiver would resolve
 //     to the foreign generic type rather than a local named type.
 //   - a named pointer type (type T *U): methods cannot be declared on a type
 //     whose underlying type is a pointer.
+//
+// A user's own named type that merely carries union or wrapper *semantics* --
+// a struct annotated ssz-type:"wrapper", say -- is an ordinary declared type
+// and can receive methods, so it is only the generic instantiation that has to
+// be rejected here, not the SSZ type it maps to.
 func validateTopLevelType(t *CodeGeneratorTypeOptions, desc *ssztypes.TypeDescriptor, typeName string) error {
-	if desc.SszType == ssztypes.SszUnionType || desc.SszType == ssztypes.SszCompatibleUnionType || desc.SszType == ssztypes.SszTypeWrapperType {
+	isAliasOnlyShape := desc.SszType == ssztypes.SszUnionType ||
+		desc.SszType == ssztypes.SszCompatibleUnionType ||
+		desc.SszType == ssztypes.SszTypeWrapperType
+	if isAliasOnlyShape && !isDeclaredNamedType(t) {
 		return fmt.Errorf("cannot generate SSZ methods for top-level %s: a Union/CompatibleUnion/TypeWrapper is nameable only via a type alias and cannot receive methods; use it as a struct field instead", typeName)
 	}
 
@@ -356,6 +364,35 @@ func validateTopLevelType(t *CodeGeneratorTypeOptions, desc *ssztypes.TypeDescri
 		}
 	}
 	return nil
+}
+
+// isDeclaredNamedType reports whether the top-level type is a named type
+// declared in source, as opposed to an instantiation of a generic library type
+// reached through a transparent alias. Only the former can carry the generated
+// methods: a receiver written for `dynssz.TypeWrapper[D, T]` would name a
+// foreign generic, while a receiver for a user's own `type Sidecars struct{...}`
+// is an ordinary method declaration.
+//
+// A pointer named type is reported as declared here; validateTopLevelType
+// rejects it separately with a message about the pointer.
+func isDeclaredNamedType(t *CodeGeneratorTypeOptions) bool {
+	if t.ReflectType != nil {
+		rt := t.ReflectType
+		if rt.Kind() == reflect.Pointer {
+			rt = rt.Elem()
+		}
+		// An instantiated generic's reflect name carries its type arguments
+		// (e.g. "TypeWrapper[...]"), which no source declaration can.
+		return rt.Name() != "" && !strings.Contains(rt.Name(), "[")
+	}
+
+	base := t.GoTypesType
+	if ptr, ok := base.(*types.Pointer); ok {
+		base = ptr.Elem()
+	}
+	named, ok := types.Unalias(base).(*types.Named)
+
+	return ok && named.TypeArgs().Len() == 0
 }
 
 // isShallowDelegatedDescriptor reports whether a descriptor was shallow-built

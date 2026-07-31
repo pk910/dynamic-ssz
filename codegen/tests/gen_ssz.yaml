@@ -147,6 +147,8 @@ types:
     output: gen_toplevel.go
   - name: TopLevelListOfList
     output: gen_toplevel.go
+  - name: TopLevelStructWrapper
+    output: gen_toplevel.go
   - name: TopLevelWrapVarList
     output: gen_toplevel.go
   - name: TopVecOfVar

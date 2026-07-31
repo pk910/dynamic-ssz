@@ -1474,3 +1474,157 @@ func TestGenerateWithoutDynExprRecursiveCycle(t *testing.T) {
 		t.Errorf("static recursive output must contain no *Dyn call:\n%s", files["gen_rec_nodyn.go"])
 	}
 }
+
+// topLevelWrapperStruct is a user-declared struct carrying type-wrapper
+// semantics through a type-level annotation. A top-level entry has no field
+// tag, so the annotation is the only channel available to it.
+type topLevelWrapperStruct struct {
+	Items []topLevelWrapperItem `ssz-max:"8"`
+}
+
+type topLevelWrapperItem struct {
+	Val  uint64
+	Tail []byte `ssz-max:"4"`
+}
+
+var _ = sszutils.Annotate[topLevelWrapperStruct](`ssz-type:"wrapper"`)
+
+// topLevelWrapperAlias names the library's generic TypeWrapper, which is only
+// expressible as a transparent alias.
+type topLevelWrapperAlias = dynssz.TypeWrapper[struct {
+	Data []byte `ssz-size:"32"`
+}, []byte]
+
+type topLevelUnionAlias = dynssz.CompatibleUnion[struct {
+	A uint32
+	B uint64
+}]
+
+type topLevelClassicUnionAlias = dynssz.Union[struct {
+	A uint32
+	B uint64
+}]
+
+// TestValidateTopLevelTypeWrapperShapes pins which wrapper-shaped types may be
+// listed as standalone -types entries.
+//
+// The gate keyed on the descriptor's SSZ type, so it rejected anything that
+// merely *mapped* to a wrapper or union — including an ordinary named struct
+// that can receive methods perfectly well, and which generated fine before the
+// gate existed. Only the library's generics genuinely cannot: they are
+// nameable solely through a transparent alias, so a method receiver would name
+// the foreign generic type.
+func TestValidateTopLevelTypeWrapperShapes(t *testing.T) {
+	tests := []struct {
+		name       string
+		reflectTyp reflect.Type
+		wantErr    bool
+	}{
+		{"declared struct with wrapper semantics", reflect.TypeFor[topLevelWrapperStruct](), false},
+		{"pointer to declared wrapper struct", reflect.TypeFor[*topLevelWrapperStruct](), false},
+		{"generic TypeWrapper via alias", reflect.TypeFor[topLevelWrapperAlias](), true},
+		{"generic CompatibleUnion via alias", reflect.TypeFor[topLevelUnionAlias](), true},
+		{"generic Union via alias", reflect.TypeFor[topLevelClassicUnionAlias](), true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cg := NewCodeGenerator(nil)
+			cg.BuildFile("test.go", WithReflectType(tt.reflectTyp))
+
+			out, err := cg.GenerateToMap()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected the alias-only generic to be rejected")
+				}
+				if !strings.Contains(err.Error(), "nameable only via a type alias") {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("declared named type rejected: %v", err)
+			}
+			code, ok := out["test.go"]
+			if !ok {
+				t.Fatal("no output emitted")
+			}
+			// The methods must land on the declared type, not on a foreign
+			// generic receiver.
+			if !strings.Contains(code, "func (t *topLevelWrapperStruct) MarshalSSZTo(") {
+				t.Fatalf("generated code has no marshal method for the declared type:\n%s", code)
+			}
+		})
+	}
+
+	// The generator's real entry point is go/types, not reflect, so the gate has
+	// to reach the same verdict there.
+	t.Run("goTypes", func(t *testing.T) {
+		cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
+		pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
+		if err != nil || len(pkgs) == 0 {
+			t.Fatalf("load tests package: %v", err)
+		}
+
+		declared := pkgs[0].Types.Scope().Lookup("TopLevelStructWrapper")
+		if declared == nil {
+			t.Fatal("TopLevelStructWrapper not found")
+		}
+
+		t.Run("declared struct accepted", func(t *testing.T) {
+			cg := NewCodeGenerator(nil)
+			cg.BuildFile("gen_wrapper_gt.go", WithGoTypesType(declared.Type()))
+			if _, genErr := cg.GenerateToMap(); genErr != nil {
+				t.Fatalf("declared named type rejected via go/types: %v", genErr)
+			}
+		})
+
+		t.Run("pointer to declared struct accepted", func(t *testing.T) {
+			cg := NewCodeGenerator(nil)
+			cg.BuildFile("gen_wrapper_ptr_gt.go", WithGoTypesType(types.NewPointer(declared.Type())))
+			if _, genErr := cg.GenerateToMap(); genErr != nil {
+				t.Fatalf("pointer to declared named type rejected via go/types: %v", genErr)
+			}
+		})
+
+		// The library generic instantiated the way an alias declares it: the one
+		// shape that genuinely cannot receive methods.
+		libPkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz")
+		if err != nil || len(libPkgs) == 0 {
+			t.Fatalf("load library package: %v", err)
+		}
+		descObj := pkgs[0].Types.Scope().Lookup("TopLevelStructWrapperItem")
+		if descObj == nil {
+			t.Fatal("TopLevelStructWrapperItem not found")
+		}
+
+		for _, generic := range []string{"CompatibleUnion", "Union"} {
+			t.Run("generic "+generic+" rejected", func(t *testing.T) {
+				obj := libPkgs[0].Types.Scope().Lookup(generic)
+				if obj == nil {
+					t.Skipf("%s not found in the library package", generic)
+				}
+				named, ok := obj.Type().(*types.Named)
+				if !ok {
+					t.Skipf("%s is %T, want *types.Named", generic, obj.Type())
+				}
+				inst, err := types.Instantiate(nil, named, []types.Type{descObj.Type()}, false)
+				if err != nil {
+					t.Fatalf("instantiate %s: %v", generic, err)
+				}
+
+				cg := NewCodeGenerator(nil)
+				cg.BuildFile("gen_generic_gt.go", WithGoTypesType(inst))
+				_, genErr := cg.GenerateToMap()
+				if genErr == nil {
+					t.Fatalf("expected the alias-only generic %s to be rejected", generic)
+				}
+				if !strings.Contains(genErr.Error(), "nameable only via a type alias") &&
+					!strings.Contains(genErr.Error(), "generic type instantiation") {
+					t.Fatalf("unexpected error for %s: %v", generic, genErr)
+				}
+			})
+		}
+	})
+}

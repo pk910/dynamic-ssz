@@ -1681,6 +1681,33 @@ type TopLevelListOfList [][]byte
 
 var _ = sszutils.Annotate[TopLevelListOfList](`ssz-max:"8,32"`)
 
+// TopLevelStructWrapper is a user-declared struct that carries type-wrapper
+// semantics through a type-level annotation. A top-level entry has no field
+// tag, so the annotation is the only channel available for it.
+//
+// Wrapper semantics must not be confused with the library's generic
+// TypeWrapper/Union, which are nameable only through a transparent alias and
+// therefore genuinely cannot receive generated methods. This is an ordinary
+// named type and can, so it must generate like any other -types entry.
+type TopLevelStructWrapper struct {
+	Items []*TopLevelStructWrapperItem `ssz-max:"72"`
+}
+
+type TopLevelStructWrapperItem struct {
+	Val  uint64
+	Tail []byte `ssz-max:"8"`
+}
+
+var _ = sszutils.Annotate[TopLevelStructWrapper](`ssz-type:"wrapper"`)
+
+var TopLevelStructWrapper_Payload = TopLevelStructWrapper{
+	Items: []*TopLevelStructWrapperItem{
+		{Val: 1, Tail: []byte{1, 2, 3}},
+		{Val: 2, Tail: []byte{}},
+		{Val: 3, Tail: []byte{9}},
+	},
+}
+
 // TopLevelWrapVarList wraps a variable-element list in a TypeWrapper; the
 // streaming size closure must not collide with the wrapper unwrap local.
 type TopLevelWrapVarList struct {

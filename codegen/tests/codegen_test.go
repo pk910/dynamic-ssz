@@ -140,6 +140,12 @@ var testMatrix = []TestPayload{
 		Specs:   map[string]any{},
 		Hash:    "984701b6584a109df60dc555cc22d000b724f85c3391c915ef362be9898b4b54",
 	},
+	{
+		Name:    "TopLevelStructWrapper",
+		Payload: TopLevelStructWrapper_Payload,
+		Specs:   map[string]any{},
+		Hash:    "0dbb6d5f4c46a2b34546ba81531263e908ea2ead013bfc0d4117f94d68ee1691",
+	},
 }
 
 func TestCodegenGeneration(t *testing.T) {
@@ -2068,4 +2074,98 @@ func TestCodegenDynamicListRejectsUnbackedElementCount(t *testing.T) {
 			}
 		}
 	})
+}
+
+// A user-declared struct that carries type-wrapper semantics through a
+// type-level annotation must generate methods like any other top-level entry.
+//
+// Wrapper semantics used to be conflated with the library's generic
+// TypeWrapper/Union: those are nameable only through a transparent alias, so a
+// method receiver would name the foreign generic and the generator rejects
+// them. The gate keyed on the SSZ type rather than on the Go type, so it also
+// rejected an ordinary named struct that can perfectly well receive methods —
+// a type that generated fine before the gate was introduced.
+func TestCodegenTopLevelStructWrapper(t *testing.T) {
+	if _, generated := any(&TopLevelStructWrapper{}).(sszutils.DynamicMarshaler); !generated {
+		t.Fatal("no generated methods for a top-level struct with wrapper semantics")
+	}
+
+	// Every generated method set must be present, not just the marshaler: a
+	// partial emission would still satisfy the gate.
+	for name, ok := range map[string]bool{
+		"DynamicMarshaler":   func() bool { _, ok := any(&TopLevelStructWrapper{}).(sszutils.DynamicMarshaler); return ok }(),
+		"DynamicUnmarshaler": func() bool { _, ok := any(&TopLevelStructWrapper{}).(sszutils.DynamicUnmarshaler); return ok }(),
+		"DynamicHashRoot":    func() bool { _, ok := any(&TopLevelStructWrapper{}).(sszutils.DynamicHashRoot); return ok }(),
+		"DynamicEncoder":     func() bool { _, ok := any(&TopLevelStructWrapper{}).(sszutils.DynamicEncoder); return ok }(),
+		"DynamicDecoder":     func() bool { _, ok := any(&TopLevelStructWrapper{}).(sszutils.DynamicDecoder); return ok }(),
+	} {
+		if !ok {
+			t.Errorf("generated code does not implement %s", name)
+		}
+	}
+
+	// The wrapper is transparent: it must serialize and hash exactly as its
+	// single field does, and the generated methods must agree with reflection.
+	refl := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation())
+	cg := dynssz.NewDynSsz(nil)
+
+	payload := TopLevelStructWrapper_Payload
+
+	reflBytes, err := refl.MarshalSSZ(payload)
+	if err != nil {
+		t.Fatalf("reflection marshal: %v", err)
+	}
+	cgBytes, err := cg.MarshalSSZ(payload)
+	if err != nil {
+		t.Fatalf("generated marshal: %v", err)
+	}
+	if !bytes.Equal(reflBytes, cgBytes) {
+		t.Fatalf("marshal mismatch:\n reflection %x\n codegen    %x", reflBytes, cgBytes)
+	}
+
+	reflRoot, err := refl.HashTreeRoot(payload)
+	if err != nil {
+		t.Fatalf("reflection hash tree root: %v", err)
+	}
+	cgRoot, err := cg.HashTreeRoot(payload)
+	if err != nil {
+		t.Fatalf("generated hash tree root: %v", err)
+	}
+	if reflRoot != cgRoot {
+		t.Fatalf("root mismatch: reflection %x, codegen %x", reflRoot, cgRoot)
+	}
+
+	if reflSize, _ := refl.SizeSSZ(payload); reflSize != len(reflBytes) {
+		t.Fatalf("reflection size %d != marshal length %d", reflSize, len(reflBytes))
+	}
+	if cgSize, _ := cg.SizeSSZ(payload); cgSize != len(cgBytes) {
+		t.Fatalf("generated size %d != marshal length %d", cgSize, len(cgBytes))
+	}
+
+	// Buffer and stream decode must both round-trip, and both engines must
+	// reach the same value.
+	decoded := map[string]*TopLevelStructWrapper{}
+	for _, e := range []struct {
+		name string
+		ds   *dynssz.DynSsz
+	}{{"reflection", refl}, {"codegen", cg}} {
+		buffered := new(TopLevelStructWrapper)
+		if err := e.ds.UnmarshalSSZ(buffered, reflBytes); err != nil {
+			t.Fatalf("%s buffer decode: %v", e.name, err)
+		}
+		streamed := new(TopLevelStructWrapper)
+		if err := e.ds.UnmarshalSSZReader(streamed, bytes.NewReader(reflBytes), len(reflBytes)); err != nil {
+			t.Fatalf("%s stream decode: %v", e.name, err)
+		}
+		if !reflect.DeepEqual(buffered, streamed) {
+			t.Fatalf("%s buffer and stream decode disagree", e.name)
+		}
+		if !reflect.DeepEqual(*buffered, payload) {
+			t.Fatalf("%s did not round-trip: got %+v, want %+v", e.name, *buffered, payload)
+		}
+		decoded[e.name] = buffered
+	}
+	if !reflect.DeepEqual(decoded["reflection"], decoded["codegen"]) {
+		t.Fatal("engines decoded the same bytes to different values")
+	}
 }
