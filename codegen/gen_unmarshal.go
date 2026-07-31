@@ -1187,6 +1187,16 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 			errCode = fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", maxVar)
 			ctx.appendCode(indent, "if itemCount > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
 		}
+		// The offset table declares the count, but only the region can prove the
+		// bodies exist. Each costs at least the element's fixed section, so a
+		// count the remaining bytes cannot cover is malformed -- and would
+		// otherwise size an allocation of count * sizeof(GoElem) that the decode
+		// of element 0 then fails. A zero minimum (a list or union element, which
+		// may legitimately be empty) carries no such bound.
+		if minElemSize := desc.ElemDesc.Len; minElemSize > 0 {
+			errCode = fmt.Sprintf("sszutils.ErrListRegionTooSmallFn(itemCount, %d, len(buf)-startOffset)", minElemSize)
+			ctx.appendCode(indent, "if itemCount > (len(buf)-startOffset)/%d {\n\treturn %s\n}\n", minElemSize, typePath.getErrorWith(errCode))
+		}
 		if desc.Kind != reflect.Array {
 			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", valueVar, valueVar)
 		}

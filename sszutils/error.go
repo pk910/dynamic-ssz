@@ -286,6 +286,19 @@ func ErrListNotAlignedFn(length, elemSize any) error {
 	}
 }
 
+// ErrListRegionTooSmallFn is returned when a dynamic list's offset table
+// declares more elements than the region can physically hold. The table costs
+// four bytes per element and each body costs at least the element's fixed
+// section, so a count above (regionBytes - tableBytes) / minElemSize describes
+// bodies that cannot exist. Rejecting it here keeps a compact offset table from
+// sizing an allocation that the element decode would only fail afterwards.
+func ErrListRegionTooSmallFn(count, minElemSize, available any) error {
+	return &sszError{
+		err:     ErrOffset,
+		message: fmt.Sprintf("list declares %v elements of at least %v bytes, but only %v bytes remain for them", count, minElemSize, available),
+	}
+}
+
 // ErrInvalidListStartOffsetFn is returned when the first offset in a
 // dynamic list is malformed (not a multiple of 4 or out of range).
 func ErrInvalidListStartOffsetFn(offset, bufLen any) error {

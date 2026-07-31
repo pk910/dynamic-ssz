@@ -6,10 +6,13 @@ package reflection_test
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math/big"
 	"reflect"
+	"runtime"
+	"strings"
 	"testing"
 
 	. "github.com/pk910/dynamic-ssz"
@@ -560,7 +563,11 @@ func TestUnmarshalErrors(t *testing.T) {
 			expectedErr: "unexpected end of SSZ",
 		},
 		{
-			name: "dynamic_nested_offset_error",
+			// The offset table fills the whole 8-byte region, so it declares two
+			// elements with no bytes left for their bodies. Each element's fixed
+			// section is 4 bytes (one dynamic field's offset), so the region
+			// cannot hold them and the count is rejected before it sizes a slice.
+			name: "dynamic_nested_region_too_small",
 			target: new(struct {
 				A uint32
 				B []struct {
@@ -568,6 +575,20 @@ func TestUnmarshalErrors(t *testing.T) {
 				} `ssz-max:"10"`
 			}),
 			data:        fromHex("0x010000000800000008000000ff000000"),
+			expectedErr: "list declares 2 elements of at least 4 bytes, but only 0 bytes remain for them",
+		},
+		{
+			// Same shape with a 16-byte region: two 4-byte elements do fit, so the
+			// capacity check passes and the malformed second offset (0xff, past
+			// the region) is what fails. Keeps the element-offset path covered.
+			name: "dynamic_nested_offset_error",
+			target: new(struct {
+				A uint32
+				B []struct {
+					C []uint8 `ssz-max:"10"`
+				} `ssz-max:"10"`
+			}),
+			data:        fromHex("0x010000000800000008000000ff0000000000000000000000"),
 			expectedErr: "element offset",
 		},
 		{
@@ -2269,3 +2290,152 @@ var _ = sszutils.Annotate[streamAllowanceBitlist](`ssz-type:"bitlist" ssz-max:"8
 type streamAllowanceBigInt big.Int
 
 var _ = sszutils.Annotate[streamAllowanceBigInt](`ssz-type:"bigint" ssz-max:"8000000"`)
+
+// TestDynamicListRejectsUnbackedElementCount pins that a dynamic-element list
+// validates its declared count against what the region can physically hold,
+// before that count sizes a slice.
+//
+// The count comes from firstOffset/4, so each declared element costs the sender
+// four wire bytes while costing the decoder sizeof(GoElem). An offset table that
+// fills the whole region declares elements with no bodies at all: the decode
+// fails on element 0 either way, but it used to allocate first, turning a
+// compact table into a very large allocation (a measured 800 KB in, 785 MB
+// allocated). The unknown-size path was hardened in #210; buffer and known-size
+// kept exact allocation.
+func TestDynamicListRejectsUnbackedElementCount(t *testing.T) {
+	// Element fixed section: 4096 (Pad) + 4 (the list's offset) = 4100 bytes.
+	type wideElem struct {
+		Pad [4096]byte
+		L   []byte `ssz-max:"1"`
+	}
+	type holder struct {
+		L []wideElem `ssz-max:"100000"`
+	}
+
+	// n offsets, every one pointing at the end of the region: n declared
+	// elements, zero bytes of bodies.
+	unbacked := func(n int) []byte {
+		region := make([]byte, 4*n)
+		for i := range n {
+			binary.LittleEndian.PutUint32(region[i*4:], uint32(4*n))
+		}
+		return append([]byte{4, 0, 0, 0}, region...)
+	}
+
+	// n elements each carrying a real 4100-byte body.
+	backed := func(n int) []byte {
+		body := make([]byte, 4100)
+		binary.LittleEndian.PutUint32(body[4096:], 4100) // empty trailing list
+		region := make([]byte, 0, 4*n+n*4100)
+		for i := range n {
+			region = binary.LittleEndian.AppendUint32(region, uint32(4*n+i*4100))
+		}
+		for range n {
+			region = append(region, body...)
+		}
+		return append([]byte{4, 0, 0, 0}, region...)
+	}
+
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation())
+
+	decodes := []struct {
+		mode string
+		fn   func(any, []byte) error
+	}{
+		{"buffer", func(v any, b []byte) error { return ds.UnmarshalSSZ(v, b) }},
+		{"known-size", func(v any, b []byte) error {
+			return ds.UnmarshalSSZReader(v, bytes.NewReader(b), len(b))
+		}},
+		{"unknown-size", func(v any, b []byte) error {
+			return ds.UnmarshalSSZReader(v, bytes.NewReader(b), -1)
+		}},
+	}
+
+	for _, d := range decodes {
+		t.Run(d.mode+"/rejects_unbacked_count", func(t *testing.T) {
+			in := unbacked(100000)
+
+			var before, after runtime.MemStats
+			runtime.GC()
+			runtime.ReadMemStats(&before)
+			err := d.fn(new(holder), in)
+			runtime.ReadMemStats(&after)
+
+			if err == nil {
+				t.Fatal("expected the declared count to be rejected")
+			}
+
+			// 100000 * 4100 bytes would be ~390 MB. Allow generous headroom for
+			// the input itself and decoder scratch; the point is that the
+			// element count never sizes an allocation.
+			const budget = 16 << 20
+			if allocated := after.TotalAlloc - before.TotalAlloc; allocated > budget {
+				t.Fatalf("decode allocated %d bytes for a %d byte input; the declared count was trusted as an allocation size",
+					allocated, len(in))
+			}
+		})
+
+		t.Run(d.mode+"/accepts_backed_count", func(t *testing.T) {
+			// The bound must be exact, not conservative: a region that holds its
+			// elements exactly still decodes.
+			const n = 20
+			out := new(holder)
+			if err := d.fn(out, backed(n)); err != nil {
+				t.Fatalf("unexpected error for a well-formed list: %v", err)
+			}
+			if len(out.L) != n {
+				t.Fatalf("decoded %d elements, want %d", len(out.L), n)
+			}
+		})
+	}
+
+	t.Run("bound_is_not_off_by_one", func(t *testing.T) {
+		// Exactly as many elements as the remaining bytes can hold is legal;
+		// one more is not. Element minimum here is 4 bytes (a lone dynamic
+		// field's offset), so a 16-byte region holds a 8-byte table plus two
+		// 4-byte bodies.
+		type smallElem struct {
+			C []uint8 `ssz-max:"10"`
+		}
+		type smallHolder struct {
+			A uint32
+			B []smallElem `ssz-max:"10"`
+		}
+
+		// A=1, B offset=8; table [8,12]; two 4-byte elements, each an empty list.
+		exact := fromHex("0x0100000008000000080000000c0000000400000004000000")
+		if err := ds.UnmarshalSSZ(new(smallHolder), exact); err != nil {
+			t.Fatalf("a region holding its elements exactly must decode: %v", err)
+		}
+
+		// Same region, but the table claims two elements and consumes all of it.
+		tooMany := fromHex("0x010000000800000008000000ff000000")
+		err := ds.UnmarshalSSZ(new(smallHolder), tooMany)
+		if err == nil || !strings.Contains(err.Error(), "but only 0 bytes remain") {
+			t.Fatalf("err = %v, want a region-capacity rejection", err)
+		}
+	})
+
+	t.Run("no_bound_for_zero_minimum_elements", func(t *testing.T) {
+		// A list element may legitimately be empty, so its minimum is 0 and no
+		// capacity bound exists. A million empty byte lists is valid SSZ and
+		// must keep decoding.
+		type listHolder struct {
+			L [][]byte `ssz-max:"1024"`
+		}
+		const n = 1024
+		region := make([]byte, 4*n)
+		for i := range n {
+			binary.LittleEndian.PutUint32(region[i*4:], uint32(4*n))
+		}
+		in := append([]byte{4, 0, 0, 0}, region...)
+
+		out := new(listHolder)
+		if err := ds.UnmarshalSSZ(out, in); err != nil {
+			t.Fatalf("empty elements are legal SSZ: %v", err)
+		}
+		if len(out.L) != n {
+			t.Fatalf("decoded %d elements, want %d", len(out.L), n)
+		}
+	})
+}

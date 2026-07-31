@@ -1971,3 +1971,101 @@ func TestCodegenUnionFixedVariantSizeValidation(t *testing.T) {
 		t.Errorf("size mismatch for valid value: generated=%d reflection=%d", genSize, refSize)
 	}
 }
+
+// A dynamic-list offset table proves its item count before it proves that any
+// item body exists. The unknown-size path grows incrementally (see
+// TestCodegenUnknownSizeDynamicListWideValueAllocationIsIncremental); the
+// buffer and known-size paths keep exact allocation, so they instead have to
+// reject a count the region cannot physically hold. Without that check a
+// compact table sized the full backing array for a very wide Go value: 2 KB of
+// offsets materialized 33 MB of WideDynamicElement.
+func TestCodegenDynamicListRejectsUnbackedElementCount(t *testing.T) {
+	if _, generated := any(&WideDynamicList{}).(sszutils.DynamicUnmarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+
+	ds := dynssz.NewDynSsz(nil)
+	if _, err := ds.SizeSSZ(&WideDynamicList{}); err != nil {
+		t.Fatalf("warm generated methods: %v", err)
+	}
+
+	// 512 offsets, each pointing past the table: 512 declared elements, no
+	// bodies. Each element's fixed section is 64 KiB + 4, so the region cannot
+	// hold even one of them.
+	const itemCount = 512
+	offsetTable := make([]byte, itemCount*4)
+	for pos := 0; pos < len(offsetTable); pos += 4 {
+		binary.LittleEndian.PutUint32(offsetTable[pos:pos+4], uint32(len(offsetTable)))
+	}
+	payload := make([]byte, 4+len(offsetTable))
+	binary.LittleEndian.PutUint32(payload[:4], 4)
+	copy(payload[4:], offsetTable)
+
+	// A two-element list that really does carry its bodies must still decode,
+	// so the bound cannot be conservative.
+	valid := WideDynamicList{Items: make([]WideDynamicElement, 2)}
+	valid.Items[0].Fixed[0] = 1
+	valid.Items[0].Tail = []byte{2}
+	valid.Items[1].Fixed[0] = 3
+	validPayload, err := ds.MarshalSSZ(&valid)
+	if err != nil {
+		t.Fatalf("marshal valid list: %v", err)
+	}
+
+	decodes := []struct {
+		mode string
+		fn   func(any, []byte) error
+	}{
+		{"buffer", func(v any, b []byte) error { return ds.UnmarshalSSZ(v, b) }},
+		{"known-size", func(v any, b []byte) error {
+			return ds.UnmarshalSSZReader(v, bytes.NewReader(b), len(b))
+		}},
+	}
+
+	for _, d := range decodes {
+		t.Run(d.mode, func(t *testing.T) {
+			runtime.GC()
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+
+			if err := d.fn(new(WideDynamicList), payload); err == nil {
+				t.Fatal("offset table without element bodies decoded successfully")
+			}
+
+			runtime.ReadMemStats(&after)
+			const allocationLimit = 4 << 20
+			if allocated := after.TotalAlloc - before.TotalAlloc; allocated > allocationLimit {
+				t.Fatalf(
+					"%d bytes of malformed input allocated %d bytes, want at most %d",
+					len(payload), allocated, allocationLimit,
+				)
+			}
+
+			var roundTrip WideDynamicList
+			if err := d.fn(&roundTrip, validPayload); err != nil {
+				t.Fatalf("well-formed list rejected: %v", err)
+			}
+			if len(roundTrip.Items) != 2 ||
+				roundTrip.Items[0].Fixed[0] != 1 ||
+				!bytes.Equal(roundTrip.Items[0].Tail, []byte{2}) ||
+				roundTrip.Items[1].Fixed[0] != 3 {
+				t.Fatal("well-formed list did not round-trip")
+			}
+		})
+	}
+
+	// The generated decoders must reject exactly what the reflection engine
+	// rejects; a divergence here means one engine allocates where the other
+	// refuses.
+	t.Run("matches_reflection", func(t *testing.T) {
+		refl := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation())
+		for _, in := range [][]byte{payload, validPayload} {
+			reflErr := refl.UnmarshalSSZ(new(WideDynamicList), in) != nil
+			cgErr := ds.UnmarshalSSZ(new(WideDynamicList), in) != nil
+			if reflErr != cgErr {
+				t.Fatalf("engines disagree on a %d byte input: reflection rejected=%v, codegen rejected=%v",
+					len(in), reflErr, cgErr)
+			}
+		}
+	})
+}

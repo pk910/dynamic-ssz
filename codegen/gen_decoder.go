@@ -1113,6 +1113,15 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 			errCode = fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", maxVar)
 			ctx.appendCode(indent, "if itemCount > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
 		}
+		// The offset table declares the count, but only the region can prove the
+		// bodies exist -- see the buffer path. LengthKnown is re-read here because
+		// the RegionEmpty probe above may have discovered EOF, which collapses an
+		// open region to a known length; without a known length sszLen is the
+		// stream allowance rather than the region, and bounds nothing.
+		if minElemSize := desc.ElemDesc.Len; minElemSize > 0 {
+			errCode = fmt.Sprintf("sszutils.ErrListRegionTooSmallFn(itemCount, %d, int(sszLen-startOffset))", minElemSize)
+			ctx.appendCode(indent, "if dec.LengthKnown() && itemCount > int(sszLen-startOffset)/%d {\n\treturn %s\n}\n", minElemSize, typePath.getErrorWith(errCode))
+		}
 
 		// read offsets
 		indexVar, indexDefer := ctx.getIndexVar()
