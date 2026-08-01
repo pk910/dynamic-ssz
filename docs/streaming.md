@@ -25,6 +25,25 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer) error
 - `source` - Object to serialize
 - `w` - Destination writer (file, network connection, etc.)
 
+**On error, the writer may already hold part of the encoding.** Bytes go out as
+they are produced, so whatever was encoded before the failure has already been
+written — how much depends on the value, the buffer size, and whether the type
+has generated code, which reaches the writer sooner than the reflection path. A
+write failure leaves a partial encoding regardless.
+
+Treat a failed call as leaving the stream unusable: discard it, or reset it to
+where it was, rather than writing anything further. A peer reading it cannot
+tell a truncated encoding from a complete one. When the reader must see all of
+it or none, encode with `MarshalSSZ` and write the result:
+
+```go
+encoded, err := ds.MarshalSSZ(block)
+if err != nil {
+    return err // nothing was written
+}
+_, err = w.Write(encoded)
+```
+
 **Example**:
 ```go
 // Write directly to file

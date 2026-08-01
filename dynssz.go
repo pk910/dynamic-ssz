@@ -419,6 +419,17 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 //   - Size calculation errors for dynamic fields
 //   - Unsupported type structures
 //
+// On error the writer may already hold part of the encoding. Bytes are written
+// as they are produced, so whatever was encoded before the failure is gone --
+// and how much that is depends on the value, the buffer size and whether the
+// type has generated code, which reaches the writer sooner. A write failure
+// leaves a partial encoding regardless of any of that.
+//
+// So a failed call leaves the stream in an unusable state: discard it, or reset
+// it to where it was, rather than writing anything further. A peer reading it
+// has no way to tell a truncated encoding from a complete one. When the reader
+// must see all of it or none, encode with MarshalSSZ and write the result.
+//
 // Example usage:
 //
 //	// Write directly to a file

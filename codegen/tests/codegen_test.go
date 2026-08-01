@@ -2596,6 +2596,53 @@ func TestCodegenSpecVecElementRegionBound(t *testing.T) {
 	}
 }
 
+// Streaming writes bytes as it produces them, so a value that fails partway
+// through leaves part of its encoding on the writer. How much depends on the
+// value, the buffer size, and whether the type has generated code -- the
+// reflection path happens to reject this one before writing, because it sizes
+// the value first. Neither is a guarantee, which is what the documentation
+// says.
+//
+// What a caller can rely on is the buffer path: it returns the error and no
+// bytes, so nothing partial can reach a peer.
+func TestCodegenStreamingMayWritePartialOutput(t *testing.T) {
+	if _, generated := any(&SimpleTypes1{}).(sszutils.DynamicEncoder); !generated {
+		t.Skip("no generated code present")
+	}
+
+	invalid := SimpleTypes1_Payload
+	invalid.Str = "far longer than its ssz-max of 8"
+
+	for _, tc := range []struct {
+		name string
+		opts []dynssz.DynSszOption
+	}{
+		{"generated", []dynssz.DynSszOption{dynssz.WithStreamWriterBufferSize(64)}},
+		{"reflection", []dynssz.DynSszOption{dynssz.WithStreamWriterBufferSize(64), dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := dynssz.NewDynSsz(nil, tc.opts...)
+
+			// The buffer path is all-or-nothing.
+			encoded, err := ds.MarshalSSZ(&invalid)
+			if err == nil {
+				t.Fatal("marshal accepted an over-long string")
+			}
+			if len(encoded) != 0 {
+				t.Errorf("the buffer path returned %d bytes alongside its error", len(encoded))
+			}
+
+			// The streaming path reports the same failure; how many bytes
+			// reached the writer is not part of the contract.
+			var written bytes.Buffer
+			if err := ds.MarshalSSZWriter(&invalid, &written); err == nil {
+				t.Fatal("streaming accepted an over-long string")
+			}
+			t.Logf("%d bytes reached the writer before the error", written.Len())
+		})
+	}
+}
+
 // SizeSSZ is exact for a value that encodes, and that is the guarantee callers
 // pre-allocate against. For a value that does not encode it means nothing: the
 // generated sizer returns a bare int, so it reports 0 where reflection reports
