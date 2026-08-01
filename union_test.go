@@ -1106,6 +1106,74 @@ func TestUnionDescriptorValidation(t *testing.T) {
 }
 
 // Explicit ssz-index selectors outside 1..127 are rejected at descriptor build.
+// A vector of unions has as many elements as its length says, and SSZ has no
+// encoding for an unset one: EIP-8016 selectors start at 1, so a zero-valued
+// CompatibleUnion names no variant. Every element has to be set.
+//
+// The type itself is legal and encodes once it is populated, so it is accepted
+// and the value is what gets refused -- naming the element, rather than
+// choosing a selector on the caller's behalf. Encoding an unset element as the
+// lowest variant would make it indistinguishable from one deliberately set to
+// that variant.
+func TestVectorOfUnionsRequiresEveryElementSet(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation())
+
+	type variants = struct {
+		V1 uint64
+		V2 uint32
+	}
+	type vec struct {
+		U [2]CompatibleUnion[variants]
+	}
+
+	// The type is legal: analysis accepts it.
+	if err := ds.ValidateType(reflect.TypeOf(vec{})); err != nil {
+		t.Fatalf("a vector of unions is a legal type: %v", err)
+	}
+
+	// Its zero value is not an encodable value, and the error says which
+	// element is at fault.
+	_, err := ds.MarshalSSZ(&vec{})
+	if err == nil {
+		t.Fatal("a zero-valued union element must not encode")
+	}
+	if !errors.Is(err, sszutils.ErrInvalidValueRange) || !strings.Contains(err.Error(), "[0]") {
+		t.Errorf("err = %v, want an ErrInvalidValueRange naming element 0", err)
+	}
+
+	// Populated, it round-trips.
+	populated := &vec{}
+	for i := range populated.U {
+		populated.U[i].Variant = 1
+		populated.U[i].Data = uint64(i + 1)
+	}
+	encoded, err := ds.MarshalSSZ(populated)
+	if err != nil {
+		t.Fatalf("a populated vector must encode: %v", err)
+	}
+	decoded := new(vec)
+	if err := ds.UnmarshalSSZ(decoded, encoded); err != nil {
+		t.Fatalf("round-trip: %v", err)
+	}
+	if decoded.U[1].Variant != 1 {
+		t.Errorf("decoded variant %d, want 1", decoded.U[1].Variant)
+	}
+
+	// The same holds for elements the library would have to invent: a
+	// slice-backed vector padded out to its declared length.
+	type padded struct {
+		U []CompatibleUnion[variants] `ssz-size:"4"`
+	}
+	short := &padded{U: make([]CompatibleUnion[variants], 2)}
+	for i := range short.U {
+		short.U[i].Variant = 1
+		short.U[i].Data = uint64(i + 1)
+	}
+	if _, err := ds.MarshalSSZ(short); err == nil {
+		t.Error("padding a vector of unions must not invent selectors")
+	}
+}
+
 func TestCompatibleUnionSelectorRangeEnforced(t *testing.T) {
 	ds := NewDynSsz(nil)
 

@@ -409,6 +409,16 @@ Serialization is `selector byte || serialize(value)`; the hash tree root is `mix
 
 For the EIP-8016 `CompatibleUnion` flavor (1-based selectors, no None, compatible merkleization), see [Compatible Unions](#compatible-unions-m4).
 
+> **A union has no "unset" encoding.** In a vector of unions every element must
+> be set before the value encodes, since a vector always has as many elements as
+> its length says. A zero-valued `CompatibleUnion` names selector 0, which
+> EIP-8016 does not have, and a zero-valued classic union has no data for the
+> variant its selector names — both are refused, with the offending element in
+> the error path. Only a classic union declaring `None` first has an encodable
+> zero value. The same applies to a slice-backed vector shorter than its
+> declared length: the padding elements are unset, and no selector is chosen on
+> your behalf.
+
 ## Progressive Types (EIP-7916 & EIP-7495)
 
 ### Progressive Lists (M1)
