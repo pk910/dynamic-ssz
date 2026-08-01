@@ -551,25 +551,6 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 	return nil
 }
 
-// unmarshalVector decodes SSZ-encoded vector data.
-//
-// Vectors in SSZ are encoded as fixed-size sequences. Since the vector length is known
-// from the type, the function can calculate each element's size by dividing the total
-// SSZ data length by the vector length.
-//
-// Parameters:
-//   - targetType: The TypeDescriptor containing vector metadata
-//   - targetValue: The reflect.Value of the vector to populate
-//   - decoder: The decoder instance used to read SSZ-encoded data
-//   - depth: Indentation level for verbose logging
-//
-// Returns:
-//   - error: An error if decoding fails
-//
-// Special handling:
-//   - Byte arrays use unsafe.Slice for efficient bulk copying without allocation
-//   - Pointer elements are automatically initialized
-//   - Each element must consume exactly itemSize bytes
 // reusePointerElem returns the pointer to decode a slice element into, keeping
 // the one already in the slot so decoding fills the object the caller put there
 // rather than replacing it. Only an empty slot is allocated. Pointer struct
@@ -620,6 +601,25 @@ func expandSliceValue(target reflect.Value, sliceType reflect.Type, size int) re
 	return reflect.MakeSlice(sliceType, size, size)
 }
 
+// unmarshalVector decodes SSZ-encoded vector data.
+//
+// Vectors in SSZ are encoded as fixed-size sequences. Since the vector length is known
+// from the type, the function can calculate each element's size by dividing the total
+// SSZ data length by the vector length.
+//
+// Parameters:
+//   - targetType: The TypeDescriptor containing vector metadata
+//   - targetValue: The reflect.Value of the vector to populate
+//   - decoder: The decoder instance used to read SSZ-encoded data
+//   - depth: Indentation level for verbose logging
+//
+// Returns:
+//   - error: An error if decoding fails
+//
+// Special handling:
+//   - Byte arrays use unsafe.Slice for efficient bulk copying without allocation
+//   - Pointer elements are automatically initialized
+//   - Each element must consume exactly itemSize bytes
 func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth int) error {
 	vecLen := int64(targetType.Len)
 	if vecLen > math.MaxInt {
