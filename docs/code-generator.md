@@ -50,7 +50,7 @@ reference.
 | `-header` | Custom header comment template for generated files. `{hash}` and `{version}` placeholders are substituted. The first line should match `^// Code generated .* DO NOT EDIT\.$` — a warning is printed otherwise, since tooling relies on that convention to recognize generated files. | dynamic-ssz default header |
 | `-v` | Verbose output | `false` |
 | `-legacy` | Generate legacy compatibility methods | `false` |
-| `-without-dynamic-expressions` | Generate only legacy methods, disable dynamic methods | `false` |
+| `-without-dynamic-expressions` | Generate only legacy methods, disable dynamic methods. See [Freezing spec values](#freezing-spec-values). | `false` |
 | `-without-fastssz` | Generate code without using fast ssz generated methods | `false` |
 | `-with-streaming` | Generate streaming encoder/decoder functions | `false` |
 | `-with-extended-types` | Enable support for non-standard extended types (signed ints, floats, big.Int, optionals) | `false` |
@@ -206,6 +206,21 @@ A list or bitlist with no `ssz-max` has no spec-defined hash tree root, so
 generating one at all requires `-with-extended-types` (see
 [supported-types.md](supported-types.md#lists-without-a-limit)). The programmatic
 API exposes the same list through `CodeGenerator.Warnings()`.
+
+### Freezing spec values
+
+`-without-dynamic-expressions` bakes the static tag values into the generated
+buffer methods. Those methods take no spec set, so they are correct only for a
+`DynSsz` whose spec values match the static ones.
+
+Streaming methods are unaffected: an encoder or decoder method is always handed
+a `DynSsz`, so there is no expression-less form of it and it keeps resolving
+spec values. A type generated with both flags therefore has methods that
+disagree when the specs are not the defaults, which is by design -- the library
+entrypoint picks the ones valid for the configured spec values, and never
+serves a baked result to a `DynSsz` that resolves them differently. Calling the
+generated methods directly is what makes the distinction visible, and there the
+buffer methods carry the static contract.
 
 ## Programmatic API
 

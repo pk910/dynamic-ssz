@@ -2596,6 +2596,59 @@ func TestCodegenSpecVecElementRegionBound(t *testing.T) {
 	}
 }
 
+// without-dynamic-expressions emits buffer methods that bake the static tag
+// values and take no spec set, so they are only correct for the defaults. The
+// streaming methods keep resolving from the spec set, because there is no
+// expression-less streaming form -- an Encoder method is always handed a
+// DynSsz.
+//
+// The two therefore disagree by construction when the specs are not the
+// defaults, and it is the entrypoint that keeps that from mattering: it must
+// not serve a value from the spec-independent methods to a spec-laden DynSsz.
+func TestCodegenWithoutDynamicExpressionsRouting(t *testing.T) {
+	// Held through the interface: without generated code the method does not
+	// exist, so naming it directly would not compile.
+	sizer, generated := any(&NoDynExprTypes_Payload).(interface{ SizeSSZ() int })
+	if !generated {
+		t.Skip("no generated code present")
+	}
+
+	specs := map[string]any{
+		"VEC8_SIZE": uint64(6), "VEC32_SIZE": uint64(4), "BITVEC_SIZE": uint64(8),
+		"LST8_MAX": uint64(4), "LST32_MAX": uint64(4), "BITLST_MAX": uint64(16), "STR_MAX": uint64(8),
+	}
+	payload := &NoDynExprTypes_Payload
+
+	// The generated buffer method knows only the static values.
+	baked := sizer.SizeSSZ()
+
+	refl := dynssz.NewDynSsz(specs, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation())
+	want, err := refl.SizeSSZ(payload)
+	if err != nil {
+		t.Fatalf("reflection size: %v", err)
+	}
+	if baked == want {
+		t.Skip("the chosen spec values do not differ from the static ones")
+	}
+
+	ds := dynssz.NewDynSsz(specs)
+	got, err := ds.SizeSSZ(payload)
+	if err != nil {
+		t.Fatalf("routed size: %v", err)
+	}
+	if got != want {
+		t.Errorf("entrypoint sized %d, want %d: it used a method that bakes the static values", got, want)
+	}
+
+	encoded, err := ds.MarshalSSZ(payload)
+	if err != nil {
+		t.Fatalf("routed marshal: %v", err)
+	}
+	if len(encoded) != want {
+		t.Errorf("entrypoint encoded %d bytes, want %d", len(encoded), want)
+	}
+}
+
 // Decoding reuses what the target already holds: a slice that fits keeps its
 // backing array, and a non-nil pointer is decoded into rather than replaced.
 // Both engines do this, in both positions -- a struct field and a slice
