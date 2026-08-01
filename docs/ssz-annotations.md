@@ -100,6 +100,51 @@ type MultiDimensional struct {
 }
 ```
 
+### The `?` placeholder
+
+A dimension can be written as `?` instead of a value. It does not mean "leave
+this one alone" — it is a declaration in its own right:
+
+| Tag | `?` means |
+|-----|-----------|
+| `ssz-size` / `dynssz-size` | the dimension is **dynamic** — a list, not a vector |
+| `ssz-max` / `dynssz-max` | the dimension is **unbounded** — no limit |
+
+Two rules follow from that, and both are enforced when the type is analyzed:
+
+**A dimension must be declared the same way by a tag and its dynamic
+counterpart.** `?` in one and a value in the other describes two different types
+— a list and a vector, or a bounded and an unbounded list — and the field would
+encode differently depending on which tag was consulted:
+
+```go
+// Rejected: dimension 0 is a 2-vector to ssz-size and dynamic to dynssz-size.
+Bad  [2][]byte `ssz-size:"2,6" dynssz-size:"?,COLS"`
+
+// Correct: repeat the static length; only dimension 1 is spec-driven.
+Good [2][]byte `ssz-size:"2,6" dynssz-size:"2,COLS"`
+
+// Rejected: dimension 0 has a limit statically but none dynamically.
+Bad2 [][]uint64 `ssz-max:"16,8" dynssz-max:"?,ROW_LIMIT"`
+
+// Correct: the placeholders line up, so dimension 0 is unbounded either way.
+Good2 [][]uint64 `ssz-max:"?,8" dynssz-max:"?,ROW_LIMIT"`
+```
+
+**A dimension cannot be `?` to both families.** `ssz-size:"?"` with
+`ssz-max:"?"` gives it neither a length nor a limit, which names no SSZ type —
+`List[T, N]` needs its `N` to merkleize (see
+[lists without a limit](supported-types.md#lists-without-a-limit)):
+
+```go
+// Rejected: dimension 0 is dynamic and unbounded at once.
+Bad [][]byte `ssz-size:"?,6" ssz-max:"?,8"`
+```
+
+Omitting a tag is not the same as writing `?`. A field with no `ssz-max` at all
+is described by its Go type, and an unbounded list stays expressible that way
+under [extended types](extended-types.md#unbounded-lists-and-bitlists).
+
 ### ssz-size
 
 Specifies a fixed size for variable-length types, turning them into SSZ vectors.
@@ -313,8 +358,20 @@ type Valid struct {
 type Invalid struct {
     // Cannot use both ssz-size and ssz-max (a field is either fixed or variable)
     Bad []byte `ssz-size:"32" ssz-max:"64"`
+
+    // A dimension declared two ways: a 2-vector statically, dynamic dynamically
+    Bad2 [2][]byte `ssz-size:"2,6" dynssz-size:"?,COLS"`
+
+    // Same for limits: bounded statically, unbounded dynamically
+    Bad3 [][]uint64 `ssz-max:"16,8" dynssz-max:"?,ROW_LIMIT"`
+
+    // A dimension with neither a length nor a limit
+    Bad4 [][]byte `ssz-size:"?,6" ssz-max:"?,8"`
 }
 ```
+
+See [the `?` placeholder](#the--placeholder) for the rules behind the last
+three.
 
 ## Common Patterns
 

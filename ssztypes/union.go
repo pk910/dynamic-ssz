@@ -76,6 +76,10 @@ func extractUnionDescriptorInfo(descriptorType reflect.Type, ds sszutils.Dynamic
 			return nil, err
 		}
 
+		if declErr := checkDimensionsDeclared(sizeHints, maxSizeHints, field.Name); declErr != nil {
+			return nil, declErr
+		}
+
 		typeHints, err := getSszTypeTag(&field)
 		if err != nil {
 			return nil, err
@@ -157,6 +161,9 @@ func extractClassicUnionDescriptorInfo(descriptorType reflect.Type, ds sszutils.
 		maxSizeHints, err := getSszMaxSizeTag(ds, &field)
 		if err != nil {
 			return nil, false, err
+		}
+		if declErr := checkDimensionsDeclared(sizeHints, maxSizeHints, field.Name); declErr != nil {
+			return nil, false, declErr
 		}
 		typeHints, err := getSszTypeTag(&field)
 		if err != nil {

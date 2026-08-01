@@ -1035,15 +1035,15 @@ func TestTypeCache_ZeroLengthVectorRejected(t *testing.T) {
 }
 
 // A fixed Go array whose outer dynssz-size dimension is the "?" placeholder must
-// keep its intrinsic length. The placeholder yields a dynamic size hint with
-// Size 0; a Go array cannot be relaxed to a variable-length list, so the array
-// length must survive (regression for the multi-dim empty-outer-dim bug where
-// the zero-size placeholder wrongly zeroed the array length).
-func TestTypeCache_ArrayOuterDynSizeQuestionKeepsLength(t *testing.T) {
+// keep its intrinsic length (regression for the multi-dim empty-outer-dim bug
+// where a zero-size outer hint wrongly zeroed the array length). The outer
+// dimension repeats its static length in the dynamic tag: `?` would declare it
+// dynamic, which contradicts the static length and is rejected.
+func TestTypeCache_ArrayOuterDynSizeKeepsLength(t *testing.T) {
 	cache := NewTypeCache(&dummyDynamicSpecs{specValues: map[string]uint64{"MAX_ATTESTATIONS": 5}})
 
 	type multiDim struct {
-		F [2][]byte `ssz-size:"2,6" dynssz-size:"?,MAX_ATTESTATIONS"`
+		F [2][]byte `ssz-size:"2,6" dynssz-size:"2,MAX_ATTESTATIONS"`
 	}
 	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(multiDim{}), nil, nil, nil)
 	if err != nil {
@@ -2685,26 +2685,25 @@ func TestBitlistRejectsFixedBitsizeNamesTheTag(t *testing.T) {
 	}
 }
 
-func TestGetSszSizeTagDynSszDynamic(t *testing.T) {
+// A dimension given a length by ssz-size and marked `?` by dynssz-size is
+// declared two ways at once, so the pair is rejected rather than one of the two
+// silently winning.
+func TestGetSszSizeTagPlaceholderMismatch(t *testing.T) {
 	ds := &dummyDynamicSpecs{}
-	// dynssz-size:"?" should set Dynamic=true
 	field := makeField("Dyn", reflect.TypeOf([]byte{}), `ssz-size:"32" dynssz-size:"?"`)
 
+	if _, err := getSszSizeTag(ds, field); err == nil || !strings.Contains(err.Error(), "conflicting size tags") {
+		t.Fatalf("err = %v, want a conflicting size tags error", err)
+	}
+
+	// Matching placeholders describe one type and are accepted.
+	field = makeField("Dyn", reflect.TypeOf([][]byte{}), `ssz-size:"?,32" dynssz-size:"?,32"`)
 	sizes, err := getSszSizeTag(ds, field)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("matching placeholders: %v", err)
 	}
-	if len(sizes) != 1 {
-		t.Fatalf("expected 1 size hint, got %d", len(sizes))
-	}
-	// The dynssz-size:"?" case: sizeExpr == "?" → sszSize.Dynamic = true
-	// But since ssz-size:"32" was parsed first, the size remains 32
-	// and the dynssz loop processes "?" which sets Dynamic on the new hint,
-	// but then i < len(sszSizes) so it checks if sizes differ.
-	// Actually: sszSize has Dynamic=true, Size=0. sszSizes[0] has Size=32.
-	// 0 != 32, so it updates sszSizes[0] to the dynamic version.
-	if !sizes[0].Dynamic {
-		t.Fatal("expected Dynamic=true for dynssz-size:\"?\"")
+	if len(sizes) != 2 || !sizes[0].Dynamic {
+		t.Fatalf("expected a dynamic outer dimension, got %+v", sizes)
 	}
 }
 
@@ -2739,17 +2738,23 @@ func TestGetSszSizeTagDynSszExtraDimension(t *testing.T) {
 	}
 }
 
-func TestGetSszMaxSizeTagDynSszMaxDynamic(t *testing.T) {
+// The same rule for limits: a dimension cannot carry a limit in one tag and the
+// unbounded placeholder in the other.
+func TestGetSszMaxSizeTagPlaceholderMismatch(t *testing.T) {
 	ds := &dummyDynamicSpecs{}
-	// dynssz-max:"?" should set NoValue=true
 	field := makeField("Dyn", reflect.TypeOf([]byte{}), `ssz-max:"100" dynssz-max:"?"`)
 
+	if _, err := getSszMaxSizeTag(ds, field); err == nil || !strings.Contains(err.Error(), "conflicting max tags") {
+		t.Fatalf("err = %v, want a conflicting max tags error", err)
+	}
+
+	field = makeField("Dyn", reflect.TypeOf([][]byte{}), `ssz-max:"?,100" dynssz-max:"?,100"`)
 	maxSizes, err := getSszMaxSizeTag(ds, field)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("matching placeholders: %v", err)
 	}
-	if len(maxSizes) != 1 {
-		t.Fatalf("expected 1 max size hint, got %d", len(maxSizes))
+	if len(maxSizes) != 2 || !maxSizes[0].NoValue {
+		t.Fatalf("expected an unbounded outer dimension, got %+v", maxSizes)
 	}
 }
 
@@ -2977,18 +2982,21 @@ func TestTypeCache_AnnotationMaxExprResolution(t *testing.T) {
 	}
 }
 
-// A dimension marked dynamic (`?`) in ssz-size but fixed in dynssz-size is
-// contradictory (list vs vector) and must be rejected, so codegen and reflection
-// agree instead of encoding the field differently. The reverse (fixed ssz-size
-// relaxed to dynamic via dynssz-size:"?") stays valid.
+// `?` marks a dimension dynamic, so a dimension cannot be `?` in one size tag
+// and a length in the other -- that names a list and a vector at once, and the
+// engines would encode the field differently. Both directions are rejected.
 func TestParseTags_DynamicStaticSizeConflict(t *testing.T) {
-	if _, _, _, err := ParseTags(`ssz-size:"?,32" dynssz-size:"SOME_SPEC,32"`); err == nil ||
-		!strings.Contains(err.Error(), "conflicting size tags") {
-		t.Fatalf("expected conflicting size tags error, got %v", err)
+	for _, tag := range []string{
+		`ssz-size:"?,32" dynssz-size:"SOME_SPEC,32"`,
+		`ssz-size:"32" dynssz-size:"?"`,
+	} {
+		if _, _, _, err := ParseTags(tag); err == nil || !strings.Contains(err.Error(), "conflicting size tags") {
+			t.Fatalf("%s: expected conflicting size tags error, got %v", tag, err)
+		}
 	}
 
-	if _, _, _, err := ParseTags(`ssz-size:"32" dynssz-size:"?"`); err != nil {
-		t.Fatalf("fixed ssz-size relaxed to dynamic should be allowed, got %v", err)
+	if _, _, _, err := ParseTags(`ssz-size:"?,32" dynssz-size:"?,32"`); err != nil {
+		t.Fatalf("matching placeholders should be allowed, got %v", err)
 	}
 }
 
@@ -3212,7 +3220,7 @@ func TestParseTags_Comprehensive(t *testing.T) {
 	})
 
 	t.Run("DynSszSizeDynamic", func(t *testing.T) {
-		_, sizeHints, _, err := ParseTags(`ssz-size:"32" dynssz-size:"?"`)
+		_, sizeHints, _, err := ParseTags(`ssz-size:"?" dynssz-size:"?"`)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -3286,7 +3294,7 @@ func TestParseTags_Comprehensive(t *testing.T) {
 	})
 
 	t.Run("DynSszMaxDynamic", func(t *testing.T) {
-		_, _, maxHints, err := ParseTags(`ssz-max:"100" dynssz-max:"?"`)
+		_, _, maxHints, err := ParseTags(`ssz-max:"?" dynssz-max:"?"`)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}

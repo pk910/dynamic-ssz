@@ -1456,6 +1456,10 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 			return sszutils.ErrorWithPath(err, schemaField.Name)
 		}
 
+		if declErr := checkDimensionsDeclared(sizeHints, maxSizeHints, schemaField.Name); declErr != nil {
+			return sszutils.ErrorWithPath(declErr, schemaField.Name)
+		}
+
 		typeHints, err := getSszTypeTag(&schemaField)
 		if err != nil {
 			return sszutils.ErrorWithPath(err, schemaField.Name)
