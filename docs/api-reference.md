@@ -127,6 +127,26 @@ var decoded MyStruct
 err := ds.UnmarshalSSZ(&decoded, data)
 ```
 
+**Decoding reuses what the target already holds.** A slice long enough for the
+result keeps its backing array, and a non-nil pointer — a struct field or a
+slice element — is decoded into rather than replaced. Only an empty slot is
+allocated. This saves allocations when a target is decoded into repeatedly, and
+it is the same behaviour in both engines.
+
+The consequence is that a decode writes through to objects the caller still
+references:
+
+```go
+first := decoded.Items[0]      // caller keeps a reference
+err = ds.UnmarshalSSZ(&decoded, other)
+// first now holds values from `other`
+```
+
+Decode into a target you own. To keep an earlier result, either decode into a
+fresh value or copy what you need out first. A successful decode always
+produces exactly the value the input describes — reuse keeps allocations, never
+data.
+
 ## Streaming Methods
 
 ### MarshalSSZWriter

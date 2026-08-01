@@ -2596,6 +2596,73 @@ func TestCodegenSpecVecElementRegionBound(t *testing.T) {
 	}
 }
 
+// Decoding reuses what the target already holds: a slice that fits keeps its
+// backing array, and a non-nil pointer is decoded into rather than replaced.
+// Both engines do this, in both positions -- a struct field and a slice
+// element -- and the decoded value is the same either way.
+func TestCodegenDecodeReusesTargetPointers(t *testing.T) {
+	if _, generated := any(&SimpleTypes2{}).(sszutils.DynamicUnmarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+
+	source := SimpleTypes2{F1: 7, F2: []*SimpleTypes2_C1{
+		{F1: []uint16{1, 2, 3, 4}}, {F1: []uint16{5, 6, 7, 8}},
+		{F1: []uint16{9, 10, 11, 12}}, {F1: []uint16{13, 14, 15, 16}},
+	}}
+
+	for _, tc := range []struct {
+		name string
+		opts []dynssz.DynSszOption
+	}{
+		{"generated", nil},
+		{"reflection", []dynssz.DynSszOption{dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := dynssz.NewDynSsz(nil, tc.opts...)
+			encoded, err := ds.MarshalSSZ(&source)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+
+			// A target already holding elements, with a reference kept to one.
+			target := &SimpleTypes2{F2: []*SimpleTypes2_C1{
+				{F1: []uint16{99, 99, 99, 99}}, {F1: []uint16{99, 99, 99, 99}},
+				{F1: []uint16{99, 99, 99, 99}}, {F1: []uint16{99, 99, 99, 99}},
+			}}
+			held := target.F2[0]
+
+			if err = ds.UnmarshalSSZ(target, encoded); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+
+			if target.F2[0] != held {
+				t.Errorf("element pointer was replaced instead of reused")
+			}
+			if held.F1[0] != 1 {
+				t.Errorf("reused element holds %d, want the decoded value 1", held.F1[0])
+			}
+
+			// Reuse must keep allocations, not data: the result has to match a
+			// decode into an empty target.
+			fresh := new(SimpleTypes2)
+			if err = ds.UnmarshalSSZ(fresh, encoded); err != nil {
+				t.Fatalf("unmarshal into a fresh target: %v", err)
+			}
+			reusedBytes, err := ds.MarshalSSZ(target)
+			if err != nil {
+				t.Fatalf("re-marshal reused: %v", err)
+			}
+			freshBytes, err := ds.MarshalSSZ(fresh)
+			if err != nil {
+				t.Fatalf("re-marshal fresh: %v", err)
+			}
+			if !bytes.Equal(reusedBytes, freshBytes) {
+				t.Errorf("decoding into a populated target gave a different value than into an empty one")
+			}
+		})
+	}
+}
+
 // A Go array's SSZ length comes from the resolved dynssz-size. The static
 // ssz-size is only the fallback for an unresolved expression, so a spec value
 // above it is legitimate and the array -- which may be larger still -- is what

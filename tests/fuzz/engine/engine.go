@@ -361,6 +361,72 @@ func (e *Engine) fuzzUnmarshalCompare(entry corpus.TypeEntry, ds *dynssz.DynSsz,
 	e.compareHTR(entry, ds, reflTarget, codegenTarget, data)
 	e.compareStreaming(entry, ds, reflTarget, data)
 	e.testRoundTrip(entry, ds, reflTarget, data)
+	e.testDirtyTargetReuse(entry, ds, reflTarget, data)
+}
+
+// testDirtyTargetReuse decodes the same input into a target that already holds
+// a value. Both engines decode into what the target already has -- its slices,
+// and the objects its pointers reference -- so the result must still be the
+// value the input describes, with nothing of the old one showing through.
+//
+// The comparison is against the same input decoded into an empty target, which
+// the caller has already produced.
+func (e *Engine) testDirtyTargetReuse(entry corpus.TypeEntry, ds *dynssz.DynSsz, cleanTarget any, data []byte) {
+	var cleanBytes []byte
+	if err := e.catchPanic(fmt.Sprintf("dirty-clean-marshal[%s]", entry.Name), entry, data, func() error {
+		var err error
+		cleanBytes, err = ds.MarshalSSZ(cleanTarget)
+
+		return err
+	}); err != nil {
+		return
+	}
+
+	for _, engine := range []struct {
+		name   string
+		decode func(any) error
+	}{
+		{"reflection", func(t any) error { return e.unmarshalReflection(ds, t, data) }},
+		{"codegen", func(t any) error { return e.unmarshalCodegen(ds, t, data) }},
+	} {
+		dirty := entry.New()
+		if err := e.catchPanic(fmt.Sprintf("dirty-fill[%s]", entry.Name), entry, data, func() error {
+			e.filler.FillStruct(dirty)
+
+			return nil
+		}); err != nil {
+			continue
+		}
+
+		if err := e.catchPanic(fmt.Sprintf("dirty-unmarshal[%s/%s]", engine.name, entry.Name), entry, data, func() error {
+			return engine.decode(dirty)
+		}); err != nil {
+			continue
+		}
+
+		var dirtyBytes []byte
+		if err := e.catchPanic(fmt.Sprintf("dirty-marshal[%s/%s]", engine.name, entry.Name), entry, data, func() error {
+			var err error
+			dirtyBytes, err = ds.MarshalSSZ(dirty)
+
+			return err
+		}); err != nil {
+			continue
+		}
+
+		if !bytes.Equal(cleanBytes, dirtyBytes) {
+			e.stats.MarshalMismatches.Add(1)
+			e.reporter.Report(&Issue{
+				Type:     IssueMarshalMismatch,
+				TypeName: entry.Name,
+				Data:     data,
+				Details: fmt.Sprintf(
+					"%s decode into a populated target differs from a clean one: clean=%d bytes, reused=%d bytes",
+					engine.name, len(cleanBytes), len(dirtyBytes),
+				),
+			})
+		}
+	}
 }
 
 func (e *Engine) compareMarshal(entry corpus.TypeEntry, ds *dynssz.DynSsz, reflTarget, codegenTarget any, origData []byte) {

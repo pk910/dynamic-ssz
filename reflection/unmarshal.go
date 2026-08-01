@@ -570,6 +570,56 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 //   - Byte arrays use unsafe.Slice for efficient bulk copying without allocation
 //   - Pointer elements are automatically initialized
 //   - Each element must consume exactly itemSize bytes
+// reusePointerElem returns the pointer to decode a slice element into, keeping
+// the one already in the slot so decoding fills the object the caller put there
+// rather than replacing it. Only an empty slot is allocated. Pointer struct
+// fields work the same way in both engines, and so does the generated code for
+// elements.
+func reusePointerElem(slot reflect.Value, elemType reflect.Type) reflect.Value {
+	if slot.IsNil() {
+		slot.Set(reflect.New(elemType))
+	}
+
+	return slot
+}
+
+// expandSliceValue prepares a slice of the decoded length, keeping what the
+// target already holds wherever it fits: its backing array, and with it any
+// element the caller populated. A pointer element is then decoded into rather
+// than replaced, which is what the generated code does through
+// sszutils.ExpandSlice, and what decoding into a value you own generally means
+// in Go.
+//
+// Elements past the decoded length are dropped, and any slot newly exposed by
+// growing within capacity is zeroed so no earlier value shows through.
+func expandSliceValue(target reflect.Value, sliceType reflect.Type, size int) reflect.Value {
+	if size < 0 || target.Kind() != reflect.Slice {
+		return reflect.MakeSlice(sliceType, max(size, 0), max(size, 0))
+	}
+
+	if target.Len() >= size {
+		out := target.Slice(0, size)
+		if out.IsNil() {
+			// A nil target decoding to length zero: an empty list decodes to an
+			// empty slice, not to nil.
+			return reflect.MakeSlice(sliceType, 0, 0)
+		}
+
+		return out
+	}
+
+	if target.Cap() >= size {
+		grown := target.Slice(0, size)
+		for i := target.Len(); i < size; i++ {
+			grown.Index(i).SetZero()
+		}
+
+		return grown
+	}
+
+	return reflect.MakeSlice(sliceType, size, size)
+}
+
 func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth int) error {
 	vecLen := int64(targetType.Len)
 	if vecLen > math.MaxInt {
@@ -593,7 +643,7 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 			byteSlice := make([]byte, arrLen)
 			newValue = reflect.ValueOf(byteSlice)
 		} else {
-			newValue = reflect.MakeSlice(sliceT, arrLen, arrLen)
+			newValue = expandSliceValue(targetValue, sliceT, arrLen)
 		}
 	case reflect.Array:
 		newValue = targetValue
@@ -737,7 +787,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 	if targetType.Kind == reflect.Array {
 		newValue = targetValue
 	} else {
-		newValue = reflect.MakeSlice(fieldT, vectorLen, vectorLen)
+		newValue = expandSliceValue(targetValue, fieldT, vectorLen)
 	}
 
 	// Pointer elements (except optionals, which decode in place) get a fresh
@@ -748,9 +798,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 	for i := 0; i < vectorLen; i++ {
 		var itemVal reflect.Value
 		if allocPointerElems {
-			// fmt.Printf("new slice item %v\n", fieldType.Name())
-			itemVal = reflect.New(fieldType.Type.Elem())
-			newValue.Index(i).Set(itemVal)
+			itemVal = reusePointerElem(newValue.Index(i), fieldType.Type.Elem())
 		} else {
 			// Non-pointer and optional-pointer elements decode in place via the
 			// addressable slot so an absent optional can be set back to nil.
@@ -830,8 +878,7 @@ func (ctx *ReflectionCtx) unmarshalFixedElements(fieldType *ssztypes.TypeDescrip
 	for i := 0; i < count; i++ {
 		var itemVal reflect.Value
 		if isPointer {
-			itemVal = reflect.New(fieldType.Type.Elem())
-			newValue.Index(i).Set(itemVal.Elem().Addr())
+			itemVal = reusePointerElem(newValue.Index(i), fieldType.Type.Elem())
 		} else {
 			itemVal = newValue.Index(i)
 		}
@@ -922,7 +969,7 @@ func (ctx *ReflectionCtx) unmarshalList(targetType *ssztypes.TypeDescriptor, tar
 			byteSlice := make([]byte, sliceLen)
 			newValue = reflect.ValueOf(byteSlice)
 		} else {
-			newValue = reflect.MakeSlice(fieldT, sliceLen, sliceLen)
+			newValue = expandSliceValue(targetValue, fieldT, sliceLen)
 		}
 	} else {
 		newValue = reflect.New(fieldT).Elem()
@@ -1311,9 +1358,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 
 			var itemVal reflect.Value
 			if allocPointerElems {
-				// fmt.Printf("new slice item %v\n", fieldType.Name())
-				itemVal = reflect.New(fieldType.Type.Elem())
-				newValue.Index(i).Set(itemVal)
+				itemVal = reusePointerElem(newValue.Index(i), fieldType.Type.Elem())
 			} else {
 				// Non-pointer and optional-pointer elements decode in place via the
 				// addressable slot so an absent optional can be set back to nil.
