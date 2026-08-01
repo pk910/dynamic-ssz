@@ -644,14 +644,6 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		} else {
 			limitVar = fmt.Sprintf("int(%s)", exprVar)
 		}
-
-		if desc.Kind == reflect.Array {
-			// check if dynamic limit is greater than the length of the array
-			ctx.appendCode(indent, "if %s > %d {\n", limitVar, desc.Len)
-			errCode := fmt.Sprintf("sszutils.ErrVectorSizeExceedsArrayFn(%s, %d)", limitVar, desc.Len)
-			ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
-			ctx.appendCode(indent, "}\n")
-		}
 	} else {
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 && desc.BitSize > 0 && desc.BitSize%8 != 0 {
 			bitlimitVar = fmt.Sprintf("%d", desc.BitSize)
@@ -681,14 +673,23 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 	}
 
 	lenVar := ""
-	if desc.Kind != reflect.Array {
+	switch {
+	case desc.Kind != reflect.Array:
 		ctx.appendCode(indent, "vlen := len(%s)\n", getValueVar(true, ""))
 		ctx.appendCode(indent, "if vlen > %s {\n", limitVar)
 		errCode := fmt.Sprintf("sszutils.ErrVectorLengthFn(%s, %s)", varNameVLen, limitVar)
 		ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "}\n")
 		lenVar = varNameVLen
-	} else {
+	case sizeExpression != nil:
+		// The resolved size is the vector's length; the static ssz-size is only
+		// the fallback. See marshalVector.
+		ctx.appendCode(indent, "if %s > len(%s) {\n", limitVar, getValueVar(false, ""))
+		errCode := fmt.Sprintf("sszutils.ErrVectorSizeExceedsArrayFn(%s, len(%s))", limitVar, getValueVar(false, ""))
+		ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
+		ctx.appendCode(indent, "}\n")
+		lenVar = limitVar
+	default:
 		lenVar = fmt.Sprintf("%d", desc.Len)
 	}
 

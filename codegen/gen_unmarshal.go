@@ -837,6 +837,10 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 		sizeExpression = nil
 	}
 
+	// Set when the vector is backed by a Go array whose length has to bound the
+	// resolved size; emitted once the array expression exists.
+	arrayBoundPending := false
+
 	limitVar := ""
 	bitlimitVar := ""
 	needExpression := desc.GoTypeFlags&ssztypes.GoTypeFlagIsString == 0 || !noBufCheck
@@ -859,11 +863,11 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 		}
 
 		if desc.Kind == reflect.Array {
-			// check if dynamic limit is greater than the length of the array
-			ctx.appendCode(indent, "if %s > %d {\n", limitVar, desc.Len)
-			errCode := fmt.Sprintf("sszutils.ErrVectorSizeExceedsArrayFn(%s, %d)", limitVar, desc.Len)
-			ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
-			ctx.appendCode(indent, "}\n")
+			// The resolved size is the vector's length; the static ssz-size is
+			// only the fallback, so the backing array is what has to hold it.
+			// See marshalVector. The array expression is not built yet here, so
+			// the bound is emitted below, once it is.
+			arrayBoundPending = true
 		}
 	} else {
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 && desc.BitSize > 0 && desc.BitSize%8 != 0 {
@@ -885,6 +889,13 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 	indexValueVar := valueVar
 	if strings.HasPrefix(valueVar, "*") {
 		indexValueVar = fmt.Sprintf("(%s)", valueVar)
+	}
+
+	if arrayBoundPending {
+		ctx.appendCode(indent, "if %s > len(%s) {\n", limitVar, indexValueVar)
+		errCode := fmt.Sprintf("sszutils.ErrVectorSizeExceedsArrayFn(%s, len(%s))", limitVar, indexValueVar)
+		ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
+		ctx.appendCode(indent, "}\n")
 	}
 
 	// create slice if needed

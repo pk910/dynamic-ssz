@@ -275,7 +275,7 @@ func TestErrorConstructorFunctions(t *testing.T) {
 
 		// ErrVectorLength constructors
 		{"ErrVectorLengthFn", ErrVectorLengthFn(10, 5), ErrVectorLength, "vector length 10 exceeds limit 5"},
-		{"ErrVectorSizeExceedsArrayFn", ErrVectorSizeExceedsArrayFn(100, 50), ErrVectorLength, "dynamic vector size 100 exceeds array length 50"},
+		{"ErrVectorSizeExceedsArrayFn", ErrVectorSizeExceedsArrayFn(100, 50), ErrInvalidConstraint, "dynamic vector size 100 exceeds array length 50"},
 
 		// ErrInvalidValueRange constructors
 		{"ErrBitvectorPaddingFn", ErrBitvectorPaddingFn(), ErrInvalidValueRange, "bitvector padding bits are not zero"},

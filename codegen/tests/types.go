@@ -411,6 +411,24 @@ var UnboundedBitlist_Payload = UnboundedBitlist{B: []byte{0x0f}}
 
 var ZeroMaxList_Payload = ZeroMaxList{X: []uint64{1, 2, 3}}
 
+// VecSpecLen is a Go array whose SSZ length comes from a spec value. The static
+// ssz-size is the fallback used when the spec does not define the expression,
+// so the resolved length may exceed it -- the array's own length is the real
+// bound. Both a word array and a byte array, which take different paths.
+type VecSpecLen struct {
+	V [8]uint64 `ssz-size:"4" dynssz-size:"VECSPEC_LEN"`
+	B [8]byte   `ssz-size:"4" dynssz-size:"VECSPEC_LEN"`
+}
+
+var VecSpecLen_Payload = VecSpecLen{
+	V: [8]uint64{1, 2, 3, 4, 5, 6, 7, 8},
+	B: [8]byte{1, 2, 3, 4, 5, 6, 7, 8},
+}
+
+// The resolved length is twice the static fallback, so anything bounding by the
+// fallback truncates.
+var VecSpecLen_Specs = map[string]any{"VECSPEC_LEN": 8}
+
 // WrappedElemLists holds lists whose elements are type wrappers around basic
 // values, alongside the plain lists they must hash identically to. A wrapper is
 // transparent to SSZ: the list packs the wrapped values and merkleizes them

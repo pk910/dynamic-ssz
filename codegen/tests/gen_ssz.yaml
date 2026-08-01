@@ -51,6 +51,9 @@ types:
   - name: SpecMatrix
     output: gen_specmatrix.go
 
+  - name: VecSpecLen
+    output: gen_vecspeclen.go
+
   - name: WrappedElemLists
     output: gen_wrappedelem.go
   - name: PlainElemLists

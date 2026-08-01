@@ -97,6 +97,13 @@ var testMatrix = []TestPayload{
 		Hash:    "1d01f38b53c776df6e3a72e9594dff762175c0411c619ee60519f718c71d0f7e",
 	},
 	{
+		// A Go array whose SSZ length resolves above its static ssz-size.
+		Name:    "VecSpecLen",
+		Payload: VecSpecLen_Payload,
+		Specs:   VecSpecLen_Specs,
+		Hash:    "2a904e56b27cee459633a119d2413867dbe38405517bd33404bf5cf597de5291",
+	},
+	{
 		// Lists of type wrappers around basic values: transparent, so they must
 		// merkleize like the plain lists they alias.
 		Name:    "WrappedElemLists",
@@ -2586,6 +2593,59 @@ func TestCodegenSpecVecElementRegionBound(t *testing.T) {
 	err = ds.UnmarshalSSZ(new(SpecVecList), short)
 	if !errors.Is(err, sszutils.ErrOffset) || !strings.Contains(err.Error(), "elements of at least 24 bytes") {
 		t.Fatalf("err = %v, want the region bound to reject 3 elements of 24 bytes", err)
+	}
+}
+
+// A Go array's SSZ length comes from the resolved dynssz-size. The static
+// ssz-size is only the fallback for an unresolved expression, so a spec value
+// above it is legitimate and the array -- which may be larger still -- is what
+// bounds it. The generated code used to bound and iterate by the static value,
+// so a preset that resolved higher was rejected outright while reflection
+// encoded it.
+func TestCodegenSpecSizedArrayUsesResolvedLength(t *testing.T) {
+	if _, generated := any(&VecSpecLen{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+
+	for _, tc := range []struct {
+		name string
+		size uint64
+		want int // serialized bytes: size*8 for V plus size for B
+	}{
+		{"above the static fallback", 8, 8*8 + 8},
+		{"at the static fallback", 4, 4*8 + 4},
+		{"below the static fallback", 2, 2*8 + 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			specs := map[string]any{"VECSPEC_LEN": tc.size}
+			testCodegenPayloadByReflection(t, VecSpecLen_Payload, specs)
+
+			ds := dynssz.NewDynSsz(specs)
+			encoded, err := ds.MarshalSSZ(&VecSpecLen_Payload)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if len(encoded) != tc.want {
+				t.Errorf("encoded %d bytes, want %d", len(encoded), tc.want)
+			}
+		})
+	}
+
+	// The backing array is the real bound, and exceeding it is still refused --
+	// by both engines, since neither can read past the array.
+	tooBig := map[string]any{"VECSPEC_LEN": 9}
+	for _, tc := range []struct {
+		name string
+		ds   *dynssz.DynSsz
+	}{
+		{"generated", dynssz.NewDynSsz(tooBig)},
+		{"reflection", dynssz.NewDynSsz(tooBig, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation())},
+	} {
+		t.Run("beyond the array/"+tc.name, func(t *testing.T) {
+			if _, err := tc.ds.MarshalSSZ(&VecSpecLen_Payload); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+				t.Errorf("err = %v, want ErrInvalidConstraint", err)
+			}
+		})
 	}
 }
 

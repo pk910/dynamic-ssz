@@ -616,14 +616,6 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		}
 
 		hasLimitVar = true
-
-		if desc.Kind == reflect.Array {
-			// check if dynamic limit is greater than the length of the array
-			ctx.appendCode(indent, "if %s > %d {\n", limitVar, desc.Len)
-			errCode := fmt.Sprintf("sszutils.ErrVectorSizeExceedsArrayFn(%s, %d)", limitVar, desc.Len)
-			ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith(errCode))
-			ctx.appendCode(indent, "}\n")
-		}
 	} else {
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 && desc.BitSize > 0 && desc.BitSize%8 != 0 {
 			bitlimitVar = fmt.Sprintf("%d", desc.BitSize)
@@ -662,8 +654,13 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent, "}\n")
 		lenVar = varNameVLen
 	case hasLimitVar:
-		ctx.appendCode(indent, varNameVLen+" := %d\n", desc.Len)
-		ctx.appendCode(indent, "if "+varNameVLen+" > %s {\n\t"+varNameVLen+" = %s\n}\n", limitVar, limitVar)
+		// The resolved size is the vector's length; the static ssz-size is only
+		// the fallback. See marshalVector.
+		ctx.appendCode(indent, "if %s > len(%s) {\n", limitVar, getValueVar(false, ""))
+		errCode := fmt.Sprintf("sszutils.ErrVectorSizeExceedsArrayFn(%s, len(%s))", limitVar, getValueVar(false, ""))
+		ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith(errCode))
+		ctx.appendCode(indent, "}\n")
+		ctx.appendCode(indent, varNameVLen+" := %s\n", limitVar)
 		lenVar = varNameVLen
 	default:
 		lenVar = fmt.Sprintf("%d", desc.Len)

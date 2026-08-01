@@ -410,10 +410,14 @@ func ErrVectorLengthFn(length, limit any) error {
 }
 
 // ErrVectorSizeExceedsArrayFn is returned when a dynamic size expression
-// yields a vector size larger than the backing Go array.
+// yields a vector size larger than the backing Go array. That is a mismatch
+// between the spec values and the Go type rather than anything about the value
+// being encoded, which is why it carries ErrInvalidConstraint -- the same
+// sentinel the reflection engine raises when it catches the mismatch while
+// building the descriptor.
 func ErrVectorSizeExceedsArrayFn(dynamicSize, arrayLen any) error {
 	return &sszError{
-		err:     ErrVectorLength,
+		err:     ErrInvalidConstraint,
 		message: fmt.Sprintf("dynamic vector size %v exceeds array length %v", dynamicSize, arrayLen),
 	}
 }
