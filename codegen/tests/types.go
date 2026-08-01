@@ -411,6 +411,51 @@ var UnboundedBitlist_Payload = UnboundedBitlist{B: []byte{0x0f}}
 
 var ZeroMaxList_Payload = ZeroMaxList{X: []uint64{1, 2, 3}}
 
+// WrappedElemLists holds lists whose elements are type wrappers around basic
+// values, alongside the plain lists they must hash identically to. A wrapper is
+// transparent to SSZ: the list packs the wrapped values and merkleizes them
+// under the packed chunk count. Reading the wrapper as the element instead
+// makes it look composite, giving one chunk per element -- a different tree
+// depth, and so a different root at every length.
+type WrappedElemLists struct {
+	W []dynssz.TypeWrapper[struct {
+		Data uint64
+	}, uint64] `ssz-max:"16" ssz-type:"?,wrapper"`
+	B []dynssz.TypeWrapper[struct {
+		Data byte
+	}, byte] `ssz-max:"64" ssz-type:"?,wrapper"`
+}
+
+// PlainElemLists is WrappedElemLists with the wrappers removed. Both types
+// describe the same SSZ types, so they must produce the same root.
+type PlainElemLists struct {
+	W []uint64 `ssz-max:"16"`
+	B []byte   `ssz-max:"64"`
+}
+
+var WrappedElemLists_Payload = func() WrappedElemLists {
+	var v WrappedElemLists
+	v.W = make([]dynssz.TypeWrapper[struct {
+		Data uint64
+	}, uint64], 5)
+	for i := range v.W {
+		v.W[i].Set(uint64(i + 1))
+	}
+	v.B = make([]dynssz.TypeWrapper[struct {
+		Data byte
+	}, byte], 5)
+	for i := range v.B {
+		v.B[i].Set(byte(i + 1))
+	}
+
+	return v
+}()
+
+var PlainElemLists_Payload = PlainElemLists{
+	W: []uint64{1, 2, 3, 4, 5},
+	B: []byte{1, 2, 3, 4, 5},
+}
+
 // SpecShrunkList is a dynamic list whose element carries a spec-driven fixed
 // section. The generator only sees the static tag values, so it cannot know the
 // element's minimum size: a preset that resolves SHRUNK_SIZE below the tag

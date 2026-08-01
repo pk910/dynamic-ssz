@@ -97,6 +97,14 @@ var testMatrix = []TestPayload{
 		Hash:    "1d01f38b53c776df6e3a72e9594dff762175c0411c619ee60519f718c71d0f7e",
 	},
 	{
+		// Lists of type wrappers around basic values: transparent, so they must
+		// merkleize like the plain lists they alias.
+		Name:    "WrappedElemLists",
+		Payload: WrappedElemLists_Payload,
+		Specs:   map[string]any{},
+		Hash:    "c2286724d36b75bd9e5a20a3b0af93d41da4ebfe8951aac9018741e25b481724",
+	},
+	{
 		// A list element that is a vector of dynamic containers with a
 		// spec-driven length: its minimum is the vector's offset table plus each
 		// entry's fixed section.
@@ -2514,6 +2522,55 @@ func TestCodegenSpecVecElementRegionBound(t *testing.T) {
 	err = ds.UnmarshalSSZ(new(SpecVecList), short)
 	if !errors.Is(err, sszutils.ErrOffset) || !strings.Contains(err.Error(), "elements of at least 24 bytes") {
 		t.Fatalf("err = %v, want the region bound to reject 3 elements of 24 bytes", err)
+	}
+}
+
+// A type wrapper is transparent to SSZ, so a list of wrappers around a basic
+// value describes the same type as the plain list and must produce the same
+// root. It used to merkleize one chunk per element rather than under the packed
+// chunk count, so the two disagreed at every length -- in both engines, which
+// agreed with each other and with neither the spec nor any other implementation.
+func TestCodegenWrappedElementListRoot(t *testing.T) {
+	if _, generated := any(&WrappedElemLists{}).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+
+	for _, tc := range []struct {
+		name string
+		opts []dynssz.DynSszOption
+	}{
+		{"generated", nil},
+		{"reflection", []dynssz.DynSszOption{dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := dynssz.NewDynSsz(nil, tc.opts...)
+
+			wrapped, err := ds.HashTreeRoot(&WrappedElemLists_Payload)
+			if err != nil {
+				t.Fatalf("wrapped: %v", err)
+			}
+			plain, err := ds.HashTreeRoot(&PlainElemLists_Payload)
+			if err != nil {
+				t.Fatalf("plain: %v", err)
+			}
+			if wrapped != plain {
+				t.Errorf("wrapped root %x differs from plain %x", wrapped, plain)
+			}
+
+			// The wrappers are transparent on the wire too, so the same bytes
+			// have to come out.
+			wrappedBytes, err := ds.MarshalSSZ(&WrappedElemLists_Payload)
+			if err != nil {
+				t.Fatalf("marshal wrapped: %v", err)
+			}
+			plainBytes, err := ds.MarshalSSZ(&PlainElemLists_Payload)
+			if err != nil {
+				t.Fatalf("marshal plain: %v", err)
+			}
+			if !bytes.Equal(wrappedBytes, plainBytes) {
+				t.Errorf("wrapped encoding %x differs from plain %x", wrappedBytes, plainBytes)
+			}
+		})
 	}
 }
 

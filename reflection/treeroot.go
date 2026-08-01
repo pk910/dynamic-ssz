@@ -792,7 +792,18 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 
 		var limit, itemSize uint64
 
-		switch sourceType.ElemDesc.SszType {
+		// A type wrapper is transparent to merkleization: the elements are
+		// packed as the value it wraps, so the limit has to come from that
+		// value's size. Reading the wrapper itself makes a packed basic element
+		// look composite, which yields a chunk per element instead of the
+		// chunk count the packing produces -- a different tree depth, so a
+		// different root at every length.
+		elemDesc := sourceType.ElemDesc
+		for elemDesc.SszType == ssztypes.SszTypeWrapperType && elemDesc.ElemDesc != nil {
+			elemDesc = elemDesc.ElemDesc
+		}
+
+		switch elemDesc.SszType {
 		case ssztypes.SszBoolType:
 			itemSize = 1
 		case ssztypes.SszUint8Type, ssztypes.SszInt8Type:

@@ -874,8 +874,19 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent, "hh.AppendBytes32(%s[:])\n", getValueVar(false, ""))
 		itemSize = 1
 	default:
-		if ctx.isPrimitive(desc.ElemDesc) {
-			itemSize = int(desc.ElemDesc.Size)
+		// A type wrapper is transparent to merkleization: the elements are
+		// packed as the value it wraps, so the item size has to come from that
+		// value. Reading the wrapper itself makes a packed basic element look
+		// composite, which yields a chunk per element instead of the chunk
+		// count the packing produces -- a different tree depth, so a different
+		// root at every length. The reflection engine unwraps the same way.
+		packedDesc := desc.ElemDesc
+		for packedDesc.SszType == ssztypes.SszTypeWrapperType && packedDesc.ElemDesc != nil {
+			packedDesc = packedDesc.ElemDesc
+		}
+
+		if ctx.isPrimitive(packedDesc) {
+			itemSize = int(packedDesc.Size)
 		} else {
 			itemSize = 32
 		}

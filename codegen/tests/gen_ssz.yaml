@@ -51,6 +51,11 @@ types:
   - name: SpecMatrix
     output: gen_specmatrix.go
 
+  - name: WrappedElemLists
+    output: gen_wrappedelem.go
+  - name: PlainElemLists
+    output: gen_wrappedelem.go
+
   - name: SpecShrunkList
     output: gen_specshrunk.go
   - name: SpecShrunkElem
