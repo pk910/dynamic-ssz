@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
@@ -2432,12 +2433,29 @@ func TestCodegenRecursionDepthBound(t *testing.T) {
 			t.Error("a cyclic type must carry depth-bearing methods")
 		}
 
-		plain, err := os.ReadFile("gen_simple1.go")
+		// Every other generated file holds types that are not on a cycle, so
+		// none of them may carry the bound. Checked by scanning rather than by
+		// naming one, since which file a type lands in is only a grouping.
+		others, err := filepath.Glob("gen_*.go")
 		if err != nil {
-			t.Fatalf("read generated non-recursive file: %v", err)
+			t.Fatalf("list generated files: %v", err)
 		}
-		if strings.Contains(string(plain), "AtDepth") {
-			t.Error("a non-recursive type must not carry depth-bearing methods")
+		checked := 0
+		for _, name := range others {
+			if name == "gen_recursive.go" {
+				continue
+			}
+			plain, err := os.ReadFile(name)
+			if err != nil {
+				t.Fatalf("read %s: %v", name, err)
+			}
+			checked++
+			if strings.Contains(string(plain), "AtDepth") {
+				t.Errorf("%s holds no cyclic type but carries depth-bearing methods", name)
+			}
+		}
+		if checked == 0 {
+			t.Fatal("no other generated files were found to check")
 		}
 	})
 }

@@ -1,16 +1,20 @@
 # Config for the main batch of generated SSZ code.
 # Paths are resolved relative to this file's directory.
 #
-# The per-type `output` override groups related types into a single file so
-# cross-references between them (e.g. SimpleTypes1 ↔ SimpleTypes1_C1) are
-# emitted as method calls instead of inlined duplicates.
+# Every type listed here is generated in one run, so they reach each other
+# through their generated methods whichever file they land in -- only a type
+# that is referenced but not listed gets inlined. The `output` override is
+# therefore about keeping related shapes readable together, and the groups
+# below follow what each type exercises.
 
 package: github.com/pk910/dynamic-ssz/codegen/tests
-output: gen_ssz.go
+output: gen_simple.go
 legacy: true
 with-streaming: true
 
 types:
+  # Primitives and the plain containers built from them. This is the
+  # default output, so these need no override.
   - SimpleBool
   - SimpleUint8
   - SimpleUint16
@@ -18,195 +22,122 @@ types:
   - SimpleUint64
   - SimpleByteVec32
   - SimpleUint64Vec4
+  - SimpleTypes1
+  - SimpleTypes1_C1
+  - NestedDelegatedContainer
+  - NestedDelegatedDynContainer
+  - MixedDelegatedContainer
+  - SimpleTypes2
+  - SimpleTypes3
 
-  - name: SimpleTypes1
-    output: gen_simple1.go
-  - name: SimpleTypes1_C1
-    output: gen_simple1.go
-
-  - name: NestedDelegatedContainer
-    output: gen_nesteddelegated.go
-  - name: NestedDelegatedDynContainer
-    output: gen_nesteddelegated.go
-  - name: MixedDelegatedContainer
-    output: gen_nesteddelegated.go
-
-  - name: SimpleTypes2
-    output: gen_simple2.go
-  - name: SimpleTypes3
-    output: gen_simple3.go
-
+  # Sizes and limits that come from spec values rather than the tag.
   - name: SimpleTypesWithSpecs
-    output: gen_withspecs.go
+    output: gen_specs.go
   - name: SimpleTypesWithSpecs_C1
-    output: gen_withspecs.go
+    output: gen_specs.go
   - name: SimpleTypesWithSpecs_C2
-    output: gen_withspecs.go
-
+    output: gen_specs.go
   - name: SimpleTypesWithSpecs2
-    output: gen_withspecs2.go
+    output: gen_specs.go
   - name: SimpleTypesWithSpecs_C3
-    output: gen_withspecs2.go
-
+    output: gen_specs.go
   - name: SpecMatrix
-    output: gen_specmatrix.go
-
+    output: gen_specs.go
   - name: VecSpecLen
-    output: gen_vecspeclen.go
-
-  - name: WrappedElemLists
-    output: gen_wrappedelem.go
-  - name: PlainElemLists
-    output: gen_wrappedelem.go
-
+    output: gen_specs.go
   - name: SpecShrunkList
-    output: gen_specshrunk.go
+    output: gen_specs.go
   - name: SpecShrunkElem
-    output: gen_specshrunk.go
+    output: gen_specs.go
   - name: SpecVecList
-    output: gen_specshrunk.go
+    output: gen_specs.go
   - name: SpecVecElem
-    output: gen_specshrunk.go
+    output: gen_specs.go
+  - name: DynSizeVectorNoStatic
+    output: gen_specs.go
 
+  # List, vector and optional-list shapes, including the wrappers that
+  # are transparent to them.
+  - name: WrappedElemLists
+    output: gen_collections.go
+  - name: PlainElemLists
+    output: gen_collections.go
   - name: ListOfList
-    output: gen_listoflist.go
+    output: gen_collections.go
   - name: Bytes2D
-    output: gen_listoflist.go
+    output: gen_collections.go
   - name: VecOfList
-    output: gen_listoflist.go
+    output: gen_collections.go
+  - name: OptionalListTypes
+    output: gen_collections.go
+  - name: OptionalListTypes_Inner
+    output: gen_collections.go
+  - name: OptionalListSliceVector
+    output: gen_collections.go
+  - name: VecDynElemExprSize
+    output: gen_collections.go
+  - name: VecDynElemExprSize_Inner
+    output: gen_collections.go
 
+  # Both union flavours, and the shapes that carry one.
   - name: ClassicUnionTypes
-    output: gen_progressive.go
+    output: gen_unions.go
+  - name: UnionExprVariantSize
+    output: gen_unions.go
+  - name: SizeUnionExprVariant
+    output: gen_unions.go
+  - name: UnionDynVariant
+    output: gen_unions.go
+  - name: UnionTaggedSelectors
+    output: gen_unions.go
+  - name: PtrUnionVariant
+    output: gen_unions.go
+  - name: ClassicUnionDynVariant
+    output: gen_unions.go
+  - name: ClassicUnionPtrVariant
+    output: gen_unions.go
+  - name: UnionSamePkgVariant
+    output: gen_unions.go
+  - name: ClassicUnionSamePkgVariant
+    output: gen_unions.go
+  - name: WrapUnionField
+    output: gen_unions.go
+  - name: WrapClassicUnionField
+    output: gen_unions.go
+
+  # EIP-7916/7495 progressive merkleization.
   - name: ProgressiveTypes
     output: gen_progressive.go
   - name: ProgIndexOnly
     output: gen_progressive.go
   - name: ProgBitlistZeroTop
     output: gen_progressive.go
-  - name: CustomTypes1
-    output: gen_custom.go
-  - name: CoverageTypes1
-    output: gen_coverage.go
-  - name: CoverageTypes7
-    output: gen_coverage.go
 
-  - name: OptionalListTypes
-    output: gen_optionallist.go
-  - name: OptionalListTypes_Inner
-    output: gen_optionallist.go
-  - name: OptionalListSliceVector
-    output: gen_optionallist.go
-  - name: UnionExprVariantSize
-    output: gen_optionallist.go
-  - name: VecDynElemExprSize
-    output: gen_optionallist.go
-  - name: VecDynElemExprSize_Inner
-    output: gen_optionallist.go
-
+  # Types generated against view schemas.
   - name: ViewTypes1_Base
-    output: gen_viewtypes1.go
+    output: gen_views.go
     views:
       - ViewTypes1_View1
       - ViewTypes1_View2
       - github.com/pk910/dynamic-ssz/codegen/tests/views.ViewTypes1_View3
-
   - name: ViewTypes2_Base
-    output: gen_viewtypes2.go
+    output: gen_views.go
     views:
       - ViewTypes2_View1
       - ViewTypes2_View2
-
   - name: ViewTypes3_Base
-    output: gen_viewtypes3.go
+    output: gen_views.go
     view-only: true
     views:
       - ViewTypes3_View1
-
   - name: ViewTypes5_Base
-    output: gen_viewtypes5.go
+    output: gen_views.go
     view-only: true
     views:
       - ViewTypes5_View1
 
-  - name: StreamVecDynSize
-    output: gen_divergence.go
-  - name: StreamVecElem
-    output: gen_divergence.go
-  - name: SizeUnionExprVariant
-    output: gen_divergence.go
-  - name: MultiDimSpecVec
-    output: gen_divergence.go
-  - name: NoMaxBitlist
-    output: gen_divergence.go
-  - name: NamedBitlistContainer
-    output: gen_divergence.go
-  - name: BitvecEdge
-    output: gen_divergence.go
-  - name: UnionDynVariant
-    output: gen_divergence.go
-  - name: UnionTaggedSelectors
-    output: gen_divergence.go
-  - name: PtrUnionVariant
-    output: gen_divergence.go
-  - name: ClassicUnionDynVariant
-    output: gen_divergence.go
-  - name: ClassicUnionPtrVariant
-    output: gen_divergence.go
-  - name: AliasedVecPair
-    output: gen_divergence.go
-  - name: TopLevelBitlist
-    output: gen_toplevel.go
-  - name: TopLevelProgBitlist
-    output: gen_toplevel.go
-  - name: TopLevelString
-    output: gen_toplevel.go
-  - name: TopLevelCtrList
-    output: gen_toplevel.go
-  - name: TopLevelCtrVec
-    output: gen_toplevel.go
-  - name: TopLevelVarList
-    output: gen_toplevel.go
-  - name: TopLevelListOfList
-    output: gen_toplevel.go
-  - name: TopLevelStructWrapper
-    output: gen_toplevel.go
-  - name: TopLevelWrapVarList
-    output: gen_toplevel.go
-  - name: TopVecOfVar
-    output: gen_compilecorrectness.go
-  - name: UnionSamePkgVariant
-    output: gen_compilecorrectness.go
-  - name: ClassicUnionSamePkgVariant
-    output: gen_compilecorrectness.go
-  - name: PtrPrimitiveList
-    output: gen_compilecorrectness.go
-  - name: FixedVecPtrStr
-    output: gen_compilecorrectness.go
-  - name: FixedVecPtrList
-    output: gen_compilecorrectness.go
-  - name: FixedVecStr
-    output: gen_compilecorrectness.go
-  - name: ShortLargeUintVec
-    output: gen_compilecorrectness.go
-  - name: PtrDynCollectionField
-    output: gen_compilecorrectness.go
-  - name: WrapUnionField
-    output: gen_compilecorrectness.go
-  - name: WrapClassicUnionField
-    output: gen_compilecorrectness.go
-  - name: ExcludedFields
-    output: gen_compilecorrectness.go
-  - name: PtrSvecOfList
-    output: gen_compilecorrectness.go
-  - name: WrapPtrList
-    output: gen_compilecorrectness.go
-  - name: WideDynamicElement
-    output: gen_compilecorrectness.go
-  - name: WideDynamicList
-    output: gen_compilecorrectness.go
-
-  # Recursive shapes: generated in one file so the recursive references are
-  # emitted as method calls between the members.
+  # Recursive shapes. Their cycles are what the depth bound is emitted
+  # for, so the depth-method assertions read this file by name.
   - name: RecursiveNode
     output: gen_recursive.go
   - name: RecursiveTree
@@ -218,5 +149,67 @@ types:
     views:
       - RecursiveViewNode_View1
 
-  - name: DynSizeVectorNoStatic
-    output: gen_dynsizevec.go
+  # Everything whose point is a shape rather than a feature: top-level
+  # entries, pointer and aliasing layouts, and the coverage fillers.
+  - name: CustomTypes1
+    output: gen_edgecases.go
+  - name: CoverageTypes1
+    output: gen_edgecases.go
+  - name: CoverageTypes7
+    output: gen_edgecases.go
+  - name: StreamVecDynSize
+    output: gen_edgecases.go
+  - name: StreamVecElem
+    output: gen_edgecases.go
+  - name: MultiDimSpecVec
+    output: gen_edgecases.go
+  - name: NoMaxBitlist
+    output: gen_edgecases.go
+  - name: NamedBitlistContainer
+    output: gen_edgecases.go
+  - name: BitvecEdge
+    output: gen_edgecases.go
+  - name: AliasedVecPair
+    output: gen_edgecases.go
+  - name: TopLevelBitlist
+    output: gen_edgecases.go
+  - name: TopLevelProgBitlist
+    output: gen_edgecases.go
+  - name: TopLevelString
+    output: gen_edgecases.go
+  - name: TopLevelCtrList
+    output: gen_edgecases.go
+  - name: TopLevelCtrVec
+    output: gen_edgecases.go
+  - name: TopLevelVarList
+    output: gen_edgecases.go
+  - name: TopLevelListOfList
+    output: gen_edgecases.go
+  - name: TopLevelStructWrapper
+    output: gen_edgecases.go
+  - name: TopLevelWrapVarList
+    output: gen_edgecases.go
+  - name: TopVecOfVar
+    output: gen_edgecases.go
+  - name: PtrPrimitiveList
+    output: gen_edgecases.go
+  - name: FixedVecPtrStr
+    output: gen_edgecases.go
+  - name: FixedVecPtrList
+    output: gen_edgecases.go
+  - name: FixedVecStr
+    output: gen_edgecases.go
+  - name: ShortLargeUintVec
+    output: gen_edgecases.go
+  - name: PtrDynCollectionField
+    output: gen_edgecases.go
+  - name: ExcludedFields
+    output: gen_edgecases.go
+  - name: PtrSvecOfList
+    output: gen_edgecases.go
+  - name: WrapPtrList
+    output: gen_edgecases.go
+  - name: WideDynamicElement
+    output: gen_edgecases.go
+  - name: WideDynamicList
+    output: gen_edgecases.go

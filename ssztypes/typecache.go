@@ -458,10 +458,14 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 					}
 
 					ok, val, resolveErr := tc.specs.ResolveSpecValue(sizeHints[i].Expr)
-					if resolveErr == nil && ok && val > math.MaxUint32 {
-						return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "ssz-size value %d exceeds the uint32 size range", val)
-					}
 					if resolveErr == nil && ok && val > 0 {
+						// The range check guards the conversion directly rather
+						// than standing as a separate condition, so that what
+						// makes the narrowing safe is visible at the narrowing.
+						if val > math.MaxUint32 {
+							return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "ssz-size value %d exceeds the uint32 size range", val)
+						}
+
 						sizeHints[i].Size = uint32(val)
 						sizeHints[i].Custom = true
 
