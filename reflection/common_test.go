@@ -14,6 +14,13 @@ import (
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
+// testByteList is a top-level byte list. A bare []uint8 has nowhere to carry a
+// limit, and a list without one has no SSZ hash tree root, so the limit comes
+// from a type annotation instead.
+type testByteList []uint8
+
+var _ = sszutils.Annotate[testByteList](`ssz-max:"64"`)
+
 var commonTestMatrix = []struct {
 	name    string
 	payload any
@@ -109,15 +116,15 @@ var commonTestMatrix = []struct {
 	// arrays & slices
 	{
 		"array_empty",
-		[]uint8{},
+		testByteList{},
 		fromHex("0x"),
-		fromHex("0x0000000000000000000000000000000000000000000000000000000000000000"),
+		fromHex("0x7a0501f5957bdf9cb3a8ff4966f02265f968658b7a9c62642cba1165e86642f5"),
 	},
 	{
 		"array_val1",
-		[]uint8{1, 2, 3, 4, 5},
+		testByteList{1, 2, 3, 4, 5},
 		fromHex("0x0102030405"),
-		fromHex("0x0102030405000000000000000000000000000000000000000000000000000000"),
+		fromHex("0x209ec0633411cff6970c26380d214e30985d43dcc50509c1b3b28f615d333939"),
 	},
 	{
 		"array_val2",
@@ -192,13 +199,13 @@ var commonTestMatrix = []struct {
 			F1 uint8
 			F2 [][]struct {
 				F1 uint16
-			} `ssz-size:"?,2"`
+			} `ssz-size:"?,2" ssz-max:"64"`
 			F3 uint8
 		}{42, [][]struct {
 			F1 uint16
 		}{{{F1: 2}, {F1: 3}}, {{F1: 4}, {F1: 5}}}, 43},
 		fromHex("0x2a060000002b0200030004000500"),
-		fromHex("0xf487ff96faa706a7842188212604b54466e355624e96e3e0aef72e066b38b929"),
+		fromHex("0x36b89d473c06d4887af012a6e44d49e25010334ef18ee8ccdfcd4309040e6e75"),
 	},
 	{
 		"complex_struct8",
@@ -233,10 +240,10 @@ var commonTestMatrix = []struct {
 	{
 		"complex_struct11",
 		struct {
-			F1 []uint16 `ssz-type:"list" ssz-size:"?"`
+			F1 []uint16 `ssz-type:"list" ssz-size:"?" ssz-max:"64"`
 		}{[]uint16{2, 3}},
 		fromHex("0x0400000002000300"),
-		fromHex("0x0200030000000000000000000000000000000000000000000000000000000000"),
+		fromHex("0x1ba9dbe7d5e3199eea6548a3692e9bbe264f4b362f6c34db578a568984133b43"),
 	},
 	{
 		"complex_struct13",
@@ -360,12 +367,12 @@ var commonTestMatrix = []struct {
 		struct {
 			Field0 uint16
 			Field1 dynssz.CompatibleUnion[struct {
-				Field1 []uint32
+				Field1 []uint32 `ssz-max:"64"`
 				Field2 [2]uint8
 			}] `ssz-type:"compatible-union"`
 			Field3 uint16
 		}{0x1337, dynssz.CompatibleUnion[struct {
-			Field1 []uint32
+			Field1 []uint32 `ssz-max:"64"`
 			Field2 [2]uint8
 		}]{Variant: 2, Data: [2]uint8{0x78, 0x56}}, 0x4242},
 		fromHex("0x3713080000004242027856"),
@@ -521,34 +528,34 @@ var commonTestMatrix = []struct {
 		"type_vector_2",
 		struct {
 			Values []struct {
-				F1 []uint64
+				F1 []uint64 `ssz-max:"64"`
 				F2 uint64
 			} `ssz-type:"vector" ssz-size:"3"`
 		}{},
 		fromHex("0x040000000c00000018000000240000000c00000000000000000000000c00000000000000000000000c0000000000000000000000"),
-		fromHex("0x8a76fb51c2335e4235aea0146626d464fe6dacad7a68f4efca90806241b3b213"),
+		fromHex("0xe77eccc7e6ad6aaaef0649b7b38dda66672dfcfd020d0623b21c3ccadfabdf9e"),
 	},
 	{
 		"type_vector_3",
 		func() any {
 			type TestType = dynssz.TypeWrapper[struct {
 				Data []struct {
-					F1 []uint64
+					F1 []uint64 `ssz-max:"64"`
 					F2 uint64
 				} `ssz-type:"vector" ssz-size:"3"`
 			}, []struct {
-				F1 []uint64
+				F1 []uint64 `ssz-max:"64"`
 				F2 uint64
 			}]
 			return TestType{
 				Data: []struct {
-					F1 []uint64
+					F1 []uint64 `ssz-max:"64"`
 					F2 uint64
 				}{},
 			}
 		}(),
 		fromHex("0x0c00000018000000240000000c00000000000000000000000c00000000000000000000000c0000000000000000000000"),
-		fromHex("0x8a76fb51c2335e4235aea0146626d464fe6dacad7a68f4efca90806241b3b213"),
+		fromHex("0xe77eccc7e6ad6aaaef0649b7b38dda66672dfcfd020d0623b21c3ccadfabdf9e"),
 	},
 	{
 		"type_vector_4",
@@ -743,19 +750,19 @@ var commonTestMatrix = []struct {
 		"type_fastssz_2",
 		struct {
 			Field0 uint64
-			Field1 []TestContainerWithFastSsz
+			Field1 []TestContainerWithFastSsz `ssz-max:"64"`
 		}{1, []TestContainerWithFastSsz{{1, 2, true, 4}, {5, 6, true, 8}}},
 		fromHex("0x01000000000000000c000000010000000000000002000000010400050000000000000006000000010800"),
-		fromHex("0x80b99000797f72ef1a9deae3e42fc1447648feaf1d7cd8dc1a4e20c7c64350ed"),
+		fromHex("0x1fd9563ea038408831a314f6d2ac61dfa8830ab88c610f976d8047f36228d1a8"),
 	},
 	{
 		"type_dynamicssz_2",
 		struct {
 			Field0 uint64
-			Field1 []TestContainerWithDynamicSsz
+			Field1 []TestContainerWithDynamicSsz `ssz-max:"64"`
 		}{1, []TestContainerWithDynamicSsz{{1, 2, true, 4}, {5, 6, true, 8}}},
 		fromHex("0x01000000000000000c000000010000000000000002000000010400050000000000000006000000010800"),
-		fromHex("0x80b99000797f72ef1a9deae3e42fc1447648feaf1d7cd8dc1a4e20c7c64350ed"),
+		fromHex("0x1fd9563ea038408831a314f6d2ac61dfa8830ab88c610f976d8047f36228d1a8"),
 	},
 
 	// optional-list (canonical List[T, 1] for pointer types). Works without

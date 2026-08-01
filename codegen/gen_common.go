@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
@@ -272,6 +273,133 @@ func (tp typePathList) getErrorWith(err string) string {
 		return fmt.Sprintf("sszutils.ErrorWithPath(%s, %s)", err, errArgs)
 	}
 	return err
+}
+
+// minSizeExpr generates the code-generation counterpart of ssztypes.MinSize:
+// an expression for the smallest a value of desc can serialize to. It returns
+// the expression, a sub-expression the caller must check is non-zero before
+// dividing by the result (empty when the value is always positive), and false
+// when no bound can be stated.
+//
+// A spec-driven size must not be baked in as a constant. The generator sees the
+// static tag values while the caller may run a preset that resolves them
+// smaller, so those parts resolve to the same runtime size variables the rest of
+// the generated method uses -- the constant and the expression would otherwise
+// disagree about the same bytes. WithoutDynamicExpressions freezes every size to
+// what the generator saw, so there everything folds back to constants.
+func minSizeExpr(desc *ssztypes.TypeDescriptor, sizeVars *staticSizeVarGenerator, options *CodeGeneratorOptions) (expr, positiveGuard string, ok bool) {
+	if desc == nil {
+		return "", "", false
+	}
+
+	// A static type serializes to exactly its size, which is a constant unless a
+	// spec value feeds it.
+	if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr == 0 || options.WithoutDynamicExpressions {
+			return fmt.Sprintf("%d", desc.Size), "", desc.Size > 0
+		}
+
+		sizeVar, err := sizeVars.getStaticSizeVar(desc)
+		if err != nil {
+			return "", "", false
+		}
+
+		return sizeVar, sizeVar, true
+	}
+
+	switch desc.SszType {
+	case ssztypes.SszTypeWrapperType:
+		return minSizeExpr(desc.ElemDesc, sizeVars, options)
+
+	case ssztypes.SszContainerType, ssztypes.SszProgressiveContainerType:
+		staticSize := 0
+		sizeParts := []string{}
+		for _, field := range desc.ContainerDesc.Fields {
+			switch {
+			case field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0:
+				staticSize += 4
+			case field.Type.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !options.WithoutDynamicExpressions:
+				sizeVar, err := sizeVars.getStaticSizeVar(field.Type)
+				if err != nil {
+					return "", "", false
+				}
+				sizeParts = append(sizeParts, sizeVar)
+			default:
+				staticSize += int(field.Type.Size)
+			}
+		}
+
+		if len(sizeParts) == 0 {
+			return fmt.Sprintf("%d", staticSize), "", staticSize > 0
+		}
+
+		// A dynamic container has at least one dynamic field, so the constant
+		// term holds that field's 4 offset bytes and the sum is never zero.
+		sizeParts = append(sizeParts, fmt.Sprintf("%d", staticSize))
+
+		return strings.Join(sizeParts, "+"), "", true
+
+	case ssztypes.SszVectorType:
+		// A vector of dynamic elements leads with one 4-byte offset per element,
+		// and every element costs at least its own minimum on top of that.
+		elemMin, _, elemOk := minSizeExpr(desc.ElemDesc, sizeVars, options)
+		if !elemOk {
+			elemMin = "0"
+		}
+		perElem, perElemOk := mulOrAddExpr("+", "4", elemMin)
+		if !perElemOk {
+			return "", "", false
+		}
+
+		// desc.Len is the element count here, not a byte size, and a count that
+		// comes from a spec value can resolve to zero however the tag reads.
+		if desc.SizeExpression == nil || options.WithoutDynamicExpressions {
+			count := fmt.Sprintf("%d", desc.Len)
+			expr, exprOk := mulOrAddExpr("*", count, perElem)
+
+			return expr, "", exprOk && desc.Len > 0
+		}
+
+		count := fmt.Sprintf("int(%s)", sizeVars.exprVarGenerator.getExprVar(*desc.SizeExpression, uint64(desc.Len)))
+		expr, exprOk := mulOrAddExpr("*", count, perElem)
+
+		// The product is what the caller divides by, so it is what has to be
+		// checked: a spec value large enough to overflow the multiplication
+		// lands on zero or a negative, neither of which bounds anything. The
+		// reflection engine drops such a product for the same reason.
+		return expr, expr, exprOk
+
+	default:
+		return "", "", false
+	}
+}
+
+// mulOrAddExpr joins two size expressions, folding them when both are literals
+// so a fully static bound stays a plain number in the generated code. It reports
+// false if the result would be zero, which states no bound.
+func mulOrAddExpr(op, left, right string) (string, bool) {
+	leftVal, leftErr := strconv.Atoi(left)
+	rightVal, rightErr := strconv.Atoi(right)
+	if leftErr == nil && rightErr == nil {
+		folded := leftVal * rightVal
+		if op == "+" {
+			folded = leftVal + rightVal
+		}
+
+		return fmt.Sprintf("%d", folded), folded > 0
+	}
+
+	if op == "+" && right == "0" {
+		return left, true
+	}
+
+	// Only a compound operand needs grouping; wrapping a bare number or variable
+	// just makes the generated expression harder to read.
+	if strings.ContainsAny(right, "+-*/") {
+		right = "(" + right + ")"
+	}
+
+	return left + op + right, true
 }
 
 // indexBase parenthesizes a value expression so it can be used as an indexing

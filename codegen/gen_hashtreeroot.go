@@ -925,7 +925,19 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 			ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, vlen, %s)\n", maxVar)
 		}
 	default:
-		ctx.appendCode(indent, "hh.Merkleize(idx)\n")
+		// No declared limit. SSZ has no root for such a list -- List[T, N] needs
+		// N to merkleize -- so hashing one is an extension, and the parser flags
+		// it when extended types are off.
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagNoSszRoot != 0 {
+			return ssztypes.NoSszRootError(desc)
+		}
+
+		// Merkleizing without the mixin would treat it as a vector and lose the
+		// length, so values differing only in trailing zeros would share a root.
+		// A limit of zero merkleizes to the chunks the value occupies, matching
+		// the reflection engine.
+		addVlen()
+		ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, vlen, 0)\n")
 	}
 
 	return nil
@@ -983,6 +995,12 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varNa
 	case maxVar != "":
 		ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, size, sszutils.CalculateBitlistLimit(%s))\n", maxVar)
 	default:
+		// Bitlist[N] needs N to merkleize, so deriving the limit from the value
+		// is an extension; the parser flags it when extended types are off.
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagNoSszRoot != 0 {
+			return ssztypes.NoSszRootError(desc)
+		}
+
 		// No explicit limit: derive it from the serialized bit length and mix
 		// in the length, matching the reflection path (buildRootFromBitlist).
 		ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, size, sszutils.CalculateBitlistLimit(uint64(len(%s)*8)))\n", valueVar)

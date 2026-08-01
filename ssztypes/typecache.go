@@ -659,6 +659,10 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			// those handle every operation correctly.
 			desc.SszCompatFlags &^= SszCompatFlagFastSSZMarshaler | SszCompatFlagFastSSZHasher | SszCompatFlagHashTreeRootWith
 			desc.HashTreeRootWithMethod = nil
+			// A shallow descriptor has no traversed subtree: a static one still
+			// knows its size, a dynamic one states no floor.
+			setMinSize(desc)
+
 			return desc, nil
 		}
 	}
@@ -958,7 +962,59 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		}
 	}
 
+	setMinSize(desc)
+
 	return desc, nil
+}
+
+// setMinSize records the smallest number of bytes a value of this type can
+// serialize to. Decoders use it to reject an offset table that declares more
+// elements than the region can hold, before that count sizes an allocation.
+//
+// A type with no floor -- a list, a union, an optional -- keeps 0, which states
+// no bound rather than a wrong one.
+//
+// It is stored rather than derived at decode time because Len carries different
+// meanings per type (bytes for a container's fixed section, elements for a
+// vector), so the rule would otherwise be re-derived on every decode. Children
+// are read from their own cached value, so a recursive type resolves without
+// walking back into itself: a cycle's back edge simply contributes nothing.
+//
+// Only this cache fills it in, where every size is already resolved against the
+// active spec. Descriptors built by the code generator's go/types parser keep 0:
+// at generation time only the static tag values are known, and freezing those
+// into a bound would refuse valid input under a preset that resolves them
+// smaller. The generator emits the same minimum as a runtime expression instead
+// (see minSizeExpr).
+func setMinSize(desc *TypeDescriptor) {
+	// A static type serializes to exactly its size.
+	if desc.SszTypeFlags&SszTypeFlagIsDynamic == 0 {
+		desc.MinSize = desc.Size
+		return
+	}
+
+	switch desc.SszType {
+	case SszTypeWrapperType:
+		if desc.ElemDesc != nil {
+			desc.MinSize = desc.ElemDesc.MinSize
+		}
+	case SszContainerType, SszProgressiveContainerType:
+		// The fixed section: every field's own size, and four offset bytes for
+		// each dynamic one.
+		desc.MinSize = desc.Len
+	case SszVectorType:
+		// A vector of dynamic elements leads with one 4-byte offset per element,
+		// and every element costs at least its own minimum on top of that. Len is
+		// the element count here, not a byte size.
+		if desc.ElemDesc != nil {
+			// An overflowing product would bound the region above the true floor
+			// and refuse valid input, so it states no bound instead.
+			minSize := uint64(desc.Len) * (4 + uint64(desc.ElemDesc.MinSize))
+			if minSize <= math.MaxUint32 {
+				desc.MinSize = uint32(minSize)
+			}
+		}
+	}
 }
 
 // detectCompatFlags records which SSZ delegation interfaces (fastssz, dynamic,
@@ -1936,7 +1992,60 @@ func (tc *TypeCache) buildListDescriptor(desc *TypeDescriptor, runtimeType, sche
 		return sszutils.NewSszError(sszutils.ErrInvalidConstraint, "list types cannot have a fixed ssz-size (use ssz-max for lists, or ssz-size with vector type)")
 	}
 
+	MarkNoSszRoot(tc.ExtendedTypes, desc)
+
 	return nil
+}
+
+// MarkNoSszRoot flags a list or bitlist that carries no limit, unless extended
+// types are enabled. It is shared by the reflection type cache and the code
+// generator's parser so both classify the same types the same way.
+//
+// A limit is part of the type in SSZ: List[T, N] and Bitlist[N] need N to
+// merkleize, so a list without one has no defined hash tree root. The library
+// still hashes it -- merkleizing to the chunks the value occupies and mixing in
+// the length, so the root at least identifies the value -- but that root is
+// outside the spec and no other implementation will agree on it, which is why
+// it is an opt-in extension rather than the default.
+//
+// Serialization is unaffected: a limit only bounds a list, and encoding and
+// decoding never need it. So the flag is set here but only acted on where the
+// root is produced, which also keeps a view's data type usable: it carries no
+// tags because the layout lives in the view schema, and hashing it through the
+// view uses the view's descriptor, which does have the limit.
+//
+// A progressive list or bitlist is unbounded by design (EIP-7916) and is
+// unaffected.
+func MarkNoSszRoot(extendedTypes bool, desc *TypeDescriptor) {
+	if extendedTypes || desc.SszTypeFlags&SszTypeFlagHasLimit != 0 {
+		return
+	}
+
+	// A limit carried by a dynssz-max expression is still a limit; it is just
+	// not resolvable yet. That is the documented ssz-max:"0" placeholder
+	// pattern, and it is how the code generator sees every spec-driven limit,
+	// since spec values only exist at runtime.
+	if desc.MaxExpression != nil {
+		return
+	}
+
+	if desc.SszType == SszListType || desc.SszType == SszBitlistType {
+		desc.SszTypeFlags |= SszTypeFlagNoSszRoot
+	}
+}
+
+// NoSszRootError reports that a limit-less list or bitlist cannot be hashed.
+// Both engines raise it where the root would be produced: the reflection engine
+// at hash time, the code generator while emitting the hash method.
+func NoSszRootError(desc *TypeDescriptor) error {
+	kind := sszTypeNameList
+	if desc.SszType == SszBitlistType {
+		kind = sszTypeNameBitlist
+	}
+
+	return sszutils.NewSszErrorf(sszutils.ErrExtendedTypeDisabled,
+		"%s has no ssz-max, so it has no SSZ hash tree root: add a limit, or enable extended types to hash it as an unbounded %s. If this is a view's data type, hash it through its view instead",
+		kind, kind)
 }
 
 // GetAllTypes returns a slice of all type keys currently cached in the TypeCache.

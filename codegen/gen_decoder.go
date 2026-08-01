@@ -1128,9 +1128,15 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		// the RegionEmpty probe above may have discovered EOF, which collapses an
 		// open region to a known length; without a known length sszLen is the
 		// stream allowance rather than the region, and bounds nothing.
-		if minElemSize := desc.ElemDesc.Len; minElemSize > 0 {
-			errCode = fmt.Sprintf("sszutils.ErrListRegionTooSmallFn(itemCount, %d, int(sszLen-startOffset))", minElemSize)
-			ctx.appendCode(indent, "if dec.LengthKnown() && itemCount > int(sszLen-startOffset)/%d {\n\treturn %s\n}\n", minElemSize, typePath.getErrorWith(errCode))
+		// A spec-driven minimum is emitted as an expression, not a constant; see
+		// the buffer path.
+		if minElemSize, positiveGuard, ok := minSizeExpr(desc.ElemDesc, ctx.staticSizeVars, ctx.options); ok {
+			guard := ""
+			if positiveGuard != "" {
+				guard = fmt.Sprintf("%s > 0 && ", positiveGuard)
+			}
+			errCode = fmt.Sprintf("sszutils.ErrListRegionTooSmallFn(itemCount, %s, int(sszLen-startOffset))", minElemSize)
+			ctx.appendCode(indent, "if dec.LengthKnown() && %sitemCount > int(sszLen-startOffset)/(%s) {\n\treturn %s\n}\n", guard, minElemSize, typePath.getErrorWith(errCode))
 		}
 
 		// read offsets

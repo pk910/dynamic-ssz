@@ -48,10 +48,10 @@ var marshalTestMatrix = append(commonTestMatrix, []struct {
 		"type_dynamicssz_val_3",
 		struct {
 			Field0 uint64
-			Field1 []TestContainerWithDynamicSsz2
+			Field1 []TestContainerWithDynamicSsz2 `ssz-max:"64"`
 		}{1, []TestContainerWithDynamicSsz2{{1, 2, true, 4}, {5, 6, true, 8}}},
 		fromHex("0x01000000000000000c000000010000000000000002000000010400050000000000000006000000010800"),
-		fromHex("0x80b99000797f72ef1a9deae3e42fc1447648feaf1d7cd8dc1a4e20c7c64350ed"),
+		fromHex("0x1fd9563ea038408831a314f6d2ac61dfa8830ab88c610f976d8047f36228d1a8"),
 	},
 
 	// fastssz value tests
@@ -65,10 +65,10 @@ var marshalTestMatrix = append(commonTestMatrix, []struct {
 		"type_fastssz_val_2",
 		struct {
 			Field0 uint64
-			Field1 []TestContainerWithFastSsz2
+			Field1 []TestContainerWithFastSsz2 `ssz-max:"64"`
 		}{1, []TestContainerWithFastSsz2{{1, 2, true, 4}, {5, 6, true, 8}}},
 		fromHex("0x01000000000000000c000000010000000000000002000000010400050000000000000006000000010800"),
-		fromHex("0x80b99000797f72ef1a9deae3e42fc1447648feaf1d7cd8dc1a4e20c7c64350ed"),
+		fromHex("0x1fd9563ea038408831a314f6d2ac61dfa8830ab88c610f976d8047f36228d1a8"),
 	},
 }...)
 
@@ -341,14 +341,14 @@ func TestMarshalErrors(t *testing.T) {
 		{
 			name: "invalid_bitlist_type",
 			input: struct {
-				Bits []uint64 `ssz-type:"bitlist"`
+				Bits []uint64 `ssz-type:"bitlist" ssz-max:"512"`
 			}{[]uint64{0xff, 0xff}},
 			expectedErr: "bitlist ssz type can only be represented by byte slices, got []uint64",
 		},
 		{
 			name: "unterminated_bitlist",
 			input: struct {
-				Bits []byte `ssz-type:"bitlist"`
+				Bits []byte `ssz-type:"bitlist" ssz-max:"512"`
 			}{[]byte{0x00}},
 			expectedErr: "bitlist missing termination bit",
 		},
@@ -489,7 +489,7 @@ func TestMarshalErrors(t *testing.T) {
 				Field0 uint16
 				Field1 []CompatibleUnion[struct {
 					Field1 uint32
-				}]
+				}] `ssz-max:"64"`
 			}{
 				0x1234,
 				[]CompatibleUnion[struct {
@@ -571,7 +571,7 @@ func TestMarshalErrors(t *testing.T) {
 		{
 			name: "dynamic_list_length_limit_exceeded",
 			input: struct {
-				Data [][]uint8 `ssz-max:"2"`
+				Data [][]uint8 `ssz-max:"2,8"`
 			}{[][]uint8{{1}, {2}, {3}}},
 			expectedErr: "exceeds maximum",
 		},
@@ -971,7 +971,7 @@ func TestSizeSSZVectorDynamicElements(t *testing.T) {
 
 	// Test size calculation for vector with dynamic elements
 	input := struct {
-		Data [][]uint32 `ssz-size:"3" ssz-max:"?,10"`
+		Data [][]uint32 `ssz-size:"3" ssz-max:"?,64"`
 	}{[][]uint32{{1, 2}, {3, 4, 5}}} // 2 elements but declared as 3
 
 	size, err := dynssz.SizeSSZ(input)

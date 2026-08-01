@@ -446,7 +446,7 @@ func TestUnmarshalErrors(t *testing.T) {
 		{
 			name: "dynamic_list_length_limit_exceeded",
 			target: new(struct {
-				Data [][]uint8 `ssz-max:"2"`
+				Data [][]uint8 `ssz-max:"2,8"`
 			}),
 			// 3 dynamic elements: offsets 0c000000 0d000000 0e000000, data: 0a 0b 0c
 			data:        fromHex("0x040000000c0000000d0000000e0000000a0b0c"),
@@ -480,7 +480,7 @@ func TestUnmarshalErrors(t *testing.T) {
 		{
 			name: "dynamic_list_offset_bounds",
 			target: new(struct {
-				Data [][]uint8 `ssz-max:"10"`
+				Data [][]uint8 `ssz-max:"10,8"`
 			}),
 			data:        fromHex("0x040000000800000010000000"),
 			expectedErr: "incorrect offset",
@@ -578,6 +578,21 @@ func TestUnmarshalErrors(t *testing.T) {
 			expectedErr: "list declares 2 elements of at least 4 bytes, but only 0 bytes remain for them",
 		},
 		{
+			// A vector element costs one offset per entry plus each entry's own
+			// fixed section: 2*(4+4) = 16 bytes, not the 2 its declared length
+			// reads as. The 8-byte table declares two such elements with nothing
+			// left for their bodies.
+			name: "dynamic_vector_element_region_too_small",
+			target: new(struct {
+				A uint32
+				B [][2]struct {
+					C []uint8 `ssz-max:"10"`
+				} `ssz-max:"10"`
+			}),
+			data:        fromHex("0x010000000800000008000000ff000000"),
+			expectedErr: "list declares 2 elements of at least 16 bytes, but only 0 bytes remain for them",
+		},
+		{
 			// Same shape with a 16-byte region: two 4-byte elements do fit, so the
 			// capacity check passes and the malformed second offset (0xff, past
 			// the region) is what fails. Keeps the element-offset path covered.
@@ -635,7 +650,7 @@ func TestUnmarshalErrors(t *testing.T) {
 		{
 			name: "bitlist_not_terminated",
 			target: new(struct {
-				Data []byte `ssz-type:"bitlist"`
+				Data []byte `ssz-type:"bitlist" ssz-max:"512"`
 			}),
 			data:        fromHex("0x0400000000"),
 			expectedErr: "bitlist missing termination bit",
@@ -849,7 +864,7 @@ func TestUnmarshalErrors(t *testing.T) {
 		{
 			name: "internal_list_item_size_mismatch",
 			target: new(struct {
-				Data []Uint32WithInvalidSize
+				Data []Uint32WithInvalidSize `ssz-max:"64"`
 			}),
 			data:        fromHex("0x04000000" + "0102030405060708"),
 			expectedErr: "element consumed to position",
@@ -857,7 +872,7 @@ func TestUnmarshalErrors(t *testing.T) {
 		{
 			name: "internal_list_dynamic_item_size_mismatch",
 			target: new(struct {
-				Data []Uint32AsDynamicType
+				Data []Uint32AsDynamicType `ssz-max:"64"`
 			}),
 			data:        fromHex("0x04000000" + "04000000" + "0102030405"),
 			expectedErr: "bytes trailing data",
@@ -1222,7 +1237,7 @@ func TestUnmarshalStringList(t *testing.T) {
 	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	type Container struct {
-		Names []string `ssz-max:"10"`
+		Names []string `ssz-max:"10,32"`
 	}
 
 	original := Container{
@@ -1569,7 +1584,7 @@ func TestUnmarshalReaderErrors(t *testing.T) {
 		{
 			name: "reader_bitlist_zero_length",
 			target: new(struct {
-				Data []byte `ssz-type:"bitlist"`
+				Data []byte `ssz-type:"bitlist" ssz-max:"512"`
 			}),
 			data:        fromHex("0x04000000"),
 			expectedErr: "bitlist missing termination bit",
@@ -1784,7 +1799,7 @@ func TestUnmarshalTruncatedReaderErrors(t *testing.T) {
 		} `ssz-max:"10"`
 	}
 	type BitlistContainer struct {
-		Data []byte `ssz-type:"bitlist"`
+		Data []byte `ssz-type:"bitlist" ssz-max:"512"`
 	}
 	type UnionInner struct {
 		A uint32
@@ -2421,7 +2436,7 @@ func TestDynamicListRejectsUnbackedElementCount(t *testing.T) {
 		// capacity bound exists. A million empty byte lists is valid SSZ and
 		// must keep decoding.
 		type listHolder struct {
-			L [][]byte `ssz-max:"1024"`
+			L [][]byte `ssz-max:"1024,64"`
 		}
 		const n = 1024
 		region := make([]byte, 4*n)

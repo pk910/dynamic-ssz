@@ -108,6 +108,36 @@ type Transaction struct {
 }
 ```
 
+#### Lists without a limit
+
+The limit is part of the type in SSZ: `List[T, N]` and `Bitlist[N]` need `N` to
+merkleize, so a list with no `ssz-max` (or `ssz-max:"0"`, the placeholder for a
+limit that only a `dynssz-max` expression supplies) has **no hash tree root**.
+
+Serialization never needs the limit, so such a list marshals and unmarshals
+normally — only hashing is refused, and only when [extended
+types](extended-types.md) are disabled:
+
+```go
+type Unbounded struct {
+    Data []uint64  // no ssz-max
+}
+
+ds := dynssz.NewDynSsz(nil)
+buf, _ := ds.MarshalSSZ(&Unbounded{Data: []uint64{1, 2, 3}})  // fine
+_, err := ds.HashTreeRoot(&Unbounded{Data: []uint64{1, 2, 3}})
+// err: list has no ssz-max, so it has no SSZ hash tree root
+```
+
+With extended types enabled, the list is hashed as an unbounded list:
+merkleized to the chunks the value occupies with the length mixed in, so the
+root identifies the value. That root is outside the spec and **no other SSZ
+implementation will agree on it**. The code generator emits the same root and
+prints a warning for every limit-less list it generates.
+
+A view's data type is unaffected: it carries no tags because the layout lives
+in the view schema, so hash it through its view.
+
 ### Byte Arrays and Strings
 
 #### Fixed-size byte arrays
@@ -183,6 +213,9 @@ type Votes struct {
 > `List[boolean, N]`, one byte per element, with `ssz-max` counted in elements
 > rather than bits. Use a byte-backed field with `ssz-type:"bitlist"` for a
 > bit-packed bitlist.
+
+A bitlist without `ssz-max` has no hash tree root either, and follows the same
+rule as [a list without a limit](#lists-without-a-limit).
 
 #### Using go-bitfield
 ```go

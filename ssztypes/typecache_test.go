@@ -687,6 +687,61 @@ func TestTypeCache_CacheManagement(t *testing.T) {
 }
 
 // Test TypeDescriptor.GetTypeHash
+// MinSize is what a decoder bounds a declared element count against, so it must
+// be the true floor of the type's serialization -- never larger, or valid input
+// is refused. Len means different things per type, which is what it has to
+// translate.
+func TestTypeDescriptor_MinSize(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	type dynElem struct {
+		Tail []uint8 `ssz-max:"8"`
+	}
+
+	tests := []struct {
+		name string
+		typ  reflect.Type
+		want uint32
+	}{
+		// Fixed sections: 4 bytes per dynamic field, the field's own size otherwise.
+		{"dynamic container", reflect.TypeFor[dynElem](), 4},
+		{"static container", reflect.TypeFor[struct{ A uint64 }](), 8},
+		{"static type", reflect.TypeFor[uint32](), 4},
+		// A vector of dynamic elements: one offset plus each element's own floor,
+		// per element. Its Len is 2 elements, not 2 bytes.
+		{"vector of dynamic", reflect.TypeFor[[2]dynElem](), 2 * (4 + 4)},
+		{"vector of static", reflect.TypeFor[[3]uint16](), 6},
+		// No floor: an empty list, union or optional costs nothing.
+		{"list", reflect.TypeFor[struct {
+			L []dynElem `ssz-max:"8"`
+		}](), 4},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			desc, err := cache.GetTypeDescriptor(tt.typ, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if desc.MinSize != tt.want {
+				t.Errorf("MinSize = %d, want %d", desc.MinSize, tt.want)
+			}
+		})
+	}
+
+	t.Run("list element states no floor", func(t *testing.T) {
+		desc, err := cache.GetTypeDescriptor(reflect.TypeFor[struct {
+			L []dynElem `ssz-max:"8"`
+		}](), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := desc.ContainerDesc.Fields[0].Type.MinSize; got != 0 {
+			t.Errorf("MinSize = %d, want 0: an empty list serializes to nothing", got)
+		}
+	})
+}
+
 func TestTypeDescriptor_GetTypeHash(t *testing.T) {
 	ds := &dummyDynamicSpecs{}
 	cache := NewTypeCache(ds)
@@ -1395,7 +1450,7 @@ func TestTypeCache_ListWithSizeHint(t *testing.T) {
 
 	// Test list with size and max hints
 	type TestStruct struct {
-		Data []uint32 `ssz-size:"10" ssz-max:"100"`
+		Data []uint32 `ssz-size:"10"`
 	}
 
 	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
@@ -1474,7 +1529,7 @@ func TestTypeCache_BitlistFromTypeNameDetection(t *testing.T) {
 	type TestBitlist []uint8
 
 	type TestStruct struct {
-		Flags TestBitlist
+		Flags TestBitlist `ssz-max:"64"`
 	}
 
 	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
@@ -2071,7 +2126,7 @@ func TestTypeCache_InvalidHashTreeRootWith(t *testing.T) {
 type runtimeContainer struct {
 	FieldA uint64
 	FieldB uint32
-	FieldC []byte
+	FieldC []byte `ssz-max:"64"`
 }
 
 type schemaContainerV1 struct {
@@ -2092,7 +2147,7 @@ type schemaContainerMissingField struct {
 // Nested view descriptor types
 type runtimeInner struct {
 	Value uint64
-	Data  []byte
+	Data  []byte `ssz-max:"64"`
 }
 
 type runtimeOuter struct {
@@ -2308,7 +2363,7 @@ func TestTypeCache_ViewDescriptorWithDynamicFields(t *testing.T) {
 
 	type runtimeWithDynamic struct {
 		StaticField  uint64
-		DynamicField []byte
+		DynamicField []byte `ssz-max:"64"`
 	}
 
 	type schemaWithDynamic struct {
@@ -2377,7 +2432,7 @@ func TestTypeCache_ViewDescriptorWithVector(t *testing.T) {
 	}
 
 	type runtimeWithVector struct {
-		Items []runtimeElem
+		Items []runtimeElem `ssz-max:"64"`
 	}
 
 	type schemaWithVector struct {
@@ -2618,7 +2673,7 @@ func TestBitlistRejectsFixedBitsizeNamesTheTag(t *testing.T) {
 
 	// A byte-unit size tag still reports ssz-size.
 	type ListWithSize struct {
-		X []byte `ssz-type:"list" ssz-size:"12" ssz-max:"64"`
+		X []byte `ssz-type:"list" ssz-size:"12"`
 	}
 
 	_, err = cache.GetTypeDescriptor(reflect.TypeOf(ListWithSize{}), nil, nil, nil)
@@ -3636,7 +3691,7 @@ type testWrapperDescriptor struct {
 
 // testTypeWrapper mimics dynssz.TypeWrapper[testWrapperDescriptor, []byte]
 type testTypeWrapper struct {
-	Data []byte
+	Data []byte `ssz-max:"64"`
 }
 
 func (w *testTypeWrapper) GetDescriptorType() reflect.Type {
@@ -3690,7 +3745,7 @@ type testDynWrapperDescriptor struct {
 }
 
 type testDynTypeWrapper struct {
-	Data []byte
+	Data []byte `ssz-max:"64"`
 }
 
 func (w *testDynTypeWrapper) GetDescriptorType() reflect.Type {
@@ -3704,7 +3759,7 @@ type testSchemaWrapperDescriptor struct {
 }
 
 type testSchemaTypeWrapper struct {
-	Data []byte
+	Data []byte `ssz-max:"64"`
 }
 
 func (w *testSchemaTypeWrapper) GetDescriptorType() reflect.Type {
@@ -4219,7 +4274,7 @@ func TestTypeCache_CustomTypeWithSizeHint(t *testing.T) {
 
 // testWrapperBadDescriptor returns a descriptor type that is not a struct
 type testWrapperBadDescriptor struct {
-	Data []byte
+	Data []byte `ssz-max:"64"`
 }
 
 func (w *testWrapperBadDescriptor) GetDescriptorType() reflect.Type {
@@ -4268,7 +4323,7 @@ type testWrapperBadWrappedDescriptor struct {
 }
 
 type testWrapperWithBadWrapped struct {
-	Data []byte
+	Data []byte `ssz-max:"64"`
 }
 
 func (w *testWrapperWithBadWrapped) GetDescriptorType() reflect.Type {
@@ -4376,7 +4431,7 @@ type testSchemaWrapperBadWrappedDescriptor struct {
 }
 
 type testSchemaWrapperBadWrapped struct {
-	Data []byte
+	Data []byte `ssz-max:"64"`
 }
 
 func (w *testSchemaWrapperBadWrapped) GetDescriptorType() reflect.Type {
@@ -4641,7 +4696,7 @@ func TestTypeCache_VectorWithNestedMaxAndTypeHints(t *testing.T) {
 	// Vector of vectors: [][]uint32 with ssz-size:"3" and
 	// nested maxSizeHints and typeHints forwarded to child
 	type TestStruct struct {
-		Field [][]uint32 `ssz-size:"3" ssz-max:"?,10" ssz-type:"?,list"`
+		Field [][]uint32 `ssz-size:"3" ssz-type:"?,list" ssz-max:"?,8"`
 	}
 
 	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)

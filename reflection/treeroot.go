@@ -823,7 +823,20 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 		}
 		hh.MerkleizeWithMixin(hashIndex, uint64(sliceLen), limit)
 	default:
-		hh.Merkleize(hashIndex)
+		// No declared limit. SSZ has no root for such a list -- List[T, N]
+		// needs N to merkleize -- so this is an extension, flagged on the
+		// descriptor when extended types are off.
+		if sourceType.SszTypeFlags&ssztypes.SszTypeFlagNoSszRoot != 0 {
+			return ssztypes.NoSszRootError(sourceType)
+		}
+
+		// Merkleizing without the mixin would treat it as a vector and lose the
+		// length entirely, so values differing only in trailing zeros would
+		// share a root. A limit of zero lets the hasher merkleize to the chunks
+		// the value actually occupies, and mixing in the length keeps the root
+		// tied to the value, matching how a progressive list (unbounded by
+		// design) is hashed.
+		hh.MerkleizeWithMixin(hashIndex, uint64(sliceLen), 0)
 	}
 
 	return nil
@@ -899,6 +912,11 @@ func (ctx *ReflectionCtx) buildRootFromBitlist(sourceType *ssztypes.TypeDescript
 	if sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
 		maxSize = sourceType.Limit
 	} else {
+		// Bitlist[N] needs N to merkleize, so without a limit there is no
+		// spec-defined root; deriving one from the value is an extension.
+		if sourceType.SszTypeFlags&ssztypes.SszTypeFlagNoSszRoot != 0 {
+			return ssztypes.NoSszRootError(sourceType)
+		}
 		maxSize = uint64(len(bytes) * 8)
 	}
 

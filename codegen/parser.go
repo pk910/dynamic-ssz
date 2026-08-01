@@ -677,7 +677,12 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	}
 
 	if len(maxSizeHints) > 0 {
-		if !maxSizeHints[0].NoValue {
+		// A resolved limit of 0 is a "no limit" placeholder (ssz-max:"0", with
+		// the real limit supplied dynamically via dynssz-max), not a limit of
+		// zero. The reflection type cache reads it the same way; treating it as
+		// a real limit here made the two engines disagree on which values are
+		// valid and on the resulting root.
+		if !maxSizeHints[0].NoValue && maxSizeHints[0].Size > 0 {
 			desc.SszTypeFlags |= ssztypes.SszTypeFlagHasLimit
 			desc.Limit = maxSizeHints[0].Size
 		}
@@ -1610,6 +1615,10 @@ func (p *Parser) buildListDescriptor(desc *ssztypes.TypeDescriptor, dataType, sc
 
 	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr)
 
+	// The reflection type cache applies the same rule, so a type either
+	// hashes in both engines or in neither.
+	ssztypes.MarkNoSszRoot(p.ExtendedTypes, desc)
+
 	return nil
 }
 
@@ -1639,6 +1648,12 @@ func (p *Parser) buildBitlistDescriptor(desc *ssztypes.TypeDescriptor, typ types
 	desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
 	desc.Size = 0
 	desc.GoTypeFlags |= ssztypes.GoTypeFlagIsByteArray
+
+	// The reflection type cache builds bitlists through its list builder, which
+	// applies this there; this parser splits them into their own builder, so it
+	// has to repeat it or the two engines would classify the same bitlist
+	// differently.
+	ssztypes.MarkNoSszRoot(p.ExtendedTypes, desc)
 
 	return nil
 }

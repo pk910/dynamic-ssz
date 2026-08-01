@@ -698,6 +698,10 @@ type CodeGenerator struct {
 	// ssz-static declaration without traversing its subtree. Set via
 	// WithAnnotationResolver; nil disables the parser's shallow-build gate.
 	annotationResolver func(types.Type) string
+
+	// warnings holds non-fatal problems found while generating, keyed by message
+	// so a type analyzed for several files is reported once.
+	warnings map[string]struct{}
 }
 
 // SetAnnotationResolver registers a resolver that returns the merged ssz

@@ -39,9 +39,9 @@ type SimpleTypes1 struct {
 	Lst128   [][2]uint64 `ssz-type:"?,uint128" ssz-max:"4"`
 	BigLst8  []uint8     `ssz-max:"35"`
 	BitLst   []byte      `ssz-max:"16"`
-	F1       [2][]uint16
-	F2       [10]uint8 `ssz-size:"5"`
-	Str      string    `ssz-max:"8"`
+	F1       [2][]uint16 `ssz-max:"?,64"`
+	F2       [10]uint8   `ssz-size:"5"`
+	Str      string      `ssz-max:"8"`
 	Wrapper1 dynssz.TypeWrapper[struct {
 		Data []byte `ssz-size:"32"`
 	}, []byte] `ssz-type:"wrapper"`
@@ -49,11 +49,11 @@ type SimpleTypes1 struct {
 		Data []uint16 `ssz-size:"2"`
 	}, []uint16] `ssz-type:"wrapper"`
 	S1  *SimpleTypes1_S1
-	S2  [4][]*SimpleTypes1_S2
+	S2  [4][]*SimpleTypes1_S2 `ssz-max:"?,64"`
 	C1  *SimpleTypes1_C1
 	C2  SimpleTypes1_C1
-	LC1 []SimpleTypes1_C1
-	LC2 [][]*SimpleTypes1_C1
+	LC1 []SimpleTypes1_C1    `ssz-max:"64"`
+	LC2 [][]*SimpleTypes1_C1 `ssz-max:"64,64"`
 }
 
 var SimpleTypes1_Payload = SimpleTypes1{
@@ -112,12 +112,12 @@ var SimpleTypes1_Payload = SimpleTypes1{
 }
 
 type SimpleTypes1_S1 struct {
-	Data []byte `ssz-size:"32"`
-	F1   []uint16
+	Data []byte   `ssz-size:"32"`
+	F1   []uint16 `ssz-max:"64"`
 }
 
 type SimpleTypes1_S2 struct {
-	F1 []uint16
+	F1 []uint16 `ssz-max:"64"`
 }
 
 type SimpleTypes1_C1 struct {
@@ -170,9 +170,9 @@ type SimpleTypes3 struct {
 	Lst128   []*[2]uint64 `ssz-type:"?,uint128" ssz-max:"4"`
 	BigLst8  []*uint8     `ssz-max:"35"`
 	BitLst   []*byte      `ssz-max:"16"`
-	F1       [2][]*uint16
-	F2       [10]*uint8 `ssz-size:"5"`
-	Str      *string    `ssz-max:"8"`
+	F1       [2][]*uint16 `ssz-max:"?,64"`
+	F2       [10]*uint8   `ssz-size:"5"`
+	Str      *string      `ssz-max:"8"`
 	Wrapper1 *dynssz.TypeWrapper[struct {
 		Data []*byte `ssz-size:"32"`
 	}, []*byte] `ssz-type:"wrapper"`
@@ -249,8 +249,8 @@ type SimpleTypesWithSpecs struct {
 	Str1    string      `ssz-max:"8" dynssz-max:"STR_MAX"`
 	Str2    string      `ssz-size:"10" dynssz-size:"STR_SIZE"`
 	C1      SimpleTypesWithSpecs_C1
-	C2      []SimpleTypesWithSpecs_C2
-	VC1     [2][]*SimpleTypesWithSpecs_C1
+	C2      []SimpleTypesWithSpecs_C2     `ssz-max:"64"`
+	VC1     [2][]*SimpleTypesWithSpecs_C1 `ssz-max:"?,64"`
 }
 
 type SimpleTypesWithSpecs_C1 struct {
@@ -265,8 +265,8 @@ type SimpleTypesWithSpecs_C2 struct {
 }
 
 type SimpleTypesWithSpecs2 struct {
-	C3  [][4]*SimpleTypesWithSpecs_C3
-	VC1 [2][]*SimpleTypesWithSpecs_C1
+	C3  [][4]*SimpleTypesWithSpecs_C3 `ssz-max:"64"`
+	VC1 [2][]*SimpleTypesWithSpecs_C1 `ssz-max:"?,64"`
 }
 
 type SimpleTypesWithSpecs_C3 struct {
@@ -370,7 +370,7 @@ var Bytes2D_Payload = Bytes2D{B: [][]byte{{1, 2}, {3}}}
 // VecOfList is a fixed-size vector of variable-size elements, exercising the
 // inner offset-table validation distinct from a dynamic list.
 type VecOfList struct {
-	V [3][]uint16
+	V [3][]uint16 `ssz-max:"?,64"`
 }
 
 var VecOfList_Payload = VecOfList{V: [3][]uint16{{1, 2}, {3}, {4, 5}}}
@@ -385,13 +385,81 @@ type ProgIndexOnly struct {
 
 var ProgIndexOnly_Payload = ProgIndexOnly{A: 1, B: 2, C: 3}
 
-// ZeroMaxList exercises ssz-max:"0": the limit check must fire (codegen used to
-// treat a zero limit as "no limit").
+// ZeroMaxList exercises ssz-max:"0", which is a "no limit" placeholder rather
+// than a limit of zero -- the real limit is expected from dynssz-max. A list
+// with no limit has no SSZ hash tree root, so the type needs extended types,
+// and it is generated in the extended-types batch alongside UnboundedList.
 type ZeroMaxList struct {
 	X []uint64 `ssz-max:"0"`
 }
 
+// UnboundedList and UnboundedBitlist carry no limit at all. SSZ has no root for
+// them -- List[T, N] and Bitlist[N] need N to merkleize -- so they are only
+// analyzable with extended types, and their roots mix in the length so the root
+// still identifies the value. Nothing else will agree on those roots.
+type UnboundedList struct {
+	X []uint64
+}
+
+type UnboundedBitlist struct {
+	B []byte `ssz-type:"bitlist"`
+}
+
+var UnboundedList_Payload = UnboundedList{X: []uint64{1, 2, 3}}
+
+var UnboundedBitlist_Payload = UnboundedBitlist{B: []byte{0x0f}}
+
 var ZeroMaxList_Payload = ZeroMaxList{X: []uint64{1, 2, 3}}
+
+// SpecShrunkList is a dynamic list whose element carries a spec-driven fixed
+// section. The generator only sees the static tag values, so it cannot know the
+// element's minimum size: a preset that resolves SHRUNK_SIZE below the tag
+// default makes every element smaller than the generator's view of it, and a
+// decoder bounding the declared count by the generated constant would reject
+// valid input.
+type SpecShrunkList struct {
+	Items []SpecShrunkElem `ssz-max:"64"`
+}
+
+type SpecShrunkElem struct {
+	Fixed []uint16 `ssz-size:"4" dynssz-size:"SHRUNK_SIZE"`
+	Tail  []uint8  `ssz-max:"8"`
+}
+
+var SpecShrunkList_Payload = SpecShrunkList{
+	Items: []SpecShrunkElem{
+		{Fixed: []uint16{1}},
+		{Fixed: []uint16{2}},
+		{Fixed: []uint16{3}},
+		{Fixed: []uint16{4}},
+	},
+}
+
+// SpecVecList's element is a vector of dynamic containers, so the element's
+// minimum is its offset table plus every entry's own fixed section -- and the
+// vector's length is spec-driven, which the tag alone does not state. A decoder
+// reading the vector's declared length as a byte count would bound the region
+// twelve times too loosely.
+type SpecVecList struct {
+	Items [][]SpecVecElem `ssz-size:"?,2" dynssz-size:"?,VEC_COUNT" ssz-max:"64"`
+}
+
+type SpecVecElem struct {
+	Tail []uint8 `ssz-max:"8"`
+}
+
+var SpecVecList_Payload = SpecVecList{
+	Items: [][]SpecVecElem{
+		{{}, {}, {}},
+		{{Tail: []uint8{1}}, {}, {}},
+		{{}, {}, {Tail: []uint8{2, 3}}},
+	},
+}
+
+// SHRUNK_SIZE resolves to a quarter of the static ssz-size, so each element is
+// 6 bytes where the generator sees 12. VEC_COUNT likewise exceeds its tag, so
+// each SpecVecList item holds three entries, not two.
+var SpecShrunkList_Specs = map[string]any{"SHRUNK_SIZE": 1, "VEC_COUNT": 3}
 
 // ProgBitlistZeroTop reproduces the EIP-7916 progressive-bitlist HTR bug: a
 // bitlist whose highest data bits are zero leaves the top 256-bit chunk all-zero.
@@ -536,14 +604,14 @@ func (c *CustomType1) HashTreeRoot() ([32]byte, error) {
 
 type ViewTypes1_Base struct {
 	F1 uint64
-	F2 []uint64
-	F3 [2][]uint64
+	F2 []uint64    `ssz-max:"64"`
+	F3 [2][]uint64 `ssz-max:"?,64"`
 	C1 *ViewTypes1_C1
 }
 
 type ViewTypes1_C1 struct {
 	F1 uint64
-	F2 []uint64
+	F2 []uint64 `ssz-max:"64"`
 }
 
 type ViewTypes1_View1 struct {
@@ -558,12 +626,12 @@ type ViewTypes1_View1_C1 struct {
 
 type ViewTypes1_View2 struct {
 	F1 uint64
-	F2 []uint64
+	F2 []uint64 `ssz-max:"64"`
 	C1 *ViewTypes1_View2_C1
 }
 
 type ViewTypes1_View2_C1 struct {
-	F2 []uint64
+	F2 []uint64 `ssz-max:"64"`
 }
 
 var ViewTypes1_Payload = ViewTypes1_Base{
@@ -1112,11 +1180,44 @@ var ViewTypes2_Payload = ViewTypes2_Base{
 	},
 }
 
+// ViewTypes5_Base carries no SSZ tags at all: its layout lives entirely in the
+// view schema, which is how a view's data type is normally written (the
+// consensus spec fixtures are shaped this way). Its lists therefore look
+// limit-less, but that is not a missing limit -- the view supplies it -- so
+// analyzing and generating for the type must not require extended types. Only
+// hashing the data type directly, outside any view, has no definition.
+type ViewTypes5_Base struct {
+	F1 uint64
+	F2 []uint64
+	C1 *ViewTypes5_Base_C1
+}
+
+type ViewTypes5_Base_C1 struct {
+	F1 []uint64
+}
+
+// ViewTypes5_View1 supplies the limits its data type omits.
+type ViewTypes5_View1 struct {
+	F1 uint64
+	F2 []uint64 `ssz-max:"64"`
+	C1 *ViewTypes5_View1_C1
+}
+
+type ViewTypes5_View1_C1 struct {
+	F1 []uint64 `ssz-max:"32"`
+}
+
+var ViewTypes5_Payload = ViewTypes5_Base{
+	F1: 7,
+	F2: []uint64{1, 2, 3},
+	C1: &ViewTypes5_Base_C1{F1: []uint64{4, 5}},
+}
+
 // ViewTypes3_Base tests the view-only generation mode.
 // It only generates view dispatch methods, no data methods.
 type ViewTypes3_Base struct {
 	F1 uint64
-	F2 []uint64
+	F2 []uint64 `ssz-max:"64"`
 }
 
 // ViewTypes3_View1 is a view for ViewTypes3_Base.
@@ -1401,7 +1502,7 @@ var NestedDelegatedContainer_Payload = NestedDelegatedContainer{
 // innard that the parser must not traverse.
 type nestedDelegatedDyn struct {
 	Bad   [0]uint64 // illegal Vector[uint64, 0] if ever traversed
-	Items []uint32
+	Items []uint32  `ssz-max:"64"`
 }
 
 var _ = sszutils.Annotate[nestedDelegatedDyn](`ssz-static:"false"`)
@@ -1456,10 +1557,11 @@ type MultiDimSpecVec struct {
 	M [][]byte `ssz-size:"2,4" dynssz-size:"SPEC_OUTER,SPEC_INNER"`
 }
 
-// NoMaxBitlist is a bitlist without any ssz-max limit; codegen and
-// reflection must produce the same hash tree root.
+// NoMaxBitlist has a limit far above its payload, so it exercises the
+// bit-limit merkleization path; codegen and reflection must agree on the root.
+// A bitlist with no limit at all has no root and lives in UnboundedBitlist.
 type NoMaxBitlist struct {
-	B1 []byte `ssz-type:"bitlist"`
+	B1 []byte `ssz-type:"bitlist" ssz-max:"512"`
 }
 
 // NamedBitlistT must be detected as a bitlist by its type name, matching
@@ -1784,7 +1886,7 @@ type FixedVecStr struct {
 // PtrDynCollectionField is a pointer to a dynamic collection; its SizeSSZ
 // must not double-declare the localized value.
 type PtrDynCollectionField struct {
-	F *[][]byte `ssz-max:"3" ssz-type:"?,bitlist" ssz-bitmax:"?,10"`
+	F *[][]byte `ssz-max:"3,10" ssz-type:"?,bitlist"`
 }
 
 // WrapUnionField wraps a CompatibleUnion; the streaming size closure must

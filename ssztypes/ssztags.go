@@ -60,6 +60,13 @@ const (
 	SszOptionalListType // pointer encoded as canonical List[T, 1]
 )
 
+// Tag names for the two unbounded-by-tag types, shared with the messages that
+// name them back to the user.
+const (
+	sszTypeNameList    = "list"
+	sszTypeNameBitlist = "bitlist"
+)
+
 // SszTypeHint holds a parsed SSZ type hint from an ssz-type struct tag.
 // Multiple hints may be present for nested types (e.g., a list of vectors).
 type SszTypeHint struct {
@@ -97,11 +104,11 @@ func ParseSszType(typeStr string) (SszType, error) {
 	// complex types
 	case "container":
 		return SszContainerType, nil
-	case "list":
+	case sszTypeNameList:
 		return SszListType, nil
 	case "vector":
 		return SszVectorType, nil
-	case "bitlist":
+	case sszTypeNameBitlist:
 		return SszBitlistType, nil
 	case "bitvector":
 		return SszBitvectorType, nil
@@ -506,7 +513,10 @@ func getSszMaxSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]S
 func getSszIndexTag(field *reflect.StructField) (*uint16, error) {
 	var sszIndex *uint16
 
-	// parse `ssz-index` first, these are the default values used by fastssz
+	// ssz-index declares a field's position in a progressive container
+	// (EIP-7495). Unlike ssz-size and ssz-max it is not a fastssz tag, so it
+	// never arrives from foreign tooling: carrying one is what opts a container
+	// into progressive merkleization.
 	if fieldSszIndexStr, fieldHasSszIndex := field.Tag.Lookup("ssz-index"); fieldHasSszIndex {
 		sszSizeInt, err := strconv.ParseUint(strings.TrimSpace(fieldSszIndexStr), 10, 16)
 		if err != nil {

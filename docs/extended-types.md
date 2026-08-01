@@ -128,6 +128,26 @@ data, _ := ds.MarshalSSZ(acc)
 
 Because `big.Int` is dynamic-size, any container that includes a `big.Int` field becomes a dynamic container with offset-based encoding.
 
+### Unbounded Lists and Bitlists
+
+A `List[T, N]` or `Bitlist[N]` needs `N` to merkleize, so a list with no
+`ssz-max` has no spec-defined hash tree root. Extended types allow hashing one
+anyway: it is merkleized to the chunks the value occupies with the length mixed
+in, so the root identifies the value.
+
+```go
+type Unbounded struct {
+    Data []uint64  // no ssz-max
+}
+
+ds := dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes())
+root, _ := ds.HashTreeRoot(&Unbounded{Data: []uint64{1, 2, 3}})
+```
+
+Only the root is gated: serialization never needs a limit, so such a list
+marshals and unmarshals without extended types. The code generator prints a
+warning for every limit-less list it generates.
+
 ### Optional Types (Pointers)
 
 | Go Type | SSZ Type   | Size | Encoding |
@@ -241,6 +261,7 @@ Extended types are fully supported in hash tree root computation:
 - **Fixed-size types** (`int8`-`int64`, `float32`, `float64`): Hashed as their serialized byte representation, same as standard unsigned integers.
 - **`big.Int`**: Hashed using `PutBytes` for proper merkleization of variable-length data.
 - **Optional types**: The hash tree root includes the presence flag and the child value's hash.
+- **Unbounded lists and bitlists**: Merkleized to the chunks the value occupies, with the length mixed in.
 
 ## Code Generation
 
@@ -257,7 +278,7 @@ Enable with the `-with-extended-types` CLI flag or `codegen.WithExtendedTypes()`
 - Extended types are a **Dynamic SSZ extension** and are not part of the SSZ specification.
 - Data encoded with extended types **cannot** be decoded by standard SSZ libraries (`fastssz`, Rust `ssz`, Python `py_ssz`, etc.).
 - The `WithExtendedTypes()` option must be consistently used for both encoding and decoding.
-- When extended types are disabled (the default), encountering signed integers, floats, or `big.Int` types produces a descriptive error. Optional types annotated with `ssz-type:"optional"` also require extended types to be enabled.
+- When extended types are disabled (the default), encountering signed integers, floats, or `big.Int` types produces a descriptive error. Optional types annotated with `ssz-type:"optional"` also require extended types to be enabled, as does hashing a list or bitlist that carries no `ssz-max`.
 - `int` and `uint` (architecture-dependent sizes) are never supported, regardless of the extended types setting.
 - `complex64` and `complex128` are not supported.
 

@@ -28,7 +28,7 @@ import (
 // Test types for DynamicEncoder/DynamicDecoder/DynamicMarshaler/DynamicUnmarshaler paths
 
 type testDynamicEncoder struct {
-	Data  []byte
+	Data  []byte `ssz-max:"64"`
 	Error error
 }
 
@@ -536,7 +536,7 @@ func TestHashTreeRootLargeObjectOverflow(t *testing.T) {
 
 // testDynMarshaler implements DynamicMarshaler + DynamicSizer.
 type testDynMarshaler struct {
-	Data  []byte
+	Data  []byte `ssz-max:"64"`
 	Size  int
 	Error error
 }
@@ -554,7 +554,7 @@ func (t *testDynMarshaler) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
 
 // testDynMarshalerNoSizer implements only DynamicMarshaler (no DynamicSizer).
 type testDynMarshalerNoSizer struct {
-	Data  []byte
+	Data  []byte `ssz-max:"64"`
 	Error error
 }
 
@@ -593,7 +593,7 @@ type testViewType struct{}
 
 // testDynViewAll implements all 6 DynamicView* interfaces.
 type testDynViewAll struct {
-	MarshalBuf []byte
+	MarshalBuf []byte `ssz-max:"64"`
 	Size       int
 	Error      error
 }
@@ -668,7 +668,7 @@ func (t *testDynViewAll) HashTreeRootWithDynView(view any) func(sszutils.Dynamic
 
 // testDynViewNoSizer implements DynamicViewMarshaler but NOT DynamicViewSizer.
 type testDynViewNoSizer struct {
-	MarshalBuf []byte
+	MarshalBuf []byte `ssz-max:"64"`
 	Error      error
 }
 
@@ -687,7 +687,7 @@ func (t *testDynViewNoSizer) MarshalSSZDynView(view any) func(sszutils.DynamicSp
 // testDynViewNilSizeFn implements DynamicViewMarshaler + DynamicViewSizer,
 // but SizeSSZDynView returns nil.
 type testDynViewNilSizeFn struct {
-	MarshalBuf []byte
+	MarshalBuf []byte `ssz-max:"64"`
 	Error      error
 }
 
@@ -2458,16 +2458,42 @@ func TestHTRListLimitEnforced(t *testing.T) {
 
 // --- ssz-max:"0" is a no-limit placeholder, not a zero limit ---
 
+// ssz-max:"0" is a "no limit" placeholder rather than a limit of zero: the real
+// limit is expected from a dynssz-max expression. A list that ends up with no
+// limit at all has no SSZ hash tree root -- List[T, N] needs N to merkleize --
+// so it is only usable with extended types.
 func TestZeroMaxTreatedAsNoLimit(t *testing.T) {
-	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoFastHash())
 	type T struct {
 		X []uint64 `ssz-max:"0"`
 	}
-	if _, err := ds.MarshalSSZ(&T{X: []uint64{1, 2, 3}}); err != nil {
+	payload := &T{X: []uint64{1, 2, 3}}
+
+	// A limit only bounds a list, so serialization never needs one; only the
+	// root does.
+	plain := NewDynSsz(nil, WithNoFastSsz(), WithNoFastHash())
+	if _, err := plain.MarshalSSZ(payload); err != nil {
+		t.Fatalf("ssz-max:0 marshal should succeed without extended types: %v", err)
+	}
+	if _, err := plain.HashTreeRoot(payload); !errors.Is(err, sszutils.ErrExtendedTypeDisabled) {
+		t.Fatalf("err = %v, want the limit-less list to require extended types to hash", err)
+	}
+
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoFastHash(), WithExtendedTypes())
+	if _, err := ds.MarshalSSZ(payload); err != nil {
 		t.Fatalf("ssz-max:0 marshal should succeed (no limit): %v", err)
 	}
-	if _, err := ds.HashTreeRoot(&T{X: []uint64{1, 2, 3}}); err != nil {
+	if _, err := ds.HashTreeRoot(payload); err != nil {
 		t.Fatalf("ssz-max:0 HTR should succeed (no limit): %v", err)
+	}
+
+	// A dynssz-max expression is still a limit, just not one resolvable
+	// statically, so the placeholder pattern needs no extension.
+	type withExpr struct {
+		X []uint64 `ssz-max:"0" dynssz-max:"LIMIT"`
+	}
+	specs := NewDynSsz(map[string]any{"LIMIT": uint64(8)}, WithNoFastSsz(), WithNoFastHash())
+	if _, err := specs.HashTreeRoot(&withExpr{X: []uint64{1, 2, 3}}); err != nil {
+		t.Fatalf("a dynssz-max limit should not require extended types: %v", err)
 	}
 }
 
@@ -3260,7 +3286,7 @@ func TestMarshalSSZToAppendsAfterPrefix(t *testing.T) {
 // vector (which diverges from the generated code).
 func TestReflectionRejectsDynamicStaticSizeConflict(t *testing.T) {
 	type T struct {
-		M [][32]byte `ssz-size:"?,32" dynssz-size:"COMMITTEE,32"`
+		M [][32]byte `ssz-size:"?,32" dynssz-size:"COMMITTEE,32" ssz-max:"64"`
 	}
 	ds := NewDynSsz(map[string]any{"COMMITTEE": uint64(4)}, WithNoFastSsz())
 
@@ -4687,7 +4713,7 @@ type usTailPtrs struct {
 
 type usTailUnlimited struct {
 	Head uint32
-	Tail []uint32 // no ssz-max: bounded only by the stream size
+	Tail []uint32 `ssz-max:"64"` // limit far above what the stream carries
 }
 
 type usTailString struct {

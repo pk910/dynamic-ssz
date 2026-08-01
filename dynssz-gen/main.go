@@ -566,6 +566,14 @@ func run(config *Config) error {
 		}
 	}
 
+	// Warnings do not fail generation, but the author has to see them: they
+	// flag output that is valid Go yet will not interoperate. They go to stderr
+	// with the tool's other diagnostics, so a caller reading stdout gets only
+	// the generation summary.
+	for _, warning := range codeGen.Warnings() {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
+	}
+
 	if config.Verbose {
 		log.Printf("Successfully generated %d bytes of code for %d types to %d files", codeSize, typeCount, len(generateFiles))
 	} else {

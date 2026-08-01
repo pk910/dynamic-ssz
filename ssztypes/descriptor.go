@@ -17,7 +17,7 @@ import (
 )
 
 // SszTypeFlag is a flag indicating whether a type has a specific SSZ type feature
-type SszTypeFlag uint8
+type SszTypeFlag uint16
 
 const (
 	SszTypeFlagIsDynamic      SszTypeFlag = 1 << iota // Whether the type is a dynamic type (or has nested dynamic types)
@@ -28,6 +28,7 @@ const (
 	SszTypeFlagHasMaxExpr                             // Whether this type or any of its nested types uses a dynamic expression to calculate the max size
 	SszTypeFlagHasBitSize                             // Whether the type has a bit size tag
 	SszTypeFlagHasNoneVariant                         // Whether a classic union declares the None option at selector 0
+	SszTypeFlagNoSszRoot                              // Whether the type is a list or bitlist without a limit, which has no SSZ hash tree root
 )
 
 // SszCompatFlag is a flag indicating whether a type implements a specific SSZ compatibility interface
@@ -79,6 +80,7 @@ type TypeDescriptor struct {
 	SizeExpression         *string                   `json:"size_expr,omitempty"` // The dynamic expression used to calculate the size of the type
 	MaxExpression          *string                   `json:"max_expr,omitempty"`  // The dynamic expression used to calculate the max size of the type
 	BitSize                uint32                    `json:"bit_size,omitempty"`  // Bit size for bit vector types (ssz-bitsize tag)
+	MinSize                uint32                    `json:"min_size,omitempty"`  // Smallest serialization of this type; 0 when it has no floor or was built by the codegen parser (see setMinSize)
 	SszType                SszType                   `json:"type"`                // SSZ type of the type
 	SszTypeFlags           SszTypeFlag               `json:"flags"`               // SSZ type flags
 	SszCompatFlags         SszCompatFlag             `json:"compat"`              // SSZ compatibility flags

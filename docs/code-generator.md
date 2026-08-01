@@ -190,6 +190,23 @@ For memory-efficient streaming to/from `io.Reader`/`io.Writer`:
 dynssz-gen -with-streaming -package . -types BeaconState -output streaming_ssz.go
 ```
 
+### Warnings
+
+Generation succeeds but prints a warning for a type whose encoding is legal yet
+outside the SSZ spec, so the mismatch is visible rather than silently baked into
+the generated methods:
+
+```
+warning: mypkg.Attestation.Bits has no ssz-max, so its hash tree root uses a
+limit derived from the value rather than the type: it will not match another
+implementation
+```
+
+A list or bitlist with no `ssz-max` has no spec-defined hash tree root, so
+generating one at all requires `-with-extended-types` (see
+[supported-types.md](supported-types.md#lists-without-a-limit)). The programmatic
+API exposes the same list through `CodeGenerator.Warnings()`.
+
 ## Programmatic API
 
 ### Basic Example

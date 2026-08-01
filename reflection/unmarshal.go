@@ -1212,9 +1212,9 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 	// zero minimum (a list or union element, which may legitimately be empty)
 	// carries no such bound; there the table's own four bytes per element is the
 	// only cost, which is the SSZ-inherent one.
-	if lengthKnown && targetType.ElemDesc.Len > 0 {
-		if available := sszLen - int(firstOffset); sliceLen > available/int(targetType.ElemDesc.Len) {
-			return sszutils.ErrListRegionTooSmallFn(sliceLen, targetType.ElemDesc.Len, available)
+	if minElemSize := int(targetType.ElemDesc.MinSize); lengthKnown && minElemSize > 0 {
+		if available := sszLen - int(firstOffset); sliceLen > available/minElemSize {
+			return sszutils.ErrListRegionTooSmallFn(sliceLen, minElemSize, available)
 		}
 	}
 

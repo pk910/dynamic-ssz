@@ -51,6 +51,15 @@ types:
   - name: SpecMatrix
     output: gen_specmatrix.go
 
+  - name: SpecShrunkList
+    output: gen_specshrunk.go
+  - name: SpecShrunkElem
+    output: gen_specshrunk.go
+  - name: SpecVecList
+    output: gen_specshrunk.go
+  - name: SpecVecElem
+    output: gen_specshrunk.go
+
   - name: ListOfList
     output: gen_listoflist.go
   - name: Bytes2D
@@ -63,8 +72,6 @@ types:
   - name: ProgressiveTypes
     output: gen_progressive.go
   - name: ProgIndexOnly
-    output: gen_progressive.go
-  - name: ZeroMaxList
     output: gen_progressive.go
   - name: ProgBitlistZeroTop
     output: gen_progressive.go
@@ -106,6 +113,12 @@ types:
     view-only: true
     views:
       - ViewTypes3_View1
+
+  - name: ViewTypes5_Base
+    output: gen_viewtypes5.go
+    view-only: true
+    views:
+      - ViewTypes5_View1
 
   - name: StreamVecDynSize
     output: gen_divergence.go

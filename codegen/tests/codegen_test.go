@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"runtime"
@@ -30,7 +31,7 @@ var testMatrix = []TestPayload{
 		Name:    "SimpleTypes1",
 		Payload: SimpleTypes1_Payload,
 		Specs:   map[string]any{},
-		Hash:    "b528ffea01ddd484a9c1e6d16063512f9ec3097803dbf50dcdfa68effb1508df",
+		Hash:    "bec0d5229e4833e2d8c37b1faca5ef770809daee540caf5809951676ee234f58",
 	},
 	{
 		Name:    "SimpleTypes2",
@@ -42,19 +43,19 @@ var testMatrix = []TestPayload{
 		Name:    "SimpleTypes3",
 		Payload: SimpleTypes3_Payload,
 		Specs:   map[string]any{},
-		Hash:    "53aa7926e7d5b0b409990cde59849a85047431ce8d30b4e5b499754dcb438c48",
+		Hash:    "7ae2dd701191c23929aa6e665ec82840881d2ecdbc821852c70692584653b46b",
 	},
 	{
 		Name:    "SimpleTypesWithSpecs",
 		Payload: SimpleTypesWithSpecs_Payload,
 		Specs:   SimpleTypesWithSpecs_Specs,
-		Hash:    "893aca6e960e166d2bde84c27e39db72ad85e271e40a92160b017ebf551334a8",
+		Hash:    "92a6c92ba823ca5421ac5d4d5652c8a79c2be2fc9b7c27cac098257a4c04871d",
 	},
 	{
 		Name:    "SimpleTypesWithSpecs2",
 		Payload: SimpleTypesWithSpecs2_Payload,
 		Specs:   SimpleTypesWithSpecs_Specs,
-		Hash:    "966912b4d9e6b44fbebce56369fa255b76cd777d76e4dac2d396df93916ac077",
+		Hash:    "9982ff6cd691c967e02d67c5e729cb071b0f2d54735a5c26c18202c6a7a51714",
 	},
 	{
 		Name:    "ProgressiveTypes",
@@ -83,7 +84,24 @@ var testMatrix = []TestPayload{
 		Name:    "ZeroMaxList",
 		Payload: ZeroMaxList_Payload,
 		Specs:   map[string]any{},
-		Hash:    "0100000000000000020000000000000003000000000000000000000000000000",
+		Hash:    "8dfcc0c61e1cfbec317bfc62c874364d717f1ba3ca13cfe07d86864883c24093",
+	},
+	{
+		// A list element whose fixed section shrinks with the spec preset: the
+		// decoders may not bound the declared count by a generated constant.
+		Name:    "SpecShrunkList",
+		Payload: SpecShrunkList_Payload,
+		Specs:   SpecShrunkList_Specs,
+		Hash:    "1d01f38b53c776df6e3a72e9594dff762175c0411c619ee60519f718c71d0f7e",
+	},
+	{
+		// A list element that is a vector of dynamic containers with a
+		// spec-driven length: its minimum is the vector's offset table plus each
+		// entry's fixed section.
+		Name:    "SpecVecList",
+		Payload: SpecVecList_Payload,
+		Specs:   SpecShrunkList_Specs,
+		Hash:    "00111a3bcce33ac26823df94e590d1021c3c480c9d1a7a1cd0cc966259b1473e",
 	},
 	{
 		// EIP-7916 progressive-bitlist with an all-zero top 256-bit chunk. The
@@ -108,7 +126,7 @@ var testMatrix = []TestPayload{
 		Payload: ViewTypes1_Payload,
 		View:    (*ViewTypes1_View2)(nil),
 		Specs:   map[string]any{},
-		Hash:    "82acb108812798107c2bed326c83a2881c90f942883a6e3de6144f30b2987959",
+		Hash:    "3b00274c7a34ebc3e1d9b1e63d620569cf5278848be7b15b26a848ef4d975861",
 	},
 	{
 		Name:    "ViewTypes_View3",
@@ -2398,4 +2416,226 @@ func TestCodegenRecursiveViewDepthBound(t *testing.T) {
 			t.Fatalf("err = %v, want ErrMaxDepthExceeded", err)
 		}
 	})
+}
+
+// A list with no declared limit mixes in its length in generated code too, so
+// the two engines agree and the root identifies the value.
+//
+// SSZ has no root for such a list -- List[T, N] needs N to merkleize -- and it
+// used to be merkleized as a vector with no mixin, which made the root blind to
+// the length: values differing only by trailing zeros shared a root.
+// The offset table declares how many elements follow, but only the region can
+// prove their bodies exist, so a count the remaining bytes cannot cover is
+// rejected before it sizes a slice. The bound is the element's fixed section,
+// which here resolves from a spec value: the generator sees 12 bytes per
+// element (ssz-size:"4"), the SHRUNK_SIZE preset makes it 6, and a bound baked
+// in as a constant would reject the valid encoding of the smaller one.
+func TestCodegenSpecShrunkElementRegionBound(t *testing.T) {
+	if _, generated := any(&SpecShrunkList{}).(sszutils.DynamicUnmarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+
+	ds := dynssz.NewDynSsz(SpecShrunkList_Specs)
+
+	// Four elements, each the 6-byte minimum: the region holds them exactly, so
+	// this is the encoding a constant bound of 12 rejected.
+	valid, err := ds.MarshalSSZ(&SpecShrunkList_Payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out SpecShrunkList
+	if err := ds.UnmarshalSSZ(&out, valid); err != nil {
+		t.Fatalf("a region holding exactly its elements must decode: %v", err)
+	}
+	if len(out.Items) != len(SpecShrunkList_Payload.Items) {
+		t.Fatalf("decoded %d items, want %d", len(out.Items), len(SpecShrunkList_Payload.Items))
+	}
+
+	// Same declared count, region cut to 8 body bytes: 4 elements of 6 bytes do
+	// not fit, and the count must be refused rather than sized into a slice.
+	const declared = 4
+	const tableBytes = declared * 4
+	short := make([]byte, 4+tableBytes+8)
+	binary.LittleEndian.PutUint32(short, 4)
+	for i := range declared {
+		binary.LittleEndian.PutUint32(short[4+i*4:], tableBytes)
+	}
+
+	shortErr := ds.UnmarshalSSZ(new(SpecShrunkList), short)
+	if !errors.Is(shortErr, sszutils.ErrOffset) || !strings.Contains(shortErr.Error(), "elements of at least 6 bytes") {
+		t.Fatalf("err = %v, want the region bound to reject 4 elements of 6 bytes", shortErr)
+	}
+}
+
+// A list element that is itself a vector of dynamic entries costs one offset
+// per entry plus each entry's own fixed section, and the vector's length comes
+// from a spec value. Reading that length as a byte count -- it is an element
+// count -- would bound the region twelve times too loosely here.
+func TestCodegenSpecVecElementRegionBound(t *testing.T) {
+	if _, generated := any(&SpecVecList{}).(sszutils.DynamicUnmarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+
+	ds := dynssz.NewDynSsz(SpecShrunkList_Specs)
+
+	valid, err := ds.MarshalSSZ(&SpecVecList_Payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out SpecVecList
+	if err = ds.UnmarshalSSZ(&out, valid); err != nil {
+		t.Fatalf("the payload's own encoding must decode: %v", err)
+	}
+	if len(out.Items) != len(SpecVecList_Payload.Items) {
+		t.Fatalf("decoded %d items, want %d", len(out.Items), len(SpecVecList_Payload.Items))
+	}
+
+	// VEC_COUNT resolves to 3, so an element is 3*(4+4) = 24 bytes at minimum.
+	// Three of them need 72 bytes; the region offers 24.
+	const declared = 3
+	const tableBytes = declared * 4
+	short := make([]byte, 4+tableBytes+24)
+	binary.LittleEndian.PutUint32(short, 4)
+	for i := range declared {
+		binary.LittleEndian.PutUint32(short[4+i*4:], tableBytes)
+	}
+
+	err = ds.UnmarshalSSZ(new(SpecVecList), short)
+	if !errors.Is(err, sszutils.ErrOffset) || !strings.Contains(err.Error(), "elements of at least 24 bytes") {
+		t.Fatalf("err = %v, want the region bound to reject 3 elements of 24 bytes", err)
+	}
+}
+
+// A view's data type carries no tags because its layout lives in the view
+// schema, so every list on it looks limit-less. That must not make the type
+// unanalyzable: the limit exists, it is just written on the view. Hashing
+// through the view works, hashing the bare data type does not.
+func TestCodegenViewDataTypeNeedsNoLimits(t *testing.T) {
+	if _, generated := any(&ViewTypes5_Base{}).(sszutils.DynamicViewHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+
+	view := (*ViewTypes5_View1)(nil)
+	cg := dynssz.NewDynSsz(nil)
+	refl := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation())
+
+	cgRoot, err := cg.HashTreeRoot(&ViewTypes5_Payload, dynssz.WithViewDescriptor(view))
+	if err != nil {
+		t.Fatalf("generated root through the view: %v", err)
+	}
+	reflRoot, err := refl.HashTreeRoot(&ViewTypes5_Payload, dynssz.WithViewDescriptor(view))
+	if err != nil {
+		t.Fatalf("reflection root through the view: %v", err)
+	}
+	if cgRoot != reflRoot {
+		t.Fatalf("generated root %x differs from reflection %x", cgRoot, reflRoot)
+	}
+
+	// The view's limits are what make the root defined, so the same value has no
+	// root without it -- and the error says where to look.
+	_, err = refl.HashTreeRoot(&ViewTypes5_Payload)
+	if !errors.Is(err, sszutils.ErrExtendedTypeDisabled) {
+		t.Fatalf("err = %v, want ErrExtendedTypeDisabled", err)
+	}
+	if !strings.Contains(err.Error(), "through its view") {
+		t.Errorf("error %q does not point at the view", err)
+	}
+
+	// Serialization never needs a limit, so the data type round-trips on its own.
+	encoded, err := refl.MarshalSSZ(&ViewTypes5_Payload)
+	if err != nil {
+		t.Fatalf("marshal without a view: %v", err)
+	}
+	decoded := new(ViewTypes5_Base)
+	if err := refl.UnmarshalSSZ(decoded, encoded); err != nil {
+		t.Fatalf("unmarshal without a view: %v", err)
+	}
+	if len(decoded.F2) != len(ViewTypes5_Payload.F2) {
+		t.Fatalf("decoded %d elements, want %d", len(decoded.F2), len(ViewTypes5_Payload.F2))
+	}
+}
+
+// A limit-less bitlist derives its merkleization limit from the value rather
+// than the type, so the two engines have to derive it identically -- and the
+// root still has to commit to the bit length, or bitlists differing only in
+// their terminator position would collide.
+func TestCodegenLimitlessBitlistRootMatchesReflection(t *testing.T) {
+	if _, generated := any(&UnboundedBitlist{}).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+
+	// A limit-less bitlist has no SSZ root, so hashing one is an extension.
+	cg := dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes())
+	refl := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation(), dynssz.WithExtendedTypes())
+
+	// Terminator bit at a different position each time, so every value is a
+	// distinct bitlist rather than the same bits re-padded.
+	values := [][]byte{{0x01}, {0x02}, {0x03}, {0x0f}, {0xff, 0x01}, {0x00, 0x02}}
+
+	roots := map[[32]byte][]string{}
+	for _, v := range values {
+		payload := UnboundedBitlist{B: v}
+
+		cgRoot, err := cg.HashTreeRoot(payload)
+		if err != nil {
+			t.Fatalf("%x generated root: %v", v, err)
+		}
+		reflRoot, err := refl.HashTreeRoot(payload)
+		if err != nil {
+			t.Fatalf("%x reflection root: %v", v, err)
+		}
+		if cgRoot != reflRoot {
+			t.Fatalf("%x: generated root %x differs from reflection %x", v, cgRoot, reflRoot)
+		}
+		roots[cgRoot] = append(roots[cgRoot], fmt.Sprintf("%x", v))
+	}
+
+	for _, colliding := range roots {
+		if len(colliding) > 1 {
+			t.Errorf("distinct bitlists share a root: %v", colliding)
+		}
+	}
+
+	// Without extended types the root has no definition, so it is refused
+	// rather than silently derived.
+	plain := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation())
+	if _, err := plain.HashTreeRoot(UnboundedBitlist_Payload); !errors.Is(err, sszutils.ErrExtendedTypeDisabled) {
+		t.Fatalf("err = %v, want ErrExtendedTypeDisabled", err)
+	}
+}
+
+func TestCodegenLimitlessListRootCommitsToLength(t *testing.T) {
+	if _, generated := any(&ZeroMaxList{}).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+
+	// A limit-less list has no SSZ root, so hashing one is an extension.
+	cg := dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes())
+	refl := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation(), dynssz.WithExtendedTypes())
+
+	values := [][]uint64{{}, {1}, {1, 0}, {1, 0, 0, 0}, {1, 2}, {1, 2, 0, 0}}
+
+	roots := map[[32]byte][]string{}
+	for _, v := range values {
+		payload := ZeroMaxList{X: v}
+
+		cgRoot, err := cg.HashTreeRoot(payload)
+		if err != nil {
+			t.Fatalf("%v generated root: %v", v, err)
+		}
+		reflRoot, err := refl.HashTreeRoot(payload)
+		if err != nil {
+			t.Fatalf("%v reflection root: %v", v, err)
+		}
+		if cgRoot != reflRoot {
+			t.Fatalf("%v: generated root %x differs from reflection %x", v, cgRoot, reflRoot)
+		}
+		roots[cgRoot] = append(roots[cgRoot], fmt.Sprint(v))
+	}
+
+	for _, colliding := range roots {
+		if len(colliding) > 1 {
+			t.Errorf("distinct values share a root: %v", colliding)
+		}
+	}
 }

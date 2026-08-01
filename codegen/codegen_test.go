@@ -5,6 +5,7 @@
 package codegen
 
 import (
+	"errors"
 	"go/types"
 	"math/big"
 	"os"
@@ -37,6 +38,166 @@ type inlineCycleMember struct {
 // the cycle itself.
 type inlineCycleRoot struct {
 	Items []inlineCycleMember `ssz-max:"4"`
+}
+
+// limitlessListType carries a list with no ssz-max and a bitlist with no limit
+// either, so neither has an SSZ hash tree root.
+type limitlessListType struct {
+	X []uint64
+	B []byte `ssz-type:"bitlist"`
+}
+
+// regionBound* cover the shapes a dynamic list's region bound has to state: an
+// element whose fixed section is spec-driven, an element that is a vector of
+// dynamic entries (statically and spec-driven counted), and an element that is
+// itself a list, which has no floor at all.
+type regionBoundElem struct {
+	Fixed []uint16 `ssz-size:"4" dynssz-size:"BOUND_SIZE"`
+	Tail  []uint8  `ssz-max:"8"`
+}
+
+type regionBoundDyn struct {
+	Tail []uint8 `ssz-max:"8"`
+}
+
+type regionBoundWrapped = dynssz.TypeWrapper[struct {
+	Data [2][]uint8 `ssz-max:"?,8"`
+}, [2][]uint8]
+
+type regionBoundTypes struct {
+	SpecSized   []regionBoundElem    `ssz-max:"64"`
+	StaticVec   [][2]regionBoundDyn  `ssz-max:"64"`
+	SpecVec     [][]regionBoundDyn   `ssz-size:"?,2" dynssz-size:"?,BOUND_COUNT" ssz-max:"64"`
+	Wrapped     []regionBoundWrapped `ssz-type:"?,wrapper" ssz-max:"64"`
+	ListOfLists [][]uint8            `ssz-max:"64,8"`
+}
+
+// The decoder bounds a declared element count by the element's minimum size,
+// which must be emitted as an expression wherever a spec value feeds it: the
+// generator only sees the static tag values, and a caller running a preset that
+// resolves them smaller would have valid input refused.
+func TestGenerateListRegionBound(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_test.go", WithReflectType(reflect.TypeFor[regionBoundTypes]()))
+
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generation: %v", err)
+	}
+	code := files["gen_test.go"]
+
+	tests := []struct {
+		name  string
+		want  string
+		count int
+	}{
+		// A spec-driven fixed section: 4 offset bytes for the dynamic tail plus
+		// the resolved size of Fixed. Never zero, so no guard.
+		{"spec-sized container element", "itemCount > (len(buf)-startOffset)/(size1+4)", 1},
+		// Two entries, each an offset plus the entry's own 4-byte fixed section.
+		// Fully static, so it folds to a literal.
+		{"static vector element", "itemCount > (len(buf)-startOffset)/(16)", 1},
+		// A resolved count can make the divisor zero -- or wrap it past zero --
+		// so the bound itself is checked before dividing by it.
+		{"spec-counted vector element", "int(expr1)*8 > 0 && itemCount > (len(buf)-startOffset)/(int(expr1)*8)", 1},
+		// A wrapper contributes nothing of its own: the bound is the wrapped
+		// vector's, two entries of one offset each.
+		{"wrapper element", "itemCount > (len(buf)-startOffset)/(8)", 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := strings.Count(code, tt.want); got != tt.count {
+				t.Errorf("emitted %d occurrences of %q, want %d", got, tt.want, tt.count)
+			}
+		})
+	}
+
+	t.Run("list element states no bound", func(t *testing.T) {
+		// An empty list costs nothing, so no count is refusable. ListOfLists is
+		// the only field whose element is a list, so the other three each get one
+		// bound in the buffer unmarshaler.
+		if got := strings.Count(code, "ErrListRegionTooSmallFn"); got != 4 {
+			t.Errorf("emitted %d region bounds, want one per bounded field", got)
+		}
+	})
+}
+
+// A limit is part of the type in SSZ: List[T, N] and Bitlist[N] need N to
+// merkleize, so a list without one has no hash tree root and hashing it is an
+// extension. Serialization never needs a limit, so only the hash method is
+// refused, and only without extended types.
+func TestGenerateLimitlessListRoot(t *testing.T) {
+	t.Run("HashRefused", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_test.go", WithReflectType(reflect.TypeFor[limitlessListType]()))
+
+		_, err := cg.GenerateToMap()
+		if !errors.Is(err, sszutils.ErrExtendedTypeDisabled) {
+			t.Fatalf("err = %v, want ErrExtendedTypeDisabled", err)
+		}
+	})
+
+	t.Run("SerializationAllowed", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_test.go",
+			WithReflectType(reflect.TypeFor[limitlessListType]()),
+			WithNoHashTreeRoot())
+
+		if _, err := cg.GenerateToMap(); err != nil {
+			t.Fatalf("serialization needs no limit: %v", err)
+		}
+	})
+
+	// The go/types parser splits lists and bitlists into separate builders, so
+	// it can classify one and miss the other. Both must be refused there too --
+	// this is the front end dynssz-gen uses, and a type that hashes in one
+	// engine but not the other is the divergence this rule exists to prevent.
+	t.Run("GoTypesParserRefusesBoth", func(t *testing.T) {
+		cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
+		pkgs, loadErr := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
+		if loadErr != nil || len(pkgs) == 0 {
+			t.Fatalf("load tests package: %v", loadErr)
+		}
+		scope := pkgs[0].Types.Scope()
+
+		for _, typeName := range []string{"UnboundedList", "UnboundedBitlist"} {
+			t.Run(typeName, func(t *testing.T) {
+				obj := scope.Lookup(typeName)
+				if obj == nil {
+					t.Fatalf("%s not found", typeName)
+				}
+
+				cg := NewCodeGenerator(nil)
+				cg.BuildFile("gen_test.go", WithGoTypesType(obj.Type()))
+
+				if _, genErr := cg.GenerateToMap(); !errors.Is(genErr, sszutils.ErrExtendedTypeDisabled) {
+					t.Fatalf("err = %v, want ErrExtendedTypeDisabled", genErr)
+				}
+			})
+		}
+	})
+
+	t.Run("ExtendedTypesWarns", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_test.go",
+			WithReflectType(reflect.TypeFor[limitlessListType]()),
+			WithExtendedTypes())
+
+		if _, err := cg.GenerateToMap(); err != nil {
+			t.Fatalf("extended types should allow the unbounded root: %v", err)
+		}
+
+		warnings := cg.Warnings()
+		if len(warnings) != 2 {
+			t.Fatalf("warnings = %v, want one per limit-less field", warnings)
+		}
+		for _, warning := range warnings {
+			if !strings.Contains(warning, "has no ssz-max") {
+				t.Errorf("warning %q does not name the missing limit", warning)
+			}
+		}
+	})
 }
 
 // A recursive cycle is only emittable when it can be broken by a delegated
@@ -1170,7 +1331,11 @@ type genBox[T any] struct {
 // view; both sides are pointer-wrapped alike during analysis.
 type genSliceBase []uint64
 
+var _ = sszutils.Annotate[genSliceBase](`ssz-max:"64"`)
+
 type genSliceView []uint64
+
+var _ = sszutils.Annotate[genSliceView](`ssz-max:"64"`)
 
 func TestGenerateViewEdgeCases(t *testing.T) {
 	baseType := reflect.TypeFor[SimpleTestStruct]()

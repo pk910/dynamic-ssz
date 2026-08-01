@@ -229,6 +229,14 @@ func (cg *CodeGenerator) analyzeTypes() error {
 
 			t.Descriptor = desc
 
+			// A view-only type emits no methods of its own, and its data type
+			// carries no tags because the layout lives in the view schema, so
+			// every list there looks limit-less. Only the views it is analyzed
+			// against say anything about its layout.
+			if !t.IsViewOnly {
+				cg.collectWarnings(typeName, desc)
+			}
+
 			// create TypeDescriptor for the view types
 			if hasViews(t) {
 				// A duplicate view would emit its methods and dispatcher case
@@ -265,6 +273,7 @@ func (cg *CodeGenerator) analyzeTypes() error {
 						return fmt.Errorf("failed to analyze view type %s: %w", viewType.String(), err)
 					}
 					t.ViewDescriptors = append(t.ViewDescriptors, viewDesc)
+					cg.collectWarnings(typeName+" view "+getReflectTypeName(viewType), viewDesc)
 				}
 				for _, viewType := range t.ViewGoTypesTypes {
 					if parser == nil {
@@ -287,6 +296,7 @@ func (cg *CodeGenerator) analyzeTypes() error {
 						return fmt.Errorf("failed to analyze view type %s: %w", viewType.String(), err)
 					}
 					t.ViewDescriptors = append(t.ViewDescriptors, viewDesc)
+					cg.collectWarnings(typeName+" view "+viewType.String(), viewDesc)
 				}
 			}
 		}

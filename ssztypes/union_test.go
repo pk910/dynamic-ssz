@@ -95,7 +95,7 @@ func TestExtractUnionDescriptorInfo(t *testing.T) {
 		{
 			name: "invalid ssz-type",
 			descriptorType: reflect.TypeOf(struct {
-				Data []uint8 `ssz-type:"invalid"`
+				Data []uint8 `ssz-type:"invalid" ssz-max:"64"`
 			}{}),
 			expectError:   true,
 			errorContains: "invalid ssz-type tag",
@@ -270,7 +270,7 @@ func TestExtractClassicUnionDescriptorInfo(t *testing.T) {
 
 	t.Run("invalidSszType", func(t *testing.T) {
 		descriptorType := reflect.TypeOf(struct {
-			Data []uint8 `ssz-type:"invalid"`
+			Data []uint8 `ssz-type:"invalid" ssz-max:"64"`
 		}{})
 		if _, _, err := extractClassicUnionDescriptorInfo(descriptorType, ds); err == nil || !strings.Contains(err.Error(), "ssz-type") {
 			t.Fatalf("expected ssz-type parse error, got: %v", err)

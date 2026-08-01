@@ -18,14 +18,14 @@ import (
 func TestNewCompatibleUnion(t *testing.T) {
 	// Define test types
 	type ExecutionPayload struct {
-		BlockHash []byte
-		StateRoot []byte
+		BlockHash []byte `ssz-max:"64"`
+		StateRoot []byte `ssz-max:"64"`
 	}
 
 	type ExecutionPayloadWithBlobs struct {
-		BlockHash []byte
-		StateRoot []byte
-		Blobs     [][]byte
+		BlockHash []byte   `ssz-max:"64"`
+		StateRoot []byte   `ssz-max:"64"`
+		Blobs     [][]byte `ssz-max:"64,64"`
 	}
 
 	// Define union descriptor - each field represents a variant type
@@ -208,12 +208,12 @@ func TestCompatibleUnionWithComplexTypes(t *testing.T) {
 	t.Run("union with embedded structs", func(t *testing.T) {
 		type BasePayload struct {
 			Timestamp uint64
-			BaseFee   []byte
+			BaseFee   []byte `ssz-max:"64"`
 		}
 
 		type ExtendedPayload struct {
 			BasePayload
-			ExtraData []byte
+			ExtraData []byte `ssz-max:"64"`
 		}
 
 		type PayloadUnion struct {
