@@ -119,12 +119,8 @@ func generateDecoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 	if viewName == "" {
 		appendCode(codeBuilder, 0, "// UnmarshalSSZDecoder unmarshals the %s from the given SSZ decoder using dynamic specifications.\n", typeName)
 	}
-	if ctx.usedDynSpecs {
-		emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, dec sszutils.Decoder", "ds, dec", "err error", depthFailErr(ctx.recursion))
-	} else {
-		emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, dec sszutils.Decoder", "ds, dec", "err error", depthFailErr(ctx.recursion))
-	}
 
+	emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, dec sszutils.Decoder", "ds, dec", "err error", depthFailErr(ctx.recursion))
 	appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 	appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
 	if ctx.useSeekable {

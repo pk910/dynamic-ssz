@@ -1014,6 +1014,9 @@ func setMinSize(desc *TypeDescriptor) {
 				desc.MinSize = uint32(minSize)
 			}
 		}
+	default:
+		// Everything else can serialize to nothing -- an empty list, an absent
+		// optional, a union's smallest variant -- so it states no floor.
 	}
 }
 
