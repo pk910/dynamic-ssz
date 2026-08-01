@@ -537,13 +537,25 @@ func TreeFromNodesWithMixin(leaves []*Node, num, limit int) (*Node, error) {
 // (rounded up to a power of two via the tree depth) and mixes in the element
 // count as the right sibling of the root.
 func TreeFromNodesWithMixin64(leaves []*Node, num, limit uint64) (*Node, error) {
-	// The Hasher clamps an under-sized (or zero) mixin limit up to the actual
-	// chunk count instead of failing; mirror that so the Wrapper stays a
-	// drop-in HashWalker producing the same root for the same call sequence.
-	if count := uint64(len(leaves)); limit < count {
+	count := uint64(len(leaves))
+	if limit == 0 {
+		// No limit: the tree is exactly as deep as the leaves require.
 		limit = count
 	}
-	mainTree, err := treeFromNodesToDepthFn(leaves, chunkLimitDepth(limit))
+
+	// A limit below the leaf count describes a value that overflows its own
+	// type. The Hasher keeps the depth the limit asks for and lets the surplus
+	// chunks fall outside the tree, which leaves the root of the leaves that do
+	// fit; mirror that so the Wrapper stays a drop-in HashWalker producing the
+	// same root for the same call sequence.
+	depth := chunkLimitDepth(limit)
+	if depth < 63 {
+		if capacity := uint64(1) << uint(depth); count > capacity {
+			leaves = leaves[:capacity]
+		}
+	}
+
+	mainTree, err := treeFromNodesToDepthFn(leaves, depth)
 	if err != nil {
 		return nil, err
 	}

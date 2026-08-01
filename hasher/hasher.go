@@ -1192,19 +1192,28 @@ func (h *Hasher) merkleizeImpl(dst, input []byte, limit uint64) []byte {
 	// with zeroes to the next multiple of 32 bytes when the input is not aligned
 	// to a multiple of 32 bytes.
 	count := uint64((len(input) + 31) / 32)
-	if limit == 0 || count > limit {
-		// A limit below the actual chunk count cannot pad the tree; fall back to
-		// the chunk count so the result is well-defined instead of panicking on
-		// caller-supplied limits.
+	if limit == 0 {
+		// No limit: the tree is exactly as deep as the chunks require. This is
+		// how an unbounded list asks to be merkleized.
 		limit = count
 	}
+
+	// A limit below the chunk count describes a value that overflows its own
+	// type, so no depth can hold it and there is no correct root. Rather than
+	// grow the tree to fit -- which invents a root the type cannot have -- the
+	// tree keeps the depth the limit asks for and the surplus chunks fall
+	// outside it, leaving the root of the first 2^depth chunks. That is what
+	// fastssz produces, and this hasher is handed such input only through the
+	// HashTreeRootWith compat surface, where matching it keeps a foreign type's
+	// root independent of which hasher drives it. Both engines reject an
+	// over-capacity list before they reach this point.
 
 	if limit == 0 {
 		return append(dst, zeroBytes[:32]...)
 	}
 	if limit == 1 {
-		if count == 1 {
-			return append(dst, input[:32]...) //nolint:gosec // G602: callers always pass 32-byte-aligned chunks; count==1 guarantees len(input)>=32
+		if count >= 1 {
+			return append(dst, input[:32]...) //nolint:gosec // G602: callers always pass 32-byte-aligned chunks; count>=1 guarantees len(input)>=32
 		}
 		return append(dst, zeroBytes[:32]...)
 	}
@@ -1230,7 +1239,9 @@ func (h *Hasher) merkleizeImpl(dst, input []byte, limit uint64) []byte {
 		input = input[:outputLen]
 	}
 
-	return append(dst, input...)
+	// A tree of this depth reduces to one chunk unless the input overflowed the
+	// limit, in which case the surplus is what is left over and dropped here.
+	return append(dst, input[:32]...)
 }
 
 // merkleizeProgressiveImpl performs recursive progressive merkleization

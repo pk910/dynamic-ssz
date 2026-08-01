@@ -1229,24 +1229,41 @@ func TestTreeFromNodesWithMixinZeroLimit(t *testing.T) {
 	}
 }
 
+// A limit below the leaf count overflows the type it declares, so the tree
+// keeps the depth the limit asks for and the surplus leaves fall outside it --
+// the root is the one the leaves that fit produce. The Hasher does the same,
+// and so does fastssz, which is what a foreign type's HashTreeRootWith is
+// measured against.
 func TestTreeFromNodesWithMixinLimitBelowCount(t *testing.T) {
 	nodes := make([]*Node, 8)
 	for i := range nodes {
 		nodes[i] = NewNodeWithValue([]byte{byte(i + 1)})
 	}
 
-	// limit 2 < 8 chunks: clamped up to the chunk count like the Hasher does.
 	tree, err := TreeFromNodesWithMixin(nodes, 8, 2)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	reference, err := TreeFromNodesWithMixin(nodes, 8, 8)
+	// Only the first two leaves fit under a limit of 2.
+	reference, err := TreeFromNodesWithMixin(nodes[:2], 8, 2)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !bytes.Equal(tree.Hash(), reference.Hash()) {
-		t.Errorf("clamped limit root mismatch: %x != %x", tree.Hash(), reference.Hash())
+		t.Errorf("over-capacity root mismatch: %x != %x", tree.Hash(), reference.Hash())
+	}
+
+	// The leaves that do not fit make no difference to the root.
+	altered := make([]*Node, len(nodes))
+	copy(altered, nodes)
+	altered[7] = NewNodeWithValue([]byte{0xff})
+	alt, err := TreeFromNodesWithMixin(altered, 8, 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !bytes.Equal(tree.Hash(), alt.Hash()) {
+		t.Errorf("a leaf outside the limit changed the root")
 	}
 }
 
