@@ -210,6 +210,14 @@ func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error)
 
 Calculates serialized size without encoding.
 
+For a value that encodes, the size is exact — the length `MarshalSSZ` produces,
+and both engines agree on it. For a value that does not encode, the number means
+nothing and depends on which engine ran: a type with generated code sizes itself
+through `DynamicSizer`, which returns a bare `int` and so cannot report the
+problem, while the reflection engine returns an error. Use this to size a
+buffer, not to decide whether a value is encodable — `MarshalSSZ` rejects such a
+value either way.
+
 ### ValidateType
 
 ```go

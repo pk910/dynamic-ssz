@@ -529,6 +529,19 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 //   - int: The exact number of bytes that would be produced by MarshalSSZ for this source
 //   - error: An error if the size calculation fails due to unsupported types or invalid data
 //
+// For a value that encodes, the size is exact: it is the length MarshalSSZ
+// produces, and both engines agree on it.
+//
+// For a value that does not encode -- a union holding data that does not match
+// its selector, say -- the number means nothing, and what comes back depends on
+// which engine ran. A type with generated code sizes itself through
+// DynamicSizer, which returns a bare int and so cannot report the problem; it
+// yields 0, which is indistinguishable from a value that really is zero bytes
+// long. The reflection engine returns an error instead.
+//
+// So use this to size a buffer, not to decide whether a value is encodable.
+// MarshalSSZ rejects such a value in either engine.
+//
 // Example:
 //
 //	state := &phase0.BeaconState{

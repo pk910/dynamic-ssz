@@ -2596,6 +2596,58 @@ func TestCodegenSpecVecElementRegionBound(t *testing.T) {
 	}
 }
 
+// SizeSSZ is exact for a value that encodes, and that is the guarantee callers
+// pre-allocate against. For a value that does not encode it means nothing: the
+// generated sizer returns a bare int, so it reports 0 where reflection reports
+// an error. Marshaling is what rejects such a value, in both engines.
+func TestCodegenSizeIsExactForEncodableValues(t *testing.T) {
+	if _, generated := any(&UnionSamePkgVariant{}).(sszutils.DynamicSizer); !generated {
+		t.Skip("no generated code present")
+	}
+
+	engines := []struct {
+		name string
+		ds   *dynssz.DynSsz
+	}{
+		{"generated", dynssz.NewDynSsz(nil)},
+		{"reflection", dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation())},
+	}
+
+	valid := UnionSamePkgVariant{}
+	valid.U.Variant = 1
+	valid.U.Data = uint64(42)
+
+	for _, engine := range engines {
+		t.Run("exact/"+engine.name, func(t *testing.T) {
+			size, err := engine.ds.SizeSSZ(&valid)
+			if err != nil {
+				t.Fatalf("size: %v", err)
+			}
+			encoded, err := engine.ds.MarshalSSZ(&valid)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if size != len(encoded) {
+				t.Errorf("size %d does not match the %d bytes encoded", size, len(encoded))
+			}
+		})
+	}
+
+	// A selector with no variant behind it cannot be encoded. Sizing it is not
+	// what says so -- marshaling is, in both engines.
+	invalid := UnionSamePkgVariant{}
+	invalid.U.Variant = 99
+	invalid.U.Data = uint32(1)
+
+	for _, engine := range engines {
+		t.Run("rejected at marshal/"+engine.name, func(t *testing.T) {
+			if _, err := engine.ds.MarshalSSZ(&invalid); err == nil {
+				t.Error("marshal accepted a value with no such variant")
+			}
+		})
+	}
+}
+
 // without-dynamic-expressions emits buffer methods that bake the static tag
 // values and take no spec set, so they are only correct for the defaults. The
 // streaming methods keep resolving from the spec set, because there is no

@@ -49,7 +49,13 @@ type DynamicDecoder interface {
 	UnmarshalSSZDecoder(ds DynamicSpecs, decoder Decoder) error
 }
 
-// DynamicSizer is the interface implemented by types that can calculate their own SSZ size dynamically
+// DynamicSizer is the interface implemented by types that can calculate their own SSZ size dynamically.
+//
+// The size is exact for a value that encodes. It is returned on its own,
+// matching the fastssz shape, so an implementation has no way to report a value
+// it cannot size and returns 0 instead -- indistinguishable from a value that
+// really is zero bytes long. Callers should rely on marshaling, not on this, to
+// reject a value that cannot be encoded.
 type DynamicSizer interface {
 	SizeSSZDyn(ds DynamicSpecs) int
 }
