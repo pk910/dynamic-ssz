@@ -202,7 +202,7 @@ func TestCodegenBigIntGolden(t *testing.T) {
 		payload any
 		golden  string
 	}{
-		{"valueBigInt", ExtendedTypes1_Payload1, "d43c9c95a419854cc80d68260f4f3777ec1f5f6a699575f5d9ddaf38fb5c86a0"},
+		{"valueBigInt", ExtendedTypes1_Payload1, "29e70bed46a1d689e21122f9a425c56cf63c05c72c307488a0626205a1b5a412"},
 		{"pointerBigInt", CoverageTypes2_Payload1, "9f187208f2264c56c945c495d2b170c40e9469de661fea65d07a6aa990824fff"},
 	}
 

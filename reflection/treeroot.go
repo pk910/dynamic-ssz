@@ -265,13 +265,8 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 		} else {
 			hh.PutUint64(math.Float64bits(sourceValue.Float()))
 		}
-	case ssztypes.SszOptionalType:
+	case ssztypes.SszOptionalType, ssztypes.SszOptionalListType:
 		err := ctx.buildRootFromOptional(sourceType, sourceValue, hh, depth)
-		if err != nil {
-			return err
-		}
-	case ssztypes.SszOptionalListType:
-		err := ctx.buildRootFromOptionalList(sourceType, sourceValue, hh, depth)
 		if err != nil {
 			return err
 		}
@@ -947,17 +942,26 @@ func (ctx *ReflectionCtx) buildRootFromBitlist(sourceType *ssztypes.TypeDescript
 	return nil
 }
 
-// buildRootFromOptional computes the hash tree root for ssz optionals.
+// buildRootFromOptional computes the hash tree root for a value that may be
+// absent, committing to which:
+//   - Merkleize the zero or one value chunks, with a limit of 1
+//   - Mix in 1 when the value is present, 0 when it is absent
 //
-// Optionals in SSZ are hashed as follows:
-//   - The optional is hashed as the data field if it is not nil
-//   - The optional is hashed as uint8(0) value if it is nil
+// Both spellings of an optional use it, so they agree on the root and differ
+// only on the wire: ssz-type:"optional" writes a presence flag, while
+// ssz-type:"optional-list" writes the canonical List[T, 1].
+//
+// The mixin is what makes the root unambiguous. Without it an absent value and
+// a present zero value hash alike -- the absent case contributes a zero chunk,
+// and the present case contributes the value's root, which for a zero value is
+// that same zero chunk -- so the root could not tell "no value" from "the zero
+// value" although the two serialize differently.
 //
 // Parameters:
-//   - sourceType: The TypeDescriptor containing optional metadata
-//   - sourceValue: The reflect.Value of the optional to hash
+//   - sourceType: The TypeDescriptor containing the optional metadata
+//   - sourceValue: The reflect.Value of the pointer to hash
 //   - hh: The Hasher instance for hash computation
-//   - depth: Indentation level for verbose logging
+//   - depth: Current nesting depth
 //
 // Returns:
 //   - error: An error if hashing fails
@@ -972,59 +976,20 @@ func (ctx *ReflectionCtx) buildRootFromOptional(sourceType *ssztypes.TypeDescrip
 		return sszutils.ErrMaxDepthExceededFn(ctx.maxDepth)
 	}
 
-	if sourceValue.IsNil() {
-		hh.PutUint8(0)
-		return nil
-	}
-
-	err := ctx.buildRootFromType(sourceType.ElemDesc, sourceValue.Elem(), hh, false, depth+1)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// buildRootFromOptionalList computes the hash tree root for a pointer encoded as List[T, 1].
-//
-// The hash matches the canonical SSZ list hashing:
-//   - Merkleize the (zero or one) element chunks
-//   - Mix in the length (0 for nil, 1 for non-nil)
-//   - Limit is always 1 chunk/element for List[T, 1]
-//
-// Parameters:
-//   - sourceType: The TypeDescriptor containing optional-list metadata
-//   - sourceValue: The reflect.Value of the pointer to hash
-//   - hh: The Hasher instance for hash computation
-//   - depth: Indentation level for verbose logging
-//
-// Returns:
-//   - error: An error if hashing fails
-func (ctx *ReflectionCtx) buildRootFromOptionalList(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, depth int) error {
-	// Only a list, an optional or an optional-list can legalize a recursive
-	// cycle -- they are the boundaries the type cache counts when deciding
-	// whether a cycle is finite, so every trip round a cycle crosses one of
-	// them. Bounding them therefore bounds the recursion, and nothing else pays
-	// for it. Without the bound a deeply nested value exhausts the goroutine
-	// stack, which Go turns into an unrecoverable process abort.
-	if depth > ctx.maxDepth {
-		return sszutils.ErrMaxDepthExceededFn(ctx.maxDepth)
-	}
-
 	hashIndex := hh.StartTree(sszutils.TreeTypeBinary)
 
-	var sliceLen uint64
+	var present uint64
 	if !sourceValue.IsNil() {
 		err := ctx.buildRootFromType(sourceType.ElemDesc, sourceValue.Elem(), hh, true, depth+1)
 		if err != nil {
-			return sszutils.ErrorWithPathf(err, "[0]")
+			return err
 		}
-		sliceLen = 1
+		present = 1
 	}
 
 	hh.FillUpTo32()
-	// List[T, 1] always has limit 1 (either 1 element or 1 packed chunk for basic types ≤32 bytes)
-	hh.MerkleizeWithMixin(hashIndex, sliceLen, 1)
+	// One value means one chunk, so the limit is 1 like List[T, 1].
+	hh.MerkleizeWithMixin(hashIndex, present, 1)
 
 	return nil
 }

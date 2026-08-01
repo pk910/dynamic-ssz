@@ -434,10 +434,8 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 		} else {
 			ctx.appendCode(indent, "hh.PutUint64(%s)\n", valExpr)
 		}
-	case ssztypes.SszOptionalType:
+	case ssztypes.SszOptionalType, ssztypes.SszOptionalListType:
 		return ctx.hashOptional(desc, varName, typePath, indent)
-	case ssztypes.SszOptionalListType:
-		return ctx.hashOptionalList(desc, varName, typePath, indent)
 	case ssztypes.SszBigIntType:
 		return ctx.hashBigInt(desc, varName, typePath, indent)
 
@@ -448,45 +446,43 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 	return nil
 }
 
-// hashOptional generates hash tree root code for SSZ optional types.
-func (ctx *hashTreeRootContext) hashOptional(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
-	ctx.appendCode(indent, "if %s == nil {\n", varName)
-	ctx.appendCode(indent+1, "hh.PutUint8(0)\n")
-	ctx.appendCode(indent, "} else {\n")
-	innerVarName := fmt.Sprintf("(*%s)", varName)
-	if err := ctx.hashType(desc.ElemDesc, innerVarName, typePath, indent+1, false, false); err != nil {
-		return err
-	}
-	ctx.appendCode(indent, "}\n")
-	return nil
-}
-
-// hashOptionalList generates hash tree root code for optional-list (canonical List[T, 1]).
+// hashOptional generates hash tree root code for a value that may be absent,
+// committing to which:
+//   - Merkleize the zero or one value chunks, with a limit of 1
+//   - Mix in 1 when the value is present, 0 when it is absent
 //
-// Builds a binary tree containing zero or one element chunk, then mixes in
-// the length (0 or 1). The merkleization limit is always 1 (one chunk for
-// basic elements ≤32 bytes, or one element for complex elements).
-func (ctx *hashTreeRootContext) hashOptionalList(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
+// Both spellings of an optional use it, so they agree on the root and differ
+// only on the wire: ssz-type:"optional" writes a presence flag, while
+// ssz-type:"optional-list" writes the canonical List[T, 1].
+//
+// The mixin is what makes the root unambiguous. Without it an absent value and
+// a present zero value hash alike -- the absent case contributes a zero chunk,
+// and the present case contributes the value's root, which for a zero value is
+// that same zero chunk -- so the root could not tell "no value" from "the zero
+// value" although the two serialize differently.
+func (ctx *hashTreeRootContext) hashOptional(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	// Wrap in braces so `idx` and the length var don't collide with any caller's
-	// locals. The length var uses a dedicated name (not `vlen`): the element is
-	// hashed inline in the same `if` block and a fixed-size vector/list element
+	// locals. The length var uses a dedicated name (not `vlen`): the value is
+	// hashed inline in the same `if` block and a fixed-size vector/list value
 	// declares its own `vlen := len(...)` there. Reusing `vlen` here would let
 	// that inner declaration shadow ours, so the mixin length assignment would
-	// target the element's local and leave the outer length at 0 — mixing in a
-	// length of 0 for a present element and producing the wrong root.
+	// target the value's local and leave the outer length at 0 -- mixing in a
+	// length of 0 for a present value and producing the wrong root.
 	ctx.appendCode(indent, "{\n")
 	ctx.appendCode(indent+1, "idx := hh.StartTree(sszutils.TreeTypeBinary)\n")
-	ctx.appendCode(indent+1, "optListLen := uint64(0)\n")
+	ctx.appendCode(indent+1, "optLen := uint64(0)\n")
 	ctx.appendCode(indent+1, "if %s != nil {\n", varName)
-	ctx.appendCode(indent+2, "optListLen = 1\n")
+	ctx.appendCode(indent+2, "optLen = 1\n")
 	innerVarName := fmt.Sprintf("(*%s)", varName)
-	if err := ctx.hashType(desc.ElemDesc, innerVarName, typePath.append("[0]"), indent+2, false, true); err != nil {
+	if err := ctx.hashType(desc.ElemDesc, innerVarName, typePath, indent+2, false, true); err != nil {
 		return err
 	}
 	ctx.appendCode(indent+1, "}\n")
 	ctx.appendCode(indent+1, "hh.FillUpTo32()\n")
-	ctx.appendCode(indent+1, "hh.MerkleizeWithMixin(idx, optListLen, 1)\n")
+	// One value means one chunk, so the limit is 1 like List[T, 1].
+	ctx.appendCode(indent+1, "hh.MerkleizeWithMixin(idx, optLen, 1)\n")
 	ctx.appendCode(indent, "}\n")
+
 	return nil
 }
 

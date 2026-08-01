@@ -3296,6 +3296,68 @@ func TestReflectionRejectsDynamicStaticSizeConflict(t *testing.T) {
 	}
 }
 
+// An optional's root has to say whether the value is there. Without that, an
+// absent value and a present zero value hash alike -- the two serialize
+// differently, so a root that cannot tell them apart is ambiguous.
+func TestHashTreeRootOptionalCommitsToPresence(t *testing.T) {
+	type optContainer struct {
+		Opt *uint32 `ssz-type:"optional"`
+	}
+	// The canonical spelling of the same thing: a pointer as List[T, 1].
+	type optListContainer struct {
+		Opt *uint32 `ssz-type:"optional-list"`
+	}
+
+	zero := uint32(0)
+	set := uint32(7)
+
+	for _, opts := range [][]DynSszOption{
+		{WithExtendedTypes()},
+		{WithExtendedTypes(), WithNoFastSsz(), WithNoFastHash()},
+	} {
+		ds := NewDynSsz(nil, opts...)
+
+		absent, err := ds.HashTreeRoot(&optContainer{Opt: nil})
+		if err != nil {
+			t.Fatalf("absent: %v", err)
+		}
+		presentZero, err := ds.HashTreeRoot(&optContainer{Opt: &zero})
+		if err != nil {
+			t.Fatalf("present zero: %v", err)
+		}
+		presentSet, err := ds.HashTreeRoot(&optContainer{Opt: &set})
+		if err != nil {
+			t.Fatalf("present value: %v", err)
+		}
+
+		if absent == presentZero {
+			t.Errorf("absent and present-zero share the root %x", absent)
+		}
+		if presentZero == presentSet {
+			t.Errorf("distinct values share the root %x", presentZero)
+		}
+
+		// Both spellings mix in the same presence over the same value, so they
+		// differ only on the wire.
+		for _, tc := range []struct {
+			name string
+			opt  *uint32
+		}{{"absent", nil}, {"present", &set}} {
+			listRoot, err := ds.HashTreeRoot(&optListContainer{Opt: tc.opt})
+			if err != nil {
+				t.Fatalf("%s optional-list: %v", tc.name, err)
+			}
+			optRoot, err := ds.HashTreeRoot(&optContainer{Opt: tc.opt})
+			if err != nil {
+				t.Fatalf("%s optional: %v", tc.name, err)
+			}
+			if listRoot != optRoot {
+				t.Errorf("%s: optional root %x differs from optional-list %x", tc.name, optRoot, listRoot)
+			}
+		}
+	}
+}
+
 // A list of optionals interleaves deferred child subtrees (present elements)
 // with raw zero chunks (nil elements) in the incremental hasher; the roots
 // must match an independent manual merkleization for every ordering.
@@ -3322,9 +3384,16 @@ func TestHashTreeRootOptionalListOrdering(t *testing.T) {
 	manualRoot := func(elems []*optInner) [32]byte {
 		leaves := make([][32]byte, 16)
 		for i, e := range elems {
+			// Every optional commits to its presence, so a nil element is a
+			// zero chunk with 0 mixed in -- distinct from the zero leaves that
+			// pad the list out to its limit.
+			var valueRoot [32]byte
+			present := uint64(0)
 			if e != nil {
-				leaves[i] = hashPair(chunkU64(e.A), chunkU64(e.B))
+				valueRoot = hashPair(chunkU64(e.A), chunkU64(e.B))
+				present = 1
 			}
+			leaves[i] = hashPair(valueRoot, chunkU64(present))
 		}
 		level := leaves
 		for len(level) > 1 {

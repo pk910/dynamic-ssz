@@ -164,6 +164,19 @@ Optional types use Go pointer types to represent values that may or may not be p
 - If `nil`: `0x00` (1 byte)
 - If present: `0x01` followed by the serialized value
 
+**Hash tree root**: the value's root — a zero chunk when absent — with its
+presence mixed in as a length, 1 when present and 0 when absent:
+
+```
+mix_in_length(merkleize([value_root], limit=1), present ? 1 : 0)
+```
+
+The mixin is what makes the root unambiguous: without it an absent value and a
+present zero value produce the same root, although the two serialize
+differently. This is the same construction
+[`optional-list`](supported-types.md#optional-lists-canonical-listt-1) uses, so
+the two spellings agree on the root and differ only on the wire.
+
 ```go
 type Config struct {
     Name     uint64
@@ -260,7 +273,7 @@ Extended types are fully supported in hash tree root computation:
 
 - **Fixed-size types** (`int8`-`int64`, `float32`, `float64`): Hashed as their serialized byte representation, same as standard unsigned integers.
 - **`big.Int`**: Hashed using `PutBytes` for proper merkleization of variable-length data.
-- **Optional types**: The hash tree root includes the presence flag and the child value's hash.
+- **Optional types**: The value's root with its presence mixed in as a length (1 present, 0 absent), so an absent value and a present zero value do not collide. Identical to `optional-list`.
 - **Unbounded lists and bitlists**: Merkleized to the chunks the value occupies, with the length mixed in.
 
 ## Code Generation

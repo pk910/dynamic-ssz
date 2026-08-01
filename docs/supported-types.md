@@ -362,7 +362,10 @@ Encoding:
 | non-nil, fixed element   | `<element bytes>`                                     |
 | non-nil, dynamic element | `0x04 0x00 0x00 0x00 || <element bytes>` (offset = 4) |
 
-The hash tree root matches `List[T, 1]` exactly.
+The hash tree root matches `List[T, 1]` exactly: the element's root merkleized
+under a limit of one chunk, with the element count mixed in (0 for `nil`, 1
+otherwise). The non-canonical [`ssz-type:"optional"`](extended-types.md#optional-types-pointers)
+produces the same root, so the two differ only in their encoding.
 
 ## Union Types
 
