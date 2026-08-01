@@ -159,7 +159,17 @@ type Data struct {
 }
 ```
 
-Strings are null-padded if shorter than the specified size. Cannot be combined with `ssz-max` on the same field (a field is either fixed-size or variable-size).
+Strings are null-padded if shorter than the specified size.
+
+A dimension is either fixed or variable, so `ssz-size` and `ssz-max` cannot both
+describe the same one — a fixed length has no capacity left to bound, and
+declaring a limit for it is rejected. They combine freely across *different*
+dimensions, which is the usual shape for a list of fixed-size elements:
+
+```go
+Roots [][32]byte `ssz-size:"?,32" ssz-max:"64"`  // up to 64 roots, 32 bytes each
+Bad   []byte     `ssz-size:"32" ssz-max:"64"`    // rejected: one dimension, both tags
+```
 
 ### dynssz-size
 
@@ -356,8 +366,11 @@ type Valid struct {
 
 ```go
 type Invalid struct {
-    // Cannot use both ssz-size and ssz-max (a field is either fixed or variable)
+    // One dimension cannot be both fixed and bounded
     Bad []byte `ssz-size:"32" ssz-max:"64"`
+
+    // Same, reached through the Go type: the array's length is fixed
+    Bad1b [8]uint64 `ssz-max:"4"`
 
     // A dimension declared two ways: a 2-vector statically, dynamic dynamically
     Bad2 [2][]byte `ssz-size:"2,6" dynssz-size:"?,COLS"`

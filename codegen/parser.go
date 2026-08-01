@@ -1417,6 +1417,10 @@ func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, dataType, 
 	var dataElemType types.Type
 	var length uint32
 
+	if err := ssztypes.RejectMaxOnVector(maxSizeHints, schemaType.String()); err != nil {
+		return err
+	}
+
 	// Extract element type from schema (determines SSZ layout)
 	switch t := schemaType.(type) {
 	case *types.Array:

@@ -1812,6 +1812,10 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 		return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "vector ssz type can only be represented by array or slice types, got %v", desc.Kind)
 	}
 
+	if err := RejectMaxOnVector(maxSizeHints, schemaType.String()); err != nil {
+		return err
+	}
+
 	switch {
 	case desc.Kind == reflect.Array:
 		// With a view descriptor the schema (view) type defines the SSZ layout while
@@ -2022,6 +2026,32 @@ func (tc *TypeCache) buildListDescriptor(desc *TypeDescriptor, runtimeType, sche
 	MarkNoSszRoot(tc.ExtendedTypes, desc)
 
 	return nil
+}
+
+// RejectMaxOnVector rejects a limit declared for a dimension that is fixed. A
+// vector's length is its type, so it has no capacity left to bound: the limit
+// describes nothing and was being ignored, which reads as a bounded list to
+// anyone writing the tag. It is shared by the reflection type cache and the
+// code generator's parser so both refuse the same tags.
+//
+// The dimension is fixed either because ssz-size gave it a length or because
+// the Go type is an array, so this catches both spellings. Only the dimension
+// being built is examined: an outer array of bounded lists carries `?` for its
+// own dimension and its limits belong to the inner ones.
+func RejectMaxOnVector(maxSizeHints []SszMaxSizeHint, typeName string) error {
+	if len(maxSizeHints) == 0 || maxSizeHints[0].NoValue {
+		return nil
+	}
+
+	// A limit that only exists as an unresolved expression, or the ssz-max:"0"
+	// placeholder, states no capacity either.
+	if maxSizeHints[0].Size == 0 {
+		return nil
+	}
+
+	return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint,
+		"ssz-max %d is declared for %s, whose length is fixed: a vector has no capacity to bound (use ssz-size or ssz-max, not both, for one dimension)",
+		maxSizeHints[0].Size, typeName)
 }
 
 // MarkNoSszRoot flags a list or bitlist that carries no limit, unless extended

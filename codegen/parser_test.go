@@ -1056,6 +1056,20 @@ func TestBuildVectorDescriptor(t *testing.T) {
 		}
 	})
 
+	t.Run("VectorWithMaxOnFixedDimension", func(t *testing.T) {
+		// A limit on a dimension whose length is fixed describes nothing, and
+		// was silently ignored -- while reading as a bounded list to whoever
+		// wrote it.
+		innerSlice := types.NewSlice(types.Typ[types.Uint8])
+		outerArr := types.NewArray(innerSlice, 10)
+		typeHints := []ssztypes.SszTypeHint{{}, {Type: ssztypes.SszVectorType}}
+		sizeHints := []ssztypes.SszSizeHint{{}, {Size: 32}}
+		maxSizeHints := []ssztypes.SszMaxSizeHint{{}, {Size: 1024}}
+		if _, err := parser.buildTypeDescriptor(outerArr, outerArr, typeHints, sizeHints, maxSizeHints); err == nil {
+			t.Error("a limit on a fixed dimension should be rejected")
+		}
+	})
+
 	t.Run("VectorWithDynamicElements", func(t *testing.T) {
 		// Vector of slices (dynamic elements)
 		sliceType := types.NewSlice(types.Typ[types.Uint8])
@@ -2381,13 +2395,14 @@ func TestBuildVectorDescriptorEdgeCases(t *testing.T) {
 	})
 
 	t.Run("VectorWithChildHints", func(t *testing.T) {
-		// Test vector of vectors with child hints
+		// Test vector of vectors with child hints. The inner dimension is sized,
+		// so it carries no limit: a fixed length has no capacity to bound, and
+		// declaring both is rejected (see VectorWithMaxOnFixedDimension).
 		innerSlice := types.NewSlice(types.Typ[types.Uint8])
 		outerArr := types.NewArray(innerSlice, 10)
 		typeHints := []ssztypes.SszTypeHint{{}, {Type: ssztypes.SszVectorType}}
 		sizeHints := []ssztypes.SszSizeHint{{}, {Size: 32}}
-		maxSizeHints := []ssztypes.SszMaxSizeHint{{}, {Size: 1024}}
-		desc, err := parser.buildTypeDescriptor(outerArr, outerArr, typeHints, sizeHints, maxSizeHints)
+		desc, err := parser.buildTypeDescriptor(outerArr, outerArr, typeHints, sizeHints, nil)
 		if err != nil {
 			t.Fatalf("Failed to build nested vector descriptor: %v", err)
 		}

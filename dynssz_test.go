@@ -3358,6 +3358,64 @@ func TestHashTreeRootOptionalCommitsToPresence(t *testing.T) {
 	}
 }
 
+// A dimension whose length is fixed has no capacity to bound, so a limit
+// declared for it describes nothing. It used to be accepted and ignored, which
+// reads as a bounded list to whoever wrote the tag while the field encodes as a
+// vector.
+//
+// The rule is per dimension: the common fastssz shape puts the limit on an
+// outer list and a length on the inner element, and has to keep working.
+func TestMaxOnFixedDimensionRejected(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation())
+
+	rejected := []struct {
+		name  string
+		value any
+	}{
+		{"ssz-size and ssz-max on one dimension", &struct {
+			F []byte `ssz-size:"4" ssz-max:"8"`
+		}{F: []byte{1, 2, 3, 4}}},
+		{"limit on a fixed Go array", &struct {
+			F [8]uint64 `ssz-max:"4"`
+		}{}},
+		{"limit on a sized inner dimension", &struct {
+			F [][]byte `ssz-size:"?,32" ssz-max:"64,128"`
+		}{}},
+	}
+
+	for _, tt := range rejected {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ds.MarshalSSZ(tt.value)
+			if !errors.Is(err, sszutils.ErrInvalidConstraint) {
+				t.Errorf("err = %v, want ErrInvalidConstraint", err)
+			}
+		})
+	}
+
+	accepted := []struct {
+		name  string
+		value any
+	}{
+		{"list of fixed-size elements", &struct {
+			F [][32]byte `ssz-size:"?,32" ssz-max:"64"`
+		}{F: [][32]byte{{1}}}},
+		{"list of sized slices", &struct {
+			F [][]byte `ssz-size:"?,32" ssz-max:"64"`
+		}{F: [][]byte{make([]byte, 32)}}},
+		{"array of bounded lists", &struct {
+			F [2][]uint16 `ssz-max:"?,64"`
+		}{}},
+	}
+
+	for _, tt := range accepted {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := ds.MarshalSSZ(tt.value); err != nil {
+				t.Errorf("a limit on the dimension that has capacity must be accepted: %v", err)
+			}
+		})
+	}
+}
+
 // A list of optionals interleaves deferred child subtrees (present elements)
 // with raw zero chunks (nil elements) in the incremental hasher; the roots
 // must match an independent manual merkleization for every ordering.
