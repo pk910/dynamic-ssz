@@ -486,8 +486,17 @@ func getSszMaxSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]S
 					sszMaxSize.Size = specVal
 					sszMaxSize.Custom = true
 				} else {
-					// unknown spec value? fallback to fastssz defaults
+					// Unknown spec value: keep the fastssz default for this
+					// dimension. A zero default is the ssz-max:"0" placeholder,
+					// which is not a fallback at all -- the type said its limit
+					// comes from the spec and the spec does not define it, so
+					// there is no limit to encode or hash against. That is the
+					// same dead end as resolving to zero, and the generated code
+					// reports it too (ResolveSpecValueWithDefault).
 					if i < len(sszMaxSizes) {
+						if sszMaxSizes[i].Size == 0 && !sszMaxSizes[i].NoValue {
+							return sszMaxSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-max %q for field %q is not defined and has no positive static fallback", sszMaxSizeStr, field.Name)
+						}
 						sszMaxSizes[i].Expr = sszMaxSizeStr
 					}
 					continue

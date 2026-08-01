@@ -502,6 +502,70 @@ func TestCodegenZeroStaticMaxResolvesToZeroErrors(t *testing.T) {
 	}
 }
 
+// The same dead end reached the other way: the spec value is not defined at all
+// rather than defined as 0. A placeholder ssz-max:"0" says the limit comes from
+// the spec, so an absent key leaves nothing to encode or hash against, and both
+// engines have to say so -- for an empty list as much as a full one, since it is
+// the type that is unknowable, not the value.
+func TestCodegenZeroStaticMaxUndefinedErrors(t *testing.T) {
+	if _, generated := any(&AnnotatedZeroStaticMax{}).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+
+	noSpecs := map[string]any{} // ZEROSTATIC_MAX is not defined
+	refDs := dynssz.NewDynSsz(noSpecs, dynssz.WithNoFastSsz(), dynssz.WithNoFastHash(), dynssz.WithNoDelegation())
+	genDs := dynssz.NewDynSsz(noSpecs)
+
+	for _, payload := range []AnnotatedZeroStaticMax{{}, {1, 2, 3}} {
+		p := payload
+		if _, err := refDs.HashTreeRoot(&p); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+			t.Errorf("reflection(%d elements): err = %v, want ErrInvalidConstraint", len(p), err)
+		}
+		if _, err := genDs.HashTreeRoot(&p); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+			t.Errorf("codegen(%d elements): err = %v, want ErrInvalidConstraint", len(p), err)
+		}
+	}
+
+	// A positive static value is a real fallback, so an undefined spec key just
+	// leaves it in place.
+	testCodegenPayloadByReflection(t, AnnotatedWithSpecs{1, 2, 3}, noSpecs)
+}
+
+// Refusing an undefined limit must not take away the ways to say "unbounded":
+// an ssz-max:"0" with no expression, and no tag at all, both still hash under
+// extended types.
+func TestCodegenLimitlessRemainsExpressible(t *testing.T) {
+	if _, generated := any(&ZeroMaxList{}).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+
+	gen := dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes())
+	refl := dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes(), dynssz.WithNoFastSsz(), dynssz.WithNoDelegation())
+
+	for _, tc := range []struct {
+		name    string
+		payload any
+	}{
+		{"zero max, no expression", &ZeroMaxList_Payload},
+		{"no tag", &UnboundedList_Payload},
+		{"no tag, bitlist", &UnboundedBitlist_Payload},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			genRoot, err := gen.HashTreeRoot(tc.payload)
+			if err != nil {
+				t.Fatalf("generated: %v", err)
+			}
+			reflRoot, err := refl.HashTreeRoot(tc.payload)
+			if err != nil {
+				t.Fatalf("reflection: %v", err)
+			}
+			if genRoot != reflRoot {
+				t.Errorf("generated root %x differs from reflection %x", genRoot, reflRoot)
+			}
+		})
+	}
+}
+
 // A multi-dimensional fixed vector whose inner size is dynssz-resolved must pad
 // missing outer rows with the resolved inner byte size, not the static fallback
 // . Previously codegen padded with the baked static inner size,

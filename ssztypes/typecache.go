@@ -445,40 +445,47 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			// ParseTags can't resolve dynamic expressions (no DynamicSpecs).
 			// Resolve them now using tc.specs.
 			if tc.specs != nil {
+				// A dimension keeps its static value when the expression gives
+				// nothing usable -- resolved to zero, undefined, or unresolvable.
+				// A zero static value is the "0" placeholder rather than a
+				// fallback, so there is nothing left to fall back to and the
+				// annotation names a size or limit nothing supplies. The
+				// generated code reports the same dead end at runtime, where its
+				// expressions resolve (ResolveSpecValueWithDefault).
 				for i := range sizeHints {
-					if sizeHints[i].Expr != "" {
-						if ok, val, err := tc.specs.ResolveSpecValue(sizeHints[i].Expr); err == nil && ok {
-							if val > math.MaxUint32 {
-								return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "ssz-size value %d exceeds the uint32 size range", val)
-							}
-							if val == 0 {
-								// A resolved size of 0 would form a zero-length
-								// vector; fall back to a positive static ssz-size or
-								// reject if none was given.
-								if sizeHints[i].Size == 0 {
-									return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "ssz-size expression %q resolved to 0 with no positive static fallback", sizeHints[i].Expr)
-								}
-							} else {
-								sizeHints[i].Size = uint32(val)
-								sizeHints[i].Custom = true
-							}
-						}
+					if sizeHints[i].Expr == "" {
+						continue
+					}
+
+					ok, val, resolveErr := tc.specs.ResolveSpecValue(sizeHints[i].Expr)
+					if resolveErr == nil && ok && val > math.MaxUint32 {
+						return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "ssz-size value %d exceeds the uint32 size range", val)
+					}
+					if resolveErr == nil && ok && val > 0 {
+						sizeHints[i].Size = uint32(val)
+						sizeHints[i].Custom = true
+
+						continue
+					}
+					if sizeHints[i].Size == 0 {
+						return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "ssz-size expression %q %s", sizeHints[i].Expr, unresolvedReason(ok, resolveErr))
 					}
 				}
 
 				for i := range maxSizeHints {
-					if maxSizeHints[i].Expr != "" {
-						if ok, val, err := tc.specs.ResolveSpecValue(maxSizeHints[i].Expr); err == nil && ok {
-							if val == 0 {
-								// Fall back to a positive static ssz-max or reject.
-								if maxSizeHints[i].Size == 0 {
-									return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "ssz-max expression %q resolved to 0 with no positive static fallback", maxSizeHints[i].Expr)
-								}
-							} else {
-								maxSizeHints[i].Size = val
-								maxSizeHints[i].Custom = true
-							}
-						}
+					if maxSizeHints[i].Expr == "" {
+						continue
+					}
+
+					ok, val, resolveErr := tc.specs.ResolveSpecValue(maxSizeHints[i].Expr)
+					if resolveErr == nil && ok && val > 0 {
+						maxSizeHints[i].Size = val
+						maxSizeHints[i].Custom = true
+
+						continue
+					}
+					if maxSizeHints[i].Size == 0 {
+						return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "ssz-max expression %q %s", maxSizeHints[i].Expr, unresolvedReason(ok, resolveErr))
 					}
 				}
 			}
@@ -965,6 +972,19 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 	setMinSize(desc)
 
 	return desc, nil
+}
+
+// unresolvedReason says why an expression produced no usable value, so the
+// error tells the reader whether to define the spec value or to correct it.
+func unresolvedReason(resolved bool, err error) string {
+	switch {
+	case err != nil:
+		return fmt.Sprintf("could not be resolved (%v) and has no positive static fallback", err)
+	case resolved:
+		return "resolved to 0 with no positive static fallback"
+	default:
+		return "is not defined and has no positive static fallback"
+	}
 }
 
 // setMinSize records the smallest number of bytes a value of this type can

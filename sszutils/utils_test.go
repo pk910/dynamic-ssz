@@ -195,14 +195,23 @@ func TestResolveSpecValueWithDefault_ResolvedZeroFallsBack(t *testing.T) {
 		t.Errorf("expected ErrInvalidConstraint for resolved 0 with no static fallback, got: %v", err)
 	}
 
-	// A name absent from the spec set keeps the static value unchanged, even 0.
+	// A name absent from the spec set keeps the static value unchanged.
 	dsEmpty := &mockDynamicSpecs{values: map[string]uint64{}}
-	val, err = ResolveSpecValueWithDefault(dsEmpty, "missing", 0)
+	val, err = ResolveSpecValueWithDefault(dsEmpty, "missing", 7)
 	if err != nil {
 		t.Fatalf("unexpected error for not-found: %v", err)
 	}
-	if val != 0 {
-		t.Errorf("expected 0 for not-found with 0 default, got %d", val)
+	if val != 7 {
+		t.Errorf("expected the static fallback for not-found, got %d", val)
+	}
+
+	// Unless that static value is itself 0, which is the "no static value"
+	// placeholder: the type said its value comes from the spec and the spec does
+	// not define it, so there is nothing to fall back to. Same dead end as
+	// resolving to 0.
+	_, err = ResolveSpecValueWithDefault(dsEmpty, "missing", 0)
+	if err == nil || !errors.Is(err, ErrInvalidConstraint) {
+		t.Errorf("expected ErrInvalidConstraint for not-found with no static fallback, got: %v", err)
 	}
 }
 

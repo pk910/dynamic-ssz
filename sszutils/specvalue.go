@@ -20,6 +20,16 @@ func ResolveSpecValueWithDefault(ds DynamicSpecs, name string, defaultValue uint
 		return 0, err
 	}
 	if !hasLimit {
+		// An absent spec value leaves the static fallback, and a zero fallback
+		// is the "no static value" placeholder rather than a real one: the type
+		// said its value comes from the spec, and the spec does not have it. It
+		// is the same dead end as resolving to zero, and reporting it names the
+		// key that is missing instead of leaving a zero to surface later as a
+		// capacity of nothing.
+		if defaultValue == 0 {
+			return 0, NewSszErrorf(ErrInvalidConstraint, "spec value %q is not defined and has no positive static fallback", name)
+		}
+
 		return defaultValue, nil
 	}
 	if limit == 0 {
