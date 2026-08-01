@@ -268,6 +268,17 @@ type Advanced struct {
 }
 ```
 
+Like the size tags, `ssz-type` names one dimension per level of nesting, and a
+type with no element is where they run out. Naming more than the type has is
+rejected rather than ignored — a trailing dimension would otherwise read as if
+it did something:
+
+```go
+Grid [][]uint64 `ssz-type:"list,list,uint64" ssz-max:"8,8"`  // three levels, three names
+Some [][]uint64 `ssz-type:"list" ssz-max:"8,8"`              // naming fewer is fine
+Bad  []uint64   `ssz-type:"list,uint64,uint32" ssz-max:"8"`  // rejected: uint64 has no element
+```
+
 #### Excluding a field
 
 `ssz-type:"-"` removes a field from the SSZ layout entirely: it is not

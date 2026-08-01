@@ -3358,6 +3358,52 @@ func TestHashTreeRootOptionalCommitsToPresence(t *testing.T) {
 	}
 }
 
+// A tag names one dimension per level of nesting. A type with no element is
+// where they run out, so anything past that describes a dimension the type does
+// not have -- it used to be parsed and then dropped, leaving a tag that reads
+// as if it did something.
+func TestSurplusTypeDimensionRejected(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation())
+
+	t.Run("past a basic element", func(t *testing.T) {
+		err := ds.ValidateType(reflect.TypeOf(struct {
+			F []uint64 `ssz-max:"8" ssz-type:"list,uint64,uint32"`
+		}{}))
+		if !errors.Is(err, sszutils.ErrInvalidTag) || !strings.Contains(err.Error(), "dimensions") {
+			t.Errorf("err = %v, want an ErrInvalidTag about dimensions", err)
+		}
+	})
+
+	t.Run("past a container", func(t *testing.T) {
+		type inner struct{ A uint64 }
+		err := ds.ValidateType(reflect.TypeOf(struct {
+			F []inner `ssz-max:"8" ssz-type:"list,container,uint64"`
+		}{}))
+		if !errors.Is(err, sszutils.ErrInvalidTag) {
+			t.Errorf("err = %v, want ErrInvalidTag", err)
+		}
+	})
+
+	// One dimension per level is what the type has, so these stand.
+	for _, tt := range []struct {
+		name  string
+		value any
+	}{
+		{"exactly as many as the type nests", &struct {
+			F [][]uint64 `ssz-max:"8,8" ssz-type:"list,list,uint64"`
+		}{}},
+		{"fewer than the type nests", &struct {
+			F [][]uint64 `ssz-max:"8,8" ssz-type:"list"`
+		}{}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := ds.ValidateType(reflect.TypeOf(tt.value).Elem()); err != nil {
+				t.Errorf("a tag matching the type must be accepted: %v", err)
+			}
+		})
+	}
+}
+
 // A dimension whose length is fixed has no capacity to bound, so a limit
 // declared for it describes nothing. It used to be accepted and ignored, which
 // reads as a bounded list to whoever wrote the tag while the field encodes as a
