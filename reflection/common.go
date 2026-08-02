@@ -100,7 +100,7 @@ func NewReflectionCtx(ds sszutils.DynamicSpecs, logCb func(format string, args .
 		noFastSsz:    noFastSsz,
 		noDelegation: noDelegation,
 		maxDepth:     maxDepth,
-		maxLoop:      uint32(min(maxDepth, math.MaxUint32)),
+		maxLoop:      uint32(min(uint64(maxDepth), math.MaxUint32)),
 	}
 }
 
