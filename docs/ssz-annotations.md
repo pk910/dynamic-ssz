@@ -176,14 +176,18 @@ since encoding it would drop data. Decoding always yields the full length, so a
 short slice does not come back unchanged — what is encoded is the vector, not
 the slice handed to it.
 
-A dimension is either fixed or variable, so `ssz-size` and `ssz-max` cannot both
-describe the same one — a fixed length has no capacity left to bound, and
-declaring a limit for it is rejected. They combine freely across *different*
+A dimension is either fixed or variable, so `ssz-size` and `ssz-max` cannot
+disagree about the same one — a fixed length has no capacity left to bound, and
+declaring a *different* limit for it is rejected. A limit *equal* to the fixed
+length is accepted: it states what the type already says, and tags being
+positional, the common spelling that bounds an outer list repeats the inner
+vector's length in both families. The tags combine freely across *different*
 dimensions, which is the usual shape for a list of fixed-size elements:
 
 ```go
-Roots [][32]byte `ssz-size:"?,32" ssz-max:"64"`  // up to 64 roots, 32 bytes each
-Bad   []byte     `ssz-size:"32" ssz-max:"64"`    // rejected: one dimension, both tags
+Roots   [][32]byte `ssz-size:"?,32" ssz-max:"64"`     // up to 64 roots, 32 bytes each
+Commits [][48]byte `ssz-size:"?,48" ssz-max:"4096,48"` // same, with the inner 48 repeated
+Bad     []byte     `ssz-size:"32" ssz-max:"64"`       // rejected: fixed at 32, bounded at 64
 ```
 
 ### dynssz-size

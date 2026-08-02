@@ -3445,6 +3445,18 @@ func TestMaxOnFixedDimensionRejected(t *testing.T) {
 		{"list of fixed-size elements", &struct {
 			F [][32]byte `ssz-size:"?,32" ssz-max:"64"`
 		}{F: [][32]byte{{1}}}},
+		{"limit equal to the fixed length", &struct {
+			F [8]uint64 `ssz-max:"8"`
+		}{}},
+		{"limit repeated for the inner vector in both families", &struct {
+			// Tags are positional, so bounding the outer list makes both
+			// families name the inner dimension; repeating the vector's own
+			// length there states what the type already says.
+			F [][48]byte `ssz-size:"?,48" ssz-max:"64,48"`
+		}{F: [][48]byte{{1}}}},
+		{"equal size and max on a slice dimension", &struct {
+			F []byte `ssz-size:"4" ssz-max:"4"`
+		}{F: []byte{1, 2, 3, 4}}},
 		{"list of sized slices", &struct {
 			F [][]byte `ssz-size:"?,32" ssz-max:"64"`
 		}{F: [][]byte{make([]byte, 32)}}},

@@ -1417,7 +1417,11 @@ func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, dataType, 
 	var dataElemType types.Type
 	var length uint32
 
-	if err := ssztypes.RejectMaxOnVector(maxSizeHints, schemaType.String()); err != nil {
+	arrayLen := uint64(0)
+	if arrType, isArr := schemaType.(*types.Array); isArr {
+		arrayLen = uint64(arrType.Len())
+	}
+	if err := ssztypes.RejectMaxOnVector(sizeHints, maxSizeHints, arrayLen, schemaType.String()); err != nil {
 		return err
 	}
 

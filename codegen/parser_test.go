@@ -1057,9 +1057,9 @@ func TestBuildVectorDescriptor(t *testing.T) {
 	})
 
 	t.Run("VectorWithMaxOnFixedDimension", func(t *testing.T) {
-		// A limit on a dimension whose length is fixed describes nothing, and
-		// was silently ignored -- while reading as a bounded list to whoever
-		// wrote it.
+		// A diverging limit on a dimension whose length is fixed describes
+		// nothing, and was silently ignored -- while reading as a bounded list
+		// to whoever wrote it.
 		innerSlice := types.NewSlice(types.Typ[types.Uint8])
 		outerArr := types.NewArray(innerSlice, 10)
 		typeHints := []ssztypes.SszTypeHint{{}, {Type: ssztypes.SszVectorType}}
@@ -1067,6 +1067,14 @@ func TestBuildVectorDescriptor(t *testing.T) {
 		maxSizeHints := []ssztypes.SszMaxSizeHint{{}, {Size: 1024}}
 		if _, err := parser.buildTypeDescriptor(outerArr, outerArr, typeHints, sizeHints, maxSizeHints); err == nil {
 			t.Error("a limit on a fixed dimension should be rejected")
+		}
+
+		// A limit equal to the fixed length states what the type already
+		// says; tags being positional, the common outer-list spelling repeats
+		// the inner vector's length in both families.
+		equalMax := []ssztypes.SszMaxSizeHint{{}, {Size: 32}}
+		if _, err := parser.buildTypeDescriptor(outerArr, outerArr, typeHints, sizeHints, equalMax); err != nil {
+			t.Errorf("a limit equal to the fixed length must be accepted: %v", err)
 		}
 	})
 
