@@ -46,7 +46,9 @@ type BeaconBlockBody struct {
 }
 ```
 
-If you only use `dynssz-max` without `ssz-max`, the field has no fallback when the spec value is unavailable.
+If you only use `dynssz-max` without `ssz-max`, the field has no fallback: a spec that does not
+define the value leaves the type asking to be bounded by a number nobody supplies, which is
+reported when the type is analyzed rather than silently encoding as something else.
 
 ### Annotation Locations
 
@@ -131,19 +133,23 @@ Bad2 [][]uint64 `ssz-max:"16,8" dynssz-max:"?,ROW_LIMIT"`
 Good2 [][]uint64 `ssz-max:"?,8" dynssz-max:"?,ROW_LIMIT"`
 ```
 
-**A dimension cannot be `?` to both families.** `ssz-size:"?"` with
-`ssz-max:"?"` gives it neither a length nor a limit, which names no SSZ type —
+**A dimension that is `?` to both families is an unbounded list.** `ssz-size:"?"`
+with `ssz-max:"?"` says dynamic and unbounded, which is what leaving both tags
+off says. It encodes either way and has a hash tree root only under
+[extended types](extended-types.md#unbounded-lists-and-bitlists), since
 `List[T, N]` needs its `N` to merkleize (see
-[lists without a limit](supported-types.md#lists-without-a-limit)):
+[lists without a limit](supported-types.md#lists-without-a-limit)).
+
+Writing `?` is often the only way to reach a dimension further in, because the
+tags are positional. A dimension whose length comes from its Go type has to be
+skipped in both families to leave room for the ones that need a length and a
+limit:
 
 ```go
-// Rejected: dimension 0 is dynamic and unbounded at once.
-Bad [][]byte `ssz-size:"?,6" ssz-max:"?,8"`
+// A 2-vector of List[8] of Vector[4]uint8. Dimension 0 is `?` to both families
+// because the array type already gives it a length.
+Grid [2][][]byte `ssz-size:"?,?,4" ssz-max:"?,8"`
 ```
-
-Omitting a tag is not the same as writing `?`. A field with no `ssz-max` at all
-is described by its Go type, and an unbounded list stays expressible that way
-under [extended types](extended-types.md#unbounded-lists-and-bitlists).
 
 ### ssz-size
 
@@ -388,14 +394,11 @@ type Invalid struct {
 
     // Same for limits: bounded statically, unbounded dynamically
     Bad3 [][]uint64 `ssz-max:"16,8" dynssz-max:"?,ROW_LIMIT"`
-
-    // A dimension with neither a length nor a limit
-    Bad4 [][]byte `ssz-size:"?,6" ssz-max:"?,8"`
 }
 ```
 
 See [the `?` placeholder](#the--placeholder) for the rules behind the last
-three.
+two.
 
 ## Common Patterns
 
@@ -446,7 +449,11 @@ type Nested struct {
 
 ### "Spec value not found" / expression not resolved
 
-The `dynssz-*` expression references a spec value that was not provided. If an `ssz-*` fallback exists, it will be used. If not, the operation may fail.
+The `dynssz-*` expression references a spec value that was not provided. If a positive `ssz-*`
+fallback exists, it is used. If not, the type named a length or a limit that nothing supplies
+and analysis fails with `is not defined and has no positive static fallback` — the tag decides
+whether a dimension is a vector or a list, so a missing value is a missing number rather than a
+different SSZ type.
 
 ```go
 // Ensure all referenced values are provided

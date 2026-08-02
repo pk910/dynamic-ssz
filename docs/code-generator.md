@@ -687,7 +687,10 @@ func (s *State) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) ([]byte, err
 
 ### Static Expression Optimization
 
-With `-without-dynamic-expressions`, expressions are resolved at generation time:
+With `-without-dynamic-expressions`, the expressions are dropped and the static
+`ssz-*` values take their place. Generation never consults spec values of its
+own — the generated code resolves expressions against the specs it runs under,
+so what a generating machine has loaded cannot reach the output:
 
 ```go
 // Generated static method (assuming default preset values)
