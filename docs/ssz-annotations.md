@@ -165,7 +165,16 @@ type Data struct {
 }
 ```
 
-Strings are null-padded if shorter than the specified size.
+A value shorter than the declared length is zero-padded: the elements it does
+not hold are the zeros the vector is defined to contain. That is what lets a
+zero value encode at all — an empty slice in a vector field is the all-zero
+vector rather than a missing one, so `Block{}` serializes. Strings are
+null-padded the same way.
+
+A value *longer* than the declared length is rejected rather than truncated,
+since encoding it would drop data. Decoding always yields the full length, so a
+short slice does not come back unchanged — what is encoded is the vector, not
+the slice handed to it.
 
 A dimension is either fixed or variable, so `ssz-size` and `ssz-max` cannot both
 describe the same one — a fixed length has no capacity left to bound, and

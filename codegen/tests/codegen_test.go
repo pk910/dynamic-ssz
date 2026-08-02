@@ -3068,3 +3068,85 @@ func TestCodegenLimitlessListRootCommitsToLength(t *testing.T) {
 		}
 	}
 }
+
+// A slice standing in for a fixed vector may hold fewer elements than the
+// vector: the ones it does not hold are the zeros the vector is defined to
+// contain. That is what lets a zero value encode at all -- an empty slice in a
+// vector field is the all-zero vector, not a missing one. Holding more than the
+// vector's length is rejected instead, since encoding it would drop data.
+//
+// Both engines have to agree byte for byte, or a value would encode differently
+// depending on whether its type had generated methods.
+func TestVectorSliceShorterThanItsLength(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation())
+
+	// Held through the interface: without generated code the method does not
+	// exist, so naming it directly would not compile.
+	type fastsszMarshaler interface {
+		MarshalSSZTo(buf []byte) ([]byte, error)
+		HashTreeRoot() ([32]byte, error)
+	}
+
+	marshalBoth := func(t *testing.T, value *SimpleTypes1) ([]byte, error) {
+		t.Helper()
+
+		encoded, err := ds.MarshalSSZ(value)
+		generated, hasMethods := any(value).(fastsszMarshaler)
+		if !hasMethods {
+			return encoded, err
+		}
+
+		fromCode, codeErr := generated.MarshalSSZTo(nil)
+		if (err == nil) != (codeErr == nil) {
+			t.Fatalf("reflection err = %v, generated err = %v", err, codeErr)
+		}
+		if err == nil && !bytes.Equal(encoded, fromCode) {
+			t.Fatalf("reflection encoded %x, generated %x", encoded, fromCode)
+		}
+		if err == nil {
+			root, rootErr := ds.HashTreeRoot(value)
+			codeRoot, codeRootErr := generated.HashTreeRoot()
+			if rootErr != nil || codeRootErr != nil {
+				t.Fatalf("hash tree root: %v / %v", rootErr, codeRootErr)
+			}
+			if root != codeRoot {
+				t.Fatalf("reflection root %x, generated root %x", root, codeRoot)
+			}
+		}
+
+		return encoded, err
+	}
+
+	// A zero value has an empty slice in every vector field and must encode.
+	zero := SimpleTypes1{}
+	encodedZero, err := marshalBoth(t, &zero)
+	if err != nil {
+		t.Fatalf("a zero value must encode: %v", err)
+	}
+
+	// Vec8 is ssz-size:"4"; two elements leave two zeros.
+	short := SimpleTypes1{Vec8: []uint8{1, 2}}
+	encodedShort, err := marshalBoth(t, &short)
+	if err != nil {
+		t.Fatalf("a short vector slice must encode: %v", err)
+	}
+
+	// Padding is what the spelled-out zeros would have produced.
+	padded := SimpleTypes1{Vec8: []uint8{1, 2, 0, 0}}
+	encodedPadded, err := marshalBoth(t, &padded)
+	if err != nil {
+		t.Fatalf("MarshalSSZ: %v", err)
+	}
+	if !bytes.Equal(encodedShort, encodedPadded) {
+		t.Errorf("short slice encoded %x, want the padded %x", encodedShort, encodedPadded)
+	}
+	if len(encodedZero) != len(encodedPadded) {
+		t.Errorf("zero value encoded %d bytes, want the fixed %d", len(encodedZero), len(encodedPadded))
+	}
+
+	// More elements than the vector holds would have to be dropped.
+	long := SimpleTypes1{Vec8: []uint8{1, 2, 3, 4, 5}}
+	if _, err := marshalBoth(t, &long); !errors.Is(err, sszutils.ErrVectorLength) {
+		t.Errorf("err = %v, want ErrVectorLength", err)
+	}
+}
