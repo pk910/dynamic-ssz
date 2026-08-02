@@ -5490,6 +5490,105 @@ func TestRecursiveTypeAcceptance(t *testing.T) {
 	}
 }
 
+// The nesting bound counts one level per descriptor on a recursive cycle, so
+// the flag that drives it must cover exactly the cycle: every structural
+// member (containers and the lists/optionals that close the cycle), nothing
+// outside it, and no type wrappers (they attach tags without adding a level).
+// Both engines count from this flag; marking too much or too little would
+// silently change which values the bound accepts.
+func TestRecursionMemberMarking(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	flagged := func(desc *TypeDescriptor) bool {
+		return desc.SszTypeFlags&SszTypeFlagRecursionMember != 0
+	}
+
+	t.Run("cycle_members_flagged", func(t *testing.T) {
+		// The value-typed root is not on the cycle: nesting runs through the
+		// list's *pointer* element descriptor, and a walk enters the root only
+		// once. Flagging it would charge one level per walk, not per trip.
+		desc, err := cache.GetTypeDescriptor(reflect.TypeFor[recCycleThroughPtrList](), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if flagged(desc) {
+			t.Error("the value-typed root is entered once per walk, not per trip")
+		}
+		listDesc := desc.ContainerDesc.Fields[1].Type
+		if !flagged(listDesc) {
+			t.Error("the list closing the cycle must be flagged")
+		}
+		if !flagged(listDesc.ElemDesc) {
+			t.Error("the pointer element on the cycle must be flagged")
+		}
+		if valueDesc := desc.ContainerDesc.Fields[0].Type; flagged(valueDesc) {
+			t.Error("a leaf field off the cycle must not be flagged")
+		}
+	})
+
+	t.Run("shell_outside_cycle_unflagged", func(t *testing.T) {
+		desc, err := cache.GetTypeDescriptor(reflect.TypeFor[recCycleShell](), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if flagged(desc) {
+			t.Error("a container that merely holds a recursive type is not on the cycle")
+		}
+		innerDesc := desc.ContainerDesc.Fields[0].Type
+		if flagged(innerDesc) {
+			t.Error("the embedded value-typed container is entered once, not per trip")
+		}
+		if !flagged(innerDesc.ContainerDesc.Fields[1].Type) {
+			t.Error("the cycle inside the embedded type must stay flagged")
+		}
+	})
+
+	t.Run("acyclic_graph_untouched", func(t *testing.T) {
+		desc, err := cache.GetTypeDescriptor(reflect.TypeFor[recAcyclicHolder](), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		var walk func(d *TypeDescriptor)
+		seen := map[*TypeDescriptor]struct{}{}
+		walk = func(d *TypeDescriptor) {
+			if d == nil {
+				return
+			}
+			if _, ok := seen[d]; ok {
+				return
+			}
+			seen[d] = struct{}{}
+			if flagged(d) {
+				t.Errorf("descriptor %v of an acyclic type must not be flagged", d.Kind)
+			}
+			if d.ContainerDesc != nil {
+				for i := range d.ContainerDesc.Fields {
+					walk(d.ContainerDesc.Fields[i].Type)
+				}
+			}
+			walk(d.ElemDesc)
+		}
+		walk(desc)
+	})
+
+	// The wrapper-on-cycle case (a TypeWrapper must not count a level) is
+	// covered in the root package tests: the wrapper is classified by its
+	// dynssz-package generic name, which cannot be constructed from here.
+}
+
+type recCycleShell struct {
+	Inner recCycleThroughPtrList
+}
+
+type recAcyclicHolder struct {
+	A recAcyclicInner
+	B []recAcyclicInner `ssz-max:"4"`
+}
+
+type recAcyclicInner struct {
+	V []uint64 `ssz-max:"4"`
+}
+
 type recCycleThroughList struct {
 	Value uint64
 	Items []recCycleThroughList `ssz-max:"4"`

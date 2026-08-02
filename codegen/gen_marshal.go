@@ -74,7 +74,7 @@ func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 		exprVars:    newExprVarGenerator("expr", typePrinter, options),
 	}
 	ctx.recursion = newRecursionBound(rootTypeDesc, options)
-	ctx.depthAware = ctx.recursion.applies(rootTypeDesc)
+	ctx.depthAware = ctx.recursion.threads(rootTypeDesc)
 	ctx.staticSizeVars = newStaticSizeVarGenerator(typePrinter, options, ctx.exprVars)
 
 	ctx.exprVars.retVars = "dst, err"
@@ -296,6 +296,10 @@ func (ctx *marshalContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 		ctx.usedDynSpecs = true
 		return nil
 	}
+
+	// A cycle member reached without delegation is inlined here, so the level
+	// it counts is charged inline (see emitInlineDepthCharge).
+	emitInlineDepthCharge(ctx.depthAware, isRoot, isView, ctx.recursion, desc, ctx.appendCode, indent, depthFailNilErr(ctx.recursion))
 
 	switch desc.SszType {
 	case ssztypes.SszBoolType:

@@ -100,7 +100,7 @@ func (s *sizeFnPtr) getFnCall(varName string) string {
 func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Builder, typePrinter *TypePrinter, viewName string, options *CodeGeneratorOptions) error {
 	ctx := newSizeContext(typePrinter, options)
 	ctx.recursion = newRecursionBound(rootTypeDesc, options)
-	ctx.depthAware = ctx.recursion.applies(rootTypeDesc)
+	ctx.depthAware = ctx.recursion.threads(rootTypeDesc)
 
 	// Generate main function signature
 	typeName := typePrinter.TypeString(rootTypeDesc)
@@ -291,6 +291,10 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 		}
 		ctx.appendCode(indent, "if %s == nil {\n\t%s = new(%s)\n}\n", varName, varName, ctx.typePrinter.InnerTypeString(desc))
 	}
+
+	// A cycle member reached without delegation is inlined here, so the level
+	// it counts is charged inline (see emitInlineDepthCharge).
+	emitInlineDepthCharge(ctx.depthAware, isRoot, isView, ctx.recursion, desc, ctx.appendCode, indent, "0")
 
 	switch desc.SszType {
 	case ssztypes.SszBoolType:

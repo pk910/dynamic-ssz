@@ -3075,11 +3075,10 @@ func TestParserUnionSelectorRangeEnforced(t *testing.T) {
 	}
 }
 
-// TestRecursionCycleTypes pins which types are reported as lying on a
-// recursive cycle. Every member has to be reported, not just the one the walk
-// happens to close on: the generated methods thread a nesting depth between
-// them, and a call through an unreported member would restart the count and
-// defeat the bound.
+// TestRecursionCycleTypes pins which types get depth-carrying methods. Every
+// type a cycle runs through — and every type a cycle sits under — has to
+// thread the depth, not just the one the walk happens to close on: a call
+// through a type that dropped it would restart the count and defeat the bound.
 func TestRecursionCycleTypes(t *testing.T) {
 	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
 	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
@@ -3098,9 +3097,8 @@ func TestRecursionCycleTypes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("analyze %s: %v", typeName, err)
 		}
-		_, cyclic := recursionCycleTypes(desc)[recursionTypeKey(desc)]
 
-		return cyclic
+		return newRecursionBound(desc, &CodeGeneratorOptions{}).threads(desc)
 	}
 
 	tests := []struct {
@@ -3138,9 +3136,7 @@ func TestRecursionCycleTypes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("analyze %v: %v", rt, err)
 			}
-			_, cyclic := recursionCycleTypes(desc)[recursionTypeKey(desc)]
-
-			return cyclic
+			return newRecursionBound(desc, &CodeGeneratorOptions{}).threads(desc)
 		}
 
 		if !reflectInCycle(reflect.TypeFor[reflectRecursionNode]()) {

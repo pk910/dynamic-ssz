@@ -310,6 +310,9 @@ func TestCodegenRecursiveTypes(t *testing.T) {
 	t.Run("ContainerClosedCycleDefaultSpecs", func(t *testing.T) {
 		testCodegenPayloadByReflection(t, RecursiveTree_Payload, nil)
 	})
+	t.Run("InlineMemberCycle", func(t *testing.T) {
+		testCodegenPayloadByReflection(t, RecursiveInlineHolder_Payload, nil)
+	})
 }
 
 // TestCodegenAnnotatedTypes tests root-level annotated non-struct types
@@ -2376,6 +2379,62 @@ func TestCodegenRecursionDepthBound(t *testing.T) {
 		if _, err := treeDs.MarshalSSZ(tree); !errors.Is(err, sszutils.ErrMaxDepthExceeded) {
 			t.Fatalf("err = %v, want ErrMaxDepthExceeded", err)
 		}
+	})
+
+	t.Run("engine_parity", func(t *testing.T) {
+		// Both engines count one level per cycle member entered, so the first
+		// rejected chain length must be identical — a value one engine emits
+		// within the bound must never be refused by the other. Measured, not
+		// assumed: the counts have diverged before without any test noticing.
+		refl := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation())
+		depthErr := func(err error) bool { return errors.Is(err, sszutils.ErrMaxDepthExceeded) }
+
+		firstFail := func(fails func(n int) bool) int {
+			lo, hi := 0, 4096
+			for lo < hi {
+				mid := (lo + hi) / 2
+				if fails(mid) {
+					hi = mid
+				} else {
+					lo = mid + 1
+				}
+			}
+			return lo
+		}
+
+		t.Run("self_cycle", func(t *testing.T) {
+			r := firstFail(func(n int) bool { _, err := refl.MarshalSSZ(deepValue(n)); return depthErr(err) })
+			c := firstFail(func(n int) bool { _, err := ds.MarshalSSZ(deepValue(n)); return depthErr(err) })
+			if r != c {
+				t.Fatalf("first rejected chain: reflection %d, codegen %d", r, c)
+			}
+		})
+
+		t.Run("decode", func(t *testing.T) {
+			r := firstFail(func(n int) bool { return depthErr(refl.UnmarshalSSZ(new(RecursiveNode), deepPayload(n))) })
+			c := firstFail(func(n int) bool { return depthErr(ds.UnmarshalSSZ(new(RecursiveNode), deepPayload(n))) })
+			if r != c {
+				t.Fatalf("first rejected payload: reflection %d, codegen %d", r, c)
+			}
+		})
+
+		t.Run("inline_member_cycle", func(t *testing.T) {
+			// The cycle member without generated methods is inlined into the
+			// holder's code; the level it counts must be charged there too, or
+			// the generated engine would accept deeper values than reflection.
+			deepInline := func(n int) *RecursiveInlineHolder {
+				cur := &RecursiveInlineHolder{Val: 1}
+				for range n {
+					cur = &RecursiveInlineHolder{Val: 1, Next: RecursiveInlineMember{Links: []*RecursiveInlineHolder{cur}}}
+				}
+				return cur
+			}
+			r := firstFail(func(n int) bool { _, err := refl.MarshalSSZ(deepInline(n)); return depthErr(err) })
+			c := firstFail(func(n int) bool { _, err := ds.MarshalSSZ(deepInline(n)); return depthErr(err) })
+			if r != c {
+				t.Fatalf("first rejected chain: reflection %d, codegen %d", r, c)
+			}
+		})
 	})
 
 	t.Run("within_bound_still_works", func(t *testing.T) {

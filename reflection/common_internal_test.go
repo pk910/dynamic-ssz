@@ -51,7 +51,7 @@ func TestMarshalUnionValidationErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			enc := sszutils.NewBufferEncoder(nil)
-			err := ctx.marshalUnion(td, reflect.ValueOf(tt.value), enc, 0)
+			err := ctx.marshalUnion(td, reflect.ValueOf(tt.value), enc, reflectionDepth{})
 			if err == nil {
 				t.Fatal("expected error")
 			}
@@ -133,7 +133,7 @@ func TestMarshalDynamicVectorOverLength(t *testing.T) {
 	ctx := newCtx()
 	enc := sszutils.NewBufferEncoder(nil)
 	over := reflect.ValueOf([]dynElem{{}, {}, {}}) // 3 > declared length 2
-	if err := ctx.marshalDynamicVector(vecDesc, over, enc, 0); !errors.Is(err, sszutils.ErrVectorLength) {
+	if err := ctx.marshalDynamicVector(vecDesc, over, enc, reflectionDepth{}); !errors.Is(err, sszutils.ErrVectorLength) {
 		t.Fatalf("expected ErrVectorLength, got %v", err)
 	}
 }

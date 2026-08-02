@@ -42,7 +42,21 @@ import (
 //   - Primitive type decoding (bool, uint8, uint16, uint32, uint64)
 //   - Delegation to specialized functions for composite types (structs, arrays, slices)
 //   - Validation that consumed bytes match expected sizes
-func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth int) error { //nolint:gocyclo // SSZ unmarshaling handles many type cases
+func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth reflectionDepth) error { //nolint:gocyclo // SSZ unmarshaling handles many type cases
+	// Entering a recursive cycle's member is the only step that can repeat
+	// under the input's control, so it is the only step the nesting bound
+	// counts. The value checked is the count of cycle levels above this one —
+	// the same value a generated depth-carrying method receives — so both
+	// engines accept and reject at identical nesting depths. idt advances at
+	// every level but only feeds log indentation.
+	depth.idt++
+	if targetType.SszTypeFlags&ssztypes.SszTypeFlagRecursionMember != 0 {
+		if depth.loop > ctx.maxLoop {
+			return sszutils.ErrMaxDepthExceededFn(ctx.maxDepth)
+		}
+		depth.loop++
+	}
+
 	if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && targetType.SszType != ssztypes.SszOptionalType && targetType.SszType != ssztypes.SszOptionalListType {
 		// target is a pointer type, resolve type & value to actual value type
 		if targetValue.IsNil() {
@@ -54,7 +68,7 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 	}
 
 	if ctx.verbose {
-		ctx.logCb("%stype: %s\t kind: %v\n", strings.Repeat(" ", depth*2), targetType.Type.Name(), targetType.Kind)
+		ctx.logCb("%stype: %s\t kind: %v\n", strings.Repeat(" ", int(depth.idt)*2), targetType.Type.Name(), targetType.Kind)
 	}
 
 	// Try DynamicView methods first - they take precedence over all other methods.
@@ -335,16 +349,16 @@ func delegationBuffer(targetType *ssztypes.TypeDescriptor, decoder sszutils.Deco
 //   - error: An error if decoding fails or data is malformed
 //
 // The function validates that the Data field is present and unmarshals the wrapped value using its type descriptor.
-func (ctx *ReflectionCtx) unmarshalTypeWrapper(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth int) error {
+func (ctx *ReflectionCtx) unmarshalTypeWrapper(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth reflectionDepth) error {
 	if ctx.verbose {
-		ctx.logCb("%sunmarshalTypeWrapper: %s\n", strings.Repeat(" ", depth*2), targetType.Type.Name())
+		ctx.logCb("%sunmarshalTypeWrapper: %s\n", strings.Repeat(" ", int(depth.idt)*2), targetType.Type.Name())
 	}
 
 	// Get the Data field from the TypeWrapper
 	dataField := targetValue.Field(0)
 
 	// Unmarshal the wrapped value using its type descriptor
-	err := ctx.unmarshalType(targetType.ElemDesc, dataField, decoder, depth+1)
+	err := ctx.unmarshalType(targetType.ElemDesc, dataField, decoder, depth)
 	if err != nil {
 		return err
 	}
@@ -373,7 +387,7 @@ func (ctx *ReflectionCtx) unmarshalTypeWrapper(targetType *ssztypes.TypeDescript
 //
 // The function validates offset integrity to ensure variable fields don't overlap
 // and that all data is consumed correctly.
-func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth int) error {
+func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth reflectionDepth) error {
 	// Fast path: containers with no dynamic fields (e.g. Validator)
 	if len(targetType.ContainerDesc.DynFields) == 0 {
 		sszSize := uint32(decoder.GetLength())
@@ -388,7 +402,7 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 			expectedPos := decoder.GetPosition() + fieldSize
 
 			fieldValue := targetValue.Field(int(field.FieldIndex))
-			if err := ctx.unmarshalType(field.Type, fieldValue, decoder, depth+1); err != nil {
+			if err := ctx.unmarshalType(field.Type, fieldValue, decoder, depth); err != nil {
 				return sszutils.ErrorWithPath(err, field.Name)
 			}
 
@@ -432,13 +446,13 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 		// DynFields.
 		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 			// static size field
-			// fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", depth*2+1), i, offset, offset+fieldSize, fieldSize, field.Name)
+			// fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", int(depth.idt)*2+1), i, offset, offset+fieldSize, fieldSize, field.Name)
 			expectedPos := decoder.GetPosition() + fieldSize
 
 			// Use FieldIndex to access the runtime struct's field, which may differ
 			// from the schema field index when using view descriptors.
 			fieldValue := targetValue.Field(int(field.FieldIndex))
-			err := ctx.unmarshalType(field.Type, fieldValue, decoder, depth+1)
+			err := ctx.unmarshalType(field.Type, fieldValue, decoder, depth)
 			if err != nil {
 				return sszutils.ErrorWithPath(err, field.Name)
 			}
@@ -450,7 +464,7 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 			// dynamic size field
 			// get the 4 byte offset where the fields ssz range starts
 
-			// fmt.Printf("%sfield %d:\t offset [%v:%v] %v\t %v \t %v\n", strings.Repeat(" ", depth*2+1), i, offset, offset+fieldSize, fieldSize, field.Name, fieldOffset)
+			// fmt.Printf("%sfield %d:\t offset [%v:%v] %v\t %v \t %v\n", strings.Repeat(" ", int(depth.idt)*2+1), i, offset, offset+fieldSize, fieldSize, field.Name, fieldOffset)
 
 			if canSeek {
 				decoder.SkipBytes(4)
@@ -516,7 +530,7 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 				)
 			}
 
-			// fmt.Printf("%sfield %d:\t dynamic [%v:%v]\t %v\n", strings.Repeat(" ", depth*2+1), field.Index[0], startOffset, endOffset, field.Name)
+			// fmt.Printf("%sfield %d:\t dynamic [%v:%v]\t %v\n", strings.Repeat(" ", int(depth.idt)*2+1), field.Index[0], startOffset, endOffset, field.Name)
 
 			if openField {
 				decoder.PushOpenLimit()
@@ -529,7 +543,7 @@ func (ctx *ReflectionCtx) unmarshalContainer(targetType *ssztypes.TypeDescriptor
 			// Use FieldIndex to access the runtime struct's field, which may differ
 			// from the schema field index when using view descriptors.
 			fieldValue := targetValue.Field(int(fieldDescriptor.FieldIndex))
-			err := ctx.unmarshalType(fieldDescriptor.Type, fieldValue, decoder, depth+1)
+			err := ctx.unmarshalType(fieldDescriptor.Type, fieldValue, decoder, depth)
 			if err != nil {
 				// Pop the limit before returning so a failed field cannot leave
 				// the decoder clamped to its stale region (observable when a
@@ -620,7 +634,7 @@ func expandSliceValue(target reflect.Value, sliceType reflect.Type, size int) re
 //   - Byte arrays use unsafe.Slice for efficient bulk copying without allocation
 //   - Pointer elements are automatically initialized
 //   - Each element must consume exactly itemSize bytes
-func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth int) error {
+func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth reflectionDepth) error {
 	vecLen := int64(targetType.Len)
 	if vecLen > math.MaxInt {
 		return sszutils.ErrPlatformOverflowFn("vector length", targetType.Len)
@@ -724,7 +738,7 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 //   - Offsets are monotonically increasing
 //   - No offset points outside the data bounds
 //   - Each element consumes exactly the expected bytes
-func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth int) error {
+func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth reflectionDepth) error {
 	dynVecLen := int64(targetType.Len)
 	if dynVecLen > math.MaxInt {
 		return sszutils.ErrPlatformOverflowFn("dynamic vector length", targetType.Len)
@@ -837,7 +851,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 		} else {
 			decoder.PushLimit(int(endOffset - startOffset))
 		}
-		err := ctx.unmarshalType(fieldType, itemVal, decoder, depth+1)
+		err := ctx.unmarshalType(fieldType, itemVal, decoder, depth)
 		if err != nil {
 			// Pop before returning so a failed element cannot leave the
 			// decoder clamped to its stale region on reuse.
@@ -864,7 +878,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 
 // unmarshalFixedElements decodes a sequence of fixed-size elements into target slice/array positions.
 // It handles both pointer and non-pointer element types.
-func (ctx *ReflectionCtx) unmarshalFixedElements(fieldType *ssztypes.TypeDescriptor, newValue reflect.Value, count int, decoder sszutils.Decoder, depth int) error {
+func (ctx *ReflectionCtx) unmarshalFixedElements(fieldType *ssztypes.TypeDescriptor, newValue reflect.Value, count int, decoder sszutils.Decoder, depth reflectionDepth) error {
 	fieldSize := int64(fieldType.Size)
 	if fieldSize > math.MaxInt {
 		return sszutils.ErrPlatformOverflowFn("field size", fieldType.Size)
@@ -885,7 +899,7 @@ func (ctx *ReflectionCtx) unmarshalFixedElements(fieldType *ssztypes.TypeDescrip
 
 		expectedPos := decoder.GetPosition() + itemSize
 
-		if err := ctx.unmarshalType(fieldType, itemVal, decoder, depth+1); err != nil {
+		if err := ctx.unmarshalType(fieldType, itemVal, decoder, depth); err != nil {
 			return sszutils.ErrorWithPathf(err, "[%d]", i)
 		}
 
@@ -917,17 +931,7 @@ func (ctx *ReflectionCtx) unmarshalFixedElements(fieldType *ssztypes.TypeDescrip
 // The function:
 //   - Uses optimized copying for byte lists
 //   - Validates that each element consumes exactly the expected bytes
-func (ctx *ReflectionCtx) unmarshalList(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth int) error {
-	// Only a list, an optional or an optional-list can legalize a recursive
-	// cycle -- they are the boundaries the type cache counts when deciding
-	// whether a cycle is finite, so every trip round a cycle crosses one of
-	// them. Bounding them therefore bounds the recursion, and nothing else pays
-	// for it. Without the bound a deeply nested value exhausts the goroutine
-	// stack, which Go turns into an unrecoverable process abort.
-	if depth > ctx.maxDepth {
-		return sszutils.ErrMaxDepthExceededFn(ctx.maxDepth)
-	}
-
+func (ctx *ReflectionCtx) unmarshalList(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth reflectionDepth) error {
 	fieldType := targetType.ElemDesc
 
 	elemSize := int64(fieldType.Size)
@@ -1012,7 +1016,7 @@ func (ctx *ReflectionCtx) unmarshalList(targetType *ssztypes.TypeDescriptor, tar
 // front, which also means a hostile input cannot drive an allocation larger than
 // the data actually delivered. A trailing partial element surfaces as
 // ErrUnexpectedEOF instead of ErrListNotAligned.
-func (ctx *ReflectionCtx) unmarshalListUntilEOF(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, itemSize, depth int) error {
+func (ctx *ReflectionCtx) unmarshalListUntilEOF(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, itemSize int, depth reflectionDepth) error {
 	fieldType := targetType.ElemDesc
 
 	maxItems := -1
@@ -1123,7 +1127,7 @@ func (ctx *ReflectionCtx) unmarshalListUntilEOF(targetType *ssztypes.TypeDescrip
 		itemVal := newValue.Index(count)
 
 		expectedPos := decoder.GetPosition() + itemSize
-		if err := ctx.unmarshalType(fieldType, itemVal, decoder, depth+1); err != nil {
+		if err := ctx.unmarshalType(fieldType, itemVal, decoder, depth); err != nil {
 			return sszutils.ErrorWithPathf(err, "[%d]", count)
 		}
 		if decoder.GetPosition() != expectedPos {
@@ -1176,17 +1180,7 @@ func dynamicListPreallocation(count int, elemSize uint64) int {
 //   - Offsets are monotonically increasing
 //   - No offset points outside the data bounds
 //   - Each element consumes exactly the expected bytes
-func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth int) error {
-	// Only a list, an optional or an optional-list can legalize a recursive
-	// cycle -- they are the boundaries the type cache counts when deciding
-	// whether a cycle is finite, so every trip round a cycle crosses one of
-	// them. Bounding them therefore bounds the recursion, and nothing else pays
-	// for it. Without the bound a deeply nested value exhausts the goroutine
-	// stack, which Go turns into an unrecoverable process abort.
-	if depth > ctx.maxDepth {
-		return sszutils.ErrMaxDepthExceededFn(ctx.maxDepth)
-	}
-
+func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth reflectionDepth) error {
 	// Emptiness is a semantic discriminator here, not just validation, so in an
 	// open region it has to be answered by probing the reader rather than by
 	// comparing against a region length.
@@ -1370,7 +1364,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 			} else {
 				decoder.PushLimit(int(endOffset - startOffset))
 			}
-			err := ctx.unmarshalType(fieldType, itemVal, decoder, depth+1)
+			err := ctx.unmarshalType(fieldType, itemVal, decoder, depth)
 			if err != nil {
 				// Pop before returning so a failed element cannot leave the
 				// decoder clamped to its stale region on reuse.
@@ -1491,7 +1485,7 @@ func (ctx *ReflectionCtx) unmarshalBitlist(targetType *ssztypes.TypeDescriptor, 
 //
 // Returns:
 //   - error: An error if decoding fails
-func (ctx *ReflectionCtx) unmarshalCompatibleUnion(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth int) error {
+func (ctx *ReflectionCtx) unmarshalCompatibleUnion(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth reflectionDepth) error {
 	if decoder.GetLength() < 1 {
 		return sszutils.ErrUnionSelectorEOFFn()
 	}
@@ -1512,7 +1506,7 @@ func (ctx *ReflectionCtx) unmarshalCompatibleUnion(targetType *ssztypes.TypeDesc
 	variantValue := reflect.New(variantDesc.Type).Elem()
 
 	// Unmarshal the data
-	err = ctx.unmarshalType(variantDesc, variantValue, decoder, depth+1)
+	err = ctx.unmarshalType(variantDesc, variantValue, decoder, depth)
 	if err != nil {
 		return sszutils.ErrorWithPathf(err, "[v:%d]", variant)
 	}
@@ -1541,7 +1535,7 @@ func (ctx *ReflectionCtx) unmarshalCompatibleUnion(targetType *ssztypes.TypeDesc
 //
 // Returns:
 //   - error: An error if decoding fails
-func (ctx *ReflectionCtx) unmarshalUnion(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth int) error {
+func (ctx *ReflectionCtx) unmarshalUnion(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth reflectionDepth) error {
 	if decoder.GetLength() < 1 {
 		return sszutils.ErrUnionSelectorEOFFn()
 	}
@@ -1564,7 +1558,7 @@ func (ctx *ReflectionCtx) unmarshalUnion(targetType *ssztypes.TypeDescriptor, ta
 
 	variantValue := reflect.New(variantDesc.Type).Elem()
 
-	err = ctx.unmarshalType(variantDesc, variantValue, decoder, depth+1)
+	err = ctx.unmarshalType(variantDesc, variantValue, decoder, depth)
 	if err != nil {
 		return sszutils.ErrorWithPathf(err, "[v:%d]", variant)
 	}
@@ -1585,17 +1579,7 @@ func (ctx *ReflectionCtx) unmarshalUnion(targetType *ssztypes.TypeDescriptor, ta
 //
 // Returns:
 //   - error: An error if decoding fails
-func (ctx *ReflectionCtx) unmarshalOptional(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth int) error {
-	// Only a list, an optional or an optional-list can legalize a recursive
-	// cycle -- they are the boundaries the type cache counts when deciding
-	// whether a cycle is finite, so every trip round a cycle crosses one of
-	// them. Bounding them therefore bounds the recursion, and nothing else pays
-	// for it. Without the bound a deeply nested value exhausts the goroutine
-	// stack, which Go turns into an unrecoverable process abort.
-	if depth > ctx.maxDepth {
-		return sszutils.ErrMaxDepthExceededFn(ctx.maxDepth)
-	}
-
+func (ctx *ReflectionCtx) unmarshalOptional(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth reflectionDepth) error {
 	if decoder.GetLength() < 1 {
 		return sszutils.ErrOptionalFlagEOFFn()
 	}
@@ -1622,7 +1606,7 @@ func (ctx *ReflectionCtx) unmarshalOptional(targetType *ssztypes.TypeDescriptor,
 		targetValue.Set(newValue)
 	}
 
-	err = ctx.unmarshalType(targetType.ElemDesc, targetValue.Elem(), decoder, depth+1)
+	err = ctx.unmarshalType(targetType.ElemDesc, targetValue.Elem(), decoder, depth)
 	if err != nil {
 		return err
 	}
@@ -1645,17 +1629,7 @@ func (ctx *ReflectionCtx) unmarshalOptional(targetType *ssztypes.TypeDescriptor,
 //
 // Returns:
 //   - error: An error if decoding fails
-func (ctx *ReflectionCtx) unmarshalOptionalList(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth int) error {
-	// Only a list, an optional or an optional-list can legalize a recursive
-	// cycle -- they are the boundaries the type cache counts when deciding
-	// whether a cycle is finite, so every trip round a cycle crosses one of
-	// them. Bounding them therefore bounds the recursion, and nothing else pays
-	// for it. Without the bound a deeply nested value exhausts the goroutine
-	// stack, which Go turns into an unrecoverable process abort.
-	if depth > ctx.maxDepth {
-		return sszutils.ErrMaxDepthExceededFn(ctx.maxDepth)
-	}
-
+func (ctx *ReflectionCtx) unmarshalOptionalList(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth reflectionDepth) error {
 	// An empty region means "absent", so emptiness is a semantic discriminator
 	// and must be answered by probing the reader when the length is unknown.
 	lengthKnown := decoder.LengthKnown()
@@ -1697,7 +1671,7 @@ func (ctx *ReflectionCtx) unmarshalOptionalList(targetType *ssztypes.TypeDescrip
 		targetValue.Set(newValue)
 	}
 
-	if err := ctx.unmarshalType(elemDesc, targetValue.Elem(), decoder, depth+1); err != nil {
+	if err := ctx.unmarshalType(elemDesc, targetValue.Elem(), decoder, depth); err != nil {
 		return sszutils.ErrorWithPathf(err, "[0]")
 	}
 	return nil
@@ -1713,7 +1687,7 @@ func (ctx *ReflectionCtx) unmarshalOptionalList(targetType *ssztypes.TypeDescrip
 //
 // Returns:
 //   - error: An error if decoding fails
-func (ctx *ReflectionCtx) unmarshalBigInt(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, _ int) error {
+func (ctx *ReflectionCtx) unmarshalBigInt(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, _ reflectionDepth) error {
 	bigInt := new(big.Int)
 
 	// The magnitude has no internal framing, so the payload runs to the region

@@ -20,15 +20,16 @@ import (
 type SszTypeFlag uint16
 
 const (
-	SszTypeFlagIsDynamic      SszTypeFlag = 1 << iota // Whether the type is a dynamic type (or has nested dynamic types)
-	SszTypeFlagHasLimit                               // Whether the type has a max size tag
-	SszTypeFlagHasDynamicSize                         // Whether this type or any of its nested types uses dynamic spec size value that differs from the default
-	SszTypeFlagHasDynamicMax                          // Whether this type or any of its nested types uses dynamic spec max value that differs from the default
-	SszTypeFlagHasSizeExpr                            // Whether this type or any of its nested types uses a dynamic expression to calculate the size or max size
-	SszTypeFlagHasMaxExpr                             // Whether this type or any of its nested types uses a dynamic expression to calculate the max size
-	SszTypeFlagHasBitSize                             // Whether the type has a bit size tag
-	SszTypeFlagHasNoneVariant                         // Whether a classic union declares the None option at selector 0
-	SszTypeFlagNoSszRoot                              // Whether the type is a list or bitlist without a limit, which has no SSZ hash tree root
+	SszTypeFlagIsDynamic       SszTypeFlag = 1 << iota // Whether the type is a dynamic type (or has nested dynamic types)
+	SszTypeFlagHasLimit                                // Whether the type has a max size tag
+	SszTypeFlagHasDynamicSize                          // Whether this type or any of its nested types uses dynamic spec size value that differs from the default
+	SszTypeFlagHasDynamicMax                           // Whether this type or any of its nested types uses dynamic spec max value that differs from the default
+	SszTypeFlagHasSizeExpr                             // Whether this type or any of its nested types uses a dynamic expression to calculate the size or max size
+	SszTypeFlagHasMaxExpr                              // Whether this type or any of its nested types uses a dynamic expression to calculate the max size
+	SszTypeFlagHasBitSize                              // Whether the type has a bit size tag
+	SszTypeFlagHasNoneVariant                          // Whether a classic union declares the None option at selector 0
+	SszTypeFlagNoSszRoot                               // Whether the type is a list or bitlist without a limit, which has no SSZ hash tree root
+	SszTypeFlagRecursionMember                         // Whether the type lies on a recursive cycle and counts as a level against the nesting bound
 )
 
 // SszCompatFlag is a flag indicating whether a type implements a specific SSZ compatibility interface

@@ -60,7 +60,7 @@ func TestMarshalVectorLenOverflow(t *testing.T) {
 	val := reflect.ValueOf(make([]byte, 0))
 	enc := sszutils.NewBufferEncoder(nil)
 
-	err := ctx.marshalType(td, val, enc, 0)
+	err := ctx.marshalType(td, val, enc, reflectionDepth{})
 	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
 		t.Fatalf("expected overflow error for Len, got: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestMarshalVectorElemSizeOverflow(t *testing.T) {
 	val := reflect.ValueOf(make([]byte, 2))
 	enc := sszutils.NewBufferEncoder(nil)
 
-	err := ctx.marshalType(td, val, enc, 0)
+	err := ctx.marshalType(td, val, enc, reflectionDepth{})
 	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
 		t.Fatalf("expected overflow error for ElemDesc.Size, got: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestMarshalDynamicVectorLenOverflow(t *testing.T) {
 	val := reflect.ValueOf(make([][]byte, 0))
 	enc := sszutils.NewBufferEncoder(nil)
 
-	err := ctx.marshalType(td, val, enc, 0)
+	err := ctx.marshalType(td, val, enc, reflectionDepth{})
 	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
 		t.Fatalf("expected overflow error, got: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestUnmarshalTypeFastsszSizeOverflow(t *testing.T) {
 	val := reflect.New(td.Type).Elem()
 	dec := sszutils.NewBufferDecoder(make([]byte, 200))
 
-	err := ctx.unmarshalType(td, val, dec, 0)
+	err := ctx.unmarshalType(td, val, dec, reflectionDepth{})
 	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
 		t.Fatalf("expected overflow error for fastssz Size, got: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestUnmarshalTypeDynamicSizeOverflow(t *testing.T) {
 	val := reflect.New(td.Type).Elem()
 	dec := sszutils.NewBufferDecoder(make([]byte, 200))
 
-	err := ctx.unmarshalType(td, val, dec, 0)
+	err := ctx.unmarshalType(td, val, dec, reflectionDepth{})
 	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
 		t.Fatalf("expected overflow error for dynamic unmarshal Size, got: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestUnmarshalVectorLenOverflow(t *testing.T) {
 	dec := sszutils.NewBufferDecoder(make([]byte, 200))
 	val := reflect.New(td.Type).Elem()
 
-	err := ctx.unmarshalType(td, val, dec, 0)
+	err := ctx.unmarshalType(td, val, dec, reflectionDepth{})
 	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
 		t.Fatalf("expected overflow error for vector Len, got: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestUnmarshalDynamicVectorLenOverflow(t *testing.T) {
 	dec := sszutils.NewBufferDecoder(make([]byte, 1000))
 	val := reflect.New(td.Type).Elem()
 
-	err := ctx.unmarshalType(td, val, dec, 0)
+	err := ctx.unmarshalType(td, val, dec, reflectionDepth{})
 	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
 		t.Fatalf("expected overflow error for dynamic vector Len, got: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestUnmarshalFixedElementsSizeOverflow(t *testing.T) {
 	dec := sszutils.NewBufferDecoder(make([]byte, 1000))
 	newValue := reflect.MakeSlice(reflect.TypeOf([]uint32{}), 5, 5)
 
-	err := ctx.unmarshalFixedElements(fieldType, newValue, 5, dec, 0)
+	err := ctx.unmarshalFixedElements(fieldType, newValue, 5, dec, reflectionDepth{})
 	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
 		t.Fatalf("expected overflow error for field Size, got: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestUnmarshalListSizeOverflow(t *testing.T) {
 	dec := sszutils.NewBufferDecoder(make([]byte, 400))
 	val := reflect.New(td.Type).Elem()
 
-	err := ctx.unmarshalType(td, val, dec, 0)
+	err := ctx.unmarshalType(td, val, dec, reflectionDepth{})
 	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
 		t.Fatalf("expected overflow error for list field Size, got: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestBuildRootFromVectorLenOverflow(t *testing.T) {
 	val := reflect.ValueOf(make([]byte, 200))
 	hh := hasher.NewHasher()
 
-	err := ctx.buildRootFromType(td, val, hh, false, 0)
+	err := ctx.buildRootFromType(td, val, hh, false, reflectionDepth{})
 	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
 		t.Fatalf("expected overflow error for vector Len, got: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestMarshalLargeVectorStreaming(t *testing.T) {
 	// Use StreamEncoder writing to io.Discard so we don't buffer output.
 	enc := sszutils.NewStreamEncoder(io.Discard, 4096)
 
-	err := ctx.marshalType(td, val, enc, 0)
+	err := ctx.marshalType(td, val, enc, reflectionDepth{})
 	if err != nil {
 		t.Fatalf("unexpected error marshaling large vector: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestUnmarshalListUntilEOFLimitOverflow(t *testing.T) {
 	dec.PushOpenLimit()
 	val := reflect.New(td.Type).Elem()
 
-	err := ctx.unmarshalType(td, val, dec, 0)
+	err := ctx.unmarshalType(td, val, dec, reflectionDepth{})
 	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
 		t.Fatalf("expected overflow error for list limit, got: %v", err)
 	}
@@ -372,7 +372,7 @@ func TestUnmarshalBitlistLimitOverflow(t *testing.T) {
 	dec := sszutils.NewBufferDecoder([]byte{0x01})
 	val := reflect.New(td.Type).Elem()
 
-	err := ctx.unmarshalType(td, val, dec, 0)
+	err := ctx.unmarshalType(td, val, dec, reflectionDepth{})
 	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
 		t.Fatalf("expected overflow error for bitlist limit, got: %v", err)
 	}
@@ -438,7 +438,7 @@ func TestUnmarshalListUntilEOFNotAligned(t *testing.T) {
 	dec := sszutils.NewUnknownStreamDecoder(strings.NewReader("12345"), 8, 0)
 	dec.PushLimit(5)
 	val := reflect.New(td.Type).Elem()
-	err := ctx.unmarshalType(td, val, dec, 0)
+	err := ctx.unmarshalType(td, val, dec, reflectionDepth{})
 	if err == nil || !strings.Contains(err.Error(), "not a multiple of element size") {
 		t.Fatalf("expected list-not-aligned error, got: %v", err)
 	}
@@ -458,7 +458,7 @@ func TestUnmarshalListUntilEOFTooLong(t *testing.T) {
 	dec := sszutils.NewUnknownStreamDecoder(strings.NewReader("12345678"), 8, 0)
 	dec.PushLimit(8)
 	val := reflect.New(td.Type).Elem()
-	err := ctx.unmarshalType(td, val, dec, 0)
+	err := ctx.unmarshalType(td, val, dec, reflectionDepth{})
 	if err == nil || !strings.Contains(err.Error(), "exceeds maximum") {
 		t.Fatalf("expected list-too-long error, got: %v", err)
 	}
@@ -483,7 +483,7 @@ func TestUnmarshalListUntilEOFStaticElementNotConsumed(t *testing.T) {
 	dec := sszutils.NewUnknownStreamDecoder(strings.NewReader("12345678"), 8, 0)
 	dec.PushOpenLimit()
 	val := reflect.New(td.Type).Elem()
-	err := ctx.unmarshalType(td, val, dec, 0)
+	err := ctx.unmarshalType(td, val, dec, reflectionDepth{})
 	if err == nil || !strings.Contains(err.Error(), "element consumed to position") {
 		t.Fatalf("expected static-element-not-consumed error, got: %v", err)
 	}
@@ -505,7 +505,7 @@ func TestUnmarshalDynamicVectorOpenTrailing(t *testing.T) {
 	dec := sszutils.NewUnknownStreamDecoder(bytes.NewReader(data), 64, 0)
 	dec.PushOpenLimit()
 	val := reflect.New(td.Type).Elem()
-	err := ctx.unmarshalDynamicVector(td, val, dec, 0)
+	err := ctx.unmarshalDynamicVector(td, val, dec, reflectionDepth{})
 	if err == nil || !strings.Contains(err.Error(), "trailing data") {
 		t.Fatalf("expected trailing-data error, got: %v", err)
 	}
@@ -525,7 +525,7 @@ func TestUnmarshalDynamicListOpenTrailing(t *testing.T) {
 	dec := sszutils.NewUnknownStreamDecoder(bytes.NewReader(data), 64, 0)
 	dec.PushOpenLimit()
 	val := reflect.New(td.Type).Elem()
-	err := ctx.unmarshalDynamicList(td, val, dec, 0)
+	err := ctx.unmarshalDynamicList(td, val, dec, reflectionDepth{})
 	if err == nil || !strings.Contains(err.Error(), "trailing data") {
 		t.Fatalf("expected trailing-data error, got: %v", err)
 	}

@@ -106,83 +106,11 @@ func describeDescriptor(desc *ssztypes.TypeDescriptor) string {
 	return "<unnamed>"
 }
 
-// recursionCycleTypes returns the types that lie on a recursive cycle in the
-// descriptor graph rooted at root, keyed as recursionTypeKey does.
-//
-// Only such a type can nest to a depth the input chooses, so only its generated
-// methods need to carry and check a nesting depth. A type that merely contains
-// a recursive type is not on a cycle: entering the cycle from outside starts a
-// fresh count, and the outside of a cycle is finite by construction.
-//
-// This is computed here rather than while the descriptors are built because the
-// two builders differ. The go/types parser could report cycles straight from
-// its own recursion check, but descriptors built from reflect types come from
-// the shared type cache, which has no such hook and no codegen state to record
-// it in. Walking the finished graph covers both.
-//
-// Unlike validateEmittableGraph, this walk descends through descriptors that
-// have their own methods: delegation is exactly how a legal cycle terminates,
-// so stopping there would step over every cycle worth finding.
-func recursionCycleTypes(root *ssztypes.TypeDescriptor) map[string]struct{} {
-	cyclic := map[string]struct{}{}
-
-	// A descriptor is on a cycle exactly when a walk from it can reach it
-	// again, so a depth-first walk that remembers its current path collects
-	// everything between a back edge's target and the node that closed it.
-	var path []*ssztypes.TypeDescriptor
-	onPath := map[*ssztypes.TypeDescriptor]int{}
-	done := map[*ssztypes.TypeDescriptor]struct{}{}
-
-	var visit func(desc *ssztypes.TypeDescriptor)
-	visit = func(desc *ssztypes.TypeDescriptor) {
-		if desc == nil {
-			return
-		}
-		if start, cycling := onPath[desc]; cycling {
-			for _, member := range path[start:] {
-				if key := recursionTypeKey(member); key != "" {
-					cyclic[key] = struct{}{}
-				}
-			}
-			return
-		}
-		if _, settled := done[desc]; settled {
-			return
-		}
-
-		onPath[desc] = len(path)
-		path = append(path, desc)
-
-		if desc.ContainerDesc != nil {
-			for i := range desc.ContainerDesc.Fields {
-				visit(desc.ContainerDesc.Fields[i].Type)
-			}
-		}
-		visit(desc.ElemDesc)
-		for _, variant := range desc.UnionVariants {
-			visit(variant)
-		}
-
-		path = path[:len(path)-1]
-		delete(onPath, desc)
-		// Only a fully explored node that has left the path is settled; one
-		// still on the path may yet be reached by a back edge.
-		done[desc] = struct{}{}
-	}
-	visit(root)
-
-	return cyclic
-}
-
-// recursionTypeKey identifies a descriptor by the Go type whose generated
-// methods would carry the depth, with any pointer stripped.
-//
-// A pointer and its pointee are separate descriptors sharing one method set,
-// and a cycle runs through whichever the graph happens to link. Keying by the
-// stripped type marks both, so the type the methods are emitted for is never
-// the one left out. The reflect type is preferred where present and the
-// compile-time type used otherwise, matching describeDescriptor.
-func recursionTypeKey(desc *ssztypes.TypeDescriptor) string {
+// descriptorPkgPath returns the package path of the named Go type behind a
+// descriptor, with any pointer stripped ("" for unnamed types). Generated
+// depth-carrying methods are unexported, so a caller may only name them on
+// types of the package being generated.
+func descriptorPkgPath(desc *ssztypes.TypeDescriptor) string {
 	if desc == nil {
 		return ""
 	}
@@ -192,7 +120,7 @@ func recursionTypeKey(desc *ssztypes.TypeDescriptor) string {
 		if t.Kind() == reflect.Pointer {
 			t = t.Elem()
 		}
-		return t.String()
+		return t.PkgPath()
 	}
 
 	if desc.CodegenInfo != nil {
@@ -201,7 +129,9 @@ func recursionTypeKey(desc *ssztypes.TypeDescriptor) string {
 			if ptr, isPtr := t.(*types.Pointer); isPtr {
 				t = types.Unalias(ptr.Elem())
 			}
-			return t.String()
+			if named, isNamed := t.(*types.Named); isNamed && named.Obj().Pkg() != nil {
+				return named.Obj().Pkg().Path()
+			}
 		}
 	}
 
@@ -216,11 +146,24 @@ func recursionTypeKey(desc *ssztypes.TypeDescriptor) string {
 // WithRecursionDepth for why the bound exists at all.
 const defaultRecursionDepth = 1024
 
-// recursionBound carries what the emitters need to bound a recursive type: the
-// types that lie on a cycle, and how deep those may nest.
+// recursionBound carries what the emitters need to bound recursive nesting:
+// which descriptors count a level, how deep the count may run, and which
+// package's unexported depth methods are callable.
+//
+// The count is defined by SszTypeFlagRecursionMember — one level per flagged
+// descriptor entered — which is the same rule the reflection walkers apply, so
+// the engines accept and reject at identical nesting depths.
 type recursionBound struct {
-	cycles   map[string]struct{}
 	maxDepth int
+
+	// pkgPath is the package being generated. Depth-carrying methods are
+	// unexported, so only types of this package can be entered without
+	// restarting the count.
+	pkgPath string
+
+	// contains memoizes whether a descriptor's subtree holds a cycle member,
+	// which is what forces a type's methods to carry the depth through.
+	contains map[*ssztypes.TypeDescriptor]bool
 }
 
 // newRecursionBound resolves the bound for the descriptor graph rooted at root.
@@ -230,22 +173,73 @@ func newRecursionBound(root *ssztypes.TypeDescriptor, opts *CodeGeneratorOptions
 		maxDepth = defaultRecursionDepth
 	}
 
-	return &recursionBound{cycles: recursionCycleTypes(root), maxDepth: maxDepth}
+	return &recursionBound{
+		maxDepth: maxDepth,
+		pkgPath:  descriptorPkgPath(root),
+		contains: map[*ssztypes.TypeDescriptor]bool{},
+	}
 }
 
-// applies reports whether desc's type lies on a recursive cycle, and therefore
-// whether its generated methods carry a nesting depth.
-func (b *recursionBound) applies(desc *ssztypes.TypeDescriptor) bool {
-	if b == nil || len(b.cycles) == 0 {
-		return false
-	}
-	key := recursionTypeKey(desc)
-	if key == "" {
-		return false
-	}
-	_, cyclic := b.cycles[key]
+// countsLevel reports whether entering desc advances the nesting depth: it
+// does exactly when desc lies on a recursive cycle. Everything off a cycle
+// bottoms out at a depth fixed by the type and is never charged.
+func (b *recursionBound) countsLevel(desc *ssztypes.TypeDescriptor) bool {
+	return b != nil && desc != nil && desc.SszTypeFlags&ssztypes.SszTypeFlagRecursionMember != 0
+}
 
-	return cyclic
+// threads reports whether desc's generated methods carry a nesting depth:
+// when the type itself counts a level, or when a cycle member sits anywhere in
+// its subtree — the depth must pass through unbroken, or a chain running
+// through this type would restart its count where the reflection walk does not.
+func (b *recursionBound) threads(desc *ssztypes.TypeDescriptor) bool {
+	if b == nil || desc == nil {
+		return false
+	}
+	if b.countsLevel(desc) {
+		return true
+	}
+	if found, seen := b.contains[desc]; seen {
+		return found
+	}
+
+	// An in-progress marker cannot be wrong: a walk can only revisit a node by
+	// running a cycle, every non-wrapper cycle member is flagged and answered
+	// above, and a cycle cannot consist of wrappers alone.
+	b.contains[desc] = false
+
+	found := false
+	if desc.ContainerDesc != nil {
+		for i := range desc.ContainerDesc.Fields {
+			if b.threads(desc.ContainerDesc.Fields[i].Type) {
+				found = true
+				break
+			}
+		}
+	}
+	if !found && b.threads(desc.ElemDesc) {
+		found = true
+	}
+	if !found {
+		for _, variant := range desc.UnionVariants {
+			if b.threads(variant) {
+				found = true
+				break
+			}
+		}
+	}
+	b.contains[desc] = found
+
+	return found
+}
+
+// callableDepthMethods reports whether desc's depth-carrying methods can be
+// named from the generated code: they are unexported, so only within the
+// package being generated. A reference that crosses a package boundary must
+// go through the public methods and restarts the count — a cycle never spans
+// packages (that would be an import cycle), so each side stays independently
+// bounded.
+func (b *recursionBound) callableDepthMethods(desc *ssztypes.TypeDescriptor) bool {
+	return b != nil && b.pkgPath != "" && descriptorPkgPath(desc) == b.pkgPath
 }
 
 // depthParam is the name of the nesting-depth argument threaded through the
@@ -276,7 +270,7 @@ func emitMethodHeader(
 	desc *ssztypes.TypeDescriptor,
 	typeName, fnName, params, args, results, failReturn string,
 ) {
-	if !bound.applies(desc) {
+	if !bound.threads(desc) {
 		appendCode(codeBuilder, 0, "func (t %s) %s(%s) (%s) {\n", typeName, fnName, params, results)
 		return
 	}
@@ -304,7 +298,12 @@ func emitMethodHeader(
 
 	appendCode(codeBuilder, 0, "// %s carries the nesting depth for the recursive cycle %s lies on.\n", depthFn, typeName)
 	appendCode(codeBuilder, 0, "func (t %s) %s(%s) (%s) {\n", typeName, depthFn, depthParams, results)
-	appendCode(codeBuilder, 1, "if %s > %d {\n\treturn %s\n}\n", depthParam, bound.maxDepth, failReturn)
+	// The received depth counts the cycle levels above this value, the entry
+	// into a flagged type included (the caller advanced it). A type that only
+	// passes the depth through adds no level, so it has nothing to check.
+	if bound.countsLevel(desc) {
+		appendCode(codeBuilder, 1, "if %s > %d {\n\treturn %s\n}\n", depthParam, bound.maxDepth, failReturn)
+	}
 }
 
 // isExportedName reports whether a generated method is part of the type's
@@ -351,17 +350,39 @@ func depthForwardArg(depthAware bool) string {
 // descendCall names the child method to call, and the extra argument to pass,
 // when an emitter delegates to a child's own methods.
 //
-// Delegation is how the emitter stops inlining, so it is also where a recursive
-// cycle is traversed. When the emitting method carries a depth and the child
-// lies on a cycle, the call advances it. Otherwise the child's public method is
-// called and starts its own count, which is right: entering a cycle from
-// outside is a fresh descent, and the outside of a cycle is finite.
+// Delegation is how the emitter stops inlining, so it is also where the count
+// crosses into another type's code. A child on a cycle is entered through its
+// depth twin with the count advanced; a child that merely contains a cycle is
+// entered through its twin with the count unchanged, so the depth threads
+// through unbroken. Only when the twin cannot be named — the child belongs to
+// another package, or the emitting method carries no depth — is the public
+// method called, which starts a fresh count: a cycle never spans packages, so
+// each side stays independently bounded.
 func descendCall(depthAware bool, bound *recursionBound, desc *ssztypes.TypeDescriptor, fnName string) (string, string) {
-	if !depthAware || !bound.applies(desc) {
+	if !depthAware || !bound.threads(desc) || !bound.callableDepthMethods(desc) {
 		return fnName, ""
 	}
+	if bound.countsLevel(desc) {
+		return depthMethodName(fnName), ", " + depthParam + "+1"
+	}
 
-	return depthMethodName(fnName), ", " + depthParam + "+1"
+	return depthMethodName(fnName), ", " + depthParam
+}
+
+// emitInlineDepthCharge writes the depth advance and check for a cycle member
+// whose structure is being emitted inline: the shadowed depth is scoped to the
+// block the caller opened for the value, and the incremented value is checked
+// exactly as a depth twin checks what it receives, so an inlined member costs
+// the same level a generated one does. A no-op unless the emitting method
+// carries a depth and the descriptor counts a level (roots are charged by
+// their caller; views delegate).
+func emitInlineDepthCharge(depthAware, isRoot, isView bool, bound *recursionBound, desc *ssztypes.TypeDescriptor, appendCode func(int, string, ...any), indent int, failReturn string) {
+	if !depthAware || isRoot || isView || !bound.countsLevel(desc) {
+		return
+	}
+
+	appendCode(indent, "depth := depth + 1\n")
+	appendCode(indent, "if depth > %d {\n\treturn %s\n}\n", bound.maxDepth, failReturn)
 }
 
 // depthFailErr is the return statement for a depth violation in a method whose

@@ -2469,6 +2469,16 @@ type depthCycleList struct {
 // cannot rely on containers being present.
 type depthCycleNamedList []depthCycleNamedList
 
+// depthCycleWrapped runs its cycle through a TypeWrapper. The wrapper attaches
+// tags without adding a structural level, so it must not count one — the
+// cycle's cost comes from its other members.
+type depthCycleWrapped struct {
+	V     uint8
+	Items TypeWrapper[struct {
+		Data []*depthCycleWrapped `ssz-max:"4"`
+	}, []*depthCycleWrapped]
+}
+
 var _ = sszutils.Annotate[depthCycleNamedList](`ssz-max:"2"`)
 
 type depthCycleOptional struct {
@@ -2488,6 +2498,11 @@ type depthCycleOptionalList struct {
 // cannot contain it, so a server could not isolate the failure to the request
 // that caused it. Only a recursive type can nest to a depth the input chooses,
 // and each level costs a handful of wire bytes.
+// defaultMaxNestingDepthProbe nests a non-recursive type past the default
+// bound, deep enough to prove the bound does not fire yet shallow enough to
+// keep descriptor building cheap.
+const defaultMaxNestingDepthProbe = 1200
+
 func TestNestingDepthBound(t *testing.T) {
 	// Deeper than the 1024 default, but far too shallow to overflow a real
 	// stack -- the test must prove the bound fires, not that the process dies.
@@ -2617,6 +2632,58 @@ func TestNestingDepthBound(t *testing.T) {
 		v := outer{X: inner{A: []uint64{1}}, Y: []inner{{A: []uint64{2}}}}
 		if _, err := tight.MarshalSSZ(v); err != nil {
 			t.Fatalf("a shallow non-recursive value must encode: %v", err)
+		}
+
+		// The promise is structural, not statistical: a type with no recursive
+		// cycle is not counted at all, however deep its fixed structure nests.
+		// Nested slice types are all distinct descriptors with no back edge,
+		// so even past the default bound they must encode.
+		deepType := reflect.TypeOf([]byte(nil))
+		for range defaultMaxNestingDepthProbe {
+			deepType = reflect.SliceOf(deepType)
+		}
+		deepValue := reflect.ValueOf([]byte{1})
+		for i := 0; i < defaultMaxNestingDepthProbe; i++ {
+			wrapped := reflect.MakeSlice(reflect.SliceOf(deepValue.Type()), 1, 1)
+			wrapped.Index(0).Set(deepValue)
+			deepValue = wrapped
+		}
+		ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation())
+		if _, err := ds.MarshalSSZ(deepValue.Interface()); err != nil {
+			t.Fatalf("a non-recursive type deeper than the bound must still encode: %v", err)
+		}
+	})
+
+	t.Run("wrapper_adds_no_level", func(t *testing.T) {
+		// A trip around this cycle passes the pointer-container, the wrapper
+		// and the wrapped list (a pointer folds into its element descriptor).
+		// The wrapper is transparent, so a trip costs 2 levels and the first
+		// rejected chain sits past bound/2 trips; a wrapper counting a level
+		// would pull it down to bound/3.
+		wrapDs := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation(), WithMaxNestingDepth(30))
+
+		build := func(n int) *depthCycleWrapped {
+			cur := &depthCycleWrapped{V: 1}
+			for range n {
+				next := &depthCycleWrapped{V: 1}
+				next.Items.Set([]*depthCycleWrapped{cur})
+				cur = next
+			}
+			return cur
+		}
+
+		firstFail := 0
+		for n := 1; n <= 40; n++ {
+			if _, err := wrapDs.MarshalSSZ(build(n)); errors.Is(err, sszutils.ErrMaxDepthExceeded) {
+				firstFail = n
+				break
+			}
+		}
+		if firstFail == 0 {
+			t.Fatal("the bound never fired")
+		}
+		if counted3 := 30/3 + 1; firstFail <= counted3 {
+			t.Fatalf("first rejected chain %d: the wrapper appears to count a level", firstFail)
 		}
 	})
 }

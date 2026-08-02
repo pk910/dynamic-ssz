@@ -39,6 +39,8 @@ const childDerivedFlags = SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax |
 // limits. Custom types keep their compat flags — they have no traversed
 // children, so their flags can never change here anyway.
 func FixupRecursiveFlags(root *TypeDescriptor) {
+	markRecursionMembers(root)
+
 	// Collect all reachable descriptors once; the visited set is keyed by
 	// pointer identity so cycles terminate.
 	nodes := []*TypeDescriptor{}
@@ -118,6 +120,69 @@ func FixupRecursiveFlags(root *TypeDescriptor) {
 			}
 		}
 	}
+}
+
+// markRecursionMembers flags every descriptor that lies on a recursive cycle
+// with SszTypeFlagRecursionMember. The walkers and the code generator count one
+// nesting level per flagged descriptor entered, so the flag defines what the
+// nesting bound measures — and both engines mark from the same graph shape, so
+// they count identically.
+//
+// Type wrappers are transparent: they attach tags to their element without
+// adding a structural level, so they stay unflagged (the cycle they sit on is
+// still counted through its other members — a cycle cannot consist of wrappers
+// alone, as a wrapper only wraps). Pointers never appear as separate
+// descriptors (GoTypeFlagIsPointer folds them into their element), so a trip
+// around a cycle costs exactly one level per structural member.
+//
+// Cycle membership is a property of the descriptor graph itself — a descriptor
+// either can reach itself or it cannot, regardless of which root the walk
+// started from — so marking shared cached descriptors is stable across builds.
+func markRecursionMembers(root *TypeDescriptor) {
+	// A descriptor is on a cycle exactly when a walk from it can reach it
+	// again, so a depth-first walk that remembers its current path flags
+	// everything between a back edge's target and the node that closed it.
+	var path []*TypeDescriptor
+	onPath := map[*TypeDescriptor]int{}
+	done := map[*TypeDescriptor]struct{}{}
+
+	var visit func(desc *TypeDescriptor)
+	visit = func(desc *TypeDescriptor) {
+		if desc == nil {
+			return
+		}
+		if start, cycling := onPath[desc]; cycling {
+			for _, member := range path[start:] {
+				if member.SszType != SszTypeWrapperType {
+					member.SszTypeFlags |= SszTypeFlagRecursionMember
+				}
+			}
+			return
+		}
+		if _, settled := done[desc]; settled {
+			return
+		}
+
+		onPath[desc] = len(path)
+		path = append(path, desc)
+
+		if desc.ContainerDesc != nil {
+			for i := range desc.ContainerDesc.Fields {
+				visit(desc.ContainerDesc.Fields[i].Type)
+			}
+		}
+		visit(desc.ElemDesc)
+		for _, variant := range desc.UnionVariants {
+			visit(variant)
+		}
+
+		path = path[:len(path)-1]
+		delete(onPath, desc)
+		// Only a fully explored node that has left the path is settled; one
+		// still on the path may yet be reached by a back edge.
+		done[desc] = struct{}{}
+	}
+	visit(root)
 }
 
 // marshalCyclicDescriptor serializes a descriptor graph that contains cycles

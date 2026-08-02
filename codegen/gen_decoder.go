@@ -95,7 +95,7 @@ func generateDecoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 		noDynBufferCalls: noDynBufferCalls,
 	}
 	ctx.recursion = newRecursionBound(rootTypeDesc, options)
-	ctx.depthAware = ctx.recursion.applies(rootTypeDesc)
+	ctx.depthAware = ctx.recursion.threads(rootTypeDesc)
 
 	ctx.exprVars = newExprVarGenerator("expr", typePrinter, options)
 	ctx.staticSizeVars = newStaticSizeVarGenerator(typePrinter, options, ctx.exprVars)
@@ -373,6 +373,10 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 			return nil
 		}
 	}
+
+	// A cycle member reached without delegation is inlined here, so the level
+	// it counts is charged inline (see emitInlineDepthCharge).
+	emitInlineDepthCharge(ctx.depthAware, isRoot, isView, ctx.recursion, desc, ctx.appendCode, indent, depthFailErr(ctx.recursion))
 
 	switch desc.SszType {
 	case ssztypes.SszBoolType:

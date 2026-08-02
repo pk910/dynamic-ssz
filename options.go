@@ -125,8 +125,8 @@ func WithMaxStreamSize(size int) DynSszOption {
 }
 
 // WithMaxNestingDepth bounds how deeply a value may nest while being encoded,
-// decoded or hashed. Defaults to sszutils.DefaultMaxNestingDepth (1024) if not
-// set or set to a non-positive value.
+// decoded or hashed. Defaults to 1024 if not set or set to a non-positive
+// value.
 //
 // The bound exists because stack exhaustion is fatal in Go: the runtime aborts
 // the process and recover() cannot contain it, so a server could not isolate
@@ -134,15 +134,20 @@ func WithMaxStreamSize(size int) DynSszOption {
 // sszutils.ErrMaxDepthExceeded instead.
 //
 // Only a recursive type -- one whose cycle closes through a variable-length
-// field -- can nest to a depth the input controls, so the counter is armed only
-// for type graphs that contain such a cycle. Every other type bottoms out at a
-// depth fixed by its own structure and is unaffected, as is the cost of
+// field -- can nest to a depth the input controls, so the count advances only
+// through the types that lie on such a cycle: one level per cycle member
+// entered, so a trip around a cycle costs as many levels as the cycle has
+// structural members (a type wrapper adds none). Every other type bottoms out
+// at a depth fixed by its own structure and is unaffected, as is the cost of
 // encoding it.
 //
-// This bounds the reflection engine, where it counts the whole walk. Generated
-// code carries its own bound, fixed at generation time and counting only
-// descents through a recursive cycle; see the code generator's
-// WithRecursionDepth option.
+// Generated code counts by the same rule with its own bound, fixed at
+// generation time (see the code generator's WithRecursionDepth option), so
+// both engines accept and reject at identical nesting depths. The one caveat
+// is a chain of distinct cycles spanning several packages: generated code
+// restarts its count where such a chain crosses a package boundary (the
+// depth-carrying methods are unexported), while the reflection walk counts it
+// as one run. Each side stays bounded either way.
 func WithMaxNestingDepth(depth int) DynSszOption {
 	return func(opts *DynSszOptions) {
 		opts.MaxNestingDepth = depth

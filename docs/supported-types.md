@@ -291,21 +291,29 @@ wire bytes, so a small piece of untrusted input can declare very deep nesting.
 
 Both engines therefore bound the depth and return `sszutils.ErrMaxDepthExceeded`
 instead. The default is 1024, far deeper than any practical schema (Ethereum
-consensus types stay under 20). The two bounds count differently:
+consensus types stay under 20).
 
-| | Counts | Configure with | Applies from |
-|---|---|---|---|
-| Reflection | every level of the whole walk | `dynssz.WithMaxNestingDepth(n)` | immediately |
-| Generated code | descents through a recursive cycle | `codegen.WithRecursionDepth(n)` | after regeneration |
+Both bounds count by the same rule: one level per type entered that lies on a
+recursive cycle, whether its code is generated, inlined, or walked by
+reflection. A trip around a cycle therefore costs as many levels as the cycle
+has structural members — `Node` with a `[]*Node` field costs two (the
+container and the list; a type wrapper costs none) — and the engines accept
+and reject at identical nesting depths. Everything off a cycle bottoms out at
+a depth fixed by its own structure and is never counted.
 
-The generated bound counts cycles rather than levels because the generator
-inlines children that have no methods of their own: inlined code runs in the
-same function and adds no stack frame, so only a delegated call — which is what
-a cycle must cross — advances the count. The value is baked into the generated
-code, so changing it requires regenerating.
+| | Configure with | Applies from |
+|---|---|---|
+| Reflection | `dynssz.WithMaxNestingDepth(n)` | immediately |
+| Generated code | `codegen.WithRecursionDepth(n)` | after regeneration |
+
+The generated value is baked into the emitted code, so changing it requires
+regenerating. One caveat: a chain of *distinct* cycles spanning several
+packages restarts the generated count at each package boundary (the
+depth-carrying methods are unexported), while reflection counts such a chain
+as one run. Each side stays bounded either way.
 
 Non-recursive types are unaffected by either bound, and the code generated for
-them is unchanged: only types that lie on a cycle carry a depth.
+them is unchanged: only types on or above a cycle carry a depth.
 
 > **Cyclic values are unencodable.** `ValidateType` accepts the type above
 > because the type graph is legal, but a *value* whose pointers form a cycle

@@ -917,7 +917,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 	// depth advancing across the view boundary.
 	emitViewDispatcher := func(publicName, fnPrefix string, sig viewFnSignature, mainFn func() string) {
 		typeName := typePrinter.TypeString(dataType)
-		cyclic := recursion.applies(dataType)
+		cyclic := recursion.threads(dataType)
 
 		depthExpr := ""
 		if cyclic {

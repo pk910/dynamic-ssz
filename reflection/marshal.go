@@ -39,7 +39,21 @@ import (
 //   - FastSSZ delegation for compatible types without dynamic sizing
 //   - Primitive type encoding (bool, uint8, uint16, uint32, uint64)
 //   - Delegation to specialized functions for composite types (structs, arrays, slices)
-func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth int) error {
+func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth reflectionDepth) error {
+	// Entering a recursive cycle's member is the only step that can repeat
+	// under the input's control, so it is the only step the nesting bound
+	// counts. The value checked is the count of cycle levels above this one —
+	// the same value a generated depth-carrying method receives — so both
+	// engines accept and reject at identical nesting depths. idt advances at
+	// every level but only feeds log indentation.
+	depth.idt++
+	if sourceType.SszTypeFlags&ssztypes.SszTypeFlagRecursionMember != 0 {
+		if depth.loop > ctx.maxLoop {
+			return sszutils.ErrMaxDepthExceededFn(ctx.maxDepth)
+		}
+		depth.loop++
+	}
+
 	if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && sourceType.SszType != ssztypes.SszOptionalType && sourceType.SszType != ssztypes.SszOptionalListType {
 		if sourceValue.IsNil() {
 			sourceValue = reflect.New(sourceType.Type.Elem()).Elem()
@@ -49,7 +63,7 @@ func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourc
 	}
 
 	if ctx.verbose {
-		ctx.logCb("%stype: %s\t kind: %v\n", strings.Repeat(" ", depth*2), sourceType.Type.Name(), sourceType.Kind)
+		ctx.logCb("%stype: %s\t kind: %v\n", strings.Repeat(" ", int(depth.idt)*2), sourceType.Type.Name(), sourceType.Kind)
 	}
 
 	// Try DynamicView methods first - they take precedence over all other methods.
@@ -280,16 +294,16 @@ func (ctx *ReflectionCtx) tryMarshalView(sourceType *ssztypes.TypeDescriptor, so
 //   - error: An error if any field encoding fails
 //
 // The function validates that the Data field is present and marshals the wrapped value using its type descriptor.
-func (ctx *ReflectionCtx) marshalTypeWrapper(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth int) error {
+func (ctx *ReflectionCtx) marshalTypeWrapper(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth reflectionDepth) error {
 	if ctx.verbose {
-		ctx.logCb("%smarshalTypeWrapper: %s\n", strings.Repeat(" ", depth*2), sourceType.Type.Name())
+		ctx.logCb("%smarshalTypeWrapper: %s\n", strings.Repeat(" ", int(depth.idt)*2), sourceType.Type.Name())
 	}
 
 	// Extract the Data field from the TypeWrapper
 	dataField := sourceValue.Field(0)
 
 	// Marshal the wrapped value using its type descriptor
-	return ctx.marshalType(sourceType.ElemDesc, dataField, encoder, depth+1)
+	return ctx.marshalType(sourceType.ElemDesc, dataField, encoder, depth)
 }
 
 // marshalContainer handles the encoding of container values into SSZ-encoded data.
@@ -310,7 +324,7 @@ func (ctx *ReflectionCtx) marshalTypeWrapper(sourceType *ssztypes.TypeDescriptor
 //
 // Returns:
 //   - error: An error if any field encoding fails
-func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth int) error {
+func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth reflectionDepth) error {
 	fields := sourceType.ContainerDesc.Fields
 	fieldCount := len(fields)
 
@@ -319,7 +333,7 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 		for i := 0; i < fieldCount; i++ {
 			field := &fields[i]
 			fieldValue := sourceValue.Field(int(field.FieldIndex))
-			if err := ctx.marshalType(field.Type, fieldValue, encoder, depth+1); err != nil {
+			if err := ctx.marshalType(field.Type, fieldValue, encoder, depth); err != nil {
 				return sszutils.ErrorWithPath(err, field.Name)
 			}
 		}
@@ -338,12 +352,12 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 		// field (e.g. an empty vector) is written inline instead of being mistaken
 		// for a dynamic field and emitting an unbacked offset slot.
 		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
-			// fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", depth*2+1), i, offset, offset+fieldSize, fieldSize, field.Name)
+			// fmt.Printf("%sfield %d:\t static [%v:%v] %v\t %v\n", strings.Repeat(" ", int(depth.idt)*2+1), i, offset, offset+fieldSize, fieldSize, field.Name)
 
 			// Use FieldIndex to access the runtime struct's field, which may differ
 			// from the schema field index when using view descriptors.
 			fieldValue := sourceValue.Field(int(field.FieldIndex))
-			err := ctx.marshalType(field.Type, fieldValue, encoder, depth+1)
+			err := ctx.marshalType(field.Type, fieldValue, encoder, depth)
 			if err != nil {
 				return sszutils.ErrorWithPath(err, field.Name)
 			}
@@ -363,7 +377,7 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 				encoder.EncodeOffset(sourceType.Len + uint32(dynObjOffset))
 				dynObjOffset += int(size)
 			}
-			// fmt.Printf("%sfield %d:\t offset [%v:%v] %v\t %v\n", strings.Repeat(" ", depth*2+1), i, offset, offset+fieldSize, fieldSize, field.Name)
+			// fmt.Printf("%sfield %d:\t offset [%v:%v] %v\t %v\n", strings.Repeat(" ", int(depth.idt)*2+1), i, offset, offset+fieldSize, fieldSize, field.Name)
 		}
 		offset += int(fieldSize)
 	}
@@ -376,13 +390,13 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 			encoder.EncodeOffsetAt(fieldOffset+startLen, uint32(offset))
 		}
 
-		// fmt.Printf("%sfield %d:\t dynamic [%v:]\t %v\n", strings.Repeat(" ", depth*2+1), field.Index[0], offset, field.Name)
+		// fmt.Printf("%sfield %d:\t dynamic [%v:]\t %v\n", strings.Repeat(" ", int(depth.idt)*2+1), field.Index[0], offset, field.Name)
 
 		fieldDescriptor := field.Field
 		// Use FieldIndex to access the runtime struct's field, which may differ
 		// from the schema field index when using view descriptors.
 		fieldValue := sourceValue.Field(int(fieldDescriptor.FieldIndex))
-		err := ctx.marshalType(fieldDescriptor.Type, fieldValue, encoder, depth+1)
+		err := ctx.marshalType(fieldDescriptor.Type, fieldValue, encoder, depth)
 		if err != nil {
 			return sszutils.ErrorWithPath(err, fieldDescriptor.Name)
 		}
@@ -416,7 +430,7 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 // Special handling:
 //   - Byte arrays use reflect.Value.Bytes() for efficient bulk copying
 //   - Non-addressable arrays are made addressable via a temporary pointer
-func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth int) error {
+func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth reflectionDepth) error {
 	vecLen := int64(sourceType.Len)
 	if vecLen > math.MaxInt {
 		return sszutils.ErrPlatformOverflowFn("vector length", sourceType.Len)
@@ -475,7 +489,7 @@ func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sou
 	} else {
 		for i := 0; i < dataLen; i++ {
 			itemVal := sourceValue.Index(i)
-			err := ctx.marshalType(sourceType.ElemDesc, itemVal, encoder, depth+1)
+			err := ctx.marshalType(sourceType.ElemDesc, itemVal, encoder, depth)
 			if err != nil {
 				return sszutils.ErrorWithPathf(err, "[%d]", i)
 			}
@@ -511,7 +525,7 @@ func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sou
 // The function handles size hints for padding with zero values when the list
 // length is less than the expected size. Zero values are efficiently batched
 // to minimize encoding overhead.
-func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth int) error {
+func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth reflectionDepth) error {
 	dynVecLen := int64(sourceType.Len)
 	if dynVecLen > math.MaxInt {
 		return sszutils.ErrPlatformOverflowFn("dynamic vector length", sourceType.Len)
@@ -573,7 +587,7 @@ func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescript
 	for i := 0; i < sliceLen; i++ {
 		itemVal := sourceValue.Index(i)
 
-		err := ctx.marshalType(fieldType, itemVal, encoder, depth+1)
+		err := ctx.marshalType(fieldType, itemVal, encoder, depth)
 		if err != nil {
 			return sszutils.ErrorWithPathf(err, "[%d]", i)
 		}
@@ -588,7 +602,7 @@ func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescript
 	}
 
 	for i := 0; i < appendZero; i++ {
-		err := ctx.marshalType(fieldType, zeroVal, encoder, depth+1)
+		err := ctx.marshalType(fieldType, zeroVal, encoder, depth)
 		if err != nil {
 			return sszutils.ErrorWithPathf(err, "[+%d]", sliceLen+i)
 		}
@@ -622,17 +636,7 @@ func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescript
 // Special handling:
 //   - Byte slices use optimized bulk append
 //   - Returns ErrListTooBig if slice exceeds maximum size from hints
-func (ctx *ReflectionCtx) marshalList(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth int) error {
-	// Only a list, an optional or an optional-list can legalize a recursive
-	// cycle -- they are the boundaries the type cache counts when deciding
-	// whether a cycle is finite, so every trip round a cycle crosses one of
-	// them. Bounding them therefore bounds the recursion, and nothing else pays
-	// for it. Without the bound a deeply nested value exhausts the goroutine
-	// stack, which Go turns into an unrecoverable process abort.
-	if depth > ctx.maxDepth {
-		return sszutils.ErrMaxDepthExceededFn(ctx.maxDepth)
-	}
-
+func (ctx *ReflectionCtx) marshalList(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth reflectionDepth) error {
 	sliceLen := sourceValue.Len()
 	if sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 && uint64(sliceLen) > sourceType.Limit {
 		return sszutils.ErrListLengthFn(sliceLen, sourceType.Limit)
@@ -654,7 +658,7 @@ func (ctx *ReflectionCtx) marshalList(sourceType *ssztypes.TypeDescriptor, sourc
 				itemVal = reflect.New(fieldType.Type.Elem())
 			}
 
-			err := ctx.marshalType(fieldType, itemVal, encoder, depth+1)
+			err := ctx.marshalType(fieldType, itemVal, encoder, depth)
 			if err != nil {
 				return sszutils.ErrorWithPathf(err, "[%d]", i)
 			}
@@ -681,17 +685,7 @@ func (ctx *ReflectionCtx) marshalList(sourceType *ssztypes.TypeDescriptor, sourc
 //
 // Returns:
 //   - error: An error if encoding fails or size constraints are violated
-func (ctx *ReflectionCtx) marshalDynamicList(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth int) error {
-	// Only a list, an optional or an optional-list can legalize a recursive
-	// cycle -- they are the boundaries the type cache counts when deciding
-	// whether a cycle is finite, so every trip round a cycle crosses one of
-	// them. Bounding them therefore bounds the recursion, and nothing else pays
-	// for it. Without the bound a deeply nested value exhausts the goroutine
-	// stack, which Go turns into an unrecoverable process abort.
-	if depth > ctx.maxDepth {
-		return sszutils.ErrMaxDepthExceededFn(ctx.maxDepth)
-	}
-
+func (ctx *ReflectionCtx) marshalDynamicList(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth reflectionDepth) error {
 	fieldType := sourceType.ElemDesc
 	sliceLen := sourceValue.Len()
 
@@ -727,7 +721,7 @@ func (ctx *ReflectionCtx) marshalDynamicList(sourceType *ssztypes.TypeDescriptor
 	for i := 0; i < sliceLen; i++ {
 		itemVal := sourceValue.Index(i)
 
-		err := ctx.marshalType(fieldType, itemVal, encoder, depth+1)
+		err := ctx.marshalType(fieldType, itemVal, encoder, depth)
 		if err != nil {
 			return sszutils.ErrorWithPathf(err, "[%d]", i)
 		}
@@ -757,7 +751,7 @@ func (ctx *ReflectionCtx) marshalDynamicList(sourceType *ssztypes.TypeDescriptor
 //
 // Returns:
 //   - error: An error if encoding fails or bitlist exceeds size constraints
-func (ctx *ReflectionCtx) marshalBitlist(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, _ int) error {
+func (ctx *ReflectionCtx) marshalBitlist(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, _ reflectionDepth) error {
 	bytes := sourceValue.Bytes()
 
 	// check if last byte contains termination bit
@@ -796,7 +790,7 @@ func (ctx *ReflectionCtx) marshalBitlist(sourceType *ssztypes.TypeDescriptor, so
 //
 // Returns:
 //   - error: An error if encoding fails
-func (ctx *ReflectionCtx) marshalCompatibleUnion(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth int) error {
+func (ctx *ReflectionCtx) marshalCompatibleUnion(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth reflectionDepth) error {
 	// We know CompatibleUnion has exactly 2 fields: Variant (uint8) and Data (interface{})
 	// Field 0 is Variant, Field 1 is Data
 	variant := uint8(sourceValue.Field(0).Uint())
@@ -824,7 +818,7 @@ func (ctx *ReflectionCtx) marshalCompatibleUnion(sourceType *ssztypes.TypeDescri
 	encoder.EncodeUint8(variant)
 
 	// Marshal the data using the variant's type descriptor
-	err := ctx.marshalType(variantDesc, dataField.Elem(), encoder, depth+1)
+	err := ctx.marshalType(variantDesc, dataField.Elem(), encoder, depth)
 	if err != nil {
 		return sszutils.ErrorWithPathf(err, "[v:%d]", variant)
 	}
@@ -846,7 +840,7 @@ func (ctx *ReflectionCtx) marshalCompatibleUnion(sourceType *ssztypes.TypeDescri
 //
 // Returns:
 //   - error: An error if encoding fails
-func (ctx *ReflectionCtx) marshalUnion(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth int) error {
+func (ctx *ReflectionCtx) marshalUnion(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth reflectionDepth) error {
 	variant := uint8(sourceValue.Field(0).Uint())
 	dataField := sourceValue.Field(1)
 
@@ -872,7 +866,7 @@ func (ctx *ReflectionCtx) marshalUnion(sourceType *ssztypes.TypeDescriptor, sour
 
 	encoder.EncodeUint8(variant)
 
-	err := ctx.marshalType(variantDesc, dataField.Elem(), encoder, depth+1)
+	err := ctx.marshalType(variantDesc, dataField.Elem(), encoder, depth)
 	if err != nil {
 		return sszutils.ErrorWithPathf(err, "[v:%d]", variant)
 	}
@@ -892,19 +886,9 @@ func (ctx *ReflectionCtx) marshalUnion(sourceType *ssztypes.TypeDescriptor, sour
 //   - error: An error if any field encoding fails
 //
 // The function validates that the Data field is present and marshals the wrapped value using its type descriptor.
-func (ctx *ReflectionCtx) marshalOptional(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth int) error {
-	// Only a list, an optional or an optional-list can legalize a recursive
-	// cycle -- they are the boundaries the type cache counts when deciding
-	// whether a cycle is finite, so every trip round a cycle crosses one of
-	// them. Bounding them therefore bounds the recursion, and nothing else pays
-	// for it. Without the bound a deeply nested value exhausts the goroutine
-	// stack, which Go turns into an unrecoverable process abort.
-	if depth > ctx.maxDepth {
-		return sszutils.ErrMaxDepthExceededFn(ctx.maxDepth)
-	}
-
+func (ctx *ReflectionCtx) marshalOptional(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth reflectionDepth) error {
 	if ctx.verbose {
-		ctx.logCb("%smarshalOptional: %s\n", strings.Repeat(" ", depth*2), sourceType.Type.Name())
+		ctx.logCb("%smarshalOptional: %s\n", strings.Repeat(" ", int(depth.idt)*2), sourceType.Type.Name())
 	}
 
 	if sourceValue.IsNil() {
@@ -915,7 +899,7 @@ func (ctx *ReflectionCtx) marshalOptional(sourceType *ssztypes.TypeDescriptor, s
 	encoder.EncodeBool(true)
 
 	// Marshal the wrapped value using its type descriptor
-	return ctx.marshalType(sourceType.ElemDesc, sourceValue.Elem(), encoder, depth+1)
+	return ctx.marshalType(sourceType.ElemDesc, sourceValue.Elem(), encoder, depth)
 }
 
 // marshalOptionalList encodes a pointer as a canonical SSZ List[T, 1].
@@ -933,19 +917,9 @@ func (ctx *ReflectionCtx) marshalOptional(sourceType *ssztypes.TypeDescriptor, s
 //
 // Returns:
 //   - error: An error if encoding fails
-func (ctx *ReflectionCtx) marshalOptionalList(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth int) error {
-	// Only a list, an optional or an optional-list can legalize a recursive
-	// cycle -- they are the boundaries the type cache counts when deciding
-	// whether a cycle is finite, so every trip round a cycle crosses one of
-	// them. Bounding them therefore bounds the recursion, and nothing else pays
-	// for it. Without the bound a deeply nested value exhausts the goroutine
-	// stack, which Go turns into an unrecoverable process abort.
-	if depth > ctx.maxDepth {
-		return sszutils.ErrMaxDepthExceededFn(ctx.maxDepth)
-	}
-
+func (ctx *ReflectionCtx) marshalOptionalList(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth reflectionDepth) error {
 	if ctx.verbose {
-		ctx.logCb("%smarshalOptionalList: %s\n", strings.Repeat(" ", depth*2), sourceType.Type.Name())
+		ctx.logCb("%smarshalOptionalList: %s\n", strings.Repeat(" ", int(depth.idt)*2), sourceType.Type.Name())
 	}
 
 	if sourceValue.IsNil() {
@@ -957,7 +931,7 @@ func (ctx *ReflectionCtx) marshalOptionalList(sourceType *ssztypes.TypeDescripto
 		encoder.EncodeOffset(4)
 	}
 
-	if err := ctx.marshalType(sourceType.ElemDesc, sourceValue.Elem(), encoder, depth+1); err != nil {
+	if err := ctx.marshalType(sourceType.ElemDesc, sourceValue.Elem(), encoder, depth); err != nil {
 		return sszutils.ErrorWithPathf(err, "[0]")
 	}
 	return nil
@@ -1002,9 +976,9 @@ func bigIntLimitBytes(t *ssztypes.TypeDescriptor) (int, bool) {
 	return int(t.Limit), true
 }
 
-func (ctx *ReflectionCtx) marshalBigInt(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth int) error {
+func (ctx *ReflectionCtx) marshalBigInt(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth reflectionDepth) error {
 	if ctx.verbose {
-		ctx.logCb("%smarshalBigInt: %s\n", strings.Repeat(" ", depth*2), sourceType.Type.Name())
+		ctx.logCb("%smarshalBigInt: %s\n", strings.Repeat(" ", int(depth.idt)*2), sourceType.Type.Name())
 	}
 
 	bigInt, isBigInt := sourceValue.Interface().(big.Int)

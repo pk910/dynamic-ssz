@@ -38,17 +38,19 @@ import (
 //   - Nil pointers are sized as zero-valued instances
 //   - Dynamic slices include padding for size hint compliance
 //   - Struct fields are sized based on their static/dynamic nature
-func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, depth int) (uint32, error) { //nolint:gocyclo // SSZ size computation handles many type cases
-	// This walker handles every kind in one function, so the bound is applied to
-	// the same boundaries the dedicated walkers guard: a list, an optional or an
-	// optional-list is what legalizes a recursive cycle, so every trip round a
-	// cycle crosses one. Nothing else pays for the check.
-	switch targetType.SszType { //nolint:exhaustive // only the cycle-legalizing boundaries need the bound
-	case ssztypes.SszListType, ssztypes.SszProgressiveListType,
-		ssztypes.SszOptionalType, ssztypes.SszOptionalListType:
-		if depth > ctx.maxDepth {
+func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, depth reflectionDepth) (uint32, error) { //nolint:gocyclo // SSZ size computation handles many type cases
+	// Entering a recursive cycle's member is the only step that can repeat
+	// under the input's control, so it is the only step the nesting bound
+	// counts. The value checked is the count of cycle levels above this one —
+	// the same value a generated depth-carrying method receives — so both
+	// engines accept and reject at identical nesting depths. idt advances at
+	// every level but only feeds log indentation.
+	depth.idt++
+	if targetType.SszTypeFlags&ssztypes.SszTypeFlagRecursionMember != 0 {
+		if depth.loop > ctx.maxLoop {
 			return 0, sszutils.ErrMaxDepthExceededFn(ctx.maxDepth)
 		}
+		depth.loop++
 	}
 
 	// Accumulated in uint64: the descriptor-build guards bound static sizes,
@@ -111,7 +113,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		dataField := targetValue.Field(0)
 
 		// Calculate size for the wrapped value using its type descriptor
-		size, err := ctx.getSszValueSize(targetType.ElemDesc, dataField, depth+1)
+		size, err := ctx.getSszValueSize(targetType.ElemDesc, dataField, depth)
 		if err != nil {
 			return 0, err
 		}
@@ -123,7 +125,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 			fieldValue := targetValue.Field(int(fieldType.FieldIndex))
 
 			if fieldType.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
-				size, err := ctx.getSszValueSize(fieldType.Type, fieldValue, depth+1)
+				size, err := ctx.getSszValueSize(fieldType.Type, fieldValue, depth)
 				if err != nil {
 					return 0, err
 				}
@@ -152,7 +154,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 			dataLen := targetValue.Len()
 
 			for i := 0; i < dataLen; i++ {
-				size, err := ctx.getSszValueSize(fieldType, targetValue.Index(i), depth+1)
+				size, err := ctx.getSszValueSize(fieldType, targetValue.Index(i), depth)
 				if err != nil {
 					return 0, sszutils.ErrorWithPathf(err, "[%d]", i)
 				}
@@ -163,7 +165,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 			if uint32(dataLen) < targetType.Len {
 				appendZero := targetType.Len - uint32(dataLen)
 				zeroVal := newZeroElem(fieldType)
-				size, err := ctx.getSszValueSize(fieldType, zeroVal, depth+1)
+				size, err := ctx.getSszValueSize(fieldType, zeroVal, depth)
 				if err != nil {
 					return 0, sszutils.ErrorWithPathf(err, "[+%d:%d]", dataLen, uint32(dataLen)+appendZero-1)
 				}
@@ -174,7 +176,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 			dataLen := targetValue.Len()
 
 			if dataLen > 0 {
-				size, err := ctx.getSszValueSize(fieldType, targetValue.Index(0), depth+1)
+				size, err := ctx.getSszValueSize(fieldType, targetValue.Index(0), depth)
 				if err != nil {
 					return 0, sszutils.ErrorWithPathf(err, "[0:%d]", dataLen-1)
 				}
@@ -182,7 +184,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 				staticSize = uint64(size) * uint64(targetType.Len)
 			} else {
 				zeroVal := newZeroElem(fieldType)
-				size, err := ctx.getSszValueSize(fieldType, zeroVal, depth+1)
+				size, err := ctx.getSszValueSize(fieldType, zeroVal, depth)
 				if err != nil {
 					return 0, sszutils.ErrorWithPathf(err, "[+0:%d]", targetType.Len-1)
 				}
@@ -210,7 +212,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 			case fieldType.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0:
 				// slice with dynamic size items, so we have to go through each item
 				for i := 0; i < int(sliceLen); i++ {
-					size, err := ctx.getSszValueSize(fieldType, targetValue.Index(i), depth+1)
+					size, err := ctx.getSszValueSize(fieldType, targetValue.Index(i), depth)
 					if err != nil {
 						return 0, sszutils.ErrorWithPathf(err, "[%d]", i)
 					}
@@ -250,7 +252,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 			return 0, sszutils.ErrUnionTypeMismatchFn()
 		}
 
-		dataSize, err := ctx.getSszValueSize(variantDesc, dataField.Elem(), depth+1)
+		dataSize, err := ctx.getSszValueSize(variantDesc, dataField.Elem(), depth)
 		if err != nil {
 			return 0, sszutils.ErrorWithPathf(err, "[v:%d]", variant)
 		}
@@ -278,7 +280,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		}
 
 		// Calculate size of the data
-		dataSize, err := ctx.getSszValueSize(variantDesc, dataField.Elem(), depth+1)
+		dataSize, err := ctx.getSszValueSize(variantDesc, dataField.Elem(), depth)
 		if err != nil {
 			return 0, sszutils.ErrorWithPathf(err, "[v:%d]", variant)
 		}
@@ -319,7 +321,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 			staticSize = 1
 		} else {
 			// Calculate size of the data
-			dataSize, err := ctx.getSszValueSize(targetType.ElemDesc, targetValue.Elem(), depth+1)
+			dataSize, err := ctx.getSszValueSize(targetType.ElemDesc, targetValue.Elem(), depth)
 			if err != nil {
 				return 0, err
 			}
@@ -329,7 +331,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 	case ssztypes.SszOptionalListType:
 		// canonical List[T, 1]: empty for nil, one element otherwise
 		if !targetValue.IsNil() {
-			dataSize, err := ctx.getSszValueSize(targetType.ElemDesc, targetValue.Elem(), depth+1)
+			dataSize, err := ctx.getSszValueSize(targetType.ElemDesc, targetValue.Elem(), depth)
 			if err != nil {
 				return 0, sszutils.ErrorWithPathf(err, "[0]")
 			}

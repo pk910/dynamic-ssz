@@ -2306,3 +2306,28 @@ var AtkWellHolder_Payload = AtkWellHolder{
 	N: atkWellDelegated{V: 0x99},
 	V: [2]atkWellDelegated{{V: 0xaa}, {V: 0xbb}},
 }
+
+// RecursiveInlineHolder closes a cycle through RecursiveInlineMember, which is
+// deliberately left out of the generation set: the member's structure is
+// inlined into the holder's generated methods, so the level it counts against
+// the nesting bound has to be charged inline rather than at a method boundary.
+type RecursiveInlineHolder struct {
+	Val  uint64
+	Next RecursiveInlineMember
+}
+
+// RecursiveInlineMember carries the cycle back to the holder. It has no
+// generated methods of its own by design (see RecursiveInlineHolder).
+type RecursiveInlineMember struct {
+	Links []*RecursiveInlineHolder `ssz-max:"4"`
+}
+
+var RecursiveInlineHolder_Payload = RecursiveInlineHolder{
+	Val: 7,
+	Next: RecursiveInlineMember{
+		Links: []*RecursiveInlineHolder{
+			{Val: 8},
+			{Val: 9, Next: RecursiveInlineMember{Links: []*RecursiveInlineHolder{{Val: 10}}}},
+		},
+	},
+}

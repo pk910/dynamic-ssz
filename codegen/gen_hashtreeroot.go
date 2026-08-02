@@ -75,7 +75,7 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 		exprVars:    newExprVarGenerator("expr", typePrinter, options),
 	}
 	ctx.recursion = newRecursionBound(rootTypeDesc, options)
-	ctx.depthAware = ctx.recursion.applies(rootTypeDesc)
+	ctx.depthAware = ctx.recursion.threads(rootTypeDesc)
 
 	// Generate main function signature
 	typeName := typePrinter.TypeString(rootTypeDesc)
@@ -311,6 +311,10 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 		}
 		return nil
 	}
+
+	// A cycle member reached without delegation is inlined here, so the level
+	// it counts is charged inline (see emitInlineDepthCharge).
+	emitInlineDepthCharge(ctx.depthAware, isRoot, isView, ctx.recursion, desc, ctx.appendCode, indent, depthFailErr(ctx.recursion))
 
 	switch desc.SszType {
 	case ssztypes.SszBoolType:

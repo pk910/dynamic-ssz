@@ -148,6 +148,10 @@ types:
     output: gen_recursive.go
     views:
       - RecursiveViewNode_View1
+  # The member of this cycle stays ungenerated on purpose: it pins the inline
+  # depth charge for cycle members reached without delegation.
+  - name: RecursiveInlineHolder
+    output: gen_recursive.go
 
   # Everything whose point is a shape rather than a feature: top-level
   # entries, pointer and aliasing layouts, and the coverage fillers.

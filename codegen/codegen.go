@@ -439,11 +439,12 @@ func WithNoFastSsz() CodeGeneratorOption {
 // costs only a handful of wire bytes, so a small payload can otherwise declare
 // nesting deep enough to exhaust the stack.
 //
-// It applies to recursive cycles only. Methods are emitted with a depth
-// argument just for types that lie on a cycle, and the count advances only for
-// descents that go round one, so a type is bounded by how many times it
-// re-enters itself rather than by its total nesting. Every other generated type
-// is unaffected, as is the code emitted for it.
+// It applies to recursive cycles only: the count advances one level per cycle
+// member entered — generated or inlined — so a trip around a cycle costs as
+// many levels as the cycle has structural members, the same rule the
+// reflection engine applies. A type that merely sits above a cycle threads the
+// depth through unchanged; a type with no cycle beneath it is unaffected, as
+// is the code emitted for it.
 //
 // The value is baked into the generated code, so changing it requires
 // regeneration. The reflection engine carries its own bound; see
