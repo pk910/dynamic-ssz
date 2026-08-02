@@ -458,7 +458,10 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 					}
 
 					ok, val, resolveErr := tc.specs.ResolveSpecValue(sizeHints[i].Expr)
-					if resolveErr == nil && ok && val > 0 {
+					if resolveErr != nil {
+						return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "error parsing dynssz-size expression %q for type %v: %v", sizeHints[i].Expr, t, resolveErr)
+					}
+					if ok && val > 0 {
 						// The range check guards the conversion directly rather
 						// than standing as a separate condition, so that what
 						// makes the narrowing safe is visible at the narrowing.
@@ -472,7 +475,7 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 						continue
 					}
 					if sizeHints[i].Size == 0 {
-						return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "ssz-size expression %q %s", sizeHints[i].Expr, unresolvedReason(ok, resolveErr))
+						return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-size expression %q %s", sizeHints[i].Expr, unresolvedReason(ok))
 					}
 				}
 
@@ -482,14 +485,17 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 					}
 
 					ok, val, resolveErr := tc.specs.ResolveSpecValue(maxSizeHints[i].Expr)
-					if resolveErr == nil && ok && val > 0 {
+					if resolveErr != nil {
+						return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "error parsing dynssz-max expression %q for type %v: %v", maxSizeHints[i].Expr, t, resolveErr)
+					}
+					if ok && val > 0 {
 						maxSizeHints[i].Size = val
 						maxSizeHints[i].Custom = true
 
 						continue
 					}
 					if maxSizeHints[i].Size == 0 {
-						return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "ssz-max expression %q %s", maxSizeHints[i].Expr, unresolvedReason(ok, resolveErr))
+						return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-max expression %q %s", maxSizeHints[i].Expr, unresolvedReason(ok))
 					}
 				}
 			}
@@ -990,15 +996,12 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 
 // unresolvedReason says why an expression produced no usable value, so the
 // error tells the reader whether to define the spec value or to correct it.
-func unresolvedReason(resolved bool, err error) string {
-	switch {
-	case err != nil:
-		return fmt.Sprintf("could not be resolved (%v) and has no positive static fallback", err)
-	case resolved:
+func unresolvedReason(resolved bool) string {
+	if resolved {
 		return "resolved to 0 with no positive static fallback"
-	default:
-		return "is not defined and has no positive static fallback"
 	}
+
+	return "is not defined and has no positive static fallback"
 }
 
 // setMinSize records the smallest number of bytes a value of this type can

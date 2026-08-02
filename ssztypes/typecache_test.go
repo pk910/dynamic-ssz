@@ -19,9 +19,17 @@ import (
 
 type dummyDynamicSpecs struct {
 	specValues map[string]uint64
+
+	// resolveErr makes every resolution fail, standing in for an expression
+	// that cannot be evaluated (division by zero, overflow).
+	resolveErr error
 }
 
 func (d *dummyDynamicSpecs) ResolveSpecValue(name string) (bool, uint64, error) {
+	if d.resolveErr != nil {
+		return false, 0, d.resolveErr
+	}
+
 	value, ok := d.specValues[name]
 	return ok, value, nil
 }
@@ -942,6 +950,42 @@ var (
 	_ = sszutils.Annotate[annotatedZeroMaxFallback](`ssz-max:"4" dynssz-max:"ZERO"`)
 	_ = sszutils.Annotate[annotatedZeroMaxNoFallback](`dynssz-max:"ZERO"`)
 )
+
+// Annotation fixtures pairing a static tag with an expression that cannot be
+// evaluated at all.
+type annotatedBrokenSize []byte
+type annotatedBrokenMax []uint64
+
+var (
+	_ = sszutils.Annotate[annotatedBrokenSize](`ssz-size:"4" dynssz-size:"BROKEN"`)
+	_ = sszutils.Annotate[annotatedBrokenMax](`ssz-max:"4" dynssz-max:"BROKEN"`)
+)
+
+// An expression that cannot be evaluated is a mistake in the annotation, not a
+// value to fall back from. A static tag beside it must not bury the error --
+// the same expression in a struct field tag reports it either way.
+func TestTypeCache_AnnotationExpressionErrorIsNotSwallowed(t *testing.T) {
+	broken := errors.New("division by zero")
+	ds := &dummyDynamicSpecs{resolveErr: broken}
+
+	for _, tt := range []struct {
+		name string
+		typ  reflect.Type
+	}{
+		{name: "size", typ: reflect.TypeOf(annotatedBrokenSize{})},
+		{name: "max", typ: reflect.TypeOf(annotatedBrokenMax{})},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewTypeCache(ds).GetTypeDescriptor(tt.typ, nil, nil, nil)
+			if !errors.Is(err, sszutils.ErrInvalidTag) {
+				t.Fatalf("err = %v, want ErrInvalidTag", err)
+			}
+			if !strings.Contains(err.Error(), broken.Error()) {
+				t.Errorf("err = %v, want it to name the failure", err)
+			}
+		})
+	}
+}
 
 // A dynssz-size that resolves to 0 is invalid (zero-length vector). It must fall
 // back to a positive static ssz-size, or error when there is no static fallback.
