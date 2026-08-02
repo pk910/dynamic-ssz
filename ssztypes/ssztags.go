@@ -528,31 +528,6 @@ func getSszMaxSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]S
 	return sszMaxSizes, nil
 }
 
-// checkDimensionsDeclared rejects a dimension left as `?` by both tag families.
-// `?` means "dynamic" to ssz-size and "unbounded" to ssz-max, so a dimension
-// carrying both placeholders declares neither a length nor a limit -- it names
-// no SSZ type, and a list without a limit has no hash tree root.
-//
-// Saying nothing is different from saying `?`: a field with no tag at all is
-// described by its Go type, and an unbounded list remains expressible that way
-// under extended types.
-func checkDimensionsDeclared(sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, fieldName string) error {
-	for i := range sizeHints {
-		if i >= len(maxSizeHints) {
-			break
-		}
-		if sizeHints[i].Dynamic && maxSizeHints[i].NoValue {
-			if fieldName == "" {
-				return fmt.Errorf("dimension %d is `?` in both ssz-size and ssz-max, so it has neither a length nor a limit", i)
-			}
-
-			return sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "field %q dimension %d is `?` in both ssz-size and ssz-max, so it has neither a length nor a limit", fieldName, i)
-		}
-	}
-
-	return nil
-}
-
 // placeholderMismatch describes a dimension whose static and dynamic tags
 // disagree about being a placeholder. staticIsPlaceholder says which way round
 // the disagreement runs, so the message names the tag that has to change.
@@ -833,10 +808,6 @@ func ParseTags(tag string) (typeHints []SszTypeHint, sizeHints []SszSizeHint, ma
 				maxSizeHints[i].Expr = sszMaxSizeStr
 			}
 		}
-	}
-
-	if err := checkDimensionsDeclared(sizeHints, maxSizeHints, ""); err != nil {
-		return nil, nil, nil, err
 	}
 
 	return typeHints, sizeHints, maxSizeHints, nil

@@ -104,13 +104,6 @@ func TestDimensionPlaceholderMustMatch(t *testing.T) {
 			}{},
 			want: "conflicting max tags",
 		},
-		{
-			name: "dimension declared by neither tag",
-			value: &struct {
-				F [][]byte `ssz-size:"?,6" ssz-max:"?,8"`
-			}{},
-			want: "neither a length nor a limit",
-		},
 	}
 
 	for _, tt := range tests {
@@ -131,5 +124,94 @@ func TestDimensionPlaceholderMustMatch(t *testing.T) {
 	}{F: [][]uint64{{1}}}
 	if _, err := ds.SizeSSZ(ok); err != nil {
 		t.Fatalf("matching placeholders should be accepted: %v", err)
+	}
+}
+
+// Tags are positional, so a dimension whose length comes from its Go type has
+// to be skipped in both families whenever an inner dimension needs a length and
+// another needs a limit. The array below can only be written with `?` in both,
+// and it describes exactly the same SSZ type as the spelling that needs no
+// placeholder at all -- so the two must agree byte for byte.
+func TestDimensionPlaceholderOnFixedDimension(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	placeholders := &struct {
+		F [2][][]byte `ssz-size:"?,?,4" ssz-max:"?,8"`
+	}{F: [2][][]byte{{{1, 2, 3, 4}}, {{5, 6, 7, 8}}}}
+	spelledOut := &struct {
+		F [2][][4]byte `ssz-max:"?,8"`
+	}{F: [2][][4]byte{{{1, 2, 3, 4}}, {{5, 6, 7, 8}}}}
+
+	withPlaceholders, err := ds.MarshalSSZ(placeholders)
+	if err != nil {
+		t.Fatalf("a fixed dimension may be skipped by both tag families: %v", err)
+	}
+	want, err := ds.MarshalSSZ(spelledOut)
+	if err != nil {
+		t.Fatalf("MarshalSSZ: %v", err)
+	}
+	if !bytes.Equal(withPlaceholders, want) {
+		t.Errorf("encoded %x, want %x", withPlaceholders, want)
+	}
+
+	gotRoot, err := ds.HashTreeRoot(placeholders)
+	if err != nil {
+		t.Fatalf("HashTreeRoot: %v", err)
+	}
+	wantRoot, err := ds.HashTreeRoot(spelledOut)
+	if err != nil {
+		t.Fatalf("HashTreeRoot: %v", err)
+	}
+	if gotRoot != wantRoot {
+		t.Errorf("root %x, want %x", gotRoot, wantRoot)
+	}
+}
+
+// `?` in both families on a slice dimension says "dynamic, no limit", which is
+// what leaving the tags off says. Both spellings therefore describe the same
+// unbounded list: they encode, and they have a hash tree root only once
+// extended types allow one.
+func TestDimensionPlaceholderOnUnboundedList(t *testing.T) {
+	tagged := &struct {
+		F []byte `ssz-size:"?" ssz-max:"?"`
+	}{F: []byte{1, 2, 3}}
+	untagged := &struct {
+		F []byte
+	}{F: []byte{1, 2, 3}}
+
+	for _, tc := range []struct {
+		name     string
+		ds       *DynSsz
+		hashable bool
+	}{
+		{name: "plain", ds: NewDynSsz(nil)},
+		{name: "extended", ds: NewDynSsz(nil, WithExtendedTypes()), hashable: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.ds.MarshalSSZ(tagged)
+			if err != nil {
+				t.Fatalf("an unbounded list spelled with placeholders must encode: %v", err)
+			}
+			want, err := tc.ds.MarshalSSZ(untagged)
+			if err != nil {
+				t.Fatalf("MarshalSSZ: %v", err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Errorf("encoded %x, want %x", got, want)
+			}
+
+			_, taggedErr := tc.ds.HashTreeRoot(tagged)
+			_, untaggedErr := tc.ds.HashTreeRoot(untagged)
+			if tc.hashable {
+				if taggedErr != nil {
+					t.Errorf("HashTreeRoot: %v", taggedErr)
+				}
+			} else if !errors.Is(taggedErr, sszutils.ErrExtendedTypeDisabled) {
+				t.Errorf("HashTreeRoot err = %v, want ErrExtendedTypeDisabled", taggedErr)
+			}
+			if (taggedErr == nil) != (untaggedErr == nil) {
+				t.Errorf("tagged err = %v, untagged err = %v; the two spellings must agree", taggedErr, untaggedErr)
+			}
+		})
 	}
 }

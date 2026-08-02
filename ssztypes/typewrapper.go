@@ -42,10 +42,6 @@ func extractWrapperDescriptorInfo(descriptorType reflect.Type, ds sszutils.Dynam
 		return nil, err
 	}
 
-	if declErr := checkDimensionsDeclared(sizeHints, maxSizeHints, field.Name); declErr != nil {
-		return nil, declErr
-	}
-
 	typeHints, err := getSszTypeTag(&field)
 	if err != nil {
 		return nil, err

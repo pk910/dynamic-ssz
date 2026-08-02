@@ -903,6 +903,33 @@ func TestTypeCache_AnnotationSizeHintExceedsUint32(t *testing.T) {
 	}
 }
 
+// annotatedArrayDim carries an annotation whose first dimension is fixed by the
+// Go type. Tags are positional, so skipping it in both families is the only way
+// to reach the dimensions that do need a length and a limit.
+type annotatedArrayDim [2][][]byte
+
+var _ = sszutils.Annotate[annotatedArrayDim](`ssz-size:"?,?,4" ssz-max:"?,8"`)
+
+// A dimension whose length comes from its Go type may be `?` in both families
+// on the annotation path too.
+func TestTypeCache_AnnotationPlaceholderOnFixedDimension(t *testing.T) {
+	cache := NewTypeCache(nil)
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(annotatedArrayDim{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("a fixed dimension may be skipped by both tag families: %v", err)
+	}
+	if desc.Len != 2 {
+		t.Errorf("outer length %d, want 2 from the array type", desc.Len)
+	}
+	if desc.ElemDesc.Limit != 8 {
+		t.Errorf("inner limit %d, want 8", desc.ElemDesc.Limit)
+	}
+	if desc.ElemDesc.ElemDesc.Len != 4 {
+		t.Errorf("innermost length %d, want 4", desc.ElemDesc.ElemDesc.Len)
+	}
+}
+
 // Annotation fixtures whose dynssz expressions resolve to 0 at runtime.
 type annotatedZeroSizeFallback []byte
 type annotatedZeroSizeNoFallback []byte
