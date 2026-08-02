@@ -50,6 +50,13 @@ import (
 func (cg *CodeGenerator) analyzeTypes() error {
 	var parser *Parser
 
+	// Descriptors built here describe code, not this process: a spec expression
+	// is emitted for the generated code to resolve against whatever specs it
+	// runs under. Resolving it now would bake the generator's own values in as
+	// the compile-time fallback, and would decide list-versus-vector by which
+	// values a generating machine happened to have loaded.
+	cg.typeCache.DisableSpecResolution()
+
 	getTypeName := func(t *CodeGeneratorTypeOptions) (string, string, string) {
 		var typeName, typePkgPath, typePkgName string
 		if t.ReflectType != nil {

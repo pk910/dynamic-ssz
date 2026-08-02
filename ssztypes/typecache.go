@@ -86,6 +86,10 @@ type TypeCache struct {
 	ExtendedTypes     bool
 	NoDelegation      bool
 
+	// noSpecResolution marks a cache that builds descriptors for code generation
+	// rather than for this process. See DisableSpecResolution.
+	noSpecResolution bool
+
 	// promotedDelegation memoizes InheritsPromotedDelegation (reflect.Type ->
 	// bool); the detection sits on the per-call delegation hot path.
 	promotedDelegation sync.Map
@@ -111,6 +115,18 @@ func NewTypeCache(specs sszutils.DynamicSpecs) *TypeCache {
 		CompatFlags:       map[string]SszCompatFlag{},
 		ExtendedTypes:     false,
 	}
+}
+
+// DisableSpecResolution switches the cache to building descriptors for code
+// generation rather than for this process. Spec expressions are recorded as
+// written instead of being resolved, because the generated code resolves them
+// against whatever specs it runs under; resolving them here would bake the
+// generator's own values into the output and would classify a dimension by
+// whether a value happened to be loaded. The values are dropped rather than
+// kept aside, so nothing can reach them by accident.
+func (tc *TypeCache) DisableSpecResolution() {
+	tc.noSpecResolution = true
+	tc.specs = emptySpecs{}
 }
 
 // GetTypeDescriptor returns a cached type descriptor for the given type, computing it if necessary.
@@ -443,8 +459,9 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			}
 
 			// ParseTags can't resolve dynamic expressions (no DynamicSpecs).
-			// Resolve them now using tc.specs.
-			if tc.specs != nil {
+			// Resolve them now, unless the descriptor is being built to generate
+			// code -- then the expression is what the output needs, not a value.
+			if !tc.noSpecResolution {
 				// A dimension keeps its static value when the expression gives
 				// nothing usable -- resolved to zero, undefined, or unresolvable.
 				// A zero static value is the "0" placeholder rather than a
@@ -533,6 +550,11 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		}
 
 		if maxSizeHints[0].Expr != "" {
+			// A limit no value was supplied for is the same dead end as a length.
+			if desc.Limit == 0 && !tc.noSpecResolution {
+				return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-max %q is not defined and has no positive static fallback", maxSizeHints[0].Expr)
+			}
+
 			desc.MaxExpression = &maxSizeHints[0].Expr
 		}
 
@@ -584,7 +606,11 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		case reflect.Array:
 			sszType = SszVectorType
 		case reflect.Slice:
-			if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
+			// `?` is what makes a dimension a list; any other tag names a length
+			// and so makes it a vector. Reading the resolved value instead would
+			// let the same type encode as a vector or as a list depending on which
+			// spec values a process happened to have loaded.
+			if len(sizeHints) > 0 && !sizeHints[0].Dynamic {
 				sszType = SszVectorType
 			} else if err := rejectZeroSizeHint(sizeHints); err != nil {
 				return nil, err
@@ -592,7 +618,7 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 				sszType = SszListType
 			}
 		case reflect.String:
-			if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
+			if len(sizeHints) > 0 && !sizeHints[0].Dynamic {
 				sszType = SszVectorType
 			} else if err := rejectZeroSizeHint(sizeHints); err != nil {
 				return nil, err
@@ -1868,7 +1894,21 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 			byteLen = (byteLen + 7) / 8 // ceil up to the next multiple of 8
 		}
 		desc.Len = byteLen
+	case len(sizeHints) > 0 && sizeHints[0].Expr != "":
+		// The length is named by an expression no value was supplied for. That is
+		// what generated code needs -- it resolves the expression itself -- so the
+		// length stays symbolic. Anywhere else the type named a length nothing can
+		// provide, the same dead end as one resolving to zero.
+		if !tc.noSpecResolution {
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-size %q is not defined and has no positive static fallback", sizeHints[0].Expr)
+		}
 	default:
+		// A dimension is a vector because its tag is not `?`, so a tag naming
+		// zero arrives here rather than as a list; say so in those terms.
+		if err := rejectZeroSizeHint(sizeHints); err != nil {
+			return err
+		}
+
 		return sszutils.NewSszError(sszutils.ErrInvalidConstraint, "missing size hint for vector type")
 	}
 
@@ -1877,7 +1917,10 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 	// dynssz-size resolved to 0 with no positive static fallback. A bit size
 	// misused on a non-bitvector also yields length 0, but that has a more
 	// specific error reported after the descriptor is built, so don't mask it.
-	if desc.Len == 0 && (desc.SszTypeFlags&SszTypeFlagHasBitSize == 0 || desc.SszType == SszBitvectorType) {
+	// A length supplied purely by an expression is legitimately 0 here while
+	// generating code, so only a genuine static zero is rejected (matching the
+	// code generator's own parser).
+	if desc.Len == 0 && desc.SizeExpression == nil && (desc.SszTypeFlags&SszTypeFlagHasBitSize == 0 || desc.SszType == SszBitvectorType) {
 		return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "vector type %v has zero length, which is invalid per the SSZ spec", t)
 	}
 

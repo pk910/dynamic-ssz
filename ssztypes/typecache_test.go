@@ -5043,8 +5043,11 @@ func TestTypeCache_ZeroSizeSliceRejected(t *testing.T) {
 	type zeroSlice struct {
 		V []byte `ssz-size:"0"`
 	}
-	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(zeroSlice{}), nil, nil, nil); err == nil {
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(zeroSlice{}), nil, nil, nil)
+	if err == nil {
 		t.Error("expected error for ssz-size 0 on a slice")
+	} else if !strings.Contains(err.Error(), "ssz-size 0 is not a valid vector size") {
+		t.Errorf("err = %v, want it to name the zero size", err)
 	}
 
 	type zeroString struct {
@@ -5258,17 +5261,90 @@ func TestMultiDimUnknownDynSize(t *testing.T) {
 	}
 }
 
-// dynOnlyUnknown has a dynssz-size dimension with no static ssz-size fallback,
-// so an undefined spec records a fresh dynamic dimension.
+// dynOnlyUnknown declares a length that comes from a spec value, with no static
+// ssz-size to fall back to.
 type dynOnlyUnknown struct {
-	F []uint16 `ssz-max:"8" dynssz-size:"UNK_X"`
+	F []uint16 `dynssz-size:"UNK_X"`
 }
 
+// A dimension is a vector because a tag names its length, not because the specs
+// in hand can put a number to it. When they cannot, the type declared a length
+// nothing supplies -- an error, rather than a quietly different SSZ type that
+// encodes as a list.
 func TestDynOnlyUnknownDynSize(t *testing.T) {
-	tc := NewTypeCache(nil)
-	if _, err := tc.GetTypeDescriptor(reflect.TypeOf(dynOnlyUnknown{}), nil, nil, nil); err != nil {
-		t.Fatalf("dyn-only unknown dynssz-size: %v", err)
-	}
+	t.Run("Runtime", func(t *testing.T) {
+		tc := NewTypeCache(nil)
+		_, err := tc.GetTypeDescriptor(reflect.TypeOf(dynOnlyUnknown{}), nil, nil, nil)
+		if !errors.Is(err, sszutils.ErrInvalidConstraint) {
+			t.Fatalf("err = %v, want ErrInvalidConstraint", err)
+		}
+		if !strings.Contains(err.Error(), "is not defined and has no positive static fallback") {
+			t.Errorf("err = %v, want it to say the length is unavailable", err)
+		}
+	})
+
+	t.Run("Resolved", func(t *testing.T) {
+		tc := NewTypeCache(&dummyDynamicSpecs{specValues: map[string]uint64{"UNK_X": 4}})
+		desc, err := tc.GetTypeDescriptor(reflect.TypeOf(dynOnlyUnknown{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if field := desc.ContainerDesc.Fields[0].Type; field.SszType != SszVectorType || field.Len != 4 {
+			t.Errorf("ssz type %v len %d, want a vector of 4", field.SszType, field.Len)
+		}
+	})
+
+	// Code generation emits the expression for the generated code to resolve,
+	// so the length legitimately has no value here and the type stays a vector.
+	t.Run("ForCodeGeneration", func(t *testing.T) {
+		tc := NewTypeCache(nil)
+		tc.DisableSpecResolution()
+		desc, err := tc.GetTypeDescriptor(reflect.TypeOf(dynOnlyUnknown{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		field := desc.ContainerDesc.Fields[0].Type
+		if field.SszType != SszVectorType {
+			t.Errorf("ssz type %v, want a vector", field.SszType)
+		}
+		if field.SizeExpression == nil || *field.SizeExpression != "UNK_X" {
+			t.Errorf("size expression %v, want UNK_X", field.SizeExpression)
+		}
+	})
+}
+
+// dynOnlyUnknownMax declares a limit that comes from a spec value, with no
+// static ssz-max to fall back to.
+type dynOnlyUnknownMax struct {
+	F []uint16 `dynssz-max:"UNK_M"`
+}
+
+// A limit nothing supplies is the same dead end as a length nothing supplies:
+// the type asked to be bounded by a value that is not there.
+func TestDynOnlyUnknownDynMax(t *testing.T) {
+	t.Run("Runtime", func(t *testing.T) {
+		tc := NewTypeCache(nil)
+		_, err := tc.GetTypeDescriptor(reflect.TypeOf(dynOnlyUnknownMax{}), nil, nil, nil)
+		if !errors.Is(err, sszutils.ErrInvalidConstraint) {
+			t.Fatalf("err = %v, want ErrInvalidConstraint", err)
+		}
+		if !strings.Contains(err.Error(), "is not defined and has no positive static fallback") {
+			t.Errorf("err = %v, want it to say the limit is unavailable", err)
+		}
+	})
+
+	t.Run("ForCodeGeneration", func(t *testing.T) {
+		tc := NewTypeCache(nil)
+		tc.DisableSpecResolution()
+		desc, err := tc.GetTypeDescriptor(reflect.TypeOf(dynOnlyUnknownMax{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		field := desc.ContainerDesc.Fields[0].Type
+		if field.MaxExpression == nil || *field.MaxExpression != "UNK_M" {
+			t.Errorf("max expression %v, want UNK_M", field.MaxExpression)
+		}
+	})
 }
 
 // Recursive descriptors form a cyclic graph that plain JSON marshalling cannot

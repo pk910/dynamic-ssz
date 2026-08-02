@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -1792,4 +1793,59 @@ func TestValidateTopLevelTypeWrapperShapes(t *testing.T) {
 			})
 		}
 	})
+}
+
+// genSpecSized takes its length from a spec value with no static fallback;
+// genSpecSizedFallback declares one.
+type genSpecSized struct {
+	V []uint16 `dynssz-size:"GEN_LEN"`
+}
+type genSpecSizedFallback struct {
+	V []uint16 `ssz-size:"4" dynssz-size:"GEN_LEN"`
+}
+
+// genFixedSpecs stands in for a generator handed a type cache that already has
+// spec values loaded, e.g. one taken from a running DynSsz.
+type genFixedSpecs struct{ values map[string]uint64 }
+
+func (s genFixedSpecs) ResolveSpecValue(name string) (bool, uint64, error) {
+	value, ok := s.values[name]
+	return ok, value, nil
+}
+
+// Generated code resolves spec expressions against the specs it runs under, so
+// generation must not resolve them itself: the value a generating machine holds
+// is not the value the output should carry, and a length it cannot resolve is
+// still a length rather than a reason to emit a list.
+func TestGenerationDoesNotResolveSpecValues(t *testing.T) {
+	fallbackOf := regexp.MustCompile(`ResolveSpecValueWithDefault\(ds, "GEN_LEN", (\d+)\)`)
+
+	for _, tt := range []struct {
+		name     string
+		typ      reflect.Type
+		fallback string
+	}{
+		{name: "no static fallback", typ: reflect.TypeFor[genSpecSized](), fallback: "0"},
+		{name: "static fallback", typ: reflect.TypeFor[genSpecSizedFallback](), fallback: "4"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, specs := range []sszutils.DynamicSpecs{nil, genFixedSpecs{values: map[string]uint64{"GEN_LEN": 9}}} {
+				cg := NewCodeGenerator(ssztypes.NewTypeCache(specs))
+				cg.BuildFile("gen_test.go", WithReflectType(tt.typ))
+
+				files, err := cg.GenerateToMap()
+				if err != nil {
+					t.Fatalf("a length supplied by an expression must generate: %v", err)
+				}
+
+				got := fallbackOf.FindStringSubmatch(files["gen_test.go"])
+				if got == nil {
+					t.Fatalf("no spec resolution emitted:\n%s", files["gen_test.go"])
+				}
+				if got[1] != tt.fallback {
+					t.Errorf("emitted fallback %s, want %s (the declared static size)", got[1], tt.fallback)
+				}
+			}
+		})
+	}
 }

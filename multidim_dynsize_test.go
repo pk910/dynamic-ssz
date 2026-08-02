@@ -215,3 +215,34 @@ func TestDimensionPlaceholderOnUnboundedList(t *testing.T) {
 		})
 	}
 }
+
+// specSizedVector takes its length from a spec value, with nothing static to
+// fall back to.
+type specSizedVector struct {
+	V []uint16 `dynssz-size:"SPEC_LEN"`
+}
+
+// Whether a slice is a vector or a list follows from its tags, not from the
+// specs a process happens to have loaded. With the value absent this type used
+// to encode as a variable list -- 4 bytes of offset plus contents, a layout no
+// other implementation produces for it -- and only failed later, when hashed.
+func TestSpecSizedVectorNeedsItsSpecValue(t *testing.T) {
+	value := &specSizedVector{V: []uint16{1, 2, 3, 4}}
+
+	resolved := NewDynSsz(map[string]any{"SPEC_LEN": uint64(4)}, WithNoFastSsz(), WithNoDelegation())
+	encoded, err := resolved.MarshalSSZ(value)
+	if err != nil {
+		t.Fatalf("MarshalSSZ: %v", err)
+	}
+	if len(encoded) != 8 {
+		t.Errorf("encoded %d bytes, want the 8 bytes of a vector: %x", len(encoded), encoded)
+	}
+
+	absent := NewDynSsz(map[string]any{}, WithNoFastSsz(), WithNoDelegation())
+	if _, err := absent.MarshalSSZ(value); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Errorf("err = %v, want ErrInvalidConstraint rather than a second encoding", err)
+	}
+	if _, err := absent.HashTreeRoot(value); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Errorf("err = %v, want ErrInvalidConstraint", err)
+	}
+}

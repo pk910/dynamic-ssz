@@ -356,19 +356,22 @@ func getSszSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]SszS
 					sszSize.Size = uint32(specVal)
 					sszSize.Custom = true
 				} else {
-					// Unknown spec value: keep the fastssz default for this dimension
-					// (or record it as dynamic when there is none), but keep resolving
-					// the remaining dimensions independently (matching the dynssz-max
-					// loop and codegen). The static fallback and the expression share
-					// one hint (and one unit), so a unit mismatch between the two tag
-					// families is unrepresentable and must be rejected.
+					// Unknown spec value: keep the fastssz default for this dimension,
+					// but keep resolving the remaining dimensions independently
+					// (matching the dynssz-max loop and codegen). The static fallback
+					// and the expression share one hint (and one unit), so a unit
+					// mismatch between the two tag families is unrepresentable and
+					// must be rejected.
+					//
+					// The hint stays non-dynamic: `?` is what declares a dimension
+					// dynamic, and a value nobody supplied is a missing length rather
+					// than a different SSZ type.
 					if i < len(sszSizes) {
 						if sszSizes[i].Bits != sszSize.Bits {
 							return sszSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "conflicting size units for field %q dimension %d: the static and dynamic size tags use different units (bits vs bytes)", field.Name, i)
 						}
 						sszSizes[i].Expr = sizeExpr
 					} else {
-						sszSize.Dynamic = true
 						sszSize.Expr = sizeExpr
 						sszSizes = append(sszSizes, sszSize)
 					}
@@ -498,6 +501,12 @@ func getSszMaxSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]S
 							return sszMaxSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-max %q for field %q is not defined and has no positive static fallback", sszMaxSizeStr, field.Name)
 						}
 						sszMaxSizes[i].Expr = sszMaxSizeStr
+					} else {
+						// No static tag to fall back to, so the limit is whatever the
+						// expression names. Record it: dropping the dimension would
+						// leave a list that never declared itself unbounded.
+						sszMaxSize.Expr = sszMaxSizeStr
+						sszMaxSizes = append(sszMaxSizes, sszMaxSize)
 					}
 					continue
 				}
