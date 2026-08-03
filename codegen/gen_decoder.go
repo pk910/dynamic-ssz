@@ -120,7 +120,7 @@ func generateDecoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 		appendCode(codeBuilder, 0, "// UnmarshalSSZDecoder unmarshals the %s from the given SSZ decoder using dynamic specifications.\n", typeName)
 	}
 
-	emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, dec sszutils.Decoder", "ds, dec", "err error", depthFailErr(ctx.recursion))
+	emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, dec sszutils.Decoder", "ds, dec", "err error", depthFailErr(ctx.recursion), false)
 	appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 	appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
 	if ctx.useSeekable {
@@ -310,6 +310,10 @@ func (ctx *decoderContext) unmarshalDelegatedMethod(desc *ssztypes.TypeDescripto
 
 // unmarshalType generates unmarshal code for any SSZ type, delegating to specific unmarshalers.
 func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, isRoot, noBufCheck bool) error {
+	if indent > maxEmitNesting {
+		return errEmitNesting(ctx.typePrinter, desc)
+	}
+
 	// Handle types that have generated methods we can call
 	isView := desc.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
 	if !isRoot && isView {

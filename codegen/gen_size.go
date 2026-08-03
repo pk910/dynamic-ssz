@@ -38,6 +38,16 @@ type sizeContext struct {
 
 	useTypeFnMap map[*ssztypes.TypeDescriptor]*sizeFnPtr
 	recursion    *recursionBound
+
+	// staticChildDelegation makes child-delegation decisions as if
+	// WithoutDynamicExpressions were set even though the surrounding options
+	// dropped it. The encoder generator does that for its embedded size
+	// closures: streaming code carries DynamicSpecs, but the siblings of a
+	// static build expose only static SizeSSZ — and a recursive sibling MUST
+	// be delegated to, or the walk inlines the cycle without end and
+	// generation itself runs away. The static size is also the correct one:
+	// it is what the sibling's static marshalling writes.
+	staticChildDelegation bool
 	// depthAware is set while emitting a type that lies on a recursive cycle,
 	// where the body runs inside a depth-carrying method and can pass the depth
 	// on to a cyclic child.
@@ -124,7 +134,7 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 	if genStaticFn {
 		if !ctx.usedDynSpecs {
 			appendCode(codeBuilder, 0, "// SizeSSZ returns the SSZ encoded size of the %s.\n", typeName)
-			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "SizeSSZ", "", "", "size int", "0")
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "SizeSSZ", "", "", "size int", "0", false)
 			if rootTypeDesc.Size > 0 {
 				appendCode(codeBuilder, 1, "return %d\n", rootTypeDesc.Size)
 			} else {
@@ -137,7 +147,7 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 		} else {
 			dynsszAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
 			appendCode(codeBuilder, 0, "// SizeSSZ returns the SSZ encoded size of the %s.\n", typeName)
-			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "SizeSSZ", "", "", "size int", "0")
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "SizeSSZ", "", "", "size int", "0", false)
 			appendCode(codeBuilder, 1, "return t.%s(%s.GetGlobalDynSsz()%s)\n", depthForwardName("SizeSSZDyn", ctx.depthAware), dynsszAlias, depthForwardArg(ctx.depthAware))
 			appendCode(codeBuilder, 0, "}\n\n")
 		}
@@ -152,7 +162,7 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 			if viewName == "" {
 				appendCode(codeBuilder, 0, "// SizeSSZDyn returns the SSZ encoded size of the %s using dynamic specifications.\n", typeName)
 			}
-			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs", "ds", "size int", "0")
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs", "ds", "size int", "0", false)
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 			appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
 			appendCode(codeBuilder, 1, ctx.codeBuf.String())
@@ -162,8 +172,7 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 			if viewName == "" {
 				appendCode(codeBuilder, 0, "// SizeSSZDyn returns the SSZ encoded size of the %s using dynamic specifications.\n", typeName)
 			}
-			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs", "ds", "size int", "0")
-			appendCode(codeBuilder, 1, "_ = ds\n")
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs", "ds", "size int", "0", true)
 			appendCode(codeBuilder, 1, "return t.%s(%s)\n", depthForwardName("SizeSSZ", ctx.depthAware), depthForwardArgBare(ctx.depthAware))
 			appendCode(codeBuilder, 0, "}\n\n")
 		}
@@ -217,6 +226,10 @@ func (ctx *sizeContext) getValueVar(desc *ssztypes.TypeDescriptor, varName, targ
 
 // sizeType generates size calculation code for any SSZ type, delegating to specific sizers.
 func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar string, indent int, isRoot bool) error {
+	if indent > maxEmitNesting {
+		return errEmitNesting(ctx.typePrinter, desc)
+	}
+
 	// Handle types that have generated methods we can call
 	if ptr, ok := ctx.useTypeFnMap[desc]; ok {
 		ctx.appendCode(indent, "%s += %s\n", sizeVar, ptr.getFnCall(varName))
@@ -239,18 +252,19 @@ func (ctx *sizeContext) sizeType(desc *ssztypes.TypeDescriptor, varName, sizeVar
 	}
 
 	if !isRoot && !isView {
-		hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions
+		staticBuild := ctx.options.WithoutDynamicExpressions || ctx.staticChildDelegation
+		hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !staticBuild
 		// Under WithoutDynamicExpressions the generated code must be fully static
 		// and must never call a *Dyn method. A child exposing a static SizeSSZ
 		// (every dynssz-generated child in this mode, plus external fastssz types)
 		// is reached through it even when fastssz delegation is otherwise disabled.
 		useFastSsz := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0 && !hasDynamicSize &&
-			(!ctx.options.NoFastSsz || ctx.options.WithoutDynamicExpressions)
+			(!ctx.options.NoFastSsz || staticBuild)
 		if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
 			useFastSsz = true
 		}
 
-		if ctx.options.WithoutDynamicExpressions {
+		if staticBuild {
 			if useFastSsz {
 				fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "SizeSSZ")
 				ctx.appendCode(indent, "%s += %s.%s(%s)\n", sizeVar, varName, fn, strings.TrimPrefix(arg, ", "))

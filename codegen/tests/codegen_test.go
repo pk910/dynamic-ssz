@@ -417,6 +417,7 @@ func TestCodegenNoDynNest(t *testing.T) {
 		}
 	}
 
+	testCodegenPayloadByReflection(t, NoDynRecursiveHolder_Payload, nil)
 	testCodegenPayloadByReflection(t, NoDynNestProg_Payload, nil)
 	testCodegenPayloadByReflection(t, NoDynNestList_Payload, nil)
 	testCodegenPayloadByReflection(t, NoDynNestVec_Payload, nil)
@@ -2501,7 +2502,9 @@ func TestCodegenRecursionDepthBound(t *testing.T) {
 		}
 		checked := 0
 		for _, name := range others {
-			if name == "gen_recursive.go" {
+			// gen_nodynnest.go carries recursive types on purpose: they pin
+			// the static-only build against cycles.
+			if name == "gen_recursive.go" || name == "gen_nodynnest.go" {
 				continue
 			}
 			plain, err := os.ReadFile(name)

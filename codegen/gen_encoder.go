@@ -124,7 +124,7 @@ func generateEncoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 	if viewName == "" {
 		appendCode(codeBuilder, 0, "// MarshalSSZEncoder marshals the %s to the given SSZ encoder using dynamic specifications.\n", typeName)
 	}
-	emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, enc sszutils.Encoder", "ds, enc", "err error", depthFailErr(ctx.recursion))
+	emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, enc sszutils.Encoder", "ds, enc", "err error", depthFailErr(ctx.recursion), false)
 
 	if ctx.usedContext {
 		appendCode(codeBuilder, 1, ctx.generateEncodeContext(0))
@@ -235,6 +235,14 @@ func (ctx *encoderContext) generateSizeFnCode(indent int) (string, error) {
 		sizeCtx := newSizeContext(ctx.typePrinter, ctx.options)
 		sizeCtx.exprVars = ctx.exprVars
 		sizeCtx.staticSizeVars = newStaticSizeVarGenerator(ctx.typePrinter, ctx.options, ctx.exprVars)
+		// The closures run inside the encoder method, so they share its nesting
+		// bound and, in a static build, its children's static-only method
+		// surface (see staticChildDelegation). Without either, a size walk
+		// meeting a recursive cycle has no reason to delegate — it inlines the
+		// cycle without end, and generation itself runs away.
+		sizeCtx.recursion = ctx.recursion
+		sizeCtx.depthAware = ctx.depthAware
+		sizeCtx.staticChildDelegation = ctx.noDynBufferCalls
 
 		sizeFnMap := make(map[*ssztypes.TypeDescriptor]*sizeFnPtr)
 		for desc2, idx := range ctx.sizeFnNameMap {
@@ -297,6 +305,10 @@ func (ctx *encoderContext) generateEncodeContext(indent int) string {
 
 // marshalType generates marshal code for any SSZ type, delegating to specific marshalers.
 func (ctx *encoderContext) marshalType(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, isRoot bool) error {
+	if indent > maxEmitNesting {
+		return errEmitNesting(ctx.typePrinter, desc)
+	}
+
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.SszType != ssztypes.SszOptionalType && desc.SszType != ssztypes.SszOptionalListType {
 		ctx.appendCode(indent, "if %s == nil {\n\t%s = new(%s)\n}\n", varName, varName, ctx.typePrinter.InnerTypeString(desc))
 	}

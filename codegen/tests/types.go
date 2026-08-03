@@ -2331,3 +2331,30 @@ var RecursiveInlineHolder_Payload = RecursiveInlineHolder{
 		},
 	},
 }
+
+// NoDynRecursiveNode closes a cycle under the static-only combination: its
+// walk body carries depth charges and twin calls, so the static
+// HashTreeRootWith has to be a depth twin like its marshal siblings — the
+// combination that once emitted references to a twin nothing generated.
+type NoDynRecursiveNode struct {
+	Val      uint64
+	Children []*NoDynRecursiveNode `ssz-max:"4"`
+}
+
+// NoDynRecursiveHolder threads the depth through a type that is not on the
+// cycle itself, still without dynamic expressions.
+type NoDynRecursiveHolder struct {
+	Tag  uint32
+	Node NoDynRecursiveNode
+}
+
+var NoDynRecursiveHolder_Payload = NoDynRecursiveHolder{
+	Tag: 3,
+	Node: NoDynRecursiveNode{
+		Val: 1,
+		Children: []*NoDynRecursiveNode{
+			{Val: 2},
+			{Val: 3, Children: []*NoDynRecursiveNode{{Val: 4}}},
+		},
+	},
+}

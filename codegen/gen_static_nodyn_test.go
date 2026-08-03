@@ -177,6 +177,13 @@ func TestStaticNoDynRecursion(t *testing.T) {
 				WithReflectType(reflect.TypeFor[nsSelfRec](), typeOpts...),
 				WithReflectType(reflect.TypeFor[nsMutA](), typeOpts...),
 				WithReflectType(reflect.TypeFor[nsMutB](), typeOpts...),
+				// A pointer-element cycle plus a holder that merely contains
+				// it: under the static build the streaming size closures must
+				// delegate to the cycle member's static sizer — a walk that
+				// inlines it instead grows the output without end, so this
+				// generation completing at all is the regression pin.
+				WithReflectType(reflect.TypeFor[nsPtrRec](), typeOpts...),
+				WithReflectType(reflect.TypeFor[nsPtrRecHolder](), typeOpts...),
 			)
 			files, err := cg.GenerateToMap()
 			if err != nil {
@@ -185,6 +192,20 @@ func TestStaticNoDynRecursion(t *testing.T) {
 			nsAssertNoDyn(t, combo.name, files["gen.go"])
 		})
 	}
+}
+
+// nsPtrRec closes a cycle through a pointer-element list, the shape whose
+// streaming size closure once inlined itself without end under the static
+// build (see TestStaticNoDynRecursion).
+type nsPtrRec struct {
+	V uint8
+	L []*nsPtrRec `ssz-max:"4"`
+}
+
+// nsPtrRecHolder threads the bound through a type that is not on the cycle.
+type nsPtrRecHolder struct {
+	Tag  uint32
+	Node nsPtrRec
 }
 
 // TestStaticStreamingUnexportedGenericArg is a regression guard for the type-name

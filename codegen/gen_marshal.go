@@ -110,7 +110,7 @@ func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 	if genStaticFn {
 		if !ctx.usedDynSpecs {
 			appendCode(codeBuilder, 0, "// MarshalSSZTo marshals the %s to SSZ-encoded bytes, appending to the provided buffer.\n", typeName)
-			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "MarshalSSZTo", "buf []byte", "buf", "dst []byte, err error", depthFailNilErr(ctx.recursion))
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "MarshalSSZTo", "buf []byte", "buf", "dst []byte, err error", depthFailNilErr(ctx.recursion), false)
 			appendCode(codeBuilder, 1, "dst = buf\n")
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 			appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
@@ -123,7 +123,7 @@ func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 		} else {
 			dynsszAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
 			appendCode(codeBuilder, 0, "// MarshalSSZTo marshals the %s to SSZ-encoded bytes, appending to the provided buffer.\n", typeName)
-			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "MarshalSSZTo", "buf []byte", "buf", "dst []byte, err error", depthFailNilErr(ctx.recursion))
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "MarshalSSZTo", "buf []byte", "buf", "dst []byte, err error", depthFailNilErr(ctx.recursion), false)
 			appendCode(codeBuilder, 1, "return t.%s(%s.GetGlobalDynSsz(), buf%s)\n", depthForwardName("MarshalSSZDyn", ctx.depthAware), dynsszAlias, depthForwardArg(ctx.depthAware))
 			appendCode(codeBuilder, 0, "}\n\n")
 		}
@@ -138,7 +138,7 @@ func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 			if viewName == "" {
 				appendCode(codeBuilder, 0, "// MarshalSSZDyn marshals the %s to SSZ-encoded bytes using dynamic specifications.\n", typeName)
 			}
-			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, buf []byte", "ds, buf", "dst []byte, err error", depthFailNilErr(ctx.recursion))
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, buf []byte", "ds, buf", "dst []byte, err error", depthFailNilErr(ctx.recursion), false)
 			appendCode(codeBuilder, 1, "dst = buf\n")
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 			appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
@@ -152,8 +152,7 @@ func generateMarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 			if viewName == "" {
 				appendCode(codeBuilder, 0, "// MarshalSSZDyn marshals the %s to SSZ-encoded bytes using dynamic specifications.\n", typeName)
 			}
-			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, buf []byte", "ds, buf", "dst []byte, err error", depthFailNilErr(ctx.recursion))
-			appendCode(codeBuilder, 1, "_ = ds\n")
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, buf []byte", "ds, buf", "dst []byte, err error", depthFailNilErr(ctx.recursion), true)
 			appendCode(codeBuilder, 1, "return t.%s(buf%s)\n", depthForwardName("MarshalSSZTo", ctx.depthAware), depthForwardArg(ctx.depthAware))
 			appendCode(codeBuilder, 0, "}\n\n")
 		}
@@ -214,6 +213,10 @@ func (ctx *marshalContext) isInlineable(desc *ssztypes.TypeDescriptor) bool {
 
 // marshalType generates marshal code for any SSZ type, delegating to specific marshalers.
 func (ctx *marshalContext) marshalType(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, isRoot bool) error {
+	if indent > maxEmitNesting {
+		return errEmitNesting(ctx.typePrinter, desc)
+	}
+
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.SszType != ssztypes.SszOptionalType && desc.SszType != ssztypes.SszOptionalListType {
 		ctx.appendCode(indent, "if %s == nil {\n\t%s = new(%s)\n}\n", varName, varName, ctx.typePrinter.InnerTypeString(desc))
 	}

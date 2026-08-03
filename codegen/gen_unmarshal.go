@@ -104,7 +104,7 @@ func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strin
 	if genStaticFn {
 		if !ctx.usedDynSpecs {
 			appendCode(codeBuilder, 0, "// UnmarshalSSZ unmarshals the %s from SSZ-encoded bytes.\n", typeName)
-			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "UnmarshalSSZ", "buf []byte", "buf", "err error", depthFailErr(ctx.recursion))
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "UnmarshalSSZ", "buf []byte", "buf", "err error", depthFailErr(ctx.recursion), false)
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 			appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
 			appendCode(codeBuilder, 1, codeBuf.String())
@@ -113,7 +113,7 @@ func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strin
 		} else {
 			dynsszAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
 			appendCode(codeBuilder, 0, "// UnmarshalSSZ unmarshals the %s from SSZ-encoded bytes.\n", typeName)
-			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "UnmarshalSSZ", "buf []byte", "buf", "err error", depthFailErr(ctx.recursion))
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "UnmarshalSSZ", "buf []byte", "buf", "err error", depthFailErr(ctx.recursion), false)
 			appendCode(codeBuilder, 1, "return t.%s(%s.GetGlobalDynSsz(), buf%s)\n", depthForwardName("UnmarshalSSZDyn", ctx.depthAware), dynsszAlias, depthForwardArg(ctx.depthAware))
 			appendCode(codeBuilder, 0, "}\n\n")
 		}
@@ -128,7 +128,7 @@ func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strin
 			if viewName == "" {
 				appendCode(codeBuilder, 0, "// UnmarshalSSZDyn unmarshals the %s from SSZ-encoded bytes using dynamic specifications.\n", typeName)
 			}
-			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, buf []byte", "ds, buf", "err error", depthFailErr(ctx.recursion))
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, buf []byte", "ds, buf", "err error", depthFailErr(ctx.recursion), false)
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 			appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
 			appendCode(codeBuilder, 1, codeBuf.String())
@@ -138,8 +138,7 @@ func generateUnmarshal(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strin
 			if viewName == "" {
 				appendCode(codeBuilder, 0, "// UnmarshalSSZDyn unmarshals the %s from SSZ-encoded bytes using dynamic specifications.\n", typeName)
 			}
-			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, buf []byte", "ds, buf", "err error", depthFailErr(ctx.recursion))
-			appendCode(codeBuilder, 1, "_ = ds\n")
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, buf []byte", "ds, buf", "err error", depthFailErr(ctx.recursion), true)
 			appendCode(codeBuilder, 1, "return t.%s(buf%s)\n", depthForwardName("UnmarshalSSZ", ctx.depthAware), depthForwardArg(ctx.depthAware))
 			appendCode(codeBuilder, 0, "}\n\n")
 		}
@@ -309,6 +308,10 @@ func (ctx *unmarshalContext) unmarshalCompatType(desc *ssztypes.TypeDescriptor, 
 }
 
 func (ctx *unmarshalContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, isRoot, noBufCheck bool) error {
+	if indent > maxEmitNesting {
+		return errEmitNesting(ctx.typePrinter, desc)
+	}
+
 	// Handle types that have generated methods we can call
 	isView := desc.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
 	if !isRoot && isView {

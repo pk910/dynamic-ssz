@@ -114,8 +114,12 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 
 	if genStaticFn {
 		if !ctx.usedDynSpecs {
+			// The walk body carries depth charges and twin calls whenever the
+			// type threads a nesting depth, so this header has to go through
+			// emitMethodHeader like every other body-carrying method: it is
+			// what emits the depth twin those references resolve against.
 			appendCode(codeBuilder, 0, "// HashTreeRootWith computes the SSZ hash tree root of the %s using the given hash walker.\n", typeName)
-			appendCode(codeBuilder, 0, fmt.Sprintf("func (t %s) HashTreeRootWith(hh sszutils.HashWalker) error {\n", typeName))
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "HashTreeRootWith", "hh sszutils.HashWalker", "hh", "error", depthFailErr(ctx.recursion), false)
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 			appendCode(codeBuilder, 1, codeBuf.String())
 			appendCode(codeBuilder, 1, "return nil\n")
@@ -123,7 +127,7 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 		} else {
 			dynsszAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
 			appendCode(codeBuilder, 0, "// HashTreeRootWith computes the SSZ hash tree root of the %s using the given hash walker.\n", typeName)
-			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "HashTreeRootWith", "hh sszutils.HashWalker", "hh", "error", depthFailErr(ctx.recursion))
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "HashTreeRootWith", "hh sszutils.HashWalker", "hh", "error", depthFailErr(ctx.recursion), false)
 			appendCode(codeBuilder, 1, "return t.HashTreeRootWithDyn(%s.GetGlobalDynSsz(), hh)\n", dynsszAlias)
 			appendCode(codeBuilder, 0, "}\n\n")
 		}
@@ -154,7 +158,7 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 			if viewName == "" {
 				appendCode(codeBuilder, 0, "// HashTreeRootWithDyn computes the SSZ hash tree root of the %s using dynamic specifications and the given hash walker.\n", typeName)
 			}
-			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, hh sszutils.HashWalker", "ds, hh", "error", depthFailErr(ctx.recursion))
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, hh sszutils.HashWalker", "ds, hh", "error", depthFailErr(ctx.recursion), false)
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 			appendCode(codeBuilder, 1, codeBuf.String())
 			appendCode(codeBuilder, 1, "return nil\n")
@@ -163,8 +167,7 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 			if viewName == "" {
 				appendCode(codeBuilder, 0, "// HashTreeRootWithDyn computes the SSZ hash tree root of the %s using dynamic specifications and the given hash walker.\n", typeName)
 			}
-			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, hh sszutils.HashWalker", "ds, hh", "error", depthFailErr(ctx.recursion))
-			appendCode(codeBuilder, 1, "_ = ds\n")
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, hh sszutils.HashWalker", "ds, hh", "error", depthFailErr(ctx.recursion), true)
 			appendCode(codeBuilder, 1, "return t.%s(hh%s)\n", depthForwardName("HashTreeRootWith", ctx.depthAware), depthForwardArg(ctx.depthAware))
 			appendCode(codeBuilder, 0, "}\n\n")
 		}
@@ -276,6 +279,10 @@ func (ctx *hashTreeRootContext) hashDynamicRoot(desc *ssztypes.TypeDescriptor, v
 
 // hashType generates hash tree root code for any SSZ type, delegating to specific hashers.
 func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, isRoot, pack bool) error {
+	if indent > maxEmitNesting {
+		return errEmitNesting(ctx.typePrinter, desc)
+	}
+
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.SszType != ssztypes.SszOptionalType && desc.SszType != ssztypes.SszOptionalListType {
 		ctx.appendCode(indent, "if %s == nil {\n\t%s = new(%s)\n}\n", varName, varName, ctx.typePrinter.InnerTypeString(desc))
 	}

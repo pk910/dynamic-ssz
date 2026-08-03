@@ -242,6 +242,18 @@ func (b *recursionBound) callableDepthMethods(desc *ssztypes.TypeDescriptor) boo
 	return b != nil && b.pkgPath != "" && descriptorPkgPath(desc) == b.pkgPath
 }
 
+// maxEmitNesting bounds how deep an emission walk may nest. No legal type
+// nests anywhere near this deep at emission time — a walk that does has met a
+// recursive cycle it failed to delegate, and would otherwise grow the output
+// without end. Failing keeps a generator bug an error instead of an
+// out-of-memory kill.
+const maxEmitNesting = 4096
+
+// errEmitNesting names the descriptor an emission walk was stuck on.
+func errEmitNesting(typePrinter *TypePrinter, desc *ssztypes.TypeDescriptor) error {
+	return fmt.Errorf("code emission nests deeper than %d levels at %s: a recursive cycle is being inlined instead of delegated; this is a bug in the code generator", maxEmitNesting, typePrinter.TypeString(desc))
+}
+
 // depthParam is the name of the nesting-depth argument threaded through the
 // generated methods of a recursive type.
 const depthParam = "depth"
@@ -264,14 +276,27 @@ const depthParam = "depth"
 // list reduced to argument names, for the delegating call. failReturn is the
 // return statement for a depth violation, which differs by method: a sizer has
 // no error result and reports zero.
+//
+// dsUnused declares that the body the caller is about to append never touches
+// the ds parameter (it forwards to a spec-independent method). The parameter
+// is then blanked on whichever function carries that body — the plain method,
+// or the depth twin — while a delegator keeps it named, since forwarding is a
+// use. The substitution lives here because only this function knows which of
+// those shapes it is emitting.
 func emitMethodHeader(
 	codeBuilder *strings.Builder,
 	bound *recursionBound,
 	desc *ssztypes.TypeDescriptor,
 	typeName, fnName, params, args, results, failReturn string,
+	dsUnused bool,
 ) {
+	bodyParams := params
+	if dsUnused {
+		bodyParams = strings.Replace(params, "ds ", "_ ", 1)
+	}
+
 	if !bound.threads(desc) {
-		appendCode(codeBuilder, 0, "func (t %s) %s(%s) (%s) {\n", typeName, fnName, params, results)
+		appendCode(codeBuilder, 0, "func (t %s) %s(%s) (%s) {\n", typeName, fnName, bodyParams, results)
 		return
 	}
 
@@ -292,8 +317,8 @@ func emitMethodHeader(
 	}
 
 	depthParams := depthParam + " int"
-	if params != "" {
-		depthParams = params + ", " + depthParams
+	if bodyParams != "" {
+		depthParams = bodyParams + ", " + depthParams
 	}
 
 	appendCode(codeBuilder, 0, "// %s carries the nesting depth for the recursive cycle %s lies on.\n", depthFn, typeName)
