@@ -7,6 +7,7 @@ package dynssz
 import (
 	"errors"
 	"fmt"
+	"github.com/pk910/dynamic-ssz/sszutils"
 	"math"
 	"math/big"
 	"strconv"
@@ -49,7 +50,7 @@ func (d *DynSsz) ResolveSpecValue(name string) (bool, uint64, error) {
 	if raw, ok := d.specValues[name]; ok {
 		value, resolved, err := specValueToUint64(raw)
 		if err != nil {
-			return false, 0, fmt.Errorf("invalid dynamic spec value %q: %w", name, err)
+			return false, 0, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "invalid dynamic spec value %q: %v", name, err)
 		}
 		if resolved {
 			cachedValue.resolved = true
@@ -67,10 +68,10 @@ func (d *DynSsz) ResolveSpecValue(name string) (bool, uint64, error) {
 	// evaluation (overflow, division by zero, a present-but-invalid value) errors.
 	handled, resolved, value, ierr := evalIntSpecExpression(name, d.specValues)
 	if !handled {
-		return false, 0, fmt.Errorf("unsupported dynamic spec expression %q: only integer arithmetic is supported (+ - * / %%, parentheses, unsigned literals and spec identifiers)", name)
+		return false, 0, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "unsupported dynamic spec expression %q: only integer arithmetic is supported (+ - * / %%, parentheses, unsigned literals and spec identifiers)", name)
 	}
 	if ierr != nil {
-		return false, 0, fmt.Errorf("invalid dynamic spec expression %q: %w", name, ierr)
+		return false, 0, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "invalid dynamic spec expression %q: %v", name, ierr)
 	}
 	cachedValue.resolved = resolved
 	cachedValue.value = value

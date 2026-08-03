@@ -1436,7 +1436,7 @@ func (ctx *ReflectionCtx) unmarshalBitlist(targetType *ssztypes.TypeDescriptor, 
 			return sszutils.ErrBitlistNotTerminatedFn()
 		}
 		if maxBytes >= 0 && sszLen > maxBytes {
-			return sszutils.ErrBitlistLengthFn(uint64(sszLen-1)*8, targetType.Limit)
+			return sszutils.ErrBitlistBytesFn(sszLen, maxBytes, targetType.Limit)
 		}
 	}
 
@@ -1446,7 +1446,7 @@ func (ctx *ReflectionCtx) unmarshalBitlist(targetType *ssztypes.TypeDescriptor, 
 		// Only the read cap maps to an ssz-max violation; a stream-allowance
 		// overrun is a different cause and must keep its own diagnosis.
 		if maxBytes >= 0 && errors.Is(err, sszutils.ErrPayloadTooLarge) {
-			return sszutils.ErrBitlistLengthFn(uint64(maxBytes)*8, targetType.Limit)
+			return sszutils.ErrBitlistBytesFn(maxBytes+1, maxBytes, targetType.Limit)
 		}
 		return err
 	}

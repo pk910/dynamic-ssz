@@ -692,7 +692,7 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 	// A nil typed pointer cannot receive a decode through any path; the
 	// delegate methods would dereference it.
 	if targetValue := reflect.ValueOf(target); targetValue.Kind() == reflect.Ptr && targetValue.IsNil() {
-		return fmt.Errorf("target pointer must not be nil")
+		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "target pointer must not be nil")
 	}
 
 	// The buffer form is preferred; the streaming form is bridged through a
@@ -733,11 +733,11 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 	}
 
 	if targetTypeDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer == 0 {
-		return fmt.Errorf("target must be a pointer")
+		return sszutils.NewSszError(sszutils.ErrTypeMismatch, "target must be a pointer")
 	}
 
 	if targetValue.IsNil() {
-		return fmt.Errorf("target pointer must not be nil")
+		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "target pointer must not be nil")
 	}
 
 	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation, d.options.MaxNestingDepth)
@@ -752,7 +752,7 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 
 	consumedDiff := decoder.PopLimit()
 	if consumedDiff != 0 {
-		return fmt.Errorf("did not consume full ssz range (diff: %v, ssz size: %v)", consumedDiff, len(ssz))
+		return sszutils.NewSszErrorf(sszutils.ErrOffset, "did not consume full ssz range (diff: %v, ssz size: %v)", consumedDiff, len(ssz))
 	}
 
 	return nil
@@ -892,7 +892,7 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 			return decoder.FinishRegion()
 		}
 		if consumedDiff := decoder.PopLimit(); consumedDiff != 0 {
-			return fmt.Errorf("did not consume full ssz range (diff: %v, ssz size: %v)", consumedDiff, size)
+			return sszutils.NewSszErrorf(sszutils.ErrOffset, "did not consume full ssz range (diff: %v, ssz size: %v)", consumedDiff, size)
 		}
 		return nil
 	}
@@ -900,7 +900,7 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 	// A nil typed pointer cannot receive a decode through any path; the
 	// delegate methods would dereference it.
 	if targetValue := reflect.ValueOf(target); targetValue.Kind() == reflect.Ptr && targetValue.IsNil() {
-		return fmt.Errorf("target pointer must not be nil")
+		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "target pointer must not be nil")
 	}
 
 	// The streaming form is preferred; the buffer form is bridged by reading
@@ -957,11 +957,11 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 	}
 
 	if targetTypeDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer == 0 {
-		return fmt.Errorf("target must be a pointer")
+		return sszutils.NewSszError(sszutils.ErrTypeMismatch, "target must be a pointer")
 	}
 
 	if targetValue.IsNil() {
-		return fmt.Errorf("target pointer must not be nil")
+		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "target pointer must not be nil")
 	}
 
 	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation, d.options.MaxNestingDepth)

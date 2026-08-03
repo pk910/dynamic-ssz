@@ -178,6 +178,48 @@ func TestUnmarshalNilTypedPointer(t *testing.T) {
 	}
 }
 
+// Every engine and operation names the failing container field the same way,
+// and the public entrypoints answer with typed sentinels.
+func TestErrorPathAndSentinelConsistency(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation())
+
+	type overMax struct {
+		BadList []uint64 `ssz-max:"64"`
+	}
+	value := &overMax{BadList: make([]uint64, 65)}
+
+	if _, err := ds.MarshalSSZ(value); err == nil || !strings.Contains(err.Error(), "BadList") {
+		t.Errorf("marshal error must name the field: %v", err)
+	}
+	if _, err := ds.HashTreeRoot(value); err == nil || !strings.Contains(err.Error(), "BadList") {
+		t.Errorf("hash tree root error must name the field: %v", err)
+	}
+	if _, err := ds.SizeSSZ(value); err == nil || !strings.Contains(err.Error(), "BadList") {
+		t.Errorf("size error must name the field: %v", err)
+	}
+
+	type twoFields struct {
+		A uint32
+		B uint32
+	}
+	valid, err := ds.MarshalSSZ(&twoFields{A: 1, B: 2})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	err = ds.UnmarshalSSZ(new(twoFields), append(valid, 0xff))
+	if err == nil || !errors.Is(err, sszutils.ErrOffset) {
+		t.Errorf("trailing data must carry the offset sentinel: %v", err)
+	}
+
+	if err := ds.UnmarshalSSZ(twoFields{}, valid); !errors.Is(err, sszutils.ErrTypeMismatch) {
+		t.Errorf("non-pointer target must carry the type-mismatch sentinel: %v", err)
+	}
+	var nilTarget *twoFields
+	if err := ds.UnmarshalSSZ(nilTarget, valid); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Errorf("nil target must carry the value-range sentinel: %v", err)
+	}
+}
+
 func TestDefaultLogUsesStructuredLogging(t *testing.T) {
 	var buf bytes.Buffer
 	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})

@@ -988,9 +988,9 @@ func TestDecodeUint64ListInto(t *testing.T) {
 
 	t.Run("known-length misaligned", func(t *testing.T) {
 		dec := NewBufferDecoder(data[:20])
-		// Misalignment is reported through the unexpected-EOF sentinel.
+		// Misalignment is a value-shape defect, not a truncation.
 		_, err := DecodeUint64ListInto(dec, []uint64(nil), -1)
-		if !errors.Is(err, ErrUnexpectedEOF) || !strings.Contains(err.Error(), "not a multiple") {
+		if !errors.Is(err, ErrInvalidValueRange) || !strings.Contains(err.Error(), "not a multiple") {
 			t.Fatalf("err = %v, want a list-alignment error", err)
 		}
 	})

@@ -287,7 +287,7 @@ func ErrListOffsetsEOFFn(have, needed any) error {
 // exact multiple of the element size.
 func ErrListNotAlignedFn(length, elemSize any) error {
 	return &sszError{
-		err:     ErrUnexpectedEOF,
+		err:     ErrInvalidValueRange,
 		message: fmt.Sprintf("list length %v is not a multiple of element size %v", length, elemSize),
 	}
 }
@@ -309,7 +309,7 @@ func ErrListRegionTooSmallFn(count, minElemSize, available any) error {
 // dynamic list is malformed (not a multiple of 4 or out of range).
 func ErrInvalidListStartOffsetFn(offset, bufLen any) error {
 	return &sszError{
-		err:     ErrUnexpectedEOF,
+		err:     ErrOffset,
 		message: fmt.Sprintf("invalid list start offset %v (length %v)", offset, bufLen),
 	}
 }
@@ -367,6 +367,16 @@ func ErrFieldNotConsumedFn(pos, expected any) error {
 	return &sszError{
 		err:     ErrOffset,
 		message: fmt.Sprintf("field consumed to position %v, expected %v", pos, expected),
+	}
+}
+
+// ErrBitlistBytesFn is returned when a bitlist's encoded byte region already
+// exceeds the byte capacity of its declared bit limit, before the terminator
+// (and thus the exact bit count) has been read.
+func ErrBitlistBytesFn(regionBytes, capacityBytes, limit any) error {
+	return &sszError{
+		err:     ErrListTooBig,
+		message: fmt.Sprintf("bitlist occupies %v bytes, exceeding the %v-byte capacity of limit %v", regionBytes, capacityBytes, limit),
 	}
 }
 

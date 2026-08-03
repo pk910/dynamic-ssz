@@ -484,14 +484,14 @@ func TestHashTreeRootErrors(t *testing.T) {
 			input: struct {
 				Value []byte `ssz-type:"uint128" ssz-max:"64"`
 			}{[]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}},
-			expectedErr: "large uint type does not have expected data length (17 != 16)",
+			expectedErr: "vector length 17 exceeds limit 16",
 		},
 		{
 			name: "invalid_uint256_size",
 			input: struct {
 				Value []byte `ssz-type:"uint256" ssz-max:"64"`
 			}{[]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33}},
-			expectedErr: "large uint type does not have expected data length (33 != 32)",
+			expectedErr: "vector length 33 exceeds limit 32",
 		},
 		{
 			name: "invalid_bitvector_type",
@@ -767,14 +767,14 @@ func TestGetTreeErrors(t *testing.T) {
 			input: struct {
 				Value []byte `ssz-type:"uint128" ssz-max:"64"`
 			}{[]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}},
-			expectedErr: "large uint type does not have expected data length (17 != 16)",
+			expectedErr: "vector length 17 exceeds limit 16",
 		},
 		{
 			name: "invalid_uint256_size",
 			input: struct {
 				Value []byte `ssz-type:"uint256" ssz-max:"64"`
 			}{[]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33}},
-			expectedErr: "large uint type does not have expected data length (33 != 32)",
+			expectedErr: "vector length 33 exceeds limit 32",
 		},
 		{
 			name: "invalid_bitvector_type",
@@ -2024,9 +2024,9 @@ func TestOptionalInnerBuildRootError(t *testing.T) {
 	}
 }
 
-// TestOptionalListInnerBuildRootError verifies buildRootFromOptionalList
-// propagates errors from the inner element's buildRootFromType call and tags
-// them with the "[0]" path to match list[T,1] error reporting.
+// TestOptionalListInnerBuildRootError verifies buildRootFromOptional
+// propagates errors from the inner element's buildRootFromType call, carrying
+// the holding field's name as the error path.
 func TestOptionalListInnerBuildRootError(t *testing.T) {
 	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
@@ -2050,8 +2050,8 @@ func TestOptionalListInnerBuildRootError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for optional-list inner build root error")
 	}
-	if !contains(err.Error(), "[0]") {
-		t.Errorf("expected error path to contain '[0]', got: %v", err)
+	if !contains(err.Error(), "Opt") {
+		t.Errorf("expected error path to name the field, got: %v", err)
 	}
 }
 

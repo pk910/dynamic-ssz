@@ -122,6 +122,9 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 			if sourceType.SszCompatFlags&ssztypes.SszCompatFlagHashTreeRootWith != 0 && sourceType.HashTreeRootWithMethod != nil {
 				results := sourceType.HashTreeRootWithMethod.Func.Call([]reflect.Value{sourceValuePtr, reflect.ValueOf(hh)})
 				if len(results) > 0 && !results[0].IsNil() {
+					if callErr, ok := results[0].Interface().(error); ok {
+						return fmt.Errorf("failed HashTreeRootWith: %w", callErr)
+					}
 					return fmt.Errorf("failed HashTreeRootWith: %v", results[0].Interface())
 				}
 
@@ -356,7 +359,7 @@ func (ctx *ReflectionCtx) buildRootFromLargeUint(sourceType *ssztypes.TypeDescri
 	sourceLen := uint32(sourceValue.Len())
 	expectedLen := sourceType.Size / sourceType.ElemDesc.Size
 	if sourceLen > expectedLen {
-		return sszutils.ErrLargeUintLengthFn(sourceLen, expectedLen)
+		return sszutils.ErrVectorLengthFn(sourceLen, expectedLen)
 	}
 	// A short slice is zero-padded to the full large-uint width, matching the
 	// marshal paths and the generated hash tree root (which all pad rather than
@@ -427,7 +430,7 @@ func (ctx *ReflectionCtx) buildRootFromContainer(sourceType *ssztypes.TypeDescri
 
 		err := ctx.buildRootFromType(fieldType, fieldValue, hh, false, depth)
 		if err != nil {
-			return sszutils.ErrorWithPathf(err, "[%d]", i)
+			return sszutils.ErrorWithPath(err, field.Name)
 		}
 	}
 
@@ -487,7 +490,7 @@ func (ctx *ReflectionCtx) buildRootFromProgressiveContainer(sourceType *ssztypes
 
 		err := ctx.buildRootFromType(fieldType, fieldValue, hh, false, depth)
 		if err != nil {
-			return sszutils.ErrorWithPathf(err, "[%d]", i)
+			return sszutils.ErrorWithPath(err, field.Name)
 		}
 	}
 

@@ -128,7 +128,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 			if fieldType.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 				size, err := ctx.getSszValueSize(fieldType.Type, fieldValue, depth)
 				if err != nil {
-					return 0, err
+					return 0, sszutils.ErrorWithPath(err, fieldType.Name)
 				}
 
 				// dynamic field, add 4 bytes for offset
