@@ -152,6 +152,22 @@ func TestCompatibleUnionVariantIndexing(t *testing.T) {
 		}
 	}
 
+	// A single-variant union keys its one variant at selector 1 as well:
+	// EIP-8016 selectors start at 1 regardless of how many variants exist.
+	type SingleUnion struct {
+		Only struct{ Value uint8 }
+	}
+	singleInfo, err := extractUnionDescriptorInfo(reflect.TypeOf(SingleUnion{}), ds)
+	if err != nil {
+		t.Fatalf("failed to extract single-variant union info: %v", err)
+	}
+	if _, ok := singleInfo[1]; !ok {
+		t.Error("expected the single variant at selector 1")
+	}
+	if _, ok := singleInfo[0]; ok {
+		t.Error("selector 0 must not exist in a compatible union")
+	}
+
 	// Verify field types match expected order
 	expectedKinds := []reflect.Kind{
 		reflect.Uint8,
