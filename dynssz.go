@@ -227,9 +227,14 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 	}
 	cfg := applyCallOptions(opts)
 
-	// Skip view descriptor logic for types implementing DynamicMarshaler (they handle their own serialization)
+	// Types carrying their own dynamic methods handle their serialization
+	// themselves. The buffer form is preferred; the streaming form is bridged
+	// through a buffer encoder, so both entrypoints delegate to the same
+	// method set in the same order.
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if marshaler, ok := source.(sszutils.DynamicMarshaler); ok && !d.options.NoDelegation && d.delegable(source) {
+		marshaler, hasMarshaler := source.(sszutils.DynamicMarshaler)
+		sszEncoder, hasEncoder := source.(sszutils.DynamicEncoder)
+		if (hasMarshaler || hasEncoder) && !d.options.NoDelegation && d.delegable(source) {
 			var buf []byte
 			if sizer, ok := source.(sszutils.DynamicSizer); ok {
 				size := sizer.SizeSSZDyn(d)
@@ -237,7 +242,14 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 			} else {
 				buf = make([]byte, 0, 1024)
 			}
-			return marshaler.MarshalSSZDyn(d, buf)
+			if hasMarshaler {
+				return marshaler.MarshalSSZDyn(d, buf)
+			}
+			enc := sszutils.NewBufferEncoder(buf)
+			if err := sszEncoder.MarshalSSZEncoder(d, enc); err != nil {
+				return nil, err
+			}
+			return enc.GetBuffer(), nil
 		}
 	} else if viewMarshaler, ok := source.(sszutils.DynamicViewMarshaler); ok && !d.options.NoDelegation {
 		if marshalFn := viewMarshaler.MarshalSSZDynView(cfg.viewDescriptor); marshalFn != nil {
@@ -330,10 +342,21 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 	}
 	cfg := applyCallOptions(opts)
 
-	// Skip view descriptor logic for types implementing DynamicMarshaler
+	// The buffer form is preferred; the streaming form is bridged through a
+	// buffer encoder, so both entrypoints delegate to the same method set in
+	// the same order.
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if marshaler, ok := source.(sszutils.DynamicMarshaler); ok && !d.options.NoDelegation && d.delegable(source) {
-			return marshaler.MarshalSSZDyn(d, buf)
+		if !d.options.NoDelegation && d.delegable(source) {
+			if marshaler, ok := source.(sszutils.DynamicMarshaler); ok {
+				return marshaler.MarshalSSZDyn(d, buf)
+			}
+			if sszEncoder, ok := source.(sszutils.DynamicEncoder); ok {
+				enc := sszutils.NewBufferEncoder(buf)
+				if err := sszEncoder.MarshalSSZEncoder(d, enc); err != nil {
+					return nil, err
+				}
+				return enc.GetBuffer(), nil
+			}
 		}
 	} else if viewMarshaler, ok := source.(sszutils.DynamicViewMarshaler); ok && !d.options.NoDelegation {
 		if marshalFn := viewMarshaler.MarshalSSZDynView(cfg.viewDescriptor); marshalFn != nil {
@@ -462,16 +485,30 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 	cfg := applyCallOptions(opts)
 	encoder := sszutils.NewStreamEncoder(w, d.options.StreamWriterBufferSize)
 
-	// Skip view descriptor logic for types implementing DynamicEncoder
+	// The streaming form is preferred; the buffer form is bridged through the
+	// encoder's buffer, so both entrypoints delegate to the same method set in
+	// the same order.
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if sszEncoder, ok := source.(sszutils.DynamicEncoder); ok && !d.options.NoDelegation && d.delegable(source) {
-			err := sszEncoder.MarshalSSZEncoder(d, encoder)
-			if err != nil {
-				return err
-			}
+		if !d.options.NoDelegation && d.delegable(source) {
+			if sszEncoder, ok := source.(sszutils.DynamicEncoder); ok {
+				err := sszEncoder.MarshalSSZEncoder(d, encoder)
+				if err != nil {
+					return err
+				}
 
-			encoder.Flush()
-			return encoder.GetWriteError()
+				encoder.Flush()
+				return encoder.GetWriteError()
+			}
+			if marshaler, ok := source.(sszutils.DynamicMarshaler); ok {
+				newBuf, err := marshaler.MarshalSSZDyn(d, encoder.GetBuffer())
+				if err != nil {
+					return err
+				}
+				encoder.SetBuffer(newBuf)
+
+				encoder.Flush()
+				return encoder.GetWriteError()
+			}
 		}
 	} else if viewEncoder, ok := source.(sszutils.DynamicViewEncoder); ok && !d.options.NoDelegation {
 		if marshalFn := viewEncoder.MarshalSSZEncoderView(cfg.viewDescriptor); marshalFn != nil {
@@ -652,10 +689,25 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 	}
 	cfg := applyCallOptions(opts)
 
-	// Skip view descriptor logic for types implementing DynamicUnmarshaler
+	// The buffer form is preferred; the streaming form is bridged through a
+	// buffer decoder, so both entrypoints delegate to the same method set in
+	// the same order. The bridged decode must consume the whole buffer, as a
+	// buffer unmarshaler does.
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if unmarshaler, ok := target.(sszutils.DynamicUnmarshaler); ok && !d.options.NoDelegation && d.delegable(target) {
-			return unmarshaler.UnmarshalSSZDyn(d, ssz)
+		if !d.options.NoDelegation && d.delegable(target) {
+			if unmarshaler, ok := target.(sszutils.DynamicUnmarshaler); ok {
+				return unmarshaler.UnmarshalSSZDyn(d, ssz)
+			}
+			if sszDecoder, ok := target.(sszutils.DynamicDecoder); ok {
+				dec := sszutils.NewBufferDecoder(ssz)
+				if err := sszDecoder.UnmarshalSSZDecoder(d, dec); err != nil {
+					return err
+				}
+				if remaining := len(ssz) - dec.GetPosition(); remaining > 0 {
+					return sszutils.ErrTrailingDataFn(remaining)
+				}
+				return nil
+			}
 		}
 	} else if viewUnmarshaler, ok := target.(sszutils.DynamicViewUnmarshaler); ok && !d.options.NoDelegation {
 		if unmarshalFn := viewUnmarshaler.UnmarshalSSZDynView(cfg.viewDescriptor); unmarshalFn != nil {
@@ -839,15 +891,36 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 		return nil
 	}
 
-	// Skip view descriptor logic for types implementing DynamicDecoder
+	// The streaming form is preferred; the buffer form is bridged by reading
+	// the full region first, so both entrypoints delegate to the same method
+	// set in the same order.
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if sszDecoder, ok := target.(sszutils.DynamicDecoder); ok && !d.options.NoDelegation && d.delegable(target) {
-			err := sszDecoder.UnmarshalSSZDecoder(d, decoder)
-			if err != nil {
-				return err
-			}
+		if !d.options.NoDelegation && d.delegable(target) {
+			if sszDecoder, ok := target.(sszutils.DynamicDecoder); ok {
+				err := sszDecoder.UnmarshalSSZDecoder(d, decoder)
+				if err != nil {
+					return err
+				}
 
-			return finish()
+				return finish()
+			}
+			if unmarshaler, ok := target.(sszutils.DynamicUnmarshaler); ok {
+				var sszBuf []byte
+				var err error
+				if decoder.LengthKnown() {
+					sszBuf, err = decoder.DecodeBytesBuf(decoder.GetLength())
+				} else {
+					sszBuf, err = decoder.DecodeRemaining(-1)
+				}
+				if err != nil {
+					return err
+				}
+				if err := unmarshaler.UnmarshalSSZDyn(d, sszBuf); err != nil {
+					return err
+				}
+
+				return finish()
+			}
 		}
 	} else if viewDecoder, ok := target.(sszutils.DynamicViewDecoder); ok && !d.options.NoDelegation {
 		if unmarshalFn := viewDecoder.UnmarshalSSZDecoderView(cfg.viewDescriptor); unmarshalFn != nil {

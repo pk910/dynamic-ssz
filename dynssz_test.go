@@ -57,6 +57,113 @@ func (t *testDynamicDecoder) UnmarshalSSZDecoder(ds sszutils.DynamicSpecs, decod
 	return nil
 }
 
+// crossFormMarshaler implements only the buffer-form dynamic interfaces (plus
+// fastssz with different bytes), so the streaming entrypoints have to bridge
+// to the buffer form rather than fall through to another delegate.
+type crossFormMarshaler struct {
+	V [4]byte
+}
+
+func (c *crossFormMarshaler) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 4 }
+func (c *crossFormMarshaler) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return append(buf, c.V[0]^0xff, c.V[1]^0xff, c.V[2]^0xff, c.V[3]^0xff), nil
+}
+func (c *crossFormMarshaler) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	if len(buf) != 4 {
+		return sszutils.ErrTrailingDataFn(len(buf))
+	}
+	for i := range c.V {
+		c.V[i] = buf[i] ^ 0xff
+	}
+	return nil
+}
+func (c *crossFormMarshaler) SizeSSZ() int { return 4 }
+func (c *crossFormMarshaler) MarshalSSZ() ([]byte, error) {
+	return []byte{c.V[3], c.V[2], c.V[1], c.V[0]}, nil
+}
+func (c *crossFormMarshaler) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return append(buf, c.V[3], c.V[2], c.V[1], c.V[0]), nil
+}
+func (c *crossFormMarshaler) UnmarshalSSZ(buf []byte) error {
+	for i := range c.V {
+		c.V[i] = buf[3-i]
+	}
+	return nil
+}
+
+// crossFormEncoder implements only the streaming-form dynamic interfaces, so
+// the buffer entrypoints have to bridge to it.
+type crossFormEncoder struct {
+	V [4]byte
+}
+
+func (c *crossFormEncoder) MarshalSSZEncoder(_ sszutils.DynamicSpecs, enc sszutils.Encoder) error {
+	enc.EncodeBytes([]byte{c.V[0] ^ 0xff, c.V[1] ^ 0xff, c.V[2] ^ 0xff, c.V[3] ^ 0xff})
+	return nil
+}
+
+func (c *crossFormEncoder) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, dec sszutils.Decoder) error {
+	buf := make([]byte, 4)
+	if _, err := dec.DecodeBytes(buf); err != nil {
+		return err
+	}
+	for i := range c.V {
+		c.V[i] = buf[i] ^ 0xff
+	}
+	return nil
+}
+
+// Buffer and stream entrypoints delegate to the same method set in the same
+// order: a type carrying only one dynamic form is reached through that form
+// from every entrypoint, bridged where the forms differ, never through
+// another delegate.
+func TestEntrypointsShareDelegationOrder(t *testing.T) {
+	ds := NewDynSsz(nil)
+	want := []byte{0xfb, 0xfc, 0xfd, 0xfe}
+
+	t.Run("buffer_form_from_all_entrypoints", func(t *testing.T) {
+		src := &crossFormMarshaler{V: [4]byte{0x04, 0x03, 0x02, 0x01}}
+		buf, err := ds.MarshalSSZ(src)
+		if err != nil || !bytes.Equal(buf, want) {
+			t.Fatalf("MarshalSSZ = %x (%v), want %x", buf, err, want)
+		}
+		var w bytes.Buffer
+		if err := ds.MarshalSSZWriter(src, &w); err != nil || !bytes.Equal(w.Bytes(), want) {
+			t.Fatalf("MarshalSSZWriter = %x (%v), want %x", w.Bytes(), err, want)
+		}
+
+		out := new(crossFormMarshaler)
+		if err := ds.UnmarshalSSZ(out, want); err != nil || out.V != src.V {
+			t.Fatalf("UnmarshalSSZ = %v (%v), want %v", out.V, err, src.V)
+		}
+		out = new(crossFormMarshaler)
+		if err := ds.UnmarshalSSZReader(out, bytes.NewReader(want), len(want)); err != nil || out.V != src.V {
+			t.Fatalf("UnmarshalSSZReader = %v (%v), want %v", out.V, err, src.V)
+		}
+	})
+
+	t.Run("stream_form_from_all_entrypoints", func(t *testing.T) {
+		src := &crossFormEncoder{V: [4]byte{0x04, 0x03, 0x02, 0x01}}
+		buf, err := ds.MarshalSSZ(src)
+		if err != nil || !bytes.Equal(buf, want) {
+			t.Fatalf("MarshalSSZ = %x (%v), want %x", buf, err, want)
+		}
+		var w bytes.Buffer
+		if err := ds.MarshalSSZWriter(src, &w); err != nil || !bytes.Equal(w.Bytes(), want) {
+			t.Fatalf("MarshalSSZWriter = %x (%v), want %x", w.Bytes(), err, want)
+		}
+
+		out := new(crossFormEncoder)
+		if err := ds.UnmarshalSSZ(out, want); err != nil || out.V != src.V {
+			t.Fatalf("UnmarshalSSZ = %v (%v), want %v", out.V, err, src.V)
+		}
+		out = new(crossFormEncoder)
+		if err := ds.UnmarshalSSZReader(out, bytes.NewReader(want), len(want)); err != nil || out.V != src.V {
+			t.Fatalf("UnmarshalSSZReader = %v (%v), want %v", out.V, err, src.V)
+		}
+	})
+}
+
 func TestDefaultLogUsesStructuredLogging(t *testing.T) {
 	var buf bytes.Buffer
 	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
