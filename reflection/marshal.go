@@ -40,19 +40,20 @@ import (
 //   - Primitive type encoding (bool, uint8, uint16, uint32, uint64)
 //   - Delegation to specialized functions for composite types (structs, arrays, slices)
 func (ctx *ReflectionCtx) marshalType(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, encoder sszutils.Encoder, depth reflectionDepth) error {
-	// Entering a recursive cycle's member is the only step that can repeat
-	// under the input's control, so it is the only step the nesting bound
-	// counts. The value checked is the count of cycle levels above this one —
-	// the same value a generated depth-carrying method receives — so both
-	// engines accept and reject at identical nesting depths. idt advances at
-	// every level but only feeds log indentation.
-	depth.idt++
-	if sourceType.SszTypeFlags&ssztypes.SszTypeFlagRecursionMember != 0 {
+	// The outermost value is never charged: a level costs only what a caller
+	// descends into, which is what the generated code counts — its public entry
+	// points carry depth zero and every charge is a caller advancing for a
+	// child. Below the root, entering a recursive cycle's member advances the
+	// count and checks it, so both engines reject the same value at the same
+	// nesting depth. idt advances at every level but only feeds log
+	// indentation (and marks the root by being zero on entry).
+	if sourceType.SszTypeFlags&ssztypes.SszTypeFlagRecursionMember != 0 && depth.idt > 0 {
+		depth.loop++
 		if depth.loop > ctx.maxLoop {
 			return sszutils.ErrMaxDepthExceededFn(ctx.maxDepth)
 		}
-		depth.loop++
 	}
+	depth.idt++
 
 	if sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && sourceType.SszType != ssztypes.SszOptionalType && sourceType.SszType != ssztypes.SszOptionalListType {
 		if sourceValue.IsNil() {

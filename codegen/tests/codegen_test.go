@@ -319,6 +319,9 @@ func TestCodegenRecursiveTypes(t *testing.T) {
 	t.Run("InlineMemberCycle", func(t *testing.T) {
 		testCodegenPayloadByReflection(t, RecursiveInlineHolder_Payload, nil)
 	})
+	t.Run("ValueElementCycle", func(t *testing.T) {
+		testCodegenPayloadByReflection(t, RecursiveValNode_Payload, nil)
+	})
 }
 
 // TestCodegenAnnotatedTypes tests root-level annotated non-struct types
@@ -2422,6 +2425,41 @@ func TestCodegenRecursionDepthBound(t *testing.T) {
 			c := firstFail(func(n int) bool { return depthErr(ds.UnmarshalSSZ(new(RecursiveNode), deepPayload(n))) })
 			if r != c {
 				t.Fatalf("first rejected payload: reflection %d, codegen %d", r, c)
+			}
+		})
+
+		t.Run("value_list_cycle", func(t *testing.T) {
+			// The element is the recursive struct by value; the levels charged
+			// per trip match the pointer-element shape.
+			deepVal := func(n int) *RecursiveValNode {
+				cur := &RecursiveValNode{Val: 1}
+				for range n {
+					cur = &RecursiveValNode{Val: 1, Kids: []RecursiveValNode{*cur}}
+				}
+				return cur
+			}
+			r := firstFail(func(n int) bool { _, err := refl.MarshalSSZ(deepVal(n)); return depthErr(err) })
+			c := firstFail(func(n int) bool { _, err := ds.MarshalSSZ(deepVal(n)); return depthErr(err) })
+			if r != c {
+				t.Fatalf("first rejected chain: reflection %d, codegen %d", r, c)
+			}
+		})
+
+		t.Run("value_root_walk", func(t *testing.T) {
+			// The same value walked from a value root instead of a pointer root
+			// is charged identically: the outermost value costs nothing in
+			// either engine.
+			deepVal := func(n int) RecursiveNode {
+				cur := RecursiveNode{Val: 1}
+				for range n {
+					cur = RecursiveNode{Val: 1, Children: []*RecursiveNode{{Val: cur.Val, Children: cur.Children}}}
+				}
+				return cur
+			}
+			r := firstFail(func(n int) bool { _, err := refl.MarshalSSZ(deepVal(n)); return depthErr(err) })
+			c := firstFail(func(n int) bool { _, err := ds.MarshalSSZ(deepVal(n)); return depthErr(err) })
+			if r != c {
+				t.Fatalf("first rejected chain: reflection %d, codegen %d", r, c)
 			}
 		})
 

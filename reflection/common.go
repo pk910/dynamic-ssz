@@ -49,13 +49,15 @@ type ReflectionCtx struct {
 // it costs exactly the machine word the previous plain int parameter cost.
 //
 // The two counters advance at the walk dispatchers and nowhere else:
-//   - idt steps once per structural level and only feeds log indentation.
+//   - idt steps once per structural level, feeds log indentation, and marks
+//     the walk's outermost entry by being zero.
 //   - loop steps only through descriptors flagged SszTypeFlagRecursionMember —
-//     the members of a recursive cycle — and is checked against the nesting
-//     bound before it advances, so the value checked at a node counts the
-//     cycle levels above it, exactly what a generated depth method receives.
-//     Everything outside a cycle bottoms out at a depth fixed by the type and
-//     is never counted or checked.
+//     the members of a recursive cycle — below the outermost value, and is
+//     checked after it advances: a level costs only what a caller descends
+//     into, exactly what a generated depth method receives, so both engines
+//     reject the same value at the same nesting depth. Everything outside a
+//     cycle bottoms out at a depth fixed by the type and is never counted or
+//     checked.
 type reflectionDepth struct {
 	idt  uint32
 	loop uint32

@@ -136,10 +136,10 @@ func WithMaxStreamSize(size int) DynSszOption {
 // Only a recursive type -- one whose cycle closes through a variable-length
 // field -- can nest to a depth the input controls, so the count advances only
 // through the types that lie on such a cycle: one level per cycle member
-// entered, so a trip around a cycle costs as many levels as the cycle has
-// structural members (a type wrapper adds none). Every other type bottoms out
-// at a depth fixed by its own structure and is unaffected, as is the cost of
-// encoding it.
+// descended into, with the outermost value itself costing nothing. A trip
+// around a cycle costs as many levels as the cycle has structural members (a
+// type wrapper adds none). Every other type bottoms out at a depth fixed by
+// its own structure and is unaffected, as is the cost of encoding it.
 //
 // Generated code counts by the same rule with its own bound, fixed at
 // generation time (see the code generator's WithRecursionDepth option), so

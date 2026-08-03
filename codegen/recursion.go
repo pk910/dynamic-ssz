@@ -400,23 +400,11 @@ func descendCall(depthAware bool, bound *recursionBound, desc *ssztypes.TypeDesc
 // carries a depth and the descriptor counts a level (roots are charged by
 // their caller; views delegate).
 //
-// A container-like member checks after advancing, exactly as a depth twin
-// checks what it receives, so an inlined member costs the same level a
-// generated one does. An optional checks before advancing: the reflection
-// walk checks a descriptor on entry and advances for its subtree, and an
-// optional is the one cycle member whose descriptor the reflection walk
-// enters without a caller having advanced for it — its pointer is folded
-// into the optional itself rather than standing as an element level. Checking
-// pre-advance here keeps the checked values aligned, so a cycle closing
-// through an optional edge rejects at the same chain depth in both engines.
+// The advanced value is checked exactly as a depth twin checks what it
+// receives, so an inlined member costs the same level a generated one does —
+// and the same level the reflection walk charges for it.
 func emitInlineDepthCharge(depthAware, isRoot, isView bool, bound *recursionBound, desc *ssztypes.TypeDescriptor, appendCode func(int, string, ...any), indent int, failReturn string) {
 	if !depthAware || isRoot || isView || !bound.countsLevel(desc) {
-		return
-	}
-
-	if desc.SszType == ssztypes.SszOptionalType || desc.SszType == ssztypes.SszOptionalListType {
-		appendCode(indent, "if depth > %d {\n\treturn %s\n}\n", bound.maxDepth, failReturn)
-		appendCode(indent, "depth := depth + 1\n")
 		return
 	}
 

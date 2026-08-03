@@ -293,11 +293,12 @@ Both engines therefore bound the depth and return `sszutils.ErrMaxDepthExceeded`
 instead. The default is 1024, far deeper than any practical schema (Ethereum
 consensus types stay under 20).
 
-Both bounds count by the same rule: one level per type entered that lies on a
-recursive cycle, whether its code is generated, inlined, or walked by
-reflection. A trip around a cycle therefore costs as many levels as the cycle
-has structural members — `Node` with a `[]*Node` field costs two (the
-container and the list; a type wrapper costs none) — and the engines accept
+Both bounds count by the same rule: one level per type descended into that
+lies on a recursive cycle, whether its code is generated, inlined, or walked
+by reflection; the outermost value itself costs nothing. A trip around a cycle
+therefore costs as many levels as the cycle has structural members — `Node`
+with a `[]*Node` field costs two (the container and the list; a type wrapper
+costs none) — and the engines accept
 and reject at identical nesting depths. Everything off a cycle bottoms out at
 a depth fixed by its own structure and is never counted.
 

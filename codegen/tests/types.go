@@ -2390,3 +2390,19 @@ type ReflectOptProbe struct {
 type ReflectOptSub struct {
 	V uint64
 }
+
+// RecursiveValNode closes a cycle through a list whose element is the
+// recursive struct by value. Both engines charge the same levels per trip,
+// whichever way the element is held.
+type RecursiveValNode struct {
+	Val  uint64
+	Kids []RecursiveValNode `ssz-max:"4"`
+}
+
+var RecursiveValNode_Payload = RecursiveValNode{
+	Val: 1,
+	Kids: []RecursiveValNode{
+		{Val: 2},
+		{Val: 3, Kids: []RecursiveValNode{{Val: 4}}},
+	},
+}

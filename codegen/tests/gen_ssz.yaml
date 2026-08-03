@@ -144,6 +144,8 @@ types:
     output: gen_recursive.go
   - name: RecursiveTreeBranch
     output: gen_recursive.go
+  - name: RecursiveValNode
+    output: gen_recursive.go
   - name: RecursiveViewNode
     output: gen_recursive.go
     views:
