@@ -2062,11 +2062,11 @@ func TestTypeCache_ExtendedTypes(t *testing.T) {
 		if desc.ElemDesc == nil {
 			t.Fatal("expected ElemDesc to be set")
 		}
-		if desc.ElemDesc.Type != reflect.TypeOf(runtimeInner{}) {
-			t.Errorf("expected ElemDesc.Type to be runtimeInner, got %v", desc.ElemDesc.Type)
+		if desc.ElemDesc.Type != reflect.TypeOf((*runtimeInner)(nil)) {
+			t.Errorf("expected ElemDesc.Type to be *runtimeInner, got %v", desc.ElemDesc.Type)
 		}
-		if desc.ElemDesc.SchemaType != reflect.TypeOf(schemaInner{}) {
-			t.Errorf("expected ElemDesc.SchemaType to be schemaInner, got %v", desc.ElemDesc.SchemaType)
+		if desc.ElemDesc.SchemaType != reflect.TypeOf((*schemaInner)(nil)) {
+			t.Errorf("expected ElemDesc.SchemaType to be *schemaInner, got %v", desc.ElemDesc.SchemaType)
 		}
 	})
 
@@ -2092,11 +2092,11 @@ func TestTypeCache_ExtendedTypes(t *testing.T) {
 		if desc.ElemDesc == nil {
 			t.Fatal("expected ElemDesc to be set")
 		}
-		if desc.ElemDesc.Type != reflect.TypeOf(runtimeInner{}) {
-			t.Errorf("expected ElemDesc.Type to be runtimeInner, got %v", desc.ElemDesc.Type)
+		if desc.ElemDesc.Type != reflect.TypeOf((*runtimeInner)(nil)) {
+			t.Errorf("expected ElemDesc.Type to be *runtimeInner, got %v", desc.ElemDesc.Type)
 		}
-		if desc.ElemDesc.SchemaType != reflect.TypeOf(schemaInner{}) {
-			t.Errorf("expected ElemDesc.SchemaType to be schemaInner, got %v", desc.ElemDesc.SchemaType)
+		if desc.ElemDesc.SchemaType != reflect.TypeOf((*schemaInner)(nil)) {
+			t.Errorf("expected ElemDesc.SchemaType to be *schemaInner, got %v", desc.ElemDesc.SchemaType)
 		}
 	})
 }

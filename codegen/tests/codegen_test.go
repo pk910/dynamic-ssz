@@ -208,6 +208,10 @@ func TestCodegenExtendedTypes(t *testing.T) {
 			testCodegenPayloadByReflection(t, tc.payload, nil, dynssz.WithExtendedTypes())
 		})
 	}
+
+	t.Run("OptionalCycle", func(t *testing.T) {
+		testCodegenPayloadByReflection(t, RecursiveOptNode_Payload, nil, dynssz.WithExtendedTypes())
+	})
 }
 
 // TestCodegenBigIntGolden pins the generated big.Int hash tree root against
@@ -2419,6 +2423,25 @@ func TestCodegenRecursionDepthBound(t *testing.T) {
 			}
 		})
 
+		t.Run("optional_cycle", func(t *testing.T) {
+			// A cycle closing through an optional edge charges the same levels
+			// in both engines, like the list edge.
+			extRefl := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation(), dynssz.WithExtendedTypes())
+			extDs := dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes())
+			deepOpt := func(n int) *RecursiveOptNode {
+				cur := &RecursiveOptNode{Val: 1}
+				for range n {
+					cur = &RecursiveOptNode{Val: 1, Next: cur}
+				}
+				return cur
+			}
+			r := firstFail(func(n int) bool { _, err := extRefl.MarshalSSZ(deepOpt(n)); return depthErr(err) })
+			c := firstFail(func(n int) bool { _, err := extDs.MarshalSSZ(deepOpt(n)); return depthErr(err) })
+			if r != c {
+				t.Fatalf("first rejected chain: reflection %d, codegen %d", r, c)
+			}
+		})
+
 		t.Run("inline_member_cycle", func(t *testing.T) {
 			// The cycle member without generated methods is inlined into the
 			// holder's code; the level it counts must be charged there too, or
@@ -2502,9 +2525,10 @@ func TestCodegenRecursionDepthBound(t *testing.T) {
 		}
 		checked := 0
 		for _, name := range others {
-			// gen_nodynnest.go carries recursive types on purpose: they pin
-			// the static-only build against cycles.
-			if name == "gen_recursive.go" || name == "gen_nodynnest.go" {
+			// gen_nodynnest.go and gen_extended.go carry recursive types on
+			// purpose: they pin the static-only build and the optional edge
+			// against cycles.
+			if name == "gen_recursive.go" || name == "gen_nodynnest.go" || name == "gen_extended.go" {
 				continue
 			}
 			plain, err := os.ReadFile(name)

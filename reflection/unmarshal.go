@@ -1600,13 +1600,7 @@ func (ctx *ReflectionCtx) unmarshalOptional(targetType *ssztypes.TypeDescriptor,
 		return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "invalid optional availability byte 0x%02x", availability)
 	}
 
-	if targetValue.IsNil() {
-		// create new instance of target type for null pointers
-		newValue := reflect.New(targetType.Type.Elem())
-		targetValue.Set(newValue)
-	}
-
-	err = ctx.unmarshalType(targetType.ElemDesc, targetValue.Elem(), decoder, depth)
+	err = ctx.unmarshalType(targetType.ElemDesc, targetValue, decoder, depth)
 	if err != nil {
 		return err
 	}
@@ -1666,12 +1660,7 @@ func (ctx *ReflectionCtx) unmarshalOptionalList(targetType *ssztypes.TypeDescrip
 		}
 	}
 
-	if targetValue.IsNil() {
-		newValue := reflect.New(targetType.Type.Elem())
-		targetValue.Set(newValue)
-	}
-
-	if err := ctx.unmarshalType(elemDesc, targetValue.Elem(), decoder, depth); err != nil {
+	if err := ctx.unmarshalType(elemDesc, targetValue, decoder, depth); err != nil {
 		return sszutils.ErrorWithPathf(err, "[0]")
 	}
 	return nil

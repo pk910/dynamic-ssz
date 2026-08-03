@@ -2358,3 +2358,19 @@ var NoDynRecursiveHolder_Payload = NoDynRecursiveHolder{
 		},
 	},
 }
+
+// RecursiveOptNode closes a cycle through an optional edge. Both engines
+// charge the same levels per trip, so a chain rejected by one engine at a
+// given depth is rejected by the other at that depth.
+type RecursiveOptNode struct {
+	Val  uint64
+	Next *RecursiveOptNode `ssz-type:"optional"`
+}
+
+var RecursiveOptNode_Payload = RecursiveOptNode{
+	Val: 1,
+	Next: &RecursiveOptNode{
+		Val:  2,
+		Next: &RecursiveOptNode{Val: 3},
+	},
+}

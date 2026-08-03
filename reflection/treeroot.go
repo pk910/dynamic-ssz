@@ -985,7 +985,7 @@ func (ctx *ReflectionCtx) buildRootFromOptional(sourceType *ssztypes.TypeDescrip
 
 	var present uint64
 	if !sourceValue.IsNil() {
-		err := ctx.buildRootFromType(sourceType.ElemDesc, sourceValue.Elem(), hh, true, depth)
+		err := ctx.buildRootFromType(sourceType.ElemDesc, sourceValue, hh, true, depth)
 		if err != nil {
 			return err
 		}
