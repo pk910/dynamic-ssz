@@ -9,4 +9,4 @@ coverage.*
 coverage_*
 coverage-*
 dynssz-gen-*
-bin/
+bin/fuzz-reports/
