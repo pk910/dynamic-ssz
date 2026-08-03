@@ -258,7 +258,15 @@ func resolvePackagePath(pkg, baseDir string) string {
 	}
 	if pkg == "." || pkg == ".." ||
 		strings.HasPrefix(pkg, "./") || strings.HasPrefix(pkg, "../") {
-		return filepath.Join(baseDir, pkg)
+		joined := filepath.Join(baseDir, pkg)
+		// filepath.Join cleans away the leading "./"; with a relative baseDir
+		// the result would no longer look like a filesystem path to
+		// go/packages, which would read it as an import path. An absolute
+		// path is unambiguous either way.
+		if abs, err := filepath.Abs(joined); err == nil {
+			return abs
+		}
+		return "./" + joined
 	}
 	return pkg
 }

@@ -689,6 +689,12 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 	}
 	cfg := applyCallOptions(opts)
 
+	// A nil typed pointer cannot receive a decode through any path; the
+	// delegate methods would dereference it.
+	if targetValue := reflect.ValueOf(target); targetValue.Kind() == reflect.Ptr && targetValue.IsNil() {
+		return fmt.Errorf("target pointer must not be nil")
+	}
+
 	// The buffer form is preferred; the streaming form is bridged through a
 	// buffer decoder, so both entrypoints delegate to the same method set in
 	// the same order. The bridged decode must consume the whole buffer, as a
@@ -889,6 +895,12 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 			return fmt.Errorf("did not consume full ssz range (diff: %v, ssz size: %v)", consumedDiff, size)
 		}
 		return nil
+	}
+
+	// A nil typed pointer cannot receive a decode through any path; the
+	// delegate methods would dereference it.
+	if targetValue := reflect.ValueOf(target); targetValue.Kind() == reflect.Ptr && targetValue.IsNil() {
+		return fmt.Errorf("target pointer must not be nil")
 	}
 
 	// The streaming form is preferred; the buffer form is bridged by reading

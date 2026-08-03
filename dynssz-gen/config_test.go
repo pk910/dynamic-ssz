@@ -825,3 +825,25 @@ types:
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// A package pattern relative to the config file resolves to a filesystem path
+// whether the config itself was named by a relative or an absolute path.
+// filepath.Join cleans away the "./" prefix, and with a relative base the
+// result would read as an import path to go/packages.
+func TestResolvePackagePathRelativeBase(t *testing.T) {
+	got := resolvePackagePath("./pkg", ".")
+	if !filepath.IsAbs(got) && !strings.HasPrefix(got, "./") && !strings.HasPrefix(got, "../") {
+		t.Fatalf("resolvePackagePath(./pkg, .) = %q, which go/packages reads as an import path", got)
+	}
+	if abs := resolvePackagePath("./pkg", "/tmp/cfg"); !filepath.IsAbs(abs) {
+		t.Fatalf("absolute base must yield an absolute pattern, got %q", abs)
+	}
+	// Import paths stay untouched.
+	if got := resolvePackagePath("github.com/foo/bar", "/tmp/cfg"); got != "github.com/foo/bar" {
+		t.Fatalf("import path was rewritten to %q", got)
+	}
+	// Recursive patterns keep their suffix.
+	if got := resolvePackagePath("./...", "/tmp/cfg"); !strings.HasSuffix(got, "...") || !filepath.IsAbs(got) {
+		t.Fatalf("recursive pattern resolved to %q", got)
+	}
+}

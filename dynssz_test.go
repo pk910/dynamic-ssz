@@ -164,6 +164,20 @@ func TestEntrypointsShareDelegationOrder(t *testing.T) {
 	})
 }
 
+// A nil typed pointer is rejected before any delegation: the delegate methods
+// would dereference it. Both decode entrypoints answer with the same error the
+// reflection path gives.
+func TestUnmarshalNilTypedPointer(t *testing.T) {
+	ds := NewDynSsz(nil)
+	var p *crossFormMarshaler
+	if err := ds.UnmarshalSSZ(p, []byte{1, 2, 3, 4}); err == nil || !strings.Contains(err.Error(), "must not be nil") {
+		t.Fatalf("UnmarshalSSZ err = %v, want nil-pointer rejection", err)
+	}
+	if err := ds.UnmarshalSSZReader(p, bytes.NewReader([]byte{1, 2, 3, 4}), 4); err == nil || !strings.Contains(err.Error(), "must not be nil") {
+		t.Fatalf("UnmarshalSSZReader err = %v, want nil-pointer rejection", err)
+	}
+}
+
 func TestDefaultLogUsesStructuredLogging(t *testing.T) {
 	var buf bytes.Buffer
 	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
