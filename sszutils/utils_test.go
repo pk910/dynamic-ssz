@@ -1167,3 +1167,41 @@ func TestCredibleCount_Guards(t *testing.T) {
 		t.Fatalf("CredibleCount(unknown, 5, 0) = %d, want 5", got)
 	}
 }
+
+// The two decoder implementations answer misuse identically: an invalid bool
+// byte is not consumed, an over-long skip clamps to the region end, and the
+// remaining length never reads negative.
+func TestDecoderPrimitiveParity(t *testing.T) {
+	t.Run("invalid_bool_not_consumed", func(t *testing.T) {
+		bd := NewBufferDecoder([]byte{0x02, 0xff})
+		bd.PushLimit(2)
+		if _, err := bd.DecodeBool(); err == nil || bd.GetPosition() != 0 {
+			t.Fatalf("buffer: err=%v pos=%d, want error at position 0", err, bd.GetPosition())
+		}
+		sd := NewStreamDecoder(bytes.NewReader([]byte{0x02, 0xff}), 2, 64)
+		if _, err := sd.DecodeBool(); err == nil || sd.GetPosition() != 0 {
+			t.Fatalf("stream: err=%v pos=%d, want error at position 0", err, sd.GetPosition())
+		}
+	})
+
+	t.Run("skip_clamps_and_length_stays_non_negative", func(t *testing.T) {
+		bd := NewBufferDecoder([]byte{1, 2, 3, 4})
+		bd.PushLimit(4)
+		bd.SkipBytes(100)
+		if got := bd.GetLength(); got != 0 {
+			t.Fatalf("GetLength after over-skip = %d, want 0", got)
+		}
+		if got := bd.Available(); got != 0 {
+			t.Fatalf("Available after over-skip = %d, want 0", got)
+		}
+	})
+
+	t.Run("push_limit_overflow_clamps", func(t *testing.T) {
+		bd := NewBufferDecoder([]byte{1, 2, 3, 4})
+		bd.PushLimit(4)
+		bd.PushLimit(int(^uint(0) >> 1)) // maximum int
+		if got := bd.GetLength(); got != 4 {
+			t.Fatalf("GetLength after huge limit = %d, want the enclosing region's 4", got)
+		}
+	})
+}

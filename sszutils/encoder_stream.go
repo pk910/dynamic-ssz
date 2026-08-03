@@ -190,6 +190,9 @@ func (e *StreamEncoder) EncodeOffsetAt(pos int, v uint32) {
 }
 
 func (e *StreamEncoder) EncodeZeroPadding(n int) {
+	if n < 0 {
+		return
+	}
 	e.position += n
 
 	for n > 0 {

@@ -755,13 +755,20 @@ func (e *StreamDecoder) DecodeRemaining(maxLen int) ([]byte, error) {
 }
 
 func (e *StreamDecoder) DecodeBool() (bool, error) {
-	b, err := e.readByte()
-	if err != nil {
+	// Validate before consuming, so an invalid byte leaves the position
+	// unchanged exactly as the buffer-backed decoder leaves it.
+	if e.position+1 > e.lastLimit {
+		return false, e.regionOverrun()
+	}
+	if err := e.ensureBuffered(1); err != nil {
 		return false, err
 	}
+	b := e.buffer[e.bufferPos]
 	if b != 1 && b != 0 {
 		return false, ErrInvalidValueRange
 	}
+	e.bufferPos++
+	e.position++
 	return b == 1, nil
 }
 
@@ -837,6 +844,10 @@ func (e *StreamDecoder) DecodeBytes(buf []byte) ([]byte, error) {
 	return buf, nil
 }
 
+// DecodeBytesBuf returns the next l bytes (the region remainder for a
+// negative l). The returned slice may alias the decoder's internal read
+// buffer and must be treated as read-only; callers that keep or mutate it
+// must copy.
 func (e *StreamDecoder) DecodeBytesBuf(l int) ([]byte, error) {
 	if l < 0 {
 		// "All remaining" in the current region. For an open region the extent
