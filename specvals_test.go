@@ -5,7 +5,9 @@
 package dynssz
 
 import (
+	"encoding/json"
 	"math"
+	"math/big"
 	"testing"
 )
 
@@ -110,5 +112,88 @@ func TestEvalIntSpecExpression(t *testing.T) {
 				t.Fatalf("evalIntSpecExpression(%q) err=%v; wantErr=%v", tc.expr, err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// Genuine evaluation errors surface wherever an undefined identifier sits in
+// the expression, while a zero fabricated by the undefined identifier itself
+// resolves as unknown rather than a division error.
+func TestSpecExpressionErrorOrderIndependence(t *testing.T) {
+	ds := NewDynSsz(map[string]any{"A": uint64(10)})
+
+	for _, expr := range []string{"A/0+UNDEF", "UNDEF+A/0", "A%0+UNDEF", "UNDEF+A%0"} {
+		if _, _, err := ds.ResolveSpecValue(expr); err == nil {
+			t.Errorf("%s: genuine error swallowed", expr)
+		}
+	}
+	for _, expr := range []string{"UNDEF+A", "A/UNDEF", "A%UNDEF", "UNDEF-A"} {
+		resolved, _, err := ds.ResolveSpecValue(expr)
+		if err != nil || resolved {
+			t.Errorf("%s: resolved=%v err=%v, want unresolved without error", expr, resolved, err)
+		}
+	}
+}
+
+// Directly-supplied spec values keep their precision whatever numeric shape
+// carries them.
+func TestSpecValueCoercion(t *testing.T) {
+	type namedU64 uint64
+	big1 := new(big.Int).SetUint64(18446744073709551615)
+	ds := NewDynSsz(map[string]any{
+		"JNUM_INT":   json.Number("18446744073709551615"),
+		"JNUM_FLOAT": json.Number("0.5"),
+		"NAMED":      namedU64(42),
+		"BIG":        big1,
+		"BIG_NEG":    big.NewInt(-1),
+	})
+
+	expect := func(name string, want uint64) {
+		resolved, got, err := ds.ResolveSpecValue(name)
+		if err != nil || !resolved || got != want {
+			t.Errorf("%s: resolved=%v got=%d err=%v, want %d", name, resolved, got, err, want)
+		}
+	}
+	expect("JNUM_INT", 18446744073709551615)
+	expect("NAMED", 42)
+	expect("BIG", 18446744073709551615)
+	// A fractional value rounds up at the end like any float spec.
+	expect("JNUM_FLOAT", 1)
+
+	if _, _, err := ds.ResolveSpecValue("BIG_NEG"); err == nil {
+		t.Error("negative big.Int accepted")
+	}
+
+	type namedI32 int32
+	type namedF64 float64
+	type namedStruct struct{ X int }
+	ds2 := NewDynSsz(map[string]any{
+		"NAMED_INT":   namedI32(7),
+		"NAMED_FLOAT": namedF64(2.5),
+		"JNUM_BAD":    json.Number("not-a-number"),
+		"STRUCT":      namedStruct{X: 1},
+	})
+	if resolved, got, err := ds2.ResolveSpecValue("NAMED_INT"); err != nil || !resolved || got != 7 {
+		t.Errorf("NAMED_INT: resolved=%v got=%d err=%v", resolved, got, err)
+	}
+	if resolved, got, err := ds2.ResolveSpecValue("NAMED_FLOAT"); err != nil || !resolved || got != 3 {
+		t.Errorf("NAMED_FLOAT: resolved=%v got=%d err=%v, want the once-ceiled 3", resolved, got, err)
+	}
+	if _, _, err := ds2.ResolveSpecValue("JNUM_BAD"); err == nil {
+		t.Error("malformed json.Number accepted")
+	}
+	if _, _, err := ds2.ResolveSpecValue("STRUCT"); err == nil {
+		t.Error("struct-typed spec value accepted")
+	}
+}
+
+// A spec key that spells an expression answers the lookup directly, with the
+// blanks the expression grammar ignores not counting against the match.
+func TestSpecDirectKeyWhitespace(t *testing.T) {
+	ds := NewDynSsz(map[string]any{"A+B": uint64(99), "A": uint64(10), "B": uint64(3)})
+	for _, name := range []string{"A+B", "A + B", "A +\tB"} {
+		resolved, got, err := ds.ResolveSpecValue(name)
+		if err != nil || !resolved || got != 99 {
+			t.Errorf("%q: resolved=%v got=%d err=%v, want the direct 99", name, resolved, got, err)
+		}
 	}
 }

@@ -5,12 +5,16 @@
 package dynssz
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/pk910/dynamic-ssz/sszutils"
 	"math"
 	"math/big"
+	"reflect"
 	"strconv"
+	"strings"
+
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 type cachedSpecValue struct {
@@ -47,7 +51,13 @@ func (d *DynSsz) ResolveSpecValue(name string) (bool, uint64, error) {
 	// value that is present but unconvertible (negative, non-numeric, unsupported
 	// type) is a misconfiguration and surfaces as an error rather than silently
 	// falling back to the static limit.
-	if raw, ok := d.specValues[name]; ok {
+	raw, ok := d.specValues[name]
+	if !ok {
+		// A key that spells the same expression without whitespace still
+		// answers the lookup directly.
+		raw, ok = d.specValues[stripSpecSpaces(name)]
+	}
+	if ok {
 		value, resolved, err := specValueToUint64(raw)
 		if err != nil {
 			return false, 0, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "invalid dynamic spec value %q: %v", name, err)
@@ -118,6 +128,21 @@ func specValueToUint64(raw any) (value uint64, ok bool, err error) {
 	case float32:
 		u, ferr := specFloatToUint64(float64(v))
 		return u, ferr == nil, ferr
+	case json.Number:
+		if u, perr := strconv.ParseUint(v.String(), 10, 64); perr == nil {
+			return u, true, nil
+		}
+		f, perr := v.Float64()
+		if perr != nil {
+			return 0, false, fmt.Errorf("json.Number %q is not a valid number", v.String())
+		}
+		u, ferr := specFloatToUint64(f)
+		return u, ferr == nil, ferr
+	case *big.Int:
+		if v.Sign() < 0 || !v.IsUint64() {
+			return 0, false, fmt.Errorf("big.Int value %v is outside the uint64 range", v)
+		}
+		return v.Uint64(), true, nil
 	case string:
 		u, perr := strconv.ParseUint(v, 10, 64)
 		if perr != nil {
@@ -125,7 +150,20 @@ func specValueToUint64(raw any) (value uint64, ok bool, err error) {
 		}
 		return u, true, nil
 	default:
-		return 0, false, fmt.Errorf("unsupported type %T", raw)
+		// Named types with an integer or float kind carry a usable value even
+		// though the concrete-type switch cannot see them.
+		rv := reflect.ValueOf(raw)
+		switch rv.Kind() {
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+			return rv.Uint(), true, nil
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			return intSpecToUint64(rv.Int())
+		case reflect.Float32, reflect.Float64:
+			u, ferr := specFloatToUint64(rv.Float())
+			return u, ferr == nil, ferr
+		default:
+			return 0, false, fmt.Errorf("unsupported type %T", raw)
+		}
 	}
 }
 
@@ -234,11 +272,6 @@ func evalIntSpecExpression(expr string, specs map[string]any) (handled, resolved
 		if errors.Is(err, errIntExprUnsupported) {
 			return false, false, 0, nil
 		}
-		if p.unresolved {
-			// An undefined identifier evaluates as 0 and can fabricate errors
-			// (e.g. underflow); the expression is simply unresolved.
-			return true, false, 0, nil
-		}
 		return true, false, 0, err
 	}
 	p.skipSpaces()
@@ -321,10 +354,15 @@ func (p *intSpecExprParser) parseTerm() (*big.Rat, error) {
 			return left, nil
 		}
 		p.pos++
+		outerUnresolved := p.unresolved
+		p.unresolved = false
 		right, err := p.parseFactor()
 		if err != nil {
+			p.unresolved = p.unresolved || outerUnresolved
 			return nil, err
 		}
+		rightUnresolved := p.unresolved
+		p.unresolved = rightUnresolved || outerUnresolved
 		switch op {
 		case '*':
 			left = new(big.Rat).Mul(left, right)
@@ -333,6 +371,13 @@ func (p *intSpecExprParser) parseTerm() (*big.Rat, error) {
 			// rounded up once at the end. This keeps full precision across the
 			// uint64 range and makes the result independent of evaluation order.
 			if right.Sign() == 0 {
+				// A zero produced by an undefined identifier is not a genuine
+				// division by zero: the expression is unresolved, and the
+				// placeholder value must not fabricate an error.
+				if rightUnresolved {
+					left = new(big.Rat)
+					continue
+				}
 				return nil, fmt.Errorf("division by zero")
 			}
 			left = new(big.Rat).Quo(left, right)
@@ -340,6 +385,10 @@ func (p *intSpecExprParser) parseTerm() (*big.Rat, error) {
 			// Modulo is only defined on integers; a non-integral operand would
 			// be ambiguous, so reject it rather than guess.
 			if right.Sign() == 0 {
+				if rightUnresolved {
+					left = new(big.Rat)
+					continue
+				}
 				return nil, fmt.Errorf("modulo by zero")
 			}
 			if !left.IsInt() || !right.IsInt() {
@@ -429,4 +478,15 @@ func ratCeilToUint64(r *big.Rat) (uint64, error) {
 
 func isIdentChar(c byte) bool {
 	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+}
+
+// stripSpecSpaces removes the blanks the expression grammar ignores, so a
+// directly-supplied key and a spelled-out expression compare alike.
+func stripSpecSpaces(name string) string {
+	return strings.Map(func(r rune) rune {
+		if r == ' ' || r == '\t' {
+			return -1
+		}
+		return r
+	}, name)
 }
