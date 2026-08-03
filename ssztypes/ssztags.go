@@ -727,8 +727,9 @@ func ParseTags(tag string) (typeHints []SszTypeHint, sizeHints []SszSizeHint, ma
 			} else if sszSizeInt, parseErr := strconv.ParseUint(sizeExpr, 10, 32); parseErr == nil {
 				sszSize.Size = uint32(sszSizeInt)
 			} else {
+				// An expression names a length, so the dimension is a vector;
+				// only `?` declares it dynamic.
 				isExpr = true
-				sszSize.Dynamic = true
 				sszSize.Custom = true
 
 				if i < len(sizeHints) {

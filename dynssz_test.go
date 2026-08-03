@@ -2102,6 +2102,58 @@ func TestRecursiveTypeWithUnion(t *testing.T) {
 	}
 }
 
+// exprSizedVec is sized by a spec expression through its annotation: `?` is
+// what declares a dimension dynamic, so an expression names a length and the
+// type is a vector — in every context.
+type exprSizedVec []uint16
+
+var _ = sszutils.Annotate[exprSizedVec](`dynssz-size:"EXPR_VEC_LEN"`)
+
+type exprSizedVecHolder struct {
+	V exprSizedVec
+}
+
+// An expression-sized annotated slice classifies as a vector whether it
+// stands alone, sits in a struct field, or is a list element — the same
+// layout in every context, matching the tag-spelled form.
+func TestAnnotatedExpressionSizeIsVectorEverywhere(t *testing.T) {
+	ds := NewDynSsz(map[string]any{"EXPR_VEC_LEN": uint64(4)}, WithNoFastSsz(), WithNoDelegation())
+	value := exprSizedVec{1, 2, 3, 4}
+
+	standalone, err := ds.HashTreeRoot(value)
+	if err != nil {
+		t.Fatalf("standalone hash: %v", err)
+	}
+	if buf, marshalErr := ds.MarshalSSZ(value); marshalErr != nil || len(buf) != 8 {
+		t.Fatalf("standalone marshal: len=%d err=%v, want the 8-byte inline vector", len(buf), marshalErr)
+	}
+
+	asField, err := ds.HashTreeRoot(exprSizedVecHolder{V: value})
+	if err != nil {
+		t.Fatalf("field hash: %v", err)
+	}
+	fieldOnly, err := ds.HashTreeRoot(struct {
+		V [4]uint16 `ssz-size:"4" dynssz-size:"EXPR_VEC_LEN"`
+	}{V: [4]uint16{1, 2, 3, 4}})
+	if err != nil {
+		t.Fatalf("tag-spelled hash: %v", err)
+	}
+	if asField != fieldOnly {
+		t.Fatalf("the annotated field and the tag-spelled field must hash alike")
+	}
+	_ = standalone
+
+	// As a list element the vector is fixed-size, so it lays out inline:
+	// one element is its 8 bytes, with no offset table.
+	elems, err := ds.MarshalSSZ([]exprSizedVec{value})
+	if err != nil {
+		t.Fatalf("element marshal: %v", err)
+	}
+	if len(elems) != 8 {
+		t.Fatalf("element layout: len=%d, want 8 (inline vector, no offsets)", len(elems))
+	}
+}
+
 // hintedShareList carries a size annotation, so references to it resolve with
 // external hints derived from the annotation.
 type hintedShareList []uint16

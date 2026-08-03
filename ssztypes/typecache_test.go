@@ -3328,7 +3328,7 @@ func TestParseTags_Comprehensive(t *testing.T) {
 	})
 
 	t.Run("DynSszSizeExprWithoutExistingHint", func(t *testing.T) {
-		// Expression without ssz-size base - appends new hint
+		// An expression names a length: the dimension is a vector, not dynamic.
 		_, sizeHints, _, err := ParseTags(`dynssz-size:"SOME_EXPR"`)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -3336,8 +3336,8 @@ func TestParseTags_Comprehensive(t *testing.T) {
 		if len(sizeHints) != 1 {
 			t.Fatalf("expected 1 size hint, got %d", len(sizeHints))
 		}
-		if !sizeHints[0].Dynamic {
-			t.Fatal("expected Dynamic=true")
+		if sizeHints[0].Dynamic {
+			t.Fatal("an expression-sized dimension is a vector, so Dynamic must be false")
 		}
 		if !sizeHints[0].Custom {
 			t.Fatal("expected Custom=true")
@@ -3394,8 +3394,8 @@ func TestParseTags_Comprehensive(t *testing.T) {
 	})
 
 	t.Run("DynSszSizeExprNewHint", func(t *testing.T) {
-		// When i >= len(sizeHints), it appends a new hint with Dynamic+Custom flags
-		// (lines 564-568 in ssztags.go ParseTags)
+		// When i >= len(sizeHints), a new hint is appended carrying the
+		// expression; it names a length, so the dimension stays a vector.
 		_, sizeHints, _, err := ParseTags(`dynssz-size:"MY_NEW_EXPR"`)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -3403,8 +3403,8 @@ func TestParseTags_Comprehensive(t *testing.T) {
 		if len(sizeHints) != 1 {
 			t.Fatalf("expected 1 size hint, got %d", len(sizeHints))
 		}
-		if !sizeHints[0].Dynamic || !sizeHints[0].Custom {
-			t.Fatal("expected Dynamic=true and Custom=true for new expr hint")
+		if sizeHints[0].Dynamic || !sizeHints[0].Custom {
+			t.Fatal("expected Dynamic=false and Custom=true for an expr hint")
 		}
 	})
 
