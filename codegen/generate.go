@@ -152,6 +152,7 @@ func (cg *CodeGenerator) analyzeTypes() error {
 	cg.typeCache.CompatFlags = cg.compatFlags
 
 	// analyze all types to build complete dependency graph
+	seenTypes := map[string]string{}
 	for _, file := range cg.files {
 		pkgPath := ""
 		pkgName := ""
@@ -161,6 +162,23 @@ func (cg *CodeGenerator) analyzeTypes() error {
 
 			if typePkgPath == "" {
 				return fmt.Errorf("type %s has no package path", typeName)
+			}
+
+			// A type generated into two files of one package declares every
+			// method twice; the collision spans files, so the guard must too.
+			seenKey := typePkgPath + "." + typeName
+			if firstFile, seen := seenTypes[seenKey]; seen {
+				if firstFile == file.FileName {
+					return fmt.Errorf("type %s is listed more than once for %s; remove the duplicate entry", typeName, file.FileName)
+				}
+				return fmt.Errorf("type %s is listed for both %s and %s; a type can be generated into one file only", typeName, firstFile, file.FileName)
+			}
+			seenTypes[seenKey] = file.FileName
+
+			// The legacy fastssz interface is all-or-nothing: a partial method
+			// set satisfies no consumer and silently misleads interface checks.
+			if t.Options.CreateLegacyFn && (t.Options.NoMarshalSSZ || t.Options.NoUnmarshalSSZ || t.Options.NoSizeSSZ || t.Options.NoHashTreeRoot) {
+				return fmt.Errorf("type %s combines WithCreateLegacyFn with a WithNo* option: the legacy fastssz interface needs the full method set", typeName)
 			}
 			if pkgPath == "" {
 				pkgPath = typePkgPath
@@ -235,6 +253,14 @@ func (cg *CodeGenerator) analyzeTypes() error {
 			}
 
 			t.Descriptor = desc
+
+			// Size hints describe the dimensions of a slice-ish root; a
+			// container's dimensions live on its field tags, so hints on a
+			// container root would describe nothing and be dropped.
+			if (desc.SszType == ssztypes.SszContainerType || desc.SszType == ssztypes.SszProgressiveContainerType) &&
+				(len(t.Options.SizeHints) > 0 || len(t.Options.MaxSizeHints) > 0) {
+				return fmt.Errorf("type %s is a container: size and max hints apply to non-container roots; tag the container's fields instead", typeName)
+			}
 
 			// A view-only type emits no methods of its own, and its data type
 			// carries no tags because the layout lives in the view schema, so
@@ -705,7 +731,7 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 		headerTemplate = DefaultHeaderTemplate
 	}
 	header := strings.ReplaceAll(headerTemplate, "{hash}", hex.EncodeToString(typesHash[:]))
-	header = strings.ReplaceAll(header, "{version}", Version)
+	header = strings.ReplaceAll(header, "{version}", "v"+Version)
 	mainCodeBuilder.WriteString(header)
 	if !strings.HasSuffix(header, "\n") {
 		mainCodeBuilder.WriteString("\n")

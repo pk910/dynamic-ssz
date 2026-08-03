@@ -15,6 +15,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -158,7 +159,10 @@ func main() {
 		_, _ = fmt.Fprintf(w, "        Comma-separated list of type names to generate code for\n\n")
 		_, _ = fmt.Fprintf(w, "Output flags:\n")
 		_, _ = fmt.Fprintf(w, "  -output string\n")
-		_, _ = fmt.Fprintf(w, "        Default output file path (used for types without a ':path' suffix)\n")
+		_, _ = fmt.Fprintf(w, "        Default output file path. A type overrides it with a\n")
+		_, _ = fmt.Fprintf(w, "        ':output=file.go' suffix in -types.\n")
+		_, _ = fmt.Fprintf(w, "  -config string\n")
+		_, _ = fmt.Fprintf(w, "        YAML config file; CLI flags override its top-level values.\n")
 		_, _ = fmt.Fprintf(w, "  -package-name string\n")
 		_, _ = fmt.Fprintf(w, "        Package name for generated code (default: same as source package)\n")
 		_, _ = fmt.Fprintf(w, "  -header string\n")
@@ -276,6 +280,14 @@ func run(config *Config) error {
 
 	if len(pkgs) == 0 {
 		return fmt.Errorf("no packages found for %s", config.PackagePath)
+	}
+
+	if len(pkgs) > 1 {
+		names := make([]string, 0, len(pkgs))
+		for _, matched := range pkgs {
+			names = append(names, matched.PkgPath)
+		}
+		return fmt.Errorf("pattern %s matches %d packages (%s); name exactly one", config.PackagePath, len(pkgs), strings.Join(names, ", "))
 	}
 
 	pkg := pkgs[0]
@@ -460,7 +472,9 @@ func run(config *Config) error {
 	codeGen.SetAnnotationResolver(annotationResolver(pkg))
 
 	if config.PackageName != "" {
-		codeGen.SetPackageName(config.PackageName)
+		if nameErr := codeGen.SetPackageName(config.PackageName); nameErr != nil {
+			return nameErr
+		}
 	}
 
 	if config.HeaderTemplate != "" {
@@ -552,18 +566,41 @@ func run(config *Config) error {
 		return fmt.Errorf("failed to generate code: %v", err)
 	}
 
-	// Write to output file
-	if config.Verbose {
-		log.Printf("Writing output to %s", config.OutputFile)
+	// Write the whole set atomically: every file lands next to its target as
+	// a temp file first, and the renames happen only after all writes
+	// succeeded, so a failure leaves no partial mix of old and new output.
+	outFiles := make([]string, 0, len(codeMap))
+	for outFile := range codeMap {
+		outFiles = append(outFiles, outFile)
 	}
+	sort.Strings(outFiles)
 
 	codeSize := 0
-	for outFile, generatedCode := range codeMap {
+	tempFiles := make(map[string]string, len(codeMap))
+	cleanup := func() {
+		for _, tempFile := range tempFiles {
+			_ = os.Remove(tempFile)
+		}
+	}
+	for _, outFile := range outFiles {
+		generatedCode := codeMap[outFile]
+		if config.Verbose {
+			log.Printf("Writing output to %s", outFile)
+		}
 		codeSize += len(generatedCode)
-		err = os.WriteFile(outFile, []byte(generatedCode), 0o600)
+		tempFile, err := writeTempFile(outFile, []byte(generatedCode))
 		if err != nil {
+			cleanup()
 			return fmt.Errorf("failed to write output file %s: %v", outFile, err)
 		}
+		tempFiles[outFile] = tempFile
+	}
+	for _, outFile := range outFiles {
+		if err := os.Rename(tempFiles[outFile], outFile); err != nil {
+			cleanup()
+			return fmt.Errorf("failed to write output file %s: %v", outFile, err)
+		}
+		delete(tempFiles, outFile)
 	}
 
 	// Warnings do not fail generation, but the author has to see them: they
@@ -774,6 +811,32 @@ func parseAnnotateTag(tag string) ([]codegen.CodeGeneratorOption, error) {
 	return opts, nil
 }
 
+// writeTempFile writes data to a fresh temp file in the target's directory
+// and returns its path; renaming it onto the target is then atomic on the
+// same filesystem.
+func writeTempFile(target string, data []byte) (string, error) {
+	f, err := os.CreateTemp(filepath.Dir(target), filepath.Base(target)+".tmp*")
+	if err != nil {
+		return "", err
+	}
+	name := f.Name()
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(name)
+		return "", err
+	}
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		_ = os.Remove(name)
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(name)
+		return "", err
+	}
+	return name, nil
+}
+
 // parseTypeSpecs parses the comma-separated type names string into typeSpec structs.
 // Each type can have colon-separated options: TypeName[:output=file.go][:views=View1;View2][:viewonly]
 func parseTypeSpecs(typeNames, defaultOutput string) ([]typeSpec, error) {
@@ -790,7 +853,10 @@ func parseTypeSpecs(typeNames, defaultOutput string) ([]typeSpec, error) {
 		parts := strings.Split(typeStr, ":")
 
 		// First part is always the type name
-		spec.TypeName = parts[0]
+		spec.TypeName = strings.TrimSpace(parts[0])
+		if spec.TypeName == "" {
+			return nil, fmt.Errorf("invalid type spec %q: empty type name", typeStr)
+		}
 
 		// Process remaining parts - all are optional and can be in any order
 		for i := 1; i < len(parts); i++ {
@@ -809,6 +875,9 @@ func parseTypeSpecs(typeNames, defaultOutput string) ([]typeSpec, error) {
 				spec.ViewTypes = strings.Split(viewsStr, ";")
 				for j := range spec.ViewTypes {
 					spec.ViewTypes[j] = strings.TrimSpace(spec.ViewTypes[j])
+					if spec.ViewTypes[j] == "" {
+						return nil, fmt.Errorf("invalid type spec %q: empty view type name", typeStr)
+					}
 				}
 			case strings.HasPrefix(part, "output="):
 				// Explicit output file with prefix
@@ -816,11 +885,15 @@ func parseTypeSpecs(typeNames, defaultOutput string) ([]typeSpec, error) {
 			case part == "viewonly":
 				spec.IsViewOnly = true
 			default:
-				// For backward compatibility: first unrecognized non-empty part
-				// is treated as output file (only if not already set)
-				if spec.OutputFile == "" {
+				// A bare segment names the output file (legacy positional
+				// form) — but only one, and only one that looks like a Go
+				// file. Anything else is a typo the caller has to see, not a
+				// filename to silently create.
+				if spec.OutputFile == "" && strings.HasSuffix(part, ".go") {
 					spec.OutputFile = part
+					continue
 				}
+				return nil, fmt.Errorf("invalid type spec segment %q in %q (expected output=<file.go>, views=<A;B>, or viewonly)", part, typeStr)
 			}
 		}
 

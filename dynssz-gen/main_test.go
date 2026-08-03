@@ -1262,3 +1262,41 @@ func TestRun_ExternalViewLoading(t *testing.T) {
 		t.Fatalf("run with external view types failed: %v", err)
 	}
 }
+
+// A type-spec segment that is neither a recognized option nor a Go file name
+// is a typo the caller must see, not a filename to create; empty type and
+// view names are rejected the same way.
+func TestTypeSpecRejectsJunk(t *testing.T) {
+	rejected := []string{
+		"TestType:junk",
+		"TestType:output=a.go:more:junk",
+		"TestType:views=",
+		"TestType:views=A;;B",
+		":output=a.go",
+	}
+	for _, input := range rejected {
+		if _, err := parseTypeSpecs(input, "out.go"); err == nil {
+			t.Errorf("parseTypeSpecs(%q) accepted junk", input)
+		}
+	}
+
+	// The legacy positional output form stays accepted for Go file names.
+	specs, err := parseTypeSpecs("TestType:custom.go", "out.go")
+	if err != nil || specs[0].OutputFile != "custom.go" {
+		t.Fatalf("positional output form broke: %v %+v", err, specs)
+	}
+}
+
+// A pattern matching several packages names them instead of silently using
+// the first.
+func TestRun_MultiPackagePattern(t *testing.T) {
+	config := Config{
+		PackagePath: "./...",
+		TypeNames:   "NoSuchType",
+		OutputFile:  "output.go",
+	}
+	err := run(&config)
+	if err == nil || !strings.Contains(err.Error(), "matches") {
+		t.Fatalf("expected a multi-package error, got %v", err)
+	}
+}
