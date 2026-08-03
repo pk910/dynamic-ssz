@@ -1205,3 +1205,49 @@ func TestDecoderPrimitiveParity(t *testing.T) {
 		}
 	})
 }
+
+// The negative-input guards are exercised on both implementations, and the
+// stream skip stays clamped like the buffer skip.
+func TestPrimitiveGuardBranches(t *testing.T) {
+	bd := NewBufferDecoder([]byte{1, 2, 3, 4})
+	bd.PushLimit(4)
+	bd.SkipBytes(-5)
+	if bd.GetPosition() != 0 {
+		t.Fatalf("negative skip moved the position to %d", bd.GetPosition())
+	}
+	bd.SkipBytes(2)
+	if bd.GetPosition() != 2 {
+		t.Fatalf("in-range skip landed at %d, want 2", bd.GetPosition())
+	}
+
+	be := NewBufferEncoder(nil)
+	be.EncodeZeroPadding(-3)
+	if be.GetPosition() != 0 {
+		t.Fatalf("negative padding moved the buffer encoder to %d", be.GetPosition())
+	}
+	var sink bytes.Buffer
+	se := NewStreamEncoder(&sink, 16)
+	se.EncodeZeroPadding(-3)
+	se.Flush()
+	if se.GetPosition() != 0 || sink.Len() != 0 {
+		t.Fatalf("negative padding wrote %d bytes at position %d", sink.Len(), se.GetPosition())
+	}
+
+	// A valid bool consumes exactly one byte on both implementations.
+	bd2 := NewBufferDecoder([]byte{1})
+	bd2.PushLimit(1)
+	if v, err := bd2.DecodeBool(); err != nil || !v || bd2.GetPosition() != 1 {
+		t.Fatalf("buffer bool: v=%v err=%v pos=%d", v, err, bd2.GetPosition())
+	}
+	sd2 := NewStreamDecoder(bytes.NewReader([]byte{0}), 1, 16)
+	if v, err := sd2.DecodeBool(); err != nil || v || sd2.GetPosition() != 1 {
+		t.Fatalf("stream bool: v=%v err=%v pos=%d", v, err, sd2.GetPosition())
+	}
+
+	// A bool read past the region limit fails without consuming.
+	sd3 := NewStreamDecoder(bytes.NewReader([]byte{1}), 1, 16)
+	sd3.PushLimit(0)
+	if _, err := sd3.DecodeBool(); err == nil || sd3.GetPosition() != 0 {
+		t.Fatalf("stream bool past limit: err=%v pos=%d", err, sd3.GetPosition())
+	}
+}

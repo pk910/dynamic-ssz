@@ -2687,3 +2687,22 @@ func TestNestingDepthBound(t *testing.T) {
 		}
 	})
 }
+
+// A bitlist region larger than its limit's byte capacity is rejected by the
+// byte count before the terminator is read, naming bytes rather than a bit
+// count the terminator has not yet defined.
+func TestBitlistOverCapacityByBytes(t *testing.T) {
+	type holder struct {
+		B []byte `ssz-type:"bitlist" ssz-max:"8"`
+	}
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation())
+	// limit 8 bits => capacity 2 bytes (7 data bits + terminator); 4 bytes exceed it.
+	payload := []byte{4, 0, 0, 0, 0xff, 0xff, 0xff, 0x01}
+	err := ds.UnmarshalSSZ(new(holder), payload)
+	if err == nil || !errors.Is(err, sszutils.ErrListTooBig) {
+		t.Fatalf("err = %v, want the list-too-big sentinel", err)
+	}
+	if !strings.Contains(err.Error(), "bytes") {
+		t.Fatalf("err = %v, want a byte-capacity message", err)
+	}
+}

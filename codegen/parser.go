@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 const (
@@ -927,6 +928,11 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 
 	// complex types
 	case ssztypes.SszTypeWrapperType:
+		// A wrapper's constraints live in its descriptor struct; a size or
+		// limit on the field holding the wrapper would silently lose to them.
+		if len(sizeHints) > 0 || len(maxSizeHints) > 0 {
+			return nil, sszutils.NewSszError(sszutils.ErrInvalidTag, "ssz-size/ssz-max on a TypeWrapper field are not applied: declare the constraint in the wrapper's descriptor struct")
+		}
 		// Resolve both data and schema types to named types
 		if dataNamedType == nil {
 			return nil, fmt.Errorf("data TypeWrapper must be a named type")

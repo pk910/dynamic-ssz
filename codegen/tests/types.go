@@ -2406,3 +2406,15 @@ var RecursiveValNode_Payload = RecursiveValNode{
 		{Val: 3, Kids: []RecursiveValNode{{Val: 4}}},
 	},
 }
+
+// TaggedWrapperType is a named wrapper used to pin that a size tag on the
+// field holding it is rejected.
+type TaggedWrapperType = dynssz.TypeWrapper[struct {
+	Data []uint16 `ssz-max:"16"`
+}, []uint16]
+
+// WrapperFieldTagHolder tags the field holding a wrapper; the tag is rejected
+// because the wrapper's descriptor struct declares its constraints.
+type WrapperFieldTagHolder struct {
+	W TaggedWrapperType `ssz-size:"4"`
+}

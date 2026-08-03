@@ -820,19 +820,14 @@ func writeTempFile(target string, data []byte) (string, error) {
 		return "", err
 	}
 	name := f.Name()
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
+	_, writeErr := f.Write(data)
+	closeErr := f.Close()
+	if writeErr != nil || closeErr != nil {
 		_ = os.Remove(name)
-		return "", err
-	}
-	if err := f.Chmod(0o600); err != nil {
-		_ = f.Close()
-		_ = os.Remove(name)
-		return "", err
-	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(name)
-		return "", err
+		if writeErr != nil {
+			return "", writeErr
+		}
+		return "", closeErr
 	}
 	return name, nil
 }

@@ -719,10 +719,21 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			"ssz-type declares %d dimensions for %v, which takes 1: drop the trailing %d",
 			len(typeHints), t, len(typeHints)-1)
 	}
+	// A limit names the capacity of a variable-length dimension; a type that
+	// consumes no dimension has none to bound, so a limit reaching it was
+	// parsed and dropped. NoValue placeholders are the tag family skipping a
+	// dimension that belongs to the other family, which is their job.
+	if len(maxSizeHints) > 0 && !maxSizeHints[0].NoValue && !consumesDimension(sszType) && sszType != SszBigIntType {
+		return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag,
+			"ssz-max names a limit for %v, which has no capacity to bound: drop the surplus dimension", t)
+	}
 
 	// Check type compatibility and compute size
 	switch sszType {
 	case SszUnspecifiedType:
+		if t.Kind() == reflect.Pointer {
+			return nil, sszutils.NewSszError(sszutils.ErrUnsupportedType, "unsupported multi-level pointer type: only a single level of indirection is supported")
+		}
 		return nil, sszutils.NewSszErrorf(sszutils.ErrUnsupportedType, "unsupported type kind: %v", t.Kind())
 
 	// basic types
@@ -800,6 +811,11 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 
 	// complex types
 	case SszTypeWrapperType:
+		// A wrapper's constraints live in its descriptor struct; a size or
+		// limit on the field holding the wrapper would silently lose to them.
+		if len(sizeHints) > 0 || len(maxSizeHints) > 0 {
+			return nil, sszutils.NewSszError(sszutils.ErrInvalidTag, "ssz-size/ssz-max on a TypeWrapper field are not applied: declare the constraint in the wrapper's descriptor struct")
+		}
 		err := tc.buildTypeWrapperDescriptor(desc, runtimeType, schemaType)
 		if err != nil {
 			return nil, err

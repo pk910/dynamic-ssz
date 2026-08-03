@@ -148,6 +148,10 @@ func TestEntrypointsShareDelegationOrder(t *testing.T) {
 		if err != nil || !bytes.Equal(buf, want) {
 			t.Fatalf("MarshalSSZ = %x (%v), want %x", buf, err, want)
 		}
+		buf, err = ds.MarshalSSZTo(src, nil)
+		if err != nil || !bytes.Equal(buf, want) {
+			t.Fatalf("MarshalSSZTo = %x (%v), want %x", buf, err, want)
+		}
 		var w bytes.Buffer
 		if err := ds.MarshalSSZWriter(src, &w); err != nil || !bytes.Equal(w.Bytes(), want) {
 			t.Fatalf("MarshalSSZWriter = %x (%v), want %x", w.Bytes(), err, want)

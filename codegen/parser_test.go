@@ -3167,3 +3167,20 @@ type reflectPlainNode struct {
 	Val  uint64
 	Tail []byte `ssz-max:"4"`
 }
+
+// A size or limit tag on a field holding a TypeWrapper is rejected: the
+// wrapper's descriptor struct declares its constraints.
+func TestParserRejectsWrapperFieldTags(t *testing.T) {
+	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
+	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
+	if err != nil || len(pkgs) == 0 {
+		t.Fatalf("load tests package: %v", err)
+	}
+	obj := pkgs[0].Types.Scope().Lookup("WrapperFieldTagHolder")
+	if obj == nil {
+		t.Skip("WrapperFieldTagHolder not present")
+	}
+	if _, err := NewParser().GetTypeDescriptor(obj.Type(), nil, nil, nil); err == nil || !strings.Contains(err.Error(), "TypeWrapper") {
+		t.Fatalf("err = %v, want the wrapper field-tag rejection", err)
+	}
+}

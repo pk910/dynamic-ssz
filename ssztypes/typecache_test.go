@@ -60,7 +60,7 @@ func TestTypeCache_ErrorCases(t *testing.T) {
 			{"func", reflect.TypeOf(func() {}), "functions are not supported"},
 			{"interface", reflect.TypeOf((*interface{})(nil)).Elem(), "interfaces are not supported"},
 			{"unsafe", reflect.TypeOf((*unsafe.Pointer)(nil)).Elem(), "unsafe pointers are not supported"},
-			{"pointer", reflect.TypeOf((***uint64)(nil)).Elem(), "unsupported type kind: ptr"},
+			{"pointer", reflect.TypeOf((***uint64)(nil)).Elem(), "unsupported multi-level pointer"},
 		}
 
 		for _, tt := range unsupportedTypes {
@@ -1903,11 +1903,13 @@ func TestTypeCache_ExtendedTypes(t *testing.T) {
 		cache := NewTypeCache(ds)
 		cache.ExtendedTypes = true
 
-		// optional pointer to uint16 with extra hints that get forwarded
+		// optional pointer to uint16; the size hints forward through the
+		// optional to the element, and no limit reaches the leaf (a leaf has
+		// no capacity to bound).
 		desc, err := cache.GetTypeDescriptor(
 			reflect.TypeOf((*uint16)(nil)),
 			[]SszSizeHint{{Size: 0}, {Size: 2}},
-			[]SszMaxSizeHint{{Size: 0}, {Size: 2}},
+			[]SszMaxSizeHint{{Size: 0}},
 			[]SszTypeHint{{Type: SszOptionalType}, {Type: SszUint16Type}},
 		)
 		if err != nil {
@@ -5612,4 +5614,45 @@ type recMutualFixedA struct {
 type recMutualFixedB struct {
 	Value uint64
 	A     *recMutualFixedA
+}
+
+// Tag misuse the descriptor build rejects: a limit family declaring more
+// dimensions than the type has, size or limit tags on a TypeWrapper field,
+// and a second level of pointer indirection.
+func TestTagMisuseRejections(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	t.Run("surplus_max_dimensions", func(t *testing.T) {
+		type surplusMax struct {
+			V []uint64 `ssz-max:"64,128"`
+		}
+		_, err := cache.GetTypeDescriptor(reflect.TypeFor[surplusMax](), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "no capacity to bound") {
+			t.Fatalf("err = %v, want a surplus-dimension rejection", err)
+		}
+	})
+
+	t.Run("wrapper_field_tags", func(t *testing.T) {
+		_, err := cache.GetTypeDescriptor(
+			reflect.TypeFor[hintedWrapperHolder](), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "TypeWrapper") {
+			t.Fatalf("err = %v, want the wrapper field-tag rejection", err)
+		}
+	})
+
+	t.Run("multi_level_pointer", func(t *testing.T) {
+		type doublePtr struct {
+			V **uint64
+		}
+		_, err := cache.GetTypeDescriptor(reflect.TypeFor[doublePtr](), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "multi-level pointer") {
+			t.Fatalf("err = %v, want the multi-level pointer rejection", err)
+		}
+	})
+}
+
+// hintedWrapperHolder tags the field holding a wrapper; the wrapper's own
+// descriptor declares its constraints, so the field tag is rejected.
+type hintedWrapperHolder struct {
+	W testTypeWrapper `ssz-type:"wrapper" ssz-size:"4"`
 }

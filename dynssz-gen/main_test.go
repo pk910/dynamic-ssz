@@ -1300,3 +1300,26 @@ func TestRun_MultiPackagePattern(t *testing.T) {
 		t.Fatalf("expected a multi-package error, got %v", err)
 	}
 }
+
+// A write into a nonexistent directory fails before any target is touched.
+func TestWriteTempFileFailure(t *testing.T) {
+	if _, err := writeTempFile("/nonexistent-dir-zz/x.go", []byte("data")); err == nil {
+		t.Fatal("expected a creation error")
+	}
+	dir := t.TempDir()
+	target := dir + "/out.go"
+	tmp, err := writeTempFile(target, []byte("data"))
+	if err != nil {
+		t.Fatalf("temp write: %v", err)
+	}
+	if _, statErr := os.Stat(target); statErr == nil {
+		t.Fatal("target must not exist before the rename")
+	}
+	if err := os.Rename(tmp, target); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	content, _ := os.ReadFile(target)
+	if string(content) != "data" {
+		t.Fatalf("content = %q", content)
+	}
+}

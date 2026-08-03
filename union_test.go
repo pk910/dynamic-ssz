@@ -60,10 +60,22 @@ func TestNewCompatibleUnion(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:         "create union with nil data",
+			name:         "nil data for a value variant is rejected",
 			variantIndex: 1,
 			data:         nil,
-			expectError:  false,
+			expectError:  true,
+		},
+		{
+			name:         "undeclared selector is rejected",
+			variantIndex: 200,
+			data:         ExecutionPayload{},
+			expectError:  true,
+		},
+		{
+			name:         "mismatched data type is rejected",
+			variantIndex: 1,
+			data:         "not-a-valid-variant",
+			expectError:  true,
 		},
 	}
 
@@ -1202,6 +1214,66 @@ func TestCompatibleUnionSelectorRangeEnforced(t *testing.T) {
 		v.U.Data = uint32(1)
 		if _, err := ds.MarshalSSZ(&v); err == nil {
 			t.Fatal("ssz-index 128 should be rejected")
+		}
+	})
+}
+
+// Constructor validation covers every rejection branch: bad descriptors,
+// out-of-range and None selectors, nil and mismatched data — and accepts the
+// declared shapes, including pointer-form data and the classic None variant.
+func TestUnionConstructorValidation(t *testing.T) {
+	type body struct{ A uint64 }
+
+	t.Run("compatible", func(t *testing.T) {
+		if _, err := NewCompatibleUnion[struct{ V1 body }](1, body{A: 1}); err != nil {
+			t.Errorf("declared variant rejected: %v", err)
+		}
+		if _, err := NewCompatibleUnion[struct{ V1 body }](1, &body{A: 1}); err != nil {
+			t.Errorf("pointer-form data rejected: %v", err)
+		}
+		if _, err := NewCompatibleUnion[struct{ V1 body }](0, body{}); err == nil || !errors.Is(err, sszutils.ErrInvalidUnionVariant) {
+			t.Errorf("selector 0 must be rejected with the union sentinel: %v", err)
+		}
+		if _, err := NewCompatibleUnion[struct{ V1 body }](200, "junk"); err == nil {
+			t.Error("undeclared selector accepted")
+		}
+		if _, err := NewCompatibleUnion[struct{ V1 body }](1, "junk"); err == nil {
+			t.Error("mismatched data type accepted")
+		}
+		if _, err := NewCompatibleUnion[struct{ V1 body }](1, nil); err == nil {
+			t.Error("nil data for a value variant accepted")
+		}
+		if _, err := NewCompatibleUnion[int](1, body{}); err == nil {
+			t.Error("non-struct descriptor accepted")
+		}
+	})
+
+	t.Run("classic", func(t *testing.T) {
+		type withNone struct {
+			N  None
+			V1 body
+		}
+		if _, err := NewUnion[withNone](0, nil); err != nil {
+			t.Errorf("None selector with nil data rejected: %v", err)
+		}
+		if _, err := NewUnion[withNone](0, body{}); err == nil {
+			t.Error("None selector with data accepted")
+		}
+		if _, err := NewUnion[withNone](1, body{}); err != nil {
+			t.Errorf("value variant after None rejected: %v", err)
+		}
+		if _, err := NewUnion[struct{ V1 body }](0, body{}); err != nil {
+			t.Errorf("0-based first variant rejected: %v", err)
+		}
+		if _, err := NewUnion[struct{ V1 body }](1, body{}); err == nil {
+			t.Error("out-of-range classic selector accepted")
+		}
+		type noneMid struct {
+			V1 body
+			N  None
+		}
+		if _, err := NewUnion[noneMid](1, body{}); err == nil {
+			t.Error("a selector landing on a mid-struct None field must reject data")
 		}
 	})
 }

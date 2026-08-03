@@ -258,6 +258,7 @@ func TestErrorConstructorFunctions(t *testing.T) {
 		{"ErrVectorOffsetsEOFFn", ErrVectorOffsetsEOFFn(4, 12), ErrUnexpectedEOF, "not enough data for vector offsets (have 4, needed 12)"},
 		{"ErrListOffsetsEOFFn", ErrListOffsetsEOFFn(0, 8), ErrUnexpectedEOF, "not enough data for list offsets (have 0, needed 8)"},
 		{"ErrListNotAlignedFn", ErrListNotAlignedFn(13, 4), ErrInvalidValueRange, "list length 13 is not a multiple of element size 4"},
+		{"ErrBitlistBytesFn", ErrBitlistBytesFn(9, 8, 64), ErrListTooBig, "bitlist occupies 9 bytes, exceeding the 8-byte capacity of limit 64"},
 		{"ErrInvalidListStartOffsetFn", ErrInvalidListStartOffsetFn(99, 50), ErrOffset, "invalid list start offset 99 (length 50)"},
 		{"ErrUnionSelectorEOFFn", ErrUnionSelectorEOFFn(), ErrUnexpectedEOF, "need 1 byte for union selector"},
 		{"ErrUnionVariantEOFFn", ErrUnionVariantEOFFn(3, 10), ErrUnexpectedEOF, "not enough data for union variant (have 3, needed 10)"},
