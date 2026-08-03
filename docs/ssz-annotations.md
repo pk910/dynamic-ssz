@@ -339,7 +339,7 @@ Dynamic annotations (`dynssz-size`, `dynssz-max`, `dynssz-bitsize`) support expr
 
 **Operators** (standard precedence):
 1. Parentheses: `()`
-2. Multiplication/Division: `*`, `/`
+2. Multiplication/Division/Modulo: `*`, `/`, `%` (modulo needs integer operands)
 3. Addition/Subtraction: `+`, `-`
 
 **Features**: Integer arithmetic only. Spec value substitution. Automatic rounding up for partial bytes.

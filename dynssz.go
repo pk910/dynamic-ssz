@@ -1201,7 +1201,8 @@ func (d *DynSsz) GetTree(source any, opts ...CallOption) (*treeproof.Node, error
 //   - Valid composite types (arrays, slices, structs)
 //   - Proper SSZ tags on slice fields (ssz-size, ssz-max, dynssz-size, dynssz-max)
 //   - Correct tag syntax and values
-//   - No unsupported types (strings, maps, channels, signed integers, floats, etc.)
+//   - No unsupported types (maps, channels, functions, multi-level pointers;
+//     signed integers and floats need WithExtendedTypes)
 //
 // When a view descriptor is provided via WithViewDescriptor option, the method validates:
 //   - The schema type (view descriptor) is compatible with SSZ
@@ -1224,17 +1225,21 @@ func (d *DynSsz) GetTree(source any, opts ...CallOption) (*treeproof.Node, error
 //     explaining why the type is incompatible. The error message includes details about
 //     the specific field or type that caused the validation failure.
 //
+// A type can be valid for encoding yet refuse a hash tree root: a list or
+// bitlist without an ssz-max limit encodes, but has no standard SSZ hash tree
+// root unless extended types hash it as an unbounded list. ValidateType
+// answers the encoding question.
+//
 // Example usage:
 //
 //	type MyStruct struct {
 //	    ValidField   uint64
-//	    InvalidField string  // This will cause validation to fail
+//	    InvalidField map[string]int  // maps cannot be serialized
 //	}
 //
 //	err := ds.ValidateType(reflect.TypeOf(MyStruct{}))
 //	if err != nil {
 //	    log.Fatal("Type validation failed:", err)
-//	    // Output: Type validation failed: field 'InvalidField': unsupported type 'string'
 //	}
 //
 //	// With view descriptor validation:

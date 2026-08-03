@@ -53,6 +53,9 @@ type DynSszOption func(*DynSszOptions)
 | `WithLogCb(fn)` | Set a custom logging callback (`func(format string, args ...any)`) |
 | `WithStreamWriterBufferSize(n)` | Set stream encoder buffer size (default 2KB) |
 | `WithStreamReaderBufferSize(n)` | Set stream decoder buffer size (default 2KB) |
+| `WithNoDelegation()` | Disable delegation to generated Dynamic* methods (fastssz is governed by `WithNoFastSsz`) |
+| `WithMaxStreamSize(n)` | Cap unknown-length stream decodes (default 512MB); guards allocation from untrusted readers |
+| `WithMaxNestingDepth(n)` | Bound recursion-cycle nesting (default 1024); guards the stack against deeply nested payloads |
 
 ### Global Instance
 
@@ -526,7 +529,8 @@ payload := PayloadUnion{
 ### CodeGenerator
 
 ```go
-func NewCodeGenerator(dynSsz *dynssz.DynSsz) *CodeGenerator
+func NewCodeGenerator(typeCache *ssztypes.TypeCache) *CodeGenerator
+// pass ds.GetTypeCache() to share an instance's cache, or nil for a fresh one
 
 func (cg *CodeGenerator) BuildFile(fileName string, opts ...CodeGeneratorOption)
 func (cg *CodeGenerator) Generate() error
@@ -574,7 +578,7 @@ var (
     ErrListTooBig          = fmt.Errorf("list length is higher than max value")
     ErrUnexpectedEOF       = fmt.Errorf("unexpected end of SSZ")
     ErrOffset              = fmt.Errorf("incorrect offset")
-    ErrInvalidUnionVariant = fmt.Errorf("invalid union variant")
+    ErrInvalidUnionVariant = ErrInvalidValueRange // alias: matches and prints as "invalid value range"
     ErrVectorLength        = fmt.Errorf("incorrect vector length")
     ErrNotImplemented      = fmt.Errorf("not implemented")
 )

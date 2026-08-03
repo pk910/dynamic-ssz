@@ -209,6 +209,11 @@ type Votes struct {
 }
 ```
 
+> **Canonical form**: the byte slice includes the terminating sentinel bit, so
+> the canonical empty bitlist is `[]byte{0x01}`. An empty `[]byte{}` is
+> accepted on encode as the empty bitlist, and decoding always yields the
+> canonical form — a nil/empty slice does not survive a round trip unchanged.
+
 > **Note**: A Go `[]bool` slice is **not** a bitlist — it auto-detects as
 > `List[boolean, N]`, one byte per element, with `ssz-max` counted in elements
 > rather than bits. Use a byte-backed field with `ssz-type:"bitlist"` for a

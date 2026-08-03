@@ -36,7 +36,9 @@ func GetGlobalDynSsz() *DynSsz {
 }
 
 // SetGlobalSpecs replaces the global DynSsz instance with a new one configured
-// with the given specification values. Safe for concurrent use.
+// with the given specification values. Safe for concurrent use. A reference
+// obtained from GetGlobalDynSsz earlier keeps the instance it got — its specs
+// and caches stay a consistent snapshot, unaffected by the swap.
 func SetGlobalSpecs(specs map[string]any) {
 	globalMu.Lock()
 	defer globalMu.Unlock()

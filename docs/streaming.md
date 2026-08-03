@@ -383,7 +383,7 @@ dynssz-gen -package . -types BeaconBlock,BeaconState -output ssz_generated.go -w
 
 ```go
 ds := dynssz.NewDynSsz(nil)
-codeGen := codegen.NewCodeGenerator(ds)
+codeGen := codegen.NewCodeGenerator(ds.GetTypeCache())
 
 codeGen.BuildFile("generated_ssz.go",
     codegen.WithReflectType(reflect.TypeOf(BeaconBlock{})),

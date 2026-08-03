@@ -247,7 +247,7 @@ if err != nil {
     return
 }
 
-if size != uint32(len(data)) {
+if size != len(data) {
     log.Printf("Size mismatch: calculated %d, actual %d", size, len(data))
 }
 ```

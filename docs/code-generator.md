@@ -236,7 +236,7 @@ import (
 
 func generateSSZ() error {
     // Create code generator
-    codeGen := codegen.NewCodeGenerator(dynssz.NewDynSsz(nil))
+    codeGen := codegen.NewCodeGenerator(dynssz.NewDynSsz(nil).GetTypeCache())
     
     // Add types to single file
     codeGen.BuildFile("generated_ssz.go", 
@@ -253,7 +253,7 @@ func generateSSZ() error {
 
 ```go
 func generateSSZMultipleFiles() error {
-    codeGen := codegen.NewCodeGenerator(dynssz.NewDynSsz(nil))
+    codeGen := codegen.NewCodeGenerator(dynssz.NewDynSsz(nil).GetTypeCache())
     
     // Block types to one file
     codeGen.BuildFile("block_ssz.go",
@@ -278,7 +278,7 @@ func generateSSZMultipleFiles() error {
 import "github.com/pk910/dynamic-ssz/codegen"
 
 // Create generator with options
-codeGen := codegen.NewCodeGenerator(dynSsz)
+codeGen := codegen.NewCodeGenerator(dynSsz.GetTypeCache())
 
 // Build file with options
 codeGen.BuildFile("output.go",
@@ -316,7 +316,7 @@ codeGen.BuildFile("output.go",
 ```go
 import "github.com/pk910/dynamic-ssz/codegen"
 
-codeGen := codegen.NewCodeGenerator(dynSsz)
+codeGen := codegen.NewCodeGenerator(dynSsz.GetTypeCache())
 
 // Generate type with view support (data + views mode)
 codeGen.BuildFile("output.go",
@@ -680,7 +680,7 @@ type State struct {
 
 // Generated dynamic method
 func (s *State) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
-    maxValidators := ds.GetValue("VALIDATOR_REGISTRY_LIMIT")
+    maxValidators, _ := sszutils.ResolveSpecValueWithDefault(ds, "VALIDATOR_REGISTRY_LIMIT", 1099511627776)
     // ... use dynamic value for different presets
 }
 ```
