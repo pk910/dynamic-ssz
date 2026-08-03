@@ -321,7 +321,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 			staticSize = 1
 		} else {
 			// Calculate size of the data
-			dataSize, err := ctx.getSszValueSize(targetType.ElemDesc, targetValue, depth)
+			dataSize, err := ctx.getSszValueSize(targetType.ElemDesc, targetValue.Elem(), depth)
 			if err != nil {
 				return 0, err
 			}
@@ -331,7 +331,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 	case ssztypes.SszOptionalListType:
 		// canonical List[T, 1]: empty for nil, one element otherwise
 		if !targetValue.IsNil() {
-			dataSize, err := ctx.getSszValueSize(targetType.ElemDesc, targetValue, depth)
+			dataSize, err := ctx.getSszValueSize(targetType.ElemDesc, targetValue.Elem(), depth)
 			if err != nil {
 				return 0, sszutils.ErrorWithPathf(err, "[0]")
 			}

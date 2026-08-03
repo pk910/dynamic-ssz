@@ -1760,13 +1760,8 @@ func (tc *TypeCache) buildOptionalDescriptor(desc *TypeDescriptor, runtimeType, 
 	}
 
 	// Optional is presence-gated (dynamic), a legal recursion boundary.
-	// The element is the pointer type itself — the descriptor a standalone
-	// *T reference resolves to — so a recursive cycle closing through an
-	// optional runs through the same descriptor a walk enters at, and the
-	// nesting bound charges the same levels in both engines. The walkers pass
-	// the pointer through; the dispatchers dereference it.
 	tc.dynDepth++
-	elemDesc, err := tc.getTypeDescriptor(reflect.PointerTo(runtimeType), reflect.PointerTo(schemaType), childSizeHints, childMaxSizeHints, childTypeHints)
+	elemDesc, err := tc.getTypeDescriptor(runtimeType, schemaType, childSizeHints, childMaxSizeHints, childTypeHints)
 	tc.dynDepth--
 	if err != nil {
 		return err
@@ -1818,9 +1813,8 @@ func (tc *TypeCache) buildOptionalListDescriptor(desc *TypeDescriptor, runtimeTy
 	desc.SszTypeFlags |= SszTypeFlagIsDynamic | SszTypeFlagHasLimit
 
 	// Optional-list is a canonical List[T, 1] (variable-length), a legal boundary.
-	// The element is the pointer type, as for SszOptionalType.
 	tc.dynDepth++
-	elemDesc, err := tc.getTypeDescriptor(reflect.PointerTo(runtimeType), reflect.PointerTo(schemaType), childSizeHints, childMaxSizeHints, childTypeHints)
+	elemDesc, err := tc.getTypeDescriptor(runtimeType, schemaType, childSizeHints, childMaxSizeHints, childTypeHints)
 	tc.dynDepth--
 	if err != nil {
 		return err

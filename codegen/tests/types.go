@@ -2374,3 +2374,19 @@ var RecursiveOptNode_Payload = RecursiveOptNode{
 		Next: &RecursiveOptNode{Val: 3},
 	},
 }
+
+// ReflectOptProbe carries every optional shape through the reflect front-end:
+// optional of a basic type, of a container, and a recursive optional edge.
+// It is deliberately in no generation batch; a test generates it through
+// WithReflectType and type-checks the output.
+type ReflectOptProbe struct {
+	A *uint64          `ssz-type:"optional"`
+	B *ReflectOptSub   `ssz-type:"optional"`
+	C *ReflectOptProbe `ssz-type:"optional"`
+	D *ReflectOptSub   `ssz-type:"optional-list"`
+}
+
+// ReflectOptSub is the container variant ReflectOptProbe wraps.
+type ReflectOptSub struct {
+	V uint64
+}

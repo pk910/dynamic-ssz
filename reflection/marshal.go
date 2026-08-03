@@ -899,7 +899,7 @@ func (ctx *ReflectionCtx) marshalOptional(sourceType *ssztypes.TypeDescriptor, s
 	encoder.EncodeBool(true)
 
 	// Marshal the wrapped value using its type descriptor
-	return ctx.marshalType(sourceType.ElemDesc, sourceValue, encoder, depth)
+	return ctx.marshalType(sourceType.ElemDesc, sourceValue.Elem(), encoder, depth)
 }
 
 // marshalOptionalList encodes a pointer as a canonical SSZ List[T, 1].
@@ -931,7 +931,7 @@ func (ctx *ReflectionCtx) marshalOptionalList(sourceType *ssztypes.TypeDescripto
 		encoder.EncodeOffset(4)
 	}
 
-	if err := ctx.marshalType(sourceType.ElemDesc, sourceValue, encoder, depth); err != nil {
+	if err := ctx.marshalType(sourceType.ElemDesc, sourceValue.Elem(), encoder, depth); err != nil {
 		return sszutils.ErrorWithPathf(err, "[0]")
 	}
 	return nil

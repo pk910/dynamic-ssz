@@ -17,6 +17,8 @@ import (
 	"github.com/pk910/dynamic-ssz/codegen"
 	"github.com/pk910/dynamic-ssz/codegen/tests/views"
 	"github.com/pk910/dynamic-ssz/sszutils"
+
+	"golang.org/x/tools/go/packages"
 )
 
 type TestPayload struct {
@@ -3234,5 +3236,40 @@ func TestVectorSliceShorterThanItsLength(t *testing.T) {
 	long := SimpleTypes1{Vec8: []uint8{1, 2, 3, 4, 5}}
 	if _, err := marshalBoth(t, &long); !errors.Is(err, sszutils.ErrVectorLength) {
 		t.Errorf("err = %v, want ErrVectorLength", err)
+	}
+}
+
+// The reflect front-end must emit the same compiling code for optional fields
+// the go/types front-end emits: an optional's variable is the pointer, its
+// element handling dereferences exactly once. The generated output is
+// type-checked in place against this package.
+func TestReflectFrontendOptionalCompiles(t *testing.T) {
+	cg := codegen.NewCodeGenerator(nil)
+	cg.BuildFile("gen_zz_reflectopt.go",
+		codegen.WithReflectType(reflect.TypeFor[ReflectOptProbe]()),
+		codegen.WithReflectType(reflect.TypeFor[ReflectOptSub]()),
+		codegen.WithExtendedTypes(),
+	)
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	overlayPath := filepath.Join(dir, "gen_zz_reflectopt.go")
+	cfg := &packages.Config{
+		Mode:    packages.NeedTypes | packages.NeedSyntax | packages.NeedTypesInfo | packages.NeedDeps | packages.NeedImports | packages.NeedName,
+		Dir:     dir,
+		Overlay: map[string][]byte{overlayPath: []byte(files["gen_zz_reflectopt.go"])},
+	}
+	pkgs, err := packages.Load(cfg, ".")
+	if err != nil || len(pkgs) == 0 {
+		t.Fatalf("load: %v", err)
+	}
+	for _, pkgErr := range pkgs[0].Errors {
+		t.Errorf("generated optional code does not compile: %v", pkgErr)
 	}
 }
