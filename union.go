@@ -14,6 +14,14 @@ import (
 // It uses Go generics where T is a descriptor struct that defines the union's possible types.
 // The descriptor struct is never instantiated but provides type information through its fields.
 //
+// EIP-8016 expects the variants to share a compatible merkleization: the same
+// tree shape, with containers carrying the same field names in the same order,
+// collections the same capacity, and only byte/uint8 differing among basics.
+// That is a rule for designing the schema; the library does not verify it
+// (a check may be added later). Diverging variants serialize and hash — the
+// selector is mixed into the root — but no conforming implementation will
+// accept the type.
+//
 // The union stores:
 // - unionType: uint8 field index indicating which variant is active
 // - data: interface{} holding the actual value
@@ -88,8 +96,9 @@ type None struct{}
 // declares dynssz.None as its first field represents the empty option as
 // {Variant: 0, Data: nil}.
 //
-// Unlike CompatibleUnion, variants share no merkleization constraints and the
-// selector is assigned by position alone (ssz-index tags are not allowed).
+// Variants carry no merkleization expectations (CompatibleUnion's EIP-8016
+// compatibility rule does not apply here) and the selector is assigned by
+// position alone (ssz-index tags are not allowed).
 type Union[T any] struct {
 	Variant uint8
 	Data    interface{}

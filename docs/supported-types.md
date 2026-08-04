@@ -478,7 +478,15 @@ Key features:
 - Pointer fields for indirection
 
 ### Compatible Unions (M4)
-Type-safe variant types using struct descriptor:
+Type-safe variant types using struct descriptor.
+
+EIP-8016 expects all variants of a compatible union to share a compatible
+merkleization — the same tree shape, with containers carrying the same field
+names in the same order, collections the same capacity, and only `byte`/`uint8`
+differing among basics. Designing the variants to satisfy this is the schema
+author's responsibility: the library does not verify it (a check may be added
+later), and a diverging set will not interoperate with conforming
+implementations.
 
 ```go
 import dynssz "github.com/pk910/dynamic-ssz"

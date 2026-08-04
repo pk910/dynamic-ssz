@@ -232,8 +232,13 @@ func (cg *CodeGenerator) analyzeTypes() error {
 				if parser == nil {
 					parser = NewParser()
 					parser.CompatFlags = cg.compatFlags
-					parser.ExtendedTypes = t.Options.ExtendedTypes
 					parser.AnnotationResolver = cg.annotationResolver
+				}
+				// The extended-types switch is never lowered (mirroring the
+				// type cache): a shared parser stays in the wider mode once
+				// any type in the run enables it.
+				if t.Options.ExtendedTypes {
+					parser.ExtendedTypes = true
 				}
 				if t.Options.WithoutDynamicExpressions {
 					parser.NoDelegation = true

@@ -2209,3 +2209,29 @@ func TestStaticRejectsUnInlinableDelegated(t *testing.T) {
 		t.Fatal("expected a clear error inlining a delegated type with an invalid innard")
 	}
 }
+
+// A per-type extended-types option reaches the shared go/types parser
+// whichever position the type holds: the switch is never lowered, so a later
+// extended type widens the parser a first plain type created.
+func TestPerTypeExtendedTypesReachesParser(t *testing.T) {
+	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
+	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
+	if err != nil || len(pkgs) == 0 {
+		t.Fatalf("load tests package: %v", err)
+	}
+	scope := pkgs[0].Types.Scope()
+	plain := scope.Lookup("SimpleTypes1")
+	extended := scope.Lookup("OptU32")
+	if plain == nil || extended == nil {
+		t.Skip("corpus types not present")
+	}
+
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_test.go",
+		WithGoTypesType(plain.Type()),
+		WithGoTypesType(extended.Type(), WithExtendedTypes()),
+	)
+	if _, err := cg.GenerateToMap(); err != nil {
+		t.Fatalf("a later extended type must widen the shared parser: %v", err)
+	}
+}
