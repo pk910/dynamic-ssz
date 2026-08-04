@@ -177,10 +177,22 @@ func (fc *FileConfig) applyToConfig(cfg *Config, cliProvided map[string]bool, ba
 			return nil, fmt.Errorf("types[%d]: name is required", i)
 		}
 
+		views := make([]string, 0, len(entry.Views))
+		for _, viewName := range entry.Views {
+			viewName = strings.TrimSpace(viewName)
+			if viewName == "" {
+				return nil, fmt.Errorf("types[%d] (%s): empty view type name", i, entry.Name)
+			}
+			views = append(views, viewName)
+		}
+		if entry.ViewOnly && len(views) == 0 {
+			return nil, fmt.Errorf("types[%d] (%s): view-only needs at least one entry in `views`", i, entry.Name)
+		}
+
 		spec := typeSpec{
 			TypeName:   entry.Name,
 			OutputFile: entry.Output,
-			ViewTypes:  append([]string(nil), entry.Views...),
+			ViewTypes:  views,
 			IsViewOnly: entry.ViewOnly,
 		}
 		if spec.OutputFile != "" {

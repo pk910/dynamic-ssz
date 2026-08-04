@@ -6,6 +6,7 @@
 package codegen
 
 import (
+	"errors"
 	"fmt"
 	"go/token"
 	"go/types"
@@ -17,6 +18,11 @@ import (
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
 )
+
+// ErrInvalidHeaderTemplate reports a header template that would corrupt the
+// generated files. SetHeaderTemplate returns an error wrapping it and keeps
+// the current template.
+var ErrInvalidHeaderTemplate = errors.New("invalid header template")
 
 // DefaultHeaderTemplate is the header comment emitted at the top of generated
 // files when no custom template is set via SetHeaderTemplate. The {hash} and
@@ -783,10 +789,15 @@ func (cg *CodeGenerator) SetPackageName(packageName string) error {
 // placeholders {hash} and {version} are substituted during generation with the
 // combined type hash of the generated file and the dynamic-ssz library version.
 //
-// The returned error is a non-fatal warning: it is returned when the template's
-// first line does not match the Go convention for machine-generated files
-// (`^// Code generated .* DO NOT EDIT\.$`), which tooling relies on to
-// recognize and skip generated code. The template is applied either way, so
+// Every non-empty line of the template must be a `//` line comment — anything
+// else would make the generated files invalid Go. Such a template is rejected
+// with an error wrapping ErrInvalidHeaderTemplate and the current template is
+// kept; check for it with errors.Is.
+//
+// Any other returned error is a non-fatal warning: it is returned when the
+// template's first line does not match the Go convention for machine-generated
+// files (`^// Code generated .* DO NOT EDIT\.$`), which tooling relies on to
+// recognize and skip generated code. The template is applied in that case, so
 // callers may log the warning and continue.
 //
 // Example:
@@ -796,6 +807,13 @@ func (cg *CodeGenerator) SetPackageName(packageName string) error {
 //	    log.Printf("Warning: %v", warn)
 //	}
 func (cg *CodeGenerator) SetHeaderTemplate(template string) error {
+	for lineNo, line := range strings.Split(template, "\n") {
+		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		if line != "" && !strings.HasPrefix(line, "//") {
+			return fmt.Errorf("%w: line %d is not a `//` comment and would make the generated files invalid Go", ErrInvalidHeaderTemplate, lineNo+1)
+		}
+	}
+
 	cg.headerTemplate = template
 
 	firstLine, _, _ := strings.Cut(template, "\n")

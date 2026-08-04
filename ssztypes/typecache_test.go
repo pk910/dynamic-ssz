@@ -5632,6 +5632,16 @@ func TestTagMisuseRejections(t *testing.T) {
 		}
 	})
 
+	t.Run("container_root_max_hint", func(t *testing.T) {
+		type plainContainer struct {
+			V uint64
+		}
+		_, err := cache.GetTypeDescriptor(reflect.TypeFor[plainContainer](), nil, []SszMaxSizeHint{{Size: 10}}, nil)
+		if err == nil || !strings.Contains(err.Error(), "field tags") {
+			t.Fatalf("err = %v, want the container field-tag guidance", err)
+		}
+	})
+
 	t.Run("wrapper_field_tags", func(t *testing.T) {
 		_, err := cache.GetTypeDescriptor(
 			reflect.TypeFor[hintedWrapperHolder](), nil, nil, nil)

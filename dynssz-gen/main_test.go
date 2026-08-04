@@ -728,12 +728,19 @@ func TestParseTypeSpecs(t *testing.T) {
 	})
 
 	t.Run("EmptyParts", func(t *testing.T) {
-		specs, err := parseTypeSpecs("MyType::viewonly", "out.go")
+		specs, err := parseTypeSpecs("MyType::views=MyView:viewonly", "out.go")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if !specs[0].IsViewOnly {
 			t.Error("expected viewonly to be set")
+		}
+	})
+
+	t.Run("ViewOnlyNeedsViews", func(t *testing.T) {
+		_, err := parseTypeSpecs("MyType:viewonly", "out.go")
+		if err == nil || !strings.Contains(err.Error(), "viewonly needs view types") {
+			t.Fatalf("expected viewonly-needs-views error, got: %v", err)
 		}
 	})
 
@@ -1301,10 +1308,48 @@ func TestRun_MultiPackagePattern(t *testing.T) {
 	}
 }
 
-// A write into a nonexistent directory fails before any target is touched.
+// A header template that is not made of comment lines is rejected before any
+// code is generated.
+func TestRun_InvalidHeaderTemplate(t *testing.T) {
+	config := Config{
+		PackagePath:    "github.com/pk910/dynamic-ssz/codegen/tests",
+		TypeNames:      "SimpleTypes1",
+		OutputFile:     "output.go",
+		HeaderTemplate: "not a comment\n// Hash: {hash}\n",
+	}
+	err := run(&config)
+	if err == nil || !errors.Is(err, codegen.ErrInvalidHeaderTemplate) {
+		t.Fatalf("expected the invalid-header-template rejection, got: %v", err)
+	}
+}
+
+// A write into a nonexistent directory fails before any target is touched,
+// and failure messages name the problem without leaking temp-file names.
 func TestWriteTempFileFailure(t *testing.T) {
 	if _, err := writeTempFile("/nonexistent-dir-zz/x.go", []byte("data")); err == nil {
 		t.Fatal("expected a creation error")
+	} else if strings.Contains(err.Error(), ".tmp") {
+		t.Fatalf("error leaks the temp-file name: %v", err)
+	}
+
+	base := t.TempDir()
+	goodTarget := filepath.Join(base, "a_out.go")
+	dirTarget := filepath.Join(base, "b_dir")
+	if err := os.Mkdir(dirTarget, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	_, err := writeOutputFiles(map[string]string{goodTarget: "data", dirTarget: "data"}, false)
+	if err == nil || !strings.Contains(err.Error(), "is a directory") {
+		t.Fatalf("expected a directory-target error, got: %v", err)
+	}
+	if strings.Contains(err.Error(), ".tmp") {
+		t.Fatalf("error leaks the temp-file name: %v", err)
+	}
+	if leftovers, _ := filepath.Glob(filepath.Join(base, "*.tmp*")); len(leftovers) != 0 {
+		t.Fatalf("temp files not cleaned up: %v", leftovers)
+	}
+	if _, statErr := os.Stat(goodTarget); statErr == nil {
+		t.Fatal("no target may be written when another target fails")
 	}
 	dir := t.TempDir()
 	target := dir + "/out.go"
@@ -1321,5 +1366,10 @@ func TestWriteTempFileFailure(t *testing.T) {
 	content, _ := os.ReadFile(target)
 	if string(content) != "data" {
 		t.Fatalf("content = %q", content)
+	}
+
+	plain := errors.New("plain failure")
+	if got := errCause(plain); got != plain {
+		t.Fatalf("errCause must pass through non-path errors, got: %v", got)
 	}
 }

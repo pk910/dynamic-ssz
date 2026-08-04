@@ -396,6 +396,59 @@ types:
 	}
 }
 
+func TestApplyToConfig_ViewsValidation(t *testing.T) {
+	t.Run("EmptyViewName", func(t *testing.T) {
+		path := writeTempConfig(t, `
+package: fmt
+output: out.go
+types:
+  - name: A
+    views: ["View1", "  "]
+`)
+		fc, _ := LoadConfig(path)
+		cfg := Config{}
+		_, err := fc.applyToConfig(&cfg, map[string]bool{}, filepath.Dir(path))
+		if err == nil || !strings.Contains(err.Error(), "empty view type name") {
+			t.Fatalf("expected empty-view-name error, got: %v", err)
+		}
+	})
+
+	t.Run("ViewNamesTrimmed", func(t *testing.T) {
+		path := writeTempConfig(t, `
+package: fmt
+output: out.go
+types:
+  - name: A
+    views: [" View1 ", "View2"]
+`)
+		fc, _ := LoadConfig(path)
+		cfg := Config{}
+		specs, err := fc.applyToConfig(&cfg, map[string]bool{}, filepath.Dir(path))
+		if err != nil {
+			t.Fatalf("applyToConfig: %v", err)
+		}
+		if len(specs[0].ViewTypes) != 2 || specs[0].ViewTypes[0] != "View1" || specs[0].ViewTypes[1] != "View2" {
+			t.Fatalf("view names not trimmed: %q", specs[0].ViewTypes)
+		}
+	})
+
+	t.Run("ViewOnlyNeedsViews", func(t *testing.T) {
+		path := writeTempConfig(t, `
+package: fmt
+output: out.go
+types:
+  - name: A
+    view-only: true
+`)
+		fc, _ := LoadConfig(path)
+		cfg := Config{}
+		_, err := fc.applyToConfig(&cfg, map[string]bool{}, filepath.Dir(path))
+		if err == nil || !strings.Contains(err.Error(), "view-only needs at least one entry") {
+			t.Fatalf("expected view-only-needs-views error, got: %v", err)
+		}
+	})
+}
+
 func TestApplyToConfig_MissingTypeName(t *testing.T) {
 	path := writeTempConfig(t, `
 package: fmt

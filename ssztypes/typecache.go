@@ -724,6 +724,10 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 	// parsed and dropped. NoValue placeholders are the tag family skipping a
 	// dimension that belongs to the other family, which is their job.
 	if len(maxSizeHints) > 0 && !maxSizeHints[0].NoValue && !consumesDimension(sszType) && sszType != SszBigIntType {
+		if sszType == SszContainerType || sszType == SszProgressiveContainerType {
+			return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag,
+				"ssz-max names a limit for container %v, which has no capacity to bound: a container's limits belong on its field tags", t)
+		}
 		return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag,
 			"ssz-max names a limit for %v, which has no capacity to bound: drop the surplus dimension", t)
 	}

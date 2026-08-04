@@ -12,6 +12,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -478,8 +479,11 @@ func run(config *Config) error {
 	}
 
 	if config.HeaderTemplate != "" {
-		if warn := codeGen.SetHeaderTemplate(config.HeaderTemplate); warn != nil {
-			log.Printf("Warning: %v", warn)
+		if headerErr := codeGen.SetHeaderTemplate(config.HeaderTemplate); headerErr != nil {
+			if errors.Is(headerErr, codegen.ErrInvalidHeaderTemplate) {
+				return headerErr
+			}
+			log.Printf("Warning: %v", headerErr)
 		}
 	}
 
@@ -802,6 +806,12 @@ func writeOutputFiles(codeMap map[string]string, verbose bool) (int, error) {
 		if verbose {
 			log.Printf("Writing output to %s", outFile)
 		}
+		// Renaming onto a directory would fail with a filesystem-dependent
+		// errno; name the actual problem instead.
+		if fi, statErr := os.Stat(outFile); statErr == nil && fi.IsDir() {
+			cleanup()
+			return 0, fmt.Errorf("failed to write output file %s: the target is a directory", outFile)
+		}
 		codeSize += len(generatedCode)
 		tempFile, err := writeTempFile(outFile, []byte(generatedCode))
 		if err != nil {
@@ -821,13 +831,13 @@ func writeOutputFiles(codeMap map[string]string, verbose bool) (int, error) {
 	return codeSize, nil
 }
 
-// writeTempFile writes data to a fresh temp file in the target's directory// writeTempFile writes data to a fresh temp file in the target's directory
+// writeTempFile writes data to a fresh temp file in the target's directory
 // and returns its path; renaming it onto the target is then atomic on the
 // same filesystem.
 func writeTempFile(target string, data []byte) (string, error) {
 	f, err := os.CreateTemp(filepath.Dir(target), filepath.Base(target)+".tmp*")
 	if err != nil {
-		return "", err
+		return "", errCause(err)
 	}
 	name := f.Name()
 	_, writeErr := f.Write(data)
@@ -840,6 +850,16 @@ func writeTempFile(target string, data []byte) (string, error) {
 		return "", closeErr
 	}
 	return name, nil
+}
+
+// errCause strips the temp-file path a *fs.PathError carries, so
+// creation-failure messages name only the target file the caller reports.
+func errCause(err error) error {
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) {
+		return pathErr.Err
+	}
+	return err
 }
 
 // parseTypeSpecs parses the comma-separated type names string into typeSpec structs.
@@ -900,6 +920,10 @@ func parseTypeSpecs(typeNames, defaultOutput string) ([]typeSpec, error) {
 				}
 				return nil, fmt.Errorf("invalid type spec segment %q in %q (expected output=<file.go>, views=<A;B>, or viewonly)", part, typeStr)
 			}
+		}
+
+		if spec.IsViewOnly && len(spec.ViewTypes) == 0 {
+			return nil, fmt.Errorf("invalid type spec %q: viewonly needs view types (views=<A;B>)", typeStr)
 		}
 
 		// Use default output file if not specified

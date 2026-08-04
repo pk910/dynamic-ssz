@@ -637,8 +637,11 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 		}
 		seenTypes[t.TypeName] = struct{}{}
 
-		if t.Descriptor == nil || (t.IsViewOnly && len(t.ViewDescriptors) == 0) {
-			return "", fmt.Errorf("type %s has no descriptor or view descriptors", t.TypeName)
+		if t.Descriptor == nil {
+			return "", fmt.Errorf("type %s has no descriptor", t.TypeName)
+		}
+		if t.IsViewOnly && len(t.ViewDescriptors) == 0 {
+			return "", fmt.Errorf("type %s is view-only but declares no view types; add views or drop the view-only flag", t.TypeName)
 		}
 
 		// A recursive descriptor graph is only emittable when every cycle can be
