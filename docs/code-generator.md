@@ -435,6 +435,13 @@ func (b *BeaconBlock) HashTreeRoot() ([32]byte, error) {
 }
 ```
 
+Whether a type additionally carries the static fastssz method set
+(`MarshalSSZTo`, `HashTreeRoot`, `HashTreeRootWith`) can depend on the
+composition of the generation batch: a type whose nested types are generated in
+the same batch delegates to their preset-capable `*Dyn` methods and then omits
+its own static twins. The `*Dyn` methods and the `ds.*` entry points are always
+present — use those rather than relying on the static method set.
+
 ### With `-without-dynamic-expressions`: Static Methods Only
 
 When using `-without-dynamic-expressions`, only static legacy methods are generated (no `*Dyn` methods):
