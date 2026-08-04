@@ -728,7 +728,9 @@ func TestNewCodeGenerator(t *testing.T) {
 
 func TestCodeGeneratorSetPackageName(t *testing.T) {
 	cg := NewCodeGenerator(nil)
-	cg.SetPackageName("testpackage")
+	if err := cg.SetPackageName("testpackage"); err != nil {
+		t.Fatalf("SetPackageName: %v", err)
+	}
 
 	// Package name is internal, so we can't directly test it
 	// But we can verify it doesn't panic and the generator is still usable
@@ -914,7 +916,9 @@ func TestCodeGeneratorAPI(t *testing.T) {
 
 	t.Run("CustomPackageName", func(t *testing.T) {
 		cg := NewCodeGenerator(nil)
-		cg.SetPackageName("custompackage")
+		if err := cg.SetPackageName("custompackage"); err != nil {
+			t.Fatalf("SetPackageName: %v", err)
+		}
 		reflectType := reflect.TypeOf((*SimpleTestStruct)(nil)).Elem()
 
 		cg.BuildFile("test.go", WithReflectType(reflectType))
@@ -1124,7 +1128,9 @@ func TestCodeGeneratorNilOptions(t *testing.T) {
 
 	t.Run("NilBuildFileOption", func(t *testing.T) {
 		cg := NewCodeGenerator(nil)
-		cg.SetPackageName("test")
+		if err := cg.SetPackageName("test"); err != nil {
+			t.Fatalf("SetPackageName: %v", err)
+		}
 		var nilOpt CodeGeneratorOption
 		cg.BuildFile("foo.go", WithReflectType(dataType), nilOpt)
 		if _, err := cg.GenerateToMap(); err != nil {
@@ -1134,7 +1140,9 @@ func TestCodeGeneratorNilOptions(t *testing.T) {
 
 	t.Run("NilReflectViewType", func(t *testing.T) {
 		cg := NewCodeGenerator(nil)
-		cg.SetPackageName("test")
+		if err := cg.SetPackageName("test"); err != nil {
+			t.Fatalf("SetPackageName: %v", err)
+		}
 		cg.BuildFile("foo.go", WithReflectType(dataType, WithReflectViewTypes(nil)))
 		if _, err := cg.GenerateToMap(); err != nil {
 			t.Fatalf("nil reflect view type: %v", err)
@@ -1143,7 +1151,9 @@ func TestCodeGeneratorNilOptions(t *testing.T) {
 
 	t.Run("NilGoTypesViewType", func(t *testing.T) {
 		cg := NewCodeGenerator(nil)
-		cg.SetPackageName("test")
+		if err := cg.SetPackageName("test"); err != nil {
+			t.Fatalf("SetPackageName: %v", err)
+		}
 		cg.BuildFile("foo.go", WithReflectType(dataType, WithGoTypesViewTypes(nil)))
 		if _, err := cg.GenerateToMap(); err != nil {
 			t.Fatalf("nil go/types view type: %v", err)

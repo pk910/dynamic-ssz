@@ -18,6 +18,28 @@ import (
 	"github.com/pk910/dynamic-ssz/ssztypes"
 )
 
+// validateTypeEntry rejects generation requests that would emit colliding or
+// misleading method sets: a type listed twice (its methods would be declared
+// twice, whether the duplicate is in one file or spread across two files of
+// the package), and a legacy fastssz surface with pieces switched off (the
+// interface is all-or-nothing; a partial set misleads interface checks).
+func validateTypeEntry(seenTypes map[string]string, typePkgPath, typeName, fileName string, opts *CodeGeneratorOptions) error {
+	seenKey := typePkgPath + "." + typeName
+	if firstFile, seen := seenTypes[seenKey]; seen {
+		if firstFile == fileName {
+			return fmt.Errorf("type %s is listed more than once for %s; remove the duplicate entry", typeName, fileName)
+		}
+		return fmt.Errorf("type %s is listed for both %s and %s; a type can be generated into one file only", typeName, firstFile, fileName)
+	}
+	seenTypes[seenKey] = fileName
+
+	if opts.CreateLegacyFn && (opts.NoMarshalSSZ || opts.NoUnmarshalSSZ || opts.NoSizeSSZ || opts.NoHashTreeRoot) {
+		return fmt.Errorf("type %s combines WithCreateLegacyFn with a WithNo* option: the legacy fastssz interface needs the full method set", typeName)
+	}
+
+	return nil
+}
+
 // analyzeTypes performs comprehensive type analysis and validation for all types in the generation request.
 //
 // This method is responsible for the critical pre-generation analysis phase, where all types
@@ -164,21 +186,8 @@ func (cg *CodeGenerator) analyzeTypes() error {
 				return fmt.Errorf("type %s has no package path", typeName)
 			}
 
-			// A type generated into two files of one package declares every
-			// method twice; the collision spans files, so the guard must too.
-			seenKey := typePkgPath + "." + typeName
-			if firstFile, seen := seenTypes[seenKey]; seen {
-				if firstFile == file.FileName {
-					return fmt.Errorf("type %s is listed more than once for %s; remove the duplicate entry", typeName, file.FileName)
-				}
-				return fmt.Errorf("type %s is listed for both %s and %s; a type can be generated into one file only", typeName, firstFile, file.FileName)
-			}
-			seenTypes[seenKey] = file.FileName
-
-			// The legacy fastssz interface is all-or-nothing: a partial method
-			// set satisfies no consumer and silently misleads interface checks.
-			if t.Options.CreateLegacyFn && (t.Options.NoMarshalSSZ || t.Options.NoUnmarshalSSZ || t.Options.NoSizeSSZ || t.Options.NoHashTreeRoot) {
-				return fmt.Errorf("type %s combines WithCreateLegacyFn with a WithNo* option: the legacy fastssz interface needs the full method set", typeName)
+			if err := validateTypeEntry(seenTypes, typePkgPath, typeName, file.FileName, &t.Options); err != nil {
+				return err
 			}
 			if pkgPath == "" {
 				pkgPath = typePkgPath

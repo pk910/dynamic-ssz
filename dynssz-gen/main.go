@@ -566,41 +566,9 @@ func run(config *Config) error {
 		return fmt.Errorf("failed to generate code: %v", err)
 	}
 
-	// Write the whole set atomically: every file lands next to its target as
-	// a temp file first, and the renames happen only after all writes
-	// succeeded, so a failure leaves no partial mix of old and new output.
-	outFiles := make([]string, 0, len(codeMap))
-	for outFile := range codeMap {
-		outFiles = append(outFiles, outFile)
-	}
-	sort.Strings(outFiles)
-
-	codeSize := 0
-	tempFiles := make(map[string]string, len(codeMap))
-	cleanup := func() {
-		for _, tempFile := range tempFiles {
-			_ = os.Remove(tempFile)
-		}
-	}
-	for _, outFile := range outFiles {
-		generatedCode := codeMap[outFile]
-		if config.Verbose {
-			log.Printf("Writing output to %s", outFile)
-		}
-		codeSize += len(generatedCode)
-		tempFile, err := writeTempFile(outFile, []byte(generatedCode))
-		if err != nil {
-			cleanup()
-			return fmt.Errorf("failed to write output file %s: %v", outFile, err)
-		}
-		tempFiles[outFile] = tempFile
-	}
-	for _, outFile := range outFiles {
-		if err := os.Rename(tempFiles[outFile], outFile); err != nil {
-			cleanup()
-			return fmt.Errorf("failed to write output file %s: %v", outFile, err)
-		}
-		delete(tempFiles, outFile)
+	codeSize, err := writeOutputFiles(codeMap, config.Verbose)
+	if err != nil {
+		return err
 	}
 
 	// Warnings do not fail generation, but the author has to see them: they
@@ -811,7 +779,49 @@ func parseAnnotateTag(tag string) ([]codegen.CodeGeneratorOption, error) {
 	return opts, nil
 }
 
-// writeTempFile writes data to a fresh temp file in the target's directory
+// writeOutputFiles writes the generated file set atomically: every file lands
+// next to its target as a temp file first, and the renames happen only after
+// all writes succeeded, so a failure leaves no partial mix of old and new
+// output. Files are written in stable order; the total byte count is returned.
+func writeOutputFiles(codeMap map[string]string, verbose bool) (int, error) {
+	outFiles := make([]string, 0, len(codeMap))
+	for outFile := range codeMap {
+		outFiles = append(outFiles, outFile)
+	}
+	sort.Strings(outFiles)
+
+	codeSize := 0
+	tempFiles := make(map[string]string, len(codeMap))
+	cleanup := func() {
+		for _, tempFile := range tempFiles {
+			_ = os.Remove(tempFile)
+		}
+	}
+	for _, outFile := range outFiles {
+		generatedCode := codeMap[outFile]
+		if verbose {
+			log.Printf("Writing output to %s", outFile)
+		}
+		codeSize += len(generatedCode)
+		tempFile, err := writeTempFile(outFile, []byte(generatedCode))
+		if err != nil {
+			cleanup()
+			return 0, fmt.Errorf("failed to write output file %s: %v", outFile, err)
+		}
+		tempFiles[outFile] = tempFile
+	}
+	for _, outFile := range outFiles {
+		if err := os.Rename(tempFiles[outFile], outFile); err != nil {
+			cleanup()
+			return 0, fmt.Errorf("failed to write output file %s: %v", outFile, err)
+		}
+		delete(tempFiles, outFile)
+	}
+
+	return codeSize, nil
+}
+
+// writeTempFile writes data to a fresh temp file in the target's directory// writeTempFile writes data to a fresh temp file in the target's directory
 // and returns its path; renaming it onto the target is then atomic on the
 // same filesystem.
 func writeTempFile(target string, data []byte) (string, error) {
