@@ -135,10 +135,16 @@ Good2 [][]uint64 `ssz-max:"?,8" dynssz-max:"?,ROW_LIMIT"`
 
 **A dimension that is `?` to both families is an unbounded list.** `ssz-size:"?"`
 with `ssz-max:"?"` says dynamic and unbounded, which is what leaving both tags
-off says. It encodes either way and has a hash tree root only under
-[extended types](extended-types.md#unbounded-lists-and-bitlists), since
+off says. `ssz-max:"0"` spells the same thing explicitly: a zero limit means
+no limit. All three forms encode identically and have a hash tree root only
+under [extended types](extended-types.md#unbounded-lists-and-bitlists), since
 `List[T, N]` needs its `N` to merkleize (see
 [lists without a limit](supported-types.md#lists-without-a-limit)).
+
+A `dynssz-max` next to the zero declares intent to bound at runtime, so a spec
+value that is missing (or resolves to zero) stays an error there — a missing
+limit must not silently un-bound the list. Spell explicit unboundedness
+without a `dynssz-max`.
 
 Writing `?` is often the only way to reach a dimension further in, because the
 tags are positional. A dimension whose length comes from its Go type has to be

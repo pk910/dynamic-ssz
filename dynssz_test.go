@@ -224,6 +224,57 @@ func TestErrorPathAndSentinelConsistency(t *testing.T) {
 	}
 }
 
+// exprZeroMax types pin the explicit unbounded spelling: ssz-max:"0" means
+// what leaving the tag off means — the list encodes, refuses a standard hash
+// tree root, and hashes as an unbounded list under extended types, byte- and
+// root-identical to the untagged form. A dynssz-max alongside declares intent
+// to bound at runtime, so a spec value that is missing or zero stays an error
+// rather than silently un-bounding the list.
+func TestZeroMaxMeansUnbounded(t *testing.T) {
+	type tagged struct {
+		V []uint64 `ssz-max:"0"`
+	}
+	type untagged struct {
+		V []uint64
+	}
+	type dynFallback struct {
+		V []uint64 `ssz-max:"0" dynssz-max:"ZM_LIMIT"`
+	}
+
+	plain := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation())
+	ext := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation(), WithExtendedTypes())
+	v := []uint64{1, 2, 3, 4, 5}
+
+	bTagged, err := plain.MarshalSSZ(&tagged{V: v})
+	if err != nil {
+		t.Fatalf("tagged marshal: %v", err)
+	}
+	bUntagged, err := plain.MarshalSSZ(&untagged{V: v})
+	if err != nil || !bytes.Equal(bTagged, bUntagged) {
+		t.Fatalf("untagged marshal diverges: %v", err)
+	}
+
+	if _, err := plain.HashTreeRoot(&tagged{V: v}); !errors.Is(err, sszutils.ErrExtendedTypeDisabled) {
+		t.Fatalf("plain hash of an unbounded list must need extended types: %v", err)
+	}
+	rTagged, err := ext.HashTreeRoot(&tagged{V: v})
+	if err != nil {
+		t.Fatalf("extended hash: %v", err)
+	}
+	rUntagged, err := ext.HashTreeRoot(&untagged{V: v})
+	if err != nil || rTagged != rUntagged {
+		t.Fatalf("extended roots diverge: %v", err)
+	}
+
+	if _, err := ext.MarshalSSZ(&dynFallback{V: v}); err == nil || !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Fatalf("an undefined runtime limit with a zero fallback must error: %v", err)
+	}
+	zeroSpec := NewDynSsz(map[string]any{"ZM_LIMIT": uint64(0)}, WithNoFastSsz(), WithNoDelegation(), WithExtendedTypes())
+	if _, err := zeroSpec.MarshalSSZ(&dynFallback{V: v}); err == nil || !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Fatalf("a zero-resolved runtime limit with a zero fallback must error: %v", err)
+	}
+}
+
 func TestDefaultLogUsesStructuredLogging(t *testing.T) {
 	var buf bytes.Buffer
 	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
