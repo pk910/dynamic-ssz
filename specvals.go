@@ -182,7 +182,25 @@ func specValueToRat(raw any) (*big.Rat, error) {
 		return floatSpecToRat(v)
 	case float32:
 		return floatSpecToRat(float64(v))
+	case json.Number:
+		// An integral number keeps full uint64 precision; anything else is
+		// read as the float64 it decodes to, so the operand is exactly the
+		// value a concrete float64 carrier would contribute.
+		if u, perr := strconv.ParseUint(v.String(), 10, 64); perr == nil {
+			return new(big.Rat).SetUint64(u), nil
+		}
+		f, perr := v.Float64()
+		if perr != nil {
+			return nil, fmt.Errorf("json.Number %q is not a valid number", v.String())
+		}
+		return floatSpecToRat(f)
 	default:
+		// A named type with a float kind carries a fractional value the
+		// concrete-type switch cannot see.
+		rv := reflect.ValueOf(raw)
+		if rv.Kind() == reflect.Float32 || rv.Kind() == reflect.Float64 {
+			return floatSpecToRat(rv.Float())
+		}
 		// specValueToUint64 reports failure through err (ok is false only when
 		// err is non-nil), so the error check alone covers every unresolvable
 		// value.

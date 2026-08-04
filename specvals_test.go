@@ -16,6 +16,7 @@ import (
 // and identifier factors, the evaluate-then-ceil-once semantics, and the
 // unsupported/unresolved outcomes.
 func TestEvalIntSpecExpression(t *testing.T) {
+	type namedCarrierF float64
 	specs := map[string]any{
 		"A":   uint64(10),
 		"B":   uint64(3),
@@ -27,9 +28,15 @@ func TestEvalIntSpecExpression(t *testing.T) {
 		// spec files decode every number as float64, so this is the common shape.
 		"HALF": 0.5,
 		"F32":  float32(1.5),
-		"NAN":  math.NaN(),
-		"INF":  math.Inf(1),
-		"NEGF": -1.5,
+		// The carrier type must not change the operand: a fractional spec
+		// contributes the same exact rational however it arrives.
+		"JNUMF":   json.Number("2.5"),
+		"JNUMI":   json.Number("6"),
+		"JNUMBAD": json.Number("nope"),
+		"NAMEDF":  namedCarrierF(2.5),
+		"NAN":     math.NaN(),
+		"INF":     math.Inf(1),
+		"NEGF":    -1.5,
 	}
 
 	cases := []struct {
@@ -69,6 +76,12 @@ func TestEvalIntSpecExpression(t *testing.T) {
 		{"float_operand_add", "HALF + HALF", true, true, 1, false},
 		{"float_operand_div", "HALF / 2 * 8", true, true, 2, false},
 		{"float32_operand", "F32 * 2", true, true, 3, false},
+		// 2.5*4 is 10 whether the 2.5 arrives as float64, json.Number or a
+		// named float; a per-operand ceiling would make it 12.
+		{"jnum_float_operand", "JNUMF * 4", true, true, 10, false},
+		{"jnum_int_operand", "JNUMI / 4", true, true, 2, false},
+		{"named_float_operand", "NAMEDF * 4", true, true, 10, false},
+		{"jnum_bad_operand", "JNUMBAD + 1", true, false, 0, true},
 		// A lone fractional operand still rounds up, as before.
 		{"float_operand_alone", "HALF", true, true, 1, false},
 		{"float_nan", "NAN + 1", true, false, 0, true},
