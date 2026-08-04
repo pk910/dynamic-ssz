@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pk910/dynamic-ssz/codegen/tests"
 	"github.com/pk910/dynamic-ssz/ssztypes"
 	"golang.org/x/tools/go/packages"
 )
@@ -3182,5 +3183,53 @@ func TestParserRejectsWrapperFieldTags(t *testing.T) {
 	}
 	if _, err := NewParser().GetTypeDescriptor(obj.Type(), nil, nil, nil); err == nil || !strings.Contains(err.Error(), "TypeWrapper") {
 		t.Fatalf("err = %v, want the wrapper field-tag rejection", err)
+	}
+}
+
+// Both descriptor front-ends record the same layout hash for the same type,
+// so header hashes and regeneration detection agree whichever front-end
+// produced a file. The fixtures carry no generated methods, so neither side
+// shallow-builds them.
+func TestFrontEndDescriptorHashParity(t *testing.T) {
+	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
+	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
+	if err != nil || len(pkgs) == 0 {
+		t.Fatalf("load tests package: %v", err)
+	}
+	scope := pkgs[0].Types.Scope()
+
+	cases := []struct {
+		name        string
+		reflectType reflect.Type
+	}{
+		{"HashParityNode", reflect.TypeFor[tests.HashParityNode]()},
+		{"HashParityShapes", reflect.TypeFor[tests.HashParityShapes]()},
+		{"HashParityProg", reflect.TypeFor[tests.HashParityProg]()},
+		{"HashParityWrap", reflect.TypeFor[tests.HashParityWrap]()},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			obj := scope.Lookup(tc.name)
+			if obj == nil {
+				t.Fatalf("%s not found in the tests package", tc.name)
+			}
+			p := NewParser()
+			goDesc, err := p.GetTypeDescriptor(types.NewPointer(obj.Type()), nil, nil, nil)
+			if err != nil {
+				t.Fatalf("parser descriptor: %v", err)
+			}
+			cache := ssztypes.NewTypeCache(nil)
+			reflDesc, err := cache.GetTypeDescriptor(reflect.PointerTo(tc.reflectType), nil, nil, nil)
+			if err != nil {
+				t.Fatalf("reflect descriptor: %v", err)
+			}
+			if goDesc.GetTypeHash() != reflDesc.GetTypeHash() {
+				t.Errorf("descriptor hashes diverge between the go/types and reflect front-ends")
+			}
+			if goDesc.MinSize != reflDesc.MinSize {
+				t.Errorf("MinSize diverges: go/types %d, reflect %d", goDesc.MinSize, reflDesc.MinSize)
+			}
+		})
 	}
 }

@@ -585,6 +585,9 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 			if cacheable {
 				delete(p.cache, typeKey)
 			}
+			// A shallow descriptor has no traversed subtree: a static one still
+			// knows its size, a dynamic one states no floor.
+			desc.SetMinSize()
 			return desc, nil
 		}
 	}
@@ -1154,6 +1157,10 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		p.pendingKeys = append(p.pendingKeys, parserPendingKey{key: typeKey, hinted: true})
 	}
 
+	// Completed post-order like the reflection type cache, so both front-ends
+	// record identical minimum sizes and descriptor hashes.
+	desc.SetMinSize()
+
 	return desc, nil
 }
 
@@ -1265,13 +1272,17 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 	// Check if we're using a view descriptor (data and schema types differ)
 	isViewDescriptor := dataStruct != schemaStruct
 
-	// Build a map of data field names to their types when using view descriptors
+	// Build a map of data field names to their types and struct positions when
+	// using view descriptors
 	var dataFieldMap map[string]types.Type
+	var dataFieldIndex map[string]int
 	if isViewDescriptor {
 		dataFieldMap = make(map[string]types.Type, dataStruct.NumFields())
+		dataFieldIndex = make(map[string]int, dataStruct.NumFields())
 		for i := 0; i < dataStruct.NumFields(); i++ {
 			dataField := dataStruct.Field(i)
 			dataFieldMap[dataField.Name()] = dataField.Type()
+			dataFieldIndex[dataField.Name()] = i
 		}
 	}
 
@@ -1304,6 +1315,9 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 		if err != nil {
 			return fmt.Errorf("failed to parse tags for field %v: %v", schemaField.Name(), err)
 		}
+		// The runtime struct position, for direct field access by the
+		// reflection walkers (the schema position for non-view descriptors).
+		runtimeFieldIndex := i
 		var dataFieldType types.Type
 		if isViewDescriptor {
 			// Look up corresponding data field by name
@@ -1312,6 +1326,7 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 			if !ok {
 				return fmt.Errorf("data type missing field %q defined in schema", fieldName)
 			}
+			runtimeFieldIndex = dataFieldIndex[fieldName]
 		} else {
 			dataFieldType = schemaFieldType
 		}
@@ -1323,8 +1338,9 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 		}
 
 		fieldDesc := ssztypes.FieldDescriptor{
-			Name: schemaField.Name(),
-			Type: typeDesc,
+			Name:       schemaField.Name(),
+			Type:       typeDesc,
+			FieldIndex: uint16(runtimeFieldIndex),
 		}
 
 		// Handle ssz-index for progressive containers - extract from original tag parsing
@@ -1350,7 +1366,7 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 			dynFieldDesc := ssztypes.DynFieldDescriptor{
 				Field:        &fieldDesc,
 				HeaderOffset: size,
-				Index:        int16(len(fields)),
+				Index:        int16(runtimeFieldIndex), // Runtime field index for data access
 			}
 			dynFields = append(dynFields, dynFieldDesc)
 			isDynamic = true

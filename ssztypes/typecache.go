@@ -704,7 +704,7 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			desc.HashTreeRootWithMethod = nil
 			// A shallow descriptor has no traversed subtree: a static one still
 			// knows its size, a dynamic one states no floor.
-			setMinSize(desc)
+			desc.SetMinSize()
 
 			return desc, nil
 		}
@@ -1035,7 +1035,7 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		}
 	}
 
-	setMinSize(desc)
+	desc.SetMinSize()
 
 	return desc, nil
 }
@@ -1050,7 +1050,7 @@ func unresolvedReason(resolved bool) string {
 	return "is not defined and has no positive static fallback"
 }
 
-// setMinSize records the smallest number of bytes a value of this type can
+// SetMinSize records the smallest number of bytes a value of this type can
 // serialize to. Decoders use it to reject an offset table that declares more
 // elements than the region can hold, before that count sizes an allocation.
 //
@@ -1069,32 +1069,32 @@ func unresolvedReason(resolved bool) string {
 // into a bound would refuse valid input under a preset that resolves them
 // smaller. The generator emits the same minimum as a runtime expression instead
 // (see minSizeExpr).
-func setMinSize(desc *TypeDescriptor) {
+func (td *TypeDescriptor) SetMinSize() {
 	// A static type serializes to exactly its size.
-	if desc.SszTypeFlags&SszTypeFlagIsDynamic == 0 {
-		desc.MinSize = desc.Size
+	if td.SszTypeFlags&SszTypeFlagIsDynamic == 0 {
+		td.MinSize = td.Size
 		return
 	}
 
-	switch desc.SszType {
+	switch td.SszType {
 	case SszTypeWrapperType:
-		if desc.ElemDesc != nil {
-			desc.MinSize = desc.ElemDesc.MinSize
+		if td.ElemDesc != nil {
+			td.MinSize = td.ElemDesc.MinSize
 		}
 	case SszContainerType, SszProgressiveContainerType:
 		// The fixed section: every field's own size, and four offset bytes for
 		// each dynamic one.
-		desc.MinSize = desc.Len
+		td.MinSize = td.Len
 	case SszVectorType:
 		// A vector of dynamic elements leads with one 4-byte offset per element,
 		// and every element costs at least its own minimum on top of that. Len is
 		// the element count here, not a byte size.
-		if desc.ElemDesc != nil {
+		if td.ElemDesc != nil {
 			// An overflowing product would bound the region above the true floor
 			// and refuse valid input, so it states no bound instead.
-			minSize := uint64(desc.Len) * (4 + uint64(desc.ElemDesc.MinSize))
+			minSize := uint64(td.Len) * (4 + uint64(td.ElemDesc.MinSize))
 			if minSize <= math.MaxUint32 {
-				desc.MinSize = uint32(minSize)
+				td.MinSize = uint32(minSize)
 			}
 		}
 	default:

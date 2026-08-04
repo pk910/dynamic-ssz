@@ -787,7 +787,8 @@ func (cg *CodeGenerator) SetPackageName(packageName string) error {
 //
 // The template replaces the default file header (DefaultHeaderTemplate). The
 // placeholders {hash} and {version} are substituted during generation with the
-// combined type hash of the generated file and the dynamic-ssz library version.
+// combined SSZ layout hash of the file's types (see TypeDescriptor.GetTypeHash)
+// and the dynamic-ssz library version.
 //
 // Every non-empty line of the template must be a `//` line comment — anything
 // else would make the generated files invalid Go. Such a template is rejected

@@ -81,7 +81,7 @@ type TypeDescriptor struct {
 	SizeExpression         *string                   `json:"size_expr,omitempty"` // The dynamic expression used to calculate the size of the type
 	MaxExpression          *string                   `json:"max_expr,omitempty"`  // The dynamic expression used to calculate the max size of the type
 	BitSize                uint32                    `json:"bit_size,omitempty"`  // Bit size for bit vector types (ssz-bitsize tag)
-	MinSize                uint32                    `json:"min_size,omitempty"`  // Smallest serialization of this type; 0 when it has no floor or was built by the codegen parser (see setMinSize)
+	MinSize                uint32                    `json:"min_size,omitempty"`  // Smallest serialization of this type; 0 when it has no floor (see SetMinSize)
 	SszType                SszType                   `json:"type"`                // SSZ type of the type
 	SszTypeFlags           SszTypeFlag               `json:"flags"`               // SSZ type flags
 	SszCompatFlags         SszCompatFlag             `json:"compat"`              // SSZ compatibility flags

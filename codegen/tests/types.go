@@ -2418,3 +2418,38 @@ type TaggedWrapperType = dynssz.TypeWrapper[struct {
 type WrapperFieldTagHolder struct {
 	W TaggedWrapperType `ssz-size:"4"`
 }
+
+// Descriptor-hash parity fixtures: intentionally not covered by any generation
+// preset, so both descriptor front-ends traverse the full graph instead of
+// shallow-building a delegated type.
+type HashParityNode struct {
+	Val      uint64
+	Children []*HashParityNode `ssz-max:"4"`
+}
+
+type HashParityShapes struct {
+	Num    uint64
+	List   []uint32    `ssz-max:"64" dynssz-max:"PARITY_LIMIT"`
+	VecDyn [3][]uint16 `ssz-max:"?,64"`
+	Opt    *uint64
+	Union  dynssz.CompatibleUnion[struct {
+		A uint32
+		B []byte `ssz-max:"4"`
+	}]
+	Classic dynssz.Union[struct {
+		N dynssz.None
+		A uint32
+	}]
+	Node HashParityNode
+}
+
+type HashParityProg struct {
+	A uint8  `ssz-index:"0"`
+	B uint64 `ssz-index:"3"`
+}
+
+type HashParityWrap struct {
+	W dynssz.TypeWrapper[struct {
+		Data []uint8 `ssz-max:"8"`
+	}, []uint8] `ssz-type:"wrapper"`
+}
