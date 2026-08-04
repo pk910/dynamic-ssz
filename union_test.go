@@ -1271,6 +1271,25 @@ func TestUnionConstructorValidation(t *testing.T) {
 			t.Error("selector 2 is not declared by the tagged descriptor")
 		}
 
+		// A typed-nil pointer carries no value to dereference.
+		type nilBody struct{ A uint64 }
+		var typedNil *nilBody
+		if _, err := NewCompatibleUnion[struct{ V1 nilBody }](1, typedNil); err == nil || !errors.Is(err, sszutils.ErrInvalidUnionVariant) {
+			t.Errorf("typed-nil pointer data must be rejected: %v", err)
+		}
+		if _, err := NewUnion[struct{ V1 nilBody }](0, typedNil); err == nil {
+			t.Error("typed-nil pointer data must be rejected by the classic constructor too")
+		}
+
+		// A duplicate selector is rejected by the shared authority.
+		type dupTags struct {
+			F1 []byte `ssz-max:"16" ssz-index:"3"`
+			F2 []byte `ssz-max:"16" ssz-index:"3"`
+		}
+		if _, err := NewCompatibleUnion[dupTags](3, []byte{1}); err == nil {
+			t.Error("duplicate selectors must be rejected")
+		}
+
 		// A descriptor mixing tagged and untagged fields is rejected by the
 		// shared selector authority.
 		type mixedTags struct {

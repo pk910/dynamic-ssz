@@ -162,6 +162,11 @@ func TestSpecValueCoercion(t *testing.T) {
 	if _, _, err := ds.ResolveSpecValue("BIG_NEG"); err == nil {
 		t.Error("negative big.Int accepted")
 	}
+	var nilBig *big.Int
+	nilDs := NewDynSsz(map[string]any{"BIG_NIL": nilBig})
+	if _, _, err := nilDs.ResolveSpecValue("BIG_NIL"); err == nil {
+		t.Error("typed-nil big.Int accepted")
+	}
 
 	type namedI32 int32
 	type namedF64 float64

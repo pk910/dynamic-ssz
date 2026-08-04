@@ -139,6 +139,9 @@ func specValueToUint64(raw any) (value uint64, ok bool, err error) {
 		u, ferr := specFloatToUint64(f)
 		return u, ferr == nil, ferr
 	case *big.Int:
+		if v == nil {
+			return 0, false, fmt.Errorf("big.Int spec value is nil")
+		}
 		if v.Sign() < 0 || !v.IsUint64() {
 			return 0, false, fmt.Errorf("big.Int value %v is outside the uint64 range", v)
 		}

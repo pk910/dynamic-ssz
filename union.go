@@ -177,7 +177,11 @@ func validateUnionVariant(descriptorType reflect.Type, variantIndex uint8, data 
 		return data, nil
 	}
 	if dataType.Kind() == reflect.Pointer && dataType.Elem() == fieldType {
-		return reflect.ValueOf(data).Elem().Interface(), nil
+		dataValue := reflect.ValueOf(data)
+		if dataValue.IsNil() {
+			return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidUnionVariant, "variant %d (%v) needs a value, got a nil %T", variantIndex, fieldType, data)
+		}
+		return dataValue.Elem().Interface(), nil
 	}
 	return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidUnionVariant, "variant %d expects %v, got %T", variantIndex, fieldType, data)
 }

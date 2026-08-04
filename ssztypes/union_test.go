@@ -294,10 +294,20 @@ func TestExtractClassicUnionDescriptorInfo(t *testing.T) {
 	})
 }
 
-// The exported selector authority rejects non-struct descriptors like the
-// full extraction does.
-func TestUnionVariantTypesNonStruct(t *testing.T) {
+// The exported selector authority rejects non-struct and nil descriptors
+// like the full extraction does, and refuses a selector declared twice.
+func TestUnionVariantTypesRejections(t *testing.T) {
 	if _, err := UnionVariantTypes(reflect.TypeOf(uint64(0))); err == nil {
 		t.Fatal("a non-struct descriptor must be rejected")
+	}
+	if _, err := UnionVariantTypes(nil); err == nil {
+		t.Fatal("a nil descriptor type must be rejected")
+	}
+	type dupSelectors struct {
+		F1 uint64 `ssz-index:"2"`
+		F2 uint64 `ssz-index:"2"`
+	}
+	if _, err := UnionVariantTypes(reflect.TypeOf(dupSelectors{})); err == nil {
+		t.Fatal("a duplicate selector must be rejected")
 	}
 }
