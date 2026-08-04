@@ -35,10 +35,10 @@ func TestNewCompatibleUnion(t *testing.T) {
 	}
 
 	tests := []struct {
-		name         string
-		variantIndex uint8
-		data         interface{}
-		expectError  bool
+		name             string
+		variantIndex     uint8
+		data             interface{}
+		wantMarshalError bool
 	}{
 		{
 			name:         "create union with first variant",
@@ -47,7 +47,6 @@ func TestNewCompatibleUnion(t *testing.T) {
 				BlockHash: []byte{1, 2, 3},
 				StateRoot: []byte{4, 5, 6},
 			},
-			expectError: false,
 		},
 		{
 			name:         "create union with second variant",
@@ -57,53 +56,52 @@ func TestNewCompatibleUnion(t *testing.T) {
 				StateRoot: []byte{4, 5, 6},
 				Blobs:     [][]byte{{7, 8, 9}},
 			},
-			expectError: false,
 		},
 		{
-			name:         "nil data for a value variant is rejected",
-			variantIndex: 1,
-			data:         nil,
-			expectError:  true,
+			name:             "nil data for a value variant fails at marshal",
+			variantIndex:     1,
+			data:             nil,
+			wantMarshalError: true,
 		},
 		{
-			name:         "undeclared selector is rejected",
-			variantIndex: 200,
-			data:         ExecutionPayload{},
-			expectError:  true,
+			name:             "undeclared selector fails at marshal",
+			variantIndex:     200,
+			data:             ExecutionPayload{},
+			wantMarshalError: true,
 		},
 		{
-			name:         "mismatched data type is rejected",
-			variantIndex: 1,
-			data:         "not-a-valid-variant",
-			expectError:  true,
+			name:             "mismatched data type fails at marshal",
+			variantIndex:     1,
+			data:             "not-a-valid-variant",
+			wantMarshalError: true,
 		},
 	}
+
+	type holder struct {
+		U CompatibleUnion[UnionDescriptor]
+	}
+	ds := NewDynSsz(nil)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			union, err := NewCompatibleUnion[UnionDescriptor](tt.variantIndex, tt.data)
-
-			if tt.expectError {
-				if err == nil {
-					t.Error("expected error but got none")
-				}
-				return
-			}
-
 			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
+				t.Fatalf("the constructor does not validate, unexpected error: %v", err)
 			}
-
-			if union == nil {
-				t.Fatal("union should not be nil")
-			}
-
 			if union.Variant != tt.variantIndex {
 				t.Errorf("variant mismatch: got %d, want %d", union.Variant, tt.variantIndex)
 			}
-
 			if !reflect.DeepEqual(union.Data, tt.data) {
 				t.Errorf("data mismatch: got %v, want %v", union.Data, tt.data)
+			}
+
+			_, err = ds.MarshalSSZ(&holder{U: *union})
+			if tt.wantMarshalError {
+				if err == nil {
+					t.Error("expected a marshal error but got none")
+				}
+			} else if err != nil {
+				t.Errorf("marshal failed: %v", err)
 			}
 		})
 	}
@@ -1231,166 +1229,128 @@ func TestCompatibleUnionSelectorRangeEnforced(t *testing.T) {
 
 // Constructor validation covers every rejection branch: bad descriptors,
 // out-of-range and None selectors, nil and mismatched data — and accepts the
-// declared shapes, including pointer-form data and the classic None variant.
-func TestUnionConstructorValidation(t *testing.T) {
+// The constructors store selector and data verbatim; the descriptor shape,
+// the selector and the data type are validated by the operations.
+func TestUnionConstructorStoresVerbatim(t *testing.T) {
 	type body struct{ A uint64 }
 
-	t.Run("compatible", func(t *testing.T) {
-		if _, err := NewCompatibleUnion[struct{ V1 body }](1, body{A: 1}); err != nil {
-			t.Errorf("declared variant rejected: %v", err)
+	t.Run("verbatim", func(t *testing.T) {
+		ptr := &body{A: 7}
+		u, err := NewCompatibleUnion[struct{ V1 body }](200, ptr)
+		if err != nil || u.Variant != 200 || u.Data != interface{}(ptr) {
+			t.Fatalf("constructor must store the values verbatim, got %+v err=%v", u, err)
 		}
-		if _, err := NewCompatibleUnion[struct{ V1 body }](1, &body{A: 1}); err != nil {
-			t.Errorf("pointer-form data rejected: %v", err)
-		}
-		if _, err := NewCompatibleUnion[struct{ V1 body }](0, body{}); err == nil || !errors.Is(err, sszutils.ErrInvalidUnionVariant) {
-			t.Errorf("selector 0 must be rejected with the union sentinel: %v", err)
-		}
-		if _, err := NewCompatibleUnion[struct{ V1 body }](200, "junk"); err == nil {
-			t.Error("undeclared selector accepted")
-		}
-		if _, err := NewCompatibleUnion[struct{ V1 body }](1, "junk"); err == nil {
-			t.Error("mismatched data type accepted")
-		}
-		if _, err := NewCompatibleUnion[struct{ V1 body }](1, nil); err == nil {
-			t.Error("nil data for a value variant accepted")
-		}
-		if _, err := NewCompatibleUnion[int](1, body{}); err == nil {
-			t.Error("non-struct descriptor accepted")
+		cu, err := NewUnion[struct{ V1 body }](9, "junk")
+		if err != nil || cu.Variant != 9 || cu.Data != interface{}("junk") {
+			t.Fatalf("constructor must store the values verbatim, got %+v err=%v", cu, err)
 		}
 	})
 
-	t.Run("tagged_selectors", func(t *testing.T) {
-		// The constructor answers selectors from the same mapping the
-		// descriptor extraction registers, so ssz-index-tagged selectors are
-		// accepted and the constructed value encodes.
-		type taggedUnion struct {
-			F1 []byte `ssz-max:"16" ssz-index:"1"`
-			F2 []byte `ssz-max:"16" ssz-index:"5"`
-		}
-		u, err := NewCompatibleUnion[taggedUnion](5, []byte{1, 2})
-		if err != nil {
-			t.Fatalf("tagged selector rejected: %v", err)
-		}
+	t.Run("compatible_operations_reject", func(t *testing.T) {
 		type holder struct {
-			U CompatibleUnion[taggedUnion]
+			U CompatibleUnion[struct{ V1 body }]
 		}
 		ds := NewDynSsz(nil)
-		if _, err := ds.MarshalSSZ(&holder{U: *u}); err != nil {
-			t.Fatalf("constructed union does not encode: %v", err)
-		}
-		if _, err := NewCompatibleUnion[taggedUnion](2, []byte{1}); err == nil {
-			t.Error("selector 2 is not declared by the tagged descriptor")
-		}
-
-		// A typed-nil pointer carries no value to dereference.
-		type nilBody struct{ A uint64 }
-		var typedNil *nilBody
-		if _, err := NewCompatibleUnion[struct{ V1 nilBody }](1, typedNil); err == nil || !errors.Is(err, sszutils.ErrInvalidUnionVariant) {
-			t.Errorf("typed-nil pointer data must be rejected: %v", err)
-		}
-		if _, err := NewUnion[struct{ V1 nilBody }](0, typedNil); err == nil {
-			t.Error("typed-nil pointer data must be rejected by the classic constructor too")
+		marshalErr := func(variant uint8, data interface{}) error {
+			u, _ := NewCompatibleUnion[struct{ V1 body }](variant, data)
+			_, err := ds.MarshalSSZ(&holder{U: *u})
+			return err
 		}
 
-		// dynssz.None never belongs in a compatible union descriptor; the
-		// empty option exists only in the classic Union.
-		type withNone struct {
-			N None
-			V uint64
+		if err := marshalErr(1, body{A: 1}); err != nil {
+			t.Errorf("declared variant does not encode: %v", err)
 		}
-		if _, err := NewCompatibleUnion[withNone](2, uint64(1)); err == nil || !strings.Contains(err.Error(), "classic Union") {
-			t.Errorf("None variant in a compatible descriptor must be rejected: %v", err)
+		if err := marshalErr(200, body{}); err == nil || !errors.Is(err, sszutils.ErrInvalidUnionVariant) {
+			t.Errorf("undeclared selector must fail at marshal: %v", err)
 		}
-
-		// A duplicate selector is rejected by the shared authority.
-		type dupTags struct {
-			F1 []byte `ssz-max:"16" ssz-index:"3"`
-			F2 []byte `ssz-max:"16" ssz-index:"3"`
+		if err := marshalErr(1, nil); err == nil {
+			t.Error("nil data for a value variant must fail at marshal")
 		}
-		if _, err := NewCompatibleUnion[dupTags](3, []byte{1}); err == nil {
-			t.Error("duplicate selectors must be rejected")
+		if err := marshalErr(1, "junk"); err == nil {
+			t.Error("mismatched data type must fail at marshal")
 		}
-
-		// A descriptor mixing tagged and untagged fields is rejected by the
-		// shared selector authority.
-		type mixedTags struct {
-			F1 []byte `ssz-max:"16" ssz-index:"1"`
-			F2 []byte `ssz-max:"16"`
+		// Pointer-form data is not normalized anywhere: the engines match the
+		// declared variant type exactly.
+		if err := marshalErr(1, &body{A: 7}); err == nil || !strings.Contains(err.Error(), "type mismatch") {
+			t.Errorf("pointer-form data must fail at marshal: %v", err)
 		}
-		if _, err := NewCompatibleUnion[mixedTags](1, []byte{1}); err == nil {
-			t.Error("mixed tagged and untagged variants must be rejected")
+		var typedNil *body
+		if err := marshalErr(1, typedNil); err == nil || !strings.Contains(err.Error(), "type mismatch") {
+			t.Errorf("typed-nil pointer data must fail at marshal: %v", err)
 		}
-	})
-
-	t.Run("pointer_data_encodes", func(t *testing.T) {
-		// A pointer to the declared value type is dereferenced by the
-		// constructor, so what the constructor accepts, the engines encode.
-		type pBody struct{ A uint64 }
-		type pUnion struct {
-			V1 pBody
-		}
-		u, err := NewCompatibleUnion[pUnion](1, &pBody{A: 7})
-		if err != nil {
-			t.Fatalf("pointer-form data rejected: %v", err)
-		}
-		if _, isPtr := u.Data.(*pBody); isPtr {
-			t.Fatal("pointer form must be normalized to the declared value type")
-		}
-		type holder struct {
-			U CompatibleUnion[pUnion]
-		}
-		ds := NewDynSsz(nil)
-		buf, err := ds.MarshalSSZ(&holder{U: *u})
-		if err != nil {
-			t.Fatalf("constructed union does not encode: %v", err)
-		}
-		if _, hashErr := ds.HashTreeRoot(&holder{U: *u}); hashErr != nil {
-			t.Fatalf("constructed union does not hash: %v", hashErr)
-		}
-		out := new(holder)
-		if decodeErr := ds.UnmarshalSSZ(out, buf); decodeErr != nil {
-			t.Fatalf("decode: %v", decodeErr)
+		if _, err := ds.HashTreeRoot(&holder{U: CompatibleUnion[struct{ V1 body }]{Variant: 1, Data: &body{}}}); err == nil {
+			t.Error("pointer-form data must fail at hashing")
 		}
 
-		// A variant declared as a pointer type keeps the exact pointer form.
+		// A variant declared as a pointer type takes exactly the pointer form.
 		type ptrDeclUnion struct {
-			V1 *pBody
+			V1 *body
 		}
-		u2, err := NewCompatibleUnion[ptrDeclUnion](1, &pBody{A: 9})
-		if err != nil {
-			t.Fatalf("pointer-declared variant rejected: %v", err)
+		type ptrHolder struct {
+			U CompatibleUnion[ptrDeclUnion]
 		}
-		if _, isPtr := u2.Data.(*pBody); !isPtr {
-			t.Fatal("a pointer-declared variant must stay a pointer")
+		u, _ := NewCompatibleUnion[ptrDeclUnion](1, &body{A: 9})
+		if _, err := ds.MarshalSSZ(&ptrHolder{U: *u}); err != nil {
+			t.Errorf("pointer-declared variant does not encode: %v", err)
 		}
 	})
 
-	t.Run("classic", func(t *testing.T) {
+	t.Run("classic_operations_reject", func(t *testing.T) {
 		type withNone struct {
 			N  None
 			V1 body
 		}
-		if _, err := NewUnion[withNone](0, nil); err != nil {
-			t.Errorf("None selector with nil data rejected: %v", err)
+		type holder struct {
+			U Union[withNone]
 		}
-		if _, err := NewUnion[withNone](0, body{}); err == nil {
-			t.Error("None selector with data accepted")
+		ds := NewDynSsz(nil)
+		marshalErr := func(variant uint8, data interface{}) error {
+			u, _ := NewUnion[withNone](variant, data)
+			_, err := ds.MarshalSSZ(&holder{U: *u})
+			return err
 		}
-		if _, err := NewUnion[withNone](1, body{}); err != nil {
-			t.Errorf("value variant after None rejected: %v", err)
+
+		if err := marshalErr(0, nil); err != nil {
+			t.Errorf("None selector with nil data does not encode: %v", err)
 		}
-		if _, err := NewUnion[struct{ V1 body }](0, body{}); err != nil {
-			t.Errorf("0-based first variant rejected: %v", err)
+		if err := marshalErr(0, body{}); err == nil {
+			t.Error("None selector with data must fail at marshal")
 		}
-		if _, err := NewUnion[struct{ V1 body }](1, body{}); err == nil {
-			t.Error("out-of-range classic selector accepted")
+		if err := marshalErr(1, body{A: 3}); err != nil {
+			t.Errorf("value variant after None does not encode: %v", err)
 		}
+		if err := marshalErr(2, body{}); err == nil || !errors.Is(err, sszutils.ErrInvalidUnionVariant) {
+			t.Errorf("out-of-range classic selector must fail at marshal: %v", err)
+		}
+		if err := marshalErr(1, &body{}); err == nil || !strings.Contains(err.Error(), "type mismatch") {
+			t.Errorf("pointer-form data must fail at marshal: %v", err)
+		}
+
+		// Descriptor shapes the engines reject stay rejected even though the
+		// constructor accepts them: a None-only union and a mid-struct None.
+		type noneOnly struct {
+			N None
+		}
+		type noneOnlyHolder struct {
+			U Union[noneOnly]
+		}
+		u, err := NewUnion[noneOnly](0, nil)
+		if err != nil {
+			t.Fatalf("constructor must not validate the descriptor: %v", err)
+		}
+		if _, err := ds.MarshalSSZ(&noneOnlyHolder{U: *u}); err == nil || !strings.Contains(err.Error(), "further variant") {
+			t.Errorf("a None-only union must fail at marshal: %v", err)
+		}
+
 		type noneMid struct {
 			V1 body
 			N  None
 		}
-		if _, err := NewUnion[noneMid](1, body{}); err == nil {
-			t.Error("a selector landing on a mid-struct None field must reject data")
+		type noneMidHolder struct {
+			U Union[noneMid]
+		}
+		if _, err := ds.MarshalSSZ(&noneMidHolder{U: Union[noneMid]{Variant: 0, Data: body{}}}); err == nil || !strings.Contains(err.Error(), "first union variant") {
+			t.Errorf("a mid-struct None must fail at marshal: %v", err)
 		}
 	})
 }
