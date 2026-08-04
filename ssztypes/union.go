@@ -19,9 +19,12 @@ type unionVariantInfo struct {
 	TypeHints    []SszTypeHint
 }
 
-// extractUnionDescriptorInfo extracts variant information from a union descriptor type.
-// This function is used by the type cache to extract variant information including SSZ annotations.
-func extractUnionDescriptorInfo(descriptorType reflect.Type, ds sszutils.DynamicSpecs) (map[uint8]unionVariantInfo, error) {
+// UnionVariantTypes returns the selector-to-variant-type mapping a compatible
+// union descriptor struct declares: field order starting at 1, or the fields'
+// ssz-index tags when present (all-or-none, valid range 1..127). It is the
+// selector authority shared by descriptor extraction and the union
+// constructors, so a selector accepted by one is accepted by the other.
+func UnionVariantTypes(descriptorType reflect.Type) (map[uint8]reflect.Type, error) {
 	if descriptorType.Kind() != reflect.Struct {
 		return nil, sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "union descriptor must be a struct, got %v", descriptorType.Kind())
 	}
@@ -48,8 +51,7 @@ func extractUnionDescriptorInfo(descriptorType reflect.Type, ds sszutils.Dynamic
 		return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "union descriptor has %d variants, but selectors are limited to 1..127", descriptorType.NumField())
 	}
 
-	variantInfo := make(map[uint8]unionVariantInfo)
-
+	variantTypes := make(map[uint8]reflect.Type)
 	for i := 0; i < descriptorType.NumField(); i++ {
 		field := descriptorType.Field(i)
 		variantIndex := uint8(i) + 1 // Field order determines the default variant selector, starting at 1
@@ -62,6 +64,32 @@ func extractUnionDescriptorInfo(descriptorType reflect.Type, ds sszutils.Dynamic
 			if *sszIndex < 1 || *sszIndex > 127 {
 				return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "union selector %d for field %s is outside the valid range 1..127", *sszIndex, field.Name)
 			}
+			variantIndex = uint8(*sszIndex)
+		}
+		variantTypes[variantIndex] = field.Type
+	}
+
+	return variantTypes, nil
+}
+
+// extractUnionDescriptorInfo extracts variant information from a union descriptor type.
+// This function is used by the type cache to extract variant information including SSZ annotations.
+func extractUnionDescriptorInfo(descriptorType reflect.Type, ds sszutils.DynamicSpecs) (map[uint8]unionVariantInfo, error) {
+	if _, err := UnionVariantTypes(descriptorType); err != nil {
+		return nil, err
+	}
+
+	variantInfo := make(map[uint8]unionVariantInfo)
+
+	for i := 0; i < descriptorType.NumField(); i++ {
+		field := descriptorType.Field(i)
+		variantIndex := uint8(i) + 1 // Field order determines the default variant selector, starting at 1
+
+		sszIndex, err := getSszIndexTag(&field)
+		if err != nil {
+			return nil, err
+		}
+		if sszIndex != nil {
 			variantIndex = uint8(*sszIndex)
 		}
 

@@ -7,6 +7,7 @@ package dynssz
 import (
 	"reflect"
 
+	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
@@ -57,12 +58,13 @@ type CompatibleUnion[T any] struct {
 // fields' ssz-index tags when present (valid range 1..127 per EIP-8016).
 func NewCompatibleUnion[T any](variantIndex uint8, data interface{}) (*CompatibleUnion[T], error) {
 	var zero *T
-	if err := validateUnionVariant(reflect.TypeOf(zero).Elem(), variantIndex, data, 1); err != nil {
+	normalized, err := validateUnionVariant(reflect.TypeOf(zero).Elem(), variantIndex, data, true)
+	if err != nil {
 		return nil, err
 	}
 	return &CompatibleUnion[T]{
 		Variant: variantIndex,
-		Data:    data,
+		Data:    normalized,
 	}, nil
 }
 
@@ -110,12 +112,13 @@ type Union[T any] struct {
 // empty option.
 func NewUnion[T any](variantIndex uint8, data interface{}) (*Union[T], error) {
 	var zero *T
-	if err := validateUnionVariant(reflect.TypeOf(zero).Elem(), variantIndex, data, 0); err != nil {
+	normalized, err := validateUnionVariant(reflect.TypeOf(zero).Elem(), variantIndex, data, false)
+	if err != nil {
 		return nil, err
 	}
 	return &Union[T]{
 		Variant: variantIndex,
-		Data:    data,
+		Data:    normalized,
 	}, nil
 }
 
@@ -126,38 +129,55 @@ func (u *Union[T]) GetDescriptorType() reflect.Type {
 	return reflect.TypeOf(zero).Elem()
 }
 
-// validateUnionVariant checks a selector against the descriptor struct and the
-// data value against the selected variant's field type. firstSelector is the
-// selector of the descriptor's first field: 1 for a compatible union, 0 for a
-// classic union (where a leading None field keeps selector 0 as the empty
-// option and shifts the value variants to start at 1).
-func validateUnionVariant(descriptorType reflect.Type, variantIndex uint8, data interface{}, firstSelector int) error {
+// validateUnionVariant checks a selector against the descriptor struct and
+// the data value against the selected variant's field type, and returns the
+// data in the exact declared type: every engine matches the variant type
+// exactly, so a pointer to the declared value type is dereferenced here
+// rather than failing at the first marshal. For a compatible union the
+// selector mapping is the shared UnionVariantTypes authority (field order
+// from 1, or ssz-index tags); a classic union numbers by position from 0,
+// with a leading None field keeping selector 0 as the empty option.
+func validateUnionVariant(descriptorType reflect.Type, variantIndex uint8, data interface{}, compatible bool) (interface{}, error) {
 	if descriptorType.Kind() != reflect.Struct || descriptorType.NumField() == 0 {
-		return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "union descriptor must be a struct with at least one field, got %v", descriptorType)
+		return nil, sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "union descriptor must be a struct with at least one field, got %v", descriptorType)
 	}
 
-	fieldIndex := int(variantIndex) - firstSelector
 	noneType := reflect.TypeOf(None{})
-	if firstSelector == 0 && variantIndex == 0 && descriptorType.Field(0).Type == noneType {
-		if data != nil {
-			return sszutils.NewSszErrorf(sszutils.ErrInvalidUnionVariant, "the None variant carries no data, got %T", data)
+	var fieldType reflect.Type
+	if compatible {
+		variantTypes, err := ssztypes.UnionVariantTypes(descriptorType)
+		if err != nil {
+			return nil, err
 		}
-		return nil
+		fieldType = variantTypes[variantIndex]
+		if fieldType == nil {
+			return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidUnionVariant, "variant selector %d is not declared by %v", variantIndex, descriptorType)
+		}
+	} else {
+		if variantIndex == 0 && descriptorType.Field(0).Type == noneType {
+			if data != nil {
+				return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidUnionVariant, "the None variant carries no data, got %T", data)
+			}
+			return nil, nil
+		}
+		if int(variantIndex) >= descriptorType.NumField() {
+			return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidUnionVariant, "variant selector %d is not declared by %v", variantIndex, descriptorType)
+		}
+		fieldType = descriptorType.Field(int(variantIndex)).Type
 	}
 
-	if fieldIndex < 0 || fieldIndex >= descriptorType.NumField() {
-		return sszutils.NewSszErrorf(sszutils.ErrInvalidUnionVariant, "variant selector %d is not declared by %v", variantIndex, descriptorType)
-	}
-	fieldType := descriptorType.Field(fieldIndex).Type
 	if fieldType == noneType {
-		return sszutils.NewSszErrorf(sszutils.ErrInvalidUnionVariant, "selector %d is the None variant and carries no data", variantIndex)
+		return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidUnionVariant, "selector %d is the None variant and carries no data", variantIndex)
 	}
 	if data == nil {
-		return sszutils.NewSszErrorf(sszutils.ErrInvalidUnionVariant, "variant %d (%v) needs a value, got nil", variantIndex, fieldType)
+		return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidUnionVariant, "variant %d (%v) needs a value, got nil", variantIndex, fieldType)
 	}
 	dataType := reflect.TypeOf(data)
-	if dataType != fieldType && (dataType.Kind() != reflect.Pointer || dataType.Elem() != fieldType) {
-		return sszutils.NewSszErrorf(sszutils.ErrInvalidUnionVariant, "variant %d expects %v, got %T", variantIndex, fieldType, data)
+	if dataType == fieldType {
+		return data, nil
 	}
-	return nil
+	if dataType.Kind() == reflect.Pointer && dataType.Elem() == fieldType {
+		return reflect.ValueOf(data).Elem().Interface(), nil
+	}
+	return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidUnionVariant, "variant %d expects %v, got %T", variantIndex, fieldType, data)
 }

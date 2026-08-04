@@ -1248,6 +1248,83 @@ func TestUnionConstructorValidation(t *testing.T) {
 		}
 	})
 
+	t.Run("tagged_selectors", func(t *testing.T) {
+		// The constructor answers selectors from the same mapping the
+		// descriptor extraction registers, so ssz-index-tagged selectors are
+		// accepted and the constructed value encodes.
+		type taggedUnion struct {
+			F1 []byte `ssz-max:"16" ssz-index:"1"`
+			F2 []byte `ssz-max:"16" ssz-index:"5"`
+		}
+		u, err := NewCompatibleUnion[taggedUnion](5, []byte{1, 2})
+		if err != nil {
+			t.Fatalf("tagged selector rejected: %v", err)
+		}
+		type holder struct {
+			U CompatibleUnion[taggedUnion]
+		}
+		ds := NewDynSsz(nil)
+		if _, err := ds.MarshalSSZ(&holder{U: *u}); err != nil {
+			t.Fatalf("constructed union does not encode: %v", err)
+		}
+		if _, err := NewCompatibleUnion[taggedUnion](2, []byte{1}); err == nil {
+			t.Error("selector 2 is not declared by the tagged descriptor")
+		}
+
+		// A descriptor mixing tagged and untagged fields is rejected by the
+		// shared selector authority.
+		type mixedTags struct {
+			F1 []byte `ssz-max:"16" ssz-index:"1"`
+			F2 []byte `ssz-max:"16"`
+		}
+		if _, err := NewCompatibleUnion[mixedTags](1, []byte{1}); err == nil {
+			t.Error("mixed tagged and untagged variants must be rejected")
+		}
+	})
+
+	t.Run("pointer_data_encodes", func(t *testing.T) {
+		// A pointer to the declared value type is dereferenced by the
+		// constructor, so what the constructor accepts, the engines encode.
+		type pBody struct{ A uint64 }
+		type pUnion struct {
+			V1 pBody
+		}
+		u, err := NewCompatibleUnion[pUnion](1, &pBody{A: 7})
+		if err != nil {
+			t.Fatalf("pointer-form data rejected: %v", err)
+		}
+		if _, isPtr := u.Data.(*pBody); isPtr {
+			t.Fatal("pointer form must be normalized to the declared value type")
+		}
+		type holder struct {
+			U CompatibleUnion[pUnion]
+		}
+		ds := NewDynSsz(nil)
+		buf, err := ds.MarshalSSZ(&holder{U: *u})
+		if err != nil {
+			t.Fatalf("constructed union does not encode: %v", err)
+		}
+		if _, hashErr := ds.HashTreeRoot(&holder{U: *u}); hashErr != nil {
+			t.Fatalf("constructed union does not hash: %v", hashErr)
+		}
+		out := new(holder)
+		if decodeErr := ds.UnmarshalSSZ(out, buf); decodeErr != nil {
+			t.Fatalf("decode: %v", decodeErr)
+		}
+
+		// A variant declared as a pointer type keeps the exact pointer form.
+		type ptrDeclUnion struct {
+			V1 *pBody
+		}
+		u2, err := NewCompatibleUnion[ptrDeclUnion](1, &pBody{A: 9})
+		if err != nil {
+			t.Fatalf("pointer-declared variant rejected: %v", err)
+		}
+		if _, isPtr := u2.Data.(*pBody); !isPtr {
+			t.Fatal("a pointer-declared variant must stay a pointer")
+		}
+	})
+
 	t.Run("classic", func(t *testing.T) {
 		type withNone struct {
 			N  None

@@ -293,3 +293,11 @@ func TestExtractClassicUnionDescriptorInfo(t *testing.T) {
 		}
 	})
 }
+
+// The exported selector authority rejects non-struct descriptors like the
+// full extraction does.
+func TestUnionVariantTypesNonStruct(t *testing.T) {
+	if _, err := UnionVariantTypes(reflect.TypeOf(uint64(0))); err == nil {
+		t.Fatal("a non-struct descriptor must be rejected")
+	}
+}
