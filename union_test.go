@@ -606,6 +606,17 @@ func TestCompatibleUnionSelectorValidation(t *testing.T) {
 	if _, err := ds2.MarshalSSZ(&mixed{}); err == nil || !strings.Contains(err.Error(), "ssz-index") {
 		t.Errorf("expected mixed ssz-index error, got: %v", err)
 	}
+
+	type noneVariant struct {
+		U CompatibleUnion[struct {
+			N None
+			V uint64
+		}]
+	}
+	ds3 := NewDynSsz(nil)
+	if _, err := ds3.MarshalSSZ(&noneVariant{}); err == nil || !strings.Contains(err.Error(), "classic Union") {
+		t.Errorf("expected None-variant rejection, got: %v", err)
+	}
 }
 
 // Default selectors follow field order starting at 1 per EIP-8016: the first
@@ -1279,6 +1290,16 @@ func TestUnionConstructorValidation(t *testing.T) {
 		}
 		if _, err := NewUnion[struct{ V1 nilBody }](0, typedNil); err == nil {
 			t.Error("typed-nil pointer data must be rejected by the classic constructor too")
+		}
+
+		// dynssz.None never belongs in a compatible union descriptor; the
+		// empty option exists only in the classic Union.
+		type withNone struct {
+			N None
+			V uint64
+		}
+		if _, err := NewCompatibleUnion[withNone](2, uint64(1)); err == nil || !strings.Contains(err.Error(), "classic Union") {
+			t.Errorf("None variant in a compatible descriptor must be rejected: %v", err)
 		}
 
 		// A duplicate selector is rejected by the shared authority.

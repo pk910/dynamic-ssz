@@ -59,6 +59,12 @@ func unionFieldSelectors(descriptorType reflect.Type) ([]uint8, error) {
 		field := descriptorType.Field(i)
 		variantIndex := uint8(i) + 1 // Field order determines the default variant selector, starting at 1
 
+		// A compatible union has no empty option; the None marker only names
+		// selector 0 of a classic Union.
+		if isNoneMarkerType(field.Type) {
+			return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz.None is not a valid compatible union variant (field %s): only the classic Union declares an empty option", field.Name)
+		}
+
 		sszIndex, err := getSszIndexTag(&field)
 		if err != nil {
 			return nil, err
