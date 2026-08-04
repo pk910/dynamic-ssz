@@ -254,8 +254,8 @@ func TestZeroMaxMeansUnbounded(t *testing.T) {
 		t.Fatalf("untagged marshal diverges: %v", err)
 	}
 
-	if _, err := plain.HashTreeRoot(&tagged{V: v}); !errors.Is(err, sszutils.ErrExtendedTypeDisabled) {
-		t.Fatalf("plain hash of an unbounded list must need extended types: %v", err)
+	if _, hashErr := plain.HashTreeRoot(&tagged{V: v}); !errors.Is(hashErr, sszutils.ErrExtendedTypeDisabled) {
+		t.Fatalf("plain hash of an unbounded list must need extended types: %v", hashErr)
 	}
 	rTagged, err := ext.HashTreeRoot(&tagged{V: v})
 	if err != nil {
