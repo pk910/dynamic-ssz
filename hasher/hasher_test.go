@@ -1732,7 +1732,7 @@ func TestFlushPendingNoPending(t *testing.T) {
 	before := h.CurrentIndex()
 
 	var layer treeLayer // pendCount == 0
-	h.flushPending(&layer)
+	h.flushPending(&layer, false)
 
 	if h.CurrentIndex() != before {
 		t.Fatalf("flushPending with no pending changed the buffer: %d != %d", h.CurrentIndex(), before)
