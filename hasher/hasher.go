@@ -583,7 +583,16 @@ func (h *Hasher) popTopLayer() {
 func (h *Hasher) maybeCollapseBinary(layer *treeLayer) {
 	regionStart := h.binaryRegionStart(layer)
 	totalChunks := (len(h.buf) - regionStart) / 32
-	if totalChunks < incrementalBatchSize {
+	// Only depth-0 chunks count toward the batch trigger: batching bounds the
+	// raw-chunk backlog, while completed deeper nodes are 32 bytes each and
+	// collapsing them early would stall on their in-flight reductions.
+	d0Chunks := totalChunks
+	if layer.collapsed {
+		for d := 1; d <= layer.maxDepth; d++ {
+			d0Chunks -= int(layer.counts[d])
+		}
+	}
+	if d0Chunks < incrementalBatchSize {
 		return
 	}
 
@@ -969,7 +978,10 @@ func (h *Hasher) collapseProgressiveLayer(layer *treeLayer, indx int) {
 		h.maybeCollapseProgressive(layer)
 	}
 
-	// 2. Handle the partial remainder (the last unfilled group).
+	// 2. Handle the partial remainder (the last unfilled group). The
+	// consumption rounds above may have emitted pre-collapse jobs over the
+	// remainder; their holes must be filled before the region is read.
+	h.drainJobs()
 	subtreeStart := h.activeSubtreeStart(layer)
 	activeChunks := (len(h.buf) - subtreeStart) / 32
 

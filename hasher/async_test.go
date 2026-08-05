@@ -130,6 +130,12 @@ func TestAsyncMatchesSync(t *testing.T) {
 		// Collapse never called: everything reduces at finalization.
 		asyncSequence{elemChunks: 8, n: 10000, cadence: 0, limit: 1 << 40},
 		asyncSequence{progressive: true, elemChunks: 8, n: 10000, cadence: 0},
+		// The partial last group left at finalization exceeds one job cap
+		// (60000 - 21845 > lazyFlushChunks), so the finalization rounds
+		// emit pre-collapse jobs whose holes the partial-remainder collapse
+		// must drain before reading.
+		asyncSequence{progressive: true, elemChunks: 8, n: 60000, cadence: 256},
+		asyncSequence{progressive: true, elemChunks: 4, n: 60000, cadence: 100},
 	)
 
 	for i, s := range cases {
