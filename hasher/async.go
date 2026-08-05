@@ -198,8 +198,8 @@ func (h *Hasher) enqueueReduce(st *asyncShared, start, width, outChunks, dstOff 
 	slot.outLen = outChunks * 32
 	slot.tokened = tokened
 
-	if dstOff > h.jobMaxDst {
-		h.jobMaxDst = dstOff
+	if end := dstOff + outChunks*32; end > h.jobMaxEnd {
+		h.jobMaxEnd = end
 	}
 
 	ensureAsyncRunner(st)
@@ -276,15 +276,20 @@ func (h *Hasher) claimJobSlot(st *asyncShared) *asyncJob {
 	return slot
 }
 
-// drainOldestJob waits for the ring's oldest job, writes its result into the
-// hole it was carved from, and restores the job's free-list token if it
-// holds one: pre-sized buffers are returned for reuse, anything else becomes
-// a nil token. Tokenless buffers (taken when every token was held by other
-// hashers) are simply dropped.
-func (h *Hasher) drainOldestJob() {
+// finishOldestJob waits for the ring's oldest job, optionally copies its
+// result into the hole it was carved from, and restores the job's free-list
+// token if it holds one: pre-sized buffers are returned for reuse, anything
+// else becomes a nil token. Tokenless buffers (taken when every token was
+// held by other hashers) are simply dropped.
+func (h *Hasher) finishOldestJob(copyResult bool) {
 	slot := &h.jobRing[h.jobHead]
 	<-slot.done
-	if end := slot.dstOff + slot.outLen; end <= len(h.buf) {
+	if copyResult {
+		// The destination is expected to exist: every path that shrinks the
+		// buffer below a hole drains or discards first, so an out-of-range
+		// copy is an invariant violation and panics via the bounds check
+		// rather than silently producing a wrong root.
+		end := slot.dstOff + slot.outLen
 		copy(h.buf[slot.dstOff:end], slot.in[:slot.outLen])
 	}
 	if slot.tokened {
@@ -300,6 +305,12 @@ func (h *Hasher) drainOldestJob() {
 	h.jobCount--
 }
 
+// drainOldestJob waits for the ring's oldest job and writes its result into
+// the hole it was carved from.
+func (h *Hasher) drainOldestJob() {
+	h.finishOldestJob(true)
+}
+
 // drainJobs waits for all outstanding reductions and writes their results
 // into the holes they were carved from. Must run before anything reads or
 // restructures a buffer region that may contain holes.
@@ -307,16 +318,26 @@ func (h *Hasher) drainJobs() {
 	for h.jobCount > 0 {
 		h.drainOldestJob()
 	}
-	h.jobMaxDst = -1
+	h.jobMaxEnd = 0
+}
+
+// discardJobs awaits outstanding reductions and drops their results. This is
+// for abandoning a computation (Reset): the buffer regions the jobs were
+// destined for no longer exist.
+func (h *Hasher) discardJobs() {
+	for h.jobCount > 0 {
+		h.finishOldestJob(false)
+	}
+	h.jobMaxEnd = 0
 }
 
 // drainJobsFor drains outstanding reductions only when the region starting
-// at indx can overlap a hole. Holes only exist at or below the highest
-// outstanding job offset, so scopes that operate entirely above it — every
-// child scope opened after its parents' flushes — skip the wait and keep
-// the background reductions overlapped with the walk.
+// at indx can overlap a hole. Holes only exist below the highest outstanding
+// hole end, so scopes that operate entirely above it — every child scope
+// opened after its parents' flushes — skip the wait and keep the background
+// reductions overlapped with the walk.
 func (h *Hasher) drainJobsFor(indx int) {
-	if h.jobCount > 0 && indx <= h.jobMaxDst {
+	if h.jobCount > 0 && indx < h.jobMaxEnd {
 		h.drainJobs()
 	}
 }

@@ -1085,6 +1085,7 @@ func TestHasherInterfaceCompliance(t *testing.T) {
 		t.Error("Index should not be 0 after adding data")
 	}
 
+	h.Merkleize(idx)
 	h.Merkleize(0)
 	h.Hash()
 

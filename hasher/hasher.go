@@ -102,12 +102,12 @@ type Hasher struct {
 	// jobRing is the FIFO of in-flight background subtree reductions (see
 	// async.go). Slots are reused across jobs; the ring only resizes while
 	// empty. jobHead indexes the oldest occupied slot, jobCount the number
-	// of occupied slots. jobMaxDst tracks the highest outstanding hole
-	// offset, so drains can be skipped for regions above every hole.
+	// of occupied slots. jobMaxEnd tracks the end of the highest outstanding
+	// hole, so drains can be skipped for regions above every hole.
 	jobRing    []asyncJob
 	jobHead    int
 	jobCount   int
-	jobMaxDst  int
+	jobMaxEnd  int
 	jobRingBuf [asyncRingInline]asyncJob // inline backing to avoid heap allocation
 }
 
@@ -160,7 +160,7 @@ func (h *Hasher) WithTemp(fn func(tmp []byte) []byte) {
 // background reductions are awaited and their results discarded.
 func (h *Hasher) Reset() {
 	h.buf = h.buf[:0]
-	h.drainJobs()
+	h.discardJobs()
 	h.layerCount = -1
 	h.async = false
 }
@@ -1483,8 +1483,10 @@ func (h *Hasher) merkleizeProgressiveImpl(dst, chunks []byte, depth uint8) []byt
 	return append(dst, h.tmp[:32]...)
 }
 
-// Hash returns the last 32 bytes of the buffer.
+// Hash returns the last 32 bytes of the buffer. Outstanding background
+// reductions are drained first so no unfilled hole can be exposed.
 func (h *Hasher) Hash() []byte {
+	h.drainJobs()
 	start := 0
 	if len(h.buf) > 32 {
 		start = len(h.buf) - 32
@@ -1492,9 +1494,17 @@ func (h *Hasher) Hash() []byte {
 	return h.buf[start:]
 }
 
-// HashRoot returns the final 32-byte hash root, or an error if the buffer
-// is not exactly 32 bytes.
+// HashRoot returns the final 32-byte hash root, or an error if scopes are
+// still open or the buffer is not exactly 32 bytes. Outstanding background
+// reductions are drained first so no unfilled hole can be exposed — with
+// async hashing, a buffer of the right length is not otherwise evidence of
+// a finished computation.
 func (h *Hasher) HashRoot() (res [32]byte, err error) {
+	h.drainJobs()
+	if h.layerCount >= 0 {
+		err = fmt.Errorf("unfinished hashing scopes")
+		return
+	}
 	if len(h.buf) != 32 {
 		err = fmt.Errorf("expected 32 byte size")
 		return

@@ -4,6 +4,7 @@
 package hasher
 
 import (
+	"bytes"
 	"fmt"
 	"math/rand"
 	"testing"
@@ -481,6 +482,66 @@ func TestAsyncStaleSiblingLayer(t *testing.T) {
 	if got != want {
 		t.Errorf("stale-sibling async root %x != sync root %x", got, want)
 	}
+}
+
+// TestAsyncAccessorsDrain covers the accessor boundary: after an async flush
+// compacts a run to a single placeholder chunk, a mid-scope HashRoot must
+// not mistake the 32-byte buffer for a finished computation, and Hash must
+// never expose unfilled hole bytes.
+func TestAsyncAccessorsDrain(t *testing.T) {
+	EnableAsyncHashing(4)
+	defer DisableAsyncHashing()
+
+	hh := NewHasherWithHashFn(hashtree.HashByteSlice)
+	hh.SetAsyncHashing(true)
+	rng := rand.New(rand.NewSource(37))
+	chunk := make([]byte, 32)
+
+	elems := make([][]byte, 4096)
+	idx := hh.Index()
+	for i := range elems {
+		ci := hh.Index()
+		elems[i] = make([]byte, 0, 8*32)
+		for c := 0; c < 8; c++ {
+			rng.Read(chunk)
+			elems[i] = append(elems[i], chunk...)
+			hh.Append(chunk)
+		}
+		hh.Merkleize(ci)
+	}
+	if hh.jobCount == 0 {
+		t.Fatal("expected an async reduction in flight")
+	}
+
+	// Mid-scope: the buffer holds exactly one placeholder chunk, but the
+	// computation is not finished — HashRoot must refuse.
+	if _, err := hh.HashRoot(); err == nil {
+		t.Error("HashRoot must reject unfinished scopes")
+	}
+
+	// Hash drains before reading, so it returns the completed subtree root,
+	// not the stale first chunk of the reduced run.
+	got := make([]byte, 32)
+	copy(got, hh.Hash())
+
+	ref := NewHasherWithHashFn(hashtree.HashByteSlice)
+	refIdx := ref.StartTree(sszutils.TreeTypeBinary)
+	for _, e := range elems {
+		ci := ref.StartTree(sszutils.TreeTypeNone)
+		ref.Append(e)
+		ref.Merkleize(ci)
+	}
+	ref.Merkleize(refIdx)
+	if !bytes.Equal(got, ref.Hash()) {
+		t.Errorf("mid-scope Hash %x != subtree root %x", got, ref.Hash())
+	}
+
+	// Finishing the scope still yields a valid root.
+	hh.MerkleizeWithMixin(idx, 4096, 1<<40)
+	if _, err := hh.HashRoot(); err != nil {
+		t.Errorf("finished HashRoot: %v", err)
+	}
+	hh.Reset()
 }
 
 // TestAsyncLegacyIndexDriven drives scopes the way fastssz-generated code
