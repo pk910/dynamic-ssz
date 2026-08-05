@@ -210,8 +210,8 @@ func TestAsyncResetInFlight(t *testing.T) {
 	}
 	// Abandon the computation with jobs likely in flight.
 	hh.Reset()
-	if len(hh.pendingJobs) != 0 {
-		t.Fatalf("pendingJobs not drained by Reset: %d", len(hh.pendingJobs))
+	if hh.jobCount != 0 {
+		t.Fatalf("job ring not drained by Reset: %d", hh.jobCount)
 	}
 
 	s := asyncSequence{elemChunks: 8, n: 8192, cadence: 256, limit: 1 << 40}
@@ -233,7 +233,7 @@ func TestAsyncNativeHasherExcluded(t *testing.T) {
 	defer DisableAsyncHashing()
 
 	hh := NewHasher()
-	if hh.asyncSlots() != nil {
+	if hh.asyncShared() != nil {
 		t.Fatal("native-hash hasher must not participate in async hashing")
 	}
 
@@ -252,20 +252,141 @@ func TestAsyncEnableDisable(t *testing.T) {
 	defer DisableAsyncHashing()
 
 	EnableAsyncHashing(0)
-	if asyncSem.Load() != nil {
+	if asyncState.Load() != nil {
 		t.Error("EnableAsyncHashing(0) must disable async hashing")
 	}
 	EnableAsyncHashing(-1)
-	if asyncSem.Load() != nil {
+	if asyncState.Load() != nil {
 		t.Error("EnableAsyncHashing(-1) must disable async hashing")
 	}
 	EnableAsyncHashing(2)
-	if sem := asyncSem.Load(); sem == nil || cap(*sem) != 2 {
-		t.Error("EnableAsyncHashing(2) must install a 2-slot limiter")
+	if st := asyncState.Load(); st == nil || cap(st.sem) != 2 || cap(st.bufs) != 4 {
+		t.Error("EnableAsyncHashing(2) must install a 2-worker limiter with 4 buffer tokens")
 	}
 	DisableAsyncHashing()
-	if asyncSem.Load() != nil {
+	if asyncState.Load() != nil {
 		t.Error("DisableAsyncHashing must remove the limiter")
+	}
+}
+
+// TestAsyncRingFull runs enough flushes past a tiny worker limit that the
+// job ring fills and enqueueing drains the oldest job to reuse its slot.
+func TestAsyncRingFull(t *testing.T) {
+	defer DisableAsyncHashing()
+
+	s := asyncSequence{elemChunks: 8, n: 40960, cadence: 256, limit: 1 << 40}
+
+	DisableAsyncHashing()
+	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 21)
+
+	EnableAsyncHashing(1)
+	hh := NewHasherWithHashFn(hashtree.HashByteSlice)
+	got := runAsyncSequence(t, hh, s, 21)
+	if got != want {
+		t.Errorf("ring-full async root %x != sync root %x", got, want)
+	}
+}
+
+// TestAsyncReconfigure shrinks the worker count between computations, so a
+// hasher whose ring was sized for the larger configuration must respect the
+// smaller free list of the new shared state.
+func TestAsyncReconfigure(t *testing.T) {
+	defer DisableAsyncHashing()
+
+	s := asyncSequence{elemChunks: 8, n: 40960, cadence: 256, limit: 1 << 40}
+
+	DisableAsyncHashing()
+	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 33)
+
+	EnableAsyncHashing(8)
+	hh := NewHasherWithHashFn(hashtree.HashByteSlice)
+	if got := runAsyncSequence(t, hh, s, 33); got != want {
+		t.Errorf("root with 8 workers %x != sync root %x", got, want)
+	}
+	EnableAsyncHashing(1)
+	if got := runAsyncSequence(t, hh, s, 33); got != want {
+		t.Errorf("root after shrink to 1 worker %x != sync root %x", got, want)
+	}
+}
+
+// driveFlushes drives hh through count async flushes of 4096 8-chunk
+// elements each inside an open binary list scope, without finalizing.
+func driveFlushes(hh *Hasher, rng *rand.Rand, count int) {
+	chunk := make([]byte, 32)
+	for i := 0; i < count*4096; i++ {
+		ci := hh.StartTree(sszutils.TreeTypeNone)
+		for c := 0; c < 8; c++ {
+			rng.Read(chunk)
+			hh.Append(chunk)
+		}
+		hh.Merkleize(ci)
+		if (i+1)%256 == 0 {
+			hh.Collapse()
+		}
+	}
+}
+
+// TestAsyncRingOverflow drives a hasher into a full ring that still finds a
+// free token (possible when a tokenless job sits under tokened ones), so
+// claiming the next slot has to drain the oldest job for ring space rather
+// than for a token. The token distribution is orchestrated through a second
+// hasher that parks while holding tokens.
+func TestAsyncRingOverflow(t *testing.T) {
+	EnableAsyncHashing(8) // ring and token count: 16
+	defer DisableAsyncHashing()
+
+	rng := rand.New(rand.NewSource(51))
+	parker := NewHasherWithHashFn(hashtree.HashByteSlice)
+	worker := NewHasherWithHashFn(hashtree.HashByteSlice)
+
+	// parker takes all 16 tokens and parks.
+	parker.StartTree(sszutils.TreeTypeBinary)
+	driveFlushes(parker, rng, 16)
+
+	// worker's first job finds no token: tokenless path.
+	worker.StartTree(sszutils.TreeTypeBinary)
+	driveFlushes(worker, rng, 1)
+
+	// 15 tokens come free; worker stacks 15 tokened jobs on the tokenless
+	// one, filling its ring.
+	for i := 0; i < 15; i++ {
+		parker.drainOldestJob()
+	}
+	driveFlushes(worker, rng, 15)
+	if worker.jobCount != 16 {
+		t.Fatalf("worker ring not full: %d", worker.jobCount)
+	}
+
+	// One more free token: the next enqueue gets it on the first try with a
+	// full ring, forcing the ring-space drain in claimJobSlot.
+	parker.drainOldestJob()
+	driveFlushes(worker, rng, 1)
+
+	parker.Reset()
+	worker.Reset()
+	if parker.jobCount != 0 || worker.jobCount != 0 {
+		t.Fatalf("rings not drained: parker=%d worker=%d", parker.jobCount, worker.jobCount)
+	}
+}
+
+// TestAsyncLargeWorkerCount exercises the ring allocation beyond the inline
+// backing array.
+func TestAsyncLargeWorkerCount(t *testing.T) {
+	defer DisableAsyncHashing()
+
+	s := asyncSequence{elemChunks: 8, n: 40960, cadence: 256, limit: 1 << 40}
+
+	DisableAsyncHashing()
+	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 61)
+
+	EnableAsyncHashing(9) // ring size 18 > asyncRingInline
+	hh := NewHasherWithHashFn(hashtree.HashByteSlice)
+	if len(hh.jobRingBuf) >= 18 {
+		t.Fatal("test requires ring larger than the inline backing")
+	}
+	got := runAsyncSequence(t, hh, s, 61)
+	if got != want {
+		t.Errorf("large-worker async root %x != sync root %x", got, want)
 	}
 }
 

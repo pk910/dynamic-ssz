@@ -98,8 +98,14 @@ type Hasher struct {
 	// goroutines. Hashers wrapping a stateful hash.Hash are not async-safe.
 	asyncSafe bool
 
-	// pendingJobs are in-flight background subtree reductions (see async.go).
-	pendingJobs []pendingJob
+	// jobRing is the FIFO of in-flight background subtree reductions (see
+	// async.go). Slots are reused across jobs; the ring only resizes while
+	// empty. jobHead indexes the oldest occupied slot, jobCount the number
+	// of occupied slots.
+	jobRing    []asyncJob
+	jobHead    int
+	jobCount   int
+	jobRingBuf [asyncRingInline]asyncJob // inline backing to avoid heap allocation
 }
 
 // NewHasher creates a new Hasher with the default sha256 hash function.
@@ -438,13 +444,13 @@ func (h *Hasher) flushPending(layer *treeLayer, allowAsync bool) {
 	width := count * elem
 	if allowAsync && width >= asyncMinChunks &&
 		width&(width-1) == 0 && count&(count-1) == 0 && width < 1<<(maxTreeDepth-1) {
-		if slots := h.asyncSlots(); slots != nil {
+		if st := h.asyncShared(); st != nil {
 			if layer.progressive {
-				h.flushPendingAsyncRoots(slots, start, width, count)
+				h.flushPendingAsyncRoots(st, start, width, count)
 				return
 			}
 			if h.layerLeaves(layer, start)%uint64(count) == 0 {
-				h.flushPendingAsyncRoot(slots, layer, start, width, count)
+				h.flushPendingAsyncRoot(st, layer, start, width, count)
 				return
 			}
 		}
@@ -520,7 +526,7 @@ func (h *Hasher) Collapse() {
 		return
 	}
 
-	async := h.asyncSlots() != nil
+	async := h.asyncShared() != nil
 
 	if layer.pendCount > 0 {
 		// With async hashing, Collapse is treated as a hint: the pending run
@@ -691,9 +697,9 @@ func (h *Hasher) maybeCollapseProgressive(layer *treeLayer) {
 		// plain depth-0 leaves is a complete power-of-two subtree whose
 		// reduction can run in the background; the group root slot at
 		// writePos is only read by the final fold, which drains first.
-		if slots := h.asyncSlots(); slots != nil && consumedMaxDepth == 0 &&
+		if st := h.asyncShared(); st != nil && consumedMaxDepth == 0 &&
 			consumed == baseSize && baseSize >= asyncMinChunks {
-			h.enqueueReduce(slots, readPos, int(baseSize), 1, writePos)
+			h.enqueueReduce(st, readPos, int(baseSize), 1, writePos)
 		} else {
 			// collapseAllDepths works within buf[readPos:consumePos] only,
 			// leaving the unconsumed tail untouched. Root lands at
