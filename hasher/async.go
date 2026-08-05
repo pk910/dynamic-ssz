@@ -198,6 +198,10 @@ func (h *Hasher) enqueueReduce(st *asyncShared, start, width, outChunks, dstOff 
 	slot.outLen = outChunks * 32
 	slot.tokened = tokened
 
+	if dstOff > h.jobMaxDst {
+		h.jobMaxDst = dstOff
+	}
+
 	ensureAsyncRunner(st)
 	asyncHandoff <- slot
 }
@@ -302,6 +306,18 @@ func (h *Hasher) drainOldestJob() {
 func (h *Hasher) drainJobs() {
 	for h.jobCount > 0 {
 		h.drainOldestJob()
+	}
+	h.jobMaxDst = -1
+}
+
+// drainJobsFor drains outstanding reductions only when the region starting
+// at indx can overlap a hole. Holes only exist at or below the highest
+// outstanding job offset, so scopes that operate entirely above it — every
+// child scope opened after its parents' flushes — skip the wait and keep
+// the background reductions overlapped with the walk.
+func (h *Hasher) drainJobsFor(indx int) {
+	if h.jobCount > 0 && indx <= h.jobMaxDst {
+		h.drainJobs()
 	}
 }
 

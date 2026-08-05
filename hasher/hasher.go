@@ -102,10 +102,12 @@ type Hasher struct {
 	// jobRing is the FIFO of in-flight background subtree reductions (see
 	// async.go). Slots are reused across jobs; the ring only resizes while
 	// empty. jobHead indexes the oldest occupied slot, jobCount the number
-	// of occupied slots.
+	// of occupied slots. jobMaxDst tracks the highest outstanding hole
+	// offset, so drains can be skipped for regions above every hole.
 	jobRing    []asyncJob
 	jobHead    int
 	jobCount   int
+	jobMaxDst  int
 	jobRingBuf [asyncRingInline]asyncJob // inline backing to avoid heap allocation
 }
 
@@ -603,7 +605,7 @@ func (h *Hasher) maybeCollapseBinary(layer *treeLayer) {
 	}
 
 	// About to hash and shift regions that may contain async holes.
-	h.drainJobs()
+	h.drainJobsFor(regionStart)
 
 	if !layer.collapsed {
 		layer.collapsed = true
@@ -655,7 +657,7 @@ func (h *Hasher) maybeCollapseBinary(layer *treeLayer) {
 func (h *Hasher) maybeCollapseProgressive(layer *treeLayer) {
 	// Group finalization reads and compacts the active region; any holes
 	// from element-root jobs must be filled first.
-	h.drainJobs()
+	h.drainJobsFor(layer.bufIdx)
 
 	// Sync collapse state so counts reflect all buffer data
 	if layer.collapsed {
@@ -1079,7 +1081,7 @@ func (h *Hasher) Merkleize(indx int) {
 		if layer.pendCount > 0 {
 			h.flushPending(layer, false)
 		}
-		h.drainJobs()
+		h.drainJobsFor(indx)
 
 		if layer.collapsed {
 			h.collapseAllDepths(layer, indx, len(h.buf), 0)
@@ -1089,7 +1091,7 @@ func (h *Hasher) Merkleize(indx int) {
 		}
 		h.popTopLayer()
 	}
-	h.drainJobs()
+	h.drainJobsFor(indx)
 
 	// merkleizeImpl treats the region as whole 32-byte chunks (a single chunk
 	// is returned via input[:32]), so the region must be zero-padded to a chunk
@@ -1123,7 +1125,7 @@ func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 	if layer != nil && layer.pendCount > 0 {
 		h.flushPending(layer, false)
 	}
-	h.drainJobs()
+	h.drainJobsFor(indx)
 
 	if layer != nil && layer.collapsed {
 		h.collapseAllDepths(layer, indx, len(h.buf), limit)
@@ -1168,7 +1170,7 @@ func (h *Hasher) MerkleizeProgressive(indx int) {
 	if layer != nil && layer.pendCount > 0 {
 		h.flushPending(layer, false)
 	}
-	h.drainJobs()
+	h.drainJobsFor(indx)
 
 	if layer != nil && layer.progressive {
 		// Pad an unaligned partial chunk before collapsing, like the mixin
@@ -1210,7 +1212,7 @@ func (h *Hasher) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 	if layer != nil && layer.pendCount > 0 {
 		h.flushPending(layer, false)
 	}
-	h.drainJobs()
+	h.drainJobsFor(indx)
 
 	if layer != nil && layer.progressive && layer.progressiveCount > 0 {
 		h.FillUpTo32()
@@ -1257,7 +1259,7 @@ func (h *Hasher) MerkleizeProgressiveWithActiveFields(indx int, activeFields []b
 	if layer != nil && layer.pendCount > 0 {
 		h.flushPending(layer, false)
 	}
-	h.drainJobs()
+	h.drainJobsFor(indx)
 
 	if layer != nil && layer.progressive && layer.progressiveCount > 0 {
 		h.FillUpTo32()
