@@ -19,9 +19,17 @@ import (
 
 type dummyDynamicSpecs struct {
 	specValues map[string]uint64
+
+	// resolveErr makes every resolution fail, standing in for an expression
+	// that cannot be evaluated (division by zero, overflow).
+	resolveErr error
 }
 
 func (d *dummyDynamicSpecs) ResolveSpecValue(name string) (bool, uint64, error) {
+	if d.resolveErr != nil {
+		return false, 0, d.resolveErr
+	}
+
 	value, ok := d.specValues[name]
 	return ok, value, nil
 }
@@ -52,7 +60,7 @@ func TestTypeCache_ErrorCases(t *testing.T) {
 			{"func", reflect.TypeOf(func() {}), "functions are not supported"},
 			{"interface", reflect.TypeOf((*interface{})(nil)).Elem(), "interfaces are not supported"},
 			{"unsafe", reflect.TypeOf((*unsafe.Pointer)(nil)).Elem(), "unsafe pointers are not supported"},
-			{"pointer", reflect.TypeOf((***uint64)(nil)).Elem(), "unsupported type kind: ptr"},
+			{"pointer", reflect.TypeOf((***uint64)(nil)).Elem(), "unsupported multi-level pointer"},
 		}
 
 		for _, tt := range unsupportedTypes {
@@ -542,6 +550,57 @@ func TestTypeCache_ProgressiveContainerErrors(t *testing.T) {
 		}
 	})
 
+	t.Run("AutoIndexPastMaximum", func(t *testing.T) {
+		// getSszIndexTag caps an explicit ssz-index at 255, but the auto-increment
+		// used to run past it: an untagged field after ssz-index:"255" landed on
+		// 256 and built a 33-byte active-fields bitvector, above the 32-byte
+		// maximum the hashers support.
+		type TestStruct struct {
+			Field1 uint32 `ssz-index:"255"`
+			Field2 uint32 // untagged: auto-indexed to 256
+		}
+
+		_, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+		if err == nil {
+			t.Fatal("expected error for auto-index above the supported maximum")
+		}
+		if !strings.Contains(err.Error(), "ssz-index 256 assigned to field \"Field2\" exceeds the supported maximum of 255") {
+			t.Errorf("Unexpected error: %s", err.Error())
+		}
+	})
+
+	t.Run("AutoIndexAtMaximum", func(t *testing.T) {
+		// 255 itself is still allowed, so the bound is off-by-one safe.
+		type TestStruct struct {
+			Field1 uint32 `ssz-index:"254"`
+			Field2 uint32 // untagged: auto-indexed to 255
+		}
+
+		desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := desc.ContainerDesc.Fields[1].SszIndex; got != 255 {
+			t.Errorf("Field2 auto-index = %d; want 255", got)
+		}
+	})
+
+	t.Run("IndexTagWithWhitespace", func(t *testing.T) {
+		// Tag values are trimmed, matching the size/max tag parsers.
+		type TestStruct struct {
+			Field1 uint32 `ssz-index:" 0 "`
+			Field2 uint32 `ssz-index:"1"`
+		}
+
+		desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := desc.ContainerDesc.Fields[0].SszIndex; got != 0 {
+			t.Errorf("Field1 index = %d; want 0", got)
+		}
+	})
+
 	t.Run("DecreasingIndexTag", func(t *testing.T) {
 		type TestStruct struct {
 			Field1 uint32 `ssz-index:"3"`
@@ -636,6 +695,61 @@ func TestTypeCache_CacheManagement(t *testing.T) {
 }
 
 // Test TypeDescriptor.GetTypeHash
+// MinSize is what a decoder bounds a declared element count against, so it must
+// be the true floor of the type's serialization -- never larger, or valid input
+// is refused. Len means different things per type, which is what it has to
+// translate.
+func TestTypeDescriptor_MinSize(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	type dynElem struct {
+		Tail []uint8 `ssz-max:"8"`
+	}
+
+	tests := []struct {
+		name string
+		typ  reflect.Type
+		want uint32
+	}{
+		// Fixed sections: 4 bytes per dynamic field, the field's own size otherwise.
+		{"dynamic container", reflect.TypeFor[dynElem](), 4},
+		{"static container", reflect.TypeFor[struct{ A uint64 }](), 8},
+		{"static type", reflect.TypeFor[uint32](), 4},
+		// A vector of dynamic elements: one offset plus each element's own floor,
+		// per element. Its Len is 2 elements, not 2 bytes.
+		{"vector of dynamic", reflect.TypeFor[[2]dynElem](), 2 * (4 + 4)},
+		{"vector of static", reflect.TypeFor[[3]uint16](), 6},
+		// No floor: an empty list, union or optional costs nothing.
+		{"list", reflect.TypeFor[struct {
+			L []dynElem `ssz-max:"8"`
+		}](), 4},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			desc, err := cache.GetTypeDescriptor(tt.typ, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if desc.MinSize != tt.want {
+				t.Errorf("MinSize = %d, want %d", desc.MinSize, tt.want)
+			}
+		})
+	}
+
+	t.Run("list element states no floor", func(t *testing.T) {
+		desc, err := cache.GetTypeDescriptor(reflect.TypeFor[struct {
+			L []dynElem `ssz-max:"8"`
+		}](), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := desc.ContainerDesc.Fields[0].Type.MinSize; got != 0 {
+			t.Errorf("MinSize = %d, want 0: an empty list serializes to nothing", got)
+		}
+	})
+}
+
 func TestTypeDescriptor_GetTypeHash(t *testing.T) {
 	ds := &dummyDynamicSpecs{}
 	cache := NewTypeCache(ds)
@@ -797,6 +911,33 @@ func TestTypeCache_AnnotationSizeHintExceedsUint32(t *testing.T) {
 	}
 }
 
+// annotatedArrayDim carries an annotation whose first dimension is fixed by the
+// Go type. Tags are positional, so skipping it in both families is the only way
+// to reach the dimensions that do need a length and a limit.
+type annotatedArrayDim [2][][]byte
+
+var _ = sszutils.Annotate[annotatedArrayDim](`ssz-size:"?,?,4" ssz-max:"?,8"`)
+
+// A dimension whose length comes from its Go type may be `?` in both families
+// on the annotation path too.
+func TestTypeCache_AnnotationPlaceholderOnFixedDimension(t *testing.T) {
+	cache := NewTypeCache(nil)
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(annotatedArrayDim{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("a fixed dimension may be skipped by both tag families: %v", err)
+	}
+	if desc.Len != 2 {
+		t.Errorf("outer length %d, want 2 from the array type", desc.Len)
+	}
+	if desc.ElemDesc.Limit != 8 {
+		t.Errorf("inner limit %d, want 8", desc.ElemDesc.Limit)
+	}
+	if desc.ElemDesc.ElemDesc.Len != 4 {
+		t.Errorf("innermost length %d, want 4", desc.ElemDesc.ElemDesc.Len)
+	}
+}
+
 // Annotation fixtures whose dynssz expressions resolve to 0 at runtime.
 type annotatedZeroSizeFallback []byte
 type annotatedZeroSizeNoFallback []byte
@@ -809,6 +950,42 @@ var (
 	_ = sszutils.Annotate[annotatedZeroMaxFallback](`ssz-max:"4" dynssz-max:"ZERO"`)
 	_ = sszutils.Annotate[annotatedZeroMaxNoFallback](`dynssz-max:"ZERO"`)
 )
+
+// Annotation fixtures pairing a static tag with an expression that cannot be
+// evaluated at all.
+type annotatedBrokenSize []byte
+type annotatedBrokenMax []uint64
+
+var (
+	_ = sszutils.Annotate[annotatedBrokenSize](`ssz-size:"4" dynssz-size:"BROKEN"`)
+	_ = sszutils.Annotate[annotatedBrokenMax](`ssz-max:"4" dynssz-max:"BROKEN"`)
+)
+
+// An expression that cannot be evaluated is a mistake in the annotation, not a
+// value to fall back from. A static tag beside it must not bury the error --
+// the same expression in a struct field tag reports it either way.
+func TestTypeCache_AnnotationExpressionErrorIsNotSwallowed(t *testing.T) {
+	broken := errors.New("division by zero")
+	ds := &dummyDynamicSpecs{resolveErr: broken}
+
+	for _, tt := range []struct {
+		name string
+		typ  reflect.Type
+	}{
+		{name: "size", typ: reflect.TypeOf(annotatedBrokenSize{})},
+		{name: "max", typ: reflect.TypeOf(annotatedBrokenMax{})},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewTypeCache(ds).GetTypeDescriptor(tt.typ, nil, nil, nil)
+			if !errors.Is(err, sszutils.ErrInvalidTag) {
+				t.Fatalf("err = %v, want ErrInvalidTag", err)
+			}
+			if !strings.Contains(err.Error(), broken.Error()) {
+				t.Errorf("err = %v, want it to name the failure", err)
+			}
+		})
+	}
+}
 
 // A dynssz-size that resolves to 0 is invalid (zero-length vector). It must fall
 // back to a positive static ssz-size, or error when there is no static fallback.
@@ -929,15 +1106,15 @@ func TestTypeCache_ZeroLengthVectorRejected(t *testing.T) {
 }
 
 // A fixed Go array whose outer dynssz-size dimension is the "?" placeholder must
-// keep its intrinsic length. The placeholder yields a dynamic size hint with
-// Size 0; a Go array cannot be relaxed to a variable-length list, so the array
-// length must survive (regression for the multi-dim empty-outer-dim bug where
-// the zero-size placeholder wrongly zeroed the array length).
-func TestTypeCache_ArrayOuterDynSizeQuestionKeepsLength(t *testing.T) {
+// keep its intrinsic length (regression for the multi-dim empty-outer-dim bug
+// where a zero-size outer hint wrongly zeroed the array length). The outer
+// dimension repeats its static length in the dynamic tag: `?` would declare it
+// dynamic, which contradicts the static length and is rejected.
+func TestTypeCache_ArrayOuterDynSizeKeepsLength(t *testing.T) {
 	cache := NewTypeCache(&dummyDynamicSpecs{specValues: map[string]uint64{"MAX_ATTESTATIONS": 5}})
 
 	type multiDim struct {
-		F [2][]byte `ssz-size:"2,6" dynssz-size:"?,MAX_ATTESTATIONS"`
+		F [2][]byte `ssz-size:"2,6" dynssz-size:"2,MAX_ATTESTATIONS"`
 	}
 	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(multiDim{}), nil, nil, nil)
 	if err != nil {
@@ -1344,7 +1521,7 @@ func TestTypeCache_ListWithSizeHint(t *testing.T) {
 
 	// Test list with size and max hints
 	type TestStruct struct {
-		Data []uint32 `ssz-size:"10" ssz-max:"100"`
+		Data []uint32 `ssz-size:"10"`
 	}
 
 	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
@@ -1423,7 +1600,7 @@ func TestTypeCache_BitlistFromTypeNameDetection(t *testing.T) {
 	type TestBitlist []uint8
 
 	type TestStruct struct {
-		Flags TestBitlist
+		Flags TestBitlist `ssz-max:"64"`
 	}
 
 	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
@@ -1726,11 +1903,13 @@ func TestTypeCache_ExtendedTypes(t *testing.T) {
 		cache := NewTypeCache(ds)
 		cache.ExtendedTypes = true
 
-		// optional pointer to uint16 with extra hints that get forwarded
+		// optional pointer to uint16; the size hints forward through the
+		// optional to the element, and no limit reaches the leaf (a leaf has
+		// no capacity to bound).
 		desc, err := cache.GetTypeDescriptor(
 			reflect.TypeOf((*uint16)(nil)),
 			[]SszSizeHint{{Size: 0}, {Size: 2}},
-			[]SszMaxSizeHint{{Size: 0}, {Size: 2}},
+			[]SszMaxSizeHint{{Size: 0}},
 			[]SszTypeHint{{Type: SszOptionalType}, {Type: SszUint16Type}},
 		)
 		if err != nil {
@@ -2020,7 +2199,7 @@ func TestTypeCache_InvalidHashTreeRootWith(t *testing.T) {
 type runtimeContainer struct {
 	FieldA uint64
 	FieldB uint32
-	FieldC []byte
+	FieldC []byte `ssz-max:"64"`
 }
 
 type schemaContainerV1 struct {
@@ -2041,7 +2220,7 @@ type schemaContainerMissingField struct {
 // Nested view descriptor types
 type runtimeInner struct {
 	Value uint64
-	Data  []byte
+	Data  []byte `ssz-max:"64"`
 }
 
 type runtimeOuter struct {
@@ -2257,7 +2436,7 @@ func TestTypeCache_ViewDescriptorWithDynamicFields(t *testing.T) {
 
 	type runtimeWithDynamic struct {
 		StaticField  uint64
-		DynamicField []byte
+		DynamicField []byte `ssz-max:"64"`
 	}
 
 	type schemaWithDynamic struct {
@@ -2326,7 +2505,7 @@ func TestTypeCache_ViewDescriptorWithVector(t *testing.T) {
 	}
 
 	type runtimeWithVector struct {
-		Items []runtimeElem
+		Items []runtimeElem `ssz-max:"64"`
 	}
 
 	type schemaWithVector struct {
@@ -2461,26 +2640,143 @@ func TestGetSszSizeTagBitsizeParseError(t *testing.T) {
 	}
 }
 
-func TestGetSszSizeTagDynSszDynamic(t *testing.T) {
+// TestTagValuesTolerateWhitespace pins whitespace handling in the struct-field
+// tag parsers. `ssz-size:"8, 16"` used to fail with a raw strconv error on
+// " 16" while the identical string through Annotate[T] and through a dynssz-*
+// expression was accepted — three parsers, three rules.
+func TestTagValuesTolerateWhitespace(t *testing.T) {
+	ds := &dummyDynamicSpecs{specValues: map[string]uint64{"X": 100}}
+
+	t.Run("SszSize", func(t *testing.T) {
+		field := makeField("X", reflect.TypeOf([][]byte{}), `ssz-size:"8, 16"`)
+		sizes, err := getSszSizeTag(ds, field)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(sizes) != 2 || sizes[0].Size != 8 || sizes[1].Size != 16 {
+			t.Fatalf("sizes = %+v; want sizes 8 and 16", sizes)
+		}
+	})
+
+	t.Run("SszBitsize", func(t *testing.T) {
+		field := makeField("X", reflect.TypeOf([]byte{}), `ssz-bitsize:" 12 "`)
+		sizes, err := getSszSizeTag(ds, field)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(sizes) != 1 || sizes[0].Size != 12 || !sizes[0].Bits {
+			t.Fatalf("sizes = %+v; want a 12-bit hint", sizes)
+		}
+	})
+
+	t.Run("DynSszSize", func(t *testing.T) {
+		field := makeField("X", reflect.TypeOf([]byte{}), `dynssz-size:" X "`)
+		sizes, err := getSszSizeTag(ds, field)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(sizes) != 1 || sizes[0].Size != 100 {
+			t.Fatalf("sizes = %+v; want size 100", sizes)
+		}
+	})
+
+	t.Run("SszMax", func(t *testing.T) {
+		field := makeField("X", reflect.TypeOf([][]byte{}), `ssz-max:"8, 16"`)
+		maxes, err := getSszMaxSizeTag(ds, field)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(maxes) != 2 || maxes[0].Size != 8 || maxes[1].Size != 16 {
+			t.Fatalf("maxes = %+v; want maxes 8 and 16", maxes)
+		}
+	})
+
+	t.Run("DynSszMax", func(t *testing.T) {
+		field := makeField("X", reflect.TypeOf([]byte{}), `ssz-max:"8" dynssz-max:" X "`)
+		maxes, err := getSszMaxSizeTag(ds, field)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(maxes) != 1 || maxes[0].Size != 100 {
+			t.Fatalf("maxes = %+v; want max 100", maxes)
+		}
+	})
+
+	t.Run("SszType", func(t *testing.T) {
+		field := makeField("X", reflect.TypeOf([][]uint32{}), `ssz-type:"list, list"`)
+		hints, err := getSszTypeTag(field)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(hints) != 2 || hints[0].Type != SszListType || hints[1].Type != SszListType {
+			t.Fatalf("hints = %+v; want two list hints", hints)
+		}
+	})
+
+	t.Run("ParseTagsAgrees", func(t *testing.T) {
+		// The Annotate/codegen-side parser must reach the same hints for the
+		// same string; the two rules diverging is what the fix removed.
+		_, _, maxes, err := ParseTags(`ssz-max:"8" dynssz-max:" X "`)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(maxes) != 1 || maxes[0].Expr != "X" {
+			t.Fatalf("maxes = %+v; want the trimmed expression X", maxes)
+		}
+	})
+}
+
+// TestBitlistRejectsFixedBitsizeNamesTheTag checks the diagnostic for
+// ssz-bitsize on a bitlist. The rejection is correct — a bitlist has no fixed
+// size — but it used to name ssz-size, a tag the user never wrote.
+func TestBitlistRejectsFixedBitsizeNamesTheTag(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	type BitlistWithBitsize struct {
+		X []byte `ssz-type:"bitlist" ssz-bitsize:"12" ssz-max:"64"`
+	}
+
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(BitlistWithBitsize{}), nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for a bitlist with a fixed bit size")
+	}
+	if !strings.Contains(err.Error(), "list types cannot have a fixed ssz-bitsize") {
+		t.Fatalf("error should name ssz-bitsize, got: %v", err)
+	}
+
+	// A byte-unit size tag still reports ssz-size.
+	type ListWithSize struct {
+		X []byte `ssz-type:"list" ssz-size:"12"`
+	}
+
+	_, err = cache.GetTypeDescriptor(reflect.TypeOf(ListWithSize{}), nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for a list with a fixed size")
+	}
+	if !strings.Contains(err.Error(), "list types cannot have a fixed ssz-size") {
+		t.Fatalf("error should name ssz-size, got: %v", err)
+	}
+}
+
+// A dimension given a length by ssz-size and marked `?` by dynssz-size is
+// declared two ways at once, so the pair is rejected rather than one of the two
+// silently winning.
+func TestGetSszSizeTagPlaceholderMismatch(t *testing.T) {
 	ds := &dummyDynamicSpecs{}
-	// dynssz-size:"?" should set Dynamic=true
 	field := makeField("Dyn", reflect.TypeOf([]byte{}), `ssz-size:"32" dynssz-size:"?"`)
 
+	if _, err := getSszSizeTag(ds, field); err == nil || !strings.Contains(err.Error(), "conflicting size tags") {
+		t.Fatalf("err = %v, want a conflicting size tags error", err)
+	}
+
+	// Matching placeholders describe one type and are accepted.
+	field = makeField("Dyn", reflect.TypeOf([][]byte{}), `ssz-size:"?,32" dynssz-size:"?,32"`)
 	sizes, err := getSszSizeTag(ds, field)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("matching placeholders: %v", err)
 	}
-	if len(sizes) != 1 {
-		t.Fatalf("expected 1 size hint, got %d", len(sizes))
-	}
-	// The dynssz-size:"?" case: sizeExpr == "?" → sszSize.Dynamic = true
-	// But since ssz-size:"32" was parsed first, the size remains 32
-	// and the dynssz loop processes "?" which sets Dynamic on the new hint,
-	// but then i < len(sszSizes) so it checks if sizes differ.
-	// Actually: sszSize has Dynamic=true, Size=0. sszSizes[0] has Size=32.
-	// 0 != 32, so it updates sszSizes[0] to the dynamic version.
-	if !sizes[0].Dynamic {
-		t.Fatal("expected Dynamic=true for dynssz-size:\"?\"")
+	if len(sizes) != 2 || !sizes[0].Dynamic {
+		t.Fatalf("expected a dynamic outer dimension, got %+v", sizes)
 	}
 }
 
@@ -2515,17 +2811,23 @@ func TestGetSszSizeTagDynSszExtraDimension(t *testing.T) {
 	}
 }
 
-func TestGetSszMaxSizeTagDynSszMaxDynamic(t *testing.T) {
+// The same rule for limits: a dimension cannot carry a limit in one tag and the
+// unbounded placeholder in the other.
+func TestGetSszMaxSizeTagPlaceholderMismatch(t *testing.T) {
 	ds := &dummyDynamicSpecs{}
-	// dynssz-max:"?" should set NoValue=true
 	field := makeField("Dyn", reflect.TypeOf([]byte{}), `ssz-max:"100" dynssz-max:"?"`)
 
+	if _, err := getSszMaxSizeTag(ds, field); err == nil || !strings.Contains(err.Error(), "conflicting max tags") {
+		t.Fatalf("err = %v, want a conflicting max tags error", err)
+	}
+
+	field = makeField("Dyn", reflect.TypeOf([][]byte{}), `ssz-max:"?,100" dynssz-max:"?,100"`)
 	maxSizes, err := getSszMaxSizeTag(ds, field)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("matching placeholders: %v", err)
 	}
-	if len(maxSizes) != 1 {
-		t.Fatalf("expected 1 max size hint, got %d", len(maxSizes))
+	if len(maxSizes) != 2 || !maxSizes[0].NoValue {
+		t.Fatalf("expected an unbounded outer dimension, got %+v", maxSizes)
 	}
 }
 
@@ -2753,18 +3055,32 @@ func TestTypeCache_AnnotationMaxExprResolution(t *testing.T) {
 	}
 }
 
-// A dimension marked dynamic (`?`) in ssz-size but fixed in dynssz-size is
-// contradictory (list vs vector) and must be rejected, so codegen and reflection
-// agree instead of encoding the field differently. The reverse (fixed ssz-size
-// relaxed to dynamic via dynssz-size:"?") stays valid.
+// `?` marks a dimension dynamic, so a dimension cannot be `?` in one size tag
+// and a length in the other -- that names a list and a vector at once, and the
+// engines would encode the field differently. Both directions are rejected.
 func TestParseTags_DynamicStaticSizeConflict(t *testing.T) {
-	if _, _, _, err := ParseTags(`ssz-size:"?,32" dynssz-size:"SOME_SPEC,32"`); err == nil ||
-		!strings.Contains(err.Error(), "conflicting size tags") {
-		t.Fatalf("expected conflicting size tags error, got %v", err)
+	for _, tag := range []string{
+		`ssz-size:"?,32" dynssz-size:"SOME_SPEC,32"`,
+		`ssz-size:"32" dynssz-size:"?"`,
+	} {
+		if _, _, _, err := ParseTags(tag); err == nil || !strings.Contains(err.Error(), "conflicting size tags") {
+			t.Fatalf("%s: expected conflicting size tags error, got %v", tag, err)
+		}
 	}
 
-	if _, _, _, err := ParseTags(`ssz-size:"32" dynssz-size:"?"`); err != nil {
-		t.Fatalf("fixed ssz-size relaxed to dynamic should be allowed, got %v", err)
+	if _, _, _, err := ParseTags(`ssz-size:"?,32" dynssz-size:"?,32"`); err != nil {
+		t.Fatalf("matching placeholders should be allowed, got %v", err)
+	}
+}
+
+func TestParseTags_DynamicStaticMaxConflict(t *testing.T) {
+	for _, tag := range []string{
+		`ssz-max:"5" dynssz-max:"?"`,
+		`ssz-max:"?" dynssz-max:"SOME_SPEC"`,
+	} {
+		if _, _, _, err := ParseTags(tag); err == nil || !strings.Contains(err.Error(), "conflicting max tags") {
+			t.Fatalf("%s: expected conflicting max tags error, got %v", tag, err)
+		}
 	}
 }
 
@@ -2988,7 +3304,7 @@ func TestParseTags_Comprehensive(t *testing.T) {
 	})
 
 	t.Run("DynSszSizeDynamic", func(t *testing.T) {
-		_, sizeHints, _, err := ParseTags(`ssz-size:"32" dynssz-size:"?"`)
+		_, sizeHints, _, err := ParseTags(`ssz-size:"?" dynssz-size:"?"`)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -3025,7 +3341,7 @@ func TestParseTags_Comprehensive(t *testing.T) {
 	})
 
 	t.Run("DynSszSizeExprWithoutExistingHint", func(t *testing.T) {
-		// Expression without ssz-size base - appends new hint
+		// An expression names a length: the dimension is a vector, not dynamic.
 		_, sizeHints, _, err := ParseTags(`dynssz-size:"SOME_EXPR"`)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -3033,8 +3349,8 @@ func TestParseTags_Comprehensive(t *testing.T) {
 		if len(sizeHints) != 1 {
 			t.Fatalf("expected 1 size hint, got %d", len(sizeHints))
 		}
-		if !sizeHints[0].Dynamic {
-			t.Fatal("expected Dynamic=true")
+		if sizeHints[0].Dynamic {
+			t.Fatal("an expression-sized dimension is a vector, so Dynamic must be false")
 		}
 		if !sizeHints[0].Custom {
 			t.Fatal("expected Custom=true")
@@ -3062,7 +3378,7 @@ func TestParseTags_Comprehensive(t *testing.T) {
 	})
 
 	t.Run("DynSszMaxDynamic", func(t *testing.T) {
-		_, _, maxHints, err := ParseTags(`ssz-max:"100" dynssz-max:"?"`)
+		_, _, maxHints, err := ParseTags(`ssz-max:"?" dynssz-max:"?"`)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -3091,8 +3407,8 @@ func TestParseTags_Comprehensive(t *testing.T) {
 	})
 
 	t.Run("DynSszSizeExprNewHint", func(t *testing.T) {
-		// When i >= len(sizeHints), it appends a new hint with Dynamic+Custom flags
-		// (lines 564-568 in ssztags.go ParseTags)
+		// When i >= len(sizeHints), a new hint is appended carrying the
+		// expression; it names a length, so the dimension stays a vector.
 		_, sizeHints, _, err := ParseTags(`dynssz-size:"MY_NEW_EXPR"`)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -3100,8 +3416,8 @@ func TestParseTags_Comprehensive(t *testing.T) {
 		if len(sizeHints) != 1 {
 			t.Fatalf("expected 1 size hint, got %d", len(sizeHints))
 		}
-		if !sizeHints[0].Dynamic || !sizeHints[0].Custom {
-			t.Fatal("expected Dynamic=true and Custom=true for new expr hint")
+		if sizeHints[0].Dynamic || !sizeHints[0].Custom {
+			t.Fatal("expected Dynamic=false and Custom=true for an expr hint")
 		}
 	})
 
@@ -3467,7 +3783,7 @@ type testWrapperDescriptor struct {
 
 // testTypeWrapper mimics dynssz.TypeWrapper[testWrapperDescriptor, []byte]
 type testTypeWrapper struct {
-	Data []byte
+	Data []byte `ssz-max:"64"`
 }
 
 func (w *testTypeWrapper) GetDescriptorType() reflect.Type {
@@ -3521,7 +3837,7 @@ type testDynWrapperDescriptor struct {
 }
 
 type testDynTypeWrapper struct {
-	Data []byte
+	Data []byte `ssz-max:"64"`
 }
 
 func (w *testDynTypeWrapper) GetDescriptorType() reflect.Type {
@@ -3535,7 +3851,7 @@ type testSchemaWrapperDescriptor struct {
 }
 
 type testSchemaTypeWrapper struct {
-	Data []byte
+	Data []byte `ssz-max:"64"`
 }
 
 func (w *testSchemaTypeWrapper) GetDescriptorType() reflect.Type {
@@ -4050,7 +4366,7 @@ func TestTypeCache_CustomTypeWithSizeHint(t *testing.T) {
 
 // testWrapperBadDescriptor returns a descriptor type that is not a struct
 type testWrapperBadDescriptor struct {
-	Data []byte
+	Data []byte `ssz-max:"64"`
 }
 
 func (w *testWrapperBadDescriptor) GetDescriptorType() reflect.Type {
@@ -4099,7 +4415,7 @@ type testWrapperBadWrappedDescriptor struct {
 }
 
 type testWrapperWithBadWrapped struct {
-	Data []byte
+	Data []byte `ssz-max:"64"`
 }
 
 func (w *testWrapperWithBadWrapped) GetDescriptorType() reflect.Type {
@@ -4207,7 +4523,7 @@ type testSchemaWrapperBadWrappedDescriptor struct {
 }
 
 type testSchemaWrapperBadWrapped struct {
-	Data []byte
+	Data []byte `ssz-max:"64"`
 }
 
 func (w *testSchemaWrapperBadWrapped) GetDescriptorType() reflect.Type {
@@ -4472,7 +4788,7 @@ func TestTypeCache_VectorWithNestedMaxAndTypeHints(t *testing.T) {
 	// Vector of vectors: [][]uint32 with ssz-size:"3" and
 	// nested maxSizeHints and typeHints forwarded to child
 	type TestStruct struct {
-		Field [][]uint32 `ssz-size:"3" ssz-max:"?,10" ssz-type:"?,list"`
+		Field [][]uint32 `ssz-size:"3" ssz-type:"?,list" ssz-max:"?,8"`
 	}
 
 	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
@@ -4740,8 +5056,11 @@ func TestTypeCache_ZeroSizeSliceRejected(t *testing.T) {
 	type zeroSlice struct {
 		V []byte `ssz-size:"0"`
 	}
-	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(zeroSlice{}), nil, nil, nil); err == nil {
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(zeroSlice{}), nil, nil, nil)
+	if err == nil {
 		t.Error("expected error for ssz-size 0 on a slice")
+	} else if !strings.Contains(err.Error(), "ssz-size 0 is not a valid vector size") {
+		t.Errorf("err = %v, want it to name the zero size", err)
 	}
 
 	type zeroString struct {
@@ -4955,17 +5274,90 @@ func TestMultiDimUnknownDynSize(t *testing.T) {
 	}
 }
 
-// dynOnlyUnknown has a dynssz-size dimension with no static ssz-size fallback,
-// so an undefined spec records a fresh dynamic dimension.
+// dynOnlyUnknown declares a length that comes from a spec value, with no static
+// ssz-size to fall back to.
 type dynOnlyUnknown struct {
-	F []uint16 `ssz-max:"8" dynssz-size:"UNK_X"`
+	F []uint16 `dynssz-size:"UNK_X"`
 }
 
+// A dimension is a vector because a tag names its length, not because the specs
+// in hand can put a number to it. When they cannot, the type declared a length
+// nothing supplies -- an error, rather than a quietly different SSZ type that
+// encodes as a list.
 func TestDynOnlyUnknownDynSize(t *testing.T) {
-	tc := NewTypeCache(nil)
-	if _, err := tc.GetTypeDescriptor(reflect.TypeOf(dynOnlyUnknown{}), nil, nil, nil); err != nil {
-		t.Fatalf("dyn-only unknown dynssz-size: %v", err)
-	}
+	t.Run("Runtime", func(t *testing.T) {
+		tc := NewTypeCache(nil)
+		_, err := tc.GetTypeDescriptor(reflect.TypeOf(dynOnlyUnknown{}), nil, nil, nil)
+		if !errors.Is(err, sszutils.ErrInvalidConstraint) {
+			t.Fatalf("err = %v, want ErrInvalidConstraint", err)
+		}
+		if !strings.Contains(err.Error(), "is not defined and has no positive static fallback") {
+			t.Errorf("err = %v, want it to say the length is unavailable", err)
+		}
+	})
+
+	t.Run("Resolved", func(t *testing.T) {
+		tc := NewTypeCache(&dummyDynamicSpecs{specValues: map[string]uint64{"UNK_X": 4}})
+		desc, err := tc.GetTypeDescriptor(reflect.TypeOf(dynOnlyUnknown{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if field := desc.ContainerDesc.Fields[0].Type; field.SszType != SszVectorType || field.Len != 4 {
+			t.Errorf("ssz type %v len %d, want a vector of 4", field.SszType, field.Len)
+		}
+	})
+
+	// Code generation emits the expression for the generated code to resolve,
+	// so the length legitimately has no value here and the type stays a vector.
+	t.Run("ForCodeGeneration", func(t *testing.T) {
+		tc := NewTypeCache(nil)
+		tc.DisableSpecResolution()
+		desc, err := tc.GetTypeDescriptor(reflect.TypeOf(dynOnlyUnknown{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		field := desc.ContainerDesc.Fields[0].Type
+		if field.SszType != SszVectorType {
+			t.Errorf("ssz type %v, want a vector", field.SszType)
+		}
+		if field.SizeExpression == nil || *field.SizeExpression != "UNK_X" {
+			t.Errorf("size expression %v, want UNK_X", field.SizeExpression)
+		}
+	})
+}
+
+// dynOnlyUnknownMax declares a limit that comes from a spec value, with no
+// static ssz-max to fall back to.
+type dynOnlyUnknownMax struct {
+	F []uint16 `dynssz-max:"UNK_M"`
+}
+
+// A limit nothing supplies is the same dead end as a length nothing supplies:
+// the type asked to be bounded by a value that is not there.
+func TestDynOnlyUnknownDynMax(t *testing.T) {
+	t.Run("Runtime", func(t *testing.T) {
+		tc := NewTypeCache(nil)
+		_, err := tc.GetTypeDescriptor(reflect.TypeOf(dynOnlyUnknownMax{}), nil, nil, nil)
+		if !errors.Is(err, sszutils.ErrInvalidConstraint) {
+			t.Fatalf("err = %v, want ErrInvalidConstraint", err)
+		}
+		if !strings.Contains(err.Error(), "is not defined and has no positive static fallback") {
+			t.Errorf("err = %v, want it to say the limit is unavailable", err)
+		}
+	})
+
+	t.Run("ForCodeGeneration", func(t *testing.T) {
+		tc := NewTypeCache(nil)
+		tc.DisableSpecResolution()
+		desc, err := tc.GetTypeDescriptor(reflect.TypeOf(dynOnlyUnknownMax{}), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		field := desc.ContainerDesc.Fields[0].Type
+		if field.MaxExpression == nil || *field.MaxExpression != "UNK_M" {
+			t.Errorf("max expression %v, want UNK_M", field.MaxExpression)
+		}
+	})
 }
 
 // Recursive descriptors form a cyclic graph that plain JSON marshalling cannot
@@ -5053,4 +5445,278 @@ func TestMarshalCyclicDescriptorNilChild(t *testing.T) {
 	if !strings.Contains(out, "=-1") {
 		t.Fatalf("nil child should serialize as -1 reference, got: %s", out)
 	}
+}
+
+// TestRecursiveTypeAcceptance pins which self-referential shapes the type cache
+// accepts, which docs/supported-types.md documents. The codegen parser has the
+// equivalent guards (TestParserRejectsStaticPointerRecursion,
+// TestParserAcceptsListBoundedRecursion); the engines must agree on which
+// shapes exist at all.
+func TestRecursiveTypeAcceptance(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	tests := []struct {
+		name    string
+		typ     reflect.Type
+		wantErr string
+	}{
+		{
+			// A cycle closing through a list is finite: a zero-length list
+			// terminates the recursion.
+			name: "cycle_through_list",
+			typ:  reflect.TypeOf(recCycleThroughList{}),
+		},
+		{
+			name: "cycle_through_pointer_list",
+			typ:  reflect.TypeOf(recCycleThroughPtrList{}),
+		},
+		{
+			// A cycle crossing only fixed-size fields has no finite encoding:
+			// every level would add a constant number of bytes forever.
+			name:    "cycle_through_fixed_field",
+			typ:     reflect.TypeOf(recCycleThroughFixed{}),
+			wantErr: "recursive type",
+		},
+		{
+			name:    "mutual_cycle_through_fixed_fields",
+			typ:     reflect.TypeOf(recMutualFixedA{}),
+			wantErr: "recursive type",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := cache.GetTypeDescriptor(tt.typ, nil, nil, nil)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("a list-bounded cycle is a legal SSZ shape: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected the unbounded cycle to be rejected")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want it to mention %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// The nesting bound counts one level per descriptor on a recursive cycle, so
+// the flag that drives it must cover exactly the cycle: every structural
+// member (containers and the lists/optionals that close the cycle), nothing
+// outside it, and no type wrappers (they attach tags without adding a level).
+// Both engines count from this flag; marking too much or too little would
+// silently change which values the bound accepts.
+func TestRecursionMemberMarking(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	flagged := func(desc *TypeDescriptor) bool {
+		return desc.SszTypeFlags&SszTypeFlagRecursionMember != 0
+	}
+
+	t.Run("cycle_members_flagged", func(t *testing.T) {
+		// The value-typed root is not on the cycle: nesting runs through the
+		// list's *pointer* element descriptor, and a walk enters the root only
+		// once. Flagging it would charge one level per walk, not per trip.
+		desc, err := cache.GetTypeDescriptor(reflect.TypeFor[recCycleThroughPtrList](), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if flagged(desc) {
+			t.Error("the value-typed root is entered once per walk, not per trip")
+		}
+		listDesc := desc.ContainerDesc.Fields[1].Type
+		if !flagged(listDesc) {
+			t.Error("the list closing the cycle must be flagged")
+		}
+		if !flagged(listDesc.ElemDesc) {
+			t.Error("the pointer element on the cycle must be flagged")
+		}
+		if valueDesc := desc.ContainerDesc.Fields[0].Type; flagged(valueDesc) {
+			t.Error("a leaf field off the cycle must not be flagged")
+		}
+	})
+
+	t.Run("shell_outside_cycle_unflagged", func(t *testing.T) {
+		desc, err := cache.GetTypeDescriptor(reflect.TypeFor[recCycleShell](), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if flagged(desc) {
+			t.Error("a container that merely holds a recursive type is not on the cycle")
+		}
+		innerDesc := desc.ContainerDesc.Fields[0].Type
+		if flagged(innerDesc) {
+			t.Error("the embedded value-typed container is entered once, not per trip")
+		}
+		if !flagged(innerDesc.ContainerDesc.Fields[1].Type) {
+			t.Error("the cycle inside the embedded type must stay flagged")
+		}
+	})
+
+	t.Run("acyclic_graph_untouched", func(t *testing.T) {
+		desc, err := cache.GetTypeDescriptor(reflect.TypeFor[recAcyclicHolder](), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		var walk func(d *TypeDescriptor)
+		seen := map[*TypeDescriptor]struct{}{}
+		walk = func(d *TypeDescriptor) {
+			if d == nil {
+				return
+			}
+			if _, ok := seen[d]; ok {
+				return
+			}
+			seen[d] = struct{}{}
+			if flagged(d) {
+				t.Errorf("descriptor %v of an acyclic type must not be flagged", d.Kind)
+			}
+			if d.ContainerDesc != nil {
+				for i := range d.ContainerDesc.Fields {
+					walk(d.ContainerDesc.Fields[i].Type)
+				}
+			}
+			walk(d.ElemDesc)
+		}
+		walk(desc)
+	})
+
+	// The wrapper-on-cycle case (a TypeWrapper must not count a level) is
+	// covered in the root package tests: the wrapper is classified by its
+	// dynssz-package generic name, which cannot be constructed from here.
+}
+
+type recCycleShell struct {
+	Inner recCycleThroughPtrList
+}
+
+type recAcyclicHolder struct {
+	A recAcyclicInner
+	B []recAcyclicInner `ssz-max:"4"`
+}
+
+type recAcyclicInner struct {
+	V []uint64 `ssz-max:"4"`
+}
+
+type recCycleThroughList struct {
+	Value uint64
+	Items []recCycleThroughList `ssz-max:"4"`
+}
+
+type recCycleThroughPtrList struct {
+	Value uint64
+	Items []*recCycleThroughPtrList `ssz-max:"4"`
+}
+
+type recCycleThroughFixed struct {
+	Value uint64
+	Next  *recCycleThroughFixed
+}
+
+type recMutualFixedA struct {
+	Value uint64
+	B     *recMutualFixedB
+}
+
+type recMutualFixedB struct {
+	Value uint64
+	A     *recMutualFixedA
+}
+
+// Tag misuse the descriptor build rejects: a limit family declaring more
+// dimensions than the type has, size or limit tags on a TypeWrapper field,
+// and a second level of pointer indirection.
+func TestTagMisuseRejections(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	t.Run("surplus_max_dimensions", func(t *testing.T) {
+		type surplusMax struct {
+			V []uint64 `ssz-max:"64,128"`
+		}
+		_, err := cache.GetTypeDescriptor(reflect.TypeFor[surplusMax](), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "no capacity to bound") {
+			t.Fatalf("err = %v, want a surplus-dimension rejection", err)
+		}
+	})
+
+	t.Run("unsupported_kind", func(t *testing.T) {
+		_, err := cache.GetTypeDescriptor(reflect.TypeOf(uintptr(0)), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "unsupported type kind") {
+			t.Fatalf("err = %v, want the unsupported-kind rejection", err)
+		}
+	})
+
+	t.Run("conflicting_dynssz_max_placeholder", func(t *testing.T) {
+		type conflictingMax struct {
+			L []uint8 `ssz-max:"5" dynssz-max:"?"`
+		}
+		_, err := cache.GetTypeDescriptor(reflect.TypeFor[conflictingMax](), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "conflicting max tags") {
+			t.Fatalf("err = %v, want the placeholder-mismatch rejection", err)
+		}
+	})
+
+	t.Run("bitsized_dimension_grants_no_limit_equality", func(t *testing.T) {
+		type bitsizedMax struct {
+			B []byte `ssz-bitsize:"30" ssz-max:"30"`
+		}
+		_, err := cache.GetTypeDescriptor(reflect.TypeFor[bitsizedMax](), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "no capacity to bound") {
+			t.Fatalf("err = %v, want the fixed-dimension limit rejection", err)
+		}
+	})
+
+	t.Run("optional_child_max_hints", func(t *testing.T) {
+		type optionalChildMax struct {
+			P *[]uint8 `ssz-type:"optional" ssz-max:"?,16"`
+		}
+		extCache := NewTypeCache(&dummyDynamicSpecs{})
+		extCache.ExtendedTypes = true
+		desc, err := extCache.GetTypeDescriptor(reflect.TypeFor[optionalChildMax](), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("descriptor build failed: %v", err)
+		}
+		optDesc := desc.ContainerDesc.Fields[0].Type
+		if optDesc.ElemDesc == nil || optDesc.ElemDesc.Limit != 16 {
+			t.Fatalf("optional child limit = %v, want 16", optDesc.ElemDesc)
+		}
+	})
+
+	t.Run("container_root_max_hint", func(t *testing.T) {
+		type plainContainer struct {
+			V uint64
+		}
+		_, err := cache.GetTypeDescriptor(reflect.TypeFor[plainContainer](), nil, []SszMaxSizeHint{{Size: 10}}, nil)
+		if err == nil || !strings.Contains(err.Error(), "field tags") {
+			t.Fatalf("err = %v, want the container field-tag guidance", err)
+		}
+	})
+
+	t.Run("wrapper_field_tags", func(t *testing.T) {
+		_, err := cache.GetTypeDescriptor(
+			reflect.TypeFor[hintedWrapperHolder](), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "TypeWrapper") {
+			t.Fatalf("err = %v, want the wrapper field-tag rejection", err)
+		}
+	})
+
+	t.Run("multi_level_pointer", func(t *testing.T) {
+		type doublePtr struct {
+			V **uint64
+		}
+		_, err := cache.GetTypeDescriptor(reflect.TypeFor[doublePtr](), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "multi-level pointer") {
+			t.Fatalf("err = %v, want the multi-level pointer rejection", err)
+		}
+	})
+}
+
+// hintedWrapperHolder tags the field holding a wrapper; the wrapper's own
+// descriptor declares its constraints, so the field tag is rejected.
+type hintedWrapperHolder struct {
+	W testTypeWrapper `ssz-type:"wrapper" ssz-size:"4"`
 }

@@ -4,13 +4,19 @@
 
 package dynssz
 
-import "testing"
+import (
+	"encoding/json"
+	"math"
+	"math/big"
+	"testing"
+)
 
 // TestEvalIntSpecExpression exercises the rational spec-expression evaluator
 // across every operator, the overflow/underflow/division guards, the literal
 // and identifier factors, the evaluate-then-ceil-once semantics, and the
 // unsupported/unresolved outcomes.
 func TestEvalIntSpecExpression(t *testing.T) {
+	type namedCarrierF float64
 	specs := map[string]any{
 		"A":   uint64(10),
 		"B":   uint64(3),
@@ -18,6 +24,19 @@ func TestEvalIntSpecExpression(t *testing.T) {
 		"MAX": ^uint64(0),
 		"NEG": int(-5),
 		"F":   3.5, // float rounds up to 4
+		// Fractional operands stay exact until the single final rounding; JSON
+		// spec files decode every number as float64, so this is the common shape.
+		"HALF": 0.5,
+		"F32":  float32(1.5),
+		// The carrier type must not change the operand: a fractional spec
+		// contributes the same exact rational however it arrives.
+		"JNUMF":   json.Number("2.5"),
+		"JNUMI":   json.Number("6"),
+		"JNUMBAD": json.Number("nope"),
+		"NAMEDF":  namedCarrierF(2.5),
+		"NAN":     math.NaN(),
+		"INF":     math.Inf(1),
+		"NEGF":    -1.5,
 	}
 
 	cases := []struct {
@@ -48,6 +67,26 @@ func TestEvalIntSpecExpression(t *testing.T) {
 		{"literal", "42", true, true, 42, false},
 		{"ident", "A", true, true, 10, false},
 		{"float_ceil", "F", true, true, 4, false},
+		// A float operand must enter the arithmetic as the exact rational it is.
+		// Rounding it up first turned 0.5 into 1, so these produced 4, 2 and 8.
+		{"float_operand_mul", "HALF * 4", true, true, 2, false},
+		{"float_operand_mul_small", "HALF * 2", true, true, 1, false},
+		{"float_operand_mul_fraction", "F * 2", true, true, 7, false},
+		// Two halves make a whole rather than two ceilings.
+		{"float_operand_add", "HALF + HALF", true, true, 1, false},
+		{"float_operand_div", "HALF / 2 * 8", true, true, 2, false},
+		{"float32_operand", "F32 * 2", true, true, 3, false},
+		// 2.5*4 is 10 whether the 2.5 arrives as float64, json.Number or a
+		// named float; a per-operand ceiling would make it 12.
+		{"jnum_float_operand", "JNUMF * 4", true, true, 10, false},
+		{"jnum_int_operand", "JNUMI / 4", true, true, 2, false},
+		{"named_float_operand", "NAMEDF * 4", true, true, 10, false},
+		{"jnum_bad_operand", "JNUMBAD + 1", true, false, 0, true},
+		// A lone fractional operand still rounds up, as before.
+		{"float_operand_alone", "HALF", true, true, 1, false},
+		{"float_nan", "NAN + 1", true, false, 0, true},
+		{"float_inf", "INF + 1", true, false, 0, true},
+		{"float_negative", "NEGF + 1", true, false, 0, true},
 		{"add_overflow", "MAX + A", true, false, 0, true},
 		{"sub_negative", "B - A", true, false, 0, true},
 		{"mul_overflow", "BIG * BIG", true, false, 0, true},
@@ -86,5 +125,93 @@ func TestEvalIntSpecExpression(t *testing.T) {
 				t.Fatalf("evalIntSpecExpression(%q) err=%v; wantErr=%v", tc.expr, err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// Genuine evaluation errors surface wherever an undefined identifier sits in
+// the expression, while a zero fabricated by the undefined identifier itself
+// resolves as unknown rather than a division error.
+func TestSpecExpressionErrorOrderIndependence(t *testing.T) {
+	ds := NewDynSsz(map[string]any{"A": uint64(10)})
+
+	for _, expr := range []string{"A/0+UNDEF", "UNDEF+A/0", "A%0+UNDEF", "UNDEF+A%0"} {
+		if _, _, err := ds.ResolveSpecValue(expr); err == nil {
+			t.Errorf("%s: genuine error swallowed", expr)
+		}
+	}
+	for _, expr := range []string{"UNDEF+A", "A/UNDEF", "A%UNDEF", "UNDEF-A"} {
+		resolved, _, err := ds.ResolveSpecValue(expr)
+		if err != nil || resolved {
+			t.Errorf("%s: resolved=%v err=%v, want unresolved without error", expr, resolved, err)
+		}
+	}
+}
+
+// Directly-supplied spec values keep their precision whatever numeric shape
+// carries them.
+func TestSpecValueCoercion(t *testing.T) {
+	type namedU64 uint64
+	big1 := new(big.Int).SetUint64(18446744073709551615)
+	ds := NewDynSsz(map[string]any{
+		"JNUM_INT":   json.Number("18446744073709551615"),
+		"JNUM_FLOAT": json.Number("0.5"),
+		"NAMED":      namedU64(42),
+		"BIG":        big1,
+		"BIG_NEG":    big.NewInt(-1),
+	})
+
+	expect := func(name string, want uint64) {
+		resolved, got, err := ds.ResolveSpecValue(name)
+		if err != nil || !resolved || got != want {
+			t.Errorf("%s: resolved=%v got=%d err=%v, want %d", name, resolved, got, err, want)
+		}
+	}
+	expect("JNUM_INT", 18446744073709551615)
+	expect("NAMED", 42)
+	expect("BIG", 18446744073709551615)
+	// A fractional value rounds up at the end like any float spec.
+	expect("JNUM_FLOAT", 1)
+
+	if _, _, err := ds.ResolveSpecValue("BIG_NEG"); err == nil {
+		t.Error("negative big.Int accepted")
+	}
+	var nilBig *big.Int
+	nilDs := NewDynSsz(map[string]any{"BIG_NIL": nilBig})
+	if _, _, err := nilDs.ResolveSpecValue("BIG_NIL"); err == nil {
+		t.Error("typed-nil big.Int accepted")
+	}
+
+	type namedI32 int32
+	type namedF64 float64
+	type namedStruct struct{ X int }
+	ds2 := NewDynSsz(map[string]any{
+		"NAMED_INT":   namedI32(7),
+		"NAMED_FLOAT": namedF64(2.5),
+		"JNUM_BAD":    json.Number("not-a-number"),
+		"STRUCT":      namedStruct{X: 1},
+	})
+	if resolved, got, err := ds2.ResolveSpecValue("NAMED_INT"); err != nil || !resolved || got != 7 {
+		t.Errorf("NAMED_INT: resolved=%v got=%d err=%v", resolved, got, err)
+	}
+	if resolved, got, err := ds2.ResolveSpecValue("NAMED_FLOAT"); err != nil || !resolved || got != 3 {
+		t.Errorf("NAMED_FLOAT: resolved=%v got=%d err=%v, want the once-ceiled 3", resolved, got, err)
+	}
+	if _, _, err := ds2.ResolveSpecValue("JNUM_BAD"); err == nil {
+		t.Error("malformed json.Number accepted")
+	}
+	if _, _, err := ds2.ResolveSpecValue("STRUCT"); err == nil {
+		t.Error("struct-typed spec value accepted")
+	}
+}
+
+// A spec key that spells an expression answers the lookup directly, with the
+// blanks the expression grammar ignores not counting against the match.
+func TestSpecDirectKeyWhitespace(t *testing.T) {
+	ds := NewDynSsz(map[string]any{"A+B": uint64(99), "A": uint64(10), "B": uint64(3)})
+	for _, name := range []string{"A+B", "A + B", "A +\tB"} {
+		resolved, got, err := ds.ResolveSpecValue(name)
+		if err != nil || !resolved || got != 99 {
+			t.Errorf("%q: resolved=%v got=%d err=%v, want the direct 99", name, resolved, got, err)
+		}
 	}
 }

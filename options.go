@@ -19,6 +19,7 @@ type DynSszOptions struct {
 	StreamWriterBufferSize int
 	StreamReaderBufferSize int
 	MaxStreamSize          int
+	MaxNestingDepth        int
 }
 
 // WithNoFastSsz disables fastssz fallback for types that implement fastssz
@@ -31,8 +32,8 @@ func WithNoFastSsz() DynSszOption {
 
 // WithNoDelegation disables delegation to a type's own generated Dynamic* SSZ
 // methods (MarshalSSZDyn, UnmarshalSSZDyn, HashTreeRootWith and friends,
-// including their DynamicView* variants), forcing every operation — plain and
-// view-descriptor — through the generic reflection engine.
+// including their DynamicView* variants). Fastssz-style methods are governed
+// separately by WithNoFastSsz.
 //
 // This differs from WithNoFastSsz, which only disables the legacy fastssz
 // fallback: WithNoFastSsz leaves generated dynamic methods in charge, whereas
@@ -120,6 +121,36 @@ func WithStreamReaderBufferSize(size int) DynSszOption {
 func WithMaxStreamSize(size int) DynSszOption {
 	return func(opts *DynSszOptions) {
 		opts.MaxStreamSize = size
+	}
+}
+
+// WithMaxNestingDepth bounds how deeply a value may nest while being encoded,
+// decoded or hashed. Defaults to 1024 if not set or set to a non-positive
+// value.
+//
+// The bound exists because stack exhaustion is fatal in Go: the runtime aborts
+// the process and recover() cannot contain it, so a server could not isolate
+// the failure to the request that caused it. Exceeding the bound returns
+// sszutils.ErrMaxDepthExceeded instead.
+//
+// Only a recursive type -- one whose cycle closes through a variable-length
+// field -- can nest to a depth the input controls, so the count advances only
+// through the types that lie on such a cycle: one level per cycle member
+// descended into, with the outermost value itself costing nothing. A trip
+// around a cycle costs as many levels as the cycle has structural members (a
+// type wrapper adds none). Every other type bottoms out at a depth fixed by
+// its own structure and is unaffected, as is the cost of encoding it.
+//
+// Generated code counts by the same rule with its own bound, fixed at
+// generation time (see the code generator's WithRecursionDepth option), so
+// both engines accept and reject at identical nesting depths. The one caveat
+// is a chain of distinct cycles spanning several packages: generated code
+// restarts its count where such a chain crosses a package boundary (the
+// depth-carrying methods are unexported), while the reflection walk counts it
+// as one run. Each side stays bounded either way.
+func WithMaxNestingDepth(depth int) DynSszOption {
+	return func(opts *DynSszOptions) {
+		opts.MaxNestingDepth = depth
 	}
 }
 

@@ -396,6 +396,59 @@ types:
 	}
 }
 
+func TestApplyToConfig_ViewsValidation(t *testing.T) {
+	t.Run("EmptyViewName", func(t *testing.T) {
+		path := writeTempConfig(t, `
+package: fmt
+output: out.go
+types:
+  - name: A
+    views: ["View1", "  "]
+`)
+		fc, _ := LoadConfig(path)
+		cfg := Config{}
+		_, err := fc.applyToConfig(&cfg, map[string]bool{}, filepath.Dir(path))
+		if err == nil || !strings.Contains(err.Error(), "empty view type name") {
+			t.Fatalf("expected empty-view-name error, got: %v", err)
+		}
+	})
+
+	t.Run("ViewNamesTrimmed", func(t *testing.T) {
+		path := writeTempConfig(t, `
+package: fmt
+output: out.go
+types:
+  - name: A
+    views: [" View1 ", "View2"]
+`)
+		fc, _ := LoadConfig(path)
+		cfg := Config{}
+		specs, err := fc.applyToConfig(&cfg, map[string]bool{}, filepath.Dir(path))
+		if err != nil {
+			t.Fatalf("applyToConfig: %v", err)
+		}
+		if len(specs[0].ViewTypes) != 2 || specs[0].ViewTypes[0] != "View1" || specs[0].ViewTypes[1] != "View2" {
+			t.Fatalf("view names not trimmed: %q", specs[0].ViewTypes)
+		}
+	})
+
+	t.Run("ViewOnlyNeedsViews", func(t *testing.T) {
+		path := writeTempConfig(t, `
+package: fmt
+output: out.go
+types:
+  - name: A
+    view-only: true
+`)
+		fc, _ := LoadConfig(path)
+		cfg := Config{}
+		_, err := fc.applyToConfig(&cfg, map[string]bool{}, filepath.Dir(path))
+		if err == nil || !strings.Contains(err.Error(), "view-only needs at least one entry") {
+			t.Fatalf("expected view-only-needs-views error, got: %v", err)
+		}
+	})
+}
+
 func TestApplyToConfig_MissingTypeName(t *testing.T) {
 	path := writeTempConfig(t, `
 package: fmt
@@ -825,3 +878,50 @@ types:
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// A package pattern relative to the config file resolves to a filesystem path
+// whether the config itself was named by a relative or an absolute path.
+// filepath.Join cleans away the "./" prefix, and with a relative base the
+// result would read as an import path to go/packages.
+func TestResolvePackagePathRelativeBase(t *testing.T) {
+	got := resolvePackagePath("./pkg", ".")
+	if !filepath.IsAbs(got) && !strings.HasPrefix(got, "./") && !strings.HasPrefix(got, "../") {
+		t.Fatalf("resolvePackagePath(./pkg, .) = %q, which go/packages reads as an import path", got)
+	}
+	if abs := resolvePackagePath("./pkg", "/tmp/cfg"); !filepath.IsAbs(abs) {
+		t.Fatalf("absolute base must yield an absolute pattern, got %q", abs)
+	}
+	// Import paths stay untouched.
+	if got := resolvePackagePath("github.com/foo/bar", "/tmp/cfg"); got != "github.com/foo/bar" {
+		t.Fatalf("import path was rewritten to %q", got)
+	}
+	// Recursive patterns keep their suffix.
+	if got := resolvePackagePath("./...", "/tmp/cfg"); !strings.HasSuffix(got, "...") || !filepath.IsAbs(got) {
+		t.Fatalf("recursive pattern resolved to %q", got)
+	}
+}
+
+// When the working directory has been deleted, filepath.Abs cannot resolve a
+// relative join and the path keeps its explicit relative form.
+func TestResolvePackagePath_AbsFailure(t *testing.T) {
+	gone, err := os.MkdirTemp("", "gone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(gone); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(prev) })
+	if err := os.Remove(gone); err != nil {
+		t.Fatal(err)
+	}
+
+	got := resolvePackagePath("./pkg", "rel-base")
+	if got != "./rel-base/pkg" {
+		t.Fatalf("resolvePackagePath = %q, want the explicit relative fallback", got)
+	}
+}

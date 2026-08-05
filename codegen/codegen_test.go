@@ -5,11 +5,14 @@
 package codegen
 
 import (
+	"encoding/binary"
+	"errors"
 	"go/types"
 	"math/big"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -37,6 +40,166 @@ type inlineCycleMember struct {
 // the cycle itself.
 type inlineCycleRoot struct {
 	Items []inlineCycleMember `ssz-max:"4"`
+}
+
+// limitlessListType carries a list with no ssz-max and a bitlist with no limit
+// either, so neither has an SSZ hash tree root.
+type limitlessListType struct {
+	X []uint64
+	B []byte `ssz-type:"bitlist"`
+}
+
+// regionBound* cover the shapes a dynamic list's region bound has to state: an
+// element whose fixed section is spec-driven, an element that is a vector of
+// dynamic entries (statically and spec-driven counted), and an element that is
+// itself a list, which has no floor at all.
+type regionBoundElem struct {
+	Fixed []uint16 `ssz-size:"4" dynssz-size:"BOUND_SIZE"`
+	Tail  []uint8  `ssz-max:"8"`
+}
+
+type regionBoundDyn struct {
+	Tail []uint8 `ssz-max:"8"`
+}
+
+type regionBoundWrapped = dynssz.TypeWrapper[struct {
+	Data [2][]uint8 `ssz-max:"?,8"`
+}, [2][]uint8]
+
+type regionBoundTypes struct {
+	SpecSized   []regionBoundElem    `ssz-max:"64"`
+	StaticVec   [][2]regionBoundDyn  `ssz-max:"64"`
+	SpecVec     [][]regionBoundDyn   `ssz-size:"?,2" dynssz-size:"?,BOUND_COUNT" ssz-max:"64"`
+	Wrapped     []regionBoundWrapped `ssz-type:"?,wrapper" ssz-max:"64"`
+	ListOfLists [][]uint8            `ssz-max:"64,8"`
+}
+
+// The decoder bounds a declared element count by the element's minimum size,
+// which must be emitted as an expression wherever a spec value feeds it: the
+// generator only sees the static tag values, and a caller running a preset that
+// resolves them smaller would have valid input refused.
+func TestGenerateListRegionBound(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_test.go", WithReflectType(reflect.TypeFor[regionBoundTypes]()))
+
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generation: %v", err)
+	}
+	code := files["gen_test.go"]
+
+	tests := []struct {
+		name  string
+		want  string
+		count int
+	}{
+		// A spec-driven fixed section: 4 offset bytes for the dynamic tail plus
+		// the resolved size of Fixed. Never zero, so no guard.
+		{"spec-sized container element", "itemCount > (len(buf)-startOffset)/(size1+4)", 1},
+		// Two entries, each an offset plus the entry's own 4-byte fixed section.
+		// Fully static, so it folds to a literal.
+		{"static vector element", "itemCount > (len(buf)-startOffset)/(16)", 1},
+		// A resolved count can make the divisor zero -- or wrap it past zero --
+		// so the bound itself is checked before dividing by it.
+		{"spec-counted vector element", "int(expr1)*8 > 0 && itemCount > (len(buf)-startOffset)/(int(expr1)*8)", 1},
+		// A wrapper contributes nothing of its own: the bound is the wrapped
+		// vector's, two entries of one offset each.
+		{"wrapper element", "itemCount > (len(buf)-startOffset)/(8)", 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := strings.Count(code, tt.want); got != tt.count {
+				t.Errorf("emitted %d occurrences of %q, want %d", got, tt.want, tt.count)
+			}
+		})
+	}
+
+	t.Run("list element states no bound", func(t *testing.T) {
+		// An empty list costs nothing, so no count is refusable. ListOfLists is
+		// the only field whose element is a list, so the other three each get one
+		// bound in the buffer unmarshaler.
+		if got := strings.Count(code, "ErrListRegionTooSmallFn"); got != 4 {
+			t.Errorf("emitted %d region bounds, want one per bounded field", got)
+		}
+	})
+}
+
+// A limit is part of the type in SSZ: List[T, N] and Bitlist[N] need N to
+// merkleize, so a list without one has no hash tree root and hashing it is an
+// extension. Serialization never needs a limit, so only the hash method is
+// refused, and only without extended types.
+func TestGenerateLimitlessListRoot(t *testing.T) {
+	t.Run("HashRefused", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_test.go", WithReflectType(reflect.TypeFor[limitlessListType]()))
+
+		_, err := cg.GenerateToMap()
+		if !errors.Is(err, sszutils.ErrExtendedTypeDisabled) {
+			t.Fatalf("err = %v, want ErrExtendedTypeDisabled", err)
+		}
+	})
+
+	t.Run("SerializationAllowed", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_test.go",
+			WithReflectType(reflect.TypeFor[limitlessListType]()),
+			WithNoHashTreeRoot())
+
+		if _, err := cg.GenerateToMap(); err != nil {
+			t.Fatalf("serialization needs no limit: %v", err)
+		}
+	})
+
+	// The go/types parser splits lists and bitlists into separate builders, so
+	// it can classify one and miss the other. Both must be refused there too --
+	// this is the front end dynssz-gen uses, and a type that hashes in one
+	// engine but not the other is the divergence this rule exists to prevent.
+	t.Run("GoTypesParserRefusesBoth", func(t *testing.T) {
+		cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
+		pkgs, loadErr := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
+		if loadErr != nil || len(pkgs) == 0 {
+			t.Fatalf("load tests package: %v", loadErr)
+		}
+		scope := pkgs[0].Types.Scope()
+
+		for _, typeName := range []string{"UnboundedList", "UnboundedBitlist"} {
+			t.Run(typeName, func(t *testing.T) {
+				obj := scope.Lookup(typeName)
+				if obj == nil {
+					t.Fatalf("%s not found", typeName)
+				}
+
+				cg := NewCodeGenerator(nil)
+				cg.BuildFile("gen_test.go", WithGoTypesType(obj.Type()))
+
+				if _, genErr := cg.GenerateToMap(); !errors.Is(genErr, sszutils.ErrExtendedTypeDisabled) {
+					t.Fatalf("err = %v, want ErrExtendedTypeDisabled", genErr)
+				}
+			})
+		}
+	})
+
+	t.Run("ExtendedTypesWarns", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_test.go",
+			WithReflectType(reflect.TypeFor[limitlessListType]()),
+			WithExtendedTypes())
+
+		if _, err := cg.GenerateToMap(); err != nil {
+			t.Fatalf("extended types should allow the unbounded root: %v", err)
+		}
+
+		warnings := cg.Warnings()
+		if len(warnings) != 2 {
+			t.Fatalf("warnings = %v, want one per limit-less field", warnings)
+		}
+		for _, warning := range warnings {
+			if !strings.Contains(warning, "has no ssz-max") {
+				t.Errorf("warning %q does not name the missing limit", warning)
+			}
+		}
+	})
 }
 
 // A recursive cycle is only emittable when it can be broken by a delegated
@@ -109,6 +272,47 @@ func TestCodeGeneratorGenerate(t *testing.T) {
 		_, err := cg.GenerateToMap()
 		if err == nil || !strings.Contains(err.Error(), "no SSZ fields") {
 			t.Fatalf("expected no-SSZ-fields error, got %v", err)
+		}
+	})
+
+	t.Run("CrossFileDuplicate", func(t *testing.T) {
+		// The same type generated into two files of one package declares its
+		// methods twice; the guard has to span files.
+		cg := NewCodeGenerator(nil)
+		rt := reflect.TypeFor[SimpleTestStruct]()
+		cg.BuildFile("a_test_gen.go", WithReflectType(rt))
+		cg.BuildFile("b_test_gen.go", WithReflectType(rt))
+		if _, err := cg.GenerateToMap(); err == nil || !strings.Contains(err.Error(), "one file only") {
+			t.Fatalf("expected cross-file duplicate error, got %v", err)
+		}
+	})
+
+	t.Run("LegacyNeedsFullMethodSet", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_test.go", WithReflectType(reflect.TypeFor[SimpleTestStruct]()), WithCreateLegacyFn(), WithNoHashTreeRoot())
+		if _, err := cg.GenerateToMap(); err == nil || !strings.Contains(err.Error(), "full method set") {
+			t.Fatalf("expected legacy method-set error, got %v", err)
+		}
+	})
+
+	t.Run("HintsOnContainerRoot", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_test.go", WithReflectType(reflect.TypeFor[SimpleTestStruct]()), WithSizeHints([]ssztypes.SszSizeHint{{Size: 4}}))
+		if _, err := cg.GenerateToMap(); err == nil || !strings.Contains(err.Error(), "container") {
+			t.Fatalf("expected container-root hint error, got %v", err)
+		}
+	})
+
+	t.Run("InvalidPackageName", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		if err := cg.SetPackageName("_"); err == nil {
+			t.Fatal("blank identifier must be rejected as a package name")
+		}
+		if err := cg.SetPackageName("123abc"); err == nil {
+			t.Fatal("non-identifier must be rejected as a package name")
+		}
+		if err := cg.SetPackageName("mypkg"); err != nil {
+			t.Fatalf("valid name rejected: %v", err)
 		}
 	})
 
@@ -524,7 +728,9 @@ func TestNewCodeGenerator(t *testing.T) {
 
 func TestCodeGeneratorSetPackageName(t *testing.T) {
 	cg := NewCodeGenerator(nil)
-	cg.SetPackageName("testpackage")
+	if err := cg.SetPackageName("testpackage"); err != nil {
+		t.Fatalf("SetPackageName: %v", err)
+	}
 
 	// Package name is internal, so we can't directly test it
 	// But we can verify it doesn't panic and the generator is still usable
@@ -557,7 +763,7 @@ func TestCodeGeneratorSetHeaderTemplate(t *testing.T) {
 
 	t.Run("CustomHeader", func(t *testing.T) {
 		cg := NewCodeGenerator(nil)
-		warn := cg.SetHeaderTemplate("// Code generated by mytool; DO NOT EDIT.\n// mytool-hash: {hash} (dynamic-ssz v{version})\n")
+		warn := cg.SetHeaderTemplate("// Code generated by mytool; DO NOT EDIT.\n// mytool-hash: {hash} (dynamic-ssz {version})\n")
 		if warn != nil {
 			t.Errorf("conventional first line should not warn, got: %v", warn)
 		}
@@ -597,6 +803,32 @@ func TestCodeGeneratorSetHeaderTemplate(t *testing.T) {
 		cg := NewCodeGenerator(nil)
 		if warn := cg.SetHeaderTemplate("// Code generated by mytool. DO NOT EDIT.\r\n// Hash: {hash}\r\n"); warn != nil {
 			t.Errorf("CRLF line endings should not fail the convention check, got: %v", warn)
+		}
+	})
+
+	t.Run("NonCommentTemplateRejected", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		err := cg.SetHeaderTemplate("my header\n// Hash: {hash}\n")
+		if !errors.Is(err, ErrInvalidHeaderTemplate) {
+			t.Fatalf("expected ErrInvalidHeaderTemplate, got: %v", err)
+		}
+
+		// The rejected template is not applied; generation keeps the default.
+		cg.BuildFile("test.go", WithReflectType(reflect.TypeFor[SimpleTestStruct]()))
+		results, genErr := cg.GenerateToMap()
+		if genErr != nil {
+			t.Fatalf("GenerateToMap failed: %v", genErr)
+		}
+		if !strings.HasPrefix(results["test.go"], "// Code generated by dynamic-ssz. DO NOT EDIT.\n") {
+			t.Error("rejected template must leave the default header in place")
+		}
+	})
+
+	t.Run("IndentedCommentAccepted", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		warn := cg.SetHeaderTemplate("// Code generated by mytool. DO NOT EDIT.\n  // indented comment\n")
+		if warn != nil {
+			t.Errorf("indented comment lines are valid Go, got: %v", warn)
 		}
 	})
 
@@ -696,7 +928,7 @@ func TestCodeGeneratorAPI(t *testing.T) {
 		reflectType := reflect.TypeOf((*SimpleTestStruct)(nil)).Elem()
 
 		cg.BuildFile("file1.go", WithReflectType(reflectType))
-		cg.BuildFile("file2.go", WithReflectType(reflectType))
+		cg.BuildFile("file2.go", WithReflectType(reflect.TypeOf((*SimpleTestStruct2)(nil)).Elem()))
 
 		results, err := cg.GenerateToMap()
 		if err != nil {
@@ -710,7 +942,9 @@ func TestCodeGeneratorAPI(t *testing.T) {
 
 	t.Run("CustomPackageName", func(t *testing.T) {
 		cg := NewCodeGenerator(nil)
-		cg.SetPackageName("custompackage")
+		if err := cg.SetPackageName("custompackage"); err != nil {
+			t.Fatalf("SetPackageName: %v", err)
+		}
 		reflectType := reflect.TypeOf((*SimpleTestStruct)(nil)).Elem()
 
 		cg.BuildFile("test.go", WithReflectType(reflectType))
@@ -872,6 +1106,20 @@ func TestGenerateWithViewOnly(t *testing.T) {
 	}
 }
 
+// TestGenerateViewOnlyWithoutViews tests that a view-only type with no view
+// types is rejected with a message naming the missing views.
+func TestGenerateViewOnlyWithoutViews(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("test.go",
+		WithReflectType(reflect.TypeFor[SimpleTestStruct](), WithViewOnly()),
+	)
+
+	_, err := cg.GenerateToMap()
+	if err == nil || !strings.Contains(err.Error(), "view-only but declares no view types") {
+		t.Fatalf("expected the view-only-without-views rejection, got: %v", err)
+	}
+}
+
 // TestGenerateFileNoTypes tests the generateFile error when no types are provided.
 func TestGenerateFileNoTypes(t *testing.T) {
 	cg := NewCodeGenerator(nil)
@@ -920,7 +1168,9 @@ func TestCodeGeneratorNilOptions(t *testing.T) {
 
 	t.Run("NilBuildFileOption", func(t *testing.T) {
 		cg := NewCodeGenerator(nil)
-		cg.SetPackageName("test")
+		if err := cg.SetPackageName("test"); err != nil {
+			t.Fatalf("SetPackageName: %v", err)
+		}
 		var nilOpt CodeGeneratorOption
 		cg.BuildFile("foo.go", WithReflectType(dataType), nilOpt)
 		if _, err := cg.GenerateToMap(); err != nil {
@@ -930,7 +1180,9 @@ func TestCodeGeneratorNilOptions(t *testing.T) {
 
 	t.Run("NilReflectViewType", func(t *testing.T) {
 		cg := NewCodeGenerator(nil)
-		cg.SetPackageName("test")
+		if err := cg.SetPackageName("test"); err != nil {
+			t.Fatalf("SetPackageName: %v", err)
+		}
 		cg.BuildFile("foo.go", WithReflectType(dataType, WithReflectViewTypes(nil)))
 		if _, err := cg.GenerateToMap(); err != nil {
 			t.Fatalf("nil reflect view type: %v", err)
@@ -939,7 +1191,9 @@ func TestCodeGeneratorNilOptions(t *testing.T) {
 
 	t.Run("NilGoTypesViewType", func(t *testing.T) {
 		cg := NewCodeGenerator(nil)
-		cg.SetPackageName("test")
+		if err := cg.SetPackageName("test"); err != nil {
+			t.Fatalf("SetPackageName: %v", err)
+		}
 		cg.BuildFile("foo.go", WithReflectType(dataType, WithGoTypesViewTypes(nil)))
 		if _, err := cg.GenerateToMap(); err != nil {
 			t.Fatalf("nil go/types view type: %v", err)
@@ -1170,7 +1424,11 @@ type genBox[T any] struct {
 // view; both sides are pointer-wrapped alike during analysis.
 type genSliceBase []uint64
 
+var _ = sszutils.Annotate[genSliceBase](`ssz-max:"64"`)
+
 type genSliceView []uint64
+
+var _ = sszutils.Annotate[genSliceView](`ssz-max:"64"`)
 
 func TestGenerateViewEdgeCases(t *testing.T) {
 	baseType := reflect.TypeFor[SimpleTestStruct]()
@@ -1472,5 +1730,548 @@ func TestGenerateWithoutDynExprRecursiveCycle(t *testing.T) {
 	}
 	if strings.Contains(files["gen_rec_nodyn.go"], "Dyn(") {
 		t.Errorf("static recursive output must contain no *Dyn call:\n%s", files["gen_rec_nodyn.go"])
+	}
+}
+
+// topLevelWrapperStruct is a user-declared struct carrying type-wrapper
+// semantics through a type-level annotation. A top-level entry has no field
+// tag, so the annotation is the only channel available to it.
+type topLevelWrapperStruct struct {
+	Items []topLevelWrapperItem `ssz-max:"8"`
+}
+
+type topLevelWrapperItem struct {
+	Val  uint64
+	Tail []byte `ssz-max:"4"`
+}
+
+var _ = sszutils.Annotate[topLevelWrapperStruct](`ssz-type:"wrapper"`)
+
+// topLevelWrapperAlias names the library's generic TypeWrapper, which is only
+// expressible as a transparent alias.
+type topLevelWrapperAlias = dynssz.TypeWrapper[struct {
+	Data []byte `ssz-size:"32"`
+}, []byte]
+
+type topLevelUnionAlias = dynssz.CompatibleUnion[struct {
+	A uint32
+	B uint64
+}]
+
+type topLevelClassicUnionAlias = dynssz.Union[struct {
+	A uint32
+	B uint64
+}]
+
+// TestValidateTopLevelTypeWrapperShapes pins which wrapper-shaped types may be
+// listed as standalone -types entries.
+//
+// The gate keyed on the descriptor's SSZ type, so it rejected anything that
+// merely *mapped* to a wrapper or union — including an ordinary named struct
+// that can receive methods perfectly well, and which generated fine before the
+// gate existed. Only the library's generics genuinely cannot: they are
+// nameable solely through a transparent alias, so a method receiver would name
+// the foreign generic type.
+func TestValidateTopLevelTypeWrapperShapes(t *testing.T) {
+	tests := []struct {
+		name       string
+		reflectTyp reflect.Type
+		wantErr    bool
+	}{
+		{"declared struct with wrapper semantics", reflect.TypeFor[topLevelWrapperStruct](), false},
+		{"pointer to declared wrapper struct", reflect.TypeFor[*topLevelWrapperStruct](), false},
+		{"generic TypeWrapper via alias", reflect.TypeFor[topLevelWrapperAlias](), true},
+		{"generic CompatibleUnion via alias", reflect.TypeFor[topLevelUnionAlias](), true},
+		{"generic Union via alias", reflect.TypeFor[topLevelClassicUnionAlias](), true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cg := NewCodeGenerator(nil)
+			cg.BuildFile("test.go", WithReflectType(tt.reflectTyp))
+
+			out, err := cg.GenerateToMap()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected the alias-only generic to be rejected")
+				}
+				if !strings.Contains(err.Error(), "nameable only via a type alias") {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("declared named type rejected: %v", err)
+			}
+			code, ok := out["test.go"]
+			if !ok {
+				t.Fatal("no output emitted")
+			}
+			// The methods must land on the declared type, not on a foreign
+			// generic receiver.
+			if !strings.Contains(code, "func (t *topLevelWrapperStruct) MarshalSSZTo(") {
+				t.Fatalf("generated code has no marshal method for the declared type:\n%s", code)
+			}
+		})
+	}
+
+	// The generator's real entry point is go/types, not reflect, so the gate has
+	// to reach the same verdict there.
+	t.Run("goTypes", func(t *testing.T) {
+		cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
+		pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
+		if err != nil || len(pkgs) == 0 {
+			t.Fatalf("load tests package: %v", err)
+		}
+
+		declared := pkgs[0].Types.Scope().Lookup("TopLevelStructWrapper")
+		if declared == nil {
+			t.Fatal("TopLevelStructWrapper not found")
+		}
+
+		t.Run("declared struct accepted", func(t *testing.T) {
+			cg := NewCodeGenerator(nil)
+			cg.BuildFile("gen_wrapper_gt.go", WithGoTypesType(declared.Type()))
+			if _, genErr := cg.GenerateToMap(); genErr != nil {
+				t.Fatalf("declared named type rejected via go/types: %v", genErr)
+			}
+		})
+
+		t.Run("pointer to declared struct accepted", func(t *testing.T) {
+			cg := NewCodeGenerator(nil)
+			cg.BuildFile("gen_wrapper_ptr_gt.go", WithGoTypesType(types.NewPointer(declared.Type())))
+			if _, genErr := cg.GenerateToMap(); genErr != nil {
+				t.Fatalf("pointer to declared named type rejected via go/types: %v", genErr)
+			}
+		})
+
+		// The library generic instantiated the way an alias declares it: the one
+		// shape that genuinely cannot receive methods.
+		libPkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz")
+		if err != nil || len(libPkgs) == 0 {
+			t.Fatalf("load library package: %v", err)
+		}
+		descObj := pkgs[0].Types.Scope().Lookup("TopLevelStructWrapperItem")
+		if descObj == nil {
+			t.Fatal("TopLevelStructWrapperItem not found")
+		}
+
+		for _, generic := range []string{"CompatibleUnion", "Union"} {
+			t.Run("generic "+generic+" rejected", func(t *testing.T) {
+				obj := libPkgs[0].Types.Scope().Lookup(generic)
+				if obj == nil {
+					t.Skipf("%s not found in the library package", generic)
+				}
+				named, ok := obj.Type().(*types.Named)
+				if !ok {
+					t.Skipf("%s is %T, want *types.Named", generic, obj.Type())
+				}
+				inst, err := types.Instantiate(nil, named, []types.Type{descObj.Type()}, false)
+				if err != nil {
+					t.Fatalf("instantiate %s: %v", generic, err)
+				}
+
+				cg := NewCodeGenerator(nil)
+				cg.BuildFile("gen_generic_gt.go", WithGoTypesType(inst))
+				_, genErr := cg.GenerateToMap()
+				if genErr == nil {
+					t.Fatalf("expected the alias-only generic %s to be rejected", generic)
+				}
+				if !strings.Contains(genErr.Error(), "nameable only via a type alias") &&
+					!strings.Contains(genErr.Error(), "generic type instantiation") {
+					t.Fatalf("unexpected error for %s: %v", generic, genErr)
+				}
+			})
+		}
+	})
+}
+
+// genSpecSized takes its length from a spec value with no static fallback;
+// genSpecSizedFallback declares one.
+type genSpecSized struct {
+	V []uint16 `dynssz-size:"GEN_LEN"`
+}
+type genSpecSizedFallback struct {
+	V []uint16 `ssz-size:"4" dynssz-size:"GEN_LEN"`
+}
+
+// genFixedSpecs stands in for a generator handed a type cache that already has
+// spec values loaded, e.g. one taken from a running DynSsz.
+type genFixedSpecs struct{ values map[string]uint64 }
+
+func (s genFixedSpecs) ResolveSpecValue(name string) (bool, uint64, error) {
+	value, ok := s.values[name]
+	return ok, value, nil
+}
+
+// Generated code resolves spec expressions against the specs it runs under, so
+// generation must not resolve them itself: the value a generating machine holds
+// is not the value the output should carry, and a length it cannot resolve is
+// still a length rather than a reason to emit a list.
+func TestGenerationDoesNotResolveSpecValues(t *testing.T) {
+	fallbackOf := regexp.MustCompile(`ResolveSpecValueWithDefault\(ds, "GEN_LEN", (\d+)\)`)
+
+	for _, tt := range []struct {
+		name     string
+		typ      reflect.Type
+		fallback string
+	}{
+		{name: "no static fallback", typ: reflect.TypeFor[genSpecSized](), fallback: "0"},
+		{name: "static fallback", typ: reflect.TypeFor[genSpecSizedFallback](), fallback: "4"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, specs := range []sszutils.DynamicSpecs{nil, genFixedSpecs{values: map[string]uint64{"GEN_LEN": 9}}} {
+				cg := NewCodeGenerator(ssztypes.NewTypeCache(specs))
+				cg.BuildFile("gen_test.go", WithReflectType(tt.typ))
+
+				files, err := cg.GenerateToMap()
+				if err != nil {
+					t.Fatalf("a length supplied by an expression must generate: %v", err)
+				}
+
+				got := fallbackOf.FindStringSubmatch(files["gen_test.go"])
+				if got == nil {
+					t.Fatalf("no spec resolution emitted:\n%s", files["gen_test.go"])
+				}
+				if got[1] != tt.fallback {
+					t.Errorf("emitted fallback %s, want %s (the declared static size)", got[1], tt.fallback)
+				}
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Static (without-dynamic-expressions) generation
+// ---------------------------------------------------------------------------
+
+// ---- deeply nested generated containers ----
+
+type nsLeaf struct {
+	A []byte `ssz-max:"8"`
+	B uint8
+}
+type nsD5 struct {
+	L nsLeaf
+	X uint16
+}
+type nsD4 struct {
+	N nsD5
+	L []nsD5 `ssz-max:"4"`
+}
+type nsD3 struct {
+	N nsD4
+	V [2]nsD4
+}
+type nsD2 struct {
+	N nsD3
+	P []nsD3 `ssz-type:"progressive-list" ssz-max:"8"`
+}
+type nsD1 struct {
+	N nsD2
+	Z uint64
+}
+
+// ---- container-of-container as list/vector/progressive-list ----
+
+type nsListOfC struct {
+	L []nsLeaf `ssz-max:"16"`
+}
+type nsVecOfC struct {
+	V [3]nsLeaf
+}
+type nsProgOfC struct {
+	L []nsLeaf `ssz-type:"progressive-list" ssz-max:"16"`
+}
+
+// ---- TypeWrapper wrapping a nested generated container (unexported variant) ----
+
+type nsWrapperHolder struct {
+	W dynssz.TypeWrapper[struct {
+		Data nsD4 `ssz-size:"?"`
+	}, nsD4]
+}
+
+// ---- union whose variants are nested generated containers (unexported) ----
+
+type nsUnionHolder struct {
+	U dynssz.CompatibleUnion[struct {
+		F1 nsLeaf
+		F2 nsD4
+	}]
+}
+
+// ---- optional / optional-list of nested generated containers ----
+
+type nsOptHolder struct {
+	Opt *nsD4 `ssz-type:"optional"`
+}
+type nsOptListHolder struct {
+	Opt *nsD4 `ssz-type:"optional-list"`
+}
+
+// ---- self-referential + mutually recursive (all in generation set) ----
+
+type nsSelfRec struct {
+	V     []byte      `ssz-max:"4"`
+	Peers []nsSelfRec `ssz-max:"4"`
+}
+type nsMutA struct {
+	V []byte   `ssz-max:"4"`
+	B []nsMutB `ssz-max:"4"`
+}
+type nsMutB struct {
+	V []byte   `ssz-max:"4"`
+	A []nsMutA `ssz-max:"4"`
+}
+
+var nsDynTokens = []string{"MarshalSSZDyn", "UnmarshalSSZDyn", "SizeSSZDyn", "HashTreeRootWithDyn"}
+
+func nsAssertNoDyn(t *testing.T, name, code string) {
+	t.Helper()
+	if code == "" {
+		t.Fatalf("%s: no code generated", name)
+	}
+	for _, tok := range nsDynTokens {
+		if idx := strings.Index(code, tok); idx >= 0 {
+			lo, hi := idx-140, idx+140
+			if lo < 0 {
+				lo = 0
+			}
+			if hi > len(code) {
+				hi = len(code)
+			}
+			t.Errorf("%s: forbidden %s under without-dynamic-expressions near:\n...%s...", name, tok, code[lo:hi])
+		}
+	}
+}
+
+// nsCombos enumerates flag combinations that must all keep the generated buffer
+// AND streaming paths free of *Dyn calls under WithoutDynamicExpressions.
+func nsCombos() []struct {
+	name string
+	opts []CodeGeneratorOption
+} {
+	return []struct {
+		name string
+		opts []CodeGeneratorOption
+	}{
+		{"plain", nil},
+		{"nofast", []CodeGeneratorOption{WithNoFastSsz()}},
+		{"streaming", []CodeGeneratorOption{WithCreateEncoderFn(), WithCreateDecoderFn()}},
+		{"nofast+streaming", []CodeGeneratorOption{WithNoFastSsz(), WithCreateEncoderFn(), WithCreateDecoderFn()}},
+		{"legacy", []CodeGeneratorOption{WithCreateLegacyFn()}},
+		{"all", []CodeGeneratorOption{WithNoFastSsz(), WithCreateEncoderFn(), WithCreateDecoderFn(), WithCreateLegacyFn()}},
+	}
+}
+
+// TestStaticNoDynNested generates a large family of nested generated containers
+// (deep containers-of-containers, list/vector/progressive-list nesting, union and
+// TypeWrapper variants with unexported nested types, optional/optional-list)
+// together under WithoutDynamicExpressions across every flag combo. The generated
+// code must be valid Go and must never reference a *Dyn buffer function — in the
+// buffer methods or in the streaming encoder/decoder.
+func TestStaticNoDynNested(t *testing.T) {
+	types := []reflect.Type{
+		reflect.TypeFor[nsLeaf](), reflect.TypeFor[nsD5](), reflect.TypeFor[nsD4](),
+		reflect.TypeFor[nsD3](), reflect.TypeFor[nsD2](), reflect.TypeFor[nsD1](),
+		reflect.TypeFor[nsListOfC](), reflect.TypeFor[nsVecOfC](), reflect.TypeFor[nsProgOfC](),
+		reflect.TypeFor[nsWrapperHolder](), reflect.TypeFor[nsUnionHolder](),
+		reflect.TypeFor[nsOptHolder](), reflect.TypeFor[nsOptListHolder](),
+	}
+	for _, combo := range nsCombos() {
+		t.Run(combo.name, func(t *testing.T) {
+			typeOpts := append([]CodeGeneratorOption{WithoutDynamicExpressions(), WithExtendedTypes()}, combo.opts...)
+			cg := NewCodeGenerator(nil)
+			buildOpts := make([]CodeGeneratorOption, 0, len(types))
+			for _, rt := range types {
+				buildOpts = append(buildOpts, WithReflectType(rt, typeOpts...))
+			}
+			cg.BuildFile("gen.go", buildOpts...)
+			files, err := cg.GenerateToMap()
+			if err != nil {
+				t.Fatalf("generate: %v", err)
+			}
+			nsAssertNoDyn(t, combo.name, files["gen.go"])
+		})
+	}
+}
+
+// TestStaticNoDynRecursion checks self-referential and mutually-recursive types
+// terminate (no infinite generator loop) and stay *Dyn-free across combos.
+func TestStaticNoDynRecursion(t *testing.T) {
+	for _, combo := range nsCombos() {
+		t.Run(combo.name, func(t *testing.T) {
+			typeOpts := append([]CodeGeneratorOption{WithoutDynamicExpressions()}, combo.opts...)
+			cg := NewCodeGenerator(nil)
+			cg.BuildFile("gen.go",
+				WithReflectType(reflect.TypeFor[nsSelfRec](), typeOpts...),
+				WithReflectType(reflect.TypeFor[nsMutA](), typeOpts...),
+				WithReflectType(reflect.TypeFor[nsMutB](), typeOpts...),
+				// A pointer-element cycle plus a holder that merely contains
+				// it: under the static build the streaming size closures must
+				// delegate to the cycle member's static sizer — a walk that
+				// inlines it instead grows the output without end, so this
+				// generation completing at all is the regression pin.
+				WithReflectType(reflect.TypeFor[nsPtrRec](), typeOpts...),
+				WithReflectType(reflect.TypeFor[nsPtrRecHolder](), typeOpts...),
+			)
+			files, err := cg.GenerateToMap()
+			if err != nil {
+				t.Fatalf("generate: %v", err)
+			}
+			nsAssertNoDyn(t, combo.name, files["gen.go"])
+		})
+	}
+}
+
+// nsPtrRec closes a cycle through a pointer-element list, the shape whose
+// streaming size closure once inlined itself without end under the static
+// build (see TestStaticNoDynRecursion).
+type nsPtrRec struct {
+	V uint8
+	L []*nsPtrRec `ssz-max:"4"`
+}
+
+// nsPtrRecHolder threads the bound through a type that is not on the cycle.
+type nsPtrRecHolder struct {
+	Tag  uint32
+	Node nsPtrRec
+}
+
+// TestStaticStreamingUnexportedGenericArg is a regression guard for the type-name
+// printer: a generic type argument (a CompatibleUnion / TypeWrapper parameter)
+// referencing an UNEXPORTED same-package type must be emitted as an unqualified
+// identifier, never as its full import path. The reflect type-name cleanup regex
+// previously only matched exported ([A-Z]) type names, so an unexported variant
+// leaked "github.com/.../pkg.typeName" into the streaming encoder's sizeFn
+// signatures, producing invalid Go.
+func TestStaticStreamingUnexportedGenericArg(t *testing.T) {
+	for _, rt := range []reflect.Type{reflect.TypeFor[nsUnionHolder](), reflect.TypeFor[nsWrapperHolder]()} {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen.go", WithReflectType(rt, WithExtendedTypes(), WithCreateEncoderFn(), WithCreateDecoderFn()))
+		files, err := cg.GenerateToMap()
+		if err != nil {
+			t.Fatalf("%s: generate: %v", rt, err)
+		}
+		if strings.Contains(files["gen.go"], "dynamic-ssz/codegen.") {
+			t.Errorf("%s: import path leaked as a type name in generated code", rt)
+		}
+	}
+}
+
+// nsWellDelegated is an external fully-delegated type whose Go struct layout
+// matches its wire form exactly. Under WithoutDynamicExpressions it is inlined
+// from its structure; the inlined static output must equal its Dynamic* method.
+type nsWellDelegated struct {
+	V uint64
+}
+
+var _ = sszutils.Annotate[nsWellDelegated](`ssz-static:"true"`)
+
+func (n *nsWellDelegated) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 8 }
+func (n *nsWellDelegated) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint64(buf, n.V), nil
+}
+func (n *nsWellDelegated) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	n.V = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+func (n *nsWellDelegated) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(n.V)
+	return nil
+}
+
+type nsWellHolder struct {
+	A uint64
+	N nsWellDelegated
+	V [2]nsWellDelegated
+}
+
+// TestStaticStreamingInlinesExternalDelegated is the regression guard for the
+// streaming encoder/decoder *Dyn leak: an external dynamic-only delegated child
+// nested in a WithoutDynamicExpressions type must be inlined from its structure
+// in BOTH the buffer methods and the streaming encoder/decoder, never reached via
+// MarshalSSZDyn/UnmarshalSSZDyn. Previously the streaming generators cleared the
+// WithoutDynamicExpressions flag wholesale and forwarded to the *Dyn buffer method.
+func TestStaticStreamingInlinesExternalDelegated(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen.go", WithReflectType(reflect.TypeFor[nsWellHolder](),
+		WithoutDynamicExpressions(), WithNoFastSsz(), WithCreateEncoderFn(), WithCreateDecoderFn()))
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	nsAssertNoDyn(t, "external-delegated-streaming", files["gen.go"])
+	// The child's uint64 field must be inlined structurally in the streaming path.
+	if !strings.Contains(files["gen.go"], "enc.EncodeUint64(t.V)") {
+		t.Errorf("expected the streaming encoder to inline the delegated child's uint64 field")
+	}
+}
+
+// nsIllegalDelegated mirrors the repo's nestedDelegatedInner: a delegated type
+// with a structurally-invalid innard (zero-length array). Under
+// WithoutDynamicExpressions the parser traverses it (NoDelegation) and must
+// reject it with a clear error rather than emit a *Dyn call or panic.
+type nsIllegalDelegated struct {
+	Bad   [0]uint64
+	Value uint32
+}
+
+var _ = sszutils.Annotate[nsIllegalDelegated](`ssz-static:"true"`)
+
+func (n *nsIllegalDelegated) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 4 }
+func (n *nsIllegalDelegated) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint32(buf, n.Value), nil
+}
+func (n *nsIllegalDelegated) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	n.Value = binary.LittleEndian.Uint32(buf)
+	return nil
+}
+func (n *nsIllegalDelegated) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint32(n.Value)
+	return nil
+}
+
+type nsIllegalHolder struct {
+	A uint64
+	N nsIllegalDelegated
+}
+
+// TestStaticRejectsUnInlinableDelegated confirms a delegated type that cannot be
+// faithfully inlined (structurally-invalid innard) is rejected with a clear error
+// instead of silently producing wrong code or panicking.
+func TestStaticRejectsUnInlinableDelegated(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen.go", WithReflectType(reflect.TypeFor[nsIllegalHolder](), WithoutDynamicExpressions()))
+	if _, err := cg.GenerateToMap(); err == nil {
+		t.Fatal("expected a clear error inlining a delegated type with an invalid innard")
+	}
+}
+
+// A per-type extended-types option reaches the shared go/types parser
+// whichever position the type holds: the switch is never lowered, so a later
+// extended type widens the parser a first plain type created.
+func TestPerTypeExtendedTypesReachesParser(t *testing.T) {
+	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
+	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
+	if err != nil || len(pkgs) == 0 {
+		t.Fatalf("load tests package: %v", err)
+	}
+	scope := pkgs[0].Types.Scope()
+	plain := scope.Lookup("SimpleTypes1")
+	extended := scope.Lookup("OptU32")
+	if plain == nil || extended == nil {
+		t.Skip("corpus types not present")
+	}
+
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_test.go",
+		WithGoTypesType(plain.Type()),
+		WithGoTypesType(extended.Type(), WithExtendedTypes()),
+	)
+	if _, err := cg.GenerateToMap(); err != nil {
+		t.Fatalf("a later extended type must widen the shared parser: %v", err)
 	}
 }

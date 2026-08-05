@@ -195,14 +195,23 @@ func TestResolveSpecValueWithDefault_ResolvedZeroFallsBack(t *testing.T) {
 		t.Errorf("expected ErrInvalidConstraint for resolved 0 with no static fallback, got: %v", err)
 	}
 
-	// A name absent from the spec set keeps the static value unchanged, even 0.
+	// A name absent from the spec set keeps the static value unchanged.
 	dsEmpty := &mockDynamicSpecs{values: map[string]uint64{}}
-	val, err = ResolveSpecValueWithDefault(dsEmpty, "missing", 0)
+	val, err = ResolveSpecValueWithDefault(dsEmpty, "missing", 7)
 	if err != nil {
 		t.Fatalf("unexpected error for not-found: %v", err)
 	}
-	if val != 0 {
-		t.Errorf("expected 0 for not-found with 0 default, got %d", val)
+	if val != 7 {
+		t.Errorf("expected the static fallback for not-found, got %d", val)
+	}
+
+	// Unless that static value is itself 0, which is the "no static value"
+	// placeholder: the type said its value comes from the spec and the spec does
+	// not define it, so there is nothing to fall back to. Same dead end as
+	// resolving to 0.
+	_, err = ResolveSpecValueWithDefault(dsEmpty, "missing", 0)
+	if err == nil || !errors.Is(err, ErrInvalidConstraint) {
+		t.Errorf("expected ErrInvalidConstraint for not-found with no static fallback, got: %v", err)
 	}
 }
 
@@ -940,6 +949,22 @@ func TestDecodeByteListInto(t *testing.T) {
 			t.Fatalf("err = %v, want %v", err, want)
 		}
 	})
+
+	t.Run("open region keeps the stream allowance distinct from the cap", func(t *testing.T) {
+		// The allowance (4) fires while the caller's cap (64) is untouched.
+		// Both causes surface as ErrStreamTooLarge, and reporting the allowance
+		// overrun as a list-limit violation names a length the payload never
+		// declared.
+		dec := NewUnknownStreamDecoder(bytes.NewReader(data), 2, 4)
+		dec.PushOpenLimit()
+		_, err := DecodeByteListInto(dec, nil, 64)
+		if !errors.Is(err, ErrStreamTooLarge) {
+			t.Fatalf("err = %v, want ErrStreamTooLarge", err)
+		}
+		if errors.Is(err, ErrListTooBig) {
+			t.Fatalf("stream-allowance overrun reported as a list-limit violation: %v", err)
+		}
+	})
 }
 
 func TestDecodeUint64ListInto(t *testing.T) {
@@ -963,9 +988,9 @@ func TestDecodeUint64ListInto(t *testing.T) {
 
 	t.Run("known-length misaligned", func(t *testing.T) {
 		dec := NewBufferDecoder(data[:20])
-		// Misalignment is reported through the unexpected-EOF sentinel.
+		// Misalignment is a value-shape defect, not a truncation.
 		_, err := DecodeUint64ListInto(dec, []uint64(nil), -1)
-		if !errors.Is(err, ErrUnexpectedEOF) || !strings.Contains(err.Error(), "not a multiple") {
+		if !errors.Is(err, ErrInvalidValueRange) || !strings.Contains(err.Error(), "not a multiple") {
 			t.Fatalf("err = %v, want a list-alignment error", err)
 		}
 	})
@@ -1102,25 +1127,6 @@ func TestRegionEmpty(t *testing.T) {
 	})
 }
 
-func TestIsStreamTooLarge(t *testing.T) {
-	if !isStreamTooLarge(ErrStreamTooLargeFn(10)) {
-		t.Fatal("constructed stream-too-large error not recognised")
-	}
-	if !isStreamTooLarge(ErrPayloadTooLargeFn(11, 10)) {
-		t.Fatal("payload-too-large error not recognised")
-	}
-	// It must recognise the error through the path-annotating wrapper too.
-	if !isStreamTooLarge(ErrorWithPath(ErrStreamTooLargeFn(10), "Field")) {
-		t.Fatal("wrapped stream-too-large error not recognised")
-	}
-	if isStreamTooLarge(ErrUnexpectedEOF) {
-		t.Fatal("unrelated error misrecognised")
-	}
-	if isStreamTooLarge(nil) {
-		t.Fatal("nil misrecognised")
-	}
-}
-
 // TestBufferDecoder_Available covers Available() on a buffer-backed decoder,
 // which reports the whole remaining region.
 func TestBufferDecoder_Available(t *testing.T) {
@@ -1159,5 +1165,89 @@ func TestCredibleCount_Guards(t *testing.T) {
 	}
 	if got := CredibleCount(unk, 5, 0); got != 5 {
 		t.Fatalf("CredibleCount(unknown, 5, 0) = %d, want 5", got)
+	}
+}
+
+// The two decoder implementations answer misuse identically: an invalid bool
+// byte is not consumed, an over-long skip clamps to the region end, and the
+// remaining length never reads negative.
+func TestDecoderPrimitiveParity(t *testing.T) {
+	t.Run("invalid_bool_not_consumed", func(t *testing.T) {
+		bd := NewBufferDecoder([]byte{0x02, 0xff})
+		bd.PushLimit(2)
+		if _, err := bd.DecodeBool(); err == nil || bd.GetPosition() != 0 {
+			t.Fatalf("buffer: err=%v pos=%d, want error at position 0", err, bd.GetPosition())
+		}
+		sd := NewStreamDecoder(bytes.NewReader([]byte{0x02, 0xff}), 2, 64)
+		if _, err := sd.DecodeBool(); err == nil || sd.GetPosition() != 0 {
+			t.Fatalf("stream: err=%v pos=%d, want error at position 0", err, sd.GetPosition())
+		}
+	})
+
+	t.Run("skip_clamps_and_length_stays_non_negative", func(t *testing.T) {
+		bd := NewBufferDecoder([]byte{1, 2, 3, 4})
+		bd.PushLimit(4)
+		bd.SkipBytes(100)
+		if got := bd.GetLength(); got != 0 {
+			t.Fatalf("GetLength after over-skip = %d, want 0", got)
+		}
+		if got := bd.Available(); got != 0 {
+			t.Fatalf("Available after over-skip = %d, want 0", got)
+		}
+	})
+
+	t.Run("push_limit_overflow_clamps", func(t *testing.T) {
+		bd := NewBufferDecoder([]byte{1, 2, 3, 4})
+		bd.PushLimit(4)
+		bd.PushLimit(int(^uint(0) >> 1)) // maximum int
+		if got := bd.GetLength(); got != 4 {
+			t.Fatalf("GetLength after huge limit = %d, want the enclosing region's 4", got)
+		}
+	})
+}
+
+// The negative-input guards are exercised on both implementations, and the
+// stream skip stays clamped like the buffer skip.
+func TestPrimitiveGuardBranches(t *testing.T) {
+	bd := NewBufferDecoder([]byte{1, 2, 3, 4})
+	bd.PushLimit(4)
+	bd.SkipBytes(-5)
+	if bd.GetPosition() != 0 {
+		t.Fatalf("negative skip moved the position to %d", bd.GetPosition())
+	}
+	bd.SkipBytes(2)
+	if bd.GetPosition() != 2 {
+		t.Fatalf("in-range skip landed at %d, want 2", bd.GetPosition())
+	}
+
+	be := NewBufferEncoder(nil)
+	be.EncodeZeroPadding(-3)
+	if be.GetPosition() != 0 {
+		t.Fatalf("negative padding moved the buffer encoder to %d", be.GetPosition())
+	}
+	var sink bytes.Buffer
+	se := NewStreamEncoder(&sink, 16)
+	se.EncodeZeroPadding(-3)
+	se.Flush()
+	if se.GetPosition() != 0 || sink.Len() != 0 {
+		t.Fatalf("negative padding wrote %d bytes at position %d", sink.Len(), se.GetPosition())
+	}
+
+	// A valid bool consumes exactly one byte on both implementations.
+	bd2 := NewBufferDecoder([]byte{1})
+	bd2.PushLimit(1)
+	if v, err := bd2.DecodeBool(); err != nil || !v || bd2.GetPosition() != 1 {
+		t.Fatalf("buffer bool: v=%v err=%v pos=%d", v, err, bd2.GetPosition())
+	}
+	sd2 := NewStreamDecoder(bytes.NewReader([]byte{0}), 1, 16)
+	if v, err := sd2.DecodeBool(); err != nil || v || sd2.GetPosition() != 1 {
+		t.Fatalf("stream bool: v=%v err=%v pos=%d", v, err, sd2.GetPosition())
+	}
+
+	// A bool read past the region limit fails without consuming.
+	sd3 := NewStreamDecoder(bytes.NewReader([]byte{1}), 1, 16)
+	sd3.PushLimit(0)
+	if _, err := sd3.DecodeBool(); err == nil || sd3.GetPosition() != 0 {
+		t.Fatalf("stream bool past limit: err=%v pos=%d", err, sd3.GetPosition())
 	}
 }

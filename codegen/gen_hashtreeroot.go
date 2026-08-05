@@ -33,6 +33,11 @@ type hashTreeRootContext struct {
 	usedDynSpecs  bool
 	valVarCounter int
 	indexCounter  int
+	recursion     *recursionBound
+	// depthAware is set while emitting a type that lies on a recursive cycle,
+	// where the body runs inside a depth-carrying method and can pass the depth
+	// on to a cyclic child.
+	depthAware bool
 }
 
 // generateHashTreeRoot generates hash tree root methods for a specific type.
@@ -69,6 +74,8 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 		options:     options,
 		exprVars:    newExprVarGenerator("expr", typePrinter, options),
 	}
+	ctx.recursion = newRecursionBound(rootTypeDesc, options)
+	ctx.depthAware = ctx.recursion.threads(rootTypeDesc)
 
 	// Generate main function signature
 	typeName := typePrinter.TypeString(rootTypeDesc)
@@ -107,8 +114,12 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 
 	if genStaticFn {
 		if !ctx.usedDynSpecs {
+			// The walk body carries depth charges and twin calls whenever the
+			// type threads a nesting depth, so this header has to go through
+			// emitMethodHeader like every other body-carrying method: it is
+			// what emits the depth twin those references resolve against.
 			appendCode(codeBuilder, 0, "// HashTreeRootWith computes the SSZ hash tree root of the %s using the given hash walker.\n", typeName)
-			appendCode(codeBuilder, 0, fmt.Sprintf("func (t %s) HashTreeRootWith(hh sszutils.HashWalker) error {\n", typeName))
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "HashTreeRootWith", "hh sszutils.HashWalker", "hh", "error", depthFailErr(ctx.recursion), false)
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 			appendCode(codeBuilder, 1, codeBuf.String())
 			appendCode(codeBuilder, 1, "return nil\n")
@@ -116,7 +127,7 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 		} else {
 			dynsszAlias := typePrinter.AddImport("github.com/pk910/dynamic-ssz", "dynssz")
 			appendCode(codeBuilder, 0, "// HashTreeRootWith computes the SSZ hash tree root of the %s using the given hash walker.\n", typeName)
-			appendCode(codeBuilder, 0, "func (t %s) HashTreeRootWith(hh sszutils.HashWalker) error {\n", typeName)
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "HashTreeRootWith", "hh sszutils.HashWalker", "hh", "error", depthFailErr(ctx.recursion), false)
 			appendCode(codeBuilder, 1, "return t.HashTreeRootWithDyn(%s.GetGlobalDynSsz(), hh)\n", dynsszAlias)
 			appendCode(codeBuilder, 0, "}\n\n")
 		}
@@ -147,7 +158,7 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 			if viewName == "" {
 				appendCode(codeBuilder, 0, "// HashTreeRootWithDyn computes the SSZ hash tree root of the %s using dynamic specifications and the given hash walker.\n", typeName)
 			}
-			appendCode(codeBuilder, 0, "func (t %s) %s(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName, fnName)
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, hh sszutils.HashWalker", "ds, hh", "error", depthFailErr(ctx.recursion), false)
 			appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 			appendCode(codeBuilder, 1, codeBuf.String())
 			appendCode(codeBuilder, 1, "return nil\n")
@@ -156,8 +167,8 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 			if viewName == "" {
 				appendCode(codeBuilder, 0, "// HashTreeRootWithDyn computes the SSZ hash tree root of the %s using dynamic specifications and the given hash walker.\n", typeName)
 			}
-			appendCode(codeBuilder, 0, "func (t %s) %s(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typeName, fnName)
-			appendCode(codeBuilder, 1, "return t.HashTreeRootWith(hh)\n")
+			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, hh sszutils.HashWalker", "ds, hh", "error", depthFailErr(ctx.recursion), true)
+			appendCode(codeBuilder, 1, "return t.%s(hh%s)\n", depthForwardName("HashTreeRootWith", ctx.depthAware), depthForwardArg(ctx.depthAware))
 			appendCode(codeBuilder, 0, "}\n\n")
 		}
 	}
@@ -251,7 +262,8 @@ func (ctx *hashTreeRootContext) hashUsesFastSsz(desc *ssztypes.TypeDescriptor, i
 // It must only be called for non-root, non-view types carrying DynamicHashRoot.
 func (ctx *hashTreeRootContext) hashDynamicRoot(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, useFastSsz bool) (done bool, err error) {
 	if !ctx.options.WithoutDynamicExpressions {
-		ctx.appendCode(indent, "if err := %s.HashTreeRootWithDyn(ds, hh); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
+		fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "HashTreeRootWithDyn")
+		ctx.appendCode(indent, "if err := %s.%s(ds, hh%s); err != nil {\n\treturn %s\n}\n", varName, fn, arg, typePath.getErrorWith("err"))
 		ctx.usedDynSpecs = true
 		return true, nil
 	}
@@ -267,6 +279,10 @@ func (ctx *hashTreeRootContext) hashDynamicRoot(desc *ssztypes.TypeDescriptor, v
 
 // hashType generates hash tree root code for any SSZ type, delegating to specific hashers.
 func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, isRoot, pack bool) error {
+	if indent > maxEmitNesting {
+		return errEmitNesting(ctx.typePrinter, desc)
+	}
+
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.SszType != ssztypes.SszOptionalType && desc.SszType != ssztypes.SszOptionalListType {
 		ctx.appendCode(indent, "if %s == nil {\n\t%s = new(%s)\n}\n", varName, varName, ctx.typePrinter.InnerTypeString(desc))
 	}
@@ -275,7 +291,8 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 	isView := desc.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
 	if !isRoot && isView {
 		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewHashRoot != 0 {
-			ctx.appendCode(indent, "if viewFn := %s.HashTreeRootWithDynView((%s)(nil)); viewFn != nil {\n", varName, ctx.typePrinter.ViewTypeString(desc, true))
+			viewFn, viewArg := descendCall(ctx.depthAware, ctx.recursion, desc, "HashTreeRootWithDynView")
+			ctx.appendCode(indent, "if viewFn := %s.%s((%s)(nil)%s); viewFn != nil {\n", varName, viewFn, ctx.typePrinter.ViewTypeString(desc, true), viewArg)
 			ctx.appendCode(indent+1, "if err := viewFn(ds, hh); err != nil {\n\treturn err\n}\n")
 			ctx.appendCode(indent, "} else {\n\treturn sszutils.ErrNotImplemented\n}\n")
 			ctx.usedDynSpecs = true
@@ -294,12 +311,17 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 
 	if useFastSsz && !isView {
 		if isFastsszHashWith {
-			ctx.appendCode(indent, "if err := %s.HashTreeRootWith(hh); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
+			fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "HashTreeRootWith")
+			ctx.appendCode(indent, "if err := %s.%s(hh%s); err != nil {\n\treturn %s\n}\n", varName, fn, arg, typePath.getErrorWith("err"))
 		} else {
 			ctx.appendCode(indent, "if root, err := %s.HashTreeRoot(); err != nil {\n\treturn %s\n} else {\n\thh.AppendBytes32(root[:])\n}\n", varName, typePath.getErrorWith("err"))
 		}
 		return nil
 	}
+
+	// A cycle member reached without delegation is inlined here, so the level
+	// it counts is charged inline (see emitInlineDepthCharge).
+	emitInlineDepthCharge(ctx.depthAware, isRoot, isView, ctx.recursion, desc, ctx.appendCode, indent, depthFailErr(ctx.recursion))
 
 	switch desc.SszType {
 	case ssztypes.SszBoolType:
@@ -423,10 +445,8 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 		} else {
 			ctx.appendCode(indent, "hh.PutUint64(%s)\n", valExpr)
 		}
-	case ssztypes.SszOptionalType:
+	case ssztypes.SszOptionalType, ssztypes.SszOptionalListType:
 		return ctx.hashOptional(desc, varName, typePath, indent)
-	case ssztypes.SszOptionalListType:
-		return ctx.hashOptionalList(desc, varName, typePath, indent)
 	case ssztypes.SszBigIntType:
 		return ctx.hashBigInt(desc, varName, typePath, indent)
 
@@ -437,45 +457,43 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 	return nil
 }
 
-// hashOptional generates hash tree root code for SSZ optional types.
-func (ctx *hashTreeRootContext) hashOptional(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
-	ctx.appendCode(indent, "if %s == nil {\n", varName)
-	ctx.appendCode(indent+1, "hh.PutUint8(0)\n")
-	ctx.appendCode(indent, "} else {\n")
-	innerVarName := fmt.Sprintf("(*%s)", varName)
-	if err := ctx.hashType(desc.ElemDesc, innerVarName, typePath, indent+1, false, false); err != nil {
-		return err
-	}
-	ctx.appendCode(indent, "}\n")
-	return nil
-}
-
-// hashOptionalList generates hash tree root code for optional-list (canonical List[T, 1]).
+// hashOptional generates hash tree root code for a value that may be absent,
+// committing to which:
+//   - Merkleize the zero or one value chunks, with a limit of 1
+//   - Mix in 1 when the value is present, 0 when it is absent
 //
-// Builds a binary tree containing zero or one element chunk, then mixes in
-// the length (0 or 1). The merkleization limit is always 1 (one chunk for
-// basic elements ≤32 bytes, or one element for complex elements).
-func (ctx *hashTreeRootContext) hashOptionalList(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
+// Both spellings of an optional use it, so they agree on the root and differ
+// only on the wire: ssz-type:"optional" writes a presence flag, while
+// ssz-type:"optional-list" writes the canonical List[T, 1].
+//
+// The mixin is what makes the root unambiguous. Without it an absent value and
+// a present zero value hash alike -- the absent case contributes a zero chunk,
+// and the present case contributes the value's root, which for a zero value is
+// that same zero chunk -- so the root could not tell "no value" from "the zero
+// value" although the two serialize differently.
+func (ctx *hashTreeRootContext) hashOptional(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	// Wrap in braces so `idx` and the length var don't collide with any caller's
-	// locals. The length var uses a dedicated name (not `vlen`): the element is
-	// hashed inline in the same `if` block and a fixed-size vector/list element
+	// locals. The length var uses a dedicated name (not `vlen`): the value is
+	// hashed inline in the same `if` block and a fixed-size vector/list value
 	// declares its own `vlen := len(...)` there. Reusing `vlen` here would let
 	// that inner declaration shadow ours, so the mixin length assignment would
-	// target the element's local and leave the outer length at 0 — mixing in a
-	// length of 0 for a present element and producing the wrong root.
+	// target the value's local and leave the outer length at 0 -- mixing in a
+	// length of 0 for a present value and producing the wrong root.
 	ctx.appendCode(indent, "{\n")
 	ctx.appendCode(indent+1, "idx := hh.StartTree(sszutils.TreeTypeBinary)\n")
-	ctx.appendCode(indent+1, "optListLen := uint64(0)\n")
+	ctx.appendCode(indent+1, "optLen := uint64(0)\n")
 	ctx.appendCode(indent+1, "if %s != nil {\n", varName)
-	ctx.appendCode(indent+2, "optListLen = 1\n")
+	ctx.appendCode(indent+2, "optLen = 1\n")
 	innerVarName := fmt.Sprintf("(*%s)", varName)
-	if err := ctx.hashType(desc.ElemDesc, innerVarName, typePath.append("[0]"), indent+2, false, true); err != nil {
+	if err := ctx.hashType(desc.ElemDesc, innerVarName, typePath, indent+2, false, true); err != nil {
 		return err
 	}
 	ctx.appendCode(indent+1, "}\n")
 	ctx.appendCode(indent+1, "hh.FillUpTo32()\n")
-	ctx.appendCode(indent+1, "hh.MerkleizeWithMixin(idx, optListLen, 1)\n")
+	// One value means one chunk, so the limit is 1 like List[T, 1].
+	ctx.appendCode(indent+1, "hh.MerkleizeWithMixin(idx, optLen, 1)\n")
 	ctx.appendCode(indent, "}\n")
+
 	return nil
 }
 
@@ -637,14 +655,6 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		} else {
 			limitVar = fmt.Sprintf("int(%s)", exprVar)
 		}
-
-		if desc.Kind == reflect.Array {
-			// check if dynamic limit is greater than the length of the array
-			ctx.appendCode(indent, "if %s > %d {\n", limitVar, desc.Len)
-			errCode := fmt.Sprintf("sszutils.ErrVectorSizeExceedsArrayFn(%s, %d)", limitVar, desc.Len)
-			ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
-			ctx.appendCode(indent, "}\n")
-		}
 	} else {
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 && desc.BitSize > 0 && desc.BitSize%8 != 0 {
 			bitlimitVar = fmt.Sprintf("%d", desc.BitSize)
@@ -674,14 +684,23 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 	}
 
 	lenVar := ""
-	if desc.Kind != reflect.Array {
+	switch {
+	case desc.Kind != reflect.Array:
 		ctx.appendCode(indent, "vlen := len(%s)\n", getValueVar(true, ""))
 		ctx.appendCode(indent, "if vlen > %s {\n", limitVar)
 		errCode := fmt.Sprintf("sszutils.ErrVectorLengthFn(%s, %s)", varNameVLen, limitVar)
 		ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "}\n")
 		lenVar = varNameVLen
-	} else {
+	case sizeExpression != nil:
+		// The resolved size is the vector's length; the static ssz-size is only
+		// the fallback. See marshalVector.
+		ctx.appendCode(indent, "if %s > len(%s) {\n", limitVar, getValueVar(false, ""))
+		errCode := fmt.Sprintf("sszutils.ErrVectorSizeExceedsArrayFn(%s, len(%s))", limitVar, getValueVar(false, ""))
+		ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
+		ctx.appendCode(indent, "}\n")
+		lenVar = limitVar
+	default:
 		lenVar = fmt.Sprintf("%d", desc.Len)
 	}
 
@@ -867,8 +886,19 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent, "hh.AppendBytes32(%s[:])\n", getValueVar(false, ""))
 		itemSize = 1
 	default:
-		if ctx.isPrimitive(desc.ElemDesc) {
-			itemSize = int(desc.ElemDesc.Size)
+		// A type wrapper is transparent to merkleization: the elements are
+		// packed as the value it wraps, so the item size has to come from that
+		// value. Reading the wrapper itself makes a packed basic element look
+		// composite, which yields a chunk per element instead of the chunk
+		// count the packing produces -- a different tree depth, so a different
+		// root at every length. The reflection engine unwraps the same way.
+		packedDesc := desc.ElemDesc
+		for packedDesc.SszType == ssztypes.SszTypeWrapperType && packedDesc.ElemDesc != nil {
+			packedDesc = packedDesc.ElemDesc
+		}
+
+		if ctx.isPrimitive(packedDesc) {
+			itemSize = int(packedDesc.Size)
 		} else {
 			itemSize = 32
 		}
@@ -914,7 +944,19 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 			ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, vlen, %s)\n", maxVar)
 		}
 	default:
-		ctx.appendCode(indent, "hh.Merkleize(idx)\n")
+		// No declared limit. SSZ has no root for such a list -- List[T, N] needs
+		// N to merkleize -- so hashing one is an extension, and the parser flags
+		// it when extended types are off.
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagNoSszRoot != 0 {
+			return ssztypes.NoSszRootError(desc)
+		}
+
+		// Merkleizing without the mixin would treat it as a vector and lose the
+		// length, so values differing only in trailing zeros would share a root.
+		// A limit of zero merkleizes to the chunks the value occupies, matching
+		// the reflection engine.
+		addVlen()
+		ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, vlen, 0)\n")
 	}
 
 	return nil
@@ -972,6 +1014,12 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varNa
 	case maxVar != "":
 		ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, size, sszutils.CalculateBitlistLimit(%s))\n", maxVar)
 	default:
+		// Bitlist[N] needs N to merkleize, so deriving the limit from the value
+		// is an extension; the parser flags it when extended types are off.
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagNoSszRoot != 0 {
+			return ssztypes.NoSszRootError(desc)
+		}
+
 		// No explicit limit: derive it from the serialized bit length and mix
 		// in the length, matching the reflection path (buildRootFromBitlist).
 		ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, size, sszutils.CalculateBitlistLimit(uint64(len(%s)*8)))\n", valueVar)

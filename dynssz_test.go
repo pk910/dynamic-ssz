@@ -28,7 +28,7 @@ import (
 // Test types for DynamicEncoder/DynamicDecoder/DynamicMarshaler/DynamicUnmarshaler paths
 
 type testDynamicEncoder struct {
-	Data  []byte
+	Data  []byte `ssz-max:"64"`
 	Error error
 }
 
@@ -55,6 +55,224 @@ func (t *testDynamicDecoder) UnmarshalSSZDecoder(ds sszutils.DynamicSpecs, decod
 		_, _ = decoder.DecodeBytes(buf)
 	}
 	return nil
+}
+
+// crossFormMarshaler implements only the buffer-form dynamic interfaces (plus
+// fastssz with different bytes), so the streaming entrypoints have to bridge
+// to the buffer form rather than fall through to another delegate.
+type crossFormMarshaler struct {
+	V [4]byte
+}
+
+func (c *crossFormMarshaler) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 4 }
+func (c *crossFormMarshaler) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return append(buf, c.V[0]^0xff, c.V[1]^0xff, c.V[2]^0xff, c.V[3]^0xff), nil
+}
+func (c *crossFormMarshaler) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	if len(buf) != 4 {
+		return sszutils.ErrTrailingDataFn(len(buf))
+	}
+	for i := range c.V {
+		c.V[i] = buf[i] ^ 0xff
+	}
+	return nil
+}
+func (c *crossFormMarshaler) SizeSSZ() int { return 4 }
+func (c *crossFormMarshaler) MarshalSSZ() ([]byte, error) {
+	return []byte{c.V[3], c.V[2], c.V[1], c.V[0]}, nil
+}
+func (c *crossFormMarshaler) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return append(buf, c.V[3], c.V[2], c.V[1], c.V[0]), nil
+}
+func (c *crossFormMarshaler) UnmarshalSSZ(buf []byte) error {
+	for i := range c.V {
+		c.V[i] = buf[3-i]
+	}
+	return nil
+}
+
+// crossFormEncoder implements only the streaming-form dynamic interfaces, so
+// the buffer entrypoints have to bridge to it.
+type crossFormEncoder struct {
+	V [4]byte
+}
+
+func (c *crossFormEncoder) MarshalSSZEncoder(_ sszutils.DynamicSpecs, enc sszutils.Encoder) error {
+	enc.EncodeBytes([]byte{c.V[0] ^ 0xff, c.V[1] ^ 0xff, c.V[2] ^ 0xff, c.V[3] ^ 0xff})
+	return nil
+}
+
+func (c *crossFormEncoder) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, dec sszutils.Decoder) error {
+	buf := make([]byte, 4)
+	if _, err := dec.DecodeBytes(buf); err != nil {
+		return err
+	}
+	for i := range c.V {
+		c.V[i] = buf[i] ^ 0xff
+	}
+	return nil
+}
+
+// Buffer and stream entrypoints delegate to the same method set in the same
+// order: a type carrying only one dynamic form is reached through that form
+// from every entrypoint, bridged where the forms differ, never through
+// another delegate.
+func TestEntrypointsShareDelegationOrder(t *testing.T) {
+	ds := NewDynSsz(nil)
+	want := []byte{0xfb, 0xfc, 0xfd, 0xfe}
+
+	t.Run("buffer_form_from_all_entrypoints", func(t *testing.T) {
+		src := &crossFormMarshaler{V: [4]byte{0x04, 0x03, 0x02, 0x01}}
+		buf, err := ds.MarshalSSZ(src)
+		if err != nil || !bytes.Equal(buf, want) {
+			t.Fatalf("MarshalSSZ = %x (%v), want %x", buf, err, want)
+		}
+		var w bytes.Buffer
+		if err := ds.MarshalSSZWriter(src, &w); err != nil || !bytes.Equal(w.Bytes(), want) {
+			t.Fatalf("MarshalSSZWriter = %x (%v), want %x", w.Bytes(), err, want)
+		}
+
+		out := new(crossFormMarshaler)
+		if err := ds.UnmarshalSSZ(out, want); err != nil || out.V != src.V {
+			t.Fatalf("UnmarshalSSZ = %v (%v), want %v", out.V, err, src.V)
+		}
+		out = new(crossFormMarshaler)
+		if err := ds.UnmarshalSSZReader(out, bytes.NewReader(want), len(want)); err != nil || out.V != src.V {
+			t.Fatalf("UnmarshalSSZReader = %v (%v), want %v", out.V, err, src.V)
+		}
+	})
+
+	t.Run("stream_form_from_all_entrypoints", func(t *testing.T) {
+		src := &crossFormEncoder{V: [4]byte{0x04, 0x03, 0x02, 0x01}}
+		buf, err := ds.MarshalSSZ(src)
+		if err != nil || !bytes.Equal(buf, want) {
+			t.Fatalf("MarshalSSZ = %x (%v), want %x", buf, err, want)
+		}
+		buf, err = ds.MarshalSSZTo(src, nil)
+		if err != nil || !bytes.Equal(buf, want) {
+			t.Fatalf("MarshalSSZTo = %x (%v), want %x", buf, err, want)
+		}
+		var w bytes.Buffer
+		if err := ds.MarshalSSZWriter(src, &w); err != nil || !bytes.Equal(w.Bytes(), want) {
+			t.Fatalf("MarshalSSZWriter = %x (%v), want %x", w.Bytes(), err, want)
+		}
+
+		out := new(crossFormEncoder)
+		if err := ds.UnmarshalSSZ(out, want); err != nil || out.V != src.V {
+			t.Fatalf("UnmarshalSSZ = %v (%v), want %v", out.V, err, src.V)
+		}
+		out = new(crossFormEncoder)
+		if err := ds.UnmarshalSSZReader(out, bytes.NewReader(want), len(want)); err != nil || out.V != src.V {
+			t.Fatalf("UnmarshalSSZReader = %v (%v), want %v", out.V, err, src.V)
+		}
+	})
+}
+
+// A nil typed pointer is rejected before any delegation: the delegate methods
+// would dereference it. Both decode entrypoints answer with the same error the
+// reflection path gives.
+func TestUnmarshalNilTypedPointer(t *testing.T) {
+	ds := NewDynSsz(nil)
+	var p *crossFormMarshaler
+	if err := ds.UnmarshalSSZ(p, []byte{1, 2, 3, 4}); err == nil || !strings.Contains(err.Error(), "must not be nil") {
+		t.Fatalf("UnmarshalSSZ err = %v, want nil-pointer rejection", err)
+	}
+	if err := ds.UnmarshalSSZReader(p, bytes.NewReader([]byte{1, 2, 3, 4}), 4); err == nil || !strings.Contains(err.Error(), "must not be nil") {
+		t.Fatalf("UnmarshalSSZReader err = %v, want nil-pointer rejection", err)
+	}
+}
+
+// Every engine and operation names the failing container field the same way,
+// and the public entrypoints answer with typed sentinels.
+func TestErrorPathAndSentinelConsistency(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation())
+
+	type overMax struct {
+		BadList []uint64 `ssz-max:"64"`
+	}
+	value := &overMax{BadList: make([]uint64, 65)}
+
+	if _, err := ds.MarshalSSZ(value); err == nil || !strings.Contains(err.Error(), "BadList") {
+		t.Errorf("marshal error must name the field: %v", err)
+	}
+	if _, err := ds.HashTreeRoot(value); err == nil || !strings.Contains(err.Error(), "BadList") {
+		t.Errorf("hash tree root error must name the field: %v", err)
+	}
+	if _, err := ds.SizeSSZ(value); err == nil || !strings.Contains(err.Error(), "BadList") {
+		t.Errorf("size error must name the field: %v", err)
+	}
+
+	type twoFields struct {
+		A uint32
+		B uint32
+	}
+	valid, err := ds.MarshalSSZ(&twoFields{A: 1, B: 2})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	err = ds.UnmarshalSSZ(new(twoFields), append(valid, 0xff))
+	if err == nil || !errors.Is(err, sszutils.ErrOffset) {
+		t.Errorf("trailing data must carry the offset sentinel: %v", err)
+	}
+
+	if err := ds.UnmarshalSSZ(twoFields{}, valid); !errors.Is(err, sszutils.ErrTypeMismatch) {
+		t.Errorf("non-pointer target must carry the type-mismatch sentinel: %v", err)
+	}
+	var nilTarget *twoFields
+	if err := ds.UnmarshalSSZ(nilTarget, valid); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Errorf("nil target must carry the value-range sentinel: %v", err)
+	}
+}
+
+// exprZeroMax types pin the explicit unbounded spelling: ssz-max:"0" means
+// what leaving the tag off means — the list encodes, refuses a standard hash
+// tree root, and hashes as an unbounded list under extended types, byte- and
+// root-identical to the untagged form. A dynssz-max alongside declares intent
+// to bound at runtime, so a spec value that is missing or zero stays an error
+// rather than silently un-bounding the list.
+func TestZeroMaxMeansUnbounded(t *testing.T) {
+	type tagged struct {
+		V []uint64 `ssz-max:"0"`
+	}
+	type untagged struct {
+		V []uint64
+	}
+	type dynFallback struct {
+		V []uint64 `ssz-max:"0" dynssz-max:"ZM_LIMIT"`
+	}
+
+	plain := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation())
+	ext := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation(), WithExtendedTypes())
+	v := []uint64{1, 2, 3, 4, 5}
+
+	bTagged, err := plain.MarshalSSZ(&tagged{V: v})
+	if err != nil {
+		t.Fatalf("tagged marshal: %v", err)
+	}
+	bUntagged, err := plain.MarshalSSZ(&untagged{V: v})
+	if err != nil || !bytes.Equal(bTagged, bUntagged) {
+		t.Fatalf("untagged marshal diverges: %v", err)
+	}
+
+	if _, hashErr := plain.HashTreeRoot(&tagged{V: v}); !errors.Is(hashErr, sszutils.ErrExtendedTypeDisabled) {
+		t.Fatalf("plain hash of an unbounded list must need extended types: %v", hashErr)
+	}
+	rTagged, err := ext.HashTreeRoot(&tagged{V: v})
+	if err != nil {
+		t.Fatalf("extended hash: %v", err)
+	}
+	rUntagged, err := ext.HashTreeRoot(&untagged{V: v})
+	if err != nil || rTagged != rUntagged {
+		t.Fatalf("extended roots diverge: %v", err)
+	}
+
+	if _, err := ext.MarshalSSZ(&dynFallback{V: v}); err == nil || !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Fatalf("an undefined runtime limit with a zero fallback must error: %v", err)
+	}
+	zeroSpec := NewDynSsz(map[string]any{"ZM_LIMIT": uint64(0)}, WithNoFastSsz(), WithNoDelegation(), WithExtendedTypes())
+	if _, err := zeroSpec.MarshalSSZ(&dynFallback{V: v}); err == nil || !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Fatalf("a zero-resolved runtime limit with a zero fallback must error: %v", err)
+	}
 }
 
 func TestDefaultLogUsesStructuredLogging(t *testing.T) {
@@ -127,6 +345,170 @@ func TestMarshalSSZWriterDynamicEncoderError(t *testing.T) {
 	err := ds.MarshalSSZWriter(enc, &buf)
 	if err == nil || err.Error() != "encode error" {
 		t.Fatalf("expected encode error, got: %v", err)
+	}
+}
+
+func TestMarshalSSZBufferDynamicEncoderError(t *testing.T) {
+	ds := NewDynSsz(nil)
+	enc := &testDynamicEncoder{Error: errors.New("encode error")}
+
+	if _, err := ds.MarshalSSZ(enc); err == nil || err.Error() != "encode error" {
+		t.Fatalf("expected encode error from MarshalSSZ, got: %v", err)
+	}
+	if _, err := ds.MarshalSSZTo(enc, nil); err == nil || err.Error() != "encode error" {
+		t.Fatalf("expected encode error from MarshalSSZTo, got: %v", err)
+	}
+}
+
+func TestMarshalSSZWriterDynamicMarshalerError(t *testing.T) {
+	ds := NewDynSsz(nil)
+	m := &testDynMarshaler{Error: errors.New("marshal error"), Size: 4}
+
+	var buf bytes.Buffer
+	if err := ds.MarshalSSZWriter(m, &buf); err == nil || err.Error() != "marshal error" {
+		t.Fatalf("expected marshal error, got: %v", err)
+	}
+}
+
+func TestUnmarshalSSZDynamicDecoderTrailing(t *testing.T) {
+	ds := NewDynSsz(nil)
+	dec := &testDynamicDecoder{ConsumeAll: false} // doesn't consume anything
+
+	err := ds.UnmarshalSSZ(dec, []byte{1, 2, 3, 4})
+	if err == nil || !errors.Is(err, sszutils.ErrOffset) || !strings.Contains(err.Error(), "trailing data") {
+		t.Fatalf("expected trailing-data error, got: %v", err)
+	}
+}
+
+func TestUnmarshalNilPlainPointer(t *testing.T) {
+	type plainTarget struct {
+		V uint64
+	}
+	ds := NewDynSsz(nil)
+	var target *plainTarget
+
+	if err := ds.UnmarshalSSZ(target, make([]byte, 8)); err == nil || !strings.Contains(err.Error(), "must not be nil") {
+		t.Fatalf("expected nil-pointer rejection from UnmarshalSSZ, got: %v", err)
+	}
+	if err := ds.UnmarshalSSZReader(target, bytes.NewReader(make([]byte, 8)), 8); err == nil || !strings.Contains(err.Error(), "must not be nil") {
+		t.Fatalf("expected nil-pointer rejection from UnmarshalSSZReader, got: %v", err)
+	}
+}
+
+func TestUnmarshalSSZReaderDynamicUnmarshalerUnknownLength(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	ok := &testDynUnmarshaler{}
+	if err := ds.UnmarshalSSZReader(ok, bytes.NewReader([]byte{1, 2, 3}), -1); err != nil {
+		t.Fatalf("unknown-length bridge failed: %v", err)
+	}
+
+	// A payload larger than the read buffer is not fully delivered when the
+	// bridge sizes it, so it goes through DecodeRemaining.
+	large := make([]byte, 64*1024)
+	if err := ds.UnmarshalSSZReader(ok, bytes.NewReader(large), -1); err != nil {
+		t.Fatalf("unknown-length bridge failed for a large payload: %v", err)
+	}
+
+	failing := &testDynUnmarshaler{Error: errors.New("unmarshal error")}
+	if err := ds.UnmarshalSSZReader(failing, bytes.NewReader(large), -1); err == nil || err.Error() != "unmarshal error" {
+		t.Fatalf("expected unmarshal error, got: %v", err)
+	}
+}
+
+// decoderOnlyChild implements only DynamicDecoder, so a nested decode through
+// a non-seekable stream must delegate through the decoder interface.
+type decoderOnlyChild struct {
+	V uint32
+}
+
+func (c *decoderOnlyChild) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, dec sszutils.Decoder) error {
+	v, err := dec.DecodeUint32()
+	if err != nil {
+		return err
+	}
+	c.V = v
+	return nil
+}
+
+func TestUnmarshalSSZReaderNestedDecoderOnlyChild(t *testing.T) {
+	type holder struct {
+		Inner decoderOnlyChild
+	}
+	ds := NewDynSsz(nil)
+	var target holder
+	if err := ds.UnmarshalSSZReader(&target, bytes.NewReader([]byte{7, 0, 0, 0}), 4); err != nil {
+		t.Fatalf("nested decoder-only child failed: %v", err)
+	}
+	if target.Inner.V != 7 {
+		t.Fatalf("decoded V = %d, want 7", target.Inner.V)
+	}
+}
+
+// selfSizedNode reports its own size, so the marshal entrypoint skips the
+// size walker and the marshal walker itself enforces the nesting bound.
+type selfSizedNode struct {
+	Next []selfSizedNode `ssz-max:"1"`
+}
+
+func (n *selfSizedNode) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
+	size := 4
+	for cur := n; len(cur.Next) > 0; cur = &cur.Next[0] {
+		size += 4
+	}
+	return size
+}
+
+func TestMarshalDepthBoundInMarshalWalker(t *testing.T) {
+	root := selfSizedNode{}
+	cur := &root
+	for i := 0; i < 8; i++ {
+		cur.Next = []selfSizedNode{{}}
+		cur = &cur.Next[0]
+	}
+	ds := NewDynSsz(nil, WithMaxNestingDepth(3))
+	if _, err := ds.MarshalSSZ(&root); err == nil || !errors.Is(err, sszutils.ErrMaxDepthExceeded) {
+		t.Fatalf("expected the nesting bound from the marshal walker, got: %v", err)
+	}
+}
+
+func TestMarshalDepthBound(t *testing.T) {
+	type depthNode struct {
+		Next []depthNode `ssz-max:"1"`
+	}
+	root := depthNode{}
+	cur := &root
+	for i := 0; i < 8; i++ {
+		cur.Next = []depthNode{{}}
+		cur = &cur.Next[0]
+	}
+	ds := NewDynSsz(nil, WithMaxNestingDepth(3))
+	if _, err := ds.MarshalSSZ(&root); err == nil || !errors.Is(err, sszutils.ErrMaxDepthExceeded) {
+		t.Fatalf("expected the nesting bound at marshal, got: %v", err)
+	}
+}
+
+func TestUnmarshalReusesSliceWithinCapacity(t *testing.T) {
+	type sliceReuse struct {
+		L []uint64 `ssz-max:"16"`
+	}
+	ds := NewDynSsz(nil)
+	enc, err := ds.MarshalSSZ(&sliceReuse{L: []uint64{1, 2, 3, 4}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	target := sliceReuse{L: append(make([]uint64, 0, 8), 99)}
+	if err := ds.UnmarshalSSZ(&target, enc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(target.L) != 4 || cap(target.L) != 8 {
+		t.Fatalf("slice not grown in place: len=%d cap=%d", len(target.L), cap(target.L))
+	}
+	for i, want := range []uint64{1, 2, 3, 4} {
+		if target.L[i] != want {
+			t.Fatalf("element %d = %d, want %d", i, target.L[i], want)
+		}
 	}
 }
 
@@ -536,7 +918,7 @@ func TestHashTreeRootLargeObjectOverflow(t *testing.T) {
 
 // testDynMarshaler implements DynamicMarshaler + DynamicSizer.
 type testDynMarshaler struct {
-	Data  []byte
+	Data  []byte `ssz-max:"64"`
 	Size  int
 	Error error
 }
@@ -554,7 +936,7 @@ func (t *testDynMarshaler) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
 
 // testDynMarshalerNoSizer implements only DynamicMarshaler (no DynamicSizer).
 type testDynMarshalerNoSizer struct {
-	Data  []byte
+	Data  []byte `ssz-max:"64"`
 	Error error
 }
 
@@ -593,7 +975,7 @@ type testViewType struct{}
 
 // testDynViewAll implements all 6 DynamicView* interfaces.
 type testDynViewAll struct {
-	MarshalBuf []byte
+	MarshalBuf []byte `ssz-max:"64"`
 	Size       int
 	Error      error
 }
@@ -668,7 +1050,7 @@ func (t *testDynViewAll) HashTreeRootWithDynView(view any) func(sszutils.Dynamic
 
 // testDynViewNoSizer implements DynamicViewMarshaler but NOT DynamicViewSizer.
 type testDynViewNoSizer struct {
-	MarshalBuf []byte
+	MarshalBuf []byte `ssz-max:"64"`
 	Error      error
 }
 
@@ -687,7 +1069,7 @@ func (t *testDynViewNoSizer) MarshalSSZDynView(view any) func(sszutils.DynamicSp
 // testDynViewNilSizeFn implements DynamicViewMarshaler + DynamicViewSizer,
 // but SizeSSZDynView returns nil.
 type testDynViewNilSizeFn struct {
-	MarshalBuf []byte
+	MarshalBuf []byte `ssz-max:"64"`
 	Error      error
 }
 
@@ -2102,6 +2484,58 @@ func TestRecursiveTypeWithUnion(t *testing.T) {
 	}
 }
 
+// exprSizedVec is sized by a spec expression through its annotation: `?` is
+// what declares a dimension dynamic, so an expression names a length and the
+// type is a vector — in every context.
+type exprSizedVec []uint16
+
+var _ = sszutils.Annotate[exprSizedVec](`dynssz-size:"EXPR_VEC_LEN"`)
+
+type exprSizedVecHolder struct {
+	V exprSizedVec
+}
+
+// An expression-sized annotated slice classifies as a vector whether it
+// stands alone, sits in a struct field, or is a list element — the same
+// layout in every context, matching the tag-spelled form.
+func TestAnnotatedExpressionSizeIsVectorEverywhere(t *testing.T) {
+	ds := NewDynSsz(map[string]any{"EXPR_VEC_LEN": uint64(4)}, WithNoFastSsz(), WithNoDelegation())
+	value := exprSizedVec{1, 2, 3, 4}
+
+	standalone, err := ds.HashTreeRoot(value)
+	if err != nil {
+		t.Fatalf("standalone hash: %v", err)
+	}
+	if buf, marshalErr := ds.MarshalSSZ(value); marshalErr != nil || len(buf) != 8 {
+		t.Fatalf("standalone marshal: len=%d err=%v, want the 8-byte inline vector", len(buf), marshalErr)
+	}
+
+	asField, err := ds.HashTreeRoot(exprSizedVecHolder{V: value})
+	if err != nil {
+		t.Fatalf("field hash: %v", err)
+	}
+	fieldOnly, err := ds.HashTreeRoot(struct {
+		V [4]uint16 `ssz-size:"4" dynssz-size:"EXPR_VEC_LEN"`
+	}{V: [4]uint16{1, 2, 3, 4}})
+	if err != nil {
+		t.Fatalf("tag-spelled hash: %v", err)
+	}
+	if asField != fieldOnly {
+		t.Fatalf("the annotated field and the tag-spelled field must hash alike")
+	}
+	_ = standalone
+
+	// As a list element the vector is fixed-size, so it lays out inline:
+	// one element is its 8 bytes, with no offset table.
+	elems, err := ds.MarshalSSZ([]exprSizedVec{value})
+	if err != nil {
+		t.Fatalf("element marshal: %v", err)
+	}
+	if len(elems) != 8 {
+		t.Fatalf("element layout: len=%d, want 8 (inline vector, no offsets)", len(elems))
+	}
+}
+
 // hintedShareList carries a size annotation, so references to it resolve with
 // external hints derived from the annotation.
 type hintedShareList []uint16
@@ -2458,16 +2892,42 @@ func TestHTRListLimitEnforced(t *testing.T) {
 
 // --- ssz-max:"0" is a no-limit placeholder, not a zero limit ---
 
+// ssz-max:"0" is a "no limit" placeholder rather than a limit of zero: the real
+// limit is expected from a dynssz-max expression. A list that ends up with no
+// limit at all has no SSZ hash tree root -- List[T, N] needs N to merkleize --
+// so it is only usable with extended types.
 func TestZeroMaxTreatedAsNoLimit(t *testing.T) {
-	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoFastHash())
 	type T struct {
 		X []uint64 `ssz-max:"0"`
 	}
-	if _, err := ds.MarshalSSZ(&T{X: []uint64{1, 2, 3}}); err != nil {
+	payload := &T{X: []uint64{1, 2, 3}}
+
+	// A limit only bounds a list, so serialization never needs one; only the
+	// root does.
+	plain := NewDynSsz(nil, WithNoFastSsz(), WithNoFastHash())
+	if _, err := plain.MarshalSSZ(payload); err != nil {
+		t.Fatalf("ssz-max:0 marshal should succeed without extended types: %v", err)
+	}
+	if _, err := plain.HashTreeRoot(payload); !errors.Is(err, sszutils.ErrExtendedTypeDisabled) {
+		t.Fatalf("err = %v, want the limit-less list to require extended types to hash", err)
+	}
+
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoFastHash(), WithExtendedTypes())
+	if _, err := ds.MarshalSSZ(payload); err != nil {
 		t.Fatalf("ssz-max:0 marshal should succeed (no limit): %v", err)
 	}
-	if _, err := ds.HashTreeRoot(&T{X: []uint64{1, 2, 3}}); err != nil {
+	if _, err := ds.HashTreeRoot(payload); err != nil {
 		t.Fatalf("ssz-max:0 HTR should succeed (no limit): %v", err)
+	}
+
+	// A dynssz-max expression is still a limit, just not one resolvable
+	// statically, so the placeholder pattern needs no extension.
+	type withExpr struct {
+		X []uint64 `ssz-max:"0" dynssz-max:"LIMIT"`
+	}
+	specs := NewDynSsz(map[string]any{"LIMIT": uint64(8)}, WithNoFastSsz(), WithNoFastHash())
+	if _, err := specs.HashTreeRoot(&withExpr{X: []uint64{1, 2, 3}}); err != nil {
+		t.Fatalf("a dynssz-max limit should not require extended types: %v", err)
 	}
 }
 
@@ -3260,13 +3720,191 @@ func TestMarshalSSZToAppendsAfterPrefix(t *testing.T) {
 // vector (which diverges from the generated code).
 func TestReflectionRejectsDynamicStaticSizeConflict(t *testing.T) {
 	type T struct {
-		M [][32]byte `ssz-size:"?,32" dynssz-size:"COMMITTEE,32"`
+		M [][32]byte `ssz-size:"?,32" dynssz-size:"COMMITTEE,32" ssz-max:"64"`
 	}
 	ds := NewDynSsz(map[string]any{"COMMITTEE": uint64(4)}, WithNoFastSsz())
 
 	v := &T{M: [][32]byte{{}, {}, {}, {}}}
 	if _, err := ds.HashTreeRoot(v); err == nil {
 		t.Fatal("expected conflicting size tags error")
+	}
+}
+
+// An optional's root has to say whether the value is there. Without that, an
+// absent value and a present zero value hash alike -- the two serialize
+// differently, so a root that cannot tell them apart is ambiguous.
+func TestHashTreeRootOptionalCommitsToPresence(t *testing.T) {
+	type optContainer struct {
+		Opt *uint32 `ssz-type:"optional"`
+	}
+	// The canonical spelling of the same thing: a pointer as List[T, 1].
+	type optListContainer struct {
+		Opt *uint32 `ssz-type:"optional-list"`
+	}
+
+	zero := uint32(0)
+	set := uint32(7)
+
+	for _, opts := range [][]DynSszOption{
+		{WithExtendedTypes()},
+		{WithExtendedTypes(), WithNoFastSsz(), WithNoFastHash()},
+	} {
+		ds := NewDynSsz(nil, opts...)
+
+		absent, err := ds.HashTreeRoot(&optContainer{Opt: nil})
+		if err != nil {
+			t.Fatalf("absent: %v", err)
+		}
+		presentZero, err := ds.HashTreeRoot(&optContainer{Opt: &zero})
+		if err != nil {
+			t.Fatalf("present zero: %v", err)
+		}
+		presentSet, err := ds.HashTreeRoot(&optContainer{Opt: &set})
+		if err != nil {
+			t.Fatalf("present value: %v", err)
+		}
+
+		if absent == presentZero {
+			t.Errorf("absent and present-zero share the root %x", absent)
+		}
+		if presentZero == presentSet {
+			t.Errorf("distinct values share the root %x", presentZero)
+		}
+
+		// Both spellings mix in the same presence over the same value, so they
+		// differ only on the wire.
+		for _, tc := range []struct {
+			name string
+			opt  *uint32
+		}{{"absent", nil}, {"present", &set}} {
+			listRoot, err := ds.HashTreeRoot(&optListContainer{Opt: tc.opt})
+			if err != nil {
+				t.Fatalf("%s optional-list: %v", tc.name, err)
+			}
+			optRoot, err := ds.HashTreeRoot(&optContainer{Opt: tc.opt})
+			if err != nil {
+				t.Fatalf("%s optional: %v", tc.name, err)
+			}
+			if listRoot != optRoot {
+				t.Errorf("%s: optional root %x differs from optional-list %x", tc.name, optRoot, listRoot)
+			}
+		}
+	}
+}
+
+// A tag names one dimension per level of nesting. A type with no element is
+// where they run out, so anything past that describes a dimension the type does
+// not have -- it used to be parsed and then dropped, leaving a tag that reads
+// as if it did something.
+func TestSurplusTypeDimensionRejected(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation())
+
+	t.Run("past a basic element", func(t *testing.T) {
+		err := ds.ValidateType(reflect.TypeOf(struct {
+			F []uint64 `ssz-max:"8" ssz-type:"list,uint64,uint32"`
+		}{}))
+		if !errors.Is(err, sszutils.ErrInvalidTag) || !strings.Contains(err.Error(), "dimensions") {
+			t.Errorf("err = %v, want an ErrInvalidTag about dimensions", err)
+		}
+	})
+
+	t.Run("past a container", func(t *testing.T) {
+		type inner struct{ A uint64 }
+		err := ds.ValidateType(reflect.TypeOf(struct {
+			F []inner `ssz-max:"8" ssz-type:"list,container,uint64"`
+		}{}))
+		if !errors.Is(err, sszutils.ErrInvalidTag) {
+			t.Errorf("err = %v, want ErrInvalidTag", err)
+		}
+	})
+
+	// One dimension per level is what the type has, so these stand.
+	for _, tt := range []struct {
+		name  string
+		value any
+	}{
+		{"exactly as many as the type nests", &struct {
+			F [][]uint64 `ssz-max:"8,8" ssz-type:"list,list,uint64"`
+		}{}},
+		{"fewer than the type nests", &struct {
+			F [][]uint64 `ssz-max:"8,8" ssz-type:"list"`
+		}{}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := ds.ValidateType(reflect.TypeOf(tt.value).Elem()); err != nil {
+				t.Errorf("a tag matching the type must be accepted: %v", err)
+			}
+		})
+	}
+}
+
+// A dimension whose length is fixed has no capacity to bound, so a limit
+// declared for it describes nothing. It used to be accepted and ignored, which
+// reads as a bounded list to whoever wrote the tag while the field encodes as a
+// vector.
+//
+// The rule is per dimension: the common fastssz shape puts the limit on an
+// outer list and a length on the inner element, and has to keep working.
+func TestMaxOnFixedDimensionRejected(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation())
+
+	rejected := []struct {
+		name  string
+		value any
+	}{
+		{"ssz-size and ssz-max on one dimension", &struct {
+			F []byte `ssz-size:"4" ssz-max:"8"`
+		}{F: []byte{1, 2, 3, 4}}},
+		{"limit on a fixed Go array", &struct {
+			F [8]uint64 `ssz-max:"4"`
+		}{}},
+		{"limit on a sized inner dimension", &struct {
+			F [][]byte `ssz-size:"?,32" ssz-max:"64,128"`
+		}{}},
+	}
+
+	for _, tt := range rejected {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ds.MarshalSSZ(tt.value)
+			if !errors.Is(err, sszutils.ErrInvalidConstraint) {
+				t.Errorf("err = %v, want ErrInvalidConstraint", err)
+			}
+		})
+	}
+
+	accepted := []struct {
+		name  string
+		value any
+	}{
+		{"list of fixed-size elements", &struct {
+			F [][32]byte `ssz-size:"?,32" ssz-max:"64"`
+		}{F: [][32]byte{{1}}}},
+		{"limit equal to the fixed length", &struct {
+			F [8]uint64 `ssz-max:"8"`
+		}{}},
+		{"limit repeated for the inner vector in both families", &struct {
+			// Tags are positional, so bounding the outer list makes both
+			// families name the inner dimension; repeating the vector's own
+			// length there states what the type already says.
+			F [][48]byte `ssz-size:"?,48" ssz-max:"64,48"`
+		}{F: [][48]byte{{1}}}},
+		{"equal size and max on a slice dimension", &struct {
+			F []byte `ssz-size:"4" ssz-max:"4"`
+		}{F: []byte{1, 2, 3, 4}}},
+		{"list of sized slices", &struct {
+			F [][]byte `ssz-size:"?,32" ssz-max:"64"`
+		}{F: [][]byte{make([]byte, 32)}}},
+		{"array of bounded lists", &struct {
+			F [2][]uint16 `ssz-max:"?,64"`
+		}{}},
+	}
+
+	for _, tt := range accepted {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := ds.MarshalSSZ(tt.value); err != nil {
+				t.Errorf("a limit on the dimension that has capacity must be accepted: %v", err)
+			}
+		})
 	}
 }
 
@@ -3296,9 +3934,16 @@ func TestHashTreeRootOptionalListOrdering(t *testing.T) {
 	manualRoot := func(elems []*optInner) [32]byte {
 		leaves := make([][32]byte, 16)
 		for i, e := range elems {
+			// Every optional commits to its presence, so a nil element is a
+			// zero chunk with 0 mixed in -- distinct from the zero leaves that
+			// pad the list out to its limit.
+			var valueRoot [32]byte
+			present := uint64(0)
 			if e != nil {
-				leaves[i] = hashPair(chunkU64(e.A), chunkU64(e.B))
+				valueRoot = hashPair(chunkU64(e.A), chunkU64(e.B))
+				present = 1
 			}
+			leaves[i] = hashPair(valueRoot, chunkU64(present))
 		}
 		level := leaves
 		for len(level) > 1 {
@@ -4687,7 +5332,7 @@ type usTailPtrs struct {
 
 type usTailUnlimited struct {
 	Head uint32
-	Tail []uint32 // no ssz-max: bounded only by the stream size
+	Tail []uint32 `ssz-max:"64"` // limit far above what the stream carries
 }
 
 type usTailString struct {

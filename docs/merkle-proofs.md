@@ -201,6 +201,12 @@ func VerifyProof(root []byte, proof *Proof) (bool, error)
 func VerifyMultiproof(root []byte, proof [][]byte, leaves [][]byte, indices []int) (bool, error)
 ```
 
+Every value handed to a verifier — the root, each leaf, and each proof hash —
+must be exactly 32 bytes, the SSZ chunk size. A shorter one is rejected rather
+than zero-extended: padding it would give a chunk ending in zero bytes as many
+encodings as it has trailing zeros, each verifying against the same root. Pad
+a value to a full chunk before proving or verifying it.
+
 ## Advanced Usage
 
 ### Working with Progressive Containers

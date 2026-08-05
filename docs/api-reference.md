@@ -53,6 +53,9 @@ type DynSszOption func(*DynSszOptions)
 | `WithLogCb(fn)` | Set a custom logging callback (`func(format string, args ...any)`) |
 | `WithStreamWriterBufferSize(n)` | Set stream encoder buffer size (default 2KB) |
 | `WithStreamReaderBufferSize(n)` | Set stream decoder buffer size (default 2KB) |
+| `WithNoDelegation()` | Disable delegation to generated Dynamic* methods (fastssz is governed by `WithNoFastSsz`) |
+| `WithMaxStreamSize(n)` | Cap unknown-length stream decodes (default 512MB); guards allocation from untrusted readers |
+| `WithMaxNestingDepth(n)` | Bound recursion-cycle nesting (default 1024); guards the stack against deeply nested payloads |
 
 ### Global Instance
 
@@ -127,6 +130,26 @@ var decoded MyStruct
 err := ds.UnmarshalSSZ(&decoded, data)
 ```
 
+**Decoding reuses what the target already holds.** A slice long enough for the
+result keeps its backing array, and a non-nil pointer — a struct field or a
+slice element — is decoded into rather than replaced. Only an empty slot is
+allocated. This saves allocations when a target is decoded into repeatedly, and
+it is the same behaviour in both engines.
+
+The consequence is that a decode writes through to objects the caller still
+references:
+
+```go
+first := decoded.Items[0]      // caller keeps a reference
+err = ds.UnmarshalSSZ(&decoded, other)
+// first now holds values from `other`
+```
+
+Decode into a target you own. To keep an earlier result, either decode into a
+fresh value or copy what you need out first. A successful decode always
+produces exactly the value the input describes — reuse keeps allocations, never
+data.
+
 ## Streaming Methods
 
 ### MarshalSSZWriter
@@ -189,6 +212,14 @@ func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error)
 ```
 
 Calculates serialized size without encoding.
+
+For a value that encodes, the size is exact — the length `MarshalSSZ` produces,
+and both engines agree on it. For a value that does not encode, the number means
+nothing and depends on which engine ran: a type with generated code sizes itself
+through `DynamicSizer`, which returns a bare `int` and so cannot report the
+problem, while the reflection engine returns an error. Use this to size a
+buffer, not to decide whether a value is encodable — `MarshalSSZ` rejects such a
+value either way.
 
 ### ValidateType
 
@@ -498,7 +529,8 @@ payload := PayloadUnion{
 ### CodeGenerator
 
 ```go
-func NewCodeGenerator(dynSsz *dynssz.DynSsz) *CodeGenerator
+func NewCodeGenerator(typeCache *ssztypes.TypeCache) *CodeGenerator
+// pass ds.GetTypeCache() to share an instance's cache, or nil for a fresh one
 
 func (cg *CodeGenerator) BuildFile(fileName string, opts ...CodeGeneratorOption)
 func (cg *CodeGenerator) Generate() error
@@ -546,7 +578,7 @@ var (
     ErrListTooBig          = fmt.Errorf("list length is higher than max value")
     ErrUnexpectedEOF       = fmt.Errorf("unexpected end of SSZ")
     ErrOffset              = fmt.Errorf("incorrect offset")
-    ErrInvalidUnionVariant = fmt.Errorf("invalid union variant")
+    ErrInvalidUnionVariant = ErrInvalidValueRange // alias: matches and prints as "invalid value range"
     ErrVectorLength        = fmt.Errorf("incorrect vector length")
     ErrNotImplemented      = fmt.Errorf("not implemented")
 )

@@ -13,6 +13,7 @@
 package reflection
 
 import (
+	"math"
 	"reflect"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
@@ -34,7 +35,45 @@ type ReflectionCtx struct {
 	verbose      bool
 	noFastSsz    bool
 	noDelegation bool
+
+	// maxDepth bounds how many recursion-cycle levels a walk may enter.
+	maxDepth int
+
+	// maxLoop is maxDepth as the walkers compare it, precomputed once.
+	maxLoop uint32
 }
+
+// reflectionDepth travels down a walk by value: each callee gets its own copy,
+// so unwinding out of a subtree restores the caller's counts with no cleanup,
+// and a sibling subtree can never see its predecessor's levels. At two uint32s
+// it costs exactly the machine word the previous plain int parameter cost.
+//
+// The two counters advance at the walk dispatchers and nowhere else:
+//   - idt steps once per structural level, feeds log indentation, and marks
+//     the walk's outermost entry by being zero.
+//   - loop steps only through descriptors flagged SszTypeFlagRecursionMember —
+//     the members of a recursive cycle — below the outermost value, and is
+//     checked after it advances: a level costs only what a caller descends
+//     into, exactly what a generated depth method receives, so both engines
+//     reject the same value at the same nesting depth. Everything outside a
+//     cycle bottoms out at a depth fixed by the type and is never counted or
+//     checked.
+type reflectionDepth struct {
+	idt  uint32
+	loop uint32
+}
+
+// defaultMaxNestingDepth bounds how many recursion-cycle levels a value may
+// nest while being encoded, decoded or hashed.
+//
+// Only a recursive type can nest to a depth the input controls, and each level
+// costs a handful of wire bytes, so without a bound a small payload can exhaust
+// the goroutine stack. Go aborts the process on stack exhaustion and recover()
+// cannot catch it, so the bound turns that abort into an ordinary error.
+//
+// 1024 is far deeper than any practical schema nests (Ethereum consensus types
+// stay under 20) while costing well under a megabyte of stack.
+const defaultMaxNestingDepth = 1024
 
 // NewReflectionCtx creates a new ReflectionCtx with the given configuration.
 //
@@ -47,13 +86,23 @@ type ReflectionCtx struct {
 //   - noDelegation: when true, disables delegation to a type's own generated
 //     Dynamic* SSZ methods, forcing the generic reflection walk. Custom types
 //     (which have no reflection representation) always delegate regardless.
-func NewReflectionCtx(ds sszutils.DynamicSpecs, logCb func(format string, args ...any), verbose, noFastSsz, noDelegation bool) *ReflectionCtx {
+//   - maxDepth: bounds how many recursion-cycle levels a value may nest before
+//     the walk fails with sszutils.ErrMaxDepthExceeded. A non-positive value
+//     selects defaultMaxNestingDepth. Only types flagged as recursion members
+//     count against it; every other type is unaffected.
+func NewReflectionCtx(ds sszutils.DynamicSpecs, logCb func(format string, args ...any), verbose, noFastSsz, noDelegation bool, maxDepth int) *ReflectionCtx {
+	if maxDepth <= 0 {
+		maxDepth = defaultMaxNestingDepth
+	}
+
 	return &ReflectionCtx{
 		ds:           ds,
 		logCb:        logCb,
 		verbose:      verbose,
 		noFastSsz:    noFastSsz,
 		noDelegation: noDelegation,
+		maxDepth:     maxDepth,
+		maxLoop:      uint32(min(uint64(maxDepth), math.MaxUint32)),
 	}
 }
 
@@ -91,7 +140,7 @@ func (ctx *ReflectionCtx) SizeSSZ(targetType *ssztypes.TypeDescriptor, targetVal
 	if targetType == nil {
 		return 0, sszutils.NewSszError(sszutils.ErrInvalidValueRange, "target type must not be nil")
 	}
-	return ctx.getSszValueSize(targetType, targetValue)
+	return ctx.getSszValueSize(targetType, targetValue, reflectionDepth{})
 }
 
 // MarshalSSZ encodes targetValue into SSZ format using the provided encoder
@@ -103,7 +152,7 @@ func (ctx *ReflectionCtx) MarshalSSZ(targetType *ssztypes.TypeDescriptor, target
 	if encoder == nil {
 		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "encoder must not be nil")
 	}
-	return ctx.marshalType(targetType, targetValue, encoder, 0)
+	return ctx.marshalType(targetType, targetValue, encoder, reflectionDepth{})
 }
 
 // UnmarshalSSZ decodes SSZ data from the provided decoder into targetValue
@@ -115,7 +164,7 @@ func (ctx *ReflectionCtx) UnmarshalSSZ(targetType *ssztypes.TypeDescriptor, targ
 	if decoder == nil {
 		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "decoder must not be nil")
 	}
-	return ctx.unmarshalType(targetType, targetValue, decoder, 0)
+	return ctx.unmarshalType(targetType, targetValue, decoder, reflectionDepth{})
 }
 
 // HashTreeRoot computes the SSZ hash tree root of targetValue using the
@@ -127,5 +176,5 @@ func (ctx *ReflectionCtx) HashTreeRoot(targetType *ssztypes.TypeDescriptor, targ
 	if hh == nil {
 		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "hash walker must not be nil")
 	}
-	return ctx.buildRootFromType(targetType, targetValue, hh, false, 0)
+	return ctx.buildRootFromType(targetType, targetValue, hh, false, reflectionDepth{})
 }

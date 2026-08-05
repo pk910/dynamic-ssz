@@ -227,9 +227,14 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 	}
 	cfg := applyCallOptions(opts)
 
-	// Skip view descriptor logic for types implementing DynamicMarshaler (they handle their own serialization)
+	// Types carrying their own dynamic methods handle their serialization
+	// themselves. The buffer form is preferred; the streaming form is bridged
+	// through a buffer encoder, so both entrypoints delegate to the same
+	// method set in the same order.
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if marshaler, ok := source.(sszutils.DynamicMarshaler); ok && !d.options.NoDelegation && d.delegable(source) {
+		marshaler, hasMarshaler := source.(sszutils.DynamicMarshaler)
+		sszEncoder, hasEncoder := source.(sszutils.DynamicEncoder)
+		if (hasMarshaler || hasEncoder) && !d.options.NoDelegation && d.delegable(source) {
 			var buf []byte
 			if sizer, ok := source.(sszutils.DynamicSizer); ok {
 				size := sizer.SizeSSZDyn(d)
@@ -237,7 +242,14 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 			} else {
 				buf = make([]byte, 0, 1024)
 			}
-			return marshaler.MarshalSSZDyn(d, buf)
+			if hasMarshaler {
+				return marshaler.MarshalSSZDyn(d, buf)
+			}
+			enc := sszutils.NewBufferEncoder(buf)
+			if err := sszEncoder.MarshalSSZEncoder(d, enc); err != nil {
+				return nil, err
+			}
+			return enc.GetBuffer(), nil
 		}
 	} else if viewMarshaler, ok := source.(sszutils.DynamicViewMarshaler); ok && !d.options.NoDelegation {
 		if marshalFn := viewMarshaler.MarshalSSZDynView(cfg.viewDescriptor); marshalFn != nil {
@@ -268,7 +280,7 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 		return nil, err
 	}
 
-	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation, d.options.MaxNestingDepth)
 
 	size, err := ctx.SizeSSZ(sourceTypeDesc, sourceValue)
 	if err != nil {
@@ -330,10 +342,21 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 	}
 	cfg := applyCallOptions(opts)
 
-	// Skip view descriptor logic for types implementing DynamicMarshaler
+	// The buffer form is preferred; the streaming form is bridged through a
+	// buffer encoder, so both entrypoints delegate to the same method set in
+	// the same order.
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if marshaler, ok := source.(sszutils.DynamicMarshaler); ok && !d.options.NoDelegation && d.delegable(source) {
-			return marshaler.MarshalSSZDyn(d, buf)
+		if !d.options.NoDelegation && d.delegable(source) {
+			if marshaler, ok := source.(sszutils.DynamicMarshaler); ok {
+				return marshaler.MarshalSSZDyn(d, buf)
+			}
+			if sszEncoder, ok := source.(sszutils.DynamicEncoder); ok {
+				enc := sszutils.NewBufferEncoder(buf)
+				if err := sszEncoder.MarshalSSZEncoder(d, enc); err != nil {
+					return nil, err
+				}
+				return enc.GetBuffer(), nil
+			}
 		}
 	} else if viewMarshaler, ok := source.(sszutils.DynamicViewMarshaler); ok && !d.options.NoDelegation {
 		if marshalFn := viewMarshaler.MarshalSSZDynView(cfg.viewDescriptor); marshalFn != nil {
@@ -352,7 +375,7 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 		return nil, err
 	}
 
-	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation, d.options.MaxNestingDepth)
 
 	// Grow buf so the serialized data can be appended without overrunning its
 	// capacity (BufferEncoder writes at len(buf) using cap(buf) directly).
@@ -419,6 +442,17 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 //   - Size calculation errors for dynamic fields
 //   - Unsupported type structures
 //
+// On error the writer may already hold part of the encoding. Bytes are written
+// as they are produced, so whatever was encoded before the failure is gone --
+// and how much that is depends on the value, the buffer size and whether the
+// type has generated code, which reaches the writer sooner. A write failure
+// leaves a partial encoding regardless of any of that.
+//
+// So a failed call leaves the stream in an unusable state: discard it, or reset
+// it to where it was, rather than writing anything further. A peer reading it
+// has no way to tell a truncated encoding from a complete one. When the reader
+// must see all of it or none, encode with MarshalSSZ and write the result.
+//
 // Example usage:
 //
 //	// Write directly to a file
@@ -451,16 +485,30 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 	cfg := applyCallOptions(opts)
 	encoder := sszutils.NewStreamEncoder(w, d.options.StreamWriterBufferSize)
 
-	// Skip view descriptor logic for types implementing DynamicEncoder
+	// The streaming form is preferred; the buffer form is bridged through the
+	// encoder's buffer, so both entrypoints delegate to the same method set in
+	// the same order.
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if sszEncoder, ok := source.(sszutils.DynamicEncoder); ok && !d.options.NoDelegation && d.delegable(source) {
-			err := sszEncoder.MarshalSSZEncoder(d, encoder)
-			if err != nil {
-				return err
-			}
+		if !d.options.NoDelegation && d.delegable(source) {
+			if sszEncoder, ok := source.(sszutils.DynamicEncoder); ok {
+				err := sszEncoder.MarshalSSZEncoder(d, encoder)
+				if err != nil {
+					return err
+				}
 
-			encoder.Flush()
-			return encoder.GetWriteError()
+				encoder.Flush()
+				return encoder.GetWriteError()
+			}
+			if marshaler, ok := source.(sszutils.DynamicMarshaler); ok {
+				newBuf, err := marshaler.MarshalSSZDyn(d, encoder.GetBuffer())
+				if err != nil {
+					return err
+				}
+				encoder.SetBuffer(newBuf)
+
+				encoder.Flush()
+				return encoder.GetWriteError()
+			}
 		}
 	} else if viewEncoder, ok := source.(sszutils.DynamicViewEncoder); ok && !d.options.NoDelegation {
 		if marshalFn := viewEncoder.MarshalSSZEncoderView(cfg.viewDescriptor); marshalFn != nil {
@@ -485,7 +533,7 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 		return err
 	}
 
-	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation, d.options.MaxNestingDepth)
 
 	size, err := ctx.SizeSSZ(sourceTypeDesc, sourceValue)
 	if err != nil {
@@ -528,6 +576,19 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 // Returns:
 //   - int: The exact number of bytes that would be produced by MarshalSSZ for this source
 //   - error: An error if the size calculation fails due to unsupported types or invalid data
+//
+// For a value that encodes, the size is exact: it is the length MarshalSSZ
+// produces, and both engines agree on it.
+//
+// For a value that does not encode -- a union holding data that does not match
+// its selector, say -- the number means nothing, and what comes back depends on
+// which engine ran. A type with generated code sizes itself through
+// DynamicSizer, which returns a bare int and so cannot report the problem; it
+// yields 0, which is indistinguishable from a value that really is zero bytes
+// long. The reflection engine returns an error instead.
+//
+// So use this to size a buffer, not to decide whether a value is encodable.
+// MarshalSSZ rejects such a value in either engine.
 //
 // Example:
 //
@@ -572,7 +633,7 @@ func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error) {
 		return 0, err
 	}
 
-	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation, d.options.MaxNestingDepth)
 
 	size, err := ctx.SizeSSZ(sourceTypeDesc, sourceValue)
 	if err != nil {
@@ -628,10 +689,31 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 	}
 	cfg := applyCallOptions(opts)
 
-	// Skip view descriptor logic for types implementing DynamicUnmarshaler
+	// A nil typed pointer cannot receive a decode through any path; the
+	// delegate methods would dereference it.
+	if targetValue := reflect.ValueOf(target); targetValue.Kind() == reflect.Ptr && targetValue.IsNil() {
+		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "target pointer must not be nil")
+	}
+
+	// The buffer form is preferred; the streaming form is bridged through a
+	// buffer decoder, so both entrypoints delegate to the same method set in
+	// the same order. The bridged decode must consume the whole buffer, as a
+	// buffer unmarshaler does.
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if unmarshaler, ok := target.(sszutils.DynamicUnmarshaler); ok && !d.options.NoDelegation && d.delegable(target) {
-			return unmarshaler.UnmarshalSSZDyn(d, ssz)
+		if !d.options.NoDelegation && d.delegable(target) {
+			if unmarshaler, ok := target.(sszutils.DynamicUnmarshaler); ok {
+				return unmarshaler.UnmarshalSSZDyn(d, ssz)
+			}
+			if sszDecoder, ok := target.(sszutils.DynamicDecoder); ok {
+				dec := sszutils.NewBufferDecoder(ssz)
+				if err := sszDecoder.UnmarshalSSZDecoder(d, dec); err != nil {
+					return err
+				}
+				if remaining := len(ssz) - dec.GetPosition(); remaining > 0 {
+					return sszutils.ErrTrailingDataFn(remaining)
+				}
+				return nil
+			}
 		}
 	} else if viewUnmarshaler, ok := target.(sszutils.DynamicViewUnmarshaler); ok && !d.options.NoDelegation {
 		if unmarshalFn := viewUnmarshaler.UnmarshalSSZDynView(cfg.viewDescriptor); unmarshalFn != nil {
@@ -651,14 +733,10 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 	}
 
 	if targetTypeDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer == 0 {
-		return fmt.Errorf("target must be a pointer")
+		return sszutils.NewSszError(sszutils.ErrTypeMismatch, "target must be a pointer")
 	}
 
-	if targetValue.IsNil() {
-		return fmt.Errorf("target pointer must not be nil")
-	}
-
-	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation, d.options.MaxNestingDepth)
 
 	decoder := sszutils.NewBufferDecoder(ssz)
 	decoder.PushLimit(len(ssz))
@@ -670,7 +748,7 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 
 	consumedDiff := decoder.PopLimit()
 	if consumedDiff != 0 {
-		return fmt.Errorf("did not consume full ssz range (diff: %v, ssz size: %v)", consumedDiff, len(ssz))
+		return sszutils.NewSszErrorf(sszutils.ErrOffset, "did not consume full ssz range (diff: %v, ssz size: %v)", consumedDiff, len(ssz))
 	}
 
 	return nil
@@ -810,20 +888,47 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 			return decoder.FinishRegion()
 		}
 		if consumedDiff := decoder.PopLimit(); consumedDiff != 0 {
-			return fmt.Errorf("did not consume full ssz range (diff: %v, ssz size: %v)", consumedDiff, size)
+			return sszutils.NewSszErrorf(sszutils.ErrOffset, "did not consume full ssz range (diff: %v, ssz size: %v)", consumedDiff, size)
 		}
 		return nil
 	}
 
-	// Skip view descriptor logic for types implementing DynamicDecoder
-	if cfg == nil || cfg.viewDescriptor == nil {
-		if sszDecoder, ok := target.(sszutils.DynamicDecoder); ok && !d.options.NoDelegation && d.delegable(target) {
-			err := sszDecoder.UnmarshalSSZDecoder(d, decoder)
-			if err != nil {
-				return err
-			}
+	// A nil typed pointer cannot receive a decode through any path; the
+	// delegate methods would dereference it.
+	if targetValue := reflect.ValueOf(target); targetValue.Kind() == reflect.Ptr && targetValue.IsNil() {
+		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "target pointer must not be nil")
+	}
 
-			return finish()
+	// The streaming form is preferred; the buffer form is bridged by reading
+	// the full region first, so both entrypoints delegate to the same method
+	// set in the same order.
+	if cfg == nil || cfg.viewDescriptor == nil {
+		if !d.options.NoDelegation && d.delegable(target) {
+			if sszDecoder, ok := target.(sszutils.DynamicDecoder); ok {
+				err := sszDecoder.UnmarshalSSZDecoder(d, decoder)
+				if err != nil {
+					return err
+				}
+
+				return finish()
+			}
+			if unmarshaler, ok := target.(sszutils.DynamicUnmarshaler); ok {
+				var sszBuf []byte
+				var err error
+				if decoder.LengthKnown() {
+					sszBuf, err = decoder.DecodeBytesBuf(decoder.GetLength())
+				} else {
+					sszBuf, err = decoder.DecodeRemaining(-1)
+				}
+				if err != nil {
+					return err
+				}
+				if err := unmarshaler.UnmarshalSSZDyn(d, sszBuf); err != nil {
+					return err
+				}
+
+				return finish()
+			}
 		}
 	} else if viewDecoder, ok := target.(sszutils.DynamicViewDecoder); ok && !d.options.NoDelegation {
 		if unmarshalFn := viewDecoder.UnmarshalSSZDecoderView(cfg.viewDescriptor); unmarshalFn != nil {
@@ -848,14 +953,10 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 	}
 
 	if targetTypeDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer == 0 {
-		return fmt.Errorf("target must be a pointer")
+		return sszutils.NewSszError(sszutils.ErrTypeMismatch, "target must be a pointer")
 	}
 
-	if targetValue.IsNil() {
-		return fmt.Errorf("target pointer must not be nil")
-	}
-
-	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation, d.options.MaxNestingDepth)
 
 	err = ctx.UnmarshalSSZ(targetTypeDesc, targetValue, decoder)
 	if err != nil {
@@ -1004,7 +1105,7 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...Ca
 		return err
 	}
 
-	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation)
+	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation, d.options.MaxNestingDepth)
 
 	err = ctx.HashTreeRoot(sourceTypeDesc, sourceValue, hh)
 	if err != nil {
@@ -1092,7 +1193,8 @@ func (d *DynSsz) GetTree(source any, opts ...CallOption) (*treeproof.Node, error
 //   - Valid composite types (arrays, slices, structs)
 //   - Proper SSZ tags on slice fields (ssz-size, ssz-max, dynssz-size, dynssz-max)
 //   - Correct tag syntax and values
-//   - No unsupported types (strings, maps, channels, signed integers, floats, etc.)
+//   - No unsupported types (maps, channels, functions, multi-level pointers;
+//     signed integers and floats need WithExtendedTypes)
 //
 // When a view descriptor is provided via WithViewDescriptor option, the method validates:
 //   - The schema type (view descriptor) is compatible with SSZ
@@ -1115,17 +1217,21 @@ func (d *DynSsz) GetTree(source any, opts ...CallOption) (*treeproof.Node, error
 //     explaining why the type is incompatible. The error message includes details about
 //     the specific field or type that caused the validation failure.
 //
+// A type can be valid for encoding yet refuse a hash tree root: a list or
+// bitlist without an ssz-max limit encodes, but has no standard SSZ hash tree
+// root unless extended types hash it as an unbounded list. ValidateType
+// answers the encoding question.
+//
 // Example usage:
 //
 //	type MyStruct struct {
 //	    ValidField   uint64
-//	    InvalidField string  // This will cause validation to fail
+//	    InvalidField map[string]int  // maps cannot be serialized
 //	}
 //
 //	err := ds.ValidateType(reflect.TypeOf(MyStruct{}))
 //	if err != nil {
 //	    log.Fatal("Type validation failed:", err)
-//	    // Output: Type validation failed: field 'InvalidField': unsupported type 'string'
 //	}
 //
 //	// With view descriptor validation:

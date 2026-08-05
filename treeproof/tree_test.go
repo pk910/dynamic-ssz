@@ -1229,24 +1229,41 @@ func TestTreeFromNodesWithMixinZeroLimit(t *testing.T) {
 	}
 }
 
+// A limit below the leaf count overflows the type it declares, so the tree
+// keeps the depth the limit asks for and the surplus leaves fall outside it --
+// the root is the one the leaves that fit produce. The Hasher does the same,
+// and so does fastssz, which is what a foreign type's HashTreeRootWith is
+// measured against.
 func TestTreeFromNodesWithMixinLimitBelowCount(t *testing.T) {
 	nodes := make([]*Node, 8)
 	for i := range nodes {
 		nodes[i] = NewNodeWithValue([]byte{byte(i + 1)})
 	}
 
-	// limit 2 < 8 chunks: clamped up to the chunk count like the Hasher does.
 	tree, err := TreeFromNodesWithMixin(nodes, 8, 2)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	reference, err := TreeFromNodesWithMixin(nodes, 8, 8)
+	// Only the first two leaves fit under a limit of 2.
+	reference, err := TreeFromNodesWithMixin(nodes[:2], 8, 2)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !bytes.Equal(tree.Hash(), reference.Hash()) {
-		t.Errorf("clamped limit root mismatch: %x != %x", tree.Hash(), reference.Hash())
+		t.Errorf("over-capacity root mismatch: %x != %x", tree.Hash(), reference.Hash())
+	}
+
+	// The leaves that do not fit make no difference to the root.
+	altered := make([]*Node, len(nodes))
+	copy(altered, nodes)
+	altered[7] = NewNodeWithValue([]byte{0xff})
+	alt, err := TreeFromNodesWithMixin(altered, 8, 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !bytes.Equal(tree.Hash(), alt.Hash()) {
+		t.Errorf("a leaf outside the limit changed the root")
 	}
 }
 
@@ -1970,5 +1987,180 @@ func TestProvePaddingGindex(t *testing.T) {
 	}
 	if _, err := tree.Prove(30); err == nil {
 		t.Error("Prove(30) below tree depth should fail")
+	}
+}
+
+// TestProveMultiHashesUnfinalizedBranches pins that ProveMulti resolves a
+// branch node's hash instead of reading its raw value. A tree fresh from
+// GetTree has no cached hashes, so proving a non-leaf gindex used to return an
+// empty leaf with a nil error — a proof that could never verify. Prove already
+// resolved it via hashNode; ProveMulti did not.
+func TestProveMultiHashesUnfinalizedBranches(t *testing.T) {
+	build := func() *Node {
+		leaves := make([]*Node, 8)
+		for i := range leaves {
+			b := make([]byte, 32)
+			b[0] = byte(i + 1)
+			leaves[i] = NewNodeWithValue(b)
+		}
+		tree, err := TreeFromNodes(leaves, 8)
+		if err != nil {
+			t.Fatalf("TreeFromNodes: %v", err)
+		}
+		return tree
+	}
+
+	// gindex 1 is the root, 2 and 3 are branches, 8..15 are the leaves.
+	for _, indices := range [][]int{{1}, {2}, {3}, {2, 3}, {2, 9}} {
+		fresh := build()
+		proof, err := fresh.ProveMulti(indices)
+		if err != nil {
+			t.Fatalf("ProveMulti(%v) on a fresh tree: %v", indices, err)
+		}
+		for i, leaf := range proof.Leaves {
+			if len(leaf) != 32 {
+				t.Fatalf("ProveMulti(%v) leaf %d has length %d, want 32", indices, i, len(leaf))
+			}
+		}
+
+		ok, err := VerifyMultiproof(fresh.Hash(), proof.Hashes, proof.Leaves, proof.Indices)
+		if err != nil || !ok {
+			t.Fatalf("ProveMulti(%v) on a fresh tree does not verify: ok=%v err=%v", indices, ok, err)
+		}
+
+		// Finalizing first must not change the result — the proof cannot depend
+		// on hidden tree state.
+		finalized := build()
+		_ = finalized.Hash()
+		after, err := finalized.ProveMulti(indices)
+		if err != nil {
+			t.Fatalf("ProveMulti(%v) on a finalized tree: %v", indices, err)
+		}
+		for i := range proof.Leaves {
+			if !bytes.Equal(proof.Leaves[i], after.Leaves[i]) {
+				t.Fatalf("ProveMulti(%v) leaf %d differs between a fresh and a finalized tree: %x vs %x",
+					indices, i, proof.Leaves[i], after.Leaves[i])
+			}
+		}
+	}
+}
+
+// TestProveMultiOwnsItsIndices pins that the returned Multiproof does not alias
+// the caller's index slice. Prove clones everything it returns; ProveMulti
+// cloned Leaves and Hashes but stored Indices by reference, so a later reorder
+// of the caller's own slice silently invalidated a proof that already verified.
+func TestProveMultiOwnsItsIndices(t *testing.T) {
+	leaves := make([]*Node, 8)
+	for i := range leaves {
+		b := make([]byte, 32)
+		b[0] = byte(i + 1)
+		leaves[i] = NewNodeWithValue(b)
+	}
+	tree, err := TreeFromNodes(leaves, 8)
+	if err != nil {
+		t.Fatalf("TreeFromNodes: %v", err)
+	}
+	root := tree.Hash()
+
+	indices := []int{11, 9}
+	proof, err := tree.ProveMulti(indices)
+	if err != nil {
+		t.Fatalf("ProveMulti: %v", err)
+	}
+	if ok, err := VerifyMultiproof(root, proof.Hashes, proof.Leaves, proof.Indices); err != nil || !ok {
+		t.Fatalf("proof does not verify before mutation: ok=%v err=%v", ok, err)
+	}
+
+	indices[0], indices[1] = indices[1], indices[0]
+
+	if proof.Indices[0] != 11 || proof.Indices[1] != 9 {
+		t.Fatalf("proof.Indices = %v; caller mutation leaked into the proof", proof.Indices)
+	}
+	if ok, err := VerifyMultiproof(root, proof.Hashes, proof.Leaves, proof.Indices); err != nil || !ok {
+		t.Fatalf("proof does not verify after the caller reordered its own slice: ok=%v err=%v", ok, err)
+	}
+}
+
+// TestNodeValuesDoNotAliasCallerMemory pins that a leaf owns its bytes. The
+// 32-byte branch used to store the caller's slice while the shorter branch
+// copied, so whether a later mutation of a reused scratch buffer corrupted
+// every tree and root built from it depended on the input length.
+func TestNodeValuesDoNotAliasCallerMemory(t *testing.T) {
+	tests := []struct {
+		name  string
+		build func(buf []byte) *Node
+		size  int
+	}{
+		{"NewNodeWithValue", NewNodeWithValue, 32},
+		{"LeafFromBytes_exact", LeafFromBytes, 32},
+		{"LeafFromBytes_short", LeafFromBytes, 16},
+		{"LeafFromBytes_multichunk", LeafFromBytes, 64},
+		{"TreeFromChunks", func(buf []byte) *Node {
+			tree, err := TreeFromChunks([][]byte{buf})
+			if err != nil {
+				t.Fatalf("TreeFromChunks: %v", err)
+			}
+			return tree
+		}, 32},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := make([]byte, tt.size)
+			buf[0] = 1
+
+			node := tt.build(buf)
+			before := bytes.Clone(node.Hash())
+
+			// The caller reuses its scratch buffer.
+			buf[0] = 0xff
+
+			if after := node.Hash(); !bytes.Equal(before, after) {
+				t.Fatalf("node hash changed after the caller mutated its buffer: %x -> %x", before, after)
+			}
+		})
+	}
+}
+
+// TestTreeFromChunksRequiresFullChunks pins the chunk-length validation.
+// hashPair copies each side into a fixed 64-byte block, so a short chunk was
+// zero-extended and a long one truncated: distinct inputs collided, and a
+// single-chunk tree returned fewer than the 32 bytes Node.Hash() documents.
+func TestTreeFromChunksRequiresFullChunks(t *testing.T) {
+	chunk := func(b byte) []byte {
+		c := make([]byte, 32)
+		c[0] = b
+		return c
+	}
+
+	tests := []struct {
+		name    string
+		chunks  [][]byte
+		wantErr string
+	}{
+		{"short_single", [][]byte{{1, 2, 3}}, "chunk 0 has length 3, want 32"},
+		{"short_pair", [][]byte{{1}, {2}}, "chunk 0 has length 1, want 32"},
+		{"short_second", [][]byte{chunk(1), {2}}, "chunk 1 has length 1, want 32"},
+		{"long", [][]byte{make([]byte, 40)}, "chunk 0 has length 40, want 32"},
+		{"empty_chunk", [][]byte{{}}, "chunk 0 has length 0, want 32"},
+		{"exact", [][]byte{chunk(1), chunk(2)}, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tree, err := TreeFromChunks(tt.chunks)
+			if tt.wantErr != "" {
+				if err == nil || err.Error() != tt.wantErr {
+					t.Fatalf("TreeFromChunks error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got := len(tree.Hash()); got != 32 {
+				t.Fatalf("Hash() length = %d, want 32", got)
+			}
+		})
 	}
 }

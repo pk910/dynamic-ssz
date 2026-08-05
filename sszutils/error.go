@@ -48,9 +48,23 @@ var (
 	// length decoding is always bounded; see WithMaxStreamSize.
 	ErrStreamTooLarge = fmt.Errorf("ssz stream exceeds maximum size")
 
+	// ErrPayloadTooLarge narrows ErrStreamTooLarge to the case where a
+	// caller-supplied read cap was exceeded, as opposed to the decoder's global
+	// stream allowance. Both causes are "too large", so this wraps
+	// ErrStreamTooLarge and carries its message unchanged; decoders match on it
+	// to tell an ssz-max violation apart from a stream-allowance violation
+	// instead of attributing every overrun to the schema limit.
+	ErrPayloadTooLarge = fmt.Errorf("%w", ErrStreamTooLarge)
+
 	// ErrPlatformOverflow is returned when a SSZ length or count exceeds
 	// the platform's integer range (>31-bit sizes on 32-bit platforms).
 	ErrPlatformOverflow = fmt.Errorf("value exceeds platform integer range")
+
+	// ErrMaxDepthExceeded is returned when a value nests deeper than the
+	// configured maximum. Only recursive types can reach an input-controlled
+	// depth; the bound turns what would be an unrecoverable stack overflow into
+	// an error the caller can handle. See WithMaxNestingDepth.
+	ErrMaxDepthExceeded = fmt.Errorf("maximum nesting depth exceeded")
 
 	// ErrBitlistNotTerminated is an alias for ErrInvalidValueRange,
 	// retained for backward compatibility. New code should use
@@ -273,8 +287,21 @@ func ErrListOffsetsEOFFn(have, needed any) error {
 // exact multiple of the element size.
 func ErrListNotAlignedFn(length, elemSize any) error {
 	return &sszError{
-		err:     ErrUnexpectedEOF,
+		err:     ErrInvalidValueRange,
 		message: fmt.Sprintf("list length %v is not a multiple of element size %v", length, elemSize),
+	}
+}
+
+// ErrListRegionTooSmallFn is returned when a dynamic list's offset table
+// declares more elements than the region can physically hold. The table costs
+// four bytes per element and each body costs at least the element's fixed
+// section, so a count above (regionBytes - tableBytes) / minElemSize describes
+// bodies that cannot exist. Rejecting it here keeps a compact offset table from
+// sizing an allocation that the element decode would only fail afterwards.
+func ErrListRegionTooSmallFn(count, minElemSize, available any) error {
+	return &sszError{
+		err:     ErrOffset,
+		message: fmt.Sprintf("list declares %v elements of at least %v bytes, but only %v bytes remain for them", count, minElemSize, available),
 	}
 }
 
@@ -282,7 +309,7 @@ func ErrListNotAlignedFn(length, elemSize any) error {
 // dynamic list is malformed (not a multiple of 4 or out of range).
 func ErrInvalidListStartOffsetFn(offset, bufLen any) error {
 	return &sszError{
-		err:     ErrUnexpectedEOF,
+		err:     ErrOffset,
 		message: fmt.Sprintf("invalid list start offset %v (length %v)", offset, bufLen),
 	}
 }
@@ -343,6 +370,16 @@ func ErrFieldNotConsumedFn(pos, expected any) error {
 	}
 }
 
+// ErrBitlistBytesFn is returned when a bitlist's encoded byte region already
+// exceeds the byte capacity of its declared bit limit, before the terminator
+// (and thus the exact bit count) has been read.
+func ErrBitlistBytesFn(regionBytes, capacityBytes, limit any) error {
+	return &sszError{
+		err:     ErrListTooBig,
+		message: fmt.Sprintf("bitlist occupies %v bytes, exceeding the %v-byte capacity of limit %v", regionBytes, capacityBytes, limit),
+	}
+}
+
 // ErrTrailingDataFn is returned when a dynamic field or element has
 // unconsumed bytes after decoding.
 func ErrTrailingDataFn(trailing any) error {
@@ -383,10 +420,14 @@ func ErrVectorLengthFn(length, limit any) error {
 }
 
 // ErrVectorSizeExceedsArrayFn is returned when a dynamic size expression
-// yields a vector size larger than the backing Go array.
+// yields a vector size larger than the backing Go array. That is a mismatch
+// between the spec values and the Go type rather than anything about the value
+// being encoded, which is why it carries ErrInvalidConstraint -- the same
+// sentinel the reflection engine raises when it catches the mismatch while
+// building the descriptor.
 func ErrVectorSizeExceedsArrayFn(dynamicSize, arrayLen any) error {
 	return &sszError{
-		err:     ErrVectorLength,
+		err:     ErrInvalidConstraint,
 		message: fmt.Sprintf("dynamic vector size %v exceeds array length %v", dynamicSize, arrayLen),
 	}
 }
@@ -507,7 +548,7 @@ func ErrCustomTypeNotSupportedFn() error {
 // EOF) is larger than the caller-supplied maximum.
 func ErrPayloadTooLargeFn(length, maxLen any) error {
 	return &sszError{
-		err:     ErrStreamTooLarge,
+		err:     ErrPayloadTooLarge,
 		message: fmt.Sprintf("payload length %v exceeds maximum %v", length, maxLen),
 	}
 }
@@ -518,6 +559,17 @@ func ErrStreamTooLargeFn(maxSize any) error {
 	return &sszError{
 		err:     ErrStreamTooLarge,
 		message: fmt.Sprintf("unknown-length ssz stream exceeds maximum size %v", maxSize),
+	}
+}
+
+// --- ErrMaxDepthExceeded constructors ---
+
+// ErrMaxDepthExceededFn is returned when a value nests deeper than the
+// configured maximum.
+func ErrMaxDepthExceededFn(maxDepth any) error {
+	return &sszError{
+		err:     ErrMaxDepthExceeded,
+		message: fmt.Sprintf("value nests deeper than the maximum of %v", maxDepth),
 	}
 }
 

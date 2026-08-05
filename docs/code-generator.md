@@ -50,7 +50,7 @@ reference.
 | `-header` | Custom header comment template for generated files. `{hash}` and `{version}` placeholders are substituted. The first line should match `^// Code generated .* DO NOT EDIT\.$` — a warning is printed otherwise, since tooling relies on that convention to recognize generated files. | dynamic-ssz default header |
 | `-v` | Verbose output | `false` |
 | `-legacy` | Generate legacy compatibility methods | `false` |
-| `-without-dynamic-expressions` | Generate only legacy methods, disable dynamic methods | `false` |
+| `-without-dynamic-expressions` | Generate only legacy methods, disable dynamic methods. See [Freezing spec values](#freezing-spec-values). | `false` |
 | `-without-fastssz` | Generate code without using fast ssz generated methods | `false` |
 | `-with-streaming` | Generate streaming encoder/decoder functions | `false` |
 | `-with-extended-types` | Enable support for non-standard extended types (signed ints, floats, big.Int, optionals) | `false` |
@@ -190,6 +190,38 @@ For memory-efficient streaming to/from `io.Reader`/`io.Writer`:
 dynssz-gen -with-streaming -package . -types BeaconState -output streaming_ssz.go
 ```
 
+### Warnings
+
+Generation succeeds but prints a warning for a type whose encoding is legal yet
+outside the SSZ spec, so the mismatch is visible rather than silently baked into
+the generated methods:
+
+```
+warning: mypkg.Attestation.Bits has no ssz-max, so its hash tree root uses a
+limit derived from the value rather than the type: it will not match another
+implementation
+```
+
+A list or bitlist with no `ssz-max` has no spec-defined hash tree root, so
+generating one at all requires `-with-extended-types` (see
+[supported-types.md](supported-types.md#lists-without-a-limit)). The programmatic
+API exposes the same list through `CodeGenerator.Warnings()`.
+
+### Freezing spec values
+
+`-without-dynamic-expressions` bakes the static tag values into the generated
+buffer methods. Those methods take no spec set, so they are correct only for a
+`DynSsz` whose spec values match the static ones.
+
+Streaming methods are unaffected: an encoder or decoder method is always handed
+a `DynSsz`, so there is no expression-less form of it and it keeps resolving
+spec values. A type generated with both flags therefore has methods that
+disagree when the specs are not the defaults, which is by design -- the library
+entrypoint picks the ones valid for the configured spec values, and never
+serves a baked result to a `DynSsz` that resolves them differently. Calling the
+generated methods directly is what makes the distinction visible, and there the
+buffer methods carry the static contract.
+
 ## Programmatic API
 
 ### Basic Example
@@ -204,7 +236,7 @@ import (
 
 func generateSSZ() error {
     // Create code generator
-    codeGen := codegen.NewCodeGenerator(dynssz.NewDynSsz(nil))
+    codeGen := codegen.NewCodeGenerator(dynssz.NewDynSsz(nil).GetTypeCache())
     
     // Add types to single file
     codeGen.BuildFile("generated_ssz.go", 
@@ -221,7 +253,7 @@ func generateSSZ() error {
 
 ```go
 func generateSSZMultipleFiles() error {
-    codeGen := codegen.NewCodeGenerator(dynssz.NewDynSsz(nil))
+    codeGen := codegen.NewCodeGenerator(dynssz.NewDynSsz(nil).GetTypeCache())
     
     // Block types to one file
     codeGen.BuildFile("block_ssz.go",
@@ -246,7 +278,7 @@ func generateSSZMultipleFiles() error {
 import "github.com/pk910/dynamic-ssz/codegen"
 
 // Create generator with options
-codeGen := codegen.NewCodeGenerator(dynSsz)
+codeGen := codegen.NewCodeGenerator(dynSsz.GetTypeCache())
 
 // Build file with options
 codeGen.BuildFile("output.go",
@@ -284,7 +316,7 @@ codeGen.BuildFile("output.go",
 ```go
 import "github.com/pk910/dynamic-ssz/codegen"
 
-codeGen := codegen.NewCodeGenerator(dynSsz)
+codeGen := codegen.NewCodeGenerator(dynSsz.GetTypeCache())
 
 // Generate type with view support (data + views mode)
 codeGen.BuildFile("output.go",
@@ -402,6 +434,13 @@ func (b *BeaconBlock) HashTreeRoot() ([32]byte, error) {
     // Optimized merkle root calculation using global specs
 }
 ```
+
+Whether a type additionally carries the static fastssz method set
+(`MarshalSSZTo`, `HashTreeRoot`, `HashTreeRootWith`) can depend on the
+composition of the generation batch: a type whose nested types are generated in
+the same batch delegates to their preset-capable `*Dyn` methods and then omits
+its own static twins. The `*Dyn` methods and the `ds.*` entry points are always
+present — use those rather than relying on the static method set.
 
 ### With `-without-dynamic-expressions`: Static Methods Only
 
@@ -648,14 +687,17 @@ type State struct {
 
 // Generated dynamic method
 func (s *State) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
-    maxValidators := ds.GetValue("VALIDATOR_REGISTRY_LIMIT")
+    maxValidators, _ := sszutils.ResolveSpecValueWithDefault(ds, "VALIDATOR_REGISTRY_LIMIT", 1099511627776)
     // ... use dynamic value for different presets
 }
 ```
 
 ### Static Expression Optimization
 
-With `-without-dynamic-expressions`, expressions are resolved at generation time:
+With `-without-dynamic-expressions`, the expressions are dropped and the static
+`ssz-*` values take their place. Generation never consults spec values of its
+own — the generated code resolves expressions against the specs it runs under,
+so what a generating machine has loaded cannot reach the output:
 
 ```go
 // Generated static method (assuming default preset values)

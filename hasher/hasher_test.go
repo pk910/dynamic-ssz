@@ -882,15 +882,23 @@ func TestHasherMerkleizeImpl(t *testing.T) {
 		t.Errorf("expected 32 bytes for four chunks, got %d", len(result))
 	}
 
-	// A limit below the actual chunk count is clamped to the chunk count
-	// instead of panicking.
-	clamped := h.merkleizeImpl(dst[:0], make([]byte, 64), 1) // 2 chunks, limit 1
-	if len(clamped) != 32 {
-		t.Errorf("expected 32 bytes when limit is below count, got %d", len(clamped))
+	// A limit below the actual chunk count overflows the type it declares. The
+	// tree keeps the depth the limit asks for, so the surplus chunks fall
+	// outside it and the root is the one the chunks that fit produce -- what
+	// fastssz returns for the same call, rather than a panic or a deeper tree.
+	twoChunks := make([]byte, 64)
+	twoChunks[0], twoChunks[32] = 1, 2
+	over := h.merkleizeImpl(dst[:0], twoChunks, 1) // 2 chunks, limit 1
+	if len(over) != 32 {
+		t.Errorf("expected 32 bytes when limit is below count, got %d", len(over))
 	}
-	expected := h.merkleizeImpl(make([]byte, 0, 32), make([]byte, 64), 2)
-	if !bytes.Equal(clamped, expected) {
-		t.Error("clamped limit should match merkleization with limit == count")
+	fits := h.merkleizeImpl(make([]byte, 0, 32), twoChunks[:32], 1)
+	if !bytes.Equal(over, fits) {
+		t.Error("an over-capacity list should hash as the chunks that fit")
+	}
+	deeper := h.merkleizeImpl(make([]byte, 0, 32), twoChunks, 2)
+	if bytes.Equal(over, deeper) {
+		t.Error("an over-capacity list must not grow the tree to fit")
 	}
 }
 

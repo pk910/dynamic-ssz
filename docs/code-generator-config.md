@@ -88,7 +88,7 @@ types:
 | `header` | string | no | Custom header comment template for generated files. `{hash}` and `{version}` placeholders are substituted. The first line should match `^// Code generated .* DO NOT EDIT\.$`; a warning is printed otherwise. |
 | `verbose` | bool | no | Verbose logging during generation. |
 | `legacy` | bool | no | Generate legacy (non-`*Dyn`) fastssz-compatible methods. |
-| `without-dynamic-expressions` | bool | no | Emit only static legacy methods (no `*Dyn`). |
+| `without-dynamic-expressions` | bool | no | Emit only static legacy methods (no `*Dyn`). The buffer methods bake the static tag values; streaming methods still resolve spec values, since they always receive a `DynSsz`. See [Freezing spec values](code-generator.md#freezing-spec-values). |
 | `without-fastssz` | bool | no | Don't call third-party fastssz methods on referenced types. |
 | `with-streaming` | bool | no | Emit streaming encoder/decoder methods. |
 | `with-extended-types` | bool | no | Allow extended types (signed ints, floats, big.Int, optionals). |
@@ -149,8 +149,10 @@ relative to CWD — only config-file values get rewritten.
 ## Combining with CLI flags
 
 The config file is the baseline. Any CLI flag **explicitly passed** overrides
-the corresponding config value. Flags that are *not* passed inherit the
-config value.
+the corresponding *top-level* config value. Flags that are *not* passed
+inherit the config value. A flag set explicitly **on a type entry** always
+wins for that type: per-type entries are more specific than any blanket
+flag, CLI or file-level.
 
 Detection is based on whether the flag appears on the command line at all —
 so `--config gen.yaml -legacy=false` overrides the config even if the config

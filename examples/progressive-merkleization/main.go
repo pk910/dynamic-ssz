@@ -92,8 +92,8 @@ func main() {
 		ProposerIndex uint64   `ssz-index:"1"`
 		ParentRoot    [32]byte `ssz-index:"3"`
 		StateRoot     [32]byte `ssz-index:"4"`
-		// Note: Not including progressive list/bitlist here to avoid the bug
-		ExtraData []byte `ssz-index:"5" ssz-max:"1024"`
+		ExtraData     []byte   `ssz-index:"5" ssz-max:"1024"`
+		Participation []byte   `ssz-index:"6" ssz-type:"progressive-bitlist"`
 	}
 
 	block := BeaconBlock{
@@ -102,6 +102,7 @@ func main() {
 		ParentRoot:    [32]byte{1, 2, 3, 4, 5},
 		StateRoot:     [32]byte{6, 7, 8, 9, 10},
 		ExtraData:     []byte("Some extra beacon block data"),
+		Participation: []byte{0xff, 0x0f, 0x01},
 	}
 
 	// Serialize the progressive container

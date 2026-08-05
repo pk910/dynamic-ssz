@@ -728,12 +728,19 @@ func TestParseTypeSpecs(t *testing.T) {
 	})
 
 	t.Run("EmptyParts", func(t *testing.T) {
-		specs, err := parseTypeSpecs("MyType::viewonly", "out.go")
+		specs, err := parseTypeSpecs("MyType::views=MyView:viewonly", "out.go")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if !specs[0].IsViewOnly {
 			t.Error("expected viewonly to be set")
+		}
+	})
+
+	t.Run("ViewOnlyNeedsViews", func(t *testing.T) {
+		_, err := parseTypeSpecs("MyType:viewonly", "out.go")
+		if err == nil || !strings.Contains(err.Error(), "viewonly needs view types") {
+			t.Fatalf("expected viewonly-needs-views error, got: %v", err)
 		}
 	})
 
@@ -1260,5 +1267,196 @@ func TestRun_ExternalViewLoading(t *testing.T) {
 	}
 	if err := run(&cfg); err != nil {
 		t.Fatalf("run with external view types failed: %v", err)
+	}
+}
+
+// A type-spec segment that is neither a recognized option nor a Go file name
+// is a typo the caller must see, not a filename to create; empty type and
+// view names are rejected the same way.
+func TestTypeSpecRejectsJunk(t *testing.T) {
+	rejected := []string{
+		"TestType:junk",
+		"TestType:output=a.go:more:junk",
+		"TestType:views=",
+		"TestType:views=A;;B",
+		":output=a.go",
+	}
+	for _, input := range rejected {
+		if _, err := parseTypeSpecs(input, "out.go"); err == nil {
+			t.Errorf("parseTypeSpecs(%q) accepted junk", input)
+		}
+	}
+
+	// The legacy positional output form stays accepted for Go file names.
+	specs, err := parseTypeSpecs("TestType:custom.go", "out.go")
+	if err != nil || specs[0].OutputFile != "custom.go" {
+		t.Fatalf("positional output form broke: %v %+v", err, specs)
+	}
+}
+
+// A pattern matching several packages names them instead of silently using
+// the first.
+func TestRun_MultiPackagePattern(t *testing.T) {
+	config := Config{
+		PackagePath: "./...",
+		TypeNames:   "NoSuchType",
+		OutputFile:  "output.go",
+	}
+	err := run(&config)
+	if err == nil || !strings.Contains(err.Error(), "matches") {
+		t.Fatalf("expected a multi-package error, got %v", err)
+	}
+}
+
+// A generated type with a limit-less list produces a generator warning, which
+// the CLI prints to stderr without failing the run.
+func TestRun_EmitsWarnings(t *testing.T) {
+	config := Config{
+		PackagePath:       "github.com/pk910/dynamic-ssz/codegen/tests",
+		TypeNames:         "UnboundedList",
+		OutputFile:        filepath.Join(t.TempDir(), "out.go"),
+		PackageName:       "tests",
+		WithExtendedTypes: true,
+	}
+	if err := run(&config); err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+}
+
+// An invalid package name reaches the code generator's identifier check and
+// fails the run with its message.
+func TestRun_InvalidPackageName(t *testing.T) {
+	config := Config{
+		PackagePath: "github.com/pk910/dynamic-ssz/codegen/tests",
+		TypeNames:   "SimpleTypes1",
+		OutputFile:  "output.go",
+		PackageName: "1nvalid",
+	}
+	err := run(&config)
+	if err == nil || !strings.Contains(err.Error(), "invalid package name") {
+		t.Fatalf("expected the package-name rejection, got: %v", err)
+	}
+}
+
+// seedTransitiveImports records every transitively imported package once and
+// skips entries without loaded type information.
+func TestSeedTransitiveImports(t *testing.T) {
+	typed := &packages.Package{PkgPath: "a", Types: types.NewPackage("a", "a")}
+	typed.Imports = map[string]*packages.Package{
+		"nilpkg":  nil,
+		"untyped": {PkgPath: "untyped"},
+	}
+	root := &packages.Package{
+		PkgPath: "root",
+		Imports: map[string]*packages.Package{
+			"a":     typed,
+			"a-dup": typed,
+		},
+	}
+
+	cache := map[string]*packages.Package{"a-dup": typed}
+	seedTransitiveImports(cache, root)
+
+	if cache["a"] != typed {
+		t.Fatal("typed import must be seeded")
+	}
+	if _, ok := cache["nilpkg"]; ok {
+		t.Fatal("nil import must be skipped")
+	}
+	if _, ok := cache["untyped"]; ok {
+		t.Fatal("import without type information must be skipped")
+	}
+}
+
+// Failures between the temp write and the final rename abort the whole write
+// set and clean the temp files up.
+func TestWriteOutputFilesInjectedFailures(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "out.go")
+
+	renameFile = func(string, string) error { return errors.New("rename failed") }
+	t.Cleanup(func() { renameFile = os.Rename })
+	_, err := writeOutputFiles(map[string]string{target: "data"}, true)
+	if err == nil || !strings.Contains(err.Error(), "rename failed") {
+		t.Fatalf("expected the injected rename failure, got: %v", err)
+	}
+	if leftovers, _ := filepath.Glob(filepath.Join(base, "*.tmp*")); len(leftovers) != 0 {
+		t.Fatalf("temp files not cleaned up: %v", leftovers)
+	}
+	renameFile = os.Rename
+
+	createTempFile = func(dir, pattern string) (*os.File, error) {
+		return os.Open(os.DevNull) // read-only: the write must fail
+	}
+	t.Cleanup(func() { createTempFile = os.CreateTemp })
+	if _, err := writeTempFile(target, []byte("data")); err == nil {
+		t.Fatal("expected a write failure on the read-only file")
+	}
+	createTempFile = os.CreateTemp
+}
+
+// A header template that is not made of comment lines is rejected before any
+// code is generated.
+func TestRun_InvalidHeaderTemplate(t *testing.T) {
+	config := Config{
+		PackagePath:    "github.com/pk910/dynamic-ssz/codegen/tests",
+		TypeNames:      "SimpleTypes1",
+		OutputFile:     "output.go",
+		HeaderTemplate: "not a comment\n// Hash: {hash}\n",
+	}
+	err := run(&config)
+	if err == nil || !errors.Is(err, codegen.ErrInvalidHeaderTemplate) {
+		t.Fatalf("expected the invalid-header-template rejection, got: %v", err)
+	}
+}
+
+// A write into a nonexistent directory fails before any target is touched,
+// and failure messages name the problem without leaking temp-file names.
+func TestWriteTempFileFailure(t *testing.T) {
+	if _, err := writeTempFile("/nonexistent-dir-zz/x.go", []byte("data")); err == nil {
+		t.Fatal("expected a creation error")
+	} else if strings.Contains(err.Error(), ".tmp") {
+		t.Fatalf("error leaks the temp-file name: %v", err)
+	}
+
+	base := t.TempDir()
+	goodTarget := filepath.Join(base, "a_out.go")
+	dirTarget := filepath.Join(base, "b_dir")
+	if err := os.Mkdir(dirTarget, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	_, err := writeOutputFiles(map[string]string{goodTarget: "data", dirTarget: "data"}, false)
+	if err == nil || !strings.Contains(err.Error(), "is a directory") {
+		t.Fatalf("expected a directory-target error, got: %v", err)
+	}
+	if strings.Contains(err.Error(), ".tmp") {
+		t.Fatalf("error leaks the temp-file name: %v", err)
+	}
+	if leftovers, _ := filepath.Glob(filepath.Join(base, "*.tmp*")); len(leftovers) != 0 {
+		t.Fatalf("temp files not cleaned up: %v", leftovers)
+	}
+	if _, statErr := os.Stat(goodTarget); statErr == nil {
+		t.Fatal("no target may be written when another target fails")
+	}
+	dir := t.TempDir()
+	target := dir + "/out.go"
+	tmp, err := writeTempFile(target, []byte("data"))
+	if err != nil {
+		t.Fatalf("temp write: %v", err)
+	}
+	if _, statErr := os.Stat(target); statErr == nil {
+		t.Fatal("target must not exist before the rename")
+	}
+	if err := os.Rename(tmp, target); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	content, _ := os.ReadFile(target)
+	if string(content) != "data" {
+		t.Fatalf("content = %q", content)
+	}
+
+	plain := errors.New("plain failure")
+	if got := errCause(plain); got != plain {
+		t.Fatalf("errCause must pass through non-path errors, got: %v", got)
 	}
 }

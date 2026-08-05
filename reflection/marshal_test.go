@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"math/big"
 	"reflect"
+	"strings"
 	"testing"
 
 	. "github.com/pk910/dynamic-ssz"
@@ -47,10 +48,10 @@ var marshalTestMatrix = append(commonTestMatrix, []struct {
 		"type_dynamicssz_val_3",
 		struct {
 			Field0 uint64
-			Field1 []TestContainerWithDynamicSsz2
+			Field1 []TestContainerWithDynamicSsz2 `ssz-max:"64"`
 		}{1, []TestContainerWithDynamicSsz2{{1, 2, true, 4}, {5, 6, true, 8}}},
 		fromHex("0x01000000000000000c000000010000000000000002000000010400050000000000000006000000010800"),
-		fromHex("0x80b99000797f72ef1a9deae3e42fc1447648feaf1d7cd8dc1a4e20c7c64350ed"),
+		fromHex("0x1fd9563ea038408831a314f6d2ac61dfa8830ab88c610f976d8047f36228d1a8"),
 	},
 
 	// fastssz value tests
@@ -64,10 +65,10 @@ var marshalTestMatrix = append(commonTestMatrix, []struct {
 		"type_fastssz_val_2",
 		struct {
 			Field0 uint64
-			Field1 []TestContainerWithFastSsz2
+			Field1 []TestContainerWithFastSsz2 `ssz-max:"64"`
 		}{1, []TestContainerWithFastSsz2{{1, 2, true, 4}, {5, 6, true, 8}}},
 		fromHex("0x01000000000000000c000000010000000000000002000000010400050000000000000006000000010800"),
-		fromHex("0x80b99000797f72ef1a9deae3e42fc1447648feaf1d7cd8dc1a4e20c7c64350ed"),
+		fromHex("0x1fd9563ea038408831a314f6d2ac61dfa8830ab88c610f976d8047f36228d1a8"),
 	},
 }...)
 
@@ -340,14 +341,14 @@ func TestMarshalErrors(t *testing.T) {
 		{
 			name: "invalid_bitlist_type",
 			input: struct {
-				Bits []uint64 `ssz-type:"bitlist"`
+				Bits []uint64 `ssz-type:"bitlist" ssz-max:"512"`
 			}{[]uint64{0xff, 0xff}},
 			expectedErr: "bitlist ssz type can only be represented by byte slices, got []uint64",
 		},
 		{
 			name: "unterminated_bitlist",
 			input: struct {
-				Bits []byte `ssz-type:"bitlist"`
+				Bits []byte `ssz-type:"bitlist" ssz-max:"512"`
 			}{[]byte{0x00}},
 			expectedErr: "bitlist missing termination bit",
 		},
@@ -488,7 +489,7 @@ func TestMarshalErrors(t *testing.T) {
 				Field0 uint16
 				Field1 []CompatibleUnion[struct {
 					Field1 uint32
-				}]
+				}] `ssz-max:"64"`
 			}{
 				0x1234,
 				[]CompatibleUnion[struct {
@@ -570,7 +571,7 @@ func TestMarshalErrors(t *testing.T) {
 		{
 			name: "dynamic_list_length_limit_exceeded",
 			input: struct {
-				Data [][]uint8 `ssz-max:"2"`
+				Data [][]uint8 `ssz-max:"2,8"`
 			}{[][]uint8{{1}, {2}, {3}}},
 			expectedErr: "exceeds maximum",
 		},
@@ -664,6 +665,77 @@ func TestMarshalEmptyBitlist(t *testing.T) {
 	// Should add termination bit 0x01 after the offset
 	if len(buf) < 5 || buf[4] != 0x01 {
 		t.Errorf("expected empty bitlist to have termination bit, got %x", buf)
+	}
+}
+
+// TestMarshalBitvectorPaddingMatchesHashTreeRoot pins the padding-bit check to
+// the SSZ bit size rather than the Go backing array. The check used to fire
+// whenever BitSize was below len(backingArray)*8, so a byte-aligned bitvector
+// stored in an oversized array was rejected as having non-zero padding — even
+// though a bit size that is a multiple of 8 has no padding bits at all — while
+// HashTreeRoot happily rooted the same value.
+func TestMarshalBitvectorPaddingMatchesHashTreeRoot(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation())
+
+	tests := []struct {
+		name    string
+		input   any
+		wantErr string
+	}{
+		{
+			name: "aligned_exact_array",
+			input: &struct {
+				V [1]byte `ssz-type:"bitvector" ssz-bitsize:"8"`
+			}{V: [1]byte{0xaa}},
+		},
+		{
+			name: "aligned_oversized_array",
+			input: &struct {
+				V [4]byte `ssz-type:"bitvector" ssz-bitsize:"8"`
+			}{V: [4]byte{0xaa, 0, 0, 0}},
+		},
+		{
+			// Slack beyond the encoded byte is not padding and must not be
+			// inspected: only the last encoded byte carries padding bits.
+			name: "aligned_oversized_array_dirty_slack",
+			input: &struct {
+				V [4]byte `ssz-type:"bitvector" ssz-bitsize:"8"`
+			}{V: [4]byte{0xaa, 0xff, 0xff, 0xff}},
+		},
+		{
+			name: "unaligned_clean_padding",
+			input: &struct {
+				V [2]byte `ssz-type:"bitvector" ssz-bitsize:"12"`
+			}{V: [2]byte{0xff, 0x0f}},
+		},
+		{
+			name: "unaligned_dirty_padding",
+			input: &struct {
+				V [2]byte `ssz-type:"bitvector" ssz-bitsize:"12"`
+			}{V: [2]byte{0xff, 0x1f}},
+			wantErr: "bitvector padding bits are not zero",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, marshalErr := ds.MarshalSSZ(tt.input)
+			_, htrErr := ds.HashTreeRoot(tt.input)
+
+			if tt.wantErr != "" {
+				if marshalErr == nil || !strings.Contains(marshalErr.Error(), tt.wantErr) {
+					t.Fatalf("MarshalSSZ error = %v, want %q", marshalErr, tt.wantErr)
+				}
+			} else if marshalErr != nil {
+				t.Fatalf("MarshalSSZ: unexpected error: %v", marshalErr)
+			}
+
+			// The two paths must agree on which values are encodable; a root for
+			// a value Marshal refuses to emit is internally inconsistent.
+			if (marshalErr == nil) != (htrErr == nil) {
+				t.Fatalf("marshal/HTR disagree: marshal err = %v, htr err = %v", marshalErr, htrErr)
+			}
+		})
 	}
 }
 
@@ -899,7 +971,7 @@ func TestSizeSSZVectorDynamicElements(t *testing.T) {
 
 	// Test size calculation for vector with dynamic elements
 	input := struct {
-		Data [][]uint32 `ssz-size:"3" ssz-max:"?,10"`
+		Data [][]uint32 `ssz-size:"3" ssz-max:"?,64"`
 	}{[][]uint32{{1, 2}, {3, 4, 5}}} // 2 elements but declared as 3
 
 	size, err := dynssz.SizeSSZ(input)
@@ -1718,7 +1790,7 @@ func TestMarshalDynamicListNonSeekableSizeError(t *testing.T) {
 	elemDescCopy.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
 	listDesc.ElemDesc = &elemDescCopy
 
-	ctx := reflection.NewReflectionCtx(nil, nil, false, true, false)
+	ctx := reflection.NewReflectionCtx(nil, nil, false, true, false, 0)
 	encoder := sszutils.NewStreamEncoder(bytes.NewBuffer(nil), 0)
 	data := []DynElem{{Value: 1}, {Value: 2}}
 	err = ctx.MarshalSSZ(listDesc, reflect.ValueOf(data), encoder)
@@ -1916,7 +1988,7 @@ func TestMarshalBigIntMax(t *testing.T) {
 // without a prior size pass.
 func TestMarshalDirectValidationErrors(t *testing.T) {
 	ds := NewDynSsz(nil, WithNoFastSsz(), WithExtendedTypes())
-	ctx := reflection.NewReflectionCtx(ds, nil, false, true, false)
+	ctx := reflection.NewReflectionCtx(ds, nil, false, true, false, 0)
 
 	fieldDesc := func(v any) *ssztypes.TypeDescriptor {
 		t.Helper()

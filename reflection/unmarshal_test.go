@@ -6,9 +6,13 @@ package reflection_test
 
 import (
 	"bytes"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"math/big"
 	"reflect"
+	"runtime"
+	"strings"
 	"testing"
 
 	. "github.com/pk910/dynamic-ssz"
@@ -442,7 +446,7 @@ func TestUnmarshalErrors(t *testing.T) {
 		{
 			name: "dynamic_list_length_limit_exceeded",
 			target: new(struct {
-				Data [][]uint8 `ssz-max:"2"`
+				Data [][]uint8 `ssz-max:"2,8"`
 			}),
 			// 3 dynamic elements: offsets 0c000000 0d000000 0e000000, data: 0a 0b 0c
 			data:        fromHex("0x040000000c0000000d0000000e0000000a0b0c"),
@@ -476,7 +480,7 @@ func TestUnmarshalErrors(t *testing.T) {
 		{
 			name: "dynamic_list_offset_bounds",
 			target: new(struct {
-				Data [][]uint8 `ssz-max:"10"`
+				Data [][]uint8 `ssz-max:"10,8"`
 			}),
 			data:        fromHex("0x040000000800000010000000"),
 			expectedErr: "incorrect offset",
@@ -559,7 +563,11 @@ func TestUnmarshalErrors(t *testing.T) {
 			expectedErr: "unexpected end of SSZ",
 		},
 		{
-			name: "dynamic_nested_offset_error",
+			// The offset table fills the whole 8-byte region, so it declares two
+			// elements with no bytes left for their bodies. Each element's fixed
+			// section is 4 bytes (one dynamic field's offset), so the region
+			// cannot hold them and the count is rejected before it sizes a slice.
+			name: "dynamic_nested_region_too_small",
 			target: new(struct {
 				A uint32
 				B []struct {
@@ -567,6 +575,35 @@ func TestUnmarshalErrors(t *testing.T) {
 				} `ssz-max:"10"`
 			}),
 			data:        fromHex("0x010000000800000008000000ff000000"),
+			expectedErr: "list declares 2 elements of at least 4 bytes, but only 0 bytes remain for them",
+		},
+		{
+			// A vector element costs one offset per entry plus each entry's own
+			// fixed section: 2*(4+4) = 16 bytes, not the 2 its declared length
+			// reads as. The 8-byte table declares two such elements with nothing
+			// left for their bodies.
+			name: "dynamic_vector_element_region_too_small",
+			target: new(struct {
+				A uint32
+				B [][2]struct {
+					C []uint8 `ssz-max:"10"`
+				} `ssz-max:"10"`
+			}),
+			data:        fromHex("0x010000000800000008000000ff000000"),
+			expectedErr: "list declares 2 elements of at least 16 bytes, but only 0 bytes remain for them",
+		},
+		{
+			// Same shape with a 16-byte region: two 4-byte elements do fit, so the
+			// capacity check passes and the malformed second offset (0xff, past
+			// the region) is what fails. Keeps the element-offset path covered.
+			name: "dynamic_nested_offset_error",
+			target: new(struct {
+				A uint32
+				B []struct {
+					C []uint8 `ssz-max:"10"`
+				} `ssz-max:"10"`
+			}),
+			data:        fromHex("0x010000000800000008000000ff0000000000000000000000"),
 			expectedErr: "element offset",
 		},
 		{
@@ -613,7 +650,7 @@ func TestUnmarshalErrors(t *testing.T) {
 		{
 			name: "bitlist_not_terminated",
 			target: new(struct {
-				Data []byte `ssz-type:"bitlist"`
+				Data []byte `ssz-type:"bitlist" ssz-max:"512"`
 			}),
 			data:        fromHex("0x0400000000"),
 			expectedErr: "bitlist missing termination bit",
@@ -827,7 +864,7 @@ func TestUnmarshalErrors(t *testing.T) {
 		{
 			name: "internal_list_item_size_mismatch",
 			target: new(struct {
-				Data []Uint32WithInvalidSize
+				Data []Uint32WithInvalidSize `ssz-max:"64"`
 			}),
 			data:        fromHex("0x04000000" + "0102030405060708"),
 			expectedErr: "element consumed to position",
@@ -835,7 +872,7 @@ func TestUnmarshalErrors(t *testing.T) {
 		{
 			name: "internal_list_dynamic_item_size_mismatch",
 			target: new(struct {
-				Data []Uint32AsDynamicType
+				Data []Uint32AsDynamicType `ssz-max:"64"`
 			}),
 			data:        fromHex("0x04000000" + "04000000" + "0102030405"),
 			expectedErr: "bytes trailing data",
@@ -1200,7 +1237,7 @@ func TestUnmarshalStringList(t *testing.T) {
 	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
 	type Container struct {
-		Names []string `ssz-max:"10"`
+		Names []string `ssz-max:"10,32"`
 	}
 
 	original := Container{
@@ -1547,7 +1584,7 @@ func TestUnmarshalReaderErrors(t *testing.T) {
 		{
 			name: "reader_bitlist_zero_length",
 			target: new(struct {
-				Data []byte `ssz-type:"bitlist"`
+				Data []byte `ssz-type:"bitlist" ssz-max:"512"`
 			}),
 			data:        fromHex("0x04000000"),
 			expectedErr: "bitlist missing termination bit",
@@ -1762,7 +1799,7 @@ func TestUnmarshalTruncatedReaderErrors(t *testing.T) {
 		} `ssz-max:"10"`
 	}
 	type BitlistContainer struct {
-		Data []byte `ssz-type:"bitlist"`
+		Data []byte `ssz-type:"bitlist" ssz-max:"512"`
 	}
 	type UnionInner struct {
 		A uint32
@@ -2175,7 +2212,7 @@ func TestUnmarshalErrorPopsDecoderLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	ctx := reflection.NewReflectionCtx(ds, nil, false, true, false)
+	ctx := reflection.NewReflectionCtx(ds, nil, false, true, false, 0)
 
 	// Offsets A=[8,11), B=[11,12). A's 3-byte region exceeds the 2-byte cap of
 	// Bitlist[8], so its decode fails before consuming the region.
@@ -2188,5 +2225,484 @@ func TestUnmarshalErrorPopsDecoderLimit(t *testing.T) {
 	}
 	if got, want := dec.GetLength(), len(data)-dec.GetPosition(); got != want {
 		t.Errorf("decoder left clamped to a stale limit after error: remaining %d, want %d", got, want)
+	}
+}
+
+// TestStreamAllowanceNotReportedAsListLimit pins that an unknown-size decode
+// stopped by WithMaxStreamSize is diagnosed as a stream-allowance violation,
+// not as an ssz-max violation. DecodeRemaining reports both causes under
+// ErrStreamTooLarge, and the decoders used to attribute every one of them to
+// the schema limit — fabricating a list length the payload never declared, and
+// only when an (unviolated) ssz-max happened to be present.
+func TestStreamAllowanceNotReportedAsListLimit(t *testing.T) {
+	// The payload has to outrun the reader buffer so the open region never
+	// collapses to a known length; otherwise the bounded path handles it.
+	const payloadLen = 100000
+	const allowance = 50000
+
+	payload := bytes.Repeat([]byte{7}, payloadLen)
+	payload[payloadLen-1] = 0x81 // bitlist termination bit
+
+	tests := []struct {
+		name   string
+		target any
+	}{
+		{"byte_list_with_max", new(streamAllowanceList)},
+		{"byte_list_without_max", new(streamAllowanceListNoMax)},
+		{"bitlist_with_max", new(streamAllowanceBitlist)},
+		{"bigint_with_max", new(streamAllowanceBigInt)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation(), WithExtendedTypes(), WithMaxStreamSize(allowance))
+
+			err := ds.UnmarshalSSZReader(tt.target, bytes.NewReader(payload), -1)
+			if err == nil {
+				t.Fatal("expected the stream allowance to reject the payload")
+			}
+			if !errors.Is(err, sszutils.ErrStreamTooLarge) {
+				t.Fatalf("err = %v, want ErrStreamTooLarge", err)
+			}
+			if errors.Is(err, sszutils.ErrListTooBig) {
+				t.Fatalf("stream-allowance overrun reported as a limit violation: %v", err)
+			}
+		})
+	}
+
+	// The read cap still maps to a genuine ssz-max violation when the payload
+	// really does exceed the declared limit.
+	t.Run("payload_over_ssz_max", func(t *testing.T) {
+		ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation(), WithMaxStreamSize(1<<20))
+		over := bytes.Repeat([]byte{7}, 100)
+
+		err := ds.UnmarshalSSZReader(new(streamAllowanceSmallList), bytes.NewReader(over), -1)
+		if err == nil {
+			t.Fatal("expected the ssz-max limit to reject the payload")
+		}
+		if !errors.Is(err, sszutils.ErrListTooBig) {
+			t.Fatalf("err = %v, want ErrListTooBig", err)
+		}
+	})
+}
+
+// The limit sits above the payload, so only the stream allowance is violated.
+type streamAllowanceList []byte
+
+var _ = sszutils.Annotate[streamAllowanceList](`ssz-max:"1000000"`)
+
+// The limit sits below the payload, so the read cap is what fires.
+type streamAllowanceSmallList []byte
+
+var _ = sszutils.Annotate[streamAllowanceSmallList](`ssz-max:"64"`)
+
+type streamAllowanceListNoMax []byte
+
+type streamAllowanceBitlist []byte
+
+var _ = sszutils.Annotate[streamAllowanceBitlist](`ssz-type:"bitlist" ssz-max:"8000000"`)
+
+type streamAllowanceBigInt big.Int
+
+var _ = sszutils.Annotate[streamAllowanceBigInt](`ssz-type:"bigint" ssz-max:"8000000"`)
+
+// TestDynamicListRejectsUnbackedElementCount pins that a dynamic-element list
+// validates its declared count against what the region can physically hold,
+// before that count sizes a slice.
+//
+// The count comes from firstOffset/4, so each declared element costs the sender
+// four wire bytes while costing the decoder sizeof(GoElem). An offset table that
+// fills the whole region declares elements with no bodies at all: the decode
+// fails on element 0 either way, but it used to allocate first, turning a
+// compact table into a very large allocation (a measured 800 KB in, 785 MB
+// allocated). The unknown-size path was hardened in #210; buffer and known-size
+// kept exact allocation.
+func TestDynamicListRejectsUnbackedElementCount(t *testing.T) {
+	// Element fixed section: 4096 (Pad) + 4 (the list's offset) = 4100 bytes.
+	type wideElem struct {
+		Pad [4096]byte
+		L   []byte `ssz-max:"1"`
+	}
+	type holder struct {
+		L []wideElem `ssz-max:"100000"`
+	}
+
+	// n offsets, every one pointing at the end of the region: n declared
+	// elements, zero bytes of bodies.
+	unbacked := func(n int) []byte {
+		region := make([]byte, 4*n)
+		for i := range n {
+			binary.LittleEndian.PutUint32(region[i*4:], uint32(4*n))
+		}
+		return append([]byte{4, 0, 0, 0}, region...)
+	}
+
+	// n elements each carrying a real 4100-byte body.
+	backed := func(n int) []byte {
+		body := make([]byte, 4100)
+		binary.LittleEndian.PutUint32(body[4096:], 4100) // empty trailing list
+		region := make([]byte, 0, 4*n+n*4100)
+		for i := range n {
+			region = binary.LittleEndian.AppendUint32(region, uint32(4*n+i*4100))
+		}
+		for range n {
+			region = append(region, body...)
+		}
+		return append([]byte{4, 0, 0, 0}, region...)
+	}
+
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation())
+
+	decodes := []struct {
+		mode string
+		fn   func(any, []byte) error
+	}{
+		{"buffer", func(v any, b []byte) error { return ds.UnmarshalSSZ(v, b) }},
+		{"known-size", func(v any, b []byte) error {
+			return ds.UnmarshalSSZReader(v, bytes.NewReader(b), len(b))
+		}},
+		{"unknown-size", func(v any, b []byte) error {
+			return ds.UnmarshalSSZReader(v, bytes.NewReader(b), -1)
+		}},
+	}
+
+	for _, d := range decodes {
+		t.Run(d.mode+"/rejects_unbacked_count", func(t *testing.T) {
+			in := unbacked(100000)
+
+			var before, after runtime.MemStats
+			runtime.GC()
+			runtime.ReadMemStats(&before)
+			err := d.fn(new(holder), in)
+			runtime.ReadMemStats(&after)
+
+			if err == nil {
+				t.Fatal("expected the declared count to be rejected")
+			}
+
+			// 100000 * 4100 bytes would be ~390 MB. Allow generous headroom for
+			// the input itself and decoder scratch; the point is that the
+			// element count never sizes an allocation.
+			const budget = 16 << 20
+			if allocated := after.TotalAlloc - before.TotalAlloc; allocated > budget {
+				t.Fatalf("decode allocated %d bytes for a %d byte input; the declared count was trusted as an allocation size",
+					allocated, len(in))
+			}
+		})
+
+		t.Run(d.mode+"/accepts_backed_count", func(t *testing.T) {
+			// The bound must be exact, not conservative: a region that holds its
+			// elements exactly still decodes.
+			const n = 20
+			out := new(holder)
+			if err := d.fn(out, backed(n)); err != nil {
+				t.Fatalf("unexpected error for a well-formed list: %v", err)
+			}
+			if len(out.L) != n {
+				t.Fatalf("decoded %d elements, want %d", len(out.L), n)
+			}
+		})
+	}
+
+	t.Run("bound_is_not_off_by_one", func(t *testing.T) {
+		// Exactly as many elements as the remaining bytes can hold is legal;
+		// one more is not. Element minimum here is 4 bytes (a lone dynamic
+		// field's offset), so a 16-byte region holds a 8-byte table plus two
+		// 4-byte bodies.
+		type smallElem struct {
+			C []uint8 `ssz-max:"10"`
+		}
+		type smallHolder struct {
+			A uint32
+			B []smallElem `ssz-max:"10"`
+		}
+
+		// A=1, B offset=8; table [8,12]; two 4-byte elements, each an empty list.
+		exact := fromHex("0x0100000008000000080000000c0000000400000004000000")
+		if err := ds.UnmarshalSSZ(new(smallHolder), exact); err != nil {
+			t.Fatalf("a region holding its elements exactly must decode: %v", err)
+		}
+
+		// Same region, but the table claims two elements and consumes all of it.
+		tooMany := fromHex("0x010000000800000008000000ff000000")
+		err := ds.UnmarshalSSZ(new(smallHolder), tooMany)
+		if err == nil || !strings.Contains(err.Error(), "but only 0 bytes remain") {
+			t.Fatalf("err = %v, want a region-capacity rejection", err)
+		}
+	})
+
+	t.Run("no_bound_for_zero_minimum_elements", func(t *testing.T) {
+		// A list element may legitimately be empty, so its minimum is 0 and no
+		// capacity bound exists. A million empty byte lists is valid SSZ and
+		// must keep decoding.
+		type listHolder struct {
+			L [][]byte `ssz-max:"1024,64"`
+		}
+		const n = 1024
+		region := make([]byte, 4*n)
+		for i := range n {
+			binary.LittleEndian.PutUint32(region[i*4:], uint32(4*n))
+		}
+		in := append([]byte{4, 0, 0, 0}, region...)
+
+		out := new(listHolder)
+		if err := ds.UnmarshalSSZ(out, in); err != nil {
+			t.Fatalf("empty elements are legal SSZ: %v", err)
+		}
+		if len(out.L) != n {
+			t.Fatalf("decoded %d elements, want %d", len(out.L), n)
+		}
+	})
+}
+
+// Recursive shapes for the nesting-depth bound. These are exactly the cycles
+// the type cache accepts: a cycle is only finite if it crosses a list, an
+// optional or an optional-list, so those are the boundaries the walkers bound.
+// A cycle through a vector or a union variant is rejected at analysis time and
+// therefore cannot reach a walker at all.
+type depthCycleList struct {
+	V uint8
+	L []depthCycleList `ssz-max:"2"`
+}
+
+// A named list closes a cycle with no container on it at all, so the bound
+// cannot rely on containers being present.
+type depthCycleNamedList []depthCycleNamedList
+
+// depthCycleWrapped runs its cycle through a TypeWrapper. The wrapper attaches
+// tags without adding a structural level, so it must not count one — the
+// cycle's cost comes from its other members.
+type depthCycleWrapped struct {
+	V     uint8
+	Items TypeWrapper[struct {
+		Data []*depthCycleWrapped `ssz-max:"4"`
+	}, []*depthCycleWrapped]
+}
+
+var _ = sszutils.Annotate[depthCycleNamedList](`ssz-max:"2"`)
+
+type depthCycleOptional struct {
+	V    uint8
+	Next *depthCycleOptional `ssz-type:"optional"`
+}
+
+type depthCycleOptionalList struct {
+	V    uint8
+	Next *depthCycleOptionalList `ssz-type:"optional-list"`
+}
+
+// TestNestingDepthBound pins that a value nesting past the bound fails with an
+// ordinary error rather than exhausting the goroutine stack.
+//
+// Stack exhaustion is fatal in Go: the runtime aborts the process and recover()
+// cannot contain it, so a server could not isolate the failure to the request
+// that caused it. Only a recursive type can nest to a depth the input chooses,
+// and each level costs a handful of wire bytes.
+// defaultMaxNestingDepthProbe nests a non-recursive type past the default
+// bound, deep enough to prove the bound does not fire yet shallow enough to
+// keep descriptor building cheap.
+const defaultMaxNestingDepthProbe = 1200
+
+func TestNestingDepthBound(t *testing.T) {
+	// Deeper than the 1024 default, but far too shallow to overflow a real
+	// stack -- the test must prove the bound fires, not that the process dies.
+	const tooDeep = 1200
+
+	build := func(name string) any {
+		switch name {
+		case "list":
+			cur := depthCycleList{V: 1}
+			for range tooDeep {
+				cur = depthCycleList{V: 1, L: []depthCycleList{cur}}
+			}
+			return cur
+		case "named-list":
+			cur := depthCycleNamedList{}
+			for range tooDeep {
+				cur = depthCycleNamedList{cur}
+			}
+			return cur
+		case "optional":
+			cur := &depthCycleOptional{V: 1}
+			for range tooDeep {
+				cur = &depthCycleOptional{V: 1, Next: cur}
+			}
+			return cur
+		case "optional-list":
+			cur := &depthCycleOptionalList{V: 1}
+			for range tooDeep {
+				cur = &depthCycleOptionalList{V: 1, Next: cur}
+			}
+			return cur
+		}
+		return nil
+	}
+
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation(), WithExtendedTypes())
+
+	for _, shape := range []string{"list", "named-list", "optional", "optional-list"} {
+		value := build(shape)
+
+		ops := map[string]func() error{
+			"SizeSSZ":      func() error { _, err := ds.SizeSSZ(value); return err },
+			"MarshalSSZ":   func() error { _, err := ds.MarshalSSZ(value); return err },
+			"HashTreeRoot": func() error { _, err := ds.HashTreeRoot(value); return err },
+		}
+		for op, fn := range ops {
+			t.Run(shape+"/"+op, func(t *testing.T) {
+				err := fn()
+				if err == nil {
+					t.Fatal("expected the nesting bound to reject the value")
+				}
+				if !errors.Is(err, sszutils.ErrMaxDepthExceeded) {
+					t.Fatalf("err = %v, want ErrMaxDepthExceeded", err)
+				}
+			})
+		}
+	}
+
+	t.Run("decode", func(t *testing.T) {
+		// ~9 wire bytes per level: the input that drives an unbounded decode is
+		// tiny compared with the nesting it declares.
+		payload := make([]byte, 0, tooDeep*9+5)
+		for range tooDeep {
+			payload = append(payload, 1, 5, 0, 0, 0, 4, 0, 0, 0)
+		}
+		payload = append(payload, 2, 5, 0, 0, 0)
+
+		err := ds.UnmarshalSSZ(new(depthCycleList), payload)
+		if err == nil {
+			t.Fatal("expected the nesting bound to reject the payload")
+		}
+		if !errors.Is(err, sszutils.ErrMaxDepthExceeded) {
+			t.Fatalf("err = %v, want ErrMaxDepthExceeded", err)
+		}
+	})
+
+	t.Run("cyclic_value", func(t *testing.T) {
+		// A cyclic value has no finite encoding at all. ValidateType accepts the
+		// type -- the type graph is legal -- so only the walk can catch it.
+		type node struct {
+			V uint8
+			L []*node `ssz-max:"4"`
+		}
+		n := &node{V: 1}
+		n.L = []*node{n}
+
+		if _, err := ds.SizeSSZ(n); !errors.Is(err, sszutils.ErrMaxDepthExceeded) {
+			t.Fatalf("SizeSSZ err = %v, want ErrMaxDepthExceeded", err)
+		}
+		if _, err := ds.MarshalSSZ(n); !errors.Is(err, sszutils.ErrMaxDepthExceeded) {
+			t.Fatalf("MarshalSSZ err = %v, want ErrMaxDepthExceeded", err)
+		}
+		if _, err := ds.HashTreeRoot(n); !errors.Is(err, sszutils.ErrMaxDepthExceeded) {
+			t.Fatalf("HashTreeRoot err = %v, want ErrMaxDepthExceeded", err)
+		}
+	})
+
+	t.Run("configurable", func(t *testing.T) {
+		shallow := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation(), WithMaxNestingDepth(4))
+
+		deep := depthCycleList{V: 1}
+		for range 8 {
+			deep = depthCycleList{V: 1, L: []depthCycleList{deep}}
+		}
+		if _, err := shallow.MarshalSSZ(deep); !errors.Is(err, sszutils.ErrMaxDepthExceeded) {
+			t.Fatalf("err = %v, want the lowered bound to reject the value", err)
+		}
+
+		// A value inside the lowered bound still encodes, so the bound is a
+		// limit rather than a blanket rejection of recursive types.
+		shallowValue := depthCycleList{V: 1, L: []depthCycleList{{V: 2}}}
+		if _, err := shallow.MarshalSSZ(shallowValue); err != nil {
+			t.Fatalf("a value within the bound must encode: %v", err)
+		}
+	})
+
+	t.Run("non_recursive_types_unaffected", func(t *testing.T) {
+		// The default bound must be far above anything a real schema reaches.
+		tight := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation(), WithMaxNestingDepth(4))
+		type inner struct {
+			A []uint64 `ssz-max:"4"`
+		}
+		type outer struct {
+			X inner
+			Y []inner `ssz-max:"4"`
+		}
+		v := outer{X: inner{A: []uint64{1}}, Y: []inner{{A: []uint64{2}}}}
+		if _, err := tight.MarshalSSZ(v); err != nil {
+			t.Fatalf("a shallow non-recursive value must encode: %v", err)
+		}
+
+		// The promise is structural, not statistical: a type with no recursive
+		// cycle is not counted at all, however deep its fixed structure nests.
+		// Nested slice types are all distinct descriptors with no back edge,
+		// so even past the default bound they must encode.
+		deepType := reflect.TypeOf([]byte(nil))
+		for range defaultMaxNestingDepthProbe {
+			deepType = reflect.SliceOf(deepType)
+		}
+		deepValue := reflect.ValueOf([]byte{1})
+		for i := 0; i < defaultMaxNestingDepthProbe; i++ {
+			wrapped := reflect.MakeSlice(reflect.SliceOf(deepValue.Type()), 1, 1)
+			wrapped.Index(0).Set(deepValue)
+			deepValue = wrapped
+		}
+		ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation())
+		if _, err := ds.MarshalSSZ(deepValue.Interface()); err != nil {
+			t.Fatalf("a non-recursive type deeper than the bound must still encode: %v", err)
+		}
+	})
+
+	t.Run("wrapper_adds_no_level", func(t *testing.T) {
+		// A trip around this cycle passes the pointer-container, the wrapper
+		// and the wrapped list (a pointer folds into its element descriptor).
+		// The wrapper is transparent, so a trip costs 2 levels and the first
+		// rejected chain sits past bound/2 trips; a wrapper counting a level
+		// would pull it down to bound/3.
+		wrapDs := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation(), WithMaxNestingDepth(30))
+
+		build := func(n int) *depthCycleWrapped {
+			cur := &depthCycleWrapped{V: 1}
+			for range n {
+				next := &depthCycleWrapped{V: 1}
+				next.Items.Set([]*depthCycleWrapped{cur})
+				cur = next
+			}
+			return cur
+		}
+
+		firstFail := 0
+		for n := 1; n <= 40; n++ {
+			if _, err := wrapDs.MarshalSSZ(build(n)); errors.Is(err, sszutils.ErrMaxDepthExceeded) {
+				firstFail = n
+				break
+			}
+		}
+		if firstFail == 0 {
+			t.Fatal("the bound never fired")
+		}
+		if counted3 := 30/3 + 1; firstFail <= counted3 {
+			t.Fatalf("first rejected chain %d: the wrapper appears to count a level", firstFail)
+		}
+	})
+}
+
+// A bitlist region larger than its limit's byte capacity is rejected by the
+// byte count before the terminator is read, naming bytes rather than a bit
+// count the terminator has not yet defined.
+func TestBitlistOverCapacityByBytes(t *testing.T) {
+	type holder struct {
+		B []byte `ssz-type:"bitlist" ssz-max:"8"`
+	}
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation())
+	// limit 8 bits => capacity 2 bytes (7 data bits + terminator); 4 bytes exceed it.
+	payload := []byte{4, 0, 0, 0, 0xff, 0xff, 0xff, 0x01}
+	err := ds.UnmarshalSSZ(new(holder), payload)
+	if err == nil || !errors.Is(err, sszutils.ErrListTooBig) {
+		t.Fatalf("err = %v, want the list-too-big sentinel", err)
+	}
+	if !strings.Contains(err.Error(), "bytes") {
+		t.Fatalf("err = %v, want a byte-capacity message", err)
 	}
 }

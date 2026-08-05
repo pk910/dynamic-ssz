@@ -19,9 +19,14 @@ type unionVariantInfo struct {
 	TypeHints    []SszTypeHint
 }
 
-// extractUnionDescriptorInfo extracts variant information from a union descriptor type.
-// This function is used by the type cache to extract variant information including SSZ annotations.
-func extractUnionDescriptorInfo(descriptorType reflect.Type, ds sszutils.DynamicSpecs) (map[uint8]unionVariantInfo, error) {
+// unionFieldSelectors returns the selector assigned to each descriptor field
+// in field order, validating the descriptor shape: field order starting at 1,
+// or the fields' ssz-index tags when present (all-or-none, valid range 1..127,
+// no duplicates).
+func unionFieldSelectors(descriptorType reflect.Type) ([]uint8, error) {
+	if descriptorType == nil {
+		return nil, sszutils.NewSszError(sszutils.ErrTypeMismatch, "union descriptor type must not be nil")
+	}
 	if descriptorType.Kind() != reflect.Struct {
 		return nil, sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "union descriptor must be a struct, got %v", descriptorType.Kind())
 	}
@@ -48,11 +53,17 @@ func extractUnionDescriptorInfo(descriptorType reflect.Type, ds sszutils.Dynamic
 		return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "union descriptor has %d variants, but selectors are limited to 1..127", descriptorType.NumField())
 	}
 
-	variantInfo := make(map[uint8]unionVariantInfo)
-
+	selectors := make([]uint8, descriptorType.NumField())
+	taken := make(map[uint8]bool, descriptorType.NumField())
 	for i := 0; i < descriptorType.NumField(); i++ {
 		field := descriptorType.Field(i)
 		variantIndex := uint8(i) + 1 // Field order determines the default variant selector, starting at 1
+
+		// A compatible union has no empty option; the None marker only names
+		// selector 0 of a classic Union.
+		if isNoneMarkerType(field.Type) {
+			return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz.None is not a valid compatible union variant (field %s): only the classic Union declares an empty option", field.Name)
+		}
 
 		sszIndex, err := getSszIndexTag(&field)
 		if err != nil {
@@ -64,6 +75,48 @@ func extractUnionDescriptorInfo(descriptorType reflect.Type, ds sszutils.Dynamic
 			}
 			variantIndex = uint8(*sszIndex)
 		}
+		if taken[variantIndex] {
+			return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "duplicate union selector %d (field %s)", variantIndex, field.Name)
+		}
+		taken[variantIndex] = true
+		selectors[i] = variantIndex
+	}
+
+	return selectors, nil
+}
+
+// UnionVariantTypes returns the selector-to-variant-type mapping a compatible
+// union descriptor struct declares: field order starting at 1, or the fields'
+// ssz-index tags when present (all-or-none, valid range 1..127, no
+// duplicates). It is the selector authority shared by descriptor extraction
+// and the union constructors, so a selector accepted by one is accepted by
+// the other.
+func UnionVariantTypes(descriptorType reflect.Type) (map[uint8]reflect.Type, error) {
+	selectors, err := unionFieldSelectors(descriptorType)
+	if err != nil {
+		return nil, err
+	}
+
+	variantTypes := make(map[uint8]reflect.Type, len(selectors))
+	for i, variantIndex := range selectors {
+		variantTypes[variantIndex] = descriptorType.Field(i).Type
+	}
+
+	return variantTypes, nil
+}
+
+// extractUnionDescriptorInfo extracts variant information from a union descriptor type.
+// This function is used by the type cache to extract variant information including SSZ annotations.
+func extractUnionDescriptorInfo(descriptorType reflect.Type, ds sszutils.DynamicSpecs) (map[uint8]unionVariantInfo, error) {
+	selectors, err := unionFieldSelectors(descriptorType)
+	if err != nil {
+		return nil, err
+	}
+
+	variantInfo := make(map[uint8]unionVariantInfo, len(selectors))
+
+	for i, variantIndex := range selectors {
+		field := descriptorType.Field(i)
 
 		// Extract SSZ annotations using existing DynSsz methods
 		sizeHints, err := getSszSizeTag(ds, &field)
@@ -79,10 +132,6 @@ func extractUnionDescriptorInfo(descriptorType reflect.Type, ds sszutils.Dynamic
 		typeHints, err := getSszTypeTag(&field)
 		if err != nil {
 			return nil, err
-		}
-
-		if _, exists := variantInfo[variantIndex]; exists {
-			return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "duplicate union selector %d (field %s)", variantIndex, field.Name)
 		}
 
 		variantInfo[variantIndex] = unionVariantInfo{

@@ -312,7 +312,7 @@ func DecodeByteListInto(dec Decoder, dst []byte, maxLen int) ([]byte, error) {
 
 	buf, err := dec.DecodeRemaining(maxLen)
 	if err != nil {
-		if maxLen >= 0 && isStreamTooLarge(err) {
+		if maxLen >= 0 && errors.Is(err, ErrPayloadTooLarge) {
 			return nil, ErrListLengthFn(maxLen+1, maxLen)
 		}
 		return nil, err
@@ -385,8 +385,4 @@ func RegionEmpty(dec Decoder) (bool, error) {
 		return false, err
 	}
 	return !more, nil
-}
-
-func isStreamTooLarge(err error) bool {
-	return errors.Is(err, ErrStreamTooLarge)
 }

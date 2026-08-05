@@ -183,7 +183,7 @@ dynssz-gen -package . \
 ```go
 import "github.com/pk910/dynamic-ssz/codegen"
 
-codeGen := codegen.NewCodeGenerator(dynSsz)
+codeGen := codegen.NewCodeGenerator(dynSsz.GetTypeCache())
 
 codeGen.BuildFile("body_ssz.go",
     codegen.WithReflectType(

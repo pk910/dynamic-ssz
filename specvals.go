@@ -5,11 +5,16 @@
 package dynssz
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"math/big"
+	"reflect"
 	"strconv"
+	"strings"
+
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 type cachedSpecValue struct {
@@ -46,10 +51,16 @@ func (d *DynSsz) ResolveSpecValue(name string) (bool, uint64, error) {
 	// value that is present but unconvertible (negative, non-numeric, unsupported
 	// type) is a misconfiguration and surfaces as an error rather than silently
 	// falling back to the static limit.
-	if raw, ok := d.specValues[name]; ok {
+	raw, ok := d.specValues[name]
+	if !ok {
+		// A key that spells the same expression without whitespace still
+		// answers the lookup directly.
+		raw, ok = d.specValues[stripSpecSpaces(name)]
+	}
+	if ok {
 		value, resolved, err := specValueToUint64(raw)
 		if err != nil {
-			return false, 0, fmt.Errorf("invalid dynamic spec value %q: %w", name, err)
+			return false, 0, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "invalid dynamic spec value %q: %v", name, err)
 		}
 		if resolved {
 			cachedValue.resolved = true
@@ -67,10 +78,10 @@ func (d *DynSsz) ResolveSpecValue(name string) (bool, uint64, error) {
 	// evaluation (overflow, division by zero, a present-but-invalid value) errors.
 	handled, resolved, value, ierr := evalIntSpecExpression(name, d.specValues)
 	if !handled {
-		return false, 0, fmt.Errorf("unsupported dynamic spec expression %q: only integer arithmetic is supported (+ - * / %%, parentheses, unsigned literals and spec identifiers)", name)
+		return false, 0, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "unsupported dynamic spec expression %q: only integer arithmetic is supported (+ - * / %%, parentheses, unsigned literals and spec identifiers)", name)
 	}
 	if ierr != nil {
-		return false, 0, fmt.Errorf("invalid dynamic spec expression %q: %w", name, ierr)
+		return false, 0, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "invalid dynamic spec expression %q: %v", name, ierr)
 	}
 	cachedValue.resolved = resolved
 	cachedValue.value = value
@@ -117,6 +128,24 @@ func specValueToUint64(raw any) (value uint64, ok bool, err error) {
 	case float32:
 		u, ferr := specFloatToUint64(float64(v))
 		return u, ferr == nil, ferr
+	case json.Number:
+		if u, perr := strconv.ParseUint(v.String(), 10, 64); perr == nil {
+			return u, true, nil
+		}
+		f, perr := v.Float64()
+		if perr != nil {
+			return 0, false, fmt.Errorf("json.Number %q is not a valid number", v.String())
+		}
+		u, ferr := specFloatToUint64(f)
+		return u, ferr == nil, ferr
+	case *big.Int:
+		if v == nil {
+			return 0, false, fmt.Errorf("big.Int spec value is nil")
+		}
+		if v.Sign() < 0 || !v.IsUint64() {
+			return 0, false, fmt.Errorf("big.Int value %v is outside the uint64 range", v)
+		}
+		return v.Uint64(), true, nil
 	case string:
 		u, perr := strconv.ParseUint(v, 10, 64)
 		if perr != nil {
@@ -124,8 +153,82 @@ func specValueToUint64(raw any) (value uint64, ok bool, err error) {
 		}
 		return u, true, nil
 	default:
-		return 0, false, fmt.Errorf("unsupported type %T", raw)
+		// Named types with an integer or float kind carry a usable value even
+		// though the concrete-type switch cannot see them.
+		rv := reflect.ValueOf(raw)
+		switch rv.Kind() {
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+			return rv.Uint(), true, nil
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			return intSpecToUint64(rv.Int())
+		case reflect.Float32, reflect.Float64:
+			u, ferr := specFloatToUint64(rv.Float())
+			return u, ferr == nil, ferr
+		default:
+			return 0, false, fmt.Errorf("unsupported type %T", raw)
+		}
 	}
+}
+
+// specValueToRat converts a directly-provided spec value to an exact rational
+// for use as an expression operand. Integers convert losslessly; a float keeps
+// its fractional part instead of being rounded here, so a compound expression
+// rounds up exactly once at the end (see ratCeilToUint64) rather than once per
+// operand. Specs loaded from JSON decode as float64, so this is the common case
+// for fractional values.
+func specValueToRat(raw any) (*big.Rat, error) {
+	switch v := raw.(type) {
+	case float64:
+		return floatSpecToRat(v)
+	case float32:
+		return floatSpecToRat(float64(v))
+	case json.Number:
+		// An integral number keeps full uint64 precision; anything else is
+		// read as the float64 it decodes to, so the operand is exactly the
+		// value a concrete float64 carrier would contribute.
+		if u, perr := strconv.ParseUint(v.String(), 10, 64); perr == nil {
+			return new(big.Rat).SetUint64(u), nil
+		}
+		f, perr := v.Float64()
+		if perr != nil {
+			return nil, fmt.Errorf("json.Number %q is not a valid number", v.String())
+		}
+		return floatSpecToRat(f)
+	default:
+		// A named type with a float kind carries a fractional value the
+		// concrete-type switch cannot see.
+		rv := reflect.ValueOf(raw)
+		if rv.Kind() == reflect.Float32 || rv.Kind() == reflect.Float64 {
+			return floatSpecToRat(rv.Float())
+		}
+		// specValueToUint64 reports failure through err (ok is false only when
+		// err is non-nil), so the error check alone covers every unresolvable
+		// value.
+		value, _, err := specValueToUint64(raw)
+		if err != nil {
+			return nil, err
+		}
+		return new(big.Rat).SetUint64(value), nil
+	}
+}
+
+// floatSpecToRat converts a finite non-negative float to the exact rational it
+// represents. NaN, infinity and negative values are rejected here for the same
+// reasons specFloatToUint64 rejects them; the uint64 range is not checked
+// because an intermediate operand may legitimately leave it (the final rounded
+// result is range-checked instead).
+func floatSpecToRat(v float64) (*big.Rat, error) {
+	switch {
+	case math.IsNaN(v):
+		return nil, fmt.Errorf("value is NaN")
+	case math.IsInf(v, 0):
+		return nil, fmt.Errorf("value is infinite")
+	case v < 0:
+		return nil, fmt.Errorf("negative value %v", v)
+	}
+
+	// SetFloat64 only fails for NaN and infinity, both rejected above.
+	return new(big.Rat).SetFloat64(v), nil
 }
 
 func intSpecToUint64(v int64) (uint64, bool, error) {
@@ -189,11 +292,6 @@ func evalIntSpecExpression(expr string, specs map[string]any) (handled, resolved
 	if err != nil {
 		if errors.Is(err, errIntExprUnsupported) {
 			return false, false, 0, nil
-		}
-		if p.unresolved {
-			// An undefined identifier evaluates as 0 and can fabricate errors
-			// (e.g. underflow); the expression is simply unresolved.
-			return true, false, 0, nil
 		}
 		return true, false, 0, err
 	}
@@ -277,10 +375,15 @@ func (p *intSpecExprParser) parseTerm() (*big.Rat, error) {
 			return left, nil
 		}
 		p.pos++
+		outerUnresolved := p.unresolved
+		p.unresolved = false
 		right, err := p.parseFactor()
 		if err != nil {
+			p.unresolved = p.unresolved || outerUnresolved
 			return nil, err
 		}
+		rightUnresolved := p.unresolved
+		p.unresolved = rightUnresolved || outerUnresolved
 		switch op {
 		case '*':
 			left = new(big.Rat).Mul(left, right)
@@ -289,6 +392,13 @@ func (p *intSpecExprParser) parseTerm() (*big.Rat, error) {
 			// rounded up once at the end. This keeps full precision across the
 			// uint64 range and makes the result independent of evaluation order.
 			if right.Sign() == 0 {
+				// A zero produced by an undefined identifier is not a genuine
+				// division by zero: the expression is unresolved, and the
+				// placeholder value must not fabricate an error.
+				if rightUnresolved {
+					left = new(big.Rat)
+					continue
+				}
 				return nil, fmt.Errorf("division by zero")
 			}
 			left = new(big.Rat).Quo(left, right)
@@ -296,6 +406,10 @@ func (p *intSpecExprParser) parseTerm() (*big.Rat, error) {
 			// Modulo is only defined on integers; a non-integral operand would
 			// be ambiguous, so reject it rather than guess.
 			if right.Sign() == 0 {
+				if rightUnresolved {
+					left = new(big.Rat)
+					continue
+				}
 				return nil, fmt.Errorf("modulo by zero")
 			}
 			if !left.IsInt() || !right.IsInt() {
@@ -353,13 +467,11 @@ func (p *intSpecExprParser) parseFactor() (*big.Rat, error) {
 			p.unresolved = true
 			return new(big.Rat), nil
 		}
-		// specValueToUint64 reports failure through err (ok is false only when err
-		// is non-nil), so the error check alone covers every unresolvable value.
-		value, _, err := specValueToUint64(raw)
+		value, err := specValueToRat(raw)
 		if err != nil {
 			return nil, fmt.Errorf("invalid spec value %q: %w", name, err)
 		}
-		return new(big.Rat).SetUint64(value), nil
+		return value, nil
 
 	default:
 		return nil, errIntExprUnsupported
@@ -387,4 +499,15 @@ func ratCeilToUint64(r *big.Rat) (uint64, error) {
 
 func isIdentChar(c byte) bool {
 	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+}
+
+// stripSpecSpaces removes the blanks the expression grammar ignores, so a
+// directly-supplied key and a spelled-out expression compare alike.
+func stripSpecSpaces(name string) string {
+	return strings.Map(func(r rune) rune {
+		if r == ' ' || r == '\t' {
+			return -1
+		}
+		return r
+	}, name)
 }

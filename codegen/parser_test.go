@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"go/token"
 	"go/types"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/pk910/dynamic-ssz/codegen/tests"
 	"github.com/pk910/dynamic-ssz/ssztypes"
 	"golang.org/x/tools/go/packages"
 )
@@ -919,6 +921,43 @@ func TestBuildContainerDescriptor(t *testing.T) {
 			t.Error("Expected error for invalid ssz-index")
 		}
 	})
+
+	t.Run("AutoIndexPastMaximum", func(t *testing.T) {
+		// An explicit ssz-index above 255 is rejected, but the auto-increment for
+		// an untagged following field used to run past it and emit a 33-byte
+		// active-fields bitvector — above the 32-byte maximum the hashers support.
+		// The reflection typecache enforces the same bound.
+		fields := []*types.Var{
+			types.NewVar(token.NoPos, nil, "Field1", types.Typ[types.Uint64]),
+			types.NewVar(token.NoPos, nil, "Field2", types.Typ[types.Uint64]),
+		}
+		structType := types.NewStruct(fields, []string{`ssz-index:"255"`, ``})
+
+		_, err := parser.buildTypeDescriptor(structType, structType, nil, nil, nil)
+		if err == nil {
+			t.Fatal("Expected error for auto-index above the supported maximum")
+		}
+		if !strings.Contains(err.Error(), "ssz-index 256 assigned to field \"Field2\" exceeds the supported maximum of 255") {
+			t.Errorf("Unexpected error: %v", err)
+		}
+	})
+
+	t.Run("AutoIndexAtMaximum", func(t *testing.T) {
+		// 255 itself stays valid, so the bound is off-by-one safe.
+		fields := []*types.Var{
+			types.NewVar(token.NoPos, nil, "Field1", types.Typ[types.Uint64]),
+			types.NewVar(token.NoPos, nil, "Field2", types.Typ[types.Uint64]),
+		}
+		structType := types.NewStruct(fields, []string{`ssz-index:"254"`, ``})
+
+		desc, err := parser.buildTypeDescriptor(structType, structType, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := desc.ContainerDesc.Fields[1].SszIndex; got != 255 {
+			t.Errorf("Field2 auto-index = %d; want 255", got)
+		}
+	})
 }
 
 func TestBuildVectorDescriptor(t *testing.T) {
@@ -1015,6 +1054,28 @@ func TestBuildVectorDescriptor(t *testing.T) {
 		_, err := parser.buildTypeDescriptor(uintType, uintType, typeHint, nil, nil)
 		if err == nil {
 			t.Error("Expected error for unsupported vector base type")
+		}
+	})
+
+	t.Run("VectorWithMaxOnFixedDimension", func(t *testing.T) {
+		// A diverging limit on a dimension whose length is fixed describes
+		// nothing, and was silently ignored -- while reading as a bounded list
+		// to whoever wrote it.
+		innerSlice := types.NewSlice(types.Typ[types.Uint8])
+		outerArr := types.NewArray(innerSlice, 10)
+		typeHints := []ssztypes.SszTypeHint{{}, {Type: ssztypes.SszVectorType}}
+		sizeHints := []ssztypes.SszSizeHint{{}, {Size: 32}}
+		maxSizeHints := []ssztypes.SszMaxSizeHint{{}, {Size: 1024}}
+		if _, err := parser.buildTypeDescriptor(outerArr, outerArr, typeHints, sizeHints, maxSizeHints); err == nil {
+			t.Error("a limit on a fixed dimension should be rejected")
+		}
+
+		// A limit equal to the fixed length states what the type already
+		// says; tags being positional, the common outer-list spelling repeats
+		// the inner vector's length in both families.
+		equalMax := []ssztypes.SszMaxSizeHint{{}, {Size: 32}}
+		if _, err := parser.buildTypeDescriptor(outerArr, outerArr, typeHints, sizeHints, equalMax); err != nil {
+			t.Errorf("a limit equal to the fixed length must be accepted: %v", err)
 		}
 	})
 
@@ -2343,13 +2404,14 @@ func TestBuildVectorDescriptorEdgeCases(t *testing.T) {
 	})
 
 	t.Run("VectorWithChildHints", func(t *testing.T) {
-		// Test vector of vectors with child hints
+		// Test vector of vectors with child hints. The inner dimension is sized,
+		// so it carries no limit: a fixed length has no capacity to bound, and
+		// declaring both is rejected (see VectorWithMaxOnFixedDimension).
 		innerSlice := types.NewSlice(types.Typ[types.Uint8])
 		outerArr := types.NewArray(innerSlice, 10)
 		typeHints := []ssztypes.SszTypeHint{{}, {Type: ssztypes.SszVectorType}}
 		sizeHints := []ssztypes.SszSizeHint{{}, {Size: 32}}
-		maxSizeHints := []ssztypes.SszMaxSizeHint{{}, {Size: 1024}}
-		desc, err := parser.buildTypeDescriptor(outerArr, outerArr, typeHints, sizeHints, maxSizeHints)
+		desc, err := parser.buildTypeDescriptor(outerArr, outerArr, typeHints, sizeHints, nil)
 		if err != nil {
 			t.Fatalf("Failed to build nested vector descriptor: %v", err)
 		}
@@ -3019,5 +3081,155 @@ func TestParserUnionSelectorRangeEnforced(t *testing.T) {
 		if err := NewParser().buildCompatibleUnionDescriptor(desc, named, named); err == nil {
 			t.Errorf("selector tag %s should be rejected", tag)
 		}
+	}
+}
+
+// TestRecursionCycleTypes pins which types get depth-carrying methods. Every
+// type a cycle runs through — and every type a cycle sits under — has to
+// thread the depth, not just the one the walk happens to close on: a call
+// through a type that dropped it would restart the count and defeat the bound.
+func TestRecursionCycleTypes(t *testing.T) {
+	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
+	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
+	if err != nil || len(pkgs) == 0 {
+		t.Fatalf("load tests package: %v", err)
+	}
+	scope := pkgs[0].Types.Scope()
+
+	inCycle := func(typeName string) bool {
+		obj := scope.Lookup(typeName)
+		if obj == nil {
+			t.Fatalf("%s not found", typeName)
+		}
+		parser := NewParser()
+		desc, err := parser.GetTypeDescriptor(obj.Type(), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("analyze %s: %v", typeName, err)
+		}
+
+		return newRecursionBound(desc, &CodeGeneratorOptions{}).threads(desc)
+	}
+
+	tests := []struct {
+		typeName string
+		want     bool
+	}{
+		// Self-referential through a bounded list: the cycle is this type alone.
+		{"RecursiveNode", true},
+		// A two-type cycle: both members must be marked.
+		{"RecursiveTree", true},
+		{"RecursiveTreeBranch", true},
+		// Ordinary types are not on any cycle and must stay unmarked, so they
+		// keep their plain method set.
+		{"SimpleTypes1", false},
+		{"CoverageTypes1", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.typeName, func(t *testing.T) {
+			if got := inCycle(tt.typeName); got != tt.want {
+				t.Fatalf("on a recursion cycle = %v, want %v", got, tt.want)
+			}
+		})
+	}
+
+	// Descriptors built from reflect types come from the shared type cache and
+	// carry no codegen state, so membership has to be read off the graph rather
+	// than recorded while the go/types parser builds it. Both generation entry
+	// points must reach the same verdict.
+	t.Run("reflectBuiltDescriptors", func(t *testing.T) {
+		cache := ssztypes.NewTypeCache(nil)
+
+		reflectInCycle := func(rt reflect.Type) bool {
+			desc, err := cache.GetTypeDescriptor(rt, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("analyze %v: %v", rt, err)
+			}
+			return newRecursionBound(desc, &CodeGeneratorOptions{}).threads(desc)
+		}
+
+		if !reflectInCycle(reflect.TypeFor[reflectRecursionNode]()) {
+			t.Error("a reflect-built recursive type must be reported as cyclic")
+		}
+		if reflectInCycle(reflect.TypeFor[reflectPlainNode]()) {
+			t.Error("a reflect-built non-recursive type must not be reported as cyclic")
+		}
+	})
+}
+
+// reflectRecursionNode closes a cycle through a bounded list, the shape the
+// type cache accepts as finite.
+type reflectRecursionNode struct {
+	Val      uint64
+	Children []*reflectRecursionNode `ssz-max:"4"`
+}
+
+type reflectPlainNode struct {
+	Val  uint64
+	Tail []byte `ssz-max:"4"`
+}
+
+// A size or limit tag on a field holding a TypeWrapper is rejected: the
+// wrapper's descriptor struct declares its constraints.
+func TestParserRejectsWrapperFieldTags(t *testing.T) {
+	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
+	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
+	if err != nil || len(pkgs) == 0 {
+		t.Fatalf("load tests package: %v", err)
+	}
+	obj := pkgs[0].Types.Scope().Lookup("WrapperFieldTagHolder")
+	if obj == nil {
+		t.Skip("WrapperFieldTagHolder not present")
+	}
+	if _, err := NewParser().GetTypeDescriptor(obj.Type(), nil, nil, nil); err == nil || !strings.Contains(err.Error(), "TypeWrapper") {
+		t.Fatalf("err = %v, want the wrapper field-tag rejection", err)
+	}
+}
+
+// Both descriptor front-ends record the same layout hash for the same type,
+// so header hashes and regeneration detection agree whichever front-end
+// produced a file. The fixtures carry no generated methods, so neither side
+// shallow-builds them.
+func TestFrontEndDescriptorHashParity(t *testing.T) {
+	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
+	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
+	if err != nil || len(pkgs) == 0 {
+		t.Fatalf("load tests package: %v", err)
+	}
+	scope := pkgs[0].Types.Scope()
+
+	cases := []struct {
+		name        string
+		reflectType reflect.Type
+	}{
+		{"HashParityNode", reflect.TypeFor[tests.HashParityNode]()},
+		{"HashParityShapes", reflect.TypeFor[tests.HashParityShapes]()},
+		{"HashParityProg", reflect.TypeFor[tests.HashParityProg]()},
+		{"HashParityWrap", reflect.TypeFor[tests.HashParityWrap]()},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			obj := scope.Lookup(tc.name)
+			if obj == nil {
+				t.Fatalf("%s not found in the tests package", tc.name)
+			}
+			p := NewParser()
+			goDesc, err := p.GetTypeDescriptor(types.NewPointer(obj.Type()), nil, nil, nil)
+			if err != nil {
+				t.Fatalf("parser descriptor: %v", err)
+			}
+			cache := ssztypes.NewTypeCache(nil)
+			reflDesc, err := cache.GetTypeDescriptor(reflect.PointerTo(tc.reflectType), nil, nil, nil)
+			if err != nil {
+				t.Fatalf("reflect descriptor: %v", err)
+			}
+			if goDesc.GetTypeHash() != reflDesc.GetTypeHash() {
+				t.Errorf("descriptor hashes diverge between the go/types and reflect front-ends")
+			}
+			if goDesc.MinSize != reflDesc.MinSize {
+				t.Errorf("MinSize diverges: go/types %d, reflect %d", goDesc.MinSize, reflDesc.MinSize)
+			}
+		})
 	}
 }

@@ -65,6 +65,25 @@ type Account struct {
 }
 ```
 
+### Timestamps
+
+- Go type: `time.Time`
+- SSZ type: `uint64`
+- Encoding: Unix seconds, little-endian
+
+`time.Time` is detected automatically and encoded as `uint64(t.Unix())`. It is
+**lossy**: sub-second precision is dropped, the monotonic clock reading is not
+carried, and the decoded value is normalized to UTC. A round-trip therefore does
+not satisfy `orig.Equal(decoded)` unless the original was already a whole second
+in UTC. Encode the raw nanoseconds yourself if you need them preserved.
+
+```go
+type Event struct {
+    // 2023-11-14T22:13:20.123456789Z encodes as 2023-11-14T22:13:20Z
+    Observed time.Time
+}
+```
+
 ## Collection Types
 
 ### Fixed Arrays
@@ -88,6 +107,36 @@ type Transaction struct {
     Data []byte `ssz-max:"1024"`
 }
 ```
+
+#### Lists without a limit
+
+The limit is part of the type in SSZ: `List[T, N]` and `Bitlist[N]` need `N` to
+merkleize, so a list with no `ssz-max` (or `ssz-max:"0"`, the placeholder for a
+limit that only a `dynssz-max` expression supplies) has **no hash tree root**.
+
+Serialization never needs the limit, so such a list marshals and unmarshals
+normally — only hashing is refused, and only when [extended
+types](extended-types.md) are disabled:
+
+```go
+type Unbounded struct {
+    Data []uint64  // no ssz-max
+}
+
+ds := dynssz.NewDynSsz(nil)
+buf, _ := ds.MarshalSSZ(&Unbounded{Data: []uint64{1, 2, 3}})  // fine
+_, err := ds.HashTreeRoot(&Unbounded{Data: []uint64{1, 2, 3}})
+// err: list has no ssz-max, so it has no SSZ hash tree root
+```
+
+With extended types enabled, the list is hashed as an unbounded list:
+merkleized to the chunks the value occupies with the length mixed in, so the
+root identifies the value. That root is outside the spec and **no other SSZ
+implementation will agree on it**. The code generator emits the same root and
+prints a warning for every limit-less list it generates.
+
+A view's data type is unaffected: it carries no tags because the layout lives
+in the view schema, so hash it through its view.
 
 ### Byte Arrays and Strings
 
@@ -160,10 +209,18 @@ type Votes struct {
 }
 ```
 
+> **Canonical form**: the byte slice includes the terminating sentinel bit, so
+> the canonical empty bitlist is `[]byte{0x01}`. An empty `[]byte{}` is
+> accepted on encode as the empty bitlist, and decoding always yields the
+> canonical form — a nil/empty slice does not survive a round trip unchanged.
+
 > **Note**: A Go `[]bool` slice is **not** a bitlist — it auto-detects as
 > `List[boolean, N]`, one byte per element, with `ssz-max` counted in elements
 > rather than bits. Use a byte-backed field with `ssz-type:"bitlist"` for a
 > bit-packed bitlist.
+
+A bitlist without `ssz-max` has no hash tree root either, and follows the same
+rule as [a list without a limit](#lists-without-a-limit).
 
 #### Using go-bitfield
 ```go
@@ -206,6 +263,93 @@ type Block struct {
 }
 ```
 
+### Recursive Types
+
+A type may refer to itself, as long as every cycle passes through a
+variable-length field. The length of that field is what makes the encoding
+finite — a list of zero elements terminates the recursion:
+
+```go
+type Node struct {
+    Value    uint64
+    Children []*Node `ssz-max:"4"`  // cycle closes through a list
+}
+```
+
+A cycle that crosses only fixed-size fields has no finite encoding and is
+rejected when the type is analyzed:
+
+```go
+type Bad struct {
+    Value uint64
+    Next  *Bad  // rejected: recursive type *Bad is not supported
+}
+```
+
+#### Nesting depth is bounded
+
+Encoding, decoding and hashing all walk the value recursively, so a deeply
+nested value would otherwise exhaust the goroutine stack — and Go aborts the
+process on stack exhaustion with `fatal error: stack overflow`, which
+`recover()` cannot catch. Each level of a recursive type costs only a handful of
+wire bytes, so a small piece of untrusted input can declare very deep nesting.
+
+Both engines therefore bound the depth and return `sszutils.ErrMaxDepthExceeded`
+instead. The default is 1024, far deeper than any practical schema (Ethereum
+consensus types stay under 20).
+
+Both bounds count by the same rule: one level per type descended into that
+lies on a recursive cycle, whether its code is generated, inlined, or walked
+by reflection; the outermost value itself costs nothing. A trip around a cycle
+therefore costs as many levels as the cycle has structural members — `Node`
+with a `[]*Node` field costs two (the container and the list; a type wrapper
+costs none) — and the engines accept
+and reject at identical nesting depths. Everything off a cycle bottoms out at
+a depth fixed by its own structure and is never counted.
+
+| | Configure with | Applies from |
+|---|---|---|
+| Reflection | `dynssz.WithMaxNestingDepth(n)` | immediately |
+| Generated code | `codegen.WithRecursionDepth(n)` | after regeneration |
+
+The generated value is baked into the emitted code, so changing it requires
+regenerating. One caveat: a chain of *distinct* cycles spanning several
+packages restarts the generated count at each package boundary (the
+depth-carrying methods are unexported), while reflection counts such a chain
+as one run. Each side stays bounded either way.
+
+Non-recursive types are unaffected by either bound, and the code generated for
+them is unchanged: only types on or above a cycle carry a depth.
+
+> **Cyclic values are unencodable.** `ValidateType` accepts the type above
+> because the type graph is legal, but a *value* whose pointers form a cycle
+> (`n.Children = []*Node{n}`) has no finite encoding. `SizeSSZ`, `MarshalSSZ`
+> and `HashTreeRoot` follow the cycle until the depth bound stops them, so do
+> not build parent/child back-references in values you intend to serialize.
+
+#### Recursive types with views
+
+A recursive type can be generated with views, and the depth bound is carried
+across the view boundary. It costs more stack than the plain case, though.
+
+A view dispatcher hands back a closure rather than being called directly, so it
+has nowhere to take a depth argument. For a type on a cycle the dispatcher
+therefore returns a closure that supplies the depth itself — zero from the
+public `MarshalSSZDynView`, and the caller's depth from the unexported twin the
+generated code uses when it descends. That closure is a real function, so each
+level of a recursive *view* costs two stack frames where the plain path costs
+one:
+
+| | Stack frames per level | Nesting reached at the default 1024 |
+|---|---|---|
+| Plain recursive type | 1 | 1024 |
+| Recursive type through a view | 2 | 1024 |
+
+The bound counts nesting levels either way, so both stop at the same depth — the
+view path simply uses about twice the stack getting there. If you are sizing
+`WithRecursionDepth` against a stack budget rather than against your schema,
+halve it for types you decode through views.
+
 ### Optional Lists (canonical `List[T, 1]`)
 
 Annotating a pointer field with `ssz-type:"optional-list"` encodes it as the canonical SSZ `List[T, 1]` — the encoding the Ethereum spec uses for canonical optional fields:
@@ -232,7 +376,10 @@ Encoding:
 | non-nil, fixed element   | `<element bytes>`                                     |
 | non-nil, dynamic element | `0x04 0x00 0x00 0x00 || <element bytes>` (offset = 4) |
 
-The hash tree root matches `List[T, 1]` exactly.
+The hash tree root matches `List[T, 1]` exactly: the element's root merkleized
+under a limit of one chunk, with the element count mixed in (0 for `nil`, 1
+otherwise). The non-canonical [`ssz-type:"optional"`](extended-types.md#optional-types-pointers)
+produces the same root, so the two differ only in their encoding.
 
 ## Union Types
 
@@ -275,6 +422,16 @@ Spec rules enforced at descriptor build:
 Serialization is `selector byte || serialize(value)`; the hash tree root is `mix_in_selector(hash_tree_root(value), selector)`. Variant fields may carry the usual `ssz-size`/`ssz-max`/`ssz-type` tags.
 
 For the EIP-8016 `CompatibleUnion` flavor (1-based selectors, no None, compatible merkleization), see [Compatible Unions](#compatible-unions-m4).
+
+> **A union has no "unset" encoding.** In a vector of unions every element must
+> be set before the value encodes, since a vector always has as many elements as
+> its length says. A zero-valued `CompatibleUnion` names selector 0, which
+> EIP-8016 does not have, and a zero-valued classic union has no data for the
+> variant its selector names — both are refused, with the offending element in
+> the error path. Only a classic union declaring `None` first has an encodable
+> zero value. The same applies to a slice-backed vector shorter than its
+> declared length: the padding elements are unset, and no selector is chosen on
+> your behalf.
 
 ## Progressive Types (EIP-7916 & EIP-7495)
 
@@ -321,7 +478,15 @@ Key features:
 - Pointer fields for indirection
 
 ### Compatible Unions (M4)
-Type-safe variant types using struct descriptor:
+Type-safe variant types using struct descriptor.
+
+EIP-8016 expects all variants of a compatible union to share a compatible
+merkleization — the same tree shape, with containers carrying the same field
+names in the same order, collections the same capacity, and only `byte`/`uint8`
+differing among basics. Designing the variants to satisfy this is the schema
+author's responsibility: the library does not verify it (a check may be added
+later), and a diverging set will not interoperate with conforming
+implementations.
 
 ```go
 import dynssz "github.com/pk910/dynamic-ssz"

@@ -12,6 +12,14 @@ import (
 // It uses Go generics where T is a descriptor struct that defines the union's possible types.
 // The descriptor struct is never instantiated but provides type information through its fields.
 //
+// EIP-8016 expects the variants to share a compatible merkleization: the same
+// tree shape, with containers carrying the same field names in the same order,
+// collections the same capacity, and only byte/uint8 differing among basics.
+// That is a rule for designing the schema; the library does not verify it
+// (a check may be added later). Diverging variants serialize and hash — the
+// selector is mixed into the root — but no conforming implementation will
+// accept the type.
+//
 // The union stores:
 // - unionType: uint8 field index indicating which variant is active
 // - data: interface{} holding the actual value
@@ -45,6 +53,11 @@ type CompatibleUnion[T any] struct {
 // NewCompatibleUnion creates a new CompatibleUnion with the specified variant selector and data.
 // Selectors follow the descriptor struct's field order starting at 1, or the
 // fields' ssz-index tags when present (valid range 1..127 per EIP-8016).
+//
+// The values are stored verbatim: the selector, the descriptor shape and the
+// data type are validated by the marshal, unmarshal, size and hash operations,
+// not here. Data must be exactly the declared variant type (not a pointer to
+// it). The returned error is always nil and remains for API stability.
 func NewCompatibleUnion[T any](variantIndex uint8, data interface{}) (*CompatibleUnion[T], error) {
 	return &CompatibleUnion[T]{
 		Variant: variantIndex,
@@ -82,8 +95,9 @@ type None struct{}
 // declares dynssz.None as its first field represents the empty option as
 // {Variant: 0, Data: nil}.
 //
-// Unlike CompatibleUnion, variants share no merkleization constraints and the
-// selector is assigned by position alone (ssz-index tags are not allowed).
+// Variants carry no merkleization expectations (CompatibleUnion's EIP-8016
+// compatibility rule does not apply here) and the selector is assigned by
+// position alone (ssz-index tags are not allowed).
 type Union[T any] struct {
 	Variant uint8
 	Data    interface{}
@@ -93,6 +107,11 @@ type Union[T any] struct {
 // Selectors are the 0-based positions of the descriptor struct's fields; when
 // the descriptor declares dynssz.None first, selector 0 with nil data is the
 // empty option.
+//
+// The values are stored verbatim: the selector, the descriptor shape and the
+// data type are validated by the marshal, unmarshal, size and hash operations,
+// not here. Data must be exactly the declared variant type (not a pointer to
+// it). The returned error is always nil and remains for API stability.
 func NewUnion[T any](variantIndex uint8, data interface{}) (*Union[T], error) {
 	return &Union[T]{
 		Variant: variantIndex,

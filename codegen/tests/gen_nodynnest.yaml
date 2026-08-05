@@ -11,6 +11,8 @@ without-fastssz: true
 without-dynamic-expressions: true
 
 types:
+  - NoDynRecursiveNode
+  - NoDynRecursiveHolder
   - NoDynNestProg
   - NoDynNestList
   - NoDynNestVec

@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/pk910/dynamic-ssz/hasher"
@@ -1544,4 +1545,62 @@ func TestWrapperPutBytesDoesNotMutateCallerMemory(t *testing.T) {
 	if !bytes.Equal(leaf.Value()[:5], before[:5]) {
 		t.Errorf("LeafFromBytes value mismatch")
 	}
+}
+
+// TestWrapperHashRootRequiresCompleteMerkleization pins that HashRoot reports
+// an incomplete merkleization instead of returning the last pending node's
+// hash. The Wrapper is documented as a drop-in HashWalker producing the same
+// root as hasher.Hasher for the same call sequence, and the Hasher errors on
+// that state (its buffer holds more than one chunk); Node() panics on it. Only
+// HashRoot silently handed back a wrong root with a nil error.
+func TestWrapperHashRootRequiresCompleteMerkleization(t *testing.T) {
+	t.Run("MultipleNodes", func(t *testing.T) {
+		w := NewWrapper()
+		w.AddUint64(1)
+		w.AddUint64(2)
+
+		root, err := w.HashRoot()
+		if err == nil {
+			t.Fatalf("HashRoot() = %x, want an incomplete-merkleization error", root)
+		}
+		if !strings.Contains(err.Error(), "wrapper holds 2 nodes, want 1") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// The Hasher rejects the equivalent state (more than one chunk left
+		// un-merkleized), which is the parity this method is supposed to keep.
+		h := hasher.NewHasher()
+		for i := range 8 {
+			h.AppendUint64(uint64(i))
+		}
+		if _, herr := h.HashRoot(); herr == nil {
+			t.Fatal("hasher.Hasher accepted an incomplete merkleization; parity assumption no longer holds")
+		}
+	})
+
+	t.Run("NoNodes", func(t *testing.T) {
+		w := NewWrapper()
+		if _, err := w.HashRoot(); err == nil {
+			t.Fatal("expected an error for an empty wrapper")
+		}
+	})
+
+	t.Run("SingleNode", func(t *testing.T) {
+		// A completed merkleization still returns its root.
+		w := NewWrapper()
+		idx := w.Index()
+		w.AddUint64(1)
+		w.AddUint64(2)
+		w.Merkleize(idx)
+
+		root, err := w.HashRoot()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		want := hashPair(LeafFromUint64(1).Hash(), LeafFromUint64(2).Hash())
+		if !bytes.Equal(root[:], want) {
+			t.Fatalf("root = %x, want %x", root, want)
+		}
+	})
 }

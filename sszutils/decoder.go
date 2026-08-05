@@ -34,6 +34,10 @@ package sszutils
 // than deriving an absurd element count or allocation size. Use LengthKnown to
 // distinguish the two cases, More to test for remaining data, and
 // DecodeRemaining to consume a region of unknown extent.
+//
+// Decoder is not a supported third-party implementation interface: it exists
+// for dynamic-ssz generated code and the library's own decoders, and its
+// method set may change between minor releases.
 type Decoder interface {
 	Seekable() bool   // can use DecodeOffsetAt() and SkipBytes()
 	GetPosition() int // return current position

@@ -35,14 +35,18 @@ func VerifyProof(root []byte, proof *Proof) (bool, error) {
 	if len(proof.Hashes) != getPathLength(proof.Index) {
 		return false, errors.New("invalid proof length")
 	}
-	// Chunks are at most 32 bytes; anything longer would be silently truncated
-	// below and verify against a value the caller never proved.
-	if len(proof.Leaf) > 32 {
-		return false, fmt.Errorf("leaf length %d exceeds chunk size 32", len(proof.Leaf))
+	// A chunk is exactly 32 bytes. A longer one would be silently truncated
+	// below and verify against a value the caller never proved; a shorter one
+	// would be zero-extended, so every chunk ending in zero bytes would have as
+	// many valid encodings as it has trailing zeros, all verifying against the
+	// same root. TreeFromChunks requires the same exact length for the same
+	// reason.
+	if len(proof.Leaf) != 32 {
+		return false, fmt.Errorf("leaf length %d is not the chunk size 32", len(proof.Leaf))
 	}
 	for i, h := range proof.Hashes {
-		if len(h) > 32 {
-			return false, fmt.Errorf("proof hash %d length %d exceeds chunk size 32", i, len(h))
+		if len(h) != 32 {
+			return false, fmt.Errorf("proof hash %d length %d is not the chunk size 32", i, len(h))
 		}
 	}
 
@@ -103,16 +107,21 @@ func VerifyMultiproof(root []byte, proof, leaves [][]byte, indices []int) (bool,
 		}
 	}
 
-	// Chunks are at most 32 bytes; anything longer would be silently truncated
-	// during verification and verify against a value the caller never proved.
+	// A chunk is exactly 32 bytes; see VerifyProof for why a shorter one is
+	// refused rather than zero-extended. The root is compared as a chunk too,
+	// so it is held to the same length -- VerifyProof compares it with
+	// bytes.Equal and rejects any other length already.
+	if len(root) != 32 {
+		return false, fmt.Errorf("root length %d is not the chunk size 32", len(root))
+	}
 	for i, leaf := range leaves {
-		if len(leaf) > 32 {
-			return false, fmt.Errorf("leaf %d length %d exceeds chunk size 32", i, len(leaf))
+		if len(leaf) != 32 {
+			return false, fmt.Errorf("leaf %d length %d is not the chunk size 32", i, len(leaf))
 		}
 	}
 	for i, h := range proof {
-		if len(h) > 32 {
-			return false, fmt.Errorf("proof hash %d length %d exceeds chunk size 32", i, len(h))
+		if len(h) != 32 {
+			return false, fmt.Errorf("proof hash %d length %d is not the chunk size 32", i, len(h))
 		}
 	}
 

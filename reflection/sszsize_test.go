@@ -43,10 +43,10 @@ var ssizeTestMatrix = append(commonTestMatrix, []struct {
 		"type_dynamicssz_val_3",
 		struct {
 			Field0 uint64
-			Field1 []TestContainerWithDynamicSsz2
+			Field1 []TestContainerWithDynamicSsz2 `ssz-max:"64"`
 		}{1, []TestContainerWithDynamicSsz2{{1, 2, true, 4}, {5, 6, true, 8}}},
 		fromHex("0x01000000000000000c000000010000000000000002000000010400050000000000000006000000010800"),
-		fromHex("0x80b99000797f72ef1a9deae3e42fc1447648feaf1d7cd8dc1a4e20c7c64350ed"),
+		fromHex("0x1fd9563ea038408831a314f6d2ac61dfa8830ab88c610f976d8047f36228d1a8"),
 	},
 
 	// fastssz value tests
@@ -60,10 +60,10 @@ var ssizeTestMatrix = append(commonTestMatrix, []struct {
 		"type_fastssz_val_2",
 		struct {
 			Field0 uint64
-			Field1 []TestContainerWithFastSsz2
+			Field1 []TestContainerWithFastSsz2 `ssz-max:"64"`
 		}{1, []TestContainerWithFastSsz2{{1, 2, true, 4}, {5, 6, true, 8}}},
 		fromHex("0x01000000000000000c000000010000000000000002000000010400050000000000000006000000010800"),
-		fromHex("0x80b99000797f72ef1a9deae3e42fc1447648feaf1d7cd8dc1a4e20c7c64350ed"),
+		fromHex("0x1fd9563ea038408831a314f6d2ac61dfa8830ab88c610f976d8047f36228d1a8"),
 	},
 
 	// uint128 and uint256 tests
@@ -242,7 +242,7 @@ func TestSizeSSZErrors(t *testing.T) {
 		{
 			name: "invalid_bitlist_type",
 			input: struct {
-				Bits []uint64 `ssz-type:"bitlist"`
+				Bits []uint64 `ssz-type:"bitlist" ssz-max:"512"`
 			}{[]uint64{0xff, 0xff}},
 			expectedErr: "bitlist ssz type can only be represented by byte slices, got []uint64",
 		},
@@ -313,7 +313,7 @@ func TestSizeSSZErrors(t *testing.T) {
 		{
 			name: "invalid_dynamic_type_in_list",
 			input: struct {
-				Data []InvalidDynamicType
+				Data []InvalidDynamicType `ssz-max:"64"`
 			}{[]InvalidDynamicType{{}, {}, {}}},
 			expectedErr: "unknown type",
 		},
@@ -327,7 +327,7 @@ func TestSizeSSZErrors(t *testing.T) {
 		{
 			name: "invalid_dynamic_type_in_type_wrapper",
 			input: TypeWrapper[struct {
-				Data []InvalidDynamicType
+				Data []InvalidDynamicType `ssz-max:"64"`
 			}, []InvalidDynamicType]{Data: []InvalidDynamicType{{}, {}, {}}},
 			expectedErr: "unknown type",
 		},
@@ -533,7 +533,7 @@ func TestSizeSSZBigIntTypeAssertionFailure(t *testing.T) {
 
 func TestCustomFallbackSizeSSZ(t *testing.T) {
 	type TestStruct struct {
-		ID []uint32
+		ID []uint32 `ssz-max:"64"`
 	}
 
 	type TestContainer struct {

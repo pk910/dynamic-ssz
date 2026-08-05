@@ -177,10 +177,22 @@ func (fc *FileConfig) applyToConfig(cfg *Config, cliProvided map[string]bool, ba
 			return nil, fmt.Errorf("types[%d]: name is required", i)
 		}
 
+		views := make([]string, 0, len(entry.Views))
+		for _, viewName := range entry.Views {
+			viewName = strings.TrimSpace(viewName)
+			if viewName == "" {
+				return nil, fmt.Errorf("types[%d] (%s): empty view type name", i, entry.Name)
+			}
+			views = append(views, viewName)
+		}
+		if entry.ViewOnly && len(views) == 0 {
+			return nil, fmt.Errorf("types[%d] (%s): view-only needs at least one entry in `views`", i, entry.Name)
+		}
+
 		spec := typeSpec{
 			TypeName:   entry.Name,
 			OutputFile: entry.Output,
-			ViewTypes:  append([]string(nil), entry.Views...),
+			ViewTypes:  views,
 			IsViewOnly: entry.ViewOnly,
 		}
 		if spec.OutputFile != "" {
@@ -258,7 +270,15 @@ func resolvePackagePath(pkg, baseDir string) string {
 	}
 	if pkg == "." || pkg == ".." ||
 		strings.HasPrefix(pkg, "./") || strings.HasPrefix(pkg, "../") {
-		return filepath.Join(baseDir, pkg)
+		joined := filepath.Join(baseDir, pkg)
+		// filepath.Join cleans away the leading "./"; with a relative baseDir
+		// the result would no longer look like a filesystem path to
+		// go/packages, which would read it as an import path. An absolute
+		// path is unambiguous either way.
+		if abs, err := filepath.Abs(joined); err == nil {
+			return abs
+		}
+		return "./" + joined
 	}
 	return pkg
 }

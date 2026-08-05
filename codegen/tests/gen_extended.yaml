@@ -5,6 +5,10 @@ with-streaming: true
 with-extended-types: true
 
 types:
+  - RecursiveOptNode
+  - ZeroMaxList
+  - UnboundedList
+  - UnboundedBitlist
   - ExtendedTypes1
   - ExtendedBigIntMax
   - OptU32

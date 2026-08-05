@@ -95,7 +95,7 @@ func TestExtractUnionDescriptorInfo(t *testing.T) {
 		{
 			name: "invalid ssz-type",
 			descriptorType: reflect.TypeOf(struct {
-				Data []uint8 `ssz-type:"invalid"`
+				Data []uint8 `ssz-type:"invalid" ssz-max:"64"`
 			}{}),
 			expectError:   true,
 			errorContains: "invalid ssz-type tag",
@@ -150,6 +150,22 @@ func TestCompatibleUnionVariantIndexing(t *testing.T) {
 		if _, ok := info[i]; !ok {
 			t.Errorf("expected variant at selector %d", i)
 		}
+	}
+
+	// A single-variant union keys its one variant at selector 1 as well:
+	// EIP-8016 selectors start at 1 regardless of how many variants exist.
+	type SingleUnion struct {
+		Only struct{ Value uint8 }
+	}
+	singleInfo, err := extractUnionDescriptorInfo(reflect.TypeOf(SingleUnion{}), ds)
+	if err != nil {
+		t.Fatalf("failed to extract single-variant union info: %v", err)
+	}
+	if _, ok := singleInfo[1]; !ok {
+		t.Error("expected the single variant at selector 1")
+	}
+	if _, ok := singleInfo[0]; ok {
+		t.Error("selector 0 must not exist in a compatible union")
 	}
 
 	// Verify field types match expected order
@@ -270,10 +286,40 @@ func TestExtractClassicUnionDescriptorInfo(t *testing.T) {
 
 	t.Run("invalidSszType", func(t *testing.T) {
 		descriptorType := reflect.TypeOf(struct {
-			Data []uint8 `ssz-type:"invalid"`
+			Data []uint8 `ssz-type:"invalid" ssz-max:"64"`
 		}{})
 		if _, _, err := extractClassicUnionDescriptorInfo(descriptorType, ds); err == nil || !strings.Contains(err.Error(), "ssz-type") {
 			t.Fatalf("expected ssz-type parse error, got: %v", err)
 		}
 	})
+}
+
+// The exported selector authority rejects non-struct and nil descriptors
+// like the full extraction does, and refuses a selector declared twice.
+func TestUnionVariantTypesRejections(t *testing.T) {
+	if _, err := UnionVariantTypes(reflect.TypeOf(uint64(0))); err == nil {
+		t.Fatal("a non-struct descriptor must be rejected")
+	}
+	if _, err := UnionVariantTypes(nil); err == nil {
+		t.Fatal("a nil descriptor type must be rejected")
+	}
+	type dupSelectors struct {
+		F1 uint64 `ssz-index:"2"`
+		F2 uint64 `ssz-index:"2"`
+	}
+	if _, err := UnionVariantTypes(reflect.TypeOf(dupSelectors{})); err == nil {
+		t.Fatal("a duplicate selector must be rejected")
+	}
+
+	type tagged struct {
+		F1 uint32 `ssz-index:"1"`
+		F2 uint64 `ssz-index:"5"`
+	}
+	variants, err := UnionVariantTypes(reflect.TypeOf(tagged{}))
+	if err != nil {
+		t.Fatalf("valid descriptor rejected: %v", err)
+	}
+	if len(variants) != 2 || variants[1] != reflect.TypeOf(uint32(0)) || variants[5] != reflect.TypeOf(uint64(0)) {
+		t.Fatalf("unexpected selector mapping: %v", variants)
+	}
 }

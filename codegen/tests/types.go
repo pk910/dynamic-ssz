@@ -39,9 +39,9 @@ type SimpleTypes1 struct {
 	Lst128   [][2]uint64 `ssz-type:"?,uint128" ssz-max:"4"`
 	BigLst8  []uint8     `ssz-max:"35"`
 	BitLst   []byte      `ssz-max:"16"`
-	F1       [2][]uint16
-	F2       [10]uint8 `ssz-size:"5"`
-	Str      string    `ssz-max:"8"`
+	F1       [2][]uint16 `ssz-max:"?,64"`
+	F2       [10]uint8   `ssz-size:"5"`
+	Str      string      `ssz-max:"8"`
 	Wrapper1 dynssz.TypeWrapper[struct {
 		Data []byte `ssz-size:"32"`
 	}, []byte] `ssz-type:"wrapper"`
@@ -49,11 +49,11 @@ type SimpleTypes1 struct {
 		Data []uint16 `ssz-size:"2"`
 	}, []uint16] `ssz-type:"wrapper"`
 	S1  *SimpleTypes1_S1
-	S2  [4][]*SimpleTypes1_S2
+	S2  [4][]*SimpleTypes1_S2 `ssz-max:"?,64"`
 	C1  *SimpleTypes1_C1
 	C2  SimpleTypes1_C1
-	LC1 []SimpleTypes1_C1
-	LC2 [][]*SimpleTypes1_C1
+	LC1 []SimpleTypes1_C1    `ssz-max:"64"`
+	LC2 [][]*SimpleTypes1_C1 `ssz-max:"64,64"`
 }
 
 var SimpleTypes1_Payload = SimpleTypes1{
@@ -112,12 +112,12 @@ var SimpleTypes1_Payload = SimpleTypes1{
 }
 
 type SimpleTypes1_S1 struct {
-	Data []byte `ssz-size:"32"`
-	F1   []uint16
+	Data []byte   `ssz-size:"32"`
+	F1   []uint16 `ssz-max:"64"`
 }
 
 type SimpleTypes1_S2 struct {
-	F1 []uint16
+	F1 []uint16 `ssz-max:"64"`
 }
 
 type SimpleTypes1_C1 struct {
@@ -170,9 +170,9 @@ type SimpleTypes3 struct {
 	Lst128   []*[2]uint64 `ssz-type:"?,uint128" ssz-max:"4"`
 	BigLst8  []*uint8     `ssz-max:"35"`
 	BitLst   []*byte      `ssz-max:"16"`
-	F1       [2][]*uint16
-	F2       [10]*uint8 `ssz-size:"5"`
-	Str      *string    `ssz-max:"8"`
+	F1       [2][]*uint16 `ssz-max:"?,64"`
+	F2       [10]*uint8   `ssz-size:"5"`
+	Str      *string      `ssz-max:"8"`
 	Wrapper1 *dynssz.TypeWrapper[struct {
 		Data []*byte `ssz-size:"32"`
 	}, []*byte] `ssz-type:"wrapper"`
@@ -249,8 +249,8 @@ type SimpleTypesWithSpecs struct {
 	Str1    string      `ssz-max:"8" dynssz-max:"STR_MAX"`
 	Str2    string      `ssz-size:"10" dynssz-size:"STR_SIZE"`
 	C1      SimpleTypesWithSpecs_C1
-	C2      []SimpleTypesWithSpecs_C2
-	VC1     [2][]*SimpleTypesWithSpecs_C1
+	C2      []SimpleTypesWithSpecs_C2     `ssz-max:"64"`
+	VC1     [2][]*SimpleTypesWithSpecs_C1 `ssz-max:"?,64"`
 }
 
 type SimpleTypesWithSpecs_C1 struct {
@@ -265,8 +265,8 @@ type SimpleTypesWithSpecs_C2 struct {
 }
 
 type SimpleTypesWithSpecs2 struct {
-	C3  [][4]*SimpleTypesWithSpecs_C3
-	VC1 [2][]*SimpleTypesWithSpecs_C1
+	C3  [][4]*SimpleTypesWithSpecs_C3 `ssz-max:"64"`
+	VC1 [2][]*SimpleTypesWithSpecs_C1 `ssz-max:"?,64"`
 }
 
 type SimpleTypesWithSpecs_C3 struct {
@@ -370,7 +370,7 @@ var Bytes2D_Payload = Bytes2D{B: [][]byte{{1, 2}, {3}}}
 // VecOfList is a fixed-size vector of variable-size elements, exercising the
 // inner offset-table validation distinct from a dynamic list.
 type VecOfList struct {
-	V [3][]uint16
+	V [3][]uint16 `ssz-max:"?,64"`
 }
 
 var VecOfList_Payload = VecOfList{V: [3][]uint16{{1, 2}, {3}, {4, 5}}}
@@ -385,13 +385,144 @@ type ProgIndexOnly struct {
 
 var ProgIndexOnly_Payload = ProgIndexOnly{A: 1, B: 2, C: 3}
 
-// ZeroMaxList exercises ssz-max:"0": the limit check must fire (codegen used to
-// treat a zero limit as "no limit").
+// ZeroMaxList exercises ssz-max:"0", which is a "no limit" placeholder rather
+// than a limit of zero -- the real limit is expected from dynssz-max. A list
+// with no limit has no SSZ hash tree root, so the type needs extended types,
+// and it is generated in the extended-types batch alongside UnboundedList.
 type ZeroMaxList struct {
 	X []uint64 `ssz-max:"0"`
 }
 
+// UnboundedList and UnboundedBitlist carry no limit at all. SSZ has no root for
+// them -- List[T, N] and Bitlist[N] need N to merkleize -- so they are only
+// analyzable with extended types, and their roots mix in the length so the root
+// still identifies the value. Nothing else will agree on those roots.
+type UnboundedList struct {
+	X []uint64
+}
+
+type UnboundedBitlist struct {
+	B []byte `ssz-type:"bitlist"`
+}
+
+var UnboundedList_Payload = UnboundedList{X: []uint64{1, 2, 3}}
+
+var UnboundedBitlist_Payload = UnboundedBitlist{B: []byte{0x0f}}
+
 var ZeroMaxList_Payload = ZeroMaxList{X: []uint64{1, 2, 3}}
+
+// VecSpecLen is a Go array whose SSZ length comes from a spec value. The static
+// ssz-size is the fallback used when the spec does not define the expression,
+// so the resolved length may exceed it -- the array's own length is the real
+// bound. Both a word array and a byte array, which take different paths.
+type VecSpecLen struct {
+	V [8]uint64 `ssz-size:"4" dynssz-size:"VECSPEC_LEN"`
+	B [8]byte   `ssz-size:"4" dynssz-size:"VECSPEC_LEN"`
+}
+
+var VecSpecLen_Payload = VecSpecLen{
+	V: [8]uint64{1, 2, 3, 4, 5, 6, 7, 8},
+	B: [8]byte{1, 2, 3, 4, 5, 6, 7, 8},
+}
+
+// The resolved length is twice the static fallback, so anything bounding by the
+// fallback truncates.
+var VecSpecLen_Specs = map[string]any{"VECSPEC_LEN": 8}
+
+// WrappedElemLists holds lists whose elements are type wrappers around basic
+// values, alongside the plain lists they must hash identically to. A wrapper is
+// transparent to SSZ: the list packs the wrapped values and merkleizes them
+// under the packed chunk count. Reading the wrapper as the element instead
+// makes it look composite, giving one chunk per element -- a different tree
+// depth, and so a different root at every length.
+type WrappedElemLists struct {
+	W []dynssz.TypeWrapper[struct {
+		Data uint64
+	}, uint64] `ssz-max:"16" ssz-type:"?,wrapper"`
+	B []dynssz.TypeWrapper[struct {
+		Data byte
+	}, byte] `ssz-max:"64" ssz-type:"?,wrapper"`
+}
+
+// PlainElemLists is WrappedElemLists with the wrappers removed. Both types
+// describe the same SSZ types, so they must produce the same root.
+type PlainElemLists struct {
+	W []uint64 `ssz-max:"16"`
+	B []byte   `ssz-max:"64"`
+}
+
+var WrappedElemLists_Payload = func() WrappedElemLists {
+	var v WrappedElemLists
+	v.W = make([]dynssz.TypeWrapper[struct {
+		Data uint64
+	}, uint64], 5)
+	for i := range v.W {
+		v.W[i].Set(uint64(i + 1))
+	}
+	v.B = make([]dynssz.TypeWrapper[struct {
+		Data byte
+	}, byte], 5)
+	for i := range v.B {
+		v.B[i].Set(byte(i + 1))
+	}
+
+	return v
+}()
+
+var PlainElemLists_Payload = PlainElemLists{
+	W: []uint64{1, 2, 3, 4, 5},
+	B: []byte{1, 2, 3, 4, 5},
+}
+
+// SpecShrunkList is a dynamic list whose element carries a spec-driven fixed
+// section. The generator only sees the static tag values, so it cannot know the
+// element's minimum size: a preset that resolves SHRUNK_SIZE below the tag
+// default makes every element smaller than the generator's view of it, and a
+// decoder bounding the declared count by the generated constant would reject
+// valid input.
+type SpecShrunkList struct {
+	Items []SpecShrunkElem `ssz-max:"64"`
+}
+
+type SpecShrunkElem struct {
+	Fixed []uint16 `ssz-size:"4" dynssz-size:"SHRUNK_SIZE"`
+	Tail  []uint8  `ssz-max:"8"`
+}
+
+var SpecShrunkList_Payload = SpecShrunkList{
+	Items: []SpecShrunkElem{
+		{Fixed: []uint16{1}},
+		{Fixed: []uint16{2}},
+		{Fixed: []uint16{3}},
+		{Fixed: []uint16{4}},
+	},
+}
+
+// SpecVecList's element is a vector of dynamic containers, so the element's
+// minimum is its offset table plus every entry's own fixed section -- and the
+// vector's length is spec-driven, which the tag alone does not state. A decoder
+// reading the vector's declared length as a byte count would bound the region
+// twelve times too loosely.
+type SpecVecList struct {
+	Items [][]SpecVecElem `ssz-size:"?,2" dynssz-size:"?,VEC_COUNT" ssz-max:"64"`
+}
+
+type SpecVecElem struct {
+	Tail []uint8 `ssz-max:"8"`
+}
+
+var SpecVecList_Payload = SpecVecList{
+	Items: [][]SpecVecElem{
+		{{}, {}, {}},
+		{{Tail: []uint8{1}}, {}, {}},
+		{{}, {}, {Tail: []uint8{2, 3}}},
+	},
+}
+
+// SHRUNK_SIZE resolves to a quarter of the static ssz-size, so each element is
+// 6 bytes where the generator sees 12. VEC_COUNT likewise exceeds its tag, so
+// each SpecVecList item holds three entries, not two.
+var SpecShrunkList_Specs = map[string]any{"SHRUNK_SIZE": 1, "VEC_COUNT": 3}
 
 // ProgBitlistZeroTop reproduces the EIP-7916 progressive-bitlist HTR bug: a
 // bitlist whose highest data bits are zero leaves the top 256-bit chunk all-zero.
@@ -536,14 +667,14 @@ func (c *CustomType1) HashTreeRoot() ([32]byte, error) {
 
 type ViewTypes1_Base struct {
 	F1 uint64
-	F2 []uint64
-	F3 [2][]uint64
+	F2 []uint64    `ssz-max:"64"`
+	F3 [2][]uint64 `ssz-max:"?,64"`
 	C1 *ViewTypes1_C1
 }
 
 type ViewTypes1_C1 struct {
 	F1 uint64
-	F2 []uint64
+	F2 []uint64 `ssz-max:"64"`
 }
 
 type ViewTypes1_View1 struct {
@@ -558,12 +689,12 @@ type ViewTypes1_View1_C1 struct {
 
 type ViewTypes1_View2 struct {
 	F1 uint64
-	F2 []uint64
+	F2 []uint64 `ssz-max:"64"`
 	C1 *ViewTypes1_View2_C1
 }
 
 type ViewTypes1_View2_C1 struct {
-	F2 []uint64
+	F2 []uint64 `ssz-max:"64"`
 }
 
 var ViewTypes1_Payload = ViewTypes1_Base{
@@ -1112,11 +1243,44 @@ var ViewTypes2_Payload = ViewTypes2_Base{
 	},
 }
 
+// ViewTypes5_Base carries no SSZ tags at all: its layout lives entirely in the
+// view schema, which is how a view's data type is normally written (the
+// consensus spec fixtures are shaped this way). Its lists therefore look
+// limit-less, but that is not a missing limit -- the view supplies it -- so
+// analyzing and generating for the type must not require extended types. Only
+// hashing the data type directly, outside any view, has no definition.
+type ViewTypes5_Base struct {
+	F1 uint64
+	F2 []uint64
+	C1 *ViewTypes5_Base_C1
+}
+
+type ViewTypes5_Base_C1 struct {
+	F1 []uint64
+}
+
+// ViewTypes5_View1 supplies the limits its data type omits.
+type ViewTypes5_View1 struct {
+	F1 uint64
+	F2 []uint64 `ssz-max:"64"`
+	C1 *ViewTypes5_View1_C1
+}
+
+type ViewTypes5_View1_C1 struct {
+	F1 []uint64 `ssz-max:"32"`
+}
+
+var ViewTypes5_Payload = ViewTypes5_Base{
+	F1: 7,
+	F2: []uint64{1, 2, 3},
+	C1: &ViewTypes5_Base_C1{F1: []uint64{4, 5}},
+}
+
 // ViewTypes3_Base tests the view-only generation mode.
 // It only generates view dispatch methods, no data methods.
 type ViewTypes3_Base struct {
 	F1 uint64
-	F2 []uint64
+	F2 []uint64 `ssz-max:"64"`
 }
 
 // ViewTypes3_View1 is a view for ViewTypes3_Base.
@@ -1401,7 +1565,7 @@ var NestedDelegatedContainer_Payload = NestedDelegatedContainer{
 // innard that the parser must not traverse.
 type nestedDelegatedDyn struct {
 	Bad   [0]uint64 // illegal Vector[uint64, 0] if ever traversed
-	Items []uint32
+	Items []uint32  `ssz-max:"64"`
 }
 
 var _ = sszutils.Annotate[nestedDelegatedDyn](`ssz-static:"false"`)
@@ -1456,10 +1620,11 @@ type MultiDimSpecVec struct {
 	M [][]byte `ssz-size:"2,4" dynssz-size:"SPEC_OUTER,SPEC_INNER"`
 }
 
-// NoMaxBitlist is a bitlist without any ssz-max limit; codegen and
-// reflection must produce the same hash tree root.
+// NoMaxBitlist has a limit far above its payload, so it exercises the
+// bit-limit merkleization path; codegen and reflection must agree on the root.
+// A bitlist with no limit at all has no root and lives in UnboundedBitlist.
 type NoMaxBitlist struct {
-	B1 []byte `ssz-type:"bitlist"`
+	B1 []byte `ssz-type:"bitlist" ssz-max:"512"`
 }
 
 // NamedBitlistT must be detected as a bitlist by its type name, matching
@@ -1681,6 +1846,33 @@ type TopLevelListOfList [][]byte
 
 var _ = sszutils.Annotate[TopLevelListOfList](`ssz-max:"8,32"`)
 
+// TopLevelStructWrapper is a user-declared struct that carries type-wrapper
+// semantics through a type-level annotation. A top-level entry has no field
+// tag, so the annotation is the only channel available for it.
+//
+// Wrapper semantics must not be confused with the library's generic
+// TypeWrapper/Union, which are nameable only through a transparent alias and
+// therefore genuinely cannot receive generated methods. This is an ordinary
+// named type and can, so it must generate like any other -types entry.
+type TopLevelStructWrapper struct {
+	Items []*TopLevelStructWrapperItem `ssz-max:"72"`
+}
+
+type TopLevelStructWrapperItem struct {
+	Val  uint64
+	Tail []byte `ssz-max:"8"`
+}
+
+var _ = sszutils.Annotate[TopLevelStructWrapper](`ssz-type:"wrapper"`)
+
+var TopLevelStructWrapper_Payload = TopLevelStructWrapper{
+	Items: []*TopLevelStructWrapperItem{
+		{Val: 1, Tail: []byte{1, 2, 3}},
+		{Val: 2, Tail: []byte{}},
+		{Val: 3, Tail: []byte{9}},
+	},
+}
+
 // TopLevelWrapVarList wraps a variable-element list in a TypeWrapper; the
 // streaming size closure must not collide with the wrapper unwrap local.
 type TopLevelWrapVarList struct {
@@ -1757,7 +1949,7 @@ type FixedVecStr struct {
 // PtrDynCollectionField is a pointer to a dynamic collection; its SizeSSZ
 // must not double-declare the localized value.
 type PtrDynCollectionField struct {
-	F *[][]byte `ssz-max:"3" ssz-type:"?,bitlist" ssz-bitmax:"?,10"`
+	F *[][]byte `ssz-max:"3,10" ssz-type:"?,bitlist"`
 }
 
 // WrapUnionField wraps a CompatibleUnion; the streaming size closure must
@@ -1868,6 +2060,33 @@ type RecursiveTreeBranch struct {
 
 var RecursiveTree_Specs = map[string]any{
 	"RECURSIVE_BRANCH_LIMIT": uint64(8),
+}
+
+// RecursiveViewNode is a recursive type generated with a view. A view builds
+// the data type against a schema type, which is not a cacheable build, so it
+// exercises the cycle detection on the hinted build path -- without it the
+// generator recursed until the stack was gone.
+//
+// The view methods have to carry the nesting depth like the base ones: a view
+// of a cyclic type is still cyclic, and a view method entering at depth zero
+// would restart the count halfway round the cycle.
+type RecursiveViewNode struct {
+	Val      uint64
+	Children []*RecursiveViewNode `ssz-max:"4"`
+}
+
+// RecursiveViewNode_View1 views the same shape with a tighter child limit, so
+// the view has its own descriptor graph and its own cycle.
+type RecursiveViewNode_View1 struct {
+	Val      uint64
+	Children []*RecursiveViewNode_View1 `ssz-max:"2"`
+}
+
+var RecursiveViewNode_Payload = RecursiveViewNode{
+	Val: 1,
+	Children: []*RecursiveViewNode{
+		{Val: 2, Children: []*RecursiveViewNode{{Val: 3}}},
+	},
 }
 
 var RecursiveTree_Payload = RecursiveTree{
@@ -2086,4 +2305,151 @@ var AtkWellHolder_Payload = AtkWellHolder{
 	A: 0x1122334455667788,
 	N: atkWellDelegated{V: 0x99},
 	V: [2]atkWellDelegated{{V: 0xaa}, {V: 0xbb}},
+}
+
+// RecursiveInlineHolder closes a cycle through RecursiveInlineMember, which is
+// deliberately left out of the generation set: the member's structure is
+// inlined into the holder's generated methods, so the level it counts against
+// the nesting bound has to be charged inline rather than at a method boundary.
+type RecursiveInlineHolder struct {
+	Val  uint64
+	Next RecursiveInlineMember
+}
+
+// RecursiveInlineMember carries the cycle back to the holder. It has no
+// generated methods of its own by design (see RecursiveInlineHolder).
+type RecursiveInlineMember struct {
+	Links []*RecursiveInlineHolder `ssz-max:"4"`
+}
+
+var RecursiveInlineHolder_Payload = RecursiveInlineHolder{
+	Val: 7,
+	Next: RecursiveInlineMember{
+		Links: []*RecursiveInlineHolder{
+			{Val: 8},
+			{Val: 9, Next: RecursiveInlineMember{Links: []*RecursiveInlineHolder{{Val: 10}}}},
+		},
+	},
+}
+
+// NoDynRecursiveNode closes a cycle under the static-only combination: its
+// walk body carries depth charges and twin calls, so the static
+// HashTreeRootWith has to be a depth twin like its marshal siblings — the
+// combination that once emitted references to a twin nothing generated.
+type NoDynRecursiveNode struct {
+	Val      uint64
+	Children []*NoDynRecursiveNode `ssz-max:"4"`
+}
+
+// NoDynRecursiveHolder threads the depth through a type that is not on the
+// cycle itself, still without dynamic expressions.
+type NoDynRecursiveHolder struct {
+	Tag  uint32
+	Node NoDynRecursiveNode
+}
+
+var NoDynRecursiveHolder_Payload = NoDynRecursiveHolder{
+	Tag: 3,
+	Node: NoDynRecursiveNode{
+		Val: 1,
+		Children: []*NoDynRecursiveNode{
+			{Val: 2},
+			{Val: 3, Children: []*NoDynRecursiveNode{{Val: 4}}},
+		},
+	},
+}
+
+// RecursiveOptNode closes a cycle through an optional edge. Both engines
+// charge the same levels per trip, so a chain rejected by one engine at a
+// given depth is rejected by the other at that depth.
+type RecursiveOptNode struct {
+	Val  uint64
+	Next *RecursiveOptNode `ssz-type:"optional"`
+}
+
+var RecursiveOptNode_Payload = RecursiveOptNode{
+	Val: 1,
+	Next: &RecursiveOptNode{
+		Val:  2,
+		Next: &RecursiveOptNode{Val: 3},
+	},
+}
+
+// ReflectOptProbe carries every optional shape through the reflect front-end:
+// optional of a basic type, of a container, and a recursive optional edge.
+// It is deliberately in no generation batch; a test generates it through
+// WithReflectType and type-checks the output.
+type ReflectOptProbe struct {
+	A *uint64          `ssz-type:"optional"`
+	B *ReflectOptSub   `ssz-type:"optional"`
+	C *ReflectOptProbe `ssz-type:"optional"`
+	D *ReflectOptSub   `ssz-type:"optional-list"`
+}
+
+// ReflectOptSub is the container variant ReflectOptProbe wraps.
+type ReflectOptSub struct {
+	V uint64
+}
+
+// RecursiveValNode closes a cycle through a list whose element is the
+// recursive struct by value. Both engines charge the same levels per trip,
+// whichever way the element is held.
+type RecursiveValNode struct {
+	Val  uint64
+	Kids []RecursiveValNode `ssz-max:"4"`
+}
+
+var RecursiveValNode_Payload = RecursiveValNode{
+	Val: 1,
+	Kids: []RecursiveValNode{
+		{Val: 2},
+		{Val: 3, Kids: []RecursiveValNode{{Val: 4}}},
+	},
+}
+
+// TaggedWrapperType is a named wrapper used to pin that a size tag on the
+// field holding it is rejected.
+type TaggedWrapperType = dynssz.TypeWrapper[struct {
+	Data []uint16 `ssz-max:"16"`
+}, []uint16]
+
+// WrapperFieldTagHolder tags the field holding a wrapper; the tag is rejected
+// because the wrapper's descriptor struct declares its constraints.
+type WrapperFieldTagHolder struct {
+	W TaggedWrapperType `ssz-size:"4"`
+}
+
+// Descriptor-hash parity fixtures: intentionally not covered by any generation
+// preset, so both descriptor front-ends traverse the full graph instead of
+// shallow-building a delegated type.
+type HashParityNode struct {
+	Val      uint64
+	Children []*HashParityNode `ssz-max:"4"`
+}
+
+type HashParityShapes struct {
+	Num    uint64
+	List   []uint32    `ssz-max:"64" dynssz-max:"PARITY_LIMIT"`
+	VecDyn [3][]uint16 `ssz-max:"?,64"`
+	Opt    *uint64
+	Union  dynssz.CompatibleUnion[struct {
+		A uint32
+		B []byte `ssz-max:"4"`
+	}]
+	Classic dynssz.Union[struct {
+		N dynssz.None
+		A uint32
+	}]
+	Node HashParityNode
+}
+
+type HashParityProg struct {
+	A uint8  `ssz-index:"0"`
+	B uint64 `ssz-index:"3"`
+}
+
+type HashParityWrap struct {
+	W dynssz.TypeWrapper[struct {
+		Data []uint8 `ssz-max:"8"`
+	}, []uint8] `ssz-type:"wrapper"`
 }

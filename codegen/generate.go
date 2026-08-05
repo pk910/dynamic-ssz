@@ -18,6 +18,28 @@ import (
 	"github.com/pk910/dynamic-ssz/ssztypes"
 )
 
+// validateTypeEntry rejects generation requests that would emit colliding or
+// misleading method sets: a type listed twice (its methods would be declared
+// twice, whether the duplicate is in one file or spread across two files of
+// the package), and a legacy fastssz surface with pieces switched off (the
+// interface is all-or-nothing; a partial set misleads interface checks).
+func validateTypeEntry(seenTypes map[string]string, typePkgPath, typeName, fileName string, opts *CodeGeneratorOptions) error {
+	seenKey := typePkgPath + "." + typeName
+	if firstFile, seen := seenTypes[seenKey]; seen {
+		if firstFile == fileName {
+			return fmt.Errorf("type %s is listed more than once for %s; remove the duplicate entry", typeName, fileName)
+		}
+		return fmt.Errorf("type %s is listed for both %s and %s; a type can be generated into one file only", typeName, firstFile, fileName)
+	}
+	seenTypes[seenKey] = fileName
+
+	if opts.CreateLegacyFn && (opts.NoMarshalSSZ || opts.NoUnmarshalSSZ || opts.NoSizeSSZ || opts.NoHashTreeRoot) {
+		return fmt.Errorf("type %s combines WithCreateLegacyFn with a WithNo* option: the legacy fastssz interface needs the full method set", typeName)
+	}
+
+	return nil
+}
+
 // analyzeTypes performs comprehensive type analysis and validation for all types in the generation request.
 //
 // This method is responsible for the critical pre-generation analysis phase, where all types
@@ -49,6 +71,13 @@ import (
 // the essential type metadata that drives the entire generation process.
 func (cg *CodeGenerator) analyzeTypes() error {
 	var parser *Parser
+
+	// Descriptors built here describe code, not this process: a spec expression
+	// is emitted for the generated code to resolve against whatever specs it
+	// runs under. Resolving it now would bake the generator's own values in as
+	// the compile-time fallback, and would decide list-versus-vector by which
+	// values a generating machine happened to have loaded.
+	cg.typeCache.DisableSpecResolution()
 
 	getTypeName := func(t *CodeGeneratorTypeOptions) (string, string, string) {
 		var typeName, typePkgPath, typePkgName string
@@ -145,6 +174,7 @@ func (cg *CodeGenerator) analyzeTypes() error {
 	cg.typeCache.CompatFlags = cg.compatFlags
 
 	// analyze all types to build complete dependency graph
+	seenTypes := map[string]string{}
 	for _, file := range cg.files {
 		pkgPath := ""
 		pkgName := ""
@@ -154,6 +184,10 @@ func (cg *CodeGenerator) analyzeTypes() error {
 
 			if typePkgPath == "" {
 				return fmt.Errorf("type %s has no package path", typeName)
+			}
+
+			if err := validateTypeEntry(seenTypes, typePkgPath, typeName, file.FileName, &t.Options); err != nil {
+				return err
 			}
 			if pkgPath == "" {
 				pkgPath = typePkgPath
@@ -198,8 +232,13 @@ func (cg *CodeGenerator) analyzeTypes() error {
 				if parser == nil {
 					parser = NewParser()
 					parser.CompatFlags = cg.compatFlags
-					parser.ExtendedTypes = t.Options.ExtendedTypes
 					parser.AnnotationResolver = cg.annotationResolver
+				}
+				// The extended-types switch is never lowered (mirroring the
+				// type cache): a shared parser stays in the wider mode once
+				// any type in the run enables it.
+				if t.Options.ExtendedTypes {
+					parser.ExtendedTypes = true
 				}
 				if t.Options.WithoutDynamicExpressions {
 					parser.NoDelegation = true
@@ -228,6 +267,22 @@ func (cg *CodeGenerator) analyzeTypes() error {
 			}
 
 			t.Descriptor = desc
+
+			// Size hints describe the dimensions of a slice-ish root; a
+			// container's dimensions live on its field tags, so hints on a
+			// container root would describe nothing and be dropped.
+			if (desc.SszType == ssztypes.SszContainerType || desc.SszType == ssztypes.SszProgressiveContainerType) &&
+				(len(t.Options.SizeHints) > 0 || len(t.Options.MaxSizeHints) > 0) {
+				return fmt.Errorf("type %s is a container: size and max hints apply to non-container roots; tag the container's fields instead", typeName)
+			}
+
+			// A view-only type emits no methods of its own, and its data type
+			// carries no tags because the layout lives in the view schema, so
+			// every list there looks limit-less. Only the views it is analyzed
+			// against say anything about its layout.
+			if !t.IsViewOnly {
+				cg.collectWarnings(typeName, desc)
+			}
 
 			// create TypeDescriptor for the view types
 			if hasViews(t) {
@@ -265,6 +320,7 @@ func (cg *CodeGenerator) analyzeTypes() error {
 						return fmt.Errorf("failed to analyze view type %s: %w", viewType.String(), err)
 					}
 					t.ViewDescriptors = append(t.ViewDescriptors, viewDesc)
+					cg.collectWarnings(typeName+" view "+getReflectTypeName(viewType), viewDesc)
 				}
 				for _, viewType := range t.ViewGoTypesTypes {
 					if parser == nil {
@@ -287,6 +343,7 @@ func (cg *CodeGenerator) analyzeTypes() error {
 						return fmt.Errorf("failed to analyze view type %s: %w", viewType.String(), err)
 					}
 					t.ViewDescriptors = append(t.ViewDescriptors, viewDesc)
+					cg.collectWarnings(typeName+" view "+viewType.String(), viewDesc)
 				}
 			}
 		}
@@ -311,13 +368,21 @@ func (cg *CodeGenerator) analyzeTypes() error {
 // validateTopLevelType rejects top-level types that cannot receive generated
 // methods. Both work fine as struct fields, but not as standalone -types
 // entries:
-//   - a Union / CompatibleUnion / TypeWrapper: these are generic library types
+//   - the library's generic Union / CompatibleUnion / TypeWrapper: these are
 //     nameable only via a transparent alias, so a method receiver would resolve
 //     to the foreign generic type rather than a local named type.
 //   - a named pointer type (type T *U): methods cannot be declared on a type
 //     whose underlying type is a pointer.
+//
+// A user's own named type that merely carries union or wrapper *semantics* --
+// a struct annotated ssz-type:"wrapper", say -- is an ordinary declared type
+// and can receive methods, so it is only the generic instantiation that has to
+// be rejected here, not the SSZ type it maps to.
 func validateTopLevelType(t *CodeGeneratorTypeOptions, desc *ssztypes.TypeDescriptor, typeName string) error {
-	if desc.SszType == ssztypes.SszUnionType || desc.SszType == ssztypes.SszCompatibleUnionType || desc.SszType == ssztypes.SszTypeWrapperType {
+	isAliasOnlyShape := desc.SszType == ssztypes.SszUnionType ||
+		desc.SszType == ssztypes.SszCompatibleUnionType ||
+		desc.SszType == ssztypes.SszTypeWrapperType
+	if isAliasOnlyShape && !isDeclaredNamedType(t) {
 		return fmt.Errorf("cannot generate SSZ methods for top-level %s: a Union/CompatibleUnion/TypeWrapper is nameable only via a type alias and cannot receive methods; use it as a struct field instead", typeName)
 	}
 
@@ -356,6 +421,35 @@ func validateTopLevelType(t *CodeGeneratorTypeOptions, desc *ssztypes.TypeDescri
 		}
 	}
 	return nil
+}
+
+// isDeclaredNamedType reports whether the top-level type is a named type
+// declared in source, as opposed to an instantiation of a generic library type
+// reached through a transparent alias. Only the former can carry the generated
+// methods: a receiver written for `dynssz.TypeWrapper[D, T]` would name a
+// foreign generic, while a receiver for a user's own `type Sidecars struct{...}`
+// is an ordinary method declaration.
+//
+// A pointer named type is reported as declared here; validateTopLevelType
+// rejects it separately with a message about the pointer.
+func isDeclaredNamedType(t *CodeGeneratorTypeOptions) bool {
+	if t.ReflectType != nil {
+		rt := t.ReflectType
+		if rt.Kind() == reflect.Pointer {
+			rt = rt.Elem()
+		}
+		// An instantiated generic's reflect name carries its type arguments
+		// (e.g. "TypeWrapper[...]"), which no source declaration can.
+		return rt.Name() != "" && !strings.Contains(rt.Name(), "[")
+	}
+
+	base := t.GoTypesType
+	if ptr, ok := base.(*types.Pointer); ok {
+		base = ptr.Elem()
+	}
+	named, ok := types.Unalias(base).(*types.Named)
+
+	return ok && named.TypeArgs().Len() == 0
 }
 
 // isShallowDelegatedDescriptor reports whether a descriptor was shallow-built
@@ -543,8 +637,11 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 		}
 		seenTypes[t.TypeName] = struct{}{}
 
-		if t.Descriptor == nil || (t.IsViewOnly && len(t.ViewDescriptors) == 0) {
-			return "", fmt.Errorf("type %s has no descriptor or view descriptors", t.TypeName)
+		if t.Descriptor == nil {
+			return "", fmt.Errorf("type %s has no descriptor", t.TypeName)
+		}
+		if t.IsViewOnly && len(t.ViewDescriptors) == 0 {
+			return "", fmt.Errorf("type %s is view-only but declares no view types; add views or drop the view-only flag", t.TypeName)
 		}
 
 		// A recursive descriptor graph is only emittable when every cycle can be
@@ -651,7 +748,7 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 		headerTemplate = DefaultHeaderTemplate
 	}
 	header := strings.ReplaceAll(headerTemplate, "{hash}", hex.EncodeToString(typesHash[:]))
-	header = strings.ReplaceAll(header, "{version}", Version)
+	header = strings.ReplaceAll(header, "{version}", "v"+Version)
 	mainCodeBuilder.WriteString(header)
 	if !strings.HasSuffix(header, "\n") {
 		mainCodeBuilder.WriteString("\n")
@@ -783,6 +880,7 @@ func (cg *CodeGenerator) generateSSZMethods(desc *ssztypes.TypeDescriptor, typeP
 }
 
 func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescriptor, views []*ssztypes.TypeDescriptor, typePrinter *TypePrinter, codeBuilder *strings.Builder, options *CodeGeneratorOptions) error {
+	recursion := newRecursionBound(dataType, options)
 	// Generate the actual methods using flattened generators
 	var err error
 
@@ -821,14 +919,30 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 		return fnName
 	}
 
-	buildViewDispatcher := func(fnPrefix string, mainFn func() string) {
+	// A view dispatcher hands back a closure, which has nowhere to take a
+	// nesting depth. For a type on a recursive cycle the closure instead calls
+	// the depth-carrying method and supplies the depth itself: zero from the
+	// public dispatcher, and the caller's depth from the unexported twin. That
+	// mirrors how the non-view methods are paired, and keeps the exported view
+	// interfaces unchanged.
+	buildViewDispatcher := func(fnPrefix string, mainFn func() string, sig viewFnSignature, depthExpr string) {
+		wrap := func(target string) string {
+			// Only a plain method reference can be redirected to a twin; the
+			// fastssz fallback is emitted as a literal closure and has no twin
+			// to name.
+			if depthExpr == "" || strings.ContainsAny(target, "(") {
+				return target
+			}
+			return fmt.Sprintf("func(%s) %s {\n\t\treturn %s(%s, %s)\n\t}", sig.params, sig.results, depthMethodName(target), sig.args, depthExpr)
+		}
+
 		appendCode(codeBuilder, 1, "switch view.(type) {\n")
 
 		if !options.ViewOnly {
 			mainFnName := mainFn()
 			if mainFnName != "" {
 				appendCode(codeBuilder, 1, "case nil, %s:\n", typePrinter.TypeString(dataType))
-				appendCode(codeBuilder, 2, "return %s\n", mainFnName)
+				appendCode(codeBuilder, 2, "return %s\n", wrap(mainFnName))
 			}
 		}
 
@@ -836,14 +950,41 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 			typeName := typePrinter.ViewTypeString(view, true)
 			viewFnName := getViewFnName(view)
 			appendCode(codeBuilder, 1, "case %s:\n", typeName)
-			appendCode(codeBuilder, 2, "return t.%s_%s\n", fnPrefix, viewFnName)
+			appendCode(codeBuilder, 2, "return %s\n", wrap(fmt.Sprintf("t.%s_%s", fnPrefix, viewFnName)))
 		}
 		appendCode(codeBuilder, 1, "}\n")
 	}
 
+	// emitViewDispatcher writes the public dispatcher and, for a type on a
+	// recursive cycle, the unexported twin a cyclic parent calls to keep the
+	// depth advancing across the view boundary.
+	emitViewDispatcher := func(publicName, fnPrefix string, sig viewFnSignature, mainFn func() string) {
+		typeName := typePrinter.TypeString(dataType)
+		cyclic := recursion.threads(dataType)
+
+		depthExpr := ""
+		if cyclic {
+			depthExpr = "0"
+		}
+		appendCode(codeBuilder, 0, "func (t %s) %s(view any) func(%s) %s {\n", typeName, publicName, sig.params, sig.results)
+		buildViewDispatcher(fnPrefix, mainFn, sig, depthExpr)
+		appendCode(codeBuilder, 1, "return nil\n")
+		appendCode(codeBuilder, 0, "}\n")
+
+		if !cyclic {
+			return
+		}
+
+		appendCode(codeBuilder, 0, "// %s dispatches like %s while carrying the nesting depth of the recursive cycle %s lies on.\n",
+			depthMethodName(publicName), publicName, typeName)
+		appendCode(codeBuilder, 0, "func (t %s) %s(view any, depth int) func(%s) %s {\n", typeName, depthMethodName(publicName), sig.params, sig.results)
+		buildViewDispatcher(fnPrefix, mainFn, sig, depthParam)
+		appendCode(codeBuilder, 1, "return nil\n")
+		appendCode(codeBuilder, 0, "}\n")
+	}
+
 	if !options.NoMarshalSSZ {
-		appendCode(codeBuilder, 0, "func (t %s) MarshalSSZDynView(view any) func(ds sszutils.DynamicSpecs, buf []byte) ([]byte, error) {\n", typePrinter.TypeString(dataType))
-		buildViewDispatcher("marshalSSZView", func() string {
+		emitViewDispatcher("MarshalSSZDynView", "marshalSSZView", viewFnSignature{params: "ds sszutils.DynamicSpecs, buf []byte", results: "([]byte, error)", args: "ds, buf"}, func() string {
 			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 {
 				return "t.MarshalSSZDyn"
 			}
@@ -852,8 +993,6 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 			}
 			return ""
 		})
-		appendCode(codeBuilder, 1, "return nil\n")
-		appendCode(codeBuilder, 0, "}\n")
 
 		for _, desc := range views {
 			viewName := getViewFnName(desc)
@@ -865,15 +1004,12 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 	}
 
 	if options.CreateEncoderFn {
-		appendCode(codeBuilder, 0, "func (t %s) MarshalSSZEncoderView(view any) func(ds sszutils.DynamicSpecs, enc sszutils.Encoder) error {\n", typePrinter.TypeString(dataType))
-		buildViewDispatcher("marshalSSZEncoderView", func() string {
+		emitViewDispatcher("MarshalSSZEncoderView", "marshalSSZEncoderView", viewFnSignature{params: "ds sszutils.DynamicSpecs, enc sszutils.Encoder", results: typeNameError, args: "ds, enc"}, func() string {
 			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicEncoder != 0 {
 				return "t.MarshalSSZEncoder"
 			}
 			return ""
 		})
-		appendCode(codeBuilder, 1, "return nil\n")
-		appendCode(codeBuilder, 0, "}\n")
 
 		for _, desc := range views {
 			viewName := getViewFnName(desc)
@@ -885,8 +1021,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 	}
 
 	if !options.NoUnmarshalSSZ {
-		appendCode(codeBuilder, 0, "func (t %s) UnmarshalSSZDynView(view any) func(ds sszutils.DynamicSpecs, buf []byte) error {\n", typePrinter.TypeString(dataType))
-		buildViewDispatcher("unmarshalSSZView", func() string {
+		emitViewDispatcher("UnmarshalSSZDynView", "unmarshalSSZView", viewFnSignature{params: "ds sszutils.DynamicSpecs, buf []byte", results: typeNameError, args: "ds, buf"}, func() string {
 			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 {
 				return "t.UnmarshalSSZDyn"
 			}
@@ -895,8 +1030,6 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 			}
 			return ""
 		})
-		appendCode(codeBuilder, 1, "return nil\n")
-		appendCode(codeBuilder, 0, "}\n")
 
 		for _, desc := range views {
 			viewName := getViewFnName(desc)
@@ -908,15 +1041,12 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 	}
 
 	if options.CreateDecoderFn {
-		appendCode(codeBuilder, 0, "func (t %s) UnmarshalSSZDecoderView(view any) func(ds sszutils.DynamicSpecs, dec sszutils.Decoder) error {\n", typePrinter.TypeString(dataType))
-		buildViewDispatcher("unmarshalSSZDecoderView", func() string {
+		emitViewDispatcher("UnmarshalSSZDecoderView", "unmarshalSSZDecoderView", viewFnSignature{params: "ds sszutils.DynamicSpecs, dec sszutils.Decoder", results: typeNameError, args: "ds, dec"}, func() string {
 			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 {
 				return "t.UnmarshalSSZDecoder"
 			}
 			return ""
 		})
-		appendCode(codeBuilder, 1, "return nil\n")
-		appendCode(codeBuilder, 0, "}\n")
 
 		for _, desc := range views {
 			viewName := getViewFnName(desc)
@@ -928,8 +1058,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 	}
 
 	if !options.NoSizeSSZ {
-		appendCode(codeBuilder, 0, "func (t %s) SizeSSZDynView(view any) func(ds sszutils.DynamicSpecs) int {\n", typePrinter.TypeString(dataType))
-		buildViewDispatcher("sizeSSZView", func() string {
+		emitViewDispatcher("SizeSSZDynView", "sizeSSZView", viewFnSignature{params: "ds sszutils.DynamicSpecs", results: typeNameInt, args: "ds"}, func() string {
 			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 {
 				return "t.SizeSSZDyn"
 			}
@@ -938,8 +1067,6 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 			}
 			return ""
 		})
-		appendCode(codeBuilder, 1, "return nil\n")
-		appendCode(codeBuilder, 0, "}\n")
 
 		for _, desc := range views {
 			viewName := getViewFnName(desc)
@@ -951,8 +1078,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 	}
 
 	if !options.NoHashTreeRoot {
-		appendCode(codeBuilder, 0, "func (t %s) HashTreeRootWithDynView(view any) func(ds sszutils.DynamicSpecs, hh sszutils.HashWalker) error {\n", typePrinter.TypeString(dataType))
-		buildViewDispatcher("hashTreeRootView", func() string {
+		emitViewDispatcher("HashTreeRootWithDynView", "hashTreeRootView", viewFnSignature{params: "ds sszutils.DynamicSpecs, hh sszutils.HashWalker", results: typeNameError, args: "ds, hh"}, func() string {
 			if dataType.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0 {
 				return "t.HashTreeRootWithDyn"
 			}
@@ -964,8 +1090,6 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 			}
 			return ""
 		})
-		appendCode(codeBuilder, 1, "return nil\n")
-		appendCode(codeBuilder, 0, "}\n")
 
 		for _, desc := range views {
 			viewName := getViewFnName(desc)

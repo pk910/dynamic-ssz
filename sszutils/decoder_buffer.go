@@ -47,7 +47,7 @@ func (e *BufferDecoder) GetPosition() int {
 // GetLength returns the number of remaining bytes available for reading,
 // taking into account the current limit.
 func (e *BufferDecoder) GetLength() int {
-	return e.lastLimit - e.position
+	return max(e.lastLimit-e.position, 0)
 }
 
 // RegionOpen always returns false: a buffer-backed decoder knows where every
@@ -65,7 +65,7 @@ func (e *BufferDecoder) LengthKnown() bool {
 // Available returns the whole remaining region: for a buffer-backed decoder
 // every byte of it is already in memory.
 func (e *BufferDecoder) Available() int {
-	return e.lastLimit - e.position
+	return max(e.lastLimit-e.position, 0)
 }
 
 // More reports whether the current region holds at least one more byte.
@@ -114,9 +114,11 @@ func (e *BufferDecoder) PushLimit(limit int) {
 	if limit < 0 {
 		limit = 0
 	}
-	limitPos := e.position + limit
-	if limitPos > e.lastLimit {
-		limitPos = e.lastLimit
+	// Guard the addition: a huge limit must clamp to the enclosing region,
+	// not wrap around the integer range.
+	limitPos := e.lastLimit
+	if limit < e.lastLimit-e.position {
+		limitPos = e.position + limit
 	}
 
 	e.limits = append(e.limits, limitPos)
@@ -216,6 +218,9 @@ func (e *BufferDecoder) DecodeBytes(buf []byte) ([]byte, error) {
 // limit are returned. The returned slice shares memory with the decoder's
 // buffer and must not be modified. Returns ErrUnexpectedEOF if fewer bytes
 // remain than requested.
+// DecodeBytesBuf returns the next length bytes (the region remainder for a
+// negative length). The returned slice aliases the decoder's input buffer and
+// must be treated as read-only; callers that keep or mutate it must copy.
 func (e *BufferDecoder) DecodeBytesBuf(length int) ([]byte, error) {
 	limit := e.lastLimit
 	if length < 0 {
@@ -250,5 +255,12 @@ func (e *BufferDecoder) DecodeOffsetAt(pos int) uint32 {
 
 // SkipBytes advances the read position by n bytes without reading the data.
 func (e *BufferDecoder) SkipBytes(n int) {
+	if n < 0 {
+		return
+	}
+	// Clamp to the region end, as the stream decoder clamps.
+	if n > e.lastLimit-e.position {
+		n = max(e.lastLimit-e.position, 0)
+	}
 	e.position += n
 }

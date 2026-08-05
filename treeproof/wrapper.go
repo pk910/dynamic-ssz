@@ -507,10 +507,14 @@ func (w *Wrapper) HashRoot() ([32]byte, error) {
 	// Flush any buffered bytes so a top-level packed value (never merkleized into
 	// a container) still yields its single-leaf root instead of an empty tree.
 	w.flushBuffer()
-	if len(w.nodes) == 0 {
-		return [32]byte{}, fmt.Errorf("expected 32 byte size")
+	// Exactly one node, matching hasher.Hasher (which requires its buffer to
+	// hold exactly one chunk) and Node(). With several nodes pending, the
+	// merkleization is incomplete and the last node's hash is not the root --
+	// returning it silently would hand back a wrong root with a nil error.
+	if len(w.nodes) != 1 {
+		return [32]byte{}, fmt.Errorf("incomplete merkleization: wrapper holds %d nodes, want 1", len(w.nodes))
 	}
-	root := w.nodes[len(w.nodes)-1].Hash()
+	root := w.nodes[0].Hash()
 	if len(root) != 32 {
 		return [32]byte{}, fmt.Errorf("expected 32 byte size")
 	}

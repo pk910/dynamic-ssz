@@ -187,6 +187,17 @@ func (g *Generator) generateType(depth int) TypeDef {
 	}
 }
 
+// withIndexTag adds an ssz-index annotation to a field's existing tag string,
+// which is either empty or a backtick-quoted set of tags.
+func withIndexTag(tags string, idx int) string {
+	index := fmt.Sprintf("ssz-index:%q", fmt.Sprint(idx))
+	if tags == "" {
+		return "`" + index + "`"
+	}
+
+	return "`" + strings.Trim(tags, "`") + " " + index + "`"
+}
+
 // generateProgressiveContainer generates a struct type with ssz-index annotations
 // (progressive container). Fields have increasing, possibly sparse indices.
 func (g *Generator) generateProgressiveContainer(_ int) TypeDef {
@@ -200,8 +211,10 @@ func (g *Generator) generateProgressiveContainer(_ int) TypeDef {
 	idx := 0
 	for i := range numFields {
 		f := g.generateLeafField(fmt.Sprintf("Field%d", i))
-		// Progressive containers: increasing, possibly sparse indices
-		f.Tags = fmt.Sprintf("`ssz-index:\"%d\"`", idx)
+		// Progressive containers: increasing, possibly sparse indices. The
+		// index is added to the field's own tags rather than replacing them:
+		// dropping a list's ssz-max would leave a type with no hash tree root.
+		f.Tags = withIndexTag(f.Tags, idx)
 		// 40% chance to skip an index (sparse)
 		if g.rng.Intn(5) < 2 {
 			idx += 1 + g.rng.Intn(3)

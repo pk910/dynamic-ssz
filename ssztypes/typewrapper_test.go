@@ -74,7 +74,7 @@ func TestExtractWrapperDescriptorInfo(t *testing.T) {
 		{
 			name: "descriptor with multiple fields",
 			descriptorType: reflect.TypeOf(struct {
-				Field1 []byte
+				Field1 []byte `ssz-max:"64"`
 				Field2 string
 			}{}),
 			expectError:   true,
@@ -100,7 +100,7 @@ func TestExtractWrapperDescriptorInfo(t *testing.T) {
 		{
 			name: "descriptor with invalid ssz-type",
 			descriptorType: reflect.TypeOf(struct {
-				Data []uint8 `ssz-type:"invalid"`
+				Data []uint8 `ssz-type:"invalid" ssz-max:"64"`
 			}{}),
 			expectError:   true,
 			errorContains: "invalid ssz-type tag",

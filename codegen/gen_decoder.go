@@ -48,6 +48,11 @@ type decoderContext struct {
 	// hold: a dynamic-only child must be inlined (or rejected), never reached via
 	// UnmarshalSSZDyn. That decision keys off this field, not options.
 	noDynBufferCalls bool
+	recursion        *recursionBound
+	// depthAware is set while emitting a type that lies on a recursive cycle,
+	// where the body runs inside a depth-carrying method and can pass the depth
+	// on to a cyclic child.
+	depthAware bool
 }
 
 // generateDecoder generates decoder methods for a specific type.
@@ -89,6 +94,8 @@ func generateDecoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 		options:          options,
 		noDynBufferCalls: noDynBufferCalls,
 	}
+	ctx.recursion = newRecursionBound(rootTypeDesc, options)
+	ctx.depthAware = ctx.recursion.threads(rootTypeDesc)
 
 	ctx.exprVars = newExprVarGenerator("expr", typePrinter, options)
 	ctx.staticSizeVars = newStaticSizeVarGenerator(typePrinter, options, ctx.exprVars)
@@ -112,12 +119,8 @@ func generateDecoder(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings
 	if viewName == "" {
 		appendCode(codeBuilder, 0, "// UnmarshalSSZDecoder unmarshals the %s from the given SSZ decoder using dynamic specifications.\n", typeName)
 	}
-	if ctx.usedDynSpecs {
-		appendCode(codeBuilder, 0, "func (t %s) %s(ds sszutils.DynamicSpecs, dec sszutils.Decoder) (err error) {\n", typeName, fnName)
-	} else {
-		appendCode(codeBuilder, 0, "func (t %s) %s(_ sszutils.DynamicSpecs, dec sszutils.Decoder) (err error) {\n", typeName, fnName)
-	}
 
+	emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, fnName, "ds sszutils.DynamicSpecs, dec sszutils.Decoder", "ds, dec", "err error", depthFailErr(ctx.recursion), false)
 	appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 	appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
 	if ctx.useSeekable {
@@ -237,7 +240,8 @@ func (ctx *decoderContext) unmarshalDelegatedMethod(desc *ssztypes.TypeDescripto
 	}
 
 	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 {
-		ctx.appendCode(indent, "if err = %s.UnmarshalSSZDecoder(ds, dec); err != nil {\n\treturn err\n}\n", varName)
+		fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "UnmarshalSSZDecoder")
+		ctx.appendCode(indent, "if err = %s.%s(ds, dec%s); err != nil {\n\treturn err\n}\n", varName, fn, arg)
 		ctx.usedDynSpecs = true
 		return true, nil
 	}
@@ -306,11 +310,16 @@ func (ctx *decoderContext) unmarshalDelegatedMethod(desc *ssztypes.TypeDescripto
 
 // unmarshalType generates unmarshal code for any SSZ type, delegating to specific unmarshalers.
 func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, isRoot, noBufCheck bool) error {
+	if indent > maxEmitNesting {
+		return errEmitNesting(ctx.typePrinter, desc)
+	}
+
 	// Handle types that have generated methods we can call
 	isView := desc.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
 	if !isRoot && isView {
 		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewDecoder != 0 {
-			ctx.appendCode(indent, "if viewFn := %s.UnmarshalSSZDecoderView((%s)(nil)); viewFn != nil {\n", varName, ctx.typePrinter.ViewTypeString(desc, true))
+			viewFn, viewArg := descendCall(ctx.depthAware, ctx.recursion, desc, "UnmarshalSSZDecoderView")
+			ctx.appendCode(indent, "if viewFn := %s.%s((%s)(nil)%s); viewFn != nil {\n", varName, viewFn, ctx.typePrinter.ViewTypeString(desc, true), viewArg)
 			ctx.appendCode(indent+1, "if err = viewFn(ds, dec); err != nil {\n\treturn err\n}\n")
 			ctx.appendCode(indent, "} else {\n\treturn sszutils.ErrNotImplemented\n}\n")
 			ctx.usedDynSpecs = true
@@ -340,7 +349,8 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 	}
 
 	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 && !isRoot && !isView {
-		ctx.appendCode(indent, "if err = %s.UnmarshalSSZDecoder(ds, dec); err != nil {\n\treturn %s\n}\n", varName, typePath.getErrorWith("err"))
+		fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "UnmarshalSSZDecoder")
+		ctx.appendCode(indent, "if err = %s.%s(ds, dec%s); err != nil {\n\treturn %s\n}\n", varName, fn, arg, typePath.getErrorWith("err"))
 		ctx.usedDynSpecs = true
 		return nil
 	}
@@ -367,6 +377,10 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 			return nil
 		}
 	}
+
+	// A cycle member reached without delegation is inlined here, so the level
+	// it counts is charged inline (see emitInlineDepthCharge).
+	emitInlineDepthCharge(ctx.depthAware, isRoot, isView, ctx.recursion, desc, ctx.appendCode, indent, depthFailErr(ctx.recursion))
 
 	switch desc.SszType {
 	case ssztypes.SszBoolType:
@@ -639,6 +653,10 @@ func (ctx *decoderContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, var
 func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, noBufCheck bool) error {
 	sizeExpression := desc.SizeExpression
 
+	// Set when the vector is backed by a Go array whose length has to bound the
+	// resolved size; emitted once the array expression exists.
+	arrayBoundPending := false
+
 	limitVar := ""
 	bitlimitVar := ""
 
@@ -660,11 +678,11 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 		}
 
 		if desc.Kind == reflect.Array {
-			// check if dynamic limit is greater than the length of the array
-			ctx.appendCode(indent, "if %s > %d {\n", limitVar, desc.Len)
-			errCode := fmt.Sprintf("sszutils.ErrVectorSizeExceedsArrayFn(%s, %d)", limitVar, desc.Len)
-			ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
-			ctx.appendCode(indent, "}\n")
+			// The resolved size is the vector's length; the static ssz-size is
+			// only the fallback, so the backing array is what has to hold it.
+			// See marshalVector. The array expression is not built yet here, so
+			// the bound is emitted where the length is used.
+			arrayBoundPending = true
 		}
 	} else {
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 && desc.BitSize > 0 && desc.BitSize%8 != 0 {
@@ -685,6 +703,13 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 	indexValueVar := valueVar
 	if strings.HasPrefix(valueVar, "*") {
 		indexValueVar = fmt.Sprintf("(%s)", valueVar)
+	}
+
+	if arrayBoundPending {
+		ctx.appendCode(indent, "if %s > len(%s) {\n", limitVar, indexValueVar)
+		errCode := fmt.Sprintf("sszutils.ErrVectorSizeExceedsArrayFn(%s, len(%s))", limitVar, indexValueVar)
+		ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
+		ctx.appendCode(indent, "}\n")
 	}
 
 	// create slice if needed
@@ -1112,6 +1137,21 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		if hasMax {
 			errCode = fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", maxVar)
 			ctx.appendCode(indent, "if itemCount > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
+		}
+		// The offset table declares the count, but only the region can prove the
+		// bodies exist -- see the buffer path. LengthKnown is re-read here because
+		// the RegionEmpty probe above may have discovered EOF, which collapses an
+		// open region to a known length; without a known length sszLen is the
+		// stream allowance rather than the region, and bounds nothing.
+		// A spec-driven minimum is emitted as an expression, not a constant; see
+		// the buffer path.
+		if minElemSize, positiveGuard, ok := minSizeExpr(desc.ElemDesc, ctx.staticSizeVars, ctx.options); ok {
+			guard := ""
+			if positiveGuard != "" {
+				guard = fmt.Sprintf("%s > 0 && ", positiveGuard)
+			}
+			errCode = fmt.Sprintf("sszutils.ErrListRegionTooSmallFn(itemCount, %s, int(sszLen-startOffset))", minElemSize)
+			ctx.appendCode(indent, "if dec.LengthKnown() && %sitemCount > int(sszLen-startOffset)/(%s) {\n\treturn %s\n}\n", guard, minElemSize, typePath.getErrorWith(errCode))
 		}
 
 		// read offsets

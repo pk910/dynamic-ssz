@@ -371,7 +371,7 @@ func TestViewSizerReflection(t *testing.T) {
 	}
 
 	container := TestContainerWithAllViewInterfaces{Field0: 123, Field1: 456}
-	ctx := reflection.NewReflectionCtx(ds, nil, false, true, false)
+	ctx := reflection.NewReflectionCtx(ds, nil, false, true, false, 0)
 
 	size, err := ctx.SizeSSZ(desc, reflect.ValueOf(container))
 	if err != nil {

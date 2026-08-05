@@ -257,8 +257,9 @@ func TestErrorConstructorFunctions(t *testing.T) {
 		{"ErrVectorElementsEOFFn", ErrVectorElementsEOFFn(8, 16), ErrUnexpectedEOF, "not enough data for vector elements (have 8, needed 16)"},
 		{"ErrVectorOffsetsEOFFn", ErrVectorOffsetsEOFFn(4, 12), ErrUnexpectedEOF, "not enough data for vector offsets (have 4, needed 12)"},
 		{"ErrListOffsetsEOFFn", ErrListOffsetsEOFFn(0, 8), ErrUnexpectedEOF, "not enough data for list offsets (have 0, needed 8)"},
-		{"ErrListNotAlignedFn", ErrListNotAlignedFn(13, 4), ErrUnexpectedEOF, "list length 13 is not a multiple of element size 4"},
-		{"ErrInvalidListStartOffsetFn", ErrInvalidListStartOffsetFn(99, 50), ErrUnexpectedEOF, "invalid list start offset 99 (length 50)"},
+		{"ErrListNotAlignedFn", ErrListNotAlignedFn(13, 4), ErrInvalidValueRange, "list length 13 is not a multiple of element size 4"},
+		{"ErrBitlistBytesFn", ErrBitlistBytesFn(9, 8, 64), ErrListTooBig, "bitlist occupies 9 bytes, exceeding the 8-byte capacity of limit 64"},
+		{"ErrInvalidListStartOffsetFn", ErrInvalidListStartOffsetFn(99, 50), ErrOffset, "invalid list start offset 99 (length 50)"},
 		{"ErrUnionSelectorEOFFn", ErrUnionSelectorEOFFn(), ErrUnexpectedEOF, "need 1 byte for union selector"},
 		{"ErrUnionVariantEOFFn", ErrUnionVariantEOFFn(3, 10), ErrUnexpectedEOF, "not enough data for union variant (have 3, needed 10)"},
 		{"ErrOptionalFlagEOFFn", ErrOptionalFlagEOFFn(), ErrUnexpectedEOF, "need 1 byte for optional presence flag"},
@@ -271,10 +272,11 @@ func TestErrorConstructorFunctions(t *testing.T) {
 		{"ErrTrailingDataFn", ErrTrailingDataFn(5), ErrOffset, "5 bytes trailing data"},
 		{"ErrElementOffsetOutOfRangeFn", ErrElementOffsetOutOfRangeFn(99, 10, 50), ErrOffset, "element offset 99 out of range (start 10, max 50)"},
 		{"ErrStaticElementNotConsumedFn", ErrStaticElementNotConsumedFn(6, 8), ErrOffset, "element consumed to position 6, expected 8"},
+		{"ErrListRegionTooSmallFn", ErrListRegionTooSmallFn(512, 65540, 0), ErrOffset, "list declares 512 elements of at least 65540 bytes, but only 0 bytes remain for them"},
 
 		// ErrVectorLength constructors
 		{"ErrVectorLengthFn", ErrVectorLengthFn(10, 5), ErrVectorLength, "vector length 10 exceeds limit 5"},
-		{"ErrVectorSizeExceedsArrayFn", ErrVectorSizeExceedsArrayFn(100, 50), ErrVectorLength, "dynamic vector size 100 exceeds array length 50"},
+		{"ErrVectorSizeExceedsArrayFn", ErrVectorSizeExceedsArrayFn(100, 50), ErrInvalidConstraint, "dynamic vector size 100 exceeds array length 50"},
 
 		// ErrInvalidValueRange constructors
 		{"ErrBitvectorPaddingFn", ErrBitvectorPaddingFn(), ErrInvalidValueRange, "bitvector padding bits are not zero"},
@@ -289,6 +291,13 @@ func TestErrorConstructorFunctions(t *testing.T) {
 		// ErrListTooBig constructors
 		{"ErrListLengthFn", ErrListLengthFn(100, 50), ErrListTooBig, "list length 100 exceeds maximum 50"},
 		{"ErrBitlistLengthFn", ErrBitlistLengthFn(256, 128), ErrListTooBig, "bitlist length 256 exceeds maximum 128"},
+
+		// ErrStreamTooLarge constructors. ErrPayloadTooLargeFn carries the
+		// narrower ErrPayloadTooLarge sentinel so a read-cap overrun can be told
+		// apart from a stream-allowance overrun; both still match
+		// ErrStreamTooLarge (asserted separately below).
+		{"ErrPayloadTooLargeFn", ErrPayloadTooLargeFn(100, 50), ErrPayloadTooLarge, "payload length 100 exceeds maximum 50"},
+		{"ErrStreamTooLargeFn", ErrStreamTooLargeFn(50), ErrStreamTooLarge, "unknown-length ssz stream exceeds maximum size 50"},
 
 		// ErrNotImplemented constructors
 		{"ErrUnknownTypeFn", ErrUnknownTypeFn("mysteryType"), ErrNotImplemented, "unknown type: mysteryType"},

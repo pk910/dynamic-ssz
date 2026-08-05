@@ -7,6 +7,7 @@ package reflection_test
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"reflect"
@@ -49,10 +50,10 @@ var treerootTestMatrix = append(commonTestMatrix, []struct {
 		"type_dynamicssz_val_3",
 		struct {
 			Field0 uint64
-			Field1 []TestContainerWithDynamicSsz2
+			Field1 []TestContainerWithDynamicSsz2 `ssz-max:"64"`
 		}{1, []TestContainerWithDynamicSsz2{{1, 2, true, 4}, {5, 6, true, 8}}},
 		fromHex("0x01000000000000000c000000010000000000000002000000010400050000000000000006000000010800"),
-		fromHex("0x80b99000797f72ef1a9deae3e42fc1447648feaf1d7cd8dc1a4e20c7c64350ed"),
+		fromHex("0x1fd9563ea038408831a314f6d2ac61dfa8830ab88c610f976d8047f36228d1a8"),
 	},
 
 	// fastssz value tests
@@ -66,10 +67,10 @@ var treerootTestMatrix = append(commonTestMatrix, []struct {
 		"type_fastssz_val_2",
 		struct {
 			Field0 uint64
-			Field1 []TestContainerWithFastSsz2
+			Field1 []TestContainerWithFastSsz2 `ssz-max:"64"`
 		}{1, []TestContainerWithFastSsz2{{1, 2, true, 4}, {5, 6, true, 8}}},
 		fromHex("0x01000000000000000c000000010000000000000002000000010400050000000000000006000000010800"),
-		fromHex("0x80b99000797f72ef1a9deae3e42fc1447648feaf1d7cd8dc1a4e20c7c64350ed"),
+		fromHex("0x1fd9563ea038408831a314f6d2ac61dfa8830ab88c610f976d8047f36228d1a8"),
 	},
 }...)
 
@@ -392,7 +393,9 @@ func TestFixedSizeStringVsByteArrayTreeRoot(t *testing.T) {
 }
 
 func TestStringSliceVsByteSliceTreeRoot(t *testing.T) {
-	dynssz := NewDynSsz(nil)
+	// Bare top-level slices carry no limit, and a list without one has no SSZ
+	// root, so hashing them is an extension.
+	dynssz := NewDynSsz(nil, WithExtendedTypes())
 
 	testCases := []struct {
 		name    string
@@ -479,16 +482,16 @@ func TestHashTreeRootErrors(t *testing.T) {
 		{
 			name: "invalid_uint128_size",
 			input: struct {
-				Value []byte `ssz-type:"uint128"`
+				Value []byte `ssz-type:"uint128" ssz-max:"64"`
 			}{[]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}},
-			expectedErr: "large uint type does not have expected data length (17 != 16)",
+			expectedErr: "vector length 17 exceeds limit 16",
 		},
 		{
 			name: "invalid_uint256_size",
 			input: struct {
-				Value []byte `ssz-type:"uint256"`
+				Value []byte `ssz-type:"uint256" ssz-max:"64"`
 			}{[]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33}},
-			expectedErr: "large uint type does not have expected data length (33 != 32)",
+			expectedErr: "vector length 33 exceeds limit 32",
 		},
 		{
 			name: "invalid_bitvector_type",
@@ -762,16 +765,16 @@ func TestGetTreeErrors(t *testing.T) {
 		{
 			name: "invalid_uint128_size",
 			input: struct {
-				Value []byte `ssz-type:"uint128"`
+				Value []byte `ssz-type:"uint128" ssz-max:"64"`
 			}{[]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}},
-			expectedErr: "large uint type does not have expected data length (17 != 16)",
+			expectedErr: "vector length 17 exceeds limit 16",
 		},
 		{
 			name: "invalid_uint256_size",
 			input: struct {
-				Value []byte `ssz-type:"uint256"`
+				Value []byte `ssz-type:"uint256" ssz-max:"64"`
 			}{[]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33}},
-			expectedErr: "large uint type does not have expected data length (33 != 32)",
+			expectedErr: "vector length 33 exceeds limit 32",
 		},
 		{
 			name: "invalid_bitvector_type",
@@ -2021,9 +2024,9 @@ func TestOptionalInnerBuildRootError(t *testing.T) {
 	}
 }
 
-// TestOptionalListInnerBuildRootError verifies buildRootFromOptionalList
-// propagates errors from the inner element's buildRootFromType call and tags
-// them with the "[0]" path to match list[T,1] error reporting.
+// TestOptionalListInnerBuildRootError verifies buildRootFromOptional
+// propagates errors from the inner element's buildRootFromType call, carrying
+// the holding field's name as the error path.
 func TestOptionalListInnerBuildRootError(t *testing.T) {
 	dynssz := NewDynSsz(nil, WithNoFastSsz())
 
@@ -2047,8 +2050,8 @@ func TestOptionalListInnerBuildRootError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for optional-list inner build root error")
 	}
-	if !contains(err.Error(), "[0]") {
-		t.Errorf("expected error path to contain '[0]', got: %v", err)
+	if !contains(err.Error(), "Opt") {
+		t.Errorf("expected error path to name the field, got: %v", err)
 	}
 }
 
@@ -2217,5 +2220,91 @@ func TestReflectionCustomHashAndPointerVector(t *testing.T) {
 	}
 	if back.F == nil || len(*back.F) != 2 || (*back.F)[0] != 7 {
 		t.Fatalf("ptrVec round-trip lost data: %+v", back.F)
+	}
+}
+
+// TestLimitlessListRootCommitsToLength pins that a list with no declared limit
+// still mixes in its length.
+//
+// SSZ has no root for such a list -- List[T, N] needs N to merkleize -- and it
+// used to be merkleized as a vector, with no mixin at all. That made the root
+// blind to the length: values differing only by trailing zeros packed into the
+// same chunks and shared a root, so the root did not identify the value.
+//
+// Mixing in the length restores that, matching how a progressive list (which is
+// unbounded by design) is hashed. The result is still not a List root for any
+// N, so it will not match another implementation -- but there was never a
+// root it could match.
+func TestLimitlessListRootCommitsToLength(t *testing.T) {
+	type limitless struct {
+		V []uint64
+	}
+	type zeroMax struct {
+		V []uint64 `ssz-max:"0"`
+	}
+
+	// A limit-less list has no SSZ root, so hashing one is an extension.
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation(), WithExtendedTypes())
+
+	// Values that pack into the same chunks but differ in length.
+	values := [][]uint64{{}, {1}, {1, 0}, {1, 0, 0, 0}, {1, 2}, {1, 2, 0, 0}, {0, 0, 0, 0}}
+
+	roots := map[[32]byte][]string{}
+	for _, v := range values {
+		root, err := ds.HashTreeRoot(limitless{V: v})
+		if err != nil {
+			t.Fatalf("%v: %v", v, err)
+		}
+		roots[root] = append(roots[root], fmt.Sprint(v))
+
+		// ssz-max:"0" means "no limit" and must hash identically.
+		zeroRoot, err := ds.HashTreeRoot(zeroMax{V: v})
+		if err != nil {
+			t.Fatalf("%v with ssz-max:0: %v", v, err)
+		}
+		if zeroRoot != root {
+			t.Fatalf("%v: ssz-max:\"0\" root %x differs from the untagged root %x", v, zeroRoot, root)
+		}
+	}
+
+	for _, colliding := range roots {
+		if len(colliding) > 1 {
+			t.Errorf("distinct values share a root: %v", colliding)
+		}
+	}
+
+	// The root is a real mix_in_length, not just some length-dependent value:
+	// []uint8{1,2,3,4,5} packs into one chunk, so its root is
+	// sha256(chunk || uint256(5)).
+	type limitlessBytes struct {
+		V []byte
+	}
+	root, err := ds.HashTreeRoot(limitlessBytes{V: []byte{1, 2, 3, 4, 5}})
+	if err != nil {
+		t.Fatalf("byte list: %v", err)
+	}
+
+	var chunk, length [32]byte
+	copy(chunk[:], []byte{1, 2, 3, 4, 5})
+	binary.LittleEndian.PutUint64(length[:8], 5)
+	want := sha256.Sum256(append(chunk[:], length[:]...))
+	if root != want {
+		t.Fatalf("root = %x, want mix_in_length = %x", root, want)
+	}
+
+	// A declared limit is unaffected: its root still uses the declared capacity.
+	type bounded struct {
+		V []uint64 `ssz-max:"8"`
+	}
+	boundedRoot, err := ds.HashTreeRoot(bounded{V: []uint64{1}})
+	if err != nil {
+		t.Fatalf("bounded list: %v", err)
+	}
+	limitlessRoot, err := ds.HashTreeRoot(limitless{V: []uint64{1}})
+	if err != nil {
+		t.Fatalf("limitless list: %v", err)
+	}
+	if boundedRoot == limitlessRoot {
+		t.Fatal("a declared limit must still shape the tree differently from no limit")
 	}
 }

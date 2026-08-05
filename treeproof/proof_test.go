@@ -182,6 +182,32 @@ func TestVerifyMultiproof(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name: "proof hash count mismatch",
+			root: func() []byte {
+				leaf0 := sum256ToBytes([]byte("leaf0"))
+				leaf1 := sum256ToBytes([]byte("leaf1"))
+				leaf2 := sum256ToBytes([]byte("leaf2"))
+				leaf3 := sum256ToBytes([]byte("leaf3"))
+
+				node0 := sum256ToBytes(append(leaf0, leaf1...))
+				node1 := sum256ToBytes(append(leaf2, leaf3...))
+				root := sum256ToBytes(append(node0, node1...))
+				return root
+			}(),
+			leaves: [][]byte{
+				sum256ToBytes([]byte("leaf0")),
+				sum256ToBytes([]byte("leaf3")),
+			},
+			indices: []int{4, 7},
+			proof: [][]byte{
+				sum256ToBytes([]byte("leaf2")),
+				sum256ToBytes([]byte("leaf1")),
+				sum256ToBytes([]byte("surplus")),
+			},
+			expectValid: false,
+			expectError: true,
+		},
+		{
 			name:        "empty indices",
 			root:        []byte{1, 2, 3},
 			proof:       [][]byte{},
@@ -1074,6 +1100,76 @@ func TestVerifyMultiproofDuplicateIndexConflict(t *testing.T) {
 	if !valid {
 		t.Fatal("expected consistent duplicate leaves to verify")
 	}
+}
+
+// A chunk shorter than 32 bytes would be zero-extended, so a chunk ending in
+// zero bytes would have as many encodings as it has trailing zeros -- all
+// verifying against the same root. Every chunk a verifier is handed has to be
+// exactly one length.
+func TestVerifyRejectsUndersizedChunks(t *testing.T) {
+	// A leaf whose value ends in zero bytes: truncating it is lossless once the
+	// verifier pads it back, so every truncation used to verify against this
+	// same root.
+	zeroTailed := make([][]byte, 4)
+	for i := range zeroTailed {
+		chunk := make([]byte, 32)
+		chunk[0] = byte(i + 1)
+		zeroTailed[i] = chunk
+	}
+	tree, err := TreeFromChunks(zeroTailed)
+	if err != nil {
+		t.Fatalf("tree: %v", err)
+	}
+	zeroRoot := tree.Hash()
+	zeroProof, err := tree.Prove(4)
+	if err != nil {
+		t.Fatalf("prove: %v", err)
+	}
+	if valid, err := VerifyProof(zeroRoot, zeroProof); err != nil || !valid {
+		t.Fatalf("the full-length proof must verify: valid=%v err=%v", valid, err)
+	}
+
+	t.Run("leaf", func(t *testing.T) {
+		for _, n := range []int{0, 1, 16, 31} {
+			short := &Proof{Index: zeroProof.Index, Leaf: zeroProof.Leaf[:n], Hashes: zeroProof.Hashes}
+			if valid, err := VerifyProof(zeroRoot, short); err == nil || valid {
+				t.Errorf("a %d-byte leaf verified: valid=%v err=%v", n, valid, err)
+			}
+		}
+	})
+
+	root, leaves, allNodes := buildMerkleTree(4)
+	full := &Proof{Index: 4, Leaf: leaves[0], Hashes: [][]byte{allNodes[5], allNodes[3]}}
+	if valid, err := VerifyProof(root, full); err != nil || !valid {
+		t.Fatalf("the reference proof must verify: valid=%v err=%v", valid, err)
+	}
+
+	t.Run("proof hash", func(t *testing.T) {
+		short := &Proof{Index: 4, Leaf: leaves[0], Hashes: [][]byte{allNodes[5][:16], allNodes[3]}}
+		if valid, err := VerifyProof(root, short); err == nil || valid {
+			t.Errorf("a 16-byte proof hash verified: valid=%v err=%v", valid, err)
+		}
+	})
+
+	t.Run("multiproof leaf", func(t *testing.T) {
+		indices := []int{4}
+		hashes := findProofHashes(indices, allNodes)
+		if valid, err := VerifyMultiproof(root, hashes, [][]byte{allNodes[4][:8]}, indices); err == nil || valid {
+			t.Errorf("an 8-byte leaf verified: valid=%v err=%v", valid, err)
+		}
+	})
+
+	t.Run("multiproof root", func(t *testing.T) {
+		// VerifyMultiproof compared the root as a padded chunk, so a truncated
+		// root -- or one with bytes appended past the first 32 -- was accepted.
+		indices := []int{4}
+		hashes := findProofHashes(indices, allNodes)
+		for _, bad := range [][]byte{root[:16], append(append([]byte{}, root...), 0xff)} {
+			if valid, err := VerifyMultiproof(bad, hashes, [][]byte{allNodes[4]}, indices); err == nil || valid {
+				t.Errorf("a %d-byte root verified: valid=%v err=%v", len(bad), valid, err)
+			}
+		}
+	})
 }
 
 func TestVerifyProofRejectsOversizedLeaf(t *testing.T) {

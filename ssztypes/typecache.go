@@ -86,6 +86,10 @@ type TypeCache struct {
 	ExtendedTypes     bool
 	NoDelegation      bool
 
+	// noSpecResolution marks a cache that builds descriptors for code generation
+	// rather than for this process. See DisableSpecResolution.
+	noSpecResolution bool
+
 	// promotedDelegation memoizes InheritsPromotedDelegation (reflect.Type ->
 	// bool); the detection sits on the per-call delegation hot path.
 	promotedDelegation sync.Map
@@ -111,6 +115,18 @@ func NewTypeCache(specs sszutils.DynamicSpecs) *TypeCache {
 		CompatFlags:       map[string]SszCompatFlag{},
 		ExtendedTypes:     false,
 	}
+}
+
+// DisableSpecResolution switches the cache to building descriptors for code
+// generation rather than for this process. Spec expressions are recorded as
+// written instead of being resolved, because the generated code resolves them
+// against whatever specs it runs under; resolving them here would bake the
+// generator's own values into the output and would classify a dimension by
+// whether a value happened to be loaded. The values are dropped rather than
+// kept aside, so nothing can reach them by accident.
+func (tc *TypeCache) DisableSpecResolution() {
+	tc.noSpecResolution = true
+	tc.specs = emptySpecs{}
 }
 
 // GetTypeDescriptor returns a cached type descriptor for the given type, computing it if necessary.
@@ -443,42 +459,60 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			}
 
 			// ParseTags can't resolve dynamic expressions (no DynamicSpecs).
-			// Resolve them now using tc.specs.
-			if tc.specs != nil {
+			// Resolve them now, unless the descriptor is being built to generate
+			// code -- then the expression is what the output needs, not a value.
+			if !tc.noSpecResolution {
+				// A dimension keeps its static value when the expression gives
+				// nothing usable -- resolved to zero, undefined, or unresolvable.
+				// A zero static value is the "0" placeholder rather than a
+				// fallback, so there is nothing left to fall back to and the
+				// annotation names a size or limit nothing supplies. The
+				// generated code reports the same dead end at runtime, where its
+				// expressions resolve (ResolveSpecValueWithDefault).
 				for i := range sizeHints {
-					if sizeHints[i].Expr != "" {
-						if ok, val, err := tc.specs.ResolveSpecValue(sizeHints[i].Expr); err == nil && ok {
-							if val > math.MaxUint32 {
-								return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "ssz-size value %d exceeds the uint32 size range", val)
-							}
-							if val == 0 {
-								// A resolved size of 0 would form a zero-length
-								// vector; fall back to a positive static ssz-size or
-								// reject if none was given.
-								if sizeHints[i].Size == 0 {
-									return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "ssz-size expression %q resolved to 0 with no positive static fallback", sizeHints[i].Expr)
-								}
-							} else {
-								sizeHints[i].Size = uint32(val)
-								sizeHints[i].Custom = true
-							}
+					if sizeHints[i].Expr == "" {
+						continue
+					}
+
+					ok, val, resolveErr := tc.specs.ResolveSpecValue(sizeHints[i].Expr)
+					if resolveErr != nil {
+						return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "error parsing dynssz-size expression %q for type %v: %v", sizeHints[i].Expr, t, resolveErr)
+					}
+					if ok && val > 0 {
+						// The range check guards the conversion directly rather
+						// than standing as a separate condition, so that what
+						// makes the narrowing safe is visible at the narrowing.
+						if val > math.MaxUint32 {
+							return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "ssz-size value %d exceeds the uint32 size range", val)
 						}
+
+						sizeHints[i].Size = uint32(val)
+						sizeHints[i].Custom = true
+
+						continue
+					}
+					if sizeHints[i].Size == 0 {
+						return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-size expression %q %s", sizeHints[i].Expr, unresolvedReason(ok))
 					}
 				}
 
 				for i := range maxSizeHints {
-					if maxSizeHints[i].Expr != "" {
-						if ok, val, err := tc.specs.ResolveSpecValue(maxSizeHints[i].Expr); err == nil && ok {
-							if val == 0 {
-								// Fall back to a positive static ssz-max or reject.
-								if maxSizeHints[i].Size == 0 {
-									return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "ssz-max expression %q resolved to 0 with no positive static fallback", maxSizeHints[i].Expr)
-								}
-							} else {
-								maxSizeHints[i].Size = val
-								maxSizeHints[i].Custom = true
-							}
-						}
+					if maxSizeHints[i].Expr == "" {
+						continue
+					}
+
+					ok, val, resolveErr := tc.specs.ResolveSpecValue(maxSizeHints[i].Expr)
+					if resolveErr != nil {
+						return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "error parsing dynssz-max expression %q for type %v: %v", maxSizeHints[i].Expr, t, resolveErr)
+					}
+					if ok && val > 0 {
+						maxSizeHints[i].Size = val
+						maxSizeHints[i].Custom = true
+
+						continue
+					}
+					if maxSizeHints[i].Size == 0 {
+						return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-max expression %q %s", maxSizeHints[i].Expr, unresolvedReason(ok))
 					}
 				}
 			}
@@ -516,6 +550,11 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		}
 
 		if maxSizeHints[0].Expr != "" {
+			// A limit no value was supplied for is the same dead end as a length.
+			if desc.Limit == 0 && !tc.noSpecResolution {
+				return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-max %q is not defined and has no positive static fallback", maxSizeHints[0].Expr)
+			}
+
 			desc.MaxExpression = &maxSizeHints[0].Expr
 		}
 
@@ -567,18 +606,18 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		case reflect.Array:
 			sszType = SszVectorType
 		case reflect.Slice:
-			if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
+			// `?` is what makes a dimension a list; any other tag names a length
+			// and so makes it a vector. Reading the resolved value instead would
+			// let the same type encode as a vector or as a list depending on which
+			// spec values a process happened to have loaded.
+			if len(sizeHints) > 0 && !sizeHints[0].Dynamic {
 				sszType = SszVectorType
-			} else if err := rejectZeroSizeHint(sizeHints); err != nil {
-				return nil, err
 			} else {
 				sszType = SszListType
 			}
 		case reflect.String:
-			if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
+			if len(sizeHints) > 0 && !sizeHints[0].Dynamic {
 				sszType = SszVectorType
-			} else if err := rejectZeroSizeHint(sizeHints); err != nil {
-				return nil, err
 			} else {
 				sszType = SszListType
 			}
@@ -659,13 +698,42 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			// those handle every operation correctly.
 			desc.SszCompatFlags &^= SszCompatFlagFastSSZMarshaler | SszCompatFlagFastSSZHasher | SszCompatFlagHashTreeRootWith
 			desc.HashTreeRootWithMethod = nil
+			// A shallow descriptor has no traversed subtree: a static one still
+			// knows its size, a dynamic one states no floor.
+			desc.SetMinSize()
+
 			return desc, nil
 		}
+	}
+
+	// A tag names one dimension per level of nesting, so a type that has no
+	// element consumes the last of them. Anything past that describes a
+	// dimension the type does not have: it was parsed, then dropped, which
+	// leaves a tag that reads as if it did something.
+	if len(typeHints) > 1 && !consumesDimension(sszType) {
+		return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag,
+			"ssz-type declares %d dimensions for %v, which takes 1: drop the trailing %d",
+			len(typeHints), t, len(typeHints)-1)
+	}
+	// A limit names the capacity of a variable-length dimension; a type that
+	// consumes no dimension has none to bound, so a limit reaching it was
+	// parsed and dropped. NoValue placeholders are the tag family skipping a
+	// dimension that belongs to the other family, which is their job.
+	if len(maxSizeHints) > 0 && !maxSizeHints[0].NoValue && !consumesDimension(sszType) && sszType != SszBigIntType {
+		if sszType == SszContainerType || sszType == SszProgressiveContainerType {
+			return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag,
+				"ssz-max names a limit for container %v, which has no capacity to bound: a container's limits belong on its field tags", t)
+		}
+		return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag,
+			"ssz-max names a limit for %v, which has no capacity to bound: drop the surplus dimension", t)
 	}
 
 	// Check type compatibility and compute size
 	switch sszType {
 	case SszUnspecifiedType:
+		if t.Kind() == reflect.Pointer {
+			return nil, sszutils.NewSszError(sszutils.ErrUnsupportedType, "unsupported multi-level pointer type: only a single level of indirection is supported")
+		}
 		return nil, sszutils.NewSszErrorf(sszutils.ErrUnsupportedType, "unsupported type kind: %v", t.Kind())
 
 	// basic types
@@ -743,6 +811,11 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 
 	// complex types
 	case SszTypeWrapperType:
+		// A wrapper's constraints live in its descriptor struct; a size or
+		// limit on the field holding the wrapper would silently lose to them.
+		if len(sizeHints) > 0 || len(maxSizeHints) > 0 {
+			return nil, sszutils.NewSszError(sszutils.ErrInvalidTag, "ssz-size/ssz-max on a TypeWrapper field are not applied: declare the constraint in the wrapper's descriptor struct")
+		}
 		err := tc.buildTypeWrapperDescriptor(desc, runtimeType, schemaType)
 		if err != nil {
 			return nil, err
@@ -958,7 +1031,72 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		}
 	}
 
+	desc.SetMinSize()
+
 	return desc, nil
+}
+
+// unresolvedReason says why an expression produced no usable value, so the
+// error tells the reader whether to define the spec value or to correct it.
+func unresolvedReason(resolved bool) string {
+	if resolved {
+		return "resolved to 0 with no positive static fallback"
+	}
+
+	return "is not defined and has no positive static fallback"
+}
+
+// SetMinSize records the smallest number of bytes a value of this type can
+// serialize to. Decoders use it to reject an offset table that declares more
+// elements than the region can hold, before that count sizes an allocation.
+//
+// A type with no floor -- a list, a union, an optional -- keeps 0, which states
+// no bound rather than a wrong one.
+//
+// It is stored rather than derived at decode time because Len carries different
+// meanings per type (bytes for a container's fixed section, elements for a
+// vector), so the rule would otherwise be re-derived on every decode. Children
+// are read from their own cached value, so a recursive type resolves without
+// walking back into itself: a cycle's back edge simply contributes nothing.
+//
+// Only this cache fills it in, where every size is already resolved against the
+// active spec. Descriptors built by the code generator's go/types parser keep 0:
+// at generation time only the static tag values are known, and freezing those
+// into a bound would refuse valid input under a preset that resolves them
+// smaller. The generator emits the same minimum as a runtime expression instead
+// (see minSizeExpr).
+func (td *TypeDescriptor) SetMinSize() {
+	// A static type serializes to exactly its size.
+	if td.SszTypeFlags&SszTypeFlagIsDynamic == 0 {
+		td.MinSize = td.Size
+		return
+	}
+
+	switch td.SszType {
+	case SszTypeWrapperType:
+		if td.ElemDesc != nil {
+			td.MinSize = td.ElemDesc.MinSize
+		}
+	case SszContainerType, SszProgressiveContainerType:
+		// The fixed section: every field's own size, and four offset bytes for
+		// each dynamic one.
+		td.MinSize = td.Len
+	case SszVectorType:
+		// A vector of dynamic elements leads with one 4-byte offset per element,
+		// and every element costs at least its own minimum on top of that. Len is
+		// the element count here, not a byte size.
+		if td.ElemDesc != nil {
+			// An overflowing product would bound the region above the true floor
+			// and refuse valid input, so it states no bound instead.
+			minSize := uint64(td.Len) * (4 + uint64(td.ElemDesc.MinSize))
+			if minSize <= math.MaxUint32 {
+				td.MinSize = uint32(minSize)
+			}
+		}
+	default:
+		// Everything else can serialize to nothing -- an empty list, an absent
+		// optional, a union's smallest variant -- so it states no floor.
+	}
 }
 
 // detectCompatFlags records which SSZ delegation interfaces (fastssz, dynamic,
@@ -1452,6 +1590,13 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 				}
 				field.SszIndex = *sszIndexes[i]
 			} else {
+				// The auto-increment must respect the same 255 ceiling
+				// getSszIndexTag enforces for explicit tags: a higher index needs
+				// an active-fields bitvector wider than the 32 bytes
+				// getActiveFields supports.
+				if nextIndex > 255 {
+					return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "ssz-index %d assigned to field %q exceeds the supported maximum of 255", nextIndex, field.Name)
+				}
 				field.SszIndex = nextIndex
 			}
 			nextIndex = field.SszIndex + 1
@@ -1722,6 +1867,14 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 		return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "vector ssz type can only be represented by array or slice types, got %v", desc.Kind)
 	}
 
+	arrayLen := uint64(0)
+	if t.Kind() == reflect.Array {
+		arrayLen = uint64(t.Len())
+	}
+	if err := RejectMaxOnVector(sizeHints, maxSizeHints, arrayLen, schemaType.String()); err != nil {
+		return err
+	}
+
 	switch {
 	case desc.Kind == reflect.Array:
 		// With a view descriptor the schema (view) type defines the SSZ layout while
@@ -1761,7 +1914,21 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 			byteLen = (byteLen + 7) / 8 // ceil up to the next multiple of 8
 		}
 		desc.Len = byteLen
+	case len(sizeHints) > 0 && sizeHints[0].Expr != "":
+		// The length is named by an expression no value was supplied for. That is
+		// what generated code needs -- it resolves the expression itself -- so the
+		// length stays symbolic. Anywhere else the type named a length nothing can
+		// provide, the same dead end as one resolving to zero.
+		if !tc.noSpecResolution {
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-size %q is not defined and has no positive static fallback", sizeHints[0].Expr)
+		}
 	default:
+		// A dimension is a vector because its tag is not `?`, so a tag naming
+		// zero arrives here rather than as a list; say so in those terms.
+		if err := rejectZeroSizeHint(sizeHints); err != nil {
+			return err
+		}
+
 		return sszutils.NewSszError(sszutils.ErrInvalidConstraint, "missing size hint for vector type")
 	}
 
@@ -1770,7 +1937,10 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 	// dynssz-size resolved to 0 with no positive static fallback. A bit size
 	// misused on a non-bitvector also yields length 0, but that has a more
 	// specific error reported after the descriptor is built, so don't mask it.
-	if desc.Len == 0 && (desc.SszTypeFlags&SszTypeFlagHasBitSize == 0 || desc.SszType == SszBitvectorType) {
+	// A length supplied purely by an expression is legitimately 0 here while
+	// generating code, so only a genuine static zero is rejected (matching the
+	// code generator's own parser).
+	if desc.Len == 0 && desc.SizeExpression == nil && (desc.SszTypeFlags&SszTypeFlagHasBitSize == 0 || desc.SszType == SszBitvectorType) {
 		return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "vector type %v has zero length, which is invalid per the SSZ spec", t)
 	}
 
@@ -1918,12 +2088,139 @@ func (tc *TypeCache) buildListDescriptor(desc *TypeDescriptor, runtimeType, sche
 	}
 
 	if len(sizeHints) > 0 && sizeHints[0].Size > 0 && !sizeHints[0].Dynamic {
-		// Lists cannot have a fixed ssz-size; that's a vector.
+		// Lists cannot have a fixed size; that's a vector.
 		// Lists use ssz-max to specify the maximum length.
+		// Name the tag the user actually wrote: a bit-unit hint came from
+		// ssz-bitsize/dynssz-bitsize, and reporting it as ssz-size sends the
+		// reader looking for a tag that is not there.
+		if sizeHints[0].Bits {
+			return sszutils.NewSszError(sszutils.ErrInvalidConstraint, "list types cannot have a fixed ssz-bitsize (use ssz-max for lists, or ssz-bitsize with bitvector type)")
+		}
 		return sszutils.NewSszError(sszutils.ErrInvalidConstraint, "list types cannot have a fixed ssz-size (use ssz-max for lists, or ssz-size with vector type)")
 	}
 
+	MarkNoSszRoot(tc.ExtendedTypes, desc)
+
 	return nil
+}
+
+// RejectMaxOnVector rejects a limit declared for a dimension that is fixed
+// with a different length. A vector's length is its type, so it has no
+// capacity left to bound: a diverging limit describes nothing and was being
+// ignored, which reads as a bounded list to anyone writing the tag. A limit
+// equal to the fixed length is accepted — it states what the type already
+// says, and tags are positional, so the common spelling that bounds an outer
+// list repeats the inner vector's length in both families
+// ([][48]byte `ssz-size:"?,48" ssz-max:"4096,48"`). It is shared by the
+// reflection type cache and the code generator's parser so both read the same
+// tags the same way.
+//
+// The dimension is fixed either because ssz-size gave it a length or because
+// the Go type is an array, so this catches both spellings; arrayLen carries
+// the Go array length (0 otherwise). Only the dimension being built is
+// examined: an outer array of bounded lists carries `?` for its own dimension
+// and its limits belong to the inner ones.
+func RejectMaxOnVector(sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, arrayLen uint64, typeName string) error {
+	if len(maxSizeHints) == 0 || maxSizeHints[0].NoValue {
+		return nil
+	}
+
+	// A limit that only exists as an unresolved expression, or the ssz-max:"0"
+	// placeholder, states no capacity either.
+	if maxSizeHints[0].Size == 0 {
+		return nil
+	}
+
+	// The length this dimension is fixed to, mirroring how the vector builders
+	// resolve it: an explicit size hint wins over the Go array's own length. A
+	// bit-sized hint counts bits where the limit counts elements, so it grants
+	// no equality; a purely symbolic length cannot be compared either.
+	fixedLen := arrayLen
+	if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
+		fixedLen = uint64(sizeHints[0].Size)
+		if sizeHints[0].Bits {
+			fixedLen = 0
+		}
+	}
+	if fixedLen != 0 && maxSizeHints[0].Size == fixedLen {
+		return nil
+	}
+
+	return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint,
+		"ssz-max %d is declared for %s, whose length is fixed: a vector has no capacity to bound (a limit equal to the length is accepted; anything else needs ssz-size or ssz-max, not both, for one dimension)",
+		maxSizeHints[0].Size, typeName)
+}
+
+// consumesDimension reports whether a type has an element for a tag dimension to
+// describe. A collection passes the remaining dimensions down to what it holds;
+// everything else is where the dimensions run out.
+//
+// A container is included: its fields carry their own tags rather than
+// continuing the parent's, so a dimension past it belongs to nothing. Wrappers
+// and unions are excluded from the check entirely -- they forward tags to a
+// wrapped or selected type in ways a dimension count does not describe.
+func consumesDimension(sszType SszType) bool {
+	switch sszType {
+	case SszListType, SszVectorType, SszBitlistType, SszBitvectorType,
+		SszProgressiveListType, SszProgressiveBitlistType,
+		SszOptionalType, SszOptionalListType,
+		SszTypeWrapperType, SszCompatibleUnionType, SszUnionType,
+		SszUint128Type, SszUint256Type, SszCustomType, SszUnspecifiedType:
+		return true
+	default:
+		return false
+	}
+}
+
+// MarkNoSszRoot flags a list or bitlist that carries no limit, unless extended
+// types are enabled. It is shared by the reflection type cache and the code
+// generator's parser so both classify the same types the same way.
+//
+// A limit is part of the type in SSZ: List[T, N] and Bitlist[N] need N to
+// merkleize, so a list without one has no defined hash tree root. The library
+// still hashes it -- merkleizing to the chunks the value occupies and mixing in
+// the length, so the root at least identifies the value -- but that root is
+// outside the spec and no other implementation will agree on it, which is why
+// it is an opt-in extension rather than the default.
+//
+// Serialization is unaffected: a limit only bounds a list, and encoding and
+// decoding never need it. So the flag is set here but only acted on where the
+// root is produced, which also keeps a view's data type usable: it carries no
+// tags because the layout lives in the view schema, and hashing it through the
+// view uses the view's descriptor, which does have the limit.
+//
+// A progressive list or bitlist is unbounded by design (EIP-7916) and is
+// unaffected.
+func MarkNoSszRoot(extendedTypes bool, desc *TypeDescriptor) {
+	if extendedTypes || desc.SszTypeFlags&SszTypeFlagHasLimit != 0 {
+		return
+	}
+
+	// A limit carried by a dynssz-max expression is still a limit; it is just
+	// not resolvable yet. That is the documented ssz-max:"0" placeholder
+	// pattern, and it is how the code generator sees every spec-driven limit,
+	// since spec values only exist at runtime.
+	if desc.MaxExpression != nil {
+		return
+	}
+
+	if desc.SszType == SszListType || desc.SszType == SszBitlistType {
+		desc.SszTypeFlags |= SszTypeFlagNoSszRoot
+	}
+}
+
+// NoSszRootError reports that a limit-less list or bitlist cannot be hashed.
+// Both engines raise it where the root would be produced: the reflection engine
+// at hash time, the code generator while emitting the hash method.
+func NoSszRootError(desc *TypeDescriptor) error {
+	kind := sszTypeNameList
+	if desc.SszType == SszBitlistType {
+		kind = sszTypeNameBitlist
+	}
+
+	return sszutils.NewSszErrorf(sszutils.ErrExtendedTypeDisabled,
+		"%s has no ssz-max, so it has no SSZ hash tree root: add a limit, or enable extended types to hash it as an unbounded %s. If this is a view's data type, hash it through its view instead",
+		kind, kind)
 }
 
 // GetAllTypes returns a slice of all type keys currently cached in the TypeCache.
