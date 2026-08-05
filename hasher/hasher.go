@@ -536,7 +536,8 @@ func (h *Hasher) Collapse() {
 		return
 	}
 
-	async := h.asyncShared() != nil
+	ast := h.asyncShared()
+	async := ast != nil
 
 	if layer.pendCount > 0 {
 		// With async hashing, Collapse is treated as a hint: the pending run
@@ -565,6 +566,14 @@ func (h *Hasher) Collapse() {
 		if layer.pendCount > 0 {
 			// Sub-cap remainder from the capped async flush; it accumulates
 			// toward the next cap-sized job.
+			return
+		}
+		if async {
+			// Raw chunk runs (packed primitive lists and vectors) reduce as
+			// cap-sized background jobs too. The synchronous batch collapse
+			// stays out of the way: its shallower nodes would break the cap
+			// alignment, and acting on the region would stall on the holes.
+			h.precollapseCapRun(ast, layer)
 			return
 		}
 		h.maybeCollapseBinary(layer)
@@ -687,7 +696,7 @@ func (h *Hasher) maybeCollapseProgressive(layer *treeLayer) {
 	// consumption waits for a later round: it would move (or read) the node
 	// holes while the reductions are still in flight.
 	ast := h.asyncShared()
-	if ast != nil && layer.progressiveLevel >= 8 && h.precollapseProgressiveRun(ast, layer) {
+	if ast != nil && layer.progressiveLevel >= 8 && h.precollapseCapRun(ast, layer) {
 		return
 	}
 

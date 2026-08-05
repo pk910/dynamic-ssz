@@ -415,13 +415,28 @@ func (h *Hasher) flushPendingAsync(st *asyncShared, layer *treeLayer) bool {
 // precollapseProgressiveRun replaces cap-aligned spans of a progressive
 // layer's trailing depth-0 run with cap-depth nodes reduced in the
 // background, so groups wider than one job buffer are later consumed from a
-// handful of nodes instead of one oversized reduction. Only meaningful from
-// progressive level 8 up (the caller checks): every group in the active
-// region is then a multiple of the cap, so cap-aligned nodes never straddle
-// a group boundary. Reports whether jobs were emitted — the caller must
-// then leave the active region untouched for the round, because the node
-// holes are only stable while nothing consumes or compacts around them.
-func (h *Hasher) precollapseProgressiveRun(st *asyncShared, layer *treeLayer) bool {
+// handful of nodes instead of one oversized reduction. Progressive callers
+// may only use this from level 8 up: every group in the active region is
+// then a multiple of the cap, so cap-aligned nodes never straddle a group
+// boundary. Binary layers (raw packed lists and vectors) have no group
+// boundaries and use it at any size. Reports whether jobs were emitted —
+// the caller must then leave the region untouched for the round, because
+// the node holes are only stable while nothing consumes or compacts around
+// them.
+func (h *Hasher) precollapseCapRun(st *asyncShared, layer *treeLayer) bool {
+	// Account chunks appended since the last state sync. A layer that never
+	// collapsed carries stale counts from a previous scope in its reused
+	// slot, so its state is rebuilt from the buffer instead.
+	if layer.collapsed {
+		h.syncCollapseState(layer)
+	} else {
+		layer.counts = [maxTreeDepth]uint32{}
+		layer.maxDepth = 0
+		if chunks := (len(h.buf) - h.binaryRegionStart(layer)) / 32; chunks > 0 {
+			layer.counts[0] = uint32(chunks)
+		}
+	}
+
 	// Everything deeper than the run must itself be a cap-depth node: that
 	// guarantees the run starts cap-aligned, and it keeps the buffer's
 	// deepest-first node order intact when the new nodes are recorded at
@@ -433,7 +448,7 @@ func (h *Hasher) precollapseProgressiveRun(st *asyncShared, layer *treeLayer) bo
 		}
 	}
 	emitted := false
-	runStart := h.activeSubtreeStart(layer) + int(layer.counts[asyncCapDepth])*32
+	runStart := h.binaryRegionStart(layer) + int(layer.counts[asyncCapDepth])*32
 	for layer.counts[0] >= lazyFlushChunks {
 		h.enqueueReduce(st, runStart, lazyFlushChunks, 1, runStart)
 		h.compactAsyncRun(runStart, lazyFlushChunks, 1)
