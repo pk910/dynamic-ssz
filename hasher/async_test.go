@@ -32,9 +32,12 @@ func (s asyncSequence) String() string {
 		s.progressive, s.activeFields, s.rawPrefix, s.elemChunks, s.n, s.cadence, s.limit)
 }
 
-// runAsyncSequence drives hh through the sequence and returns the root.
+// runAsyncSequence drives hh through the sequence and returns the root. The
+// hasher is gated into async hashing; whether reductions actually run in the
+// background is controlled by the process-wide Enable/Disable toggle.
 func runAsyncSequence(t *testing.T, hh *Hasher, s asyncSequence, seed int64) [32]byte {
 	t.Helper()
+	hh.SetAsyncHashing(true)
 	rng := rand.New(rand.NewSource(seed))
 	chunk := make([]byte, 32)
 
@@ -153,6 +156,7 @@ func TestAsyncTailAfterRun(t *testing.T) {
 
 	run := func() [32]byte {
 		hh := NewHasherWithHashFn(hashtree.HashByteSlice)
+		hh.SetAsyncHashing(true)
 		rng := rand.New(rand.NewSource(11))
 		chunk := make([]byte, 32)
 
@@ -193,6 +197,7 @@ func TestAsyncResetInFlight(t *testing.T) {
 	defer DisableAsyncHashing()
 
 	hh := NewHasherWithHashFn(hashtree.HashByteSlice)
+	hh.SetAsyncHashing(true)
 	rng := rand.New(rand.NewSource(7))
 	chunk := make([]byte, 32)
 
@@ -224,26 +229,44 @@ func TestAsyncResetInFlight(t *testing.T) {
 	}
 }
 
-// TestAsyncNativeHasherExcluded verifies that hashers wrapping a stateful
-// hash.Hash never take the async path (their hash function is not safe for
-// concurrent use) and still produce correct roots while async hashing is
-// enabled globally.
-func TestAsyncNativeHasherExcluded(t *testing.T) {
-	EnableAsyncHashing(4)
+// TestAsyncGate verifies the two-level gating: the process-wide toggle and
+// the per-hasher SetAsyncHashing flag must both be set, and Reset clears the
+// per-hasher flag so pooled hashers never leak the setting to another user.
+func TestAsyncGate(t *testing.T) {
 	defer DisableAsyncHashing()
 
-	hh := NewHasher()
+	hh := NewHasherWithHashFn(hashtree.HashByteSlice)
+	DisableAsyncHashing()
 	if hh.asyncShared() != nil {
-		t.Fatal("native-hash hasher must not participate in async hashing")
+		t.Error("hasher must be gated out by default")
+	}
+	hh.SetAsyncHashing(true)
+	if hh.asyncShared() != nil {
+		t.Error("process-wide disable must override the per-hasher gate")
+	}
+	EnableAsyncHashing(4)
+	if hh.asyncShared() == nil {
+		t.Error("gated-in hasher must see the shared state")
+	}
+	hh.SetAsyncHashing(false)
+	if hh.asyncShared() != nil {
+		t.Error("gated-out hasher must not see the shared state")
+	}
+	hh.SetAsyncHashing(true)
+	hh.Reset()
+	if hh.asyncShared() != nil {
+		t.Error("Reset must clear the per-hasher gate")
 	}
 
+	// An ungated hasher hashes synchronously while async is enabled, with
+	// identical roots.
 	s := asyncSequence{elemChunks: 8, n: 5000, cadence: 256, limit: 1 << 40}
 	got := runAsyncSequence(t, hh, s, 9)
 
 	DisableAsyncHashing()
 	want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 9)
 	if got != want {
-		t.Errorf("native root %x != reference root %x", got, want)
+		t.Errorf("root %x != reference root %x", got, want)
 	}
 }
 
@@ -337,7 +360,9 @@ func TestAsyncRingOverflow(t *testing.T) {
 
 	rng := rand.New(rand.NewSource(51))
 	parker := NewHasherWithHashFn(hashtree.HashByteSlice)
+	parker.SetAsyncHashing(true)
 	worker := NewHasherWithHashFn(hashtree.HashByteSlice)
+	worker.SetAsyncHashing(true)
 
 	// parker takes all 16 tokens and parks.
 	parker.StartTree(sszutils.TreeTypeBinary)
@@ -387,6 +412,72 @@ func TestAsyncLargeWorkerCount(t *testing.T) {
 	got := runAsyncSequence(t, hh, s, 61)
 	if got != want {
 		t.Errorf("large-worker async root %x != sync root %x", got, want)
+	}
+}
+
+// TestAsyncNativeFactory runs async hashing on the default native-hash
+// hasher: NativeHashWrapperFactory draws per-call instances from a pool, so
+// workers and walker never share hash state.
+func TestAsyncNativeFactory(t *testing.T) {
+	defer DisableAsyncHashing()
+
+	s := asyncSequence{elemChunks: 8, n: 12288, cadence: 256, limit: 1 << 40}
+
+	DisableAsyncHashing()
+	want := runAsyncSequence(t, NewHasher(), s, 13)
+
+	EnableAsyncHashing(4)
+	got := runAsyncSequence(t, NewHasher(), s, 13)
+	if got != want {
+		t.Errorf("native async root %x != sync root %x", got, want)
+	}
+
+	DisableAsyncHashing()
+	if ref := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 13); ref != want {
+		t.Errorf("native root %x != fast root %x", want, ref)
+	}
+}
+
+// TestAsyncMidStreamEnable toggles the process-wide switch on in the middle
+// of a progressive computation: the synchronous rounds leave pair-compacted
+// nodes at depths the pre-collapse pass cannot mix with cap-depth nodes, so
+// its shape guard must reject the run and the root must still match.
+func TestAsyncMidStreamEnable(t *testing.T) {
+	defer DisableAsyncHashing()
+
+	const n = 400000
+	run := func(enableAt int) [32]byte {
+		hh := NewHasherWithHashFn(hashtree.HashByteSlice)
+		hh.SetAsyncHashing(true)
+		rng := rand.New(rand.NewSource(77))
+		chunk := make([]byte, 32)
+
+		idx := hh.StartTree(sszutils.TreeTypeProgressive)
+		for i := 0; i < n; i++ {
+			rng.Read(chunk)
+			hh.Append(chunk)
+			if (i+1)%64 == 0 {
+				hh.Collapse()
+			}
+			if i == enableAt {
+				EnableAsyncHashing(4)
+			}
+		}
+		hh.MerkleizeProgressiveWithMixin(idx, n)
+		root, err := hh.HashRoot()
+		if err != nil {
+			t.Fatalf("HashRoot: %v", err)
+		}
+		hh.Reset()
+		return root
+	}
+
+	DisableAsyncHashing()
+	want := run(-1)
+	DisableAsyncHashing()
+	got := run(200000)
+	if got != want {
+		t.Errorf("mid-stream enable root %x != sync root %x", got, want)
 	}
 }
 

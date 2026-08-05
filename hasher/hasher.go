@@ -94,9 +94,10 @@ type Hasher struct {
 	layerCount int           // index of the current top layer, -1 when empty
 	layerBuf   [16]treeLayer // inline backing to avoid heap allocation
 
-	// asyncSafe reports whether the hash function may be called from other
-	// goroutines. Hashers wrapping a stateful hash.Hash are not async-safe.
-	asyncSafe bool
+	// async gates this hasher into background subtree reduction (see
+	// SetAsyncHashing). Cleared on Reset so pooled hashers never carry the
+	// setting to their next user.
+	async bool
 
 	// jobRing is the FIFO of in-flight background subtree reductions (see
 	// async.go). Slots are reused across jobs; the ring only resizes while
@@ -108,23 +109,21 @@ type Hasher struct {
 	jobRingBuf [asyncRingInline]asyncJob // inline backing to avoid heap allocation
 }
 
-// NewHasher creates a new Hasher with the default sha256 hash function.
+// NewHasher creates a new Hasher with the default sha256 hash function. The
+// hash function draws per-call instances from a pool, so the hasher may be
+// gated into async hashing.
 func NewHasher() *Hasher {
-	return NewHasherWithHash(sha256.New())
+	return NewHasherWithHashFn(NativeHashWrapperFactory(sha256.New))
 }
 
 // NewHasherWithHash creates a new Hasher with a custom hash.Hash function.
-// hash.Hash instances are stateful, so the hasher never participates in
-// async hashing.
+// hash.Hash instances are stateful and not safe for concurrent use, so such
+// a hasher must not be gated into async hashing (see SetAsyncHashing).
 func NewHasherWithHash(hh hash.Hash) *Hasher {
-	h := NewHasherWithHashFn(NativeHashWrapper(hh))
-	h.asyncSafe = false
-	return h
+	return NewHasherWithHashFn(NativeHashWrapper(hh))
 }
 
 // NewHasherWithHashFn creates a new Hasher with a custom HashFn function.
-// The function must be safe for concurrent use; when async hashing is
-// enabled (EnableAsyncHashing), background goroutines call it too.
 func NewHasherWithHashFn(hh HashFn) *Hasher {
 	initHasher()
 
@@ -132,11 +131,20 @@ func NewHasherWithHashFn(hh HashFn) *Hasher {
 		hash:       hh,
 		buf:        make([]byte, 0, 32*1024), // 32KB default buffer size
 		layerCount: -1,
-		asyncSafe:  true,
 	}
 	h.tmp = h.tmpBuf[:]
 	h.layers = h.layerBuf[:0]
 	return h
+}
+
+// SetAsyncHashing gates this hasher into (or out of) background subtree
+// reduction. It only takes effect while async hashing is enabled process-wide
+// via EnableAsyncHashing. The hash function must be safe for concurrent use —
+// background goroutines call it alongside the walker; hashers wrapping a
+// stateful hash.Hash (NewHasher, NewHasherWithHash) must stay gated out.
+// Reset clears the gate, so pool users re-apply it per acquisition.
+func (h *Hasher) SetAsyncHashing(enabled bool) {
+	h.async = enabled
 }
 
 // WithTemp provides access to the hasher's temporary buffer via a callback.
@@ -146,12 +154,13 @@ func (h *Hasher) WithTemp(fn func(tmp []byte) []byte) {
 	h.tmp = fn(h.tmp)
 }
 
-// Reset clears the buffer and layer stack for reuse. Outstanding background
-// reductions are awaited and their results discarded.
+// Reset clears the buffer, layer stack and async gate for reuse. Outstanding
+// background reductions are awaited and their results discarded.
 func (h *Hasher) Reset() {
 	h.buf = h.buf[:0]
 	h.drainJobs()
 	h.layerCount = -1
+	h.async = false
 }
 
 // AppendBytes32 appends b to the buffer, right-padding with zeros until the
@@ -427,13 +436,17 @@ func deferrableElemChunks(scopeBytes int) (int, bool) {
 //
 // When allowAsync is set (only from Collapse: other callers depend on the
 // run shrinking to exactly pendCount roots) and async hashing is enabled,
-// a wide power-of-two run is reduced in the background instead: to a single
-// subtree root for binary layers when the run is leaf-aligned, or to
-// per-element roots for progressive layers (group boundaries are not
-// aligned to run boundaries, so completed subtrees cannot span them).
+// the run is reduced in cap-sized background jobs instead, with any sub-cap
+// remainder left pending for the next round.
 func (h *Hasher) flushPending(layer *treeLayer, allowAsync bool) {
-	count := layer.pendCount
 	elem := layer.pendElemChunks
+	if allowAsync && layer.pendCount > 0 &&
+		elem > 0 && elem <= lazyFlushChunks && elem&(elem-1) == 0 {
+		if st := h.asyncShared(); st != nil && h.flushPendingAsync(st, layer) {
+			return
+		}
+	}
+	count := layer.pendCount
 	start := layer.pendStart
 	layer.pendCount = 0
 	layer.pendElemChunks = 0
@@ -442,19 +455,6 @@ func (h *Hasher) flushPending(layer *treeLayer, allowAsync bool) {
 		return
 	}
 	width := count * elem
-	if allowAsync && width >= asyncMinChunks &&
-		width&(width-1) == 0 && count&(count-1) == 0 && width < 1<<(maxTreeDepth-1) {
-		if st := h.asyncShared(); st != nil {
-			if layer.progressive {
-				h.flushPendingAsyncRoots(st, start, width, count)
-				return
-			}
-			if h.layerLeaves(layer, start)%uint64(count) == 0 {
-				h.flushPendingAsyncRoot(st, layer, start, width, count)
-				return
-			}
-		}
-	}
 	for width > count {
 		half := (width / 2) * 32
 		_ = h.hash(h.buf[start:start+half], h.buf[start:start+width*32])
@@ -545,8 +545,18 @@ func (h *Hasher) Collapse() {
 		if async && (len(h.buf)-h.activeSubtreeStart(layer))/32 < asyncActiveChunks {
 			return
 		}
+		if layer.pendCount > 0 {
+			// A sub-cap remainder from the capped async flush reduces
+			// synchronously: finalization must only see completed roots.
+			h.flushPending(layer, false)
+		}
 		h.maybeCollapseProgressive(layer)
 	} else {
+		if layer.pendCount > 0 {
+			// Sub-cap remainder from the capped async flush; it accumulates
+			// toward the next cap-sized job.
+			return
+		}
 		h.maybeCollapseBinary(layer)
 	}
 }
@@ -650,6 +660,18 @@ func (h *Hasher) maybeCollapseProgressive(layer *treeLayer) {
 		}
 	}
 
+	// A group wider than one job buffer is never reduced as a single job:
+	// the pre-collapse pass turns the trailing depth-0 run into cap-depth
+	// nodes first, so consumption later needs only a handful of small
+	// hashes. Below level 8 the groups themselves are narrower than the
+	// cap, so nothing needs pre-collapsing there. When jobs were emitted,
+	// consumption waits for a later round: it would move (or read) the node
+	// holes while the reductions are still in flight.
+	ast := h.asyncShared()
+	if ast != nil && layer.progressiveLevel >= 8 && h.precollapseProgressiveRun(ast, layer) {
+		return
+	}
+
 	readPos := h.activeSubtreeStart(layer)
 	writePos := readPos
 	finalized := false
@@ -693,13 +715,15 @@ func (h *Hasher) maybeCollapseProgressive(layer *treeLayer) {
 			break // safety
 		}
 
-		// Merkleize the consumed entries to a single root. A full group of
-		// plain depth-0 leaves is a complete power-of-two subtree whose
-		// reduction can run in the background; the group root slot at
+		// Merkleize the consumed entries to a single root. A cap-or-smaller
+		// group of plain depth-0 leaves is a complete power-of-two subtree
+		// whose reduction can run in the background; the group root slot at
 		// writePos is only read by the final fold, which drains first.
-		if st := h.asyncShared(); st != nil && consumedMaxDepth == 0 &&
-			consumed == baseSize && baseSize >= asyncMinChunks {
-			h.enqueueReduce(st, readPos, int(baseSize), 1, writePos)
+		// Wider groups reach this point as pre-collapsed cap-depth nodes
+		// and reduce synchronously in a few hashes.
+		if ast != nil && consumedMaxDepth == 0 && consumed == baseSize &&
+			baseSize >= asyncMinChunks && baseSize <= lazyFlushChunks {
+			h.enqueueReduce(ast, readPos, int(baseSize), 1, writePos)
 		} else {
 			// collapseAllDepths works within buf[readPos:consumePos] only,
 			// leaving the unconsumed tail untouched. Root lands at
@@ -728,8 +752,25 @@ func (h *Hasher) maybeCollapseProgressive(layer *treeLayer) {
 	}
 
 	if !finalized {
-		// No groups finalized — try binary collapse directly
-		h.maybeCollapseBinary(layer)
+		// No groups finalized — try binary collapse directly. With async
+		// hashing the pre-collapse pass already bounds the depth-0 run, and
+		// binary batching would break its cap alignment.
+		if ast == nil {
+			h.maybeCollapseBinary(layer)
+		}
+		return
+	}
+
+	if ast != nil {
+		// Step 2, async variant: move the remainder down unchanged.
+		// Pair-compaction would break the cap alignment the pre-collapse
+		// pass relies on, and cap-sized runs reduce in the background
+		// anyway.
+		if writePos != readPos {
+			copy(h.buf[writePos:], h.buf[readPos:])
+			h.buf = h.buf[:len(h.buf)-(readPos-writePos)]
+		}
+		layer.collapsed = true
 		return
 	}
 
@@ -920,6 +961,13 @@ func (h *Hasher) collapseAllDepths(layer *treeLayer, indx, bufEnd int, limit uin
 func (h *Hasher) collapseProgressiveLayer(layer *treeLayer, indx int) {
 	// 1. Finalize all complete progressive groups and compact remainder.
 	h.maybeCollapseProgressive(layer)
+	if h.jobCount > 0 {
+		// The round emitted pre-collapse jobs and skipped consumption (or
+		// left group reductions in flight); with the results drained,
+		// consumption can complete.
+		h.drainJobs()
+		h.maybeCollapseProgressive(layer)
+	}
 
 	// 2. Handle the partial remainder (the last unfilled group).
 	subtreeStart := h.activeSubtreeStart(layer)

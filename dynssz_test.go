@@ -21,6 +21,7 @@ import (
 	"testing/iotest"
 	"time"
 
+	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
@@ -6244,5 +6245,68 @@ func TestUnknownSizeBigIntWithoutLimitSurfacesStreamLimit(t *testing.T) {
 	err := ds.UnmarshalSSZReader(&out, &eofWithDataReader{data: payload}, -1)
 	if !errors.Is(err, sszutils.ErrStreamTooLarge) {
 		t.Fatalf("UnmarshalSSZReader = %v, want ErrStreamTooLarge", err)
+	}
+}
+
+type asyncHashingElement struct {
+	A uint64
+	B uint64
+	C [32]byte
+	D [48]byte `ssz-size:"48"`
+}
+
+type asyncHashingContainer struct {
+	Binary      []asyncHashingElement `ssz-max:"1099511627776"`
+	Progressive []asyncHashingElement `ssz-type:"progressive-list"`
+}
+
+// TestWithAsyncHashing verifies the DynSsz-level gate: instances with the
+// option produce identical roots to a plain instance — for the fast and the
+// native hash backend alike — and a plain instance stays ungated while async
+// hashing is enabled process-wide.
+func TestWithAsyncHashing(t *testing.T) {
+	defer hasher.DisableAsyncHashing()
+
+	elements := make([]asyncHashingElement, 20000)
+	for i := range elements {
+		elements[i].A = uint64(i)
+		binary.LittleEndian.PutUint64(elements[i].C[:8], uint64(i))
+		binary.LittleEndian.PutUint64(elements[i].D[:8], uint64(i))
+	}
+	source := &asyncHashingContainer{Binary: elements, Progressive: elements}
+
+	plain := NewDynSsz(nil)
+	want, err := plain.HashTreeRoot(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	async := NewDynSsz(nil, WithAsyncHashing(4))
+	got, err := async.HashTreeRoot(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("async root %x != plain root %x", got, want)
+	}
+
+	// The plain instance keeps hashing synchronously while async hashing is
+	// enabled process-wide.
+	if got, err := plain.HashTreeRoot(source); err != nil || got != want {
+		t.Errorf("ungated instance root %x (err %v) != %x", got, err, want)
+	}
+
+	// Gate-only variant: workers == 0 must not reconfigure the process-wide
+	// state, only opt the instance in.
+	gateOnly := NewDynSsz(nil, WithAsyncHashing(0))
+	if got, err := gateOnly.HashTreeRoot(source); err != nil || got != want {
+		t.Errorf("gate-only instance root %x (err %v) != %x", got, err, want)
+	}
+
+	// The native hash backend participates too: its hash function draws
+	// per-call instances from a pool, making it safe for the workers.
+	native := NewDynSsz(nil, WithAsyncHashing(4), WithNoFastHash())
+	if got, err := native.HashTreeRoot(source); err != nil || got != want {
+		t.Errorf("native-hash instance root %x (err %v) != %x", got, err, want)
 	}
 }

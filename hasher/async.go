@@ -52,10 +52,16 @@ const (
 	// background, so the drain at finalization rarely waits.
 	asyncActiveChunks = 131072
 
-	// asyncBufSize is the size of the pre-sized job input buffers in the
-	// free list. Jobs wider than this (large progressive groups) use a
-	// one-off allocation that is not retained.
+	// asyncBufSize is the size of every job input buffer. Jobs are capped
+	// at lazyFlushChunks, so all buffers are interchangeable and no other
+	// size ever needs allocating: wider regions reduce as a sequence of
+	// cap-sized jobs whose remainder carries over to the next round.
 	asyncBufSize = lazyFlushChunks * 32
+
+	// asyncCapDepth is the subtree depth a full cap-sized reduction
+	// produces: a lazyFlushChunks-wide run of leaves becomes one node at
+	// this depth.
+	asyncCapDepth = 15
 
 	// asyncRingInline is the job-ring size served by the hasher's inline
 	// backing array; larger rings (workers > 8) allocate once.
@@ -66,8 +72,8 @@ const (
 // reductions; a slot is held from before the job input is copied until the
 // reduction finishes. bufs is a token free list with one token per job-ring
 // slot (twice the worker count): a token is either a reusable input buffer
-// or nil before the buffer is first materialized (or after an oversized
-// one-off was dropped), so job input memory is strictly bounded.
+// or nil before the buffer is first materialized, so job input memory is
+// strictly bounded.
 type asyncShared struct {
 	sem  chan struct{}
 	bufs chan []byte
@@ -77,6 +83,37 @@ type asyncShared struct {
 // disabled. In-flight jobs keep a reference to the state they started with,
 // so reconfiguration never disturbs them.
 var asyncState atomic.Pointer[asyncShared]
+
+// asyncRunners counts the persistent runner goroutines and asyncIdle the
+// ones parked on the handoff channel. Runners start on demand: enabling
+// spawns the first, and an enqueue that finds no idle runner adds one until
+// the worker limit is reached. Runners are never stopped — the semaphore
+// bounds how many are actually working, and the count stays at the highest
+// demand ever seen (at most the highest worker limit configured).
+var (
+	asyncRunners atomic.Int64
+	asyncIdle    atomic.Int64
+)
+
+// ensureAsyncRunner spawns a runner goroutine when none is idle and the
+// worker limit of the given state allows another. The idle check is
+// approximate: in the worst case a send waits for a busy runner to finish
+// its current job, and the next enqueue tops the pool up.
+func ensureAsyncRunner(st *asyncShared) {
+	if asyncIdle.Load() > 0 {
+		return
+	}
+	for {
+		cur := asyncRunners.Load()
+		if cur >= int64(cap(st.sem)) {
+			return
+		}
+		if asyncRunners.CompareAndSwap(cur, cur+1) {
+			go asyncJobRunner()
+			return
+		}
+	}
+}
 
 // EnableAsyncHashing enables background subtree reduction for all hashers
 // whose hash function is safe for concurrent use (hashers created via
@@ -100,6 +137,7 @@ func EnableAsyncHashing(workers int) {
 		st.bufs <- nil
 	}
 	asyncState.Store(st)
+	ensureAsyncRunner(st)
 }
 
 // DisableAsyncHashing turns background subtree reduction off. Reductions
@@ -108,11 +146,11 @@ func DisableAsyncHashing() {
 	asyncState.Store(nil)
 }
 
-// asyncShared returns the shared state when async hashing is enabled and
-// this hasher's hash function may be called from other goroutines, nil
+// asyncShared returns the shared state when async hashing is enabled
+// process-wide and this hasher is gated in via SetAsyncHashing, nil
 // otherwise.
 func (h *Hasher) asyncShared() *asyncShared {
-	if !h.asyncSafe {
+	if !h.async {
 		return nil
 	}
 	return asyncState.Load()
@@ -124,6 +162,7 @@ func (h *Hasher) asyncShared() *asyncShared {
 // the job holds a free-list token to restore at drain.
 type asyncJob struct {
 	st      *asyncShared
+	fn      HashFn
 	in      []byte
 	done    chan struct{}
 	dstOff  int
@@ -131,10 +170,17 @@ type asyncJob struct {
 	tokened bool
 }
 
+// asyncHandoff passes fully-prepared job slots to the persistent runner
+// goroutines. It is never closed — reconfiguration just adjusts how many
+// runners exist and how many may work at once, so senders never race a
+// shutdown. A send parks at most until a runner finishes its current job:
+// the semaphore admits no more jobs than there are runners.
+var asyncHandoff = make(chan *asyncJob, 64)
+
 // enqueueReduce copies buf[start:start+width*32] into an input buffer and
-// spawns a goroutine that reduces it pairwise, level by level, down to
-// outChunks chunks. The claimed job-ring slot records where drainJobs must
-// copy the result. width and outChunks must be powers of two with
+// spawns a runner goroutine that reduces it pairwise, level by level, down
+// to outChunks chunks. The claimed job-ring slot records where drainJobs
+// must copy the result. width and outChunks must be powers of two with
 // outChunks < width. Blocks while all worker slots are busy.
 func (h *Hasher) enqueueReduce(st *asyncShared, start, width, outChunks, dstOff int) {
 	st.sem <- struct{}{}
@@ -146,12 +192,35 @@ func (h *Hasher) enqueueReduce(st *asyncShared, start, width, outChunks, dstOff 
 
 	slot := h.claimJobSlot(st)
 	slot.st = st
+	slot.fn = h.hash
 	slot.in = in
 	slot.dstOff = dstOff
 	slot.outLen = outChunks * 32
 	slot.tokened = tokened
 
-	go h.runAsyncJob(slot, width, outChunks)
+	ensureAsyncRunner(st)
+	asyncHandoff <- slot
+}
+
+// asyncJobRunner is a persistent worker goroutine: it reduces handed-off
+// jobs level by level down to their output size, releases the worker slot,
+// and signals completion. The result stays at the front of the input buffer
+// for drainJobs to consume. Jobs are self-contained, so which runner picks
+// which slot does not matter.
+func asyncJobRunner() {
+	for {
+		asyncIdle.Add(1)
+		slot := <-asyncHandoff
+		asyncIdle.Add(-1)
+
+		in := slot.in
+		outChunks := slot.outLen / 32
+		for w := len(in) / 32; w > outChunks; w /= 2 {
+			_ = slot.fn(in[:w/2*32], in[:w*32])
+		}
+		<-slot.st.sem
+		slot.done <- struct{}{}
+	}
 }
 
 // getJobBuf obtains a job input buffer of at least need bytes. It never
@@ -168,10 +237,9 @@ func (h *Hasher) getJobBuf(st *asyncShared, need int) ([]byte, bool) {
 			if cap(in) >= need {
 				return in, true
 			}
-			// Unmaterialized or undersized token: allocate the pre-sized
-			// buffer so it joins the reuse cycle at drain. Oversized jobs
-			// get a one-off instead, restored as a nil token at drain.
-			return make([]byte, max(need, asyncBufSize)), true
+			// Unmaterialized token: allocate the pre-sized buffer so it
+			// joins the reuse cycle at drain.
+			return make([]byte, asyncBufSize), true
 		default:
 		}
 		if h.jobCount == 0 {
@@ -204,25 +272,11 @@ func (h *Hasher) claimJobSlot(st *asyncShared) *asyncJob {
 	return slot
 }
 
-// runAsyncJob reduces the slot's input buffer level by level down to
-// outChunks chunks, releases the worker slot, and signals completion. The
-// result stays at the front of the input buffer for drainJobs to consume.
-// Runs as its own goroutine.
-func (h *Hasher) runAsyncJob(slot *asyncJob, width, outChunks int) {
-	fn := h.hash
-	in := slot.in
-	for w := width; w > outChunks; w /= 2 {
-		_ = fn(in[:w/2*32], in[:w*32])
-	}
-	<-slot.st.sem
-	slot.done <- struct{}{}
-}
-
 // drainOldestJob waits for the ring's oldest job, writes its result into the
 // hole it was carved from, and restores the job's free-list token if it
-// holds one: pre-sized buffers are returned for reuse, oversized one-offs
-// are replaced by a nil token. Tokenless buffers (taken when every token was
-// held by other hashers) are simply dropped.
+// holds one: pre-sized buffers are returned for reuse, anything else becomes
+// a nil token. Tokenless buffers (taken when every token was held by other
+// hashers) are simply dropped.
 func (h *Hasher) drainOldestJob() {
 	slot := &h.jobRing[h.jobHead]
 	<-slot.done
@@ -230,13 +284,13 @@ func (h *Hasher) drainOldestJob() {
 		copy(h.buf[slot.dstOff:end], slot.in[:slot.outLen])
 	}
 	if slot.tokened {
-		if cap(slot.in) == asyncBufSize {
-			slot.st.bufs <- slot.in[:0]
-		} else {
-			slot.st.bufs <- nil
-		}
+		// Tokened buffers always carry the pre-sized capacity: jobs are
+		// capped at the buffer size and tokens materialize at exactly that
+		// size, so the buffer itself is the token.
+		slot.st.bufs <- slot.in[:0]
 	}
 	slot.st = nil
+	slot.fn = nil
 	slot.in = nil
 	h.jobHead = (h.jobHead + 1) % len(h.jobRing)
 	h.jobCount--
@@ -267,38 +321,87 @@ func (h *Hasher) layerLeaves(layer *treeLayer, pendStart int) uint64 {
 	return leaves
 }
 
-// flushPendingAsyncRoot hands a complete power-of-two run of deferred
-// subtrees to a background job that reduces it to a single subtree root. The
-// run must be leaf-aligned in the layer's tree (the caller checks). A
-// one-chunk hole replaces the run and the completed subtree is recorded in
-// the layer's collapse state at depth log2(count) — the layer's leaves are
-// element roots, so the intra-element levels do not count.
-func (h *Hasher) flushPendingAsyncRoot(st *asyncShared, layer *treeLayer, start, width, count int) {
-	h.enqueueReduce(st, start, width, 1, start)
-	h.compactAsyncRun(start, width, 1)
-
-	d := 0
-	for c := count; c > 1; c >>= 1 {
-		d++
+// flushPendingAsync reduces the layer's deferred run in cap-sized background
+// jobs and leaves any sub-cap remainder pending for the next round, so every
+// job matches the pre-sized input buffers exactly. A binary layer gets one
+// completed subtree node per job, recorded at depth log2(elements-per-cap) —
+// the layer's leaves are element roots, so the intra-element levels do not
+// count. A progressive layer gets one root per element instead: group
+// boundaries are not aligned to run boundaries, so completed subtrees cannot
+// span them. Reports whether at least one job was emitted; if not (a binary
+// run that is not leaf-aligned), the caller reduces synchronously.
+func (h *Hasher) flushPendingAsync(st *asyncShared, layer *treeLayer) bool {
+	elem := layer.pendElemChunks
+	batchElems := lazyFlushChunks / elem
+	emitted := false
+	for layer.pendCount >= batchElems {
+		start := layer.pendStart
+		if layer.progressive {
+			h.enqueueReduce(st, start, lazyFlushChunks, batchElems, start)
+			h.compactAsyncRun(start, lazyFlushChunks, batchElems)
+			layer.pendStart = start + batchElems*32
+		} else {
+			if h.layerLeaves(layer, start)%uint64(batchElems) != 0 {
+				break
+			}
+			h.enqueueReduce(st, start, lazyFlushChunks, 1, start)
+			h.compactAsyncRun(start, lazyFlushChunks, 1)
+			d := 0
+			for c := batchElems; c > 1; c >>= 1 {
+				d++
+			}
+			if !layer.collapsed {
+				layer.collapsed = true
+				layer.counts = [maxTreeDepth]uint32{}
+				layer.maxDepth = 0
+			}
+			layer.counts[d]++
+			if d > layer.maxDepth {
+				layer.maxDepth = d
+			}
+			layer.pendStart = start + 32
+		}
+		layer.pendCount -= batchElems
+		emitted = true
 	}
-	if !layer.collapsed {
-		layer.collapsed = true
-		layer.counts = [maxTreeDepth]uint32{}
-		layer.maxDepth = 0
-	}
-	layer.counts[d]++
-	if d > layer.maxDepth {
-		layer.maxDepth = d
-	}
+	return emitted
 }
 
-// flushPendingAsyncRoots hands a run of deferred subtrees to a background
-// job that reduces it to one root per element. A count-chunk hole replaces
-// the run; the roots are plain depth-0 leaves, so the collapse state needs
-// no update (the next state sync accounts them).
-func (h *Hasher) flushPendingAsyncRoots(st *asyncShared, start, width, count int) {
-	h.enqueueReduce(st, start, width, count, start)
-	h.compactAsyncRun(start, width, count)
+// precollapseProgressiveRun replaces cap-aligned spans of a progressive
+// layer's trailing depth-0 run with cap-depth nodes reduced in the
+// background, so groups wider than one job buffer are later consumed from a
+// handful of nodes instead of one oversized reduction. Only meaningful from
+// progressive level 8 up (the caller checks): every group in the active
+// region is then a multiple of the cap, so cap-aligned nodes never straddle
+// a group boundary. Reports whether jobs were emitted — the caller must
+// then leave the active region untouched for the round, because the node
+// holes are only stable while nothing consumes or compacts around them.
+func (h *Hasher) precollapseProgressiveRun(st *asyncShared, layer *treeLayer) bool {
+	// Everything deeper than the run must itself be a cap-depth node: that
+	// guarantees the run starts cap-aligned, and it keeps the buffer's
+	// deepest-first node order intact when the new nodes are recorded at
+	// cap depth (nodes at depths in between would sit left of the new ones
+	// positionally but be consumed after them).
+	for d := 1; d <= layer.maxDepth; d++ {
+		if d != asyncCapDepth && layer.counts[d] != 0 {
+			return false
+		}
+	}
+	emitted := false
+	runStart := h.activeSubtreeStart(layer) + int(layer.counts[asyncCapDepth])*32
+	for layer.counts[0] >= lazyFlushChunks {
+		h.enqueueReduce(st, runStart, lazyFlushChunks, 1, runStart)
+		h.compactAsyncRun(runStart, lazyFlushChunks, 1)
+		layer.counts[0] -= lazyFlushChunks
+		layer.counts[asyncCapDepth]++
+		if asyncCapDepth > layer.maxDepth {
+			layer.maxDepth = asyncCapDepth
+		}
+		layer.collapsed = true
+		runStart += 32
+		emitted = true
+	}
+	return emitted
 }
 
 // compactAsyncRun shrinks a width-chunk run at start down to outChunks hole
