@@ -94,7 +94,7 @@ func TestAsyncMatchesSync(t *testing.T) {
 
 	cases := make([]asyncSequence, 0, 170)
 	for _, prog := range []bool{false, true} {
-		for _, elemChunks := range []int{8, 4, 2} {
+		for _, elemChunks := range []int{8, 4, 2, 3, 5, 7, 12} {
 			for _, n := range []int{0, 1, 255, 4095, 4096, 4097, 5460, 5461, 5462,
 				8192, 16384, 21845, 50000} {
 				for _, cadence := range []int{256, 100} {

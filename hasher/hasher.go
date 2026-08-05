@@ -420,16 +420,23 @@ func (h *Hasher) pushLayer() *treeLayer {
 	return layer
 }
 
-// deferrableElemChunks reports whether a just-closed scope of scopeBytes bytes is
-// a uniform binary subtree eligible for deferred batched reduction: a whole,
-// power-of-two number of chunks in [2, incrementalBatchSize].
+// deferrableElemChunks reports whether a just-closed scope of scopeBytes
+// bytes is eligible for deferred batched reduction, returning the complete
+// subtree width the scope occupies once padded: a whole number of chunks in
+// [2, incrementalBatchSize], rounded up to the next power of two. A scope
+// with a non-power-of-two chunk count zero-pads to that width — the merkle
+// root over zero-padded leaves is identical, because a zero subtree hashes
+// to exactly the zero hash the per-level padding would use.
 func deferrableElemChunks(scopeBytes int) (int, bool) {
 	if scopeBytes < 64 || scopeBytes%32 != 0 {
 		return 0, false
 	}
 	c := scopeBytes / 32
-	if c > incrementalBatchSize || c&(c-1) != 0 {
+	if c > incrementalBatchSize {
 		return 0, false
+	}
+	if c&(c-1) != 0 {
+		c = 1 << bits.Len(uint(c))
 	}
 	return c, true
 }
@@ -1072,6 +1079,12 @@ func (h *Hasher) Merkleize(indx int) {
 			parent := &h.layers[h.layerCount-1]
 			if parent.incremental {
 				if c, ok := deferrableElemChunks(len(h.buf) - indx); ok {
+					// Pad a non-power-of-two scope up to its complete subtree
+					// width so the run stays uniform (elements share one
+					// type, so they all pad identically).
+					if pad := indx + c*32 - len(h.buf); pad > 0 {
+						h.buf = sszutils.AppendZeroPadding(h.buf, pad)
+					}
 					// The pending run must stay one contiguous region of uniform
 					// subtrees. If this scope does not extend the current run
 					// (different chunk count, or raw chunks were appended in
