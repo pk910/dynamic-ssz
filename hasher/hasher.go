@@ -503,16 +503,18 @@ func (h *Hasher) StartTree(treeType sszutils.TreeType) int {
 	return idx
 }
 
-// Index returns the current buffer position and pushes a non-incremental
-// layer. This is for legacy/external code that doesn't use StartTree.
-// The non-incremental layer blocks Collapse on this scope but is properly
-// popped by Merkleize. Collapse on the parent layer is unaffected — it
-// only sees completed child roots after the child's Merkleize pops this layer.
+// Index returns the current buffer position and pushes a binary incremental
+// layer. This is how legacy/external code (fastssz-generated methods) opens
+// scopes: such callers never send Collapse hints, so the deferral path in
+// Merkleize batches their uniform children and flushes the pending run
+// itself once it reaches the job cap. Unlike StartTree, no pending flush is
+// forced on the enclosing scope — a scope opened via Index may itself end
+// up deferred into its parent.
 func (h *Hasher) Index() int {
 	idx := len(h.buf)
 	layer := h.pushLayer()
 	layer.bufIdx = idx
-	layer.incremental = false
+	layer.incremental = true
 	return idx
 }
 
@@ -1051,8 +1053,13 @@ func (h *Hasher) Merkleize(indx int) {
 	if layer != nil {
 		// Defer a container scope into its incremental parent so it batches with
 		// its siblings (single getMatchingLayer keeps the hot path cheap for the
-		// many small containers in a block).
-		if !layer.incremental && h.layerCount >= 1 {
+		// many small containers in a block). A scope holds plain chunks — and is
+		// therefore deferrable — when it is non-incremental, or incremental but
+		// still untouched by any collapse or deferral of its own; the latter is
+		// how legacy Index-driven scopes (fastssz-generated code) batch.
+		deferrable := !layer.incremental ||
+			(!layer.progressive && !layer.collapsed && layer.pendCount == 0)
+		if deferrable && h.layerCount >= 1 {
 			parent := &h.layers[h.layerCount-1]
 			if parent.incremental {
 				if c, ok := deferrableElemChunks(len(h.buf) - indx); ok {
@@ -1073,6 +1080,14 @@ func (h *Hasher) Merkleize(indx int) {
 					parent.pendElemChunks = c
 					parent.pendCount++
 					h.popTopLayer()
+					// Legacy callers never send Collapse hints, so the run is
+					// bounded here: once it reaches the job cap it flushes —
+					// in the background when async hashing is on, otherwise as
+					// one wide synchronous pass. Collapse-driven engines flush
+					// before this ever fires in synchronous mode.
+					if parent.pendCount*c >= lazyFlushChunks {
+						h.flushPending(parent, true)
+					}
 					return
 				}
 			}

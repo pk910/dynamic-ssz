@@ -483,6 +483,50 @@ func TestAsyncStaleSiblingLayer(t *testing.T) {
 	}
 }
 
+// TestAsyncLegacyIndexDriven drives scopes the way fastssz-generated code
+// does — Index/Merkleize with no Collapse hints — and verifies the deferral
+// path batches and self-flushes those runs with identical roots in both
+// modes, matching the StartTree-driven root.
+func TestAsyncLegacyIndexDriven(t *testing.T) {
+	defer DisableAsyncHashing()
+
+	const n = 20000
+	legacy := func() [32]byte {
+		hh := NewHasherWithHashFn(hashtree.HashByteSlice)
+		hh.SetAsyncHashing(true)
+		rng := rand.New(rand.NewSource(29))
+		chunk := make([]byte, 32)
+
+		idx := hh.Index()
+		for i := 0; i < n; i++ {
+			ci := hh.Index()
+			for c := 0; c < 8; c++ {
+				rng.Read(chunk)
+				hh.Append(chunk)
+			}
+			hh.Merkleize(ci)
+		}
+		hh.MerkleizeWithMixin(idx, n, 1<<40)
+		root, err := hh.HashRoot()
+		if err != nil {
+			t.Fatalf("HashRoot: %v", err)
+		}
+		return root
+	}
+
+	DisableAsyncHashing()
+	want := legacy()
+	s := asyncSequence{elemChunks: 8, n: n, cadence: 256, limit: 1 << 40}
+	if ref := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 29); ref != want {
+		t.Errorf("legacy sync root %x != StartTree-driven root %x", want, ref)
+	}
+
+	EnableAsyncHashing(4)
+	if got := legacy(); got != want {
+		t.Errorf("legacy async root %x != sync root %x", got, want)
+	}
+}
+
 // TestAsyncNativeFactory runs async hashing on the default native-hash
 // hasher: NativeHashWrapperFactory draws per-call instances from a pool, so
 // workers and walker never share hash state.
