@@ -305,20 +305,27 @@ func (h *Hasher) drainJobs() {
 	}
 }
 
-// layerLeaves returns the number of leaves the layer has accumulated before
-// the current pending run: nodes tracked in counts contribute 2^depth leaves
-// each, and chunks not yet accounted (appended since the last state sync,
-// excluding the pending run itself) contribute one leaf each.
-func (h *Hasher) layerLeaves(layer *treeLayer, pendStart int) uint64 {
-	var leaves, accounted uint64
+// asyncRootCompatible reports whether a completed subtree node of nodeDepth
+// may be appended for the run starting at pendStart: every leaf before the
+// run must already be represented by nodes at least that deep. That both
+// keeps the buffer's deepest-first node order (which the depth-driven
+// collapse pairing depends on) and makes the run leaf-aligned for its node.
+// counts are only meaningful once the layer has collapsed — a reused layer
+// slot carries stale counts until then — so an uncollapsed layer is only
+// compatible while nothing precedes the run at all.
+func (h *Hasher) asyncRootCompatible(layer *treeLayer, pendStart, nodeDepth int) bool {
+	before := (pendStart - h.binaryRegionStart(layer)) / 32
+	if !layer.collapsed {
+		return before == 0
+	}
+	accounted := 0
 	for d := 0; d <= layer.maxDepth; d++ {
-		leaves += uint64(layer.counts[d]) << uint(d)
-		accounted += uint64(layer.counts[d])
+		if d < nodeDepth && layer.counts[d] != 0 {
+			return false
+		}
+		accounted += int(layer.counts[d])
 	}
-	if chunks := uint64(pendStart-h.binaryRegionStart(layer)) / 32; chunks > accounted {
-		leaves += chunks - accounted
-	}
-	return leaves
+	return before == accounted
 }
 
 // flushPendingAsync reduces the layer's deferred run in cap-sized background
@@ -329,10 +336,15 @@ func (h *Hasher) layerLeaves(layer *treeLayer, pendStart int) uint64 {
 // count. A progressive layer gets one root per element instead: group
 // boundaries are not aligned to run boundaries, so completed subtrees cannot
 // span them. Reports whether at least one job was emitted; if not (a binary
-// run that is not leaf-aligned), the caller reduces synchronously.
+// run whose node would not be compatible with what precedes it), the caller
+// reduces synchronously.
 func (h *Hasher) flushPendingAsync(st *asyncShared, layer *treeLayer) bool {
 	elem := layer.pendElemChunks
 	batchElems := lazyFlushChunks / elem
+	nodeDepth := 0
+	for c := batchElems; c > 1; c >>= 1 {
+		nodeDepth++
+	}
 	emitted := false
 	for layer.pendCount >= batchElems {
 		start := layer.pendStart
@@ -341,23 +353,19 @@ func (h *Hasher) flushPendingAsync(st *asyncShared, layer *treeLayer) bool {
 			h.compactAsyncRun(start, lazyFlushChunks, batchElems)
 			layer.pendStart = start + batchElems*32
 		} else {
-			if h.layerLeaves(layer, start)%uint64(batchElems) != 0 {
+			if !h.asyncRootCompatible(layer, start, nodeDepth) {
 				break
 			}
 			h.enqueueReduce(st, start, lazyFlushChunks, 1, start)
 			h.compactAsyncRun(start, lazyFlushChunks, 1)
-			d := 0
-			for c := batchElems; c > 1; c >>= 1 {
-				d++
-			}
 			if !layer.collapsed {
 				layer.collapsed = true
 				layer.counts = [maxTreeDepth]uint32{}
 				layer.maxDepth = 0
 			}
-			layer.counts[d]++
-			if d > layer.maxDepth {
-				layer.maxDepth = d
+			layer.counts[nodeDepth]++
+			if nodeDepth > layer.maxDepth {
+				layer.maxDepth = nodeDepth
 			}
 			layer.pendStart = start + 32
 		}

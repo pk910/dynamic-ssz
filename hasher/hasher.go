@@ -409,6 +409,12 @@ func (h *Hasher) pushLayer() *treeLayer {
 	layer.pendCount = 0
 	layer.pendElemChunks = 0
 	layer.pendStart = 0
+	// Progressive root bookkeeping is read by scope-position helpers before
+	// the first collapse initializes it, so a reused slot must not carry the
+	// previous scope's values. counts/maxDepth stay lazily initialized:
+	// everything reading them is gated on the collapsed flag.
+	layer.progressiveCount = 0
+	layer.progressiveLevel = 0
 	return layer
 }
 

@@ -136,6 +136,10 @@ func TestAsyncMatchesSync(t *testing.T) {
 		// must drain before reading.
 		asyncSequence{progressive: true, elemChunks: 8, n: 60000, cadence: 256},
 		asyncSequence{progressive: true, elemChunks: 4, n: 60000, cadence: 100},
+		// A raw prefix that happens to be node-aligned: a completed subtree
+		// node must still not be appended behind plain depth-0 chunks — the
+		// whole run has to reduce synchronously.
+		asyncSequence{rawPrefix: 4096, elemChunks: 8, n: 8192, cadence: 256, limit: 1 << 40},
 	)
 
 	for i, s := range cases {
@@ -418,6 +422,64 @@ func TestAsyncLargeWorkerCount(t *testing.T) {
 	got := runAsyncSequence(t, hh, s, 61)
 	if got != want {
 		t.Errorf("large-worker async root %x != sync root %x", got, want)
+	}
+}
+
+// TestAsyncStaleSiblingLayer runs two sibling scopes at the same stack depth
+// inside one walk: the first (a collapsed raw-chunk vector of non-aligned
+// length) leaves stale counts in the reused layer slot, and the second (a
+// large deferred-element list) must not let that stale state influence its
+// async flush decisions. Mirrors a beacon state where historical roots
+// precede the validator registry.
+func TestAsyncStaleSiblingLayer(t *testing.T) {
+	defer DisableAsyncHashing()
+
+	run := func() [32]byte {
+		hh := NewHasherWithHashFn(hashtree.HashByteSlice)
+		hh.SetAsyncHashing(true)
+		rng := rand.New(rand.NewSource(23))
+		chunk := make([]byte, 32)
+
+		outer := hh.StartTree(sszutils.TreeTypeNone)
+
+		vec := hh.StartTree(sszutils.TreeTypeBinary)
+		for i := 0; i < 758; i++ {
+			rng.Read(chunk)
+			hh.Append(chunk)
+			if (i+1)%256 == 0 {
+				hh.Collapse()
+			}
+		}
+		hh.Merkleize(vec)
+
+		list := hh.StartTree(sszutils.TreeTypeBinary)
+		for i := 0; i < 12288; i++ {
+			ci := hh.StartTree(sszutils.TreeTypeNone)
+			for c := 0; c < 8; c++ {
+				rng.Read(chunk)
+				hh.Append(chunk)
+			}
+			hh.Merkleize(ci)
+			if (i+1)%256 == 0 {
+				hh.Collapse()
+			}
+		}
+		hh.MerkleizeWithMixin(list, 12288, 1<<40)
+
+		hh.Merkleize(outer)
+		root, err := hh.HashRoot()
+		if err != nil {
+			t.Fatalf("HashRoot: %v", err)
+		}
+		return root
+	}
+
+	DisableAsyncHashing()
+	want := run()
+	EnableAsyncHashing(4)
+	got := run()
+	if got != want {
+		t.Errorf("stale-sibling async root %x != sync root %x", got, want)
 	}
 }
 
