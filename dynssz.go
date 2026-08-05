@@ -736,10 +736,6 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 		return sszutils.NewSszError(sszutils.ErrTypeMismatch, "target must be a pointer")
 	}
 
-	if targetValue.IsNil() {
-		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "target pointer must not be nil")
-	}
-
 	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation, d.options.MaxNestingDepth)
 
 	decoder := sszutils.NewBufferDecoder(ssz)
@@ -958,10 +954,6 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 
 	if targetTypeDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer == 0 {
 		return sszutils.NewSszError(sszutils.ErrTypeMismatch, "target must be a pointer")
-	}
-
-	if targetValue.IsNil() {
-		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "target pointer must not be nil")
 	}
 
 	ctx := reflection.NewReflectionCtx(d, d.options.LogCb, d.options.Verbose, d.options.NoFastSsz, d.options.NoDelegation, d.options.MaxNestingDepth)

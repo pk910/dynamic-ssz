@@ -310,4 +310,16 @@ func TestUnionVariantTypesRejections(t *testing.T) {
 	if _, err := UnionVariantTypes(reflect.TypeOf(dupSelectors{})); err == nil {
 		t.Fatal("a duplicate selector must be rejected")
 	}
+
+	type tagged struct {
+		F1 uint32 `ssz-index:"1"`
+		F2 uint64 `ssz-index:"5"`
+	}
+	variants, err := UnionVariantTypes(reflect.TypeOf(tagged{}))
+	if err != nil {
+		t.Fatalf("valid descriptor rejected: %v", err)
+	}
+	if len(variants) != 2 || variants[1] != reflect.TypeOf(uint32(0)) || variants[5] != reflect.TypeOf(uint64(0)) {
+		t.Fatalf("unexpected selector mapping: %v", variants)
+	}
 }

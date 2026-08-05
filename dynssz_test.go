@@ -348,6 +348,170 @@ func TestMarshalSSZWriterDynamicEncoderError(t *testing.T) {
 	}
 }
 
+func TestMarshalSSZBufferDynamicEncoderError(t *testing.T) {
+	ds := NewDynSsz(nil)
+	enc := &testDynamicEncoder{Error: errors.New("encode error")}
+
+	if _, err := ds.MarshalSSZ(enc); err == nil || err.Error() != "encode error" {
+		t.Fatalf("expected encode error from MarshalSSZ, got: %v", err)
+	}
+	if _, err := ds.MarshalSSZTo(enc, nil); err == nil || err.Error() != "encode error" {
+		t.Fatalf("expected encode error from MarshalSSZTo, got: %v", err)
+	}
+}
+
+func TestMarshalSSZWriterDynamicMarshalerError(t *testing.T) {
+	ds := NewDynSsz(nil)
+	m := &testDynMarshaler{Error: errors.New("marshal error"), Size: 4}
+
+	var buf bytes.Buffer
+	if err := ds.MarshalSSZWriter(m, &buf); err == nil || err.Error() != "marshal error" {
+		t.Fatalf("expected marshal error, got: %v", err)
+	}
+}
+
+func TestUnmarshalSSZDynamicDecoderTrailing(t *testing.T) {
+	ds := NewDynSsz(nil)
+	dec := &testDynamicDecoder{ConsumeAll: false} // doesn't consume anything
+
+	err := ds.UnmarshalSSZ(dec, []byte{1, 2, 3, 4})
+	if err == nil || !errors.Is(err, sszutils.ErrOffset) || !strings.Contains(err.Error(), "trailing data") {
+		t.Fatalf("expected trailing-data error, got: %v", err)
+	}
+}
+
+func TestUnmarshalNilPlainPointer(t *testing.T) {
+	type plainTarget struct {
+		V uint64
+	}
+	ds := NewDynSsz(nil)
+	var target *plainTarget
+
+	if err := ds.UnmarshalSSZ(target, make([]byte, 8)); err == nil || !strings.Contains(err.Error(), "must not be nil") {
+		t.Fatalf("expected nil-pointer rejection from UnmarshalSSZ, got: %v", err)
+	}
+	if err := ds.UnmarshalSSZReader(target, bytes.NewReader(make([]byte, 8)), 8); err == nil || !strings.Contains(err.Error(), "must not be nil") {
+		t.Fatalf("expected nil-pointer rejection from UnmarshalSSZReader, got: %v", err)
+	}
+}
+
+func TestUnmarshalSSZReaderDynamicUnmarshalerUnknownLength(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	ok := &testDynUnmarshaler{}
+	if err := ds.UnmarshalSSZReader(ok, bytes.NewReader([]byte{1, 2, 3}), -1); err != nil {
+		t.Fatalf("unknown-length bridge failed: %v", err)
+	}
+
+	// A payload larger than the read buffer is not fully delivered when the
+	// bridge sizes it, so it goes through DecodeRemaining.
+	large := make([]byte, 64*1024)
+	if err := ds.UnmarshalSSZReader(ok, bytes.NewReader(large), -1); err != nil {
+		t.Fatalf("unknown-length bridge failed for a large payload: %v", err)
+	}
+
+	failing := &testDynUnmarshaler{Error: errors.New("unmarshal error")}
+	if err := ds.UnmarshalSSZReader(failing, bytes.NewReader(large), -1); err == nil || err.Error() != "unmarshal error" {
+		t.Fatalf("expected unmarshal error, got: %v", err)
+	}
+}
+
+// decoderOnlyChild implements only DynamicDecoder, so a nested decode through
+// a non-seekable stream must delegate through the decoder interface.
+type decoderOnlyChild struct {
+	V uint32
+}
+
+func (c *decoderOnlyChild) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, dec sszutils.Decoder) error {
+	v, err := dec.DecodeUint32()
+	if err != nil {
+		return err
+	}
+	c.V = v
+	return nil
+}
+
+func TestUnmarshalSSZReaderNestedDecoderOnlyChild(t *testing.T) {
+	type holder struct {
+		Inner decoderOnlyChild
+	}
+	ds := NewDynSsz(nil)
+	var target holder
+	if err := ds.UnmarshalSSZReader(&target, bytes.NewReader([]byte{7, 0, 0, 0}), 4); err != nil {
+		t.Fatalf("nested decoder-only child failed: %v", err)
+	}
+	if target.Inner.V != 7 {
+		t.Fatalf("decoded V = %d, want 7", target.Inner.V)
+	}
+}
+
+// selfSizedNode reports its own size, so the marshal entrypoint skips the
+// size walker and the marshal walker itself enforces the nesting bound.
+type selfSizedNode struct {
+	Next []selfSizedNode `ssz-max:"1"`
+}
+
+func (n *selfSizedNode) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
+	size := 4
+	for cur := n; len(cur.Next) > 0; cur = &cur.Next[0] {
+		size += 4
+	}
+	return size
+}
+
+func TestMarshalDepthBoundInMarshalWalker(t *testing.T) {
+	root := selfSizedNode{}
+	cur := &root
+	for i := 0; i < 8; i++ {
+		cur.Next = []selfSizedNode{{}}
+		cur = &cur.Next[0]
+	}
+	ds := NewDynSsz(nil, WithMaxNestingDepth(3))
+	if _, err := ds.MarshalSSZ(&root); err == nil || !errors.Is(err, sszutils.ErrMaxDepthExceeded) {
+		t.Fatalf("expected the nesting bound from the marshal walker, got: %v", err)
+	}
+}
+
+func TestMarshalDepthBound(t *testing.T) {
+	type depthNode struct {
+		Next []depthNode `ssz-max:"1"`
+	}
+	root := depthNode{}
+	cur := &root
+	for i := 0; i < 8; i++ {
+		cur.Next = []depthNode{{}}
+		cur = &cur.Next[0]
+	}
+	ds := NewDynSsz(nil, WithMaxNestingDepth(3))
+	if _, err := ds.MarshalSSZ(&root); err == nil || !errors.Is(err, sszutils.ErrMaxDepthExceeded) {
+		t.Fatalf("expected the nesting bound at marshal, got: %v", err)
+	}
+}
+
+func TestUnmarshalReusesSliceWithinCapacity(t *testing.T) {
+	type sliceReuse struct {
+		L []uint64 `ssz-max:"16"`
+	}
+	ds := NewDynSsz(nil)
+	enc, err := ds.MarshalSSZ(&sliceReuse{L: []uint64{1, 2, 3, 4}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	target := sliceReuse{L: append(make([]uint64, 0, 8), 99)}
+	if err := ds.UnmarshalSSZ(&target, enc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(target.L) != 4 || cap(target.L) != 8 {
+		t.Fatalf("slice not grown in place: len=%d cap=%d", len(target.L), cap(target.L))
+	}
+	for i, want := range []uint64{1, 2, 3, 4} {
+		if target.L[i] != want {
+			t.Fatalf("element %d = %d, want %d", i, target.L[i], want)
+		}
+	}
+}
+
 func TestMarshalSSZWriterGetTypeDescriptorError(t *testing.T) {
 	ds := NewDynSsz(nil)
 

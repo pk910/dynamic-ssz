@@ -182,6 +182,32 @@ func TestVerifyMultiproof(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name: "proof hash count mismatch",
+			root: func() []byte {
+				leaf0 := sum256ToBytes([]byte("leaf0"))
+				leaf1 := sum256ToBytes([]byte("leaf1"))
+				leaf2 := sum256ToBytes([]byte("leaf2"))
+				leaf3 := sum256ToBytes([]byte("leaf3"))
+
+				node0 := sum256ToBytes(append(leaf0, leaf1...))
+				node1 := sum256ToBytes(append(leaf2, leaf3...))
+				root := sum256ToBytes(append(node0, node1...))
+				return root
+			}(),
+			leaves: [][]byte{
+				sum256ToBytes([]byte("leaf0")),
+				sum256ToBytes([]byte("leaf3")),
+			},
+			indices: []int{4, 7},
+			proof: [][]byte{
+				sum256ToBytes([]byte("leaf2")),
+				sum256ToBytes([]byte("leaf1")),
+				sum256ToBytes([]byte("surplus")),
+			},
+			expectValid: false,
+			expectError: true,
+		},
+		{
 			name:        "empty indices",
 			root:        []byte{1, 2, 3},
 			proof:       [][]byte{},

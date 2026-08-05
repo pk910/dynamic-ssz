@@ -612,16 +612,12 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			// spec values a process happened to have loaded.
 			if len(sizeHints) > 0 && !sizeHints[0].Dynamic {
 				sszType = SszVectorType
-			} else if err := rejectZeroSizeHint(sizeHints); err != nil {
-				return nil, err
 			} else {
 				sszType = SszListType
 			}
 		case reflect.String:
 			if len(sizeHints) > 0 && !sizeHints[0].Dynamic {
 				sszType = SszVectorType
-			} else if err := rejectZeroSizeHint(sizeHints); err != nil {
-				return nil, err
 			} else {
 				sszType = SszListType
 			}

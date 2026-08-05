@@ -2718,3 +2718,33 @@ func TestStreamDecoder_DecodeRemainingOpenEOFSeenBreak(t *testing.T) {
 		t.Fatalf("DecodeRemaining = %x, want empty", got)
 	}
 }
+
+// A bool or an offset arriving with the write buffer already full must flush
+// before encoding, like every other fixed-width write.
+func TestStreamEncoderFlushBeforeBoolAndOffset(t *testing.T) {
+	var buf bytes.Buffer
+	enc := NewStreamEncoder(&buf, 8)
+	enc.EncodeUint64(0x0102030405060708)
+	enc.EncodeBool(true)
+	enc.Flush()
+	if err := enc.GetWriteError(); err != nil {
+		t.Fatalf("write error: %v", err)
+	}
+	want := []byte{8, 7, 6, 5, 4, 3, 2, 1, 1}
+	if !bytes.Equal(buf.Bytes(), want) {
+		t.Fatalf("encoded % x, want % x", buf.Bytes(), want)
+	}
+
+	buf.Reset()
+	enc = NewStreamEncoder(&buf, 8)
+	enc.EncodeUint64(0x0102030405060708)
+	enc.EncodeOffset(0x11223344)
+	enc.Flush()
+	if err := enc.GetWriteError(); err != nil {
+		t.Fatalf("write error: %v", err)
+	}
+	want = []byte{8, 7, 6, 5, 4, 3, 2, 1, 0x44, 0x33, 0x22, 0x11}
+	if !bytes.Equal(buf.Bytes(), want) {
+		t.Fatalf("encoded % x, want % x", buf.Bytes(), want)
+	}
+}

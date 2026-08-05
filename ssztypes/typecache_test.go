@@ -3073,6 +3073,17 @@ func TestParseTags_DynamicStaticSizeConflict(t *testing.T) {
 	}
 }
 
+func TestParseTags_DynamicStaticMaxConflict(t *testing.T) {
+	for _, tag := range []string{
+		`ssz-max:"5" dynssz-max:"?"`,
+		`ssz-max:"?" dynssz-max:"SOME_SPEC"`,
+	} {
+		if _, _, _, err := ParseTags(tag); err == nil || !strings.Contains(err.Error(), "conflicting max tags") {
+			t.Fatalf("%s: expected conflicting max tags error, got %v", tag, err)
+		}
+	}
+}
+
 func TestParseTags_DynMaxNumericOverride(t *testing.T) {
 	// dynssz-max with a numeric value that differs from ssz-max
 	_, _, maxHints, err := ParseTags(`ssz-max:"10" dynssz-max:"20"`)
@@ -5629,6 +5640,49 @@ func TestTagMisuseRejections(t *testing.T) {
 		_, err := cache.GetTypeDescriptor(reflect.TypeFor[surplusMax](), nil, nil, nil)
 		if err == nil || !strings.Contains(err.Error(), "no capacity to bound") {
 			t.Fatalf("err = %v, want a surplus-dimension rejection", err)
+		}
+	})
+
+	t.Run("unsupported_kind", func(t *testing.T) {
+		_, err := cache.GetTypeDescriptor(reflect.TypeOf(uintptr(0)), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "unsupported type kind") {
+			t.Fatalf("err = %v, want the unsupported-kind rejection", err)
+		}
+	})
+
+	t.Run("conflicting_dynssz_max_placeholder", func(t *testing.T) {
+		type conflictingMax struct {
+			L []uint8 `ssz-max:"5" dynssz-max:"?"`
+		}
+		_, err := cache.GetTypeDescriptor(reflect.TypeFor[conflictingMax](), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "conflicting max tags") {
+			t.Fatalf("err = %v, want the placeholder-mismatch rejection", err)
+		}
+	})
+
+	t.Run("bitsized_dimension_grants_no_limit_equality", func(t *testing.T) {
+		type bitsizedMax struct {
+			B []byte `ssz-bitsize:"30" ssz-max:"30"`
+		}
+		_, err := cache.GetTypeDescriptor(reflect.TypeFor[bitsizedMax](), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "no capacity to bound") {
+			t.Fatalf("err = %v, want the fixed-dimension limit rejection", err)
+		}
+	})
+
+	t.Run("optional_child_max_hints", func(t *testing.T) {
+		type optionalChildMax struct {
+			P *[]uint8 `ssz-type:"optional" ssz-max:"?,16"`
+		}
+		extCache := NewTypeCache(&dummyDynamicSpecs{})
+		extCache.ExtendedTypes = true
+		desc, err := extCache.GetTypeDescriptor(reflect.TypeFor[optionalChildMax](), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("descriptor build failed: %v", err)
+		}
+		optDesc := desc.ContainerDesc.Fields[0].Type
+		if optDesc.ElemDesc == nil || optDesc.ElemDesc.Limit != 16 {
+			t.Fatalf("optional child limit = %v, want 16", optDesc.ElemDesc)
 		}
 	})
 

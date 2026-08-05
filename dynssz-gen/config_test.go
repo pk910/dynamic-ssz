@@ -900,3 +900,28 @@ func TestResolvePackagePathRelativeBase(t *testing.T) {
 		t.Fatalf("recursive pattern resolved to %q", got)
 	}
 }
+
+// When the working directory has been deleted, filepath.Abs cannot resolve a
+// relative join and the path keeps its explicit relative form.
+func TestResolvePackagePath_AbsFailure(t *testing.T) {
+	gone, err := os.MkdirTemp("", "gone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(gone); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(prev) })
+	if err := os.Remove(gone); err != nil {
+		t.Fatal(err)
+	}
+
+	got := resolvePackagePath("./pkg", "rel-base")
+	if got != "./rel-base/pkg" {
+		t.Fatalf("resolvePackagePath = %q, want the explicit relative fallback", got)
+	}
+}

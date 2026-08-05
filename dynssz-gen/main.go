@@ -246,6 +246,21 @@ func providedFlagSet() map[string]bool {
 	return provided
 }
 
+// seedTransitiveImports records every transitively imported package with
+// loaded type information in the cache, keyed by import path.
+func seedTransitiveImports(cache map[string]*packages.Package, p *packages.Package) {
+	for impPath, impPkg := range p.Imports {
+		if _, ok := cache[impPath]; ok {
+			continue
+		}
+		if impPkg == nil || impPkg.Types == nil {
+			continue
+		}
+		cache[impPath] = impPkg
+		seedTransitiveImports(cache, impPkg)
+	}
+}
+
 func run(config *Config) error {
 	if config.PackagePath == "" {
 		return errors.New("package path is required (-package)")
@@ -328,20 +343,7 @@ func run(config *Config) error {
 	// (data != schema) to misclassify every nested struct as a view —
 	// preventing fastssz delegation to per-fork generated methods.
 	externalPackages := make(map[string]*packages.Package)
-	var seedTransitiveImports func(p *packages.Package)
-	seedTransitiveImports = func(p *packages.Package) {
-		for impPath, impPkg := range p.Imports {
-			if _, ok := externalPackages[impPath]; ok {
-				continue
-			}
-			if impPkg == nil || impPkg.Types == nil {
-				continue
-			}
-			externalPackages[impPath] = impPkg
-			seedTransitiveImports(impPkg)
-		}
-	}
-	seedTransitiveImports(pkg)
+	seedTransitiveImports(externalPackages, pkg)
 	if config.Verbose {
 		log.Printf("Seeded %d transitive packages from main", len(externalPackages))
 	}
@@ -821,7 +823,7 @@ func writeOutputFiles(codeMap map[string]string, verbose bool) (int, error) {
 		tempFiles[outFile] = tempFile
 	}
 	for _, outFile := range outFiles {
-		if err := os.Rename(tempFiles[outFile], outFile); err != nil {
+		if err := renameFile(tempFiles[outFile], outFile); err != nil {
 			cleanup()
 			return 0, fmt.Errorf("failed to write output file %s: %v", outFile, err)
 		}
@@ -835,22 +837,28 @@ func writeOutputFiles(codeMap map[string]string, verbose bool) (int, error) {
 // and returns its path; renaming it onto the target is then atomic on the
 // same filesystem.
 func writeTempFile(target string, data []byte) (string, error) {
-	f, err := os.CreateTemp(filepath.Dir(target), filepath.Base(target)+".tmp*")
+	f, err := createTempFile(filepath.Dir(target), filepath.Base(target)+".tmp*")
 	if err != nil {
 		return "", errCause(err)
 	}
 	name := f.Name()
 	_, writeErr := f.Write(data)
-	closeErr := f.Close()
-	if writeErr != nil || closeErr != nil {
+	if closeErr := f.Close(); writeErr == nil {
+		writeErr = closeErr
+	}
+	if writeErr != nil {
 		_ = os.Remove(name)
-		if writeErr != nil {
-			return "", writeErr
-		}
-		return "", closeErr
+		return "", writeErr
 	}
 	return name, nil
 }
+
+// Filesystem seams so tests can inject failures the real filesystem cannot
+// produce deterministically.
+var (
+	createTempFile = os.CreateTemp
+	renameFile     = os.Rename
+)
 
 // errCause strips the temp-file path a *fs.PathError carries, so
 // creation-failure messages name only the target file the caller reports.

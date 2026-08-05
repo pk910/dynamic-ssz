@@ -122,10 +122,10 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 			if sourceType.SszCompatFlags&ssztypes.SszCompatFlagHashTreeRootWith != 0 && sourceType.HashTreeRootWithMethod != nil {
 				results := sourceType.HashTreeRootWithMethod.Func.Call([]reflect.Value{sourceValuePtr, reflect.ValueOf(hh)})
 				if len(results) > 0 && !results[0].IsNil() {
-					if callErr, ok := results[0].Interface().(error); ok {
-						return fmt.Errorf("failed HashTreeRootWith: %w", callErr)
-					}
-					return fmt.Errorf("failed HashTreeRootWith: %v", results[0].Interface())
+					// The compat gate only admits methods whose return type is
+					// assignable to error, so the assertion always holds.
+					callErr, _ := results[0].Interface().(error)
+					return fmt.Errorf("failed HashTreeRootWith: %w", callErr)
 				}
 
 				return nil

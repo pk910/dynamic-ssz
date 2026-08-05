@@ -1308,6 +1308,93 @@ func TestRun_MultiPackagePattern(t *testing.T) {
 	}
 }
 
+// A generated type with a limit-less list produces a generator warning, which
+// the CLI prints to stderr without failing the run.
+func TestRun_EmitsWarnings(t *testing.T) {
+	config := Config{
+		PackagePath:       "github.com/pk910/dynamic-ssz/codegen/tests",
+		TypeNames:         "UnboundedList",
+		OutputFile:        filepath.Join(t.TempDir(), "out.go"),
+		PackageName:       "tests",
+		WithExtendedTypes: true,
+	}
+	if err := run(&config); err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+}
+
+// An invalid package name reaches the code generator's identifier check and
+// fails the run with its message.
+func TestRun_InvalidPackageName(t *testing.T) {
+	config := Config{
+		PackagePath: "github.com/pk910/dynamic-ssz/codegen/tests",
+		TypeNames:   "SimpleTypes1",
+		OutputFile:  "output.go",
+		PackageName: "1nvalid",
+	}
+	err := run(&config)
+	if err == nil || !strings.Contains(err.Error(), "invalid package name") {
+		t.Fatalf("expected the package-name rejection, got: %v", err)
+	}
+}
+
+// seedTransitiveImports records every transitively imported package once and
+// skips entries without loaded type information.
+func TestSeedTransitiveImports(t *testing.T) {
+	typed := &packages.Package{PkgPath: "a", Types: types.NewPackage("a", "a")}
+	typed.Imports = map[string]*packages.Package{
+		"nilpkg":  nil,
+		"untyped": {PkgPath: "untyped"},
+	}
+	root := &packages.Package{
+		PkgPath: "root",
+		Imports: map[string]*packages.Package{
+			"a":     typed,
+			"a-dup": typed,
+		},
+	}
+
+	cache := map[string]*packages.Package{"a-dup": typed}
+	seedTransitiveImports(cache, root)
+
+	if cache["a"] != typed {
+		t.Fatal("typed import must be seeded")
+	}
+	if _, ok := cache["nilpkg"]; ok {
+		t.Fatal("nil import must be skipped")
+	}
+	if _, ok := cache["untyped"]; ok {
+		t.Fatal("import without type information must be skipped")
+	}
+}
+
+// Failures between the temp write and the final rename abort the whole write
+// set and clean the temp files up.
+func TestWriteOutputFilesInjectedFailures(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "out.go")
+
+	renameFile = func(string, string) error { return errors.New("rename failed") }
+	t.Cleanup(func() { renameFile = os.Rename })
+	_, err := writeOutputFiles(map[string]string{target: "data"}, true)
+	if err == nil || !strings.Contains(err.Error(), "rename failed") {
+		t.Fatalf("expected the injected rename failure, got: %v", err)
+	}
+	if leftovers, _ := filepath.Glob(filepath.Join(base, "*.tmp*")); len(leftovers) != 0 {
+		t.Fatalf("temp files not cleaned up: %v", leftovers)
+	}
+	renameFile = os.Rename
+
+	createTempFile = func(dir, pattern string) (*os.File, error) {
+		return os.Open(os.DevNull) // read-only: the write must fail
+	}
+	t.Cleanup(func() { createTempFile = os.CreateTemp })
+	if _, err := writeTempFile(target, []byte("data")); err == nil {
+		t.Fatal("expected a write failure on the read-only file")
+	}
+	createTempFile = os.CreateTemp
+}
+
 // A header template that is not made of comment lines is rejected before any
 // code is generated.
 func TestRun_InvalidHeaderTemplate(t *testing.T) {
