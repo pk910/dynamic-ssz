@@ -104,23 +104,41 @@ func logfn(format string, a ...any) {
 // hash result into dst.
 type HashFn func(dst []byte, input []byte) error
 
-// NativeHashWrapper wraps a hash.Hash function into a HashFn
+// nativeHashPairs hashes input as consecutive 64-byte pairs into dst using
+// the given hash.Hash instance.
+func nativeHashPairs(hashFn hash.Hash, dst, input []byte) {
+	layerLen := len(input) / 32
+	if layerLen%2 == 1 {
+		layerLen++
+	}
+	for i := 0; i < layerLen; i += 2 {
+		hashFn.Write(input[i*32 : i*32+32])
+		hashFn.Write(input[i*32+32 : i*32+64])
+		hashFn.Sum(dst[(i / 2 * 32):][:0])
+		hashFn.Reset()
+	}
+}
+
+// NativeHashWrapper wraps a hash.Hash instance into a HashFn. The instance
+// is stateful, so the returned function is NOT safe for concurrent use and
+// the hasher carrying it must stay gated out of async hashing; use
+// NativeHashWrapperFactory when that is needed.
 func NativeHashWrapper(hashFn hash.Hash) HashFn {
 	return func(dst []byte, input []byte) error {
-		hash := func(dst []byte, src []byte) {
-			hashFn.Write(src[:32])
-			hashFn.Write(src[32:64])
-			hashFn.Sum(dst)
-			hashFn.Reset()
-		}
+		nativeHashPairs(hashFn, dst, input)
+		return nil
+	}
+}
 
-		layerLen := len(input) / 32
-		if layerLen%2 == 1 {
-			layerLen++
-		}
-		for i := 0; i < layerLen; i += 2 {
-			hash(dst[(i/2)*32:][:0], input[i*32:])
-		}
+// NativeHashWrapperFactory wraps a hash.Hash constructor into a HashFn that
+// is safe for concurrent use: every call draws its own instance from a pool.
+// This is what makes the native-hash path eligible for async hashing.
+func NativeHashWrapperFactory(newHash func() hash.Hash) HashFn {
+	pool := &sync.Pool{New: func() any { return newHash() }}
+	return func(dst []byte, input []byte) error {
+		hashFn, _ := pool.Get().(hash.Hash)
+		nativeHashPairs(hashFn, dst, input)
+		pool.Put(hashFn)
 		return nil
 	}
 }

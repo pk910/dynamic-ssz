@@ -110,6 +110,10 @@ func NewDynSsz(specs map[string]any, options ...DynSszOption) *DynSsz {
 		option(opts)
 	}
 
+	if opts.AsyncHashing && opts.AsyncHashingWorkers > 0 {
+		hasher.EnableAsyncHashing(opts.AsyncHashingWorkers)
+	}
+
 	dynssz := &DynSsz{
 		specValues:     specs,
 		specValueCache: map[string]*cachedSpecValue{},
@@ -1019,6 +1023,10 @@ func (d *DynSsz) HashTreeRoot(source any, opts ...CallOption) ([32]byte, error) 
 	defer func() {
 		pool.Put(hh)
 	}()
+
+	if d.options.AsyncHashing {
+		hh.SetAsyncHashing(true)
+	}
 
 	err := d.HashTreeRootWith(source, hh, opts...)
 	if err != nil {

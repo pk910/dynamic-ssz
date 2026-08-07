@@ -1085,6 +1085,7 @@ func TestHasherInterfaceCompliance(t *testing.T) {
 		t.Error("Index should not be 0 after adding data")
 	}
 
+	h.Merkleize(idx)
 	h.Merkleize(0)
 	h.Hash()
 
@@ -1732,7 +1733,7 @@ func TestFlushPendingNoPending(t *testing.T) {
 	before := h.CurrentIndex()
 
 	var layer treeLayer // pendCount == 0
-	h.flushPending(&layer)
+	h.flushPending(&layer, false)
 
 	if h.CurrentIndex() != before {
 		t.Fatalf("flushPending with no pending changed the buffer: %d != %d", h.CurrentIndex(), before)

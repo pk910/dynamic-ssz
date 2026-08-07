@@ -13,6 +13,8 @@ type DynSszOptions struct {
 	NoFastSsz              bool
 	NoDelegation           bool
 	NoFastHash             bool
+	AsyncHashing           bool
+	AsyncHashingWorkers    int
 	ExtendedTypes          bool
 	Verbose                bool
 	LogCb                  func(format string, args ...any)
@@ -55,6 +57,24 @@ func WithNoDelegation() DynSszOption {
 func WithNoFastHash() DynSszOption {
 	return func(opts *DynSszOptions) {
 		opts.NoFastHash = true
+	}
+}
+
+// WithAsyncHashing gates this instance's HashTreeRoot computations into
+// background subtree reduction: large subtrees hash on worker goroutines
+// while the walker keeps serializing, which speeds up large lists (such as
+// a beacon state's validator registry) severalfold. Roots are identical to
+// synchronous hashing.
+//
+// workers > 0 also configures the process-wide worker limit (shared by all
+// instances, see hasher.EnableAsyncHashing); workers == 0 only gates this
+// instance in and leaves the process-wide configuration untouched.
+// HashTreeRootWith is unaffected: the caller owns that hasher and gates it
+// explicitly via its SetAsyncHashing method.
+func WithAsyncHashing(workers int) DynSszOption {
+	return func(opts *DynSszOptions) {
+		opts.AsyncHashing = true
+		opts.AsyncHashingWorkers = workers
 	}
 }
 
