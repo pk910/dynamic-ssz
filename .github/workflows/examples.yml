@@ -23,6 +23,7 @@ jobs:
           - streaming
           - merkle-proofs
           - fork-views
+          - htr-caching
 
     steps:
     - name: Checkout code

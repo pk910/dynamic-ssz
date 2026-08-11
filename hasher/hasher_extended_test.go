@@ -1412,3 +1412,100 @@ func TestPutRootVectorEdgeCases(t *testing.T) {
 		t.Errorf("single root: got %x, want %x", got, root)
 	}
 }
+
+// hashScopeElem appends a deterministic elemChunks-chunk element payload.
+func hashScopeElem(h *Hasher, elemChunks, seed int) {
+	for c := 0; c < elemChunks; c++ {
+		var chunk [32]byte
+		binary.LittleEndian.PutUint64(chunk[:], uint64(seed*997+c+1))
+		h.Append(chunk[:])
+	}
+}
+
+// TestHashReturnsDeferredScopeRoot verifies that Hash() returns the root of
+// the most recently completed child scope even when that scope's chunks were
+// deferred into the incremental parent's pending batch. Covers chunk counts
+// on both sides of the deferral eligibility rule (power-of-two counts >= 2
+// defer, others merkleize immediately) and both scope styles (StartTree and
+// legacy Index), and checks the on-demand root computation leaves the pending
+// run intact by comparing the final list root against a reference.
+func TestHashReturnsDeferredScopeRoot(t *testing.T) {
+	const elems = 600 // crosses the incremental batch threshold
+
+	for _, tc := range []struct {
+		name       string
+		elemChunks int
+		useIndex   bool
+	}{
+		{"chunks-1-starttree", 1, false},
+		{"chunks-2-starttree", 2, false},
+		{"chunks-3-starttree", 3, false},
+		{"chunks-4-starttree", 4, false},
+		{"chunks-4-index", 4, true},
+		{"chunks-8-starttree", 8, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Standalone element roots as reference.
+			expElemRoots := make([][32]byte, elems)
+			for i := range expElemRoots {
+				eh := FastHasherPool.Get()
+				idx := eh.Index()
+				hashScopeElem(eh, tc.elemChunks, i)
+				eh.Merkleize(idx)
+				root, err := eh.HashRoot()
+				FastHasherPool.Put(eh)
+				if err != nil {
+					t.Fatalf("element %d HashRoot: %v", i, err)
+				}
+				expElemRoots[i] = root
+			}
+
+			// Reference list root built from the element roots.
+			rh := FastHasherPool.Get()
+			refIdx := rh.Index()
+			for i := range expElemRoots {
+				rh.PutBytes(expElemRoots[i][:])
+			}
+			rh.MerkleizeWithMixin(refIdx, elems, 1024)
+			expListRoot, err := rh.HashRoot()
+			FastHasherPool.Put(rh)
+			if err != nil {
+				t.Fatalf("reference HashRoot: %v", err)
+			}
+
+			h := FastHasherPool.Get()
+			defer FastHasherPool.Put(h)
+
+			listIdx := h.StartTree(sszutils.TreeTypeBinary)
+			for i := 0; i < elems; i++ {
+				var idx int
+				if tc.useIndex {
+					idx = h.Index()
+				} else {
+					idx = h.StartTree(sszutils.TreeTypeNone)
+				}
+				hashScopeElem(h, tc.elemChunks, i)
+				h.Merkleize(idx)
+
+				var got [32]byte
+				copy(got[:], h.Hash())
+				if got != expElemRoots[i] {
+					t.Fatalf("element %d root via Hash(): got %x, want %x", i, got, expElemRoots[i])
+				}
+
+				if (i+1)%256 == 0 {
+					h.Collapse()
+				}
+			}
+
+			h.MerkleizeWithMixin(listIdx, elems, 1024)
+			root, err := h.HashRoot()
+			if err != nil {
+				t.Fatalf("HashRoot: %v", err)
+			}
+			if root != expListRoot {
+				t.Errorf("list root: got %x, want %x", root, expListRoot)
+			}
+		})
+	}
+}

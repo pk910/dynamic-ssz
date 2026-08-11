@@ -164,6 +164,7 @@ Check out the [examples](examples/) directory for standalone, CI-tested example 
 - [codegen](examples/codegen/) — code generation setup with a programmatic generator
 - [custom-types](examples/custom-types/) — custom specifications and dynamic expressions
 - [fork-views](examples/fork-views/) — one fork-agnostic type with per-fork SSZ schemas via views, plus view-only code generation
+- [htr-caching](examples/htr-caching/) — application-level hash-tree-root caching on a large validator registry via the `DynamicHashRoot` delegation hook
 - [merkle-proofs](examples/merkle-proofs/) — Merkle tree construction, generalized-index proofs into nested lists, multiproofs and standalone verification
 - [progressive-merkleization](examples/progressive-merkleization/) — progressive lists, bitlists, and containers (EIP-7916/EIP-7495)
 - [streaming](examples/streaming/) — stream SSZ to/from files and network connections without buffering the full payload

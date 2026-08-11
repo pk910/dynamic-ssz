@@ -129,7 +129,9 @@ const (
 // This allows us to avoid importing fastssz directly while still being
 // compatible with types that implement HashTreeRootWith
 type HashWalker interface {
-	// Hash returns the latest hash generated during merkleize
+	// Hash returns the latest hash generated during merkleize; deferred
+	// reductions are completed first. The returned slice is only valid until
+	// the next walker operation.
 	Hash() []byte
 
 	// Methods for appending single values
