@@ -184,8 +184,11 @@ func (d *DynSsz) resolveSchemaType(runtimeType reflect.Type, cfg *callConfig) re
 // method promoted from an embedded field: the promoted method serializes just
 // that field and would silently drop v's other fields, so v must be walked as
 // a container instead (the embedded field still delegates during the walk).
-func (d *DynSsz) delegable(v any) bool {
-	return !d.typeCache.InheritsPromotedDelegation(reflect.TypeOf(v))
+// delegable reports whether the named delegation method on v is the type's
+// own declaration rather than a wrapper promoted from an embedded field, which
+// would serialize just the embedded field and drop the siblings.
+func (d *DynSsz) delegable(v any, method string) bool {
+	return !d.typeCache.PromotedDelegationMethods(reflect.TypeOf(v))[method]
 }
 
 // MarshalSSZ serializes the given source into its SSZ (Simple Serialize) representation.
@@ -238,9 +241,11 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 	if cfg == nil || cfg.viewDescriptor == nil {
 		marshaler, hasMarshaler := source.(sszutils.DynamicMarshaler)
 		sszEncoder, hasEncoder := source.(sszutils.DynamicEncoder)
-		if (hasMarshaler || hasEncoder) && !d.options.NoDelegation && d.delegable(source) {
+		hasMarshaler = hasMarshaler && d.delegable(source, "MarshalSSZDyn")
+		hasEncoder = hasEncoder && d.delegable(source, "MarshalSSZEncoder")
+		if (hasMarshaler || hasEncoder) && !d.options.NoDelegation {
 			var buf []byte
-			if sizer, ok := source.(sszutils.DynamicSizer); ok {
+			if sizer, ok := source.(sszutils.DynamicSizer); ok && d.delegable(source, "SizeSSZDyn") {
 				size := sizer.SizeSSZDyn(d)
 				buf = make([]byte, 0, size)
 			} else {
@@ -350,11 +355,11 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 	// buffer encoder, so both entrypoints delegate to the same method set in
 	// the same order.
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if !d.options.NoDelegation && d.delegable(source) {
-			if marshaler, ok := source.(sszutils.DynamicMarshaler); ok {
+		if !d.options.NoDelegation {
+			if marshaler, ok := source.(sszutils.DynamicMarshaler); ok && d.delegable(source, "MarshalSSZDyn") {
 				return marshaler.MarshalSSZDyn(d, buf)
 			}
-			if sszEncoder, ok := source.(sszutils.DynamicEncoder); ok {
+			if sszEncoder, ok := source.(sszutils.DynamicEncoder); ok && d.delegable(source, "MarshalSSZEncoder") {
 				enc := sszutils.NewBufferEncoder(buf)
 				if err := sszEncoder.MarshalSSZEncoder(d, enc); err != nil {
 					return nil, err
@@ -495,8 +500,8 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 	// encoder's buffer, so both entrypoints delegate to the same method set in
 	// the same order.
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if !d.options.NoDelegation && d.delegable(source) {
-			if sszEncoder, ok := source.(sszutils.DynamicEncoder); ok {
+		if !d.options.NoDelegation {
+			if sszEncoder, ok := source.(sszutils.DynamicEncoder); ok && d.delegable(source, "MarshalSSZEncoder") {
 				err := sszEncoder.MarshalSSZEncoder(d, encoder)
 				if err != nil {
 					return err
@@ -505,7 +510,7 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 				encoder.Flush()
 				return encoder.GetWriteError()
 			}
-			if marshaler, ok := source.(sszutils.DynamicMarshaler); ok {
+			if marshaler, ok := source.(sszutils.DynamicMarshaler); ok && d.delegable(source, "MarshalSSZDyn") {
 				newBuf, err := marshaler.MarshalSSZDyn(d, encoder.GetBuffer())
 				if err != nil {
 					return err
@@ -618,7 +623,7 @@ func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error) {
 
 	// Skip view descriptor logic for types implementing DynamicSizer
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if sizer, ok := source.(sszutils.DynamicSizer); ok && !d.options.NoDelegation && d.delegable(source) {
+		if sizer, ok := source.(sszutils.DynamicSizer); ok && !d.options.NoDelegation && d.delegable(source, "SizeSSZDyn") {
 			return sizer.SizeSSZDyn(d), nil
 		}
 	} else if viewSizer, ok := source.(sszutils.DynamicViewSizer); ok && !d.options.NoDelegation {
@@ -703,11 +708,11 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 	// the same order. The bridged decode must consume the whole buffer, as a
 	// buffer unmarshaler does.
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if !d.options.NoDelegation && d.delegable(target) {
-			if unmarshaler, ok := target.(sszutils.DynamicUnmarshaler); ok {
+		if !d.options.NoDelegation {
+			if unmarshaler, ok := target.(sszutils.DynamicUnmarshaler); ok && d.delegable(target, "UnmarshalSSZDyn") {
 				return unmarshaler.UnmarshalSSZDyn(d, ssz)
 			}
-			if sszDecoder, ok := target.(sszutils.DynamicDecoder); ok {
+			if sszDecoder, ok := target.(sszutils.DynamicDecoder); ok && d.delegable(target, "UnmarshalSSZDecoder") {
 				dec := sszutils.NewBufferDecoder(ssz)
 				if err := sszDecoder.UnmarshalSSZDecoder(d, dec); err != nil {
 					return err
@@ -906,8 +911,8 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 	// the full region first, so both entrypoints delegate to the same method
 	// set in the same order.
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if !d.options.NoDelegation && d.delegable(target) {
-			if sszDecoder, ok := target.(sszutils.DynamicDecoder); ok {
+		if !d.options.NoDelegation {
+			if sszDecoder, ok := target.(sszutils.DynamicDecoder); ok && d.delegable(target, "UnmarshalSSZDecoder") {
 				err := sszDecoder.UnmarshalSSZDecoder(d, decoder)
 				if err != nil {
 					return err
@@ -915,7 +920,7 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 
 				return finish()
 			}
-			if unmarshaler, ok := target.(sszutils.DynamicUnmarshaler); ok {
+			if unmarshaler, ok := target.(sszutils.DynamicUnmarshaler); ok && d.delegable(target, "UnmarshalSSZDyn") {
 				var sszBuf []byte
 				var err error
 				if decoder.LengthKnown() {
@@ -1086,7 +1091,7 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...Ca
 
 	// Skip view descriptor logic for types implementing DynamicHashRoot
 	if cfg == nil || cfg.viewDescriptor == nil {
-		if hasher, ok := source.(sszutils.DynamicHashRoot); ok && !d.options.NoDelegation && d.delegable(source) {
+		if hasher, ok := source.(sszutils.DynamicHashRoot); ok && !d.options.NoDelegation && d.delegable(source, "HashTreeRootWithDyn") {
 			err := hasher.HashTreeRootWithDyn(d, hh)
 			if err != nil {
 				return err

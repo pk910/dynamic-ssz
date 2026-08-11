@@ -90,8 +90,8 @@ type TypeCache struct {
 	// rather than for this process. See DisableSpecResolution.
 	noSpecResolution bool
 
-	// promotedDelegation memoizes InheritsPromotedDelegation (reflect.Type ->
-	// bool); the detection sits on the per-call delegation hot path.
+	// promotedDelegation memoizes PromotedDelegationMethods (reflect.Type ->
+	// map[string]bool); the detection sits on the per-call delegation hot path.
 	promotedDelegation sync.Map
 }
 
@@ -944,24 +944,47 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 
 	tc.detectCompatFlags(desc, runtimeType, schemaType)
 
-	// A plain container that only satisfies the delegation interfaces through a
-	// method promoted from an embedded field must not delegate: the promoted
-	// method serializes just the embedded field and drops the container's other
-	// fields. Walk it as a container instead — the embedded field still
-	// delegates correctly as one of the walked fields. Custom types are exempt
-	// (they are opaque and have no walkable layout).
-	if (desc.SszType == SszContainerType || desc.SszType == SszProgressiveContainerType) &&
-		tc.InheritsPromotedDelegation(runtimeType) {
-		desc.SszCompatFlags &^= SszCompatFlagDynamicMarshaler |
-			SszCompatFlagDynamicUnmarshaler |
-			SszCompatFlagDynamicSizer |
-			SszCompatFlagDynamicHashRoot |
-			SszCompatFlagDynamicEncoder |
-			SszCompatFlagDynamicDecoder |
-			SszCompatFlagFastSSZMarshaler |
-			SszCompatFlagFastSSZHasher |
-			SszCompatFlagHashTreeRootWith
-		desc.HashTreeRootWithMethod = nil
+	// A plain container that only satisfies a delegation interface through a
+	// method promoted from an embedded field must not delegate through it: the
+	// promoted method serializes just the embedded field and drops the
+	// container's other fields. The suppression is per interface — an
+	// interface the container declares itself (including a declaration
+	// shadowing an embedded method) keeps delegating, only the promoted ones
+	// fall back to the container walk. Custom types are exempt (they are
+	// opaque and have no walkable layout).
+	if desc.SszType == SszContainerType || desc.SszType == SszProgressiveContainerType {
+		if promoted := tc.PromotedDelegationMethods(runtimeType); promoted != nil {
+			if promoted["MarshalSSZDyn"] {
+				desc.SszCompatFlags &^= SszCompatFlagDynamicMarshaler
+			}
+			if promoted["UnmarshalSSZDyn"] {
+				desc.SszCompatFlags &^= SszCompatFlagDynamicUnmarshaler
+			}
+			if promoted["SizeSSZDyn"] {
+				desc.SszCompatFlags &^= SszCompatFlagDynamicSizer
+			}
+			if promoted["HashTreeRootWithDyn"] {
+				desc.SszCompatFlags &^= SszCompatFlagDynamicHashRoot
+			}
+			if promoted["MarshalSSZEncoder"] {
+				desc.SszCompatFlags &^= SszCompatFlagDynamicEncoder
+			}
+			if promoted["UnmarshalSSZDecoder"] {
+				desc.SszCompatFlags &^= SszCompatFlagDynamicDecoder
+			}
+			// The fastssz convert surface spans marshal and unmarshal; a
+			// promoted piece anywhere poisons the whole pair.
+			if promoted["MarshalSSZ"] || promoted["MarshalSSZTo"] || promoted["SizeSSZ"] || promoted["UnmarshalSSZ"] {
+				desc.SszCompatFlags &^= SszCompatFlagFastSSZMarshaler
+			}
+			if promoted["HashTreeRoot"] {
+				desc.SszCompatFlags &^= SszCompatFlagFastSSZHasher
+			}
+			if promoted["HashTreeRootWith"] {
+				desc.SszCompatFlags &^= SszCompatFlagHashTreeRootWith
+				desc.HashTreeRootWithMethod = nil
+			}
+		}
 	}
 
 	// When field-level hints override the type's own annotation, don't delegate

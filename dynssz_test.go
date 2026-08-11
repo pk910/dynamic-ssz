@@ -4920,6 +4920,64 @@ func TestEmbeddedShadowDeclarationDelegates(t *testing.T) {
 	}
 }
 
+// mixedPromotedOuter embeds a delegating type but declares only part of the
+// delegation set itself. The declared marshaler must keep delegating while
+// the promoted remainder falls back to the container walk.
+type mixedPromotedOuter struct {
+	PromotedInner
+	Label uint64
+}
+
+func (o *mixedPromotedOuter) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	// A layout only this declaration produces: 3-byte magic, then the fields.
+	buf = append(buf, 0xd1, 0xd2, 0xd3)
+	buf = binary.BigEndian.AppendUint16(buf, o.Seconds)
+	return binary.LittleEndian.AppendUint64(buf, o.Label), nil
+}
+
+func TestEmbeddedPromotionMixedDeclaration(t *testing.T) {
+	ds := NewDynSsz(nil)
+	v := &mixedPromotedOuter{PromotedInner: PromotedInner{Seconds: 0x0102}, Label: 0x33}
+
+	// The declared marshaler is the type's own and must be used even though
+	// other delegation methods are promoted from the embedded field.
+	enc, err := ds.MarshalSSZ(v)
+	if err != nil {
+		t.Fatalf("MarshalSSZ: %v", err)
+	}
+	if len(enc) != 13 || enc[0] != 0xd1 || enc[1] != 0xd2 || enc[2] != 0xd3 {
+		t.Fatalf("declared marshaler not used: got %d bytes (%x)", len(enc), enc)
+	}
+
+	// The promoted methods stay suppressed: sizing and hashing walk the
+	// container (2 embedded + 8 label), keeping the sibling field.
+	size, err := ds.SizeSSZ(v)
+	if err != nil || size != 10 {
+		t.Fatalf("SizeSSZ = %d, %v; want the 10-byte container walk", size, err)
+	}
+	if _, err := ds.HashTreeRoot(v); err != nil {
+		t.Fatalf("HashTreeRoot: %v", err)
+	}
+}
+
+// ifaceEmbedOuter embeds a delegation interface. Its promoted method only
+// serializes the embedded value and would drop Extra, so the type must not
+// delegate through it; the container walk then rejects the interface field
+// loudly instead of encoding a silently wrong value.
+type ifaceEmbedOuter struct {
+	sszutils.DynamicMarshaler
+	Extra uint64
+}
+
+func TestEmbeddedInterfaceNoFalseDelegation(t *testing.T) {
+	ds := NewDynSsz(nil)
+	v := &ifaceEmbedOuter{DynamicMarshaler: &PromotedInner{Seconds: 1}, Extra: 2}
+
+	if enc, err := ds.MarshalSSZ(v); err == nil {
+		t.Fatalf("expected an error for the interface-typed field, got %d bytes (%x)", len(enc), enc)
+	}
+}
+
 // A large-uint (uint128/uint256) whose Go slice is shorter than its declared
 // width is zero-padded on hash tree root, matching the marshal paths and the
 // generated HTR, instead of being rejected. Over-length slices are still
