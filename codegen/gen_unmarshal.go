@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
@@ -657,7 +658,7 @@ func (ctx *unmarshalContext) unmarshalBigInt(desc *ssztypes.TypeDescriptor, varN
 	// the marshal side.
 	if desc.MaxExpression == nil && desc.Limit > 0 {
 		limitErr := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", len(buf), %d)", desc.Limit)
-		ctx.appendCode(indent, "if uint64(len(buf)) > %d {\n\t\treturn %s\n\t}\n", desc.Limit, typePath.getErrorWith(limitErr))
+		ctx.appendCode(indent, "if %s {\n\t\treturn %s\n\t}\n", uintCmpExpr("len(buf)", ">", fmt.Sprintf("%d", desc.Limit)), typePath.getErrorWith(limitErr))
 	}
 	ctx.appendCode(indent, "if buf[0] > 1 {\n\t\treturn %s\n\t}\n", typePath.getErrorWith(signErr))
 	ctx.appendCode(indent, "if len(buf) > 1 && buf[1] == 0 {\n\t\treturn %s\n\t}\n", typePath.getErrorWith(leadZeroErr))
@@ -716,7 +717,9 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, v
 	totalStaticSizeExpr := strings.Join(staticSizeVars, "+")
 	if len(staticSizeVars) > 1 {
 		ctx.appendCode(indent, "exproffset := 0\n")
-		ctx.appendCode(indent, "totalSize := %s\n", totalStaticSizeExpr)
+		// The buffer arithmetic below runs in the int domain, so the unsigned
+		// size sum binds once as int.
+		ctx.appendCode(indent, "totalSize := int(%s)\n", totalStaticSizeExpr)
 		totalStaticSizeExpr = "totalSize"
 	}
 
@@ -767,7 +770,7 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, v
 				if err != nil {
 					return err
 				}
-				ctx.appendCode(indent, "\tbuf := buf[%s%d : %s%s+%d]\n", offsetPrefix, offset, offsetPrefix, fieldSizeVar, offset)
+				ctx.appendCode(indent, "\tbuf := buf[%s%d : %sint(%s)+%d]\n", offsetPrefix, offset, offsetPrefix, fieldSizeVar, offset)
 				ctx.appendCode(indent, "\texproffset += int(%s)\n", fieldSizeVar)
 				offsetPrefix = "exproffset+"
 			} else {
@@ -848,7 +851,10 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 	// resolved size; emitted once the array expression exists.
 	arrayBoundPending := false
 
+	// limitVar is the int-domain bound the buffer arithmetic uses; limit64 is
+	// the uint64-domain form for length checks and error arguments.
 	limitVar := ""
+	limit64 := ""
 	bitlimitVar := ""
 	needExpression := desc.GoTypeFlags&ssztypes.GoTypeFlagIsString == 0 || !noBufCheck
 
@@ -860,13 +866,18 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 
 		exprVar := ctx.exprVars.getSizeExprVar(*sizeExpression, defaultValue)
 
+		// The buffer arithmetic below runs in the int domain (len(buf) and
+		// slice bounds), so the resolved limit binds once as int and every use
+		// stays plain.
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
 			ctx.appendCode(indent, "bitlimit := %s\n", exprVar)
-			ctx.appendCode(indent, "limit := (bitlimit+7)/8\n")
-			bitlimitVar = "int(bitlimit)"
+			ctx.appendCode(indent, "limit := (bitlimit + 7) / 8\n")
+			bitlimitVar = "bitlimit"
 			limitVar = "int(limit)"
+			limit64 = "limit"
 		} else {
 			limitVar = fmt.Sprintf("int(%s)", exprVar)
+			limit64 = exprVar
 		}
 
 		if desc.Kind == reflect.Array {
@@ -881,6 +892,7 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 			bitlimitVar = fmt.Sprintf("%d", desc.BitSize)
 		}
 		limitVar = fmt.Sprintf("%d", desc.Len)
+		limit64 = limitVar
 	}
 
 	valueVar := varName
@@ -899,8 +911,8 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 	}
 
 	if arrayBoundPending {
-		ctx.appendCode(indent, "if %s > len(%s) {\n", limitVar, indexValueVar)
-		errCode := fmt.Sprintf("sszutils.ErrVectorSizeExceedsArrayFn(%s, len(%s))", limitVar, indexValueVar)
+		ctx.appendCode(indent, "if %s {\n", uintCmpExpr(fmt.Sprintf("len(%s)", indexValueVar), "<", limit64))
+		errCode := fmt.Sprintf("sszutils.ErrVectorSizeExceedsArrayFn(%s, len(%s))", limit64, indexValueVar)
 		ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "}\n")
 	}
@@ -963,6 +975,14 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 			if err != nil {
 				return err
 			}
+			// The decode arithmetic below runs in the int domain, so the
+			// unsigned size variable binds once as int. The bind name carries
+			// the size variable's suffix: nested element scopes would otherwise
+			// shadow an outer bind that is still referenced after the inner
+			// declaration.
+			bindVar := varNameElemSize + strings.TrimPrefix(fieldSizeVar, "size")
+			ctx.appendCode(indent, bindVar+" := int(%s)\n", fieldSizeVar)
+			fieldSizeVar = bindVar
 		} else {
 			fieldSizeVar = fmt.Sprintf("%d", desc.ElemDesc.Size)
 		}
@@ -1101,7 +1121,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
 			if hasMax {
 				errCode := fmt.Sprintf("sszutils.ErrListLengthFn(len(buf), %s)", uintLitArg(maxVar))
-				ctx.appendCode(indent, "if uint64(len(buf)) > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
+				ctx.appendCode(indent, "if %s {\n\treturn %s\n}\n", uintCmpExpr("len(buf)", ">", maxVar), typePath.getErrorWith(errCode))
 			}
 			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
 				typename := ctx.typePrinter.InnerTypeString(desc)
@@ -1128,7 +1148,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 			ctx.appendCode(indent, "if len(buf)%%8 != 0 {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
 			if hasMax {
 				errCode = fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", uintLitArg(maxVar))
-				ctx.appendCode(indent, "if uint64(itemCount) > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
+				ctx.appendCode(indent, "if %s {\n\treturn %s\n}\n", uintCmpExpr("itemCount", ">", maxVar), typePath.getErrorWith(errCode))
 			}
 			if desc.Kind != reflect.Array {
 				ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", valueVar, valueVar)
@@ -1145,6 +1165,14 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 			if err != nil {
 				return err
 			}
+			// The decode arithmetic below runs in the int domain, so the
+			// unsigned size variable binds once as int. The bind name carries
+			// the size variable's suffix: nested element scopes would otherwise
+			// shadow an outer bind that is still referenced after the inner
+			// declaration.
+			bindVar := varNameElemSize + strings.TrimPrefix(fieldSizeVar, "size")
+			ctx.appendCode(indent, bindVar+" := int(%s)\n", fieldSizeVar)
+			fieldSizeVar = bindVar
 		} else {
 			fieldSizeVar = fmt.Sprintf("%d", desc.ElemDesc.Size)
 		}
@@ -1158,7 +1186,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 		}
 		if hasMax {
 			errCode := fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", uintLitArg(maxVar))
-			ctx.appendCode(indent, "if uint64(itemCount) > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
+			ctx.appendCode(indent, "if %s {\n\treturn %s\n}\n", uintCmpExpr("itemCount", ">", maxVar), typePath.getErrorWith(errCode))
 		}
 		if desc.Kind != reflect.Array {
 			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", valueVar, valueVar)
@@ -1218,7 +1246,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 		ctx.appendCode(indent, "itemCount := startOffset / 4\n")
 		if hasMax {
 			errCode = fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", uintLitArg(maxVar))
-			ctx.appendCode(indent, "if uint64(itemCount) > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
+			ctx.appendCode(indent, "if %s {\n\treturn %s\n}\n", uintCmpExpr("itemCount", ">", maxVar), typePath.getErrorWith(errCode))
 		}
 		// The offset table declares the count, but only the region can prove the
 		// bodies exist. Each costs at least the element's fixed section, so a
@@ -1234,7 +1262,11 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 				guard = fmt.Sprintf("%s > 0 && ", positiveGuard)
 			}
 			errCode = fmt.Sprintf("sszutils.ErrListRegionTooSmallFn(itemCount, %s, len(buf)-startOffset)", minElemSize)
-			ctx.appendCode(indent, "if %sitemCount > (len(buf)-startOffset)/(%s) {\n\treturn %s\n}\n", guard, minElemSize, typePath.getErrorWith(errCode))
+			regionCmp := fmt.Sprintf("uint64(itemCount) > uint64(len(buf)-startOffset)/(%s)", minElemSize)
+			if _, lerr := strconv.ParseUint(minElemSize, 10, 64); lerr == nil {
+				regionCmp = fmt.Sprintf("itemCount > (len(buf)-startOffset)/(%s)", minElemSize)
+			}
+			ctx.appendCode(indent, "if %s%s {\n\treturn %s\n}\n", guard, regionCmp, typePath.getErrorWith(errCode))
 		}
 		if desc.Kind != reflect.Array {
 			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", valueVar, valueVar)
@@ -1303,7 +1335,7 @@ func (ctx *unmarshalContext) unmarshalBitlist(desc *ssztypes.TypeDescriptor, var
 		bitsPkgName := ctx.typePrinter.AddImport("math/bits", "bits")
 		ctx.appendCode(indent, "bitCount := 8*(blen-1) + int(%s.Len8(buf[blen-1])) - 1\n", bitsPkgName)
 		errCode := fmt.Sprintf("sszutils.ErrBitlistLengthFn(bitCount, %s)", uintLitArg(maxVar))
-		ctx.appendCode(indent, "if uint64(bitCount) > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
+		ctx.appendCode(indent, "if %s {\n\treturn %s\n}\n", uintCmpExpr("bitCount", ">", maxVar), typePath.getErrorWith(errCode))
 	}
 
 	valueVar := varName
@@ -1365,7 +1397,7 @@ func (ctx *unmarshalContext) unmarshalUnion(desc *ssztypes.TypeDescriptor, varNa
 				if serr != nil {
 					return serr
 				}
-				sizeExpr = fmt.Sprintf("1 + %s", sizeVar)
+				sizeExpr = fmt.Sprintf("1 + int(%s)", sizeVar)
 			} else {
 				sizeExpr = fmt.Sprintf("%d", 1+elemSize)
 			}

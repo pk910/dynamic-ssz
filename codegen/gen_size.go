@@ -501,11 +501,17 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 
 		exprVar := ctx.exprVars.getSizeExprVar(*sizeExpression, defaultValue)
 
+		rawLimit := exprVar
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
-			limitVar = fmt.Sprintf("int((%s+7)/8)", exprVar)
-		} else {
-			limitVar = fmt.Sprintf("int(%s)", exprVar)
+			rawLimit = fmt.Sprintf("(%s+7)/8", exprVar)
 		}
+		// The size accumulator is int (the size interface), so the resolved
+		// limit binds once in the int domain and every use below stays plain.
+		convSuppress := ""
+		if ctx.exprVars.isSlice {
+			convSuppress = convSuppressComment
+		}
+		ctx.appendCode(indent, "%s := int(%s)%s\n", limitVar, rawLimit, convSuppress)
 	} else {
 		ctx.appendCode(indent, "%s := %d\n", limitVar, desc.Len)
 	}
@@ -521,7 +527,11 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 			if err != nil {
 				return err
 			}
-			ctx.appendCode(indent, "%s += int(%s) * %s\n", sizeVar, innerSizeVar, limitVar)
+			elemConvSuppress := ""
+			if ctx.exprVars.isSlice {
+				elemConvSuppress = convSuppressComment
+			}
+			ctx.appendCode(indent, "%s += int(%s) * %s%s\n", sizeVar, innerSizeVar, limitVar, elemConvSuppress)
 		case desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 || desc.ElemDesc.Size == 1:
 			// For byte arrays, size is just the vector length
 			ctx.appendCode(indent, "%s += %s\n", sizeVar, limitVar)

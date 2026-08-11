@@ -15,7 +15,10 @@ import (
 	"github.com/pk910/dynamic-ssz/ssztypes"
 )
 
-const varNameVLen = "vlen"
+const (
+	varNameVLen     = "vlen"
+	varNameElemSize = "elemSize"
+)
 
 // convSuppressComment rides emitted lines that convert a resolved ctx.exprs
 // value to int. The value is bounded by the platform-size guard emitted at
@@ -181,7 +184,9 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 	// implement DynamicSizer (fullyDelegatesSSZ requires it), so that is the only
 	// case to handle here.
 	if desc.SszType == ssztypes.SszUnspecifiedType && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 {
-		appendCode(g.codeBuf, 0, "%s := new(%s).SizeSSZDyn(ds)\n", sizeVar, g.typePrinter.InnerTypeString(desc))
+		// The sizer speaks int; clamping a misbehaving negative to zero keeps
+		// the unsigned sum from wrapping huge.
+		appendCode(g.codeBuf, 0, "%s := uint64(sszutils.Max(new(%s).SizeSSZDyn(ds), 0))\n", sizeVar, g.typePrinter.InnerTypeString(desc))
 		g.varMap[descHash] = sizeVar
 		return sizeVar, nil
 	}
@@ -251,11 +256,11 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 					exprVar = fmt.Sprintf("(%s+7)/8", exprVar)
 				}
 
-				convSuppress := ""
-				if g.exprVarGenerator.isSlice {
-					convSuppress = convSuppressComment
-				}
-				appendCode(g.codeBuf, 0, "%s := %s * int(%s)%s\n", sizeVar, itemSizeVar, exprVar, convSuppress)
+				appendCode(g.codeBuf, 0, "%s := %s * %s\n", sizeVar, itemSizeVar, exprVar)
+			} else if _, lerr := strconv.ParseUint(itemSizeVar, 10, 64); lerr == nil {
+				// A fully literal product needs the explicit uint64 type to
+				// join the other unsigned size variables.
+				appendCode(g.codeBuf, 0, "%s := uint64(%s * %d)\n", sizeVar, itemSizeVar, desc.Len)
 			} else {
 				appendCode(g.codeBuf, 0, "%s := %s * %d\n", sizeVar, itemSizeVar, desc.Len)
 			}
@@ -403,12 +408,12 @@ func minSizeExpr(desc *ssztypes.TypeDescriptor, sizeVars *staticSizeVarGenerator
 			return expr, "", exprOk && desc.Len > 0
 		}
 
-		count := fmt.Sprintf("int(%s)", sizeVars.exprVarGenerator.getSizeExprVar(*desc.SizeExpression, uint64(desc.Len)))
+		count := sizeVars.exprVarGenerator.getSizeExprVar(*desc.SizeExpression, uint64(desc.Len))
 		expr, exprOk := mulOrAddExpr("*", count, perElem)
 
 		// The product is what the caller divides by, so it is what has to be
 		// checked: a spec value large enough to overflow the multiplication
-		// lands on zero or a negative, neither of which bounds anything. The
+		// wraps to zero or a small value, neither of which bounds anything. The
 		// reflection engine drops such a product for the same reason.
 		return expr, expr, exprOk
 
@@ -481,6 +486,17 @@ func intCapExpr(expr string) string {
 		return expr
 	}
 	return fmt.Sprintf("sszutils.CapToInt(%s)", expr)
+}
+
+// uintCmpExpr renders a length comparison against a resolved size or limit.
+// Expression values compare in uint64 (lengths are never negative, and the
+// resolved value spans the full range); literals in the portable int range
+// compare as plain int constants, sparing the pointless cast.
+func uintCmpExpr(lenExpr, op, limit string) string {
+	if v, err := strconv.ParseUint(limit, 10, 64); err == nil && v <= math.MaxInt32 {
+		return fmt.Sprintf("%s %s %s", lenExpr, op, limit)
+	}
+	return fmt.Sprintf("uint64(%s) %s %s", lenExpr, op, limit)
 }
 
 // uintLitArg types an integer literal above the portable int range as uint64

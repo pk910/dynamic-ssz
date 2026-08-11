@@ -95,13 +95,13 @@ func TestGenerateListRegionBound(t *testing.T) {
 	}{
 		// A spec-driven fixed section: 4 offset bytes for the dynamic tail plus
 		// the resolved size of Fixed. Never zero, so no guard.
-		{"spec-sized container element", "itemCount > (len(buf)-startOffset)/(size1+4)", 1},
+		{"spec-sized container element", "uint64(itemCount) > uint64(len(buf)-startOffset)/(size1+4)", 1},
 		// Two entries, each an offset plus the entry's own 4-byte fixed section.
 		// Fully static, so it folds to a literal.
 		{"static vector element", "itemCount > (len(buf)-startOffset)/(16)", 1},
 		// A resolved count can make the divisor zero -- or wrap it past zero --
 		// so the bound itself is checked before dividing by it.
-		{"spec-counted vector element", "int(expr1)*8 > 0 && itemCount > (len(buf)-startOffset)/(int(expr1)*8)", 1},
+		{"spec-counted vector element", "expr1*8 > 0 && uint64(itemCount) > uint64(len(buf)-startOffset)/(expr1*8)", 1},
 		// A wrapper contributes nothing of its own: the bound is the wrapped
 		// vector's, two entries of one offset each.
 		{"wrapper element", "itemCount > (len(buf)-startOffset)/(8)", 1},

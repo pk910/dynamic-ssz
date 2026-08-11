@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
@@ -594,7 +595,10 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		sizeExpression = nil
 	}
 
+	// limitVar is the uint64-domain resolved size (raw expression or literal);
+	// intLimit is its int form for the codec sinks that require one.
 	limitVar := ""
+	intLimit := ""
 	bitlimitVar := ""
 	hasLimitVar := false
 	if sizeExpression != nil {
@@ -611,10 +615,11 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
 			bitlimitVar = exprVar
-			limitVar = fmt.Sprintf("int((%s+7)/8)", exprVar)
+			limitVar = fmt.Sprintf("(%s+7)/8", exprVar)
 		} else {
-			limitVar = fmt.Sprintf("int(%s)", exprVar)
+			limitVar = exprVar
 		}
+		intLimit = fmt.Sprintf("int(%s)", limitVar)
 
 		hasLimitVar = true
 	} else {
@@ -622,6 +627,7 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			bitlimitVar = fmt.Sprintf("%d", desc.BitSize)
 		}
 		limitVar = fmt.Sprintf("%d", desc.Len)
+		intLimit = limitVar
 	}
 
 	valueVar := varName
@@ -650,8 +656,8 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 	switch {
 	case desc.Kind != reflect.Array:
 		ctx.appendCode(indent, "vlen := len(%s)\n", getValueVar(true, ""))
-		ctx.appendCode(indent, "if vlen > %s {\n", limitVar)
-		errCode := fmt.Sprintf("sszutils.ErrVectorLengthFn(%s, %s)", varNameVLen, limitVar)
+		ctx.appendCode(indent, "if %s {\n", uintCmpExpr("vlen", ">", limitVar))
+		errCode := fmt.Sprintf("sszutils.ErrVectorLengthFn(%s, %s)", varNameVLen, uintLitArg(limitVar))
 		ctx.appendCode(indent, "\treturn nil, %s\n", typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "}\n")
 		lenVar = varNameVLen
@@ -660,11 +666,11 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		// the fallback for when the expression does not resolve, so bounding by
 		// it would truncate a vector whose spec value exceeds it. The backing
 		// array is what has to hold the result, and it may be larger.
-		ctx.appendCode(indent, "if %s > len(%s) {\n", limitVar, getValueVar(false, ""))
+		ctx.appendCode(indent, "if %s {\n", uintCmpExpr(fmt.Sprintf("len(%s)", getValueVar(false, "")), "<", limitVar))
 		errCode := fmt.Sprintf("sszutils.ErrVectorSizeExceedsArrayFn(%s, len(%s))", limitVar, getValueVar(false, ""))
 		ctx.appendCode(indent, "\treturn nil, %s\n", typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "}\n")
-		ctx.appendCode(indent, "vlen := %s\n", limitVar)
+		ctx.appendCode(indent, "vlen := %s\n", intLimit)
 		lenVar = varNameVLen
 	default:
 		lenVar = fmt.Sprintf("%d", desc.Len)
@@ -681,7 +687,7 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 				// their last byte is a data byte, not the boundary byte.
 				conds := []string{}
 				if lenVar == varNameVLen {
-					conds = append(conds, fmt.Sprintf("%s == %s", lenVar, limitVar))
+					conds = append(conds, uintCmpExpr(lenVar, "==", limitVar))
 				}
 				if sizeExpression != nil {
 					conds = append(conds, fmt.Sprintf("%s %% 8 != 0", bitlimitVar))
@@ -729,15 +735,23 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			// element itself is dynssz-sized (e.g. a multi-dimensional fixed
 			// vector), not the static fallback baked at generation time.
 			elemSizeStr := fmt.Sprintf("%d", desc.ElemDesc.Size)
+			elemIsLiteral := true
 			if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
 				sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(desc.ElemDesc)
 				if err != nil {
 					return err
 				}
 				elemSizeStr = sizeVar
+				elemIsLiteral = false
 			}
-			ctx.appendCode(indent, "if %s < %s {\n", lenVar, limitVar)
-			ctx.appendCode(indent, "\tdst = sszutils.AppendZeroPadding(dst, (%s-%s)*%s)\n", limitVar, lenVar, elemSizeStr)
+			ctx.appendCode(indent, "if %s {\n", uintCmpExpr(lenVar, "<", limitVar))
+			if _, limErr := strconv.ParseUint(limitVar, 10, 64); limErr == nil && elemIsLiteral {
+				ctx.appendCode(indent, "\tdst = sszutils.AppendZeroPadding(dst, (%s-%s)*%s)\n", limitVar, lenVar, elemSizeStr)
+			} else {
+				// The subtraction and product run in uint64 (the size variables
+				// are unsigned); the codec surface takes the byte count as int.
+				ctx.appendCode(indent, "\tdst = sszutils.AppendZeroPadding(dst, int((%s-uint64(%s))*%s))\n", limitVar, lenVar, elemSizeStr)
+			}
 			ctx.appendCode(indent, "}\n")
 		}
 	} else {
@@ -747,7 +761,7 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		defer indexDefer()
 
 		ctx.appendCode(indent, "dstlen := len(dst)\n")
-		ctx.appendCode(indent, "dst = sszutils.AppendZeroPadding(dst, %s*4)\n", limitVar)
+		ctx.appendCode(indent, "dst = sszutils.AppendZeroPadding(dst, %s*4)\n", intLimit)
 		ctx.appendCode(indent, "for %s := range %s {\n", indexVar, lenVar)
 		binaryPkgName := ctx.typePrinter.AddImport("encoding/binary", "binary")
 		mathPkgName := ctx.typePrinter.AddImport("math", "math")
@@ -771,9 +785,9 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			// append zero padding if we have less items than the limit. The
 			// padding item is a zero value of the element's own Go type (a nil
 			// pointer for pointer elements, which the element marshaler handles).
-			ctx.appendCode(indent, "if %s < %s {\n", lenVar, limitVar)
+			ctx.appendCode(indent, "if %s {\n", uintCmpExpr(lenVar, "<", limitVar))
 			ctx.appendCode(indent, "\tvar zeroItem %s\n", ctx.typePrinter.TypeString(desc.ElemDesc))
-			ctx.appendCode(indent, "\tfor %s := %s; %s < %s; %s++ {\n", indexVar, lenVar, indexVar, limitVar, indexVar)
+			ctx.appendCode(indent, "\tfor %s := %s; %s; %s++ {\n", indexVar, lenVar, uintCmpExpr(indexVar, "<", limitVar), indexVar)
 			mathPkgName := ctx.typePrinter.AddImport("math", "math")
 			ctx.appendCode(indent, "\t\tif off := uint64(len(dst)) - uint64(dstlen); off > %s.MaxUint32 {\n", mathPkgName)
 			ctx.appendCode(indent, "\t\t\treturn nil, sszutils.ErrOffsetOverflowFn(off)\n")
@@ -848,7 +862,7 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 
 	if hasMax {
 		addVlen()
-		ctx.appendCode(indent, "if uint64(vlen) > %s {\n", maxVar)
+		ctx.appendCode(indent, "if %s {\n", uintCmpExpr("vlen", ">", maxVar))
 		errCode := fmt.Sprintf("sszutils.ErrListLengthFn(vlen, %s)", uintLitArg(maxVar))
 		ctx.appendCode(indent, "\treturn nil, %s\n", typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "}\n")
@@ -971,7 +985,7 @@ func (ctx *marshalContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName
 		ctx.appendCode(indent, "if vlen > 0 {\n")
 		ctx.appendCode(indent+1, "bitCount := 8*(vlen-1) + %s.Len8(bval[vlen-1]) - 1\n", bitsPkgName)
 		errCode := fmt.Sprintf("sszutils.ErrBitlistLengthFn(bitCount, %s)", uintLitArg(maxVar))
-		ctx.appendCode(indent+1, "if uint64(bitCount) > %s {\n\treturn nil, %s\n}\n", maxVar, typePath.getErrorWith(errCode))
+		ctx.appendCode(indent+1, "if %s {\n\treturn nil, %s\n}\n", uintCmpExpr("bitCount", ">", maxVar), typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "}\n")
 	}
 

@@ -635,7 +635,10 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		sizeExpression = nil
 	}
 
+	// limitVar is the uint64-domain resolved size (raw expression or literal);
+	// intLimit is its int form for the slicing and indexing sinks.
 	limitVar := ""
+	intLimit := ""
 	bitlimitVar := ""
 	if sizeExpression != nil {
 		defaultValue := uint64(desc.Len)
@@ -650,16 +653,18 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		exprVar := ctx.exprVars.getSizeExprVar(*sizeExpression, defaultValue)
 
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
-			bitlimitVar = fmt.Sprintf("int(%s)", exprVar)
-			limitVar = fmt.Sprintf("int((%s+7)/8)", exprVar)
+			bitlimitVar = exprVar
+			limitVar = fmt.Sprintf("(%s+7)/8", exprVar)
 		} else {
-			limitVar = fmt.Sprintf("int(%s)", exprVar)
+			limitVar = exprVar
 		}
+		intLimit = fmt.Sprintf("int(%s)", limitVar)
 	} else {
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 && desc.BitSize > 0 && desc.BitSize%8 != 0 {
 			bitlimitVar = fmt.Sprintf("%d", desc.BitSize)
 		}
 		limitVar = fmt.Sprintf("%d", desc.Len)
+		intLimit = limitVar
 	}
 
 	valueVar := varName
@@ -687,19 +692,19 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 	switch {
 	case desc.Kind != reflect.Array:
 		ctx.appendCode(indent, "vlen := len(%s)\n", getValueVar(true, ""))
-		ctx.appendCode(indent, "if vlen > %s {\n", limitVar)
-		errCode := fmt.Sprintf("sszutils.ErrVectorLengthFn(%s, %s)", varNameVLen, limitVar)
+		ctx.appendCode(indent, "if %s {\n", uintCmpExpr("vlen", ">", limitVar))
+		errCode := fmt.Sprintf("sszutils.ErrVectorLengthFn(%s, %s)", varNameVLen, uintLitArg(limitVar))
 		ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "}\n")
 		lenVar = varNameVLen
 	case sizeExpression != nil:
 		// The resolved size is the vector's length; the static ssz-size is only
 		// the fallback. See marshalVector.
-		ctx.appendCode(indent, "if %s > len(%s) {\n", limitVar, getValueVar(false, ""))
+		ctx.appendCode(indent, "if %s {\n", uintCmpExpr(fmt.Sprintf("len(%s)", getValueVar(false, "")), "<", limitVar))
 		errCode := fmt.Sprintf("sszutils.ErrVectorSizeExceedsArrayFn(%s, len(%s))", limitVar, getValueVar(false, ""))
 		ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "}\n")
-		lenVar = limitVar
+		lenVar = intLimit
 	default:
 		lenVar = fmt.Sprintf("%d", desc.Len)
 	}
@@ -721,8 +726,8 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 			valVar = "val"
 
 			// append zero padding if we have less items than the limit
-			ctx.appendCode(indent, "if %s < %s {\n", lenVar, limitVar)
-			ctx.appendCode(indent, "\tval = sszutils.AppendZeroPadding(val, (%s-%s)*%d)\n", limitVar, lenVar, desc.ElemDesc.Size)
+			ctx.appendCode(indent, "if %s {\n", uintCmpExpr(lenVar, "<", limitVar))
+			ctx.appendCode(indent, "\tval = sszutils.AppendZeroPadding(val, (%s-%s)*%d)\n", intLimit, lenVar, desc.ElemDesc.Size)
 			ctx.appendCode(indent, "}\n")
 		} else {
 			valVar = getValueVar(false, "")
@@ -738,7 +743,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 				checkIndent++
 			}
 			ctx.appendCode(checkIndent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
-			ctx.appendCode(checkIndent, "if %s[%s-1] & paddingMask != 0 {\n", valVar, limitVar)
+			ctx.appendCode(checkIndent, "if %s[%s-1] & paddingMask != 0 {\n", valVar, intLimit)
 			errCode := errCodeBitvectorPadding
 			ctx.appendCode(checkIndent, "\treturn %s\n", typePath.getErrorWith(errCode))
 			ctx.appendCode(checkIndent, "}\n")
@@ -748,9 +753,9 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		}
 
 		if pack {
-			ctx.appendCode(indent, "hh.Append(%s[:%s])\n", valVar, limitVar)
+			ctx.appendCode(indent, "hh.Append(%s[:%s])\n", valVar, intLimit)
 		} else {
-			ctx.appendCode(indent, "hh.PutBytes(%s[:%s])\n", valVar, limitVar)
+			ctx.appendCode(indent, "hh.PutBytes(%s[:%s])\n", valVar, intLimit)
 		}
 		_ = itemSize // itemSize only used in element hashing branch
 	} else {
@@ -778,7 +783,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		defer indexDefer()
 
 		ctx.appendCode(indent, "var %s%s %s%s\n", valVar, emptyVarAddin, valVarPtrPrefix, ctx.typePrinter.TypeString(desc.ElemDesc))
-		ctx.appendCode(indent, "for %s := range %s {\n", indexVar, limitVar)
+		ctx.appendCode(indent, "for %s := range %s {\n", indexVar, intLimit)
 		ctx.appendCode(indent, "\tif %s < %s {\n", indexVar, lenVar)
 		ctx.appendCode(indent, "\t\t%s = %s[%s]\n", valVar, getValueVar(false, ctx.getPtrPrefix(desc.ElemDesc, "&")), indexVar)
 		ctx.appendCode(indent, "\t} else if %s == %s {\n", indexVar, lenVar)
