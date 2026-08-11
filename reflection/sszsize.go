@@ -195,7 +195,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		}
 	case ssztypes.SszListType, ssztypes.SszBitlistType, ssztypes.SszProgressiveListType, ssztypes.SszProgressiveBitlistType:
 		fieldType := targetType.ElemDesc
-		sliceLen := uint32(targetValue.Len())
+		sliceLen := targetValue.Len()
 
 		// Enforce ssz-max like marshalList: a list longer than its limit cannot be
 		// serialized, so return the same error instead of a size for an
@@ -203,7 +203,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		// their own encode path, so they are excluded here.
 		if (targetType.SszType == ssztypes.SszListType || targetType.SszType == ssztypes.SszProgressiveListType) &&
 			targetType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 && uint64(sliceLen) > targetType.Limit {
-			return 0, sszutils.ErrListLengthFn(int(sliceLen), targetType.Limit)
+			return 0, sszutils.ErrListLengthFn(sliceLen, targetType.Limit)
 		}
 
 		if sliceLen > 0 {
@@ -212,7 +212,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 				staticSize = uint64(sliceLen)
 			case fieldType.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0:
 				// slice with dynamic size items, so we have to go through each item
-				for i := 0; i < int(sliceLen); i++ {
+				for i := 0; i < sliceLen; i++ {
 					size, err := ctx.getSszValueSize(fieldType, targetValue.Index(i), depth)
 					if err != nil {
 						return 0, sszutils.ErrorWithPathf(err, "[%d]", i)
