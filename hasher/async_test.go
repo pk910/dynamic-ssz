@@ -51,6 +51,9 @@ func runAsyncSequence(t *testing.T, hh *Hasher, s asyncSequence, seed int64) [32
 	for i := 0; i < s.rawPrefix; i++ {
 		rng.Read(chunk)
 		hh.Append(chunk)
+		if s.cadence > 0 && (i+1)%s.cadence == 0 {
+			hh.Collapse()
+		}
 	}
 	for i := 0; i < s.n; i++ {
 		if s.elemChunks == 0 {
@@ -141,6 +144,17 @@ func TestAsyncMatchesSync(t *testing.T) {
 		// node must still not be appended behind plain depth-0 chunks — the
 		// whole run has to reduce synchronously.
 		asyncSequence{rawPrefix: 4096, elemChunks: 8, n: 8192, cadence: 256, limit: 1 << 40},
+		// Element sizes outside the deferral bounds: a single-chunk scope is
+		// below the two-chunk minimum and a 257-chunk scope exceeds
+		// incrementalBatchSize, so both merkleize immediately instead of
+		// joining a deferred run.
+		asyncSequence{elemChunks: 1, n: 300, cadence: 64, limit: 1 << 40},
+		asyncSequence{elemChunks: 257, n: 300, cadence: 64, limit: 1 << 40},
+		// A raw prefix wide enough that its collapse emits a cap-depth node
+		// and leaves depth-0 chunks in front of the element run: the run's
+		// completed-subtree node is incompatible with those shallower leaves,
+		// so the async flush must reject it and reduce synchronously.
+		asyncSequence{rawPrefix: 33024, elemChunks: 8, n: 4200, cadence: 256, limit: 1 << 40},
 	)
 
 	for i, s := range cases {
@@ -301,6 +315,116 @@ func TestAsyncEnableDisable(t *testing.T) {
 	if asyncState.Load() != nil {
 		t.Error("DisableAsyncHashing must remove the limiter")
 	}
+
+	// Worker-limit backstop: occupy every runner with a blocking job so none
+	// is parked idle, then enable with a worker limit the pool has already
+	// reached — no additional runner may spawn.
+	release := make(chan struct{})
+	started := make(chan struct{})
+	blockFn := func(dst []byte, input []byte) error {
+		started <- struct{}{}
+		<-release
+		return nil
+	}
+	EnableAsyncHashing(int(asyncRunners.Load()) + 8)
+	st := asyncState.Load()
+	jobs := make([]*asyncJob, 0, asyncRunners.Load())
+	for int64(len(jobs)) < asyncRunners.Load() {
+		st.sem <- struct{}{}
+		job := &asyncJob{st: st, fn: blockFn, in: make([]byte, 64), outLen: 32,
+			done: make(chan struct{}, 1)}
+		asyncHandoff <- job
+		<-started
+		jobs = append(jobs, job)
+	}
+	runners := asyncRunners.Load()
+	EnableAsyncHashing(1)
+	if got := asyncRunners.Load(); got != runners {
+		t.Errorf("runner spawned past the worker limit: %d != %d", got, runners)
+	}
+	close(release)
+	for _, job := range jobs {
+		<-job.done
+	}
+}
+
+// TestAsyncCollapseSubCapRemainder drives Collapse over deferred runs wider
+// than one job cap but not a multiple of it, so the capped async flush
+// leaves a sub-cap remainder pending: a binary layer keeps the remainder
+// pending for the next round, while a progressive layer reduces it
+// synchronously before group finalization. The runs are registered on the
+// layer directly, mirroring the state the Merkleize deferral path builds —
+// that path self-flushes at exactly the cap, so it never presents an
+// over-cap run to Collapse itself.
+func TestAsyncCollapseSubCapRemainder(t *testing.T) {
+	defer DisableAsyncHashing()
+
+	registerRun := func(hh *Hasher, rng *rand.Rand, idx, elemChunks, n int) {
+		chunk := make([]byte, 32)
+		for i := 0; i < n*elemChunks; i++ {
+			rng.Read(chunk)
+			hh.Append(chunk)
+		}
+		layer := &hh.layers[hh.layerCount]
+		layer.pendStart = idx
+		layer.pendElemChunks = elemChunks
+		layer.pendCount = n
+	}
+
+	t.Run("binary", func(t *testing.T) {
+		const n = 4100 // one cap-sized job of 4096 elements plus a remainder of 4
+		s := asyncSequence{elemChunks: 8, n: n, limit: 1 << 40}
+		DisableAsyncHashing()
+		want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 83)
+
+		EnableAsyncHashing(4)
+		hh := NewHasherWithHashFn(hashtree.HashByteSlice)
+		hh.SetAsyncHashing(true)
+		idx := hh.StartTree(sszutils.TreeTypeBinary)
+		registerRun(hh, rand.New(rand.NewSource(83)), idx, 8, n)
+		hh.Collapse()
+		if pend := hh.layers[hh.layerCount].pendCount; pend != 4 {
+			t.Fatalf("remainder not kept pending after Collapse: %d != 4", pend)
+		}
+		hh.MerkleizeWithMixin(idx, n, 1<<40)
+		got, err := hh.HashRoot()
+		if err != nil {
+			t.Fatalf("HashRoot: %v", err)
+		}
+		if got != want {
+			t.Errorf("binary remainder root %x != sync root %x", got, want)
+		}
+	})
+
+	t.Run("progressive", func(t *testing.T) {
+		// Eight cap-sized jobs of 16384 two-chunk elements plus a remainder
+		// of 4: the flush compacts the run to 131080 chunks of element
+		// roots, just past the deferred-finalization bound
+		// (asyncActiveChunks), so Collapse reduces the remainder and
+		// finalizes instead of returning early.
+		const n = 8*16384 + 4
+		s := asyncSequence{progressive: true, elemChunks: 2, n: n}
+		DisableAsyncHashing()
+		want := runAsyncSequence(t, NewHasherWithHashFn(hashtree.HashByteSlice), s, 89)
+
+		EnableAsyncHashing(4)
+		hh := NewHasherWithHashFn(hashtree.HashByteSlice)
+		hh.SetAsyncHashing(true)
+		idx := hh.StartTree(sszutils.TreeTypeProgressive)
+		registerRun(hh, rand.New(rand.NewSource(89)), idx, 2, n)
+		hh.Collapse()
+		if pend := hh.layers[hh.layerCount].pendCount; pend != 0 {
+			t.Fatalf("remainder not reduced before finalization: %d != 0", pend)
+		}
+		hh.MerkleizeProgressiveWithMixin(idx, n)
+		got, err := hh.HashRoot()
+		if err != nil {
+			t.Fatalf("HashRoot: %v", err)
+		}
+		if got != want {
+			t.Errorf("progressive remainder root %x != sync root %x", got, want)
+		}
+	})
 }
 
 // TestAsyncRingFull runs enough flushes past a tiny worker limit that the
