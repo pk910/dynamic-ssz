@@ -201,7 +201,8 @@ func (fc *FileConfig) applyToConfig(cfg *Config, cliProvided map[string]bool, ba
 	}
 
 	specs := make([]typeSpec, 0, len(fc.Types))
-	for i, entry := range fc.Types {
+	for i := range fc.Types {
+		entry := &fc.Types[i]
 		if entry.Name == "" {
 			return nil, fmt.Errorf("types[%d]: name is required", i)
 		}

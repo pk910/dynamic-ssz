@@ -1,0 +1,18 @@
+# Config for the main batch of generated SSZ code.
+# Paths are resolved relative to this file's directory.
+#
+# Every type listed here is generated in one run, so they reach each other
+# through their generated methods whichever file they land in -- only a type
+# that is referenced but not listed gets inlined. The `output` override is
+# therefore about keeping related shapes readable together, and the groups
+# below follow what each type exercises.
+
+package: github.com/pk910/dynamic-ssz/examples/htr-caching
+output: types_ssz.go
+
+types:
+  - Validator
+  - name: CachedValidator
+    skip-hashtreeroot: true
+  - CachedRegistry
+  - PlainRegistry

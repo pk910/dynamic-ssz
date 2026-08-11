@@ -60,6 +60,28 @@ re-hash only recomputes elements that were invalidated with `MarkDirty`.
 5. **Round-trip** — cached and plain registries serialize to identical bytes; a decoded registry
    starts with empty caches and rebuilds them on the first hash
 
+## Code generation
+
+The example ships generated SSZ methods (`types_ssz.go`), produced by `dynssz-gen` from
+`generate.yaml`. The wrapper entry uses `skip-hashtreeroot: true` so marshal/unmarshal/size are
+generated while the hand-written caching `HashTreeRootWithDyn` stays in charge — the generated
+registry code delegates to it per element:
+
+```yaml
+types:
+  - Validator
+  - name: CachedValidator
+    skip-hashtreeroot: true
+  - CachedRegistry
+  - PlainRegistry
+```
+
+Regenerate with:
+
+```bash
+go generate .
+```
+
 ## Running the Example
 
 ```bash

@@ -54,10 +54,11 @@ type Validator struct {
 // the wrapper's root yields the same registry root as a list of bare
 // validators.
 type CachedValidator struct {
-	Data *Validator
+	Data Validator
 	Root *[32]byte `ssz-type:"-"`
 }
 
+var _ = sszutils.Annotate[CachedValidator](`ssz-type:"wrapper"`)
 var _ sszutils.DynamicHashRoot = (*CachedValidator)(nil)
 
 // HashTreeRootWithDyn implements sszutils.DynamicHashRoot. When the registry
@@ -117,16 +118,16 @@ func main() {
 		"VALIDATOR_REGISTRY_LIMIT": uint64(1099511627776),
 	})
 
-	// Both registries share the same *Validator instances, so mutations below
-	// are visible in both and the plain registry always yields the reference
-	// root for the current data.
+	// The wrapper embeds the validator by value, so each registry holds its
+	// own copy. Mutations below are applied to both so the plain registry
+	// always yields the reference root for the current data.
 	cached := &CachedRegistry{Validators: make([]*CachedValidator, validatorCount)}
 	plain := &PlainRegistry{Validators: make([]*Validator, validatorCount)}
 
 	for i := range plain.Validators {
 		validator := buildValidator(uint64(i))
 		plain.Validators[i] = validator
-		cached.Validators[i] = &CachedValidator{Data: validator}
+		cached.Validators[i] = &CachedValidator{Data: *validator}
 	}
 
 	fmt.Printf("\n1. Cold hash (%d validators, empty cache):\n", validatorCount)
@@ -168,7 +169,8 @@ func main() {
 
 	for i := range 25 {
 		index := i * 4000
-		cached.Validators[index].Data.EffectiveBalance += 1_000_000_000
+		plain.Validators[index].EffectiveBalance += 1_000_000_000
+		cached.Validators[index].Data = *plain.Validators[index]
 		cached.Validators[index].MarkDirty()
 	}
 
@@ -195,6 +197,7 @@ func main() {
 
 	fmt.Println("\n4. Pitfall — mutating without MarkDirty serves a stale root:")
 
+	plain.Validators[0].Slashed = true
 	cached.Validators[0].Data.Slashed = true
 
 	staleRoot, err := ds.HashTreeRoot(cached)
