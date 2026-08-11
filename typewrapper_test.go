@@ -5,9 +5,12 @@
 package dynssz
 
 import (
+	"bytes"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 func TestNewTypeWrapper(t *testing.T) {
@@ -257,4 +260,80 @@ func TestTypeWrapperEdgeCases(t *testing.T) {
 			t.Error("GetDescriptorType should return same type for same descriptor")
 		}
 	})
+}
+
+// Tagged wrapper shapes with SSZ-excluded cache fields. The excluded field may
+// precede the wrapped value, so the wrapped field index is not always 0.
+type testWrapperTrailingExcluded struct {
+	Data uint64
+	Note *[32]byte `ssz-type:"-"`
+}
+
+type testWrapperLeadingExcluded struct {
+	Note *[32]byte `ssz-type:"-"`
+	Data uint64
+}
+
+type testWrapperTwoSszFields struct {
+	A uint64
+	B uint64
+}
+
+var _ = sszutils.Annotate[testWrapperTrailingExcluded](`ssz-type:"wrapper"`)
+var _ = sszutils.Annotate[testWrapperLeadingExcluded](`ssz-type:"wrapper"`)
+var _ = sszutils.Annotate[testWrapperTwoSszFields](`ssz-type:"wrapper"`)
+
+// TestTaggedWrapperExcludedFields verifies that a wrapper-tagged struct may
+// carry excluded fields alongside its single SSZ field: serialization and
+// hashing are transparent to the wrapped value, unmarshal leaves the excluded
+// field untouched, and more than one SSZ field is rejected.
+func TestTaggedWrapperExcludedFields(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	wantBytes, err := ds.MarshalSSZ(uint64(12345))
+	if err != nil {
+		t.Fatalf("marshal reference: %v", err)
+	}
+	wantRoot, err := ds.HashTreeRoot(uint64(12345))
+	if err != nil {
+		t.Fatalf("hash reference: %v", err)
+	}
+
+	note := &[32]byte{1}
+	trailing := &testWrapperTrailingExcluded{Data: 12345, Note: note}
+	leading := &testWrapperLeadingExcluded{Note: note, Data: 12345}
+
+	for name, value := range map[string]any{"trailing": trailing, "leading": leading} {
+		buf, marshalErr := ds.MarshalSSZ(value)
+		if marshalErr != nil {
+			t.Fatalf("%s: marshal: %v", name, marshalErr)
+		}
+		if !bytes.Equal(buf, wantBytes) {
+			t.Errorf("%s: serialization differs from wrapped value: %x != %x", name, buf, wantBytes)
+		}
+
+		root, hashErr := ds.HashTreeRoot(value)
+		if hashErr != nil {
+			t.Fatalf("%s: hash: %v", name, hashErr)
+		}
+		if root != wantRoot {
+			t.Errorf("%s: root differs from wrapped value: %x != %x", name, root, wantRoot)
+		}
+	}
+
+	var decoded testWrapperLeadingExcluded
+	if err = ds.UnmarshalSSZ(&decoded, wantBytes); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.Data != 12345 {
+		t.Errorf("decoded Data = %d, want 12345", decoded.Data)
+	}
+	if decoded.Note != nil {
+		t.Error("excluded field must stay untouched on unmarshal")
+	}
+
+	_, err = ds.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(testWrapperTwoSszFields{}), nil, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "exactly 1 SSZ field") {
+		t.Errorf("expected multiple-SSZ-field rejection, got: %v", err)
+	}
 }

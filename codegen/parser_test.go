@@ -2076,8 +2076,8 @@ func TestBuildTypeWrapperDescriptor(t *testing.T) {
 		if err == nil {
 			t.Error("Expected error for wrong field count")
 		}
-		if !strings.Contains(err.Error(), "exactly 1 field") {
-			t.Errorf("Expected 'exactly 1 field' error, got: %v", err)
+		if !strings.Contains(err.Error(), "exactly 1 SSZ field") {
+			t.Errorf("Expected 'exactly 1 SSZ field' error, got: %v", err)
 		}
 	})
 

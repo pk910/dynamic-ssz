@@ -355,8 +355,8 @@ func (ctx *ReflectionCtx) unmarshalTypeWrapper(targetType *ssztypes.TypeDescript
 		ctx.logCb("%sunmarshalTypeWrapper: %s\n", strings.Repeat(" ", int(depth.idt)*2), targetType.Type.Name())
 	}
 
-	// Get the Data field from the TypeWrapper
-	dataField := targetValue.Field(0)
+	// Get the wrapped value field from the TypeWrapper
+	dataField := targetValue.Field(int(targetType.WrapperFieldIndex))
 
 	// Unmarshal the wrapped value using its type descriptor
 	err := ctx.unmarshalType(targetType.ElemDesc, dataField, decoder, depth)

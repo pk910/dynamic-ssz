@@ -252,3 +252,37 @@ func TestGetTypeWrapperFieldName(t *testing.T) {
 		}
 	})
 }
+
+// TestGetTypeWrapperFieldNameExcludedFields verifies that ssz-excluded fields
+// are ignored when locating the wrapper's data field, in both the go/types and
+// the reflection branch.
+func TestGetTypeWrapperFieldNameExcludedFields(t *testing.T) {
+	t.Run("CodegenInfoExcludedField", func(t *testing.T) {
+		note := types.NewVar(token.NoPos, nil, "Note", types.Typ[types.Uint64])
+		payload := types.NewVar(token.NoPos, nil, "Payload", types.Typ[types.Uint32])
+		structType := types.NewStruct([]*types.Var{note, payload}, []string{`ssz-type:"-"`, ""})
+		info := &CodegenInfo{Type: structType}
+		var anyInfo any = info
+		desc := &ssztypes.TypeDescriptor{
+			SszType:     ssztypes.SszTypeWrapperType,
+			CodegenInfo: &anyInfo,
+		}
+		if got := getTypeWrapperFieldName(desc); got != "Payload" {
+			t.Errorf("expected Payload, got %q", got)
+		}
+	})
+
+	t.Run("ReflectionExcludedField", func(t *testing.T) {
+		type wrapper struct {
+			Note *[32]byte `ssz-type:"-"`
+			Data uint64
+		}
+		desc := &ssztypes.TypeDescriptor{
+			SszType: ssztypes.SszTypeWrapperType,
+			Type:    reflect.TypeOf(wrapper{}),
+		}
+		if got := getTypeWrapperFieldName(desc); got != "Data" {
+			t.Errorf("expected Data, got %q", got)
+		}
+	})
+}

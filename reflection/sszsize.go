@@ -110,8 +110,8 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 
 	switch targetType.SszType {
 	case ssztypes.SszTypeWrapperType:
-		// Extract the Data field from the TypeWrapper
-		dataField := targetValue.Field(0)
+		// Extract the wrapped value field from the TypeWrapper
+		dataField := targetValue.Field(int(targetType.WrapperFieldIndex))
 
 		// Calculate size for the wrapped value using its type descriptor
 		size, err := ctx.getSszValueSize(targetType.ElemDesc, dataField, depth)

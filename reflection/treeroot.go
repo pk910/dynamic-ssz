@@ -322,8 +322,8 @@ func (ctx *ReflectionCtx) buildRootFromTypeWrapper(sourceType *ssztypes.TypeDesc
 		ctx.logCb("%sbuildRootFromTypeWrapper: %s\n", strings.Repeat(" ", int(depth.idt)*2), sourceType.Type.Name())
 	}
 
-	// Extract the Data field from the TypeWrapper
-	dataField := sourceValue.Field(0)
+	// Extract the wrapped value field from the TypeWrapper
+	dataField := sourceValue.Field(int(sourceType.WrapperFieldIndex))
 
 	// Build hash tree root for the wrapped value using its type descriptor
 	return ctx.buildRootFromType(sourceType.ElemDesc, dataField, hh, pack, depth)

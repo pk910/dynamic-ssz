@@ -69,7 +69,7 @@ func TestExtractWrapperDescriptorInfo(t *testing.T) {
 			name:           "descriptor with no fields",
 			descriptorType: reflect.TypeOf(struct{}{}),
 			expectError:    true,
-			errorContains:  "wrapper descriptor must have exactly 1 field",
+			errorContains:  "wrapper descriptor must have exactly 1 SSZ field",
 		},
 		{
 			name: "descriptor with multiple fields",
@@ -78,7 +78,7 @@ func TestExtractWrapperDescriptorInfo(t *testing.T) {
 				Field2 string
 			}{}),
 			expectError:   true,
-			errorContains: "wrapper descriptor must have exactly 1 field",
+			errorContains: "wrapper descriptor must have exactly 1 SSZ field",
 		},
 
 		{

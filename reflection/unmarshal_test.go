@@ -491,7 +491,7 @@ func TestUnmarshalErrors(t *testing.T) {
 				TypeWrapper struct{} `ssz-type:"wrapper"`
 			}),
 			data:        fromHex("0x"),
-			expectedErr: "wrapper descriptor must have exactly 1 field",
+			expectedErr: "wrapper descriptor must have exactly 1 SSZ field",
 		},
 		{
 			name: "compatible_union_missing_selector",
@@ -765,7 +765,7 @@ func TestUnmarshalErrors(t *testing.T) {
 			}),
 			// Container offset (4) + first offset claims 2 items (8) but only 5 bytes total
 			data:        fromHex("0x04000000" + "01020304"),
-			expectedErr: "wrapper descriptor must have exactly 1 field",
+			expectedErr: "wrapper descriptor must have exactly 1 SSZ field",
 		},
 		{
 			name: "type_wrapper_inner_error",

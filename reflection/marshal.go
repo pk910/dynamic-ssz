@@ -300,8 +300,8 @@ func (ctx *ReflectionCtx) marshalTypeWrapper(sourceType *ssztypes.TypeDescriptor
 		ctx.logCb("%smarshalTypeWrapper: %s\n", strings.Repeat(" ", int(depth.idt)*2), sourceType.Type.Name())
 	}
 
-	// Extract the Data field from the TypeWrapper
-	dataField := sourceValue.Field(0)
+	// Extract the wrapped value field from the TypeWrapper
+	dataField := sourceValue.Field(int(sourceType.WrapperFieldIndex))
 
 	// Marshal the wrapped value using its type descriptor
 	return ctx.marshalType(sourceType.ElemDesc, dataField, encoder, depth)

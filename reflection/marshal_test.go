@@ -307,7 +307,7 @@ func TestMarshalErrors(t *testing.T) {
 			input: struct {
 				TypeWrapper struct{} `ssz-type:"wrapper"`
 			}{},
-			expectedErr: "wrapper descriptor must have exactly 1 field",
+			expectedErr: "wrapper descriptor must have exactly 1 SSZ field",
 		},
 
 		{

@@ -1263,6 +1263,12 @@ func (tc *TypeCache) buildTypeWrapperDescriptor(desc *TypeDescriptor, runtimeTyp
 		return sszutils.ErrorWithPath(err, "(wrapper)")
 	}
 
+	// Index of the wrapped value field in the runtime struct. A generic
+	// TypeWrapper always holds its value in field 0 (Data); a tagged wrapper
+	// struct holds it at its single SSZ field, which excluded fields may
+	// precede.
+	wrappedFieldIndex := 0
+
 	// Determine runtime wrapped type
 	var runtimeWrappedType reflect.Type
 	if runtimeType != schemaType {
@@ -1296,16 +1302,23 @@ func (tc *TypeCache) buildTypeWrapperDescriptor(desc *TypeDescriptor, runtimeTyp
 			return sszutils.ErrorWithPath(err2, "(wrapper)")
 		}
 		runtimeWrappedType = runtimeWrapperInfo.Type
+		if !isTypeWrapper {
+			wrappedFieldIndex = runtimeWrapperInfo.FieldIndex
+		}
 	} else {
 		runtimeWrappedType = schemaWrapperInfo.Type
+		if !isTypeWrapper {
+			wrappedFieldIndex = schemaWrapperInfo.FieldIndex
+		}
 	}
+	desc.WrapperFieldIndex = uint8(wrappedFieldIndex)
 
 	// The wrapper's actual value field must be shape-compatible with the type the
 	// descriptor expects. Otherwise the reflection-driven encode/decode would call
 	// type-specific operations (Bytes, Uint, Len, ...) on an incompatible value
 	// and panic deep in the reflect package.
-	if runtimeType.NumField() > 0 {
-		valueType := runtimeType.Field(0).Type
+	if wrappedFieldIndex < runtimeType.NumField() {
+		valueType := runtimeType.Field(wrappedFieldIndex).Type
 		if !wrapperTypeCompatible(valueType, runtimeWrappedType) {
 			return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch,
 				"TypeWrapper value type %v is not compatible with descriptor type %v", valueType, runtimeWrappedType)

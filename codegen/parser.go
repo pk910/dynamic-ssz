@@ -1938,14 +1938,24 @@ func (p *Parser) buildTypeWrapperDescriptor(desc *ssztypes.TypeDescriptor, dataN
 		return fmt.Errorf("TypeWrapper descriptor must be a struct, got %T", schemaDescriptorType.Underlying())
 	}
 
-	// The descriptor must have exactly 1 field
-	if schemaDescriptorStruct.NumFields() != 1 {
-		return fmt.Errorf("TypeWrapper descriptor must have exactly 1 field, got %d", schemaDescriptorStruct.NumFields())
+	// The descriptor must have exactly 1 SSZ field; excluded fields are ignored
+	schemaFieldIndex, err := singleSszFieldIndex(schemaDescriptorStruct)
+	if err != nil {
+		return fmt.Errorf("TypeWrapper descriptor %v", err)
+	}
+
+	// Index of the wrapped value field in the runtime struct. A generic
+	// TypeWrapper always holds its value in field 0 (Data); a tagged wrapper
+	// struct holds it at its single SSZ field, which excluded fields may
+	// precede.
+	wrappedFieldIndex := 0
+	if !isTypeWrapper {
+		wrappedFieldIndex = schemaFieldIndex
 	}
 
 	// Extract SSZ annotations from the schema descriptor field
-	schemaField := schemaDescriptorStruct.Field(0)
-	fieldTypeHints, fieldSizeHints, fieldMaxSizeHints, err := p.parseFieldTags(schemaDescriptorStruct.Tag(0))
+	schemaField := schemaDescriptorStruct.Field(schemaFieldIndex)
+	fieldTypeHints, fieldSizeHints, fieldMaxSizeHints, err := p.parseFieldTags(schemaDescriptorStruct.Tag(schemaFieldIndex))
 	if err != nil {
 		return fmt.Errorf("failed to parse TypeWrapper descriptor field tags: %v", err)
 	}
@@ -1973,11 +1983,13 @@ func (p *Parser) buildTypeWrapperDescriptor(desc *ssztypes.TypeDescriptor, dataN
 			if !ok {
 				return fmt.Errorf("data TypeWrapper descriptor must be a struct, got %T", dataNamed.Underlying())
 			}
-			if dataStruct.NumFields() != 1 {
-				return fmt.Errorf("data TypeWrapper descriptor must have exactly 1 field, got %d", dataStruct.NumFields())
+			dataFieldIndex, err2 := singleSszFieldIndex(dataStruct)
+			if err2 != nil {
+				return fmt.Errorf("data TypeWrapper descriptor %v", err2)
 			}
+			wrappedFieldIndex = dataFieldIndex
 
-			dataField := dataStruct.Field(0)
+			dataField := dataStruct.Field(dataFieldIndex)
 			dataWrappedType = dataField.Type()
 		}
 	} else {
@@ -1992,6 +2004,7 @@ func (p *Parser) buildTypeWrapperDescriptor(desc *ssztypes.TypeDescriptor, dataN
 
 	// Store wrapper information
 	desc.ElemDesc = wrappedDesc
+	desc.WrapperFieldIndex = uint8(wrappedFieldIndex)
 
 	// The TypeWrapper inherits properties from the wrapped type
 	desc.Size = wrappedDesc.Size

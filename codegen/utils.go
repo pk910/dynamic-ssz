@@ -183,12 +183,12 @@ func getTypeWrapperFieldName(desc *ssztypes.TypeDescriptor) string {
 				return ""
 			}
 
-			fieldCount := structType.NumFields()
-			if fieldCount != 1 {
+			fieldIndex, err := singleSszFieldIndex(structType)
+			if err != nil {
 				return ""
 			}
 
-			return structType.Field(0).Name()
+			return structType.Field(fieldIndex).Name()
 		}
 	}
 
@@ -203,13 +203,40 @@ func getTypeWrapperFieldName(desc *ssztypes.TypeDescriptor) string {
 			return ""
 		}
 
-		fieldCount := innerType.NumField()
-		if fieldCount != 1 {
-			return ""
+		fieldName := ""
+		for i := 0; i < innerType.NumField(); i++ {
+			f := innerType.Field(i)
+			if !f.IsExported() || ssztypes.IsSszExcluded(f.Tag) {
+				continue
+			}
+			if fieldName != "" {
+				return ""
+			}
+			fieldName = f.Name
 		}
 
-		return innerType.Field(0).Name
+		return fieldName
 	}
 
 	return ""
+}
+
+// singleSszFieldIndex returns the index of the only SSZ-eligible field of a
+// wrapper descriptor struct; unexported and ssz-excluded fields are ignored.
+func singleSszFieldIndex(s *types.Struct) (int, error) {
+	fieldIndex := -1
+	for i := 0; i < s.NumFields(); i++ {
+		f := s.Field(i)
+		if !f.Exported() || ssztypes.IsSszExcluded(reflect.StructTag(s.Tag(i))) {
+			continue
+		}
+		if fieldIndex >= 0 {
+			return -1, fmt.Errorf("must have exactly 1 SSZ field, got multiple (%s, %s)", s.Field(fieldIndex).Name(), f.Name())
+		}
+		fieldIndex = i
+	}
+	if fieldIndex < 0 {
+		return -1, fmt.Errorf("must have exactly 1 SSZ field, got 0")
+	}
+	return fieldIndex, nil
 }
