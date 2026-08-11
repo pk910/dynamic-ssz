@@ -836,6 +836,14 @@ type testLargeContainer struct {
 // SizeSSZ platform behavior for >MaxInt32 sizes is covered by
 // TestSizeAboveMaxInt32 (accepted on 64-bit, rejected on 32-bit).
 
+// skipUnless64Bit skips the test on platforms where int is 32 bits wide.
+func skipUnless64Bit(t *testing.T) {
+	t.Helper()
+	if math.MaxInt <= math.MaxInt32 {
+		t.Skip("requires a 64-bit platform")
+	}
+}
+
 // skipUnless32Bit skips the test on platforms where int is wider than 32 bits.
 func skipUnless32Bit(t *testing.T) {
 	t.Helper()
@@ -6424,6 +6432,15 @@ func TestMarshalWriterOffsetOverflow(t *testing.T) {
 
 	expectOffsetErr := func(t *testing.T, err error) {
 		t.Helper()
+		// On 32-bit platforms the size walk rejects the claimed totals with
+		// the platform range error before any offset write runs; both verdicts
+		// reject the value.
+		if math.MaxInt <= math.MaxInt32 {
+			if err == nil {
+				t.Error("expected an error for the oversized claims")
+			}
+			return
+		}
 		if err == nil || !errors.Is(err, sszutils.ErrOffset) {
 			t.Errorf("expected offset range error, got: %v", err)
 		}
@@ -6538,6 +6555,9 @@ func TestMarshalSeekableOffsetOverflow(t *testing.T) {
 	})
 
 	t.Run("container field patches", func(t *testing.T) {
+		// The container patch accumulator holds encoder positions in int;
+		// positions past the 32-bit range cannot exist on a 32-bit platform.
+		skipUnless64Bit(t)
 		type C struct {
 			A []uint8 `ssz-max:"16"`
 			B []uint8 `ssz-max:"16"`
