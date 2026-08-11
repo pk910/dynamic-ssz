@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/pk910/dynamic-ssz/hasher"
+	"github.com/pk910/dynamic-ssz/reflection"
 	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
@@ -6335,4 +6336,215 @@ func TestWithAsyncHashing(t *testing.T) {
 	if got, err := native.HashTreeRoot(source); err != nil || got != want {
 		t.Errorf("native-hash instance root %x (err %v) != %x", got, err, want)
 	}
+}
+
+// negSizeCustom reports a negative size; the marshal and size entry points
+// reject it before any allocation.
+type negSizeCustom struct{}
+
+var _ = sszutils.Annotate[negSizeCustom](`ssz-type:"custom"`)
+
+func (n *negSizeCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return -1 }
+
+func (n *negSizeCustom) MarshalSSZEncoder(_ sszutils.DynamicSpecs, _ sszutils.Encoder) error {
+	return nil
+}
+
+func (n *negSizeCustom) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, _ sszutils.Decoder) error {
+	return nil
+}
+
+func (n *negSizeCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+// hugeSizeCustom claims 2GiB-1 per value while writing a single byte, driving
+// offset arithmetic past the 4-byte range without the memory cost.
+type hugeSizeCustom struct{}
+
+var _ = sszutils.Annotate[hugeSizeCustom](`ssz-type:"custom"`)
+
+func (h *hugeSizeCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return math.MaxInt32 }
+
+func (h *hugeSizeCustom) MarshalSSZEncoder(_ sszutils.DynamicSpecs, e sszutils.Encoder) error {
+	e.EncodeUint8(0)
+	return nil
+}
+
+func (h *hugeSizeCustom) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, _ sszutils.Decoder) error {
+	return nil
+}
+
+func (h *hugeSizeCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+// emptyDynCustom claims zero bytes and occupies zero Go bytes, so a billion
+// elements build an offset table past the offset range at no memory cost.
+type emptyDynCustom struct{}
+
+var _ = sszutils.Annotate[emptyDynCustom](`ssz-type:"custom"`)
+
+func (h *emptyDynCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 0 }
+
+func (h *emptyDynCustom) MarshalSSZEncoder(_ sszutils.DynamicSpecs, _ sszutils.Encoder) error {
+	return nil
+}
+
+func (h *emptyDynCustom) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, _ sszutils.Decoder) error {
+	return nil
+}
+
+func (h *emptyDynCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+// A negative size from a delegated sizer must surface as an error from every
+// size-consuming entry point rather than wrapping into an allocation.
+func TestMarshalNegativeDelegatedSize(t *testing.T) {
+	ds := NewDynSsz(nil, WithExtendedTypes(), WithNoDelegation(), WithNoFastSsz())
+	v := &negSizeCustom{}
+
+	if _, err := ds.MarshalSSZ(v); err == nil {
+		t.Error("MarshalSSZ should reject a negative size")
+	}
+	if _, err := ds.MarshalSSZTo(v, nil); err == nil {
+		t.Error("MarshalSSZTo should reject a negative size")
+	}
+	if _, err := ds.SizeSSZ(v); err == nil {
+		t.Error("SizeSSZ should reject a negative size")
+	}
+}
+
+// Claimed element sizes drive the offset tables the streaming marshal writes
+// before the bodies; totals past the 4-byte offset range must reject instead
+// of truncating. The claims come from lying sizers, so no real memory moves.
+func TestMarshalWriterOffsetOverflow(t *testing.T) {
+	ds := NewDynSsz(nil, WithExtendedTypes())
+
+	expectOffsetErr := func(t *testing.T, err error) {
+		t.Helper()
+		if err == nil || !errors.Is(err, sszutils.ErrOffset) {
+			t.Errorf("expected offset range error, got: %v", err)
+		}
+	}
+
+	t.Run("list offset table", func(t *testing.T) {
+		// The reflection context is driven on a bare list root: any wrapper
+		// would size-walk the billion no-op elements before marshaling starts,
+		// while the list path itself rejects at the first offset write.
+		v := make([]emptyDynCustom, (1<<30)+1)
+		desc, err := ds.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(v), nil, []ssztypes.SszMaxSizeHint{{Size: 2000000000}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx := reflection.NewReflectionCtx(ds, nil, false, true, false, 0)
+		expectOffsetErr(t, ctx.MarshalSSZ(desc, reflect.ValueOf(v), sszutils.NewStreamEncoder(io.Discard, 0)))
+	})
+
+	t.Run("list offsets accumulate", func(t *testing.T) {
+		type L struct {
+			Items []hugeSizeCustom `ssz-max:"16"`
+		}
+		v := &L{Items: make([]hugeSizeCustom, 3)}
+		expectOffsetErr(t, ds.MarshalSSZWriter(v, io.Discard))
+	})
+
+	t.Run("vector offsets accumulate", func(t *testing.T) {
+		type V struct {
+			Items []hugeSizeCustom `ssz-size:"3"`
+		}
+		v := &V{Items: make([]hugeSizeCustom, 3)}
+		expectOffsetErr(t, ds.MarshalSSZWriter(v, io.Discard))
+	})
+
+	t.Run("vector zero-fill offsets accumulate", func(t *testing.T) {
+		type V struct {
+			Items []hugeSizeCustom `ssz-size:"4"`
+		}
+		v := &V{Items: make([]hugeSizeCustom, 1)}
+		expectOffsetErr(t, ds.MarshalSSZWriter(v, io.Discard))
+	})
+
+	t.Run("container field offsets", func(t *testing.T) {
+		type C struct {
+			A hugeSizeCustom `ssz-type:"custom"`
+			B hugeSizeCustom `ssz-type:"custom"`
+			C hugeSizeCustom `ssz-type:"custom"`
+		}
+		expectOffsetErr(t, ds.MarshalSSZWriter(&C{}, io.Discard))
+	})
+}
+
+// inflatingEncoder is seekable and reports positions far past the bytes it
+// receives, so the post-marshal offset patches see encodings past the 4-byte
+// offset range without the memory cost.
+type inflatingEncoder struct{ pos int }
+
+func (e *inflatingEncoder) Seekable() bool { return true }
+func (e *inflatingEncoder) GetPosition() int {
+	e.pos += 1 << 30
+	return e.pos
+}
+func (e *inflatingEncoder) GetBuffer() []byte              { return nil }
+func (e *inflatingEncoder) SetBuffer(_ []byte)             {}
+func (e *inflatingEncoder) EncodeBool(_ bool)              {}
+func (e *inflatingEncoder) EncodeUint8(_ uint8)            {}
+func (e *inflatingEncoder) EncodeUint16(_ uint16)          {}
+func (e *inflatingEncoder) EncodeUint32(_ uint32)          {}
+func (e *inflatingEncoder) EncodeUint64(_ uint64)          {}
+func (e *inflatingEncoder) EncodeBytes(_ []byte)           {}
+func (e *inflatingEncoder) EncodeOffset(_ uint32)          {}
+func (e *inflatingEncoder) EncodeOffsetAt(_ int, _ uint32) {}
+func (e *inflatingEncoder) EncodeZeroPadding(_ int)        {}
+
+// The seekable marshal paths patch offsets from real encoder positions after
+// each element; positions past the 4-byte offset range must reject instead of
+// truncating.
+func TestMarshalSeekableOffsetOverflow(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	run := func(t *testing.T, v any) {
+		t.Helper()
+		desc, err := ds.GetTypeCache().GetTypeDescriptor(reflect.TypeOf(v), nil, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx := reflection.NewReflectionCtx(ds, nil, false, true, false, 0)
+		if err := ctx.MarshalSSZ(desc, reflect.ValueOf(v), &inflatingEncoder{}); err == nil || !errors.Is(err, sszutils.ErrOffset) {
+			t.Errorf("expected offset range error, got: %v", err)
+		}
+	}
+
+	t.Run("vector element patches", func(t *testing.T) {
+		type V struct {
+			Items [][]uint8 `ssz-size:"8" ssz-max:"?,16"`
+		}
+		run(t, &V{Items: [][]uint8{{1}, {2}, {3}, {4}, {5}, {6}, {7}, {8}}})
+	})
+
+	t.Run("vector zero-fill patches", func(t *testing.T) {
+		type V struct {
+			Items [][]uint8 `ssz-size:"8" ssz-max:"?,16"`
+		}
+		run(t, &V{Items: [][]uint8{{1}}})
+	})
+
+	t.Run("list element patches", func(t *testing.T) {
+		type L struct {
+			Items [][]uint8 `ssz-max:"16,16"`
+		}
+		run(t, &L{Items: [][]uint8{{1}, {2}, {3}, {4}, {5}, {6}, {7}, {8}}})
+	})
+
+	t.Run("container field patches", func(t *testing.T) {
+		type C struct {
+			A []uint8 `ssz-max:"16"`
+			B []uint8 `ssz-max:"16"`
+			C []uint8 `ssz-max:"16"`
+			D []uint8 `ssz-max:"16"`
+			E []uint8 `ssz-max:"16"`
+		}
+		run(t, &C{})
+	})
 }

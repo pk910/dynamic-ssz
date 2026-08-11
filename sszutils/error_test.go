@@ -273,6 +273,7 @@ func TestErrorConstructorFunctions(t *testing.T) {
 		{"ErrElementOffsetOutOfRangeFn", ErrElementOffsetOutOfRangeFn(99, 10, 50), ErrOffset, "element offset 99 out of range (start 10, max 50)"},
 		{"ErrStaticElementNotConsumedFn", ErrStaticElementNotConsumedFn(6, 8), ErrOffset, "element consumed to position 6, expected 8"},
 		{"ErrListRegionTooSmallFn", ErrListRegionTooSmallFn(512, 65540, 0), ErrOffset, "list declares 512 elements of at least 65540 bytes, but only 0 bytes remain for them"},
+		{"ErrOffsetOverflowFn", ErrOffsetOverflowFn(int64(5000000000)), ErrOffset, "offset 5000000000 exceeds the 4-byte SSZ offset range"},
 
 		// ErrVectorLength constructors
 		{"ErrVectorLengthFn", ErrVectorLengthFn(10, 5), ErrVectorLength, "vector length 10 exceeds limit 5"},
