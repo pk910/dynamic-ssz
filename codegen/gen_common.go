@@ -17,21 +17,15 @@ import (
 
 const varNameVLen = "vlen"
 
-// intCapExpr returns expr usable as an int capacity cap. A capacity above the
-// platform integer range clamps to math.MaxInt — the limit check itself
-// compares in uint64, so nothing is lost — while a plain conversion of a
-// 64-bit limit could wrap negative. Integer literals are resolved at
-// generation time: small ones pass through untouched, larger ones emit the
-// runtime clamp so the generated code compiles on 32-bit platforms too.
-func intCapExpr(expr string, typePrinter *TypePrinter) string {
-	if v, err := strconv.ParseUint(expr, 10, 64); err == nil {
-		if v <= math.MaxInt32 {
-			return expr
-		}
-		return fmt.Sprintf("int(min(uint64(%s), uint64(%s.MaxInt)))", expr, typePrinter.AddImport("math", "math"))
-	}
-	return fmt.Sprintf("int(min(%s, uint64(%s.MaxInt)))", expr, typePrinter.AddImport("math", "math"))
-}
+// convSuppressComment rides emitted lines that convert a resolved ctx.exprs
+// value to int. The value is bounded by the platform-size guard emitted at
+// resolution, but CodeQL and gosec do not carry range facts through array
+// elements, so the exact conversion is flagged. gosec requires #nosec at the
+// comment start; the lgtm marker is CodeQL's end-of-line suppression form
+// (codeql[...] only works as a standalone line), matched anywhere in the
+// comment, and takes effect in scans that include the alert-suppression
+// queries.
+const convSuppressComment = " // #nosec G115 lgtm[go/incorrect-integer-conversion] -- bounded by the platform-size guard at spec resolution"
 
 // Generated error expression constants shared across codegen files.
 const (
@@ -257,7 +251,11 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 					exprVar = fmt.Sprintf("(%s+7)/8", exprVar)
 				}
 
-				appendCode(g.codeBuf, 0, "%s := %s * int(%s)\n", sizeVar, itemSizeVar, exprVar)
+				convSuppress := ""
+				if g.exprVarGenerator.isSlice {
+					convSuppress = convSuppressComment
+				}
+				appendCode(g.codeBuf, 0, "%s := %s * int(%s)%s\n", sizeVar, itemSizeVar, exprVar, convSuppress)
 			} else {
 				appendCode(g.codeBuf, 0, "%s := %s * %d\n", sizeVar, itemSizeVar, desc.Len)
 			}
@@ -468,4 +466,30 @@ func localizedVarName(varName string, indent int) string {
 		return "t2"
 	}
 	return "t"
+}
+
+// intCapExpr returns expr usable as an int capacity cap. A capacity above the
+// platform integer range clamps to math.MaxInt — the limit check itself
+// compares in uint64, so nothing is lost — while a plain conversion of a
+// 64-bit limit could wrap negative. Integer literals are resolved at
+// generation time: small ones pass through untouched, larger ones emit the
+// runtime clamp so the generated code compiles on 32-bit platforms too. The
+// qualified helper keeps the generated code clear of the bare min builtin,
+// which a target package may shadow.
+func intCapExpr(expr string) string {
+	if v, err := strconv.ParseUint(expr, 10, 64); err == nil && v <= math.MaxInt32 {
+		return expr
+	}
+	return fmt.Sprintf("sszutils.CapToInt(%s)", expr)
+}
+
+// uintLitArg types an integer literal above the portable int range as uint64
+// for splicing into an `any` argument (error constructors). An untyped
+// constant there defaults to int, which does not compile for values past the
+// target's int width. Variables and smaller literals pass through untouched.
+func uintLitArg(expr string) string {
+	if v, err := strconv.ParseUint(expr, 10, 64); err == nil && v > math.MaxInt32 {
+		return fmt.Sprintf("uint64(%s)", expr)
+	}
+	return expr
 }

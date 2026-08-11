@@ -1021,10 +1021,10 @@ func (ctx *ReflectionCtx) unmarshalListUntilEOF(targetType *ssztypes.TypeDescrip
 
 	maxItems := -1
 	if targetType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
-		if targetType.Limit > math.MaxInt {
-			return sszutils.ErrPlatformOverflowFn("list limit", targetType.Limit)
-		}
-		maxItems = int(targetType.Limit)
+		// A limit above the platform integer range caps to MaxInt: the cap only
+		// bounds reads and allocations, which cannot reach that magnitude, while
+		// the limit itself keeps its full uint64 range.
+		maxItems = sszutils.CapToInt(targetType.Limit)
 	}
 
 	fieldT := targetType.Type
@@ -1422,11 +1422,10 @@ func (ctx *ReflectionCtx) unmarshalBitlist(targetType *ssztypes.TypeDescriptor, 
 	// stream) from forcing an arbitrarily large allocation.
 	maxBytes := -1
 	if targetType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
-		limitBytes := targetType.Limit/8 + 1
-		if limitBytes > math.MaxInt {
-			return sszutils.ErrPlatformOverflowFn("bitlist limit", targetType.Limit)
-		}
-		maxBytes = int(limitBytes)
+		// A byte cap above the platform integer range caps to MaxInt: it only
+		// bounds the read, which cannot reach that magnitude, while the limit
+		// itself keeps its full uint64 range.
+		maxBytes = sszutils.CapToInt(targetType.Limit/8 + 1)
 	}
 
 	if decoder.LengthKnown() {

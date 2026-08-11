@@ -1451,7 +1451,7 @@ func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, dataType, 
 	switch t := schemaType.(type) {
 	case *types.Array:
 		schemaElemType = t.Elem()
-		length = int64(t.Len())
+		length = t.Len()
 		if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
 			byteSize := sizeHints[0].Size
 			if sizeHints[0].Bits {

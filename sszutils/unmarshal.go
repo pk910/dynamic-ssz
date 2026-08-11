@@ -5,8 +5,10 @@
 package sszutils
 
 import (
+	"cmp"
 	"encoding/binary"
 	"errors"
+	"math"
 	"unsafe"
 )
 
@@ -131,6 +133,30 @@ func ReadOffset(buf []byte) uint64 {
 }
 
 // ---- expansion functions ----
+
+// CapToInt caps a uint64 value to the platform integer range. Allocation
+// capacities and read caps derived from SSZ limits pass through int while the
+// limits themselves span the full uint64 range; nothing above math.MaxInt is
+// reachable in memory, so the cap loses nothing.
+func CapToInt(v uint64) int {
+	if v > math.MaxInt {
+		return math.MaxInt
+	}
+
+	return int(v)
+}
+
+// Min returns the smaller of a and b. Generated code calls the qualified
+// helpers instead of the min/max builtins, which a target package can shadow
+// with its own function.
+func Min[T cmp.Ordered](a, b T) T {
+	return min(a, b)
+}
+
+// Max returns the larger of a and b. See Min.
+func Max[T cmp.Ordered](a, b T) T {
+	return max(a, b)
+}
 
 // ExpandSlice grows or shrinks src to length size, zeroing any newly added elements.
 // For size == 0 it returns a non-nil empty slice.

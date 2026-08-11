@@ -1100,7 +1100,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 		// static byte arrays
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
 			if hasMax {
-				errCode := fmt.Sprintf("sszutils.ErrListLengthFn(len(buf), %s)", maxVar)
+				errCode := fmt.Sprintf("sszutils.ErrListLengthFn(len(buf), %s)", uintLitArg(maxVar))
 				ctx.appendCode(indent, "if uint64(len(buf)) > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
 			}
 			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
@@ -1127,8 +1127,8 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 			errCode := "sszutils.ErrListNotAlignedFn(len(buf), 8)"
 			ctx.appendCode(indent, "if len(buf)%%8 != 0 {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
 			if hasMax {
-				errCode = fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", maxVar)
-				ctx.appendCode(indent, "if uint64(max(itemCount, 0)) > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
+				errCode = fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", uintLitArg(maxVar))
+				ctx.appendCode(indent, "if uint64(itemCount) > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
 			}
 			if desc.Kind != reflect.Array {
 				ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", valueVar, valueVar)
@@ -1157,8 +1157,8 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 			ctx.appendCode(indent, "if len(buf)%%%s != 0 {\n\treturn %s\n}\n", fieldSizeVar, typePath.getErrorWith(errCode))
 		}
 		if hasMax {
-			errCode := fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", maxVar)
-			ctx.appendCode(indent, "if uint64(max(itemCount, 0)) > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
+			errCode := fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", uintLitArg(maxVar))
+			ctx.appendCode(indent, "if uint64(itemCount) > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
 		}
 		if desc.Kind != reflect.Array {
 			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", valueVar, valueVar)
@@ -1203,18 +1203,22 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 		ctx.appendCode(indent, "if len(buf) != 0 {\n")
 		errCode := "sszutils.ErrListOffsetsEOFFn(len(buf), 4)"
 		ctx.appendCode(indent, "\tif len(buf) < 4 {\n\t\treturn %s\n\t}\n", typePath.getErrorWith(errCode))
-		ctx.appendCode(indent, "\tstartOffset = int(%s.LittleEndian.Uint32(buf[0:4]))\n", binaryPkgName)
+		ctx.appendCode(indent, "\tfirstOffset := %s.LittleEndian.Uint32(buf[0:4])\n", binaryPkgName)
+		// The offset validates in the unsigned domain, before the int conversion:
+		// on a 32-bit platform a raw value past MaxInt32 would wrap negative and
+		// slip through int-domain checks as an empty list. A non-empty region
+		// must begin with an offset table, so the first offset is at least 4; a
+		// first offset of 0 means zero items and is only valid for a zero-length
+		// region, anything else leaves unconsumed trailing data that the
+		// reflection path rejects.
+		errCode = "sszutils.ErrInvalidListStartOffsetFn(firstOffset, len(buf))"
+		ctx.appendCode(indent, "\tif firstOffset%%4 != 0 || uint64(firstOffset) > uint64(len(buf)) || firstOffset == 0 {\n\t\treturn %s\n\t}\n", typePath.getErrorWith(errCode))
+		ctx.appendCode(indent, "\tstartOffset = int(firstOffset)\n")
 		ctx.appendCode(indent, "}\n")
 		ctx.appendCode(indent, "itemCount := startOffset / 4\n")
-		errCode = "sszutils.ErrInvalidListStartOffsetFn(startOffset, len(buf))"
-		// A non-empty region must begin with an offset table, so the first offset
-		// is at least 4. A first offset of 0 means zero items and is only valid
-		// for a zero-length region; otherwise the remaining bytes are unconsumed
-		// trailing data that the reflection path rejects.
-		ctx.appendCode(indent, "if startOffset%%4 != 0 || len(buf) < startOffset || (len(buf) != 0 && startOffset == 0) {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
 		if hasMax {
-			errCode = fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", maxVar)
-			ctx.appendCode(indent, "if uint64(max(itemCount, 0)) > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
+			errCode = fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", uintLitArg(maxVar))
+			ctx.appendCode(indent, "if uint64(itemCount) > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
 		}
 		// The offset table declares the count, but only the region can prove the
 		// bodies exist. Each costs at least the element's fixed section, so a
@@ -1298,8 +1302,8 @@ func (ctx *unmarshalContext) unmarshalBitlist(desc *ssztypes.TypeDescriptor, var
 	if hasMax {
 		bitsPkgName := ctx.typePrinter.AddImport("math/bits", "bits")
 		ctx.appendCode(indent, "bitCount := 8*(blen-1) + int(%s.Len8(buf[blen-1])) - 1\n", bitsPkgName)
-		errCode := fmt.Sprintf("sszutils.ErrBitlistLengthFn(bitCount, %s)", maxVar)
-		ctx.appendCode(indent, "if uint64(max(bitCount, 0)) > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
+		errCode := fmt.Sprintf("sszutils.ErrBitlistLengthFn(bitCount, %s)", uintLitArg(maxVar))
+		ctx.appendCode(indent, "if uint64(bitCount) > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
 	}
 
 	valueVar := varName

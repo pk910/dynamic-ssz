@@ -6,8 +6,10 @@ package codegen
 
 import (
 	"fmt"
+	"math"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
@@ -931,7 +933,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		maxVar = "0"
 	}
 	cappedMaxVar := func() string {
-		return intCapExpr(maxVar, ctx.typePrinter)
+		return intCapExpr(maxVar)
 	}
 	growthLimit := func() string {
 		if hasMax {
@@ -1043,8 +1045,8 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 			ctx.appendCode(indent+1, "itemCount = sszLen / %s\n", fieldSizeVar)
 		}
 		if hasMax {
-			errCode := fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", maxVar)
-			ctx.appendCode(indent+1, "if uint64(max(itemCount, 0)) > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
+			errCode := fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", uintLitArg(maxVar))
+			ctx.appendCode(indent+1, "if uint64(itemCount) > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
 		}
 		ctx.appendCode(indent+1, "%s = sszutils.SizeListSlice(dec, %s, itemCount, %s)\n", valueVar, valueVar, fieldSizeVar)
 		ctx.appendCode(indent, "} else {\n")
@@ -1068,7 +1070,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent+2, "}\n")
 		// ssz-max bounds the list while its extent is still unknown.
 		if hasMax {
-			errCode := fmt.Sprintf("sszutils.ErrListLengthFn(%s+1, %s)", indexVar, maxVar)
+			errCode := fmt.Sprintf("sszutils.ErrListLengthFn(%s+1, %s)", indexVar, uintLitArg(maxVar))
 			ctx.appendCode(indent+2, "if uint64(%s) >= %s {\n\treturn %s\n}\n", indexVar, maxVar, typePath.getErrorWith(errCode))
 		}
 		ctx.appendCode(indent+2, "%s = sszutils.GrowSlice(%s, %s+1, %s)\n", valueVar, valueVar, indexVar, growthLimit())
@@ -1132,10 +1134,12 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		// reflection path does.
 		errCode := "sszutils.ErrInvalidListStartOffsetFn(startOffset, sszLen)"
 		// A zero first offset in a non-empty region is rejected (it would
-		// otherwise decode as an empty list), matching the buffer path.
-		ctx.appendCode(indent, "if startOffset%%4 != 0 || sszLen < int(startOffset) || (sszLen != 0 && startOffset == 0) {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
+		// otherwise decode as an empty list), matching the buffer path. The
+		// length bound compares in the unsigned domain: on a 32-bit platform
+		// int(startOffset) can wrap negative and would slip through.
+		ctx.appendCode(indent, "if startOffset%%4 != 0 || uint64(startOffset) > uint64(sszLen) || (sszLen != 0 && startOffset == 0) {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
 		if hasMax {
-			errCode = fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", maxVar)
+			errCode = fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", uintLitArg(maxVar))
 			ctx.appendCode(indent, "if uint64(startOffset)/4 > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
 		}
 		// The offset table declares the count, but only the region can prove the
@@ -1219,9 +1223,9 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent+1, "if %s >= len(%s) {\n", indexVar, indexValueVar)
 		ctx.appendCode(indent+2, "chunkLen := cap(%s)\n", indexValueVar)
 		ctx.appendCode(indent+2, "if chunkLen == len(%s) {\n", indexValueVar)
-		ctx.appendCode(indent+3, "chunkLen = max(%s+1, 8, len(%s)*2)\n", indexVar, indexValueVar)
+		ctx.appendCode(indent+3, "chunkLen = sszutils.Max(sszutils.Max(%s+1, 8), len(%s)*2)\n", indexVar, indexValueVar)
 		ctx.appendCode(indent+2, "}\n")
-		ctx.appendCode(indent+2, "%s = sszutils.GrowSlice(%s, min(itemCount, chunkLen), itemCount)\n", valueVar, valueVar)
+		ctx.appendCode(indent+2, "%s = sszutils.GrowSlice(%s, sszutils.Min(itemCount, chunkLen), itemCount)\n", valueVar, valueVar)
 		ctx.appendCode(indent+1, "}\n")
 
 		// The trailing element runs to the end of the list, so it takes an open
@@ -1286,7 +1290,18 @@ func (ctx *decoderContext) unmarshalBitlist(desc *ssztypes.TypeDescriptor, varNa
 	// as a read cap and an over-long payload is never allocated.
 	bitlistMaxArg := "-1"
 	if hasMax {
-		ctx.appendCode(indent, "bitlistMaxBytes := (%s / 8) + 1\n", intCapExpr(maxVar, ctx.typePrinter))
+		// The byte cap divides in uint64 before capping to int; capping the bit
+		// limit first would round the cap down a byte for limits past MaxInt.
+		var bitlistCap string
+		switch v, err := strconv.ParseUint(maxVar, 10, 64); {
+		case err == nil && v/8 >= math.MaxInt32:
+			bitlistCap = fmt.Sprintf("sszutils.CapToInt(%d)", v/8+1)
+		case err == nil:
+			bitlistCap = fmt.Sprintf("(%s / 8) + 1", maxVar)
+		default:
+			bitlistCap = fmt.Sprintf("sszutils.CapToInt(%s/8 + 1)", maxVar)
+		}
+		ctx.appendCode(indent, "bitlistMaxBytes := %s\n", bitlistCap)
 		bitlistMaxArg = "bitlistMaxBytes"
 	}
 	ctx.appendCode(indent, "if buf, err := sszutils.DecodeByteListInto(dec, %s, %s); err != nil {\n", valueVar, bitlistMaxArg)
@@ -1303,8 +1318,8 @@ func (ctx *decoderContext) unmarshalBitlist(desc *ssztypes.TypeDescriptor, varNa
 	if hasMax {
 		bitsPkgName := ctx.typePrinter.AddImport("math/bits", "bits")
 		ctx.appendCode(indent, "bitCount := 8*(blen-1) + int(%s.Len8(%s[blen-1])) - 1\n", bitsPkgName, valueVar)
-		errCode := fmt.Sprintf("sszutils.ErrBitlistLengthFn(bitCount, %s)", maxVar)
-		ctx.appendCode(indent, "if uint64(max(bitCount, 0)) > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
+		errCode := fmt.Sprintf("sszutils.ErrBitlistLengthFn(bitCount, %s)", uintLitArg(maxVar))
+		ctx.appendCode(indent, "if uint64(bitCount) > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
 	}
 
 	return nil

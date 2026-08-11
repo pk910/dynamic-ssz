@@ -864,7 +864,7 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 	if hasMax {
 		addVlen()
 		ctx.appendCode(indent, "if vlen > %s {\n", maxVar)
-		errCode := fmt.Sprintf("sszutils.ErrListLengthFn(vlen, %s)", maxVar)
+		errCode := fmt.Sprintf("sszutils.ErrListLengthFn(vlen, %s)", uintLitArg(maxVar))
 		ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "}\n")
 	}
@@ -1002,7 +1002,7 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varNa
 
 	if maxVar != "" {
 		ctx.appendCode(indent, "if size > %s {\n", maxVar)
-		errCode := fmt.Sprintf("sszutils.ErrBitlistLengthFn(size, %s)", maxVar)
+		errCode := fmt.Sprintf("sszutils.ErrBitlistLengthFn(size, %s)", uintLitArg(maxVar))
 		ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "}\n")
 	}
