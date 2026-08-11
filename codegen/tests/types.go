@@ -2453,3 +2453,530 @@ type HashParityWrap struct {
 		Data []uint8 `ssz-max:"8"`
 	}, []uint8] `ssz-type:"wrapper"`
 }
+
+// GenCovBranches exercises generator branches no other fixture reaches: bulk
+// fixed-byte collections, limits past the int32 range, spec-sized strings and
+// bit sizes, duplicate hinted shapes, wrapper-borne static sizes, and a
+// fastssz-only child in the streaming decoder.
+type GenCovBranches struct {
+	RootsVec  [][32]byte `ssz-size:"4"`
+	RootsList [][32]byte `ssz-max:"64"`
+	HugeLimit []uint64   `ssz-max:"1099511627776"`
+	SpecStr   string     `dynssz-size:"TEST_SPEC"`
+	Bits2     []byte     `ssz-type:"bitvector" ssz-bitsize:"30"`
+	BitsArr   [4]byte    `ssz-type:"bitvector" ssz-bitsize:"30"`
+	HintA     []byte     `ssz-size:"32" dynssz-size:"SPEC_A"`
+	HintB     []byte     `ssz-size:"32" dynssz-size:"SPEC_B"`
+	Fast      CustomType1
+	WrapSpec  dynssz.TypeWrapper[struct {
+		Data []byte `ssz-size:"32" dynssz-size:"TEST_SPEC"`
+	}, []byte] `ssz-type:"wrapper"`
+	UnionList []dynssz.CompatibleUnion[struct {
+		V1 uint64
+		V2 []byte `ssz-max:"8"`
+	}] `ssz-max:"8"`
+	SpecVecList [][2]genCovSpecInner `ssz-max:"8"`
+	VecOfList   [][2][]uint8         `ssz-max:"8,?,4"`
+	Dyn         []byte               `ssz-max:"32"`
+}
+
+// genCovSpecInner is a dynamic container with a spec-sized static part, so
+// the list region bound over vectors of it groups a compound minimum.
+type genCovSpecInner struct {
+	A []byte `ssz-size:"4" dynssz-size:"TEST_SPEC"`
+	B []byte `ssz-max:"4"`
+}
+
+// GenCovCustomHolder pairs a fastssz-only custom field with a dynamic
+// sibling; generated without fastssz, every generator emits its custom-type
+// return.
+type GenCovCustomHolder struct {
+	C CustomType1 `ssz-type:"custom"`
+	D []byte      `ssz-max:"8"`
+}
+
+// GenCovWideOffsets carries enough consecutive dynamic fields that the
+// grouped offset reservation exceeds the bulk-padding threshold.
+type GenCovWideOffsets struct {
+	F000 []byte `ssz-max:"4"`
+	F001 []byte `ssz-max:"4"`
+	F002 []byte `ssz-max:"4"`
+	F003 []byte `ssz-max:"4"`
+	F004 []byte `ssz-max:"4"`
+	F005 []byte `ssz-max:"4"`
+	F006 []byte `ssz-max:"4"`
+	F007 []byte `ssz-max:"4"`
+	F008 []byte `ssz-max:"4"`
+	F009 []byte `ssz-max:"4"`
+	F010 []byte `ssz-max:"4"`
+	F011 []byte `ssz-max:"4"`
+	F012 []byte `ssz-max:"4"`
+	F013 []byte `ssz-max:"4"`
+	F014 []byte `ssz-max:"4"`
+	F015 []byte `ssz-max:"4"`
+	F016 []byte `ssz-max:"4"`
+	F017 []byte `ssz-max:"4"`
+	F018 []byte `ssz-max:"4"`
+	F019 []byte `ssz-max:"4"`
+	F020 []byte `ssz-max:"4"`
+	F021 []byte `ssz-max:"4"`
+	F022 []byte `ssz-max:"4"`
+	F023 []byte `ssz-max:"4"`
+	F024 []byte `ssz-max:"4"`
+	F025 []byte `ssz-max:"4"`
+	F026 []byte `ssz-max:"4"`
+	F027 []byte `ssz-max:"4"`
+	F028 []byte `ssz-max:"4"`
+	F029 []byte `ssz-max:"4"`
+	F030 []byte `ssz-max:"4"`
+	F031 []byte `ssz-max:"4"`
+	F032 []byte `ssz-max:"4"`
+	F033 []byte `ssz-max:"4"`
+	F034 []byte `ssz-max:"4"`
+	F035 []byte `ssz-max:"4"`
+	F036 []byte `ssz-max:"4"`
+	F037 []byte `ssz-max:"4"`
+	F038 []byte `ssz-max:"4"`
+	F039 []byte `ssz-max:"4"`
+	F040 []byte `ssz-max:"4"`
+	F041 []byte `ssz-max:"4"`
+	F042 []byte `ssz-max:"4"`
+	F043 []byte `ssz-max:"4"`
+	F044 []byte `ssz-max:"4"`
+	F045 []byte `ssz-max:"4"`
+	F046 []byte `ssz-max:"4"`
+	F047 []byte `ssz-max:"4"`
+	F048 []byte `ssz-max:"4"`
+	F049 []byte `ssz-max:"4"`
+	F050 []byte `ssz-max:"4"`
+	F051 []byte `ssz-max:"4"`
+	F052 []byte `ssz-max:"4"`
+	F053 []byte `ssz-max:"4"`
+	F054 []byte `ssz-max:"4"`
+	F055 []byte `ssz-max:"4"`
+	F056 []byte `ssz-max:"4"`
+	F057 []byte `ssz-max:"4"`
+	F058 []byte `ssz-max:"4"`
+	F059 []byte `ssz-max:"4"`
+	F060 []byte `ssz-max:"4"`
+	F061 []byte `ssz-max:"4"`
+	F062 []byte `ssz-max:"4"`
+	F063 []byte `ssz-max:"4"`
+	F064 []byte `ssz-max:"4"`
+	F065 []byte `ssz-max:"4"`
+	F066 []byte `ssz-max:"4"`
+	F067 []byte `ssz-max:"4"`
+	F068 []byte `ssz-max:"4"`
+	F069 []byte `ssz-max:"4"`
+	F070 []byte `ssz-max:"4"`
+	F071 []byte `ssz-max:"4"`
+	F072 []byte `ssz-max:"4"`
+	F073 []byte `ssz-max:"4"`
+	F074 []byte `ssz-max:"4"`
+	F075 []byte `ssz-max:"4"`
+	F076 []byte `ssz-max:"4"`
+	F077 []byte `ssz-max:"4"`
+	F078 []byte `ssz-max:"4"`
+	F079 []byte `ssz-max:"4"`
+	F080 []byte `ssz-max:"4"`
+	F081 []byte `ssz-max:"4"`
+	F082 []byte `ssz-max:"4"`
+	F083 []byte `ssz-max:"4"`
+	F084 []byte `ssz-max:"4"`
+	F085 []byte `ssz-max:"4"`
+	F086 []byte `ssz-max:"4"`
+	F087 []byte `ssz-max:"4"`
+	F088 []byte `ssz-max:"4"`
+	F089 []byte `ssz-max:"4"`
+	F090 []byte `ssz-max:"4"`
+	F091 []byte `ssz-max:"4"`
+	F092 []byte `ssz-max:"4"`
+	F093 []byte `ssz-max:"4"`
+	F094 []byte `ssz-max:"4"`
+	F095 []byte `ssz-max:"4"`
+	F096 []byte `ssz-max:"4"`
+	F097 []byte `ssz-max:"4"`
+	F098 []byte `ssz-max:"4"`
+	F099 []byte `ssz-max:"4"`
+	F100 []byte `ssz-max:"4"`
+	F101 []byte `ssz-max:"4"`
+	F102 []byte `ssz-max:"4"`
+	F103 []byte `ssz-max:"4"`
+	F104 []byte `ssz-max:"4"`
+	F105 []byte `ssz-max:"4"`
+	F106 []byte `ssz-max:"4"`
+	F107 []byte `ssz-max:"4"`
+	F108 []byte `ssz-max:"4"`
+	F109 []byte `ssz-max:"4"`
+	F110 []byte `ssz-max:"4"`
+	F111 []byte `ssz-max:"4"`
+	F112 []byte `ssz-max:"4"`
+	F113 []byte `ssz-max:"4"`
+	F114 []byte `ssz-max:"4"`
+	F115 []byte `ssz-max:"4"`
+	F116 []byte `ssz-max:"4"`
+	F117 []byte `ssz-max:"4"`
+	F118 []byte `ssz-max:"4"`
+	F119 []byte `ssz-max:"4"`
+	F120 []byte `ssz-max:"4"`
+	F121 []byte `ssz-max:"4"`
+	F122 []byte `ssz-max:"4"`
+	F123 []byte `ssz-max:"4"`
+	F124 []byte `ssz-max:"4"`
+	F125 []byte `ssz-max:"4"`
+	F126 []byte `ssz-max:"4"`
+	F127 []byte `ssz-max:"4"`
+	F128 []byte `ssz-max:"4"`
+	F129 []byte `ssz-max:"4"`
+	F130 []byte `ssz-max:"4"`
+	F131 []byte `ssz-max:"4"`
+	F132 []byte `ssz-max:"4"`
+	F133 []byte `ssz-max:"4"`
+	F134 []byte `ssz-max:"4"`
+	F135 []byte `ssz-max:"4"`
+	F136 []byte `ssz-max:"4"`
+	F137 []byte `ssz-max:"4"`
+	F138 []byte `ssz-max:"4"`
+	F139 []byte `ssz-max:"4"`
+	F140 []byte `ssz-max:"4"`
+	F141 []byte `ssz-max:"4"`
+	F142 []byte `ssz-max:"4"`
+	F143 []byte `ssz-max:"4"`
+	F144 []byte `ssz-max:"4"`
+	F145 []byte `ssz-max:"4"`
+	F146 []byte `ssz-max:"4"`
+	F147 []byte `ssz-max:"4"`
+	F148 []byte `ssz-max:"4"`
+	F149 []byte `ssz-max:"4"`
+	F150 []byte `ssz-max:"4"`
+	F151 []byte `ssz-max:"4"`
+	F152 []byte `ssz-max:"4"`
+	F153 []byte `ssz-max:"4"`
+	F154 []byte `ssz-max:"4"`
+	F155 []byte `ssz-max:"4"`
+	F156 []byte `ssz-max:"4"`
+	F157 []byte `ssz-max:"4"`
+	F158 []byte `ssz-max:"4"`
+	F159 []byte `ssz-max:"4"`
+	F160 []byte `ssz-max:"4"`
+	F161 []byte `ssz-max:"4"`
+	F162 []byte `ssz-max:"4"`
+	F163 []byte `ssz-max:"4"`
+	F164 []byte `ssz-max:"4"`
+	F165 []byte `ssz-max:"4"`
+	F166 []byte `ssz-max:"4"`
+	F167 []byte `ssz-max:"4"`
+	F168 []byte `ssz-max:"4"`
+	F169 []byte `ssz-max:"4"`
+	F170 []byte `ssz-max:"4"`
+	F171 []byte `ssz-max:"4"`
+	F172 []byte `ssz-max:"4"`
+	F173 []byte `ssz-max:"4"`
+	F174 []byte `ssz-max:"4"`
+	F175 []byte `ssz-max:"4"`
+	F176 []byte `ssz-max:"4"`
+	F177 []byte `ssz-max:"4"`
+	F178 []byte `ssz-max:"4"`
+	F179 []byte `ssz-max:"4"`
+	F180 []byte `ssz-max:"4"`
+	F181 []byte `ssz-max:"4"`
+	F182 []byte `ssz-max:"4"`
+	F183 []byte `ssz-max:"4"`
+	F184 []byte `ssz-max:"4"`
+	F185 []byte `ssz-max:"4"`
+	F186 []byte `ssz-max:"4"`
+	F187 []byte `ssz-max:"4"`
+	F188 []byte `ssz-max:"4"`
+	F189 []byte `ssz-max:"4"`
+	F190 []byte `ssz-max:"4"`
+	F191 []byte `ssz-max:"4"`
+	F192 []byte `ssz-max:"4"`
+	F193 []byte `ssz-max:"4"`
+	F194 []byte `ssz-max:"4"`
+	F195 []byte `ssz-max:"4"`
+	F196 []byte `ssz-max:"4"`
+	F197 []byte `ssz-max:"4"`
+	F198 []byte `ssz-max:"4"`
+	F199 []byte `ssz-max:"4"`
+	F200 []byte `ssz-max:"4"`
+	F201 []byte `ssz-max:"4"`
+	F202 []byte `ssz-max:"4"`
+	F203 []byte `ssz-max:"4"`
+	F204 []byte `ssz-max:"4"`
+	F205 []byte `ssz-max:"4"`
+	F206 []byte `ssz-max:"4"`
+	F207 []byte `ssz-max:"4"`
+	F208 []byte `ssz-max:"4"`
+	F209 []byte `ssz-max:"4"`
+	F210 []byte `ssz-max:"4"`
+	F211 []byte `ssz-max:"4"`
+	F212 []byte `ssz-max:"4"`
+	F213 []byte `ssz-max:"4"`
+	F214 []byte `ssz-max:"4"`
+	F215 []byte `ssz-max:"4"`
+	F216 []byte `ssz-max:"4"`
+	F217 []byte `ssz-max:"4"`
+	F218 []byte `ssz-max:"4"`
+	F219 []byte `ssz-max:"4"`
+	F220 []byte `ssz-max:"4"`
+	F221 []byte `ssz-max:"4"`
+	F222 []byte `ssz-max:"4"`
+	F223 []byte `ssz-max:"4"`
+	F224 []byte `ssz-max:"4"`
+	F225 []byte `ssz-max:"4"`
+	F226 []byte `ssz-max:"4"`
+	F227 []byte `ssz-max:"4"`
+	F228 []byte `ssz-max:"4"`
+	F229 []byte `ssz-max:"4"`
+	F230 []byte `ssz-max:"4"`
+	F231 []byte `ssz-max:"4"`
+	F232 []byte `ssz-max:"4"`
+	F233 []byte `ssz-max:"4"`
+	F234 []byte `ssz-max:"4"`
+	F235 []byte `ssz-max:"4"`
+	F236 []byte `ssz-max:"4"`
+	F237 []byte `ssz-max:"4"`
+	F238 []byte `ssz-max:"4"`
+	F239 []byte `ssz-max:"4"`
+	F240 []byte `ssz-max:"4"`
+	F241 []byte `ssz-max:"4"`
+	F242 []byte `ssz-max:"4"`
+	F243 []byte `ssz-max:"4"`
+	F244 []byte `ssz-max:"4"`
+	F245 []byte `ssz-max:"4"`
+	F246 []byte `ssz-max:"4"`
+	F247 []byte `ssz-max:"4"`
+	F248 []byte `ssz-max:"4"`
+	F249 []byte `ssz-max:"4"`
+	F250 []byte `ssz-max:"4"`
+	F251 []byte `ssz-max:"4"`
+	F252 []byte `ssz-max:"4"`
+	F253 []byte `ssz-max:"4"`
+	F254 []byte `ssz-max:"4"`
+	F255 []byte `ssz-max:"4"`
+	F256 []byte `ssz-max:"4"`
+}
+
+// streamOnlyCustom carries the fastssz set plus only the streaming-flavored
+// dynamic methods: the dynamic flags unforce the fastssz delegation, so the
+// buffer generators fall through to their custom-type returns while the
+// streaming generators delegate.
+type streamOnlyCustom struct{ A uint32 }
+
+func (e *streamOnlyCustom) MarshalSSZ() ([]byte, error) {
+	return e.MarshalSSZTo(nil)
+}
+
+func (e *streamOnlyCustom) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return sszutils.MarshalUint32(buf, e.A), nil
+}
+
+func (e *streamOnlyCustom) SizeSSZ() int { return 4 }
+
+func (e *streamOnlyCustom) UnmarshalSSZ(data []byte) error {
+	e.A = sszutils.UnmarshallUint32(data)
+	return nil
+}
+
+func (e *streamOnlyCustom) HashTreeRoot() ([32]byte, error) {
+	return [32]byte{}, nil
+}
+
+func (e *streamOnlyCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 4 }
+
+func (e *streamOnlyCustom) MarshalSSZEncoder(_ sszutils.DynamicSpecs, enc sszutils.Encoder) error {
+	enc.EncodeUint32(e.A)
+	return nil
+}
+
+func (e *streamOnlyCustom) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, dec sszutils.Decoder) error {
+	v, err := dec.DecodeUint32()
+	e.A = v
+	return err
+}
+
+func (e *streamOnlyCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+// bufOnlyCustom mirrors streamOnlyCustom with only the buffer-flavored
+// dynamic methods, so the streaming generators fall through instead.
+type bufOnlyCustom struct{ A uint32 }
+
+func (e *bufOnlyCustom) MarshalSSZ() ([]byte, error) {
+	return e.MarshalSSZTo(nil)
+}
+
+func (e *bufOnlyCustom) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return sszutils.MarshalUint32(buf, e.A), nil
+}
+
+func (e *bufOnlyCustom) SizeSSZ() int { return 4 }
+
+func (e *bufOnlyCustom) UnmarshalSSZ(data []byte) error {
+	e.A = sszutils.UnmarshallUint32(data)
+	return nil
+}
+
+func (e *bufOnlyCustom) HashTreeRoot() ([32]byte, error) {
+	return [32]byte{}, nil
+}
+
+func (e *bufOnlyCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 4 }
+
+func (e *bufOnlyCustom) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return sszutils.MarshalUint32(buf, e.A), nil
+}
+
+func (e *bufOnlyCustom) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, data []byte) error {
+	e.A = sszutils.UnmarshallUint32(data)
+	return nil
+}
+
+func (e *bufOnlyCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+// GenCovCustomHolder2 pairs stream-only, buffer-only and statically sized
+// fastssz-only custom fields with a dynamic sibling, driving each generator
+// through its delegation fallbacks.
+type GenCovCustomHolder2 struct {
+	C  streamOnlyCustom `ssz-type:"custom"`
+	CB bufOnlyCustom    `ssz-type:"custom"`
+	CS CustomType1      `ssz-type:"custom" ssz-size:"8"`
+	D  []byte           `ssz-max:"8"`
+}
+
+// namedCovBytes is unwrapped against the plain view schema field.
+type namedCovBytes []byte
+
+// aliasCovBytes is unaliased against the plain view schema field.
+type aliasCovBytes = []byte
+
+// View-mix bases: ChildA keeps only the buffer-flavored view methods, ChildB
+// only the streaming-flavored ones, so the holder generators exercise the
+// cross-flavored delegation branches.
+type ViewMixChildA struct {
+	X []byte `ssz-max:"8"`
+	Y uint32
+}
+
+type ViewMixChildB struct {
+	X []byte `ssz-max:"8"`
+	Z uint64
+}
+
+type ViewMixHolder struct {
+	A ViewMixChildA
+	B ViewMixChildB
+	C ViewMixChildC
+	N namedCovBytes `ssz-max:"8"`
+	L aliasCovBytes `ssz-max:"8"`
+	U dynssz.CompatibleUnion[struct {
+		V1 uint64
+		V2 ViewMixChildA
+	}]
+	D []byte `ssz-max:"8"`
+}
+
+type ViewMixChildA_View struct {
+	X []byte `ssz-max:"8"`
+	Y uint32
+}
+
+type ViewMixChildB_View struct {
+	X []byte `ssz-max:"8"`
+	Z uint64
+}
+
+// ViewMixChildC is fully static, so the sized delegate-buffer branches run
+// for its buffer-only view methods.
+type ViewMixChildC struct {
+	Y uint32
+	Z uint64
+}
+
+type ViewMixChildC_View struct {
+	Y uint32
+	Z uint64
+}
+
+type ViewMixHolder_View struct {
+	A ViewMixChildA_View
+	B ViewMixChildB_View
+	C ViewMixChildC_View
+	N []byte `ssz-max:"8"`
+	L []byte `ssz-max:"8"`
+	U dynssz.CompatibleUnion[struct {
+		V1 uint64
+		V2 ViewMixChildA_View
+	}]
+	D []byte `ssz-max:"8"`
+}
+
+var GenCovBranches_Payload = GenCovBranches{
+	RootsVec:  [][32]byte{{1}, {2}},
+	RootsList: [][32]byte{{3}, {4}},
+	HugeLimit: []uint64{7, 8},
+	SpecStr:   "abc",
+	BitsArr:   [4]byte{0xaa, 0xbb, 0xcc, 0x2d},
+	Bits2:     []byte{0xff, 0xee, 0xdd, 0x2c},
+	HintA:     []byte{1, 2, 3},
+	HintB:     []byte{4, 5, 6},
+	Fast:      CustomType1(0x1122),
+	WrapSpec: dynssz.TypeWrapper[struct {
+		Data []byte `ssz-size:"32" dynssz-size:"TEST_SPEC"`
+	}, []byte]{
+		Data: []byte{1, 2, 3, 4, 5, 6, 7, 8},
+	},
+	UnionList: []dynssz.CompatibleUnion[struct {
+		V1 uint64
+		V2 []byte `ssz-max:"8"`
+	}]{
+		{Variant: 1, Data: uint64(5)},
+		{Variant: 2, Data: []byte{1, 2}},
+	},
+	SpecVecList: [][2]genCovSpecInner{{
+		{A: []byte{1, 2, 3, 4, 5, 6, 7, 8}, B: []byte{1}},
+		{A: []byte{8, 7, 6, 5, 4, 3, 2, 1}},
+	}},
+	VecOfList: [][2][]uint8{{{1}, {2, 3}}},
+	Dyn:       []byte{9},
+}
+
+var GenCovBranches_Specs = map[string]any{
+	"TEST_SPEC": uint64(8),
+	"SPEC_A":    uint64(32),
+	"SPEC_B":    uint64(32),
+}
+
+var GenCovCustomHolder_Payload = GenCovCustomHolder{
+	C: CustomType1(0x33445566),
+	D: []byte{1, 2, 3},
+}
+
+var GenCovCustomHolder2_Payload = GenCovCustomHolder2{
+	C:  streamOnlyCustom{A: 3},
+	CB: bufOnlyCustom{A: 4},
+	CS: CustomType1(9),
+	D:  []byte{7},
+}
+
+var GenCovWideOffsets_Payload = GenCovWideOffsets{
+	F000: []byte{1},
+	F128: []byte{2, 3},
+	F256: []byte{4},
+}
+
+var ViewMixHolder_Payload = ViewMixHolder{
+	A: ViewMixChildA{X: []byte{1}, Y: 2},
+	B: ViewMixChildB{X: []byte{3}, Z: 4},
+	C: ViewMixChildC{Y: 5, Z: 6},
+	N: namedCovBytes{7},
+	L: aliasCovBytes{8},
+	U: dynssz.CompatibleUnion[struct {
+		V1 uint64
+		V2 ViewMixChildA
+	}]{Variant: 2, Data: ViewMixChildA{X: []byte{9}, Y: 10}},
+	D: []byte{11},
+}

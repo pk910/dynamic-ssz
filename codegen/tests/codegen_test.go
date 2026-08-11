@@ -156,6 +156,37 @@ var testMatrix = []TestPayload{
 		Hash:    "1bee9de04dd4f275d8c785741e5ae754bc95d6cf3d6abf1f98c3a41d066f557f",
 	},
 	{
+		Name:    "GenCovBranches",
+		Payload: GenCovBranches_Payload,
+		Specs:   GenCovBranches_Specs,
+		Hash:    "5467d3272bb3d7fdc5a98771df8936d8ed00c8e2bc1c8524b231f0029b3a394d",
+	},
+	{
+		Name:    "GenCovCustomHolder2",
+		Payload: GenCovCustomHolder2_Payload,
+		Specs:   map[string]any{},
+		Hash:    "0a3b5fb13b2a99c649c2e75acf707a67c5cb680117a3e0dcc2934b891f7f1156",
+	},
+	{
+		Name:    "GenCovWideOffsets",
+		Payload: GenCovWideOffsets_Payload,
+		Specs:   map[string]any{},
+		Hash:    "f1bab90ff9c8f01b31fa444c6d9b2ace4749d0dcf3d6ca1ae35f4b9e00b284cb",
+	},
+	{
+		Name:    "ViewMixHolder",
+		Payload: ViewMixHolder_Payload,
+		Specs:   map[string]any{},
+		Hash:    "853c0bb51de56d2bd79fefe13caabbc18965129ca87438d4187fbcc48c557c82",
+	},
+	{
+		Name:    "ViewMixHolder_View",
+		Payload: ViewMixHolder_Payload,
+		View:    (*ViewMixHolder_View)(nil),
+		Specs:   map[string]any{},
+		Hash:    "853c0bb51de56d2bd79fefe13caabbc18965129ca87438d4187fbcc48c557c82",
+	},
+	{
 		Name:    "AnnotatedContainer",
 		Payload: AnnotatedContainer_Payload,
 		Specs:   map[string]any{},
@@ -467,6 +498,7 @@ func TestCodegenAtkNest(t *testing.T) {
 	testCodegenPayloadByReflection(t, AtkNestOpt_Payload, nil, ext)
 	testCodegenPayloadByReflection(t, AtkNestOptList_Payload, nil, ext)
 	testCodegenPayloadByReflection(t, AtkWellHolder_Payload, nil, ext)
+	testCodegenPayloadByReflection(t, GenCovCustomHolder_Payload, nil, ext)
 
 	// The inlined static encoding of the external delegated child must be
 	// byte-identical to what its own Dynamic* method produces. AtkWellHolder is

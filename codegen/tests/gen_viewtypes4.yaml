@@ -8,3 +8,25 @@ types:
     output: gen_viewtypes4.go
     views:
       - ViewTypes4_View1
+  - name: ViewMixChildA
+    output: gen_viewtypes4.go
+    views:
+      - ViewMixChildA_View
+    skip-encoder: true
+    skip-decoder: true
+  - name: ViewMixChildB
+    output: gen_viewtypes4.go
+    views:
+      - ViewMixChildB_View
+    skip-marshal: true
+    skip-unmarshal: true
+  - name: ViewMixChildC
+    output: gen_viewtypes4.go
+    views:
+      - ViewMixChildC_View
+    skip-encoder: true
+    skip-decoder: true
+  - name: ViewMixHolder
+    output: gen_viewtypes4.go
+    views:
+      - ViewMixHolder_View
