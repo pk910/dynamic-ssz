@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -15,6 +16,22 @@ import (
 )
 
 const varNameVLen = "vlen"
+
+// intCapExpr returns expr usable as an int capacity cap. A capacity above the
+// platform integer range clamps to math.MaxInt — the limit check itself
+// compares in uint64, so nothing is lost — while a plain conversion of a
+// 64-bit limit could wrap negative. Integer literals are resolved at
+// generation time: small ones pass through untouched, larger ones emit the
+// runtime clamp so the generated code compiles on 32-bit platforms too.
+func intCapExpr(expr string, typePrinter *TypePrinter) string {
+	if v, err := strconv.ParseUint(expr, 10, 64); err == nil {
+		if v <= math.MaxInt32 {
+			return expr
+		}
+		return fmt.Sprintf("int(min(uint64(%s), uint64(%s.MaxInt)))", expr, typePrinter.AddImport("math", "math"))
+	}
+	return fmt.Sprintf("int(min(%s, uint64(%s.MaxInt)))", expr, typePrinter.AddImport("math", "math"))
+}
 
 // Generated error expression constants shared across codegen files.
 const (
@@ -76,6 +93,34 @@ func (g *exprVarGenerator) getExprVar(expr string, defaultValue uint64) string {
 
 	g.varMap[exprKey] = exprVar
 
+	return exprVar
+}
+
+// getSizeExprVar resolves a size-domain spec expression (a vector or byte
+// size, as opposed to a list limit) via getExprVar and additionally rejects a
+// resolved value above the platform integer range: sizes pass through int at
+// their use sites (allocations, loop bounds, the int-based codec surface), so
+// the guard makes those conversions exact. List limits keep their full uint64
+// range by resolving through getExprVar directly.
+func (g *exprVarGenerator) getSizeExprVar(expr string, defaultValue uint64) string {
+	if expr == "" {
+		return fmt.Sprintf("%v", defaultValue)
+	}
+
+	exprVar := g.getExprVar(expr, defaultValue)
+
+	guardKey := sha256.Sum256([]byte(fmt.Sprintf("sizeguard\n%s\n%v", expr, defaultValue)))
+	if _, ok := g.varMap[guardKey]; ok {
+		return exprVar
+	}
+
+	mathPkgName := g.typePrinter.AddImport("math", "math")
+	appendCode(g.codeBuf, 0, "if %s > %s.MaxInt {\n", exprVar, mathPkgName)
+	appendCode(g.codeBuf, 1, "err = sszutils.ErrPlatformOverflowFn(\"size expression %s\", %s)\n", expr, exprVar)
+	appendCode(g.codeBuf, 1, "return %s\n", g.retVars)
+	appendCode(g.codeBuf, 0, "}\n")
+
+	g.varMap[guardKey] = exprVar
 	return exprVar
 }
 
@@ -206,7 +251,7 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 				if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 && desc.BitSize > 0 {
 					defaultValue = uint64(desc.BitSize)
 				}
-				exprVar := g.exprVarGenerator.getExprVar(*sizeExpression, defaultValue)
+				exprVar := g.exprVarGenerator.getSizeExprVar(*sizeExpression, defaultValue)
 
 				if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
 					exprVar = fmt.Sprintf("(%s+7)/8", exprVar)
@@ -360,7 +405,7 @@ func minSizeExpr(desc *ssztypes.TypeDescriptor, sizeVars *staticSizeVarGenerator
 			return expr, "", exprOk && desc.Len > 0
 		}
 
-		count := fmt.Sprintf("int(%s)", sizeVars.exprVarGenerator.getExprVar(*desc.SizeExpression, uint64(desc.Len)))
+		count := fmt.Sprintf("int(%s)", sizeVars.exprVarGenerator.getSizeExprVar(*desc.SizeExpression, uint64(desc.Len)))
 		expr, exprOk := mulOrAddExpr("*", count, perElem)
 
 		// The product is what the caller divides by, so it is what has to be

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
@@ -547,7 +548,13 @@ func (ctx *encoderContext) marshalContainer(desc *ssztypes.TypeDescriptor, varNa
 	if hasDynamic {
 		ctx.usedSeekable = true
 		ctx.appendCode(indent, "dstlen := enc.GetPosition()\n")
-		ctx.appendCode(indent, "dynoff := uint32(%v)\n", strings.Join(staticSizeVars, " + "))
+		staticSizeExpr := strings.Join(staticSizeVars, " + ")
+		if _, err := strconv.ParseUint(staticSizeExpr, 10, 64); err == nil {
+			ctx.appendCode(indent, "dynoff := uint64(%s)\n", staticSizeExpr)
+		} else {
+			ctx.appendCode(indent, "staticSize := max(%s, 0)\n", staticSizeExpr)
+			ctx.appendCode(indent, "dynoff := uint64(staticSize)\n")
+		}
 	}
 
 	// Write offsets for dynamic fields
@@ -558,9 +565,14 @@ func (ctx *encoderContext) marshalContainer(desc *ssztypes.TypeDescriptor, varNa
 			ctx.appendCode(indent, "if canSeek {\n")
 			ctx.appendCode(indent+1, "enc.EncodeOffset(0)\n")
 			ctx.appendCode(indent, "} else {\n")
-			ctx.appendCode(indent+1, "enc.EncodeOffset(dynoff)\n")
+			mathPkgName := ctx.typePrinter.AddImport("math", "math")
+			ctx.appendCode(indent+1, "if dynoff > %s.MaxUint32 {\n", mathPkgName)
+			ctx.appendCode(indent+2, "return sszutils.ErrOffsetOverflowFn(dynoff)\n")
+			ctx.appendCode(indent+1, "}\n")
+			ctx.appendCode(indent+1, "enc.EncodeOffset(uint32(dynoff))\n")
 			sizeFnCall := ctx.getSizeFnCall(field.Type, fmt.Sprintf("%s.%s", varName, field.Name))
-			ctx.appendCode(indent+1, "dynoff += uint32(%s)\n", sizeFnCall)
+			ctx.appendCode(indent+1, "fieldSize%d := max(%s, 0)\n", idx, sizeFnCall)
+			ctx.appendCode(indent+1, "dynoff += uint64(fieldSize%d)\n", idx)
 			ctx.appendCode(indent, "}\n")
 		} else {
 			// Marshal fixed fields
@@ -587,7 +599,11 @@ func (ctx *encoderContext) marshalContainer(desc *ssztypes.TypeDescriptor, varNa
 		ctx.appendCode(indent, "{ // Dynamic Field #%d '%s'\n", idx, field.Name)
 
 		ctx.appendCode(indent, "\tif canSeek {\n")
-		ctx.appendCode(indent, "\t\tenc.EncodeOffsetAt(offset%d, uint32(enc.GetPosition()-dstlen))\n", idx)
+		ctx.appendCode(indent, "\t\tif off := uint64(max(enc.GetPosition()-dstlen, 0)); off > %s.MaxUint32 {\n", ctx.typePrinter.AddImport("math", "math"))
+		ctx.appendCode(indent, "\t\t\treturn sszutils.ErrOffsetOverflowFn(off)\n")
+		ctx.appendCode(indent, "\t\t} else {\n")
+		ctx.appendCode(indent, "\t\t\tenc.EncodeOffsetAt(offset%d, uint32(off))\n", idx)
+		ctx.appendCode(indent, "\t\t}\n")
 		ctx.appendCode(indent, "\t}\n")
 
 		valVar := "t"
@@ -622,7 +638,7 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			}
 		}
 
-		exprVar := ctx.exprVars.getExprVar(*sizeExpression, defaultValue)
+		exprVar := ctx.exprVars.getSizeExprVar(*sizeExpression, defaultValue)
 
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
 			bitlimitVar = exprVar
@@ -770,10 +786,19 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		// real element, then for each zero-padding slot when the vector is
 		// under-filled. (Byte-identical to a full vector; correct when shorter.)
 		sizeFnCall := ctx.getSizeFnCall(desc.ElemDesc, fmt.Sprintf("%s[i]", getValueVar(false, "")))
-		ctx.appendCode(indent, "\toffset := %s * 4\n", limitVar)
+		mathPkgName := ctx.typePrinter.AddImport("math", "math")
+		if _, err := strconv.ParseUint(limitVar, 10, 64); err == nil {
+			ctx.appendCode(indent, "\toffset := uint64(%s) * 4\n", limitVar)
+		} else {
+			ctx.appendCode(indent, "\toffset := uint64(max(%s, 0)) * 4\n", limitVar)
+		}
 		ctx.appendCode(indent, "\tfor i := range %s {\n", lenVar)
+		ctx.appendCode(indent, "\t\tif offset > %s.MaxUint32 {\n", mathPkgName)
+		ctx.appendCode(indent, "\t\t\treturn sszutils.ErrOffsetOverflowFn(offset)\n")
+		ctx.appendCode(indent, "\t\t}\n")
 		ctx.appendCode(indent, "\t\tenc.EncodeOffset(uint32(offset))\n")
-		ctx.appendCode(indent, "\t\toffset += %s\n", sizeFnCall)
+		ctx.appendCode(indent, "\t\telemSize := max(%s, 0)\n", sizeFnCall)
+		ctx.appendCode(indent, "\t\toffset += uint64(elemSize)\n")
 		ctx.appendCode(indent, "\t}\n")
 
 		if desc.Kind != reflect.Array {
@@ -784,10 +809,13 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			ctx.appendCode(indent, "\t\tvar zeroItem %s\n", ctx.typePrinter.TypeString(desc.ElemDesc))
 
 			zeroItemSizeFnCall := ctx.getSizeFnCall(desc.ElemDesc, "zeroItem")
-			ctx.appendCode(indent, "\t\tzeroSize := %s\n", zeroItemSizeFnCall)
+			ctx.appendCode(indent, "\t\tzeroSize := max(%s, 0)\n", zeroItemSizeFnCall)
 			ctx.appendCode(indent, "\t\tfor i := %s; i < %s; i++ {\n", lenVar, limitVar)
+			ctx.appendCode(indent, "\t\t\tif offset > %s.MaxUint32 {\n", mathPkgName)
+			ctx.appendCode(indent, "\t\t\t\treturn sszutils.ErrOffsetOverflowFn(offset)\n")
+			ctx.appendCode(indent, "\t\t\t}\n")
 			ctx.appendCode(indent, "\t\t\tenc.EncodeOffset(uint32(offset))\n")
-			ctx.appendCode(indent, "\t\t\toffset += zeroSize\n")
+			ctx.appendCode(indent, "\t\t\toffset += uint64(zeroSize)\n")
 			ctx.appendCode(indent, "\t\t}\n")
 			ctx.appendCode(indent, "\t}\n")
 		}
@@ -799,7 +827,11 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent, "for %s := range %s {\n", indexVar, lenVar)
 
 		ctx.appendCode(indent, "\tif canSeek {\n")
-		ctx.appendCode(indent, "\t\tenc.EncodeOffsetAt(dstlen+(%s*4), uint32(enc.GetPosition() - dstlen))\n", indexVar)
+		ctx.appendCode(indent, "\t\tif off := uint64(max(enc.GetPosition()-dstlen, 0)); off > %s.MaxUint32 {\n", ctx.typePrinter.AddImport("math", "math"))
+		ctx.appendCode(indent, "\t\t\treturn sszutils.ErrOffsetOverflowFn(off)\n")
+		ctx.appendCode(indent, "\t\t} else {\n")
+		ctx.appendCode(indent, "\t\t\tenc.EncodeOffsetAt(dstlen+(%s*4), uint32(off))\n", indexVar)
+		ctx.appendCode(indent, "\t\t}\n")
 		ctx.appendCode(indent, "\t}\n")
 
 		valVar := "t"
@@ -822,7 +854,11 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			ctx.appendCode(indent, "\tvar zeroItem %s\n", ctx.typePrinter.TypeString(desc.ElemDesc))
 			ctx.appendCode(indent, "\tfor %s := %s; %s < %s; %s++ {\n", indexVar, lenVar, indexVar, limitVar, indexVar)
 			ctx.appendCode(indent, "\t\tif canSeek {\n")
-			ctx.appendCode(indent, "\t\t\tenc.EncodeOffsetAt(dstlen+(%s*4), uint32(enc.GetPosition()-dstlen))\n", indexVar)
+			ctx.appendCode(indent, "\t\t\tif off := uint64(max(enc.GetPosition()-dstlen, 0)); off > %s.MaxUint32 {\n", ctx.typePrinter.AddImport("math", "math"))
+			ctx.appendCode(indent, "\t\t\t\treturn sszutils.ErrOffsetOverflowFn(off)\n")
+			ctx.appendCode(indent, "\t\t\t} else {\n")
+			ctx.appendCode(indent, "\t\t\t\tenc.EncodeOffsetAt(dstlen+(%s*4), uint32(off))\n", indexVar)
+			ctx.appendCode(indent, "\t\t\t}\n")
 			ctx.appendCode(indent, "\t\t}\n")
 			if err := ctx.marshalType(desc.ElemDesc, "zeroItem", typePath.append("[+%d]", indexVar), indent+2, false); err != nil {
 				return err
@@ -840,14 +876,15 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 	maxExpression := desc.MaxExpression
 
 	hasMax := false
+	// The raw spec expression variable or the untyped limit literal. Length
+	// checks compare in uint64 so a limit above the int range never truncates.
 	maxVar := ""
-
 	switch {
 	case maxExpression != nil:
 		exprVar := ctx.exprVars.getExprVar(*maxExpression, desc.Limit)
 
 		hasMax = true
-		maxVar = fmt.Sprintf("int(%s)", exprVar)
+		maxVar = exprVar
 	case desc.Limit > 0:
 		maxVar = fmt.Sprintf("%d", desc.Limit)
 		hasMax = true
@@ -887,7 +924,7 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 
 	if hasMax {
 		addVlen()
-		ctx.appendCode(indent, "if vlen > %s {\n", maxVar)
+		ctx.appendCode(indent, "if uint64(vlen) > %s {\n", maxVar)
 		errCode := fmt.Sprintf("sszutils.ErrListLengthFn(vlen, %s)", maxVar)
 		ctx.appendCode(indent, "\treturn %s\n", typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "}\n")
@@ -934,10 +971,18 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 		ctx.appendCode(indent, "\tenc.EncodeZeroPadding(vlen * 4)\n")
 		ctx.appendCode(indent, "} else if vlen > 0 {\n")
 		sizeFnCall := ctx.getSizeFnCall(desc.ElemDesc, fmt.Sprintf("%s[i]", getValueVar(false, "")))
-		ctx.appendCode(indent, "\toffset := vlen * 4\n")
+		mathPkgName := ctx.typePrinter.AddImport("math", "math")
+		ctx.appendCode(indent, "\toffset := uint64(vlen) * 4\n")
+		ctx.appendCode(indent, "\tif offset > %s.MaxUint32 {\n", mathPkgName)
+		ctx.appendCode(indent, "\t\treturn sszutils.ErrOffsetOverflowFn(offset)\n")
+		ctx.appendCode(indent, "\t}\n")
 		ctx.appendCode(indent, "\tenc.EncodeOffset(uint32(offset))\n")
 		ctx.appendCode(indent, "\tfor i := range vlen-1 {\n")
-		ctx.appendCode(indent, "\t\toffset += %s\n", sizeFnCall)
+		ctx.appendCode(indent, "\t\telemSize := max(%s, 0)\n", sizeFnCall)
+		ctx.appendCode(indent, "\t\toffset += uint64(elemSize)\n")
+		ctx.appendCode(indent, "\t\tif offset > %s.MaxUint32 {\n", mathPkgName)
+		ctx.appendCode(indent, "\t\t\treturn sszutils.ErrOffsetOverflowFn(offset)\n")
+		ctx.appendCode(indent, "\t\t}\n")
 		ctx.appendCode(indent, "\t\tenc.EncodeOffset(uint32(offset))\n")
 		ctx.appendCode(indent, "\t}\n")
 		ctx.appendCode(indent, "}\n")
@@ -947,7 +992,11 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 
 		ctx.appendCode(indent, "for %s := range vlen {\n", indexVar)
 		ctx.appendCode(indent, "\tif canSeek {\n")
-		ctx.appendCode(indent, "\t\tenc.EncodeOffsetAt(dstlen+(%s*4), uint32(enc.GetPosition()-dstlen))\n", indexVar)
+		ctx.appendCode(indent, "\t\tif off := uint64(max(enc.GetPosition()-dstlen, 0)); off > %s.MaxUint32 {\n", ctx.typePrinter.AddImport("math", "math"))
+		ctx.appendCode(indent, "\t\t\treturn sszutils.ErrOffsetOverflowFn(off)\n")
+		ctx.appendCode(indent, "\t\t} else {\n")
+		ctx.appendCode(indent, "\t\t\tenc.EncodeOffsetAt(dstlen+(%s*4), uint32(off))\n", indexVar)
+		ctx.appendCode(indent, "\t\t}\n")
 		ctx.appendCode(indent, "\t}\n")
 		valVar := "t"
 		if ctx.isInlineable(desc.ElemDesc) {
@@ -968,14 +1017,15 @@ func (ctx *encoderContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName
 	maxExpression := desc.MaxExpression
 
 	hasMax := false
+	// The raw spec expression variable or the untyped limit literal. Length
+	// checks compare in uint64 so a limit above the int range never truncates.
 	maxVar := ""
-
 	switch {
 	case maxExpression != nil:
 		exprVar := ctx.exprVars.getExprVar(*maxExpression, desc.Limit)
 
 		hasMax = true
-		maxVar = fmt.Sprintf("int(%s)", exprVar)
+		maxVar = exprVar
 	case desc.Limit > 0:
 		maxVar = fmt.Sprintf("%d", desc.Limit)
 		hasMax = true
@@ -1003,7 +1053,7 @@ func (ctx *encoderContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName
 		ctx.appendCode(indent, "if vlen > 0 {\n")
 		ctx.appendCode(indent+1, "bitCount := 8*(vlen-1) + %s.Len8(bval[vlen-1]) - 1\n", bitsPkgName)
 		errCode := fmt.Sprintf("sszutils.ErrBitlistLengthFn(bitCount, %s)", maxVar)
-		ctx.appendCode(indent+1, "if bitCount > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
+		ctx.appendCode(indent+1, "if uint64(max(bitCount, 0)) > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "}\n")
 	}
 

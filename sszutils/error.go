@@ -432,6 +432,15 @@ func ErrVectorSizeExceedsArrayFn(dynamicSize, arrayLen any) error {
 	}
 }
 
+// ErrOffsetOverflowFn is returned when a computed offset exceeds the 4-byte
+// SSZ offset range, i.e. the encoded object grew past 2^32-1 bytes.
+func ErrOffsetOverflowFn(offset any) error {
+	return &sszError{
+		err:     ErrOffset,
+		message: fmt.Sprintf("offset %v exceeds the 4-byte SSZ offset range", offset),
+	}
+}
+
 // --- ErrInvalidValueRange constructors ---
 
 // ErrBitvectorPaddingFn is returned when a bitvector's padding bits

@@ -566,7 +566,12 @@ func (ctx *marshalContext) marshalContainer(desc *ssztypes.TypeDescriptor, varNa
 
 		ctx.appendCode(indent, "{ // Dynamic Field #%d '%s'\n", idx, field.Name)
 		binaryPkgName := ctx.typePrinter.AddImport("encoding/binary", "binary")
-		ctx.appendCode(indent, "\t%s.LittleEndian.PutUint32(dst[%s:], uint32(len(dst)-dstlen))\n", binaryPkgName, offsetExprs[idx])
+		mathPkgName := ctx.typePrinter.AddImport("math", "math")
+		ctx.appendCode(indent, "\tif off := uint64(len(dst)) - uint64(dstlen); off > %s.MaxUint32 {\n", mathPkgName)
+		ctx.appendCode(indent, "\t\treturn nil, sszutils.ErrOffsetOverflowFn(off)\n")
+		ctx.appendCode(indent, "\t} else {\n")
+		ctx.appendCode(indent, "\t\t%s.LittleEndian.PutUint32(dst[%s:], uint32(off))\n", binaryPkgName, offsetExprs[idx])
+		ctx.appendCode(indent, "\t}\n")
 		valVar := "t"
 		if ctx.isInlineable(field.Type) {
 			valVar = fmt.Sprintf("%s.%s", varName, field.Name)
@@ -602,7 +607,7 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			}
 		}
 
-		exprVar := ctx.exprVars.getExprVar(*sizeExpression, defaultValue)
+		exprVar := ctx.exprVars.getSizeExprVar(*sizeExpression, defaultValue)
 
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
 			bitlimitVar = exprVar
@@ -745,7 +750,12 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent, "dst = sszutils.AppendZeroPadding(dst, %s*4)\n", limitVar)
 		ctx.appendCode(indent, "for %s := range %s {\n", indexVar, lenVar)
 		binaryPkgName := ctx.typePrinter.AddImport("encoding/binary", "binary")
-		ctx.appendCode(indent, "\t%s.LittleEndian.PutUint32(dst[dstlen+(%s*4):], uint32(len(dst)-dstlen))\n", binaryPkgName, indexVar)
+		mathPkgName := ctx.typePrinter.AddImport("math", "math")
+		ctx.appendCode(indent, "\tif off := uint64(len(dst)) - uint64(dstlen); off > %s.MaxUint32 {\n", mathPkgName)
+		ctx.appendCode(indent, "\t\treturn nil, sszutils.ErrOffsetOverflowFn(off)\n")
+		ctx.appendCode(indent, "\t} else {\n")
+		ctx.appendCode(indent, "\t\t%s.LittleEndian.PutUint32(dst[dstlen+(%s*4):], uint32(off))\n", binaryPkgName, indexVar)
+		ctx.appendCode(indent, "\t}\n")
 		valVar := "t"
 		if ctx.isInlineable(desc.ElemDesc) {
 			valVar = fmt.Sprintf("%s[%s]", getValueVar(false, ""), indexVar)
@@ -764,7 +774,12 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			ctx.appendCode(indent, "if %s < %s {\n", lenVar, limitVar)
 			ctx.appendCode(indent, "\tvar zeroItem %s\n", ctx.typePrinter.TypeString(desc.ElemDesc))
 			ctx.appendCode(indent, "\tfor %s := %s; %s < %s; %s++ {\n", indexVar, lenVar, indexVar, limitVar, indexVar)
-			ctx.appendCode(indent, "\t\t%s.LittleEndian.PutUint32(dst[dstlen+(%s*4):], uint32(len(dst)-dstlen))\n", binaryPkgName, indexVar)
+			mathPkgName := ctx.typePrinter.AddImport("math", "math")
+			ctx.appendCode(indent, "\t\tif off := uint64(len(dst)) - uint64(dstlen); off > %s.MaxUint32 {\n", mathPkgName)
+			ctx.appendCode(indent, "\t\t\treturn nil, sszutils.ErrOffsetOverflowFn(off)\n")
+			ctx.appendCode(indent, "\t\t} else {\n")
+			ctx.appendCode(indent, "\t\t\t%s.LittleEndian.PutUint32(dst[dstlen+(%s*4):], uint32(off))\n", binaryPkgName, indexVar)
+			ctx.appendCode(indent, "\t\t}\n")
 			if err := ctx.marshalType(desc.ElemDesc, "zeroItem", typePath.append("[+%d]", indexVar), indent+1, false); err != nil {
 				return err
 			}
@@ -784,6 +799,8 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 	}
 
 	hasMax := false
+	// The raw spec expression variable or the untyped limit literal. Length
+	// checks compare in uint64 so a limit above the int range never truncates.
 	maxVar := ""
 
 	switch {
@@ -791,7 +808,7 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 		exprVar := ctx.exprVars.getExprVar(*maxExpression, desc.Limit)
 
 		hasMax = true
-		maxVar = fmt.Sprintf("int(%s)", exprVar)
+		maxVar = exprVar
 	case desc.Limit > 0:
 		maxVar = fmt.Sprintf("%d", desc.Limit)
 		hasMax = true
@@ -831,7 +848,7 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 
 	if hasMax {
 		addVlen()
-		ctx.appendCode(indent, "if vlen > %s {\n", maxVar)
+		ctx.appendCode(indent, "if uint64(vlen) > %s {\n", maxVar)
 		errCode := fmt.Sprintf("sszutils.ErrListLengthFn(vlen, %s)", maxVar)
 		ctx.appendCode(indent, "\treturn nil, %s\n", typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "}\n")
@@ -877,7 +894,12 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 		ctx.appendCode(indent, "dst = sszutils.AppendZeroPadding(dst, vlen*4)\n")
 		ctx.appendCode(indent, "for %s := range vlen {\n", indexVar)
 		binaryPkgName := ctx.typePrinter.AddImport("encoding/binary", "binary")
-		ctx.appendCode(indent, "\t%s.LittleEndian.PutUint32(dst[dstlen+(%s*4):], uint32(len(dst)-dstlen))\n", binaryPkgName, indexVar)
+		mathPkgName := ctx.typePrinter.AddImport("math", "math")
+		ctx.appendCode(indent, "\tif off := uint64(len(dst)) - uint64(dstlen); off > %s.MaxUint32 {\n", mathPkgName)
+		ctx.appendCode(indent, "\t\treturn nil, sszutils.ErrOffsetOverflowFn(off)\n")
+		ctx.appendCode(indent, "\t} else {\n")
+		ctx.appendCode(indent, "\t\t%s.LittleEndian.PutUint32(dst[dstlen+(%s*4):], uint32(off))\n", binaryPkgName, indexVar)
+		ctx.appendCode(indent, "\t}\n")
 		valVar := "t"
 		if ctx.isInlineable(desc.ElemDesc) {
 			valVar = fmt.Sprintf("%s[%s]", getValueVar(false, ""), indexVar)
@@ -900,6 +922,8 @@ func (ctx *marshalContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName
 	}
 
 	hasMax := false
+	// The raw spec expression variable or the untyped limit literal. Length
+	// checks compare in uint64 so a limit above the int range never truncates.
 	maxVar := ""
 
 	switch {
@@ -907,7 +931,7 @@ func (ctx *marshalContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName
 		exprVar := ctx.exprVars.getExprVar(*maxExpression, desc.Limit)
 
 		hasMax = true
-		maxVar = fmt.Sprintf("int(%s)", exprVar)
+		maxVar = exprVar
 	case desc.Limit > 0:
 		maxVar = fmt.Sprintf("%d", desc.Limit)
 		hasMax = true
@@ -947,7 +971,7 @@ func (ctx *marshalContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName
 		ctx.appendCode(indent, "if vlen > 0 {\n")
 		ctx.appendCode(indent+1, "bitCount := 8*(vlen-1) + %s.Len8(bval[vlen-1]) - 1\n", bitsPkgName)
 		errCode := fmt.Sprintf("sszutils.ErrBitlistLengthFn(bitCount, %s)", maxVar)
-		ctx.appendCode(indent+1, "if bitCount > %s {\n\treturn nil, %s\n}\n", maxVar, typePath.getErrorWith(errCode))
+		ctx.appendCode(indent+1, "if uint64(max(bitCount, 0)) > %s {\n\treturn nil, %s\n}\n", maxVar, typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "}\n")
 	}
 

@@ -858,7 +858,7 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 			defaultValue = uint64(desc.BitSize)
 		}
 
-		exprVar := ctx.exprVars.getExprVar(*sizeExpression, defaultValue)
+		exprVar := ctx.exprVars.getSizeExprVar(*sizeExpression, defaultValue)
 
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
 			ctx.appendCode(indent, "bitlimit := %s\n", exprVar)
@@ -1072,10 +1072,8 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 
 	switch {
 	case maxExpression != nil:
-		exprVar := ctx.exprVars.getExprVar(*maxExpression, desc.Limit)
-
+		maxVar = ctx.exprVars.getExprVar(*maxExpression, desc.Limit)
 		hasMax = true
-		maxVar = fmt.Sprintf("int(%s)", exprVar)
 	case desc.Limit > 0:
 		maxVar = fmt.Sprintf("%d", desc.Limit)
 		hasMax = true
@@ -1103,7 +1101,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
 			if hasMax {
 				errCode := fmt.Sprintf("sszutils.ErrListLengthFn(len(buf), %s)", maxVar)
-				ctx.appendCode(indent, "if len(buf) > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
+				ctx.appendCode(indent, "if uint64(len(buf)) > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
 			}
 			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
 				typename := ctx.typePrinter.InnerTypeString(desc)
@@ -1130,7 +1128,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 			ctx.appendCode(indent, "if len(buf)%%8 != 0 {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
 			if hasMax {
 				errCode = fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", maxVar)
-				ctx.appendCode(indent, "if itemCount > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
+				ctx.appendCode(indent, "if uint64(max(itemCount, 0)) > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
 			}
 			if desc.Kind != reflect.Array {
 				ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", valueVar, valueVar)
@@ -1160,7 +1158,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 		}
 		if hasMax {
 			errCode := fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", maxVar)
-			ctx.appendCode(indent, "if itemCount > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
+			ctx.appendCode(indent, "if uint64(max(itemCount, 0)) > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
 		}
 		if desc.Kind != reflect.Array {
 			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, itemCount)\n", valueVar, valueVar)
@@ -1216,7 +1214,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 		ctx.appendCode(indent, "if startOffset%%4 != 0 || len(buf) < startOffset || (len(buf) != 0 && startOffset == 0) {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
 		if hasMax {
 			errCode = fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", maxVar)
-			ctx.appendCode(indent, "if itemCount > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
+			ctx.appendCode(indent, "if uint64(max(itemCount, 0)) > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
 		}
 		// The offset table declares the count, but only the region can prove the
 		// bodies exist. Each costs at least the element's fixed section, so a
@@ -1282,10 +1280,8 @@ func (ctx *unmarshalContext) unmarshalBitlist(desc *ssztypes.TypeDescriptor, var
 
 	switch {
 	case maxExpression != nil:
-		exprVar := ctx.exprVars.getExprVar(*maxExpression, desc.Limit)
-
+		maxVar = ctx.exprVars.getExprVar(*maxExpression, desc.Limit)
 		hasMax = true
-		maxVar = fmt.Sprintf("int(%s)", exprVar)
 	case desc.Limit > 0:
 		maxVar = fmt.Sprintf("%d", desc.Limit)
 		hasMax = true
@@ -1303,7 +1299,7 @@ func (ctx *unmarshalContext) unmarshalBitlist(desc *ssztypes.TypeDescriptor, var
 		bitsPkgName := ctx.typePrinter.AddImport("math/bits", "bits")
 		ctx.appendCode(indent, "bitCount := 8*(blen-1) + int(%s.Len8(buf[blen-1])) - 1\n", bitsPkgName)
 		errCode := fmt.Sprintf("sszutils.ErrBitlistLengthFn(bitCount, %s)", maxVar)
-		ctx.appendCode(indent, "if bitCount > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
+		ctx.appendCode(indent, "if uint64(max(bitCount, 0)) > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
 	}
 
 	valueVar := varName

@@ -499,7 +499,7 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 			}
 		}
 
-		exprVar := ctx.exprVars.getExprVar(*sizeExpression, defaultValue)
+		exprVar := ctx.exprVars.getSizeExprVar(*sizeExpression, defaultValue)
 
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
 			limitVar = fmt.Sprintf("int((%s+7)/8)", exprVar)

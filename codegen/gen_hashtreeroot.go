@@ -647,7 +647,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 			}
 		}
 
-		exprVar := ctx.exprVars.getExprVar(*sizeExpression, defaultValue)
+		exprVar := ctx.exprVars.getSizeExprVar(*sizeExpression, defaultValue)
 
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
 			bitlimitVar = fmt.Sprintf("int(%s)", exprVar)
@@ -913,7 +913,7 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 			indexVar, indexDefer := ctx.getIndexVar()
 			defer indexDefer()
 
-			ctx.appendCode(indent, "for %s := range int(vlen) {\n", indexVar)
+			ctx.appendCode(indent, "for %s := range len(%s) {\n", indexVar, getValueVar(true, ""))
 			valVar := "t"
 			if ctx.isInlineable(desc.ElemDesc) {
 				valVar = fmt.Sprintf("%s[%s]", getValueVar(false, ""), indexVar)
