@@ -520,7 +520,7 @@ func (ctx *decoderContext) unmarshalTypeWrapper(desc *ssztypes.TypeDescriptor, v
 
 // unmarshalContainer generates unmarshal code for SSZ container (struct) types.
 func (ctx *decoderContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
-	staticSize := uint32(0)
+	staticSize := int64(0)
 	staticSizeVars := []string{}
 	hasDynamicFields := false
 	for _, field := range desc.ContainerDesc.Fields {

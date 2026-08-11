@@ -1261,7 +1261,7 @@ func (p *Parser) buildUint256Descriptor(desc *ssztypes.TypeDescriptor, typ types
 func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStruct, schemaStruct *types.Struct) error {
 	fields := []ssztypes.FieldDescriptor{}
 	dynFields := []ssztypes.DynFieldDescriptor{}
-	size := uint32(0)
+	size := int64(0)
 	isDynamic := false
 
 	// Progressive-container detection: tracks whether any field carries an
@@ -1437,7 +1437,7 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, dataType, schemaType types.Type, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint, typeHints []ssztypes.SszTypeHint) error {
 	var schemaElemType types.Type
 	var dataElemType types.Type
-	var length uint32
+	var length int64
 
 	arrayLen := uint64(0)
 	if arrType, isArr := schemaType.(*types.Array); isArr {
@@ -1451,7 +1451,7 @@ func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, dataType, 
 	switch t := schemaType.(type) {
 	case *types.Array:
 		schemaElemType = t.Elem()
-		length = uint32(t.Len())
+		length = int64(t.Len())
 		if len(sizeHints) > 0 && sizeHints[0].Size > 0 {
 			byteSize := sizeHints[0].Size
 			if sizeHints[0].Bits {

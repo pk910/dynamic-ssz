@@ -709,7 +709,7 @@ func TestTypeDescriptor_MinSize(t *testing.T) {
 	tests := []struct {
 		name string
 		typ  reflect.Type
-		want uint32
+		want int64
 	}{
 		// Fixed sections: 4 bytes per dynamic field, the field's own size otherwise.
 		{"dynamic container", reflect.TypeFor[dynElem](), 4},
@@ -868,9 +868,9 @@ func TestTypeCache_SizeHintExpressions(t *testing.T) {
 
 // A dynssz-size field tag resolving to a value beyond the uint32 size range
 // must error rather than silently truncate during conversion.
-func TestTypeCache_SizeHintExpressionExceedsUint32(t *testing.T) {
+func TestTypeCache_SizeHintExpressionExceedsPlatformInt(t *testing.T) {
 	ds := &dummyDynamicSpecs{
-		specValues: map[string]uint64{"HUGE_SIZE": uint64(math.MaxUint32) + 1},
+		specValues: map[string]uint64{"HUGE_SIZE": uint64(math.MaxInt) + 1},
 	}
 	cache := NewTypeCache(ds)
 
@@ -880,33 +880,33 @@ func TestTypeCache_SizeHintExpressionExceedsUint32(t *testing.T) {
 
 	_, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
 	if err == nil {
-		t.Fatal("expected error for dynssz-size value exceeding uint32 range")
+		t.Fatal("expected error for dynssz-size value exceeding the platform integer range")
 	}
-	if !strings.Contains(err.Error(), "exceeds the uint32 size range") {
+	if !errors.Is(err, sszutils.ErrPlatformOverflow) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
 
 // annotatedOverflowSize carries a registered annotation whose dynssz-size
-// expression resolves beyond uint32, exercising the annotation-registry
-// resolution path (distinct from struct field tags).
+// expression resolves beyond the platform integer range, exercising the
+// annotation-registry resolution path (distinct from struct field tags).
 type annotatedOverflowSize []byte
 
 var _ = sszutils.Annotate[annotatedOverflowSize](`dynssz-size:"HUGE_SIZE"`)
 
-// A registered annotation whose dynssz-size resolves beyond the uint32 size
-// range must error during the deferred spec resolution.
-func TestTypeCache_AnnotationSizeHintExceedsUint32(t *testing.T) {
+// A registered annotation whose dynssz-size resolves beyond the platform
+// integer range must error during the deferred spec resolution.
+func TestTypeCache_AnnotationSizeHintExceedsPlatformInt(t *testing.T) {
 	ds := &dummyDynamicSpecs{
-		specValues: map[string]uint64{"HUGE_SIZE": uint64(math.MaxUint32) + 1},
+		specValues: map[string]uint64{"HUGE_SIZE": uint64(math.MaxInt) + 1},
 	}
 	cache := NewTypeCache(ds)
 
 	_, err := cache.GetTypeDescriptor(reflect.TypeOf(annotatedOverflowSize{}), nil, nil, nil)
 	if err == nil {
-		t.Fatal("expected error for annotation dynssz-size value exceeding uint32 range")
+		t.Fatal("expected error for annotation dynssz-size value exceeding the platform integer range")
 	}
-	if !strings.Contains(err.Error(), "exceeds the uint32 size range") {
+	if !errors.Is(err, sszutils.ErrPlatformOverflow) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }

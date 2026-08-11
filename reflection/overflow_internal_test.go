@@ -288,7 +288,7 @@ func TestMarshalLargeVectorStreaming(t *testing.T) {
 	}
 
 	ctx := newCtx()
-	vectorLen := uint32(math.MaxInt32 + 1) // 2GB vector
+	vectorLen := int64(math.MaxInt32 + 1) // 2GB vector
 	td := &ssztypes.TypeDescriptor{
 		SszType:     ssztypes.SszVectorType,
 		Kind:        reflect.Slice,

@@ -306,7 +306,7 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 	}
 
 	newBuf := encoder.GetBuffer()
-	if uint32(len(newBuf)) != size {
+	if int64(len(newBuf)) != size {
 		return nil, fmt.Errorf("ssz length does not match expected length (expected: %v, got: %v)", size, len(newBuf))
 	}
 
@@ -407,7 +407,7 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 	}
 
 	newBuf := encoder.GetBuffer()
-	if uint32(len(newBuf)-len(buf)) != size {
+	if int64(len(newBuf)-len(buf)) != size {
 		return nil, fmt.Errorf("ssz length does not match expected length (expected: %v, got: %v)", size, len(newBuf)-len(buf))
 	}
 
@@ -557,7 +557,7 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 	// Parity with the buffer path: reject output whose length disagrees with the
 	// precomputed size (e.g. a nested delegated marshaler whose SizeSSZ contradicts
 	// the bytes it writes), which would otherwise stream malformed SSZ silently.
-	if uint32(encoder.GetPosition()) != size {
+	if int64(encoder.GetPosition()) != size {
 		return fmt.Errorf("ssz length does not match expected length (expected: %v, got: %v)", size, encoder.GetPosition())
 	}
 	return nil

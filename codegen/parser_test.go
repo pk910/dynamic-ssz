@@ -314,7 +314,7 @@ func TestBuildTypeDescriptorBasicTypes(t *testing.T) {
 		name     string
 		typeKind types.BasicKind
 		expected ssztypes.SszType
-		size     uint32
+		size     int64
 	}{
 		{"bool", types.Bool, ssztypes.SszBoolType, 1},
 		{"uint8", types.Uint8, ssztypes.SszUint8Type, 1},

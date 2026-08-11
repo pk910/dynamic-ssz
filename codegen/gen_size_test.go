@@ -232,7 +232,7 @@ func TestSizeExtendedTypes(t *testing.T) {
 	extendedTypes := []struct {
 		name    string
 		sszType ssztypes.SszType
-		size    uint32
+		size    int64
 	}{
 		{"Int8", ssztypes.SszInt8Type, 1},
 		{"Int16", ssztypes.SszInt16Type, 2},

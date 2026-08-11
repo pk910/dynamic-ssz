@@ -71,8 +71,8 @@ type TypeDescriptor struct {
 	SchemaType             reflect.Type              `json:"-"`                       // Schema type that defines SSZ layout (may differ from Type for view descriptors)
 	CodegenInfo            *any                      `json:"-"`                       // Codegen information or view pointer
 	Kind                   reflect.Kind              `json:"kind"`                    // Reflect kind of the type
-	Size                   uint32                    `json:"size"`                    // SSZ size (-1 if dynamic)
-	Len                    uint32                    `json:"len"`                     // Length of array/slice / static size of container
+	Size                   int64                     `json:"size"`                    // SSZ size (-1 if dynamic)
+	Len                    int64                     `json:"len"`                     // Length of array/slice / static size of container
 	Limit                  uint64                    `json:"limit"`                   // Limit of array/slice (ssz-max tag)
 	ContainerDesc          *ContainerDescriptor      `json:"container,omitempty"`     // For structs
 	UnionVariants          map[uint8]*TypeDescriptor `json:"union,omitempty"`         // Union variant types by index (for CompatibleUnion)
@@ -80,8 +80,8 @@ type TypeDescriptor struct {
 	HashTreeRootWithMethod *reflect.Method           `json:"-"`                       // Cached HashTreeRootWith method for performance
 	SizeExpression         *string                   `json:"size_expr,omitempty"`     // The dynamic expression used to calculate the size of the type
 	MaxExpression          *string                   `json:"max_expr,omitempty"`      // The dynamic expression used to calculate the max size of the type
-	BitSize                uint32                    `json:"bit_size,omitempty"`      // Bit size for bit vector types (ssz-bitsize tag)
-	MinSize                uint32                    `json:"min_size,omitempty"`      // Smallest serialization of this type; 0 when it has no floor (see SetMinSize)
+	BitSize                int64                     `json:"bit_size,omitempty"`      // Bit size for bit vector types (ssz-bitsize tag)
+	MinSize                int64                     `json:"min_size,omitempty"`      // Smallest serialization of this type; 0 when it has no floor (see SetMinSize)
 	WrapperFieldIndex      uint8                     `json:"wrapper_field,omitempty"` // Index of the wrapped value field in a wrapper struct (excluded fields may precede it)
 	SszType                SszType                   `json:"type"`                    // SSZ type of the type
 	SszTypeFlags           SszTypeFlag               `json:"flags"`                   // SSZ type flags
@@ -109,6 +109,6 @@ type FieldDescriptor struct {
 // DynFieldDescriptor represents a dynamic field descriptor for a struct
 type DynFieldDescriptor struct {
 	Field        *FieldDescriptor `json:"field"`
-	HeaderOffset uint32           `json:"offset"`
+	HeaderOffset int64            `json:"offset"`
 	Index        int16            `json:"index"` // Index of the field in the struct
 }

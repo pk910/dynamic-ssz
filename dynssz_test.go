@@ -4498,65 +4498,76 @@ func TestOptionalVectorPaddingSizeAgreement(t *testing.T) {
 func TestDescriptorSizeOverflowRejected(t *testing.T) {
 	ds := NewDynSsz(nil)
 
-	t.Run("vector product wraps", func(t *testing.T) {
-		// 8 (uint64) * 536870912 == 2^32
+	t.Run("vector product exceeds platform range", func(t *testing.T) {
+		// 8 (uint64) * 2^60 == 2^63, past the platform integer range.
 		type T struct {
-			L [][]uint64 `ssz-max:"10" ssz-size:"?,536870912"`
+			L [][]uint64 `ssz-max:"10" ssz-size:"?,1152921504606846976"`
 		}
 		var v T
 		err := ds.UnmarshalSSZ(&v, []byte{4, 0, 0, 0, 0, 0, 0, 0})
 		if err == nil {
-			t.Fatal("expected descriptor error for wrapped vector size")
+			t.Fatal("expected descriptor error for overflowing vector size")
 		}
 	})
 
 	t.Run("vector in container", func(t *testing.T) {
 		type T struct {
 			A uint64
-			V []uint64 `ssz-size:"536870912"`
+			V []uint64 `ssz-size:"1152921504606846976"`
 			B uint64
 		}
 		var v T
 		err := ds.UnmarshalSSZ(&v, make([]byte, 16))
 		if err == nil {
-			t.Fatal("expected descriptor error for wrapped vector size")
+			t.Fatal("expected descriptor error for overflowing vector size")
 		}
 	})
 
-	t.Run("container sum wraps", func(t *testing.T) {
-		// Each field fits in uint32, the sum does not.
+	t.Run("container sum exceeds platform range", func(t *testing.T) {
+		// Each field fits the platform range, the sum does not.
 		type T struct {
-			A []byte `ssz-size:"3000000000"`
-			B []byte `ssz-size:"3000000000"`
+			A []byte `ssz-size:"4611686018427387904"`
+			B []byte `ssz-size:"4611686018427387904"`
 		}
 		var v T
 		err := ds.UnmarshalSSZ(&v, make([]byte, 16))
 		if err == nil {
-			t.Fatal("expected descriptor error for wrapped container size")
+			t.Fatal("expected descriptor error for overflowing container size")
 		}
 	})
 
-	t.Run("multi-dim product wraps", func(t *testing.T) {
-		// 8 * 65536 * 65536 wraps; each nesting level guards its own product,
+	t.Run("multi-dim product exceeds platform range", func(t *testing.T) {
+		// 8 * 2^30 * 2^30 == 2^63; each nesting level guards its own product,
 		// and ValidateType shares the guarded build path.
 		type T struct {
-			V [][]uint64 `ssz-size:"65536,65536"`
+			V [][]uint64 `ssz-size:"1073741824,1073741824"`
 		}
 		if err := ds.ValidateType(reflect.TypeOf(T{})); err == nil {
-			t.Fatal("ValidateType should reject the wrapped multi-dim size")
+			t.Fatal("ValidateType should reject the overflowing multi-dim size")
 		}
 		var v T
 		if err := ds.UnmarshalSSZ(&v, make([]byte, 8)); err == nil {
-			t.Fatal("expected descriptor error for wrapped multi-dim size")
+			t.Fatal("expected descriptor error for overflowing multi-dim size")
 		}
 	})
 
-	t.Run("three-dim product wraps", func(t *testing.T) {
+	t.Run("three-dim product exceeds platform range", func(t *testing.T) {
+		// 4 * 2^21 * 2^21 * 2^21 == 2^65 overflows at the outermost level.
 		type T struct {
-			V [][][]uint32 `ssz-size:"4096,4096,4096"`
+			V [][][]uint32 `ssz-size:"2097152,2097152,2097152"`
 		}
 		if err := ds.ValidateType(reflect.TypeOf(T{})); err == nil {
-			t.Fatal("ValidateType should reject the wrapped three-dim size")
+			t.Fatal("ValidateType should reject the overflowing three-dim size")
+		}
+	})
+
+	t.Run("large sizes within the platform range are valid", func(t *testing.T) {
+		// 8 * 8192 * 65536 == 2^32: past the former uint32 bound, valid SSZ.
+		type T struct {
+			V [][]uint64 `ssz-size:"65536,8192"`
+		}
+		if err := ds.ValidateType(reflect.TypeOf(T{})); err != nil {
+			t.Fatalf("ValidateType should accept a size within the platform range: %v", err)
 		}
 	})
 
@@ -4723,8 +4734,11 @@ func TestSizeSSZValueOverflowRejected(t *testing.T) {
 	if err != nil || sz != 4+268435456 {
 		t.Fatalf("n=1: size=%d err=%v", sz, err)
 	}
-	if _, err := ds.SizeSSZ(&OuterList{Items: make([]InnerHuge, 17)}); err == nil {
-		t.Error("expected error for a value size exceeding the uint32 range")
+	// 17 elements put the total past the former uint32 bound; sizes are valid
+	// up to the platform integer range.
+	sz, err = ds.SizeSSZ(&OuterList{Items: make([]InnerHuge, 17)})
+	if err != nil || sz != 4+17*268435456 {
+		t.Errorf("n=17: size=%d err=%v", sz, err)
 	}
 }
 

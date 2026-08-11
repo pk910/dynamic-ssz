@@ -136,7 +136,7 @@ func getPtr(v reflect.Value) reflect.Value {
 
 // SizeSSZ computes the SSZ-encoded byte size of targetValue using its type
 // descriptor.
-func (ctx *ReflectionCtx) SizeSSZ(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value) (uint32, error) {
+func (ctx *ReflectionCtx) SizeSSZ(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value) (int64, error) {
 	if targetType == nil {
 		return 0, sszutils.NewSszError(sszutils.ErrInvalidValueRange, "target type must not be nil")
 	}

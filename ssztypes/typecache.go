@@ -482,11 +482,11 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 						// The range check guards the conversion directly rather
 						// than standing as a separate condition, so that what
 						// makes the narrowing safe is visible at the narrowing.
-						if val > math.MaxUint32 {
-							return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "ssz-size value %d exceeds the uint32 size range", val)
+						if val > math.MaxInt {
+							return nil, sszutils.ErrPlatformOverflowFn("ssz-size annotation value", val)
 						}
 
-						sizeHints[i].Size = uint32(val)
+						sizeHints[i].Size = int64(val)
 						sizeHints[i].Custom = true
 
 						continue
@@ -1089,8 +1089,8 @@ func (td *TypeDescriptor) SetMinSize() {
 			// An overflowing product would bound the region above the true floor
 			// and refuse valid input, so it states no bound instead.
 			minSize := uint64(td.Len) * (4 + uint64(td.ElemDesc.MinSize))
-			if minSize <= math.MaxUint32 {
-				td.MinSize = uint32(minSize)
+			if minSize <= math.MaxInt64 {
+				td.MinSize = int64(minSize)
 			}
 		}
 	default:
@@ -1191,17 +1191,17 @@ func fullyDelegatesSSZView(runtimeType reflect.Type) bool {
 // derives its result from constants and spec values only — never from field data
 // — so a zero value yields the correct size, and spec-dependent fixed sizes are
 // resolved against the cache's specs. View descriptors use the view sizer.
-func (tc *TypeCache) delegatedStaticSize(desc *TypeDescriptor, runtimeType reflect.Type) (uint32, error) {
+func (tc *TypeCache) delegatedStaticSize(desc *TypeDescriptor, runtimeType reflect.Type) (int64, error) {
 	specs := tc.specs // never nil: NewTypeCache substitutes emptySpecs{}
 	zero := reflect.New(runtimeType).Interface()
 
-	// A sizer returns int; a negative or >uint32 value would wrap on conversion
-	// and corrupt downstream sizing/offset math, so validate the range.
-	validate := func(n int) (uint32, error) {
-		if n < 0 || int64(n) > math.MaxUint32 {
+	// A sizer returns int; a negative value would corrupt downstream
+	// sizing/offset math, so validate the range.
+	validate := func(n int) (int64, error) {
+		if n < 0 {
 			return 0, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "sizer for static type %v returned out-of-range size %d", runtimeType, n)
 		}
-		return uint32(n), nil
+		return int64(n), nil
 	}
 
 	if desc.GoTypeFlags&GoTypeFlagIsView != 0 {
@@ -1374,7 +1374,7 @@ func wrapperTypeCompatible(actual, expected reflect.Type) bool {
 }
 
 // buildUint128Descriptor builds a descriptor for uint128 types
-func (tc *TypeCache) buildUintDescriptor(desc *TypeDescriptor, t reflect.Type, byteLen uint32, typeName string) error {
+func (tc *TypeCache) buildUintDescriptor(desc *TypeDescriptor, t reflect.Type, byteLen int64, typeName string) error {
 	if desc.Kind != reflect.Slice && desc.Kind != reflect.Array {
 		return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "%s ssz type can only be represented by slice or array types, got %v", typeName, desc.Kind)
 	}
@@ -1397,7 +1397,7 @@ func (tc *TypeCache) buildUintDescriptor(desc *TypeDescriptor, t reflect.Type, b
 	desc.Len = desc.Size / elemDesc.Size
 
 	if desc.Kind == reflect.Array {
-		dstLen := uint32(t.Len())
+		dstLen := int64(t.Len())
 		// A fixed-width uint (uint128/uint256) occupies exactly desc.Len array
 		// elements. A smaller array cannot hold it; a larger array carries trailing
 		// elements that marshal silently drops (truncating to desc.Len) while
@@ -1471,7 +1471,7 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 		DynFields: make([]DynFieldDescriptor, 0),
 	}
 
-	totalSize := uint32(0)
+	totalSize := int64(0)
 	isDynamic := false
 
 	// Check for progressive container detection
@@ -1575,10 +1575,11 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 		}
 
 		desc.SszTypeFlags |= fieldDesc.Type.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
-		// SSZ sizes are uint32; a wrapped sum would defeat the fixed-section
-		// length checks that are derived from it.
-		if totalSize > math.MaxUint32-sszSize {
-			return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "container byte size exceeds the uint32 SSZ size range")
+		// A wrapped sum would defeat the fixed-section length checks that are
+		// derived from it, so bound the static size to the platform integer
+		// range like every other size.
+		if totalSize > math.MaxInt-sszSize {
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "container byte size exceeds the platform integer range")
 		}
 		totalSize += sszSize
 		desc.ContainerDesc.Fields[fi] = fieldDesc
@@ -1901,7 +1902,7 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 		if runtimeType.Kind() == reflect.Array && runtimeType.Len() < t.Len() {
 			return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "view schema array length (%d) exceeds the backing array length (%d)", t.Len(), runtimeType.Len())
 		}
-		desc.Len = uint32(t.Len())
+		desc.Len = int64(t.Len())
 		// A dynamic placeholder hint — e.g. dynssz-size:"?" on an outer dimension
 		// whose Go type is a fixed array — carries Size 0 (and no Bits) and must
 		// not zero the array's intrinsic length: a Go array cannot be relaxed to
@@ -2006,14 +2007,14 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 		desc.Size = 0
 		desc.SszTypeFlags |= SszTypeFlagIsDynamic
 	} else {
-		// SSZ sizes are uint32; an unchecked product would wrap silently and
-		// downstream length checks would then divide by or allocate from a
-		// bogus size.
-		totalSize := uint64(elemDesc.Size) * uint64(desc.Len)
-		if totalSize > math.MaxUint32 {
-			return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "vector byte size %d exceeds the uint32 SSZ size range", totalSize)
+		// An unchecked product would wrap silently and downstream length
+		// checks would then divide by or allocate from a bogus size, so bound
+		// it to the platform integer range like every other size. The bound is
+		// checked by division so the product itself cannot wrap first.
+		if desc.Len > 0 && elemDesc.Size > math.MaxInt/desc.Len {
+			return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "vector byte size %d*%d exceeds the platform integer range", elemDesc.Size, desc.Len)
 		}
-		desc.Size = uint32(totalSize)
+		desc.Size = elemDesc.Size * desc.Len
 	}
 
 	return nil

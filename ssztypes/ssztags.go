@@ -214,7 +214,7 @@ func getSszTypeTag(field *reflect.StructField) ([]SszTypeHint, error) {
 //   - bits: A boolean flag indicating whether the size is in bits rather than bytes.
 //   - expr: The dynamic expression used to calculate the size of the field, typically through 'dynssz-size' annotations.
 type SszSizeHint struct {
-	Size    uint32
+	Size    int64
 	Dynamic bool
 	Custom  bool
 	Bits    bool
@@ -266,18 +266,18 @@ func getSszSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]SszS
 
 			switch {
 			case sszBitsizeStr != "?":
-				sszSizeInt, err := strconv.ParseUint(sszBitsizeStr, 10, 32)
+				sszSizeInt, err := strconv.ParseUint(sszBitsizeStr, 10, 63)
 				if err != nil {
 					return sszSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "error parsing ssz-bitsize tag for '%v' field: %v", field.Name, err)
 				}
-				sszSize.Size = uint32(sszSizeInt)
+				sszSize.Size = int64(sszSizeInt)
 				sszSize.Bits = true
 			case sszSizeStr != "?":
-				sszSizeInt, err := strconv.ParseUint(sszSizeStr, 10, 32)
+				sszSizeInt, err := strconv.ParseUint(sszSizeStr, 10, 63)
 				if err != nil {
 					return sszSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "error parsing ssz-size tag for '%v' field: %v", field.Name, err)
 				}
-				sszSize.Size = uint32(sszSizeInt)
+				sszSize.Size = int64(sszSizeInt)
 			default:
 				sszSize.Dynamic = true
 			}
@@ -329,8 +329,8 @@ func getSszSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]SszS
 
 			if sizeExpr == "?" {
 				sszSize.Dynamic = true
-			} else if sszSizeInt, err := strconv.ParseUint(sizeExpr, 10, 32); err == nil {
-				sszSize.Size = uint32(sszSizeInt)
+			} else if sszSizeInt, err := strconv.ParseUint(sizeExpr, 10, 63); err == nil {
+				sszSize.Size = int64(sszSizeInt)
 			} else {
 				ok, specVal, err := ds.ResolveSpecValue(sizeExpr)
 				if err != nil {
@@ -340,8 +340,8 @@ func getSszSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]SszS
 				isExpr = true
 				if ok {
 					// dynamic value from spec
-					if specVal > math.MaxUint32 {
-						return sszSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidTag, "dynssz-size value %d for field %q exceeds the uint32 size range", specVal, field.Name)
+					if specVal > math.MaxInt {
+						return sszSizes, sszutils.ErrPlatformOverflowFn(fmt.Sprintf("dynssz-size value for field %q", field.Name), specVal)
 					}
 					if specVal == 0 {
 						// A dynssz-size that resolves to 0 would form a zero-length
@@ -353,7 +353,7 @@ func getSszSizeTag(ds sszutils.DynamicSpecs, field *reflect.StructField) ([]SszS
 						}
 						return sszSizes, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-size for field %q resolved to 0 with no positive static fallback", field.Name)
 					}
-					sszSize.Size = uint32(specVal)
+					sszSize.Size = int64(specVal)
 					sszSize.Custom = true
 				} else {
 					// Unknown spec value: keep the fastssz default for this dimension,
@@ -663,20 +663,20 @@ func ParseTags(tag string) (typeHints []SszTypeHint, sizeHints []SszSizeHint, ma
 
 			switch {
 			case sszBitsizeStr != "?":
-				sizeInt, parseErr := strconv.ParseUint(strings.TrimSpace(sszBitsizeStr), 10, 32)
+				sizeInt, parseErr := strconv.ParseUint(strings.TrimSpace(sszBitsizeStr), 10, 63)
 				if parseErr != nil {
 					return nil, nil, nil, fmt.Errorf("error parsing ssz-size tag: %v", parseErr)
 				}
 
-				hint.Size = uint32(sizeInt)
+				hint.Size = int64(sizeInt)
 				hint.Bits = true
 			case sszSizeStr != "?":
-				sizeInt, parseErr := strconv.ParseUint(strings.TrimSpace(sszSizeStr), 10, 32)
+				sizeInt, parseErr := strconv.ParseUint(strings.TrimSpace(sszSizeStr), 10, 63)
 				if parseErr != nil {
 					return nil, nil, nil, fmt.Errorf("error parsing ssz-size tag: %v", parseErr)
 				}
 
-				hint.Size = uint32(sizeInt)
+				hint.Size = int64(sizeInt)
 			default:
 				hint.Dynamic = true
 			}
@@ -724,8 +724,8 @@ func ParseTags(tag string) (typeHints []SszTypeHint, sizeHints []SszSizeHint, ma
 
 			if sizeExpr == "?" {
 				sszSize.Dynamic = true
-			} else if sszSizeInt, parseErr := strconv.ParseUint(sizeExpr, 10, 32); parseErr == nil {
-				sszSize.Size = uint32(sszSizeInt)
+			} else if sszSizeInt, parseErr := strconv.ParseUint(sizeExpr, 10, 63); parseErr == nil {
+				sszSize.Size = int64(sszSizeInt)
 			} else {
 				// An expression names a length, so the dimension is a vector;
 				// only `?` declares it dynamic.
