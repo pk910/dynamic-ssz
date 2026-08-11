@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/pk910/dynamic-ssz/codegen"
 )
 
 // writeTempConfig writes content to a file in tempDir and returns its path.
@@ -645,16 +647,56 @@ func TestResolveBool(t *testing.T) {
 }
 
 func TestCodegenFlagOptions(t *testing.T) {
+	apply := func(spec *typeSpec) codegen.CodeGeneratorOptions {
+		var resolved codegen.CodeGeneratorOptions
+		for _, opt := range codegenFlagOptions(spec) {
+			opt(&resolved)
+		}
+		return resolved
+	}
+
 	// Empty set produces no options.
-	if opts := codegenFlagOptions(false, false, false, false, false); len(opts) != 0 {
+	if opts := codegenFlagOptions(&typeSpec{}); len(opts) != 0 {
 		t.Errorf("expected 0 options for all-false, got %d", len(opts))
 	}
-	// Streaming emits two options (encoder + decoder).
-	if opts := codegenFlagOptions(false, false, false, true, false); len(opts) != 2 {
-		t.Errorf("expected 2 options for streaming, got %d", len(opts))
+
+	// Streaming emits encoder + decoder.
+	resolved := apply(&typeSpec{WithStreaming: true})
+	if !resolved.CreateEncoderFn || !resolved.CreateDecoderFn {
+		t.Errorf("streaming: expected encoder+decoder, got %+v", resolved)
 	}
-	// All flags on → 6 options total (legacy, no-dyn, no-fastssz, encoder, decoder, extended).
-	if opts := codegenFlagOptions(true, true, true, true, true); len(opts) != 6 {
+
+	// Skips suppress the streaming methods individually.
+	resolved = apply(&typeSpec{WithStreaming: true, SkipEncoder: true})
+	if resolved.CreateEncoderFn || !resolved.CreateDecoderFn {
+		t.Errorf("skip-encoder: expected decoder only, got %+v", resolved)
+	}
+	resolved = apply(&typeSpec{WithStreaming: true, SkipDecoder: true})
+	if !resolved.CreateEncoderFn || resolved.CreateDecoderFn {
+		t.Errorf("skip-decoder: expected encoder only, got %+v", resolved)
+	}
+
+	// Method skips map to the No* codegen options.
+	resolved = apply(&typeSpec{
+		SkipMarshal:      true,
+		SkipUnmarshal:    true,
+		SkipSize:         true,
+		SkipHashTreeRoot: true,
+	})
+	if !resolved.NoMarshalSSZ || !resolved.NoUnmarshalSSZ || !resolved.NoSizeSSZ || !resolved.NoHashTreeRoot {
+		t.Errorf("skips: expected all No* options set, got %+v", resolved)
+	}
+
+	// All base flags on → 6 options total (legacy, no-dyn, no-fastssz,
+	// encoder, decoder, extended).
+	all := &typeSpec{
+		Legacy:                    true,
+		WithoutDynamicExpressions: true,
+		WithoutFastSsz:            true,
+		WithStreaming:             true,
+		WithExtendedTypes:         true,
+	}
+	if opts := codegenFlagOptions(all); len(opts) != 6 {
 		t.Errorf("expected 6 options, got %d", len(opts))
 	}
 }
@@ -923,5 +965,56 @@ func TestResolvePackagePath_AbsFailure(t *testing.T) {
 	got := resolvePackagePath("./pkg", "rel-base")
 	if got != "./rel-base/pkg" {
 		t.Fatalf("resolvePackagePath = %q, want the explicit relative fallback", got)
+	}
+}
+
+func TestApplyToConfig_SkipFlags(t *testing.T) {
+	path := writeTempConfig(t, `
+package: fmt
+output: out.go
+skip-encoder: true
+with-streaming: true
+types:
+  - Stringer
+  - name: GoStringer
+    skip-hashtreeroot: true
+    skip-marshal: true
+    skip-unmarshal: true
+    skip-size: true
+    skip-encoder: false
+    skip-decoder: true
+`)
+	fc, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	cfg := Config{}
+	specs, err := fc.applyToConfig(&cfg, map[string]bool{}, filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("applyToConfig: %v", err)
+	}
+	if !cfg.SkipEncoder {
+		t.Error("expected global skip-encoder to reach cfg")
+	}
+	if len(specs) != 2 {
+		t.Fatalf("len(specs) = %d", len(specs))
+	}
+
+	// First entry inherits the global: encoder skipped, everything else on.
+	inherit := specs[0]
+	if !inherit.SkipEncoder || inherit.SkipDecoder ||
+		inherit.SkipMarshal || inherit.SkipUnmarshal || inherit.SkipSize || inherit.SkipHashTreeRoot {
+		t.Errorf("expected only skip-encoder inherited from global, got %+v", inherit)
+	}
+
+	// Second entry overrides: all method skips on, encoder re-enabled.
+	override := specs[1]
+	if override.SkipEncoder {
+		t.Error("expected per-type skip-encoder=false to override the global")
+	}
+	if !override.SkipMarshal || !override.SkipUnmarshal || !override.SkipSize ||
+		!override.SkipHashTreeRoot || !override.SkipDecoder {
+		t.Errorf("expected per-type skips set, got %+v", override)
 	}
 }

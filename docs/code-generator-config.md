@@ -92,6 +92,12 @@ types:
 | `without-fastssz` | bool | no | Don't call third-party fastssz methods on referenced types. |
 | `with-streaming` | bool | no | Emit streaming encoder/decoder methods. |
 | `with-extended-types` | bool | no | Allow extended types (signed ints, floats, big.Int, optionals). |
+| `skip-marshal` | bool | no | Don't generate marshal methods. |
+| `skip-unmarshal` | bool | no | Don't generate unmarshal methods. |
+| `skip-size` | bool | no | Don't generate size methods. |
+| `skip-hashtreeroot` | bool | no | Don't generate hash tree root methods (e.g. when a type carries a hand-written `HashTreeRootWithDyn`). |
+| `skip-encoder` | bool | no | With `with-streaming`: don't generate the streaming encoder. |
+| `skip-decoder` | bool | no | With `with-streaming`: don't generate the streaming decoder. |
 | `types` | list | yes | At least one type entry (shorthand string or mapping). |
 
 ### Type entries
@@ -110,6 +116,12 @@ or **full form** (a mapping).
 | `without-fastssz` | bool | Per-type override. |
 | `with-streaming` | bool | Per-type override. |
 | `with-extended-types` | bool | Per-type override. |
+| `skip-marshal` | bool | Per-type override. |
+| `skip-unmarshal` | bool | Per-type override. |
+| `skip-size` | bool | Per-type override. |
+| `skip-hashtreeroot` | bool | Per-type override. |
+| `skip-encoder` | bool | Per-type override. |
+| `skip-decoder` | bool | Per-type override. |
 
 Per-type boolean overrides can flip a flag in either direction (e.g. turn off
 `legacy` for one type while it is on globally, or vice versa).

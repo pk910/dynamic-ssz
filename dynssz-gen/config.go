@@ -34,6 +34,13 @@ type FileConfig struct {
 	WithStreaming             *bool `yaml:"with-streaming"`
 	WithExtendedTypes         *bool `yaml:"with-extended-types"`
 
+	SkipMarshal      *bool `yaml:"skip-marshal"`
+	SkipUnmarshal    *bool `yaml:"skip-unmarshal"`
+	SkipSize         *bool `yaml:"skip-size"`
+	SkipHashTreeRoot *bool `yaml:"skip-hashtreeroot"`
+	SkipEncoder      *bool `yaml:"skip-encoder"`
+	SkipDecoder      *bool `yaml:"skip-decoder"`
+
 	Types []TypeEntry `yaml:"types"`
 }
 
@@ -60,6 +67,13 @@ type TypeEntry struct {
 	WithoutFastSsz            *bool `yaml:"without-fastssz"`
 	WithStreaming             *bool `yaml:"with-streaming"`
 	WithExtendedTypes         *bool `yaml:"with-extended-types"`
+
+	SkipMarshal      *bool `yaml:"skip-marshal"`
+	SkipUnmarshal    *bool `yaml:"skip-unmarshal"`
+	SkipSize         *bool `yaml:"skip-size"`
+	SkipHashTreeRoot *bool `yaml:"skip-hashtreeroot"`
+	SkipEncoder      *bool `yaml:"skip-encoder"`
+	SkipDecoder      *bool `yaml:"skip-decoder"`
 }
 
 // UnmarshalYAML accepts either a scalar (string) or a mapping for each type
@@ -94,6 +108,12 @@ func (t *TypeEntry) UnmarshalYAML(node *yaml.Node) error {
 		"without-fastssz":             true,
 		"with-streaming":              true,
 		"with-extended-types":         true,
+		"skip-marshal":                true,
+		"skip-unmarshal":              true,
+		"skip-size":                   true,
+		"skip-hashtreeroot":           true,
+		"skip-encoder":                true,
+		"skip-decoder":                true,
 	}
 	for i := 0; i < len(node.Content); i += 2 {
 		key := node.Content[i].Value
@@ -163,6 +183,15 @@ func (fc *FileConfig) applyToConfig(cfg *Config, cliProvided map[string]bool, ba
 	applyBool(&cfg.WithStreaming, fc.WithStreaming, cliProvided["with-streaming"])
 	applyBool(&cfg.WithExtendedTypes, fc.WithExtendedTypes, cliProvided["with-extended-types"])
 
+	// The skip-* method exclusions have no CLI flag counterparts; they are
+	// config-file only.
+	applyBool(&cfg.SkipMarshal, fc.SkipMarshal, false)
+	applyBool(&cfg.SkipUnmarshal, fc.SkipUnmarshal, false)
+	applyBool(&cfg.SkipSize, fc.SkipSize, false)
+	applyBool(&cfg.SkipHashTreeRoot, fc.SkipHashTreeRoot, false)
+	applyBool(&cfg.SkipEncoder, fc.SkipEncoder, false)
+	applyBool(&cfg.SkipDecoder, fc.SkipDecoder, false)
+
 	// Types: if the CLI provided -types, it fully replaces the file list.
 	// Merging the two was considered but felt confusing — users that want to
 	// combine should just edit the file. The specs are parsed by the caller
@@ -209,6 +238,12 @@ func (fc *FileConfig) applyToConfig(cfg *Config, cliProvided map[string]bool, ba
 		spec.WithoutFastSsz = resolveBool(entry.WithoutFastSsz, cfg.WithoutFastSsz)
 		spec.WithStreaming = resolveBool(entry.WithStreaming, cfg.WithStreaming)
 		spec.WithExtendedTypes = resolveBool(entry.WithExtendedTypes, cfg.WithExtendedTypes)
+		spec.SkipMarshal = resolveBool(entry.SkipMarshal, cfg.SkipMarshal)
+		spec.SkipUnmarshal = resolveBool(entry.SkipUnmarshal, cfg.SkipUnmarshal)
+		spec.SkipSize = resolveBool(entry.SkipSize, cfg.SkipSize)
+		spec.SkipHashTreeRoot = resolveBool(entry.SkipHashTreeRoot, cfg.SkipHashTreeRoot)
+		spec.SkipEncoder = resolveBool(entry.SkipEncoder, cfg.SkipEncoder)
+		spec.SkipDecoder = resolveBool(entry.SkipDecoder, cfg.SkipDecoder)
 		spec.HasPerTypeOverrides = true
 
 		specs = append(specs, spec)
@@ -287,22 +322,39 @@ func resolvePackagePath(pkg, baseDir string) string {
 // corresponding codegen.CodeGeneratorOption values. Only true-valued flags
 // emit options — codegen's With* helpers can only set booleans to true, so
 // "false" is represented by the absence of an option.
-func codegenFlagOptions(legacy, noDynExpr, noFastSsz, streaming, extended bool) []codegen.CodeGeneratorOption {
+func codegenFlagOptions(spec *typeSpec) []codegen.CodeGeneratorOption {
 	var opts []codegen.CodeGeneratorOption
-	if legacy {
+	if spec.Legacy {
 		opts = append(opts, codegen.WithCreateLegacyFn())
 	}
-	if noDynExpr {
+	if spec.WithoutDynamicExpressions {
 		opts = append(opts, codegen.WithoutDynamicExpressions())
 	}
-	if noFastSsz {
+	if spec.WithoutFastSsz {
 		opts = append(opts, codegen.WithNoFastSsz())
 	}
-	if streaming {
-		opts = append(opts, codegen.WithCreateEncoderFn(), codegen.WithCreateDecoderFn())
+	if spec.WithStreaming {
+		if !spec.SkipEncoder {
+			opts = append(opts, codegen.WithCreateEncoderFn())
+		}
+		if !spec.SkipDecoder {
+			opts = append(opts, codegen.WithCreateDecoderFn())
+		}
 	}
-	if extended {
+	if spec.WithExtendedTypes {
 		opts = append(opts, codegen.WithExtendedTypes())
+	}
+	if spec.SkipMarshal {
+		opts = append(opts, codegen.WithNoMarshalSSZ())
+	}
+	if spec.SkipUnmarshal {
+		opts = append(opts, codegen.WithNoUnmarshalSSZ())
+	}
+	if spec.SkipSize {
+		opts = append(opts, codegen.WithNoSizeSSZ())
+	}
+	if spec.SkipHashTreeRoot {
+		opts = append(opts, codegen.WithNoHashTreeRoot())
 	}
 	return opts
 }

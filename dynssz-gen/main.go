@@ -39,6 +39,15 @@ type Config struct {
 	WithStreaming             bool
 	WithExtendedTypes         bool
 
+	// Method exclusions, settable through the config file only (no CLI
+	// flag counterparts).
+	SkipMarshal      bool
+	SkipUnmarshal    bool
+	SkipSize         bool
+	SkipHashTreeRoot bool
+	SkipEncoder      bool
+	SkipDecoder      bool
+
 	// TypeSpecs, when non-nil, overrides TypeNames parsing. Populated by the
 	// config-file path so per-type override booleans carry through.
 	TypeSpecs []typeSpec
@@ -62,6 +71,12 @@ type typeSpec struct {
 	WithoutFastSsz            bool
 	WithStreaming             bool
 	WithExtendedTypes         bool
+	SkipMarshal               bool
+	SkipUnmarshal             bool
+	SkipSize                  bool
+	SkipHashTreeRoot          bool
+	SkipEncoder               bool
+	SkipDecoder               bool
 
 	// Resolved during run()'s validation pass; reused when building codegen
 	// options so we don't look up or re-resolve the same symbols twice (and
@@ -532,13 +547,7 @@ func run(config *Config) error {
 			// we left the option on at the file level we could never turn it
 			// off for one type.
 			if spec.HasPerTypeOverrides {
-				typeSpecificOpts = append(typeSpecificOpts, codegenFlagOptions(
-					spec.Legacy,
-					spec.WithoutDynamicExpressions,
-					spec.WithoutFastSsz,
-					spec.WithStreaming,
-					spec.WithExtendedTypes,
-				)...)
+				typeSpecificOpts = append(typeSpecificOpts, codegenFlagOptions(&spec)...)
 			}
 
 			// Add the type with its options
@@ -549,13 +558,19 @@ func run(config *Config) error {
 		// play (i.e. the legacy CLI path). In the config-file path each type
 		// already carries its fully-resolved per-type options above.
 		if !anyHasOverrides(specs) {
-			typeOptions = append(typeOptions, codegenFlagOptions(
-				config.Legacy,
-				config.WithoutDynamicExpressions,
-				config.WithoutFastSsz,
-				config.WithStreaming,
-				config.WithExtendedTypes,
-			)...)
+			typeOptions = append(typeOptions, codegenFlagOptions(&typeSpec{
+				Legacy:                    config.Legacy,
+				WithoutDynamicExpressions: config.WithoutDynamicExpressions,
+				WithoutFastSsz:            config.WithoutFastSsz,
+				WithStreaming:             config.WithStreaming,
+				WithExtendedTypes:         config.WithExtendedTypes,
+				SkipMarshal:               config.SkipMarshal,
+				SkipUnmarshal:             config.SkipUnmarshal,
+				SkipSize:                  config.SkipSize,
+				SkipHashTreeRoot:          config.SkipHashTreeRoot,
+				SkipEncoder:               config.SkipEncoder,
+				SkipDecoder:               config.SkipDecoder,
+			})...)
 		}
 
 		// Build the file with all types
