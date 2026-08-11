@@ -4735,9 +4735,15 @@ func TestSizeSSZValueOverflowRejected(t *testing.T) {
 		t.Fatalf("n=1: size=%d err=%v", sz, err)
 	}
 	// 17 elements put the total past the former uint32 bound; sizes are valid
-	// up to the platform integer range.
+	// up to the platform integer range, past which SizeSSZ reports the
+	// platform bound instead of wrapping.
+	const total = int64(4) + 17*268435456
 	sz, err = ds.SizeSSZ(&OuterList{Items: make([]InnerHuge, 17)})
-	if err != nil || sz != 4+17*268435456 {
+	if total > math.MaxInt {
+		if err == nil {
+			t.Errorf("n=17: expected platform overflow error, got size %d", sz)
+		}
+	} else if err != nil || int64(sz) != total {
 		t.Errorf("n=17: size=%d err=%v", sz, err)
 	}
 }
