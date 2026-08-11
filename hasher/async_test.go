@@ -804,3 +804,185 @@ func TestAsyncConcurrentHashers(t *testing.T) {
 		}
 	}
 }
+
+// TestAsyncHashDrainsTailHole carves an exactly cap-sized deferred run into a
+// background job via Collapse, leaving the job's hole as the buffer tail, and
+// verifies Hash() waits for the reduction instead of returning unfilled hole
+// bytes. The final root must match a fully synchronous run of the same
+// sequence.
+func TestAsyncHashDrainsTailHole(t *testing.T) {
+	defer DisableAsyncHashing()
+
+	const elemChunks = 8
+	elems := lazyFlushChunks / elemChunks
+
+	chunks := make([]byte, lazyFlushChunks*32)
+	rand.New(rand.NewSource(7)).Read(chunks)
+
+	// Reference: the job reduces the raw run pairwise to a single node, which
+	// equals the plain binary merkleization of the run.
+	ref := NewHasherWithHashFn(hashtree.HashByteSlice)
+	refIdx := ref.Index()
+	ref.Append(chunks)
+	ref.Merkleize(refIdx)
+	wantHash, err := ref.HashRoot()
+	if err != nil {
+		t.Fatalf("reference HashRoot: %v", err)
+	}
+
+	run := func(async bool) [32]byte {
+		hh := NewHasherWithHashFn(hashtree.HashByteSlice)
+		hh.SetAsyncHashing(true)
+
+		listIdx := hh.StartTree(sszutils.TreeTypeBinary)
+		for off := 0; off < len(chunks); off += elemChunks * 32 {
+			ci := hh.StartTree(sszutils.TreeTypeNone)
+			hh.Append(chunks[off : off+elemChunks*32])
+			hh.Merkleize(ci)
+		}
+		hh.Collapse()
+
+		// Only the async run carves the whole run into a job whose hole is
+		// the tail; the sync control flushes to element roots instead and
+		// its Hash() value differs legitimately.
+		var got [32]byte
+		copy(got[:], hh.Hash())
+		if async && got != wantHash {
+			t.Errorf("Hash() over tail hole: got %x, want %x", got, wantHash)
+		}
+
+		hh.MerkleizeWithMixin(listIdx, uint64(elems), 1<<40)
+		root, err := hh.HashRoot()
+		if err != nil {
+			t.Fatalf("HashRoot: %v", err)
+		}
+		return root
+	}
+
+	DisableAsyncHashing()
+	want := run(false)
+	EnableAsyncHashing(4)
+	got := run(true)
+	if got != want {
+		t.Errorf("async root %x != sync root %x", got, want)
+	}
+}
+
+// TestAsyncHashReturnsDeferredScopeRoot runs the per-element root capture
+// pattern (Merkleize a child scope, read its root back via Hash()) with async
+// hashing enabled. The per-element flush keeps the pending run narrow, so
+// background jobs never overlap the tail and Hash() must not stall on or
+// corrupt the captured roots.
+func TestAsyncHashReturnsDeferredScopeRoot(t *testing.T) {
+	defer DisableAsyncHashing()
+	EnableAsyncHashing(4)
+
+	const elemChunks = 8
+	const elems = 600
+
+	expElemRoots := make([][32]byte, elems)
+	for i := range expElemRoots {
+		eh := NewHasherWithHashFn(hashtree.HashByteSlice)
+		idx := eh.Index()
+		hashScopeElem(eh, elemChunks, i)
+		eh.Merkleize(idx)
+		root, err := eh.HashRoot()
+		if err != nil {
+			t.Fatalf("element %d HashRoot: %v", i, err)
+		}
+		expElemRoots[i] = root
+	}
+
+	rh := NewHasherWithHashFn(hashtree.HashByteSlice)
+	refIdx := rh.Index()
+	for i := range expElemRoots {
+		rh.PutBytes(expElemRoots[i][:])
+	}
+	rh.MerkleizeWithMixin(refIdx, elems, 1024)
+	expListRoot, err := rh.HashRoot()
+	if err != nil {
+		t.Fatalf("reference HashRoot: %v", err)
+	}
+
+	hh := NewHasherWithHashFn(hashtree.HashByteSlice)
+	hh.SetAsyncHashing(true)
+
+	listIdx := hh.StartTree(sszutils.TreeTypeBinary)
+	for i := 0; i < elems; i++ {
+		idx := hh.StartTree(sszutils.TreeTypeNone)
+		hashScopeElem(hh, elemChunks, i)
+		hh.Merkleize(idx)
+
+		var got [32]byte
+		copy(got[:], hh.Hash())
+		if got != expElemRoots[i] {
+			t.Fatalf("element %d root via Hash(): got %x, want %x", i, got, expElemRoots[i])
+		}
+
+		if (i+1)%256 == 0 {
+			hh.Collapse()
+		}
+	}
+
+	hh.MerkleizeWithMixin(listIdx, elems, 1024)
+	root, err := hh.HashRoot()
+	if err != nil {
+		t.Fatalf("HashRoot: %v", err)
+	}
+	if root != expListRoot {
+		t.Errorf("list root: got %x, want %x", root, expListRoot)
+	}
+}
+
+// TestAsyncHashSkipsDrainBelowTail verifies Hash() leaves background
+// reductions outstanding when their holes lie below the tail: after an async
+// flush carves a hole, one more deferred element is appended and captured via
+// Hash(), which must reduce only that element and keep the job pending.
+func TestAsyncHashSkipsDrainBelowTail(t *testing.T) {
+	defer DisableAsyncHashing()
+	EnableAsyncHashing(4)
+
+	const elemChunks = 8
+	batchElems := lazyFlushChunks / elemChunks
+
+	hh := NewHasherWithHashFn(hashtree.HashByteSlice)
+	hh.SetAsyncHashing(true)
+
+	listIdx := hh.StartTree(sszutils.TreeTypeBinary)
+	for i := 0; i < batchElems; i++ {
+		ci := hh.StartTree(sszutils.TreeTypeNone)
+		hashScopeElem(hh, elemChunks, i)
+		hh.Merkleize(ci)
+	}
+	hh.Collapse() // carves the run into a background job
+	if hh.jobCount == 0 {
+		t.Fatal("expected an outstanding background job after Collapse")
+	}
+
+	eh := NewHasherWithHashFn(hashtree.HashByteSlice)
+	ei := eh.Index()
+	hashScopeElem(eh, elemChunks, batchElems)
+	eh.Merkleize(ei)
+	wantElem, err := eh.HashRoot()
+	if err != nil {
+		t.Fatalf("element HashRoot: %v", err)
+	}
+
+	ci := hh.StartTree(sszutils.TreeTypeNone)
+	hashScopeElem(hh, elemChunks, batchElems)
+	hh.Merkleize(ci)
+
+	var got [32]byte
+	copy(got[:], hh.Hash())
+	if got != wantElem {
+		t.Errorf("element root via Hash(): got %x, want %x", got, wantElem)
+	}
+	if hh.jobCount == 0 {
+		t.Error("Hash() drained a job whose hole lies below the tail")
+	}
+
+	hh.MerkleizeWithMixin(listIdx, uint64(batchElems)+1, 1<<40)
+	if _, err := hh.HashRoot(); err != nil {
+		t.Fatalf("HashRoot: %v", err)
+	}
+}
