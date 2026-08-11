@@ -327,12 +327,12 @@ func TestMarshalLargeVectorStreaming(t *testing.T) {
 
 // --- unknown-length decode overflow tests ---
 //
-// These guards live on the read-to-EOF path, which derives allocations from
-// ssz-max rather than from a region length. Like the others here they are only
-// active on 32-bit platforms, where a uint64 limit can exceed math.MaxInt.
+// The read-to-EOF path derives its read caps from ssz-max. A limit past the
+// platform integer range clamps to the cap instead of erroring: the cap only
+// bounds reads, which cannot reach that magnitude, while the limit itself
+// keeps its full uint64 range.
 
-func TestUnmarshalListUntilEOFLimitOverflow(t *testing.T) {
-	skipUnless32Bit(t)
+func TestUnmarshalListUntilEOFLimitClamped(t *testing.T) {
 	ctx := newCtx()
 	elemDesc := &ssztypes.TypeDescriptor{
 		Size:    4,
@@ -354,13 +354,15 @@ func TestUnmarshalListUntilEOFLimitOverflow(t *testing.T) {
 	val := reflect.New(td.Type).Elem()
 
 	err := ctx.unmarshalType(td, val, dec, reflectionDepth{})
-	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
-		t.Fatalf("expected overflow error for list limit, got: %v", err)
+	if err != nil {
+		t.Fatalf("expected the clamped limit to decode, got: %v", err)
+	}
+	if val.Len() != 2 {
+		t.Fatalf("expected 2 elements, got %d", val.Len())
 	}
 }
 
-func TestUnmarshalBitlistLimitOverflow(t *testing.T) {
-	skipUnless32Bit(t)
+func TestUnmarshalBitlistLimitClamped(t *testing.T) {
 	ctx := newCtx()
 	td := &ssztypes.TypeDescriptor{
 		SszType:      ssztypes.SszBitlistType,
@@ -373,8 +375,11 @@ func TestUnmarshalBitlistLimitOverflow(t *testing.T) {
 	val := reflect.New(td.Type).Elem()
 
 	err := ctx.unmarshalType(td, val, dec, reflectionDepth{})
-	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
-		t.Fatalf("expected overflow error for bitlist limit, got: %v", err)
+	if err != nil {
+		t.Fatalf("expected the clamped limit to decode, got: %v", err)
+	}
+	if val.Len() != 1 {
+		t.Fatalf("expected 1 byte, got %d", val.Len())
 	}
 }
 

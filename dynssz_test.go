@@ -849,8 +849,8 @@ func TestMarshalSSZLargeObjectOverflow(t *testing.T) {
 	container := &testLargeContainer{}
 
 	_, err := ds.MarshalSSZ(container)
-	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
-		t.Fatalf("expected 'exceeds platform int max' error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "platform int") {
+		t.Fatalf("expected a platform integer range error, got: %v", err)
 	}
 }
 
@@ -860,8 +860,8 @@ func TestMarshalSSZToLargeObjectOverflow(t *testing.T) {
 	container := &testLargeContainer{}
 
 	_, err := ds.MarshalSSZTo(container, nil)
-	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
-		t.Fatalf("expected 'exceeds platform int max' error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "platform int") {
+		t.Fatalf("expected a platform integer range error, got: %v", err)
 	}
 }
 
@@ -872,8 +872,8 @@ func TestMarshalSSZWriterLargeObjectOverflow(t *testing.T) {
 
 	var buf bytes.Buffer
 	err := ds.MarshalSSZWriter(container, &buf)
-	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
-		t.Fatalf("expected 'exceeds platform int max' error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "platform int") {
+		t.Fatalf("expected a platform integer range error, got: %v", err)
 	}
 }
 
@@ -908,8 +908,8 @@ func TestHashTreeRootLargeObjectOverflow(t *testing.T) {
 	container := &testLargeContainer{}
 
 	_, err := ds.HashTreeRoot(container)
-	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
-		t.Fatalf("expected 'exceeds platform int max' error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "platform int") {
+		t.Fatalf("expected a platform integer range error, got: %v", err)
 	}
 }
 
@@ -4562,12 +4562,18 @@ func TestDescriptorSizeOverflowRejected(t *testing.T) {
 	})
 
 	t.Run("large sizes within the platform range are valid", func(t *testing.T) {
-		// 8 * 8192 * 65536 == 2^32: past the former uint32 bound, valid SSZ.
+		// 8 * 8192 * 65536 == 2^32: past the former uint32 bound, valid SSZ
+		// wherever the platform integer range holds it.
 		type T struct {
 			V [][]uint64 `ssz-size:"65536,8192"`
 		}
-		if err := ds.ValidateType(reflect.TypeOf(T{})); err != nil {
-			t.Fatalf("ValidateType should accept a size within the platform range: %v", err)
+		err := ds.ValidateType(reflect.TypeOf(T{}))
+		if uint64(1)<<32 <= uint64(math.MaxInt) {
+			if err != nil {
+				t.Fatalf("ValidateType should accept a size within the platform range: %v", err)
+			}
+		} else if err == nil {
+			t.Fatal("ValidateType should reject a size past the platform range")
 		}
 	})
 
