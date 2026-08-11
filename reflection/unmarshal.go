@@ -326,7 +326,7 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 // incremental — and is bounded by the decoder's maximum stream size.
 func delegationBuffer(targetType *ssztypes.TypeDescriptor, decoder sszutils.Decoder) ([]byte, error) {
 	if targetType.Size > 0 {
-		typeSize := int64(targetType.Size)
+		typeSize := targetType.Size
 		if typeSize > math.MaxInt {
 			return nil, sszutils.ErrPlatformOverflowFn("type size", targetType.Size)
 		}
@@ -635,7 +635,7 @@ func expandSliceValue(target reflect.Value, sliceType reflect.Type, size int) re
 //   - Pointer elements are automatically initialized
 //   - Each element must consume exactly itemSize bytes
 func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth reflectionDepth) error {
-	vecLen := int64(targetType.Len)
+	vecLen := targetType.Len
 	if vecLen > math.MaxInt {
 		return sszutils.ErrPlatformOverflowFn("vector length", targetType.Len)
 	}
@@ -739,7 +739,7 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 //   - No offset points outside the data bounds
 //   - Each element consumes exactly the expected bytes
 func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth reflectionDepth) error {
-	dynVecLen := int64(targetType.Len)
+	dynVecLen := targetType.Len
 	if dynVecLen > math.MaxInt {
 		return sszutils.ErrPlatformOverflowFn("dynamic vector length", targetType.Len)
 	}
@@ -879,7 +879,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 // unmarshalFixedElements decodes a sequence of fixed-size elements into target slice/array positions.
 // It handles both pointer and non-pointer element types.
 func (ctx *ReflectionCtx) unmarshalFixedElements(fieldType *ssztypes.TypeDescriptor, newValue reflect.Value, count int, decoder sszutils.Decoder, depth reflectionDepth) error {
-	fieldSize := int64(fieldType.Size)
+	fieldSize := fieldType.Size
 	if fieldSize > math.MaxInt {
 		return sszutils.ErrPlatformOverflowFn("field size", fieldType.Size)
 	}
@@ -934,7 +934,7 @@ func (ctx *ReflectionCtx) unmarshalFixedElements(fieldType *ssztypes.TypeDescrip
 func (ctx *ReflectionCtx) unmarshalList(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth reflectionDepth) error {
 	fieldType := targetType.ElemDesc
 
-	elemSize := int64(fieldType.Size)
+	elemSize := fieldType.Size
 	if elemSize > math.MaxInt {
 		return sszutils.ErrPlatformOverflowFn("field size", fieldType.Size)
 	}

@@ -378,10 +378,10 @@ func (ctx *ReflectionCtx) buildRootFromLargeUint(sourceType *ssztypes.TypeDescri
 	} else {
 		b := sourceValue.Bytes()
 		hh.Append(b)
-		// int64 keeps the widening conversion from the uint32 size safe on every
-		// platform (a large-uint width is only ever 16 or 32, but the size is a
-		// spec-derived uint32 the compiler cannot bound).
-		if pad := int64(sourceType.Size) - int64(len(b)); pad > 0 {
+		// The subtraction runs in int64 so an over-long value yields a negative
+		// pad instead of wrapping (a large-uint width is only ever 16 or 32,
+		// but the size is spec-derived and the compiler cannot bound it).
+		if pad := sourceType.Size - int64(len(b)); pad > 0 {
 			hh.Append(sszutils.ZeroBytes()[:pad])
 		}
 	}
@@ -627,7 +627,7 @@ func (ctx *ReflectionCtx) buildRootFromUnion(sourceType *ssztypes.TypeDescriptor
 //   - Byte arrays use PutBytes for efficient chunk-based hashing
 //   - Arrays with max size hints include length mixing for proper limits
 func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, depth reflectionDepth) error {
-	vecLen := int64(sourceType.Len)
+	vecLen := sourceType.Len
 	if vecLen > math.MaxInt {
 		return sszutils.ErrPlatformOverflowFn("vector length", sourceType.Len)
 	}
