@@ -624,8 +624,8 @@ func (ctx *unmarshalContext) unmarshalOptionalList(desc *ssztypes.TypeDescriptor
 			sizeVar = fmt.Sprintf("%d", desc.ElemDesc.Size)
 		}
 		eofErr := typePath.getErrorWith("sszutils.ErrOptionalValueEOFFn()")
-		trailErr := typePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - int(%s))", sizeVar))
-		ctx.appendExactLenCheck(indent+1, fmt.Sprintf("int(%s)", sizeVar), "len(buf)", eofErr, trailErr)
+		trailErr := typePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(uint64(len(buf)) - %s)", sizeVar))
+		ctx.appendExactLenCheck(indent+1, sizeVar, "uint64(len(buf))", eofErr, trailErr)
 	}
 	valVar := ctx.getValVar()
 	ctx.appendCode(indent+1, "var %s %s\n", valVar, ctx.typePrinter.TypeString(desc.ElemDesc))
@@ -695,11 +695,11 @@ func (ctx *unmarshalContext) appendExactLenCheck(indent int, sizeExpr, lenExpr, 
 func (ctx *unmarshalContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
 	staticSize := 0
 	staticSizeVars := []string{}
-	hasDynamicFields := false
+	dynFieldCount := 0
 	for _, field := range desc.ContainerDesc.Fields {
 		if field.Type.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 			staticSize += 4
-			hasDynamicFields = true
+			dynFieldCount++
 		} else {
 			if field.Type.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
 				sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(field.Type)
@@ -716,22 +716,30 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, v
 
 	totalStaticSizeExpr := strings.Join(staticSizeVars, "+")
 	if len(staticSizeVars) > 1 {
-		ctx.appendCode(indent, "exproffset := 0\n")
-		// The buffer arithmetic below runs in the int domain, so the unsigned
-		// size sum binds once as int.
-		ctx.appendCode(indent, "totalSize := int(%s)\n", totalStaticSizeExpr)
+		ctx.appendCode(indent, "exproffset := uint64(0)\n")
+		// The size sum stays uint64 (an adversarial spec could wrap an
+		// int-converted sum negative, turning the EOF check into a pass on a
+		// short buffer); buflen lives in the same domain.
+		ctx.appendCode(indent, "totalSize := %s\n", totalStaticSizeExpr)
 		totalStaticSizeExpr = "totalSize"
 	}
 
 	// Read fixed fields and offsets
 	offset := 0
 	offsetPrefix := ""
-	ctx.appendCode(indent, "buflen := len(buf)\n")
+	ctx.appendCode(indent, "buflen := uint64(len(buf))\n")
 	errCode := fmt.Sprintf("sszutils.ErrFixedFieldsEOFFn(buflen, %s)", totalStaticSizeExpr)
-	if hasDynamicFields {
+	if dynFieldCount > 0 {
 		// Variable-length container: only a shortfall in the fixed prefix is an
 		// error; trailing bytes belong to the dynamic fields.
 		ctx.appendCode(indent, "if buflen < %s {\n\treturn %s\n}\n", totalStaticSizeExpr, typePath.getErrorWith(errCode))
+		if dynFieldCount > 1 {
+			// Only an offset after the first checks against maxOffset (the
+			// first compares against the static size). Offsets are 4-byte
+			// values, so the bound lives in uint32: a region past the offset
+			// range caps, since no offset can address it.
+			ctx.appendCode(indent, "maxOffset := uint32(sszutils.Min(buflen, %s.MaxUint32))\n", ctx.typePrinter.AddImport("math", "math"))
+		}
 	} else {
 		// A fully fixed container occupies exactly its size, so any extra bytes
 		// are trailing data and must be rejected (matching the reflection and
@@ -751,14 +759,18 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, v
 				fmtSpace = " "
 			}
 			binaryPkgName := ctx.typePrinter.AddImport("encoding/binary", "binary")
-			ctx.appendCode(indent, "offset%d := int(%s.LittleEndian.Uint32(buf[%s%d%s:%s%s%d]))\n", idx, binaryPkgName, offsetPrefix, offset, fmtSpace, fmtSpace, offsetPrefix, offset+4)
+			ctx.appendCode(indent, "offset%d := %s.LittleEndian.Uint32(buf[%s%d%s:%s%s%d])\n", idx, binaryPkgName, offsetPrefix, offset, fmtSpace, fmtSpace, offsetPrefix, offset+4)
 			fieldOffsetPath := typePath.append(fmt.Sprintf("%s:o", field.Name))
 			if len(dynamicFields) > 0 {
 				errCode = fmt.Sprintf("sszutils.ErrOffsetOutOfRangeFn(offset%d, offset%d, buflen)", idx, dynamicFields[len(dynamicFields)-1])
-				ctx.appendCode(indent, "if offset%d < offset%d || offset%d > buflen {\n\treturn %s\n}\n", idx, dynamicFields[len(dynamicFields)-1], idx, fieldOffsetPath.getErrorWith(errCode))
+				ctx.appendCode(indent, "if offset%d < offset%d || offset%d > maxOffset {\n\treturn %s\n}\n", idx, dynamicFields[len(dynamicFields)-1], idx, fieldOffsetPath.getErrorWith(errCode))
 			} else {
 				errCode = fmt.Sprintf("sszutils.ErrFirstOffsetMismatchFn(offset%d, %s)", idx, totalStaticSizeExpr)
-				ctx.appendCode(indent, "if offset%d != %s {\n\treturn %s\n}\n", idx, totalStaticSizeExpr, fieldOffsetPath.getErrorWith(errCode))
+				firstOffCmp := fmt.Sprintf("uint64(offset%d) != %s", idx, totalStaticSizeExpr)
+				if _, lerr := strconv.ParseUint(totalStaticSizeExpr, 10, 64); lerr == nil {
+					firstOffCmp = fmt.Sprintf("offset%d != %s", idx, totalStaticSizeExpr)
+				}
+				ctx.appendCode(indent, "if %s {\n\treturn %s\n}\n", firstOffCmp, fieldOffsetPath.getErrorWith(errCode))
 			}
 			offset += 4
 			dynamicFields = append(dynamicFields, idx)
@@ -770,8 +782,8 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, v
 				if err != nil {
 					return err
 				}
-				ctx.appendCode(indent, "\tbuf := buf[%s%d : %sint(%s)+%d]\n", offsetPrefix, offset, offsetPrefix, fieldSizeVar, offset)
-				ctx.appendCode(indent, "\texproffset += int(%s)\n", fieldSizeVar)
+				ctx.appendCode(indent, "\tbuf := buf[%s%d : %s%s+%d]\n", offsetPrefix, offset, offsetPrefix, fieldSizeVar, offset)
+				ctx.appendCode(indent, "\texproffset += %s\n", fieldSizeVar)
 				offsetPrefix = "exproffset+"
 			} else {
 				fmtSpace := ""

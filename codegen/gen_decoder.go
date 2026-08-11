@@ -544,11 +544,14 @@ func (ctx *decoderContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, var
 	staticSizeVars = append(staticSizeVars, fmt.Sprintf("%d", staticSize))
 
 	totalStaticSizeExpr := strings.Join(staticSizeVars, "+")
+	lenExpr := "dec.GetLength()"
 	if len(staticSizeVars) > 1 {
-		// The decode arithmetic below runs in the int domain, so the unsigned
-		// size sum binds once as int.
-		ctx.appendCode(indent, "totalSize := int(%s)\n", totalStaticSizeExpr)
+		// The size sum stays uint64 and the comparisons promote the length
+		// side instead: an adversarial spec could wrap an int-converted sum
+		// negative, turning the EOF check into a pass on a short region.
+		ctx.appendCode(indent, "totalSize := %s\n", totalStaticSizeExpr)
 		totalStaticSizeExpr = "totalSize"
+		lenExpr = "uint64(dec.GetLength())"
 	}
 
 	// Read fixed fields and offsets
@@ -559,7 +562,7 @@ func (ctx *decoderContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, var
 		ctx.startPosVarCounter++
 	}
 	errCode := fmt.Sprintf("sszutils.ErrFixedFieldsEOFFn(dec.GetLength(), %s)", totalStaticSizeExpr)
-	ctx.appendCode(indent, "if dec.GetLength() < %s {\n\treturn %s\n}\n", totalStaticSizeExpr, typePath.getErrorWith(errCode))
+	ctx.appendCode(indent, "if %s < %s {\n\treturn %s\n}\n", lenExpr, totalStaticSizeExpr, typePath.getErrorWith(errCode))
 	// Only an offset after the first checks against maxOffset (the first
 	// compares against the static size), so the bound is emitted for two or
 	// more dynamic fields. Offsets are 4-byte values, so the bound lives in
@@ -582,7 +585,7 @@ func (ctx *decoderContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, var
 				ctx.appendCode(indent, "if offset%d < offset%d || offset%d > maxOffset {\n\treturn %s\n}\n", idx, dynamicFields[len(dynamicFields)-1], idx, fieldPath.getErrorWith(errCode))
 			} else {
 				errCode = fmt.Sprintf("sszutils.ErrFirstOffsetMismatchFn(offset%d, %s)", idx, totalStaticSizeExpr)
-				firstOffCmp := fmt.Sprintf("int(offset%d) != %s", idx, totalStaticSizeExpr)
+				firstOffCmp := fmt.Sprintf("uint64(offset%d) != %s", idx, totalStaticSizeExpr)
 				if _, lerr := strconv.ParseUint(totalStaticSizeExpr, 10, 64); lerr == nil {
 					firstOffCmp = fmt.Sprintf("offset%d != %s", idx, totalStaticSizeExpr)
 				}
