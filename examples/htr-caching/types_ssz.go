@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/binary"
+	"math"
 
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
@@ -236,11 +237,15 @@ func (t *CachedRegistry) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (ds
 	// Offset Field #0 'Validators'
 	dst = append(dst, 0, 0, 0, 0)
 	{ // Dynamic Field #0 'Validators'
-		binary.LittleEndian.PutUint32(dst[dstlen:], uint32(len(dst)-dstlen))
+		if off := uint64(len(dst)) - uint64(dstlen); off > math.MaxUint32 {
+			return nil, sszutils.ErrOffsetOverflowFn(off)
+		} else {
+			binary.LittleEndian.PutUint32(dst[dstlen:], uint32(off))
+		}
 		t := t.Validators
 		vlen := len(t)
-		if vlen > int(expr0) {
-			return nil, sszutils.ErrorWithPath(sszutils.ErrListLengthFn(vlen, int(expr0)), "Validators")
+		if uint64(vlen) > expr0 {
+			return nil, sszutils.ErrorWithPath(sszutils.ErrListLengthFn(vlen, expr0), "Validators")
 		}
 		for idx1 := range vlen {
 			t := t[idx1]
@@ -277,8 +282,8 @@ func (t *CachedRegistry) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (
 		if len(buf)%121 != 0 {
 			return sszutils.ErrorWithPath(sszutils.ErrListNotAlignedFn(len(buf), 121), "Validators")
 		}
-		if itemCount > int(expr0) {
-			return sszutils.ErrorWithPath(sszutils.ErrListLengthFn(itemCount, int(expr0)), "Validators")
+		if uint64(max(itemCount, 0)) > expr0 {
+			return sszutils.ErrorWithPath(sszutils.ErrListLengthFn(itemCount, expr0), "Validators")
 		}
 		val1 = sszutils.ExpandSlice(val1, itemCount)
 		for idx1 := range itemCount {
@@ -342,7 +347,7 @@ func (t *CachedRegistry) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszuti
 			return sszutils.ErrorWithPath(sszutils.ErrListLengthFn(vlen, expr0), "Validators")
 		}
 		idx := hh.StartTree(sszutils.TreeTypeBinary)
-		for idx1 := range int(vlen) {
+		for idx1 := range len(t) {
 			t := t[idx1]
 			if t == nil {
 				t = new(CachedValidator)
@@ -374,11 +379,15 @@ func (t *PlainRegistry) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (dst
 	// Offset Field #0 'Validators'
 	dst = append(dst, 0, 0, 0, 0)
 	{ // Dynamic Field #0 'Validators'
-		binary.LittleEndian.PutUint32(dst[dstlen:], uint32(len(dst)-dstlen))
+		if off := uint64(len(dst)) - uint64(dstlen); off > math.MaxUint32 {
+			return nil, sszutils.ErrOffsetOverflowFn(off)
+		} else {
+			binary.LittleEndian.PutUint32(dst[dstlen:], uint32(off))
+		}
 		t := t.Validators
 		vlen := len(t)
-		if vlen > int(expr0) {
-			return nil, sszutils.ErrorWithPath(sszutils.ErrListLengthFn(vlen, int(expr0)), "Validators")
+		if uint64(vlen) > expr0 {
+			return nil, sszutils.ErrorWithPath(sszutils.ErrListLengthFn(vlen, expr0), "Validators")
 		}
 		for idx1 := range vlen {
 			t := t[idx1]
@@ -415,8 +424,8 @@ func (t *PlainRegistry) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) (e
 		if len(buf)%121 != 0 {
 			return sszutils.ErrorWithPath(sszutils.ErrListNotAlignedFn(len(buf), 121), "Validators")
 		}
-		if itemCount > int(expr0) {
-			return sszutils.ErrorWithPath(sszutils.ErrListLengthFn(itemCount, int(expr0)), "Validators")
+		if uint64(max(itemCount, 0)) > expr0 {
+			return sszutils.ErrorWithPath(sszutils.ErrListLengthFn(itemCount, expr0), "Validators")
 		}
 		val1 = sszutils.ExpandSlice(val1, itemCount)
 		for idx1 := range itemCount {
@@ -480,7 +489,7 @@ func (t *PlainRegistry) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutil
 			return sszutils.ErrorWithPath(sszutils.ErrListLengthFn(vlen, expr0), "Validators")
 		}
 		idx := hh.StartTree(sszutils.TreeTypeBinary)
-		for idx1 := range int(vlen) {
+		for idx1 := range len(t) {
 			t := t[idx1]
 			if t == nil {
 				t = new(Validator)
