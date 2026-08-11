@@ -462,12 +462,30 @@ func indexBase(valueVar string) string {
 
 // localizedVarName returns the name to bind a localized value to. The generated
 // method/closure already declares "t" (its receiver or parameter), and a
-// pointer nil-check localizes to "t" as well, so a same-scope re-declaration
-// would collide. In those cases ("t" is already bound: top scope, or the
-// incoming var is the localized "t") a distinct "t2" is used; otherwise "t"
-// legally shadows the outer value inside its own block.
+// pointer nil-check localizes to "t" as well. A value rooted in a localized
+// name must not redeclare that name — TypeWrapper recursion stays in the same
+// brace scope — so the root identifier of the incoming value advances a
+// numeric suffix instead: t -> t2 -> t3. An unrelated root shadows "t" inside
+// its own block, except at the top scope where "t" is the receiver.
 func localizedVarName(varName string, indent int) string {
-	if indent == 0 || varName == "t" {
+	root := varName
+	for i, r := range varName {
+		if r == '.' || r == '[' {
+			root = varName[:i]
+			break
+		}
+	}
+	root = strings.TrimSuffix(strings.TrimLeft(root, "(*"), ")")
+
+	if rest, ok := strings.CutPrefix(root, "t"); ok {
+		if rest == "" {
+			return "t2"
+		}
+		if n, err := strconv.Atoi(rest); err == nil {
+			return fmt.Sprintf("t%d", n+1)
+		}
+	}
+	if indent == 0 {
 		return "t2"
 	}
 	return "t"

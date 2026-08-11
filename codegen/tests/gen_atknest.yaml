@@ -24,3 +24,4 @@ types:
   - AtkNestOptList
   - AtkWellHolder
   - name: GenCovCustomHolder
+  - name: GenCovPtrWrapper

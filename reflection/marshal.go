@@ -362,7 +362,7 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 	}
 
 	offset := 0
-	dynObjOffset := 0
+	dynObjOffset := int64(0)
 	canSeek := encoder.Seekable()
 	startLen := encoder.GetPosition()
 
@@ -395,12 +395,12 @@ func (ctx *ReflectionCtx) marshalContainer(sourceType *ssztypes.TypeDescriptor, 
 					return sszutils.ErrorWithPathf(err, "%s:o", field.Name)
 				}
 
-				fieldOffset := sourceType.Len + int64(dynObjOffset)
+				fieldOffset := sourceType.Len + dynObjOffset
 				if fieldOffset > math.MaxUint32 {
 					return sszutils.ErrOffsetOverflowFn(fieldOffset)
 				}
 				encoder.EncodeOffset(uint32(fieldOffset))
-				dynObjOffset += int(size)
+				dynObjOffset += size
 			}
 			// fmt.Printf("%sfield %d:\t offset [%v:%v] %v\t %v\n", strings.Repeat(" ", int(depth.idt)*2+1), i, offset, offset+fieldSize, fieldSize, field.Name)
 		}

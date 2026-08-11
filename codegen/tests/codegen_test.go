@@ -499,6 +499,7 @@ func TestCodegenAtkNest(t *testing.T) {
 	testCodegenPayloadByReflection(t, AtkNestOptList_Payload, nil, ext)
 	testCodegenPayloadByReflection(t, AtkWellHolder_Payload, nil, ext)
 	testCodegenPayloadByReflection(t, GenCovCustomHolder_Payload, nil, ext)
+	testCodegenPayloadByReflection(t, GenCovPtrWrapper_Payload, nil, ext)
 
 	// The inlined static encoding of the external delegated child must be
 	// byte-identical to what its own Dynamic* method produces. AtkWellHolder is

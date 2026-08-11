@@ -2980,3 +2980,22 @@ var ViewMixHolder_Payload = ViewMixHolder{
 	}]{Variant: 2, Data: ViewMixChildA{X: []byte{9}, Y: 10}},
 	D: []byte{11},
 }
+
+// genCovPtrWrapInner is the wrapped shape of GenCovPtrWrapper: a pointer
+// value inside a pointer wrapper field localizes twice in one size-walk
+// scope, so the bound names must differ.
+type genCovPtrWrapInner struct {
+	Data *[]uint8 `ssz-max:"32"`
+}
+
+type GenCovPtrWrapper struct {
+	W *dynssz.TypeWrapper[genCovPtrWrapInner, *[]uint8] `ssz-type:"wrapper"`
+}
+
+var genCovPtrWrapData = []uint8{1, 2, 3}
+
+var GenCovPtrWrapper_Payload = GenCovPtrWrapper{
+	W: &dynssz.TypeWrapper[genCovPtrWrapInner, *[]uint8]{
+		Data: &genCovPtrWrapData,
+	},
+}

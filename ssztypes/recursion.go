@@ -153,7 +153,10 @@ func markRecursionMembers(root *TypeDescriptor) {
 		}
 		if start, cycling := onPath[desc]; cycling {
 			for _, member := range path[start:] {
-				if member.SszType != SszTypeWrapperType {
+				// A member reached through an already-built descriptor carries
+				// the bit already; re-setting it would write to a published
+				// descriptor that other goroutines read lock-free.
+				if member.SszType != SszTypeWrapperType && member.SszTypeFlags&SszTypeFlagRecursionMember == 0 {
 					member.SszTypeFlags |= SszTypeFlagRecursionMember
 				}
 			}

@@ -826,22 +826,26 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 		isTrailing := i == vectorLen-1
 		openElem := isTrailing && !lengthKnown
 
-		var endOffset uint32
+		// The trailing element ends at the region end, which can lie past the
+		// 4-byte offset range when the last element is huge; its bound runs in
+		// int64 so a region past 4GiB is not truncated.
+		var elemEnd int64
 		if !isTrailing {
+			var endOffset uint32
 			if canSeek {
 				endOffset = decoder.DecodeOffsetAt(startPos + (i+1)*4)
 			} else {
 				endOffset = sliceOffsets[i+1]
 			}
+			offset = endOffset
+			elemEnd = int64(endOffset)
 		} else {
-			endOffset = uint32(sszLen)
+			elemEnd = int64(sszLen)
 		}
 
-		offset = endOffset
-
-		if endOffset < startOffset || endOffset > uint32(sszLen) {
+		if elemEnd < int64(startOffset) || elemEnd > int64(sszLen) {
 			return sszutils.ErrorWithPathf(
-				sszutils.ErrElementOffsetOutOfRangeFn(endOffset, startOffset, sszLen),
+				sszutils.ErrElementOffsetOutOfRangeFn(elemEnd, startOffset, sszLen),
 				"[%d:o]", i,
 			)
 		}
@@ -849,7 +853,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescri
 		if openElem {
 			decoder.PushOpenLimit()
 		} else {
-			decoder.PushLimit(int(endOffset - startOffset))
+			decoder.PushLimit(int(elemEnd - int64(startOffset)))
 		}
 		err := ctx.unmarshalType(fieldType, itemVal, decoder, depth)
 		if err != nil {
@@ -1233,7 +1237,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 	// leaves a gap or unconsumable trailing bytes and is malformed; reject it to
 	// match the codegen path and to avoid indexing an empty offset slice in the
 	// non-seekable branch below (sliceLen == 0).
-	if firstOffset == 0 || firstOffset%4 != 0 || firstOffset > uint32(sszLen) {
+	if firstOffset == 0 || firstOffset%4 != 0 || int64(firstOffset) > int64(sszLen) {
 		return sszutils.ErrInvalidListStartOffsetFn(firstOffset, sszLen)
 	}
 
@@ -1322,19 +1326,24 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 			isTrailing := i == sliceLen-1
 			openElem := isTrailing && !lengthKnown
 
+			// The trailing element ends at the region end, which can lie past
+			// the 4-byte offset range when the last element is huge; its bound
+			// runs in int64 so a region past 4GiB is not truncated.
+			var elemEnd int64
 			if isTrailing {
-				endOffset = uint32(sszLen)
+				elemEnd = int64(sszLen)
 			} else {
 				if canSeek {
 					endOffset = decoder.DecodeOffsetAt(startPos + (i+1)*4)
 				} else {
 					endOffset = sliceOffsets[i+1]
 				}
+				elemEnd = int64(endOffset)
 			}
 
-			if endOffset < startOffset || endOffset > uint32(sszLen) {
+			if elemEnd < int64(startOffset) || elemEnd > int64(sszLen) {
 				return sszutils.ErrorWithPathf(
-					sszutils.ErrElementOffsetOutOfRangeFn(endOffset, startOffset, sszLen),
+					sszutils.ErrElementOffsetOutOfRangeFn(elemEnd, startOffset, sszLen),
 					"[%d:o]", i,
 				)
 			}
@@ -1362,7 +1371,7 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 			if openElem {
 				decoder.PushOpenLimit()
 			} else {
-				decoder.PushLimit(int(endOffset - startOffset))
+				decoder.PushLimit(int(elemEnd - int64(startOffset)))
 			}
 			err := ctx.unmarshalType(fieldType, itemVal, decoder, depth)
 			if err != nil {
