@@ -1536,8 +1536,8 @@ func TestConcurrentProveOnUnfinalizedTree(t *testing.T) {
 				errCh <- fmt.Errorf("goroutine %d: Prove(%d): %v", g, leafIdx, err)
 				return
 			}
-			if ok, err := VerifyProof(wantRoot, proof); err != nil || !ok {
-				errCh <- fmt.Errorf("goroutine %d: VerifyProof(%d) = %v, %v; want true, nil", g, leafIdx, ok, err)
+			if ok, verifyErr := VerifyProof(wantRoot, proof); verifyErr != nil || !ok {
+				errCh <- fmt.Errorf("goroutine %d: VerifyProof(%d) = %v, %v; want true, nil", g, leafIdx, ok, verifyErr)
 				return
 			}
 
@@ -1548,8 +1548,8 @@ func TestConcurrentProveOnUnfinalizedTree(t *testing.T) {
 				errCh <- fmt.Errorf("goroutine %d: Prove(%d): %v", g, intIdx, err)
 				return
 			}
-			if ok, err := VerifyProof(wantRoot, intProof); err != nil || !ok {
-				errCh <- fmt.Errorf("goroutine %d: VerifyProof(%d) = %v, %v; want true, nil", g, intIdx, ok, err)
+			if ok, verifyErr := VerifyProof(wantRoot, intProof); verifyErr != nil || !ok {
+				errCh <- fmt.Errorf("goroutine %d: VerifyProof(%d) = %v, %v; want true, nil", g, intIdx, ok, verifyErr)
 				return
 			}
 
@@ -1560,8 +1560,8 @@ func TestConcurrentProveOnUnfinalizedTree(t *testing.T) {
 				errCh <- fmt.Errorf("goroutine %d: ProveMulti(%v): %v", g, multiIndices, err)
 				return
 			}
-			if ok, err := VerifyMultiproof(wantRoot, multiProof.Hashes, multiProof.Leaves, multiProof.Indices); err != nil || !ok {
-				errCh <- fmt.Errorf("goroutine %d: VerifyMultiproof(%v) = %v, %v; want true, nil", g, multiIndices, ok, err)
+			if ok, verifyErr := VerifyMultiproof(wantRoot, multiProof.Hashes, multiProof.Leaves, multiProof.Indices); verifyErr != nil || !ok {
+				errCh <- fmt.Errorf("goroutine %d: VerifyMultiproof(%v) = %v, %v; want true, nil", g, multiIndices, ok, verifyErr)
 				return
 			}
 
