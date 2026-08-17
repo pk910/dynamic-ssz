@@ -148,11 +148,19 @@ func (c *CompressedMultiproof) Decompress() *Multiproof {
 //
 // The isEmpty field indicates whether this is a "zero" node used for padding
 // incomplete trees to maintain proper binary tree structure.
+//
+// Multiple goroutines: a leaf's value never changes after the node is
+// created, so reading it is always safe. A branch node's value, on the other
+// hand, is computed the first time it's needed and then reused (see
+// hashNode) — if two goroutines both need it at the same time, they could
+// try to compute and save it at the same time too. mu prevents that: it's a
+// small lock that makes sure only one goroutine writes value at a time.
 type Node struct {
-	left    *Node  // Left child node (nil for leaves)
-	right   *Node  // Right child node (nil for leaves)
-	isEmpty bool   // True if this is a zero-padding node
-	value   []byte // 32-byte value (data for leaves, hash for branches)
+	left    *Node      // Left child node (nil for leaves)
+	right   *Node      // Right child node (nil for leaves)
+	isEmpty bool       // True if this is a zero-padding node
+	value   []byte     // 32-byte value (data for leaves, hash for branches)
+	mu      sync.Mutex // keeps value safe to read/write from multiple goroutines
 }
 
 var (
@@ -677,12 +685,19 @@ func (n *Node) IsEmpty() bool {
 	return n.isEmpty
 }
 
-// Value returns a copy of the 32-byte value stored in this node. A copy is
+// Value returns a copy of the 32-byte value stored in this node, or nil if a
+// branch node's value has not been computed yet (see Hash). A copy is
 // returned because empty (zero-padding) nodes alias the process-wide zero-hash
 // table and cached empty nodes are shared across trees; handing out the raw
 // slice would let a caller's mutation corrupt every other tree and root.
+//
+// We lock before reading value because another goroutine might be computing
+// and saving it at this exact moment (see the Node.mu comment).
 func (n *Node) Value() []byte {
-	return bytes.Clone(n.value)
+	n.mu.Lock()
+	v := n.value
+	n.mu.Unlock()
+	return bytes.Clone(v)
 }
 
 func getEmptyNode(depth int) *Node {
@@ -700,6 +715,8 @@ func hashNode(n *Node) []byte {
 	}
 
 	if n.left == nil && n.right == nil {
+		// Leaf node: its value was set once when the node was created and
+		// never changes after that, so it's always safe to read.
 		return n.value
 	}
 
@@ -707,34 +724,55 @@ func hashNode(n *Node) []byte {
 		panic("Tree incomplete")
 	}
 
-	if n.value != nil {
+	// Branch node: its value is computed the first time it's needed and
+	// reused after that. More than one goroutine could ask for it at the
+	// same time, so we lock while reading it instead of touching the field
+	// directly.
+	n.mu.Lock()
+	cached := n.value
+	n.mu.Unlock()
+	if cached != nil {
 		// This value has already been hashed, don't do the work again.
-		return n.value
+		return cached
 	}
 
 	if n.right == nil {
 		panic("Tree incomplete")
 	}
 
+	// The actual hashing happens without the lock held, so one goroutine
+	// computing a big subtree doesn't block others from working on
+	// different, unrelated nodes. Each node has its own lock, so this is
+	// also safe from deadlocks.
+	var result []byte
 	if n.right.isEmpty {
-		result := hashPair(hashNode(n.left), n.right.value)
-		n.value = result // Set the hash result on each node so that proofs can be generated for any level
-		return result
+		result = hashPair(hashNode(n.left), n.right.value)
+	} else {
+		result = hashPair(hashNode(n.left), hashNode(n.right))
 	}
 
-	result := hashPair(hashNode(n.left), hashNode(n.right))
-	n.value = result
+	n.mu.Lock()
+	if n.value == nil {
+		// Save the result so we don't redo this work next time.
+		n.value = result
+	} else {
+		// Another goroutine already finished computing and saving this same
+		// value while we were working. Use that saved copy instead of ours
+		// (both are the same hash either way) so everyone ends up agreeing
+		// on the exact same value for this node.
+		result = n.value
+	}
+	n.mu.Unlock()
 	return result
 }
 
 // Prove returns a list of sibling values and hashes needed
 // to compute the root hash for a given general index.
 //
-// Thread-safety: Prove lazily computes and caches intermediate node hashes on
-// first use, so it is not safe to call concurrently on a freshly built,
-// unfinalized tree. Finalize the tree once by calling Hash() before sharing it
-// across goroutines; afterwards concurrent Prove/ProveMulti calls only read the
-// cached hashes.
+// Multiple goroutines: Prove computes and saves node hashes as it needs
+// them. That work is protected by a lock (see hashNode/Node.mu), so it's
+// safe to call Prove, ProveMulti, Hash, and Value on the same tree from
+// several goroutines at once, even if Hash() hasn't been called yet.
 func (n *Node) Prove(index int) (*Proof, error) {
 	if index < 1 {
 		return nil, fmt.Errorf("invalid generalized index %d (must be >= 1)", index)
@@ -783,11 +821,12 @@ func (n *Node) Prove(index int) (*Proof, error) {
 	}
 
 	proof.Hashes = hashes
-	if cur.value == nil {
-		// This is an intermediate node without a value; add the hash to it so that we're providing a suitable leaf value.
-		cur.value = hashNode(cur)
-	}
-	proof.Leaf = bytes.Clone(cur.value)
+	// We use hashNode(cur) here instead of reading cur.value directly. cur
+	// might be a node whose value hasn't been computed yet, and hashNode
+	// knows how to compute it if needed, or safely read it if it's already
+	// saved. Reading cur.value directly would skip that safety and could
+	// clash with another goroutine computing the same value at the same time.
+	proof.Leaf = bytes.Clone(hashNode(cur))
 
 	return proof, nil
 }
@@ -797,8 +836,8 @@ func (n *Node) Prove(index int) (*Proof, error) {
 // hashes needed to reconstruct the root. Returns an error if any index cannot
 // be found in the tree.
 //
-// Thread-safety: like Prove, this lazily caches node hashes, so finalize the tree
-// with Hash() before sharing it across goroutines (see Prove).
+// Multiple goroutines: like Prove, this is safe to call from several
+// goroutines at once, even before Hash() has been called (see Prove).
 func (n *Node) ProveMulti(indices []int) (*Multiproof, error) {
 	for _, gi := range indices {
 		if gi < 1 {

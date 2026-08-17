@@ -9,6 +9,8 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/pk910/dynamic-ssz/hasher"
@@ -1440,8 +1442,9 @@ func TestTreeEdgeCases(t *testing.T) {
 }
 
 func TestProveIntermediateNodeSetsValue(t *testing.T) {
-	// Create a fresh tree and prove an intermediate node FIRST
-	// (before any Hash() calls) to hit the cur.value == nil branch
+	// Create a fresh tree and prove an intermediate node FIRST (before any
+	// Hash() calls), so Prove must compute-and-cache its value via hashNode
+	// rather than reading an already-cached one.
 	chunks := [][]byte{
 		sum256ToBytes([]byte("a")),
 		sum256ToBytes([]byte("b")),
@@ -1464,6 +1467,123 @@ func TestProveIntermediateNodeSetsValue(t *testing.T) {
 	}
 	if len(proof.Leaf) != 32 {
 		t.Fatalf("expected 32-byte leaf, got %d bytes", len(proof.Leaf))
+	}
+}
+
+// TestConcurrentProveOnUnfinalizedTree builds a tree and, WITHOUT calling
+// Hash() on it first, immediately hands it to many goroutines that all call
+// Prove/ProveMulti/Hash/Value on it at the same time.
+//
+// This test needs `-race` to actually catch a data race (this repo's CI and
+// Makefile already run tests with -race). Without -race, it still checks
+// that every goroutine computed the correct, matching result, but a race
+// that doesn't happen to corrupt any value during that particular run would
+// go unnoticed.
+func TestConcurrentProveOnUnfinalizedTree(t *testing.T) {
+	const numLeaves = 32 // 32 leaves -> a few levels of shared parent nodes for goroutines to contend on
+
+	chunks := make([][]byte, numLeaves)
+	for i := range chunks {
+		chunks[i] = sum256ToBytes([]byte{byte(i)})
+	}
+
+	// Build a second, separate tree first and hash it normally (single
+	// goroutine, no concurrency) to get the correct, known-good root to
+	// compare every goroutine's result against.
+	refTree, err := TreeFromChunks(chunks)
+	if err != nil {
+		t.Fatalf("failed to build reference tree: %v", err)
+	}
+	wantRoot := refTree.Hash()
+
+	// This is the tree the goroutines below will actually hammer on. It is
+	// deliberately left un-hashed so its node values still need to be
+	// computed while multiple goroutines are using it.
+	tree, err := TreeFromChunks(chunks)
+	if err != nil {
+		t.Fatalf("failed to build tree: %v", err)
+	}
+
+	leafIndices := make([]int, numLeaves)
+	for i := range leafIndices {
+		leafIndices[i] = numLeaves + i
+	}
+	// A few positions closer to the root. Having every goroutine's Prove/
+	// Value calls repeatedly land on these same few nodes (instead of each
+	// goroutine working on its own separate part of the tree) is what
+	// creates the contention needed to trigger the race.
+	internalIndices := []int{1, 2, 3, 4, 5, 6, 7}
+
+	const numGoroutines = 32
+	var wg sync.WaitGroup
+	errCh := make(chan error, numGoroutines)
+
+	for g := range numGoroutines {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+
+			// Compute the whole tree's root hash.
+			if root := tree.Hash(); !bytes.Equal(root, wantRoot) {
+				errCh <- fmt.Errorf("goroutine %d: Hash() = %x, want %x", g, root, wantRoot)
+				return
+			}
+
+			// Prove a single leaf, then check the proof against the correct root.
+			leafIdx := leafIndices[g%numLeaves]
+			proof, err := tree.Prove(leafIdx)
+			if err != nil {
+				errCh <- fmt.Errorf("goroutine %d: Prove(%d): %v", g, leafIdx, err)
+				return
+			}
+			if ok, err := VerifyProof(wantRoot, proof); err != nil || !ok {
+				errCh <- fmt.Errorf("goroutine %d: VerifyProof(%d) = %v, %v; want true, nil", g, leafIdx, ok, err)
+				return
+			}
+
+			// Prove a node closer to the root, shared by several goroutines at once.
+			intIdx := internalIndices[g%len(internalIndices)]
+			intProof, err := tree.Prove(intIdx)
+			if err != nil {
+				errCh <- fmt.Errorf("goroutine %d: Prove(%d): %v", g, intIdx, err)
+				return
+			}
+			if ok, err := VerifyProof(wantRoot, intProof); err != nil || !ok {
+				errCh <- fmt.Errorf("goroutine %d: VerifyProof(%d) = %v, %v; want true, nil", g, intIdx, ok, err)
+				return
+			}
+
+			// Prove several leaves at once with a single multiproof call.
+			multiIndices := []int{leafIndices[g%numLeaves], leafIndices[(g+1)%numLeaves], leafIndices[(g+7)%numLeaves]}
+			multiProof, err := tree.ProveMulti(multiIndices)
+			if err != nil {
+				errCh <- fmt.Errorf("goroutine %d: ProveMulti(%v): %v", g, multiIndices, err)
+				return
+			}
+			if ok, err := VerifyMultiproof(wantRoot, multiProof.Hashes, multiProof.Leaves, multiProof.Indices); err != nil || !ok {
+				errCh <- fmt.Errorf("goroutine %d: VerifyMultiproof(%v) = %v, %v; want true, nil", g, multiIndices, ok, err)
+				return
+			}
+
+			// Also read a node's value directly through Value(), the other
+			// place that reads this same, possibly-still-being-computed field.
+			node, err := tree.Get(internalIndices[g%len(internalIndices)])
+			if err != nil {
+				errCh <- fmt.Errorf("goroutine %d: Get: %v", g, err)
+				return
+			}
+			// Value() is allowed to return nil here if this node's hash
+			// hasn't been computed by anyone yet -- that's not a failure.
+			// What matters is that reading it never races with another
+			// goroutine computing and saving it; -race is what checks that.
+			_ = node.Value()
+		}(g)
+	}
+
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Error(err)
 	}
 }
 
