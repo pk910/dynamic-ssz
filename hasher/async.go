@@ -52,11 +52,13 @@ const (
 	// background, so the drain at finalization rarely waits.
 	asyncActiveChunks = 131072
 
-	// asyncBufSize is the size of every job input buffer. Jobs are capped
+	// AsyncBufSize is the size of every job input buffer. Jobs are capped
 	// at lazyFlushChunks, so all buffers are interchangeable and no other
 	// size ever needs allocating: wider regions reduce as a sequence of
 	// cap-sized jobs whose remainder carries over to the next round.
-	asyncBufSize = lazyFlushChunks * 32
+	// External batch hashing (tree finalization) sizes its work units to it
+	// so borrowed buffers hold exactly one unit (see AsyncJobBuf).
+	AsyncBufSize = lazyFlushChunks * 32
 
 	// asyncCapDepth is the subtree depth a full cap-sized reduction
 	// produces: a lazyFlushChunks-wide run of leaves becomes one node at
@@ -144,6 +146,53 @@ func EnableAsyncHashing(workers int) {
 // already in flight complete independently; only new work is affected.
 func DisableAsyncHashing() {
 	asyncState.Store(nil)
+}
+
+// AsyncHashingWorkers returns the process-wide async hashing worker limit, or
+// 0 when async hashing is disabled.
+func AsyncHashingWorkers() int {
+	if st := asyncState.Load(); st != nil {
+		return cap(st.sem)
+	}
+	return 0
+}
+
+// AsyncJobBuf borrows a job input buffer (AsyncBufSize bytes) from the async
+// free list for external batch hashing work such as tree finalization. ok
+// reports whether async hashing is enabled. Borrowing never blocks — tokens
+// can sit in completed-but-undrained jobs, so when none is free a one-off
+// buffer is handed out and put is a no-op. put returns a pooled buffer to
+// the free list and must be called exactly once.
+func AsyncJobBuf() (buf []byte, put func(), ok bool) {
+	st := asyncState.Load()
+	if st == nil {
+		return nil, nil, false
+	}
+	select {
+	case b := <-st.bufs:
+		if cap(b) < AsyncBufSize {
+			// Unmaterialized token: allocate the pre-sized buffer so it
+			// joins the reuse cycle at put.
+			b = make([]byte, AsyncBufSize)
+		}
+		b = b[:AsyncBufSize]
+		return b, func() { st.bufs <- b[:0] }, true
+	default:
+		return make([]byte, AsyncBufSize), func() {}, true
+	}
+}
+
+// AsyncWorkSlot acquires one of the process-wide async worker slots so
+// external batch hashing counts against the same concurrency limit as
+// background reductions, blocking while all slots are busy. The returned
+// release frees the slot; it is a no-op while async hashing is disabled.
+func AsyncWorkSlot() (release func()) {
+	st := asyncState.Load()
+	if st == nil {
+		return func() {}
+	}
+	st.sem <- struct{}{}
+	return func() { <-st.sem }
 }
 
 // asyncShared returns the shared state when async hashing is enabled
@@ -243,7 +292,7 @@ func (h *Hasher) getJobBuf(st *asyncShared, need int) ([]byte, bool) {
 			}
 			// Unmaterialized token: allocate the pre-sized buffer so it
 			// joins the reuse cycle at drain.
-			return make([]byte, asyncBufSize), true
+			return make([]byte, AsyncBufSize), true
 		default:
 		}
 		if h.jobCount == 0 {

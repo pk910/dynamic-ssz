@@ -2387,3 +2387,80 @@ func TestHashNilNode(t *testing.T) {
 	var n *Node
 	_ = n.Hash()
 }
+
+// With async hashing enabled, wide levels finalize across worker goroutines;
+// the root must match the recursive reference. 256k leaves give the widest
+// level 128k pairs — two full slabs — so the parallel path actually runs.
+// -race (used by CI) checks the workers really share nothing.
+func TestFinalizeParallel(t *testing.T) {
+	hasher.EnableAsyncHashing(4)
+	defer hasher.DisableAsyncHashing()
+
+	chunks := finalizeTestChunks(1 << 18)
+
+	ref, err := TreeFromChunks(chunks)
+	if err != nil {
+		t.Fatalf("failed to build reference tree: %v", err)
+	}
+	want := bytes.Clone(hashNode(ref))
+
+	tree, err := TreeFromChunks(chunks)
+	if err != nil {
+		t.Fatalf("failed to build tree: %v", err)
+	}
+	if got := tree.Hash(); !bytes.Equal(got, want) {
+		t.Fatalf("Hash() = %x, want %x", got, want)
+	}
+	assertAllBranchesHashed(t, tree)
+}
+
+// A failing backend during a parallel level must fall back to the recursive
+// path and still produce a correct, fully hashed tree.
+func TestFinalizeParallelBatchHashFnError(t *testing.T) {
+	hasher.EnableAsyncHashing(4)
+	defer hasher.DisableAsyncHashing()
+
+	orig := batchHashFn
+	batchHashFn = func(_, _ []byte) error { return errors.New("backend failure") }
+	defer func() { batchHashFn = orig }()
+
+	chunks := finalizeTestChunks(1 << 18)
+
+	ref, err := TreeFromChunks(chunks)
+	if err != nil {
+		t.Fatalf("failed to build reference tree: %v", err)
+	}
+	want := bytes.Clone(hashNode(ref))
+
+	tree, err := TreeFromChunks(chunks)
+	if err != nil {
+		t.Fatalf("failed to build tree: %v", err)
+	}
+	if got := tree.Hash(); !bytes.Equal(got, want) {
+		t.Fatalf("Hash() = %x, want %x", got, want)
+	}
+	assertAllBranchesHashed(t, tree)
+}
+
+// finalizeLevelParallel falls back to one-off gather buffers when async
+// hashing is disabled between the worker-count read and the level run; the
+// hashes must still be correct.
+func TestFinalizeLevelParallelDisabledFallback(t *testing.T) {
+	count := finalizeBatchPairs + 1 // two slabs
+	nodes := make([]*Node, count)
+	for i := range nodes {
+		left := LeafFromBytes(sum256ToBytes([]byte{byte(i), byte(i >> 8), 1}))
+		right := LeafFromBytes(sum256ToBytes([]byte{byte(i), byte(i >> 8), 2}))
+		nodes[i] = NewNodeWithLR(left, right)
+	}
+	out := make([]byte, count*32)
+
+	if !finalizeLevelParallel(nodes, out, 2) {
+		t.Fatal("finalizeLevelParallel reported failure")
+	}
+	for i, node := range nodes {
+		if want := hashPair(node.left.value, node.right.value); !bytes.Equal(node.value, want) {
+			t.Fatalf("node %d value = %x, want %x", i, node.value, want)
+		}
+	}
+}

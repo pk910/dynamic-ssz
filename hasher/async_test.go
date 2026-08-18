@@ -986,3 +986,74 @@ func TestAsyncHashSkipsDrainBelowTail(t *testing.T) {
 		t.Fatalf("HashRoot: %v", err)
 	}
 }
+
+// AsyncHashingWorkers reflects the configured process-wide worker limit and
+// reports 0 while async hashing is disabled.
+func TestAsyncHashingWorkers(t *testing.T) {
+	if got := AsyncHashingWorkers(); got != 0 {
+		t.Fatalf("AsyncHashingWorkers() = %d before enabling, want 0", got)
+	}
+	EnableAsyncHashing(3)
+	defer DisableAsyncHashing()
+	if got := AsyncHashingWorkers(); got != 3 {
+		t.Fatalf("AsyncHashingWorkers() = %d, want 3", got)
+	}
+	DisableAsyncHashing()
+	if got := AsyncHashingWorkers(); got != 0 {
+		t.Fatalf("AsyncHashingWorkers() = %d after disabling, want 0", got)
+	}
+}
+
+// AsyncJobBuf hands out pool tokens while available (materializing them on
+// first use and recycling them via put) and falls back to untracked one-off
+// buffers once every token is taken; it reports ok=false while async hashing
+// is disabled.
+func TestAsyncJobBuf(t *testing.T) {
+	if _, _, ok := AsyncJobBuf(); ok {
+		t.Fatal("AsyncJobBuf() ok = true while async hashing is disabled")
+	}
+
+	EnableAsyncHashing(1)
+	defer DisableAsyncHashing()
+
+	// Drain both tokens of the 1-worker pool.
+	buf1, put1, ok := AsyncJobBuf()
+	if !ok || len(buf1) != AsyncBufSize {
+		t.Fatalf("AsyncJobBuf() = len %d, ok %v; want %d, true", len(buf1), ok, AsyncBufSize)
+	}
+	_, put2, ok := AsyncJobBuf()
+	if !ok {
+		t.Fatal("second AsyncJobBuf() not ok")
+	}
+
+	// Pool empty: one-off buffer, still usable.
+	buf3, put3, ok := AsyncJobBuf()
+	if !ok || len(buf3) != AsyncBufSize {
+		t.Fatalf("one-off AsyncJobBuf() = len %d, ok %v; want %d, true", len(buf3), ok, AsyncBufSize)
+	}
+	put3()
+
+	// Returned tokens are handed out again with their full capacity.
+	put1()
+	put2()
+	buf4, put4, ok := AsyncJobBuf()
+	if !ok || len(buf4) != AsyncBufSize {
+		t.Fatalf("recycled AsyncJobBuf() = len %d, ok %v; want %d, true", len(buf4), ok, AsyncBufSize)
+	}
+	put4()
+}
+
+// AsyncWorkSlot bounds external batch work by the async worker limit and
+// degrades to a no-op release while async hashing is disabled.
+func TestAsyncWorkSlot(t *testing.T) {
+	release := AsyncWorkSlot()
+	release() // disabled: no-op, must not panic
+
+	EnableAsyncHashing(1)
+	defer DisableAsyncHashing()
+
+	r1 := AsyncWorkSlot()
+	r1()
+	r2 := AsyncWorkSlot()
+	r2()
+}

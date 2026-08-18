@@ -36,6 +36,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
@@ -709,15 +710,15 @@ const finalizeThreshold = 16
 
 // finalizeBatchPairs caps how many sibling pairs are gathered and hashed per
 // backend call. Wide levels are processed in slabs of this size, keeping the
-// gather buffer at a fixed, cache-friendly 4 MB instead of scaling with the
-// widest level of the tree.
-const finalizeBatchPairs = 65536
+// gather buffer at a fixed, cache-friendly size instead of scaling with the
+// widest level of the tree. A slab's gather buffer is exactly one async job
+// buffer, so parallel levels borrow their buffers from the async free list.
+const finalizeBatchPairs = hasher.AsyncBufSize / 64
 
 // finalizeScratch holds the reusable buffers of a finalize pass: the
-// per-depth node collections and the gather buffer for the widest level.
-// Pooling them keeps repeated finalizations from churning level-sized
-// garbage; only the values arena is allocated per tree, since the nodes
-// retain it.
+// per-depth node collections and the shared gather buffer. Pooling them
+// keeps repeated finalizations from churning level-sized garbage; only the
+// values arena is allocated per tree, since the nodes retain it.
 type finalizeScratch struct {
 	levels [][]*Node
 	input  []byte
@@ -796,37 +797,103 @@ func (n *Node) finalize() {
 		return
 	}
 
+	workers := hasher.AsyncHashingWorkers()
+
 	values := make([]byte, total*32)
 	valueOffset := 0
 
 	for depth := len(scratch.levels) - 1; depth >= 0; depth-- {
 		nodes := scratch.levels[depth]
-		for off := 0; off < len(nodes); off += finalizeBatchPairs {
-			slab := nodes[off:min(off+finalizeBatchPairs, len(nodes))]
-			if cap(scratch.input) < len(slab)*64 {
-				scratch.input = make([]byte, len(slab)*64)
-			}
-			input := scratch.input[:len(slab)*64]
-			out := values[valueOffset : valueOffset+len(slab)*32]
-			for i, node := range slab {
-				copy(input[i*64:i*64+32], node.left.value)
-				copy(input[i*64+32:i*64+64], node.right.value)
-			}
-			if err := batchHashFn(out, input); err != nil {
-				// The backend rejects only malformed buffer sizes, which the
-				// packing above cannot produce; hash the remainder recursively
-				// so a misbehaving backend still yields a correct tree.
-				if rootOk {
-					hashNode(n)
+		out := values[valueOffset : valueOffset+len(nodes)*32]
+		slabs := (len(nodes) + finalizeBatchPairs - 1) / finalizeBatchPairs
+
+		ok := true
+		if workers > 1 && slabs > 1 {
+			ok = finalizeLevelParallel(nodes, out, min(workers, slabs))
+		} else {
+			for off := 0; off < len(nodes); off += finalizeBatchPairs {
+				slab := nodes[off:min(off+finalizeBatchPairs, len(nodes))]
+				if cap(scratch.input) < len(slab)*64 {
+					scratch.input = make([]byte, len(slab)*64)
 				}
-				return
+				if hashSlab(slab, out[off*32:], scratch.input[:len(slab)*64]) != nil {
+					ok = false
+					break
+				}
 			}
-			for i, node := range slab {
-				node.value = out[i*32 : (i+1)*32 : (i+1)*32]
-			}
-			valueOffset += len(slab) * 32
 		}
+		if !ok {
+			// The backend rejects only malformed buffer sizes, which the slab
+			// packing cannot produce; hash the remainder recursively so a
+			// misbehaving backend still yields a correct tree.
+			if rootOk {
+				hashNode(n)
+			}
+			return
+		}
+		valueOffset += len(nodes) * 32
 	}
+}
+
+// hashSlab gathers the sibling pairs of slab into input, compresses them in
+// one batchHashFn call, and hands out the results as sub-slices of out.
+// input must hold exactly len(slab) pairs.
+func hashSlab(slab []*Node, out, input []byte) error {
+	for i, node := range slab {
+		copy(input[i*64:i*64+32], node.left.value)
+		copy(input[i*64+32:i*64+64], node.right.value)
+	}
+	if err := batchHashFn(out[:len(slab)*32], input); err != nil {
+		return err
+	}
+	for i, node := range slab {
+		node.value = out[i*32 : (i+1)*32 : (i+1)*32]
+	}
+	return nil
+}
+
+// finalizeLevelParallel hashes one level's slabs across the given number of
+// worker goroutines. Gather buffers are borrowed from the async hashing free
+// list (a slab fills exactly one job buffer), and each slab holds an async
+// work slot while hashing, so tree finalization counts against the same
+// process-wide concurrency limit as background HTR reductions. Slab node
+// sets and slab ranges of out are disjoint and every gather reads values
+// completed on a deeper level, so workers share nothing but their slab
+// assignment. Reports whether every slab hashed.
+func finalizeLevelParallel(nodes []*Node, out []byte, workers int) bool {
+	slabs := (len(nodes) + finalizeBatchPairs - 1) / finalizeBatchPairs
+
+	var failed atomic.Bool
+
+	var wg sync.WaitGroup
+	for wi := range workers {
+		wg.Add(1)
+		go func(wi int) {
+			defer wg.Done()
+			region, put, ok := hasher.AsyncJobBuf()
+			if !ok {
+				// Async hashing was disabled after the worker count was read;
+				// a one-off buffer keeps the level correct.
+				region = make([]byte, finalizeBatchPairs*64)
+				put = func() {}
+			}
+			defer put()
+			for j := wi; j < slabs; j += workers {
+				start := j * finalizeBatchPairs
+				slab := nodes[start:min(start+finalizeBatchPairs, len(nodes))]
+				release := hasher.AsyncWorkSlot()
+				err := hashSlab(slab, out[start*32:], region[:len(slab)*64])
+				release()
+				if err != nil {
+					failed.Store(true)
+					return
+				}
+			}
+		}(wi)
+	}
+	wg.Wait()
+
+	return !failed.Load()
 }
 
 func hashNode(n *Node) []byte {
