@@ -2388,10 +2388,8 @@ func TestHashNilNode(t *testing.T) {
 	_ = n.Hash()
 }
 
-// With async hashing enabled, wide levels finalize across worker goroutines;
-// the root must match the recursive reference. 256k leaves give the widest
-// level 128k pairs — two full slabs — so the parallel path actually runs.
-// -race (used by CI) checks the workers really share nothing.
+// Finalization with async hashing enabled must match the recursive
+// reference; 256k leaves force many mid-walk batch flushes.
 func TestFinalizeParallel(t *testing.T) {
 	hasher.EnableAsyncHashing(4)
 	defer hasher.DisableAsyncHashing()
@@ -2414,7 +2412,7 @@ func TestFinalizeParallel(t *testing.T) {
 	assertAllBranchesHashed(t, tree)
 }
 
-// A failing backend during a parallel level must fall back to the recursive
+// A backend failing during a mid-walk flush must fall back to the recursive
 // path and still produce a correct, fully hashed tree.
 func TestFinalizeParallelBatchHashFnError(t *testing.T) {
 	hasher.EnableAsyncHashing(4)
@@ -2440,29 +2438,6 @@ func TestFinalizeParallelBatchHashFnError(t *testing.T) {
 		t.Fatalf("Hash() = %x, want %x", got, want)
 	}
 	assertAllBranchesHashed(t, tree)
-}
-
-// finalizeLevelParallel falls back to one-off gather buffers when async
-// hashing is disabled between the worker-count read and the level run; the
-// hashes must still be correct.
-func TestFinalizeLevelParallelDisabledFallback(t *testing.T) {
-	count := finalizeBatchPairs + 1 // two slabs
-	nodes := make([]*Node, count)
-	for i := range nodes {
-		left := LeafFromBytes(sum256ToBytes([]byte{byte(i), byte(i >> 8), 1}))
-		right := LeafFromBytes(sum256ToBytes([]byte{byte(i), byte(i >> 8), 2}))
-		nodes[i] = NewNodeWithLR(left, right)
-	}
-	out := make([]byte, count*32)
-
-	if !finalizeLevelParallel(nodes, out, 2, batchHashFn) {
-		t.Fatal("finalizeLevelParallel reported failure")
-	}
-	for i, node := range nodes {
-		if want := hashPair(node.left.value, node.right.value); !bytes.Equal(node.value, want) {
-			t.Fatalf("node %d value = %x, want %x", i, node.value, want)
-		}
-	}
 }
 
 // shortLeafNodes returns n leaves shorter than a full chunk; their chunks
@@ -2508,8 +2483,8 @@ func TestFinalizeShortLeavesWarmedPool(t *testing.T) {
 	}
 }
 
-// Same stale-bytes condition on the parallel path: borrowed async job
-// buffers carry arbitrary prior hashing input.
+// Same stale-bytes condition across many mid-walk flushes with async
+// hashing enabled.
 func TestFinalizeShortLeavesParallel(t *testing.T) {
 	hasher.EnableAsyncHashing(4)
 	defer hasher.DisableAsyncHashing()

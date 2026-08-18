@@ -36,7 +36,6 @@ import (
 	"slices"
 	"strconv"
 	"sync"
-	"sync/atomic"
 
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
@@ -711,51 +710,52 @@ func getEmptyNode(depth int) *Node {
 var batchHashFn = hasher.FastHasherPool.HashFn
 
 // finalizeThreshold is the unhashed-branch count below which finalize hashes
-// recursively: tiny batches pay more in buffer setup and per-level backend
+// recursively: tiny batches pay more in buffer setup and per-batch backend
 // calls than the vectorized hashing saves.
 const finalizeThreshold = 16
 
-// finalizeBatchPairs caps how many sibling pairs are gathered and hashed per
-// backend call. Wide levels are processed in slabs of this size, keeping the
-// gather buffer at a fixed, cache-friendly size instead of scaling with the
-// widest level of the tree. A slab's gather buffer is exactly one async job
-// buffer, so parallel levels borrow their buffers from the async free list.
-const finalizeBatchPairs = hasher.AsyncBufSize / 64
+// finalizeBatchPairs is the number of hashable sibling pairs accumulated per
+// depth before the batch flushes through one backend call. Batches cover
+// nodes the walk visited moments earlier, so the gather reads cache-warm
+// values; the size balances that locality against per-call backend overhead.
+const finalizeBatchPairs = 1024
 
 // finalizeScratch holds the reusable buffers of a finalize pass: the
-// per-depth node collections and the shared gather buffer. Pooling them
-// keeps repeated finalizations from churning level-sized garbage; only the
-// values arena is allocated per tree, since the nodes retain it.
+// per-depth pending batches and the shared gather buffer. Pending batches
+// are bounded at finalizeBatchPairs entries per depth, so a pooled scratch
+// retains only a few hundred KB regardless of tree size; the computed values
+// are allocated per flush, since the nodes retain them.
 type finalizeScratch struct {
-	levels [][]*Node
-	input  []byte
+	pending [][]*Node
+	input   []byte
 }
 
 var finalizeScratchPool = sync.Pool{
 	New: func() any { return new(finalizeScratch) },
 }
 
-// release empties the node collections (dropping their node references so a
-// pooled scratch cannot pin a finalized tree in memory) and returns the
-// scratch to the pool. Slice capacities are kept for reuse.
+// release empties the pending batches (dropping their node references so a
+// pooled scratch cannot pin a tree in memory) and returns the scratch to the
+// pool. Slice capacities are kept for reuse.
 func (s *finalizeScratch) release() {
-	for i := range s.levels {
-		clear(s.levels[i])
-		s.levels[i] = s.levels[i][:0]
+	for i := range s.pending {
+		clear(s.pending[i])
+		s.pending[i] = s.pending[i][:0]
 	}
 	finalizeScratchPool.Put(s)
 }
 
 // finalize computes and caches the value of every unhashed branch node in the
-// subtree rooted at n. Nodes are collected per depth and hashed level by level
-// from the bottom up, so each level compresses in a single batchHashFn call
-// and all computed values share one backing array. Already-hashed subtrees are
-// pruned: a branch value is only ever set after its children's values, so a
-// cached branch root covers its whole subtree. A malformed node (exactly one
-// nil child) and its ancestor chain are excluded and left for the recursive
-// path, which reports such nodes to the caller; healthy subtrees below the
-// excluded chain still batch, so an excluded ancestor can leave its level with
-// no collected nodes.
+// subtree rooted at n. Hashing streams through the post-order walk: a branch
+// whose subtree is complete joins its depth's pending batch, and a full batch
+// flushes through one batchHashFn call right away — deeper pending batches
+// flush first, so a batch's children always have their values when it
+// gathers them. Already-hashed subtrees are pruned: a branch value is only
+// ever set after its children's values, so a cached branch root covers its
+// whole subtree. A malformed node (exactly one nil child) and its ancestor
+// chain are excluded and left for the recursive path, which reports such
+// nodes to the caller; healthy subtrees below the excluded chain still
+// batch.
 func (n *Node) finalize(fn hasher.HashFn) {
 	if n == nil {
 		return
@@ -766,12 +766,36 @@ func (n *Node) finalize(fn hasher.HashFn) {
 
 	scratch, _ := finalizeScratchPool.Get().(*finalizeScratch)
 	defer scratch.release()
+	if cap(scratch.input) < finalizeBatchPairs*64 {
+		scratch.input = make([]byte, finalizeBatchPairs*64)
+	}
 
 	total := 0
 
-	// walk reports whether the subtree is fully hashed once collected nodes
-	// are batched; only nodes whose children both are get collected. Levels
-	// beyond a reused scratch's deepest current entry stay empty.
+	var hashErr error
+
+	// flushFrom hashes every pending batch at depth d or deeper, deepest
+	// first: a pending node's unhashed children sit one depth deeper, so the
+	// sweep order guarantees the gather finds their values.
+	flushFrom := func(d int) {
+		for dd := len(scratch.pending) - 1; dd >= d; dd-- {
+			batch := scratch.pending[dd]
+			if len(batch) == 0 {
+				continue
+			}
+			out := make([]byte, len(batch)*32)
+			if err := hashBatch(batch, out, scratch.input[:len(batch)*64], fn); err != nil {
+				hashErr = err
+				return
+			}
+			clear(batch)
+			scratch.pending[dd] = batch[:0]
+		}
+	}
+
+	// walk reports whether the subtree is fully hashed once pending batches
+	// flush; only nodes whose children both are get batched. After a backend
+	// failure the walk keeps traversing for that verdict but stops batching.
 	var walk func(node *Node, depth int) bool
 	walk = func(node *Node, depth int) bool {
 		if node.left == nil && node.right == nil {
@@ -790,125 +814,58 @@ func (n *Node) finalize(fn hasher.HashFn) {
 		if !leftOk || !rightOk {
 			return false
 		}
-		for len(scratch.levels) <= depth {
-			scratch.levels = append(scratch.levels, nil)
-		}
-		scratch.levels[depth] = append(scratch.levels[depth], node)
 		total++
+		if hashErr != nil {
+			return true
+		}
+		for len(scratch.pending) <= depth {
+			scratch.pending = append(scratch.pending, nil)
+		}
+		if cap(scratch.pending[depth]) == 0 {
+			scratch.pending[depth] = make([]*Node, 0, finalizeBatchPairs)
+		}
+		scratch.pending[depth] = append(scratch.pending[depth], node)
+		if len(scratch.pending[depth]) == finalizeBatchPairs {
+			flushFrom(depth)
+		}
 
 		return true
 	}
 	rootOk := walk(n, 0)
 
-	if total < finalizeThreshold {
-		if total > 0 && rootOk {
-			hashNode(n)
-		}
-		return
+	if hashErr == nil && total >= finalizeThreshold {
+		flushFrom(0)
 	}
-
-	workers := hasher.AsyncHashingWorkers()
-
-	values := make([]byte, total*32)
-	valueOffset := 0
-
-	for depth := len(scratch.levels) - 1; depth >= 0; depth-- {
-		nodes := scratch.levels[depth]
-		out := values[valueOffset : valueOffset+len(nodes)*32]
-		slabs := (len(nodes) + finalizeBatchPairs - 1) / finalizeBatchPairs
-
-		ok := true
-		if workers > 1 && slabs > 1 {
-			ok = finalizeLevelParallel(nodes, out, min(workers, slabs), fn)
-		} else {
-			for off := 0; off < len(nodes); off += finalizeBatchPairs {
-				slab := nodes[off:min(off+finalizeBatchPairs, len(nodes))]
-				if cap(scratch.input) < len(slab)*64 {
-					scratch.input = make([]byte, len(slab)*64)
-				}
-				if hashSlab(slab, out[off*32:], scratch.input[:len(slab)*64], fn) != nil {
-					ok = false
-					break
-				}
-			}
-		}
-		if !ok {
-			// The backend rejects only malformed buffer sizes, which the slab
-			// packing cannot produce; hash the remainder recursively so a
-			// misbehaving backend still yields a correct tree.
-			if rootOk {
-				hashNode(n)
-			}
-			return
-		}
-		valueOffset += len(nodes) * 32
+	// Small trees hash recursively (batch setup costs more than it saves).
+	// So does whatever a failing backend left unhashed: the backend rejects
+	// only malformed buffer sizes, which the batch packing cannot produce,
+	// so the recursive path keeps a misbehaving backend from corrupting the
+	// tree.
+	if (hashErr != nil || total < finalizeThreshold) && total > 0 && rootOk {
+		hashNode(n)
 	}
 }
 
-// hashSlab gathers the sibling pairs of slab into input, compresses them in
-// one batchHashFn call, and hands out the results as sub-slices of out.
-// input must hold exactly len(slab) pairs; its prior contents are arbitrary
+// hashBatch gathers the sibling pairs of batch into input, compresses them
+// in one batchHashFn call, and hands out the results as sub-slices of out.
+// input must hold exactly len(batch) pairs; its prior contents are arbitrary
 // (buffers are reused), so short values zero-extend their chunk explicitly,
 // matching hashPair.
-func hashSlab(slab []*Node, out, input []byte, fn hasher.HashFn) error {
-	for i, node := range slab {
+func hashBatch(batch []*Node, out, input []byte, fn hasher.HashFn) error {
+	for i, node := range batch {
 		off := i * 64
 		n := copy(input[off:off+32], node.left.value)
 		clear(input[off+n : off+32])
 		n = copy(input[off+32:off+64], node.right.value)
 		clear(input[off+32+n : off+64])
 	}
-	if err := fn(out[:len(slab)*32], input); err != nil {
+	if err := fn(out[:len(batch)*32], input); err != nil {
 		return err
 	}
-	for i, node := range slab {
+	for i, node := range batch {
 		node.value = out[i*32 : (i+1)*32 : (i+1)*32]
 	}
 	return nil
-}
-
-// finalizeLevelParallel hashes one level's slabs across the given number of
-// worker goroutines. Gather buffers are borrowed from the async hashing free
-// list (a slab fills exactly one job buffer), and each slab holds an async
-// work slot while hashing, so tree finalization counts against the same
-// process-wide concurrency limit as background HTR reductions. Slab node
-// sets and slab ranges of out are disjoint and every gather reads values
-// completed on a deeper level, so workers share nothing but their slab
-// assignment. Reports whether every slab hashed.
-func finalizeLevelParallel(nodes []*Node, out []byte, workers int, fn hasher.HashFn) bool {
-	slabs := (len(nodes) + finalizeBatchPairs - 1) / finalizeBatchPairs
-
-	var failed atomic.Bool
-
-	var wg sync.WaitGroup
-	for wi := range workers {
-		wg.Add(1)
-		go func(wi int) {
-			defer wg.Done()
-			work := func(region []byte) {
-				for j := wi; j < slabs; j += workers {
-					start := j * finalizeBatchPairs
-					slab := nodes[start:min(start+finalizeBatchPairs, len(nodes))]
-					var err error
-					hasher.WithAsyncWorkSlot(func() {
-						err = hashSlab(slab, out[start*32:], region[:len(slab)*64], fn)
-					})
-					if err != nil {
-						failed.Store(true)
-						return
-					}
-				}
-			}
-			if !hasher.WithAsyncJobBuf(work) {
-				// Async hashing was disabled after the worker count was read;
-				// a one-off buffer keeps the level correct.
-				work(make([]byte, finalizeBatchPairs*64))
-			}
-		}(wi)
-	}
-	wg.Wait()
-
-	return !failed.Load()
 }
 
 func hashNode(n *Node) []byte {
