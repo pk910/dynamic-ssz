@@ -1577,6 +1577,30 @@ func TestGetTreeError(t *testing.T) {
 	}
 }
 
+// GetTree returns a finalized tree: the root value is already cached and
+// matches HashTreeRoot.
+func TestGetTreeFinalized(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz())
+	container := &testSimpleContainer{Value: 42}
+
+	node, err := ds.GetTree(container)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	rootValue := node.Value()
+	if rootValue == nil {
+		t.Fatal("expected cached root value on tree returned by GetTree")
+	}
+
+	root, err := ds.HashTreeRoot(container)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !bytes.Equal(rootValue, root[:]) {
+		t.Fatalf("tree root value = %x, want %x", rootValue, root)
+	}
+}
+
 // global.go: first-time initialization (lines 32-35)
 func TestGetGlobalDynSszFirstInit(t *testing.T) {
 	// Reset global state to force the first-time init path

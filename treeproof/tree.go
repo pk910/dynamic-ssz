@@ -649,11 +649,14 @@ func (n *Node) Get(index int) (*Node, error) {
 
 // Hash returns the hash of the subtree with the given Node as its root.
 // If root has no children, it returns root's value (not its hash).
+// Hash finalizes the subtree, so afterwards every branch node holds its
+// cached hash and the subtree is read-only.
 // A copy is returned for the same reason as in Value: empty (zero-padding)
 // nodes alias the process-wide zero-hash table and cached empty nodes are
 // shared across trees, so the raw slice must not escape to callers.
 func (n *Node) Hash() []byte {
 	// TODO: handle special cases: empty root, one non-empty node
+	n.finalize()
 	return bytes.Clone(hashNode(n))
 }
 
@@ -694,6 +697,138 @@ func getEmptyNode(depth int) *Node {
 	return emptyNodeCache[depth]
 }
 
+// batchHashFn compresses a packed sequence of 64-byte sibling pairs into
+// 32-byte parent hashes in a single call, using the vectorized hashtree
+// backend when available.
+var batchHashFn = hasher.FastHasherPool.HashFn
+
+// finalizeThreshold is the unhashed-branch count below which finalize hashes
+// recursively: tiny batches pay more in buffer setup and per-level backend
+// calls than the vectorized hashing saves.
+const finalizeThreshold = 16
+
+// finalizeBatchPairs caps how many sibling pairs are gathered and hashed per
+// backend call. Wide levels are processed in slabs of this size, keeping the
+// gather buffer at a fixed, cache-friendly 4 MB instead of scaling with the
+// widest level of the tree.
+const finalizeBatchPairs = 65536
+
+// finalizeScratch holds the reusable buffers of a finalize pass: the
+// per-depth node collections and the gather buffer for the widest level.
+// Pooling them keeps repeated finalizations from churning level-sized
+// garbage; only the values arena is allocated per tree, since the nodes
+// retain it.
+type finalizeScratch struct {
+	levels [][]*Node
+	input  []byte
+}
+
+var finalizeScratchPool = sync.Pool{
+	New: func() any { return new(finalizeScratch) },
+}
+
+// release empties the node collections (dropping their node references so a
+// pooled scratch cannot pin a finalized tree in memory) and returns the
+// scratch to the pool. Slice capacities are kept for reuse.
+func (s *finalizeScratch) release() {
+	for i := range s.levels {
+		clear(s.levels[i])
+		s.levels[i] = s.levels[i][:0]
+	}
+	finalizeScratchPool.Put(s)
+}
+
+// finalize computes and caches the value of every unhashed branch node in the
+// subtree rooted at n. Nodes are collected per depth and hashed level by level
+// from the bottom up, so each level compresses in a single batchHashFn call
+// and all computed values share one backing array. Already-hashed subtrees are
+// pruned: a branch value is only ever set after its children's values, so a
+// cached branch root covers its whole subtree. A malformed node (exactly one
+// nil child) and its ancestor chain are excluded and left for the recursive
+// path, which reports such nodes to the caller; healthy subtrees below the
+// excluded chain still batch, so an excluded ancestor can leave its level with
+// no collected nodes.
+func (n *Node) finalize() {
+	if n == nil {
+		return
+	}
+
+	scratch, _ := finalizeScratchPool.Get().(*finalizeScratch)
+	defer scratch.release()
+
+	total := 0
+
+	// walk reports whether the subtree is fully hashed once collected nodes
+	// are batched; only nodes whose children both are get collected. Levels
+	// beyond a reused scratch's deepest current entry stay empty.
+	var walk func(node *Node, depth int) bool
+	walk = func(node *Node, depth int) bool {
+		if node.left == nil && node.right == nil {
+			return true
+		}
+		if node.value != nil {
+			return true
+		}
+		if node.left == nil || node.right == nil {
+			return false
+		}
+
+		leftOk := walk(node.left, depth+1)
+		rightOk := walk(node.right, depth+1)
+
+		if !leftOk || !rightOk {
+			return false
+		}
+		for len(scratch.levels) <= depth {
+			scratch.levels = append(scratch.levels, nil)
+		}
+		scratch.levels[depth] = append(scratch.levels[depth], node)
+		total++
+
+		return true
+	}
+	rootOk := walk(n, 0)
+
+	if total < finalizeThreshold {
+		if total > 0 && rootOk {
+			hashNode(n)
+		}
+		return
+	}
+
+	values := make([]byte, total*32)
+	valueOffset := 0
+
+	for depth := len(scratch.levels) - 1; depth >= 0; depth-- {
+		nodes := scratch.levels[depth]
+		for off := 0; off < len(nodes); off += finalizeBatchPairs {
+			slab := nodes[off:min(off+finalizeBatchPairs, len(nodes))]
+			if cap(scratch.input) < len(slab)*64 {
+				scratch.input = make([]byte, len(slab)*64)
+			}
+			input := scratch.input[:len(slab)*64]
+			out := values[valueOffset : valueOffset+len(slab)*32]
+			for i, node := range slab {
+				copy(input[i*64:i*64+32], node.left.value)
+				copy(input[i*64+32:i*64+64], node.right.value)
+			}
+			if err := batchHashFn(out, input); err != nil {
+				// The backend rejects only malformed buffer sizes, which the
+				// packing above cannot produce; hash the remainder recursively
+				// so a misbehaving backend still yields a correct tree.
+				if rootOk {
+					hashNode(n)
+				}
+				return
+			}
+			for i, node := range slab {
+				node.value = out[i*32 : (i+1)*32 : (i+1)*32]
+			}
+			valueOffset += len(slab) * 32
+		}
+	}
+}
+
 func hashNode(n *Node) []byte {
 	if n == nil {
 		panic("Tree incomplete")
@@ -730,15 +865,15 @@ func hashNode(n *Node) []byte {
 // Prove returns a list of sibling values and hashes needed
 // to compute the root hash for a given general index.
 //
-// Thread-safety: Prove lazily computes and caches intermediate node hashes on
-// first use, so it is not safe to call concurrently on a freshly built,
-// unfinalized tree. Finalize the tree once by calling Hash() before sharing it
-// across goroutines; afterwards concurrent Prove/ProveMulti calls only read the
-// cached hashes.
+// Thread-safety: the first Prove/ProveMulti/Hash call on a freshly built tree
+// finalizes it (computes and caches all node hashes) and must not run
+// concurrently with other calls on the same tree. A finalized tree is
+// read-only, so concurrent calls on it are safe.
 func (n *Node) Prove(index int) (*Proof, error) {
 	if index < 1 {
 		return nil, fmt.Errorf("invalid generalized index %d (must be >= 1)", index)
 	}
+	n.finalize()
 	pathLen := getPathLength(index)
 	proof := &Proof{Index: index}
 	hashes := make([][]byte, 0, pathLen)
@@ -783,11 +918,7 @@ func (n *Node) Prove(index int) (*Proof, error) {
 	}
 
 	proof.Hashes = hashes
-	if cur.value == nil {
-		// This is an intermediate node without a value; add the hash to it so that we're providing a suitable leaf value.
-		cur.value = hashNode(cur)
-	}
-	proof.Leaf = bytes.Clone(cur.value)
+	proof.Leaf = bytes.Clone(hashNode(cur))
 
 	return proof, nil
 }
@@ -797,14 +928,16 @@ func (n *Node) Prove(index int) (*Proof, error) {
 // hashes needed to reconstruct the root. Returns an error if any index cannot
 // be found in the tree.
 //
-// Thread-safety: like Prove, this lazily caches node hashes, so finalize the tree
-// with Hash() before sharing it across goroutines (see Prove).
+// Thread-safety: like Prove, this finalizes the tree on first use, so the
+// first call must not run concurrently with other calls on the same tree
+// (see Prove).
 func (n *Node) ProveMulti(indices []int) (*Multiproof, error) {
 	for _, gi := range indices {
 		if gi < 1 {
 			return nil, fmt.Errorf("invalid generalized index %d (must be >= 1)", gi)
 		}
 	}
+	n.finalize()
 	reqIndices := getRequiredIndices(indices)
 	// Indices is cloned like Leaves and Hashes: storing the caller's slice by
 	// reference lets a later reorder or reuse of it silently invalidate a proof

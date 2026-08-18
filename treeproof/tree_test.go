@@ -9,6 +9,8 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/pk910/dynamic-ssz/hasher"
@@ -2163,4 +2165,225 @@ func TestTreeFromChunksRequiresFullChunks(t *testing.T) {
 			}
 		})
 	}
+}
+
+// finalizeTestChunks returns n distinct 32-byte chunks.
+func finalizeTestChunks(n int) [][]byte {
+	chunks := make([][]byte, n)
+	for i := range chunks {
+		chunks[i] = sum256ToBytes([]byte{byte(i), byte(i >> 8)})
+	}
+	return chunks
+}
+
+// assertAllBranchesHashed fails the test if any branch node in the subtree has
+// no cached value.
+func assertAllBranchesHashed(t *testing.T, n *Node) {
+	t.Helper()
+	if n == nil || (n.left == nil && n.right == nil) {
+		return
+	}
+	if n.value == nil {
+		t.Fatal("branch node has no cached value after finalization")
+	}
+	assertAllBranchesHashed(t, n.left)
+	assertAllBranchesHashed(t, n.right)
+}
+
+// Batched finalization must produce the same roots as the recursive hashNode
+// path across tree shapes, both below and above finalizeThreshold.
+func TestFinalizeBatchedShapes(t *testing.T) {
+	leaves := func(n int) []*Node {
+		chunks := finalizeTestChunks(n)
+		nodes := make([]*Node, n)
+		for i := range nodes {
+			nodes[i] = LeafFromBytes(chunks[i])
+		}
+		return nodes
+	}
+
+	tests := []struct {
+		name  string
+		build func() (*Node, error)
+	}{
+		{"chunks below threshold", func() (*Node, error) { return TreeFromChunks(finalizeTestChunks(8)) }},
+		{"chunks above threshold", func() (*Node, error) { return TreeFromChunks(finalizeTestChunks(64)) }},
+		{"padded vector", func() (*Node, error) { return TreeFromNodes(leaves(100), 128) }},
+		{"progressive", func() (*Node, error) { return TreeFromNodesProgressive(leaves(33)) }},
+		{"mixin", func() (*Node, error) { return TreeFromNodesWithMixin(leaves(20), 20, 32) }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ref, err := tt.build()
+			if err != nil {
+				t.Fatalf("failed to build reference tree: %v", err)
+			}
+			want := bytes.Clone(hashNode(ref))
+
+			tree, err := tt.build()
+			if err != nil {
+				t.Fatalf("failed to build tree: %v", err)
+			}
+			if got := tree.Hash(); !bytes.Equal(got, want) {
+				t.Fatalf("Hash() = %x, want %x", got, want)
+			}
+			assertAllBranchesHashed(t, tree)
+		})
+	}
+}
+
+// Finalization must skip already-hashed subtrees: hashing a child subtree
+// first leaves the tree partially cached, and the root hash must still match.
+func TestFinalizePartialSubtree(t *testing.T) {
+	chunks := finalizeTestChunks(64)
+
+	ref, err := TreeFromChunks(chunks)
+	if err != nil {
+		t.Fatalf("failed to build reference tree: %v", err)
+	}
+	want := bytes.Clone(hashNode(ref))
+
+	tree, err := TreeFromChunks(chunks)
+	if err != nil {
+		t.Fatalf("failed to build tree: %v", err)
+	}
+	if got := tree.Left().Hash(); !bytes.Equal(got, hashNode(ref.left)) {
+		t.Fatalf("left subtree hash mismatch: %x", got)
+	}
+	if got := tree.Hash(); !bytes.Equal(got, want) {
+		t.Fatalf("Hash() = %x, want %x", got, want)
+	}
+	assertAllBranchesHashed(t, tree)
+}
+
+// A failing batch hash backend must fall back to the recursive path and still
+// produce a correct, fully hashed tree.
+func TestFinalizeBatchHashFnError(t *testing.T) {
+	orig := batchHashFn
+	batchHashFn = func(_, _ []byte) error { return errors.New("backend failure") }
+	defer func() { batchHashFn = orig }()
+
+	chunks := finalizeTestChunks(64)
+
+	ref, err := TreeFromChunks(chunks)
+	if err != nil {
+		t.Fatalf("failed to build reference tree: %v", err)
+	}
+	want := bytes.Clone(hashNode(ref))
+
+	tree, err := TreeFromChunks(chunks)
+	if err != nil {
+		t.Fatalf("failed to build tree: %v", err)
+	}
+	if got := tree.Hash(); !bytes.Equal(got, want) {
+		t.Fatalf("Hash() = %x, want %x", got, want)
+	}
+	assertAllBranchesHashed(t, tree)
+}
+
+// A finalized tree is read-only: concurrent Prove/ProveMulti/Hash/Value calls
+// must agree on the root and produce verifiable proofs. Needs -race (which CI
+// uses) to detect an unsynchronized write sneaking back into the read paths.
+func TestFinalizedTreeConcurrentUse(t *testing.T) {
+	const numLeaves = 32
+
+	chunks := finalizeTestChunks(numLeaves)
+	tree, err := TreeFromChunks(chunks)
+	if err != nil {
+		t.Fatalf("failed to build tree: %v", err)
+	}
+	want := tree.Hash()
+
+	const numGoroutines = 16
+	var wg sync.WaitGroup
+	errCh := make(chan error, numGoroutines)
+
+	for g := range numGoroutines {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+
+			if got := tree.Hash(); !bytes.Equal(got, want) {
+				errCh <- fmt.Errorf("goroutine %d: Hash() = %x, want %x", g, got, want)
+				return
+			}
+
+			leafIdx := numLeaves + g%numLeaves
+			proof, err := tree.Prove(leafIdx)
+			if err != nil {
+				errCh <- fmt.Errorf("goroutine %d: Prove(%d): %v", g, leafIdx, err)
+				return
+			}
+			if ok, verifyErr := VerifyProof(want, proof); verifyErr != nil || !ok {
+				errCh <- fmt.Errorf("goroutine %d: VerifyProof(%d) = %v, %v", g, leafIdx, ok, verifyErr)
+				return
+			}
+
+			multiIndices := []int{numLeaves + g%numLeaves, numLeaves + (g+3)%numLeaves}
+			multiProof, err := tree.ProveMulti(multiIndices)
+			if err != nil {
+				errCh <- fmt.Errorf("goroutine %d: ProveMulti(%v): %v", g, multiIndices, err)
+				return
+			}
+			if ok, verifyErr := VerifyMultiproof(want, multiProof.Hashes, multiProof.Leaves, multiProof.Indices); verifyErr != nil || !ok {
+				errCh <- fmt.Errorf("goroutine %d: VerifyMultiproof(%v) = %v, %v", g, multiIndices, ok, verifyErr)
+				return
+			}
+
+			if got := tree.Value(); !bytes.Equal(got, want) {
+				errCh <- fmt.Errorf("goroutine %d: Value() = %x, want %x", g, got, want)
+			}
+		}(g)
+	}
+
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Error(err)
+	}
+}
+
+// A malformed node (one nil child) and its ancestor chain are excluded from
+// batching, while healthy sibling subtrees still finalize; the excluded
+// ancestors leave their levels without collected nodes.
+func TestFinalizeMalformedSubtree(t *testing.T) {
+	healthy, err := TreeFromChunks(finalizeTestChunks(32))
+	if err != nil {
+		t.Fatalf("failed to build healthy subtree: %v", err)
+	}
+	malformed := NewNodeWithLR(LeafFromBytes(finalizeTestChunks(1)[0]), nil)
+	root := NewNodeWithLR(healthy, malformed)
+
+	root.finalize()
+
+	if root.value != nil {
+		t.Error("root above a malformed subtree must stay unhashed")
+	}
+	if malformed.value != nil {
+		t.Error("malformed node must stay unhashed")
+	}
+	assertAllBranchesHashed(t, healthy)
+}
+
+// Prove on a malformed tree returns an error instead of panicking, matching
+// the traversal's own nil-child reporting.
+func TestProveMalformedTreeStillErrors(t *testing.T) {
+	root := NewNodeWithLR(nil, LeafFromBytes(finalizeTestChunks(1)[0]))
+
+	if _, err := root.Prove(3); err == nil {
+		t.Fatal("expected error for malformed tree")
+	}
+}
+
+// A nil root passes through finalize untouched; hashing then reports the
+// incomplete tree.
+func TestHashNilNode(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic for nil node")
+		}
+	}()
+	var n *Node
+	_ = n.Hash()
 }
