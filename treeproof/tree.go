@@ -656,7 +656,7 @@ func (n *Node) Get(index int) (*Node, error) {
 // shared across trees, so the raw slice must not escape to callers.
 func (n *Node) Hash() []byte {
 	// TODO: handle special cases: empty root, one non-empty node
-	n.finalize(finalizeConfig{})
+	_ = n.finalize(finalizeConfig{}) // never fails without a custom hash function
 	return bytes.Clone(hashNode(n))
 }
 
@@ -669,7 +669,9 @@ type finalizeConfig struct {
 }
 
 // WithHashFn finalizes through the given hash function instead of the
-// accelerated default backend.
+// accelerated default backend, on every path — batched flushes and the
+// recursive hashing of trees below the batching threshold alike. An error
+// from fn aborts finalization and is returned by Finalize.
 func WithHashFn(fn hasher.HashFn) FinalizeOption {
 	return func(c *finalizeConfig) {
 		c.fn = fn
@@ -691,12 +693,17 @@ func WithAsyncHashing(workers int) FinalizeOption {
 // Value calls. Hash, Prove and ProveMulti finalize implicitly with default
 // options; Finalize is the explicit entry point for configuring the hash
 // function or parallel hashing.
-func (n *Node) Finalize(opts ...FinalizeOption) {
+//
+// The returned error is non-nil only when a WithHashFn function failed; the
+// tree is then partially finalized — every cached hash is valid — and a
+// later Finalize resumes from it. With the default backend Finalize always
+// succeeds.
+func (n *Node) Finalize(opts ...FinalizeOption) error {
 	cfg := finalizeConfig{}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
-	n.finalize(cfg)
+	return n.finalize(cfg)
 }
 
 // Left returns the left child node, or nil if this is a leaf.
@@ -752,6 +759,12 @@ const finalizeThreshold = 16
 // values; the size balances that locality against per-call backend overhead.
 const finalizeBatchPairs = 1024
 
+// finalizePendingMark marks a branch that has joined a pending batch: a
+// non-nil zero-length value nothing else produces (hashed branch values are
+// always 32 bytes). A walk arriving at a marked node is observing a subtree
+// that is aliased into the tree at more than one position.
+var finalizePendingMark = make([]byte, 0)
+
 // finalizeScratch holds the reusable buffers of a finalize pass: the
 // per-depth pending batches and the shared gather buffer. Pending batches
 // are bounded at finalizeBatchPairs entries per depth, so a pooled scratch
@@ -787,13 +800,22 @@ func (s *finalizeScratch) release() {
 // whole subtree. A malformed node (exactly one nil child) and its ancestor
 // chain are excluded and left for the recursive path, which reports such
 // nodes to the caller; healthy subtrees below the excluded chain still
-// batch.
-func (n *Node) finalize(cfg finalizeConfig) {
+// batch. An unhashed subtree aliased into the tree at several positions is
+// batched once — pending nodes are marked, and a walk hitting a marked node
+// stops further batching so the node's other parents (whose depths the
+// batch ordering cannot serve) finish on the recursive path.
+//
+// The returned error is non-nil only when a caller-supplied hash function
+// failed; the tree is then left partially finalized with every cached value
+// intact, and a later finalize resumes from it. Failures of the default
+// backend recover through the recursive path instead (the backend rejects
+// only malformed buffer sizes, which the batch packing cannot produce).
+func (n *Node) finalize(cfg finalizeConfig) error {
 	// A branch value is only ever set after its children's values, so a
 	// cached root value certifies the whole subtree is finalized; leaves
 	// carry their value from construction.
 	if n == nil || n.value != nil || (n.left == nil && n.right == nil) {
-		return
+		return nil
 	}
 	fn := cfg.fn
 	if fn == nil {
@@ -809,6 +831,7 @@ func (n *Node) finalize(cfg finalizeConfig) {
 	var pipe *finalizePipeline
 
 	total := 0
+	aliased := false
 
 	var hashErr error
 
@@ -845,6 +868,13 @@ func (n *Node) finalize(cfg finalizeConfig) {
 			return true
 		}
 		if node.value != nil {
+			// A pending mark means this subtree already sits in a batch under
+			// another parent: the tree aliases it. It hashes exactly once
+			// through that batch; batching stops so no other parent gathers
+			// it from a depth the flush ordering does not serve.
+			if len(node.value) == 0 {
+				aliased = true
+			}
 			return true
 		}
 		if node.left == nil || node.right == nil {
@@ -858,7 +888,7 @@ func (n *Node) finalize(cfg finalizeConfig) {
 			return false
 		}
 		total++
-		if hashErr != nil {
+		if hashErr != nil || aliased {
 			return true
 		}
 		for len(scratch.pending) <= depth {
@@ -867,6 +897,7 @@ func (n *Node) finalize(cfg finalizeConfig) {
 		if cap(scratch.pending[depth]) == 0 {
 			scratch.pending[depth] = make([]*Node, 0, finalizeBatchPairs)
 		}
+		node.value = finalizePendingMark
 		scratch.pending[depth] = append(scratch.pending[depth], node)
 		if len(scratch.pending[depth]) == finalizeBatchPairs {
 			// The tree is large enough for mid-walk flushing, so hashing
@@ -882,7 +913,7 @@ func (n *Node) finalize(cfg finalizeConfig) {
 	}
 	rootOk := walk(n, 0)
 
-	if hashErr == nil && total >= finalizeThreshold {
+	if hashErr == nil && (total >= finalizeThreshold || aliased) {
 		flushFrom(0)
 	}
 	if pipe != nil {
@@ -890,14 +921,74 @@ func (n *Node) finalize(cfg finalizeConfig) {
 			hashErr = err
 		}
 	}
+	// Batches that never flushed still carry pending marks; restore those
+	// nodes to unhashed so the recursive path recomputes them.
+	for _, batch := range scratch.pending {
+		for _, node := range batch {
+			if len(node.value) == 0 {
+				node.value = nil
+			}
+		}
+	}
 	// Small trees hash recursively (batch setup costs more than it saves).
-	// So does whatever a failing backend left unhashed: the backend rejects
-	// only malformed buffer sizes, which the batch packing cannot produce,
-	// so the recursive path keeps a misbehaving backend from corrupting the
-	// tree.
-	if (hashErr != nil || total < finalizeThreshold) && total > 0 && rootOk {
+	// So do the parents excluded after an aliasing stop, and whatever a
+	// failing default backend left unhashed: that backend rejects only
+	// malformed buffer sizes, which the batch packing cannot produce, so
+	// the recursive path keeps a misbehaving backend from corrupting the
+	// tree. A caller-supplied function is different — substituting the
+	// built-in hash for it would silently change the tree's hash function,
+	// so its failure aborts instead, and its recursive path hashes through
+	// the function itself.
+	if (hashErr != nil || aliased || total < finalizeThreshold) && total > 0 && rootOk {
+		if cfg.fn != nil {
+			if hashErr != nil {
+				return hashErr
+			}
+			_, err := hashNodeFn(n, cfg.fn)
+			return err
+		}
 		hashNode(n)
 	}
+	return nil
+}
+
+// hashNodeFn is the recursive finalization path for a caller-supplied hash
+// function: it computes what hashNode computes, but through fn, and
+// propagates fn's error instead of substituting the built-in hash. A value
+// is only cached after a successful fn call, so an errored pass leaves a
+// consistent, resumable tree.
+func hashNodeFn(n *Node, fn hasher.HashFn) ([]byte, error) {
+	if n == nil {
+		panic("Tree incomplete")
+	}
+	if n.left == nil && n.right == nil {
+		return n.value, nil
+	}
+	if n.value != nil {
+		return n.value, nil
+	}
+	if n.left == nil || n.right == nil {
+		panic("Tree incomplete")
+	}
+
+	left, err := hashNodeFn(n.left, fn)
+	if err != nil {
+		return nil, err
+	}
+	right, err := hashNodeFn(n.right, fn)
+	if err != nil {
+		return nil, err
+	}
+
+	var input [64]byte
+	copy(input[:32], left)
+	copy(input[32:], right)
+	out := make([]byte, 32)
+	if err := fn(out, input[:]); err != nil {
+		return nil, err
+	}
+	n.value = out
+	return out, nil
 }
 
 // hashBatch gathers the sibling pairs of batch into input, compresses them
@@ -1019,6 +1110,16 @@ func (p *finalizePipeline) worker() {
 		if !failed {
 			err = hashBatch(job.batch, job.out, input[:len(job.batch)*64], p.fn)
 		}
+		if failed || err != nil {
+			// The batch was not hashed; drop the pending marks so the nodes
+			// read as unhashed. Nothing gathers them concurrently — the
+			// recorded error makes every later job skip its gather.
+			for _, node := range job.batch {
+				if len(node.value) == 0 {
+					node.value = nil
+				}
+			}
+		}
 
 		p.mu.Lock()
 		if err != nil && p.err == nil {
@@ -1094,7 +1195,9 @@ func (n *Node) Prove(index int) (*Proof, error) {
 	if index < 1 {
 		return nil, fmt.Errorf("invalid generalized index %d (must be >= 1)", index)
 	}
-	n.finalize(finalizeConfig{})
+	if err := n.finalize(finalizeConfig{}); err != nil {
+		return nil, err
+	}
 	pathLen := getPathLength(index)
 	proof := &Proof{Index: index}
 	hashes := make([][]byte, 0, pathLen)
@@ -1158,7 +1261,9 @@ func (n *Node) ProveMulti(indices []int) (*Multiproof, error) {
 			return nil, fmt.Errorf("invalid generalized index %d (must be >= 1)", gi)
 		}
 	}
-	n.finalize(finalizeConfig{})
+	if err := n.finalize(finalizeConfig{}); err != nil {
+		return nil, err
+	}
 	reqIndices := getRequiredIndices(indices)
 	// Indices is cloned like Leaves and Hashes: storing the caller's slice by
 	// reference lets a later reorder or reuse of it silently invalidate a proof

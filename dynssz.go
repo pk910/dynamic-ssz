@@ -1207,7 +1207,9 @@ func (d *DynSsz) GetTree(source any, opts ...CallOption) (*treeproof.Node, error
 	if d.options.AsyncHashing && d.options.AsyncHashingWorkers > 1 {
 		finalizeOpts = append(finalizeOpts, treeproof.WithAsyncHashing(d.options.AsyncHashingWorkers))
 	}
-	node.Finalize(finalizeOpts...)
+	if err := node.Finalize(finalizeOpts...); err != nil {
+		return nil, err
+	}
 
 	return node, nil
 }

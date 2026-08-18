@@ -2357,7 +2357,9 @@ func TestFinalizeMalformedSubtree(t *testing.T) {
 	malformed := NewNodeWithLR(LeafFromBytes(finalizeTestChunks(1)[0]), nil)
 	root := NewNodeWithLR(healthy, malformed)
 
-	root.finalize(finalizeConfig{})
+	if err := root.finalize(finalizeConfig{}); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
 
 	if root.value != nil {
 		t.Error("root above a malformed subtree must stay unhashed")
@@ -2405,7 +2407,9 @@ func TestFinalizeParallel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to build tree: %v", err)
 	}
-	tree.Finalize(WithAsyncHashing(4))
+	if err := tree.Finalize(WithAsyncHashing(4)); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
 	if got := tree.Hash(); !bytes.Equal(got, want) {
 		t.Fatalf("Hash() = %x, want %x", got, want)
 	}
@@ -2431,7 +2435,9 @@ func TestFinalizeParallelBatchHashFnError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to build tree: %v", err)
 	}
-	tree.Finalize(WithAsyncHashing(4))
+	if err := tree.Finalize(WithAsyncHashing(4)); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
 	if got := tree.Hash(); !bytes.Equal(got, want) {
 		t.Fatalf("Hash() = %x, want %x", got, want)
 	}
@@ -2489,7 +2495,9 @@ func TestFinalizeShortLeavesParallel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	warm.Finalize(WithAsyncHashing(4))
+	if finErr := warm.Finalize(WithAsyncHashing(4)); finErr != nil {
+		t.Fatalf("Finalize: %v", finErr)
+	}
 
 	const numLeaves = 4 * finalizeBatchPairs // two full slabs on the leaf-parent level
 	ref, err := TreeFromNodes(shortLeafNodes(numLeaves), numLeaves)
@@ -2502,7 +2510,9 @@ func TestFinalizeShortLeavesParallel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tree.Finalize(WithAsyncHashing(4))
+	if err := tree.Finalize(WithAsyncHashing(4)); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
 	if got := tree.Hash(); !bytes.Equal(got, want) {
 		t.Fatalf("parallel batched root %x != recursive root %x", got, want)
 	}
@@ -2529,7 +2539,9 @@ func TestFinalizeWithHashFn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tree.Finalize(WithHashFn(countingFn))
+	if err := tree.Finalize(WithHashFn(countingFn)); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
 	if got := tree.Hash(); !bytes.Equal(got, want) {
 		t.Fatalf("Finalize(WithHashFn) root %x, want %x", got, want)
 	}
@@ -2641,10 +2653,127 @@ func TestFinalizeParallelDeepPadded(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		tree.Finalize(WithAsyncHashing(8))
+		if err := tree.Finalize(WithAsyncHashing(8)); err != nil {
+			t.Fatalf("round %d: Finalize: %v", round, err)
+		}
 		if got := tree.Hash(); !bytes.Equal(got, want) {
 			t.Fatalf("round %d: root mismatch", round)
 		}
 		assertAllBranchesHashed(t, tree)
 	}
+}
+
+// A worker returning its batch buffer while the recycle pool is already full
+// drops the buffer instead of blocking.
+func TestFinalizePipelinePoolReturnFull(t *testing.T) {
+	gate := make(chan struct{})
+	fn := func(dst, input []byte) error {
+		<-gate
+		return batchHashFn(dst, input)
+	}
+
+	node := NewNodeWithLR(
+		LeafFromBytes(sum256ToBytes([]byte{1})),
+		LeafFromBytes(sum256ToBytes([]byte{2})),
+	)
+
+	p := newFinalizePipeline(1, fn)
+	_ = p.flush(append(make([]*Node, 0, finalizeBatchPairs), node), 0)
+	for range cap(p.pool) {
+		p.pool <- make([]*Node, 0, 1)
+	}
+	close(gate)
+	if err := p.join(); err != nil {
+		t.Fatalf("join: %v", err)
+	}
+
+	if len(p.pool) != cap(p.pool) {
+		t.Errorf("pool size changed around a full-pool return: %d/%d", len(p.pool), cap(p.pool))
+	}
+	if want := hashPair(node.left.value, node.right.value); !bytes.Equal(node.value, want) {
+		t.Error("node value mismatch after full-pool return")
+	}
+}
+
+// An unhashed subtree may be aliased into the tree at many positions
+// (TreeFromNodes accepts existing nodes); it must be batched exactly once so
+// pipeline workers never write the same node concurrently (needs -race), and
+// the root must match an alias-free reference.
+func TestFinalizeSharedSubtreeAsync(t *testing.T) {
+	build := func(share bool) *Node {
+		leaves := make([]*Node, 2048)
+		for i := range leaves {
+			if share && i > 0 {
+				leaves[i] = leaves[0]
+				continue
+			}
+			leaves[i] = NewNodeWithLR(
+				LeafFromBytes(sum256ToBytes([]byte{1})),
+				LeafFromBytes(sum256ToBytes([]byte{2})),
+			)
+		}
+		tree, err := TreeFromNodes(leaves, len(leaves))
+		if err != nil {
+			t.Fatalf("failed to build tree: %v", err)
+		}
+		return tree
+	}
+
+	shared := build(true)
+	if err := shared.Finalize(WithAsyncHashing(2)); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	if got, want := shared.Hash(), build(false).Hash(); !bytes.Equal(got, want) {
+		t.Fatalf("shared-subtree root %x, want %x", got, want)
+	}
+	assertAllBranchesHashed(t, shared)
+}
+
+// WithHashFn reaches trees below the batching threshold through the
+// recursive path, and a failing function surfaces its error while leaving a
+// resumable tree.
+func TestFinalizeWithHashFnSmallTree(t *testing.T) {
+	chunks := finalizeTestChunks(8)
+
+	ref, err := TreeFromChunks(chunks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := bytes.Clone(hashNode(ref))
+
+	var calls int
+	countingFn := func(dst, input []byte) error {
+		calls++
+		return batchHashFn(dst, input)
+	}
+	tree, err := TreeFromChunks(chunks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tree.Finalize(WithHashFn(countingFn)); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	if calls == 0 {
+		t.Fatal("custom hash function was not used below the batching threshold")
+	}
+	if got := tree.Hash(); !bytes.Equal(got, want) {
+		t.Fatalf("small-tree WithHashFn root %x, want %x", got, want)
+	}
+
+	failing, err := TreeFromChunks(chunks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := failing.Finalize(WithHashFn(func(_, _ []byte) error {
+		return errors.New("backend failure")
+	})); err == nil {
+		t.Fatal("expected the failing hash function's error")
+	}
+	if err := failing.Finalize(); err != nil {
+		t.Fatalf("resumed Finalize: %v", err)
+	}
+	if got := failing.Hash(); !bytes.Equal(got, want) {
+		t.Fatalf("resumed root %x, want %x", got, want)
+	}
+	assertAllBranchesHashed(t, failing)
 }
