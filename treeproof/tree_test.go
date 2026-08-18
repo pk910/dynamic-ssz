@@ -2730,9 +2730,11 @@ func TestFinalizeSharedSubtreeCrossBatchAsync(t *testing.T) {
 	}
 
 	build := func(share bool) *Node {
-		leaves := make([]*Node, 2*finalizeBatchPairs)
+		// Wide enough that the shared node's batch is dispatched before the
+		// walk revisits it, at the scaled two-worker flush size.
+		leaves := make([]*Node, 4*finalizeBatchPairs)
 		for i := range leaves {
-			if i == finalizeBatchPairs {
+			if i == 2*finalizeBatchPairs {
 				if share {
 					leaves[i] = leaves[0]
 					continue
