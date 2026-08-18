@@ -243,9 +243,10 @@ type proofTestOptional struct {
 	L    []*proofTestInner `ssz-max:"4"`
 }
 
-// Shapes without a native descent (bitlists, progressive containers and
-// lists, unions, optionals) prove through subtree materialization; every
-// generalized index must still match the tree-based Prove path.
+// Exotic shapes (bitlists, progressive containers and lists, unions,
+// optionals): every generalized index must match the tree-based Prove path,
+// whether it proves through the streamed capture or through subtree
+// materialization.
 func TestGetProofsExoticShapes(t *testing.T) {
 	union, err := dynssz.NewCompatibleUnion[proofTestUnionDesc](1, proofTestInner{A: 9, B: [32]byte{1, 2}})
 	if err != nil {
@@ -953,5 +954,144 @@ func TestGetProofsProgressiveComposite(t *testing.T) {
 		if ok, verr := treeproof.VerifyProof(root, got[0]); verr != nil || !ok {
 			t.Fatalf("VerifyProof(%d) = %v, %v", gindex, ok, verr)
 		}
+	}
+}
+
+type proofTestProgContainer struct {
+	Slot   uint64            `ssz-index:"0"`
+	Root   [32]byte          `ssz-index:"1" ssz-size:"32"`
+	Values []uint64          `ssz-index:"3" ssz-max:"64"`
+	Inner  proofTestInner    `ssz-index:"6"`
+	List   []*proofTestInner `ssz-index:"9" ssz-type:"progressive-list" ssz-max:"4096"`
+}
+
+// Deep proofs into progressive containers decompose through the fields'
+// stable ssz-index chunk positions, including gap slots and the
+// active-fields mixin; every generalized index must match the tree-based
+// Prove path.
+func TestGetProofsProgressiveContainer(t *testing.T) {
+	source := &proofTestProgContainer{
+		Slot:   11,
+		Root:   [32]byte{1, 2, 3},
+		Values: []uint64{4, 5, 6},
+	}
+	for i := range 5 {
+		inner := &proofTestInner{A: uint64(i + 1)}
+		inner.B[0] = byte(i + 1)
+		source.List = append(source.List, inner)
+	}
+	ds := dynssz.NewDynSsz(nil)
+
+	for name, src := range map[string]any{"filled": source, "zero": &proofTestProgContainer{}} {
+		t.Run(name, func(t *testing.T) {
+			tree, root, getProofs := proofTestSetup(t, ds, src)
+
+			var gindices []int
+			collectGindices(tree, 1, &gindices)
+			for _, gindex := range gindices {
+				want, proveErr := tree.Prove(gindex)
+				if proveErr != nil {
+					t.Fatalf("tree.Prove(%d): %v", gindex, proveErr)
+				}
+				got, err := getProofs([]int{gindex})
+				if err != nil {
+					t.Fatalf("GetProofs(%d): %v", gindex, err)
+				}
+				assertProofEqual(t, gindex, want, got[0])
+				if ok, verr := treeproof.VerifyProof(root, got[0]); verr != nil || !ok {
+					t.Fatalf("VerifyProof(%d) = %v, %v", gindex, ok, verr)
+				}
+			}
+		})
+	}
+}
+
+// Deep proofs into a progressive container's fields stream through the
+// scheduled capture: a warmed run must stay data-bounded instead of
+// building the container's subtree whole.
+func TestGetProofsProgressiveContainerAllocationBound(t *testing.T) {
+	type progState struct {
+		Slot       uint64   `ssz-index:"0"`
+		Validators []uint64 `ssz-index:"2" ssz-type:"progressive-list" ssz-max:"16777216"`
+	}
+	source := &progState{Slot: 3, Validators: make([]uint64, 1<<20)}
+	for i := range source.Validators {
+		source.Validators[i] = uint64(i)
+	}
+	ds := dynssz.NewDynSsz(nil)
+
+	full, err := ds.GetTree(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gindices []int
+	collectGindices(full, 1, &gindices)
+	target := gindices[len(gindices)*3/4]
+
+	warmProofs, err := ds.GetProofs(source, []int{target}) // warm caches and pools
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, proveErr := full.Prove(target)
+	if proveErr != nil {
+		t.Fatal(proveErr)
+	}
+	assertProofEqual(t, target, want, warmProofs[0])
+
+	runtime.GC()
+	var m0, m1 runtime.MemStats
+	runtime.ReadMemStats(&m0)
+	if _, err := ds.GetProofs(source, []int{target}); err != nil {
+		t.Fatal(err)
+	}
+	runtime.ReadMemStats(&m1)
+	if alloc := m1.TotalAlloc - m0.TotalAlloc; alloc > 32<<20 {
+		t.Fatalf("progressive container proof allocated %d bytes; capture is not streaming", alloc)
+	}
+}
+
+// Deep proofs into an optional's value stream through the scheduled capture
+// (Optional[T] merkleizes like List[T, 1]): a warmed run must stay
+// data-bounded instead of building the optional's subtree whole.
+func TestGetProofsOptionalAllocationBound(t *testing.T) {
+	type optInner struct {
+		Values []uint64 `ssz-max:"16777216"`
+	}
+	type optHolder struct {
+		Opt *optInner `ssz-type:"optional"`
+	}
+	source := &optHolder{Opt: &optInner{Values: make([]uint64, 1<<20)}}
+	for i := range source.Opt.Values {
+		source.Opt.Values[i] = uint64(i)
+	}
+	ds := dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes())
+
+	full, err := ds.GetTree(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gindices []int
+	collectGindices(full, 1, &gindices)
+	target := gindices[len(gindices)*3/4]
+
+	warmProofs, err := ds.GetProofs(source, []int{target}) // warm caches and pools
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, proveErr := full.Prove(target)
+	if proveErr != nil {
+		t.Fatal(proveErr)
+	}
+	assertProofEqual(t, target, want, warmProofs[0])
+
+	runtime.GC()
+	var m0, m1 runtime.MemStats
+	runtime.ReadMemStats(&m0)
+	if _, err := ds.GetProofs(source, []int{target}); err != nil {
+		t.Fatal(err)
+	}
+	runtime.ReadMemStats(&m1)
+	if alloc := m1.TotalAlloc - m0.TotalAlloc; alloc > 32<<20 {
+		t.Fatalf("optional deep proof allocated %d bytes; capture is not streaming", alloc)
 	}
 }

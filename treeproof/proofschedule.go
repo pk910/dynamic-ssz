@@ -16,8 +16,7 @@ import (
 // type descriptor and the requested generalized indices: a child appears in
 // the schedule when a proof path descends to or below it, and retainAll
 // marks subtrees whose internal tree shape depends on runtime data
-// (progressive trees, unions, optionals, delegated types), so they are kept
-// whole.
+// (union variants, delegated types), so they are kept whole.
 type ProofSchedule struct {
 	children  map[uint64]*ProofSchedule
 	retainAll bool
@@ -200,14 +199,70 @@ func scheduleTarget(sched *ProofSchedule, desc *ssztypes.TypeDescriptor, rel uin
 			slot, _ := consumeProgressivePath(&rel)
 			sched.addChild(slot)
 			return
+		case ssztypes.SszProgressiveContainerType:
+			// Chunk slots are the fields' ssz-index positions in the
+			// progressive tree (gap slots hash as zero chunks). The mixin's
+			// right side is the active-fields chunk, which carries no
+			// structure below it.
+			sched.progressive = true
+			side, ok := consumePath(&rel, 1)
+			if !ok || side != 0 {
+				return
+			}
+			slot, ok := consumeProgressivePath(&rel)
+			child := sched.addChild(slot)
+			field := progressiveFieldAt(desc.ContainerDesc.Fields, slot)
+			if !ok || field == nil {
+				// Interior node, gap slot or zero padding: the retained slot
+				// pins the path, nothing below it has structure.
+				return
+			}
+			sched = child
+			desc = field.Type
+			continue
+		case ssztypes.SszOptionalType, ssztypes.SszOptionalListType:
+			// Optional values merkleize like List[T, 1]: one content chunk
+			// (the value's root, zero when absent) with a presence mixin.
+			side, ok := consumePath(&rel, 1)
+			if !ok || side != 0 {
+				return
+			}
+			sched = sched.addChild(0)
+			desc = desc.ElemDesc
+			continue
+		case ssztypes.SszCompatibleUnionType, ssztypes.SszUnionType:
+			// Union roots merkleize two chunks: the variant's data root and
+			// the selector. The data subtree's shape follows the runtime
+			// selector, so paths below the data root keep that subtree whole.
+			slot, ok := consumePath(&rel, 1)
+			child := sched.addChild(slot)
+			if !ok || slot != 0 || rel == 1 {
+				return
+			}
+			child.retainAll = true
+			child.targets = append(child.targets, rel)
+			return
 		default:
-			// Progressive containers, unions, optionals, custom and
-			// delegated types: the tree layout is not derivable from the
-			// descriptor alone, keep the whole subtree.
+			// Custom and delegated types: the tree layout is not derivable
+			// from the descriptor alone, keep the whole subtree.
 			sched.retainAll = true
 			return
 		}
 	}
+}
+
+// progressiveFieldAt returns the field occupying the given chunk slot of a
+// progressive container, nil for gap slots. Fields are ordered by increasing
+// ssz-index.
+func progressiveFieldAt(fields []ssztypes.FieldDescriptor, slot uint64) *ssztypes.FieldDescriptor {
+	for i := range fields {
+		if index := uint64(fields[i].SszIndex); index == slot {
+			return &fields[i]
+		} else if index > slot {
+			return nil
+		}
+	}
+	return nil
 }
 
 // consumePath consumes depth bits of the relative generalized index and

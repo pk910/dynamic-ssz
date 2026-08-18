@@ -645,3 +645,123 @@ func TestProofScheduleProgressiveCorners(t *testing.T) {
 		t.Fatal("saturated group has no span")
 	}
 }
+
+// A scheduled progressive scope may close with an active-fields mixin (a
+// progressive container): the fold's mixin chunk must match the hasher's,
+// including the merkleized root of a multi-chunk bitvector. Inside a
+// retained subtree the close mirrors into the tree wrapper instead.
+func TestProofCaptureActiveFieldsClose(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		sched        *ProofSchedule
+		activeFields []byte
+	}{
+		{"scheduled chunk", nil, []byte{0x0b}},
+		{"scheduled multi-chunk", nil, bytes.Repeat([]byte{0xff}, 68)},
+		{"retained", &ProofSchedule{retainAll: true}, []byte{0x0b}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ref := hasher.FastHasherPool.Get()
+			refIdx := ref.Index()
+			ref.PutUint64(7)
+			ref.PutUint64(9)
+			ref.MerkleizeProgressiveWithActiveFields(refIdx, tc.activeFields)
+			refRoot, err := ref.HashRoot()
+			hasher.FastHasherPool.Put(ref)
+			if err != nil {
+				t.Fatalf("reference HashRoot: %v", err)
+			}
+
+			sched := tc.sched
+			if sched == nil {
+				sched = &ProofSchedule{progressive: true}
+				sched.addChild(1)
+			}
+			hh := hasher.FastHasherPool.Get()
+			defer hasher.FastHasherPool.Put(hh)
+			pc := newProofCapture(sched, hh, nil, 0)
+			idx := pc.StartTree(sszutils.TreeTypeNone)
+			pc.PutUint64(7)
+			pc.PutUint64(9)
+			pc.MerkleizeProgressiveWithActiveFields(idx, tc.activeFields)
+
+			tree, err := pc.ProofTree()
+			if err != nil {
+				t.Fatalf("ProofTree: %v", err)
+			}
+			if !bytes.Equal(tree.Hash(), refRoot[:]) {
+				t.Fatalf("capture root = %x, want %x", tree.Hash(), refRoot)
+			}
+
+			afChunk := activeFieldsRoot(tc.activeFields)
+			afLeaf, err := tree.Get(3)
+			if err != nil {
+				t.Fatalf("Get(3): %v", err)
+			}
+			if !bytes.Equal(afLeaf.Value(), afChunk[:]) {
+				t.Fatalf("active-fields leaf = %x, want %x", afLeaf.Value(), afChunk)
+			}
+		})
+	}
+}
+
+// A Put-style value directly under a retainAll schedule (a union variant or
+// extended type put without a scope of its own) keeps its target paths
+// through the chunk-built pruned tree instead of collapsing to a leaf.
+func TestProofCapturePutRetainTargets(t *testing.T) {
+	vals := make([]uint64, 20)
+	for i := range vals {
+		vals[i] = uint64(i + 1)
+	}
+	for _, tc := range []struct {
+		name string
+		put  func(w sszutils.HashWalker)
+	}{
+		{"uint64 array", func(w sszutils.HashWalker) { w.PutUint64Array(vals, 64) }},
+		{"progressive bitlist", func(w sszutils.HashWalker) { w.PutProgressiveBitlist([]byte{0xaa, 0x55, 0xff, 0x35, 0x01}) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ref := NewWrapper()
+			refIdx := ref.StartTree(sszutils.TreeTypeNone)
+			tc.put(ref)
+			ref.Merkleize(refIdx)
+			refTree := ref.Node()
+			refTree.Finalize()
+
+			// The outer scope holds a single chunk, so the put subtree's
+			// relative targets equal the absolute generalized indices.
+			var gindices []int
+			collectStreamGindices(refTree, 1, &gindices)
+
+			sched := &ProofSchedule{}
+			child := sched.addChild(0)
+			child.retainAll = true
+			for _, gindex := range gindices {
+				child.targets = append(child.targets, uint64(gindex))
+			}
+
+			hh := hasher.FastHasherPool.Get()
+			defer hasher.FastHasherPool.Put(hh)
+			pc := newProofCapture(sched, hh, nil, 0)
+			idx := pc.StartTree(sszutils.TreeTypeNone)
+			tc.put(pc)
+			pc.Merkleize(idx)
+
+			tree, err := pc.ProofTree()
+			if err != nil {
+				t.Fatalf("ProofTree: %v", err)
+			}
+			for _, gindex := range gindices {
+				want, refErr := refTree.Prove(gindex)
+				if refErr != nil {
+					t.Fatalf("reference Prove(%d): %v", gindex, refErr)
+				}
+				got, err := tree.Prove(gindex)
+				if err != nil {
+					t.Fatalf("pruned Prove(%d): %v", gindex, err)
+				}
+				assertSameProof(t, gindex, want, got)
+			}
+		})
+	}
+}

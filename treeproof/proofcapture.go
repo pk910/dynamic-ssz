@@ -359,6 +359,9 @@ func (pc *proofCapture) PutProgressiveBitlist(bb []byte) {
 	if sched == nil || sched.empty() {
 		return
 	}
+	if sched.retainAll {
+		sched = putRetainSchedule(sched.targets, 0, true, true)
+	}
 	bitlist, size := hasher.ParseProgressiveBitlist(nil, bb)
 	content := pc.prunedProgressiveChunkTree(sched, bitlist, 0, 0)
 	var lengthChunk [32]byte
@@ -903,6 +906,9 @@ func (pc *proofCapture) putPruned(ordinal uint64, sched *ProofSchedule, chunks [
 	if limitChunks != 0 {
 		depth = chunkDepthSlots(limitChunks)
 	}
+	if sched.retainAll {
+		sched = putRetainSchedule(sched.targets, depth, mixin, false)
+	}
 	node := pc.prunedChunkTree(sched, chunks, depth, 0)
 	if mixin {
 		var lengthChunk [32]byte
@@ -911,6 +917,35 @@ func (pc *proofCapture) putPruned(ordinal uint64, sched *ProofSchedule, chunks [
 		node = &Node{left: node, right: newOwnedLeaf(bytes.Clone(lengthChunk[:])), value: root}
 	}
 	pc.registerChild(ordinal, node)
+}
+
+// putRetainSchedule derives chunk-slot retention from a retainAll
+// schedule's proof targets. Put-style values under runtime-shaped schedules
+// (union variants, delegated and extended types) never open a scope, so the
+// retain wrapper cannot capture them; decomposing the targets against the
+// put value's own chunk-tree shape keeps their paths in the chunk-built
+// pruned tree instead.
+func putRetainSchedule(targets []uint64, depth int, mixin, progressive bool) *ProofSchedule {
+	s := &ProofSchedule{progressive: progressive}
+	for _, rel := range targets {
+		if rel <= 1 {
+			continue
+		}
+		if mixin {
+			side, ok := consumePath(&rel, 1)
+			if !ok || side != 0 {
+				continue
+			}
+		}
+		if progressive {
+			slot, _ := consumeProgressivePath(&rel)
+			s.addChild(slot)
+			continue
+		}
+		slot, _ := consumePath(&rel, depth)
+		s.addChild(slot)
+	}
+	return s
 }
 
 // pruneTree prunes a fully hashed subtree back to the given relative proof
@@ -957,12 +992,10 @@ func pruneNode(node *Node, targets []uint64) *Node {
 // the scope's tree depth with zero subtrees, keeping empty-node structure
 // under scheduled slots so proofs of emptiness stay servable.
 func (pc *proofCapture) foldScope(scope *proofCaptureScope, variant proofClose) (*Node, [32]byte) {
-	if variant.kind == sszutils.TreeTypeProgressive != scope.sched.progressive || variant.activeFields != nil {
+	if variant.kind == sszutils.TreeTypeProgressive != scope.sched.progressive {
 		// The stream's tree shape disagrees with the schedule's
-		// decomposition (or an active-fields close reached a scheduled
-		// scope, which the schedule never descends into); the entries cannot
-		// reproduce the other shape. Record the failure for ProofTree
-		// instead of serving a wrong proof.
+		// decomposition; the entries cannot reproduce the other shape.
+		// Record the failure for ProofTree instead of serving a wrong proof.
 		if pc.err == nil {
 			pc.err = sszutils.NewSszError(sszutils.ErrInvalidValueRange, "proof capture cannot fold a scope whose tree shape disagrees with the schedule")
 		}
@@ -972,11 +1005,15 @@ func (pc *proofCapture) foldScope(scope *proofCaptureScope, variant proofClose) 
 	if variant.kind == sszutils.TreeTypeProgressive {
 		content := pc.foldProgressive(scope, 0, 0)
 		if variant.mixin {
-			var lengthChunk [32]byte
-			sszutils.MarshalUint64(lengthChunk[:0], variant.num)
+			var mixinChunk [32]byte
+			if variant.activeFields != nil {
+				mixinChunk = activeFieldsRoot(variant.activeFields)
+			} else {
+				sszutils.MarshalUint64(mixinChunk[:0], variant.num)
+			}
 			contentNode := content.materialize()
-			root := hashPair(contentNode.value, lengthChunk[:])
-			node := &Node{left: contentNode, right: newOwnedLeaf(bytes.Clone(lengthChunk[:])), value: root}
+			root := hashPair(contentNode.value, mixinChunk[:])
+			node := &Node{left: contentNode, right: newOwnedLeaf(bytes.Clone(mixinChunk[:])), value: root}
 			return node, [32]byte(root)
 		}
 		node := content.materialize()
@@ -999,6 +1036,30 @@ func (pc *proofCapture) foldScope(scope *proofCaptureScope, variant proofClose) 
 	}
 	node := content.materialize()
 	return node, [32]byte(node.value)
+}
+
+// activeFieldsRoot returns the active-fields mixin chunk: the bitvector
+// zero-padded to one chunk, or its merkleized root when it spans several,
+// matching the hasher's mixin input.
+func activeFieldsRoot(activeFields []byte) [32]byte {
+	var chunk [32]byte
+	if len(activeFields) <= 32 {
+		copy(chunk[:], activeFields)
+		return chunk
+	}
+	chunks := make([]byte, (len(activeFields)+31)/32*32, (len(activeFields)+63)/32*32)
+	copy(chunks, activeFields)
+	for level := 0; len(chunks) > 32; level++ {
+		if (len(chunks)/32)%2 == 1 {
+			chunks = append(chunks, hasher.GetZeroHash(level)...)
+		}
+		for i := 0; i < len(chunks)/64; i++ {
+			root := hashPair(chunks[i*64:i*64+32], chunks[i*64+32:i*64+64])
+			copy(chunks[i*32:], root)
+		}
+		chunks = chunks[:len(chunks)/2]
+	}
+	return [32]byte(chunks)
 }
 
 // foldRange folds the entries covering [base, base+2^level) into a single
