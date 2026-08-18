@@ -530,6 +530,18 @@ func (h *Hasher) CurrentIndex() int {
 	return len(h.buf)
 }
 
+// BufferSince returns the buffer contents from the given index (a value
+// previously returned by StartTree) to the current position, draining any
+// background reduction overlapping the region first. The returned slice is
+// only valid until the next walker operation. Intended for stream observers
+// reading a non-incremental scope's completed chunks: incremental scopes
+// collapse and defer within their region, so their contents are not the
+// plain chunk sequence this returns.
+func (h *Hasher) BufferSince(indx int) []byte {
+	h.drainJobsFor(indx)
+	return h.buf[indx:]
+}
+
 // Collapse hints the hasher to collapse accumulated chunks in the current
 // layer if the batch threshold is reached. This is a no-op for
 // non-incremental layers or when no layer is active.
