@@ -36,6 +36,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
@@ -678,10 +679,9 @@ func WithHashFn(fn hasher.HashFn) FinalizeOption {
 	}
 }
 
-// WithAsyncHashing hashes finalization batches on the given number of
-// pipeline worker goroutines, overlapping hashing with the tree walk. The
-// hash function must be safe for concurrent use. workers <= 1 keeps
-// finalization on the calling goroutine.
+// WithAsyncHashing spreads each finalization batch across the given number
+// of goroutines. The hash function must be safe for concurrent use.
+// workers <= 1 keeps finalization on the calling goroutine.
 func WithAsyncHashing(workers int) FinalizeOption {
 	return func(c *finalizeConfig) {
 		c.workers = workers
@@ -694,10 +694,11 @@ func WithAsyncHashing(workers int) FinalizeOption {
 // options; Finalize is the explicit entry point for configuring the hash
 // function or parallel hashing.
 //
-// The returned error is non-nil only when a WithHashFn function failed; the
-// tree is then partially finalized — every cached hash is valid — and a
-// later Finalize resumes from it. With the default backend Finalize always
-// succeeds.
+// A hashing backend failure aborts finalization and is returned; the tree
+// is then partially finalized — every cached hash is valid — and a later
+// Finalize resumes from it. The default backend cannot fail in practice (it
+// rejects only malformed buffer sizes, which finalization never produces),
+// so without WithHashFn, Finalize errors only on a malformed tree.
 func (n *Node) Finalize(opts ...FinalizeOption) error {
 	cfg := finalizeConfig{}
 	for _, opt := range opts {
@@ -753,23 +754,20 @@ var batchHashFn = hasher.FastHasherPool.HashFn
 // calls than the vectorized hashing saves.
 const finalizeThreshold = 16
 
-// finalizeBatchPairs is the number of hashable sibling pairs accumulated per
-// depth before the batch flushes through one backend call. Batches cover
-// nodes the walk visited moments earlier, so the gather reads cache-warm
-// values; the size balances that locality against per-call backend overhead.
+// finalizeBatchPairs is the number of sibling pairs accumulated per depth
+// before a batch flushes: small enough to gather cache-warm values, large
+// enough to amortize the backend call.
 const finalizeBatchPairs = 1024
 
-// finalizePendingMark marks a branch that has joined a pending batch: a
-// non-nil zero-length value nothing else produces (hashed branch values are
-// always 32 bytes). A walk arriving at a marked node is observing a subtree
-// that is aliased into the tree at more than one position.
+// finalizePendingMark marks a branch that has joined a batch: a non-nil
+// zero-length value nothing else produces. A walk arriving at a marked node
+// is revisiting an aliased subtree.
 var finalizePendingMark = make([]byte, 0)
 
-// finalizeScratch holds the reusable buffers of a finalize pass: the
-// per-depth pending batches and the shared gather buffer. Pending batches
-// are bounded at finalizeBatchPairs entries per depth, so a pooled scratch
-// retains only a few hundred KB regardless of tree size; the computed values
-// are allocated per flush, since the nodes retain them.
+// finalizeScratch holds a finalize pass's reusable buffers: the per-depth
+// pending batches and the sequential gather buffer. Both are bounded by the
+// flush size, not the tree size; computed values are allocated per flush,
+// since the nodes retain them.
 type finalizeScratch struct {
 	pending [][]*Node
 	input   []byte
@@ -779,9 +777,8 @@ var finalizeScratchPool = sync.Pool{
 	New: func() any { return new(finalizeScratch) },
 }
 
-// release empties the pending batches (dropping their node references so a
-// pooled scratch cannot pin a tree in memory) and returns the scratch to the
-// pool. Slice capacities are kept for reuse.
+// release drops all node references (a pooled scratch must not pin a tree)
+// and returns the scratch to the pool, keeping slice capacities.
 func (s *finalizeScratch) release() {
 	for i := range s.pending {
 		clear(s.pending[i])
@@ -790,30 +787,19 @@ func (s *finalizeScratch) release() {
 	finalizeScratchPool.Put(s)
 }
 
-// finalize computes and caches the value of every unhashed branch node in the
-// subtree rooted at n. Hashing streams through the post-order walk: a branch
-// whose subtree is complete joins its depth's pending batch, and a full batch
-// flushes through one batchHashFn call right away — deeper pending batches
-// flush first, so a batch's children always have their values when it
-// gathers them. Already-hashed subtrees are pruned: a branch value is only
-// ever set after its children's values, so a cached branch root covers its
-// whole subtree. A malformed node (exactly one nil child) and its ancestor
-// chain are excluded and left for the recursive path, which reports such
-// nodes to the caller; healthy subtrees below the excluded chain still
-// batch. An unhashed subtree aliased into the tree at several positions is
-// batched once — pending nodes are marked, and a walk hitting a marked node
-// stops further batching so the node's other parents (whose depths the
-// batch ordering cannot serve) finish on the recursive path.
+// finalize computes and caches the value of every unhashed branch node in
+// the subtree rooted at n. Hashing streams through the post-order walk:
+// complete branches join their depth's pending batch, full batches flush
+// deepest-first so a batch's children are always hashed before its gather.
+// Already-hashed subtrees are pruned. A malformed node (one nil child) and
+// its ancestors are left unhashed and reported. An aliased subtree is
+// batched once: further batching stops at the revisit, and the remaining
+// parents finish on the recursive path.
 //
-// The returned error is non-nil only when a caller-supplied hash function
-// failed; the tree is then left partially finalized with every cached value
-// intact, and a later finalize resumes from it. Failures of the default
-// backend recover through the recursive path instead (the backend rejects
-// only malformed buffer sizes, which the batch packing cannot produce).
+// A backend failure aborts finalization and returns the error; every cached
+// value is intact, and a later finalize resumes from it.
 func (n *Node) finalize(cfg finalizeConfig) error {
-	// A branch value is only ever set after its children's values, so a
-	// cached root value certifies the whole subtree is finalized; leaves
-	// carry their value from construction.
+	// A cached root value certifies the whole subtree is finalized.
 	if n == nil || n.value != nil || (n.left == nil && n.right == nil) {
 		return nil
 	}
@@ -822,13 +808,20 @@ func (n *Node) finalize(cfg finalizeConfig) error {
 		fn = batchHashFn
 	}
 
-	scratch, _ := finalizeScratchPool.Get().(*finalizeScratch)
-	defer scratch.release()
-	if cap(scratch.input) < finalizeBatchPairs*64 {
-		scratch.input = make([]byte, finalizeBatchPairs*64)
+	// Parallel flushes grow with the worker count so each share stays near
+	// one finalizeBatchPairs.
+	flushPairs := finalizeBatchPairs
+	if cfg.workers > 1 {
+		flushPairs = finalizeBatchPairs * min(cfg.workers, 4)
 	}
 
-	var pipe *finalizePipeline
+	scratch, _ := finalizeScratchPool.Get().(*finalizeScratch)
+	defer scratch.release()
+	if cap(scratch.input) < flushPairs*64 {
+		scratch.input = make([]byte, flushPairs*64)
+	}
+
+	var pool *finalizeAsync
 
 	total := 0
 	aliased := false
@@ -836,26 +829,38 @@ func (n *Node) finalize(cfg finalizeConfig) error {
 	var hashErr error
 
 	// flushFrom hashes every pending batch at depth d or deeper, deepest
-	// first: a pending node's unhashed children sit one depth deeper, so the
-	// sweep order guarantees the gather finds their values — inline, or via
-	// the pipeline's completion tracking once workers are running.
+	// first: a pending node's unhashed children sit one depth deeper, and
+	// joining that child slot before gathering guarantees their values are
+	// assigned. With a pool, each batch is dispatched fire-and-forget and
+	// joined lazily — usually on a later sweep, with the walk continuing in
+	// between.
 	flushFrom := func(d int) {
 		for dd := len(scratch.pending) - 1; dd >= d; dd-- {
 			batch := scratch.pending[dd]
 			if len(batch) == 0 {
 				continue
 			}
-			if pipe != nil {
-				scratch.pending[dd] = pipe.flush(batch, dd)
+			if pool == nil {
+				out := make([]byte, len(batch)*32)
+				if err := hashBatch(batch, out, scratch.input[:len(batch)*64], fn); err != nil {
+					hashErr = err
+					return
+				}
+				clear(batch)
+				scratch.pending[dd] = batch[:0]
 				continue
 			}
-			out := make([]byte, len(batch)*32)
-			if err := hashBatch(batch, out, scratch.input[:len(batch)*64], fn); err != nil {
+			if err := pool.join(dd + 1); err != nil {
 				hashErr = err
 				return
 			}
-			clear(batch)
-			scratch.pending[dd] = batch[:0]
+			if err := pool.join(dd); err != nil {
+				hashErr = err
+				return
+			}
+			out := make([]byte, len(batch)*32)
+			pool.dispatch(dd, batch, out, pool.getInput(len(batch)*64), fn)
+			scratch.pending[dd] = pool.getSpare(flushPairs)
 		}
 	}
 
@@ -868,10 +873,10 @@ func (n *Node) finalize(cfg finalizeConfig) error {
 			return true
 		}
 		if node.value != nil {
-			// A pending mark means this subtree already sits in a batch under
-			// another parent: the tree aliases it. It hashes exactly once
-			// through that batch; batching stops so no other parent gathers
-			// it from a depth the flush ordering does not serve.
+			// A pending mark means an aliased subtree: it hashes once through
+			// its existing batch, and batching stops so no parent gathers it
+			// from a depth the flush ordering does not serve. Values grow to
+			// full length only at a join, so a full-length value is final.
 			if len(node.value) == 0 {
 				aliased = true
 			}
@@ -894,17 +899,16 @@ func (n *Node) finalize(cfg finalizeConfig) error {
 		for len(scratch.pending) <= depth {
 			scratch.pending = append(scratch.pending, nil)
 		}
-		if cap(scratch.pending[depth]) == 0 {
-			scratch.pending[depth] = make([]*Node, 0, finalizeBatchPairs)
+		if cap(scratch.pending[depth]) < flushPairs {
+			scratch.pending[depth] = append(make([]*Node, 0, flushPairs), scratch.pending[depth]...)
 		}
 		node.value = finalizePendingMark
 		scratch.pending[depth] = append(scratch.pending[depth], node)
-		if len(scratch.pending[depth]) == finalizeBatchPairs {
-			// The tree is large enough for mid-walk flushing, so hashing
-			// moves to worker goroutines and overlaps with the walk when
-			// async hashing grants them.
-			if pipe == nil && cfg.workers > 1 {
-				pipe = newFinalizePipeline(cfg.workers, fn)
+		if len(scratch.pending[depth]) >= flushPairs {
+			// The tree is large enough for mid-walk flushing; async hashing
+			// spreads each flush across a worker pool.
+			if pool == nil && cfg.workers > 1 {
+				pool = &finalizeAsync{workers: cfg.workers}
 			}
 			flushFrom(depth)
 		}
@@ -916,8 +920,8 @@ func (n *Node) finalize(cfg finalizeConfig) error {
 	if hashErr == nil && (total >= finalizeThreshold || aliased) {
 		flushFrom(0)
 	}
-	if pipe != nil {
-		if err := pipe.join(); err != nil && hashErr == nil {
+	if pool != nil {
+		if err := pool.joinAll(); err != nil && hashErr == nil {
 			hashErr = err
 		}
 	}
@@ -930,24 +934,20 @@ func (n *Node) finalize(cfg finalizeConfig) error {
 			}
 		}
 	}
-	// Small trees hash recursively (batch setup costs more than it saves).
-	// So do the parents excluded after an aliasing stop, and whatever a
-	// failing default backend left unhashed: that backend rejects only
-	// malformed buffer sizes, which the batch packing cannot produce, so
-	// the recursive path keeps a misbehaving backend from corrupting the
-	// tree. A caller-supplied function is different — substituting the
-	// built-in hash for it would silently change the tree's hash function,
-	// so its failure aborts instead, and its recursive path hashes through
-	// the function itself.
-	if (hashErr != nil || aliased || total < finalizeThreshold) && total > 0 && rootOk {
+	if hashErr != nil {
+		return hashErr
+	}
+	// Small trees hash recursively (batch setup costs more than it saves),
+	// as do the parents excluded after an aliasing stop.
+	if (aliased || total < finalizeThreshold) && total > 0 && rootOk {
 		if cfg.fn != nil {
-			if hashErr != nil {
-				return hashErr
-			}
 			_, err := hashNodeFn(n, cfg.fn)
 			return err
 		}
 		hashNode(n)
+	}
+	if !rootOk {
+		return errors.New("tree is malformed: branch with a single nil child")
 	}
 	return nil
 }
@@ -997,14 +997,7 @@ func hashNodeFn(n *Node, fn hasher.HashFn) ([]byte, error) {
 // (buffers are reused), so short values zero-extend their chunk explicitly,
 // matching hashPair.
 func hashBatch(batch []*Node, out, input []byte, fn hasher.HashFn) error {
-	for i, node := range batch {
-		off := i * 64
-		n := copy(input[off:off+32], node.left.value)
-		clear(input[off+n : off+32])
-		n = copy(input[off+32:off+64], node.right.value)
-		clear(input[off+32+n : off+64])
-	}
-	if err := fn(out[:len(batch)*32], input); err != nil {
+	if err := hashBatchInto(batch, out, input, fn); err != nil {
 		return err
 	}
 	for i, node := range batch {
@@ -1013,142 +1006,182 @@ func hashBatch(batch []*Node, out, input []byte, fn hasher.HashFn) error {
 	return nil
 }
 
-// flushJob is one batch handed to the pipeline workers: gather the batch's
-// children values, hash into out, assign the results. seq is the job's
-// position within its depth; target is the depth+1 completion frontier the
-// job must observe before gathering — every depth+1 job enqueued earlier
-// holds children values this batch may need.
-type flushJob struct {
+// hashBatchInto is hashBatch without the value-header assignment, for
+// worker-pool shares: the pool assigns every header on the calling
+// goroutine once the whole batch hashed.
+func hashBatchInto(batch []*Node, out, input []byte, fn hasher.HashFn) error {
+	for i, node := range batch {
+		off := i * 64
+		n := copy(input[off:off+32], node.left.value)
+		clear(input[off+n : off+32])
+		n = copy(input[off+32:off+64], node.right.value)
+		clear(input[off+32+n : off+64])
+	}
+	return fn(out[:len(batch)*32], input)
+}
+
+// finalizeAsync is one finalize call's async-flush state. Every flush is
+// dispatched fire-and-forget as per-worker shares and parked in its depth's
+// slot; joining a slot — always on the walking goroutine — collects the
+// shares and assigns the nodes' value headers, so headers have a single
+// writer and batched nodes keep their pending marks until their hash is
+// final. The flush sweep joins a depth's child slot before gathering from
+// it, which is the only ordering the batches need. Shares execute on the
+// process-wide worker pool shared by all concurrent finalizations.
+type finalizeAsync struct {
+	workers int
+
+	slots  []finalizeSlot
+	inputs [][]byte  // gather-buffer freelist, recycled at join
+	spares [][]*Node // batch-slice freelist, recycled at join
+}
+
+// finalizeHandoff passes flush shares to the persistent worker goroutines.
+// It is never closed — finalize calls come and go while the workers
+// persist, so concurrent calls share one pool instead of stacking
+// goroutines.
+var finalizeHandoff = make(chan finalizeShare, 64)
+
+// finalizeWorkers counts the persistent worker goroutines and finalizeIdle
+// the ones parked on the handoff channel.
+var (
+	finalizeWorkers atomic.Int64
+	finalizeIdle    atomic.Int64
+)
+
+// ensureFinalizeWorker starts another persistent worker unless one is idle
+// or limit is reached. The idle check is approximate: in the worst case a
+// share waits for a busy worker, and the next dispatch tops the pool up.
+func ensureFinalizeWorker(limit int) {
+	if finalizeIdle.Load() > 0 {
+		return
+	}
+	for {
+		cur := finalizeWorkers.Load()
+		if cur >= int64(limit) {
+			return
+		}
+		if finalizeWorkers.CompareAndSwap(cur, cur+1) {
+			go finalizeShareWorker()
+			return
+		}
+	}
+}
+
+// finalizeShareWorker is a persistent worker goroutine: it gathers and
+// hashes handed-off shares and reports each result on the share's channel.
+func finalizeShareWorker() {
+	for {
+		finalizeIdle.Add(1)
+		share := <-finalizeHandoff
+		finalizeIdle.Add(-1)
+		share.res <- hashBatchInto(share.batch, share.out, share.input, share.fn)
+	}
+}
+
+// finalizeShare is one worker's slice of a flush: disjoint sub-ranges of
+// the batch and its gather/output buffers.
+type finalizeShare struct {
+	batch      []*Node
+	out, input []byte
+	fn         hasher.HashFn
+	res        chan<- error
+}
+
+// finalizeSlot parks one dispatched batch per depth until its join.
+type finalizeSlot struct {
 	batch  []*Node
 	out    []byte
-	depth  int
-	seq    int
-	target int
+	input  []byte
+	res    chan error
+	shares int
 }
 
-// pipelineDepth tracks one depth's jobs. Jobs complete out of order across
-// workers, so completions are recorded per sequence number and frontier is
-// the contiguous completed prefix — only a frontier guarantees that every
-// earlier job's values are in place, a bare completion count does not.
-type pipelineDepth struct {
-	enqueued int
-	frontier int
-	done     []bool
+// finalizeShareMinPairs is the smallest share worth handing to a worker;
+// below it, the fan-out overhead outweighs the parallel hashing.
+const finalizeShareMinPairs = 64
+
+// getInput returns a gather buffer of at least size bytes.
+func (p *finalizeAsync) getInput(size int) []byte {
+	if n := len(p.inputs); n > 0 {
+		buf := p.inputs[n-1]
+		p.inputs = p.inputs[:n-1]
+		if cap(buf) >= size {
+			return buf[:size]
+		}
+	}
+	return make([]byte, size)
 }
 
-// finalizePipeline hashes flush batches on worker goroutines while the
-// finalize walk keeps traversing. Jobs are consumed in enqueue order and a
-// job waits until the completion frontier one depth deeper covers every job
-// enqueued before it, so gathers never read a value that is still being
-// computed; a job's dependencies always sit earlier in the queue, so some
-// worker can always make progress.
-type finalizePipeline struct {
-	fn   hasher.HashFn
-	jobs chan flushJob
-	pool chan []*Node
-	wg   sync.WaitGroup
-
-	mu     sync.Mutex
-	cond   *sync.Cond
-	depths []pipelineDepth
-	err    error
+// getSpare returns an empty batch slice to replace a dispatched one.
+func (p *finalizeAsync) getSpare(capacity int) []*Node {
+	if n := len(p.spares); n > 0 {
+		batch := p.spares[n-1]
+		p.spares = p.spares[:n-1]
+		if cap(batch) >= capacity {
+			return batch
+		}
+	}
+	return make([]*Node, 0, capacity)
 }
 
-func newFinalizePipeline(workers int, fn hasher.HashFn) *finalizePipeline {
-	p := &finalizePipeline{
-		fn:   fn,
-		jobs: make(chan flushJob, 4*workers),
-		pool: make(chan []*Node, 5*workers+1),
+// dispatch fans batch out to the workers and parks it in depth's slot; the
+// batch, out and input buffers stay owned by the shares until the join.
+func (p *finalizeAsync) dispatch(depth int, batch []*Node, out, input []byte, fn hasher.HashFn) {
+	for len(p.slots) <= depth {
+		p.slots = append(p.slots, finalizeSlot{})
 	}
-	p.cond = sync.NewCond(&p.mu)
-	p.wg.Add(workers)
-	for range workers {
-		go p.worker()
+	shares := max(min(p.workers, len(batch)/finalizeShareMinPairs), 1)
+	span := (len(batch) + shares - 1) / shares
+	res := make(chan error, shares)
+	for s := 0; s < shares; s++ {
+		lo := s * span
+		hi := min(lo+span, len(batch))
+		ensureFinalizeWorker(p.workers)
+		finalizeHandoff <- finalizeShare{batch: batch[lo:hi], out: out[lo*32 : hi*32], input: input[lo*64 : hi*64], fn: fn, res: res}
 	}
-	return p
+	p.slots[depth] = finalizeSlot{batch: batch, out: out, input: input, res: res, shares: shares}
 }
 
-// flush hands batch to the workers and returns an empty replacement slice
-// for the caller's pending list; the batch slice itself is recycled once its
-// job completes.
-func (p *finalizePipeline) flush(batch []*Node, depth int) []*Node {
-	p.mu.Lock()
-	for len(p.depths) <= depth {
-		p.depths = append(p.depths, pipelineDepth{})
+// join completes the slot at depth: collect every share, then assign the
+// value headers — or, when a share failed, clear the nodes' pending marks
+// so they read as unhashed. Buffers recycle into the freelists.
+func (p *finalizeAsync) join(depth int) error {
+	if depth >= len(p.slots) || p.slots[depth].batch == nil {
+		return nil
 	}
-	target := 0
-	if depth+1 < len(p.depths) {
-		target = p.depths[depth+1].enqueued
+	slot := p.slots[depth]
+	p.slots[depth] = finalizeSlot{}
+	var err error
+	for range slot.shares {
+		if shareErr := <-slot.res; shareErr != nil && err == nil {
+			err = shareErr
+		}
 	}
-	seq := p.depths[depth].enqueued
-	p.depths[depth].enqueued++
-	p.depths[depth].done = append(p.depths[depth].done, false)
-	p.mu.Unlock()
-
-	p.jobs <- flushJob{batch: batch, out: make([]byte, len(batch)*32), depth: depth, seq: seq, target: target}
-
-	select {
-	case next := <-p.pool:
-		return next
-	default:
-		return make([]*Node, 0, finalizeBatchPairs)
+	if err == nil {
+		for i, node := range slot.batch {
+			node.value = slot.out[i*32 : (i+1)*32 : (i+1)*32]
+		}
+	} else {
+		for _, node := range slot.batch {
+			node.value = nil
+		}
 	}
+	clear(slot.batch)
+	p.inputs = append(p.inputs, slot.input)
+	p.spares = append(p.spares, slot.batch[:0])
+	return err
 }
 
-func (p *finalizePipeline) worker() {
-	defer p.wg.Done()
-	input := make([]byte, finalizeBatchPairs*64)
-	for job := range p.jobs {
-		p.mu.Lock()
-		for p.err == nil && job.depth+1 < len(p.depths) && p.depths[job.depth+1].frontier < job.target {
-			p.cond.Wait()
-		}
-		failed := p.err != nil
-		p.mu.Unlock()
-
-		var err error
-		if !failed {
-			err = hashBatch(job.batch, job.out, input[:len(job.batch)*64], p.fn)
-		}
-		if failed || err != nil {
-			// The batch was not hashed; drop the pending marks so the nodes
-			// read as unhashed. Nothing gathers them concurrently — the
-			// recorded error makes every later job skip its gather.
-			for _, node := range job.batch {
-				if len(node.value) == 0 {
-					node.value = nil
-				}
-			}
-		}
-
-		p.mu.Lock()
-		if err != nil && p.err == nil {
-			p.err = err
-		}
-		// Failed and skipped jobs advance the frontier too, so waiters
-		// unblock; the error makes the caller fall back to the recursive
-		// path.
-		d := &p.depths[job.depth]
-		d.done[job.seq] = true
-		for d.frontier < len(d.done) && d.done[d.frontier] {
-			d.frontier++
-		}
-		p.cond.Broadcast()
-		p.mu.Unlock()
-
-		clear(job.batch)
-		select {
-		case p.pool <- job.batch[:0]:
-		default:
+// joinAll completes every outstanding slot and reports the first error.
+func (p *finalizeAsync) joinAll() error {
+	var err error
+	for depth := len(p.slots) - 1; depth >= 0; depth-- {
+		if joinErr := p.join(depth); joinErr != nil && err == nil {
+			err = joinErr
 		}
 	}
-}
-
-// join waits for all enqueued batches and reports the first backend error.
-func (p *finalizePipeline) join() error {
-	close(p.jobs)
-	p.wg.Wait()
-	return p.err
+	return err
 }
 
 func hashNode(n *Node) []byte {
