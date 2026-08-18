@@ -2850,3 +2850,114 @@ func TestFinalizeConcurrentAsync(t *testing.T) {
 		}
 	}
 }
+
+// A share failing on a batch dispatched during the final sweep surfaces at
+// the exact join that discovers it: the next-shallower depth's child-slot
+// join (128-byte input = the two-node depth-1 batch) or the terminal
+// joinAll (64-byte input = the root batch). Both leave a resumable tree.
+func TestFinalizeAsyncJoinErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		failLen int
+	}{
+		{"child_slot_join", 128},
+		{"join_all", 64},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fn := func(dst, input []byte) error {
+				if len(input) == tc.failLen {
+					return errors.New("backend failure")
+				}
+				return batchHashFn(dst, input)
+			}
+
+			chunks := finalizeTestChunks(8 * finalizeBatchPairs)
+			ref, err := TreeFromChunks(chunks)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := bytes.Clone(hashNode(ref))
+
+			tree, err := TreeFromChunks(chunks)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if finalizeErr := tree.Finalize(WithHashFn(fn), WithAsyncHashing(2)); finalizeErr == nil {
+				t.Fatal("expected the backend error")
+			}
+			if finalizeErr := tree.Finalize(); finalizeErr != nil {
+				t.Fatalf("resumed Finalize: %v", finalizeErr)
+			}
+			if got := tree.Hash(); !bytes.Equal(got, want) {
+				t.Fatalf("resumed root %x, want %x", got, want)
+			}
+			assertAllBranchesHashed(t, tree)
+		})
+	}
+}
+
+// hashNodeFn reports malformed nodes as errors.
+func TestHashNodeFnMalformed(t *testing.T) {
+	if _, err := hashNodeFn(nil, batchHashFn); err == nil {
+		t.Error("expected error for nil node")
+	}
+	malformed := &Node{left: LeafFromBytes(finalizeTestChunks(1)[0])}
+	if _, err := hashNodeFn(malformed, batchHashFn); err == nil {
+		t.Error("expected error for branch with a single child")
+	}
+}
+
+// A custom hash function failing inside a right subtree propagates through
+// the parent's right-child recursion.
+func TestFinalizeWithHashFnRightSubtreeError(t *testing.T) {
+	chunks := finalizeTestChunks(4)
+
+	ref, err := TreeFromChunks(chunks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := bytes.Clone(hashNode(ref))
+
+	var calls int
+	fn := func(dst, input []byte) error {
+		calls++
+		if calls == 2 {
+			return errors.New("backend failure")
+		}
+		return batchHashFn(dst, input)
+	}
+	tree, err := TreeFromChunks(chunks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finalizeErr := tree.Finalize(WithHashFn(fn)); finalizeErr == nil {
+		t.Fatal("expected the backend error")
+	}
+	if finalizeErr := tree.Finalize(); finalizeErr != nil {
+		t.Fatalf("resumed Finalize: %v", finalizeErr)
+	}
+	if got := tree.Hash(); !bytes.Equal(got, want) {
+		t.Fatalf("resumed root %x, want %x", got, want)
+	}
+}
+
+// Proof navigation through a cached-value branch with a missing child
+// reports the node as not found instead of panicking. The cached value
+// keeps finalize from rejecting the malformed shape first.
+func TestProveNavigationMissingChild(t *testing.T) {
+	leaf := LeafFromBytes(finalizeTestChunks(1)[0])
+	cached := sum256ToBytes([]byte{9})
+
+	missingSibling := &Node{right: leaf, value: cached}
+	if _, err := missingSibling.Prove(3); err == nil {
+		t.Error("expected error for missing left sibling")
+	}
+
+	missingTarget := &Node{left: leaf, value: cached}
+	if _, err := missingTarget.Prove(3); err == nil {
+		t.Error("expected error for missing right child")
+	}
+	if _, err := missingTarget.ProveMulti([]int{2}); err == nil {
+		t.Error("expected error for a required sibling outside the tree")
+	}
+}

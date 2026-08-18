@@ -1207,11 +1207,11 @@ func (d *DynSsz) GetTree(source any, opts ...CallOption) (*treeproof.Node, error
 	if d.options.AsyncHashing && d.options.AsyncHashingWorkers > 1 {
 		finalizeOpts = append(finalizeOpts, treeproof.WithAsyncHashing(d.options.AsyncHashingWorkers))
 	}
-	if err := node.Finalize(finalizeOpts...); err != nil {
-		return nil, err
-	}
+	// On a finalization error the partially finalized tree is returned
+	// alongside the error; every hash cached in it is valid.
+	finalizeErr := node.Finalize(finalizeOpts...)
 
-	return node, nil
+	return node, finalizeErr
 }
 
 // nativeBatchHashFn hashes with the standard library sha256, serving tree

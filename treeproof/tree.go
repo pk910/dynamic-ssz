@@ -959,7 +959,7 @@ func (n *Node) finalize(cfg finalizeConfig) error {
 // consistent, resumable tree.
 func hashNodeFn(n *Node, fn hasher.HashFn) ([]byte, error) {
 	if n == nil {
-		panic("Tree incomplete")
+		return nil, errors.New("tree is malformed: nil node")
 	}
 	if n.left == nil && n.right == nil {
 		return n.value, nil
@@ -968,7 +968,7 @@ func hashNodeFn(n *Node, fn hasher.HashFn) ([]byte, error) {
 		return n.value, nil
 	}
 	if n.left == nil || n.right == nil {
-		panic("Tree incomplete")
+		return nil, errors.New("tree is malformed: branch with a single nil child")
 	}
 
 	left, err := hashNodeFn(n.left, fn)
