@@ -25,6 +25,7 @@ import (
 	"github.com/pk910/dynamic-ssz/reflection"
 	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
+	"github.com/pk910/dynamic-ssz/treeproof"
 )
 
 // Test types for DynamicEncoder/DynamicDecoder/DynamicMarshaler/DynamicUnmarshaler paths
@@ -6696,5 +6697,59 @@ func TestGetTreeAsyncHashing(t *testing.T) {
 	}
 	if !bytes.Equal(node.Value(), root[:]) {
 		t.Fatalf("tree root value = %x, want %x", node.Value(), root)
+	}
+}
+
+// GetTree with WithTreeIndices returns a pruned proof tree: same root as the
+// full tree, servable proofs for the requested indices, and only a fraction
+// of the full tree's nodes — off-path subtrees collapse into single value
+// nodes.
+func TestGetTreeWithIndices(t *testing.T) {
+	type listContainer struct {
+		Values []uint64 `ssz-max:"4096"`
+		Extra  uint64
+	}
+	source := &listContainer{Values: make([]uint64, 4096), Extra: 7}
+	for i := range source.Values {
+		source.Values[i] = uint64(i) * 3
+	}
+
+	ds := NewDynSsz(nil)
+
+	full, err := ds.GetTree(source)
+	if err != nil {
+		t.Fatalf("full GetTree: %v", err)
+	}
+
+	// gindex of the chunk holding Values[8]: field 0 of 2 fields -> list
+	// mixin -> chunk 2 of the 1024-chunk data tree.
+	gindex := ((2+0)*2)*1024 + 2
+	pruned, err := ds.GetTree(source, WithTreeIndices(gindex))
+	if err != nil {
+		t.Fatalf("pruned GetTree: %v", err)
+	}
+
+	if !bytes.Equal(pruned.Hash(), full.Hash()) {
+		t.Fatalf("pruned root %x != full root %x", pruned.Hash(), full.Hash())
+	}
+
+	proof, err := pruned.Prove(gindex)
+	if err != nil {
+		t.Fatalf("Prove: %v", err)
+	}
+	if ok, err := treeproof.VerifyProof(full.Hash(), proof); err != nil || !ok {
+		t.Fatalf("VerifyProof = %v, %v", ok, err)
+	}
+
+	var countNodes func(n *treeproof.Node) int
+	countNodes = func(n *treeproof.Node) int {
+		if n == nil {
+			return 0
+		}
+		return 1 + countNodes(n.Left()) + countNodes(n.Right())
+	}
+	fullCount, prunedCount := countNodes(full), countNodes(pruned)
+	if prunedCount*10 > fullCount {
+		t.Fatalf("pruned tree has %d nodes, full tree %d: expected >10x reduction", prunedCount, fullCount)
 	}
 }

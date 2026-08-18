@@ -1187,10 +1187,55 @@ func (d *DynSsz) GetTree(source any, opts ...CallOption) (*treeproof.Node, error
 	if source == nil {
 		return nil, sszutils.NewSszError(sszutils.ErrInvalidValueRange, "source must not be nil")
 	}
-	w := treeproof.NewWrapper()
+
+	var wrapperOpts []treeproof.WrapperOption
+	if cfg := applyCallOptions(opts); cfg != nil && len(cfg.treeIndices) > 0 {
+		sourceType := reflect.TypeOf(source)
+		sourceTypeDesc, err := d.typeCache.GetTypeDescriptorWithSchema(sourceType, d.resolveSchemaType(sourceType, cfg), nil, nil, nil)
+		if err != nil {
+			return nil, err
+		}
+		sched, err := treeproof.BuildProofSchedule(sourceTypeDesc, cfg.treeIndices)
+		if err != nil {
+			return nil, err
+		}
+
+		var pool *hasher.HasherPool
+		if d.options.NoFastHash {
+			pool = &hasher.DefaultHasherPool
+		} else {
+			pool = &hasher.FastHasherPool
+		}
+		hh := pool.Get()
+		defer pool.Put(hh)
+		if d.options.AsyncHashing {
+			hh.SetAsyncHashing(true)
+		}
+
+		// NoFastHash keeps its promise for the proof capture too: sibling-range
+		// reduction then runs on the native Go sha256 implementation.
+		var proofHashFn hasher.HashFn
+		if d.options.NoFastHash {
+			proofHashFn = nativeBatchHashFn
+		}
+		wrapperOpts = append(wrapperOpts, treeproof.WithProofCapture(sched, hh, proofHashFn))
+		if d.options.AsyncHashing && d.options.AsyncHashingWorkers > 1 {
+			wrapperOpts = append(wrapperOpts, treeproof.WithProofWorkers(d.options.AsyncHashingWorkers))
+		}
+	}
+
+	w := treeproof.NewWrapper(wrapperOpts...)
 
 	if err := d.HashTreeRootWith(source, w, opts...); err != nil {
 		return nil, err
+	}
+
+	// The proof capture reports its failures as errors; surface them here
+	// instead of panicking through Node.
+	if pt, ok := w.(interface {
+		ProofTree() (*treeproof.Node, error)
+	}); ok {
+		return pt.ProofTree()
 	}
 
 	// Finalize all node hashes up front: batched hashing during finalization
@@ -1215,6 +1260,31 @@ func (d *DynSsz) GetTree(source any, opts ...CallOption) (*treeproof.Node, error
 // nativeBatchHashFn hashes with the standard library sha256, serving tree
 // finalization for instances configured with WithNoFastHash.
 var nativeBatchHashFn = hasher.NativeHashWrapperFactory(sha256.New)
+
+// GetProofs generates Merkle proofs for the given generalized indices
+// without materializing the value's full proof tree. The cost stays close
+// to a plain HashTreeRoot and memory stays bounded by the requested proof
+// paths. All SSZ shapes are supported.
+//
+// The proofs are returned in the order of the given indices and verify
+// against the value's HashTreeRoot via treeproof.VerifyProof.
+func (d *DynSsz) GetProofs(source any, gindices []int, opts ...CallOption) ([]*treeproof.Proof, error) {
+	tree, err := d.GetTree(source, append(append([]CallOption{}, opts...), WithTreeIndices(gindices...))...)
+	if err != nil {
+		return nil, err
+	}
+
+	proofs := make([]*treeproof.Proof, len(gindices))
+	for i, gindex := range gindices {
+		proof, err := tree.Prove(gindex)
+		if err != nil {
+			return nil, err
+		}
+		proofs[i] = proof
+	}
+
+	return proofs, nil
+}
 
 // ValidateType validates whether a given type is compatible with SSZ encoding/decoding.
 //

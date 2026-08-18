@@ -189,6 +189,9 @@ type callConfig struct {
 	// When set, this defines the SSZ schema for the operation, allowing the same
 	// runtime type to be serialized with different SSZ layouts (fork views).
 	viewDescriptor any
+
+	// treeIndices holds the generalized indices provided via WithTreeIndices.
+	treeIndices []int
 }
 
 // applyCallOptions applies all provided CallOptions to a callConfig and returns it.
@@ -242,5 +245,20 @@ func applyCallOptions(opts []CallOption) *callConfig {
 func WithViewDescriptor(view any) CallOption {
 	return func(cfg *callConfig) {
 		cfg.viewDescriptor = view
+	}
+}
+
+// WithTreeIndices makes GetTree construct a pruned proof tree for the given
+// generalized indices instead of materializing the full tree: the value is
+// hashed through the regular optimized hashing path while only the subtrees
+// the requested proof paths descend into keep their structure; everything
+// off-path collapses into single value nodes carrying the subtree hash. The
+// pruned tree's root equals the full tree's root and serves proofs for the
+// given indices, as well as for the roots of the collapsed subtrees along
+// their paths; proving an index deeper inside a collapsed subtree fails with
+// the tree's regular not-found error. Only GetTree evaluates this option.
+func WithTreeIndices(gindices ...int) CallOption {
+	return func(cfg *callConfig) {
+		cfg.treeIndices = gindices
 	}
 }

@@ -175,9 +175,19 @@ func (hh *HasherPool) Get() *Hasher {
 	return hasher
 }
 
-// Put releases the Hasher to the pool.
+// maxPooledBufferSize is the buffer capacity above which a hasher is
+// dropped instead of pooled: Reset keeps capacity, so one exceptionally
+// large value would otherwise pin its buffer in the pool indefinitely. The
+// bound comfortably covers mainnet beacon-state hashing.
+const maxPooledBufferSize = 128 << 20
+
+// Put releases the Hasher to the pool. A hasher whose buffer grew beyond
+// maxPooledBufferSize is left for the garbage collector instead.
 func (hh *HasherPool) Put(h *Hasher) {
 	h.Reset()
+	if h.BufferCap() > maxPooledBufferSize {
+		return
+	}
 	hh.pool.Put(h)
 }
 

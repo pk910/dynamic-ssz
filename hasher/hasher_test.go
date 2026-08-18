@@ -2172,3 +2172,37 @@ func TestZeroHashAccessorsSelfInitialize(t *testing.T) {
 		t.Fatalf("GetZeroHashLevel = (%d, %v); want (2, true)", lvl, ok)
 	}
 }
+
+// BufferSince exposes a non-incremental scope's completed chunks.
+func TestBufferSince(t *testing.T) {
+	h := NewHasher()
+	idx := h.StartTree(sszutils.TreeTypeNone)
+	h.PutUint64(7)
+	h.PutUint64(9)
+	region := h.BufferSince(idx)
+	if len(region) != 64 || region[0] != 7 || region[32] != 9 {
+		t.Fatalf("BufferSince = %x", region)
+	}
+}
+
+// A hasher whose buffer grew beyond maxPooledBufferSize is dropped at Put
+// instead of pinning the capacity in the pool.
+func TestHasherPoolBufferCap(t *testing.T) {
+	var pool HasherPool
+
+	small := pool.Get()
+	small.Append(make([]byte, 1024))
+	pool.Put(small)
+	if reused := pool.Get(); reused != small {
+		t.Log("pool did not return the small hasher (GC timing); capacity check skipped")
+	} else if reused.BufferCap() < 1024 {
+		t.Fatal("small hasher lost its capacity")
+	}
+
+	big := pool.Get()
+	big.Append(make([]byte, maxPooledBufferSize+1))
+	pool.Put(big)
+	if pool.Get() == big {
+		t.Fatal("oversized hasher was returned to the pool")
+	}
+}

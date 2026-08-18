@@ -525,9 +525,42 @@ func (h *Hasher) Index() int {
 	return idx
 }
 
+// BufferCap returns the buffer's current capacity (debug and pool
+// accounting only).
+func (h *Hasher) BufferCap() int {
+	return cap(h.buf)
+}
+
 // CurrentIndex returns the current buffer position without pushing a layer.
 func (h *Hasher) CurrentIndex() int {
 	return len(h.buf)
+}
+
+// BufferSince returns the buffer contents from the given index (a value
+// previously returned by StartTree) to the current position, draining any
+// background reduction overlapping the region first. The returned slice is
+// only valid until the next walker operation. Intended for stream observers
+// reading a non-incremental scope's completed chunks: incremental scopes
+// collapse and defer within their region, so their contents are not the
+// plain chunk sequence this returns.
+func (h *Hasher) BufferSince(indx int) []byte {
+	h.drainJobsFor(indx)
+	return h.buf[indx:]
+}
+
+// TruncateBuffer discards the buffer contents from the given index (a value
+// previously returned by StartTree, or such a value plus a whole number of
+// chunks) to the current position, draining any background reduction
+// overlapping the region first. Intended for stream observers that consume a
+// non-incremental scope's completed chunks through BufferSince and take
+// ownership of the region: the caller becomes responsible for the truncated
+// content's contribution to the enclosing scope (see treeproof's proof
+// capture). Must not be used while an incremental scope is open above indx —
+// incremental layers track their region by position and would misaccount the
+// shift.
+func (h *Hasher) TruncateBuffer(indx int) {
+	h.drainJobsFor(indx)
+	h.buf = h.buf[:indx]
 }
 
 // Collapse hints the hasher to collapse accumulated chunks in the current
