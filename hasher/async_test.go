@@ -1004,56 +1004,65 @@ func TestAsyncHashingWorkers(t *testing.T) {
 	}
 }
 
-// AsyncJobBuf hands out pool tokens while available (materializing them on
-// first use and recycling them via put) and falls back to untracked one-off
-// buffers once every token is taken; it reports ok=false while async hashing
-// is disabled.
-func TestAsyncJobBuf(t *testing.T) {
-	if _, _, ok := AsyncJobBuf(); ok {
-		t.Fatal("AsyncJobBuf() ok = true while async hashing is disabled")
+// WithAsyncJobBuf hands out pool tokens while available (materializing them
+// on first use and recycling them afterwards) and falls back to untracked
+// one-off buffers once every token is taken; it reports false without
+// calling fn while async hashing is disabled.
+func TestWithAsyncJobBuf(t *testing.T) {
+	if WithAsyncJobBuf(func([]byte) { t.Error("fn called while disabled") }) {
+		t.Fatal("WithAsyncJobBuf() = true while async hashing is disabled")
 	}
 
 	EnableAsyncHashing(1)
 	defer DisableAsyncHashing()
 
-	// Drain both tokens of the 1-worker pool.
-	buf1, put1, ok := AsyncJobBuf()
-	if !ok || len(buf1) != AsyncBufSize {
-		t.Fatalf("AsyncJobBuf() = len %d, ok %v; want %d, true", len(buf1), ok, AsyncBufSize)
-	}
-	_, put2, ok := AsyncJobBuf()
-	if !ok {
-		t.Fatal("second AsyncJobBuf() not ok")
+	// Nested borrows drain both tokens of the 1-worker pool; the innermost
+	// borrow runs on a one-off buffer.
+	if !WithAsyncJobBuf(func(b1 []byte) {
+		if len(b1) != AsyncBufSize {
+			t.Errorf("len(b1) = %d, want %d", len(b1), AsyncBufSize)
+		}
+		if !WithAsyncJobBuf(func(b2 []byte) {
+			if !WithAsyncJobBuf(func(b3 []byte) {
+				if len(b3) != AsyncBufSize {
+					t.Errorf("one-off len(b3) = %d, want %d", len(b3), AsyncBufSize)
+				}
+			}) {
+				t.Error("one-off borrow not ok")
+			}
+		}) {
+			t.Error("second borrow not ok")
+		}
+	}) {
+		t.Fatal("first borrow not ok")
 	}
 
-	// Pool empty: one-off buffer, still usable.
-	buf3, put3, ok := AsyncJobBuf()
-	if !ok || len(buf3) != AsyncBufSize {
-		t.Fatalf("one-off AsyncJobBuf() = len %d, ok %v; want %d, true", len(buf3), ok, AsyncBufSize)
+	// Returned tokens are handed out again with their full size.
+	if !WithAsyncJobBuf(func(b []byte) {
+		if len(b) != AsyncBufSize {
+			t.Errorf("recycled len(b) = %d, want %d", len(b), AsyncBufSize)
+		}
+	}) {
+		t.Fatal("recycled borrow not ok")
 	}
-	put3()
-
-	// Returned tokens are handed out again with their full capacity.
-	put1()
-	put2()
-	buf4, put4, ok := AsyncJobBuf()
-	if !ok || len(buf4) != AsyncBufSize {
-		t.Fatalf("recycled AsyncJobBuf() = len %d, ok %v; want %d, true", len(buf4), ok, AsyncBufSize)
-	}
-	put4()
 }
 
-// AsyncWorkSlot bounds external batch work by the async worker limit and
-// degrades to a no-op release while async hashing is disabled.
-func TestAsyncWorkSlot(t *testing.T) {
-	release := AsyncWorkSlot()
-	release() // disabled: no-op, must not panic
+// WithAsyncWorkSlot bounds external batch work by the async worker limit and
+// runs fn slotless while async hashing is disabled.
+func TestWithAsyncWorkSlot(t *testing.T) {
+	ran := false
+	WithAsyncWorkSlot(func() { ran = true })
+	if !ran {
+		t.Fatal("fn not called while async hashing is disabled")
+	}
 
 	EnableAsyncHashing(1)
 	defer DisableAsyncHashing()
 
-	r1 := AsyncWorkSlot()
-	r1()
-	r2 := AsyncWorkSlot()
-	r2()
+	ran = false
+	WithAsyncWorkSlot(func() { ran = true })
+	if !ran {
+		t.Fatal("fn not called with slot held")
+	}
+	WithAsyncWorkSlot(func() {}) // slot released: a second acquisition does not block
 }

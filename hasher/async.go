@@ -157,42 +157,47 @@ func AsyncHashingWorkers() int {
 	return 0
 }
 
-// AsyncJobBuf borrows a job input buffer (AsyncBufSize bytes) from the async
-// free list for external batch hashing work such as tree finalization. ok
-// reports whether async hashing is enabled. Borrowing never blocks — tokens
-// can sit in completed-but-undrained jobs, so when none is free a one-off
-// buffer is handed out and put is a no-op. put returns a pooled buffer to
-// the free list and must be called exactly once.
-func AsyncJobBuf() (buf []byte, put func(), ok bool) {
+// WithAsyncJobBuf runs fn with a job input buffer (AsyncBufSize bytes)
+// borrowed from the async free list for external batch hashing work such as
+// tree finalization; the buffer returns to the free list afterwards, even if
+// fn panics. The buffer's prior contents are arbitrary. It reports false
+// without calling fn when async hashing is disabled. Borrowing never blocks —
+// tokens can sit in completed-but-undrained jobs, so when none is free fn
+// runs on an untracked one-off buffer instead.
+func WithAsyncJobBuf(fn func(buf []byte)) bool {
 	st := asyncState.Load()
 	if st == nil {
-		return nil, nil, false
+		return false
 	}
 	select {
 	case b := <-st.bufs:
 		if cap(b) < AsyncBufSize {
 			// Unmaterialized token: allocate the pre-sized buffer so it
-			// joins the reuse cycle at put.
+			// joins the reuse cycle afterwards.
 			b = make([]byte, AsyncBufSize)
 		}
-		b = b[:AsyncBufSize]
-		return b, func() { st.bufs <- b[:0] }, true
+		defer func() { st.bufs <- b[:0] }()
+		fn(b[:AsyncBufSize])
 	default:
-		return make([]byte, AsyncBufSize), func() {}, true
+		fn(make([]byte, AsyncBufSize))
 	}
+	return true
 }
 
-// AsyncWorkSlot acquires one of the process-wide async worker slots so
-// external batch hashing counts against the same concurrency limit as
-// background reductions, blocking while all slots are busy. The returned
-// release frees the slot; it is a no-op while async hashing is disabled.
-func AsyncWorkSlot() (release func()) {
+// WithAsyncWorkSlot runs fn while holding one of the process-wide async
+// worker slots, so external batch hashing counts against the same
+// concurrency limit as background reductions; it blocks while all slots are
+// busy and releases the slot afterwards, even if fn panics. While async
+// hashing is disabled fn runs without a slot.
+func WithAsyncWorkSlot(fn func()) {
 	st := asyncState.Load()
 	if st == nil {
-		return func() {}
+		fn()
+		return
 	}
 	st.sem <- struct{}{}
-	return func() { <-st.sem }
+	defer func() { <-st.sem }()
+	fn()
 }
 
 // asyncShared returns the shared state when async hashing is enabled

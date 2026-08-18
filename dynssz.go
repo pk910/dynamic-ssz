@@ -6,6 +6,7 @@
 package dynssz
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"log/slog"
@@ -1194,12 +1195,21 @@ func (d *DynSsz) GetTree(source any, opts ...CallOption) (*treeproof.Node, error
 
 	// Finalize all node hashes up front: batched level hashing is cheaper than
 	// the lazy per-pair path, and the finalized tree is immutable and safe for
-	// concurrent proof generation.
+	// concurrent proof generation. NoFastHash keeps its promise here too:
+	// finalization then runs on the native Go sha256 implementation.
 	node := w.Node()
-	node.Hash()
+	if d.options.NoFastHash {
+		node.HashWithHashFn(nativeBatchHashFn)
+	} else {
+		node.Hash()
+	}
 
 	return node, nil
 }
+
+// nativeBatchHashFn hashes with the standard library sha256, serving tree
+// finalization for instances configured with WithNoFastHash.
+var nativeBatchHashFn = hasher.NativeHashWrapperFactory(sha256.New)
 
 // ValidateType validates whether a given type is compatible with SSZ encoding/decoding.
 //

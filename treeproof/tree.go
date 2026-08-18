@@ -657,7 +657,14 @@ func (n *Node) Get(index int) (*Node, error) {
 // shared across trees, so the raw slice must not escape to callers.
 func (n *Node) Hash() []byte {
 	// TODO: handle special cases: empty root, one non-empty node
-	n.finalize()
+	n.finalize(nil)
+	return bytes.Clone(hashNode(n))
+}
+
+// HashWithHashFn returns the subtree hash like Hash, finalizing with the
+// given hash function instead of the accelerated default backend.
+func (n *Node) HashWithHashFn(fn hasher.HashFn) []byte {
+	n.finalize(fn)
 	return bytes.Clone(hashNode(n))
 }
 
@@ -749,9 +756,12 @@ func (s *finalizeScratch) release() {
 // path, which reports such nodes to the caller; healthy subtrees below the
 // excluded chain still batch, so an excluded ancestor can leave its level with
 // no collected nodes.
-func (n *Node) finalize() {
+func (n *Node) finalize(fn hasher.HashFn) {
 	if n == nil {
 		return
+	}
+	if fn == nil {
+		fn = batchHashFn
 	}
 
 	scratch, _ := finalizeScratchPool.Get().(*finalizeScratch)
@@ -809,14 +819,14 @@ func (n *Node) finalize() {
 
 		ok := true
 		if workers > 1 && slabs > 1 {
-			ok = finalizeLevelParallel(nodes, out, min(workers, slabs))
+			ok = finalizeLevelParallel(nodes, out, min(workers, slabs), fn)
 		} else {
 			for off := 0; off < len(nodes); off += finalizeBatchPairs {
 				slab := nodes[off:min(off+finalizeBatchPairs, len(nodes))]
 				if cap(scratch.input) < len(slab)*64 {
 					scratch.input = make([]byte, len(slab)*64)
 				}
-				if hashSlab(slab, out[off*32:], scratch.input[:len(slab)*64]) != nil {
+				if hashSlab(slab, out[off*32:], scratch.input[:len(slab)*64], fn) != nil {
 					ok = false
 					break
 				}
@@ -837,13 +847,18 @@ func (n *Node) finalize() {
 
 // hashSlab gathers the sibling pairs of slab into input, compresses them in
 // one batchHashFn call, and hands out the results as sub-slices of out.
-// input must hold exactly len(slab) pairs.
-func hashSlab(slab []*Node, out, input []byte) error {
+// input must hold exactly len(slab) pairs; its prior contents are arbitrary
+// (buffers are reused), so short values zero-extend their chunk explicitly,
+// matching hashPair.
+func hashSlab(slab []*Node, out, input []byte, fn hasher.HashFn) error {
 	for i, node := range slab {
-		copy(input[i*64:i*64+32], node.left.value)
-		copy(input[i*64+32:i*64+64], node.right.value)
+		off := i * 64
+		n := copy(input[off:off+32], node.left.value)
+		clear(input[off+n : off+32])
+		n = copy(input[off+32:off+64], node.right.value)
+		clear(input[off+32+n : off+64])
 	}
-	if err := batchHashFn(out[:len(slab)*32], input); err != nil {
+	if err := fn(out[:len(slab)*32], input); err != nil {
 		return err
 	}
 	for i, node := range slab {
@@ -860,7 +875,7 @@ func hashSlab(slab []*Node, out, input []byte) error {
 // sets and slab ranges of out are disjoint and every gather reads values
 // completed on a deeper level, so workers share nothing but their slab
 // assignment. Reports whether every slab hashed.
-func finalizeLevelParallel(nodes []*Node, out []byte, workers int) bool {
+func finalizeLevelParallel(nodes []*Node, out []byte, workers int, fn hasher.HashFn) bool {
 	slabs := (len(nodes) + finalizeBatchPairs - 1) / finalizeBatchPairs
 
 	var failed atomic.Bool
@@ -870,24 +885,24 @@ func finalizeLevelParallel(nodes []*Node, out []byte, workers int) bool {
 		wg.Add(1)
 		go func(wi int) {
 			defer wg.Done()
-			region, put, ok := hasher.AsyncJobBuf()
-			if !ok {
+			work := func(region []byte) {
+				for j := wi; j < slabs; j += workers {
+					start := j * finalizeBatchPairs
+					slab := nodes[start:min(start+finalizeBatchPairs, len(nodes))]
+					var err error
+					hasher.WithAsyncWorkSlot(func() {
+						err = hashSlab(slab, out[start*32:], region[:len(slab)*64], fn)
+					})
+					if err != nil {
+						failed.Store(true)
+						return
+					}
+				}
+			}
+			if !hasher.WithAsyncJobBuf(work) {
 				// Async hashing was disabled after the worker count was read;
 				// a one-off buffer keeps the level correct.
-				region = make([]byte, finalizeBatchPairs*64)
-				put = func() {}
-			}
-			defer put()
-			for j := wi; j < slabs; j += workers {
-				start := j * finalizeBatchPairs
-				slab := nodes[start:min(start+finalizeBatchPairs, len(nodes))]
-				release := hasher.AsyncWorkSlot()
-				err := hashSlab(slab, out[start*32:], region[:len(slab)*64])
-				release()
-				if err != nil {
-					failed.Store(true)
-					return
-				}
+				work(make([]byte, finalizeBatchPairs*64))
 			}
 		}(wi)
 	}
@@ -940,7 +955,7 @@ func (n *Node) Prove(index int) (*Proof, error) {
 	if index < 1 {
 		return nil, fmt.Errorf("invalid generalized index %d (must be >= 1)", index)
 	}
-	n.finalize()
+	n.finalize(nil)
 	pathLen := getPathLength(index)
 	proof := &Proof{Index: index}
 	hashes := make([][]byte, 0, pathLen)
@@ -1004,7 +1019,7 @@ func (n *Node) ProveMulti(indices []int) (*Multiproof, error) {
 			return nil, fmt.Errorf("invalid generalized index %d (must be >= 1)", gi)
 		}
 	}
-	n.finalize()
+	n.finalize(nil)
 	reqIndices := getRequiredIndices(indices)
 	// Indices is cloned like Leaves and Hashes: storing the caller's slice by
 	// reference lets a later reorder or reuse of it silently invalidate a proof

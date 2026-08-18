@@ -2355,7 +2355,7 @@ func TestFinalizeMalformedSubtree(t *testing.T) {
 	malformed := NewNodeWithLR(LeafFromBytes(finalizeTestChunks(1)[0]), nil)
 	root := NewNodeWithLR(healthy, malformed)
 
-	root.finalize()
+	root.finalize(nil)
 
 	if root.value != nil {
 		t.Error("root above a malformed subtree must stay unhashed")
@@ -2455,12 +2455,113 @@ func TestFinalizeLevelParallelDisabledFallback(t *testing.T) {
 	}
 	out := make([]byte, count*32)
 
-	if !finalizeLevelParallel(nodes, out, 2) {
+	if !finalizeLevelParallel(nodes, out, 2, batchHashFn) {
 		t.Fatal("finalizeLevelParallel reported failure")
 	}
 	for i, node := range nodes {
 		if want := hashPair(node.left.value, node.right.value); !bytes.Equal(node.value, want) {
 			t.Fatalf("node %d value = %x, want %x", i, node.value, want)
 		}
+	}
+}
+
+// shortLeafNodes returns n leaves shorter than a full chunk; their chunks
+// zero-extend during hashing.
+func shortLeafNodes(n int) []*Node {
+	leaves := make([]*Node, n)
+	for i := range leaves {
+		leaves[i] = NewNodeWithValue([]byte{byte(i + 1), byte(i >> 8)})
+	}
+	return leaves
+}
+
+// Short leaf values must zero-extend in reused gather buffers: a scratch
+// buffer warmed with nonzero chunks previously leaked its stale bytes into
+// the hashed input. Covers the sequential batch path and, below threshold,
+// the recursive path.
+func TestFinalizeShortLeavesWarmedPool(t *testing.T) {
+	for _, n := range []int{8, 32} {
+		ref, err := TreeFromNodes(shortLeafNodes(n), n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := bytes.Clone(hashNode(ref))
+
+		// Warm the scratch pool with nonzero 32-byte chunks.
+		warmChunks := make([][]byte, 32)
+		for i := range warmChunks {
+			warmChunks[i] = bytes.Repeat([]byte{0xAA}, 32)
+		}
+		warm, err := TreeFromChunks(warmChunks)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = warm.Hash()
+
+		tree, err := TreeFromNodes(shortLeafNodes(n), n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := tree.Hash(); !bytes.Equal(got, want) {
+			t.Fatalf("n=%d: batched root %x != recursive root %x", n, got, want)
+		}
+	}
+}
+
+// Same stale-bytes condition on the parallel path: borrowed async job
+// buffers carry arbitrary prior hashing input.
+func TestFinalizeShortLeavesParallel(t *testing.T) {
+	hasher.EnableAsyncHashing(4)
+	defer hasher.DisableAsyncHashing()
+
+	// Dirty the async job buffers with a normal finalize first.
+	warm, err := TreeFromChunks(finalizeTestChunks(1 << 16))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = warm.Hash()
+
+	const numLeaves = 4 * finalizeBatchPairs // two full slabs on the leaf-parent level
+	ref, err := TreeFromNodes(shortLeafNodes(numLeaves), numLeaves)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := bytes.Clone(hashNode(ref))
+
+	tree, err := TreeFromNodes(shortLeafNodes(numLeaves), numLeaves)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tree.Hash(); !bytes.Equal(got, want) {
+		t.Fatalf("parallel batched root %x != recursive root %x", got, want)
+	}
+}
+
+// HashWithHashFn finalizes through the given hash function and produces the
+// same root as the default backend.
+func TestHashWithHashFn(t *testing.T) {
+	chunks := finalizeTestChunks(64)
+
+	ref, err := TreeFromChunks(chunks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := bytes.Clone(hashNode(ref))
+
+	var calls int
+	countingFn := func(dst, input []byte) error {
+		calls++
+		return batchHashFn(dst, input)
+	}
+
+	tree, err := TreeFromChunks(chunks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tree.HashWithHashFn(countingFn); !bytes.Equal(got, want) {
+		t.Fatalf("HashWithHashFn root %x, want %x", got, want)
+	}
+	if calls == 0 {
+		t.Fatal("custom hash function was not used")
 	}
 }
