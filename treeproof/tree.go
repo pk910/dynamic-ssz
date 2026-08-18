@@ -656,15 +656,47 @@ func (n *Node) Get(index int) (*Node, error) {
 // shared across trees, so the raw slice must not escape to callers.
 func (n *Node) Hash() []byte {
 	// TODO: handle special cases: empty root, one non-empty node
-	n.finalize(nil)
+	n.finalize(finalizeConfig{})
 	return bytes.Clone(hashNode(n))
 }
 
-// HashWithHashFn returns the subtree hash like Hash, finalizing with the
-// given hash function instead of the accelerated default backend.
-func (n *Node) HashWithHashFn(fn hasher.HashFn) []byte {
-	n.finalize(fn)
-	return bytes.Clone(hashNode(n))
+// FinalizeOption configures Finalize.
+type FinalizeOption func(*finalizeConfig)
+
+type finalizeConfig struct {
+	fn      hasher.HashFn
+	workers int
+}
+
+// WithHashFn finalizes through the given hash function instead of the
+// accelerated default backend.
+func WithHashFn(fn hasher.HashFn) FinalizeOption {
+	return func(c *finalizeConfig) {
+		c.fn = fn
+	}
+}
+
+// WithAsyncHashing hashes finalization batches on the given number of
+// pipeline worker goroutines, overlapping hashing with the tree walk. The
+// hash function must be safe for concurrent use. workers <= 1 keeps
+// finalization on the calling goroutine.
+func WithAsyncHashing(workers int) FinalizeOption {
+	return func(c *finalizeConfig) {
+		c.workers = workers
+	}
+}
+
+// Finalize computes and caches every node hash in the subtree, so afterwards
+// the subtree is read-only and safe for concurrent Prove/ProveMulti/Hash/
+// Value calls. Hash, Prove and ProveMulti finalize implicitly with default
+// options; Finalize is the explicit entry point for configuring the hash
+// function or parallel hashing.
+func (n *Node) Finalize(opts ...FinalizeOption) {
+	cfg := finalizeConfig{}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	n.finalize(cfg)
 }
 
 // Left returns the left child node, or nil if this is a leaf.
@@ -756,10 +788,14 @@ func (s *finalizeScratch) release() {
 // chain are excluded and left for the recursive path, which reports such
 // nodes to the caller; healthy subtrees below the excluded chain still
 // batch.
-func (n *Node) finalize(fn hasher.HashFn) {
-	if n == nil {
+func (n *Node) finalize(cfg finalizeConfig) {
+	// A branch value is only ever set after its children's values, so a
+	// cached root value certifies the whole subtree is finalized; leaves
+	// carry their value from construction.
+	if n == nil || n.value != nil || (n.left == nil && n.right == nil) {
 		return
 	}
+	fn := cfg.fn
 	if fn == nil {
 		fn = batchHashFn
 	}
@@ -770,17 +806,24 @@ func (n *Node) finalize(fn hasher.HashFn) {
 		scratch.input = make([]byte, finalizeBatchPairs*64)
 	}
 
+	var pipe *finalizePipeline
+
 	total := 0
 
 	var hashErr error
 
 	// flushFrom hashes every pending batch at depth d or deeper, deepest
 	// first: a pending node's unhashed children sit one depth deeper, so the
-	// sweep order guarantees the gather finds their values.
+	// sweep order guarantees the gather finds their values — inline, or via
+	// the pipeline's completion tracking once workers are running.
 	flushFrom := func(d int) {
 		for dd := len(scratch.pending) - 1; dd >= d; dd-- {
 			batch := scratch.pending[dd]
 			if len(batch) == 0 {
+				continue
+			}
+			if pipe != nil {
+				scratch.pending[dd] = pipe.flush(batch, dd)
 				continue
 			}
 			out := make([]byte, len(batch)*32)
@@ -826,6 +869,12 @@ func (n *Node) finalize(fn hasher.HashFn) {
 		}
 		scratch.pending[depth] = append(scratch.pending[depth], node)
 		if len(scratch.pending[depth]) == finalizeBatchPairs {
+			// The tree is large enough for mid-walk flushing, so hashing
+			// moves to worker goroutines and overlaps with the walk when
+			// async hashing grants them.
+			if pipe == nil && cfg.workers > 1 {
+				pipe = newFinalizePipeline(cfg.workers, fn)
+			}
 			flushFrom(depth)
 		}
 
@@ -835,6 +884,11 @@ func (n *Node) finalize(fn hasher.HashFn) {
 
 	if hashErr == nil && total >= finalizeThreshold {
 		flushFrom(0)
+	}
+	if pipe != nil {
+		if err := pipe.join(); err != nil && hashErr == nil {
+			hashErr = err
+		}
 	}
 	// Small trees hash recursively (batch setup costs more than it saves).
 	// So does whatever a failing backend left unhashed: the backend rejects
@@ -866,6 +920,134 @@ func hashBatch(batch []*Node, out, input []byte, fn hasher.HashFn) error {
 		node.value = out[i*32 : (i+1)*32 : (i+1)*32]
 	}
 	return nil
+}
+
+// flushJob is one batch handed to the pipeline workers: gather the batch's
+// children values, hash into out, assign the results. seq is the job's
+// position within its depth; target is the depth+1 completion frontier the
+// job must observe before gathering — every depth+1 job enqueued earlier
+// holds children values this batch may need.
+type flushJob struct {
+	batch  []*Node
+	out    []byte
+	depth  int
+	seq    int
+	target int
+}
+
+// pipelineDepth tracks one depth's jobs. Jobs complete out of order across
+// workers, so completions are recorded per sequence number and frontier is
+// the contiguous completed prefix — only a frontier guarantees that every
+// earlier job's values are in place, a bare completion count does not.
+type pipelineDepth struct {
+	enqueued int
+	frontier int
+	done     []bool
+}
+
+// finalizePipeline hashes flush batches on worker goroutines while the
+// finalize walk keeps traversing. Jobs are consumed in enqueue order and a
+// job waits until the completion frontier one depth deeper covers every job
+// enqueued before it, so gathers never read a value that is still being
+// computed; a job's dependencies always sit earlier in the queue, so some
+// worker can always make progress.
+type finalizePipeline struct {
+	fn   hasher.HashFn
+	jobs chan flushJob
+	pool chan []*Node
+	wg   sync.WaitGroup
+
+	mu     sync.Mutex
+	cond   *sync.Cond
+	depths []pipelineDepth
+	err    error
+}
+
+func newFinalizePipeline(workers int, fn hasher.HashFn) *finalizePipeline {
+	p := &finalizePipeline{
+		fn:   fn,
+		jobs: make(chan flushJob, 4*workers),
+		pool: make(chan []*Node, 5*workers+1),
+	}
+	p.cond = sync.NewCond(&p.mu)
+	p.wg.Add(workers)
+	for range workers {
+		go p.worker()
+	}
+	return p
+}
+
+// flush hands batch to the workers and returns an empty replacement slice
+// for the caller's pending list; the batch slice itself is recycled once its
+// job completes.
+func (p *finalizePipeline) flush(batch []*Node, depth int) []*Node {
+	p.mu.Lock()
+	for len(p.depths) <= depth {
+		p.depths = append(p.depths, pipelineDepth{})
+	}
+	target := 0
+	if depth+1 < len(p.depths) {
+		target = p.depths[depth+1].enqueued
+	}
+	seq := p.depths[depth].enqueued
+	p.depths[depth].enqueued++
+	p.depths[depth].done = append(p.depths[depth].done, false)
+	p.mu.Unlock()
+
+	p.jobs <- flushJob{batch: batch, out: make([]byte, len(batch)*32), depth: depth, seq: seq, target: target}
+
+	select {
+	case next := <-p.pool:
+		return next
+	default:
+		return make([]*Node, 0, finalizeBatchPairs)
+	}
+}
+
+func (p *finalizePipeline) worker() {
+	defer p.wg.Done()
+	input := make([]byte, finalizeBatchPairs*64)
+	for job := range p.jobs {
+		p.mu.Lock()
+		for p.err == nil && job.depth+1 < len(p.depths) && p.depths[job.depth+1].frontier < job.target {
+			p.cond.Wait()
+		}
+		failed := p.err != nil
+		p.mu.Unlock()
+
+		var err error
+		if !failed {
+			err = hashBatch(job.batch, job.out, input[:len(job.batch)*64], p.fn)
+		}
+
+		p.mu.Lock()
+		if err != nil && p.err == nil {
+			p.err = err
+		}
+		// Failed and skipped jobs advance the frontier too, so waiters
+		// unblock; the error makes the caller fall back to the recursive
+		// path.
+		d := &p.depths[job.depth]
+		d.done[job.seq] = true
+		for d.frontier < len(d.done) && d.done[d.frontier] {
+			d.frontier++
+		}
+		p.cond.Broadcast()
+		p.mu.Unlock()
+
+		clear(job.batch)
+		select {
+		case p.pool <- job.batch[:0]:
+		default:
+		}
+	}
+}
+
+// join waits for all enqueued batches and reports the first backend error.
+func (p *finalizePipeline) join() error {
+	close(p.jobs)
+	p.wg.Wait()
+	return p.err
 }
 
 func hashNode(n *Node) []byte {
@@ -912,7 +1094,7 @@ func (n *Node) Prove(index int) (*Proof, error) {
 	if index < 1 {
 		return nil, fmt.Errorf("invalid generalized index %d (must be >= 1)", index)
 	}
-	n.finalize(nil)
+	n.finalize(finalizeConfig{})
 	pathLen := getPathLength(index)
 	proof := &Proof{Index: index}
 	hashes := make([][]byte, 0, pathLen)
@@ -976,7 +1158,7 @@ func (n *Node) ProveMulti(indices []int) (*Multiproof, error) {
 			return nil, fmt.Errorf("invalid generalized index %d (must be >= 1)", gi)
 		}
 	}
-	n.finalize(nil)
+	n.finalize(finalizeConfig{})
 	reqIndices := getRequiredIndices(indices)
 	// Indices is cloned like Leaves and Hashes: storing the caller's slice by
 	// reference lets a later reorder or reuse of it silently invalidate a proof

@@ -68,7 +68,9 @@ func WithNoFastHash() DynSszOption {
 //
 // workers > 0 also configures the process-wide worker limit (shared by all
 // instances, see hasher.EnableAsyncHashing); workers == 0 only gates this
-// instance in and leaves the process-wide configuration untouched.
+// instance in and leaves the process-wide configuration untouched. GetTree
+// finalizes its tree on this instance's worker count as well (see
+// treeproof.WithAsyncHashing).
 // HashTreeRootWith is unaffected: the caller owns that hasher and gates it
 // explicitly via its SetAsyncHashing method.
 func WithAsyncHashing(workers int) DynSszOption {

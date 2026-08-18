@@ -11,7 +11,9 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
@@ -2355,7 +2357,7 @@ func TestFinalizeMalformedSubtree(t *testing.T) {
 	malformed := NewNodeWithLR(LeafFromBytes(finalizeTestChunks(1)[0]), nil)
 	root := NewNodeWithLR(healthy, malformed)
 
-	root.finalize(nil)
+	root.finalize(finalizeConfig{})
 
 	if root.value != nil {
 		t.Error("root above a malformed subtree must stay unhashed")
@@ -2388,12 +2390,9 @@ func TestHashNilNode(t *testing.T) {
 	_ = n.Hash()
 }
 
-// Finalization with async hashing enabled must match the recursive
-// reference; 256k leaves force many mid-walk batch flushes.
+// Finalization on pipeline workers must match the recursive reference; 256k
+// leaves force many mid-walk batch flushes.
 func TestFinalizeParallel(t *testing.T) {
-	hasher.EnableAsyncHashing(4)
-	defer hasher.DisableAsyncHashing()
-
 	chunks := finalizeTestChunks(1 << 18)
 
 	ref, err := TreeFromChunks(chunks)
@@ -2406,18 +2405,16 @@ func TestFinalizeParallel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to build tree: %v", err)
 	}
+	tree.Finalize(WithAsyncHashing(4))
 	if got := tree.Hash(); !bytes.Equal(got, want) {
 		t.Fatalf("Hash() = %x, want %x", got, want)
 	}
 	assertAllBranchesHashed(t, tree)
 }
 
-// A backend failing during a mid-walk flush must fall back to the recursive
-// path and still produce a correct, fully hashed tree.
+// A backend failing during a mid-walk flush on pipeline workers must fall
+// back to the recursive path and still produce a correct, fully hashed tree.
 func TestFinalizeParallelBatchHashFnError(t *testing.T) {
-	hasher.EnableAsyncHashing(4)
-	defer hasher.DisableAsyncHashing()
-
 	orig := batchHashFn
 	batchHashFn = func(_, _ []byte) error { return errors.New("backend failure") }
 	defer func() { batchHashFn = orig }()
@@ -2434,6 +2431,7 @@ func TestFinalizeParallelBatchHashFnError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to build tree: %v", err)
 	}
+	tree.Finalize(WithAsyncHashing(4))
 	if got := tree.Hash(); !bytes.Equal(got, want) {
 		t.Fatalf("Hash() = %x, want %x", got, want)
 	}
@@ -2483,18 +2481,15 @@ func TestFinalizeShortLeavesWarmedPool(t *testing.T) {
 	}
 }
 
-// Same stale-bytes condition across many mid-walk flushes with async
-// hashing enabled.
+// Same stale-bytes condition across many mid-walk flushes on pipeline
+// workers.
 func TestFinalizeShortLeavesParallel(t *testing.T) {
-	hasher.EnableAsyncHashing(4)
-	defer hasher.DisableAsyncHashing()
-
-	// Dirty the async job buffers with a normal finalize first.
+	// Dirty the pooled buffers with a normal finalize first.
 	warm, err := TreeFromChunks(finalizeTestChunks(1 << 16))
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = warm.Hash()
+	warm.Finalize(WithAsyncHashing(4))
 
 	const numLeaves = 4 * finalizeBatchPairs // two full slabs on the leaf-parent level
 	ref, err := TreeFromNodes(shortLeafNodes(numLeaves), numLeaves)
@@ -2507,14 +2502,15 @@ func TestFinalizeShortLeavesParallel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	tree.Finalize(WithAsyncHashing(4))
 	if got := tree.Hash(); !bytes.Equal(got, want) {
 		t.Fatalf("parallel batched root %x != recursive root %x", got, want)
 	}
 }
 
-// HashWithHashFn finalizes through the given hash function and produces the
+// Finalize(WithHashFn) hashes through the given function and produces the
 // same root as the default backend.
-func TestHashWithHashFn(t *testing.T) {
+func TestFinalizeWithHashFn(t *testing.T) {
 	chunks := finalizeTestChunks(64)
 
 	ref, err := TreeFromChunks(chunks)
@@ -2533,10 +2529,122 @@ func TestHashWithHashFn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := tree.HashWithHashFn(countingFn); !bytes.Equal(got, want) {
-		t.Fatalf("HashWithHashFn root %x, want %x", got, want)
+	tree.Finalize(WithHashFn(countingFn))
+	if got := tree.Hash(); !bytes.Equal(got, want) {
+		t.Fatalf("Finalize(WithHashFn) root %x, want %x", got, want)
 	}
 	if calls == 0 {
 		t.Fatal("custom hash function was not used")
+	}
+}
+
+// A pipeline job whose children are still being hashed must wait for them:
+// the deep batch's backend call is gated, so the shallow batch — whose
+// gather needs the deep results — can only produce correct hashes by
+// honoring its completion target.
+func TestFinalizePipelineDependencyWait(t *testing.T) {
+	gate := make(chan struct{})
+	var gated atomic.Bool
+	fn := func(dst, input []byte) error {
+		if gated.CompareAndSwap(false, true) {
+			<-gate
+		}
+		return batchHashFn(dst, input)
+	}
+
+	deep := make([]*Node, 4)
+	for i := range deep {
+		deep[i] = NewNodeWithLR(
+			LeafFromBytes(sum256ToBytes([]byte{byte(i), 1})),
+			LeafFromBytes(sum256ToBytes([]byte{byte(i), 2})),
+		)
+	}
+	shallow := []*Node{
+		NewNodeWithLR(deep[0], deep[1]),
+		NewNodeWithLR(deep[2], deep[3]),
+	}
+
+	p := newFinalizePipeline(2, fn)
+	deepReplacement := p.flush(append(make([]*Node, 0, finalizeBatchPairs), deep...), 1)
+	_ = p.flush(append(make([]*Node, 0, finalizeBatchPairs), shallow...), 0)
+	if cap(deepReplacement) == 0 {
+		t.Error("flush returned an uninitialized replacement batch")
+	}
+
+	time.Sleep(20 * time.Millisecond) // let the shallow job reach its wait
+	close(gate)
+	if err := p.join(); err != nil {
+		t.Fatalf("join: %v", err)
+	}
+
+	for i, node := range deep {
+		if want := hashPair(node.left.value, node.right.value); !bytes.Equal(node.value, want) {
+			t.Fatalf("deep node %d value mismatch", i)
+		}
+	}
+	for i, node := range shallow {
+		if want := hashPair(node.left.value, node.right.value); !bytes.Equal(node.value, want) {
+			t.Fatalf("shallow node %d value mismatch", i)
+		}
+	}
+}
+
+// A backend failure on a mid-walk flush without pipeline workers (async
+// hashing disabled) stops further batching during the walk and falls back to
+// the recursive path.
+func TestFinalizeSequentialMidwalkError(t *testing.T) {
+	orig := batchHashFn
+	batchHashFn = func(_, _ []byte) error { return errors.New("backend failure") }
+	defer func() { batchHashFn = orig }()
+
+	chunks := finalizeTestChunks(4 * finalizeBatchPairs)
+
+	ref, err := TreeFromChunks(chunks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := bytes.Clone(hashNode(ref))
+
+	tree, err := TreeFromChunks(chunks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tree.Hash(); !bytes.Equal(got, want) {
+		t.Fatalf("Hash() = %x, want %x", got, want)
+	}
+	assertAllBranchesHashed(t, tree)
+}
+
+// Deep padded trees produce uneven batch sizes across depths, so pipeline
+// jobs complete out of order; the completion frontier must still order every
+// gather after its children's jobs. Regression: a completion count instead
+// of a frontier let a fast small job satisfy a waiter while a large sibling
+// job was still assigning.
+func TestFinalizeParallelDeepPadded(t *testing.T) {
+	leaves := func() []*Node {
+		chunks := finalizeTestChunks(1 << 17)
+		nodes := make([]*Node, len(chunks))
+		for i := range nodes {
+			nodes[i] = LeafFromBytes(chunks[i])
+		}
+		return nodes
+	}
+
+	ref, err := TreeFromNodes64(leaves(), 1<<30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := bytes.Clone(hashNode(ref))
+
+	for round := 0; round < 3; round++ {
+		tree, err := TreeFromNodes64(leaves(), 1<<30)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tree.Finalize(WithAsyncHashing(8))
+		if got := tree.Hash(); !bytes.Equal(got, want) {
+			t.Fatalf("round %d: root mismatch", round)
+		}
+		assertAllBranchesHashed(t, tree)
 	}
 }

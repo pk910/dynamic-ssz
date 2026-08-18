@@ -6674,3 +6674,27 @@ func TestGetTreeNoFastHash(t *testing.T) {
 		t.Fatalf("tree root value = %x, want %x", rootValue, root)
 	}
 }
+
+// GetTree with async hashing enabled finalizes on pipeline workers using the
+// instance's configured worker count; the tree is finalized and correct.
+func TestGetTreeAsyncHashing(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithAsyncHashing(4))
+	defer hasher.DisableAsyncHashing()
+	container := &testSimpleContainer{Value: 42}
+
+	node, err := ds.GetTree(container)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if node.Value() == nil {
+		t.Fatal("expected cached root value on tree returned by GetTree")
+	}
+
+	root, err := ds.HashTreeRoot(container)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !bytes.Equal(node.Value(), root[:]) {
+		t.Fatalf("tree root value = %x, want %x", node.Value(), root)
+	}
+}
