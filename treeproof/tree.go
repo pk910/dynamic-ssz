@@ -757,7 +757,9 @@ const finalizeBatchPairs = 1024
 
 // finalizeScratch holds a finalize pass's reusable buffers: the per-depth
 // pending batches and the shared buffer that gathered pairs are hashed in.
-// Both are bounded by the flush size, not the tree size.
+// The buffer is bounded by the flush size; pending storage is bounded per
+// depth, so O(depth·finalizeBatchPairs) overall — independent of the node
+// count for balanced trees.
 type finalizeScratch struct {
 	pending [][]*Node
 	buf     []byte // finalizeBatchPairs*64 bytes, lazily allocated on first flush

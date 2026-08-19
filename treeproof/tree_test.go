@@ -2998,6 +2998,42 @@ func TestFinalizeRecoveredFnPanic(t *testing.T) {
 	assertAllBranchesHashed(t, tree)
 }
 
+// BenchmarkFinalize measures finalization alone on a prebuilt 65,536-leaf
+// tree; construction is untimed.
+func BenchmarkFinalize(b *testing.B) {
+	chunks := finalizeTestChunks(1 << 16)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		tree, err := TreeFromChunks(chunks)
+		if err != nil {
+			b.Fatal(err)
+		}
+		b.StartTimer()
+		if err := tree.Finalize(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkBuildFinalize measures tree construction plus finalization for
+// 65,536 leaves — the end-to-end cost a GetTree caller pays per tree.
+func BenchmarkBuildFinalize(b *testing.B) {
+	chunks := finalizeTestChunks(1 << 16)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tree, err := TreeFromChunks(chunks)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := tree.Finalize(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // Errors on the aliased path surface like on the plain path: from the
 // pending-batch flush after the alias stopped batching (call 1 hashes the
 // shared branch) and from the recursive remainder pass (call 2 hashes the

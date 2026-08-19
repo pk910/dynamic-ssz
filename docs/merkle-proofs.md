@@ -128,7 +128,7 @@ type ProgressiveContainer struct {
 ### GetTree Method
 
 ```go
-func (d *DynSsz) GetTree(source any) (*treeproof.Node, error)
+func (d *DynSsz) GetTree(source any, opts ...CallOption) (*treeproof.Node, error)
 ```
 
 Builds and returns the complete Merkle tree for any SSZ-compatible structure.
@@ -140,6 +140,13 @@ Builds and returns the complete Merkle tree for any SSZ-compatible structure.
 - `*treeproof.Node` - Root node of the complete tree
 - `error` - Error if tree construction fails
 
+The returned tree is finalized: every branch node already carries its cached
+hash, so the tree is read-only and immediately safe for concurrent
+`Prove`/`ProveMulti`/`Hash`/`Value` calls from multiple goroutines. On a
+finalization error the partially finalized tree is returned alongside the
+error; every hash cached in it is valid. With `WithNoFastHash` configured on
+the instance, finalization runs on the native Go sha256 implementation.
+
 ### Node Methods
 
 #### Navigation and Access
@@ -150,7 +157,42 @@ func (n *Node) Get(index int) (*Node, error)
 
 // Get hash of this node
 func (n *Node) Hash() []byte
+
+// Get the cached 32-byte value (leaf data or finalized branch hash);
+// nil for a branch that has not been hashed yet
+func (n *Node) Value() []byte
 ```
+
+Node values are full 32-byte chunks: leaf constructors zero-pad shorter
+input at construction time, so `Value()` and `Proof.Leaf` always return 32
+bytes. `NewNodeWithValue` drops input bytes beyond 32 — use `LeafFromBytes`
+to merkleize longer input into a subtree. All constructors copy their input,
+so a later mutation of the caller's buffer never changes the tree.
+
+#### Finalization
+
+```go
+// Compute and cache every node hash in the subtree
+func (n *Node) Finalize(opts ...FinalizeOption) error
+
+// Finalize through a custom hash function instead of the default backend.
+// fn must support in-place hashing: dst aliases the front of input.
+func WithHashFn(fn hasher.HashFn) FinalizeOption
+```
+
+Trees returned by `GetTree` are already finalized. For manually assembled
+trees (`TreeFromNodes`, `NewNodeWithLR`, ...), `Hash`/`Prove`/`ProveMulti`
+finalize implicitly with default options; `Finalize` is the explicit entry
+point for configuring the hash function or for surfacing errors instead of
+panics. Any error — a hashing backend failure or a malformed tree (a branch
+with a single nil child) — aborts finalization immediately and is returned.
+Hashes cached before the abort remain valid, so a later `Finalize` resumes
+from them.
+
+**Thread safety**: the first `Finalize`/`Hash`/`Prove`/`ProveMulti` call on
+a freshly built tree writes the hash caches and must not run concurrently
+with other calls on the same tree. A finalized tree is read-only, so
+concurrent calls on it are safe.
 
 #### Proof Generation
 
