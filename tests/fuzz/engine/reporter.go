@@ -18,6 +18,12 @@ const (
 	IssueHTRMismatch     IssueType = "htr-mismatch"
 	IssueStreamMismatch  IssueType = "stream-mismatch"
 	IssueUnmarshalDiff   IssueType = "unmarshal-diff"
+	// Deep-oracle issue types.
+	IssueSizeMismatch      IssueType = "size-mismatch"      // SizeSSZ != len(MarshalSSZ)
+	IssueReferenceMismatch IssueType = "reference-mismatch" // independent reference oracle divergence
+	IssueProofFail         IssueType = "proof-fail"         // tree/GetTree or Merkle proof failure
+	IssueMetamorphic       IssueType = "metamorphic"        // distinct serializations share an HTR
+	IssueNonDeterministic  IssueType = "nondeterministic"   // HashTreeRoot not stable across repeats
 )
 
 // Issue represents a single fuzzing issue found.
