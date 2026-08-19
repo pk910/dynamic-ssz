@@ -83,7 +83,6 @@ func flipByte(b []byte, i int) []byte {
 // HashTreeRoot. Issues are reported through fail; ck counts a completed check.
 func proofCheck(reflDs, cgDs *dynssz.DynSsz, val any, htr [32]byte, rng *rand.Rand,
 	fail func(kind, detail string), ck func()) {
-
 	const maxDepth = 22 // bound traversal for very large / deep trees
 
 	var reflTree, cgTree *treeproof.Node

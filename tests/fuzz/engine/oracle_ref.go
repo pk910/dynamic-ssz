@@ -26,6 +26,12 @@ import (
 	"strings"
 )
 
+// SSZ ssz-type tag values used across the reference oracle.
+const (
+	tagBitlist   = "bitlist"
+	tagBitvector = "bitvector"
+)
+
 type refTag struct {
 	size []int // ssz-size dims (-1 for "?")
 	max  []int // ssz-max dims
@@ -94,10 +100,10 @@ func refSupportsType(t reflect.Type, tag reflect.StructTag) bool {
 	case reflect.Array, reflect.Slice:
 		// bitvector is a fixed []byte; supported. bitlist canonicalization
 		// (delimiter placement, trailing-zero trimming) is out of scope.
-		if rt.typ == "bitlist" {
+		if rt.typ == tagBitlist {
 			return false
 		}
-		if rt.typ == "bitvector" {
+		if rt.typ == tagBitvector {
 			return t.Elem().Kind() == reflect.Uint8
 		}
 		// Single-dimensional collections only. Multi-dimensional collections
@@ -116,8 +122,9 @@ func refSupportsType(t reflect.Type, tag reflect.StructTag) bool {
 		return refSupportsType(t.Elem(), consumeDim(tag))
 	case reflect.Struct:
 		return refSupportsStruct(t)
+	default:
+		return false
 	}
-	return false
 }
 
 // consumeDim drops the leading ssz-size / ssz-max dimension from a struct tag,
@@ -183,7 +190,7 @@ func zeroDeref(v reflect.Value) reflect.Value {
 }
 
 func refFixedSize(t reflect.Type, tag refTag) (int, bool) {
-	if tag.typ == "bitlist" {
+	if tag.typ == tagBitlist {
 		return 0, false
 	}
 	switch t.Kind() {
@@ -204,7 +211,7 @@ func refFixedSize(t reflect.Type, tag refTag) (int, bool) {
 		}
 		return es * t.Len(), true
 	case reflect.Slice:
-		if tag.typ == "bitvector" && len(tag.size) > 0 {
+		if tag.typ == tagBitvector && len(tag.size) > 0 {
 			return tag.size[0], true // bitvector: fixed N bytes
 		}
 		// A concrete ssz-size dim makes this a fixed Vector[E, N]; it is fixed
@@ -228,8 +235,9 @@ func refFixedSize(t reflect.Type, tag refTag) (int, bool) {
 			total += fs
 		}
 		return total, true
+	default:
+		return 0, false
 	}
-	return 0, false
 }
 
 func refMarshal(v reflect.Value, tag refTag) []byte {
@@ -267,10 +275,10 @@ func refMarshal(v reflect.Value, tag refTag) []byte {
 		// 4-byte offset per element, no length prefix), then the bodies.
 		return refOffsetEncode(v, tag)
 	case reflect.Slice:
-		if tag.typ == "bitlist" {
+		if tag.typ == tagBitlist {
 			return append([]byte(nil), v.Bytes()...) // raw incl. delimiter
 		}
-		if tag.typ == "bitvector" && len(tag.size) > 0 {
+		if tag.typ == tagBitvector && len(tag.size) > 0 {
 			out := make([]byte, tag.size[0])
 			copy(out, v.Bytes())
 			return out
@@ -292,8 +300,9 @@ func refMarshal(v reflect.Value, tag refTag) []byte {
 		return refOffsetEncode(v, tag)
 	case reflect.Struct:
 		return refMarshalContainer(v)
+	default:
+		return nil
 	}
-	return nil
 }
 
 // refVectorEncode encodes a fixed Vector[E, n]: exactly n elements, drawing
@@ -401,12 +410,12 @@ func refHTR(v reflect.Value, tag refTag) [32]byte {
 		}
 		return refMerkleize(roots, 0)
 	case reflect.Slice:
-		if tag.typ == "bitvector" && len(tag.size) > 0 {
+		if tag.typ == tagBitvector && len(tag.size) > 0 {
 			out := make([]byte, tag.size[0])
 			copy(out, v.Bytes())
 			return refMerkleize(refChunkify(out), 0)
 		}
-		if tag.typ == "bitlist" {
+		if tag.typ == tagBitlist {
 			bl := v.Bytes()
 			nbits := refBitlistLen(bl)
 			limit := (tag.curMax() + 255) / 256
@@ -450,16 +459,18 @@ func refHTR(v reflect.Value, tag refTag) [32]byte {
 			roots[i] = refHTR(v.Field(i), parseRefTag(t.Field(i).Tag))
 		}
 		return refMerkleize(roots, 0)
+	default:
+		return [32]byte{}
 	}
-	return [32]byte{}
 }
 
 func refIsBasicKind(k reflect.Kind) bool {
 	switch k {
 	case reflect.Bool, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		return true
+	default:
+		return false
 	}
-	return false
 }
 
 func refPack(b []byte) [][32]byte { return refChunkify(b) }
