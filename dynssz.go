@@ -1195,17 +1195,12 @@ func (d *DynSsz) GetTree(source any, opts ...CallOption) (*treeproof.Node, error
 
 	// Finalize all node hashes up front: batched hashing during finalization
 	// is cheaper than the lazy per-pair path, and the finalized tree is
-	// immutable and safe for concurrent proof generation. The instance's
-	// options carry over: NoFastHash finalizes on the native Go sha256
-	// implementation, and async hashing lends its worker count to the
-	// finalization pipeline.
+	// immutable and safe for concurrent proof generation. NoFastHash carries
+	// over: finalization then runs on the native Go sha256 implementation.
 	node := w.Node()
-	finalizeOpts := make([]treeproof.FinalizeOption, 0, 2)
+	finalizeOpts := make([]treeproof.FinalizeOption, 0, 1)
 	if d.options.NoFastHash {
 		finalizeOpts = append(finalizeOpts, treeproof.WithHashFn(nativeBatchHashFn))
-	}
-	if d.options.AsyncHashing && d.options.AsyncHashingWorkers > 1 {
-		finalizeOpts = append(finalizeOpts, treeproof.WithAsyncHashing(d.options.AsyncHashingWorkers))
 	}
 	// On a finalization error the partially finalized tree is returned
 	// alongside the error; every hash cached in it is valid.

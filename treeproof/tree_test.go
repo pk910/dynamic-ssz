@@ -11,9 +11,8 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"testing"
-	"time"
+	"unsafe"
 
 	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
@@ -47,7 +46,7 @@ func TestNewNodeWithValue(t *testing.T) {
 			if node.left != nil || node.right != nil {
 				t.Error("leaf node should have nil children")
 			}
-			if !bytes.Equal(node.value, tt.value) {
+			if !bytes.Equal(node.value[:], tt.value) {
 				t.Error("node value mismatch")
 			}
 			if node.isEmpty != tt.expectEmpty {
@@ -67,7 +66,7 @@ func TestNewEmptyNode(t *testing.T) {
 	if !node.isEmpty {
 		t.Error("empty node should have isEmpty=true")
 	}
-	if !bytes.Equal(node.value, zeroHash) {
+	if !bytes.Equal(node.value[:], zeroHash) {
 		t.Error("empty node value should match zero hash")
 	}
 	if node.left != nil || node.right != nil {
@@ -90,8 +89,8 @@ func TestNewNodeWithLR(t *testing.T) {
 	if node.right != right {
 		t.Error("right child mismatch")
 	}
-	if node.value != nil {
-		t.Error("branch node should have nil value initially")
+	if node.hasValue {
+		t.Error("branch node should have no value initially")
 	}
 }
 
@@ -410,7 +409,7 @@ func TestTreeFromNodesWithMixin(t *testing.T) {
 	// Right child should be the length mixin
 	lengthBuf := make([]byte, 32)
 	binary.LittleEndian.PutUint64(lengthBuf[:8], 4)
-	if !bytes.Equal(tree.right.value, lengthBuf) {
+	if !bytes.Equal(tree.right.value[:], lengthBuf) {
 		t.Error("right child should be length mixin")
 	}
 }
@@ -434,7 +433,7 @@ func TestTreeFromNodesProgressiveWithMixin(t *testing.T) {
 	// Right child should be the length mixin
 	lengthBuf := make([]byte, 32)
 	binary.LittleEndian.PutUint64(lengthBuf[:8], 3)
-	if !bytes.Equal(tree.right.value, lengthBuf) {
+	if !bytes.Equal(tree.right.value[:], lengthBuf) {
 		t.Error("right child should be length mixin")
 	}
 }
@@ -461,7 +460,7 @@ func TestTreeFromNodesProgressiveWithActiveFields(t *testing.T) {
 	expectedLeaf := make([]byte, 0, 32)
 	expectedLeaf = append(expectedLeaf, activeFields...)
 	expectedLeaf = append(expectedLeaf, make([]byte, 30)...)
-	if !bytes.Equal(tree.right.value, expectedLeaf) {
+	if !bytes.Equal(tree.right.value[:], expectedLeaf) {
 		t.Error("right child should be active fields bitvector")
 	}
 }
@@ -570,7 +569,7 @@ func TestNodeHash(t *testing.T) {
 	right := NewNodeWithValue(bytes.Repeat([]byte{2}, 32))
 	branch := NewNodeWithLR(left, right)
 
-	expectedHash := sha256.Sum256(append(left.value, right.value...))
+	expectedHash := sha256.Sum256(append(left.value[:], right.value[:]...))
 	branchHash := branch.Hash()
 
 	if !bytes.Equal(branchHash, expectedHash[:]) {
@@ -578,7 +577,7 @@ func TestNodeHash(t *testing.T) {
 	}
 
 	// Test that hash is cached
-	if branch.value == nil {
+	if !branch.hasValue {
 		t.Error("hash should be cached in node value")
 	}
 
@@ -998,7 +997,7 @@ func TestLeafCreationFunctions(t *testing.T) {
 		buf := make([]byte, 32)
 		binary.LittleEndian.PutUint64(buf[:8], val)
 
-		if !bytes.Equal(leaf.value, buf) {
+		if !bytes.Equal(leaf.value[:], buf) {
 			t.Error("LeafFromUint64 value mismatch")
 		}
 	})
@@ -1010,7 +1009,7 @@ func TestLeafCreationFunctions(t *testing.T) {
 		buf := make([]byte, 32)
 		binary.LittleEndian.PutUint32(buf[:4], val)
 
-		if !bytes.Equal(leaf.value, buf) {
+		if !bytes.Equal(leaf.value[:], buf) {
 			t.Error("LeafFromUint32 value mismatch")
 		}
 	})
@@ -1022,7 +1021,7 @@ func TestLeafCreationFunctions(t *testing.T) {
 		buf := make([]byte, 32)
 		binary.LittleEndian.PutUint16(buf[:2], val)
 
-		if !bytes.Equal(leaf.value, buf) {
+		if !bytes.Equal(leaf.value[:], buf) {
 			t.Error("LeafFromUint16 value mismatch")
 		}
 	})
@@ -1034,7 +1033,7 @@ func TestLeafCreationFunctions(t *testing.T) {
 		buf := make([]byte, 32)
 		buf[0] = val
 
-		if !bytes.Equal(leaf.value, buf) {
+		if !bytes.Equal(leaf.value[:], buf) {
 			t.Error("LeafFromUint8 value mismatch")
 		}
 	})
@@ -1045,7 +1044,7 @@ func TestLeafCreationFunctions(t *testing.T) {
 		bufTrue := make([]byte, 32)
 		bufTrue[0] = 1
 
-		if !bytes.Equal(leafTrue.value, bufTrue) {
+		if !bytes.Equal(leafTrue.value[:], bufTrue) {
 			t.Error("LeafFromBool(true) value mismatch")
 		}
 
@@ -1053,7 +1052,7 @@ func TestLeafCreationFunctions(t *testing.T) {
 		leafFalse := LeafFromBool(false)
 		bufFalse := make([]byte, 32)
 
-		if !bytes.Equal(leafFalse.value, bufFalse) {
+		if !bytes.Equal(leafFalse.value[:], bufFalse) {
 			t.Error("LeafFromBool(false) value mismatch")
 		}
 	})
@@ -1067,7 +1066,7 @@ func TestLeafCreationFunctions(t *testing.T) {
 		expectedSmall = append(expectedSmall, smallBytes...)
 		expectedSmall = append(expectedSmall, make([]byte, 28)...)
 
-		if !bytes.Equal(leafSmall.value, expectedSmall) {
+		if !bytes.Equal(leafSmall.value[:], expectedSmall) {
 			t.Error("LeafFromBytes (small) value mismatch")
 		}
 
@@ -1075,7 +1074,7 @@ func TestLeafCreationFunctions(t *testing.T) {
 		fullBytes := bytes.Repeat([]byte{0xFF}, 32)
 		leafFull := LeafFromBytes(fullBytes)
 
-		if !bytes.Equal(leafFull.value, fullBytes) {
+		if !bytes.Equal(leafFull.value[:], fullBytes) {
 			t.Error("LeafFromBytes (32 bytes) value mismatch")
 		}
 	})
@@ -1083,7 +1082,7 @@ func TestLeafCreationFunctions(t *testing.T) {
 	t.Run("EmptyLeaf", func(t *testing.T) {
 		leaf := EmptyLeaf()
 
-		if !bytes.Equal(leaf.value, sszutils.ZeroBytes()[:32]) {
+		if !bytes.Equal(leaf.value[:], sszutils.ZeroBytes()[:32]) {
 			t.Error("EmptyLeaf value mismatch")
 		}
 		if !leaf.isEmpty {
@@ -1113,7 +1112,7 @@ func TestLeafCreationFunctions(t *testing.T) {
 			binary.LittleEndian.PutUint64(buf[i*8:(i+1)*8], v)
 		}
 
-		if !bytes.Equal(leaves[0].value, buf) {
+		if !bytes.Equal(leaves[0].value[:], buf) {
 			t.Error("LeavesFromUint64 packed value mismatch")
 		}
 
@@ -1417,7 +1416,7 @@ func TestTreeEdgeCases(t *testing.T) {
 
 		// First call computes hash
 		hash1 := branch.Hash()
-		if branch.value == nil {
+		if !branch.hasValue {
 			t.Error("hash should be cached")
 		}
 
@@ -1435,7 +1434,7 @@ func TestTreeEdgeCases(t *testing.T) {
 
 		// Hash should still be computed correctly
 		hash := branch.Hash()
-		expected := hashFn(append(left.value, emptyRight.value...))
+		expected := hashFn(append(left.value[:], emptyRight.value[:]...))
 
 		if !bytes.Equal(hash, expected) {
 			t.Error("hash with empty right node mismatch")
@@ -2185,8 +2184,11 @@ func assertAllBranchesHashed(t *testing.T, n *Node) {
 	if n == nil || (n.left == nil && n.right == nil) {
 		return
 	}
-	if n.value == nil {
+	if !n.hasValue {
 		t.Fatal("branch node has no cached value after finalization")
+	}
+	if n.isVisited {
+		t.Fatal("branch node still carries the pending flag after finalization")
 	}
 	assertAllBranchesHashed(t, n.left)
 	assertAllBranchesHashed(t, n.right)
@@ -2353,9 +2355,9 @@ func TestFinalizedTreeConcurrentUse(t *testing.T) {
 	}
 }
 
-// A malformed node (one nil child) and its ancestor chain are excluded from
-// batching, while healthy sibling subtrees still finalize; the excluded
-// ancestors leave their levels without collected nodes.
+// A malformed node (one nil child) hard-aborts finalization: the error is
+// returned immediately and nothing further is hashed — batches collected
+// before the abort stay pending, and their nodes are restored to unhashed.
 func TestFinalizeMalformedSubtree(t *testing.T) {
 	healthy, err := TreeFromChunks(finalizeTestChunks(32))
 	if err != nil {
@@ -2368,11 +2370,22 @@ func TestFinalizeMalformedSubtree(t *testing.T) {
 		t.Fatal("expected the malformed-tree error")
 	}
 
-	if root.value != nil {
+	if root.hasValue {
 		t.Error("root above a malformed subtree must stay unhashed")
 	}
-	if malformed.value != nil {
+	if malformed.hasValue {
 		t.Error("malformed node must stay unhashed")
+	}
+	if healthy.hasValue {
+		t.Error("hard abort must not hash the sibling walked before the malformed node")
+	}
+	if healthy.isVisited {
+		t.Error("pending flag must be cleared when the abort discards the batches")
+	}
+
+	// The healthy subtree still finalizes on its own.
+	if finalizeErr := healthy.Finalize(); finalizeErr != nil {
+		t.Fatalf("healthy subtree Finalize: %v", finalizeErr)
 	}
 	assertAllBranchesHashed(t, healthy)
 }
@@ -2399,9 +2412,9 @@ func TestHashNilNode(t *testing.T) {
 	_ = n.Hash()
 }
 
-// Finalization on pipeline workers must match the recursive reference; 256k
-// leaves force many mid-walk batch flushes.
-func TestFinalizeParallel(t *testing.T) {
+// Large trees force many mid-walk batch flushes across depths; the batched
+// result must match the recursive reference.
+func TestFinalizeLargeTree(t *testing.T) {
 	chunks := finalizeTestChunks(1 << 18)
 
 	ref, err := TreeFromChunks(chunks)
@@ -2414,41 +2427,8 @@ func TestFinalizeParallel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to build tree: %v", err)
 	}
-	if err := tree.Finalize(WithAsyncHashing(4)); err != nil {
+	if err := tree.Finalize(); err != nil {
 		t.Fatalf("Finalize: %v", err)
-	}
-	if got := tree.Hash(); !bytes.Equal(got, want) {
-		t.Fatalf("Hash() = %x, want %x", got, want)
-	}
-	assertAllBranchesHashed(t, tree)
-}
-
-// A backend failing during a mid-walk flush on pipeline workers aborts all
-// remaining jobs and fails Finalize; the partially finalized tree resumes
-// cleanly once the backend recovers.
-func TestFinalizeParallelBatchHashFnError(t *testing.T) {
-	orig := batchHashFn
-	batchHashFn = func(_, _ []byte) error { return errors.New("backend failure") }
-	defer func() { batchHashFn = orig }()
-
-	chunks := finalizeTestChunks(1 << 18)
-
-	ref, err := TreeFromChunks(chunks)
-	if err != nil {
-		t.Fatalf("failed to build reference tree: %v", err)
-	}
-	want := bytes.Clone(hashNode(ref))
-
-	tree, err := TreeFromChunks(chunks)
-	if err != nil {
-		t.Fatalf("failed to build tree: %v", err)
-	}
-	if finalizeErr := tree.Finalize(WithAsyncHashing(4)); finalizeErr == nil {
-		t.Fatal("expected the backend error")
-	}
-	batchHashFn = orig
-	if finalizeErr := tree.Finalize(WithAsyncHashing(4)); finalizeErr != nil {
-		t.Fatalf("resumed Finalize: %v", finalizeErr)
 	}
 	if got := tree.Hash(); !bytes.Equal(got, want) {
 		t.Fatalf("Hash() = %x, want %x", got, want)
@@ -2466,10 +2446,9 @@ func shortLeafNodes(n int) []*Node {
 	return leaves
 }
 
-// Short leaf values must zero-extend in reused gather buffers: a scratch
-// buffer warmed with nonzero chunks previously leaked its stale bytes into
-// the hashed input. Covers the sequential batch path and, below threshold,
-// the recursive path.
+// Short leaf values zero-pad at construction; a pooled gather buffer warmed
+// with nonzero chunks must not leak stale bytes into the hashed input.
+// Covers the batch path and, below threshold, the recursive path.
 func TestFinalizeShortLeavesWarmedPool(t *testing.T) {
 	for _, n := range []int{8, 32} {
 		ref, err := TreeFromNodes(shortLeafNodes(n), n)
@@ -2499,19 +2478,18 @@ func TestFinalizeShortLeavesWarmedPool(t *testing.T) {
 	}
 }
 
-// Same stale-bytes condition across many mid-walk flushes on pipeline
-// workers.
-func TestFinalizeShortLeavesParallel(t *testing.T) {
+// Same stale-bytes condition across many mid-walk flushes.
+func TestFinalizeShortLeavesLarge(t *testing.T) {
 	// Dirty the pooled buffers with a normal finalize first.
 	warm, err := TreeFromChunks(finalizeTestChunks(1 << 16))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if finErr := warm.Finalize(WithAsyncHashing(4)); finErr != nil {
+	if finErr := warm.Finalize(); finErr != nil {
 		t.Fatalf("Finalize: %v", finErr)
 	}
 
-	const numLeaves = 4 * finalizeBatchPairs // two full slabs on the leaf-parent level
+	const numLeaves = 4 * finalizeBatchPairs // several full batches on the leaf-parent level
 	ref, err := TreeFromNodes(shortLeafNodes(numLeaves), numLeaves)
 	if err != nil {
 		t.Fatal(err)
@@ -2522,11 +2500,11 @@ func TestFinalizeShortLeavesParallel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tree.Finalize(WithAsyncHashing(4)); err != nil {
+	if err := tree.Finalize(); err != nil {
 		t.Fatalf("Finalize: %v", err)
 	}
 	if got := tree.Hash(); !bytes.Equal(got, want) {
-		t.Fatalf("parallel batched root %x != recursive root %x", got, want)
+		t.Fatalf("batched root %x != recursive root %x", got, want)
 	}
 }
 
@@ -2562,10 +2540,9 @@ func TestFinalizeWithHashFn(t *testing.T) {
 	}
 }
 
-// A backend failure on a mid-walk flush without pipeline workers (async
-// hashing disabled) stops further batching during the walk and fails
-// Finalize; the tree resumes cleanly once the backend recovers.
-func TestFinalizeSequentialMidwalkError(t *testing.T) {
+// A backend failure on a mid-walk flush aborts the walk and fails Finalize;
+// the tree resumes cleanly once the backend recovers.
+func TestFinalizeMidwalkError(t *testing.T) {
 	orig := batchHashFn
 	batchHashFn = func(_, _ []byte) error { return errors.New("backend failure") }
 	defer func() { batchHashFn = orig }()
@@ -2595,12 +2572,9 @@ func TestFinalizeSequentialMidwalkError(t *testing.T) {
 	assertAllBranchesHashed(t, tree)
 }
 
-// Deep padded trees produce uneven batch sizes across depths, so pipeline
-// jobs complete out of order; the completion frontier must still order every
-// gather after its children's jobs. Regression: a completion count instead
-// of a frontier let a fast small job satisfy a waiter while a large sibling
-// job was still assigning.
-func TestFinalizeParallelDeepPadded(t *testing.T) {
+// Deep padded trees produce uneven batch sizes across depths; deepest-first
+// flushing must still hash every child batch before its parents gather.
+func TestFinalizeDeepPadded(t *testing.T) {
 	leaves := func() []*Node {
 		chunks := finalizeTestChunks(1 << 17)
 		nodes := make([]*Node, len(chunks))
@@ -2616,25 +2590,23 @@ func TestFinalizeParallelDeepPadded(t *testing.T) {
 	}
 	want := bytes.Clone(hashNode(ref))
 
-	for round := 0; round < 3; round++ {
-		tree, err := TreeFromNodes64(leaves(), 1<<30)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := tree.Finalize(WithAsyncHashing(8)); err != nil {
-			t.Fatalf("round %d: Finalize: %v", round, err)
-		}
-		if got := tree.Hash(); !bytes.Equal(got, want) {
-			t.Fatalf("round %d: root mismatch", round)
-		}
-		assertAllBranchesHashed(t, tree)
+	tree, err := TreeFromNodes64(leaves(), 1<<30)
+	if err != nil {
+		t.Fatal(err)
 	}
+	if err := tree.Finalize(); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	if got := tree.Hash(); !bytes.Equal(got, want) {
+		t.Fatal("root mismatch")
+	}
+	assertAllBranchesHashed(t, tree)
 }
 
 // An unhashed subtree may be aliased into the tree at many positions
-// (TreeFromNodes accepts existing nodes); it must be batched exactly once so
-// pipeline workers never write the same node concurrently (needs -race), and
-// the root must match an alias-free reference.
+// (TreeFromNodes accepts existing nodes); revisiting it while it is still
+// pending aborts batching and the remainder finishes recursively, so the
+// root must match an alias-free reference.
 func TestFinalizeSharedSubtree(t *testing.T) {
 	build := func(share bool) *Node {
 		leaves := make([]*Node, 2048)
@@ -2656,7 +2628,7 @@ func TestFinalizeSharedSubtree(t *testing.T) {
 	}
 
 	shared := build(true)
-	if finalizeErr := shared.Finalize(WithAsyncHashing(2)); finalizeErr != nil {
+	if finalizeErr := shared.Finalize(); finalizeErr != nil {
 		t.Fatalf("Finalize: %v", finalizeErr)
 	}
 	if got, want := shared.Hash(), build(false).Hash(); !bytes.Equal(got, want) {
@@ -2715,23 +2687,12 @@ func TestFinalizeWithHashFnSmallTree(t *testing.T) {
 }
 
 // The cross-batch alias case: the shared branch's first occurrence is
-// hashed through an earlier (slowed) parallel flush before the walk meets
-// the alias, so the revisit sees a final value and continues batching.
-// Needs -race.
-func TestFinalizeSharedSubtreeCrossBatchAsync(t *testing.T) {
-	var calls atomic.Int32
-	fn := func(dst, input []byte) error {
-		if calls.Add(1) == 1 {
-			// Hold the first dispatched batch in flight long enough for the
-			// walk to meet the alias of a node it contains.
-			time.Sleep(100 * time.Millisecond)
-		}
-		return batchHashFn(dst, input)
-	}
-
+// hashed by an earlier mid-walk flush before the walk meets the alias, so
+// the revisit sees a cached value and batching continues without an abort.
+func TestFinalizeSharedSubtreeCrossBatch(t *testing.T) {
 	build := func(share bool) *Node {
-		// Wide enough that the shared node's batch is dispatched before the
-		// walk revisits it, at the scaled two-worker flush size.
+		// Wide enough that the shared node's batch flushes before the walk
+		// revisits it.
 		leaves := make([]*Node, 4*finalizeBatchPairs)
 		for i := range leaves {
 			if i == 2*finalizeBatchPairs {
@@ -2759,35 +2720,38 @@ func TestFinalizeSharedSubtreeCrossBatchAsync(t *testing.T) {
 	}
 
 	shared := build(true)
-	if err := shared.Finalize(WithHashFn(fn), WithAsyncHashing(2)); err != nil {
+	if err := shared.Finalize(); err != nil {
 		t.Fatalf("Finalize: %v", err)
 	}
 
 	if got, want := shared.Hash(), build(false).Hash(); !bytes.Equal(got, want) {
-		t.Fatalf("delayed-alias root %x, want %x", got, want)
+		t.Fatalf("cross-batch alias root %x, want %x", got, want)
 	}
 	assertAllBranchesHashed(t, shared)
 }
 
-// A failing caller-supplied backend must surface its error even when a
-// malformed sibling keeps the root unhashable.
-func TestFinalizeMalformedSiblingCustomFnError(t *testing.T) {
+// A malformed node aborts before any hashing here: a caller-supplied
+// backend is never invoked for a tree that cannot finalize completely.
+func TestFinalizeMalformedSiblingCustomFn(t *testing.T) {
 	healthy, err := TreeFromChunks(finalizeTestChunks(32))
 	if err != nil {
 		t.Fatalf("failed to build healthy subtree: %v", err)
 	}
 	root := NewNodeWithLR(healthy, NewNodeWithLR(LeafFromBytes(finalizeTestChunks(1)[0]), nil))
 
-	backendErr := errors.New("backend failure")
-	finalizeErr := root.Finalize(WithHashFn(func(_, _ []byte) error { return backendErr }))
-	if !errors.Is(finalizeErr, backendErr) {
-		t.Fatalf("Finalize error = %v, want the backend failure", finalizeErr)
+	var calls int
+	finalizeErr := root.Finalize(WithHashFn(func(_, _ []byte) error { calls++; return nil }))
+	if finalizeErr == nil {
+		t.Fatal("expected the malformed-tree error")
+	}
+	if calls != 0 {
+		t.Errorf("hash function ran %d times before the abort", calls)
 	}
 }
 
-// A pre-finalized subtree met during an async finalize is trusted as
-// final and batching continues past it.
-func TestFinalizePrehashedSubtreeAsync(t *testing.T) {
+// A pre-finalized subtree met during the walk is trusted as final and
+// batching continues past it.
+func TestFinalizePrehashedSubtree(t *testing.T) {
 	chunks := finalizeTestChunks(4 * finalizeBatchPairs)
 
 	ref, err := TreeFromChunks(chunks)
@@ -2803,7 +2767,7 @@ func TestFinalizePrehashedSubtreeAsync(t *testing.T) {
 	if err := tree.right.Finalize(); err != nil {
 		t.Fatalf("subtree Finalize: %v", err)
 	}
-	if err := tree.Finalize(WithAsyncHashing(2)); err != nil {
+	if err := tree.Finalize(); err != nil {
 		t.Fatalf("Finalize: %v", err)
 	}
 	if got := tree.Hash(); !bytes.Equal(got, want) {
@@ -2812,9 +2776,10 @@ func TestFinalizePrehashedSubtreeAsync(t *testing.T) {
 	assertAllBranchesHashed(t, tree)
 }
 
-// Concurrent async finalizations share the process-wide worker pool; each
+// Concurrent finalizations of distinct trees share the scratch pool; each
 // tree must still finalize completely and agree with its reference root.
-func TestFinalizeConcurrentAsync(t *testing.T) {
+// Needs -race.
+func TestFinalizeConcurrentTrees(t *testing.T) {
 	const trees = 4
 	chunks := finalizeTestChunks(1 << 15)
 
@@ -2835,7 +2800,7 @@ func TestFinalizeConcurrentAsync(t *testing.T) {
 		wg.Add(1)
 		go func(i int, tree *Node) {
 			defer wg.Done()
-			if errs[i] = tree.Finalize(WithAsyncHashing(4)); errs[i] == nil {
+			if errs[i] = tree.Finalize(); errs[i] == nil {
 				roots[i] = tree.Hash()
 			}
 		}(i, tree)
@@ -2851,38 +2816,53 @@ func TestFinalizeConcurrentAsync(t *testing.T) {
 	}
 }
 
-// A share failing on a batch dispatched during the final sweep surfaces at
-// the exact join that discovers it: the next-shallower depth's child-slot
-// join (128-byte input = the two-node depth-1 batch) or the terminal
-// joinAll (64-byte input = the root batch). Both leave a resumable tree.
-func TestFinalizeAsyncJoinErrors(t *testing.T) {
+// hashNodeFn reports malformed nodes as errors.
+func TestHashNodeFnMalformed(t *testing.T) {
+	if err := hashNodeFn(nil, batchHashFn); err == nil {
+		t.Error("expected error for nil node")
+	}
+	malformed := &Node{left: LeafFromBytes(finalizeTestChunks(1)[0])}
+	if err := hashNodeFn(malformed, batchHashFn); err == nil {
+		t.Error("expected error for branch with a single child")
+	}
+}
+
+// A custom hash function failing on the recursive path surfaces from every
+// position: the left recursion, the right recursion and the node's own
+// hash. Each abort leaves a resumable tree.
+func TestFinalizeRecursiveTailErrors(t *testing.T) {
+	// Four chunks stay below finalizeThreshold, so hashNodeFn hashes the two
+	// child branches (calls 1 and 2) and then the root (call 3).
+	chunks := finalizeTestChunks(4)
+
+	ref, err := TreeFromChunks(chunks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := bytes.Clone(hashNode(ref))
+
 	for _, tc := range []struct {
-		name    string
-		failLen int
+		name     string
+		failCall int
 	}{
-		{"child_slot_join", 128},
-		{"join_all", 64},
+		{"left_child", 1},
+		{"right_child", 2},
+		{"own_hash", 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			var calls int
 			fn := func(dst, input []byte) error {
-				if len(input) == tc.failLen {
+				calls++
+				if calls == tc.failCall {
 					return errors.New("backend failure")
 				}
 				return batchHashFn(dst, input)
 			}
-
-			chunks := finalizeTestChunks(8 * finalizeBatchPairs)
-			ref, err := TreeFromChunks(chunks)
-			if err != nil {
-				t.Fatal(err)
-			}
-			want := bytes.Clone(hashNode(ref))
-
 			tree, err := TreeFromChunks(chunks)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if finalizeErr := tree.Finalize(WithHashFn(fn), WithAsyncHashing(2)); finalizeErr == nil {
+			if finalizeErr := tree.Finalize(WithHashFn(fn)); finalizeErr == nil {
 				t.Fatal("expected the backend error")
 			}
 			if finalizeErr := tree.Finalize(); finalizeErr != nil {
@@ -2896,51 +2876,6 @@ func TestFinalizeAsyncJoinErrors(t *testing.T) {
 	}
 }
 
-// hashNodeFn reports malformed nodes as errors.
-func TestHashNodeFnMalformed(t *testing.T) {
-	if _, err := hashNodeFn(nil, batchHashFn); err == nil {
-		t.Error("expected error for nil node")
-	}
-	malformed := &Node{left: LeafFromBytes(finalizeTestChunks(1)[0])}
-	if _, err := hashNodeFn(malformed, batchHashFn); err == nil {
-		t.Error("expected error for branch with a single child")
-	}
-}
-
-// A custom hash function failing inside a right subtree propagates through
-// the parent's right-child recursion.
-func TestFinalizeWithHashFnRightSubtreeError(t *testing.T) {
-	chunks := finalizeTestChunks(4)
-
-	ref, err := TreeFromChunks(chunks)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := bytes.Clone(hashNode(ref))
-
-	var calls int
-	fn := func(dst, input []byte) error {
-		calls++
-		if calls == 2 {
-			return errors.New("backend failure")
-		}
-		return batchHashFn(dst, input)
-	}
-	tree, err := TreeFromChunks(chunks)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if finalizeErr := tree.Finalize(WithHashFn(fn)); finalizeErr == nil {
-		t.Fatal("expected the backend error")
-	}
-	if finalizeErr := tree.Finalize(); finalizeErr != nil {
-		t.Fatalf("resumed Finalize: %v", finalizeErr)
-	}
-	if got := tree.Hash(); !bytes.Equal(got, want) {
-		t.Fatalf("resumed root %x, want %x", got, want)
-	}
-}
-
 // Proof navigation through a cached-value branch with a missing child
 // reports the node as not found instead of panicking. The cached value
 // keeps finalize from rejecting the malformed shape first.
@@ -2948,16 +2883,159 @@ func TestProveNavigationMissingChild(t *testing.T) {
 	leaf := LeafFromBytes(finalizeTestChunks(1)[0])
 	cached := sum256ToBytes([]byte{9})
 
-	missingSibling := &Node{right: leaf, value: cached}
+	missingSibling := &Node{right: leaf, hasValue: true}
+	copy(missingSibling.value[:], cached)
 	if _, err := missingSibling.Prove(3); err == nil {
 		t.Error("expected error for missing left sibling")
 	}
 
-	missingTarget := &Node{left: leaf, value: cached}
+	missingTarget := &Node{left: leaf, hasValue: true}
+	copy(missingTarget.value[:], cached)
 	if _, err := missingTarget.Prove(3); err == nil {
 		t.Error("expected error for missing right child")
 	}
 	if _, err := missingTarget.ProveMulti([]int{2}); err == nil {
 		t.Error("expected error for a required sibling outside the tree")
+	}
+}
+
+// The Node layout is 56 bytes on 64-bit platforms: two pointers, the inline
+// 32-byte value and three flags swallowed by the struct padding. A size
+// regression means a field was added or reordered carelessly; the node size
+// directly bounds a mainnet-scale tree's memory footprint.
+func TestNodeSize(t *testing.T) {
+	if unsafe.Sizeof(uintptr(0)) != 8 {
+		t.Skip("layout pin applies to 64-bit platforms")
+	}
+	if size := unsafe.Sizeof(Node{}); size != 56 {
+		t.Fatalf("Node size = %d bytes, want 56", size)
+	}
+}
+
+// A diamond-shaped DAG shares one node at every level; finalization must
+// stay linear in the depth (memoized through cached values), not go
+// exponential, and the root must equal the strict-tree equivalent.
+func TestFinalizeDiamondDAG(t *testing.T) {
+	const levels = 40
+	leafData := sum256ToBytes([]byte("diamond"))
+
+	node := LeafFromBytes(leafData)
+	for range levels {
+		node = NewNodeWithLR(node, node)
+	}
+	if err := node.Finalize(); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+
+	want := bytes.Clone(leafData)
+	for range levels {
+		want = hashPair(want, want)
+	}
+	if got := node.Hash(); !bytes.Equal(got, want) {
+		t.Fatalf("diamond root %x, want %x", got, want)
+	}
+}
+
+// A leaked isVisited flag (unreachable through the public API — the
+// deferred cleanup clears pending batches on every exit) must never cost
+// correctness: the walker reads it as an alias and routes finalization to
+// the conservative recursive path, which computes the correct root and
+// scrubs the flag.
+func TestFinalizeStaleVisitedFlag(t *testing.T) {
+	chunks := finalizeTestChunks(64)
+
+	ref, err := TreeFromChunks(chunks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := bytes.Clone(hashNode(ref))
+
+	tree, err := TreeFromChunks(chunks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree.left.isVisited = true
+	if finalizeErr := tree.Finalize(); finalizeErr != nil {
+		t.Fatalf("Finalize: %v", finalizeErr)
+	}
+	if got := tree.Hash(); !bytes.Equal(got, want) {
+		t.Fatalf("Hash() = %x, want %x", got, want)
+	}
+	assertAllBranchesHashed(t, tree)
+}
+
+// A panic escaping the hash function unwinds through Finalize; the deferred
+// scratch release still clears the pending flags, so a recovering caller is
+// left with a consistent tree that re-finalizes to the correct root.
+func TestFinalizeRecoveredFnPanic(t *testing.T) {
+	chunks := finalizeTestChunks(64)
+
+	ref, err := TreeFromChunks(chunks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := bytes.Clone(hashNode(ref))
+
+	tree, err := TreeFromChunks(chunks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("expected the fn panic to propagate")
+			}
+		}()
+		_ = tree.Finalize(WithHashFn(func(_, _ []byte) error { panic("fn panic") }))
+	}()
+
+	if finalizeErr := tree.Finalize(); finalizeErr != nil {
+		t.Fatalf("re-finalize: %v", finalizeErr)
+	}
+	if got := tree.Hash(); !bytes.Equal(got, want) {
+		t.Fatalf("Hash() = %x, want %x", got, want)
+	}
+	assertAllBranchesHashed(t, tree)
+}
+
+// Errors on the aliased path surface like on the plain path: from the
+// pending-batch flush after the alias stopped batching (call 1 hashes the
+// shared branch) and from the recursive remainder pass (call 2 hashes the
+// root). Both leave a resumable tree.
+func TestFinalizeAliasedErrors(t *testing.T) {
+	leafA := sum256ToBytes([]byte{1})
+	leafB := sum256ToBytes([]byte{2})
+	want := hashPair(hashPair(leafA, leafB), hashPair(leafA, leafB))
+
+	for _, tc := range []struct {
+		name     string
+		failCall int
+	}{
+		{"pending_flush", 1},
+		{"recursive_tail", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			shared := NewNodeWithLR(LeafFromBytes(leafA), LeafFromBytes(leafB))
+			tree := NewNodeWithLR(shared, shared)
+
+			var calls int
+			fn := func(dst, input []byte) error {
+				calls++
+				if calls == tc.failCall {
+					return errors.New("backend failure")
+				}
+				return batchHashFn(dst, input)
+			}
+			if finalizeErr := tree.Finalize(WithHashFn(fn)); finalizeErr == nil {
+				t.Fatal("expected the backend error")
+			}
+			if finalizeErr := tree.Finalize(); finalizeErr != nil {
+				t.Fatalf("resumed Finalize: %v", finalizeErr)
+			}
+			if got := tree.Hash(); !bytes.Equal(got, want) {
+				t.Fatalf("resumed root %x, want %x", got, want)
+			}
+			assertAllBranchesHashed(t, tree)
+		})
 	}
 }

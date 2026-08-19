@@ -514,9 +514,6 @@ func (w *Wrapper) HashRoot() ([32]byte, error) {
 	if len(w.nodes) != 1 {
 		return [32]byte{}, fmt.Errorf("incomplete merkleization: wrapper holds %d nodes, want 1", len(w.nodes))
 	}
-	root := w.nodes[0].Hash()
-	if len(root) != 32 {
-		return [32]byte{}, fmt.Errorf("expected 32 byte size")
-	}
-	return [32]byte(root), nil
+	// Hash always returns exactly 32 bytes (node values are inline arrays).
+	return [32]byte(w.nodes[0].Hash()), nil
 }

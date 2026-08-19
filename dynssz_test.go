@@ -6675,8 +6675,8 @@ func TestGetTreeNoFastHash(t *testing.T) {
 	}
 }
 
-// GetTree with async hashing enabled finalizes on pipeline workers using the
-// instance's configured worker count; the tree is finalized and correct.
+// GetTree on an instance with async hashing enabled still returns a
+// finalized, correct tree; tree finalization itself runs sequentially.
 func TestGetTreeAsyncHashing(t *testing.T) {
 	ds := NewDynSsz(nil, WithNoFastSsz(), WithAsyncHashing(4))
 	defer hasher.DisableAsyncHashing()
