@@ -1180,9 +1180,12 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...Ca
 // Note: For progressive containers (with ssz-index tags), the tree structure will be
 // progressive rather than binary, which affects the generalized indices of fields.
 //
-// The returned tree is fully hashed: every branch node already holds its
-// cached hash, so the tree is read-only and safe to share across goroutines
-// for concurrent Prove/ProveMulti/Hash/Value calls.
+// On success the returned tree is fully hashed: every branch node already
+// holds its cached hash, so the tree is read-only and safe to share across
+// goroutines for concurrent Prove/ProveMulti/Hash/Value calls. On error the
+// tree is returned alongside it but may be only partially finalized: every
+// hash cached in it is valid, and a later Finalize resumes from those
+// caches, but it must not be shared across goroutines until one succeeds.
 func (d *DynSsz) GetTree(source any, opts ...CallOption) (*treeproof.Node, error) {
 	if source == nil {
 		return nil, sszutils.NewSszError(sszutils.ErrInvalidValueRange, "source must not be nil")

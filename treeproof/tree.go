@@ -246,9 +246,13 @@ func (n *Node) show(depth, maxDepth, index int) {
 // padded to the full 32-byte chunk. Copying is what makes the node
 // independent of the caller's buffer: retaining a reference would let a
 // later mutation of a reused scratch buffer silently change every tree and
-// root built from it. Value bytes beyond 32 are dropped; use LeafFromBytes
-// to merkleize longer input into a subtree.
+// root built from it. A value longer than 32 bytes panics — a leaf cannot
+// hold it, and truncating would silently corrupt every root built from the
+// node; use LeafFromBytes to merkleize longer input into a subtree.
 func NewNodeWithValue(value []byte) *Node {
+	if len(value) > 32 {
+		panic(fmt.Sprintf("NewNodeWithValue: value length %d exceeds the 32-byte leaf chunk", len(value)))
+	}
 	return newLeaf(value)
 }
 

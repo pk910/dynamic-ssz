@@ -2084,6 +2084,22 @@ func TestProveMultiOwnsItsIndices(t *testing.T) {
 	}
 }
 
+// A leaf cannot hold more than its 32-byte chunk; NewNodeWithValue panics
+// on longer input instead of truncating it into a silently wrong root.
+// LeafFromBytes stays the constructor for longer input, merkleizing it into
+// a subtree.
+func TestNewNodeWithValueOversized(t *testing.T) {
+	if n := NewNodeWithValue(bytes.Repeat([]byte{7}, 32)); !n.hasValue {
+		t.Fatal("32-byte value must build a leaf")
+	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic for a 33-byte leaf value")
+		}
+	}()
+	NewNodeWithValue(bytes.Repeat([]byte{7}, 33))
+}
+
 // TestNodeValuesDoNotAliasCallerMemory pins that a leaf owns its bytes. The
 // 32-byte branch used to store the caller's slice while the shorter branch
 // copied, so whether a later mutation of a reused scratch buffer corrupted
