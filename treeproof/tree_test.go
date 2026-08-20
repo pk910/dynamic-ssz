@@ -2605,8 +2605,8 @@ func TestFinalizeDeepPadded(t *testing.T) {
 
 // An unhashed subtree may be aliased into the tree at many positions
 // (TreeFromNodes accepts existing nodes); revisiting it while it is still
-// pending aborts batching and the remainder finishes recursively, so the
-// root must match an alias-free reference.
+// pending flushes the pending batches so its value is cached, and the root
+// must match an alias-free reference.
 func TestFinalizeSharedSubtree(t *testing.T) {
 	build := func(share bool) *Node {
 		leaves := make([]*Node, 2048)
@@ -2726,6 +2726,59 @@ func TestFinalizeSharedSubtreeCrossBatch(t *testing.T) {
 
 	if got, want := shared.Hash(), build(false).Hash(); !bytes.Equal(got, want) {
 		t.Fatalf("cross-batch alias root %x, want %x", got, want)
+	}
+	assertAllBranchesHashed(t, shared)
+}
+
+// Batching survives an alias: the flush caches the shared node's value and
+// the rest of the tree keeps hashing in vectorized batches, so an alias met
+// early in the walk costs one partial flush — not per-pair calls for the
+// whole remainder.
+func TestFinalizeSharedSubtreeKeepsBatching(t *testing.T) {
+	build := func(share bool) *Node {
+		leaves := make([]*Node, 4*finalizeBatchPairs)
+		for i := range leaves {
+			if i == 1 {
+				if share {
+					leaves[i] = leaves[0]
+					continue
+				}
+				// The alias-free reference carries position 0's content here.
+				leaves[i] = NewNodeWithLR(
+					LeafFromBytes(sum256ToBytes([]byte{0, 0, 1})),
+					LeafFromBytes(sum256ToBytes([]byte{0, 0, 2})),
+				)
+				continue
+			}
+			leaves[i] = NewNodeWithLR(
+				LeafFromBytes(sum256ToBytes([]byte{byte(i), byte(i >> 8), 1})),
+				LeafFromBytes(sum256ToBytes([]byte{byte(i), byte(i >> 8), 2})),
+			)
+		}
+		tree, err := TreeFromNodes(leaves, len(leaves))
+		if err != nil {
+			t.Fatalf("failed to build tree: %v", err)
+		}
+		return tree
+	}
+
+	shared := build(true)
+	var calls int
+	countingFn := func(dst, input []byte) error {
+		calls++
+		return batchHashFn(dst, input)
+	}
+	if err := shared.Finalize(WithHashFn(countingFn)); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+
+	// ~8k branches batch into ~8 full flushes plus the alias flush and the
+	// trailing per-depth partials; per-pair hashing would take thousands.
+	if calls > 64 {
+		t.Fatalf("finalize used %d hash calls; batching did not survive the alias", calls)
+	}
+	if got, want := shared.Hash(), build(false).Hash(); !bytes.Equal(got, want) {
+		t.Fatalf("aliased root %x, want %x", got, want)
 	}
 	assertAllBranchesHashed(t, shared)
 }
@@ -2938,9 +2991,9 @@ func TestFinalizeDiamondDAG(t *testing.T) {
 
 // A leaked isVisited flag (unreachable through the public API — the
 // deferred cleanup clears pending batches on every exit) must never cost
-// correctness: the walker reads it as an alias and routes finalization to
-// the conservative recursive path, which computes the correct root and
-// scrubs the flag.
+// correctness: the walker reads it as an alias, and when the flush does not
+// produce the node's value it scrubs the flag and walks the subtree
+// normally, computing the correct root.
 func TestFinalizeStaleVisitedFlag(t *testing.T) {
 	chunks := finalizeTestChunks(64)
 

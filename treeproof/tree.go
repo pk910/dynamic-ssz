@@ -794,9 +794,12 @@ func (s *finalizeScratch) release() {
 // stays consistent and a later finalize resumes from the cached values.
 //
 // A node met again while it is still pending (isVisited) means the tree is
-// a DAG of shared subtrees: the walk aborts, the pending depth-consistent
-// batches flush, and the remainder finishes on the recursive path, which
-// caches every node and therefore hashes each shared subtree once.
+// a DAG of shared subtrees: all pending batches flush on the spot, which
+// hashes the shared node once and caches its value, and the walk continues
+// batching the rest of the tree against that cache. Flushing mid-walk is
+// safe at any point: pending nodes are completed subtrees — never ancestors
+// of the walk position — and their unhashed children always sit one depth
+// deeper, so the deepest-first flush order holds.
 func (n *Node) finalize(cfg finalizeConfig) error {
 	// A cached root value certifies the whole subtree is finalized.
 	if n == nil || n.hasValue || (n.left == nil && n.right == nil) {
@@ -811,7 +814,6 @@ func (n *Node) finalize(cfg finalizeConfig) error {
 	defer scratch.release()
 
 	total := 0
-	aliased := false
 	malformed := false
 
 	var hashErr error
@@ -846,8 +848,17 @@ func (n *Node) finalize(cfg finalizeConfig) error {
 			return
 		}
 		if node.isVisited {
-			aliased = true
-			return
+			// The node is pending in a batch: the tree is a DAG sharing this
+			// subtree. Flushing everything hashes it once and caches its
+			// value; the walk continues batching against the cache.
+			flushFrom(0)
+			if hashErr != nil || node.hasValue {
+				return
+			}
+			// The flush did not produce a value, so the flag is stale (the
+			// node is not pending in any batch): scrub it and walk the
+			// subtree normally.
+			node.isVisited = false
 		}
 		if node.left == nil || node.right == nil {
 			malformed = true
@@ -855,11 +866,11 @@ func (n *Node) finalize(cfg finalizeConfig) error {
 		}
 
 		walk(node.left, depth+1)
-		if aliased || malformed || hashErr != nil {
+		if malformed || hashErr != nil {
 			return
 		}
 		walk(node.right, depth+1)
-		if aliased || malformed || hashErr != nil {
+		if malformed || hashErr != nil {
 			return
 		}
 
@@ -880,14 +891,6 @@ func (n *Node) finalize(cfg finalizeConfig) error {
 		return hashErr
 	case malformed:
 		return errors.New("tree is malformed: branch with a single nil child")
-	case aliased:
-		// The batches collected before the alias was detected are depth
-		// consistent; flush them, then finish the remainder recursively.
-		flushFrom(0)
-		if hashErr != nil {
-			return hashErr
-		}
-		return hashNodeFn(n, fn)
 	case total < finalizeThreshold:
 		// Small trees hash recursively: batch setup costs more than the
 		// vectorized backend saves.
