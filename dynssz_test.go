@@ -17,6 +17,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -25,6 +26,7 @@ import (
 	"github.com/pk910/dynamic-ssz/reflection"
 	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
+	"github.com/pk910/dynamic-ssz/treeproof"
 )
 
 // Test types for DynamicEncoder/DynamicDecoder/DynamicMarshaler/DynamicUnmarshaler paths
@@ -1574,6 +1576,30 @@ func TestGetTreeError(t *testing.T) {
 	_, err := ds.GetTree(make(chan int))
 	if err == nil {
 		t.Fatal("expected error for unsupported type")
+	}
+}
+
+// GetTree returns a finalized tree: the root value is already cached and
+// matches HashTreeRoot.
+func TestGetTreeFinalized(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz())
+	container := &testSimpleContainer{Value: 42}
+
+	node, err := ds.GetTree(container)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	rootValue := node.Value()
+	if rootValue == nil {
+		t.Fatal("expected cached root value on tree returned by GetTree")
+	}
+
+	root, err := ds.HashTreeRoot(container)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !bytes.Equal(rootValue, root[:]) {
+		t.Fatalf("tree root value = %x, want %x", rootValue, root)
 	}
 }
 
@@ -6625,4 +6651,130 @@ func TestMarshalSeekableOffsetOverflow(t *testing.T) {
 		}
 		run(t, &C{})
 	})
+}
+
+// GetTree honors WithNoFastHash: finalization runs on the native sha256
+// implementation and still yields a finalized tree with the correct root.
+func TestGetTreeNoFastHash(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoFastHash())
+	container := &testSimpleContainer{Value: 42}
+
+	node, err := ds.GetTree(container)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	rootValue := node.Value()
+	if rootValue == nil {
+		t.Fatal("expected cached root value on tree returned by GetTree")
+	}
+
+	root, err := ds.HashTreeRoot(container)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !bytes.Equal(rootValue, root[:]) {
+		t.Fatalf("tree root value = %x, want %x", rootValue, root)
+	}
+}
+
+// GetTree on an instance with async hashing enabled still returns a
+// finalized, correct tree; tree finalization itself runs sequentially.
+func TestGetTreeAsyncHashing(t *testing.T) {
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithAsyncHashing(4))
+	defer hasher.DisableAsyncHashing()
+	container := &testSimpleContainer{Value: 42}
+
+	node, err := ds.GetTree(container)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if node.Value() == nil {
+		t.Fatal("expected cached root value on tree returned by GetTree")
+	}
+
+	root, err := ds.HashTreeRoot(container)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !bytes.Equal(node.Value(), root[:]) {
+		t.Fatalf("tree root value = %x, want %x", node.Value(), root)
+	}
+}
+
+// GetTree hands back a tree that is safe for concurrent use immediately —
+// no serial Hash/Prove call warms it up first. This pins the integration
+// boundary superseding #221: the finalization inside GetTree is what makes
+// the returned tree read-only. Needs -race to catch a lazy write sneaking
+// back into the read paths.
+func TestGetTreeImmediatelyConcurrent(t *testing.T) {
+	type getTreeItem struct {
+		A uint64
+		B [32]byte
+	}
+	type getTreeState struct {
+		Items []getTreeItem `ssz-max:"1024"`
+		Flag  bool
+	}
+	source := &getTreeState{Flag: true}
+	for i := 0; i < 300; i++ {
+		item := getTreeItem{A: uint64(i)}
+		binary.LittleEndian.PutUint64(item.B[:8], uint64(i*7+1))
+		source.Items = append(source.Items, item)
+	}
+
+	ds := NewDynSsz(nil)
+	want, err := ds.HashTreeRoot(source)
+	if err != nil {
+		t.Fatalf("HashTreeRoot: %v", err)
+	}
+	tree, err := ds.GetTree(source)
+	if err != nil {
+		t.Fatalf("GetTree: %v", err)
+	}
+
+	const goroutines = 16
+	var wg sync.WaitGroup
+	errCh := make(chan error, goroutines)
+	for g := range goroutines {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+
+			if got := tree.Hash(); !bytes.Equal(got, want[:]) {
+				errCh <- fmt.Errorf("goroutine %d: Hash() = %x, want %x", g, got, want)
+				return
+			}
+			if got := tree.Value(); !bytes.Equal(got, want[:]) {
+				errCh <- fmt.Errorf("goroutine %d: Value() = %x, want %x", g, got, want)
+				return
+			}
+
+			// gindices 2/3 are the container's fields, 4/5 the list's contents.
+			gi := 2 + g%4
+			proof, err := tree.Prove(gi)
+			if err != nil {
+				errCh <- fmt.Errorf("goroutine %d: Prove(%d): %v", g, gi, err)
+				return
+			}
+			if ok, verifyErr := treeproof.VerifyProof(want[:], proof); verifyErr != nil || !ok {
+				errCh <- fmt.Errorf("goroutine %d: VerifyProof(%d) = %v, %v", g, gi, ok, verifyErr)
+				return
+			}
+
+			multiIndices := []int{2 + g%2, 4 + g%2}
+			multiProof, err := tree.ProveMulti(multiIndices)
+			if err != nil {
+				errCh <- fmt.Errorf("goroutine %d: ProveMulti(%v): %v", g, multiIndices, err)
+				return
+			}
+			if ok, verifyErr := treeproof.VerifyMultiproof(want[:], multiProof.Hashes, multiProof.Leaves, multiProof.Indices); verifyErr != nil || !ok {
+				errCh <- fmt.Errorf("goroutine %d: VerifyMultiproof(%v) = %v, %v", g, multiIndices, ok, verifyErr)
+			}
+		}(g)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Error(err)
+	}
 }

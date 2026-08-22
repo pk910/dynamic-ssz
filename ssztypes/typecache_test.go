@@ -5780,3 +5780,58 @@ func TestTagMisuseRejections(t *testing.T) {
 type hintedWrapperHolder struct {
 	W testTypeWrapper `ssz-type:"wrapper" ssz-size:"4"`
 }
+
+// promotedCompatOuter satisfies the fastssz convert surface, HashTreeRoot,
+// HashTreeRootWith and the encoder/decoder streams only through methods
+// promoted from its embedded fields; delegating through any of them would
+// drop Label.
+type promotedCompatOuter struct {
+	testFastsszMarshaler
+	testHashTreeRootWith
+	testDynamicEncoder
+	testDynamicDecoder
+	Label uint32
+}
+
+func TestTypeCache_PromotedCompatSuppression(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(promotedCompatOuter{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	suppressed := SszCompatFlagFastSSZMarshaler | SszCompatFlagFastSSZHasher |
+		SszCompatFlagHashTreeRootWith | SszCompatFlagDynamicEncoder | SszCompatFlagDynamicDecoder
+	if got := desc.SszCompatFlags & suppressed; got != 0 {
+		t.Errorf("promoted compat flags not suppressed: %b", got)
+	}
+	if desc.HashTreeRootWithMethod != nil {
+		t.Error("promoted HashTreeRootWith method not discarded")
+	}
+}
+
+// plainIfaceEmbed carries a non-SSZ embedded interface next to a delegating
+// embedded struct; the interface contributes no delegation surface and must
+// not hide the promotion coming from the struct.
+type plainIfaceEmbed struct {
+	fmt.Stringer
+	testFastsszMarshaler
+	Label uint32
+}
+
+func TestPromotedDelegationEmbeddedPlainInterface(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	promoted := cache.PromotedDelegationMethods(reflect.TypeOf(plainIfaceEmbed{}))
+	if promoted == nil || !promoted["MarshalSSZTo"] {
+		t.Fatalf("promotion from the embedded struct not detected: %v", promoted)
+	}
+
+	type onlyPlainIface struct {
+		fmt.Stringer
+		Label uint32
+	}
+	if got := cache.PromotedDelegationMethods(reflect.TypeOf(onlyPlainIface{})); got != nil {
+		t.Errorf("expected no promoted methods for an embedded plain interface, got %v", got)
+	}
+}

@@ -186,7 +186,10 @@ Computes the SSZ hash tree root.
 func (d *DynSsz) GetTree(source any, opts ...CallOption) (*treeproof.Node, error)
 ```
 
-Builds the complete Merkle tree for proof generation.
+Builds the complete Merkle tree for proof generation. The returned tree is
+finalized (every branch hash cached), so it is read-only and immediately safe
+for concurrent proof generation. On a finalization error the partially
+finalized tree is returned alongside the error.
 
 ```go
 tree, err := ds.GetTree(myStruct)

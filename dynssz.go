@@ -6,6 +6,7 @@
 package dynssz
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"log/slog"
@@ -1179,9 +1180,12 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...Ca
 // Note: For progressive containers (with ssz-index tags), the tree structure will be
 // progressive rather than binary, which affects the generalized indices of fields.
 //
-// The returned tree lazily caches node hashes on first proof, so it is not safe
-// to share across goroutines before it is finalized. Call tree.Hash() once before
-// handing it to concurrent Prove/ProveMulti callers.
+// On success the returned tree is fully hashed: every branch node already
+// holds its cached hash, so the tree is read-only and safe to share across
+// goroutines for concurrent Prove/ProveMulti/Hash/Value calls. On error the
+// tree is returned alongside it but may be only partially finalized: every
+// hash cached in it is valid, and a later Finalize resumes from those
+// caches, but it must not be shared across goroutines until one succeeds.
 func (d *DynSsz) GetTree(source any, opts ...CallOption) (*treeproof.Node, error) {
 	if source == nil {
 		return nil, sszutils.NewSszError(sszutils.ErrInvalidValueRange, "source must not be nil")
@@ -1192,8 +1196,25 @@ func (d *DynSsz) GetTree(source any, opts ...CallOption) (*treeproof.Node, error
 		return nil, err
 	}
 
-	return w.Node(), nil
+	// Finalize all node hashes up front: batched hashing during finalization
+	// is cheaper than the lazy per-pair path, and the finalized tree is
+	// immutable and safe for concurrent proof generation. NoFastHash carries
+	// over: finalization then runs on the native Go sha256 implementation.
+	node := w.Node()
+	finalizeOpts := make([]treeproof.FinalizeOption, 0, 1)
+	if d.options.NoFastHash {
+		finalizeOpts = append(finalizeOpts, treeproof.WithHashFn(nativeBatchHashFn))
+	}
+	// On a finalization error the partially finalized tree is returned
+	// alongside the error; every hash cached in it is valid.
+	finalizeErr := node.Finalize(finalizeOpts...)
+
+	return node, finalizeErr
 }
+
+// nativeBatchHashFn hashes with the standard library sha256, serving tree
+// finalization for instances configured with WithNoFastHash.
+var nativeBatchHashFn = hasher.NativeHashWrapperFactory(sha256.New)
 
 // ValidateType validates whether a given type is compatible with SSZ encoding/decoding.
 //

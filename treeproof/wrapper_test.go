@@ -396,7 +396,7 @@ func TestWrapperPutMethods(t *testing.T) {
 
 		expected := make([]byte, 32)
 		expected[0] = 1
-		if !bytes.Equal(w.nodes[0].value, expected) {
+		if !bytes.Equal(w.nodes[0].value[:], expected) {
 			t.Error("PutBool value mismatch")
 		}
 	})
@@ -515,7 +515,7 @@ func TestWrapperAddMethods(t *testing.T) {
 
 		expected := make([]byte, 32)
 		binary.LittleEndian.PutUint64(expected[:8], 0xFFFFFFFFFFFFFFFF)
-		if !bytes.Equal(w.nodes[0].value, expected) {
+		if !bytes.Equal(w.nodes[0].value[:], expected) {
 			t.Error("AddUint64 value mismatch")
 		}
 	})
@@ -681,7 +681,7 @@ func TestWrapperCommitAliases(t *testing.T) {
 	// AddEmpty adds a zero leaf like the internal addEmpty.
 	w := NewWrapper()
 	w.AddEmpty()
-	if len(w.nodes) != 1 || !isZeroLeafValue(w.nodes[0].value) {
+	if len(w.nodes) != 1 || !w.nodes[0].isEmpty {
 		t.Error("AddEmpty should append a single zero leaf")
 	}
 }
@@ -737,7 +737,7 @@ func TestWrapperHashToleratesUnflushedBuffer(t *testing.T) {
 
 	empty := NewWrapper()
 	z := empty.Hash()
-	if len(z) != 32 || !isZeroLeafValue(z) {
+	if len(z) != 32 || !bytes.Equal(z, make([]byte, 32)) {
 		t.Fatalf("empty Hash() = %x; want 32-byte zero chunk", z)
 	}
 }
@@ -867,7 +867,7 @@ func TestWrapperAppendBytesAsNodes(t *testing.T) {
 			t.Error("32 bytes should create one node")
 		}
 
-		if !bytes.Equal(w2.nodes[0].value, data) {
+		if !bytes.Equal(w2.nodes[0].value[:], data) {
 			t.Error("node value mismatch")
 		}
 	})
@@ -1012,20 +1012,6 @@ func TestWrapperAddNodeNil(t *testing.T) {
 	// Should have one node (even if nil)
 	if len(w.nodes) != 1 {
 		t.Error("AddNode should add the node even if nil")
-	}
-}
-
-func TestWrapperHashRootNon32Bytes(t *testing.T) {
-	w := NewWrapper()
-	// Leaf node with non-32-byte value exercises the HashRoot error path.
-	w.nodes = []*Node{{value: []byte{1, 2, 3}}}
-
-	_, err := w.HashRoot()
-	if err == nil {
-		t.Fatal("expected error for non-32-byte hash")
-	}
-	if err.Error() != "expected 32 byte size" {
-		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
