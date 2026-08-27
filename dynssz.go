@@ -1288,3 +1288,74 @@ func (d *DynSsz) ValidateType(t reflect.Type, opts ...CallOption) error {
 
 	return nil
 }
+
+// GetProofs generates Merkle proofs for the given generalized indices
+// without materializing the value's proof tree. The value is hashed through
+// the regular optimized hashing path while a proof capture shadows just the
+// subtrees the requested paths descend into, so the cost stays close to a
+// plain HashTreeRoot and memory stays bounded by the retained proof paths
+// (plus any subtree whose layout depends on runtime data, which is kept
+// whole). All SSZ shapes are supported, and the walk delegates to generated
+// code exactly like HashTreeRoot does.
+//
+// The proofs are returned in the order of the given indices and verify
+// against the value's HashTreeRoot via treeproof.VerifyProof.
+func (d *DynSsz) GetProofs(source any, gindices []int, opts ...CallOption) ([]*treeproof.Proof, error) {
+	if source == nil {
+		return nil, sszutils.NewSszError(sszutils.ErrInvalidValueRange, "source must not be nil")
+	}
+
+	cfg := applyCallOptions(opts)
+	sourceType := reflect.TypeOf(source)
+	schemaType := d.resolveSchemaType(sourceType, cfg)
+
+	sourceTypeDesc, err := d.typeCache.GetTypeDescriptorWithSchema(sourceType, schemaType, nil, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	sched, err := treeproof.BuildProofSchedule(sourceTypeDesc, gindices)
+	if err != nil {
+		return nil, err
+	}
+
+	var pool *hasher.HasherPool
+	if d.options.NoFastHash {
+		pool = &hasher.DefaultHasherPool
+	} else {
+		pool = &hasher.FastHasherPool
+	}
+	hh := pool.Get()
+	defer pool.Put(hh)
+	if d.options.AsyncHashing {
+		hh.SetAsyncHashing(true)
+	}
+
+	// NoFastHash keeps its promise for the proof capture too: sibling-range
+	// reduction then runs on the native Go sha256 implementation.
+	var proofHashFn hasher.HashFn
+	if d.options.NoFastHash {
+		proofHashFn = nativeBatchHashFn
+	}
+
+	w := treeproof.NewProofHasher(sched, hh, proofHashFn)
+	err = d.HashTreeRootWith(source, w, opts...)
+	if err != nil {
+		return nil, err
+	}
+	tree, err := w.ProofTree()
+	if err != nil {
+		return nil, err
+	}
+
+	proofs := make([]*treeproof.Proof, len(gindices))
+	for i, gindex := range gindices {
+		proof, err := tree.Prove(gindex)
+		if err != nil {
+			return nil, err
+		}
+		proofs[i] = proof
+	}
+
+	return proofs, nil
+}
