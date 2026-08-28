@@ -18,6 +18,15 @@ type layout:
   consensus-split vulnerability class.
 * **Roundtrip (P1)** — every well-typed, offset-representable value decodes
   back from its serialization.
+* **Tree/root agreement (P7)** — the explicit Merkle tree the type
+  merkleizes into (the structure a `GetTree`-style API walks) hashes to
+  exactly the direct hash-tree-root. This is the property whose violation
+  was issue #191 (`GetTree` reordering leaves against `HashTreeRoot` on
+  Deneb+ `BeaconState`s), as a machine-checked theorem per type. The
+  merkleization model covers bounded trees with zero-subtree padding,
+  packed and composite leaves, the EIP-7916 progressive spine, EIP-7495
+  progressive-container layouts, and the length/active-fields/selector
+  mix-ins.
 * Injectivity and unique-encoding (non-malleability) follow as corollaries
   inside the library.
 
@@ -35,6 +44,10 @@ formal/
     SszCert/Bitlist.lean     bitlist sentinel discipline
     SszCert/Bitvector.lean   bitvector padding discipline
     SszCert/Boolean.lean     strict 0x00/0x01 booleans
+    SszCert/Sha256.lean      executable SHA-256 (opaque to all proofs)
+    SszCert/Merkle.lean      merkleization: bounded + progressive trees,
+                             mix-ins, explicit `Node` trees, and the
+                             tree/root agreement theorems
     SszCert/Codec.lean       the composition layer: `Codec` structure with
                              proof fields + combinators for every SSZ shape
                              (containers, lists, vectors, bitfields,
@@ -63,9 +76,11 @@ cd formal/lean && lake build ssz-oracle
 # 3. (Optional) differential link: the built ssz-oracle binary answers
 #    "<TypeName> <hex|->" lines on stdin with ACCEPT/REJECT, letting a test
 #    harness compare the verified model's accept/reject decision against
-#    UnmarshalSSZ on any corpus. On ACCEPT the oracle also re-serializes and
-#    compares byte-for-byte (the canonicity theorem makes any mismatch a
-#    compiler bug, not a model question).
+#    UnmarshalSSZ on any corpus. ACCEPT answers carry the certified hash
+#    tree root, for comparison against HashTreeRoot and GetTree().Hash()
+#    on both engines. On ACCEPT the oracle also re-serializes byte-for-byte
+#    and re-hashes the explicit tree against the direct root (the theorems
+#    make any mismatch a compiler bug, not a model question).
 ```
 
 Requires [elan](https://github.com/leanprover/elan) (the Lean toolchain in
@@ -79,9 +94,10 @@ realistic certificate load end to end.
 
 ## What is proved vs. what is trusted
 
-Machine-checked (per certified type): canonicity, roundtrip, injectivity of
-the *model* codec the certificate denotes — the exact offset/limit/padding/
-sentinel discipline of SSZ.
+Machine-checked (per certified type): canonicity, roundtrip, injectivity,
+and tree/root agreement of the *model* codec the certificate denotes — the
+exact offset/limit/padding/sentinel discipline of SSZ serialization and the
+chunking/padding/spine/mix-in discipline of its merkleization.
 
 Trusted (the differential link carries these, not proofs):
 
@@ -92,9 +108,10 @@ Trusted (the differential link carries these, not proofs):
   linked empirically by running both on corpora (fixture replay + random
   values + mutations), where the canonicity theorem collapses byte-level
   agreement to accept/reject agreement;
+* the SHA-256 implementation (never unfolded by any proof; validated
+  against the FIPS vectors and continuously by the root comparisons);
 * Lean's kernel and compiler, and the Go toolchain.
 
-Serialization only: hash-tree-root/merkleization is outside the certificate
-surface (progressive types serialize identically to their classic
-counterparts; they differ only in merkleization). Recursive Go types are
-rejected by the certifier (Lean certificates are non-cyclic terms).
+Merkle *proof verification* (`treeproof.Prove`/`VerifyProof` beyond the
+root) is outside the certificate surface. Recursive Go types are rejected
+by the certifier (Lean certificates are non-cyclic terms).

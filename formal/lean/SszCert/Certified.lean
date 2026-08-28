@@ -4,10 +4,6 @@ import SszCert.Codec
 
 namespace Ssz
 
-/-- Stand-in bound for SSZ types without a declared limit (progressive
-    lists/bitlists). Unreachable: offsets cap wire-derived counts far below. -/
-def noLimit : Nat := 2 ^ 64
-
 /-- Certificate for `harness.BasicBitList16`. -/
 def C_BasicBitList16 : Codec :=
   (bitlistCodec 16)
@@ -22,6 +18,12 @@ theorem C_BasicBitList16_canonicity {bs : List UInt8} {v : Val}
 theorem C_BasicBitList16_roundtrip {v : Val} (hwt : C_BasicBitList16.wt v) (hrep : C_BasicBitList16.rep v) :
     C_BasicBitList16.dec (C_BasicBitList16.ser v) = some v :=
   C_BasicBitList16.round hwt hrep
+
+/-- Tree/root agreement for `BasicBitList16`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_BasicBitList16_tree_root {v : Val} (hwt : C_BasicBitList16.wt v) :
+    (C_BasicBitList16.tree v).root = C_BasicBitList16.htr v :=
+  C_BasicBitList16.htr_tree hwt
 
 /-- Certificate for `harness.BasicBitVector64`. -/
 def C_BasicBitVector64 : Codec :=
@@ -38,6 +40,12 @@ theorem C_BasicBitVector64_roundtrip {v : Val} (hwt : C_BasicBitVector64.wt v) (
     C_BasicBitVector64.dec (C_BasicBitVector64.ser v) = some v :=
   C_BasicBitVector64.round hwt hrep
 
+/-- Tree/root agreement for `BasicBitVector64`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_BasicBitVector64_tree_root {v : Val} (hwt : C_BasicBitVector64.wt v) :
+    (C_BasicBitVector64.tree v).root = C_BasicBitVector64.htr v :=
+  C_BasicBitVector64.htr_tree hwt
+
 /-- Certificate for `harness.BasicBitVector8`. -/
 def C_BasicBitVector8 : Codec :=
   (bitvectorCodec 8)
@@ -52,6 +60,12 @@ theorem C_BasicBitVector8_canonicity {bs : List UInt8} {v : Val}
 theorem C_BasicBitVector8_roundtrip {v : Val} (hwt : C_BasicBitVector8.wt v) (hrep : C_BasicBitVector8.rep v) :
     C_BasicBitVector8.dec (C_BasicBitVector8.ser v) = some v :=
   C_BasicBitVector8.round hwt hrep
+
+/-- Tree/root agreement for `BasicBitVector8`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_BasicBitVector8_tree_root {v : Val} (hwt : C_BasicBitVector8.wt v) :
+    (C_BasicBitVector8.tree v).root = C_BasicBitVector8.htr v :=
+  C_BasicBitVector8.htr_tree hwt
 
 /-- Certificate for `harness.BasicBool`. -/
 def C_BasicBool : Codec :=
@@ -68,6 +82,12 @@ theorem C_BasicBool_roundtrip {v : Val} (hwt : C_BasicBool.wt v) (hrep : C_Basic
     C_BasicBool.dec (C_BasicBool.ser v) = some v :=
   C_BasicBool.round hwt hrep
 
+/-- Tree/root agreement for `BasicBool`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_BasicBool_tree_root {v : Val} (hwt : C_BasicBool.wt v) :
+    (C_BasicBool.tree v).root = C_BasicBool.htr v :=
+  C_BasicBool.htr_tree hwt
+
 /-- Certificate for `harness.BasicByteList512KiB`. -/
 def C_BasicByteList512KiB : Codec :=
   (byteListCodec 524288)
@@ -82,6 +102,12 @@ theorem C_BasicByteList512KiB_canonicity {bs : List UInt8} {v : Val}
 theorem C_BasicByteList512KiB_roundtrip {v : Val} (hwt : C_BasicByteList512KiB.wt v) (hrep : C_BasicByteList512KiB.rep v) :
     C_BasicByteList512KiB.dec (C_BasicByteList512KiB.ser v) = some v :=
   C_BasicByteList512KiB.round hwt hrep
+
+/-- Tree/root agreement for `BasicByteList512KiB`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_BasicByteList512KiB_tree_root {v : Val} (hwt : C_BasicByteList512KiB.wt v) :
+    (C_BasicByteList512KiB.tree v).root = C_BasicByteList512KiB.htr v :=
+  C_BasicByteList512KiB.htr_tree hwt
 
 /-- Certificate for `harness.BasicBytes32`. -/
 def C_BasicBytes32 : Codec :=
@@ -98,6 +124,12 @@ theorem C_BasicBytes32_roundtrip {v : Val} (hwt : C_BasicBytes32.wt v) (hrep : C
     C_BasicBytes32.dec (C_BasicBytes32.ser v) = some v :=
   C_BasicBytes32.round hwt hrep
 
+/-- Tree/root agreement for `BasicBytes32`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_BasicBytes32_tree_root {v : Val} (hwt : C_BasicBytes32.wt v) :
+    (C_BasicBytes32.tree v).root = C_BasicBytes32.htr v :=
+  C_BasicBytes32.htr_tree hwt
+
 /-- Certificate for `harness.BasicBytes32List8`. -/
 def C_BasicBytes32List8 : Codec :=
   (listFixedCodec (byteVectorCodec 32) 32 8 (by rfl) (by decide))
@@ -112,6 +144,12 @@ theorem C_BasicBytes32List8_canonicity {bs : List UInt8} {v : Val}
 theorem C_BasicBytes32List8_roundtrip {v : Val} (hwt : C_BasicBytes32List8.wt v) (hrep : C_BasicBytes32List8.rep v) :
     C_BasicBytes32List8.dec (C_BasicBytes32List8.ser v) = some v :=
   C_BasicBytes32List8.round hwt hrep
+
+/-- Tree/root agreement for `BasicBytes32List8`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_BasicBytes32List8_tree_root {v : Val} (hwt : C_BasicBytes32List8.wt v) :
+    (C_BasicBytes32List8.tree v).root = C_BasicBytes32List8.htr v :=
+  C_BasicBytes32List8.htr_tree hwt
 
 /-- Certificate for `harness.BasicBytes4`. -/
 def C_BasicBytes4 : Codec :=
@@ -128,6 +166,12 @@ theorem C_BasicBytes4_roundtrip {v : Val} (hwt : C_BasicBytes4.wt v) (hrep : C_B
     C_BasicBytes4.dec (C_BasicBytes4.ser v) = some v :=
   C_BasicBytes4.round hwt hrep
 
+/-- Tree/root agreement for `BasicBytes4`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_BasicBytes4_tree_root {v : Val} (hwt : C_BasicBytes4.wt v) :
+    (C_BasicBytes4.tree v).root = C_BasicBytes4.htr v :=
+  C_BasicBytes4.htr_tree hwt
+
 /-- Certificate for `harness.BasicBytes52`. -/
 def C_BasicBytes52 : Codec :=
   (byteVectorCodec 52)
@@ -142,6 +186,12 @@ theorem C_BasicBytes52_canonicity {bs : List UInt8} {v : Val}
 theorem C_BasicBytes52_roundtrip {v : Val} (hwt : C_BasicBytes52.wt v) (hrep : C_BasicBytes52.rep v) :
     C_BasicBytes52.dec (C_BasicBytes52.ser v) = some v :=
   C_BasicBytes52.round hwt hrep
+
+/-- Tree/root agreement for `BasicBytes52`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_BasicBytes52_tree_root {v : Val} (hwt : C_BasicBytes52.wt v) :
+    (C_BasicBytes52.tree v).root = C_BasicBytes52.htr v :=
+  C_BasicBytes52.htr_tree hwt
 
 /-- Certificate for `harness.BasicBytes64`. -/
 def C_BasicBytes64 : Codec :=
@@ -158,6 +208,12 @@ theorem C_BasicBytes64_roundtrip {v : Val} (hwt : C_BasicBytes64.wt v) (hrep : C
     C_BasicBytes64.dec (C_BasicBytes64.ser v) = some v :=
   C_BasicBytes64.round hwt hrep
 
+/-- Tree/root agreement for `BasicBytes64`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_BasicBytes64_tree_root {v : Val} (hwt : C_BasicBytes64.wt v) :
+    (C_BasicBytes64.tree v).root = C_BasicBytes64.htr v :=
+  C_BasicBytes64.htr_tree hwt
+
 /-- Certificate for `harness.BasicUint128`. -/
 def C_BasicUint128 : Codec :=
   (uintCodec 16)
@@ -172,6 +228,12 @@ theorem C_BasicUint128_canonicity {bs : List UInt8} {v : Val}
 theorem C_BasicUint128_roundtrip {v : Val} (hwt : C_BasicUint128.wt v) (hrep : C_BasicUint128.rep v) :
     C_BasicUint128.dec (C_BasicUint128.ser v) = some v :=
   C_BasicUint128.round hwt hrep
+
+/-- Tree/root agreement for `BasicUint128`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_BasicUint128_tree_root {v : Val} (hwt : C_BasicUint128.wt v) :
+    (C_BasicUint128.tree v).root = C_BasicUint128.htr v :=
+  C_BasicUint128.htr_tree hwt
 
 /-- Certificate for `harness.BasicUint16`. -/
 def C_BasicUint16 : Codec :=
@@ -188,9 +250,15 @@ theorem C_BasicUint16_roundtrip {v : Val} (hwt : C_BasicUint16.wt v) (hrep : C_B
     C_BasicUint16.dec (C_BasicUint16.ser v) = some v :=
   C_BasicUint16.round hwt hrep
 
+/-- Tree/root agreement for `BasicUint16`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_BasicUint16_tree_root {v : Val} (hwt : C_BasicUint16.wt v) :
+    (C_BasicUint16.tree v).root = C_BasicUint16.htr v :=
+  C_BasicUint16.htr_tree hwt
+
 /-- Certificate for `harness.BasicUint16Vector3`. -/
 def C_BasicUint16Vector3 : Codec :=
-  (vectorFixedCodec (uintCodec 2) 2 3 (by rfl))
+  (vectorPackedCodec (uintCodec 2) 2 3 (by rfl))
 
 /-- Decode-canonicity (P2) for `BasicUint16Vector3`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -202,6 +270,12 @@ theorem C_BasicUint16Vector3_canonicity {bs : List UInt8} {v : Val}
 theorem C_BasicUint16Vector3_roundtrip {v : Val} (hwt : C_BasicUint16Vector3.wt v) (hrep : C_BasicUint16Vector3.rep v) :
     C_BasicUint16Vector3.dec (C_BasicUint16Vector3.ser v) = some v :=
   C_BasicUint16Vector3.round hwt hrep
+
+/-- Tree/root agreement for `BasicUint16Vector3`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_BasicUint16Vector3_tree_root {v : Val} (hwt : C_BasicUint16Vector3.wt v) :
+    (C_BasicUint16Vector3.tree v).root = C_BasicUint16Vector3.htr v :=
+  C_BasicUint16Vector3.htr_tree hwt
 
 /-- Certificate for `harness.BasicUint256`. -/
 def C_BasicUint256 : Codec :=
@@ -218,6 +292,12 @@ theorem C_BasicUint256_roundtrip {v : Val} (hwt : C_BasicUint256.wt v) (hrep : C
     C_BasicUint256.dec (C_BasicUint256.ser v) = some v :=
   C_BasicUint256.round hwt hrep
 
+/-- Tree/root agreement for `BasicUint256`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_BasicUint256_tree_root {v : Val} (hwt : C_BasicUint256.wt v) :
+    (C_BasicUint256.tree v).root = C_BasicUint256.htr v :=
+  C_BasicUint256.htr_tree hwt
+
 /-- Certificate for `harness.BasicUint32`. -/
 def C_BasicUint32 : Codec :=
   (uintCodec 4)
@@ -233,9 +313,15 @@ theorem C_BasicUint32_roundtrip {v : Val} (hwt : C_BasicUint32.wt v) (hrep : C_B
     C_BasicUint32.dec (C_BasicUint32.ser v) = some v :=
   C_BasicUint32.round hwt hrep
 
+/-- Tree/root agreement for `BasicUint32`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_BasicUint32_tree_root {v : Val} (hwt : C_BasicUint32.wt v) :
+    (C_BasicUint32.tree v).root = C_BasicUint32.htr v :=
+  C_BasicUint32.htr_tree hwt
+
 /-- Certificate for `harness.BasicUint32List16`. -/
 def C_BasicUint32List16 : Codec :=
-  (listFixedCodec (uintCodec 4) 4 16 (by rfl) (by decide))
+  (listPackedCodec (uintCodec 4) 4 16 (by rfl) (by decide))
 
 /-- Decode-canonicity (P2) for `BasicUint32List16`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -247,6 +333,12 @@ theorem C_BasicUint32List16_canonicity {bs : List UInt8} {v : Val}
 theorem C_BasicUint32List16_roundtrip {v : Val} (hwt : C_BasicUint32List16.wt v) (hrep : C_BasicUint32List16.rep v) :
     C_BasicUint32List16.dec (C_BasicUint32List16.ser v) = some v :=
   C_BasicUint32List16.round hwt hrep
+
+/-- Tree/root agreement for `BasicUint32List16`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_BasicUint32List16_tree_root {v : Val} (hwt : C_BasicUint32List16.wt v) :
+    (C_BasicUint32List16.tree v).root = C_BasicUint32List16.htr v :=
+  C_BasicUint32List16.htr_tree hwt
 
 /-- Certificate for `harness.BasicUint64`. -/
 def C_BasicUint64 : Codec :=
@@ -263,9 +355,15 @@ theorem C_BasicUint64_roundtrip {v : Val} (hwt : C_BasicUint64.wt v) (hrep : C_B
     C_BasicUint64.dec (C_BasicUint64.ser v) = some v :=
   C_BasicUint64.round hwt hrep
 
+/-- Tree/root agreement for `BasicUint64`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_BasicUint64_tree_root {v : Val} (hwt : C_BasicUint64.wt v) :
+    (C_BasicUint64.tree v).root = C_BasicUint64.htr v :=
+  C_BasicUint64.htr_tree hwt
+
 /-- Certificate for `harness.BasicUint64Vector4`. -/
 def C_BasicUint64Vector4 : Codec :=
-  (vectorFixedCodec (uintCodec 8) 8 4 (by rfl))
+  (vectorPackedCodec (uintCodec 8) 8 4 (by rfl))
 
 /-- Decode-canonicity (P2) for `BasicUint64Vector4`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -277,6 +375,12 @@ theorem C_BasicUint64Vector4_canonicity {bs : List UInt8} {v : Val}
 theorem C_BasicUint64Vector4_roundtrip {v : Val} (hwt : C_BasicUint64Vector4.wt v) (hrep : C_BasicUint64Vector4.rep v) :
     C_BasicUint64Vector4.dec (C_BasicUint64Vector4.ser v) = some v :=
   C_BasicUint64Vector4.round hwt hrep
+
+/-- Tree/root agreement for `BasicUint64Vector4`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_BasicUint64Vector4_tree_root {v : Val} (hwt : C_BasicUint64Vector4.wt v) :
+    (C_BasicUint64Vector4.tree v).root = C_BasicUint64Vector4.htr v :=
+  C_BasicUint64Vector4.htr_tree hwt
 
 /-- Certificate for `harness.BasicUint8`. -/
 def C_BasicUint8 : Codec :=
@@ -293,6 +397,12 @@ theorem C_BasicUint8_roundtrip {v : Val} (hwt : C_BasicUint8.wt v) (hrep : C_Bas
     C_BasicUint8.dec (C_BasicUint8.ser v) = some v :=
   C_BasicUint8.round hwt hrep
 
+/-- Tree/root agreement for `BasicUint8`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_BasicUint8_tree_root {v : Val} (hwt : C_BasicUint8.wt v) :
+    (C_BasicUint8.tree v).root = C_BasicUint8.htr v :=
+  C_BasicUint8.htr_tree hwt
+
 /-- Certificate for `harness.BoundaryBitList256`. -/
 def C_BoundaryBitList256 : Codec :=
   (bitlistCodec 256)
@@ -307,6 +417,12 @@ theorem C_BoundaryBitList256_canonicity {bs : List UInt8} {v : Val}
 theorem C_BoundaryBitList256_roundtrip {v : Val} (hwt : C_BoundaryBitList256.wt v) (hrep : C_BoundaryBitList256.rep v) :
     C_BoundaryBitList256.dec (C_BoundaryBitList256.ser v) = some v :=
   C_BoundaryBitList256.round hwt hrep
+
+/-- Tree/root agreement for `BoundaryBitList256`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_BoundaryBitList256_tree_root {v : Val} (hwt : C_BoundaryBitList256.wt v) :
+    (C_BoundaryBitList256.tree v).root = C_BoundaryBitList256.htr v :=
+  C_BoundaryBitList256.htr_tree hwt
 
 /-- Certificate for `harness.BoundaryBitVector1`. -/
 def C_BoundaryBitVector1 : Codec :=
@@ -323,6 +439,12 @@ theorem C_BoundaryBitVector1_roundtrip {v : Val} (hwt : C_BoundaryBitVector1.wt 
     C_BoundaryBitVector1.dec (C_BoundaryBitVector1.ser v) = some v :=
   C_BoundaryBitVector1.round hwt hrep
 
+/-- Tree/root agreement for `BoundaryBitVector1`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_BoundaryBitVector1_tree_root {v : Val} (hwt : C_BoundaryBitVector1.wt v) :
+    (C_BoundaryBitVector1.tree v).root = C_BoundaryBitVector1.htr v :=
+  C_BoundaryBitVector1.htr_tree hwt
+
 /-- Certificate for `harness.BoundaryBitVector255`. -/
 def C_BoundaryBitVector255 : Codec :=
   (bitvectorCodec 255)
@@ -337,6 +459,12 @@ theorem C_BoundaryBitVector255_canonicity {bs : List UInt8} {v : Val}
 theorem C_BoundaryBitVector255_roundtrip {v : Val} (hwt : C_BoundaryBitVector255.wt v) (hrep : C_BoundaryBitVector255.rep v) :
     C_BoundaryBitVector255.dec (C_BoundaryBitVector255.ser v) = some v :=
   C_BoundaryBitVector255.round hwt hrep
+
+/-- Tree/root agreement for `BoundaryBitVector255`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_BoundaryBitVector255_tree_root {v : Val} (hwt : C_BoundaryBitVector255.wt v) :
+    (C_BoundaryBitVector255.tree v).root = C_BoundaryBitVector255.htr v :=
+  C_BoundaryBitVector255.htr_tree hwt
 
 /-- Certificate for `harness.BoundaryBitVector256`. -/
 def C_BoundaryBitVector256 : Codec :=
@@ -353,6 +481,12 @@ theorem C_BoundaryBitVector256_roundtrip {v : Val} (hwt : C_BoundaryBitVector256
     C_BoundaryBitVector256.dec (C_BoundaryBitVector256.ser v) = some v :=
   C_BoundaryBitVector256.round hwt hrep
 
+/-- Tree/root agreement for `BoundaryBitVector256`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_BoundaryBitVector256_tree_root {v : Val} (hwt : C_BoundaryBitVector256.wt v) :
+    (C_BoundaryBitVector256.tree v).root = C_BoundaryBitVector256.htr v :=
+  C_BoundaryBitVector256.htr_tree hwt
+
 /-- Certificate for `harness.BoundaryBitVector257`. -/
 def C_BoundaryBitVector257 : Codec :=
   (bitvectorCodec 257)
@@ -367,6 +501,12 @@ theorem C_BoundaryBitVector257_canonicity {bs : List UInt8} {v : Val}
 theorem C_BoundaryBitVector257_roundtrip {v : Val} (hwt : C_BoundaryBitVector257.wt v) (hrep : C_BoundaryBitVector257.rep v) :
     C_BoundaryBitVector257.dec (C_BoundaryBitVector257.ser v) = some v :=
   C_BoundaryBitVector257.round hwt hrep
+
+/-- Tree/root agreement for `BoundaryBitVector257`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_BoundaryBitVector257_tree_root {v : Val} (hwt : C_BoundaryBitVector257.wt v) :
+    (C_BoundaryBitVector257.tree v).root = C_BoundaryBitVector257.htr v :=
+  C_BoundaryBitVector257.htr_tree hwt
 
 /-- Certificate for `harness.BoundaryBitVector7`. -/
 def C_BoundaryBitVector7 : Codec :=
@@ -383,6 +523,12 @@ theorem C_BoundaryBitVector7_roundtrip {v : Val} (hwt : C_BoundaryBitVector7.wt 
     C_BoundaryBitVector7.dec (C_BoundaryBitVector7.ser v) = some v :=
   C_BoundaryBitVector7.round hwt hrep
 
+/-- Tree/root agreement for `BoundaryBitVector7`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_BoundaryBitVector7_tree_root {v : Val} (hwt : C_BoundaryBitVector7.wt v) :
+    (C_BoundaryBitVector7.tree v).root = C_BoundaryBitVector7.htr v :=
+  C_BoundaryBitVector7.htr_tree hwt
+
 /-- Certificate for `harness.BoundaryBitVector9`. -/
 def C_BoundaryBitVector9 : Codec :=
   (bitvectorCodec 9)
@@ -397,6 +543,12 @@ theorem C_BoundaryBitVector9_canonicity {bs : List UInt8} {v : Val}
 theorem C_BoundaryBitVector9_roundtrip {v : Val} (hwt : C_BoundaryBitVector9.wt v) (hrep : C_BoundaryBitVector9.rep v) :
     C_BoundaryBitVector9.dec (C_BoundaryBitVector9.ser v) = some v :=
   C_BoundaryBitVector9.round hwt hrep
+
+/-- Tree/root agreement for `BoundaryBitVector9`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_BoundaryBitVector9_tree_root {v : Val} (hwt : C_BoundaryBitVector9.wt v) :
+    (C_BoundaryBitVector9.tree v).root = C_BoundaryBitVector9.htr v :=
+  C_BoundaryBitVector9.htr_tree hwt
 
 /-- Certificate for `harness.BoundaryBool`. -/
 def C_BoundaryBool : Codec :=
@@ -413,9 +565,15 @@ theorem C_BoundaryBool_roundtrip {v : Val} (hwt : C_BoundaryBool.wt v) (hrep : C
     C_BoundaryBool.dec (C_BoundaryBool.ser v) = some v :=
   C_BoundaryBool.round hwt hrep
 
+/-- Tree/root agreement for `BoundaryBool`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_BoundaryBool_tree_root {v : Val} (hwt : C_BoundaryBool.wt v) :
+    (C_BoundaryBool.tree v).root = C_BoundaryBool.htr v :=
+  C_BoundaryBool.htr_tree hwt
+
 /-- Certificate for `harness.BoundaryUint64List32`. -/
 def C_BoundaryUint64List32 : Codec :=
-  (listFixedCodec (uintCodec 8) 8 32 (by rfl) (by decide))
+  (listPackedCodec (uintCodec 8) 8 32 (by rfl) (by decide))
 
 /-- Decode-canonicity (P2) for `BoundaryUint64List32`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -428,9 +586,15 @@ theorem C_BoundaryUint64List32_roundtrip {v : Val} (hwt : C_BoundaryUint64List32
     C_BoundaryUint64List32.dec (C_BoundaryUint64List32.ser v) = some v :=
   C_BoundaryUint64List32.round hwt hrep
 
+/-- Tree/root agreement for `BoundaryUint64List32`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_BoundaryUint64List32_tree_root {v : Val} (hwt : C_BoundaryUint64List32.wt v) :
+    (C_BoundaryUint64List32.tree v).root = C_BoundaryUint64List32.htr v :=
+  C_BoundaryUint64List32.htr_tree hwt
+
 /-- Certificate for `harness.CUCircle`. -/
 def C_CUCircle : Codec :=
-  (containerCodec [(uintCodec 2), (uintCodec 1)])
+  (progContainerCodec [(uintCodec 2), (uintCodec 1)] [false, true, true])
 
 /-- Decode-canonicity (P2) for `CUCircle`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -443,9 +607,15 @@ theorem C_CUCircle_roundtrip {v : Val} (hwt : C_CUCircle.wt v) (hrep : C_CUCircl
     C_CUCircle.dec (C_CUCircle.ser v) = some v :=
   C_CUCircle.round hwt hrep
 
+/-- Tree/root agreement for `CUCircle`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_CUCircle_tree_root {v : Val} (hwt : C_CUCircle.wt v) :
+    (C_CUCircle.tree v).root = C_CUCircle.htr v :=
+  C_CUCircle.htr_tree hwt
+
 /-- Certificate for `harness.CUCircleProgList`. -/
 def C_CUCircleProgList : Codec :=
-  (listFixedCodec (containerCodec [(uintCodec 2), (uintCodec 1)]) 3 noLimit (by rfl) (by decide))
+  (progListFixedCodec (progContainerCodec [(uintCodec 2), (uintCodec 1)] [false, true, true]) 3 (by rfl) (by decide))
 
 /-- Decode-canonicity (P2) for `CUCircleProgList`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -458,9 +628,15 @@ theorem C_CUCircleProgList_roundtrip {v : Val} (hwt : C_CUCircleProgList.wt v) (
     C_CUCircleProgList.dec (C_CUCircleProgList.ser v) = some v :=
   C_CUCircleProgList.round hwt hrep
 
+/-- Tree/root agreement for `CUCircleProgList`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_CUCircleProgList_tree_root {v : Val} (hwt : C_CUCircleProgList.wt v) :
+    (C_CUCircleProgList.tree v).root = C_CUCircleProgList.htr v :=
+  C_CUCircleProgList.htr_tree hwt
+
 /-- Certificate for `harness.CUShapeContainer`. -/
 def C_CUShapeContainer : Codec :=
-  (containerCodec [(uintCodec 8), (unionCodec [(1, (containerCodec [(uintCodec 2), (uintCodec 1)])), (2, (containerCodec [(uintCodec 2), (uintCodec 1)])), (127, (containerCodec [(uintCodec 2), (uintCodec 1)]))])])
+  (containerCodec [(uintCodec 8), (unionCodec [(1, (progContainerCodec [(uintCodec 2), (uintCodec 1)] [true, false, true])), (2, (progContainerCodec [(uintCodec 2), (uintCodec 1)] [false, true, true])), (127, (progContainerCodec [(uintCodec 2), (uintCodec 1)] [true, false, true]))])])
 
 /-- Decode-canonicity (P2) for `CUShapeContainer`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -473,9 +649,15 @@ theorem C_CUShapeContainer_roundtrip {v : Val} (hwt : C_CUShapeContainer.wt v) (
     C_CUShapeContainer.dec (C_CUShapeContainer.ser v) = some v :=
   C_CUShapeContainer.round hwt hrep
 
+/-- Tree/root agreement for `CUShapeContainer`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_CUShapeContainer_tree_root {v : Val} (hwt : C_CUShapeContainer.wt v) :
+    (C_CUShapeContainer.tree v).root = C_CUShapeContainer.htr v :=
+  C_CUShapeContainer.htr_tree hwt
+
 /-- Certificate for `harness.CUShapeProgList`. -/
 def C_CUShapeProgList : Codec :=
-  (listVarCodec (unionCodec [(1, (containerCodec [(uintCodec 2), (uintCodec 1)])), (2, (containerCodec [(uintCodec 2), (uintCodec 1)])), (127, (containerCodec [(uintCodec 2), (uintCodec 1)]))]) noLimit)
+  (progListVarCodec (unionCodec [(1, (progContainerCodec [(uintCodec 2), (uintCodec 1)] [true, false, true])), (2, (progContainerCodec [(uintCodec 2), (uintCodec 1)] [false, true, true])), (127, (progContainerCodec [(uintCodec 2), (uintCodec 1)] [true, false, true]))]))
 
 /-- Decode-canonicity (P2) for `CUShapeProgList`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -488,9 +670,15 @@ theorem C_CUShapeProgList_roundtrip {v : Val} (hwt : C_CUShapeProgList.wt v) (hr
     C_CUShapeProgList.dec (C_CUShapeProgList.ser v) = some v :=
   C_CUShapeProgList.round hwt hrep
 
+/-- Tree/root agreement for `CUShapeProgList`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_CUShapeProgList_tree_root {v : Val} (hwt : C_CUShapeProgList.wt v) :
+    (C_CUShapeProgList.tree v).root = C_CUShapeProgList.htr v :=
+  C_CUShapeProgList.htr_tree hwt
+
 /-- Certificate for `harness.CUShapeProgressiveContainer`. -/
 def C_CUShapeProgressiveContainer : Codec :=
-  (containerCodec [(uintCodec 8), (unionCodec [(1, (containerCodec [(uintCodec 2), (uintCodec 1)])), (2, (containerCodec [(uintCodec 2), (uintCodec 1)])), (127, (containerCodec [(uintCodec 2), (uintCodec 1)]))])])
+  (progContainerCodec [(uintCodec 8), (unionCodec [(1, (progContainerCodec [(uintCodec 2), (uintCodec 1)] [true, false, true])), (2, (progContainerCodec [(uintCodec 2), (uintCodec 1)] [false, true, true])), (127, (progContainerCodec [(uintCodec 2), (uintCodec 1)] [true, false, true]))])] [true, false, true])
 
 /-- Decode-canonicity (P2) for `CUShapeProgressiveContainer`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -503,9 +691,15 @@ theorem C_CUShapeProgressiveContainer_roundtrip {v : Val} (hwt : C_CUShapeProgre
     C_CUShapeProgressiveContainer.dec (C_CUShapeProgressiveContainer.ser v) = some v :=
   C_CUShapeProgressiveContainer.round hwt hrep
 
+/-- Tree/root agreement for `CUShapeProgressiveContainer`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_CUShapeProgressiveContainer_tree_root {v : Val} (hwt : C_CUShapeProgressiveContainer.wt v) :
+    (C_CUShapeProgressiveContainer.tree v).root = C_CUShapeProgressiveContainer.htr v :=
+  C_CUShapeProgressiveContainer.htr_tree hwt
+
 /-- Certificate for `harness.CUSquare`. -/
 def C_CUSquare : Codec :=
-  (containerCodec [(uintCodec 2), (uintCodec 1)])
+  (progContainerCodec [(uintCodec 2), (uintCodec 1)] [true, false, true])
 
 /-- Decode-canonicity (P2) for `CUSquare`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -518,9 +712,15 @@ theorem C_CUSquare_roundtrip {v : Val} (hwt : C_CUSquare.wt v) (hrep : C_CUSquar
     C_CUSquare.dec (C_CUSquare.ser v) = some v :=
   C_CUSquare.round hwt hrep
 
+/-- Tree/root agreement for `CUSquare`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_CUSquare_tree_root {v : Val} (hwt : C_CUSquare.wt v) :
+    (C_CUSquare.tree v).root = C_CUSquare.htr v :=
+  C_CUSquare.htr_tree hwt
+
 /-- Certificate for `harness.CUSquareProgList`. -/
 def C_CUSquareProgList : Codec :=
-  (listFixedCodec (containerCodec [(uintCodec 2), (uintCodec 1)]) 3 noLimit (by rfl) (by decide))
+  (progListFixedCodec (progContainerCodec [(uintCodec 2), (uintCodec 1)] [true, false, true]) 3 (by rfl) (by decide))
 
 /-- Decode-canonicity (P2) for `CUSquareProgList`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -533,9 +733,15 @@ theorem C_CUSquareProgList_roundtrip {v : Val} (hwt : C_CUSquareProgList.wt v) (
     C_CUSquareProgList.dec (C_CUSquareProgList.ser v) = some v :=
   C_CUSquareProgList.round hwt hrep
 
+/-- Tree/root agreement for `CUSquareProgList`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_CUSquareProgList_tree_root {v : Val} (hwt : C_CUSquareProgList.wt v) :
+    (C_CUSquareProgList.tree v).root = C_CUSquareProgList.htr v :=
+  C_CUSquareProgList.htr_tree hwt
+
 /-- Certificate for `harness.CUUint16List4`. -/
 def C_CUUint16List4 : Codec :=
-  (listFixedCodec (uintCodec 2) 2 4 (by rfl) (by decide))
+  (listPackedCodec (uintCodec 2) 2 4 (by rfl) (by decide))
 
 /-- Decode-canonicity (P2) for `CUUint16List4`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -548,9 +754,15 @@ theorem C_CUUint16List4_roundtrip {v : Val} (hwt : C_CUUint16List4.wt v) (hrep :
     C_CUUint16List4.dec (C_CUUint16List4.ser v) = some v :=
   C_CUUint16List4.round hwt hrep
 
+/-- Tree/root agreement for `CUUint16List4`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_CUUint16List4_tree_root {v : Val} (hwt : C_CUUint16List4.wt v) :
+    (C_CUUint16List4.tree v).root = C_CUUint16List4.htr v :=
+  C_CUUint16List4.htr_tree hwt
+
 /-- Certificate for `harness.PCBoundedListField`. -/
 def C_PCBoundedListField : Codec :=
-  (containerCodec [(uintCodec 8), (listFixedCodec (uintCodec 2) 2 4 (by rfl) (by decide))])
+  (progContainerCodec [(uintCodec 8), (listPackedCodec (uintCodec 2) 2 4 (by rfl) (by decide))] [true, false, true])
 
 /-- Decode-canonicity (P2) for `PCBoundedListField`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -563,9 +775,15 @@ theorem C_PCBoundedListField_roundtrip {v : Val} (hwt : C_PCBoundedListField.wt 
     C_PCBoundedListField.dec (C_PCBoundedListField.ser v) = some v :=
   C_PCBoundedListField.round hwt hrep
 
+/-- Tree/root agreement for `PCBoundedListField`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_PCBoundedListField_tree_root {v : Val} (hwt : C_PCBoundedListField.wt v) :
+    (C_PCBoundedListField.tree v).root = C_PCBoundedListField.htr v :=
+  C_PCBoundedListField.htr_tree hwt
+
 /-- Certificate for `harness.PCCircle`. -/
 def C_PCCircle : Codec :=
-  (containerCodec [(uintCodec 2), (uintCodec 1)])
+  (progContainerCodec [(uintCodec 2), (uintCodec 1)] [false, true, true])
 
 /-- Decode-canonicity (P2) for `PCCircle`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -578,9 +796,15 @@ theorem C_PCCircle_roundtrip {v : Val} (hwt : C_PCCircle.wt v) (hrep : C_PCCircl
     C_PCCircle.dec (C_PCCircle.ser v) = some v :=
   C_PCCircle.round hwt hrep
 
+/-- Tree/root agreement for `PCCircle`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_PCCircle_tree_root {v : Val} (hwt : C_PCCircle.wt v) :
+    (C_PCCircle.tree v).root = C_PCCircle.htr v :=
+  C_PCCircle.htr_tree hwt
+
 /-- Certificate for `harness.PCInnerShape`. -/
 def C_PCInnerShape : Codec :=
-  (containerCodec [(uintCodec 2), (uintCodec 1)])
+  (progContainerCodec [(uintCodec 2), (uintCodec 1)] [true, false, true])
 
 /-- Decode-canonicity (P2) for `PCInnerShape`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -593,9 +817,15 @@ theorem C_PCInnerShape_roundtrip {v : Val} (hwt : C_PCInnerShape.wt v) (hrep : C
     C_PCInnerShape.dec (C_PCInnerShape.ser v) = some v :=
   C_PCInnerShape.round hwt hrep
 
+/-- Tree/root agreement for `PCInnerShape`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_PCInnerShape_tree_root {v : Val} (hwt : C_PCInnerShape.wt v) :
+    (C_PCInnerShape.tree v).root = C_PCInnerShape.htr v :=
+  C_PCInnerShape.htr_tree hwt
+
 /-- Certificate for `harness.PCLeadingGaps`. -/
 def C_PCLeadingGaps : Codec :=
-  (containerCodec [(uintCodec 4)])
+  (progContainerCodec [(uintCodec 4)] [false, false, true])
 
 /-- Decode-canonicity (P2) for `PCLeadingGaps`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -608,9 +838,15 @@ theorem C_PCLeadingGaps_roundtrip {v : Val} (hwt : C_PCLeadingGaps.wt v) (hrep :
     C_PCLeadingGaps.dec (C_PCLeadingGaps.ser v) = some v :=
   C_PCLeadingGaps.round hwt hrep
 
+/-- Tree/root agreement for `PCLeadingGaps`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_PCLeadingGaps_tree_root {v : Val} (hwt : C_PCLeadingGaps.wt v) :
+    (C_PCLeadingGaps.tree v).root = C_PCLeadingGaps.htr v :=
+  C_PCLeadingGaps.htr_tree hwt
+
 /-- Certificate for `harness.PCLevelBoundary`. -/
 def C_PCLevelBoundary : Codec :=
-  (containerCodec [(uintCodec 2), (uintCodec 1)])
+  (progContainerCodec [(uintCodec 2), (uintCodec 1)] [true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, true])
 
 /-- Decode-canonicity (P2) for `PCLevelBoundary`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -623,9 +859,15 @@ theorem C_PCLevelBoundary_roundtrip {v : Val} (hwt : C_PCLevelBoundary.wt v) (hr
     C_PCLevelBoundary.dec (C_PCLevelBoundary.ser v) = some v :=
   C_PCLevelBoundary.round hwt hrep
 
+/-- Tree/root agreement for `PCLevelBoundary`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_PCLevelBoundary_tree_root {v : Val} (hwt : C_PCLevelBoundary.wt v) :
+    (C_PCLevelBoundary.tree v).root = C_PCLevelBoundary.htr v :=
+  C_PCLevelBoundary.htr_tree hwt
+
 /-- Certificate for `harness.PCMultipleGaps`. -/
 def C_PCMultipleGaps : Codec :=
-  (containerCodec [(uintCodec 1), (uintCodec 2), (uintCodec 4)])
+  (progContainerCodec [(uintCodec 1), (uintCodec 2), (uintCodec 4)] [true, false, false, true, false, true])
 
 /-- Decode-canonicity (P2) for `PCMultipleGaps`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -638,9 +880,15 @@ theorem C_PCMultipleGaps_roundtrip {v : Val} (hwt : C_PCMultipleGaps.wt v) (hrep
     C_PCMultipleGaps.dec (C_PCMultipleGaps.ser v) = some v :=
   C_PCMultipleGaps.round hwt hrep
 
+/-- Tree/root agreement for `PCMultipleGaps`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_PCMultipleGaps_tree_root {v : Val} (hwt : C_PCMultipleGaps.wt v) :
+    (C_PCMultipleGaps.tree v).root = C_PCMultipleGaps.htr v :=
+  C_PCMultipleGaps.htr_tree hwt
+
 /-- Certificate for `harness.PCOneField`. -/
 def C_PCOneField : Codec :=
-  (containerCodec [(uintCodec 2)])
+  (progContainerCodec [(uintCodec 2)] [true])
 
 /-- Decode-canonicity (P2) for `PCOneField`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -653,9 +901,15 @@ theorem C_PCOneField_roundtrip {v : Val} (hwt : C_PCOneField.wt v) (hrep : C_PCO
     C_PCOneField.dec (C_PCOneField.ser v) = some v :=
   C_PCOneField.round hwt hrep
 
+/-- Tree/root agreement for `PCOneField`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_PCOneField_tree_root {v : Val} (hwt : C_PCOneField.wt v) :
+    (C_PCOneField.tree v).root = C_PCOneField.htr v :=
+  C_PCOneField.htr_tree hwt
+
 /-- Certificate for `harness.PCOuterShape`. -/
 def C_PCOuterShape : Codec :=
-  (containerCodec [(uintCodec 1), (containerCodec [(uintCodec 2), (uintCodec 1)])])
+  (progContainerCodec [(uintCodec 1), (progContainerCodec [(uintCodec 2), (uintCodec 1)] [true, false, true])] [true, false, true])
 
 /-- Decode-canonicity (P2) for `PCOuterShape`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -668,9 +922,15 @@ theorem C_PCOuterShape_roundtrip {v : Val} (hwt : C_PCOuterShape.wt v) (hrep : C
     C_PCOuterShape.dec (C_PCOuterShape.ser v) = some v :=
   C_PCOuterShape.round hwt hrep
 
+/-- Tree/root agreement for `PCOuterShape`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_PCOuterShape_tree_root {v : Val} (hwt : C_PCOuterShape.wt v) :
+    (C_PCOuterShape.tree v).root = C_PCOuterShape.htr v :=
+  C_PCOuterShape.htr_tree hwt
+
 /-- Certificate for `harness.PCProgressiveFields`. -/
 def C_PCProgressiveFields : Codec :=
-  (containerCodec [(uintCodec 8), (listFixedCodec (uintCodec 8) 8 noLimit (by rfl) (by decide)), (bitlistCodec noLimit)])
+  (progContainerCodec [(uintCodec 8), (progListPackedCodec (uintCodec 8) 8 (by rfl) (by decide)), progBitlistCodec] [true, true, true])
 
 /-- Decode-canonicity (P2) for `PCProgressiveFields`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -683,9 +943,15 @@ theorem C_PCProgressiveFields_roundtrip {v : Val} (hwt : C_PCProgressiveFields.w
     C_PCProgressiveFields.dec (C_PCProgressiveFields.ser v) = some v :=
   C_PCProgressiveFields.round hwt hrep
 
+/-- Tree/root agreement for `PCProgressiveFields`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_PCProgressiveFields_tree_root {v : Val} (hwt : C_PCProgressiveFields.wt v) :
+    (C_PCProgressiveFields.tree v).root = C_PCProgressiveFields.htr v :=
+  C_PCProgressiveFields.htr_tree hwt
+
 /-- Certificate for `harness.PCShapeContainer`. -/
 def C_PCShapeContainer : Codec :=
-  (containerCodec [(uintCodec 1), (containerCodec [(uintCodec 2), (uintCodec 1)])])
+  (containerCodec [(uintCodec 1), (progContainerCodec [(uintCodec 2), (uintCodec 1)] [true, false, true])])
 
 /-- Decode-canonicity (P2) for `PCShapeContainer`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -698,9 +964,15 @@ theorem C_PCShapeContainer_roundtrip {v : Val} (hwt : C_PCShapeContainer.wt v) (
     C_PCShapeContainer.dec (C_PCShapeContainer.ser v) = some v :=
   C_PCShapeContainer.round hwt hrep
 
+/-- Tree/root agreement for `PCShapeContainer`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_PCShapeContainer_tree_root {v : Val} (hwt : C_PCShapeContainer.wt v) :
+    (C_PCShapeContainer.tree v).root = C_PCShapeContainer.htr v :=
+  C_PCShapeContainer.htr_tree hwt
+
 /-- Certificate for `harness.PCSquare`. -/
 def C_PCSquare : Codec :=
-  (containerCodec [(uintCodec 2), (uintCodec 1)])
+  (progContainerCodec [(uintCodec 2), (uintCodec 1)] [true, false, true])
 
 /-- Decode-canonicity (P2) for `PCSquare`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -713,9 +985,15 @@ theorem C_PCSquare_roundtrip {v : Val} (hwt : C_PCSquare.wt v) (hrep : C_PCSquar
     C_PCSquare.dec (C_PCSquare.ser v) = some v :=
   C_PCSquare.round hwt hrep
 
+/-- Tree/root agreement for `PCSquare`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_PCSquare_tree_root {v : Val} (hwt : C_PCSquare.wt v) :
+    (C_PCSquare.tree v).root = C_PCSquare.htr v :=
+  C_PCSquare.htr_tree hwt
+
 /-- Certificate for `harness.PCSquareProgList`. -/
 def C_PCSquareProgList : Codec :=
-  (listFixedCodec (containerCodec [(uintCodec 2), (uintCodec 1)]) 3 noLimit (by rfl) (by decide))
+  (progListFixedCodec (progContainerCodec [(uintCodec 2), (uintCodec 1)] [true, false, true]) 3 (by rfl) (by decide))
 
 /-- Decode-canonicity (P2) for `PCSquareProgList`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -728,9 +1006,15 @@ theorem C_PCSquareProgList_roundtrip {v : Val} (hwt : C_PCSquareProgList.wt v) (
     C_PCSquareProgList.dec (C_PCSquareProgList.ser v) = some v :=
   C_PCSquareProgList.round hwt hrep
 
+/-- Tree/root agreement for `PCSquareProgList`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_PCSquareProgList_tree_root {v : Val} (hwt : C_PCSquareProgList.wt v) :
+    (C_PCSquareProgList.tree v).root = C_PCSquareProgList.htr v :=
+  C_PCSquareProgList.htr_tree hwt
+
 /-- Certificate for `harness.PCWidestLayout`. -/
 def C_PCWidestLayout : Codec :=
-  (containerCodec [(uintCodec 1)])
+  (progContainerCodec [(uintCodec 1)] [false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, true])
 
 /-- Decode-canonicity (P2) for `PCWidestLayout`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -743,9 +1027,15 @@ theorem C_PCWidestLayout_roundtrip {v : Val} (hwt : C_PCWidestLayout.wt v) (hrep
     C_PCWidestLayout.dec (C_PCWidestLayout.ser v) = some v :=
   C_PCWidestLayout.round hwt hrep
 
+/-- Tree/root agreement for `PCWidestLayout`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_PCWidestLayout_tree_root {v : Val} (hwt : C_PCWidestLayout.wt v) :
+    (C_PCWidestLayout.tree v).root = C_PCWidestLayout.htr v :=
+  C_PCWidestLayout.htr_tree hwt
+
 /-- Certificate for `harness.ProgBitList`. -/
 def C_ProgBitList : Codec :=
-  (bitlistCodec noLimit)
+  progBitlistCodec
 
 /-- Decode-canonicity (P2) for `ProgBitList`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -757,6 +1047,12 @@ theorem C_ProgBitList_canonicity {bs : List UInt8} {v : Val}
 theorem C_ProgBitList_roundtrip {v : Val} (hwt : C_ProgBitList.wt v) (hrep : C_ProgBitList.rep v) :
     C_ProgBitList.dec (C_ProgBitList.ser v) = some v :=
   C_ProgBitList.round hwt hrep
+
+/-- Tree/root agreement for `ProgBitList`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_ProgBitList_tree_root {v : Val} (hwt : C_ProgBitList.wt v) :
+    (C_ProgBitList.tree v).root = C_ProgBitList.htr v :=
+  C_ProgBitList.htr_tree hwt
 
 /-- Certificate for `harness.ProgBytes32`. -/
 def C_ProgBytes32 : Codec :=
@@ -773,9 +1069,15 @@ theorem C_ProgBytes32_roundtrip {v : Val} (hwt : C_ProgBytes32.wt v) (hrep : C_P
     C_ProgBytes32.dec (C_ProgBytes32.ser v) = some v :=
   C_ProgBytes32.round hwt hrep
 
+/-- Tree/root agreement for `ProgBytes32`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_ProgBytes32_tree_root {v : Val} (hwt : C_ProgBytes32.wt v) :
+    (C_ProgBytes32.tree v).root = C_ProgBytes32.htr v :=
+  C_ProgBytes32.htr_tree hwt
+
 /-- Certificate for `harness.ProgBytes32List`. -/
 def C_ProgBytes32List : Codec :=
-  (listFixedCodec (byteVectorCodec 32) 32 noLimit (by rfl) (by decide))
+  (progListFixedCodec (byteVectorCodec 32) 32 (by rfl) (by decide))
 
 /-- Decode-canonicity (P2) for `ProgBytes32List`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -788,9 +1090,15 @@ theorem C_ProgBytes32List_roundtrip {v : Val} (hwt : C_ProgBytes32List.wt v) (hr
     C_ProgBytes32List.dec (C_ProgBytes32List.ser v) = some v :=
   C_ProgBytes32List.round hwt hrep
 
+/-- Tree/root agreement for `ProgBytes32List`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_ProgBytes32List_tree_root {v : Val} (hwt : C_ProgBytes32List.wt v) :
+    (C_ProgBytes32List.tree v).root = C_ProgBytes32List.htr v :=
+  C_ProgBytes32List.htr_tree hwt
+
 /-- Certificate for `harness.ProgContainerWithList`. -/
 def C_ProgContainerWithList : Codec :=
-  (containerCodec [(uintCodec 2), (listFixedCodec (uintCodec 8) 8 noLimit (by rfl) (by decide)), (uintCodec 1)])
+  (containerCodec [(uintCodec 2), (progListPackedCodec (uintCodec 8) 8 (by rfl) (by decide)), (uintCodec 1)])
 
 /-- Decode-canonicity (P2) for `ProgContainerWithList`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -803,9 +1111,15 @@ theorem C_ProgContainerWithList_roundtrip {v : Val} (hwt : C_ProgContainerWithLi
     C_ProgContainerWithList.dec (C_ProgContainerWithList.ser v) = some v :=
   C_ProgContainerWithList.round hwt hrep
 
+/-- Tree/root agreement for `ProgContainerWithList`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_ProgContainerWithList_tree_root {v : Val} (hwt : C_ProgContainerWithList.wt v) :
+    (C_ProgContainerWithList.tree v).root = C_ProgContainerWithList.htr v :=
+  C_ProgContainerWithList.htr_tree hwt
+
 /-- Certificate for `harness.ProgNestedList`. -/
 def C_ProgNestedList : Codec :=
-  (listVarCodec (listFixedCodec (uintCodec 2) 2 noLimit (by rfl) (by decide)) noLimit)
+  (progListVarCodec (progListPackedCodec (uintCodec 2) 2 (by rfl) (by decide)))
 
 /-- Decode-canonicity (P2) for `ProgNestedList`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -818,9 +1132,15 @@ theorem C_ProgNestedList_roundtrip {v : Val} (hwt : C_ProgNestedList.wt v) (hrep
     C_ProgNestedList.dec (C_ProgNestedList.ser v) = some v :=
   C_ProgNestedList.round hwt hrep
 
+/-- Tree/root agreement for `ProgNestedList`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_ProgNestedList_tree_root {v : Val} (hwt : C_ProgNestedList.wt v) :
+    (C_ProgNestedList.tree v).root = C_ProgNestedList.htr v :=
+  C_ProgNestedList.htr_tree hwt
+
 /-- Certificate for `harness.ProgUint16List`. -/
 def C_ProgUint16List : Codec :=
-  (listFixedCodec (uintCodec 2) 2 noLimit (by rfl) (by decide))
+  (progListPackedCodec (uintCodec 2) 2 (by rfl) (by decide))
 
 /-- Decode-canonicity (P2) for `ProgUint16List`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -833,9 +1153,15 @@ theorem C_ProgUint16List_roundtrip {v : Val} (hwt : C_ProgUint16List.wt v) (hrep
     C_ProgUint16List.dec (C_ProgUint16List.ser v) = some v :=
   C_ProgUint16List.round hwt hrep
 
+/-- Tree/root agreement for `ProgUint16List`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_ProgUint16List_tree_root {v : Val} (hwt : C_ProgUint16List.wt v) :
+    (C_ProgUint16List.tree v).root = C_ProgUint16List.htr v :=
+  C_ProgUint16List.htr_tree hwt
+
 /-- Certificate for `harness.ProgUint64List`. -/
 def C_ProgUint64List : Codec :=
-  (listFixedCodec (uintCodec 8) 8 noLimit (by rfl) (by decide))
+  (progListPackedCodec (uintCodec 8) 8 (by rfl) (by decide))
 
 /-- Decode-canonicity (P2) for `ProgUint64List`: every accepted byte string is
     exactly the canonical serialization of its decoded value. -/
@@ -847,6 +1173,12 @@ theorem C_ProgUint64List_canonicity {bs : List UInt8} {v : Val}
 theorem C_ProgUint64List_roundtrip {v : Val} (hwt : C_ProgUint64List.wt v) (hrep : C_ProgUint64List.rep v) :
     C_ProgUint64List.dec (C_ProgUint64List.ser v) = some v :=
   C_ProgUint64List.round hwt hrep
+
+/-- Tree/root agreement for `ProgUint64List`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_ProgUint64List_tree_root {v : Val} (hwt : C_ProgUint64List.wt v) :
+    (C_ProgUint64List.tree v).root = C_ProgUint64List.htr v :=
+  C_ProgUint64List.htr_tree hwt
 
 /-- Certificate for `harness.SmokeBitList8`. -/
 def C_SmokeBitList8 : Codec :=
@@ -862,6 +1194,12 @@ theorem C_SmokeBitList8_canonicity {bs : List UInt8} {v : Val}
 theorem C_SmokeBitList8_roundtrip {v : Val} (hwt : C_SmokeBitList8.wt v) (hrep : C_SmokeBitList8.rep v) :
     C_SmokeBitList8.dec (C_SmokeBitList8.ser v) = some v :=
   C_SmokeBitList8.round hwt hrep
+
+/-- Tree/root agreement for `SmokeBitList8`: hashing the explicit Merkle tree
+    yields exactly the direct hash-tree-root. -/
+theorem C_SmokeBitList8_tree_root {v : Val} (hwt : C_SmokeBitList8.wt v) :
+    (C_SmokeBitList8.tree v).root = C_SmokeBitList8.htr v :=
+  C_SmokeBitList8.htr_tree hwt
 
 /-- Name-indexed certificate registry (for the oracle CLI). -/
 def certified : List (String × Codec) := [

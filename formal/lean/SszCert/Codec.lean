@@ -5,6 +5,7 @@ import SszCert.Bitlist
 import SszCert.Boolean
 import SszCert.Bitvector
 import SszCert.FixedSeq
+import SszCert.Merkle
 
 /-!
 # The codec composition layer
@@ -51,9 +52,12 @@ structure Codec where
   ser : Val → List UInt8
   dec : List UInt8 → Option Val
   kind : Option Nat
+  htr : Val → Merkle.Hash
+  tree : Val → Merkle.Node
   canon : ∀ {bs v}, dec bs = some v → wt v ∧ ser v = bs
   round : ∀ {v}, wt v → rep v → dec (ser v) = some v
   ser_len : ∀ {v n}, wt v → kind = some n → (ser v).length = n
+  htr_tree : ∀ {v}, wt v → (tree v).root = htr v
 
 /-! ## Leaf codecs -/
 
@@ -68,6 +72,15 @@ def uintCodec (w : Nat) : Codec where
     | _ => []
   dec bs := if bs.length = w then some (.uint (decodeLE bs)) else none
   kind := some w
+  htr v := match v with
+    | .uint n => Merkle.padChunk (encodeLE n w)
+    | _ => []
+  tree v := match v with
+    | .uint n => .leaf (Merkle.padChunk (encodeLE n w))
+    | _ => .leaf []
+  htr_tree := by
+    intro v _
+    cases v <;> rfl
   canon := by
     intro bs v h
     by_cases hl : bs.length = w
@@ -111,6 +124,15 @@ def boolCodec : Codec where
     | _ => []
   dec bs := (Boolean.decodeBool bs).map .boolean
   kind := some 1
+  htr v := match v with
+    | .boolean b => Merkle.padChunk (Boolean.serializeBool b)
+    | _ => []
+  tree v := match v with
+    | .boolean b => .leaf (Merkle.padChunk (Boolean.serializeBool b))
+    | _ => .leaf []
+  htr_tree := by
+    intro v _
+    cases v <;> rfl
   canon := by
     intro bs v h
     cases hb : Boolean.decodeBool bs with
@@ -150,6 +172,19 @@ def byteVectorCodec (n : Nat) : Codec where
     | _ => []
   dec bs := if bs.length = n then some (.bytes bs) else none
   kind := some n
+  htr v := match v with
+    | .bytes bs => Merkle.merkleRoot (Merkle.depthFor (Merkle.byteChunks n))
+        (Merkle.packBytes bs)
+    | _ => []
+  tree v := match v with
+    | .bytes bs => Merkle.merkleTree (Merkle.depthFor (Merkle.byteChunks n))
+        (Merkle.chunkNodes (Merkle.packBytes bs))
+    | _ => .leaf []
+  htr_tree := by
+    intro v _
+    cases v
+    case bytes bs => exact Merkle.root_merkleTree_chunks _ _
+    all_goals rfl
   canon := by
     intro bs v h
     by_cases hl : bs.length = n
@@ -186,6 +221,26 @@ def byteListCodec (limit : Nat) : Codec where
     | _ => []
   dec bs := if bs.length ≤ limit then some (.bytes bs) else none
   kind := none
+  htr v := match v with
+    | .bytes bs => Merkle.mixIn
+        (Merkle.merkleRoot (Merkle.depthFor (Merkle.byteChunks limit))
+          (Merkle.packBytes bs))
+        (Merkle.lengthWord bs.length)
+    | _ => []
+  tree v := match v with
+    | .bytes bs => .branch
+        (Merkle.merkleTree (Merkle.depthFor (Merkle.byteChunks limit))
+          (Merkle.chunkNodes (Merkle.packBytes bs)))
+        (.leaf (Merkle.lengthWord bs.length))
+    | _ => .leaf []
+  htr_tree := by
+    intro v _
+    cases v
+    case bytes bs =>
+      show Merkle.hashPair _ _ = _
+      rw [Merkle.root_merkleTree_chunks]
+      rfl
+    all_goals rfl
   canon := by
     intro bs v h
     by_cases hl : bs.length ≤ limit
@@ -218,6 +273,19 @@ def bitvectorCodec (n : Nat) : Codec where
     | _ => []
   dec bs := (Bitvector.decodeBitvec n bs).map .bits
   kind := some (Bitvector.byteLen n)
+  htr v := match v with
+    | .bits l => Merkle.merkleRoot (Merkle.depthFor (Merkle.bitChunks n))
+        (Merkle.packBits l)
+    | _ => []
+  tree v := match v with
+    | .bits l => Merkle.merkleTree (Merkle.depthFor (Merkle.bitChunks n))
+        (Merkle.chunkNodes (Merkle.packBits l))
+    | _ => .leaf []
+  htr_tree := by
+    intro v _
+    cases v
+    case bits l => exact Merkle.root_merkleTree_chunks _ _
+    all_goals rfl
   canon := by
     intro bs v h
     cases hb : Bitvector.decodeBitvec n bs with
@@ -258,6 +326,26 @@ def bitlistCodec (limit : Nat) : Codec where
     | _ => []
   dec bs := (Bitlist.decodeBits limit bs).map .bits
   kind := none
+  htr v := match v with
+    | .bits l => Merkle.mixIn
+        (Merkle.merkleRoot (Merkle.depthFor (Merkle.bitChunks limit))
+          (Merkle.packBits l))
+        (Merkle.lengthWord l.length)
+    | _ => []
+  tree v := match v with
+    | .bits l => .branch
+        (Merkle.merkleTree (Merkle.depthFor (Merkle.bitChunks limit))
+          (Merkle.chunkNodes (Merkle.packBits l)))
+        (.leaf (Merkle.lengthWord l.length))
+    | _ => .leaf []
+  htr_tree := by
+    intro v _
+    cases v
+    case bits l =>
+      show Merkle.hashPair _ _ = _
+      rw [Merkle.root_merkleTree_chunks]
+      rfl
+    all_goals rfl
   canon := by
     intro bs v h
     cases hb : Bitlist.decodeBits limit bs with
@@ -437,6 +525,28 @@ theorem varVals_no_var {s : Sch.Schema}
         exact ih (fun g hg => hs g (by simp [hg])) vs
       | var => exact absurd rfl (hs .var (by simp))
 
+/-- Field roots, per field codec. -/
+def htrFields : List Codec → List Val → List Merkle.Hash
+  | c :: cs, v :: vs => c.htr v :: htrFields cs vs
+  | _, _ => []
+
+/-- Field subtrees, per field codec. -/
+def treeFields : List Codec → List Val → List Merkle.Node
+  | c :: cs, v :: vs => c.tree v :: treeFields cs vs
+  | _, _ => []
+
+theorem map_root_treeFields {cs : List Codec} {vs : List Val}
+    (hwt : WTFields cs vs) :
+    (treeFields cs vs).map Merkle.Node.root = htrFields cs vs := by
+  induction cs generalizing vs with
+  | nil => cases vs <;> rfl
+  | cons c cs ih =>
+    cases vs with
+    | nil => rfl
+    | cons v vs =>
+      obtain ⟨hw, hws⟩ := hwt
+      simp only [treeFields, htrFields, List.map_cons, c.htr_tree hw, ih hws]
+
 /-- SSZ container of heterogeneous fields: fixed fields inline, variable
     fields behind a 4-byte offset table (all offset discipline inherited from
     `Schema.lean`). -/
@@ -457,6 +567,20 @@ def containerCodec (cs : List Codec) : Codec where
     | some fields => (decFields cs fields).map .seq
     | none => none
   kind := kindOfCodecs cs
+  htr v := match v with
+    | .seq vs => Merkle.merkleRoot (Merkle.depthFor cs.length) (htrFields cs vs)
+    | _ => []
+  tree v := match v with
+    | .seq vs => Merkle.merkleTree (Merkle.depthFor cs.length) (treeFields cs vs)
+    | _ => .leaf []
+  htr_tree := by
+    intro v hwt
+    cases v
+    case seq vs =>
+      have hwt' : WTFields cs vs := hwt
+      show (Merkle.merkleTree _ _).root = _
+      rw [Merkle.root_merkleTree, map_root_treeFields hwt']
+    all_goals rfl
   canon := by
     intro bs v h
     cases hd : Sch.decode (schemaOfCodecs cs) bs with
@@ -596,6 +720,15 @@ theorem length_decElems {c : Codec} {fields : List (List UInt8)}
   rw [length_serElems] at hlen
   exact hlen
 
+theorem map_root_treeElems {c : Codec} {vs : List Val}
+    (hwt : WTElems c vs) :
+    (vs.map c.tree).map Merkle.Node.root = vs.map c.htr := by
+  induction vs with
+  | nil => rfl
+  | cons v vs ih =>
+    simp only [List.map_cons, c.htr_tree (hwt v (by simp)),
+      ih (fun w hw => hwt w (by simp [hw]))]
+
 /-- SSZ `List[T, limit]` with fixed-size `T` (`k` bytes per element): packed
     encoding, count derived from the byte length. -/
 def listFixedCodec (c : Codec) (k limit : Nat) (hk : c.kind = some k)
@@ -614,6 +747,25 @@ def listFixedCodec (c : Codec) (k limit : Nat) (hk : c.kind = some k)
     | some fields => (decElems c fields).map .seq
     | none => none
   kind := none
+  htr v := match v with
+    | .seq vs => Merkle.mixIn
+        (Merkle.merkleRoot (Merkle.depthFor limit) (vs.map c.htr))
+        (Merkle.lengthWord vs.length)
+    | _ => []
+  tree v := match v with
+    | .seq vs => .branch
+        (Merkle.merkleTree (Merkle.depthFor limit) (vs.map c.tree))
+        (.leaf (Merkle.lengthWord vs.length))
+    | _ => .leaf []
+  htr_tree := by
+    intro v hwt
+    cases v
+    case seq vs =>
+      have hwt' : WTElems c vs ∧ vs.length ≤ limit := hwt
+      show Merkle.hashPair _ _ = _
+      rw [Merkle.root_merkleTree, map_root_treeElems hwt'.1]
+      rfl
+    all_goals rfl
   canon := by
     intro bs v h
     cases hd : FixedSeq.decodeFixedList k limit bs with
@@ -678,6 +830,25 @@ def listVarCodec (c : Codec) (limit : Nat) : Codec where
     | some fields => (decElems c fields).map .seq
     | none => none
   kind := none
+  htr v := match v with
+    | .seq vs => Merkle.mixIn
+        (Merkle.merkleRoot (Merkle.depthFor limit) (vs.map c.htr))
+        (Merkle.lengthWord vs.length)
+    | _ => []
+  tree v := match v with
+    | .seq vs => .branch
+        (Merkle.merkleTree (Merkle.depthFor limit) (vs.map c.tree))
+        (.leaf (Merkle.lengthWord vs.length))
+    | _ => .leaf []
+  htr_tree := by
+    intro v hwt
+    cases v
+    case seq vs =>
+      have hwt' : WTElems c vs ∧ vs.length ≤ limit := hwt
+      show Merkle.hashPair _ _ = _
+      rw [Merkle.root_merkleTree, map_root_treeElems hwt'.1]
+      rfl
+    all_goals rfl
   canon := by
     intro bs v h
     cases hd : VarList.decodeList limit bs with
@@ -744,6 +915,20 @@ def vectorFixedCodec (c : Codec) (k n : Nat) (hk : c.kind = some k) :
     | some fields => (decElems c fields).map .seq
     | none => none
   kind := some (k * n)
+  htr v := match v with
+    | .seq vs => Merkle.merkleRoot (Merkle.depthFor n) (vs.map c.htr)
+    | _ => []
+  tree v := match v with
+    | .seq vs => Merkle.merkleTree (Merkle.depthFor n) (vs.map c.tree)
+    | _ => .leaf []
+  htr_tree := by
+    intro v hwt
+    cases v
+    case seq vs =>
+      have hwt' : WTElems c vs ∧ vs.length = n := hwt
+      show (Merkle.merkleTree _ _).root = _
+      rw [Merkle.root_merkleTree, map_root_treeElems hwt'.1]
+    all_goals rfl
   canon := by
     intro bs v h
     cases hd : FixedSeq.decodeFixedVector k n bs with
@@ -814,6 +999,20 @@ def vectorVarCodec (c : Codec) (n : Nat) : Codec where
     | some fields => (decElems c fields).map .seq
     | none => none
   kind := none
+  htr v := match v with
+    | .seq vs => Merkle.merkleRoot (Merkle.depthFor n) (vs.map c.htr)
+    | _ => []
+  tree v := match v with
+    | .seq vs => Merkle.merkleTree (Merkle.depthFor n) (vs.map c.tree)
+    | _ => .leaf []
+  htr_tree := by
+    intro v hwt
+    cases v
+    case seq vs =>
+      have hwt' : WTElems c vs ∧ vs.length = n := hwt
+      show (Merkle.merkleTree _ _).root = _
+      rw [Merkle.root_merkleTree, map_root_treeElems hwt'.1]
+    all_goals rfl
   canon := by
     intro bs v h
     cases hd : VarList.decodeVector n bs with
@@ -888,6 +1087,34 @@ def unionCodec (variants : List (Nat × Codec)) : Codec where
       | some c => (c.dec rest).map (.union s.toNat)
       | none => none
   kind := none
+  htr v := match v with
+    | .union sel pv =>
+      match variants.lookup sel with
+      | some c => Merkle.mixIn (c.htr pv) (Merkle.selectorWord sel)
+      | none => []
+    | _ => []
+  tree v := match v with
+    | .union sel pv =>
+      match variants.lookup sel with
+      | some c => .branch (c.tree pv) (.leaf (Merkle.selectorWord sel))
+      | none => .leaf []
+    | _ => .leaf []
+  htr_tree := by
+    intro v hwt
+    cases v
+    case union sel pv =>
+      have hwt' : (match variants.lookup sel with
+        | some c => c.wt pv ∧ sel < 256
+        | none => False) := hwt
+      cases hl : variants.lookup sel with
+      | none => simp only [hl] at hwt'
+      | some c =>
+        simp only [hl] at hwt'
+        simp only [hl]
+        show Merkle.hashPair (c.tree pv).root _ = _
+        rw [c.htr_tree hwt'.1]
+        rfl
+    all_goals rfl
   canon := by
     intro bs v h
     match bs with
@@ -953,5 +1180,215 @@ def unionCodec (variants : List (Nat × Codec)) : Codec where
   ser_len := by
     intro v n _ hk
     exact absurd hk (by simp)
+
+/-! ## Packed-merkleization and progressive variants
+
+Same wire formats as their base combinators (the `with`-update keeps
+`ser`/`dec` and their canonicity/roundtrip proofs untouched); only the
+merkleization differs. -/
+
+/-- Stand-in bound for SSZ types without a declared limit (progressive
+    lists/bitlists). Unreachable: offsets cap wire-derived counts far below. -/
+def noLimit : Nat := 2 ^ 64
+
+/-- SSZ `List[T, limit]` with *basic* `T` (uintN/bool, `k` bytes each):
+    merkleization packs the serialized elements into shared chunks. -/
+def listPackedCodec (c : Codec) (k limit : Nat) (hk : c.kind = some k)
+    (hkpos : 0 < k) : Codec :=
+  { listFixedCodec c k limit hk hkpos with
+    htr := fun v => match v with
+      | .seq vs => Merkle.mixIn
+          (Merkle.merkleRoot (Merkle.depthFor (Merkle.byteChunks (limit * k)))
+            (Merkle.packBytes (Sch.cat (serElems c vs))))
+          (Merkle.lengthWord vs.length)
+      | _ => []
+    tree := fun v => match v with
+      | .seq vs => .branch
+          (Merkle.merkleTree (Merkle.depthFor (Merkle.byteChunks (limit * k)))
+            (Merkle.chunkNodes (Merkle.packBytes (Sch.cat (serElems c vs)))))
+          (.leaf (Merkle.lengthWord vs.length))
+      | _ => .leaf []
+    htr_tree := by
+      intro v _
+      cases v
+      case seq vs =>
+        show Merkle.hashPair _ _ = _
+        rw [Merkle.root_merkleTree_chunks]
+        rfl
+      all_goals rfl }
+
+/-- SSZ `Vector[T, n]` with *basic* `T` (`k` bytes each): packed
+    merkleization. -/
+def vectorPackedCodec (c : Codec) (k n : Nat) (hk : c.kind = some k) :
+    Codec :=
+  { vectorFixedCodec c k n hk with
+    htr := fun v => match v with
+      | .seq vs => Merkle.merkleRoot (Merkle.depthFor (Merkle.byteChunks (n * k)))
+          (Merkle.packBytes (Sch.cat (serElems c vs)))
+      | _ => []
+    tree := fun v => match v with
+      | .seq vs => Merkle.merkleTree (Merkle.depthFor (Merkle.byteChunks (n * k)))
+          (Merkle.chunkNodes (Merkle.packBytes (Sch.cat (serElems c vs))))
+      | _ => .leaf []
+    htr_tree := by
+      intro v _
+      cases v
+      case seq vs => exact Merkle.root_merkleTree_chunks _ _
+      all_goals rfl }
+
+/-- EIP-7916 `ProgressiveList[T]` with basic `T`: list wire format (no
+    limit), progressive packed merkleization. -/
+def progListPackedCodec (c : Codec) (k : Nat) (hk : c.kind = some k)
+    (hkpos : 0 < k) : Codec :=
+  { listFixedCodec c k noLimit hk hkpos with
+    htr := fun v => match v with
+      | .seq vs => Merkle.mixIn
+          (Merkle.progRoot (Merkle.packBytes (Sch.cat (serElems c vs))))
+          (Merkle.lengthWord vs.length)
+      | _ => []
+    tree := fun v => match v with
+      | .seq vs => .branch
+          (Merkle.progTree (Merkle.chunkNodes
+            (Merkle.packBytes (Sch.cat (serElems c vs)))))
+          (.leaf (Merkle.lengthWord vs.length))
+      | _ => .leaf []
+    htr_tree := by
+      intro v _
+      cases v
+      case seq vs =>
+        show Merkle.hashPair _ _ = _
+        rw [Merkle.root_progTree_chunks]
+        rfl
+      all_goals rfl }
+
+/-- EIP-7916 `ProgressiveList[T]` with fixed-size composite `T`: one root
+    per element on the progressive spine. -/
+def progListFixedCodec (c : Codec) (k : Nat) (hk : c.kind = some k)
+    (hkpos : 0 < k) : Codec :=
+  { listFixedCodec c k noLimit hk hkpos with
+    htr := fun v => match v with
+      | .seq vs => Merkle.mixIn (Merkle.progRoot (vs.map c.htr))
+          (Merkle.lengthWord vs.length)
+      | _ => []
+    tree := fun v => match v with
+      | .seq vs => .branch (Merkle.progTree (vs.map c.tree))
+          (.leaf (Merkle.lengthWord vs.length))
+      | _ => .leaf []
+    htr_tree := by
+      intro v hwt
+      cases v
+      case seq vs =>
+        have hwt' : WTElems c vs ∧ vs.length ≤ noLimit := hwt
+        show Merkle.hashPair _ _ = _
+        rw [Merkle.root_progTree, map_root_treeElems hwt'.1]
+        rfl
+      all_goals rfl }
+
+/-- EIP-7916 `ProgressiveList[T]` with variable-size `T`. -/
+def progListVarCodec (c : Codec) : Codec :=
+  { listVarCodec c noLimit with
+    htr := fun v => match v with
+      | .seq vs => Merkle.mixIn (Merkle.progRoot (vs.map c.htr))
+          (Merkle.lengthWord vs.length)
+      | _ => []
+    tree := fun v => match v with
+      | .seq vs => .branch (Merkle.progTree (vs.map c.tree))
+          (.leaf (Merkle.lengthWord vs.length))
+      | _ => .leaf []
+    htr_tree := by
+      intro v hwt
+      cases v
+      case seq vs =>
+        have hwt' : WTElems c vs ∧ vs.length ≤ noLimit := hwt
+        show Merkle.hashPair _ _ = _
+        rw [Merkle.root_progTree, map_root_treeElems hwt'.1]
+        rfl
+      all_goals rfl }
+
+/-- EIP-7916 `ProgressiveBitList`. -/
+def progBitlistCodec : Codec :=
+  { bitlistCodec noLimit with
+    htr := fun v => match v with
+      | .bits l => Merkle.mixIn (Merkle.progRoot (Merkle.packBits l))
+          (Merkle.lengthWord l.length)
+      | _ => []
+    tree := fun v => match v with
+      | .bits l => .branch (Merkle.progTree (Merkle.chunkNodes (Merkle.packBits l)))
+          (.leaf (Merkle.lengthWord l.length))
+      | _ => .leaf []
+    htr_tree := by
+      intro v _
+      cases v
+      case bits l =>
+        show Merkle.hashPair _ _ = _
+        rw [Merkle.root_progTree_chunks]
+        rfl
+      all_goals rfl }
+
+/-! ## Progressive containers (EIP-7495) -/
+
+/-- Layout-position roots: a cleared bit keeps its zero leaf, a set bit
+    consumes the next field. -/
+def progFieldRoots : List Bool → List Codec → List Val → List Merkle.Hash
+  | [], _, _ => []
+  | false :: rest, cs, vs => Merkle.zeroHash 0 :: progFieldRoots rest cs vs
+  | true :: rest, c :: cs, v :: vs => c.htr v :: progFieldRoots rest cs vs
+  | true :: _, _, _ => []
+
+/-- Layout-position subtrees. -/
+def progFieldNodes : List Bool → List Codec → List Val → List Merkle.Node
+  | [], _, _ => []
+  | false :: rest, cs, vs =>
+    .leaf (Merkle.zeroHash 0) :: progFieldNodes rest cs vs
+  | true :: rest, c :: cs, v :: vs => c.tree v :: progFieldNodes rest cs vs
+  | true :: _, _, _ => []
+
+theorem map_root_progFieldNodes (layout : List Bool) {cs : List Codec}
+    {vs : List Val} (hwt : WTFields cs vs) :
+    (progFieldNodes layout cs vs).map Merkle.Node.root
+      = progFieldRoots layout cs vs := by
+  induction layout generalizing cs vs with
+  | nil => rfl
+  | cons b rest ih =>
+    cases b with
+    | false =>
+      simp only [progFieldNodes, progFieldRoots, List.map_cons,
+        Merkle.Node.root, ih hwt]
+    | true =>
+      cases cs with
+      | nil =>
+        cases vs with
+        | nil => rfl
+        | cons v vs => exact hwt.elim
+      | cons c cs' =>
+        cases vs with
+        | nil => exact hwt.elim
+        | cons v vs' =>
+          obtain ⟨hw, hws⟩ := hwt
+          simp only [progFieldNodes, progFieldRoots, List.map_cons,
+            c.htr_tree hw, ih hws]
+
+/-- EIP-7495 `ProgressiveContainer`: container wire format over the declared
+    fields; merkleization spreads the field roots over the layout positions
+    on a progressive spine and mixes in the active-fields word. -/
+def progContainerCodec (cs : List Codec) (layout : List Bool) : Codec :=
+  { containerCodec cs with
+    htr := fun v => match v with
+      | .seq vs => Merkle.mixIn (Merkle.progRoot (progFieldRoots layout cs vs))
+          (Merkle.activeFieldsWord layout)
+      | _ => []
+    tree := fun v => match v with
+      | .seq vs => .branch (Merkle.progTree (progFieldNodes layout cs vs))
+          (.leaf (Merkle.activeFieldsWord layout))
+      | _ => .leaf []
+    htr_tree := by
+      intro v hwt
+      cases v
+      case seq vs =>
+        have hwt' : WTFields cs vs := hwt
+        show Merkle.hashPair _ _ = _
+        rw [Merkle.root_progTree, map_root_progFieldNodes layout hwt']
+        rfl
+      all_goals rfl }
 
 end Ssz

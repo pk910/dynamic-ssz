@@ -8,10 +8,12 @@ Executable decision oracle over the certified codecs. Reads lines of the form
 `<typeName> <hex|->` from stdin (`-` denotes the empty byte string) and
 answers per line:
 
-* `ACCEPT` — the certified strict decoder accepts the bytes (and the
-  re-serialization self-check reproduced the input byte-for-byte, as the
-  canonicity theorem guarantees; a `MISMATCH` answer would indicate a
-  compiler/runtime defect, since the theorem rules it out for the model);
+* `ACCEPT <root>` — the certified strict decoder accepts the bytes; `<root>`
+  is the hash tree root of the decoded value. Two self-checks run on every
+  accept — the re-serialization must reproduce the input byte-for-byte, and
+  the explicit Merkle tree must hash to the direct root — both guaranteed by
+  the theorems, so a `MISMATCH`/`MISMATCH-TREE` answer would indicate a
+  compiler/runtime defect, not a model question;
 * `REJECT` — the certified strict decoder rejects the bytes;
 * `ERR ...` — malformed input line or unknown type name.
 -/
@@ -35,6 +37,11 @@ where
     | _, _ => none
   | _, _ => none
 
+def hexOf (bs : List UInt8) : String :=
+  bs.foldl (fun s b =>
+    let d := "0123456789abcdef".toList
+    (s.push d[b.toNat / 16]!).push d[b.toNat % 16]!) ""
+
 def handle (name : String) (hex : String) : String :=
   let bytes? := if hex == "-" then some [] else parseHex hex
   match bytes? with
@@ -44,7 +51,15 @@ def handle (name : String) (hex : String) : String :=
     | none => s!"ERR unknown {name}"
     | some c =>
       match c.dec bytes with
-      | some v => if c.ser v == bytes then "ACCEPT" else "MISMATCH"
+      | some v =>
+        if c.ser v == bytes then
+          let root := c.htr v
+          if (c.tree v).root == root then
+            s!"ACCEPT {hexOf root}"
+          else
+            "MISMATCH-TREE"
+        else
+          "MISMATCH"
       | none => "REJECT"
 
 partial def loop (stdin : IO.FS.Stream) (stdout : IO.FS.Stream) : IO Unit := do
