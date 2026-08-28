@@ -1,0 +1,10 @@
+name = "ssz-cert"
+version = "0.1.0"
+defaultTargets = ["SszCert"]
+
+[[lean_lib]]
+name = "SszCert"
+
+[[lean_exe]]
+name = "ssz-oracle"
+root = "Main"
