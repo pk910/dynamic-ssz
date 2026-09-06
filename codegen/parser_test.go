@@ -72,10 +72,9 @@ func TestParserShallowGate(t *testing.T) {
 func TestViewMethodDetectionWithAliasedAny(t *testing.T) {
 	p := NewParser()
 
-	anyType := types.Universe.Lookup("any").Type()
-	if _, isAlias := anyType.(*types.Alias); !isAlias {
-		t.Fatalf("test binary must materialise aliases (gotypesalias=1); got %T", anyType)
-	}
+	// Build the alias form explicitly: the universe any is an alias node only
+	// from Go 1.23 on, and only when aliases are materialised.
+	anyType := types.NewAlias(types.NewTypeName(token.NoPos, nil, "any", nil), types.NewInterfaceType(nil, nil))
 	if !p.typeMatches(anyType, "any") {
 		t.Error("typeMatches(any alias, \"any\") = false")
 	}
