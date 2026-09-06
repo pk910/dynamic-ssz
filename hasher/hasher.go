@@ -1122,6 +1122,10 @@ func (h *Hasher) Merkleize(indx int) {
 		h.drainJobsFor(indx)
 
 		if layer.collapsed {
+			// The collapse counts whole chunks; a partial chunk of packed
+			// values at the end of the scope is padded first so it is reduced
+			// like the non-collapsed path and the mixin variants do.
+			h.FillUpTo32()
 			h.collapseAllDepths(layer, indx, len(h.buf), 0)
 			h.buf = h.buf[:indx+32]
 			h.popTopLayer()

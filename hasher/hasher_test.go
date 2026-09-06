@@ -2172,3 +2172,52 @@ func TestZeroHashAccessorsSelfInitialize(t *testing.T) {
 		t.Fatalf("GetZeroHashLevel = (%d, %v); want (2, true)", lvl, ok)
 	}
 }
+
+// A packed run whose length is not a multiple of a chunk is padded before the
+// collapsed scope is reduced: collapsing during the appends must not change
+// the root of a vector of packed values.
+func TestMerkleizeCollapsedPadsPartialChunk(t *testing.T) {
+	cases := []struct {
+		name  string
+		count int
+		width int
+	}{
+		{"uint64 x1025", 1025, 8},
+		{"uint32 x2049", 2049, 4},
+		{"uint16 x4097", 4097, 2},
+		{"uint8 x8193", 8193, 1},
+		{"uint64 x1027", 1027, 8},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := func(collapse bool) [32]byte {
+				h := NewHasher()
+				indx := h.StartTree(sszutils.TreeTypeBinary)
+				for i := range tc.count {
+					switch tc.width {
+					case 8:
+						h.AppendUint64(uint64(i + 1))
+					case 4:
+						h.AppendUint32(uint32(i + 1))
+					case 2:
+						h.AppendUint16(uint16(i + 1))
+					default:
+						h.AppendUint8(uint8(i + 1))
+					}
+					if collapse && (i+1)%256 == 0 {
+						h.Collapse()
+					}
+				}
+				h.Merkleize(indx)
+				res, err := h.HashRoot()
+				if err != nil {
+					t.Fatalf("HashRoot: %v", err)
+				}
+				return res
+			}
+			if got, want := root(true), root(false); got != want {
+				t.Fatalf("collapsed root %x != plain root %x", got, want)
+			}
+		})
+	}
+}
