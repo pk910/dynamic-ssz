@@ -278,8 +278,10 @@ func (ctx *ReflectionCtx) tryMarshalView(sourceType *ssztypes.TypeDescriptor, so
 	useViewEncoder := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewEncoder != 0
 	useViewMarshaler := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewMarshaler != 0
 
-	// Prefer encoder for seekable encoders, marshaler otherwise
-	if useViewEncoder && encoder.Seekable() {
+	// The encoder form streams; it is preferred for a non-seekable encoder and
+	// is the only form when no marshaler exists. A seekable (buffer) encoder
+	// prefers the marshaler, as tryMarshalCompat does.
+	if useViewEncoder && (!encoder.Seekable() || !useViewMarshaler) {
 		if enc, ok := getPtr(sourceValue).Interface().(sszutils.DynamicViewEncoder); ok {
 			if encodeFn := enc.MarshalSSZEncoderView(*sourceType.CodegenInfo); encodeFn != nil {
 				return true, encodeFn(ctx.ds, encoder)
