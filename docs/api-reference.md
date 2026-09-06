@@ -54,7 +54,7 @@ type DynSszOption func(*DynSszOptions)
 | `WithStreamWriterBufferSize(n)` | Set stream encoder buffer size (default 2KB) |
 | `WithStreamReaderBufferSize(n)` | Set stream decoder buffer size (default 2KB) |
 | `WithNoDelegation()` | Disable delegation to generated Dynamic* methods (fastssz is governed by `WithNoFastSsz`) |
-| `WithMaxStreamSize(n)` | Cap unknown-length stream decodes (default 512MB); guards allocation from untrusted readers |
+| `WithMaxStreamSize(n)` | Cap the payload size of `UnmarshalSSZReader` (default 512MB): a larger declared size is rejected up front, an unknown-length decode stops there |
 | `WithMaxNestingDepth(n)` | Bound recursion-cycle nesting (default 1024); guards the stack against deeply nested payloads |
 
 ### Global Instance

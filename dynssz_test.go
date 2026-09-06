@@ -5289,6 +5289,61 @@ func TestUnknownSizeMaxStreamSize(t *testing.T) {
 	}
 }
 
+// A declared size is trusted, so it is held to the maximum stream size before
+// any byte is read: the maximum is the most a single call can allocate up
+// front, on the reflection path and on the delegated path alike.
+func TestKnownSizeMaxStreamSize(t *testing.T) {
+	type payload struct {
+		A    uint64
+		Data []byte `ssz-max:"1099511627776"`
+	}
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithMaxStreamSize(64))
+	full, err := ds.MarshalSSZ(&payload{A: 1, Data: []byte{1, 2, 3}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	// At the cap the decode proceeds normally.
+	if err := ds.UnmarshalSSZReader(&payload{}, bytes.NewReader(full), len(full)); err != nil {
+		t.Fatalf("decode within cap: %v", err)
+	}
+
+	// Above the cap the size is rejected without touching the reader.
+	rd := &countingReader{r: bytes.NewReader(full)}
+	err = ds.UnmarshalSSZReader(&payload{}, rd, 65)
+	if !errors.Is(err, sszutils.ErrStreamTooLarge) {
+		t.Fatalf("err = %v, want ErrStreamTooLarge", err)
+	}
+	if rd.n != 0 {
+		t.Fatalf("reader consumed %d bytes before the size was rejected", rd.n)
+	}
+
+	// The default bound applies when none is configured, and a size beyond it
+	// is rejected before the allocation it would otherwise cause.
+	dsd := NewDynSsz(nil, WithNoFastSsz())
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	err = dsd.UnmarshalSSZReader(&payload{}, bytes.NewReader(full), sszutils.DefaultMaxStreamSize+1)
+	runtime.ReadMemStats(&after)
+	if !errors.Is(err, sszutils.ErrStreamTooLarge) {
+		t.Fatalf("err = %v, want ErrStreamTooLarge", err)
+	}
+	if grew := after.TotalAlloc - before.TotalAlloc; grew > 1<<20 {
+		t.Fatalf("rejecting the size allocated %d bytes", grew)
+	}
+}
+
+type countingReader struct {
+	r io.Reader
+	n int
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += n
+	return n, err
+}
+
 // ssz-max must be enforced while reading, so an over-long list is rejected
 // before it is allocated rather than after.
 func TestUnknownSizeEnforcesListLimit(t *testing.T) {
