@@ -152,6 +152,9 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 			staticSize = uint64(targetType.Len)
 		case fieldType.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0:
 			// vector with dynamic size items, so we have to go through each item
+			if targetType.Len > math.MaxInt {
+				return 0, sszutils.ErrPlatformOverflowFn("vector length", targetType.Len)
+			}
 			dataLen := targetValue.Len()
 			if targetType.Kind == reflect.Array && int64(dataLen) > targetType.Len {
 				dataLen = int(targetType.Len)

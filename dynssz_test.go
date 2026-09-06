@@ -5304,7 +5304,7 @@ func TestKnownSizeMaxStreamSize(t *testing.T) {
 	}
 
 	// At the cap the decode proceeds normally.
-	if err := ds.UnmarshalSSZReader(&payload{}, bytes.NewReader(full), len(full)); err != nil {
+	if err = ds.UnmarshalSSZReader(&payload{}, bytes.NewReader(full), len(full)); err != nil {
 		t.Fatalf("decode within cap: %v", err)
 	}
 

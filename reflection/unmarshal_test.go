@@ -1081,10 +1081,10 @@ func TestNamedByteElementsRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("marshal: %v", err)
 		}
-		if err := ds.UnmarshalSSZ(fresh, data, opts...); err != nil {
+		if err = ds.UnmarshalSSZ(fresh, data, opts...); err != nil {
 			t.Fatalf("unmarshal: %v", err)
 		}
-		if err := ds.UnmarshalSSZReader(fresh, bytes.NewReader(data), -1, opts...); err != nil {
+		if err = ds.UnmarshalSSZReader(fresh, bytes.NewReader(data), -1, opts...); err != nil {
 			t.Fatalf("unmarshal reader: %v", err)
 		}
 		again, err := ds.MarshalSSZ(fresh, opts...)

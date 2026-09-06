@@ -2137,13 +2137,13 @@ func TestOversizedArrayOfDynamicElements(t *testing.T) {
 			t.Fatalf("SizeSSZ = %d, len = %d", size, len(data))
 		}
 		var streamed bytes.Buffer
-		if err := ds.MarshalSSZWriter(value, &streamed); err != nil {
+		if err = ds.MarshalSSZWriter(value, &streamed); err != nil {
 			t.Fatalf("marshal writer: %v", err)
 		}
 		if !bytes.Equal(streamed.Bytes(), data) {
 			t.Fatalf("writer bytes differ: %x != %x", streamed.Bytes(), data)
 		}
-		if err := ds.UnmarshalSSZ(fresh, data); err != nil {
+		if err = ds.UnmarshalSSZ(fresh, data); err != nil {
 			t.Fatalf("unmarshal: %v", err)
 		}
 		again, err := ds.MarshalSSZ(fresh)

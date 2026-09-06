@@ -417,6 +417,19 @@ func TestCodegenCoverageTypes2(t *testing.T) {
 // encoder and hash methods leave a nil pointer field nil: they are read-only
 // entry points and are called concurrently on shared values.
 func TestCodegenReadOnlyMethodsKeepNilPointers(t *testing.T) {
+	type marshalToer interface {
+		MarshalSSZTo(dst []byte) ([]byte, error)
+	}
+	type hashTreeRootWither interface {
+		HashTreeRootWith(hh sszutils.HashWalker) error
+	}
+	type hashTreeRooter interface {
+		HashTreeRoot() ([32]byte, error)
+	}
+	if _, generated := any(&CoverageTypes2{}).(hashTreeRootWither); !generated {
+		t.Skip("no generated code present")
+	}
+
 	nilFields := func(t *testing.T, v *CoverageTypes2, op string) {
 		t.Helper()
 		if v.I8p != nil || v.I16p != nil || v.I32p != nil || v.I64p != nil ||
@@ -426,32 +439,48 @@ func TestCodegenReadOnlyMethodsKeepNilPointers(t *testing.T) {
 	}
 
 	v := CoverageTypes2_Payload2
-	if _, err := v.MarshalSSZTo(nil); err != nil {
+	marshaler, ok := any(&v).(marshalToer)
+	if !ok {
+		t.Fatal("generated MarshalSSZTo missing")
+	}
+	if _, err := marshaler.MarshalSSZTo(nil); err != nil {
 		t.Fatalf("MarshalSSZTo: %v", err)
 	}
 	nilFields(t, &v, "MarshalSSZTo")
 
 	v = CoverageTypes2_Payload2
+	encoder, ok := any(&v).(sszutils.DynamicEncoder)
+	if !ok {
+		t.Fatal("generated MarshalSSZEncoder missing")
+	}
 	enc := sszutils.NewBufferEncoder(make([]byte, 0, 128))
-	if err := v.MarshalSSZEncoder(dynssz.NewDynSsz(nil), enc); err != nil {
+	if err := encoder.MarshalSSZEncoder(dynssz.NewDynSsz(nil), enc); err != nil {
 		t.Fatalf("MarshalSSZEncoder: %v", err)
 	}
 	nilFields(t, &v, "MarshalSSZEncoder")
 
 	v = CoverageTypes2_Payload2
-	if err := v.HashTreeRootWith(hasher.NewHasher()); err != nil {
+	hasherWith, ok := any(&v).(hashTreeRootWither)
+	if !ok {
+		t.Fatal("generated HashTreeRootWith missing")
+	}
+	if err := hasherWith.HashTreeRootWith(hasher.NewHasher()); err != nil {
 		t.Fatalf("HashTreeRootWith: %v", err)
 	}
 	nilFields(t, &v, "HashTreeRootWith")
 
 	// Concurrent hashing of one shared value must be race-free.
 	shared := CoverageTypes2_Payload2
+	hashRoot, ok := any(&shared).(hashTreeRooter)
+	if !ok {
+		t.Fatal("generated HashTreeRoot missing")
+	}
 	var wg sync.WaitGroup
 	for range 4 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := shared.HashTreeRoot(); err != nil {
+			if _, err := hashRoot.HashTreeRoot(); err != nil {
 				t.Errorf("HashTreeRoot: %v", err)
 			}
 		}()
@@ -1328,13 +1357,19 @@ func TestCodegenOversizedArrayDynVec(t *testing.T) {
 func TestCodegenSizerOnlyChild(t *testing.T) {
 	testCodegenPayloadByReflection(t, SizerOnlyHolder_Payload, nil)
 
-	ds := dynssz.NewDynSsz(nil)
+	type sizer interface {
+		SizeSSZ() int
+	}
 	v := SizerOnlyHolder_Payload
-	data, err := ds.MarshalSSZ(&v)
+	sized, generated := any(&v).(sizer)
+	if !generated {
+		t.Skip("no generated code present")
+	}
+	data, err := dynssz.NewDynSsz(nil).MarshalSSZ(&v)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if size := v.SizeSSZ(); size != len(data) {
+	if size := sized.SizeSSZ(); size != len(data) {
 		t.Fatalf("generated SizeSSZ = %d, encoding is %d bytes", size, len(data))
 	}
 	if v.S.Calls == 0 {
