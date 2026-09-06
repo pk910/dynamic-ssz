@@ -6844,3 +6844,57 @@ func TestGetTreeImmediatelyConcurrent(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+// sizerOnly implements DynamicSizer but no marshaler or encoder; the sizer is
+// correct and counts its calls.
+type sizerOnly struct {
+	A     uint64
+	B     []byte `ssz-max:"8"`
+	calls int
+}
+
+func (s *sizerOnly) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
+	s.calls++
+	return 8 + 4 + len(s.B)
+}
+
+type sizerOnlyHolder struct {
+	S sizerOnly
+	T uint32
+}
+
+// TestSizerWithoutMarshalerIsUsed checks that a type's own sizer is consulted
+// when defined, at the top level and nested, even when the bytes come from the
+// reflection walk; the size agrees with the encoding on both paths.
+func TestSizerWithoutMarshalerIsUsed(t *testing.T) {
+	ds := NewDynSsz(nil)
+
+	top := &sizerOnly{A: 7, B: []byte{1, 2, 3}}
+	holder := &sizerOnlyHolder{S: sizerOnly{A: 7, B: []byte{1, 2, 3}}, T: 9}
+	for _, v := range []any{top, holder} {
+		data, err := ds.MarshalSSZ(v)
+		if err != nil {
+			t.Fatalf("%T marshal: %v", v, err)
+		}
+		size, err := ds.SizeSSZ(v)
+		if err != nil {
+			t.Fatalf("%T size: %v", v, err)
+		}
+		if size != len(data) {
+			t.Fatalf("%T: SizeSSZ = %d, encoding is %d bytes", v, size, len(data))
+		}
+		var streamed bytes.Buffer
+		if err := ds.MarshalSSZWriter(v, &streamed); err != nil {
+			t.Fatalf("%T marshal writer: %v", v, err)
+		}
+		if !bytes.Equal(streamed.Bytes(), data) {
+			t.Fatalf("%T: writer bytes differ", v)
+		}
+	}
+	if top.calls == 0 {
+		t.Error("top-level SizeSSZDyn was not consulted")
+	}
+	if holder.S.calls == 0 {
+		t.Error("nested SizeSSZDyn was not consulted")
+	}
+}

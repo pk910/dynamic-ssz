@@ -1396,6 +1396,34 @@ func (m *MarshalerOnlyType) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszu
 	return nil
 }
 
+// SizerOnlyType implements DynamicSizer but no marshaler or encoder. A
+// defined sizer is consulted even though the bytes come from the inlined
+// walk; the sizer is correct and counts its calls.
+type SizerOnlyType struct {
+	A     uint64
+	B     []byte `ssz-max:"8"`
+	Calls int    `ssz-type:"-"`
+}
+
+var _ sszutils.DynamicSizer = (*SizerOnlyType)(nil)
+
+func (s *SizerOnlyType) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
+	s.Calls++
+	return 8 + 4 + len(s.B)
+}
+
+// SizerOnlyHolder nests SizerOnlyType so the generated sizer meets a child
+// with a sizer but no marshaler.
+type SizerOnlyHolder struct {
+	S SizerOnlyType
+	T uint32
+}
+
+var SizerOnlyHolder_Payload = SizerOnlyHolder{
+	S: SizerOnlyType{A: 7, B: []byte{1, 2, 3}},
+	T: 9,
+}
+
 // CoverageTypes6 wraps MarshalerOnlyType as a field to trigger the
 // DynamicMarshaler/DynamicUnmarshaler dispatch branches.
 type CoverageTypes6 struct {

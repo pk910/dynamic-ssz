@@ -169,6 +169,8 @@ types:
     output: gen_edgecases.go
   - name: OversizedArrayDynVec
     output: gen_edgecases.go
+  - name: SizerOnlyHolder
+    output: gen_edgecases.go
   - name: MultiDimSpecVec
     output: gen_edgecases.go
   - name: NoMaxBitlist

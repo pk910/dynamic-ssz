@@ -1323,6 +1323,25 @@ func TestCodegenOversizedArrayDynVec(t *testing.T) {
 	testCodegenPayloadByReflection(t, OversizedArrayDynVec_Payload, nil)
 }
 
+// A child with a sizer but no marshaler or encoder is inlined for marshaling,
+// but its sizer is consulted for sizing, and the size equals the encoding.
+func TestCodegenSizerOnlyChild(t *testing.T) {
+	testCodegenPayloadByReflection(t, SizerOnlyHolder_Payload, nil)
+
+	ds := dynssz.NewDynSsz(nil)
+	v := SizerOnlyHolder_Payload
+	data, err := ds.MarshalSSZ(&v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if size := v.SizeSSZ(); size != len(data) {
+		t.Fatalf("generated SizeSSZ = %d, encoding is %d bytes", size, len(data))
+	}
+	if v.S.Calls == 0 {
+		t.Error("generated sizer did not consult the child's SizeSSZDyn")
+	}
+}
+
 func TestCodegenStreamVecDynSize(t *testing.T) {
 	for _, specs := range []map[string]any{nil, StreamVecDynSize_Specs} {
 		testCodegenPayloadByReflection(t, StreamVecDynSize_Payload, specs)
