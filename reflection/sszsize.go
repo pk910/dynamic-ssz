@@ -250,7 +250,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 			return 0, sszutils.ErrInvalidUnionVariantFn()
 		}
 		if dataField.IsNil() {
-			return 0, sszutils.ErrInvalidUnionVariantFn()
+			return 0, sszutils.ErrUnionTypeMismatchFn()
 		}
 		if dataField.Elem().Type() != variantDesc.Type {
 			return 0, sszutils.ErrUnionTypeMismatchFn()
@@ -274,10 +274,9 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 			return 0, sszutils.ErrInvalidUnionVariantFn()
 		}
 
-		// A zero-value union has a nil data interface; reject it instead of
-		// panicking on the zero reflect.Value (consistent with marshal/HTR).
+		// A nil data interface cannot carry the selected variant's value.
 		if dataField.IsNil() {
-			return 0, sszutils.ErrInvalidUnionVariantFn()
+			return 0, sszutils.ErrUnionTypeMismatchFn()
 		}
 		if dataField.Elem().Type() != variantDesc.Type {
 			return 0, sszutils.ErrUnionTypeMismatchFn()

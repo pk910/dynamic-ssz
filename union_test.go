@@ -356,6 +356,51 @@ func TestCompatibleUnionEdgeCases(t *testing.T) {
 	})
 }
 
+// TestUnionNilDataIsTypeMismatch checks that a valid selector with a nil data
+// interface is reported as a variant type mismatch on every reflection path,
+// the same error the generated code returns for that value.
+func TestUnionNilDataIsTypeMismatch(t *testing.T) {
+	type compat struct {
+		U CompatibleUnion[struct {
+			V0 uint32
+			V1 [16]byte
+		}]
+	}
+	type classic struct {
+		U Union[struct {
+			V0 uint32
+			V1 [16]byte
+		}]
+	}
+	ds := NewDynSsz(nil)
+
+	for _, v := range []any{
+		&compat{U: CompatibleUnion[struct {
+			V0 uint32
+			V1 [16]byte
+		}]{Variant: 1}},
+		&classic{U: Union[struct {
+			V0 uint32
+			V1 [16]byte
+		}]{Variant: 1}},
+	} {
+		check := func(op string, err error) {
+			t.Helper()
+			if !errors.Is(err, sszutils.ErrInvalidValueRange) || !strings.Contains(err.Error(), "union variant type mismatch") {
+				t.Errorf("%T %s: err = %v, want union variant type mismatch", v, op, err)
+			}
+		}
+		_, err := ds.MarshalSSZ(v)
+		check("marshal", err)
+		_, err = ds.SizeSSZ(v)
+		check("size", err)
+		_, err = ds.HashTreeRoot(v)
+		check("hash", err)
+		var sb bytes.Buffer
+		check("stream", ds.MarshalSSZWriter(v, &sb))
+	}
+}
+
 // TestZeroUnionMarshalDoesNotPanic verifies that a zero-value CompatibleUnion
 // (nil Data interface) returns a clean error across marshal, stream marshal and
 // HTR instead of panicking on the zero reflect.Value.

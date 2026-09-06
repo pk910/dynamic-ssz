@@ -530,7 +530,7 @@ func (ctx *ReflectionCtx) buildRootFromCompatibleUnion(sourceType *ssztypes.Type
 
 	// Hash the data root first; the selector is merkleized in below.
 	if dataField.IsNil() {
-		return sszutils.ErrInvalidUnionVariantFn()
+		return sszutils.ErrUnionTypeMismatchFn()
 	}
 	if dataField.Elem().Type() != variantDesc.Type {
 		return sszutils.ErrUnionTypeMismatchFn()
@@ -588,7 +588,7 @@ func (ctx *ReflectionCtx) buildRootFromUnion(sourceType *ssztypes.TypeDescriptor
 		return sszutils.ErrInvalidUnionVariantFn()
 	}
 	if dataField.IsNil() {
-		return sszutils.ErrInvalidUnionVariantFn()
+		return sszutils.ErrUnionTypeMismatchFn()
 	}
 	if dataField.Elem().Type() != variantDesc.Type {
 		return sszutils.ErrUnionTypeMismatchFn()

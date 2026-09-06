@@ -850,10 +850,9 @@ func (ctx *ReflectionCtx) marshalCompatibleUnion(sourceType *ssztypes.TypeDescri
 		return sszutils.ErrInvalidUnionVariantFn()
 	}
 
-	// A zero-value union has a nil data interface; reject it instead of
-	// panicking on the zero reflect.Value (consistent with the HTR path).
+	// A nil data interface cannot carry the selected variant's value.
 	if dataField.IsNil() {
-		return sszutils.ErrInvalidUnionVariantFn()
+		return sszutils.ErrUnionTypeMismatchFn()
 	}
 
 	// Reject data whose concrete type does not match the variant, instead of
@@ -906,7 +905,7 @@ func (ctx *ReflectionCtx) marshalUnion(sourceType *ssztypes.TypeDescriptor, sour
 		return sszutils.ErrInvalidUnionVariantFn()
 	}
 	if dataField.IsNil() {
-		return sszutils.ErrInvalidUnionVariantFn()
+		return sszutils.ErrUnionTypeMismatchFn()
 	}
 	if dataField.Elem().Type() != variantDesc.Type {
 		return sszutils.ErrUnionTypeMismatchFn()
