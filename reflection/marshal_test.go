@@ -2101,3 +2101,83 @@ func TestMarshalDirectValidationErrors(t *testing.T) {
 		}
 	})
 }
+
+// TestOversizedArrayOfDynamicElements serializes a Go array that is longer
+// than the declared vector length and holds variable-size elements. Only the
+// declared length is encoded, sized and hashed, on the buffer and the stream
+// path alike, and the encoding decodes back.
+func TestOversizedArrayOfDynamicElements(t *testing.T) {
+	type elem struct {
+		L []uint64 `ssz-max:"4"`
+	}
+	type pointers struct {
+		F [8]*elem `ssz-size:"4"`
+	}
+	type values struct {
+		F [8]elem `ssz-size:"4"`
+	}
+
+	ds := NewDynSsz(nil)
+
+	check := func(t *testing.T, value any, fresh any) {
+		t.Helper()
+		data, err := ds.MarshalSSZ(value)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		// container offset + 4 element offsets + 4 elements of (offset + uint64)
+		if want := 4 + 4*4 + 4*12; len(data) != want {
+			t.Fatalf("encoded %d bytes, want %d", len(data), want)
+		}
+		size, err := ds.SizeSSZ(value)
+		if err != nil {
+			t.Fatalf("size: %v", err)
+		}
+		if size != len(data) {
+			t.Fatalf("SizeSSZ = %d, len = %d", size, len(data))
+		}
+		var streamed bytes.Buffer
+		if err := ds.MarshalSSZWriter(value, &streamed); err != nil {
+			t.Fatalf("marshal writer: %v", err)
+		}
+		if !bytes.Equal(streamed.Bytes(), data) {
+			t.Fatalf("writer bytes differ: %x != %x", streamed.Bytes(), data)
+		}
+		if err := ds.UnmarshalSSZ(fresh, data); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		again, err := ds.MarshalSSZ(fresh)
+		if err != nil {
+			t.Fatalf("re-marshal: %v", err)
+		}
+		if !bytes.Equal(again, data) {
+			t.Fatalf("round trip differs: %x != %x", again, data)
+		}
+		root, err := ds.HashTreeRoot(value)
+		if err != nil {
+			t.Fatalf("hash: %v", err)
+		}
+		tree, err := ds.GetTree(value)
+		if err != nil {
+			t.Fatalf("tree: %v", err)
+		}
+		if treeRoot := tree.Hash(); !bytes.Equal(treeRoot, root[:]) {
+			t.Fatalf("tree root %x != hash %x", treeRoot, root)
+		}
+	}
+
+	t.Run("pointer elements", func(t *testing.T) {
+		var v pointers
+		for i := range v.F {
+			v.F[i] = &elem{L: []uint64{uint64(i)}}
+		}
+		check(t, &v, &pointers{})
+	})
+	t.Run("value elements", func(t *testing.T) {
+		var v values
+		for i := range v.F {
+			v.F[i] = elem{L: []uint64{uint64(i)}}
+		}
+		check(t, &v, &values{})
+	})
+}

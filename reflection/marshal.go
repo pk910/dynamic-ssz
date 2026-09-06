@@ -562,13 +562,18 @@ func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescript
 	sliceLen := sourceValue.Len()
 
 	appendZero := 0
-	if sourceType.Kind == reflect.Slice || sourceType.Kind == reflect.String {
-		innerSliceLen := sourceValue.Len()
-		if int64(innerSliceLen) > sourceType.Len {
-			return sszutils.ErrVectorLengthFn(innerSliceLen, sourceType.Len)
+	if sourceType.Kind == reflect.Array {
+		// A backing array longer than the declared length carries unused
+		// trailing elements; only the declared length is serialized.
+		if int64(sliceLen) > sourceType.Len {
+			sliceLen = int(dynVecLen)
 		}
-		if int64(innerSliceLen) < sourceType.Len {
-			appendZero = int(dynVecLen) - innerSliceLen
+	} else {
+		if int64(sliceLen) > sourceType.Len {
+			return sszutils.ErrVectorLengthFn(sliceLen, sourceType.Len)
+		}
+		if int64(sliceLen) < sourceType.Len {
+			appendZero = int(dynVecLen) - sliceLen
 		}
 	}
 

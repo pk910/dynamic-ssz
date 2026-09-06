@@ -2113,6 +2113,23 @@ type StreamVecElem struct {
 	X []byte `ssz-max:"8"`
 }
 
+// OversizedArrayDynVec holds Go arrays longer than their declared vector
+// length whose elements are variable-size: only the declared length is
+// encoded, sized and hashed, and both engines must agree on that.
+type OversizedArrayDynVec struct {
+	P [8]*StreamVecElem `ssz-size:"4"`
+	V [8]StreamVecElem  `ssz-size:"4"`
+}
+
+var OversizedArrayDynVec_Payload = func() OversizedArrayDynVec {
+	var v OversizedArrayDynVec
+	for i := range v.P {
+		v.P[i] = &StreamVecElem{X: []byte{byte(i), byte(i)}}
+		v.V[i] = StreamVecElem{X: []byte{byte(i)}}
+	}
+	return v
+}()
+
 var StreamVecDynSize_Specs = map[string]any{
 	"STREAMVEC_LEN": uint64(2),
 }

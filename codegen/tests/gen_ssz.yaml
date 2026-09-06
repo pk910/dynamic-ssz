@@ -167,6 +167,8 @@ types:
     output: gen_edgecases.go
   - name: StreamVecElem
     output: gen_edgecases.go
+  - name: OversizedArrayDynVec
+    output: gen_edgecases.go
   - name: MultiDimSpecVec
     output: gen_edgecases.go
   - name: NoMaxBitlist

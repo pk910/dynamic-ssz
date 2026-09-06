@@ -153,6 +153,9 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 		case fieldType.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0:
 			// vector with dynamic size items, so we have to go through each item
 			dataLen := targetValue.Len()
+			if targetType.Kind == reflect.Array && int64(dataLen) > targetType.Len {
+				dataLen = int(targetType.Len)
+			}
 
 			for i := 0; i < dataLen; i++ {
 				size, err := ctx.getSszValueSize(fieldType, targetValue.Index(i), depth)

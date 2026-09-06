@@ -1317,6 +1317,12 @@ func TestCodegenMultiDimSpecVec(t *testing.T) {
 // check compares a uint32 offset against limit*4, where limit is int(expr)).
 // The package building at all is the compile regression guard; the differential
 // confirms the value round-trips identically in both engines.
+// A Go array longer than its declared vector length, with variable-size
+// elements, serializes only the declared length in both engines.
+func TestCodegenOversizedArrayDynVec(t *testing.T) {
+	testCodegenPayloadByReflection(t, OversizedArrayDynVec_Payload, nil)
+}
+
 func TestCodegenStreamVecDynSize(t *testing.T) {
 	for _, specs := range []map[string]any{nil, StreamVecDynSize_Specs} {
 		testCodegenPayloadByReflection(t, StreamVecDynSize_Payload, specs)
