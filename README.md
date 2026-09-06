@@ -18,7 +18,7 @@ Dynamic SSZ is a production-ready Go library for [SSZ](https://github.com/ethere
 - **⚡ Reflection-Based Processing** — works instantly with any SSZ-compatible type, no code generation required
 - **🏗️ Code Generation** — static SSZ methods via the `dynssz-gen` CLI or programmatic API (2-3x faster than reflection), configurable through flags or YAML config files
 - **📡 Streaming Support** — memory-efficient encoding/decoding directly to/from `io.Reader`/`io.Writer` for large objects
-- **🌲 Accelerated Hashing** — SIMD-accelerated hash tree roots via [hashtree](https://github.com/prysmaticlabs/hashtree) bindings, with a pure-Go fallback (`nohashtree` build tag)
+- **🌲 Accelerated Hashing** — SIMD-accelerated hash tree roots via [hashtree](https://github.com/prysmaticlabs/hashtree) bindings, with a pure-Go fallback (`nohashtree` build tag), and opt-in background subtree reduction (`WithAsyncHashing`) for large objects
 - **🔄 fastssz Hybrid** — automatically delegates to existing fastssz methods where types have no dynamic sizing, for optimal efficiency
 
 ### Beyond Serialization

@@ -142,8 +142,9 @@ func NewHasherWithHashFn(hh HashFn) *Hasher {
 // SetAsyncHashing gates this hasher into (or out of) background subtree
 // reduction. It only takes effect while async hashing is enabled process-wide
 // via EnableAsyncHashing. The hash function must be safe for concurrent use —
-// background goroutines call it alongside the walker; hashers wrapping a
-// stateful hash.Hash (NewHasher, NewHasherWithHash) must stay gated out.
+// background goroutines call it alongside the walker. NewHasher and the
+// pooled hashers qualify; a hasher wrapping a single stateful hash.Hash
+// (NewHasherWithHash) must stay gated out.
 // Reset clears the gate, so pool users re-apply it per acquisition.
 func (h *Hasher) SetAsyncHashing(enabled bool) {
 	h.async = enabled

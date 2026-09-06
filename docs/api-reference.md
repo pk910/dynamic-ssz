@@ -56,6 +56,7 @@ type DynSszOption func(*DynSszOptions)
 | `WithNoDelegation()` | Disable delegation to generated Dynamic* methods (fastssz is governed by `WithNoFastSsz`) |
 | `WithMaxStreamSize(n)` | Cap the payload size of `UnmarshalSSZReader` (default 512MB): a larger declared size is rejected up front, an unknown-length decode stops there |
 | `WithMaxNestingDepth(n)` | Bound recursion-cycle nesting (default 1024); guards the stack against deeply nested payloads |
+| `WithAsyncHashing(workers)` | Opt this instance's `HashTreeRoot` into background subtree reduction; `workers > 0` also sets the process-wide worker limit (see [Async hashing](performance.md#2-async-hashing)) |
 
 ### Global Instance
 
