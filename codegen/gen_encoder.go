@@ -313,6 +313,14 @@ func (ctx *encoderContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 	}
 
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.SszType != ssztypes.SszOptionalType && desc.SszType != ssztypes.SszOptionalListType {
+		if strings.ContainsAny(varName, ".[") {
+			// A pointer reached through a selector or index is localized first so
+			// the nil fill-in stays in this method and never writes into the
+			// caller's value. A bare identifier is already a local.
+			local := localizedVarName(varName, indent)
+			ctx.appendCode(indent, "%s := %s\n", local, varName)
+			varName = local
+		}
 		ctx.appendCode(indent, "if %s == nil {\n\t%s = new(%s)\n}\n", varName, varName, ctx.typePrinter.InnerTypeString(desc))
 	}
 

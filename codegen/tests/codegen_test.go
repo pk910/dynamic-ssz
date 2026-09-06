@@ -11,11 +11,13 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	dynssz "github.com/pk910/dynamic-ssz"
 	"github.com/pk910/dynamic-ssz/codegen"
 	"github.com/pk910/dynamic-ssz/codegen/tests/views"
+	"github.com/pk910/dynamic-ssz/hasher"
 	"github.com/pk910/dynamic-ssz/sszutils"
 
 	"golang.org/x/tools/go/packages"
@@ -409,6 +411,53 @@ func TestCodegenCoverageTypes2(t *testing.T) {
 			testCodegenPayloadByReflection(t, tc.payload, nil, dynssz.WithExtendedTypes())
 		})
 	}
+}
+
+// TestCodegenReadOnlyMethodsKeepNilPointers checks that the generated marshal,
+// encoder and hash methods leave a nil pointer field nil: they are read-only
+// entry points and are called concurrently on shared values.
+func TestCodegenReadOnlyMethodsKeepNilPointers(t *testing.T) {
+	nilFields := func(t *testing.T, v *CoverageTypes2, op string) {
+		t.Helper()
+		if v.I8p != nil || v.I16p != nil || v.I32p != nil || v.I64p != nil ||
+			v.F32p != nil || v.F64p != nil || v.Bigp != nil {
+			t.Errorf("%s allocated a nil pointer field: %+v", op, v)
+		}
+	}
+
+	v := CoverageTypes2_Payload2
+	if _, err := v.MarshalSSZTo(nil); err != nil {
+		t.Fatalf("MarshalSSZTo: %v", err)
+	}
+	nilFields(t, &v, "MarshalSSZTo")
+
+	v = CoverageTypes2_Payload2
+	enc := sszutils.NewBufferEncoder(make([]byte, 0, 128))
+	if err := v.MarshalSSZEncoder(dynssz.NewDynSsz(nil), enc); err != nil {
+		t.Fatalf("MarshalSSZEncoder: %v", err)
+	}
+	nilFields(t, &v, "MarshalSSZEncoder")
+
+	v = CoverageTypes2_Payload2
+	if err := v.HashTreeRootWith(hasher.NewHasher()); err != nil {
+		t.Fatalf("HashTreeRootWith: %v", err)
+	}
+	nilFields(t, &v, "HashTreeRootWith")
+
+	// Concurrent hashing of one shared value must be race-free.
+	shared := CoverageTypes2_Payload2
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := shared.HashTreeRoot(); err != nil {
+				t.Errorf("HashTreeRoot: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	nilFields(t, &shared, "concurrent HashTreeRoot")
 }
 
 func TestCodegenCoverageTypes3(t *testing.T) {
