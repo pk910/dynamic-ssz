@@ -7,6 +7,7 @@ package hasher
 import (
 	"encoding/binary"
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/pk910/dynamic-ssz/sszutils"
@@ -679,6 +680,68 @@ func TestBinaryRemainderPreservation(t *testing.T) {
 	}
 }
 
+// veryLargeReference caches the non-incremental root of the first total
+// chunks LE(0), LE(1), ... per merkleization, so the very-large tests compute
+// each reference once instead of once per collapse interval. Each key has its
+// own once, so distinct references are computed concurrently.
+var veryLargeReference = struct {
+	sync.Mutex
+	entries map[string]*veryLargeReferenceEntry
+}{entries: make(map[string]*veryLargeReferenceEntry, 16)}
+
+type veryLargeReferenceEntry struct {
+	once sync.Once
+	root [32]byte
+	err  error
+}
+
+func veryLargeReferenceRoot(t *testing.T, kind string, total int, merkleize func(h *Hasher, idx int)) [32]byte {
+	t.Helper()
+	key := fmt.Sprintf("%s/%d", kind, total)
+	veryLargeReference.Lock()
+	entry, ok := veryLargeReference.entries[key]
+	if !ok {
+		entry = &veryLargeReferenceEntry{}
+		veryLargeReference.entries[key] = entry
+	}
+	veryLargeReference.Unlock()
+
+	entry.once.Do(func() {
+		h := FastHasherPool.Get()
+		defer FastHasherPool.Put(h)
+		idx := h.StartTree(sszutils.TreeTypeNone)
+		for i := 0; i < total; i++ {
+			var chunk [32]byte
+			binary.LittleEndian.PutUint64(chunk[:], uint64(i))
+			h.buf = append(h.buf, chunk[:]...)
+		}
+		h.FillUpTo32()
+		merkleize(h, idx)
+		entry.root, entry.err = h.HashRoot()
+	})
+	if entry.err != nil {
+		t.Fatalf("ref: %v", entry.err)
+	}
+	return entry.root
+}
+
+// binaryReferenceRoot is the reference root of a binary list of total chunks.
+func binaryReferenceRoot(t *testing.T, total int) [32]byte {
+	t.Helper()
+	return veryLargeReferenceRoot(t, "binary", total, func(h *Hasher, idx int) {
+		h.MerkleizeWithMixin(idx, uint64(total), uint64(total))
+	})
+}
+
+// progressiveReferenceRoot is the reference root of a progressive list of
+// total chunks.
+func progressiveReferenceRoot(t *testing.T, total int) [32]byte {
+	t.Helper()
+	return veryLargeReferenceRoot(t, "progressive", total, func(h *Hasher, idx int) {
+		h.MerkleizeProgressiveWithMixin(idx, uint64(total))
+	})
+}
+
 // TestIncrementalBinaryVeryLarge tests binary incremental with 2M+ entries.
 func TestIncrementalBinaryVeryLarge(t *testing.T) {
 	for _, tc := range []struct {
@@ -691,23 +754,11 @@ func TestIncrementalBinaryVeryLarge(t *testing.T) {
 		{"3M_every128", 3_000_000, 128},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// Reference: TreeTypeNone
+			t.Parallel()
 			hRef := FastHasherPool.Get()
 			defer FastHasherPool.Put(hRef)
 
-			refIdx := hRef.StartTree(sszutils.TreeTypeNone)
-			for i := 0; i < tc.total; i++ {
-				var chunk [32]byte
-				binary.LittleEndian.PutUint64(chunk[:], uint64(i))
-				hRef.buf = append(hRef.buf, chunk[:]...)
-			}
-			hRef.FillUpTo32()
-			hRef.MerkleizeWithMixin(refIdx, uint64(tc.total), uint64(tc.total))
-			refRoot, err := hRef.HashRoot()
-			if err != nil {
-				t.Fatalf("ref: %v", err)
-			}
-			hRef.Reset()
+			refRoot := binaryReferenceRoot(t, tc.total)
 
 			// Incremental
 			incIdx := hRef.StartTree(sszutils.TreeTypeBinary)
@@ -745,23 +796,11 @@ func TestProgressiveVeryLarge(t *testing.T) {
 		{"3M_every128", 3_000_000, 128},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			hRef := FastHasherPool.Get()
 			defer FastHasherPool.Put(hRef)
 
-			// Reference
-			refIdx := hRef.StartTree(sszutils.TreeTypeNone)
-			for i := 0; i < tc.total; i++ {
-				var chunk [32]byte
-				binary.LittleEndian.PutUint64(chunk[:], uint64(i))
-				hRef.buf = append(hRef.buf, chunk[:]...)
-			}
-			hRef.FillUpTo32()
-			hRef.MerkleizeProgressiveWithMixin(refIdx, uint64(tc.total))
-			refRoot, err := hRef.HashRoot()
-			if err != nil {
-				t.Fatalf("ref: %v", err)
-			}
-			hRef.Reset()
+			refRoot := progressiveReferenceRoot(t, tc.total)
 
 			// Incremental
 			incIdx := hRef.StartTree(sszutils.TreeTypeProgressive)
@@ -803,22 +842,11 @@ func TestIncrementalBinaryVeryLargeOdd(t *testing.T) {
 		{"2000003_every17", 2_000_003, 17}, // prime total, prime interval
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			hRef := FastHasherPool.Get()
 			defer FastHasherPool.Put(hRef)
 
-			refIdx := hRef.StartTree(sszutils.TreeTypeNone)
-			for i := 0; i < tc.total; i++ {
-				var chunk [32]byte
-				binary.LittleEndian.PutUint64(chunk[:], uint64(i))
-				hRef.buf = append(hRef.buf, chunk[:]...)
-			}
-			hRef.FillUpTo32()
-			hRef.MerkleizeWithMixin(refIdx, uint64(tc.total), uint64(tc.total))
-			refRoot, err := hRef.HashRoot()
-			if err != nil {
-				t.Fatalf("ref: %v", err)
-			}
-			hRef.Reset()
+			refRoot := binaryReferenceRoot(t, tc.total)
 
 			incIdx := hRef.StartTree(sszutils.TreeTypeBinary)
 			for i := 0; i < tc.total; i++ {
@@ -857,22 +885,11 @@ func TestProgressiveVeryLargeOdd(t *testing.T) {
 		{"3000001_every128", 3_000_001, 128},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			hRef := FastHasherPool.Get()
 			defer FastHasherPool.Put(hRef)
 
-			refIdx := hRef.StartTree(sszutils.TreeTypeNone)
-			for i := 0; i < tc.total; i++ {
-				var chunk [32]byte
-				binary.LittleEndian.PutUint64(chunk[:], uint64(i))
-				hRef.buf = append(hRef.buf, chunk[:]...)
-			}
-			hRef.FillUpTo32()
-			hRef.MerkleizeProgressiveWithMixin(refIdx, uint64(tc.total))
-			refRoot, err := hRef.HashRoot()
-			if err != nil {
-				t.Fatalf("ref: %v", err)
-			}
-			hRef.Reset()
+			refRoot := progressiveReferenceRoot(t, tc.total)
 
 			incIdx := hRef.StartTree(sszutils.TreeTypeProgressive)
 			for i := 0; i < tc.total; i++ {

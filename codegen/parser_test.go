@@ -27,11 +27,7 @@ import (
 // the gate fires; the resolver supplies the ssz-static declaration. An invalid
 // value is rejected.
 func TestParserShallowGate(t *testing.T) {
-	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports | packages.NeedDeps}
-	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
-	if err != nil || len(pkgs) == 0 {
-		t.Fatalf("load tests package: %v", err)
-	}
+	pkgs := []*packages.Package{loadTestsPackage(t)}
 	container := pkgs[0].Types.Scope().Lookup("NestedDelegatedContainer")
 	if container == nil {
 		t.Fatal("NestedDelegatedContainer not found")
@@ -3163,11 +3159,7 @@ func TestParserUnionSelectorRangeEnforced(t *testing.T) {
 // thread the depth, not just the one the walk happens to close on: a call
 // through a type that dropped it would restart the count and defeat the bound.
 func TestRecursionCycleTypes(t *testing.T) {
-	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports | packages.NeedDeps}
-	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
-	if err != nil || len(pkgs) == 0 {
-		t.Fatalf("load tests package: %v", err)
-	}
+	pkgs := []*packages.Package{loadTestsPackage(t)}
 	scope := pkgs[0].Types.Scope()
 
 	inCycle := func(typeName string) bool {
@@ -3246,11 +3238,7 @@ type reflectPlainNode struct {
 // A size or limit tag on a field holding a TypeWrapper is rejected: the
 // wrapper's descriptor struct declares its constraints.
 func TestParserRejectsWrapperFieldTags(t *testing.T) {
-	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports | packages.NeedDeps}
-	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
-	if err != nil || len(pkgs) == 0 {
-		t.Fatalf("load tests package: %v", err)
-	}
+	pkgs := []*packages.Package{loadTestsPackage(t)}
 	obj := pkgs[0].Types.Scope().Lookup("WrapperFieldTagHolder")
 	if obj == nil {
 		t.Skip("WrapperFieldTagHolder not present")
@@ -3265,11 +3253,7 @@ func TestParserRejectsWrapperFieldTags(t *testing.T) {
 // produced a file. The fixtures carry no generated methods, so neither side
 // shallow-builds them.
 func TestFrontEndDescriptorHashParity(t *testing.T) {
-	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports | packages.NeedDeps}
-	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
-	if err != nil || len(pkgs) == 0 {
-		t.Fatalf("load tests package: %v", err)
-	}
+	pkgs := []*packages.Package{loadTestsPackage(t)}
 	scope := pkgs[0].Types.Scope()
 
 	cases := []struct {
