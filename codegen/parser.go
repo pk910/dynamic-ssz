@@ -2334,6 +2334,10 @@ func (p *Parser) hasMethodWithSignature(methodSet *types.MethodSet, methodName s
 }
 
 func (p *Parser) typeMatches(typ types.Type, expectedTypeStr string) bool {
+	// Method signatures spell the view parameter as any, which go/types
+	// represents as an alias; the checks below inspect the aliased type.
+	typ = types.Unalias(typ)
+
 	switch expectedTypeStr {
 	case "-":
 		return true

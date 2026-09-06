@@ -156,7 +156,7 @@ func TestGenerateLimitlessListRoot(t *testing.T) {
 	// this is the front end dynssz-gen uses, and a type that hashes in one
 	// engine but not the other is the divergence this rule exists to prevent.
 	t.Run("GoTypesParserRefusesBoth", func(t *testing.T) {
-		cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
+		cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports | packages.NeedDeps}
 		pkgs, loadErr := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
 		if loadErr != nil || len(pkgs) == 0 {
 			t.Fatalf("load tests package: %v", loadErr)
@@ -1494,7 +1494,7 @@ func TestParseTagsConflictingUnits(t *testing.T) {
 // a generic instantiation is rejected, duplicate views are rejected, and a
 // view type is pointer-wrapped like the base.
 func TestGoTypesViewAndGenericGuards(t *testing.T) {
-	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
+	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports | packages.NeedDeps}
 
 	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
 	if err != nil || len(pkgs) == 0 {
@@ -1570,7 +1570,7 @@ func TestGoTypesViewAndGenericGuards(t *testing.T) {
 // embedded field is walked as a container (so its sibling fields survive), not
 // treated as fully delegating.
 func TestGoTypesPromotedMethodsNotDelegation(t *testing.T) {
-	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
+	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports | packages.NeedDeps}
 	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
 	if err != nil || len(pkgs) == 0 {
 		t.Fatalf("load tests package: %v", err)
@@ -1819,7 +1819,7 @@ func TestValidateTopLevelTypeWrapperShapes(t *testing.T) {
 	// The generator's real entry point is go/types, not reflect, so the gate has
 	// to reach the same verdict there.
 	t.Run("goTypes", func(t *testing.T) {
-		cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
+		cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports | packages.NeedDeps}
 		pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
 		if err != nil || len(pkgs) == 0 {
 			t.Fatalf("load tests package: %v", err)
@@ -2254,7 +2254,7 @@ func TestStaticRejectsUnInlinableDelegated(t *testing.T) {
 // whichever position the type holds: the switch is never lowered, so a later
 // extended type widens the parser a first plain type created.
 func TestPerTypeExtendedTypesReachesParser(t *testing.T) {
-	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
+	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports | packages.NeedDeps}
 	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
 	if err != nil || len(pkgs) == 0 {
 		t.Fatalf("load tests package: %v", err)

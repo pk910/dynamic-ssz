@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // This file is part of the dynamic-ssz library.
 
+// The generator must recognise method signatures whether or not go/types
+// materialises aliases such as any; the test binary pins the materialised form.
+//go:debug gotypesalias=1
+
 package codegen
 
 import (
@@ -23,7 +27,7 @@ import (
 // the gate fires; the resolver supplies the ssz-static declaration. An invalid
 // value is rejected.
 func TestParserShallowGate(t *testing.T) {
-	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
+	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports | packages.NeedDeps}
 	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
 	if err != nil || len(pkgs) == 0 {
 		t.Fatalf("load tests package: %v", err)
@@ -60,6 +64,37 @@ func TestParserShallowGate(t *testing.T) {
 			t.Error("expected shallow descriptor (nil ContainerDesc) for delegated type")
 		}
 	})
+}
+
+// TestViewMethodDetectionWithAliasedAny checks that a view method whose
+// parameter is spelled any is recognised when go/types represents any as an
+// alias (the only form Go 1.27 and later produce).
+func TestViewMethodDetectionWithAliasedAny(t *testing.T) {
+	p := NewParser()
+
+	anyType := types.Universe.Lookup("any").Type()
+	if _, isAlias := anyType.(*types.Alias); !isAlias {
+		t.Fatalf("test binary must materialise aliases (gotypesalias=1); got %T", anyType)
+	}
+	if !p.typeMatches(anyType, "any") {
+		t.Error("typeMatches(any alias, \"any\") = false")
+	}
+	if !p.typeMatches(types.NewInterfaceType(nil, nil), "any") {
+		t.Error("typeMatches(interface{}, \"any\") = false")
+	}
+
+	pkg := types.NewPackage("example.com/views", "views")
+	named := types.NewNamed(types.NewTypeName(token.NoPos, pkg, "Base", nil), types.NewStruct(nil, nil), nil)
+	recv := types.NewVar(token.NoPos, pkg, "t", types.NewPointer(named))
+	params := types.NewTuple(types.NewVar(token.NoPos, pkg, "view", anyType))
+	inner := types.NewSignatureType(nil, nil, nil, nil, nil, false)
+	results := types.NewTuple(types.NewVar(token.NoPos, pkg, "", inner))
+	sig := types.NewSignatureType(recv, nil, nil, params, results, false)
+	named.AddMethod(types.NewFunc(token.NoPos, pkg, "MarshalSSZDynView", sig))
+
+	if !p.getDynamicViewMarshalerCompatibility(types.NewPointer(named)) {
+		t.Error("MarshalSSZDynView(view any) not detected on *Base")
+	}
 }
 
 func TestNewParser(t *testing.T) {
@@ -3089,7 +3124,7 @@ func TestParserUnionSelectorRangeEnforced(t *testing.T) {
 // thread the depth, not just the one the walk happens to close on: a call
 // through a type that dropped it would restart the count and defeat the bound.
 func TestRecursionCycleTypes(t *testing.T) {
-	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
+	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports | packages.NeedDeps}
 	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
 	if err != nil || len(pkgs) == 0 {
 		t.Fatalf("load tests package: %v", err)
@@ -3172,7 +3207,7 @@ type reflectPlainNode struct {
 // A size or limit tag on a field holding a TypeWrapper is rejected: the
 // wrapper's descriptor struct declares its constraints.
 func TestParserRejectsWrapperFieldTags(t *testing.T) {
-	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
+	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports | packages.NeedDeps}
 	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
 	if err != nil || len(pkgs) == 0 {
 		t.Fatalf("load tests package: %v", err)
@@ -3191,7 +3226,7 @@ func TestParserRejectsWrapperFieldTags(t *testing.T) {
 // produced a file. The fixtures carry no generated methods, so neither side
 // shallow-builds them.
 func TestFrontEndDescriptorHashParity(t *testing.T) {
-	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
+	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports | packages.NeedDeps}
 	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
 	if err != nil || len(pkgs) == 0 {
 		t.Fatalf("load tests package: %v", err)
