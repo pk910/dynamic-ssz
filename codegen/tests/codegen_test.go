@@ -1491,6 +1491,56 @@ func TestCodegenPackedCustomElements(t *testing.T) {
 	}
 }
 
+// Byte-array elements are copied in bulk only when the Go array is laid out
+// exactly as encoded; an oversized or spec-sized backing array and a bitvector
+// element go through the per-element path, so the encoding, the size and the
+// padding-bit check agree with reflection.
+func TestCodegenBulkByteElemsUseDeclaredWidth(t *testing.T) {
+	for _, specs := range []map[string]any{nil, BulkElems_Specs} {
+		testCodegenPayloadByReflection(t, BulkElems_Payload, specs)
+	}
+
+	ds := dynssz.NewDynSsz(BulkElems_Specs)
+	payload := BulkElems_Payload
+	data, err := ds.MarshalSSZ(&payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	size, err := ds.SizeSSZ(&payload)
+	if err != nil {
+		t.Fatalf("size: %v", err)
+	}
+	// 4 offsets, then 3 x 32 + 3 x 32 + 3 x 2 + 3 x 32 element bytes.
+	if want := 16 + 3*32 + 3*32 + 3*2 + 3*32; len(data) != want || size != want {
+		t.Fatalf("encoding is %d bytes, SizeSSZ %d, want %d", len(data), size, want)
+	}
+
+	var decoded BulkElems
+	if err = ds.UnmarshalSSZ(&decoded, data); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for i := range payload.A {
+		if !bytes.Equal(decoded.A[i][:32], payload.A[i][:32]) || [16]byte(decoded.A[i][32:]) != [16]byte{} {
+			t.Fatalf("A[%d] decoded as %x", i, decoded.A[i])
+		}
+		if !bytes.Equal(decoded.B[i][:32], payload.B[i][:32]) || [16]byte(decoded.B[i][32:]) != [16]byte{} {
+			t.Fatalf("B[%d] decoded as %x", i, decoded.B[i])
+		}
+	}
+
+	dirty := BulkElems{C: [][2]byte{{0xff, 0xff}}}
+	if _, err = ds.MarshalSSZ(&dirty); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Fatalf("marshal with padding bits set: err = %v, want ErrInvalidValueRange (padding bits)", err)
+	}
+	dirtyData := append([]byte{}, data...)
+	// C's region starts after the 16 offset bytes and the 3 x 32 bytes of A
+	// and B; set the padding bits of its first element.
+	dirtyData[16+3*32+3*32+1] = 0xff
+	if err = ds.UnmarshalSSZ(&decoded, dirtyData); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Fatalf("unmarshal with padding bits set: err = %v, want ErrInvalidValueRange (padding bits)", err)
+	}
+}
+
 func TestCodegenStreamVecDynSize(t *testing.T) {
 	for _, specs := range []map[string]any{nil, StreamVecDynSize_Specs} {
 		testCodegenPayloadByReflection(t, StreamVecDynSize_Payload, specs)

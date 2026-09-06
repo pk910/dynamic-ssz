@@ -1608,6 +1608,40 @@ var PackedCustomPlain_Payload = PackedCustomPlain{
 	O: [][3]byte{{8, 9, 10}, {11, 12, 13}},
 }
 
+// BulkElems holds byte-array elements whose Go width differs from the encoded
+// width, or that carry padding bits, next to one that is laid out exactly as
+// encoded: only the last may be copied in bulk.
+type BulkElems struct {
+	A [][48]byte `ssz-size:"?,32" ssz-max:"8"`
+	B [][48]byte `ssz-size:"?,48" dynssz-size:"?,BULK_LEN" ssz-max:"8"`
+	C [][2]byte  `ssz-type:"?,bitvector" ssz-bitsize:"?,12" ssz-max:"8"`
+	D [][32]byte `ssz-max:"8"`
+}
+
+var BulkElems_Specs = map[string]any{
+	"BULK_LEN": uint64(32),
+}
+
+var BulkElems_Payload = func() BulkElems {
+	var v BulkElems
+	for i := range 3 {
+		var a, b [48]byte
+		for j := range a {
+			a[j] = byte(i*48 + j)
+			b[j] = byte(255 - i*48 - j)
+		}
+		var d [32]byte
+		for j := range d {
+			d[j] = byte(i + j)
+		}
+		v.A = append(v.A, a)
+		v.B = append(v.B, b)
+		v.C = append(v.C, [2]byte{0xff, 0x0f})
+		v.D = append(v.D, d)
+	}
+	return v
+}()
+
 // BasicMethodsHolder places the method-carrying basic types where the engines
 // pack them: a list, a vector and a byte-sized list.
 type BasicMethodsHolder struct {
