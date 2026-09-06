@@ -1552,8 +1552,10 @@ func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, dataType, 
 		return fmt.Errorf("vector type %v has zero length, which is invalid per the SSZ spec", schemaType)
 	}
 
-	// Set byte array flag for byte types
-	if p.isByteType(schemaElemType) {
+	// The bulk byte code copies through the data value as a plain []byte, so
+	// the flag follows the data element type: a named uint8 element (or a
+	// view whose data element is one) is emitted element-wise.
+	if p.isByteType(dataElemType) {
 		desc.GoTypeFlags |= ssztypes.GoTypeFlagIsByteArray
 	}
 
@@ -1641,8 +1643,10 @@ func (p *Parser) buildListDescriptor(desc *ssztypes.TypeDescriptor, dataType, sc
 	}
 	desc.ElemDesc = elemDesc
 
-	// Set byte array flag for byte types
-	if p.isByteType(schemaElemType) {
+	// The bulk byte code copies through the data value as a plain []byte, so
+	// the flag follows the data element type: a named uint8 element (or a
+	// view whose data element is one) is emitted element-wise.
+	if p.isByteType(dataElemType) {
 		desc.GoTypeFlags |= ssztypes.GoTypeFlagIsByteArray
 	}
 

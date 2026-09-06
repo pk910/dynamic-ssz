@@ -1406,7 +1406,10 @@ func (tc *TypeCache) buildUintDescriptor(desc *TypeDescriptor, t reflect.Type, b
 	elemKind := fieldType.Kind()
 	if elemKind != reflect.Uint8 && elemKind != reflect.Uint64 {
 		return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "%s ssz type can only be represented by slices or arrays of uint8 or uint64, got %v", typeName, elemKind)
-	} else if elemKind == reflect.Uint8 {
+	} else if fieldType == byteType {
+		// The bulk byte paths copy through a plain []byte, which is only
+		// assignable to a slice whose element type is exactly byte; a named
+		// uint8 element decodes element-wise instead.
 		desc.GoTypeFlags |= GoTypeFlagIsByteArray
 	}
 
@@ -2007,7 +2010,10 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 		// Get element type from both runtime and schema types
 		schemaElemType = t.Elem()
 		runtimeElemType = runtimeType.Elem()
-		if schemaElemType == byteType {
+		// The bulk byte paths copy through the runtime value as a plain
+		// []byte, so the flag follows the runtime element type: a named uint8
+		// element (or a view whose runtime element is one) decodes element-wise.
+		if runtimeElemType == byteType {
 			desc.GoTypeFlags |= GoTypeFlagIsByteArray
 		}
 	}
@@ -2082,7 +2088,10 @@ func (tc *TypeCache) buildListDescriptor(desc *TypeDescriptor, runtimeType, sche
 		// Get element type from both runtime and schema types
 		schemaElemType = t.Elem()
 		runtimeElemType = runtimeType.Elem()
-		if schemaElemType == byteType {
+		// The bulk byte paths copy through the runtime value as a plain
+		// []byte, so the flag follows the runtime element type: a named uint8
+		// element (or a view whose runtime element is one) decodes element-wise.
+		if runtimeElemType == byteType {
 			desc.GoTypeFlags |= GoTypeFlagIsByteArray
 		}
 	}

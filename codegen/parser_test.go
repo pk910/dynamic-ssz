@@ -97,6 +97,46 @@ func TestViewMethodDetectionWithAliasedAny(t *testing.T) {
 	}
 }
 
+// TestByteArrayFlagFollowsDataElement checks that the bulk-byte flag is set
+// only when the data element type is exactly byte: the emitted copy goes
+// through the data value, so a named uint8 element, or a []byte view over a
+// named-uint8 data slice, must be emitted element-wise.
+func TestByteArrayFlagFollowsDataElement(t *testing.T) {
+	p := NewParser()
+
+	namedByte := types.NewNamed(types.NewTypeName(token.NoPos, nil, "namedByte", nil), types.Typ[types.Uint8], nil)
+	plain := types.NewSlice(types.Typ[types.Uint8])
+	named := types.NewSlice(namedByte)
+	vectorHint := []ssztypes.SszSizeHint{{Size: 4}}
+	listHint := []ssztypes.SszMaxSizeHint{{Size: 8}}
+
+	cases := []struct {
+		name         string
+		data, schema types.Type
+		size         []ssztypes.SszSizeHint
+		max          []ssztypes.SszMaxSizeHint
+		wantFlag     bool
+	}{
+		{"plain vector", plain, plain, vectorHint, nil, true},
+		{"named vector", named, named, vectorHint, nil, false},
+		{"named vector through byte view", named, plain, vectorHint, nil, false},
+		{"plain list", plain, plain, nil, listHint, true},
+		{"named list", named, named, nil, listHint, false},
+		{"named list through byte view", named, plain, nil, listHint, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			desc, err := p.GetTypeDescriptorWithSchema(tc.data, tc.schema, nil, tc.size, tc.max)
+			if err != nil {
+				t.Fatalf("descriptor: %v", err)
+			}
+			if got := desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0; got != tc.wantFlag {
+				t.Errorf("byte array flag = %v, want %v", got, tc.wantFlag)
+			}
+		})
+	}
+}
+
 func TestNewParser(t *testing.T) {
 	parser := NewParser()
 	if parser == nil {
