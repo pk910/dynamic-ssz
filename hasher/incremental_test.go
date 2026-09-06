@@ -744,6 +744,7 @@ func progressiveReferenceRoot(t *testing.T, total int) [32]byte {
 
 // TestIncrementalBinaryVeryLarge tests binary incremental with 2M+ entries.
 func TestIncrementalBinaryVeryLarge(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		total    int
@@ -786,6 +787,7 @@ func TestIncrementalBinaryVeryLarge(t *testing.T) {
 
 // TestProgressiveVeryLarge tests progressive incremental with 2M+ entries.
 func TestProgressiveVeryLarge(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		total    int
@@ -829,6 +831,7 @@ func TestProgressiveVeryLarge(t *testing.T) {
 // TestIncrementalBinaryVeryLargeOdd tests binary incremental with 2M+ odd entries
 // to exercise remainder handling at every depth level.
 func TestIncrementalBinaryVeryLargeOdd(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		total    int
@@ -874,6 +877,7 @@ func TestIncrementalBinaryVeryLargeOdd(t *testing.T) {
 // TestProgressiveVeryLargeOdd tests progressive incremental with odd totals
 // at various progressive level boundaries.
 func TestProgressiveVeryLargeOdd(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		total    int
