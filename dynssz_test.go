@@ -4727,35 +4727,46 @@ func TestHashTreeRootDoesNotMutateCallerMemory(t *testing.T) {
 	}
 }
 
-// The unit of a size dimension comes from the tag that produced the resolved
-// value; it must not flip depending on whether the number happens to equal
-// the static fallback.
+// A size dimension has one unit: the static and dynamic size tags must both
+// be spelled in bits or both in bytes, whether or not the dynamic value
+// resolves. Matching units resolve to the dynamic value in that unit.
 func TestSizeTagUnitMerge(t *testing.T) {
-	type T struct {
-		V []byte `ssz-bitsize:"64" dynssz-size:"S"`
+	type bitsBoth struct {
+		V []byte `ssz-type:"bitvector" ssz-bitsize:"64" dynssz-bitsize:"S"`
 	}
-	// dynssz-size names bytes: every resolved value yields a byte vector of
-	// that many bytes, including S=64 (== the static bit count).
+	type bytesBoth struct {
+		V []byte `ssz-size:"8" dynssz-size:"S"`
+	}
 	for _, s := range []uint64{63, 64, 65} {
 		ds := NewDynSsz(map[string]any{"S": s})
-		sz, err := ds.SizeSSZ(&T{})
-		if err != nil {
-			t.Errorf("S=%d: %v", s, err)
-			continue
+		if sz, err := ds.SizeSSZ(&bitsBoth{}); err != nil || sz != int((s+7)/8) {
+			t.Errorf("bits S=%d: size %d, err %v; want %d bytes", s, sz, err, (s+7)/8)
 		}
-		if sz != int(s) {
-			t.Errorf("S=%d: size %d, want %d bytes", s, sz, s)
+		if sz, err := ds.SizeSSZ(&bytesBoth{}); err != nil || sz != int(s) {
+			t.Errorf("bytes S=%d: size %d, err %v; want %d bytes", s, sz, err, s)
 		}
 	}
 
-	// An unresolvable expression shares the static hint (and its unit), so a
-	// unit mismatch between the tag families is rejected.
-	type U struct {
-		V []byte `ssz-size:"8" dynssz-bitsize:"UNKNOWN_SPEC"`
+	type bitsThenBytes struct {
+		V []byte `ssz-bitsize:"64" dynssz-size:"S"`
 	}
-	ds := NewDynSsz(nil)
-	if _, err := ds.SizeSSZ(&U{}); err == nil {
-		t.Error("expected error for conflicting size units")
+	type bytesThenBits struct {
+		V []byte `ssz-size:"8" dynssz-bitsize:"S"`
+	}
+	type bytesThenBitsLiteral struct {
+		V []byte `ssz-size:"8" dynssz-bitsize:"64"`
+	}
+	for name, specs := range map[string]map[string]any{
+		"resolved":   {"S": uint64(64)},
+		"unresolved": nil,
+	} {
+		ds := NewDynSsz(specs)
+		for _, v := range []any{&bitsThenBytes{}, &bytesThenBits{}, &bytesThenBitsLiteral{}} {
+			_, err := ds.SizeSSZ(v)
+			if !errors.Is(err, sszutils.ErrInvalidTag) || !strings.Contains(err.Error(), "conflicting size units") {
+				t.Errorf("%s %T: err = %v, want conflicting size units", name, v, err)
+			}
+		}
 	}
 }
 

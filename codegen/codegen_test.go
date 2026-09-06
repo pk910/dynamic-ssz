@@ -1480,13 +1480,29 @@ func TestGenerateViewEdgeCases(t *testing.T) {
 	})
 }
 
-// The codegen ParseTags path drops into the same shared-hint merge; a unit
-// mismatch between the static and dynamic size tags is rejected there too.
+// The codegen ParseTags path applies the same rule as the reflection tag
+// reader: the static and dynamic size tags of a dimension share one unit,
+// for an expression as well as for a literal.
 func TestParseTagsConflictingUnits(t *testing.T) {
-	_, sizeHints, _, err := ParseTags(`ssz-size:"8" dynssz-bitsize:"UNKNOWN_SPEC"`)
-	_ = sizeHints
-	if err == nil || !strings.Contains(err.Error(), "conflicting size units") {
-		t.Fatalf("expected conflicting-units error, got %v", err)
+	for _, tag := range []string{
+		`ssz-size:"8" dynssz-bitsize:"UNKNOWN_SPEC"`,
+		`ssz-bitsize:"64" dynssz-size:"UNKNOWN_SPEC"`,
+		`ssz-size:"8" dynssz-bitsize:"64"`,
+		`ssz-bitsize:"64" dynssz-size:"8"`,
+	} {
+		_, _, _, err := ParseTags(tag)
+		if err == nil || !strings.Contains(err.Error(), "conflicting size units") {
+			t.Errorf("%s: expected conflicting-units error, got %v", tag, err)
+		}
+	}
+	for _, tag := range []string{
+		`ssz-bitsize:"64" dynssz-bitsize:"SPEC"`,
+		`ssz-size:"8" dynssz-size:"SPEC"`,
+		`ssz-size:"8" dynssz-size:"16"`,
+	} {
+		if _, _, _, err := ParseTags(tag); err != nil {
+			t.Errorf("%s: unexpected error %v", tag, err)
+		}
 	}
 }
 
