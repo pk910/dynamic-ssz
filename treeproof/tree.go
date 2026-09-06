@@ -361,9 +361,12 @@ func treeFromNodesToDepth(leaves []*Node, depth int) (*Node, error) {
 	numLeaves := len(leaves)
 
 	// Reject excess leaves (silently dropped otherwise) when 2^depth is
-	// representable; for depth >= 63 the capacity dwarfs any real leaf count.
-	if depth >= 0 && depth < 63 && numLeaves > (1<<uint(depth)) {
-		return nil, fmt.Errorf("number of leaves %d exceeds limit %d", numLeaves, 1<<uint(depth))
+	// representable. The capacity is compared in uint64 so that depths at or
+	// above the platform int width (31 on 32-bit targets) keep their real
+	// capacity instead of wrapping to zero; for depth >= 64 the capacity dwarfs
+	// any real leaf count.
+	if depth >= 0 && depth < 64 && uint64(numLeaves) > (uint64(1)<<uint(depth)) {
+		return nil, fmt.Errorf("number of leaves %d exceeds limit %d", numLeaves, uint64(1)<<uint(depth))
 	}
 
 	// there are no leaves, return a zero order hash node
