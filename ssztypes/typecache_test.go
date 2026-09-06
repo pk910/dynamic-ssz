@@ -694,6 +694,61 @@ func TestTypeCache_CacheManagement(t *testing.T) {
 	})
 }
 
+// Hint-carrying references (a field with ssz-max, ssz-size or ssz-type) are
+// cached as variants keyed by the referenced type. Cache management must see
+// and clear those variants like the plain entries, or a rebuild after
+// RemoveAllTypes hands out the old field descriptors.
+func TestTypeCache_HintedCacheManagement(t *testing.T) {
+	type hintedInner struct {
+		L []uint64 `ssz-max:"8"`
+	}
+	type hintedOuter struct {
+		F hintedInner
+	}
+	outerType := reflect.TypeOf(hintedOuter{})
+	listType := reflect.TypeOf([]uint64(nil))
+	listKey := typeKey{runtime: listType, schema: listType}
+
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	first, err := cache.GetTypeDescriptor(outerType, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if len(cache.hintedDescriptors[listKey]) == 0 {
+		t.Fatal("expected a hinted variant for []uint64 with ssz-max")
+	}
+
+	listed := false
+	for _, pair := range cache.GetAllTypes() {
+		if pair[0] == listType && pair[1] == listType {
+			listed = true
+		}
+	}
+	if !listed {
+		t.Error("GetAllTypes omits the hinted-only []uint64 entry")
+	}
+
+	cache.RemoveType(listType)
+	if len(cache.hintedDescriptors[listKey]) != 0 {
+		t.Error("RemoveType left the hinted variants in place")
+	}
+
+	cache.RemoveAllTypes()
+	if len(cache.hintedDescriptors) != 0 || len(cache.GetAllTypes()) != 0 {
+		t.Fatalf("RemoveAllTypes left %d hinted keys and %d listed types", len(cache.hintedDescriptors), len(cache.GetAllTypes()))
+	}
+
+	second, err := cache.GetTypeDescriptor(outerType, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	firstList := first.ContainerDesc.Fields[0].Type.ContainerDesc.Fields[0].Type
+	secondList := second.ContainerDesc.Fields[0].Type.ContainerDesc.Fields[0].Type
+	if firstList == secondList {
+		t.Error("rebuild after RemoveAllTypes reused the cached hinted list descriptor")
+	}
+}
+
 // Test TypeDescriptor.GetTypeHash
 // MinSize is what a decoder bounds a declared element count against, so it must
 // be the true floor of the type's serialization -- never larger, or valid input

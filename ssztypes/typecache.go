@@ -2298,9 +2298,15 @@ func (tc *TypeCache) GetAllTypes() [][2]reflect.Type {
 	tc.mutex.RLock()
 	defer tc.mutex.RUnlock()
 
-	types := make([][2]reflect.Type, 0, len(tc.descriptors))
+	types := make([][2]reflect.Type, 0, len(tc.descriptors)+len(tc.hintedDescriptors))
 	for key := range tc.descriptors {
 		types = append(types, [2]reflect.Type{key.runtime, key.schema})
+	}
+	// A type reached only through hint-carrying references has no plain entry.
+	for key := range tc.hintedDescriptors {
+		if _, plain := tc.descriptors[key]; !plain {
+			types = append(types, [2]reflect.Type{key.runtime, key.schema})
+		}
 	}
 
 	return types
@@ -2348,34 +2354,38 @@ func (tc *TypeCache) RemoveTypeKey(runtimeType, schemaType reflect.Type) {
 		schemaType = schemaType.Elem()
 	}
 
-	delete(tc.descriptors, typeKey{runtime: runtimeType, schema: schemaType})
+	key := typeKey{runtime: runtimeType, schema: schemaType}
+	delete(tc.descriptors, key)
+	delete(tc.hintedDescriptors, key)
 }
 
-// RemoveAllTypes clears all cached type descriptors from the cache.
+// RemoveAllTypes clears all cached type descriptors from the cache, both the
+// plain entries and the hint-carrying variants.
 //
 // This method is useful for:
-//   - Resetting the cache after configuration changes
 //   - Memory management in long-running applications
 //   - Testing scenarios requiring a clean cache state
 //
 // The method acquires a write lock to ensure thread-safe clearing.
 // After calling this method, all subsequent type descriptor requests
-// will trigger recomputation.
+// will trigger recomputation. Spec values are resolved and memoized by the
+// owning DynSsz instance, so a changed spec set needs a new DynSsz rather
+// than a cleared cache.
 //
 // Example:
 //
-//	// Clear cache after updating specifications
-//	ds.UpdateSpecs(newSpecs)
 //	cache.RemoveAllTypes()
 //
-//	// All types will be recomputed with new specs
-//	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(MyStruct{}), nil, nil)
+//	// All types will be recomputed
+//	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(MyStruct{}), nil, nil, nil)
 func (tc *TypeCache) RemoveAllTypes() {
 	tc.mutex.Lock()
 	defer tc.mutex.Unlock()
 
-	// Create new map to clear all references
+	// Create new maps to clear all references, including the hint-carrying
+	// variants that container fields and list elements are cached under.
 	tc.descriptors = make(map[typeKey]*TypeDescriptor)
+	tc.hintedDescriptors = make(map[typeKey][]*hintedVariant)
 }
 
 // extractGenericTypeParameter extracts the generic type parameter from a CompatibleUnion type.
