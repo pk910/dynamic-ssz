@@ -2,6 +2,7 @@ package tests
 
 import (
 	"encoding/binary"
+	"errors"
 	"math/big"
 	"time"
 
@@ -1422,6 +1423,217 @@ type SizerOnlyHolder struct {
 var SizerOnlyHolder_Payload = SizerOnlyHolder{
 	S: SizerOnlyType{A: 7, B: []byte{1, 2, 3}},
 	T: 9,
+}
+
+// errBasicDelegated is returned by the hash methods of the basic types below.
+// Inside a list or vector their values are packed by the engines themselves,
+// so a hash delegation there shows up as this error instead of a wrong root.
+// The serialization methods are correct: the bytes of a basic value are the
+// same whether the engine or the type writes them.
+var errBasicDelegated = errors.New("hash method called on a packed basic element")
+
+// BasicWithMethods is a named uint64 that carries the dynamic and the fastssz
+// method sets.
+type BasicWithMethods uint64
+
+var _ sszutils.DynamicMarshaler = (*BasicWithMethods)(nil)
+var _ sszutils.DynamicUnmarshaler = (*BasicWithMethods)(nil)
+var _ sszutils.DynamicSizer = (*BasicWithMethods)(nil)
+var _ sszutils.DynamicHashRoot = (*BasicWithMethods)(nil)
+
+func (b *BasicWithMethods) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return b.MarshalSSZTo(buf)
+}
+
+func (b *BasicWithMethods) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	return b.UnmarshalSSZ(buf)
+}
+
+func (b *BasicWithMethods) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
+	return 8
+}
+
+func (b *BasicWithMethods) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return errBasicDelegated
+}
+
+func (b *BasicWithMethods) MarshalSSZ() ([]byte, error) {
+	return b.MarshalSSZTo(nil)
+}
+
+func (b *BasicWithMethods) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint64(buf, uint64(*b)), nil
+}
+
+func (b *BasicWithMethods) SizeSSZ() int {
+	return 8
+}
+
+func (b *BasicWithMethods) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	*b = BasicWithMethods(binary.LittleEndian.Uint64(buf))
+	return nil
+}
+
+func (b *BasicWithMethods) HashTreeRoot() ([32]byte, error) {
+	return [32]byte{}, errBasicDelegated
+}
+
+// BasicByteWithMethods is the uint8 counterpart: 32 values share one chunk.
+type BasicByteWithMethods uint8
+
+var _ sszutils.DynamicMarshaler = (*BasicByteWithMethods)(nil)
+var _ sszutils.DynamicUnmarshaler = (*BasicByteWithMethods)(nil)
+var _ sszutils.DynamicSizer = (*BasicByteWithMethods)(nil)
+var _ sszutils.DynamicHashRoot = (*BasicByteWithMethods)(nil)
+
+func (b *BasicByteWithMethods) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return append(buf, byte(*b)), nil
+}
+
+func (b *BasicByteWithMethods) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	if len(buf) != 1 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	*b = BasicByteWithMethods(buf[0])
+	return nil
+}
+
+func (b *BasicByteWithMethods) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
+	return 1
+}
+
+func (b *BasicByteWithMethods) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return errBasicDelegated
+}
+
+// PackedCustom is a struct-backed uint16 with custom SSZ methods. Its hash
+// method appends only the packed two bytes: as a field the engines pad it to a
+// leaf, inside a list or vector they pack it with its neighbours.
+type PackedCustom struct{ V uint16 }
+
+func (p *PackedCustom) MarshalSSZ() ([]byte, error) {
+	return p.MarshalSSZTo(nil)
+}
+
+func (p *PackedCustom) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint16(buf, p.V), nil
+}
+
+func (p *PackedCustom) SizeSSZ() int { return 2 }
+
+func (p *PackedCustom) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 2 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	p.V = binary.LittleEndian.Uint16(buf)
+	return nil
+}
+
+func (p *PackedCustom) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint16(root[:], p.V)
+	return root, nil
+}
+
+func (p *PackedCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.AppendUint16(p.V)
+	return nil
+}
+
+// OddCustom is a 3-byte custom type whose hash method appends only its bytes.
+// No basic type has that size, so inside a list each value is padded to a leaf
+// of its own, like a Vector[byte, 3] element.
+type OddCustom struct{ B [3]byte }
+
+func (o *OddCustom) MarshalSSZ() ([]byte, error) {
+	return o.MarshalSSZTo(nil)
+}
+
+func (o *OddCustom) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return append(buf, o.B[:]...), nil
+}
+
+func (o *OddCustom) SizeSSZ() int { return 3 }
+
+func (o *OddCustom) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 3 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	copy(o.B[:], buf)
+	return nil
+}
+
+func (o *OddCustom) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	copy(root[:], o.B[:])
+	return root, nil
+}
+
+func (o *OddCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.Append(o.B[:])
+	return nil
+}
+
+// PackedCustomHolder places the append-only custom types as a field, in a
+// list and in a vector; PackedCustomPlain is the twin built from the types
+// they stand for.
+type PackedCustomHolder struct {
+	A PackedCustom    `ssz-type:"custom" ssz-size:"2"`
+	L []PackedCustom  `ssz-type:"?,custom" ssz-size:"?,2" ssz-max:"8"`
+	V [4]PackedCustom `ssz-type:"?,custom" ssz-size:"4,2"`
+	O []OddCustom     `ssz-type:"?,custom" ssz-size:"?,3" ssz-max:"8"`
+}
+
+type PackedCustomPlain struct {
+	A uint16
+	L []uint16 `ssz-max:"8"`
+	V [4]uint16
+	O [][3]byte `ssz-max:"8"`
+}
+
+var PackedCustomHolder_Payload = PackedCustomHolder{
+	A: PackedCustom{V: 0x1234},
+	L: []PackedCustom{{V: 1}, {V: 2}, {V: 3}},
+	V: [4]PackedCustom{{V: 4}, {V: 5}, {V: 6}, {V: 7}},
+	O: []OddCustom{{B: [3]byte{8, 9, 10}}, {B: [3]byte{11, 12, 13}}},
+}
+
+var PackedCustomPlain_Payload = PackedCustomPlain{
+	A: 0x1234,
+	L: []uint16{1, 2, 3},
+	V: [4]uint16{4, 5, 6, 7},
+	O: [][3]byte{{8, 9, 10}, {11, 12, 13}},
+}
+
+// BasicMethodsHolder places the method-carrying basic types where the engines
+// pack them: a list, a vector and a byte-sized list.
+type BasicMethodsHolder struct {
+	L []BasicWithMethods `ssz-max:"8"`
+	V [4]BasicWithMethods
+	B []BasicByteWithMethods `ssz-max:"64"`
+}
+
+// BasicMethodsPlain is the twin built from plain basic types; it must produce
+// the same bytes and root as BasicMethodsHolder.
+type BasicMethodsPlain struct {
+	L []uint64 `ssz-max:"8"`
+	V [4]uint64
+	B []uint8 `ssz-max:"64"`
+}
+
+var BasicMethodsHolder_Payload = BasicMethodsHolder{
+	L: []BasicWithMethods{1, 2, 3},
+	V: [4]BasicWithMethods{4, 5, 6, 7},
+	B: []BasicByteWithMethods{8, 9, 10},
+}
+
+var BasicMethodsPlain_Payload = BasicMethodsPlain{
+	L: []uint64{1, 2, 3},
+	V: [4]uint64{4, 5, 6, 7},
+	B: []uint8{8, 9, 10},
 }
 
 // CoverageTypes6 wraps MarshalerOnlyType as a field to trigger the

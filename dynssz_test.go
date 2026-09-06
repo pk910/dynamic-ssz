@@ -6898,3 +6898,93 @@ func TestSizerWithoutMarshalerIsUsed(t *testing.T) {
 		t.Error("nested SizeSSZDyn was not consulted")
 	}
 }
+
+// basicWithMethods is a named uint64 whose hash methods fail: inside a list or
+// vector its values are packed by the engine itself, never through them. The
+// serialization methods are correct.
+type basicWithMethods uint64
+
+var errBasicDelegated = errors.New("hash method called on a packed basic element")
+
+func (b *basicWithMethods) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint64(buf, uint64(*b)), nil
+}
+
+func (b *basicWithMethods) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	if len(buf) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	*b = basicWithMethods(binary.LittleEndian.Uint64(buf))
+	return nil
+}
+
+func (b *basicWithMethods) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
+	return 8
+}
+
+func (b *basicWithMethods) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return errBasicDelegated
+}
+
+func (b *basicWithMethods) HashTreeRoot() ([32]byte, error) {
+	return [32]byte{}, errBasicDelegated
+}
+
+type basicMethodsHolder struct {
+	L []basicWithMethods `ssz-max:"8"`
+	V [4]basicWithMethods
+}
+
+type basicMethodsPlain struct {
+	L []uint64 `ssz-max:"8"`
+	V [4]uint64
+}
+
+// A list or vector of a named basic type packs its elements like the plain
+// type does, whatever methods the named type declares.
+func TestPackedBasicElementsAreNotDelegated(t *testing.T) {
+	holder := &basicMethodsHolder{L: []basicWithMethods{1, 2, 3}, V: [4]basicWithMethods{4, 5, 6, 7}}
+	plain := &basicMethodsPlain{L: []uint64{1, 2, 3}, V: [4]uint64{4, 5, 6, 7}}
+
+	for _, ds := range []*DynSsz{NewDynSsz(nil), NewDynSsz(nil, WithNoFastSsz()), NewDynSsz(nil, WithNoDelegation())} {
+		holderBytes, err := ds.MarshalSSZ(holder)
+		if err != nil {
+			t.Fatalf("marshal holder: %v", err)
+		}
+		plainBytes, err := ds.MarshalSSZ(plain)
+		if err != nil {
+			t.Fatalf("marshal plain: %v", err)
+		}
+		if !bytes.Equal(holderBytes, plainBytes) {
+			t.Fatalf("holder bytes %x != plain bytes %x", holderBytes, plainBytes)
+		}
+
+		holderRoot, err := ds.HashTreeRoot(holder)
+		if err != nil {
+			t.Fatalf("hash holder: %v", err)
+		}
+		plainRoot, err := ds.HashTreeRoot(plain)
+		if err != nil {
+			t.Fatalf("hash plain: %v", err)
+		}
+		if holderRoot != plainRoot {
+			t.Fatalf("holder root %x != plain root %x", holderRoot, plainRoot)
+		}
+
+		tree, err := ds.GetTree(holder)
+		if err != nil {
+			t.Fatalf("tree holder: %v", err)
+		}
+		if !bytes.Equal(tree.Hash(), holderRoot[:]) {
+			t.Fatalf("tree root %x != root %x", tree.Hash(), holderRoot)
+		}
+
+		var decoded basicMethodsHolder
+		if err := ds.UnmarshalSSZ(&decoded, holderBytes); err != nil {
+			t.Fatalf("unmarshal holder: %v", err)
+		}
+		if !reflect.DeepEqual(&decoded, holder) {
+			t.Fatalf("decoded %+v != %+v", decoded, *holder)
+		}
+	}
+}

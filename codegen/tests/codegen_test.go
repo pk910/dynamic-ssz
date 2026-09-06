@@ -1377,6 +1377,120 @@ func TestCodegenSizerOnlyChild(t *testing.T) {
 	}
 }
 
+// Inside a list or vector, basic values pack into chunks, so the element type's
+// own SSZ methods are not called by either engine: the holder must encode,
+// decode and hash like its plain twin, and none of the error-returning methods
+// may run.
+func TestCodegenPackedBasicElementsAreNotDelegated(t *testing.T) {
+	testCodegenPayloadByReflection(t, BasicMethodsHolder_Payload, nil)
+
+	ds := dynssz.NewDynSsz(nil)
+	holder := BasicMethodsHolder_Payload
+	plain := BasicMethodsPlain_Payload
+
+	holderBytes, err := ds.MarshalSSZ(&holder)
+	if err != nil {
+		t.Fatalf("marshal holder: %v", err)
+	}
+	plainBytes, err := ds.MarshalSSZ(&plain)
+	if err != nil {
+		t.Fatalf("marshal plain twin: %v", err)
+	}
+	if !bytes.Equal(holderBytes, plainBytes) {
+		t.Fatalf("holder bytes %x != plain twin bytes %x", holderBytes, plainBytes)
+	}
+
+	holderRoot, err := ds.HashTreeRoot(&holder)
+	if err != nil {
+		t.Fatalf("hash holder: %v", err)
+	}
+	plainRoot, err := ds.HashTreeRoot(&plain)
+	if err != nil {
+		t.Fatalf("hash plain twin: %v", err)
+	}
+	if holderRoot != plainRoot {
+		t.Fatalf("holder root %x != plain twin root %x", holderRoot, plainRoot)
+	}
+
+	tree, err := ds.GetTree(&holder)
+	if err != nil {
+		t.Fatalf("tree holder: %v", err)
+	}
+	if treeRoot := tree.Hash(); !bytes.Equal(treeRoot, holderRoot[:]) {
+		t.Fatalf("tree root %x != root %x", treeRoot, holderRoot)
+	}
+
+	var decoded BasicMethodsHolder
+	if err = ds.UnmarshalSSZ(&decoded, holderBytes); err != nil {
+		t.Fatalf("unmarshal holder: %v", err)
+	}
+	if !reflect.DeepEqual(decoded, holder) {
+		t.Fatalf("decoded %+v != payload %+v", decoded, holder)
+	}
+}
+
+// A custom type whose hash method appends only its packed bytes is padded to
+// a leaf as a field and packed inside lists and vectors, so the holder hashes
+// like its uint16 twin in both engines; a root-level value is padded too.
+func TestCodegenPackedCustomElements(t *testing.T) {
+	testCodegenPayloadByReflection(t, PackedCustomHolder_Payload, nil)
+
+	ds := dynssz.NewDynSsz(nil)
+	holder := PackedCustomHolder_Payload
+	plain := PackedCustomPlain_Payload
+
+	holderBytes, err := ds.MarshalSSZ(&holder)
+	if err != nil {
+		t.Fatalf("marshal holder: %v", err)
+	}
+	plainBytes, err := ds.MarshalSSZ(&plain)
+	if err != nil {
+		t.Fatalf("marshal plain twin: %v", err)
+	}
+	if !bytes.Equal(holderBytes, plainBytes) {
+		t.Fatalf("holder bytes %x != plain twin bytes %x", holderBytes, plainBytes)
+	}
+
+	holderRoot, err := ds.HashTreeRoot(&holder)
+	if err != nil {
+		t.Fatalf("hash holder: %v", err)
+	}
+	plainRoot, err := ds.HashTreeRoot(&plain)
+	if err != nil {
+		t.Fatalf("hash plain twin: %v", err)
+	}
+	if holderRoot != plainRoot {
+		t.Fatalf("holder root %x != plain twin root %x", holderRoot, plainRoot)
+	}
+
+	tree, err := ds.GetTree(&holder)
+	if err != nil {
+		t.Fatalf("tree holder: %v", err)
+	}
+	if treeRoot := tree.Hash(); !bytes.Equal(treeRoot, holderRoot[:]) {
+		t.Fatalf("tree root %x != root %x", treeRoot, holderRoot)
+	}
+
+	var decoded PackedCustomHolder
+	if err = ds.UnmarshalSSZ(&decoded, holderBytes); err != nil {
+		t.Fatalf("unmarshal holder: %v", err)
+	}
+	if !reflect.DeepEqual(decoded, holder) {
+		t.Fatalf("decoded %+v != payload %+v", decoded, holder)
+	}
+
+	single := PackedCustom{V: 0x1234}
+	singleRoot, err := ds.HashTreeRoot(&single)
+	if err != nil {
+		t.Fatalf("hash root-level custom: %v", err)
+	}
+	var want [32]byte
+	binary.LittleEndian.PutUint16(want[:], single.V)
+	if singleRoot != want {
+		t.Fatalf("root-level custom root %x != leaf %x", singleRoot, want)
+	}
+}
+
 func TestCodegenStreamVecDynSize(t *testing.T) {
 	for _, specs := range []map[string]any{nil, StreamVecDynSize_Specs} {
 		testCodegenPayloadByReflection(t, StreamVecDynSize_Payload, specs)

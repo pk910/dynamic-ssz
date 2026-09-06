@@ -295,6 +295,14 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent, "if %s == nil {\n\t%s = new(%s)\n}\n", varName, varName, ctx.typePrinter.InnerTypeString(desc))
 	}
 
+	// A delegate may leave a whole leaf or only the packed bytes of its value;
+	// it is padded to a leaf afterwards, except for a custom element inside a
+	// packed scope whose declared size is one a basic type could have (a power
+	// of two up to 16 bytes): that element stands in for the basic type and is
+	// packed with its neighbours by the scope.
+	padDelegate := !pack || desc.SszType != ssztypes.SszCustomType ||
+		desc.Size <= 0 || desc.Size > 16 || desc.Size&(desc.Size-1) != 0
+
 	// Handle types that have generated methods we can call
 	isView := desc.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
 	if !isRoot && isView {
@@ -303,6 +311,9 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 			ctx.appendCode(indent, "if viewFn := %s.%s((%s)(nil)%s); viewFn != nil {\n", varName, viewFn, ctx.typePrinter.ViewTypeString(desc, true), viewArg)
 			ctx.appendCode(indent+1, "if err := viewFn(ds, hh); err != nil {\n\treturn err\n}\n")
 			ctx.appendCode(indent, "} else {\n\treturn sszutils.ErrNotImplemented\n}\n")
+			if padDelegate {
+				ctx.appendCode(indent, "hh.FillUpTo32()\n")
+			}
 			ctx.usedDynSpecs = true
 			return nil
 		}
@@ -311,16 +322,27 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 	isFastsszHashWith := desc.SszCompatFlags&ssztypes.SszCompatFlagHashTreeRootWith != 0
 	useFastSsz := ctx.hashUsesFastSsz(desc, isRoot)
 
-	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0 && !isRoot && !isView {
+	// A basic element of up to 16 bytes is packed with its neighbours by the
+	// enclosing list or vector; its own hash methods are not called there. A
+	// 32-byte uint256 fills a chunk on its own and may still delegate.
+	packedBasic := pack && desc.SszType.IsBasic() && desc.Size <= 16
+
+	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0 && !isRoot && !isView && !packedBasic {
 		if done, err := ctx.hashDynamicRoot(desc, varName, typePath, indent, useFastSsz); done {
+			if err == nil && padDelegate {
+				ctx.appendCode(indent, "hh.FillUpTo32()\n")
+			}
 			return err
 		}
 	}
 
-	if useFastSsz && !isView {
+	if useFastSsz && !isView && !packedBasic {
 		if isFastsszHashWith {
 			fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "HashTreeRootWith")
 			ctx.appendCode(indent, "if err := %s.%s(hh%s); err != nil {\n\treturn %s\n}\n", varName, fn, arg, typePath.getErrorWith("err"))
+			if padDelegate {
+				ctx.appendCode(indent, "hh.FillUpTo32()\n")
+			}
 		} else {
 			ctx.appendCode(indent, "if root, err := %s.HashTreeRoot(); err != nil {\n\treturn %s\n} else {\n\thh.AppendBytes32(root[:])\n}\n", varName, typePath.getErrorWith("err"))
 		}
@@ -809,9 +831,8 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		ctx.appendCode(indent, "}\n")
 
 		if !pack {
-			if itemSize < 32 {
-				ctx.appendCode(indent, "hh.FillUpTo32()\n")
-			}
+			// Packed basics and append-only delegates leave a partial chunk.
+			ctx.appendCode(indent, "hh.FillUpTo32()\n")
 
 			// Finalize vector with bit limit
 			ctx.appendCode(indent, "hh.Merkleize(idx)\n")
@@ -910,9 +931,15 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 			packedDesc = packedDesc.ElemDesc
 		}
 
-		if ctx.isPrimitive(packedDesc) {
+		switch {
+		case ctx.isPrimitive(packedDesc):
 			itemSize = int(packedDesc.Size)
-		} else {
+		case packedDesc.SszType == ssztypes.SszCustomType && packedDesc.Size > 0 && packedDesc.Size <= 16 && packedDesc.Size&(packedDesc.Size-1) == 0:
+			// A custom element whose declared size is one a basic type could
+			// have (a power of two up to 16 bytes) packs like that basic type;
+			// any other size occupies a chunk of its own.
+			itemSize = int(packedDesc.Size)
+		default:
 			itemSize = 32
 		}
 
@@ -940,9 +967,8 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 			ctx.appendCode(indent, "}\n")
 		}
 
-		if itemSize < 32 {
-			ctx.appendCode(indent, "hh.FillUpTo32()\n")
-		}
+		// Packed basics and append-only delegates leave a partial chunk.
+		ctx.appendCode(indent, "hh.FillUpTo32()\n")
 	}
 
 	switch {

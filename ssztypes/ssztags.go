@@ -60,6 +60,19 @@ const (
 	SszOptionalListType // pointer encoded as canonical List[T, 1]
 )
 
+// IsBasic reports whether t is a basic type: a boolean or a fixed-width number.
+// Basic values are packed into 32-byte chunks when a list or vector of them is
+// merkleized.
+func (t SszType) IsBasic() bool {
+	switch t {
+	case SszBoolType, SszUint8Type, SszUint16Type, SszUint32Type, SszUint64Type, SszUint128Type, SszUint256Type,
+		SszInt8Type, SszInt16Type, SszInt32Type, SszInt64Type, SszFloat32Type, SszFloat64Type:
+		return true
+	default:
+		return false
+	}
+}
+
 // Tag names for the two unbounded-by-tag types, shared with the messages that
 // name them back to the user.
 const (

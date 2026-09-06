@@ -1108,6 +1108,9 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...Ca
 			if err != nil {
 				return err
 			}
+			// A delegate may leave only the packed bytes of its value; the
+			// root is one leaf.
+			hh.FillUpTo32()
 			return nil
 		}
 	} else if viewHasher, ok := source.(sszutils.DynamicViewHashRoot); ok && !d.options.NoDelegation {
@@ -1116,6 +1119,7 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...Ca
 			if err != nil {
 				return err
 			}
+			hh.FillUpTo32()
 			return nil
 		}
 	}
