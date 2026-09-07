@@ -256,11 +256,14 @@ func (ctx *unmarshalContext) unmarshalViewType(desc *ssztypes.TypeDescriptor, va
 	}
 
 	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewDecoder != 0 {
+		// The streaming form is bridged through a buffer decoder; like a
+		// buffer unmarshaler it has to consume the whole region.
 		ctx.appendCode(indent, "dec := sszutils.NewBufferDecoder(buf)\n")
 		viewFn, viewArg := descendCall(ctx.depthAware, ctx.recursion, desc, "UnmarshalSSZDecoderView")
 		ctx.appendCode(indent, "if viewFn := %s.%s((%s)(nil)%s); viewFn != nil {\n", varName, viewFn, ctx.typePrinter.ViewTypeString(desc, true), viewArg)
 		ctx.appendCode(indent+1, "if err = viewFn(ds, dec); err != nil {\n\treturn err\n}\n")
 		ctx.appendCode(indent, "} else {\n\treturn sszutils.ErrNotImplemented\n}\n")
+		ctx.appendCode(indent, "if remaining := len(buf) - dec.GetPosition(); remaining > 0 {\n\treturn sszutils.ErrTrailingDataFn(remaining)\n}\n")
 		ctx.usedDynSpecs = true
 		return true
 	}
@@ -312,9 +315,12 @@ func (ctx *unmarshalContext) unmarshalCompatType(desc *ssztypes.TypeDescriptor, 
 	}
 
 	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 {
+		// The streaming form is bridged through a buffer decoder; like a
+		// buffer unmarshaler it has to consume the whole region.
 		ctx.appendCode(indent, "dec := sszutils.NewBufferDecoder(buf)\n")
 		fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "UnmarshalSSZDecoder")
 		ctx.appendCode(indent, "if err = %s.%s(ds, dec%s); err != nil {\n\treturn %s\n}\n", varName, fn, arg, typePath.getErrorWith("err"))
+		ctx.appendCode(indent, "if remaining := len(buf) - dec.GetPosition(); remaining > 0 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.ErrTrailingDataFn(remaining)"))
 		ctx.usedDynSpecs = true
 		return true, nil
 	}

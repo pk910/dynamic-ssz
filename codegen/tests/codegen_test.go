@@ -1491,6 +1491,48 @@ func TestCodegenPackedCustomElements(t *testing.T) {
 	}
 }
 
+// A child that only implements the streaming decoder is bridged through a
+// buffer decoder inside generated buffer code; the bridge must reject bytes the
+// child left unread in its region, as the streaming generated code and the
+// reflection engine do.
+func TestCodegenDecoderBridgeRejectsTrailingBytes(t *testing.T) {
+	ds := dynssz.NewDynSsz(nil)
+	payload := GenCovCustomHolder2{C: streamOnlyCustom{A: 0x11111111}, CB: bufOnlyCustom{A: 0x22222222}, D: []byte{0xdd}}
+	enc, err := ds.MarshalSSZ(&payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Layout: offsets of C, CB and D at 0, 4 and 16, CS at 8..16, then C (4
+	// bytes), CB (4 bytes), D (1 byte).
+	if len(enc) != 29 || binary.LittleEndian.Uint32(enc[0:]) != 20 || binary.LittleEndian.Uint32(enc[4:]) != 24 || binary.LittleEndian.Uint32(enc[16:]) != 28 {
+		t.Fatalf("unexpected layout: %x", enc)
+	}
+	// One garbage byte after C, and the following offsets moved past it.
+	mutated := append(append(append([]byte{}, enc[:24]...), 0xaa), enc[24:]...)
+	binary.LittleEndian.PutUint32(mutated[4:], 25)
+	binary.LittleEndian.PutUint32(mutated[16:], 29)
+
+	var viaReflection GenCovCustomHolder2
+	if err := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz()).UnmarshalSSZ(&viaReflection, mutated); !errors.Is(err, sszutils.ErrOffset) {
+		t.Fatalf("reflection: err = %v, want ErrOffset", err)
+	}
+
+	type bufferUnmarshaler interface {
+		UnmarshalSSZDyn(sszutils.DynamicSpecs, []byte) error
+	}
+	var generated GenCovCustomHolder2
+	unmarshaler, ok := any(&generated).(bufferUnmarshaler)
+	if !ok {
+		t.Skip("no generated code present")
+	}
+	if err := unmarshaler.UnmarshalSSZDyn(ds, mutated); !errors.Is(err, sszutils.ErrOffset) {
+		t.Fatalf("generated UnmarshalSSZDyn: err = %v, want ErrOffset", err)
+	}
+	if err := unmarshaler.UnmarshalSSZDyn(ds, enc); err != nil {
+		t.Fatalf("generated UnmarshalSSZDyn on the clean encoding: %v", err)
+	}
+}
+
 // Byte-array elements are copied in bulk only when the Go array is laid out
 // exactly as encoded; an oversized or spec-sized backing array and a bitvector
 // element go through the per-element path, so the encoding, the size and the
