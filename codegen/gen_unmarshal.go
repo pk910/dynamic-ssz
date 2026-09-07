@@ -6,6 +6,7 @@ package codegen
 
 import (
 	"fmt"
+	"go/types"
 	"reflect"
 	"slices"
 	"strconv"
@@ -185,15 +186,28 @@ func (ctx *unmarshalContext) getIndexVar() (string, func()) {
 	}
 }
 
-// isBulkBytesElem reports whether elemDesc is a fixed-size byte array value type
-// (e.g. [32]byte) that can be marshaled/unmarshaled as part of a contiguous slice
-// via a single bulk memory copy. Pointer, string and dynamic element types are
-// excluded since they are not laid out as a contiguous padding-free byte region.
+// isBulkBytesElem reports whether elemDesc is a byte-array element whose Go
+// value is laid out exactly as its SSZ encoding, so a slice of them marshals
+// and unmarshals with a single memory copy: a plain (non-pointer, non-string)
+// byte vector whose declared length equals the Go array length and does not
+// come from a size expression. A bitvector validates its padding bits per
+// element, and an array longer than its declared length, or sized by a spec
+// value, would be copied at its Go width.
 func isBulkBytesElem(elemDesc *ssztypes.TypeDescriptor) bool {
-	return elemDesc.Kind == reflect.Array &&
-		elemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 &&
-		elemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsPointer|ssztypes.GoTypeFlagIsString) == 0 &&
-		elemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0
+	if elemDesc.Kind != reflect.Array ||
+		elemDesc.SszType != ssztypes.SszVectorType ||
+		elemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray == 0 ||
+		elemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsPointer|ssztypes.GoTypeFlagIsString) != 0 ||
+		elemDesc.SszTypeFlags&(ssztypes.SszTypeFlagIsDynamic|ssztypes.SszTypeFlagHasSizeExpr) != 0 {
+		return false
+	}
+	if elemDesc.CodegenInfo != nil {
+		if info, ok := (*elemDesc.CodegenInfo).(*CodegenInfo); ok && info.Type != nil {
+			arr, ok := info.Type.Underlying().(*types.Array)
+			return ok && arr.Len() == elemDesc.Len
+		}
+	}
+	return elemDesc.Type != nil && elemDesc.Type.Kind() == reflect.Array && int64(elemDesc.Type.Len()) == elemDesc.Len
 }
 
 // isInlinable determines if a type can be unmarshaled inline without temporary variables.
@@ -242,11 +256,14 @@ func (ctx *unmarshalContext) unmarshalViewType(desc *ssztypes.TypeDescriptor, va
 	}
 
 	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewDecoder != 0 {
+		// The streaming form is bridged through a buffer decoder; like a
+		// buffer unmarshaler it has to consume the whole region.
 		ctx.appendCode(indent, "dec := sszutils.NewBufferDecoder(buf)\n")
 		viewFn, viewArg := descendCall(ctx.depthAware, ctx.recursion, desc, "UnmarshalSSZDecoderView")
 		ctx.appendCode(indent, "if viewFn := %s.%s((%s)(nil)%s); viewFn != nil {\n", varName, viewFn, ctx.typePrinter.ViewTypeString(desc, true), viewArg)
 		ctx.appendCode(indent+1, "if err = viewFn(ds, dec); err != nil {\n\treturn err\n}\n")
 		ctx.appendCode(indent, "} else {\n\treturn sszutils.ErrNotImplemented\n}\n")
+		ctx.appendCode(indent, "if remaining := len(buf) - dec.GetPosition(); remaining > 0 {\n\treturn sszutils.ErrTrailingDataFn(remaining)\n}\n")
 		ctx.usedDynSpecs = true
 		return true
 	}
@@ -298,9 +315,12 @@ func (ctx *unmarshalContext) unmarshalCompatType(desc *ssztypes.TypeDescriptor, 
 	}
 
 	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 {
+		// The streaming form is bridged through a buffer decoder; like a
+		// buffer unmarshaler it has to consume the whole region.
 		ctx.appendCode(indent, "dec := sszutils.NewBufferDecoder(buf)\n")
 		fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "UnmarshalSSZDecoder")
 		ctx.appendCode(indent, "if err = %s.%s(ds, dec%s); err != nil {\n\treturn %s\n}\n", varName, fn, arg, typePath.getErrorWith("err"))
+		ctx.appendCode(indent, "if remaining := len(buf) - dec.GetPosition(); remaining > 0 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.ErrTrailingDataFn(remaining)"))
 		ctx.usedDynSpecs = true
 		return true, nil
 	}
@@ -1357,7 +1377,12 @@ func (ctx *unmarshalContext) unmarshalBitlist(desc *ssztypes.TypeDescriptor, var
 	if desc.Kind != reflect.Array {
 		ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, blen)\n", valueVar, valueVar)
 	}
-	ctx.appendCode(indent, "copy(%s[:], buf)\n", valueVar)
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
+		ctx.appendCode(indent, "copy(%s[:], buf)\n", valueVar)
+	} else {
+		// A named uint8 element is viewed as a byte without copying.
+		ctx.appendCode(indent, "copy(sszutils.ByteSlice(%s[:]), buf)\n", valueVar)
+	}
 
 	return nil
 }

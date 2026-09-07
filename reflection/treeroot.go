@@ -76,6 +76,15 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 	// This supports fork-dependent SSZ schemas where generated code handles
 	// different view types. If the method returns nil, fall through to
 	// other hashing methods.
+	//
+	// A delegate may leave a whole leaf or only the packed bytes of its value;
+	// it is padded to a leaf afterwards, except for a custom element inside a
+	// packed scope whose declared size is one a basic type could have (a power
+	// of two up to 16 bytes): that element stands in for the basic type and is
+	// packed with its neighbours by the scope.
+	padDelegate := !pack || sourceType.SszType != ssztypes.SszCustomType ||
+		sourceType.Size <= 0 || sourceType.Size > 16 || sourceType.Size&(sourceType.Size-1) != 0
+
 	isView := sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
 	if isView {
 		// Under no-delegation the view schema is hashed by reflection instead of
@@ -88,6 +97,9 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 					if err := hashFn(ctx.ds, hh); err != nil {
 						return err
 					}
+					if padDelegate {
+						hh.FillUpTo32()
+					}
 
 					if ctx.verbose {
 						ctx.logCb("%shash: 0x%x\n", strings.Repeat(" ", int(depth.idt)*2), hh.Hash())
@@ -97,7 +109,10 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 				}
 			}
 		}
-	} else if sourceType.SszCompatFlags != 0 || sourceType.SszType == ssztypes.SszCustomType {
+	} else if (sourceType.SszCompatFlags != 0 || sourceType.SszType == ssztypes.SszCustomType) && (!pack || !sourceType.SszType.IsBasic() || sourceType.Size > 16) {
+		// A basic element of up to 16 bytes is packed with its neighbours by
+		// the list or vector walk below; its own hash methods are not consulted
+		// there. A 32-byte uint256 fills a chunk on its own.
 		// Fast path: skip compat interface checks for types that don't implement any
 		isFastsszHasher := sourceType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0
 		useDynamicHashRoot := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0
@@ -127,6 +142,9 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 					callErr, _ := results[0].Interface().(error)
 					return fmt.Errorf("failed HashTreeRootWith: %w", callErr)
 				}
+				if padDelegate {
+					hh.FillUpTo32()
+				}
 
 				return nil
 			}
@@ -147,6 +165,9 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 				err := hasher.HashTreeRootWithDyn(ctx.ds, hh)
 				if err != nil {
 					return fmt.Errorf("failed HashTreeRootDyn: %w", err)
+				}
+				if padDelegate {
+					hh.FillUpTo32()
 				}
 
 				return nil
@@ -530,7 +551,7 @@ func (ctx *ReflectionCtx) buildRootFromCompatibleUnion(sourceType *ssztypes.Type
 
 	// Hash the data root first; the selector is merkleized in below.
 	if dataField.IsNil() {
-		return sszutils.ErrInvalidUnionVariantFn()
+		return sszutils.ErrUnionTypeMismatchFn()
 	}
 	if dataField.Elem().Type() != variantDesc.Type {
 		return sszutils.ErrUnionTypeMismatchFn()
@@ -588,7 +609,7 @@ func (ctx *ReflectionCtx) buildRootFromUnion(sourceType *ssztypes.TypeDescriptor
 		return sszutils.ErrInvalidUnionVariantFn()
 	}
 	if dataField.IsNil() {
-		return sszutils.ErrInvalidUnionVariantFn()
+		return sszutils.ErrUnionTypeMismatchFn()
 	}
 	if dataField.Elem().Type() != variantDesc.Type {
 		return sszutils.ErrUnionTypeMismatchFn()
@@ -826,6 +847,13 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 			itemSize = 16
 		case ssztypes.SszUint256Type:
 			itemSize = 32
+		case ssztypes.SszCustomType:
+			// A custom element whose declared size is one a basic type could
+			// have (a power of two up to 16 bytes) packs like that basic type;
+			// any other size occupies a chunk of its own.
+			if elemDesc.Size > 0 && elemDesc.Size <= 16 && elemDesc.Size&(elemDesc.Size-1) == 0 {
+				itemSize = uint64(elemDesc.Size)
+			}
 		default:
 			itemSize = 0
 		}

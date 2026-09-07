@@ -219,6 +219,14 @@ func (ctx *marshalContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 	}
 
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.SszType != ssztypes.SszOptionalType && desc.SszType != ssztypes.SszOptionalListType {
+		if strings.ContainsAny(varName, ".[") {
+			// A pointer reached through a selector or index is localized first so
+			// the nil fill-in stays in this method and never writes into the
+			// caller's value. A bare identifier is already a local.
+			local := localizedVarName(varName, indent)
+			ctx.appendCode(indent, "%s := %s\n", local, varName)
+			varName = local
+		}
 		ctx.appendCode(indent, "if %s == nil {\n\t%s = new(%s)\n}\n", varName, varName, ctx.typePrinter.InnerTypeString(desc))
 	}
 
@@ -972,7 +980,12 @@ func (ctx *marshalContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName
 
 	ctx.appendCode(indent, "vlen := len(%s)\n", getValueVar(true, ""))
 
-	ctx.appendCode(indent, "bval := []byte(%s[:])\n", getValueVar(false, ""))
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
+		ctx.appendCode(indent, "bval := []byte(%s[:])\n", getValueVar(false, ""))
+	} else {
+		// A named uint8 element is viewed as a byte without copying.
+		ctx.appendCode(indent, "bval := sszutils.ByteSlice(%s[:])\n", getValueVar(false, ""))
+	}
 	ctx.appendCode(indent, "if vlen == 0 {\n")
 	ctx.appendCode(indent, "\tbval = []byte{0x01}\n")
 	ctx.appendCode(indent, "} else if bval[vlen-1] == 0x00 {\n")

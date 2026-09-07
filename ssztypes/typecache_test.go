@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"reflect"
 	"strings"
 	"testing"
@@ -692,6 +693,61 @@ func TestTypeCache_CacheManagement(t *testing.T) {
 			t.Errorf("Expected 0 types after RemoveAllTypes, got %d", len(allTypes))
 		}
 	})
+}
+
+// Hint-carrying references (a field with ssz-max, ssz-size or ssz-type) are
+// cached as variants keyed by the referenced type. Cache management must see
+// and clear those variants like the plain entries, or a rebuild after
+// RemoveAllTypes hands out the old field descriptors.
+func TestTypeCache_HintedCacheManagement(t *testing.T) {
+	type hintedInner struct {
+		L []uint64 `ssz-max:"8"`
+	}
+	type hintedOuter struct {
+		F hintedInner
+	}
+	outerType := reflect.TypeOf(hintedOuter{})
+	listType := reflect.TypeOf([]uint64(nil))
+	listKey := typeKey{runtime: listType, schema: listType}
+
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	first, err := cache.GetTypeDescriptor(outerType, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if len(cache.hintedDescriptors[listKey]) == 0 {
+		t.Fatal("expected a hinted variant for []uint64 with ssz-max")
+	}
+
+	listed := false
+	for _, pair := range cache.GetAllTypes() {
+		if pair[0] == listType && pair[1] == listType {
+			listed = true
+		}
+	}
+	if !listed {
+		t.Error("GetAllTypes omits the hinted-only []uint64 entry")
+	}
+
+	cache.RemoveType(listType)
+	if len(cache.hintedDescriptors[listKey]) != 0 {
+		t.Error("RemoveType left the hinted variants in place")
+	}
+
+	cache.RemoveAllTypes()
+	if len(cache.hintedDescriptors) != 0 || len(cache.GetAllTypes()) != 0 {
+		t.Fatalf("RemoveAllTypes left %d hinted keys and %d listed types", len(cache.hintedDescriptors), len(cache.GetAllTypes()))
+	}
+
+	second, err := cache.GetTypeDescriptor(outerType, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	firstList := first.ContainerDesc.Fields[0].Type.ContainerDesc.Fields[0].Type
+	secondList := second.ContainerDesc.Fields[0].Type.ContainerDesc.Fields[0].Type
+	if firstList == secondList {
+		t.Error("rebuild after RemoveAllTypes reused the cached hinted list descriptor")
+	}
 }
 
 // Test TypeDescriptor.GetTypeHash
@@ -1917,7 +1973,7 @@ func TestTypeCache_ExtendedTypes(t *testing.T) {
 				name:     "bigint with non-struct",
 				typ:      reflect.TypeOf(uint64(0)),
 				hints:    []SszTypeHint{{Type: SszBigIntType}},
-				expected: "bigint type can only be represented by struct types",
+				expected: "bigint ssz type can only be represented by math/big.Int",
 			},
 		}
 
@@ -1987,12 +2043,10 @@ func TestTypeCache_ExtendedTypes(t *testing.T) {
 		cache := NewTypeCache(ds)
 		cache.ExtendedTypes = true
 
-		type BigIntLike struct {
-			// big.Int is a struct, so we test with a struct type
-		}
-
+		// A bigint is read and written through big.Int's methods, so only
+		// big.Int itself carries the hint.
 		desc, err := cache.GetTypeDescriptor(
-			reflect.TypeOf(BigIntLike{}),
+			reflect.TypeOf(big.Int{}),
 			nil, nil,
 			[]SszTypeHint{{Type: SszBigIntType}},
 		)
@@ -5833,5 +5887,129 @@ func TestPromotedDelegationEmbeddedPlainInterface(t *testing.T) {
 	}
 	if got := cache.PromotedDelegationMethods(reflect.TypeOf(onlyPlainIface{})); got != nil {
 		t.Errorf("expected no promoted methods for an embedded plain interface, got %v", got)
+	}
+}
+
+// A bitlist may be backed by a slice of byte or of a named uint8 type (viewed
+// as bytes, without the bulk flag); a pointer element has no byte view.
+func TestBitlistElementTypes(t *testing.T) {
+	type namedByte uint8
+	type holder struct {
+		Named   []namedByte `ssz-type:"bitlist" ssz-max:"16"`
+		Pointer []*byte     `ssz-type:"bitlist" ssz-max:"16"`
+		Plain   []byte      `ssz-type:"bitlist" ssz-max:"16"`
+	}
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	holderType := reflect.TypeOf(holder{})
+	hint := []SszTypeHint{{Type: SszBitlistType}}
+	limit := []SszMaxSizeHint{{Size: 16}}
+
+	f, _ := holderType.FieldByName("Pointer")
+	if _, err := cache.GetTypeDescriptor(f.Type, nil, limit, hint); !errors.Is(err, sszutils.ErrTypeMismatch) {
+		t.Errorf("Pointer: err = %v, want ErrTypeMismatch", err)
+	}
+	f, _ = holderType.FieldByName("Named")
+	desc, err := cache.GetTypeDescriptor(f.Type, nil, limit, hint)
+	if err != nil {
+		t.Fatalf("Named: %v", err)
+	}
+	if desc.GoTypeFlags&GoTypeFlagIsByteArray != 0 {
+		t.Error("Named: byte array flag set for a named uint8 element")
+	}
+	f, _ = holderType.FieldByName("Plain")
+	desc, err = cache.GetTypeDescriptor(f.Type, nil, limit, hint)
+	if err != nil {
+		t.Fatalf("Plain: %v", err)
+	}
+	if desc.GoTypeFlags&GoTypeFlagIsByteArray == 0 {
+		t.Error("Plain: byte array flag missing")
+	}
+}
+
+// A schema handled through its methods (time.Time, big.Int) needs the same
+// runtime type; every other pairing only needs matching kinds.
+func TestViewOverMethodDrivenTypeNeedsSameRuntimeType(t *testing.T) {
+	type opaque struct{ X uint64 }
+	type when opaque
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	cache.ExtendedTypes = true
+
+	timeType := reflect.TypeOf(time.Time{})
+	bigIntType := reflect.TypeOf(big.Int{})
+	for name, pair := range map[string][2]reflect.Type{
+		"bare struct over time":     {reflect.TypeOf(opaque{}), timeType},
+		"named struct over time":    {reflect.TypeOf(when{}), timeType},
+		"bare struct over big.Int":  {reflect.TypeOf(opaque{}), bigIntType},
+		"named struct over big.Int": {reflect.TypeOf(when{}), bigIntType},
+	} {
+		if _, err := cache.GetTypeDescriptorWithSchema(pair[0], pair[1], nil, nil, nil); !errors.Is(err, sszutils.ErrTypeMismatch) {
+			t.Errorf("%s: err = %v, want ErrTypeMismatch", name, err)
+		}
+	}
+	for name, typ := range map[string]reflect.Type{"time": timeType, "big.Int": bigIntType} {
+		if _, err := cache.GetTypeDescriptorWithSchema(typ, typ, nil, nil, nil); err != nil {
+			t.Errorf("%s over itself: %v", name, err)
+		}
+	}
+
+	// The binding holds for a hinted bigint as well.
+	hint := []SszTypeHint{{Type: SszBigIntType}}
+	if _, err := cache.GetTypeDescriptorWithSchema(reflect.TypeOf(opaque{}), bigIntType, nil, nil, hint); !errors.Is(err, sszutils.ErrTypeMismatch) {
+		t.Errorf("bare struct over hinted big.Int: err = %v, want ErrTypeMismatch", err)
+	}
+	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(opaque{}), nil, nil, hint); !errors.Is(err, sszutils.ErrTypeMismatch) {
+		t.Errorf("bare struct hinted as bigint: err = %v, want ErrTypeMismatch", err)
+	}
+	if _, err := cache.GetTypeDescriptor(bigIntType, nil, nil, hint); err != nil {
+		t.Errorf("hinted big.Int: %v", err)
+	}
+}
+
+// A fixed-width integer view pairs a runtime array or slice with a schema one:
+// the element kinds must agree, an array must have the exact length on both
+// sides, and the bulk flag follows the runtime element type.
+func TestLargeUintViewPairs(t *testing.T) {
+	type namedByte uint8
+	type namedWord uint64
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	hint := []SszTypeHint{{Type: SszUint256Type}}
+
+	accepted := map[string]struct {
+		runtime, schema reflect.Type
+		bulk            bool
+	}{
+		"bytes over bytes":             {reflect.TypeOf([32]byte{}), reflect.TypeOf([32]byte{}), true},
+		"named bytes over bytes":       {reflect.TypeOf([32]namedByte{}), reflect.TypeOf([32]byte{}), false},
+		"named byte slice over bytes":  {reflect.TypeOf([]namedByte{}), reflect.TypeOf([]byte{}), false},
+		"words over words":             {reflect.TypeOf([4]uint64{}), reflect.TypeOf([4]uint64{}), false},
+		"named words over words":       {reflect.TypeOf([4]namedWord{}), reflect.TypeOf([4]uint64{}), false},
+		"named words over named words": {reflect.TypeOf([4]namedWord{}), reflect.TypeOf([4]namedWord{}), false},
+	}
+	for name, tc := range accepted {
+		desc, err := cache.GetTypeDescriptorWithSchema(tc.runtime, tc.schema, nil, nil, hint)
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		if got := desc.GoTypeFlags&GoTypeFlagIsByteArray != 0; got != tc.bulk {
+			t.Errorf("%s: bulk flag %v, want %v", name, got, tc.bulk)
+		}
+	}
+
+	rejected := map[string][2]reflect.Type{
+		"bools over words":       {reflect.TypeOf([1]bool{}), reflect.TypeOf([4]uint64{})},
+		"bytes over words":       {reflect.TypeOf([32]byte{}), reflect.TypeOf([4]uint64{})},
+		"short runtime array":    {reflect.TypeOf([3]uint64{}), reflect.TypeOf([4]uint64{})},
+		"long runtime array":     {reflect.TypeOf([5]uint64{}), reflect.TypeOf([4]uint64{})},
+		"short schema array":     {reflect.TypeOf([4]uint64{}), reflect.TypeOf([3]uint64{})},
+		"uint32 elements":        {reflect.TypeOf([8]uint32{}), reflect.TypeOf([8]uint32{})},
+		"named byte over uint64": {reflect.TypeOf([32]namedByte{}), reflect.TypeOf([4]uint64{})},
+		"pointer byte elements":  {reflect.TypeOf([32]*byte{}), reflect.TypeOf([32]*byte{})},
+		"pointer word elements":  {reflect.TypeOf([4]*uint64{}), reflect.TypeOf([4]*uint64{})},
+	}
+	for name, pair := range rejected {
+		if _, err := cache.GetTypeDescriptorWithSchema(pair[0], pair[1], nil, nil, hint); !errors.Is(err, sszutils.ErrTypeMismatch) && !errors.Is(err, sszutils.ErrInvalidConstraint) {
+			t.Errorf("%s: err = %v, want a type or constraint error", name, err)
+		}
 	}
 }

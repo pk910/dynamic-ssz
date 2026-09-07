@@ -578,6 +578,11 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		desc.GoTypeFlags |= GoTypeFlagIsString
 	}
 	if t.PkgPath() == "time" && t.Name() == "Time" {
+		// A time value is read and written through its methods, so a view
+		// over it needs the same runtime type.
+		if runtimeType != t {
+			return nil, sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "incompatible types: schema %v needs the same runtime type, got %v", t, runtimeType)
+		}
 		desc.GoTypeFlags |= GoTypeFlagIsTime
 	}
 
@@ -796,7 +801,7 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		if len(sizeHints) > 0 && sizeHints[0].Bits {
 			return nil, sszutils.NewSszError(sszutils.ErrInvalidConstraint, "uint128 ssz type cannot be limited by bits, use regular size tag instead")
 		}
-		err := tc.buildUintDescriptor(desc, t, 16, "uint128") // handle as [16]uint8 or [2]uint64
+		err := tc.buildUintDescriptor(desc, runtimeType, t, 16, "uint128") // handle as [16]uint8 or [2]uint64
 		if err != nil {
 			return nil, err
 		}
@@ -804,7 +809,7 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		if len(sizeHints) > 0 && sizeHints[0].Bits {
 			return nil, sszutils.NewSszError(sszutils.ErrInvalidConstraint, "uint256 ssz type cannot be limited by bits, use regular size tag instead")
 		}
-		err := tc.buildUintDescriptor(desc, t, 32, "uint256") // handle as [32]uint8 or [4]uint64
+		err := tc.buildUintDescriptor(desc, runtimeType, t, 32, "uint256") // handle as [32]uint8 or [4]uint64
 		if err != nil {
 			return nil, err
 		}
@@ -932,7 +937,7 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		if !tc.ExtendedTypes {
 			return nil, sszutils.NewSszError(sszutils.ErrExtendedTypeDisabled, "big integers are not supported in SSZ (use extended types option to enable it)")
 		}
-		err := tc.buildBigIntDescriptor(desc)
+		err := tc.buildBigIntDescriptor(desc, runtimeType)
 		if err != nil {
 			return nil, err
 		}
@@ -1396,21 +1401,32 @@ func wrapperTypeCompatible(actual, expected reflect.Type) bool {
 	}
 }
 
-// buildUint128Descriptor builds a descriptor for uint128 types
-func (tc *TypeCache) buildUintDescriptor(desc *TypeDescriptor, t reflect.Type, byteLen int64, typeName string) error {
+// buildUintDescriptor builds a descriptor for a fixed-width integer (uint128,
+// uint256) stored as a slice or array of uint8 or uint64 elements. The schema
+// type fixes the layout; the runtime type must store it with the same element
+// kind and, for arrays, the same length, and a view is checked the same way.
+func (tc *TypeCache) buildUintDescriptor(desc *TypeDescriptor, runtimeType, schemaType reflect.Type, byteLen int64, typeName string) error {
 	if desc.Kind != reflect.Slice && desc.Kind != reflect.Array {
 		return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "%s ssz type can only be represented by slice or array types, got %v", typeName, desc.Kind)
 	}
 
-	fieldType := t.Elem()
-	elemKind := fieldType.Kind()
+	schemaElemType := schemaType.Elem()
+	runtimeElemType := runtimeType.Elem()
+	elemKind := schemaElemType.Kind()
 	if elemKind != reflect.Uint8 && elemKind != reflect.Uint64 {
 		return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "%s ssz type can only be represented by slices or arrays of uint8 or uint64, got %v", typeName, elemKind)
-	} else if elemKind == reflect.Uint8 {
+	}
+	if runtimeElemType.Kind() != elemKind {
+		return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "%s ssz type stored as %v elements needs the same runtime element kind, got %v", typeName, elemKind, runtimeElemType.Kind())
+	}
+	// The bulk byte paths copy through a plain []byte, which is only
+	// assignable to a slice whose element type is exactly byte; a named uint8
+	// element decodes element-wise instead.
+	if runtimeElemType == byteType {
 		desc.GoTypeFlags |= GoTypeFlagIsByteArray
 	}
 
-	elemDesc, err := tc.getTypeDescriptor(fieldType, fieldType, nil, nil, nil)
+	elemDesc, err := tc.getTypeDescriptor(runtimeElemType, schemaElemType, nil, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -1420,19 +1436,19 @@ func (tc *TypeCache) buildUintDescriptor(desc *TypeDescriptor, t reflect.Type, b
 	desc.Len = desc.Size / elemDesc.Size
 
 	if desc.Kind == reflect.Array {
-		dstLen := int64(t.Len())
-		// A fixed-width uint (uint128/uint256) occupies exactly desc.Len array
-		// elements. A smaller array cannot hold it; a larger array carries trailing
-		// elements that marshal silently drops (truncating to desc.Len) while
-		// HashTreeRoot rejects the length mismatch — an inconsistency the codegen
-		// parser already refuses. Reject both here so the reflection path agrees.
-		// Unlike a Vector/Bitvector (where an oversized backing array is a valid
-		// preset pattern), a uint width is intrinsic and never preset-dependent.
-		if dstLen < desc.Len {
-			return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "%s ssz type does not fit in array (%d < %d)", typeName, dstLen, desc.Len)
-		}
-		if dstLen > desc.Len {
-			return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "%s ssz type does not fill the array (%d > %d): trailing elements would be dropped", typeName, dstLen, desc.Len)
+		// A fixed-width uint occupies exactly desc.Len array elements. A smaller
+		// array cannot hold it; a larger array carries trailing elements that
+		// marshal would drop while HashTreeRoot rejects the length, so both are
+		// refused, on the schema and on the runtime array alike. Unlike a
+		// Vector/Bitvector (where an oversized backing array is a valid preset
+		// pattern), a uint width is intrinsic and never preset-dependent.
+		for _, arrayLen := range []int64{int64(schemaType.Len()), int64(runtimeType.Len())} {
+			if arrayLen < desc.Len {
+				return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "%s ssz type does not fit in array (%d < %d)", typeName, arrayLen, desc.Len)
+			}
+			if arrayLen > desc.Len {
+				return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "%s ssz type does not fill the array (%d > %d): trailing elements would be dropped", typeName, arrayLen, desc.Len)
+			}
 		}
 	}
 
@@ -1880,9 +1896,11 @@ func (tc *TypeCache) buildOptionalListDescriptor(desc *TypeDescriptor, runtimeTy
 }
 
 // buildBigIntDescriptor builds a descriptor for ssz big int types
-func (tc *TypeCache) buildBigIntDescriptor(desc *TypeDescriptor) error {
-	if desc.Kind != reflect.Struct {
-		return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "bigint type can only be represented by struct types, got %v", desc.Kind)
+func (tc *TypeCache) buildBigIntDescriptor(desc *TypeDescriptor, runtimeType reflect.Type) error {
+	// A big integer is read and written through big.Int's methods, whether
+	// the type was detected or hinted, so the runtime type has to be big.Int.
+	if runtimeType != bigIntType {
+		return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "bigint ssz type can only be represented by math/big.Int, got %v", runtimeType)
 	}
 
 	desc.Size = 0
@@ -2007,7 +2025,10 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 		// Get element type from both runtime and schema types
 		schemaElemType = t.Elem()
 		runtimeElemType = runtimeType.Elem()
-		if schemaElemType == byteType {
+		// The bulk byte paths copy through the runtime value as a plain
+		// []byte, so the flag follows the runtime element type: a named uint8
+		// element (or a view whose runtime element is one) decodes element-wise.
+		if runtimeElemType == byteType {
 			desc.GoTypeFlags |= GoTypeFlagIsByteArray
 		}
 	}
@@ -2082,7 +2103,10 @@ func (tc *TypeCache) buildListDescriptor(desc *TypeDescriptor, runtimeType, sche
 		// Get element type from both runtime and schema types
 		schemaElemType = t.Elem()
 		runtimeElemType = runtimeType.Elem()
-		if schemaElemType == byteType {
+		// The bulk byte paths copy through the runtime value as a plain
+		// []byte, so the flag follows the runtime element type: a named uint8
+		// element (or a view whose runtime element is one) decodes element-wise.
+		if runtimeElemType == byteType {
 			desc.GoTypeFlags |= GoTypeFlagIsByteArray
 		}
 	}
@@ -2119,8 +2143,10 @@ func (tc *TypeCache) buildListDescriptor(desc *TypeDescriptor, runtimeType, sche
 		if desc.Kind != reflect.Slice {
 			return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "bitlist ssz type can only be represented by byte slices, got %v", desc.Kind.String())
 		}
-		if desc.ElemDesc.Kind != reflect.Uint8 {
-			return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "bitlist ssz type can only be represented by byte slices, got []%v", desc.ElemDesc.Kind.String())
+		// A named uint8 element is viewed as a byte without copying; a pointer
+		// element has no such view.
+		if desc.ElemDesc.Kind != reflect.Uint8 || desc.ElemDesc.GoTypeFlags&GoTypeFlagIsPointer != 0 {
+			return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "bitlist ssz type can only be represented by byte slices, got []%v", runtimeElemType)
 		}
 	}
 
@@ -2289,9 +2315,15 @@ func (tc *TypeCache) GetAllTypes() [][2]reflect.Type {
 	tc.mutex.RLock()
 	defer tc.mutex.RUnlock()
 
-	types := make([][2]reflect.Type, 0, len(tc.descriptors))
+	types := make([][2]reflect.Type, 0, len(tc.descriptors)+len(tc.hintedDescriptors))
 	for key := range tc.descriptors {
 		types = append(types, [2]reflect.Type{key.runtime, key.schema})
+	}
+	// A type reached only through hint-carrying references has no plain entry.
+	for key := range tc.hintedDescriptors {
+		if _, plain := tc.descriptors[key]; !plain {
+			types = append(types, [2]reflect.Type{key.runtime, key.schema})
+		}
 	}
 
 	return types
@@ -2339,34 +2371,38 @@ func (tc *TypeCache) RemoveTypeKey(runtimeType, schemaType reflect.Type) {
 		schemaType = schemaType.Elem()
 	}
 
-	delete(tc.descriptors, typeKey{runtime: runtimeType, schema: schemaType})
+	key := typeKey{runtime: runtimeType, schema: schemaType}
+	delete(tc.descriptors, key)
+	delete(tc.hintedDescriptors, key)
 }
 
-// RemoveAllTypes clears all cached type descriptors from the cache.
+// RemoveAllTypes clears all cached type descriptors from the cache, both the
+// plain entries and the hint-carrying variants.
 //
 // This method is useful for:
-//   - Resetting the cache after configuration changes
 //   - Memory management in long-running applications
 //   - Testing scenarios requiring a clean cache state
 //
 // The method acquires a write lock to ensure thread-safe clearing.
 // After calling this method, all subsequent type descriptor requests
-// will trigger recomputation.
+// will trigger recomputation. Spec values are resolved and memoized by the
+// owning DynSsz instance, so a changed spec set needs a new DynSsz rather
+// than a cleared cache.
 //
 // Example:
 //
-//	// Clear cache after updating specifications
-//	ds.UpdateSpecs(newSpecs)
 //	cache.RemoveAllTypes()
 //
-//	// All types will be recomputed with new specs
-//	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(MyStruct{}), nil, nil)
+//	// All types will be recomputed
+//	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(MyStruct{}), nil, nil, nil)
 func (tc *TypeCache) RemoveAllTypes() {
 	tc.mutex.Lock()
 	defer tc.mutex.Unlock()
 
-	// Create new map to clear all references
+	// Create new maps to clear all references, including the hint-carrying
+	// variants that container fields and list elements are cached under.
 	tc.descriptors = make(map[typeKey]*TypeDescriptor)
+	tc.hintedDescriptors = make(map[typeKey][]*hintedVariant)
 }
 
 // extractGenericTypeParameter extracts the generic type parameter from a CompatibleUnion type.

@@ -277,6 +277,66 @@ func (ctx *hashTreeRootContext) hashDynamicRoot(desc *ssztypes.TypeDescriptor, v
 	return false, nil
 }
 
+// hashDelegated emits the call to a type's own hash method when one applies
+// and reports whether it did; a basic element of up to 16 bytes inside a
+// packed scope is never delegated, since the scope packs it.
+func (ctx *hashTreeRootContext) hashDelegated(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, isRoot, isView, pack bool) (done bool, err error) {
+	// A delegate may leave a whole leaf or only the packed bytes of its value;
+	// it is padded to a leaf afterwards, except for a custom element inside a
+	// packed scope whose declared size is one a basic type could have (a power
+	// of two up to 16 bytes): that element stands in for the basic type and is
+	// packed with its neighbours by the scope.
+	padDelegate := !pack || desc.SszType != ssztypes.SszCustomType ||
+		desc.Size <= 0 || desc.Size > 16 || desc.Size&(desc.Size-1) != 0
+
+	// Handle types that have generated methods we can call
+	if !isRoot && isView {
+		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewHashRoot != 0 {
+			viewFn, viewArg := descendCall(ctx.depthAware, ctx.recursion, desc, "HashTreeRootWithDynView")
+			ctx.appendCode(indent, "if viewFn := %s.%s((%s)(nil)%s); viewFn != nil {\n", varName, viewFn, ctx.typePrinter.ViewTypeString(desc, true), viewArg)
+			ctx.appendCode(indent+1, "if err := viewFn(ds, hh); err != nil {\n\treturn err\n}\n")
+			ctx.appendCode(indent, "} else {\n\treturn sszutils.ErrNotImplemented\n}\n")
+			if padDelegate {
+				ctx.appendCode(indent, "hh.FillUpTo32()\n")
+			}
+			ctx.usedDynSpecs = true
+			return true, nil
+		}
+	}
+
+	isFastsszHashWith := desc.SszCompatFlags&ssztypes.SszCompatFlagHashTreeRootWith != 0
+	useFastSsz := ctx.hashUsesFastSsz(desc, isRoot)
+
+	// A basic element of up to 16 bytes is packed with its neighbours by the
+	// enclosing list or vector; its own hash methods are not called there. A
+	// 32-byte uint256 fills a chunk on its own and may still delegate.
+	packedBasic := pack && desc.SszType.IsBasic() && desc.Size <= 16
+
+	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0 && !isRoot && !isView && !packedBasic {
+		if done, err := ctx.hashDynamicRoot(desc, varName, typePath, indent, useFastSsz); done {
+			if err == nil && padDelegate {
+				ctx.appendCode(indent, "hh.FillUpTo32()\n")
+			}
+			return true, err
+		}
+	}
+
+	if useFastSsz && !isView && !packedBasic {
+		if isFastsszHashWith {
+			fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "HashTreeRootWith")
+			ctx.appendCode(indent, "if err := %s.%s(hh%s); err != nil {\n\treturn %s\n}\n", varName, fn, arg, typePath.getErrorWith("err"))
+			if padDelegate {
+				ctx.appendCode(indent, "hh.FillUpTo32()\n")
+			}
+		} else {
+			ctx.appendCode(indent, "if root, err := %s.HashTreeRoot(); err != nil {\n\treturn %s\n} else {\n\thh.AppendBytes32(root[:])\n}\n", varName, typePath.getErrorWith("err"))
+		}
+		return true, nil
+	}
+
+	return false, nil
+}
+
 // hashType generates hash tree root code for any SSZ type, delegating to specific hashers.
 func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, isRoot, pack bool) error {
 	if indent > maxEmitNesting {
@@ -284,39 +344,20 @@ func (ctx *hashTreeRootContext) hashType(desc *ssztypes.TypeDescriptor, varName 
 	}
 
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 && desc.SszType != ssztypes.SszOptionalType && desc.SszType != ssztypes.SszOptionalListType {
+		if strings.ContainsAny(varName, ".[") {
+			// A pointer reached through a selector or index is localized first so
+			// the nil fill-in stays in this method and never writes into the
+			// caller's value. A bare identifier is already a local.
+			local := localizedVarName(varName, indent)
+			ctx.appendCode(indent, "%s := %s\n", local, varName)
+			varName = local
+		}
 		ctx.appendCode(indent, "if %s == nil {\n\t%s = new(%s)\n}\n", varName, varName, ctx.typePrinter.InnerTypeString(desc))
 	}
 
-	// Handle types that have generated methods we can call
 	isView := desc.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
-	if !isRoot && isView {
-		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewHashRoot != 0 {
-			viewFn, viewArg := descendCall(ctx.depthAware, ctx.recursion, desc, "HashTreeRootWithDynView")
-			ctx.appendCode(indent, "if viewFn := %s.%s((%s)(nil)%s); viewFn != nil {\n", varName, viewFn, ctx.typePrinter.ViewTypeString(desc, true), viewArg)
-			ctx.appendCode(indent+1, "if err := viewFn(ds, hh); err != nil {\n\treturn err\n}\n")
-			ctx.appendCode(indent, "} else {\n\treturn sszutils.ErrNotImplemented\n}\n")
-			ctx.usedDynSpecs = true
-			return nil
-		}
-	}
-
-	isFastsszHashWith := desc.SszCompatFlags&ssztypes.SszCompatFlagHashTreeRootWith != 0
-	useFastSsz := ctx.hashUsesFastSsz(desc, isRoot)
-
-	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0 && !isRoot && !isView {
-		if done, err := ctx.hashDynamicRoot(desc, varName, typePath, indent, useFastSsz); done {
-			return err
-		}
-	}
-
-	if useFastSsz && !isView {
-		if isFastsszHashWith {
-			fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "HashTreeRootWith")
-			ctx.appendCode(indent, "if err := %s.%s(hh%s); err != nil {\n\treturn %s\n}\n", varName, fn, arg, typePath.getErrorWith("err"))
-		} else {
-			ctx.appendCode(indent, "if root, err := %s.HashTreeRoot(); err != nil {\n\treturn %s\n} else {\n\thh.AppendBytes32(root[:])\n}\n", varName, typePath.getErrorWith("err"))
-		}
-		return nil
+	if done, err := ctx.hashDelegated(desc, varName, typePath, indent, isRoot, isView, pack); done {
+		return err
 	}
 
 	// A cycle member reached without delegation is inlined here, so the level
@@ -709,8 +750,6 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		lenVar = fmt.Sprintf("%d", desc.Len)
 	}
 
-	itemSize := 0
-
 	// Handle byte arrays
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 || desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
 		valVar := ""
@@ -757,18 +796,11 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		} else {
 			ctx.appendCode(indent, "hh.PutBytes(%s[:%s])\n", valVar, intLimit)
 		}
-		_ = itemSize // itemSize only used in element hashing branch
 	} else {
 		// Hash individual elements
 		if !pack {
 			// Start vector merkleization
 			ctx.appendCode(indent, "idx := hh.StartTree(sszutils.TreeTypeBinary)\n")
-		}
-
-		if ctx.isPrimitive(desc.ElemDesc) {
-			itemSize = int(desc.ElemDesc.Size)
-		} else {
-			itemSize = 32
 		}
 
 		valVar := ctx.getValVar()
@@ -801,9 +833,8 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		ctx.appendCode(indent, "}\n")
 
 		if !pack {
-			if itemSize < 32 {
-				ctx.appendCode(indent, "hh.FillUpTo32()\n")
-			}
+			// Packed basics and append-only delegates leave a partial chunk.
+			ctx.appendCode(indent, "hh.FillUpTo32()\n")
 
 			// Finalize vector with bit limit
 			ctx.appendCode(indent, "hh.Merkleize(idx)\n")
@@ -902,9 +933,15 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 			packedDesc = packedDesc.ElemDesc
 		}
 
-		if ctx.isPrimitive(packedDesc) {
+		switch {
+		case ctx.isPrimitive(packedDesc):
 			itemSize = int(packedDesc.Size)
-		} else {
+		case packedDesc.SszType == ssztypes.SszCustomType && packedDesc.Size > 0 && packedDesc.Size <= 16 && packedDesc.Size&(packedDesc.Size-1) == 0:
+			// A custom element whose declared size is one a basic type could
+			// have (a power of two up to 16 bytes) packs like that basic type;
+			// any other size occupies a chunk of its own.
+			itemSize = int(packedDesc.Size)
+		default:
 			itemSize = 32
 		}
 
@@ -932,9 +969,8 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 			ctx.appendCode(indent, "}\n")
 		}
 
-		if itemSize < 32 {
-			ctx.appendCode(indent, "hh.FillUpTo32()\n")
-		}
+		// Packed basics and append-only delegates leave a partial chunk.
+		ctx.appendCode(indent, "hh.FillUpTo32()\n")
 	}
 
 	switch {
@@ -1003,7 +1039,12 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varNa
 	if desc.SszType == ssztypes.SszProgressiveBitlistType {
 		parseFn = "ParseProgressiveBitlistWithHasher"
 	}
-	ctx.appendCode(indent, "bitlist, %s := %s.%s(hh, %s[:])\n", sizeVar, hasherAlias, parseFn, valueVar)
+	bitsArg := fmt.Sprintf("%s[:]", valueVar)
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray == 0 {
+		// A named uint8 element is viewed as a byte without copying.
+		bitsArg = fmt.Sprintf("sszutils.ByteSlice(%s[:])", valueVar)
+	}
+	ctx.appendCode(indent, "bitlist, %s := %s.%s(hh, %s)\n", sizeVar, hasherAlias, parseFn, bitsArg)
 
 	if maxVar != "" {
 		ctx.appendCode(indent, "if size > %s {\n", maxVar)

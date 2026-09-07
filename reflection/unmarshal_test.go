@@ -1041,6 +1041,120 @@ func TestMixedStringTypesUnmarshal(t *testing.T) {
 	}
 }
 
+// TestNamedByteElementsRoundTrip decodes byte-shaped values whose Go element
+// type is a named uint8. The bulk byte copy applies only to a plain byte
+// element; a named element (directly, or as the runtime type behind a []byte
+// view) decodes element-wise and must round-trip and hash like the plain form.
+func TestNamedByteElementsRoundTrip(t *testing.T) {
+	type namedByte uint8
+	type namedBytes []namedByte
+	type plainUint256 struct {
+		V []byte `ssz-type:"uint256"`
+	}
+	type namedUint256 struct {
+		V namedBytes `ssz-type:"uint256"`
+	}
+	type namedUint128 struct {
+		V []namedByte `ssz-type:"uint128"`
+	}
+	type namedArrayUint256 struct {
+		V [32]namedByte `ssz-type:"uint256"`
+	}
+	type plainVector struct {
+		V []byte `ssz-size:"4"`
+	}
+	type namedVector struct {
+		V []namedByte `ssz-size:"4"`
+	}
+	type plainList struct {
+		V []byte `ssz-max:"8"`
+	}
+	type namedList struct {
+		V []namedByte `ssz-max:"8"`
+	}
+
+	ds := NewDynSsz(nil)
+
+	roundTrip := func(t *testing.T, value, fresh any, opts ...CallOption) []byte {
+		t.Helper()
+		data, err := ds.MarshalSSZ(value, opts...)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if err = ds.UnmarshalSSZ(fresh, data, opts...); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if err = ds.UnmarshalSSZReader(fresh, bytes.NewReader(data), -1, opts...); err != nil {
+			t.Fatalf("unmarshal reader: %v", err)
+		}
+		again, err := ds.MarshalSSZ(fresh, opts...)
+		if err != nil {
+			t.Fatalf("re-marshal: %v", err)
+		}
+		if !bytes.Equal(data, again) {
+			t.Fatalf("round trip mismatch: %x != %x", data, again)
+		}
+		return data
+	}
+
+	sameRoot := func(t *testing.T, a, b any, opts ...CallOption) {
+		t.Helper()
+		ra, err := ds.HashTreeRoot(a, opts...)
+		if err != nil {
+			t.Fatalf("hash a: %v", err)
+		}
+		rb, err := ds.HashTreeRoot(b, opts...)
+		if err != nil {
+			t.Fatalf("hash b: %v", err)
+		}
+		if ra != rb {
+			t.Fatalf("root mismatch: %x != %x", ra, rb)
+		}
+	}
+
+	word := make([]byte, 32)
+	for i := range word {
+		word[i] = byte(i + 1)
+	}
+	named := make(namedBytes, 32)
+	for i := range named {
+		named[i] = namedByte(i + 1)
+	}
+
+	t.Run("uint256 slice", func(t *testing.T) {
+		data := roundTrip(t, &namedUint256{V: named}, &namedUint256{})
+		if !bytes.Equal(data, word) {
+			t.Fatalf("encoding %x != %x", data, word)
+		}
+		sameRoot(t, &namedUint256{V: named}, &plainUint256{V: word})
+	})
+
+	t.Run("uint128 slice", func(t *testing.T) {
+		roundTrip(t, &namedUint128{V: []namedByte(named[:16])}, &namedUint128{})
+	})
+
+	t.Run("uint256 array", func(t *testing.T) {
+		var arr namedArrayUint256
+		copy(arr.V[:], named)
+		roundTrip(t, &arr, &namedArrayUint256{})
+		sameRoot(t, &arr, &plainUint256{V: word})
+	})
+
+	t.Run("vector through byte view", func(t *testing.T) {
+		view := (*plainVector)(nil)
+		value := &namedVector{V: []namedByte{1, 2, 3, 4}}
+		roundTrip(t, value, &namedVector{}, WithViewDescriptor(view))
+		sameRoot(t, value, &plainVector{V: []byte{1, 2, 3, 4}}, WithViewDescriptor(view))
+	})
+
+	t.Run("list through byte view", func(t *testing.T) {
+		view := (*plainList)(nil)
+		value := &namedList{V: []namedByte{5, 6, 7}}
+		roundTrip(t, value, &namedList{}, WithViewDescriptor(view))
+		sameRoot(t, value, &plainList{V: []byte{5, 6, 7}}, WithViewDescriptor(view))
+	})
+}
+
 // TestViewUnmarshaler tests the DynamicViewUnmarshaler interface via UnmarshalSSZ (buffer-based, seekable).
 func TestViewUnmarshaler(t *testing.T) {
 	ds := NewDynSsz(nil)
@@ -2250,14 +2364,20 @@ func TestStreamAllowanceNotReportedAsListLimit(t *testing.T) {
 		{"byte_list_with_max", new(streamAllowanceList)},
 		{"byte_list_without_max", new(streamAllowanceListNoMax)},
 		{"bitlist_with_max", new(streamAllowanceBitlist)},
-		{"bigint_with_max", new(streamAllowanceBigInt)},
+		{"bigint_with_max", new(streamAllowanceBigIntHolder)},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation(), WithExtendedTypes(), WithMaxStreamSize(allowance))
 
-			err := ds.UnmarshalSSZReader(tt.target, bytes.NewReader(payload), -1)
+			data := payload
+			if _, isHolder := tt.target.(*streamAllowanceBigIntHolder); isHolder {
+				// The holder's single dynamic field starts right after its
+				// 4-byte offset.
+				data = append([]byte{4, 0, 0, 0}, payload[4:]...)
+			}
+			err := ds.UnmarshalSSZReader(tt.target, bytes.NewReader(data), -1)
 			if err == nil {
 				t.Fatal("expected the stream allowance to reject the payload")
 			}
@@ -2302,9 +2422,12 @@ type streamAllowanceBitlist []byte
 
 var _ = sszutils.Annotate[streamAllowanceBitlist](`ssz-type:"bitlist" ssz-max:"8000000"`)
 
-type streamAllowanceBigInt big.Int
-
-var _ = sszutils.Annotate[streamAllowanceBigInt](`ssz-type:"bigint" ssz-max:"8000000"`)
+// streamAllowanceBigIntHolder carries the big integer as a field: a bigint is
+// read and written through big.Int itself, so its limit is tagged on the
+// field rather than on a named wrapper type.
+type streamAllowanceBigIntHolder struct {
+	V big.Int `ssz-type:"bigint" ssz-max:"8000000"`
+}
 
 // TestDynamicListRejectsUnbackedElementCount pins that a dynamic-element list
 // validates its declared count against what the region can physically hold,

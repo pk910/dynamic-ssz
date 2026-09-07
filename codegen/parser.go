@@ -30,6 +30,24 @@ var (
 	byteType = types.Typ[types.Uint8]
 )
 
+const (
+	pkgPathBig              = "math/big"
+	typeNameExternalInt     = "Int"
+	typeNameHashWalkerParam = "HashWalkerParam"
+)
+
+// hashWalkerMethods lists the methods of sszutils.HashWalker by name with their
+// parameter and result counts.
+var hashWalkerMethods = func() map[string][2]int {
+	walker := reflect.TypeOf((*sszutils.HashWalker)(nil)).Elem()
+	methods := make(map[string][2]int, walker.NumMethod())
+	for i := range walker.NumMethod() {
+		method := walker.Method(i)
+		methods[method.Name] = [2]int{method.Type.NumIn(), method.Type.NumOut()}
+	}
+	return methods
+}()
+
 // CodegenInfo contains type information specific to code generation from go/types analysis.
 //
 // This structure bridges the gap between compile-time type analysis (using go/types)
@@ -467,8 +485,9 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	var ptrType *types.Pointer
 
 	for {
-		// Resolve named types - allow independent unwrapping since view and data types
-		// may have different naming structures (e.g., schema: [32]byte, data: Root where Root = [32]byte)
+		// Resolve named types on either side independently: a view pairs the
+		// schema's layout with the data's storage, and only the fully unwrapped
+		// kinds have to agree (checked after the loop).
 		schemaIsNamed := false
 		if named, ok := schemaType.(*types.Named); ok {
 			schemaType = named.Underlying()
@@ -478,9 +497,6 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		if named, ok := dataType.(*types.Named); ok {
 			dataType = named.Underlying()
 			dataNamedType = named
-		} else if schemaIsNamed {
-			// Schema was named but data wasn't - this is an error
-			return nil, fmt.Errorf("incompatible types: data kind %v != schema kind %v", dataType.String(), schemaType.String())
 		}
 		if schemaIsNamed {
 			continue
@@ -519,9 +535,6 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		}
 		if alias, ok := dataType.(*types.Alias); ok {
 			dataType = types.Unalias(alias)
-		} else if schemaIsAlias {
-			// Schema was alias but data wasn't - this is an error
-			return nil, fmt.Errorf("incompatible types: data kind %v != schema kind %v", dataType.String(), schemaType.String())
 		}
 		if schemaIsAlias {
 			continue
@@ -624,7 +637,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 			desc.Kind = reflect.Uint16
 		case types.Uint32:
 			desc.Kind = reflect.Uint32
-		case types.Uint64, types.Uint:
+		case types.Uint64:
 			desc.Kind = reflect.Uint64
 		case types.String:
 			desc.Kind = reflect.String
@@ -717,14 +730,8 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	if sszType == ssztypes.SszUnspecifiedType {
 		// Detect well-known types first (named types)
 		var obj *types.TypeName
-		if alias, ok := innerSchemaType.(*types.Alias); ok {
-			innerSchemaType = types.Unalias(alias)
-			if alias, ok := innerDataType.(*types.Alias); ok {
-				innerDataType = types.Unalias(alias)
-			} else {
-				return nil, fmt.Errorf("incompatible types: data kind %v != schema kind %v", innerDataType.String(), innerSchemaType.String())
-			}
-		}
+		innerSchemaType = types.Unalias(innerSchemaType)
+		innerDataType = types.Unalias(innerDataType)
 		if named, ok := innerSchemaType.(*types.Named); ok {
 			obj = named.Obj()
 		}
@@ -733,17 +740,23 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 			pkgPath := obj.Pkg().Path()
 			typeName := obj.Name()
 
+			// time.Time is handled through its methods, so a view over it
+			// needs the same data type (big.Int is checked in its builder,
+			// hint or not); the other well-known types are handled through
+			// their underlying representation.
 			switch {
 			case pkgPath == pkgPathTime && typeName == typeNameTime:
+				if !types.Identical(innerDataType, innerSchemaType) {
+					return nil, fmt.Errorf("incompatible types: schema %v needs the same data type, got %v", innerSchemaType, innerDataType)
+				}
 				sszType = ssztypes.SszUint64Type
 				desc.GoTypeFlags |= ssztypes.GoTypeFlagIsTime
-			case pkgPath == "math/big" && typeName == "Int":
-				if p.ExtendedTypes {
-					sszType = ssztypes.SszBigIntType
-				} else {
+			case pkgPath == pkgPathBig && typeName == typeNameExternalInt:
+				if !p.ExtendedTypes {
 					return nil, fmt.Errorf("big.Int is not supported in SSZ (use unsigned integers instead)")
 				}
-			case pkgPath == "github.com/holiman/uint256" && typeName == "Int":
+				sszType = ssztypes.SszBigIntType
+			case pkgPath == "github.com/holiman/uint256" && typeName == typeNameExternalInt:
 				sszType = ssztypes.SszUint256Type
 			case pkgPath == "github.com/prysmaticlabs/go-bitfield" && typeName == "Bitlist":
 				sszType = ssztypes.SszBitlistType
@@ -916,7 +929,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		if len(sizeHints) > 0 && sizeHints[0].Bits {
 			return nil, fmt.Errorf("uint128 ssz type cannot be limited by bits, use regular size tag instead")
 		}
-		err := p.buildUint128Descriptor(desc, schemaType)
+		err := p.buildLargeUintDescriptor(desc, dataType, schemaType, 16, "uint128")
 		if err != nil {
 			return nil, err
 		}
@@ -924,7 +937,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		if len(sizeHints) > 0 && sizeHints[0].Bits {
 			return nil, fmt.Errorf("uint256 ssz type cannot be limited by bits, use regular size tag instead")
 		}
-		err := p.buildUint256Descriptor(desc, schemaType)
+		err := p.buildLargeUintDescriptor(desc, dataType, schemaType, 32, "uint256")
 		if err != nil {
 			return nil, err
 		}
@@ -971,7 +984,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 			return nil, err
 		}
 	case ssztypes.SszBitlistType, ssztypes.SszProgressiveBitlistType:
-		err := p.buildBitlistDescriptor(desc, schemaType, sizeHints, maxSizeHints, typeHints)
+		err := p.buildBitlistDescriptor(desc, dataType, schemaType)
 		if err != nil {
 			return nil, err
 		}
@@ -1077,7 +1090,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		if !p.ExtendedTypes {
 			return nil, fmt.Errorf("big.Int is not supported in SSZ (use unsigned integers instead)")
 		}
-		err := p.buildBigIntDescriptor(desc, dataType)
+		err := p.buildBigIntDescriptor(desc, innerDataType)
 		if err != nil {
 			return nil, err
 		}
@@ -1164,94 +1177,59 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	return desc, nil
 }
 
-//nolint:dupl // intentionally similar to buildUint256Descriptor but handles 128-bit types
-func (p *Parser) buildUint128Descriptor(desc *ssztypes.TypeDescriptor, typ types.Type) error {
-	// Handle as [16]uint8, [2]uint64
-	var elemType types.Type
-	switch t := typ.(type) {
-	case *types.Array:
-		elemType = t.Elem()
-		if t.Len() == 16 {
-			if elem, ok := types.Unalias(t.Elem()).(*types.Basic); ok && elem.Kind() == types.Uint8 {
-				desc.Size = 16
-			}
-		} else if t.Len() == 2 {
-			if elem, ok := types.Unalias(t.Elem()).(*types.Basic); ok && elem.Kind() == types.Uint64 {
-				desc.Size = 16
-			}
-		}
-	case *types.Slice:
-		elemType = t.Elem()
-		if elem, ok := types.Unalias(t.Elem()).(*types.Basic); ok {
-			if elem.Kind() == types.Uint8 {
-				desc.Size = 16
-			} else if elem.Kind() == types.Uint64 {
-				desc.Size = 16
-			}
+// buildLargeUintDescriptor builds a descriptor for a fixed-width integer
+// (uint128, uint256) stored as a slice or array of uint8 or uint64 elements.
+// The schema type fixes the layout; the data type must store it with the same
+// element kind and, for arrays, the same length, and a view is checked the
+// same way.
+func (p *Parser) buildLargeUintDescriptor(desc *ssztypes.TypeDescriptor, dataType, schemaType types.Type, byteLen int64, typeName string) error {
+	elemOf := func(typ types.Type) (elem types.Type, arrayLen int64, ok bool) {
+		switch t := typ.(type) {
+		case *types.Array:
+			return t.Elem(), t.Len(), true
+		case *types.Slice:
+			return t.Elem(), -1, true
+		default:
+			return nil, 0, false
 		}
 	}
 
-	if desc.Size == 0 {
-		return fmt.Errorf("uint128 ssz type can only be represented by [16]uint8 or [2]uint64 types")
+	schemaElemType, schemaLen, ok := elemOf(schemaType)
+	if !ok {
+		return fmt.Errorf("%s ssz type can only be represented by [%d]uint8 or [%d]uint64 types", typeName, byteLen, byteLen/8)
+	}
+	dataElemType, dataLen, ok := elemOf(dataType)
+	if !ok {
+		return fmt.Errorf("%s ssz type can only be represented by [%d]uint8 or [%d]uint64 types", typeName, byteLen, byteLen/8)
 	}
 
-	// Build element descriptor (element types use same type for data and schema)
-	elemDesc, err := p.buildTypeDescriptor(elemType, elemType, nil, nil, nil)
+	// Build the element descriptor from the (data, schema) element pair; the
+	// pairing itself rejects elements of different kinds.
+	elemDesc, err := p.buildTypeDescriptor(dataElemType, schemaElemType, nil, nil, nil)
 	if err != nil {
-		return fmt.Errorf("failed to build vector element descriptor: %v", err)
+		return fmt.Errorf("%s ssz type can only be represented by [%d]uint8 or [%d]uint64 types: %v", typeName, byteLen, byteLen/8, err)
+	}
+	// The words are read and written in place, so a pointer element has no
+	// place here either.
+	if (elemDesc.Kind != reflect.Uint8 && elemDesc.Kind != reflect.Uint64) || elemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		return fmt.Errorf("%s ssz type can only be represented by [%d]uint8 or [%d]uint64 types, got %v elements", typeName, byteLen, byteLen/8, dataElemType)
 	}
 	desc.ElemDesc = elemDesc
+	desc.Size = byteLen
 	desc.Len = desc.Size / elemDesc.Size
 
-	// Set byte array flag for byte types
-	if p.isByteType(elemType) {
-		desc.GoTypeFlags |= ssztypes.GoTypeFlagIsByteArray
-	}
-
-	return nil
-}
-
-//nolint:dupl // intentionally similar to buildUint128Descriptor but handles 256-bit types
-func (p *Parser) buildUint256Descriptor(desc *ssztypes.TypeDescriptor, typ types.Type) error {
-	// Handle as [32]uint8, [4]uint64
-	var elemType types.Type
-	switch t := typ.(type) {
-	case *types.Array:
-		elemType = t.Elem()
-		if t.Len() == 32 {
-			if elem, ok := types.Unalias(t.Elem()).(*types.Basic); ok && elem.Kind() == types.Uint8 {
-				desc.Size = 32
-			}
-		} else if t.Len() == 4 {
-			if elem, ok := types.Unalias(t.Elem()).(*types.Basic); ok && elem.Kind() == types.Uint64 {
-				desc.Size = 32
-			}
-		}
-	case *types.Slice:
-		elemType = t.Elem()
-		if elem, ok := types.Unalias(t.Elem()).(*types.Basic); ok {
-			if elem.Kind() == types.Uint8 {
-				desc.Size = 32
-			} else if elem.Kind() == types.Uint64 {
-				desc.Size = 32
-			}
+	// A fixed-width uint occupies exactly desc.Len array elements, on the
+	// schema and on the data array alike.
+	for _, arrayLen := range []int64{schemaLen, dataLen} {
+		if arrayLen >= 0 && arrayLen != desc.Len {
+			return fmt.Errorf("%s ssz type can only be represented by [%d]uint8 or [%d]uint64 types, got an array of %d", typeName, byteLen, byteLen/8, arrayLen)
 		}
 	}
 
-	if desc.Size == 0 {
-		return fmt.Errorf("uint256 ssz type can only be represented by [32]uint8 or [4]uint64 types")
-	}
-
-	// Build element descriptor (element types use same type for data and schema)
-	elemDesc, err := p.buildTypeDescriptor(elemType, elemType, nil, nil, nil)
-	if err != nil {
-		return fmt.Errorf("failed to build vector element descriptor: %v", err)
-	}
-	desc.ElemDesc = elemDesc
-	desc.Len = desc.Size / elemDesc.Size
-
-	// Set byte array flag for byte types
-	if p.isByteType(elemType) {
+	// The bulk byte code copies through the data value as a plain []byte, so
+	// the flag follows the data element type; a named uint8 element (or a
+	// view whose data element is one) is emitted element-wise.
+	if p.isByteType(dataElemType) {
 		desc.GoTypeFlags |= ssztypes.GoTypeFlagIsByteArray
 	}
 
@@ -1552,8 +1530,10 @@ func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, dataType, 
 		return fmt.Errorf("vector type %v has zero length, which is invalid per the SSZ spec", schemaType)
 	}
 
-	// Set byte array flag for byte types
-	if p.isByteType(schemaElemType) {
+	// The bulk byte code copies through the data value as a plain []byte, so
+	// the flag follows the data element type: a named uint8 element (or a
+	// view whose data element is one) is emitted element-wise.
+	if p.isByteType(dataElemType) {
 		desc.GoTypeFlags |= ssztypes.GoTypeFlagIsByteArray
 	}
 
@@ -1641,8 +1621,10 @@ func (p *Parser) buildListDescriptor(desc *ssztypes.TypeDescriptor, dataType, sc
 	}
 	desc.ElemDesc = elemDesc
 
-	// Set byte array flag for byte types
-	if p.isByteType(schemaElemType) {
+	// The bulk byte code copies through the data value as a plain []byte, so
+	// the flag follows the data element type: a named uint8 element (or a
+	// view whose data element is one) is emitted element-wise.
+	if p.isByteType(dataElemType) {
 		desc.GoTypeFlags |= ssztypes.GoTypeFlagIsByteArray
 	}
 
@@ -1655,32 +1637,41 @@ func (p *Parser) buildListDescriptor(desc *ssztypes.TypeDescriptor, dataType, sc
 	return nil
 }
 
-func (p *Parser) buildBitlistDescriptor(desc *ssztypes.TypeDescriptor, typ types.Type, _ []ssztypes.SszSizeHint, _ []ssztypes.SszMaxSizeHint, _ []ssztypes.SszTypeHint) error {
-	var elemType types.Type
-
-	switch t := typ.(type) {
-	case *types.Slice:
-		elemType = t.Elem()
-	default:
-		return fmt.Errorf("bitlist type can only be represented by slice types, got %T", typ)
+func (p *Parser) buildBitlistDescriptor(desc *ssztypes.TypeDescriptor, dataType, schemaType types.Type) error {
+	schemaSlice, ok := schemaType.(*types.Slice)
+	if !ok {
+		return fmt.Errorf("bitlist type can only be represented by slice types, got %T", schemaType)
 	}
+	dataSlice, ok := dataType.(*types.Slice)
+	if !ok {
+		return fmt.Errorf("bitlist type can only be represented by slice types, got %T", dataType)
+	}
+	dataElemType, schemaElemType := dataSlice.Elem(), schemaSlice.Elem()
 
-	// Build element descriptor (element types use same type for data and schema)
-	elemDesc, err := p.buildTypeDescriptor(elemType, elemType, nil, nil, nil)
+	// Build the element descriptor from the (data, schema) element pair, as a
+	// list does.
+	elemDesc, err := p.buildTypeDescriptor(dataElemType, schemaElemType, nil, nil, nil)
 	if err != nil {
 		return fmt.Errorf("failed to build bitlist element descriptor: %v", err)
 	}
 	desc.ElemDesc = elemDesc
 
-	// Bitlist must use byte (uint8) elements
-	if elemDesc.Kind != reflect.Uint8 {
-		return fmt.Errorf("bitlist ssz type can only be represented by byte slices, got []%v", elemDesc.Kind)
+	// A named uint8 element is viewed as a byte without copying; a pointer
+	// element has no such view.
+	if elemDesc.Kind != reflect.Uint8 || elemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		return fmt.Errorf("bitlist ssz type can only be represented by byte slices, got []%v", dataElemType)
 	}
 
 	// Bitlists are always dynamic
 	desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
 	desc.Size = 0
-	desc.GoTypeFlags |= ssztypes.GoTypeFlagIsByteArray
+	// The bulk byte code reads the data value as a plain []byte, so the flag
+	// follows the data element type as it does for lists and vectors; a named
+	// uint8 element (or a view whose data element is one) goes through a byte
+	// view instead.
+	if p.isByteType(dataElemType) {
+		desc.GoTypeFlags |= ssztypes.GoTypeFlagIsByteArray
+	}
 
 	// The reflection type cache builds bitlists through its list builder, which
 	// applies this there; this parser splits them into their own builder, so it
@@ -2105,9 +2096,12 @@ func (p *Parser) buildOptionalListDescriptor(desc *ssztypes.TypeDescriptor, data
 	return nil
 }
 
-func (p *Parser) buildBigIntDescriptor(desc *ssztypes.TypeDescriptor, _ types.Type) error {
-	if desc.Kind != reflect.Struct {
-		return fmt.Errorf("bigint type can only be represented by struct types, got %v", desc.Kind)
+func (p *Parser) buildBigIntDescriptor(desc *ssztypes.TypeDescriptor, dataType types.Type) error {
+	// A big integer is read and written through big.Int's methods, whether
+	// the type was detected or hinted, so the data type has to be big.Int.
+	named, ok := types.Unalias(dataType).(*types.Named)
+	if !ok || named.Obj().Pkg() == nil || named.Obj().Pkg().Path() != pkgPathBig || named.Obj().Name() != typeNameExternalInt {
+		return fmt.Errorf("bigint ssz type can only be represented by math/big.Int, got %v", dataType)
 	}
 	desc.Size = 0
 	desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
@@ -2196,7 +2190,7 @@ func (p *Parser) getFastsszHashCompatibility(typ types.Type) bool {
 func (p *Parser) getHashTreeRootWithCompatibility(typ types.Type) bool {
 	// Check if type has HashTreeRootWith method
 	methodSet := types.NewMethodSet(typ)
-	return p.hasMethodWithSignature(methodSet, "HashTreeRootWith", []string{"-"}, []string{"error"})
+	return p.hasMethodWithSignature(methodSet, "HashTreeRootWith", []string{typeNameHashWalkerParam}, []string{"error"})
 }
 
 func (p *Parser) getDynamicMarshalerCompatibility(typ types.Type) bool {
@@ -2334,8 +2328,29 @@ func (p *Parser) hasMethodWithSignature(methodSet *types.MethodSet, methodName s
 }
 
 func (p *Parser) typeMatches(typ types.Type, expectedTypeStr string) bool {
+	// Method signatures spell the view parameter as any, which go/types
+	// represents as an alias; the checks below inspect the aliased type.
+	typ = types.Unalias(typ)
+
 	switch expectedTypeStr {
 	case "-":
+		return true
+	case typeNameHashWalkerParam:
+		iface, ok := typ.Underlying().(*types.Interface)
+		if !ok {
+			return false
+		}
+		for i := range iface.NumMethods() {
+			method := iface.Method(i)
+			counts, ok := hashWalkerMethods[method.Name()]
+			if !ok {
+				return false
+			}
+			sig, ok := method.Type().(*types.Signature)
+			if !ok || sig.Params().Len() != counts[0] || sig.Results().Len() != counts[1] {
+				return false
+			}
+		}
 		return true
 	case typeNameByteSlice:
 		if slice, ok := typ.(*types.Slice); ok {

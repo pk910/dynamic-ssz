@@ -81,9 +81,13 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int) error
 **Parameters**:
 - `target` - Pointer to object to deserialize into
 - `r` - Source reader
-- `size` - Expected total size of the SSZ data in bytes. A negative size selects
-  **unknown-size mode**: the payload is consumed to EOF without being buffered,
-  so the memory savings of streaming still apply. See
+- `size` - Expected total size of the SSZ data in bytes. A non-negative size is
+  **trusted**: regions and allocations are sized from it before the bytes
+  arrive, so it must come from a source you control (a `stat()` result, a
+  `Content-Length` you are willing to believe). A size above
+  `WithMaxStreamSize` (512 MiB by default) is rejected before anything is read.
+  A negative size selects **unknown-size mode**: the payload is consumed to EOF
+  without being buffered, so the memory savings of streaming still apply. See
   [Unknown-size decoding](#unknown-size-decoding).
 
 **Example**:
@@ -220,13 +224,15 @@ ds := dynssz.NewDynSsz(specs, dynssz.WithStreamReaderBufferSize(64*1024))
 
 ### Wire-size bound
 
-Unknown-size decoding is **always bounded** and the bound cannot be disabled:
+Decoding from a reader is **always bounded** and the bound cannot be disabled:
 
 ```go
 ds := dynssz.NewDynSsz(specs, dynssz.WithMaxStreamSize(16*1024*1024))
 ```
 
-The default is 512 MiB. This bounds bytes consumed from the wire and doubles as
+The default is 512 MiB. A declared `size` above it is rejected before any byte
+is read, and an unknown-size decode stops at it. This bounds bytes consumed
+from the wire (and the allocation a trusted size can cause) and doubles as
 the remaining-length estimate reported to code that predates unknown-size
 decoding (see [Regenerating](#regenerating-generated-code)). `ssz-max` limits
 are enforced while reading. Set the smallest value your application protocol

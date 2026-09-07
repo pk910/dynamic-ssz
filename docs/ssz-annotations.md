@@ -237,6 +237,8 @@ type DynamicAttestation struct {
 }
 ```
 
+A dimension has one unit. Pair `ssz-bitsize` with `dynssz-bitsize` and `ssz-size` with `dynssz-size`; mixing the two families on the same dimension (for example `ssz-bitsize:"12" dynssz-size:"X"`) is rejected by both the reflection engine and the code generator.
+
 ## Maximum Size Annotations
 
 ### ssz-max

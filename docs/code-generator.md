@@ -550,6 +550,19 @@ The generator supports all Dynamic SSZ types and annotations:
 - Byte arrays: `[]byte`, `[N]byte`
 - Strings: `string`
 
+Inside a list or vector, elements of a basic type narrower than 32 bytes are
+packed into shared chunks by the engine itself, so SSZ methods declared on such
+an element type (`type Slot uint64` with generated methods) are not called
+there. A basic-typed field or root value still delegates to its methods.
+
+A `ssz-type:"custom"` value always delegates. After the delegate returns, the
+engine pads the hasher to the next 32-byte chunk, so a hash method may either
+leave a complete leaf or append only the packed bytes of its value. Inside a
+list or vector, a custom type whose declared `ssz-size` is one a basic type
+could have (a power of two up to 16 bytes) is packed exactly like that basic
+type when its hash method appends only those bytes; any other size gets a leaf
+of its own, as a composite element does.
+
 ### Non-Struct Types with `sszutils.Annotate[T]()`
 
 The code generator supports generating SSZ methods for non-struct types (named slices, arrays, etc.) using `sszutils.Annotate[T]()` to register SSZ annotations. This solves the problem that Go does not allow struct tags on type definitions.

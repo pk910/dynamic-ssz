@@ -278,8 +278,10 @@ func (ctx *ReflectionCtx) tryMarshalView(sourceType *ssztypes.TypeDescriptor, so
 	useViewEncoder := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewEncoder != 0
 	useViewMarshaler := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewMarshaler != 0
 
-	// Prefer encoder for seekable encoders, marshaler otherwise
-	if useViewEncoder && encoder.Seekable() {
+	// The encoder form streams; it is preferred for a non-seekable encoder and
+	// is the only form when no marshaler exists. A seekable (buffer) encoder
+	// prefers the marshaler, as tryMarshalCompat does.
+	if useViewEncoder && (!encoder.Seekable() || !useViewMarshaler) {
 		if enc, ok := getPtr(sourceValue).Interface().(sszutils.DynamicViewEncoder); ok {
 			if encodeFn := enc.MarshalSSZEncoderView(*sourceType.CodegenInfo); encodeFn != nil {
 				return true, encodeFn(ctx.ds, encoder)
@@ -562,13 +564,18 @@ func (ctx *ReflectionCtx) marshalDynamicVector(sourceType *ssztypes.TypeDescript
 	sliceLen := sourceValue.Len()
 
 	appendZero := 0
-	if sourceType.Kind == reflect.Slice || sourceType.Kind == reflect.String {
-		innerSliceLen := sourceValue.Len()
-		if int64(innerSliceLen) > sourceType.Len {
-			return sszutils.ErrVectorLengthFn(innerSliceLen, sourceType.Len)
+	if sourceType.Kind == reflect.Array {
+		// A backing array longer than the declared length carries unused
+		// trailing elements; only the declared length is serialized.
+		if int64(sliceLen) > sourceType.Len {
+			sliceLen = int(dynVecLen)
 		}
-		if int64(innerSliceLen) < sourceType.Len {
-			appendZero = int(dynVecLen) - innerSliceLen
+	} else {
+		if int64(sliceLen) > sourceType.Len {
+			return sszutils.ErrVectorLengthFn(sliceLen, sourceType.Len)
+		}
+		if int64(sliceLen) < sourceType.Len {
+			appendZero = int(dynVecLen) - sliceLen
 		}
 	}
 
@@ -843,10 +850,9 @@ func (ctx *ReflectionCtx) marshalCompatibleUnion(sourceType *ssztypes.TypeDescri
 		return sszutils.ErrInvalidUnionVariantFn()
 	}
 
-	// A zero-value union has a nil data interface; reject it instead of
-	// panicking on the zero reflect.Value (consistent with the HTR path).
+	// A nil data interface cannot carry the selected variant's value.
 	if dataField.IsNil() {
-		return sszutils.ErrInvalidUnionVariantFn()
+		return sszutils.ErrUnionTypeMismatchFn()
 	}
 
 	// Reject data whose concrete type does not match the variant, instead of
@@ -899,7 +905,7 @@ func (ctx *ReflectionCtx) marshalUnion(sourceType *ssztypes.TypeDescriptor, sour
 		return sszutils.ErrInvalidUnionVariantFn()
 	}
 	if dataField.IsNil() {
-		return sszutils.ErrInvalidUnionVariantFn()
+		return sszutils.ErrUnionTypeMismatchFn()
 	}
 	if dataField.Elem().Type() != variantDesc.Type {
 		return sszutils.ErrUnionTypeMismatchFn()

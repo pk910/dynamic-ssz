@@ -421,7 +421,7 @@ func TestRun_TypeSpecificOutputFile(t *testing.T) {
 // the edge cases the generator's gate inputs do not normally produce: a non-named
 // type and a named type from a different package both resolve to no annotation.
 func TestAnnotationResolver(t *testing.T) {
-	cfg := &packages.Config{Mode: packages.NeedName | packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedImports}
+	cfg := &packages.Config{Mode: packages.NeedName | packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedImports | packages.NeedDeps}
 	pkgs, err := packages.Load(cfg,
 		"github.com/pk910/dynamic-ssz/codegen/tests",
 		"github.com/pk910/dynamic-ssz/sszutils")
@@ -557,7 +557,7 @@ func TestParseAnnotateTag_Multiple(t *testing.T) {
 
 func TestFindAnnotateCall_Found(t *testing.T) {
 	cfg := &packages.Config{
-		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName,
+		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName | packages.NeedDeps,
 	}
 
 	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
@@ -574,7 +574,7 @@ func TestFindAnnotateCall_Found(t *testing.T) {
 
 func TestFindAnnotateCall_Found2(t *testing.T) {
 	cfg := &packages.Config{
-		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName,
+		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName | packages.NeedDeps,
 	}
 
 	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
@@ -590,7 +590,7 @@ func TestFindAnnotateCall_Found2(t *testing.T) {
 
 func TestFindAnnotateCall_NotFound(t *testing.T) {
 	cfg := &packages.Config{
-		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName,
+		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName | packages.NeedDeps,
 	}
 
 	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
@@ -657,7 +657,7 @@ func TestRun_AnnotatedTypeVerbose(t *testing.T) {
 func TestFindAnnotateCall_InitFunction(t *testing.T) {
 	// Covers main.go:373-380 (init() function body scanning)
 	cfg := &packages.Config{
-		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName,
+		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName | packages.NeedDeps,
 	}
 
 	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
@@ -674,7 +674,7 @@ func TestFindAnnotateCall_InitFunction(t *testing.T) {
 func TestFindAnnotateCall_InterpretedString(t *testing.T) {
 	// Covers main.go:432-437 (interpreted string literal path)
 	cfg := &packages.Config{
-		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName,
+		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName | packages.NeedDeps,
 	}
 
 	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
@@ -1039,7 +1039,7 @@ func TestRun_BadAnnotateTagInSource(t *testing.T) {
 
 func TestFindAnnotateCall_AliasedImport(t *testing.T) {
 	cfg := &packages.Config{
-		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName,
+		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName | packages.NeedDeps,
 	}
 	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg")
 	if err != nil {
@@ -1056,7 +1056,7 @@ func TestFindAnnotateCall_AliasedImport(t *testing.T) {
 // findAnnotateCallInDecl.
 func TestFindAnnotateCall_InitMixedStmts(t *testing.T) {
 	cfg := &packages.Config{
-		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName,
+		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName | packages.NeedDeps,
 	}
 	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg")
 	if err != nil {

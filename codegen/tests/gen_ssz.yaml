@@ -167,6 +167,20 @@ types:
     output: gen_edgecases.go
   - name: StreamVecElem
     output: gen_edgecases.go
+  - name: OversizedArrayDynVec
+    output: gen_edgecases.go
+  - name: SizerOnlyHolder
+    output: gen_edgecases.go
+  - name: BasicMethodsHolder
+    output: gen_edgecases.go
+  - name: PackedCustomHolder
+    output: gen_edgecases.go
+  - name: BulkElems
+    output: gen_edgecases.go
+  - name: NamedBitlists
+    output: gen_edgecases.go
+  - name: ForeignHashWithHolder
+    output: gen_edgecases.go
   - name: MultiDimSpecVec
     output: gen_edgecases.go
   - name: NoMaxBitlist

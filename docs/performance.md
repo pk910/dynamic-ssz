@@ -200,6 +200,41 @@ ds := dynssz.NewDynSsz(specs, dynssz.WithNoFastSsz())
 ds := dynssz.NewDynSsz(specs, dynssz.WithVerbose())
 ```
 
+### 2. Async Hashing
+
+`HashTreeRoot` is single-threaded by default. `WithAsyncHashing` moves the
+reduction of large subtrees (a beacon state's validator registry, balances,
+and similar lists) onto background goroutines while the walker keeps
+serializing, which speeds up hashing of large objects severalfold. Roots are
+identical to synchronous hashing.
+
+```go
+// Gate this instance in and set the process-wide worker limit.
+ds := dynssz.NewDynSsz(specs, dynssz.WithAsyncHashing(4))
+
+// Gate a second instance in without touching the process-wide limit.
+other := dynssz.NewDynSsz(otherSpecs, dynssz.WithAsyncHashing(0))
+```
+
+What to know before enabling it:
+
+- **Off by default.** Only instances constructed with `WithAsyncHashing` use it.
+- **The worker limit is process-wide.** `WithAsyncHashing(n)` with `n > 0`
+  calls `hasher.EnableAsyncHashing(n)`; the most recent call wins for every
+  gated instance. Configure it once, or pass `0` on further instances.
+  `hasher.DisableAsyncHashing()` turns it off for new work.
+- **Memory.** Deferred subtrees accumulate into wider runs before reduction,
+  so peak buffer usage grows by a few megabytes per hasher, and pooled hashers
+  keep that capacity.
+- **Caller-owned hashers.** `HashTreeRootWith` is unaffected by the option:
+  the caller owns that hasher and gates it with `Hasher.SetAsyncHashing(true)`
+  per acquisition (`Reset` clears the gate). The hash function must then be
+  safe for concurrent use; `NewHasher`, the pooled hashers and any
+  `NewHasherWithHashFn` with a concurrency-safe function qualify, a hasher
+  built with `NewHasherWithHash` around one `hash.Hash` does not.
+- **Cost model.** Small objects gain nothing; the benefit comes from lists
+  with thousands of elements. Measure with your own payloads.
+
 ## Profiling and Monitoring
 
 ### 1. CPU Profiling

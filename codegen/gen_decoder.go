@@ -1348,10 +1348,17 @@ func (ctx *decoderContext) unmarshalBitlist(desc *ssztypes.TypeDescriptor, varNa
 		ctx.appendCode(indent, "bitlistMaxBytes := %s\n", bitlistCap)
 		bitlistMaxArg = "bitlistMaxBytes"
 	}
-	ctx.appendCode(indent, "if buf, err := sszutils.DecodeByteListInto(dec, %s, %s); err != nil {\n", valueVar, bitlistMaxArg)
+	dstArg, decoded := valueVar, "buf"
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray == 0 {
+		// A named uint8 element is viewed as a byte without copying, in both
+		// directions.
+		dstArg = fmt.Sprintf("sszutils.ByteSlice(%s[:])", valueVar)
+		decoded = fmt.Sprintf("sszutils.BytesAs[%s](buf)", ctx.typePrinter.TypeString(desc.ElemDesc))
+	}
+	ctx.appendCode(indent, "if buf, err := sszutils.DecodeByteListInto(dec, %s, %s); err != nil {\n", dstArg, bitlistMaxArg)
 	ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith("err"))
 	ctx.appendCode(indent, "} else {\n")
-	ctx.appendCode(indent+1, "%s = %s\n", valueVar, ctx.getCastedValueVar(desc, "buf", ""))
+	ctx.appendCode(indent+1, "%s = %s\n", valueVar, ctx.getCastedValueVar(desc, decoded, ""))
 	ctx.appendCode(indent, "}\n")
 	ctx.appendCode(indent, "blen := len(%s)\n", valueVar)
 	ctx.appendCode(indent, "if blen == 0 || %s[blen-1] == 0x00 {\n", valueVar)
@@ -1361,7 +1368,11 @@ func (ctx *decoderContext) unmarshalBitlist(desc *ssztypes.TypeDescriptor, varNa
 
 	if hasMax {
 		bitsPkgName := ctx.typePrinter.AddImport("math/bits", "bits")
-		ctx.appendCode(indent, "bitCount := 8*(blen-1) + int(%s.Len8(%s[blen-1])) - 1\n", bitsPkgName, valueVar)
+		lastByte := fmt.Sprintf("%s[blen-1]", valueVar)
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray == 0 {
+			lastByte = "uint8(" + lastByte + ")"
+		}
+		ctx.appendCode(indent, "bitCount := 8*(blen-1) + int(%s.Len8(%s)) - 1\n", bitsPkgName, lastByte)
 		errCode := fmt.Sprintf("sszutils.ErrBitlistLengthFn(bitCount, %s)", uintLitArg(maxVar))
 		ctx.appendCode(indent, "if %s {\n\treturn %s\n}\n", uintCmpExpr("bitCount", ">", maxVar), typePath.getErrorWith(errCode))
 	}

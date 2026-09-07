@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 
 	dynssz "github.com/pk910/dynamic-ssz"
@@ -78,6 +79,26 @@ type regionBoundTypes struct {
 // which must be emitted as an expression wherever a spec value feeds it: the
 // generator only sees the static tag values, and a caller running a preset that
 // resolves them smaller would have valid input refused.
+
+// testsPackage loads github.com/pk910/dynamic-ssz/codegen/tests once per test
+// binary. Loading type-checks the whole import graph from source, and every
+// caller only reads the package's type information.
+var testsPackage = sync.OnceValues(func() ([]*packages.Package, error) {
+	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports | packages.NeedDeps}
+	return packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
+})
+
+// loadTestsPackage returns the shared codegen/tests package, failing the test
+// when it did not load.
+func loadTestsPackage(t *testing.T) *packages.Package {
+	t.Helper()
+	pkgs, err := testsPackage()
+	if err != nil || len(pkgs) == 0 {
+		t.Fatalf("load tests package: %v", err)
+	}
+	return pkgs[0]
+}
+
 func TestGenerateListRegionBound(t *testing.T) {
 	cg := NewCodeGenerator(nil)
 	cg.BuildFile("gen_test.go", WithReflectType(reflect.TypeFor[regionBoundTypes]()))
@@ -129,6 +150,31 @@ func TestGenerateListRegionBound(t *testing.T) {
 // merkleize, so a list without one has no hash tree root and hashing it is an
 // extension. Serialization never needs a limit, so only the hash method is
 // refused, and only without extended types.
+type bulkRootsHolder struct {
+	R [][32]byte `ssz-max:"8"`
+	O [][48]byte `ssz-size:"?,32" ssz-max:"8"`
+}
+
+// With the reflect front end the bulk byte-array copy is gated by the Go
+// array length as well: the [32]byte list is copied in bulk, the oversized
+// [48]byte list is not.
+func TestReflectFrontendBulkByteElems(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_test.go", WithReflectType(reflect.TypeFor[bulkRootsHolder]()))
+
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	code := files["gen_test.go"]
+	if n := strings.Count(code, "MarshalFixedBytesSlice"); n != 1 {
+		t.Fatalf("MarshalFixedBytesSlice emitted %d times, want 1 (only the [32]byte list)", n)
+	}
+	if n := strings.Count(code, "UnmarshalFixedBytesSlice"); n != 1 {
+		t.Fatalf("UnmarshalFixedBytesSlice emitted %d times, want 1 (only the [32]byte list)", n)
+	}
+}
+
 func TestGenerateLimitlessListRoot(t *testing.T) {
 	t.Run("HashRefused", func(t *testing.T) {
 		cg := NewCodeGenerator(nil)
@@ -156,11 +202,7 @@ func TestGenerateLimitlessListRoot(t *testing.T) {
 	// this is the front end dynssz-gen uses, and a type that hashes in one
 	// engine but not the other is the divergence this rule exists to prevent.
 	t.Run("GoTypesParserRefusesBoth", func(t *testing.T) {
-		cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
-		pkgs, loadErr := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
-		if loadErr != nil || len(pkgs) == 0 {
-			t.Fatalf("load tests package: %v", loadErr)
-		}
+		pkgs := []*packages.Package{loadTestsPackage(t)}
 		scope := pkgs[0].Types.Scope()
 
 		for _, typeName := range []string{"UnboundedList", "UnboundedBitlist"} {
@@ -1480,13 +1522,29 @@ func TestGenerateViewEdgeCases(t *testing.T) {
 	})
 }
 
-// The codegen ParseTags path drops into the same shared-hint merge; a unit
-// mismatch between the static and dynamic size tags is rejected there too.
+// The codegen ParseTags path applies the same rule as the reflection tag
+// reader: the static and dynamic size tags of a dimension share one unit,
+// for an expression as well as for a literal.
 func TestParseTagsConflictingUnits(t *testing.T) {
-	_, sizeHints, _, err := ParseTags(`ssz-size:"8" dynssz-bitsize:"UNKNOWN_SPEC"`)
-	_ = sizeHints
-	if err == nil || !strings.Contains(err.Error(), "conflicting size units") {
-		t.Fatalf("expected conflicting-units error, got %v", err)
+	for _, tag := range []string{
+		`ssz-size:"8" dynssz-bitsize:"UNKNOWN_SPEC"`,
+		`ssz-bitsize:"64" dynssz-size:"UNKNOWN_SPEC"`,
+		`ssz-size:"8" dynssz-bitsize:"64"`,
+		`ssz-bitsize:"64" dynssz-size:"8"`,
+	} {
+		_, _, _, err := ParseTags(tag)
+		if err == nil || !strings.Contains(err.Error(), "conflicting size units") {
+			t.Errorf("%s: expected conflicting-units error, got %v", tag, err)
+		}
+	}
+	for _, tag := range []string{
+		`ssz-bitsize:"64" dynssz-bitsize:"SPEC"`,
+		`ssz-size:"8" dynssz-size:"SPEC"`,
+		`ssz-size:"8" dynssz-size:"16"`,
+	} {
+		if _, _, _, err := ParseTags(tag); err != nil {
+			t.Errorf("%s: unexpected error %v", tag, err)
+		}
 	}
 }
 
@@ -1494,13 +1552,7 @@ func TestParseTagsConflictingUnits(t *testing.T) {
 // a generic instantiation is rejected, duplicate views are rejected, and a
 // view type is pointer-wrapped like the base.
 func TestGoTypesViewAndGenericGuards(t *testing.T) {
-	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
-
-	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
-	if err != nil || len(pkgs) == 0 {
-		t.Fatalf("load tests package: %v", err)
-	}
-	scope := pkgs[0].Types.Scope()
+	scope := loadTestsPackage(t).Types.Scope()
 
 	genBoxObj := scope.Lookup("GenericBoxFixture")
 	if genBoxObj == nil {
@@ -1570,11 +1622,7 @@ func TestGoTypesViewAndGenericGuards(t *testing.T) {
 // embedded field is walked as a container (so its sibling fields survive), not
 // treated as fully delegating.
 func TestGoTypesPromotedMethodsNotDelegation(t *testing.T) {
-	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
-	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
-	if err != nil || len(pkgs) == 0 {
-		t.Fatalf("load tests package: %v", err)
-	}
+	pkgs := []*packages.Package{loadTestsPackage(t)}
 	scope := pkgs[0].Types.Scope()
 	inner := scope.Lookup("PromotedDelegInner")
 	outer := scope.Lookup("PromotedDelegOuter")
@@ -1819,11 +1867,7 @@ func TestValidateTopLevelTypeWrapperShapes(t *testing.T) {
 	// The generator's real entry point is go/types, not reflect, so the gate has
 	// to reach the same verdict there.
 	t.Run("goTypes", func(t *testing.T) {
-		cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
-		pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
-		if err != nil || len(pkgs) == 0 {
-			t.Fatalf("load tests package: %v", err)
-		}
+		pkgs := []*packages.Package{loadTestsPackage(t)}
 
 		declared := pkgs[0].Types.Scope().Lookup("TopLevelStructWrapper")
 		if declared == nil {
@@ -1848,6 +1892,7 @@ func TestValidateTopLevelTypeWrapperShapes(t *testing.T) {
 
 		// The library generic instantiated the way an alias declares it: the one
 		// shape that genuinely cannot receive methods.
+		cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports | packages.NeedDeps}
 		libPkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz")
 		if err != nil || len(libPkgs) == 0 {
 			t.Fatalf("load library package: %v", err)
@@ -2254,11 +2299,7 @@ func TestStaticRejectsUnInlinableDelegated(t *testing.T) {
 // whichever position the type holds: the switch is never lowered, so a later
 // extended type widens the parser a first plain type created.
 func TestPerTypeExtendedTypesReachesParser(t *testing.T) {
-	cfg := &packages.Config{Mode: packages.NeedTypes | packages.NeedName | packages.NeedImports}
-	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/codegen/tests")
-	if err != nil || len(pkgs) == 0 {
-		t.Fatalf("load tests package: %v", err)
-	}
+	pkgs := []*packages.Package{loadTestsPackage(t)}
 	scope := pkgs[0].Types.Scope()
 	plain := scope.Lookup("SimpleTypes1")
 	extended := scope.Lookup("OptU32")
