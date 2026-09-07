@@ -1068,7 +1068,12 @@ func (ctx *encoderContext) marshalBitlist(desc *ssztypes.TypeDescriptor, varName
 
 	ctx.appendCode(indent, "vlen := len(%s)\n", valueVar)
 
-	ctx.appendCode(indent, "bval := []byte(%s[:])\n", valueVar)
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
+		ctx.appendCode(indent, "bval := []byte(%s[:])\n", valueVar)
+	} else {
+		// A named uint8 element is viewed as a byte without copying.
+		ctx.appendCode(indent, "bval := sszutils.ByteSlice(%s[:])\n", valueVar)
+	}
 	ctx.appendCode(indent, "if vlen == 0 {\n")
 	ctx.appendCode(indent, "\tbval = []byte{0x01}\n")
 	ctx.appendCode(indent, "} else if bval[vlen-1] == 0x00 {\n")

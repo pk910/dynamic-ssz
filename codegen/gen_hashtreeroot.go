@@ -1037,7 +1037,12 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varNa
 	if desc.SszType == ssztypes.SszProgressiveBitlistType {
 		parseFn = "ParseProgressiveBitlistWithHasher"
 	}
-	ctx.appendCode(indent, "bitlist, %s := %s.%s(hh, %s[:])\n", sizeVar, hasherAlias, parseFn, valueVar)
+	bitsArg := fmt.Sprintf("%s[:]", valueVar)
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray == 0 {
+		// A named uint8 element is viewed as a byte without copying.
+		bitsArg = fmt.Sprintf("sszutils.ByteSlice(%s[:])", valueVar)
+	}
+	ctx.appendCode(indent, "bitlist, %s := %s.%s(hh, %s)\n", sizeVar, hasherAlias, parseFn, bitsArg)
 
 	if maxVar != "" {
 		ctx.appendCode(indent, "if size > %s {\n", maxVar)

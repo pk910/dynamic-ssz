@@ -1474,7 +1474,13 @@ func (ctx *ReflectionCtx) unmarshalBitlist(targetType *ssztypes.TypeDescriptor, 
 		}
 	}
 
-	targetValue.Set(reflect.ValueOf(byteSlice))
+	if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
+		targetValue.Set(reflect.ValueOf(byteSlice))
+	} else {
+		// A slice of a named uint8 type has the same header and element
+		// layout as []byte, so the decoded slice is handed over as is.
+		targetValue.Set(reflect.NewAt(targetValue.Type(), unsafe.Pointer(&byteSlice)).Elem())
+	}
 
 	return nil
 }

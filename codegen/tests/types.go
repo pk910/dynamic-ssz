@@ -1642,6 +1642,34 @@ var BulkElems_Payload = func() BulkElems {
 	return v
 }()
 
+// NamedBit is a named uint8 used as a bitlist element: the engines view the
+// slice as bytes without copying.
+type NamedBit uint8
+
+// NamedBitlists backs plain and progressive bitlists with a named uint8
+// element; NamedBitlistsPlain is the []byte twin.
+type NamedBitlists struct {
+	B []NamedBit `ssz-type:"bitlist" ssz-max:"16"`
+	P []NamedBit `ssz-type:"progressive-bitlist"`
+	E []NamedBit `ssz-type:"bitlist" ssz-max:"16"`
+}
+
+type NamedBitlistsPlain struct {
+	B []byte `ssz-type:"bitlist" ssz-max:"16"`
+	P []byte `ssz-type:"progressive-bitlist"`
+	E []byte `ssz-type:"bitlist" ssz-max:"16"`
+}
+
+var NamedBitlists_Payload = NamedBitlists{
+	B: []NamedBit{0xa5, 0x01},
+	P: []NamedBit{0x0f, 0xf0, 0x81},
+}
+
+var NamedBitlistsPlain_Payload = NamedBitlistsPlain{
+	B: []byte{0xa5, 0x01},
+	P: []byte{0x0f, 0xf0, 0x81},
+}
+
 // BasicMethodsHolder places the method-carrying basic types where the engines
 // pack them: a list, a vector and a byte-sized list.
 type BasicMethodsHolder struct {

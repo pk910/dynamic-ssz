@@ -132,6 +132,208 @@ func TestByteArrayFlagFollowsDataElement(t *testing.T) {
 	}
 }
 
+// A bitlist may be backed by a slice of byte or of a named uint8 type (viewed
+// as bytes, without the bulk flag); a pointer element has no byte view. The
+// go/types front end agrees with the reflection type cache.
+func TestBitlistElementTypes(t *testing.T) {
+	p := NewParser()
+	namedByte := types.NewNamed(types.NewTypeName(token.NoPos, nil, "namedByte", nil), types.Typ[types.Uint8], nil)
+	hint := []ssztypes.SszTypeHint{{Type: ssztypes.SszBitlistType}}
+	limit := []ssztypes.SszMaxSizeHint{{Size: 16}}
+
+	if _, err := p.GetTypeDescriptor(types.NewSlice(types.NewPointer(types.Typ[types.Uint8])), hint, nil, limit); err == nil {
+		t.Error("pointer element bitlist accepted")
+	}
+	desc, err := p.GetTypeDescriptor(types.NewSlice(namedByte), hint, nil, limit)
+	if err != nil {
+		t.Fatalf("named element bitlist: %v", err)
+	}
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
+		t.Error("named element bitlist carries the byte array flag")
+	}
+	desc, err = p.GetTypeDescriptor(types.NewSlice(types.Typ[types.Uint8]), hint, nil, limit)
+	if err != nil {
+		t.Fatalf("byte bitlist: %v", err)
+	}
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray == 0 {
+		t.Error("byte bitlist lacks the byte array flag")
+	}
+
+	// A view pairs a data slice with a schema slice; the flag follows the
+	// data element, in both directions.
+	named, plain := types.NewSlice(namedByte), types.NewSlice(types.Typ[types.Uint8])
+	desc, err = p.GetTypeDescriptorWithSchema(named, plain, hint, nil, limit)
+	if err != nil {
+		t.Fatalf("named data over byte schema: %v", err)
+	}
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
+		t.Error("named data over byte schema carries the byte array flag")
+	}
+	desc, err = p.GetTypeDescriptorWithSchema(plain, named, hint, nil, limit)
+	if err != nil {
+		t.Fatalf("byte data over named schema: %v", err)
+	}
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray == 0 {
+		t.Error("byte data over named schema lacks the byte array flag")
+	}
+}
+
+// A fixed-width integer view pairs a data array or slice with a schema one:
+// the element kinds must agree by underlying type, an array must have the
+// exact length on both sides, and the bulk flag follows the data element.
+func TestLargeUintViewPairs(t *testing.T) {
+	p := NewParser()
+	hint := []ssztypes.SszTypeHint{{Type: ssztypes.SszUint256Type}}
+	namedByte := types.NewNamed(types.NewTypeName(token.NoPos, nil, "namedByte", nil), types.Typ[types.Uint8], nil)
+	namedWord := types.NewNamed(types.NewTypeName(token.NoPos, nil, "namedWord", nil), types.Typ[types.Uint64], nil)
+	bytes32 := types.NewArray(types.Typ[types.Uint8], 32)
+	words4 := types.NewArray(types.Typ[types.Uint64], 4)
+
+	accepted := map[string]struct {
+		data, schema types.Type
+		bulk         bool
+	}{
+		"bytes over bytes":             {bytes32, bytes32, true},
+		"named bytes over bytes":       {types.NewArray(namedByte, 32), bytes32, false},
+		"named byte slice over bytes":  {types.NewSlice(namedByte), types.NewSlice(types.Typ[types.Uint8]), false},
+		"named bytes over named bytes": {types.NewArray(namedByte, 32), types.NewArray(namedByte, 32), false},
+		"words over words":             {words4, words4, false},
+		"named words over words":       {types.NewArray(namedWord, 4), words4, false},
+	}
+	for name, tc := range accepted {
+		desc, err := p.GetTypeDescriptorWithSchema(tc.data, tc.schema, hint, nil, nil)
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		if got := desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0; got != tc.bulk {
+			t.Errorf("%s: bulk flag %v, want %v", name, got, tc.bulk)
+		}
+		if desc.Len*desc.ElemDesc.Size != 32 {
+			t.Errorf("%s: Len %d x elem size %d != 32", name, desc.Len, desc.ElemDesc.Size)
+		}
+	}
+
+	rejected := map[string][2]types.Type{
+		"bools over words":       {types.NewArray(types.Typ[types.Bool], 1), words4},
+		"bytes over words":       {bytes32, words4},
+		"short data array":       {types.NewArray(types.Typ[types.Uint64], 3), words4},
+		"long data array":        {types.NewArray(types.Typ[types.Uint64], 5), words4},
+		"short schema array":     {words4, types.NewArray(types.Typ[types.Uint64], 3)},
+		"uint32 elements":        {types.NewArray(types.Typ[types.Uint32], 8), types.NewArray(types.Typ[types.Uint32], 8)},
+		"struct elements":        {types.NewArray(types.NewStruct(nil, nil), 4), types.NewArray(types.NewStruct(nil, nil), 4)},
+		"machine uint elements":  {types.NewArray(types.Typ[types.Uint], 4), types.NewArray(types.Typ[types.Uint], 4)},
+		"pointer byte elements":  {types.NewArray(types.NewPointer(types.Typ[types.Uint8]), 32), types.NewArray(types.NewPointer(types.Typ[types.Uint8]), 32)},
+		"pointer word elements":  {types.NewArray(types.NewPointer(types.Typ[types.Uint64]), 4), types.NewArray(types.NewPointer(types.Typ[types.Uint64]), 4)},
+		"pointer word slice":     {types.NewSlice(types.NewPointer(types.Typ[types.Uint64])), types.NewSlice(types.NewPointer(types.Typ[types.Uint64]))},
+		"named byte over uint64": {types.NewArray(namedByte, 32), words4},
+		"scalar":                 {types.Typ[types.Uint64], types.Typ[types.Uint64]},
+	}
+	for name, pair := range rejected {
+		if _, err := p.GetTypeDescriptorWithSchema(pair[0], pair[1], hint, nil, nil); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+
+	// The builders only see data and schema of one kind; a scalar data type
+	// next to an array schema is still refused when called directly.
+	desc := &ssztypes.TypeDescriptor{Kind: reflect.Array}
+	if err := p.buildLargeUintDescriptor(desc, types.Typ[types.Uint64], words4, 32, "uint256"); err == nil {
+		t.Error("scalar data over array schema accepted")
+	}
+	if err := p.buildBitlistDescriptor(desc, types.Typ[types.Uint8], types.NewSlice(types.Typ[types.Uint8])); err == nil {
+		t.Error("scalar data over slice schema accepted as bitlist")
+	}
+}
+
+// Go's machine-sized integers have no SSZ width; the go/types front end
+// refuses them like the reflection type cache does, alone and as elements.
+func TestMachineSizedIntegersRejected(t *testing.T) {
+	p := NewParser()
+	for name, typ := range map[string]types.Type{
+		"uint":       types.Typ[types.Uint],
+		"int":        types.Typ[types.Int],
+		"[]uint":     types.NewSlice(types.Typ[types.Uint]),
+		"[4]uint":    types.NewArray(types.Typ[types.Uint], 4),
+		"named uint": types.NewNamed(types.NewTypeName(token.NoPos, nil, "Count", nil), types.Typ[types.Uint], nil),
+	} {
+		_, err := p.GetTypeDescriptor(typ, nil, nil, nil)
+		if err == nil {
+			t.Errorf("%s: accepted", name)
+			continue
+		}
+		if !strings.Contains(err.Error(), "unspecified size") {
+			t.Errorf("%s: unexpected error: %v", name, err)
+		}
+	}
+}
+
+// A big.Int schema binds its data type whether it was detected or hinted.
+func TestBigIntHintNeedsBigIntData(t *testing.T) {
+	p := NewParser()
+	p.ExtendedTypes = true
+	opaque := types.NewStruct([]*types.Var{types.NewField(token.NoPos, nil, "X", types.Typ[types.Uint64], false)}, nil)
+	bigInt := types.NewNamed(types.NewTypeName(token.NoPos, types.NewPackage("math/big", "big"), "Int", nil), opaque, nil)
+	hint := []ssztypes.SszTypeHint{{Type: ssztypes.SszBigIntType}}
+
+	if _, err := p.GetTypeDescriptorWithSchema(opaque, bigInt, hint, nil, nil); err == nil {
+		t.Error("bare struct over hinted big.Int accepted")
+	}
+	if _, err := p.GetTypeDescriptor(opaque, hint, nil, nil); err == nil {
+		t.Error("bare struct hinted as bigint accepted")
+	}
+	if _, err := p.GetTypeDescriptor(bigInt, hint, nil, nil); err != nil {
+		t.Errorf("hinted big.Int: %v", err)
+	}
+}
+
+// A view only needs the fully unwrapped kinds of data and schema to agree:
+// a named or aliased schema over a bare data type is as valid as the reverse,
+// while a kind mismatch is still rejected. The exception is a schema handled
+// through its methods (time.Time, big.Int), which needs the same data type.
+func TestViewPairingNeedsMatchingKindsOnly(t *testing.T) {
+	p := NewParser()
+	p.ExtendedTypes = true
+	bytes32 := types.NewArray(types.Typ[types.Uint8], 32)
+	root := types.NewNamed(types.NewTypeName(token.NoPos, nil, "Root", nil), bytes32, nil)
+	hash := types.NewNamed(types.NewTypeName(token.NoPos, nil, "Hash", nil), bytes32, nil)
+	rootAlias := types.NewAlias(types.NewTypeName(token.NoPos, nil, "RootAlias", nil), bytes32)
+	opaque := types.NewStruct([]*types.Var{types.NewField(token.NoPos, nil, "X", types.Typ[types.Uint64], false)}, nil)
+	when := types.NewNamed(types.NewTypeName(token.NoPos, nil, "When", nil), opaque, nil)
+	timeType := types.NewNamed(types.NewTypeName(token.NoPos, types.NewPackage("time", "time"), "Time", nil), opaque, nil)
+	bigInt := types.NewNamed(types.NewTypeName(token.NoPos, types.NewPackage("math/big", "big"), "Int", nil), opaque, nil)
+
+	for name, pair := range map[string][2]types.Type{
+		"named schema over bare data":   {bytes32, root},
+		"bare schema over named data":   {root, bytes32},
+		"named schema over named data":  {hash, root},
+		"alias schema over bare data":   {bytes32, rootAlias},
+		"alias schema over named data":  {hash, rootAlias},
+		"named schema over alias data":  {rootAlias, root},
+		"pointer to named over pointer": {types.NewPointer(bytes32), types.NewPointer(root)},
+		"time over time":                {timeType, timeType},
+		"big.Int over big.Int":          {bigInt, bigInt},
+	} {
+		if _, err := p.GetTypeDescriptorWithSchema(pair[0], pair[1], nil, nil, nil); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	for name, pair := range map[string][2]types.Type{
+		"array over slice":            {types.NewSlice(types.Typ[types.Uint8]), root},
+		"pointer over value":          {types.NewPointer(bytes32), root},
+		"uint64 over uint32":          {types.Typ[types.Uint64], types.Typ[types.Uint32]},
+		"bare struct over time":       {opaque, timeType},
+		"named struct over time":      {when, timeType},
+		"bare struct over big.Int":    {opaque, bigInt},
+		"named struct over big.Int":   {when, bigInt},
+		"pointer to struct over time": {types.NewPointer(opaque), types.NewPointer(timeType)},
+	} {
+		if _, err := p.GetTypeDescriptorWithSchema(pair[0], pair[1], nil, nil, nil); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
 func TestNewParser(t *testing.T) {
 	parser := NewParser()
 	if parser == nil {
@@ -391,7 +593,6 @@ func TestBuildTypeDescriptorBasicTypes(t *testing.T) {
 		{"uint16", types.Uint16, ssztypes.SszUint16Type, 2},
 		{"uint32", types.Uint32, ssztypes.SszUint32Type, 4},
 		{"uint64", types.Uint64, ssztypes.SszUint64Type, 8},
-		{"uint", types.Uint, ssztypes.SszUint64Type, 8},
 		{"string", types.String, ssztypes.SszListType, 0},
 	}
 
@@ -2859,7 +3060,8 @@ func TestOptionalNonPointer(t *testing.T) {
 	}
 }
 
-// TestBigIntDescriptorNonStruct tests that big.Int SSZ type rejects non-struct types.
+// TestBigIntDescriptorNonStruct tests that the bigint SSZ type rejects any data
+// type other than math/big.Int.
 func TestBigIntDescriptorNonStruct(t *testing.T) {
 	parser := NewParser()
 	parser.ExtendedTypes = true
@@ -2869,7 +3071,7 @@ func TestBigIntDescriptorNonStruct(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for big.Int with non-struct type")
 	}
-	if !strings.Contains(err.Error(), "bigint type can only be represented by struct") {
+	if !strings.Contains(err.Error(), "bigint ssz type can only be represented by math/big.Int") {
 		t.Errorf("unexpected error: %v", err)
 	}
 }

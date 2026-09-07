@@ -2364,14 +2364,20 @@ func TestStreamAllowanceNotReportedAsListLimit(t *testing.T) {
 		{"byte_list_with_max", new(streamAllowanceList)},
 		{"byte_list_without_max", new(streamAllowanceListNoMax)},
 		{"bitlist_with_max", new(streamAllowanceBitlist)},
-		{"bigint_with_max", new(streamAllowanceBigInt)},
+		{"bigint_with_max", new(streamAllowanceBigIntHolder)},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation(), WithExtendedTypes(), WithMaxStreamSize(allowance))
 
-			err := ds.UnmarshalSSZReader(tt.target, bytes.NewReader(payload), -1)
+			data := payload
+			if _, isHolder := tt.target.(*streamAllowanceBigIntHolder); isHolder {
+				// The holder's single dynamic field starts right after its
+				// 4-byte offset.
+				data = append([]byte{4, 0, 0, 0}, payload[4:]...)
+			}
+			err := ds.UnmarshalSSZReader(tt.target, bytes.NewReader(data), -1)
 			if err == nil {
 				t.Fatal("expected the stream allowance to reject the payload")
 			}
@@ -2416,9 +2422,12 @@ type streamAllowanceBitlist []byte
 
 var _ = sszutils.Annotate[streamAllowanceBitlist](`ssz-type:"bitlist" ssz-max:"8000000"`)
 
-type streamAllowanceBigInt big.Int
-
-var _ = sszutils.Annotate[streamAllowanceBigInt](`ssz-type:"bigint" ssz-max:"8000000"`)
+// streamAllowanceBigIntHolder carries the big integer as a field: a bigint is
+// read and written through big.Int itself, so its limit is tagged on the
+// field rather than on a named wrapper type.
+type streamAllowanceBigIntHolder struct {
+	V big.Int `ssz-type:"bigint" ssz-max:"8000000"`
+}
 
 // TestDynamicListRejectsUnbackedElementCount pins that a dynamic-element list
 // validates its declared count against what the region can physically hold,

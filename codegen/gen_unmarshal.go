@@ -1371,7 +1371,12 @@ func (ctx *unmarshalContext) unmarshalBitlist(desc *ssztypes.TypeDescriptor, var
 	if desc.Kind != reflect.Array {
 		ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, blen)\n", valueVar, valueVar)
 	}
-	ctx.appendCode(indent, "copy(%s[:], buf)\n", valueVar)
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
+		ctx.appendCode(indent, "copy(%s[:], buf)\n", valueVar)
+	} else {
+		// A named uint8 element is viewed as a byte without copying.
+		ctx.appendCode(indent, "copy(sszutils.ByteSlice(%s[:]), buf)\n", valueVar)
+	}
 
 	return nil
 }

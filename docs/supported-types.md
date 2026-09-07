@@ -200,7 +200,8 @@ type CommitteeFlags struct {
 
 A bitlist is a bit-packed variable-size boolean array. Model it with a
 byte-backed field annotated `ssz-type:"bitlist"` (or use `bitfield.Bitlist`,
-below). For bitlists, `ssz-max` specifies the maximum number of **bits**, not
+below). A slice of a named uint8 type works as well; a pointer element does
+not. For bitlists, `ssz-max` specifies the maximum number of **bits**, not
 bytes, consistent with the SSZ specification.
 
 ```go

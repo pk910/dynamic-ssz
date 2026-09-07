@@ -1541,6 +1541,70 @@ func TestCodegenBulkByteElemsUseDeclaredWidth(t *testing.T) {
 	}
 }
 
+// A bitlist backed by a slice of a named uint8 type is viewed as bytes in
+// both engines: it encodes, sizes, decodes and hashes like its []byte twin,
+// including the lone termination byte of an empty value.
+func TestCodegenNamedBitlistElements(t *testing.T) {
+	testCodegenPayloadByReflection(t, NamedBitlists_Payload, nil)
+
+	ds := dynssz.NewDynSsz(nil)
+	holder := NamedBitlists_Payload
+	plain := NamedBitlistsPlain_Payload
+
+	holderBytes, err := ds.MarshalSSZ(&holder)
+	if err != nil {
+		t.Fatalf("marshal holder: %v", err)
+	}
+	plainBytes, err := ds.MarshalSSZ(&plain)
+	if err != nil {
+		t.Fatalf("marshal plain twin: %v", err)
+	}
+	if !bytes.Equal(holderBytes, plainBytes) {
+		t.Fatalf("holder bytes %x != plain twin bytes %x", holderBytes, plainBytes)
+	}
+	size, err := ds.SizeSSZ(&holder)
+	if err != nil {
+		t.Fatalf("size holder: %v", err)
+	}
+	if size != len(holderBytes) {
+		t.Fatalf("SizeSSZ %d, encoding is %d bytes", size, len(holderBytes))
+	}
+
+	holderRoot, err := ds.HashTreeRoot(&holder)
+	if err != nil {
+		t.Fatalf("hash holder: %v", err)
+	}
+	plainRoot, err := ds.HashTreeRoot(&plain)
+	if err != nil {
+		t.Fatalf("hash plain twin: %v", err)
+	}
+	if holderRoot != plainRoot {
+		t.Fatalf("holder root %x != plain twin root %x", holderRoot, plainRoot)
+	}
+
+	var decoded NamedBitlists
+	if err = ds.UnmarshalSSZ(&decoded, holderBytes); err != nil {
+		t.Fatalf("unmarshal holder: %v", err)
+	}
+	if !bytes.Equal(sszutils.ByteSlice(decoded.B), sszutils.ByteSlice(holder.B)) ||
+		!bytes.Equal(sszutils.ByteSlice(decoded.P), sszutils.ByteSlice(holder.P)) ||
+		!bytes.Equal(sszutils.ByteSlice(decoded.E), []byte{0x01}) {
+		t.Fatalf("decoded %+v != payload %+v", decoded, holder)
+	}
+	var streamed NamedBitlists
+	if err = ds.UnmarshalSSZReader(&streamed, bytes.NewReader(holderBytes), len(holderBytes)); err != nil {
+		t.Fatalf("stream unmarshal holder: %v", err)
+	}
+	if !bytes.Equal(sszutils.ByteSlice(streamed.B), sszutils.ByteSlice(holder.B)) {
+		t.Fatalf("stream decoded %+v != payload %+v", streamed, holder)
+	}
+
+	unterminated := NamedBitlists{B: []NamedBit{0xa5, 0x00}}
+	if _, err = ds.MarshalSSZ(&unterminated); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Fatalf("marshal without termination bit: err = %v, want ErrInvalidValueRange", err)
+	}
+}
+
 func TestCodegenStreamVecDynSize(t *testing.T) {
 	for _, specs := range []map[string]any{nil, StreamVecDynSize_Specs} {
 		testCodegenPayloadByReflection(t, StreamVecDynSize_Payload, specs)

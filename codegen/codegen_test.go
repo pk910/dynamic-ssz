@@ -150,6 +150,31 @@ func TestGenerateListRegionBound(t *testing.T) {
 // merkleize, so a list without one has no hash tree root and hashing it is an
 // extension. Serialization never needs a limit, so only the hash method is
 // refused, and only without extended types.
+type bulkRootsHolder struct {
+	R [][32]byte `ssz-max:"8"`
+	O [][48]byte `ssz-size:"?,32" ssz-max:"8"`
+}
+
+// With the reflect front end the bulk byte-array copy is gated by the Go
+// array length as well: the [32]byte list is copied in bulk, the oversized
+// [48]byte list is not.
+func TestReflectFrontendBulkByteElems(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_test.go", WithReflectType(reflect.TypeFor[bulkRootsHolder]()))
+
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	code := files["gen_test.go"]
+	if n := strings.Count(code, "MarshalFixedBytesSlice"); n != 1 {
+		t.Fatalf("MarshalFixedBytesSlice emitted %d times, want 1 (only the [32]byte list)", n)
+	}
+	if n := strings.Count(code, "UnmarshalFixedBytesSlice"); n != 1 {
+		t.Fatalf("UnmarshalFixedBytesSlice emitted %d times, want 1 (only the [32]byte list)", n)
+	}
+}
+
 func TestGenerateLimitlessListRoot(t *testing.T) {
 	t.Run("HashRefused", func(t *testing.T) {
 		cg := NewCodeGenerator(nil)

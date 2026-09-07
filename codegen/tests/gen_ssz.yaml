@@ -177,6 +177,8 @@ types:
     output: gen_edgecases.go
   - name: BulkElems
     output: gen_edgecases.go
+  - name: NamedBitlists
+    output: gen_edgecases.go
   - name: MultiDimSpecVec
     output: gen_edgecases.go
   - name: NoMaxBitlist

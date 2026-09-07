@@ -6988,3 +6988,72 @@ func TestPackedBasicElementsAreNotDelegated(t *testing.T) {
 		}
 	}
 }
+
+// A fixed-width integer viewed through a byte schema while stored in a slice
+// or array of a named uint8 type decodes element-wise; no path may assume the
+// runtime slice is a plain []byte.
+func TestLargeUintViewOverNamedBytes(t *testing.T) {
+	type namedByte uint8
+	type runtime struct {
+		S []namedByte
+		A [16]namedByte
+	}
+	type view struct {
+		S []byte   `ssz-type:"uint256"`
+		A [16]byte `ssz-type:"uint128"`
+	}
+	type plain struct {
+		S []byte   `ssz-type:"uint256"`
+		A [16]byte `ssz-type:"uint128"`
+	}
+
+	ds := NewDynSsz(nil)
+	value := &runtime{S: make([]namedByte, 32)}
+	twin := &plain{S: make([]byte, 32)}
+	for i := range 32 {
+		value.S[i] = namedByte(i + 1)
+		twin.S[i] = byte(i + 1)
+	}
+	for i := range 16 {
+		value.A[i] = namedByte(0xf0 + i)
+		twin.A[i] = byte(0xf0 + i)
+	}
+
+	data, err := ds.MarshalSSZ(value, WithViewDescriptor(view{}))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	twinData, err := ds.MarshalSSZ(twin)
+	if err != nil {
+		t.Fatalf("marshal twin: %v", err)
+	}
+	if !bytes.Equal(data, twinData) {
+		t.Fatalf("bytes %x != twin %x", data, twinData)
+	}
+	root, err := ds.HashTreeRoot(value, WithViewDescriptor(view{}))
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	twinRoot, err := ds.HashTreeRoot(twin)
+	if err != nil {
+		t.Fatalf("hash twin: %v", err)
+	}
+	if root != twinRoot {
+		t.Fatalf("root %x != twin %x", root, twinRoot)
+	}
+
+	var decoded runtime
+	if err := ds.UnmarshalSSZ(&decoded, data, WithViewDescriptor(view{})); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(&decoded, value) {
+		t.Fatalf("decoded %+v != %+v", decoded, *value)
+	}
+	var streamed runtime
+	if err := ds.UnmarshalSSZReader(&streamed, bytes.NewReader(data), -1, WithViewDescriptor(view{})); err != nil {
+		t.Fatalf("stream unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(&streamed, value) {
+		t.Fatalf("stream decoded %+v != %+v", streamed, *value)
+	}
+}
