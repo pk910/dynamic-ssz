@@ -1558,6 +1558,46 @@ func TestCodegenForeignHashTreeRootWith(t *testing.T) {
 	}
 }
 
+// The plain fastssz `ssz` tag is read as ssz-type by both engines: the tagged
+// type encodes and hashes like its ssz-type twin, and a bitlist without its
+// termination bit is rejected by generated code as well.
+func TestCodegenFastsszTag(t *testing.T) {
+	testCodegenPayloadByReflection(t, FastsszTagged_Payload, nil)
+
+	ds := dynssz.NewDynSsz(nil)
+	tagged := FastsszTagged_Payload
+	plain := FastsszTaggedPlain_Payload
+	taggedBytes, err := ds.MarshalSSZ(&tagged)
+	if err != nil {
+		t.Fatalf("marshal tagged: %v", err)
+	}
+	plainBytes, err := ds.MarshalSSZ(&plain)
+	if err != nil {
+		t.Fatalf("marshal plain: %v", err)
+	}
+	if !bytes.Equal(taggedBytes, plainBytes) {
+		t.Fatalf("tagged bytes %x != plain bytes %x", taggedBytes, plainBytes)
+	}
+	taggedRoot, err := ds.HashTreeRoot(&tagged)
+	if err != nil {
+		t.Fatalf("hash tagged: %v", err)
+	}
+	plainRoot, err := ds.HashTreeRoot(&plain)
+	if err != nil {
+		t.Fatalf("hash plain: %v", err)
+	}
+	if taggedRoot != plainRoot {
+		t.Fatalf("tagged root %x != plain root %x", taggedRoot, plainRoot)
+	}
+
+	// Bits without a termination bit: offset (4) + Filler (1) + two zero bytes.
+	unterminated := append(append([]byte{5, 0, 0, 0}, 7), 0xa5, 0x00)
+	var decoded FastsszTagged
+	if err := ds.UnmarshalSSZ(&decoded, unterminated); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Fatalf("unterminated bitlist: err = %v, want ErrInvalidValueRange", err)
+	}
+}
+
 func TestCodegenBulkByteElemsUseDeclaredWidth(t *testing.T) {
 	for _, specs := range []map[string]any{nil, BulkElems_Specs} {
 		testCodegenPayloadByReflection(t, BulkElems_Payload, specs)

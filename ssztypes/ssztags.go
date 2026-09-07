@@ -634,8 +634,17 @@ func ParseTags(tag string) (typeHints []SszTypeHint, sizeHints []SszSizeHint, ma
 
 	structTag := reflect.StructTag(tag)
 
-	// Parse type hints
-	if sszType, ok := structTag.Lookup("ssz-type"); ok {
+	// Parse type hints. The plain fastssz `ssz` tag stands in for ssz-type
+	// when no ssz-type is given, as it does for struct fields (getSszTypeTag);
+	// setting both is ambiguous and rejected.
+	sszType, hasSszType := structTag.Lookup("ssz-type")
+	if sszStr, hasSsz := structTag.Lookup("ssz"); hasSsz {
+		if hasSszType {
+			return nil, nil, nil, fmt.Errorf("both 'ssz' and 'ssz-type' tags are set; use only one")
+		}
+		sszType, hasSszType = sszStr, true
+	}
+	if hasSszType {
 		for _, typeStr := range strings.Split(sszType, ",") {
 			typeStr = strings.TrimSpace(typeStr)
 			hint := SszTypeHint{}

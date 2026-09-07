@@ -325,9 +325,12 @@ type Block struct {
 ```
 
 The struct above encodes identically to one containing only `Slot` and `Body`.
-Both the reflection and code-generation engines honor the exclusion. (This is
-the dynamic-ssz spelling of fastssz's `ssz:"-"`; dynamic-ssz does not read the
-plain `ssz` struct tag.)
+Both the reflection and code-generation engines honor the exclusion.
+
+The plain fastssz `ssz` tag is read as well, by both engines, wherever no
+`ssz-type` is given: `ssz:"-"` excludes a field and `ssz:"bitlist"` (or any
+other type name) acts as `ssz-type`. Setting both `ssz` and `ssz-type` on one
+field is rejected.
 
 ### ssz-index
 

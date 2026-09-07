@@ -1716,6 +1716,25 @@ type ForeignHashWithHolder struct {
 
 var ForeignHashWithHolder_Payload = ForeignHashWithHolder{F: ForeignHashWith{A: 0x0102030405060708}, Y: 9}
 
+// FastsszTagged uses the plain fastssz `ssz` tag; both engines read it as
+// ssz-type, so the bitlist is a bitlist and the excluded field is skipped.
+type FastsszTagged struct {
+	Bits   []byte `ssz:"bitlist" ssz-max:"16"`
+	Skip   uint64 `ssz:"-"`
+	Filler uint8
+}
+
+// FastsszTaggedPlain is the dynamic-ssz spelling of the same type.
+type FastsszTaggedPlain struct {
+	Bits   []byte `ssz-type:"bitlist" ssz-max:"16"`
+	Skip   uint64 `ssz-type:"-"`
+	Filler uint8
+}
+
+var FastsszTagged_Payload = FastsszTagged{Bits: []byte{0xa5, 0x01}, Skip: 99, Filler: 7}
+
+var FastsszTaggedPlain_Payload = FastsszTaggedPlain{Bits: []byte{0xa5, 0x01}, Skip: 99, Filler: 7}
+
 // BasicMethodsHolder places the method-carrying basic types where the engines
 // pack them: a list, a vector and a byte-sized list.
 type BasicMethodsHolder struct {

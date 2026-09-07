@@ -6013,3 +6013,18 @@ func TestLargeUintViewPairs(t *testing.T) {
 		}
 	}
 }
+
+// ParseTags reads the plain fastssz `ssz` tag as ssz-type when no ssz-type is
+// given and rejects the two together, as the struct-field reader does.
+func TestParseTagsFastsszTag(t *testing.T) {
+	typeHints, _, maxHints, err := ParseTags(`ssz:"bitlist" ssz-max:"16"`)
+	if err != nil {
+		t.Fatalf("ssz tag: %v", err)
+	}
+	if len(typeHints) != 1 || typeHints[0].Type != SszBitlistType || len(maxHints) != 1 || maxHints[0].Size != 16 {
+		t.Fatalf("ssz tag: hints %+v / %+v", typeHints, maxHints)
+	}
+	if _, _, _, err := ParseTags(`ssz:"bitlist" ssz-type:"bitlist"`); err == nil {
+		t.Fatal("both tags accepted")
+	}
+}
