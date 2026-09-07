@@ -446,6 +446,13 @@ func run(config *Config) error {
 		if !ok {
 			return fmt.Errorf("object %s is not a type in package %s", spec.TypeName, config.PackagePath)
 		}
+		// An alias names another type; a receiver written for it would declare
+		// methods on that other type, or not compile at all. The declaration
+		// is checked here because go/types may resolve the alias away before
+		// the generator sees it.
+		if typeObj.IsAlias() {
+			return fmt.Errorf("type %s in package %s is an alias: methods cannot be declared on an alias; generate the aliased type or declare a named type", spec.TypeName, config.PackagePath)
+		}
 		spec.resolvedGoType = typeObj.Type()
 
 		// Resolve view types exactly once; cache on the spec so the second
@@ -518,7 +525,7 @@ func run(config *Config) error {
 			var typeSpecificOpts []codegen.CodeGeneratorOption
 
 			// Parse SSZ annotations from sszutils.Annotate[T]() calls in source
-			if tag := findAnnotateCall(pkg, spec.TypeName); tag != "" {
+			if tag := findAnnotateCall(pkg, annotatedNamedType(goType, pkg)); tag != "" {
 				annotateOpts, parseErr := parseAnnotateTag(tag)
 				if parseErr != nil {
 					return fmt.Errorf("failed to parse Annotate tag for type %s: %v", spec.TypeName, parseErr)
@@ -609,41 +616,62 @@ func run(config *Config) error {
 	return nil
 }
 
-// annotationResolver returns a resolver that maps a go/types type to the merged
-// ssz annotation tag registered for it in pkg (or "" when the type is not a
-// named, same-package type). The code generator's parser uses it to read a
-// referenced type's ssz-static declaration.
 func annotationResolver(pkg *packages.Package) func(types.Type) string {
 	return func(t types.Type) string {
-		name := annotatedTypeName(t, pkg)
-		if name == "" {
+		target := annotatedNamedType(t, pkg)
+		if target == nil {
 			return ""
 		}
-		return findAnnotateCall(pkg, name)
+		return findAnnotateCall(pkg, target)
 	}
 }
 
-// annotatedTypeName returns the bare name of a named type defined in pkg, or ""
-// if t is not a named type belonging to pkg. Pointers are unwrapped. Only
-// same-package types are resolved, since annotations are scanned within pkg.
-func annotatedTypeName(t types.Type, pkg *packages.Package) string {
+// annotatedNamedType returns the named type t stands for when that type is
+// declared in pkg, or nil. An alias is transparent and one pointer level is
+// stripped, as the runtime registration does. Only same-package types are
+// resolved, since annotations are scanned within pkg.
+func annotatedNamedType(t types.Type, pkg *packages.Package) *types.Named {
+	t = types.Unalias(t)
 	if ptr, ok := t.(*types.Pointer); ok {
-		t = ptr.Elem()
+		t = types.Unalias(ptr.Elem())
 	}
 	named, ok := t.(*types.Named)
 	if !ok {
-		return ""
+		return nil
 	}
 	obj := named.Obj()
 	if obj.Pkg() == nil || obj.Pkg().Path() != pkg.PkgPath {
-		return ""
+		return nil
 	}
-	return obj.Name()
+	return named
 }
 
-// findAnnotateCall scans package AST for sszutils.Annotate[typeName]("...")
+// annotateTypeArgMatches reports whether the type argument of an Annotate call
+// is target. With type information the argument is resolved the way the
+// runtime registration resolves it (an alias is transparent, one pointer level
+// is stripped) and compared as a type, so instantiations of one generic type
+// and same-named types of other packages stay apart; without it the argument
+// has to be spelled as the target's own name.
+func annotateTypeArgMatches(pkg *packages.Package, arg ast.Expr, target *types.Named) bool {
+	if pkg != nil && pkg.TypesInfo != nil {
+		if typ := pkg.TypesInfo.TypeOf(arg); typ != nil {
+			typ = types.Unalias(typ)
+			if ptr, ok := typ.(*types.Pointer); ok {
+				typ = types.Unalias(ptr.Elem())
+			}
+			return types.Identical(typ, target)
+		}
+	}
+	ident, ok := arg.(*ast.Ident)
+	return ok && ident.Name == target.Obj().Name()
+}
+
+// findAnnotateCall scans package AST for sszutils.Annotate[target]("...")
 // calls and returns the tag string literal, or "" if not found.
-func findAnnotateCall(pkg *packages.Package, typeName string) string {
+func findAnnotateCall(pkg *packages.Package, target *types.Named) string {
+	if target == nil {
+		return ""
+	}
 	// A type may be annotated from several places (a hand-written constraint plus
 	// a generated ssz-static declaration, possibly in different files), so collect
 	// every Annotate call for the type and merge them into one space-separated tag.
@@ -671,7 +699,7 @@ func findAnnotateCall(pkg *packages.Package, typeName string) string {
 		}
 
 		for _, decl := range file.Decls {
-			tag := findAnnotateCallInDecl(decl, sszutilsAlias, typeName)
+			tag := findAnnotateCallInDecl(pkg, decl, sszutilsAlias, target)
 			if tag != "" {
 				if _, ok := seen[tag]; !ok {
 					seen[tag] = struct{}{}
@@ -685,7 +713,7 @@ func findAnnotateCall(pkg *packages.Package, typeName string) string {
 }
 
 // findAnnotateCallInDecl checks a single declaration for an Annotate call.
-func findAnnotateCallInDecl(decl ast.Decl, alias, typeName string) string {
+func findAnnotateCallInDecl(pkg *packages.Package, decl ast.Decl, alias string, target *types.Named) string {
 	switch d := decl.(type) {
 	case *ast.GenDecl:
 		if d.Tok != token.VAR {
@@ -699,7 +727,7 @@ func findAnnotateCallInDecl(decl ast.Decl, alias, typeName string) string {
 			}
 
 			for _, val := range vs.Values {
-				if tag := matchAnnotateCall(val, alias, typeName); tag != "" {
+				if tag := matchAnnotateCall(pkg, val, alias, target); tag != "" {
 					return tag
 				}
 			}
@@ -716,7 +744,7 @@ func findAnnotateCallInDecl(decl ast.Decl, alias, typeName string) string {
 				continue
 			}
 
-			if tag := matchAnnotateCall(exprStmt.X, alias, typeName); tag != "" {
+			if tag := matchAnnotateCall(pkg, exprStmt.X, alias, target); tag != "" {
 				return tag
 			}
 		}
@@ -725,9 +753,10 @@ func findAnnotateCallInDecl(decl ast.Decl, alias, typeName string) string {
 	return ""
 }
 
-// matchAnnotateCall checks if an expression is sszutils.Annotate[typeName]("...tag...")
-// and returns the tag string, or "" if it doesn't match.
-func matchAnnotateCall(expr ast.Expr, alias, typeName string) string {
+// matchAnnotateCall checks if an expression is sszutils.Annotate[target]("...tag...")
+// and returns the tag string, or "" if it doesn't match (see
+// annotateTypeArgMatches for how the type argument is compared).
+func matchAnnotateCall(pkg *packages.Package, expr ast.Expr, alias string, target *types.Named) string {
 	call, ok := expr.(*ast.CallExpr)
 	if !ok || len(call.Args) != 1 {
 		return ""
@@ -751,8 +780,7 @@ func matchAnnotateCall(expr ast.Expr, alias, typeName string) string {
 	}
 
 	// Check that the type argument matches
-	typeIdent, ok := indexExpr.Index.(*ast.Ident)
-	if !ok || typeIdent.Name != typeName {
+	if !annotateTypeArgMatches(pkg, indexExpr.Index, target) {
 		return ""
 	}
 

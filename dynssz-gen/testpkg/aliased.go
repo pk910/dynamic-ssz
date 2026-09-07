@@ -14,3 +14,7 @@ import szs "github.com/pk910/dynamic-ssz/sszutils"
 type AliasedAnnotated []byte
 
 var _ = szs.Annotate[AliasedAnnotated](`ssz-max:"16"`)
+
+// AliasedTarget names AliasedAnnotated through an alias; it cannot be a
+// generation target of its own.
+type AliasedTarget = AliasedAnnotated

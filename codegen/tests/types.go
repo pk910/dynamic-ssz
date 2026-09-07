@@ -1735,6 +1735,22 @@ var FastsszTagged_Payload = FastsszTagged{Bits: []byte{0xa5, 0x01}, Skip: 99, Fi
 
 var FastsszTaggedPlain_Payload = FastsszTaggedPlain{Bits: []byte{0xa5, 0x01}, Skip: 99, Filler: 7}
 
+// AliasAnnotated is annotated through an alias of itself: the annotation
+// belongs to the named type in both engines, so both fields of the holder are
+// lists of at most six elements.
+type AliasAnnotated []uint64
+
+type AliasAnnotatedAlias = AliasAnnotated
+
+var _ = sszutils.Annotate[AliasAnnotatedAlias](`ssz-max:"6"`)
+
+type AliasAnnotatedHolder struct {
+	B AliasAnnotated
+	C AliasAnnotatedAlias
+}
+
+var AliasAnnotatedHolder_Payload = AliasAnnotatedHolder{B: AliasAnnotated{1, 2, 3}, C: AliasAnnotatedAlias{4, 5}}
+
 // BasicMethodsHolder places the method-carrying basic types where the engines
 // pack them: a list, a vector and a byte-sized list.
 type BasicMethodsHolder struct {

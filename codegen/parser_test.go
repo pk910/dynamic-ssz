@@ -311,6 +311,46 @@ func TestHashTreeRootWithParameter(t *testing.T) {
 	}
 }
 
+// A type-level annotation reaches a field that names the annotated type
+// through an alias, directly or behind a pointer, and a top-level alias
+// reference too.
+func TestAnnotationThroughAlias(t *testing.T) {
+	pkg := types.NewPackage("example.com/ann", "ann")
+	blobs := types.NewNamed(types.NewTypeName(token.NoPos, pkg, "Blobs", nil), types.NewSlice(types.Typ[types.Uint64]), nil)
+	blobsAlias := types.NewAlias(types.NewTypeName(token.NoPos, pkg, "BlobsAlias", nil), blobs)
+
+	p := NewParser()
+	p.AnnotationResolver = func(t types.Type) string {
+		if named, ok := t.(*types.Named); ok && named.Obj().Name() == "Blobs" {
+			return `ssz-max:"6"`
+		}
+		return ""
+	}
+
+	for name, field := range map[string]types.Type{
+		"alias":            blobsAlias,
+		"pointer to alias": types.NewPointer(blobsAlias),
+	} {
+		holder := types.NewStruct([]*types.Var{types.NewField(token.NoPos, pkg, "B", field, false)}, nil)
+		desc, err := p.GetTypeDescriptor(holder, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		list := desc.ContainerDesc.Fields[0].Type
+		if list.SszTypeFlags&ssztypes.SszTypeFlagHasLimit == 0 || list.Limit != 6 {
+			t.Errorf("%s: limit %d (has limit %v), want 6 from the annotation", name, list.Limit, list.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0)
+		}
+	}
+
+	desc, err := p.GetTypeDescriptor(blobsAlias, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("top-level alias: %v", err)
+	}
+	if desc.Limit != 6 {
+		t.Errorf("top-level alias: limit %d, want 6", desc.Limit)
+	}
+}
+
 // A big.Int schema binds its data type whether it was detected or hinted.
 func TestBigIntHintNeedsBigIntData(t *testing.T) {
 	p := NewParser()

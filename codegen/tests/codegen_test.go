@@ -1598,6 +1598,41 @@ func TestCodegenFastsszTag(t *testing.T) {
 	}
 }
 
+// An annotation written against an alias belongs to the aliased type in both
+// engines: the holder hashes like its tagged twin and both fields enforce the
+// annotated limit.
+func TestCodegenAliasAnnotation(t *testing.T) {
+	testCodegenPayloadByReflection(t, AliasAnnotatedHolder_Payload, nil)
+
+	type twin struct {
+		B []uint64 `ssz-max:"6"`
+		C []uint64 `ssz-max:"6"`
+	}
+	ds := dynssz.NewDynSsz(nil)
+	holder := AliasAnnotatedHolder_Payload
+	holderRoot, err := ds.HashTreeRoot(&holder)
+	if err != nil {
+		t.Fatalf("hash holder: %v", err)
+	}
+	twinRoot, err := ds.HashTreeRoot(&twin{B: []uint64{1, 2, 3}, C: []uint64{4, 5}})
+	if err != nil {
+		t.Fatalf("hash twin: %v", err)
+	}
+	if holderRoot != twinRoot {
+		t.Fatalf("holder root %x != twin root %x", holderRoot, twinRoot)
+	}
+
+	seven := AliasAnnotated{1, 2, 3, 4, 5, 6, 7}
+	for name, v := range map[string]*AliasAnnotatedHolder{
+		"B over limit": {B: seven},
+		"C over limit": {C: seven},
+	} {
+		if _, err := ds.MarshalSSZ(v); !errors.Is(err, sszutils.ErrListTooBig) {
+			t.Errorf("%s: err = %v, want ErrListTooBig", name, err)
+		}
+	}
+}
+
 func TestCodegenBulkByteElemsUseDeclaredWidth(t *testing.T) {
 	for _, specs := range []map[string]any{nil, BulkElems_Specs} {
 		testCodegenPayloadByReflection(t, BulkElems_Payload, specs)

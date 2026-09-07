@@ -564,6 +564,11 @@ func WithReflectType(t reflect.Type, typeOpts ...CodeGeneratorOption) CodeGenera
 //	    WithCreateLegacyFn(),
 //	    WithoutDynamicExpressions(),
 //	)
+//
+// The type must be a declared named type; an alias cannot carry methods and is
+// refused when go/types materialises it as one. Under Go 1.22, where go/types
+// resolves an alias to its target before analysis, the caller has to make that
+// distinction itself (dynssz-gen checks the declaration).
 func WithGoTypesType(t types.Type, typeOpts ...CodeGeneratorOption) CodeGeneratorOption {
 	return func(opts *CodeGeneratorOptions) {
 		opts.Types = append(opts.Types, CodeGeneratorTypeOption{

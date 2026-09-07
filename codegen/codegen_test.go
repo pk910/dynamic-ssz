@@ -7,6 +7,7 @@ package codegen
 import (
 	"encoding/binary"
 	"errors"
+	"go/token"
 	"go/types"
 	"math/big"
 	"os"
@@ -1820,6 +1821,35 @@ type topLevelClassicUnionAlias = dynssz.Union[struct {
 // gate existed. Only the library's generics genuinely cannot: they are
 // nameable solely through a transparent alias, so a method receiver would name
 // the foreign generic type.
+// An alias cannot carry methods; a generation target that is an alias is
+// refused up front instead of emitting a receiver for another type.
+func TestValidateTopLevelTypeRejectsAlias(t *testing.T) {
+	pkg := types.NewPackage("example.com/alias", "alias")
+	root := types.NewAlias(types.NewTypeName(token.NoPos, pkg, "Root", nil), types.NewArray(types.Typ[types.Uint8], 32))
+	container := types.NewNamed(types.NewTypeName(token.NoPos, pkg, "Container", nil),
+		types.NewStruct([]*types.Var{types.NewField(token.NoPos, pkg, "A", types.Typ[types.Uint64], false)}, nil), nil)
+	containerAlias := types.NewAlias(types.NewTypeName(token.NoPos, pkg, "ContainerAlias", nil), container)
+
+	for name, typ := range map[string]types.Type{
+		"alias of array":            root,
+		"alias of named container":  containerAlias,
+		"pointer to aliased struct": types.NewPointer(containerAlias),
+	} {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("test.go", WithGoTypesType(typ))
+		_, err := cg.GenerateToMap()
+		if err == nil || !strings.Contains(err.Error(), "type alias") {
+			t.Errorf("%s: err = %v, want the alias rejection", name, err)
+		}
+	}
+
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("test.go", WithGoTypesType(container))
+	if _, err := cg.GenerateToMap(); err != nil {
+		t.Fatalf("named container: %v", err)
+	}
+}
+
 func TestValidateTopLevelTypeWrapperShapes(t *testing.T) {
 	tests := []struct {
 		name       string

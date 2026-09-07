@@ -579,7 +579,7 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	// caller (it strips delegation flags).
 	beingGenerated := p.getCompatFlag(innerDataType, innerSchemaType) != 0 || p.getCompatFlag(innerDataType, innerDataType) != 0
 	if p.AnnotationResolver != nil && !p.NoDelegation && len(typeHints) == 0 && len(sizeHints) == 0 && len(maxSizeHints) == 0 && !beingGenerated && p.fullyDelegatesSSZ(originalType) {
-		if staticStr, ok := reflect.StructTag(p.AnnotationResolver(originalType)).Lookup("ssz-static"); ok {
+		if staticStr, ok := reflect.StructTag(p.AnnotationResolver(types.Unalias(originalType))).Lookup("ssz-static"); ok {
 			switch staticStr {
 			case "true":
 				// Static: the generated code resolves the exact size at runtime via
@@ -612,9 +612,10 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	// inline in containers). References with explicit field-level hints keep
 	// those (they override the annotation).
 	if p.AnnotationResolver != nil && len(typeHints) == 0 && len(sizeHints) == 0 && len(maxSizeHints) == 0 {
-		annotationType := originalType
+		// An alias is transparent: the annotation belongs to the type it names.
+		annotationType := types.Unalias(originalType)
 		if ptr, ok := annotationType.(*types.Pointer); ok {
-			annotationType = ptr.Elem()
+			annotationType = types.Unalias(ptr.Elem())
 		}
 		if tag := p.AnnotationResolver(annotationType); tag != "" {
 			annTypeHints, annSizeHints, annMaxSizeHints, err := ssztypes.ParseTags(tag)
@@ -1280,9 +1281,11 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 		// so annotation keys the field does not override still apply.
 		fieldTag := schemaStruct.Tag(i)
 		if p.AnnotationResolver != nil {
-			annotationType := schemaFieldType
+			// An alias is transparent: the annotation belongs to the type it
+			// names.
+			annotationType := types.Unalias(schemaFieldType)
 			if ptr, ok := annotationType.(*types.Pointer); ok {
-				annotationType = ptr.Elem()
+				annotationType = types.Unalias(ptr.Elem())
 			}
 			if annTag := p.AnnotationResolver(annotationType); annTag != "" {
 				fieldTag = string(ssztypes.JoinFieldAnnotationTag(reflect.StructTag(fieldTag), annTag))
