@@ -30,6 +30,24 @@ var (
 	byteType = types.Typ[types.Uint8]
 )
 
+const (
+	pkgPathBig              = "math/big"
+	typeNameExternalInt     = "Int"
+	typeNameHashWalkerParam = "HashWalkerParam"
+)
+
+// hashWalkerMethods lists the methods of sszutils.HashWalker by name with their
+// parameter and result counts.
+var hashWalkerMethods = func() map[string][2]int {
+	walker := reflect.TypeOf((*sszutils.HashWalker)(nil)).Elem()
+	methods := make(map[string][2]int, walker.NumMethod())
+	for i := range walker.NumMethod() {
+		method := walker.Method(i)
+		methods[method.Name] = [2]int{method.Type.NumIn(), method.Type.NumOut()}
+	}
+	return methods
+}()
+
 // CodegenInfo contains type information specific to code generation from go/types analysis.
 //
 // This structure bridges the gap between compile-time type analysis (using go/types)
@@ -733,12 +751,12 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 				}
 				sszType = ssztypes.SszUint64Type
 				desc.GoTypeFlags |= ssztypes.GoTypeFlagIsTime
-			case pkgPath == "math/big" && typeName == "Int":
+			case pkgPath == pkgPathBig && typeName == typeNameExternalInt:
 				if !p.ExtendedTypes {
 					return nil, fmt.Errorf("big.Int is not supported in SSZ (use unsigned integers instead)")
 				}
 				sszType = ssztypes.SszBigIntType
-			case pkgPath == "github.com/holiman/uint256" && typeName == "Int":
+			case pkgPath == "github.com/holiman/uint256" && typeName == typeNameExternalInt:
 				sszType = ssztypes.SszUint256Type
 			case pkgPath == "github.com/prysmaticlabs/go-bitfield" && typeName == "Bitlist":
 				sszType = ssztypes.SszBitlistType
@@ -2082,7 +2100,7 @@ func (p *Parser) buildBigIntDescriptor(desc *ssztypes.TypeDescriptor, dataType t
 	// A big integer is read and written through big.Int's methods, whether
 	// the type was detected or hinted, so the data type has to be big.Int.
 	named, ok := types.Unalias(dataType).(*types.Named)
-	if !ok || named.Obj().Pkg() == nil || named.Obj().Pkg().Path() != "math/big" || named.Obj().Name() != "Int" {
+	if !ok || named.Obj().Pkg() == nil || named.Obj().Pkg().Path() != pkgPathBig || named.Obj().Name() != typeNameExternalInt {
 		return fmt.Errorf("bigint ssz type can only be represented by math/big.Int, got %v", dataType)
 	}
 	desc.Size = 0
@@ -2172,7 +2190,7 @@ func (p *Parser) getFastsszHashCompatibility(typ types.Type) bool {
 func (p *Parser) getHashTreeRootWithCompatibility(typ types.Type) bool {
 	// Check if type has HashTreeRootWith method
 	methodSet := types.NewMethodSet(typ)
-	return p.hasMethodWithSignature(methodSet, "HashTreeRootWith", []string{"-"}, []string{"error"})
+	return p.hasMethodWithSignature(methodSet, "HashTreeRootWith", []string{typeNameHashWalkerParam}, []string{"error"})
 }
 
 func (p *Parser) getDynamicMarshalerCompatibility(typ types.Type) bool {
@@ -2316,6 +2334,23 @@ func (p *Parser) typeMatches(typ types.Type, expectedTypeStr string) bool {
 
 	switch expectedTypeStr {
 	case "-":
+		return true
+	case typeNameHashWalkerParam:
+		iface, ok := typ.Underlying().(*types.Interface)
+		if !ok {
+			return false
+		}
+		for i := range iface.NumMethods() {
+			method := iface.Method(i)
+			counts, ok := hashWalkerMethods[method.Name()]
+			if !ok {
+				return false
+			}
+			sig, ok := method.Type().(*types.Signature)
+			if !ok || sig.Params().Len() != counts[0] || sig.Results().Len() != counts[1] {
+				return false
+			}
+		}
 		return true
 	case typeNameByteSlice:
 		if slice, ok := typ.(*types.Slice); ok {

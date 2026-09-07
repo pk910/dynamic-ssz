@@ -2,6 +2,7 @@ package tests
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -1537,6 +1538,26 @@ func TestCodegenDecoderBridgeRejectsTrailingBytes(t *testing.T) {
 // exactly as encoded; an oversized or spec-sized backing array and a bitvector
 // element go through the per-element path, so the encoding, the size and the
 // padding-bit check agree with reflection.
+// A field type whose HashTreeRootWith takes a concrete foreign hasher is hashed
+// through HashTreeRoot() by both engines; the generated code compiles and the
+// roots agree.
+func TestCodegenForeignHashTreeRootWith(t *testing.T) {
+	testCodegenPayloadByReflection(t, ForeignHashWithHolder_Payload, nil)
+
+	holder := ForeignHashWithHolder_Payload
+	root, err := dynssz.NewDynSsz(nil).HashTreeRoot(&holder)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	var leafF, leafY [32]byte
+	binary.LittleEndian.PutUint64(leafF[:], holder.F.A)
+	leafY[0] = holder.Y
+	want := sha256.Sum256(append(leafF[:], leafY[:]...))
+	if root != want {
+		t.Fatalf("root %x != %x", root, want)
+	}
+}
+
 func TestCodegenBulkByteElemsUseDeclaredWidth(t *testing.T) {
 	for _, specs := range []map[string]any{nil, BulkElems_Specs} {
 		testCodegenPayloadByReflection(t, BulkElems_Payload, specs)

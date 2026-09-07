@@ -1670,6 +1670,52 @@ var NamedBitlistsPlain_Payload = NamedBitlistsPlain{
 	P: []byte{0x0f, 0xf0, 0x81},
 }
 
+// foreignHasher stands for a third-party hasher type.
+type foreignHasher struct{ N int }
+
+// ForeignHashWith carries the fastssz method set with a HashTreeRootWith that
+// takes a concrete foreign hasher: that method cannot be called with the
+// engines' hash walker, so both fall back to HashTreeRoot().
+type ForeignHashWith struct{ A uint64 }
+
+func (f *ForeignHashWith) MarshalSSZ() ([]byte, error) {
+	return f.MarshalSSZTo(nil)
+}
+
+func (f *ForeignHashWith) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint64(buf, f.A), nil
+}
+
+func (f *ForeignHashWith) SizeSSZ() int { return 8 }
+
+func (f *ForeignHashWith) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	f.A = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+
+// HashTreeRoot is the root of a container with one uint64 field: its single
+// leaf.
+func (f *ForeignHashWith) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint64(root[:], f.A)
+	return root, nil
+}
+
+func (f *ForeignHashWith) HashTreeRootWith(h *foreignHasher) error {
+	h.N++
+	return nil
+}
+
+type ForeignHashWithHolder struct {
+	F ForeignHashWith
+	Y uint8
+}
+
+var ForeignHashWithHolder_Payload = ForeignHashWithHolder{F: ForeignHashWith{A: 0x0102030405060708}, Y: 9}
+
 // BasicMethodsHolder places the method-carrying basic types where the engines
 // pack them: a list, a vector and a byte-sized list.
 type BasicMethodsHolder struct {

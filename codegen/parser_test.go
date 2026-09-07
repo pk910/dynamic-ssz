@@ -252,7 +252,7 @@ func TestMachineSizedIntegersRejected(t *testing.T) {
 	p := NewParser()
 	for name, typ := range map[string]types.Type{
 		"uint":       types.Typ[types.Uint],
-		"int":        types.Typ[types.Int],
+		typeNameInt:  types.Typ[types.Int],
 		"[]uint":     types.NewSlice(types.Typ[types.Uint]),
 		"[4]uint":    types.NewArray(types.Typ[types.Uint], 4),
 		"named uint": types.NewNamed(types.NewTypeName(token.NoPos, nil, "Count", nil), types.Typ[types.Uint], nil),
@@ -264,6 +264,49 @@ func TestMachineSizedIntegersRejected(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "unspecified size") {
 			t.Errorf("%s: unexpected error: %v", name, err)
+		}
+	}
+}
+
+// HashTreeRootWith is only delegated to when its parameter is an interface the
+// generated code's sszutils.HashWalker satisfies; a concrete foreign hasher or
+// an unrelated interface falls back to HashTreeRoot().
+func TestHashTreeRootWithParameter(t *testing.T) {
+	p := NewParser()
+	pkg := types.NewPackage("example.com/hash", "hash")
+	errorType := types.Universe.Lookup("error").Type()
+
+	withParam := func(name string, param types.Type) types.Type {
+		named := types.NewNamed(types.NewTypeName(token.NoPos, pkg, name, nil), types.NewStruct(nil, nil), nil)
+		recv := types.NewVar(token.NoPos, pkg, "t", types.NewPointer(named))
+		params := types.NewTuple(types.NewVar(token.NoPos, pkg, "hh", param))
+		results := types.NewTuple(types.NewVar(token.NoPos, pkg, "", errorType))
+		named.AddMethod(types.NewFunc(token.NoPos, pkg, "HashTreeRootWith", types.NewSignatureType(recv, nil, nil, params, results, false)))
+		return types.NewPointer(named)
+	}
+	method := func(name string, params, results []*types.Var) *types.Func {
+		return types.NewFunc(token.NoPos, pkg, name, types.NewSignatureType(nil, nil, nil, types.NewTuple(params...), types.NewTuple(results...), false))
+	}
+	foreignHasher := types.NewPointer(types.NewNamed(types.NewTypeName(token.NoPos, pkg, "Hasher", nil), types.NewStruct(nil, nil), nil))
+	walkerSubset := types.NewInterfaceType([]*types.Func{
+		method("PutUint64", []*types.Var{types.NewVar(token.NoPos, pkg, "i", types.Typ[types.Uint64])}, nil),
+		method("Merkleize", []*types.Var{types.NewVar(token.NoPos, pkg, "indx", types.Typ[types.Int])}, nil),
+	}, nil).Complete()
+	unrelated := types.NewInterfaceType([]*types.Func{method("Frobnicate", nil, nil)}, nil).Complete()
+	wrongArity := types.NewInterfaceType([]*types.Func{method("PutUint64", nil, nil)}, nil).Complete()
+
+	for name, tc := range map[string]struct {
+		param types.Type
+		want  bool
+	}{
+		"walker subset interface": {walkerSubset, true},
+		"empty interface":         {types.NewInterfaceType(nil, nil).Complete(), true},
+		"foreign hasher pointer":  {foreignHasher, false},
+		"unrelated interface":     {unrelated, false},
+		"wrong arity":             {wrongArity, false},
+	} {
+		if got := p.getHashTreeRootWithCompatibility(withParam(name, tc.param)); got != tc.want {
+			t.Errorf("%s: compatible = %v, want %v", name, got, tc.want)
 		}
 	}
 }
