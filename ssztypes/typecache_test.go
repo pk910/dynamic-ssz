@@ -5747,13 +5747,29 @@ type recMutualFixedB struct {
 func TestTagMisuseRejections(t *testing.T) {
 	cache := NewTypeCache(&dummyDynamicSpecs{})
 
-	t.Run("surplus_max_dimensions", func(t *testing.T) {
-		type surplusMax struct {
+	// A tag may name more dimensions than the type has; the surplus is
+	// dropped, as the go/types front end drops it.
+	t.Run("surplus_dimensions_ignored", func(t *testing.T) {
+		type inner struct{ X uint64 }
+		type surplus struct {
 			V []uint64 `ssz-max:"64,128"`
+			G []uint64 `ssz-type:"list,uint64,uint32" ssz-max:"8"`
+			F inner    `ssz-max:"10"`
+			U uint64   `ssz-max:"3"`
 		}
-		_, err := cache.GetTypeDescriptor(reflect.TypeFor[surplusMax](), nil, nil, nil)
-		if err == nil || !strings.Contains(err.Error(), "no capacity to bound") {
-			t.Fatalf("err = %v, want a surplus-dimension rejection", err)
+		desc, err := cache.GetTypeDescriptor(reflect.TypeFor[surplus](), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("descriptor build failed: %v", err)
+		}
+		fields := desc.ContainerDesc.Fields
+		if fields[0].Type.Limit != 64 || fields[0].Type.SszType != SszListType {
+			t.Errorf("V: %v limit %d, want list limit 64", fields[0].Type.SszType, fields[0].Type.Limit)
+		}
+		if fields[1].Type.Limit != 8 || fields[1].Type.ElemDesc.SszType != SszUint64Type {
+			t.Errorf("G: limit %d elem %v, want list of uint64 limit 8", fields[1].Type.Limit, fields[1].Type.ElemDesc.SszType)
+		}
+		if fields[2].Type.SszType != SszContainerType || fields[3].Type.SszType != SszUint64Type {
+			t.Errorf("F/U: %v / %v, want container / uint64", fields[2].Type.SszType, fields[3].Type.SszType)
 		}
 	})
 
@@ -5800,13 +5816,17 @@ func TestTagMisuseRejections(t *testing.T) {
 		}
 	})
 
+	// A limit reaching a container has nothing to bound and is dropped.
 	t.Run("container_root_max_hint", func(t *testing.T) {
 		type plainContainer struct {
 			V uint64
 		}
-		_, err := cache.GetTypeDescriptor(reflect.TypeFor[plainContainer](), nil, []SszMaxSizeHint{{Size: 10}}, nil)
-		if err == nil || !strings.Contains(err.Error(), "field tags") {
-			t.Fatalf("err = %v, want the container field-tag guidance", err)
+		desc, err := cache.GetTypeDescriptor(reflect.TypeFor[plainContainer](), nil, []SszMaxSizeHint{{Size: 10}}, nil)
+		if err != nil {
+			t.Fatalf("descriptor build failed: %v", err)
+		}
+		if desc.SszType != SszContainerType {
+			t.Fatalf("type = %v, want container", desc.SszType)
 		}
 	})
 

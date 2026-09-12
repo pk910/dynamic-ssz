@@ -351,6 +351,40 @@ func TestAnnotationThroughAlias(t *testing.T) {
 	}
 }
 
+// A tag naming more dimensions than the type has is accepted and the surplus
+// dropped, as in the reflection type cache.
+func TestSurplusTagDimensionsIgnored(t *testing.T) {
+	p := NewParser()
+	pkg := types.NewPackage("example.com/surplus", "surplus")
+	inner := types.NewNamed(types.NewTypeName(token.NoPos, pkg, "Inner", nil),
+		types.NewStruct([]*types.Var{types.NewField(token.NoPos, pkg, "X", types.Typ[types.Uint64], false)}, nil), nil)
+	holder := types.NewStruct([]*types.Var{
+		types.NewField(token.NoPos, pkg, "V", types.NewSlice(types.Typ[types.Uint64]), false),
+		types.NewField(token.NoPos, pkg, "G", types.NewSlice(types.Typ[types.Uint64]), false),
+		types.NewField(token.NoPos, pkg, "F", inner, false),
+		types.NewField(token.NoPos, pkg, "U", types.Typ[types.Uint64], false),
+	}, []string{
+		`ssz-max:"64,128"`,
+		`ssz-type:"list,uint64,uint32" ssz-max:"8"`,
+		`ssz-max:"10"`,
+		`ssz-max:"3"`,
+	})
+	desc, err := p.GetTypeDescriptor(holder, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("descriptor: %v", err)
+	}
+	fields := desc.ContainerDesc.Fields
+	if fields[0].Type.Limit != 64 || fields[0].Type.SszType != ssztypes.SszListType {
+		t.Errorf("V: %v limit %d, want list limit 64", fields[0].Type.SszType, fields[0].Type.Limit)
+	}
+	if fields[1].Type.Limit != 8 || fields[1].Type.ElemDesc.SszType != ssztypes.SszUint64Type {
+		t.Errorf("G: limit %d elem %v, want list of uint64 limit 8", fields[1].Type.Limit, fields[1].Type.ElemDesc.SszType)
+	}
+	if fields[2].Type.SszType != ssztypes.SszContainerType || fields[3].Type.SszType != ssztypes.SszUint64Type {
+		t.Errorf("F/U: %v / %v, want container / uint64", fields[2].Type.SszType, fields[3].Type.SszType)
+	}
+}
+
 // A big.Int schema binds its data type whether it was detected or hinted.
 func TestBigIntHintNeedsBigIntData(t *testing.T) {
 	p := NewParser()

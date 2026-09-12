@@ -185,6 +185,8 @@ types:
     output: gen_edgecases.go
   - name: AliasAnnotatedHolder
     output: gen_edgecases.go
+  - name: SurplusTags
+    output: gen_edgecases.go
   - name: MultiDimSpecVec
     output: gen_edgecases.go
   - name: NoMaxBitlist

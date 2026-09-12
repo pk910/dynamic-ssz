@@ -711,28 +711,6 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		}
 	}
 
-	// A tag names one dimension per level of nesting, so a type that has no
-	// element consumes the last of them. Anything past that describes a
-	// dimension the type does not have: it was parsed, then dropped, which
-	// leaves a tag that reads as if it did something.
-	if len(typeHints) > 1 && !consumesDimension(sszType) {
-		return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag,
-			"ssz-type declares %d dimensions for %v, which takes 1: drop the trailing %d",
-			len(typeHints), t, len(typeHints)-1)
-	}
-	// A limit names the capacity of a variable-length dimension; a type that
-	// consumes no dimension has none to bound, so a limit reaching it was
-	// parsed and dropped. NoValue placeholders are the tag family skipping a
-	// dimension that belongs to the other family, which is their job.
-	if len(maxSizeHints) > 0 && !maxSizeHints[0].NoValue && !consumesDimension(sszType) && sszType != SszBigIntType {
-		if sszType == SszContainerType || sszType == SszProgressiveContainerType {
-			return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag,
-				"ssz-max names a limit for container %v, which has no capacity to bound: a container's limits belong on its field tags", t)
-		}
-		return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidTag,
-			"ssz-max names a limit for %v, which has no capacity to bound: drop the surplus dimension", t)
-	}
-
 	// Check type compatibility and compute size
 	switch sszType {
 	case SszUnspecifiedType:
@@ -2212,27 +2190,6 @@ func RejectMaxOnVector(sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, a
 	return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint,
 		"ssz-max %d is declared for %s, whose length is fixed: a vector has no capacity to bound (a limit equal to the length is accepted; anything else needs ssz-size or ssz-max, not both, for one dimension)",
 		maxSizeHints[0].Size, typeName)
-}
-
-// consumesDimension reports whether a type has an element for a tag dimension to
-// describe. A collection passes the remaining dimensions down to what it holds;
-// everything else is where the dimensions run out.
-//
-// A container is included: its fields carry their own tags rather than
-// continuing the parent's, so a dimension past it belongs to nothing. Wrappers
-// and unions are excluded from the check entirely -- they forward tags to a
-// wrapped or selected type in ways a dimension count does not describe.
-func consumesDimension(sszType SszType) bool {
-	switch sszType {
-	case SszListType, SszVectorType, SszBitlistType, SszBitvectorType,
-		SszProgressiveListType, SszProgressiveBitlistType,
-		SszOptionalType, SszOptionalListType,
-		SszTypeWrapperType, SszCompatibleUnionType, SszUnionType,
-		SszUint128Type, SszUint256Type, SszCustomType, SszUnspecifiedType:
-		return true
-	default:
-		return false
-	}
 }
 
 // MarkNoSszRoot flags a list or bitlist that carries no limit, unless extended

@@ -1751,6 +1751,16 @@ type AliasAnnotatedHolder struct {
 
 var AliasAnnotatedHolder_Payload = AliasAnnotatedHolder{B: AliasAnnotated{1, 2, 3}, C: AliasAnnotatedAlias{4, 5}}
 
+// SurplusTags names more tag dimensions than its fields have; the surplus is
+// dropped by both engines and the remaining limits are enforced.
+type SurplusTags struct {
+	F SimpleTypes1_C1 `ssz-max:"10"`
+	G []uint64        `ssz-type:"list,uint64,uint32" ssz-max:"8"`
+	H []uint64        `ssz-max:"64,128"`
+}
+
+var SurplusTags_Payload = SurplusTags{F: SimpleTypes1_C1{F1: 1}, G: []uint64{1, 2, 3}, H: []uint64{4, 5}}
+
 // BasicMethodsHolder places the method-carrying basic types where the engines
 // pack them: a list, a vector and a byte-sized list.
 type BasicMethodsHolder struct {

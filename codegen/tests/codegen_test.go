@@ -1633,6 +1633,21 @@ func TestCodegenAliasAnnotation(t *testing.T) {
 	}
 }
 
+// Surplus tag dimensions are dropped by both engines; the limits that remain
+// are enforced.
+func TestCodegenSurplusTagDimensions(t *testing.T) {
+	testCodegenPayloadByReflection(t, SurplusTags_Payload, nil)
+
+	ds := dynssz.NewDynSsz(nil)
+	nine := make([]uint64, 9)
+	if _, err := ds.MarshalSSZ(&SurplusTags{G: nine}); !errors.Is(err, sszutils.ErrListTooBig) {
+		t.Errorf("G with 9 elements: err = %v, want ErrListTooBig", err)
+	}
+	if _, err := ds.MarshalSSZ(&SurplusTags{H: make([]uint64, 65)}); !errors.Is(err, sszutils.ErrListTooBig) {
+		t.Errorf("H with 65 elements: err = %v, want ErrListTooBig", err)
+	}
+}
+
 func TestCodegenBulkByteElemsUseDeclaredWidth(t *testing.T) {
 	for _, specs := range []map[string]any{nil, BulkElems_Specs} {
 		testCodegenPayloadByReflection(t, BulkElems_Payload, specs)

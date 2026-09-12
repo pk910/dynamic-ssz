@@ -3829,28 +3829,49 @@ func TestHashTreeRootOptionalCommitsToPresence(t *testing.T) {
 }
 
 // A tag names one dimension per level of nesting. A type with no element is
-// where they run out, so anything past that describes a dimension the type does
-// not have -- it used to be parsed and then dropped, leaving a tag that reads
-// as if it did something.
-func TestSurplusTypeDimensionRejected(t *testing.T) {
+// where they run out; a name past that point is dropped, and the type encodes
+// like its plainly tagged twin.
+func TestSurplusTypeDimensionIgnored(t *testing.T) {
 	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation())
 
 	t.Run("past a basic element", func(t *testing.T) {
-		err := ds.ValidateType(reflect.TypeOf(struct {
+		surplus := &struct {
 			F []uint64 `ssz-max:"8" ssz-type:"list,uint64,uint32"`
-		}{}))
-		if !errors.Is(err, sszutils.ErrInvalidTag) || !strings.Contains(err.Error(), "dimensions") {
-			t.Errorf("err = %v, want an ErrInvalidTag about dimensions", err)
+		}{F: []uint64{1, 2, 3}}
+		plain := &struct {
+			F []uint64 `ssz-max:"8"`
+		}{F: []uint64{1, 2, 3}}
+		surplusRoot, err := ds.HashTreeRoot(surplus)
+		if err != nil {
+			t.Fatalf("surplus: %v", err)
+		}
+		plainRoot, err := ds.HashTreeRoot(plain)
+		if err != nil {
+			t.Fatalf("plain: %v", err)
+		}
+		if surplusRoot != plainRoot {
+			t.Errorf("root %x != plain root %x", surplusRoot, plainRoot)
 		}
 	})
 
 	t.Run("past a container", func(t *testing.T) {
 		type inner struct{ A uint64 }
-		err := ds.ValidateType(reflect.TypeOf(struct {
+		surplus := &struct {
 			F []inner `ssz-max:"8" ssz-type:"list,container,uint64"`
-		}{}))
-		if !errors.Is(err, sszutils.ErrInvalidTag) {
-			t.Errorf("err = %v, want ErrInvalidTag", err)
+		}{F: []inner{{A: 7}}}
+		plain := &struct {
+			F []inner `ssz-max:"8"`
+		}{F: []inner{{A: 7}}}
+		surplusRoot, err := ds.HashTreeRoot(surplus)
+		if err != nil {
+			t.Fatalf("surplus: %v", err)
+		}
+		plainRoot, err := ds.HashTreeRoot(plain)
+		if err != nil {
+			t.Fatalf("plain: %v", err)
+		}
+		if surplusRoot != plainRoot {
+			t.Errorf("root %x != plain root %x", surplusRoot, plainRoot)
 		}
 	})
 
