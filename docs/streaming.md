@@ -332,10 +332,16 @@ another element, and a known-size decode accepts it too.
 ### Regenerating generated code
 
 Types whose SSZ methods were produced by **dynamic-ssz v1.3.2 or earlier must be
-regenerated** to be decoded with `size < 0`. Older generated decoders size the
-trailing region from the remaining-length estimate, so they fail cleanly with
-`ErrUnexpectedEOF` rather than decoding. Passing an explicit size keeps working
-with them unchanged.
+regenerated** before they are decoded with `size < 0`. Those decoders size a
+trailing region from the remaining-length estimate, which in an unknown-size
+stream is the unread part of the `WithMaxStreamSize` allowance, not the payload
+length. A payload small enough to fit the read buffer is collapsed to a known
+length and decodes; anything larger is not decoded: depending on the schema the
+stale decoder rejects the valid input (the estimate is not a multiple of the
+element size, or exceeds `ssz-max`), or it allocates the destination for the
+estimate, up to the maximum stream size, and then fails with `ErrUnexpectedEOF`
+when the read runs out. Passing an explicit size keeps working with them
+unchanged, as does buffer decoding.
 
 ## Stream Encoder and Decoder
 
