@@ -7078,3 +7078,78 @@ func TestLargeUintViewOverNamedBytes(t *testing.T) {
 		t.Fatalf("stream decoded %+v != %+v", streamed, *value)
 	}
 }
+
+// zeroSizeShell serializes to no bytes through its own buffer methods. It has
+// no SSZ fields of its own, so it is only valid as a delegate, and it rejects
+// any bytes handed to it so a misframed region is detected.
+type zeroSizeShell struct{}
+
+func (z *zeroSizeShell) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+
+func (z *zeroSizeShell) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	if len(buf) != 0 {
+		return sszutils.ErrTrailingDataFn(len(buf))
+	}
+	return nil
+}
+
+func (z *zeroSizeShell) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 0 }
+
+func (z *zeroSizeShell) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(0)
+	return nil
+}
+
+type zeroShellHolder struct {
+	Head zeroSizeShell
+	X    uint64
+	Mid  zeroSizeShell
+	Tail []byte `ssz-max:"8"`
+}
+
+// A fixed-size delegate of size zero is framed at zero bytes on every decode
+// path; it must not be handed the rest of the enclosing region.
+func TestZeroSizeStaticDelegateFraming(t *testing.T) {
+	ds := NewDynSsz(nil)
+	src := &zeroShellHolder{X: 7, Tail: []byte{1, 2, 3}}
+	want, err := ds.MarshalSSZ(src)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if len(want) != 8+4+3 {
+		t.Fatalf("unexpected encoding %x", want)
+	}
+	wantRoot, err := ds.HashTreeRoot(src)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+
+	check := func(name string, got *zeroShellHolder, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got.X != src.X || !bytes.Equal(got.Tail, src.Tail) {
+			t.Fatalf("%s: decoded %+v, want %+v", name, got, src)
+		}
+		gotRoot, err := ds.HashTreeRoot(got)
+		if err != nil {
+			t.Fatalf("%s hash: %v", name, err)
+		}
+		if gotRoot != wantRoot {
+			t.Fatalf("%s: root %x, want %x", name, gotRoot, wantRoot)
+		}
+	}
+
+	got := &zeroShellHolder{}
+	check("buffer", got, ds.UnmarshalSSZ(got, want))
+	got = &zeroShellHolder{}
+	check("reader(exact)", got, ds.UnmarshalSSZReader(got, bytes.NewReader(want), len(want)))
+	for _, bufSize := range unknownSizeBufSizes {
+		dsr := NewDynSsz(nil, WithStreamReaderBufferSize(bufSize))
+		got = &zeroShellHolder{}
+		check(fmt.Sprintf("reader(-1,buf=%d)", bufSize), got, dsr.UnmarshalSSZReader(got, bytes.NewReader(want), -1))
+	}
+}

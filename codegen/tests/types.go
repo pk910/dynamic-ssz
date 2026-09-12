@@ -3310,6 +3310,7 @@ type ViewMixHolder struct {
 	A ViewMixChildA
 	B ViewMixChildB
 	C ViewMixChildC
+	E ViewMixChildD
 	N namedCovBytes `ssz-max:"8"`
 	L aliasCovBytes `ssz-max:"8"`
 	U dynssz.CompatibleUnion[struct {
@@ -3341,10 +3342,23 @@ type ViewMixChildC_View struct {
 	Z uint64
 }
 
+// ViewMixChildD is static with a spec-sized field, so its buffer-only view
+// delegate is framed at the runtime-resolved size.
+type ViewMixChildD struct {
+	Y []byte `ssz-size:"4" dynssz-size:"VIEWMIX_D_SIZE"`
+	Z uint64
+}
+
+type ViewMixChildD_View struct {
+	Y []byte `ssz-size:"4" dynssz-size:"VIEWMIX_D_SIZE"`
+	Z uint64
+}
+
 type ViewMixHolder_View struct {
 	A ViewMixChildA_View
 	B ViewMixChildB_View
 	C ViewMixChildC_View
+	E ViewMixChildD_View
 	N []byte `ssz-max:"8"`
 	L []byte `ssz-max:"8"`
 	U dynssz.CompatibleUnion[struct {
@@ -3412,6 +3426,27 @@ var ViewMixHolder_Payload = ViewMixHolder{
 	A: ViewMixChildA{X: []byte{1}, Y: 2},
 	B: ViewMixChildB{X: []byte{3}, Z: 4},
 	C: ViewMixChildC{Y: 5, Z: 6},
+	E: ViewMixChildD{Y: []byte{1, 2, 3, 4}, Z: 12},
+	N: namedCovBytes{7},
+	L: aliasCovBytes{8},
+	U: dynssz.CompatibleUnion[struct {
+		V1 uint64
+		V2 ViewMixChildA
+	}]{Variant: 2, Data: ViewMixChildA{X: []byte{9}, Y: 10}},
+	D: []byte{11},
+}
+
+// ViewMixHolder_SpecsPayload sizes ViewMixChildD.Y from ViewMixHolder_Specs
+// instead of the static default.
+var ViewMixHolder_Specs = map[string]any{
+	"VIEWMIX_D_SIZE": uint64(6),
+}
+
+var ViewMixHolder_SpecsPayload = ViewMixHolder{
+	A: ViewMixChildA{X: []byte{1}, Y: 2},
+	B: ViewMixChildB{X: []byte{3}, Z: 4},
+	C: ViewMixChildC{Y: 5, Z: 6},
+	E: ViewMixChildD{Y: []byte{1, 2, 3, 4, 5, 6}, Z: 12},
 	N: namedCovBytes{7},
 	L: aliasCovBytes{8},
 	U: dynssz.CompatibleUnion[struct {

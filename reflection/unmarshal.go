@@ -320,12 +320,13 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 //
 // Delegates (fastssz, DynamicUnmarshaler, view unmarshalers) take a []byte, so
 // unlike the streaming interfaces they cannot consume an open region
-// incrementally. A fixed-size type is read at its exact size; otherwise the
-// region is consumed to its end, which for an open region means reading to EOF.
-// That gives up streaming for this subtree only — the enclosing decode stays
-// incremental — and is bounded by the decoder's maximum stream size.
+// incrementally. A fixed-size type is read at its exact size, which may be zero
+// (a shell whose methods emit no bytes); a variable-size type consumes the
+// region to its end, which for an open region means reading to EOF. That gives
+// up streaming for this subtree only — the enclosing decode stays incremental —
+// and is bounded by the decoder's maximum stream size.
 func delegationBuffer(targetType *ssztypes.TypeDescriptor, decoder sszutils.Decoder) ([]byte, error) {
-	if targetType.Size > 0 {
+	if targetType.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 		typeSize := targetType.Size
 		if typeSize > math.MaxInt {
 			return nil, sszutils.ErrPlatformOverflowFn("type size", targetType.Size)

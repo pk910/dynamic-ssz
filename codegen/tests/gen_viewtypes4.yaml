@@ -26,6 +26,12 @@ types:
       - ViewMixChildC_View
     skip-encoder: true
     skip-decoder: true
+  - name: ViewMixChildD
+    output: gen_viewtypes4.go
+    views:
+      - ViewMixChildD_View
+    skip-encoder: true
+    skip-decoder: true
   - name: ViewMixHolder
     output: gen_viewtypes4.go
     views:
