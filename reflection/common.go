@@ -178,3 +178,18 @@ func (ctx *ReflectionCtx) HashTreeRoot(targetType *ssztypes.TypeDescriptor, targ
 	}
 	return ctx.buildRootFromType(targetType, targetValue, hh, false, reflectionDepth{})
 }
+
+// bitvectorPaddingBits returns the bits above the bit size in the last element
+// of a bit-sized bitvector stored element-wise (a named uint8 or a pointer to a
+// byte element). A nil element holds no bits.
+func bitvectorPaddingBits(desc *ssztypes.TypeDescriptor, vec reflect.Value, n int) uint8 {
+	last := vec.Index(n - 1)
+	if last.Kind() == reflect.Pointer {
+		if last.IsNil() {
+			return 0
+		}
+		last = last.Elem()
+	}
+	paddingMask := uint8((uint16(0xff) << (desc.BitSize % 8)) & 0xff)
+	return uint8(last.Uint()) & paddingMask
+}

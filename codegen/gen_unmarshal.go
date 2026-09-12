@@ -1068,6 +1068,12 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 			ctx.appendCode(indent, "\t%s[%s] = %s\n", indexValueVar, indexVar, valVar)
 		}
 		ctx.appendCode(indent, "}\n")
+		if bitlimitVar != "" {
+			// A bit-sized bitvector stored element-wise has its padding bits in
+			// the last element.
+			ptrElem := desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0
+			appendElemPaddingCheck(ctx.appendCode, indent, fmt.Sprintf("%s[%s-1]", indexValueVar, limitVar), ptrElem, bitlimitVar, sizeExpression != nil, nil, "return "+typePath.getErrorWith(errCodeBitvectorPadding))
+		}
 	} else {
 		// dynamic elements
 		binaryPkgName := ctx.typePrinter.AddImport("encoding/binary", "binary")

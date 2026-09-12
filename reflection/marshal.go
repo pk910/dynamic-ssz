@@ -527,6 +527,10 @@ func (ctx *ReflectionCtx) marshalVector(sourceType *ssztypes.TypeDescriptor, sou
 		if appendZero > 0 {
 			totalZeroBytes := int(vecElemSize) * appendZero
 			encoder.EncodeZeroPadding(totalZeroBytes)
+		} else if dataLen > 0 && sourceType.BitSize > 0 && sourceType.BitSize%8 != 0 && bitvectorPaddingBits(sourceType, sourceValue, dataLen) != 0 {
+			// A bit-sized bitvector stored element-wise has its padding bits
+			// in the last element; a shorter value is zero-padded instead.
+			return sszutils.ErrBitvectorPaddingFn()
 		}
 	}
 

@@ -710,6 +710,11 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 		if err := ctx.unmarshalFixedElements(fieldType, newValue, arrLen, decoder, depth); err != nil {
 			return err
 		}
+		// A bit-sized bitvector stored element-wise has its padding bits in
+		// the last element.
+		if targetType.BitSize > 0 && targetType.BitSize%8 != 0 && arrLen > 0 && bitvectorPaddingBits(targetType, newValue, arrLen) != 0 {
+			return sszutils.ErrBitvectorPaddingFn()
+		}
 	}
 
 	if targetType.Kind != reflect.Array {

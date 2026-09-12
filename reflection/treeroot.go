@@ -717,6 +717,12 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 			}
 		}
 
+		// A bit-sized bitvector stored element-wise has its padding bits in
+		// the last element; a shorter value is zero-padded instead.
+		if appendZero == 0 && sliceLen > 0 && sourceType.BitSize > 0 && sourceType.BitSize%8 != 0 && bitvectorPaddingBits(sourceType, sourceValue, sliceLen) != 0 {
+			return sszutils.ErrBitvectorPaddingFn()
+		}
+
 		if appendZero > 0 {
 			zeroVal := newZeroElem(sourceType.ElemDesc)
 

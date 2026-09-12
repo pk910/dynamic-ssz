@@ -1761,6 +1761,36 @@ type SurplusTags struct {
 
 var SurplusTags_Payload = SurplusTags{F: SimpleTypes1_C1{F1: 1}, G: []uint64{1, 2, 3}, H: []uint64{4, 5}}
 
+// ElemBitvectors stores bit-sized bitvectors element-wise: pointer elements, a
+// named uint8 slice and the plain byte twin. The padding bits of the last
+// element are checked on every path, as for the byte-backed form.
+type ElemBitvectors struct {
+	P [2]*byte   `ssz-type:"bitvector" ssz-bitsize:"12"`
+	N []NamedBit `ssz-type:"bitvector" ssz-bitsize:"12"`
+	Q []*byte    `ssz-type:"bitvector" ssz-bitsize:"12"`
+	S []*byte    `ssz-type:"bitvector" ssz-bitsize:"12" dynssz-bitsize:"ELEM_BITS"`
+	B [2]byte    `ssz-type:"bitvector" ssz-bitsize:"12"`
+	Z uint8
+}
+
+var ElemBitvectors_Specs = map[string]any{
+	"ELEM_BITS": uint64(12),
+}
+
+var ElemBitvectors_Payload = func() ElemBitvectors {
+	a, b := byte(0xff), byte(0x0f)
+	c, d := byte(0xa5), byte(0x05)
+	e, f := byte(0x11), byte(0x01)
+	return ElemBitvectors{
+		P: [2]*byte{&a, &b},
+		N: []NamedBit{0x3c, 0x0c},
+		Q: []*byte{&c, &d},
+		S: []*byte{&e, &f},
+		B: [2]byte{0x81, 0x08},
+		Z: 9,
+	}
+}()
+
 // BasicMethodsHolder places the method-carrying basic types where the engines
 // pack them: a list, a vector and a byte-sized list.
 type BasicMethodsHolder struct {

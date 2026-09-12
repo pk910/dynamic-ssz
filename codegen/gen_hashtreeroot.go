@@ -831,6 +831,16 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		}
 		ctx.appendCode(indent, "\tif (%s+1)%%256 == 0 {\n\t\thh.Collapse()\n\t}\n", indexVar)
 		ctx.appendCode(indent, "}\n")
+		if bitlimitVar != "" {
+			// The padding bits live in the last element when the value
+			// occupies the full length; a shorter value is zero-padded.
+			var conds []string
+			if lenVar != intLimit {
+				conds = append(conds, fmt.Sprintf("%s == %s", lenVar, intLimit))
+			}
+			ptrElem := desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0
+			appendElemPaddingCheck(ctx.appendCode, indent, fmt.Sprintf("%s[%s-1]", getValueVar(false, ""), lenVar), ptrElem, bitlimitVar, sizeExpression != nil, conds, "return "+typePath.getErrorWith(errCodeBitvectorPadding))
+		}
 
 		if !pack {
 			// Packed basics and append-only delegates leave a partial chunk.

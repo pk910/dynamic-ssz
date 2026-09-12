@@ -1648,6 +1648,62 @@ func TestCodegenSurplusTagDimensions(t *testing.T) {
 	}
 }
 
+// A bit-sized bitvector stored element-wise has its padding bits checked like
+// the byte-backed form, in both engines and on every path: a value with bits
+// above the bit size is refused on marshal, hash and decode.
+func TestCodegenElemBitvectorPadding(t *testing.T) {
+	testCodegenPayloadByReflection(t, ElemBitvectors_Payload, ElemBitvectors_Specs)
+
+	for name, ds := range map[string]*dynssz.DynSsz{
+		"default":    dynssz.NewDynSsz(ElemBitvectors_Specs),
+		"reflection": dynssz.NewDynSsz(ElemBitvectors_Specs, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz()),
+	} {
+		clean := ElemBitvectors_Payload
+		data, err := ds.MarshalSSZ(&clean)
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", name, err)
+		}
+		// Layout: P (2) N (2) Q (2) S (2) B (2) Z (1); the second byte of
+		// each bitvector carries the four padding bits.
+		if len(data) != 11 {
+			t.Fatalf("%s: encoding is %d bytes, want 11", name, len(data))
+		}
+		for field, last := range map[string]int{"P": 1, "N": 3, "Q": 5, "S": 7, "B": 9} {
+			dirty := append([]byte{}, data...)
+			dirty[last] |= 0xf0
+			var decoded ElemBitvectors
+			if err := ds.UnmarshalSSZ(&decoded, dirty); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+				t.Errorf("%s: %s with padding bits set decodes: err = %v", name, field, err)
+			}
+			var streamed ElemBitvectors
+			if err := ds.UnmarshalSSZReader(&streamed, bytes.NewReader(dirty), len(dirty)); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+				t.Errorf("%s: %s with padding bits set streams: err = %v", name, field, err)
+			}
+		}
+
+		hi := byte(0xff)
+		dirtyValues := map[string]ElemBitvectors{
+			"P": {P: [2]*byte{&hi, &hi}},
+			"N": {N: []NamedBit{0xff, 0xff}},
+			"Q": {Q: []*byte{&hi, &hi}},
+			"S": {S: []*byte{&hi, &hi}},
+			"B": {B: [2]byte{0xff, 0xff}},
+		}
+		for field, value := range dirtyValues {
+			if _, err := ds.MarshalSSZ(&value); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+				t.Errorf("%s: marshal %s with padding bits set: err = %v", name, field, err)
+			}
+			var streamed bytes.Buffer
+			if err := ds.MarshalSSZWriter(&value, &streamed); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+				t.Errorf("%s: stream marshal %s with padding bits set: err = %v", name, field, err)
+			}
+			if _, err := ds.HashTreeRoot(&value); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+				t.Errorf("%s: hash %s with padding bits set: err = %v", name, field, err)
+			}
+		}
+	}
+}
+
 func TestCodegenBulkByteElemsUseDeclaredWidth(t *testing.T) {
 	for _, specs := range []map[string]any{nil, BulkElems_Specs} {
 		testCodegenPayloadByReflection(t, BulkElems_Payload, specs)

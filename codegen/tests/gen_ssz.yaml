@@ -187,6 +187,8 @@ types:
     output: gen_edgecases.go
   - name: SurplusTags
     output: gen_edgecases.go
+  - name: ElemBitvectors
+    output: gen_edgecases.go
   - name: MultiDimSpecVec
     output: gen_edgecases.go
   - name: NoMaxBitlist
