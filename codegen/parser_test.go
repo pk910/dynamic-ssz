@@ -3633,3 +3633,49 @@ func TestParserRejectsStringAndWideBitfields(t *testing.T) {
 		})
 	}
 }
+
+// A HashTreeRootWith parameter qualifies as a walker interface only when the
+// library's walker implements it: every method must exist on the walker with
+// the same signature, not just the same name and arity.
+func TestParserWalkerParameterSignatures(t *testing.T) {
+	parser := NewParser()
+	sig := func(variadic bool, results []types.Type, params ...types.Type) *types.Signature {
+		vars := make([]*types.Var, len(params))
+		for i, p := range params {
+			vars[i] = types.NewVar(0, nil, "", p)
+		}
+		res := make([]*types.Var, len(results))
+		for i, r := range results {
+			res[i] = types.NewVar(0, nil, "", r)
+		}
+		return types.NewSignatureType(nil, nil, nil, types.NewTuple(vars...), types.NewTuple(res...), variadic)
+	}
+	method := func(name string, s *types.Signature) *types.Func { return types.NewFunc(0, nil, name, s) }
+	iface := func(methods ...*types.Func) types.Type {
+		return types.NewInterfaceType(methods, nil).Complete()
+	}
+	bytes := types.NewSlice(types.Typ[types.Byte])
+	u64, i, str := types.Typ[types.Uint64], types.Typ[types.Int], types.Typ[types.String]
+
+	for _, tc := range []struct {
+		name string
+		typ  types.Type
+		want bool
+	}{
+		{"fastssz subset", iface(method("Index", sig(false, []types.Type{i})), method("PutUint64", sig(false, nil, u64)), method("Merkleize", sig(false, nil, i))), true},
+		{"bytes and variadic", iface(method("PutBitlist", sig(false, nil, bytes, u64)), method("PutUint64Array", sig(true, nil, types.NewSlice(u64), types.NewSlice(u64)))), true},
+		{"function parameter", iface(method("WithTemp", sig(false, nil, sig(false, []types.Type{bytes}, bytes)))), true},
+		{"wrong parameter type", iface(method("PutUint64", sig(false, nil, str))), false},
+		{"wrong parameter width", iface(method("Merkleize", sig(false, nil, u64))), false},
+		{"wrong result type", iface(method("Index", sig(false, []types.Type{u64}))), false},
+		{"missing variadic", iface(method("PutUint64Array", sig(false, nil, types.NewSlice(u64), types.NewSlice(u64)))), false},
+		{"unknown method", iface(method("PutSomething", sig(false, nil, u64))), false},
+		{"not an interface", u64, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parser.typeMatches(tc.typ, typeNameHashWalkerParam); got != tc.want {
+				t.Fatalf("typeMatches = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

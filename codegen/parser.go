@@ -37,16 +37,83 @@ const (
 )
 
 // hashWalkerMethods lists the methods of sszutils.HashWalker by name with their
-// parameter and result counts.
-var hashWalkerMethods = func() map[string][2]int {
+// signature keys (see reflectTypeKey).
+var hashWalkerMethods = func() map[string]string {
 	walker := reflect.TypeOf((*sszutils.HashWalker)(nil)).Elem()
-	methods := make(map[string][2]int, walker.NumMethod())
+	methods := make(map[string]string, walker.NumMethod())
 	for i := range walker.NumMethod() {
 		method := walker.Method(i)
-		methods[method.Name] = [2]int{method.Type.NumIn(), method.Type.NumOut()}
+		methods[method.Name] = reflectTypeKey(method.Type)
 	}
 	return methods
 }()
+
+// reflectTypeKey spells a reflect type the way goTypeKey spells the same
+// go/types type, so a signature seen through either can be compared.
+func reflectTypeKey(t reflect.Type) string {
+	switch t.Kind() {
+	case reflect.Pointer:
+		return "*" + reflectTypeKey(t.Elem())
+	case reflect.Slice:
+		return "[]" + reflectTypeKey(t.Elem())
+	case reflect.Array:
+		return fmt.Sprintf("[%d]%s", t.Len(), reflectTypeKey(t.Elem()))
+	case reflect.Func:
+		params := make([]string, t.NumIn())
+		for i := range params {
+			params[i] = reflectTypeKey(t.In(i))
+			if t.IsVariadic() && i == t.NumIn()-1 {
+				params[i] = "..." + params[i][2:]
+			}
+		}
+		results := make([]string, t.NumOut())
+		for i := range results {
+			results[i] = reflectTypeKey(t.Out(i))
+		}
+		return "func(" + strings.Join(params, ",") + ")(" + strings.Join(results, ",") + ")"
+	default:
+		if t.PkgPath() != "" {
+			return t.PkgPath() + "." + t.Name()
+		}
+		return t.Kind().String()
+	}
+}
+
+// goTypeKey spells a go/types type the way reflectTypeKey spells the same
+// reflect type; a type of a kind the walker never uses gets a key of its own
+// that matches nothing.
+func goTypeKey(t types.Type) string {
+	switch t := types.Unalias(t).(type) {
+	case *types.Pointer:
+		return "*" + goTypeKey(t.Elem())
+	case *types.Slice:
+		return "[]" + goTypeKey(t.Elem())
+	case *types.Array:
+		return fmt.Sprintf("[%d]%s", t.Len(), goTypeKey(t.Elem()))
+	case *types.Signature:
+		params := make([]string, t.Params().Len())
+		for i := range params {
+			params[i] = goTypeKey(t.Params().At(i).Type())
+			if t.Variadic() && i == len(params)-1 {
+				params[i] = "..." + params[i][2:]
+			}
+		}
+		results := make([]string, t.Results().Len())
+		for i := range results {
+			results[i] = goTypeKey(t.Results().At(i).Type())
+		}
+		return "func(" + strings.Join(params, ",") + ")(" + strings.Join(results, ",") + ")"
+	case *types.Named:
+		if t.Obj().Pkg() == nil {
+			return t.Obj().Name()
+		}
+		return t.Obj().Pkg().Path() + "." + t.Obj().Name()
+	case *types.Basic:
+		return types.Typ[t.Kind()].Name()
+	default:
+		return "<" + t.String() + ">"
+	}
+}
 
 // CodegenInfo contains type information specific to code generation from go/types analysis.
 //
@@ -2353,18 +2420,15 @@ func (p *Parser) typeMatches(typ types.Type, expectedTypeStr string) bool {
 	case "-":
 		return true
 	case typeNameHashWalkerParam:
+		// The library's walker must implement the parameter's interface:
+		// every method of it is a walker method with the same signature.
 		iface, ok := typ.Underlying().(*types.Interface)
 		if !ok {
 			return false
 		}
 		for i := range iface.NumMethods() {
 			method := iface.Method(i)
-			counts, ok := hashWalkerMethods[method.Name()]
-			if !ok {
-				return false
-			}
-			sig, ok := method.Type().(*types.Signature)
-			if !ok || sig.Params().Len() != counts[0] || sig.Results().Len() != counts[1] {
+			if key, ok := hashWalkerMethods[method.Name()]; !ok || goTypeKey(method.Type()) != key {
 				return false
 			}
 		}
