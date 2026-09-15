@@ -72,6 +72,14 @@ jobs:
         # preset directory here would make every fork lookup miss.
         echo "CONSENSUS_SPEC_TESTS_DIR=$(./setup_test_data.sh export)" >> $GITHUB_ENV
 
+    - name: Build test log formatter
+      # testfmt (see .github/tools/testfmt) turns go test -json streams into a
+      # readable step log: one line per package, verbose output in collapsed
+      # groups, failures in the open with annotations, and a step summary.
+      run: |
+        go -C .github/tools/testfmt build -o "$RUNNER_TEMP/testfmt" .
+        echo "TESTFMT=$RUNNER_TEMP/testfmt" >> "$GITHUB_ENV"
+
     - name: Run spec tests with coverage
       run: |
         cd tests/spectests
@@ -114,6 +122,14 @@ jobs:
     - name: Unpack compat-tests archives
       run: make unpack-compat-tests
 
+    - name: Build test log formatter
+      # testfmt (see .github/tools/testfmt) turns go test -json streams into a
+      # readable step log: one line per package, verbose output in collapsed
+      # groups, failures in the open with annotations, and a step summary.
+      run: |
+        go -C .github/tools/testfmt build -o "$RUNNER_TEMP/testfmt" .
+        echo "TESTFMT=$RUNNER_TEMP/testfmt" >> "$GITHUB_ENV"
+
     - name: Run codegen test suite without generated code
       # The gen_*.go files are gitignored, so before go generate runs the
       # suite exercises the pure reflection engine — the state fresh checkouts
@@ -129,55 +145,35 @@ jobs:
 
     - name: Run unit tests with coverage (default, no-cgo and 32-bit in parallel)
       # These three variants are independent and each build their own cache, so
-      # they run concurrently to overlap compile/link/idle gaps. The full -v
-      # output is tee'd to a per-variant log (uploaded as an artifact); only a
-      # concise view — package results, failures and panics, dropping the
-      # per-test RUN/PASS spam — is streamed to the step log, prefixed so the
-      # interleaved streams stay attributable. The step fails if any variant
-      # fails (PIPESTATUS captures the go test exit regardless of the filter).
+      # they run concurrently to overlap compile/link/idle gaps. testfmt
+      # multiplexes their event streams: the step log shows one line per
+      # completed package per variant (a collapsed group holding the verbose
+      # output), failures uncollapsed with file/line annotations, a heartbeat
+      # naming what is still running, and a verdict per variant. The full
+      # verbose output is written per variant for the artifact below, and the
+      # step fails if any variant fails.
       run: |
-        run_variant() {
-          local name="$1" prefix="$2"; shift 2
-          set +e
-          "$@" 2>&1 | tee "unit-${name}.log" \
-            | grep --line-buffered -vE '^[[:space:]]*(=== (RUN|PAUSE|CONT)|--- (PASS|SKIP))' \
-            | sed -u "s/^/${prefix} /"
-          echo "${PIPESTATUS[0]}" > "test-${name}.status"
-        }
-        run_variant default '[NORMAL]' env go test -v -race -coverprofile=coverage-unit.txt -coverpkg=./... ./... &
-        run_variant nocgo '[NOCGO]' env CGO_ENABLED=0 go test -v -coverprofile=coverage-unit-nocgo.txt -coverpkg=./... ./... &
-        run_variant 386 '[32BIT]' env GOARCH=386 CGO_ENABLED=0 go test -v -coverprofile=coverage-unit-386.txt -coverpkg=./... ./... &
-        wait
-
-        rc=0
-        for name in default nocgo 386; do
-          if [ "$(cat "test-${name}.status")" = 0 ]; then
-            echo "[${name}] PASSED"
-          else
-            echo "[${name}] FAILED"
-            rc=1
-          fi
-        done
-        exit "${rc}"
+        "$TESTFMT" -title "Unit tests (Go ${{ matrix.go-version }})" -log-dir unit-test-logs \
+          -cmd 'NORMAL: go test -race -coverprofile=coverage-unit.txt -coverpkg=./... ./...' \
+          -cmd 'NOCGO: CGO_ENABLED=0 go test -coverprofile=coverage-unit-nocgo.txt -coverpkg=./... ./...' \
+          -cmd '32BIT: GOARCH=386 CGO_ENABLED=0 go test -coverprofile=coverage-unit-386.txt -coverpkg=./... ./...'
 
     - name: Run endianness fallback tests with coverage
       # The dynssz_endian_generic tag swaps the compile-time hostLittleEndian
       # constant for the runtime-detected var, letting the tests force the
       # big-endian fallback paths of the bulk uint64 slice helpers on any host.
       run: |
-        go test -v -race -tags dynssz_endian_generic -coverprofile=coverage-unit-endianness.txt -coverpkg=./... ./sszutils/
+        "$TESTFMT" -title "Endianness fallback tests (Go ${{ matrix.go-version }})" -log-dir unit-test-logs \
+          -cmd 'ENDIAN: go test -race -tags=dynssz_endian_generic -coverprofile=coverage-unit-endianness.txt -coverpkg=./... ./sszutils/'
 
     - name: Upload verbose unit test logs
-      # Persist the full -v output that the step log intentionally elides, so
-      # the per-test detail stays available on demand (especially on failure).
+      # Persist the full -v output of every variant as plain text, for
+      # grepping outside the collapsed groups of the step log.
       if: always()
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: unit-test-logs-go${{ matrix.go-version }}
-        path: |
-          unit-default.log
-          unit-nocgo.log
-          unit-386.log
+        path: unit-test-logs/*.log
 
     - name: Upload unit test coverage artifacts
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

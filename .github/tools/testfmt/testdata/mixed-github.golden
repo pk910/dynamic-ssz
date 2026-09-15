@@ -1,0 +1,72 @@
+::group::[NORMAL] 1/4 █████░░░░░░░░░░░░░░░ ✗ alpha                               0.0s     4 passed    2 skipped    2 FAILED
+[NORMAL]     alpha_test.go:8: hello from one
+[NORMAL] --- PASS: TestOne (0.00s)
+[NORMAL]     alpha_test.go:10: needs a 64-bit platform
+[NORMAL] --- SKIP: TestSkipped (0.00s)
+[NORMAL]     alpha_test.go:12: needs a 64-bit platform
+[NORMAL] --- SKIP: TestSkippedToo (0.00s)
+[NORMAL] --- PASS: TestSubs/case-0 (0.00s)
+[NORMAL]     alpha_test.go:18: value mismatch: got 1, want 0
+[NORMAL] --- FAIL: TestSubs/case-1 (0.00s)
+[NORMAL] --- PASS: TestSubs/case-2 (0.00s)
+[NORMAL] --- FAIL: TestSubs (0.00s)
+[NORMAL] plain stdout line
+[NORMAL] --- PASS: TestPrints (0.00s)
+[NORMAL] FAIL
+[NORMAL] FAIL	example.com/fx/alpha	0.002s
+::endgroup::
+[NORMAL]     alpha_test.go:18: value mismatch: got 1, want 0
+[NORMAL] --- FAIL: TestSubs/case-1 (0.00s)
+[NORMAL] --- FAIL: TestSubs (0.00s)
+[NORMAL] FAIL
+[NORMAL] FAIL	example.com/fx/alpha	0.002s
+::error file=sub/alpha/alpha_test.go,line=18,title=TestSubs/case-1 [NORMAL]::value mismatch: got 1, want 0
+::group::[NORMAL] 2/4 ██████████░░░░░░░░░░ ✗ beta                                0.0s     1 passed    1 FAILED
+[NORMAL] --- PASS: TestFine (0.00s)
+[NORMAL] --- FAIL: TestPanics (0.00s)
+[NORMAL] panic: assignment to entry in nil map [recovered, repanicked]
+[NORMAL] 
+[NORMAL] goroutine 7 [running]:
+[NORMAL] testing.tRunner.func1.2({0x6b9a80, 0x6f10c0})
+[NORMAL] 	/usr/local/go/src/testing/testing.go:2123 +0x232
+[NORMAL] testing.tRunner.func1()
+[NORMAL] 	/usr/local/go/src/testing/testing.go:2126 +0x329
+[NORMAL] panic({0x6b9a80?, 0x6f10c0?})
+[NORMAL] 	/usr/local/go/src/runtime/panic.go:859 +0x125
+[NORMAL] example.com/fx/beta.TestPanics(0x200b6ef64488?)
+[NORMAL] 	/work/fx/beta/beta_test.go:9 +0x28
+[NORMAL] testing.tRunner(0x200b6ef64488, 0x6d7470)
+[NORMAL] 	/usr/local/go/src/testing/testing.go:2193 +0xea
+[NORMAL] created by testing.(*T).Run in goroutine 1
+[NORMAL] 	/usr/local/go/src/testing/testing.go:2258 +0x4d4
+[NORMAL] FAIL	example.com/fx/beta	0.004s
+::endgroup::
+[NORMAL] --- FAIL: TestPanics (0.00s)
+[NORMAL] panic: assignment to entry in nil map [recovered, repanicked]
+[NORMAL] 
+[NORMAL] goroutine 7 [running]:
+[NORMAL] testing.tRunner.func1.2({0x6b9a80, 0x6f10c0})
+[NORMAL] 	/usr/local/go/src/testing/testing.go:2123 +0x232
+[NORMAL] testing.tRunner.func1()
+[NORMAL] 	/usr/local/go/src/testing/testing.go:2126 +0x329
+[NORMAL] panic({0x6b9a80?, 0x6f10c0?})
+[NORMAL] 	/usr/local/go/src/runtime/panic.go:859 +0x125
+[NORMAL] example.com/fx/beta.TestPanics(0x200b6ef64488?)
+[NORMAL] 	/work/fx/beta/beta_test.go:9 +0x28
+[NORMAL] testing.tRunner(0x200b6ef64488, 0x6d7470)
+[NORMAL] 	/usr/local/go/src/testing/testing.go:2193 +0xea
+[NORMAL] created by testing.(*T).Run in goroutine 1
+[NORMAL] 	/usr/local/go/src/testing/testing.go:2258 +0x4d4
+[NORMAL] FAIL	example.com/fx/beta	0.004s
+::error file=sub/beta/beta_test.go,line=9,title=TestPanics [NORMAL]::panic: assignment to entry in nil map [recovered, repanicked]
+::group::[NORMAL] 4/4 ████████████████████ ✓ gamma                               0.0s     3 passed    1 skipped
+[NORMAL]     gamma_test.go:5: a
+[NORMAL] --- PASS: TestA (0.00s)
+[NORMAL] --- PASS: TestB/x (0.00s)
+[NORMAL]     gamma_test.go:8: not today
+[NORMAL] --- SKIP: TestB/y (0.00s)
+[NORMAL] --- PASS: TestB (0.00s)
+[NORMAL] PASS
+[NORMAL] ok  	example.com/fx/gamma	0.002s
+::endgroup::
+[NORMAL] ✗ FAILED  3 packages (+1 without tests) · 8 passed · 3 skipped · 3 failed · 0.0s · exit status 1

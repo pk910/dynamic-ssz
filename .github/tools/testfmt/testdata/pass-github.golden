@@ -1,0 +1,11 @@
+::group::[NORMAL] 2/2 ████████████████████ ✓ gamma                               0.0s     3 passed    1 skipped
+[NORMAL]     gamma_test.go:5: a
+[NORMAL] --- PASS: TestA (0.00s)
+[NORMAL] --- PASS: TestB/x (0.00s)
+[NORMAL]     gamma_test.go:8: not today
+[NORMAL] --- SKIP: TestB/y (0.00s)
+[NORMAL] --- PASS: TestB (0.00s)
+[NORMAL] PASS
+[NORMAL] ok  	example.com/fx/gamma	0.002s
+::endgroup::
+[NORMAL] ✓ PASSED  1 packages (+1 without tests) · 3 passed · 1 skipped · 0 failed · 0.0s

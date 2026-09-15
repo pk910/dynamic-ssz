@@ -1,0 +1,7 @@
+{"ImportPath":"example.com/fx/delta [example.com/fx/delta.test]","Action":"build-output","Output":"# example.com/fx/delta [example.com/fx/delta.test]\n"}
+{"ImportPath":"example.com/fx/delta [example.com/fx/delta.test]","Action":"build-output","Output":"delta/delta_test.go:5:37: declared and not used: x\n"}
+{"ImportPath":"example.com/fx/delta [example.com/fx/delta.test]","Action":"build-output","Output":"delta/delta_test.go:5:45: cannot use \"string\" (untyped string constant) as int value in variable declaration\n"}
+{"ImportPath":"example.com/fx/delta [example.com/fx/delta.test]","Action":"build-fail"}
+{"Time":"2026-09-15T19:26:25.903197962+02:00","Action":"start","Package":"example.com/fx/delta"}
+{"Time":"2026-09-15T19:26:25.903285875+02:00","Action":"output","Package":"example.com/fx/delta","Output":"FAIL\texample.com/fx/delta [build failed]\n","OutputType":"frame"}
+{"Time":"2026-09-15T19:26:25.903305532+02:00","Action":"fail","Package":"example.com/fx/delta","Elapsed":0,"FailedBuild":"example.com/fx/delta [example.com/fx/delta.test]"}
