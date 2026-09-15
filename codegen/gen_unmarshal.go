@@ -1215,6 +1215,9 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 			// declaration.
 			bindVar := varNameElemSize + strings.TrimPrefix(fieldSizeVar, "size")
 			ctx.appendCode(indent, bindVar+" := int(%s)\n", fieldSizeVar)
+			// A delegate's sizer is only known at run time; a zero size cannot
+			// divide the region.
+			ctx.appendCode(indent, "if %s <= 0 {\n\treturn %s\n}\n", bindVar, typePath.getErrorWith(`sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "list element size resolved to 0")`))
 			fieldSizeVar = bindVar
 		} else {
 			fieldSizeVar = fmt.Sprintf("%d", desc.ElemDesc.Size)

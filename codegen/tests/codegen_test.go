@@ -4442,3 +4442,35 @@ func TestCodegenCustomStreamDecoderPrefersDynamicMethods(t *testing.T) {
 		}
 	}
 }
+
+// A list element whose size resolves to zero at run time cannot be counted
+// from its region: the generated decoders report it, and the reflection type
+// cache refuses the type.
+func TestCodegenZeroSizeListElementRejected(t *testing.T) {
+	unmarshaler, ok := any(&ZeroSizeShellList{}).(sszutils.DynamicUnmarshaler)
+	if !ok {
+		t.Skip("no generated code present")
+	}
+	decoder, ok := any(&ZeroSizeShellList{}).(sszutils.DynamicDecoder)
+	if !ok {
+		t.Fatal("holder has no generated decoder")
+	}
+
+	ds := dynssz.NewDynSsz(nil)
+	for _, data := range [][]byte{{4, 0, 0, 0}, {4, 0, 0, 0, 0, 0}} {
+		if err := unmarshaler.UnmarshalSSZDyn(ds, data); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+			t.Errorf("buffer decode of %x: err = %v, want ErrInvalidConstraint", data, err)
+		}
+		if err := decoder.UnmarshalSSZDecoder(ds, sszutils.NewBufferDecoder(data)); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+			t.Errorf("stream decode of %x: err = %v, want ErrInvalidConstraint", data, err)
+		}
+		if err := ds.UnmarshalSSZReader(&ZeroSizeShellList{}, bytes.NewReader(data), -1); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+			t.Errorf("open-region decode of %x: err = %v, want ErrInvalidConstraint", data, err)
+		}
+	}
+
+	refl := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+	if err := refl.UnmarshalSSZ(&ZeroSizeShellList{}, []byte{4, 0, 0, 0}); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Errorf("reflection err = %v, want ErrInvalidConstraint", err)
+	}
+}

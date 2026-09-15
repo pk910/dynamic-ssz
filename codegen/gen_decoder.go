@@ -1047,16 +1047,18 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 			// declaration.
 			bindVar := varNameElemSize + strings.TrimPrefix(fieldSizeVar, "size")
 			ctx.appendCode(indent, bindVar+" := int(%s)\n", fieldSizeVar)
+			// A delegate's sizer is only known at run time; a zero size cannot
+			// divide the region.
+			ctx.appendCode(indent, "if %s <= 0 {\n\treturn %s\n}\n", bindVar, typePath.getErrorWith(`sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "list element size resolved to 0")`))
 			fieldSizeVar = bindVar
 		} else {
 			fieldSizeVar = fmt.Sprintf("%d", desc.ElemDesc.Size)
 		}
 
-		// fieldSizeVar is non-zero, literal or resolved: the type cache rejects
-		// every shape that would give a static list element a size of 0, and a
-		// dynssz-size resolving to 0 is rejected unless a positive static
-		// fallback takes over. So the division below cannot trap and the
-		// until-EOF loop always makes progress.
+		// fieldSizeVar is non-zero: a literal is never 0 and a dynssz-size
+		// resolving to 0 is rejected unless a positive static fallback takes
+		// over, while a run-time size is checked above. So the division below
+		// cannot trap and the until-EOF loop always makes progress.
 
 		// The element count comes from the region length, which is not knowable
 		// up front when the region is open. In that case itemCount stays -1 and

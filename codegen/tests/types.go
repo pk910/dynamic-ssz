@@ -2246,6 +2246,35 @@ var WidthCustomHolder_Payload = widthCustomHolderPayload(3)
 
 var WidthCustomHolder_Specs = map[string]any{"CUSTOM_WIDTH": uint64(3)}
 
+// ZeroSizeShell serializes to no bytes through its own static methods.
+type ZeroSizeShell struct{}
+
+var _ = sszutils.Annotate[ZeroSizeShell](`ssz-static:"true"`)
+
+func (z *ZeroSizeShell) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 0 }
+
+func (z *ZeroSizeShell) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+
+func (z *ZeroSizeShell) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	if len(buf) != 0 {
+		return sszutils.ErrTrailingDataFn(len(buf))
+	}
+	return nil
+}
+
+func (z *ZeroSizeShell) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(0)
+	return nil
+}
+
+// ZeroSizeShellList lists a zero-size element; its count cannot be derived
+// from a region, so decoding fails instead of dividing by zero.
+type ZeroSizeShellList struct {
+	L []ZeroSizeShell `ssz-max:"4"`
+}
+
 // CoverageTypes6 wraps MarshalerOnlyType as a field to trigger the
 // DynamicMarshaler/DynamicUnmarshaler dispatch branches.
 type CoverageTypes6 struct {
