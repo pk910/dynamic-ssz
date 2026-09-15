@@ -1454,6 +1454,16 @@ func (ctx *decoderContext) unmarshalOptional(desc *ssztypes.TypeDescriptor, varN
 // validate a 4-byte offset header (must equal 4); then unmarshal the single
 // element and assign a fresh pointer to it.
 func (ctx *decoderContext) unmarshalOptionalList(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
+	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 &&
+		desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+		// A delegate's sizer is only known at run time; a present element of
+		// zero size would be indistinguishable from an absent one.
+		sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(desc.ElemDesc)
+		if err != nil {
+			return err
+		}
+		ctx.appendCode(indent, "if %s == 0 {\n\treturn %s\n}\n", sizeVar, typePath.getErrorWith(`sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "optional-list element size resolved to 0")`))
+	}
 	// An empty region means "absent", so emptiness is a semantic discriminator
 	// here rather than a validation check and has to be answered by probing the
 	// reader when the region's extent is not yet known.

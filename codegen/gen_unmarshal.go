@@ -624,6 +624,22 @@ func (ctx *unmarshalContext) unmarshalOptional(desc *ssztypes.TypeDescriptor, va
 // then slice buf to skip the header. Finally allocate the pointer and
 // unmarshal the single element from the remaining bytes.
 func (ctx *unmarshalContext) unmarshalOptionalList(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
+	// A present fixed-size value occupies exactly the inner type's size. A
+	// delegate's sizer is only known at run time; a present element of zero
+	// size would be indistinguishable from an absent one.
+	sizeVar := ""
+	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
+		if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+			var err error
+			sizeVar, err = ctx.staticSizeVars.getStaticSizeVar(desc.ElemDesc)
+			if err != nil {
+				return err
+			}
+			ctx.appendCode(indent, "if %s == 0 {\n\treturn %s\n}\n", sizeVar, typePath.getErrorWith(`sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "optional-list element size resolved to 0")`))
+		} else {
+			sizeVar = fmt.Sprintf("%d", desc.ElemDesc.Size)
+		}
+	}
 	ctx.appendCode(indent, "if len(buf) == 0 {\n")
 	ctx.appendCode(indent+1, "%s = nil\n", varName)
 	ctx.appendCode(indent, "} else {\n")
@@ -636,20 +652,9 @@ func (ctx *unmarshalContext) unmarshalOptionalList(desc *ssztypes.TypeDescriptor
 		ctx.appendCode(indent+1, "if firstOffset != 4 {\n\treturn %s\n}\n", typePath.getErrorWith(errOffset))
 		ctx.appendCode(indent+1, "buf := buf[4:]\n")
 	} else {
-		// A present fixed-size value occupies exactly the inner type's size;
-		// reject truncated regions (which would decode zero-padded garbage or
+		// Reject truncated regions (which would decode zero-padded garbage or
 		// index out of range) and oversized regions (trailing data), matching
 		// the reflection and streaming-decoder paths.
-		var sizeVar string
-		if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
-			var err error
-			sizeVar, err = ctx.staticSizeVars.getStaticSizeVar(desc.ElemDesc)
-			if err != nil {
-				return err
-			}
-		} else {
-			sizeVar = fmt.Sprintf("%d", desc.ElemDesc.Size)
-		}
 		eofErr := typePath.getErrorWith("sszutils.ErrOptionalValueEOFFn()")
 		trailErr := typePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(uint64(len(buf)) - %s)", sizeVar))
 		ctx.appendExactLenCheck(indent+1, sizeVar, "uint64(len(buf))", eofErr, trailErr)

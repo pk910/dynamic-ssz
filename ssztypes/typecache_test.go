@@ -5216,6 +5216,53 @@ func TestTypeCache_ProgressiveIndexBound(t *testing.T) {
 // An explicit ssz-size:"0" on a slice or string must be rejected instead of
 // silently degrading to an unbounded list (zero-length vectors are illegal
 // in SSZ).
+// delegatedZeroSize is a fully delegated static type whose sizer reports 0.
+type delegatedZeroSize struct{}
+
+var _ = sszutils.Annotate[delegatedZeroSize](`ssz-static:"true"`)
+
+func (*delegatedZeroSize) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+
+func (*delegatedZeroSize) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+
+func (*delegatedZeroSize) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 0 }
+
+func (*delegatedZeroSize) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(0)
+	return nil
+}
+
+// An optional-list of a zero-size element could never decode presence, so it
+// is rejected like a list of it; a plain pointer to the element stays valid.
+func TestTypeCache_OptionalListZeroSizeElementRejected(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	cache.ExtendedTypes = true
+
+	type optHolder struct {
+		Item *delegatedZeroSize `ssz-type:"optional-list"`
+	}
+	_, err := cache.GetTypeDescriptor(reflect.TypeOf(optHolder{}), nil, nil, nil)
+	if !errors.Is(err, sszutils.ErrInvalidConstraint) || !strings.Contains(err.Error(), "optional-list element type") {
+		t.Fatalf("optional-list of a zero-size element: err = %v, want ErrInvalidConstraint naming the element", err)
+	}
+
+	type listHolder struct {
+		Items []delegatedZeroSize `ssz-max:"1"`
+	}
+	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(listHolder{}), nil, nil, nil); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Fatalf("list of a zero-size element: err = %v, want ErrInvalidConstraint", err)
+	}
+
+	type plainHolder struct {
+		Item *delegatedZeroSize
+	}
+	if _, err := cache.GetTypeDescriptor(reflect.TypeOf(plainHolder{}), nil, nil, nil); err != nil {
+		t.Fatalf("plain pointer to a zero-size element: %v", err)
+	}
+}
+
 func TestTypeCache_ZeroSizeSliceRejected(t *testing.T) {
 	cache := NewTypeCache(&dummyDynamicSpecs{})
 

@@ -1873,6 +1873,13 @@ func (tc *TypeCache) buildOptionalListDescriptor(desc *TypeDescriptor, runtimeTy
 	desc.ElemDesc = elemDesc
 	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
 
+	// A present element of zero size leaves the region as empty as an absent
+	// one, so presence could never be decoded. Only reachable through custom
+	// types whose sizer reports 0.
+	if elemDesc.SszTypeFlags&(SszTypeFlagIsDynamic|SszTypeFlagHasSizeExpr) == 0 && elemDesc.Size == 0 {
+		return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "optional-list element type %v has a static SSZ size of 0", schemaType)
+	}
+
 	return nil
 }
 

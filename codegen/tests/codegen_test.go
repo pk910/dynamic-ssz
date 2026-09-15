@@ -1441,6 +1441,38 @@ func TestCodegenPackedBasicElementsHashLikePlain(t *testing.T) {
 	}
 }
 
+// An optional-list of a zero-size element could never decode presence: the
+// generated decoders refuse it at run time, where the element's sizer is
+// first known, and reflection refuses the type.
+func TestCodegenZeroSizeOptionalListElementRejected(t *testing.T) {
+	unmarshaler, ok := any(&ZeroSizeShellOptional{}).(sszutils.DynamicUnmarshaler)
+	if !ok {
+		t.Skip("no generated code present")
+	}
+	decoder, ok := any(&ZeroSizeShellOptional{}).(sszutils.DynamicDecoder)
+	if !ok {
+		t.Fatal("holder has no generated decoder")
+	}
+
+	ds := dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes())
+	for _, data := range [][]byte{{4, 0, 0, 0}, {4, 0, 0, 0, 0, 0}} {
+		if err := unmarshaler.UnmarshalSSZDyn(ds, data); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+			t.Errorf("buffer decode of %x: err = %v, want ErrInvalidConstraint", data, err)
+		}
+		if err := decoder.UnmarshalSSZDecoder(ds, sszutils.NewBufferDecoder(data)); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+			t.Errorf("stream decode of %x: err = %v, want ErrInvalidConstraint", data, err)
+		}
+		if err := ds.UnmarshalSSZReader(&ZeroSizeShellOptional{}, bytes.NewReader(data), -1); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+			t.Errorf("open-region decode of %x: err = %v, want ErrInvalidConstraint", data, err)
+		}
+	}
+
+	refl := dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes(), dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+	if err := refl.UnmarshalSSZ(&ZeroSizeShellOptional{}, []byte{4, 0, 0, 0}); !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Errorf("reflection err = %v, want ErrInvalidConstraint", err)
+	}
+}
+
 // A custom type whose hash method appends only its packed bytes is padded to
 // a leaf as a field and packed inside lists and vectors, so the holder hashes
 // like its uint16 twin in both engines; a root-level value is padded too.

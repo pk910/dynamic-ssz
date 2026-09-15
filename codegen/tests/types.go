@@ -2580,6 +2580,13 @@ type ZeroSizeShellList struct {
 	L []ZeroSizeShell `ssz-max:"4"`
 }
 
+// ZeroSizeShellOptional holds a zero-size element as an optional-list; a
+// present value would leave the region as empty as an absent one, so decoding
+// fails instead of losing presence.
+type ZeroSizeShellOptional struct {
+	Item *ZeroSizeShell `ssz-type:"optional-list"`
+}
+
 // WideByteCustom is a custom type stored in a uint8 whose SSZ width is four
 // bytes.
 type WideByteCustom uint8
