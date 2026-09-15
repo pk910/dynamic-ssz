@@ -925,7 +925,7 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 	if desc.SszType == ssztypes.SszProgressiveListType {
 		treeType = sszutils.TreeTypeProgressive
 	}
-	packed := itemSize < 32 || desc.ElemDesc.SszType == ssztypes.SszUint256Type
+	packed := packedElemSize(desc.ElemDesc) > 0
 
 	// Handle byte slices
 	switch {

@@ -2302,6 +2302,65 @@ func OnlyWithPlainPayload(mask uint64) OnlyWithPlain {
 	}
 }
 
+// WrappedU256 is a tagged wrapper around a uint256 whose hash method puts
+// the 32 bytes of its value.
+type WrappedU256 struct {
+	Data [32]byte `ssz-type:"uint256"`
+}
+
+var _ = sszutils.Annotate[WrappedU256](`ssz-type:"wrapper"`)
+
+func (w *WrappedU256) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutBytes(w.Data[:])
+	return nil
+}
+
+// NarrowWrappedU256 is the same wrapper whose hash method puts only a uint64,
+// which is not the packed form of a uint256.
+type NarrowWrappedU256 struct {
+	Data [32]byte `ssz-type:"uint256"`
+}
+
+var _ = sszutils.Annotate[NarrowWrappedU256](`ssz-type:"wrapper"`)
+
+func (w *NarrowWrappedU256) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(binary.LittleEndian.Uint64(w.Data[:8]))
+	return nil
+}
+
+// WrappedU256Holder lists the well-behaved wrapper and NarrowWrappedU256Holder
+// the narrow one; the Reflection twins sit outside the generation set and
+// WrappedU256Plain is the plain twin.
+type WrappedU256Holder struct {
+	L []WrappedU256 `ssz-max:"4" ssz-type:"?,wrapper"`
+}
+
+type WrappedU256Reflection struct {
+	L []WrappedU256 `ssz-max:"4" ssz-type:"?,wrapper"`
+}
+
+type WrappedU256Plain struct {
+	L [][32]byte `ssz-max:"4" ssz-type:"?,uint256"`
+}
+
+type NarrowWrappedU256Holder struct {
+	L []NarrowWrappedU256 `ssz-max:"4" ssz-type:"?,wrapper"`
+}
+
+type NarrowWrappedU256Reflection struct {
+	L []NarrowWrappedU256 `ssz-max:"4" ssz-type:"?,wrapper"`
+}
+
+var WrappedU256Holder_Payload = WrappedU256Holder{L: []WrappedU256{{Data: [32]byte{1}}, {Data: [32]byte{2, 0, 0, 0, 0, 0, 0, 0, 3}}}}
+
+var WrappedU256Reflection_Payload = WrappedU256Reflection{L: []WrappedU256{{Data: [32]byte{1}}, {Data: [32]byte{2, 0, 0, 0, 0, 0, 0, 0, 3}}}}
+
+var WrappedU256Plain_Payload = WrappedU256Plain{L: [][32]byte{{1}, {2, 0, 0, 0, 0, 0, 0, 0, 3}}}
+
+var NarrowWrappedU256Holder_Payload = NarrowWrappedU256Holder{L: []NarrowWrappedU256{{Data: [32]byte{1}}, {Data: [32]byte{2}}}}
+
+var NarrowWrappedU256Reflection_Payload = NarrowWrappedU256Reflection{L: []NarrowWrappedU256{{Data: [32]byte{1}}, {Data: [32]byte{2}}}}
+
 // CountedNum is a named uint64 whose hash method counts its calls and puts
 // the value; CountedNumErr makes it fail instead.
 type CountedNum uint64

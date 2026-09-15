@@ -223,6 +223,10 @@ types:
     output: gen_edgecases.go
   - name: BitCfgDyn
     output: gen_edgecases.go
+  - name: WrappedU256Holder
+    output: gen_edgecases.go
+  - name: NarrowWrappedU256Holder
+    output: gen_edgecases.go
   - name: UnionSpecChild
     output: gen_unions.go
   - name: UnionSpecParent

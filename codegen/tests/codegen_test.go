@@ -4540,6 +4540,44 @@ func TestCodegenHashTreeRootWithOnlyDelegated(t *testing.T) {
 	}
 }
 
+// A wrapper around a uint256 packs like the uint256 itself in both engines:
+// a hash method that puts the 32 bytes hashes like the plain twin, one that
+// puts less is refused as a packed delegate.
+func TestCodegenWrappedUint256ElementsPack(t *testing.T) {
+	if _, generated := any(&WrappedU256Holder_Payload).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+	plainRoot, err := ds.HashTreeRoot(&WrappedU256Plain_Payload)
+	if err != nil {
+		t.Fatalf("hash plain twin: %v", err)
+	}
+	for _, v := range []any{&WrappedU256Holder_Payload, &WrappedU256Reflection_Payload} {
+		root, err := ds.HashTreeRoot(v)
+		if err != nil {
+			t.Fatalf("hash %T: %v", v, err)
+		}
+		if root != plainRoot {
+			t.Fatalf("%T root %x != plain twin root %x", v, root, plainRoot)
+		}
+		tree, err := ds.GetTree(v)
+		if err != nil {
+			t.Fatalf("tree %T: %v", v, err)
+		}
+		if treeRoot := tree.Hash(); !bytes.Equal(treeRoot, plainRoot[:]) {
+			t.Fatalf("%T tree root %x != root %x", v, treeRoot, plainRoot)
+		}
+	}
+	for _, v := range []any{&NarrowWrappedU256Holder_Payload, &NarrowWrappedU256Reflection_Payload} {
+		if _, err := ds.HashTreeRoot(v); !errors.Is(err, sszutils.ErrPackedDelegate) {
+			t.Fatalf("%T root err = %v, want ErrPackedDelegate", v, err)
+		}
+		if _, err := ds.GetTree(v); !errors.Is(err, sszutils.ErrPackedDelegate) {
+			t.Fatalf("%T tree err = %v, want ErrPackedDelegate", v, err)
+		}
+	}
+}
+
 // A uint64 element with a hash method of its own is hashed through that
 // method in both engines, so the method runs once per element and its error
 // reaches the caller; the roots equal the plain twin's.
