@@ -207,7 +207,7 @@ func ParseBitlist(dst, buf []byte) ([]byte, uint64) {
 		return dst, 0
 	}
 	msb := uint8(msbLen) - 1
-	size := uint64(8*(len(buf)-1) + int(msb))
+	size := uint64(len(buf)-1)*8 + uint64(msb)
 
 	dstlen := len(dst)
 	dst = append(dst, buf...)

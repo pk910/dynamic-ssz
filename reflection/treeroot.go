@@ -946,7 +946,7 @@ func (ctx *ReflectionCtx) buildRootFromBitlist(sourceType *ssztypes.TypeDescript
 		if sourceType.SszTypeFlags&ssztypes.SszTypeFlagNoSszRoot != 0 {
 			return ssztypes.NoSszRootError(sourceType)
 		}
-		maxSize = uint64(len(bytes) * 8)
+		maxSize = uint64(len(bytes)) * 8
 	}
 
 	isProgressive := sourceType.SszType == ssztypes.SszProgressiveBitlistType

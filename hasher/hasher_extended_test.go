@@ -1509,3 +1509,48 @@ func TestHashReturnsDeferredScopeRoot(t *testing.T) {
 		})
 	}
 }
+
+// hugeBitlist returns a bitlist of exactly 2^31 zero bits with its delimiter:
+// 256 MiB of data plus one byte. Its bit count exceeds the 32-bit int range.
+func hugeBitlist() []byte {
+	data := make([]byte, (1<<28)+1)
+	data[len(data)-1] = 1
+	return data
+}
+
+// hugeBitlistRoot is the root of hugeBitlist under a limit of 2^31 bits: 2^23
+// zero chunks merkleized to depth 23, mixed with the bit count.
+func hugeBitlistRoot() [32]byte {
+	var node [32]byte
+	var pair [64]byte
+	for range 23 {
+		copy(pair[:32], node[:])
+		copy(pair[32:], node[:])
+		node = sha256.Sum256(pair[:])
+	}
+	copy(pair[:32], node[:])
+	clear(pair[32:])
+	binary.LittleEndian.PutUint64(pair[32:], 1<<31)
+	return sha256.Sum256(pair[:])
+}
+
+// A bitlist longer than the 32-bit int range in bits keeps its exact bit
+// count through the parser and the length mixin.
+func TestBitlistBitCountBeyondInt32(t *testing.T) {
+	data := hugeBitlist()
+	_, count := ParseBitlist(data[:0:len(data)], data)
+	if count != 1<<31 {
+		t.Fatalf("ParseBitlist count = %d, want %d", count, uint64(1)<<31)
+	}
+
+	data = hugeBitlist()
+	h := NewHasher()
+	h.PutBitlist(data, 1<<31)
+	root, err := h.HashRoot()
+	if err != nil {
+		t.Fatalf("HashRoot: %v", err)
+	}
+	if want := hugeBitlistRoot(); root != want {
+		t.Fatalf("PutBitlist root = %x, want %x", root, want)
+	}
+}

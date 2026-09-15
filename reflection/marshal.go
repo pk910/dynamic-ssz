@@ -817,7 +817,7 @@ func (ctx *ReflectionCtx) marshalBitlist(sourceType *ssztypes.TypeDescriptor, so
 
 	if sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
 		msb := uint8(bits.Len8(bytes[len(bytes)-1])) - 1
-		bitCount := uint64(8*(len(bytes)-1)) + uint64(msb)
+		bitCount := uint64(len(bytes)-1)*8 + uint64(msb)
 		if bitCount > sourceType.Limit {
 			return sszutils.ErrBitlistLengthFn(bitCount, sourceType.Limit)
 		}

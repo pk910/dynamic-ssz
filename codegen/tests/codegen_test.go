@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -4537,6 +4538,54 @@ func TestCodegenHashTreeRootWithOnlyDelegated(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A bitlist of exactly 2^31 bits is within its limit on every platform: the
+// generated buffer and stream paths accept it and agree with reflection.
+func TestCodegenBitlistBitCountBeyondInt32(t *testing.T) {
+	if _, generated := any(&HugeBitlistHolder{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	data := make([]byte, (1<<28)+1)
+	data[len(data)-1] = 1
+	holder := &HugeBitlistHolder{B: data}
+	marshaler, _ := any(holder).(sszutils.DynamicMarshaler)
+	encoder, _ := any(holder).(sszutils.DynamicEncoder)
+	hashRoot, _ := any(holder).(sszutils.DynamicHashRoot)
+	ds := dynssz.NewDynSsz(nil)
+
+	encoded, err := marshaler.MarshalSSZDyn(ds, nil)
+	if err != nil || len(encoded) != 4+len(data) {
+		t.Fatalf("MarshalSSZDyn = %d bytes, %v; want %d", len(encoded), err, 4+len(data))
+	}
+	if err = encoder.MarshalSSZEncoder(ds, sszutils.NewStreamEncoder(io.Discard, 4096)); err != nil {
+		t.Fatalf("MarshalSSZEncoder: %v", err)
+	}
+
+	refl := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+	want, err := refl.HashTreeRoot(holder)
+	if err != nil {
+		t.Fatalf("reflection HashTreeRoot: %v", err)
+	}
+	hh := hasher.NewHasher()
+	if err = hashRoot.HashTreeRootWithDyn(ds, hh); err != nil {
+		t.Fatalf("HashTreeRootWithDyn: %v", err)
+	}
+	root, err := hh.HashRoot()
+	if err != nil || root != want {
+		t.Fatalf("generated root = %x, %v; want %x", root, err, want)
+	}
+
+	var decoded HugeBitlistHolder
+	unmarshaler, _ := any(&decoded).(sszutils.DynamicUnmarshaler)
+	if err = unmarshaler.UnmarshalSSZDyn(ds, encoded); err != nil || len(decoded.B) != len(data) {
+		t.Fatalf("UnmarshalSSZDyn = %d bytes, %v; want %d", len(decoded.B), err, len(data))
+	}
+	decoded = HugeBitlistHolder{}
+	decoder, _ := any(&decoded).(sszutils.DynamicDecoder)
+	if err = decoder.UnmarshalSSZDecoder(ds, sszutils.NewBufferDecoder(encoded)); err != nil || len(decoded.B) != len(data) {
+		t.Fatalf("UnmarshalSSZDecoder = %d bytes, %v; want %d", len(decoded.B), err, len(data))
 	}
 }
 

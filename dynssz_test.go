@@ -4927,6 +4927,49 @@ func TestEmbeddedPromotionNoFalseDelegation(t *testing.T) {
 	}
 }
 
+// hugeBits is a bitlist whose limit exceeds the 32-bit int range in bits.
+type hugeBits []byte
+
+var _ = sszutils.Annotate[hugeBits](`ssz-type:"bitlist" ssz-max:"2147483648"`)
+
+// A bitlist of exactly 2^31 bits is within its limit on every platform: the
+// reflection engine writes, hashes and reads it back.
+func TestReflectionBitlistBitCountBeyondInt32(t *testing.T) {
+	data := make([]byte, (1<<28)+1)
+	data[len(data)-1] = 1
+	value := hugeBits(data)
+	ds := NewDynSsz(nil, WithNoDelegation(), WithNoFastSsz())
+
+	if err := ds.MarshalSSZWriter(&value, io.Discard); err != nil {
+		t.Fatalf("MarshalSSZWriter: %v", err)
+	}
+	size, err := ds.SizeSSZ(&value)
+	if err != nil || size != len(data) {
+		t.Fatalf("SizeSSZ = %d, %v; want %d", size, err, len(data))
+	}
+
+	var want [32]byte
+	var pair [64]byte
+	for range 23 {
+		copy(pair[:32], want[:])
+		copy(pair[32:], want[:])
+		want = sha256.Sum256(pair[:])
+	}
+	copy(pair[:32], want[:])
+	clear(pair[32:])
+	binary.LittleEndian.PutUint64(pair[32:], 1<<31)
+	want = sha256.Sum256(pair[:])
+	root, err := ds.HashTreeRoot(&value)
+	if err != nil || root != want {
+		t.Fatalf("HashTreeRoot = %x, %v; want %x", root, err, want)
+	}
+
+	var decoded hugeBits
+	if err := ds.UnmarshalSSZ(&decoded, data); err != nil || len(decoded) != len(data) {
+		t.Fatalf("UnmarshalSSZ = %d bytes, %v; want %d", len(decoded), err, len(data))
+	}
+}
+
 // promotedViewInner serializes its own B through hand-written view methods
 // for promotedViewSchema.
 type promotedViewInner struct{ B uint64 }

@@ -1065,7 +1065,7 @@ func (ctx *hashTreeRootContext) hashBitlist(desc *ssztypes.TypeDescriptor, varNa
 
 		// No explicit limit: derive it from the serialized bit length and mix
 		// in the length, matching the reflection path (buildRootFromBitlist).
-		ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, size, sszutils.CalculateBitlistLimit(uint64(len(%s)*8)))\n", valueVar)
+		ctx.appendCode(indent, "hh.MerkleizeWithMixin(idx, size, sszutils.CalculateBitlistLimit(uint64(len(%s))*8))\n", valueVar)
 	}
 
 	return nil

@@ -1371,9 +1371,9 @@ func (ctx *decoderContext) unmarshalBitlist(desc *ssztypes.TypeDescriptor, varNa
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray == 0 {
 			lastByte = "uint8(" + lastByte + ")"
 		}
-		ctx.appendCode(indent, "bitCount := 8*(blen-1) + int(%s.Len8(%s)) - 1\n", bitsPkgName, lastByte)
+		ctx.appendCode(indent, "bitCount := uint64(blen-1)*8 + uint64(%s.Len8(%s)) - 1\n", bitsPkgName, lastByte)
 		errCode := fmt.Sprintf("sszutils.ErrBitlistLengthFn(bitCount, %s)", uintLitArg(maxVar))
-		ctx.appendCode(indent, "if %s {\n\treturn %s\n}\n", uintCmpExpr("bitCount", ">", maxVar), typePath.getErrorWith(errCode))
+		ctx.appendCode(indent, "if bitCount > %s {\n\treturn %s\n}\n", maxVar, typePath.getErrorWith(errCode))
 	}
 
 	return nil

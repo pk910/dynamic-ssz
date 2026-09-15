@@ -2361,6 +2361,12 @@ var NarrowWrappedU256Holder_Payload = NarrowWrappedU256Holder{L: []NarrowWrapped
 
 var NarrowWrappedU256Reflection_Payload = NarrowWrappedU256Reflection{L: []NarrowWrappedU256{{Data: [32]byte{1}}, {Data: [32]byte{2}}}}
 
+// HugeBitlistHolder holds a bitlist whose limit exceeds the 32-bit int range
+// in bits.
+type HugeBitlistHolder struct {
+	B []byte `ssz-type:"bitlist" ssz-max:"2147483648"`
+}
+
 // CountedNum is a named uint64 whose hash method counts its calls and puts
 // the value; CountedNumErr makes it fail instead.
 type CountedNum uint64

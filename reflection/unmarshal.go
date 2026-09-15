@@ -1474,7 +1474,7 @@ func (ctx *ReflectionCtx) unmarshalBitlist(targetType *ssztypes.TypeDescriptor, 
 
 	if targetType.SszTypeFlags&ssztypes.SszTypeFlagHasLimit != 0 {
 		msb := uint8(bits.Len8(byteSlice[sszLen-1])) - 1
-		bitCount := uint64(8*(sszLen-1)) + uint64(msb)
+		bitCount := uint64(sszLen-1)*8 + uint64(msb)
 		if bitCount > targetType.Limit {
 			return sszutils.ErrBitlistLengthFn(bitCount, targetType.Limit)
 		}
