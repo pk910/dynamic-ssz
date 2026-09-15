@@ -4368,6 +4368,55 @@ func TestCodegenPackedBasicViewElements(t *testing.T) {
 	}
 }
 
+// A type whose only hash method is HashTreeRootWith is delegated to by both
+// engines wherever it sits. Under NoFastSsz reflection hashes it
+// structurally; NoDelegation keeps the generated holder out of that walk.
+func TestCodegenHashTreeRootWithOnlyDelegated(t *testing.T) {
+	if _, generated := any(&OnlyWithHolder_Payload).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+	for _, tc := range []struct {
+		name string
+		mask uint64
+		opts []dynssz.DynSszOption
+	}{
+		{"delegated", 0xffff, nil},
+		{"structural", 0, []dynssz.DynSszOption{dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := dynssz.NewDynSsz(nil, tc.opts...)
+			plain := OnlyWithPlainPayload(tc.mask)
+			plainRoot, err := ds.HashTreeRoot(&plain)
+			if err != nil {
+				t.Fatalf("hash plain twin: %v", err)
+			}
+			genRoot, err := ds.HashTreeRoot(&OnlyWithHolder_Payload)
+			if err != nil {
+				t.Fatalf("hash holder: %v", err)
+			}
+			if genRoot != plainRoot {
+				t.Fatalf("generated root %x != plain twin root %x", genRoot, plainRoot)
+			}
+			reflRoot, err := ds.HashTreeRoot(&OnlyWithReflection_Payload)
+			if err != nil {
+				t.Fatalf("hash reflection twin: %v", err)
+			}
+			if reflRoot != plainRoot {
+				t.Fatalf("reflection root %x != plain twin root %x", reflRoot, plainRoot)
+			}
+			for _, v := range []any{&OnlyWithHolder_Payload, &OnlyWithReflection_Payload} {
+				tree, treeErr := ds.GetTree(v)
+				if treeErr != nil {
+					t.Fatalf("tree %T: %v", v, treeErr)
+				}
+				if treeRoot := tree.Hash(); !bytes.Equal(treeRoot, plainRoot[:]) {
+					t.Fatalf("tree root %x != root %x for %T", treeRoot, plainRoot, v)
+				}
+			}
+		})
+	}
+}
+
 // A uint64 element with a hash method of its own is hashed through that
 // method in both engines, so the method runs once per element and its error
 // reaches the caller; the roots equal the plain twin's.

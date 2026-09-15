@@ -64,7 +64,7 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 	}
 
 	if ctx.verbose {
-		isFastsszHasher := sourceType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0
+		isFastsszHasher := sourceType.SszCompatFlags&(ssztypes.SszCompatFlagFastSSZHasher|ssztypes.SszCompatFlagHashTreeRootWith) != 0
 		hasDynamicSize := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
 		hasDynamicMax := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicMax != 0
 		useFastSsz := !ctx.noFastSsz && isFastsszHasher && !hasDynamicSize && !hasDynamicMax
@@ -115,7 +115,7 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 		}
 	} else if sourceType.SszCompatFlags != 0 || sourceType.SszType == ssztypes.SszCustomType {
 		// Fast path: skip compat interface checks for types that don't implement any
-		isFastsszHasher := sourceType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0
+		isFastsszHasher := sourceType.SszCompatFlags&(ssztypes.SszCompatFlagFastSSZHasher|ssztypes.SszCompatFlagHashTreeRootWith) != 0
 		useDynamicHashRoot := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0
 		hasDynamicSize := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize != 0
 		hasDynamicMax := sourceType.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicMax != 0

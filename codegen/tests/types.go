@@ -2137,6 +2137,60 @@ type ViewLeafTypes_View1 struct {
 
 var ViewLeafTypes_Payload = ViewLeafTypes_Base{L: []LeafViewNum{1, 2, 3}}
 
+// OnlyWith is a container whose only hash method is HashTreeRootWith; it
+// hashes its value masked so delegation shows in the root.
+type OnlyWith struct{ Data uint64 }
+
+func (o *OnlyWith) HashTreeRootWith(hh sszutils.HashWalker) error {
+	idx := hh.StartTree(sszutils.TreeTypeNone)
+	hh.PutUint64(o.Data ^ 0xffff)
+	hh.Merkleize(idx)
+	return nil
+}
+
+// OnlyWithNum is a uint64 whose only hash method is HashTreeRootWith.
+type OnlyWithNum uint64
+
+func (o *OnlyWithNum) HashTreeRootWith(hh sszutils.HashWalker) error {
+	hh.PutUint64(uint64(*o) ^ 0xffff)
+	return nil
+}
+
+// OnlyWithHolder places both as a field, a composite list and a packed list.
+type OnlyWithHolder struct {
+	F OnlyWith
+	L []OnlyWith    `ssz-max:"4"`
+	N []OnlyWithNum `ssz-max:"8"`
+}
+
+// OnlyWithReflection is the twin outside the generation set.
+type OnlyWithReflection struct {
+	F OnlyWith
+	L []OnlyWith    `ssz-max:"4"`
+	N []OnlyWithNum `ssz-max:"8"`
+}
+
+// OnlyWithPlain is the twin built from plain values.
+type OnlyWithPlain struct {
+	F struct{ Data uint64 }
+	L []struct{ Data uint64 } `ssz-max:"4"`
+	N []uint64                `ssz-max:"8"`
+}
+
+var OnlyWithHolder_Payload = OnlyWithHolder{F: OnlyWith{1}, L: []OnlyWith{{2}, {3}}, N: []OnlyWithNum{4, 5, 6}}
+
+var OnlyWithReflection_Payload = OnlyWithReflection{F: OnlyWith{1}, L: []OnlyWith{{2}, {3}}, N: []OnlyWithNum{4, 5, 6}}
+
+// OnlyWithPlainPayload builds the plain twin, masked as the hash methods do
+// or unmasked as the structure is.
+func OnlyWithPlainPayload(mask uint64) OnlyWithPlain {
+	return OnlyWithPlain{
+		F: struct{ Data uint64 }{1 ^ mask},
+		L: []struct{ Data uint64 }{{2 ^ mask}, {3 ^ mask}},
+		N: []uint64{4 ^ mask, 5 ^ mask, 6 ^ mask},
+	}
+}
+
 // CountedNum is a named uint64 whose hash method counts its calls and puts
 // the value; CountedNumErr makes it fail instead.
 type CountedNum uint64

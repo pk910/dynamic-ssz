@@ -208,6 +208,8 @@ types:
     output: gen_edgecases.go
   - name: CountedNumHolder
     output: gen_edgecases.go
+  - name: OnlyWithHolder
+    output: gen_edgecases.go
   - name: UnionSpecChild
     output: gen_unions.go
   - name: UnionSpecParent
