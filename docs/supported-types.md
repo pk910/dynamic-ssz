@@ -579,7 +579,10 @@ appends the packed bytes, and the method must leave exactly those bytes; a
 method that merkleizes a leaf of its own there fails with
 `sszutils.ErrPackedDelegate`. A `HashTreeRoot()`-only type contributes the
 packed prefix of its root, so its root has to be the padded value. Custom
-types of any other size occupy one leaf per element.
+types of any other size occupy one leaf per element: a `HashTreeRootWith*`
+method there must leave exactly one root on the walker, as it would for
+fastssz. The walker does not verify this; a method that leaves several leaves
+shifts the following elements and can push chunks past the list limit.
 
 ### Dynamic Interfaces
 

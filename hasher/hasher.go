@@ -1430,11 +1430,10 @@ func (h *Hasher) merkleizeImpl(dst, input []byte, limit uint64) []byte {
 	// type, so no depth can hold it and there is no correct root. Rather than
 	// grow the tree to fit -- which invents a root the type cannot have -- the
 	// tree keeps the depth the limit asks for and the surplus chunks fall
-	// outside it, leaving the root of the first 2^depth chunks. That is what
-	// fastssz produces, and this hasher is handed such input only through the
-	// HashTreeRootWith compat surface, where matching it keeps a foreign type's
-	// root independent of which hasher drives it. Both engines reject an
-	// over-capacity list before they reach this point.
+	// outside it, leaving the root of the first 2^depth chunks. Both engines
+	// reject an over-capacity list before they reach this point, so the
+	// surplus can only come from a hash method that leaves more than one
+	// leaf per value; that is the method's contract to keep, not checked here.
 
 	if limit == 0 {
 		return append(dst, zeroBytes[:32]...)
