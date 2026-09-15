@@ -32,7 +32,7 @@
 [NORMAL] ✓ TestB                               0.0s     1 passed    1 skipped subtests
 [NORMAL] 4/4 ████████████████████ ✓ gamma                               0.0s     3 passed    1 skipped
 [NORMAL] ✗ FAILED  3 packages (+1 without tests) · 8 passed · 3 skipped · 3 failed · 0.0s · exit status 1
-[NORMAL] ── verbose output, one collapsed group per test ──
+[NORMAL] ── verbose output, one collapsed group per top-level test ──
 ::group::[NORMAL] ✓ TestOne                             0.0s
 [NORMAL]     alpha_test.go:8: hello from one
 [NORMAL] --- PASS: TestOne (0.00s)
