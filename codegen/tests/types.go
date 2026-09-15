@@ -1152,6 +1152,64 @@ var NoDynExprTypes_Payload = NoDynExprTypes{
 	Str1:   "hello",
 }
 
+// NoDynWrapped is a type wrapper around a uint64 generated without dynamic
+// expressions.
+type NoDynWrapped struct {
+	Data uint64
+}
+
+var _ = sszutils.Annotate[NoDynWrapped](`ssz-type:"wrapper"`)
+
+// NoDynWrappedDyn is a type wrapper whose only hash method is the dynamic
+// one; static generation inlines its structure instead.
+type NoDynWrappedDyn struct {
+	Data uint64
+}
+
+var _ = sszutils.Annotate[NoDynWrappedDyn](`ssz-type:"wrapper"`)
+
+var _ sszutils.DynamicHashRoot = (*NoDynWrappedDyn)(nil)
+
+func (w *NoDynWrappedDyn) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(w.Data)
+	return nil
+}
+
+// NoDynWrappedHolder places both wrappers where the static hasher packs them
+// and as fields.
+type NoDynWrappedHolder struct {
+	L  []NoDynWrapped    `ssz-max:"8" ssz-type:"?,wrapper"`
+	V  [4]NoDynWrapped   `ssz-type:"?,wrapper"`
+	F  NoDynWrapped      `ssz-type:"wrapper"`
+	DL []NoDynWrappedDyn `ssz-max:"8" ssz-type:"?,wrapper"`
+	DF NoDynWrappedDyn   `ssz-type:"wrapper"`
+}
+
+// NoDynWrappedPlain is the twin with the wrappers removed.
+type NoDynWrappedPlain struct {
+	L  []uint64 `ssz-max:"8"`
+	V  [4]uint64
+	F  uint64
+	DL []uint64 `ssz-max:"8"`
+	DF uint64
+}
+
+var NoDynWrappedHolder_Payload = NoDynWrappedHolder{
+	L:  []NoDynWrapped{{1}, {2}, {3}},
+	V:  [4]NoDynWrapped{{4}, {5}, {6}, {7}},
+	F:  NoDynWrapped{8},
+	DL: []NoDynWrappedDyn{{9}, {10}},
+	DF: NoDynWrappedDyn{11},
+}
+
+var NoDynWrappedPlain_Payload = NoDynWrappedPlain{
+	L:  []uint64{1, 2, 3},
+	V:  [4]uint64{4, 5, 6, 7},
+	F:  8,
+	DL: []uint64{9, 10},
+	DF: 11,
+}
+
 // NoDynNestChild is a variable-size container nested by the NoDynNest* parents.
 // Generated with -with-streaming -without-fastssz -without-dynamic-expressions,
 // its parents must reach it through its static MarshalSSZTo/UnmarshalSSZ/SizeSSZ/

@@ -6,3 +6,5 @@ without-dynamic-expressions: true
 
 types:
   - NoDynExprTypes
+  - NoDynWrapped
+  - NoDynWrappedHolder

@@ -3502,6 +3502,61 @@ func TestCodegenWithoutDynamicExpressionsRouting(t *testing.T) {
 	}
 }
 
+// Static generation over packed wrapper elements: the generated wrapper is
+// reached through its static hash method and the dynamic-only wrapper is
+// inlined, and the root equals the plain twin's.
+func TestCodegenWithoutDynamicExpressionsPackedWrappers(t *testing.T) {
+	generated, ok := any(&NoDynWrappedHolder_Payload).(interface{ HashTreeRoot() ([32]byte, error) })
+	if !ok {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+
+	plainRoot, err := ds.HashTreeRoot(&NoDynWrappedPlain_Payload)
+	if err != nil {
+		t.Fatalf("hash plain twin: %v", err)
+	}
+	genRoot, err := generated.HashTreeRoot()
+	if err != nil {
+		t.Fatalf("generated hash: %v", err)
+	}
+	if genRoot != plainRoot {
+		t.Fatalf("generated root %x != plain twin root %x", genRoot, plainRoot)
+	}
+	tree, err := ds.GetTree(&NoDynWrappedHolder_Payload)
+	if err != nil {
+		t.Fatalf("tree holder: %v", err)
+	}
+	if treeRoot := tree.Hash(); !bytes.Equal(treeRoot, plainRoot[:]) {
+		t.Fatalf("tree root %x != root %x", treeRoot, plainRoot)
+	}
+
+	for i := range 11 {
+		mutated := NoDynWrappedHolder_Payload
+		mutated.L = append([]NoDynWrapped(nil), mutated.L...)
+		mutated.DL = append([]NoDynWrappedDyn(nil), mutated.DL...)
+		switch {
+		case i < 3:
+			mutated.L[i].Data = 0xff
+		case i < 7:
+			mutated.V[i-3].Data = 0xff
+		case i == 7:
+			mutated.F.Data = 0xff
+		case i < 10:
+			mutated.DL[i-8].Data = 0xff
+		default:
+			mutated.DF.Data = 0xff
+		}
+		mutatedRoot, mutateErr := ds.HashTreeRoot(&mutated)
+		if mutateErr != nil {
+			t.Fatalf("hash mutated value %d: %v", i, mutateErr)
+		}
+		if mutatedRoot == plainRoot {
+			t.Errorf("value %d does not reach the root", i)
+		}
+	}
+}
+
 // Decoding reuses what the target already holds: a slice that fits keeps its
 // backing array, and a non-nil pointer is decoded into rather than replaced.
 // Both engines do this, in both positions -- a struct field and a slice
