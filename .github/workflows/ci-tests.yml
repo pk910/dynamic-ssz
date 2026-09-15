@@ -29,12 +29,7 @@ jobs:
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version: ${{ matrix.go-version }}
-
-    - name: Cache Go modules
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ matrix.go-version }}-spectests-${{ hashFiles('tests/spectests/go.sum') }}
+        cache-dependency-path: tests/spectests/go.sum
 
     - name: Download dependencies (spectests)
       run: |
@@ -101,12 +96,6 @@ jobs:
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version: ${{ matrix.go-version }}
-
-    - name: Cache Go modules
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ matrix.go-version }}-${{ hashFiles('**/go.sum') }}
 
     - name: Download dependencies
       run: go mod download
@@ -251,12 +240,6 @@ jobs:
       with:
         go-version: '1.25.11'
 
-    - name: Cache Go modules
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ~/go/pkg/mod
-        key: ${{ runner.os }}-go-1.25.11-s390x-${{ hashFiles('**/go.sum') }}
-
     - name: Install QEMU user emulation
       run: |
         sudo apt-get update
@@ -310,12 +293,6 @@ jobs:
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version: '1.25.11'
-
-    - name: Cache Go modules
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ~/go/pkg/mod
-        key: ${{ runner.os }}-go-1.25.11-fuzz-${{ hashFiles('**/go.sum') }}
 
     - name: Download dependencies
       run: go mod download
