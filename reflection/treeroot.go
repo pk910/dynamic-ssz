@@ -1089,7 +1089,7 @@ func checkPackedDelegate(hh sszutils.HashWalker, pack bool, start int, size int6
 		return nil
 	}
 	if got := hh.CurrentIndex() - start; int64(got) != size {
-		return sszutils.ErrPackedDelegateFn(got, int(size))
+		return sszutils.ErrPackedDelegateFn(got, size)
 	}
 	return nil
 }

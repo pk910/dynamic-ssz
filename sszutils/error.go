@@ -449,7 +449,7 @@ func ErrOffsetOverflowFn(offset any) error {
 
 // ErrPackedDelegateFn reports a packed element's hash method that left got
 // bytes on the walker instead of want.
-func ErrPackedDelegateFn(got, want int) error {
+func ErrPackedDelegateFn(got int, want int64) error {
 	return &sszError{
 		err:     ErrPackedDelegate,
 		message: fmt.Sprintf("packed element hash method left %d bytes, expected its %d packed bytes", got, want),
