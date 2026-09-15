@@ -95,6 +95,7 @@ The GitHub Actions workflow automatically:
 - Downloads the latest consensus spec tests
 - Caches test data between runs
 - Runs tests for both mainnet and minimal presets
+- Runs the suite a second time as a 32-bit build (`GOARCH=386`)
 - Runs on push, PR, and daily schedule
 
 See [.github/workflows/ci-tests.yml](../.github/workflows/ci-tests.yml) for the complete CI configuration.
