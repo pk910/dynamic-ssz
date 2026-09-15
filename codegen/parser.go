@@ -72,8 +72,13 @@ func reflectTypeKey(t reflect.Type) string {
 		}
 		return "func(" + strings.Join(params, ",") + ")(" + strings.Join(results, ",") + ")"
 	default:
+		// A named type, including a universe type such as error, is spelled
+		// by its name; an unnamed type of another kind by the kind.
 		if t.PkgPath() != "" {
 			return t.PkgPath() + "." + t.Name()
+		}
+		if t.Name() != "" {
+			return t.Name()
 		}
 		return t.Kind().String()
 	}
