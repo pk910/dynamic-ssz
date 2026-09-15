@@ -569,6 +569,18 @@ func (c *CustomType) HashTreeRoot() ([32]byte, error) {
 }
 ```
 
+A custom type's hash method is called wherever the value sits. As a field or
+root the engine pads the walker to the next chunk after it returns, so the
+method may leave a complete leaf or append only the packed bytes of its value.
+Inside a list or vector, a custom type whose declared `ssz-size` is one a basic
+type could have (1, 2, 4, 8 or 16 bytes, without a size expression) is packed
+like that basic type: the scope is a packed walker scope, in which `Put*`
+appends the packed bytes, and the method must leave exactly those bytes; a
+method that merkleizes a leaf of its own there fails with
+`sszutils.ErrPackedDelegate`. A `HashTreeRoot()`-only type contributes the
+packed prefix of its root, so its root has to be the padded value. Custom
+types of any other size occupy one leaf per element.
+
 ### Dynamic Interfaces
 
 For spec-aware marshaling:

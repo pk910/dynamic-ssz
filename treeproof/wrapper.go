@@ -33,6 +33,9 @@ type Wrapper struct {
 	nodes []*Node
 	buf   []byte
 	tmp   []byte
+	// packed holds one entry per open scope: true when the scope packs basic
+	// values, so Put* buffers packed bytes instead of adding a leaf.
+	packed []bool
 }
 
 // NewWrapper creates a new Wrapper ready to construct a Merkle tree. The
@@ -59,6 +62,7 @@ func (w *Wrapper) WithTemp(fn func(tmp []byte) []byte) {
 // flushed first so the checkpoint separates them from the new scope.
 func (w *Wrapper) Index() int {
 	w.flushBuffer()
+	w.packed = append(w.packed, false)
 	return len(w.nodes)
 }
 
@@ -71,9 +75,23 @@ func (w *Wrapper) CurrentIndex() int {
 // this is identical to Index() since the wrapper does not support
 // incremental hashing. Pending Append* bytes are flushed first so they
 // become leaves of the enclosing scope, not of the new child scope.
-func (w *Wrapper) StartTree(_ sszutils.TreeType) int {
+func (w *Wrapper) StartTree(treeType sszutils.TreeType) int {
 	w.flushBuffer()
+	w.packed = append(w.packed, treeType&sszutils.TreeTypePacked != 0)
 	return len(w.nodes)
+}
+
+// closeScope drops the innermost scope entry opened by Index or StartTree.
+func (w *Wrapper) closeScope() {
+	if n := len(w.packed); n > 0 {
+		w.packed = w.packed[:n-1]
+	}
+}
+
+// inPackedScope reports whether the innermost open scope packs basic values.
+func (w *Wrapper) inPackedScope() bool {
+	n := len(w.packed)
+	return n > 0 && w.packed[n-1]
 }
 
 // Collapse is a no-op for the tree proof wrapper.
@@ -131,6 +149,7 @@ func (w *Wrapper) FillUpTo32() {
 // resulting subtree replaces those nodes as a single tree node.
 func (w *Wrapper) Merkleize(indx int) {
 	w.flushBuffer()
+	w.closeScope()
 	w.commit(indx)
 }
 
@@ -139,6 +158,7 @@ func (w *Wrapper) Merkleize(indx int) {
 // sibling. This implements SSZ list merkleization: hash(merkle_root || length).
 func (w *Wrapper) MerkleizeWithMixin(indx int, num, limit uint64) {
 	w.flushBuffer()
+	w.closeScope()
 	w.commitWithMixin(indx, num, limit)
 }
 
@@ -147,6 +167,7 @@ func (w *Wrapper) MerkleizeWithMixin(indx int, num, limit uint64) {
 // (base sizes 1, 4, 16, 64...) instead of even binary splits.
 func (w *Wrapper) MerkleizeProgressive(indx int) {
 	w.flushBuffer()
+	w.closeScope()
 	w.commitProgressive(indx)
 }
 
@@ -155,6 +176,7 @@ func (w *Wrapper) MerkleizeProgressive(indx int) {
 // count (num) as a right sibling.
 func (w *Wrapper) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 	w.flushBuffer()
+	w.closeScope()
 	w.commitProgressiveWithMixin(indx, num)
 }
 
@@ -163,6 +185,7 @@ func (w *Wrapper) MerkleizeProgressiveWithMixin(indx int, num uint64) {
 // bitvector as a right sibling. This is used for stable/progressive containers.
 func (w *Wrapper) MerkleizeProgressiveWithActiveFields(indx int, activeFields []byte) {
 	w.flushBuffer()
+	w.closeScope()
 	w.commitProgressiveWithActiveFields(indx, activeFields)
 }
 
@@ -224,34 +247,64 @@ func (w *Wrapper) appendBytesAsNodes(b []byte) {
 	}
 }
 
-// PutBool adds a boolean value as a single 32-byte leaf node.
+// PutBool adds a boolean value as a single 32-byte leaf node, or buffers its
+// packed byte inside a packed scope.
 func (w *Wrapper) PutBool(b bool) {
+	if w.inPackedScope() {
+		w.AppendBool(b)
+		return
+	}
 	w.AddNode(LeafFromBool(b))
 }
 
-// PutBytes adds a byte slice as one or more 32-byte leaf nodes. If the slice
-// exceeds 32 bytes, it is split into chunks and merkleized into a subtree.
+// PutBytes adds a byte slice as one or more 32-byte leaf nodes, or buffers up
+// to 32 raw bytes inside a packed scope. If the slice exceeds 32 bytes, it is
+// split into chunks and merkleized into a subtree.
 func (w *Wrapper) PutBytes(b []byte) {
+	if len(b) <= 32 && w.inPackedScope() {
+		w.Append(b)
+		return
+	}
 	w.AddBytes(b)
 }
 
-// PutUint16 adds a uint16 value as a single 32-byte leaf node.
+// PutUint16 adds a uint16 value as a single 32-byte leaf node, or buffers its
+// packed bytes inside a packed scope.
 func (w *Wrapper) PutUint16(i uint16) {
+	if w.inPackedScope() {
+		w.AppendUint16(i)
+		return
+	}
 	w.AddUint16(i)
 }
 
-// PutUint64 adds a uint64 value as a single 32-byte leaf node.
+// PutUint64 adds a uint64 value as a single 32-byte leaf node, or buffers its
+// packed bytes inside a packed scope.
 func (w *Wrapper) PutUint64(i uint64) {
+	if w.inPackedScope() {
+		w.AppendUint64(i)
+		return
+	}
 	w.AddUint64(i)
 }
 
-// PutUint8 adds a uint8 value as a single 32-byte leaf node.
+// PutUint8 adds a uint8 value as a single 32-byte leaf node, or buffers its
+// packed bytes inside a packed scope.
 func (w *Wrapper) PutUint8(i uint8) {
+	if w.inPackedScope() {
+		w.AppendUint8(i)
+		return
+	}
 	w.AddUint8(i)
 }
 
-// PutUint32 adds a uint32 value as a single 32-byte leaf node.
+// PutUint32 adds a uint32 value as a single 32-byte leaf node, or buffers its
+// packed bytes inside a packed scope.
 func (w *Wrapper) PutUint32(i uint32) {
+	if w.inPackedScope() {
+		w.AppendUint32(i)
+		return
+	}
 	w.AddUint32(i)
 }
 

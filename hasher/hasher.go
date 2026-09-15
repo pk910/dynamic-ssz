@@ -51,6 +51,7 @@ type treeLayer struct {
 	incremental bool // true if opened via StartTree(), supports collapse
 	collapsed   bool // true once at least one binary batch has been collapsed
 	progressive bool // true if using progressive tree shape
+	packed      bool // true if the scope packs basic values: Put* appends packed bytes
 
 	// Binary collapse state (active subtree)
 	counts   [maxTreeDepth]uint32
@@ -217,8 +218,13 @@ func (h *Hasher) AppendUint64(i uint64) {
 	h.buf = sszutils.MarshalUint64(h.buf, i)
 }
 
-// PutBool appends a boolean as a 32-byte zero-padded chunk.
+// PutBool appends a boolean as a 32-byte zero-padded chunk, or as one packed
+// byte inside a packed scope.
 func (h *Hasher) PutBool(b bool) {
+	if h.inPackedScope() {
+		h.AppendBool(b)
+		return
+	}
 	n := len(h.buf)
 	h.buf = append(h.buf, zeroBytes[:32]...)
 	if b {
@@ -226,40 +232,60 @@ func (h *Hasher) PutBool(b bool) {
 	}
 }
 
-// PutUint64 appends a little-endian uint64 as a 32-byte zero-padded chunk.
+// PutUint64 appends a little-endian uint64 as a 32-byte zero-padded chunk, or
+// as its 8 packed bytes inside a packed scope.
 func (h *Hasher) PutUint64(i uint64) {
+	if h.inPackedScope() {
+		h.AppendUint64(i)
+		return
+	}
 	n := len(h.buf)
 	h.buf = append(h.buf, zeroBytes[:32]...)
 	binary.LittleEndian.PutUint64(h.buf[n:], i)
 }
 
-// PutUint32 appends a little-endian uint32 as a 32-byte zero-padded chunk.
+// PutUint32 appends a little-endian uint32 as a 32-byte zero-padded chunk, or
+// as its 4 packed bytes inside a packed scope.
 func (h *Hasher) PutUint32(i uint32) {
+	if h.inPackedScope() {
+		h.AppendUint32(i)
+		return
+	}
 	n := len(h.buf)
 	h.buf = append(h.buf, zeroBytes[:32]...)
 	binary.LittleEndian.PutUint32(h.buf[n:], i)
 }
 
-// PutUint16 appends a little-endian uint16 as a 32-byte zero-padded chunk.
+// PutUint16 appends a little-endian uint16 as a 32-byte zero-padded chunk, or
+// as its 2 packed bytes inside a packed scope.
 func (h *Hasher) PutUint16(i uint16) {
+	if h.inPackedScope() {
+		h.AppendUint16(i)
+		return
+	}
 	n := len(h.buf)
 	h.buf = append(h.buf, zeroBytes[:32]...)
 	binary.LittleEndian.PutUint16(h.buf[n:], i)
 }
 
-// PutUint8 appends a uint8 as a 32-byte zero-padded chunk.
+// PutUint8 appends a uint8 as a 32-byte zero-padded chunk, or as one packed
+// byte inside a packed scope.
 func (h *Hasher) PutUint8(i uint8) {
+	if h.inPackedScope() {
+		h.AppendUint8(i)
+		return
+	}
 	n := len(h.buf)
 	h.buf = append(h.buf, zeroBytes[:32]...)
 	h.buf[n] = i
 }
 
-// PutBytes appends b as a 32-byte chunk. If b exceeds 32 bytes, the content
-// is merkleized in-place to a single root without interacting with the layer
-// stack.
+// PutBytes appends b as a 32-byte chunk, or as its raw bytes inside a packed
+// scope. If b exceeds 32 bytes, the content is merkleized in-place to a single
+// root without interacting with the layer stack.
 func (h *Hasher) PutBytes(b []byte) {
 	if blen := len(b); blen <= 32 {
-		if blen == 32 {
+		if blen == 32 || h.inPackedScope() {
 			// Fast path: exactly 32 bytes, no padding needed
 			h.buf = append(h.buf, b...)
 			return
@@ -405,6 +431,7 @@ func (h *Hasher) pushLayer() *treeLayer {
 	layer := &h.layers[h.layerCount]
 	layer.collapsed = false
 	layer.progressive = false
+	layer.packed = false
 	// Reset the deferred-batching state. In the normal flow this is already 0
 	// (every incremental layer is flushed before it is popped), but clearing it
 	// here keeps a reused slot clean even if a prior hash was abandoned mid-way
@@ -492,6 +519,9 @@ func (h *Hasher) flushPending(layer *treeLayer, allowAsync bool) {
 // TreeTypeBinary/Progressive: pushes an incremental layer (supports Collapse).
 // TreeTypeNone: pushes a non-incremental layer (Collapse is a no-op on this scope).
 func (h *Hasher) StartTree(treeType sszutils.TreeType) int {
+	packed := treeType&sszutils.TreeTypePacked != 0
+	treeType &^= sszutils.TreeTypePacked
+
 	// An incremental child is merkleized immediately (it never defers into this
 	// parent), so it would append a root after any deferred siblings and break
 	// the "pending chunks are a contiguous tail run" invariant. Flush first.
@@ -508,7 +538,14 @@ func (h *Hasher) StartTree(treeType sszutils.TreeType) int {
 	layer.bufIdx = idx
 	layer.incremental = treeType != sszutils.TreeTypeNone
 	layer.progressive = treeType == sszutils.TreeTypeProgressive
+	layer.packed = packed
 	return idx
+}
+
+// inPackedScope reports whether the innermost open scope packs basic values,
+// in which case a Put* call appends the packed bytes instead of a chunk.
+func (h *Hasher) inPackedScope() bool {
+	return h.layerCount >= 0 && h.layers[h.layerCount].packed
 }
 
 // Index returns the current buffer position and pushes a binary incremental

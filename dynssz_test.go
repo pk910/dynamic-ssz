@@ -6920,12 +6920,8 @@ func TestSizerWithoutMarshalerIsUsed(t *testing.T) {
 	}
 }
 
-// basicWithMethods is a named uint64 whose hash methods fail: inside a list or
-// vector its values are packed by the engine itself, never through them. The
-// serialization methods are correct.
+// basicWithMethods is a named uint64 whose hash methods put the value.
 type basicWithMethods uint64
-
-var errBasicDelegated = errors.New("hash method called on a packed basic element")
 
 func (b *basicWithMethods) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
 	return binary.LittleEndian.AppendUint64(buf, uint64(*b)), nil
@@ -6943,12 +6939,15 @@ func (b *basicWithMethods) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
 	return 8
 }
 
-func (b *basicWithMethods) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
-	return errBasicDelegated
+func (b *basicWithMethods) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(uint64(*b))
+	return nil
 }
 
 func (b *basicWithMethods) HashTreeRoot() ([32]byte, error) {
-	return [32]byte{}, errBasicDelegated
+	var root [32]byte
+	binary.LittleEndian.PutUint64(root[:], uint64(*b))
+	return root, nil
 }
 
 type basicMethodsHolder struct {
@@ -6961,8 +6960,8 @@ type basicMethodsPlain struct {
 	V [4]uint64
 }
 
-// A list or vector of a named basic type packs its elements like the plain
-// type does, whatever methods the named type declares.
+// A list or vector of a named basic type with its own hash methods packs its
+// elements like the plain type does.
 func TestPackedBasicElementsAreNotDelegated(t *testing.T) {
 	holder := &basicMethodsHolder{L: []basicWithMethods{1, 2, 3}, V: [4]basicWithMethods{4, 5, 6, 7}}
 	plain := &basicMethodsPlain{L: []uint64{1, 2, 3}, V: [4]uint64{4, 5, 6, 7}}
@@ -7151,5 +7150,316 @@ func TestZeroSizeStaticDelegateFraming(t *testing.T) {
 		dsr := NewDynSsz(nil, WithStreamReaderBufferSize(bufSize))
 		got = &zeroShellHolder{}
 		check(fmt.Sprintf("reader(-1,buf=%d)", bufSize), got, dsr.UnmarshalSSZReader(got, bytes.NewReader(want), -1))
+	}
+}
+
+// wrappedWithMethods is a type wrapper around a uint64 whose hash methods put
+// the wrapped value.
+type wrappedWithMethods struct {
+	Data uint64
+}
+
+func (w *wrappedWithMethods) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(w.Data)
+	return nil
+}
+
+func (w *wrappedWithMethods) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint64(root[:], w.Data)
+	return root, nil
+}
+
+// leafCustom is a custom type of a basic size (8 bytes) whose walker method
+// merkleizes a leaf of its own.
+type leafCustom struct{ V uint64 }
+
+func (c *leafCustom) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint64(buf, c.V), nil
+}
+
+func (c *leafCustom) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	if len(buf) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	c.V = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+
+func (c *leafCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 8 }
+
+func (c *leafCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	idx := hh.StartTree(sszutils.TreeTypeNone)
+	hh.PutUint64(c.V)
+	hh.Merkleize(idx)
+	return nil
+}
+
+type leafCustomHolder struct {
+	L []leafCustom `ssz-type:"?,custom" ssz-size:"?,8" ssz-max:"4"`
+}
+
+// rootOnlyCustom is a custom type of a basic size (2 bytes) whose only hash
+// method returns its root, the padded value.
+type rootOnlyCustom struct{ V uint16 }
+
+func (c *rootOnlyCustom) MarshalSSZ() ([]byte, error) { return c.MarshalSSZTo(nil) }
+
+func (c *rootOnlyCustom) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint16(buf, c.V), nil
+}
+
+func (c *rootOnlyCustom) SizeSSZ() int { return 2 }
+
+func (c *rootOnlyCustom) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 2 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	c.V = binary.LittleEndian.Uint16(buf)
+	return nil
+}
+
+func (c *rootOnlyCustom) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint16(root[:], c.V)
+	return root, nil
+}
+
+type rootOnlyCustomHolder struct {
+	R  []rootOnlyCustom  `ssz-type:"?,custom" ssz-size:"?,2" ssz-max:"8"`
+	RV [4]rootOnlyCustom `ssz-type:"?,custom" ssz-size:"4,2"`
+}
+
+type rootOnlyCustomPlain struct {
+	R  []uint16 `ssz-max:"8"`
+	RV [4]uint16
+}
+
+type wrappedMethodsHolder struct {
+	L []wrappedWithMethods  `ssz-max:"8" ssz-type:"?,wrapper"`
+	V [4]wrappedWithMethods `ssz-type:"?,wrapper"`
+}
+
+type wrappedFieldHolder struct {
+	F wrappedWithMethods `ssz-type:"wrapper"`
+}
+
+// A list or vector of wrappers around a basic value packs the wrapped values
+// like the plain type does; a wrapper field is one leaf.
+func TestPackedWrappedElementsAreNotDelegated(t *testing.T) {
+	holder := &wrappedMethodsHolder{L: []wrappedWithMethods{{1}, {2}, {3}, {4}, {5}}, V: [4]wrappedWithMethods{{6}, {7}, {8}, {9}}}
+	plain := &basicMethodsPlain{L: []uint64{1, 2, 3, 4, 5}, V: [4]uint64{6, 7, 8, 9}}
+
+	for _, ds := range []*DynSsz{NewDynSsz(nil), NewDynSsz(nil, WithNoFastSsz()), NewDynSsz(nil, WithNoDelegation())} {
+		holderBytes, err := ds.MarshalSSZ(holder)
+		if err != nil {
+			t.Fatalf("marshal holder: %v", err)
+		}
+		plainBytes, err := ds.MarshalSSZ(plain)
+		if err != nil {
+			t.Fatalf("marshal plain: %v", err)
+		}
+		if !bytes.Equal(holderBytes, plainBytes) {
+			t.Fatalf("holder bytes %x != plain bytes %x", holderBytes, plainBytes)
+		}
+
+		holderRoot, err := ds.HashTreeRoot(holder)
+		if err != nil {
+			t.Fatalf("hash holder: %v", err)
+		}
+		plainRoot, err := ds.HashTreeRoot(plain)
+		if err != nil {
+			t.Fatalf("hash plain: %v", err)
+		}
+		if holderRoot != plainRoot {
+			t.Fatalf("holder root %x != plain root %x", holderRoot, plainRoot)
+		}
+
+		tree, err := ds.GetTree(holder)
+		if err != nil {
+			t.Fatalf("tree holder: %v", err)
+		}
+		if !bytes.Equal(tree.Hash(), holderRoot[:]) {
+			t.Fatalf("tree root %x != root %x", tree.Hash(), holderRoot)
+		}
+
+		// Every element has to reach the root.
+		for i := range len(holder.L) + len(holder.V) {
+			mutated := &wrappedMethodsHolder{L: append([]wrappedWithMethods(nil), holder.L...), V: holder.V}
+			if i < len(holder.L) {
+				mutated.L[i].Data = 0xff
+			} else {
+				mutated.V[i-len(holder.L)].Data = 0xff
+			}
+			mutatedRoot, mutateErr := ds.HashTreeRoot(mutated)
+			if mutateErr != nil {
+				t.Fatalf("hash mutated element %d: %v", i, mutateErr)
+			}
+			if mutatedRoot == holderRoot {
+				t.Errorf("element %d does not reach the root", i)
+			}
+		}
+
+		// A wrapper field is one leaf.
+		fieldRoot, err := ds.HashTreeRoot(&wrappedFieldHolder{F: wrappedWithMethods{1}})
+		if err != nil {
+			t.Fatalf("hash wrapper field: %v", err)
+		}
+		plainFieldRoot, err := ds.HashTreeRoot(&struct{ F uint64 }{F: 1})
+		if err != nil {
+			t.Fatalf("hash plain field: %v", err)
+		}
+		if fieldRoot != plainFieldRoot {
+			t.Fatalf("wrapper field root %x != plain field root %x", fieldRoot, plainFieldRoot)
+		}
+	}
+}
+
+// A custom element of a basic size whose walker method merkleizes a leaf of
+// its own is rejected; one with only a root method hashes like the basic type
+// it stands in for.
+func TestPackedCustomDelegates(t *testing.T) {
+	ds := NewDynSsz(nil)
+	leaf := &leafCustomHolder{L: []leafCustom{{1}, {2}, {3}}}
+	if _, err := ds.HashTreeRoot(leaf); !errors.Is(err, sszutils.ErrPackedDelegate) {
+		t.Fatalf("leaf delegate err = %v, want ErrPackedDelegate", err)
+	}
+	if _, err := ds.GetTree(leaf); !errors.Is(err, sszutils.ErrPackedDelegate) {
+		t.Fatalf("leaf delegate tree err = %v, want ErrPackedDelegate", err)
+	}
+
+	holder := &rootOnlyCustomHolder{R: []rootOnlyCustom{{1}, {2}, {3}}, RV: [4]rootOnlyCustom{{4}, {5}, {6}, {7}}}
+	plain := &rootOnlyCustomPlain{R: []uint16{1, 2, 3}, RV: [4]uint16{4, 5, 6, 7}}
+	holderRoot, err := ds.HashTreeRoot(holder)
+	if err != nil {
+		t.Fatalf("hash holder: %v", err)
+	}
+	plainRoot, err := ds.HashTreeRoot(plain)
+	if err != nil {
+		t.Fatalf("hash plain: %v", err)
+	}
+	if holderRoot != plainRoot {
+		t.Fatalf("holder root %x != plain root %x", holderRoot, plainRoot)
+	}
+	tree, err := ds.GetTree(holder)
+	if err != nil {
+		t.Fatalf("tree holder: %v", err)
+	}
+	if !bytes.Equal(tree.Hash(), holderRoot[:]) {
+		t.Fatalf("tree root %x != root %x", tree.Hash(), holderRoot)
+	}
+	for i := range 7 {
+		mutated := &rootOnlyCustomHolder{R: append([]rootOnlyCustom(nil), holder.R...), RV: holder.RV}
+		if i < 3 {
+			mutated.R[i].V = 0xff
+		} else {
+			mutated.RV[i-3].V = 0xff
+		}
+		mutatedRoot, mutateErr := ds.HashTreeRoot(mutated)
+		if mutateErr != nil {
+			t.Fatalf("hash mutated element %d: %v", i, mutateErr)
+		}
+		if mutatedRoot == holderRoot {
+			t.Errorf("element %d does not reach the root", i)
+		}
+	}
+}
+
+// viewNum is a basic type with a hand-written view hash method that puts the
+// value as a basic type does; leafViewNum's view method merkleizes a leaf.
+type viewNum uint16
+
+func (v *viewNum) HashTreeRootWithDynView(view any) func(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	if _, ok := view.(*uint16); !ok {
+		return nil
+	}
+	return func(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+		hh.PutUint16(uint16(*v))
+		return nil
+	}
+}
+
+type leafViewNum uint16
+
+func (v *leafViewNum) HashTreeRootWithDynView(view any) func(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	if _, ok := view.(*uint16); !ok {
+		return nil
+	}
+	return func(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+		idx := hh.StartTree(sszutils.TreeTypeNone)
+		hh.PutUint16(uint16(*v))
+		hh.Merkleize(idx)
+		return nil
+	}
+}
+
+type viewNumHolder struct {
+	V []viewNum
+	F viewNum
+}
+
+type viewNumSchema struct {
+	V []uint16 `ssz-max:"4"`
+	F uint16
+}
+
+type leafViewHolder struct {
+	L []leafViewNum
+}
+
+type leafViewSchema struct {
+	L []uint16 `ssz-max:"4"`
+}
+
+// A basic-typed view element hashes through its view method like the plain
+// schema; a view method that merkleizes a leaf of its own is rejected.
+func TestPackedBasicViewElements(t *testing.T) {
+	holder := &viewNumHolder{V: []viewNum{1, 2, 3}, F: 4}
+	plain := &viewNumSchema{V: []uint16{1, 2, 3}, F: 4}
+	view := WithViewDescriptor((*viewNumSchema)(nil))
+
+	for _, ds := range []*DynSsz{NewDynSsz(nil), NewDynSsz(nil, WithNoDelegation())} {
+		holderRoot, err := ds.HashTreeRoot(holder, view)
+		if err != nil {
+			t.Fatalf("hash holder: %v", err)
+		}
+		plainRoot, err := ds.HashTreeRoot(plain)
+		if err != nil {
+			t.Fatalf("hash plain: %v", err)
+		}
+		if holderRoot != plainRoot {
+			t.Fatalf("holder root %x != plain root %x", holderRoot, plainRoot)
+		}
+		tree, err := ds.GetTree(holder, view)
+		if err != nil {
+			t.Fatalf("tree holder: %v", err)
+		}
+		if !bytes.Equal(tree.Hash(), holderRoot[:]) {
+			t.Fatalf("tree root %x != root %x", tree.Hash(), holderRoot)
+		}
+		for i := range 4 {
+			mutated := &viewNumHolder{V: append([]viewNum(nil), holder.V...), F: holder.F}
+			if i < 3 {
+				mutated.V[i] = 0xff
+			} else {
+				mutated.F = 0xff
+			}
+			mutatedRoot, mutateErr := ds.HashTreeRoot(mutated, view)
+			if mutateErr != nil {
+				t.Fatalf("hash mutated element %d: %v", i, mutateErr)
+			}
+			if mutatedRoot == holderRoot {
+				t.Errorf("element %d does not reach the root", i)
+			}
+		}
+	}
+
+	ds := NewDynSsz(nil)
+	leafView := WithViewDescriptor((*leafViewSchema)(nil))
+	if _, err := ds.HashTreeRoot(&leafViewHolder{L: []leafViewNum{1, 2, 3}}, leafView); !errors.Is(err, sszutils.ErrPackedDelegate) {
+		t.Fatalf("leaf view err = %v, want ErrPackedDelegate", err)
+	}
+	if _, err := ds.GetTree(&leafViewHolder{L: []leafViewNum{1, 2, 3}}, leafView); !errors.Is(err, sszutils.ErrPackedDelegate) {
+		t.Fatalf("leaf view tree err = %v, want ErrPackedDelegate", err)
 	}
 }

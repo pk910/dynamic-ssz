@@ -123,6 +123,12 @@ const (
 	TreeTypeBinary
 	// TreeTypeProgressive is the progressive merkle tree (subtree_fill_progressive).
 	TreeTypeProgressive
+
+	// TreeTypePacked marks a scope whose elements are packed basic values; it
+	// is combined with the shape (TreeTypeBinary|TreeTypePacked). Inside a
+	// packed scope the walker's Put* methods append the value's packed bytes
+	// instead of a padded chunk; the scope pads the trailing chunk itself.
+	TreeTypePacked TreeType = 0x80
 )
 
 // HashWalker is our own interface that mirrors fastssz.HashWalker

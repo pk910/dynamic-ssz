@@ -1391,10 +1391,8 @@ func TestCodegenSizerOnlyChild(t *testing.T) {
 	}
 }
 
-// Inside a list or vector, basic values pack into chunks, so the element type's
-// own SSZ methods are not called by either engine: the holder must encode,
-// decode and hash like its plain twin, and none of the error-returning methods
-// may run.
+// A list or vector of a named basic type with its own SSZ methods must encode,
+// decode and hash like its plain twin.
 func TestCodegenPackedBasicElementsAreNotDelegated(t *testing.T) {
 	testCodegenPayloadByReflection(t, BasicMethodsHolder_Payload, nil)
 
@@ -3969,5 +3967,328 @@ func TestCodegenDynSizeVectorNoStatic(t *testing.T) {
 				t.Fatalf("root changed: got %s want %s", got, tc.root)
 			}
 		})
+	}
+}
+
+// A list or vector of wrappers around a basic value, with hand-written or
+// generated hash methods, must encode, decode and hash like its plain twin
+// under every option set, and every element must reach the root.
+func TestCodegenWrappedElementsWithMethodsPack(t *testing.T) {
+	if _, generated := any(&WrappedGenerated{}).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+
+	testCodegenPayloadByReflection(t, WrappedMethodsHolder_Payload, nil)
+
+	mutate := func(holder *WrappedMethodsHolder, plain *WrappedMethodsPlain, i int, v uint64) {
+		switch {
+		case i < len(holder.L):
+			holder.L[i].Data, plain.L[i] = v, v
+		case i < len(holder.L)+len(holder.V):
+			holder.V[i-len(holder.L)].Data, plain.V[i-len(holder.L)] = v, v
+		case i < len(holder.L)+len(holder.V)+len(holder.GL):
+			holder.GL[i-len(holder.L)-len(holder.V)].Data, plain.GL[i-len(holder.L)-len(holder.V)] = v, v
+		default:
+			j := i - len(holder.L) - len(holder.V) - len(holder.GL)
+			holder.GV[j].Data, plain.GV[j] = v, v
+		}
+	}
+	elements := len(WrappedMethodsHolder_Payload.L) + len(WrappedMethodsHolder_Payload.V) +
+		len(WrappedMethodsHolder_Payload.GL) + len(WrappedMethodsHolder_Payload.GV)
+
+	for _, tc := range []struct {
+		name string
+		opts []dynssz.DynSszOption
+	}{
+		{"default", nil},
+		{"nofastssz", []dynssz.DynSszOption{dynssz.WithNoFastSsz()}},
+		{"reflection", []dynssz.DynSszOption{dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := dynssz.NewDynSsz(nil, tc.opts...)
+			holder := WrappedMethodsHolder_Payload
+			plain := WrappedMethodsPlain_Payload
+
+			holderBytes, err := ds.MarshalSSZ(&holder)
+			if err != nil {
+				t.Fatalf("marshal holder: %v", err)
+			}
+			plainBytes, err := ds.MarshalSSZ(&plain)
+			if err != nil {
+				t.Fatalf("marshal plain twin: %v", err)
+			}
+			if !bytes.Equal(holderBytes, plainBytes) {
+				t.Fatalf("holder bytes %x != plain twin bytes %x", holderBytes, plainBytes)
+			}
+
+			holderRoot, err := ds.HashTreeRoot(&holder)
+			if err != nil {
+				t.Fatalf("hash holder: %v", err)
+			}
+			plainRoot, err := ds.HashTreeRoot(&plain)
+			if err != nil {
+				t.Fatalf("hash plain twin: %v", err)
+			}
+			if holderRoot != plainRoot {
+				t.Fatalf("holder root %x != plain twin root %x", holderRoot, plainRoot)
+			}
+
+			tree, err := ds.GetTree(&holder)
+			if err != nil {
+				t.Fatalf("tree holder: %v", err)
+			}
+			if treeRoot := tree.Hash(); !bytes.Equal(treeRoot, holderRoot[:]) {
+				t.Fatalf("tree root %x != root %x", treeRoot, holderRoot)
+			}
+
+			var decoded WrappedMethodsHolder
+			if err = ds.UnmarshalSSZ(&decoded, holderBytes); err != nil {
+				t.Fatalf("unmarshal holder: %v", err)
+			}
+			if !reflect.DeepEqual(decoded, holder) {
+				t.Fatalf("decoded %+v != payload %+v", decoded, holder)
+			}
+
+			// Every element has to reach the root.
+			for i := range elements {
+				mutated, mutatedPlain := WrappedMethodsHolder_Payload, WrappedMethodsPlain_Payload
+				mutated.L = append([]WrappedWithMethods(nil), mutated.L...)
+				mutated.GL = append([]WrappedGenerated(nil), mutated.GL...)
+				mutatedPlain.L = append([]uint64(nil), mutatedPlain.L...)
+				mutatedPlain.GL = append([]uint64(nil), mutatedPlain.GL...)
+				mutate(&mutated, &mutatedPlain, i, 0xff)
+
+				mutatedRoot, mutateErr := ds.HashTreeRoot(&mutated)
+				if mutateErr != nil {
+					t.Fatalf("hash mutated element %d: %v", i, mutateErr)
+				}
+				mutatedPlainRoot, mutateErr := ds.HashTreeRoot(&mutatedPlain)
+				if mutateErr != nil {
+					t.Fatalf("hash mutated plain element %d: %v", i, mutateErr)
+				}
+				if mutatedRoot == holderRoot {
+					t.Errorf("element %d does not reach the root", i)
+				}
+				if mutatedRoot != mutatedPlainRoot {
+					t.Errorf("mutated element %d: holder root %x != plain twin root %x", i, mutatedRoot, mutatedPlainRoot)
+				}
+			}
+		})
+	}
+
+	// The generated method of the holder must agree as well.
+	hh := hasher.NewHasher()
+	defer hh.Reset()
+	holder := WrappedMethodsHolder_Payload
+	generated, ok := any(&holder).(sszutils.DynamicHashRoot)
+	if !ok {
+		t.Fatal("holder has no generated hash method")
+	}
+	if err := generated.HashTreeRootWithDyn(dynssz.NewDynSsz(nil), hh); err != nil {
+		t.Fatalf("generated hash: %v", err)
+	}
+	plainRoot, err := dynssz.NewDynSsz(nil).HashTreeRoot(&WrappedMethodsPlain_Payload)
+	if err != nil {
+		t.Fatalf("hash plain twin: %v", err)
+	}
+	if root := hh.Hash(); !bytes.Equal(root, plainRoot[:]) {
+		t.Fatalf("generated root %x != plain twin root %x", root, plainRoot)
+	}
+}
+
+// A custom element of a basic size packs like that basic type, through its
+// walker method or the prefix of its root: the holder must encode, decode and
+// hash like its plain twin, and every element must reach the root.
+func TestCodegenBasicSizedCustomElements(t *testing.T) {
+	if _, generated := any(&BasicSizedCustomHolder{}).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+
+	testCodegenPayloadByReflection(t, BasicSizedCustomHolder_Payload, nil)
+
+	elements := len(BasicSizedCustomHolder_Payload.L) + len(BasicSizedCustomHolder_Payload.V) +
+		len(BasicSizedCustomHolder_Payload.R) + len(BasicSizedCustomHolder_Payload.RV)
+	mutate := func(holder *BasicSizedCustomHolder, plain *BasicSizedCustomPlain, i int) {
+		switch {
+		case i < len(holder.L):
+			holder.L[i], plain.L[i] = 0xff, 0xff
+		case i < len(holder.L)+len(holder.V):
+			j := i - len(holder.L)
+			holder.V[j], plain.V[j] = 0xff, 0xff
+		case i < len(holder.L)+len(holder.V)+len(holder.R):
+			j := i - len(holder.L) - len(holder.V)
+			holder.R[j].V, plain.R[j] = 0xff, 0xff
+		default:
+			j := i - len(holder.L) - len(holder.V) - len(holder.R)
+			holder.RV[j].V, plain.RV[j] = 0xff, 0xff
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		opts []dynssz.DynSszOption
+	}{
+		{"default", nil},
+		{"nofastssz", []dynssz.DynSszOption{dynssz.WithNoFastSsz()}},
+		{"nodelegation", []dynssz.DynSszOption{dynssz.WithNoDelegation()}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := dynssz.NewDynSsz(nil, tc.opts...)
+			holder := BasicSizedCustomHolder_Payload
+			plain := BasicSizedCustomPlain_Payload
+
+			holderBytes, err := ds.MarshalSSZ(&holder)
+			if err != nil {
+				t.Fatalf("marshal holder: %v", err)
+			}
+			plainBytes, err := ds.MarshalSSZ(&plain)
+			if err != nil {
+				t.Fatalf("marshal plain twin: %v", err)
+			}
+			if !bytes.Equal(holderBytes, plainBytes) {
+				t.Fatalf("holder bytes %x != plain twin bytes %x", holderBytes, plainBytes)
+			}
+
+			holderRoot, err := ds.HashTreeRoot(&holder)
+			if err != nil {
+				t.Fatalf("hash holder: %v", err)
+			}
+			plainRoot, err := ds.HashTreeRoot(&plain)
+			if err != nil {
+				t.Fatalf("hash plain twin: %v", err)
+			}
+			if holderRoot != plainRoot {
+				t.Fatalf("holder root %x != plain twin root %x", holderRoot, plainRoot)
+			}
+
+			tree, err := ds.GetTree(&holder)
+			if err != nil {
+				t.Fatalf("tree holder: %v", err)
+			}
+			if treeRoot := tree.Hash(); !bytes.Equal(treeRoot, holderRoot[:]) {
+				t.Fatalf("tree root %x != root %x", treeRoot, holderRoot)
+			}
+
+			var decoded BasicSizedCustomHolder
+			if err = ds.UnmarshalSSZ(&decoded, holderBytes); err != nil {
+				t.Fatalf("unmarshal holder: %v", err)
+			}
+			if !reflect.DeepEqual(decoded, holder) {
+				t.Fatalf("decoded %+v != payload %+v", decoded, holder)
+			}
+
+			for i := range elements {
+				mutated, mutatedPlain := BasicSizedCustomHolder_Payload, BasicSizedCustomPlain_Payload
+				mutated.L = append([]BasicSizedCustom(nil), mutated.L...)
+				mutated.R = append([]RootOnlyCustom(nil), mutated.R...)
+				mutatedPlain.L = append([]uint64(nil), mutatedPlain.L...)
+				mutatedPlain.R = append([]uint16(nil), mutatedPlain.R...)
+				mutate(&mutated, &mutatedPlain, i)
+
+				mutatedRoot, mutateErr := ds.HashTreeRoot(&mutated)
+				if mutateErr != nil {
+					t.Fatalf("hash mutated element %d: %v", i, mutateErr)
+				}
+				mutatedPlainRoot, mutateErr := ds.HashTreeRoot(&mutatedPlain)
+				if mutateErr != nil {
+					t.Fatalf("hash mutated plain element %d: %v", i, mutateErr)
+				}
+				if mutatedRoot == holderRoot {
+					t.Errorf("element %d does not reach the root", i)
+				}
+				if mutatedRoot != mutatedPlainRoot {
+					t.Errorf("mutated element %d: holder root %x != plain twin root %x", i, mutatedRoot, mutatedPlainRoot)
+				}
+			}
+		})
+	}
+}
+
+// A custom element of a basic size whose walker method merkleizes a leaf of
+// its own is rejected by the generated method and the reflection walk.
+func TestCodegenPackedLeafDelegateRejected(t *testing.T) {
+	generated, ok := any(&LeafCustomHolder_Payload).(sszutils.DynamicHashRoot)
+	if !ok {
+		t.Skip("no generated code present")
+	}
+
+	ds := dynssz.NewDynSsz(nil)
+	hh := hasher.NewHasher()
+	defer hh.Reset()
+	if err := generated.HashTreeRootWithDyn(ds, hh); !errors.Is(err, sszutils.ErrPackedDelegate) {
+		t.Fatalf("generated hash err = %v, want ErrPackedDelegate", err)
+	}
+
+	refl := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+	if _, err := refl.HashTreeRoot(&LeafCustomHolder_Payload); !errors.Is(err, sszutils.ErrPackedDelegate) {
+		t.Fatalf("reflection hash err = %v, want ErrPackedDelegate", err)
+	}
+	if _, err := ds.GetTree(&LeafCustomHolder_Payload); !errors.Is(err, sszutils.ErrPackedDelegate) {
+		t.Fatalf("tree err = %v, want ErrPackedDelegate", err)
+	}
+}
+
+// A basic-typed view element hashes through its view method like the plain
+// twin, generated and structurally; a view method that merkleizes a leaf of
+// its own is rejected.
+func TestCodegenPackedBasicViewElements(t *testing.T) {
+	if _, generated := any(&ViewNumTypes_Base{}).(sszutils.DynamicViewHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+	view := dynssz.WithViewDescriptor((*ViewNumTypes_View1)(nil))
+
+	for _, tc := range []struct {
+		name string
+		opts []dynssz.DynSszOption
+	}{
+		{"generated", nil},
+		{"structural", []dynssz.DynSszOption{dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := dynssz.NewDynSsz(nil, tc.opts...)
+			holderRoot, err := ds.HashTreeRoot(&ViewNumTypes_Payload, view)
+			if err != nil {
+				t.Fatalf("hash holder: %v", err)
+			}
+			plainRoot, err := ds.HashTreeRoot(&ViewNumTypes_Plain_Payload)
+			if err != nil {
+				t.Fatalf("hash plain twin: %v", err)
+			}
+			if holderRoot != plainRoot {
+				t.Fatalf("holder root %x != plain twin root %x", holderRoot, plainRoot)
+			}
+			tree, err := ds.GetTree(&ViewNumTypes_Payload, view)
+			if err != nil {
+				t.Fatalf("tree holder: %v", err)
+			}
+			if treeRoot := tree.Hash(); !bytes.Equal(treeRoot, holderRoot[:]) {
+				t.Fatalf("tree root %x != root %x", treeRoot, holderRoot)
+			}
+			for i := range 4 {
+				mutated := ViewNumTypes_Payload
+				mutated.V = append([]ViewNum(nil), mutated.V...)
+				if i < 3 {
+					mutated.V[i] = 0xff
+				} else {
+					mutated.F = 0xff
+				}
+				mutatedRoot, mutateErr := ds.HashTreeRoot(&mutated, view)
+				if mutateErr != nil {
+					t.Fatalf("hash mutated element %d: %v", i, mutateErr)
+				}
+				if mutatedRoot == holderRoot {
+					t.Errorf("element %d does not reach the root", i)
+				}
+			}
+		})
+	}
+
+	leafView := dynssz.WithViewDescriptor((*ViewLeafTypes_View1)(nil))
+	ds := dynssz.NewDynSsz(nil)
+	if _, err := ds.HashTreeRoot(&ViewLeafTypes_Payload, leafView); !errors.Is(err, sszutils.ErrPackedDelegate) {
+		t.Fatalf("generated leaf view err = %v, want ErrPackedDelegate", err)
+	}
+	if _, err := ds.GetTree(&ViewLeafTypes_Payload, leafView); !errors.Is(err, sszutils.ErrPackedDelegate) {
+		t.Fatalf("generated leaf view tree err = %v, want ErrPackedDelegate", err)
 	}
 }

@@ -2,7 +2,6 @@ package tests
 
 import (
 	"encoding/binary"
-	"errors"
 	"math/big"
 	"time"
 
@@ -1425,15 +1424,8 @@ var SizerOnlyHolder_Payload = SizerOnlyHolder{
 	T: 9,
 }
 
-// errBasicDelegated is returned by the hash methods of the basic types below.
-// Inside a list or vector their values are packed by the engines themselves,
-// so a hash delegation there shows up as this error instead of a wrong root.
-// The serialization methods are correct: the bytes of a basic value are the
-// same whether the engine or the type writes them.
-var errBasicDelegated = errors.New("hash method called on a packed basic element")
-
 // BasicWithMethods is a named uint64 that carries the dynamic and the fastssz
-// method sets.
+// method sets; its hash methods put the value.
 type BasicWithMethods uint64
 
 var _ sszutils.DynamicMarshaler = (*BasicWithMethods)(nil)
@@ -1453,8 +1445,9 @@ func (b *BasicWithMethods) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
 	return 8
 }
 
-func (b *BasicWithMethods) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
-	return errBasicDelegated
+func (b *BasicWithMethods) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(uint64(*b))
+	return nil
 }
 
 func (b *BasicWithMethods) MarshalSSZ() ([]byte, error) {
@@ -1478,7 +1471,9 @@ func (b *BasicWithMethods) UnmarshalSSZ(buf []byte) error {
 }
 
 func (b *BasicWithMethods) HashTreeRoot() ([32]byte, error) {
-	return [32]byte{}, errBasicDelegated
+	var root [32]byte
+	binary.LittleEndian.PutUint64(root[:], uint64(*b))
+	return root, nil
 }
 
 // BasicByteWithMethods is the uint8 counterpart: 32 values share one chunk.
@@ -1505,8 +1500,9 @@ func (b *BasicByteWithMethods) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
 	return 1
 }
 
-func (b *BasicByteWithMethods) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
-	return errBasicDelegated
+func (b *BasicByteWithMethods) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint8(uint8(*b))
+	return nil
 }
 
 // PackedCustom is a struct-backed uint16 with custom SSZ methods. Its hash
@@ -1818,6 +1814,270 @@ var BasicMethodsPlain_Payload = BasicMethodsPlain{
 	V: [4]uint64{4, 5, 6, 7},
 	B: []uint8{8, 9, 10},
 }
+
+// WrappedWithMethods is a type wrapper around a uint64 with hand-written hash
+// methods that put the wrapped value.
+type WrappedWithMethods struct {
+	Data uint64
+}
+
+var _ = sszutils.Annotate[WrappedWithMethods](`ssz-type:"wrapper"`)
+
+var _ sszutils.DynamicHashRoot = (*WrappedWithMethods)(nil)
+
+func (w *WrappedWithMethods) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(w.Data)
+	return nil
+}
+
+func (w *WrappedWithMethods) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint64(root[:], w.Data)
+	return root, nil
+}
+
+// WrappedGenerated is the same shape with generated methods.
+type WrappedGenerated struct {
+	Data uint64
+}
+
+var _ = sszutils.Annotate[WrappedGenerated](`ssz-type:"wrapper"`)
+
+// WrappedMethodsHolder places both wrapper types in a list and a vector, and
+// WrappedGenerated as a field.
+type WrappedMethodsHolder struct {
+	L  []WrappedWithMethods  `ssz-max:"8" ssz-type:"?,wrapper"`
+	V  [4]WrappedWithMethods `ssz-type:"?,wrapper"`
+	GL []WrappedGenerated    `ssz-max:"8" ssz-type:"?,wrapper"`
+	GV [4]WrappedGenerated   `ssz-type:"?,wrapper"`
+	F  WrappedGenerated      `ssz-type:"wrapper"`
+}
+
+// WrappedMethodsPlain is the twin with the wrappers removed; it must produce
+// the same bytes and root as WrappedMethodsHolder.
+type WrappedMethodsPlain struct {
+	L  []uint64 `ssz-max:"8"`
+	V  [4]uint64
+	GL []uint64 `ssz-max:"8"`
+	GV [4]uint64
+	F  uint64
+}
+
+var WrappedMethodsHolder_Payload = WrappedMethodsHolder{
+	L:  []WrappedWithMethods{{1}, {2}, {3}, {4}, {5}},
+	V:  [4]WrappedWithMethods{{6}, {7}, {8}, {9}},
+	GL: []WrappedGenerated{{10}, {11}, {12}, {13}, {14}},
+	GV: [4]WrappedGenerated{{15}, {16}, {17}, {18}},
+	F:  WrappedGenerated{19},
+}
+
+var WrappedMethodsPlain_Payload = WrappedMethodsPlain{
+	L:  []uint64{1, 2, 3, 4, 5},
+	V:  [4]uint64{6, 7, 8, 9},
+	GL: []uint64{10, 11, 12, 13, 14},
+	GV: [4]uint64{15, 16, 17, 18},
+	F:  19,
+}
+
+// BasicSizedCustom is a custom type of a basic size (8 bytes) with the fastssz
+// method set; its walker method puts the value and its root is the padded
+// value.
+type BasicSizedCustom uint64
+
+func (c *BasicSizedCustom) MarshalSSZ() ([]byte, error) {
+	return c.MarshalSSZTo(nil)
+}
+
+func (c *BasicSizedCustom) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint64(buf, uint64(*c)), nil
+}
+
+func (c *BasicSizedCustom) SizeSSZ() int { return 8 }
+
+func (c *BasicSizedCustom) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	*c = BasicSizedCustom(binary.LittleEndian.Uint64(buf))
+	return nil
+}
+
+func (c *BasicSizedCustom) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint64(root[:], uint64(*c))
+	return root, nil
+}
+
+func (c *BasicSizedCustom) HashTreeRootWith(hh sszutils.HashWalker) error {
+	hh.PutUint64(uint64(*c))
+	return nil
+}
+
+// RootOnlyCustom is a custom type of a basic size (2 bytes) whose only hash
+// method returns its root, the padded value.
+type RootOnlyCustom struct{ V uint16 }
+
+func (c *RootOnlyCustom) MarshalSSZ() ([]byte, error) {
+	return c.MarshalSSZTo(nil)
+}
+
+func (c *RootOnlyCustom) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint16(buf, c.V), nil
+}
+
+func (c *RootOnlyCustom) SizeSSZ() int { return 2 }
+
+func (c *RootOnlyCustom) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 2 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	c.V = binary.LittleEndian.Uint16(buf)
+	return nil
+}
+
+func (c *RootOnlyCustom) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint16(root[:], c.V)
+	return root, nil
+}
+
+// BasicSizedCustomHolder places the basic-sized custom types in lists and
+// vectors.
+type BasicSizedCustomHolder struct {
+	L  []BasicSizedCustom  `ssz-type:"?,custom" ssz-size:"?,8" ssz-max:"4"`
+	V  [4]BasicSizedCustom `ssz-type:"?,custom" ssz-size:"4,8"`
+	R  []RootOnlyCustom    `ssz-type:"?,custom" ssz-size:"?,2" ssz-max:"8"`
+	RV [4]RootOnlyCustom   `ssz-type:"?,custom" ssz-size:"4,2"`
+}
+
+// BasicSizedCustomPlain is the twin built from the basic types the custom
+// types stand in for; it must produce the same bytes and root.
+type BasicSizedCustomPlain struct {
+	L  []uint64 `ssz-max:"4"`
+	V  [4]uint64
+	R  []uint16 `ssz-max:"8"`
+	RV [4]uint16
+}
+
+var BasicSizedCustomHolder_Payload = BasicSizedCustomHolder{
+	L:  []BasicSizedCustom{1, 2, 3},
+	V:  [4]BasicSizedCustom{4, 5, 6, 7},
+	R:  []RootOnlyCustom{{8}, {9}, {10}},
+	RV: [4]RootOnlyCustom{{11}, {12}, {13}, {14}},
+}
+
+var BasicSizedCustomPlain_Payload = BasicSizedCustomPlain{
+	L:  []uint64{1, 2, 3},
+	V:  [4]uint64{4, 5, 6, 7},
+	R:  []uint16{8, 9, 10},
+	RV: [4]uint16{11, 12, 13, 14},
+}
+
+// LeafCustom is a custom type of a basic size (8 bytes) whose walker method
+// merkleizes a leaf of its own.
+type LeafCustom struct{ V uint64 }
+
+func (c *LeafCustom) MarshalSSZ() ([]byte, error) {
+	return c.MarshalSSZTo(nil)
+}
+
+func (c *LeafCustom) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint64(buf, c.V), nil
+}
+
+func (c *LeafCustom) SizeSSZ() int { return 8 }
+
+func (c *LeafCustom) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	c.V = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+
+func (c *LeafCustom) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint64(root[:], c.V)
+	return root, nil
+}
+
+func (c *LeafCustom) HashTreeRootWith(hh sszutils.HashWalker) error {
+	idx := hh.StartTree(sszutils.TreeTypeNone)
+	hh.PutUint64(c.V)
+	hh.Merkleize(idx)
+	return nil
+}
+
+// LeafCustomHolder lists LeafCustom under a packed limit.
+type LeafCustomHolder struct {
+	L []LeafCustom `ssz-type:"?,custom" ssz-size:"?,8" ssz-max:"4"`
+}
+
+var LeafCustomHolder_Payload = LeafCustomHolder{L: []LeafCustom{{1}, {2}, {3}}}
+
+// ViewNum is a basic type whose view hash method puts the value through a
+// uint16 view.
+type ViewNum uint16
+
+func (v *ViewNum) HashTreeRootWithDynView(view any) func(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	if _, ok := view.(*uint16); !ok {
+		return nil
+	}
+	return func(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+		hh.PutUint16(uint16(*v))
+		return nil
+	}
+}
+
+// LeafViewNum is a basic type whose view hash method merkleizes a leaf of its
+// own.
+type LeafViewNum uint16
+
+func (v *LeafViewNum) HashTreeRootWithDynView(view any) func(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	if _, ok := view.(*uint16); !ok {
+		return nil
+	}
+	return func(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+		idx := hh.StartTree(sszutils.TreeTypeNone)
+		hh.PutUint16(uint16(*v))
+		hh.Merkleize(idx)
+		return nil
+	}
+}
+
+// ViewNumTypes_Base holds the basic-typed views; its layout lives in the view.
+type ViewNumTypes_Base struct {
+	V []ViewNum
+	F ViewNum
+}
+
+// ViewNumTypes_View1 is the schema: a packed list and a field of uint16.
+type ViewNumTypes_View1 struct {
+	V []uint16 `ssz-max:"4"`
+	F uint16
+}
+
+// ViewNumTypes_Plain is the twin built from plain uint16 values.
+type ViewNumTypes_Plain struct {
+	V []uint16 `ssz-max:"4"`
+	F uint16
+}
+
+var ViewNumTypes_Payload = ViewNumTypes_Base{V: []ViewNum{1, 2, 3}, F: 4}
+
+var ViewNumTypes_Plain_Payload = ViewNumTypes_Plain{V: []uint16{1, 2, 3}, F: 4}
+
+// ViewLeafTypes_Base lists LeafViewNum under a packed limit.
+type ViewLeafTypes_Base struct {
+	L []LeafViewNum
+}
+
+// ViewLeafTypes_View1 is its schema.
+type ViewLeafTypes_View1 struct {
+	L []uint16 `ssz-max:"4"`
+}
+
+var ViewLeafTypes_Payload = ViewLeafTypes_Base{L: []LeafViewNum{1, 2, 3}}
 
 // CoverageTypes6 wraps MarshalerOnlyType as a field to trigger the
 // DynamicMarshaler/DynamicUnmarshaler dispatch branches.

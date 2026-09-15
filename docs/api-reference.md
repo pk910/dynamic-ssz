@@ -298,6 +298,14 @@ of `HashTreeRoot()` when its parameter is an interface that the library's
 `HashTreeRootWith(*ssz.Hasher)` form that `sszgen` emits by default takes a
 concrete foreign type, so it is not called; `HashTreeRoot()` is used instead.
 
+Hash methods are called wherever the value sits. A list or vector of basic
+values opens a packed walker scope (`StartTree` with `sszutils.TreeTypePacked`
+set on the shape), in which the walker's `Put*` methods append the packed bytes
+of a value instead of a padded chunk; the same method therefore packs its value
+as a list element and leaves a chunk as a field. The engines verify that a
+method called inside a packed scope left exactly the element's packed bytes and
+return `sszutils.ErrPackedDelegate` otherwise.
+
 ### Dynamic Interfaces (spec-aware)
 
 These are the primary interfaces used by generated code. They receive the `DynSsz` instance as a `DynamicSpecs` for resolving spec values:

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/pk910/dynamic-ssz/ssztypes"
+	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
 // hashTreeRootContext contains the state and utilities for generating hash tree root methods.
@@ -278,27 +279,36 @@ func (ctx *hashTreeRootContext) hashDynamicRoot(desc *ssztypes.TypeDescriptor, v
 }
 
 // hashDelegated emits the call to a type's own hash method when one applies
-// and reports whether it did; a basic element of up to 16 bytes inside a
-// packed scope is never delegated, since the scope packs it.
+// and reports whether it did. Outside a packed scope the delegate is padded
+// to a leaf afterwards; inside one it must leave exactly the element's packed
+// bytes.
 func (ctx *hashTreeRootContext) hashDelegated(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, isRoot, isView, pack bool) (done bool, err error) {
-	// A delegate may leave a whole leaf or only the packed bytes of its value;
-	// it is padded to a leaf afterwards, except for a custom element inside a
-	// packed scope whose declared size is one a basic type could have (a power
-	// of two up to 16 bytes): that element stands in for the basic type and is
-	// packed with its neighbours by the scope.
-	padDelegate := !pack || desc.SszType != ssztypes.SszCustomType ||
-		desc.Size <= 0 || desc.Size > 16 || desc.Size&(desc.Size-1) != 0
+	padDelegate := !pack
+	appendPackedStart := func() {
+		if pack {
+			ctx.appendCode(indent, "packedStart := hh.CurrentIndex()\n")
+		}
+	}
+	appendPackedCheck := func() {
+		if !pack {
+			return
+		}
+		errCode := fmt.Sprintf("sszutils.ErrPackedDelegateFn(got, %d)", desc.Size)
+		ctx.appendCode(indent, "if got := hh.CurrentIndex() - packedStart; got != %d {\n\treturn %s\n}\n", desc.Size, typePath.getErrorWith(errCode))
+	}
 
 	// Handle types that have generated methods we can call
 	if !isRoot && isView {
 		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewHashRoot != 0 {
 			viewFn, viewArg := descendCall(ctx.depthAware, ctx.recursion, desc, "HashTreeRootWithDynView")
+			appendPackedStart()
 			ctx.appendCode(indent, "if viewFn := %s.%s((%s)(nil)%s); viewFn != nil {\n", varName, viewFn, ctx.typePrinter.ViewTypeString(desc, true), viewArg)
 			ctx.appendCode(indent+1, "if err := viewFn(ds, hh); err != nil {\n\treturn err\n}\n")
 			ctx.appendCode(indent, "} else {\n\treturn sszutils.ErrNotImplemented\n}\n")
 			if padDelegate {
 				ctx.appendCode(indent, "hh.FillUpTo32()\n")
 			}
+			appendPackedCheck()
 			ctx.usedDynSpecs = true
 			return true, nil
 		}
@@ -307,28 +317,35 @@ func (ctx *hashTreeRootContext) hashDelegated(desc *ssztypes.TypeDescriptor, var
 	isFastsszHashWith := desc.SszCompatFlags&ssztypes.SszCompatFlagHashTreeRootWith != 0
 	useFastSsz := ctx.hashUsesFastSsz(desc, isRoot)
 
-	// A basic element of up to 16 bytes is packed with its neighbours by the
-	// enclosing list or vector; its own hash methods are not called there. A
-	// 32-byte uint256 fills a chunk on its own and may still delegate.
-	packedBasic := pack && desc.SszType.IsBasic() && desc.Size <= 16
-
-	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0 && !isRoot && !isView && !packedBasic {
+	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0 && !isRoot && !isView {
+		appendPackedStart()
 		if done, err := ctx.hashDynamicRoot(desc, varName, typePath, indent, useFastSsz); done {
-			if err == nil && padDelegate {
-				ctx.appendCode(indent, "hh.FillUpTo32()\n")
+			if err == nil {
+				if padDelegate {
+					ctx.appendCode(indent, "hh.FillUpTo32()\n")
+				}
+				appendPackedCheck()
 			}
 			return true, err
 		}
 	}
 
-	if useFastSsz && !isView && !packedBasic {
-		if isFastsszHashWith {
+	if useFastSsz && !isView {
+		switch {
+		case isFastsszHashWith:
 			fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "HashTreeRootWith")
+			appendPackedStart()
 			ctx.appendCode(indent, "if err := %s.%s(hh%s); err != nil {\n\treturn %s\n}\n", varName, fn, arg, typePath.getErrorWith("err"))
 			if padDelegate {
 				ctx.appendCode(indent, "hh.FillUpTo32()\n")
 			}
-		} else {
+			appendPackedCheck()
+		case pack:
+			// The root of a basic value is its packed bytes padded to a chunk,
+			// so the packed bytes are its prefix; a custom type of a basic
+			// size promises the same layout.
+			ctx.appendCode(indent, "if root, err := %s.HashTreeRoot(); err != nil {\n\treturn %s\n} else {\n\thh.Append(root[:%d])\n}\n", varName, typePath.getErrorWith("err"), desc.Size)
+		default:
 			ctx.appendCode(indent, "if root, err := %s.HashTreeRoot(); err != nil {\n\treturn %s\n} else {\n\thh.AppendBytes32(root[:])\n}\n", varName, typePath.getErrorWith("err"))
 		}
 		return true, nil
@@ -520,13 +537,14 @@ func (ctx *hashTreeRootContext) hashOptional(desc *ssztypes.TypeDescriptor, varN
 	// that inner declaration shadow ours, so the mixin length assignment would
 	// target the value's local and leave the outer length at 0 -- mixing in a
 	// length of 0 for a present value and producing the wrong root.
+	packed := packedElemSize(desc.ElemDesc) > 0
 	ctx.appendCode(indent, "{\n")
-	ctx.appendCode(indent+1, "idx := hh.StartTree(sszutils.TreeTypeBinary)\n")
+	ctx.appendCode(indent+1, "idx := hh.StartTree(%s)\n", treeTypeExpr(sszutils.TreeTypeBinary, packed))
 	ctx.appendCode(indent+1, "optLen := uint64(0)\n")
 	ctx.appendCode(indent+1, "if %s != nil {\n", varName)
 	ctx.appendCode(indent+2, "optLen = 1\n")
 	innerVarName := fmt.Sprintf("(*%s)", varName)
-	if err := ctx.hashType(desc.ElemDesc, innerVarName, typePath, indent+2, false, true); err != nil {
+	if err := ctx.hashType(desc.ElemDesc, innerVarName, typePath, indent+2, false, packed); err != nil {
 		return err
 	}
 	ctx.appendCode(indent+1, "}\n")
@@ -798,9 +816,10 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		}
 	} else {
 		// Hash individual elements
+		packed := packedElemSize(desc.ElemDesc) > 0
 		if !pack {
 			// Start vector merkleization
-			ctx.appendCode(indent, "idx := hh.StartTree(sszutils.TreeTypeBinary)\n")
+			ctx.appendCode(indent, "idx := hh.StartTree(%s)\n", treeTypeExpr(sszutils.TreeTypeBinary, packed))
 		}
 
 		valVar := ctx.getValVar()
@@ -826,7 +845,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		}
 		ctx.appendCode(indent, "\t}\n")
 
-		if err := ctx.hashType(desc.ElemDesc, valVar, typePath.append("[%d]", indexVar), indent+1, false, true); err != nil {
+		if err := ctx.hashType(desc.ElemDesc, valVar, typePath.append("[%d]", indexVar), indent+1, false, packed); err != nil {
 			return err
 		}
 		ctx.appendCode(indent, "\tif (%s+1)%%256 == 0 {\n\t\thh.Collapse()\n\t}\n", indexVar)
@@ -912,45 +931,30 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent, "}\n")
 	}
 
-	// Start list merkleization
-	if desc.SszType == ssztypes.SszProgressiveListType {
-		ctx.appendCode(indent, "idx := hh.StartTree(sszutils.TreeTypeProgressive)\n")
-	} else {
-		ctx.appendCode(indent, "idx := hh.StartTree(sszutils.TreeTypeBinary)\n")
+	// Start list merkleization. The chunk count of a packed list derives from
+	// the item size; a composite list is sized by the element limit itself.
+	itemSize := int(packedElemSize(desc.ElemDesc))
+	if itemSize == 0 {
+		itemSize = 32
 	}
-	var itemSize int
+	treeType := sszutils.TreeTypeBinary
+	if desc.SszType == ssztypes.SszProgressiveListType {
+		treeType = sszutils.TreeTypeProgressive
+	}
+	packed := itemSize < 32 || desc.ElemDesc.SszType == ssztypes.SszUint256Type
 
 	// Handle byte slices
 	switch {
 	case desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0:
+		ctx.appendCode(indent, "idx := hh.StartTree(%s)\n", treeTypeExpr(treeType, true))
 		ctx.appendCode(indent, "hh.AppendBytes32([]byte(%s))\n", getValueVar(true, ""))
 		itemSize = 1
 	case desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0:
+		ctx.appendCode(indent, "idx := hh.StartTree(%s)\n", treeTypeExpr(treeType, true))
 		ctx.appendCode(indent, "hh.AppendBytes32(%s[:])\n", getValueVar(false, ""))
 		itemSize = 1
 	default:
-		// A type wrapper is transparent to merkleization: the elements are
-		// packed as the value it wraps, so the item size has to come from that
-		// value. Reading the wrapper itself makes a packed basic element look
-		// composite, which yields a chunk per element instead of the chunk
-		// count the packing produces -- a different tree depth, so a different
-		// root at every length. The reflection engine unwraps the same way.
-		packedDesc := desc.ElemDesc
-		for packedDesc.SszType == ssztypes.SszTypeWrapperType && packedDesc.ElemDesc != nil {
-			packedDesc = packedDesc.ElemDesc
-		}
-
-		switch {
-		case ctx.isPrimitive(packedDesc):
-			itemSize = int(packedDesc.Size)
-		case packedDesc.SszType == ssztypes.SszCustomType && packedDesc.Size > 0 && packedDesc.Size <= 16 && packedDesc.Size&(packedDesc.Size-1) == 0:
-			// A custom element whose declared size is one a basic type could
-			// have (a power of two up to 16 bytes) packs like that basic type;
-			// any other size occupies a chunk of its own.
-			itemSize = int(packedDesc.Size)
-		default:
-			itemSize = 32
-		}
+		ctx.appendCode(indent, "idx := hh.StartTree(%s)\n", treeTypeExpr(treeType, packed))
 
 		// Bulk uint64 list hashing
 		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0 {
@@ -969,7 +973,7 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 			} else {
 				ctx.appendCode(indent, "\tt := %s[%s]\n", getValueVar(false, ctx.getPtrPrefix(desc.ElemDesc, "&")), indexVar)
 			}
-			if err := ctx.hashType(desc.ElemDesc, valVar, typePath.append("[%d]", indexVar), indent+1, false, true); err != nil {
+			if err := ctx.hashType(desc.ElemDesc, valVar, typePath.append("[%d]", indexVar), indent+1, false, packed); err != nil {
 				return err
 			}
 			ctx.appendCode(indent, "\tif (%s+1)%%256 == 0 {\n\t\thh.Collapse()\n\t}\n", indexVar)
@@ -1124,4 +1128,37 @@ func (ctx *hashTreeRootContext) hashUnion(desc *ssztypes.TypeDescriptor, varName
 	ctx.appendCode(indent, "hh.Merkleize(idx)\n")
 
 	return nil
+}
+
+// packedElemSize returns the packed byte size of a list, vector or optional
+// element, or 0 when each element occupies a chunk of its own: basic values,
+// wrappers around them and custom types of a basic size (a power of two up to
+// 16 bytes, without a size expression) pack. The size is a property of the
+// type, as the SSZ chunk count is; the reflection engine decides the same way.
+func packedElemSize(elemDesc *ssztypes.TypeDescriptor) int64 {
+	for elemDesc.SszType == ssztypes.SszTypeWrapperType && elemDesc.ElemDesc != nil {
+		elemDesc = elemDesc.ElemDesc
+	}
+	switch {
+	case elemDesc.SszType.IsBasic():
+		return elemDesc.Size
+	case elemDesc.SszType == ssztypes.SszCustomType && elemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr == 0 &&
+		elemDesc.Size > 0 && elemDesc.Size <= 16 && elemDesc.Size&(elemDesc.Size-1) == 0:
+		return elemDesc.Size
+	default:
+		return 0
+	}
+}
+
+// treeTypeExpr spells the StartTree argument for a scope of the given shape,
+// with the packed flag when the scope packs its elements.
+func treeTypeExpr(shape sszutils.TreeType, packed bool) string {
+	name := "sszutils.TreeTypeBinary"
+	if shape == sszutils.TreeTypeProgressive {
+		name = "sszutils.TreeTypeProgressive"
+	}
+	if packed {
+		return name + " | sszutils.TreeTypePacked"
+	}
+	return name
 }

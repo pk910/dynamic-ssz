@@ -2221,3 +2221,62 @@ func TestMerkleizeCollapsedPadsPartialChunk(t *testing.T) {
 		})
 	}
 }
+
+// Inside a packed scope the Put* forms append the packed bytes of their value;
+// outside one they stay whole chunks, and a scope opened inside a packed one
+// is a normal scope again.
+func TestPackedScopePut(t *testing.T) {
+	packed := NewHasher()
+	defer packed.Reset()
+	idx := packed.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
+	packed.PutUint64(1)
+	packed.PutUint32(2)
+	packed.PutUint16(3)
+	packed.PutUint8(4)
+	packed.PutBool(true)
+	packed.PutBytes([]byte{5, 6})
+	if got := packed.CurrentIndex() - idx; got != 8+4+2+1+1+2 {
+		t.Fatalf("packed scope holds %d bytes, want 18", got)
+	}
+	packed.FillUpTo32()
+	packed.Merkleize(idx)
+	packedRoot := packed.Hash()
+
+	appended := NewHasher()
+	defer appended.Reset()
+	idx = appended.StartTree(sszutils.TreeTypeBinary)
+	appended.AppendUint64(1)
+	appended.AppendUint32(2)
+	appended.AppendUint16(3)
+	appended.AppendUint8(4)
+	appended.AppendBool(true)
+	appended.Append([]byte{5, 6})
+	appended.FillUpTo32()
+	appended.Merkleize(idx)
+	if !bytes.Equal(packedRoot, appended.Hash()) {
+		t.Fatalf("packed puts %x != appends %x", packedRoot, appended.Hash())
+	}
+
+	chunks := NewHasher()
+	defer chunks.Reset()
+	idx = chunks.StartTree(sszutils.TreeTypeBinary)
+	chunks.PutUint64(1)
+	chunks.PutUint64(2)
+	if got := chunks.CurrentIndex() - idx; got != 64 {
+		t.Fatalf("plain scope holds %d bytes, want 64", got)
+	}
+
+	nested := NewHasher()
+	defer nested.Reset()
+	outer := nested.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
+	inner := nested.StartTree(sszutils.TreeTypeNone)
+	nested.PutUint64(1)
+	if got := nested.CurrentIndex() - inner; got != 32 {
+		t.Fatalf("scope inside a packed scope holds %d bytes, want 32", got)
+	}
+	nested.Merkleize(inner)
+	nested.PutUint64(2)
+	if got := nested.CurrentIndex() - outer; got != 40 {
+		t.Fatalf("packed scope after a nested scope holds %d bytes, want 40", got)
+	}
+}
