@@ -335,6 +335,12 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
 		useFastSsz = true
 	}
+	// Custom types prefer their spec-aware dynssz methods over fastssz; the
+	// static decoder keeps the static method.
+	if desc.SszType == ssztypes.SszCustomType && !ctx.noDynBufferCalls &&
+		desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicUnmarshaler|ssztypes.SszCompatFlagDynamicDecoder) != 0 {
+		useFastSsz = false
+	}
 
 	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 && !isRoot && !isView {
 		fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "UnmarshalSSZDecoder")

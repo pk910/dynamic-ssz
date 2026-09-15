@@ -2170,6 +2170,82 @@ var OptSpecHolder_Payload = optSpecHolderPayload(6)
 
 var OptSpecHolder_Specs = map[string]any{"OPT_INNER_LEN": uint64(6)}
 
+// WidthCustom is a custom type whose fastssz methods bake the default width of
+// two bytes while its dynssz buffer methods take the width from CUSTOM_WIDTH.
+type WidthCustom struct{ Data []byte }
+
+func (c *WidthCustom) SizeSSZ() int { return 2 }
+
+func (c *WidthCustom) MarshalSSZ() ([]byte, error) { return c.MarshalSSZTo(nil) }
+
+func (c *WidthCustom) MarshalSSZTo(buf []byte) ([]byte, error) {
+	if len(c.Data) != 2 {
+		return nil, sszutils.ErrVectorLengthFn(len(c.Data), 2)
+	}
+	return append(buf, c.Data...), nil
+}
+
+func (c *WidthCustom) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 2 {
+		return sszutils.ErrVectorLengthFn(len(buf), 2)
+	}
+	c.Data = append([]byte(nil), buf...)
+	return nil
+}
+
+func (c *WidthCustom) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	copy(root[:], c.Data)
+	return root, nil
+}
+
+func (c *WidthCustom) SizeSSZDyn(ds sszutils.DynamicSpecs) int {
+	return int(widthCustomWidth(ds))
+}
+
+func (c *WidthCustom) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	if uint64(len(c.Data)) != widthCustomWidth(ds) {
+		return nil, sszutils.ErrVectorLengthFn(len(c.Data), widthCustomWidth(ds))
+	}
+	return append(buf, c.Data...), nil
+}
+
+func (c *WidthCustom) UnmarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) error {
+	if uint64(len(buf)) != widthCustomWidth(ds) {
+		return sszutils.ErrVectorLengthFn(len(buf), widthCustomWidth(ds))
+	}
+	c.Data = append([]byte(nil), buf...)
+	return nil
+}
+
+func (c *WidthCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutBytes(c.Data)
+	return nil
+}
+
+func widthCustomWidth(ds sszutils.DynamicSpecs) uint64 {
+	width, _ := sszutils.ResolveSpecValueWithDefault(ds, "CUSTOM_WIDTH", 2)
+	return width
+}
+
+// WidthCustomHolder nests the custom type as a dynamic field.
+type WidthCustomHolder struct {
+	Item WidthCustom `ssz-type:"custom"`
+	Tail uint8
+}
+
+func widthCustomHolderPayload(width int) WidthCustomHolder {
+	data := make([]byte, width)
+	for i := range data {
+		data[i] = byte(0x20 + i)
+	}
+	return WidthCustomHolder{Item: WidthCustom{Data: data}, Tail: 9}
+}
+
+var WidthCustomHolder_Payload = widthCustomHolderPayload(3)
+
+var WidthCustomHolder_Specs = map[string]any{"CUSTOM_WIDTH": uint64(3)}
+
 // CoverageTypes6 wraps MarshalerOnlyType as a field to trigger the
 // DynamicMarshaler/DynamicUnmarshaler dispatch branches.
 type CoverageTypes6 struct {

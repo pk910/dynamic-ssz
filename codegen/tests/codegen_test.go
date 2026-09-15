@@ -4414,3 +4414,31 @@ func TestCodegenOptionalSpecSizedValue(t *testing.T) {
 		}
 	}
 }
+
+// A custom type with spec-aware buffer methods is reached through them by the
+// generated streaming decoder as well, so a value written at a width the
+// instance's specs resolve is read back at that width on every path.
+func TestCodegenCustomStreamDecoderPrefersDynamicMethods(t *testing.T) {
+	if _, generated := any(&WidthCustomHolder{}).(sszutils.DynamicDecoder); !generated {
+		t.Skip("no generated code present")
+	}
+
+	for _, width := range []int{3, 1, 2} {
+		specs := map[string]any{"CUSTOM_WIDTH": uint64(width)}
+		payload := widthCustomHolderPayload(width)
+		testCodegenPayloadByReflection(t, payload, specs)
+
+		ds := dynssz.NewDynSsz(specs)
+		var stream bytes.Buffer
+		if err := ds.MarshalSSZWriter(&payload, &stream); err != nil {
+			t.Fatalf("width %d: stream encode: %v", width, err)
+		}
+		var decoded WidthCustomHolder
+		if err := ds.UnmarshalSSZReader(&decoded, bytes.NewReader(stream.Bytes()), stream.Len()); err != nil {
+			t.Fatalf("width %d: stream decode: %v", width, err)
+		}
+		if !reflect.DeepEqual(decoded, payload) {
+			t.Fatalf("width %d: decoded %+v != %+v", width, decoded, payload)
+		}
+	}
+}
