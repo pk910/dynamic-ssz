@@ -14,10 +14,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/pk910/dynamic-ssz/codegen"
+	"github.com/pk910/dynamic-ssz/dynssz-gen/testpkg"
+	"github.com/pk910/dynamic-ssz/sszutils"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -1325,42 +1328,52 @@ func TestMatchAnnotateCall_RawString(t *testing.T) {
 	}
 }
 
-// findAnnotateCallInDecl has a `continue` for non-ValueSpec entries inside
+// findAnnotateCallsInVarDecl has a `continue` for non-ValueSpec entries inside
 // a VAR GenDecl. Valid Go won't produce that, so we hand-craft a GenDecl
 // with mixed spec types.
-func TestFindAnnotateCallInDecl_NonValueSpec(t *testing.T) {
+func TestFindAnnotateCallsInVarDecl_NonValueSpec(t *testing.T) {
 	decl := &ast.GenDecl{
 		Tok: token.VAR,
 		Specs: []ast.Spec{
 			&ast.ImportSpec{}, // deliberately wrong spec type for a VAR decl
 		},
 	}
-	if got := findAnnotateCallInDecl(nil, decl, "sszutils", testNamedFoo); got != "" {
-		t.Errorf("expected empty from GenDecl with non-ValueSpec, got %q", got)
+	if got := findAnnotateCallsInVarDecl(nil, decl, "sszutils", testNamedFoo); len(got) != 0 {
+		t.Errorf("expected no tags from GenDecl with non-ValueSpec, got %q", got)
 	}
 }
 
-func TestFindAnnotateCallInDecl_GenDeclNotVar(t *testing.T) {
-	// TYPE decls are ignored outright — exercises the early return at the
-	// top of findAnnotateCallInDecl.
+func TestFindAnnotateCallsInVarDecl_GenDeclNotVar(t *testing.T) {
+	// TYPE decls are ignored outright.
 	src := `package p
 type T int
 `
 	f := astFileFromString(t, src)
 	for _, decl := range f.Decls {
-		if got := findAnnotateCallInDecl(nil, decl, "sszutils", testNamedT); got != "" {
-			t.Errorf("expected empty, got %q", got)
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok {
+			t.Fatalf("expected a GenDecl, got %T", decl)
+		}
+		if got := findAnnotateCallsInVarDecl(nil, gen, "sszutils", testNamedT); len(got) != 0 {
+			t.Errorf("expected no tags, got %q", got)
 		}
 	}
 }
 
-func TestFindAnnotateCallInDecl_OtherDeclKind(t *testing.T) {
-	// A LabeledStmt is not *ast.GenDecl or *ast.FuncDecl — it's also not a
-	// top-level Decl, but we can still hand it as an untyped Decl to force
-	// the switch's default (no branch taken). We use a BadDecl for clarity.
-	var d ast.Decl = &ast.BadDecl{}
-	if got := findAnnotateCallInDecl(nil, d, "sszutils", testNamedFoo); got != "" {
-		t.Errorf("expected empty from BadDecl, got %q", got)
+func TestFindAnnotateCallsInInit_OtherFunc(t *testing.T) {
+	// Only init functions are scanned.
+	src := `package p
+func helper() { sszutils.Annotate[Foo]("tag") }
+`
+	f := astFileFromString(t, src)
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok {
+			t.Fatalf("expected a FuncDecl, got %T", decl)
+		}
+		if got := findAnnotateCallsInInit(nil, fn, "sszutils", testNamedFoo); len(got) != 0 {
+			t.Errorf("expected no tags from a helper function, got %q", got)
+		}
 	}
 }
 
@@ -1569,5 +1582,44 @@ func TestWriteTempFileFailure(t *testing.T) {
 	plain := errors.New("plain failure")
 	if got := errCause(plain); got != plain {
 		t.Fatalf("errCause must pass through non-path errors, got: %v", got)
+	}
+}
+
+// A type registered more than once resolves a duplicated key to the same
+// registration in the generator as in the runtime registry: the last one in
+// the package's initialization order.
+func TestFindAnnotateCall_RepeatedRegistrations(t *testing.T) {
+	cfg := &packages.Config{
+		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedName | packages.NeedDeps,
+	}
+	pkgs, err := packages.Load(cfg, "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg")
+	if err != nil {
+		t.Fatalf("failed to load package: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		typ  reflect.Type
+		key  string
+		want string
+	}{
+		{"RepeatedAnnotated", reflect.TypeOf(testpkg.RepeatedAnnotated(nil)), "ssz-size", "8"},
+		{"RepeatedBlock", reflect.TypeOf(testpkg.RepeatedBlock(nil)), "ssz-max", "8"},
+		{"RepeatedSame", reflect.TypeOf(testpkg.RepeatedSame(nil)), "ssz-max", "4"},
+	} {
+		generated := findAnnotateCall(pkgs[0], lookupNamed(pkgs[0], tc.name))
+		runtime, ok := sszutils.LookupAnnotation(tc.typ)
+		if !ok {
+			t.Fatalf("%s: no runtime annotation", tc.name)
+		}
+		if got := reflect.StructTag(generated).Get(tc.key); got != tc.want {
+			t.Errorf("%s: generator resolves %s to %q (tag %q), want %q", tc.name, tc.key, got, generated, tc.want)
+		}
+		if got := reflect.StructTag(runtime).Get(tc.key); got != tc.want {
+			t.Errorf("%s: runtime resolves %s to %q (tag %q), want %q", tc.name, tc.key, got, runtime, tc.want)
+		}
+		if generated != runtime {
+			t.Errorf("%s: generator tag %q != runtime tag %q", tc.name, generated, runtime)
+		}
 	}
 }

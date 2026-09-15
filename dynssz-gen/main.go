@@ -667,16 +667,16 @@ func annotateTypeArgMatches(pkg *packages.Package, arg ast.Expr, target *types.N
 }
 
 // findAnnotateCall scans package AST for sszutils.Annotate[target]("...")
-// calls and returns the tag string literal, or "" if not found.
+// calls and returns the merged tag, or "" if not found. The calls are taken
+// in the package's initialization order (package-level variables of every
+// file in file order, then the init functions) and merged newest first, as
+// the runtime registration does, so a key registered twice resolves to the
+// same registration in both.
 func findAnnotateCall(pkg *packages.Package, target *types.Named) string {
 	if target == nil {
 		return ""
 	}
-	// A type may be annotated from several places (a hand-written constraint plus
-	// a generated ssz-static declaration, possibly in different files), so collect
-	// every Annotate call for the type and merge them into one space-separated tag.
-	var tags []string
-	seen := map[string]struct{}{}
+	var varTags, initTags []string
 
 	for _, file := range pkg.Syntax {
 		// Resolve which import alias (if any) maps to sszutils
@@ -699,58 +699,71 @@ func findAnnotateCall(pkg *packages.Package, target *types.Named) string {
 		}
 
 		for _, decl := range file.Decls {
-			tag := findAnnotateCallInDecl(pkg, decl, sszutilsAlias, target)
-			if tag != "" {
-				if _, ok := seen[tag]; !ok {
-					seen[tag] = struct{}{}
-					tags = append(tags, tag)
-				}
+			switch d := decl.(type) {
+			case *ast.GenDecl:
+				varTags = append(varTags, findAnnotateCallsInVarDecl(pkg, d, sszutilsAlias, target)...)
+			case *ast.FuncDecl:
+				initTags = append(initTags, findAnnotateCallsInInit(pkg, d, sszutilsAlias, target)...)
 			}
 		}
 	}
 
-	return strings.Join(tags, " ")
+	ordered := make([]string, 0, len(varTags)+len(initTags))
+	ordered = append(ordered, varTags...)
+	ordered = append(ordered, initTags...)
+	merged := make([]string, 0, len(ordered))
+	seen := make(map[string]struct{}, len(ordered))
+	for i := len(ordered) - 1; i >= 0; i-- {
+		if _, ok := seen[ordered[i]]; ok {
+			continue
+		}
+		seen[ordered[i]] = struct{}{}
+		merged = append(merged, ordered[i])
+	}
+
+	return strings.Join(merged, " ")
 }
 
-// findAnnotateCallInDecl checks a single declaration for an Annotate call.
-func findAnnotateCallInDecl(pkg *packages.Package, decl ast.Decl, alias string, target *types.Named) string {
-	switch d := decl.(type) {
-	case *ast.GenDecl:
-		if d.Tok != token.VAR {
-			return ""
+// findAnnotateCallsInVarDecl returns the tags of every Annotate call for
+// target among the initializers of a package-level var declaration.
+func findAnnotateCallsInVarDecl(pkg *packages.Package, d *ast.GenDecl, alias string, target *types.Named) []string {
+	if d.Tok != token.VAR {
+		return nil
+	}
+	var tags []string
+	for _, spec := range d.Specs {
+		vs, ok := spec.(*ast.ValueSpec)
+		if !ok {
+			continue
 		}
 
-		for _, spec := range d.Specs {
-			vs, ok := spec.(*ast.ValueSpec)
-			if !ok {
-				continue
-			}
-
-			for _, val := range vs.Values {
-				if tag := matchAnnotateCall(pkg, val, alias, target); tag != "" {
-					return tag
-				}
-			}
-		}
-	case *ast.FuncDecl:
-		// Check init() functions
-		if d.Name.Name != "init" || d.Body == nil {
-			return ""
-		}
-
-		for _, stmt := range d.Body.List {
-			exprStmt, ok := stmt.(*ast.ExprStmt)
-			if !ok {
-				continue
-			}
-
-			if tag := matchAnnotateCall(pkg, exprStmt.X, alias, target); tag != "" {
-				return tag
+		for _, val := range vs.Values {
+			if tag := matchAnnotateCall(pkg, val, alias, target); tag != "" {
+				tags = append(tags, tag)
 			}
 		}
 	}
+	return tags
+}
 
-	return ""
+// findAnnotateCallsInInit returns the tags of every Annotate call for target
+// among the statements of an init function.
+func findAnnotateCallsInInit(pkg *packages.Package, d *ast.FuncDecl, alias string, target *types.Named) []string {
+	if d.Name.Name != "init" || d.Body == nil {
+		return nil
+	}
+	var tags []string
+	for _, stmt := range d.Body.List {
+		exprStmt, ok := stmt.(*ast.ExprStmt)
+		if !ok {
+			continue
+		}
+
+		if tag := matchAnnotateCall(pkg, exprStmt.X, alias, target); tag != "" {
+			tags = append(tags, tag)
+		}
+	}
+	return tags
 }
 
 // matchAnnotateCall checks if an expression is sszutils.Annotate[target]("...tag...")

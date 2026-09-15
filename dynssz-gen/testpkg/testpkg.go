@@ -38,6 +38,24 @@ type NonExprInitMarker []byte
 // (hits the `sel.Sel.Name != "Annotate"` branch in matchAnnotateCall).
 func unrelatedCall() {}
 
+var _ = sszutils.Annotate[RepeatedAnnotated](`ssz-size:"8"`)
+
+// RepeatedBlock is registered twice in one var block; the later one wins.
+type RepeatedBlock []byte
+
+var (
+	_ = sszutils.Annotate[RepeatedBlock](`ssz-max:"4"`)
+	_ = sszutils.Annotate[RepeatedBlock](`ssz-max:"8"`)
+)
+
+// RepeatedSame is registered twice with the same tag; the tag is kept once.
+type RepeatedSame []byte
+
+var (
+	_ = sszutils.Annotate[RepeatedSame](`ssz-max:"4"`)
+	_ = sszutils.Annotate[RepeatedSame](`ssz-max:"4"`)
+)
+
 func init() {
 	// AssignStmt, not ExprStmt — the scanner must `continue` past this
 	// without crashing when looking for Annotate calls in init() bodies.
