@@ -1837,6 +1837,85 @@ func TestGenerateRecursiveChildOutsideGenerationSet(t *testing.T) {
 	}
 }
 
+// partialRecursiveChild is recursive, hand-writes its marshaler and is in
+// the generation set for hashing only.
+type partialRecursiveChild struct {
+	Value    uint64
+	Children []*partialRecursiveChild `ssz-max:"4"`
+}
+
+func (c *partialRecursiveChild) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return append(buf, byte(c.Value)), nil
+}
+
+type partialRecursiveRoot struct{ Child partialRecursiveChild }
+
+// A parent names a child's depth twin only for the operations the child is
+// generated for in this run; the hand-written marshaler is called publicly
+// while the generated hasher is reached through its twin.
+func TestGenerateDepthTwinPerOperation(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_partial.go",
+		WithReflectType(reflect.TypeFor[partialRecursiveRoot](), WithNoUnmarshalSSZ(), WithNoSizeSSZ()),
+		WithReflectType(reflect.TypeFor[partialRecursiveChild](), WithNoMarshalSSZ(), WithNoUnmarshalSSZ(), WithNoSizeSSZ()))
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	code := files["gen_partial.go"]
+	if !strings.Contains(code, ".MarshalSSZDyn(ds, dst)") || strings.Contains(code, ".marshalSSZDynAtDepth(ds, dst, depth)") {
+		t.Errorf("hand-written marshaler is not reached through its public method:\n%s", code)
+	}
+	if !strings.Contains(code, ".hashTreeRootWithDynAtDepth(ds, hh, depth)") {
+		t.Errorf("generated hasher is not reached through its depth twin:\n%s", code)
+	}
+}
+
+// A parent generated in a later run over the same package reaches a child
+// whose earlier run emitted the depth twin through that twin, and a
+// hand-written child through its public method.
+func TestGenerateDepthTwinProbedInPackage(t *testing.T) {
+	pkg := loadTestsPackage(t)
+	node := pkg.Types.Scope().Lookup("RecursiveNode")
+	hand := pkg.Types.Scope().Lookup("HandRecursiveChild")
+	if node == nil || hand == nil {
+		t.Fatal("fixture types not found")
+	}
+	p := NewParser()
+	if !p.fullyDelegatesSSZ(types.NewPointer(node.Type())) {
+		t.Skip("generated code not present; RecursiveNode has no methods")
+	}
+
+	for _, tc := range []struct {
+		name     string
+		suffix   string
+		child    types.Object
+		wantTwin bool
+	}{
+		{"generated child", "Gen", node, true},
+		{"hand-written child", "Hand", hand, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parent := types.NewNamed(types.NewTypeName(token.NoPos, pkg.Types, "SynthParent"+tc.suffix, nil),
+				types.NewStruct([]*types.Var{types.NewField(token.NoPos, pkg.Types, "Child", tc.child.Type(), false)}, []string{""}), nil)
+			cg := NewCodeGenerator(nil)
+			cg.BuildFile("gen_synth.go", WithGoTypesType(parent, WithNoUnmarshalSSZ(), WithNoSizeSSZ(), WithNoHashTreeRoot()))
+			files, err := cg.GenerateToMap()
+			if err != nil {
+				t.Fatalf("generate: %v", err)
+			}
+			code := files["gen_synth.go"]
+			// The child is reached through whichever twin matches the method
+			// the parent delegates to: the static one for a legacy child, the
+			// dynamic one otherwise.
+			got := strings.Contains(code, "AtDepth(dst, depth)") || strings.Contains(code, "AtDepth(ds, dst, depth)")
+			if got != tc.wantTwin {
+				t.Errorf("twin call = %v, want %v:\n%s", got, tc.wantTwin, code)
+			}
+		})
+	}
+}
+
 // The invariant (maintainer, non-negotiable): with WithoutDynamicExpressions the
 // generated code must NEVER reference a *Dyn buffer function. A parent nesting a
 // generated child must reach it through the child's static MarshalSSZTo /

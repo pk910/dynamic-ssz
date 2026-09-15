@@ -6,6 +6,7 @@ with-extended-types: true
 
 types:
   - RecursiveOptNode
+  - CycleBatchB
   - ZeroMaxList
   - UnboundedList
   - UnboundedBitlist

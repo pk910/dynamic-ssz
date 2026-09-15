@@ -4421,6 +4421,112 @@ func TestCodegenHandWrittenRecursiveChild(t *testing.T) {
 	testCodegenPayloadByReflection(t, HandRecursiveHolder_Payload, nil)
 }
 
+// A cycle generated in two batches keeps its depth bound: the second batch
+// reaches the first through the depth twin the earlier run emitted, so the
+// generated engine refuses exactly where reflection does.
+func TestCodegenCycleAcrossBatches(t *testing.T) {
+	if _, generated := any(&CycleBatchB{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	gen := dynssz.NewDynSsz(nil)
+	refl := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+	// Chains rooted at either half of the cycle: the one rooted at the second
+	// batch's type enters the first batch's code through the twin it found in
+	// the package.
+	roots := map[string]func(int) any{
+		"A": func(hops int) any { v := CycleBatchChain(hops); return &v },
+		"B": func(hops int) any { v := CycleBatchChainB(hops); return &v },
+	}
+	for rootName, chain := range roots {
+		accepts := func(ds *dynssz.DynSsz, hops int) bool {
+			_, err := ds.MarshalSSZ(chain(hops))
+			return err == nil
+		}
+		// The deepest chain reflection accepts.
+		lo, hi := 1, 3000
+		for lo < hi {
+			mid := (lo + hi + 1) / 2
+			if accepts(refl, mid) {
+				lo = mid
+			} else {
+				hi = mid - 1
+			}
+		}
+		bound := lo
+		if bound < 100 || bound >= 3000 {
+			t.Fatalf("root %s: reflection bound at %d hops is not a usable probe", rootName, bound)
+		}
+		for _, tc := range []struct {
+			hops int
+			ok   bool
+		}{{10, true}, {bound, true}, {bound + 1, false}, {3000, false}} {
+			v := chain(tc.hops)
+			genBytes, genErr := gen.MarshalSSZ(v)
+			if (genErr == nil) != tc.ok {
+				t.Fatalf("root %s hops=%d: generated err=%v, want accepted=%v", rootName, tc.hops, genErr, tc.ok)
+			}
+			if _, err := gen.HashTreeRoot(v); (err == nil) != tc.ok {
+				t.Fatalf("root %s hops=%d: generated root err=%v, want accepted=%v", rootName, tc.hops, err, tc.ok)
+			}
+			if !tc.ok {
+				continue
+			}
+			reflBytes, err := refl.MarshalSSZ(v)
+			if err != nil || !bytes.Equal(genBytes, reflBytes) {
+				t.Fatalf("root %s hops=%d: generated and reflection bytes differ (%v)", rootName, tc.hops, err)
+			}
+			if err := gen.UnmarshalSSZ(chain(0), genBytes); err != nil {
+				t.Fatalf("root %s hops=%d: unmarshal: %v", rootName, tc.hops, err)
+			}
+		}
+		unbounded := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz(), dynssz.WithMaxNestingDepth(8*(bound+1)))
+		data, err := unbounded.MarshalSSZ(chain(bound + 1))
+		if err != nil {
+			t.Fatalf("root %s: encode the chain past the bound: %v", rootName, err)
+		}
+		if err = gen.UnmarshalSSZ(chain(0), data); err == nil {
+			t.Fatalf("root %s: generated unmarshal accepted a chain past the bound", rootName)
+		}
+	}
+}
+
+// A recursive data type with a non-recursive view compiles and serves the
+// view through plain methods.
+func TestCodegenRecursiveDataLeafView(t *testing.T) {
+	if _, generated := any(&RecursiveLeafNode{}).(sszutils.DynamicViewMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+	view := dynssz.WithViewDescriptor((*RecursiveLeafNode_View1)(nil))
+	enc, err := ds.MarshalSSZ(&RecursiveLeafNode_Payload, view)
+	if err != nil {
+		t.Fatalf("marshal view: %v", err)
+	}
+	if want := []byte{7, 0, 0, 0, 0, 0, 0, 0}; !bytes.Equal(enc, want) {
+		t.Fatalf("view bytes %x, want %x", enc, want)
+	}
+	root, err := ds.HashTreeRoot(&RecursiveLeafNode_Payload, view)
+	if err != nil {
+		t.Fatalf("hash view: %v", err)
+	}
+	plainRoot, err := ds.HashTreeRoot(&struct{ Value uint64 }{7})
+	if err != nil || root != plainRoot {
+		t.Fatalf("view root %x, %v; want %x", root, err, plainRoot)
+	}
+	var back RecursiveLeafNode
+	if err = ds.UnmarshalSSZ(&back, enc, view); err != nil || back.Value != 7 {
+		t.Fatalf("unmarshal view: %+v, %v", back, err)
+	}
+	full, err := ds.MarshalSSZ(&RecursiveLeafNode_Payload)
+	if err != nil {
+		t.Fatalf("marshal data: %v", err)
+	}
+	var backFull RecursiveLeafNode
+	if err = ds.UnmarshalSSZ(&backFull, full); err != nil || len(backFull.Children) != 1 || backFull.Children[0].Value != 8 {
+		t.Fatalf("unmarshal data: %+v, %v", backFull, err)
+	}
+}
+
 // A bit-sized vector whose bit count is a spec value with no static bit size
 // falls back to the array's own length in bits, on every path of both engines.
 func TestCodegenBitsizeExpressionWithoutStaticFallback(t *testing.T) {

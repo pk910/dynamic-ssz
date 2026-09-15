@@ -933,11 +933,12 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 	// mirrors how the non-view methods are paired, and keeps the exported view
 	// interfaces unchanged.
 	buildViewDispatcher := func(fnPrefix string, mainFn func() string, sig viewFnSignature, depthExpr string) {
-		wrap := func(target string) string {
-			// Only a plain method reference can be redirected to a twin; the
-			// fastssz fallback is emitted as a literal closure and has no twin
-			// to name.
-			if depthExpr == "" || strings.ContainsAny(target, "(") {
+		// A target is redirected to its twin only when its own methods carry
+		// a depth: a view that leaves the recursive field out has plain
+		// methods even when the data type is on a cycle. The fastssz fallback
+		// is emitted as a literal closure and has no twin to name.
+		wrap := func(target string, targetDesc *ssztypes.TypeDescriptor) string {
+			if depthExpr == "" || !recursion.threads(targetDesc) || strings.ContainsAny(target, "(") {
 				return target
 			}
 			return fmt.Sprintf("func(%s) %s {\n\t\treturn %s(%s, %s)\n\t}", sig.params, sig.results, depthMethodName(target), sig.args, depthExpr)
@@ -949,7 +950,7 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 			mainFnName := mainFn()
 			if mainFnName != "" {
 				appendCode(codeBuilder, 1, "case nil, %s:\n", typePrinter.TypeString(dataType))
-				appendCode(codeBuilder, 2, "return %s\n", wrap(mainFnName))
+				appendCode(codeBuilder, 2, "return %s\n", wrap(mainFnName, dataType))
 			}
 		}
 
@@ -957,17 +958,20 @@ func (cg *CodeGenerator) generateSSZViewMethods(dataType *ssztypes.TypeDescripto
 			typeName := typePrinter.ViewTypeString(view, true)
 			viewFnName := getViewFnName(view)
 			appendCode(codeBuilder, 1, "case %s:\n", typeName)
-			appendCode(codeBuilder, 2, "return %s\n", wrap(fmt.Sprintf("t.%s_%s", fnPrefix, viewFnName)))
+			appendCode(codeBuilder, 2, "return %s\n", wrap(fmt.Sprintf("t.%s_%s", fnPrefix, viewFnName), view))
 		}
 		appendCode(codeBuilder, 1, "}\n")
 	}
 
-	// emitViewDispatcher writes the public dispatcher and, for a type on a
-	// recursive cycle, the unexported twin a cyclic parent calls to keep the
-	// depth advancing across the view boundary.
+	// emitViewDispatcher writes the public dispatcher and, when any target's
+	// methods carry a depth, the unexported twin a cyclic parent calls to keep
+	// the depth advancing across the view boundary.
 	emitViewDispatcher := func(publicName, fnPrefix string, sig viewFnSignature, mainFn func() string) {
 		typeName := typePrinter.TypeString(dataType)
 		cyclic := recursion.threads(dataType)
+		for _, view := range views {
+			cyclic = cyclic || recursion.threads(view)
+		}
 
 		depthExpr := ""
 		if cyclic {
