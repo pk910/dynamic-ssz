@@ -2430,6 +2430,23 @@ type RecursiveLeafNode_View1 struct {
 
 var RecursiveLeafNode_Payload = RecursiveLeafNode{Value: 7, Children: []*RecursiveLeafNode{{Value: 8}}}
 
+// EOFMatrix holds the shapes whose decoding depends on how a reader splits
+// its bytes around EOF: nested variable-size lists and a nested container.
+type EOFMatrixInner struct {
+	A uint64
+	L []uint64 `ssz-max:"4"`
+	C uint32
+}
+
+type EOFMatrix struct {
+	LL [][]uint16 `ssz-max:"4,8"`
+	BL [][]byte   `ssz-max:"4,8"`
+	X  uint16
+	D  EOFMatrixInner
+}
+
+var EOFMatrix_Payload = EOFMatrix{LL: [][]uint16{{1, 2}, {3}}, BL: [][]byte{{1, 2}, {3}}, X: 7, D: EOFMatrixInner{A: 1, L: []uint64{3, 4}, C: 5}}
+
 // CountedNum is a named uint64 whose hash method counts its calls and puts
 // the value; CountedNumErr makes it fail instead.
 type CountedNum uint64

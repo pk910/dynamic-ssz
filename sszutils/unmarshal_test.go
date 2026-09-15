@@ -38,4 +38,15 @@ func TestSizeListSlice(t *testing.T) {
 	if got == nil || len(got) != 0 {
 		t.Fatalf("undelivered bytes must not size the allocation, got len %d", len(got))
 	}
+
+	// A declared length is a claim as well: only the bytes read so far size
+	// the allocation, whatever the caller declared the total to be.
+	declared := NewStreamDecoder(bytes.NewReader(make([]byte, 16)), 1<<20, 0)
+	if err := declared.Prefill(); err != nil {
+		t.Fatal(err)
+	}
+	got = SizeListSlice(declared, []uint64(nil), 1<<17, 8)
+	if len(got) > 16/8 {
+		t.Fatalf("declared length sized the allocation: len %d", len(got))
+	}
 }

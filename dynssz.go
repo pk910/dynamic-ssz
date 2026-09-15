@@ -792,21 +792,18 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 //     "unknown size" mode: the payload is consumed to EOF without being materialised,
 //     so the memory savings of streaming still apply.
 //
-// A non-negative size is treated as trusted: it is the extent every region is
-// measured against, so allocations are sized from it before the bytes arrive. It
-// must come from a source you control — a stat() result, or a Content-Length you
-// are willing to believe — not from untrusted framing. A size above
-// WithMaxStreamSize (512 MiB by default) is rejected with
-// sszutils.ErrStreamTooLarge before anything is read, so the maximum is the
-// most a single call can allocate up front; if the size comes off the wire,
-// set the smallest maximum your protocol permits or pass a negative size.
+// A non-negative size is the extent every region is measured against and the
+// most that is read from r; it is not subject to WithMaxStreamSize. It is a
+// claim, not evidence: allocations are sized from the bytes that have arrived,
+// so a size taken from untrusted framing costs the peer the bytes it declares.
 //
 // Unknown-size mode is possible because SSZ is self-delimiting for every region
 // except the trailing one, so the missing length only ever affects the last
-// dynamic child at each nesting level. It is bounded by the same
-// WithMaxStreamSize. That is a wire-byte allowance, not a deadline,
-// cancellation mechanism, or decoded-object heap limit. Use the smallest
-// application-specific cap your schema permits.
+// dynamic child at each nesting level. It is bounded by WithMaxStreamSize, or
+// by WithStreamSizeLimit when the call passes one.
+// That is a wire-byte allowance, not a deadline, cancellation mechanism, or
+// decoded-object heap limit. Use the smallest application-specific cap your
+// schema permits.
 //
 // EOF is the message boundary in unknown-size mode. A raw connection is safe
 // only when it carries one SSZ payload and EOF unambiguously ends that payload.
@@ -881,16 +878,16 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 	knownSize := size >= 0
 	var decoder *sszutils.StreamDecoder
 	if knownSize {
-		// The declared size is trusted for region bookkeeping, but it also
-		// sizes allocations before any byte arrives, so it is held to the same
-		// ceiling as an unknown-length decode.
-		if size > d.options.MaxStreamSize {
-			return sszutils.ErrPayloadTooLargeFn(size, d.options.MaxStreamSize)
-		}
+		// The declared size bounds the regions and the reads; allocations
+		// follow the bytes that arrive, so the size needs no ceiling.
 		decoder = sszutils.NewStreamDecoder(r, size, d.options.StreamReaderBufferSize)
 		decoder.PushLimit(size)
 	} else {
-		decoder = sszutils.NewUnknownStreamDecoder(r, d.options.StreamReaderBufferSize, d.options.MaxStreamSize)
+		maxStreamSize := d.options.MaxStreamSize
+		if cfg != nil && cfg.maxStreamSize > 0 {
+			maxStreamSize = cfg.maxStreamSize
+		}
+		decoder = sszutils.NewUnknownStreamDecoder(r, d.options.StreamReaderBufferSize, maxStreamSize)
 		// Fill the read buffer once up front. If the whole payload fits, EOF is
 		// observed immediately and the length becomes exact, so the decode runs
 		// on the known-length path with all of its fail-fast validation intact.

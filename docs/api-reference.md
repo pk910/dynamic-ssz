@@ -54,7 +54,7 @@ type DynSszOption func(*DynSszOptions)
 | `WithStreamWriterBufferSize(n)` | Set stream encoder buffer size (default 2KB) |
 | `WithStreamReaderBufferSize(n)` | Set stream decoder buffer size (default 2KB) |
 | `WithNoDelegation()` | Disable delegation to generated Dynamic* methods (fastssz is governed by `WithNoFastSsz`) |
-| `WithMaxStreamSize(n)` | Cap the payload size of `UnmarshalSSZReader` (default 512MB): a larger declared size is rejected up front, an unknown-length decode stops there |
+| `WithMaxStreamSize(n)` | Cap an unknown-length `UnmarshalSSZReader` decode (default 512MB); a declared size is its own bound; `WithStreamSizeLimit` overrides it per call |
 | `WithMaxNestingDepth(n)` | Bound recursion-cycle nesting (default 1024); guards the stack against deeply nested payloads |
 | `WithAsyncHashing(workers)` | Opt this instance's `HashTreeRoot` into background subtree reduction; `workers > 0` also sets the process-wide worker limit (see [Async hashing](performance.md#2-async-hashing)) |
 
@@ -94,6 +94,18 @@ data, err = ds.MarshalSSZ(body, dynssz.WithViewDescriptor((*Phase0BodyView)(nil)
 ```
 
 See [SSZ Views](views.md) for detailed documentation.
+
+#### WithStreamSizeLimit
+
+```go
+func WithStreamSizeLimit(size int) CallOption
+```
+
+Bounds one unknown-length `UnmarshalSSZReader` decode, overriding `WithMaxStreamSize` for that call. A non-positive value keeps the instance default; a declared size is its own bound and is not affected. Other operations ignore the option.
+
+```go
+err := ds.UnmarshalSSZReader(&block, body, -1, dynssz.WithStreamSizeLimit(4*1024*1024))
+```
 
 ## Serialization Methods
 

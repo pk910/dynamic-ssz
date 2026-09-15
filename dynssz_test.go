@@ -5206,6 +5206,110 @@ func TestEmbeddedInterfaceNoFalseDelegation(t *testing.T) {
 	}
 }
 
+// Reader segmentation: whichever way a reader splits its bytes, and whether
+// it reports EOF together with the last bytes or on its own, a truncated
+// message is rejected by the stream path exactly when the buffer path
+// rejects it, and a valid one is accepted everywhere.
+type eofListOfLists struct {
+	L [][]uint16 `ssz-max:"4,8"`
+}
+
+type eofByteLists struct {
+	L [][]byte `ssz-max:"4,8"`
+	T uint8
+}
+
+type eofThreeByteLists struct {
+	A []byte `ssz-max:"8"`
+	B []byte `ssz-max:"8"`
+	C []byte `ssz-max:"8"`
+}
+
+type eofNested struct {
+	X uint16
+	D struct {
+		A uint64
+		L []uint64 `ssz-max:"4"`
+		C uint32
+	}
+}
+
+func eofReaders(data []byte) map[string]io.Reader {
+	return map[string]io.Reader{
+		"bytes":           bytes.NewReader(data),
+		"data+EOF":        iotest.DataErrReader(bytes.NewReader(data)),
+		"onebyte+EOF":     iotest.DataErrReader(iotest.OneByteReader(bytes.NewReader(data))),
+		"halfreads+EOF":   iotest.DataErrReader(iotest.HalfReader(bytes.NewReader(data))),
+		"halfreads+plain": iotest.HalfReader(bytes.NewReader(data)),
+	}
+}
+
+func TestReaderSegmentationMatchesBuffer(t *testing.T) {
+	values := []any{
+		&eofListOfLists{L: [][]uint16{{1, 2}, {3}}},
+		&eofByteLists{L: [][]byte{{1, 2}, {3}}, T: 4},
+		&eofThreeByteLists{A: []byte{0xaa}, B: []byte{0xbb}, C: []byte{0xcc}},
+		&eofNested{X: 7, D: struct {
+			A uint64
+			L []uint64 `ssz-max:"4"`
+			C uint32
+		}{A: 1, L: []uint64{3, 4}, C: 5}},
+	}
+	for _, bufSize := range []int{1, 8, 0} {
+		ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation(), WithStreamReaderBufferSize(bufSize))
+		for _, v := range values {
+			full, err := ds.MarshalSSZ(v)
+			if err != nil {
+				t.Fatalf("%T: %v", v, err)
+			}
+			target := reflect.New(reflect.TypeOf(v).Elem()).Interface()
+			for cut := 0; cut < len(full); cut++ {
+				data := full[:len(full)-cut]
+				bufferOK := ds.UnmarshalSSZ(target, data) == nil
+				for _, size := range []int{-1, len(data), len(full)} {
+					for name, r := range eofReaders(data) {
+						err := ds.UnmarshalSSZReader(target, r, size)
+						wantOK := bufferOK && size != len(full) || cut == 0
+						if (err == nil) != wantOK {
+							t.Errorf("%T buf=%d cut=%d size=%d reader=%s: err=%v, buffer accepts=%v", v, bufSize, cut, size, name, err, bufferOK)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// A truncated list of lists whose second element's declared start lies past
+// the input is rejected with the default reader buffer as well, when the
+// reader hands over the last bytes together with EOF.
+func TestReaderEOFWithDataDefaultBuffer(t *testing.T) {
+	first := make([]byte, 2048)
+	for i := range first {
+		first[i] = byte(i + 1)
+	}
+	type lists struct {
+		L [][]byte `ssz-max:"4,4096"`
+	}
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithNoDelegation())
+	full, err := ds.MarshalSSZ(&lists{L: [][]byte{first, {7}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Cut inside the first element: the second element's offset now lies past
+	// the end of the input.
+	data := full[:len(full)-3]
+	if err := ds.UnmarshalSSZ(&lists{}, data); err == nil {
+		t.Fatal("buffer path accepted the truncated message")
+	}
+	if err := ds.UnmarshalSSZReader(&lists{}, iotest.DataErrReader(bytes.NewReader(data)), -1); err == nil {
+		t.Fatal("stream path accepted the truncated message")
+	}
+	if err := ds.UnmarshalSSZReader(&lists{}, iotest.DataErrReader(bytes.NewReader(full)), -1); err != nil {
+		t.Fatalf("stream path rejected the valid message: %v", err)
+	}
+}
+
 // walkerOnlyInner exposes only HashTreeRootWith; walkerOnlyOuter inherits it
 // and adds a sibling the promoted method knows nothing about.
 type walkerOnlyInner struct{ A uint64 }
@@ -5556,59 +5660,69 @@ func TestUnknownSizeMaxStreamSize(t *testing.T) {
 	}
 }
 
-// A declared size is trusted, so it is held to the maximum stream size before
-// any byte is read: the maximum is the most a single call can allocate up
-// front, on the reflection path and on the delegated path alike.
-func TestKnownSizeMaxStreamSize(t *testing.T) {
+// A declared size is the read bound of the call and is not subject to
+// WithMaxStreamSize; allocations follow the bytes that arrive, so a size far
+// beyond the input costs nothing up front and ends in ErrUnexpectedEOF.
+func TestKnownSizeAboveMaxStreamSize(t *testing.T) {
 	type payload struct {
 		A    uint64
 		Data []byte `ssz-max:"1099511627776"`
 	}
-	ds := NewDynSsz(nil, WithNoFastSsz(), WithMaxStreamSize(64))
+	ds := NewDynSsz(nil, WithNoFastSsz(), WithMaxStreamSize(8))
 	full, err := ds.MarshalSSZ(&payload{A: 1, Data: []byte{1, 2, 3}})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-
-	// At the cap the decode proceeds normally.
-	if err = ds.UnmarshalSSZReader(&payload{}, bytes.NewReader(full), len(full)); err != nil {
-		t.Fatalf("decode within cap: %v", err)
+	if len(full) <= 8 {
+		t.Fatalf("payload of %d bytes does not exceed the configured maximum", len(full))
 	}
 
-	// Above the cap the size is rejected without touching the reader.
-	rd := &countingReader{r: bytes.NewReader(full)}
-	err = ds.UnmarshalSSZReader(&payload{}, rd, 65)
-	if !errors.Is(err, sszutils.ErrStreamTooLarge) {
-		t.Fatalf("err = %v, want ErrStreamTooLarge", err)
+	// The declared size exceeds the maximum stream size and decodes normally.
+	var back payload
+	if err = ds.UnmarshalSSZReader(&back, bytes.NewReader(full), len(full)); err != nil {
+		t.Fatalf("decode with a size above the maximum: %v", err)
 	}
-	if rd.n != 0 {
-		t.Fatalf("reader consumed %d bytes before the size was rejected", rd.n)
+	if back.A != 1 || !bytes.Equal(back.Data, []byte{1, 2, 3}) {
+		t.Fatalf("decoded %+v", back)
 	}
 
-	// The default bound applies when none is configured, and a size beyond it
-	// is rejected before the allocation it would otherwise cause.
+	// A per-call limit overrides the instance value for an unknown-size decode
+	// in both directions; a non-positive value keeps the instance default.
+	back = payload{}
+	if err = ds.UnmarshalSSZReader(&back, bytes.NewReader(full), -1, WithStreamSizeLimit(len(full))); err != nil {
+		t.Fatalf("decode with a per-call limit above the instance maximum: %v", err)
+	}
+	if back.A != 1 || !bytes.Equal(back.Data, []byte{1, 2, 3}) {
+		t.Fatalf("decoded %+v", back)
+	}
+	if err = ds.UnmarshalSSZReader(&payload{}, bytes.NewReader(full), -1, WithStreamSizeLimit(0)); !errors.Is(err, sszutils.ErrStreamTooLarge) {
+		t.Fatalf("zero per-call limit err = %v, want ErrStreamTooLarge from the instance maximum", err)
+	}
+	dsl := NewDynSsz(nil, WithNoFastSsz())
+	if err = dsl.UnmarshalSSZReader(&payload{}, bytes.NewReader(full), -1, WithStreamSizeLimit(8)); !errors.Is(err, sszutils.ErrStreamTooLarge) {
+		t.Fatalf("per-call limit below the payload err = %v, want ErrStreamTooLarge", err)
+	}
+	if err = dsl.UnmarshalSSZReader(&payload{}, bytes.NewReader(full), len(full), WithStreamSizeLimit(8)); err != nil {
+		t.Fatalf("declared size with a smaller per-call limit: %v", err)
+	}
+
+	// A size the input does not fill fails without sizing anything from it.
+	type wide struct {
+		L []*uint8 `ssz-max:"1099511627776"`
+	}
 	dsd := NewDynSsz(nil, WithNoFastSsz())
+	short := []byte{4, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8}
 	var before, after runtime.MemStats
+	runtime.GC()
 	runtime.ReadMemStats(&before)
-	err = dsd.UnmarshalSSZReader(&payload{}, bytes.NewReader(full), sszutils.DefaultMaxStreamSize+1)
+	err = dsd.UnmarshalSSZReader(&wide{}, bytes.NewReader(short), 64<<20)
 	runtime.ReadMemStats(&after)
-	if !errors.Is(err, sszutils.ErrStreamTooLarge) {
-		t.Fatalf("err = %v, want ErrStreamTooLarge", err)
+	if !errors.Is(err, sszutils.ErrUnexpectedEOF) {
+		t.Fatalf("err = %v, want ErrUnexpectedEOF", err)
 	}
 	if grew := after.TotalAlloc - before.TotalAlloc; grew > 1<<20 {
-		t.Fatalf("rejecting the size allocated %d bytes", grew)
+		t.Fatalf("a 12-byte input with a 64 MiB declaration allocated %d bytes", grew)
 	}
-}
-
-type countingReader struct {
-	r io.Reader
-	n int
-}
-
-func (c *countingReader) Read(p []byte) (int, error) {
-	n, err := c.r.Read(p)
-	c.n += n
-	return n, err
 }
 
 // ssz-max must be enforced while reading, so an over-long list is rejected

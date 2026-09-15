@@ -218,14 +218,28 @@ func decodeSlicePreallocation(count int, elemSize uint64) int {
 	return count
 }
 
-// PreallocateDecodeSlice reserves a byte-bounded prefix of a declared dynamic
-// list. Callers extend the result geometrically with GrowSlice as later chunks
-// are reached.
+// RegionDelivered reports whether every byte of the current region is already
+// in memory: a buffer decode always, a stream decode once the region fits in
+// what has been read. Only then may an allocation be sized from the region's
+// declared extent; a declaration the bytes have not backed yet is a claim by
+// the input, whatever the caller said the total length was.
+func RegionDelivered(dec Decoder) bool {
+	return dec.LengthKnown() && dec.Available() >= dec.GetLength()
+}
+
+// PreallocateDecodeSlice sizes src for a dynamic list of count elements. A
+// region already in memory is sized exactly; otherwise the offset table
+// proves the count but not that any body exists, so a byte-bounded prefix is
+// reserved and callers extend it geometrically with GrowSlice as bodies are
+// reached.
 //
 // ExpandSlice is intentional here: GrowSlice's small-slice capacity floor is a
 // throughput win during incremental growth, but reserving eight wide elements
 // would defeat the byte bound this helper provides.
-func PreallocateDecodeSlice[T any](src []T, count int) []T {
+func PreallocateDecodeSlice[T any](dec Decoder, src []T, count int) []T {
+	if RegionDelivered(dec) {
+		return ExpandSlice(src, count)
+	}
 	var zero T
 	initialCount := decodeSlicePreallocation(count, uint64(unsafe.Sizeof(zero)))
 	return ExpandSlice(src, initialCount)
@@ -237,14 +251,11 @@ func PreallocateDecodeSlice[T any](src []T, count int) []T {
 // A count taken from an offset or a region length is only a claim until the
 // bytes behind it arrive. Sizing an allocation from the claim lets a peer turn a
 // few delivered bytes into an arbitrary one; sizing it from what has arrived
-// costs the peer the bytes. When the extent is already backed by known input the
+// costs the peer the bytes. A buffer decode has every byte in hand, so its
 // count is returned unchanged.
 func CredibleCount(dec Decoder, count, elemSize int) int {
 	if count <= 0 {
 		return 0
-	}
-	if dec.LengthKnown() {
-		return count
 	}
 	if elemSize <= 0 {
 		return count
@@ -257,14 +268,14 @@ func CredibleCount(dec Decoder, count, elemSize int) int {
 
 // SizeListSlice sizes dst for a list of count elements of elemSize bytes.
 //
-// When the region's extent is backed by input known to exist, the slice is
-// allocated exactly -- the common case, and what every buffer or known-length
-// decode does. Otherwise the count is merely declared by the input, so
-// allocating it outright would let a peer turn a few delivered bytes into an
-// arbitrary allocation; the slice is instead seeded from the bytes that have
-// actually arrived and grows as the rest does.
+// When the region is already in memory the slice is allocated exactly -- the
+// common case, and what every buffer decode does. Otherwise the count is
+// merely declared by the input, so allocating it outright would let a peer
+// turn a few delivered bytes into an arbitrary allocation; the slice is
+// instead seeded from the bytes that have actually arrived and grows as the
+// rest does.
 func SizeListSlice[T any](dec Decoder, dst []T, count, elemSize int) []T {
-	if dec.LengthKnown() {
+	if RegionDelivered(dec) {
 		return ExpandSlice(dst, count)
 	}
 	return GrowSlice(dst, CredibleCount(dec, count, elemSize), count)

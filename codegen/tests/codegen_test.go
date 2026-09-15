@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 
 	dynssz "github.com/pk910/dynamic-ssz"
 	"github.com/pk910/dynamic-ssz/codegen"
@@ -4524,6 +4525,47 @@ func TestCodegenRecursiveDataLeafView(t *testing.T) {
 	var backFull RecursiveLeafNode
 	if err = ds.UnmarshalSSZ(&backFull, full); err != nil || len(backFull.Children) != 1 || backFull.Children[0].Value != 8 {
 		t.Fatalf("unmarshal data: %+v, %v", backFull, err)
+	}
+}
+
+// Reader segmentation through generated decoders: whichever way a reader
+// splits its bytes around EOF, a truncated message is rejected by the
+// generated stream decoder exactly when the generated buffer decoder rejects
+// it, and both agree with reflection.
+func TestCodegenReaderSegmentationMatchesBuffer(t *testing.T) {
+	if _, generated := any(&EOFMatrix{}).(sszutils.DynamicDecoder); !generated {
+		t.Skip("no generated code present")
+	}
+	refl := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation())
+	full, err := refl.MarshalSSZ(&EOFMatrix_Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readers := func(data []byte) map[string]io.Reader {
+		return map[string]io.Reader{
+			"bytes":       bytes.NewReader(data),
+			"data+EOF":    iotest.DataErrReader(bytes.NewReader(data)),
+			"onebyte+EOF": iotest.DataErrReader(iotest.OneByteReader(bytes.NewReader(data))),
+		}
+	}
+	for _, bufSize := range []int{1, 8, 0} {
+		gen := dynssz.NewDynSsz(nil, dynssz.WithStreamReaderBufferSize(bufSize))
+		for cut := 0; cut < len(full); cut++ {
+			data := full[:len(full)-cut]
+			bufferOK := gen.UnmarshalSSZ(&EOFMatrix{}, data) == nil
+			if reflOK := refl.UnmarshalSSZ(&EOFMatrix{}, data) == nil; reflOK != bufferOK {
+				t.Errorf("cut=%d: generated buffer accepts=%v, reflection accepts=%v", cut, bufferOK, reflOK)
+			}
+			for _, size := range []int{-1, len(data), len(full)} {
+				for name, r := range readers(data) {
+					err := gen.UnmarshalSSZReader(&EOFMatrix{}, r, size)
+					wantOK := bufferOK && size != len(full) || cut == 0
+					if (err == nil) != wantOK {
+						t.Errorf("buf=%d cut=%d size=%d reader=%s: err=%v, buffer accepts=%v", bufSize, cut, size, name, err, bufferOK)
+					}
+				}
+			}
+		}
 	}
 }
 

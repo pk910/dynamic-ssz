@@ -951,8 +951,10 @@ func (ctx *ReflectionCtx) unmarshalList(targetType *ssztypes.TypeDescriptor, tar
 	itemSize := int(elemSize)
 
 	// A list of fixed-size elements derives its length from the region length,
-	// so an open region has to be consumed element by element until EOF.
-	if !decoder.LengthKnown() {
+	// so an open region has to be consumed element by element until EOF. A
+	// bounded region whose bytes have not all arrived is consumed the same way,
+	// so the allocation follows the bytes rather than the declaration.
+	if !sszutils.RegionDelivered(decoder) {
 		return ctx.unmarshalListUntilEOF(targetType, targetValue, decoder, itemSize, depth)
 	}
 
@@ -1089,7 +1091,7 @@ func (ctx *ReflectionCtx) unmarshalListUntilEOF(targetType *ssztypes.TypeDescrip
 	// allocated element instead would cost an allocation per item, which for a
 	// large trailing list is worse than the buffering this path exists to avoid.
 	// Seed from the bytes that have arrived rather than from the declaration.
-	initialLen := 8
+	initialLen := decoder.Available() / itemSize
 	if declared >= 0 {
 		initialLen = sszutils.CredibleCount(decoder, declared, itemSize)
 	}
@@ -1116,11 +1118,11 @@ func (ctx *ReflectionCtx) unmarshalListUntilEOF(targetType *ssztypes.TypeDescrip
 			// count, so the loop always has room for the element it is about to
 			// decode no matter how small the slice started.
 			newLen := max(newValue.Len()*2, count+1)
-			// More() may have reached EOF, which makes the region length exact.
-			// Once that happens the remaining element count is known, so the
-			// slice can be sized to fit rather than doubled past it.
+			// A bounded region declares the remaining element count, so the
+			// growth never overshoots it; the count still only becomes the
+			// allocation once its bytes are in memory.
 			if decoder.LengthKnown() {
-				if exact := count + decoder.GetLength()/itemSize; exact >= count+1 {
+				if exact := count + decoder.GetLength()/itemSize; exact >= count+1 && exact < newLen {
 					newLen = exact
 				}
 			}
@@ -1305,12 +1307,12 @@ func (ctx *ReflectionCtx) unmarshalDynamicList(targetType *ssztypes.TypeDescript
 		fieldT = fieldT.Elem()
 	}
 
-	// A known region is already backed by the caller's complete input and keeps
-	// the existing exact-allocation path. For an open stream region, the offset
-	// table proves the element count but not that any element body exists, so
-	// reserve only a byte-bounded prefix and grow as bodies are reached.
+	// A region already in memory keeps the exact-allocation path. Otherwise
+	// the offset table proves the element count but not that any element body
+	// exists, so reserve only a byte-bounded prefix and grow as bodies are
+	// reached.
 	initialLen := sliceLen
-	if !lengthKnown {
+	if !sszutils.RegionDelivered(decoder) {
 		initialLen = dynamicListPreallocation(sliceLen, uint64(fieldT.Elem().Size()))
 	}
 	newValue := reflect.MakeSlice(fieldT, initialLen, initialLen)

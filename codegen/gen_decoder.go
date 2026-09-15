@@ -1153,7 +1153,6 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		startPosVar := fmt.Sprintf("startPos%d", ctx.startPosVarCounter)
 		ctx.startPosVarCounter++
 		ctx.appendCode(indent, "%s := dec.GetPosition()\n", startPosVar)
-		ctx.appendCode(indent, "lengthKnown := dec.LengthKnown()\n")
 		// An empty region means "empty list", so emptiness is a semantic
 		// discriminator and has to be answered by probing the reader when the
 		// region's extent is not yet known. The probe may discover EOF, which
@@ -1232,11 +1231,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 			ctx.offsetSliceLimit = ctx.offsetSliceCounter
 		}
 
-		ctx.appendCode(indent, "if lengthKnown {\n")
-		ctx.appendCode(indent+1, "%s = sszutils.ExpandSlice(%s, itemCount)\n", valueVar, valueVar)
-		ctx.appendCode(indent, "} else {\n")
-		ctx.appendCode(indent+1, "%s = sszutils.PreallocateDecodeSlice(%s, itemCount)\n", valueVar, valueVar)
-		ctx.appendCode(indent, "}\n")
+		ctx.appendCode(indent, "%s = sszutils.PreallocateDecodeSlice(dec, %s, itemCount)\n", valueVar, valueVar)
 
 		fieldPath := typePath.append("[%d]", indexVar)
 		// Bind the last index to a uniquely named variable before the loop. A

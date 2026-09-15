@@ -232,6 +232,10 @@ types:
     output: gen_edgecases.go
   - name: HugeBitlistHolder
     output: gen_edgecases.go
+  - name: EOFMatrixInner
+    output: gen_edgecases.go
+  - name: EOFMatrix
+    output: gen_edgecases.go
   - name: WalkerOnlyOuter
     output: gen_edgecases.go
   - name: WrappedU256Holder
