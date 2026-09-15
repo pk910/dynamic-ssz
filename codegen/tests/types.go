@@ -2200,7 +2200,7 @@ func (c *WidthCustom) HashTreeRoot() ([32]byte, error) {
 }
 
 func (c *WidthCustom) SizeSSZDyn(ds sszutils.DynamicSpecs) int {
-	return int(widthCustomWidth(ds))
+	return sszutils.CapToInt(widthCustomWidth(ds))
 }
 
 func (c *WidthCustom) MarshalSSZDyn(ds sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
