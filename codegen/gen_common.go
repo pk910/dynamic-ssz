@@ -530,10 +530,15 @@ func uintLitArg(expr string) string {
 
 // appendElemPaddingCheck emits the padding-bit check of a bit-sized bitvector
 // stored element-wise: the last element (dereferenced when it is a pointer; a
-// nil element holds no bits) must have no bits above the bit size. conds are
-// extra conditions the check runs under; runtimeAlign adds the alignment test
-// for a bit size only known at run time. failStmt is emitted on a violation.
-func appendElemPaddingCheck(appendCode func(int, string, ...any), indent int, lastElem string, ptrElem bool, bitlimitVar string, runtimeAlign bool, conds []string, failStmt string) {
+// nil element holds no bits) must have no bits above the bit size. fullLenCond,
+// when set, restricts the check to a value that occupies the full length (a
+// shorter value is zero-padded); runtimeAlign adds the alignment test for a
+// bit size only known at run time. failStmt is emitted on a violation.
+func appendElemPaddingCheck(appendCode func(int, string, ...any), indent int, elemDesc *ssztypes.TypeDescriptor, valueVar, lenVar, bitlimitVar string, runtimeAlign bool, fullLenCond, failStmt string) {
+	var conds []string
+	if fullLenCond != "" {
+		conds = append(conds, fullLenCond)
+	}
 	if runtimeAlign {
 		conds = append(conds, fmt.Sprintf("%s %% 8 != 0", bitlimitVar))
 	}
@@ -543,10 +548,10 @@ func appendElemPaddingCheck(appendCode func(int, string, ...any), indent int, la
 		checkIndent++
 	}
 	appendCode(checkIndent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
-	if ptrElem {
-		appendCode(checkIndent, "if last := %s; last != nil && uint8(*last) & paddingMask != 0 {\n\t%s\n}\n", lastElem, failStmt)
+	if elemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0 {
+		appendCode(checkIndent, "if last := %s[%s-1]; last != nil && uint8(*last) & paddingMask != 0 {\n\t%s\n}\n", valueVar, lenVar, failStmt)
 	} else {
-		appendCode(checkIndent, "if uint8(%s) & paddingMask != 0 {\n\t%s\n}\n", lastElem, failStmt)
+		appendCode(checkIndent, "if uint8(%s[%s-1]) & paddingMask != 0 {\n\t%s\n}\n", valueVar, lenVar, failStmt)
 	}
 	if len(conds) > 0 {
 		appendCode(indent, "}\n")

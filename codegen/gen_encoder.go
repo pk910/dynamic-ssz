@@ -773,14 +773,11 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			}
 			ctx.appendCode(indent, "}\n")
 			if bitlimitVar != "" {
-				// The padding bits live in the last element when the value
-				// occupies the full length; a shorter value is zero-padded.
-				var conds []string
+				fullLen := ""
 				if lenVar == varNameVLen {
-					conds = append(conds, uintCmpExpr(lenVar, "==", limitVar))
+					fullLen = uintCmpExpr(lenVar, "==", limitVar)
 				}
-				ptrElem := desc.ElemDesc.GoTypeFlags&ssztypes.GoTypeFlagIsPointer != 0
-				appendElemPaddingCheck(ctx.appendCode, indent, fmt.Sprintf("%s[%s-1]", getValueVar(false, ""), lenVar), ptrElem, bitlimitVar, sizeExpression != nil, conds, "return "+typePath.getErrorWith(errCodeBitvectorPadding))
+				appendElemPaddingCheck(ctx.appendCode, indent, desc.ElemDesc, getValueVar(false, ""), lenVar, bitlimitVar, sizeExpression != nil, fullLen, "return "+typePath.getErrorWith(errCodeBitvectorPadding))
 			}
 		}
 
