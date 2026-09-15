@@ -586,14 +586,22 @@ func (ctx *unmarshalContext) unmarshalOptional(desc *ssztypes.TypeDescriptor, va
 	ctx.appendCode(indent+1, "%s = nil\n", varName)
 	ctx.appendCode(indent, "case 1:\n")
 
-	// Check that buf has enough bytes for the presence flag plus the value. For
-	// a fixed-size value the region is exactly 1+elemSize bytes, so reject any
-	// trailing data too; a variable-size value consumes the remaining bytes.
-	elemSize := desc.ElemDesc.Size
-	if elemSize > 0 {
+	// A present fixed-size value occupies exactly the presence flag plus the
+	// inner type's size, resolved at run time when it carries a size
+	// expression; a variable-size value consumes the remaining bytes.
+	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 		eofErr := typePath.getErrorWith("sszutils.ErrOptionalValueEOFFn()")
-		trailErr := typePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - %d)", 1+elemSize))
-		ctx.appendExactLenCheck(indent+1, fmt.Sprintf("%d", 1+elemSize), "len(buf)", eofErr, trailErr)
+		if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+			sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(desc.ElemDesc)
+			if err != nil {
+				return err
+			}
+			trailErr := typePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(uint64(len(buf)) - 1 - %s)", sizeVar))
+			ctx.appendExactLenCheck(indent+1, "1+"+sizeVar, "uint64(len(buf))", eofErr, trailErr)
+		} else {
+			trailErr := typePath.getErrorWith(fmt.Sprintf("sszutils.ErrTrailingDataFn(len(buf) - %d)", 1+desc.ElemDesc.Size))
+			ctx.appendExactLenCheck(indent+1, fmt.Sprintf("%d", 1+desc.ElemDesc.Size), "len(buf)", eofErr, trailErr)
+		}
 	}
 
 	valVar := ctx.getValVar()

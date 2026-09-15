@@ -17,3 +17,6 @@ types:
   - CoverageTypes4
   - CoverageTypes5
   - CoverageTypes6
+  - OptSpecInner
+  - OptSpecBytes
+  - OptSpecHolder

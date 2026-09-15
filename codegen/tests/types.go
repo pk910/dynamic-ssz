@@ -2137,6 +2137,39 @@ var RecursiveOverlapA_Payload = RecursiveOverlapA{
 	C: []RecursiveOverlapC{{B: []RecursiveOverlapB{{A: []RecursiveOverlapA{{C: []RecursiveOverlapC{{}}}}}}}},
 }
 
+// OptSpecInner is a fixed-size container whose width comes from a spec value.
+type OptSpecInner struct {
+	Y []byte `ssz-size:"4" dynssz-size:"OPT_INNER_LEN"`
+	Z uint32
+}
+
+// OptSpecBytes is a byte vector whose width comes from a spec value.
+type OptSpecBytes []byte
+
+var _ = sszutils.Annotate[OptSpecBytes](`ssz-size:"4" dynssz-size:"OPT_INNER_LEN"`)
+
+// OptSpecHolder holds both as optional values, so a present value occupies
+// the presence byte plus the width the instance's specs resolve.
+type OptSpecHolder struct {
+	A     uint8
+	Opt   *OptSpecInner `ssz-type:"optional"`
+	Bytes *OptSpecBytes `ssz-type:"optional"`
+	Tail  uint8
+}
+
+func optSpecHolderPayload(width int) OptSpecHolder {
+	y := make([]byte, width)
+	b := make(OptSpecBytes, width)
+	for i := range width {
+		y[i], b[i] = byte(i+1), byte(0x10+i)
+	}
+	return OptSpecHolder{A: 1, Opt: &OptSpecInner{Y: y, Z: 7}, Bytes: &b, Tail: 9}
+}
+
+var OptSpecHolder_Payload = optSpecHolderPayload(6)
+
+var OptSpecHolder_Specs = map[string]any{"OPT_INNER_LEN": uint64(6)}
+
 // CoverageTypes6 wraps MarshalerOnlyType as a field to trigger the
 // DynamicMarshaler/DynamicUnmarshaler dispatch branches.
 type CoverageTypes6 struct {

@@ -4371,3 +4371,46 @@ func TestCodegenUnionVariantSpecFlags(t *testing.T) {
 		})
 	}
 }
+
+// A present optional value of a fixed-size type occupies the presence byte
+// plus the width the instance's specs resolve: valid encodings at every width
+// round-trip through the generated buffer decoder, and a region of another
+// width is rejected by both engines.
+func TestCodegenOptionalSpecSizedValue(t *testing.T) {
+	if _, generated := any(&OptSpecHolder{}).(sszutils.DynamicUnmarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+
+	for _, width := range []int{6, 2, 4} {
+		specs := map[string]any{"OPT_INNER_LEN": uint64(width)}
+		payload := optSpecHolderPayload(width)
+		testCodegenPayloadByReflection(t, payload, specs, dynssz.WithExtendedTypes())
+	}
+
+	encoded := map[int][]byte{}
+	for _, width := range []int{4, 6} {
+		ds := dynssz.NewDynSsz(map[string]any{"OPT_INNER_LEN": uint64(width)}, dynssz.WithExtendedTypes())
+		payload := optSpecHolderPayload(width)
+		buf, err := ds.MarshalSSZ(&payload)
+		if err != nil {
+			t.Fatalf("marshal width %d: %v", width, err)
+		}
+		encoded[width] = buf
+	}
+	for _, tc := range []struct{ encodedWidth, decodeWidth int }{{4, 6}, {6, 4}} {
+		ds := dynssz.NewDynSsz(map[string]any{"OPT_INNER_LEN": uint64(tc.decodeWidth)}, dynssz.WithExtendedTypes())
+		refl := dynssz.NewDynSsz(map[string]any{"OPT_INNER_LEN": uint64(tc.decodeWidth)}, dynssz.WithExtendedTypes(), dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+		buf := encoded[tc.encodedWidth]
+		generated, ok := any(&OptSpecHolder{}).(sszutils.DynamicUnmarshaler)
+		if !ok {
+			t.Fatal("holder has no generated unmarshaler")
+		}
+		if err := generated.UnmarshalSSZDyn(ds, buf); err == nil {
+			t.Errorf("generated decoder at width %d accepted an encoding of width %d", tc.decodeWidth, tc.encodedWidth)
+		}
+		var reflected OptSpecHolder
+		if err := refl.UnmarshalSSZ(&reflected, buf); err == nil {
+			t.Errorf("reflection at width %d accepted an encoding of width %d", tc.decodeWidth, tc.encodedWidth)
+		}
+	}
+}
