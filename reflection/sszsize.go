@@ -148,7 +148,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 
 		fieldType := targetType.ElemDesc
 		switch {
-		case fieldType.Kind == reflect.Uint8:
+		case fieldType.SszType == ssztypes.SszUint8Type:
 			staticSize = uint64(targetType.Len)
 		case fieldType.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0:
 			// vector with dynamic size items, so we have to go through each item
@@ -214,7 +214,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 
 		if sliceLen > 0 {
 			switch {
-			case fieldType.Kind == reflect.Uint8:
+			case fieldType.SszType == ssztypes.SszUint8Type:
 				staticSize = uint64(sliceLen)
 			case fieldType.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0:
 				// slice with dynamic size items, so we have to go through each item

@@ -2275,6 +2275,51 @@ type ZeroSizeShellList struct {
 	L []ZeroSizeShell `ssz-max:"4"`
 }
 
+// WideByteCustom is a custom type stored in a uint8 whose SSZ width is four
+// bytes.
+type WideByteCustom uint8
+
+func (c *WideByteCustom) SizeSSZ() int { return 4 }
+
+func (c *WideByteCustom) MarshalSSZ() ([]byte, error) { return c.MarshalSSZTo(nil) }
+
+func (c *WideByteCustom) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint32(buf, uint32(*c)), nil
+}
+
+func (c *WideByteCustom) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 4 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	*c = WideByteCustom(binary.LittleEndian.Uint32(buf))
+	return nil
+}
+
+func (c *WideByteCustom) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint32(root[:], uint32(*c))
+	return root, nil
+}
+
+func (c *WideByteCustom) HashTreeRootWith(hh sszutils.HashWalker) error {
+	hh.PutUint32(uint32(*c))
+	return nil
+}
+
+// WideByteCustomHolder places the custom type in a list and a vector, where
+// each element takes its declared width.
+type WideByteCustomHolder struct {
+	L []WideByteCustom  `ssz-type:"?,custom" ssz-size:"?,4" ssz-max:"8"`
+	V [3]WideByteCustom `ssz-type:"?,custom" ssz-size:"3,4"`
+	T uint8
+}
+
+var WideByteCustomHolder_Payload = WideByteCustomHolder{
+	L: []WideByteCustom{1, 2},
+	V: [3]WideByteCustom{3, 4, 5},
+	T: 6,
+}
+
 // CoverageTypes6 wraps MarshalerOnlyType as a field to trigger the
 // DynamicMarshaler/DynamicUnmarshaler dispatch branches.
 type CoverageTypes6 struct {

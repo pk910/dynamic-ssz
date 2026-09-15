@@ -4474,3 +4474,26 @@ func TestCodegenZeroSizeListElementRejected(t *testing.T) {
 		t.Errorf("reflection err = %v, want ErrInvalidConstraint", err)
 	}
 }
+
+// A custom element stored in a uint8 takes its declared width in every size
+// and encoding path of both engines.
+func TestCodegenWideByteCustomElements(t *testing.T) {
+	if _, generated := any(&WideByteCustomHolder{}).(sszutils.DynamicSizer); !generated {
+		t.Skip("no generated code present")
+	}
+
+	testCodegenPayloadByReflection(t, WideByteCustomHolder_Payload, nil)
+
+	refl := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+	holder := WideByteCustomHolder_Payload
+	encoded, err := refl.MarshalSSZ(&holder)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if want := 4 + 3*4 + 1 + 2*4; len(encoded) != want {
+		t.Fatalf("encoding is %d bytes, want %d", len(encoded), want)
+	}
+	if size, err := refl.SizeSSZ(&holder); err != nil || size != len(encoded) {
+		t.Fatalf("size %d err %v, want %d", size, err, len(encoded))
+	}
+}

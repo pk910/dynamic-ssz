@@ -7629,3 +7629,63 @@ func TestPublishedDescriptorUnchangedByLaterBuild(t *testing.T) {
 	}
 	<-done
 }
+
+// wideByteCustom is a custom type stored in a uint8 whose SSZ width is four
+// bytes.
+type wideByteCustom uint8
+
+func (c *wideByteCustom) SizeSSZ() int { return 4 }
+
+func (c *wideByteCustom) MarshalSSZ() ([]byte, error) { return c.MarshalSSZTo(nil) }
+
+func (c *wideByteCustom) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint32(buf, uint32(*c)), nil
+}
+
+func (c *wideByteCustom) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 4 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	*c = wideByteCustom(binary.LittleEndian.Uint32(buf))
+	return nil
+}
+
+func (c *wideByteCustom) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint32(root[:], uint32(*c))
+	return root, nil
+}
+
+type wideByteCustomHolder struct {
+	L []wideByteCustom  `ssz-type:"?,custom" ssz-size:"?,4" ssz-max:"8"`
+	V [3]wideByteCustom `ssz-type:"?,custom" ssz-size:"3,4"`
+}
+
+// A custom element stored in a uint8 is sized at its declared width, so the
+// size agrees with the encoding and the value marshals on every path.
+func TestSizeWideByteCustomElements(t *testing.T) {
+	ds := NewDynSsz(nil)
+	holder := &wideByteCustomHolder{L: []wideByteCustom{1, 2}, V: [3]wideByteCustom{3, 4, 5}}
+	encoded, err := ds.MarshalSSZ(holder)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if want := 4 + 3*4 + 2*4; len(encoded) != want {
+		t.Fatalf("encoding is %d bytes, want %d", len(encoded), want)
+	}
+	size, err := ds.SizeSSZ(holder)
+	if err != nil || size != len(encoded) {
+		t.Fatalf("size %d err %v, want %d", size, err, len(encoded))
+	}
+	var stream bytes.Buffer
+	if err := ds.MarshalSSZWriter(holder, &stream); err != nil || !bytes.Equal(stream.Bytes(), encoded) {
+		t.Fatalf("writer: err %v, %x != %x", err, stream.Bytes(), encoded)
+	}
+	var decoded wideByteCustomHolder
+	if err := ds.UnmarshalSSZ(&decoded, encoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(&decoded, holder) {
+		t.Fatalf("decoded %+v != %+v", decoded, *holder)
+	}
+}
