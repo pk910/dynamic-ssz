@@ -1594,6 +1594,35 @@ func TestWrapperHashRootRequiresCompleteMerkleization(t *testing.T) {
 // A packed scope on the wrapper buffers the Put* forms like the Append* forms;
 // a scope opened inside a packed one, and any scope after it, add whole
 // leaves again.
+// The convenience methods that merkleize a subtree of their own leave the
+// scope stack as they found it, so a long sequence of them inside one scope
+// keeps that scope's packing state intact.
+func TestWrapperConvenienceMethodsKeepScopeStack(t *testing.T) {
+	for name, put := range map[string]func(*Wrapper){
+		"bitlist":             func(w *Wrapper) { w.PutBitlist([]byte{1}, 8) },
+		"progressive-bitlist": func(w *Wrapper) { w.PutProgressiveBitlist([]byte{1}) },
+		"long-bytes":          func(w *Wrapper) { w.PutBytes(make([]byte, 64)) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := NewWrapper()
+			idx := w.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
+			for range 100 {
+				put(w)
+			}
+			if got := len(w.packed); got != 1 {
+				t.Fatalf("scope stack holds %d entries inside one open scope, want 1", got)
+			}
+			if !w.inPackedScope() {
+				t.Fatal("the open packed scope lost its packing state")
+			}
+			w.Merkleize(idx)
+			if got := len(w.packed); got != 0 {
+				t.Fatalf("scope stack holds %d entries after the scope closed, want 0", got)
+			}
+		})
+	}
+}
+
 func TestWrapperPackedScope(t *testing.T) {
 	w := NewWrapper()
 	idx := w.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)

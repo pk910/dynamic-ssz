@@ -196,7 +196,8 @@ func (w *Wrapper) PutBitlist(bb []byte, maxSize uint64) {
 	b, size := hasher.ParseBitlist(w.tmp[:0], bb)
 	w.tmp = b
 
-	indx := w.Index()
+	w.flushBuffer()
+	indx := len(w.nodes)
 	w.appendBytesAsNodes(b)
 
 	limit := sszutils.CalculateBitlistLimit(maxSize)
@@ -212,7 +213,8 @@ func (w *Wrapper) PutProgressiveBitlist(bb []byte) {
 	b, size := hasher.ParseProgressiveBitlist(w.tmp[:0], bb)
 	w.tmp = b
 
-	indx := w.Index()
+	w.flushBuffer()
+	indx := len(w.nodes)
 	w.appendBytesAsNodes(b)
 
 	w.commitProgressiveWithMixin(indx, size)
@@ -344,7 +346,8 @@ func (w *Wrapper) AddBytes(b []byte) {
 	if len(b) <= 32 {
 		w.AddNode(LeafFromBytes(b))
 	} else {
-		indx := w.Index()
+		w.flushBuffer()
+		indx := len(w.nodes)
 		w.appendBytesAsNodes(b)
 		w.commit(indx)
 	}
