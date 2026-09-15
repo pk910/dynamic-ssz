@@ -132,10 +132,14 @@ err := ds.UnmarshalSSZ(&decoded, data)
 ```
 
 **Decoding reuses what the target already holds.** A slice long enough for the
-result keeps its backing array, and a non-nil pointer — a struct field or a
-slice element — is decoded into rather than replaced. Only an empty slot is
-allocated. This saves allocations when a target is decoded into repeatedly, and
-it is the same behaviour in both engines.
+result keeps its backing array, a non-nil pointer field is decoded into rather
+than replaced, and a non-nil pointer element of a list of fixed-size elements
+is decoded into on the buffer and known-size stream paths. This saves
+allocations when a target is decoded into repeatedly. Elements are allocated
+fresh, and an existing element and its excluded fields are dropped, in these
+cases: elements of a list of variable-size elements in the reflection engine,
+elements of any list on an unknown-size stream, and optional values in
+generated code.
 
 The consequence is that a decode writes through to objects the caller still
 references:

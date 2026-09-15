@@ -824,9 +824,10 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 //     instead surface as ErrUnexpectedEOF when the read runs out. The accept/reject
 //     decision is unchanged; only the diagnostic differs.
 //   - Types whose SSZ methods were produced by dynamic-ssz v1.3.2 or earlier must be
-//     regenerated. Older generated decoders size the trailing region from the
-//     remaining-length estimate, so they fail with ErrUnexpectedEOF rather than
-//     decoding. Passing an explicit size keeps working with them.
+//     regenerated before decoding without a size. Older generated decoders size
+//     the trailing region from the remaining-length estimate, so they reject
+//     valid input or allocate up to WithMaxStreamSize before failing. Passing an
+//     explicit size keeps working with them.
 //
 // Returns:
 //   - error: An error if decoding fails due to:

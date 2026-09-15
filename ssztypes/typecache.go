@@ -1065,12 +1065,11 @@ func unresolvedReason(resolved bool) string {
 // are read from their own cached value, so a recursive type resolves without
 // walking back into itself: a cycle's back edge simply contributes nothing.
 //
-// Only this cache fills it in, where every size is already resolved against the
-// active spec. Descriptors built by the code generator's go/types parser keep 0:
-// at generation time only the static tag values are known, and freezing those
-// into a bound would refuse valid input under a preset that resolves them
-// smaller. The generator emits the same minimum as a runtime expression instead
-// (see minSizeExpr).
+// Both front ends record it, so the descriptor hashes agree. The reflection
+// cache resolves every size against the active spec; the code generator's
+// go/types parser records the static tag values and emits the bound as a
+// runtime expression instead (see minSizeExpr), since a preset may resolve
+// them smaller than the static defaults.
 func (td *TypeDescriptor) SetMinSize() {
 	// A static type serializes to exactly its size.
 	if td.SszTypeFlags&SszTypeFlagIsDynamic == 0 {
