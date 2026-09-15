@@ -79,6 +79,13 @@ jobs:
       env:
         CONSENSUS_SPEC_TESTS_DIR: ${{ env.CONSENSUS_SPEC_TESTS_DIR }}
 
+    - name: Run spec tests (32-bit)
+      run: |
+        cd tests/spectests
+        GOARCH=386 CGO_ENABLED=0 go test -timeout=30m -run="TestConsensusSpec" ./...
+      env:
+        CONSENSUS_SPEC_TESTS_DIR: ${{ env.CONSENSUS_SPEC_TESTS_DIR }}
+
     - name: Upload spec test coverage artifacts
       if: matrix.go-version == '1.25.11'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
