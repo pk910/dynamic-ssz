@@ -1210,6 +1210,57 @@ var NoDynWrappedPlain_Payload = NoDynWrappedPlain{
 	DF: 11,
 }
 
+// NoDynDualCustom is a custom type carrying both the static fastssz surface
+// and the spec-aware dynssz surface.
+type NoDynDualCustom struct{ V uint32 }
+
+func (c *NoDynDualCustom) SizeSSZ() int { return 4 }
+
+func (c *NoDynDualCustom) MarshalSSZ() ([]byte, error) { return c.MarshalSSZTo(nil) }
+
+func (c *NoDynDualCustom) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint32(buf, c.V), nil
+}
+
+func (c *NoDynDualCustom) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 4 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	c.V = binary.LittleEndian.Uint32(buf)
+	return nil
+}
+
+func (c *NoDynDualCustom) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint32(root[:], c.V)
+	return root, nil
+}
+
+func (c *NoDynDualCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 4 }
+
+func (c *NoDynDualCustom) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return c.MarshalSSZTo(buf)
+}
+
+func (c *NoDynDualCustom) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	return c.UnmarshalSSZ(buf)
+}
+
+func (c *NoDynDualCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint32(c.V)
+	return nil
+}
+
+// NoDynCustomHolder nests a dual-surface custom type and a static-only one;
+// static generation reaches both through their static methods.
+type NoDynCustomHolder struct {
+	D NoDynDualCustom `ssz-type:"custom" ssz-size:"4"`
+	S CustomType1     `ssz-type:"custom"`
+	N uint64
+}
+
+var NoDynCustomHolder_Payload = NoDynCustomHolder{D: NoDynDualCustom{7}, S: 8, N: 9}
+
 // NoDynNestChild is a variable-size container nested by the NoDynNest* parents.
 // Generated with -with-streaming -without-fastssz -without-dynamic-expressions,
 // its parents must reach it through its static MarshalSSZTo/UnmarshalSSZ/SizeSSZ/

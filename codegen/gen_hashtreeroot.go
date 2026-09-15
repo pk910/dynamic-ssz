@@ -245,8 +245,11 @@ func (ctx *hashTreeRootContext) hashUsesFastSsz(desc *ssztypes.TypeDescriptor, i
 
 	useFastSsz := !isRoot && !hasDynamicSize && !hasDynamicMax && (isFastsszHasher || isFastsszHashWith) &&
 		(!ctx.options.NoFastSsz || ctx.options.WithoutDynamicExpressions)
-	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
-		useFastSsz = true
+	if desc.SszType == ssztypes.SszCustomType {
+		// A custom type has no structure to inline: it is reached through its
+		// static hash method whenever it has one and the spec-aware method is
+		// not taken first.
+		useFastSsz = isFastsszHasher || isFastsszHashWith
 	}
 	return useFastSsz
 }

@@ -349,13 +349,12 @@ func (ctx *encoderContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0
 	isFastsszMarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
 	useFastSsz := !ctx.options.NoFastSsz && isFastsszMarshaler && !hasDynamicSize
-	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
-		useFastSsz = true
-	}
-	// Custom types prefer their spec-aware dynssz methods over fastssz.
-	if desc.SszType == ssztypes.SszCustomType &&
-		desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicMarshaler|ssztypes.SszCompatFlagDynamicEncoder) != 0 {
-		useFastSsz = false
+	if desc.SszType == ssztypes.SszCustomType {
+		// A custom type has no structure to inline: it is reached through its
+		// spec-aware methods when it has them and dynamic calls are allowed,
+		// otherwise through its static ones.
+		useFastSsz = desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicMarshaler|ssztypes.SszCompatFlagDynamicEncoder) == 0 ||
+			(ctx.noDynBufferCalls && isFastsszMarshaler)
 	}
 
 	if useFastSsz && !isRoot && !isView {

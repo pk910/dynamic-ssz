@@ -239,13 +239,12 @@ func (ctx *marshalContext) marshalType(desc *ssztypes.TypeDescriptor, varName st
 	// fastssz types) is reached through that static method even when fastssz
 	// delegation is otherwise disabled, because the dynamic path is forbidden.
 	useFastSsz := isFastsszMarshaler && !hasDynamicSize && (!ctx.options.NoFastSsz || ctx.options.WithoutDynamicExpressions)
-	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
-		useFastSsz = true
-	}
-	// Custom types prefer their spec-aware dynssz methods over fastssz.
-	if desc.SszType == ssztypes.SszCustomType &&
-		desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicMarshaler|ssztypes.SszCompatFlagDynamicEncoder) != 0 {
-		useFastSsz = false
+	if desc.SszType == ssztypes.SszCustomType {
+		// A custom type has no structure to inline: it is reached through its
+		// spec-aware methods when it has them and dynamic calls are allowed,
+		// otherwise through its static ones.
+		useFastSsz = desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicMarshaler|ssztypes.SszCompatFlagDynamicEncoder) == 0 ||
+			(ctx.options.WithoutDynamicExpressions && isFastsszMarshaler)
 	}
 
 	isView := desc.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0

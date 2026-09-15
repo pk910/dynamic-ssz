@@ -279,13 +279,12 @@ func (ctx *unmarshalContext) unmarshalCompatType(desc *ssztypes.TypeDescriptor, 
 	// (every dynssz-generated child in this mode, plus external fastssz types) is
 	// reached through it even when fastssz delegation is otherwise disabled.
 	useFastSsz := isFastsszUnmarshaler && !hasDynamicSize && (!ctx.options.NoFastSsz || ctx.options.WithoutDynamicExpressions)
-	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
-		useFastSsz = true
-	}
-	// Custom types prefer their spec-aware dynssz methods over fastssz.
-	if desc.SszType == ssztypes.SszCustomType &&
-		desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicUnmarshaler|ssztypes.SszCompatFlagDynamicDecoder) != 0 {
-		useFastSsz = false
+	if desc.SszType == ssztypes.SszCustomType {
+		// A custom type has no structure to inline: it is reached through its
+		// spec-aware methods when it has them and dynamic calls are allowed,
+		// otherwise through its static ones.
+		useFastSsz = desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicUnmarshaler|ssztypes.SszCompatFlagDynamicDecoder) == 0 ||
+			(ctx.options.WithoutDynamicExpressions && isFastsszUnmarshaler)
 	}
 
 	if useFastSsz {

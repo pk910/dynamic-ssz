@@ -1681,6 +1681,107 @@ type nodynParentField struct {
 	N uint16
 }
 
+// nodynDualCustom carries both the static and the spec-aware surface;
+// nodynDynCustom only the spec-aware one.
+type nodynDualCustom struct{ V uint32 }
+
+func (c *nodynDualCustom) SizeSSZ() int                { return 4 }
+func (c *nodynDualCustom) MarshalSSZ() ([]byte, error) { return c.MarshalSSZTo(nil) }
+func (c *nodynDualCustom) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return append(buf, byte(c.V), byte(c.V>>8), byte(c.V>>16), byte(c.V>>24)), nil
+}
+func (c *nodynDualCustom) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 4 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	c.V = uint32(buf[0]) | uint32(buf[1])<<8 | uint32(buf[2])<<16 | uint32(buf[3])<<24
+	return nil
+}
+func (c *nodynDualCustom) HashTreeRoot() ([32]byte, error)        { return [32]byte{byte(c.V)}, nil }
+func (c *nodynDualCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 4 }
+func (c *nodynDualCustom) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return c.MarshalSSZTo(buf)
+}
+func (c *nodynDualCustom) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	return c.UnmarshalSSZ(buf)
+}
+func (c *nodynDualCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint32(c.V)
+	return nil
+}
+
+type nodynDynCustom struct{ V uint32 }
+
+func (c *nodynDynCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 4 }
+func (c *nodynDynCustom) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return append(buf, byte(c.V), 0, 0, 0), nil
+}
+func (c *nodynDynCustom) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	c.V = uint32(buf[0])
+	return nil
+}
+func (c *nodynDynCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint32(c.V)
+	return nil
+}
+
+type nodynDualHolder struct {
+	C nodynDualCustom `ssz-type:"custom" ssz-size:"4"`
+	N uint64
+}
+
+type nodynDynHolder struct {
+	C nodynDynCustom `ssz-type:"custom"`
+	N uint64
+}
+
+// Under WithoutDynamicExpressions a custom type with a static surface is
+// reached through it, on every buffer and stream path, and one without a
+// static surface is rejected by every emitter.
+func TestGenerateWithoutDynExprCustomTypes(t *testing.T) {
+	static := []CodeGeneratorOption{WithoutDynamicExpressions(), WithCreateEncoderFn(), WithCreateDecoderFn()}
+
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_dual.go", WithReflectType(reflect.TypeFor[nodynDualHolder](), static...))
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate dual-surface holder: %v", err)
+	}
+	code := files["gen_dual.go"]
+	for _, tok := range []string{"MarshalSSZDyn", "UnmarshalSSZDyn", "SizeSSZDyn", "HashTreeRootWithDyn"} {
+		if strings.Contains(code, tok) {
+			t.Errorf("generated code references forbidden %s under without-dynamic-expressions:\n%s", tok, code)
+		}
+	}
+	for _, want := range []string{".MarshalSSZTo(", ".UnmarshalSSZ(", ".HashTreeRoot()"} {
+		if !strings.Contains(code, want) {
+			t.Errorf("generated code does not reach the custom type through %s:\n%s", want, code)
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		opts []CodeGeneratorOption
+		want string
+	}{
+		{"marshal", []CodeGeneratorOption{WithNoUnmarshalSSZ(), WithNoSizeSSZ(), WithNoHashTreeRoot()}, "static marshaler"},
+		{"unmarshal", []CodeGeneratorOption{WithNoMarshalSSZ(), WithNoSizeSSZ(), WithNoHashTreeRoot()}, "static unmarshaler"},
+		{"size", []CodeGeneratorOption{WithNoMarshalSSZ(), WithNoUnmarshalSSZ(), WithNoHashTreeRoot()}, "static sizer"},
+		{"hash", []CodeGeneratorOption{WithNoMarshalSSZ(), WithNoUnmarshalSSZ(), WithNoSizeSSZ()}, "static hash tree root"},
+		{"encoder", []CodeGeneratorOption{WithNoMarshalSSZ(), WithNoUnmarshalSSZ(), WithNoSizeSSZ(), WithNoHashTreeRoot(), WithCreateEncoderFn()}, "static encoder"},
+		{"decoder", []CodeGeneratorOption{WithNoMarshalSSZ(), WithNoUnmarshalSSZ(), WithNoSizeSSZ(), WithNoHashTreeRoot(), WithCreateDecoderFn()}, "static decoder"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cg := NewCodeGenerator(nil)
+			cg.BuildFile("gen_dyn.go", WithReflectType(reflect.TypeFor[nodynDynHolder](), append([]CodeGeneratorOption{WithoutDynamicExpressions()}, tc.opts...)...))
+			_, err := cg.GenerateToMap()
+			if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "provides only") {
+				t.Fatalf("dynamic-only custom under without-dynamic-expressions: err = %v, want a %q rejection", err, tc.want)
+			}
+		})
+	}
+}
+
 // The invariant (maintainer, non-negotiable): with WithoutDynamicExpressions the
 // generated code must NEVER reference a *Dyn buffer function. A parent nesting a
 // generated child must reach it through the child's static MarshalSSZTo /

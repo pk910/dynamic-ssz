@@ -3557,6 +3557,16 @@ func TestCodegenWithoutDynamicExpressionsPackedWrappers(t *testing.T) {
 	}
 }
 
+// Static generation reaches a custom type through its static methods whether
+// or not it also carries the spec-aware ones, on the buffer and the stream
+// paths, and the result matches reflection.
+func TestCodegenWithoutDynamicExpressionsCustomTypes(t *testing.T) {
+	if _, generated := any(&NoDynCustomHolder_Payload).(interface{ SizeSSZ() int }); !generated {
+		t.Skip("no generated code present")
+	}
+	testCodegenPayloadByReflection(t, NoDynCustomHolder_Payload, nil)
+}
+
 // Decoding reuses what the target already holds: a slice that fits keeps its
 // backing array, and a non-nil pointer is decoded into rather than replaced.
 // Both engines do this, in both positions -- a struct field and a slice
