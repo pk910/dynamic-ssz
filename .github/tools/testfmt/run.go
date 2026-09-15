@@ -506,16 +506,17 @@ func (r *run) writePkgBlock(b *strings.Builder, p *pkgState, ev *testEvent) {
 		summary = "build failed"
 	}
 
-	title := fmt.Sprintf("%s %s%s %-*s %7s %s",
-		r.out.progress(), r.prefix(), r.mark(ev.Action),
+	// The live line leads with the global progress; the detail group later
+	// carries only the per-run part.
+	line := fmt.Sprintf("%s%s %-*s %7s %s", r.prefix(), r.mark(ev.Action),
 		r.nameWidth, r.displayName(p.path), fmtSeconds(ev.Elapsed), summary)
-	title = strings.TrimRight(title, " ")
+	line = strings.TrimRight(line, " ")
 
-	b.WriteString(r.colorize(title))
+	b.WriteString(r.colorize(r.out.progress() + " " + line))
 	b.WriteByte('\n')
 
 	if r.out.github {
-		r.keepDetail(title, p, func(l outLine) bool {
+		r.keepDetail(line, p, func(l outLine) bool {
 			if r.cfg.perTest {
 				return l.test == ""
 			}

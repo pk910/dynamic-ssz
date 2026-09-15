@@ -1,7 +1,7 @@
 ████████████████████ 2/2 [NORMAL] ✓ gamma                               0.0s     3 passed    1 skipped
 [NORMAL] ✓ PASSED  1 packages (+1 without tests) · 3 passed · 1 skipped · 0 failed · 0.0s
 [NORMAL] ── verbose output, one collapsed group per package ──
-::group::████████████████████ 2/2 [NORMAL] ✓ gamma                               0.0s     3 passed    1 skipped
+::group::[NORMAL] ✓ gamma                               0.0s     3 passed    1 skipped
 [NORMAL]     gamma_test.go:5: a
 [NORMAL] --- PASS: TestA (0.00s)
 [NORMAL] --- PASS: TestB/x (0.00s)

@@ -6,10 +6,10 @@
 ████████████████████ 2/2 [NORMAL] ✓ gamma                               0.0s     3 passed    1 skipped
 [NORMAL] ✗ FAILED  2 packages · 3 passed · 1 skipped · 0 failed · 0.1s · exit status 1 · 3 lines outside the event stream
 [NORMAL] ── verbose output, one collapsed group per package ──
-::group::██████████░░░░░░░░░░ 1/2 [NORMAL] ✗ delta                               0.0s build failed
+::group::[NORMAL] ✗ delta                               0.0s build failed
 [NORMAL] FAIL	example.com/fx/delta [build failed]
 ::endgroup::
-::group::████████████████████ 2/2 [NORMAL] ✓ gamma                               0.0s     3 passed    1 skipped
+::group::[NORMAL] ✓ gamma                               0.0s     3 passed    1 skipped
 [NORMAL]     gamma_test.go:5: a
 [NORMAL] --- PASS: TestA (0.00s)
 [NORMAL] --- PASS: TestB/x (0.00s)

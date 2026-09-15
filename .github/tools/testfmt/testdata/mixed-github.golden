@@ -27,7 +27,7 @@
 ████████████████████ 4/4 [NORMAL] ✓ gamma                               0.0s     3 passed    1 skipped
 [NORMAL] ✗ FAILED  3 packages (+1 without tests) · 8 passed · 3 skipped · 3 failed · 0.0s · exit status 1
 [NORMAL] ── verbose output, one collapsed group per package ──
-::group::█████░░░░░░░░░░░░░░░ 1/4 [NORMAL] ✗ alpha                               0.0s     4 passed    2 skipped    2 FAILED
+::group::[NORMAL] ✗ alpha                               0.0s     4 passed    2 skipped    2 FAILED
 [NORMAL]     alpha_test.go:8: hello from one
 [NORMAL] --- PASS: TestOne (0.00s)
 [NORMAL]     alpha_test.go:10: needs a 64-bit platform
@@ -44,7 +44,7 @@
 [NORMAL] FAIL
 [NORMAL] FAIL	example.com/fx/alpha	0.002s
 ::endgroup::
-::group::██████████░░░░░░░░░░ 2/4 [NORMAL] ✗ beta                                0.0s     1 passed    1 FAILED
+::group::[NORMAL] ✗ beta                                0.0s     1 passed    1 FAILED
 [NORMAL] --- PASS: TestFine (0.00s)
 [NORMAL] --- FAIL: TestPanics (0.00s)
 [NORMAL] panic: assignment to entry in nil map [recovered, repanicked]
@@ -64,7 +64,7 @@
 [NORMAL] 	/usr/local/go/src/testing/testing.go:2258 +0x4d4
 [NORMAL] FAIL	example.com/fx/beta	0.004s
 ::endgroup::
-::group::████████████████████ 4/4 [NORMAL] ✓ gamma                               0.0s     3 passed    1 skipped
+::group::[NORMAL] ✓ gamma                               0.0s     3 passed    1 skipped
 [NORMAL]     gamma_test.go:5: a
 [NORMAL] --- PASS: TestA (0.00s)
 [NORMAL] --- PASS: TestB/x (0.00s)
