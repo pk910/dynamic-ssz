@@ -1925,14 +1925,14 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 			return sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "view schema array length (%d) exceeds the backing array length (%d)", t.Len(), runtimeType.Len())
 		}
 		desc.Len = int64(t.Len())
-		// A dynamic placeholder hint — e.g. dynssz-size:"?" on an outer dimension
-		// whose Go type is a fixed array — carries Size 0 (and no Bits) and must
-		// not zero the array's intrinsic length: a Go array cannot be relaxed to
-		// a variable-length list, so it keeps its intrinsic length (matching the
-		// codegen path). A concrete hint (Size > 0) or an explicit bit-size hint
-		// (Bits set, incl. ssz-bitsize:"0", which must still be rejected as a
-		// zero-length bitvector) is applied.
-		if len(sizeHints) > 0 && (sizeHints[0].Size > 0 || sizeHints[0].Bits) {
+		// A hint without a size leaves the array's intrinsic length in place:
+		// a dynamic placeholder (dynssz-size:"?") cannot relax a Go array to a
+		// list, and a bit size named by an expression nothing supplied a value
+		// for falls back to the array's own length in bits, as the code
+		// generator does. A concrete hint (Size > 0) or a literal bit size
+		// (incl. ssz-bitsize:"0", which is still rejected as a zero-length
+		// bitvector) is applied.
+		if len(sizeHints) > 0 && (sizeHints[0].Size > 0 || (sizeHints[0].Bits && sizeHints[0].Expr == "")) {
 			byteLen := sizeHints[0].Size
 			if sizeHints[0].Bits {
 				desc.BitSize = sizeHints[0].Size

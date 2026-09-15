@@ -4368,6 +4368,77 @@ func TestCodegenPackedBasicViewElements(t *testing.T) {
 	}
 }
 
+// A bit-sized vector whose bit count is a spec value with no static bit size
+// falls back to the array's own length in bits, on every path of both engines.
+func TestCodegenBitsizeExpressionWithoutStaticFallback(t *testing.T) {
+	if _, generated := any(&BitCfg_Payload).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	for _, tc := range []struct {
+		name  string
+		specs map[string]any
+		width int // bytes of Flags on the wire
+	}{
+		{"undefined", nil, 4},
+		{"8 bits", map[string]any{"FLAG_BITS": uint64(8)}, 1},
+		{"16 bits", map[string]any{"FLAG_BITS": uint64(16)}, 2},
+		{"32 bits", map[string]any{"FLAG_BITS": uint64(32)}, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testCodegenPayloadByReflection(t, BitCfg_Payload, tc.specs)
+			testCodegenPayloadByReflection(t, BitCfgDyn_Payload, tc.specs)
+
+			ds := dynssz.NewDynSsz(tc.specs)
+			data, err := ds.MarshalSSZ(&BitCfg_Payload)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if len(data) != tc.width+8 {
+				t.Fatalf("encoded %d bytes, want %d", len(data), tc.width+8)
+			}
+			size, err := ds.SizeSSZ(&BitCfg_Payload)
+			if err != nil {
+				t.Fatalf("size: %v", err)
+			}
+			if size != len(data) {
+				t.Fatalf("SizeSSZ = %d, encoding is %d bytes", size, len(data))
+			}
+		})
+	}
+
+	// A width that is not byte aligned makes the padding bits visible: a set
+	// padding bit is rejected by both engines.
+	specs := map[string]any{"FLAG_BITS": uint64(12)}
+	padded := BitCfg{Flags: [4]byte{0xff, 0x1f}, Num: 7}
+	for _, ds := range []*dynssz.DynSsz{
+		dynssz.NewDynSsz(specs),
+		dynssz.NewDynSsz(specs, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation()),
+	} {
+		if _, err := ds.MarshalSSZ(&padded); err == nil {
+			t.Fatalf("marshal accepted set padding bits at 12 bits")
+		}
+		clean := BitCfg{Flags: [4]byte{0xff, 0x0f}, Num: 7}
+		data, err := ds.MarshalSSZ(&clean)
+		if err != nil {
+			t.Fatalf("marshal 12-bit value: %v", err)
+		}
+		if len(data) != 2+8 {
+			t.Fatalf("encoded %d bytes at 12 bits, want %d", len(data), 2+8)
+		}
+		var decoded BitCfg
+		if err := ds.UnmarshalSSZ(&decoded, data); err != nil {
+			t.Fatalf("unmarshal 12-bit value: %v", err)
+		}
+		if decoded != clean {
+			t.Fatalf("decoded %+v != %+v", decoded, clean)
+		}
+		data[1] |= 0x10
+		if err := ds.UnmarshalSSZ(&decoded, data); err == nil {
+			t.Fatalf("unmarshal accepted set padding bits at 12 bits")
+		}
+	}
+}
+
 // A type whose only hash method is HashTreeRootWith is delegated to by both
 // engines wherever it sits. Under NoFastSsz reflection hashes it
 // structurally; NoDelegation keeps the generated holder out of that walk.

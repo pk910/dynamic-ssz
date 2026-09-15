@@ -239,6 +239,8 @@ type DynamicAttestation struct {
 
 A dimension has one unit. Pair `ssz-bitsize` with `dynssz-bitsize` and `ssz-size` with `dynssz-size`; mixing the two families on the same dimension (for example `ssz-bitsize:"12" dynssz-size:"X"`) is rejected by both the reflection engine and the code generator.
 
+The static tag is the fallback when the spec value is not defined. Without one, a Go array falls back to its own length in bits; a slice has no length to fall back to, so the reflection engine rejects the type.
+
 ## Maximum Size Annotations
 
 ### ssz-max

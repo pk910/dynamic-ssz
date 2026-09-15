@@ -1722,6 +1722,43 @@ func TestTypeCache_BitvectorWithBitSize(t *testing.T) {
 	}
 }
 
+// A bit size named by an expression with no static fallback leaves an array
+// at its own length while the value is undefined, and takes the resolved
+// width once it is.
+func TestTypeCache_BitsizeExpressionWithoutStaticFallback(t *testing.T) {
+	type TestStruct struct {
+		Flags [4]byte `ssz-type:"bitvector" dynssz-bitsize:"FLAG_BITS"`
+	}
+	for _, tc := range []struct {
+		name    string
+		specs   map[string]uint64
+		len     int64
+		bitSize int64
+	}{
+		{"undefined", nil, 4, 0},
+		{"12 bits", map[string]uint64{"FLAG_BITS": 12}, 2, 12},
+		{"32 bits", map[string]uint64{"FLAG_BITS": 32}, 4, 32},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := NewTypeCache(&dummyDynamicSpecs{specValues: tc.specs})
+			desc, err := cache.GetTypeDescriptor(reflect.TypeOf(TestStruct{}), nil, nil, nil)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			field := desc.ContainerDesc.Fields[0].Type
+			if field.Len != tc.len {
+				t.Errorf("Len = %d, want %d", field.Len, tc.len)
+			}
+			if field.BitSize != tc.bitSize {
+				t.Errorf("BitSize = %d, want %d", field.BitSize, tc.bitSize)
+			}
+			if field.SizeExpression == nil || *field.SizeExpression != "FLAG_BITS" {
+				t.Errorf("SizeExpression = %v, want FLAG_BITS", field.SizeExpression)
+			}
+		})
+	}
+}
+
 // Test bitlist from type name detection
 func TestTypeCache_BitlistFromTypeNameDetection(t *testing.T) {
 	ds := &dummyDynamicSpecs{}

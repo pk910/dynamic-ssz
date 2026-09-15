@@ -675,8 +675,12 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 
 	if sizeExpression != nil {
 		defaultValue := uint64(desc.Len)
-		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 && desc.BitSize > 0 {
-			defaultValue = uint64(desc.BitSize)
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
+			if desc.BitSize > 0 {
+				defaultValue = uint64(desc.BitSize)
+			} else {
+				defaultValue = uint64(desc.Len * 8)
+			}
 		}
 
 		exprVar := ctx.exprVars.getSizeExprVar(*sizeExpression, defaultValue)

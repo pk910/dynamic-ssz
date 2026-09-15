@@ -2137,6 +2137,25 @@ type ViewLeafTypes_View1 struct {
 
 var ViewLeafTypes_Payload = ViewLeafTypes_Base{L: []LeafViewNum{1, 2, 3}}
 
+// BitCfg has a bit-sized vector whose bit count comes from a spec value with
+// no static bit size; the array's own length is the fallback.
+type BitCfg struct {
+	Flags [4]byte `ssz-type:"bitvector" dynssz-bitsize:"FLAG_BITS"`
+	Num   uint64
+}
+
+// BitCfgDyn adds a trailing dynamic field so the offsets depend on the
+// resolved width.
+type BitCfgDyn struct {
+	Flags [4]byte `ssz-type:"bitvector" dynssz-bitsize:"FLAG_BITS"`
+	Num   uint64
+	List  []uint64 `ssz-max:"16"`
+}
+
+var BitCfg_Payload = BitCfg{Flags: [4]byte{0x01, 0x02, 0x03, 0x04}, Num: 7}
+
+var BitCfgDyn_Payload = BitCfgDyn{Flags: [4]byte{0x01, 0x02, 0x03, 0x04}, Num: 7, List: []uint64{1, 2}}
+
 // OnlyWith is a container whose only hash method is HashTreeRootWith; it
 // hashes its value masked so delegation shows in the root.
 type OnlyWith struct{ Data uint64 }
