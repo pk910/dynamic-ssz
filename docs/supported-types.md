@@ -729,8 +729,9 @@ type BeaconState struct {
     // Progressive list for efficiency
     Validators []Validator `ssz-type:"progressive-list" ssz-max:"1099511627776" dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
 
-    // Bitlist for participation
-    JustificationBits bitfield.Bitvector4
+    // Bitvector of 4 bits; go-bitfield's Bitvector types are plain byte
+    // slices, so the tag supplies the SSZ type and the bit count
+    JustificationBits bitfield.Bitvector4 `ssz-type:"bitvector" ssz-bitsize:"4"`
 
     // Dynamic with expression (ssz-max is fallback when spec value is unavailable)
     Balances []uint64 `ssz-max:"1099511627776" dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`

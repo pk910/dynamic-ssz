@@ -155,7 +155,7 @@ func (tc *TypeCache) DisableSpecResolution() {
 //
 // Example:
 //
-//	typeDesc, err := cache.GetTypeDescriptor(reflect.TypeOf(myStruct), nil, nil)
+//	typeDesc, err := cache.GetTypeDescriptor(reflect.TypeOf(myStruct), nil, nil, nil)
 //	if err != nil {
 //	    log.Fatal("Failed to get type descriptor:", err)
 //	}
