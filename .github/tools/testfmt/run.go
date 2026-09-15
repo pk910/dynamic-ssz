@@ -82,6 +82,14 @@ type pkgTime struct {
 	elapsed float64
 }
 
+// detail is the verbose output of one package (or top-level test), kept
+// for the collapsed groups printed once every run has finished: groups
+// streamed live render expanded in the GitHub log viewer.
+type detail struct {
+	title string
+	lines []string
+}
+
 // run executes one `go test` variant and turns its event stream into
 // progress lines, collapsed details and summary counters.
 type run struct {
@@ -102,6 +110,7 @@ type run struct {
 	failures   []failure
 	skips      []skipped
 	times      []pkgTime
+	details    []detail
 	stray      int
 	nameWidth  int
 	firstEvent time.Time
@@ -484,27 +493,24 @@ func (r *run) pkgDone(p *pkgState, ev *testEvent) {
 	r.releaseLines(p, "")
 }
 
-// writePkgBlock renders the package line as the title of a collapsed group
-// holding its verbose output, followed by any failure excerpt in the open.
+// writePkgBlock renders the package line, keeps its verbose output for the
+// deferred collapsed group, and prints any failure excerpt in the open.
 func (r *run) writePkgBlock(b *strings.Builder, p *pkgState, ev *testEvent) {
-	mark := "✓"
-	if ev.Action == actionFail {
-		mark = "✗"
-	}
-
 	summary := counts(p.passed, p.skipped, p.failed)
 	if !p.built {
 		summary = "build failed"
 	}
 
 	title := fmt.Sprintf("%s%s %s %s %-*s %7s %s",
-		r.prefix(), r.counter(), progressBar(r.donePkgs, r.total), mark,
+		r.prefix(), r.counter(), progressBar(r.donePkgs, r.total), r.mark(ev.Action),
 		r.nameWidth, r.displayName(p.path), fmtSeconds(ev.Elapsed), summary)
+	title = strings.TrimRight(title, " ")
 
-	r.out.groupStart(b, strings.TrimRight(title, " "))
+	b.WriteString(r.colorize(title))
+	b.WriteByte('\n')
 
 	if r.out.github {
-		r.writeLines(b, p, func(l outLine) bool {
+		r.keepDetail(title, p, func(l outLine) bool {
 			if r.cfg.perTest {
 				return l.test == ""
 			}
@@ -513,13 +519,55 @@ func (r *run) writePkgBlock(b *strings.Builder, p *pkgState, ev *testEvent) {
 		})
 	}
 
-	r.out.groupEnd(b)
-
 	// Per test, failures were shown as they happened; the package block only
 	// adds something when the package failed without a failing test.
 	if ev.Action == actionFail && (!r.cfg.perTest || p.failed == 0) {
 		r.writeFailure(b, p, "", !r.cfg.perTest)
 	}
+}
+
+func (r *run) mark(action string) string {
+	switch action {
+	case actionFail:
+		return "✗"
+	case actionSkip:
+		return "-"
+	default:
+		return "✓"
+	}
+}
+
+// colorize paints the marks and counts of a live package or test line.
+func (r *run) colorize(line string) string {
+	if !r.out.color {
+		return line
+	}
+
+	rep := strings.NewReplacer(
+		" ✓ ", " "+ansiGreen+"✓"+ansiReset+" ",
+		" ✗ ", " "+ansiRed+"✗"+ansiReset+" ",
+		" FAILED", " "+ansiRed+"FAILED"+ansiReset,
+		" skipped", " "+ansiYellow+"skipped"+ansiReset,
+		"build failed", ansiRed+"build failed"+ansiReset,
+	)
+
+	return rep.Replace(line)
+}
+
+// keepDetail stores the buffered output lines a filter selects, minus the
+// === RUN markers, under the given group title.
+func (r *run) keepDetail(title string, p *pkgState, keep func(outLine) bool) {
+	lines := make([]string, 0, len(p.lines))
+
+	for _, l := range p.lines {
+		if !keep(l) || isRunMarker(l.text) {
+			continue
+		}
+
+		lines = append(lines, l.text)
+	}
+
+	r.details = append(r.details, detail{title: title, lines: lines})
 }
 
 // renderTop renders one top-level test (per-test granularity) and drops its
@@ -528,29 +576,20 @@ func (r *run) renderTop(p *pkgState, ev *testEvent, ts *topTest) {
 	r.lastPrint = time.Now()
 
 	r.out.block(func(b *strings.Builder) {
-		mark := "✓"
-
-		switch ev.Action {
-		case actionFail:
-			mark = "✗"
-		case actionSkip:
-			mark = "-"
-		}
-
 		subs := ""
 		if ts.passed+ts.skipped+ts.failed > 0 {
 			subs = counts(ts.passed, ts.skipped, ts.failed) + " subtests"
 		}
 
-		title := fmt.Sprintf("%s%s %-*s %7s %s", r.prefix(), mark, r.nameWidth, ev.Test, fmtSeconds(ev.Elapsed), subs)
+		title := fmt.Sprintf("%s%s %-*s %7s %s", r.prefix(), r.mark(ev.Action), r.nameWidth, ev.Test, fmtSeconds(ev.Elapsed), subs)
+		title = strings.TrimRight(title, " ")
 
-		r.out.groupStart(b, strings.TrimRight(title, " "))
+		b.WriteString(r.colorize(title))
+		b.WriteByte('\n')
 
 		if r.out.github {
-			r.writeLines(b, p, func(l outLine) bool { return topLevel(l.test) == ev.Test })
+			r.keepDetail(title, p, func(l outLine) bool { return topLevel(l.test) == ev.Test })
 		}
-
-		r.out.groupEnd(b)
 
 		if ev.Action == actionFail {
 			r.writeFailure(b, p, ev.Test, true)
@@ -560,18 +599,34 @@ func (r *run) renderTop(p *pkgState, ev *testEvent, ts *topTest) {
 	r.releaseLines(p, ev.Test)
 }
 
-// writeLines prints the buffered output lines a filter selects, minus the
-// === RUN markers, each led by the run prefix.
-func (r *run) writeLines(b *strings.Builder, p *pkgState, keep func(outLine) bool) {
-	for _, l := range p.lines {
-		if !keep(l) || isRunMarker(l.text) {
-			continue
+// writeDetails prints the collapsed groups of verbose output, one per
+// package or top-level test, in completion order.
+func (r *run) writeDetails(b *strings.Builder) {
+	if len(r.details) == 0 {
+		return
+	}
+
+	fmt.Fprintf(b, "%s── verbose output, one collapsed group per %s ──\n", r.prefix(), r.detailUnit())
+
+	for _, d := range r.details {
+		r.out.groupStart(b, d.title)
+
+		for _, l := range d.lines {
+			b.WriteString(r.prefix())
+			b.WriteString(l)
+			b.WriteByte('\n')
 		}
 
-		b.WriteString(r.prefix())
-		b.WriteString(l.text)
-		b.WriteByte('\n')
+		r.out.groupEnd(b)
 	}
+}
+
+func (r *run) detailUnit() string {
+	if r.cfg.perTest {
+		return "top-level test"
+	}
+
+	return "package"
 }
 
 // writeFailure prints, uncollapsed, the output of every test that failed or

@@ -47,6 +47,7 @@ func replay(t *testing.T, tc *fixtureCase) (string, *run) {
 		b.WriteString(r.resultLine())
 		b.WriteByte('\n')
 	})
+	out.block(r.writeDetails)
 
 	return buf.String(), r
 }

@@ -69,8 +69,9 @@ jobs:
 
     - name: Build test log formatter
       # testfmt (see .github/tools/testfmt) turns go test -json streams into a
-      # readable step log: one line per package, verbose output in collapsed
-      # groups, failures in the open with annotations, and a step summary.
+      # readable step log: one line per package, failures in the open with
+      # annotations, verbose output in collapsed groups at the end, and a
+      # step summary.
       run: |
         go -C .github/tools/testfmt build -o "$RUNNER_TEMP/testfmt" .
         echo "TESTFMT=$RUNNER_TEMP/testfmt" >> "$GITHUB_ENV"
@@ -113,8 +114,9 @@ jobs:
 
     - name: Build test log formatter
       # testfmt (see .github/tools/testfmt) turns go test -json streams into a
-      # readable step log: one line per package, verbose output in collapsed
-      # groups, failures in the open with annotations, and a step summary.
+      # readable step log: one line per package, failures in the open with
+      # annotations, verbose output in collapsed groups at the end, and a
+      # step summary.
       run: |
         go -C .github/tools/testfmt build -o "$RUNNER_TEMP/testfmt" .
         echo "TESTFMT=$RUNNER_TEMP/testfmt" >> "$GITHUB_ENV"
@@ -136,11 +138,13 @@ jobs:
       # These three variants are independent and each build their own cache, so
       # they run concurrently to overlap compile/link/idle gaps. testfmt
       # multiplexes their event streams: the step log shows one line per
-      # completed package per variant (a collapsed group holding the verbose
-      # output), failures uncollapsed with file/line annotations, a heartbeat
-      # naming what is still running, and a verdict per variant. The full
-      # verbose output is written per variant for the artifact below, and the
-      # step fails if any variant fails.
+      # completed package per variant, failures uncollapsed with file/line
+      # annotations, a heartbeat naming what is still running, a verdict per
+      # variant, and finally the verbose output as one collapsed group per
+      # package (printed last because the log viewer keeps groups expanded
+      # while a step streams). The full verbose output is also written per
+      # variant for the artifact below, and the step fails if any variant
+      # fails.
       run: |
         "$TESTFMT" -title "Unit tests (Go ${{ matrix.go-version }})" -log-dir unit-test-logs \
           -cmd 'NORMAL: go test -race -coverprofile=coverage-unit.txt -coverpkg=./... ./...' \

@@ -1,10 +1,10 @@
 // testfmt runs one or more `go test` variants concurrently and renders their
 // -json event streams as a readable GitHub Actions log: one line per
-// completed package (the title of a collapsed group holding the verbose
-// output), failures in the open with file/line annotations, a heartbeat for
-// long silent stretches, a one-line verdict per variant and a markdown step
-// summary. Outside GitHub Actions it prints the same package and failure
-// lines without the collapsed details.
+// completed package, failures in the open with file/line annotations, a
+// heartbeat for long silent stretches, a one-line verdict per variant, then
+// the verbose output as one collapsed group per package, and a markdown
+// step summary. Outside GitHub Actions it prints the same package and
+// failure lines without the collapsed details.
 //
 // Usage:
 //
@@ -112,6 +112,12 @@ func realMain() int {
 			}
 		}
 	})
+
+	// The collapsed groups come last: streamed live they would render
+	// expanded in the GitHub log viewer until the step completes.
+	for _, r := range runs {
+		out.block(r.writeDetails)
+	}
 
 	if cfg.summary != "" {
 		if err := writeSummary(cfg, runs); err != nil {
