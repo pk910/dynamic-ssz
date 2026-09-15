@@ -4643,6 +4643,48 @@ func TestCodegenUint64ViewElementsAreDelegated(t *testing.T) {
 	}
 }
 
+// A generated view method promoted from an embedded field is never delegated
+// to: the embedding struct is walked against the view schema, so its own
+// shadowing field is what gets serialized.
+func TestCodegenPromotedViewMethodsNotDelegated(t *testing.T) {
+	if _, generated := any(&PromotedViewInner{}).(sszutils.DynamicViewMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+	view := dynssz.WithViewDescriptor((*PromotedViewSchema)(nil))
+	v := &PromotedViewOuter{PromotedViewInner: PromotedViewInner{B: 1}, B: 2}
+	want := []byte{2, 0, 0, 0, 0, 0, 0, 0}
+
+	enc, err := ds.MarshalSSZ(v, view)
+	if err != nil || !bytes.Equal(enc, want) {
+		t.Fatalf("MarshalSSZ = %x, %v; want %x", enc, err, want)
+	}
+	var stream bytes.Buffer
+	if err = ds.MarshalSSZWriter(v, &stream, view); err != nil || !bytes.Equal(stream.Bytes(), want) {
+		t.Fatalf("MarshalSSZWriter = %x, %v; want %x", stream.Bytes(), err, want)
+	}
+	size, err := ds.SizeSSZ(v, view)
+	if err != nil || size != 8 {
+		t.Fatalf("SizeSSZ = %d, %v; want 8", size, err)
+	}
+	root, err := ds.HashTreeRoot(v, view)
+	if err != nil {
+		t.Fatalf("HashTreeRoot: %v", err)
+	}
+	plainRoot, err := ds.HashTreeRoot(&PromotedViewSchema{B: 2})
+	if err != nil || root != plainRoot {
+		t.Fatalf("HashTreeRoot = %x, %v; want the plain root %x", root, err, plainRoot)
+	}
+	var back PromotedViewOuter
+	if err = ds.UnmarshalSSZ(&back, want, view); err != nil || back.B != 2 || back.PromotedViewInner.B != 0 {
+		t.Fatalf("UnmarshalSSZ decoded %+v, %v; want B=2 on the outer field only", back, err)
+	}
+	var streamed PromotedViewOuter
+	if err = ds.UnmarshalSSZReader(&streamed, bytes.NewReader(want), len(want), view); err != nil || streamed.B != 2 || streamed.PromotedViewInner.B != 0 {
+		t.Fatalf("UnmarshalSSZReader decoded %+v, %v; want B=2 on the outer field only", streamed, err)
+	}
+}
+
 // A union carries the spec-dependence flags of its variants, so a generated
 // parent reaches a child holding one through the spec-aware methods and the
 // variant width follows the instance's specs, not the global ones.

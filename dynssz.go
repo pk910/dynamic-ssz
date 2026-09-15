@@ -186,14 +186,11 @@ func (d *DynSsz) resolveSchemaType(runtimeType reflect.Type, cfg *callConfig) re
 	return runtimeType
 }
 
-// delegable reports whether v may be serialized through its own SSZ methods.
-// It is false when v is a struct that satisfies the SSZ interfaces only via a
-// method promoted from an embedded field: the promoted method serializes just
-// that field and would silently drop v's other fields, so v must be walked as
-// a container instead (the embedded field still delegates during the walk).
 // delegable reports whether the named delegation method on v is the type's
 // own declaration rather than a wrapper promoted from an embedded field, which
-// would serialize just the embedded field and drop the siblings.
+// would serialize just the embedded field and drop the siblings; v is walked
+// as a container instead, and the embedded field still delegates during the
+// walk.
 func (d *DynSsz) delegable(v any, method string) bool {
 	return !d.typeCache.PromotedDelegationMethods(reflect.TypeOf(v))[method]
 }
@@ -267,10 +264,10 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 			}
 			return enc.GetBuffer(), nil
 		}
-	} else if viewMarshaler, ok := source.(sszutils.DynamicViewMarshaler); ok && !d.options.NoDelegation {
+	} else if viewMarshaler, ok := source.(sszutils.DynamicViewMarshaler); ok && !d.options.NoDelegation && d.delegable(source, "MarshalSSZDynView") {
 		if marshalFn := viewMarshaler.MarshalSSZDynView(cfg.viewDescriptor); marshalFn != nil {
 			var buf []byte
-			if sizer, ok := source.(sszutils.DynamicViewSizer); ok {
+			if sizer, ok := source.(sszutils.DynamicViewSizer); ok && d.delegable(source, "SizeSSZDynView") {
 				sizeFn := sizer.SizeSSZDynView(cfg.viewDescriptor)
 				if sizeFn != nil {
 					size := sizeFn(d)
@@ -374,7 +371,7 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 				return enc.GetBuffer(), nil
 			}
 		}
-	} else if viewMarshaler, ok := source.(sszutils.DynamicViewMarshaler); ok && !d.options.NoDelegation {
+	} else if viewMarshaler, ok := source.(sszutils.DynamicViewMarshaler); ok && !d.options.NoDelegation && d.delegable(source, "MarshalSSZDynView") {
 		if marshalFn := viewMarshaler.MarshalSSZDynView(cfg.viewDescriptor); marshalFn != nil {
 			return marshalFn(d, buf)
 		}
@@ -528,7 +525,7 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 				return encoder.GetWriteError()
 			}
 		}
-	} else if viewEncoder, ok := source.(sszutils.DynamicViewEncoder); ok && !d.options.NoDelegation {
+	} else if viewEncoder, ok := source.(sszutils.DynamicViewEncoder); ok && !d.options.NoDelegation && d.delegable(source, "MarshalSSZEncoderView") {
 		if marshalFn := viewEncoder.MarshalSSZEncoderView(cfg.viewDescriptor); marshalFn != nil {
 			err := marshalFn(d, encoder)
 			if err != nil {
@@ -633,7 +630,7 @@ func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error) {
 		if sizer, ok := source.(sszutils.DynamicSizer); ok && !d.options.NoDelegation && d.delegable(source, "SizeSSZDyn") {
 			return sizer.SizeSSZDyn(d), nil
 		}
-	} else if viewSizer, ok := source.(sszutils.DynamicViewSizer); ok && !d.options.NoDelegation {
+	} else if viewSizer, ok := source.(sszutils.DynamicViewSizer); ok && !d.options.NoDelegation && d.delegable(source, "SizeSSZDynView") {
 		sizeFn := viewSizer.SizeSSZDynView(cfg.viewDescriptor)
 		if sizeFn != nil {
 			return sizeFn(d), nil
@@ -730,7 +727,7 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 				return nil
 			}
 		}
-	} else if viewUnmarshaler, ok := target.(sszutils.DynamicViewUnmarshaler); ok && !d.options.NoDelegation {
+	} else if viewUnmarshaler, ok := target.(sszutils.DynamicViewUnmarshaler); ok && !d.options.NoDelegation && d.delegable(target, "UnmarshalSSZDynView") {
 		if unmarshalFn := viewUnmarshaler.UnmarshalSSZDynView(cfg.viewDescriptor); unmarshalFn != nil {
 			return unmarshalFn(d, ssz)
 		}
@@ -951,7 +948,7 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 				return finish()
 			}
 		}
-	} else if viewDecoder, ok := target.(sszutils.DynamicViewDecoder); ok && !d.options.NoDelegation {
+	} else if viewDecoder, ok := target.(sszutils.DynamicViewDecoder); ok && !d.options.NoDelegation && d.delegable(target, "UnmarshalSSZDecoderView") {
 		if unmarshalFn := viewDecoder.UnmarshalSSZDecoderView(cfg.viewDescriptor); unmarshalFn != nil {
 			err := unmarshalFn(d, decoder)
 			if err != nil {
@@ -1114,7 +1111,7 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...Ca
 			hh.FillUpTo32()
 			return nil
 		}
-	} else if viewHasher, ok := source.(sszutils.DynamicViewHashRoot); ok && !d.options.NoDelegation {
+	} else if viewHasher, ok := source.(sszutils.DynamicViewHashRoot); ok && !d.options.NoDelegation && d.delegable(source, "HashTreeRootWithDynView") {
 		if hashFn := viewHasher.HashTreeRootWithDynView(cfg.viewDescriptor); hashFn != nil {
 			err := hashFn(d, hh)
 			if err != nil {

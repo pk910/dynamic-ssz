@@ -4927,6 +4927,133 @@ func TestEmbeddedPromotionNoFalseDelegation(t *testing.T) {
 	}
 }
 
+// promotedViewInner serializes its own B through hand-written view methods
+// for promotedViewSchema.
+type promotedViewInner struct{ B uint64 }
+
+// promotedViewSchema is the view schema both types are read against.
+type promotedViewSchema struct{ B uint64 }
+
+func (i *promotedViewInner) MarshalSSZDynView(view any) func(sszutils.DynamicSpecs, []byte) ([]byte, error) {
+	if _, ok := view.(*promotedViewSchema); !ok {
+		return nil
+	}
+	return func(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+		return binary.LittleEndian.AppendUint64(buf, i.B), nil
+	}
+}
+
+func (i *promotedViewInner) MarshalSSZEncoderView(view any) func(sszutils.DynamicSpecs, sszutils.Encoder) error {
+	if _, ok := view.(*promotedViewSchema); !ok {
+		return nil
+	}
+	return func(_ sszutils.DynamicSpecs, enc sszutils.Encoder) error {
+		enc.EncodeUint64(i.B)
+		return nil
+	}
+}
+
+func (i *promotedViewInner) UnmarshalSSZDynView(view any) func(sszutils.DynamicSpecs, []byte) error {
+	if _, ok := view.(*promotedViewSchema); !ok {
+		return nil
+	}
+	return func(_ sszutils.DynamicSpecs, buf []byte) error {
+		if len(buf) != 8 {
+			return sszutils.ErrUnexpectedEOF
+		}
+		i.B = binary.LittleEndian.Uint64(buf)
+		return nil
+	}
+}
+
+func (i *promotedViewInner) UnmarshalSSZDecoderView(view any) func(sszutils.DynamicSpecs, sszutils.Decoder) error {
+	if _, ok := view.(*promotedViewSchema); !ok {
+		return nil
+	}
+	return func(_ sszutils.DynamicSpecs, dec sszutils.Decoder) error {
+		v, err := dec.DecodeUint64()
+		i.B = v
+		return err
+	}
+}
+
+func (i *promotedViewInner) SizeSSZDynView(view any) func(sszutils.DynamicSpecs) int {
+	if _, ok := view.(*promotedViewSchema); !ok {
+		return nil
+	}
+	return func(sszutils.DynamicSpecs) int { return 8 }
+}
+
+func (i *promotedViewInner) HashTreeRootWithDynView(view any) func(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	if _, ok := view.(*promotedViewSchema); !ok {
+		return nil
+	}
+	return func(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+		hh.PutUint64(i.B)
+		return nil
+	}
+}
+
+// promotedViewOuter embeds the inner type and shadows its field, so the view
+// schema's B is the outer field while the promoted methods know only the
+// inner one.
+type promotedViewOuter struct {
+	promotedViewInner
+	B uint64
+}
+
+// A view method promoted from an embedded field is never delegated to: the
+// outer struct is walked against the view schema, so its own field is what
+// every path serializes, and the embedded type keeps delegating on its own.
+func TestEmbeddedPromotionViewMethods(t *testing.T) {
+	ds := NewDynSsz(nil)
+	view := WithViewDescriptor((*promotedViewSchema)(nil))
+	v := &promotedViewOuter{promotedViewInner: promotedViewInner{B: 1}, B: 2}
+	want := binary.LittleEndian.AppendUint64(nil, 2)
+
+	enc, err := ds.MarshalSSZ(v, view)
+	if err != nil || !bytes.Equal(enc, want) {
+		t.Fatalf("MarshalSSZ = %x, %v; want %x", enc, err, want)
+	}
+	size, err := ds.SizeSSZ(v, view)
+	if err != nil || size != 8 {
+		t.Fatalf("SizeSSZ = %d, %v; want 8", size, err)
+	}
+	var stream bytes.Buffer
+	if err = ds.MarshalSSZWriter(v, &stream, view); err != nil || !bytes.Equal(stream.Bytes(), want) {
+		t.Fatalf("MarshalSSZWriter = %x, %v; want %x", stream.Bytes(), err, want)
+	}
+	root, err := ds.HashTreeRoot(v, view)
+	if err != nil {
+		t.Fatalf("HashTreeRoot: %v", err)
+	}
+	plainRoot, err := ds.HashTreeRoot(&promotedViewSchema{B: 2})
+	if err != nil || root != plainRoot {
+		t.Fatalf("HashTreeRoot = %x, %v; want the plain root %x", root, err, plainRoot)
+	}
+
+	var back promotedViewOuter
+	if err = ds.UnmarshalSSZ(&back, want, view); err != nil {
+		t.Fatalf("UnmarshalSSZ: %v", err)
+	}
+	if back.B != 2 || back.promotedViewInner.B != 0 {
+		t.Fatalf("UnmarshalSSZ decoded %+v; want B=2 on the outer field only", back)
+	}
+	var streamed promotedViewOuter
+	if err = ds.UnmarshalSSZReader(&streamed, bytes.NewReader(want), len(want), view); err != nil {
+		t.Fatalf("UnmarshalSSZReader: %v", err)
+	}
+	if streamed.B != 2 || streamed.promotedViewInner.B != 0 {
+		t.Fatalf("UnmarshalSSZReader decoded %+v; want B=2 on the outer field only", streamed)
+	}
+
+	inner := &promotedViewInner{B: 3}
+	encInner, err := ds.MarshalSSZ(inner, view)
+	if err != nil || binary.LittleEndian.Uint64(encInner) != 3 {
+		t.Fatalf("inner MarshalSSZ = %x, %v; want its own B", encInner, err)
+	}
+}
+
 // shadowInner is a delegating inner type.
 type shadowInner struct{ S uint16 }
 

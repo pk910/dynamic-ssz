@@ -2384,6 +2384,19 @@ var ViewNum64Types_Reflection_Payload = ViewNum64Types_Reflection{V: []ViewNum64
 
 var ViewNum64Types_Plain_Payload = ViewNum64Types_Plain{V: []uint64{2, 3, 4}}
 
+// PromotedViewInner gets generated view methods for PromotedViewSchema.
+type PromotedViewInner struct{ B uint64 }
+
+// PromotedViewSchema is its view schema.
+type PromotedViewSchema struct{ B uint64 }
+
+// PromotedViewOuter embeds the generated type and shadows its field; it is
+// not generated, so the promoted view methods are all it offers.
+type PromotedViewOuter struct {
+	PromotedViewInner
+	B uint64
+}
+
 // UnionSpecVariants has a variant whose width comes from a spec value.
 type UnionSpecVariants struct {
 	Bytes [8]byte `ssz-size:"4" dynssz-size:"UNION_WIDTH"`

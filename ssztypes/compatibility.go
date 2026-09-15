@@ -43,6 +43,9 @@ var delegationInterfaces = []reflect.Type{
 	dynamicMarshalerType, dynamicUnmarshalerType,
 	dynamicEncoderType, dynamicDecoderType,
 	dynamicSizerType, dynamicHashRootType,
+	dynamicViewMarshalerType, dynamicViewUnmarshalerType,
+	dynamicViewEncoderType, dynamicViewDecoderType,
+	dynamicViewSizerType, dynamicViewHashRootType,
 	sszMarshalerType, sszUnmarshalerType, sszHashRootType,
 }
 
@@ -52,6 +55,8 @@ var delegationInterfaces = []reflect.Type{
 var delegationMethodNames = []string{
 	"MarshalSSZDyn", "UnmarshalSSZDyn", "SizeSSZDyn", "HashTreeRootWithDyn",
 	"MarshalSSZEncoder", "UnmarshalSSZDecoder",
+	"MarshalSSZDynView", "UnmarshalSSZDynView", "SizeSSZDynView", "HashTreeRootWithDynView",
+	"MarshalSSZEncoderView", "UnmarshalSSZDecoderView",
 	"MarshalSSZTo", "UnmarshalSSZ", "SizeSSZ", "HashTreeRoot", "HashTreeRootWith",
 }
 

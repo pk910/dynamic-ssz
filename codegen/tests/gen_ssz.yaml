@@ -150,6 +150,11 @@ types:
     view-only: true
     views:
       - ViewNum64Types_View1
+  - name: PromotedViewInner
+    output: gen_views.go
+    view-only: true
+    views:
+      - PromotedViewSchema
 
   # Recursive shapes. Their cycles are what the depth bound is emitted
   # for, so the depth-method assertions read this file by name.

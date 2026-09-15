@@ -1277,50 +1277,59 @@ func TestTypeCache_ZeroFieldContainerRejected(t *testing.T) {
 	}
 }
 
-// delegationMethods implements the full dynamic SSZ operation set; embedding it
-// makes a type fully delegated. The bodies are inert — only the method set matters.
-// delegationOps implements the dynamic marshal/unmarshal/hash-root operations.
-type delegationOps struct{}
+// The shallow-build fixtures declare the full dynamic SSZ operation set on the
+// type itself: a method promoted from an embedded field does not delegate.
+// The bodies are inert -- only the method set matters. Each fixture carries a
+// structurally-invalid innard (an empty struct field) that would be rejected
+// if the typecache recursed into it.
+type delegatedFixedSize struct{ Bad struct{} }
 
-func (delegationOps) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+func (delegatedFixedSize) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
 	return buf, nil
 }
-func (delegationOps) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
-func (delegationOps) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+func (delegatedFixedSize) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+func (delegatedFixedSize) SizeSSZDyn(_ sszutils.DynamicSpecs) int                  { return 32 }
+func (delegatedFixedSize) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
 	return nil
 }
 
-// delegationMethods adds a constant-size sizer, making a type fully delegated.
-type delegationMethods struct{ delegationOps }
+type delegatedVarSize struct{ Bad struct{} }
 
-func (delegationMethods) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 32 }
+func (delegatedVarSize) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+func (delegatedVarSize) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+func (delegatedVarSize) SizeSSZDyn(_ sszutils.DynamicSpecs) int                  { return 32 }
+func (delegatedVarSize) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
 
-// Each fixture carries a structurally-invalid innard (an empty struct field) that
-// would be rejected if the typecache recursed into it.
-type delegatedFixedSize struct {
-	delegationMethods
-	Bad struct{}
+type delegatedNoAnnotation struct{ Value uint64 }
+
+func (delegatedNoAnnotation) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
 }
-type delegatedVarSize struct {
-	delegationMethods
-	Bad struct{}
-}
-type delegatedNoAnnotation struct {
-	delegationMethods
-	Value uint64
+func (delegatedNoAnnotation) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+func (delegatedNoAnnotation) SizeSSZDyn(_ sszutils.DynamicSpecs) int                  { return 32 }
+func (delegatedNoAnnotation) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
 }
 
 // delegatedSpecStatic is a static type whose fixed size depends on a spec value,
 // proving the size is taken from the sizer (resolved against the cache specs),
 // not from the annotation.
-type delegatedSpecStatic struct {
-	delegationOps
-	Bad struct{}
-}
+type delegatedSpecStatic struct{ Bad struct{} }
 
+func (delegatedSpecStatic) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+func (delegatedSpecStatic) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
 func (delegatedSpecStatic) SizeSSZDyn(ds sszutils.DynamicSpecs) int {
 	n, _ := sszutils.ResolveSpecValueWithDefault(ds, "STATIC_SIZE", 16)
 	return int(n)
+}
+func (delegatedSpecStatic) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
 }
 
 type partiallyDelegated struct {
@@ -1348,33 +1357,67 @@ func (viewDelegationMethods) HashTreeRootWithDynView(any) func(sszutils.DynamicS
 	return nil
 }
 
-// delegatedViewRuntime carries the view methods; delegatedViewSchema carries the
-// annotation (the schema type defines the SSZ layout for a view descriptor).
-type delegatedViewRuntime struct {
-	viewDelegationMethods
-	Bad struct{}
+// delegatedViewRuntime declares the view methods; delegatedViewSchema carries
+// the annotation (the schema type defines the SSZ layout for a view descriptor).
+type delegatedViewRuntime struct{ Bad struct{} }
+
+func (delegatedViewRuntime) MarshalSSZDynView(any) func(sszutils.DynamicSpecs, []byte) ([]byte, error) {
+	return nil
 }
+func (delegatedViewRuntime) UnmarshalSSZDynView(any) func(sszutils.DynamicSpecs, []byte) error {
+	return nil
+}
+func (delegatedViewRuntime) SizeSSZDynView(any) func(sszutils.DynamicSpecs) int {
+	return func(sszutils.DynamicSpecs) int { return 32 }
+}
+func (delegatedViewRuntime) HashTreeRootWithDynView(any) func(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	return nil
+}
+
 type delegatedViewSchema struct {
 	Bad struct{}
 }
 
 // delegatedBadStatic carries an invalid ssz-static value; delegatedNegSize's
 // sizer returns an out-of-range size. Both must be rejected.
-type delegatedBadStatic struct{ delegationMethods }
-type delegatedNegSize struct{ delegationOps }
+type delegatedBadStatic struct{}
 
-func (delegatedNegSize) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return -1 }
-
-// viewNilSizerMethods fully delegates the view interfaces but its view sizer
-// yields no size function, so a static view descriptor cannot resolve its size.
-type viewNilSizerMethods struct{ viewDelegationMethods }
-
-func (viewNilSizerMethods) SizeSSZDynView(any) func(sszutils.DynamicSpecs) int { return nil }
-
-type delegatedViewNilRuntime struct {
-	viewNilSizerMethods
-	Bad struct{}
+func (delegatedBadStatic) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
 }
+func (delegatedBadStatic) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+func (delegatedBadStatic) SizeSSZDyn(_ sszutils.DynamicSpecs) int                  { return 32 }
+func (delegatedBadStatic) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+type delegatedNegSize struct{}
+
+func (delegatedNegSize) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+func (delegatedNegSize) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+func (delegatedNegSize) SizeSSZDyn(_ sszutils.DynamicSpecs) int                  { return -1 }
+func (delegatedNegSize) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+// delegatedViewNilRuntime fully delegates the view interfaces but its view
+// sizer yields no size function, so a static view descriptor cannot resolve
+// its size.
+type delegatedViewNilRuntime struct{ Bad struct{} }
+
+func (delegatedViewNilRuntime) MarshalSSZDynView(any) func(sszutils.DynamicSpecs, []byte) ([]byte, error) {
+	return nil
+}
+func (delegatedViewNilRuntime) UnmarshalSSZDynView(any) func(sszutils.DynamicSpecs, []byte) error {
+	return nil
+}
+func (delegatedViewNilRuntime) SizeSSZDynView(any) func(sszutils.DynamicSpecs) int { return nil }
+func (delegatedViewNilRuntime) HashTreeRootWithDynView(any) func(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	return nil
+}
+
 type delegatedViewNilSchema struct {
 	Bad struct{}
 }
@@ -1404,7 +1447,7 @@ func TestTypeCache_DelegatedShallowBuild(t *testing.T) {
 		if desc.ContainerDesc != nil {
 			t.Error("expected shallow descriptor (nil ContainerDesc), subtree was built")
 		}
-		// 32 comes from delegationMethods.SizeSSZDyn, called on a zero value.
+		// 32 comes from the type's SizeSSZDyn, called on a zero value.
 		if desc.Size != 32 || desc.SszTypeFlags&SszTypeFlagIsDynamic != 0 {
 			t.Errorf("expected fixed Size 32 from sizer, got Size=%d dynamic=%v", desc.Size, desc.SszTypeFlags&SszTypeFlagIsDynamic != 0)
 		}
@@ -6072,6 +6115,28 @@ func TestTypeCache_PromotedCompatSuppression(t *testing.T) {
 	}
 	if desc.HashTreeRootWithMethod != nil {
 		t.Error("promoted HashTreeRootWith method not discarded")
+	}
+}
+
+// promotedViewCompatOuter satisfies the view delegation surface only through
+// methods promoted from its embedded field; delegating through any of them
+// would drop Label.
+type promotedViewCompatOuter struct {
+	viewDelegationMethods
+	Label uint32
+}
+
+func TestTypeCache_PromotedViewCompatSuppression(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(promotedViewCompatOuter{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	suppressed := SszCompatFlagDynamicViewMarshaler | SszCompatFlagDynamicViewUnmarshaler |
+		SszCompatFlagDynamicViewSizer | SszCompatFlagDynamicViewHashRoot
+	if got := desc.SszCompatFlags & suppressed; got != 0 {
+		t.Errorf("promoted view compat flags not suppressed: %b", got)
 	}
 }
 

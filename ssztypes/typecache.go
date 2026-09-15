@@ -679,10 +679,11 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 	// descriptors qualify when they delegate through the dynamic view interface set.
 	if staticAnnotation != nil && !hasExternalHints && !tc.NoDelegation {
 		var fullyDelegated bool
+		promoted := tc.PromotedDelegationMethods(runtimeType)
 		if desc.GoTypeFlags&GoTypeFlagIsView != 0 {
-			fullyDelegated = fullyDelegatesSSZView(runtimeType)
+			fullyDelegated = fullyDelegatesSSZView(runtimeType, promoted)
 		} else {
-			fullyDelegated = fullyDelegatesSSZ(runtimeType)
+			fullyDelegated = fullyDelegatesSSZ(runtimeType, promoted)
 		}
 		if fullyDelegated {
 			if *staticAnnotation {
@@ -955,6 +956,24 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 			if promoted["UnmarshalSSZDecoder"] {
 				desc.SszCompatFlags &^= SszCompatFlagDynamicDecoder
 			}
+			if promoted["MarshalSSZDynView"] {
+				desc.SszCompatFlags &^= SszCompatFlagDynamicViewMarshaler
+			}
+			if promoted["UnmarshalSSZDynView"] {
+				desc.SszCompatFlags &^= SszCompatFlagDynamicViewUnmarshaler
+			}
+			if promoted["SizeSSZDynView"] {
+				desc.SszCompatFlags &^= SszCompatFlagDynamicViewSizer
+			}
+			if promoted["HashTreeRootWithDynView"] {
+				desc.SszCompatFlags &^= SszCompatFlagDynamicViewHashRoot
+			}
+			if promoted["MarshalSSZEncoderView"] {
+				desc.SszCompatFlags &^= SszCompatFlagDynamicViewEncoder
+			}
+			if promoted["UnmarshalSSZDecoderView"] {
+				desc.SszCompatFlags &^= SszCompatFlagDynamicViewDecoder
+			}
 			// The fastssz convert surface spans marshal and unmarshal; a
 			// promoted piece anywhere poisons the whole pair.
 			if promoted["MarshalSSZ"] || promoted["MarshalSSZTo"] || promoted["SizeSSZ"] || promoted["UnmarshalSSZ"] {
@@ -1167,28 +1186,34 @@ func (tc *TypeCache) detectCompatFlags(desc *TypeDescriptor, runtimeType, schema
 	desc.SszCompatFlags |= tc.getCompatFlag(runtimeType, schemaType)
 }
 
-// fullyDelegatesSSZ reports whether the type implements the complete set of
+// fullyDelegatesSSZ reports whether the type declares the complete set of
 // dynamic SSZ operation interfaces (marshal, unmarshal, size, hash-tree-root).
 // When it does, every SSZ operation is handled by the type's own generated code
 // and the descriptor subtree below it is never consulted, so it does not need to
 // be built or validated — provided the type also declares its size via an
-// annotation (see the shallow-build path in buildTypeDescriptor).
-func fullyDelegatesSSZ(runtimeType reflect.Type) bool {
-	return (getDynamicMarshalerCompatibility(runtimeType) || getDynamicEncoderCompatibility(runtimeType)) &&
-		(getDynamicUnmarshalerCompatibility(runtimeType) || getDynamicDecoderCompatibility(runtimeType)) &&
-		getDynamicSizerCompatibility(runtimeType) &&
-		getDynamicHashRootCompatibility(runtimeType)
+// annotation (see the shallow-build path in buildTypeDescriptor). A method only
+// promoted from an embedded field (see PromotedDelegationMethods) serializes
+// that field alone and does not count.
+func fullyDelegatesSSZ(runtimeType reflect.Type, promoted map[string]bool) bool {
+	return ((getDynamicMarshalerCompatibility(runtimeType) && !promoted["MarshalSSZDyn"]) ||
+		(getDynamicEncoderCompatibility(runtimeType) && !promoted["MarshalSSZEncoder"])) &&
+		((getDynamicUnmarshalerCompatibility(runtimeType) && !promoted["UnmarshalSSZDyn"]) ||
+			(getDynamicDecoderCompatibility(runtimeType) && !promoted["UnmarshalSSZDecoder"])) &&
+		getDynamicSizerCompatibility(runtimeType) && !promoted["SizeSSZDyn"] &&
+		getDynamicHashRootCompatibility(runtimeType) && !promoted["HashTreeRootWithDyn"]
 }
 
 // fullyDelegatesSSZView is the view-descriptor counterpart of fullyDelegatesSSZ:
-// it reports whether the type implements the complete set of dynamic view SSZ
+// it reports whether the type declares the complete set of dynamic view SSZ
 // operation interfaces, in which case a view descriptor also delegates every
 // operation to the type's own code and its subtree need not be built.
-func fullyDelegatesSSZView(runtimeType reflect.Type) bool {
-	return (getDynamicViewMarshalerCompatibility(runtimeType) || getDynamicViewEncoderCompatibility(runtimeType)) &&
-		(getDynamicViewUnmarshalerCompatibility(runtimeType) || getDynamicViewDecoderCompatibility(runtimeType)) &&
-		getDynamicViewSizerCompatibility(runtimeType) &&
-		getDynamicViewHashRootCompatibility(runtimeType)
+func fullyDelegatesSSZView(runtimeType reflect.Type, promoted map[string]bool) bool {
+	return ((getDynamicViewMarshalerCompatibility(runtimeType) && !promoted["MarshalSSZDynView"]) ||
+		(getDynamicViewEncoderCompatibility(runtimeType) && !promoted["MarshalSSZEncoderView"])) &&
+		((getDynamicViewUnmarshalerCompatibility(runtimeType) && !promoted["UnmarshalSSZDynView"]) ||
+			(getDynamicViewDecoderCompatibility(runtimeType) && !promoted["UnmarshalSSZDecoderView"])) &&
+		getDynamicViewSizerCompatibility(runtimeType) && !promoted["SizeSSZDynView"] &&
+		getDynamicViewHashRootCompatibility(runtimeType) && !promoted["HashTreeRootWithDynView"]
 }
 
 // delegatedStaticSize returns the fixed SSZ byte size of a fully-delegated static
