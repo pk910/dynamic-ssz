@@ -4589,6 +4589,40 @@ func TestCodegenBitlistBitCountBeyondInt32(t *testing.T) {
 	}
 }
 
+// A struct inheriting an embedded field's HashTreeRootWith is walked as a
+// container by both engines, so the sibling field reaches the root.
+func TestCodegenPromotedWalkerMethodKeepsSiblings(t *testing.T) {
+	if _, generated := any(&WalkerOnlyOuter_Payload).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+	genRoot, err := ds.HashTreeRoot(&WalkerOnlyOuter_Payload)
+	if err != nil {
+		t.Fatalf("generated root: %v", err)
+	}
+	reflRoot, err := ds.HashTreeRoot(&WalkerOnlyReflection_Payload)
+	if err != nil {
+		t.Fatalf("reflection root: %v", err)
+	}
+	if genRoot != reflRoot {
+		t.Fatalf("generated root %x != reflection root %x", genRoot, reflRoot)
+	}
+	other := WalkerOnlyReflection{WalkerOnlyInner: WalkerOnlyInner{A: 1}, B: 99}
+	otherRoot, err := ds.HashTreeRoot(&other)
+	if err != nil || otherRoot == reflRoot {
+		t.Fatalf("changing the sibling did not change the root (%x, %v)", otherRoot, err)
+	}
+	for _, v := range []any{&WalkerOnlyOuter_Payload, &WalkerOnlyReflection_Payload} {
+		tree, treeErr := ds.GetTree(v)
+		if treeErr != nil {
+			t.Fatalf("tree %T: %v", v, treeErr)
+		}
+		if !bytes.Equal(tree.Hash(), genRoot[:]) {
+			t.Fatalf("%T tree root %x != root %x", v, tree.Hash(), genRoot)
+		}
+	}
+}
+
 // A wrapper around a uint256 packs like the uint256 itself in both engines:
 // a hash method that puts the 32 bytes hashes like the plain twin, one that
 // puts less is refused as a packed delegate.

@@ -5206,6 +5206,82 @@ func TestEmbeddedInterfaceNoFalseDelegation(t *testing.T) {
 	}
 }
 
+// walkerOnlyInner exposes only HashTreeRootWith; walkerOnlyOuter inherits it
+// and adds a sibling the promoted method knows nothing about.
+type walkerOnlyInner struct{ A uint64 }
+
+func (v *walkerOnlyInner) HashTreeRootWith(hh sszutils.HashWalker) error {
+	hh.PutUint64(v.A)
+	return nil
+}
+
+type walkerOnlyOuter struct {
+	walkerOnlyInner
+	B uint64
+}
+
+func TestEmbeddedPromotionWalkerMethodKeepsSiblings(t *testing.T) {
+	ds := NewDynSsz(nil)
+	structural := NewDynSsz(nil, WithNoDelegation(), WithNoFastSsz())
+	v := &walkerOnlyOuter{walkerOnlyInner: walkerOnlyInner{A: 1}, B: 2}
+
+	root, err := ds.HashTreeRoot(v)
+	if err != nil {
+		t.Fatalf("HashTreeRoot: %v", err)
+	}
+	want, err := structural.HashTreeRoot(v)
+	if err != nil || root != want {
+		t.Fatalf("root %x, %v; want the structural root %x", root, err, want)
+	}
+	other, err := ds.HashTreeRoot(&walkerOnlyOuter{walkerOnlyInner: walkerOnlyInner{A: 1}, B: 99})
+	if err != nil || other == root {
+		t.Fatalf("changing the sibling did not change the root (%x, %v)", other, err)
+	}
+	tree, err := ds.GetTree(v)
+	if err != nil {
+		t.Fatalf("GetTree: %v", err)
+	}
+	if !bytes.Equal(tree.Hash(), root[:]) {
+		t.Fatalf("tree root %x != root %x", tree.Hash(), root)
+	}
+	// The embedded type itself still delegates.
+	inner, err := ds.HashTreeRoot(&walkerOnlyInner{A: 1})
+	if err != nil || binary.LittleEndian.Uint64(inner[:8]) != 1 {
+		t.Fatalf("inner root %x, %v; want its own leaf", inner, err)
+	}
+}
+
+// valueReceiverOuter embeds a delegating type and declares its own delegation
+// methods with value receivers; they are called and their errors reach the
+// caller.
+type valueReceiverOuter struct {
+	PromotedInner
+	B uint64
+}
+
+var errValueReceiver = errors.New("value receiver method called")
+
+func (valueReceiverOuter) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return errValueReceiver
+}
+
+func (valueReceiverOuter) MarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) ([]byte, error) {
+	return nil, errValueReceiver
+}
+
+func (valueReceiverOuter) SizeSSZDyn(sszutils.DynamicSpecs) int { return 0 }
+
+func TestEmbeddedPromotionValueReceiverIsOwn(t *testing.T) {
+	ds := NewDynSsz(nil)
+	v := &valueReceiverOuter{PromotedInner: PromotedInner{Seconds: 1}, B: 2}
+	if _, err := ds.HashTreeRoot(v); !errors.Is(err, errValueReceiver) {
+		t.Fatalf("HashTreeRoot err = %v, want the declared method's error", err)
+	}
+	if _, err := ds.MarshalSSZ(v); !errors.Is(err, errValueReceiver) {
+		t.Fatalf("MarshalSSZ err = %v, want the declared method's error", err)
+	}
+}
+
 // A large-uint (uint128/uint256) whose Go slice is shorter than its declared
 // width is zero-padded on hash tree root, matching the marshal paths and the
 // generated HTR, instead of being rejected. Over-length slices are still

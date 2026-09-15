@@ -2367,6 +2367,30 @@ type HugeBitlistHolder struct {
 	B []byte `ssz-type:"bitlist" ssz-max:"2147483648"`
 }
 
+// WalkerOnlyInner exposes only HashTreeRootWith; WalkerOnlyOuter is generated
+// and WalkerOnlyReflection is its twin outside the generation set, both
+// inheriting the method next to a sibling field.
+type WalkerOnlyInner struct{ A uint64 }
+
+func (v *WalkerOnlyInner) HashTreeRootWith(hh sszutils.HashWalker) error {
+	hh.PutUint64(v.A)
+	return nil
+}
+
+type WalkerOnlyOuter struct {
+	WalkerOnlyInner
+	B uint64
+}
+
+type WalkerOnlyReflection struct {
+	WalkerOnlyInner
+	B uint64
+}
+
+var WalkerOnlyOuter_Payload = WalkerOnlyOuter{WalkerOnlyInner: WalkerOnlyInner{A: 1}, B: 2}
+
+var WalkerOnlyReflection_Payload = WalkerOnlyReflection{WalkerOnlyInner: WalkerOnlyInner{A: 1}, B: 2}
+
 // CountedNum is a named uint64 whose hash method counts its calls and puts
 // the value; CountedNumErr makes it fail instead.
 type CountedNum uint64

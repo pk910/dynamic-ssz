@@ -6140,6 +6140,75 @@ func TestTypeCache_PromotedViewCompatSuppression(t *testing.T) {
 	}
 }
 
+// walkerOnlyInner exposes only HashTreeRootWith, a delegation surface with no
+// interface of its own.
+type walkerOnlyInner struct{ A uint64 }
+
+func (v *walkerOnlyInner) HashTreeRootWith(hh sszutils.HashWalker) error {
+	hh.PutUint64(v.A)
+	return nil
+}
+
+type walkerOnlyOuter struct {
+	walkerOnlyInner
+	B uint64
+}
+
+type walkerOnlyPtrOuter struct {
+	*walkerOnlyInner
+	B uint64
+}
+
+// valueReceiverOuter embeds a delegating struct and declares three delegation
+// methods of its own with value receivers.
+type valueReceiverOuter struct {
+	testFastsszMarshaler
+	Label uint32
+}
+
+func (valueReceiverOuter) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+
+func (valueReceiverOuter) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+func (valueReceiverOuter) HashTreeRootWith(_ sszutils.HashWalker) error { return nil }
+
+// A promoted HashTreeRootWith is detected like any other delegation method,
+// through a value or a pointer embed; a method the outer type declares with a
+// value receiver is its own and is never reported as promoted.
+func TestPromotedDelegationWalkerMethodAndValueReceivers(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	for _, typ := range []reflect.Type{reflect.TypeOf(walkerOnlyOuter{}), reflect.TypeOf(walkerOnlyPtrOuter{})} {
+		promoted := cache.PromotedDelegationMethods(typ)
+		if !promoted["HashTreeRootWith"] {
+			t.Errorf("%v: promoted HashTreeRootWith not detected: %v", typ, promoted)
+		}
+		desc, err := cache.GetTypeDescriptor(typ, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("%v: %v", typ, err)
+		}
+		if desc.SszCompatFlags&SszCompatFlagHashTreeRootWith != 0 || desc.HashTreeRootWithMethod != nil {
+			t.Errorf("%v: promoted HashTreeRootWith still delegable", typ)
+		}
+	}
+
+	promoted := cache.PromotedDelegationMethods(reflect.TypeOf(valueReceiverOuter{}))
+	for _, own := range []string{"MarshalSSZDyn", "HashTreeRootWithDyn", "HashTreeRootWith"} {
+		if promoted[own] {
+			t.Errorf("declared value-receiver %s reported as promoted", own)
+		}
+	}
+	for _, inherited := range []string{"MarshalSSZTo", "UnmarshalSSZ", "SizeSSZ", "HashTreeRoot"} {
+		if !promoted[inherited] {
+			t.Errorf("promoted %s not detected: %v", inherited, promoted)
+		}
+	}
+}
+
 // plainIfaceEmbed carries a non-SSZ embedded interface next to a delegating
 // embedded struct; the interface contributes no delegation surface and must
 // not hide the promotion coming from the struct.
