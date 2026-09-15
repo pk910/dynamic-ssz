@@ -177,11 +177,6 @@ func generateHashTreeRoot(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *st
 	return nil
 }
 
-// isPrimitive checks if a type is a primitive SSZ type that can be hashed directly.
-func (ctx *hashTreeRootContext) isPrimitive(desc *ssztypes.TypeDescriptor) bool {
-	return desc.SszType == ssztypes.SszBoolType || desc.SszType == ssztypes.SszUint8Type || desc.SszType == ssztypes.SszUint16Type || desc.SszType == ssztypes.SszUint32Type || desc.SszType == ssztypes.SszUint64Type || desc.SszType == ssztypes.SszUint128Type || desc.SszType == ssztypes.SszInt8Type || desc.SszType == ssztypes.SszInt16Type || desc.SszType == ssztypes.SszInt32Type || desc.SszType == ssztypes.SszInt64Type || desc.SszType == ssztypes.SszFloat32Type || desc.SszType == ssztypes.SszFloat64Type
-}
-
 // isInlineable checks if a type can be inlined directly into the hash tree root code
 func (ctx *hashTreeRootContext) isInlineable(desc *ssztypes.TypeDescriptor) bool {
 	if desc.SszType == ssztypes.SszBoolType || desc.SszType == ssztypes.SszUint8Type || desc.SszType == ssztypes.SszUint16Type || desc.SszType == ssztypes.SszUint32Type || desc.SszType == ssztypes.SszUint64Type || desc.SszType == ssztypes.SszInt8Type || desc.SszType == ssztypes.SszInt16Type || desc.SszType == ssztypes.SszInt32Type || desc.SszType == ssztypes.SszInt64Type || desc.SszType == ssztypes.SszFloat32Type || desc.SszType == ssztypes.SszFloat64Type {
