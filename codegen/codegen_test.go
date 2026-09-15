@@ -1782,6 +1782,61 @@ func TestGenerateWithoutDynExprCustomTypes(t *testing.T) {
 	}
 }
 
+// handRecursiveChild is a recursive type with a hand-written spec-aware
+// marshaler, outside the generation set; genRecursiveChild is its generated
+// twin.
+type handRecursiveChild struct {
+	Value    uint64
+	Children []*handRecursiveChild `ssz-max:"4"`
+}
+
+func (c *handRecursiveChild) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return append(buf, byte(c.Value)), nil
+}
+
+type handRecursiveRoot struct{ Child handRecursiveChild }
+
+type genRecursiveChild struct {
+	Value    uint64
+	Children []*genRecursiveChild `ssz-max:"4"`
+}
+
+type genRecursiveRoot struct{ Child genRecursiveChild }
+
+// A parent reaches a recursive child through the child's private depth method
+// only when the child is generated in the same run; a hand-written child of
+// the same package is called through its public method.
+func TestGenerateRecursiveChildOutsideGenerationSet(t *testing.T) {
+	marshalOnly := []CodeGeneratorOption{WithNoUnmarshalSSZ(), WithNoSizeSSZ(), WithNoHashTreeRoot()}
+
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_hand.go", WithReflectType(reflect.TypeFor[handRecursiveRoot](), marshalOnly...))
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate parent of a hand-written child: %v", err)
+	}
+	code := files["gen_hand.go"]
+	if !strings.Contains(code, ".MarshalSSZDyn(ds, dst)") {
+		t.Errorf("hand-written child is not reached through its public method:\n%s", code)
+	}
+	if strings.Contains(code, ".marshalSSZDynAtDepth(ds, dst, depth)") {
+		t.Errorf("hand-written child is called through a depth method it does not have:\n%s", code)
+	}
+
+	cg = NewCodeGenerator(nil)
+	cg.BuildFile("gen_set.go",
+		WithReflectType(reflect.TypeFor[genRecursiveRoot](), marshalOnly...),
+		WithReflectType(reflect.TypeFor[genRecursiveChild](), marshalOnly...))
+	files, err = cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate parent and child: %v", err)
+	}
+	code = files["gen_set.go"]
+	if !strings.Contains(code, ".marshalSSZDynAtDepth(ds, dst, depth)") {
+		t.Errorf("generated child is not reached through its depth method:\n%s", code)
+	}
+}
+
 // The invariant (maintainer, non-negotiable): with WithoutDynamicExpressions the
 // generated code must NEVER reference a *Dyn buffer function. A parent nesting a
 // generated child must reach it through the child's static MarshalSSZTo /

@@ -4378,6 +4378,16 @@ func TestCodegenPackedBasicViewElements(t *testing.T) {
 	}
 }
 
+// A generated parent reaches a hand-written recursive child of the same
+// package through the child's public methods, and the result matches
+// reflection.
+func TestCodegenHandWrittenRecursiveChild(t *testing.T) {
+	if _, generated := any(&HandRecursiveHolder_Payload).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	testCodegenPayloadByReflection(t, HandRecursiveHolder_Payload, nil)
+}
+
 // A bit-sized vector whose bit count is a spec value with no static bit size
 // falls back to the array's own length in bits, on every path of both engines.
 func TestCodegenBitsizeExpressionWithoutStaticFallback(t *testing.T) {

@@ -2207,6 +2207,47 @@ var BitCfg_Payload = BitCfg{Flags: [4]byte{0x01, 0x02, 0x03, 0x04}, Num: 7}
 
 var BitCfgDyn_Payload = BitCfgDyn{Flags: [4]byte{0x01, 0x02, 0x03, 0x04}, Num: 7, List: []uint64{1, 2}}
 
+// HandRecursiveChild is a recursive type with hand-written spec-aware
+// methods, which walk the value by reflection with delegation off.
+type HandRecursiveChild struct {
+	Value    uint64
+	Children []*HandRecursiveChild `ssz-max:"4"`
+}
+
+var handRecursiveDs = dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+
+func (c *HandRecursiveChild) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return handRecursiveDs.MarshalSSZTo(c, buf)
+}
+
+func (c *HandRecursiveChild) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	return handRecursiveDs.UnmarshalSSZ(c, buf)
+}
+
+func (c *HandRecursiveChild) SizeSSZDyn(_ sszutils.DynamicSpecs) int {
+	size, err := handRecursiveDs.SizeSSZ(c)
+	if err != nil {
+		return 0
+	}
+	return size
+}
+
+func (c *HandRecursiveChild) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	return handRecursiveDs.HashTreeRootWith(c, hh)
+}
+
+// HandRecursiveHolder is generated and nests the hand-written recursive type
+// as a field and as list elements.
+type HandRecursiveHolder struct {
+	C HandRecursiveChild
+	L []HandRecursiveChild `ssz-max:"2"`
+}
+
+var HandRecursiveHolder_Payload = HandRecursiveHolder{
+	C: HandRecursiveChild{Value: 1, Children: []*HandRecursiveChild{{Value: 2, Children: []*HandRecursiveChild{{Value: 3}}}}},
+	L: []HandRecursiveChild{{Value: 4}, {Value: 5, Children: []*HandRecursiveChild{{Value: 6}}}},
+}
+
 // OnlyWith is a container whose only hash method is HashTreeRootWith; it
 // hashes its value masked so delegation shows in the root.
 type OnlyWith struct{ Data uint64 }

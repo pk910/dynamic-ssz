@@ -112,6 +112,11 @@ type CodeGeneratorOptions struct {
 	ViewGoTypesTypes []types.Type   // View types for data+views mode (compile-time)
 	ViewReflectTypes []reflect.Type // View types for data+views mode (runtime)
 	ViewOnly         bool           // Only generate view methods, not data methods
+
+	// generated is the run's generation set, keyed by package-qualified type
+	// name; the generator fills it in before emitting a type, so the emitters
+	// know which types get depth-carrying methods in this run.
+	generated map[string]ssztypes.SszCompatFlag
 }
 
 // CodeGeneratorTypeOption specifies a type to include in code generation with its specific options.

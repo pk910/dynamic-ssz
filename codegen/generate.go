@@ -669,6 +669,8 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 			}
 		}
 
+		t.Options.generated = cg.compatFlags
+
 		if !t.IsViewOnly {
 			hash := t.Descriptor.GetTypeHash()
 			hashParts = append(hashParts, hash[:])

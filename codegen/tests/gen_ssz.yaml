@@ -165,6 +165,10 @@ types:
     output: gen_recursive.go
     views:
       - RecursiveViewNode_View1
+  # The child of this holder is hand-written, so the holder reaches it through
+  # its public methods.
+  - name: HandRecursiveHolder
+    output: gen_recursive.go
   # The member of this cycle stays ungenerated on purpose: it pins the inline
   # depth charge for cycle members reached without delegation.
   - name: RecursiveInlineHolder
