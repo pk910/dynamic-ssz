@@ -12,3 +12,4 @@ package tests
 //go:generate go run -cover ../../dynssz-gen -config gen_nodynexpr.yaml
 //go:generate go run -cover ../../dynssz-gen -config gen_nodynnest.yaml
 //go:generate go run -cover ../../dynssz-gen -config gen_atknest.yaml
+//go:generate go run -cover ../../dynssz-gen -config gen_mixed.yaml

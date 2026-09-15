@@ -1507,6 +1507,17 @@ func TestGenerateViewEdgeCases(t *testing.T) {
 		}
 	})
 
+	t.Run("ViewOnlyWithoutDynExpressionsRejected", func(t *testing.T) {
+		cg := NewCodeGenerator(nil)
+		cg.BuildFile("gen_viewonly_nodyn.go",
+			WithReflectType(baseType, WithoutDynamicExpressions(), WithViewOnly(), WithReflectViewTypes(viewType)),
+		)
+		_, err := cg.GenerateToMap()
+		if err == nil || !strings.Contains(err.Error(), "view-only and cannot be generated without dynamic expressions") {
+			t.Fatalf("expected the view-only rejection, got %v", err)
+		}
+	})
+
 	t.Run("ViewMethodsSkippedWithoutDynExpressions", func(t *testing.T) {
 		cg := NewCodeGenerator(nil)
 		cg.BuildFile("gen_views_nodyn.go",
@@ -2195,6 +2206,201 @@ func TestValidateTopLevelTypeWrapperShapes(t *testing.T) {
 			})
 		}
 	})
+}
+
+// mixedOpaqueLeaf is a fully-delegated type whose structure cannot be
+// traversed; mixedPlainList carries a limit-less list, which only extended
+// types can hash.
+type mixedOpaqueLeaf struct {
+	V    uint64
+	Note any
+}
+
+var _ = sszutils.Annotate[mixedOpaqueLeaf](`ssz-static:"true"`)
+
+func (n *mixedOpaqueLeaf) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 8 }
+func (n *mixedOpaqueLeaf) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint64(buf, n.V), nil
+}
+func (n *mixedOpaqueLeaf) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	n.V = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+func (n *mixedOpaqueLeaf) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(n.V)
+	return nil
+}
+
+type mixedOpaqueHolder struct {
+	L mixedOpaqueLeaf
+	N uint64
+}
+
+type mixedStatic struct {
+	A uint64
+	B []uint64 `ssz-max:"4"`
+}
+
+type mixedPlainList struct {
+	X []uint64
+}
+
+type mixedExt struct {
+	S int8
+}
+
+// Each type in a run is analyzed in its own mode. A static type must not make
+// a default-mode neighbour traverse its delegated child, and an extended-types
+// type must not let a default-mode neighbour hash a limit-less list; the
+// result is the same in either listing order, on both front ends.
+func TestGenerateModePerType(t *testing.T) {
+	generate := func(t *testing.T, opts ...CodeGeneratorOption) (string, error) {
+		t.Helper()
+		cg := NewCodeGenerator(nil)
+		// The go/types front end reads ssz-static declarations through the
+		// resolver the CLI installs from its source scan.
+		cg.SetAnnotationResolver(func(t types.Type) string {
+			if ptr, ok := types.Unalias(t).(*types.Pointer); ok {
+				t = ptr.Elem()
+			}
+			if named, ok := types.Unalias(t).(*types.Named); ok && named.Obj().Name() == "mixedOpaqueDelegated" {
+				tag, _ := sszutils.LookupAnnotation(reflect.TypeFor[mixedOpaqueLeaf]())
+				return tag
+			}
+			return ""
+		})
+		cg.BuildFile("gen_mixed.go", opts...)
+		files, err := cg.GenerateToMap()
+		return files["gen_mixed.go"], err
+	}
+	body := func(code, typeName string) string {
+		var methods []string
+		for _, chunk := range strings.Split(code, "\nfunc (t *") {
+			// A chunk runs up to the next method's doc comment; keep the body only.
+			if end := strings.LastIndex(chunk, "\n}"); strings.HasPrefix(chunk, typeName+")") && end >= 0 {
+				methods = append(methods, chunk[:end+2])
+			}
+		}
+		return strings.Join(methods, "\n")
+	}
+	check := func(t *testing.T, name string, a, b CodeGeneratorOption, wantErr string) {
+		t.Helper()
+		codeAB, errAB := generate(t, a, b)
+		codeBA, errBA := generate(t, b, a)
+		for _, err := range []error{errAB, errBA} {
+			if wantErr == "" && err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			if wantErr != "" && (err == nil || !strings.Contains(err.Error(), wantErr)) {
+				t.Fatalf("%s: err = %v, want %q", name, err, wantErr)
+			}
+		}
+		if wantErr == "" && body(codeAB, name) != body(codeBA, name) {
+			t.Errorf("%s emitted differently depending on the listing order", name)
+		}
+	}
+
+	pkg := loadTestsPackage(t)
+	goType := func(name string) types.Type {
+		obj := pkg.Types.Scope().Lookup(name)
+		if obj == nil {
+			t.Fatalf("fixture type %s not found", name)
+		}
+		return obj.Type()
+	}
+
+	t.Run("reflect", func(t *testing.T) {
+		static := WithReflectType(reflect.TypeFor[mixedStatic](), WithoutDynamicExpressions())
+		holder := WithReflectType(reflect.TypeFor[mixedOpaqueHolder]())
+		check(t, "mixedOpaqueHolder", static, holder, "")
+
+		ext := WithReflectType(reflect.TypeFor[mixedExt](), WithExtendedTypes())
+		plain := WithReflectType(reflect.TypeFor[mixedPlainList]())
+		check(t, "mixedPlainList", ext, plain, "has no ssz-max")
+	})
+
+	t.Run("go/types", func(t *testing.T) {
+		static := WithGoTypesType(goType("MixedStatic"), WithoutDynamicExpressions())
+		holder := WithGoTypesType(goType("MixedOpaqueHolder"))
+		check(t, "MixedOpaqueHolder", static, holder, "")
+
+		ext := WithGoTypesType(goType("MixedExt"), WithExtendedTypes())
+		plain := WithGoTypesType(goType("UnboundedList"))
+		check(t, "UnboundedList", ext, plain, "has no ssz-max")
+	})
+}
+
+// The cache handed to NewCodeGenerator is read-only: a generation leaves the
+// instance it came from resolving spec values, delegating and rejecting
+// extended types exactly as before, for types it has not built yet as well as
+// for types it has. Only the cache's extended-types setting is inherited.
+func TestGenerateLeavesCallerCacheUntouched(t *testing.T) {
+	specs := map[string]any{"GEN_LEN": uint64(9)}
+	ds := dynssz.NewDynSsz(specs, dynssz.WithNoFastSsz())
+	fresh := dynssz.NewDynSsz(specs, dynssz.WithNoFastSsz())
+	value := &genSpecSizedFallback{V: make([]uint16, 9)}
+	before, err := ds.HashTreeRoot(&genSpecSized{V: make([]uint16, 9)})
+	if err != nil {
+		t.Fatalf("hash before generation: %v", err)
+	}
+
+	cg := NewCodeGenerator(ds.GetTypeCache())
+	cg.BuildFile("gen_test.go",
+		WithReflectType(reflect.TypeFor[genSpecSizedFallback]()),
+		WithReflectType(reflect.TypeFor[mixedStatic](), WithoutDynamicExpressions()),
+		WithReflectType(reflect.TypeFor[mixedExt](), WithExtendedTypes()),
+	)
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	fallbackOf := regexp.MustCompile(`ResolveSpecValueWithDefault\(ds, "GEN_LEN", (\d+)\)`)
+	if got := fallbackOf.FindStringSubmatch(files["gen_test.go"]); len(got) < 2 || got[1] != "4" {
+		t.Fatalf("emitted fallback %v, want the declared static size 4", got)
+	}
+
+	// A type first built after the generation still resolves the spec value.
+	got, err := ds.MarshalSSZ(value)
+	if err != nil {
+		t.Fatalf("marshal after generation: %v", err)
+	}
+	if len(got) != 18 {
+		t.Fatalf("marshalled %d bytes after generation, want 18 (GEN_LEN=9 resolved)", len(got))
+	}
+	root, err := ds.HashTreeRoot(value)
+	if err != nil {
+		t.Fatalf("hash after generation: %v", err)
+	}
+	want, err := fresh.HashTreeRoot(value)
+	if err != nil {
+		t.Fatalf("hash on fresh instance: %v", err)
+	}
+	if root != want {
+		t.Fatalf("root after generation %x, fresh instance %x", root[:8], want[:8])
+	}
+	// The generation's own modes did not leak either.
+	if _, err = ds.HashTreeRoot(&mixedExt{S: 1}); err == nil {
+		t.Fatal("extended types accepted by an instance that did not enable them")
+	}
+	after, err := ds.HashTreeRoot(&genSpecSized{V: make([]uint16, 9)})
+	if err != nil || after != before {
+		t.Fatalf("already cached type changed: %x -> %x, err %v", before[:8], after[:8], err)
+	}
+	tc := ds.GetTypeCache()
+	if tc.ExtendedTypes || tc.NoDelegation {
+		t.Fatalf("instance cache flags changed: extended=%v nodelegation=%v", tc.ExtendedTypes, tc.NoDelegation)
+	}
+
+	// An instance built with extended types widens the reflect path.
+	extDs := dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes())
+	cg = NewCodeGenerator(extDs.GetTypeCache())
+	cg.BuildFile("gen_ext.go", WithReflectType(reflect.TypeFor[mixedExt]()))
+	if _, err = cg.GenerateToMap(); err != nil {
+		t.Fatalf("extended types inherited from the cache: %v", err)
+	}
+	if n := len(extDs.GetTypeCache().GetAllTypes()); n != 0 {
+		t.Fatalf("generation registered %d descriptors in the instance cache", n)
+	}
 }
 
 // genSpecSized takes its length from a spec value with no static fallback;

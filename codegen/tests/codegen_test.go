@@ -620,6 +620,61 @@ func TestCodegenAtkNest(t *testing.T) {
 	}
 }
 
+// A batch that mixes generation modes per type (gen_mixed.yaml) analyzes each
+// type in its own mode: the static type is inlined, the default-mode type
+// delegates to its opaque child instead of traversing it, and the extended
+// type does not widen its neighbours.
+func TestCodegenMixedModes(t *testing.T) {
+	code, err := os.ReadFile("gen_mixed.go")
+	if os.IsNotExist(err) {
+		t.Skip("no generated code present")
+	}
+	if err != nil {
+		t.Fatalf("read generated file: %v", err)
+	}
+	for _, chunk := range strings.Split(string(code), "\nfunc (t *") {
+		if strings.HasPrefix(chunk, "MixedStatic)") && (strings.Contains(chunk, "SizeSSZDyn(") || strings.Contains(chunk, "MarshalSSZDyn(")) {
+			t.Error("MixedStatic references dynamic methods under without-dynamic-expressions")
+		}
+	}
+
+	genDs := dynssz.NewDynSsz(nil)
+	got, err := genDs.MarshalSSZ(&MixedOpaqueHolder_Payload)
+	if err != nil {
+		t.Fatalf("marshal MixedOpaqueHolder: %v", err)
+	}
+	want, err := MixedOpaqueHolder_Payload.N.MarshalSSZDyn(nil, nil)
+	if err != nil {
+		t.Fatalf("child MarshalSSZDyn: %v", err)
+	}
+	want = binary.LittleEndian.AppendUint64(want, MixedOpaqueHolder_Payload.A)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("MixedOpaqueHolder = %x, want %x", got, want)
+	}
+	var back MixedOpaqueHolder
+	if err = genDs.UnmarshalSSZ(&back, got); err != nil {
+		t.Fatalf("unmarshal MixedOpaqueHolder: %v", err)
+	}
+	if back.N.V != MixedOpaqueHolder_Payload.N.V || back.A != MixedOpaqueHolder_Payload.A {
+		t.Fatalf("round trip = %+v", back)
+	}
+	// Two leaves: the delegated child's root and the uint64 chunk.
+	var chunks [64]byte
+	binary.LittleEndian.PutUint64(chunks[0:], MixedOpaqueHolder_Payload.N.V)
+	binary.LittleEndian.PutUint64(chunks[32:], MixedOpaqueHolder_Payload.A)
+	wantRoot := sha256.Sum256(chunks[:])
+	root, err := genDs.HashTreeRoot(&MixedOpaqueHolder_Payload)
+	if err != nil {
+		t.Fatalf("hash MixedOpaqueHolder: %v", err)
+	}
+	if root != wantRoot {
+		t.Fatalf("MixedOpaqueHolder root = %x, want %x", root, wantRoot)
+	}
+
+	testCodegenPayloadByReflection(t, MixedStatic_Payload, nil)
+	testCodegenPayloadByReflection(t, MixedExt_Payload, nil, dynssz.WithExtendedTypes())
+}
+
 // A dynssz expression that resolves to 0 must fall back to the static value in
 // both engines. Previously the generated code applied the literal
 // 0 limit and rejected the value while reflection fell back, diverging.

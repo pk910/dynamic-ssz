@@ -554,7 +554,7 @@ payload := PayloadUnion{
 
 ```go
 func NewCodeGenerator(typeCache *ssztypes.TypeCache) *CodeGenerator
-// pass ds.GetTypeCache() to share an instance's cache, or nil for a fresh one
+// the cache is read-only: only its extended-types setting is inherited; nil for the default
 
 func (cg *CodeGenerator) BuildFile(fileName string, opts ...CodeGeneratorOption)
 func (cg *CodeGenerator) Generate() error

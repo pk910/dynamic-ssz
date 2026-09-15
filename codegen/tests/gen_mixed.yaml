@@ -1,0 +1,14 @@
+# One batch mixing generation modes per type: a static type, a default type
+# holding an externally delegated child whose structure cannot be traversed,
+# and an extended-types type. Each type is analyzed in its own mode, so the
+# batch generates the same code in any listing order.
+package: github.com/pk910/dynamic-ssz/codegen/tests
+output: gen_mixed.go
+with-streaming: true
+
+types:
+  - name: MixedOpaqueHolder
+  - name: MixedStatic
+    without-dynamic-expressions: true
+  - name: MixedExt
+    with-extended-types: true

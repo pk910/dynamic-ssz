@@ -511,8 +511,15 @@ func run(config *Config) error {
 		}
 	}
 
-	// Build options for all types
-	for outFile, specs := range generateFiles {
+	// Build options for all types, in a stable file order so a run's log and
+	// its first reported error do not depend on map iteration.
+	outFiles := make([]string, 0, len(generateFiles))
+	for outFile := range generateFiles {
+		outFiles = append(outFiles, outFile)
+	}
+	sort.Strings(outFiles)
+	for _, outFile := range outFiles {
+		specs := generateFiles[outFile]
 		var typeOptions []codegen.CodeGeneratorOption
 
 		for _, spec := range specs {

@@ -23,7 +23,7 @@ import (
 // twice, whether the duplicate is in one file or spread across two files of
 // the package), and a legacy fastssz surface with pieces switched off (the
 // interface is all-or-nothing; a partial set misleads interface checks).
-func validateTypeEntry(seenTypes map[string]string, typePkgPath, typeName, fileName string, opts *CodeGeneratorOptions) error {
+func validateTypeEntry(seenTypes map[string]string, typePkgPath, typeName, fileName string, viewOnly bool, opts *CodeGeneratorOptions) error {
 	seenKey := typePkgPath + "." + typeName
 	if firstFile, seen := seenTypes[seenKey]; seen {
 		if firstFile == fileName {
@@ -35,6 +35,13 @@ func validateTypeEntry(seenTypes map[string]string, typePkgPath, typeName, fileN
 
 	if opts.CreateLegacyFn && (opts.NoMarshalSSZ || opts.NoUnmarshalSSZ || opts.NoSizeSSZ || opts.NoHashTreeRoot) {
 		return fmt.Errorf("type %s combines WithCreateLegacyFn with a WithNo* option: the legacy fastssz interface needs the full method set", typeName)
+	}
+
+	// View methods resolve spec expressions at runtime, so they are never
+	// emitted without dynamic expressions; a view-only type would then emit
+	// nothing at all.
+	if viewOnly && opts.WithoutDynamicExpressions {
+		return fmt.Errorf("type %s is view-only and cannot be generated without dynamic expressions: view methods resolve spec expressions at runtime", typeName)
 	}
 
 	return nil
@@ -70,15 +77,6 @@ func validateTypeEntry(seenTypes map[string]string, typePkgPath, typeName, fileN
 // This method must be called before any code generation attempts, as it populates
 // the essential type metadata that drives the entire generation process.
 func (cg *CodeGenerator) analyzeTypes() error {
-	var parser *Parser
-
-	// Descriptors built here describe code, not this process: a spec expression
-	// is emitted for the generated code to resolve against whatever specs it
-	// runs under. Resolving it now would bake the generator's own values in as
-	// the compile-time fallback, and would decide list-versus-vector by which
-	// values a generating machine happened to have loaded.
-	cg.typeCache.DisableSpecResolution()
-
 	getTypeName := func(t *CodeGeneratorTypeOptions) (string, string, string) {
 		var typeName, typePkgPath, typePkgName string
 		if t.ReflectType != nil {
@@ -171,8 +169,6 @@ func (cg *CodeGenerator) analyzeTypes() error {
 		}
 	}
 
-	cg.typeCache.CompatFlags = cg.compatFlags
-
 	// analyze all types to build complete dependency graph
 	seenTypes := map[string]string{}
 	for _, file := range cg.files {
@@ -186,7 +182,7 @@ func (cg *CodeGenerator) analyzeTypes() error {
 				return fmt.Errorf("type %s has no package path", typeName)
 			}
 
-			if err := validateTypeEntry(seenTypes, typePkgPath, typeName, file.FileName, &t.Options); err != nil {
+			if err := validateTypeEntry(seenTypes, typePkgPath, typeName, file.FileName, t.IsViewOnly, &t.Options); err != nil {
 				return err
 			}
 			if pkgPath == "" {
@@ -203,50 +199,18 @@ func (cg *CodeGenerator) analyzeTypes() error {
 			var desc *ssztypes.TypeDescriptor
 			var err error
 
-			// Without dynamic expressions the generated code must never call a
-			// delegated *Dyn method, so a fully-delegated ssz-static type cannot be
-			// reached through its dynamic methods and must instead be inlined from
-			// its traversed structure. Disable the shallow-build shortcut so the
-			// subtree is available. The flag is never lowered (mirroring
-			// ExtendedTypes): a shared cache/parser stays in the stricter mode.
-			if t.Options.WithoutDynamicExpressions {
-				cg.typeCache.NoDelegation = true
-			}
-
 			if t.ReflectType != nil {
 				// Always wrap in pointer so generated methods use pointer receivers
 				// (needed for unmarshal to write back modified values).
 				if t.ReflectType.Kind() != reflect.Pointer {
 					t.ReflectType = reflect.PointerTo(t.ReflectType)
 				}
-				// The reflect path builds descriptors through the shared TypeCache,
-				// which carries its own extended-types switch; propagate the option
-				// so it is honored on this path like it is on the go/types path.
-				// The cache flag is never lowered: it may have been enabled by the
-				// DynSsz instance the cache was taken from.
-				if t.Options.ExtendedTypes {
-					cg.typeCache.ExtendedTypes = true
-				}
-				desc, err = cg.typeCache.GetTypeDescriptor(t.ReflectType, t.Options.SizeHints, t.Options.MaxSizeHints, t.Options.TypeHints)
+				desc, err = cg.typeCacheFor(&t.Options).GetTypeDescriptor(t.ReflectType, t.Options.SizeHints, t.Options.MaxSizeHints, t.Options.TypeHints)
 			} else {
-				if parser == nil {
-					parser = NewParser()
-					parser.CompatFlags = cg.compatFlags
-					parser.AnnotationResolver = cg.annotationResolver
-				}
-				// The extended-types switch is never lowered (mirroring the
-				// type cache): a shared parser stays in the wider mode once
-				// any type in the run enables it.
-				if t.Options.ExtendedTypes {
-					parser.ExtendedTypes = true
-				}
-				if t.Options.WithoutDynamicExpressions {
-					parser.NoDelegation = true
-				}
 				if _, ok := t.GoTypesType.(*types.Pointer); !ok {
 					t.GoTypesType = types.NewPointer(t.GoTypesType)
 				}
-				desc, err = parser.GetTypeDescriptor(t.GoTypesType, t.Options.TypeHints, t.Options.SizeHints, t.Options.MaxSizeHints)
+				desc, err = cg.parserFor(&t.Options).GetTypeDescriptor(t.GoTypesType, t.Options.TypeHints, t.Options.SizeHints, t.Options.MaxSizeHints)
 			}
 
 			if err != nil {
@@ -315,7 +279,7 @@ func (cg *CodeGenerator) analyzeTypes() error {
 						return fmt.Errorf("view type %s is listed more than once for %s; remove the duplicate entry", viewType.String(), typeName)
 					}
 					seenViews[viewType.String()] = true
-					viewDesc, err := cg.typeCache.GetTypeDescriptorWithSchema(t.ReflectType, viewType, t.Options.SizeHints, t.Options.MaxSizeHints, t.Options.TypeHints)
+					viewDesc, err := cg.typeCacheFor(&t.Options).GetTypeDescriptorWithSchema(t.ReflectType, viewType, t.Options.SizeHints, t.Options.MaxSizeHints, t.Options.TypeHints)
 					if err != nil {
 						return fmt.Errorf("failed to analyze view type %s: %w", viewType.String(), err)
 					}
@@ -323,11 +287,6 @@ func (cg *CodeGenerator) analyzeTypes() error {
 					cg.collectWarnings(typeName+" view "+getReflectTypeName(viewType), viewDesc)
 				}
 				for _, viewType := range t.ViewGoTypesTypes {
-					if parser == nil {
-						parser = NewParser()
-						parser.CompatFlags = cg.compatFlags
-						parser.AnnotationResolver = cg.annotationResolver
-					}
 					if _, ok := viewType.(*types.Pointer); !ok {
 						viewType = types.NewPointer(viewType)
 					}
@@ -338,7 +297,7 @@ func (cg *CodeGenerator) analyzeTypes() error {
 						return fmt.Errorf("view type %s is listed more than once for %s; remove the duplicate entry", viewType.String(), typeName)
 					}
 					seenViews[viewType.String()] = true
-					viewDesc, err := parser.GetTypeDescriptorWithSchema(t.GoTypesType, viewType, t.Options.TypeHints, t.Options.SizeHints, t.Options.MaxSizeHints)
+					viewDesc, err := cg.parserFor(&t.Options).GetTypeDescriptorWithSchema(t.GoTypesType, viewType, t.Options.TypeHints, t.Options.SizeHints, t.Options.MaxSizeHints)
 					if err != nil {
 						return fmt.Errorf("failed to analyze view type %s: %w", viewType.String(), err)
 					}

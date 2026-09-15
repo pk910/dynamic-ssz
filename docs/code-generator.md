@@ -249,6 +249,11 @@ func generateSSZ() error {
 }
 ```
 
+The generator analyzes types on caches of its own and never writes to the cache
+it is given; passing a live instance's cache only inherits its extended-types
+setting. The instance keeps resolving spec values as before, and the generated
+code carries the spec expressions rather than the instance's values.
+
 ### Multiple Files Example
 
 ```go

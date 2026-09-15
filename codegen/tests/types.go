@@ -4445,3 +4445,51 @@ var GenCovPtrWrapper_Payload = GenCovPtrWrapper{
 		Data: &genCovPtrWrapData,
 	},
 }
+
+// mixedOpaqueDelegated is an external fully-delegated type whose structure the
+// engines cannot traverse: it is usable only through its Dynamic* methods.
+type mixedOpaqueDelegated struct {
+	V    uint64
+	Note any
+}
+
+var _ = sszutils.Annotate[mixedOpaqueDelegated](`ssz-static:"true"`)
+
+func (n *mixedOpaqueDelegated) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 8 }
+func (n *mixedOpaqueDelegated) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint64(buf, n.V), nil
+}
+func (n *mixedOpaqueDelegated) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	n.V = binary.LittleEndian.Uint64(buf)
+	return nil
+}
+func (n *mixedOpaqueDelegated) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(n.V)
+	return nil
+}
+
+// MixedOpaqueHolder is generated in default mode next to a static type; its
+// opaque child must still be delegated to, not traversed.
+type MixedOpaqueHolder struct {
+	N mixedOpaqueDelegated
+	A uint64
+}
+
+// MixedStatic is generated without dynamic expressions in the same batch.
+type MixedStatic struct {
+	A uint64
+	B []uint64 `ssz-max:"4"`
+}
+
+// MixedExt needs extended types; the neighbouring default-mode types must not
+// inherit that.
+type MixedExt struct {
+	S int8
+	L []uint64 `ssz-max:"4"`
+}
+
+var (
+	MixedOpaqueHolder_Payload = MixedOpaqueHolder{N: mixedOpaqueDelegated{V: 0x1122}, A: 7}
+	MixedStatic_Payload       = MixedStatic{A: 9, B: []uint64{1, 2, 3}}
+	MixedExt_Payload          = MixedExt{S: -3, L: []uint64{4, 5}}
+)
