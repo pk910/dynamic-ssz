@@ -1590,3 +1590,56 @@ func TestWrapperHashRootRequiresCompleteMerkleization(t *testing.T) {
 		}
 	})
 }
+
+// A packed scope on the wrapper buffers the Put* forms like the Append* forms;
+// a scope opened inside a packed one, and any scope after it, add whole
+// leaves again.
+func TestWrapperPackedScope(t *testing.T) {
+	w := NewWrapper()
+	idx := w.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
+	w.PutUint64(1)
+	w.PutUint32(2)
+	w.PutUint16(3)
+	w.PutUint8(4)
+	w.PutBool(true)
+	w.PutBytes([]byte{5, 6})
+	if got := w.CurrentIndex(); got != 8+4+2+1+1+2 {
+		t.Fatalf("packed scope buffered %d bytes, want 18", got)
+	}
+	w.FillUpTo32()
+	w.MerkleizeWithMixin(idx, 6, 4)
+
+	h := hasher.NewHasher()
+	defer h.Reset()
+	hidx := h.StartTree(sszutils.TreeTypeBinary)
+	h.AppendUint64(1)
+	h.AppendUint32(2)
+	h.AppendUint16(3)
+	h.AppendUint8(4)
+	h.AppendBool(true)
+	h.Append([]byte{5, 6})
+	h.FillUpTo32()
+	h.MerkleizeWithMixin(hidx, 6, 4)
+	if !bytes.Equal(w.Hash(), h.Hash()) {
+		t.Fatalf("wrapper packed root %x != hasher root %x", w.Hash(), h.Hash())
+	}
+
+	w = NewWrapper()
+	outer := w.StartTree(sszutils.TreeTypeBinary | sszutils.TreeTypePacked)
+	inner := w.StartTree(sszutils.TreeTypeNone)
+	w.PutUint64(1)
+	if len(w.nodes) != 1 || len(w.buf) != 0 {
+		t.Fatalf("scope inside a packed scope added %d leaves and %d buffered bytes, want 1 leaf", len(w.nodes), len(w.buf))
+	}
+	w.Merkleize(inner)
+	w.PutUint64(2)
+	if len(w.buf) != 8 {
+		t.Fatalf("packed scope after a nested scope buffered %d bytes, want 8", len(w.buf))
+	}
+	w.FillUpTo32()
+	w.Merkleize(outer)
+	w.PutUint64(3)
+	if len(w.buf) != 0 {
+		t.Fatalf("closed packed scope still buffers puts: %d bytes", len(w.buf))
+	}
+}

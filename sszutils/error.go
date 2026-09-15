@@ -43,6 +43,10 @@ var (
 	// type or feature it does not support.
 	ErrNotImplemented = fmt.Errorf("not implemented")
 
+	// ErrPackedDelegate is returned when the hash method of a packed element
+	// leaves anything but the element's packed bytes on the walker.
+	ErrPackedDelegate = fmt.Errorf("packed element hash method did not append its packed value")
+
 	// ErrStreamTooLarge is returned when decoding a stream of unknown length
 	// would consume more bytes than the decoder's configured maximum. Unknown-
 	// length decoding is always bounded; see WithMaxStreamSize.
@@ -438,6 +442,17 @@ func ErrOffsetOverflowFn(offset any) error {
 	return &sszError{
 		err:     ErrOffset,
 		message: fmt.Sprintf("offset %v exceeds the 4-byte SSZ offset range", offset),
+	}
+}
+
+// --- ErrPackedDelegate constructors ---
+
+// ErrPackedDelegateFn reports a packed element's hash method that left got
+// bytes on the walker instead of want.
+func ErrPackedDelegateFn(got, want int) error {
+	return &sszError{
+		err:     ErrPackedDelegate,
+		message: fmt.Sprintf("packed element hash method left %d bytes, expected its %d packed bytes", got, want),
 	}
 }
 

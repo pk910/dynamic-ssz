@@ -554,8 +554,9 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 		break
 	}
 
-	// Verify data and schema types have compatible base kinds
-	if dataType != schemaType {
+	// A pairing is a view whenever the data type is not the schema type (an
+	// alias is the same type); only the base kinds have to agree.
+	if dataType != schemaType || !types.Identical(innerDataType, innerSchemaType) {
 		schemaKindStr := p.getTypeKindString(schemaType)
 		dataKindStr := p.getTypeKindString(dataType)
 		if schemaKindStr != dataKindStr {

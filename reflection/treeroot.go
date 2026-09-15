@@ -27,7 +27,7 @@ import (
 //   - sourceType: The TypeDescriptor containing optimized metadata about the type to hash
 //   - sourceValue: The reflect.Value holding the data to be hashed
 //   - hh: The Hasher instance managing the hash computation state
-//   - pack: Whether to pack the value into a single tree leaf
+//   - pack: Whether the enclosing scope packs the value with its neighbours
 //   - depth: Indentation level for verbose logging (when enabled)
 //
 // Returns:
@@ -77,13 +77,14 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 	// different view types. If the method returns nil, fall through to
 	// other hashing methods.
 	//
-	// A delegate may leave a whole leaf or only the packed bytes of its value;
-	// it is padded to a leaf afterwards, except for a custom element inside a
-	// packed scope whose declared size is one a basic type could have (a power
-	// of two up to 16 bytes): that element stands in for the basic type and is
-	// packed with its neighbours by the scope.
-	padDelegate := !pack || sourceType.SszType != ssztypes.SszCustomType ||
-		sourceType.Size <= 0 || sourceType.Size > 16 || sourceType.Size&(sourceType.Size-1) != 0
+	// A delegate outside a packed scope is padded to a leaf afterwards. Inside
+	// a packed scope the walker packs its Put* calls, and it must leave
+	// exactly the element's packed bytes.
+	padDelegate := !pack
+	packedStart := 0
+	if pack {
+		packedStart = hh.CurrentIndex()
+	}
 
 	isView := sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
 	if isView {
@@ -100,6 +101,9 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 					if padDelegate {
 						hh.FillUpTo32()
 					}
+					if err := checkPackedDelegate(hh, pack, packedStart, sourceType.Size); err != nil {
+						return err
+					}
 
 					if ctx.verbose {
 						ctx.logCb("%shash: 0x%x\n", strings.Repeat(" ", int(depth.idt)*2), hh.Hash())
@@ -109,10 +113,7 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 				}
 			}
 		}
-	} else if (sourceType.SszCompatFlags != 0 || sourceType.SszType == ssztypes.SszCustomType) && (!pack || !sourceType.SszType.IsBasic() || sourceType.Size > 16) {
-		// A basic element of up to 16 bytes is packed with its neighbours by
-		// the list or vector walk below; its own hash methods are not consulted
-		// there. A 32-byte uint256 fills a chunk on its own.
+	} else if sourceType.SszCompatFlags != 0 || sourceType.SszType == ssztypes.SszCustomType {
 		// Fast path: skip compat interface checks for types that don't implement any
 		isFastsszHasher := sourceType.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0
 		useDynamicHashRoot := sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0
@@ -146,7 +147,7 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 					hh.FillUpTo32()
 				}
 
-				return nil
+				return checkPackedDelegate(hh, pack, packedStart, sourceType.Size)
 			}
 
 			if hasher, ok := sourceValuePtr.Interface().(sszutils.FastsszHashRoot); ok {
@@ -155,6 +156,13 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 					return fmt.Errorf("failed HashTreeRoot: %w", err)
 				}
 
+				if pack {
+					// The root of a basic value is its packed bytes padded to
+					// a chunk, so the packed bytes are its prefix; a custom
+					// type of a basic size promises the same layout.
+					hh.Append(hashBytes[:sourceType.Size])
+					return nil
+				}
 				hh.PutBytes(hashBytes[:])
 				return nil
 			}
@@ -170,7 +178,7 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 					hh.FillUpTo32()
 				}
 
-				return nil
+				return checkPackedDelegate(hh, pack, packedStart, sourceType.Size)
 			}
 		}
 	}
@@ -331,7 +339,7 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 //   - sourceType: The TypeDescriptor containing wrapper field metadata
 //   - sourceValue: The reflect.Value of the wrapper to hash
 //   - hh: The Hasher instance for hash computation
-//   - pack: Whether to pack the value into a single tree leaf
+//   - pack: Whether the enclosing scope packs the value with its neighbours
 //   - depth: Indentation level for verbose logging
 //
 // Returns:
@@ -363,7 +371,7 @@ func (ctx *ReflectionCtx) buildRootFromTypeWrapper(sourceType *ssztypes.TypeDesc
 //   - sourceType: The TypeDescriptor containing array metadata
 //   - sourceValue: The reflect.Value of the array to hash
 //   - hh: The Hasher instance for hash computation
-//   - pack: Whether to pack the value into a single tree leaf
+//   - pack: Whether the enclosing scope packs the value with its neighbours
 //   - depth: Indentation level for verbose logging
 //
 // Returns:
@@ -653,7 +661,12 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 		return sszutils.ErrPlatformOverflowFn("vector length", sourceType.Len)
 	}
 
-	hashIndex := hh.StartTree(sszutils.TreeTypeBinary)
+	packed := packedElemSize(sourceType.ElemDesc) > 0
+	treeType := sszutils.TreeTypeBinary
+	if packed {
+		treeType |= sszutils.TreeTypePacked
+	}
+	hashIndex := hh.StartTree(treeType)
 
 	sliceLen := sourceValue.Len()
 	if int64(sliceLen) > sourceType.Len {
@@ -708,7 +721,7 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 		for i := 0; i < sliceLen; i++ {
 			fieldValue := sourceValue.Index(i)
 
-			err := ctx.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, true, depth)
+			err := ctx.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, packed, depth)
 			if err != nil {
 				return sszutils.ErrorWithPathf(err, "[%d]", i)
 			}
@@ -727,7 +740,7 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 			zeroVal := newZeroElem(sourceType.ElemDesc)
 
 			for i := 0; i < appendZero; i++ {
-				err := ctx.buildRootFromType(sourceType.ElemDesc, zeroVal, hh, true, depth)
+				err := ctx.buildRootFromType(sourceType.ElemDesc, zeroVal, hh, packed, depth)
 				if err != nil {
 					return sszutils.ErrorWithPathf(err, "[+%d]", sliceLen+i)
 				}
@@ -769,6 +782,10 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 	if sourceType.SszType == ssztypes.SszProgressiveListType {
 		treeType = sszutils.TreeTypeProgressive
 	}
+	itemSize := packedElemSize(sourceType.ElemDesc)
+	if itemSize > 0 {
+		treeType |= sszutils.TreeTypePacked
+	}
 	hashIndex := hh.StartTree(treeType)
 
 	sliceLen := sourceValue.Len()
@@ -796,7 +813,7 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 		for i := 0; i < arrayLen; i++ {
 			fieldValue := sourceValue.Index(i)
 
-			err := ctx.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, true, depth)
+			err := ctx.buildRootFromType(sourceType.ElemDesc, fieldValue, hh, itemSize > 0, depth)
 			if err != nil {
 				return sszutils.ErrorWithPathf(err, "[%d]", i)
 			}
@@ -825,47 +842,11 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 			return sszutils.ErrListLengthFn(sliceLen, sourceType.Limit)
 		}
 
-		var limit, itemSize uint64
-
-		// A type wrapper is transparent to merkleization: the elements are
-		// packed as the value it wraps, so the limit has to come from that
-		// value's size. Reading the wrapper itself makes a packed basic element
-		// look composite, which yields a chunk per element instead of the
-		// chunk count the packing produces -- a different tree depth, so a
-		// different root at every length.
-		elemDesc := sourceType.ElemDesc
-		for elemDesc.SszType == ssztypes.SszTypeWrapperType && elemDesc.ElemDesc != nil {
-			elemDesc = elemDesc.ElemDesc
-		}
-
-		switch elemDesc.SszType {
-		case ssztypes.SszBoolType:
-			itemSize = 1
-		case ssztypes.SszUint8Type, ssztypes.SszInt8Type:
-			itemSize = 1
-		case ssztypes.SszUint16Type, ssztypes.SszInt16Type:
-			itemSize = 2
-		case ssztypes.SszUint32Type, ssztypes.SszInt32Type, ssztypes.SszFloat32Type:
-			itemSize = 4
-		case ssztypes.SszUint64Type, ssztypes.SszInt64Type, ssztypes.SszFloat64Type:
-			itemSize = 8
-		case ssztypes.SszUint128Type:
-			itemSize = 16
-		case ssztypes.SszUint256Type:
-			itemSize = 32
-		case ssztypes.SszCustomType:
-			// A custom element whose declared size is one a basic type could
-			// have (a power of two up to 16 bytes) packs like that basic type;
-			// any other size occupies a chunk of its own.
-			if elemDesc.Size > 0 && elemDesc.Size <= 16 && elemDesc.Size&(elemDesc.Size-1) == 0 {
-				itemSize = uint64(elemDesc.Size)
-			}
-		default:
-			itemSize = 0
-		}
-
+		// The chunk count of a packed list is derived from the item size, that
+		// of a composite list is the element limit itself.
+		var limit uint64
 		if itemSize > 0 {
-			limit = sszutils.CalculateLimit(sourceType.Limit, uint64(sliceLen), itemSize)
+			limit = sszutils.CalculateLimit(sourceType.Limit, uint64(sliceLen), uint64(itemSize))
 		} else {
 			limit = sourceType.Limit
 		}
@@ -1019,11 +1000,16 @@ func (ctx *ReflectionCtx) buildRootFromBitlist(sourceType *ssztypes.TypeDescript
 // Returns:
 //   - error: An error if hashing fails
 func (ctx *ReflectionCtx) buildRootFromOptional(sourceType *ssztypes.TypeDescriptor, sourceValue reflect.Value, hh sszutils.HashWalker, depth reflectionDepth) error {
-	hashIndex := hh.StartTree(sszutils.TreeTypeBinary)
+	packed := packedElemSize(sourceType.ElemDesc) > 0
+	treeType := sszutils.TreeTypeBinary
+	if packed {
+		treeType |= sszutils.TreeTypePacked
+	}
+	hashIndex := hh.StartTree(treeType)
 
 	var present uint64
 	if !sourceValue.IsNil() {
-		err := ctx.buildRootFromType(sourceType.ElemDesc, sourceValue.Elem(), hh, true, depth)
+		err := ctx.buildRootFromType(sourceType.ElemDesc, sourceValue.Elem(), hh, packed, depth)
 		if err != nil {
 			return err
 		}
@@ -1073,5 +1059,37 @@ func (ctx *ReflectionCtx) buildRootFromBigInt(sourceType *ssztypes.TypeDescripto
 	buf = append(buf, sign)
 	buf = append(buf, mag...)
 	hh.PutBytes(buf)
+	return nil
+}
+
+// packedElemSize returns the packed byte size of a list, vector or optional
+// element, or 0 when each element occupies a chunk of its own: basic values,
+// wrappers around them and custom types of a basic size (a power of two up to
+// 16 bytes, without a size expression) pack. The size is a property of the
+// type, as the SSZ chunk count is.
+func packedElemSize(elemDesc *ssztypes.TypeDescriptor) int64 {
+	for elemDesc.SszType == ssztypes.SszTypeWrapperType && elemDesc.ElemDesc != nil {
+		elemDesc = elemDesc.ElemDesc
+	}
+	switch {
+	case elemDesc.SszType.IsBasic():
+		return elemDesc.Size
+	case elemDesc.SszType == ssztypes.SszCustomType && elemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr == 0 &&
+		elemDesc.Size > 0 && elemDesc.Size <= 16 && elemDesc.Size&(elemDesc.Size-1) == 0:
+		return elemDesc.Size
+	default:
+		return 0
+	}
+}
+
+// checkPackedDelegate verifies that a delegate called inside a packed scope
+// advanced the walker from start by exactly the element's packed size.
+func checkPackedDelegate(hh sszutils.HashWalker, pack bool, start int, size int64) error {
+	if !pack {
+		return nil
+	}
+	if got := hh.CurrentIndex() - start; int64(got) != size {
+		return sszutils.ErrPackedDelegateFn(got, int(size))
+	}
 	return nil
 }
