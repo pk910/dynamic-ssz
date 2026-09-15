@@ -2079,6 +2079,88 @@ type ViewLeafTypes_View1 struct {
 
 var ViewLeafTypes_Payload = ViewLeafTypes_Base{L: []LeafViewNum{1, 2, 3}}
 
+// CountedNum is a named uint64 whose hash method counts its calls and puts
+// the value; CountedNumErr makes it fail instead.
+type CountedNum uint64
+
+var (
+	CountedNumCalls int
+	CountedNumErr   error
+)
+
+func (c *CountedNum) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	CountedNumCalls++
+	if CountedNumErr != nil {
+		return CountedNumErr
+	}
+	hh.PutUint64(uint64(*c))
+	return nil
+}
+
+// CountedNumHolder lists CountedNum under a limit and progressively.
+type CountedNumHolder struct {
+	L []CountedNum `ssz-max:"8"`
+	P []CountedNum `ssz-type:"progressive-list"`
+}
+
+// CountedNumReflection is the twin outside the generation set.
+type CountedNumReflection struct {
+	L []CountedNum `ssz-max:"8"`
+	P []CountedNum `ssz-type:"progressive-list"`
+}
+
+// CountedNumPlain is the twin built from plain uint64 values.
+type CountedNumPlain struct {
+	L []uint64 `ssz-max:"8"`
+	P []uint64 `ssz-type:"progressive-list"`
+}
+
+var CountedNumHolder_Payload = CountedNumHolder{L: []CountedNum{1, 2, 3}, P: []CountedNum{4, 5, 6, 7, 8}}
+
+var CountedNumReflection_Payload = CountedNumReflection{L: []CountedNum{1, 2, 3}, P: []CountedNum{4, 5, 6, 7, 8}}
+
+var CountedNumPlain_Payload = CountedNumPlain{L: []uint64{1, 2, 3}, P: []uint64{4, 5, 6, 7, 8}}
+
+// ViewNum64 is a uint64 whose view hash method puts the value plus one
+// through a uint64 view.
+type ViewNum64 uint64
+
+func (v *ViewNum64) HashTreeRootWithDynView(view any) func(sszutils.DynamicSpecs, sszutils.HashWalker) error {
+	if _, ok := view.(*uint64); !ok {
+		return nil
+	}
+	return func(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+		hh.PutUint64(uint64(*v) + 1)
+		return nil
+	}
+}
+
+// ViewNum64Types_Base lists ViewNum64; its layout lives in the view.
+type ViewNum64Types_Base struct {
+	V []ViewNum64
+}
+
+// ViewNum64Types_View1 is the schema: a packed list of uint64.
+type ViewNum64Types_View1 struct {
+	V []uint64 `ssz-max:"4"`
+}
+
+// ViewNum64Types_Reflection is the twin outside the generation set.
+type ViewNum64Types_Reflection struct {
+	V []ViewNum64
+}
+
+// ViewNum64Types_Plain is the twin built from the values the view method puts.
+type ViewNum64Types_Plain struct {
+	V []uint64 `ssz-max:"4"`
+}
+
+var ViewNum64Types_Payload = ViewNum64Types_Base{V: []ViewNum64{1, 2, 3}}
+
+var ViewNum64Types_Reflection_Payload = ViewNum64Types_Reflection{V: []ViewNum64{1, 2, 3}}
+
+var ViewNum64Types_Plain_Payload = ViewNum64Types_Plain{V: []uint64{2, 3, 4}}
+
 // UnionSpecVariants has a variant whose width comes from a spec value.
 type UnionSpecVariants struct {
 	Bytes [8]byte `ssz-size:"4" dynssz-size:"UNION_WIDTH"`

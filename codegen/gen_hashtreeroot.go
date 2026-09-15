@@ -951,8 +951,10 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 	default:
 		ctx.appendCode(indent, "idx := hh.StartTree(%s)\n", treeTypeExpr(treeType, packed))
 
-		// Bulk uint64 list hashing
-		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0 {
+		// Bulk uint64 list hashing; an element with a hash method of its own is
+		// walked one by one so the method is called.
+		hashMethods := ssztypes.SszCompatFlagDynamicHashRoot | ssztypes.SszCompatFlagDynamicViewHashRoot | ssztypes.SszCompatFlagFastSSZHasher | ssztypes.SszCompatFlagHashTreeRootWith
+		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0 && desc.ElemDesc.SszCompatFlags&hashMethods == 0 {
 			ctx.appendCode(indent, "sszutils.HashUint64Slice(hh, %s)\n", getValueVar(true, ""))
 		} else {
 			// Hash all elements

@@ -145,6 +145,11 @@ types:
     view-only: true
     views:
       - ViewLeafTypes_View1
+  - name: ViewNum64Types_Base
+    output: gen_views.go
+    view-only: true
+    views:
+      - ViewNum64Types_View1
 
   # Recursive shapes. Their cycles are what the depth bound is emitted
   # for, so the depth-method assertions read this file by name.
@@ -200,6 +205,8 @@ types:
   - name: BasicSizedCustomPlain
     output: gen_edgecases.go
   - name: LeafCustomHolder
+    output: gen_edgecases.go
+  - name: CountedNumHolder
     output: gen_edgecases.go
   - name: UnionSpecChild
     output: gen_unions.go

@@ -1393,7 +1393,7 @@ func TestCodegenSizerOnlyChild(t *testing.T) {
 
 // A list or vector of a named basic type with its own SSZ methods must encode,
 // decode and hash like its plain twin.
-func TestCodegenPackedBasicElementsAreNotDelegated(t *testing.T) {
+func TestCodegenPackedBasicElementsHashLikePlain(t *testing.T) {
 	testCodegenPayloadByReflection(t, BasicMethodsHolder_Payload, nil)
 
 	ds := dynssz.NewDynSsz(nil)
@@ -4310,6 +4310,109 @@ func TestCodegenPackedBasicViewElements(t *testing.T) {
 	}
 	if _, err := ds.GetTree(&ViewLeafTypes_Payload, leafView); !errors.Is(err, sszutils.ErrPackedDelegate) {
 		t.Fatalf("generated leaf view tree err = %v, want ErrPackedDelegate", err)
+	}
+}
+
+// A uint64 element with a hash method of its own is hashed through that
+// method in both engines, so the method runs once per element and its error
+// reaches the caller; the roots equal the plain twin's.
+func TestCodegenUint64ElementsWithMethodsAreDelegated(t *testing.T) {
+	generated, ok := any(&CountedNumHolder_Payload).(sszutils.DynamicHashRoot)
+	if !ok {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+	elems := len(CountedNumHolder_Payload.L) + len(CountedNumHolder_Payload.P)
+
+	plainRoot, err := ds.HashTreeRoot(&CountedNumPlain_Payload)
+	if err != nil {
+		t.Fatalf("hash plain twin: %v", err)
+	}
+
+	CountedNumCalls = 0
+	hh := hasher.NewHasher()
+	if err = generated.HashTreeRootWithDyn(ds, hh); err != nil {
+		t.Fatalf("generated hash: %v", err)
+	}
+	genRoot, err := hh.HashRoot()
+	if err != nil {
+		t.Fatalf("generated root: %v", err)
+	}
+	if CountedNumCalls != elems {
+		t.Fatalf("generated hash called the element method %d times, want %d", CountedNumCalls, elems)
+	}
+	if genRoot != plainRoot {
+		t.Fatalf("generated root %x != plain twin root %x", genRoot, plainRoot)
+	}
+
+	CountedNumCalls = 0
+	reflRoot, err := ds.HashTreeRoot(&CountedNumReflection_Payload)
+	if err != nil {
+		t.Fatalf("reflection hash: %v", err)
+	}
+	if CountedNumCalls != elems {
+		t.Fatalf("reflection hash called the element method %d times, want %d", CountedNumCalls, elems)
+	}
+	if reflRoot != plainRoot {
+		t.Fatalf("reflection root %x != plain twin root %x", reflRoot, plainRoot)
+	}
+
+	tree, err := ds.GetTree(&CountedNumHolder_Payload)
+	if err != nil {
+		t.Fatalf("tree holder: %v", err)
+	}
+	if treeRoot := tree.Hash(); !bytes.Equal(treeRoot, plainRoot[:]) {
+		t.Fatalf("tree root %x != root %x", treeRoot, plainRoot)
+	}
+
+	CountedNumErr = errors.New("element refused")
+	defer func() { CountedNumErr = nil }()
+	_, err = ds.HashTreeRoot(&CountedNumHolder_Payload)
+	if !errors.Is(err, CountedNumErr) {
+		t.Fatalf("generated hash err = %v, want the element's error", err)
+	}
+	if !strings.Contains(err.Error(), "L[0]") {
+		t.Fatalf("generated hash err = %v, want the element path", err)
+	}
+	_, err = ds.HashTreeRoot(&CountedNumReflection_Payload)
+	if !errors.Is(err, CountedNumErr) {
+		t.Fatalf("reflection hash err = %v, want the element's error", err)
+	}
+}
+
+// A uint64 view element is hashed through its view method in both engines,
+// so the root commits to the values the method puts.
+func TestCodegenUint64ViewElementsAreDelegated(t *testing.T) {
+	if _, generated := any(&ViewNum64Types_Base{}).(sszutils.DynamicViewHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+	view := dynssz.WithViewDescriptor((*ViewNum64Types_View1)(nil))
+	ds := dynssz.NewDynSsz(nil)
+
+	plainRoot, err := ds.HashTreeRoot(&ViewNum64Types_Plain_Payload)
+	if err != nil {
+		t.Fatalf("hash plain twin: %v", err)
+	}
+	genRoot, err := ds.HashTreeRoot(&ViewNum64Types_Payload, view)
+	if err != nil {
+		t.Fatalf("hash holder: %v", err)
+	}
+	if genRoot != plainRoot {
+		t.Fatalf("generated view root %x != plain twin root %x", genRoot, plainRoot)
+	}
+	reflRoot, err := ds.HashTreeRoot(&ViewNum64Types_Reflection_Payload, view)
+	if err != nil {
+		t.Fatalf("hash reflection twin: %v", err)
+	}
+	if reflRoot != plainRoot {
+		t.Fatalf("reflection view root %x != plain twin root %x", reflRoot, plainRoot)
+	}
+	tree, err := ds.GetTree(&ViewNum64Types_Payload, view)
+	if err != nil {
+		t.Fatalf("tree holder: %v", err)
+	}
+	if treeRoot := tree.Hash(); !bytes.Equal(treeRoot, plainRoot[:]) {
+		t.Fatalf("tree root %x != root %x", treeRoot, plainRoot)
 	}
 }
 
