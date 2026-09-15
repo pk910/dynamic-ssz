@@ -122,7 +122,9 @@ func (c *CompressedMultiproof) Decompress() *Multiproof {
 			if zc < len(c.ZeroLevels) {
 				level = c.ZeroLevels[zc]
 			}
-			p.Hashes[i] = hasher.GetZeroHash(level)
+			// The zero hashes are shared by every tree; the proof owns its
+			// hashes, so the caller may modify them.
+			p.Hashes[i] = bytes.Clone(hasher.GetZeroHash(level))
 			zc++
 		} else {
 			p.Hashes[i] = c.Hashes[i]

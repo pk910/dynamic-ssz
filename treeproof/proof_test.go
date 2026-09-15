@@ -1396,3 +1396,22 @@ func TestVerifyProofRejectsNonPositiveIndex(t *testing.T) {
 		}
 	}
 }
+
+// A decompressed proof owns its hashes: writing to one leaves the shared zero
+// hashes untouched.
+func TestDecompressClonesZeroHashes(t *testing.T) {
+	proof := &Multiproof{
+		Indices: []int{2, 3},
+		Leaves:  [][]byte{make([]byte, 32), make([]byte, 32)},
+		Hashes:  [][]byte{make([]byte, 32)},
+	}
+	decompressed := proof.Compress().Decompress()
+	if len(decompressed.Hashes) != 1 {
+		t.Fatalf("decompressed %d hashes, want 1", len(decompressed.Hashes))
+	}
+	before := bytes.Clone(hasher.GetZeroHash(0))
+	decompressed.Hashes[0][0] ^= 0xff
+	if !bytes.Equal(hasher.GetZeroHash(0), before) {
+		t.Fatal("writing a decompressed proof hash changed the shared zero hash")
+	}
+}
