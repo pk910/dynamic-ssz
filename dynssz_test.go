@@ -7463,3 +7463,122 @@ func TestPackedBasicViewElements(t *testing.T) {
 		t.Fatalf("leaf view tree err = %v, want ErrPackedDelegate", err)
 	}
 }
+
+// unionSpecVariants has a variant whose width comes from a spec value.
+type unionSpecVariants struct {
+	Bytes [8]byte `ssz-size:"4" dynssz-size:"WIDTH"`
+}
+
+type unionSpecChild struct {
+	Choice Union[unionSpecVariants]
+}
+
+type compatUnionSpecChild struct {
+	Choice CompatibleUnion[unionSpecVariants]
+}
+
+// unionSpecLegacyChild carries fastssz methods baked at the default width of 4.
+type unionSpecLegacyChild struct {
+	Choice Union[unionSpecVariants]
+}
+
+func (c *unionSpecLegacyChild) SizeSSZ() int { return 4 + 1 + 4 }
+
+func (c *unionSpecLegacyChild) MarshalSSZ() ([]byte, error) { return c.MarshalSSZTo(nil) }
+
+func (c *unionSpecLegacyChild) MarshalSSZTo(buf []byte) ([]byte, error) {
+	buf = binary.LittleEndian.AppendUint32(buf, 4)
+	buf = append(buf, c.Choice.Variant)
+	data, _ := c.Choice.Data.([8]byte)
+	return append(buf, data[:4]...), nil
+}
+
+func (c *unionSpecLegacyChild) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 9 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	var data [8]byte
+	copy(data[:4], buf[5:9])
+	c.Choice = Union[unionSpecVariants]{Variant: buf[4], Data: data}
+	return nil
+}
+
+type unionSpecParent struct {
+	Child unionSpecLegacyChild
+}
+
+// A union carries the spec-dependence flags of its variants, so a container
+// holding one is spec-dependent and never delegated to methods that bake the
+// default width.
+func TestUnionVariantsPropagateSpecFlags(t *testing.T) {
+	ds := NewDynSsz(map[string]any{"WIDTH": uint64(8)})
+	for _, typ := range []reflect.Type{reflect.TypeOf(unionSpecChild{}), reflect.TypeOf(compatUnionSpecChild{})} {
+		desc, err := ds.typeCache.GetTypeDescriptor(typ, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("%v: %v", typ, err)
+		}
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr == 0 || desc.SszTypeFlags&ssztypes.SszTypeFlagHasDynamicSize == 0 {
+			t.Errorf("%v: flags %v lack the size expression flags of the variant", typ, desc.SszTypeFlags)
+		}
+	}
+
+	parent := &unionSpecParent{Child: unionSpecLegacyChild{Choice: Union[unionSpecVariants]{Variant: 0, Data: [8]byte{1, 2, 3, 4, 5, 6, 7, 8}}}}
+	structural, err := NewDynSsz(map[string]any{"WIDTH": uint64(8)}, WithNoDelegation(), WithNoFastSsz()).MarshalSSZ(parent)
+	if err != nil {
+		t.Fatalf("structural marshal: %v", err)
+	}
+	if len(structural) != 4+4+1+8 {
+		t.Fatalf("structural encoding is %d bytes, want 17", len(structural))
+	}
+	got, err := ds.MarshalSSZ(parent)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Equal(got, structural) {
+		t.Fatalf("delegating marshal %x != structural %x", got, structural)
+	}
+	var decoded unionSpecParent
+	if err := ds.UnmarshalSSZ(&decoded, got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(&decoded, parent) {
+		t.Fatalf("decoded %+v != %+v", decoded, *parent)
+	}
+	if size, err := ds.SizeSSZ(parent); err != nil || size != len(structural) {
+		t.Fatalf("size %d err %v, want %d", size, err, len(structural))
+	}
+}
+
+type unionCycleA struct {
+	U Union[unionCycleAV]
+}
+
+type unionCycleAV struct {
+	B []*unionCycleB `ssz-max:"1"`
+}
+
+type unionCycleB struct {
+	A    *unionCycleA
+	Leaf [8]byte `ssz-size:"4" dynssz-size:"WIDTH"`
+}
+
+// A cycle closed through a union variant gets the spec-dependence flags of
+// the member built last, on every descriptor of the cycle.
+func TestUnionCycleFlagsFixup(t *testing.T) {
+	ds := NewDynSsz(map[string]any{"WIDTH": uint64(8)})
+	descB, err := ds.typeCache.GetTypeDescriptor(reflect.TypeOf(unionCycleB{}), nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descA := descB.ContainerDesc.Fields[0].Type
+	descU := descA.ContainerDesc.Fields[0].Type
+	if descU.SszType != ssztypes.SszUnionType || len(descU.UnionVariants) != 1 {
+		t.Fatalf("union descriptor: type %v, %d variants", descU.SszType, len(descU.UnionVariants))
+	}
+	descAV := descU.UnionVariants[0]
+	for name, desc := range map[string]*ssztypes.TypeDescriptor{"B": descB, "A": descA, "union": descU, "variant": descAV} {
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr == 0 {
+			t.Errorf("%s: flags %v lack the size expression flag", name, desc.SszTypeFlags)
+		}
+	}
+}

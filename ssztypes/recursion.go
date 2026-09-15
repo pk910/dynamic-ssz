@@ -79,9 +79,10 @@ func FixupRecursiveFlags(root *TypeDescriptor) {
 			var derived SszTypeFlag
 
 			// Mirror the build-time propagation rules exactly: containers OR the
-			// flags of every field, single-element collections OR their element's
-			// flags. Unions and large uints propagate nothing from their children
-			// (matching the builders), and leaves have nothing to derive.
+			// flags of every field, unions the flags of every variant,
+			// single-element collections their element's flags. Large uints
+			// propagate nothing from their children, and leaves have nothing
+			// to derive.
 			switch desc.SszType {
 			case SszContainerType, SszProgressiveContainerType:
 				if desc.ContainerDesc != nil {
@@ -96,9 +97,15 @@ func FixupRecursiveFlags(root *TypeDescriptor) {
 				if desc.ElemDesc != nil {
 					derived |= desc.ElemDesc.SszTypeFlags
 				}
+			case SszUnionType, SszCompatibleUnionType:
+				for _, variantDesc := range desc.UnionVariants {
+					if variantDesc != nil {
+						derived |= variantDesc.SszTypeFlags
+					}
+				}
 			default:
-				// Primitives, large uints, unions and custom types derive no flags
-				// from children (matching the builders).
+				// Primitives, large uints and custom types derive no flags from
+				// children.
 			}
 
 			raised := (derived & childDerivedFlags) &^ desc.SszTypeFlags

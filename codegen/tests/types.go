@@ -2079,6 +2079,44 @@ type ViewLeafTypes_View1 struct {
 
 var ViewLeafTypes_Payload = ViewLeafTypes_Base{L: []LeafViewNum{1, 2, 3}}
 
+// UnionSpecVariants has a variant whose width comes from a spec value.
+type UnionSpecVariants struct {
+	Bytes [8]byte `ssz-size:"4" dynssz-size:"UNION_WIDTH"`
+}
+
+// UnionSpecChild and CompatUnionSpecChild hold the union; UnionSpecParent and
+// CompatUnionSpecParent hold the child, so the parent's choice of child method
+// decides whether the width follows the instance's specs.
+type UnionSpecChild struct {
+	Choice dynssz.Union[UnionSpecVariants]
+}
+
+type UnionSpecParent struct {
+	Child UnionSpecChild
+	Tail  uint8
+}
+
+type CompatUnionSpecChild struct {
+	Choice dynssz.CompatibleUnion[UnionSpecVariants]
+}
+
+type CompatUnionSpecParent struct {
+	Child CompatUnionSpecChild
+	Tail  uint8
+}
+
+var UnionSpecParent_Payload = UnionSpecParent{
+	Child: UnionSpecChild{Choice: dynssz.Union[UnionSpecVariants]{Variant: 0, Data: [8]byte{1, 2, 3, 4, 5, 6, 7, 8}}},
+	Tail:  9,
+}
+
+var CompatUnionSpecParent_Payload = CompatUnionSpecParent{
+	Child: CompatUnionSpecChild{Choice: dynssz.CompatibleUnion[UnionSpecVariants]{Variant: 1, Data: [8]byte{1, 2, 3, 4, 5, 6, 7, 8}}},
+	Tail:  9,
+}
+
+var UnionSpec_Specs = map[string]any{"UNION_WIDTH": uint64(8)}
+
 // CoverageTypes6 wraps MarshalerOnlyType as a field to trigger the
 // DynamicMarshaler/DynamicUnmarshaler dispatch branches.
 type CoverageTypes6 struct {

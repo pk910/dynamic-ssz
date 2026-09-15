@@ -4292,3 +4292,62 @@ func TestCodegenPackedBasicViewElements(t *testing.T) {
 		t.Fatalf("generated leaf view tree err = %v, want ErrPackedDelegate", err)
 	}
 }
+
+// A union carries the spec-dependence flags of its variants, so a generated
+// parent reaches a child holding one through the spec-aware methods and the
+// variant width follows the instance's specs, not the global ones.
+func TestCodegenUnionVariantSpecFlags(t *testing.T) {
+	if _, generated := any(&UnionSpecParent{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+
+	testCodegenPayloadByReflection(t, UnionSpecParent_Payload, UnionSpec_Specs)
+	testCodegenPayloadByReflection(t, CompatUnionSpecParent_Payload, UnionSpec_Specs)
+	testCodegenPayloadByReflection(t, UnionSpecParent_Payload, nil)
+	testCodegenPayloadByReflection(t, CompatUnionSpecParent_Payload, nil)
+
+	dynssz.SetGlobalSpecs(map[string]any{"UNION_WIDTH": uint64(4)})
+	defer dynssz.SetGlobalSpecs(nil)
+	ds := dynssz.NewDynSsz(UnionSpec_Specs)
+	structural := dynssz.NewDynSsz(UnionSpec_Specs, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+
+	for _, tc := range []struct {
+		name    string
+		payload any
+	}{
+		{"union", &UnionSpecParent_Payload},
+		{"compatible-union", &CompatUnionSpecParent_Payload},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want, err := structural.MarshalSSZ(tc.payload)
+			if err != nil {
+				t.Fatalf("structural marshal: %v", err)
+			}
+			if len(want) != 4+1+4+1+8 {
+				t.Fatalf("structural encoding is %d bytes, want 18", len(want))
+			}
+			marshaler, ok := tc.payload.(sszutils.DynamicMarshaler)
+			if !ok {
+				t.Fatal("payload has no generated marshaler")
+			}
+			got, err := marshaler.MarshalSSZDyn(ds, nil)
+			if err != nil {
+				t.Fatalf("generated marshal: %v", err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Fatalf("generated %x != structural %x", got, want)
+			}
+			decoded := reflect.New(reflect.TypeOf(tc.payload).Elem()).Interface()
+			unmarshaler, ok := decoded.(sszutils.DynamicUnmarshaler)
+			if !ok {
+				t.Fatal("payload has no generated unmarshaler")
+			}
+			if err := unmarshaler.UnmarshalSSZDyn(ds, got); err != nil {
+				t.Fatalf("generated unmarshal: %v", err)
+			}
+			if !reflect.DeepEqual(decoded, tc.payload) {
+				t.Fatalf("decoded %+v != %+v", decoded, tc.payload)
+			}
+		})
+	}
+}

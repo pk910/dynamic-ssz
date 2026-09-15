@@ -1712,6 +1712,8 @@ func (tc *TypeCache) buildCompatibleUnionDescriptor(desc *TypeDescriptor, runtim
 		}
 
 		desc.UnionVariants[variantIndex] = variantDesc
+		// The flags say whether any nested value depends on a spec value.
+		desc.SszTypeFlags |= variantDesc.SszTypeFlags & childDerivedFlags
 	}
 
 	return nil
@@ -1776,6 +1778,8 @@ func (tc *TypeCache) buildUnionDescriptor(desc *TypeDescriptor, runtimeType, sch
 		}
 
 		desc.UnionVariants[variantIndex] = variantDesc
+		// The flags say whether any nested value depends on a spec value.
+		desc.SszTypeFlags |= variantDesc.SszTypeFlags & childDerivedFlags
 	}
 
 	return nil

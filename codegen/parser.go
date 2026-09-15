@@ -1795,6 +1795,8 @@ func (p *Parser) buildCompatibleUnionDescriptor(desc *ssztypes.TypeDescriptor, d
 		}
 
 		variantInfo[variantIndex] = variantDesc
+		// The flags say whether any nested value depends on a spec value.
+		desc.SszTypeFlags |= variantDesc.SszTypeFlags & (ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr)
 	}
 
 	if len(variantInfo) == 0 {
@@ -1906,6 +1908,8 @@ func (p *Parser) buildUnionDescriptor(desc *ssztypes.TypeDescriptor, dataNamed, 
 		}
 
 		variantInfo[uint8(i)] = variantDesc
+		// The flags say whether any nested value depends on a spec value.
+		desc.SszTypeFlags |= variantDesc.SszTypeFlags & (ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr)
 	}
 
 	desc.UnionVariants = variantInfo

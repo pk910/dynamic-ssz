@@ -195,6 +195,14 @@ types:
     output: gen_edgecases.go
   - name: LeafCustomHolder
     output: gen_edgecases.go
+  - name: UnionSpecChild
+    output: gen_unions.go
+  - name: UnionSpecParent
+    output: gen_unions.go
+  - name: CompatUnionSpecChild
+    output: gen_unions.go
+  - name: CompatUnionSpecParent
+    output: gen_unions.go
   - name: PackedCustomHolder
     output: gen_edgecases.go
   - name: BulkElems
