@@ -2766,17 +2766,14 @@ func TestBuildVectorDescriptorEdgeCases(t *testing.T) {
 		}
 	})
 
-	t.Run("BitvectorStringWithBitsizeHint", func(t *testing.T) {
-		// Test string as bitvector with bitsize hint
+	t.Run("BitvectorStringRejected", func(t *testing.T) {
+		// A bitvector is stored in bytes, never in a string.
 		stringType := types.Typ[types.String]
 		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszBitvectorType}}
-		sizeHint := []ssztypes.SszSizeHint{{Size: 160, Bits: true}} // 160 bits = 20 bytes
-		desc, err := parser.buildTypeDescriptor(stringType, stringType, typeHint, sizeHint, nil)
-		if err != nil {
-			t.Fatalf("Failed to build string bitvector descriptor: %v", err)
-		}
-		if desc.Len != 20 { // 160 bits = 20 bytes
-			t.Errorf("Expected len 20 (160 bits), got %d", desc.Len)
+		sizeHint := []ssztypes.SszSizeHint{{Size: 160, Bits: true}}
+		_, err := parser.buildTypeDescriptor(stringType, stringType, typeHint, sizeHint, nil)
+		if err == nil || !strings.Contains(err.Error(), "got string") {
+			t.Fatalf("err = %v, want the string bitvector rejection", err)
 		}
 	})
 
@@ -3606,6 +3603,32 @@ func TestFrontEndDescriptorHashParity(t *testing.T) {
 			}
 			if goDesc.MinSize != reflDesc.MinSize {
 				t.Errorf("MinSize diverges: go/types %d, reflect %d", goDesc.MinSize, reflDesc.MinSize)
+			}
+		})
+	}
+}
+
+// A bitvector or bitlist is stored in bytes; a string backing, or a wider
+// element, is refused as the reflection type cache refuses it.
+func TestParserRejectsStringAndWideBitfields(t *testing.T) {
+	parser := NewParser()
+
+	for _, tc := range []struct {
+		name     string
+		typ      types.Type
+		typeHint ssztypes.SszType
+		sizeHint []ssztypes.SszSizeHint
+		maxHint  []ssztypes.SszMaxSizeHint
+		expected string
+	}{
+		{"bitvector as string", types.Typ[types.String], ssztypes.SszBitvectorType, []ssztypes.SszSizeHint{{Size: 4, Bits: true}}, nil, "got string"},
+		{"bitvector of uint16", types.NewSlice(types.Typ[types.Uint16]), ssztypes.SszBitvectorType, []ssztypes.SszSizeHint{{Size: 16, Bits: true}}, nil, "got uint16"},
+		{"bitlist as string", types.Typ[types.String], ssztypes.SszBitlistType, nil, []ssztypes.SszMaxSizeHint{{Size: 16}}, "bitlist type can only be represented by slice types"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parser.buildTypeDescriptor(tc.typ, tc.typ, []ssztypes.SszTypeHint{{Type: tc.typeHint}}, tc.sizeHint, tc.maxHint)
+			if err == nil || !strings.Contains(err.Error(), tc.expected) {
+				t.Fatalf("err = %v, want an error containing %q", err, tc.expected)
 			}
 		})
 	}

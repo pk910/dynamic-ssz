@@ -354,6 +354,7 @@ func TestTypeCache_ErrorCases(t *testing.T) {
 			name     string
 			typ      reflect.Type
 			sizeHint []SszSizeHint
+			maxHint  []SszMaxSizeHint
 			typeHint []SszTypeHint
 			expected string
 		}{
@@ -383,11 +384,25 @@ func TestTypeCache_ErrorCases(t *testing.T) {
 				sizeHint: []SszSizeHint{{Size: 4}},
 				expected: "bitvector ssz type can only be represented by byte slices or arrays",
 			},
+			{
+				name:     "bitvector as string",
+				typ:      reflect.TypeOf(""),
+				typeHint: []SszTypeHint{{Type: SszBitvectorType}},
+				sizeHint: []SszSizeHint{{Size: 4, Bits: true}},
+				expected: "bitvector ssz type can only be represented by byte slices or arrays, got string",
+			},
+			{
+				name:     "bitlist as string",
+				typ:      reflect.TypeOf(""),
+				typeHint: []SszTypeHint{{Type: SszBitlistType}},
+				maxHint:  []SszMaxSizeHint{{Size: 16}},
+				expected: "bitlist ssz type can only be represented by byte slices",
+			},
 		}
 
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				_, err := cache.GetTypeDescriptor(tt.typ, tt.sizeHint, nil, tt.typeHint)
+				_, err := cache.GetTypeDescriptor(tt.typ, tt.sizeHint, tt.maxHint, tt.typeHint)
 				if err == nil {
 					t.Errorf("Expected error for %s", tt.name)
 					return

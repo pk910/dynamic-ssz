@@ -2025,6 +2025,10 @@ func (tc *TypeCache) buildVectorDescriptor(desc *TypeDescriptor, runtimeType, sc
 	desc.ElemDesc = elemDesc
 	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (SszTypeFlagHasDynamicSize | SszTypeFlagHasDynamicMax | SszTypeFlagHasSizeExpr | SszTypeFlagHasMaxExpr)
 
+	// A bitvector is a sequence of bits stored in bytes; a string holds text.
+	if desc.SszType == SszBitvectorType && desc.GoTypeFlags&GoTypeFlagIsString != 0 {
+		return sszutils.NewSszError(sszutils.ErrTypeMismatch, "bitvector ssz type can only be represented by byte slices or arrays, got string")
+	}
 	if desc.SszType == SszBitvectorType && desc.ElemDesc.Kind != reflect.Uint8 {
 		return sszutils.NewSszErrorf(sszutils.ErrTypeMismatch, "bitvector ssz type can only be represented by byte slices or arrays, got %v", desc.ElemDesc.Kind.String())
 	}

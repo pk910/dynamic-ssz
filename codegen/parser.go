@@ -1525,6 +1525,15 @@ func (p *Parser) buildVectorDescriptor(desc *ssztypes.TypeDescriptor, dataType, 
 	desc.ElemDesc = elemDesc
 	desc.Len = length
 
+	// A bitvector is a sequence of bits stored in bytes; a string holds text.
+	// The reflection type cache applies the same rule.
+	if desc.SszType == ssztypes.SszBitvectorType && desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
+		return fmt.Errorf("bitvector ssz type can only be represented by byte slices or arrays, got string")
+	}
+	if desc.SszType == ssztypes.SszBitvectorType && elemDesc.Kind != reflect.Uint8 {
+		return fmt.Errorf("bitvector ssz type can only be represented by byte slices or arrays, got %v", elemDesc.Kind)
+	}
+
 	// Per the SSZ spec, Vector[type, 0] and Bitvector[0] are illegal: a vector
 	// must have a length greater than zero (e.g. a [0]T array). A vector whose
 	// length is supplied purely by a runtime dynssz-size expression legitimately
