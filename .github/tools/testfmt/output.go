@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -27,6 +28,11 @@ type printer struct {
 	color       bool
 	nameWidth   int
 	annotations int
+
+	// Package progress across every run: the bar is global, the rest of a
+	// line is per run.
+	done  int
+	total int
 }
 
 func newPrinter(w io.Writer, github, color bool, names []string) *printer {
@@ -51,6 +57,34 @@ func (p *printer) block(fn func(b *strings.Builder)) {
 	if b.Len() > 0 {
 		_, _ = io.WriteString(p.w, b.String())
 	}
+}
+
+// addTotal registers a run's package count in the global progress.
+func (p *printer) addTotal(n int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.total += n
+}
+
+// advance counts one more completed package in the global progress.
+func (p *printer) advance() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.done++
+}
+
+// progress renders the global bar and counter that lead a package line.
+// Must be called from inside block.
+func (p *printer) progress() string {
+	if p.total <= 0 {
+		return fmt.Sprintf("#%d", p.done)
+	}
+
+	w := len(strconv.Itoa(p.total))
+
+	return fmt.Sprintf("%s %*d/%d", progressBar(p.done, p.total), w, p.done, p.total)
 }
 
 // prefix returns the padded "[NAME] " tag that leads every line of a run.

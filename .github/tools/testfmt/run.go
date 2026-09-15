@@ -153,8 +153,14 @@ func (r *run) pkgDir(pkg string) string {
 	return path.Join(r.cfg.workDir, rel)
 }
 
-// execute runs the variant to completion. Heavy work happens here, not in
-// the constructor.
+// prepare resolves the package list so the global progress bar knows its
+// total before any run starts.
+func (r *run) prepare(ctx context.Context) {
+	r.countPackages(ctx)
+	r.out.addTotal(r.total)
+}
+
+// execute runs the variant to completion.
 func (r *run) execute(ctx context.Context) error {
 	if r.cfg.logDir != "" {
 		f, err := os.Create(path.Join(r.cfg.logDir, r.spec.name+".log"))
@@ -168,8 +174,6 @@ func (r *run) execute(ctx context.Context) error {
 
 		defer func() { _ = r.log.Flush() }()
 	}
-
-	r.countPackages(ctx)
 
 	cmd := exec.CommandContext(ctx, r.spec.argv[0], r.spec.argv[1:]...) //nolint:gosec // the command line is the operator's own -cmd flag
 	cmd.Env = append(os.Environ(), r.spec.env...)
@@ -468,6 +472,7 @@ func (r *run) pkgDone(p *pkgState, ev *testEvent) {
 
 	p.done = true
 	r.donePkgs++
+	r.out.advance()
 
 	if ev.Action == actionSkip {
 		// [no test files]
@@ -501,8 +506,8 @@ func (r *run) writePkgBlock(b *strings.Builder, p *pkgState, ev *testEvent) {
 		summary = "build failed"
 	}
 
-	title := fmt.Sprintf("%s%s %s %s %-*s %7s %s",
-		r.prefix(), r.counter(), progressBar(r.donePkgs, r.total), r.mark(ev.Action),
+	title := fmt.Sprintf("%s %s%s %-*s %7s %s",
+		r.out.progress(), r.prefix(), r.mark(ev.Action),
 		r.nameWidth, r.displayName(p.path), fmtSeconds(ev.Elapsed), summary)
 	title = strings.TrimRight(title, " ")
 
@@ -696,16 +701,6 @@ func (r *run) releaseLines(p *pkgState, top string) {
 	}
 
 	p.lines = kept
-}
-
-func (r *run) counter() string {
-	if r.total > 0 {
-		w := len(strconv.Itoa(r.total))
-
-		return fmt.Sprintf("%*d/%d", w, r.donePkgs, r.total)
-	}
-
-	return fmt.Sprintf("#%d", r.donePkgs)
 }
 
 func counts(passed, skipped, failed int) string {

@@ -85,6 +85,18 @@ func realMain() int {
 
 		wg.Add(1)
 
+		go func() {
+			defer wg.Done()
+
+			r.prepare(ctx)
+		}()
+	}
+
+	wg.Wait()
+
+	for i, r := range runs {
+		wg.Add(1)
+
 		go func(i int, r *run) {
 			defer wg.Done()
 

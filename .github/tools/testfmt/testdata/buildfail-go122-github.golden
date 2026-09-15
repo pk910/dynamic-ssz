@@ -1,15 +1,15 @@
 [NORMAL] # example.com/fx/delta [example.com/fx/delta.test]
 [NORMAL] delta/delta_test.go:5:37: x declared and not used
 [NORMAL] delta/delta_test.go:5:45: cannot use "string" (untyped string constant) as int value in variable declaration
-[NORMAL] 1/2 ██████████░░░░░░░░░░ ✗ delta                               0.0s build failed
+██████████░░░░░░░░░░ 1/2 [NORMAL] ✗ delta                               0.0s build failed
 [NORMAL] FAIL	example.com/fx/delta [build failed]
-[NORMAL] 2/2 ████████████████████ ✓ gamma                               0.0s     3 passed    1 skipped
+████████████████████ 2/2 [NORMAL] ✓ gamma                               0.0s     3 passed    1 skipped
 [NORMAL] ✗ FAILED  2 packages · 3 passed · 1 skipped · 0 failed · 0.1s · exit status 1 · 3 lines outside the event stream
 [NORMAL] ── verbose output, one collapsed group per package ──
-::group::[NORMAL] 1/2 ██████████░░░░░░░░░░ ✗ delta                               0.0s build failed
+::group::██████████░░░░░░░░░░ 1/2 [NORMAL] ✗ delta                               0.0s build failed
 [NORMAL] FAIL	example.com/fx/delta [build failed]
 ::endgroup::
-::group::[NORMAL] 2/2 ████████████████████ ✓ gamma                               0.0s     3 passed    1 skipped
+::group::████████████████████ 2/2 [NORMAL] ✓ gamma                               0.0s     3 passed    1 skipped
 [NORMAL]     gamma_test.go:5: a
 [NORMAL] --- PASS: TestA (0.00s)
 [NORMAL] --- PASS: TestB/x (0.00s)

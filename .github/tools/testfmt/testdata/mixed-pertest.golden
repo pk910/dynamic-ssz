@@ -8,7 +8,7 @@
 ::error file=sub/alpha/alpha_test.go,line=18,title=TestSubs/case-1 [NORMAL]::value mismatch: got 1, want 0
 [NORMAL] ✓ TestPrints                          0.0s
 [NORMAL] ✓ TestFine                            0.0s
-[NORMAL] 1/4 █████░░░░░░░░░░░░░░░ ✗ alpha                               0.0s     4 passed    2 skipped    2 FAILED
+█████░░░░░░░░░░░░░░░ 1/4 [NORMAL] ✗ alpha                               0.0s     4 passed    2 skipped    2 FAILED
 [NORMAL] ✗ TestPanics                          0.0s
 [NORMAL] --- FAIL: TestPanics (0.00s)
 [NORMAL] panic: assignment to entry in nil map [recovered, repanicked]
@@ -27,10 +27,10 @@
 [NORMAL] created by testing.(*T).Run in goroutine 1
 [NORMAL] 	/usr/local/go/src/testing/testing.go:2258 +0x4d4
 ::error file=sub/beta/beta_test.go,line=9,title=TestPanics [NORMAL]::panic: assignment to entry in nil map [recovered, repanicked]
-[NORMAL] 2/4 ██████████░░░░░░░░░░ ✗ beta                                0.0s     1 passed    1 FAILED
+██████████░░░░░░░░░░ 2/4 [NORMAL] ✗ beta                                0.0s     1 passed    1 FAILED
 [NORMAL] ✓ TestA                               0.0s
 [NORMAL] ✓ TestB                               0.0s     1 passed    1 skipped subtests
-[NORMAL] 4/4 ████████████████████ ✓ gamma                               0.0s     3 passed    1 skipped
+████████████████████ 4/4 [NORMAL] ✓ gamma                               0.0s     3 passed    1 skipped
 [NORMAL] ✗ FAILED  3 packages (+1 without tests) · 8 passed · 3 skipped · 3 failed · 0.0s · exit status 1
 [NORMAL] ── verbose output, one collapsed group per top-level test ──
 ::group::[NORMAL] ✓ TestOne                             0.0s
@@ -59,7 +59,7 @@
 ::group::[NORMAL] ✓ TestFine                            0.0s
 [NORMAL] --- PASS: TestFine (0.00s)
 ::endgroup::
-::group::[NORMAL] 1/4 █████░░░░░░░░░░░░░░░ ✗ alpha                               0.0s     4 passed    2 skipped    2 FAILED
+::group::█████░░░░░░░░░░░░░░░ 1/4 [NORMAL] ✗ alpha                               0.0s     4 passed    2 skipped    2 FAILED
 [NORMAL] FAIL
 [NORMAL] FAIL	example.com/fx/alpha	0.002s
 ::endgroup::
@@ -81,7 +81,7 @@
 [NORMAL] created by testing.(*T).Run in goroutine 1
 [NORMAL] 	/usr/local/go/src/testing/testing.go:2258 +0x4d4
 ::endgroup::
-::group::[NORMAL] 2/4 ██████████░░░░░░░░░░ ✗ beta                                0.0s     1 passed    1 FAILED
+::group::██████████░░░░░░░░░░ 2/4 [NORMAL] ✗ beta                                0.0s     1 passed    1 FAILED
 [NORMAL] FAIL	example.com/fx/beta	0.004s
 ::endgroup::
 ::group::[NORMAL] ✓ TestA                               0.0s
@@ -94,7 +94,7 @@
 [NORMAL] --- SKIP: TestB/y (0.00s)
 [NORMAL] --- PASS: TestB (0.00s)
 ::endgroup::
-::group::[NORMAL] 4/4 ████████████████████ ✓ gamma                               0.0s     3 passed    1 skipped
+::group::████████████████████ 4/4 [NORMAL] ✓ gamma                               0.0s     3 passed    1 skipped
 [NORMAL] PASS
 [NORMAL] ok  	example.com/fx/gamma	0.002s
 ::endgroup::

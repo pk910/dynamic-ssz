@@ -39,6 +39,7 @@ func replay(t *testing.T, tc *fixtureCase) (string, *run) {
 
 	r := newRun(&runSpec{name: "NORMAL"}, cfg, out)
 	r.total = tc.total
+	out.addTotal(tc.total)
 
 	r.consume(strings.NewReader(string(data)))
 	r.finish(tc.exitCode, nil)
