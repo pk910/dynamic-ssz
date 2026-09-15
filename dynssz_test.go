@@ -7582,3 +7582,50 @@ func TestUnionCycleFlagsFixup(t *testing.T) {
 		}
 	}
 }
+
+type recRaceA struct {
+	B []recRaceB `ssz-max:"1"`
+	C []recRaceC `ssz-max:"1"`
+}
+
+type recRaceB struct {
+	A []recRaceA `ssz-max:"1"`
+}
+
+type recRaceC struct {
+	B []recRaceB `ssz-max:"1"`
+}
+
+type recRaceX struct {
+	C recRaceC
+	X []recRaceX `ssz-max:"1"`
+}
+
+// A published descriptor is never written by a later build: a walker may read
+// it lock-free while another type that reaches it is built.
+func TestPublishedDescriptorUnchangedByLaterBuild(t *testing.T) {
+	ds := NewDynSsz(nil)
+	if _, err := ds.typeCache.GetTypeDescriptor(reflect.TypeOf(recRaceA{}), nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	descC, err := ds.typeCache.GetTypeDescriptor(reflect.TypeOf(recRaceC{}), nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := reflection.NewReflectionCtx(ds, nil, false, true, true, 1024)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		value := reflect.ValueOf(recRaceC{})
+		for range 20000 {
+			if _, err := ctx.SizeSSZ(descC, value); err != nil {
+				return
+			}
+		}
+	}()
+	if _, err := ds.typeCache.GetTypeDescriptor(reflect.TypeOf(recRaceX{}), nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+}

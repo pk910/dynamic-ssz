@@ -3035,6 +3035,26 @@ func TestCodegenRecursionDepthBound(t *testing.T) {
 			}
 		})
 
+		t.Run("overlapping_cycles", func(t *testing.T) {
+			// Every member of two cycles that share a type charges a level in
+			// both engines, so a trip A -> C -> B -> A costs three.
+			deepVal := func(n int) *RecursiveOverlapA {
+				cur := &RecursiveOverlapA{}
+				for range n {
+					cur = &RecursiveOverlapA{C: []RecursiveOverlapC{{B: []RecursiveOverlapB{{A: []RecursiveOverlapA{*cur}}}}}}
+				}
+				return cur
+			}
+			r := firstFail(func(n int) bool { _, err := refl.MarshalSSZ(deepVal(n)); return depthErr(err) })
+			c := firstFail(func(n int) bool { _, err := ds.MarshalSSZ(deepVal(n)); return depthErr(err) })
+			if r != c {
+				t.Fatalf("first rejected chain: reflection %d, codegen %d", r, c)
+			}
+			if r == 0 || r > 4096/3+1 {
+				t.Fatalf("first rejected chain %d does not charge every member", r)
+			}
+		})
+
 		t.Run("value_root_walk", func(t *testing.T) {
 			// The same value walked from a value root instead of a pointer root
 			// is charged identically: the outermost value costs nothing in

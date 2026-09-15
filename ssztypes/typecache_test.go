@@ -5670,6 +5670,76 @@ func TestRecursionMemberMarking(t *testing.T) {
 		}
 	})
 
+	t.Run("overlapping_cycles", func(t *testing.T) {
+		// A is on two cycles, A-B and A-C-B, which share B. Every member of
+		// both is flagged from the first build that reaches them.
+		desc, err := cache.GetTypeDescriptor(reflect.TypeFor[recOverlapA](), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		descB := desc.ContainerDesc.Fields[0].Type.ElemDesc
+		descC := desc.ContainerDesc.Fields[1].Type.ElemDesc
+		for name, d := range map[string]*TypeDescriptor{"A": desc, "B": descB, "C": descC, "A.B": desc.ContainerDesc.Fields[0].Type, "A.C": desc.ContainerDesc.Fields[1].Type, "C.B": descC.ContainerDesc.Fields[0].Type} {
+			if !flagged(d) {
+				t.Errorf("%s must be flagged", name)
+			}
+		}
+
+		// A later build through the shared descriptors leaves them as they are.
+		before := descC.SszTypeFlags
+		if _, err := cache.GetTypeDescriptor(reflect.TypeFor[recOverlapX](), nil, nil, nil); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if descC.SszTypeFlags != before {
+			t.Errorf("building X changed the published C flags %v -> %v", before, descC.SszTypeFlags)
+		}
+	})
+
+	t.Run("build_order_independent", func(t *testing.T) {
+		// The flags of every shared type are the same whichever type is built
+		// first.
+		roots := []reflect.Type{reflect.TypeFor[recOverlapA](), reflect.TypeFor[recOverlapB](), reflect.TypeFor[recOverlapC](), reflect.TypeFor[recOverlapX]()}
+		shared := roots[:3]
+		var want []SszTypeFlag
+		for _, root := range roots {
+			fresh := NewTypeCache(&dummyDynamicSpecs{})
+			if _, err := fresh.GetTypeDescriptor(root, nil, nil, nil); err != nil {
+				t.Fatalf("%v: %v", root, err)
+			}
+			got := make([]SszTypeFlag, len(shared))
+			for i, typ := range shared {
+				d, err := fresh.GetTypeDescriptor(typ, nil, nil, nil)
+				if err != nil {
+					t.Fatalf("%v: %v", typ, err)
+				}
+				got[i] = d.SszTypeFlags
+			}
+			if want == nil {
+				want = got
+				continue
+			}
+			for i := range shared {
+				if got[i] != want[i] {
+					t.Errorf("root %v: %v flags %v, want %v as built from %v", root, shared[i], got[i], want[i], roots[0])
+				}
+			}
+		}
+	})
+
+	t.Run("self_edge", func(t *testing.T) {
+		// A list whose element is the list itself is a one-node cycle.
+		desc, err := cache.GetTypeDescriptor(reflect.TypeFor[recSelfList](), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if desc.ElemDesc != desc {
+			t.Fatalf("the element descriptor is not the list itself")
+		}
+		if !flagged(desc) {
+			t.Error("a descriptor with an edge to itself must be flagged")
+		}
+	})
+
 	t.Run("acyclic_graph_untouched", func(t *testing.T) {
 		desc, err := cache.GetTypeDescriptor(reflect.TypeFor[recAcyclicHolder](), nil, nil, nil)
 		if err != nil {
@@ -5730,6 +5800,28 @@ type recCycleThroughFixed struct {
 	Value uint64
 	Next  *recCycleThroughFixed
 }
+
+type recOverlapA struct {
+	B []recOverlapB `ssz-max:"1"`
+	C []recOverlapC `ssz-max:"1"`
+}
+
+type recOverlapB struct {
+	A []recOverlapA `ssz-max:"1"`
+}
+
+type recOverlapC struct {
+	B []recOverlapB `ssz-max:"1"`
+}
+
+type recOverlapX struct {
+	C recOverlapC
+	X []recOverlapX `ssz-max:"1"`
+}
+
+type recSelfList []recSelfList
+
+var _ = sszutils.Annotate[recSelfList](`ssz-max:"1"`)
 
 type recMutualFixedA struct {
 	Value uint64

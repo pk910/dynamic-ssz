@@ -2117,6 +2117,26 @@ var CompatUnionSpecParent_Payload = CompatUnionSpecParent{
 
 var UnionSpec_Specs = map[string]any{"UNION_WIDTH": uint64(8)}
 
+// RecursiveOverlapA lies on two cycles that share RecursiveOverlapB, so every
+// one of the three types is a cycle member and charges a nesting level.
+type RecursiveOverlapA struct {
+	B []RecursiveOverlapB `ssz-max:"1"`
+	C []RecursiveOverlapC `ssz-max:"1"`
+}
+
+type RecursiveOverlapB struct {
+	A []RecursiveOverlapA `ssz-max:"1"`
+}
+
+type RecursiveOverlapC struct {
+	B []RecursiveOverlapB `ssz-max:"1"`
+}
+
+var RecursiveOverlapA_Payload = RecursiveOverlapA{
+	B: []RecursiveOverlapB{{A: []RecursiveOverlapA{{}}}},
+	C: []RecursiveOverlapC{{B: []RecursiveOverlapB{{A: []RecursiveOverlapA{{C: []RecursiveOverlapC{{}}}}}}}},
+}
+
 // CoverageTypes6 wraps MarshalerOnlyType as a field to trigger the
 // DynamicMarshaler/DynamicUnmarshaler dispatch branches.
 type CoverageTypes6 struct {
