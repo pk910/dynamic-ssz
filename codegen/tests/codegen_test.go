@@ -671,11 +671,15 @@ func TestCodegenMixedModes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal MixedOpaqueHolder: %v", err)
 	}
-	want, err := MixedOpaqueHolder_Payload.N.MarshalSSZDyn(nil, nil)
+	// The expected bytes are built from a local copy: the s390x assembler
+	// rejects a byte-reversing load addressed straight at a package-level
+	// variable's field.
+	opaque := MixedOpaqueHolder_Payload
+	want, err := opaque.N.MarshalSSZDyn(nil, nil)
 	if err != nil {
 		t.Fatalf("child MarshalSSZDyn: %v", err)
 	}
-	want = binary.LittleEndian.AppendUint64(want, MixedOpaqueHolder_Payload.A)
+	want = binary.LittleEndian.AppendUint64(want, opaque.A)
 	if !bytes.Equal(got, want) {
 		t.Fatalf("MixedOpaqueHolder = %x, want %x", got, want)
 	}
@@ -683,13 +687,13 @@ func TestCodegenMixedModes(t *testing.T) {
 	if err = genDs.UnmarshalSSZ(&back, got); err != nil {
 		t.Fatalf("unmarshal MixedOpaqueHolder: %v", err)
 	}
-	if back.N.V != MixedOpaqueHolder_Payload.N.V || back.A != MixedOpaqueHolder_Payload.A {
+	if back.N.V != opaque.N.V || back.A != opaque.A {
 		t.Fatalf("round trip = %+v", back)
 	}
 	// Two leaves: the delegated child's root and the uint64 chunk.
 	var chunks [64]byte
-	binary.LittleEndian.PutUint64(chunks[0:], MixedOpaqueHolder_Payload.N.V)
-	binary.LittleEndian.PutUint64(chunks[32:], MixedOpaqueHolder_Payload.A)
+	binary.LittleEndian.PutUint64(chunks[0:], opaque.N.V)
+	binary.LittleEndian.PutUint64(chunks[32:], opaque.A)
 	wantRoot := sha256.Sum256(chunks[:])
 	root, err := genDs.HashTreeRoot(&MixedOpaqueHolder_Payload)
 	if err != nil {
