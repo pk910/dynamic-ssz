@@ -1422,7 +1422,70 @@ type delegatedViewNilSchema struct {
 	Bad struct{}
 }
 
+// cycleDelegatedA delegates every operation to its own methods and lies on a
+// cycle with cycleDelegatedB, which has no methods. cycleDelegatedOff delegates
+// the same way but lies on no cycle. cycleDelegatedOpaque lies on a cycle with
+// cycleOpaqueC but cannot be traversed.
+type cycleDelegatedA struct {
+	V  uint64
+	Bs []cycleDelegatedB `ssz-max:"4"`
+}
+
+func (cycleDelegatedA) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+func (cycleDelegatedA) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+func (cycleDelegatedA) SizeSSZDyn(_ sszutils.DynamicSpecs) int                  { return 12 }
+func (cycleDelegatedA) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+type cycleDelegatedB struct {
+	W  uint32
+	As []cycleDelegatedA `ssz-max:"4"`
+}
+
+type cycleDelegatedOff struct {
+	V uint64
+}
+
+func (cycleDelegatedOff) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+func (cycleDelegatedOff) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+func (cycleDelegatedOff) SizeSSZDyn(_ sszutils.DynamicSpecs) int                  { return 8 }
+func (cycleDelegatedOff) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+type cycleDelegatedOffHolder struct {
+	D cycleDelegatedOff
+	N uint64
+}
+
+type cycleDelegatedOpaque struct {
+	Bad struct{}
+	Cs  []cycleOpaqueC `ssz-max:"4"`
+}
+
+func (cycleDelegatedOpaque) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+func (cycleDelegatedOpaque) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+func (cycleDelegatedOpaque) SizeSSZDyn(_ sszutils.DynamicSpecs) int                  { return 4 }
+func (cycleDelegatedOpaque) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+type cycleOpaqueC struct {
+	W  uint32
+	Os []cycleDelegatedOpaque `ssz-max:"4"`
+}
+
 var (
+	_ = sszutils.Annotate[cycleDelegatedA](`ssz-static:"false"`)
+	_ = sszutils.Annotate[cycleDelegatedOff](`ssz-static:"true"`)
+	_ = sszutils.Annotate[cycleDelegatedOpaque](`ssz-static:"false"`)
 	_ = sszutils.Annotate[delegatedFixedSize](`ssz-static:"true"`)
 	_ = sszutils.Annotate[delegatedVarSize](`ssz-static:"false"`)
 	_ = sszutils.Annotate[delegatedSpecStatic](`ssz-static:"true"`)
@@ -1436,6 +1499,45 @@ var (
 // A fully-delegated type that declares ssz-static must build a shallow descriptor:
 // no subtree recursion (so a structurally-invalid innard is never reached) and
 // size-ness from the annotation, with the fixed size read from the type's sizer.
+// A fully-delegated type is built shallow unless its structure closes a cycle
+// with a build in flight: then it is traversed, so both members carry the
+// recursion flag and the walkers count the cycle's levels. An opaque partner
+// on a cycle keeps the shallow descriptor.
+func TestTypeCache_DelegatedCycleMemberIsTraversed(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+
+	descB, err := cache.GetTypeDescriptor(reflect.TypeOf(cycleDelegatedB{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("build B: %v", err)
+	}
+	descA := descB.ContainerDesc.Fields[1].Type.ElemDesc
+	if descA.ContainerDesc == nil {
+		t.Fatal("the delegated cycle member was built shallow; its subtree is missing")
+	}
+	if descA.SszTypeFlags&SszTypeFlagRecursionMember == 0 || descB.SszTypeFlags&SszTypeFlagRecursionMember == 0 {
+		t.Fatalf("recursion flags A=%v B=%v, want both set", descA.SszTypeFlags&SszTypeFlagRecursionMember != 0, descB.SszTypeFlags&SszTypeFlagRecursionMember != 0)
+	}
+	if descA.SszCompatFlags&SszCompatFlagDynamicMarshaler == 0 {
+		t.Fatal("the traversed cycle member lost its delegation flags")
+	}
+
+	holder, err := cache.GetTypeDescriptor(reflect.TypeOf(cycleDelegatedOffHolder{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("build holder: %v", err)
+	}
+	if off := holder.ContainerDesc.Fields[0].Type; off.ContainerDesc != nil {
+		t.Fatal("a delegated type off any cycle was traversed")
+	}
+
+	descC, err := cache.GetTypeDescriptor(reflect.TypeOf(cycleOpaqueC{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("build C with an opaque cycle partner: %v", err)
+	}
+	if opaque := descC.ContainerDesc.Fields[1].Type.ElemDesc; opaque.ContainerDesc != nil || opaque.SszCompatFlags&SszCompatFlagDynamicMarshaler == 0 {
+		t.Fatal("an opaque cycle partner did not fall back to its shallow descriptor")
+	}
+}
+
 func TestTypeCache_DelegatedShallowBuild(t *testing.T) {
 	cache := NewTypeCache(&dummyDynamicSpecs{})
 

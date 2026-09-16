@@ -21,6 +21,7 @@ import (
 	"github.com/pk910/dynamic-ssz/codegen"
 	"github.com/pk910/dynamic-ssz/codegen/tests/views"
 	"github.com/pk910/dynamic-ssz/hasher"
+	"github.com/pk910/dynamic-ssz/ssztypes"
 	"github.com/pk910/dynamic-ssz/sszutils"
 
 	"golang.org/x/tools/go/packages"
@@ -4640,6 +4641,31 @@ func TestCodegenCycleAcrossBatches(t *testing.T) {
 		if err = gen.UnmarshalSSZ(chain(0), data); err == nil {
 			t.Fatalf("root %s: generated unmarshal accepted a chain past the bound", rootName)
 		}
+	}
+}
+
+// The second batch of a cycle sees the first batch's member through its
+// generated methods and still marks the cycle: the type cache traverses the
+// delegated partner, and the generated code of the later member carries its
+// own depth twins.
+func TestCodegenCycleAcrossBatchesMarksBothMembers(t *testing.T) {
+	if _, generated := any(&CycleBatchB{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	descB, err := ssztypes.NewTypeCache(nil).GetTypeDescriptor(reflect.TypeOf(CycleBatchB{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("build CycleBatchB: %v", err)
+	}
+	descA := descB.ContainerDesc.Fields[1].Type.ElemDesc
+	if descA.ContainerDesc == nil || descA.SszTypeFlags&ssztypes.SszTypeFlagRecursionMember == 0 || descB.SszTypeFlags&ssztypes.SszTypeFlagRecursionMember == 0 {
+		t.Fatalf("delegated partner traversed=%v, recursion flags A=%v B=%v", descA.ContainerDesc != nil, descA.SszTypeFlags&ssztypes.SszTypeFlagRecursionMember != 0, descB.SszTypeFlags&ssztypes.SszTypeFlagRecursionMember != 0)
+	}
+	generated, err := os.ReadFile("gen_extended.go")
+	if err != nil {
+		t.Fatalf("read the second batch's output: %v", err)
+	}
+	if !strings.Contains(string(generated), "func (t *CycleBatchB) marshalSSZDynAtDepth(") {
+		t.Fatal("the second batch's cycle member carries no depth twin")
 	}
 }
 
