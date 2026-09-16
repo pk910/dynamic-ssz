@@ -1873,6 +1873,26 @@ func TestCustomTypesAndErrors(t *testing.T) {
 		}
 	})
 
+	t.Run("CustomTypeWithDynamicMethodsOnly", func(t *testing.T) {
+		uint32Type := types.Typ[types.Uint32]
+		parser.CompatFlags[uint32Type.String()] = ssztypes.SszCompatFlagDynamicMarshaler | ssztypes.SszCompatFlagDynamicUnmarshaler |
+			ssztypes.SszCompatFlagDynamicSizer | ssztypes.SszCompatFlagDynamicHashRoot
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszCustomType}}
+		if _, err := parser.buildTypeDescriptor(uint32Type, uint32Type, typeHint, nil, nil); err != nil {
+			t.Fatalf("a custom type served by its dynssz methods must be accepted: %v", err)
+		}
+	})
+
+	t.Run("CustomTypeMissingHasher", func(t *testing.T) {
+		int64Type := types.Typ[types.Int64]
+		parser.CompatFlags[int64Type.String()] = ssztypes.SszCompatFlagFastSSZMarshaler
+		typeHint := []ssztypes.SszTypeHint{{Type: ssztypes.SszCustomType}}
+		_, err := parser.buildTypeDescriptor(int64Type, int64Type, typeHint, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "missing a fastssz or dynssz hasher") {
+			t.Fatalf("custom type without a hasher: err = %v, want the missing hasher named", err)
+		}
+	})
+
 	t.Run("CustomTypeWithSizeHint", func(t *testing.T) {
 		// Mock a type with FastSSZ compatibility for testing
 		uint64Type := types.Typ[types.Uint64]

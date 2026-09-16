@@ -448,6 +448,14 @@ For streaming decoding:
    - Limits are pushed to constrain field boundaries
    - Data is read in order within limit boundaries
 
+### Nested types
+
+A nested type with a registered static surface and no spec expressions is
+read from or written to the stream buffer as one region and handled through
+its static method. Otherwise a nested type with its own streaming methods is
+encoded and decoded through them, so its bytes pass straight through the
+stream buffer. See [Method Delegation](delegation.md) for the complete order.
+
 ### Seek vs Non-Seek Mode
 
 The streaming system adapts based on encoder/decoder capabilities:

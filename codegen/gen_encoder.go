@@ -497,6 +497,16 @@ func (ctx *encoderContext) marshalOptional(desc *ssztypes.TypeDescriptor, varNam
 // nil → empty list (no bytes); non-nil → single-element list. When the element
 // is dynamic, a 4-byte offset (=4) precedes the element bytes.
 func (ctx *encoderContext) marshalOptionalList(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
+	// A delegate's sizer is only known at run time; a present element of
+	// zero size would be indistinguishable from an absent one.
+	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 &&
+		desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+		sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(desc.ElemDesc)
+		if err != nil {
+			return err
+		}
+		ctx.appendCode(indent, "if %s == 0 {\n\treturn %s\n}\n", sizeVar, typePath.getErrorWith(`sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "optional-list element size resolved to 0")`))
+	}
 	ctx.appendCode(indent, "if %s != nil {\n", varName)
 	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 		ctx.appendCode(indent+1, "enc.EncodeOffset(4)\n")
@@ -581,7 +591,8 @@ func (ctx *encoderContext) marshalContainer(desc *ssztypes.TypeDescriptor, varNa
 			ctx.appendCode(indent+1, "}\n")
 			ctx.appendCode(indent+1, "enc.EncodeOffset(uint32(dynoff))\n")
 			sizeFnCall := ctx.getSizeFnCall(field.Type, fmt.Sprintf("%s.%s", varName, field.Name))
-			ctx.appendCode(indent+1, "fieldSize%d := sszutils.Max(%s, 0)\n", idx, sizeFnCall)
+			ctx.appendCode(indent+1, "fieldSize%d := %s\n", idx, sizeFnCall)
+			ctx.appendCode(indent+1, "if fieldSize%d < 0 {\n\treturn %s\n}\n", idx, typePath.getErrorWith(fmt.Sprintf(`sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "negative size %%d", fieldSize%d)`, idx)))
 			ctx.appendCode(indent+1, "dynoff += uint64(fieldSize%d)\n", idx)
 			ctx.appendCode(indent, "}\n")
 		} else {
@@ -831,7 +842,8 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent, "\t\t\treturn sszutils.ErrOffsetOverflowFn(offset)\n")
 		ctx.appendCode(indent, "\t\t}\n")
 		ctx.appendCode(indent, "\t\tenc.EncodeOffset(uint32(offset))\n")
-		ctx.appendCode(indent, "\t\telemSize := sszutils.Max(%s, 0)\n", sizeFnCall)
+		ctx.appendCode(indent, "\t\telemSize := %s\n", sizeFnCall)
+		ctx.appendCode(indent, "\t\tif elemSize < 0 {\n\t\t\treturn %s\n\t\t}\n", typePath.getErrorWith(`sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "negative size %d", elemSize)`))
 		ctx.appendCode(indent, "\t\toffset += uint64(elemSize)\n")
 		ctx.appendCode(indent, "\t}\n")
 
@@ -843,7 +855,8 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			ctx.appendCode(indent, "\t\tvar zeroItem %s\n", ctx.typePrinter.TypeString(desc.ElemDesc))
 
 			zeroItemSizeFnCall := ctx.getSizeFnCall(desc.ElemDesc, "zeroItem")
-			ctx.appendCode(indent, "\t\tzeroSize := sszutils.Max(%s, 0)\n", zeroItemSizeFnCall)
+			ctx.appendCode(indent, "\t\tzeroSize := %s\n", zeroItemSizeFnCall)
+			ctx.appendCode(indent, "\t\tif zeroSize < 0 {\n\t\t\treturn %s\n\t\t}\n", typePath.getErrorWith(`sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "negative size %d", zeroSize)`))
 			ctx.appendCode(indent, "\t\tfor i := %s; %s; i++ {\n", lenVar, uintCmpExpr("i", "<", limitVar))
 			ctx.appendCode(indent, "\t\t\tif offset > %s.MaxUint32 {\n", mathPkgName)
 			ctx.appendCode(indent, "\t\t\t\treturn sszutils.ErrOffsetOverflowFn(offset)\n")
@@ -1012,7 +1025,8 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 		ctx.appendCode(indent, "\t}\n")
 		ctx.appendCode(indent, "\tenc.EncodeOffset(uint32(offset))\n")
 		ctx.appendCode(indent, "\tfor i := range vlen-1 {\n")
-		ctx.appendCode(indent, "\t\telemSize := sszutils.Max(%s, 0)\n", sizeFnCall)
+		ctx.appendCode(indent, "\t\telemSize := %s\n", sizeFnCall)
+		ctx.appendCode(indent, "\t\tif elemSize < 0 {\n\t\t\treturn %s\n\t\t}\n", typePath.getErrorWith(`sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "negative size %d", elemSize)`))
 		ctx.appendCode(indent, "\t\toffset += uint64(elemSize)\n")
 		ctx.appendCode(indent, "\t\tif offset > %s.MaxUint32 {\n", mathPkgName)
 		ctx.appendCode(indent, "\t\t\treturn sszutils.ErrOffsetOverflowFn(offset)\n")

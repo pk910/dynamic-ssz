@@ -340,13 +340,6 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 			(ctx.noDynBufferCalls && isFastsszUnmarshaler)
 	}
 
-	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 && !isRoot && !isView {
-		fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "UnmarshalSSZDecoder")
-		ctx.appendCode(indent, "if err = %s.%s(ds, dec%s); err != nil {\n\treturn %s\n}\n", varName, fn, arg, typePath.getErrorWith("err"))
-		ctx.usedDynSpecs = true
-		return nil
-	}
-
 	if useFastSsz && !isRoot && !isView {
 		sizeStr := "-1"
 		if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
@@ -357,6 +350,13 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent, "} else if err = %s.UnmarshalSSZ(buf); err != nil {\n", varName)
 		ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith("err"))
 		ctx.appendCode(indent, "}\n")
+		return nil
+	}
+
+	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 && !isRoot && !isView {
+		fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "UnmarshalSSZDecoder")
+		ctx.appendCode(indent, "if err = %s.%s(ds, dec%s); err != nil {\n\treturn %s\n}\n", varName, fn, arg, typePath.getErrorWith("err"))
+		ctx.usedDynSpecs = true
 		return nil
 	}
 

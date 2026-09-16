@@ -6953,6 +6953,24 @@ func TestMarshalNegativeDelegatedSize(t *testing.T) {
 	if _, err := ds.SizeSSZ(v); err == nil {
 		t.Error("SizeSSZ should reject a negative size")
 	}
+
+	// A nested delegate is rejected where its size is taken, before it can
+	// drive an offset below the table.
+	type negHolder struct {
+		A negSizeCustom
+		B []byte `ssz-max:"8"`
+	}
+	h := &negHolder{B: []byte{1, 2}}
+	if _, err := ds.MarshalSSZ(h); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Errorf("MarshalSSZ nested: err = %v, want ErrInvalidValueRange", err)
+	}
+	var w bytes.Buffer
+	if err := ds.MarshalSSZWriter(h, &w); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Errorf("MarshalSSZWriter nested: err = %v, want ErrInvalidValueRange", err)
+	}
+	if _, err := ds.SizeSSZ(h); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Errorf("SizeSSZ nested: err = %v, want ErrInvalidValueRange", err)
+	}
 }
 
 // Claimed element sizes drive the offset tables the streaming marshal writes

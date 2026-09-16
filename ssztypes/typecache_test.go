@@ -1765,6 +1765,76 @@ func TestTypeCache_BitvectorWithBitSize(t *testing.T) {
 	}
 }
 
+// annotatedBitsArray and annotatedBitsSlice carry a bit size by expression
+// only, as a type-level annotation.
+type annotatedBitsArray [4]byte
+
+var _ = sszutils.Annotate[annotatedBitsArray](`ssz-type:"bitvector" dynssz-bitsize:"UNDEFINED_ANN_BITS"`)
+
+type annotatedBitsSlice []byte
+
+var _ = sszutils.Annotate[annotatedBitsSlice](`ssz-type:"bitvector" dynssz-bitsize:"UNDEFINED_ANN_BITS"`)
+
+// annotatedBitsMatrix names the bit size of its inner dimension, which is an
+// array; annotatedBitsScalarDim names a bit size for a dimension that is a
+// scalar and has no length at all.
+type annotatedBitsMatrix [2][4]byte
+
+var _ = sszutils.Annotate[annotatedBitsMatrix](`ssz-type:"?,bitvector" dynssz-bitsize:"?,UNDEFINED_ANN_BITS"`)
+
+type annotatedBitsScalarDim [4]byte
+
+var _ = sszutils.Annotate[annotatedBitsScalarDim](`dynssz-bitsize:"?,UNDEFINED_ANN_BITS"`)
+
+// annotatedBitsPtrMatrix reaches its inner array through a pointer;
+// annotatedBitsDeepDim names a dimension the type does not have.
+type annotatedBitsPtrMatrix [2]*[4]byte
+
+var _ = sszutils.Annotate[annotatedBitsPtrMatrix](`ssz-type:"?,bitvector" dynssz-bitsize:"?,UNDEFINED_ANN_BITS"`)
+
+type annotatedBitsDeepDim [4]byte
+
+var _ = sszutils.Annotate[annotatedBitsDeepDim](`dynssz-bitsize:"?,?,UNDEFINED_ANN_BITS"`)
+
+// The array fallback applies to an annotated top-level type as it does to a
+// field tag; an annotated slice still has nothing to fall back to.
+func TestTypeCache_AnnotatedBitsizeExpressionWithoutStaticFallback(t *testing.T) {
+	cache := NewTypeCache(&dummyDynamicSpecs{})
+	desc, err := cache.GetTypeDescriptor(reflect.TypeOf(annotatedBitsArray{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("annotated array: %v", err)
+	}
+	if desc.Len != 4 || desc.BitSize != 0 || desc.SizeExpression == nil || *desc.SizeExpression != "UNDEFINED_ANN_BITS" {
+		t.Fatalf("annotated array: Len=%d BitSize=%d expr=%v, want 4, 0, UNDEFINED_ANN_BITS", desc.Len, desc.BitSize, desc.SizeExpression)
+	}
+	_, err = cache.GetTypeDescriptor(reflect.TypeOf(annotatedBitsSlice{}), nil, nil, nil)
+	if !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Fatalf("annotated slice: err = %v, want ErrInvalidConstraint", err)
+	}
+	desc, err = cache.GetTypeDescriptor(reflect.TypeOf(annotatedBitsMatrix{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("annotated matrix: %v", err)
+	}
+	if desc.ElemDesc.Len != 4 || desc.ElemDesc.BitSize != 0 {
+		t.Fatalf("annotated matrix inner: Len=%d BitSize=%d, want 4, 0", desc.ElemDesc.Len, desc.ElemDesc.BitSize)
+	}
+	_, err = cache.GetTypeDescriptor(reflect.TypeOf(annotatedBitsScalarDim{}), nil, nil, nil)
+	if !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Fatalf("annotated scalar dimension: err = %v, want ErrInvalidConstraint", err)
+	}
+	desc, err = cache.GetTypeDescriptor(reflect.TypeOf(annotatedBitsPtrMatrix{}), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("annotated pointer matrix: %v", err)
+	}
+	if desc.ElemDesc.Len != 4 || desc.ElemDesc.BitSize != 0 {
+		t.Fatalf("annotated pointer matrix inner: Len=%d BitSize=%d, want 4, 0", desc.ElemDesc.Len, desc.ElemDesc.BitSize)
+	}
+	_, err = cache.GetTypeDescriptor(reflect.TypeOf(annotatedBitsDeepDim{}), nil, nil, nil)
+	if !errors.Is(err, sszutils.ErrInvalidConstraint) {
+		t.Fatalf("annotated missing dimension: err = %v, want ErrInvalidConstraint", err)
+	}
+}
+
 // A bit size named by an expression with no static fallback leaves an array
 // at its own length while the value is undefined, and takes the resolved
 // width once it is.

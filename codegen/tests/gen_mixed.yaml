@@ -12,3 +12,5 @@ types:
     without-dynamic-expressions: true
   - name: MixedExt
     with-extended-types: true
+  - name: MixedDynCustomHolder
+  - name: MixedNegSizeHolder

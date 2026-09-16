@@ -249,7 +249,7 @@ func (ctx *hashTreeRootContext) hashUsesFastSsz(desc *ssztypes.TypeDescriptor, i
 		// A custom type has no structure to inline: it is reached through its
 		// static hash method whenever it has one and the spec-aware method is
 		// not taken first.
-		useFastSsz = isFastsszHasher || isFastsszHashWith
+		useFastSsz = !isRoot && (isFastsszHasher || isFastsszHashWith)
 	}
 	return useFastSsz
 }

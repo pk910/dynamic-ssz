@@ -338,6 +338,12 @@ func (cg *CodeGenerator) analyzeTypes() error {
 // and can receive methods, so it is only the generic instantiation that has to
 // be rejected here, not the SSZ type it maps to.
 func validateTopLevelType(t *CodeGeneratorTypeOptions, desc *ssztypes.TypeDescriptor, typeName string) error {
+	// A custom type supplies every SSZ method itself; generated ones would
+	// redeclare them and hash through the type's own root.
+	if desc.SszType == ssztypes.SszCustomType {
+		return fmt.Errorf("cannot generate SSZ methods for custom type %s: it provides its own SSZ methods; use it as a field instead", typeName)
+	}
+
 	isAliasOnlyShape := desc.SszType == ssztypes.SszUnionType ||
 		desc.SszType == ssztypes.SszCompatibleUnionType ||
 		desc.SszType == ssztypes.SszTypeWrapperType

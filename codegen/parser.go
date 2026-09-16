@@ -1222,11 +1222,27 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	}
 
 	if desc.SszType == ssztypes.SszCustomType {
-		isCompatible := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0 && desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZHasher != 0
-		// isCompatible = isCompatible || (desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0 && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicUnmarshaler != 0 && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicSizer != 0 && desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicHashRoot != 0)
-
-		if !isCompatible {
-			return nil, fmt.Errorf("custom ssz type requires fastssz marshaler, unmarshaler and hasher implementations")
+		// A custom type delegates every SSZ operation to its own methods. Each
+		// operation may be served by either the fastssz method or the dynssz
+		// (Dynamic*) equivalent, but at least one implementation per operation
+		// is required. The fastssz marshaler interface bundles marshal,
+		// unmarshal and size; the fastssz hasher covers the hash tree root.
+		f := desc.SszCompatFlags
+		var missing []string
+		if f&(ssztypes.SszCompatFlagFastSSZMarshaler|ssztypes.SszCompatFlagDynamicMarshaler|ssztypes.SszCompatFlagDynamicEncoder) == 0 {
+			missing = append(missing, "marshaler")
+		}
+		if f&(ssztypes.SszCompatFlagFastSSZMarshaler|ssztypes.SszCompatFlagDynamicUnmarshaler|ssztypes.SszCompatFlagDynamicDecoder) == 0 {
+			missing = append(missing, "unmarshaler")
+		}
+		if f&(ssztypes.SszCompatFlagFastSSZMarshaler|ssztypes.SszCompatFlagDynamicSizer) == 0 {
+			missing = append(missing, "sizer")
+		}
+		if f&(ssztypes.SszCompatFlagFastSSZHasher|ssztypes.SszCompatFlagHashTreeRootWith|ssztypes.SszCompatFlagDynamicHashRoot) == 0 {
+			missing = append(missing, "hasher")
+		}
+		if len(missing) > 0 {
+			return nil, fmt.Errorf("custom ssz type %v is missing a fastssz or dynssz %s implementation", originalType, strings.Join(missing, ", "))
 		}
 	}
 
@@ -2181,6 +2197,11 @@ func (p *Parser) buildOptionalListDescriptor(desc *ssztypes.TypeDescriptor, data
 
 	desc.ElemDesc = elemDesc
 	desc.SszTypeFlags |= elemDesc.SszTypeFlags & (ssztypes.SszTypeFlagHasDynamicSize | ssztypes.SszTypeFlagHasDynamicMax | ssztypes.SszTypeFlagHasSizeExpr | ssztypes.SszTypeFlagHasMaxExpr)
+
+	// A present element of zero size would leave the region as empty as an
+	// absent one. No static zero-size element can be built here: a custom
+	// type without a size hint is dynamic and a zero size hint is rejected,
+	// so the generated methods check a spec-sized element at run time.
 
 	return nil
 }

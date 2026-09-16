@@ -454,6 +454,16 @@ func (ctx *marshalContext) marshalOptional(desc *ssztypes.TypeDescriptor, varNam
 // nil → empty list (no bytes); non-nil → single-element list. When the element
 // is dynamic, a 4-byte offset (=4) precedes the element bytes.
 func (ctx *marshalContext) marshalOptionalList(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int) error {
+	// A delegate's sizer is only known at run time; a present element of
+	// zero size would be indistinguishable from an absent one.
+	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 &&
+		desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+		sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(desc.ElemDesc)
+		if err != nil {
+			return err
+		}
+		ctx.appendCode(indent, "if %s == 0 {\n\treturn nil, %s\n}\n", sizeVar, typePath.getErrorWith(`sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "optional-list element size resolved to 0")`))
+	}
 	ctx.appendCode(indent, "if %s != nil {\n", varName)
 	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 		binaryPkg := ctx.typePrinter.AddImport("encoding/binary", "binary")

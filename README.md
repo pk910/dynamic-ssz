@@ -147,6 +147,7 @@ The library includes comprehensive testing infrastructure:
 - [SSZ Views](docs/views.md)
 - [Merkle Proofs](docs/merkle-proofs.md)
 - [Streaming Support](docs/streaming.md)
+- [Method Delegation](docs/delegation.md)
 - [Type Wrapper](docs/type-wrapper.md)
 - [Extended Types](docs/extended-types.md) (non-standard)
 - [go-eth2-client Integration](docs/go-eth2-client-integration.md)

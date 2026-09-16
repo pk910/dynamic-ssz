@@ -117,6 +117,24 @@ func NewTypeCache(specs sszutils.DynamicSpecs) *TypeCache {
 	}
 }
 
+// dimensionKind returns the Go kind of the type at size dimension dim of t,
+// walking through pointers and one array or slice level per dimension.
+func dimensionKind(t reflect.Type, dim int) reflect.Kind {
+	for {
+		for t.Kind() == reflect.Pointer {
+			t = t.Elem()
+		}
+		if dim == 0 {
+			return t.Kind()
+		}
+		if t.Kind() != reflect.Array && t.Kind() != reflect.Slice {
+			return reflect.Invalid
+		}
+		t = t.Elem()
+		dim--
+	}
+}
+
 // DisableSpecResolution switches the cache to building descriptors for code
 // generation rather than for this process. Spec expressions are recorded as
 // written instead of being resolved, because the generated code resolves them
@@ -491,7 +509,11 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 
 						continue
 					}
-					if sizeHints[i].Size == 0 {
+					// A bit size on a Go array falls back to the array's own
+					// length in bits; the vector builder applies that, as it
+					// does for field tags. A slice has no length to fall back
+					// to and is rejected there.
+					if sizeHints[i].Size == 0 && (!sizeHints[i].Bits || dimensionKind(t, i) != reflect.Array) {
 						return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidConstraint, "dynssz-size expression %q %s", sizeHints[i].Expr, unresolvedReason(ok))
 					}
 				}

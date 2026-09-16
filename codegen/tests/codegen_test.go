@@ -527,6 +527,34 @@ func TestCodegenCoverageTypes7(t *testing.T) {
 
 func TestCodegenNoDynExprTypes(t *testing.T) {
 	testCodegenPayloadByReflection(t, NoDynExprTypes_Payload, nil)
+	testCodegenPayloadByReflection(t, NoDynStreamCustomHolder_Payload, nil)
+
+	// The static batch writes and reads the dual-surface custom type through
+	// its static methods on the stream paths as well.
+	code, err := os.ReadFile("gen_nodynexpr.go")
+	if os.IsNotExist(err) {
+		t.Skip("no generated code present")
+	}
+	if err != nil {
+		t.Fatalf("read generated file: %v", err)
+	}
+	for _, chunk := range strings.Split(string(code), "\nfunc (t *") {
+		if strings.HasPrefix(chunk, "NoDynStreamCustomHolder)") && (strings.Contains(chunk, ".C.MarshalSSZEncoder(") || strings.Contains(chunk, ".C.UnmarshalSSZDecoder(")) {
+			t.Error("NoDynStreamCustomHolder reaches its custom field through a spec-aware stream method")
+		}
+	}
+	ds := dynssz.NewDynSsz(nil)
+	var w bytes.Buffer
+	if err := ds.MarshalSSZWriter(&NoDynStreamCustomHolder_Payload, &w); err != nil {
+		t.Fatalf("writer: %v", err)
+	}
+	var back NoDynStreamCustomHolder
+	if err := ds.UnmarshalSSZReader(&back, bytes.NewReader(w.Bytes()), w.Len()); err != nil {
+		t.Fatalf("reader: %v", err)
+	}
+	if back != NoDynStreamCustomHolder_Payload {
+		t.Fatalf("stream round trip = %+v, want %+v", back, NoDynStreamCustomHolder_Payload)
+	}
 }
 
 // TestCodegenNoDynNest enforces the without-dynamic-expressions invariant on a
@@ -673,6 +701,28 @@ func TestCodegenMixedModes(t *testing.T) {
 
 	testCodegenPayloadByReflection(t, MixedStatic_Payload, nil)
 	testCodegenPayloadByReflection(t, MixedExt_Payload, nil, dynssz.WithExtendedTypes())
+	testCodegenPayloadByReflection(t, MixedDynCustomHolder_Payload, nil)
+
+	// A negative delegated size is an error wherever the size feeds an
+	// offset: the writer path on both engines, and every size-consuming path
+	// on reflection. The generated buffer marshal derives its offsets from the
+	// bytes written, and the generated size method sums what the delegates
+	// report; neither consults the sizer for an offset.
+	neg := &MixedNegSizeHolder{A: 1, L: make([]mixedNegSizeCustom, 2)}
+	genDs = dynssz.NewDynSsz(nil)
+	refDs := dynssz.NewDynSsz(nil, dynssz.WithNoDelegation(), dynssz.WithNoFastSsz())
+	for name, ds := range map[string]*dynssz.DynSsz{"generated": genDs, "reflection": refDs} {
+		var w bytes.Buffer
+		if err := ds.MarshalSSZWriter(neg, &w); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+			t.Errorf("%s writer: err = %v, want ErrInvalidValueRange", name, err)
+		}
+	}
+	if _, err := refDs.MarshalSSZ(neg); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Errorf("reflection marshal: err = %v, want ErrInvalidValueRange", err)
+	}
+	if _, err := refDs.SizeSSZ(neg); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Errorf("reflection size: err = %v, want ErrInvalidValueRange", err)
+	}
 }
 
 // A dynssz expression that resolves to 0 must fall back to the static value in

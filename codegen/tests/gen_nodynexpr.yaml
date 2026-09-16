@@ -9,3 +9,4 @@ types:
   - NoDynWrapped
   - NoDynWrappedHolder
   - NoDynCustomHolder
+  - NoDynStreamCustomHolder

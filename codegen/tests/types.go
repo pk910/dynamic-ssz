@@ -1259,6 +1259,52 @@ type NoDynCustomHolder struct {
 	N uint64
 }
 
+// noDynStreamCustom carries a static surface and a spec-aware streaming one
+// that agree on the encoding and the root.
+type noDynStreamCustom struct{ A uint32 }
+
+func (c *noDynStreamCustom) SizeSSZ() int                { return 4 }
+func (c *noDynStreamCustom) MarshalSSZ() ([]byte, error) { return c.MarshalSSZTo(nil) }
+func (c *noDynStreamCustom) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return sszutils.MarshalUint32(buf, c.A), nil
+}
+func (c *noDynStreamCustom) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 4 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	c.A = sszutils.UnmarshallUint32(buf)
+	return nil
+}
+func (c *noDynStreamCustom) HashTreeRoot() ([32]byte, error) {
+	var root [32]byte
+	binary.LittleEndian.PutUint32(root[:], c.A)
+	return root, nil
+}
+func (c *noDynStreamCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 4 }
+func (c *noDynStreamCustom) MarshalSSZEncoder(_ sszutils.DynamicSpecs, enc sszutils.Encoder) error {
+	enc.EncodeUint32(c.A)
+	return nil
+}
+func (c *noDynStreamCustom) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, dec sszutils.Decoder) error {
+	v, err := dec.DecodeUint32()
+	c.A = v
+	return err
+}
+func (c *noDynStreamCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint32(c.A)
+	return nil
+}
+
+// NoDynStreamCustomHolder holds a custom type with both a static and a
+// spec-aware streaming surface; generated statically, the stream is written
+// and read through the static one.
+type NoDynStreamCustomHolder struct {
+	C noDynStreamCustom `ssz-type:"custom" ssz-size:"4"`
+	N uint64
+}
+
+var NoDynStreamCustomHolder_Payload = NoDynStreamCustomHolder{C: noDynStreamCustom{A: 0x01020304}, N: 5}
+
 var NoDynCustomHolder_Payload = NoDynCustomHolder{D: NoDynDualCustom{7}, S: 8, N: 9}
 
 // NoDynNestChild is a variable-size container nested by the NoDynNest* parents.
@@ -4493,3 +4539,49 @@ var (
 	MixedStatic_Payload       = MixedStatic{A: 9, B: []uint64{1, 2, 3}}
 	MixedExt_Payload          = MixedExt{S: -3, L: []uint64{4, 5}}
 )
+
+// mixedDynOnlyCustom is served by its dynssz methods alone.
+type mixedDynOnlyCustom struct{ V uint32 }
+
+func (c *mixedDynOnlyCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 4 }
+func (c *mixedDynOnlyCustom) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint32(buf, c.V), nil
+}
+func (c *mixedDynOnlyCustom) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) error {
+	c.V = binary.LittleEndian.Uint32(buf)
+	return nil
+}
+func (c *mixedDynOnlyCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint32(c.V)
+	return nil
+}
+
+// MixedDynCustomHolder holds a custom type without any fastssz method.
+type MixedDynCustomHolder struct {
+	C mixedDynOnlyCustom `ssz-type:"custom" ssz-size:"4"`
+	N uint64
+}
+
+var MixedDynCustomHolder_Payload = MixedDynCustomHolder{C: mixedDynOnlyCustom{V: 0x0a0b0c0d}, N: 3}
+
+// mixedNegSizeCustom reports a negative size.
+type mixedNegSizeCustom struct{}
+
+func (n *mixedNegSizeCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return -1 }
+func (n *mixedNegSizeCustom) MarshalSSZEncoder(_ sszutils.DynamicSpecs, _ sszutils.Encoder) error {
+	return nil
+}
+func (n *mixedNegSizeCustom) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, _ sszutils.Decoder) error {
+	return nil
+}
+func (n *mixedNegSizeCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+// MixedNegSizeHolder places the negative-size custom type where the encoder
+// takes its size for an offset.
+type MixedNegSizeHolder struct {
+	A uint64
+	C mixedNegSizeCustom   `ssz-type:"custom"`
+	L []mixedNegSizeCustom `ssz-max:"4" ssz-type:"?,custom"`
+}

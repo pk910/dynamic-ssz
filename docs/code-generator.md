@@ -400,6 +400,16 @@ func (b *BeaconBlock) HashTreeRootWithDyn(ds sszutils.DynamicSpecs, hh sszutils.
 }
 ```
 
+### How generated code reaches nested types
+
+A generated method reaches a nested type that has SSZ methods of its own
+through them. A child with a registered static surface and no spec expressions
+is reached through its static method on every path; otherwise a buffer method
+calls the child's `*Dyn` method and a streaming method calls the child's
+streaming method. Code generated with `-without-dynamic-expressions` reaches
+every child through its static methods only. The full order and the effect of
+the options are in [Method Delegation](delegation.md).
+
 ### With `-legacy`: Additional Legacy Methods
 
 When using `-legacy` flag, additional fastssz-compatible methods are generated:

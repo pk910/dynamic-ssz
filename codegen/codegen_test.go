@@ -1741,6 +1741,42 @@ type nodynDualHolder struct {
 	N uint64
 }
 
+// nodynStreamCustom carries a static surface and a spec-aware streaming one.
+type nodynStreamCustom struct{ V uint32 }
+
+func (c *nodynStreamCustom) SizeSSZ() int                { return 4 }
+func (c *nodynStreamCustom) MarshalSSZ() ([]byte, error) { return c.MarshalSSZTo(nil) }
+func (c *nodynStreamCustom) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return append(buf, byte(c.V), byte(c.V>>8), byte(c.V>>16), byte(c.V>>24)), nil
+}
+func (c *nodynStreamCustom) UnmarshalSSZ(buf []byte) error {
+	if len(buf) != 4 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	c.V = uint32(buf[0]) | uint32(buf[1])<<8 | uint32(buf[2])<<16 | uint32(buf[3])<<24
+	return nil
+}
+func (c *nodynStreamCustom) HashTreeRoot() ([32]byte, error)        { return [32]byte{byte(c.V)}, nil }
+func (c *nodynStreamCustom) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return 4 }
+func (c *nodynStreamCustom) MarshalSSZEncoder(_ sszutils.DynamicSpecs, enc sszutils.Encoder) error {
+	enc.EncodeUint32(c.V)
+	return nil
+}
+func (c *nodynStreamCustom) UnmarshalSSZDecoder(_ sszutils.DynamicSpecs, dec sszutils.Decoder) error {
+	v, err := dec.DecodeUint32()
+	c.V = v
+	return err
+}
+func (c *nodynStreamCustom) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint32(c.V)
+	return nil
+}
+
+type nodynStreamHolder struct {
+	C nodynStreamCustom `ssz-type:"custom" ssz-size:"4"`
+	N uint64
+}
+
 type nodynDynHolder struct {
 	C nodynDynCustom `ssz-type:"custom"`
 	N uint64
@@ -1767,6 +1803,26 @@ func TestGenerateWithoutDynExprCustomTypes(t *testing.T) {
 	for _, want := range []string{".MarshalSSZTo(", ".UnmarshalSSZ(", ".HashTreeRoot()"} {
 		if !strings.Contains(code, want) {
 			t.Errorf("generated code does not reach the custom type through %s:\n%s", want, code)
+		}
+	}
+
+	// The streaming encoder and decoder take the static surface too, so a
+	// stream is written and read with the same encoding.
+	cg = NewCodeGenerator(nil)
+	cg.BuildFile("gen_stream.go", WithReflectType(reflect.TypeFor[nodynStreamHolder](), static...))
+	files, err = cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate stream-surface holder: %v", err)
+	}
+	code = files["gen_stream.go"]
+	for _, tok := range []string{".C.MarshalSSZEncoder(", ".C.UnmarshalSSZDecoder(", ".C.SizeSSZDyn("} {
+		if strings.Contains(code, tok) {
+			t.Errorf("generated code reaches the custom type through spec-aware %s under without-dynamic-expressions", tok)
+		}
+	}
+	for _, want := range []string{".MarshalSSZTo(", "sszutils.DecodeDelegateBuffer(dec, 4)"} {
+		if !strings.Contains(code, want) {
+			t.Errorf("generated stream code does not reach the custom type through %s:\n%s", want, code)
 		}
 	}
 
@@ -2400,6 +2456,106 @@ func TestGenerateLeavesCallerCacheUntouched(t *testing.T) {
 	}
 	if n := len(extDs.GetTypeCache().GetAllTypes()); n != 0 {
 		t.Fatalf("generation registered %d descriptors in the instance cache", n)
+	}
+}
+
+// genCustomRoot is a custom type offered as a generation root.
+type genCustomRoot uint64
+
+var _ = sszutils.Annotate[genCustomRoot](`ssz-type:"custom"`)
+
+func (c *genCustomRoot) SizeSSZ() int                { return 8 }
+func (c *genCustomRoot) MarshalSSZ() ([]byte, error) { return c.MarshalSSZTo(nil) }
+func (c *genCustomRoot) MarshalSSZTo(buf []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint64(buf, uint64(*c)), nil
+}
+func (c *genCustomRoot) UnmarshalSSZ(buf []byte) error {
+	*c = genCustomRoot(binary.LittleEndian.Uint64(buf))
+	return nil
+}
+func (c *genCustomRoot) HashTreeRoot() ([32]byte, error) { return [32]byte{}, nil }
+
+// A custom type provides its own SSZ methods; generating a method set for it
+// would redeclare them.
+func TestGenerateRejectsCustomRoot(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_custom_root.go", WithReflectType(reflect.TypeFor[genCustomRoot]()))
+	_, err := cg.GenerateToMap()
+	if err == nil || !strings.Contains(err.Error(), "custom type genCustomRoot: it provides its own SSZ methods") {
+		t.Fatalf("custom generation root: err = %v, want the custom-root rejection", err)
+	}
+}
+
+// genNegSizer reports a negative size from its spec-aware sizer.
+type genNegSizer struct{}
+
+func (n *genNegSizer) SizeSSZDyn(_ sszutils.DynamicSpecs) int { return -1 }
+func (n *genNegSizer) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+func (n *genNegSizer) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+func (n *genNegSizer) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+type genNegSizeHolder struct {
+	A uint64
+	C genNegSizer    `ssz-type:"custom"`
+	L []genNegSizer  `ssz-max:"4" ssz-type:"?,custom"`
+	V [2]genNegSizer `ssz-type:"?,custom"`
+}
+
+// The streaming encoder reports a negative delegated size instead of clamping
+// it, on a container field, list elements, list padding and vector elements.
+func TestGenerateEncoderRejectsNegativeSize(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_neg.go", WithReflectType(reflect.TypeFor[genNegSizeHolder](), WithCreateEncoderFn()))
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	code := files["gen_neg.go"]
+	if strings.Contains(code, "sszutils.Max(ctx.sizeFn") {
+		t.Errorf("generated encoder still clamps a delegated size:\n%s", code)
+	}
+	if got := strings.Count(code, `"negative size %d"`); got < 4 {
+		t.Errorf("generated encoder checks %d delegated sizes, want at least 4:\n%s", got, code)
+	}
+}
+
+// genOptSpecSized is a fixed-size element whose width comes from a spec value.
+type genOptSpecSized struct {
+	V []byte `ssz-size:"4" dynssz-size:"OPT_WIDTH"`
+}
+
+type genOptSpecSizedHolder struct {
+	Opt *genOptSpecSized `ssz-type:"optional-list"`
+}
+
+// Every generated method guards an optional-list whose element width resolves
+// to zero, since a present zero-width element reads as absent.
+func TestGenerateOptionalListZeroWidthGuard(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_opt.go", WithReflectType(reflect.TypeFor[genOptSpecSizedHolder](), WithCreateEncoderFn(), WithCreateDecoderFn()))
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	code := files["gen_opt.go"]
+	if got := strings.Count(code, "optional-list element size resolved to 0"); got != 4 {
+		t.Errorf("zero-width guard emitted %d times, want 4 (marshal, unmarshal, encoder, decoder):\n%s", got, code)
+	}
+	// The size path has no error channel and reports 0 instead.
+	start := strings.Index(code, ") SizeSSZDyn(")
+	if start < 0 {
+		t.Fatalf("no size method generated:\n%s", code)
+	}
+	sizeBody := code[start:]
+	if end := strings.Index(sizeBody, "\n}\n"); end >= 0 {
+		sizeBody = sizeBody[:end]
+	}
+	if !strings.Contains(sizeBody, "== 0 {\n\t\t\treturn 0\n") {
+		t.Errorf("size method lacks the zero-width guard:\n%s", sizeBody)
 	}
 }
 

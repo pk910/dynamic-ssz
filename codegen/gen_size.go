@@ -404,6 +404,18 @@ func (ctx *sizeContext) sizeOptional(desc *ssztypes.TypeDescriptor, varName, siz
 // nil → 0 bytes. Non-nil → size of the single element, plus 4 bytes for the
 // offset header when the element is dynamic.
 func (ctx *sizeContext) sizeOptionalList(desc *ssztypes.TypeDescriptor, varName, sizeVar string, indent int) error {
+	// A delegate's sizer is only known at run time; a present element of
+	// zero size would be indistinguishable from an absent one. The size path
+	// has no error channel, so it reports 0 for a value that cannot be
+	// serialized.
+	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 &&
+		desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
+		elemSizeVar, err := ctx.staticSizeVars.getStaticSizeVar(desc.ElemDesc)
+		if err != nil {
+			return err
+		}
+		ctx.appendCode(indent, "if %s == 0 {\n\treturn 0\n}\n", elemSizeVar)
+	}
 	ctx.appendCode(indent, "if %s != nil {\n", varName)
 	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0 {
 		ctx.appendCode(indent+1, "%s += 4 // optional-list offset header\n", sizeVar)
