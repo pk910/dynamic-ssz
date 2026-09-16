@@ -24,6 +24,7 @@ jobs:
           - merkle-proofs
           - fork-views
           - htr-caching
+          - codegen
 
     steps:
     - name: Checkout code

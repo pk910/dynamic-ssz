@@ -239,9 +239,10 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 	cfg := applyCallOptions(opts)
 
 	// Types carrying their own dynamic methods handle their serialization
-	// themselves. The buffer form is preferred; the streaming form is bridged
-	// through a buffer encoder, so both entrypoints delegate to the same
-	// method set in the same order.
+	// themselves. This entry point prefers the buffer form and bridges the streaming form
+	// through a buffer encoder; the stream entry point prefers the streaming
+	// form, so both reach the same method set, each through its own form
+	// first.
 	if cfg == nil || cfg.viewDescriptor == nil {
 		marshaler, hasMarshaler := source.(sszutils.DynamicMarshaler)
 		sszEncoder, hasEncoder := source.(sszutils.DynamicEncoder)
@@ -304,7 +305,7 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 	// this platform (never trips on 64-bit, guards make() on 32-bit). SizeSSZ
 	// applies the same ceiling so the two paths agree.
 	if uint64(size) > uint64(math.MaxInt) {
-		return nil, fmt.Errorf("SSZ size %d exceeds platform int max", size)
+		return nil, sszutils.ErrPlatformOverflowFn("SSZ size", size)
 	}
 
 	buf := make([]byte, 0, size)
@@ -316,7 +317,7 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 
 	newBuf := encoder.GetBuffer()
 	if int64(len(newBuf)) != size {
-		return nil, fmt.Errorf("ssz length does not match expected length (expected: %v, got: %v)", size, len(newBuf))
+		return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "ssz length does not match expected length (expected: %v, got: %v)", size, len(newBuf))
 	}
 
 	return newBuf, nil
@@ -355,9 +356,10 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 	}
 	cfg := applyCallOptions(opts)
 
-	// The buffer form is preferred; the streaming form is bridged through a
-	// buffer encoder, so both entrypoints delegate to the same method set in
-	// the same order.
+	// This entry point prefers the buffer form and bridges the streaming form
+	// through a buffer encoder; the stream entry point prefers the streaming
+	// form, so both reach the same method set, each through its own form
+	// first.
 	if cfg == nil || cfg.viewDescriptor == nil {
 		if !d.options.NoDelegation {
 			if marshaler, ok := source.(sszutils.DynamicMarshaler); ok && d.delegable(source, "MarshalSSZDyn") {
@@ -402,7 +404,7 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 	// bound stays in the signed domain so the int conversion below is provably
 	// within range.
 	if size < 0 || size > int64(math.MaxInt)-int64(len(buf)) {
-		return nil, fmt.Errorf("SSZ size %d exceeds platform int max", size)
+		return nil, sszutils.ErrPlatformOverflowFn("SSZ size", size)
 	}
 	needed := len(buf) + sszutils.CapToInt(uint64(size))
 	if cap(buf) < needed {
@@ -419,7 +421,7 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 
 	newBuf := encoder.GetBuffer()
 	if int64(len(newBuf)-len(buf)) != size {
-		return nil, fmt.Errorf("ssz length does not match expected length (expected: %v, got: %v)", size, len(newBuf)-len(buf))
+		return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "ssz length does not match expected length (expected: %v, got: %v)", size, len(newBuf)-len(buf))
 	}
 
 	return newBuf, nil
@@ -501,9 +503,10 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 	cfg := applyCallOptions(opts)
 	encoder := sszutils.NewStreamEncoder(w, d.options.StreamWriterBufferSize)
 
-	// The streaming form is preferred; the buffer form is bridged through the
-	// encoder's buffer, so both entrypoints delegate to the same method set in
-	// the same order.
+	// This entry point prefers the streaming form and bridges the buffer form
+	// through the encoder's buffer; the buffer entry point prefers the buffer
+	// form, so both reach the same method set, each through its own form
+	// first.
 	if cfg == nil || cfg.viewDescriptor == nil {
 		if !d.options.NoDelegation {
 			if sszEncoder, ok := source.(sszutils.DynamicEncoder); ok && d.delegable(source, "MarshalSSZEncoder") {
@@ -570,7 +573,7 @@ func (d *DynSsz) MarshalSSZWriter(source any, w io.Writer, opts ...CallOption) e
 	// precomputed size (e.g. a nested delegated marshaler whose SizeSSZ contradicts
 	// the bytes it writes), which would otherwise stream malformed SSZ silently.
 	if int64(encoder.GetPosition()) != size {
-		return fmt.Errorf("ssz length does not match expected length (expected: %v, got: %v)", size, encoder.GetPosition())
+		return sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "ssz length does not match expected length (expected: %v, got: %v)", size, encoder.GetPosition())
 	}
 	return nil
 }
@@ -659,7 +662,7 @@ func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error) {
 	// Reject a size that cannot be represented as an int on this platform; the
 	// bound stays in the signed domain so the conversion is provably in range.
 	if size < 0 || size > math.MaxInt {
-		return 0, fmt.Errorf("SSZ size %d exceeds platform int max", size)
+		return 0, sszutils.ErrPlatformOverflowFn("SSZ size", size)
 	}
 
 	return int(size), nil
@@ -708,9 +711,10 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "target pointer must not be nil")
 	}
 
-	// The buffer form is preferred; the streaming form is bridged through a
-	// buffer decoder, so both entrypoints delegate to the same method set in
-	// the same order. The bridged decode must consume the whole buffer, as a
+	// This entry point prefers the buffer form and bridges the streaming form
+	// through a buffer decoder; the reader entry point prefers the streaming
+	// form, so both reach the same method set, each through its own form
+	// first. The bridged decode must consume the whole buffer, as a
 	// buffer unmarshaler does.
 	if cfg == nil || cfg.viewDescriptor == nil {
 		if !d.options.NoDelegation {
@@ -915,9 +919,10 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 		return sszutils.NewSszError(sszutils.ErrInvalidValueRange, "target pointer must not be nil")
 	}
 
-	// The streaming form is preferred; the buffer form is bridged by reading
-	// the full region first, so both entrypoints delegate to the same method
-	// set in the same order.
+	// This entry point prefers the streaming form and bridges the buffer form
+	// by reading the full region first; the buffer entry point prefers the
+	// buffer form, so both reach the same method set, each through its own
+	// form first.
 	if cfg == nil || cfg.viewDescriptor == nil {
 		if !d.options.NoDelegation {
 			if sszDecoder, ok := target.(sszutils.DynamicDecoder); ok && d.delegable(target, "UnmarshalSSZDecoder") {

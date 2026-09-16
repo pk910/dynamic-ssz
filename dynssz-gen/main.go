@@ -38,6 +38,7 @@ type Config struct {
 	WithoutFastSsz            bool
 	WithStreaming             bool
 	WithExtendedTypes         bool
+	RecursionDepth            int
 
 	// Method exclusions, settable through the config file only (no CLI
 	// flag counterparts).
@@ -71,6 +72,7 @@ type typeSpec struct {
 	WithoutFastSsz            bool
 	WithStreaming             bool
 	WithExtendedTypes         bool
+	RecursionDepth            int
 	SkipMarshal               bool
 	SkipUnmarshal             bool
 	SkipSize                  bool
@@ -146,6 +148,7 @@ func main() {
 		withoutFastSsz            = flag.Bool("without-fastssz", false, "Generate code without using fast ssz generated methods")
 		withStreaming             = flag.Bool("with-streaming", false, "Generate streaming functions")
 		withExtendedTypes         = flag.Bool("with-extended-types", false, "Generate code with extended types")
+		recursionDepth            = flag.Int("recursion-depth", 0, "Nesting depth at which generated code rejects a recursive value (0 = default)")
 		showVersion               = flag.Bool("version", false, "Print version and exit")
 	)
 
@@ -227,6 +230,7 @@ func main() {
 		WithoutFastSsz:            *withoutFastSsz,
 		WithStreaming:             *withStreaming,
 		WithExtendedTypes:         *withExtendedTypes,
+		RecursionDepth:            *recursionDepth,
 	}
 
 	if *configPath != "" {
@@ -578,6 +582,7 @@ func run(config *Config) error {
 				WithoutFastSsz:            config.WithoutFastSsz,
 				WithStreaming:             config.WithStreaming,
 				WithExtendedTypes:         config.WithExtendedTypes,
+				RecursionDepth:            config.RecursionDepth,
 				SkipMarshal:               config.SkipMarshal,
 				SkipUnmarshal:             config.SkipUnmarshal,
 				SkipSize:                  config.SkipSize,

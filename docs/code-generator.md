@@ -54,6 +54,7 @@ reference.
 | `-without-fastssz` | Generate code without using fast ssz generated methods | `false` |
 | `-with-streaming` | Generate streaming encoder/decoder functions | `false` |
 | `-with-extended-types` | Enable support for non-standard extended types (signed ints, floats, big.Int, optionals) | `false` |
+| `-recursion-depth` | Nesting depth at which the generated methods reject a recursive value; see [Recursion depth](supported-types.md#recursive-types) | `0` (the default depth of 1024) |
 
 When both `--config` and CLI flags are provided, any CLI flag that is
 explicitly passed overrides the config file's value. See the
@@ -471,13 +472,13 @@ generate such cycles in one run.
 
 ### With `-without-dynamic-expressions`: Static Methods Only
 
-When using `-without-dynamic-expressions`, only static legacy methods are generated (no `*Dyn` methods):
+When using `-without-dynamic-expressions`, only static methods are generated
+(no `*Dyn` methods): `MarshalSSZTo`, `UnmarshalSSZ`, `SizeSSZ`, `HashTreeRoot`
+and `HashTreeRootWith`, plus the streaming pair with `-with-streaming`. The
+allocating `MarshalSSZ` wrapper is a legacy method and only comes with
+`-legacy`.
 
 ```go
-func (b *BeaconBlock) MarshalSSZ() ([]byte, error) {
-    // Static marshaling for default preset only
-}
-
 func (b *BeaconBlock) MarshalSSZTo(buf []byte) ([]byte, error) {
     // Static marshaling to buffer
 }
@@ -751,7 +752,7 @@ so what a generating machine has loaded cannot reach the output:
 
 ```go
 // Generated static method (assuming default preset values)
-func (s *State) MarshalSSZ() ([]byte, error) {
+func (s *State) MarshalSSZTo(buf []byte) ([]byte, error) {
     // Hard-coded limits for maximum performance
     // Falls back to reflection for non-default presets
 }

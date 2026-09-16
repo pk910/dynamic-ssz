@@ -311,7 +311,7 @@ a depth fixed by its own structure and is never counted.
 | | Configure with | Applies from |
 |---|---|---|
 | Reflection | `dynssz.WithMaxNestingDepth(n)` | immediately |
-| Generated code | `codegen.WithRecursionDepth(n)` | after regeneration |
+| Generated code | `codegen.WithRecursionDepth(n)`, `dynssz-gen -recursion-depth n`, or `recursion-depth` in the config file | after regeneration |
 
 The generated value is baked into the emitted code, so changing it requires
 regenerating. One caveat: a chain of *distinct* cycles spanning several

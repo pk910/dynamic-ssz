@@ -725,6 +725,11 @@ func (cg *CodeGenerator) generateFile(packagePath string, opts *CodeGeneratorFil
 	if !strings.HasSuffix(header, "\n") {
 		mainCodeBuilder.WriteString("\n")
 	}
+	// A blank line keeps the header from becoming the package's doc comment;
+	// a template that already ends in one is left as it is.
+	if !strings.HasSuffix(mainCodeBuilder.String(), "\n\n") {
+		mainCodeBuilder.WriteString("\n")
+	}
 	fmt.Fprintf(&mainCodeBuilder, "package %s\n\n", opts.PackageName)
 
 	// Imports
