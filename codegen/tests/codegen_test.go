@@ -725,6 +725,49 @@ func TestCodegenMixedModes(t *testing.T) {
 	}
 }
 
+// A declared length is a claim about the input: an 8-byte input against a
+// 65536-element vector of variable-size elements, a 3-billion-element vector
+// and a 4 GiB bigint limit is refused on every decode path of both engines
+// without allocating for the declaration, on 64-bit and 32-bit targets alike.
+func TestCodegenDeclaredSizeBounded(t *testing.T) {
+	in := []byte{4, 0, 0, 0, 0, 0, 0, 0}
+	engines := map[string]*dynssz.DynSsz{
+		"generated":  dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes()),
+		"reflection": dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes(), dynssz.WithNoDelegation(), dynssz.WithNoFastSsz()),
+	}
+	for name, ds := range engines {
+		for _, shape := range []struct {
+			name string
+			mk   func() any
+		}{
+			{"DynVecDeclared", func() any { return new(DynVecDeclared) }},
+			{"BigVecFixed", func() any { return new(BigVecFixed) }},
+			{"BigIntLimit", func() any { return new(BigIntLimit) }},
+		} {
+			for _, path := range []struct {
+				name string
+				run  func(any) error
+			}{
+				{"buffer", func(v any) error { return ds.UnmarshalSSZ(v, in) }},
+				{"reader", func(v any) error { return ds.UnmarshalSSZReader(v, bytes.NewReader(in), len(in)) }},
+				{"reader-unknown", func(v any) error { return ds.UnmarshalSSZReader(v, bytes.NewReader(in), -1) }},
+			} {
+				var before, after runtime.MemStats
+				runtime.GC()
+				runtime.ReadMemStats(&before)
+				err := path.run(shape.mk())
+				runtime.ReadMemStats(&after)
+				if err == nil {
+					t.Errorf("%s %s %s: an 8-byte input was accepted", name, shape.name, path.name)
+				}
+				if grew := after.TotalAlloc - before.TotalAlloc; grew > 1<<20 {
+					t.Errorf("%s %s %s: allocated %d bytes for an 8-byte input", name, shape.name, path.name, grew)
+				}
+			}
+		}
+	}
+}
+
 // A dynssz expression that resolves to 0 must fall back to the static value in
 // both engines. Previously the generated code applied the literal
 // 0 limit and rejected the value while reflection fell back, diverging.

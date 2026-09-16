@@ -547,7 +547,7 @@ func (ctx *hashTreeRootContext) hashBigInt(desc *ssztypes.TypeDescriptor, varNam
 	// cannot be serialized. Dynamic (dynssz-max expression) limits stay unchecked
 	// to keep generated code consistent with the reflection engine.
 	if desc.MaxExpression == nil && desc.Limit > 0 {
-		errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", uint64(1+len(%s.Bytes())), %d)", varName, desc.Limit)
+		errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", uint64(1+len(%s.Bytes())), %s)", varName, uintLitArg(fmt.Sprintf("%d", desc.Limit)))
 		ctx.appendCode(indent, "if uint64(1+len(%s.Bytes())) > %d {\n\treturn %s\n}\n", varName, desc.Limit, typePath.getErrorWith(errCode))
 	}
 	// Hash the payload byte length, then the sign byte and big-endian magnitude.
@@ -689,7 +689,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 			if desc.BitSize > 0 {
 				defaultValue = uint64(desc.BitSize)
 			} else {
-				defaultValue = uint64(desc.Len * 8)
+				defaultValue = uint64(desc.Len) * 8
 			}
 		}
 
@@ -707,7 +707,9 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 			bitlimitVar = fmt.Sprintf("%d", desc.BitSize)
 		}
 		limitVar = fmt.Sprintf("%d", desc.Len)
-		intLimit = limitVar
+		intLimit = intLitStr(limitVar)
+		declared, overflow := declaredVectorBytes(desc)
+		platformGuard(ctx.appendCode, indent, ctx.typePrinter.AddImport("math", "math"), declared, overflow, "return "+typePath.getErrorWith(fmt.Sprintf("sszutils.ErrPlatformOverflowFn(\"vector size\", uint64(%d))", declared)))
 	}
 
 	valueVar := varName
@@ -749,7 +751,7 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		ctx.appendCode(indent, "}\n")
 		lenVar = intLimit
 	default:
-		lenVar = fmt.Sprintf("%d", desc.Len)
+		lenVar = intLimit
 	}
 
 	// Handle byte arrays

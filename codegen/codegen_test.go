@@ -2505,6 +2505,96 @@ type genNegSizeHolder struct {
 	V [2]genNegSizer `ssz-type:"?,custom"`
 }
 
+// genBigVec declares a fixed-element vector past the 32-bit int range and
+// genDynVec a vector of variable-size elements.
+type genBigVec struct {
+	V []uint64 `ssz-size:"3000000000"`
+}
+
+type genDynVecElem struct {
+	B []byte `ssz-max:"8"`
+}
+
+type genDynVec struct {
+	V []genDynVecElem `ssz-size:"65536"`
+}
+
+// A declared size past the 32-bit int range is emitted in a form that
+// compiles on every target: the comparisons run in uint64, the int positions
+// carry the capped literal, and a platform guard precedes them; a vector of
+// variable-size elements allocates its slice and offset table only after the
+// input has been checked against the declaration.
+func TestGeneratePortableDeclaredSizes(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_big.go",
+		WithReflectType(reflect.TypeFor[genBigVec](), WithCreateEncoderFn(), WithCreateDecoderFn()),
+		WithReflectType(reflect.TypeFor[genDynVec](), WithCreateEncoderFn(), WithCreateDecoderFn()),
+	)
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	code := files["gen_big.go"]
+	for _, want := range []string{
+		"if 24000000000 > math.MaxInt {",
+		"sszutils.CapToInt(3000000000)",
+		"if 24000000000 != uint64(buflen) {",
+		"sszutils.ErrFixedFieldsEOFFn(buflen, uint64(24000000000))",
+		"24000000000 > uint64(dec.GetLength())",
+	} {
+		if !strings.Contains(code, want) {
+			t.Errorf("generated code lacks %q:\n%s", want, code)
+		}
+	}
+	for _, line := range strings.Split(code, "\n") {
+		if strings.Contains(line, "3000000000*") || strings.Contains(line, "*3000000000") {
+			t.Errorf("generated code carries an unfolded constant product: %s", line)
+		}
+	}
+
+	// The stream decoder seeds the offset table from the delivered bytes and
+	// expands the element slice after the offsets are read.
+	decoder := methodBody(code, "genDynVec", "UnmarshalSSZDecoder")
+	seed := strings.Index(decoder, "sszutils.CredibleCount(dec, 65536-1, 4)")
+	expand := strings.Index(decoder, "sszutils.ExpandSlice(val1, 65536)")
+	if seed < 0 || expand < 0 || expand < seed {
+		t.Errorf("stream decoder allocates for the declaration before checking it:\n%s", decoder)
+	}
+	// The spec-free type carries its buffer body in the static method.
+	unmarshal := methodBody(code, "genDynVec", "UnmarshalSSZ")
+	check := strings.Index(unmarshal, "if 262144 > len(buf) {")
+	expand = strings.Index(unmarshal, "sszutils.ExpandSlice(val1, 65536)")
+	if check < 0 || expand < 0 || expand < check {
+		t.Errorf("buffer unmarshal allocates for the declaration before checking it:\n%s", unmarshal)
+	}
+}
+
+// methodBody returns the body of the named generated method of typeName.
+func methodBody(code, typeName, method string) string {
+	for _, chunk := range strings.Split(code, "\nfunc (t *") {
+		if strings.HasPrefix(chunk, typeName+") "+method+"(") {
+			if end := strings.LastIndex(chunk, "\n}"); end >= 0 {
+				return chunk[:end+2]
+			}
+			return chunk
+		}
+	}
+	return ""
+}
+
+// A product of two literal bounds folds in uint64 and states no bound past it.
+func TestMulOrAddExprOverflow(t *testing.T) {
+	if expr, ok := mulOrAddExpr("*", "4294967296", "4294967296"); ok || expr != "" {
+		t.Errorf("overflowing product folded to %q, ok=%v", expr, ok)
+	}
+	if expr, ok := mulOrAddExpr("*", "3000000000", "8"); !ok || expr != "24000000000" {
+		t.Errorf("product folded to %q, ok=%v, want 24000000000", expr, ok)
+	}
+	if expr, ok := mulOrAddExpr("+", "18446744073709551615", "1"); ok || expr != "" {
+		t.Errorf("overflowing sum folded to %q, ok=%v", expr, ok)
+	}
+}
+
 // The streaming encoder reports a negative delegated size instead of clamping
 // it, on a container field, list elements, list padding and vector elements.
 func TestGenerateEncoderRejectsNegativeSize(t *testing.T) {

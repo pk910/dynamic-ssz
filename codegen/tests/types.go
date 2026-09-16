@@ -4585,3 +4585,24 @@ type MixedNegSizeHolder struct {
 	C mixedNegSizeCustom   `ssz-type:"custom"`
 	L []mixedNegSizeCustom `ssz-max:"4" ssz-type:"?,custom"`
 }
+
+// BigVecFixed declares a fixed-element vector past the 32-bit int range; the
+// generated file must still build there and refuse the shape.
+type BigVecFixed struct {
+	V []uint64 `ssz-size:"3000000000"`
+}
+
+// DynVecDeclared is a vector of variable-size elements whose declared length
+// is a claim the decoders must not allocate for before the bytes arrive.
+type DynVecElem struct {
+	B []byte `ssz-max:"64"`
+}
+
+type DynVecDeclared struct {
+	V []DynVecElem `ssz-size:"65536"`
+}
+
+// BigIntLimit carries a bigint limit past the 32-bit int range.
+type BigIntLimit struct {
+	B *big.Int `ssz-type:"bigint" ssz-max:"4294967296"`
+}

@@ -745,8 +745,10 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 //   - No offset points outside the data bounds
 //   - Each element consumes exactly the expected bytes
 func (ctx *ReflectionCtx) unmarshalDynamicVector(targetType *ssztypes.TypeDescriptor, targetValue reflect.Value, decoder sszutils.Decoder, depth reflectionDepth) error {
+	// The offset table holds four bytes per element and its size is computed
+	// in int below, so the length is bounded by what that product can hold.
 	dynVecLen := targetType.Len
-	if dynVecLen > math.MaxInt {
+	if dynVecLen > math.MaxInt/4 {
 		return sszutils.ErrPlatformOverflowFn("dynamic vector length", targetType.Len)
 	}
 

@@ -14,3 +14,8 @@ types:
     with-extended-types: true
   - name: MixedDynCustomHolder
   - name: MixedNegSizeHolder
+  - name: BigVecFixed
+  - name: DynVecElem
+  - name: DynVecDeclared
+  - name: BigIntLimit
+    with-extended-types: true

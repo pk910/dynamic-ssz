@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/bits"
 	"strconv"
 	"strings"
 
@@ -155,6 +156,18 @@ func newStaticSizeVarGenerator(typePrinter *TypePrinter, options *CodeGeneratorO
 	}
 }
 
+// elemSizeExpr returns the byte size of a fixed-size element as the generated
+// code must see it: the runtime-resolved size variable when the element is
+// spec-sized and dynamic expressions are on, otherwise the static literal.
+// The second result reports the literal form.
+func (g *staticSizeVarGenerator) elemSizeExpr(elemDesc *ssztypes.TypeDescriptor) (string, bool, error) {
+	if elemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !g.options.WithoutDynamicExpressions {
+		sizeVar, err := g.getStaticSizeVar(elemDesc)
+		return sizeVar, false, err
+	}
+	return fmt.Sprintf("%d", elemDesc.Size), true, nil
+}
+
 // getStaticSizeVar generates a variable name for cached static size calculations.
 func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor) (string, error) {
 	descCopy := *desc
@@ -251,7 +264,7 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 					if desc.BitSize > 0 {
 						defaultValue = uint64(desc.BitSize)
 					} else {
-						defaultValue = uint64(desc.Len * 8)
+						defaultValue = uint64(desc.Len) * 8
 					}
 				}
 				exprVar := g.exprVarGenerator.getSizeExprVar(*sizeExpression, defaultValue)
@@ -430,12 +443,22 @@ func minSizeExpr(desc *ssztypes.TypeDescriptor, sizeVars *staticSizeVarGenerator
 // so a fully static bound stays a plain number in the generated code. It reports
 // false if the result would be zero, which states no bound.
 func mulOrAddExpr(op, left, right string) (string, bool) {
-	leftVal, leftErr := strconv.Atoi(left)
-	rightVal, rightErr := strconv.Atoi(right)
+	leftVal, leftErr := strconv.ParseUint(left, 10, 64)
+	rightVal, rightErr := strconv.ParseUint(right, 10, 64)
 	if leftErr == nil && rightErr == nil {
-		folded := leftVal * rightVal
+		// Folded in uint64; a product past that range states no usable bound.
+		var folded uint64
 		if op == "+" {
 			folded = leftVal + rightVal
+			if folded < leftVal {
+				return "", false
+			}
+		} else {
+			hi, lo := bits.Mul64(leftVal, rightVal)
+			if hi != 0 {
+				return "", false
+			}
+			folded = lo
 		}
 
 		return fmt.Sprintf("%d", folded), folded > 0
@@ -519,6 +542,91 @@ func uintCmpExpr(lenExpr, op, limit string) string {
 		return fmt.Sprintf("%s %s %s", lenExpr, op, limit)
 	}
 	return fmt.Sprintf("uint64(%s) %s %s", lenExpr, op, limit)
+}
+
+// bigLiteral reports whether expr is a literal past every platform's int
+// range, which a 32-bit target cannot compile in an int position.
+func bigLiteral(expr string) bool {
+	v, err := strconv.ParseUint(expr, 10, 64)
+	return err == nil && v > math.MaxInt32
+}
+
+// intLitStr renders a size or count expression for an int position: a literal
+// past every platform's int range is capped at run time so the file compiles
+// on a 32-bit target; anything else passes through untouched. A capped
+// literal is only reached behind platformGuard.
+func intLitStr(expr string) string {
+	if bigLiteral(expr) {
+		return fmt.Sprintf("sszutils.CapToInt(%s)", expr)
+	}
+	return expr
+}
+
+// sizeCmpExpr renders "size op len" with the length widened to uint64 when
+// the size is a literal past the portable int range, so the comparison stays
+// exact on every target.
+func sizeCmpExpr(sizeExpr, op, lenExpr string) string {
+	if bigLiteral(sizeExpr) {
+		lenExpr = "uint64(" + lenExpr + ")"
+	}
+	return fmt.Sprintf("%s %s %s", sizeExpr, op, lenExpr)
+}
+
+// lenCmpExpr renders "len op size" with the length widened to uint64 when
+// the size is a literal past the portable int range.
+func lenCmpExpr(lenExpr, op, sizeExpr string) string {
+	if bigLiteral(sizeExpr) {
+		lenExpr = "uint64(" + lenExpr + ")"
+	}
+	return fmt.Sprintf("%s %s %s", lenExpr, op, sizeExpr)
+}
+
+// lenMinusExpr renders "len - size" in uint64 when the size is a literal past
+// the portable int range.
+func lenMinusExpr(lenExpr, sizeExpr string) string {
+	if bigLiteral(sizeExpr) {
+		return fmt.Sprintf("uint64(%s) - %s", lenExpr, sizeExpr)
+	}
+	return fmt.Sprintf("%s - %s", lenExpr, sizeExpr)
+}
+
+// foldedProduct multiplies two size expressions, folding two literals into
+// one number so the generated code never carries a constant product that
+// overflows the target's int.
+func foldedProduct(a, b string) string {
+	av, aerr := strconv.ParseUint(a, 10, 64)
+	bv, berr := strconv.ParseUint(b, 10, 64)
+	if aerr == nil && berr == nil {
+		hi, lo := bits.Mul64(av, bv)
+		if hi == 0 {
+			return fmt.Sprintf("%d", lo)
+		}
+	}
+	return fmt.Sprintf("%s*%s", a, b)
+}
+
+// declaredVectorBytes is the wire size a fixed-length vector declares: its
+// offset table for dynamic elements, its elements otherwise. The second
+// result reports a product past uint64.
+func declaredVectorBytes(desc *ssztypes.TypeDescriptor) (uint64, bool) {
+	elem := uint64(4)
+	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
+		elem = uint64(desc.ElemDesc.Size)
+	}
+	hi, lo := bits.Mul64(uint64(desc.Len), elem)
+	return lo, hi != 0
+}
+
+// platformGuard emits a rejection of a declared size that cannot exist on
+// the target platform, so the capped literals that follow are never reached
+// there; the comparison is between constants and folds away where the size
+// fits. Nothing is emitted for a size every platform holds. retStmt is the
+// full return statement of the surrounding method.
+func platformGuard(appendCode func(int, string, ...any), indent int, mathPkg string, size uint64, overflow bool, retStmt string) {
+	if !overflow && size <= math.MaxInt32 {
+		return
+	}
+	appendCode(indent, "if %d > %s.MaxInt {\n\t%s\n}\n", size, mathPkg, retStmt)
 }
 
 // uintLitArg types an integer literal above the portable int range as uint64

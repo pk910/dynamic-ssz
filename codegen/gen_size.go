@@ -136,7 +136,7 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 			appendCode(codeBuilder, 0, "// SizeSSZ returns the SSZ encoded size of the %s.\n", typeName)
 			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "SizeSSZ", "", "", "size int", "0", false)
 			if rootTypeDesc.Size > 0 {
-				appendCode(codeBuilder, 1, "return %d\n", rootTypeDesc.Size)
+				appendCode(codeBuilder, 1, "return %s\n", intLitStr(fmt.Sprintf("%d", rootTypeDesc.Size)))
 			} else {
 				appendCode(codeBuilder, 1, ctx.exprVars.getCode())
 				appendCode(codeBuilder, 1, ctx.staticSizeVars.getCode())
@@ -510,7 +510,7 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 			if desc.BitSize > 0 {
 				defaultValue = uint64(desc.BitSize)
 			} else {
-				defaultValue = uint64(desc.Len * 8)
+				defaultValue = uint64(desc.Len) * 8
 			}
 		}
 
@@ -528,7 +528,7 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 		}
 		ctx.appendCode(indent, "%s := int(%s)%s\n", limitVar, rawLimit, convSuppress)
 	} else {
-		ctx.appendCode(indent, "%s := %d\n", limitVar, desc.Len)
+		ctx.appendCode(indent, "%s := %s\n", limitVar, intLitStr(fmt.Sprintf("%d", desc.Len)))
 	}
 
 	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {

@@ -31,7 +31,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"math"
 	"math/bits"
 	"slices"
 	"strconv"
@@ -1212,5 +1211,5 @@ func floorLog2(n int) int {
 }
 
 func powerTwo(n int) int {
-	return int(math.Pow(2, float64(n)))
+	return 1 << n
 }

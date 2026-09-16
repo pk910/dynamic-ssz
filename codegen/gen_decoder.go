@@ -532,6 +532,7 @@ func (ctx *decoderContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, var
 		}
 	}
 	staticSizeVars = append(staticSizeVars, fmt.Sprintf("%d", staticSize))
+	platformGuard(ctx.appendCode, indent, ctx.typePrinter.AddImport("math", "math"), uint64(staticSize), false, "return "+typePath.getErrorWith(fmt.Sprintf("sszutils.ErrPlatformOverflowFn(\"container size\", uint64(%d))", staticSize)))
 
 	totalStaticSizeExpr := strings.Join(staticSizeVars, "+")
 	lenExpr := "dec.GetLength()"
@@ -551,8 +552,8 @@ func (ctx *decoderContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, var
 		ctx.appendCode(indent, "%s := dec.GetPosition()\n", startPosVar)
 		ctx.startPosVarCounter++
 	}
-	errCode := fmt.Sprintf("sszutils.ErrFixedFieldsEOFFn(dec.GetLength(), %s)", totalStaticSizeExpr)
-	ctx.appendCode(indent, "if %s < %s {\n\treturn %s\n}\n", lenExpr, totalStaticSizeExpr, typePath.getErrorWith(errCode))
+	errCode := fmt.Sprintf("sszutils.ErrFixedFieldsEOFFn(dec.GetLength(), %s)", uintLitArg(totalStaticSizeExpr))
+	ctx.appendCode(indent, "if %s {\n\treturn %s\n}\n", sizeCmpExpr(totalStaticSizeExpr, ">", lenExpr), typePath.getErrorWith(errCode))
 	// Only an offset after the first checks against maxOffset (the first
 	// compares against the static size), so the bound is emitted for two or
 	// more dynamic fields. Offsets are 4-byte values, so the bound lives in
@@ -677,7 +678,7 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 			if desc.BitSize > 0 {
 				defaultValue = uint64(desc.BitSize)
 			} else {
-				defaultValue = uint64(desc.Len * 8)
+				defaultValue = uint64(desc.Len) * 8
 			}
 		}
 
@@ -709,6 +710,8 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 		}
 		limitVar = fmt.Sprintf("%d", desc.Len)
 		limit64 = limitVar
+		declared, overflow := declaredVectorBytes(desc)
+		platformGuard(ctx.appendCode, indent, ctx.typePrinter.AddImport("math", "math"), declared, overflow, "return "+typePath.getErrorWith(fmt.Sprintf("sszutils.ErrPlatformOverflowFn(\"vector size\", uint64(%d))", declared)))
 	}
 
 	valueVar := varName
@@ -732,20 +735,25 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 		ctx.appendCode(indent, "}\n")
 	}
 
-	// create slice if needed
-	if desc.Kind != reflect.Array && desc.GoTypeFlags&ssztypes.GoTypeFlagIsString == 0 {
-		ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, %s)\n", valueVar, valueVar, limitVar)
+	// The slice is sized once the input has been checked against the
+	// declaration, so a declared length costs nothing before the bytes it
+	// claims are present.
+	expandSlice := func() {
+		if desc.Kind != reflect.Array && desc.GoTypeFlags&ssztypes.GoTypeFlagIsString == 0 {
+			ctx.appendCode(indent, "%s = sszutils.ExpandSlice(%s, %s)\n", valueVar, valueVar, intLitStr(limitVar))
+		}
 	}
 
 	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 		// static byte arrays
 		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
 			if !noBufCheck {
-				errCode := fmt.Sprintf("sszutils.ErrByteVectorEOFFn(dec.GetLength(), %s)", limitVar)
-				ctx.appendCode(indent, "if %s > dec.GetLength() {\n\treturn %s\n}\n", limitVar, typePath.getErrorWith(errCode))
+				errCode := fmt.Sprintf("sszutils.ErrByteVectorEOFFn(dec.GetLength(), %s)", uintLitArg(limitVar))
+				ctx.appendCode(indent, "if %s {\n\treturn %s\n}\n", sizeCmpExpr(limitVar, ">", "dec.GetLength()"), typePath.getErrorWith(errCode))
 			}
+			expandSlice()
 			if desc.GoTypeFlags&ssztypes.GoTypeFlagIsString != 0 {
-				ctx.appendCode(indent, "if buf, err := dec.DecodeBytesBuf(%s); err != nil {\n", limitVar)
+				ctx.appendCode(indent, "if buf, err := dec.DecodeBytesBuf(%s); err != nil {\n", intLitStr(limitVar))
 				ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith("err"))
 				ctx.appendCode(indent, "} else {\n")
 				// Assign through the plain (dereferenced) lvalue: valueVar may
@@ -757,7 +765,7 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 				ctx.appendCode(indent+1, "%s = %s\n", assignVar, ctx.getCastedValueVar(desc, "buf", ""))
 				ctx.appendCode(indent, "}\n")
 			} else {
-				ctx.appendCode(indent, "if _, err = dec.DecodeBytes(%s[:%s]); err != nil {\n\treturn err\n}\n", indexValueVar, limitVar)
+				ctx.appendCode(indent, "if _, err = dec.DecodeBytes(%s[:%s]); err != nil {\n\treturn err\n}\n", indexValueVar, intLitStr(limitVar))
 				if bitlimitVar != "" {
 					// Only bit-aligned bitvectors (bit size not a multiple of 8)
 					// have padding bits. For runtime-resolved bit sizes the
@@ -768,7 +776,7 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 						checkIndent++
 					}
 					ctx.appendCode(checkIndent, "paddingMask := uint8((uint16(0xff) << (%s %% 8)) & 0xff)\n", bitlimitVar)
-					ctx.appendCode(checkIndent, "if %s[%s-1] & paddingMask != 0 {\n", indexValueVar, limitVar)
+					ctx.appendCode(checkIndent, "if %s[%s-1] & paddingMask != 0 {\n", indexValueVar, intLitStr(limitVar))
 					errCode := errCodeBitvectorPadding
 					ctx.appendCode(checkIndent, "\treturn %s\n", typePath.getErrorWith(errCode))
 					ctx.appendCode(checkIndent, "}\n")
@@ -801,13 +809,15 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 		}
 
 		if !noBufCheck {
-			errCode := fmt.Sprintf("sszutils.ErrVectorElementsEOFFn(dec.GetLength(), %s*%s)", limitVar, fieldSizeVar)
-			ctx.appendCode(indent, "if %s*%s > dec.GetLength() {\n\treturn %s\n}\n", limitVar, fieldSizeVar, typePath.getErrorWith(errCode))
+			sizeExpr := foldedProduct(limitVar, fieldSizeVar)
+			errCode := fmt.Sprintf("sszutils.ErrVectorElementsEOFFn(dec.GetLength(), %s)", uintLitArg(sizeExpr))
+			ctx.appendCode(indent, "if %s {\n\treturn %s\n}\n", sizeCmpExpr(sizeExpr, ">", "dec.GetLength()"), typePath.getErrorWith(errCode))
 		}
+		expandSlice()
 
 		// bulk uint64 lists
 		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0 {
-			ctx.appendCode(indent, "if err = sszutils.DecodeUint64Slice(dec, %s[:%s]); err != nil {\n\treturn %s\n}\n", indexValueVar, limitVar, typePath.getErrorWith("err"))
+			ctx.appendCode(indent, "if err = sszutils.DecodeUint64Slice(dec, %s[:%s]); err != nil {\n\treturn %s\n}\n", indexValueVar, intLitStr(limitVar), typePath.getErrorWith("err"))
 			return nil
 		}
 
@@ -818,7 +828,7 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 		indexVar, indexDefer := ctx.getIndexVar()
 		defer indexDefer()
 
-		ctx.appendCode(indent, "for %s := range %s {\n", indexVar, limitVar)
+		ctx.appendCode(indent, "for %s := range %s {\n", indexVar, intLitStr(limitVar))
 
 		valVar := fmt.Sprintf("%s[%s]", indexValueVar, indexVar)
 		isInlinable := ctx.isInlinable(desc.ElemDesc)
@@ -845,13 +855,14 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 		}
 		ctx.appendCode(indent, "}\n")
 		if bitlimitVar != "" {
-			appendElemPaddingCheck(ctx.appendCode, indent, desc.ElemDesc, indexValueVar, limitVar, bitlimitVar, sizeExpression != nil, "", "return "+typePath.getErrorWith(errCodeBitvectorPadding))
+			appendElemPaddingCheck(ctx.appendCode, indent, desc.ElemDesc, indexValueVar, intLitStr(limitVar), bitlimitVar, sizeExpression != nil, "", "return "+typePath.getErrorWith(errCodeBitvectorPadding))
 		}
 	} else {
 		// dynamic elements
 		ctx.appendCode(indent, "sszLen := dec.GetLength()\n")
-		errCode := fmt.Sprintf("sszutils.ErrVectorOffsetsEOFFn(dec.GetLength(), %s*4)", limitVar)
-		ctx.appendCode(indent, "if %s*4 > sszLen {\n\treturn %s\n}\n", limitVar, typePath.getErrorWith(errCode))
+		tableSize := foldedProduct(limitVar, "4")
+		errCode := fmt.Sprintf("sszutils.ErrVectorOffsetsEOFFn(dec.GetLength(), %s)", uintLitArg(tableSize))
+		ctx.appendCode(indent, "if %s {\n\treturn %s\n}\n", sizeCmpExpr(tableSize, ">", "sszLen"), typePath.getErrorWith(errCode))
 		startPosVar := fmt.Sprintf("startPos%d", ctx.startPosVarCounter)
 		ctx.startPosVarCounter++
 		ctx.appendCode(indent, "%s := dec.GetPosition()\n", startPosVar)
@@ -859,28 +870,33 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 		// check first offset
 		ctx.appendCode(indent, "firstOffset, err := dec.DecodeOffset()\n")
 		ctx.appendCode(indent, "if err != nil {\n\treturn %s\n}\n", typePath.getErrorWith("err"))
-		errCode = fmt.Sprintf("sszutils.ErrFirstOffsetMismatchFn(firstOffset, %s*4)", limitVar)
-		ctx.appendCode(indent, "if int(firstOffset) != %s*4 {\n\treturn %s\n}\n", limitVar, typePath.getErrorWith(errCode))
+		errCode = fmt.Sprintf("sszutils.ErrFirstOffsetMismatchFn(firstOffset, %s)", uintLitArg(tableSize))
+		ctx.appendCode(indent, "if %s {\n\treturn %s\n}\n", lenCmpExpr("int(firstOffset)", "!=", tableSize), typePath.getErrorWith(errCode))
 		ctx.appendCode(indent, "startOffset := int(firstOffset)\n")
 
 		// read offsets
 		ctx.appendCode(indent, "var offsets []uint32\n")
 		ctx.appendCode(indent, "if canSeek {\n")
-		ctx.appendCode(indent+1, "dec.SkipBytes((%s - 1) * 4)\n", limitVar)
+		ctx.appendCode(indent+1, "dec.SkipBytes((%s - 1) * 4)\n", intLitStr(limitVar))
 		ctx.appendCode(indent, "} else if %s > 1 {\n", limitVar)
-		ctx.appendCode(indent+1, "offsetSlices[%d] = sszutils.ExpandSlice(offsetSlices[%d], %s-1)\n", ctx.offsetSliceCounter, ctx.offsetSliceCounter, limitVar)
+		// The declared length is a claim about the input, not a witness of it.
+		// Seed the table from the bytes that have arrived and grow as the
+		// offsets are read -- each costs four bytes.
+		ctx.appendCode(indent+1, "offsetSlices[%d] = sszutils.ExpandSlice(offsetSlices[%d], sszutils.CredibleCount(dec, %s-1, 4))\n", ctx.offsetSliceCounter, ctx.offsetSliceCounter, intLitStr(limitVar))
 		ctx.appendCode(indent+1, "offsets = offsetSlices[%d]\n", ctx.offsetSliceCounter)
 
 		indexVar, indexDefer := ctx.getIndexVar()
 		defer indexDefer()
 
-		ctx.appendCode(indent+1, "for %s := range %s-1 {\n", indexVar, limitVar)
+		ctx.appendCode(indent+1, "for %s := range %s-1 {\n", indexVar, intLitStr(limitVar))
 		ctx.appendCode(indent+2, "offset, err := dec.DecodeOffset()\n")
 		ctx.appendCode(indent+2, "if err != nil {\n")
 		ctx.appendCode(indent+3, "return %s\n", typePath.append("[%d:o]", indexVar).getErrorWith("err"))
 		ctx.appendCode(indent+2, "}\n")
+		ctx.appendCode(indent+2, "offsets = sszutils.GrowSlice(offsets, %s+1, %s-1)\n", indexVar, intLitStr(limitVar))
 		ctx.appendCode(indent+2, "offsets[%s] = offset\n", indexVar)
 		ctx.appendCode(indent+1, "}\n")
+		ctx.appendCode(indent+1, "offsetSlices[%d] = offsets\n", ctx.offsetSliceCounter)
 		ctx.appendCode(indent, "}\n")
 		ctx.useSeekable = true
 		ctx.offsetSliceCounter++
@@ -888,12 +904,13 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 			ctx.offsetSliceLimit = ctx.offsetSliceCounter
 		}
 
-		ctx.appendCode(indent, "for %s := range %s {\n", indexVar, limitVar)
+		expandSlice()
+		ctx.appendCode(indent, "for %s := range %s {\n", indexVar, intLitStr(limitVar))
 
 		fieldPath := typePath.append("[%d]", indexVar)
 
 		ctx.appendCode(indent+1, "var endOffset int\n")
-		ctx.appendCode(indent+1, "if %s < %s-1 {\n", indexVar, limitVar)
+		ctx.appendCode(indent+1, "if %s < %s-1 {\n", indexVar, intLitStr(limitVar))
 		ctx.appendCode(indent+2, "if canSeek {\n")
 		ctx.appendCode(indent+3, "endOffset = int(dec.DecodeOffsetAt(%s + int((%s+1)*4)))\n", startPosVar, indexVar)
 		ctx.appendCode(indent+2, "} else {\n")
@@ -911,7 +928,7 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 		// The trailing element runs to the end of the vector, so it takes an
 		// open region: the whole remainder of the enclosing region, whether or
 		// not that region's extent is known yet.
-		ctx.appendCode(indent+1, "if %s < %s-1 {\n", indexVar, limitVar)
+		ctx.appendCode(indent+1, "if %s < %s-1 {\n", indexVar, intLitStr(limitVar))
 		ctx.appendCode(indent+2, "dec.PushLimit(endOffset - startOffset)\n")
 		ctx.appendCode(indent+1, "} else {\n")
 		ctx.appendCode(indent+2, "dec.PushOpenLimit()\n")
@@ -928,7 +945,7 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 			return err
 		}
 
-		ctx.appendCode(indent+1, "if %s < %s-1 {\n", indexVar, limitVar)
+		ctx.appendCode(indent+1, "if %s < %s-1 {\n", indexVar, intLitStr(limitVar))
 		errCode = errCodeTrailingData
 		ctx.appendCode(indent+2, "if diff := dec.PopLimit(); diff != 0 {\n\treturn %s\n}\n", fieldPath.getErrorWith(errCode))
 		ctx.appendCode(indent+1, "} else if err := dec.FinishRegion(); err != nil {\n")
@@ -1503,9 +1520,11 @@ func (ctx *decoderContext) unmarshalBigInt(desc *ssztypes.TypeDescriptor, varNam
 	// the buffer path; dynamic limits (dynssz-max expressions) stay unchecked.
 	bigIntMaxArg := "-1"
 	if desc.MaxExpression == nil && desc.Limit > 0 {
-		limitErr := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", dec.GetLength(), %d)", desc.Limit)
+		limitErr := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", dec.GetLength(), %s)", uintLitArg(fmt.Sprintf("%d", desc.Limit)))
 		ctx.appendCode(indent, "if dec.LengthKnown() && uint64(dec.GetLength()) > %d {\n\treturn %s\n}\n", desc.Limit, typePath.getErrorWith(limitErr))
-		bigIntMaxArg = fmt.Sprintf("%d", desc.Limit)
+		// The read cap is an int; a limit past the platform's range caps to
+		// it, which the comparison above has already shown the region to fit.
+		bigIntMaxArg = intLitStr(fmt.Sprintf("%d", desc.Limit))
 	}
 	// The magnitude has no internal framing, so the payload runs to the region
 	// end -- only discoverable at EOF when the region is open. The ssz-max bound

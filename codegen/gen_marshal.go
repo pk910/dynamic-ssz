@@ -483,7 +483,7 @@ func (ctx *marshalContext) marshalBigInt(desc *ssztypes.TypeDescriptor, varName 
 	// (dynssz-max expressions) are left unchecked so generated code stays
 	// consistent with the reflection path.
 	if desc.MaxExpression == nil && desc.Limit > 0 {
-		errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", uint64(1+len(%s.Bytes())), %d)", varName, desc.Limit)
+		errCode := fmt.Sprintf("sszutils.NewSszErrorf(sszutils.ErrListTooBig, \"big.Int payload length %%d exceeds maximum %%d\", uint64(1+len(%s.Bytes())), %s)", varName, uintLitArg(fmt.Sprintf("%d", desc.Limit)))
 		ctx.appendCode(indent, "if uint64(1+len(%s.Bytes())) > %d {\n\treturn nil, %s\n}\n", varName, desc.Limit, typePath.getErrorWith(errCode))
 	}
 	// sign byte (0 = non-negative, 1 = negative) followed by the big-endian magnitude
@@ -624,7 +624,7 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			if desc.BitSize > 0 {
 				defaultValue = uint64(desc.BitSize)
 			} else {
-				defaultValue = uint64(desc.Len * 8)
+				defaultValue = uint64(desc.Len) * 8
 			}
 		}
 
@@ -644,7 +644,9 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			bitlimitVar = fmt.Sprintf("%d", desc.BitSize)
 		}
 		limitVar = fmt.Sprintf("%d", desc.Len)
-		intLimit = limitVar
+		intLimit = intLitStr(limitVar)
+		declared, overflow := declaredVectorBytes(desc)
+		platformGuard(ctx.appendCode, indent, ctx.typePrinter.AddImport("math", "math"), declared, overflow, "return nil, "+typePath.getErrorWith(fmt.Sprintf("sszutils.ErrPlatformOverflowFn(\"vector size\", uint64(%d))", declared)))
 	}
 
 	valueVar := varName
@@ -690,7 +692,7 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		ctx.appendCode(indent, "vlen := %s\n", intLimit)
 		lenVar = varNameVLen
 	default:
-		lenVar = fmt.Sprintf("%d", desc.Len)
+		lenVar = intLimit
 	}
 
 	if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
@@ -758,23 +760,20 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			// per-element byte size must be the runtime-resolved size when the
 			// element itself is dynssz-sized (e.g. a multi-dimensional fixed
 			// vector), not the static fallback baked at generation time.
-			elemSizeStr := fmt.Sprintf("%d", desc.ElemDesc.Size)
-			elemIsLiteral := true
-			if desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions {
-				sizeVar, err := ctx.staticSizeVars.getStaticSizeVar(desc.ElemDesc)
-				if err != nil {
-					return err
-				}
-				elemSizeStr = sizeVar
-				elemIsLiteral = false
+			elemSizeStr, elemIsLiteral, err := ctx.staticSizeVars.elemSizeExpr(desc.ElemDesc)
+			if err != nil {
+				return err
 			}
 			ctx.appendCode(indent, "if %s {\n", uintCmpExpr(lenVar, "<", limitVar))
 			if _, limErr := strconv.ParseUint(limitVar, 10, 64); limErr == nil && elemIsLiteral {
-				ctx.appendCode(indent, "\tdst = sszutils.AppendZeroPadding(dst, (%s-%s)*%s)\n", limitVar, lenVar, elemSizeStr)
+				ctx.appendCode(indent, "\tdst = sszutils.AppendZeroPadding(dst, (%s-%s)*%s)\n", intLimit, lenVar, elemSizeStr)
 			} else {
 				// The subtraction and product run in uint64 (the size variables
-				// are unsigned); the codec surface takes the byte count as int.
-				ctx.appendCode(indent, "\tdst = sszutils.AppendZeroPadding(dst, int((%s-uint64(%s))*%s))\n", limitVar, lenVar, elemSizeStr)
+				// are unsigned); the codec surface takes the byte count as int,
+				// so a product past its range is refused rather than truncated.
+				ctx.appendCode(indent, "\tpadding := (%s-uint64(%s))*%s\n", limitVar, lenVar, elemSizeStr)
+				ctx.appendCode(indent, "\tif padding > %s.MaxInt {\n\t\treturn nil, %s\n\t}\n", ctx.typePrinter.AddImport("math", "math"), typePath.getErrorWith(`sszutils.ErrPlatformOverflowFn("vector padding", padding)`))
+				ctx.appendCode(indent, "\tdst = sszutils.AppendZeroPadding(dst, int(padding))\n")
 			}
 			ctx.appendCode(indent, "}\n")
 		}
