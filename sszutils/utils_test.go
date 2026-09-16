@@ -1162,6 +1162,20 @@ func TestBufferDecoder_Available(t *testing.T) {
 // TestCredibleCount_Guards covers the two early-return guards in CredibleCount:
 // a non-positive count, and a non-positive element size on an unknown-length
 // decoder (where the count cannot be bounded from delivered bytes).
+func TestMulSize(t *testing.T) {
+	if got, err := MulSize("vector size", 3, 4); err != nil || got != 12 {
+		t.Fatalf("MulSize(3, 4) = %d, %v", got, err)
+	}
+	// Past 2^64: the high word is set.
+	if _, err := MulSize("vector size", 1<<32, 1<<32); !errors.Is(err, ErrPlatformOverflow) {
+		t.Fatalf("MulSize(2^32, 2^32) err = %v, want ErrPlatformOverflow", err)
+	}
+	// Fits uint64 but not the platform int.
+	if _, err := MulSize("vector size", 1<<62, 4); !errors.Is(err, ErrPlatformOverflow) {
+		t.Fatalf("MulSize(2^62, 4) err = %v, want ErrPlatformOverflow", err)
+	}
+}
+
 func TestCredibleCount_Guards(t *testing.T) {
 	// count <= 0 short-circuits to 0.
 	if got := CredibleCount(NewBufferDecoder(nil), 0, 4); got != 0 {

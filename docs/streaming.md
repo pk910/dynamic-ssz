@@ -458,6 +458,11 @@ func (b *BeaconBlock) UnmarshalSSZDecoder(ds sszutils.DynamicSpecs, decoder sszu
 }
 ```
 
+A generated `UnmarshalSSZDecoder` reads exactly its type's bytes and does not
+verify that the decoder's region ends there: the frame belongs to its caller.
+`UnmarshalSSZReader` pushes the payload as the root region and rejects trailing
+bytes; code that drives a generated decoder directly owns that check.
+
 ## How Streaming Works
 
 ### Encoding

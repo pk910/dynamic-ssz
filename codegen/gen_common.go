@@ -142,6 +142,10 @@ type staticSizeVarGenerator struct {
 	codeBuf          *strings.Builder
 	varMap           map[[32]byte]string
 	varCounter       int
+	// retVars is the return statement's value list where this prelude is
+	// placed; empty means the expression generator's, which is the enclosing
+	// method's. A size closure returning an int sets "0".
+	retVars string
 }
 
 func newStaticSizeVarGenerator(typePrinter *TypePrinter, options *CodeGeneratorOptions, exprVarGenerator *exprVarGenerator) *staticSizeVarGenerator {
@@ -273,7 +277,17 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 					exprVar = fmt.Sprintf("(%s+7)/8", exprVar)
 				}
 
-				appendCode(g.codeBuf, 0, "%s := %s * %s\n", sizeVar, itemSizeVar, exprVar)
+				// Two runtime-resolved factors can pass 2^64 and wrap, so the
+				// product is formed by sszutils.MulSize, which refuses it past
+				// the platform int range like a single resolved size.
+				appendCode(g.codeBuf, 0, "%s, err := sszutils.MulSize(\"vector size\", uint64(%s), uint64(%s))\n", sizeVar, itemSizeVar, exprVar)
+				appendCode(g.codeBuf, 0, "if err != nil {\n")
+				retVars := g.retVars
+				if retVars == "" {
+					retVars = g.exprVarGenerator.retVars
+				}
+				appendCode(g.codeBuf, 1, "return %s\n", retVars)
+				appendCode(g.codeBuf, 0, "}\n")
 			} else if _, lerr := strconv.ParseUint(itemSizeVar, 10, 64); lerr == nil {
 				// A fully literal product needs the explicit uint64 type to
 				// join the other unsigned size variables.

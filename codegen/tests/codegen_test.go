@@ -4755,6 +4755,31 @@ func TestCodegenKnownSizeReaderAllocatesLikeBuffer(t *testing.T) {
 	}
 }
 
+// Two spec-resolved dimensions whose byte product passes 2^64 are refused by
+// every generated writer instead of wrapping to an empty encoding; the size
+// method, which has no error channel, reports 0. Reflection refuses the
+// schema at analysis.
+func TestCodegenRuntimeSizeProductOverflow(t *testing.T) {
+	if _, generated := any(&RuntimeProduct{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	specs := map[string]any{"OUTER": uint64(1) << 32, "INNER": uint64(1) << 32}
+	gen := dynssz.NewDynSsz(specs)
+	if _, err := gen.MarshalSSZ(&RuntimeProduct{}); !errors.Is(err, sszutils.ErrPlatformOverflow) {
+		t.Fatalf("generated MarshalSSZ err = %v, want ErrPlatformOverflow", err)
+	}
+	if err := gen.MarshalSSZWriter(&RuntimeProduct{}, io.Discard); !errors.Is(err, sszutils.ErrPlatformOverflow) {
+		t.Fatalf("generated MarshalSSZWriter err = %v, want ErrPlatformOverflow", err)
+	}
+	if size, err := gen.SizeSSZ(&RuntimeProduct{}); err != nil || size != 0 {
+		t.Fatalf("generated SizeSSZ = %d, %v, want 0 for an overflowing product", size, err)
+	}
+	refl := dynssz.NewDynSsz(specs, dynssz.WithNoFastSsz(), dynssz.WithNoDelegation())
+	if _, err := refl.MarshalSSZ(&RuntimeProduct{}); err == nil {
+		t.Fatal("reflection accepted a schema whose byte size passes the platform range")
+	}
+}
+
 // A bit-sized vector whose bit count is a spec value with no static bit size
 // falls back to the array's own length in bits, on every path of both engines.
 func TestCodegenBitsizeExpressionWithoutStaticFallback(t *testing.T) {

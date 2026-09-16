@@ -2514,6 +2514,12 @@ type SingleCustomHolder struct {
 	N uint64
 }
 
+// RuntimeProduct sizes a byte matrix from two spec values whose product can
+// pass the platform int range.
+type RuntimeProduct struct {
+	Data [][]byte `ssz-size:"1,1" dynssz-size:"OUTER,INNER"`
+}
+
 // KnownSizeLists carries one fixed-element list and one list of lists large
 // enough that a stream decode seeded from the read buffer would grow them.
 type KnownSizeLists struct {

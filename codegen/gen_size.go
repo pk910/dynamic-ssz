@@ -399,6 +399,17 @@ func (ctx *sizeContext) sizeOptional(desc *ssztypes.TypeDescriptor, varName, siz
 	return nil
 }
 
+// appendCheckedProductAdd emits sizeVar += a*b with the product formed by
+// sszutils.MulSize: two spec-driven factors can pass the int range, and the
+// size path has no error channel, so an overflowing product reports 0.
+func (ctx *sizeContext) appendCheckedProductAdd(indent int, sizeVar, what, a, b, suppress string) {
+	ctx.appendCode(indent, "{\n")
+	ctx.appendCode(indent+1, "product, err := sszutils.MulSize(\"%s\", uint64(%s), uint64(%s))%s\n", what, a, b, suppress)
+	ctx.appendCode(indent+1, "if err != nil {\n\treturn 0\n}\n")
+	ctx.appendCode(indent+1, "%s += int(product)\n", sizeVar)
+	ctx.appendCode(indent, "}\n")
+}
+
 // sizeOptionalList generates size calculation code for optional-list (canonical List[T, 1]).
 //
 // nil → 0 bytes. Non-nil → size of the single element, plus 4 bytes for the
@@ -546,17 +557,17 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 			if ctx.exprVars.isSlice {
 				elemConvSuppress = convSuppressComment
 			}
-			ctx.appendCode(indent, "%s += int(%s) * %s%s\n", sizeVar, innerSizeVar, limitVar, elemConvSuppress)
+			ctx.appendCheckedProductAdd(indent, sizeVar, "vector size", innerSizeVar, limitVar, elemConvSuppress)
 		case desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 || desc.ElemDesc.Size == 1:
 			// For byte arrays, size is just the vector length
 			ctx.appendCode(indent, "%s += %s\n", sizeVar, limitVar)
 		default:
-			// Fixed size elements - simple multiplication
-			ctx.appendCode(indent, "%s += %s * %d\n", sizeVar, limitVar, desc.ElemDesc.Size)
+			// Fixed size elements
+			ctx.appendCheckedProductAdd(indent, sizeVar, "vector size", limitVar, fmt.Sprintf("%d", desc.ElemDesc.Size), "")
 		}
 	} else {
 		// Dynamic size elements - need to iterate
-		ctx.appendCode(indent, "%s += %s * 4\n", sizeVar, limitVar)
+		ctx.appendCheckedProductAdd(indent, sizeVar, "vector offsets", limitVar, "4", "")
 
 		if desc.Kind == reflect.Array {
 			indexVar := ctx.getIndexVar()
@@ -593,7 +604,7 @@ func (ctx *sizeContext) sizeVector(desc *ssztypes.TypeDescriptor, varName, sizeV
 			if err := ctx.sizeType(desc.ElemDesc, "zeroItem", innerSizeVar, indent+1, false); err != nil {
 				return err
 			}
-			ctx.appendCode(indent, "\t%s += %s * (%s - vlen)\n", sizeVar, innerSizeVar, limitVar)
+			ctx.appendCheckedProductAdd(indent+1, sizeVar, "vector padding", innerSizeVar, fmt.Sprintf("%s - vlen", limitVar), "")
 			ctx.appendCode(indent, "}\n")
 		}
 	}

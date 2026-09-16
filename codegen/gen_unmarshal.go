@@ -775,9 +775,12 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, v
 		}
 	} else {
 		// A fully fixed container occupies exactly its size, so any extra bytes
-		// are trailing data and must be rejected (matching the reflection and
-		// streaming-decoder paths). Nested fixed containers always receive an
-		// exactly-sized slice, so this only ever fires at the top-level entry.
+		// are trailing data and must be rejected, as the reflection buffer path
+		// does. Nested fixed containers always receive an exactly-sized slice,
+		// so this only ever fires at the top-level entry. The streaming decoder
+		// has no such check: it reads exactly its size and leaves the region's
+		// end to the frame its caller pushed, which UnmarshalSSZReader verifies
+		// for the root.
 		trailErr := fmt.Sprintf("sszutils.ErrTrailingDataFn(%s)", lenMinusExpr("buflen", totalStaticSizeExpr))
 		ctx.appendExactLenCheck(indent, totalStaticSizeExpr, "buflen", typePath.getErrorWith(errCode), typePath.getErrorWith(trailErr))
 	}

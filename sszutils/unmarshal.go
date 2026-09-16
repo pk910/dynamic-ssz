@@ -8,7 +8,9 @@ import (
 	"cmp"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"math"
+	"math/bits"
 	"unsafe"
 )
 
@@ -144,6 +146,19 @@ func CapToInt(v uint64) int {
 	}
 
 	return int(v)
+}
+
+// MulSize returns a*b as a byte count that fits the platform integer range.
+// Two spec-driven factors (a dimension times an element size, a limit times
+// the offset width) can pass 2^64, so the product is formed in 128 bits and
+// refused with ErrPlatformOverflow when it does not fit in an int; what names
+// the quantity in the error.
+func MulSize(what string, a, b uint64) (uint64, error) {
+	hi, lo := bits.Mul64(a, b)
+	if hi != 0 || lo > math.MaxInt {
+		return 0, ErrPlatformOverflowFn(what, fmt.Sprintf("%d*%d", a, b))
+	}
+	return lo, nil
 }
 
 // Min returns the smaller of a and b. Generated code calls the qualified

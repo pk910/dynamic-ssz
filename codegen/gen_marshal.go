@@ -768,11 +768,13 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			if _, limErr := strconv.ParseUint(limitVar, 10, 64); limErr == nil && elemIsLiteral {
 				ctx.appendCode(indent, "\tdst = sszutils.AppendZeroPadding(dst, (%s-%s)*%s)\n", intLimit, lenVar, elemSizeStr)
 			} else {
-				// The subtraction and product run in uint64 (the size variables
-				// are unsigned); the codec surface takes the byte count as int,
-				// so a product past its range is refused rather than truncated.
-				ctx.appendCode(indent, "\tpadding := (%s-uint64(%s))*%s\n", limitVar, lenVar, elemSizeStr)
-				ctx.appendCode(indent, "\tif padding > %s.MaxInt {\n\t\treturn nil, %s\n\t}\n", ctx.typePrinter.AddImport("math", "math"), typePath.getErrorWith(`sszutils.ErrPlatformOverflowFn("vector padding", padding)`))
+				// The subtraction runs in uint64 (the size variables are
+				// unsigned) and the product through sszutils.MulSize, since two
+				// spec-driven factors can pass 2^64; the codec surface takes
+				// the byte count as int, so a product past its range is refused
+				// rather than truncated.
+				ctx.appendCode(indent, "\tpadding, err := sszutils.MulSize(\"vector padding\", %s-uint64(%s), uint64(%s))\n", limitVar, lenVar, elemSizeStr)
+				ctx.appendCode(indent, "\tif err != nil {\n\t\treturn nil, %s\n\t}\n", typePath.getErrorWith("err"))
 				ctx.appendCode(indent, "\tdst = sszutils.AppendZeroPadding(dst, int(padding))\n")
 			}
 			ctx.appendCode(indent, "}\n")
