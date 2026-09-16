@@ -797,10 +797,19 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 //     "unknown size" mode: the payload is consumed to EOF without being materialised,
 //     so the memory savings of streaming still apply.
 //
-// A non-negative size is the extent every region is measured against and the
-// most that is read from r; it is not subject to WithMaxStreamSize. It is a
-// claim, not evidence: allocations are sized from the bytes that have arrived,
-// so a size taken from untrusted framing costs the peer the bytes it declares.
+// A non-negative size is trusted input. It is the extent every region is
+// measured against and the most that is read from r, and the decoder sizes its
+// allocations from it before the bytes arrive; it is not subject to
+// WithMaxStreamSize. It must therefore come from a source you control, such as
+// the stat() result of a local file or a length your own protocol has already
+// validated, never from an untrusted remote peer. A size taken from untrusted
+// framing lets the peer choose how much memory the decode commits before
+// sending anything: the heap reserved for a list is the declared element
+// count times the Go element size, so a few bytes carrying a declared 64 MiB
+// list of pointer elements reserve 512 MiB up front and hold it for as long as
+// the peer keeps the connection open. For input that cannot be trusted pass a
+// negative size and bound the decode with WithMaxStreamSize or
+// WithStreamSizeLimit instead.
 //
 // Unknown-size mode is possible because SSZ is self-delimiting for every region
 // except the trailing one, so the missing length only ever affects the last
@@ -883,8 +892,8 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 	knownSize := size >= 0
 	var decoder *sszutils.StreamDecoder
 	if knownSize {
-		// The declared size bounds the regions and the reads; allocations
-		// follow the bytes that arrive, so the size needs no ceiling.
+		// The declared size is trusted input: it bounds the regions and the
+		// reads and sizes the allocations, so it has no ceiling of its own.
 		decoder = sszutils.NewStreamDecoder(r, size, d.options.StreamReaderBufferSize)
 		decoder.PushLimit(size)
 	} else {

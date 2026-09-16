@@ -183,7 +183,7 @@ Serializes directly to an `io.Writer` for memory-efficient streaming.
 func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...CallOption) error
 ```
 
-Deserializes from an `io.Reader`. The `size` parameter specifies the expected total SSZ data size in bytes.
+Deserializes from an `io.Reader`. The `size` parameter specifies the expected total SSZ data size in bytes. A non-negative size is trusted input: allocations are sized from it before the bytes arrive, so it must come from a source you control (a local file's `stat()` result, a length your own protocol validated), never from an untrusted peer. Pass a negative size for input read off the wire and bound it with `WithMaxStreamSize` or `WithStreamSizeLimit`.
 
 See [Streaming Support](streaming.md) for details.
 

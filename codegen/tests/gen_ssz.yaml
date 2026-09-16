@@ -236,6 +236,8 @@ types:
     output: gen_edgecases.go
   - name: EOFMatrix
     output: gen_edgecases.go
+  - name: KnownSizeLists
+    output: gen_edgecases.go
   - name: WalkerOnlyOuter
     output: gen_edgecases.go
   - name: WrappedU256Holder

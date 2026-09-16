@@ -4721,6 +4721,40 @@ func TestCodegenReaderSegmentationMatchesBuffer(t *testing.T) {
 	}
 }
 
+// A declared size is trusted, so the generated known-size stream decoder sizes
+// its lists from the declaration like the generated buffer decoder does: the
+// only allocations it adds are the decoder and its read buffer, never a growth
+// series.
+func TestCodegenKnownSizeReaderAllocatesLikeBuffer(t *testing.T) {
+	if _, generated := any(&KnownSizeLists{}).(sszutils.DynamicDecoder); !generated {
+		t.Skip("no generated code present")
+	}
+	value := KnownSizeLists{L: make([]uint32, 100000), LL: make([][]uint16, 8000)}
+	for i := range value.LL {
+		value.LL[i] = []uint16{uint16(i)}
+	}
+	// Without the static surface the reader path takes the generated
+	// streaming decoder instead of bridging the whole payload into a buffer.
+	ds := dynssz.NewDynSsz(nil, dynssz.WithNoFastSsz())
+	full, err := ds.MarshalSSZ(&value)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	buffer := testing.AllocsPerRun(5, func() {
+		if err := ds.UnmarshalSSZ(&KnownSizeLists{}, full); err != nil {
+			t.Fatal(err)
+		}
+	})
+	reader := testing.AllocsPerRun(5, func() {
+		if err := ds.UnmarshalSSZReader(&KnownSizeLists{}, bytes.NewReader(full), len(full)); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if reader > buffer+8 {
+		t.Fatalf("known-size reader decode: %v allocs, buffer decode: %v", reader, buffer)
+	}
+}
+
 // A bit-sized vector whose bit count is a spec value with no static bit size
 // falls back to the array's own length in bits, on every path of both engines.
 func TestCodegenBitsizeExpressionWithoutStaticFallback(t *testing.T) {

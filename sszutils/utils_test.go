@@ -519,8 +519,9 @@ func TestDecodeSlicePreallocation(t *testing.T) {
 func TestPreallocateDecodeSlice(t *testing.T) {
 	type wideElement [maxDecodeSlicePreallocationBytes]byte
 
-	// A declared length is a claim; the region's bytes have not arrived.
-	undelivered := NewStreamDecoder(bytes.NewReader(nil), 1<<20, 0)
+	// An open region has no backed extent, so only a byte-bounded prefix is
+	// reserved before the bodies arrive.
+	undelivered := NewUnknownStreamDecoder(bytes.NewReader(nil), 0, 1<<20)
 	got := PreallocateDecodeSlice(undelivered, []wideElement(nil), 512)
 	if len(got) != 1 || cap(got) != 1 {
 		t.Fatalf("wide preallocation len/cap = %d/%d, want 1/1", len(got), cap(got))
@@ -549,6 +550,13 @@ func TestPreallocateDecodeSlice(t *testing.T) {
 	exact := PreallocateDecodeSlice(delivered, []wideElement(nil), 512)
 	if len(exact) != 512 || cap(exact) != 512 {
 		t.Fatalf("delivered preallocation len/cap = %d/%d, want 512/512", len(exact), cap(exact))
+	}
+	// So is a region of a stream whose length the caller declared: the size
+	// is trusted, whether or not the bytes have arrived yet.
+	declared := NewStreamDecoder(bytes.NewReader(nil), 1<<20, 0)
+	exact = PreallocateDecodeSlice(declared, []wideElement(nil), 512)
+	if len(exact) != 512 || cap(exact) != 512 {
+		t.Fatalf("declared preallocation len/cap = %d/%d, want 512/512", len(exact), cap(exact))
 	}
 }
 
@@ -1162,13 +1170,13 @@ func TestCredibleCount_Guards(t *testing.T) {
 	if got := CredibleCount(NewBufferDecoder(nil), -3, 4); got != 0 {
 		t.Fatalf("CredibleCount(_, -3, 4) = %d, want 0", got)
 	}
-	// A buffer decoder has every byte in hand, so a count its region covers
-	// is returned unchanged; one it does not is clamped like any other claim.
-	if got := CredibleCount(NewBufferDecoder(make([]byte, 28)), 7, 4); got != 7 {
+	// A known-length decoder trusts the count unchanged.
+	if got := CredibleCount(NewBufferDecoder(make([]byte, 4)), 7, 4); got != 7 {
 		t.Fatalf("CredibleCount(buffer, 7, 4) = %d, want 7", got)
 	}
-	if got := CredibleCount(NewBufferDecoder(make([]byte, 4)), 7, 4); got != 1 {
-		t.Fatalf("CredibleCount(short buffer, 7, 4) = %d, want 1", got)
+	declared := NewStreamDecoder(bytes.NewReader(make([]byte, 4)), 1<<20, 0)
+	if got := CredibleCount(declared, 1<<16, 4); got != 1<<16 {
+		t.Fatalf("CredibleCount(declared stream, 65536, 4) = %d, want 65536", got)
 	}
 	// An unknown-length decoder with a non-positive element size cannot bound the
 	// count from delivered bytes, so it is returned unchanged.

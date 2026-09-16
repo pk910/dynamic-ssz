@@ -2491,6 +2491,13 @@ type EOFMatrix struct {
 	D  EOFMatrixInner
 }
 
+// KnownSizeLists carries one fixed-element list and one list of lists large
+// enough that a stream decode seeded from the read buffer would grow them.
+type KnownSizeLists struct {
+	L  []uint32   `ssz-max:"1048576"`
+	LL [][]uint16 `ssz-max:"16384,64"`
+}
+
 var EOFMatrix_Payload = EOFMatrix{LL: [][]uint16{{1, 2}, {3}}, BL: [][]byte{{1, 2}, {3}}, X: 7, D: EOFMatrixInner{A: 1, L: []uint64{3, 4}, C: 5}}
 
 // CountedNum is a named uint64 whose hash method counts its calls and puts

@@ -82,9 +82,12 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int) error
 - `target` - Pointer to object to deserialize into
 - `r` - Source reader
 - `size` - Expected total size of the SSZ data in bytes. A non-negative size
-  bounds the regions and the reads and is not subject to `WithMaxStreamSize`;
-  allocations follow the bytes that arrive, so a size taken from untrusted
-  framing costs the peer the bytes it declares.
+  is **trusted**: it bounds the regions and the reads, is not subject to
+  `WithMaxStreamSize`, and the decoder sizes its allocations from it before the
+  bytes arrive. It must come from a source you control, such as the `stat()`
+  result of a local file or a length your own protocol has already validated,
+  never from an untrusted remote peer. See
+  [Trusted sizes](#trusted-sizes) for what an untrusted size can cost.
   A negative size selects **unknown-size mode**: the payload is consumed to EOF
   without being buffered, so the memory savings of streaming still apply. See
   [Unknown-size decoding](#unknown-size-decoding).
@@ -107,10 +110,39 @@ if err != nil {
 ```
 
 ```go
-// Read from network with known size
+// Read from a network peer: the peer's length prefix is not a trusted size.
+// Decode in unknown-size mode under a cap your protocol permits instead.
 var block BeaconBlock
-err = ds.UnmarshalSSZReader(&block, conn, expectedSize)
+err = ds.UnmarshalSSZReader(&block, conn, -1, dynssz.WithStreamSizeLimit(maxBlockBytes))
 ```
+
+### Trusted sizes
+
+A non-negative `size` is trusted, and the decoder uses it the way a buffer
+decode uses `len(buf)`: every region is measured against it, and a list's Go
+slice is allocated for its full declared element count before the element
+bytes have been read. That is what makes a known-size stream decode as cheap as
+a buffer decode, with none of the incremental growth of unknown-size mode.
+
+The decoder does not, and cannot, check where the size came from. Passing a
+size that an untrusted peer chose hands that peer control over how much memory
+the decode commits before it has sent anything:
+
+- The heap reserved for a list is the declared element count times the Go
+  element size, not the wire size. For a list of pointer elements that is
+  8 bytes of heap per declared wire byte; a few bytes of input carrying a
+  declared 64 MiB list reserve 512 MiB up front.
+- `WithMaxStreamSize` and `WithStreamSizeLimit` do not apply to a declared
+  size, so nothing else bounds it.
+- The memory stays committed for as long as the peer keeps the connection open
+  without delivering the bytes.
+
+Use a non-negative size only when it comes from a source you control: the
+`stat()` result of a local file, a database column, or a length your own
+protocol has already validated against a cap. For anything read off the wire,
+pass a negative size and bound the decode with `WithMaxStreamSize` or
+`WithStreamSizeLimit`; unknown-size mode sizes its allocations from the bytes
+that have actually arrived.
 
 ## Streaming Interfaces
 

@@ -5280,6 +5280,38 @@ func TestReaderSegmentationMatchesBuffer(t *testing.T) {
 	}
 }
 
+// A declared size is trusted, so a known-size reader decode sizes its lists
+// from the declaration like a buffer decode does: the only allocations it
+// adds are the decoder and its read buffer, never a growth series.
+func TestKnownSizeReaderAllocatesLikeBuffer(t *testing.T) {
+	type lists struct {
+		L  []uint32   `ssz-max:"1048576"`
+		LL [][]uint16 `ssz-max:"16384,64"`
+	}
+	value := lists{L: make([]uint32, 100000), LL: make([][]uint16, 8000)}
+	for i := range value.LL {
+		value.LL[i] = []uint16{uint16(i)}
+	}
+	ds := NewDynSsz(nil, WithNoFastSsz())
+	full, err := ds.MarshalSSZ(&value)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	buffer := testing.AllocsPerRun(5, func() {
+		if err := ds.UnmarshalSSZ(&lists{}, full); err != nil {
+			t.Fatal(err)
+		}
+	})
+	reader := testing.AllocsPerRun(5, func() {
+		if err := ds.UnmarshalSSZReader(&lists{}, bytes.NewReader(full), len(full)); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if reader > buffer+8 {
+		t.Fatalf("known-size reader decode: %v allocs, buffer decode: %v", reader, buffer)
+	}
+}
+
 // A truncated list of lists whose second element's declared start lies past
 // the input is rejected with the default reader buffer as well, when the
 // reader hands over the last bytes together with EOF.
@@ -5660,9 +5692,8 @@ func TestUnknownSizeMaxStreamSize(t *testing.T) {
 	}
 }
 
-// A declared size is the read bound of the call and is not subject to
-// WithMaxStreamSize; allocations follow the bytes that arrive, so a size far
-// beyond the input costs nothing up front and ends in ErrUnexpectedEOF.
+// A declared size is trusted input: it is the read bound of the call and is
+// not subject to WithMaxStreamSize, which bounds unknown-size decodes only.
 func TestKnownSizeAboveMaxStreamSize(t *testing.T) {
 	type payload struct {
 		A    uint64
@@ -5706,22 +5737,12 @@ func TestKnownSizeAboveMaxStreamSize(t *testing.T) {
 		t.Fatalf("declared size with a smaller per-call limit: %v", err)
 	}
 
-	// A size the input does not fill fails without sizing anything from it.
-	type wide struct {
-		L []*uint8 `ssz-max:"1099511627776"`
-	}
-	dsd := NewDynSsz(nil, WithNoFastSsz())
-	short := []byte{4, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8}
-	var before, after runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&before)
-	err = dsd.UnmarshalSSZReader(&wide{}, bytes.NewReader(short), 64<<20)
-	runtime.ReadMemStats(&after)
+	// A size the input does not fill ends in ErrUnexpectedEOF: A, then the
+	// offset of Data, then nothing of the 4084 declared bytes behind it.
+	short := []byte{1, 0, 0, 0, 0, 0, 0, 0, 12, 0, 0, 0}
+	err = NewDynSsz(nil, WithNoFastSsz()).UnmarshalSSZReader(&payload{}, bytes.NewReader(short), 4096)
 	if !errors.Is(err, sszutils.ErrUnexpectedEOF) {
 		t.Fatalf("err = %v, want ErrUnexpectedEOF", err)
-	}
-	if grew := after.TotalAlloc - before.TotalAlloc; grew > 1<<20 {
-		t.Fatalf("a 12-byte input with a 64 MiB declaration allocated %d bytes", grew)
 	}
 }
 
