@@ -119,8 +119,8 @@ var (
 // field path that is built up as the error bubbles through the call stack.
 //
 // Downstream consumers can use errors.Is(err, sszutils.ErrUnexpectedEOF) to
-// check the error category, and the exported helper functions ErrorPath,
-// ErrorMessage, and ErrorSentinel to inspect details.
+// check the error category; the Path and Message methods, reached through
+// errors.As, expose the details.
 type sszError struct {
 	// err is the underlying sentinel error (e.g. ErrUnexpectedEOF, ErrOffset).
 	err error
@@ -128,21 +128,24 @@ type sszError struct {
 	// message provides additional context about the error.
 	message string
 
-	// path holds field segments collected while the error bubbles up.
-	// Segments are appended at each level (innermost first), then reversed
-	// in Error() to produce a jq-style path like "Block.Body.Attestations[3]".
-	path []string
+	// segment is the field segment this level adds and inner the error it
+	// wraps, so an error bubbling through n levels costs n small values
+	// rather than n copies of a growing path. depth counts the segments;
+	// the outermost level holds the root field, giving Error() its jq-style
+	// path like "Block.Body.Attestations[3]" by walking inward.
+	segment string
+	inner   *sszError
+	depth   int
 }
 
 // Error builds a human-readable error string with the full field path.
 func (e *sszError) Error() string {
 	var b strings.Builder
 
-	if len(e.path) > 0 {
-		// path is stored innermost-first, so iterate in reverse for jq-style output.
-		for i := len(e.path) - 1; i >= 0; i-- {
-			seg := e.path[i]
-			if i == len(e.path)-1 || (seg != "" && seg[0] == '[') {
+	if e.depth > 0 {
+		for level := e; level != nil && level.depth > 0; level = level.inner {
+			seg := level.segment
+			if level == e || (seg != "" && seg[0] == '[') {
 				b.WriteString(seg)
 			} else {
 				b.WriteByte('.')
@@ -172,9 +175,18 @@ func (e *sszError) Unwrap() error {
 	return e.err
 }
 
-// Path returns the field path of the sszError.
+// Path returns the field path of the sszError, innermost segment first.
 func (e *sszError) Path() []string {
-	return e.path
+	if e.depth == 0 {
+		return nil
+	}
+	path := make([]string, e.depth)
+	i := e.depth - 1
+	for level := e; level != nil && level.depth > 0; level = level.inner {
+		path[i] = level.segment
+		i--
+	}
+	return path
 }
 
 // Message returns the detail message of the sszError.
@@ -193,20 +205,15 @@ func NewSszErrorf(base error, format string, args ...any) error {
 }
 
 // ErrorWithPath appends a path segment to an sszError as it bubbles up.
-// If err is not already an sszError, it is wrapped in one.
-// Segments are collected innermost-first and reversed when formatting.
+// If err is not already an sszError, it is wrapped in one. The input error
+// is never mutated: the new level points at it.
 func ErrorWithPath(err error, segment string) error {
 	var se *sszError
 	if errors.As(err, &se) {
-		// Build a fresh error with a copied path so wrapping never mutates the
-		// input error (which may be shared or wrapped concurrently).
-		newPath := make([]string, len(se.path)+1)
-		copy(newPath, se.path)
-		newPath[len(se.path)] = segment
-		return &sszError{err: se.err, message: se.message, path: newPath}
+		return &sszError{err: se.err, message: se.message, segment: segment, inner: se, depth: se.depth + 1}
 	}
 
-	return &sszError{err: err, path: []string{segment}}
+	return &sszError{err: err, segment: segment, depth: 1}
 }
 
 // ErrorWithPathf appends a formatted path segment to an sszError as it bubbles up.

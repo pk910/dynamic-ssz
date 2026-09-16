@@ -435,12 +435,13 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 // The implementation employs several optimizations:
 //   - Internal buffering (default 1KB) to reduce system call overhead for small writes
 //   - Automatic delegation to regular MarshalSSZ for structures smaller than the buffer size
-//   - Pre-computed dynamic size trees for efficient offset calculation in complex structures
 //   - Seamless integration with fastssz for types without dynamic fields
 //
-// For structures with dynamic fields, the method builds a size tree during the first pass to calculate
-// all necessary offsets, then streams the actual data in a second pass. This two-pass approach ensures
-// correct SSZ encoding while maintaining streaming efficiency.
+// A stream cannot be seeked to patch offsets in, so the offsets of a value's
+// dynamic children are computed from their sizes before the children are
+// written. Each nesting level sizes its own children, so a deeply nested value
+// is sized once per level it is nested in; on consensus-shaped values the cost
+// is on par with MarshalSSZ.
 //
 // Parameters:
 //   - source: Any Go value to be serialized. Must be a type supported by SSZ encoding.
