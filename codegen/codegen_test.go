@@ -9,6 +9,7 @@ import (
 	"errors"
 	"go/token"
 	"go/types"
+	"math"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -2533,6 +2534,14 @@ func TestGeneratePortableDeclaredSizes(t *testing.T) {
 		WithReflectType(reflect.TypeFor[genDynVec](), WithCreateEncoderFn(), WithCreateDecoderFn()),
 	)
 	files, err := cg.GenerateToMap()
+	if math.MaxInt == math.MaxInt32 {
+		// A host whose int cannot hold the declaration refuses it at analysis
+		// rather than emitting code from wrapped sizes.
+		if err == nil || !strings.Contains(err.Error(), "exceeds the platform integer range") {
+			t.Fatalf("32-bit host: err = %v, want the platform-range refusal", err)
+		}
+		return
+	}
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
