@@ -21,14 +21,14 @@ go run .
 
 1. **`MarshalSSZWriter`** — stream-encode a 100k-validator registry (~11 MB)
    straight into a file.
-2. **`UnmarshalSSZReader`** — stream-decode with a known total size (from
-   `os.Stat`, or an HTTP `Content-Length`).
-3. **Unknown-size decoding** for chunked HTTP responses: pass a negative size
-   and the payload is consumed to EOF without being buffered. Prefer passing
-   the size when you have it — knowing where the payload ends keeps the
-   fail-fast validation and avoids growing the trailing collection. (Tip:
-   request with `Accept-Encoding: identity` to keep `Content-Length`
-   available on beacon API downloads.)
+2. **`UnmarshalSSZReader`** — stream-decode with a known total size from
+   `os.Stat`. A non-negative size is trusted input: the decoder sizes its
+   allocations from it before the bytes arrive, so it must come from a source
+   you control, never from a remote peer's `Content-Length`.
+3. **Unknown-size decoding** for HTTP responses: pass a negative size and the
+   payload is consumed to EOF without being buffered, bounded by
+   `WithMaxStreamSize` or a per-call `WithStreamSizeLimit`. This is the path
+   for any body whose length is the server's claim.
 4. **`io.Pipe` streaming** — encoder goroutine feeding a decoder with no
    intermediate buffer at all, the shape of direct network transmission.
 5. **Allocation measurement** — buffered decode allocates payload + struct,

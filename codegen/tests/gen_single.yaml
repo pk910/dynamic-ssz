@@ -1,0 +1,15 @@
+# One type per output file, the per-type `output` layout: each generated file
+# must compile on the imports its own code uses.
+package: github.com/pk910/dynamic-ssz/codegen/tests
+output: gen_single_plain.go
+with-streaming: true
+
+types:
+  - name: SinglePlain
+  - name: SingleViewBase
+    output: gen_single_view.go
+    view-only: true
+    views:
+      - SingleViewBase_View1
+  - name: SingleCustomHolder
+    output: gen_single_custom.go

@@ -5280,6 +5280,26 @@ func TestReaderSegmentationMatchesBuffer(t *testing.T) {
 	}
 }
 
+// negSizer reports a negative size through its own sizer.
+type negSizer struct{ A uint64 }
+
+func (n *negSizer) SizeSSZDyn(sszutils.DynamicSpecs) int { return -1 }
+func (n *negSizer) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return append(buf, 0, 0, 0, 0, 0, 0, 0, 0), nil
+}
+
+// A negative size from a type's own sizer is an error at the entry points,
+// as it is inside the engines, instead of an allocation from it.
+func TestNegativeDelegatedSizeAtEntryPoints(t *testing.T) {
+	ds := NewDynSsz(nil)
+	if _, err := ds.MarshalSSZ(&negSizer{}); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Fatalf("MarshalSSZ err = %v, want ErrInvalidValueRange", err)
+	}
+	if _, err := ds.SizeSSZ(&negSizer{}); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Fatalf("SizeSSZ err = %v, want ErrInvalidValueRange", err)
+	}
+}
+
 // A declared size is trusted, so a known-size reader decode sizes its lists
 // from the declaration like a buffer decode does: the only allocations it
 // adds are the decoder and its read buffer, never a growth series.

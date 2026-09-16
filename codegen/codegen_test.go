@@ -2508,6 +2508,12 @@ type genNegSizeHolder struct {
 	V [2]genNegSizer `ssz-type:"?,custom"`
 }
 
+// genPlainContainer needs no platform guard anywhere in its generated code.
+type genPlainContainer struct {
+	A uint64
+	B uint32
+}
+
 // genBigVec declares a fixed-element vector past the 32-bit int range and
 // genDynVec a vector of variable-size elements.
 type genBigVec struct {
@@ -2527,6 +2533,23 @@ type genDynVec struct {
 // carry the capped literal, and a platform guard precedes them; a vector of
 // variable-size elements allocates its slice and offset table only after the
 // input has been checked against the declaration.
+// A container that needs no platform guard must not register the math import
+// the guard would have used: alone in its output file it has to compile.
+func TestGeneratePlainContainerImportsOnlyWhatItUses(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_plain.go",
+		WithReflectType(reflect.TypeFor[genPlainContainer](), WithCreateEncoderFn(), WithCreateDecoderFn()),
+	)
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	code := files["gen_plain.go"]
+	if strings.Contains(code, "\"math\"") && !strings.Contains(code, "math.") {
+		t.Fatalf("plain container imports math without using it:\n%s", code)
+	}
+}
+
 func TestGeneratePortableDeclaredSizes(t *testing.T) {
 	cg := NewCodeGenerator(nil)
 	cg.BuildFile("gen_big.go",

@@ -237,15 +237,14 @@ func PreallocateDecodeSlice[T any](dec Decoder, src []T, count int) []T {
 	return ExpandSlice(src, initialCount)
 }
 
-// CredibleCount clamps a count declared by the input to what the bytes already
-// read can account for, at elemSize bytes per element.
+// CredibleCount returns the count an allocation may be sized from.
 //
-// A count taken from an offset or a region length is only a claim until the
-// bytes behind it arrive. Sizing an allocation from the claim lets a peer turn a
-// few delivered bytes into an arbitrary one; sizing it from what has arrived
-// costs the peer the bytes. When the extent is already backed by known input
-// (a buffer, or a stream whose length the caller declared) the count is
-// returned unchanged.
+// When the region's extent is known (a buffer, a stream whose length the
+// caller declared, or a region that fits in the bytes already read) the
+// declared count is returned unchanged. In unknown-length mode the count is
+// only a claim until the bytes behind it arrive, so it is clamped to what the
+// bytes already read account for at elemSize bytes per element, and callers
+// grow the allocation as the rest arrives.
 func CredibleCount(dec Decoder, count, elemSize int) int {
 	if count <= 0 {
 		return 0

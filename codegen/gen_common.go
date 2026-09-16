@@ -622,11 +622,11 @@ func declaredVectorBytes(desc *ssztypes.TypeDescriptor) (uint64, bool) {
 // there; the comparison is between constants and folds away where the size
 // fits. Nothing is emitted for a size every platform holds. retStmt is the
 // full return statement of the surrounding method.
-func platformGuard(appendCode func(int, string, ...any), indent int, mathPkg string, size uint64, overflow bool, retStmt string) {
+func platformGuard(appendCode func(int, string, ...any), indent int, typePrinter *TypePrinter, size uint64, overflow bool, retStmt string) {
 	if !overflow && size <= math.MaxInt32 {
 		return
 	}
-	appendCode(indent, "if %d > %s.MaxInt {\n\t%s\n}\n", size, mathPkg, retStmt)
+	appendCode(indent, "if %d > %s.MaxInt {\n\t%s\n}\n", size, typePrinter.AddImport("math", "math"), retStmt)
 }
 
 // uintLitArg types an integer literal above the portable int range as uint64

@@ -87,8 +87,8 @@ var _ Decoder = (*StreamDecoder)(nil)
 // NewStreamDecoder creates a new StreamDecoder that reads SSZ data from the
 // provided io.Reader. totalLen specifies the total expected byte length of the
 // SSZ payload and is trusted as such: regions and allocations are sized from
-// it before the bytes arrive, so a caller must bound it (DynSsz holds it to
-// its maximum stream size). A negative totalLen selects unknown-length mode
+// it before the bytes arrive, so it must come from a source the caller
+// controls. A negative totalLen selects unknown-length mode
 // with the default maximum stream size (see NewUnknownStreamDecoder).
 // maxBufSize controls the maximum internal read buffer size; if <= 0,
 // DefaultStreamDecoderBufSize is used.

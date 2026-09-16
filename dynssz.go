@@ -252,6 +252,9 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 			var buf []byte
 			if sizer, ok := source.(sszutils.DynamicSizer); ok && d.delegable(source, "SizeSSZDyn") {
 				size := sizer.SizeSSZDyn(d)
+				if size < 0 {
+					return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "sizer of %T returned negative size %d", source, size)
+				}
 				buf = make([]byte, 0, size)
 			} else {
 				buf = make([]byte, 0, 1024)
@@ -272,6 +275,9 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 				sizeFn := sizer.SizeSSZDynView(cfg.viewDescriptor)
 				if sizeFn != nil {
 					size := sizeFn(d)
+					if size < 0 {
+						return nil, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "sizer of %T returned negative size %d", source, size)
+					}
 					buf = make([]byte, 0, size)
 				} else {
 					buf = make([]byte, 0, 1024)
@@ -632,12 +638,20 @@ func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error) {
 	// Skip view descriptor logic for types implementing DynamicSizer
 	if cfg == nil || cfg.viewDescriptor == nil {
 		if sizer, ok := source.(sszutils.DynamicSizer); ok && !d.options.NoDelegation && d.delegable(source, "SizeSSZDyn") {
-			return sizer.SizeSSZDyn(d), nil
+			size := sizer.SizeSSZDyn(d)
+			if size < 0 {
+				return 0, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "sizer of %T returned negative size %d", source, size)
+			}
+			return size, nil
 		}
 	} else if viewSizer, ok := source.(sszutils.DynamicViewSizer); ok && !d.options.NoDelegation && d.delegable(source, "SizeSSZDynView") {
 		sizeFn := viewSizer.SizeSSZDynView(cfg.viewDescriptor)
 		if sizeFn != nil {
-			return sizeFn(d), nil
+			size := sizeFn(d)
+			if size < 0 {
+				return 0, sszutils.NewSszErrorf(sszutils.ErrInvalidValueRange, "sizer of %T returned negative size %d", source, size)
+			}
+			return size, nil
 		}
 	}
 

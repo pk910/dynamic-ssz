@@ -646,7 +646,7 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 		limitVar = fmt.Sprintf("%d", desc.Len)
 		intLimit = intLitStr(limitVar)
 		declared, overflow := declaredVectorBytes(desc)
-		platformGuard(ctx.appendCode, indent, ctx.typePrinter.AddImport("math", "math"), declared, overflow, "return nil, "+typePath.getErrorWith(fmt.Sprintf("sszutils.ErrPlatformOverflowFn(\"vector size\", uint64(%d))", declared)))
+		platformGuard(ctx.appendCode, indent, ctx.typePrinter, declared, overflow, "return nil, "+typePath.getErrorWith(fmt.Sprintf("sszutils.ErrPlatformOverflowFn(\"vector size\", uint64(%d))", declared)))
 	}
 
 	valueVar := varName

@@ -2491,6 +2491,29 @@ type EOFMatrix struct {
 	D  EOFMatrixInner
 }
 
+// SinglePlain, SingleViewBase and SingleCustomHolder are generated one type
+// per output file, so each file has to compile on the imports its own code
+// uses: a plain container, a view-only type and a custom-typed field.
+type SinglePlain struct {
+	A uint64
+	B uint32
+}
+
+type SingleViewBase struct {
+	F1 uint64
+	F2 []uint64 `ssz-max:"64"`
+}
+
+// SingleViewBase_View1 is a view for SingleViewBase.
+type SingleViewBase_View1 struct {
+	F1 uint64
+}
+
+type SingleCustomHolder struct {
+	C noDynStreamCustom `ssz-type:"custom" ssz-size:"4"`
+	N uint64
+}
+
 // KnownSizeLists carries one fixed-element list and one list of lists large
 // enough that a stream decode seeded from the read buffer would grow them.
 type KnownSizeLists struct {
