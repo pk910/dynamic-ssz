@@ -1904,6 +1904,56 @@ func TestTreeFromNodes64EdgeCases(t *testing.T) {
 	}
 }
 
+// TestTreeFromNodesToDepthWideCapacity builds single- and two-leaf trees at
+// every depth from the 32-bit int width up to the uint64 ceiling. The capacity
+// check must hold in uint64 on every platform: a list capacity such as
+// VALIDATOR_REGISTRY_LIMIT (2^40 chunks) reaches this path through GetTree and
+// must not be mistaken for an over-full tree on a 32-bit build.
+func TestTreeFromNodesToDepthWideCapacity(t *testing.T) {
+	leaf := LeafFromUint64(1)
+	leaves := []*Node{leaf, LeafFromUint64(2)}
+
+	for _, depth := range []int{31, 32, 33, 40, 62, 63, 64} {
+		for _, in := range [][]*Node{{leaf}, leaves} {
+			n, err := treeFromNodesToDepth(in, depth)
+			if err != nil {
+				t.Fatalf("depth %d, %d leaves: %v", depth, len(in), err)
+			}
+			if n == nil {
+				t.Fatalf("depth %d, %d leaves: nil node", depth, len(in))
+			}
+		}
+	}
+
+	// The excess check itself still applies where 2^depth is representable.
+	if _, err := treeFromNodesToDepth(leaves, 0); err == nil {
+		t.Error("depth 0 with two leaves should error")
+	}
+
+	// End to end: a list with a 2^40 chunk capacity holding one element hashes
+	// to the same root through the wrapper as through the hasher.
+	w := NewWrapper()
+	idx := w.Index()
+	w.AppendUint64(7)
+	w.MerkleizeWithMixin(idx, 1, 1<<40)
+	wrapperRoot, err := w.HashRoot()
+	if err != nil {
+		t.Fatalf("wrapper root: %v", err)
+	}
+
+	h := hasher.NewHasher()
+	hidx := h.Index()
+	h.AppendUint64(7)
+	h.MerkleizeWithMixin(hidx, 1, 1<<40)
+	hasherRoot, err := h.HashRoot()
+	if err != nil {
+		t.Fatalf("hasher root: %v", err)
+	}
+	if wrapperRoot != hasherRoot {
+		t.Errorf("wrapper root %x != hasher root %x", wrapperRoot, hasherRoot)
+	}
+}
+
 // TestTreeBuilderDefensiveBranches covers the remaining defensive branches:
 // treeFromNodesToDepth's own excess check (reached only when a caller does not
 // pre-validate), the progressive mixin's negative-count clamp, and hashNode's

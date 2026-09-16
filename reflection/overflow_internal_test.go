@@ -114,6 +114,31 @@ func TestMarshalDynamicVectorLenOverflow(t *testing.T) {
 	}
 }
 
+// --- getSszValueSize dynamic-vector overflow test ---
+
+func TestSizeDynamicVectorLenOverflow(t *testing.T) {
+	skipUnless32Bit(t)
+	ctx := newCtx()
+	elemDesc := &ssztypes.TypeDescriptor{
+		Size:         0,
+		Kind:         reflect.Slice,
+		SszType:      ssztypes.SszListType,
+		SszTypeFlags: ssztypes.SszTypeFlagIsDynamic,
+	}
+	td := &ssztypes.TypeDescriptor{
+		SszType:  ssztypes.SszVectorType,
+		Kind:     reflect.Slice,
+		Len:      overflowLen,
+		ElemDesc: elemDesc,
+	}
+	val := reflect.ValueOf(make([][]byte, 0))
+
+	_, err := ctx.getSszValueSize(td, val, reflectionDepth{})
+	if err == nil || !strings.Contains(err.Error(), "exceeds platform int max") {
+		t.Fatalf("expected overflow error, got: %v", err)
+	}
+}
+
 // --- unmarshalType fastssz path overflow test ---
 
 func TestUnmarshalTypeFastsszSizeOverflow(t *testing.T) {

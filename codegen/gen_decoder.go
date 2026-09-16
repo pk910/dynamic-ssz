@@ -229,35 +229,10 @@ func (ctx *decoderContext) isInlinable(desc *ssztypes.TypeDescriptor) bool {
 // handled=false to signal the caller should inline the type's structure via the
 // structural switch. It must only be called for non-root, non-view types.
 func (ctx *decoderContext) unmarshalDelegatedMethod(desc *ssztypes.TypeDescriptor, varName string, indent int) (handled bool, err error) {
-	hasDynamicSize := desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0
-	isFastsszUnmarshaler := desc.SszCompatFlags&ssztypes.SszCompatFlagFastSSZMarshaler != 0
-	useFastSsz := !ctx.options.NoFastSsz && isFastsszUnmarshaler && !hasDynamicSize
-	if !useFastSsz && desc.SszType == ssztypes.SszCustomType {
-		useFastSsz = true
-	}
-	// Custom types prefer their spec-aware dynssz methods over fastssz.
-	if desc.SszType == ssztypes.SszCustomType &&
-		desc.SszCompatFlags&(ssztypes.SszCompatFlagDynamicUnmarshaler|ssztypes.SszCompatFlagDynamicDecoder) != 0 {
-		useFastSsz = false
-	}
-
 	if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicDecoder != 0 {
 		fn, arg := descendCall(ctx.depthAware, ctx.recursion, desc, "UnmarshalSSZDecoder")
 		ctx.appendCode(indent, "if err = %s.%s(ds, dec%s); err != nil {\n\treturn err\n}\n", varName, fn, arg)
 		ctx.usedDynSpecs = true
-		return true, nil
-	}
-
-	if useFastSsz {
-		sizeStr := "-1"
-		if desc.Size > 0 {
-			sizeStr = fmt.Sprintf("%d", desc.Size)
-		}
-		ctx.appendCode(indent, "if buf, err := sszutils.DecodeDelegateBuffer(dec, %s); err != nil {\n", sizeStr)
-		ctx.appendCode(indent+1, "return err\n")
-		ctx.appendCode(indent, "} else if err = %s.UnmarshalSSZ(buf); err != nil {\n", varName)
-		ctx.appendCode(indent+1, "return err\n")
-		ctx.appendCode(indent, "}\n")
 		return true, nil
 	}
 
@@ -288,14 +263,15 @@ func (ctx *decoderContext) unmarshalDelegatedMethod(desc *ssztypes.TypeDescripto
 			// so it cannot decode its own valid output (ws14-01). This branch is
 			// checked before the static one precisely because such a type has both
 			// a concrete desc.Size and a size expression. A shallow delegated type
-			// (desc.Size == 0) also lands here — reading the whole remaining region
-			// would otherwise swallow subsequent fields.
+			// (desc.Size == 0) also lands here.
 			sizeVar, verr := ctx.staticSizeVars.getStaticSizeVar(desc)
 			if verr != nil {
 				return false, verr
 			}
 			sizeStr = fmt.Sprintf("int(%s)", sizeVar)
-		case desc.Size > 0:
+		case desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0:
+			// A fixed-size delegate is framed at its size, even when that is
+			// zero; only a variable-size delegate consumes the region.
 			sizeStr = fmt.Sprintf("%d", desc.Size)
 		}
 		ctx.appendCode(indent, "if buf, err := sszutils.DecodeDelegateBuffer(dec, %s); err != nil {\n", sizeStr)
@@ -330,7 +306,17 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 
 		if desc.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewUnmarshaler != 0 {
 			sizeStr := "-1"
-			if desc.Size > 0 {
+			switch {
+			case desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 &&
+				desc.SszTypeFlags&ssztypes.SszTypeFlagHasSizeExpr != 0 && !ctx.options.WithoutDynamicExpressions:
+				// A fixed-size view carrying a size expression occupies its
+				// runtime-resolved size (see the unmarshaler delegate below).
+				sizeVar, verr := ctx.staticSizeVars.getStaticSizeVar(desc)
+				if verr != nil {
+					return verr
+				}
+				sizeStr = fmt.Sprintf("int(%s)", sizeVar)
+			case desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0:
 				sizeStr = fmt.Sprintf("%d", desc.Size)
 			}
 			ctx.appendCode(indent, "if buf, err := sszutils.DecodeDelegateBuffer(dec, %s); err != nil {\n", sizeStr)
@@ -359,7 +345,7 @@ func (ctx *decoderContext) unmarshalType(desc *ssztypes.TypeDescriptor, varName 
 
 	if useFastSsz && !isRoot && !isView {
 		sizeStr := "-1"
-		if desc.Size > 0 {
+		if desc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 			sizeStr = fmt.Sprintf("%d", desc.Size)
 		}
 		ctx.appendCode(indent, "if buf, err := sszutils.DecodeDelegateBuffer(dec, %s); err != nil {\n", sizeStr)
@@ -850,6 +836,9 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 			ctx.appendCode(indent, "\t%s[%s] = %s\n", indexValueVar, indexVar, valVar)
 		}
 		ctx.appendCode(indent, "}\n")
+		if bitlimitVar != "" {
+			appendElemPaddingCheck(ctx.appendCode, indent, desc.ElemDesc, indexValueVar, limitVar, bitlimitVar, sizeExpression != nil, "", "return "+typePath.getErrorWith(errCodeBitvectorPadding))
+		}
 	} else {
 		// dynamic elements
 		ctx.appendCode(indent, "sszLen := dec.GetLength()\n")
@@ -1348,10 +1337,17 @@ func (ctx *decoderContext) unmarshalBitlist(desc *ssztypes.TypeDescriptor, varNa
 		ctx.appendCode(indent, "bitlistMaxBytes := %s\n", bitlistCap)
 		bitlistMaxArg = "bitlistMaxBytes"
 	}
-	ctx.appendCode(indent, "if buf, err := sszutils.DecodeByteListInto(dec, %s, %s); err != nil {\n", valueVar, bitlistMaxArg)
+	dstArg, decoded := valueVar, "buf"
+	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray == 0 {
+		// A named uint8 element is viewed as a byte without copying, in both
+		// directions.
+		dstArg = fmt.Sprintf("sszutils.ByteSlice(%s[:])", valueVar)
+		decoded = fmt.Sprintf("sszutils.BytesAs[%s](buf)", ctx.typePrinter.TypeString(desc.ElemDesc))
+	}
+	ctx.appendCode(indent, "if buf, err := sszutils.DecodeByteListInto(dec, %s, %s); err != nil {\n", dstArg, bitlistMaxArg)
 	ctx.appendCode(indent+1, "return %s\n", typePath.getErrorWith("err"))
 	ctx.appendCode(indent, "} else {\n")
-	ctx.appendCode(indent+1, "%s = %s\n", valueVar, ctx.getCastedValueVar(desc, "buf", ""))
+	ctx.appendCode(indent+1, "%s = %s\n", valueVar, ctx.getCastedValueVar(desc, decoded, ""))
 	ctx.appendCode(indent, "}\n")
 	ctx.appendCode(indent, "blen := len(%s)\n", valueVar)
 	ctx.appendCode(indent, "if blen == 0 || %s[blen-1] == 0x00 {\n", valueVar)
@@ -1361,7 +1357,11 @@ func (ctx *decoderContext) unmarshalBitlist(desc *ssztypes.TypeDescriptor, varNa
 
 	if hasMax {
 		bitsPkgName := ctx.typePrinter.AddImport("math/bits", "bits")
-		ctx.appendCode(indent, "bitCount := 8*(blen-1) + int(%s.Len8(%s[blen-1])) - 1\n", bitsPkgName, valueVar)
+		lastByte := fmt.Sprintf("%s[blen-1]", valueVar)
+		if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray == 0 {
+			lastByte = "uint8(" + lastByte + ")"
+		}
+		ctx.appendCode(indent, "bitCount := 8*(blen-1) + int(%s.Len8(%s)) - 1\n", bitsPkgName, lastByte)
 		errCode := fmt.Sprintf("sszutils.ErrBitlistLengthFn(bitCount, %s)", uintLitArg(maxVar))
 		ctx.appendCode(indent, "if %s {\n\treturn %s\n}\n", uintCmpExpr("bitCount", ">", maxVar), typePath.getErrorWith(errCode))
 	}

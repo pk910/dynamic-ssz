@@ -237,6 +237,8 @@ type DynamicAttestation struct {
 }
 ```
 
+A dimension has one unit. Pair `ssz-bitsize` with `dynssz-bitsize` and `ssz-size` with `dynssz-size`; mixing the two families on the same dimension (for example `ssz-bitsize:"12" dynssz-size:"X"`) is rejected by both the reflection engine and the code generator.
+
 ## Maximum Size Annotations
 
 ### ssz-max
@@ -294,15 +296,18 @@ type Advanced struct {
 ```
 
 Like the size tags, `ssz-type` names one dimension per level of nesting, and a
-type with no element is where they run out. Naming more than the type has is
-rejected rather than ignored — a trailing dimension would otherwise read as if
-it did something:
+type with no element is where they run out. Naming fewer dimensions than the
+type has is fine; naming more is accepted and the surplus is ignored, as is a
+limit that reaches a type with no capacity (a container or a basic type):
 
 ```go
-Grid [][]uint64 `ssz-type:"list,list,uint64" ssz-max:"8,8"`  // three levels, three names
-Some [][]uint64 `ssz-type:"list" ssz-max:"8,8"`              // naming fewer is fine
-Bad  []uint64   `ssz-type:"list,uint64,uint32" ssz-max:"8"`  // rejected: uint64 has no element
+Grid  [][]uint64 `ssz-type:"list,list,uint64" ssz-max:"8,8"`  // three levels, three names
+Some  [][]uint64 `ssz-type:"list" ssz-max:"8,8"`              // naming fewer is fine
+Extra []uint64   `ssz-type:"list,uint64,uint32" ssz-max:"8"`  // the trailing uint32 is ignored
 ```
+
+A limit on a fixed-length dimension is still rejected: a vector has no
+capacity to bound.
 
 #### Excluding a field
 
@@ -323,9 +328,12 @@ type Block struct {
 ```
 
 The struct above encodes identically to one containing only `Slot` and `Body`.
-Both the reflection and code-generation engines honor the exclusion. (This is
-the dynamic-ssz spelling of fastssz's `ssz:"-"`; dynamic-ssz does not read the
-plain `ssz` struct tag.)
+Both the reflection and code-generation engines honor the exclusion.
+
+The plain fastssz `ssz` tag is read as well, by both engines, wherever no
+`ssz-type` is given: `ssz:"-"` excludes a field and `ssz:"bitlist"` (or any
+other type name) acts as `ssz-type`. Setting both `ssz` and `ssz-type` on one
+field is rejected.
 
 ### ssz-index
 

@@ -152,7 +152,13 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 			staticSize = uint64(targetType.Len)
 		case fieldType.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0:
 			// vector with dynamic size items, so we have to go through each item
+			if targetType.Len > math.MaxInt {
+				return 0, sszutils.ErrPlatformOverflowFn("vector length", targetType.Len)
+			}
 			dataLen := targetValue.Len()
+			if targetType.Kind == reflect.Array && int64(dataLen) > targetType.Len {
+				dataLen = int(targetType.Len)
+			}
 
 			for i := 0; i < dataLen; i++ {
 				size, err := ctx.getSszValueSize(fieldType, targetValue.Index(i), depth)
@@ -247,7 +253,7 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 			return 0, sszutils.ErrInvalidUnionVariantFn()
 		}
 		if dataField.IsNil() {
-			return 0, sszutils.ErrInvalidUnionVariantFn()
+			return 0, sszutils.ErrUnionTypeMismatchFn()
 		}
 		if dataField.Elem().Type() != variantDesc.Type {
 			return 0, sszutils.ErrUnionTypeMismatchFn()
@@ -271,10 +277,9 @@ func (ctx *ReflectionCtx) getSszValueSize(targetType *ssztypes.TypeDescriptor, t
 			return 0, sszutils.ErrInvalidUnionVariantFn()
 		}
 
-		// A zero-value union has a nil data interface; reject it instead of
-		// panicking on the zero reflect.Value (consistent with marshal/HTR).
+		// A nil data interface cannot carry the selected variant's value.
 		if dataField.IsNil() {
-			return 0, sszutils.ErrInvalidUnionVariantFn()
+			return 0, sszutils.ErrUnionTypeMismatchFn()
 		}
 		if dataField.Elem().Type() != variantDesc.Type {
 			return 0, sszutils.ErrUnionTypeMismatchFn()

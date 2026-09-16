@@ -115,6 +115,12 @@ func NewDynSsz(specs map[string]any, options ...DynSszOption) *DynSsz {
 		hasher.EnableAsyncHashing(opts.AsyncHashingWorkers)
 	}
 
+	// The stream bound is load-bearing and cannot be switched off: a
+	// non-positive setting selects the default.
+	if opts.MaxStreamSize <= 0 {
+		opts.MaxStreamSize = sszutils.DefaultMaxStreamSize
+	}
+
 	dynssz := &DynSsz{
 		specValues:     specs,
 		specValueCache: map[string]*cachedSpecValue{},
@@ -776,9 +782,6 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 //   - Processing static fields directly from the stream
 //   - Dynamically allocating slices based on discovered sizes
 //
-// For optimal performance with small static types (≤ buffer size), the method automatically
-// reads into an internal buffer and delegates to the regular unmarshal function.
-//
 // Parameters:
 //   - target: A pointer to the Go value where decoded data will be stored. Must be a pointer
 //     to a type compatible with SSZ decoding. The method will allocate memory for slices
@@ -795,14 +798,16 @@ func (d *DynSsz) UnmarshalSSZ(target any, ssz []byte, opts ...CallOption) error 
 // A non-negative size is treated as trusted: it is the extent every region is
 // measured against, so allocations are sized from it before the bytes arrive. It
 // must come from a source you control — a stat() result, or a Content-Length you
-// are willing to believe — not from untrusted framing. If it comes off the wire,
-// either cap it yourself first or pass a negative size and let WithMaxStreamSize
-// bound the decode.
+// are willing to believe — not from untrusted framing. A size above
+// WithMaxStreamSize (512 MiB by default) is rejected with
+// sszutils.ErrStreamTooLarge before anything is read, so the maximum is the
+// most a single call can allocate up front; if the size comes off the wire,
+// set the smallest maximum your protocol permits or pass a negative size.
 //
 // Unknown-size mode is possible because SSZ is self-delimiting for every region
 // except the trailing one, so the missing length only ever affects the last
-// dynamic child at each nesting level. It is always bounded by WithMaxStreamSize
-// (512 MiB by default). That is a wire-byte allowance, not a deadline,
+// dynamic child at each nesting level. It is bounded by the same
+// WithMaxStreamSize. That is a wire-byte allowance, not a deadline,
 // cancellation mechanism, or decoded-object heap limit. Use the smallest
 // application-specific cap your schema permits.
 //
@@ -878,6 +883,12 @@ func (d *DynSsz) UnmarshalSSZReader(target any, r io.Reader, size int, opts ...C
 	knownSize := size >= 0
 	var decoder *sszutils.StreamDecoder
 	if knownSize {
+		// The declared size is trusted for region bookkeeping, but it also
+		// sizes allocations before any byte arrives, so it is held to the same
+		// ceiling as an unknown-length decode.
+		if size > d.options.MaxStreamSize {
+			return sszutils.ErrPayloadTooLargeFn(size, d.options.MaxStreamSize)
+		}
 		decoder = sszutils.NewStreamDecoder(r, size, d.options.StreamReaderBufferSize)
 		decoder.PushLimit(size)
 	} else {
@@ -1097,6 +1108,9 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...Ca
 			if err != nil {
 				return err
 			}
+			// A delegate may leave only the packed bytes of its value; the
+			// root is one leaf.
+			hh.FillUpTo32()
 			return nil
 		}
 	} else if viewHasher, ok := source.(sszutils.DynamicViewHashRoot); ok && !d.options.NoDelegation {
@@ -1105,6 +1119,7 @@ func (d *DynSsz) HashTreeRootWith(source any, hh sszutils.HashWalker, opts ...Ca
 			if err != nil {
 				return err
 			}
+			hh.FillUpTo32()
 			return nil
 		}
 	}

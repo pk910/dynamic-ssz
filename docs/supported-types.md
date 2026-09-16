@@ -200,7 +200,8 @@ type CommitteeFlags struct {
 
 A bitlist is a bit-packed variable-size boolean array. Model it with a
 byte-backed field annotated `ssz-type:"bitlist"` (or use `bitfield.Bitlist`,
-below). For bitlists, `ssz-max` specifies the maximum number of **bits**, not
+below). A slice of a named uint8 type works as well; a pointer element does
+not. For bitlists, `ssz-max` specifies the maximum number of **bits**, not
 bytes, consistent with the SSZ specification.
 
 ```go
@@ -728,8 +729,9 @@ type BeaconState struct {
     // Progressive list for efficiency
     Validators []Validator `ssz-type:"progressive-list" ssz-max:"1099511627776" dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`
 
-    // Bitlist for participation
-    JustificationBits bitfield.Bitvector4
+    // Bitvector of 4 bits; go-bitfield's Bitvector types are plain byte
+    // slices, so the tag supplies the SSZ type and the bit count
+    JustificationBits bitfield.Bitvector4 `ssz-type:"bitvector" ssz-bitsize:"4"`
 
     // Dynamic with expression (ssz-max is fallback when spec value is unavailable)
     Balances []uint64 `ssz-max:"1099511627776" dynssz-max:"VALIDATOR_REGISTRY_LIMIT"`

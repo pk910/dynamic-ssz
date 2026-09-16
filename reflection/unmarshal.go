@@ -320,12 +320,13 @@ func (ctx *ReflectionCtx) unmarshalType(targetType *ssztypes.TypeDescriptor, tar
 //
 // Delegates (fastssz, DynamicUnmarshaler, view unmarshalers) take a []byte, so
 // unlike the streaming interfaces they cannot consume an open region
-// incrementally. A fixed-size type is read at its exact size; otherwise the
-// region is consumed to its end, which for an open region means reading to EOF.
-// That gives up streaming for this subtree only — the enclosing decode stays
-// incremental — and is bounded by the decoder's maximum stream size.
+// incrementally. A fixed-size type is read at its exact size, which may be zero
+// (a shell whose methods emit no bytes); a variable-size type consumes the
+// region to its end, which for an open region means reading to EOF. That gives
+// up streaming for this subtree only — the enclosing decode stays incremental —
+// and is bounded by the decoder's maximum stream size.
 func delegationBuffer(targetType *ssztypes.TypeDescriptor, decoder sszutils.Decoder) ([]byte, error) {
-	if targetType.Size > 0 {
+	if targetType.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic == 0 {
 		typeSize := targetType.Size
 		if typeSize > math.MaxInt {
 			return nil, sszutils.ErrPlatformOverflowFn("type size", targetType.Size)
@@ -709,6 +710,11 @@ func (ctx *ReflectionCtx) unmarshalVector(targetType *ssztypes.TypeDescriptor, t
 	} else {
 		if err := ctx.unmarshalFixedElements(fieldType, newValue, arrLen, decoder, depth); err != nil {
 			return err
+		}
+		// A bit-sized bitvector stored element-wise has its padding bits in
+		// the last element.
+		if targetType.BitSize > 0 && targetType.BitSize%8 != 0 && arrLen > 0 && bitvectorPaddingBits(targetType, newValue, arrLen) != 0 {
+			return sszutils.ErrBitvectorPaddingFn()
 		}
 	}
 
@@ -1474,7 +1480,13 @@ func (ctx *ReflectionCtx) unmarshalBitlist(targetType *ssztypes.TypeDescriptor, 
 		}
 	}
 
-	targetValue.Set(reflect.ValueOf(byteSlice))
+	if targetType.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
+		targetValue.Set(reflect.ValueOf(byteSlice))
+	} else {
+		// A slice of a named uint8 type has the same header and element
+		// layout as []byte, so the decoded slice is handed over as is.
+		targetValue.Set(reflect.NewAt(targetValue.Type(), unsafe.Pointer(&byteSlice)).Elem())
+	}
 
 	return nil
 }

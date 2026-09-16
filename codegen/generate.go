@@ -412,6 +412,11 @@ func validateTopLevelType(t *CodeGeneratorTypeOptions, desc *ssztypes.TypeDescri
 	if ptr, ok := base.(*types.Pointer); ok {
 		base = ptr.Elem()
 	}
+	// An alias names another type; a receiver written for it would declare
+	// methods on that other type, or not compile at all.
+	if _, isAlias := base.(*types.Alias); isAlias {
+		return fmt.Errorf("cannot generate SSZ methods for type alias %s: methods cannot be declared on an alias; generate the aliased type or declare a named type", typeName)
+	}
 	if named, ok := base.(*types.Named); ok {
 		if named.TypeArgs().Len() > 0 {
 			return genericErr()

@@ -126,14 +126,16 @@ func WithStreamReaderBufferSize(size int) DynSszOption {
 }
 
 // WithMaxStreamSize sets the upper bound on the total size of an SSZ payload
-// decoded by UnmarshalSSZReader without a known length (size < 0). Defaults to
-// sszutils.DefaultMaxStreamSize (512 MiB) if not set or set to a non-positive
-// value.
+// decoded by UnmarshalSSZReader. A declared size (size >= 0) above the bound is
+// rejected before any byte is read; an unknown-length decode (size < 0) stops
+// at it. Defaults to sszutils.DefaultMaxStreamSize (512 MiB) if not set or set
+// to a non-positive value.
 //
-// Unknown-length decoding is always byte-bounded, and deliberately so: the
-// allowance prevents an endless input from driving unbounded wire buffering and
-// doubles as the remaining-length estimate reported to decode paths that have
-// not been taught about regions of unknown extent. It cannot be disabled.
+// The bound is deliberate and cannot be disabled: a declared size is trusted
+// and sizes allocations up front, and an unknown-length decode would otherwise
+// let an endless input drive unbounded wire buffering. It also doubles as the
+// remaining-length estimate reported to decode paths that have not been taught
+// about regions of unknown extent.
 //
 // This is not a deadline, cancellation mechanism, or decoded-object heap limit.
 // Network callers must impose their own lifetime bound, and should choose the

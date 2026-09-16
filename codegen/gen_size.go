@@ -597,18 +597,18 @@ func (ctx *sizeContext) sizeList(desc *ssztypes.TypeDescriptor, varName, sizeVar
 		valueVar = ctx.getValueVar(desc, varName, targetType)
 	}
 
-	// For byte slices, size is just the length
+	// A bitlist is its bytes, with the lone termination byte of an empty
+	// value; a byte list is just its length.
+	if desc.SszType == ssztypes.SszBitlistType || desc.SszType == ssztypes.SszProgressiveBitlistType {
+		ctx.appendCode(indent, "if len(%s) == 0 {\n", valueVar)
+		ctx.appendCode(indent, "\t%s += 1\n", sizeVar)
+		ctx.appendCode(indent, "} else {\n")
+		ctx.appendCode(indent, "\t%s += len(%s)\n", sizeVar, valueVar)
+		ctx.appendCode(indent, "}\n")
+		return nil
+	}
 	if desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0 {
-		if desc.SszType == ssztypes.SszBitlistType || desc.SszType == ssztypes.SszProgressiveBitlistType {
-			// Bitlists always have at least 1 byte (sentinel byte for empty bitlists)
-			ctx.appendCode(indent, "if len(%s) == 0 {\n", valueVar)
-			ctx.appendCode(indent, "\t%s += 1\n", sizeVar)
-			ctx.appendCode(indent, "} else {\n")
-			ctx.appendCode(indent, "\t%s += len(%s)\n", sizeVar, valueVar)
-			ctx.appendCode(indent, "}\n")
-		} else {
-			ctx.appendCode(indent, "%s += len(%s)\n", sizeVar, valueVar)
-		}
+		ctx.appendCode(indent, "%s += len(%s)\n", sizeVar, valueVar)
 		return nil
 	}
 

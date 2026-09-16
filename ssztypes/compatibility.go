@@ -5,6 +5,7 @@
 package ssztypes
 
 import (
+	"math/big"
 	"reflect"
 	"runtime"
 	"strings"
@@ -12,7 +13,10 @@ import (
 	"github.com/pk910/dynamic-ssz/sszutils"
 )
 
-var byteType = reflect.TypeOf(byte(0))
+var (
+	byteType   = reflect.TypeOf(byte(0))
+	bigIntType = reflect.TypeOf(big.Int{})
+)
 var sszMarshalerType = reflect.TypeOf((*sszutils.FastsszMarshaler)(nil)).Elem()
 var sszUnmarshalerType = reflect.TypeOf((*sszutils.FastsszUnmarshaler)(nil)).Elem()
 var sszHashRootType = reflect.TypeOf((*sszutils.FastsszHashRoot)(nil)).Elem()
