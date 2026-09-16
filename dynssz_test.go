@@ -8067,3 +8067,29 @@ func TestSizeWideByteCustomElements(t *testing.T) {
 		t.Fatalf("decoded %+v != %+v", decoded, *holder)
 	}
 }
+
+// twoLeafDelegate breaks the one-leaf contract at the top level.
+type twoLeafDelegate struct{ A, B uint64 }
+
+func (t *twoLeafDelegate) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(t.A)
+	hh.PutUint64(t.B)
+	return nil
+}
+
+// A delegate that leaves the walker with several nodes is an error from every
+// entry point; the tree builder must not panic where the hasher errors.
+func TestGetTreeIncompleteMerkleization(t *testing.T) {
+	ds := NewDynSsz(nil)
+	v := &twoLeafDelegate{A: 1, B: 2}
+	if _, err := ds.HashTreeRoot(v); err == nil {
+		t.Fatal("HashTreeRoot accepted a two-leaf delegate")
+	}
+	node, err := ds.GetTree(v)
+	if err == nil || !strings.Contains(err.Error(), "incomplete merkleization") {
+		t.Fatalf("GetTree err = %v, want incomplete merkleization", err)
+	}
+	if node != nil {
+		t.Fatal("GetTree returned a tree alongside the error")
+	}
+}

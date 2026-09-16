@@ -570,7 +570,10 @@ func (h *Hasher) CurrentIndex() int {
 
 // Collapse hints the hasher to collapse accumulated chunks in the current
 // layer if the batch threshold is reached. This is a no-op for
-// non-incremental layers or when no layer is active.
+// non-incremental layers or when no layer is active. The hint never changes
+// the root of a scope that respects its limit; a scope holding more chunks
+// than its limit has no defined root, and its value then depends on the
+// hints received.
 func (h *Hasher) Collapse() {
 	if h.layerCount < 0 {
 		return
@@ -1194,7 +1197,10 @@ func (h *Hasher) Merkleize(indx int) {
 
 // MerkleizeWithMixin computes the binary merkle root from indx with the given
 // limit, then mixes in num as the list length. Pops the matching layer if one
-// exists.
+// exists. A scope holding more chunks than the limit allows has no defined
+// root: both engines reject an over-capacity value before this point, so the
+// surplus can only come from a hash method leaving more than one leaf, and
+// the value then depends on the Collapse hints received.
 func (h *Hasher) MerkleizeWithMixin(indx int, num, limit uint64) {
 	indx = h.clampMerkleizeIndex(indx)
 	h.FillUpTo32()

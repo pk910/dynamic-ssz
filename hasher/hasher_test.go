@@ -50,6 +50,12 @@ func TestGetZeroHash(t *testing.T) {
 		t.Error("GetZeroHash(0) should return zero bytes")
 	}
 
+	// The caller owns the returned slice; the shared table stays intact.
+	hash0[0] = 1
+	if !bytes.Equal(GetZeroHash(0), make([]byte, 32)) {
+		t.Error("editing a returned zero hash changed the shared table")
+	}
+
 	// Test that each level is hash of previous level
 	for i := 1; i < 5; i++ {
 		prevHash := GetZeroHash(i - 1)

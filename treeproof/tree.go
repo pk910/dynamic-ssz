@@ -76,9 +76,11 @@ type Multiproof struct {
 // Compress returns a new proof with zero hashes omitted.
 // See `CompressedMultiproof` for more info.
 func (p *Multiproof) Compress() *CompressedMultiproof {
+	// The compressed proof owns its data, so editing one proof never edits
+	// the other.
 	compressed := &CompressedMultiproof{
-		Indices:    p.Indices,
-		Leaves:     p.Leaves,
+		Indices:    slices.Clone(p.Indices),
+		Leaves:     cloneChunks(p.Leaves),
 		Hashes:     make([][]byte, 0, len(p.Hashes)),
 		ZeroLevels: make([]int, 0, len(p.Hashes)),
 	}
@@ -88,11 +90,23 @@ func (p *Multiproof) Compress() *CompressedMultiproof {
 			compressed.ZeroLevels = append(compressed.ZeroLevels, l)
 			compressed.Hashes = append(compressed.Hashes, nil)
 		} else {
-			compressed.Hashes = append(compressed.Hashes, h)
+			compressed.Hashes = append(compressed.Hashes, bytes.Clone(h))
 		}
 	}
 
 	return compressed
+}
+
+// cloneChunks copies a slice of byte slices and every byte slice in it.
+func cloneChunks(src [][]byte) [][]byte {
+	if src == nil {
+		return nil
+	}
+	out := make([][]byte, len(src))
+	for i, chunk := range src {
+		out[i] = bytes.Clone(chunk)
+	}
+	return out
 }
 
 // CompressedMultiproof represents a compressed merkle proof of several leaves.
@@ -108,9 +122,11 @@ type CompressedMultiproof struct {
 // Decompress returns a new multiproof, filling in the omitted
 // zero hashes. See `CompressedMultiProof` for more info.
 func (c *CompressedMultiproof) Decompress() *Multiproof {
+	// The decompressed proof owns its data, so editing one proof never edits
+	// the other.
 	p := &Multiproof{
-		Indices: c.Indices,
-		Leaves:  c.Leaves,
+		Indices: slices.Clone(c.Indices),
+		Leaves:  cloneChunks(c.Leaves),
 		Hashes:  make([][]byte, len(c.Hashes)),
 	}
 
@@ -121,12 +137,10 @@ func (c *CompressedMultiproof) Decompress() *Multiproof {
 			if zc < len(c.ZeroLevels) {
 				level = c.ZeroLevels[zc]
 			}
-			// The zero hashes are shared by every tree; the proof owns its
-			// hashes, so the caller may modify them.
-			p.Hashes[i] = bytes.Clone(hasher.GetZeroHash(level))
+			p.Hashes[i] = hasher.GetZeroHash(level)
 			zc++
 		} else {
-			p.Hashes[i] = c.Hashes[i]
+			p.Hashes[i] = bytes.Clone(c.Hashes[i])
 		}
 	}
 
@@ -258,10 +272,10 @@ func NewNodeWithValue(value []byte) *Node {
 }
 
 // newLeaf initializes a leaf node from up to 32 bytes of value, zero padded.
+// A leaf built from a value is data, never padding, whatever the value.
 func newLeaf(value []byte) *Node {
 	n := &Node{hasValue: true}
 	copy(n.value[:], value)
-	n.isEmpty = n.value == [32]byte{}
 	return n
 }
 
@@ -723,7 +737,8 @@ func (n *Node) IsLeaf() bool {
 	return n.left == nil && n.right == nil
 }
 
-// IsEmpty returns true if this node represents zero-padding.
+// IsEmpty returns true if this node represents zero-padding: a position the
+// tree holds no value for. A leaf holding an all-zero value is not empty.
 func (n *Node) IsEmpty() bool {
 	return n.isEmpty
 }

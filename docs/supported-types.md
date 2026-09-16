@@ -582,7 +582,9 @@ packed prefix of its root, so its root has to be the padded value. Custom
 types of any other size occupy one leaf per element: a `HashTreeRootWith*`
 method there must leave exactly one root on the walker, as it would for
 fastssz. The walker does not verify this; a method that leaves several leaves
-shifts the following elements and can push chunks past the list limit.
+shifts the following elements and can push chunks past the list limit, and a
+scope pushed past its limit has no defined root: the value then depends on
+the collapse hints the walker received.
 
 ### Dynamic Interfaces
 

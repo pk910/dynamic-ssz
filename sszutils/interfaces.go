@@ -135,9 +135,10 @@ const (
 // This allows us to avoid importing fastssz directly while still being
 // compatible with types that implement HashTreeRootWith
 type HashWalker interface {
-	// Hash returns the latest hash generated during merkleize; deferred
-	// reductions are completed first. The returned slice is only valid until
-	// the next walker operation.
+	// Hash returns the last 32 bytes of the walker's state: the latest hash
+	// generated during merkleize, or bytes appended since that are not
+	// merkleized yet; deferred reductions are completed first. The returned
+	// slice is only valid until the next walker operation.
 	Hash() []byte
 
 	// Methods for appending single values
@@ -162,7 +163,7 @@ type HashWalker interface {
 	// Buffer manipulation methods
 	FillUpTo32()
 	Append(i []byte)
-	Index() int                      // deprecated: use StartTree(TreeTypeNone) instead
+	Index() int                      // deprecated: opens a scope like StartTree(TreeTypeNone) but without flushing the enclosing scope's pending reductions
 	CurrentIndex() int               // returns the current buffer index (debug only)
 	StartTree(treeType TreeType) int // start a new SSZ object scope and return the buffer index (close with Merkleize*)
 	Collapse()                       // Hint to collapse accumulated chunks if threshold is reached

@@ -399,6 +399,18 @@ func (w *Wrapper) Node() *Node {
 	return w.nodes[0]
 }
 
+// Root returns the single root node of the constructed Merkle tree, or an
+// error when the wrapper holds any other number of nodes, which indicates
+// incomplete merkleization. Bytes still buffered by Append* calls are flushed
+// to a leaf first. Nothing is hashed.
+func (w *Wrapper) Root() (*Node, error) {
+	w.flushBuffer()
+	if len(w.nodes) != 1 {
+		return nil, fmt.Errorf("incomplete merkleization: wrapper holds %d nodes, want 1", len(w.nodes))
+	}
+	return w.nodes[0], nil
+}
+
 // Hash returns the most recent data of the wrapper's state without mutating
 // it: the trailing bytes of the pending Append* buffer when present (up to 32
 // bytes — fewer when the buffer is not chunk-aligned, like
