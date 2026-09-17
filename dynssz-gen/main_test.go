@@ -138,6 +138,57 @@ func TestRun_RemoveStashesAndRestores(t *testing.T) {
 	}
 }
 
+// A stash left behind by an interrupted run is never overwritten: the run is
+// refused and nothing else is moved.
+func TestStashOutputs_RefusesExistingStash(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "gen_a.go")
+	second := filepath.Join(dir, "gen_b.go")
+	for _, f := range []string{first, second, second + stashSuffix} {
+		if err := os.WriteFile(f, []byte("package x // "+filepath.Base(f)+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := stashOutputs([]typeSpec{{OutputFile: first}, {OutputFile: second}})
+	if err == nil || !strings.Contains(err.Error(), "interrupted") {
+		t.Fatalf("err = %v, want the stash refusal", err)
+	}
+	for _, f := range []string{first, second, second + stashSuffix} {
+		if data, rerr := os.ReadFile(f); rerr != nil || string(data) != "package x // "+filepath.Base(f)+"\n" {
+			t.Fatalf("%s changed: %v", f, rerr)
+		}
+	}
+	if _, serr := os.Stat(first + stashSuffix); !errors.Is(serr, os.ErrNotExist) {
+		t.Fatalf("%s was left moved aside (%v)", first, serr)
+	}
+}
+
+// A generation that panics gets its output files back before the panic
+// continues.
+func TestWithStashedOutputs_RestoresOnPanic(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "gen.go")
+	if err := os.WriteFile(out, []byte("package x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if r := recover(); r != "generator panic" {
+			t.Fatalf("recovered %v, want the generation panic", r)
+		}
+		if data, err := os.ReadFile(out); err != nil || string(data) != "package x\n" {
+			t.Fatalf("output not restored after the panic: %v", err)
+		}
+		if _, serr := os.Stat(out + stashSuffix); !errors.Is(serr, os.ErrNotExist) {
+			t.Fatalf("stash survived the panic (%v)", serr)
+		}
+	}()
+	_ = withStashedOutputs([]typeSpec{{OutputFile: out}}, func() error {
+		if _, serr := os.Stat(out); !errors.Is(serr, os.ErrNotExist) {
+			t.Fatalf("output still in place during generation (%v)", serr)
+		}
+		panic("generator panic")
+	})
+}
+
 // A file that cannot be moved aside fails the stash and puts back what was
 // already moved.
 func TestStashOutputs_MoveFails(t *testing.T) {

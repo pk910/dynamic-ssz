@@ -191,6 +191,7 @@ func main() {
 		_, _ = fmt.Fprintf(w, "        Move the configured output files aside before loading the package,\n")
 		_, _ = fmt.Fprintf(w, "        so generated code from an earlier run cannot block the analysis;\n")
 		_, _ = fmt.Fprintf(w, "        they are deleted once generation succeeds and restored if it fails.\n")
+		_, _ = fmt.Fprintf(w, "        A stash left behind by an interrupted run (<output>.dynssz-gen.orig) is never overwritten.\n")
 		_, _ = fmt.Fprintf(w, "  -package-name string\n")
 		_, _ = fmt.Fprintf(w, "        Package name for generated code (default: same as source package)\n")
 		_, _ = fmt.Fprintf(w, "  -header string\n")
@@ -318,18 +319,34 @@ func run(config *Config) error {
 		typeSpecs = specs
 	}
 	if config.Remove {
-		stash, err := stashOutputs(typeSpecs)
-		if err != nil {
-			return err
-		}
-		if err := runGeneration(config, typeSpecs); err != nil {
-			stash.restore()
-			return err
-		}
-		stash.discard()
-		return nil
+		return withStashedOutputs(typeSpecs, func() error {
+			return runGeneration(config, typeSpecs)
+		})
 	}
 	return runGeneration(config, typeSpecs)
+}
+
+// withStashedOutputs runs generate with the output files moved aside. They
+// are deleted when generate returns nil and restored otherwise, including
+// when generate panics: the panic continues after the files are back.
+func withStashedOutputs(typeSpecs []typeSpec, generate func() error) (err error) {
+	stash, err := stashOutputs(typeSpecs)
+	if err != nil {
+		return err
+	}
+	done := false
+	defer func() {
+		if done {
+			stash.discard()
+		} else {
+			stash.restore()
+		}
+	}()
+	if err := generate(); err != nil {
+		return err
+	}
+	done = true
+	return nil
 }
 
 // runGeneration loads the package and writes the generated files.
@@ -989,6 +1006,12 @@ func stashOutputs(typeSpecs []typeSpec) (*outputStash, error) {
 			continue
 		}
 		seen[spec.OutputFile] = true
+		// A stash left behind by an interrupted run is the only copy of that
+		// run's input; it is never overwritten.
+		if _, statErr := os.Lstat(spec.OutputFile + stashSuffix); statErr == nil {
+			stash.restore()
+			return nil, fmt.Errorf("%s exists: a previous -remove run was interrupted; restore or delete it", spec.OutputFile+stashSuffix)
+		}
 		err := os.Rename(spec.OutputFile, spec.OutputFile+stashSuffix)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
