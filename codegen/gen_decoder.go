@@ -575,7 +575,7 @@ func (ctx *decoderContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, var
 				errCode = fmt.Sprintf("sszutils.ErrOffsetOutOfRangeFn(offset%d, offset%d, maxOffset)", idx, dynamicFields[len(dynamicFields)-1])
 				ctx.appendCode(indent, "if offset%d < offset%d || offset%d > maxOffset {\n\treturn %s\n}\n", idx, dynamicFields[len(dynamicFields)-1], idx, fieldPath.getErrorWith(errCode))
 			} else {
-				errCode = fmt.Sprintf("sszutils.ErrFirstOffsetMismatchFn(offset%d, %s)", idx, totalStaticSizeExpr)
+				errCode = fmt.Sprintf("sszutils.ErrFirstOffsetMismatchFn(offset%d, %s)", idx, uintLitArg(totalStaticSizeExpr))
 				firstOffCmp := fmt.Sprintf("uint64(offset%d) != %s", idx, totalStaticSizeExpr)
 				if _, lerr := strconv.ParseUint(totalStaticSizeExpr, 10, 64); lerr == nil {
 					firstOffCmp = fmt.Sprintf("offset%d != %s", idx, totalStaticSizeExpr)
@@ -845,8 +845,8 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 			return err
 		}
 
-		ctx.appendCode(indent+1, "if dec.GetPosition() != %s+int(%s*(%s+1)) {\n", startPosVar, fieldSizeVar, indexVar)
-		errCode := fmt.Sprintf("sszutils.ErrStaticElementNotConsumedFn(dec.GetPosition(), %s+int(%s*(%s+1)))", startPosVar, fieldSizeVar, indexVar)
+		ctx.appendCode(indent+1, "if dec.GetPosition() != %s+int(%s*(%s+1)) {\n", startPosVar, intLitStr(fieldSizeVar), indexVar)
+		errCode := fmt.Sprintf("sszutils.ErrStaticElementNotConsumedFn(dec.GetPosition(), %s+int(%s*(%s+1)))", startPosVar, intLitStr(fieldSizeVar), indexVar)
 		ctx.appendCode(indent+2, "return %s\n", fieldPath.getErrorWith(errCode))
 		ctx.appendCode(indent+1, "}\n")
 
@@ -1153,8 +1153,8 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 			return err
 		}
 
-		ctx.appendCode(indent+1, "if dec.GetPosition() != %s+int(%s*(%s+1)) {\n", startPosVar, fieldSizeVar, indexVar)
-		errCode := fmt.Sprintf("sszutils.ErrStaticElementNotConsumedFn(dec.GetPosition(), %s+int(%s*(%s+1)))", startPosVar, fieldSizeVar, indexVar)
+		ctx.appendCode(indent+1, "if dec.GetPosition() != %s+int(%s*(%s+1)) {\n", startPosVar, intLitStr(fieldSizeVar), indexVar)
+		errCode := fmt.Sprintf("sszutils.ErrStaticElementNotConsumedFn(dec.GetPosition(), %s+int(%s*(%s+1)))", startPosVar, intLitStr(fieldSizeVar), indexVar)
 		ctx.appendCode(indent+2, "return %s\n", fieldPath.getErrorWith(errCode))
 		ctx.appendCode(indent+1, "}\n")
 

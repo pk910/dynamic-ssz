@@ -801,7 +801,7 @@ func (ctx *unmarshalContext) unmarshalContainer(desc *ssztypes.TypeDescriptor, v
 				errCode = fmt.Sprintf("sszutils.ErrOffsetOutOfRangeFn(offset%d, offset%d, buflen)", idx, dynamicFields[len(dynamicFields)-1])
 				ctx.appendCode(indent, "if offset%d < offset%d || offset%d > maxOffset {\n\treturn %s\n}\n", idx, dynamicFields[len(dynamicFields)-1], idx, fieldOffsetPath.getErrorWith(errCode))
 			} else {
-				errCode = fmt.Sprintf("sszutils.ErrFirstOffsetMismatchFn(offset%d, %s)", idx, totalStaticSizeExpr)
+				errCode = fmt.Sprintf("sszutils.ErrFirstOffsetMismatchFn(offset%d, %s)", idx, uintLitArg(totalStaticSizeExpr))
 				firstOffCmp := fmt.Sprintf("uint64(offset%d) != %s", idx, totalStaticSizeExpr)
 				if _, lerr := strconv.ParseUint(totalStaticSizeExpr, 10, 64); lerr == nil {
 					firstOffCmp = fmt.Sprintf("offset%d != %s", idx, totalStaticSizeExpr)
@@ -1087,7 +1087,7 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
 		}
 
-		ctx.appendCode(indent, "\tbuf := buf[%s*%s : %s*(%s+1)]\n", fieldSizeVar, indexVar, fieldSizeVar, indexVar)
+		ctx.appendCode(indent, "\tbuf := buf[%s*%s : %s*(%s+1)]\n", intLitStr(fieldSizeVar), indexVar, intLitStr(fieldSizeVar), indexVar)
 		if err := ctx.unmarshalType(desc.ElemDesc, valVar, typePath.append("[%d]", indexVar), indent+1, false, true); err != nil {
 			return err
 		}
@@ -1283,7 +1283,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 			ctx.appendCode(indent+1, "if %s == nil {\n\t%s = new(%s)\n}\n", valVar, valVar, ctx.typePrinter.InnerTypeString(desc.ElemDesc))
 		}
 
-		ctx.appendCode(indent, "\tbuf := buf[%s*%s : %s*(%s+1)]\n", fieldSizeVar, indexVar, fieldSizeVar, indexVar)
+		ctx.appendCode(indent, "\tbuf := buf[%s*%s : %s*(%s+1)]\n", intLitStr(fieldSizeVar), indexVar, intLitStr(fieldSizeVar), indexVar)
 		if err := ctx.unmarshalType(desc.ElemDesc, valVar, typePath.append("[%d]", indexVar), indent+1, false, true); err != nil {
 			return err
 		}

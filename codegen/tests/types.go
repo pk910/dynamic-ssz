@@ -2578,6 +2578,25 @@ func (v *shallowBasic) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, h sszutils.H
 	return nil
 }
 
+// WideAggregate sums three 1 GiB vectors: the total fits a 64-bit int and
+// not a 32-bit one, where no value of the type can exist.
+type WideAggregate struct {
+	A []byte `ssz-size:"1073741824"`
+	B []byte `ssz-size:"1073741824"`
+	C []byte `ssz-size:"1073741824"`
+}
+
+// WideElems places a 3 GB static field behind a vector of variable-size
+// elements, so the first offset and the element bounds carry the big size.
+type WideElemInner struct {
+	L []byte `ssz-max:"8"`
+}
+
+type WideElems struct {
+	V []WideElemInner `ssz-size:"2"`
+	W []byte          `ssz-size:"3000000000"`
+}
+
 // wideWrapperDescriptor holds 300 excluded fields before the single wrapped
 // value, a position no byte-wide index can address.
 type wideWrapperDescriptor struct {

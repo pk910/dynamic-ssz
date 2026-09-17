@@ -766,7 +766,7 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 			}
 			ctx.appendCode(indent, "if %s {\n", uintCmpExpr(lenVar, "<", limitVar))
 			if _, limErr := strconv.ParseUint(limitVar, 10, 64); limErr == nil && elemIsLiteral {
-				ctx.appendCode(indent, "\tdst = sszutils.AppendZeroPadding(dst, (%s-%s)*%s)\n", intLimit, lenVar, elemSizeStr)
+				ctx.appendCode(indent, "\tdst = sszutils.AppendZeroPadding(dst, (%s-%s)*%s)\n", intLimit, lenVar, intLitStr(elemSizeStr))
 			} else {
 				// The subtraction runs in uint64 (the size variables are
 				// unsigned); the padding is at most the vector's byte size,

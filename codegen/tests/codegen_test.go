@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -4888,6 +4889,30 @@ func TestCodegenShallowBasicDelegateShape(t *testing.T) {
 		if err != nil || root != wantList {
 			t.Fatalf("%T list root = %x, %v, want %x", v, root, err, wantList)
 		}
+	}
+}
+
+// A declared size the target platform cannot hold compiles there and reports
+// zero rather than a wrapped count; on a host that holds it, the size is the
+// sum itself. The shapes also cover the element bounds and the first offset,
+// which carried the same literal.
+func TestCodegenPlatformSizedDeclarations(t *testing.T) {
+	if _, generated := any(&WideAggregate{}).(sszutils.DynamicSizer); !generated {
+		t.Skip("no generated code present")
+	}
+	sizer, ok := any(&WideAggregate{}).(sszutils.DynamicSizer)
+	if !ok {
+		t.Fatal("the generated sizer is missing")
+	}
+	size := sizer.SizeSSZDyn(dynssz.NewDynSsz(nil))
+	if math.MaxInt == math.MaxInt32 {
+		if size != 0 {
+			t.Fatalf("32-bit size = %d, want 0", size)
+		}
+		return
+	}
+	if int64(size) != 3*1073741824 {
+		t.Fatalf("size = %d, want %d", size, int64(3*1073741824))
 	}
 }
 

@@ -136,6 +136,11 @@ func generateSize(rootTypeDesc *ssztypes.TypeDescriptor, codeBuilder *strings.Bu
 			appendCode(codeBuilder, 0, "// SizeSSZ returns the SSZ encoded size of the %s.\n", typeName)
 			emitMethodHeader(codeBuilder, ctx.recursion, rootTypeDesc, typeName, "SizeSSZ", "", "", "size int", "0", false)
 			if rootTypeDesc.Size > 0 {
+				// A size past the target's int range cannot be produced there;
+				// the size path has no error channel, so it reports 0.
+				platformGuard(func(indent int, code string, args ...any) {
+					appendCode(codeBuilder, indent+1, code, args...)
+				}, 0, ctx.typePrinter, uint64(rootTypeDesc.Size), false, "return 0")
 				appendCode(codeBuilder, 1, "return %s\n", intLitStr(fmt.Sprintf("%d", rootTypeDesc.Size)))
 			} else {
 				appendCode(codeBuilder, 1, ctx.exprVars.getCode())
@@ -444,7 +449,10 @@ func (ctx *sizeContext) sizeContainer(desc *ssztypes.TypeDescriptor, varName, si
 	}
 
 	if staticSize > 0 {
-		ctx.appendCode(indent, "%s += %d\n", sizeVar, staticSize)
+		// A size past the target's int range cannot be produced there; the
+		// size path has no error channel, so it reports 0.
+		platformGuard(ctx.appendCode, indent, ctx.typePrinter, uint64(staticSize), false, "return 0")
+		ctx.appendCode(indent, "%s += %s\n", sizeVar, intLitStr(fmt.Sprintf("%d", staticSize)))
 	}
 
 	// Add calculated size for static fields
