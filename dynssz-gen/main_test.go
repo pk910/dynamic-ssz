@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"go/ast"
@@ -68,7 +69,7 @@ func TestStashOutputs(t *testing.T) {
 		}
 	}
 	specs := []typeSpec{{OutputFile: stale}, {OutputFile: stale}, {OutputFile: other}, {OutputFile: filepath.Join(dir, "missing.go")}}
-	stash, err := stashOutputs(specs, false)
+	stash, err := stashOutputs(specs)
 	if err != nil {
 		t.Fatalf("stashOutputs: %v", err)
 	}
@@ -83,7 +84,7 @@ func TestStashOutputs(t *testing.T) {
 			t.Fatalf("%s not restored: %v", f, rerr)
 		}
 	}
-	stash, err = stashOutputs(specs, false)
+	stash, err = stashOutputs(specs)
 	if err != nil {
 		t.Fatalf("stashOutputs again: %v", err)
 	}
@@ -96,6 +97,121 @@ func TestStashOutputs(t *testing.T) {
 			t.Fatalf("%s stash survived discard (%v)", f, serr)
 		}
 	}
+}
+
+// -remove through run(): a successful run replaces the stale output and
+// leaves no stash behind; a failing run restores the stale output.
+func TestRun_RemoveStashesAndRestores(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "gen.go")
+	stale := []byte("package testpkg // stale\n")
+	if err := os.WriteFile(out, stale, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	config := Config{
+		PackagePath: "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg",
+		TypeNames:   "RepeatedSame",
+		OutputFile:  out,
+		Remove:      true,
+	}
+	if err := run(&config); err != nil {
+		t.Fatalf("run with -remove: %v", err)
+	}
+	generated, err := os.ReadFile(out)
+	if err != nil || bytes.Equal(generated, stale) || !bytes.Contains(generated, []byte("RepeatedSame")) {
+		t.Fatalf("stale output not replaced: %v", err)
+	}
+	if _, serr := os.Stat(out + stashSuffix); !errors.Is(serr, os.ErrNotExist) {
+		t.Fatalf("stash survived a successful run (%v)", serr)
+	}
+
+	config.TypeNames = "NonExistentType"
+	if rerr := run(&config); rerr == nil || !strings.Contains(rerr.Error(), "not found") {
+		t.Fatalf("run err = %v, want the missing type", rerr)
+	}
+	restored, err := os.ReadFile(out)
+	if err != nil || !bytes.Equal(restored, generated) {
+		t.Fatalf("output not restored after a failed run: %v", err)
+	}
+	if _, serr := os.Stat(out + stashSuffix); !errors.Is(serr, os.ErrNotExist) {
+		t.Fatalf("stash survived a failed run (%v)", serr)
+	}
+}
+
+// A file that cannot be moved aside fails the stash and puts back what was
+// already moved.
+func TestStashOutputs_MoveFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("a read-only directory does not stop root")
+	}
+	dir := t.TempDir()
+	movable := filepath.Join(dir, "gen_a.go")
+	if err := os.WriteFile(movable, []byte("package x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	locked := filepath.Join(dir, "locked")
+	if err := os.Mkdir(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stuck := filepath.Join(locked, "gen_b.go")
+	if err := os.WriteFile(stuck, []byte("package x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+
+	_, err := stashOutputs([]typeSpec{{OutputFile: movable}, {OutputFile: stuck}})
+	if err == nil || !strings.Contains(err.Error(), "move") {
+		t.Fatalf("err = %v, want the move failure", err)
+	}
+	if _, serr := os.Stat(movable); serr != nil {
+		t.Fatalf("the file moved before the failure was not put back: %v", serr)
+	}
+
+	// The same failure ends a run before the package is loaded.
+	config := Config{
+		PackagePath: "github.com/pk910/dynamic-ssz/dynssz-gen/testpkg",
+		TypeNames:   "RepeatedSame",
+		OutputFile:  stuck,
+		Remove:      true,
+	}
+	if rerr := run(&config); rerr == nil || !strings.Contains(rerr.Error(), "move") {
+		t.Fatalf("run err = %v, want the move failure", rerr)
+	}
+
+	// A restore or discard that cannot complete is logged, not fatal: the
+	// stash of a file in a directory locked after the move stays in place,
+	// and a stash removed by hand is nothing to discard.
+	if cerr := os.Chmod(locked, 0o700); cerr != nil {
+		t.Fatal(cerr)
+	}
+	stash, err := stashOutputs([]typeSpec{{OutputFile: stuck}})
+	if err != nil {
+		t.Fatalf("stashOutputs: %v", err)
+	}
+	if cerr := os.Chmod(locked, 0o500); cerr != nil {
+		t.Fatal(cerr)
+	}
+	stash.restore()
+	if cerr := os.Chmod(locked, 0o700); cerr != nil {
+		t.Fatal(cerr)
+	}
+	if _, serr := os.Stat(stuck + stashSuffix); serr != nil {
+		t.Fatalf("stash of a locked directory vanished: %v", serr)
+	}
+	if rerr := os.Rename(stuck+stashSuffix, stuck); rerr != nil {
+		t.Fatal(rerr)
+	}
+	stash, err = stashOutputs([]typeSpec{{OutputFile: stuck}})
+	if err != nil {
+		t.Fatalf("stashOutputs: %v", err)
+	}
+	if rerr := os.Remove(stuck + stashSuffix); rerr != nil {
+		t.Fatal(rerr)
+	}
+	stash.discard()
 }
 
 func TestTypeNameParsing(t *testing.T) {

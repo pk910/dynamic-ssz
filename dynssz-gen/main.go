@@ -318,7 +318,7 @@ func run(config *Config) error {
 		typeSpecs = specs
 	}
 	if config.Remove {
-		stash, err := stashOutputs(typeSpecs, config.Verbose)
+		stash, err := stashOutputs(typeSpecs)
 		if err != nil {
 			return err
 		}
@@ -976,14 +976,13 @@ const stashSuffix = ".dynssz-gen.orig"
 // be out of the way before the package is loaded when the types it was
 // generated for changed. The files come back if generation fails.
 type outputStash struct {
-	moved   []string
-	verbose bool
+	moved []string
 }
 
 // stashOutputs moves every distinct existing output file the type specs name
 // aside. A file that does not exist is skipped.
-func stashOutputs(typeSpecs []typeSpec, verbose bool) (*outputStash, error) {
-	stash := &outputStash{verbose: verbose}
+func stashOutputs(typeSpecs []typeSpec) (*outputStash, error) {
+	stash := &outputStash{}
 	seen := map[string]bool{}
 	for _, spec := range typeSpecs {
 		if spec.OutputFile == "" || seen[spec.OutputFile] {
@@ -999,9 +998,6 @@ func stashOutputs(typeSpecs []typeSpec, verbose bool) (*outputStash, error) {
 			return nil, fmt.Errorf("move %s aside: %w", spec.OutputFile, err)
 		}
 		stash.moved = append(stash.moved, spec.OutputFile)
-		if verbose {
-			log.Printf("Moved output file aside: %s", spec.OutputFile)
-		}
 	}
 	return stash, nil
 }
@@ -1011,8 +1007,6 @@ func (s *outputStash) restore() {
 	for _, f := range s.moved {
 		if err := os.Rename(f+stashSuffix, f); err != nil {
 			log.Printf("Restoring %s: %v", f, err)
-		} else if s.verbose {
-			log.Printf("Restored output file: %s", f)
 		}
 	}
 	s.moved = nil
