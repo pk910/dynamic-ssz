@@ -916,7 +916,7 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 			}
 		}
 
-		exprVar := ctx.exprVars.getVectorLenExprVar(*sizeExpression, defaultValue, desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0)
+		exprVar := ctx.exprVars.getVectorLenExprVar(*sizeExpression, defaultValue, desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0, desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0)
 
 		// The buffer arithmetic below runs in the int domain (len(buf) and
 		// slice bounds), so the resolved limit binds once as int and every use

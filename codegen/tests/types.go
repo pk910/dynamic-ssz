@@ -2578,6 +2578,49 @@ func (v *shallowBasic) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, h sszutils.H
 	return nil
 }
 
+// wideWrapperDescriptor holds 300 excluded fields before the single wrapped
+// value, a position no byte-wide index can address.
+type wideWrapperDescriptor struct {
+	S000, S001, S002, S003, S004, S005, S006, S007, S008, S009 uint64 `ssz:"-"`
+	S010, S011, S012, S013, S014, S015, S016, S017, S018, S019 uint64 `ssz:"-"`
+	S020, S021, S022, S023, S024, S025, S026, S027, S028, S029 uint64 `ssz:"-"`
+	S030, S031, S032, S033, S034, S035, S036, S037, S038, S039 uint64 `ssz:"-"`
+	S040, S041, S042, S043, S044, S045, S046, S047, S048, S049 uint64 `ssz:"-"`
+	S050, S051, S052, S053, S054, S055, S056, S057, S058, S059 uint64 `ssz:"-"`
+	S060, S061, S062, S063, S064, S065, S066, S067, S068, S069 uint64 `ssz:"-"`
+	S070, S071, S072, S073, S074, S075, S076, S077, S078, S079 uint64 `ssz:"-"`
+	S080, S081, S082, S083, S084, S085, S086, S087, S088, S089 uint64 `ssz:"-"`
+	S090, S091, S092, S093, S094, S095, S096, S097, S098, S099 uint64 `ssz:"-"`
+	S100, S101, S102, S103, S104, S105, S106, S107, S108, S109 uint64 `ssz:"-"`
+	S110, S111, S112, S113, S114, S115, S116, S117, S118, S119 uint64 `ssz:"-"`
+	S120, S121, S122, S123, S124, S125, S126, S127, S128, S129 uint64 `ssz:"-"`
+	S130, S131, S132, S133, S134, S135, S136, S137, S138, S139 uint64 `ssz:"-"`
+	S140, S141, S142, S143, S144, S145, S146, S147, S148, S149 uint64 `ssz:"-"`
+	S150, S151, S152, S153, S154, S155, S156, S157, S158, S159 uint64 `ssz:"-"`
+	S160, S161, S162, S163, S164, S165, S166, S167, S168, S169 uint64 `ssz:"-"`
+	S170, S171, S172, S173, S174, S175, S176, S177, S178, S179 uint64 `ssz:"-"`
+	S180, S181, S182, S183, S184, S185, S186, S187, S188, S189 uint64 `ssz:"-"`
+	S190, S191, S192, S193, S194, S195, S196, S197, S198, S199 uint64 `ssz:"-"`
+	S200, S201, S202, S203, S204, S205, S206, S207, S208, S209 uint64 `ssz:"-"`
+	S210, S211, S212, S213, S214, S215, S216, S217, S218, S219 uint64 `ssz:"-"`
+	S220, S221, S222, S223, S224, S225, S226, S227, S228, S229 uint64 `ssz:"-"`
+	S230, S231, S232, S233, S234, S235, S236, S237, S238, S239 uint64 `ssz:"-"`
+	S240, S241, S242, S243, S244, S245, S246, S247, S248, S249 uint64 `ssz:"-"`
+	S250, S251, S252, S253, S254, S255, S256, S257, S258, S259 uint64 `ssz:"-"`
+	Data                                                       []byte `ssz-size:"4"`
+}
+
+// WideWrapperHolder carries the wrapper struct itself, so both engines
+// address its value by field index.
+type WideWrapperHolder struct {
+	W wideWrapperDescriptor `ssz-type:"wrapper"`
+}
+
+// WideWrapperHolderRefl is the same shape without generated methods.
+type WideWrapperHolderRefl struct {
+	W wideWrapperDescriptor `ssz-type:"wrapper"`
+}
+
 // extScalar is a delegated signed basic, which is a basic shape only where
 // extended types are enabled.
 type extScalar int32

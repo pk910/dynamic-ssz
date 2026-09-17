@@ -1440,7 +1440,7 @@ func (tc *TypeCache) buildTypeWrapperDescriptor(desc *TypeDescriptor, runtimeTyp
 			wrappedFieldIndex = schemaWrapperInfo.FieldIndex
 		}
 	}
-	desc.WrapperFieldIndex = uint8(wrappedFieldIndex)
+	desc.WrapperFieldIndex = uint32(wrappedFieldIndex)
 
 	// The wrapper's actual value field must be shape-compatible with the type the
 	// descriptor expects. Otherwise the reflection-driven encode/decode would call
@@ -1647,7 +1647,7 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 		}
 
 		// Store the runtime field index for direct field access during encode/decode/hash
-		fieldDesc.FieldIndex = uint16(runtimeFieldIndex)
+		fieldDesc.FieldIndex = uint32(runtimeFieldIndex)
 		runtimeFieldType := runtimeType.Field(runtimeFieldIndex).Type
 
 		// Get ssz-index tag from schema field (for progressive containers)
@@ -1710,7 +1710,7 @@ func (tc *TypeCache) buildContainerDescriptor(desc *TypeDescriptor, runtimeType,
 			desc.ContainerDesc.DynFields = append(desc.ContainerDesc.DynFields, DynFieldDescriptor{
 				Field:        &desc.ContainerDesc.Fields[fi],
 				HeaderOffset: totalSize,
-				Index:        int16(runtimeFieldIndex), // Use runtime field index for data access
+				Index:        int32(runtimeFieldIndex), // Use runtime field index for data access
 			})
 		}
 

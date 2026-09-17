@@ -248,6 +248,8 @@ types:
     output: gen_edgecases.go
   - name: NegShellHolder
     output: gen_edgecases.go
+  - name: WideWrapperHolder
+    output: gen_edgecases.go
   - name: AmountList
     output: gen_edgecases.go
   - name: ShallowBasicHolder

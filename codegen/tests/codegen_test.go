@@ -4891,6 +4891,41 @@ func TestCodegenShallowBasicDelegateShape(t *testing.T) {
 	}
 }
 
+// A wrapper whose value sits past the byte-wide index range is addressed by
+// both engines, which encode and hash the same bytes.
+func TestCodegenWideWrapperIndex(t *testing.T) {
+	if _, generated := any(&WideWrapperHolder{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+	want := []byte{1, 2, 3, 4}
+	gen := &WideWrapperHolder{}
+	gen.W.Data = want
+	refl := &WideWrapperHolderRefl{}
+	refl.W.Data = want
+	for _, v := range []any{gen, refl} {
+		enc, err := ds.MarshalSSZ(v)
+		if err != nil || !bytes.Equal(enc, want) {
+			t.Fatalf("%T marshal = %x, %v, want %x", v, enc, err, want)
+		}
+	}
+	genRoot, err := ds.HashTreeRoot(gen)
+	if err != nil {
+		t.Fatalf("generated hash: %v", err)
+	}
+	reflRoot, err := ds.HashTreeRoot(refl)
+	if err != nil {
+		t.Fatalf("reflection hash: %v", err)
+	}
+	if genRoot != reflRoot {
+		t.Fatalf("generated %x, reflection %x", genRoot, reflRoot)
+	}
+	back := &WideWrapperHolderRefl{}
+	if err := ds.UnmarshalSSZ(back, want); err != nil || !bytes.Equal(back.W.Data, want) {
+		t.Fatalf("unmarshal = %x, %v, want %x", back.W.Data, err, want)
+	}
+}
+
 // A delegate whose basic shape is declared by annotation rather than by its
 // Go kind keeps that shape in both engines: a list of it packs by the declared
 // width and both engines match an independently computed root.

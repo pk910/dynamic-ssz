@@ -1632,7 +1632,7 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 		fieldDesc := ssztypes.FieldDescriptor{
 			Name:       schemaField.Name(),
 			Type:       typeDesc,
-			FieldIndex: uint16(runtimeFieldIndex),
+			FieldIndex: uint32(runtimeFieldIndex),
 		}
 
 		// Handle ssz-index for progressive containers - extract from original tag parsing
@@ -1658,7 +1658,7 @@ func (p *Parser) buildContainerDescriptor(desc *ssztypes.TypeDescriptor, dataStr
 			dynFieldDesc := ssztypes.DynFieldDescriptor{
 				Field:        &fieldDesc,
 				HeaderOffset: size,
-				Index:        int16(runtimeFieldIndex), // Runtime field index for data access
+				Index:        int32(runtimeFieldIndex), // Runtime field index for data access
 			}
 			dynFields = append(dynFields, dynFieldDesc)
 			isDynamic = true
@@ -2354,7 +2354,7 @@ func (p *Parser) buildTypeWrapperDescriptor(desc *ssztypes.TypeDescriptor, dataN
 
 	// Store wrapper information
 	desc.ElemDesc = wrappedDesc
-	desc.WrapperFieldIndex = uint8(wrappedFieldIndex)
+	desc.WrapperFieldIndex = uint32(wrappedFieldIndex)
 
 	// The TypeWrapper inherits properties from the wrapped type
 	desc.Size = wrappedDesc.Size

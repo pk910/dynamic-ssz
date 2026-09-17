@@ -100,14 +100,11 @@ func (g *exprVarGenerator) getExprVar(expr string, defaultValue uint64) string {
 // their use sites (allocations, loop bounds, the int-based codec surface), so
 // the guard makes those conversions exact. List limits keep their full uint64
 // range by resolving through getExprVar directly.
-func (g *exprVarGenerator) getSizeExprVar(expr string, defaultValue uint64) string {
-	return g.getVectorLenExprVar(expr, defaultValue, false)
-}
-
 // getVectorLenExprVar resolves the length expression of a vector. A vector of
 // variable-size elements leads with one 4-byte offset per element inside its
-// fixed section, so its length is bounded to a quarter of the size limit.
-func (g *exprVarGenerator) getVectorLenExprVar(expr string, defaultValue uint64, dynamicElems bool) string {
+// fixed section, so its length is bounded to a quarter of the size limit. A
+// bit count is measured by the bytes it occupies, as the tag parser bounds it.
+func (g *exprVarGenerator) getVectorLenExprVar(expr string, defaultValue uint64, dynamicElems, bits bool) string {
 	if expr == "" {
 		return fmt.Sprintf("%v", defaultValue)
 	}
@@ -118,12 +115,16 @@ func (g *exprVarGenerator) getVectorLenExprVar(expr string, defaultValue uint64,
 	if dynamicElems {
 		bound += "/4"
 	}
-	guardKey := sha256.Sum256([]byte(fmt.Sprintf("sizeguard\n%s\n%v\n%s", expr, defaultValue, bound)))
+	measured := exprVar
+	if bits {
+		measured = fmt.Sprintf("(%s+7)/8", exprVar)
+	}
+	guardKey := sha256.Sum256([]byte(fmt.Sprintf("sizeguard\n%s\n%v\n%s\n%v", expr, defaultValue, bound, bits)))
 	if _, ok := g.varMap[guardKey]; ok {
 		return exprVar
 	}
 
-	appendCode(g.codeBuf, 0, "if %s > %s {\n", exprVar, bound)
+	appendCode(g.codeBuf, 0, "if %s > %s {\n", measured, bound)
 	appendCode(g.codeBuf, 1, "err = sszutils.ErrPlatformOverflowFn(\"size expression %s\", %s)\n", expr, exprVar)
 	appendCode(g.codeBuf, 1, "return %s\n", g.retVars)
 	appendCode(g.codeBuf, 0, "}\n")
@@ -295,9 +296,10 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 						defaultValue = uint64(desc.Len) * 8
 					}
 				}
-				exprVar := g.exprVarGenerator.getSizeExprVar(*sizeExpression, defaultValue)
+				bits := desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0
+				exprVar := g.exprVarGenerator.getVectorLenExprVar(*sizeExpression, defaultValue, false, bits)
 
-				if desc.SszTypeFlags&ssztypes.SszTypeFlagHasBitSize != 0 {
+				if bits {
 					exprVar = fmt.Sprintf("(%s+7)/8", exprVar)
 				}
 
@@ -476,7 +478,7 @@ func minSizeExpr(desc *ssztypes.TypeDescriptor, sizeVars *staticSizeVarGenerator
 			return expr, "", exprOk && desc.Len > 0
 		}
 
-		count := sizeVars.exprVarGenerator.getVectorLenExprVar(*desc.SizeExpression, uint64(desc.Len), desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0)
+		count := sizeVars.exprVarGenerator.getVectorLenExprVar(*desc.SizeExpression, uint64(desc.Len), desc.ElemDesc.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0, false)
 		expr, exprOk := mulOrAddExpr("*", count, perElem)
 
 		// The product is what the caller divides by, so it is what has to be

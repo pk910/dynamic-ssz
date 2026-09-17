@@ -3531,18 +3531,25 @@ func TestParseTags_DynamicStaticMaxConflict(t *testing.T) {
 func TestParseTags_LiteralSizePastLimit(t *testing.T) {
 	for _, tag := range []string{
 		`ssz-size:"4294967296"`,
-		`ssz-bitsize:"4294967296"`,
+		// A bit count is measured by the bytes it occupies, so the limit is
+		// eight times as many bits.
+		`ssz-bitsize:"34359738368"`,
 		`ssz-size:"1" dynssz-size:"4294967296"`,
 	} {
 		if _, _, _, err := ParseTags(tag); err == nil || !strings.Contains(err.Error(), "SSZ size limit") {
 			t.Fatalf("%s: err = %v, want the SSZ size limit refusal", tag, err)
 		}
 	}
+
+	// 2^32 bits occupy 512 MiB, well inside the limit.
+	if _, _, _, err := ParseTags(`ssz-bitsize:"4294967296"`); err != nil {
+		t.Fatalf("a 512 MiB bitvector was refused: %v", err)
+	}
 	type literalSize struct {
 		Data []byte `ssz-size:"4294967296"`
 	}
 	type literalBitSize struct {
-		Bits []byte `ssz-type:"bitvector" ssz-bitsize:"4294967296"`
+		Bits []byte `ssz-type:"bitvector" ssz-bitsize:"34359738368"`
 	}
 	type literalDynSize struct {
 		Data []byte `ssz-size:"1" dynssz-size:"4294967296"`
