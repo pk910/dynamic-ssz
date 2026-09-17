@@ -149,6 +149,21 @@ func TestParserRefusesHugeArrayLength(t *testing.T) {
 	}
 }
 
+// The generator describes a cycle through a delegate that carries no
+// annotation, as the reflection type cache does: neither builds such a type
+// shallow, so the cycle refusal never applies to it.
+func TestParserDescribesUnannotatedDelegateCycle(t *testing.T) {
+	obj := loadTestsPackage(t).Types.Scope().Lookup("NoAnnParent")
+	if obj == nil {
+		t.Fatal("NoAnnParent not found")
+	}
+	p := NewParser()
+	p.AnnotationResolver = func(types.Type) string { return "" }
+	if _, err := p.GetTypeDescriptor(types.NewPointer(obj.Type()), nil, nil, nil); err != nil {
+		t.Fatalf("parse NoAnnParent: %v", err)
+	}
+}
+
 func TestParserShallowGate(t *testing.T) {
 	pkgs := []*packages.Package{loadTestsPackage(t)}
 	container := pkgs[0].Types.Scope().Lookup("NestedDelegatedContainer")

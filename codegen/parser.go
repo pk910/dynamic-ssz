@@ -295,7 +295,9 @@ func (p *Parser) purgePending(from int) {
 
 // basicShape reports the Go kind, SSZ type and byte width of a type whose
 // underlying type is an SSZ basic value, or a zero width for any other type.
-func basicShape(t types.Type) (reflect.Kind, ssztypes.SszType, int64) {
+// Signed and floating values are basic only where extended types are enabled,
+// as the reflection type cache reads them.
+func basicShape(t types.Type, extended bool) (reflect.Kind, ssztypes.SszType, int64) {
 	b, ok := types.Unalias(t).Underlying().(*types.Basic)
 	if !ok {
 		return reflect.Invalid, ssztypes.SszUnspecifiedType, 0
@@ -312,8 +314,104 @@ func basicShape(t types.Type) (reflect.Kind, ssztypes.SszType, int64) {
 	case types.Uint64:
 		return reflect.Uint64, ssztypes.SszUint64Type, 8
 	default:
+		// Anything else is basic only as an extended type, below.
+	}
+	if !extended {
 		return reflect.Invalid, ssztypes.SszUnspecifiedType, 0
 	}
+	switch b.Kind() {
+	case types.Int8:
+		return reflect.Int8, ssztypes.SszInt8Type, 1
+	case types.Int16:
+		return reflect.Int16, ssztypes.SszInt16Type, 2
+	case types.Int32:
+		return reflect.Int32, ssztypes.SszInt32Type, 4
+	case types.Int64:
+		return reflect.Int64, ssztypes.SszInt64Type, 8
+	case types.Float32:
+		return reflect.Float32, ssztypes.SszFloat32Type, 4
+	case types.Float64:
+		return reflect.Float64, ssztypes.SszFloat64Type, 8
+	default:
+		return reflect.Invalid, ssztypes.SszUnspecifiedType, 0
+	}
+}
+
+// sszBasicWidth returns the byte width of a basic SSZ type, or zero for any
+// other type. Signed and floating values are basic only where extended types
+// are enabled.
+func sszBasicWidth(t ssztypes.SszType, extended bool) int64 {
+	switch t {
+	case ssztypes.SszBoolType, ssztypes.SszUint8Type:
+		return 1
+	case ssztypes.SszUint16Type:
+		return 2
+	case ssztypes.SszUint32Type:
+		return 4
+	case ssztypes.SszUint64Type:
+		return 8
+	case ssztypes.SszUint128Type:
+		return 16
+	case ssztypes.SszUint256Type:
+		return 32
+	default:
+		// Anything else is basic only as an extended type, below.
+	}
+	if !extended {
+		return 0
+	}
+	switch t {
+	case ssztypes.SszInt8Type:
+		return 1
+	case ssztypes.SszInt16Type:
+		return 2
+	case ssztypes.SszInt32Type, ssztypes.SszFloat32Type:
+		return 4
+	case ssztypes.SszInt64Type, ssztypes.SszFloat64Type:
+		return 8
+	default:
+		return 0
+	}
+}
+
+// goKind reports the reflect kind of a Go type, for the shapes a shallow
+// descriptor can carry.
+func goKind(t types.Type) reflect.Kind {
+	switch u := types.Unalias(t).Underlying().(type) {
+	case *types.Array:
+		return reflect.Array
+	case *types.Slice:
+		return reflect.Slice
+	case *types.Struct:
+		return reflect.Struct
+	case *types.Basic:
+		if u.Kind() == types.String {
+			return reflect.String
+		}
+	}
+	return reflect.Invalid
+}
+
+// delegateShape reports the SSZ shape a fully-delegated type declares: the
+// ssz-type of its annotation when it names a basic type, otherwise its own Go
+// kind. A width of zero means the type states no basic shape, so its size is
+// resolved at run time through its own sizer.
+func (p *Parser) delegateShape(annotation string, t types.Type) (reflect.Kind, ssztypes.SszType, int64) {
+	kind, sszType, size := basicShape(t, p.ExtendedTypes)
+	typeHints, _, _, err := ssztypes.ParseTags(annotation)
+	if err != nil || len(typeHints) == 0 || typeHints[0].Type == ssztypes.SszUnspecifiedType {
+		return kind, sszType, size
+	}
+	declared := typeHints[0].Type
+	width := sszBasicWidth(declared, p.ExtendedTypes)
+	if width == 0 {
+		// A declared non-basic type (a custom type, say) has no width here.
+		return reflect.Invalid, ssztypes.SszUnspecifiedType, 0
+	}
+	if kind == reflect.Invalid {
+		kind = goKind(t)
+	}
+	return kind, declared, width
 }
 
 // derefGoType strips aliases and pointers from t.
@@ -758,19 +856,25 @@ func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints 
 	// described here would go unmarked and uncounted: the members of a cycle
 	// are described together, by one generator run.
 	if shallowDelegate {
-		if partner := p.cycleWith(originalType); partner != nil {
-			return nil, fmt.Errorf("%v delegates to its own SSZ methods but forms a recursive cycle with %v, which is described here: the members of a cycle must be generated in one run", originalType, partner)
-		}
-		if staticStr, ok := reflect.StructTag(p.AnnotationResolver(types.Unalias(originalType))).Lookup("ssz-static"); ok {
+		annotation := p.AnnotationResolver(types.Unalias(originalType))
+		if staticStr, ok := reflect.StructTag(annotation).Lookup("ssz-static"); ok {
+			// A delegated type is not traversed, so a cycle through it and a
+			// type described here would go unmarked and uncounted: the members
+			// of a cycle are described together, by one generator run. A type
+			// without the annotation is not built shallow, here or in the
+			// reflection type cache, so it never reaches this check.
+			if partner := p.cycleWith(originalType); partner != nil {
+				return nil, fmt.Errorf("%v delegates to its own SSZ methods but forms a recursive cycle with %v, which is described here: the members of a cycle must be generated in one run", originalType, partner)
+			}
 			switch staticStr {
 			case "true":
-				// A basic Go type keeps its SSZ shape, as the type cache's
-				// shallow descriptor does: the width is intrinsic to the kind,
-				// so the emitters pack, pad and size it like any basic value.
-				// Any other static type resolves its exact size at runtime via
-				// its own sizer, so sizing and offsets are driven at runtime
-				// rather than from a (here unknown) compile-time constant.
-				if kind, sszType, size := basicShape(innerDataType); size > 0 {
+				// A type that states a basic SSZ shape keeps it, as the type
+				// cache's shallow descriptor does, so the emitters pack, pad
+				// and size it like any basic value. Any other static type
+				// resolves its exact size at runtime via its own sizer, so
+				// sizing and offsets are driven at runtime rather than from a
+				// (here unknown) compile-time constant.
+				if kind, sszType, size := p.delegateShape(annotation, innerDataType); size > 0 {
 					desc.Kind = kind
 					desc.SszType = sszType
 					desc.Size = size

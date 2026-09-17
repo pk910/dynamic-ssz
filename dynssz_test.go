@@ -846,6 +846,10 @@ func skipUnless64Bit(t *testing.T) {
 	}
 }
 
+// The 2 GiB vector of testLargeContainer is within the SSZ size limit on a
+// 64-bit host and past it on a 32-bit one, where the declaration is refused as
+// it is parsed.
+//
 // skipUnless32Bit skips the test on platforms where int is wider than 32 bits.
 func skipUnless32Bit(t *testing.T) {
 	t.Helper()
@@ -860,8 +864,8 @@ func TestMarshalSSZLargeObjectOverflow(t *testing.T) {
 	container := &testLargeContainer{}
 
 	_, err := ds.MarshalSSZ(container)
-	if err == nil || !strings.Contains(err.Error(), "platform int") {
-		t.Fatalf("expected a platform integer range error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "SSZ size limit") {
+		t.Fatalf("expected the SSZ size limit refusal, got: %v", err)
 	}
 }
 
@@ -871,8 +875,8 @@ func TestMarshalSSZToLargeObjectOverflow(t *testing.T) {
 	container := &testLargeContainer{}
 
 	_, err := ds.MarshalSSZTo(container, nil)
-	if err == nil || !strings.Contains(err.Error(), "platform int") {
-		t.Fatalf("expected a platform integer range error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "SSZ size limit") {
+		t.Fatalf("expected the SSZ size limit refusal, got: %v", err)
 	}
 }
 
@@ -883,8 +887,8 @@ func TestMarshalSSZWriterLargeObjectOverflow(t *testing.T) {
 
 	var buf bytes.Buffer
 	err := ds.MarshalSSZWriter(container, &buf)
-	if err == nil || !strings.Contains(err.Error(), "platform int") {
-		t.Fatalf("expected a platform integer range error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "SSZ size limit") {
+		t.Fatalf("expected the SSZ size limit refusal, got: %v", err)
 	}
 }
 
@@ -919,8 +923,8 @@ func TestHashTreeRootLargeObjectOverflow(t *testing.T) {
 	container := &testLargeContainer{}
 
 	_, err := ds.HashTreeRoot(container)
-	if err == nil || !strings.Contains(err.Error(), "platform int") {
-		t.Fatalf("expected a platform integer range error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "SSZ size limit") {
+		t.Fatalf("expected the SSZ size limit refusal, got: %v", err)
 	}
 }
 

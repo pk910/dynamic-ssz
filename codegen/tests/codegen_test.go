@@ -4891,6 +4891,82 @@ func TestCodegenShallowBasicDelegateShape(t *testing.T) {
 	}
 }
 
+// A delegate whose basic shape is declared by annotation rather than by its
+// Go kind keeps that shape in both engines: a list of it packs by the declared
+// width and both engines match an independently computed root.
+func TestCodegenDeclaredBasicShape(t *testing.T) {
+	if _, generated := any(&AmountList{}).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+
+	// Three 16-byte elements fill one and a half chunks of a four-chunk list
+	// (8*16/32), mixed with the length.
+	values := []amount{{2}, {3}, {4}}
+	var packed [2][32]byte
+	copy(packed[0][:16], values[0][:])
+	copy(packed[0][16:], values[1][:])
+	copy(packed[1][:16], values[2][:])
+	var length [32]byte
+	length[0] = 3
+	listRoot := merkleRoot(packed[:], 4)
+	want := sha256.Sum256(append(listRoot[:], length[:]...))
+	for _, v := range []any{&AmountList{L: values}, &AmountListRefl{L: values}} {
+		root, err := ds.HashTreeRoot(v)
+		if err != nil || root != want {
+			t.Fatalf("%T root = %x, %v, want %x", v, root, err, want)
+		}
+	}
+}
+
+// A delegated signed basic keeps its shape where extended types are enabled,
+// so both engines pack its list by the declared width and agree on the root.
+func TestCodegenExtendedBasicDelegateShape(t *testing.T) {
+	if _, generated := any(&ExtScalarHolder{}).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil, dynssz.WithExtendedTypes())
+	values := []extScalar{-1, 2}
+	var packed [32]byte
+	binary.LittleEndian.PutUint32(packed[:4], uint32(values[0]))
+	binary.LittleEndian.PutUint32(packed[4:8], uint32(values[1]))
+	var length [32]byte
+	length[0] = 2
+	listRoot := merkleRoot([][32]byte{packed}, 1)
+	var scalar [32]byte
+	binary.LittleEndian.PutUint32(scalar[:4], 7)
+	var pair [64]byte
+	copy(pair[:32], scalar[:])
+	listMixed := sha256.Sum256(append(listRoot[:], length[:]...))
+	copy(pair[32:], listMixed[:])
+	wantHolder := sha256.Sum256(pair[:])
+	for _, v := range []any{&ExtScalarHolder{A: 7, L: values}, &ExtScalarHolderRefl{A: 7, L: values}} {
+		root, err := ds.HashTreeRoot(v)
+		if err != nil || root != wantHolder {
+			t.Fatalf("%T root = %x, %v, want %x", v, root, err, wantHolder)
+		}
+	}
+}
+
+// A delegate carrying no annotation is not built shallow, here or in the
+// generator, so the cycle it closes is an ordinary recursive cycle that both
+// front ends describe. The generator's side is covered by its parser tests.
+func TestTypeCacheDescribesUnannotatedDelegateCycle(t *testing.T) {
+	if _, err := ssztypes.NewTypeCache(nil).GetTypeDescriptor(reflect.TypeOf(NoAnnParent{}), nil, nil, nil); err != nil {
+		t.Fatalf("build NoAnnParent: %v", err)
+	}
+	// Without delegation the parent is walked, so the cycle is described
+	// rather than handed to the parent's own methods.
+	walked := ssztypes.NewTypeCache(nil)
+	walked.NoDelegation = true
+	if _, err := walked.GetTypeDescriptor(reflect.TypeOf(NoAnnParent{}), nil, nil, nil); err != nil {
+		t.Fatalf("build NoAnnParent without delegation: %v", err)
+	}
+	if _, err := dynssz.NewDynSsz(nil).HashTreeRoot(&NoAnnParent{A: noAnnDelegate{V: 7}}); err != nil {
+		t.Fatalf("hash NoAnnParent: %v", err)
+	}
+}
+
 // A named slice with its own fixed codec lies on no cycle and keeps its
 // shallow static descriptor in both engines: nothing adds an offset in front
 // of its eight bytes.

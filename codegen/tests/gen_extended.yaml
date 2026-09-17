@@ -10,6 +10,7 @@ types:
   - UnboundedList
   - UnboundedBitlist
   - ExtendedTypes1
+  - ExtScalarHolder
   - ExtendedBigIntMax
   - OptU32
   - CoverageTypes2

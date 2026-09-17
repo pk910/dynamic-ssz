@@ -2578,6 +2578,98 @@ func (v *shallowBasic) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, h sszutils.H
 	return nil
 }
 
+// extScalar is a delegated signed basic, which is a basic shape only where
+// extended types are enabled.
+type extScalar int32
+
+var _ = sszutils.Annotate[extScalar](`ssz-static:"true"`)
+
+func (*extScalar) SizeSSZDyn(sszutils.DynamicSpecs) int { return 4 }
+func (v *extScalar) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint32(b, uint32(*v)), nil
+}
+func (v *extScalar) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) error {
+	if len(b) != 4 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	*v = extScalar(binary.LittleEndian.Uint32(b))
+	return nil
+}
+func (v *extScalar) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, h sszutils.HashWalker) error {
+	h.AppendUint32(uint32(*v))
+	return nil
+}
+
+type ExtScalarHolder struct {
+	A extScalar
+	L []extScalar `ssz-max:"8"`
+}
+
+// ExtScalarHolderRefl is the same shape without generated methods.
+type ExtScalarHolderRefl struct {
+	A extScalar
+	L []extScalar `ssz-max:"8"`
+}
+
+// amount declares a 16-byte basic shape by annotation, which no Go kind can
+// state. Packed scopes size their capacity by that width in both engines.
+type amount [16]byte
+
+var _ = sszutils.Annotate[amount](`ssz-type:"uint128" ssz-static:"true"`)
+
+func (*amount) SizeSSZDyn(sszutils.DynamicSpecs) int { return 16 }
+func (v *amount) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	return append(b, v[:]...), nil
+}
+func (v *amount) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) error {
+	if len(b) != 16 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	copy(v[:], b)
+	return nil
+}
+func (v *amount) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, h sszutils.HashWalker) error {
+	h.Append(v[:])
+	return nil
+}
+
+type AmountList struct {
+	L []amount `ssz-max:"8"`
+}
+
+// AmountListRefl is the same shape without generated methods.
+type AmountListRefl struct {
+	L []amount `ssz-max:"8"`
+}
+
+// noAnnDelegate delegates every operation but carries no annotation, so
+// neither engine builds it shallow and the cycle it closes with NoAnnParent
+// is an ordinary recursive cycle.
+type noAnnDelegate struct {
+	V uint64
+	P []NoAnnParent `ssz-max:"4"`
+}
+
+func (noAnnDelegate) SizeSSZDyn(sszutils.DynamicSpecs) int { return 8 }
+func (v noAnnDelegate) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint64(b, v.V), nil
+}
+func (v *noAnnDelegate) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) error {
+	if len(b) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	v.V = binary.LittleEndian.Uint64(b)
+	return nil
+}
+func (v noAnnDelegate) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, h sszutils.HashWalker) error {
+	h.PutUint64(v.V)
+	return nil
+}
+
+type NoAnnParent struct {
+	A noAnnDelegate
+}
+
 type ShallowBasicHolder struct {
 	A shallowBasic
 	B uint64
