@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"reflect"
 	"sync"
 
@@ -398,8 +399,11 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 	if err != nil {
 		return nil, err
 	}
-	// The type cache bounds every static size to the platform int at analysis
-	// and a delegated sizer speaks int, so the size fits here.
+	// The size fits the platform int on its own; together with the bytes
+	// already in buf it may not.
+	if size > int64(math.MaxInt)-int64(len(buf)) {
+		return nil, sszutils.ErrPlatformOverflowFn("SSZ size", size)
+	}
 	needed := len(buf) + int(size)
 	if cap(buf) < needed {
 		grown := make([]byte, len(buf), needed)

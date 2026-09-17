@@ -321,7 +321,7 @@ func (h *Hasher) finishOldestJob(copyResult bool) {
 	slot.in = nil
 	h.jobHead = (h.jobHead + 1) % len(h.jobRing)
 	h.jobCount--
-	if panicked != nil {
+	if panicked != nil && copyResult {
 		panic(panicked)
 	}
 }
@@ -342,8 +342,9 @@ func (h *Hasher) drainJobs() {
 	h.jobMaxEnd = 0
 }
 
-// discardJobs awaits outstanding reductions and drops their results. This is
-// for abandoning a computation (Reset): the buffer regions the jobs were
+// discardJobs awaits outstanding reductions and drops their results, and
+// with them the panic of a job whose hash function failed. This is for
+// abandoning a computation (Reset): the buffer regions the jobs were
 // destined for no longer exist.
 func (h *Hasher) discardJobs() {
 	for h.jobCount > 0 {

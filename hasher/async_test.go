@@ -292,6 +292,15 @@ func TestAsyncPanicReachesCaller(t *testing.T) {
 	if calls.Load() == 0 {
 		t.Fatal("no job-sized reduction ran; the sequence did not exercise the runner")
 	}
+
+	// The jobs still outstanding failed the same way; abandoning them drops
+	// their panics with their results.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Reset raised an abandoned job's panic: %v", r)
+		}
+	}()
+	hh.Reset()
 }
 
 // TestAsyncGate verifies the two-level gating: the process-wide toggle and
