@@ -317,9 +317,6 @@ func derefGoType(t types.Type) types.Type {
 // does: then it lies on a cycle with that type, and the cycle is only marked,
 // and its depth only counted, when the members are traversed.
 func (p *Parser) reachesBuilding(t types.Type) bool {
-	if len(p.buildingTypes) == 0 {
-		return false
-	}
 	root := derefGoType(t)
 	seen := map[types.Type]bool{root: true}
 	var walk func(t types.Type) bool

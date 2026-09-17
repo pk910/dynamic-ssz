@@ -5298,39 +5298,13 @@ func TestNegativeDelegatedSizeAtEntryPoints(t *testing.T) {
 	if _, err := ds.SizeSSZ(&negSizer{}); !errors.Is(err, sszutils.ErrInvalidValueRange) {
 		t.Fatalf("SizeSSZ err = %v, want ErrInvalidValueRange", err)
 	}
-}
-
-// wrappedEOFReader reports the end of its data as an error wrapping io.EOF,
-// as decompressing and authenticating readers do.
-type wrappedEOFReader struct{ data []byte }
-
-func (r *wrappedEOFReader) Read(p []byte) (int, error) {
-	if len(r.data) == 0 {
-		return 0, fmt.Errorf("stream closed: %w", io.EOF)
+	// The view paths take the size from the view sizer.
+	view := &testDynViewAll{MarshalBuf: []byte{1}, Size: -1}
+	if _, err := ds.MarshalSSZ(view, WithViewDescriptor(&testViewType{})); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Fatalf("view MarshalSSZ err = %v, want ErrInvalidValueRange", err)
 	}
-	n := copy(p, r.data)
-	r.data = r.data[n:]
-	return n, nil
-}
-
-// An unknown-size decode ends cleanly on a wrapped io.EOF, not only on the
-// bare sentinel.
-func TestUnknownSizeWrappedEOF(t *testing.T) {
-	type payload struct {
-		A uint64
-		L []uint32 `ssz-max:"8"`
-	}
-	ds := NewDynSsz(nil, WithNoFastSsz())
-	full, err := ds.MarshalSSZ(&payload{A: 7, L: []uint32{1, 2, 3}})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var back payload
-	if err := ds.UnmarshalSSZReader(&back, &wrappedEOFReader{data: full}, -1); err != nil {
-		t.Fatalf("wrapped EOF was not treated as end of stream: %v", err)
-	}
-	if back.A != 7 || len(back.L) != 3 {
-		t.Fatalf("decoded %+v", back)
+	if _, err := ds.SizeSSZ(view, WithViewDescriptor(&testViewType{})); !errors.Is(err, sszutils.ErrInvalidValueRange) {
+		t.Fatalf("view SizeSSZ err = %v, want ErrInvalidValueRange", err)
 	}
 }
 

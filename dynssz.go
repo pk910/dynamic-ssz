@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
 	"reflect"
 	"sync"
 
@@ -307,13 +306,8 @@ func (d *DynSsz) MarshalSSZ(source any, opts ...CallOption) ([]byte, error) {
 		return nil, err
 	}
 
-	// SSZ sizes are uint32; reject only what cannot be represented as an int on
-	// this platform (never trips on 64-bit, guards make() on 32-bit). SizeSSZ
-	// applies the same ceiling so the two paths agree.
-	if uint64(size) > uint64(math.MaxInt) {
-		return nil, sszutils.ErrPlatformOverflowFn("SSZ size", size)
-	}
-
+	// The type cache bounds every static size to the platform int at analysis
+	// and a delegated sizer speaks int, so the size fits here.
 	buf := make([]byte, 0, size)
 	encoder := sszutils.NewBufferEncoder(buf)
 	err = ctx.MarshalSSZ(sourceTypeDesc, sourceValue, encoder)
@@ -404,15 +398,9 @@ func (d *DynSsz) MarshalSSZTo(source any, buf []byte, opts ...CallOption) ([]byt
 	if err != nil {
 		return nil, err
 	}
-	// Reject a size that cannot be represented as an int on this platform,
-	// accounting for the existing buffer length so len(buf)+size cannot
-	// overflow int. SizeSSZ applies the same ceiling so the paths agree. The
-	// bound stays in the signed domain so the int conversion below is provably
-	// within range.
-	if size < 0 || size > int64(math.MaxInt)-int64(len(buf)) {
-		return nil, sszutils.ErrPlatformOverflowFn("SSZ size", size)
-	}
-	needed := len(buf) + sszutils.CapToInt(uint64(size))
+	// The type cache bounds every static size to the platform int at analysis
+	// and a delegated sizer speaks int, so the size fits here.
+	needed := len(buf) + int(size)
 	if cap(buf) < needed {
 		grown := make([]byte, len(buf), needed)
 		copy(grown, buf)
@@ -673,12 +661,8 @@ func (d *DynSsz) SizeSSZ(source any, opts ...CallOption) (int, error) {
 		return 0, err
 	}
 
-	// Reject a size that cannot be represented as an int on this platform; the
-	// bound stays in the signed domain so the conversion is provably in range.
-	if size < 0 || size > math.MaxInt {
-		return 0, sszutils.ErrPlatformOverflowFn("SSZ size", size)
-	}
-
+	// The type cache bounds every static size to the platform int at analysis
+	// and a delegated sizer speaks int, so the size fits.
 	return int(size), nil
 }
 

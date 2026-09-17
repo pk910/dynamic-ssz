@@ -289,9 +289,6 @@ func derefType(t reflect.Type) reflect.Type {
 // does: then it lies on a cycle with that type, and the cycle is only marked,
 // and its depth only counted, when the members are traversed.
 func (tc *TypeCache) reachesBuilding(t reflect.Type) bool {
-	if len(tc.buildingTypes) == 0 {
-		return false
-	}
 	seen := map[reflect.Type]bool{derefType(t): true}
 	var walk func(t reflect.Type) bool
 	walk = func(t reflect.Type) bool {

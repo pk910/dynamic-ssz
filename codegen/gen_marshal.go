@@ -773,8 +773,14 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 				// spec-driven factors can pass 2^64; the codec surface takes
 				// the byte count as int, so a product past its range is refused
 				// rather than truncated.
-				ctx.appendCode(indent, "\tpadding, err := sszutils.MulSize(\"vector padding\", %s-uint64(%s), uint64(%s))\n", limitVar, lenVar, elemSizeStr)
-				ctx.appendCode(indent, "\tif err != nil {\n\t\treturn nil, %s\n\t}\n", typePath.getErrorWith("err"))
+				if elemSizeStr == "1" {
+					// One-byte elements: the limit is bounded to the platform
+					// int, so the difference is the padding.
+					ctx.appendCode(indent, "\tpadding := %s - uint64(%s)\n", limitVar, lenVar)
+				} else {
+					ctx.appendCode(indent, "\tpadding, err := sszutils.MulSize(\"vector padding\", %s-uint64(%s), uint64(%s))\n", limitVar, lenVar, elemSizeStr)
+					ctx.appendCode(indent, "\tif err != nil {\n\t\treturn nil, %s\n\t}\n", typePath.getErrorWith("err"))
+				}
 				ctx.appendCode(indent, "\tdst = sszutils.AppendZeroPadding(dst, int(padding))\n")
 			}
 			ctx.appendCode(indent, "}\n")

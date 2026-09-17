@@ -290,17 +290,23 @@ func (g *staticSizeVarGenerator) getStaticSizeVar(desc *ssztypes.TypeDescriptor)
 					exprVar = fmt.Sprintf("(%s+7)/8", exprVar)
 				}
 
-				// Two runtime-resolved factors can pass 2^64 and wrap, so the
-				// product is formed by sszutils.MulSize, which refuses it past
-				// the platform int range like a single resolved size.
-				appendCode(g.codeBuf, 0, "%s, err := sszutils.MulSize(\"vector size\", uint64(%s), uint64(%s))\n", sizeVar, itemSizeVar, exprVar)
-				appendCode(g.codeBuf, 0, "if err != nil {\n")
-				retVars := g.retVars
-				if retVars == "" {
-					retVars = g.exprVarGenerator.retVars
+				if itemSizeVar == "1" {
+					// A one-byte element: the resolved size, already bounded
+					// to the platform int, is the byte size.
+					appendCode(g.codeBuf, 0, "%s := uint64(%s)\n", sizeVar, exprVar)
+				} else {
+					// Two runtime-resolved factors can pass 2^64 and wrap, so the
+					// product is formed by sszutils.MulSize, which refuses it past
+					// the platform int range like a single resolved size.
+					appendCode(g.codeBuf, 0, "%s, err := sszutils.MulSize(\"vector size\", uint64(%s), uint64(%s))\n", sizeVar, itemSizeVar, exprVar)
+					appendCode(g.codeBuf, 0, "if err != nil {\n")
+					retVars := g.retVars
+					if retVars == "" {
+						retVars = g.exprVarGenerator.retVars
+					}
+					appendCode(g.codeBuf, 1, "return %s\n", retVars)
+					appendCode(g.codeBuf, 0, "}\n")
 				}
-				appendCode(g.codeBuf, 1, "return %s\n", retVars)
-				appendCode(g.codeBuf, 0, "}\n")
 			} else if _, lerr := strconv.ParseUint(itemSizeVar, 10, 64); lerr == nil {
 				// A fully literal product needs the explicit uint64 type to
 				// join the other unsigned size variables.

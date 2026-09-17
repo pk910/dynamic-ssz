@@ -403,6 +403,16 @@ func (ctx *sizeContext) sizeOptional(desc *ssztypes.TypeDescriptor, varName, siz
 // sszutils.MulSize: two spec-driven factors can pass the int range, and the
 // size path has no error channel, so an overflowing product reports 0.
 func (ctx *sizeContext) appendCheckedProductAdd(indent int, sizeVar, what, a, b, suppress string) {
+	// A factor of one is the identity; each factor is already bounded to the
+	// platform int.
+	switch {
+	case a == "1":
+		ctx.appendCode(indent, "%s += int(%s)%s\n", sizeVar, b, suppress)
+		return
+	case b == "1":
+		ctx.appendCode(indent, "%s += int(%s)%s\n", sizeVar, a, suppress)
+		return
+	}
 	ctx.appendCode(indent, "{\n")
 	ctx.appendCode(indent+1, "product, err := sszutils.MulSize(\"%s\", uint64(%s), uint64(%s))%s\n", what, a, b, suppress)
 	ctx.appendCode(indent+1, "if err != nil {\n\treturn 0\n}\n")
