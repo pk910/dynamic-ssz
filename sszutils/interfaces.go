@@ -171,7 +171,9 @@ type HashWalker interface {
 	// temporary buffer methods
 	WithTemp(func(tmp []byte) []byte)
 
-	// Merkleization methods
+	// Merkleization methods. Each reduce pads a partial trailing chunk of the
+	// scope to a full chunk before reducing, so a scope of packed values or a
+	// short value needs no FillUpTo32 before it.
 	Merkleize(indx int)
 	MerkleizeWithMixin(indx int, num, limit uint64)
 	MerkleizeProgressive(indx int)

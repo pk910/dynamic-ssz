@@ -597,7 +597,8 @@ which for a basic value is the value itself.
 A `ssz-type:"custom"` value always delegates. Outside a packed scope the engine
 pads the hasher to the next 32-byte chunk after the delegate returns, so a hash
 method may either leave a complete leaf or append only the packed bytes of its
-value. Inside a list or vector, a custom type whose declared `ssz-size` is one a
+value. A generated or fastssz composite type is not padded: its method leaves
+exactly one root. Inside a list or vector, a custom type whose declared `ssz-size` is one a
 basic type could have (a power of two up to 16 bytes, without a size
 expression) stands in for that basic type: the scope is packed and its hash
 method is held to the rule above. Any other size gets a leaf of its own, as a

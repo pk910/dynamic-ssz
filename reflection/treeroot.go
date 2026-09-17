@@ -77,10 +77,12 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 	// different view types. If the method returns nil, fall through to
 	// other hashing methods.
 	//
-	// A delegate outside a packed scope is padded to a leaf afterwards. Inside
-	// a packed scope the walker packs its Put* calls, and it must leave
-	// exactly the element's packed bytes.
-	padDelegate := !pack
+	// A composite delegate leaves one root, so nothing follows it. A
+	// basic-shaped or custom delegate outside a packed scope may leave only
+	// its packed bytes and is padded to a leaf afterwards; inside a packed
+	// scope the walker packs its Put* calls, and it must leave exactly the
+	// element's packed bytes.
+	padDelegate := !pack && (packedElemSize(sourceType) > 0 || sourceType.SszType == ssztypes.SszCustomType)
 	packedStart := 0
 	if pack {
 		packedStart = hh.CurrentIndex()
@@ -746,8 +748,6 @@ func (ctx *ReflectionCtx) buildRootFromVector(sourceType *ssztypes.TypeDescripto
 				}
 			}
 		}
-
-		hh.FillUpTo32()
 	}
 
 	hh.Merkleize(hashIndex)
@@ -821,8 +821,6 @@ func (ctx *ReflectionCtx) buildRootFromList(sourceType *ssztypes.TypeDescriptor,
 				hh.Collapse()
 			}
 		}
-
-		hh.FillUpTo32()
 	}
 
 	switch {
@@ -1016,7 +1014,6 @@ func (ctx *ReflectionCtx) buildRootFromOptional(sourceType *ssztypes.TypeDescrip
 		present = 1
 	}
 
-	hh.FillUpTo32()
 	// One value means one chunk, so the limit is 1 like List[T, 1].
 	hh.MerkleizeWithMixin(hashIndex, present, 1)
 

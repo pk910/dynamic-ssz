@@ -2508,6 +2508,31 @@ type genNegSizeHolder struct {
 	V [2]genNegSizer `ssz-type:"?,custom"`
 }
 
+// padBasic and padComposite delegate their hashing; only the basic-shaped one
+// is padded to a leaf after its method returns.
+type padBasic uint64
+
+func (b *padBasic) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	hh.PutUint64(uint64(*b))
+	return nil
+}
+
+type padComposite struct{ A uint64 }
+
+func (c *padComposite) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, hh sszutils.HashWalker) error {
+	idx := hh.StartTree(sszutils.TreeTypeBinary)
+	hh.PutUint64(c.A)
+	hh.Merkleize(idx)
+	return nil
+}
+
+type padHolder struct {
+	B padBasic
+	C padComposite
+	L []padComposite `ssz-max:"4"`
+	V [2]padComposite
+}
+
 // genPlainContainer needs no platform guard anywhere in its generated code.
 type genPlainContainer struct {
 	A uint64
@@ -2535,6 +2560,28 @@ type genDynVec struct {
 // input has been checked against the declaration.
 // A container that needs no platform guard must not register the math import
 // the guard would have used: alone in its output file it has to compile.
+// The hasher pads only after a basic-shaped delegate outside a packed scope:
+// a composite delegate leaves one root, and every reduce pads its own
+// partial trailing chunk.
+func TestGenerateHashPadsOnlyBasicDelegates(t *testing.T) {
+	cg := NewCodeGenerator(nil)
+	cg.BuildFile("gen_pad.go", WithReflectType(reflect.TypeFor[padHolder]()))
+	files, err := cg.GenerateToMap()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	body := methodBody(files["gen_pad.go"], "padHolder", "HashTreeRootWithDyn")
+	if body == "" {
+		t.Fatal("no HashTreeRootWithDyn body generated")
+	}
+	if got := strings.Count(body, "hh.FillUpTo32()"); got != 1 {
+		t.Fatalf("padHolder hasher pads %d times, want once after the basic-shaped delegate:\n%s", got, body)
+	}
+	if !strings.Contains(body, "t.B.HashTreeRootWithDyn(ds, hh)") {
+		t.Fatalf("basic-shaped field not delegated:\n%s", body)
+	}
+}
+
 func TestGeneratePlainContainerImportsOnlyWhatItUses(t *testing.T) {
 	cg := NewCodeGenerator(nil)
 	cg.BuildFile("gen_plain.go",

@@ -255,11 +255,12 @@ func (ctx *hashTreeRootContext) hashUsesFastSsz(desc *ssztypes.TypeDescriptor, i
 }
 
 // hashDelegated emits the call to a type's own hash method when one applies
-// and reports whether it did. Outside a packed scope the delegate is padded
-// to a leaf afterwards; inside one it must leave exactly the element's packed
-// bytes.
+// and reports whether it did. A composite delegate leaves one root, so
+// nothing follows it. A basic-shaped or custom delegate outside a packed
+// scope may leave only its packed bytes and is padded to a leaf afterwards;
+// inside a packed scope it must leave exactly the element's packed bytes.
 func (ctx *hashTreeRootContext) hashDelegated(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, isRoot, isView, pack bool) (done bool, err error) {
-	padDelegate := !pack
+	padDelegate := !pack && (packedElemSize(desc) > 0 || desc.SszType == ssztypes.SszCustomType)
 	appendPackedStart := func() {
 		if pack {
 			ctx.appendCode(indent, "packedStart := hh.CurrentIndex()\n")
@@ -532,7 +533,6 @@ func (ctx *hashTreeRootContext) hashOptional(desc *ssztypes.TypeDescriptor, varN
 		return err
 	}
 	ctx.appendCode(indent+1, "}\n")
-	ctx.appendCode(indent+1, "hh.FillUpTo32()\n")
 	// One value means one chunk, so the limit is 1 like List[T, 1].
 	ctx.appendCode(indent+1, "hh.MerkleizeWithMixin(idx, optLen, 1)\n")
 	ctx.appendCode(indent, "}\n")
@@ -845,9 +845,6 @@ func (ctx *hashTreeRootContext) hashVector(desc *ssztypes.TypeDescriptor, varNam
 		}
 
 		if !pack {
-			// Packed basics and append-only delegates leave a partial chunk.
-			ctx.appendCode(indent, "hh.FillUpTo32()\n")
-
 			// Finalize vector with bit limit
 			ctx.appendCode(indent, "hh.Merkleize(idx)\n")
 		}
@@ -967,9 +964,6 @@ func (ctx *hashTreeRootContext) hashList(desc *ssztypes.TypeDescriptor, varName 
 			ctx.appendCode(indent, "\tif (%s+1)%%256 == 0 {\n\t\thh.Collapse()\n\t}\n", indexVar)
 			ctx.appendCode(indent, "}\n")
 		}
-
-		// Packed basics and append-only delegates leave a partial chunk.
-		ctx.appendCode(indent, "hh.FillUpTo32()\n")
 	}
 
 	switch {
