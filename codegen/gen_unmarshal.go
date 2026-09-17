@@ -1059,7 +1059,7 @@ func (ctx *unmarshalContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varN
 		expandSlice()
 
 		// bulk uint64 lists
-		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0 {
+		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.Kind == reflect.Uint64 && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0 {
 			ctx.appendCode(indent, "sszutils.UnmarshalUint64Slice(%s[:%s], buf)\n", indexValueVar, intLitStr(limitVar))
 			return nil
 		}
@@ -1207,7 +1207,7 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 		}
 
 		// bulk uint64 lists
-		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0 {
+		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.Kind == reflect.Uint64 && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0 {
 			ctx.appendCode(indent, "itemCount := len(buf) / 8\n")
 			errCode := "sszutils.ErrListNotAlignedFn(len(buf), 8)"
 			ctx.appendCode(indent, "if len(buf)%%8 != 0 {\n\treturn %s\n}\n", typePath.getErrorWith(errCode))
@@ -1248,9 +1248,13 @@ func (ctx *unmarshalContext) unmarshalList(desc *ssztypes.TypeDescriptor, varNam
 		if fieldSizeVar == "1" {
 			ctx.appendCode(indent, "itemCount := len(buf)\n")
 		} else {
-			ctx.appendCode(indent, "itemCount := len(buf) / %s\n", fieldSizeVar)
-			errCode := fmt.Sprintf("sszutils.ErrListNotAlignedFn(len(buf), %s)", fieldSizeVar)
-			ctx.appendCode(indent, "if len(buf)%%%s != 0 {\n\treturn %s\n}\n", fieldSizeVar, typePath.getErrorWith(errCode))
+			// A declared element size past the target's int range cannot be
+			// produced there; the guard above the capped literal makes the
+			// division and the alignment check portable.
+			platformGuard(ctx.appendCode, indent, ctx.typePrinter, uint64(desc.ElemDesc.Size), false, "return "+typePath.getErrorWith(fmt.Sprintf("sszutils.ErrPlatformOverflowFn(\"list element size\", %s)", uintLitArg(fieldSizeVar))))
+			ctx.appendCode(indent, "itemCount := len(buf) / %s\n", intLitStr(fieldSizeVar))
+			errCode := fmt.Sprintf("sszutils.ErrListNotAlignedFn(len(buf), %s)", uintLitArg(fieldSizeVar))
+			ctx.appendCode(indent, "if len(buf)%%%s != 0 {\n\treturn %s\n}\n", intLitStr(fieldSizeVar), typePath.getErrorWith(errCode))
 		}
 		if hasMax {
 			errCode := fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", uintLitArg(maxVar))

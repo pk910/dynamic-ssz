@@ -248,11 +248,17 @@ types:
     output: gen_edgecases.go
   - name: NegShellHolder
     output: gen_edgecases.go
+  - name: WideListHolder
+    output: gen_edgecases.go
   - name: WideAggregate
     output: gen_edgecases.go
   - name: WideElems
     output: gen_edgecases.go
   - name: WideWrapperHolder
+    output: gen_edgecases.go
+  - name: DeclaredU64Holder
+    output: gen_edgecases.go
+  - name: PlainExtHolder
     output: gen_edgecases.go
   - name: AmountList
     output: gen_edgecases.go

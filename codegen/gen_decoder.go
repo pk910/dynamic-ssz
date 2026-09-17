@@ -816,7 +816,7 @@ func (ctx *decoderContext) unmarshalVector(desc *ssztypes.TypeDescriptor, varNam
 		expandSlice()
 
 		// bulk uint64 lists
-		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0 {
+		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.Kind == reflect.Uint64 && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0 {
 			ctx.appendCode(indent, "if err = sszutils.DecodeUint64Slice(dec, %s[:%s]); err != nil {\n\treturn %s\n}\n", indexValueVar, intLitStr(limitVar), typePath.getErrorWith("err"))
 			return nil
 		}
@@ -1038,7 +1038,7 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		}
 
 		// bulk uint64 lists
-		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0 {
+		if desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.Kind == reflect.Uint64 && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0 {
 			maxArg := "-1"
 			if hasMax {
 				maxArg = cappedMaxVar()
@@ -1090,21 +1090,25 @@ func (ctx *decoderContext) unmarshalList(desc *ssztypes.TypeDescriptor, varName 
 		// still apply -- they cost nothing and reject a malformed declaration
 		// immediately. Only the allocation has to distrust the count, since a
 		// declared extent is not evidence the bytes arrived.
+		// A declared element size past the target's int range cannot be
+		// produced there; the guard above the capped literal makes the
+		// division, the alignment check and the sizing portable.
+		platformGuard(ctx.appendCode, indent, ctx.typePrinter, uint64(desc.ElemDesc.Size), false, "return "+typePath.getErrorWith(fmt.Sprintf("sszutils.ErrPlatformOverflowFn(\"list element size\", %s)", uintLitArg(fieldSizeVar))))
 		ctx.appendCode(indent, "itemCount := -1\n")
 		ctx.appendCode(indent, "if !dec.RegionOpen() {\n")
 		if fieldSizeVar == "1" {
 			ctx.appendCode(indent+1, "itemCount = dec.GetLength()\n")
 		} else {
 			ctx.appendCode(indent+1, "sszLen := dec.GetLength()\n")
-			errCode := fmt.Sprintf("sszutils.ErrListNotAlignedFn(sszLen, %s)", fieldSizeVar)
-			ctx.appendCode(indent+1, "if sszLen%%%s != 0 {\n\treturn %s\n}\n", fieldSizeVar, typePath.getErrorWith(errCode))
-			ctx.appendCode(indent+1, "itemCount = sszLen / %s\n", fieldSizeVar)
+			errCode := fmt.Sprintf("sszutils.ErrListNotAlignedFn(sszLen, %s)", uintLitArg(fieldSizeVar))
+			ctx.appendCode(indent+1, "if sszLen%%%s != 0 {\n\treturn %s\n}\n", intLitStr(fieldSizeVar), typePath.getErrorWith(errCode))
+			ctx.appendCode(indent+1, "itemCount = sszLen / %s\n", intLitStr(fieldSizeVar))
 		}
 		if hasMax {
 			errCode := fmt.Sprintf("sszutils.ErrListLengthFn(itemCount, %s)", uintLitArg(maxVar))
 			ctx.appendCode(indent+1, "if %s {\n\treturn %s\n}\n", uintCmpExpr("itemCount", ">", maxVar), typePath.getErrorWith(errCode))
 		}
-		ctx.appendCode(indent+1, "%s = sszutils.SizeListSlice(dec, %s, itemCount, %s)\n", valueVar, valueVar, fieldSizeVar)
+		ctx.appendCode(indent+1, "%s = sszutils.SizeListSlice(dec, %s, itemCount, %s)\n", valueVar, valueVar, intLitStr(fieldSizeVar))
 		ctx.appendCode(indent, "} else {\n")
 		ctx.appendCode(indent+1, "%s = sszutils.GrowSlice(%s, 0, %s)\n", valueVar, valueVar, growthLimit())
 		ctx.appendCode(indent, "}\n")

@@ -769,7 +769,7 @@ func (ctx *encoderContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 				}
 			}
 			ctx.appendCode(indent, "enc.EncodeBytes(%s[:%s])\n", getValueVar(false, ""), lenVar)
-		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0:
+		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.Kind == reflect.Uint64 && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0:
 			ctx.appendCode(indent, "sszutils.EncodeUint64Slice(enc, %s[:%s])\n", getValueVar(false, ""), lenVar)
 		default:
 			indexVar, indexDefer := ctx.getIndexVar()
@@ -992,7 +992,7 @@ func (ctx *encoderContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 				valueVar = fmt.Sprintf("(%s)", valueVar)
 			}
 			ctx.appendCode(indent, "enc.EncodeBytes(%s[:])\n", getValueVar(false, ""))
-		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0:
+		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.Kind == reflect.Uint64 && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0:
 			addVlen()
 			ctx.appendCode(indent, "sszutils.EncodeUint64Slice(enc, %s[:vlen])\n", getValueVar(false, ""))
 		default:

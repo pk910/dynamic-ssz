@@ -2588,6 +2588,16 @@ type WideAggregate struct {
 	C []byte `ssz-size:"1073741824"`
 }
 
+// WideListElem carries a declared size no 32-bit target can hold, held in a
+// list rather than a vector so the element count is divided by that size.
+type WideListElem struct {
+	X []byte `ssz-size:"3000000000"`
+}
+
+type WideListHolder struct {
+	L []WideListElem `ssz-max:"2"`
+}
+
 // WideElemInner is the variable-size element of WideElems.
 type WideElemInner struct {
 	L []byte `ssz-max:"8"`
@@ -2674,6 +2684,70 @@ type ExtScalarHolder struct {
 type ExtScalarHolderRefl struct {
 	A extScalar
 	L []extScalar `ssz-max:"8"`
+}
+
+// declaredU64 is a Go array declaring a uint64 shape, a width its Go kind
+// does not state; the emitters must keep picking their element paths by the
+// Go kind.
+type declaredU64 [8]byte
+
+var _ = sszutils.Annotate[declaredU64](`ssz-type:"uint64" ssz-static:"true"`)
+
+func (*declaredU64) SizeSSZDyn(sszutils.DynamicSpecs) int { return 8 }
+func (v *declaredU64) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	return append(b, v[:]...), nil
+}
+func (v *declaredU64) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) error {
+	if len(b) != 8 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	copy(v[:], b)
+	return nil
+}
+func (v *declaredU64) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, h sszutils.HashWalker) error {
+	h.Append(v[:])
+	return nil
+}
+
+type DeclaredU64Holder struct {
+	L []declaredU64 `ssz-max:"8"`
+}
+
+// DeclaredU64HolderRefl is the same shape without generated methods.
+type DeclaredU64HolderRefl struct {
+	L []declaredU64 `ssz-max:"8"`
+}
+
+// plainExtScalar is a delegated signed basic in the batch generated without
+// extended types: a delegated type is never traversed, so both front ends
+// keep its shape whatever that flag says.
+type plainExtScalar int32
+
+var _ = sszutils.Annotate[plainExtScalar](`ssz-static:"true"`)
+
+func (*plainExtScalar) SizeSSZDyn(sszutils.DynamicSpecs) int { return 4 }
+func (v *plainExtScalar) MarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) ([]byte, error) {
+	return binary.LittleEndian.AppendUint32(b, uint32(*v)), nil
+}
+func (v *plainExtScalar) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, b []byte) error {
+	if len(b) != 4 {
+		return sszutils.ErrUnexpectedEOF
+	}
+	*v = plainExtScalar(binary.LittleEndian.Uint32(b))
+	return nil
+}
+func (v *plainExtScalar) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, h sszutils.HashWalker) error {
+	h.AppendUint32(uint32(*v))
+	return nil
+}
+
+type PlainExtHolder struct {
+	L []plainExtScalar `ssz-max:"8"`
+}
+
+// PlainExtHolderRefl is the same shape without generated methods.
+type PlainExtHolderRefl struct {
+	L []plainExtScalar `ssz-max:"8"`
 }
 
 // amount declares a 16-byte basic shape by annotation, which no Go kind can

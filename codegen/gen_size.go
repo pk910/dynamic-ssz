@@ -667,7 +667,8 @@ func (ctx *sizeContext) sizeList(desc *ssztypes.TypeDescriptor, varName, sizeVar
 			if desc.ElemDesc.Size == 1 {
 				ctx.appendCode(indent, "%s += len(%s)\n", sizeVar, valueVar)
 			} else {
-				ctx.appendCode(indent, "%s += len(%s) * %d\n", sizeVar, valueVar, desc.ElemDesc.Size)
+				platformGuard(ctx.appendCode, indent, ctx.typePrinter, uint64(desc.ElemDesc.Size), false, "return 0")
+				ctx.appendCode(indent, "%s += len(%s) * %s\n", sizeVar, valueVar, intLitStr(fmt.Sprintf("%d", desc.ElemDesc.Size)))
 			}
 		} else {
 			useVar()

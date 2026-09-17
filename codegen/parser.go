@@ -395,14 +395,21 @@ func goKind(t types.Type) reflect.Kind {
 // ssz-type of its annotation when it names a basic type, otherwise its own Go
 // kind. A width of zero means the type states no basic shape, so its size is
 // resolved at run time through its own sizer.
+//
+// The kind is always the Go kind, as the reflection type cache keeps it: the
+// emitters choose their element fast paths by kind, and a declared width does
+// not make a Go array a uint64. A delegated type is never traversed, in either
+// front end, so neither applies the representability and extended-type rules
+// that a traversed type passes; its own methods own its encoding, and the
+// shape only says how a scope packs and pads it.
 func (p *Parser) delegateShape(annotation string, t types.Type) (reflect.Kind, ssztypes.SszType, int64) {
-	kind, sszType, size := basicShape(t, p.ExtendedTypes)
+	kind, sszType, size := basicShape(t, true)
 	typeHints, _, _, err := ssztypes.ParseTags(annotation)
 	if err != nil || len(typeHints) == 0 || typeHints[0].Type == ssztypes.SszUnspecifiedType {
 		return kind, sszType, size
 	}
 	declared := typeHints[0].Type
-	width := sszBasicWidth(declared, p.ExtendedTypes)
+	width := sszBasicWidth(declared, true)
 	if width == 0 {
 		// A declared non-basic type (a custom type, say) has no width here.
 		return reflect.Invalid, ssztypes.SszUnspecifiedType, 0

@@ -726,7 +726,7 @@ func (ctx *marshalContext) marshalVector(desc *ssztypes.TypeDescriptor, varName 
 				}
 			}
 			ctx.appendCode(indent, "dst = append(dst, %s[:%s]...)\n", getValueVar(false, ""), lenVar)
-		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0:
+		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.Kind == reflect.Uint64 && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0:
 			ctx.appendCode(indent, "dst = sszutils.MarshalUint64Slice(dst, %s[:%s])\n", getValueVar(false, ""), lenVar)
 		case isBulkBytesElem(desc.ElemDesc):
 			// fixed byte-array elements (e.g. []Root) are contiguous: append in one copy
@@ -899,7 +899,7 @@ func (ctx *marshalContext) marshalList(desc *ssztypes.TypeDescriptor, varName st
 		switch {
 		case desc.GoTypeFlags&ssztypes.GoTypeFlagIsByteArray != 0:
 			ctx.appendCode(indent, "dst = append(dst, %s[:]...)\n", getValueVar(false, ""))
-		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0:
+		case desc.ElemDesc.SszType == ssztypes.SszUint64Type && desc.ElemDesc.Kind == reflect.Uint64 && desc.ElemDesc.GoTypeFlags&(ssztypes.GoTypeFlagIsTime|ssztypes.GoTypeFlagIsPointer) == 0:
 			addVlen()
 			ctx.appendCode(indent, "dst = sszutils.MarshalUint64Slice(dst, %s[:vlen])\n", getValueVar(false, ""))
 		case isBulkBytesElem(desc.ElemDesc):

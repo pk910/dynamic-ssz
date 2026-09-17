@@ -4900,6 +4900,9 @@ func TestCodegenPlatformSizedDeclarations(t *testing.T) {
 	if _, generated := any(&WideAggregate{}).(sszutils.DynamicSizer); !generated {
 		t.Skip("no generated code present")
 	}
+	if _, listed := any(&WideListHolder{}).(sszutils.DynamicSizer); !listed {
+		t.Fatal("the list holder was not generated")
+	}
 	sizer, ok := any(&WideAggregate{}).(sszutils.DynamicSizer)
 	if !ok {
 		t.Fatal("the generated sizer is missing")
@@ -4948,6 +4951,41 @@ func TestCodegenWideWrapperIndex(t *testing.T) {
 	back := &WideWrapperHolderRefl{}
 	if err := ds.UnmarshalSSZ(back, want); err != nil || !bytes.Equal(back.W.Data, want) {
 		t.Fatalf("unmarshal = %x, %v, want %x", back.W.Data, err, want)
+	}
+}
+
+// A delegated type's shape is kept by both front ends: a width declared by
+// annotation that its Go kind does not state, and a signed basic in a batch
+// generated without extended types. The emitters pick their element paths by
+// the Go kind, so the generated file compiles either way.
+func TestCodegenDelegatedShapeParity(t *testing.T) {
+	if _, generated := any(&DeclaredU64Holder{}).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+	for _, pair := range []struct{ gen, refl any }{
+		{&DeclaredU64Holder{L: []declaredU64{{1}, {2}, {3}}}, &DeclaredU64HolderRefl{L: []declaredU64{{1}, {2}, {3}}}},
+		{&PlainExtHolder{L: []plainExtScalar{-1, 2, 3}}, &PlainExtHolderRefl{L: []plainExtScalar{-1, 2, 3}}},
+	} {
+		genRoot, err := ds.HashTreeRoot(pair.gen)
+		if err != nil {
+			t.Fatalf("%T: %v", pair.gen, err)
+		}
+		reflRoot, err := ds.HashTreeRoot(pair.refl)
+		if err != nil {
+			t.Fatalf("%T: %v", pair.refl, err)
+		}
+		if genRoot != reflRoot {
+			t.Fatalf("%T: generated %x, reflection %x", pair.gen, genRoot, reflRoot)
+		}
+		genBytes, err := ds.MarshalSSZ(pair.gen)
+		if err != nil {
+			t.Fatalf("%T marshal: %v", pair.gen, err)
+		}
+		reflBytes, err := ds.MarshalSSZ(pair.refl)
+		if err != nil || !bytes.Equal(genBytes, reflBytes) {
+			t.Fatalf("%T: generated %x, reflection %x, %v", pair.gen, genBytes, reflBytes, err)
+		}
 	}
 }
 
