@@ -318,12 +318,38 @@ func run(config *Config) error {
 		}
 		typeSpecs = specs
 	}
+	if err := checkOutputCollisions(typeSpecs); err != nil {
+		return err
+	}
 	if config.Remove {
 		return withStashedOutputs(typeSpecs, func() error {
 			return runGeneration(config, typeSpecs)
 		})
 	}
 	return runGeneration(config, typeSpecs)
+}
+
+// checkOutputCollisions refuses two output paths that name one file. Every
+// path is cleaned when it is parsed, so equal spellings already group
+// together; two spellings of the same file that survive cleaning (a relative
+// and an absolute one) would otherwise be generated separately and then
+// written onto each other, keeping only the last.
+func checkOutputCollisions(typeSpecs []typeSpec) error {
+	seen := map[string]string{}
+	for _, spec := range typeSpecs {
+		if spec.OutputFile == "" {
+			continue
+		}
+		abs, err := filepath.Abs(spec.OutputFile)
+		if err != nil {
+			return fmt.Errorf("resolve output %s: %w", spec.OutputFile, err)
+		}
+		if first, ok := seen[abs]; ok && first != spec.OutputFile {
+			return fmt.Errorf("output files %s and %s name the same file: spell the target the same way in every type", first, spec.OutputFile)
+		}
+		seen[abs] = spec.OutputFile
+	}
+	return nil
 }
 
 // withStashedOutputs runs generate with the output files moved aside. They
@@ -1114,6 +1140,7 @@ func parseTypeSpecs(typeNames, defaultOutput string) ([]typeSpec, error) {
 			}
 			spec.OutputFile = defaultOutput
 		}
+		spec.OutputFile = filepath.Clean(spec.OutputFile)
 
 		typeSpecs = append(typeSpecs, spec)
 	}

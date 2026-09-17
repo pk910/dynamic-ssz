@@ -138,6 +138,33 @@ func TestRun_RemoveStashesAndRestores(t *testing.T) {
 	}
 }
 
+// Two spellings of one output file name one target: the spellings that clean
+// to the same path group together, and any other pair is refused rather than
+// generated twice and written onto each other.
+func TestOutputPathAliases(t *testing.T) {
+	specs, err := parseTypeSpecs("A:output=gen.go,B:output=./gen.go", "")
+	if err != nil {
+		t.Fatalf("parseTypeSpecs: %v", err)
+	}
+	for _, spec := range specs {
+		if spec.OutputFile != "gen.go" {
+			t.Fatalf("output %q, want gen.go", spec.OutputFile)
+		}
+	}
+	if err := checkOutputCollisions(specs); err != nil {
+		t.Fatalf("equal spellings were refused: %v", err)
+	}
+
+	abs, absErr := filepath.Abs("gen.go")
+	if absErr != nil {
+		t.Fatal(absErr)
+	}
+	mixed := []typeSpec{{TypeName: "A", OutputFile: "gen.go"}, {TypeName: "B", OutputFile: abs}}
+	if err := checkOutputCollisions(mixed); err == nil || !strings.Contains(err.Error(), "name the same file") {
+		t.Fatalf("err = %v, want the collision refusal", err)
+	}
+}
+
 // A stash left behind by an interrupted run is never overwritten: the run is
 // refused and nothing else is moved.
 func TestStashOutputs_RefusesExistingStash(t *testing.T) {

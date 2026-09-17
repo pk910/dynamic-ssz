@@ -288,8 +288,11 @@ func resolveBool(override *bool, fallback bool) bool {
 // resolvePath returns path if absolute, otherwise joined against baseDir.
 // An empty baseDir means paths are used as-is.
 func resolvePath(path, baseDir string) string {
-	if path == "" || baseDir == "" || filepath.IsAbs(path) {
+	if path == "" {
 		return path
+	}
+	if baseDir == "" || filepath.IsAbs(path) {
+		return filepath.Clean(path)
 	}
 	return filepath.Join(baseDir, path)
 }
