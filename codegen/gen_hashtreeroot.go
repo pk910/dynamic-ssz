@@ -255,23 +255,28 @@ func (ctx *hashTreeRootContext) hashUsesFastSsz(desc *ssztypes.TypeDescriptor, i
 }
 
 // hashDelegated emits the call to a type's own hash method when one applies
-// and reports whether it did. A composite delegate leaves one root, so
-// nothing follows it. A basic-shaped or custom delegate outside a packed
-// scope may leave only its packed bytes and is padded to a leaf afterwards;
-// inside a packed scope it must leave exactly the element's packed bytes.
+// and reports whether it did. A composite delegate leaves whole chunks, which
+// is verified so a partial chunk never merges into the next leaf; the count
+// is not verified, since a closed scope may stay in the walker as several
+// chunks until its parent reduces it. A
+// basic-shaped or custom delegate outside a packed scope may leave only its
+// packed bytes and is padded to a leaf afterwards; inside a packed scope it
+// must leave exactly the element's packed bytes.
 func (ctx *hashTreeRootContext) hashDelegated(desc *ssztypes.TypeDescriptor, varName string, typePath typePathList, indent int, isRoot, isView, pack bool) (done bool, err error) {
 	padDelegate := !pack && (packedElemSize(desc) > 0 || desc.SszType == ssztypes.SszCustomType)
 	appendPackedStart := func() {
-		if pack {
-			ctx.appendCode(indent, "packedStart := hh.CurrentIndex()\n")
+		if pack || !padDelegate {
+			ctx.appendCode(indent, "delegateStart := hh.CurrentIndex()\n")
 		}
 	}
 	appendPackedCheck := func() {
-		if !pack {
-			return
+		switch {
+		case pack:
+			errCode := fmt.Sprintf("sszutils.ErrPackedDelegateFn(got, %d)", desc.Size)
+			ctx.appendCode(indent, "if got := hh.CurrentIndex() - delegateStart; got != %d {\n\treturn %s\n}\n", desc.Size, typePath.getErrorWith(errCode))
+		case !padDelegate:
+			ctx.appendCode(indent, "if got := hh.CurrentIndex() - delegateStart; got%%32 != 0 {\n\treturn %s\n}\n", typePath.getErrorWith("sszutils.ErrCompositeDelegateFn(got)"))
 		}
-		errCode := fmt.Sprintf("sszutils.ErrPackedDelegateFn(got, %d)", desc.Size)
-		ctx.appendCode(indent, "if got := hh.CurrentIndex() - packedStart; got != %d {\n\treturn %s\n}\n", desc.Size, typePath.getErrorWith(errCode))
 	}
 
 	// Handle types that have generated methods we can call

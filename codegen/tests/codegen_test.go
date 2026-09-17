@@ -4907,6 +4907,42 @@ func TestCodegenDelegatedShallowFraming(t *testing.T) {
 	}
 }
 
+// A composite delegate leaves whole chunks. One that leaves a partial chunk
+// is refused by the hasher and by the tree wrapper, in both engines; one
+// that honours the contract hashes the same everywhere.
+func TestCompositeDelegateContract(t *testing.T) {
+	if _, generated := any(&PartialHolder{}).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+	for _, v := range []any{&PartialHolder{N: 1, M: 2}, &PartialHolderRefl{N: 1, M: 2}} {
+		if _, err := ds.HashTreeRoot(v); !errors.Is(err, sszutils.ErrCompositeDelegate) {
+			t.Fatalf("%T HashTreeRoot err = %v, want ErrCompositeDelegate", v, err)
+		}
+		if _, err := ds.GetTree(v); !errors.Is(err, sszutils.ErrCompositeDelegate) {
+			t.Fatalf("%T GetTree err = %v, want ErrCompositeDelegate", v, err)
+		}
+	}
+	roots := make([][32]byte, 0, 2)
+	for _, v := range []any{&GoodHolder{N: 1, G: goodComposite{A: 3, B: 4}, M: 2}, &GoodHolderRefl{N: 1, G: goodComposite{A: 3, B: 4}, M: 2}} {
+		root, err := ds.HashTreeRoot(v)
+		if err != nil {
+			t.Fatalf("%T HashTreeRoot: %v", v, err)
+		}
+		tree, err := ds.GetTree(v)
+		if err != nil {
+			t.Fatalf("%T GetTree: %v", v, err)
+		}
+		if !bytes.Equal(tree.Hash(), root[:]) {
+			t.Fatalf("%T: tree %x, hasher %x", v, tree.Hash(), root)
+		}
+		roots = append(roots, root)
+	}
+	if roots[0] != roots[1] {
+		t.Fatalf("generated %x, reflection %x", roots[0], roots[1])
+	}
+}
+
 // Every size formed at run time is bounded where it enters: a vector of
 // variable-size elements to a quarter of the size limit, a container's summed
 // fields and a delegated sizer's result to the limit itself. Both engines

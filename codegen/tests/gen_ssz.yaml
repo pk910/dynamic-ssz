@@ -256,6 +256,10 @@ types:
     output: gen_edgecases.go
   - name: SpecSumDelegated
     output: gen_edgecases.go
+  - name: PartialHolder
+    output: gen_edgecases.go
+  - name: GoodHolder
+    output: gen_edgecases.go
   - name: OctetParent
     output: gen_edgecases.go
   - name: WalkerOnlyOuter

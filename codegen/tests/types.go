@@ -2686,6 +2686,52 @@ type SpecSumDelegated struct {
 	V []SpecSumInner `ssz-size:"1" dynssz-size:"COUNT"`
 }
 
+// partialComposite is a composite type whose hash method leaves a partial
+// chunk, eight raw bytes, instead of one root; goodComposite honours the
+// contract. Both walkers refuse the first and agree on the second.
+type partialComposite struct{ A, B uint64 }
+
+func (p *partialComposite) HashTreeRootWith(hh sszutils.HashWalker) error {
+	hh.Append([]byte{1, 2, 3, 4, 5, 6, 7, 8})
+	return nil
+}
+func (p *partialComposite) HashTreeRoot() ([32]byte, error) { return [32]byte{9}, nil }
+
+type goodComposite struct{ A, B uint64 }
+
+func (g *goodComposite) HashTreeRootWith(hh sszutils.HashWalker) error {
+	idx := hh.StartTree(sszutils.TreeTypeNone)
+	hh.PutUint64(g.A)
+	hh.PutUint64(g.B)
+	hh.Merkleize(idx)
+	return nil
+}
+func (g *goodComposite) HashTreeRoot() ([32]byte, error) { return [32]byte{}, nil }
+
+type PartialHolder struct {
+	N uint64
+	P partialComposite
+	M uint64
+}
+
+type PartialHolderRefl struct {
+	N uint64
+	P partialComposite
+	M uint64
+}
+
+type GoodHolder struct {
+	N uint64
+	G goodComposite
+	M uint64
+}
+
+type GoodHolderRefl struct {
+	N uint64
+	G goodComposite
+	M uint64
+}
+
 // fixedOctets is a named slice with its own eight-byte fixed codec: it lies
 // on no cycle and must keep its shallow static descriptor.
 type fixedOctets []byte

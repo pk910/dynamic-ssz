@@ -86,11 +86,6 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 	padDelegate := func() bool {
 		return !pack && (packedElemSize(sourceType) > 0 || sourceType.SszType == ssztypes.SszCustomType)
 	}
-	packedStart := 0
-	if pack {
-		packedStart = hh.CurrentIndex()
-	}
-
 	isView := sourceType.GoTypeFlags&ssztypes.GoTypeFlagIsView != 0
 	if isView {
 		// Under no-delegation the view schema is hashed by reflection instead of
@@ -100,13 +95,14 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 		if !ctx.noDelegation && sourceType.SszCompatFlags&ssztypes.SszCompatFlagDynamicViewHashRoot != 0 {
 			if viewHasher, ok := getPtr(sourceValue).Interface().(sszutils.DynamicViewHashRoot); ok {
 				if hashFn := viewHasher.HashTreeRootWithDynView(*sourceType.CodegenInfo); hashFn != nil {
+					delegateStart := hh.CurrentIndex()
 					if err := hashFn(ctx.ds, hh); err != nil {
 						return err
 					}
 					if padDelegate() {
 						hh.FillUpTo32()
 					}
-					if err := checkPackedDelegate(hh, pack, packedStart, sourceType.Size); err != nil {
+					if err := checkDelegate(hh, pack, delegateStart, sourceType.Size); err != nil {
 						return err
 					}
 
@@ -141,6 +137,7 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 			sourceValuePtr := getPtr(sourceValue)
 
 			if sourceType.SszCompatFlags&ssztypes.SszCompatFlagHashTreeRootWith != 0 && sourceType.HashTreeRootWithMethod != nil {
+				delegateStart := hh.CurrentIndex()
 				results := sourceType.HashTreeRootWithMethod.Func.Call([]reflect.Value{sourceValuePtr, reflect.ValueOf(hh)})
 				if len(results) > 0 && !results[0].IsNil() {
 					// The compat gate only admits methods whose return type is
@@ -152,7 +149,7 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 					hh.FillUpTo32()
 				}
 
-				return checkPackedDelegate(hh, pack, packedStart, sourceType.Size)
+				return checkDelegate(hh, pack, delegateStart, sourceType.Size)
 			}
 
 			if hasher, ok := sourceValuePtr.Interface().(sszutils.FastsszHashRoot); ok {
@@ -175,6 +172,7 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 
 		if useDynamicHashRoot {
 			if hasher, ok := getPtr(sourceValue).Interface().(sszutils.DynamicHashRoot); ok {
+				delegateStart := hh.CurrentIndex()
 				err := hasher.HashTreeRootWithDyn(ctx.ds, hh)
 				if err != nil {
 					return fmt.Errorf("failed HashTreeRootDyn: %w", err)
@@ -183,7 +181,7 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 					hh.FillUpTo32()
 				}
 
-				return checkPackedDelegate(hh, pack, packedStart, sourceType.Size)
+				return checkDelegate(hh, pack, delegateStart, sourceType.Size)
 			}
 		}
 	}
@@ -1082,14 +1080,23 @@ func packedElemSize(elemDesc *ssztypes.TypeDescriptor) int64 {
 	}
 }
 
-// checkPackedDelegate verifies that a delegate called inside a packed scope
-// advanced the walker from start by exactly the element's packed size.
-func checkPackedDelegate(hh sszutils.HashWalker, pack bool, start int, size int64) error {
-	if !pack {
+// checkDelegate verifies what a delegate left on the walker from start:
+// inside a packed scope exactly the element's packed bytes, outside it whole
+// chunks, so a partial chunk never merges into the next leaf. Only the
+// alignment is checked: a scope closed by the delegate may stay in the buffer
+// as several chunks until its parent reduces it, and a batched reduction of
+// earlier siblings may even shorten the buffer during the call, both by whole
+// chunks.
+func checkDelegate(hh sszutils.HashWalker, pack bool, start int, size int64) error {
+	got := hh.CurrentIndex() - start
+	if pack {
+		if int64(got) != size {
+			return sszutils.ErrPackedDelegateFn(got, size)
+		}
 		return nil
 	}
-	if got := hh.CurrentIndex() - start; int64(got) != size {
-		return sszutils.ErrPackedDelegateFn(got, size)
+	if got%32 != 0 {
+		return sszutils.ErrCompositeDelegateFn(got)
 	}
 	return nil
 }
