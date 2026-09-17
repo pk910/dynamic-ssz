@@ -4644,11 +4644,10 @@ func TestCodegenCycleAcrossBatches(t *testing.T) {
 	}
 }
 
-// The second batch of a cycle sees the first batch's member through its
-// generated methods and still marks the cycle: the type cache traverses the
-// delegated partner, and the generated code of the later member carries its
-// own depth twins.
-func TestCodegenCycleAcrossBatchesMarksBothMembers(t *testing.T) {
+// Both members of a generated cycle carry depth twins, and the type cache
+// takes a member that delegates as the shallow descriptor its methods stand
+// for: its cycle partner is generated too, so nothing is left uncounted.
+func TestCodegenCycleMembersCarryDepthTwins(t *testing.T) {
 	if _, generated := any(&CycleBatchB{}).(sszutils.DynamicMarshaler); !generated {
 		t.Skip("no generated code present")
 	}
@@ -4656,16 +4655,27 @@ func TestCodegenCycleAcrossBatchesMarksBothMembers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build CycleBatchB: %v", err)
 	}
-	descA := descB.ContainerDesc.Fields[1].Type.ElemDesc
-	if descA.ContainerDesc == nil || descA.SszTypeFlags&ssztypes.SszTypeFlagRecursionMember == 0 || descB.SszTypeFlags&ssztypes.SszTypeFlagRecursionMember == 0 {
-		t.Fatalf("delegated partner traversed=%v, recursion flags A=%v B=%v", descA.ContainerDesc != nil, descA.SszTypeFlags&ssztypes.SszTypeFlagRecursionMember != 0, descB.SszTypeFlags&ssztypes.SszTypeFlagRecursionMember != 0)
+	if descB.ContainerDesc != nil || descB.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler == 0 {
+		t.Fatalf("traversed=%v delegated=%v, want a shallow delegated descriptor", descB.ContainerDesc != nil, descB.SszCompatFlags&ssztypes.SszCompatFlagDynamicMarshaler != 0)
 	}
-	generated, err := os.ReadFile("gen_extended.go")
+	generated, err := os.ReadFile("gen_recursive.go")
 	if err != nil {
-		t.Fatalf("read the second batch's output: %v", err)
+		t.Fatalf("read the generated output: %v", err)
 	}
-	if !strings.Contains(string(generated), "func (t *CycleBatchB) marshalSSZDynAtDepth(") {
-		t.Fatal("the second batch's cycle member carries no depth twin")
+	for _, twin := range []string{"func (t *CycleBatchA) marshalSSZDynAtDepth(", "func (t *CycleBatchB) marshalSSZDynAtDepth("} {
+		if !strings.Contains(string(generated), twin) {
+			t.Fatalf("missing depth twin %s", twin)
+		}
+	}
+}
+
+// A type without methods on a cycle with a delegated type is refused by the
+// type cache; the parser refuses the same pair (see the generator's parser
+// tests).
+func TestTypeCacheRefusesHalfDelegatedCycle(t *testing.T) {
+	_, err := dynssz.NewDynSsz(nil).MarshalSSZ(&EdgeCycleParent{})
+	if err == nil || !strings.Contains(err.Error(), "edgeOpaque") || !strings.Contains(err.Error(), "edgeCycleA") {
+		t.Fatalf("err = %v, want the cycle between edgeOpaque and edgeCycleA refused", err)
 	}
 }
 
@@ -4820,6 +4830,80 @@ func TestCodegenNegativeDelegatedSize(t *testing.T) {
 	}
 	if err := gen.UnmarshalSSZReader(&NegShellHolder{}, bytes.NewReader(data), len(data)); !errors.Is(err, sszutils.ErrInvalidValueRange) {
 		t.Fatalf("generated UnmarshalSSZReader err = %v, want ErrInvalidValueRange", err)
+	}
+}
+
+// merkleRoot reduces leaves (padded to a power of two with zero leaves) to
+// one root with sha256, as the SSZ spec defines merkleization.
+func merkleRoot(leaves [][32]byte, limit int) [32]byte {
+	for len(leaves) < limit {
+		leaves = append(leaves, [32]byte{})
+	}
+	for len(leaves) > 1 {
+		next := make([][32]byte, 0, len(leaves)/2)
+		for i := 0; i < len(leaves); i += 2 {
+			next = append(next, sha256.Sum256(append(leaves[i][:], leaves[i+1][:]...)))
+		}
+		leaves = next
+	}
+	return leaves[0]
+}
+
+// A basic type that delegates through its own methods keeps its SSZ shape
+// in both front ends: as a field it is padded to a leaf after its packed
+// bytes, and a list of it packs into chunks of its width. Both engines, the
+// proof tree and an independent sha256 oracle agree.
+func TestCodegenShallowBasicDelegateShape(t *testing.T) {
+	if _, generated := any(&ShallowBasicHolder{}).(sszutils.DynamicHashRoot); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+
+	var pair [64]byte
+	binary.LittleEndian.PutUint16(pair[:2], 0x1234)
+	binary.LittleEndian.PutUint64(pair[32:40], 0x1122334455667788)
+	wantHolder := sha256.Sum256(pair[:])
+	for _, v := range []any{&ShallowBasicHolder{A: 0x1234, B: 0x1122334455667788}, &ShallowBasicHolderRefl{A: 0x1234, B: 0x1122334455667788}} {
+		root, err := ds.HashTreeRoot(v)
+		if err != nil || root != wantHolder {
+			t.Fatalf("%T root = %x, %v, want %x", v, root, err, wantHolder)
+		}
+		tree, err := ds.GetTree(v)
+		if err != nil || !bytes.Equal(tree.Hash(), wantHolder[:]) {
+			t.Fatalf("%T tree root = %x, %v, want %x", v, tree.Hash(), err, wantHolder)
+		}
+	}
+
+	// Two uint16 values pack into one chunk of a five-chunk list (65*2/32
+	// rounded up), mixed with the length.
+	var packed [32]byte
+	binary.LittleEndian.PutUint16(packed[:2], 0x1234)
+	binary.LittleEndian.PutUint16(packed[2:4], 0x5678)
+	var length [32]byte
+	length[0] = 2
+	listRoot := merkleRoot([][32]byte{packed}, 8)
+	wantList := sha256.Sum256(append(listRoot[:], length[:]...))
+	for _, v := range []any{&ShallowBasicList{L: []shallowBasic{0x1234, 0x5678}}, &ShallowBasicListRefl{L: []shallowBasic{0x1234, 0x5678}}} {
+		root, err := ds.HashTreeRoot(v)
+		if err != nil || root != wantList {
+			t.Fatalf("%T list root = %x, %v, want %x", v, root, err, wantList)
+		}
+	}
+}
+
+// A named slice with its own fixed codec lies on no cycle and keeps its
+// shallow static descriptor in both engines: nothing adds an offset in front
+// of its eight bytes.
+func TestCodegenDelegatedShallowFraming(t *testing.T) {
+	if _, generated := any(&OctetParent{}).(sszutils.DynamicMarshaler); !generated {
+		t.Skip("no generated code present")
+	}
+	ds := dynssz.NewDynSsz(nil)
+	nine := []byte{9, 0, 0, 0, 0, 0, 0, 0}
+	for _, v := range []any{&OctetParent{Data: fixedOctets{9}}, &OctetParentRefl{Data: fixedOctets{9}}} {
+		if got, err := ds.MarshalSSZ(v); err != nil || !bytes.Equal(got, nine) {
+			t.Fatalf("%T = %x, %v, want %x", v, got, err, nine)
+		}
 	}
 }
 

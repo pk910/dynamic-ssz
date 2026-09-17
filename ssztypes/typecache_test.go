@@ -1425,7 +1425,9 @@ type delegatedViewNilSchema struct {
 // cycleDelegatedA delegates every operation to its own methods and lies on a
 // cycle with cycleDelegatedB, which has no methods. cycleDelegatedOff delegates
 // the same way but lies on no cycle. cycleDelegatedOpaque lies on a cycle with
-// cycleOpaqueC but cannot be traversed.
+// cycleOpaqueC and holds a field that cannot be described. cycleDelegatedSelf
+// lies on a cycle with itself only; cycleDelegatedPairA and cycleDelegatedPairB
+// form a cycle whose members both delegate.
 type cycleDelegatedA struct {
 	V  uint64
 	Bs []cycleDelegatedB `ssz-max:"4"`
@@ -1482,10 +1484,55 @@ type cycleOpaqueC struct {
 	Os []cycleDelegatedOpaque `ssz-max:"4"`
 }
 
+type cycleDelegatedSelf struct {
+	V    uint64
+	Next []cycleDelegatedSelf `ssz-max:"4"`
+}
+
+func (cycleDelegatedSelf) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+func (cycleDelegatedSelf) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+func (cycleDelegatedSelf) SizeSSZDyn(_ sszutils.DynamicSpecs) int                  { return 12 }
+func (cycleDelegatedSelf) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+type cycleDelegatedPairA struct {
+	V  uint64
+	Bs []cycleDelegatedPairB `ssz-max:"4"`
+}
+
+func (cycleDelegatedPairA) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+func (cycleDelegatedPairA) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+func (cycleDelegatedPairA) SizeSSZDyn(_ sszutils.DynamicSpecs) int                  { return 12 }
+func (cycleDelegatedPairA) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
+type cycleDelegatedPairB struct {
+	W  uint32
+	As []cycleDelegatedPairA `ssz-max:"4"`
+}
+
+func (cycleDelegatedPairB) MarshalSSZDyn(_ sszutils.DynamicSpecs, buf []byte) ([]byte, error) {
+	return buf, nil
+}
+func (cycleDelegatedPairB) UnmarshalSSZDyn(_ sszutils.DynamicSpecs, _ []byte) error { return nil }
+func (cycleDelegatedPairB) SizeSSZDyn(_ sszutils.DynamicSpecs) int                  { return 8 }
+func (cycleDelegatedPairB) HashTreeRootWithDyn(_ sszutils.DynamicSpecs, _ sszutils.HashWalker) error {
+	return nil
+}
+
 var (
 	_ = sszutils.Annotate[cycleDelegatedA](`ssz-static:"false"`)
 	_ = sszutils.Annotate[cycleDelegatedOff](`ssz-static:"true"`)
 	_ = sszutils.Annotate[cycleDelegatedOpaque](`ssz-static:"false"`)
+	_ = sszutils.Annotate[cycleDelegatedSelf](`ssz-static:"false"`)
+	_ = sszutils.Annotate[cycleDelegatedPairA](`ssz-static:"false"`)
+	_ = sszutils.Annotate[cycleDelegatedPairB](`ssz-static:"false"`)
 	_ = sszutils.Annotate[delegatedFixedSize](`ssz-static:"true"`)
 	_ = sszutils.Annotate[delegatedVarSize](`ssz-static:"false"`)
 	_ = sszutils.Annotate[delegatedSpecStatic](`ssz-static:"true"`)
@@ -1503,38 +1550,38 @@ var (
 // with a build in flight: then it is traversed, so both members carry the
 // recursion flag and the walkers count the cycle's levels. An opaque partner
 // on a cycle keeps the shallow descriptor.
-func TestTypeCache_DelegatedCycleMemberIsTraversed(t *testing.T) {
+func TestTypeCache_DelegatedCycleIsRefused(t *testing.T) {
 	cache := NewTypeCache(&dummyDynamicSpecs{})
 
-	descB, err := cache.GetTypeDescriptor(reflect.TypeOf(cycleDelegatedB{}), nil, nil, nil)
-	if err != nil {
-		t.Fatalf("build B: %v", err)
-	}
-	descA := descB.ContainerDesc.Fields[1].Type.ElemDesc
-	if descA.ContainerDesc == nil {
-		t.Fatal("the delegated cycle member was built shallow; its subtree is missing")
-	}
-	if descA.SszTypeFlags&SszTypeFlagRecursionMember == 0 || descB.SszTypeFlags&SszTypeFlagRecursionMember == 0 {
-		t.Fatalf("recursion flags A=%v B=%v, want both set", descA.SszTypeFlags&SszTypeFlagRecursionMember != 0, descB.SszTypeFlags&SszTypeFlagRecursionMember != 0)
-	}
-	if descA.SszCompatFlags&SszCompatFlagDynamicMarshaler == 0 {
-		t.Fatal("the traversed cycle member lost its delegation flags")
-	}
-
-	holder, err := cache.GetTypeDescriptor(reflect.TypeOf(cycleDelegatedOffHolder{}), nil, nil, nil)
-	if err != nil {
-		t.Fatalf("build holder: %v", err)
-	}
-	if off := holder.ContainerDesc.Fields[0].Type; off.ContainerDesc != nil {
-		t.Fatal("a delegated type off any cycle was traversed")
+	// A delegated type on a cycle with a type described here is refused,
+	// whether its structure could be traversed or not.
+	for _, tc := range []struct {
+		root    any
+		partner string
+		member  string
+	}{
+		{cycleDelegatedB{}, "cycleDelegatedA", "cycleDelegatedB"},
+		{cycleOpaqueC{}, "cycleDelegatedOpaque", "cycleOpaqueC"},
+	} {
+		_, err := cache.GetTypeDescriptor(reflect.TypeOf(tc.root), nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), tc.partner) || !strings.Contains(err.Error(), tc.member) || !strings.Contains(err.Error(), "generated in one run") {
+			t.Fatalf("build %T: err = %v, want the cycle between %s and %s refused", tc.root, err, tc.partner, tc.member)
+		}
 	}
 
-	descC, err := cache.GetTypeDescriptor(reflect.TypeOf(cycleOpaqueC{}), nil, nil, nil)
-	if err != nil {
-		t.Fatalf("build C with an opaque cycle partner: %v", err)
-	}
-	if opaque := descC.ContainerDesc.Fields[1].Type.ElemDesc; opaque.ContainerDesc != nil || opaque.SszCompatFlags&SszCompatFlagDynamicMarshaler == 0 {
-		t.Fatal("an opaque cycle partner did not fall back to its shallow descriptor")
+	// A delegated type off any cycle, one whose cycle stays within itself and
+	// a pair that delegate together are built shallow.
+	for _, v := range []any{cycleDelegatedOffHolder{}, cycleDelegatedSelf{}, cycleDelegatedPairA{}} {
+		desc, err := cache.GetTypeDescriptor(reflect.TypeOf(v), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("build %T: %v", v, err)
+		}
+		if _, holder := v.(cycleDelegatedOffHolder); holder {
+			desc = desc.ContainerDesc.Fields[0].Type
+		}
+		if desc.ContainerDesc != nil || desc.SszCompatFlags&SszCompatFlagDynamicMarshaler == 0 {
+			t.Fatalf("%T: traversed=%v delegated=%v, want a shallow delegated descriptor", v, desc.ContainerDesc != nil, desc.SszCompatFlags&SszCompatFlagDynamicMarshaler != 0)
+		}
 	}
 }
 

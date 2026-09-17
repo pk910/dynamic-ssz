@@ -1105,6 +1105,10 @@ func (h *Hasher) clampMerkleizeIndex(indx int) int {
 
 func (h *Hasher) Merkleize(indx int) {
 	indx = h.clampMerkleizeIndex(indx)
+	// The scope is reduced as whole chunks, and a scope of packed values ends
+	// on a partial one; padding it first keeps the scope eligible for the
+	// batched reduction below, which counts whole chunks.
+	h.FillUpTo32()
 	layer := h.getMatchingLayer(indx)
 
 	if layer != nil {

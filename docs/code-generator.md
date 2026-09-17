@@ -459,18 +459,16 @@ the same batch delegates to their preset-capable `*Dyn` methods and then omits
 its own static twins. The `*Dyn` methods and the `ds.*` entry points are always
 present — use those rather than relying on the static method set.
 
-A recursive cycle may span several generation batches of one package. The
-first batch inlines the members not generated yet, so its code counts the
-whole cycle. A later batch traverses the structure of an earlier batch's
-members even though it delegates to their methods, so it sees the cycle,
-counts its own level and reaches the earlier members through the
-depth-carrying methods it finds in the package source: the count continues
-across the boundary and the bound is the same from every entry point.
-Regenerate every batch of a package after upgrading the generator, so each
-member carries its depth-carrying methods. Generation through the Go API from
-`reflect.Type` values cannot see unexported methods at all: a cycle split
-across several in-process runs restarts its count at every run boundary, so
-generate such cycles in one run.
+The members of a recursive cycle are generated in one run. A run inlines the
+members it does not generate itself, so its code counts the whole cycle, and
+a hand-written member owns its own recursion safety. A member that already
+carries generated methods from an earlier run is delegated to and never
+traversed, so a run that meets such a member on a cycle with a type it
+generates fails with an error naming both types: regenerate the whole cycle
+together (`-remove` clears the earlier output first). The same rule holds at
+run time, in the reflection engine and in generation through the Go API:
+describing a type without generated methods that lies on a cycle with a
+generated type fails with the same error.
 
 ### With `-without-dynamic-expressions`: Static Methods Only
 

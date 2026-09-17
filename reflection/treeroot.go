@@ -81,8 +81,11 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 	// basic-shaped or custom delegate outside a packed scope may leave only
 	// its packed bytes and is padded to a leaf afterwards; inside a packed
 	// scope the walker packs its Put* calls, and it must leave exactly the
-	// element's packed bytes.
-	padDelegate := !pack && (packedElemSize(sourceType) > 0 || sourceType.SszType == ssztypes.SszCustomType)
+	// element's packed bytes. The shape test runs only once a delegate is
+	// called: this function runs for every value walked.
+	padDelegate := func() bool {
+		return !pack && (packedElemSize(sourceType) > 0 || sourceType.SszType == ssztypes.SszCustomType)
+	}
 	packedStart := 0
 	if pack {
 		packedStart = hh.CurrentIndex()
@@ -100,7 +103,7 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 					if err := hashFn(ctx.ds, hh); err != nil {
 						return err
 					}
-					if padDelegate {
+					if padDelegate() {
 						hh.FillUpTo32()
 					}
 					if err := checkPackedDelegate(hh, pack, packedStart, sourceType.Size); err != nil {
@@ -145,7 +148,7 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 					callErr, _ := results[0].Interface().(error)
 					return fmt.Errorf("failed HashTreeRootWith: %w", callErr)
 				}
-				if padDelegate {
+				if padDelegate() {
 					hh.FillUpTo32()
 				}
 
@@ -176,7 +179,7 @@ func (ctx *ReflectionCtx) buildRootFromType(sourceType *ssztypes.TypeDescriptor,
 				if err != nil {
 					return fmt.Errorf("failed HashTreeRootDyn: %w", err)
 				}
-				if padDelegate {
+				if padDelegate() {
 					hh.FillUpTo32()
 				}
 

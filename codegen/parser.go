@@ -217,12 +217,7 @@ type Parser struct {
 	// flight, so a fully-delegated type can tell whether its structure closes
 	// a cycle with one of them.
 	buildingTypes map[types.Type]int
-	// shallowFallback marks a build (by type key) whose fully-delegated type is
-	// being traversed only because it lies on a cycle; a traversal that fails
-	// is retried as the shallow descriptor named by forceShallow.
-	shallowFallback map[string]struct{}
-	forceShallow    string
-	dynDepth        int
+	dynDepth      int
 
 	// hintedCache caches builds with external hints, matched by exact hint
 	// equality: the same (type pair, hints) combination recurs across every
@@ -274,8 +269,7 @@ func NewParser() *Parser {
 		building:    make(map[string][]*parserBuildEntry),
 		hintedCache: make(map[string][]*parserHintedVariant),
 
-		buildingTypes:   make(map[types.Type]int),
-		shallowFallback: make(map[string]struct{}),
+		buildingTypes: make(map[types.Type]int),
 	}
 }
 
@@ -299,6 +293,29 @@ func (p *Parser) purgePending(from int) {
 	p.pendingKeys = p.pendingKeys[:from]
 }
 
+// basicShape reports the Go kind, SSZ type and byte width of a type whose
+// underlying type is an SSZ basic value, or a zero width for any other type.
+func basicShape(t types.Type) (reflect.Kind, ssztypes.SszType, int64) {
+	b, ok := types.Unalias(t).Underlying().(*types.Basic)
+	if !ok {
+		return reflect.Invalid, ssztypes.SszUnspecifiedType, 0
+	}
+	switch b.Kind() {
+	case types.Bool:
+		return reflect.Bool, ssztypes.SszBoolType, 1
+	case types.Uint8:
+		return reflect.Uint8, ssztypes.SszUint8Type, 1
+	case types.Uint16:
+		return reflect.Uint16, ssztypes.SszUint16Type, 2
+	case types.Uint32:
+		return reflect.Uint32, ssztypes.SszUint32Type, 4
+	case types.Uint64:
+		return reflect.Uint64, ssztypes.SszUint64Type, 8
+	default:
+		return reflect.Invalid, ssztypes.SszUnspecifiedType, 0
+	}
+}
+
 // derefGoType strips aliases and pointers from t.
 func derefGoType(t types.Type) types.Type {
 	for {
@@ -311,46 +328,49 @@ func derefGoType(t types.Type) types.Type {
 	}
 }
 
-// reachesBuilding reports whether the structure below t (its SSZ-visible
-// struct fields and collection elements, through pointers) contains a type
-// whose build is in flight. A fully-delegated type is built shallow unless it
-// does: then it lies on a cycle with that type, and the cycle is only marked,
-// and its depth only counted, when the members are traversed.
-func (p *Parser) reachesBuilding(t types.Type) bool {
+// cycleWith returns a named type with a build in flight that the structure
+// below t (its SSZ-visible struct fields and collection elements, through
+// pointers) reaches, or nil. References back to t itself do not count: a
+// cycle that stays within t is the business of t's own methods. Unnamed
+// collections are the path between named types, not members of a cycle.
+func (p *Parser) cycleWith(t types.Type) types.Type {
 	root := derefGoType(t)
 	seen := map[types.Type]bool{root: true}
-	var walk func(t types.Type) bool
-	walkFields := func(t types.Type) bool {
-		switch u := t.Underlying().(type) {
-		case *types.Struct:
-			for i := 0; i < u.NumFields(); i++ {
-				f := u.Field(i)
-				if !f.Exported() || f.Name() == "_" || ssztypes.IsSszExcluded(reflect.StructTag(u.Tag(i))) {
-					continue
-				}
-				if walk(f.Type()) {
-					return true
-				}
-			}
-		case *types.Slice:
-			return walk(u.Elem())
-		case *types.Array:
-			return walk(u.Elem())
-		}
-		return false
-	}
-	walk = func(t types.Type) bool {
+	var walk func(t types.Type) types.Type
+	walk = func(t types.Type) types.Type {
 		t = derefGoType(t)
-		if p.buildingTypes[t] > 0 {
-			return true
-		}
 		if seen[t] {
-			return false
+			return nil
+		}
+		if _, named := t.(*types.Named); named && p.buildingTypes[t] > 0 {
+			return t
 		}
 		seen[t] = true
-		return walkFields(t)
+		return p.cycleBelow(t, walk)
 	}
-	return walkFields(root)
+	return p.cycleBelow(root, walk)
+}
+
+// cycleBelow applies walk to the SSZ-visible fields or element of t and
+// returns the first type it reports.
+func (p *Parser) cycleBelow(t types.Type, walk func(types.Type) types.Type) types.Type {
+	switch u := t.Underlying().(type) {
+	case *types.Struct:
+		for i := 0; i < u.NumFields(); i++ {
+			f := u.Field(i)
+			if !f.Exported() || f.Name() == "_" || ssztypes.IsSszExcluded(reflect.StructTag(u.Tag(i))) {
+				continue
+			}
+			if hit := walk(f.Type()); hit != nil {
+				return hit
+			}
+		}
+	case *types.Slice:
+		return walk(u.Elem())
+	case *types.Array:
+		return walk(u.Elem())
+	}
+	return nil
 }
 
 // GetTypeDescriptor analyzes a Go type and creates an SSZ type descriptor for code generation.
@@ -424,19 +444,7 @@ func (p *Parser) GetTypeDescriptorWithSchema(dataType, schemaType types.Type, ty
 		// build leaves incomplete entries behind; purge everything cached on the
 		// way. Hinted variants appended during this build sit at their list's
 		// tail, so reverse order pops them correctly.
-		for i := len(p.pendingKeys) - 1; i >= 0; i-- {
-			pending := p.pendingKeys[i]
-			if !pending.hinted {
-				delete(p.cache, pending.key)
-				continue
-			}
-			variants := p.hintedCache[pending.key]
-			if len(variants) <= 1 {
-				delete(p.hintedCache, pending.key)
-			} else {
-				p.hintedCache[pending.key] = variants[:len(variants)-1]
-			}
-		}
+		p.purgePending(0)
 		return nil, err
 	}
 
@@ -543,28 +551,10 @@ func (p *Parser) fullyDelegatesSSZ(t types.Type) bool {
 		any2(p.getDynamicHashRootCompatibility)
 }
 
-// buildTypeDescriptor builds the descriptor of a type pair. A fully-delegated
-// type that lies on a cycle with a build in flight is traversed so the cycle
-// is marked; if its structure cannot be traversed, the build is retried as the
-// shallow descriptor the type would have had off the cycle.
-func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints []ssztypes.SszTypeHint, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint) (*ssztypes.TypeDescriptor, error) {
-	typeKey := fmt.Sprintf("%v|%v", dataType.String(), schemaType.String())
-	pendingStart := len(p.pendingKeys)
-	desc, err := p.buildTypeDescriptorOnce(dataType, schemaType, typeHints, sizeHints, maxSizeHints)
-	if _, fallback := p.shallowFallback[typeKey]; fallback {
-		delete(p.shallowFallback, typeKey)
-		if err != nil {
-			p.purgePending(pendingStart)
-			p.forceShallow = typeKey
-			desc, err = p.buildTypeDescriptorOnce(dataType, schemaType, typeHints, sizeHints, maxSizeHints)
-			p.forceShallow = ""
-		}
-	}
-	return desc, err
-}
-
+// buildTypeDescriptor builds the descriptor of a type pair.
+//
 //nolint:gocyclo // SSZ type descriptor builder is inherently complex
-func (p *Parser) buildTypeDescriptorOnce(dataType, schemaType types.Type, typeHints []ssztypes.SszTypeHint, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint) (*ssztypes.TypeDescriptor, error) {
+func (p *Parser) buildTypeDescriptor(dataType, schemaType types.Type, typeHints []ssztypes.SszTypeHint, sizeHints []ssztypes.SszSizeHint, maxSizeHints []ssztypes.SszMaxSizeHint) (*ssztypes.TypeDescriptor, error) {
 	// Only cache in the plain descriptor cache when types match and no hints
 	// are provided; hint-carrying builds are cached per exact hint combination.
 	cacheable := dataType == schemaType && len(typeHints) == 0 && len(sizeHints) == 0 && len(maxSizeHints) == 0
@@ -764,22 +754,29 @@ func (p *Parser) buildTypeDescriptorOnce(dataType, schemaType types.Type, typeHi
 	// caller (it strips delegation flags).
 	beingGenerated := p.getCompatFlag(innerDataType, innerSchemaType) != 0 || p.getCompatFlag(innerDataType, innerDataType) != 0
 	shallowDelegate := p.AnnotationResolver != nil && !p.NoDelegation && len(typeHints) == 0 && len(sizeHints) == 0 && len(maxSizeHints) == 0 && !beingGenerated && p.fullyDelegatesSSZ(originalType)
-	// A delegated type whose structure closes a cycle with a build in flight
-	// is traversed after all: the cycle must be marked on both members so the
-	// generated code counts its levels and emits depth twins in every batch.
-	// Its methods still delegate. A traversal that fails is retried shallow.
-	if shallowDelegate && p.forceShallow != typeKey && p.reachesBuilding(originalType) {
-		p.shallowFallback[typeKey] = struct{}{}
-		shallowDelegate = false
-	}
+	// A delegated type is not traversed, so a cycle through it and a type
+	// described here would go unmarked and uncounted: the members of a cycle
+	// are described together, by one generator run.
 	if shallowDelegate {
+		if partner := p.cycleWith(originalType); partner != nil {
+			return nil, fmt.Errorf("%v delegates to its own SSZ methods but forms a recursive cycle with %v, which is described here: the members of a cycle must be generated in one run", originalType, partner)
+		}
 		if staticStr, ok := reflect.StructTag(p.AnnotationResolver(types.Unalias(originalType))).Lookup("ssz-static"); ok {
 			switch staticStr {
 			case "true":
-				// Static: the generated code resolves the exact size at runtime via
-				// the type's own sizer, so drive sizing/offsets at runtime rather
-				// than from a (here unknown) compile-time constant.
-				desc.SszTypeFlags |= ssztypes.SszTypeFlagHasSizeExpr
+				// A basic Go type keeps its SSZ shape, as the type cache's
+				// shallow descriptor does: the width is intrinsic to the kind,
+				// so the emitters pack, pad and size it like any basic value.
+				// Any other static type resolves its exact size at runtime via
+				// its own sizer, so sizing and offsets are driven at runtime
+				// rather than from a (here unknown) compile-time constant.
+				if kind, sszType, size := basicShape(innerDataType); size > 0 {
+					desc.Kind = kind
+					desc.SszType = sszType
+					desc.Size = size
+				} else {
+					desc.SszTypeFlags |= ssztypes.SszTypeFlagHasSizeExpr
+				}
 			case "false":
 				desc.SszTypeFlags |= ssztypes.SszTypeFlagIsDynamic
 			default:

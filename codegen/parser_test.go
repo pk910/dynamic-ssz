@@ -26,6 +26,90 @@ import (
 // methods) fully delegates and is not registered in the parser's CompatFlags, so
 // the gate fires; the resolver supplies the ssz-static declaration. An invalid
 // value is rejected.
+// Both front ends describe a fully-delegated child the same way: a basic
+// type keeps its SSZ type and width and an acyclic named slice stays a
+// shallow static value. Both refuse a delegated type on a cycle with the type
+// they are describing.
+// staticTrueAnnotation is the annotation a fully-delegated fixed-size type
+// carries.
+const staticTrueAnnotation = `ssz-static:"true"`
+
+func TestShallowDescriptorParity(t *testing.T) {
+	pkg := loadTestsPackage(t)
+	parse := func(name string) (*ssztypes.TypeDescriptor, error) {
+		obj := pkg.Types.Scope().Lookup(name)
+		if obj == nil {
+			t.Fatalf("%s not found", name)
+		}
+		p := NewParser()
+		// The fixtures register their static annotation through
+		// sszutils.Annotate; the parser sees it through this resolver.
+		p.AnnotationResolver = func(t types.Type) string {
+			if ptr, ok := types.Unalias(t).(*types.Pointer); ok {
+				t = ptr.Elem()
+			}
+			if named, ok := types.Unalias(t).(*types.Named); ok {
+				switch named.Obj().Name() {
+				case "shallowBasic", "edgeOpaque", "fixedOctets":
+					return staticTrueAnnotation
+				}
+			}
+			return ""
+		}
+		return p.GetTypeDescriptor(types.NewPointer(obj.Type()), nil, nil, nil)
+	}
+	reflectDesc := func(v any) (*ssztypes.TypeDescriptor, error) {
+		return ssztypes.NewTypeCache(nil).GetTypeDescriptor(reflect.TypeOf(v), nil, nil, nil)
+	}
+	// What the emitters consume from a delegated descriptor: whether it is a
+	// basic value and how wide, whether it packs, whether it is dynamic, and
+	// whether it was built shallow. A non-basic shallow type states its size
+	// at run time through its sizer in one front end and statically in the
+	// other, which the emitters handle alike.
+	shape := func(d *ssztypes.TypeDescriptor) string {
+		size := int64(0)
+		if d.SszType.IsBasic() {
+			size = d.Size
+		}
+		return fmt.Sprintf("basic=%v width=%d packed=%d dynamic=%v shallow=%v",
+			d.SszType.IsBasic(), size, packedElemSize(d), d.SszTypeFlags&ssztypes.SszTypeFlagIsDynamic != 0,
+			d.ContainerDesc == nil && d.ElemDesc == nil)
+	}
+	for _, tc := range []struct {
+		name  string
+		value any
+		want  string
+	}{
+		{"shallowBasic", tests.ShallowBasicHolder{}.A, "basic=true width=2 packed=2 dynamic=false shallow=true"},
+		{"fixedOctets", tests.OctetParent{}.Data, "basic=false width=0 packed=0 dynamic=false shallow=true"},
+	} {
+		parsedRoot, err := parse(tc.name)
+		if err != nil {
+			t.Fatalf("parse %s: %v", tc.name, err)
+		}
+		reflectedRoot, err := reflectDesc(tc.value)
+		if err != nil {
+			t.Fatalf("type cache %s: %v", tc.name, err)
+		}
+		parsed, reflected := shape(parsedRoot), shape(reflectedRoot)
+		if parsed != tc.want || reflected != tc.want {
+			t.Fatalf("%s: parser %s, type cache %s, want %s", tc.name, parsed, reflected, tc.want)
+		}
+	}
+
+	// edgeOpaque delegates and lies on a cycle with edgeCycleA, which is
+	// described here: both front ends refuse the pair by name.
+	for name, build := range map[string]func() error{
+		"parser":     func() error { _, err := parse("edgeCycleA"); return err },
+		"type cache": func() error { _, err := reflectDesc(tests.EdgeCycleParent{}); return err },
+	} {
+		err := build()
+		if err == nil || !strings.Contains(err.Error(), "edgeOpaque") || !strings.Contains(err.Error(), "edgeCycleA") || !strings.Contains(err.Error(), "generated in one run") {
+			t.Fatalf("%s: err = %v, want the cycle between edgeOpaque and edgeCycleA refused", name, err)
+		}
+	}
+}
+
 // Three shapes the type cache refuses are refused by the parser as well.
 func TestParserRefusesDivergentShapes(t *testing.T) {
 	pkg := loadTestsPackage(t)
@@ -67,7 +151,7 @@ func TestParserShallowGate(t *testing.T) {
 
 	t.Run("StaticTrueShallow", func(t *testing.T) {
 		p := NewParser()
-		p.AnnotationResolver = func(types.Type) string { return `ssz-static:"true"` }
+		p.AnnotationResolver = func(types.Type) string { return staticTrueAnnotation }
 		// The shallow gate only fires for a fully-delegated type. When the
 		// generated methods are absent (gen_*.go not produced by go generate),
 		// NestedDelegatedContainer does not delegate and the gate never fires.

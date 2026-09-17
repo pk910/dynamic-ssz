@@ -83,17 +83,12 @@ type TypeCache struct {
 	// flight, so a fully-delegated type can tell whether its structure closes
 	// a cycle with one of them.
 	buildingTypes map[reflect.Type]int
-	// shallowFallback marks a descriptor whose fully-delegated type is being
-	// traversed only because it lies on a cycle; a traversal that fails is
-	// retried as the shallow descriptor named by forceShallow.
-	shallowFallback map[*TypeDescriptor]struct{}
-	forceShallow    reflect.Type
-	dynDepth        int
-	recursion       bool
-	pendingKeys     []pendingKey
-	CompatFlags     map[string]SszCompatFlag
-	ExtendedTypes   bool
-	NoDelegation    bool
+	dynDepth      int
+	recursion     bool
+	pendingKeys   []pendingKey
+	CompatFlags   map[string]SszCompatFlag
+	ExtendedTypes bool
+	NoDelegation  bool
 
 	// noSpecResolution marks a cache that builds descriptors for code generation
 	// rather than for this process. See DisableSpecResolution.
@@ -122,7 +117,6 @@ func NewTypeCache(specs sszutils.DynamicSpecs) *TypeCache {
 		hintedDescriptors: make(map[typeKey][]*hintedVariant),
 		building:          make(map[typeKey][]*buildEntry),
 		buildingTypes:     make(map[reflect.Type]int),
-		shallowFallback:   make(map[*TypeDescriptor]struct{}),
 		CompatFlags:       map[string]SszCompatFlag{},
 		ExtendedTypes:     false,
 	}
@@ -283,54 +277,48 @@ func derefType(t reflect.Type) reflect.Type {
 	return t
 }
 
-// reachesBuilding reports whether the structure below t (its SSZ-visible
-// struct fields and collection elements, through pointers) contains a type
-// whose build is in flight. A fully-delegated type is built shallow unless it
-// does: then it lies on a cycle with that type, and the cycle is only marked,
-// and its depth only counted, when the members are traversed.
-func (tc *TypeCache) reachesBuilding(t reflect.Type) bool {
+// cycleWith returns a named type with a build in flight that the structure
+// below t (its SSZ-visible struct fields and collection elements, through
+// pointers) reaches, or nil. References back to t itself do not count: a
+// cycle that stays within t is the business of t's own methods. Unnamed
+// collections are the path between named types, not members of a cycle.
+func (tc *TypeCache) cycleWith(t reflect.Type) reflect.Type {
 	seen := map[reflect.Type]bool{derefType(t): true}
-	var walk func(t reflect.Type) bool
-	walk = func(t reflect.Type) bool {
+	var walk func(t reflect.Type) reflect.Type
+	walk = func(t reflect.Type) reflect.Type {
 		t = derefType(t)
-		if tc.buildingTypes[t] > 0 {
-			return true
-		}
 		if seen[t] {
-			return false
+			return nil
+		}
+		if t.Name() != "" && tc.buildingTypes[t] > 0 {
+			return t
 		}
 		seen[t] = true
-		switch t.Kind() {
-		case reflect.Struct:
-			for i := 0; i < t.NumField(); i++ {
-				f := t.Field(i)
-				if !f.IsExported() || IsSszExcluded(f.Tag) {
-					continue
-				}
-				if walk(f.Type) {
-					return true
-				}
-			}
-		case reflect.Slice, reflect.Array:
-			return walk(t.Elem())
-		default:
-		}
-		return false
+		return tc.cycleBelow(t, walk)
 	}
-	t = derefType(t)
-	if t.Kind() == reflect.Struct {
+	return tc.cycleBelow(derefType(t), walk)
+}
+
+// cycleBelow applies walk to the SSZ-visible fields or element of t and
+// returns the first type it reports.
+func (tc *TypeCache) cycleBelow(t reflect.Type, walk func(reflect.Type) reflect.Type) reflect.Type {
+	switch t.Kind() {
+	case reflect.Struct:
 		for i := 0; i < t.NumField(); i++ {
 			f := t.Field(i)
 			if !f.IsExported() || IsSszExcluded(f.Tag) {
 				continue
 			}
-			if walk(f.Type) {
-				return true
+			if hit := walk(f.Type); hit != nil {
+				return hit
 			}
 		}
-		return false
+		return nil
+	case reflect.Slice, reflect.Array:
+		return walk(t.Elem())
+	default:
+		return nil
 	}
-	return walk(t)
 }
 
 func (tc *TypeCache) getTypeDescriptor(runtimeType, schemaType reflect.Type, sizeHints []SszSizeHint, maxSizeHints []SszMaxSizeHint, typeHints []SszTypeHint) (*TypeDescriptor, error) {
@@ -413,20 +401,7 @@ func (tc *TypeCache) getTypeDescriptor(runtimeType, schemaType reflect.Type, siz
 		}
 	}()
 
-	pendingStart := len(tc.pendingKeys)
 	err := tc.buildTypeDescriptor(desc, runtimeType, schemaType, sizeHints, maxSizeHints, typeHints)
-	if _, fallback := tc.shallowFallback[desc]; fallback {
-		delete(tc.shallowFallback, desc)
-		if err != nil {
-			// The type lies on a cycle but its structure cannot be traversed:
-			// it keeps the shallow descriptor it would have had off the cycle.
-			tc.purgePending(pendingStart)
-			*desc = TypeDescriptor{Type: runtimeType, SchemaType: schemaType}
-			tc.forceShallow = runtimeType
-			err = tc.buildTypeDescriptor(desc, runtimeType, schemaType, sizeHints, maxSizeHints, typeHints)
-			tc.forceShallow = nil
-		}
-	}
 	if err != nil {
 		// A cycle member completes and is cached before the cycle head finishes.
 		// If the head's build fails afterwards, those members were built against
@@ -803,15 +778,13 @@ func (tc *TypeCache) buildTypeDescriptor(desc *TypeDescriptor, runtimeType, sche
 		} else {
 			fullyDelegated = fullyDelegatesSSZ(runtimeType, promoted)
 		}
-		// A delegated type whose structure closes a cycle with a build in
-		// flight is traversed after all: the cycle must be marked on both
-		// members so the walkers count its levels. Its methods still delegate.
-		// A traversal that fails is retried as the shallow descriptor.
-		if fullyDelegated && tc.forceShallow != runtimeType && tc.reachesBuilding(runtimeType) {
-			tc.shallowFallback[desc] = struct{}{}
-			fullyDelegated = false
-		}
+		// A delegated type is not traversed, so a cycle through it and a type
+		// described here would go unmarked and uncounted: the members of a
+		// cycle are described together, by one generator run.
 		if fullyDelegated {
+			if partner := tc.cycleWith(runtimeType); partner != nil {
+				return sszutils.NewSszErrorf(sszutils.ErrUnsupportedType, "%v delegates to its own SSZ methods but forms a recursive cycle with %v, which is described here: the members of a cycle must be generated in one run", runtimeType, partner)
+			}
 			if *staticAnnotation {
 				size, err := tc.delegatedStaticSize(desc, runtimeType)
 				if err != nil {

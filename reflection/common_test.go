@@ -1167,6 +1167,21 @@ func (c *TestContainerWithHashError) HashTreeRoot() ([32]byte, error) {
 	return hh.HashRoot()
 }
 
+// walkerU16 is a two-byte type that hashes itself through the walker, so a
+// sibling after it must start on a fresh chunk.
+type walkerU16 uint16
+
+func (w *walkerU16) HashTreeRootWith(hh sszutils.HashWalker) error {
+	hh.PutUint16(uint16(*w))
+	return nil
+}
+
+// TestWalkerU16Holder places a walker-hashed basic before a sibling.
+type TestWalkerU16Holder struct {
+	A walkerU16
+	B uint64
+}
+
 func (c *TestContainerWithHashError) HashTreeRootWith(hh sszutils.HashWalker) error {
 	return fmt.Errorf("test HashTreeRootWith error")
 }
